@@ -1,0 +1,52 @@
+// A forwarding argument spelled `*it` inside a member function template,
+// with `it` a class iterator, takes the value category of the operator* the
+// instance calls ([over.oper] — an overloaded operator is a function call):
+// move_iterator's `T&& operator*()` is an xvalue, so the element is MOVED; an
+// ordinary `T& operator*()` an lvalue, so it is copied. madc took the
+// pattern's builtin `*` (an lvalue) and copied in both — libstdc++ 11's
+// __uninitialized_copy<false>::__uninit_copy over move_iterator (std::vector
+// growth on Ubuntu 22.04) copied every string, then destroyed garbage.
+// Oracle: g++ 13 and clang++ 18 print the .expect lines.
+#include <stdio.h>
+#include <utility>
+#include <new>
+struct S
+{
+	int v;
+	S(int x) : v(x) { }
+	S(const S &o) : v(o.v + 10) { }
+	S(S &&o) : v(o.v + 100) { o.v = -1; }
+};
+template<typename T> struct mvit
+{
+	T *p;
+	T &&operator*() const { return static_cast<T &&>(*p); }
+};
+template<typename T> struct cpit
+{
+	T *p;
+	T &operator*() const { return *p; }
+};
+template<typename T, typename... A>
+void construct(T *p, A &&... a) { ::new ((void *)p) T(std::forward<A>(a)...); }
+template<bool B>
+struct uc
+{
+	template<typename I, typename F>
+	static F copy(I f, F r) { construct(r, *f); return r; }
+};
+template<typename I, typename F>
+F fcopy(I f, F r) { construct(r, *f); return r; }
+int main()
+{
+	S a(1), b(2), c(3), d(4);
+	alignas(S) unsigned char raw[4 * sizeof(S)];
+	S *t = reinterpret_cast<S *>(raw);
+	uc<false>::copy(mvit<S>{ &a }, t);
+	fcopy(mvit<S>{ &b }, t + 1);
+	uc<true>::copy(cpit<S>{ &c }, t + 2);
+	fcopy(cpit<S>{ &d }, t + 3);
+	printf("move: %d %d %d %d\n", t[0].v, a.v, t[1].v, b.v);
+	printf("copy: %d %d %d %d\n", t[2].v, c.v, t[3].v, d.v);
+	return 0;
+}

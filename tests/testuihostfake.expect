@@ -1,5 +1,6 @@
 registered -> yes
-duplicate -> no
+same host again -> yes
+another host, taken name -> no
 term taken -> no
 no-level host -> no
 fake open: madc
@@ -14,6 +15,10 @@ fake menu: {"bar":[{"items":[{"enabled":true,"id":"save","key":"^k s","title":"S
 menu calls after same render: 1
 fake menu: {"bar":[{"items":[{"enabled":true,"id":"save","key":"^k s","title":"Save"},{"sep":true},{"code":42,"enabled":false,"id":"quit","title":"Quit"}],"title":"Datei"}]}
 menu calls after changed render: 2
+title calls before a title: 0
+fake title: fake - a.c @ 1 : 1
+fake title: fake - a.c @ 2 : 1
+title calls: 2
 dialogs -> yes
 fake dialog: {"mode":"open","title":"Open File","path":""}
 dialog -> shown
@@ -23,6 +28,15 @@ clipboard get (none yet) -> refused
 fake clip_set: one|two
 clipboard set -> taken
 clipboard get -> answered [one|two] no CR
+fake fullscreen: -1 -> full
+fullscreen toggle -> done
+fake fullscreen: -1 -> full
+fullscreen toggle -> done
+fake fullscreen: 0 -> windowed
+fullscreen leave -> done
+fake fullscreen: 1 -> full
+fullscreen enter -> done
+fullscreen bad handle -> refused
 event dialog open /tmp/picked.mad code 0
 event text hi
 event focus
@@ -36,4 +50,4 @@ event action  ^k c code 7
 rows x cols after resize -> 40 x 100
 pending -> []
 fake close
-pushed 3 times
+pushed 6 times

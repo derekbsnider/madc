@@ -1,0 +1,187 @@
+// madcide's git (plan docs/plans/2026-10-03-chthonia-windows-macos.md §7e
+// stage 1, §7f item 4; tools/madcide/madcide_git.inc): the `git` command's
+// read verbs — what `%git VERB` runs in the REPL — over the repository the
+// test runs in, each answered in the REPL's transcript. Every lane runs the
+// suite from a checkout root, so the assertions are SHAPE (never a sha or a
+// count history would move). Each verb prints what git prints:
+//   status — git status -sb: `## BRANCH` first;
+//   log    — git log --format='%h %s (%ar, %an)' -N [-- FILE];
+//   show   — REV:FILE is the file at REV (git show REV:FILE); REV alone the
+//            commit's header (commit, Author, Date, the summary);
+//   blame  — git blame --date=relative's fields for LINE; a line the buffer
+//            added is `00000000 (Not Committed Yet LINE)`;
+//   diff   — FILE's open buffer, unsaved edits included, against HEAD (git
+//            diff HEAD -- FILE); an unchanged buffer prints nothing;
+// then the views (§7e stage 1): the %G status seat (the branch, `*` once
+// the buffer differs from its last commit); View ▸ Changes (the buffer's
+// diff in the read-only [changes] buffer); Blame line (the caret's line's
+// commit, or "not committed yet", on the status line; a pseudo-buffer is
+// "Not a file"); View ▸ History (the file's commits as a choice list, a row
+// showing that revision in a read-only "[VERSION @ SHA7]" buffer);
+// then the refusals, and the relative dates on fixed (when, now) pairs: what
+// git log --date=relative printed for commits exactly that old (1 s, 30 s,
+// 100 s, 5 h, 3 d, 20 d, 100 d, 400 d, 730 d, 2000 d) and for a future one.
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+
+long transcript_size(long w, long es)
+{
+    long rd = repl_doc_if_any(w, es);
+    return rd == 0 ? 0 : ui::text_size(w, rd);
+}
+
+// One `git` command: what it added to the transcript.
+void git_run(var &out, IdeSession &S, long doc, long w, long es, const char *arg)
+{
+    long from = transcript_size(w, es);
+    bool cont = true;
+    S.command(doc, cmd_of_w(w, "git"), arg, cont);
+    var t = "";
+    long rd = repl_doc_if_any(w, es);
+    if ( rd != 0 )
+	ui::text(t, w, rd);
+    out = t.substr(from, strlen(t.c_str()) - from);
+}
+
+// Is `s` a run of `n` lowercase hex digits from `at`?
+bool hex_run(var &s, long at, long n)
+{
+    const char *p = s.c_str();
+    if ( strlen(p) < at + n )
+	return false;
+    for ( long i = at; i < at + n; i = i + 1 )
+	if ( !((p[i] >= '0' && p[i] <= '9') || (p[i] >= 'a' && p[i] <= 'f')) )
+	    return false;
+    return true;
+}
+
+int main()
+{
+    long w = ui::world_new();
+    long doc = setup_editor(w, "VERSION", false);
+    long es = ui::entity_by_name(w, "editor-state");
+    builtins_activate(w, es);	// madcide's own modules, as IdeSession::open activates them
+    IdeSession S;
+    S.attach(w, es);
+    var disk;
+    php::file_get_contents(disk, "VERSION");
+    var seat0;
+    git_seat(seat0, w, es, doc);
+    ui::set(w, doc, "modified", true);
+    var seat1;
+    git_seat(seat1, w, es, doc);
+    ui::set(w, doc, "modified", false);
+    println("seat: branch={} clean={} edited={}", strlen(seat0.c_str()) > 0,
+	    rust::ends_with(seat0.c_str(), "*") == 0, rust::ends_with(seat1.c_str(), "*") != 0);
+
+    var out;
+    git_run(out, S, doc, w, es, "status");
+    println("status: branch line={}", perl::index(out.c_str(), "## ") == 0);
+
+    git_run(out, S, doc, w, es, "log -n 2 VERSION");
+    var lines;
+    php::explode(lines, "\n", out.c_str());
+    var l0 = lines[0];
+    println("log: rows={} sha={} shape={}", php::count(lines) - 1, hex_run(l0, 0, 7),
+	    rust::contains(l0.c_str(), " ago, ") != 0 && rust::ends_with(l0.c_str(), ")") != 0);
+
+    git_run(out, S, doc, w, es, "show HEAD");
+    println("show rev: commit={} author={} date={}",
+	    perl::index(out.c_str(), "commit ") == 0 && hex_run(out, 7, 40),
+	    rust::contains(out.c_str(), "\nAuthor: ") != 0,
+	    rust::contains(out.c_str(), "\nDate:   ") != 0);
+    git_run(out, S, doc, w, es, "show HEAD:VERSION");
+    println("show file: same={}", out == disk);
+
+    git_run(out, S, doc, w, es, "blame VERSION:1");
+    php::explode(lines, "\n", out.c_str());
+    var b0 = lines[0];
+    println("blame: rows={} sha={} line={}", php::count(lines) - 1, hex_run(b0, 0, 8),
+	    rust::contains(b0.c_str(), " 1) ") != 0);
+
+    git_run(out, S, doc, w, es, "diff VERSION");
+    println("diff unchanged: empty={}", strlen(out.c_str()) == 0);
+    var edited = format("{}an added line\n", disk);
+    ui::text_load(w, doc, edited.c_str());		// the buffer, unsaved
+    git_run(out, S, doc, w, es, "diff VERSION");
+    println("diff edited: header={} added={}",
+	    rust::contains(out.c_str(), "--- a/VERSION\n+++ b/VERSION\n") != 0,
+	    rust::contains(out.c_str(), "\n+an added line\n") != 0);
+    long nl = python::count(disk.c_str(), "\n");
+    var spec = format("blame VERSION:{}", nl + 1);
+    git_run(out, S, doc, w, es, spec.c_str());
+    var want = format("00000000 (Not Committed Yet {}) an added line\n", nl + 1);
+    println("blame edited: uncommitted={}", out == want);
+
+    bool cont = true;
+    S.command(doc, cmd_of_w(w, "gitchanges"), "", cont);
+    long cd = active_doc(w, es, 0);
+    var cname;
+    doc_name(cname, w, cd);
+    var ctext;
+    ui::text(ctext, w, cd);
+    println("changes: buffer={} added={} read-only={}", cname,
+	    rust::contains(ctext.c_str(), "\n+an added line\n") != 0, !es_flag(w, es, "editable"));
+    var msg;
+    S.command(doc, cmd_of_w(w, "gitblame"), "", cont);
+    ui::get(msg, w, es, "msg");
+    println("blame pseudo: {}", msg);
+    switch_buffer(w, es, cd, buffer_index_of(w, es, doc));
+    ui::set(w, es, "caret", strlen(disk.c_str()));		// the added line
+    S.command(doc, cmd_of_w(w, "gitblame"), "", cont);
+    ui::get(msg, w, es, "msg");
+    println("blame line: {}", msg);
+    ui::set(w, es, "caret", 0);
+    S.command(doc, cmd_of_w(w, "gitblame"), "", cont);
+    ui::get(msg, w, es, "msg");
+    println("blame first: line={} sha={} ago={}", perl::index(msg.c_str(), "Line 1: ") == 0,
+	    hex_run(msg, 8, 7), rust::contains(msg.c_str(), " ago: ") != 0);
+
+    S.command(doc, cmd_of_w(w, "githistory"), "", cont);
+    var hrows;
+    ui::get(hrows, w, es, "choicerows");
+    var hlabel;
+    ui::get(hlabel, w, es, "choicelabel");
+    var h0 = hrows[0];
+    var h0title = h0["title"];
+    var h0arg = h0["arg"];
+    println("history: label={} choice={} rows={} title={}", hlabel,
+	    cur_pane(w, es) == paneCHOICE, php::count(hrows) > 0, hex_run(h0title, 0, 7));
+    S.command(doc, cmd_of_w(w, "githistory"), h0arg.c_str(), cont);
+    long hd = active_doc(w, es, 0);
+    var hname;
+    doc_name(hname, w, hd);
+    var htext;
+    ui::text(htext, w, hd);
+    println("revision: buffer={} same={} read-only={}", perl::index(hname.c_str(), "[VERSION @ ") == 0,
+	    htext == disk, !es_flag(w, es, "editable"));
+    switch_buffer(w, es, hd, buffer_index_of(w, es, doc));
+
+    git_run(out, S, doc, w, es, "frob");
+    print("refused: {}", out);
+    git_run(out, S, doc, w, es, "");
+    print("refused: {}", out);
+    git_run(out, S, doc, w, es, "blame");
+    print("refused: {}", out);
+    git_run(out, S, doc, w, es, "log -n x");
+    print("refused: {}", out);
+    git_run(out, S, doc, w, es, "show HEAD:");
+    print("refused: {}", out);
+    git_run(out, S, doc, w, es, "blame VERSION:0");
+    print("refused: {}", out);
+
+    var ages = { 1, 30, 100, 18000, 259200, 1728000, 8640000, 34560000, 63072000, 172800000 };
+    long now = 1800000000;
+    var said = "";
+    for ( var a : ages )
+    {
+	var rd;
+	git_relative_date(rd, now - a.as_integer(), now);
+	said = format("{}{} | ", said, rd);
+    }
+    var fut;
+    git_relative_date(fut, now + 10, now);
+    println("dates: {}{}", said, fut);
+    return 0;
+}

@@ -13,16 +13,7 @@
 #include "../../tools/texteditor/lined_core.inc"
 #include "../../tools/texteditor/editor_events.inc"
 #include "../../tools/madcide/madcide_core.inc"
-
-void ev_action(var &e, const char *a)
-{
-    var f;
-    f["event"] = "action";
-    f["event_code"] = ui::event_kind::action;
-    f["action"] = a;
-    f["seq"] = "";
-    e = f;
-}
+#include "../../tools/madcide/include/madcide/harness"	// <madcide/harness>: ev_text, ev_key, ev_action
 
 // The popup facts as one snapshot line: how many popups; a quick input's
 // label, text, caret, placement (top third, centered, parented by the foot

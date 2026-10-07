@@ -14,7 +14,9 @@
 // target's suffix (libfoo.so, libfoo.so.2), is verbatim (the -l contract).
 //
 // THREAD-SAFETY CONTRACT: the map is a constant table; the functions are
-// pure except madc_module_open, which is the madc_dl seam's contract.
+// pure except madc_module_open, which is the madc_dl seam's contract, and
+// madc_darwin_install_name / madc_darwin_link_rpath, which read a file and
+// share no state.
 
 #include <string>
 #include "datadef.h"	// TargetOS, madc_target_os
@@ -68,7 +70,29 @@ std::string madc_module_library_spelling(const std::string &name);	// for madc_t
 // Open a spelled library through the madc_dl seam into the default symbol
 // scope: a bare spelling is tried beside the running binary first
 // (<exe dir>/../lib/<spelling>, the relocatable install shape the runpath
-// uses), then as the loader itself searches. NULL + `error` on failure.
-void *madc_module_open(const std::string &spelling, std::string &error);
+// uses), then as the loader itself searches. `bind_now` resolves every
+// reference at open (the command line's -l: fail-fast). The one opener for
+// `import`, a manifest's "libs", -l and a frozen forest's recorded
+// libraries. NULL + `error` on failure.
+void *madc_module_open(const std::string &spelling, std::string &error,
+		       bool bind_now = false);
+
+// The load command a Mach-O image linking `spelling` records — the dylib's
+// own install name (LC_ID_DYLIB), as ld64 records it — read from the file
+// madc_module_open opens first: beside the running binary for a bare
+// spelling, the path itself for a path spelling. Every library madc builds
+// or ships names itself "@rpath/<file>", so a program linking one loads it
+// through the runpath's LC_RPATHs from a relocatable install. A file madc
+// cannot read (a system dylib in the dyld shared cache, a cross host without
+// it) answers the spelling: dyld's default search.
+std::string madc_darwin_install_name(const std::string &spelling);
+
+// The LC_RPATH a Mach-O image needs to load `spelling` where the link found
+// it: a PATH spelling whose install name is "@rpath/<file>" (every library
+// madc builds) answers its real directory — ld64 links such a library by
+// path with `-rpath <dir>`, recording the install name. "" for a bare
+// spelling (the runpath's madc lib dir serves it) and for a library whose
+// install name is a fixed path.
+std::string madc_darwin_link_rpath(const std::string &spelling);
 
 #endif

@@ -14,7 +14,7 @@
 //   PHP           madc
 //   int(42)       int(42) / long(42) / unsigned int(42)  — the real width
 //   float(3.5)    double(3.5) / float(1.5)
-//   string(2)     char *(2) / char[8](2)
+//   string(2)     char *(2) / char[8](2) / char[3](2) for the literal "hi"
 //   object(P)#1   struct Point(2)   — PHP's object handle means nothing in C
 // A bool is bool(true)/bool(false) as in PHP; a char is char('A'), or char(10)
 // for a byte that must not be written raw into the output.
@@ -59,7 +59,12 @@ int main()
 	php::var_dump(c);
 	char nlc = '\n';
 	php::var_dump(nlc);
+	// A string literal is an array of char (C11 6.4.5p6): `const Ts &` deduces
+	// char[3] (g++: "with Ts = {char [3]}"), so the real type word is char[3].
+	// A pointer to the same text is a char *.
 	php::var_dump("hi");
+	const char *hi = "hi";
+	php::var_dump(hi);
 	const char *nul = NULL;
 	php::var_dump(nul);
 

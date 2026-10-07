@@ -1,0 +1,23 @@
+// An overloaded operator whose function returns a reference is an lvalue
+// ([expr.call]/14, [over.match.oper]/2), so `&` takes its address: madc
+// refused `&(std::cout << "x")` with "expecting addressable expression after
+// '&'". g++ and clang++ (-std=c++17) print the lines in the .expect.
+#include <iostream>
+
+struct Counter
+{
+    int n;
+    Counter &operator++() { ++n; return *this; }
+};
+
+int main()
+{
+    std::ostream *p = &(std::cout << "x");
+    *p << " y" << std::endl;
+    std::cout << "stream: " << (p == &std::cout) << std::endl;
+    Counter c = { 1 };
+    Counter *r = &++c;
+    r->n *= 10;
+    std::cout << "prefix: " << (r == &c) << " " << c.n << std::endl;
+    return 0;
+}

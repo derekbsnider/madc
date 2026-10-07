@@ -259,9 +259,11 @@ emit() {
 
 # Idempotent write: rewrite only on real content change, so the parse-time
 # regeneration in src/Makefile never churns mtimes / forces rebuilds.
-emit > "$OUT.tmp"
-if cmp -s "$OUT.tmp" "$OUT" 2>/dev/null; then
-    rm -f "$OUT.tmp"
+# A per-process temp: two concurrent writers of one table cannot interleave.
+TMP="$OUT.tmp.$$"
+emit > "$TMP"
+if cmp -s "$TMP" "$OUT" 2>/dev/null; then
+    rm -f "$TMP"
 else
-    mv "$OUT.tmp" "$OUT"
+    mv "$TMP" "$OUT"
 fi

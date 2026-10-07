@@ -12,6 +12,7 @@
 ^g help
 ^w find
 ^l findnext
+^\ replace
 ^b mark
 ^n bend
 ^k blockdel

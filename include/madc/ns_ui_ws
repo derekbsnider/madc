@@ -27,8 +27,9 @@ namespace ui_ws {
     // attach() immediately before ui::open("ws"); the cooperative scheduler
     // never yields between those two calls (attach is a bare store, ui::open
     // reaches open() with no park in between), so two seats can never race
-    // this single slot.
-    madc::channel *__pending = 0;
+    // this single slot. Inline: one slot however many units include this
+    // fragment, objects linked included.
+    inline madc::channel *__pending = 0;
 
     void attach(madc::channel *ch)
     {
@@ -83,11 +84,13 @@ namespace ui_ws {
     }
 }
 
-// No menu / dialog / tick / clipboard op: a ws window has no native menu bar
-// or file dialog, no platform loop to bound (readline is the cooperative
-// wait), and a page asks the user before it reads the clipboard — so the
-// application keeps its own copy (plan §41.11a step 3e).
+// No menu / dialog / tick / clipboard / full-screen op: a ws window has no
+// native menu bar or file dialog, no platform loop to bound (readline is the
+// cooperative wait), and a page asks the user before it reads the clipboard
+// — so the application keeps its own copy (plan §41.11a step 3e); the
+// browser's own full screen is the browser's (F11).
 static ui::ui_host_ops __ui_ws_ops = {
-    ui_ws::open, ui_ws::close, ui_ws::eval, ui_ws::run, 0, 0, 0, 0, 0
+    ui_ws::open, ui_ws::close, ui_ws::eval, ui_ws::run, 0, 0, 0, 0, 0, 0, 0,
+    "ns_ui_ws"
 };
 static bool __ui_ws_registered = ui::register_host("ws", ui::WEB, &__ui_ws_ops);

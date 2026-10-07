@@ -56,7 +56,7 @@ SRC="${MADC_GATE_SRC:-src/parser.cpp}"   # override exists ONLY for --selftest
 
 # BASELINE (measured 2026-09-19 @ 85f3c91d4) -> END STATE after the plan lands
 BASE_FNPTRPARAMS=2   # -> 2  (definition + the owner's suffix call)
-BASE_FPTR=3           # owner + fnptr_twin + getPointerType's FuncDef decay
+BASE_FPTR=4           # owner + fnptr_twin + getPointerType's FuncDef decay + function_type_of
 BASE_CARRAY=6         # -> 5  (owner x1 + 4 non-declarator sites)
 BASE_MEMBERPTR=3      # -> 2  (owner + the &C::field constant)
 BASE_MEMBERFNPTR=2    # -> 2  (owner + the &C::method constant)
@@ -101,6 +101,7 @@ control "parse_declarator's member-fn-ptr fold"        'dd = new DataDefMemberFn
 control "parse_declarator's function-type suffix"      'DataDefFPTR \*fp = new DataDefFPTR(func);'
 control "fnptr_twin's construction (the ONE fn-type -> fn-pointer twin)" 'DataDefFPTR \*twin = new DataDefFPTR(fn_type->target);'
 control "getPointerType's [conv.func] decay (the ONE FuncDef -> fn-pointer mint)" 'DataDefFPTR \*fp = new DataDefFPTR(fd);'
+control "function_type_of's mint (the ONE FuncDef -> function TYPE, [temp.deduct.call]/3)" 'DataDefFPTR \*ft = new DataDefFPTR(fd);'
 control "parse_declarator's data member pointer fold" 'dd = new DataDefMemberPtr(owner, owner_name, \*dd);'
 
 if [ "${1:-}" = "--selftest" ]; then

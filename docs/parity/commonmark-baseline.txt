@@ -1,0 +1,21 @@
+# CommonMark conformance lane baseline (scripts/commonmark_lane.sh): the spec
+# examples (cmark-gfm 0.29.0.gfm.13's test/spec.txt, by example number) whose
+# HTML, rendered from the madcmark module's tree, differs from the example's.
+# The lane is RED when an example outside this list fails, and LOUD when one
+# of these passes — the list only shrinks.
+#
+# Every row is the module's CONFIGURATION, not a tree gap: madcmark always
+# attaches table, strikethrough, autolink and tasklist (madcide's panes read
+# GitHub-flavoured Markdown), while the spec runs each example with only the
+# extensions it names.
+#
+# The autolink extension is attached, so a bare URL or address in a core
+# example becomes a link (the spec's core run has the extension off):
+610 Autolinks
+614 Autolinks
+616 Autolinks
+619 Autolinks
+620 Autolinks
+# The tagfilter extension is not attached: an HTML-output filter, and no
+# madcide pane renders raw HTML.
+652 Disallowed Raw HTML (extension)

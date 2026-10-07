@@ -1,0 +1,13 @@
+default: hint=(none) size=0
+terminal menu: larger=0 smaller=0
+terminal larger: msg=[A terminal keeps its own font size.] hint=(none) size=0
+terminal kept: 0
+window menu: larger=1 smaller=1
+larger: msg=[Font size 15.] hint=15px size=15
+kept: font_size=15
+smaller: msg=[Font size 14.] hint=14px size=14
+smaller: msg=[Font size 13.] hint=13px size=13
+at the top: msg=[The font size stays 36 (from 8 to 36).] hint=36px size=36
+at the bottom: msg=[The font size stays 8 (from 8 to 36).] hint=8px size=8
+from the bottom: msg=[Font size 9.] hint=9px size=9
+new session: hint=9px size=9

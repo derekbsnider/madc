@@ -1,0 +1,1 @@
+__builtin_ia32_sfence is an x86 builtin (gcc declares it only for an x86 target); Apple arm64 has none, so the call is invalid there as it is for gcc.

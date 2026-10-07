@@ -15,7 +15,7 @@
 //   5. settings.json's "profile" selects a user bundle: its own directory
 //      holds its layout, its keys word (pico) is the shared profiles' file,
 //      the word it leaves unset (theme) is the default bundle's, and its
-//      settings' default seeds repl.std;
+//      settings' default seeds the session's standard ("std");
 //   6. the command line's profile beats settings.json's;
 //   7. a user setting beats the bundle's default;
 //   8. a user bundle overrides a shipped one by name (a user default/ with
@@ -25,9 +25,15 @@
 //      a path leave the default profile in use, the reason on the status line;
 //  10. the program's own name (madc::sys.argv[0], its basename without the
 //      extension) selects the bundle of that name with no flag — a link
-//      /usr/local/bin/chthonia, a chthonia.exe — ahead of settings.json's
+//      /usr/local/bin/learner, a learner.exe — ahead of settings.json's
 //      "profile"; the command line still beats it, and a name no bundle has
 //      falls through to settings.json.
+//  11. MADCIDE_PLUGIN_PATH (plugin_path_dirs): its directories in order, split
+//      at ':' (';' on Windows, where "C:\x" keeps its drive), empty entries
+//      skipped; the search path is the configuration directory, then those
+//      directories, then the shipped plugins — a bundle only there is found,
+//      a user bundle of the same name still wins, and the shipped default is
+//      still found.
 // The configuration directory is this test's fixture (MADCIDE_CONFIG_DIR in
 // the .env); the runner points every other test at none.
 #include "../tools/texteditor/lined_core.inc"
@@ -77,14 +83,13 @@ void probe(var &out, const char *path, const char *profile)
 	ui::get(lo, S.w, S.es, "layout");
 	var sc;
 	ui::get(sc, S.w, S.es, "scheme");
-	var rs;
-	ui::get(rs, S.w, S.es, "replstd");
+	var rs = madc::file_kind_name(lang_session(S.w));
 	var bd;
 	ui::get(bd, S.w, S.es, "bundledir");
 	var msg;
 	ui::get(msg, S.w, S.es, "msg");
 	r = { "doc": doc, "bundle": b, "keys": k, "window": lo["window"],
-	      "scheme": sc, "replstd": rs, "dir": bd, "msg": msg };
+	      "scheme": sc, "std": rs, "dir": bd, "msg": msg };
 	S.close();
     }
     out = r;
@@ -99,15 +104,15 @@ int main()
 
     // 1. The configuration directory's order.
     var c;
-    config_dir_of(c, "/o", "/x", "/a", "/h", true);
+    config_dir_of(c, "madcide", "/o", "/x", "/a", "/h", true);
     println("bundles-cfg-override: {}", c);
-    config_dir_of(c, "", "/x", "/a", "/h", true);
+    config_dir_of(c, "madcide", "", "/x", "/a", "/h", true);
     println("bundles-cfg-xdg: {}", c);
-    config_dir_of(c, NULL, NULL, "/a", "/h", true);
+    config_dir_of(c, "madcide", NULL, NULL, "/a", "/h", true);
     println("bundles-cfg-appdata: {}", c);
-    config_dir_of(c, NULL, NULL, "/a", "/h", false);
+    config_dir_of(c, "madcide", NULL, NULL, "/a", "/h", false);
     println("bundles-cfg-home: {}", c);
-    config_dir_of(c, NULL, NULL, NULL, NULL, false);
+    config_dir_of(c, "madcide", NULL, NULL, NULL, NULL, false);
     println("bundles-cfg-none: [{}]", c);
 
     var cfg;
@@ -132,22 +137,22 @@ int main()
     mkdirs(made, bad.c_str());
     var bp = format("{}/bad.plugin", bad);
     var m;
-    put(files, bp, "{ \"name\": \"bad\", \"api\": 2, \"colour\": \"red\" }");
+    put(files, bp, "{ \"name\": \"bad\", \"api\": 3, \"colour\": \"red\" }");
     plugin_manifest_read(m, why, bad, "bad");
     println("bundles-refuse-field: {}", php::str_replace(cfg.c_str(), "CFG", why.c_str()));
-    php::file_put_contents(bp.c_str(), "{ \"name\": \"bad\", \"api\": 2, \"contributes\": { \"commands\": {} } }");
+    php::file_put_contents(bp.c_str(), "{ \"name\": \"bad\", \"api\": 3, \"contributes\": { \"commands\": {} } }");
     plugin_manifest_read(m, why, bad, "bad");
     println("bundles-refuse-kind: {}", php::str_replace(cfg.c_str(), "CFG", why.c_str()));
-    php::file_put_contents(bp.c_str(), "{ \"name\": \"other\", \"api\": 2 }");
+    php::file_put_contents(bp.c_str(), "{ \"name\": \"other\", \"api\": 3 }");
     plugin_manifest_read(m, why, bad, "bad");
     println("bundles-refuse-name: {}", php::str_replace(cfg.c_str(), "CFG", why.c_str()));
-    php::file_put_contents(bp.c_str(), "{ \"name\": \"bad\", \"api\": 3 }");
+    php::file_put_contents(bp.c_str(), "{ \"name\": \"bad\", \"api\": 4 }");
     plugin_manifest_read(m, why, bad, "bad");
     println("bundles-refuse-api: {}", php::str_replace(cfg.c_str(), "CFG", why.c_str()));
-    php::file_put_contents(bp.c_str(), "{ \"name\": \"bad\", \"api\": 2, \"contributes\": { \"keys\": \"../joe\" } }");
+    php::file_put_contents(bp.c_str(), "{ \"name\": \"bad\", \"api\": 3, \"contributes\": { \"keys\": \"../joe\" } }");
     plugin_manifest_read(m, why, bad, "bad");
     println("bundles-refuse-path: {}", php::str_replace(cfg.c_str(), "CFG", why.c_str()));
-    php::file_put_contents(bp.c_str(), "{ \"name\": \"bad\", \"api\": 2, \"contributes\": \"joe\" }");
+    php::file_put_contents(bp.c_str(), "{ \"name\": \"bad\", \"api\": 3, \"contributes\": \"joe\" }");
     plugin_manifest_read(m, why, bad, "bad");
     println("bundles-refuse-contributes: {}", php::str_replace(cfg.c_str(), "CFG", why.c_str()));
     php::file_put_contents(bp.c_str(), "{ \"name\": \"bad\", ");
@@ -164,27 +169,32 @@ int main()
     var mine = format("{}/mine", plugins);
     mkdirs(made, mine.c_str());
     var mp = format("{}/mine.plugin", mine);
-    put(files, mp, "{ \"name\": \"mine\", \"title\": \"Mine\", \"api\": 2,"
+    put(files, mp, "{ \"name\": \"mine\", \"title\": \"Mine\", \"api\": 3,"
 		   " \"contributes\": { \"keys\": \"pico\", \"layout\": \"mine\","
-		   " \"settings\": { \"repl.std\": \"c11\" } } }");
+		   " \"settings\": { \"std\": \"c11\" } } }");
     var ml = format("{}/mine.layout", mine);
     put(files, ml, "@window mine\npane editor tabs views source focus\npane panel bottom 30% tabs views problems repl\n");
     var sp = format("{}/settings.json", cfg);
     put(files, sp, "{ \"profile\": \"mine\" }");
     probe(r, path, "");
-    println("bundles-settings: bundle={} keys={} window={} scheme={} replstd={} user-dir={}",
-	    r["bundle"], r["keys"], r["window"], r["scheme"], r["replstd"], r["dir"] == mine ? 1 : 0);
+    println("bundles-settings: bundle={} keys={} window={} scheme={} std={} user-dir={}",
+	    r["bundle"], r["keys"], r["window"], r["scheme"], r["std"], r["dir"] == mine ? 1 : 0);
 
     // 6. The command line beats settings.json.
     probe(r, path, "default");
     println("bundles-cli: bundle={} keys={} window={}", r["bundle"], r["keys"], r["window"]);
 
-    // 10. The program's own name (settings.json still says "mine").
+    // 10. The program's own name (settings.json still says "mine"): a user
+    //     bundle `learner`, the name of a program linked or renamed to it.
+    var ld = format("{}/learner", plugins);
+    mkdirs(made, ld.c_str());
+    var lp = format("{}/learner.plugin", ld);
+    put(files, lp, "{ \"name\": \"learner\", \"api\": 3 }");
     var a0 = madc::sys.argv[0];
-    madc::sys.argv[0] = "/usr/local/bin/chthonia";
+    madc::sys.argv[0] = "/usr/local/bin/learner";
     probe(r, path, "");
     var pl = r["bundle"];
-    madc::sys.argv[0] = "chthonia.exe";
+    madc::sys.argv[0] = "learner.exe";
     probe(r, path, "");
     var pe = r["bundle"];
     probe(r, path, "default");
@@ -196,16 +206,16 @@ int main()
     println("bundles-progname: link={} exe={} cli={} unknown={}", pl, pe, pc, pu);
 
     // 7. A user setting beats the bundle's default.
-    php::file_put_contents(sp.c_str(), "{ \"profile\": \"mine\", \"repl.std\": \"c17\" }");
+    php::file_put_contents(sp.c_str(), "{ \"profile\": \"mine\", \"std\": \"c17\" }");
     probe(r, path, "");
-    println("bundles-user-setting: replstd={}", r["replstd"]);
+    println("bundles-user-setting: std={}", r["std"]);
     php::file_put_contents(sp.c_str(), "{ }");
 
     // 8. A user bundle overrides a shipped one by name.
     var ud = format("{}/default", plugins);
     mkdirs(made, ud.c_str());
     var up = format("{}/default.plugin", ud);
-    put(files, up, "{ \"name\": \"default\", \"api\": 2, \"contributes\": { \"keys\": \"emacs\","
+    put(files, up, "{ \"name\": \"default\", \"api\": 3, \"contributes\": { \"keys\": \"emacs\","
 		   " \"status\": \"joe\", \"theme\": \"default\", \"menu\": \"default\", \"layout\": \"default\" } }");
     probe(r, path, "");
     println("bundles-override: bundle={} keys={} user-dir={}", r["bundle"], r["keys"], r["dir"] == ud ? 1 : 0);
@@ -215,10 +225,10 @@ int main()
     var nk = format("{}/nokeys", plugins);
     mkdirs(made, nk.c_str());
     var np = format("{}/nokeys.plugin", nk);
-    put(files, np, "{ \"name\": \"nokeys\", \"api\": 2, \"contributes\": { \"keys\": \"nosuch\" } }");
+    put(files, np, "{ \"name\": \"nokeys\", \"api\": 3, \"contributes\": { \"keys\": \"nosuch\" } }");
     probe(r, path, "nokeys");
     println("bundles-nokeys: bundle={} keys={} msg={}", r["bundle"], r["keys"], r["msg"]);
-    php::file_put_contents(bp.c_str(), "{ \"name\": \"bad\", \"api\": 2, \"colour\": \"red\" }");
+    php::file_put_contents(bp.c_str(), "{ \"name\": \"bad\", \"api\": 3, \"colour\": \"red\" }");
     probe(r, path, "bad");
     var said = php::str_replace(cfg.c_str(), "CFG", r["msg"].c_str());
     println("bundles-refused: bundle={} keys={} msg={}", r["bundle"], r["keys"], said);
@@ -226,6 +236,34 @@ int main()
     println("bundles-unknown: bundle={} msg={}", r["bundle"], r["msg"]);
     probe(r, path, "../mine");
     println("bundles-path: bundle={} msg={}", r["bundle"], r["msg"]);
+
+    // 11. The plugin path: its split, then the search order (this test's
+    //     .env names one directory).
+    array pd;
+    plugin_path_dirs(pd, "a::b:", false);
+    plugin_path_dirs(pd, "C:\\x;;D:\\y", true);
+    plugin_path_dirs(pd, NULL, false);
+    println("bundles-plugpath-split: {}", php::implode(" ", pd));
+    var envdir = getenv("MADCIDE_PLUGIN_PATH");
+    var ex = format("{}/extra", envdir);
+    mkdirs(made, ex.c_str());
+    var exp = format("{}/extra.plugin", ex);
+    put(files, exp, "{ \"name\": \"extra\", \"api\": 3 }");
+    var em = format("{}/mine", envdir);
+    mkdirs(made, em.c_str());
+    var emp = format("{}/mine.plugin", em);
+    put(files, emp, "{ \"name\": \"mine\", \"api\": 3 }");
+    array sd;
+    plugin_dirs(sd);
+    var fx;
+    bool fe = plugin_find(fx, "extra");
+    var fm;
+    plugin_find(fm, "mine");
+    var fd;
+    plugin_find(fd, "default");
+    println("bundles-plugpath-search: dirs={} second={} extra={} mine-user={} default-shipped={}",
+	    php::count(sd), sd[1] == envdir ? 1 : 0, fe && fx == ex ? 1 : 0, fm == mine ? 1 : 0,
+	    fd == ddir ? 1 : 0);
 
     // Remove every file, then every directory this test made.
     long nf = php::count(files);

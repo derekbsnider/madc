@@ -1,0 +1,6 @@
+rows before: 3
+close: editor shows untitled=1 panel=0
+close: transcript kept=1 build kept=1
+close all: editor shows untitled=1 panel=0
+close all: transcript kept=1 build kept=1
+strip: untitled

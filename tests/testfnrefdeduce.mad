@@ -1,0 +1,25 @@
+// [temp.deduct.call]/2-3: a function argument deduces the FUNCTION type for a
+// reference parameter (`Fn &f` from add3: Fn = int(int), f is int(&)(int)),
+// its pointer for a by-value one (Fn = int(*)(int)), and an lvalue reference
+// to it for a forwarding one (Fn = int(&)(int)). madc bound the named
+// function's own DataDef, which is no type: the instance declared `void *f`
+// and the call through it was rejected.
+// g++ 13.3 and clang++ 18.1 (-std=c++17) print the .expect lines.
+#include <stdio.h>
+static int add3(int x) { return x + 3; }
+static double half(double x) { return x / 2; }
+template<typename Fn> static int callt(Fn &f, int x) { return f(x); }
+template<typename Fn> static double callv(Fn f, int x) { return f(x); }
+template<typename Fn> static double callfw(Fn &&f, int x) { return f(x); }
+struct caller
+{
+	template<typename Fn> static int call_ref(Fn &f, int x) { return f(x); }
+};
+int main()
+{
+	int (*fp)(int) = add3;
+	printf("ref: %d %d %d\n", callt(add3, 7), callt(fp, 8), caller::call_ref(add3, 6));
+	printf("val: %g %g\n", callv(add3, 1), callv(half, 5));
+	printf("fwd: %g %g\n", callfw(add3, 2), callfw(half, 9));
+	return 0;
+}

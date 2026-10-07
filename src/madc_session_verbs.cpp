@@ -85,6 +85,17 @@ madc::value reply_row(const SessionClient::Reply &r)
 	    f["rendered"] = madc::value(r.rendered);
 	    f["submitted"] = madc::value((int64_t)r.submitted);
 	    f["diagnostics"] = reply_diagnostics(r);
+	    // A taken command's ask (a session_payload code; argv is the file,
+	    // then its arguments): the pane honors it (%load, %run, %run -i,
+	    // %call, %quit).
+	    f["payload"] = madc::value((int64_t)r.payload);
+	    if ( r.payload != madc::session_payload::none )
+	    {
+		std::vector<madc::value> argv;
+		for ( const std::string &a : r.argv )
+		    argv.push_back(madc::value(a));
+		f["argv"] = madc::value::make_array(argv);
+	    }
 	    break;
 	case madc::session_reply::complete:
 	{
@@ -105,13 +116,24 @@ madc::value reply_row(const SessionClient::Reply &r)
 	    f["rendered"] = madc::value(r.rendered);
 	    f["diagnostics"] = reply_diagnostics(r);
 	    if ( r.kind == madc::session_reply::run )
+	    {
 		f["status"] = madc::value((int64_t)r.status);
+		f["shown"] = madc::value(r.shown);	// a call's value
+	    }
+	    else
+		f["main"] = madc::value(r.defines_main);
 	    break;
 	case madc::session_reply::continues:
 	    f["continues"] = madc::value(r.continues);
 	    break;
 	case madc::session_reply::bindings:
 	    f["rows"] = r.rows.is_array() ? r.rows : madc::value::make_array();
+	    break;
+	case madc::session_reply::build:
+	    f["ok"] = madc::value(r.ok);
+	    f["shown"] = madc::value(r.shown);
+	    f["rendered"] = madc::value(r.rendered);
+	    f["diagnostics"] = reply_diagnostics(r);
 	    break;
     }
     return madc::value::make_object(f);
@@ -188,7 +210,8 @@ int64_t session_bindings(int64_t handle)
     return s ? (int64_t)s->client.bindings() : 0;
 }
 
-int64_t session_run(int64_t handle, value &argv)
+// session_run's and session_call's one request: argv as strings.
+static int64_t run_request(int64_t handle, value &argv, bool call)
 {
     SessionHandle *s = session_of(handle);
     if ( !s || !argv.is_array() )
@@ -196,7 +219,26 @@ int64_t session_run(int64_t handle, value &argv)
     std::vector<std::string> args;
     for ( const value &a : argv.as_array() )
 	args.push_back(a.is_string() ? a.as_string() : std::string());
-    return (int64_t)s->client.run(args);
+    return (int64_t)s->client.run(args, call);
+}
+
+int64_t session_run(int64_t handle, value &argv)
+{
+    return run_request(handle, argv, false);
+}
+
+int64_t session_call(int64_t handle, value &argv)
+{
+    return run_request(handle, argv, true);
+}
+
+int64_t session_build(int64_t handle, const char *path, const char *text,
+		      const char *out)
+{
+    SessionHandle *s = session_of(handle);
+    return s ? (int64_t)s->client.build(path ? path : "", text ? text : "",
+					out ? out : "")
+	     : 0;
 }
 
 int64_t session_poll(value &reply, int64_t handle)
@@ -243,6 +285,18 @@ bool session_input(int64_t handle, const char *text)
     return s && s->client.input(text ? text : "");
 }
 
+bool session_interrupt(int64_t handle)
+{
+    SessionHandle *s = session_of(handle);
+    return s && s->client.interrupt();
+}
+
+bool session_eof(int64_t handle)
+{
+    SessionHandle *s = session_of(handle);
+    return s && s->client.eof();
+}
+
 // A new backend for a handle: under its standard (std_opt NULL) or under
 // another one. The handle, its readable case and a pump parked on it carry
 // over; the output not yet taken goes with the old backend.
@@ -279,6 +333,21 @@ int64_t session_readable(int64_t handle)
 bool session_close(int64_t handle)
 {
     return session_handles().close(handle);	// the client's destructor stops it
+}
+
+bool session_command_of(value &out, const char *text)
+{
+    std::string word, argument;
+    InteractiveSession::Command code = InteractiveSession::Command::none;
+    out = value();
+    if ( !text || !InteractiveSession::command_of(text, word, code, argument) )
+	return false;
+    std::map<std::string, value> f;
+    f["word"] = value(word);
+    f["command"] = value((int64_t)code);	// a madc::session_command code
+    f["argument"] = value(argument);
+    out = value::make_object(f);
+    return true;
 }
 
 } // namespace madc

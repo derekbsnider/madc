@@ -21,8 +21,34 @@ namespace madc {
     // then its offer reply), an offer, a completion, the backend's end (a
     // crash; the session's state went with it), a program file loaded, its
     // main run (the cores of %load and %run), D11's question answered, or
-    // the names the session defined (%whos's rows, plan §41.11a step 3d).
-    enum class session_reply : unsigned char { running, offer, complete, stopped, load, run, continues, bindings };
+    // the names the session defined (%whos's rows, plan §41.11a step 3d), or
+    // a file built (%build, plan §7f).
+    enum class session_reply : unsigned char { running, offer, complete, stopped, load, run, continues, bindings, build };
+    // What a taken command asks its HOST to do (IPython's payloads: a
+    // kernel's execute reply asks its frontend to act) with the reply's
+    // `argv`, the file and then its arguments, the host reading the file (an
+    // IDE's open buffer is its live text): none; load (%load, D25: the file
+    // loaded, nothing run); run (%run, D16: a FRESH session, which the
+    // session cannot start itself — the host restarts it, loads the file and
+    // runs its main, as F5 does); run_here (%run -i: loaded and run in this
+    // session); build (%build: argv is FILE, then OUT — the host hands
+    // FILE's text to the session's build); call (%call FILE(ARGS), cling's
+    // .x: argv is FILE, then the call's text — loaded, then a run with
+    // `call` calls the function named after FILE, else its main); open
+    // (%open, %edit: argv is FILE, then the line when one is named — an IDE
+    // opens its editor there, a terminal runs $EDITOR); quit (%quit: end
+    // the session, IPython's ask_exit — a terminal ends, an IDE pane starts
+    // a fresh session; no argv).
+    enum class session_payload : unsigned char { none, load, run, run_here, build, call, open, quit };
+    // A session command (plan §41.8a, D13/D24; the engine's
+    // InteractiveSession::Command aliases it): what an entry's `%name`,
+    // `:name` or `.name` names, an alias's command included (cling's `.L` is
+    // load). none: no command of the session's — an IDE's own (plan §7f,
+    // ide::repl_command), or a typo the session refuses.
+    enum class session_command : unsigned char
+    {
+	none, help, type, pinfo, whos, load, run, build, call, open, edit, quit
+    };
     // What a top-level name names (plan §41.8a; the engine's
     // Program::TopLevelName::Kind aliases it): a binding row's `kind`
     // (%whos, madcide's Variables view, plan §41.11a) is one of these codes.

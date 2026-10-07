@@ -1,0 +1,82 @@
+// File ▸ Save All (chthonia parity row, Thonny's File ▸ Save All): every
+// buffer with unsaved changes is written by the `w` verb with that buffer
+// as the verb's subject, the active buffer kept; an untitled buffer is left
+// for Save As and counted; the message names only what happened. Oracle:
+// Thonny's Save All writes every named editor and asks a name for an
+// untitled one (here: counted, the active one asks on Save). Pins:
+//   1. two named buffers edited and an untitled one typed into, the
+//      untitled one active: Save All writes both files (their bytes on
+//      disk), clears their dirtiness, leaves the untitled one dirty and
+//      active, and says "Saved 2 files. 1 untitled (Save As names it).";
+//   2. again: only the untitled one is left — "1 untitled (Save As names
+//      it)." and nothing is rewritten;
+//   3. a session with nothing modified: "Nothing to save.".
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+
+void type(IdeSession &S, long doc, const char *text)
+{
+    var e = { "event": "text", "event_code": ui::event_kind::text, "text": text };
+    S.apply_ide_event(doc, e);
+}
+
+void msg(const char *label, IdeSession &S)
+{
+    var m;
+    ui::get(m, S.w, S.es, "msg");
+    println("{}: msg=[{}]", label, m);
+}
+
+void disk(const char *label, const char *path)
+{
+    var t;
+    php::file_get_contents(t, path);
+    println("{}: [{}]", label, php::str_replace("\n", "|", t));
+}
+
+int main()
+{
+    const char *pa = "madc_ide_saveall_a.txt";
+    const char *pb = "madc_ide_saveall_b.txt";
+    php::file_put_contents(pa, "alpha\n");
+    php::file_put_contents(pb, "beta\n");
+
+    IdeSession S;
+    long da = S.open(pa, false);
+    load_profile(S.w, S.es, "chthonia");
+    type(S, da, "A");
+    edit_file(S.w, S.es, da, pb);
+    long db = active_doc(S.w, S.es, da);
+    type(S, db, "B");
+    S.post(db, cmdNEW);
+    long du = active_doc(S.w, S.es, db);
+    type(S, du, "x");
+    println("before: a={} b={} untitled={} active-untitled={}",
+	    doc_modified(S.w, da) ? 1 : 0, doc_modified(S.w, db) ? 1 : 0,
+	    doc_modified(S.w, du) ? 1 : 0, du != da && du != db ? 1 : 0);
+
+    S.post(du, cmdSAVEALL);
+    msg("saveall", S);
+    disk("disk-a", pa);
+    disk("disk-b", pb);
+    println("after: a={} b={} untitled={} active={}",
+	    doc_modified(S.w, da) ? 1 : 0, doc_modified(S.w, db) ? 1 : 0,
+	    doc_modified(S.w, du) ? 1 : 0,
+	    active_doc(S.w, S.es, da) == du ? "untitled" : "moved");
+
+    S.post(du, cmdSAVEALL);
+    msg("again", S);
+    S.close();
+
+    IdeSession C;
+    long dc = C.open(pa, false);
+    C.post(dc, cmdSAVEALL);
+    msg("clean", C);
+    C.close();
+
+    // a test leaves nothing in its working directory
+    php::unlink(pa);
+    php::unlink(pb);
+    return 0;
+}

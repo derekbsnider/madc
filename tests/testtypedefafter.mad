@@ -1,0 +1,17 @@
+// Declaration specifiers come in any order (C11 6.7p1, 6.7.1): the
+// storage-class specifier `typedef` may follow the type —
+// `const char typedef *strptr;` declares strptr an alias of `const char *`,
+// at file scope and in a block. madc refused it ("Expecting identifier after
+// type"). gcc 13.3 and clang 18.1 (-std=c11) print the .expect line.
+#include <stdio.h>
+const char typedef *strptr;
+int typedef arr3[3];
+int main(void)
+{
+	double typedef real;
+	strptr s = "after";
+	arr3 a = { 1, 2, 3 };
+	real r = 2.5;
+	printf("typedef: %s %zu %d %.1f\n", s, sizeof(arr3), a[2], r);
+	return 0;
+}

@@ -1,0 +1,225 @@
+// The PRODUCT descriptor (<madcide/product>; docs/plans/2026-10-03-chthonia-
+// windows-macos.md §7 D3): madcide's base reads the product in use for its
+// name, its bundle, its face and the plugin linked into it. Pins:
+//   1. before madcide_main records one, the product is madcide's own: the
+//      console face, no bundle of its own, nothing linked;
+//   2. the configuration directory is named by the product
+//      ($XDG_CONFIG_HOME/<name>, %APPDATA%/<name> on Windows,
+//      ~/.config/<name>), the base's override still first;
+//   3. the product's face with no flag is the window, --tui the console,
+//      --gui and --line as before; the usage is under the product's name;
+//   4. a session opened with no --profile, no bundle by the program's name
+//      and no settings opens the product's bundle (learner, written into
+//      this test's configuration directory), and its code is the plugin
+//      LINKED into this program: transport `linked`, nothing loaded or
+//      compiled, its command registered;
+//   5. the window's title is under the product's name: the composed root's
+//      `title` hint, `Learner - <file> @ <row> : <col>`;
+//   6. what the program says about itself is under the product's name: an
+//      MCP client's tool descriptions read `learner '<command>' command`,
+//      never the base's `madcide`;
+//   7. Help ▸ About is the descriptor's: madcide's own (its name, the home
+//      page, the madc it runs on, the copyright, the MPL-2.0 summary) and a
+//      product's (its title and its OWN version — 9.8.7 here, never madc's),
+//      the year the build's (__DATE__), the pane a dialog titled
+//      `About <title>` with a Close button and no primary.
+// This unit links its plugin as a product's program does (its manifest's
+// units): the plugin's code below is compiled here, beside the base.
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+#include "../tools/madcide/madcide_args.inc"
+#include "../tools/madcide/madcide_discover.inc"
+#include "../tools/madcide/madcide_client.inc"
+#include "../tools/madcide/madcide_api.inc"
+#include "../tools/madcide/madcide_mcp.inc"
+// The product's plugin, linked in: one command.
+#include <madcide/plugin>
+
+bool learner_greet(long w, long es, long doc, const char *arg)
+{
+    return true;
+}
+
+extern "C" bool madcide_plugin_activate(const ide_api *api, long w)
+{
+    ide::bind(api);
+    return ide::command(w, "lgreet", "Greet", learner_greet) != 0;
+}
+
+const ide_product test_product = { "learner", "learner", ui::WEB, "learner",
+				   madcide_plugin_activate, "Learner", "9.8.7",
+				   "https://example.org/learner", "A. Holder",
+				   "Line one.\nLine two." };
+
+// The product's bundle in the configuration directory: a manifest naming
+// its code (the linked plugin's source, never compiled here).
+void write_bundle()
+{
+    var cfg;
+    madcide_config_dir(cfg);
+    php::mkdir(cfg.c_str());
+    var pl = format("{}/plugins", cfg);
+    php::mkdir(pl.c_str());
+    var b = format("{}/learner", pl);
+    php::mkdir(b.c_str());
+    php::file_put_contents(format("{}/learner.plugin", b),
+	"{ \"name\": \"learner\", \"api\": 3, \"code\": \"learner.mad\" }\n");
+    php::file_put_contents(format("{}/learner.mad", b),
+	"#include <madcide/plugin>\n"
+	"bool learner_greet(long w, long es, long doc, const char *arg) { return true; }\n"
+	"extern \"C\" bool madcide_plugin_activate(const ide_api *api, long w)\n"
+	"{\n    ide::bind(api);\n"
+	"    return ide::command(w, \"lgreet\", \"Greet\", learner_greet) != 0;\n}\n");
+}
+
+// About's lines joined by `|`, the madc version and the copyright year
+// replaced by their sources' names (they change with the build).
+void about_line(var &out)
+{
+    var rows;
+    product_about(rows);
+    const char *date = __DATE__;
+    var year = date + strlen(date) - 4;
+    out = "";
+    for ( var r : rows )
+    {
+	var t = php::str_replace(madc::sys.version, "<sys.version>", r.c_str());
+	t = php::str_replace(format("(c) {} ", year), "(c) <__DATE__> ", t.c_str());
+	out = format("{}|{}", out, t);
+    }
+}
+
+// The popup box in a composed tree (role choice), or null.
+void find_popup(var &out, var &node)
+{
+    if ( node["role"] == "choice" )
+    {
+	out = node;
+	return;
+    }
+    for ( var k : node["children"] )
+    {
+	find_popup(out, k);
+	if ( !out.is_null() )
+	    return;
+    }
+}
+
+// The face the command line asks for (-1 = refused).
+long face_of(int argc, const char **argv)
+{
+    ide_args a;
+    var why;
+    if ( !ide_args_parse(a, why, argc, argv) )
+	return -1;
+    return a.level;
+}
+
+// Remove a directory tree the test made: every file, then the directories,
+// deepest first (no shell: `rm -rf` is not a Windows command).
+void remove_tree(var &dir)
+{
+    var kids;
+    var pat = format("{}/*", dir);
+    perl::glob(kids, pat.c_str());
+    for ( var k : kids )
+    {
+	if ( php::is_dir(k.c_str()) )
+	    remove_tree(k);
+	else
+	    php::unlink(k.c_str());
+    }
+    php::rmdir(dir.c_str());
+}
+
+int main()
+{
+    // 7a. madcide's own About.
+    var ab;
+    about_line(ab);
+    println("product-about-base: {}", ab);
+
+    // 1. madcide's own.
+    const ide_product &m = product_in_use();
+    const char *n0[1] = { "madcide" };
+    println("product-base: name={} bundle=[{}] tui={} linked={}", m.name,
+	    m.bundle, face_of(1, n0) == ui::TUI ? 1 : 0, m.activate == 0 ? 0 : 1);
+
+    // 2. The configuration directory.
+    var c1;
+    config_dir_of(c1, "learner", NULL, "/x", "/a", "/h", true);
+    var c2;
+    config_dir_of(c2, "learner", NULL, NULL, "/a", "/h", true);
+    var c3;
+    config_dir_of(c3, "learner", NULL, NULL, "/a", "/h", false);
+    var c4;
+    config_dir_of(c4, "learner", "/o", "/x", "/a", "/h", true);
+    println("product-config: xdg={} appdata={} home={} override={}", c1, c2, c3, c4);
+
+    // 3. The product's faces and usage.
+    product_use(test_product);
+    const char *f1[1] = { "learner" };
+    const char *f2[2] = { "learner", "--tui" };
+    const char *f3[2] = { "learner", "--gui" };
+    const char *f4[2] = { "learner", "--line" };
+    println("product-face: none-web={} tui={} gui-web={} line={}",
+	    face_of(1, f1) == ui::WEB ? 1 : 0, face_of(2, f2) == ui::TUI ? 1 : 0,
+	    face_of(2, f3) == ui::WEB ? 1 : 0, face_of(2, f4) == ui::LINE ? 1 : 0);
+    var usage;
+    ide_usage(usage);
+    println("product-usage: learner={} madcide={}",
+	    usage.index("usage: learner [<file>]") >= 0 ? 1 : 0,
+	    usage.index("madcide") >= 0 ? 1 : 0);
+
+    // 4. The product's bundle, its plugin linked.
+    const char *path = "madc_ide_product.c";
+    php::file_put_contents(path, "int main(void) { return 0; }\n");
+    write_bundle();
+    IdeSession S;
+    long doc = S.open(path, false);
+    var b;
+    ui::get(b, S.w, S.es, "bundle");
+    println("product-open: doc={} bundle={} transport={} command={}",
+	    doc > 0 ? 1 : 0, b,
+	    plugin_transport_name(plugin_active_transport(S.w, "learner")),
+	    cmd_of_w(S.w, "lgreet") != 0 ? 1 : 0);
+    var root;
+    S.compose_ide_tree(root, doc);
+    println("product-title: [{}]", root["hints"]["title"]);
+
+    // 7b. The product's About, and its pane.
+    var pa;
+    about_line(pa);
+    println("product-about: {}", pa);
+    toggle_pane(S.w, S.es, paneABOUT);
+    var root2;
+    S.compose_ide_tree(root2, doc);
+    var box;
+    find_popup(box, root2);
+    var dlg = box["hints"]["dialog"];
+    println("product-about-pane: label=[{}] rows={} buttons={} first=[{}]",
+	    box["label"], php::count(box["children"]), php::count(dlg["buttons"]),
+	    dlg["buttons"][0]["label"]);
+
+    // 6. The tool descriptions an MCP client reads.
+    var tools;
+    mcp_tools(tools, S.w);
+    long named = 0;
+    long base = 0;
+    for ( var t : tools )
+    {
+	var d = t["description"];
+	if ( d.index("learner '") == 0 )
+	    named++;
+	if ( d.index("madcide") >= 0 )
+	    base++;
+    }
+    println("product-mcp: named={} base={}", named > 0 ? 1 : 0, base);
+    S.close();
+    php::unlink(path);
+    var cfg;
+    madcide_config_dir(cfg);
+    remove_tree(cfg);
+    return 0;
+}

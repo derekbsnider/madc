@@ -1,0 +1,81 @@
+// Send EOF (plan docs/plans/madc-repl-thonny-plan-2026-09-24.md §41.12a;
+// Thonny's Run ▸ Send EOF, a terminal's Ctrl-D): an entry reading its
+// standard input to the end gets the end after the lines sent before it, and
+// the entry after it reads new input — the backend's stdin is a fresh pipe,
+// its end-of-file indicator clear. Send EOF while nothing runs leaves the
+// next entry reading new input too.
+
+// Poll until a reply of `kind` (or the backend's end) arrives.
+long wait_for(var &r, long h, madc::session_reply kind)
+{
+    for ( long waited = 0; waited < 20000; waited = waited + 10 )
+    {
+	if ( madc::session_poll(r, h) != 0 )
+	{
+	    if ( r["kind"] == kind || r["kind"] == madc::session_reply::stopped )
+		return 1;
+	    continue;
+	}
+	madc::sleep_ms(10);
+    }
+    return 0;
+}
+
+// An entry's shown value.
+void show(long h, const char *text)
+{
+    var r;
+    madc::session_offer(h, text, true);
+    wait_for(r, h, madc::session_reply::offer);
+    println("{} -> ok={} shown={}", text, r["ok"], r["shown"]);
+}
+
+// Offer an entry that reads, wait for it to run, send it `input`, and wait
+// for its answer.
+void read_entry(long h, const char *label, const char *text, const char *input,
+		bool eof)
+{
+    var r;
+    madc::session_offer(h, text, true);
+    wait_for(r, h, madc::session_reply::running);
+    madc::session_input(h, input);
+    bool sent = true;
+    if ( eof )
+	sent = madc::session_eof(h);
+    wait_for(r, h, madc::session_reply::offer);
+    println("{}: eof-sent={} ok={}", label, sent, r["ok"]);
+}
+
+int main()
+{
+    long h = madc::session_open("c11");
+    var r;
+    madc::session_offer(h, "#include <stdio.h>", true);
+    wait_for(r, h, madc::session_reply::offer);
+    madc::session_offer(h, "long lines(void) { long n = 0; int c;"
+			" while ((c = getchar()) != EOF) if (c == '\\n') n++;"
+			" return n; }", true);
+    wait_for(r, h, madc::session_reply::offer);
+    // C: a file-scope object's initializer is a constant (C11 6.7.9p4), so
+    // the reads are assignments.
+    madc::session_offer(h, "long n = 0, m = 0; int c = 0, d = 0;", true);
+    wait_for(r, h, madc::session_reply::offer);
+
+    // To its end: two lines, then Send EOF.
+    read_entry(h, "to the end", "n = lines();", "one\ntwo\n", true);
+    show(h, "n");
+    // The next entry reads new input.
+    read_entry(h, "after", "c = getchar();", "x", false);
+    show(h, "c == 'x'");
+    // Twice: the fresh stdin ends as the first did.
+    read_entry(h, "again", "m = lines();", "three\n", true);
+    show(h, "m");
+
+    // Send EOF with nothing running: the next entry still reads new input.
+    println("idle: sent={}", madc::session_eof(h));
+    read_entry(h, "after idle", "d = getchar();", "y", false);
+    show(h, "d == 'y'");
+
+    println("close: {}", madc::session_close(h));
+    return 0;
+}

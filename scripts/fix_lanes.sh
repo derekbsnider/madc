@@ -3,7 +3,7 @@
 #
 #   Tier 1  the fix's tests + the touched subsystem's neighbours, JIT + exe +
 #           obj in one run (scripts/run_tests.sh --exe --obj <globs>)
-#   Tier 2  scripts/fast_lanes.sh: the six conformance lanes, under three
+#   Tier 2  scripts/fast_lanes.sh: the seven conformance lanes, under three
 #           minutes
 #
 # About five minutes in all. The BATCH (scripts/batch_lane.sh, the whole tests/

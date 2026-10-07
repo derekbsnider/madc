@@ -1,0 +1,61 @@
+// The native file dialog (ui::dialog -> madcwebview_dialog_open) under Xvfb,
+// answered from outside the way a user answers it: a background xdotool
+// waits for each dialog window to show, points at it and focuses it (no
+// window manager runs under Xvfb: keys go where the pointer and the focus
+// are), then sends keys. Both open in a directory of the test's own that
+// holds one file. The first dialog is cancelled (Escape): the answer is the
+// empty path. The second opens on that file — the request's initial path,
+// selected — and is accepted (Return): the answer is that file. No path is
+// typed: keys typed into a GTK location entry race its completion. GTK
+// 4.10+ shows a GtkFileDialog; an older GTK 4 (Ubuntu 22.04's 4.6) a
+// GtkFileChooserNative — the GTK the library was built against picks the
+// arm, and this test runs whichever that is. The dialog's title carries the
+// process id, so tests sharing one display never answer each other's dialogs.
+int main()
+{
+    long w = ui::world_new();
+    long t = ui::open(ui::WEB);
+    if ( !t )
+	return 1;
+    var ev;
+    while ( ui::event(ev, t, w) )
+    {
+	if ( ev["event_code"] == ui::event_kind::resize )
+	    break;
+    }
+    var title = format("Dialog Probe {}", madc::sys.pid);
+    var dir = format("/tmp/ui_web_dialog_{}", madc::sys.pid);
+    var pick = format("{}/pick.c", dir);
+    system(format("mkdir -p {}; touch {}", dir, pick));
+    system(format("( for k in cancel choose; do"
+		  " id=$(timeout 60 xdotool search --sync --onlyvisible --name '{}' | head -1);"
+		  " [ -n \"$id\" ] || exit 0; sleep 3;"
+		  " xdotool mousemove --window $id 20 20 windowfocus --sync $id;"
+		  " if [ $k = cancel ]; then xdotool key Escape;"
+		  " else xdotool key Return; fi;"
+		  " sleep 2; done ) > /dev/null 2>&1 &", title));
+    println("GUI_DIALOG native={}", ui::dialogs(t) ? "yes" : "no");
+    for ( int round = 0; round < 2; ++round )
+    {
+	var start = round ? pick : dir;
+	var request = { "mode": "open", "title": title, "path": start };
+	bool shown = ui::dialog(t, js::stringify(request));
+	println("GUI_DIALOG round {} shown={}", round, shown ? "yes" : "no");
+	if ( !shown )
+	    break;
+	while ( ui::event(ev, t, w) )
+	{
+	    if ( ev["event_code"] == ui::event_kind::dialog )
+	    {
+		println("GUI_DIALOG round {} picked={}", round,
+			ev["path"] == pick ? "the initial file" : format("[{}]", ev["path"]));
+		break;
+	    }
+	}
+    }
+    system(format("rm -rf {}", dir));
+    ui::close(t);
+    ui::world_close(w);
+    println("GUI_DIALOG closed");
+    return 0;
+}

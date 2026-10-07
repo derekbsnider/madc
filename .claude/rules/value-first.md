@@ -8,7 +8,8 @@ showcase programs, docs samples, and new tests.
   auto-include scan + auto-namespace resolution serve bare
   `print`/`println`/`format`, the namespace surfaces
   (`php::`/`ui::`/`madc::` — e.g. `madc::getline` for line input), and
-  `cin` — in the main file AND inside quoted user modules. A name that
+  `cin` — in the main file AND inside the program's own modules, quoted
+  or angle-included from its own include directories. A name that
   needs an include or a `std::` prefix to resolve in dialect code is a
   COMPILER GAP: fix the resolver/scan, never spell around it.
 - Prefer `var` / `madc::value` over `std::string`. Use `std::string`

@@ -1,0 +1,27 @@
+// __builtin_ia32_sfence: gcc's store-fence builtin, declared for an x86
+// target. mingw's <psdk_inc/intrin-impl.h> calls it in the inline
+// __faststorefence that <windows.h> reaches, so a C++ program including
+// <windows.h> parses this call (B167). madc declared no __builtin_ia32_*
+// builtin: C++ refused the call as an undeclared identifier, and C took an
+// implicit declaration that then failed at link ("import of undefined item
+// __builtin_ia32_sfence"). It maps to a runtime helper, as the bswap family
+// does; the target's predefine table (__x86_64__ / __i386__) gates it.
+//
+// Oracles: g++ 13 and clang++ 18 (-std=c++17, x86-64 Linux): `sfence: ok
+// stored=42`.
+#include <stdio.h>
+
+static int slot;
+
+static inline void store_then_fence(int v)
+{
+	slot = v;
+	__builtin_ia32_sfence();
+}
+
+int main()
+{
+	store_then_fence(42);
+	printf("sfence: ok stored=%d\n", slot);
+	return 0;
+}

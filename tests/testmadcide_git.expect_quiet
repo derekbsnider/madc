@@ -1,0 +1,1 @@
+stderr must be empty: a refused verb answers in the transcript and the status line, never on stderr

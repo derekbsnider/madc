@@ -1,0 +1,1 @@
+madc refuses std::map<long, long>::operator[] under libc++ (darwin: no matching constructor for __tuple_leaf<0, long&&>; Linux -stdlib=libc++: undefined MIR import of tuple<long&&>'s constructor; v0.100.0 and v0.101.0 the same; clang++ -stdlib=libc++ compiles it), so the entry fails instead of being interrupted; BUGS.md B192

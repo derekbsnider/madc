@@ -1,0 +1,1 @@
+POSIX-shaped setup (a hard link and symbolic links with ln, system() exit statuses)

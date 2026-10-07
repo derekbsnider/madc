@@ -1,0 +1,44 @@
+// Under the default (madc) mode, a class template's nested struct / union is
+// owned by each SPECIALIZATION ([class.nest]): two specializations each
+// define their own `type`. madc kept C's file-scope nested tags for every
+// aggregate in this mode, so the second specialization failed with "Struct
+// 'type' already defined" — std::aligned_storage<_Len,_Align>::type
+// (libstdc++ 11's std::vector, Ubuntu 22.04). A plain C aggregate (C below)
+// keeps C's file-scope nested tag in this mode; tests/testnesteddesig
+// covers that shape (gcc-torture pr39339).
+// Oracle: g++ 13 and clang++ 18 (-std=c++17) print the .expect lines.
+template<int L, int A>
+struct as
+{
+	union type
+	{
+		unsigned char d[L];
+		struct __attribute__((__aligned__((A)))) { } al;
+	};
+};
+template<int L>
+struct pl
+{
+	union type
+	{
+		unsigned char d[L];
+		int i;
+	};
+	struct rec { unsigned n; type t; };
+};
+struct C { struct D { int x; } attr; int y; };
+int main()
+{
+	pl<4>::type p1;
+	pl<8>::type p2;
+	pl<16>::rec r;
+	as<4, 4>::type a1;
+	as<16, 16>::type a2;
+	r.t.i = 7;
+	println("sizes: {} {} {} {} {}", (int)sizeof(p1), (int)sizeof(p2), (int)sizeof(r), (int)sizeof(a1), (int)sizeof(a2));
+	println("align: {} {} {}", (int)alignof(as<4, 4>::type), (int)alignof(as<16, 16>::type), r.t.i);
+	C c;
+	c.attr.x = 5;
+	println("c: {}", c.attr.x + (int)sizeof(C));
+	return 0;
+}

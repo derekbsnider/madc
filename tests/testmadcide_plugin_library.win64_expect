@@ -9,7 +9,7 @@ build-nocode-why: tmp/testmadcide_plugin_library_cfg/plugins/nocode/nocode.plugi
 build-stale: ok=1 rows=0 line-pos=0
 madcide: built tmp/testmadcide_plugin_library_cfg/plugins/hello/hello.dll
 cli-build: built=0 refused=1
-stale-msg: Plugin 'stale': its source is in use (tmp/testmadcide_plugin_library_cfg/plugins/stale/stale.dll was built against plugin API 3; this madcide serves 2: rebuild it with `madcide --build-plugin tmp/testmadcide_plugin_library_cfg/plugins/stale`)
+stale-msg: Plugin 'stale': its source is in use (tmp/testmadcide_plugin_library_cfg/plugins/stale/stale.dll was built against plugin API 4; this madcide serves 3: rebuild it with `madcide --build-plugin tmp/testmadcide_plugin_library_cfg/plugins/stale`)
 transports: hello=1 srconly=1 stale=1
 hello-code: contributed=1
 run-greet: cont=1 msg=Hello, world.
@@ -17,8 +17,9 @@ run-greetagain: cont=1 msg=Hello, again. (ran)
 run-srcgreet: cont=1 msg=From source, world.
 run-stalecmd: cont=1 msg=Stale, fixed.
 hello-view: 1
-spawn: same-code=1 active=4 msg=
-activate-future: ok=0 tmp/testmadcide_plugin_library_cfg/plugins/future/future.dll was built against plugin API 3; this madcide serves 2: rebuild it with `madcide --build-plugin tmp/testmadcide_plugin_library_cfg/plugins/future`; its source: tmp/testmadcide_plugin_library_cfg/plugins/future/future.mad targets plugin API 3; this madcide serves 2
+hello-repl: 1
+spawn: same-code=1 active=5 msg=
+activate-future: ok=0 tmp/testmadcide_plugin_library_cfg/plugins/future/future.dll was built against plugin API 4; this madcide serves 3: rebuild it with `madcide --build-plugin tmp/testmadcide_plugin_library_cfg/plugins/future`; its source: tmp/testmadcide_plugin_library_cfg/plugins/future/future.mad targets plugin API 4; this madcide serves 3
 activate-noentry: ok=0 tmp/testmadcide_plugin_library_cfg/plugins/noentry/noentry.dll is not a madcide plugin (it defines no madcide_plugin_activate); its source: tmp/testmadcide_plugin_library_cfg/plugins/noentry/noentry.mad is not a madcide plugin (it defines no madcide_plugin_activate)
 activate-declines: ok=0 its activation refused it (tmp/testmadcide_plugin_library_cfg/plugins/declines/declines.dll)
 declined-taken-back: 1

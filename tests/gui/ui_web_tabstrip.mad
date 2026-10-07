@@ -1,0 +1,93 @@
+// A content node's tab strip stays drawn (owner, Chthonia: "what about tabs
+// for the editor pane?"). madcide's editor tabs (polish P4) are a content
+// node docked above the editor whose `tabs` hint carries the buffer strip:
+// one tab per buffer, the active one marked, each naming `bufsel` with its
+// ring index. The page drew the strip as the node's first child, then wrote
+// the node's text — and the write took the strip with it, every frame, so
+// the editor never showed a tab. A group's strip (the bottom panel's) was
+// untouched: a group draws no text. Pins, in a real page under Xvfb:
+//   1. the first frame shows both tabs, the second one active;
+//   2. a second frame still shows them (the text is rewritten every frame);
+//   3. a click on the first tab posts `bufsel` with its argument 0.
+// Oracle: web_model's contract — `tabs` is a strip the page draws above the
+// node; before the fix every probe printed tabs=0 and no click arrived.
+void compose(var &tree)
+{
+    var t0 = { "title": "a.c", "action": "bufsel", "arg": "0" };
+    var t1 = { "title": "b.c*", "action": "bufsel", "arg": "1", "active": 1 };
+    var strip = {};
+    strip.push(t0);
+    strip.push(t1);
+    var th = { "tabs": strip };
+    var tabs = { "role": "content", "content": "", "hints": th };
+    var eh = { "caret": 0 };
+    var edit = { "role": "edit", "content": "int main() {}", "hints": eh };
+    var kids = {};
+    kids.push(tabs);
+    kids.push(edit);
+    var root = { "role": "group", "children": kids };
+    tree = root;
+}
+
+// The strip as the page shows it: the tab count and the active tab's title.
+void probe(long t)
+{
+    ui::eval_page(t,
+	"(function(){var ts=document.querySelectorAll('.tabstrip .tab');"
+	"var a=document.querySelector('.tabstrip .tab.active');"
+	"window.madc(JSON.stringify({kind:'snapshot',"
+	"text:'tabs='+ts.length+' active='+(a?a.textContent:'none')}));})()");
+}
+
+int main()
+{
+    long w = ui::world_new();
+    long t = ui::open(ui::WEB);
+    if ( !t )
+	return 1;
+    println("TABSTRIP open");
+    var tree;
+    var ev;
+    int stage = 0;
+    while ( ui::event(ev, t, w) )
+    {
+	if ( ev["event"] == "resize" )
+	{
+	    if ( stage != 0 )
+		continue;
+	    stage = 1;
+	    compose(tree);
+	    ui::render(t, w, tree);
+	    probe(t);
+	}
+	else if ( ev["event"] == "snapshot" )
+	{
+	    println("TABSTRIP {} {}", stage, ev["text"]);
+	    if ( stage == 1 )
+	    {
+		stage = 2;			// the same frame again
+		compose(tree);
+		ui::render(t, w, tree);
+		probe(t);
+	    }
+	    else if ( stage == 2 )
+	    {
+		stage = 3;			// a click on the first tab
+		ui::eval_page(t, "(function(){var ts=document.querySelectorAll('.tabstrip .tab');"
+			      "if(ts.length)ts[0].click();"
+			      "else window.madc(JSON.stringify({kind:'snapshot',text:'no tab to click'}));})()");
+	    }
+	    else
+		break;
+	}
+	else if ( ev["event"] == "action" )
+	{
+	    println("TABSTRIP {} action {} arg={}", stage, ev["action"], ev["arg"]);
+	    break;
+	}
+    }
+    ui::close(t);
+    ui::world_close(w);
+    println("TABSTRIP closed");
+    return 0;
+}

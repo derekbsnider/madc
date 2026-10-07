@@ -79,7 +79,18 @@ enum DefKind : uint32_t {
 	DK_VAR,		// Variable: ref0 = type type-id (later increment)
 	DK_SIMD,
 	DK_FPTR,	// v22: DataDefFPTR — ref0 = the target FuncDef's DK_FUNC record
-	DK_MEMBERPTR,
+	DK_MEMBERPTR,	// v53: a pointer to member — DataDefMemberPtr `T C::*` or
+			// DataDefMemberFnPtr `R (C::*)(A)` (DF_MEMBERPTR_FUNCTION).
+			// Per-kind field reuse (no layout growth):
+			//   ref0      = the member type-id (data) / the signature's
+			//               DK_FUNC record (function)
+			//   body_unit = the owner class's type-id (0 = unresolved
+			//               at parse — owner_class NULL)
+			//   disp_id   = the spelled owner (owner_name) intern id
+			// Its layout never depends on the owner or the member (8
+			// bytes, or the 16-byte {ptr, adj} pair), so a member of this
+			// type never gates its aggregate (libstdc++'s _Nocopy_types,
+			// whose owner _Undefined_class is never defined).
 	DK_CARRAY,	// v25: DataDefCArray — ref0 = element type-id; carray_count_lo/hi
 			// hold the FOLDED element count (a runtime-sized array —
 			// count_expr set — is never recorded; it is function-local
@@ -271,6 +282,12 @@ enum DefFlags : uint32_t {
 						// ranks the SAME set the freezing parse ranked
 						// (LOADED==PARSED; a smaller thaw-side set split
 						// instantiation identities — stl_vector.h:428)
+	DF_MEMBERPTR_FUNCTION = 1u << 0,	// v53, DK_MEMBERPTR-scoped: a pointer to member
+						// FUNCTION (DataDefMemberFnPtr, ref0 = its
+						// signature's DK_FUNC record); clear = a pointer to
+						// data member (DataDefMemberPtr, ref0 = the member type)
+	DF_MEMBERPTR_CONST_METHOD = 1u << 1,	// v53, DK_MEMBERPTR-scoped:
+						// DataDefMemberFnPtr::is_const_method
 };
 
 // Per-method flag bits (methodrec.flags) — the class-membership classification the live

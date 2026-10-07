@@ -1,0 +1,155 @@
+// Editing through the concealing lens (plan docs/plans/2026-10-03-chthonia-
+// windows-macos.md §7d, slice 2; tools/madcide/madcide_core.inc lens_put,
+// madcide_markdown.inc md_put_repair): an edit in a Markdown buffer's
+// formatted view runs on the stored text and the view re-renders.
+//  - typing at the end of `bold` lands inside `**bold**`, at its start
+//    outside it (a boundary's earlier side);
+//  - a forward delete at the start of `code` takes the `c`, not a backtick
+//    (the later side);
+//  - undo is the stored text's own;
+//  - deleting part of a construct's text keeps its delimiters paired, and
+//    deleting all of it removes the construct whole;
+//  - deleting an escaped character takes its backslash with it;
+//  - the Edit menu judges the file (Undo, Cut, Paste enabled; Copy Block
+//    not, a formatted view refuses it); Cut puts what the view shows on
+//    the clipboard; a block marker is taken; Copy Block is refused.
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+
+void show(IdeSession &S, long doc, const char *label)
+{
+    long w = S.w;
+    long es = S.es;
+    var st;
+    ui::text(st, w, doc);
+    var v;
+    view_row(v, w, es, focused_view(w, es));
+    var dt;
+    ui::text(dt, w, v["vbuf"].as_integer());
+    var nm;
+    lens_name(nm, w, es);
+    println("{}: stored=[{}] display=[{}] caret={} lens={}", label,
+	    php::str_replace("\n", "|", st.c_str()), php::str_replace("\n", "|", dt.c_str()),
+	    es_int(w, es, "caret", -1), nm);
+}
+
+// the display offset of `what` in the formatted view, plus `plus`
+long at(IdeSession &S, const char *what, long plus)
+{
+    var v;
+    view_row(v, S.w, S.es, focused_view(S.w, S.es));
+    var dt;
+    ui::text(dt, S.w, v["vbuf"].as_integer());
+    long i = perl::index(dt.c_str(), what);
+    if ( i < 0 )
+	println("missing [{}]", what);
+    return i + plus;
+}
+
+// a GUI selection over the display: `n` bytes from `what` (both ends set:
+// the default key style marks a block by its two points)
+void select(IdeSession &S, const char *what, long n)
+{
+    long lo = at(S, what, 0);
+    ui::set(S.w, S.es, "selgui", true);
+    ui::set(S.w, S.es, "mark", lo);
+    ui::set(S.w, S.es, "bend", lo + n);
+    ui::set(S.w, S.es, "caret", lo + n);
+}
+
+void type(IdeSession &S, long doc, const char *text)
+{
+    var e = { "event": "text", "event_code": ui::event_kind::text, "text": text };
+    S.apply_ide_event(doc, e);
+}
+
+void key(IdeSession &S, long doc, ui::key k, const char *name)
+{
+    var e = { "event": "key", "event_code": ui::event_kind::key, "key": name, "key_code": k };
+    S.apply_ide_event(doc, e);
+}
+
+int main()
+{
+    const char *path = "madc_ide_mdput.md";
+    php::file_put_contents(path,
+	"# Title\n\nSome **bold** and `code`.\n\nx **bold** y and a \\*b.\n");
+    IdeSession S;
+    long doc = S.open(path, false);
+    long w = S.w;
+    long es = S.es;
+    bool cont = true;
+    S.command(doc, cmdVIEW, "", cont);	// original -> formatted
+    show(S, doc, "enter");
+
+    ui::set(w, es, "caret", at(S, "bold and", 4));
+    type(S, doc, "er");
+    show(S, doc, "type at the end of bold");
+
+    ui::set(w, es, "caret", at(S, "bolder", 0));
+    type(S, doc, "X");
+    show(S, doc, "type at the start of bold");
+
+    ui::set(w, es, "caret", at(S, "code", 0));
+    key(S, doc, ui::key::del, "del");
+    show(S, doc, "del at the start of code");
+
+    S.command(doc, cmdUNDO, "", cont);
+    show(S, doc, "undo");
+
+    select(S, "x bold", 4);
+    key(S, doc, ui::key::backspace, "backspace");
+    show(S, doc, "delete x bo");
+
+    select(S, "ld y", 2);
+    key(S, doc, ui::key::backspace, "backspace");
+    show(S, doc, "delete ld");
+
+    ui::set(w, es, "caret", at(S, "*b.", 0));
+    key(S, doc, ui::key::del, "del");
+    show(S, doc, "del an escaped star");
+
+    ui::set(w, es, "caret", at(S, "Title", 5));
+    type(S, doc, "s");
+    show(S, doc, "type in the heading");
+
+    // the Edit menu in the formatted view, with a selection up
+    select(S, "Xbolder", 7);
+    var mb;
+    compose_menu_bar(mb, w, es, doc, nav_doc(w, es, doc));
+    for ( var m : mb["bar"] )
+	if ( m["title"] == "Edit" )
+	    for ( var it : m["items"] )
+		if ( it["id"] == "undo" || it["id"] == "cut" || it["id"] == "paste"
+		  || it["id"] == "mark" || it["id"] == "blockcopy" )
+		    println("menu {} enabled={}", it["id"], it["enabled"].is_null() ? 1 : 0);
+
+    S.command(doc, cmdCUT, "", cont);
+    var clip;
+    ui::get(clip, w, es, "clip");
+    println("cut clip=[{}]", clip);
+    show(S, doc, "cut Xbolder");
+
+    ui::set(w, es, "caret", at(S, "and code", 0));
+    S.command(doc, cmdMARK, "", cont);
+    var msg;
+    ui::get(msg, w, es, "msg");
+    println("mark: at={} msg=[{}]", es_int(w, es, "mark", -1), msg);
+    ui::set(w, es, "caret", at(S, "code", 4));
+    S.command(doc, cmdBEND, "", cont);
+    println("bend: at={}", es_int(w, es, "bend", -1));
+    S.command(doc, cmdBLOCKCOPY, "", cont);
+    ui::get(msg, w, es, "msg");
+    println("blockcopy: msg=[{}]", msg);
+    show(S, doc, "after blockcopy");
+
+    var md;
+    ui::get(md, w, doc, "modified");
+    println("modified={} editable={}", md.as_boolean() ? 1 : 0, es_flag(w, es, "editable") ? 1 : 0);
+    S.command(doc, cmdVIEW, "", cont);	// formatted -> original
+    show(S, doc, "exit");
+    S.close();
+    php::unlink(path);
+    return 0;
+}

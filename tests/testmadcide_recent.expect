@@ -1,0 +1,10 @@
+headless open: []
+remember: [madc_recent_a.md]
+open b, c: [madc_recent_c.txt madc_recent_b.mad madc_recent_a.md]
+switch to a: [madc_recent_c.txt madc_recent_b.mad madc_recent_a.md]
+new d: [madc_recent_c.txt madc_recent_b.mad madc_recent_a.md]
+save d: [madc_recent_d.md madc_recent_c.txt madc_recent_b.mad madc_recent_a.md]
+choice Recent files: [madc_recent_d.md madc_recent_b.mad madc_recent_a.md]
+chose: madc_recent_b.mad
+kept: 10 newest=madc_recent_r11.txt oldest=madc_recent_r2.txt
+headless: newest=madc_recent_r11.txt

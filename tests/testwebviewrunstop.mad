@@ -1,0 +1,125 @@
+// madcwebview_run / madcwebview_stop on Win32: a stop issued inside a modal
+// loop still ends the run. The window's wait (the ui `run` op) ends from a
+// callback the loop dispatched — an event, a menu selection, the engine's
+// periodic tick. A modal loop running inside such a dispatch (a tracked menu,
+// a file dialog) takes a WM_QUIT for itself, so a stop delivered as a WM_QUIT
+// (upstream's webview_terminate) was consumed there: the run never returned,
+// and the editor stopped answering while the window kept painting. The stop
+// is a flag the run reads after every dispatch instead.
+//
+// The reducer: a timer dispatched by the run starts a modal loop that, as a
+// menu loop does, takes every message including a WM_QUIT; a second timer,
+// dispatched INSIDE that modal loop, calls stop. Pins: the run returns 0, the
+// stop fired, and no WM_QUIT reached the modal loop. A watchdog ends the
+// process (exit 3) if the run does not return. madcwebview.dll and user32 are
+// loaded by name at run time (the DLL search finds madcwebview.dll beside the
+// madc that runs the test); run and stop take the view as a handle and never
+// dereference it on Win32. Off Win32 the test only says so. The few Win32
+// types and kernel32 calls are declared here, by their documented x64
+// shapes, rather than through <windows.h> (B167: madc refuses objidl.h).
+#include <stdio.h>
+#include <stdint.h>
+#ifdef _WIN32
+typedef void *HWND;
+typedef void *HMODULE;
+typedef unsigned int UINT;
+typedef unsigned long DWORD;
+typedef int BOOL;
+typedef uintptr_t UINT_PTR;
+typedef struct { HWND hwnd; UINT message; uintptr_t wParam; intptr_t lParam;
+		 DWORD time; long pt_x, pt_y; DWORD lPrivate; } MSG;
+#define WM_QUIT 0x0012
+#define PM_REMOVE 0x0001
+HMODULE LoadLibraryA(const char *name);
+void *GetProcAddress(HMODULE m, const char *name);
+BOOL FreeLibrary(HMODULE m);
+DWORD GetTickCount(void);
+void Sleep(DWORD ms);
+void ExitProcess(UINT code);
+
+typedef void (*TIMERPROC)(HWND, UINT, UINT_PTR, DWORD);
+typedef int (*run_fn)(void *);
+typedef int (*stop_fn)(void *);
+typedef UINT_PTR (*settimer_fn)(HWND, UINT_PTR, UINT, TIMERPROC);
+typedef BOOL (*killtimer_fn)(HWND, UINT_PTR);
+typedef BOOL (*peek_fn)(MSG *, HWND, UINT, UINT, UINT);
+typedef intptr_t (*dispatch_fn)(const MSG *);
+
+static run_fn run;
+static stop_fn stop;
+static settimer_fn set_timer;
+static killtimer_fn kill_timer;
+static peek_fn peek;
+static dispatch_fn dispatch;
+static void *view = (void *)1;
+static int stop_fired, quit_seen;
+
+static void in_modal(HWND w, UINT m, UINT_PTR id, DWORD t)
+{
+	kill_timer(NULL, id);
+	stop_fired = 1;
+	stop(view);
+}
+
+static void start_modal(HWND w, UINT m, UINT_PTR id, DWORD t)
+{
+	kill_timer(NULL, id);
+	set_timer(NULL, 0, 10, in_modal);
+	DWORD t0 = GetTickCount();
+	MSG msg;
+	while (GetTickCount() - t0 < 200) {
+		if (peek(&msg, NULL, 0, 0, PM_REMOVE)) {
+			if (msg.message == WM_QUIT) {
+				quit_seen = 1;
+				continue;
+			}
+			dispatch(&msg);
+		} else {
+			Sleep(1);
+		}
+	}
+}
+
+static void watchdog(HWND w, UINT m, UINT_PTR id, DWORD t)
+{
+	printf("run-stop: the run did not return\n");
+	fflush(stdout);
+	ExitProcess(3);
+}
+
+int main(void)
+{
+	HMODULE wv = LoadLibraryA("madcwebview.dll");
+	HMODULE u32 = LoadLibraryA("user32.dll");
+	if (!wv || !u32) {
+		printf("run-stop: cannot load madcwebview.dll or user32.dll\n");
+		return 1;
+	}
+	run = (run_fn)GetProcAddress(wv, "madcwebview_run");
+	stop = (stop_fn)GetProcAddress(wv, "madcwebview_stop");
+	set_timer = (settimer_fn)GetProcAddress(u32, "SetTimer");
+	kill_timer = (killtimer_fn)GetProcAddress(u32, "KillTimer");
+	peek = (peek_fn)GetProcAddress(u32, "PeekMessageW");
+	dispatch = (dispatch_fn)GetProcAddress(u32, "DispatchMessageW");
+	if (!run || !stop || !set_timer || !kill_timer || !peek || !dispatch) {
+		printf("run-stop: an entry point is missing\n");
+		return 1;
+	}
+	set_timer(NULL, 0, 10, start_modal);
+	UINT_PTR wd = set_timer(NULL, 0, 3000, watchdog);
+	int rc = run(view);
+	kill_timer(NULL, wd);
+	printf("run-stop: rc=%d stop-fired=%d quit-seen=%d\n", rc, stop_fired, quit_seen);
+	stop(view);
+	printf("stop-outside-run: ok\n");
+	FreeLibrary(wv);
+	return 0;
+}
+#else
+int main(void)
+{
+	printf("run-stop: not Win32\n");
+	printf("stop-outside-run: ok\n");
+	return 0;
+}
+#endif

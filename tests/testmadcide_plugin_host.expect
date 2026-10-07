@@ -8,5 +8,3 @@ host-crash: msg=Plugin 'hosted' ended; it was started again.
 host-after: msg=Hello, back.
 host-stopped: msg=Plugin 'hosted' stopped: its process ended 4 times.
 host-gone: msg=Plugin 'hosted' is not running.
-isolate-open: transport-host=1
-isolate-rows: [count int 3|main int (void)|square int (int)|]

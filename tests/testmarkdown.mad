@@ -1,0 +1,30 @@
+// The markdown:: namespace (plan docs/plans/2026-10-03-chthonia-windows-
+// macos.md §7d; the madcmark module over cmark-gfm): a README-shaped text
+// parsed into a value tree, read the way a renderer reads it — switching on
+// the markdown::node_kind / markdown::column_align codes (<bits/markdown_enums>) — for a
+// heading's level, a task item's state, a table column's alignment, a code
+// block's info string and text, and a link's url. The values are what
+// cmark-gfm's tree holds for this text (tests/unit/test_markdown.cpp pins the
+// source positions against a cmark-gfm probe).
+int main()
+{
+    println("available: {}", markdown::available());
+    var doc;
+    markdown::parse(doc, "# Hello\n\n- [x] done\n\n| a |\n|--:|\n| 1 |\n\n```c\nint x;\n```\nSee [madc](https://example.com).\n");
+    var kids = doc["children"];
+    println("blocks: {}", php::count(kids));
+    var h = kids[0];
+    var htext = h["children"][0]["text"];
+    println("heading: {} level={} text={}", h["kind"] == markdown::node_kind::heading, h["level"], htext);
+    var item = kids[1]["children"][0];
+    println("task: {} checked={}", item["task"], item["checked"]);
+    var t = kids[2];
+    println("table: {} right={}", t["kind"] == markdown::node_kind::table,
+	    t["align"][0] == markdown::column_align::right);
+    var cb = kids[3];
+    var code = php::trim(cb["text"]);
+    println("code: info={} text={}", cb["info"], code);
+    var link = kids[4]["children"][1];
+    println("link: {} url={}", link["kind"] == markdown::node_kind::link, link["url"]);
+    return 0;
+}

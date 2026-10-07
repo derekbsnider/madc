@@ -1,30 +1,60 @@
-// The toolbar in the window (plan §41.11a, step 2): chthonia.menu places
-// Open, Save and Run on the toolbar (the placement word `toolbar`); the
-// composed root carries them as its `toolbar` hint, web_model passes them
-// with their codes, and the page draws a button per row in the workbench's
-// top row. A click on Save posts the row's action by name, which arrives as
-// the session's action event carrying its command's code (the headless
-// pins: tests/testmadcide_chthonia.mad, test_web_model). Runs under Xvfb
-// through the gui lane.
+// The toolbar in the window (plan §41.11a, step 2): a bundle's menu places
+// New, Open, Save, a divider, Run and Stop on the toolbar (the placement
+// word `toolbar`), each with its picture ({ICON}, ui::icon) and Run with
+// its arrow dropping the Run menu down ({run Run}); the composed root
+// carries them as its `toolbar` hint, web_model passes them with their
+// codes and icon names, and the page draws a button per row in the
+// workbench's top row — the picture, Run's label beside it, a ▾ posting
+// `menushow Run`, a divider. A click on Save posts the row's action by
+// name, which arrives as the session's action event carrying its command's
+// code (the headless pin: test_web_model).
+// The root group carries the toolbar and the @gui theme on EVERY frame: a
+// keystroke's frame leaves both alone — the same button elements (a mark
+// set on the first survives) and no write to the document's custom
+// properties — while a theme change still writes them. Rebuilding the
+// toolbar and re-setting the theme per frame relaid out the workbench
+// around the editor on every keystroke (~170 ms a key in WebKitGTK 2.4x on
+// a 2,000-line buffer, owner report 2026-10-06).
+// The bundle is this test's own (tbtest), written into the directory its
+// .env puts on MADCIDE_PLUGIN_PATH. Runs under Xvfb through the gui lane.
 #include "../../tools/texteditor/lined_core.inc"
 #include "../../tools/texteditor/editor_events.inc"
 #include "../../tools/madcide/madcide_core.inc"
+
+// The bundle: a manifest naming its menu, and the menu — File's and Run's
+// rows, then the toolbar's.
+void write_bundle(const char *dir0)
+{
+    var dir = dir0;
+    php::mkdir(dir.c_str());
+    var b = format("{}/tbtest", dir);
+    php::mkdir(b.c_str());
+    php::file_put_contents(format("{}/tbtest.plugin", b),
+	"{ \"name\": \"tbtest\", \"api\": 3, \"contributes\": { \"menu\": \"tbtest\" } }\n");
+    php::file_put_contents(format("{}/tbtest.menu", b),
+	"File new New\nFile editfile Open…\nFile save Save [editable]\n"
+	"Run replrun Run\nRun replstop Stop\n"
+	"toolbar new {new} New\ntoolbar editfile {open} Open\n"
+	"toolbar save {save} Save [editable]\ntoolbar -\n"
+	"toolbar replrun {run Run} Run\ntoolbar replstop {stop} Stop\n");
+}
 
 int main()
 {
     const char *path = "madc_ide_toolbar_gui.mad";
     php::file_put_contents(path, "int main() { return 0; }\n");
+    const char *plugins = getenv("MADCIDE_PLUGIN_PATH");
+    write_bundle(plugins);
     long w = ui::world_new();
     long doc = setup_editor(w, path, false);
     long es = ui::entity_by_name(w, "editor-state");
     builtins_activate(w, es);	// madcide's own modules, as IdeSession::open activates them
     ui::set(w, es, "profile_dir", "tools/madcide/profiles");
-    bundle_select(w, es, "chthonia");	// the shipped bundle: its menu
-    plugins_activate(w, es);		// its code first: the menu names its Variables
+    bundle_select(w, es, "tbtest");	// this test's bundle: its menu
     ui::set(w, es, "profile", "pico");
     load_status(w, es, "joe");
     load_theme(w, es, "default");
-    load_menu(w, es, "chthonia");
+    load_menu(w, es, "tbtest");
     IdeSession S;
     S.attach(w, es);
     push_buffer_row(w, es, doc, path);
@@ -36,7 +66,15 @@ int main()
 	return 1;
     println("TOOLBAR open");
     var ev;
+    var tree;
     int stage = 0;
+    // What the page kept since the mark: the first button's element, and
+    // whether the document's custom properties were written.
+    const char *kept =
+	"(function(){var b=document.querySelector('.slot[data-slot=toolbar] .tb-btn');"
+	"var n=window.__ts||0;window.__ts=0;"
+	"window.madc(JSON.stringify({kind:'snapshot',text:'kept='+(b&&b._mark===1?1:0)"
+	"+' theme-writes='+(n>0?'some':'none')}));";
     while ( ui::event(ev, t, w) )
     {
 	if ( ev["event"] == "resize" )
@@ -45,18 +83,49 @@ int main()
 		continue;
 	    stage = 1;
 	    S.viewport(ui::cols(t), ui::rows(t));
-	    var tree;
 	    S.compose_ide_tree(tree, doc);
 	    ui::render(t, w, tree);
-	    // The buttons as the page drew them, then a click on Save.
+	    // The buttons as the page drew them; then the first one marked and
+	    // the document's custom-property writes counted from here on.
 	    ui::eval_page(t,
-		"(function(){var bs=document.querySelectorAll('.slot[data-slot=toolbar] .tb-btn');"
-		"var l=[];for(var i=0;i<bs.length;i++)l.push(bs[i].textContent);"
-		"window.madc(JSON.stringify({kind:'snapshot',text:'buttons='+l.join(',')}));"
-		"for(var k=0;k<bs.length;k++)if(bs[k].textContent==='Save')bs[k].click();})()");
+		"(function(){var tb='.slot[data-slot=toolbar] ';"
+		"var bs=document.querySelectorAll(tb+'.tb-btn:not(.tb-drop)');"
+		"var l=[],ic=[],tx=[];for(var i=0;i<bs.length;i++){l.push(bs[i].getAttribute('aria-label'));"
+		"var p=bs[i].querySelector('.tb-ic svg');ic.push(p?bs[i].querySelector('.tb-ic').className.replace('tb-ic tb-ic-',''):'-');"
+		"tx.push(bs[i].textContent);}"
+		"var d=document.querySelector(tb+'.tb-drop');"
+		"var sp=document.querySelectorAll(tb+'.tb-sep').length;"
+		"if(bs.length)bs[0]._mark=1;"
+		"var st=document.documentElement.style,o=st.setProperty;window.__ts=0;"
+		"st.setProperty=function(n,v,q){window.__ts++;return o.call(st,n,v,q);};"
+		"window.madc(JSON.stringify({kind:'snapshot',text:'buttons='+l.join(',')+' icons='+ic.join(',')"
+		"+' text='+tx.join(',')+' drop='+(d?d.dataset.action+':'+d.dataset.arg:'none')+' seps='+sp}));})()");
 	}
 	else if ( ev["event"] == "snapshot" )
+	{
 	    println("TOOLBAR {}", ev["text"]);
+	    if ( stage == 1 )
+	    {
+		// A keystroke's frame: the root group arrives again, unchanged.
+		stage = 2;
+		var te = { "event": "text", "event_code": ui::event_kind::text, "text": "x" };
+		S.apply_ide_event(doc, te);
+		S.compose_ide_tree(tree, doc);
+		ui::render(t, w, tree);
+		ui::eval_page(t, format("{}}})()", kept));
+	    }
+	    else if ( stage == 2 )
+	    {
+		// A theme change: its custom properties are written; the
+		// toolbar's rows did not change. Then a click on Save.
+		stage = 3;
+		load_theme(w, es, "vivid");
+		S.compose_ide_tree(tree, doc);
+		ui::render(t, w, tree);
+		ui::eval_page(t, format("{}var bs=document.querySelectorAll('.slot[data-slot=toolbar] .tb-btn:not(.tb-drop)');"
+		    "for(var k=0;k<bs.length;k++)if(bs[k].getAttribute('aria-label')==='Save')bs[k].click();}})()", kept));
+	    }
+	}
 	else if ( ev["event"] == "action" )
 	{
 	    println("TOOLBAR event action {} code={}", ev["action"],
@@ -71,5 +140,6 @@ int main()
     println("TOOLBAR closed");
     // a test leaves nothing in its working directory
     remove(path);
+    system(format("rm -rf {}", plugins));
     return 0;
 }

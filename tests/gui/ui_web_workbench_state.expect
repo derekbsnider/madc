@@ -1,0 +1,5 @@
+WBSTATE open
+WBSTATE 1 bottom=1 scrolled=1 panelmax=0
+WBSTATE 2 bottom=1 scrolled=1 panelmax=0
+WBSTATE 3 panelmax=1
+WBSTATE closed

@@ -653,14 +653,17 @@ long caret_to_line(long w, long doc, long line, long col)
     return start + col;
 }
 
-// The typing gate AND its refusal prose, derived ONCE from the
-// enumerated affordances: the read-only rule lives in the shared
-// availability check; the editor stores its verdict and its reason
-// (verb `c`'s enumerated state) on the editor-state bag instead of
-// re-implementing or re-spelling either.
-void derive_access(long w, long es)
+// The read-only rule's verdict on the FILE, from the enumerated
+// affordances (verb `c`'s enumerated state): `editable` and its `reason`.
+// False = no `c` affordance is registered (`editable` stays true). The one
+// reader: derive_access stores it on the bag; a client whose display is
+// read-only over a file that is not (madcide's menus over a lens that
+// edits through to the file) asks it directly.
+bool access_verdict(bool &editable, var &reason, long w, long es)
 {
-    bool editable = true;
+    editable = true;
+    reason = "";
+    bool found = false;
     var affs;
     ui::affordances(affs, w, es);
     for ( var a : affs )
@@ -669,10 +672,24 @@ void derive_access(long w, long es)
 	if ( act == "c" )
 	{
 	    editable = a["enabled"].as_boolean();
-	    var reason = format("{}", a["reason"]);
-	    ui::set(w, es, "ro_msg", reason.c_str());
+	    reason = format("{}", a["reason"]);
+	    found = true;
 	}
     }
+    return found;
+}
+
+// The typing gate AND its refusal prose, derived ONCE from the
+// enumerated affordances: the read-only rule lives in the shared
+// availability check; the editor stores its verdict and its reason
+// (verb `c`'s enumerated state) on the editor-state bag instead of
+// re-implementing or re-spelling either.
+void derive_access(long w, long es)
+{
+    bool editable = true;
+    var reason;
+    if ( access_verdict(editable, reason, w, es) )
+	ui::set(w, es, "ro_msg", reason.c_str());
     ui::set(w, es, "editable", editable);
 }
 
@@ -909,6 +926,198 @@ bool selection_replace(long w, long es, long doc, long caret, const char *text)
 	ed_text_insert(w, es, doc, lo, t.c_str());
     ui::set(w, es, "caret", lo + strlen(t.c_str()));
     ui::set(w, doc, "modified", true);
+    return true;
+}
+
+// ---- line-wise edits (Thonny's Edit ▸ Indent, Dedent, Toggle comment) ----
+// ONE owner for an edit applied to every line the selection touches: the
+// span rule, each line's edit, and the pass that applies them (one undo
+// step; the last line first, so the lines above keep their offsets; the
+// caret carried through shift_offset; a GUI selection re-lit over the
+// lines' whole text).
+enum line_edit_op : unsigned char { leINDENT = 0, leDEDENT, leCOMMENT };
+
+// The lines the byte range [lo, hi) touches — ONE rule (a selection's lines
+// here, a proposal's hunk in madcide_mcp.inc): `r` answers {first, last},
+// 1-based; a range ending at a line's START leaves that line out (it reached
+// up to the line, not into it); an empty range is the line it stands on.
+void range_lines(var &r, long w, long doc, long lo, long hi)
+{
+    long end = hi > lo ? hi - 1 : hi;
+    var b = { "first": line_of(w, doc, lo), "last": line_of(w, doc, end) };
+    r = b;
+}
+
+// The lines a line-wise edit covers: the selection's (range_lines), else
+// the caret's line (the phantom line counts: the caret can stand on it).
+void edit_line_span(var &r, long w, long es, long doc, long caret)
+{
+    var s;
+    if ( selection_range(s, w, es, caret) )
+	range_lines(r, w, doc, s["lo"].as_integer(), s["hi"].as_integer());
+    else
+	range_lines(r, w, doc, caret, caret);
+}
+
+// A GUI selection that crosses a line: Tab indents its lines instead of
+// replacing it (IDLE, Thonny, VS Code).
+bool selection_spans_lines(long w, long es, long doc, long caret)
+{
+    var s;
+    if ( !selection_gui(w, es) || !selection_range(s, w, es, caret) )
+	return false;
+    return line_of(w, doc, s["lo"].as_integer()) != line_of(w, doc, s["hi"].as_integer());
+}
+
+// The blanks (spaces and tabs) a text starts with — the ONE leading-blank
+// scanner: a line's indent here, a layout line's nesting depth
+// (madcide_core.inc), the indent an MCP fragment inherits (madcide_mcp.inc).
+long blank_run(const char *s)
+{
+    long k = 0;
+    while ( s[k] == ' ' || s[k] == '\t' )
+	k = k + 1;
+    return k;
+}
+
+// A line of nothing but blanks (a CRLF file's '\r' counted as its end).
+bool blank_line(const char *s)
+{
+    long k = blank_run(s);
+    return s[k] == 0 || (s[k] == '\r' && s[k + 1] == 0);
+}
+
+// The edit `op` makes to line `n`: {at, del, ins} — erase `del` bytes at
+// `at`, then insert `ins` there (0 and "" = the line is left alone).
+// Indent inserts the tab a typed Tab inserts, on a line that is not empty;
+// dedent removes one leading tab, else up to `tabw` leading spaces; the
+// comment toggle inserts `prefix` and a space at column 0 of a non-blank
+// line, or with `strip` removes the prefix after the line's blanks and the
+// one space that follows it.
+void line_edit_of(var &e, long w, long doc, long n, long op,
+		  const char *prefix, bool strip, long tabw)
+{
+    var l;
+    ui::text_line(l, w, doc, n);
+    const char *s = l.c_str();
+    long at = line_start_of(w, doc, n);
+    long del = 0;
+    var ins = "";
+    switch ( op )
+    {
+	case leINDENT:
+	    if ( s[0] != 0 )
+		ins = "\t";
+	    break;
+	case leDEDENT:
+	    if ( s[0] == '\t' )
+		del = 1;
+	    else
+		while ( del < tabw && s[del] == ' ' )
+		    del = del + 1;
+	    break;
+	case leCOMMENT:
+	    if ( blank_line(s) )
+		break;
+	    if ( !strip )
+		ins = format("{} ", prefix);
+	    else
+	    {
+		long k = blank_run(s);
+		long pl = strlen(prefix);
+		at = at + k;
+		del = pl;
+		if ( s[k + pl] == ' ' )
+		    del = pl + 1;
+	    }
+	    break;
+    }
+    var r = { "at": at, "del": del, "ins": ins };
+    e = r;
+}
+
+// Apply `op` to the span's lines (`prefix` = the line comment leCOMMENT
+// toggles): gated on the editable verdict; the toggle strips when every
+// non-blank line already carries the prefix, else adds it. False = nothing
+// changed (no undo step; the buffer keeps its dirtiness).
+bool edit_lines(long w, long es, long doc, long caret, long op, const char *prefix)
+{
+    if ( !es_flag(w, es, "editable") )
+    {
+	refuse_edit(w, es);
+	return false;
+    }
+    var span;
+    edit_line_span(span, w, es, doc, caret);
+    long first = span["first"].as_integer();
+    long last = span["last"].as_integer();
+    bool strip = false;
+    if ( op == leCOMMENT )
+    {
+	long seen = 0;
+	strip = true;
+	for ( long n = first; n <= last; n = n + 1 )
+	{
+	    var l;
+	    ui::text_line(l, w, doc, n);
+	    if ( blank_line(l.c_str()) )
+		continue;
+	    seen = seen + 1;
+	    if ( strncmp(l.c_str() + blank_run(l.c_str()), prefix, strlen(prefix)) != 0 )
+		strip = false;
+	}
+	if ( seen == 0 )
+	    return false;
+    }
+    long tabw = es_int(w, es, "tabwidth", 8);
+    if ( tabw < 1 )
+	tabw = 8;
+    var edits = {};
+    for ( long n = last; n >= first; n = n - 1 )
+    {
+	var e;
+	line_edit_of(e, w, doc, n, op, prefix, strip, tabw);
+	if ( e["del"].as_integer() > 0 || strlen(e["ins"].c_str()) > 0 )
+	    edits.push(e);
+    }
+    if ( php::count(edits) == 0 )
+	return false;
+    // A GUI selection is re-lit over the lines it covered, its caret end
+    // kept: through to the next line's start when it reached it, else to
+    // the last line's end.
+    var sel;
+    bool gui = selection_gui(w, es) && selection_range(sel, w, es, caret);
+    bool whole = gui && line_of(w, doc, sel["hi"].as_integer()) > last;
+    bool back = gui && caret == sel["lo"].as_integer();
+    edit_checkpoint(w, es, doc, caret);
+    long c = caret;
+    for ( var e : edits )
+    {
+	long at = e["at"].as_integer();
+	long del = e["del"].as_integer();
+	if ( del > 0 )
+	{
+	    ed_text_erase(w, es, doc, at, del);
+	    c = shift_offset(c, at, -del, true);
+	}
+	long n = strlen(e["ins"].c_str());
+	if ( n > 0 )
+	{
+	    ed_text_insert(w, es, doc, at, e["ins"].c_str());
+	    c = shift_offset(c, at, n, true);
+	}
+    }
+    ui::set(w, es, "caret", c);
+    ui::set(w, doc, "modified", true);
+    if ( gui )
+    {
+	long lo = line_start_of(w, doc, first);
+	long hi = line_start_of(w, doc, last) + ui::text_line_len(w, doc, last);
+	if ( whole )
+	    hi = line_start_of(w, doc, last + 1);
+	ui::set(w, es, "caret", back ? lo : hi);
+	select_span(w, es, back ? hi : lo, back ? lo : hi);
+    }
     return true;
 }
 
@@ -1295,8 +1504,15 @@ bool edit_key(long w, long es, long doc, long caret, var &ev)
     }
     if ( k == ui::key::tab )
     {
-	// Tab types a tab byte at the caret (JOE, pico, vim's insert mode):
-	// the one typed-text owner inserts it (B55).
+	// Tab over a GUI selection that crosses a line indents its lines
+	// (IDLE, Thonny, VS Code: the GUI rule beside "typing replaces it").
+	if ( selection_spans_lines(w, es, doc, caret) )
+	{
+	    edit_lines(w, es, doc, caret, leINDENT, "");
+	    return true;
+	}
+	// Otherwise Tab types a tab byte at the caret (JOE, pico, vim's
+	// insert mode): the one typed-text owner inserts it (B55).
 	var te = { "event": "text", "event_code": ui::event_kind::text, "text": "\t" };
 	edit_text_run(w, es, doc, caret, te);
 	return true;

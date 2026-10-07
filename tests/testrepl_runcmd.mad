@@ -1,0 +1,11 @@
+// %run and %load typed in the REPL (plan §7f; D16, D25; IPython's %run,
+// Thonny's F5): `madc -i` loads this file into the session, then the
+// entries in testrepl_runcmd.input run. `%run -i FILE ARGS` runs FILE's main
+// with ARGS (the shell's rules) in THIS session, so `base` below is still
+// there; `%run FILE ARGS` runs it in a FRESH session, which the engine asks
+// its host for (IPython's payload) and the terminal starts — `base` is gone
+// after it, FILE's names stay, and a FILE with no main only defines. A file
+// that does not open is refused before any restart, so the session survives
+// it, and its error shows once. `%load FILE` defines FILE's names and runs
+// nothing, its main included.
+int base = 1017;

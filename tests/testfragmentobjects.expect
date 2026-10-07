@@ -1,0 +1,5 @@
+a.o: rc=0
+b.o: rc=0
+link: rc=0
+same: 1
+run: rc=0

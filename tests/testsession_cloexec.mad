@@ -1,0 +1,32 @@
+// A session's wire to its backend is close-on-exec: a program the host
+// starts later through fork + exec (a webview's helper processes, a shell)
+// does not inherit it. An inherited end outlives the host's close, so the
+// backend's socket never reaches its end, the I/O reactor keeps polling a
+// descriptor the host no longer has (a core at 100% from the REPL's first
+// restart), and Chthonia's window close left the process running.
+// Oracle: POSIX — a descriptor made with SOCK_CLOEXEC is closed by execve;
+// the exec'd /bin/ls lists the descriptors it inherited.
+
+// The sockets a program started now through fork + exec holds.
+long inherited_sockets()
+{
+    madc::channel ls("exec:///bin/ls -l /proc/self/fd");
+    long n = 0;
+    var line;
+    while ( ls.readline(line) )
+	if ( strstr(line.c_str(), "socket:") != NULL )
+	    n = n + 1;
+    ls.close();
+    return n;
+}
+
+int main()
+{
+    long before = inherited_sockets();
+    long h = madc::session_open("c17");
+    println("session running: {}", madc::session_running(h));
+    long during = inherited_sockets();
+    println("sockets a child inherits from a live session: {}", during - before);
+    madc::session_close(h);
+    return 0;
+}

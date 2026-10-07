@@ -1,0 +1,3 @@
+// The file testrepl_runcmd.input runs with a fresh %run: it has no main, so
+// nothing runs and only its names are the new session's.
+int thrice(int x) { return 3 * x; }

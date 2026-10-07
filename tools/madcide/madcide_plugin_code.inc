@@ -83,10 +83,16 @@ bool ide_api_show(long w, long es, long kind)
     return show_view(w, es, kind);
 }
 
+bool ide_api_repl_command(long w, const char *name, const char *usage,
+			  const char *summary, long code)
+{
+    return plugin_repl_command(w, name, usage, summary, code);
+}
+
 const ide_api madcide_api = { MADCIDE_PLUGIN_API, ide_api_command,
 			      ide_api_view, ide_api_event, ide_api_run,
 			      ide_api_command_id, ide_api_get, ide_api_set,
-			      ide_api_show };
+			      ide_api_show, ide_api_repl_command };
 
 // ---- the code's transports ---------------------------------------------------
 // Where plugin `name`'s library is: <dir>/<name><suffix>, the target's
@@ -213,8 +219,10 @@ void registry_mark(var &mark, long w)
     registry_rows(v, w, "views");
     var e;
     registry_rows(e, w, "events");
+    var r;
+    registry_rows(r, w, "repl");
     mark = { "commands": php::count(c), "views": php::count(v),
-	     "events": php::count(e) };
+	     "events": php::count(e), "repl": php::count(r) };
 }
 
 // Take back every row registered after `mark` (a refused activation leaves
@@ -224,7 +232,7 @@ void registry_rollback(long w, var &mark)
     long reg = plugin_registry(w);
     if ( reg == 0 )
 	return;
-    var lists = { "commands", "views", "events" };
+    var lists = { "commands", "views", "events", "repl" };
     for ( var l : lists )
     {
 	var rows;
@@ -298,6 +306,39 @@ bool plugin_code_open(var &dir, var &name, var &m, long &transport, int64_t &h,
     return true;
 }
 
+// Plugin `name`'s code recorded active in world `w`: the transport it came
+// by, where from ("" = nowhere: built in, linked) and the handle it closes by
+// (0 = none). The one writer of the registry's "active" rows.
+void plugin_record_active(long w, var &name, long transport, var &from,
+			  int64_t h)
+{
+    long reg = plugin_registry_make(w);
+    var active;
+    registry_rows(active, w, "active");
+    active[] = { "name": name, "transport": transport, "from": from,
+		 "handle": h };
+    ui::set(w, reg, "active", active);
+}
+
+// Plugin `name`'s code linked into the product (<madcide/product>), activated
+// in world `w`: it is part of this program, so nothing is loaded, compiled or
+// hosted. False = its activation refused it (`why`); nothing it registered
+// remains.
+bool plugin_activate_linked(long w, var &name, plugin_activate_fn af, var &why)
+{
+    var mark;
+    registry_mark(mark, w);
+    if ( !af(&madcide_api, w) )
+    {
+	registry_rollback(w, mark);
+	why = "its activation refused it (it is linked into this program)";
+	return false;
+    }
+    var none = "";
+    plugin_record_active(w, name, ptLINKED, none, 0);
+    return true;
+}
+
 // Does plugin `m` run in a process of its own (§5.4's host transport)? Its
 // manifest asks ("transport": "host"), or settings.json's "plugins.isolate"
 // asks it of every plugin.
@@ -335,6 +376,11 @@ bool plugin_activate(long w, var &dir, const char *name0, var &m, var &why,
     note = "";
     if ( plugin_is_active(w, name.c_str()) )
 	return true;
+    // The plugin the product links (chthonia's, in chthonia) is part of the
+    // program: its library, its source and a host process are never asked.
+    const ide_product &pr = product_in_use();
+    if ( pr.activate != 0 && name == pr.plugin )
+	return plugin_activate_linked(w, name, pr.activate, why);
     var hnote = "";
     if ( plugin_wants_host(w, m) )
     {
@@ -368,12 +414,7 @@ bool plugin_activate(long w, var &dir, const char *name0, var &m, var &why,
 	why = format("its activation refused it ({})", from);
 	return false;
     }
-    long reg = plugin_registry_make(w);
-    var active;
-    registry_rows(active, w, "active");
-    active[] = { "name": name, "transport": transport, "from": from,
-		 "handle": h };
-    ui::set(w, reg, "active", active);
+    plugin_record_active(w, name, transport, from, h);
     return true;
 }
 
@@ -406,12 +447,8 @@ void builtins_activate(long w, long es)
 	    ui::set(w, es, "msg", format("Built-in module '{}' refused its activation.", name));
 	    continue;
 	}
-	long reg = plugin_registry_make(w);
-	var active;
-	registry_rows(active, w, "active");
-	int64_t none = 0;
-	active[] = { "name": name, "transport": ptBUILTIN, "from": "", "handle": none };
-	ui::set(w, reg, "active", active);
+	var none = "";
+	plugin_record_active(w, name, ptBUILTIN, none, 0);
     }
 }
 
@@ -536,12 +573,12 @@ int run_build_plugin(const char *dir)
     var rows = {};
     if ( plugin_build(why, rows, dir) )
     {
-	println("madcide: built {}", why);
+	println("{}: built {}", product_in_use().name, why);
 	return 0;
     }
     for ( var r : rows )
 	println(stderr, "{}:{}:{}: {}: {}", r["file"], r["line"], r["column"],
 		r["severity"], r["message"]);
-    println(stderr, "madcide: --build-plugin: {}", why);
+    println(stderr, "{}: --build-plugin: {}", product_in_use().name, why);
     return 1;
 }

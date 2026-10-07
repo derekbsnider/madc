@@ -149,7 +149,7 @@ struct Fixture
 
 } // namespace
 
-TEST_CASE("GitRepo opens a repository and answers head/refs/revparse/log/show/blame/dirty")
+TEST_CASE("GitRepo opens a repository and answers head/refs/revparse/log/commit/show/blame/dirty")
 {
     Fixture fx;
     madc::GitRepo repo;
@@ -192,6 +192,13 @@ TEST_CASE("GitRepo opens a repository and answers head/refs/revparse/log/show/bl
     CHECK(rows.size() == 2);
     REQUIRE(repo.log(rows, "", 1, &err));	// the limit holds
     CHECK(rows.size() == 1);
+
+    madc::GitCommit c;
+    REQUIRE(repo.commit("HEAD~1", c, &err));
+    CHECK(c.sha == fx.first_sha);
+    CHECK(c.summary == "first");
+    CHECK(c.when == 1700000000);
+    CHECK(!repo.commit("no-such-ref-anywhere", c, &err));
 
     std::string text;
     REQUIRE(repo.show(fx.first_sha, "a.txt", text, &err));
@@ -243,6 +250,78 @@ TEST_CASE("GitRepo blames a modified buffer against the committed file")
     REQUIRE(b.size() == 1);
     CHECK(b[0].sha.empty());
     CHECK(!repo.blame_buffer(b, "nope.txt", "x\n", 1, 0, &err));
+}
+
+// `git status`'s rows (plan §7e): a clean tree has none; a modified file,
+// an untracked one and a staged new one each answer their two sides, sorted
+// by path. git status --porcelain on the same tree (it prints the untracked
+// rows last): ` M a.txt` / `A  d.txt` / `?? c.txt`.
+TEST_CASE("GitRepo answers git status's rows")
+{
+    Fixture fx;
+    madc::GitRepo repo;
+    madc::error err;
+    REQUIRE(repo.open(fx.dir, &err));
+    std::vector<madc::GitStatusRow> rows;
+    REQUIRE(repo.status(rows, &err));
+    CHECK(rows.empty());
+    fx.write("a.txt", "one\nTWO\n");
+    fx.write("c.txt", "sea\n");
+    fx.write("d.txt", "dee\n");
+    git_index *idx = (git_index *)0;
+    REQUIRE(git_repository_index(&idx, fx.repo) == 0);
+    REQUIRE(git_index_add_bypath(idx, "d.txt") == 0);
+    REQUIRE(git_index_write(idx) == 0);
+    git_index_free(idx);
+    REQUIRE(repo.status(rows, &err));
+    REQUIRE(rows.size() == 3);
+    CHECK(rows[0].path == "a.txt");
+    CHECK(rows[0].index == git::file_state::unmodified);
+    CHECK(rows[0].worktree == git::file_state::modified);
+    CHECK(rows[1].path == "c.txt");
+    CHECK(rows[1].worktree == git::file_state::untracked);
+    CHECK(rows[2].path == "d.txt");
+    CHECK(rows[2].index == git::file_state::added);
+    CHECK(rows[2].worktree == git::file_state::unmodified);
+    CHECK(rows[2].from.empty());
+}
+
+// A file at a revision against a text (plan §7e: View ▸ Changes diffs the
+// live buffer): git diff's unified patch and its hunks. `git diff` on the
+// same change prints the same hunk header and lines.
+TEST_CASE("GitRepo diffs a file at a revision against a text")
+{
+    Fixture fx;
+    madc::GitRepo repo;
+    madc::error err;
+    REQUIRE(repo.open(fx.dir, &err));
+    std::string patch;
+    std::vector<madc::GitHunk> hunks;
+    REQUIRE(repo.diff("HEAD", "a.txt", "one\nTWO\n", patch, hunks, &err));
+    REQUIRE(hunks.size() == 1);
+    CHECK(hunks[0].header == "@@ -1,2 +1,2 @@");
+    CHECK(hunks[0].old_start == 1);
+    CHECK(hunks[0].old_lines == 2);
+    CHECK(hunks[0].new_start == 1);
+    CHECK(hunks[0].new_lines == 2);
+    CHECK(patch.find("--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +1,2 @@\n one\n-two\n+TWO\n")
+	  != std::string::npos);
+    REQUIRE(repo.diff("HEAD", "a.txt", "one\ntwo\n", patch, hunks, &err));
+    CHECK(patch.empty());			// equal: nothing to show
+    CHECK(hunks.empty());
+    REQUIRE(repo.diff(fx.first_sha, "a.txt", "one\ntwo\n", patch, hunks, &err));
+    REQUIRE(hunks.size() == 1);
+    CHECK(hunks[0].header == "@@ -1 +1,2 @@");
+    CHECK(patch.find("@@ -1 +1,2 @@\n one\n+two\n") != std::string::npos);
+    REQUIRE(repo.diff("HEAD", "new.txt", "x\n", patch, hunks, &err));
+    REQUIRE(hunks.size() == 1);			// absent at HEAD: every line added
+    CHECK(hunks[0].old_start == 0);
+    CHECK(hunks[0].old_lines == 0);
+    CHECK(hunks[0].new_lines == 1);
+    CHECK(patch.find("@@ -0,0 +1 @@\n+x\n") != std::string::npos);
+    err = madc::error();
+    CHECK(!repo.diff("no-such-ref-anywhere", "a.txt", "", patch, hunks, &err));
+    CHECK(err.message.find("git diff") == 0);
 }
 
 TEST_CASE("GitRepo refuses a non-repository, a missing path and a bad ref with prose")

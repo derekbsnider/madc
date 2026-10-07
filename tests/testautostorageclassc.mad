@@ -1,0 +1,32 @@
+/* C's `auto` before C23 is a storage-class specifier (C11 6.7.1), not a
+   deduced type: `auto int d = 4;` declares an int, `auto struct P p` and
+   `auto ushort_t us` the types that follow, and with no type specifier
+   (`auto c = 2.75;`, `auto *pd`) the type is int (C89 6.5.2) — c is 2,
+   sizeof c is 4. madc read `auto` as the C++/C23 placeholder: "Expecting
+   identifier after type" at `auto int`, and "'auto' type deduction requires
+   a function name or lambda" at `auto c = 2.75`.
+   Oracle: gcc -std=c89 and -std=c11, and clang -std=c89, print the .expect
+   lines (clang -std=c11 refuses implicit int). */
+#include <stdio.h>
+
+typedef unsigned short ushort_t;
+struct P { int a, b; };
+
+int main(void)
+{
+	auto int d = 4;
+	auto long l = 5;
+	auto c = 2.75;
+	auto *pd = &d;
+	auto unsigned char uc = 200;
+	auto const int ac = 3;
+	auto struct P p = { 1, 2 };
+	auto ushort_t us = 65535;
+	auto int i, sum = 0;
+	for ( i = 0; i < 3; i++ )
+		sum += i;
+	printf("auto: %d %ld %d %d %d %d %d %d %d\n", d, l, c, *pd, uc, ac,
+	       p.a + p.b, sum, us);
+	printf("size: %d %d %d\n", (int)sizeof c, (int)sizeof *pd, (int)sizeof us);
+	return 0;
+}

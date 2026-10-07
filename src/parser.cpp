@@ -356,7 +356,8 @@ bool internal_program_code_close(int64_t code);
 // handle groups a cc.json manifest's TUs.
 int64_t internal_program_parse_open(::Program &self,
 				    const std::string &source_text,
-				    const std::string &display_name);
+				    const std::string &display_name,
+				    int64_t standard);
 int64_t internal_program_parse_open_file(::Program &self,
 					 const std::string &path);
 bool internal_program_parse_refresh(::Program &self, int64_t handle,
@@ -1141,7 +1142,7 @@ bool madc_code_close(int64_t code)
 // source/filename/path = std::string*, result = madc::value*. The handle
 // registries live beside the child pipeline in madc_program.cpp.
 
-int64_t madc_parse_open(void *source, void *filename)
+int64_t madc_parse_open(void *source, void *filename, int64_t standard)
 {
     std::unique_ptr<Program> owned;
     Program *active = require_runtime_eval_program(owned);
@@ -1151,7 +1152,8 @@ int64_t madc_parse_open(void *source, void *filename)
     const std::string &disp = *(const std::string *)filename;
     return madc::internal_program_parse_open(*active, src,
 					     disp.empty() ? "<source>"
-							  : disp);
+							  : disp,
+					     standard);
 }
 
 int64_t madc_parse_open_file(void *path)
@@ -1795,7 +1797,7 @@ static bool is_alignment_specifier_name(const std::string &name)
 // may.
 static bool is_attribute_specifier_name(const std::string &name)
 {
-    return name == "__attribute__" || name == "__attribute"
+    return madc_gnu_attribute_introducer(name)
 	|| is_alignment_specifier_name(name);
 }
 
@@ -1851,6 +1853,7 @@ static bool cpp_keyword_leads_declaration(TokenBase *tb)
 
 static bool is_contextual_identifier_token(TokenBase *tb);	// defined with the identifier readers below
 static std::string contextual_identifier_name(TokenBase *tb);
+static void copy_token_location(TokenBase *dst, TokenBase *src);
 
 // Balanced-delimiter depth for token scans: (), [], {}, <>. The hand-rolled
 // "++paren … --angle … >>" if-else chain is copy-pasted across many scanners;
@@ -2170,6 +2173,25 @@ TokenBase *Program::consume_gnu_attributes(TokenBase *nt,
 			    pushToken(cl);
 		    }
 		}
+		else if ( token_names_gnu_attribute(at, GnuAttributeKind::Cleanup)
+		       && peekToken() && peekToken()->id() == TokenID::tkOpBrk )
+		{
+		    // cleanup(f): the function the declared object's scope exit
+		    // calls with the object's address. The declaration being
+		    // read takes it (parse_declaration_body); its parens are
+		    // consumed here, balanced.
+		    nextToken();
+		    TokenBase *fn = nextToken();
+		    Variable *fv = (fn && is_contextual_identifier_token(fn))
+			? findVariable(contextual_identifier_name(fn)) : NULL;
+		    if ( !fv || !fv->type || !fv->type->as_funcdef_dd() )
+			Throw(fn ? fn : at) << "cleanup argument not a function" << flush;
+		    pending_cleanup_function = fv;
+		    TokenBase *cl = nextToken();
+		    if ( cl && cl->id() != TokenID::tkClBrk )
+			pushToken(cl);
+		    continue;
+		}
 		else if ( token_names_gnu_attribute(at, GnuAttributeKind::VectorSize) )
 		    saw_vector_size = true;
 		else if ( saw_vector_size && at->id() == TokenID::tkOpBrk )
@@ -2298,172 +2320,164 @@ TokenBase *Program::consume_gnu_asm_label(TokenBase *nt,
     return nt;
 }
 
-// Skip (or lower the recognized copy shapes of) a GNU asm STATEMENT.
-// `tb` is the asm introducer; shared by the ttIdentifier and ttKeyword
-// arms of parseStatement so reserving `asm` as a keyword keeps the skip.
-// A token the asm skipper already consumed while probing a clause: +1 for a
-// `(` it opened, -1 for a `)` it closed, 0 otherwise.
-static int consumed_paren_balance(const TokenBase *t)
-{
-    if ( !t )
-	return 0;
-    if ( t->id() == TokenID::tkOpBrk )
-	return 1;
-    if ( t->id() == TokenID::tkClBrk )
-	return -1;
-    return 0;
-}
-
+// A GNU asm STATEMENT (gcc "Extended Asm"; basic asm is its template-only
+// form): asm qualifiers ( template [: outputs [: inputs [: clobbers
+// [: labels]]]] ) ; — an operand is `[name] "constraint" ( expression )`.
+// `tb` is the asm introducer; shared by the ttIdentifier and ttKeyword arms
+// of parseStatement so reserving `asm` as a keyword keeps the statement.
+// c2mir has no inline asm and a template's instructions never run, so the
+// statement lowers to what its OPERANDS make observable: each operand
+// expression evaluated exactly once, in order (outputs, then inputs). Under
+// an EMPTY template a matching constraint ("0", "[name]") is exact as well —
+// the input sits in its output's location — so it lowers to `output = input`.
 TokenBase *Program::skip_gnu_asm_statement(TokenBase *tb)
 {
-	    // optional volatile qualifier
-	    if ( peekToken()
-	      && peekToken()->type() == TokenType::ttKeyword
-	      && peekToken()->id() == TokenID::tkVOLATILE )
-		nextToken();
-	    else if ( peekToken() && peekToken()->type() == TokenType::ttIdentifier )
-	    {
-		std::string q = ((TokenIdent *)peekToken())->spelling();
-		if ( q == "volatile" || q == "__volatile__" )
-		    nextToken();
-	    }
-	    TokenBase *ob = nextToken();
-	    if ( ob && ob->id() == TokenID::tkOpBrk )
-	    {
-		TokenBase *tmpl = nextToken();
-		bool parsed_simple_copy = false;
-		if ( tmpl && tmpl->type() == TokenType::ttString
-		  && ((TokenStr *)tmpl)->spelling_empty()
-		  && peekToken() && peekToken()->id() == TokenID::tkColon )
-		{
-		    nextToken(); // ':'
-		    TokenBase *out_c = nextToken();
-		    TokenBase *out_ob = nextToken();
-		    if ( out_c && out_c->type() == TokenType::ttString
-		      && out_ob && out_ob->id() == TokenID::tkOpBrk )
-		    {
-			std::string out_constraint = ((TokenStr *)out_c)->str;
-			if ( out_constraint == "+m" )
-			{
-			    // Through the operand's `)`, then the asm's own.
-			    if ( consume_through_open_parens(1) )
-				consume_through_open_parens(1);
-			    if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
-				return nextToken();
-			    return tb;
-			}
-			TokenBase *out_tb = nextToken();
-			TokenBase *out_expr = out_tb ? parseExpression(out_tb, true) : NULL;
-			TokenBase *out_cb = nextToken();
-			TokenBase *next_clause = nextToken();
-			if ( out_expr
-			  && out_cb && out_cb->id() == TokenID::tkClBrk
-			  && next_clause && next_clause->id() == TokenID::tkClBrk )
-			{
-			    if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
-				nextToken();
-			    if ( out_constraint == "+r" )
-				return out_expr;
-			    return tb;
-			}
-			if ( out_expr
-			  && out_cb && out_cb->id() == TokenID::tkClBrk
-			  && next_clause && next_clause->id() == TokenID::tkSemi )
-			{
-			    if ( out_constraint == "+r" )
-				return out_expr;
-			    return next_clause;
-			}
-			TokenBase *in_c = nextToken();
-			TokenBase *in_ob = nextToken();
-			if ( out_expr
-			  && out_cb && out_cb->id() == TokenID::tkClBrk
-			  && next_clause && next_clause->id() == TokenID::tkColon
-			  && in_c && in_c->type() == TokenType::ttString
-			  && in_ob && in_ob->id() == TokenID::tkOpBrk )
-			{
-			    TokenBase *in_tb = nextToken();
-			    TokenBase *in_expr = in_tb ? parseExpression(in_tb, true) : NULL;
-			    TokenBase *in_cb = nextToken();
-			    TokenBase *close = nextToken();
-			    std::string in_constraint = ((TokenStr *)in_c)->str;
-			    // If close is ':' (clobber list), consume
-			    // remaining tokens up to outer ')'.
-			    if ( close && close->id() == TokenID::tkColon )
-			    {
-				consume_through_open_parens(1);
-				close = new TokenClBrk();
-			    }
-			    if ( in_expr
-			      && in_cb && in_cb->id() == TokenID::tkClBrk
-			      && close && close->id() == TokenID::tkClBrk
-			      && out_constraint == "=r"
-			      && in_constraint == "0" )
-			    {
-				TokenAssign *assign = new TokenAssign();
-				assign->file = tb->file;
-				assign->line = tb->line;
-				assign->column = tb->column;
-				assign->left = out_expr;
-				assign->right = in_expr;
-				if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
-				    nextToken();
-				return assign;
-			    }
-			    if ( in_expr
-			      && in_cb && in_cb->id() == TokenID::tkClBrk
-			      && close && close->id() == TokenID::tkClBrk
-			      && out_constraint == "=m"
-			      && in_constraint == "m" )
-			    {
-				if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
-				    return nextToken();
-				return tb;
-			    }
-			    // Unrecognized two-operand asm pattern — consume
-			    // any remaining tokens until the outer asm ')' is
-			    // found, then return as no-op. We track paren
-			    // depth starting from `close` (which may be `,`,
-			    // `:`, or a paren itself).
-			    {
-				// 1 for the outer '(' consumed at asm entry,
-				// adjusted by `close` itself.
-				consume_through_open_parens(
-				    1 + consumed_paren_balance(close));
-				parsed_simple_copy = true;
-				if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
-				    return nextToken();
-				return tb;
-			    }
-			}
-			// Unrecognized asm pattern — the output operand
-			// was consumed but the remaining clauses don't match
-			// a known shape. Consume any remaining tokens until
-			// the outer asm ')' is balanced. The outer '(' was
-			// consumed at asm entry; out_ob/out_cb cancel; so we
-			// need 1 more ')' to close, adjusted by any parens
-			// in in_c and in_ob.
-			{
-			    // 1 for the outer '(', adjusted by in_c and in_ob.
-			    consume_through_open_parens(
-				1 + consumed_paren_balance(in_c)
-				  + consumed_paren_balance(in_ob));
-			    parsed_simple_copy = true;
-			    if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
-				return nextToken();
-			    return tb;
-			}
-		    }
-		}
-		if ( !parsed_simple_copy )
-		    consume_through_open_parens(1);
-	    }
-	    // Return the semicolon as the statement (no-op).
-	    // If the asm is the body of `if (...) asm(...);`, the
-	    // caller needs a non-NULL return.
-	    if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
-		return nextToken();
-	    return tb;
+    // asm-qualifiers, in any order: volatile, inline, goto.
+    for ( TokenBase *q = peekToken(); q; q = peekToken() )
+    {
+	bool qualifier = q->id() == TokenID::tkVOLATILE
+		      || q->id() == TokenID::tkGOTO;
+	if ( !qualifier && is_contextual_identifier_token(q) )
+	{
+	    std::string name = contextual_identifier_name(q);
+	    qualifier = name == "volatile" || name == "__volatile__"
+		     || name == "__volatile" || name == "inline"
+		     || name == "__inline__" || name == "__inline"
+		     || name == "goto";
+	}
+	if ( !qualifier )
+	    break;
+	nextToken();
+    }
+    TokenBase *open = nextToken();
+    if ( !open || open->id() != TokenID::tkOpBrk )
+	Throw(open ? open : tb) << "Expecting '(' after asm" << flush;
+
+    struct AsmOperand
+    {
+	std::string name;	// `[name]`, empty when unnamed
+	std::string constraint;
+	TokenBase *expr;
+    };
+    std::vector<AsmOperand> operands[2];	// outputs, inputs
+    bool empty_template = true;
+    // 0 template, 1 outputs, 2 inputs, 3 clobbers, 4 goto labels.
+    int section = 0;
+    for ( ;; )
+    {
+	TokenBase *t = nextToken();
+	if ( !t )
+	    Throw(tb) << "Expecting ')' to close the asm statement" << flush;
+	if ( t->id() == TokenID::tkClBrk )
+	    break;
+	// `::` is two clause separators (`asm ("" :: "r" (x))`).
+	if ( t->id() == TokenID::tkColon || t->id() == TokenID::tkNS )
+	{
+	    section += t->id() == TokenID::tkNS ? 2 : 1;
+	    if ( section > 4 )
+		Throw(t) << "Too many ':' in asm statement" << flush;
+	    continue;
+	}
+	if ( t->id() == TokenID::tkComma && section > 0 )
+	    continue;
+	if ( section == 0 || section == 3 )
+	{
+	    if ( t->type() != TokenType::ttString )
+		Throw(t) << (section == 0 ? "Expecting string literal asm template"
+				   : "Expecting string literal asm clobber") << flush;
+	    if ( section == 0 && !((TokenStr *)t)->spelling_empty() )
+		empty_template = false;
+	    continue;
+	}
+	if ( section == 4 )
+	{
+	    if ( !is_contextual_identifier_token(t) )
+		Throw(t) << "Expecting label name in asm goto" << flush;
+	    continue;
+	}
+	AsmOperand op;
+	if ( t->id() == TokenID::tkOpSqr )
+	{
+	    TokenBase *name = nextToken();
+	    if ( !is_contextual_identifier_token(name) )
+		Throw(name ? name : t) << "Expecting asm operand name after '['" << flush;
+	    op.name = contextual_identifier_name(name);
+	    TokenBase *close = nextToken();
+	    if ( !close || close->id() != TokenID::tkClSqr )
+		Throw(close ? close : name) << "Expecting ']' after asm operand name" << flush;
+	    t = nextToken();
+	}
+	if ( !t || t->type() != TokenType::ttString )
+	    Throw(t ? t : tb) << "Expecting string literal asm operand constraint" << flush;
+	op.constraint = ((TokenStr *)t)->str;
+	TokenBase *eopen = nextToken();
+	if ( !eopen || eopen->id() != TokenID::tkOpBrk )
+	    Throw(eopen ? eopen : t) << "Expecting '(' before asm operand" << flush;
+	TokenBase *first = nextToken();
+	op.expr = first ? parseExpression(first, true) : NULL;
+	TokenBase *eclose = nextToken();
+	if ( !op.expr || !eclose || eclose->id() != TokenID::tkClBrk )
+	    Throw(eclose ? eclose : eopen) << "Expecting ')' after asm operand" << flush;
+	operands[section - 1].push_back(op);
+    }
+    if ( !peekToken() || peekToken()->id() != TokenID::tkSemi )
+	Throw(peekToken() ? peekToken() : tb) << "Expecting ';' after asm statement" << flush;
+    TokenBase *semi = nextToken();
+
+    // The output a matching input constraint names: its number ("0") or its
+    // `[name]`; -1 when the input names none.
+    std::vector<AsmOperand> &outs = operands[0];
+    auto tied_output = [&outs](const std::string &c) -> int {
+	if ( c.size() > 2 && c.front() == '[' && c.back() == ']' )
+	{
+	    for ( size_t o = 0; o < outs.size(); o++ )
+		if ( outs[o].name == c.substr(1, c.size() - 2) )
+		    return (int)o;
+	    return -1;
+	}
+	if ( c.empty() || c.find_first_not_of("0123456789") != std::string::npos )
+	    return -1;
+	size_t o = (size_t)std::stoul(c);
+	return o < outs.size() ? (int)o : -1;
+    };
+    std::vector<bool> output_assigned(outs.size(), false);
+    std::vector<TokenBase *> effects;
+    if ( empty_template )
+	for ( const AsmOperand &in : operands[1] )
+	{
+	    int o = tied_output(in.constraint);
+	    if ( o >= 0 )
+		output_assigned[o] = true;
+	}
+    for ( size_t o = 0; o < outs.size(); o++ )
+	if ( !output_assigned[o] )
+	    effects.push_back(outs[o].expr);
+    for ( const AsmOperand &in : operands[1] )
+    {
+	int o = empty_template ? tied_output(in.constraint) : -1;
+	if ( o < 0 )
+	{
+	    effects.push_back(in.expr);
+	    continue;
+	}
+	TokenAssign *assign = new TokenAssign();
+	copy_token_location(assign, tb);
+	assign->left = outs[o].expr;
+	assign->right = in.expr;
+	effects.push_back(assign);
+    }
+    if ( effects.empty() )
+	return semi;	// nothing observable: the statement is a no-op
+    TokenBase *seq = effects[0];
+    for ( size_t e = 1; e < effects.size(); e++ )
+    {
+	TokenComma *comma = new TokenComma();
+	copy_token_location(comma, tb);
+	comma->left = seq;
+	comma->right = effects[e];
+	seq = comma;
+    }
+    return seq;
 }
 
 // Skip C23 [[...]] attributes: [[gnu::noipa]], [[nodiscard]], etc.
@@ -2861,6 +2875,16 @@ static bool is_type_query_identifier(const std::string &name)
     return name == "sizeof" || is_alignof_identifier(name);
 }
 
+// An operator whose parenthesized operand is UNEVALUATED — decltype
+// ([dcl.type.decltype]/1), sizeof and alignof ([expr.sizeof]/1,
+// [expr.alignof]), noexcept ([expr.unary.noexcept]/1): a call or member
+// access inside it is no run-time access.
+static bool has_unevaluated_operand(const std::string &name)
+{
+    return is_decltype_identifier(name) || is_type_query_identifier(name)
+	|| name == "noexcept";
+}
+
 static bool is_static_assert_identifier(const std::string &name)
 {
     return name == "_Static_assert" || name == "static_assert";
@@ -2926,6 +2950,21 @@ DataDef *Program::effective_pointer_type_for_member_access(TokenBase *tb)
     }
 
     return NULL;
+}
+
+// The dot arm's one test for a PRVALUE receiver — an expression of
+// class/struct type with no storage of its own: an operator result
+// (`(a + b).m`, `(--j)._M_node`), a functional-construction temp
+// (`T(args).m`), a va_arg read (`va_arg(ap, struct S).c`, C11 7.16.1.1: a
+// value of the named type). Member lookup reads the receiver's own type;
+// the CIR materializes it through the member's parent_expr. A call result
+// has its own arm (its declared return type).
+bool Program::member_receiver_is_prvalue(const TokenBase *lhs)
+{
+    return lhs->type() == TokenType::ttOperator
+	|| lhs->type() == TokenType::ttMultiOp
+	|| lhs->id() == TokenID::tkObjTemp
+	|| dynamic_cast<const TokenVaArg *>(lhs) != NULL;
 }
 
 TokenCallMethod *Program::arrow_operator_call(TokenBase *lhs, TokenBase *loc_tb)
@@ -3986,7 +4025,7 @@ DataDef *Program::resolve_builtin_type_spelling(const std::string &name)
     // The _FloatN spellings ride the nearest-supported approximation (no
     // dd of their own); a real _Float128/_Float64x type is its own slice.
     if ( name == "double" || name == "_Float64" || name == "_Float128"
-      || name == "_Float32x" || name == "_Float64x" )
+      || name == "_Float32x" || name == "_Float64x" || name == "__float128" )
 	return &ddDOUBLE;
     if ( name == "int8_t" ) return &ddINT8;
     if ( name == "int16_t" ) return &ddINT16;
@@ -5913,6 +5952,28 @@ static std::string template_binding_identity_spelling(DataDef *dd)
 		return reference_spelling(
 		    template_binding_identity_spelling(r->base_type),
 		    dd->is_rvalue_reference());
+    // A function type or function pointer spells STRUCTURALLY: every
+    // DataDefFPTR is named "funcptr" and a named function's own DataDef (a
+    // FuncDef) carries no type name, so by name every function binding was
+    // ONE — `call(add3)` and `call(half)` shared the int(*)(int) instance.
+    // A function TYPE (`Fn&` bound to a function) spells `int (int)`, apart
+    // from its pointer `int (*)(int)`.
+    FuncDef *fn_type = dd->as_funcdef_dd();
+    DataDefFPTR *fp = fn_type ? NULL : dd->as_fptr_dd();
+    FuncDef *sig = fn_type ? fn_type : fp ? fp->target : NULL;
+    // [expr.prim.lambda.closure]/1: every lambda is its own closure type. A
+    // CAPTURING one, typed here by its hoisted function (or its pointer), is
+    // no function (B178) and never shares a binding with another value of
+    // the same signature: its identity is its unique hoisted symbol.
+    if ( sig && sig->has_captures && !sig->local_emit_name.empty() )
+	return "{closure " + sig->local_emit_name + "}"; // allowed-exception: binding identity key, not symbol build
+    if ( fn_type )
+	return DataDefFPTR(fn_type).structural_spelling(false);
+    if ( fp && !fp->ptr_syntax )
+	return fp->structural_spelling(false);
+    std::string fps = fptr_structural_spelling(dd);
+    if ( !fps.empty() )
+	return fps;
     DataDef *canon = canonical_template_binding_dd(dd);
     return canon ? canon->name : dd->name;
 }
@@ -7625,6 +7686,32 @@ static bool is_incomplete_template_class_type(TokenDataType *tdt)
     return tdt && is_incomplete_class_datadef(&tdt->definition);
 }
 
+// The first type argument that is a class AWAITING its definition — declared
+// only, or a concrete specialization still a pending shell — or NULL
+// (shells_awaiting_argument). A dependent placeholder is not one (the
+// dependent-surface rule owns those), and neither is a class whose definition
+// is being parsed or instantiated right now: a body naming its own enclosing
+// class keeps the in-flight rules (self-reference, template_arg_resolve_depth).
+DataDefCLASS *Program::awaited_class_argument(
+	const std::vector<TokenDataType *> &args) const
+{
+    for ( size_t i = 0; i < args.size(); ++i )
+    {
+	DataDefCLASS *cls = args[i]
+	    ? dynamic_cast<DataDefCLASS *>(args[i]->definition.unqualified())
+	    : NULL;
+	if ( !cls || cls->is_dependent_placeholder
+	  || !is_incomplete_class_datadef(cls) )
+	    continue;
+	if ( class_inst_in_progress.count(cls->name)
+	  || std::find(class_scope_stack.begin(), class_scope_stack.end(), cls)
+	       != class_scope_stack.end() )
+	    continue;
+	return cls;
+    }
+    return NULL;
+}
+
 DataDefCLASS *Program::complete_shell_class_type(DataDefCLASS *cls)
 {
     if ( !cls || !is_incomplete_class_datadef(cls) )
@@ -7640,6 +7727,7 @@ DataDefCLASS *Program::complete_shell_class_type(DataDefCLASS *cls)
     // shell, a spelling-matched-spec template — must leave the caller exactly
     // as it was (SilentReplay owns that discipline).
     SilentReplay sr(*this);
+    CompletionDemandScope demand(*this, cls->name);
     TokenDataType *real = NULL;
     try
     {
@@ -7917,6 +8005,20 @@ static std::string dependent_surface_reason(DataDef *dd,
 static std::string serialize_token_range(const std::vector<TokenBase *> &toks,
 					 size_t begin, size_t end);
 
+// The spelling that KEYS an opaque derived from `dd` (its `X__deref`, its
+// `Owner__member`). The opaque's DependentDerivedOrigin records `dd` itself,
+// and tsubst re-derives through the binding by that identity, so the key is
+// the identity: a template parameter is its (name, index) — the
+// intern_template_param pool's key. By name alone, `_ForwardIterator` as
+// parameter 0 of one template and parameter 1 of another shared ONE opaque
+// whose recipe named the first, which the second's binding never maps.
+static std::string dependent_derivation_key(DataDef *dd)
+{
+    if ( DataDefTemplateParam *tp = dynamic_cast<DataDefTemplateParam *>(dd) )
+	return tp->name + "__p" + std::to_string(tp->param_index);
+    return dd->name;
+}
+
 DataDefCLASS *Program::materialize_dependent_member_type(DataDef *owner,
 						       const std::string &member_name,
 						       const std::vector<std::vector<TokenBase *> > *member_template_args)
@@ -7941,7 +8043,8 @@ DataDefCLASS *Program::materialize_dependent_member_type(DataDef *owner,
 	    args_spelling += serialize_token_range((*member_template_args)[i], 0,
 						   (*member_template_args)[i].size());
 	}
-    std::string dep_name = owner->name + "__" + sanitize_template_fragment(member_name);
+    std::string dep_name = dependent_derivation_key(owner) + "__"
+			 + sanitize_template_fragment(member_name);
     if ( member_template_args )
 	dep_name += "__" + sanitize_template_fragment(args_spelling);
     flat_datatype_map_iter have = datatype_map.find(dep_name);
@@ -8045,9 +8148,10 @@ void Program::stamp_opaque_mint_context(DataDefCLASS *dep)
     static const char *mtp = ::getenv("MADC_MTI_PROBE_CLASS");
     if ( mtp && *mtp && dep->name.find(mtp) != std::string::npos )
 	fprintf(stderr, "MTIPROBE opaque-mint name=%s dep_parse=%d concrete=%d"
-		" from=%p\n", dep->name.c_str(),
+		" in=%s from=%p\n", dep->name.c_str(),
 		(int)dependent_parse_in_progress,
-		(int)dep->opaque_concrete_tag, __builtin_return_address(0));
+		(int)dep->opaque_concrete_tag, cur_func_name.c_str(),
+		__builtin_return_address(0));
 }
 
 DataDef *Program::dependent_deref_result_type(DataDef *dd)
@@ -8061,7 +8165,8 @@ DataDef *Program::dependent_deref_result_type(DataDef *dd)
     std::string spelling = dd->canonical_cpp_spelling().empty()
 			 ? dd->name : dd->canonical_cpp_spelling();
     DataDefCLASS *dep = materialize_opaque_class_type(
-	sanitize_template_fragment(dd->name + "__deref"), "*" + spelling);
+	sanitize_template_fragment(dependent_derivation_key(dd) + "__deref"),
+	"*" + spelling);
     // Record the derivation so tsubst can re-derive the CONCRETE deref type
     // under an instance substitution (see DependentDerivedOrigin).
     if ( dep && dep->is_dependent_placeholder
@@ -10829,6 +10934,38 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	}
     }
 
+    // The pending-shell lane's reach: the pending record replays a list of
+    // TYPE arguments by the template's bare name, so a non-type or pack
+    // argument keeps the eager path, never inside a dependent parse. A
+    // MEMBER class template (td.owner_class) keeps it too: the bare name does
+    // not carry the owner (`__alloc_traits<A,T>::rebind<T>` stayed a shell in
+    // a class pattern, "could not resolve type ... name='other'"). So does a
+    // template whose body lives in a PARTIAL SPECIALIZATION (td swapped to
+    // the matched spec above; the primary is bodyless — `common_type<T,U>`,
+    // `__common_type2_imp<T,U,void>`): the replay re-enters by the primary's
+    // name and the cache-hit branch hands a bodyless primary's shell straight
+    // back, before spec matching, so such a shell could never complete (the
+    // libc++ <locale> freeze: `common_type<int64_t, int64_t>::type`
+    // unresolved in chrono's duration spec).
+    bool all_type_args = true;
+    for ( size_t i = 0; i < arg_tokens_by_slot.size() && all_type_args; ++i )
+	if ( !arg_tokens_by_slot[i].empty() )
+	    all_type_args = false;
+    const bool shell_replayable = !dependent_parse_in_progress
+	&& !td.body.empty() && !dependent_surface && !placeholder_arg
+	&& !td.owner_class && !td.is_partial_specialization
+	&& !template_has_parameter_pack(td.typeparam_is_pack)
+	&& pack_subst.empty() && token_pack_subst.empty()
+	&& all_type_args;
+    // [temp.inst]/2: naming a specialization never requires it complete. One
+    // whose argument awaits its definition (awaited_class_argument) stays a
+    // pending shell until a completeness demand names THIS shell
+    // (class_completion_demand) or the argument is defined
+    // (complete_shells_awaiting).
+    DataDefCLASS *awaited_arg = shell_replayable
+	&& registered_mangled != class_completion_demand
+	? awaited_class_argument(type_args) : NULL;
+
     // Already instantiated? Return a use-site clone of the cached type.
     flat_datatype_map_iter have = datatype_map.find(registered_mangled);
     // Env-gated probe (MADC_MTI_PROBE_CLASS=<substr>): every template-use
@@ -10884,6 +11021,10 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	    deferred_arg_instantiations.push_back(registered_mangled);
 	    return use_site_type_token(cached, tb);
 	}
+	// Named again while an argument still awaits its definition: the
+	// pending shell stays one (awaited_arg above).
+	if ( awaited_arg && has_pending_template_instantiation(registered_mangled) )
+	    return use_site_type_token(cached, tb);
     }
     // A variadic template admitted to the real path (template_pack_real_instantiable)
     // but instantiated with a STILL-DEPENDENT arg stays an opaque dependent shell —
@@ -10915,34 +11056,14 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     // flight, such an argument becomes the same pending shell a bodyless
     // template mints, completed by the enclosing instantiation the moment its
     // class is complete (complete_deferred_arg_instantiations) or by any
-    // completeness demand before that. Type arguments only — the pending
-    // record replays type args; a non-type or pack argument keeps the eager
-    // path — and never inside a dependent parse.
-    bool all_type_args = true;
-    for ( size_t i = 0; i < arg_tokens_by_slot.size() && all_type_args; ++i )
-	if ( !arg_tokens_by_slot[i].empty() )
-	    all_type_args = false;
-    // A MEMBER class template (td.owner_class) keeps the eager path: the
-    // pending record replays by the bare template name, which does not carry
-    // the owner (`__alloc_traits<A,T>::rebind<T>` stayed a shell in a class
-    // pattern, "could not resolve type ... name='other'"). So does a
-    // template whose body lives in a PARTIAL SPECIALIZATION (td swapped to the
-    // matched spec above; the primary is bodyless — `common_type<T,U>`,
-    // `__common_type2_imp<T,U,void>`): the replay re-enters by the primary's
-    // name and the cache-hit branch hands a bodyless primary's shell straight
-    // back, before spec matching, so a deferred shell of such a template could
-    // never complete (the libc++ <locale> freeze: `common_type<int64_t,
-    // int64_t>::type` unresolved in chrono's duration spec).
+    // completeness demand before that. Only where the pending record can
+    // replay it (shell_replayable above).
     bool deferred_arg = template_arg_deferral_context()
-		     && !dependent_parse_in_progress
-		     && !td.body.empty() && !dependent_surface
-		     && !placeholder_arg && !recursive_opaque
-		     && !td.owner_class && !td.is_partial_specialization
-		     && !template_has_parameter_pack(td.typeparam_is_pack)
-		     && pack_subst.empty() && token_pack_subst.empty()
-		     && all_type_args;
+		     && shell_replayable && !recursive_opaque;
+    // A specialization whose argument awaits its definition (awaited_arg).
+    bool awaits_arg = awaited_arg && !recursive_opaque;
     if ( td.body.empty() || (pack_real_inst && dependent_surface)
-      || placeholder_arg || recursive_opaque || deferred_arg
+      || placeholder_arg || recursive_opaque || deferred_arg || awaits_arg
       || indirect_type_use )
     {
 	++_class_inst_opaque;
@@ -10989,13 +11110,15 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	datatype_map[registered_mangled] = tdt;
 	if ( !td.defining_namespace.empty() )
 	    namespace_datatype_map[td.defining_namespace][registered_mangled] = tdt;
-	if ( unresolved_surface || deferred_arg )
+	if ( unresolved_surface || deferred_arg || awaits_arg )
 	    record_dependent_shell_origin(*this, fwd, td, tname,
 					  arg_spellings,
 					  shell_origin_arg_tokens);
 	record_pending_template_instantiation(*this, tname, registered_mangled, canon, type_args);
 	if ( deferred_arg )
 	    deferred_arg_instantiations.push_back(registered_mangled);
+	if ( awaits_arg )
+	    shells_awaiting_argument[awaited_arg->name].push_back(registered_mangled);
 	return use_site_type_token(tdt, tb);
     }
 
@@ -13258,19 +13381,74 @@ void Program::complete_deferred_arg_instantiations(size_t mark)
 	if ( have == datatype_map.end()
 	  || !is_incomplete_template_class_type((TokenDataType *)(*have)) )
 	    continue;
+	// An argument that still awaits its definition keeps the shell
+	// pending past the enclosing class too (shells_awaiting_argument).
+	const PendingTemplateInstantiation *rec =
+	    find_pending_template_instantiation(name);
+	if ( DataDefCLASS *still = rec ? awaited_class_argument(rec->args) : NULL )
+	{
+	    shells_awaiting_argument[still->name].push_back(name);
+	    continue;
+	}
 	request_template_instantiation_completion(name);
     }
 }
 
-bool Program::has_pending_template_instantiation(const std::string &mangled_name) const
+const Program::PendingTemplateInstantiation *
+Program::find_pending_template_instantiation(const std::string &mangled_name) const
 {
     for ( std::map<std::string, std::vector<Program::PendingTemplateInstantiation>>::const_iterator pi =
 	      pending_template_instantiations.begin();
 	  pi != pending_template_instantiations.end(); ++pi )
 	for ( size_t i = 0; i < pi->second.size(); ++i )
 	    if ( pi->second[i].mangled_name == mangled_name )
-		return true;
-    return false;
+		return &pi->second[i];
+    return NULL;
+}
+
+bool Program::has_pending_template_instantiation(const std::string &mangled_name) const
+{
+    return find_pending_template_instantiation(mangled_name) != NULL;
+}
+
+// The shells filed under a class that has just been defined
+// (shells_awaiting_argument): each is a specialization named while that class
+// awaited its definition. One whose arguments are all defined now is
+// instantiated here, SILENTLY (complete_shell_class_type) — this is eager
+// instantiation at its earliest faithful point, not a completeness demand, so
+// a specialization that cannot be built stays the pending shell C++ leaves it
+// until something requires it complete. One with another argument still
+// awaiting its definition is filed under that one.
+void Program::complete_shells_awaiting(const std::string &completed_class)
+{
+    // A pattern parse or capture instantiates nothing (instantiate_template_use).
+    if ( dependent_parse_in_progress || class_pattern_capture_in_progress )
+	return;
+    std::map<std::string, std::vector<std::string> >::iterator ai =
+	shells_awaiting_argument.find(completed_class);
+    if ( ai == shells_awaiting_argument.end() )
+	return;
+    std::vector<std::string> shells;
+    shells.swap(ai->second);
+    shells_awaiting_argument.erase(ai);
+    for ( size_t i = 0; i < shells.size(); ++i )
+    {
+	flat_datatype_map_iter have = datatype_map.find(shells[i]);
+	if ( have == datatype_map.end()
+	  || !is_incomplete_template_class_type((TokenDataType *)(*have)) )
+	    continue;
+	const PendingTemplateInstantiation *rec =
+	    find_pending_template_instantiation(shells[i]);
+	if ( !rec )
+	    continue;
+	if ( DataDefCLASS *still = awaited_class_argument(rec->args) )
+	{
+	    shells_awaiting_argument[still->name].push_back(shells[i]);
+	    continue;
+	}
+	complete_shell_class_type(
+	    dynamic_cast<DataDefCLASS *>(&((TokenDataType *)(*have))->definition));
+    }
 }
 
 static bool split_template_id_spelling(const std::string &s, std::string &outer,
@@ -13332,6 +13510,7 @@ static std::string pending_instantiation_from_canonical_identity(
 bool Program::request_template_instantiation_completion(const std::string &mangled_name)
 {
     template_completion_requested.insert(mangled_name);
+    CompletionDemandScope demand(*this, mangled_name);
     for ( std::map<std::string, std::vector<Program::PendingTemplateInstantiation>>::iterator pi =
 	      pending_template_instantiations.begin();
 	  pi != pending_template_instantiations.end(); ++pi )
@@ -13378,6 +13557,22 @@ DataDef *Program::complete_class_type_on_demand(DataDef *dd)
 	if ( DataDefCLASS *real = complete_shell_class_type(cls) )
 	    return real;
     return out;
+}
+
+// A context that requires a COMPLETE class ([expr.ref]/4 member access,
+// [expr.new]/1): a concrete specialization still a pending shell — named
+// while an argument awaited its definition (shells_awaiting_argument), or a
+// forward instantiation — is instantiated now, in place
+// (complete_class_type_on_demand). A dependent shell, a dependent parse and
+// a complete class are left as they are: there is nothing to instantiate.
+// Returns the possibly-refreshed type, as complete_class_type_on_demand does.
+DataDef *Program::require_complete_class(DataDef *dd)
+{
+    DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(dd);
+    if ( !cls || cls->is_dependent_placeholder || dependent_parse_in_progress
+      || class_pattern_capture_in_progress || !is_incomplete_class_datadef(cls) )
+	return dd;
+    return complete_class_type_on_demand(cls);
 }
 
 // A non-static data member's declared type, read at the member's type head
@@ -13864,6 +14059,18 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
 	if ( bare_name )
 	{
 	    std::string ename = contextual_identifier_name(name_tb);
+	    // A tag the name already declares IS the type, whether or not the
+	    // name is also a type name — in C a tag never is (C11 6.7.2.3p9;
+	    // [basic.lookup.elab]: non-type names are ignored). The ONE
+	    // visible-tag rule finds it; only a name that declares nothing
+	    // first-declares below.
+	    datadef_map_citer vis = find_visible_struct_tag(ename);
+	    if ( vis != struct_map.end() )
+	    {
+		TokenDataType *tdt = new TokenDataType(ename.c_str(), *vis->second);
+		copy_token_location(tdt, name_tb);
+		return tdt;
+	    }
 	    DataDefSTRUCT *sdd = mint_incomplete_struct_tag(ename,
 		    tb->id() == TokenID::tkUNION);
 	    flat_datatype_map_iter mi = datatype_map.find(ename);
@@ -13959,13 +14166,14 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
 	return NULL;
 
     std::string tname = contextual_identifier_name(tb);
-    // [class]/2 (strict C++ modes): a tag declared in an OPEN data-only
+    // [class]/2 (where open aggregates own their nested tags —
+    // open_aggregates_own_nested_tags): a tag declared in an OPEN data-only
     // aggregate — or in one enclosing it — is a type name right after its
     // declaration: the sibling `struct rec { type t; }` beside `union type`,
     // the member `std::vector<Saved> saved;` of the aggregate that declared
     // Saved. Only a SCOPED hit (Owner::tag): a flat tag keeps today's path,
     // which register_cpp_aggregate_name already serves.
-    if ( is_cpp_mode() && !aggregate_scope_stack.empty() )
+    if ( open_aggregates_own_nested_tags() && !aggregate_scope_stack.empty() )
     {
 	datadef_map_citer vis = find_visible_struct_tag(tname);
 	if ( vis != struct_map.end() && vis->first != tname )
@@ -15193,6 +15401,8 @@ bool Program::parse_builtin_types_compatible_operand(TokenBase *type_tb,
 	else
 	    base = resolve_named_datadef(tname);
     }
+    else if ( TokenDataType *def = aggregate_definition_in_type_name(type_tb) )
+	base = &def->definition;	// `struct { ... }` defined in the type name
     else if ( type_tb->type() == TokenType::ttKeyword
 	   && (type_tb->id() == TokenID::tkSTRUCT || type_tb->id() == TokenID::tkUNION) )
     {
@@ -15355,7 +15565,7 @@ Variable *Program::resolve_c_identifier(TokenIdent *ident_tb, bool expression_he
 
 static bool read_constant_integer(Variable *var, madc_wide_int &out)
 {
-    if ( !var || !var->is_constant() || !var->data || !var->type || !var->type->is_integer() )
+    if ( !var || !var->holds_constant_value() || !var->type || !var->type->is_integer() )
 	return false;
     switch ( var->type->rawtype() )
     {
@@ -15728,6 +15938,11 @@ DataDef *Program::resolve_type_query_datadef(TokenBase *type_tb,
 {
     DataDef *dd = NULL;
 
+    // A struct / union / enum DEFINITION as the type name's specifier
+    // (`sizeof(struct { char a; })`, C11 6.7.7): the one type-name reader.
+    if ( TokenDataType *def = aggregate_definition_in_type_name(type_tb) )
+	return &def->definition;
+
     if ( is_contextual_identifier_token(type_tb) )
     {
 	std::string tname = contextual_identifier_name(type_tb);
@@ -15750,6 +15965,19 @@ DataDef *Program::resolve_type_query_datadef(TokenBase *type_tb,
 	// declared-type resolver, which owns the decltype arm (libc++
 	// bsd_locale_fallbacks.h family; the statement-head route is the
 	// sibling in parseStatement's keyword arm).
+	if ( TokenDataType *tdt =
+		resolve_declared_type_token(type_tb, true, true) )
+	    return &tdt->definition;
+    }
+
+    // sizeof(typename T::type) / alignof(...): a typename-specifier
+    // ([temp.res]/5) is a type-id. The one declared-type resolver owns it
+    // (resolve_typename_type_token); read as an expression, the operand
+    // failed and the function template's instantiation was dropped — an
+    // undefined MIR import at the call.
+    if ( !is_c_mode() && is_contextual_identifier_token(type_tb)
+      && contextual_identifier_name(type_tb) == "typename" )
+    {
 	if ( TokenDataType *tdt =
 		resolve_declared_type_token(type_tb, true, true) )
 	    return &tdt->definition;
@@ -15820,9 +16048,10 @@ DataDef *Program::resolve_type_query_datadef(TokenBase *type_tb,
 	if ( TokenDataType *tdt = resolve_declared_type_token(type_tb, true, true) )
 	    dd = &tdt->definition;
     }
-    else if ( type_tb->type() == TokenType::ttKeyword && type_tb->id() == TokenID::tkCONST )
+    else if ( is_cv_qualifier_token(type_tb) )
     {
-	// sizeof(const type) — skip const qualifier
+	// sizeof(const T), sizeof(volatile T): a qualifier changes neither
+	// size nor alignment (C11 6.2.5p27) — read the type after it.
 	TokenBase *inner = nextToken();
 	return resolve_type_query_datadef(inner, op_name, have_value, query_value);
     }
@@ -15867,6 +16096,8 @@ static TokenBase *deferred_expression_type_query(Program &pgm, TokenBase *op_tb,
 		q->measure_floor = tv->var.explicit_align;
     return query;
 }
+
+static bool is_runtime_sized_type(DataDef *dd);
 
 size_t Program::evaluate_type_query(TokenBase *op_tb, const std::string &op_name,
 				    TokenBase **deferred)
@@ -15959,6 +16190,12 @@ size_t Program::evaluate_type_query(TokenBase *op_tb, const std::string &op_name
 	    *deferred = make_type_query_token(op_tb, dd, want_alignof);
 	    return 0;
 	}
+	// No deferral: the constant evaluator's query. A variably modified
+	// type's size is a run-time value, never a constant (its alignment,
+	// the element's, is one).
+	if ( !deferred && !want_alignof && is_runtime_sized_type(dd) )
+	    Throw(type_tb) << op_name << " of a variable length array type is "
+				 "not a constant expression" << flush;
 	return query_datadef_measure(dd, want_alignof);
     }
 
@@ -17666,7 +17903,7 @@ static bool try_eval_known_integer(TokenBase *tb, int64_t &out)
     }
     if ( TokenVar *tv = dynamic_cast<TokenVar *>(tb) )
     {
-	if ( tv->var.is_constant() )
+	if ( tv->var.holds_constant_value() )
 	{
 	    out = tv->var.get<int64_t>();
 	    return true;
@@ -18961,7 +19198,15 @@ ConstValue Program::parse_constant_primary()
 	if ( is_bool_literal_identifier(name, bool_value) )
 	    return bool_value ? 1 : 0;
 	if ( is_type_query_identifier(name) )
+	{
+	    // The size of a VLA object is a run-time value (C11 6.5.3.4p2:
+	    // the operand is evaluated) — the expression parser's VLA sizeof
+	    // recognizes it; in a constant expression it is a refusal.
+	    if ( try_parse_vla_variable_sizeof(tb, name) )
+		Throw(tb) << name << " of a variable length array is not a "
+			     "constant expression" << flush;
 	    return (madc_wide_int)evaluate_type_query(tb, name);
+	}
 	// noexcept(expr) — [expr.unary.noexcept] in constant context: the
 	// integral_constant base of libc++'s __libcpp_is_nothrow_constructible
 	// fallback (madc presents as GCC, so libc++ compiles its non-builtin
@@ -19866,7 +20111,7 @@ void Program::skip_discarded_statement()
     }
 }
 
-static bool constant_initializer_has_runtime_access(Program &pgm)
+static bool constant_initializer_has_runtime_access(Program &pgm, bool comma_ends)
 {
     // Explicit paren/square/brace, NOT d.top(): this scan never tracked angle
     // brackets, and top() also demands angle == 0 — `a < b;` would open one and
@@ -19877,7 +20122,8 @@ static bool constant_initializer_has_runtime_access(Program &pgm)
 	TokenBase *t = pgm.tokens[i];
 	if ( !t )
 	    continue;
-	if ( t->id() == TokenID::tkSemi
+	if ( (t->id() == TokenID::tkSemi
+	   || (comma_ends && t->id() == TokenID::tkComma))
 	  && d.paren == 0 && d.square == 0 && d.brace == 0 )
 	    break;
 	d.update(t);
@@ -19902,12 +20148,13 @@ static bool constant_initializer_has_runtime_access(Program &pgm)
 	if ( next && (next->id() == TokenID::tkDot || next->id() == TokenID::tkDeRef) )
 	    return true;
 	std::string name = contextual_identifier_name(t);
-	// A decltype-specifier's operand is UNEVALUATED ([dcl.type.decltype]):
-	// nothing inside it is runtime access, and member/call shapes there
-	// (`decltype(__test<_Tp>(0))::value` — the libc++ detection idiom)
-	// must not veto the fold. Skip the balanced operand extent (DelimDepth
-	// owns balanced-delimiter scanning); the group nets zero on `d`.
-	if ( is_decltype_identifier(name)
+	// An UNEVALUATED operand (decltype, sizeof, alignof, noexcept —
+	// has_unevaluated_operand): nothing inside it is runtime access, and
+	// member/call shapes there (`decltype(__test<_Tp>(0))::value` — the
+	// libc++ detection idiom; `noexcept(value(42))`) must not veto the
+	// fold. Skip the balanced operand extent (DelimDepth owns
+	// balanced-delimiter scanning); the group nets zero on `d`.
+	if ( has_unevaluated_operand(name)
 	  && i + 1 < pgm.tokens.size() && pgm.tokens[i + 1]
 	  && pgm.tokens[i + 1]->id() == TokenID::tkOpBrk )
 	{
@@ -19954,9 +20201,12 @@ static bool constant_initializer_has_runtime_access(Program &pgm)
 // failure the stream/diagnostics are restored and false returned, so the
 // caller falls back to skipping a non-constant initializer. Same
 // save/try/restore idiom as bracket_dim_constant_expression_parses.
-bool Program::capture_constant_initializer_value(int64_t &out, bool brace_form)
+// `declarator`: a declaration's `= initializer`, which a top-level ',' (the
+// next declarator of its list) ends as well as the ';'.
+bool Program::capture_constant_initializer_value(int64_t &out, bool brace_form,
+						 bool declarator)
 {
-    if ( constant_initializer_has_runtime_access(*this) )
+    if ( constant_initializer_has_runtime_access(*this, declarator) )
 	return false;
     StreamMark saved_tokens = mark_stream();
     size_t saved_diag_count = diagnostics.size();
@@ -20011,7 +20261,8 @@ bool Program::capture_constant_initializer_value(int64_t &out, bool brace_form)
 		    ok = true;
 	    }
 	}
-	else if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
+	else if ( peekToken() && (peekToken()->id() == TokenID::tkSemi
+		  || (declarator && peekToken()->id() == TokenID::tkComma)) )
 	    ok = true;
     }
     catch ( ... ) { ok = false; }
@@ -20030,6 +20281,18 @@ bool Program::capture_constant_initializer_value(int64_t &out, bool brace_form)
     if ( recursion_limit_hit )
 	report_constexpr_recursion_limit(*this, fold_anchor);
     return false;
+}
+
+// A const object's initializer value for the declaration's bake: the
+// speculative capture above in its declarator mode, then the stream rewound
+// so the declaration still parses the initializer as its expression.
+bool Program::const_initializer_value(int64_t &out)
+{
+    StreamMark at = mark_stream();
+    nextToken();	// the '='
+    bool ok = capture_constant_initializer_value(out, false, true);
+    rewind_stream(at);
+    return ok;
 }
 
 bool Program::bracket_dim_constant_expression_parses()
@@ -21284,6 +21547,12 @@ DataDef *Program::type_from_id(uint32_t id)
 
 DataDef *DataDefCLASS::binary_operator_return_type(const std::string &opname)
 {
+    FuncDef *fd = binary_operator_function(opname);
+    return fd ? &fd->return_value_type() : NULL;
+}
+
+FuncDef *DataDefCLASS::binary_operator_function(const std::string &opname)
+{
     // Prefer a binary (params > 1 incl. __this) overload. Search the source
     // operator name first, then the mangled ClassName__operatorX family, then
     // the base chain.
@@ -21295,7 +21564,7 @@ DataDef *DataDefCLASS::binary_operator_return_type(const std::string &opname)
 	FuncDef *fd = dynamic_cast<FuncDef *>(mv->type);
 	if ( !fd ) continue;
 	if ( !any ) any = fd;
-	if ( fd->parameters.size() > 1 ) return &fd->return_value_type();
+	if ( fd->parameters.size() > 1 ) return fd;
     }
     std::string mangled = name + "__" + opname;
     std::string mangled_overload_prefix = mangled + "__o";
@@ -21308,9 +21577,9 @@ DataDef *DataDefCLASS::binary_operator_return_type(const std::string &opname)
 	FuncDef *fd = dynamic_cast<FuncDef *>(mv->type);
 	if ( !fd ) continue;
 	if ( !any ) any = fd;
-	if ( fd->parameters.size() > 1 ) return &fd->return_value_type();
+	if ( fd->parameters.size() > 1 ) return fd;
     }
-    if ( any ) return &any->return_value_type();
+    if ( any ) return any;
     // Multiple/virtual inheritance: the operator may be inherited from ANY direct
     // base, not only the primary. basic_iostream inherits operator<< from its
     // SECOND base (basic_ostream); the first (basic_istream) has none — so a
@@ -21319,12 +21588,12 @@ DataDef *DataDefCLASS::binary_operator_return_type(const std::string &opname)
     // primary included), so this subsumes the legacy single-`base_class` walk.
     for ( const BaseSpec &b : bases )
 	if ( b.base )
-	    if ( DataDef *rt = b.base->binary_operator_return_type(opname) )
-		return rt;
+	    if ( FuncDef *bfd = b.base->binary_operator_function(opname) )
+		return bfd;
     // Legacy single-base path: a class that set base_class without populating
     // bases (then base_class is the sole parent).
     if ( bases.empty() && base_class )
-	return base_class->binary_operator_return_type(opname);
+	return base_class->binary_operator_function(opname);
     return NULL;
 }
 
@@ -21372,6 +21641,13 @@ bool DataDefCLASS::binary_operator_only_takes_nonclass(const std::string &opname
 DataDef *DataDefCLASS::unary_operator_return_type(const std::string &opname,
 						  bool postfix)
 {
+    FuncDef *fd = unary_operator_function(opname, postfix);
+    return fd ? &fd->return_value_type() : NULL;
+}
+
+FuncDef *DataDefCLASS::unary_operator_function(const std::string &opname,
+					       bool postfix)
+{
     FuncDef *fallback = NULL;
     std::string mangled = name + "__" + opname;
     std::string mangled_un = mangled + "_un";
@@ -21392,14 +21668,14 @@ DataDef *DataDefCLASS::unary_operator_return_type(const std::string &opname,
 	    continue;
 	bool parameterized = fd->parameters.size() > 1;
 	if ( postfix == parameterized )
-	    return &fd->return_value_type();
+	    return fd;
 	if ( !fallback )
 	    fallback = fd;
     }
     if ( fallback )
-	return &fallback->return_value_type();
+	return fallback;
     if ( base_class )
-	return base_class->unary_operator_return_type(opname, postfix);
+	return base_class->unary_operator_function(opname, postfix);
     return NULL;
 }
 
@@ -21447,6 +21723,13 @@ static const char *object_operator_symbol(TokenID id)
 DataDefCLASS *Program::operand_object_class(TokenBase *operand)
 {
     if ( !operand )
+	return NULL;
+    // An operand that denotes an ARRAY is no class object, whatever its
+    // element ([conv.array]): madc stores an array flattened, so datadef()
+    // names the element, and `a + 1` over an array of a class with a
+    // constructor typed as D::operator+'s missing result (int) instead of
+    // the decayed D*.
+    if ( array_operand_type(operand) )
 	return NULL;
     DataDef *dd = operand->datadef();
     if ( DataDefCLASS *c = (dd ? dd->as_class_dd() : NULL) )
@@ -21546,6 +21829,17 @@ DataDef *Program::array_operand_type(TokenBase *e)
 	    base = tv->var.type;
 	    array = true;
 	}
+	// A narrow string literal denotes its array of char, the bytes and
+	// the terminating NUL (C11 6.4.5p6, [lex.string]/6): `&"ab"` points
+	// at a char[3]. madc keeps it as a variable of the decayed pointer
+	// type, so the element is that pointer's pointee.
+	else if ( tv->var.is_string_literal() )
+	    if ( DataDefPTR *lp = pointer_dd_of(tv->var.type) )
+	    {
+		dims.assign(1, tv->var.literal_text().size() + 1);
+		base = lp->base_type;
+		array = true;
+	    }
     }
     else if ( TokenSubscript *ts = root->as_subscript_tok() )
     {
@@ -21707,10 +22001,16 @@ void Program::resolve_object_operator_type(TokenOperator *to)
 	return;
     std::string opname = std::string("operator") + opsym;
     DataDef *rt = NULL;
+    bool reference = false;
     if ( lc )
     {
-	rt = unary ? lc->unary_operator_return_type(opname, postfix)
-		   : lc->binary_operator_return_type(opname);
+	FuncDef *ofd = unary ? lc->unary_operator_function(opname, postfix)
+			     : lc->binary_operator_function(opname);
+	if ( ofd )
+	{
+	    rt = &ofd->return_value_type();
+	    reference = ofd->returns_reference();
+	}
 	if ( !rt && !unary )
 	    rt = free_binary_operator_return_class(lc, opname, to->right);
     }
@@ -21734,7 +22034,12 @@ void Program::resolve_object_operator_type(TokenOperator *to)
 	    rt = free_binary_operator_return_class_nonclass_lhs(to->left, opname,
 								to->right);
     }
-    if ( rt ) to->set_resolved_type(rt);
+    if ( rt )
+    {
+	to->set_resolved_type(rt);
+	// The free-operator sets above answer by-value returns only.
+	to->resolved_reference = reference;
+    }
 }
 
 // Cfront lowering for a retained free-operator template: `a @ b` becomes a
@@ -24740,6 +25045,7 @@ void Program::print_diagnostic(std::ostream &os, const Diagnostic &diag, const c
 {
     if ( DiagnosticRenderMute::active )
 	return;		// captured as data; the record already exists
+    diag.rendered = true;
     if ( !diag.file.empty() )
 	os << ANSI_WHITE << diag.file << ':' << diag.line << ':'
 	   << madc_diag_screen_column(&source, diag.file.c_str(), diag.line,
@@ -25490,7 +25796,11 @@ void Program::populate_builtin_registry()
     if ( builtin_registry.defaults_loaded )
 	return;
 
-    builtin_registry.add_core_function("puts",	 datatype_vec_t{DataType::dtVOID, ptr_of(ddCHAR)}, (fVOIDFUNC)puts);
+    // puts is the C library's: `int puts(const char *)` (C11 7.21.7.9), bound
+    // to libc's. Its value is usable (`int n = puts(s);`, a REPL entry shows
+    // it); the madc-only void shape it had is the private dialect ruled out
+    // for getenv below.
+    builtin_registry.add_core_function("puts",	 datatype_vec_t{DataType::dtINT32, ptr_of(ddCHAR)}, (fVOIDFUNC)puts);
     builtin_registry.add_core_function("printstr", datatype_vec_t{DataType::dtVOID, ptr_of(ddCHAR)}, (fVOIDFUNC)NULL);
     builtin_registry.add_core_function("puti",	 datatype_vec_t{DataType::dtVOID, DataType::dtINT}, (fVOIDFUNC)printinteger);
     builtin_registry.add_core_function("putu",	 datatype_vec_t{DataType::dtVOID, DataType::dtUINT64}, (fVOIDFUNC)printuinteger);
@@ -29845,15 +30155,15 @@ bool is_runtime_eval_scope_supported_variable(Variable *var)
 	return false;
     if ( is_runtime_eval_scope_helper_name(var->name) )
 	return false;
-    // A parse-time constant (vfCONSTANT without vfCONSTDECL: enum
+    // A parse-time constant (a set() value without vfCONSTDECL: enum
     // constants, host-installed eval binding constants) has no
     // declaration in the emitted module — reads of it FOLD to its value,
     // so the scope-context lowering's by-name capture would emit an
     // undeclared identifier (real glibc headers register hundreds:
     // _ISupper, PTHREAD_*). It is a value, not runtime scope state.
     // const-DECLARED variables (vfCONSTDECL) keep real storage and stay
-    // capturable.
-    if ( var->is_constant() && !(var->flags & vfCONSTDECL) )
+    // capturable, and so does a const PARAMETER (vfCONSTANT, no value).
+    if ( var->holds_constant_value() && !(var->flags & vfCONSTDECL) )
 	return false;
     // A DECLARATION never completed by a definition (vfEXTERN) is excluded by
     // the same rule, but NOT here: whether a definition arrives is a
@@ -30948,6 +31258,8 @@ Variable *Program::declare_object(TokenCpnd *code, DataDef &type, const std::str
     Variable *var = addVariable(code, type, id, count, NULL, alloc);
     if ( var && is_definition )
 	var->flags |= vfDEFINED;
+    if ( var && code && code != tkProgram )
+	hide_typedef_name_in_block(id);
     return var;
 }
 
@@ -31449,6 +31761,27 @@ void Program::register_scoped_typedef(const std::string &alias, TokenDataType *t
 		    compounds.size(), block_typedef_shadows.size(),
 		    cur_func_name.c_str());
     datatype_map[alias] = tdt;
+}
+
+// An ordinary identifier declared in a block (an object, a parameter) hides a
+// typedef name of an enclosing scope until the block ends (C11 6.2.1p4):
+// `(value)->code` with a parameter `value` is a member access, not a cast.
+// The name's flat datatype_map entry is set aside in the block's shadow
+// frame, which unwinding restores — register_scoped_typedef's frame, with no
+// new meaning installed. C modes; a builtin type name is a keyword, never
+// hidden.
+void Program::hide_typedef_name_in_block(const std::string &name)
+{
+    if ( compounds.empty() || !is_c_mode() )
+	return;
+    flat_datatype_map_iter prev = datatype_map.find(name);
+    if ( prev == datatype_map.end() || !*prev || (*prev)->builtin )
+	return;
+    while ( block_typedef_shadows.size() < compounds.size() )
+	block_typedef_shadows.push_back(
+	    std::vector<std::pair<std::string, TokenDataType *> >());
+    block_typedef_shadows.back().push_back(std::make_pair(name, *prev));
+    datatype_map.erase(name);
 }
 
 // The struct-TAG twin of register_scoped_typedef: a block-scope
@@ -32126,11 +32459,16 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 	instantiate_member_fn_template_for_call(tc);
     }
 
+    // An unevaluated deduced call's specialization is selected here — the
+    // instantiation that selects for an evaluated call is suppressed above.
+    bool unevaluated_selected = unevaluated_operand_depth > 0
+			     && pin_unevaluated_fn_template_return(tc);
+
     // [temp.arg.explicit]: an explicit template argument FIXES its
     // parameter, while the identity-return inference deduces T from the
     // argument — so it serves a deduced call, and an explicit-argument call
     // only when the substituting lane below forms nothing.
-    if ( tc->explicit_template_args.empty() )
+    if ( tc->explicit_template_args.empty() && !unevaluated_selected )
 	apply_template_call_return_inference(tc);
     check_atomic_builtin_call(tc);
 
@@ -32389,6 +32727,23 @@ DataDef *Program::parse_named_cast_target(TokenBase *cast_tb,
     if ( !peekToken() || peekToken()->id() != TokenID::tkLT )
 	Throw(cast_tb) << "Expecting '<' after " << cast_name << flush;
     nextToken();
+    DataDef *cast_dd = parse_type_name_operand(cast_tb, cast_name + " target",
+					       type_head);
+    skip_expression_whitespace();
+    if ( !peekToken() || peekToken()->id() != TokenID::tkGT )
+	Throw(cast_tb) << "Expecting '>' to close " << cast_name << "<...>" << flush;
+    nextToken();
+    return cast_dd;
+}
+
+// A type-name operand (C11 6.7.7): its leading cv, the type its first token
+// names (resolve_declared_type_token) and its abstract declarator
+// (parse_type_id, the TYPE-ID owner) — consumed up to, not including, the
+// token that ends it. `what` names the operand for the diagnostic; `type_head`,
+// when given, receives the type's first token.
+DataDef *Program::parse_type_name_operand(TokenBase *ctx, const std::string &what,
+					  TokenBase **type_head)
+{
     skip_expression_whitespace();
     unsigned lead_cv = skip_cv_qualifier_tokens();
     TokenBase *type_tb = nextToken();
@@ -32396,14 +32751,102 @@ DataDef *Program::parse_named_cast_target(TokenBase *cast_tb,
 	*type_head = type_tb;
     TokenDataType *tdt = resolve_declared_type_token(type_tb, true, true);
     if ( !tdt )
-	Throw(type_tb ? type_tb : cast_tb) << cast_name << " target is not a type" << flush;
+	Throw(type_tb ? type_tb : ctx) << what << " is not a type" << flush;
     DeclaratorResult decl;
-    DataDef *cast_dd = parse_type_id(&tdt->definition, lead_cv, decl);
-    skip_expression_whitespace();
-    if ( !peekToken() || peekToken()->id() != TokenID::tkGT )
-	Throw(cast_tb) << "Expecting '>' to close " << cast_name << "<...>" << flush;
+    return parse_type_id(&tdt->definition, lead_cv, decl);
+}
+
+// The vector builtin an identifier names, read once at the name.
+static bool vector_builtin_kind(const TokenIdent *tb, TokenVectorBuiltin::Kind &kind)
+{
+    for ( TokenVectorBuiltin::Kind k : { TokenVectorBuiltin::Kind::ConvertVector,
+					 TokenVectorBuiltin::Kind::ShuffleVector,
+					 TokenVectorBuiltin::Kind::Shuffle } )
+	if ( tb->spelling_is(TokenVectorBuiltin::spelling(k)) )
+	{
+	    kind = k;
+	    return true;
+	}
+    return false;
+}
+
+// `__builtin_convertvector(v, T)` (gcc 9+, clang), `__builtin_shufflevector(a,
+// b, i...)` (clang, gcc 12+) and `__builtin_shuffle(a[, b], mask)` (gcc) —
+// the vector builtins c2mir implements, emitted as its calls. The stream is
+// at the `(` after the name. The operands are expressions, convertvector's
+// second a type name. The result: convertvector's T, a vector of the same
+// lane count; shufflevector's a vector of a's element type with one lane per
+// index (simd_type, the anonymous-vector owner); shuffle's a's type.
+TokenBase *Program::parse_vector_builtin(TokenBase *name_tb,
+					 TokenVectorBuiltin::Kind kind)
+{
+    typedef TokenVectorBuiltin::Kind Kind;
+    const std::string name = TokenVectorBuiltin::spelling(kind);
+    if ( !skip_expression_whitespace() || peekToken()->id() != TokenID::tkOpBrk )
+	Throw(name_tb) << "Expecting '(' after " << name << flush;
     nextToken();
-    return cast_dd;
+    TokenVectorBuiltin *vb = new TokenVectorBuiltin(kind);
+    copy_token_location(vb, name_tb);
+    for (;;)
+    {
+	if ( kind == Kind::ConvertVector && vb->args.size() == 1 && !vb->convert_target )
+	    vb->convert_target = parse_type_name_operand(name_tb, name + " target");
+	else
+	{
+	    skip_expression_whitespace();
+	    TokenBase *first = nextToken();
+	    if ( !first )
+		Throw(name_tb) << "Unexpected end of input in " << name << flush;
+	    vb->args.push_back(parseExpression(first, false, false, false, 0, true));
+	}
+	skip_expression_whitespace();
+	TokenBase *sep = nextToken();
+	if ( sep && sep->id() == TokenID::tkClBrk )
+	    break;
+	if ( !sep || sep->id() != TokenID::tkComma )
+	    Throw(sep ? sep : name_tb) << "Expecting ',' or ')' in " << name << flush;
+    }
+    size_t n = vb->args.size();
+    DataDef *first_type = n && vb->args[0]->datadef() ? vb->args[0]->datadef()->unqualified() : NULL;
+    DataDefSIMD *first_vec = first_type ? first_type->as_simd_dd() : NULL;
+    DataDef *result = NULL;
+    switch ( kind )
+    {
+    case Kind::ConvertVector:
+    {
+	DataDefSIMD *to = vb->convert_target ? vb->convert_target->as_simd_dd() : NULL;
+	if ( n != 1 || !vb->convert_target )
+	    Throw(name_tb) << "wrong number of arguments to " << name << flush;
+	if ( !first_vec || !to )
+	    Throw(name_tb) << name << " operands must be vector types" << flush;
+	if ( first_vec->lane_count != to->lane_count )
+	    Throw(name_tb) << name << " operands must have the same number of elements" << flush;
+	result = vb->convert_target;
+	break;
+    }
+    case Kind::Shuffle:
+	if ( n != 2 && n != 3 )
+	    Throw(name_tb) << "wrong number of arguments to " << name << flush;
+	if ( !first_vec )
+	    Throw(name_tb) << "arguments of " << name << " must be vectors" << flush;
+	result = first_type;
+	break;
+    case Kind::ShuffleVector:
+    {
+	if ( n < 3 )
+	    Throw(name_tb) << "wrong number of arguments to " << name << flush;
+	if ( !first_vec || !first_vec->element_type )
+	    Throw(name_tb) << "first two arguments of " << name << " must be vectors" << flush;
+	size_t bytes = first_vec->element_type->size * (n - 2);
+	if ( bytes & (bytes - 1) )
+	    Throw(name_tb) << name << ": " << (n - 2)
+			   << " indices do not form a power-of-two-sized vector" << flush;
+	result = simd_type(first_vec->element_type, bytes);
+	break;
+    }
+    }
+    vb->setDataType(result);
+    return vb;
 }
 
 TokenBase *Program::parse_named_cpp_cast(TokenBase *cast_tb,
@@ -32961,6 +33404,10 @@ TokenBase *Program::parsePostfixChainFrom(TokenBase *result, Variable *var)
 		    obj_type = pt->base_type;
 		}
 		    }
+		    // [expr.ref]/4: the class is complete here — completed in
+		    // place, the type keeps its cv spelling (see above).
+		    if ( obj_type )
+			require_complete_class(obj_type->unqualified());
 		    if ( !obj_type || (!obj_type->is_struct() && !obj_type->is_object()) )
 			Throw(mtb) << "member reference type "
 			    << (obj_type ? "'" + obj_type->name + "' " : "")
@@ -33586,6 +34033,12 @@ bool Program::is_addressable_expression(TokenBase *expr) const
 	if ( tcf->call_returns_reference() )
 	    return true;
     }
+    // An overloaded operator is a call of its operator function
+    // ([over.match.oper]/2): one returning a reference is an lvalue the same
+    // way — `&(cout << x)` is cout's address.
+    if ( TokenOperator *to = expr->as_operator_tok() )
+	if ( to->resolved_reference )
+	    return true;
     // [expr.cond]/4: a C++ conditional is an LVALUE when both arms are
     // lvalues (a plain variable arm counts). The CIR lowering distributes
     // the address into the arms (CirBuilder::node1's N_ADDR-over-N_COND
@@ -35293,6 +35746,8 @@ struct Program::ClassRegistrationJournal::State
 	ptr_type_cache_transaction;
     registration_map<std::pair<DataDef *, bool>, DataDefREF *>::transaction_state
 	ref_type_cache_transaction;
+    registration_map<FuncDef *, DataDefFPTR *>::transaction_state
+	function_type_cache_transaction;
     registration_map<std::pair<DataDef *, unsigned>, DataDefQUAL *>::transaction_state
 	qualified_type_cache_transaction;
     funcdef_map_t::transaction_state funcdef_map_transaction;
@@ -35482,6 +35937,7 @@ Program::ClassRegistrationJournal::ClassRegistrationJournal(
     pgm.literal_map.begin_transaction(state->literal_map_transaction);
     pgm.ptr_type_cache.begin_transaction(state->ptr_type_cache_transaction);
     pgm.ref_type_cache.begin_transaction(state->ref_type_cache_transaction);
+    pgm.function_type_cache.begin_transaction(state->function_type_cache_transaction);
     pgm.qualified_type_cache.begin_transaction(state->qualified_type_cache_transaction);
     pgm.namespace_fn_overload_sets.begin_transaction(
 	state->namespace_fn_overload_sets_transaction);
@@ -35851,6 +36307,7 @@ void Program::ClassRegistrationJournal::commit()
     pgm.literal_map.commit_transaction(state->literal_map_transaction);
     pgm.ptr_type_cache.commit_transaction(state->ptr_type_cache_transaction);
     pgm.ref_type_cache.commit_transaction(state->ref_type_cache_transaction);
+    pgm.function_type_cache.commit_transaction(state->function_type_cache_transaction);
     pgm.qualified_type_cache.commit_transaction(state->qualified_type_cache_transaction);
     pgm.namespace_fn_overload_sets.commit_transaction(
 	state->namespace_fn_overload_sets_transaction);
@@ -36019,6 +36476,7 @@ void Program::ClassRegistrationJournal::rollback()
     pgm.literal_map.rollback_transaction(state->literal_map_transaction);
     pgm.ptr_type_cache.rollback_transaction(state->ptr_type_cache_transaction);
     pgm.ref_type_cache.rollback_transaction(state->ref_type_cache_transaction);
+    pgm.function_type_cache.rollback_transaction(state->function_type_cache_transaction);
     pgm.qualified_type_cache.rollback_transaction(state->qualified_type_cache_transaction);
     pgm.namespace_fn_overload_sets.rollback_transaction(
 	state->namespace_fn_overload_sets_transaction);
@@ -39591,11 +40049,16 @@ std::string Program::canonical_arg_key_fragment(
     // while every use site — spelled from the declared-type canonical dd —
     // keyed int32_tP: the specialization was invisible and the primary
     // instantiated silently (tests/testptrbuiltinspec.mad).
+    // A QUALIFIED core (`pmr::string`, a namespace's typedef — libstdc++ 11's
+    // `template<> struct hash<pmr::string>`) resolves through the spelling
+    // owner, which reads the namespace's types; the flat named lookup does
+    // not, and the specialization keyed on the raw spelling while its use
+    // sites key the class it names.
     if ( !core.empty() && core.find('<') == std::string::npos )
     {
 	DataDef *cdd = resolve_builtin_type_spelling(core);
 	if ( !cdd )
-	    cdd = resolve_named_datadef(core);
+	    cdd = resolve_arg_spelling_datadef(*this, core);
 	if ( cdd )
 	{
 	    const std::string &cs = cdd->canonical_cpp_spelling();
@@ -40920,6 +41383,12 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    exStack.push(tnp);
 		    return done ? ExprStep::Done : ExprStep::Break;
 		}
+		TokenVectorBuiltin::Kind vector_kind;
+		if ( vector_builtin_kind(ident_tb, vector_kind) )
+		{
+		    exStack.push(parse_vector_builtin(tb, vector_kind));
+		    return done ? ExprStep::Done : ExprStep::Break;
+		}
 		if ( ident_tb->spelling_is("__builtin_types_compatible_p") )
 		{
 		    if ( !skip_expression_whitespace() || peekToken()->id() != TokenID::tkOpBrk )
@@ -41081,67 +41550,12 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    TokenBase *comma_tb = nextToken();
 		    if ( comma_tb->id() != TokenID::tkComma )
 			Throw(comma_tb) << "Expecting ',' after va_list expression in va_arg" << flush;
-		    // second arg: type name
-		    TokenBase *type_tb = nextToken();
-		    while ( is_type_qualifier_token(type_tb) )
-		    {
-			type_tb = nextToken();
-			if ( !type_tb )
-			    Throw(comma_tb) << "Expecting type after qualifier in va_arg" << flush;
-		    }
-		    DataDef *target_dd = NULL;
-		    if ( type_tb->type() == TokenType::ttDataType )
-			target_dd = &((TokenDataType *)type_tb)->definition;
-		    else if ( type_tb->type() == TokenType::ttIdentifier
-		      && ((TokenIdent *)type_tb)->spelling_is("typeof") )
-		    {
-			TokenDataType *typeof_dt = parse_typeof_datatype(type_tb);
-			target_dd = typeof_dt ? &typeof_dt->definition : NULL;
-		    }
-		    else if ( type_tb->type() == TokenType::ttIdentifier )
-		    {
-			std::string tname = ((TokenIdent *)type_tb)->spelling();
-			flat_datatype_map_iter tdmi = datatype_map.find(tname);
-			if ( tdmi != datatype_map.end() )
-			    target_dd = &(*tdmi)->definition;
-			if ( !target_dd )
-			{
-			    datadef_map_citer sdmi = struct_map.find(tname);
-			    if ( sdmi != struct_map.end() )
-				target_dd = sdmi->second;
-			}
-		    }
-		    // handle 'struct Tag' or 'union Tag' as va_arg type
-		    if ( !target_dd && type_tb->type() == TokenType::ttKeyword
-			&& (type_tb->id() == TokenID::tkSTRUCT || type_tb->id() == TokenID::tkUNION) )
-		    {
-			TokenBase *tag_tb = nextToken();
-			if ( tag_tb && tag_tb->type() == TokenType::ttIdentifier )
-			{
-			    std::string sname = ((TokenIdent *)tag_tb)->spelling();
-			    datadef_map_citer sdmi = struct_map.find(sname);
-			    if ( sdmi != struct_map.end() )
-				target_dd = sdmi->second;
-			}
-		    }
-		    // `va_arg(ap, enum TAG)`: the tag's type, through the one
-		    // elaborated-specifier resolver (this arm read an int).
-		    if ( !target_dd && type_tb->type() == TokenType::ttKeyword
-			&& type_tb->id() == TokenID::tkENUM )
-			if ( TokenDataType *etdt =
-				resolve_declared_type_token(type_tb, true, true) )
-			    target_dd = &etdt->definition;
-		    // handle compound type specifiers: unsigned, long, etc.
-		    if ( !target_dd && type_tb->type() == TokenType::ttDataType )
-			target_dd = &((TokenDataType *)type_tb)->definition;
-		    if ( !target_dd )
-			Throw(type_tb) << "Unknown type in va_arg" << flush;
-		    // handle pointer: va_arg(ap, char *)
-		    while ( peekToken() && peekToken()->id() == TokenID::tkMul )
-		    {
-			nextToken(); // consume '*'
-			target_dd = getPointerType(target_dd);
-		    }
+		    // second arg: a type name — the one type-name reader, so an
+		    // abstract declarator (`int (*)(void)`, `char (*)[4]`) is read
+		    // as in a cast, not only a run of trailing `*`s.
+		    TokenBase *type_tb = NULL;
+		    DataDef *target_dd = parse_type_name_operand(comma_tb, "va_arg type",
+								 &type_tb);
 		    // consume closing ) unless a nested typeof/expression parse
 		    // already balanced the token stream to the outer close-paren
 		    if ( peekToken() && peekToken()->id() == TokenID::tkClBrk )
@@ -41181,9 +41595,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			      && lhs_dot->type() != TokenType::ttStructLit
 				    && lhs_dot->type() != TokenType::ttCallFunc
 				    && lhs_dot->type() != TokenType::ttCallMethod
-				    && lhs_dot->type() != TokenType::ttOperator   // (a + b).member — operator result object
-				    && lhs_dot->type() != TokenType::ttMultiOp    // (a != b).member etc — multi-symbol operator result object
-				    && lhs_dot->id() != TokenID::tkObjTemp        // T(args).member — functional-ctor temp
+				    && !member_receiver_is_prvalue(lhs_dot)   // (a + b).m, T(args).m, va_arg(ap, S).m
 				    && lhs_dot->id() != TokenID::tkTypeid )   // typeid(x).name() (S5d)
 				    Throw(tb) << "member reference is not a structure or union" << flush;
 		    Variable *tv_var = NULL;
@@ -41316,15 +41728,14 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 				    struct_type = referent_if_reference(ret_type);
 				    tv_var = new Variable("__call_expr", *struct_type, 1, NULL, false);
 				}
-			else if ( lhs_dot->type() == TokenType::ttOperator
-			       || lhs_dot->type() == TokenType::ttMultiOp
-			       || lhs_dot->id() == TokenID::tkObjTemp )
+			else if ( member_receiver_is_prvalue(lhs_dot) )
 			{
-			    // (a + b).member or T(args).member — a class-object rvalue
-			    // (an overloaded-operator result typed by
-			    // resolve_object_operator_type, or a functional-construction
-			    // temp TokenObjTemp). The rvalue is materialized at codegen via
-			    // parent_expr (class_this_arg -> translate_expr -> the temp).
+			    // (a + b).member, T(args).member, va_arg(ap, S).member — a
+			    // class-object rvalue (an overloaded-operator result typed by
+			    // resolve_object_operator_type, a functional-construction
+			    // temp TokenObjTemp, a va_arg read of its target type). The
+			    // rvalue is materialized at codegen via parent_expr
+			    // (class_this_arg -> translate_expr -> the temp).
 			    DataDef *op_type = NULL;
 			    if ( TokenObjTemp *ot = dynamic_cast<TokenObjTemp *>(lhs_dot) )
 				op_type = ot->obj_class;
@@ -41376,6 +41787,8 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    // must never see the DataDefQUAL wrapper (the arrow arm
 		    // peels at its pointee extraction for the same reason).
 		    struct_type = struct_type->unqualified();
+		    // [expr.ref]/4: the class is complete here.
+		    struct_type = require_complete_class(struct_type);
 		    if ( !struct_type->is_struct() && !struct_type->is_object() )
 		    {
 			// UFCS (--std=madc): a non-class receiver (int, char *, array).
@@ -41685,10 +42098,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    // operator/multiop/objtemp). Without parent_expr the synthetic
 		    // __op_expr receiver leaks as an undeclared identifier. ttMultiOp
 		    // (`--`/`++`/`<=` results) must be wired exactly like ttOperator.
-		    bool is_operator_rvalue_lhs =
-			(lhs_dot->type() == TokenType::ttOperator
-			 || lhs_dot->type() == TokenType::ttMultiOp
-			 || lhs_dot->id() == TokenID::tkObjTemp);
+		    bool is_operator_rvalue_lhs = member_receiver_is_prvalue(lhs_dot);
 		    if ( is_derefexpr_lhs || is_compound_lit_lhs || is_stmt_expr_lhs
 		      || is_callfunc_lhs || is_operator_rvalue_lhs )
 			exStack.push(new TokenMember(*tv_var, *var, ofs, lhs_dot));
@@ -41829,6 +42239,8 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			arrow_object_cv = ptr_type->base_type->cv_quals();
 			base = ptr_type->base_type->unqualified();
 		    }
+		    // [expr.ref]/4: the class is complete here.
+		    base = require_complete_class(base);
 		    if ( !base->is_struct() && !base->is_object() )
 		    {
 			// UFCS (--std=madc): `->` on a non-struct pointee (char *, int *).
@@ -43480,6 +43892,32 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			    exStack.push(new TokenSubscriptExpr(base_expr, idx, elem_type));
 			    return done ? ExprStep::Done : ExprStep::Break;
 			}
+			// C11 6.5.2.1p1, [expr.sub]/1: either operand may be the
+			// pointer — `2["World"]` is `"World"[2]`. A `[` after an
+			// integer operand is a subscript (a lambda-introducer never
+			// follows an operand); the element is the index's pointee.
+			// The tree keeps the operands as written (c2mir orders the
+			// pair, as gcc does).
+			if ( dd && dd->is_integer() && isPostfixPosition() )
+			{
+			    TokenBase *base_expr = exStack.top();
+			    exStack.pop();
+			    TokenBase *idx = parseExpression(nextToken());
+			    TokenBase *clsqr = nextToken();
+			    if ( !clsqr || clsqr->id() != TokenID::tkClSqr )
+				Throw(tb) << "Expected ] in subscript expression" << flush;
+			    // An array index's element is its ROW (madc stores
+			    // arrays flattened: never the operand's datadef()).
+			    DataDef *elem_type = array_operand_element_type(idx);
+			    DataDef *idx_dd = idx ? idx->datadef() : NULL;
+			    if ( !elem_type && idx_dd && idx_dd->is_pointer() )
+				elem_type = unwrap_subscript_element_type(idx_dd);
+			    if ( !elem_type )
+				Throw(tb) << "subscripted value is neither array nor pointer" << flush;
+			    DBG(cout << "parseExpression: subscript with the pointer as index" << endl);
+			    exStack.push(new TokenSubscriptExpr(base_expr, idx, elem_type));
+			    return done ? ExprStep::Done : ExprStep::Break;
+			}
 			if ( DataDef *elem_type = dependent_deref_result_type(dd) )
 			{
 			    TokenBase *base_expr = exStack.top();
@@ -43757,7 +44195,11 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			    // (struct/union Tag *) — peek further
 			    TokenBase *save1 = nextToken(); // consume 'struct' / 'union'
 			    TokenBase *save2 = peekToken();
-			    if ( save2 && save2->type() == TokenType::ttIdentifier )
+			    // A definition (`(struct { int x; } *)p`, the compound
+			    // literal `(struct { int x; }){ 1 }`, C11 6.7.7).
+			    if ( TokenDataType *def = aggregate_definition_in_type_name(save1) )
+				cast_dd = &def->definition;
+			    else if ( save2 && save2->type() == TokenType::ttIdentifier )
 			    {
 				std::string sname = ((TokenIdent *)save2)->spelling();
 				datadef_map_citer sdmi = struct_map.find(sname);
@@ -46894,15 +47336,16 @@ std::string Program::scoped_struct_tag(const std::string &name)
     std::string block = block_scoped_struct_tag(name);
     if ( block != name )
 	return block;
-    // [class.nest] in the STRICT C++ modes (--std= determines semantics): a
-    // tag declared inside a data-only aggregate's open body belongs to that
-    // aggregate, whatever function or class context triggered its parse.
-    // Bare keys made every instantiation of aligned_storage<_Len,_Align>
-    // collide on its nested `union type` (type_traits:2101, 17 self-host
-    // units). C AND the madc dialect keep C's file-scope tags: C programs
-    // (`struct C { struct D {...} attr; }; struct D d;`, gcc-torture
-    // pr39339) run under the default mode.
-    if ( is_cpp_mode() && !aggregate_scope_stack.empty() )
+    // [class.nest] (open_aggregates_own_nested_tags — --std= determines
+    // semantics): a tag declared inside a data-only aggregate's open body
+    // belongs to that aggregate, whatever function or class context
+    // triggered its parse. Bare keys made every instantiation of
+    // aligned_storage<_Len,_Align> collide on its nested `union type`
+    // (type_traits:2101, 17 self-host units). C AND the madc dialect keep
+    // C's file-scope tags for C aggregates: C programs (`struct C { struct D
+    // {...} attr; }; struct D d;`, gcc-torture pr39339) run under the
+    // default mode.
+    if ( open_aggregates_own_nested_tags() && !aggregate_scope_stack.empty() )
 	return aggregate_scope_stack.back()->name + "::" + name;
     if ( DataDefCLASS *owner = nested_aggregate_owner() )
 	return owner->name + "::" + name;
@@ -46922,9 +47365,9 @@ datadef_map_citer Program::find_visible_struct_tag(const std::string &name)
     }
     // ...then every enclosing open aggregate outward (`struct rec { type
     // t; }` names the sibling union its OWNER declared), then the class
-    // owner the open aggregates sit in, then the flat registration. Strict
-    // C++ modes only (the aggregate keys exist only there).
-    if ( is_cpp_mode() )
+    // owner the open aggregates sit in, then the flat registration. Only
+    // where the aggregate keys exist (open_aggregates_own_nested_tags).
+    if ( open_aggregates_own_nested_tags() )
     {
 	for ( size_t i = aggregate_scope_stack.size(); i-- > 0; )
 	{
@@ -47081,6 +47524,83 @@ DataDefSTRUCT *Program::mint_incomplete_struct_tag(const std::string &name,
     return fwd;
 }
 
+// A struct, union or enum DEFINITION in a C type name (C11 6.7.7: the
+// specifier-qualifier-list's struct-or-union-specifier or enum-specifier
+// carries its body — `sizeof(struct { char a; })`, `(struct { int x; }){ 1 }`,
+// `(union { int i; } *)p`). `kw` is the aggregate keyword the type-name reader
+// just took. A body (`{`, or a tag then `{`) is read and registered as a
+// declaration's would be — through TokenSTRUCT::parse's definition-only mode,
+// or TokenENUM::parse — and its type returned, whatever follows the `}` (an
+// abstract declarator, the `)`) left to the reader. No body: NULL, nothing
+// consumed (a tag reference stays the reader's). C only: C++ forbids defining
+// a type in a type-id ([dcl.fct]/9, [expr.sizeof]/1).
+TokenDataType *Program::aggregate_definition_in_type_name(TokenBase *kw)
+{
+    if ( !kw || kw->type() != TokenType::ttKeyword || !is_c_mode() )
+	return NULL;
+    TokenSTRUCT *aggregate = dynamic_cast<TokenSTRUCT *>(kw);	// struct, union
+    if ( !aggregate && kw->id() != TokenID::tkENUM )
+	return NULL;
+    bool body = false;
+    {
+	StreamMark at_tag = mark_stream();
+	TokenBase *t = nextToken();
+	if ( t && is_contextual_identifier_token(t) )
+	    t = nextToken();
+	body = t && t->id() == TokenID::tkOpBrc;
+	rewind_stream(at_tag);
+    }
+    if ( !body )
+	return NULL;
+    // Definition-only: TokenSTRUCT::parse returns at the `}`, and TokenENUM::
+    // parse re-feeds its type whatever follows the `}`. A type name is no
+    // typedef, and owns none of an enclosing typedef's prefix attributes.
+    const bool saved_def_only = class_definition_only;
+    const bool saved_typedef = parsing_typedef_decl;
+    const size_t saved_prefix_align = typedef_prefix_align;
+    const unsigned saved_prefix_cv = typedef_prefix_cv;
+    auto restore = [&]() {
+	class_definition_only = saved_def_only;
+	parsing_typedef_decl = saved_typedef;
+	typedef_prefix_align = saved_prefix_align;
+	typedef_prefix_cv = saved_prefix_cv;
+    };
+    class_definition_only = true;
+    parsing_typedef_decl = false;
+    typedef_prefix_align = 0;
+    typedef_prefix_cv = cvNONE;
+    TokenBase *def = NULL;
+    try
+    {
+	if ( aggregate )
+	    def = aggregate->parse(*this);
+	else
+	{
+	    // TokenENUM::parse — the one owner of enum bodies — registers the
+	    // enumerators at the enclosing scope and re-feeds the type token.
+	    TokenENUM tenum;
+	    tenum.parse(*this);
+	}
+    }
+    catch(...) { restore(); throw; }
+    restore();
+    if ( !aggregate )
+    {
+	TokenBase *refed = peekToken();
+	if ( !refed || refed->type() != TokenType::ttDataType )
+	    Throw(kw) << "Expecting an enum definition in a type name" << flush;
+	return (TokenDataType *)nextToken();
+    }
+    TokenStructDef *sd = dynamic_cast<TokenStructDef *>(def);
+    if ( !sd || !sd->sdd )
+	Throw(kw) << "Expecting a struct or union definition in a type name" << flush;
+    TokenDataType *tdt = new TokenDataType(
+	(std::string(sd->is_union ? "union " : "struct ") + sd->sdd->name).c_str(),
+	*sd->sdd);
+    copy_token_location(tdt, kw);
+    return tdt;
+}
+
 TokenBase *TokenSTRUCT::parse(Program &pgm)
 {
     TokenIdent *tag = NULL;
@@ -47104,7 +47624,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     auto nested_store_key = [&](DataDefSTRUCT *nested, const std::string &sname)
 	-> std::string
     {
-	if ( !pgm.is_cpp_mode() || pgm.aggregate_scope_stack.empty() )
+	if ( !pgm.open_aggregates_own_nested_tags()
+	  || pgm.aggregate_scope_stack.empty() )
 	    return sname;
 	DataDefSTRUCT *owner = pgm.aggregate_scope_stack.back();
 	return pgm.key_nested_aggregate(nested, sname, owner->name,
@@ -47629,6 +48150,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 
     while ( (tn=pgm.peekToken()) && tn->id() != TokenID::tkClBrc )
     {
+	if ( pgm.consume_empty_member_declaration() )
+	    continue;
 	uint32_t member_flags = 0;
 	// The line's cv (before and after the type specifier) — every
 	// declarator on it derives from the cv-qualified base (member_declarator).
@@ -47728,6 +48251,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		} inner_scope(pgm, inner);
 		while ( (tn = pgm.peekToken()) && tn->id() != TokenID::tkClBrc )
 		{
+		    if ( pgm.consume_empty_member_declaration() )
+			continue;
 		    // Leading cv-qualifiers on the member's type and the
 		    // attribute groups among them (the line's alignment, as in
 		    // the top-level loop), through the ONE owner
@@ -48224,6 +48749,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     apply_aggregate_attributes(dds, trail_attrs, true);
     dds->is_complete = true; // a `{ ... }` body was parsed (even if it had no members)
     dds->finalize(pgm.presents_as_cpp()); // round up size; C++ empty aggregate => 1
+    pgm.complete_shells_awaiting(dds->name);
 
     // A struct that contains an OBJECT member by value is — per C++ — a
     // NON-TRIVIAL class: those members must be
@@ -48510,6 +49036,20 @@ bool Program::consume_anonymous_aggregate_open(AggregateAttributes &attrs)
     return true;
 }
 
+// An EMPTY member-declaration, a stray `;` in a class, struct or union body
+// ([class.mem]; in C a GNU extension, gcc -pedantic "extra semicolon in
+// struct or union specified"): consumed, true when there was one. The ONE
+// test every member loop asks — a macro that expands to nothing before its
+// `;`, the `;` after a member function body.
+bool Program::consume_empty_member_declaration()
+{
+    TokenBase *tn = peekToken();
+    if ( !tn || tn->id() != TokenID::tkSemi )
+	return false;
+    nextToken();
+    return true;
+}
+
 void Program::parse_class_anonymous_aggregate_members(DataDefSTRUCT *agg,
 						    TokenBase *loc)
 {
@@ -48523,6 +49063,8 @@ void Program::parse_class_anonymous_aggregate_members(DataDefSTRUCT *agg,
 		pushToken(tn);
 	    tn = peekToken();
 	}
+	if ( consume_empty_member_declaration() )
+	    continue;
 	skip_cv_qualifier_tokens();	// the ONE cv owner, not a fourth copy
 	tn = peekToken();
 	if ( !tn )
@@ -50644,6 +51186,7 @@ void Program::complete_class_aggregate(DataDefCLASS *ddc)
     }
     if ( forest_arena_enabled )
 	forest_arena_record_aggregate(ddc);
+    complete_shells_awaiting(ddc->name);
 }
 
 // A defaulted/deleted DEFAULT constructor is dropped from the class's ctor
@@ -51561,15 +52104,11 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	access_flags &= ~vfMUTABLE; // storage specifiers last one member declaration
 	if ( !(tn=pgm.peekToken()) || tn->id() == TokenID::tkClBrc )
 	    break;
-	// [class.mem]: an EMPTY member-declaration — the stray `;` after a
-	// member function body (`int f() { return v; };`, madc.h:2145 — 20
-	// self-host units read it as the start of a member and demanded a
-	// type). gcc/clang accept it (-pedantic: "extra ';'").
-	if ( tn->id() == TokenID::tkSemi )
-	{
-	    pgm.nextToken();
+	// The stray `;` after a member function body (`int f() { return v;
+	// };`, madc.h:2145 — 20 self-host units read it as the start of a
+	// member and demanded a type).
+	if ( pgm.consume_empty_member_declaration() )
 	    continue;
-	}
 	// --- class-scope type aliases: typedef T name; / using name = T; ---
 	if ( tn->id() == TokenID::tkTYPEDEF )
 	{
@@ -54229,45 +54768,54 @@ TokenBase *TokenOPEROVER::parse(Program &pgm)
 TokenBase *TokenREGISTER::parse(Program &pgm)
 {
     DBG(std::cout << "TokenREGISTER::parse()" << std::endl);
-    pgm.consume_declaration_attributes();
-    TokenBase *tn = pgm.peekToken();
-    if ( !tn )
-        pgm.Throw << "Unexpected end of input after 'register'" << flush;
+    return pgm.parse_storage_class_declaration("register", vfREGISTER);
+}
 
-    // Accept `register struct ...`, `register TypedefName ...`, and
-    // `register <primitive type> ...`. `register` is a C hint — we set
-    // vfREGISTER for the primitive path where the Variable is numeric;
-    // for struct/typedef paths the flag is dropped (the variable will
-    // still live in a register when it's a pointer, which is typical).
+// The declaration after a storage-class specifier that leaves the type to what
+// follows it — `register`, and C's `auto` (auto_is_storage_class) — the
+// specifier already consumed: a type keyword (`register struct ...`), a typeof,
+// a typedef name, a type token, or, with no type specifier, an implicit int
+// (`register m;`, `auto c = a + b;`). `var_flags` mark the object declared on
+// the typeof / typedef / type paths (vfREGISTER: the primitive path where the
+// Variable is numeric; a keyword-routed declaration keeps its own flags — a
+// register pointer still lives in a register, which is typical).
+TokenBase *Program::parse_storage_class_declaration(const char *spelling,
+						    uint32_t var_flags)
+{
+    consume_declaration_attributes();
+    TokenBase *tn = peekToken();
+    if ( !tn )
+        Throw << "Unexpected end of input after '" << spelling << "'" << flush;
     if ( tn->type() == TokenType::ttKeyword )
-	return pgm.parseKeyword(static_cast<TokenKeyword *>(pgm.nextToken()));
+	return parseKeyword(static_cast<TokenKeyword *>(nextToken()));
+    TokenDataType *type_tok = NULL;
     if ( tn->type() == TokenType::ttIdentifier )
     {
 	std::string tname = ((TokenIdent *)tn)->spelling();
+	flat_datatype_map_iter tdmi = datatype_map.find(tname);
 	if ( is_typeof_identifier(tname) )
 	{
-	    pgm.nextToken();
-	    TokenBase *decl = pgm.parseDeclaration(pgm.parse_typeof_datatype(tn));
-	    if ( decl && decl->type() == TokenType::ttDeclare )
-		dynamic_cast<TokenDecl *>(decl)->var.flags |= vfREGISTER;
-	    return decl;
+	    nextToken();
+	    type_tok = parse_typeof_datatype(tn);
 	}
-	flat_datatype_map_iter tdmi = pgm.datatype_map.find(tname);
-	if ( tdmi != pgm.datatype_map.end() )
+	else if ( tdmi != datatype_map.end() )
 	{
-	    pgm.nextToken();
-	    TokenBase *decl = pgm.parseDeclaration((*tdmi));
-	    if ( decl && decl->type() == TokenType::ttDeclare )
-		dynamic_cast<TokenDecl *>(decl)->var.flags |= vfREGISTER;
-	    return decl;
+	    nextToken();
+	    type_tok = *tdmi;
 	}
     }
-    if ( tn->type() != TokenType::ttDataType )
-        pgm.Throw(tn) << "Expecting type after 'register'" << flush;
-    tn = pgm.nextToken();
-    TokenBase *decl = pgm.parseDeclaration(static_cast<TokenDataType *>(tn));
+    if ( !type_tok )
+    {
+	if ( tn->type() == TokenType::ttDataType )
+	    type_tok = static_cast<TokenDataType *>(nextToken());
+	else if ( implicit_int_declarator_at(tn) )
+	    type_tok = implicit_int_type_token(tn);
+	else
+	    Throw(tn) << "Expecting type after '" << spelling << "'" << flush;
+    }
+    TokenBase *decl = parseDeclaration(type_tok);
     if ( decl && decl->type() == TokenType::ttDeclare )
-        dynamic_cast<TokenDecl *>(decl)->var.flags |= vfREGISTER;
+        dynamic_cast<TokenDecl *>(decl)->var.flags |= var_flags;
     return decl;
 }
 
@@ -54883,8 +55431,9 @@ void Program::parse_array_dimensions(std::vector<carray_dim_t> &dims,
 				     TokenBase *ctx, const char *what,
 				     bool capture_runtime_dims,
 				     const std::set<std::string> *runtime_names,
-				     bool param_qualifiers)
+				     bool param_qualifiers, bool *first_unbounded)
 {
+    const size_t first = dims.size();
     while ( peekToken() && peekToken()->id() == TokenID::tkOpSqr )
     {
 	nextToken(); // consume '['
@@ -54894,6 +55443,10 @@ void Program::parse_array_dimensions(std::vector<carray_dim_t> &dims,
 	if ( dim_peek && dim_peek->id() == TokenID::tkClSqr )
 	{
 	    nextToken(); // consume ']' for an unsized dim
+	    // An unwritten bound and a written `[0]` both store 0; the caller
+	    // that must tell them apart asks for the first one here.
+	    if ( first_unbounded && dims.size() == first )
+		*first_unbounded = true;
 	    dims.push_back(0);
 	    dim_exprs.push_back(NULL);
 	    continue;
@@ -54947,7 +55500,7 @@ DataDef *Program::nest_carray_dims(DataDef *elem_dd,
 				   const std::vector<carray_dim_t> &dims,
 				   const std::vector<TokenBase *> &dim_exprs,
 				   const std::string &outer_name,
-				   bool forest_record)
+				   bool forest_record, bool outer_unbounded)
 {
     DataDef *arr = elem_dd;
     for ( size_t i = dims.size(); i-- > 0; )
@@ -54956,6 +55509,7 @@ DataDef *Program::nest_carray_dims(DataDef *elem_dd,
 			      ? outer_name : arr->name;
 	DataDefCArray *level = new DataDefCArray(*arr, nm, dims[i],
 						i < dim_exprs.size() ? dim_exprs[i] : NULL);
+	level->unbounded = i == 0 && outer_unbounded;
 	if ( forest_record && forest_arena_enabled )
 	    forest_arena_record_unary(level);	// v25: DK_CARRAY write-through
 	arr = level;
@@ -54993,7 +55547,7 @@ DataDef *Program::qualify_array_elements(DataDef *arr, unsigned cv)
 	elem = c->element_type;
     }
     return nest_carray_dims(getQualifiedType(elem, cv), dims, dim_exprs,
-			    std::string(), false);
+			    std::string(), false, outer->unbounded);
 }
 
 // Pointer-to-array declarator suffix `[N][M]...` — the stream is positioned
@@ -55010,9 +55564,11 @@ DataDef *Program::parse_ptr_array_suffix(DataDef *elem_dd, TokenBase *ctx,
 {
     std::vector<carray_dim_t> dims;
     std::vector<TokenBase *> dim_exprs;
-    parse_array_dimensions(dims, dim_exprs, ctx, what, capture_runtime_dims);
+    bool first_unbounded = false;
+    parse_array_dimensions(dims, dim_exprs, ctx, what, capture_runtime_dims,
+			   NULL, false, &first_unbounded);
     return getPointerType(nest_carray_dims(elem_dd, dims, dim_exprs,
-					   std::string(), false));
+					   std::string(), false, first_unbounded));
 }
 
 // ============================================================================
@@ -55139,6 +55695,21 @@ DataDefFPTR *Program::fnptr_twin(DataDefFPTR *fn_type)
     return twin;
 }
 
+// The function TYPE of a named function: the other direction of
+// getPointerType's FuncDef fold. A FuncDef is the named function's own
+// DataDef, no type a template parameter can be; a function lvalue deduces
+// this for `T&` ([temp.deduct.call]/3), interned like its pointer.
+DataDefFPTR *Program::function_type_of(FuncDef *fd)
+{
+    auto it = function_type_cache.find(fd);
+    if ( it != function_type_cache.end() )
+	return it->second;
+    DataDefFPTR *ft = new DataDefFPTR(fd);
+    ft->ptr_syntax = false;
+    function_type_cache[fd] = ft;
+    return ft;
+}
+
 // A pointer to member function's `target` is the member's function TYPE —
 // what parseFnPtrParams and parse_member_signature_qualifiers build for the
 // declarator `R (C::*)(A) const`, and what every reader of the member pointer
@@ -55234,26 +55805,54 @@ static bool member_pointer_owner_head(TokenBase *tb)
 // counted it as an opener and read `int(const float&)` as a nested group
 // (g++.dg/cpp0x/variadic16). paren_starts_parameter_list is the complement.
 // ONE home for the shape consume_template_parameter_declarator spelled inline.
-bool Program::nested_declarator_opens(DeclaratorMode mode)
+// `at` reads the `(` that many tokens ahead (drop_redundant_declarator_parens
+// asks it of each level of a group before any of it is read).
+bool Program::nested_declarator_opens(DeclaratorMode mode, size_t at)
 {
-    if ( tokens.size() < 2 || !tokens[0] || tokens[0]->id() != TokenID::tkOpBrk
-      || !tokens[1] )
+    if ( tokens.size() < at + 2 || !tokens[at]
+      || tokens[at]->id() != TokenID::tkOpBrk || !tokens[at + 1] )
 	return false;
-    TokenBase *t1 = tokens[1];
+    TokenBase *t1 = tokens[at + 1];
+    TokenBase *t2 = tokens.size() > at + 2 ? tokens[at + 2] : NULL;
     if ( t1->id() == TokenID::tkMul || t1->id() == TokenID::tkBand
       || t1->id() == TokenID::tkLand || t1->id() == TokenID::tkOpBrk
       || t1->id() == TokenID::tkOpSqr )	// `int ([4])`: a parenthesized abstract array declarator
 	return true;
-    if ( tokens.size() > 2 && tokens[2]
-      && (tokens[2]->id() == TokenID::tkNS || tokens[2]->id() == TokenID::tkLT)
-      && member_pointer_declarator_ahead(t1, 2) )
+    if ( t2 && (t2->id() == TokenID::tkNS || t2->id() == TokenID::tkLT)
+      && member_pointer_declarator_ahead(t1, at + 2) )
 	return true;			// `(C::*`, `(T1::*` yes; `(std::string` no
     if ( !is_contextual_identifier_token(t1) )
 	return false;
-    if ( tokens.size() > 2 && tokens[2]
-      && (tokens[2]->id() == TokenID::tkNS || tokens[2]->id() == TokenID::tkLT) )
+    if ( t2 && (t2->id() == TokenID::tkNS || t2->id() == TokenID::tkLT) )
 	return false;
     return mode != DeclaratorMode::Abstract && !token_starts_type_name(t1);
+}
+
+// At a `(` (unread): parentheses around the declarator-id alone — `(foo)`,
+// `((foo))` — are redundant: `( declarator )` declares what the declarator
+// does (C11 6.7.6p6), so `int ((foo))(int)` is the function `int foo(int)`.
+// Every level must open a nested declarator (nested_declarator_opens: in
+// `void f(int((x)))` with x a typedef name, the inner `(x)` is a parameter
+// list). The parentheses are removed from the stream, leaving the id for the
+// direct-declarator's id arm; any other shape is left as it is.
+void Program::drop_redundant_declarator_parens(DeclaratorMode mode)
+{
+    if ( mode == DeclaratorMode::Abstract )
+	return;
+    size_t wraps = 0;			// the `(`s ahead of the id
+    while ( nested_declarator_opens(mode, wraps) )
+    {
+	++wraps;
+	if ( tokens[wraps]->id() != TokenID::tkOpBrk )
+	    break;
+    }
+    if ( wraps == 0 || tokens.size() < 2 * wraps + 1
+      || !declarator_id_token(tokens[wraps], mode) )
+	return;
+    for ( size_t k = 1; k <= wraps; ++k )
+	if ( !tokens[wraps + k] || tokens[wraps + k]->id() != TokenID::tkClBrk )
+	    return;
+    tokens.splice_front(2 * wraps + 1, std::vector<TokenBase *>(1, tokens[wraps]));
 }
 
 // At a `(` (tokens[0], unconsumed): can what follows begin a parameter list?
@@ -55470,6 +56069,7 @@ DataDef *Program::parse_declarator_level(DataDef *base, DeclaratorMode mode,
 
     // 2. direct-declarator.
     bool id_here = false;
+    drop_redundant_declarator_parens(mode);
     TokenBase *pk = peekToken();
     if ( pk && pk->id() == TokenID::tkOpBrk && nested_declarator_opens(mode) )
     {
@@ -55579,15 +56179,17 @@ DataDef *Program::parse_declarator_suffixes(DataDef *dd, DeclaratorMode mode,
 	    // function entry. A TYPEDEF's dims, its own and a nested group's, are
 	    // captured where the typedef is reached (C11 6.7.8p3): a later change
 	    // to `n` changes neither `sizeof` of the alias nor an object of it.
+	    bool first_unbounded = false;
 	    parse_array_dimensions(dims, dim_exprs, pk, "array declarator",
 				   (mode == DeclaratorMode::Declaration && out.saw_parens)
 				   || mode == DeclaratorMode::Typedef,
 				   runtime_names,
-				   mode == DeclaratorMode::Parameter);
+				   mode == DeclaratorMode::Parameter, &first_unbounded);
 	    if ( depth == 0 && out.array_dims.empty() )
 	    {
 		out.array_dims = dims;
 		out.array_dim_exprs = dim_exprs;
+		out.outer_unbounded = first_unbounded;
 	    }
 	    // A TYPEDEF's own dims name their outer level after the alias and
 	    // write the v25 DK_CARRAY record (the contract the typedef array
@@ -55595,7 +56197,8 @@ DataDef *Program::parse_declarator_suffixes(DataDef *dd, DeclaratorMode mode,
 	    // and a typedef's nested group — builds an anonymous chain.
 	    bool alias_level = mode == DeclaratorMode::Typedef && depth == 0;
 	    dd = nest_carray_dims(dd, dims, dim_exprs,
-				  alias_level ? out.name : std::string(), alias_level);
+				  alias_level ? out.name : std::string(), alias_level,
+				  first_unbounded);
 	    continue;
 	}
 	if ( pk && pk->id() == TokenID::tkOpBrk )
@@ -56540,7 +57143,10 @@ TokenBase *TokenENUM::parse(Program &pgm)
 	     || after_body->id() == TokenID::tkMul
 	     || after_body->id() == TokenID::tkBand
 	     || after_body->id() == TokenID::tkOpBrk);
-	if ( !declarator_follows )
+	// Definition-only (a type name's enum-specifier,
+	// aggregate_definition_in_type_name): the re-fed type is the reader's,
+	// whatever follows (`sizeof(enum { A, B })`).
+	if ( !declarator_follows && !pgm.class_definition_only )
 	    pgm.Throw(after_body) << "Expecting variable name or ';' after enum definition" << flush;
 	DataDef *refeed_dd = enum_dd;
 	if ( !refeed_dd )
@@ -56626,26 +57232,21 @@ TokenBase *TokenSTATIC::parse(Program &pgm)
 	    else
 	    {
 		pgm.rewind_stream(type_saved);
-		// C89 implicit int: `static funcname(...)` — treat as int
+		// C89 implicit int: `static funcname(...)`, and in C
+		// `static baz = 42;` — the omitted type specifier is int.
 		TokenBase *id_tok = pgm.nextToken();
 		TokenBase *peek2 = pgm.peekToken();
 		pgm.pushToken(id_tok);
-		if ( peek2 && peek2->id() == TokenID::tkOpBrk )
-		{
-		    // HEAP token (same rule as the mixed-comma-list arm):
-		    // parseDeclaration records tb as TopDecl.origin, which
-		    // must outlive this frame.
-		    TokenDataType *tdt = new TokenDataType("int", ddINT);
-		    tdt->file = tn->file;
-		    tdt->line = tn->line;
-		    tdt->column = tn->column;
-		    result = pgm.parseDeclaration(tdt, true);
-		}
+		if ( (peek2 && peek2->id() == TokenID::tkOpBrk)
+		  || pgm.implicit_int_declarator_at(tn) )
+		    result = pgm.parseDeclaration(pgm.implicit_int_type_token(tn), true);
 		else
 		    pgm.Throw(tn) << "Expecting type after 'static'" << flush;
 	    }
 	    }
 	}
+	else if ( pgm.implicit_int_declarator_at(tn) )	// `static *p;`
+	    result = pgm.parseDeclaration(pgm.implicit_int_type_token(tn), true);
 	else
 	    pgm.Throw(tn) << "Expecting type after 'static'" << flush;
     }
@@ -56685,11 +57286,15 @@ TokenBase *TokenCONST::parse(Program &pgm)
 		pgm.nextToken();
 		return pgm.parseDeclaration(pgm.parse_typeof_datatype(tn));
 	    }
+	    Program::StreamMark csaved = pgm.mark_stream();
 	    TokenBase *type_tb = pgm.nextToken();
 	    if ( TokenDataType *resolved =
 		    pgm.resolve_declared_type_token(type_tb, true, true) )
 		return pgm.parseDeclaration(resolved);
+	    pgm.rewind_stream(csaved);
 	}
+	if ( pgm.implicit_int_declarator_at(tn) )	// `const k = 5;`
+	    return pgm.parseDeclaration(pgm.implicit_int_type_token(tn));
 	pgm.Throw(tn) << "Expecting type after 'const'" << flush;
 	return NULL;
 }
@@ -56826,6 +57431,11 @@ TokenBase *TokenEXTERN::parse(Program &pgm)
 	    }
 	    }
 	}
+	if ( !handled && pgm.implicit_int_declarator_at(tn) )	// `extern e;`
+	{
+	    handled = true;
+	    result = pgm.parseDeclaration(pgm.implicit_int_type_token(tn));
+	}
 	if ( !handled )
 	    pgm.Throw(tn) << "Expecting type after 'extern'" << flush;
     }
@@ -56906,6 +57516,8 @@ TokenBase *TokenVOLATILE::parse(Program &pgm)
 	    return pgm.parseDeclaration(dt ? dt : (*tdmi));
 	}
     }
+    if ( pgm.implicit_int_declarator_at(tn) )	// `volatile v = 6;`
+	return pgm.parseDeclaration(pgm.implicit_int_type_token(tn));
     pgm.Throw(tn) << "Expecting type after 'volatile'" << flush;
     return NULL;
 }
@@ -57149,6 +57761,8 @@ TokenBase *TokenNEW::parse(Program &pgm)
     TokenDataType *tdt = pgm.resolve_declared_type_token(tn, true, true);
     if ( tdt )
     {
+	// [expr.new]/1: the allocated type is complete — completed in place.
+	pgm.require_complete_class(tdt->definition.unqualified());
 	if ( DataDefCLASS *c = dynamic_cast<DataDefCLASS *>(&tdt->definition) )
 	    alloc_class = c;
 	else
@@ -57850,6 +58464,7 @@ std::vector<DataDef *> Program::capture_call_template_args()
 	    consume_template_close(nextToken());
 	    return out;
 	}
+	StreamMark arg_start = mark_stream();
 	TokenBase *at = nextToken();
 	if ( !at )
 	    return out;
@@ -57869,9 +58484,22 @@ std::vector<DataDef *> Program::capture_call_template_args()
 	    // type — and no reference- or function-type SFINAE default over T
 	    // could ever fail (g++.dg sfinae8/12/15: `f<int&>`, `f<void()>`).
 	    adt = fold_template_arg_declarator(adt, at, &cv_spelling);
-	    dd = &adt->definition;
+	    // [temp.arg]/2: the type-id reading claims an argument only when the
+	    // WHOLE argument is a type-id. A type head the argument continues
+	    // past — `X<T>::value`, an enumerator or static member of a class
+	    // template specialization (std::copy's `__copy_move_a<
+	    // __is_move_iterator<_II>::__value>`) — is an expression: read the
+	    // argument again from its start as a non-type argument.
+	    if ( !is_template_param_separator(peekToken()) )
+	    {
+		rewind_stream(arg_start);
+		at = nextToken();
+		adt = NULL;
+	    }
+	    else
+		dd = &adt->definition;
 	}
-	else
+	if ( !adt )
 	{
 	    // NON-TYPE template argument (`addN<5>`, `get<0>`, or a constant
 	    // EXPRESSION — libc++ basic_string::__recommend's
@@ -60634,6 +61262,16 @@ void Program::apply_template_call_return_inference(TokenCallFunc *tc)
     (void)*this;
     if ( !tc || !tc->var.type || !tc->var.type->is_function() )
 	return;
+    // The deduced SPECIALIZATION's type is the call's type ([temp.deduct]):
+    // once instantiation pinned it (instantiate_namespace_fn_template_for_call),
+    // this inference — read from the parse-bound placeholder, which can be
+    // ANOTHER overload of the set (`I mb(I)` beside the more specialized
+    // `auto mb(wrap<I>) -> decltype(mb(it.base()))`, std::__miter_base's
+    // move_iterator unwrap) — must not replace it.
+    if ( tc->return_override
+      && tc->deduction.outcome == FnTemplateDeduction::Outcome::Deduced
+      && tc->deduction.specialization )
+	return;
     FuncDef *fd = dynamic_cast<FuncDef *>(tc->var.type);
     if ( !fd || fd->template_return_param_name.empty()
       || fd->template_return_deduce_arg_index < 0 )
@@ -60684,7 +61322,7 @@ Program::AtomicCallCheck Program::atomic_builtin_call_error(
     AtomicCallCheck out;
     AtomicForm form = ab.form;
     const std::string fn = std::string("'") + ab.name + "'";
-    size_t want = atomic_form_arity(form);
+    size_t want = atomic_builtin_arity(ab);
     if ( args.size() != want )
     {
 	out.message = std::string(args.size() < want ? "too few" : "too many")
@@ -61089,14 +61727,28 @@ static bool skipped_template_body_is_inline_destroy(
 	  && i + 1 < tokens.size() && tokens[i + 1]
 	  && tokens[i + 1]->id() == TokenID::tkOpBrk )
 	    return true;
-	if ( t->id() == TokenID::tkDeRef
-	  && i + 2 < tokens.size()
-	  && tokens[i + 1] && tokens[i + 1]->id() == TokenID::tkBnot
-	  && tokens[i + 2] && is_contextual_identifier_token(tokens[i + 2])
-	  && pnames.count(contextual_identifier_name(tokens[i + 2])) )
-	    return true;
     }
-    return false;
+    // `{ p->~T(); }` — the body IS the destroy (std::_Destroy(_Tp*)): its one
+    // statement is a destructor call through a type parameter. A body that
+    // does anything else is an ordinary template whose instances run all of
+    // it; the shape once matched `->~T` ANYWHERE in the body, so a call to
+    // `{ p->~T(); ++count; }` lowered to the bare destructor call.
+    size_t open = tokens.size();
+    for ( size_t i = 0; i < tokens.size(); ++i )
+	if ( tokens[i] && tokens[i]->id() == TokenID::tkOpBrc )
+	{ open = i; break; }
+    if ( open + 9 != tokens.size() || !tokens.back()
+      || tokens.back()->id() != TokenID::tkClBrc )
+	return false;
+    TokenBase *const *b = &tokens[open + 1];
+    return b[0] && is_contextual_identifier_token(b[0])
+	&& b[1] && b[1]->id() == TokenID::tkDeRef
+	&& b[2] && b[2]->id() == TokenID::tkBnot
+	&& b[3] && is_contextual_identifier_token(b[3])
+	&& pnames.count(contextual_identifier_name(b[3]))
+	&& b[4] && b[4]->id() == TokenID::tkOpBrk
+	&& b[5] && b[5]->id() == TokenID::tkClBrk
+	&& b[6] && b[6]->id() == TokenID::tkSemi;
 }
 
 // Identity reference-cast body (`{ return static_cast<_Tp&&>(__t); }` —
@@ -62300,12 +62952,15 @@ static std::string fn_template_call_shape_suffix(TokenCallFunc *tc,
 	{
 	    TokenBase *arg = tc->parameters[i];
 	    DataDef *dd = arg ? arg->datadef() : NULL;
-	    shape += dd ? dd->name : std::string("?");
+	    // The identity spelling every identity former compares: a bare
+	    // name tells no two function (pointer) types apart.
+	    shape += dd ? template_binding_identity_spelling(dd) : std::string("?");
 	    shape += fn_template_call_arg_is_lvalue(arg, pgm) ? "@L," : "@R,";
 	}
 	shape += ")";
 	for ( DataDef *ea : tc->explicit_template_args )
-	    shape += "<" + (ea ? ea->name : std::string("?")) + ">";
+	    shape += "<" + (ea ? template_binding_identity_spelling(ea)
+			       : std::string("?")) + ">";
     }
     else
 	shape += ")";
@@ -62350,6 +63005,14 @@ static int fn_template_deduce_param(const std::string &spelling,
     // pointee is a declared type but the direct scalar arm sees the raw
     // expression dd (integer literals carry the ddINT flavor twin).
     DataDef *dd = canonical_template_binding_dd(arg_dd);
+    // [temp.deduct.call]/2-3: an argument of FUNCTION type — a named
+    // function, whose DataDef is its FuncDef, no type — deduces the function
+    // type for a reference parameter (`Fn&` from add3: int(int)) and, by
+    // [conv.func], its pointer for a by-value one (int(*)(int)).
+    if ( pgm && shape.stars == 0 )
+	if ( FuncDef *fn = dd->as_funcdef_dd() )
+	    dd = shape.amps == 0 ? pgm->getPointerType(fn)
+				 : pgm->function_type_of(fn);
     // An expression never has reference type ([expr.type]/1): an rvalue-
     // reference-typed argument denotes its referent, as an lvalue when named
     // (`int&& r`) — deducing through the lvalue reference — else as an xvalue,
@@ -63000,6 +63663,8 @@ static bool free_operator_concrete_param_matches(Program &pgm,
 // it), empty where deduction formed the parameter from the argument.
 // `declared_params_out` (per argument): the parameter's declared spelling
 // either way — its reference declarator decides what the argument may bind.
+// `deduced_binding_out` (deduce_only): the binding deduction formed, by
+// template-parameter name.
 static bool try_instantiate_namespace_fn_template(Program &pgm,
 	Program::FnTemplateDef &ft, const std::string &key, TokenCallFunc *tc,
 	std::vector<DataDef *> *type_args_out = NULL,
@@ -63008,7 +63673,8 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 	bool relaxed_concrete_class_params = false,
 	bool deduce_only = false,
 	std::vector<std::string> *concrete_params_out = NULL,
-	std::vector<std::string> *declared_params_out = NULL)
+	std::vector<std::string> *declared_params_out = NULL,
+	std::map<std::string, DataDef *> *deduced_binding_out = NULL)
 {
     InstTimer _it(pgm, pgm._inst_fn_count);	// --show-stats
     if ( type_args_out )
@@ -63710,7 +64376,11 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
     if ( pack_empty && binding.count(pack_param) )
 	{ FTPROBE("exit-53233"); return false; }
     if ( deduce_only )
+    {
+	if ( deduced_binding_out )
+	    *deduced_binding_out = binding;
 	return true;
+    }
 #ifdef MADC_DEBUG_CTORTMPL
     if ( getenv("MADC_DEBUG_CTORTMPL") && !tid_packs.empty() )
     {
@@ -66609,6 +67279,70 @@ static int best_deduced_fn_template(Program &pgm, TokenCallFunc *tc,
     return best;
 }
 
+// [temp.func.order]: a call's function-template candidates, most specialized
+// first, so a first-viable selection picks the most specialized overload that
+// deduces. Incomparable candidates keep registration order.
+static std::vector<Program::FnTemplateDef *> fn_templates_most_specialized_first(
+	Program &pgm, std::vector<Program::FnTemplateDef> &templates)
+{
+    std::vector<Program::FnTemplateDef *> order;
+    for ( size_t vi = 0; vi < templates.size(); ++vi )
+    {
+	Program::FnTemplateDef *cand = &templates[vi];
+	size_t pos = order.size();
+	for ( size_t j = 0; j < order.size(); ++j )
+	    if ( po_more_specialized(pgm, *cand, *order[j]) )
+	    { pos = j; break; }
+	order.insert(order.begin() + pos, cand);
+    }
+    return order;
+}
+
+// [temp.over]/1: every template whose deduction succeeds contributes its
+// specialization, and the best of them ([over.match.best]) is the one a call
+// takes — it is tried first. The rest keep `order` behind it, for a candidate
+// that fails past deduction (substitution, a missing default). `relaxed` is
+// the second viability pass (a concrete named-class parameter no deduction
+// touches stops vetoing). `viable_out` (optional), per returned entry: whether
+// its deduction succeeded.
+static std::vector<Program::FnTemplateDef *> fn_template_attempt_order(
+	Program &pgm, const std::vector<Program::FnTemplateDef *> &order,
+	const std::string &fn_key, TokenCallFunc *tc, bool relaxed,
+	std::vector<bool> *viable_out = NULL)
+{
+    std::vector<Program::FnTemplateDef *> attempt = order;
+    std::vector<bool> deduced(order.size(), false);
+    if ( order.size() > 1 || viable_out )
+    {
+	std::vector<std::vector<std::string> > concrete(order.size());
+	std::vector<std::vector<std::string> > declared(order.size());
+	std::vector<std::vector<std::string> > typeparams(order.size());
+	for ( size_t k = 0; k < order.size(); ++k )
+	{
+	    deduced[k] = try_instantiate_namespace_fn_template(pgm, *order[k],
+				fn_key, tc, NULL, NULL, NULL, relaxed,
+				true, &concrete[k], &declared[k]);
+	    typeparams[k] = order[k]->typeparams;
+	}
+	int b = order.size() > 1
+	      ? best_deduced_fn_template(pgm, tc, deduced, concrete,
+					 declared, typeparams)
+	      : -1;
+	if ( b > 0 )
+	    std::rotate(attempt.begin(), attempt.begin() + b,
+			attempt.begin() + b + 1);
+    }
+    if ( viable_out )
+    {
+	viable_out->assign(attempt.size(), false);
+	for ( size_t j = 0; j < attempt.size(); ++j )
+	    for ( size_t k = 0; k < order.size(); ++k )
+		if ( attempt[j] == order[k] )
+		    (*viable_out)[j] = deduced[k];
+    }
+    return attempt;
+}
+
 Variable *Program::instantiate_namespace_fn_template_for_call(TokenCallFunc *tc)
 {
     if ( !tc )
@@ -66636,19 +67370,8 @@ Variable *Program::instantiate_namespace_fn_template_for_call(TokenCallFunc *tc)
 	tc->deduction.outcome = FnTemplateDeduction::Outcome::Deferred;
 	return NULL;
     }
-    // Order candidates most-specialized first ([temp.func.order]) so the
-    // first-viable selection below picks the most specialized overload that
-    // deduces. Incomparable candidates keep registration order.
-    std::vector<Program::FnTemplateDef *> order;
-    for ( size_t vi = 0; vi < mi->size(); ++vi )
-    {
-	Program::FnTemplateDef *cand = &(*mi)[vi];
-	size_t pos = order.size();
-	for ( size_t j = 0; j < order.size(); ++j )
-	    if ( po_more_specialized(*this, *cand, *order[j]) )
-	    { pos = j; break; }
-	order.insert(order.begin() + pos, cand);
-    }
+    std::vector<Program::FnTemplateDef *> order =
+	fn_templates_most_specialized_first(*this, *mi);
     Variable *inst = NULL;
     // Two viability passes, the member-template lane's rule
     // (instantiate_member_fn_template_for_call): STRICT over every
@@ -66658,31 +67381,8 @@ Variable *Program::instantiate_namespace_fn_template_for_call(TokenCallFunc *tc)
     // `f(T, N)` called as `f(t, 2)` with `N(int)`).
     for ( int relax_pass = 0; relax_pass < 2; ++relax_pass )
     {
-    // [temp.over]/1: every template whose deduction succeeds contributes its
-    // specialization, and the best of them ([over.match.best]) is the one
-    // instantiated — it is tried first. The rest keep the most-specialized
-    // order behind it, for a candidate that fails past deduction
-    // (substitution, a missing default).
-    std::vector<Program::FnTemplateDef *> attempt = order;
-    if ( order.size() > 1 )
-    {
-	std::vector<bool> deduced(order.size(), false);
-	std::vector<std::vector<std::string> > concrete(order.size());
-	std::vector<std::vector<std::string> > declared(order.size());
-	std::vector<std::vector<std::string> > typeparams(order.size());
-	for ( size_t k = 0; k < order.size(); ++k )
-	{
-	    deduced[k] = try_instantiate_namespace_fn_template(*this, *order[k],
-				fn_key, tc, NULL, NULL, NULL, relax_pass != 0,
-				true, &concrete[k], &declared[k]);
-	    typeparams[k] = order[k]->typeparams;
-	}
-	int b = best_deduced_fn_template(*this, tc, deduced, concrete,
-					 declared, typeparams);
-	if ( b > 0 )
-	    std::rotate(attempt.begin(), attempt.begin() + b,
-			attempt.begin() + b + 1);
-    }
+    std::vector<Program::FnTemplateDef *> attempt =
+	fn_template_attempt_order(*this, order, fn_key, tc, relax_pass != 0);
     for ( Program::FnTemplateDef *cand : attempt )
 	if ( try_instantiate_namespace_fn_template(*this, *cand, fn_key, tc,
 						   NULL, NULL, &inst,
@@ -68660,6 +69360,81 @@ DataDef *Program::resolve_namespace_fn_template_call_return_type(
 					     0);
 }
 
+// [temp.over]/1, [over.match.best]: a call's type is the type of the
+// specialization overload resolution SELECTS, evaluated or not — an
+// unevaluated operand ([dcl.type.decltype]) forms the call without
+// instantiating a definition. An evaluated call selects in
+// instantiate_namespace_fn_template_for_call, which an unevaluated one skips,
+// and the identity-return inference reads the parse-bound placeholder, ONE
+// overload of the set (`I f(I)` beside `P f(wrap<P>)`: libstdc++'s
+// `decltype(__niter_base(it))` typed the generic overload's `_Iterator`). So
+// the selection is made here in the evaluated lane's order, and the best
+// viable candidate's return is formed alone — never a lesser candidate's. A
+// single template, a deferred (dependent) call, or a return this lane cannot
+// form pins nothing: the inference and the registration-order resolver answer,
+// as before.
+bool Program::pin_unevaluated_fn_template_return(TokenCallFunc *tc)
+{
+    FuncDef *fd = tc ? dynamic_cast<FuncDef *>(tc->var.type) : NULL;
+    if ( !fd || fd->function_display_name.empty() || tc->parameters.empty()
+      || !tc->explicit_template_args.empty() )
+	return false;
+    if ( fn_template_deduction_deferred(*this, tc) )
+	return false;
+    std::string key = fd->namespace_name + "::" + fd->function_display_name;
+    std::vector<FnTemplateDef> *mi = thawed_fn_templates(key);
+    // Env-gated probe (MADC_DT_PROBE, the decltype family): the selection's
+    // candidate count — a set of one, or none, is not this lane's.
+    static const char *dtp = ::getenv("MADC_DT_PROBE");
+    if ( dtp && *dtp )
+	fprintf(stderr, "[dtprobe] uneval-select key=%s templates=%zu\n",
+		key.c_str(), mi == fn_template_map.end() ? (size_t)0 : mi->size());
+    if ( mi == fn_template_map.end() || mi->size() < 2 )
+	return false;
+    std::vector<FnTemplateDef *> order =
+	fn_templates_most_specialized_first(*this, *mi);
+    FnTemplateDef *best = NULL;
+    bool best_relaxed = false;
+    for ( int relax_pass = 0; relax_pass < 2 && !best; ++relax_pass )
+    {
+	std::vector<bool> viable;
+	std::vector<FnTemplateDef *> attempt =
+	    fn_template_attempt_order(*this, order, key, tc, relax_pass != 0,
+				      &viable);
+	for ( size_t k = 0; k < attempt.size() && !best; ++k )
+	    if ( viable[k] )
+	    {
+		best = attempt[k];
+		best_relaxed = relax_pass != 0;
+	    }
+    }
+    if ( !best )
+	return false;
+    // Its binding as the evaluated lane's deduction forms it (template-id
+    // parameters included — `wrap<P>` against `wrap<int *>`).
+    std::map<std::string, DataDef *> deduced;
+    if ( !try_instantiate_namespace_fn_template(*this, *best, key, tc, NULL,
+			NULL, NULL, best_relaxed, true, NULL, NULL, &deduced) )
+	return false;
+    std::vector<DataDef *> arg_types;
+    arg_types.reserve(tc->parameters.size());
+    for ( TokenBase *p : tc->parameters )
+	arg_types.push_back(p ? operand_value_datadef(p) : NULL);
+    std::vector<FnTemplateDef *> selected(1, best);
+    DataDef *rt = resolve_fn_template_return_by_key(key, std::vector<DataDef *>(),
+						    0, &arg_types, &selected,
+						    &deduced);
+    if ( dtp && *dtp )
+	fprintf(stderr, "[dtprobe] uneval-select key=%s best=#%d -> %s\n",
+		key.c_str(), (int)(best - &(*mi)[0]),
+		rt ? rt->name.c_str() : "(not formed)");
+    if ( !rt || rt == &ddAUTO )
+	return false;
+    tc->return_override = rt;
+    tc->setDataType(rt);
+    return true;
+}
+
 // Core of resolve_namespace_fn_template_call_return_type: resolve "ns::name" +
 // the explicit type args to the template's return DataDef. Called both by the
 // TokenCallFunc entry above AND recursively for a `decltype(inner_call)` return
@@ -68668,7 +69443,9 @@ DataDef *Program::resolve_fn_template_return_by_key(
 		const std::string &key,
 		const std::vector<DataDef *> &explicit_args,
 		int depth,
-		const std::vector<DataDef *> *call_arg_types)
+		const std::vector<DataDef *> *call_arg_types,
+		const std::vector<FnTemplateDef *> *ranked,
+		const std::map<std::string, DataDef *> *deduced)
 {
     bool have_arg_types = call_arg_types && !call_arg_types->empty();
     if ( depth > 8 || (explicit_args.empty() && !have_arg_types) )
@@ -68690,8 +69467,12 @@ DataDef *Program::resolve_fn_template_return_by_key(
     if ( !in_flight.inserted )
 	return NULL;
     // Candidates: body-bearing (fn_template_map) AND body-less (fn_template_decl_map)
-    // free templates of this name — declval and friends are body-less.
+    // free templates of this name — declval and friends are body-less — unless
+    // the caller ranked them.
     std::vector<FnTemplateDef *> cands;
+    if ( ranked )
+	cands = *ranked;
+    else
     {
 	std::vector<FnTemplateDef> *mi =
 	    thawed_fn_templates(key);
@@ -68707,7 +69488,7 @@ DataDef *Program::resolve_fn_template_return_by_key(
     // transitively (`std::__1::__declval`, where libc++ actually declares
     // it). Same walk find_template_alias's qualified branch does over its
     // own registry; each registry owns its copy today.
-    if ( cands.empty() )
+    if ( cands.empty() && !ranked )
     {
 	size_t sep = key.rfind("::");
 	if ( sep != std::string::npos )
@@ -68872,7 +69653,9 @@ DataDef *Program::resolve_fn_template_return_by_key(
 	// return_override and broke ref-binding of std::get results in the piecewise
 	// pair ctor (map<K,string>::operator[]). Skip such a kind-mismatched candidate
 	// so the viable by-INDEX overload (or full instantiation) supplies the type.
-	std::map<std::string, DataDef *> binding;
+	// A caller-selected candidate starts from the binding call deduction formed.
+	std::map<std::string, DataDef *> binding =
+	    deduced ? *deduced : std::map<std::string, DataDef *>();
 	std::vector<DataDef *> pack_elems;
 	bool kind_mismatch = false;
 	for ( size_t i = 0; i < explicit_args.size(); ++i )
@@ -71785,6 +72568,33 @@ bool Program::file_scope_implicit_int_declaration(TokenBase *tb)
 	      || n->id() == TokenID::tkSemi || n->id() == TokenID::tkOpSqr);
 }
 
+// Do declaration specifiers holding no type specifier — a storage class or a
+// qualifier alone: `static baz = 42;`, `register m;`, `const k = 5;`,
+// `extern e;` — leave the type to default to int (C89 6.5.2; gcc accepts it
+// in every C mode before C23, knr_supported())? `tn` is the token after the
+// specifiers; it must begin a declarator: `*`, or a name that is not a type.
+bool Program::implicit_int_declarator_at(TokenBase *tn)
+{
+    if ( !tn || !is_c_mode() || !knr_supported() )
+	return false;
+    if ( tn->id() == TokenID::tkMul )
+	return true;
+    if ( tn->type() != TokenType::ttIdentifier )
+	return false;
+    std::string name = ((TokenIdent *)tn)->spelling();
+    return !datatype_map.count(name) && !struct_map.count(name);
+}
+
+// The type token an omitted type specifier implies: the `int` keyword's type,
+// on the heap at `at`'s position — parseDeclaration records its token as
+// TopDecl.origin, which must outlive the caller's frame.
+TokenDataType *Program::implicit_int_type_token(TokenBase *at)
+{
+    TokenDataType *implied = new TokenDataType("int", ddINT);
+    copy_token_location(implied, at);
+    return implied;
+}
+
 TokenBase *Program::consume_balanced_parenthesized_suffix(TokenBase *open)
 {
     if ( !open || open->id() != TokenID::tkOpBrk )
@@ -72298,6 +73108,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    fresh->is_const_method = func->is_const_method;
 	    fresh->is_volatile_method = func->is_volatile_method;
 	    fresh->is_member_template = func->is_member_template;
+	    fresh->declared_unprototyped = is_c_mode();
 	    funcdef_map[id] = fresh;
 	    func = fresh;
 	    func_already_declared = false;
@@ -72313,6 +73124,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    fresh->parameters   = func->parameters;
 	    fresh->is_varargs   = func->is_varargs;
 	    fresh->is_void_params = func->is_void_params;
+	    fresh->declared_unprototyped = func->declared_unprototyped;
 	    fresh->return_types = func->return_types;
 	    fresh->multi_ret_struct = func->multi_ret_struct;
 	    fresh->return_typedef_name = func->return_typedef_name;
@@ -73407,10 +74219,13 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    TokenBase *open = nextToken();
 	    if ( !open || open->id() != TokenID::tkOpBrk )
 	    {
-		// Mixed declaration list: `float fx(), inita(), a, b;`
-		// After a function declarator continuation, fall back to the
-		// normal variable declarator parser when the next name is not
-		// followed by `(`.
+		// Mixed declaration list: `float fx(), inita(), a, b;` — the
+		// next declarator is an object's. It continues as the list's
+		// TAIL through the stream, push_declarator_list_tail's model:
+		// the statement parser reads `T a ...;` as the next declaration
+		// and keeps what it returns. A parseDeclaration call made here
+		// dropped that — the initializer, so a block-scope
+		// `int f(int), b = 2;` left b uninitialized.
 		// HEAP token, never a stack local: parseDeclaration records tb
 		// as TopDecl.origin (and MC11-IR keeps originating tokens for
 		// the life of the tree), so a stack token here is a dangling
@@ -73423,8 +74238,8 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 		tdt->file = nt->file;
 		tdt->line = nt->line;
 		tdt->column = nt->column;
+		pushToken(tdt);
 		pop_param_scope();
-		parseDeclaration(tdt);
 		return;
 	    }
 	    pop_param_scope();
@@ -73753,6 +74568,11 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
     {
 	DBG(cout << "parseFunction() setting code->method" << endl);
 	code->method = method;
+	// A parameter's scope is the body's outermost block: its name hides a
+	// file-scope typedef of the same spelling there (C11 6.2.1p4).
+	for ( Variable *pv : method->parameters )
+	    if ( pv && !pv->name.empty() )
+		hide_typedef_name_in_block(pv->name);
     }
     else
     {
@@ -74997,6 +75817,45 @@ TokenStructLit *Program::fit_char_array(TokenStructLit *chars, size_t count,
     return chars;
 }
 
+// A string literal ENCLOSED, initializing a character array: in braces,
+// `char c[] = {"ab" "cd"};` (C11 6.7.9p14: "optionally enclosed in braces"),
+// or in parentheses, `char a[7] = ("wat");` (gcc and clang take it;
+// -pedantic: "array initialized from parenthesized string constant"). The
+// stream sits AT the `{` or `(`: when the enclosure holds exactly one string
+// literal (adjacent literals, which literal_char_array concatenates,
+// included; a trailing `,` in braces) it is removed and true is returned;
+// any other shape leaves the stream unchanged.
+bool Program::unwrap_enclosed_string_literal()
+{
+    const bool braced = !tokens.empty() && tokens[0]
+		     && tokens[0]->id() == TokenID::tkOpBrc;
+    size_t n = 0;	// the opening run: one `{`, or any number of `(`
+    while ( n < tokens.size() && tokens[n]
+	 && tokens[n]->id() == (braced ? TokenID::tkOpBrc : TokenID::tkOpBrk)
+	 && !(braced && n == 1) )
+	++n;
+    size_t end = n;	// past the run of string literals
+    while ( end < tokens.size() && tokens[end]
+	 && tokens[end]->type() == TokenType::ttString )
+	++end;
+    if ( !n || end == n )
+	return false;
+    size_t close = end;
+    if ( braced && close < tokens.size() && tokens[close]
+      && tokens[close]->id() == TokenID::tkComma )
+	++close;
+    for ( size_t k = 0; k < n; ++k )
+	if ( close + k >= tokens.size() || !tokens[close + k]
+	  || tokens[close + k]->id() != (braced ? TokenID::tkClBrc
+						 : TokenID::tkClBrk) )
+	    return false;
+    std::vector<TokenBase *> literal;
+    for ( size_t i = n; i < end; ++i )
+	literal.push_back(tokens[i]);
+    tokens.splice_front(close + n, literal);
+    return true;
+}
+
 TokenStructLit *Program::literal_char_array(TokenStr *strtok, size_t count,
 					    bool wide, bool pad)
 {
@@ -75938,12 +76797,26 @@ size_t Program::record_global_top_decl(Variable *var, TokenBase *origin, TokenDe
 void Program::push_declarator_list_tail(TokenBase *type_tb, bool is_static,
 					bool is_thread_local, bool is_volatile,
 					bool is_const, bool is_constexpr, bool is_inline,
-					size_t specifier_align)
+					size_t specifier_align, Variable *specifier_cleanup,
+					bool specifier_weak)
 {
     declarator_list_continues = true;
-    // The specifiers' alignment, which no pushed token spells: the tail's
-    // parseDeclaration takes it as a specifier run's (`AL int a, b;`).
+    // Every declarator of the list names the SAME type (C11 6.7p1): a tagless
+    // aggregate named by more than one declarator is recorded so the CIR
+    // emits it once, by its synthetic tag (`struct { short s; } a, b;` makes
+    // `a = b` an assignment between objects of one type).
+    if ( TokenDataType *tdt = dynamic_cast<TokenDataType *>(type_tb) )
+	if ( DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(&tdt->definition) )
+	    if ( sdd->is_anonymous )
+		shared_anonymous_aggregates.insert(sdd);
+    // The specifiers' alignment and cleanup, which no pushed token spells: the
+    // tail's parseDeclaration takes them as a specifier run's (`AL int a, b;`).
     parsing_decl_align = specifier_align;
+    pending_cleanup_function = specifier_cleanup;
+    // The specifiers' `weak` is the tail's; a `weak` in this declarator's own
+    // groups (`int a __attribute__((weak)), b;`) is not.
+    pending_specifier_weak = specifier_weak;
+    pending_weak_binding = false;
     pushToken(type_tb->clone_origin());
     if ( is_volatile )
 	pushToken(new TokenVOLATILE());
@@ -75974,12 +76847,17 @@ void Program::push_declarator_list_tail(TokenBase *type_tb, bool is_static,
 // guard). `static` wins: internal linkage is never vague.
 void Program::apply_declaration_storage(Variable *var, TokenCpnd *code,
 					bool is_static, bool is_thread_local,
-					bool is_inline, size_t align)
+					bool is_inline, size_t align,
+					Variable *cleanup)
 {
     if ( !var )
 	return;
     if ( align > var->explicit_align )
 	var->explicit_align = align;
+    // cleanup(f) applies to an automatic object only; gcc ignores it on a
+    // static or file-scope one (with a warning), and so does madc.
+    if ( cleanup && !is_static && !is_thread_local && !file_scope_compound(code) )
+	var->cleanup_function = cleanup;
     // A block-scope `thread_local` implies `static` in C++ ([dcl.stc]/3); C
     // requires the `static` spelled (C11 6.7.1p3 — c2mir diagnoses it, as
     // gcc does).
@@ -75990,10 +76868,83 @@ void Program::apply_declaration_storage(Variable *var, TokenCpnd *code,
 	var->flags |= vfTHREADLOCAL;
     if ( is_inline && !is_static && file_scope_compound(code) )
 	var->flags |= vfLINKONCE;
+    // `weak` (the specifiers' or this declarator's groups): a binding of an
+    // external-linkage object; gcc ignores it on an automatic one and
+    // refuses it on a static one, neither of which madc binds.
+    if ( pending_weak_binding && !is_static && file_scope_compound(code) )
+	var->flags |= vfWEAK;
+}
+
+// A SCALAR's braced initializer (C11 6.7.9p11: "optionally enclosed in
+// braces"; `T x{v}`, [dcl.init.list]/3): the stream sits AT the `{`. The
+// list is rewritten as its one element in parentheses, `{ v [,] }` -> `( v )`,
+// for the declaration's `= expr` reader. `{}` is `( 0 )` (value-/empty
+// initialization); braces around the element (`{{v}}`, gcc's "braces around
+// scalar initializer") are peeled; elements after the first (gcc and clang:
+// "excess elements in scalar initializer", dropped) are dropped.
+void Program::unwrap_scalar_braced_initializer()
+{
+    // The `}` matching the `{` at tokens[open]: the one delimiter tracker.
+    // `elem_end` gets the first top-level `,` inside it (or the close).
+    auto match_brace = [this](size_t open, size_t &elem_end) -> size_t {
+	DelimDepth d(this);
+	elem_end = 0;
+	size_t i = open;
+	while ( i < tokens.size() && tokens[i] )
+	{
+	    if ( i > open && d.brace == 1 && !d.paren && !d.square && !d.angle
+	      && tokens[i]->id() == TokenID::tkComma && !elem_end )
+		elem_end = i;
+	    i += delim_scan_step(tokens, i, d);
+	    if ( !d.brace )
+		return i - 1;
+	}
+	Throw(tokens[open]) << "Unterminated '{' in initializer" << flush;
+	return 0;
+    };
+    TokenBase *open = tokens[0];
+    size_t elem_end = 0;
+    const size_t close = match_brace(0, elem_end);
+    if ( !elem_end )
+	elem_end = close;
+    size_t first = 1;
+    // `{{v}}`: the element is itself one braced list spanning it.
+    while ( first < elem_end && tokens[first]->id() == TokenID::tkOpBrc )
+    {
+	size_t inner_end = 0;
+	size_t inner_close = match_brace(first, inner_end);
+	if ( inner_close + 1 != elem_end )
+	    break;
+	if ( !inner_end )
+	    inner_end = inner_close;
+	elem_end = inner_end;
+	++first;
+    }
+    std::vector<TokenBase *> out;
+    TokenBase *lp = new TokenOpBrk();
+    copy_token_location(lp, open);
+    out.push_back(lp);
+    if ( first == elem_end )
+    {
+	TokenBase *zero = new TokenInt(0);
+	copy_token_location(zero, open);
+	out.push_back(zero);
+    }
+    for ( size_t i = first; i < elem_end; ++i )
+	out.push_back(tokens[i]);
+    TokenBase *rp = new TokenClBrk();
+    copy_token_location(rp, tokens[close]);
+    out.push_back(rp);
+    tokens.splice_front(close + 1, out);
 }
 
 TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 {
+    // C's `auto` before C23 is a storage-class specifier, not a deduced type
+    // (C11 6.7.1): `auto int d = 4;` declares an int, and `auto c = a + b;`
+    // an implicit int. The declaration is the one that follows it.
+    if ( &tb->definition == &ddAUTO && auto_is_storage_class() )
+	return parse_storage_class_declaration("auto", 0);
     declarator_list_continues = false;
     TokenBase *r = parse_declaration_body(tb, is_static);
     // An object declaration owes its terminator as its last act — unless its
@@ -76073,6 +77024,25 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 	TokenBase *pk = peekToken();
 	if ( !pk )
 	    break;
+	// `T typedef D;` — `typedef` is a storage-class specifier, legal after
+	// the type as well (C11 6.7p1, 6.7.1): the declaration declares an
+	// alias. The specifiers read so far are re-fed behind the `typedef`
+	// and the statement is TokenTYPEDEF::parse's, the one owner of alias
+	// declarations (push_declarator_list_tail's re-feed model).
+	if ( pk->id() == TokenID::tkTYPEDEF )
+	{
+	    if ( gotstatic || gotthreadlocal || parsing_extern_decl )
+		Throw(pk) << "multiple storage classes in declaration specifiers" << flush;
+	    TokenTYPEDEF *td = dynamic_cast<TokenTYPEDEF *>(nextToken());
+	    if ( !td )
+		Throw(pk) << "Expecting 'typedef'" << flush;
+	    pushToken(tb->clone_origin());
+	    if ( gotvolatile )
+		pushToken(new TokenVOLATILE());
+	    if ( gotconst )
+		pushToken(new TokenCONST());
+	    return td->parse(*this);
+	}
 	if ( pk->id() == TokenID::tkSTATIC )
 	{
 	    gotstatic = true;
@@ -76116,6 +77086,18 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 	break;
     }
     object_align = decl_align;
+    // A cleanup(f) in the statement's head or among the specifiers' groups is
+    // every declarator's; one in a declarator's own groups is its object's.
+    Variable *decl_cleanup = pending_cleanup_function;
+    pending_cleanup_function = NULL;
+    Variable *object_cleanup = decl_cleanup;
+    // Likewise `weak`: the head's and the specifiers' is every declarator's
+    // (a list's tail receives it as pending_specifier_weak); pending_weak_binding
+    // stays armed so a function declarator's parse and a declarator's own
+    // groups add to it.
+    bool decl_weak = pending_weak_binding || pending_specifier_weak;
+    pending_specifier_weak = false;
+    pending_weak_binding = decl_weak;
 
     // check for pointer declarator(s): type * [*...] identifier.
     // base_type is the declared type without any `*`s — comma-continuations
@@ -76168,6 +77150,7 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
     // sentinel, vla_size_expr the outermost runtime count), a typedef'd array
     // base still flattens BEHIND them (alias dims last, as the rotate left them).
     bool decl_name_in_parens = false;
+    bool decl_outer_unbounded = false;	// `T a[]`: no outermost bound written
     int decl_fnptr_stars = -1;
     int n_decl_stars = 0;	// the declarator's top-level stars (the function-typedef variable rule below)
     {
@@ -76186,6 +77169,7 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 	if ( is_fnptr_base )
 	    decl_fnptr_stars = vd.ptr_depth;	// an FPTR base: the alias + this count spell the variable (`DO_FUN *fp`)
 	decl_name_in_parens = vd.saw_parens;
+	decl_outer_unbounded = vd.outer_unbounded;
 	have_decl_id = !vd.name.empty();
 	if ( have_decl_id )
 	{
@@ -76506,7 +77490,7 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 	bool alloc = (!code || gotstatic) ? true : false;
 	var = declare_object(code, *auto_decl_type, id, 1, alloc, true, tb);
 	apply_declaration_storage(var, code, gotstatic, gotthreadlocal, gotinline,
-				  object_align);
+				  object_align, object_cleanup);
 	if ( !decl_typedef_alias.empty() )
 	    var->typedef_name = decl_typedef_alias;
 	TokenDecl *td = new TokenDecl(*var);
@@ -76548,6 +77532,11 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
     {
 	TokenBase *attr = nextToken();
 	nt = consume_gnu_attributes(attr, NULL, &decl_alias_target, &object_align);
+	if ( pending_cleanup_function )
+	{
+	    object_cleanup = pending_cleanup_function;
+	    pending_cleanup_function = NULL;
+	}
 	if ( nt )
 	{
 	    pushToken(nt);
@@ -76655,7 +77644,7 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 				 NULL, decl_object_cv);
 	    var->fnptr_explicit_stars = decl_fnptr_stars;
 	    apply_declaration_storage(var, code, gotstatic, gotthreadlocal, gotinline,
-				      object_align);
+				      object_align, object_cleanup);
 	    if ( !decl_typedef_alias.empty() )
 		var->typedef_name = decl_typedef_alias;
 	    TokenDecl *td = new TokenDecl(*var);
@@ -76737,7 +77726,8 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 		if ( !looks_like_next_decl )
 		    Throw(peek ? peek : tb) << "Expecting identifier after ',' in declaration" << flush;
 		push_declarator_list_tail(tb, gotstatic, gotthreadlocal, gotvolatile,
-					  gotconst, gotconstexpr, gotinline, decl_align);
+					  gotconst, gotconstexpr, gotinline, decl_align,
+					  decl_cleanup, decl_weak);
 	    }
 	    // A FILE-SCOPE ctor-syntax declaration (`Cls g(args);`, incl. an
 	    // out-of-class static member definition `Cls Cls::less(args);`)
@@ -76783,6 +77773,14 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
     // '=' in front of the '{'. Covers scalars, aggregates/arrays, and class
     // value-init uniformly. The `(` ctor-call syntax is handled above; this is the
     // brace form. References (`T& x{...}`) keep the explicit-init requirement.
+    // An aggregate takes a brace list; anything else is a scalar, whose braced
+    // initializer is its one element.
+    DataDef *brace_target = decl_type ? decl_type->unqualified() : NULL;
+    bool brace_target_is_aggregate = !arr_dims.empty()
+	|| (brace_target && (dynamic_cast<DataDefSTRUCT *>(brace_target) != NULL
+			  || brace_target->as_carray_dd()
+			  || brace_target->is_simd()
+			  || brace_target->basetype() == BaseType::btClass));
     if ( nt->id() == TokenID::tkOpBrc && ret_is_ref
       && decl_type->as_carray_dd() )
     {
@@ -76793,47 +77791,27 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
     }
     else if ( nt->id() == TokenID::tkOpBrc && !ret_is_ref )
     {
-	bool is_aggregate = !arr_dims.empty()
-	    || dynamic_cast<DataDefSTRUCT *>(decl_type) != NULL
-	    || (decl_type && decl_type->is_simd())
-	    || (decl_type && decl_type->basetype() == BaseType::btClass);
-	TokenBase *brc = nextToken();            // consume '{'
 	TokenBase *syn = new TokenAssign();
-	syn->file = brc->file; syn->line = brc->line; syn->column = brc->column;
-	if ( is_aggregate )
-	{
-	    pushToken(brc);                      // restore '{' -> '= { ... }'
-	    pushToken(syn);
-	}
-	else
-	{
-	    // Scalar brace-init: a scalar takes 0 or 1 element, so UNWRAP to
-	    // `= <inner>` (empty `{}` -> value-init `= 0`). The aggregate brace-list
-	    // path is only for arrays/structs/classes; routing a scalar there hits a
-	    // separate scalar `= {N}` defect, so unwrap to plain `= expr` instead.
-	    std::vector<TokenBase *> inner;
-	    int depth = 1;
-	    while ( depth > 0 )
-	    {
-		TokenBase *t = nextToken();
-		if ( !t )
-		    Throw(brc) << "Unterminated '{' in initializer" << flush;
-		if ( t->id() == TokenID::tkOpBrc ) { depth++; }
-		else if ( t->id() == TokenID::tkClBrc ) { if ( --depth == 0 ) break; }
-		inner.push_back(t);
-	    }
-	    if ( inner.empty() )
-	    {
-		TokenBase *zero = new TokenInt(0);
-		zero->file = brc->file; zero->line = brc->line; zero->column = brc->column;
-		inner.push_back(zero);
-	    }
-	    // a splice: `T x{v}` goes back as `T x = v`.
-	    for ( size_t i = inner.size(); i-- > 0; )
-		pushToken(inner[i]);             // re-push inner tokens in order
-	    pushToken(syn);                      // '= <inner...>'
-	}
+	copy_token_location(syn, nt);
+	// A scalar `T x{v}` reads as `T x = (v)`; an aggregate keeps its list.
+	if ( !brace_target_is_aggregate )
+	    unwrap_scalar_braced_initializer();
+	pushToken(syn);
 	nt = peekToken();                        // nt is the synthetic '='
+    }
+    // C11 6.7.9p11: a scalar's initializer may be enclosed in braces —
+    // `T x = {v}` reads as `T x = (v)`. C++11 copy-list-initialization has
+    // its own route (respell_braced_list_for_target).
+    else if ( nt->id() == TokenID::tkAssign && !ret_is_ref
+	   && !brace_target_is_aggregate && !cpp_keyword_active(STD_CPP11)
+	   && &tb->definition != &ddAUTO
+	   && tokens.size() > 1 && tokens[1]
+	   && tokens[1]->id() == TokenID::tkOpBrc )
+    {
+	TokenBase *eq = nextToken();		// '='
+	unwrap_scalar_braced_initializer();
+	pushToken(eq);
+	nt = peekToken();
     }
 
     // A ZERO-star declarator whose TYPE is a function TYPEDEF (`typedef void
@@ -76930,7 +77908,7 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 						  true, tb, &arr_dims, decl_object_cv);
 	    provisional_decl_var->fnptr_explicit_stars = decl_fnptr_stars;
 	    apply_declaration_storage(provisional_decl_var, code, gotstatic,
-				      gotthreadlocal, gotinline, object_align);
+				      gotthreadlocal, gotinline, object_align, object_cleanup);
 	    if ( parsing_extern_decl )
 		provisional_decl_var->flags |= vfEXTERN;
 	    // Set dims early so self-referencing init expressions like
@@ -76949,6 +77927,12 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 	    TokenBase *peek0 = peekToken();
 	    if ( !peek0 )
 		Throw(nt) << "Expected initializer after '='" << flush;
+	    // `char c[] = {"ab"};` and `char a[7] = ("wat");` initialize a
+	    // character array from the enclosed literal.
+	    if ( arr_dims.size() == 1 && is_char_array_element_type(decl_type)
+	      && (peek0->id() == TokenID::tkOpBrc || peek0->id() == TokenID::tkOpBrk)
+	      && unwrap_enclosed_string_literal() )
+		peek0 = peekToken();
 
 	    auto looks_like_wide_string_payload = [](TokenBase *tok) -> bool {
 		if ( !tok || tok->type() != TokenType::ttString )
@@ -77201,6 +78185,21 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 		    cursor.positional(parseExpression(next_init));
 		finish_list_element(TokenID::tkClBrc, "}");
 	    }
+	    // An array of aggregates (rows, structs) whose list mixes braced
+	    // elements and brace-elided ones (`{{1, 2}, 3, 4, 5}`) is placed by
+	    // brace elision against the type (C11 6.7.9p20); an all-braced or
+	    // all-elided list keeps its clauses for the consumers.
+	    if ( !cursor.member_indexed() && !arr_dims.empty()
+	      && (arr_dims.size() > 1
+		  || InitializerCursor::Shape::of(decl_type).aggregate()) )
+	    {
+		bool braced_clause = false, elided_clause = false;
+		for ( TokenBase *clause : init_list )
+		    (dynamic_cast<TokenStructLit *>(clause) ? braced_clause
+							    : elided_clause) = true;
+		if ( braced_clause && elided_clause )
+		    cursor.elide_braces();
+	    }
 	    }
 	    // Infer size for arrays with dims[0] == 0; validate count
 	    if ( !arr_dims.empty() )
@@ -77260,6 +78259,8 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 				 &arr_dims, decl_object_cv);
 	    var->fnptr_explicit_stars = decl_fnptr_stars;
 	}
+	if ( var && decl_outer_unbounded )
+	    var->flags |= vfUNBOUNDED;
 	if ( var && !decl_asm_alias.empty() )
 	{
 	    var->asm_label = decl_asm_alias;
@@ -77293,7 +78294,7 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 	bool shared_global_extern_ref =
 	    is_shared_global_extern_reference(code, var);
 	apply_declaration_storage(var, code, gotstatic, gotthreadlocal, gotinline,
-				  object_align);
+				  object_align, object_cleanup);
 	// Mark a SCALAR `const`-declared variable so the CIR backend can enforce
 	// read-only-ness (reject assignment to it — P2.4). The variable itself is
 	// const only when const qualifies the VALUE (`const int x`) or is the
@@ -77488,69 +78489,6 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 	    td->baked_static_init = true; // mark as the defining decl (vs extern)
 	}
 
-	// Global/static SIMD with constant init: write directly to heap storage.
-	if ( !code && var && var->data && var->type && var->type->is_simd()
-	  && !td->init_list.empty() )
-	{
-	    DataDefSIMD *vdd = static_cast<DataDefSIMD *>(var->type);
-	    size_t lane_size = vdd->element_type ? vdd->element_type->size : 0;
-	    bool all_constant = lane_size > 0;
-
-	    // Case 1: array of SIMD vectors — each init_list entry is a
-	    // TokenStructLit whose inits hold the per-lane integer values.
-	    if ( !arr_dims.empty() && all_constant )
-	    {
-		for ( size_t ei = 0; all_constant && ei < td->init_list.size(); ++ei )
-		{
-		    TokenStructLit *slit = dynamic_cast<TokenStructLit *>(td->init_list[ei]);
-		    if ( !slit ) { all_constant = false; break; }
-		    for ( size_t li = 0; all_constant && li < slit->inits.size(); ++li )
-		    {
-			int64_t v = 0;
-			if ( !literal_integer_value(slit->inits[li], v) )
-			    all_constant = false;
-		    }
-		}
-		if ( all_constant )
-		{
-		    char *base = (char *)var->data;
-		    size_t simd_bytes = vdd->size;
-		    for ( size_t ei = 0; ei < td->init_list.size(); ++ei )
-		    {
-			TokenStructLit *slit = static_cast<TokenStructLit *>(td->init_list[ei]);
-			for ( size_t li = 0; li < vdd->lane_count && li < slit->inits.size(); ++li )
-			{
-			    int64_t v = 0;
-			    literal_integer_value(slit->inits[li], v);
-			    memcpy(base + ei * simd_bytes + li * lane_size, &v, lane_size);
-			}
-		    }
-		    td->init_list.clear();
-		}
-	    }
-	    // Case 2: single SIMD variable — init_list holds flat lane values.
-	    else if ( arr_dims.empty() && all_constant )
-	    {
-		for ( size_t i = 0; all_constant && i < td->init_list.size(); ++i )
-		{
-		    int64_t v = 0;
-		    if ( !literal_integer_value(td->init_list[i], v) )
-			all_constant = false;
-		}
-		if ( all_constant )
-		{
-		    char *base = (char *)var->data;
-		    for ( size_t i = 0; i < vdd->lane_count && i < td->init_list.size(); ++i )
-		    {
-			int64_t v = 0;
-			literal_integer_value(td->init_list[i], v);
-			memcpy(base + i * lane_size, &v, lane_size);
-		    }
-		    td->init_list.clear();
-		}
-	    }
-	}
-
 	if ( ret_is_ref && nt->id() == TokenID::tkAssign
 	  && arr_dims.empty() && init_list.empty() )
 	{
@@ -77605,6 +78543,20 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 	}
 	else if ( nt->id() == TokenID::tkAssign && arr_dims.empty() && init_list.empty() )
 	{
+	    // A const-declared scalar integer bakes its initializer's VALUE when
+	    // that is a constant expression (below); read it before the
+	    // expression parse moves the stream past it. A volatile object is
+	    // never usable in a constant expression ([expr.const]). A dependent
+	    // pattern's evaluator would measure a parameter's PLACEHOLDER
+	    // (`sizeof(T)`), so a pattern bakes only what its parsed tree holds
+	    // without dependence (try_eval_known_integer, below).
+	    bool bakes_const_value = (var->flags & vfCONSTDECL)
+		&& var->type && var->type->is_integer()
+		&& !var->type->is_pointer() && !var->type->is_volatile();
+	    int64_t const_init_value = 0;
+	    bool const_init_folds = bakes_const_value
+		&& !dependent_parse_in_progress
+		&& const_initializer_value(const_init_value);
 	    DBG(std::cout << "parseDeclaration() calling td->initialize = parseExpression" << std::endl);
 	    // conditional=true so `;` stops without being consumed, which lets
 	    // the comma-continuation loop below distinguish "end of decl" (peek
@@ -77651,25 +78603,26 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 	    // the trivial vs per-element specialization by these const bools, so
 	    // without it vector<string> realloc routed string elements through
 	    // the int __do_uninit_copy and corrupted them. Reads still fold to
-	    // the constant in CIR; the SPEC_DECL initializer still runs.
-	    if ( (var->flags & vfCONSTDECL)
-	      && var->type && var->type->is_integer()
-	      && !var->type->is_pointer() )
+	    // the constant in CIR; the SPEC_DECL initializer still runs. The
+	    // value is the one constant evaluator's (const_initializer_value,
+	    // read above): `N * 2`, a constexpr call; an initializer that is not
+	    // a constant expression bakes nothing and the object reads as itself.
+	    if ( bakes_const_value && dependent_parse_in_progress )
 	    {
 		TokenAssign *cta = dynamic_cast<TokenAssign *>(td->initialize);
-		int64_t cval = 0;
-		if ( cta && cta->right
-		  && try_eval_known_integer(cta->right, cval) )
+		const_init_folds = cta && cta->right
+		    && try_eval_known_integer(cta->right, const_init_value);
+	    }
+	    if ( const_init_folds )
+	    {
+		if ( !var->data && var->type->size > 0 )
 		{
-		    if ( !var->data && var->type->size > 0 )
-		    {
-			var->data = calloc(1, Variable::slot_size(*var->type));
-			if ( var->data )
-			    var->flags |= vfALLOC;
-		    }
-		    if ( var->data && var->set(cval) )
-			var->flags |= vfCONSTBAKED;
+		    var->data = calloc(1, Variable::slot_size(*var->type));
+		    if ( var->data )
+			var->flags |= vfALLOC;
 		}
+		if ( var->data && var->set(const_init_value) )
+		    var->flags |= vfCONSTBAKED;
 	    }
 	}
 	update_pointer_object_size_hints(td->initialize);
@@ -77715,7 +78668,8 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 		// Push back a synthetic base-type token so the next parseStatement
 		// sees it as the start of a new declaration.
 		push_declarator_list_tail(tb, gotstatic, gotthreadlocal, gotvolatile,
-					  gotconst, gotconstexpr, gotinline, decl_align);
+					  gotconst, gotconstexpr, gotinline, decl_align,
+					  decl_cleanup, decl_weak);
 	    }
 	}
 
@@ -78602,7 +79556,10 @@ TokenBase *Program::parseStatement(TokenBase *tb)
     // declarator list's tail re-set it for the next statement); one that
     // declared nothing (`AL struct S { ... };`, a typedef) leaves it behind.
     if ( !(r && r->as_decl_tok()) )
+    {
 	parsing_decl_align = 0;
+	pending_cleanup_function = NULL;
+    }
     // The statement's own terminator, paid before its extent is stamped so
     // the extent includes it (as an expression statement's always has).
     StatementTerminator owed = terminator_scope.close();
@@ -78932,9 +79889,7 @@ TokenBase *Program::parseStatementBody(TokenBase *tb)
 	    if ( file_scope_implicit_int_declaration(tb) )
 	    {
 		pushToken(tb);
-		TokenDataType *implied = new TokenDataType("int", ddINT32);
-		copy_token_location(implied, tb);
-		return parseDeclaration(implied);
+		return parseDeclaration(implicit_int_type_token(tb));
 	    }
 	    // check if identifier is a user-defined type (class/struct registered in datatype_map)
 	    {
@@ -80278,6 +81233,9 @@ size_t Program::record_throw_diagnostic(const std::exception &e,
 {
     set_error(phase, Throw.str().empty() ? e.what() : Throw.str(),
 	      file, line, column, end_line, end_column);
+    // sync renders unless muted, and only a Throw it ran fills the buffer.
+    diagnostics.back().rendered = !DiagnosticRenderMute::active
+				&& !Throw.str().empty();
     return diagnostics.size() - 1;
 }
 
@@ -81123,6 +82081,11 @@ static EntryValueRoot entry_value_root(TokenBase *e)
     if ( TokenCallFunc *tcf = e->as_callfunc_tok() )
 	return tcf->call_returns_reference() ? EntryValueRoot::Referenced
 					     : EntryValueRoot::Temporary;
+    // An overloaded operator returning a reference designates an existing
+    // object the same way (`cout << x` is cout).
+    if ( TokenOperator *to = e->as_operator_tok() )
+	if ( to->resolved_reference )
+	    return EntryValueRoot::Referenced;
     if ( TokenTerQ *tq = dynamic_cast<TokenTerQ *>(e) )
     {
 	EntryValueRoot a = entry_value_root(tq->true_expr);

@@ -1,0 +1,3 @@
+a_secret=100 from_b=300
+run-rc=0
+bad-run: -1

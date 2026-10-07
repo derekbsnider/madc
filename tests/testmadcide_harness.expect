@@ -1,0 +1,6 @@
+library: ok=1 rows=0
+harness-options: 1 options
+harness-closed: 1
+harness-command: options 1
+harness-typed: caret=1 untitled=0
+run: status=0

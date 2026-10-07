@@ -1,0 +1,123 @@
+// View ▸ Program arguments (chthonia parity row, Thonny's View ▸ Program
+// arguments): the words F5's run passes its main after the path, typed in a
+// prompt (`progargs`) and split the way Thonny splits them — Python's
+// shlex.split (python::shlex_split). Oracle: Thonny runs `%Run hello.py a b`
+// with sys.argv = [hello.py, a, b], quoted words kept whole; a C program's
+// argv is the same list. Pins:
+//   1. `-n 3 "a file.txt"`: the %run line shows them as typed, main sees
+//      argc 4 and the three words (the quoted one whole);
+//   2. the prompt starts with the current words;
+//   3. an unclosed quote is refused and the old words stay;
+//   4. emptied, the arguments are none and main sees argc 1.
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+
+#include "../tools/madcide/include/madcide/harness"	// <madcide/harness>: ev_*, settle, enter_line
+
+long transcript_size(long w, long es)
+{
+    long rd = repl_doc_if_any(w, es);
+    return rd == 0 ? 0 : ui::text_size(w, rd);
+}
+
+void transcript_since(var &out, long w, long es, long from)
+{
+    var t = "";
+    long rd = repl_doc_if_any(w, es);
+    if ( rd != 0 )
+	ui::text(t, w, rd);
+    out = t.substr(from, strlen(t.c_str()) - from);
+}
+
+// Answer the Program arguments prompt with `text` (after `erase` backspaces
+// over what it started with).
+void set_args(IdeSession &S, long doc, long w, long es, const char *text, long erase)
+{
+    var e;
+    ev_action(e, "progargs", "");
+    S.apply_ide_event(doc, e);
+    for ( long i = 0; i < erase; i = i + 1 )
+    {
+	ev_key(e, "backspace");
+	S.apply_ide_event(doc, e);
+    }
+    if ( strlen(text) > 0 )
+    {
+	ev_text(e, text);
+	S.apply_ide_event(doc, e);
+    }
+    ev_key(e, "enter");
+    S.apply_ide_event(doc, e);
+}
+
+void run_f5(IdeSession &S, long doc, long w, long es, const char *label)
+{
+    long mark = transcript_size(w, es);
+    var e;
+    ev_action(e, "replrun", "f5");
+    S.apply_ide_event(doc, e);
+    settle(w, es, false);
+    var got;
+    transcript_since(got, w, es, mark);
+    array lines;
+    php::explode(lines, "\n", got.c_str());
+    for ( var l : lines )
+	if ( rust::contains(l.c_str(), "%run") != 0 || rust::contains(l.c_str(), "arg") != 0 )
+	    println("{}: {}", label, php::trim(l));
+}
+
+int main()
+{
+    const char *path = "madc_ide_progargs.mad";
+    php::file_put_contents(path, "#include <stdio.h>\n"
+	"int main(int argc, char **argv)\n"
+	"{\n"
+	"    printf(\"argc %d\\n\", argc);\n"
+	"    for ( int i = 1; i < argc; i++ )\n"
+	"        printf(\"arg %d [%s]\\n\", i, argv[i]);\n"
+	"    return 0;\n"
+	"}\n");
+    long w = ui::world_new();
+    long doc = setup_editor(w, path, false);
+    long es = ui::entity_by_name(w, "editor-state");
+    builtins_activate(w, es);
+    ui::set(w, es, "profile_dir", "tools/madcide/profiles");
+    ui::set(w, es, "profile", "joe");
+    ui::set(w, lang_world(w), "std", (long)madc::fkC11);
+    IdeSession S;
+    S.attach(w, es);
+
+    set_args(S, doc, w, es, "-n 3 \"a file.txt\"", 0);
+    var m;
+    ui::get(m, w, es, "msg");
+    println("set: msg=[{}]", m);
+    run_f5(S, doc, w, es, "run");
+
+    // The prompt starts with the current words.
+    var e;
+    ev_action(e, "progargs", "");
+    S.apply_ide_event(doc, e);
+    var pin;
+    ui::get(pin, w, es, "pinput");
+    println("prefilled: [{}]", pin);
+    ev_key(e, "esc");
+    S.apply_ide_event(doc, e);
+
+    // An unclosed quote: refused, the words kept.
+    set_args(S, doc, w, es, " \"open", 0);
+    ui::get(m, w, es, "msg");
+    var kept;
+    ui::get(kept, w, es, "progargs");
+    println("bad: msg=[{}] kept=[{}]", m, kept);
+
+    // Emptied: none.
+    set_args(S, doc, w, es, "", strlen(kept.c_str()));
+    ui::get(m, w, es, "msg");
+    println("cleared: msg=[{}]", m);
+    run_f5(S, doc, w, es, "run-none");
+
+    S.close();				// stops the pump and the session
+    php::unlink(path);
+    return 0;
+}

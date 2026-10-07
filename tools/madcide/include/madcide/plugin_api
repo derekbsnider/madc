@@ -15,7 +15,7 @@
 // <madcide/plugin>), and madcide refuses either when it is not the version
 // it serves. The table below is append-only: an entry added at its end
 // moves this number.
-#define MADCIDE_PLUGIN_API 2
+#define MADCIDE_PLUGIN_API 3
 
 // A contributed command's handler, run by the dispatcher with the command's
 // argument. False = it ended the session (the dispatcher's quit verdict).
@@ -25,7 +25,8 @@ typedef bool (*cmd_handler)(long w, long es, long doc, const char *arg);
 // the kind it subscribed to (repl_event).
 typedef void (*event_handler)(long w, long es, long doc, var &event);
 // The REPL pane's reply events, the kinds an event handler subscribes to:
-// an entry taken, F5's run returned, F5's load refused, the session
+// an entry taken, a file's run returned (F5, %run; or the file loaded with
+// no main to run, %load's), a file's load refused, the session
 // stopped, the session's names answered (replbindings: the reply carries
 // their rows). madcide publishes them and a plugin names them, so this is
 // their one text; reLAST bounds the range. Append-only, as the table is.
@@ -56,6 +57,14 @@ struct ide_api
     // kind, from view): its pane comes up with it active. False = no pane
     // of the layout hosts it (the status line says so). API 2.
     bool (*show)(long w, long es, long kind);
+    // Registration, at activation: a REPL command (plan §7f, the IDE layer)
+    // — `%name ARGS` typed in the REPL pane runs command `code` with ARGS
+    // (its argument) before the session sees the entry, under every prefix
+    // (`.name`, `:name`), and %help lists it with `usage` and `summary`.
+    // False = refused: a name the session's own commands or aliases use, a
+    // name already taken, or no such command. API 3.
+    bool (*repl_command)(long w, const char *name, const char *usage,
+			 const char *summary, long code);
 };
 
 // A plugin library's two entries, looked up by madcide when it loads the
@@ -64,5 +73,11 @@ struct ide_api
 // refuses the plugin).
 typedef long (*plugin_version_fn)();
 typedef bool (*plugin_activate_fn)(const ide_api *api, long w);
+
+// The activation a plugin's code defines (plugin_activate_fn's shape): the
+// entry madcide looks up in a plugin's library, and the address a product
+// that links the plugin hands madcide_main (<madcide/product>). Declared
+// once, here, so a definition of another shape is refused where it is built.
+extern "C" bool madcide_plugin_activate(const ide_api *api, long w);
 
 #endif

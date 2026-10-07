@@ -131,7 +131,12 @@ namespace madc {
     // Persistent parse handles: the compiler-data surfaces above given a
     // LIFETIME. parse_open compiles (NEVER executes) `source` in a child
     // that stays live behind an int64 handle (>= 1; parse errors do not
-    // fail the open — they are the handle's state); parse_open_file opens
+    // fail the open — they are the handle's state); parse_open with a
+    // `standard` (a <bits/file_kinds> code naming a standard — madc::fkC17,
+    // madc::fkCPP17, madc::fkMADC; 0 = the engine's default, which is the
+    // two-argument form's) compiles under that standard, and the handle
+    // keeps it through every refresh (0 = a code that names no standard,
+    // a family head included); parse_open_file opens
     // a TU from disk through the lexer's own file ingestion (0 = the path
     // is unreadable); parse_refresh whole-TU re-parses the handle with
     // new text; parse_close frees it (handles are never reused within a
@@ -152,6 +157,8 @@ namespace madc {
     // Thread contract: a handle is confined to the thread/program that
     // opened it — the runtime-eval machinery's confinement.
     int64_t parse_open(const char *source, const char *filename);
+    int64_t parse_open(const char *source, const char *filename,
+		       int64_t standard);
     int64_t parse_open_file(const char *path);
     bool parse_refresh(int64_t handle, const char *source);
     bool parse_close(int64_t handle);
@@ -284,8 +291,9 @@ namespace madc {
     //       with argv[0] = the handle's filename; stdio is INHERITED —
     //       suspend a tui first). Returns the guest's exit status
     //       (128+signal on a signal death); negative = it never ran:
-    //       -1 bad handle, -2 the parse has errors, -3 fork failed or
-    //       no fork on this platform (win64). ^C reaches the guest
+    //       -1 bad handle, -2 the parse has errors, -3 the child did
+    //       not start (fork failed; Windows: the snapshot or the spawn of
+    //       the child of self, serve_run_child). ^C reaches the guest
     //       alone while it runs (the system(3) discipline).
     // Thread contract: the runtime-eval confinement — a handle is used
     // only from the thread/program that opened it.
@@ -353,6 +361,16 @@ namespace madc {
     // process lifetime; "" = the platform probe failed. Concurrent reads
     // are safe.
     const char *compiler_path();
+    // A Run child of self. Windows has no fork, so parse_run, project_run
+    // and the madcrun:// / madcproj:// channels spawn THIS executable with
+    // the run named in its environment (MADC_RUN_CHILD); serve_run_child
+    // runs that request and exits with the guest's status, and answers -1
+    // in every other process. The initializer below calls it, so a program
+    // that can make the request serves it before its main runs (the
+    // <iostream> ios_base::Init idiom).
+    // Thread contract: process start, before the program's threads.
+    int64_t serve_run_child();
+    static const int64_t __madc_run_child = serve_run_child();
 
     // Value channels between cooperative tasks (MT-2; the Go contract —
     // src/madc_task_chan.cpp carries the full semantics). capacity 0 =
@@ -449,6 +467,21 @@ namespace madc {
     // when it cannot be. A LAZY module row (madcwebview) compiles and
     // runs without its library — ask this before the first call.
     bool module_available(const char *name);
+    // The console of the process that started this one (plan
+    // 2026-10-03-chthonia-windows-macos.md §7a). A Windows program built as
+    // a GUI image (-mwindows, a manifest's "kind": "gui") starts with no
+    // console, so its standard streams go nowhere: console_attach() attaches
+    // it to its parent's console (a command prompt, a terminal, a launcher
+    // that waits for it) and points each standard stream the parent left
+    // without a handle at that console — a stream the parent redirected to a
+    // file or a pipe stays redirected. True = the process has a console now
+    // (or had one); false = its parent has none (Explorer, a shortcut). Every
+    // other platform's program keeps the terminal it was started from: true.
+    // A window program does not attach for its window: closing the console
+    // it attached to would end it. Thread contract: call it once, from main
+    // and before any thread starts — it rebinds the process's standard
+    // streams.
+    bool console_attach();
     // A shared library opened at run time by PATH — a madcide plugin's
     // library, or any madc-built one (plan §41.11a step 4):
     //   library_open: every reference binds at open, so a library whose
@@ -733,15 +766,25 @@ namespace madc {
     //     as one unit (its statics are session names); with text, the text
     //     is the unit and path names it (an editor's buffer), with "" the
     //     file at path. session_run(h, argv): call its main with argv (an
-    //     array of strings: the path, then the arguments). Each returns its
+    //     array of strings: the path, then the arguments).
+    //     session_call(h, argv): %call's call once its file is loaded (argv
+    //     is the offer reply's: the file, then the call's text) — the
+    //     function named after the file, else its main. Each returns its
     //     seq; the replies are `load` (ok, rendered) and `run` (ok, rendered,
-    //     status: main's return value) rows. The cores of %load and %run
-    //     (D25), and madcide's F5 (plan §41.10a).
+    //     status: main's return value; shown: a call's value) rows. The
+    //     cores of %load, %run and %call (D25), and madcide's F5 (plan
+    //     §41.10a).
+    //   session_build(h, path, text, out): %build's build (plan §7f): the
+    //     file built to the executable `out` under the session's standard,
+    //     from `text` (an editor's buffer) or, with "", the file at path.
+    //     Its seq; the reply is a `build` row (ok, shown: what was built,
+    //     rendered, diagnostics).
     //   session_bindings(h): the names the session defined (%whos's rows;
     //     madcide's Variables view, plan §41.11a step 3d). Its seq; the
     //     reply is a `bindings` row whose rows are {name, kind (a
     //     madc::name_kind code), type (the source's spelling), value (an
-    //     object's: no pointer followed, at most 16 elements, 80 columns),
+    //     object's, no type spelled: no pointer followed but a character
+    //     pointer's text, `0x… "Test"`, at most 16 elements, 80 columns),
     //     file, line (where an entry or a loaded file declared it)}, sorted
     //     by name. Answered between entries.
     //   session_poll(reply, h): 1 with a reply, 0 when none waits, -1 when
@@ -753,7 +796,16 @@ namespace madc {
     //     prints comes after it, then its offer row. An offer's state (a
     //     madc::offer_state code), ok, shown, rendered (the diagnostics as the
     //     CLI prints them), submitted, diagnostics (the rows parse_check
-    //     returns); a load's ok, rendered and diagnostics; a run's ok,
+    //     returns), payload (a madc::session_payload code: what a taken
+    //     command asks the pane to do with argv, the file and its
+    //     arguments — load it, run it here, or run it in a fresh session,
+    //     reading an open buffer's live text; load it and session_call
+    //     argv: %call; session_build argv[0] to argv[1]: %build; open
+    //     argv[0] in the editor at line argv[1] when there is one: %open,
+    //     %edit; or, with no argv, end the session: %quit); a load's
+    //     ok, rendered,
+    //     diagnostics and main (the file defined main, so running it runs
+    //     main: one an earlier unit defined is not the file's); a run's ok,
     //     rendered, status (main's) and diagnostics (the rows recorded since
     //     the last entry or load began, the run's own included); a
     //     completion's start and names; a bindings reply's rows; a stop's
@@ -761,6 +813,17 @@ namespace madc {
     //     backend exited).
     //   session_output(out, h): what the program printed since the last call.
     //   session_input(h, text): text for the program's stdin.
+    //   session_interrupt(h): interrupt the running entry (D8): it returns
+    //     to the prompt at its next loop iteration, its offer (or run)
+    //     answering with the runtime diagnostic `interrupted` and the
+    //     session's state kept. A second one before the entry polled ends
+    //     the backend (a stop reply; a fresh backend starts). One while no
+    //     entry runs does nothing. False = no backend.
+    //   session_eof(h): Send EOF (plan §41.12a): the program's standard
+    //     input ends — its reads take what session_input sent, then see the
+    //     end — and the entry after the running one reads a fresh stdin
+    //     (its end-of-file indicator clear). False = no backend, or its
+    //     stdin is the host's terminal (the terminal's own Ctrl-D ends it).
     //   session_restart(h): a new backend; its state starts empty.
     //   session_restart(h, std): the same under another standard (`c17` or
     //     `--std=c17`, as session_open takes it): the language changes.
@@ -768,6 +831,12 @@ namespace madc {
     //     output waits. Made once per handle and reused; it follows restarts,
     //     and a closed session's case is dead.
     //   session_close(h): stop the backend and free the handle.
+    //   session_command_of(out, text): what `text` is as an entry, asked of
+    //     the session's own rule with no session (plan §7f: an IDE answers
+    //     its own commands before the session sees them): false when it is
+    //     no command; else out = {word (the name typed), command (a
+    //     madc::session_command code: none when the session has no such
+    //     command), argument (the rest of its first line)}.
     // Thread contract: a handle is confined to the thread that opened it.
     int64_t session_open(const char *std);
     bool session_running(int64_t handle);
@@ -777,10 +846,16 @@ namespace madc {
     int64_t session_complete(int64_t handle, const char *text, int64_t caret);
     int64_t session_load(int64_t handle, const char *path, const char *text);
     int64_t session_run(int64_t handle, value &argv);
+    int64_t session_call(int64_t handle, value &argv);
+    int64_t session_build(int64_t handle, const char *path, const char *text,
+			  const char *out);
+    bool session_command_of(value &out, const char *text);
     int64_t session_bindings(int64_t handle);
     int64_t session_poll(value &reply, int64_t handle);
     value &session_output(value &out, int64_t handle);
     bool session_input(int64_t handle, const char *text);
+    bool session_interrupt(int64_t handle);
+    bool session_eof(int64_t handle);
     bool session_restart(int64_t handle);
     bool session_restart(int64_t handle, const char *standard);
     int64_t session_readable(int64_t handle);

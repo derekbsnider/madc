@@ -1,0 +1,20 @@
+// puts is C's `int puts(const char *)` (C11 7.21.7.9), and its value is
+// usable: a madc builtin of the same name with a void return shadowed it, so
+// `int n = puts("hello");` failed c2mir's check ("incompatible types in
+// assignment to an arithmetic type lvalue"). gcc and clang print the five
+// lines below; the value itself is the C library's (glibc: length + 1, the
+// UCRT: 0), so only its sign is printed.
+#include <stdio.h>
+
+int main(void)
+{
+    int n = puts("hello");
+    printf("nonneg: %d\n", n >= 0);
+    int m = (int)puts("again");
+    printf("cast: %d\n", m >= 0);
+    if (puts("third") == EOF)
+        printf("cond: eof\n");
+    else
+        printf("cond: ok\n");
+    return 0;
+}

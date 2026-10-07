@@ -56,6 +56,10 @@ header-only shortcut. So the WebView2 script is the precedent only for the
   carries its own. Follow that shape.
 - **Pin to the container's version, 1.7.2** (`provision_container.sh`
   `PKGS_git=libgit2-dev`), so the Linux system lib and the cross builds agree.
+  **Superseded 2026-10-04** (owner: "1.9.7 / 1.8.7 or _newer_"): the pin is
+  v1.9.7 (`src/madcgit.mk`'s `LIBGIT2_TAG`, staged under
+  `$LIBGIT2_DIR/<tag>/`), and Linux links the staged archive too, since
+  Ubuntu's system libgit2 (1.7.2) is below the floor.
 
 The owner may veto (a vetted prebuilt source would be simpler if one exists).
 State the ruling in the plan before writing the fetch/build script.
@@ -97,6 +101,8 @@ The Linux and the bundled Windows/macOS targets are NOT the same:
   ship `libmadcgit.so` as a weak dep and let the OS provide `libgit2.so`
   (`libgit2-dev` / distro package). The rpm/deb can declare libgit2 a
   dependency; the tarball assumes it present. Nothing changes here.
+  (Superseded 2026-10-04: Linux links the staged static archive as the
+  bundles do; no package depends on a system libgit2.)
 - **Windows / macOS pre-compiled bundles** have NO package manager to supply
   libgit2 at runtime, so a `libmadcgit.dll` linked against a *system*
   `libgit2-2.dll` would fail to load and `git::available()` would be false —

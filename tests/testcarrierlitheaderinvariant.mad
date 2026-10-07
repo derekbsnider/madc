@@ -1,0 +1,29 @@
+// A carrier literal's element is typed by the CALLED overload, whatever
+// headers the TU parsed. With <string> parsed, php::rtrim's overload set
+// also holds std::string &rtrim(std::string &); the call below binds
+// rtrim(var &), a const char *, and the literal takes it as text. The
+// oracle is this program without the #include: identical output (the
+// dialect-lean law, carrier semantics never vary with the headers parsed).
+// Before the fix the CIR builder typed the keyed element by the call
+// token's parse-bound set member (the std::string & one) and refused:
+// "cannot initialize a value list element of this type" -- every madcide
+// test on macOS, whose libc++ build parses <string>.
+#include <string>
+
+void put_row(var &rows, var &r)
+{
+	var text = format("{}", "ab  ");
+	rows[] = { "content": php::rtrim(text), "line": r["line"] };
+}
+
+int main()
+{
+	var rows;
+	var r = { "line": 3 };
+	put_row(rows, r);
+	println("keyed: [{}] {}", rows[0]["content"], rows[0]["line"]);
+	var text = format("{}", "  cd");
+	var list = { php::ltrim(text), php::rtrim(text) };
+	println("positional: [{}] [{}]", list[0], list[1]);
+	return 0;
+}

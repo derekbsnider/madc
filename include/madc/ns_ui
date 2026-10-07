@@ -276,9 +276,11 @@ namespace ui {
     // strictly inside a gap collapses FORWARD to the next segment;
     // past the end lands just after the last image; an EMPTY map (a
     // wholly rendered view) answers 0. -1 = malformed map / negative
-    // offset.
+    // offset. lens_to_stored_after answers a boundary on its LATER side
+    // (past a concealed run: where a deletion starting there begins).
     int64_t lens_to_display(value &map, int64_t stored);
     int64_t lens_to_stored(value &map, int64_t display);
+    int64_t lens_to_stored_after(value &map, int64_t display);
 
     // ---- level-1 TUI (R5): the addressable-grid frontend, behind the
     // provider seam (the built-in target is the dependency-free
@@ -429,6 +431,11 @@ namespace ui {
     int64_t side_code(const char *name);
     const char *split_name(int64_t code);
     const char *side_name(int64_t code);
+    // The ICON vocabulary's (<bits/ui_enums> ui::icon) the same way: a menu
+    // row's `{ICON}` word -> its code (none for a word that is not one), and
+    // a code -> its name.
+    int64_t icon_code(const char *name);
+    const char *icon_name(int64_t code);
 
     // ---- script-hosted targets (the web target is one; a test fake is
     // another). A host is a table of C function pointers a madc fragment
@@ -461,7 +468,12 @@ namespace ui {
     // clip_get(host): the platform clipboard's text, read now ("" = it
     // holds none), the host's own until its next call; 0 (NULL) = no
     // clipboard here. Both optional.
-    // LAYOUT CONTRACT with src/ns_ui.cpp — the same nine pointers in the
+    // title(host, text): show text as the window's title — the composed
+    // root's `title` hint, sent when it changes; 0 = shown; optional.
+    // fullscreen(host, on): the window full screen — on = 1 enters, 0
+    // leaves, -1 toggles its current state; 0 = done, nonzero = not here;
+    // optional.
+    // LAYOUT CONTRACT with src/ns_ui.cpp — the same eleven pointers in the
     // same order, append-only, keep both in sync.
     typedef void *(*ui_host_open_fn)(const char *title, const char *page, void *ctx);
     typedef void  (*ui_host_close_fn)(void *host);
@@ -472,6 +484,8 @@ namespace ui {
     typedef int64_t (*ui_host_tick_fn)(void *host, int64_t ms);
     typedef int64_t (*ui_host_clip_set_fn)(void *host, const char *text);
     typedef const char *(*ui_host_clip_get_fn)(void *host);
+    typedef int64_t (*ui_host_title_fn)(void *host, const char *text);
+    typedef int64_t (*ui_host_fullscreen_fn)(void *host, int64_t on);
     struct ui_host_ops {
 	ui_host_open_fn  open;
 	ui_host_close_fn close;
@@ -482,11 +496,18 @@ namespace ui {
 	ui_host_tick_fn  tick;
 	ui_host_clip_set_fn clip_set;
 	ui_host_clip_get_fn clip_get;
+	ui_host_title_fn title;
+	ui_host_fullscreen_fn fullscreen;
+	const char *identity;	// the host's name for itself; NULL = none
     };
     // A host registers under a target name AND declares the UI level it
     // serves (ui::WEB for a page in a webview); open(level) picks the first
     // registered host of that level. False + stderr: no name, no table,
-    // no level (ui::NONE), or a name already taken.
+    // no level (ui::NONE), or a name another host holds. The same host
+    // registered again (the same level, and the same `identity` — or, a host
+    // that states none, the same entries: each unit and each image of a
+    // program that names the level runs its fragment's initializer, and
+    // entries differ between images) is accepted, with nothing said.
     bool register_host(const char *target, level lvl, const ui_host_ops *ops);
     // The engine's ONE embedded web page (page.js + page.css): a ws serve
     // seat sends this to a browser over HTTP so page.js connects the socket
@@ -525,4 +546,9 @@ namespace ui {
     bool    clipboards(int64_t t);
     bool    clipboard_set(int64_t t, const char *text);
     bool    clipboard_get(value &out, int64_t t);
+    // The window full screen (View ▸ Full screen): on = 1 enters it, 0
+    // leaves it, -1 toggles the window's current state. True = done; false
+    // = this target has no window to make full screen (the terminal, a
+    // browser page, a bad handle).
+    bool    fullscreen(int64_t t, int64_t on);
 }

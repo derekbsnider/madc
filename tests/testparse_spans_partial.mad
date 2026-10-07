@@ -1,0 +1,61 @@
+// The parse's highlight spans REFINE the lexical ones and never remove
+// them (owner report 2026-10-06: colour shown at load, then gone when the
+// parse landed). A parse that stops short — a header that does not open,
+// a syntax error mid-file — holds no tokens past where it stopped; the
+// text it did not reach keeps the lexical classifier's rows. Oracle: the
+// lexical classifier itself (madc::lex_spans over the same text) — past the
+// stop point, parse_spans answers exactly its rows; before it, the parse's.
+// Each case prints the parse's last-reached line and whether the rows on
+// every later line match the lexical ones (count and every field).
+
+// One row as text: line:column:length:class.
+void row_text(var &out, var &r)
+{
+    out = format("{}:{}:{}:{}", r["line"].as_integer(), r["column"].as_integer(),
+		 r["length"].as_integer(), r["class"]);
+}
+
+// The rows of `rows` on lines > `after`, as one text.
+void tail_text(var &out, var &rows, long after)
+{
+    out = "";
+    long n = php::count(rows);
+    for ( long i = 0; i < n; i = i + 1 )
+    {
+	var r = rows[i];
+	if ( r["line"].as_integer() <= after )
+	    continue;
+	var t;
+	row_text(t, r);
+	out = format("{}{} ", out, t);
+    }
+}
+
+void check(const char *label, const char *src, long stop_line)
+{
+    long h = madc::parse_open(src, "partial.c", madc::file_kind_of("c17"));
+    var parsed;
+    madc::parse_spans(parsed, h);
+    var lex;
+    madc::lex_spans(lex, src, "partial.c");
+    var pt;
+    tail_text(pt, parsed, stop_line);
+    var lt;
+    tail_text(lt, lex, stop_line);
+    println("{}: rows after line {}: {}", label, stop_line, pt);
+    println("{}: lexical after line {}: {}", label, stop_line, lt);
+    println("{}: tail coloured={} matches-lexical={}", label,
+	    php::count(parsed) > 0 && strlen(pt.c_str()) > 0 ? 1 : 0, pt == lt ? 1 : 0);
+    madc::parse_close(h);
+}
+
+int main()
+{
+    check("missing-header",
+	  "int before = 1;\n#include \"madc_no_such_header.h\"\nint after = 2; /* tail */\n", 2);
+    check("syntax-error",
+	  "int a = 1;\nint b = ;\nint c = 3; // tail\n", 2);
+    check("complete",
+	  "int a = 1;\nint b = 2;\nint c = 3; // tail\n", 2);
+    return 0;
+}

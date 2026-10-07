@@ -43,6 +43,26 @@ std::string canonical_path_for_compare(const std::string &path);
 std::string host_path_dirname(const std::string &path);
 std::string host_path_basename(const std::string &path);
 
+// Does `path` name its own root, so that joining it onto a base directory
+// would be wrong? THE owner of "is this path absolute" for every resolver
+// that joins a relative path to a base (an include, a manifest's file or
+// include_dirs entry, a config value). A leading separator of the
+// splitters' set everywhere; on Windows also a drive (`C:\x`, `C:/x`, and
+// the drive-relative `C:x`, which names its own drive). A '/'-only test
+// joined `Z:\work\inc` onto the manifest's directory.
+bool host_path_absolute(const std::string &path);
+
+// Is `path` inside the directory `dir`? Both are COMPARISON spellings
+// (canonical_path_for_compare). THE owner of "under this directory": dir's
+// spelling, less any trailing separator, must be followed in path by a
+// separator of the same predicate the splitters use — '/' or '\' on Windows
+// (the canonicalizer writes '\'), '/' elsewhere. A bare string prefix also
+// matches a sibling (include vs include-fixed), and a '/' appended to a
+// Windows canonical spelling never matches. `rel_at`, when non-null,
+// receives the offset of the part below dir (past the separator).
+bool host_path_within(const std::string &dir, const std::string &path,
+		      std::size_t *rel_at = nullptr);
+
 // Thread-safe local time (POSIX localtime_r). The Win32 arm is the MS
 // localtime_s — NOTE the two spell their argument orders opposite ways,
 // which is exactly why call sites go through this owner. False on failure,
@@ -107,6 +127,16 @@ void glob_paths(const std::string &pattern, std::vector<std::string> &out);
 // this signature only.
 void *map_file_readonly(const char *path, std::size_t &length);
 
+// Map `length` bytes of anonymous memory at exactly `addr`, executable and
+// not writable: the shape of a JIT code region (a MIR code allocator's
+// mem_map; its owner flips write access through protect_exec_region). NULL
+// when the range is taken or cannot be placed at `addr`.
+void *map_exec_region_at(void *addr, std::size_t length);
+// Make an exec region writable (`writable`) or read+exec only: 0 on success.
+int protect_exec_region(void *addr, std::size_t length, bool writable);
+// Release a region map_exec_region_at returned: 0 on success.
+int unmap_exec_region(void *addr, std::size_t length);
+
 // Create + open a fresh uniquely-named temporary file: the fd (read/write,
 // binary) is returned, its path through `path_out`; -1 on failure. `prefix`
 // names the purpose ("madc_exec_stdout") — the owner owns placement and
@@ -124,6 +154,17 @@ unsigned long long process_cpu_microseconds();
 // in-process invoke-limits metric (child metering rides rusage inside the
 // POSIX-only subprocess machinery instead).
 unsigned long long process_resident_bytes();
+
+// Copy up to `size` bytes of THIS process's memory at `src` into `dst`,
+// stopping at the first byte that cannot be read; returns the count copied
+// (0 when `src` itself cannot be read). A debugger's read, never a fault: the
+// POSIX arm hands each span to write(2) on the call's own pipe, which answers
+// EFAULT for an unmapped or unreadable address instead of raising SIGSEGV;
+// the Win32 arm is ReadProcessMemory on the current process. Page by page,
+// so a span that runs off the end of a mapping keeps the bytes before it.
+// Thread-safe: no shared state; a concurrent writer to `src` races as any
+// read of that memory does.
+std::size_t read_process_memory(void *dst, const void *src, std::size_t size);
 
 #ifdef _WIN32
 // GetLastError code -> trimmed FormatMessage text ("Windows error N" when

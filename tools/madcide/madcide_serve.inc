@@ -119,10 +119,10 @@ long serve_listen(IdeSession &S, long doc, const char *addr, var &endpoint, var 
 // the file or the listener could not open; the serve loop runs until the
 // listener dies (the process is stopped).
 long run_serve(const char *path, bool ro, const char *addr,
-	       const char *profile = "")
+	       const char *profile = "", long std = 0)
 {
     IdeSession S;
-    long doc = S.open(path, ro, profile);
+    long doc = S.open(path, ro, profile, std);
     if ( doc <= 0 )
 	return 1;			// -1 already reported on stderr
     S.terminal(false);			// headless: no interactive terminal
@@ -135,11 +135,11 @@ long run_serve(const char *path, bool ro, const char *addr,
     long listen_handle = serve_listen(S, doc, addr, endpoint, why);
     if ( listen_handle == 0 )
     {
-	println(stderr, "madcide: {}", why);
+	println(stderr, "{}: {}", product_in_use().name, why);
 	S.close();
 	return 1;
     }
-    println(stderr, "madcide: serving {} on {} (api + ws + http)", path, endpoint);
+    println(stderr, "{}: serving {} on {} (api + ws + http)", product_in_use().name, path, endpoint);
 
     // THE accept loop — the same function the LSP process and the editor spawn
     // as a task (V6c-4). A headless server has nothing else to do, so it runs
@@ -167,10 +167,10 @@ long run_serve(const char *path, bool ro, const char *addr,
 // parked accept would hang that drain). The client loop therefore closes its
 // frontends and returns, and the session closes here, after the join.
 long run_tui(const char *path, bool ro, ui::level lvl, const char *addr,
-	     const char *profile = "")
+	     const char *profile = "", long std = 0)
 {
     IdeSession S;
-    long doc = S.open(path, ro, profile);
+    long doc = S.open(path, ro, profile, std);
     if ( doc <= 0 )
 	return 1;			// -1 already reported on stderr
     long w = S.world();
@@ -338,14 +338,14 @@ long run_attach(const char *addr, bool framed)
     madc::channel io("stdio://");
     if ( !io.ok() || (framed && !io.frame_headers()) )
     {
-	println(stderr, "madcide --attach: {}", io.last_error());
+	println(stderr, "{} --attach: {}", product_in_use().name, io.last_error());
 	return 1;
     }
     var uri = format("tcp://{}", addr);
     madc::channel sock(uri.c_str());
     if ( !sock.ok() )
     {
-	println(stderr, "madcide: cannot attach to {}: {}", addr, sock.last_error());
+	println(stderr, "{}: cannot attach to {}: {}", product_in_use().name, addr, sock.last_error());
 	return 1;
     }
     // Declare the dialect: `initialize` exists in both protocols, so the seat
@@ -357,7 +357,7 @@ long run_attach(const char *addr, bool framed)
     sock.write(hline.c_str());
     var ack;
     sock.readline(ack);			// the seat's acknowledgement
-    println(stderr, "madcide: attached to {} ({})", addr, hjs);
+    println(stderr, "{}: attached to {} ({})", product_in_use().name, addr, hjs);
 
     bool down = false;			// a shutdown arrived before exit
     scope
@@ -405,10 +405,10 @@ long run_attach(const char *addr, bool framed)
 }
 
 long run_lsp(const char *path, bool ro, const char *serve,
-	     const char *profile = "")
+	     const char *profile = "", long std = 0)
 {
     IdeSession S;
-    long doc = S.open(path, ro, profile);
+    long doc = S.open(path, ro, profile, std);
     if ( doc <= 0 )
 	return 1;
     S.terminal(false);				// headless: no interactive terminal
@@ -420,7 +420,7 @@ long run_lsp(const char *path, bool ro, const char *serve,
     madc::channel io("stdio://");
     if ( !io.ok() || !io.frame_headers() )
     {
-	println(stderr, "madcide --lsp: {}", io.last_error());
+	println(stderr, "{} --lsp: {}", product_in_use().name, io.last_error());
 	S.close();
 	return 1;
     }
@@ -439,12 +439,12 @@ long run_lsp(const char *path, bool ro, const char *serve,
 	listen_handle = serve_listen(S, doc, serve, endpoint, why);
 	if ( listen_handle == 0 )
 	{
-	    println(stderr, "madcide --lsp: {}", why);
+	    println(stderr, "{} --lsp: {}", product_in_use().name, why);
 	    io.close();
 	    S.close();
 	    return 1;
 	}
-	println(stderr, "madcide: serving {} on {} (api + ws + http) beside --lsp",
+	println(stderr, "{}: serving {} on {} (api + ws + http) beside --lsp", product_in_use().name,
 		path, endpoint);
     }
 

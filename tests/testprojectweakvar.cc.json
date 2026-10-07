@@ -1,0 +1,4 @@
+[
+  {"directory":"tests","file":"testprojectweakvar_a.c","command":"gcc -c testprojectweakvar_a.c"},
+  {"directory":"tests","file":"testprojectweakvar_b.c","command":"gcc -c testprojectweakvar_b.c"}
+]

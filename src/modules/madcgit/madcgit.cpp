@@ -4,9 +4,10 @@
 // value shapers, and the module's C API (include/madc/madcgit.h — what
 // `import madcgit;` binds). Read-only: nothing here writes a repository.
 //
-// libgit2 is the SYSTEM library (pkg-config libgit2), a dependency of the
-// IDE's nexus and never part of madc (owner ruling 2026-09-15, superseding the
-// L4a vendoring): this file is compiled into lib/libmadcgit.so by
+// libgit2 is a dependency of the IDE's nexus and never part of madc (owner
+// ruling 2026-09-15, superseding the L4a vendoring): linked statically from the
+// pinned stage (src/madcgit.mk), or a system libgit2 at the floor
+// (libgit2_floor.h). This file is compiled into lib/libmadcgit.so by
 // src/madcgit.mk, never into libmadc — the engine's export surface carries no
 // git_* symbol (scripts/check-c-abi-surface.sh). The module binds libmadc's
 // own symbols (value, error, the error composer, the path canonicalizer) at
@@ -19,7 +20,7 @@
 					// check-one-error-composer.sh)
 #include "madc_posix_io.h"		// canonical_path_for_compare — THE path canonicalizer
 
-#include <git2.h>
+#include "libgit2_floor.h"		// <git2.h>, refused below the floor
 
 #include <cstdint>
 #include <cstring>
@@ -259,6 +260,27 @@ bool GitRepo::log(std::vector<GitCommit> &out, const std::string &path, size_t l
     return true;
 }
 
+bool GitRepo::commit(const std::string &rev, GitCommit &out, error *err) const
+{
+    git_object *obj = (git_object *)0;
+    if ( !_->repo || git_revparse_single(&obj, _->repo, rev.c_str()) < 0 )
+    {
+	set_err(err, "git show");
+	return false;
+    }
+    git_object *peeled = (git_object *)0;
+    bool ok = git_object_peel(&peeled, obj, GIT_OBJECT_COMMIT) == 0;
+    if ( ok )
+    {
+	fill_commit(out, git_object_id(peeled), (git_commit *)peeled);
+	git_object_free(peeled);
+    }
+    else
+	set_err(err, "git show");
+    git_object_free(obj);
+    return ok;
+}
+
 bool GitRepo::show(const std::string &rev, const std::string &path, std::string &text,
 		   error *err) const
 {
@@ -414,6 +436,149 @@ bool GitRepo::dirty(const std::string &path, bool &out, error *err) const
     return true;
 }
 
+namespace {
+
+// libgit2's status flags -> one side's state; `index` picks the side.
+git::file_state side_state(unsigned int f, bool index)
+{
+    if ( f & GIT_STATUS_CONFLICTED )
+	return git::file_state::conflicted;
+    if ( index )
+    {
+	if ( f & GIT_STATUS_INDEX_NEW )		return git::file_state::added;
+	if ( f & GIT_STATUS_INDEX_MODIFIED )	return git::file_state::modified;
+	if ( f & GIT_STATUS_INDEX_DELETED )	return git::file_state::deleted;
+	if ( f & GIT_STATUS_INDEX_RENAMED )	return git::file_state::renamed;
+	if ( f & GIT_STATUS_INDEX_TYPECHANGE )	return git::file_state::typechange;
+	return git::file_state::unmodified;
+    }
+    if ( f & GIT_STATUS_WT_NEW )		return git::file_state::untracked;
+    if ( f & GIT_STATUS_IGNORED )		return git::file_state::ignored;
+    if ( f & (GIT_STATUS_WT_MODIFIED | GIT_STATUS_WT_UNREADABLE) )
+	return git::file_state::modified;
+    if ( f & GIT_STATUS_WT_DELETED )		return git::file_state::deleted;
+    if ( f & GIT_STATUS_WT_RENAMED )		return git::file_state::renamed;
+    if ( f & GIT_STATUS_WT_TYPECHANGE )		return git::file_state::typechange;
+    return git::file_state::unmodified;
+}
+
+// The blob at `path` in `rev`'s tree; *blob stays NULL when the path is
+// absent there. False (err set) for a rev that does not resolve.
+bool blob_at(git_repository *repo, const std::string &rev, const std::string &path,
+	     git_blob **blob, error *err)
+{
+    *blob = (git_blob *)0;
+    git_object *obj = (git_object *)0;
+    if ( !repo || git_revparse_single(&obj, repo, rev.c_str()) < 0 )
+    {
+	set_err(err, "git diff");
+	return false;
+    }
+    git_object *tree_obj = (git_object *)0;
+    bool ok = git_object_peel(&tree_obj, obj, GIT_OBJECT_TREE) == 0;
+    if ( !ok )
+	set_err(err, "git diff");
+    git_oid id;
+    if ( ok && entry_oid_at((git_tree *)tree_obj, path.c_str(), id)
+	 && git_blob_lookup(blob, repo, &id) < 0 )
+    {
+	*blob = (git_blob *)0;
+	set_err(err, "git diff");
+	ok = false;
+    }
+    if ( tree_obj )
+	git_object_free(tree_obj);
+    git_object_free(obj);
+    return ok;
+}
+
+} // namespace
+
+bool GitRepo::status(std::vector<GitStatusRow> &out, error *err) const
+{
+    out.clear();
+    git_status_options opts = GIT_STATUS_OPTIONS_INIT;
+    opts.show = GIT_STATUS_SHOW_INDEX_AND_WORKDIR;
+    opts.flags = GIT_STATUS_OPT_INCLUDE_UNTRACKED | GIT_STATUS_OPT_RENAMES_HEAD_TO_INDEX
+	       | GIT_STATUS_OPT_SORT_CASE_SENSITIVELY;
+    git_status_list *list = (git_status_list *)0;
+    if ( !_->repo || git_status_list_new(&list, _->repo, &opts) < 0 )
+    {
+	set_err(err, "git status");
+	return false;
+    }
+    size_t n = git_status_list_entrycount(list);
+    for ( size_t i = 0; i < n; ++i )
+    {
+	const git_status_entry *e = git_status_byindex(list, i);
+	if ( !e || e->status == GIT_STATUS_CURRENT )
+	    continue;
+	GitStatusRow row;
+	row.index = side_state(e->status, true);
+	row.worktree = side_state(e->status, false);
+	const git_diff_delta *d = e->head_to_index ? e->head_to_index : e->index_to_workdir;
+	if ( d )
+	{
+	    row.path = d->new_file.path ? d->new_file.path : "";
+	    if ( d->status == GIT_DELTA_RENAMED )
+		row.from = d->old_file.path ? d->old_file.path : "";
+	}
+	out.push_back(row);
+    }
+    git_status_list_free(list);
+    return true;
+}
+
+bool GitRepo::diff(const std::string &rev, const std::string &path,
+		   const std::string &text, std::string &patch,
+		   std::vector<GitHunk> &hunks, error *err) const
+{
+    patch.clear();
+    hunks.clear();
+    git_blob *old_blob = (git_blob *)0;
+    if ( !blob_at(_->repo, rev, path, &old_blob, err) )
+	return false;
+    git_diff_options opts = GIT_DIFF_OPTIONS_INIT;
+    git_patch *p = (git_patch *)0;
+    int rc = git_patch_from_blob_and_buffer(&p, old_blob, path.c_str(), text.data(),
+					    text.size(), path.c_str(), &opts);
+    if ( old_blob )
+	git_blob_free(old_blob);
+    if ( rc < 0 )
+    {
+	set_err(err, "git diff");
+	return false;
+    }
+    size_t n = git_patch_num_hunks(p);
+    for ( size_t i = 0; i < n; ++i )
+    {
+	const git_diff_hunk *h = (const git_diff_hunk *)0;
+	size_t lines = 0;
+	if ( git_patch_get_hunk(&h, &lines, p, i) < 0 || !h )
+	    continue;
+	GitHunk row;
+	row.old_start = h->old_start;
+	row.old_lines = h->old_lines;
+	row.new_start = h->new_start;
+	row.new_lines = h->new_lines;
+	row.header.assign(h->header, h->header_len);
+	while ( !row.header.empty()
+		&& (row.header[row.header.size() - 1] == '\n'
+		    || row.header[row.header.size() - 1] == '\r') )
+	    row.header.erase(row.header.size() - 1);
+	hunks.push_back(row);
+    }
+    git_buf buf = GIT_BUF_INIT;
+    bool binary = (git_patch_get_delta(p)->flags & GIT_DIFF_FLAG_BINARY) != 0;
+    if ( (n > 0 || binary) && git_patch_to_buf(&buf, p) == 0 )
+    {
+	patch.assign(buf.ptr ? buf.ptr : "", buf.size);
+	git_buf_dispose(&buf);
+    }
+    git_patch_free(p);
+    return true;
+}
+
 // ------------------------------------------------------------- value shapers
 
 value git_commit_value(const GitCommit &c)
@@ -432,6 +597,27 @@ value git_ref_value(const GitRefRow &r)
     std::map<std::string, value> f;
     f["name"] = value(r.name);
     f["sha"] = value(r.sha);
+    return value::make_object(f);
+}
+
+value git_status_value(const GitStatusRow &s)
+{
+    std::map<std::string, value> f;
+    f["path"] = value(s.path);
+    f["from"] = value(s.from);
+    f["index"] = value((int64_t)s.index);	// a git::file_state code
+    f["worktree"] = value((int64_t)s.worktree);
+    return value::make_object(f);
+}
+
+value git_hunk_value(const GitHunk &h)
+{
+    std::map<std::string, value> f;
+    f["old_start"] = value(h.old_start);
+    f["old_lines"] = value(h.old_lines);
+    f["new_start"] = value(h.new_start);
+    f["new_lines"] = value(h.new_lines);
+    f["header"] = value(h.header);
     return value::make_object(f);
 }
 
@@ -762,12 +948,10 @@ void *madcgit_relpath(void *result, int64_t handle, const char *path)
     if ( !st )
 	return result;
     std::string wd = madc::detail::canonical_path_for_compare(st->repo.workdir());
-    while ( wd.size() > 1 && (wd[wd.size() - 1] == '/' || wd[wd.size() - 1] == '\\') )
-	wd.erase(wd.size() - 1);
     std::string given = madc::text_of(path);
     std::string p = madc::detail::canonical_path_for_compare(given);
-    if ( wd.empty() || p.size() <= wd.size() + 1 || p.compare(0, wd.size(), wd) != 0
-	 || (p[wd.size()] != '/' && p[wd.size()] != '\\') )
+    std::size_t rel_at = 0;
+    if ( !madc::detail::host_path_within(wd, p, &rel_at) )
     {
 	out = madc::error_value("git: `" + given + "` is not inside the repository's working tree");
 	return result;
@@ -777,7 +961,7 @@ void *madcgit_relpath(void *result, int64_t handle, const char *path)
     // Windows the working-tree-relative result would read "tests\file" — the
     // git:: face normalizes to forward slashes at its output boundary, the same
     // platform-path discipline the session-discovery layer applies to its slug.
-    std::string rel = p.substr(wd.size() + 1);
+    std::string rel = p.substr(rel_at);
     for ( size_t i = 0; i < rel.size(); ++i )
 	if ( rel[i] == '\\' )
 	    rel[i] = '/';
@@ -802,6 +986,72 @@ void *madcgit_dirty(void *result, int64_t handle, const char *path)
     }
     std::map<std::string, value> f;
     f["dirty"] = value(d);
+    out = value::make_object(f);
+    return result;
+}
+
+void *madcgit_status(void *result, int64_t handle)
+{
+    value &out = *(value *)result;
+    madc::git_repo_state *st = madc::state_or_refuse(handle, out);
+    if ( !st )
+	return result;
+    std::vector<madc::GitStatusRow> files;
+    madc::error err;
+    if ( !st->repo.status(files, &err) )
+    {
+	out = madc::error_value(err.message);
+	return result;
+    }
+    std::vector<value> rows;
+    for ( size_t i = 0; i < files.size(); ++i )
+	rows.push_back(madc::git_status_value(files[i]));
+    std::map<std::string, value> f;
+    f["rows"] = value::make_array(rows);
+    f["workdir"] = value(st->repo.workdir());	// the rows' paths are relative to it
+    out = value::make_object(f);
+    return result;
+}
+
+void *madcgit_commit(void *result, int64_t handle, const char *rev)
+{
+    value &out = *(value *)result;
+    madc::git_repo_state *st = madc::state_or_refuse(handle, out);
+    if ( !st )
+	return result;
+    madc::GitCommit c;
+    madc::error err;
+    if ( !st->repo.commit(madc::text_of(rev), c, &err) )
+    {
+	out = madc::error_value(err.message);
+	return result;
+    }
+    out = madc::git_commit_value(c);
+    return result;
+}
+
+void *madcgit_diff(void *result, int64_t handle, const char *rev, const char *path,
+		   const char *text)
+{
+    value &out = *(value *)result;
+    madc::git_repo_state *st = madc::state_or_refuse(handle, out);
+    if ( !st )
+	return result;
+    std::string patch;
+    std::vector<madc::GitHunk> hunks;
+    madc::error err;
+    if ( !st->repo.diff(madc::text_of(rev), madc::text_of(path), madc::text_of(text),
+			patch, hunks, &err) )
+    {
+	out = madc::error_value(err.message);
+	return result;
+    }
+    std::vector<value> rows;
+    for ( size_t i = 0; i < hunks.size(); ++i )
+	rows.push_back(madc::git_hunk_value(hunks[i]));
+    std::map<std::string, value> f;
+    f["patch"] = value(patch);
+    f["hunks"] = value::make_array(rows);
     out = value::make_object(f);
     return result;
 }

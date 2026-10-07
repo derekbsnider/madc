@@ -18,6 +18,7 @@
 // shapes).
 
 #include "madcide_enums.inc"	// ide_cmd + the state discriminators, as codes
+#include "madcide_product.inc"	// the product in use: name, bundle, face, linked plugin
 #include "madcide_plugins.inc"	// bundles: the manifest, the search path, settings
 
 // The bag's discriminator slots — ONE reader and ONE writer each (V0.5d):
@@ -31,123 +32,11 @@ long cur_vimode(long w, long es)	{ return es_int(w, es, "vimode", viOFF); }
 void set_vimode(long w, long es, long m) { ui::set(w, es, "vimode", m); }
 
 // ---- the IDE session (the gateway seam, design doc 2026-08-31) ---------
-// THIS FILE IS THE SESSION LAYER. IdeSession owns the IDE's state and
-// semantics; apply_ide_event / compose_ide_tree are its surface. The ui
-// entity bags are the session's private storage (initially — state
-// migrates onto members in later gateway slices); the free functions
-// below are its private implementation over them.
-//
-// The session NEVER touches a tui handle (gated:
-// scripts/check-madcide-seam.sh). The TUI CLIENT (madcide_client.inc)
-// keeps render / input / refresh / suspend and feeds the session what a
-// terminal knows:
-//   - FACTS the client pushes: viewport (cols/rows), terminal presence,
-//     the pending chord (JOE's %k seat).
-//   - the KEY TABLE the session loads as data: the client asks for it
-//     (key_table) and installs it whenever keys_generation moves; the
-//     session validates profiles handle-free (ui::tui_validate_keys), so
-//     refusal semantics stay its own.
-//   - TERMINAL REQUESTS the session parks (term_request: run / projrun /
-//     cmd / shell / refresh): the client drains one after each event
-//     (take_request), suspends, calls term_exec back to run the guest,
-//     pauses, resumes. No terminal pushed = no request parks — headless
-//     sessions refuse with "No terminal to suspend." exactly as before.
-// A remote client would push the same facts and service the same
-// requests over a transport; keys stay client-private either way.
-class IdeSession
-{
-    public:
-	long w;		// the ui world (documents + state entity live in it)
-	long es;	// the editor-state entity — the bags
-
-	long open(const char *path0, bool ro, const char *profile = "");
-						// full session startup
-						// under the profile named
-						// ("" = settings.json's,
-						// else default); > 0 = the
-						// launch doc, -1 = refused
-						// or fatal, reported on
-						// stderr
-	void attach(long w0, long es0);	// a session over an EXISTING
-					// world + state entity (the
-					// headless harness, embedders)
-	long spawn_view(long doc);	// a NEW client view over the shared
-					// world + `doc` (viewwindow): a fresh
-					// es built like open()'s, returned to
-					// the client to open a frontend on;
-					// 0 = the profile + rescue both failed
-	bool apply_ide_event(long doc, var &ev);	// false = quit
-	void pointer_event(long doc, long nav, var &ev);	// the pointer
-					// arm: the hit node's window tag
-					// (else its subject) picks the
-					// window, edit_pointer places
-	void compose_ide_tree(var &root, long doc);
-	bool vi_event(long doc, long nav, var &ev, bool &cont);
-					// the vi modes-as-scopes arm:
-					// true = consumed; cont carries
-					// the continue/quit verdict
-	bool vi_exec(long doc, long code, long n);	// one command (its
-					// code), n times, through
-					// apply_ide_event
-	bool post(long doc, long code);	// ONE command by CODE through the
-					// one dispatcher (a client that
-					// speaks codes); false = quit
-	bool command(long doc, long code, const char *arg, bool &cont);
-					// a command WITH ITS ARGUMENT
-					// (the -c line, the api seat, a
-					// `:` verb): the argument is what
-					// the prompt the command opens
-					// would have been typed; false =
-					// refused (an argument the command
-					// does not take); cont = the
-					// continue / quit verdict
-	bool line_input(long doc, const char *line, bool &cont);
-					// ONE line of the ex / edlin client
-					// (ui::LINE, V2.5): a ':' line is a
-					// colon command (posted through
-					// command(cmdCOLON, …)); any other
-					// line is text inserted verbatim +
-					// a newline. false = refused; cont =
-					// the continue / quit verdict
-	long error_count();		// ERROR rows in the problems
-					// projection (a one-shot's verdict)
-	void vi_open_line(long doc, bool above);	// o / O / cc's line
-	long world();
-	long active(long fallback);	// the active buffer's document
-	bool parse_pending(long adoc);	// spawn the parked background
-					// parse; true = spawned (client
-					// keeps serving input)
-	void viewport(long cols, long rows);	// client-pushed facts
-	void terminal(bool has);
-	void dialogs(bool has);		// the client can show native file
-					// dialogs (S4): open / save-as park a
-					// filedialog request instead of a prompt
-	void clipboard(bool has);	// the client reaches the platform's
-					// clipboard (plan §41.11a step 3e): a
-					// copy parks a clipset request, a
-					// paste a paste request
-	void panel(bool has);		// the client renders REGIONS (a
-					// window): runs and the shell go to a
-					// pty in the Terminal tab; the panel
-					// itself is the layout's (V2)
-	void dialog_fallback(var &req);	// the client could not show it:
-					// the request's prompt instead
-	void request_refused(var &req);	// the client cannot hand over a
-					// terminal for this request: say so
-	void pending_chord(const char *pcs);
-	long keys_generation();		// moves when the key table changes
-	void key_table(var &out);
-	bool take_request(var &out);	// drain the parked terminal request
-	bool take_spawn(long &doc);	// drain a parked viewwindow spawn
-					// (the doc the new window views);
-					// false = none
-	void term_exec(var &req);	// run the guest between the
-					// client's suspend and resume
-	void stop_tasks();		// tell the session's pumps to stop
-					// (a host joins them before close)
-	void close();			// stop_tasks, drain tasks, close
-					// parse handles, close the world
-};
+// THIS FILE IS THE SESSION LAYER: IdeSession's methods are defined here. The
+// class itself is <madcide/session> (the layer's contract, read there), which
+// a product's tests include too through <madcide/harness> — one definition,
+// so the layout cannot drift.
+#include "include/madcide/session"
 
 // THE action event for a command: what a key bound to `code` produces, with
 // `arg` as its argument ("" = none) for a command that reads one off the
@@ -164,6 +53,12 @@ void action_event(var &e, long code, const char *arg)
 
 #include "madcide_plugin_code.inc"	// plugin code: the API table, activation, --build-plugin
 #include "madcide_plugin_host.inc"	// the host transport: a plugin's code in a child process
+#include "madcide_lang.inc"		// the session's language standard (--std=, `language`)
+#include "madcide_repo.inc"		// a buffer's git repository + the %G status seat
+#include "madcide_markdown.inc"	// the one Markdown renderer: a markdown:: tree as rows (plan §7d)
+#include "madcide_help.inc"		// Help's topics: a bundle's Markdown pages (plan §7d)
+#include "madcide_preview.inc"		// View ▸ Markdown Preview of the buffer being edited (plan §7d)
+#include "madcide_recent.inc"		// File ▸ Recent Files: the person's opened and saved files (plan §7a)
 
 // ---- keybinding profiles as data --------------------------------------
 // ONE rule for profile lines (parse_keys and the help pane share it):
@@ -379,6 +274,13 @@ const char *modal_default_keys_text()
 	   "@confirm y pyes\n"
 	   "@confirm n pcancel\n"
 	   "@confirm esc pcancel\n"
+	   "@replace y pyes\n"
+	   "@replace n pno\n"
+	   "@replace a pall\n"
+	   "@replace esc pcancel\n"
+	   "@save y pyes\n"
+	   "@save n pno\n"
+	   "@save esc pcancel\n"
 	   "@project esc projclose\n"
 	   "@project backspace projdelchar\n"
 	   "@project ins projadd\n"
@@ -699,16 +601,6 @@ long layout_size_of(var &word)
     return v;
 }
 
-// The leading whitespace of a raw line (its nesting depth).
-long layout_depth_of(var &raw)
-{
-    const char *rs = raw.c_str();
-    long d = 0;
-    while ( rs[d] == ' ' || rs[d] == '\t' )
-	d = d + 1;
-    return d;
-}
-
 // One `pane` line's words (after the keyword) into a flat row. False + err.
 bool layout_pane_row(var &row, var &words, long lineno, var &err, long w)
 {
@@ -927,7 +819,7 @@ bool parse_layout(var &layout, const char *text, var &err, long w = 0)
 	    err = format("line {}: unknown word '{}'", lineno, kw);
 	    return false;
 	}
-	long depth = layout_depth_of(raw);
+	long depth = blank_run(raw.c_str());	// its nesting depth: the leading blanks
 	// The open splits: a line at or above an open split's depth closes it.
 	while ( php::count(open) > 0 )
 	{
@@ -1073,7 +965,7 @@ const char *default_layout_text()
     return "# baked default layout — profile data\n"
 	   "@window main\n"
 	   "pane editor tabs views source focus\n"
-	   "pane sidebar left 20% tabs views outline hidden\n"
+	   "pane sidebar left 20% tabs views outline help mdpreview hidden\n"
 	   "pane panel bottom 25% tabs views problems output terminal repl hidden\n";
 }
 
@@ -1130,8 +1022,10 @@ void layout_indent(var &out, long depth)
 // One pane line: `pane <slot> [<side>] [<size>%] <mode> views <kind>...
 // [focus] [hidden]` — mode and size BEFORE `views` and the flags after (so
 // the `views` list stops at a flag), the exact word order parse_layout reads.
-// An editor pane persists as a SOURCE pane (its tabs' Views are session
-// state); a chrome pane persists its tool tabs (fixed kinds).
+// An editor pane persists as a SOURCE pane plus the Views its layout lists
+// beside the buffer ring (`help`: Help opens as an editor tab) — never a code
+// render (viewCODE, a split's session state); a chrome pane persists its tool
+// tabs (fixed kinds).
 void layout_emit_pane(var &out, var &node, long depth, long w)
 {
     var ind;
@@ -1147,13 +1041,15 @@ void layout_emit_pane(var &out, var &node, long depth, long w)
     line = format("{} {} views", line, pmode_name(node["mode"].as_integer()));
     if ( slot == slotEDITOR )
 	line = format("{} {}", line, view_name(viewSOURCE));
-    else
-	for ( var t : node["tabs"] )
-	{
-	    var vn;
-	    view_name_w(vn, w, t["kind"].as_integer());
-	    line = format("{} {}", line, vn);
-	}
+    for ( var t : node["tabs"] )
+    {
+	long k = t["kind"].as_integer();
+	if ( slot == slotEDITOR && (k == viewSOURCE || k == viewCODE) )
+	    continue;
+	var vn;
+	view_name_w(vn, w, k);
+	line = format("{} {}", line, vn);
+    }
     if ( node["focus"].as_integer() != 0 )
 	line = format("{} focus", line);
     if ( node["hidden"].as_integer() != 0 )
@@ -1307,6 +1203,9 @@ bool show_view(long w, long es, long kind)
     }
     var ch = lo["chrome"];
     var c = ch[ci];
+    // The tab this one replaces: dismiss_view returns the pane to it.
+    if ( c["active"].as_integer() != tab )
+	c["prev"] = c["active"].as_integer();
     c["hidden"] = 0;
     c["active"] = tab;
     ch[ci] = c;
@@ -1338,6 +1237,39 @@ bool hide_view(long w, long es, long kind)
 	ui::set(w, es, "chromelast", none);
     }
     return was;
+}
+
+// DISMISS a shown tool View — a View command's toggle-off, Thonny's: the
+// other Views stay. In a pane with other tabs, the tab it showed before this
+// View came up (show_view's record; else its first other tab) is active
+// again and the pane stays; a pane hosting this View alone hides
+// (hide_view). False when the View was not shown.
+bool dismiss_view(long w, long es, long kind)
+{
+    if ( !view_shown(w, es, kind) )
+	return false;
+    var lo;
+    layout_get(lo, w, es);
+    long tab = -1;
+    long ci = chrome_hosting(lo, kind, tab);
+    var ch = lo["chrome"];
+    var c = ch[ci];
+    long ntabs = php::count(c["tabs"]);
+    if ( ntabs < 2 )
+	return hide_view(w, es, kind);
+    long back = c["prev"].is_null() ? -1 : c["prev"].as_integer();
+    if ( back < 0 || back >= ntabs || back == tab )
+	back = tab == 0 ? 1 : 0;
+    c["active"] = back;
+    ch[ci] = c;
+    lo["chrome"] = ch;
+    ui::set(w, es, "layout", lo);
+    if ( es_int(w, es, "chromelast", viewNONE) == kind )
+    {
+	long none = viewNONE;
+	ui::set(w, es, "chromelast", none);
+    }
+    return true;
 }
 
 // The @pane esc on the chrome: hide the pane that showed the LAST kind; false
@@ -1387,6 +1319,65 @@ void toggle_slot(long w, long es, long slot)
 // Schemes are just theme files: profiles/<name>.theme, swapped by name
 // (the profile-swap precedent). False = no such theme (the previous one
 // stays); an es "scheme" records the loaded name.
+// ---- View ▸ Increase / Decrease font size (plan 2026-10-03 §7a) ----------
+// The window's text size, in pixels: settings.json's "font_size", 8 to 36,
+// page.css's own 14 when unset. A window applies it through the root theme
+// hint (--font-size, below); a terminal keeps its own font.
+long font_size_min() { return 8; }
+long font_size_max() { return 36; }
+
+// The size in force; 0 = none set (the page's own).
+long font_size(long w, long es)
+{
+    var fs;
+    setting_get(fs, w, es, "font_size");
+    if ( fs.is_null() || !fs.is_integer() )
+	return 0;
+    long n = fs.as_integer();
+    if ( n < font_size_min() )
+	n = font_size_min();
+    if ( n > font_size_max() )
+	n = font_size_max();
+    return n;
+}
+
+// One step larger (+1) or smaller (-1), kept in settings.json. A terminal
+// draws with its own font: there the command says so and changes nothing.
+void font_step(long w, long es, long delta)
+{
+    if ( !es_flag(w, es, "haspanel") )
+    {
+	ui::set(w, es, "msg", "A terminal keeps its own font size.");
+	return;
+    }
+    long n = font_size(w, es);
+    if ( n == 0 )
+	n = 14;
+    n = n + delta;
+    if ( n < font_size_min() || n > font_size_max() )
+    {
+	ui::set(w, es, "msg", format("The font size stays {} (from {} to {}).",
+				     n - delta, font_size_min(), font_size_max()));
+	return;
+    }
+    var v = n;
+    if ( setting_put(w, es, "font_size", v) )
+	ui::set(w, es, "msg", format("Font size {}.", n));
+}
+
+// View ▸ Full screen: the window's client toggles it (the parked request;
+// the session never holds a window). A terminal's window is the terminal's.
+void full_screen(long w, long es)
+{
+    if ( !es_flag(w, es, "haspanel") )
+    {
+	ui::set(w, es, "msg", "A terminal keeps its own window.");
+	return;
+    }
+    var rq = { "kind": rqFULLSCREEN, "pause": 0 };
+    ui::set(w, es, "termreq", rq);
+}
+
 bool load_theme(long w, long es, const char *name)
 {
     var tname = name;		// ring discipline: own the text first
@@ -1504,6 +1495,39 @@ bool load_menu(long w, long es, const char *name)
 		id = perl::substr(rest, 0, sp2 - rs);
 		title = php::trim(sp2 + 1);
 	    }
+	    // An optional {ICON [MENU]} first: the picture a renderer draws
+	    // for the item (ui::icon's vocabulary, converted HERE — an unknown
+	    // word refuses the menu) and, on a toolbar button, the menu its
+	    // arrow drops down (checked once the file is read).
+	    long icon = 0;
+	    var drop = "";
+	    if ( strncmp(title.c_str(), "{", 1) == 0 )
+	    {
+		const char *tb = title.c_str();
+		const char *close = strchr(tb, '}');
+		if ( close == 0 )
+		{
+		    ui::set(w, es, "msg", format("Menu '{}' line {}: an icon brace that never closes.", mname, i + 1));
+		    return false;
+		}
+		var inner = php::trim(perl::substr(title, 1, close - tb - 1));
+		var after = php::trim(close + 1);
+		var iw = inner;
+		const char *ib = inner.c_str();
+		const char *isp = strchr(ib, ' ');
+		if ( isp != 0 )
+		{
+		    iw = perl::substr(inner, 0, isp - ib);
+		    drop = php::trim(isp + 1);
+		}
+		icon = ui::icon_code(iw.c_str());
+		if ( icon == 0 )		// ui::icon::none: no such picture
+		{
+		    ui::set(w, es, "msg", format("Menu '{}' line {}: unknown icon '{}'.", mname, i + 1, iw));
+		    return false;
+		}
+		title = after;
+	    }
 	    var when = "";
 	    // A trailing [when] clause: the context that enables the item.
 	    const char *ts = title.c_str();
@@ -1527,6 +1551,10 @@ bool load_menu(long w, long es, const char *name)
 		return false;
 	    }
 	    item = { "id": id, "code": code, "title": title, "when": when };
+	    if ( icon != 0 )
+		item["icon"] = icon;
+	    if ( strlen(drop.c_str()) > 0 )
+		item["drop"] = drop;
 	}
 	var idx = at[menu.c_str()];
 	if ( idx.is_null() )
@@ -1547,6 +1575,19 @@ bool load_menu(long w, long es, const char *name)
 	    menus[k] = m;
 	}
     }
+    // A dropdown names a menu of this file: one the file never makes is
+    // refused like an unknown command.
+    for ( var m : menus )
+	for ( var it : m["items"] )
+	{
+	    var dn;
+	    keyed_get(dn, it, "drop");
+	    if ( dn.is_null() || !at[dn.c_str()].is_null() )
+		continue;
+	    ui::set(w, es, "msg", format("Menu '{}': '{}' drops down '{}', which it never makes.",
+					 mname, it["id"], dn));
+	    return false;
+	}
     ui::set(w, es, "menudef", menus);
     return true;
 }
@@ -1555,6 +1596,7 @@ bool load_menu(long w, long es, const char *name)
 // the menu context reads it).
 long window_count(long w, long es);
 void ensure_build_cmds(long w, long es);	// the Build menu composes the ^B rows
+bool focused_lens_conceals(long w, long es);	// the lens seam, below
 
 // The context a [when] clause is judged against: named FACTS of the
 // session, computed once per compose. A clause names keys from this bag
@@ -1572,9 +1614,22 @@ void menu_context(var &ctx, long w, long es, long doc, long nav)
     bool building = es_int(w, es, "buildlive", 0) != 0;
     bool modal = cur_vimode(w, es) != viOFF;
     bool viewing = nav != doc;
+    bool window = es_flag(w, es, "haspanel");	// a window, not a terminal
+    bool formatted = false;
+    if ( viewing && focused_lens_conceals(w, es) )
+    {
+	// a concealing lens edits through to the file (lens_put): the edit
+	// items follow the FILE's verdict, its history and block markers are
+	// the file's; `formatted` names what the view still refuses
+	var why;
+	access_verdict(editable, why, w, es);
+	viewing = false;
+	formatted = true;
+    }
     ctx = { "editable": editable, "dirty": dirty, "selection": selection,
 	    "split": split, "buffers": buffers, "project": project,
-	    "building": building, "modal": modal, "viewing": viewing };
+	    "building": building, "modal": modal, "viewing": viewing,
+	    "formatted": formatted, "window": window };
 }
 
 // Does a [when] clause hold? `key`, `!key`, joined by `&&`; an empty
@@ -1676,10 +1731,13 @@ bool compose_menu_bar(var &out, long w, long es, long doc, long nav)
 
 // The TOOLBAR as the composed tree carries it (plan §41.11a): the rows the
 // menu data places on it (MENU word `toolbar`), in order, each { label,
-// action, code } plus `enabled: 0` when its [when] fails now; a separator
-// row places nothing. Profile-independent like the bar: a renderer shows
-// the chord the loaded profile binds to the code (web_model, tui_model).
-// False = nothing placed on it (the default menu places nothing).
+// action, code } plus `enabled: 0` when its [when] fails now, `icon` (a
+// ui::icon code) when the row names one, and `drop` — the `menushow`
+// command with the menu's title — when the row drops a menu down; a
+// separator row is { sep }. Profile-independent like the bar: a renderer
+// shows the chord the loaded profile binds to the code (web_model,
+// tui_model). False = nothing placed on it (the default menu places
+// nothing).
 bool compose_toolbar(var &out, long w, long es, long doc, long nav)
 {
     var def;
@@ -1696,11 +1754,28 @@ bool compose_toolbar(var &out, long w, long es, long doc, long nav)
 	for ( var it : m["items"] )
 	{
 	    if ( !it["sep"].is_null() )
+	    {
+		var sep = { "sep": 1 };
+		rows.push(sep);
 		continue;
+	    }
 	    var row = { "label": it["title"], "action": it["id"], "code": it["code"] };
 	    var when = it["when"];
 	    if ( !when_holds(ctx, when) )
 		row["enabled"] = 0;
+	    var ic;
+	    keyed_get(ic, it, "icon");
+	    if ( !ic.is_null() )
+		row["icon"] = ic;
+	    var dn;
+	    keyed_get(dn, it, "drop");
+	    if ( !dn.is_null() )
+	    {
+		var dact;
+		cmd_name(dact, cmdMENUSHOW);
+		var dr = { "action": dact, "code": (long)cmdMENUSHOW, "arg": dn };
+		row["drop"] = dr;
+	    }
 	    rows.push(row);
 	}
     }
@@ -1764,8 +1839,9 @@ void load_status(long w, long es, const char *name)
 // its own). A class the scheme does not style is plain on both, so its
 // span is not emitted. ONE converter, three feeders: parse_spans
 // (refresh_spans, the full-parse state), lex_spans (colour at load
-// before the parse lands) and the view lens (enter_view: the lexer's
-// classes over the EMITTED text). `doc` is the buffer whose lines the
+// before the parse lands) and the view lens (lens_render: the lexer's
+// classes over the EMITTED text, or a concealing lens's stored-text spans
+// carried through its map). `doc` is the buffer whose lines the
 // rows address; `dest` is the entity the rows land on — the state bag
 // for the document's own spans, the view buffer for a lens's (owner
 // 2026-09-09: every emitted code view is coloured). Like the status
@@ -1795,8 +1871,29 @@ void spans_to_hspans(long w, long es, long doc, var &rows, long dest)
     ui::set(w, dest, "hspans", hs);
 }
 
+// A text kind's colour (a kind that is not the compiler's, madcide_lang.inc):
+// a Markdown buffer's spans come from its tree (madcide_markdown.inc
+// md_spans, through the one converter); the other text kinds have none yet.
+// Replaces the session's spans either way, so no other buffer's stay up.
+void refresh_text_spans(long w, long es, long doc)
+{
+    var rows = {};
+    if ( doc_kind(w, doc) == madc::fkMARKDOWN )
+    {
+	var t;
+	ui::text(t, w, doc);
+	md_spans(rows, t.c_str());
+    }
+    spans_to_hspans(w, es, doc, rows, es);
+}
+
 void refresh_spans(long w, long es, long doc, long h)
 {
+    if ( !kind_reaches_compiler(doc_kind(w, doc)) )
+    {
+	refresh_text_spans(w, es, doc);	// no parse: the text kind's own colour
+	return;
+    }
     var rows;
     madc::parse_spans(rows, h);
     spans_to_hspans(w, es, doc, rows, es);
@@ -1808,6 +1905,14 @@ void refresh_spans(long w, long es, long doc, long h)
 // full parse's spans replace these when the handle lands.
 void lex_first_spans(long w, long es, long doc)
 {
+    if ( !kind_reaches_compiler(doc_kind(w, doc)) )
+    {
+	// Not the compiler's text (madcide_lang.inc): no C colour on prose —
+	// the kind's own (refresh_text_spans), which also replaces the
+	// previous buffer's spans (they live on the es).
+	refresh_text_spans(w, es, doc);
+	return;
+    }
     var t;
     ui::text(t, w, doc);
     var p;
@@ -1824,6 +1929,11 @@ void lex_first_spans(long w, long es, long doc)
 // enclosing-function query never runs the compiler.
 long ensure_phandle(long w, long es, long doc)
 {
+    // A kind that is not the compiler's never gets a parse (a README is not
+    // C): no handle, so no diagnostics, outline or compiler colour; every
+    // caller reads 0 as "no parse", as after a failed open.
+    if ( !kind_reaches_compiler(doc_kind(w, doc)) )
+	return 0;
     long h = es_int(w, doc, "phandle", 0);
     if ( h != 0 )
 	return h;
@@ -1831,7 +1941,7 @@ long ensure_phandle(long w, long es, long doc)
     ui::text(t, w, doc);
     var p;
     doc_name(p, w, doc);		// the unit's name (`untitled` without a file)
-    h = madc::parse_open(t.c_str(), p.c_str());
+    h = madc::parse_open(t.c_str(), p.c_str(), doc_standard(w, doc));
     // Stage-2: parse_open YIELDS between slices, so two flows can overlap
     // on one doc (the spawned background parse and a synchronous check).
     // ONE handle owner: whoever finds the bag already filled closes its
@@ -1890,6 +2000,13 @@ long reparse_buffer(long w, long es, long doc)
 // compiler.
 long refresh_diags(long w, long es, long doc)
 {
+    if ( !kind_reaches_compiler(doc_kind(w, doc)) )
+    {
+	var none = {};		// a text kind has no compiler diagnostics
+	ui::set(w, es, "diags", none);
+	refresh_text_spans(w, es, doc);	// its colour refreshes as a parse's would
+	return 0;
+    }
     long h = reparse_buffer(w, es, doc);
     var diags;
     madc::parse_check(diags, h);
@@ -1930,6 +2047,14 @@ void show_output(long w, long es)
 // The check ACTION: refresh + report + show the pane.
 void run_check(long w, long es, long doc)
 {
+    long k = doc_kind(w, doc);
+    if ( !kind_reaches_compiler(k) )
+    {
+	refresh_diags(w, es, doc);
+	ui::set(w, es, "msg", format("Check: a {} file is not compiled.",
+				     madc::file_kind_name(k)));
+	return;
+    }
     long n = refresh_diags(w, es, doc);
     show_diags(w, es);
     if ( n == 0 )
@@ -2067,6 +2192,40 @@ void key_style(long w, long es, const char *arg0)
     choice_show(w, es, "Key bindings", crows);
 }
 
+long nav_doc(long w, long es, long doc);	// below
+
+// `menushow MENU` (a toolbar button's arrow, plan §41.11a; the mockup's
+// Run ▾): the menu's items as a choice list, each row running its command —
+// the items the bar shows, in its order. A separator, an item whose [when]
+// fails now and a composed Build row are left out. An unknown menu is said.
+void menu_show(long w, long es, long doc, const char *arg0)
+{
+    var arg = arg0;		// ring discipline: own the text first
+    var def;
+    ui::get(def, w, es, "menudef");
+    if ( !def.is_null() )
+	for ( var m : def )
+	{
+	    if ( !(m["title"] == arg) )
+		continue;
+	    var ctx;
+	    menu_context(ctx, w, es, doc, nav_doc(w, es, doc));
+	    var crows = {};
+	    for ( var it : m["items"] )
+	    {
+		if ( !it["sep"].is_null() )
+		    continue;
+		var when = it["when"];
+		if ( !when_holds(ctx, when) )
+		    continue;
+		crows[] = { "title": it["title"], "code": it["code"], "arg": "", "current": 0 };
+	    }
+	    choice_show(w, es, arg.c_str(), crows);
+	    return;
+	}
+    ui::set(w, es, "msg", format("No menu '{}'.", arg));
+}
+
 // A choose on the pane: move the caret to the chosen row's line. The
 // rows live on the bag in pane order — the 1-based option is the index.
 // A row carrying a "file" (a PROJECT check's rows span TUs) first opens
@@ -2075,6 +2234,8 @@ void key_style(long w, long es, const char *arg0)
 void edit_file(long w, long es, long olddoc, const char *path0);
 bool save_as(long w, long es, long doc, const char *path0);	// S4: Save As
 bool save_as_quit(long w, long es, long doc, const char *path0);	// ^K X, untitled
+void save_as_close(long w, long es, long doc, const char *path0);	// File ▸ Close, untitled
+void close_answer(long w, long es, long doc, long a);	// File ▸ Close's question
 long active_doc(long w, long es, long fallback);
 void goto_pane_row(long w, long es, long doc, long option, long view)
 {
@@ -2224,10 +2385,31 @@ void view_spans(var &out, long w, long es, var &v)
 	ui::get(out, w, es, "hspans");
 }
 
+// A CONCEALING lens (plan 2026-10-03 §7d): its display is the stored text
+// with bytes hidden — the formatted view of a Markdown buffer — so its map
+// is exact both ways and the caret projects through it on entry and exit.
+// The compiler's renders (mc11 / c11 / c++) are wholly rendered instead.
+bool lens_conceals(long lang)
+{
+    return lang == madc::fkMARKDOWN;
+}
+
+// A render language's name as a View shows it: a concealing lens is
+// "formatted" (its subject's kind is the same), a compiler render its kind's
+// name (madc::file_kind_name: "mc11" / "c11" / "c++").
+void lens_lang_name(var &out, long lang)
+{
+    if ( lens_conceals(lang) )
+	out = "formatted";
+    else
+	out = madc::file_kind_name(lang);
+}
+
 // THE lens-up rule, one seat (dupaudit family view_active_predicate): a
 // lens is up iff the focused View is a code render (viewCODE). Out = the
-// render language's name (madc::file_kind_name: "mc11" / "c11" / "c++"),
-// "" otherwise; false = the identity lens (a source View, or no View yet).
+// render language's name (lens_lang_name: "mc11" / "c11" / "c++" /
+// "formatted"), "" otherwise; false = the identity lens (a source View, or
+// no View yet).
 bool lens_name(var &out, long w, long es)
 {
     out = "";
@@ -2236,7 +2418,7 @@ bool lens_name(var &out, long w, long es)
 	return false;
     if ( v["kind"].as_integer() != viewCODE )
 	return false;
-    out = madc::file_kind_name(v["lang"].as_integer());
+    lens_lang_name(out, v["lang"].as_integer());
     return true;
 }
 
@@ -2247,8 +2429,10 @@ bool lens_name(var &out, long w, long es)
 // count/operator echoes here too), %M the vi MODE seat (vim's
 // showmode), %x the enclosing context — madcide renders its AST-backed
 // enclosing function here, superior to JOE's textual backward
-// heuristic — %y the active VIEW name in JOE's "(syntax)" seat, and %%
-// a literal percent. UNSUPPORTED joerc escapes render EMPTY and light
+// heuristic — %y the active VIEW name in JOE's "(syntax)" seat, %G (a
+// madcide seat, no joerc letter) the buffer's git branch with `*` when the
+// buffer differs from its last commit (madcide_repo.inc), and %% a literal
+// percent. UNSUPPORTED joerc escapes render EMPTY and light
 // up as their features land (%T %W %I %X %S
 // ...). \X attribute escapes are consumed — the status row renders
 // inverse whole-line; intra-line styling is a named seat.
@@ -2363,6 +2547,8 @@ void status_expand(var &out, var &segs, long w, long es, long doc, long caret,
 	}
 	if ( e == 'x' )
 	    seat = fnctxv;
+	if ( e == 'G' )
+	    git_seat(seat, w, es, doc);
 	if ( e == 'y' )
 	{
 	    var vw;
@@ -2406,19 +2592,45 @@ void status_expand(var &out, var &segs, long w, long es, long doc, long caret,
 // plain row. This builds CONTENT from the editor state only; WHERE the
 // row goes is the screen model's decision (compose_ide_tree appends it
 // last) — a different editor personality places the same row elsewhere.
-// The confirm question's answers as a chrome-drawing client shows them
-// (the dialog's buttons): the @confirm scope's ACTIONS — profile data
-// binds their keys; this table gives each its title and the order a
-// dialog lays them. An action the scope does not bind gets no button, so
-// a profile that respells the question's keys keeps the dialog honest.
-void confirm_choices(var &out, long w, long es)
+// A QUESTION is a prompt mode answered by single keys — its answers are the
+// actions of one modal scope (profile data): the y/n confirm (@confirm) and
+// Replace's question at each match (@replace). The scope a mode reads; ""
+// = the mode is a typed prompt, not a question.
+const char *question_scope(long mode)
+{
+    switch ( mode )
+    {
+	case pmCONFIRM: return "confirm";
+	case pmREPLACEASK: return "replace";
+	case pmCLOSEASK: return "save";
+    }
+    return "";
+}
+
+// A question's answers as a chrome-drawing client shows them (the dialog's
+// buttons): the scope's ACTIONS — profile data binds their keys; this table
+// gives each its title and the order a dialog lays them. An action the
+// scope does not bind gets no button, so a profile that respells the
+// question's keys keeps the dialog honest. The cancel is "No" where it is
+// the question's no (the confirm), "Cancel" beside a separate no.
+void question_choices(var &out, long w, long es, const char *scope)
 {
     var mk;
     modal_keys(mk, w, es);
-    var sc = mk["confirm"];
+    var sc = mk[scope];
+    bool has_no = false;
+    if ( !sc.is_null() )
+	for ( var a : sc )
+	    if ( a == cmdPNO )
+		has_no = true;
     var titles = {};
     titles[] = { "code": cmdPYES, "label": "Yes" };
-    titles[] = { "code": cmdPCANCEL, "label": "No" };
+    titles[] = { "code": cmdPNO, "label": "No" };
+    titles[] = { "code": cmdPALL, "label": "All" };
+    var cancel = { "code": cmdPCANCEL, "label": "No" };
+    if ( has_no )
+	cancel["label"] = "Cancel";
+    titles[] = cancel;
     var rows = {};
     for ( var t : titles )
     {
@@ -2465,7 +2677,7 @@ void scope_key_action(var &out, long w, long es, const char *scope,
 // contract, so every pane's choose arm runs unchanged) under the label
 // the caller gives (null = no primary: a pane whose rows do nothing on
 // choose); Close posts the action the pane's @scope binds to esc — a
-// scope that binds no cancel gets no Close button (confirm_choices'
+// scope that binds no cancel gets no Close button (question_choices'
 // honesty rule). The filter is the text the core holds (null = the pane
 // does not filter). The terminal reads none of it.
 void dialog_hints(var &box, long w, long es, const char *scope,
@@ -2533,14 +2745,15 @@ bool compose_overlay_row(var &row, long w, long es)
     ui::get(pr, w, es, "prompt");
     if ( !pr.is_null() && strlen(pr.c_str()) > 0 )
     {
-	if ( cur_pmode(w, es) == pmCONFIRM )
+	const char *qs = question_scope(cur_pmode(w, es));
+	if ( strlen(qs) > 0 )
 	{
 	    st["content"] = pr;	// the label spells its own keys (y,n,^C)
 	    // The question as a DIALOG in a window: the label and its
 	    // answers as buttons — each fires the scope's action by name
 	    // (scope_action_named), what its key does in the terminal.
 	    var ch;
-	    confirm_choices(ch, w, es);
+	    question_choices(ch, w, es, qs);
 	    var cf = { "label": pr };
 	    cf["choices"] = ch;
 	    var h = { "popup": 1 };
@@ -2698,6 +2911,136 @@ void insert_file(long w, long es, long doc, long caret, const char *path)
     ui::set(w, es, "msg", format("Inserted {} bytes.", tn));
 }
 
+// ---- Replace (Edit ▸ Replace; nano's ^\ flow) ---------------------------
+// Two prompts — the text to find, the text to put in its place (empty =
+// delete it) — then a QUESTION at each match, walking from the caret to the
+// end and wrapping once to the top, stopping where it began: y replaces the
+// match (one undo step), n leaves it, a replaces it and every match after it
+// (one undo step), esc or ^C stops. The match is lit as a GUI selection
+// while the question is up; the walk ends with the count. The walk's state
+// on the bag: rfind / rwith (the answers), rat (the match asked about),
+// rstop (where the walk began, carried through each replacement by
+// shift_offset), rwrap (the walk has wrapped), rcount (replacements made).
+
+// The next match at or after `from` in the walk: past the end it wraps
+// once to the top, where a match must end by rstop. -1 = none left.
+long replace_next(long w, long es, long doc, long from)
+{
+    var pat;
+    ui::get(pat, w, es, "rfind");
+    long n = strlen(pat.c_str());
+    if ( !es_flag(w, es, "rwrap") )
+    {
+	long hit = ui::text_find(w, doc, from, pat.c_str());
+	if ( hit >= 0 )
+	    return hit;
+	ui::set(w, es, "rwrap", true);
+	from = 0;
+    }
+    long hit2 = ui::text_find(w, doc, from, pat.c_str());
+    if ( hit2 < 0 || hit2 + n > es_int(w, es, "rstop", 0) )
+	return -1;
+    return hit2;
+}
+
+// The walk is over: the question goes, the match unlit, and the count is
+// the message.
+void replace_end(long w, long es)
+{
+    end_prompt(w, es);
+    select_clear(w, es);
+    long c = es_int(w, es, "rcount", 0);
+    ui::set(w, es, "msg", format("Replaced {} occurrence{}.", c, c == 1 ? "" : "s"));
+}
+
+// Ask about the match at `at` (lit, the caret after it); none = the end.
+void replace_ask(long w, long es, long doc, long at)
+{
+    if ( at < 0 )
+    {
+	replace_end(w, es);
+	return;
+    }
+    var pat;
+    ui::get(pat, w, es, "rfind");
+    long n = strlen(pat.c_str());
+    ui::set(w, es, "rat", at);
+    ui::set(w, es, "caret", at + n);
+    select_span(w, es, at, at + n);
+    start_prompt(w, es, "Replace this one? (y)es (n)o (a)ll (^C)", pmREPLACEASK);
+}
+
+// Replace the match at rat; `checkpoint` makes it its own undo step. The
+// next search starts after the replacement.
+long replace_one(long w, long es, long doc, bool checkpoint)
+{
+    var pat;
+    ui::get(pat, w, es, "rfind");
+    var with;
+    ui::get(with, w, es, "rwith");
+    long at = es_int(w, es, "rat", 0);
+    long n = strlen(pat.c_str());
+    long m = strlen(with.c_str());
+    if ( checkpoint )
+	edit_checkpoint(w, es, doc, es_int(w, es, "caret", at));
+    select_clear(w, es);
+    ed_text_erase(w, es, doc, at, n);
+    if ( m > 0 )
+	ed_text_insert(w, es, doc, at, with.c_str());
+    // The stop keeps its place before text put in AT it (the walk began
+    // there; the replacement is behind it, never asked about again).
+    long stop = shift_offset(es_int(w, es, "rstop", 0), at, -n, true);
+    ui::set(w, es, "rstop", shift_offset(stop, at, m, false));
+    ui::set(w, es, "rcount", es_int(w, es, "rcount", 0) + 1);
+    ui::set(w, es, "caret", at + m);
+    ui::set(w, doc, "modified", true);
+    return at + m;
+}
+
+// The two answers are in: start the walk at the caret.
+void replace_begin(long w, long es, long doc, long caret)
+{
+    ui::set(w, es, "rstop", caret);
+    ui::set(w, es, "rwrap", false);
+    ui::set(w, es, "rcount", 0);
+    long at = replace_next(w, es, doc, caret);
+    if ( at < 0 )
+    {
+	ui::set(w, es, "msg", "Not found.");
+	return;
+    }
+    replace_ask(w, es, doc, at);
+}
+
+// The question's answer (an @replace action; anything else stops).
+void replace_answer(long w, long es, long doc, long a)
+{
+    var pat;
+    ui::get(pat, w, es, "rfind");
+    long at = es_int(w, es, "rat", 0);
+    if ( a == cmdPYES )
+    {
+	replace_ask(w, es, doc, replace_next(w, es, doc, replace_one(w, es, doc, true)));
+	return;
+    }
+    if ( a == cmdPNO )
+    {
+	replace_ask(w, es, doc, replace_next(w, es, doc, at + strlen(pat.c_str())));
+	return;
+    }
+    if ( a == cmdPALL )
+    {
+	long next = replace_one(w, es, doc, true);
+	for ( long hit = replace_next(w, es, doc, next); hit >= 0;
+	      hit = replace_next(w, es, doc, next) )
+	{
+	    ui::set(w, es, "rat", hit);
+	    next = replace_one(w, es, doc, false);
+	}
+    }
+    replace_end(w, es);
+}
+
 // AST-5 buffers (defined after the view machinery): ^K E open-or-switch.
 void edit_file(long w, long es, long olddoc, const char *path);
 // The ^P project window (defined after the buffer machinery): the prompt
@@ -2731,6 +3074,54 @@ void viewsplit_args(var &arg, long &dir, long &lang);
 void viewdock_target(var &arg, long &slot, long &side);
 void viewsize_args(var &arg, long &slot, long &size);
 
+// An empty answer is no answer — except where empty IS the answer:
+// Replace's text to put in (delete each match) and the Program arguments
+// (none).
+bool prompt_takes_empty(long mode)
+{
+    return mode == pmREPLACEWITH || mode == pmPROGARGS;
+}
+
+// ---- Program arguments (Thonny's View ▸ Program arguments) ---------------
+// The words a run of the buffer passes its main after the path, as the
+// user typed them on the session's bag ("progargs"), split the way Thonny
+// splits them: Python's shlex.split (python::shlex_split). F5's run reads
+// them (the REPL plugin's repl_run).
+
+// The argv a run passes: the path, then the words of `args`. False = `args`
+// does not split (an unclosed quote, a trailing backslash): argv holds the
+// path alone.
+bool program_argv(var &argv, const char *path, const char *args)
+{
+    var words;
+    bool ok = python::shlex_split(words, args);
+    var a = {};
+    var p = path;
+    a.push(p);
+    for ( var wd : words )
+	a.push(wd);
+    argv = a;
+    return ok;
+}
+
+// The prompt's answer: kept when it splits, refused (the old words stay)
+// when it does not.
+void set_program_args(long w, long es, const char *text0)
+{
+    var text = text0;			// ring discipline: own the text first
+    var words;
+    if ( !python::shlex_split(words, text.c_str()) )
+    {
+	ui::set(w, es, "msg", "Program arguments not changed: an unclosed quote or a trailing backslash.");
+	return;
+    }
+    ui::set(w, es, "progargs", text.c_str());
+    if ( php::count(words) == 0 )
+	ui::set(w, es, "msg", "Program arguments: none.");
+    else
+	ui::set(w, es, "msg", format("Program arguments: {}", text));
+}
+
 // Prompt completion (enter): dispatch on the stored mode. False = quit
 // (a committed :q — every other mode continues the session).
 bool finish_prompt(long w, long es, long doc, long caret)
@@ -2739,7 +3130,7 @@ bool finish_prompt(long w, long es, long doc, long caret)
     var in;
     ui::get(in, w, es, "pinput");
     end_prompt(w, es);
-    if ( strlen(in.c_str()) == 0 )
+    if ( strlen(in.c_str()) == 0 && !prompt_takes_empty(mode) )
 	return true;
     if ( mode == pmCOLON )
 	return colon_command(w, es, doc, caret, in);
@@ -2747,6 +3138,23 @@ bool finish_prompt(long w, long es, long doc, long caret)
     {
 	ui::set(w, es, "search", in.c_str());
 	do_find(w, es, doc, caret);
+	return true;
+    }
+    if ( mode == pmREPLACE )
+    {
+	ui::set(w, es, "rfind", in.c_str());
+	start_prompt(w, es, "Replace with", pmREPLACEWITH);
+	return true;
+    }
+    if ( mode == pmREPLACEWITH )
+    {
+	ui::set(w, es, "rwith", in.c_str());
+	replace_begin(w, es, doc, caret);
+	return true;
+    }
+    if ( mode == pmPROGARGS )
+    {
+	set_program_args(w, es, in.c_str());
 	return true;
     }
     if ( mode == pmGOTOLINE )
@@ -2768,6 +3176,11 @@ bool finish_prompt(long w, long es, long doc, long caret)
 	return save_as(w, es, doc, in.c_str());
     if ( mode == pmSAVEASQUIT )
 	return save_as_quit(w, es, doc, in.c_str());
+    if ( mode == pmSAVEASCLOSE )
+    {
+	save_as_close(w, es, doc, in.c_str());
+	return true;
+    }
     if ( mode == pmOPENPROJECT )
     {
 	proj_open(w, es, doc, in.c_str());
@@ -2847,17 +3260,29 @@ bool finish_prompt(long w, long es, long doc, long caret)
 bool prompt_event(long w, long es, long doc, long caret, var &ev)
 {
     var kind = ev["event_code"];
-    if ( cur_pmode(w, es) == pmCONFIRM )
+    long qmode = cur_pmode(w, es);
+    const char *qs = question_scope(qmode);
+    if ( strlen(qs) > 0 )
     {
-	// Single-key question: characters AND keys consult @confirm
-	// (a confirm reads its answer characters — unlike a prompt,
+	// Single-key question: characters AND keys consult its scope
+	// (a question reads its answer characters — unlike a prompt,
 	// whose characters are input). ^C arrives as its BOUND action
 	// (discard in the JOE profile), so any action cancels too.
 	// Unbound keys leave the question standing.
 	var a;
-	if ( scoped_action(a, w, es, "confirm", ev)
-	  || scope_action_named(a, w, es, "confirm", ev) )
+	if ( scoped_action(a, w, es, qs, ev)
+	  || scope_action_named(a, w, es, qs, ev) )
 	{
+	    if ( qmode == pmREPLACEASK )
+	    {
+		replace_answer(w, es, doc, a.as_integer());
+		return true;
+	    }
+	    if ( qmode == pmCLOSEASK )
+	    {
+		close_answer(w, es, doc, a.as_integer());
+		return true;
+	    }
 	    if ( a == cmdPYES )
 	    {
 		var vb;
@@ -2870,7 +3295,14 @@ bool prompt_event(long w, long es, long doc, long caret, var &ev)
 	    return true;
 	}
 	if ( kind == ui::event_kind::action )
-	    end_prompt(w, es);
+	{
+	    if ( qmode == pmREPLACEASK )
+		replace_answer(w, es, doc, cmdPCANCEL);
+	    else if ( qmode == pmCLOSEASK )
+		close_answer(w, es, doc, cmdPCANCEL);
+	    else
+		end_prompt(w, es);
+	}
 	return true;
     }
     if ( kind == ui::event_kind::text )
@@ -3045,11 +3477,22 @@ void clip_cut(long w, long es, long doc, long caret)
     clip_publish(w, es);
 }
 
+long console_of_input(long w, long es, long doc);	// the console view (below)
+
 void clip_copy(long w, long es, long doc, long caret)
 {
     if ( !copy_selection(w, es, doc, caret) )
     {
 	ui::set(w, es, "msg", "Nothing selected.");
+	// A console's input with nothing selected: Copy's key interrupts the
+	// console's program, as a terminal's Ctrl+C does (seINTERRUPT; the
+	// console's plugin decides — nothing running leaves the message).
+	long cv = console_of_input(w, es, doc);
+	if ( cv != viewNONE )
+	{
+	    var rep = { "view": cv };
+	    publish_event(w, es, doc, seINTERRUPT, rep);
+	}
 	return;
     }
     clip_publish(w, es);
@@ -3085,6 +3528,20 @@ void select_all(long w, long es, long doc)
     long n = ui::text_size(w, doc);
     ui::set(w, es, "caret", n);
     select_span(w, es, 0, n);
+}
+
+// Edit ▸ Toggle comment: the shared line-comment toggle (edit_lines) over
+// the NAV target, with the stored document's language's opener; an
+// editable buffer whose language has none refuses.
+void toggle_comment(long w, long es, long doc, long nav, long caret)
+{
+    const char *p = line_comment_of(w, doc);
+    if ( es_flag(w, es, "editable") && strlen(p) == 0 )
+    {
+	ui::set(w, es, "msg", "This file's language has no line comment.");
+	return;
+    }
+    edit_lines(w, es, nav, caret, leCOMMENT, p);
 }
 
 // ---- direct editing (^Y delete line, ^W delete word right) ------------
@@ -3151,22 +3608,101 @@ long nav_doc(long w, long es, long doc)
     return view_text_entity(v, doc);
 }
 
-// Re-represent the focused View as a code View in `lang` (madc::fkMC11 /
-// fkC11 / fkCPP — the kinds the emitter renders). False = the buffer does
-// not translate (the compiler's own rows surface; the View is unchanged).
-bool enter_lens(long w, long es, long doc, long lang)
+// Stored-space span rows {line, column, length, class} carried onto a
+// concealing lens's display through its map: each span's two ends project
+// (ui::lens_to_display — a concealed run inside a span just vanishes), and
+// the display offset becomes a display (line, column). A span whose bytes
+// are all concealed drops.
+void lens_spans(var &out, var &rows, var &stored, var &display, var &map)
+{
+    out = {};
+    var sst;
+    text_line_starts(sst, stored);
+    var dst;
+    text_line_starts(dst, display);
+    long nd = php::count(dst);
+    for ( var r : rows )
+    {
+	long l = r["line"].as_integer();
+	if ( l < 1 || l > php::count(sst) )
+	    continue;
+	long s = sst[l - 1].as_integer() + r["column"].as_integer();
+	long ds = ui::lens_to_display(map, s);
+	long de = ui::lens_to_display(map, s + r["length"].as_integer());
+	if ( ds < 0 || de <= ds )
+	    continue;
+	// the display line holding ds: the last line start at or before it
+	long lo = 0;
+	long hi = nd - 1;
+	while ( lo < hi )
+	{
+	    long mid = (lo + hi + 1) / 2;
+	    if ( dst[mid].as_integer() <= ds )
+		lo = mid;
+	    else
+		hi = mid - 1;
+	}
+	out[] = { "line": lo + 1, "column": ds - dst[lo].as_integer(),
+		  "length": de - ds, "class": r["class"] };
+    }
+}
+
+// A lens's render of text `t` (named `p`) in `lang`: the display text, its
+// coordinate map and its colour (span rows over the display). A concealing
+// lens hides the Markdown formatting (md_conceal) and carries the stored
+// text's own spans through the map; a compiler render is madc::emit's text
+// and map (V5), coloured by the lexer alone over the emitted text. False =
+// the text does not render.
+bool lens_render(var &shown, var &vmap, var &vrows, var &t, var &p, long lang)
+{
+    if ( lens_conceals(lang) )
+    {
+	if ( !md_conceal(shown, vmap, t.c_str()) )
+	    return false;
+	var srows;
+	md_spans(srows, t.c_str());
+	lens_spans(vrows, srows, t, shown, vmap);
+	return true;
+    }
+    if ( !madc::emit(shown, vmap, t.c_str(), p.c_str(), lang) )
+	return false;
+    madc::lex_spans(vrows, shown.c_str(), p.c_str());
+    return true;
+}
+
+// Show the focused View as a lens in `lang`: a code View of the emitter's
+// render (madc::fkMC11 / fkC11 / fkCPP), or the formatted view of a
+// Markdown buffer (madc::fkMARKDOWN, a concealing lens). From the source
+// View it parks the stored caret; over a lens (a cycle step) the parked one
+// stays. A concealing lens's display caret is the stored caret projected —
+// on entry, and again after each edit put through it (lens_put). False =
+// the buffer does not render that way (a compiler render surfaces the
+// compiler's own rows; the View is unchanged).
+bool lens_show(long w, long es, long doc, long lang)
 {
     var t;
     ui::text(t, w, doc);
     var p;
     doc_name(p, w, doc);
+    var lname;
+    lens_lang_name(lname, lang);
+    if ( lens_conceals(lang) && doc_kind(w, doc) != lang )
+    {
+	ui::set(w, es, "msg", format("View: {} applies to a {} buffer.", lname,
+				     madc::file_kind_name(lang)));
+	return false;
+    }
     var emitted;
     var vmap;			// V5: the source↔display coordinate map, beside the text
-    if ( !madc::emit(emitted, vmap, t.c_str(), p.c_str(), lang) )
+    var vrows;
+    if ( !lens_render(emitted, vmap, vrows, t, p, lang) )
     {
 	// The buffer does not translate: surface the compiler's own rows
 	// instead of a bare refusal.
-	run_check(w, es, doc);
+	if ( lens_conceals(lang) )
+	    ui::set(w, es, "msg", "View: the Markdown module is not available.");
+	else
+	    run_check(w, es, doc);
 	return false;
     }
     long id = ensure_focused_view(w, es, doc);
@@ -3185,57 +3721,289 @@ bool enter_lens(long w, long es, long doc, long lang)
 				// document and carries no kind)
     // Colour on the lens (owner 2026-09-09: every emitted code view is
     // syntax-coloured): the render buffer carries its OWN highlight spans —
-    // the lexer-alone classification (the colour-at-load path) over the
-    // EMITTED text, through the one converter, landing on the render
+    // lens_render's rows, through the one converter, landing on the render
     // buffer; the composer attaches the spans of whichever buffer it
     // shows (view_spans). The emitted text is already indented — the
     // emitter's own layout (src/cir_emit_c.cpp), one owner for --emit and
     // every lens.
-    var vrows;
-    madc::lex_spans(vrows, emitted.c_str(), p.c_str());
     spans_to_hspans(w, es, vd, vrows, vd);
+    // the stored-space caret: the one parked on entry from the source View,
+    // or a concealing lens's display caret carried back (a lens-to-lens
+    // cycle never re-parks)
+    long scaret = es_int(w, es, "caret", 0);
     if ( v["kind"].as_integer() != viewCODE )
-	ui::set(w, es, "ocaret", es_int(w, es, "caret", 0));	// the CONTAINER
+	ui::set(w, es, "ocaret", scaret);	// the CONTAINER
 				// parks its stored-space caret (never the row)
+    else
+	scaret = es_int(w, es, "ocaret", 0);
     v["kind"] = viewCODE;
     v["lang"] = lang;
     v["generator"] = genMADC;
     v["vbuf"] = vd;
     v["map"] = vmap;		// V5: fills the vmap that was EMPTY (design §2.6)
     view_store(w, es, v);
-    ui::set(w, es, "caret", 0);
+    // a concealing lens keeps the caret where it was (projected); a
+    // compiler render starts at the top
+    long dcaret = 0;
+    if ( lens_conceals(lang) )
+	dcaret = ui::lens_to_display(vmap, scaret);
+    ui::set(w, es, "caret", dcaret < 0 ? 0 : dcaret);
     ui::set(w, es, "mark", -1);
     ui::set(w, es, "bend", -1);
+    // the display itself takes no edit: a compiler render is read-only, and
+    // a concealing lens takes its edits through the stored text (lens_put)
+    // — an event that reaches the display unclassified is refused, never
+    // written into the render
     ui::set(w, es, "editable", false);
-    ui::set(w, es, "ro_msg", "Read-only view (^K A returns).");
-    ui::set(w, es, "msg", format("View: {}", madc::file_kind_name(lang)));
+    if ( lens_conceals(lang) )
+	ui::set(w, es, "ro_msg", "That command does not edit through the formatted view (^K A returns).");
+    else
+	ui::set(w, es, "ro_msg", "Read-only view (^K A returns).");
     return true;
 }
 
+// Re-represent the focused View as a lens in `lang` (lens_show), saying so.
+bool enter_lens(long w, long es, long doc, long lang)
+{
+    if ( !lens_show(w, es, doc, lang) )
+	return false;
+    var lname;
+    lens_lang_name(lname, lang);
+    ui::set(w, es, "msg", format("View: {}", lname));
+    return true;
+}
+
+// A View row back on its subject's own text and kind (no render, no map),
+// stored.
+void view_row_source(long w, long es, var &v)
+{
+    long subject = v["subject"].as_integer();
+    v["kind"] = viewSOURCE;
+    v["lang"] = doc_kind(w, subject);
+    v["generator"] = genNONE;
+    v["vbuf"] = subject;
+    var nomap = {};
+    v["map"] = nomap;
+    view_store(w, es, v);
+}
+
 // Back to the source View: the row's representation returns to the
-// subject's own text and kind; the container's parked caret returns.
+// subject's own text and kind; the container's parked caret returns. With
+// no lens up (lens_name, the one lens-up rule) there is nothing to leave:
+// the parked caret is stale and the caret stays where it is.
 void exit_lens(long w, long es, long doc)
 {
+    var up;
+    if ( !lens_name(up, w, es) )
+	return;
     var v;
+    long back = es_int(w, es, "ocaret", 0);
     if ( view_row(v, w, es, focused_view(w, es)) )
     {
-	long subject = v["subject"].as_integer();
-	v["kind"] = viewSOURCE;
-	v["lang"] = doc_kind(w, subject);
-	v["generator"] = genNONE;
-	v["vbuf"] = subject;
-	var nomap = {};
-	v["map"] = nomap;
-	view_store(w, es, v);
+	if ( lens_conceals(v["lang"].as_integer()) )
+	{
+	    // the caret moved over the formatted text: where it reads, the
+	    // stored text's caret lands (the earlier side of a concealed run)
+	    var m = v["map"];
+	    long s = ui::lens_to_stored(m, es_int(w, es, "caret", 0));
+	    if ( s >= 0 )
+		back = s;
+	}
+	view_row_source(w, es, v);
     }
-    ui::set(w, es, "caret", es_int(w, es, "ocaret", 0));
+    ui::set(w, es, "caret", back);
     ui::set(w, es, "mark", -1);
     ui::set(w, es, "bend", -1);
     derive_access(w, es);	// the file's own verdict returns
 }
 
+// ---- the concealing lens's put (plan 2026-10-03 §7d, slice 2) ----------
+// An edit through the formatted view runs on the STORED text: the caret and
+// block project to stored offsets on the side the edit needs (lens_side),
+// the View steps aside to its source for the one event — the ordinary
+// dispatcher, its history and its change log, unchanged — and the lens
+// re-renders over the result with the caret projected back. Undo and the
+// change log stay in stored offsets: the lens holds no history of its own.
+
+// Does `ev` change the text, and on which side of a concealed run?
+long edit_event_side(var &ev)
+{
+    var kind = ev["event_code"];
+    if ( kind == ui::event_kind::text )
+	return sideBEFORE;
+    if ( kind == ui::event_kind::key )
+    {
+	var k = ev["key_code"];
+	return key_edit_side(k);
+    }
+    if ( kind == ui::event_kind::action )
+    {
+	long code = ev_code(ev);
+	ui::key mk = motion_key_of(code);
+	if ( mk != ui::key::none )
+	{
+	    var kv = mk;
+	    return key_edit_side(kv);
+	}
+	return cmd_edit_side(code);
+    }
+    return sideNONE;
+}
+
+// Is the focused View a concealing lens (lens_name: the one lens-up rule)?
+bool focused_lens_conceals(long w, long es)
+{
+    var nm;
+    if ( !lens_name(nm, w, es) )
+	return false;
+    var v;
+    view_row(v, w, es, focused_view(w, es));
+    return lens_conceals(v["lang"].as_integer());
+}
+
+// A display offset's stored position on the side an edit needs.
+long lens_put_point(var &map, long d, bool after)
+{
+    if ( after )
+	return ui::lens_to_stored_after(map, d);
+    return ui::lens_to_stored(map, d);
+}
+
+// The change log's newest seq (0 = no log yet): where an event's own
+// splices begin.
+long clog_head(long w)
+{
+    long le = clog_find(w);
+    return le > 0 ? es_int(w, le, "seq", 0) : 0;
+}
+
+// After an edit put through a Markdown lens: what it deleted, repaired
+// (md_put_repair) as one more splice in the same undo step. The edit's own
+// splices are the change log's records of `doc` after `seq0` — exact, never
+// a guess from the texts' difference. A repair applies to one deletion,
+// alone or replaced at the same place (typing over a block); any other
+// shape (an insertion, the line edits' many splices) deleted no visible
+// text to repair.
+void lens_put_repair(long w, long es, long doc, var &before, long seq0)
+{
+    long le = clog_find(w);
+    if ( le <= 0 )
+	return;
+    var recs;
+    clog_records(recs, w, le);
+    var mine = {};
+    for ( var rec : recs )
+	if ( rec["seq"].as_integer() > seq0 && rec["doc"].as_integer() == doc
+	  && clog_kind_of(rec) == ckSPLICE )
+	    mine[] = rec;
+    long n = php::count(mine);
+    if ( n < 1 || n > 2 )
+	return;
+    int64_t p = mine[0]["at"].as_integer();
+    long e = p + mine[0]["del"].as_integer();
+    var ins = mine[0]["ins"];
+    if ( n == 2 )
+    {
+	// a deletion, then what replaced it, at the same place
+	if ( strlen(ins.c_str()) > 0 || mine[1]["del"].as_integer() != 0
+	  || mine[1]["at"].as_integer() != p )
+	    return;
+	ins = mine[1]["ins"];
+    }
+    if ( e <= p )
+	return;			// nothing deleted
+    var fixed;
+    long fcaret = 0;
+    if ( !md_put_repair(fixed, fcaret, before, p, e, ins) )
+	return;
+    // the repaired text over the edited one: one more splice
+    var after;
+    ui::text(after, w, doc);
+    long na = strlen(after.c_str());
+    long nf = strlen(fixed.c_str());
+    long r = 0;
+    long t = 0;
+    {
+	const char *a = after.c_str();
+	const char *f = fixed.c_str();
+	while ( r < na && r < nf && a[r] == f[r] )
+	    r = r + 1;
+	while ( t < na - r && t < nf - r && a[na - 1 - t] == f[nf - 1 - t] )
+	    t = t + 1;
+    }
+    if ( na - t > r )
+	ed_text_erase(w, es, doc, r, na - t - r);
+    if ( nf - t > r )
+    {
+	var piece = perl::substr(fixed, r, nf - t - r);
+	ed_text_insert(w, es, doc, r, piece.c_str());
+    }
+    ui::set(w, es, "caret", fcaret);
+}
+
+bool IdeSession::lens_put(long doc, var &ev, long side)
+{
+    var v;
+    view_row(v, w, es, focused_view(w, es));
+    long subject = v["subject"].as_integer();
+    long lang = v["lang"].as_integer();
+    var m = v["map"];
+    // the caret on the edit's side; a block's low end past the concealed
+    // run before it, its high end before the one after it (the runs at a
+    // block's edges stay)
+    long dc = es_int(w, es, "caret", 0);
+    long dm = es_int(w, es, "mark", -1);
+    long db = es_int(w, es, "bend", -1);
+    long sc = lens_put_point(m, dc, side == sideAFTER);
+    long sm = -1;
+    long sb = -1;
+    if ( dm >= 0 )
+    {
+	long de = db >= 0 ? db : dc;
+	long dlo = dm < de ? dm : de;
+	sm = lens_put_point(m, dm, dm == dlo && dm != de);
+	if ( db >= 0 )
+	    sb = lens_put_point(m, db, db == dlo && db != dm);
+	else if ( dc != dm )
+	    sc = lens_put_point(m, dc, dc == dlo);
+    }
+    var before;
+    ui::text(before, w, subject);
+    // a cut's clipboard takes what the view shows, as a copy there does:
+    // the copy rule over the view's own block once the edit is in (the
+    // lens buffer keeps the shown text until lens_show)
+    long code = ev_code(ev);
+    long vbuf = v["vbuf"].as_integer();
+    var shown;
+    bool cuts = (code == cmdCUT || code == cmdBLOCKDEL)
+	&& selection_range(shown, w, es, dc);
+    // the lens steps aside for the one event: the View on its source, the
+    // caret and block in stored offsets, the file's own access verdict
+    view_row_source(w, es, v);
+    ui::set(w, es, "caret", sc);
+    ui::set(w, es, "mark", sm);
+    ui::set(w, es, "bend", sb);
+    derive_access(w, es);
+    long seq0 = clog_head(w);
+    bool cont = apply_ide_event(doc, ev);
+    if ( lens_conceals(lang) && code != cmdUNDO && code != cmdREDO )
+	lens_put_repair(w, es, subject, before, seq0);
+    if ( cuts )
+    {
+	ui::set(w, es, "mark", dm);
+	ui::set(w, es, "bend", db);
+	copy_selection(w, es, vbuf, dc);
+	select_clear(w, es);
+	clip_publish(w, es);
+    }
+    // the lens returns over the edited text, its caret projected
+    lens_show(w, es, subject, lang);
+    return cont;
+}
+
 // A STANDALONE code View of `subject` in `lang` (madc::fkMC11 / fkC11 /
-// fkCPP): a NEW View with its own render buffer, coloured like the lens, the
+// fkCPP, or a Markdown subject's formatted view, madc::fkMARKDOWN): a NEW
+// View with its own render buffer, coloured like the lens, the
 // subject untouched — for a `viewsplit right mc11` second pane (source left,
 // MC11 right) that does NOT re-represent the focused View. 0 = the subject
 // does not translate. The focused re-representation stays enter_lens; this is
@@ -3246,9 +4014,12 @@ long make_code_view(long w, long es, long subject, long lang)
     ui::text(t, w, subject);
     var p;
     doc_name(p, w, subject);
+    if ( lens_conceals(lang) && doc_kind(w, subject) != lang )
+	return 0;
     var emitted;
     var vmap;			// V5: the source↔display coordinate map
-    if ( !madc::emit(emitted, vmap, t.c_str(), p.c_str(), lang) )
+    var vrows;
+    if ( !lens_render(emitted, vmap, vrows, t, p, lang) )
 	return 0;
     long id = view_new(w, es, subject, viewCODE, lang);
     var v;
@@ -3256,8 +4027,6 @@ long make_code_view(long w, long es, long subject, long lang)
     long vd = ui::create(w, "view-buffer");
     ui::text_load(w, vd, emitted.c_str());
     ui::set(w, vd, "path", p);		// the status %n seat: a display path
-    var vrows;
-    madc::lex_spans(vrows, emitted.c_str(), p.c_str());
     spans_to_hspans(w, es, vd, vrows, vd);
     v["generator"] = genMADC;
     v["vbuf"] = vd;
@@ -3410,13 +4179,23 @@ void switch_buffer(long w, long es, long olddoc, long idx)
 
 // THE buffer-table row shape, one owner (dupaudit family
 // madcide_buffer_row_shape): a FRESH row for a newly opened document.
-// The seed row in edit_file is the one deliberate exception — it carries
-// the LIVE interaction state of the buffer being adopted, not fresh
-// zeroes.
+// The seed row (ensure_buffer_table) is the one deliberate exception — it
+// carries the LIVE interaction state of the buffer being adopted, not
+// fresh zeroes.
+void ensure_buffer_table(long w, long es, long doc);
 void push_buffer_row(long w, long es, long nd, const char *path)
 {
     var bufs;
     ui::get(bufs, w, es, "buffers");
+    long ad = active_doc(w, es, 0);
+    if ( bufs.is_null() && ad != 0 && ad != nd )
+    {
+	// No table yet (headless): the buffer the session drives is row 0
+	// first (ensure_buffer_table's seed), so a pushed [repl] or [build]
+	// never hides it from the buffer finder.
+	ensure_buffer_table(w, es, ad);
+	ui::get(bufs, w, es, "buffers");
+    }
     if ( bufs.is_null() )
     {
 	var fresh = {};
@@ -3431,9 +4210,98 @@ void push_buffer_row(long w, long es, long nd, const char *path)
     ui::set(w, es, "buffers", bufs);
 }
 
+// A PANEL's buffer — the REPL's transcript, a build's output, the Terminal's
+// screen: a buffer-table row (^P reaches it) whose document says so
+// ("panel"), so a close never hands it the editor and Close all leaves it to
+// its panel. The one creator of one; doc_is_panel_buffer reads the mark.
+long new_panel_buffer(long w, long es, const char *name)
+{
+    long nd = new_document(w, name, "");
+    ui::set(w, nd, "panel", 1);
+    push_buffer_row(w, es, nd, name);
+    return nd;
+}
+
+bool doc_is_panel_buffer(long w, long doc)
+{
+    return es_int(w, doc, "panel", 0) != 0;
+}
+
+// The editor's Help buffer (a layout whose editor pane lists the Help view,
+// editor_hosts): an editor tab the Help view's rows show in — read-only, its
+// document marked ("help"; doc_is_help_buffer reads it), named like a
+// panel's buffer ([help]: never a path looked up on disk). Found by its mark,
+// made once.
+bool doc_is_help_buffer(long w, long doc)
+{
+    return es_int(w, doc, "help", 0) != 0;
+}
+
+long help_doc_if_any(long w, long es)
+{
+    var bufs;
+    ui::get(bufs, w, es, "buffers");
+    if ( bufs.is_null() )
+	return 0;
+    for ( var b : bufs )
+	if ( doc_is_help_buffer(w, b["doc"].as_integer()) )
+	    return b["doc"].as_integer();
+    return 0;
+}
+
+long help_doc(long w, long es)
+{
+    long existing = help_doc_if_any(w, es);
+    if ( existing != 0 )
+	return existing;
+    long nd = new_document(w, "[help]", "");
+    ui::set(w, nd, "help", 1);
+    ui::set(w, nd, "read_only", true);
+    push_buffer_row(w, es, nd, "[help]");
+    return nd;
+}
+
+// The buffer-table row showing `doc` (a document has one row); -1 when
+// none.
+long buffer_index_of(long w, long es, long doc)
+{
+    var bufs;
+    ui::get(bufs, w, es, "buffers");
+    if ( bufs.is_null() )
+	return -1;
+    long n = php::count(bufs);
+    for ( long i = 0; i < n; i = i + 1 )
+    {
+	var r = bufs[i];
+	if ( r["doc"].as_integer() == doc )
+	    return i;
+    }
+    return -1;
+}
+
+// A session without the buffer table (headless) seeds it from the buffer
+// it drives: ONE owner (edit_file opens beside it, Close removes from it).
+// The seed row carries that buffer's LIVE interaction state, not fresh
+// zeroes (push_buffer_row's shape otherwise).
+void ensure_buffer_table(long w, long es, long doc)
+{
+    var bufs;
+    ui::get(bufs, w, es, "buffers");
+    if ( !bufs.is_null() && php::count(bufs) > 0 )
+	return;
+    var seed = {};
+    var op;
+    ui::get(op, w, doc, "path");
+    long lv = ensure_focused_view(w, es, doc);	// the live View too
+    seed[] = { "doc": doc, "path": op, "caret": es_int(w, es, "caret", 0),
+	       "mark": -1, "bend": -1, "view": lv };
+    ui::set(w, es, "buffers", seed);
+    ui::set(w, es, "bufidx", 0);
+    ui::set(w, es, "adoc", doc);
+}
+
 // ^K E's commit: an open path switches; anything else opens (missing =
-// New File). A session without the table (headless) seeds it from the
-// buffer it was driving.
+// New File). A session without the table (headless) seeds it first.
 void edit_file(long w, long es, long olddoc, const char *path0)
 {
     // Value-first: the caller hands a prompt value's ring-lifetime
@@ -3442,22 +4310,9 @@ void edit_file(long w, long es, long olddoc, const char *path0)
     // {}-format/value-assign char-array mistype is a banked engine
     // defect, KG madc_char_array_text_boundary).
     var p = path0;
+    ensure_buffer_table(w, es, olddoc);
     var bufs;
     ui::get(bufs, w, es, "buffers");
-    if ( bufs.is_null() || php::count(bufs) == 0 )
-    {
-	var seed = {};
-	var op;
-	ui::get(op, w, olddoc, "path");
-	long lv = ensure_focused_view(w, es, olddoc);	// the live View too
-	seed[] = { "doc": olddoc, "path": op,
-		   "caret": es_int(w, es, "caret", 0),
-		   "mark": -1, "bend": -1, "view": lv };
-	ui::set(w, es, "buffers", seed);
-	ui::set(w, es, "bufidx", 0);
-	ui::set(w, es, "adoc", olddoc);
-	ui::get(bufs, w, es, "buffers");
-    }
     long n = php::count(bufs);
     // Two spellings of one file are one BUFFER (V6c-2): same_file, or
     // `^K E /abs/path/x.mad` opens a second buffer on the file already open
@@ -3493,6 +4348,7 @@ void edit_file(long w, long es, long olddoc, const char *path0)
     }
     push_buffer_row(w, es, nd, p.c_str());
     switch_buffer(w, es, olddoc, n);
+    recent_note(w, es, p.c_str());	// File ▸ Recent Files (a new file: once saved)
     var nm;
     doc_name(nm, w, nd);
     if ( strlen(note.c_str()) > 0 )
@@ -4788,8 +5644,9 @@ void build_subst(var &out, const char *cmd, long w, long es, long doc)
 // The [build] buffer if it already exists, else 0 — a NON-creating lookup
 // for read-only callers (the composer's live-build panel), so composition
 // never mints a buffer as a side effect.
-// ONE finder for a pseudo-buffer by its bracketed name ([build],
-// [terminal]) — non-creating: composition never mints a buffer.
+// ONE finder for a buffer by its path or a pseudo-buffer by its bracketed
+// name ([build], [terminal]) — non-creating: composition never mints a
+// buffer (a typed %run's file reads its open buffer through it too).
 long buffer_doc_named(long w, long es, const char *name)
 {
     var bufs;
@@ -4817,9 +5674,7 @@ long build_doc(long w, long es)
     long existing = build_doc_if_any(w, es);	// ONE finder, no duplicate scan
     if ( existing != 0 )
 	return existing;
-    long nd = new_document(w, "[build]", "");
-    push_buffer_row(w, es, nd, "[build]");
-    return nd;
+    return new_panel_buffer(w, es, "[build]");
 }
 
 // Append one line; the [build] buffer never reads as user-modified.
@@ -4970,9 +5825,7 @@ long term_doc(long w, long es)
     long existing = term_doc_if_any(w, es);
     if ( existing != 0 )
 	return existing;
-    long nd = new_document(w, "[terminal]", "");
-    push_buffer_row(w, es, nd, "[terminal]");
-    return nd;
+    return new_panel_buffer(w, es, "[terminal]");
 }
 
 void term_feed_text(long w, long tdoc, const char *text)
@@ -5547,17 +6400,53 @@ bool dialog_request(long w, long es, long dlg, const char *title,
     return true;
 }
 
+// The prompt a file dialog's request falls back to (the terminal, or a
+// client with no native dialog): its mode and its label, by the dialog's
+// kind. ONE mapping — save_as_ask and IdeSession::dialog_fallback read it.
+long dlg_prompt_mode(long dlg)
+{
+    switch ( dlg )
+    {
+	case dlgSAVE: return pmSAVEAS;
+	case dlgSAVEQUIT: return pmSAVEASQUIT;
+	case dlgSAVECLOSE: return pmSAVEASCLOSE;
+	case dlgOPENPROJECT: return pmOPENPROJECT;
+    }
+    return pmEDITFILE;		// dlgOPEN: the file to edit
+}
+
+const char *dlg_prompt_label(long dlg)
+{
+    switch ( dlg )
+    {
+	case dlgSAVE: case dlgSAVEQUIT: case dlgSAVECLOSE: return "Save as";
+	case dlgOPENPROJECT: return "Project file to open";
+    }
+    return "Name of file to edit";
+}
+
 // Ask for the name a save writes under (Save As…): the native dialog when
-// the client has one, else JOE's prompt. `then_quit` is ^K X on a buffer
-// with no file yet: the answer saves, then quits (the request's own kind
-// carries it, so a cancel leaves nothing behind).
-void save_as_ask(long w, long es, long doc, bool then_quit)
+// the client has one, else JOE's prompt. `dlg` is the save's kind — what
+// the answer does after writing: dlgSAVE nothing more, dlgSAVEQUIT quits
+// (^K X on a buffer with no file yet), dlgSAVECLOSE closes the buffer
+// (File ▸ Close). The request carries it, so a cancel leaves nothing behind.
+void save_as_ask(long w, long es, long doc, long dlg)
 {
     var cur = "";
     if ( !doc_untitled(w, doc) )
 	ui::get(cur, w, doc, "path");
-    if ( !dialog_request(w, es, then_quit ? dlgSAVEQUIT : dlgSAVE, "Save As", cur) )
-	start_prompt(w, es, "Save as", then_quit ? pmSAVEASQUIT : pmSAVEAS);
+    if ( !dialog_request(w, es, dlg, "Save As", cur) )
+	start_prompt(w, es, dlg_prompt_label(dlg), dlg_prompt_mode(dlg));
+}
+
+// The document's parse handle goes; the next need opens it again (under
+// the document's name and the session's standard, both read at the open).
+void doc_forget_parse(long w, long doc)
+{
+    long ph = es_int(w, doc, "phandle", 0);
+    if ( ph != 0 )
+	madc::parse_close(ph);
+    ui::set(w, doc, "phandle", 0);
 }
 
 // The document's name moved (Save As): the caches keyed on the old one go —
@@ -5566,10 +6455,7 @@ void save_as_ask(long w, long es, long doc, bool then_quit)
 // both under the new name.
 void doc_forget_name(long w, long doc)
 {
-    long ph = es_int(w, doc, "phandle", 0);
-    if ( ph != 0 )
-	madc::parse_close(ph);
-    ui::set(w, doc, "phandle", 0);
+    doc_forget_parse(w, doc);
     ui::set(w, doc, "ghandle", -1);
     ui::set(w, doc, "grelpath", "");
 }
@@ -5585,25 +6471,19 @@ bool save_as(long w, long es, long doc, const char *path0)
     bool untitled_launch = launch_untitled(w, es, doc);	// before the name moves
     doc_set_path(w, doc, p.c_str());	// the kind follows the new name
     doc_forget_name(w, doc);
-    var bufs;
-    ui::get(bufs, w, es, "buffers");
-    if ( !bufs.is_null() )
+    long i = buffer_index_of(w, es, doc);
+    if ( i >= 0 )
     {
-	long n = php::count(bufs);
-	for ( long i = 0; i < n; i = i + 1 )
-	{
-	    var r = bufs[i];
-	    if ( r["doc"].as_integer() == doc )
-	    {
-		r["path"] = p;
-		bufs[i] = r;
-		// The untitled LAUNCH buffer (row 0) named: it is the launch
-		// file now, the implicit project's anchor.
-		if ( i == 0 && untitled_launch )
-		    ui::set(w, es, "launchpath", p);
-	    }
-	}
+	var bufs;
+	ui::get(bufs, w, es, "buffers");
+	var r = bufs[i];
+	r["path"] = p;
+	bufs[i] = r;
 	ui::set(w, es, "buffers", bufs);
+	// The untitled LAUNCH buffer (row 0) named: it is the launch file
+	// now, the implicit project's anchor.
+	if ( i == 0 && untitled_launch )
+	    ui::set(w, es, "launchpath", p);
     }
     return save_and_check(w, es, doc);
 }
@@ -5620,6 +6500,210 @@ bool save_as_quit(long w, long es, long doc, const char *path0)
     if ( doc_modified(w, doc) )
 	return true;			// the write failed; its message stands
     return do_verb(w, es, "q");
+}
+
+// ---- File ▸ Close / Close all (Thonny's) ---------------------------------
+// A tab is a buffer-table row; closing one removes the row, and its
+// document stays in the world (another client may be showing it). One
+// owner removes a row: drop_buffer_row. A buffer with unsaved changes asks
+// first — a QUESTION (@save: y saves, n discards, esc keeps it open); an
+// untitled buffer's yes asks its name through Save As, whose answer then
+// closes it (dlgSAVECLOSE). Close all asks once for every unsaved buffer.
+// The question's subject on the bag: closeidx (the row asked about; -1 =
+// Close all).
+void save_all(long w, long es, long doc);		// defined with the actions below
+
+// The row a close of row `idx` hands the editor: the nearest EDITING buffer
+// (a file, the untitled buffer, a read-only view the editor shows) on its
+// right, else its left — never a panel's buffer (doc_is_panel_buffer: the
+// REPL's transcript, a build's output, the Terminal's screen), which its
+// panel shows. -1 = no other editing buffer.
+long close_successor_row(long w, var &bufs, long idx)
+{
+    long n = php::count(bufs);
+    for ( long i = idx + 1; i < n; i = i + 1 )
+	if ( !doc_is_panel_buffer(w, bufs[i]["doc"].as_integer()) )
+	    return i;
+    for ( long i = idx - 1; i >= 0; i = i - 1 )
+	if ( !doc_is_panel_buffer(w, bufs[i]["doc"].as_integer()) )
+	    return i;
+    return -1;
+}
+
+// Remove row `idx`. The active row first hands the session to the nearest
+// editing buffer, right then left (close_successor_row; switch_buffer's
+// whole restore); every index past it moves down one — the active one and
+// each window row's — and a window that showed it shows the new active
+// buffer. madcide always has an editing buffer, so the last one never goes:
+// a named file's row gives way to the untitled buffer, and the untitled
+// buffer itself is emptied (one undo step) and left clean.
+void drop_buffer_row(long w, long es, long idx)
+{
+    var bufs;
+    ui::get(bufs, w, es, "buffers");
+    long n = php::count(bufs);
+    var row = bufs[idx];
+    long d = row["doc"].as_integer();
+    if ( close_successor_row(w, bufs, idx) < 0 )
+    {
+	if ( doc_untitled(w, d) )
+	{
+	    long size = ui::text_size(w, d);
+	    if ( size > 0 )
+	    {
+		edit_checkpoint(w, es, d, es_int(w, es, "caret", 0));
+		ed_text_erase(w, es, d, 0, size);
+	    }
+	    ui::set(w, d, "modified", false);
+	    ui::set(w, es, "caret", 0);
+	    select_clear(w, es);
+	    return;
+	}
+	edit_file(w, es, d, "");	// the untitled buffer: a new row, active
+	ui::get(bufs, w, es, "buffers");
+	n = php::count(bufs);
+    }
+    long cur = es_int(w, es, "bufidx", 0);
+    if ( idx == cur )
+    {
+	cur = close_successor_row(w, bufs, idx);
+	switch_buffer(w, es, d, cur);
+	ui::get(bufs, w, es, "buffers");	// the switch saved the rows
+    }
+    var kept = {};
+    for ( long i = 0; i < n; i = i + 1 )
+	if ( i != idx )
+	    kept[] = bufs[i];
+    ui::set(w, es, "buffers", kept);
+    if ( cur > idx )
+	cur = cur - 1;
+    ui::set(w, es, "bufidx", cur);
+    var ws;
+    ui::get(ws, w, es, "windows");
+    if ( ws.is_null() )
+	return;
+    long nw = php::count(ws);
+    for ( long k = 0; k < nw; k = k + 1 )
+    {
+	var wr = ws[k];
+	long b = wr["bufidx"].as_integer();
+	if ( b == idx )
+	    b = cur;
+	else if ( b > idx )
+	    b = b - 1;
+	wr["bufidx"] = b;
+	ws[k] = wr;
+    }
+    ui::set(w, es, "windows", ws);
+}
+
+// File ▸ Close: the active buffer, asking first when it has unsaved
+// changes.
+void close_buffer(long w, long es, long doc)
+{
+    ensure_buffer_table(w, es, doc);
+    long idx = es_int(w, es, "bufidx", 0);
+    var row;
+    var bufs;
+    ui::get(bufs, w, es, "buffers");
+    row = bufs[idx];
+    long d = row["doc"].as_integer();
+    if ( !doc_modified(w, d) )
+    {
+	drop_buffer_row(w, es, idx);
+	return;
+    }
+    var nm;
+    doc_name(nm, w, d);
+    ui::set(w, es, "closeidx", idx);
+    var q = format("Save changes to {}? (y)es (n)o (^C)", php::basename(nm));
+    start_prompt(w, es, q.c_str(), pmCLOSEASK);
+}
+
+// File ▸ Close all: every buffer; one question when any has unsaved
+// changes.
+void close_all(long w, long es, long doc)
+{
+    ensure_buffer_table(w, es, doc);
+    var bufs;
+    ui::get(bufs, w, es, "buffers");
+    long dirty = 0;
+    for ( var b : bufs )
+	if ( doc_modified(w, b["doc"].as_integer()) )
+	    dirty = dirty + 1;
+    ui::set(w, es, "closeidx", -1);
+    if ( dirty == 0 )
+    {
+	close_answer(w, es, doc, cmdPNO);
+	return;
+    }
+    var q = format("Save changes to {} file{}? (y)es (n)o (^C)", dirty,
+		   dirty == 1 ? "" : "s");
+    start_prompt(w, es, q.c_str(), pmCLOSEASK);
+}
+
+// The question's answer. y: the buffer is saved, then closed — an untitled
+// one asks its name first (the close follows the answer); for Close all,
+// Save All runs and every buffer it left clean closes (an untitled one
+// stays open, unsaved). n: closed without saving. Anything else: nothing
+// closes.
+void close_answer(long w, long es, long doc, long a)
+{
+    end_prompt(w, es);
+    if ( a != cmdPYES && a != cmdPNO )
+	return;
+    long idx = es_int(w, es, "closeidx", -1);
+    if ( idx >= 0 )
+    {
+	var bufs;
+	ui::get(bufs, w, es, "buffers");
+	var row = bufs[idx];
+	long d = row["doc"].as_integer();
+	if ( a == cmdPYES )
+	{
+	    if ( doc_untitled(w, d) )
+	    {
+		save_as_ask(w, es, d, dlgSAVECLOSE);
+		return;
+	    }
+	    save_and_check(w, es, d);
+	    if ( doc_modified(w, d) )
+		return;			// the write failed; its message stands
+	}
+	drop_buffer_row(w, es, idx);
+	return;
+    }
+    if ( a == cmdPYES )
+	save_all(w, es, doc);
+    // Close all: the last row first, so the indices still to come hold. A
+    // panel's buffer stays with its panel (the REPL keeps its transcript).
+    var bufs2;
+    ui::get(bufs2, w, es, "buffers");
+    for ( long i = php::count(bufs2) - 1; i >= 0; i = i - 1 )
+    {
+	var r = bufs2[i];
+	if ( doc_is_panel_buffer(w, r["doc"].as_integer()) )
+	    continue;
+	if ( a == cmdPYES && doc_modified(w, r["doc"].as_integer()) )
+	    continue;			// untitled, or its write failed
+	drop_buffer_row(w, es, i);
+	ui::get(bufs2, w, es, "buffers");
+    }
+}
+
+// Save As's answer on a buffer File ▸ Close asked about: written under the
+// name, then closed (a failed write leaves it open, its message standing).
+void save_as_close(long w, long es, long doc, const char *path0)
+{
+    var p = path0;			// ring discipline: own the text first
+    if ( strlen(p.c_str()) == 0 )
+	return;
+    save_as(w, es, doc, p.c_str());
+    if ( doc_modified(w, doc) )
+	return;
+    long idx = buffer_index_of(w, es, doc);
+    if ( idx >= 0 )
+	drop_buffer_row(w, es, idx);
 }
 
 // A native file dialog answered (the dialog event, S4): open edits the
@@ -5641,6 +6725,9 @@ bool dialog_result(long w, long es, long doc, var &ev)
 	    return save_as(w, es, doc, path.c_str());
 	case dlgSAVEQUIT:
 	    return save_as_quit(w, es, doc, path.c_str());
+	case dlgSAVECLOSE:
+	    save_as_close(w, es, doc, path.c_str());
+	    return true;
 	case dlgOPENPROJECT:
 	    proj_open(w, es, doc, path.c_str());
 	    return true;
@@ -6069,17 +7156,17 @@ void build_choose(long w, long es, long doc, long option)
 // family (doc_kind — stamped once at open from the file name, never
 // re-derived here): its render is source-shaped (madc::emit for madc::fkCPP
 // echoes the retained source), and a madc-dialect buffer has no C++
-// respelling yet (the named seat, design doc §3.2). A range test on the
-// one file-kind vocabulary, never an extension ladder.
+// respelling yet (the named seat, design doc §3.2). The family is
+// kind_family's (madcide_lang.inc), never an extension ladder.
 bool cxx_view_applies(long w, long es, long doc)
 {
-    long k = doc_kind(w, doc);
-    return (k >= madc::fkC && k <= madc::fkC_LAST)
-	|| (k >= madc::fkCPP && k <= madc::fkCPP_LAST);
+    long f = kind_family(doc_kind(w, doc));
+    return f == madc::fkC || f == madc::fkCPP;
 }
 
 // ^K A (IDE-9e moved it off ^K N, now nextw): original -> mc11 -> c11
-// [-> c++ on a C/C++ buffer] -> original.
+// [-> c++ on a C/C++ buffer] -> original; a Markdown buffer: original ->
+// formatted -> original; any other text kind has no other view.
 // A failed enter falls back to the original — the session is never
 // trapped inside a stale view.
 // The cycle REPLACES the focused View's representation in place (one View
@@ -6090,9 +7177,16 @@ void cycle_view(long w, long es, long doc)
     var v;
     bool up = view_row(v, w, es, focused_view(w, es))
 	   && v["kind"].as_integer() == viewCODE;
+    long k = doc_kind(w, doc);
     if ( !up )
     {
-	enter_lens(w, es, doc, madc::fkMC11);
+	if ( lens_conceals(k) )
+	    enter_lens(w, es, doc, k);
+	else if ( kind_reaches_compiler(k) )
+	    enter_lens(w, es, doc, madc::fkMC11);
+	else
+	    ui::set(w, es, "msg", format("View: a {} file has no other view.",
+					 madc::file_kind_name(k)));
 	return;
     }
     switch ( v["lang"].as_integer() )
@@ -6140,7 +7234,7 @@ bool save_quit(long w, long es, long doc)
 {
     if ( doc_untitled(w, doc) )
     {
-	save_as_ask(w, es, doc, true);	// the name first; the answer quits
+	save_as_ask(w, es, doc, dlgSAVEQUIT);	// the name first; the answer quits
 	return true;
     }
     if ( !do_verb(w, es, "w") )
@@ -6157,12 +7251,75 @@ bool save_and_check(long w, long es, long doc)
 {
     if ( doc_untitled(w, doc) )
     {
-	save_as_ask(w, es, doc, false);
+	save_as_ask(w, es, doc, dlgSAVE);
 	return true;
     }
     bool run = do_verb(w, es, "w");
+    if ( !doc_modified(w, doc) )
+	recent_note_doc(w, es, doc);	// written: File ▸ Recent Files
     refresh_diags(w, es, doc);
     return run;
+}
+
+// File ▸ Save All (Thonny's): every buffer with unsaved changes is written
+// by the `w` verb — the one persistence owner — with that buffer as the
+// verb's subject (the actor's "adoc", _subject.madv's rule) for the call,
+// the active buffer's restored after. A buffer with no file yet is left
+// for Save As and counted; a write the verb refuses is counted too. The
+// active buffer's diagnostics refresh when it was written (check-on-save).
+// A session without the buffer table (headless) saves its one document.
+void save_all(long w, long es, long doc)
+{
+    var bufs;
+    ui::get(bufs, w, es, "buffers");
+    if ( bufs.is_null() || php::count(bufs) == 0 )
+    {
+	if ( doc_modified(w, doc) )
+	    save_and_check(w, es, doc);
+	else
+	    ui::set(w, es, "msg", "Nothing to save.");
+	return;
+    }
+    long active = es_int(w, es, "adoc", doc);
+    long saved = 0;
+    long untitled = 0;
+    long failed = 0;
+    for ( var b : bufs )
+    {
+	long d = b["doc"].as_integer();
+	if ( !doc_modified(w, d) )
+	    continue;
+	if ( doc_untitled(w, d) )
+	{
+	    untitled = untitled + 1;
+	    continue;
+	}
+	ui::set(w, es, "adoc", d);
+	var out;
+	ui::act(out, w, es, "w", "");
+	if ( doc_modified(w, d) )
+	    failed = failed + 1;
+	else
+	{
+	    saved = saved + 1;
+	    recent_note_doc(w, es, d);	// written: File ▸ Recent Files
+	}
+    }
+    ui::set(w, es, "adoc", active);
+    if ( saved > 0 && !doc_modified(w, active) )
+	refresh_diags(w, es, active);
+    // The message names only what happened: saved, left untitled, refused.
+    var m = "Nothing to save.";
+    var parts = {};
+    if ( saved > 0 )
+	parts[] = format("Saved {} file{}.", saved, saved == 1 ? "" : "s");
+    if ( untitled > 0 )
+	parts[] = format("{} untitled (Save As names it).", untitled);
+    if ( failed > 0 )
+	parts[] = format("{} could not be written.", failed);
+    if ( php::count(parts) > 0 )
+	m = php::implode(" ", parts);
+    ui::set(w, es, "msg", m.c_str());
 }
 
 // The vi COLON LINE (owner ruling 2026-08-31: modes are general — joe
@@ -6362,6 +7519,24 @@ long editor_leaf_count(var &node)
     for ( var c : node["children"] )
 	n = n + editor_leaf_count(c);
     return n;
+}
+
+// Does a pane of the editor tree list View `kind` on its tabs — chrome_hosting's
+// question for the editor region? `pane editor tabs views source help` opens
+// Help in the editor, as a tab of the buffer ring (help_open).
+bool editor_hosts(var &node, long kind)
+{
+    if ( node["kind"] == ctSPLIT )
+    {
+	for ( var c : node["children"] )
+	    if ( editor_hosts(c, kind) )
+		return true;
+	return false;
+    }
+    for ( var t : node["tabs"] )
+	if ( t["kind"] == kind )
+	    return true;
+    return false;
 }
 
 // The tree-order index of the focused leaf (-1 = none), a running counter.
@@ -6582,6 +7757,8 @@ long viewrepr_lang_of(var &word)
 	return madc::fkC11;
     if ( a == "cpp" || a == "c++" || a == "cxx" )
 	return madc::fkCPP;
+    if ( a == "formatted" )
+	return madc::fkMARKDOWN;	// the concealing lens (lens_conceals)
     return 0;			// source / src / unknown = a source pane
 }
 
@@ -6628,6 +7805,11 @@ long leaf_view_of(long w, long es, var &leaf, bool primary)
 // S5 window stack is up (one axis at a time in V2b; the stack is JOE's).
 void view_split(long w, long es, long doc, long dir, long lang)
 {
+    if ( doc_is_help_buffer(w, active_doc(w, es, doc)) )
+    {
+	ui::set(w, es, "msg", "Help shows in one view; switch to a file to split.");
+	return;
+    }
     if ( window_count(w, es) >= 2 )
     {
 	ui::set(w, es, "msg",
@@ -6642,14 +7824,26 @@ void view_split(long w, long es, long doc, long dir, long lang)
     if ( lang != 0 )
     {
 	nv = make_code_view(w, es, subject, lang);
+	var lname;
+	lens_lang_name(lname, lang);
 	if ( nv == 0 )
 	{
 	    ui::set(w, es, "msg",
 		    format("Cannot render {} — the buffer does not translate.",
-			   madc::file_kind_name(lang)));
+			   lname));
 	    return;
 	}
 	pcar = 0;			// a fresh code render starts at the top
+	if ( lens_conceals(lang) )
+	{
+	    // a concealing lens opens where the caret reads
+	    var nvr;
+	    view_row(nvr, w, es, nv);
+	    var m = nvr["map"];
+	    long d = ui::lens_to_display(m, ca);
+	    if ( d > 0 )
+		pcar = d;
+	}
 	tkind = viewCODE;
     }
     else
@@ -7124,6 +8318,16 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 	    return vcont;
     }
 
+    // An EDIT through a concealing lens (plan 2026-10-03 §7d, slice 2) runs
+    // on the stored text — the lens's put — and the lens re-renders over
+    // the result; every other event (a motion, find) runs over the display.
+    if ( viewing )
+    {
+	long side = edit_event_side(ev);
+	if ( side != sideNONE && focused_lens_conceals(w, es) )
+	    return lens_put(doc, ev, side);
+    }
+
     // A pointing-device gesture (the web target's hit test; a terminal's
     // mouse reporting later): the caret model is the keyboard's.
     if ( kind == ui::event_kind::dialog )
@@ -7164,9 +8368,11 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 	}
 	// Stored-space interaction state (block markers) and history are
 	// meaningless against a displayed view: the one refusal, up front
-	// (mutating actions below refuse through the editable gate).
-	if ( viewing && (code == cmdMARK || code == cmdBEND
-		     || code == cmdUNDO || code == cmdREDO) )
+	// (mutating actions below refuse through the editable gate). A
+	// concealing lens takes them: its edits reach the file (lens_put,
+	// above, has run undo and redo already) and its block's ends project.
+	if ( viewing && !focused_lens_conceals(w, es)
+	  && (code == cmdMARK || code == cmdBEND || code == cmdUNDO || code == cmdREDO) )
 	{
 	    refuse_edit(w, es);
 	    return true;
@@ -7233,6 +8439,15 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 		return true;
 	    case cmdSAVE:
 		return save_and_check(w, es, doc);
+	    case cmdSAVEALL:
+		save_all(w, es, doc);
+		return true;
+	    case cmdCLOSE:
+		close_buffer(w, es, doc);
+		return true;
+	    case cmdCLOSEALL:
+		close_all(w, es, doc);
+		return true;
 	    case cmdSAVEQUIT:
 		return save_quit(w, es, doc);
 	    case cmdQUIT:
@@ -7257,6 +8472,25 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 	    case cmdFINDNEXT:
 	    {
 		do_find(w, es, nav, caret);
+		return true;
+	    }
+	    case cmdPROGARGS:
+	    {
+		// The prompt starts with the current words (Thonny's field
+		// keeps them between runs).
+		var cur;
+		ui::get(cur, w, es, "progargs");
+		start_prompt(w, es, "Program arguments", pmPROGARGS);
+		if ( !cur.is_null() )
+		    ui::set(w, es, "pinput", cur.c_str());
+		return true;
+	    }
+	    case cmdREPLACE:
+	    {
+		if ( !es_flag(w, es, "editable") )
+		    refuse_edit(w, es);
+		else
+		    start_prompt(w, es, "Replace", pmREPLACE);
 		return true;
 	    }
 	    case cmdGOTOLINE:
@@ -7304,6 +8538,17 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 	    }
 	    case cmdSELECTALL:
 		select_all(w, es, nav);
+		return true;
+	    // The line edits (Thonny's Edit ▸ Indent, Dedent, Toggle comment):
+	    // over the NAV target too, refused on a displayed View by the gate.
+	    case cmdINDENT:
+		edit_lines(w, es, nav, caret, leINDENT, "");
+		return true;
+	    case cmdDEDENT:
+		edit_lines(w, es, nav, caret, leDEDENT, "");
+		return true;
+	    case cmdTOGGLECOMMENT:
+		toggle_comment(w, es, doc, nav, caret);
 		return true;
 	    case cmdBLOCKCOPY:
 	    {
@@ -7374,9 +8619,11 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 	    case cmdOUTLINE:
 	    {
 		// The outline View toggles where the layout hosts it (the
-		// sidebar by default): shown -> hidden; else refresh + show.
+		// sidebar by default): shown -> dismissed (a pane of its own
+		// hides; beside other tabs, the one it replaced returns —
+		// chthonia's Symbols); else refresh + show.
 		if ( view_shown(w, es, viewOUTLINE) )
-		    hide_view(w, es, viewOUTLINE);
+		    dismiss_view(w, es, viewOUTLINE);
 		else
 		{
 		    refresh_outline(w, es, doc);
@@ -7384,9 +8631,35 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 		}
 		return true;
 	    }
+	    case cmdMDPREVIEW:
+	    {
+		// View ▸ Markdown Preview toggles like the outline: the buffer
+		// rendered beside it (madcide_preview.inc).
+		preview_toggle(w, es, doc);
+		return true;
+	    }
 	    case cmdHELP:
 	    {
 		toggle_pane(w, es, paneHELP);
+		return true;
+	    }
+	    case cmdHELPCONTENTS:
+	    {
+		// Help ▸ Help Contents: the bundle's first topic.
+		help_open(w, es, doc, "contents");
+		return true;
+	    }
+	    case cmdHELPTOPIC:
+	    {
+		// A topic by name (the palette's, -c's), else the one open now
+		// (the Help tab's click), else the contents.
+		help_topic_cmd(w, es, doc, ev);
+		return true;
+	    }
+	    case cmdABOUT:
+	    {
+		// Help ▸ About (Thonny's): the product's About lines.
+		toggle_pane(w, es, paneABOUT);
 		return true;
 	    }
 	    case cmdOPTIONS:
@@ -7447,7 +8720,7 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 		return true;
 	    }
 	    case cmdSAVEAS:
-		save_as_ask(w, es, doc, false);
+		save_as_ask(w, es, doc, dlgSAVE);
 		return true;
 	    case cmdOPENPROJECT:
 	    {
@@ -7485,6 +8758,27 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 		}
 		return true;
 	    }
+	    case cmdFONTLARGER:
+		font_step(w, es, 1);
+		return true;
+	    case cmdFONTSMALLER:
+		font_step(w, es, -1);
+		return true;
+	    case cmdFULLSCREEN:
+		full_screen(w, es);
+		return true;
+	    case cmdRECENT:
+	    {
+		// File ▸ Recent Files…: its argument (a choice row's, the
+		// seat's, -c's) opens that file, else the choice list.
+		var ra;
+		keyed_get(ra, ev, "arg");
+		var rs = "";
+		if ( !ra.is_null() )
+		    rs = format("{}", ra);
+		recent_files(w, es, doc, rs.c_str());
+		return true;
+	    }
 	    case cmdKEYSTYLE:
 	    {
 		// Tools ▸ Key bindings…: its argument (a choice row's, the
@@ -7497,6 +8791,34 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 		key_style(w, es, ks.c_str());
 		return true;
 	    }
+	    case cmdLANGUAGE:
+	    {
+		// Run ▸ Language…: its argument (a choice row's, the seat's,
+		// -c's) or the choice list.
+		var la;
+		keyed_get(la, ev, "arg");
+		var ls = "";
+		if ( !la.is_null() )
+		    ls = format("{}", la);
+		lang_command(w, es, ls.c_str());
+		return true;
+	    }
+	    case cmdMENUSHOW:
+	    {
+		// A toolbar button's arrow: its menu as a choice list.
+		var ma;
+		keyed_get(ma, ev, "arg");
+		var ms = "";
+		if ( !ma.is_null() )
+		    ms = format("{}", ma);
+		menu_show(w, es, doc, ms.c_str());
+		return true;
+	    }
+	    case cmdNEW:
+		// File ▸ New (Thonny's): the untitled buffer — the one already
+		// open, else a new one (edit_file's empty name).
+		edit_file(w, es, doc, "");
+		return true;
 	    case cmdBUFSEL:
 	    {
 		// Switch to a buffer (polish P4): by ring index when the command
@@ -7652,6 +8974,18 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 	    case cmdBLD_PROJ_RUN:
 		build_choose(w, es, doc, ev["option"].as_integer());
 		return true;
+	    case cmdHELPTOPIC:
+		// A Help row: a link opens its topic (madcide_help.inc).
+		help_choose(w, es, doc, ev["option"].as_integer());
+		return true;
+	    case cmdMDPREVIEWROW:
+		// A preview row: its source line, or its link's file
+		// (madcide_preview.inc). Stored lines, as a pane row's goto.
+		if ( viewing )
+		    refuse_edit(w, es);
+		else
+		    preview_choose(w, es, doc, ev["option"].as_integer());
+		return true;
 	    case cmdGOTO:
 	    case cmdGOTODEF:
 		// Pane rows carry STORED line numbers — meaningless against a
@@ -7794,7 +9128,9 @@ void compose_view_node(var &ed, long w, long es, long id, long doc,
 void view_lens_hints(var &eh, long w, long es, var &v)
 {
     long lang = v["lang"].as_integer();
-    eh["view"] = madc::file_kind_name(lang);
+    var lname;
+    lens_lang_name(lname, lang);
+    eh["view"] = lname;
     eh["lang_code"] = lang;
     eh["map"] = v["map"];
     var vhs;
@@ -7972,6 +9308,20 @@ void compose_chrome_pane(var &out, long w, long es, long doc, var &c)
 	    pkids.push(outn);
 	    break;
 	}
+	case viewHELP:
+	{
+	    var hn;
+	    help_view_node(hn, w, es, focus);
+	    pkids.push(hn);
+	    break;
+	}
+	case viewMDPREVIEW:
+	{
+	    var mn;
+	    preview_view_node(mn, w, es, focus);
+	    pkids.push(mn);
+	    break;
+	}
 	case viewOUTLINE:
 	case viewPROBLEMS:
 	{
@@ -8042,8 +9392,11 @@ void compose_editor_flat(var &kids, long w, long es, var &ed, var &status,
     // one tab per buffer (its base name, `*` while modified), the active
     // buffer marked, each tab naming the `bufsel` command WITH its argument
     // (the ring index) — a command that takes an argument, the gateway
-    // shape (a human client's prompt collects the same argument). The
-    // terminal keeps ^P's buffer rows; it never composes this node.
+    // shape (a human client's prompt collects the same argument). A panel's
+    // buffer (doc_is_panel_buffer: the REPL's transcript, a build's output,
+    // the Terminal's screen) is its panel's, never an editor tab; ^P still
+    // reaches it. The terminal keeps ^P's buffer rows; it never composes
+    // this node.
     if ( es_flag(w, es, "haspanel") )
     {
 	var bufs;
@@ -8058,9 +9411,13 @@ void compose_editor_flat(var &kids, long w, long es, var &ed, var &status,
 	    for ( long i = 0; i < nb; i = i + 1 )
 	    {
 		var b = bufs[i];
+		if ( doc_is_panel_buffer(w, b["doc"].as_integer()) )
+		    continue;
 		var bp;
 		doc_name(bp, w, b["doc"].as_integer());	// `untitled` without a file
 		var bn = php::basename(bp);
+		if ( doc_is_help_buffer(w, b["doc"].as_integer()) )
+		    bn = "Help";		// the Help tab (help_doc), not its [help] name
 		var title = bn;
 		if ( doc_modified(w, b["doc"].as_integer()) )
 		    title = format("{}*", bn);
@@ -8289,8 +9646,25 @@ void compose_editor_split(var &kids, long w, long es, long doc, var &node,
     kids.push(g);
 }
 
+// The window's title, Thonny's `Thonny  -  <path>  @  <line> : <col>`: the
+// product's name, the document (`untitled` without a file) and the caret's
+// row and column as the status line counts them (over `nav`, the text the
+// caret moves in). A root hint the terminal ignores and a window shows.
+void window_title(var &out, long w, long doc, long nav, long caret)
+{
+    var name;
+    doc_name(name, w, doc);
+    long line = line_of(w, nav, caret);
+    long col = caret - line_start_of(w, nav, line) + 1;
+    out = format("{} - {} @ {} : {}", product_title(), name, line, col);
+}
+
 void IdeSession::compose_ide_tree(var &root, long doc)
 {
+    // The Markdown Preview follows the buffer: re-rendered here, the one seat
+    // every client's frame passes, only when its text changed
+    // (madcide_preview.inc) — the panes below only read.
+    preview_follow(w, es, doc);
     long caret = es_int(w, es, "caret", 0);
     // The View seam at composition: the edit node presents the focused
     // View's text (its render buffer while a lens is up) and, for a code
@@ -8306,8 +9680,15 @@ void IdeSession::compose_ide_tree(var &root, long doc)
     // The JOE screen model (IDE-9b): no heading banner — the path, the
     // modified/read-only badges, and the view name all render in the
     // status line's %n / %m / %R / %y seats.
+    // The editor's Help tab (help_doc) shows the Help view's rows — the list
+    // the chrome pane shows elsewhere — never its empty read-only document;
+    // the edit node's hints below are not its.
+    bool helping = doc_is_help_buffer(w, nav);
     var ed;
-    compose_view_node(ed, w, es, fv, doc, caret);
+    if ( helping )
+	help_view_node(ed, w, es, editor_has_keyboard(w, es));
+    else
+	compose_view_node(ed, w, es, fv, doc, caret);
     // ONE read-modify-write of the edit node's hints: every hint below
     // lands on this local and it is written back ONCE, after the region
     // block. A var assignment is a deep copy, and with the highlight
@@ -8315,9 +9696,9 @@ void IdeSession::compose_ide_tree(var &root, long doc)
     // three RMW passes cost two ~3 ms copies per composed keystroke
     // (measured 2026-09-07).
     var eh = ed["hints"];
-    if ( viewing )
+    if ( viewing && !helping )
 	view_lens_hints(eh, w, es, fvrow);
-    else
+    else if ( !helping )
     {
 	// Highlight spans (AST-2): the bag's themed byte-range rows ride
 	// the hints — the document's stored-space rows, computed at
@@ -8332,12 +9713,12 @@ void IdeSession::compose_ide_tree(var &root, long doc)
     // The display tab width (IDE-9d ^T option) rides the edit node's
     // hints like the caret — the model owns the expansion math.
     long tabw = es_int(w, es, "tabwidth", 0);
-    if ( tabw > 0 )
+    if ( tabw > 0 && !helping )
 	eh["tabwidth"] = tabw;
     // While the editor has the keyboard, tab is the editor's key — it types
     // a tab (edit_key), never a focus cycle (B55; the terminal's and the
     // REPL input's `tabkey` precedent).
-    if ( editor_has_keyboard(w, es) )
+    if ( editor_has_keyboard(w, es) && !helping )
 	eh["tabkey"] = 1;
 
     // The status line's enclosing-function seat (%x, AST-1): a RETAINED-
@@ -8429,6 +9810,20 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 		var title;
 		if ( keys_title_line(title, line) )
 		    continue;
+		items[] = { "role": "item", "content": line };
+		nrows = nrows + 1;
+	    }
+	    var nofilter;
+	    dialog_hints(box, w, es, "pane", "", nofilter);	// no primary: rows do nothing on choose
+	}
+	else if ( pane == paneABOUT )
+	{
+	    // About = the product descriptor's lines (product_about)
+	    box["label"] = format("About {}", product_title());
+	    var lines;
+	    product_about(lines);
+	    for ( var line : lines )
+	    {
 		items[] = { "role": "item", "content": line };
 		nrows = nrows + 1;
 	    }
@@ -8629,6 +10024,20 @@ void IdeSession::compose_ide_tree(var &root, long doc)
     // menu data), so the bag is built by keyed assignment (`{}` would be
     // an empty ARRAY); nothing loaded = no hints, as before.
     var rh;
+    // The font size the user chose (font_size) rides the same bag as the
+    // page's --font-size; unset, the page keeps its own.
+    long fsz = font_size(w, es);
+    if ( fsz > 0 )
+    {
+	var px = format("{}px", fsz);
+	if ( gt.is_null() || php::count(gt) == 0 )
+	{
+	    var only = { "font-size": px };
+	    gt = only;
+	}
+	else
+	    gt["font-size"] = px;
+    }
     if ( !gt.is_null() && php::count(gt) > 0 )
 	rh["theme"] = gt;
     // The @presence palette (V3c): the scheme's round-robin caret colours
@@ -8649,8 +10058,12 @@ void IdeSession::compose_ide_tree(var &root, long doc)
     var tbar;
     if ( compose_toolbar(tbar, w, es, doc, nav) )
 	rh["toolbar"] = tbar;
-    if ( !rh.is_null() )
-	r["hints"] = rh;
+    // The window's title (window_title): every compose, so it follows the
+    // file and the caret; the host is told only when it changed.
+    var title;
+    window_title(title, w, doc, nav, caret);
+    rh["title"] = title;
+    r["hints"] = rh;
     root = r;
 }
 
@@ -8669,7 +10082,7 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 // Returns false ONLY when the startup profile AND the built-in rescue
 // bindings both fail (fatal; the caller reports the exit).
 bool init_view_es(long w, long es, long doc, const char *path,
-		  const char *profile)
+		  const char *profile, long std)
 {
     var p = path;		// ring discipline: own the text first — the
 				// data loads below cycle the ring, so a bare
@@ -8692,6 +10105,10 @@ bool init_view_es(long w, long es, long doc, const char *path,
     var want;
     active_profile(want, w, es, prof.c_str());
     bundle_select(w, es, want.c_str());
+    // The session's language standard, before anything parses or the open
+    // starts a module (madcide_lang.inc): the command line's, else the
+    // "std" setting, else each file's own.
+    lang_open(w, es, std);
     // Plugin CODE activates before any data loads, so a key profile, a menu
     // or a layout can name what it registers (madcide_plugin_code.inc).
     plugins_activate(w, es);
@@ -8755,7 +10172,7 @@ bool init_view_es(long w, long es, long doc, const char *path,
 	{
 	    var kpath;
 	    bundle_data_path(kpath, w, es, kw.c_str(), cbKEYS);
-	    println(stderr, "madcide: cannot load the startup keys {} and the built-in rescue bindings failed to install — check the install layout (source tree: profiles/ beside madcide_core.inc; installed: <exedir>/../share/madcide/profiles, or profiles/ beside the executable).", kpath);
+	    println(stderr, "{}: cannot load the startup keys {} and the built-in rescue bindings failed to install — check the install layout (source tree: profiles/ beside madcide_core.inc; installed: <exedir>/../share/madcide/profiles, or profiles/ beside the executable).", product_in_use().name, kpath);
 	    return false;
 	}
     }
@@ -8766,8 +10183,11 @@ bool init_view_es(long w, long es, long doc, const char *path,
     publish_event(w, es, doc, seOPEN, opened);
     ui::set(w, es, "hint", 1);	// the transient bottom startup hint
     // The buffer table (AST-5): row 0 = the launch file; ^K E grows it.
-    // ONE fresh-row owner (push_buffer_row — the gated dupaudit family).
-    push_buffer_row(w, es, doc, p.c_str());
+    // ONE fresh-row owner (push_buffer_row — the gated dupaudit family). A
+    // buffer the open made first (a REPL pane's that could not start)
+    // seeded the launch file's row already.
+    if ( buffer_index_of(w, es, doc) < 0 )
+	push_buffer_row(w, es, doc, p.c_str());
     ui::set(w, es, "bufidx", 0);
     // Presence (client-server V3c): register this client as a viewer of the
     // launch document — the anchor registry shifts every client's caret in
@@ -8812,7 +10232,7 @@ long spawn_view_es(long w, long doc, const char *path, const char *profile = "")
     ui::set(w, es, "mark", -1);
     ui::set(w, es, "adoc", doc);
     derive_access(w, es);
-    if ( !init_view_es(w, es, doc, p.c_str(), pr.c_str()) )
+    if ( !init_view_es(w, es, doc, p.c_str(), pr.c_str(), 0) )
 	return 0;
     return es;
 }
@@ -8849,10 +10269,11 @@ bool IdeSession::take_spawn(long &doc)
 // for the key table. The launch document comes through THE open rule
 // (open_buffer_doc, the one ^K E uses): a missing path opens as a new
 // file and says so on the status line. `profile` is the command line's
-// --profile ("" = settings.json's, else default). > 0 = the launch doc;
+// --profile ("" = settings.json's, else default), `std` its --std= (a
+// standard's kind; 0 = not given — madcide_lang.inc). > 0 = the launch doc;
 // -1 = refused (a path that exists but cannot be read) or fatal, already
 // reported on stderr.
-long IdeSession::open(const char *path0, bool ro, const char *profile)
+long IdeSession::open(const char *path0, bool ro, const char *profile, long std)
 {
     var p = path0;		// ring discipline: own the text first
     var pr = profile;
@@ -8861,13 +10282,13 @@ long IdeSession::open(const char *path0, bool ro, const char *profile)
     long doc = open_buffer_doc(note, w, p.c_str(), ro);
     if ( doc == 0 )
     {
-	println(stderr, "madcide: {}", note);
+	println(stderr, "{}: {}", product_in_use().name, note);
 	return -1;
     }
     if ( !setup_editor_state(w, doc) )
 	return -1;		// the verbs (already reported)
     es = ui::entity_by_name(w, "editor-state");
-    if ( !init_view_es(w, es, doc, p.c_str(), pr.c_str()) )
+    if ( !init_view_es(w, es, doc, p.c_str(), pr.c_str(), std) )
 	return -1;		// the profile AND rescue bindings both failed
     if ( strlen(note.c_str()) > 0 )
 	msg_beside(w, es, note.c_str());	// New file <path>.
@@ -8932,6 +10353,13 @@ void IdeSession::clipboard(bool has)
     ui::set(w, es, "hasclip", has);
 }
 
+void IdeSession::remember(bool on)
+{
+    ui::set(w, es, "remember", on);
+    if ( on )
+	recent_note_doc(w, es, active_doc(w, es, 0));
+}
+
 void IdeSession::panel(bool has)
 {
     ui::set(w, es, "haspanel", has);
@@ -8946,21 +10374,7 @@ void IdeSession::dialog_fallback(var &req)
     long dlg = dlgOPEN;
     if ( !dk.is_null() )
 	dlg = dk.as_integer();
-    switch ( dlg )
-    {
-	case dlgSAVE:
-	    start_prompt(w, es, "Save as", pmSAVEAS);
-	    return;
-	case dlgSAVEQUIT:
-	    start_prompt(w, es, "Save as", pmSAVEASQUIT);
-	    return;
-	case dlgOPENPROJECT:
-	    start_prompt(w, es, "Project file to open", pmOPENPROJECT);
-	    return;
-	default:
-	    break;
-    }
-    start_prompt(w, es, "Name of file to edit", pmEDITFILE);
+    start_prompt(w, es, dlg_prompt_label(dlg), dlg_prompt_mode(dlg));
 }
 
 // A terminal request the client cannot serve (no terminal to suspend —
@@ -8968,9 +10382,15 @@ void IdeSession::dialog_fallback(var &req)
 // was silently dropped before polish P3b-1 (fix-what-you-find).
 void IdeSession::request_refused(var &req)
 {
+    long kind = req["kind"].as_integer();
+    if ( kind == rqFULLSCREEN )
+    {
+	ui::set(w, es, "msg", "This window cannot go full screen.");
+	return;
+    }
     ui::set(w, es, "msg",
 	    format("This client has no terminal to hand over for '{}'.",
-		   req_name(req["kind"].as_integer())));
+		   req_name(kind)));
 }
 
 void IdeSession::pending_chord(const char *pcs)
@@ -9420,11 +10840,15 @@ bool IdeSession::vi_event(long doc, long nav, var &ev, bool &cont)
 // at its activation (builtins_activate), and nothing above names its
 // functions (check-madcide-command-registry.sh).
 #include "madcide_repl.inc"	// the panel's REPL tab (plan §41.9a)
+#include "madcide_git.inc"	// the IDE's git: %git's read verbs (plan §7e, §7f)
 
 void builtin_plugins(var &out)
 {
     builtin_activate_fn repl = repl_activate;
     int64_t ra = (int64_t)repl;
+    builtin_activate_fn git = git_activate;
+    int64_t ga = (int64_t)git;
     out = {};
     out[] = { "name": "repl", "activate": ra };
+    out[] = { "name": "git", "activate": ga };
 }

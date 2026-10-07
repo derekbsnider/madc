@@ -3,7 +3,9 @@
 // input field the keyboard. Pins:
 //   1. typed text edits the input buffer and never the editor's buffer or
 //      caret; enter offers it: a taken entry lands in the transcript after
-//      the prompt, then what it printed, then its shown value;
+//      the prompt, then what it printed, then its shown value; the
+//      transcript's [repl] row, the first a headless session pushes, comes
+//      after the editor's buffer (row 0), which its path still finds;
 //   2. an unfinished entry keeps editing on a new line, and the finished
 //      one shows its continuation indented to the prompt's width;
 //   3. a refused entry shows its diagnostics; up / down walk the history
@@ -23,16 +25,39 @@
 //   8. Stop (`replstop`, plan §41.11a): with no session there is nothing to
 //      stop; during an entry that never ends, the entry stops with its
 //      session, the transcript says so, and the next entry runs in a new one;
-//   9. Run ▸ Language… (`repllang`): the choice list shows the three
+//   9. Run ▸ Language… (`language`, the session's standard,
+//      madcide_lang.inc): the choice list shows By file and the three
 //      standards; choosing C++17 restarts the session under it (a reference
-//      entry is taken) and the list then marks it current; esc closes it; an
-//      argument (the seat's, -c's) sets the language directly; an unknown
-//      one is refused with the choices.
+//      entry is taken), keeps it in settings.json's "std", and the list then
+//      marks it current; esc closes it; an argument (the seat's, -c's) sets
+//      the language directly; an unknown one is refused with the choices.
+//      The session sets c11 at the start, as `--std=c11` would (the buffer
+//      is a .mad file, which would be madc); the configuration directory is
+//      this test's fixture (MADCIDE_CONFIG_DIR in testmadcide_repl.env).
+//  11. typed file commands (plan §7f): `%run FILE ARGS` runs FILE from disk
+//      in a fresh session with the shell-split ARGS (`answer` is gone);
+//      `%load` of the open buffer's file loads its live, unsaved text (the
+//      disk still holds `add`); `%run -i` adds a file's names to this
+//      session, and runs no main when the file has none (the session's main
+//      is an earlier file's); a file that does not open is refused, its
+//      error shown once;
+//  12. the `.` prefix (plan §7f): `.q` ends the session and a fresh one
+//      starts (an earlier name is gone); `.L FILE` loads FILE; `.x
+//      FILE(ARGS)` loads FILE and shows the call of the function named
+//      after it; `%build FILE -o OUT` builds FILE's executable; `%edit
+//      NAME` opens the file that defines NAME at its line;
+//  13. a plugin's REPL command (ide::repl_command, plan §7f): `%hi WHO`
+//      (and `:hi WHO`) runs the command it names with WHO before the
+//      session sees the entry, the entry shown as a taken one; %help lists
+//      it after the session's own commands; a name the session owns, a
+//      name its rule does not read whole, a repeat and a code that names no
+//      command are refused; madcide's own `%git` (madcide_git.inc) is listed
+//      first.
 #include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
 
-#include "madcide_repl_drive.inc"	// ev_*, settle, enter_line
+#include "../tools/madcide/include/madcide/harness"	// <madcide/harness>: ev_*, settle, enter_line
 
 // A subscriber to the session's names answered (reBINDINGS): each row as
 // `name type = value @ file:line;`.
@@ -66,6 +91,13 @@ void input_text(var &out, long w, long es)
     ui::text(out, w, repl_input_doc(w, es));
 }
 
+// Pin 13's command: keeps its argument where the test reads it.
+bool hi_handler(long w, long es, long doc, const char *arg)
+{
+    ui::set(w, es, "test.hi", arg);
+    return true;
+}
+
 int main()
 {
     const char *path = "madc_ide_repl.mad";
@@ -76,7 +108,7 @@ int main()
     builtins_activate(w, es);	// madcide's own modules, as IdeSession::open activates them
     ui::set(w, es, "profile_dir", "tools/madcide/profiles");
     ui::set(w, es, "profile", "joe");
-    ui::set(w, es, "replstd", "c11");
+    ui::set(w, lang_world(w), "std", (long)madc::fkC11);	// as --std=c11 sets it
     IdeSession S;
     S.attach(w, es);
     ui::set(w, es, "caret", 5);
@@ -110,6 +142,11 @@ int main()
 	    es_int(w, es, "caret", -1), repl_field_caret(w, es));
     ev_key(e, "left");
     S.apply_ide_event(doc, e);
+    // Headless, no buffer table exists until the transcript's [repl] row:
+    // the editor's buffer is seeded as row 0 first, so its path finds it.
+    println("table: editor row={} found={} repl row={}",
+	    buffer_index_of(w, es, doc), buffer_doc_named(w, es, path) == doc,
+	    buffer_index_of(w, es, repl_doc(w, es)));
     println("motion: field caret={} editor caret={}", repl_field_caret(w, es),
 	    es_int(w, es, "caret", -1));
     ev_key(e, "enter");
@@ -177,8 +214,11 @@ int main()
     enter_line(S, doc, w, es, "int *p = 0; *p = 1;");
     enter_line(S, doc, w, es, "x");
     transcript_since(got, w, es, mark);
+    // The status is the platform's: 128 + SIGSEGV on POSIX, the NTSTATUS
+    // of an access violation on Windows (testsession_pump pins the numbers).
     println("crash: said={} fresh={}",
-	    rust::contains(got.c_str(), "[the session stopped (exit 139); a new one started]") != 0,
+	    rust::contains(got.c_str(), "[the session stopped (exit 139); a new one started]") != 0
+	    || rust::contains(got.c_str(), "[the session stopped (exit 0xC0000005); a new one started]") != 0,
 	    rust::contains(got.c_str(), "undeclared") != 0);
 
     // 6. The composed node, then the keyboard back.
@@ -278,7 +318,7 @@ int main()
 	    rust::contains(got.c_str(), "undeclared") != 0);
 
     // 9. Run ▸ Language….
-    ev_action(e, "repllang", "");
+    ev_action(e, "language", "");
     S.apply_ide_event(doc, e);
     var ltree;
     S.compose_ide_tree(ltree, doc);
@@ -286,22 +326,28 @@ int main()
     ui::render_tree(ltext, w, ltree);
     const char *lt = ltext.c_str();
     println("lang: pane={} listed={}", pane_name(cur_pane(w, es)),
-	    rust::contains(lt, "Language") != 0 && rust::contains(lt, "C17") != 0
+	    rust::contains(lt, "Language") != 0 && rust::contains(lt, "By file") != 0
+	    && rust::contains(lt, "C17") != 0
 	    && rust::contains(lt, "C++17") != 0 && rust::contains(lt, "madc") != 0);
     mark = transcript_size(w, es);
     var lch = { "event": "choose", "event_code": ui::event_kind::choose,
-		"option": 2, "action": "", "action_code": cmdCHOICE };
+		"option": 3, "action": "", "action_code": cmdCHOICE };
     S.apply_ide_event(doc, lch);
     var lstd = madc::session_standard(es_int(w, es, "replh", 0));
     enter_line(S, doc, w, es, "int v = 5; int &rv = v;");
     transcript_since(got, w, es, mark);
-    var lcur;
-    repl_lang_current(lcur, w, es);
+    var lcur = madc::file_kind_name(lang_session(w));
+    var kept;
+    var cfg;
+    madcide_config_dir(cfg);
+    var setp = format("{}/settings.json", cfg);
+    php::file_get_contents(kept, setp.c_str());
+    println("lang kept: {}", rust::contains(kept.c_str(), "\"std\": \"c++17\"") != 0);
     println("lang pick: closed={} std={} said={} taken={} current={}",
 	    cur_pane(w, es) == paneNONE, lstd,
 	    rust::contains(got.c_str(), "[the language is c++17; a new session started]") != 0,
 	    rust::contains(got.c_str(), "error") == 0, lcur);
-    ev_action(e, "repllang", "");
+    ev_action(e, "language", "");
     S.apply_ide_event(doc, e);
     S.compose_ide_tree(ltree, doc);
     ui::render_tree(ltext, w, ltree);
@@ -310,10 +356,9 @@ int main()
     S.apply_ide_event(doc, e);
     println("lang again: marked={} closed={}", marked, cur_pane(w, es) == paneNONE);
     bool lc = true;
-    long langc = cmd_of_w(w, "repllang");
-    S.command(doc, langc, "c17", lc);
+    S.command(doc, cmdLANGUAGE, "c17", lc);
     println("lang arg: std={}", madc::session_standard(es_int(w, es, "replh", 0)));
-    S.command(doc, langc, "fortran", lc);
+    S.command(doc, cmdLANGUAGE, "fortran", lc);
     ui::get(msg, w, es, "msg");
     println("lang unknown: {}", msg);
 
@@ -327,7 +372,101 @@ int main()
     var rows;
     ui::get(rows, w, es, "test.bound");
     println("bindings: subscribed={} rows={}", subscribed, rows);
+
+    // 11. Typed file commands (plan §7f): the engine parses the line and asks
+    // the pane (a payload), which reads the file, an open buffer as its live
+    // text, as F5 does.
+    mark = transcript_size(w, es);
+    enter_line(S, doc, w, es, "%run tests/testrepl_runcmd_prog.mad a \"b c\"");
+    enter_line(S, doc, w, es, "twice(21)");
+    enter_line(S, doc, w, es, "answer");
+    transcript_since(got, w, es, mark);
+    println("typed run: argv={} names={} fresh={}",
+	    rust::contains(got.c_str(), "main argc=3 [a] [b c]\n") != 0,
+	    rust::contains(got.c_str(), "\n42\n") != 0,
+	    rust::contains(got.c_str(), "undeclared identifier 'answer'") != 0);
+    ui::text_load(w, doc, "int quad(int v) { return 4 * v; }\n");
+    mark = transcript_size(w, es);
+    enter_line(S, doc, w, es, "%load madc_ide_repl.mad");
+    enter_line(S, doc, w, es, "quad(3)");
+    enter_line(S, doc, w, es, "%run -i tests/testrepl_runcmd_lib.mad");
+    enter_line(S, doc, w, es, "thrice(twice(1))");
+    enter_line(S, doc, w, es, "%load tests/no_such_file.mad");
+    transcript_since(got, w, es, mark);
+    println("typed load: live={} here={} no main={} missing once={} busy={}",
+	    rust::contains(got.c_str(), "\n12\n") != 0,
+	    rust::contains(got.c_str(), "\n6\n") != 0,
+	    rust::contains(got.c_str(), "main argc") == 0,
+	    python::count(got.c_str(), "Failed to open file") == 1,
+	    es_int(w, es, "replbusy", -1));
+
+    // 12. The `.` prefix (plan §7f): `.q` ends the session and the pane
+    // starts a fresh one, as when a backend ends; `.L` is %load; `.x` loads
+    // its file and the session calls the function named after it.
+    mark = transcript_size(w, es);
+    enter_line(S, doc, w, es, ".q");
+    enter_line(S, doc, w, es, ".L tests/testrepl_runcmd_lib.mad");
+    enter_line(S, doc, w, es, "thrice(5)");
+    enter_line(S, doc, w, es, "quad(3)");
+    enter_line(S, doc, w, es, ".x tests/testrepl_dotcmd_area.mad(6, 7)");
+    enter_line(S, doc, w, es, "%build tests/testrepl_runcmd_prog.mad -o madc_ide_build_prog");
+    bool built = php::file_exists("madc_ide_build_prog") != 0;
+    php::unlink("madc_ide_build_prog");
+    transcript_since(got, w, es, mark);
+    println("build: said={} built={} busy={}",
+	    rust::contains(got.c_str(), "\nbuilt madc_ide_build_prog\n") != 0,
+	    built, es_int(w, es, "replbusy", -1));
+    // %edit: the editor opens the file a session unit defined the name in,
+    // at its line, and takes the keyboard (last: the input loses it).
+    enter_line(S, doc, w, es, "%edit thrice");
+    long edoc = active_doc(w, es, 0);
+    var ename;
+    doc_name(ename, w, edoc);
+    println("edit: file={} line={} editor has keys={} busy={}",
+	    php::basename(ename.c_str()),
+	    line_of(w, edoc, es_int(w, es, "caret", 0)),
+	    es_int(w, es, "consolefocus", -1) == 0, es_int(w, es, "replbusy", -1));
+    println("dot: ended={} loaded={} fresh={} called={} busy={}",
+	    rust::contains(got.c_str(), "[the session ended; a new one started]") != 0,
+	    rust::contains(got.c_str(), "\n15\n") != 0,
+	    rust::contains(got.c_str(), "undefined reference to 'quad'") != 0,
+	    rust::contains(got.c_str(), "\n4201\n") != 0,
+	    es_int(w, es, "replbusy", -1));
+
+    // 13. A plugin's REPL command: the IDE answers it before the session.
+    ui::set(w, es, "consolefocus", repl_view(w));
+    long hc = plugin_command(w, "hi", "Hi", hi_handler);
+    bool reg = plugin_repl_command(w, "hi", "%hi [WHO]", "say hello", hc);
+    bool own = plugin_repl_command(w, "load", "%load X", "mine", hc);
+    bool alias = plugin_repl_command(w, "q", "%q", "mine", hc);
+    bool dash = plugin_repl_command(w, "h-i", "%h-i", "mine", hc);
+    bool again = plugin_repl_command(w, "hi", "%hi", "again", hc);
+    bool nocmd = plugin_repl_command(w, "ho", "%ho", "none", 999999);
+    println("ide cmd: registered={} refused={}{}{}{}{}", reg, own, alias, dash,
+	    again, nocmd);
+    mark = transcript_size(w, es);
+    enter_line(S, doc, w, es, "%hi bob");
+    var who;
+    ui::get(who, w, es, "test.hi");
+    enter_line(S, doc, w, es, ":hi ann");
+    var who2;
+    ui::get(who2, w, es, "test.hi");
+    enter_line(S, doc, w, es, "%help");
+    transcript_since(got, w, es, mark);
+    // The IDE's rows follow the session's: positions in ONE copy of the text
+    // (each c_str() is its own ring copy).
+    const char *g = got.c_str();
+    const char *quit_at = strstr(g, "%quit");
+    const char *ide_at = strstr(g, "IDE commands:");
+    println("ide cmd: ran={} {} shown={} listed={} after={} busy={}", who, who2,
+	    rust::contains(got.c_str(), "%hi bob\n") != 0,
+	    rust::contains(got.c_str(), "IDE commands:\n%git VERB  the repository's log") != 0
+		&& rust::contains(got.c_str(), "\n%hi [WHO]  say hello\n") != 0,
+	    quit_at != 0 && ide_at != 0 && quit_at < ide_at,
+	    es_int(w, es, "replbusy", -1));
     S.close();				// stops the pump and the session
     php::unlink(path);
+    php::unlink(setp.c_str());		// the Language choice's settings.json
+    php::rmdir(cfg.c_str());
     return 0;
 }

@@ -17,7 +17,11 @@ compiler gaps that once forced the spellings (the module-blind
 auto-include scan, the main-file-only prelude insertion, the
 using-directive-only std call fallback) were fixed the same day —
 which is the rule's mechanism: the SPELLING gap always indicts the
-compiler, never the script.
+compiler, never the script. The same held on 2026-10-05: the scan read
+every angle include as a system header, so a program's own header found
+through `-I` (madcide's `<madcide/harness>`) lost the service. The scan
+now classifies by the resolved path, as gcc and clang do
+(`tests/testautoincludeangle`).
 
 ## Why the rule exists
 

@@ -884,8 +884,8 @@ static int obj_item_sym_eq (obj_item_sym_t el1, obj_item_sym_t el2, void *arg MI
 
 /* Follow export/forward/import indirections to the item that actually defines
    the name in this context; a name with no definition here stays an import
-   (an undefined ELF symbol resolved by the system linker).  A weak func that a
-   strong definition replaced is defined by the replacement. */
+   (an undefined ELF symbol resolved by the system linker).  A weak func or
+   object that a strong definition replaced is defined by the replacement. */
 static MIR_item_t obj_canonical_item (MIR_context_t ctx, MIR_item_t item) {
   MIR_item_t repl;
 
@@ -893,7 +893,7 @@ static MIR_item_t obj_canonical_item (MIR_context_t ctx, MIR_item_t item) {
           || item->item_type == MIR_import_item)
          && item->ref_def != NULL && item->ref_def != item)
     item = item->ref_def;
-  if ((repl = _MIR_weak_func_replacement (ctx, item)) != NULL) item = repl;
+  if ((repl = _MIR_weak_replacement (ctx, item)) != NULL) item = repl;
   return item;
 }
 
@@ -9883,7 +9883,7 @@ static void obj_emit_module_data (gen_ctx_t gen_ctx, MIR_module_t m) {
       el.item = item;
       /* a replaced weak func is never generated: its references bind to the
          replacement (obj_canonical_item) */
-      if (_MIR_weak_func_replacement (ctx, item) == NULL
+      if (_MIR_weak_replacement (ctx, item) == NULL
           && (!HTAB_DO (obj_item_sym_t, obj_item_sym_tab, el, HTAB_FIND, tab_el)
               || !MIR_object_symbol_defined_p (gen_object, tab_el.sym)))
         (*MIR_get_error_func (ctx)) (MIR_func_error,
@@ -9902,6 +9902,12 @@ static void obj_emit_module_data (gen_ctx_t gen_ctx, MIR_module_t m) {
     while (g_end != NULL && obj_data_item_p (g_end) && MIR_item_name (ctx, g_end) == NULL) {
       if (g_end->item_type != MIR_bss_item) bss_only_p = FALSE;
       g_end = DLIST_NEXT (MIR_item_t, g_end);
+    }
+    /* a replaced weak object is never emitted: its references bind to the
+       replacement (obj_canonical_item) */
+    if (_MIR_weak_replacement (ctx, item) != NULL) {
+      item = g_end;
+      continue;
     }
     int sec = bss_only_p ? MIR_OBJ_SEC_BSS : MIR_OBJ_SEC_DATA;
     int first_p = TRUE;

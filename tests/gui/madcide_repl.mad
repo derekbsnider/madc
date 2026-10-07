@@ -61,7 +61,7 @@ int main()
     builtins_activate(w, es);	// madcide's own modules, as IdeSession::open activates them
     ui::set(w, es, "profile_dir", "tools/madcide/profiles");
     ui::set(w, es, "profile", "joe");
-    ui::set(w, es, "replstd", "c11");
+    ui::set(w, lang_world(w), "std", (long)madc::fkC11);	// as --std=c11 sets it
     load_status(w, es, "joe");
     load_theme(w, es, "default");
     load_menu(w, es, "default");

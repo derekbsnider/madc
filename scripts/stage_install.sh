@@ -13,8 +13,10 @@
 # Inputs, built before it runs (from the repo root): bin/madc-release,
 # lib/release/libmadc.so (the forest inside), lib/release/libmadc_rt.a,
 # madcide compiled by that release compiler ($MADC_STAGE_MADCIDE, default
-# tmp/madcide-pkg) and the shipped plugins built by that madcide
-# ($MADC_STAGE_PLUGINS, default tmp/plugins-pkg). The optional modules
+# tmp/madcide-pkg), libmadcide (madcide's base as a library,
+# lib/libmadcide.so, which a product built on madcide links) and the
+# shipped plugins built by that madcide ($MADC_STAGE_PLUGINS, default
+# tmp/plugins-pkg). The optional modules
 # (lib/libmadcwebview.so, lib/libmadcgit.so: weak dependencies, a program
 # that imports them loads them) are staged when they were built;
 # MADC_STAGE_REQUIRE_MODULES=1 (the packages) makes a missing one an error.
@@ -32,7 +34,7 @@ madcide="${MADC_STAGE_MADCIDE:-tmp/madcide-pkg}"
 plugins="${MADC_STAGE_PLUGINS:-tmp/plugins-pkg}"
 p="$root${prefix:+/$prefix}"
 
-for f in bin/madc-release lib/release/libmadc.so lib/release/libmadc_rt.a "$madcide"; do
+for f in bin/madc-release lib/release/libmadc.so lib/release/libmadc_rt.a lib/libmadcide.so "$madcide"; do
 	if [ ! -f "$f" ]; then
 		echo "stage_install: missing $f (build it first)" >&2
 		exit 1
@@ -80,8 +82,9 @@ fi
 # mac and win archives already ship it.
 install -m 644 lib/release/libmadc_rt.a "$root/$libdir/libmadc_rt.a"
 # The optional modules: the platform webview library (the loader tries
-# <exedir>/../lib first, then the system search) and the madcgit module.
-for m in libmadcwebview.so libmadcgit.so; do
+# <exedir>/../lib first, then the system search), the madcgit module and the
+# madcmark module.
+for m in libmadcwebview.so libmadcgit.so libmadcmark.so; do
 	if [ -f "lib/$m" ]; then
 		install -m 755 "lib/$m" "$root/$libdir/$m"
 	elif [ -n "$MADC_STAGE_REQUIRE_MODULES" ]; then
@@ -90,34 +93,41 @@ for m in libmadcwebview.so libmadcgit.so; do
 	fi
 done
 install -m 755 "$madcide" "$p/bin/madcide"
-mkdir -p "$p/share/madcide/profiles"
-install -m 644 tools/madcide/profiles/* "$p/share/madcide/profiles/"
-# The shipped plugins (bundles: <name>/<name>.plugin, the data files it
-# carries, and its code as source plus its built library), the plugin
-# search path's second arm (resolve_data_dir).
-mkdir -p "$p/share/madcide/plugins"
-cp -R "$plugins"/. "$p/share/madcide/plugins/"
-# The plugin API headers a plugin's code includes (<madcide/plugin>):
-# --build-plugin puts this directory on the include path (resolve_data_dir),
-# and `madc -shared -I` names it by hand.
-mkdir -p "$p/share/madcide/include/madcide"
-install -m 644 tools/madcide/include/madcide/* "$p/share/madcide/include/madcide/"
-# The line editor's verb and check bodies (save, quit and the rest are
-# verbs): resolve_data_dir finds them here, and madcide refuses to start
-# without them rather than run an editor that cannot save or quit.
-mkdir -p "$p/share/madcide/verbs" "$p/share/madcide/checks"
-install -m 644 tools/texteditor/verbs/*.madv "$p/share/madcide/verbs/"
-install -m 644 tools/texteditor/checks/*.madv "$p/share/madcide/checks/"
+# libmadcide: madcide's base, the library a product built on it links.
+install -m 644 lib/libmadcide.so "$root/$libdir/libmadcide.so"
+# madcide's data (profiles, plugins, the plugin API headers, the line
+# editor's verbs and checks): the one staging owner, into share/madcide —
+# where resolve_data_dir and resolve_profile_dir look in an install.
+scripts/stage_madcide_data.sh "$p/share/madcide" "$plugins"
 gzip -9n < docs/man/madc.1 > "$p/share/man/man1/madc.1.gz"
 gzip -9n < docs/man/madcide.1 > "$p/share/man/man1/madcide.1.gz"
 install -m 644 LICENSE "$p/share/doc/madc/copyright"
 install -m 644 third_party/webview/LICENSE "$p/share/doc/madc/webview-copyright"
+# libmadcgit.so statically links the pinned libgit2 (GPLv2 WITH the linking
+# exception, which permits linking into a differently-licensed program): its
+# notice ships wherever the module does, from the staged source it was built
+# from (src/madcgit.mk's LIBGIT2_STAGE). A module built against a system
+# libgit2 (the Homebrew formula's; MADCGIT_LIBGIT2 empty) links no copy, and
+# that library's own package carries its notice.
+if [ -f "$root/$libdir/libmadcgit.so" ] && [ -n "$(make -C src -s print-MADCGIT_LIBGIT2)" ]; then
+	install -m 644 "$(make -C src -s print-LIBGIT2_STAGE)/src/COPYING" "$p/share/doc/madc/libgit2-copyright"
+fi
+# A libmadcmark.so linked against the staged cmark-gfm carries its code
+# (BSD-2 and MIT), so the stage's notice ships beside it; one linked against a
+# system cmark-gfm (Homebrew) leaves the notice to that package.
+if [ -f "$root/$libdir/libmadcmark.so" ]; then
+	notice=$(make -C src -s print-MADCMARK_NOTICE)
+	if [ -n "$notice" ]; then
+		if [ ! -f "$notice" ]; then
+			echo "stage_install: cmark-gfm's notice $notice is missing (scripts/stage_cmark_gfm.sh host)" >&2
+			exit 1
+		fi
+		install -m 644 "$notice" "$p/share/doc/madc/cmark-gfm-copyright"
+	fi
+fi
 gzip -9n < CHANGELOG.md > "$p/share/doc/madc/changelog.gz"
 # The example config keeps its real name: share/doc is not on madc.ini's
 # search path, so it can never shadow a user's config.
 install -m 644 docs/examples/madc.ini "$p/share/doc/madc/examples/madc.ini"
-# dpkg-deb requires plain 0755 directories. GNU chmod's NUMERIC modes
-# deliberately preserve a directory's setgid bit (inherited from the
-# checkout), so it must be cleared symbolically first.
-find "$root" -type d -exec chmod g-s {} +
-find "$root" -type d -exec chmod 0755 {} +
+# Every entry gets the modes an install gives every user (the one owner).
+scripts/install_modes.sh "$root"

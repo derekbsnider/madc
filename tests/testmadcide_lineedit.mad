@@ -1,0 +1,157 @@
+// Line-wise edits (chthonia parity rows, Thonny's Edit ▸ Indent selected
+// lines, Dedent selected lines, Toggle comment): one shared owner
+// (edit_lines, editor_events.inc) over every line the selection touches —
+// a selection ending at a line's START leaves that line out — else the
+// caret's line; one undo step; a GUI selection re-lit over the whole lines.
+// Oracle: IDLE / Thonny (Tk) and VS Code, the same gestures over
+// "int a;\nint b;\n\nint c;\n" in a .c file:
+//   - Indent on the caret's line puts a tab at its start, the caret moving
+//     with the text; Dedent takes it back.
+//   - Three Shift+Downs from the top select lines 1-3 up to line 4's start:
+//     Toggle comment writes "// " at column 0 of lines 1 and 2 (the blank
+//     line 3 is skipped, line 4 is out); toggling again strips them.
+//   - Tab over that selection indents its non-empty lines (IDLE's
+//     indent_region, VS Code's Tab); Shift+Tab dedents them; a dedent takes
+//     one tab, or up to a tab width of spaces.
+//   - A span with one commented line and one not comments both.
+//   - A .py file takes "#"; a .txt file has no line comment and refuses; a
+//     read-only buffer refuses with its read-only reason.
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+
+void key(IdeSession &S, long doc, const char *name, ui::key code, long mods)
+{
+    var e = { "event": "key", "event_code": ui::event_kind::key, "key": name,
+	      "key_code": code, "mods": mods };
+    S.apply_ide_event(doc, e);
+}
+
+// A bound chord's action, as the key owner fires it.
+void chord(IdeSession &S, long doc, long code, const char *seq)
+{
+    var e = { "event": "action", "event_code": ui::event_kind::action,
+	      "action": "", "action_code": code, "seq": seq, "mods": 0 };
+    S.apply_ide_event(doc, e);
+}
+
+void show(const char *label, IdeSession &S, long doc)
+{
+    var t;
+    ui::text(t, S.w, doc);
+    var s1 = php::str_replace("\n", "|", t);
+    var shown = php::str_replace("\t", "\\t", s1);
+    long caret = es_int(S.w, S.es, "caret", 0);
+    var r;
+    var sel = "none";
+    if ( selection_range(r, S.w, S.es, caret) )
+	sel = format("{}..{}", r["lo"], r["hi"]);
+    var mod;
+    ui::get(mod, S.w, doc, "modified");
+    println("{}: [{}] caret={} sel={} modified={}", label, shown, caret, sel,
+	    !mod.is_null() && mod.as_boolean() ? 1 : 0);
+}
+
+void msg(const char *label, IdeSession &S)
+{
+    var m;
+    ui::get(m, S.w, S.es, "msg");
+    println("{}: msg={}", label, m);
+}
+
+int main()
+{
+    const char *path = "madc_ide_lineedit.c";
+    php::file_put_contents(path, "int a;\nint b;\n\nint c;\n");
+    long shift = (long)ui::key_mod::shift;
+
+    IdeSession S;
+    long doc = S.open(path, false);
+    load_profile(S.w, S.es, "chthonia");
+    S.post(doc, cmdINDENT);
+    show("indent-caret-line", S, doc);
+    S.post(doc, cmdDEDENT);
+    show("dedent-caret-line", S, doc);
+    S.post(doc, cmdUNDO);
+    S.post(doc, cmdUNDO);
+    show("undo-both", S, doc);
+
+    key(S, doc, "shift+down", ui::key::down, shift);
+    key(S, doc, "shift+down", ui::key::down, shift);
+    key(S, doc, "shift+down", ui::key::down, shift);
+    show("select-3", S, doc);
+    S.post(doc, cmdTOGGLECOMMENT);
+    show("comment", S, doc);
+    S.post(doc, cmdTOGGLECOMMENT);
+    show("uncomment", S, doc);
+    S.post(doc, cmdUNDO);
+    show("undo-uncomment", S, doc);
+    S.post(doc, cmdTOGGLECOMMENT);
+    show("uncomment-again", S, doc);
+
+    // Tab over the selection indents its lines; Shift+Tab (chthonia.keys)
+    // dedents them.
+    key(S, doc, "tab", ui::key::tab, 0);
+    show("tab-indents", S, doc);
+    key(S, doc, "tab", ui::key::tab, 0);
+    show("tab-again", S, doc);
+    chord(S, doc, cmdDEDENT, "shift+tab");
+    show("shift-tab", S, doc);
+    chord(S, doc, cmdDEDENT, "shift+tab");
+    chord(S, doc, cmdDEDENT, "shift+tab");
+    show("dedent-past-zero", S, doc);
+
+    // A mixed span comments every line; spaces dedent by the tab width.
+    S.post(doc, cmdSELECTALL);
+    var te = { "event": "text", "event_code": ui::event_kind::text,
+	       "text": "// x;\ny;\n    z;\n          w;\n" };
+    S.apply_ide_event(doc, te);
+    S.post(doc, cmdTOP);
+    key(S, doc, "shift+down", ui::key::down, shift);
+    key(S, doc, "shift+down", ui::key::down, shift);
+    S.post(doc, cmdTOGGLECOMMENT);
+    show("mixed-comments-all", S, doc);
+    S.post(doc, cmdBOTTOM);
+    key(S, doc, "shift+up", ui::key::up, shift);
+    key(S, doc, "shift+up", ui::key::up, shift);
+    S.post(doc, cmdDEDENT);
+    show("dedent-spaces", S, doc);
+    S.close();
+
+    // A .py file comments with '#'.
+    const char *py = "madc_ide_lineedit.py";
+    php::file_put_contents(py, "x = 1\n");
+    IdeSession P;
+    long pd = P.open(py, false);
+    P.post(pd, cmdTOGGLECOMMENT);
+    show("python", P, pd);
+    P.close();
+
+    // Plain text has no line comment: refused, the text unchanged.
+    const char *txt = "madc_ide_lineedit.txt";
+    php::file_put_contents(txt, "notes\n");
+    IdeSession T;
+    long td = T.open(txt, false);
+    T.post(td, cmdTOGGLECOMMENT);
+    show("text", T, td);
+    msg("text", T);
+    T.close();
+
+    // A read-only buffer refuses with its read-only reason.
+    IdeSession R;
+    long rd = R.open(path, true);
+    R.post(rd, cmdINDENT);
+    show("readonly", R, rd);
+    var rm;
+    ui::get(rm, R.w, R.es, "msg");
+    var ro;
+    ui::get(ro, R.w, R.es, "ro_msg");
+    println("readonly: refused={}", strlen(rm.c_str()) > 0 && rm == ro ? 1 : 0);
+    R.close();
+
+    // a test leaves nothing in its working directory
+    php::unlink(path);
+    php::unlink(py);
+    php::unlink(txt);
+    return 0;
+}

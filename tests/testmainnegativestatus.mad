@@ -1,0 +1,13 @@
+// main's return value is the program's exit status (C11 5.1.2.2.3), a
+// negative one included: the host keeps its low byte (POSIX), exactly as a
+// gcc-built program's. -170456 leaves the process as 40. The JIT lane read
+// any negative main as its own failure and exited 1.
+// gcc 13.3 and clang 18.1 (-std=c11) print the .expect line and exit 40.
+#include <stdio.h>
+int main(void)
+{
+	short k = (short)0xDFB2;
+	int q = 0x5405EA32 / k;
+	printf("quotient: %d\n", q);
+	return q;
+}

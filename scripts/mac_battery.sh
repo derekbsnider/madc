@@ -38,6 +38,9 @@
 #      the image loads libc++ by LC_LOAD_DYLIB, binds imports flat, and
 #      carries its madc runtime ledger-merged (no cc involved; a binary
 #      predating the dylib-binding slice emits an image that dies at dyld)
+#   6e a library madc built, placed in madc's lib/ and linked bare (-l):
+#      the image records its @rpath install name and runs from anywhere
+#      (info-skip when that lib/ is not writable)
 #   7  compile latency of a <string> program (reported, not gated)
 
 MADC="$1"
@@ -200,11 +203,11 @@ fi
 # --- 4. value intrinsic, include-free ---------------------------------------
 cat > val.mad <<'EOF'
 int main() {
-    value v = 41;
+    var v = 41;
     v = v + 1;
-    value s = "answer=";
-    var joined = s + v;
-    printf("%s\n", joined.c_str());
+    var s = "answer";
+    var joined = s + "=";
+    println("{}{}", joined, v);
     return 0;
 }
 EOF
@@ -270,7 +273,7 @@ printf 'aot 42\n' > aot.expect
 # here. The decline's own words are echoed rather than matched, so the log
 # records what madc actually said instead of a guess.
 rm -f aot.o
-if "$MADC" -c aot.mad -o aot.o > aot.compile.out 2>&1; then
+if "$MADC" -c -o aot.o aot.mad > aot.compile.out 2>&1; then
     AOT_OUT=$("$MADC" aot.o 2>&1); AOT_RC=$?
     if [ $AOT_RC -eq 0 ] && [ "$AOT_OUT" = "$(cat aot.expect)" ]; then
         echo "ok   - AOT object round-trip (-c then run .o)"
@@ -406,6 +409,38 @@ if ! "$MADC" -static-libmadc -o aotcpp.bin aotcpp.mad 2> aotcpp.emit.err; then
     FAIL=$((FAIL + 1))
 else
     check "native AOT executable (madc -o, C++ world, flat dylib binds)" aotcpp.expect ./aotcpp.bin
+fi
+
+# --- 6e. a library beside madc, linked by bare name ---------------------------
+# The installed shape a product on madc has (Chthonia: "libs": ["madcide"]):
+# a library madc built (`madc -shared`, install name @rpath/<file>) sits in
+# madc's own lib/, a program names it bare (-l<name>), and the image records
+# the library's install name, as ld64 does, so its LC_RPATHs find it when it
+# runs from anywhere. A bare load command would leave dyld searching the
+# working directory and /usr/lib. Info-skip when madc's lib/ is not writable;
+# the library is removed after.
+MBLIB="$(dirname "$MADC")/../lib"
+if [ ! -w "$MBLIB" ]; then
+    echo "info - library beside madc: $MBLIB not writable (skipped)"
+else
+    trap 'rm -f "$MBLIB/libmbleg.dylib"; rm -rf "$WORK"' EXIT
+    printf 'extern "C" long mbleg_add(long a, long b)\n{\n    return a + b;\n}\n' > mbleg.mad
+    printf '#include <stdio.h>\nextern "C" long mbleg_add(long a, long b);\nint main()\n{\n    printf("mbleg %%ld\\n", mbleg_add(40, 2));\n    return 0;\n}\n' > mbprog.mad
+    printf 'mbleg 42\n' > mbprog.expect
+    mkdir -p mbout/bin elsewhere
+    if ! "$MADC" -shared -o "$MBLIB/libmbleg.dylib" mbleg.mad 2> mbleg.err; then
+        echo "FAIL - library beside madc (madc -shared failed)"
+        head -3 mbleg.err | sed 's/^/    /'
+        FAIL=$((FAIL + 1))
+    elif ! "$MADC" -lmbleg -o mbout/bin/mbprog mbprog.mad 2> mbprog.err; then
+        echo "FAIL - library beside madc (madc -lmbleg -o failed)"
+        head -3 mbprog.err | sed 's/^/    /'
+        FAIL=$((FAIL + 1))
+    else
+        check "library beside madc, linked bare, runs from anywhere (@rpath install name)" \
+            mbprog.expect sh -c "cd '$WORK/elsewhere' && '$WORK/mbout/bin/mbprog'"
+    fi
+    rm -f "$MBLIB/libmbleg.dylib"
 fi
 
 # --- 7. compile latency (report only) ----------------------------------------

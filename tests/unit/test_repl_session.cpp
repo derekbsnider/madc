@@ -19,6 +19,7 @@ thread_local bool madc_verbose = false;
 #include <iostream>
 #include <map>
 #include <queue>
+#include <sstream>
 #include <stack>
 #include <string>
 #include <vector>
@@ -31,7 +32,9 @@ thread_local bool madc_verbose = false;
 #include "../../src/madc_posix_io.h"
 
 #include <cstdio>
+#include <cstdlib>		// std::system: %build's executable runs
 #include <cstring>
+#include <sys/wait.h>		// WEXITSTATUS
 #include <unistd.h>
 
 namespace {
@@ -1186,6 +1189,27 @@ TEST_CASE("an entry without its final ; shows its value, re-enterably (D10, madc
     CHECK(s.shown().empty());
 }
 
+// The madc dialect is a C++ superset (Program::presents_as_cpp): a value of a
+// C++ type shows as C++ writes it, `Pt{ .x = 1.0 }` and `std::vector<int>{ 1,
+// 2, 3 }` — never C's compound literal of the lowered tag
+// (`(struct vector_int32_t_std__allocator_int32_t_){ … }`), which the dialect
+// cannot read back.
+TEST_CASE("an entry without its final ; shows its value, re-enterably (D10, madc C++ types)")
+{
+    InteractiveSession s;
+    REQUIRE(s.begin("--std=madc"));
+    REQUIRE(s.submit("#include <vector>\nint k = 0;"));
+    check_reenters(s, "std::vector<int> v1 = { 1, 2, 3 }",
+		   "std::vector<int>{ 1, 2, 3 }",
+		   "(@).size() == 3 && (@)[0] == v1[0] && (@)[2] == v1[2]");
+    REQUIRE(s.submit("struct Pt { double x, y; };"));
+    check_reenters(s, "Pt v2 = { 1.0, 2.5 }", "Pt{ .x = 1.0, .y = 2.5 }",
+		   "(@).y == v2.y");
+    REQUIRE(s.submit("enum E { A, B = 5 };"));
+    check_reenters(s, "E v3 = B", "E::B", "(@) == v3");
+    check_reenters(s, "int *v4 = 0", "(int *) nullptr", "(@) == v4");
+}
+
 // An entry's final bare function name (plan §41.6a, A) shows the function's
 // pointer and never calls it: the entry's end stands for the `;` the entry
 // omitted, and a function name before that `;` decays. WORD is the pointer
@@ -1221,7 +1245,8 @@ TEST_CASE("an entry's final function name shows the function, never a call (§41
 {
     check_function_name_shown("--std=c17", "int (*)(void)");
     check_function_name_shown("--std=c++17", "int (*)()");
-    check_function_name_shown("--std=madc", "int (*)(void)");
+    // The madc dialect spells types as C++ does (presents_as_cpp).
+    check_function_name_shown("--std=madc", "int (*)()");
 }
 
 // An entry's `auto` object is a session global like any declaration's, and
@@ -1722,6 +1747,100 @@ TEST_CASE("a loaded file's main runs with its argv, and the session goes on (§4
     std::remove(lp.c_str());
 }
 
+// How often NEEDLE occurs in TEXT.
+static size_t occurrences(const std::string &text, const char *needle)
+{
+    size_t n = 0;
+    for ( size_t at = text.find(needle); at != std::string::npos;
+	  at = text.find(needle, at + 1) )
+	++n;
+    return n;
+}
+
+// The file commands (plan §7f). A host that honors no payloads (the
+// in-process terminal): %load and %run -i load the file in the session
+// itself, %run (a fresh session) is refused naming %run -i, and a refused
+// file's diagnostics show once — its load rendered them, the command's end
+// does not again. A payload host (the backend server) gets the command's
+// payload with the file and its arguments, and the session loads nothing.
+TEST_CASE("session commands: %load and %run, with and without a payload host (§7f)")
+{
+    std::string lib = temp_source("int thrice(int v) { return 3 * v; }\n",
+				  "madc_repl_cmdlib");
+    std::string bad = temp_source("int broken = nosuch;\n", "madc_repl_cmdbad");
+    std::string prog = temp_source(
+	"int ran = 0;\n"
+	"int main(int argc, char **argv) { ran = argc; return 0; }\n",
+	"madc_repl_cmdprog");
+    std::string other = temp_source("int sq(int v) { return v * v; }\n",
+				    "madc_repl_cmdother");
+    const std::string missing = "/nonexistent/madc_repl_no_such_file.c";
+
+    InteractiveSession s;
+    REQUIRE(s.begin("--std=c17"));
+    std::ostringstream err;
+    s.program().error_stream = &err;
+    REQUIRE(s.submit("%load " + lib));
+    CHECK(s.payload() == madc::session_payload::none);
+    REQUIRE(s.submit("thrice(7)"));
+    CHECK(s.shown() == "21");
+    REQUIRE(s.submit("%run -i " + prog + " a 'b c'"));
+    REQUIRE(s.submit("ran"));
+    CHECK(s.shown() == "3");
+    CHECK(s.loaded_main());
+    // A file with no main of its own runs none: prog's is not its main.
+    REQUIRE(s.submit("ran = 0;"));
+    REQUIRE(s.submit("%run -i " + other + " z"));
+    CHECK_FALSE(s.loaded_main());
+    REQUIRE(s.submit("ran"));
+    CHECK(s.shown() == "0");
+    REQUIRE(s.submit("sq(9)"));
+    CHECK(s.shown() == "81");
+    CHECK_FALSE(s.submit("%run " + prog));
+    CHECK(first_error(s) == "%run starts a fresh session, which this host"
+			    " cannot; %run -i FILE runs it in this one");
+    CHECK_FALSE(s.submit("%run"));
+    CHECK(first_error(s) == "%run needs a FILE");
+    CHECK_FALSE(s.submit("%run -i"));
+    CHECK(first_error(s) == "%run needs a FILE");
+    CHECK_FALSE(s.submit("%load"));
+    CHECK(first_error(s) == "%load takes one FILE");
+    CHECK_FALSE(s.submit("%load " + lib + " " + lib));
+    CHECK(first_error(s) == "%load takes one FILE");
+    CHECK_FALSE(s.submit("%run \"unclosed"));
+    CHECK(first_error(s) == "%run: no closing quotation, or a backslash at the end");
+    err.str("");
+    CHECK_FALSE(s.submit("%load " + bad));
+    CHECK(occurrences(err.str(), "undeclared identifier 'nosuch'") == 1);
+    err.str("");
+    CHECK_FALSE(s.submit("%load " + missing));
+    CHECK(occurrences(err.str(), "Failed to open file") == 1);
+
+    InteractiveSession h;
+    REQUIRE(h.begin("--std=c17"));
+    h.host_honors_payloads(true);
+    REQUIRE(h.submit("%run " + prog + " x"));
+    CHECK(h.payload() == madc::session_payload::run);
+    CHECK(h.payload_argv() == std::vector<std::string>{ prog, "x" });
+    REQUIRE(h.submit("%run -i " + prog));
+    CHECK(h.payload() == madc::session_payload::run_here);
+    REQUIRE(h.submit("1 + 1"));		// the next entry asks nothing
+    CHECK(h.payload() == madc::session_payload::none);
+    REQUIRE(h.submit("%load " + lib));
+    CHECK(h.payload() == madc::session_payload::load);
+    CHECK(h.payload_argv() == std::vector<std::string>{ lib });
+    CHECK(h.function("thrice") == (void *)NULL);
+    CHECK(h.function("main") == (void *)NULL);
+    CHECK_FALSE(h.submit("%load " + missing));
+    CHECK(h.payload() == madc::session_payload::none);
+    CHECK(first_error(h) == "Failed to open file");
+
+    std::remove(lib.c_str());
+    std::remove(bad.c_str());
+    std::remove(prog.c_str());
+    std::remove(other.c_str());
+}
+
 // Completion (plan §41.7a, slice 3): the names that complete the word before
 // the caret, walked from the registries; the query lexes the text before the
 // word as an attempt that rolls back, so it leaves nothing.
@@ -2012,6 +2131,320 @@ TEST_CASE("session commands: %help, %type, an unknown command, and what stays C"
     CHECK(m.shown() == "var");			// the dialect's carrier
 }
 
+// The third prefix (plan §7f): cling's and Node's `.name` reaches the table
+// `%` and `:` reach, and their own spellings are alias rows naming our
+// commands under every prefix — `.L` is %load, `.q` and `.exit` %quit, `.?`
+// %help — which %help names. %quit ends the session: ended() for a host that
+// honors no payloads, the `quit` payload for one that does. What stays C:
+// `.5`, and a designator's `.x` on a continuation line.
+TEST_CASE("session commands: the `.` prefix, alias rows and %quit (§7f)")
+{
+    std::string lib = temp_source("int thrice(int v) { return 3 * v; }\n",
+				  "madc_repl_dotlib");
+    InteractiveSession c;
+    REQUIRE(c.begin("--std=c17"));
+    std::ostringstream err;
+    c.program().error_stream = &err;
+    REQUIRE(c.submit("int x = 10;"));
+    REQUIRE(c.submit(".type x * 2.5"));
+    CHECK(c.shown() == "double");
+    REQUIRE(c.submit(".L " + lib));
+    REQUIRE(c.submit("thrice(x)"));
+    CHECK(c.shown() == "30");
+    CHECK_FALSE(c.submit("%L " + lib + "x"));	// %L is .L: its FILE opens first
+    CHECK(first_error(c) == "Failed to open file");
+    const char *helps[] = { ".help", ".?", "%?", ":?" };
+    for ( size_t i = 0; i < sizeof(helps) / sizeof(helps[0]); ++i )
+    {
+	CAPTURE(helps[i]);
+	REQUIRE(c.submit(helps[i]));
+	const std::string &h = c.shown();
+	CHECK(h.find("list the session's commands (also .?)\n") != std::string::npos);
+	CHECK(h.find("nothing runs (also .L)\n") != std::string::npos);
+	CHECK(h.find("%quit") != std::string::npos);
+	CHECK(h.find("end the session (also .q, .exit)\n") != std::string::npos);
+    }
+    CHECK_FALSE(c.submit(".nosuch"));
+    CHECK(err.str().find("unknown command '.nosuch'") != std::string::npos);
+    // What stays C.
+    REQUIRE(c.submit(".5 + x"));
+    CHECK(c.shown() == "10.5");
+    REQUIRE(c.submit("struct P { int x; int y; };"));
+    REQUIRE(c.submit("struct P q = {\n.x = 3,\n.y = 4 };"));
+    REQUIRE(c.submit("q.y"));
+    CHECK(c.shown() == "4");
+    // Completion offers the aliases beside the names.
+    size_t start = 0;
+    CHECK(complete_at_end(c, ".ex", &start) == std::vector<std::string>{ "exit" });
+    CHECK(start == 1u);
+    CHECK(complete_at_end(c, ".q") == (std::vector<std::string>{ "q", "quit" }));
+    CHECK(complete_at_end(c, "%L") == std::vector<std::string>{ "L" });
+    // %quit: refused with an argument, else the session ends (status 0).
+    int status = 7;
+    CHECK_FALSE(c.ended(status));
+    CHECK_FALSE(c.submit("%quit now"));
+    CHECK(first_error(c) == "%quit takes no argument");
+    CHECK_FALSE(c.ended(status));
+    REQUIRE(c.submit(".q"));
+    CHECK(c.ended(status));
+    CHECK(status == 0);
+
+    InteractiveSession h;
+    REQUIRE(h.begin("--std=c17"));
+    h.host_honors_payloads(true);
+    REQUIRE(h.submit(".exit"));
+    CHECK(h.payload() == madc::session_payload::quit);
+    CHECK(h.payload_argv().empty());
+    REQUIRE(h.submit(":L " + lib));
+    CHECK(h.payload() == madc::session_payload::load);
+    CHECK(h.payload_argv() == std::vector<std::string>{ lib });
+
+    std::remove(lib.c_str());
+}
+
+// TEXT in a fresh temporary file, each `@` in it replaced by the file's stem
+// (its name without the directory and an extension: the function %call
+// calls); the path, the stem through `stem`.
+static std::string temp_named_source(const char *text, const char *prefix,
+				     std::string &stem)
+{
+    std::string path;
+    int fd = madc::detail::make_temp_file(prefix, path);
+    REQUIRE(fd >= 0);
+    const size_t sep = path.find_last_of("/\\");
+    stem = sep == std::string::npos ? path : path.substr(sep + 1);
+    const size_t dot = stem.rfind('.');
+    if ( dot != std::string::npos && dot > 0 )
+	stem.erase(dot);
+    std::string body;
+    for ( const char *p = text; *p; ++p )
+	body += *p == '@' ? stem : std::string(1, *p);
+    CHECK(madc::detail::write_fd_without_sigpipe(fd, body.data(), body.size())
+	  == (ssize_t)body.size());
+    ::close(fd);
+    return path;
+}
+
+// cling's `.x FILE(ARGS)` (plan §7f): FILE loads, then the function named
+// after it is called with ARGS (none without them), its value shown and its
+// diagnostics citing the columns typed; a FILE with no such function runs its
+// own main (with no ARGS as %run -i runs it); one with neither is refused. A
+// payload host gets FILE and the call's text, loads FILE, and call_file
+// makes the call.
+TEST_CASE("session commands: %call (.x) calls the function named after FILE (§7f)")
+{
+    std::string two, zero, bad, solo, withargs, none, host;
+    std::string f2 = temp_named_source("int @(int a, int b) { return a * 10 + b; }\n",
+				       "madc_repl_calltwo", two);
+    std::string f0 = temp_named_source("int @(void) { return 7; }\n",
+				       "madc_repl_callzero", zero);
+    std::string fb = temp_named_source("int @(int a, int b) { return a + b; }\n",
+				       "madc_repl_callbad", bad);
+    std::string m1 = temp_named_source(
+	"int solo_ran = 0;\n"
+	"int main(int argc, char **argv) { solo_ran = argc + 40; return 0; }\n",
+	"madc_repl_callsolo", solo);
+    std::string m2 = temp_named_source(
+	"int args_ran = 0;\n"
+	"int main(int argc, char **argv) { args_ran = argc; return 5; }\n",
+	"madc_repl_callargs", withargs);
+    std::string nf = temp_named_source("int nothing_here = 1;\n",
+				       "madc_repl_callnone", none);
+    std::string fh = temp_named_source("int @(int a, int b) { return a * b; }\n",
+				       "madc_repl_callhost", host);
+
+    InteractiveSession s;
+    REQUIRE(s.begin("--std=c17"));
+    std::ostringstream err;
+    s.program().error_stream = &err;
+    REQUIRE(s.submit(".x " + f2 + "(4, 2)"));
+    CHECK(s.shown() == "42");
+    REQUIRE(s.submit(two + "(1, 1)"));		// its names stay
+    CHECK(s.shown() == "11");
+    REQUIRE(s.submit("%call " + f0));		// no ARGS: it takes none
+    CHECK(s.shown() == "7");
+    REQUIRE(s.submit(".x " + m1));		// FILE's main, as %run -i runs it
+    REQUIRE(s.submit("solo_ran"));
+    CHECK(s.shown() == "41");
+    // Refused: the call's undeclared argument at the column typed, a FILE
+    // with neither function, no FILE, and text after the call.
+    err.str("");
+    CHECK_FALSE(s.submit(".x " + fb + "(4, nope)"));
+    CHECK(err.str().find(":1:" + std::to_string(3 + fb.size() + 5) + ": ")
+	  != std::string::npos);
+    CHECK(err.str().find("undeclared identifier 'nope'") != std::string::npos);
+    CHECK_FALSE(s.submit(".x " + nf));
+    CHECK(first_error(s) == "%call: " + nf + " defines no function " + none
+			    + ", and no main");
+    CHECK_FALSE(s.submit("%call"));
+    CHECK(first_error(s) == "%call needs a FILE");
+    CHECK_FALSE(s.submit("%call " + f2 + "(1, 2) + 3"));
+    CHECK(first_error(s) == "%call's arguments end the line: %call FILE(ARGS)");
+
+    // A second main is refused, so FILE's main with ARGS has its own session.
+    InteractiveSession t;
+    REQUIRE(t.begin("--std=c17"));
+    REQUIRE(t.submit(".x " + m2 + "(3, 0)"));	// FILE's main, called with ARGS
+    CHECK(t.shown() == "5");
+    REQUIRE(t.submit("args_ran"));
+    CHECK(t.shown() == "3");
+
+    InteractiveSession h;
+    REQUIRE(h.begin("--std=c17"));
+    h.host_honors_payloads(true);
+    REQUIRE(h.submit(".x " + fh + "(5, 6)"));
+    CHECK(h.payload() == madc::session_payload::call);
+    REQUIRE(h.payload_argv().size() == 2u);
+    CHECK(h.payload_argv()[0] == fh);
+    CHECK(h.payload_argv()[1] == std::string(3 + fh.size(), ' ') + "(5, 6)");
+    CHECK(h.function(host.c_str()) == (void *)NULL);	// nothing loaded yet
+    const std::vector<std::string> argv = h.payload_argv();
+    REQUIRE(h.load(argv[0]));
+    int status = -1;
+    REQUIRE(h.call_file(argv[0], argv[1], &status));
+    CHECK(h.shown() == "30");
+
+    const std::string files[] = { f2, f0, fb, m1, m2, nf, fh };
+    for ( const std::string &f : files )
+	std::remove(f.c_str());
+}
+
+// `%build FILE [-o OUT]` (plan §7f; madcide's Build): FILE compiled to a
+// native executable under the session's standard, OUT by default FILE
+// without its extension; a refused FILE's diagnostics are the session's. A
+// payload host gets FILE and OUT, and build_file builds the text it hands
+// over (an editor's buffer), not the file.
+TEST_CASE("session commands: %build FILE [-o OUT] (§7f)")
+{
+    std::string prog = temp_source("int main(void) { return 3; }\n", "madc_repl_build");
+    std::string bad = temp_source("int main(void) { return nope; }\n",
+				  "madc_repl_buildbad");
+    const std::string out = prog + "_exe";
+    const std::string named = prog + "_named.c";	// an extension to drop
+    {
+	std::ofstream f(named.c_str());
+	f << "int main(void) { return 5; }\n";
+    }
+
+    InteractiveSession s;
+    REQUIRE(s.begin("--std=c17"));
+    std::ostringstream err;
+    s.program().error_stream = &err;
+    REQUIRE(s.submit("%build " + prog + " -o " + out));
+    CHECK(s.shown() == "built " + out);
+    int rc = std::system(out.c_str());
+    CHECK(WEXITSTATUS(rc) == 3);
+    std::remove(out.c_str());
+    REQUIRE(s.submit(".build " + named));		// OUT: FILE without .c
+    CHECK(s.shown() == "built " + prog + "_named");
+    rc = std::system((prog + "_named").c_str());
+    CHECK(WEXITSTATUS(rc) == 5);
+    std::remove((prog + "_named").c_str());
+    // Refused: a FILE with no extension and no -o, no FILE, -o without OUT,
+    // and a FILE that does not compile (its diagnostics are the session's;
+    // nothing is built).
+    CHECK_FALSE(s.submit("%build " + prog));
+    CHECK(first_error(s) == "%build: FILE has no extension to drop; name the"
+			    " executable: %build FILE -o OUT");
+    CHECK_FALSE(s.submit("%build"));
+    CHECK(first_error(s) == "%build needs a FILE");
+    CHECK_FALSE(s.submit("%build " + prog + " -o"));
+    CHECK(first_error(s) == "%build takes one FILE and -o OUT");
+    err.str("");
+    CHECK_FALSE(s.submit("%build " + bad + " -o " + out));
+    CHECK(err.str().find("undeclared identifier 'nope'") != std::string::npos);
+    CHECK(first_error(s).find("nope") != std::string::npos);
+    CHECK_FALSE(std::ifstream(out.c_str()).good());
+
+    InteractiveSession h;
+    REQUIRE(h.begin("--std=c17"));
+    h.host_honors_payloads(true);
+    REQUIRE(h.submit("%build " + named));
+    CHECK(h.payload() == madc::session_payload::build);
+    CHECK(h.payload_argv() == (std::vector<std::string>{ named, prog + "_named" }));
+    CHECK_FALSE(std::ifstream((prog + "_named").c_str()).good());	// nothing built
+    REQUIRE(h.build_file(named, "int main(void) { return 6; }\n", out));
+    CHECK(h.shown() == "built " + out);
+    rc = std::system(out.c_str());
+    CHECK(WEXITSTATUS(rc) == 6);			// the text handed over
+
+    const std::string files[] = { prog, bad, named, out };
+    for ( const std::string &f : files )
+	std::remove(f.c_str());
+}
+
+// `%open FILE` and `%edit NAME` (plan §7f, the IDE layer): the file in its
+// host's editor — the `open` payload (FILE, then the line %edit names, from
+// the bindings' origin) for a payload host, else the terminal's editor
+// ($EDITOR) run by the session. A name an entry defined has no file.
+TEST_CASE("session commands: %open FILE and %edit NAME (§7f)")
+{
+    std::string lib = temp_source("int seven = 7;\nint thrice(int v) { return 3 * v; }\n",
+				  "madc_repl_editlib");
+    InteractiveSession h;
+    REQUIRE(h.begin("--std=c17"));
+    h.host_honors_payloads(true);
+    REQUIRE(h.submit("%open " + lib + "_new.c"));		// need not exist
+    CHECK(h.payload() == madc::session_payload::open);
+    CHECK(h.payload_argv() == std::vector<std::string>{ lib + "_new.c" });
+    REQUIRE(h.load(lib));
+    REQUIRE(h.submit("int x = 1;"));
+    REQUIRE(h.submit("%edit thrice"));
+    CHECK(h.payload() == madc::session_payload::open);
+    CHECK(h.payload_argv() == (std::vector<std::string>{ lib, "2" }));
+    REQUIRE(h.submit(".edit seven"));
+    CHECK(h.payload_argv() == (std::vector<std::string>{ lib, "1" }));
+    CHECK_FALSE(h.submit("%edit x"));
+    CHECK(first_error(h) == "%edit: 'x' was defined in REPL[2], which is no file to open");
+    CHECK_FALSE(h.submit("%edit nosuch"));
+    CHECK(first_error(h) == "%edit: 'nosuch' is not a name the session defined");
+    CHECK_FALSE(h.submit("%edit 1x"));
+    CHECK(first_error(h) == "%edit takes a name");
+    CHECK_FALSE(h.submit("%open"));
+    CHECK(first_error(h) == "%open takes one FILE");
+
+    // No payload host: the session runs the terminal's editor ($EDITOR).
+    const char *was = getenv("EDITOR");
+    const std::string saved = was ? was : "";
+    setenv("EDITOR", "true", 1);
+    InteractiveSession s;
+    REQUIRE(s.begin("--std=c17"));
+    REQUIRE(s.submit("%open " + lib));
+    CHECK(s.payload() == madc::session_payload::none);
+    REQUIRE(s.load(lib));
+    REQUIRE(s.submit("%edit thrice"));
+    if ( was )
+	setenv("EDITOR", saved.c_str(), 1);
+    else
+	unsetenv("EDITOR");
+    std::remove(lib.c_str());
+}
+
+// The one rule a host reads an entry's command by (an IDE answers its own
+// commands before the session sees the entry): the word, its command (none
+// for a word the session does not own) and the rest of the line.
+TEST_CASE("session commands: command_of reads an entry as the session does (§7f)")
+{
+    std::string word, arg;
+    InteractiveSession::Command code = InteractiveSession::Command::help;
+    REQUIRE(InteractiveSession::command_of(".L lib.c", word, code, arg));
+    CHECK(word == "L");
+    CHECK(code == InteractiveSession::Command::load);
+    CHECK(arg == "lib.c");
+    REQUIRE(InteractiveSession::command_of("%hi  bob ann", word, code, arg));
+    CHECK(word == "hi");
+    CHECK(code == InteractiveSession::Command::none);
+    CHECK(arg == "bob ann");
+    REQUIRE(InteractiveSession::command_of(":quit", word, code, arg));
+    CHECK(code == InteractiveSession::Command::quit);
+    CHECK(arg.empty());
+    REQUIRE(InteractiveSession::command_of("?x", word, code, arg));
+    CHECK(code == InteractiveSession::Command::pinfo);
+    CHECK(arg == "x");
+    CHECK_FALSE(InteractiveSession::command_of("int x;", word, code, arg));
+    CHECK_FALSE(InteractiveSession::command_of("%1", word, code, arg));
+}
+
 // Slice 2 (plan §41.8a): `?name` / `%pinfo name` describe what the session
 // knows of a name, in IPython's fields, each overload with its location
 // (Julia), from the walk completion reads: `?` describes a name exactly
@@ -2161,8 +2594,8 @@ TEST_CASE("?name: where a keyword comes from")
     }
 }
 
-// Plan §41.11a step 3d: the bindings owner, IPython's %whos and madcide's
-// Variables view. The session's own objects and functions only (an included
+// Plan §41.11a step 3d: the bindings owner, IPython's %whos and Chthonia's
+// Symbols view. The session's own objects and functions only (an included
 // header's, a reserved name and a result never), sorted by name, each with
 // its type, its value in the show's row form (no pointer followed, text
 // included; at most 16 elements of an aggregate, then `…`) and its origin.
@@ -2223,15 +2656,19 @@ TEST_CASE("session bindings: %whos lists the names the session defined (C17)")
     CHECK(binding_field(rows, "square", "type") == "int (int)");
     CHECK(binding_field(rows, "square", "value").empty());
     CHECK(binding_field(rows, "square", "file") == "REPL[4]");
-    // A pointer shows its address, never its pointee: text included, and a
-    // wild one cannot crash the backend.
-    CHECK(binding_field(rows, "p", "value") == "(char *) 0x1");
-    CHECK(binding_field(rows, "greeting", "value").compare(0, 17, "(const char *) 0x") == 0);
+    // The row's value spells no type (its Type column does, gdb's `info
+    // locals`). A pointer shows its address; a character pointer then its
+    // text, read so that a wild one cannot crash the backend.
+    CHECK(binding_field(rows, "p", "value") == "0x1 <unreadable>");
+    const std::string g = binding_field(rows, "greeting", "value");
+    CHECK(g.compare(0, 2, "0x") == 0);
+    CHECK(g.size() > 5);
+    CHECK(g.compare(g.size() - 5, 5, " \"hi\"") == 0);
     // An aggregate: 16 elements, then `…`.
     CHECK(binding_field(rows, "big", "type") == "int [20]");
     CHECK(binding_field(rows, "big", "value")
-	  == "(int[20]){ 1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, … }");
-    CHECK(binding_field(rows, "pt", "value") == "(struct P){ .x = 1, .y = 2 }");
+	  == "{ 1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, … }");
+    CHECK(binding_field(rows, "pt", "value") == "{ .x = 1, .y = 2 }");
     // %whos prints the same rows as a table.
     REQUIRE(c.submit("%whos"));
     const std::string table = c.shown();
@@ -2259,14 +2696,19 @@ TEST_CASE("session bindings: C++ containers, a class the session wrote, a qualif
 		     "11, 12, 13, 14, 15, 16, 17, 18, 19, 20 };"));
     REQUIRE(c.submit("static std::string t = \"x\";"));
     REQUIRE(c.submit("t += \"y\";"));
+    REQUIRE(c.submit("#include <map>"));
+    REQUIRE(c.submit("std::map<int, int> m = { { 2, 20 }, { 1, 10 } };"));
     madc::value rows;
     c.bindings(rows);
-    CHECK(binding_field(rows, "v", "value") == "std::vector<int>{ 1, 2, 3 }");
+    // A container's row is its elements: the Type column names it.
+    CHECK(binding_field(rows, "v", "type") == "std::vector<int>");
+    CHECK(binding_field(rows, "v", "value") == "{ 1, 2, 3 }");
     CHECK(binding_field(rows, "w", "value")
-	  == "std::vector<int>{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, … }");
+	  == "{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, … }");
+    CHECK(binding_field(rows, "m", "value") == "{ { 1, 10 }, { 2, 20 } }");
     // A class the session wrote a method of walks by its members: a row
     // calls no code the session wrote.
-    CHECK(binding_field(rows, "b", "value") == "Box{ .a = { 7, 8, 9 } }");
+    CHECK(binding_field(rows, "b", "value") == "{ .a = { 7, 8, 9 } }");
     // B94: a qualified typedef's object is the entry's, not its header's.
     CHECK(binding_field(rows, "s", "type") == "std::string");
     CHECK(binding_field(rows, "s", "value") == "\"hello\"");

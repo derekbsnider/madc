@@ -11,23 +11,26 @@
 # Where macOS uses a different KEY, not just Cmd, the Linux key is bound
 # on every platform (a profile has one key per binding): the file's ends
 # (Ctrl+Home / Ctrl+End; macOS ⌘↑ / ⌘↓), the word motions (Ctrl+arrows;
-# macOS ⌥←/⌥→), Find next (F3; macOS ⌘G) and Redo (Ctrl+Y; macOS ⇧⌘Z).
+# macOS ⌥←/⌥→), Find next (F3; macOS ⌘G), Redo (Ctrl+Y; macOS ⇧⌘Z) and
+# Save All (Ctrl+K S; macOS ⌥⌘S).
 #
 # VS Code's keys whose command madcide does not have yet are listed, not
-# invented: New File (Ctrl+N), Close (Ctrl+W), Close All (Ctrl+K Ctrl+W),
-# Save All (Ctrl+K S; macOS ⌥⌘S), Replace (Ctrl+H), Find previous
-# (Shift+F3), Toggle line comment (Ctrl+/), Trigger suggestion
-# (Ctrl+Space), Move line (Alt+Up / Alt+Down), Insert line below / above
-# (Ctrl+Enter, Ctrl+Shift+Enter), Go to Definition (F12), next / previous
-# problem (F8 / Shift+F8), the Command Palette (Ctrl+Shift+P, F1), the
-# debugger's steps and breakpoints (F9, F10, F11, Shift+F11), zoom
-# (Ctrl+= / Ctrl+-) and full screen (F11).
+# invented: Find previous (Shift+F3), Trigger suggestion (Ctrl+Space), Move
+# line (Alt+Up / Alt+Down), Insert line below / above (Ctrl+Enter,
+# Ctrl+Shift+Enter), Go to Definition (F12), next / previous problem (F8 /
+# Shift+F8), the Command Palette (Ctrl+Shift+P, F1), the debugger's steps
+# and breakpoints (F9, F10, F11, Shift+F11 — F11 is full screen until
+# then). Zoom (Ctrl+= / Ctrl+-) is the font size.
 @title VS Code
 
 # File management
+primary+n new
 primary+o editfile
+primary+w close
+primary+k primary+w closeall
 primary+s save
 primary+shift+s saveas
+primary+k s saveall
 ctrl+tab bufsel
 # Basic editing
 primary+z undo
@@ -42,8 +45,15 @@ ctrl+end bottom
 ctrl+left wordleft
 ctrl+right wordright
 ctrl+del delword
+# Indent / Outdent line and Toggle line comment (Tab over a selection that
+# crosses a line indents it too: the editor's GUI rule, no line here)
+primary+] indent
+primary+[ dedent
+shift+tab dedent
+primary+/ togglecomment
 # Search and navigation
 primary+f find
+primary+h replace
 f3 findnext
 ctrl+g gotoline
 primary+p project
@@ -55,11 +65,17 @@ primary+shift+u output
 primary+\ splitw
 primary+k primary+left prevw
 primary+k primary+right nextw
+# Zoom in / out (Ctrl+= / Ctrl+-): the window's font size; full screen (F11)
+primary+= fontlarger
+primary+- fontsmaller
+f11 fullscreen
 # Run (F5 / Ctrl+F5) and stop (Shift+F5); the integrated terminal
 f5 replrun
 ctrl+f5 replrun
 shift+f5 replstop
 ctrl+` terminal
+# Run Build Task (Ctrl+Shift+B; macOS ⇧⌘B): the Build menu's rows.
+primary+shift+b build
 # Quit: VS Code's on Linux (Ctrl+Q) and macOS (⌘Q), off its sheets.
 primary+q quit
 # The project window's keys (@project scope — profile data; the baked

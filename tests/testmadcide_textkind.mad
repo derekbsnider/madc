@@ -1,0 +1,38 @@
+// A buffer whose kind is not the compiler's never reaches it
+// (tools/madcide/madcide_lang.inc kind_reaches_compiler). A README.md and a
+// notes.txt get no parse handle, no compiler colour and, on Check, no
+// diagnostics — before this, Check lexed the prose as C and reported the
+// apostrophe in "can't" as `missing terminating ' character`. The negative
+// control: a .c file with an undeclared name still gets its diagnostic.
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+
+void check_file(const char *label, const char *path, const char *text)
+{
+    php::file_put_contents(path, text);
+    IdeSession S;
+    long doc = S.open(path, false);
+    long w = S.w;
+    long es = S.es;
+    bool cont = true;
+    S.command(doc, cmdCHECK, "", cont);
+    var d;
+    ui::get(d, w, es, "diags");
+    var m;
+    ui::get(m, w, es, "msg");
+    println("{}: reaches={} handle={} diags={} msg={}", label,
+	    kind_reaches_compiler(doc_kind(w, doc)), es_int(w, doc, "phandle", 0) != 0,
+	    d.is_null() ? 0 : php::count(d), m);
+    S.close();
+    php::unlink(path);
+}
+
+int main()
+{
+    check_file("md", "madc_ide_textkind.md",
+	       "# Read me\n\nIf you can't build it, for int reasons, see `make`.\n");
+    check_file("txt", "madc_ide_textkind.txt", "It's 'quoted' text; int x = ;\n");
+    check_file("c", "madc_ide_textkind.c", "int main(void) { return undeclared_name; }\n");
+    return 0;
+}

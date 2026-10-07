@@ -1,0 +1,115 @@
+// Run ▸ Interrupt in madcide's shell (D8, plan
+// docs/plans/madc-repl-thonny-plan-2026-09-24.md §41.12a; Thonny's Run ▸
+// Interrupt and its Ctrl+C in the Shell): `replinterrupt` returns a running
+// entry to the prompt with the session's names kept, its transcript showing
+// the entry's `interrupted`; Copy with nothing selected in the shell's input
+// does the same (seINTERRUPT, the console rule a terminal's Ctrl+C follows);
+// with nothing running, Interrupt says so and Copy's own "Nothing selected."
+// stands.
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+#include "../tools/madcide/include/madcide/harness"	// <madcide/harness>: ev_*, settle, enter_line
+
+// The transcript's text after `from` bytes (what the last steps added).
+void transcript_since(var &out, long w, long es, long from)
+{
+    var t = "";
+    long rd = repl_doc_if_any(w, es);
+    if ( rd != 0 )
+	ui::text(t, w, rd);
+    out = t.substr(from, strlen(t.c_str()) - from);
+}
+
+long transcript_size(long w, long es)
+{
+    long rd = repl_doc_if_any(w, es);
+    return rd == 0 ? 0 : ui::text_size(w, rd);
+}
+
+void show_msg(long w, long es, const char *label)
+{
+    var m;
+    ui::get(m, w, es, "msg");
+    println("{}: msg=[{}]", label, m);
+}
+
+// Offer a line that runs until interrupted and wait until it runs.
+void start_loop(IdeSession &S, long doc, long w, long es, const char *text)
+{
+    var e;
+    ev_text(e, text);
+    S.apply_ide_event(doc, e);
+    ev_key(e, "enter");
+    S.apply_ide_event(doc, e);
+    settle(w, es, true);
+    madc::sleep_ms(50);
+}
+
+// What the transcript gained since `from`: whether it says `interrupted`,
+// and whether a fresh session started (it should not).
+void report(long w, long es, long from, const char *label)
+{
+    var t;
+    transcript_since(t, w, es, from);
+    println("{}: interrupted={} restarted={} busy={}", label,
+	    t.index("interrupted") >= 0 ? 1 : 0,
+	    t.index("new session") >= 0 ? 1 : 0, es_int(w, es, "replbusy", 0));
+}
+
+int main()
+{
+    const char *path = "madc_ide_replintr.mad";
+    php::file_put_contents(path, "long add(long a, long b) { return a + b; }\n");
+    long w = ui::world_new();
+    long doc = setup_editor(w, path, false);
+    long es = ui::entity_by_name(w, "editor-state");
+    builtins_activate(w, es);	// madcide's own modules, as IdeSession::open activates them
+    ui::set(w, es, "profile_dir", "tools/madcide/profiles");
+    ui::set(w, es, "profile", "joe");
+    ui::set(w, lang_world(w), "std", (long)madc::fkC11);	// as --std=c11 sets it
+    IdeSession S;
+    S.attach(w, es);
+
+    var e;
+    ev_action(e, "replinterrupt", "");
+    S.apply_ide_event(doc, e);
+    show_msg(w, es, "no session");
+
+    ev_action(e, "repl", "");
+    S.apply_ide_event(doc, e);
+    enter_line(S, doc, w, es, "long n = 0;");
+    ev_action(e, "replinterrupt", "");
+    S.apply_ide_event(doc, e);
+    show_msg(w, es, "idle");
+
+    // Run ▸ Interrupt.
+    long from = transcript_size(w, es);
+    start_loop(S, doc, w, es, "while (1) n++;");
+    ev_action(e, "replinterrupt", "");
+    S.apply_ide_event(doc, e);
+    settle(w, es, false);
+    report(w, es, from, "interrupt");
+    from = transcript_size(w, es);
+    enter_line(S, doc, w, es, "n > 0");
+    var t;
+    transcript_since(t, w, es, from);
+    println("kept: {}", php::str_replace("\n", "|", t));
+
+    // Copy with nothing selected in the shell's input: Ctrl+C's interrupt.
+    from = transcript_size(w, es);
+    start_loop(S, doc, w, es, "for (;;) n--;");
+    ev_action(e, "copy", "");
+    S.apply_ide_event(doc, e);
+    settle(w, es, false);
+    report(w, es, from, "copy-interrupt");
+
+    // Nothing running: Copy keeps its own message.
+    ev_action(e, "copy", "");
+    S.apply_ide_event(doc, e);
+    show_msg(w, es, "copy idle");
+
+    S.close();
+    php::unlink(path);
+    return 0;
+}

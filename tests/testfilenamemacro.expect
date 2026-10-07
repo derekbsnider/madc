@@ -1,0 +1,5 @@
+name: testfilenamemacro.mad
+suffix of __FILE__: 1
+ifdef __FILE_NAME__: 1
+defined __FILE__ __LINE__: 1
+after #line: dir/renamed.c renamed.c 100

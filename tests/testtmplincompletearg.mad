@@ -1,0 +1,81 @@
+// Oracle (g++ 13, clang++ 18, -std=c++17): "lazy: x 2 7 1" / "box: 42 42 4".
+// A class template specialization is implicitly instantiated only where a
+// complete class type is required ([temp.inst]/2); naming it — a typedef, an
+// alias, a pointer or reference, a template argument, an explicit
+// specialization's base argument — does not. libstdc++ 11's <string> names
+// basic_string<char, char_traits<char>, polymorphic_allocator<char>> with
+// polymorphic_allocator only declared: `using string = basic_string<char>;`
+// in namespace pmr, then `template<> struct hash<pmr::string> :
+// __hash_string_base<pmr::string> {};` — the base is instantiated, its
+// operator() is not, so the string type is never completed. (hash_base's
+// member reads no member of S: madc instantiates a user template's member
+// function bodies with the class, not at their use — [temp.inst]/4.)
+#include <stdio.h>
+
+template<typename A, typename = typename A::value_type>
+struct traits_of
+{
+	typedef typename A::value_type value_type;
+};
+
+template<typename T, typename A>
+struct str
+{
+	typedef typename traits_of<A>::value_type value_type;
+	T data;
+	int size() const { return (int)sizeof(value_type); }
+};
+
+template<typename T> struct poly;	// declared only, like polymorphic_allocator
+
+namespace pmr {
+	template<typename T> using basic = str<T, poly<T> >;
+	typedef basic<char> string;
+}
+
+template<typename S>
+struct hash_base
+{
+	typedef S argument_type;
+	int seed() const { return 7; }
+};
+
+template<typename S>
+int value_size(const S &s) { return (int)sizeof(typename S::value_type) + s.size(); }
+
+template<typename T> struct hasher;
+template<> struct hasher<pmr::string> : hash_base<pmr::string> { };
+
+typedef str<char, poly<char> > named_str;
+named_str *named_ptr = 0;
+int takes_ref(const named_str &) { return 1; }
+
+struct alloc { typedef char value_type; };
+
+// A specialization named while its argument is incomplete is completed
+// where a complete type is first required, the argument complete by then.
+struct node;
+template<typename T>
+struct box
+{
+	T item;
+	int twice() const { return item.v * 2; }
+};
+typedef box<node> node_box;
+node_box *spare_box = 0;
+struct node { int v; };
+int read_box(const node_box &b) { return b.twice(); }
+
+int main()
+{
+	str<char, alloc> s;
+	s.data = 'x';
+	hasher<pmr::string> h;
+	printf("lazy: %c %d %d %d\n", s.data, value_size(s), h.seed(), named_ptr == 0 ? 1 : 0);
+	node_box b;
+	b.item.v = 21;
+	node_box *p = new node_box(b);
+	printf("box: %d %d %d\n", read_box(b), p->twice(), (int)sizeof(node_box));
+	delete p;
+	return 0;
+}

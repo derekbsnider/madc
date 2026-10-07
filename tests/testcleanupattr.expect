@@ -1,0 +1,16 @@
+has: 1
+cl 11
+ret: 12
+no early return
+cl 10
+ret: 0
+lists 20 21 22 23 24 99
+c2 24
+c2 23
+c2 21
+cl 20
+cl 30
+cl 31
+cl 32
+c2 40
+after goto

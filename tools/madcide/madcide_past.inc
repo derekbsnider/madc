@@ -20,42 +20,8 @@
 // Thread contract: every cache here is per-document session-thread state like
 // the live parse handle (design §7); nothing is persisted (no-program-cache law).
 
-// The doc's git handle (0 = no repository above it) and its working-tree-
-// relative path, opened once and kept on the doc bag ("ghandle", "grelpath").
-long git_handle_of(long w, long es, long adoc)
-{
-    long gh = es_int(w, adoc, "ghandle", -1);
-    if ( gh >= 0 )
-	return gh;
-    if ( doc_untitled(w, adoc) )
-	return 0;		// no file, no repository (not cached: Save As names it)
-    var p;
-    ui::get(p, w, adoc, "path");
-    var dir = php::dirname(p);		// ring: own the text first
-    // The madcgit module is LAZY (libgit2 is the system's, a dependency of
-    // this nexus — never part of madc): without it there is no repository to
-    // ask, the same degradation as a path outside any repository (handle 0,
-    // the versioned layer absent).
-    gh = git::available() ? git::open(dir.c_str()) : 0;
-    ui::set(w, adoc, "ghandle", gh);
-    if ( gh > 0 )
-    {
-	var rp;
-	git::relpath(rp, gh, p.c_str());
-	var rel = rp["path"];
-	if ( rel.is_null() )
-	    rel = "";
-	ui::set(w, adoc, "grelpath", rel);
-    }
-    return gh;
-}
-
-void git_relpath_of(var &out, long w, long adoc)
-{
-    ui::get(out, w, adoc, "grelpath");
-    if ( out.is_null() )
-	out = "";
-}
+// The doc's git handle and relative path: git_handle_of / git_relpath_of
+// (madcide_repo.inc, the core's: a buffer's repository).
 
 // (keyed_get — the one keyed READ of a map that may still be null / the empty
 // container — lives in editor_events.inc since Nexus L4c; the stream's

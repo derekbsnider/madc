@@ -1,0 +1,10 @@
+to the end: eof-sent=true ok=true
+n -> ok=true shown=2
+after: eof-sent=true ok=true
+c == 'x' -> ok=true shown=1
+again: eof-sent=true ok=true
+m -> ok=true shown=1
+idle: sent=true
+after idle: eof-sent=true ok=true
+d == 'y' -> ok=true shown=1
+close: true

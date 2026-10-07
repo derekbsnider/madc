@@ -450,9 +450,9 @@ WEBVIEW_API int madcwebview_menu_activate(webview_t w, const char *id);
  * callback fires later, on the UI thread inside the platform's run loop,
  * with the chosen path ("" = cancelled). `initial` names the folder or file
  * the dialog starts at (NULL/"" = the platform's default). Nonzero = no
- * window / no native dialog on this host. GTK4: GtkFileDialog (4.10+);
- * Cocoa: NSOpenPanel / NSSavePanel as a sheet; Win32: IFileOpenDialog /
- * IFileSaveDialog. */
+ * window / no native dialog on this host. GTK4: GtkFileDialog (4.10+),
+ * GtkFileChooserNative on an older GTK 4; Cocoa: NSOpenPanel /
+ * NSSavePanel as a sheet; Win32: IFileOpenDialog / IFileSaveDialog. */
 typedef void (*madcwebview_dialog_fn)(const char *path, void *arg);
 
 WEBVIEW_API int madcwebview_dialog_open(webview_t w, const char *title,
@@ -473,6 +473,21 @@ typedef void (*madcwebview_tick_fn)(void *arg);
 WEBVIEW_API int madcwebview_tick(webview_t w, unsigned ms, madcwebview_tick_fn cb,
 				 void *arg);
 
+/* The engine's wait in the platform loop (the host's `run` op): run reads
+ * and dispatches the UI thread's events until stop asks it to return (0) or
+ * the window is destroyed (1, where the platform can tell). Stop is called
+ * from a callback the loop dispatched (an event, a menu selection, the
+ * tick); outside a run it does nothing, so it never ends a later one.
+ * Win32: stop is a flag the loop reads after every message it dispatches,
+ * never a WM_QUIT — a modal loop running inside a dispatch (a menu being
+ * tracked, a file dialog) would take a WM_QUIT for itself: it ends the
+ * dialog, or is consumed and never reaches this loop. WM_QUIT means the
+ * window was destroyed (upstream ends its loop with one then). GTK and
+ * Cocoa: upstream's webview_run / webview_terminate, whose loop does not
+ * tell a close from a stop (0 either way). */
+WEBVIEW_API int madcwebview_run(webview_t w);
+WEBVIEW_API int madcwebview_stop(webview_t w);
+
 /* The platform's clipboard, plain UTF-8 text (plan §41.11a step 3e): set
  * replaces what it holds; get reads it NOW and hands the text to cb before
  * it returns ("" = it holds no text). Line ends are the platform's: set
@@ -485,6 +500,15 @@ typedef void (*madcwebview_text_fn)(const char *text, void *arg);
 WEBVIEW_API int madcwebview_clipboard_set(webview_t w, const char *text);
 WEBVIEW_API int madcwebview_clipboard_get(webview_t w, madcwebview_text_fn cb,
 					  void *arg);
+
+/* Full screen (View ▸ Full screen): on = 1 enters it, 0 leaves it, -1
+ * toggles the window's CURRENT state — so a window the user took out of
+ * full screen by the platform's own means toggles from where it is. The
+ * menu bar stays. Nonzero = no window here. GTK4: gtk_window_fullscreen
+ * (the window manager covers the monitor); Cocoa: toggleFullScreen: (its
+ * own space, animated); Win32: the frame dropped and the monitor covered,
+ * the style and placement restored on leaving. UI thread only. */
+WEBVIEW_API int madcwebview_fullscreen(webview_t w, int on);
 
 #ifdef __cplusplus
 }

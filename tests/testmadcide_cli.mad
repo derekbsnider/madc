@@ -62,6 +62,17 @@ const char *face_needs(int argc, const char **argv)
     return f == NULL ? "-" : f;
 }
 
+// The flags open the window and nothing that speaks on the standard
+// streams (ide_face_is_window: no console to attach): 1, else 0.
+long face_window(int argc, const char **argv)
+{
+    ide_args a;
+    var why;
+    if ( !ide_args_parse(a, why, argc, argv) )
+	return -1;
+    return ide_face_is_window(a) ? 1 : 0;
+}
+
 int main()
 {
     const char *path = "madc_ide_cli.mad";
@@ -203,7 +214,16 @@ int main()
 	    face_needs(1, n1), face_needs(2, n2), face_needs(2, n3),
 	    face_needs(3, n4), face_needs(2, n5), face_needs(2, n6),
 	    face_needs(3, n7));
-    var usage = ide_usage();
+    const char *g1[3] = { "madcide", "--gui", "--help" };
+    const char *g2[4] = { "madcide", "--gui", "-c", "check" };
+    const char *g3[3] = { "madcide", "--gui", "--sessions" };
+    const char *g4[4] = { "madcide", "--gui", "--serve", "127.0.0.1:0" };
+    println("cli-window: tui={} gui={} line={} gui-help={} gui-once={} gui-sessions={} gui-serve={}",
+	    face_window(1, n1), face_window(2, n2), face_window(2, n3),
+	    face_window(3, g1), face_window(4, g2), face_window(3, g3),
+	    face_window(4, g4));
+    var usage;
+    ide_usage(usage);
     println("cli-usage: names-profile={} file-optional={}",
 	    usage.index("--profile NAME") >= 0 ? 1 : 0,
 	    usage.index("usage: madcide [<file>]") >= 0 ? 1 : 0);

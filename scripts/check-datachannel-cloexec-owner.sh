@@ -7,7 +7,7 @@ owner=$(grep -c '^bool set_fd_close_on_exec(' src/madc_posix_io.cpp)
 file_atomic=$(grep -c 'flags |= O_CLOEXEC' src/madc_datachannel.cpp)
 process_atomic=$(grep -c 'pipe2(fds, O_CLOEXEC)' src/madc_process.cpp)
 process_delegate=$(grep -c 'detail::set_fd_close_on_exec(fds\[i\])' src/madc_process.cpp)
-socket_atomic=$(grep -c 'socket_type | SOCK_CLOEXEC' src/madc_socket_channel.cpp)
+socket_atomic=$(grep -c '::socket(domain, socket_type | SOCK_CLOEXEC' src/madc_socket_channel.cpp)
 socket_delegate=$(grep -c 'detail::set_fd_close_on_exec(fd)' src/madc_socket_channel.cpp)
 echo "FD close-on-exec owner: $owner definition(s) (target 1)"
 echo "file/FIFO atomic O_CLOEXEC: $file_atomic (target 1)"
@@ -19,6 +19,23 @@ if [ "$owner" -ne 1 ] || [ "$file_atomic" -ne 1 ] \
 	echo "  -> creation sites must set close-on-exec ATOMICALLY where the"
 	echo "     platform provides it (O_CLOEXEC / pipe2 / SOCK_CLOEXEC) and"
 	echo "     keep the shared post-hoc owner as the portable fallback."
+	exit 1
+fi
+
+# A socket PAIR has the same rule and one owner (create_socket_pair): a raw
+# socketpair() elsewhere is born inheritable, so a later fork+exec (a
+# webview's helper processes) keeps an end alive past our close.
+pair_atomic=$(grep -c 'socket_type | SOCK_CLOEXEC, protocol, fds' src/madc_socket_channel.cpp)
+pair_raw=$(grep -rn --include='*.cpp' 'socketpair(' src/ \
+	| grep -v 'src/madc_socket_channel.cpp' || true)
+echo "socket pair atomic SOCK_CLOEXEC owner: $pair_atomic (target 1)"
+if [ "$pair_atomic" -ne 1 ]; then
+	echo "  -> create_socket_pair must set SOCK_CLOEXEC atomically."
+	exit 1
+fi
+if [ -n "$pair_raw" ]; then
+	echo "raw socketpair() outside create_socket_pair:"
+	printf '%s\n' "$pair_raw" | sed 's/^/  /'
 	exit 1
 fi
 

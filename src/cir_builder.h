@@ -337,6 +337,16 @@ class CirBuilder {
 	// module of the interactive session defines (plan §41.2a): the
 	// `extern` form, exactly as if the Variable carried vfEXTERN.
 	bool m_extern_decl = false;
+	// Shared tagless aggregates (Program::anonymous_aggregate_shared) whose
+	// definition under their synthetic tag a var_decl has already emitted:
+	// at file scope (the module's), and in the function body being
+	// translated (func_def saves and restores it — a body's tags die with
+	// it). A later declarator of the same aggregate names the tag.
+	std::set<DataDefSTRUCT *> m_anon_tags_file;
+	std::set<DataDefSTRUCT *> m_anon_tags_body;
+	bool m_in_func_body = false;
+	bool anon_tag_defined(DataDefSTRUCT *sdd) const
+		{ return m_anon_tags_file.count(sdd) || m_anon_tags_body.count(sdd); }
 	// Plan §41.2a: does an earlier entry of the interactive session define
 	// the symbol `sym`, in a module linked into the live context
 	// (Program::session_defined)? Such a definition is declared, never
@@ -628,6 +638,11 @@ class CirBuilder {
 	// (std::move(x), a T&/T&& method) — the pointer representation
 	// unwrapped; NULL when arg is not a ref-returning call.
 	DataDef *ref_returning_call_type(TokenBase *arg);
+	// A CALL's value type by its RESOLVED callee's return (a reference
+	// return's referent): the parse-bound Variable is an arbitrary member of
+	// a late-bound overload set. NULL when the token pins its own return
+	// (return_override) or no callee resolves.
+	DataDef *resolved_call_value_type(TokenCallFunc *tcf);
 	// The operand of an IDENTITY reference-cast call (std::move/forward,
 	// inline_builtin_kind "forward") — transparent for TYPE questions;
 	// NULL when fw is not such a call. See cir_builder.cpp.
@@ -797,9 +812,16 @@ class CirBuilder {
 	// resolution — class_ctor_call); returns the temp's lvalue.
 	node_t class_object_temp(TokenBase *arg, DataDefCLASS *target);
 
+	// What a reference argument's lowered value is: the referent's VALUE,
+	// its category read from the argument token (expr_is_nonaddressable_rvalue);
+	// already the referent's ADDRESS; or a value whose category the caller
+	// established — an LVALUE binds its address, a PRVALUE binds through a
+	// materialized temporary (a tsubst copy's re-resolved call argument).
 	enum class RefArgValueForm {
 		ReferentValue,
-		ReferentAddress
+		ReferentAddress,
+		ReferentLvalue,
+		ReferentPrvalue
 	};
 	// Address of an argument bound to a NON-class reference parameter
 	// (`const T&`, T scalar/pointer). An lvalue passes by address directly; a
@@ -815,7 +837,8 @@ class CirBuilder {
 		DataDef *value_type, DataDef *expected_referent,
 		bool allow_converted_temp, RefArgValueForm value_form,
 		std::vector<node_t> &prefix);
-	RefArgValueForm copied_ref_arg_value_form(TokenBase *arg, node_t value);
+	RefArgValueForm copied_ref_arg_value_form(TokenBase *arg, node_t value,
+				const std::map<DataDef *, DataDef *> *subst);
 	// THE result of a call to `callee`: a reference return lowers to the
 	// referent's ADDRESS (T& is a T* at this level), so the call expression
 	// is `*call` — the referent lvalue, read or written. Every call, method,
@@ -828,6 +851,12 @@ class CirBuilder {
 	// it only flags forms that `&expr` already rejects, so lvalue arguments keep
 	// the existing direct-address lowering untouched.
 	bool expr_is_nonaddressable_rvalue(TokenBase *arg);
+	// A PATTERN call bound to a member template's placeholder whose
+	// declared return is a reference (`... &` / `... &&`): every instance of
+	// that candidate is a glvalue, while the placeholder's fabricated return
+	// reads as a prvalue ([temp.dep.expr]: the call is type-dependent; the
+	// copy resolves the instance — copied_dependent_call_winner).
+	bool stand_in_call_returns_reference(TokenBase *arg);
 
 	// ---- madc array (`array`, a madc::value) object lowering ----
 	// Same opaque-object model as other runtime objects; array arguments are
@@ -928,16 +957,27 @@ private:
 	// The show's limits (plan §41.11a step 3d). An entry's show follows
 	// text (a `char *` shows its string) and walks every element. A binding
 	// row (`__madc_show_row`: %whos, madcide's Variables view) follows no
-	// pointer, text included, walks at most `elements` of an aggregate and
-	// then `…`, and calls no code the session wrote: a class with a method
-	// a session unit defined walks by its members, never its container
-	// protocol. Set for one show's lowering (lower_show_call).
+	// pointer but a character pointer, whose text it reads through the
+	// fault-safe copy (gdb's `0x… "Test"`, __madc_dump_sh_rowtext); walks at
+	// most `elements` of an aggregate and then `…`; spells no type, which
+	// the row's own column names (show_spells_type); and calls no code the
+	// session wrote: a class with a method a session unit defined walks by
+	// its members, never its container protocol. Set for one show's
+	// lowering (lower_show_call).
 	struct ShowLimits
 	{
 		bool row;
 		long elements;		// 0: every element
 	};
 	ShowLimits m_show_limits = { false, 0 };
+	// Whether a show spells the value's type before it, D10's re-enterable
+	// spelling (`(struct P){ … }`, `(int *) 0x…`, `(enum E) 7`): never in a
+	// binding row, whose own column names the type, and never for an
+	// aggregate NESTED in another (`nested`), which shows its braces alone.
+	// A runtime type word is then empty, which __madc_dump_sh_ptr /
+	// __madc_dump_sh_enum show as the value alone.
+	bool show_spells_type(bool nested) const
+	{ return !nested && !m_show_limits.row; }
 	std::map<DataDefCLASS *, bool> m_row_session_class;	// the rule's cache
 	bool row_class_has_session_method(DataDefCLASS *cls);
 	// The row form's element bound: `n` shown of `count` (count when no bound).
@@ -958,9 +998,17 @@ private:
 	// be handed to two parents — the walk rebuilds instead of sharing, the
 	// same discipline aggregate_member_init_stmts follows for `path`.
 	typedef std::function<node_t()> DumpAccess;
-	// dfShow's pointer: its type and address, never its pointee (§6.4).
+	// dfShow's pointer: its type (none in a binding row) and address, never
+	// its pointee (§6.4).
 	bool dump_show_pointer(const DumpAccess &acc, DataDef *dd,
 			       std::vector<node_t> &out, TokenBase *origin);
+	// A binding row's character pointer: __madc_dump_sh_rowtext (the
+	// address, then the text through the fault-safe copy).
+	bool dump_show_row_text(const DumpAccess &acc, std::vector<node_t> &out,
+				TokenBase *origin);
+	// dfShow's class with non-public members: its type and address.
+	bool dump_show_object(const DumpAccess &acc, class DataDefCLASS *cls,
+			      std::vector<node_t> &out, TokenBase *origin);
 	// The walk. Each returns false with `why` set when the type has no dumper
 	// yet — a refusal, never a guess. `depth` is a COMPILE-TIME nesting level:
 	// the walk is EXPANDED per level, so every column is a literal and no
@@ -1111,6 +1159,13 @@ private:
 	std::vector<node_t> m_pending_top_protos;
 	std::vector<node_t> m_pending_top_defs;
 	int m_dump_fn_counter = 0;
+	// A template argument substituted where the pattern holds a type-spec
+	// marker (copy_cir_subtree) whose C spelling needs declarator parts — a
+	// pointer, an array, a function type — is named by a module-level
+	// typedef, queued with the pending top-level declarations: per-module,
+	// like the dumper memo above.
+	std::map<DataDef *, std::string> m_tsubst_type_aliases;
+	std::string tsubst_type_alias(DataDef *dd);
 	// While a generated dumper's BODY is being built: the names of its column
 	// base local, its depth parameter and its nested parameter. All empty in
 	// the ordinary in-line walk, which is what keeps every column there a
@@ -1744,9 +1799,12 @@ public:
 	// The pointer piece of a declarator — N_POINTER per level, then the
 	// pointee's array dims — shared by var_decl and typedef_decl. level_cv
 	// (dd_peel_pointers' record) gives each level its own qualifiers.
+	// first_unbounded: the pointee's outermost bound was never written
+	// (`T (*p)[]`, peel_pointer_declarator's record) — emitted `[]`.
 	void append_pointer_declarator(node_t decl_list, int levels,
 				       const std::vector<carray_dim_t> &ptr_array_dims,
-				       const std::vector<unsigned> *level_cv = NULL);
+				       const std::vector<unsigned> *level_cv = NULL,
+				       bool first_unbounded = false);
 	void fnptr_decl_pieces(class FuncDef *fd, bool emit_pointer,
 			       node_t spec_list, node_t decl_list,
 			       const std::vector<carray_dim_t> &lead_dims);
@@ -2178,6 +2236,10 @@ public:
 	bool initializer_copies_class(TokenBase *init, DataDefCLASS *cdd);
 	bool braced_class_array_needs_construction(Variable *v,
 			       TokenDecl *tdecl, DataDefCLASS *cdd);
+	// The class half of that rule: an element of `cdd` is constructed, never
+	// C-initialized — a declared array's and an initializer list's backing
+	// array alike ([dcl.init.list]/5: `const E a[N] = { ... }`).
+	bool class_elements_need_construction(DataDefCLASS *cdd);
 	// THE owner of a class array's elements from a braced list
 	// ([dcl.init.aggr]/3-5, [dcl.init.list]): each element is copy-
 	// initialized from its initializer-clause (a braced element list-
@@ -2369,10 +2431,19 @@ public:
 	// question the declaration lanes ask before threading an initializer.
 	bool takes_whole_braced_list(DataDefCLASS *cdd,
 			       const std::vector<TokenBase *> &elems);
+	// [over.ics.list]/7-8: an element of class `cdd` can be list-initialized
+	// from the braced clause — through cdd's own initializer-list ctor, a
+	// ctor its clauses select (a member template instantiated, as the
+	// construction will), or as an aggregate. A user-defined conversion.
+	bool braced_clause_initializes(DataDefCLASS *cdd,
+				       class TokenStructLit *clause);
 	// The braced-list argument itself: `(IL){ (E[N]){e0,...}, N }`. The
 	// backing array is a compound literal, so it has automatic storage in
 	// the enclosing block — which outlives the initializer_list temporary,
-	// as [dcl.init.list]/6 requires.
+	// as [dcl.init.list]/6 requires. An element class that needs
+	// construction (class_elements_need_construction) gets a cleanup-tagged
+	// array temp in the enclosing block instead (m_pending_stmts), each slot
+	// copy-initialized by class_array_list_init, the declared array's owner.
 	node_t initializer_list_literal(DataDefCLASS *ilc, DataDef *elem,
 			       const std::vector<TokenBase *> &elems,
 			       TokenBase *origin);
@@ -2709,8 +2780,9 @@ public:
 	// A loop body's own temporaries must live INSIDE the body so they are
 	// re-constructed each iteration; wraps a non-compound body (reusing
 	// translate_branch_stmt) but stashes the loop's init/cond/incr pending temps
-	// first so only the body's temps are wrapped.
-	node_t translate_loop_body(TokenBase *tb);
+	// first so only the body's temps are wrapped. `loop` is the loop's own
+	// token (the session interrupt's poll is the loop's, D8).
+	node_t translate_loop_body(TokenBase *loop, TokenBase *tb);
 	// Class-instance declaration statement (`Foo f(a,b)`, `string s = "x"`,
 	// `iterator it = m.begin()`): storage decl + injected construction (the
 	// 1->N C++ decl lowering), appended to `items`. Shared by
@@ -2973,6 +3045,7 @@ public:
 	// BY-VALUE class formal of class `target` (copied_call_arg_for_formal).
 	node_t copied_class_value_arg(class TokenBase *arg, node_t value,
 				      DataDefCLASS *target, DataDef *arg_type,
+				      const std::map<DataDef *, DataDef *> *subst,
 				      std::vector<node_t> &prefix);
 	// Is `arg` a PRVALUE of class `target` — the parameter object itself
 	// ([class.temporary], guaranteed elision)?
@@ -2996,7 +3069,8 @@ public:
 	cir_node *tsubst_dependent_operator(cir_node *src,
 				const std::map<DataDef *, DataDef *> &subst);
 	DataDef *tsubst_dependent_operator_type(class TokenBase *tb,
-				const std::map<DataDef *, DataDef *> &subst);
+				const std::map<DataDef *, DataDef *> &subst,
+				ArgValueCategory *category = NULL);
 	// The instance parameter a copied N_ID names when that parameter holds
 	// its object's ADDRESS — a reference, or a by-value class passed by
 	// invisible reference — else NULL; and the address of the object a
@@ -3015,6 +3089,13 @@ public:
 		bool *changed_out = nullptr,
 		std::vector<DataDef *> *concrete_param_types = nullptr,
 		std::string *error_out = nullptr);
+	// The callee this copy re-resolves a pattern CALL argument to
+	// (resolve_copied_dependent_call's winner), or NULL when the pattern's
+	// own binding stands. The pattern token stays bound to its parse-time
+	// stand-in, so the instance's type and value category are the winner's.
+	class FuncDef *copied_dependent_call_winner(class TokenBase *arg,
+		const std::map<DataDef *, DataDef *> *subst,
+		std::string *error_out = nullptr);
 	bool system_header_pack_element_call_resolves(
 		class TokenPackExpansion *pe,
 		const std::map<DataDef *, DataDef *> &subst,
@@ -3025,6 +3106,12 @@ public:
 	void rename_copied_pack_value_id(cir_node *src, cir_node *dst);
 	void rewrite_copied_dependent_call_id(cir_node *src, cir_node *dst,
 					      const std::map<DataDef *, DataDef *> *subst);
+	// The instance of a dependent named-receiver call (`f(x)`, Fn f) whose
+	// receiver substitutes to a function pointer or function: a call through
+	// that value. NULL for any other receiver.
+	cir_node *tsubst_call_through_dependent_value(cir_node *src,
+		class TokenMember *tm,
+		const std::map<DataDef *, DataDef *> *subst);
 };
 
 // Peel ALL pointer levels off `dd` to its base type, returning the star count.

@@ -1,0 +1,12 @@
+library: ok=1 rows=0
+unbound-run: status=1
+sum 42
+run: status=7
+build: ok=1 rows=0
+exe: status=7
+relative: status=7
+missing-run: status=1
+missing-build: ok=0 rows>=1 1
+notarray-run: -1
+notarray-build: "libs" is not an array
+nottext-build: a "libs" entry must name a library

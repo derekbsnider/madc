@@ -781,7 +781,11 @@ void *_MIR_get_interp_shim (MIR_context_t ctx, MIR_item_t func_item, void *handl
   return res;
 }
 
-/* push rsi,rdi;rsi=called_func,rdi=ctx;r10=hook_address;jmp wrapper_end; */
+/* push rsi,rdi;rsi=called_func,rdi=ctx;r10=hook_address;jmp wrapper_end;
+   The wrapper and wrapper_end can sit in different code holders, and code
+   holders are not kept within rel32 reach of one another (mir.c,
+   MIR_CODE_RESERVE_SIZE): jump through r11 like a thunk's long form
+   (long_jmp_pattern), which already clobbers r11 on the way in. */
 void *_MIR_get_wrapper (MIR_context_t ctx, MIR_item_t called_func, void *hook_address) {
 #ifndef _WIN32
   static const uint8_t start_pat[] = {
@@ -790,9 +794,8 @@ void *_MIR_get_wrapper (MIR_context_t ctx, MIR_item_t called_func, void *hook_ad
     0x48, 0xbe, 0, 0, 0, 0, 0, 0, 0, 0, /* movabs called_func,%rsi  	   */
     0x48, 0xbf, 0, 0, 0, 0, 0, 0, 0, 0, /* movabs ctx,%rdi  	   */
     0x49, 0xba, 0, 0, 0, 0, 0, 0, 0, 0, /* movabs <hook_address>,%r10  	   */
-    0xe9, 0,    0, 0, 0,                /* 0x0: jmp rel32 */
   };
-  size_t call_func_offset = 4, ctx_offset = 14, hook_offset = 24, rel32_offset = 33;
+  size_t call_func_offset = 4, ctx_offset = 14, hook_offset = 24;
 #else
   static const uint8_t start_pat[] = {
     0x48, 0x89, 0x4c, 0x24, 0x08,                /* mov  %rcx,0x08(%rsp) */
@@ -800,12 +803,11 @@ void *_MIR_get_wrapper (MIR_context_t ctx, MIR_item_t called_func, void *hook_ad
     0x48, 0xba, 0,    0,    0,    0, 0, 0, 0, 0, /* movabs called_func,%rdx   */
     0x48, 0xb9, 0,    0,    0,    0, 0, 0, 0, 0, /* movabs ctx,%rcx           */
     0x49, 0xba, 0,    0,    0,    0, 0, 0, 0, 0, /* movabs <hook_address>,%r10*/
-    0xe9, 0,    0,    0,    0,                   /* 0x0: jmp rel32 */
   };
   /* Immediate offsets account for the two leading home-space spill
      instructions (10 bytes) — patching at the spill-less offsets corrupts
-     the wrapper from byte 2 and leaves the hook/rel32 slots unpatched. */
-  size_t call_func_offset = 12, ctx_offset = 22, hook_offset = 32, rel32_offset = 41;
+     the wrapper from byte 2 and leaves the hook slot unpatched. */
+  size_t call_func_offset = 12, ctx_offset = 22, hook_offset = 32;
 #endif
   uint8_t *addr;
   VARR (uint8_t) * code;
@@ -816,11 +818,10 @@ void *_MIR_get_wrapper (MIR_context_t ctx, MIR_item_t called_func, void *hook_ad
   memcpy (addr + call_func_offset, &called_func, sizeof (void *));
   memcpy (addr + ctx_offset, &ctx, sizeof (void *));
   memcpy (addr + hook_offset, &hook_address, sizeof (void *));
+  addr = push_insns (code, long_jmp_pattern, sizeof (long_jmp_pattern));
+  memcpy (addr + 2, &wrapper_end_addr, sizeof (void *));
   res = _MIR_publish_code (ctx, VARR_ADDR (uint8_t, code), VARR_LENGTH (uint8_t, code));
   VARR_DESTROY (uint8_t, code);
-  int64_t off = (uint8_t *) wrapper_end_addr - ((uint8_t *) res + rel32_offset + 4);
-  assert (INT32_MIN <= off && off <= INT32_MAX);
-  _MIR_change_code (ctx, (uint8_t *) res + rel32_offset, (uint8_t *) &off, 4); /* LE */
   return res;
 }
 

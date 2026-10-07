@@ -1,0 +1,9 @@
+module: true
+shown: true heading=Notes level=1 line=1
+link-row: target=madc_ide_mdpreview_other.md line=3
+item: • two line=6
+node: label=Markdown Preview — madc_ide_mdpreview.md row-code=true
+goto: row-line=9 caret-on-line=true
+live:     new code line
+link-open: madc_ide_mdpreview_other.md
+not-md: (the buffer is not Markdown)

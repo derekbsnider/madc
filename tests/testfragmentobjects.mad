@@ -1,0 +1,52 @@
+// Two units that each use the namespaces whose embedded fragments define
+// code — the web and ws UI hosts (ui::WEB, the level a program asks for;
+// ui_ws::), git:: and markdown:: — compiled to objects (`madc -c`) and
+// linked (`madc -o`). A fragment's namespace-scope variables are inline and
+// its function bodies have vague linkage, so each object's copy is one
+// entity and the link keeps one; a plain variable in a header is a second
+// definition in the second object, which the link refuses, as ld does.
+// madcide's base linked as an object beside a product's units (the static
+// form of libmadcide) is this shape. scripts/check-fragment-inline-vars.sh
+// holds the rule for every fragment.
+// Before the fix this link refused: "cannot merge object: duplicate symbol
+// '_ZN5ui_ws9__pendingE'"; chthonia's three objects (madcide's base, its
+// plugin, its main) refused '_ZN6ui_web11__last_hostE' the same way.
+// Oracle: g++ 13 and clang++ 18 over the C++ analogue (a header defining a
+// variable and a function in a namespace, included by two units): plain
+// definitions fail "multiple definition"; inline ones link, and the
+// variable is one object, printing "11 1 1" as madc's link does.
+int main()
+{
+	var dir = "tmp/testfragmentobjects";
+	php::mkdir(dir.c_str());
+	var a = format("{}/a.mad", dir);
+	php::file_put_contents(a.c_str(),
+		"long a_side(void)\n{\n\tlong l = ui::WEB;\n"
+		"\treturn l + (git::available() ? 1 : 0) + (markdown::available() ? 1 : 0)\n"
+		"\t\t+ (ui_ws::__pending == 0 ? 0 : 1);\n}\n");
+	var b = format("{}/b.mad", dir);
+	php::file_put_contents(b.c_str(),
+		"long a_side(void);\nint main()\n{\n\tlong l = ui::WEB;\n"
+		"\tlong b = l + (git::available() ? 1 : 0) + (markdown::available() ? 1 : 0)\n"
+		"\t\t+ (ui_ws::__pending == 0 ? 0 : 1);\n"
+		"\tprintln(\"same: {}\", a_side() == b ? 1 : 0);\n\treturn 0;\n}\n");
+	var ao = format("{}/a.o", dir);
+	var bo = format("{}/b.o", dir);
+	var prog = format("{}/prog", dir);
+	const char *madc = madc::compiler_path();
+	long rc = system(format("{} -c -o {} {}", madc, ao, a));
+	println("a.o: rc={}", rc);
+	rc = system(format("{} -c -o {} {}", madc, bo, b));
+	println("b.o: rc={}", rc);
+	rc = system(format("{} -o {} {} {}", madc, prog, ao, bo));
+	println("link: rc={}", rc);
+	rc = system(format("./{}", prog));
+	println("run: rc={}", rc);
+	php::unlink(prog.c_str());
+	php::unlink(bo.c_str());
+	php::unlink(ao.c_str());
+	php::unlink(b.c_str());
+	php::unlink(a.c_str());
+	php::rmdir(dir.c_str());
+	return 0;
+}

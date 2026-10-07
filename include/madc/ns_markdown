@@ -1,0 +1,24 @@
+// madc embedded <ns_markdown> — the markdown namespace: GitHub-flavoured
+// Markdown parsed into a value tree through the madcmark MODULE (cmark-gfm,
+// statically linked into the module; plan
+// docs/plans/2026-10-03-chthonia-windows-macos.md §7d). Pulled in by any
+// mention of markdown:: (auto-include). The module row is LAZY: this
+// fragment compiles and runs on a system without the module; a program asks
+// markdown::available() before parsing. The wrapper is the dialect's
+// carrier-return convention (the out-parameter, returned).
+//   markdown::parse(out, text): the document node — every node {kind (a
+//     markdown::node_kind code), line, col, end_line, end_col (1-based source
+//     positions; 0 where none, a soft break's), text (a literal's decoded
+//     text), children}, and by kind: heading level; list list (a
+//     markdown::list_kind code), start, tight; item task, checked;
+//     code_block info, fenced; link and image url, title; table align (a
+//     markdown::column_align code per column); table_row header.
+// THREAD CONTRACT: parse is a pure function of its text.
+#include <bits/markdown_enums>	// markdown::node_kind / list_kind / column_align: the tree's codes
+import madcmark;
+
+namespace markdown {
+    bool available() { return madc::module_available("madcmark"); }
+    value &parse(value &out, const char *text)
+	{ madcmark_parse(&out, text); return out; }
+}

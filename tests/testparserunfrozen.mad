@@ -1,12 +1,15 @@
 // madc::parse_run runs the LIVE handle's tree in a child on EVERY
 // platform — one contract, two arms: POSIX forks at post-parse (the
 // child inherits the tree by COW); Windows freezes the handle's forest
-// arena to a temp container and runs it in a fresh madc --run-frozen
-// child (design (b), owner ruling 2026-08-28 — LOADED == parsed, the
-// MIR cache rides). Gates BOTH arms: the guest's stdout is inherited
-// and its exit status comes back. The artifact half of this surface
-// (parse_build + run-the-exe) stays in testparserun, which is
-// POSIX-domain; THIS test runs on every domain.
+// arena to a temp container and runs it in a child OF SELF (design (b),
+// owner ruling 2026-08-28 — LOADED == parsed, the MIR cache rides). Gates
+// BOTH arms: the guest's stdout is inherited and its exit status comes
+// back. Self is the madc CLI under the JIT and THIS program under --exe:
+// a native program serves the run its parent named (MADC_RUN_CHILD,
+// <ns_madc>'s initializer) — before that, the win64 executable spawned
+// itself without end. The artifact half of this surface (parse_build +
+// run-the-exe) stays in testparserun, which is POSIX-domain; THIS test
+// runs on every domain.
 
 int main()
 {

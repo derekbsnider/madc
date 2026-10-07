@@ -1,0 +1,35 @@
+/* va_arg's second operand is a type name (C11 7.16.1.1), abstract declarator
+   included: `va_arg(ap, int (*)(void))`, `va_arg(ap, char (*)[4])`. madc read
+   only a type followed by `*`s there and refused the rest ("Expecting ')'
+   after va_arg type").
+   Oracle: gcc 13.3 and clang 18.1 (-std=c11) print the .expect line. */
+#include <stdarg.h>
+#include <stdio.h>
+
+typedef int (*binop)(int, int);
+struct P { int x, y; };
+
+static int seven(void) { return 7; }
+static int add(int a, int b) { return a + b; }
+
+static void show(int n, ...)
+{
+	va_list ap;
+	va_start(ap, n);
+	int (*f)(void) = va_arg(ap, int (*)(void));
+	char (*row)[4] = va_arg(ap, char (*)[4]);
+	binop op = va_arg(ap, binop);
+	const char *s = va_arg(ap, const char *);
+	struct P p = va_arg(ap, struct P);
+	va_end(ap);
+	printf("vaarg: %d %d %c %d %s %d %d\n", n, f(), row[1][2], op(2, 3), s,
+	       p.x, p.y);
+}
+
+int main(void)
+{
+	char grid[2][4] = { "abc", "xyz" };
+	struct P p = { 4, 9 };
+	show(5, seven, grid, add, "str", p);
+	return 0;
+}

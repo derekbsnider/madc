@@ -149,6 +149,39 @@ inline bool ui_side_from_name(const std::string &s, ui_side &sd)
     return false;
 }
 
+// A command's ICON (ui::icon) and its name at the boundaries (a menu row's
+// `{ICON}` word, the page's toolbar op) — ONE spelling owner, both
+// directions: the name of every icon is read off this switch.
+typedef ::ui::icon ui_icon;
+inline const char *ui_icon_name(ui_icon ic)
+{
+    switch ( ic )
+    {
+	case ui_icon::file_new:    return "new";
+	case ui_icon::open:        return "open";
+	case ui_icon::save:        return "save";
+	case ui_icon::run:         return "run";
+	case ui_icon::debug:       return "debug";
+	case ui_icon::stop:        return "stop";
+	case ui_icon::step_over:   return "step-over";
+	case ui_icon::step_into:   return "step-into";
+	case ui_icon::step_out:    return "step-out";
+	case ui_icon::breakpoints: return "breakpoints";
+	case ui_icon::none: break;
+    }
+    return "";
+}
+inline bool ui_icon_from_name(const std::string &s, ui_icon &ic)
+{
+    for ( int i = (int)ui_icon::file_new; i <= (int)ui_icon::breakpoints; ++i )
+	if ( s == ui_icon_name((ui_icon)i) )
+	{
+	    ic = (ui_icon)i;
+	    return true;
+	}
+    return false;
+}
+
 struct tui_event
 {
     tui_event_kind kind;

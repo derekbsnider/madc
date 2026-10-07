@@ -1,0 +1,1 @@
+/proc/self/fd and exec:///bin/ls are POSIX/Linux; the Windows session wire is a loopback socket made by create_socket

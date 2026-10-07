@@ -100,7 +100,7 @@ TEST_CASE("modified keys — spelling round-trips; primary is the platform's")
 {
     const char *names[] = {
 	"ctrl+shift+s", "ctrl+f2", "shift+right", "alt+f4", "ctrl+space",
-	"ctrl+plus", "ctrl+-", "ctrl+3", "cmd+s", "shift+tab",
+	"ctrl+plus", "ctrl+-", "ctrl+=", "ctrl+3", "cmd+s", "shift+tab",
 	"ctrl+alt+del", "ctrl+shift+w", "shift+f5", "ctrl+f8",
     };
     for ( size_t i = 0; i < sizeof(names) / sizeof(names[0]); ++i )

@@ -1,11 +1,38 @@
 #include "madc_project.h"
+#include "madc_posix_io.h"	// host_path_dirname / host_path_absolute: a "libs" entry, a TU path
 #include "json.hpp"
+#include <algorithm>
 #include <fstream>
 #include <cctype>
 
 using nlohmann::json;
 
+// Supplied by the build as -DMADC_VERSION_STR='"x.y.z"' from ../VERSION; the
+// Makefile makes every file that names it depend on ../VERSION.
+#ifndef MADC_VERSION_STR
+#define MADC_VERSION_STR "0.0.0"
+#endif
+
 namespace {
+// A release version, VERSION's form: "major.minor.patch", three decimal
+// fields and nothing else. False = not one.
+bool release_version(const std::string &s, unsigned long v[3]) {
+	size_t i = 0;
+	for (int f = 0; f < 3; ++f) {
+		if (f > 0) {
+			if (i >= s.size() || s[i] != '.') return false;
+			++i;
+		}
+		size_t start = i;
+		unsigned long n = 0;
+		while (i < s.size() && std::isdigit((unsigned char)s[i]))
+			n = n * 10 + (unsigned long)(s[i++] - '0');
+		if (i == start || i - start > 9) return false;
+		v[f] = n;
+	}
+	return i == s.size();
+}
+
 // Shell-split a `command` string into argv-like tokens. Honors simple
 // single/double quotes (compile_commands.json rarely needs more).
 void shell_split(const std::string &cmd, std::vector<std::string> &out) {
@@ -30,7 +57,7 @@ void shell_split(const std::string &cmd, std::vector<std::string> &out) {
 // spelling, not a "./"-prefixed twin of it (buffer paths compare by
 // spelling; "./x" and "x" would open twice).
 std::string resolve(const std::string &base, const std::string &p) {
-	if (p.empty() || p[0] == '/') return p;
+	if (p.empty() || madc::detail::host_path_absolute(p)) return p;
 	if (base.empty() || base == ".") return p;
 	std::string b = base;
 	if (b.back() != '/') b += '/';
@@ -159,6 +186,50 @@ bool read_native_object(const json &root, const std::string &manifest_dir,
 		    || !project_kind_from_name(root["kind"].get<std::string>(),
 					       out.kind)) {
 			err = "\"kind\" must be \"console\" or \"gui\"";
+			return false;
+		}
+	}
+	if (root.contains("icon")) {
+		if (!root["icon"].is_string()
+		    || root["icon"].get<std::string>().empty()) {
+			err = "\"icon\" must name an icon file";
+			return false;
+		}
+		out.icon = resolve(manifest_dir, root["icon"].get<std::string>());
+	}
+	// "libs": the libraries the program links, named as -l names them; a
+	// path is the manifest's, as a TU's file is.
+	if (root.contains("libs")) {
+		if (!root["libs"].is_array()) {
+			err = "\"libs\" is not an array";
+			return false;
+		}
+		for (const auto &l : root["libs"]) {
+			if (!l.is_string() || l.get<std::string>().empty()) {
+				err = "a \"libs\" entry must name a library";
+				return false;
+			}
+			std::string lib = l.get<std::string>();
+			if (!madc::detail::host_path_dirname(lib).empty())
+				lib = resolve(manifest_dir, lib);
+			out.libs.push_back(lib);
+		}
+	}
+	// "madc": the oldest release that builds the project. An older madc
+	// refuses here, naming both versions, instead of failing later on a
+	// key or a library it does not know.
+	if (root.contains("madc")) {
+		unsigned long want[3], have[3];
+		if (!root["madc"].is_string()
+		    || !release_version(root["madc"].get<std::string>(), want)) {
+			err = "\"madc\" must be a release version (major.minor.patch)";
+			return false;
+		}
+		out.madc_min = root["madc"].get<std::string>();
+		if (!release_version(MADC_VERSION_STR, have)
+		    || std::lexicographical_compare(have, have + 3, want, want + 3)) {
+			err = "this project needs madc " + out.madc_min
+			    + " or newer (this is madc " MADC_VERSION_STR ")";
 			return false;
 		}
 	}

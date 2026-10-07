@@ -1,0 +1,5 @@
+newer: status=-1
+same: status=0
+older: status=0
+malformed: status=-1
+prog: ran

@@ -82,7 +82,7 @@ implements it inside `libmadcwebview` on all three platforms;
 
 | Platform | Menu bar | File dialogs | Extra build inputs |
 |---|---|---|---|
-| GTK4 | `GtkPopoverMenuBar` over a `GMenu`; the webview re-parented under it | `GtkFileDialog` (GTK 4.10+) | — |
+| GTK4 | `GtkPopoverMenuBar` over a `GMenu`; the webview re-parented under it | `GtkFileDialog` (GTK 4.10+; `GtkFileChooserNative` before) | — |
 | Cocoa | the application's main menu (`NSMenu` on `NSApp`); the first submenu is the application menu, its Quit the window's `performClose:` | `NSOpenPanel` / `NSSavePanel` as a sheet on the window | `-fblocks` (the completion handler is a block; the code stays C++ over the ObjC runtime like the library) |
 | Win32 | an `HMENU` bar (`SetMenu`); `WM_COMMAND` through a comctl32 subclass of the library's window procedure | `IFileOpenDialog` / `IFileSaveDialog` (COM), run from a message the subclass posts to itself | `-lcomctl32 -luuid` |
 

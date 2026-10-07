@@ -1,0 +1,58 @@
+// The session interrupt (D8, plan docs/plans/madc-repl-thonny-plan-2026-09-24.md
+// §41.12a) sent while the backend still COMPILES the entry: std::map's
+// members instantiate, so the compile takes a while. The interrupt waits for
+// the entry's first poll — the entry's loop returns `interrupted`, and the
+// session keeps what earlier entries made. Split from testsession_interrupt
+// (whose other cases need no C++ library) so that libc++, where
+// std::map<long, long>::operator[] does not compile yet (BUGS.md B192),
+// skips this case alone.
+// Precedent (plan D8): Julia's and IPython's Ctrl-C returns to the prompt
+// with the session's names kept.
+
+// Poll until a reply of `kind` (or the backend's end) arrives.
+long wait_for(var &r, long h, madc::session_reply kind)
+{
+    for ( long waited = 0; waited < 20000; waited = waited + 10 )
+    {
+	if ( madc::session_poll(r, h) != 0 )
+	{
+	    if ( r["kind"] == kind || r["kind"] == madc::session_reply::stopped )
+		return 1;
+	    continue;
+	}
+	madc::sleep_ms(10);
+    }
+    return 0;
+}
+
+// An entry's shown value.
+void show(long h, const char *text)
+{
+    var r;
+    madc::session_offer(h, text, true);
+    wait_for(r, h, madc::session_reply::offer);
+    println("{} -> ok={} shown={}", text, r["ok"], r["shown"]);
+}
+
+int main()
+{
+    var r;
+    long hx = madc::session_open("c++17");
+    madc::session_offer(hx, "long m = 1;", true);
+    wait_for(r, hx, madc::session_reply::offer);
+    madc::session_offer(hx, "#include <map>", true);
+    wait_for(r, hx, madc::session_reply::offer);
+    // Interrupted at once: the running notice comes before the compile, so
+    // the interrupt reaches the backend while it still compiles the entry.
+    madc::session_offer(hx, "{ std::map<long, long> mm; for (long i = 0; ; i++) mm[i % 7] = i; }", true);
+    wait_for(r, hx, madc::session_reply::running);
+    bool sent = madc::session_interrupt(hx);
+    wait_for(r, hx, madc::session_reply::offer);
+    var said = r["rendered"];
+    println("while compiling: sent={} kind-offer={} ok={} interrupted={}", sent,
+	    r["kind"] == madc::session_reply::offer, r["ok"],
+	    said.index("interrupted") >= 0);
+    show(hx, "m > 0");
+    println("close c++: {}", madc::session_close(hx));
+    return 0;
+}

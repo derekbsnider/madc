@@ -1,0 +1,36 @@
+// __FILE_NAME__ (gcc 12+, clang): a string literal of the current file's
+// last path component. __FILE__, __FILE_NAME__ and __LINE__ are DEFINED
+// for #ifdef / defined() as well (gcc and clang both answer 1). madc had no
+// __FILE_NAME__ and answered 0 for all three. The macOS prelude's assert()
+// expands to __FILE_NAME__ (Apple's <assert.h> tests #ifdef __FILE_NAME__,
+// and clang resolved it when the prelude was flattened), so every assert()
+// in a C program failed on macOS: "use of undeclared identifier
+// '__FILE_NAME__'".
+//
+// Oracles: gcc 13 and clang 18 (-std=c17, Linux), the lines below verbatim.
+// madc before the fix: "use of undeclared identifier '__FILE_NAME__'".
+#include <stdio.h>
+#include <string.h>
+
+int main(void)
+{
+	const char *file = __FILE__;
+	const char *name = __FILE_NAME__;
+	size_t fl = strlen(file), nl = strlen(name);
+	printf("name: %s\n", name);
+	printf("suffix of __FILE__: %d\n",
+	       nl <= fl && strcmp(file + fl - nl, name) == 0);
+#ifdef __FILE_NAME__
+	printf("ifdef __FILE_NAME__: 1\n");
+#else
+	printf("ifdef __FILE_NAME__: 0\n");
+#endif
+#if defined(__FILE__) && defined(__LINE__)
+	printf("defined __FILE__ __LINE__: 1\n");
+#else
+	printf("defined __FILE__ __LINE__: 0\n");
+#endif
+#line 100 "dir/renamed.c"
+	printf("after #line: %s %s %d\n", __FILE__, __FILE_NAME__, __LINE__);
+	return 0;
+}

@@ -660,7 +660,7 @@ bool CirBuilder::dump_scalar(DumpFlavor fl, const DumpAccess &acc, DataDef *dd,
 	// A floating value keeps its own type, since its digits and its suffix are
 	// the type's (print_r narrows a long double to double).
 	if (fl == dfShow) {
-		const bool cxx = m_prog && m_prog->is_cpp_mode();
+		const bool cxx = m_prog && m_prog->presents_as_cpp();
 		const char *sym = NULL;
 		std::vector<ExternParam> params;
 		node_t a = list();
@@ -788,16 +788,18 @@ bool CirBuilder::dump_struct(DumpFlavor fl, const DumpAccess &acc,
 
 	// D10's show (plan §41.4a): C99 designated initializers on one line. At top
 	// level the value carries its type as a compound literal, `(struct P){ .x =
-	// 1 }` in C and `P{ .x = 1 }` in C++; nested in an aggregate it is the
-	// braces alone. A union shows its first member, the one its initializer
-	// sets. A member with no show yet shows its type in angle brackets, in
-	// place, so one member does not hide the rest.
+	// 1 }` in C and `P{ .x = 1 }` in C++ and the madc dialect (presents_as_cpp);
+	// nested in an aggregate it is the braces alone. A union shows its first
+	// member, the one its initializer sets. A member with no show yet shows
+	// its type in angle brackets, in place, so one member does not hide the
+	// rest.
 	const bool show = fl == dfShow;
 	size_t nshow = shown.size();
 	if (show) {
-		const bool cxx = m_prog && m_prog->is_cpp_mode();
+		const bool cxx = m_prog && m_prog->presents_as_cpp();
 		std::string word = dump_show_type_word(sdd);
-		out.push_back(dump_show_text(nested ? std::string("{ ")
+		out.push_back(dump_show_text(!show_spells_type(nested)
+					     ? std::string("{ ")
 					     : cxx ? word + "{ "
 						   : "(" + word + "){ ", origin));
 		if (sdd->union_layout && nshow > 1)
@@ -929,7 +931,7 @@ bool CirBuilder::dump_array(DumpFlavor fl, const DumpAccess &acc, DataDef *elem,
 	}
 	if (show) {
 		std::string open = "{ ";
-		if (!nested && !(m_prog && m_prog->is_cpp_mode())) {
+		if (show_spells_type(nested) && !(m_prog && m_prog->presents_as_cpp())) {
 			std::string word = dump_show_type_word(elem);
 			for (size_t d = dim_ix; d < dims.size(); d++)
 				word += "[" + std::to_string((unsigned long long)dims[d])
@@ -1152,7 +1154,8 @@ bool CirBuilder::dump_sequence(DumpFlavor fl, const DumpAccess &acc,
 			body.push_back(dump_call_stmt("__madc_dump_sh_textchar", ca,
 						      origin));
 		} else {
-			out.push_back(dump_show_text(nested ? std::string("{ ")
+			out.push_back(dump_show_text(!show_spells_type(nested)
+						     ? std::string("{ ")
 						     : dump_container_type_word(cls)
 						       + "{ ", origin));
 			need_dump_extern("__madc_dump_sh_sep",
@@ -1393,7 +1396,8 @@ bool CirBuilder::dump_iterator(DumpFlavor fl, const DumpAccess &acc,
 	std::vector<node_t> body;
 	const bool show = fl == dfShow;
 	if (show) {
-		out.push_back(dump_show_text(nested ? std::string("{ ")
+		out.push_back(dump_show_text(!show_spells_type(nested)
+					     ? std::string("{ ")
 					     : dump_container_type_word(cls) + "{ ",
 					     origin));
 		need_dump_extern("__madc_dump_sh_sep",
@@ -1681,12 +1685,13 @@ bool CirBuilder::dump_enum(DumpFlavor fl, const DumpAccess &acc,
 	// unscoped one accepts it (C++11). An anonymous enum has no tag to write.
 	// A value that names none shows as a cast of the number.
 	if (fl == dfShow) {
-		const bool cxx = m_prog && m_prog->is_cpp_mode();
+		const bool cxx = m_prog && m_prog->presents_as_cpp();
 		const bool named = !edd->enum_name.empty()
 				   && edd->enum_name.compare(0, 2, "__") != 0;
 		std::string scope = (cxx && named) ? tag + "::" : std::string();
-		std::string ty = named ? dump_show_type_word(edd)
-				       : dump_show_type_word(under);
+		std::string ty = !show_spells_type(false) ? std::string()
+				 : named ? dump_show_type_word(edd)
+					 : dump_show_type_word(under);
 		need_dump_extern("__madc_dump_sh_enum",
 				 { { {N_CHAR}, true }, { {N_CHAR}, true },
 				   { {N_CHAR}, true }, { {N_LONG, N_LONG}, false } });
@@ -1856,15 +1861,56 @@ node_t CirBuilder::show_bounded_tail(node_t n, TokenBase *origin)
 		     node2(N_BLOCK, list(), items, origin), ignore(), origin);
 }
 
+// A class whose data members are not all public, its bases' included: those
+// members are its implementation, not its value.
+static bool class_has_nonpublic_members(DataDefCLASS *cls, int depth = 0)
+{
+	if (!cls || depth > 32)
+		return false;
+	for (size_t i = 0; i < cls->members.size(); i++)
+		if (i < cls->member_access.size()
+		    && (cls->member_access[i] & (vfPRIVATE | vfPROTECTED)))
+			return true;
+	for (const BaseSpec &b : cls->bases)
+		if (class_has_nonpublic_members(b.base, depth + 1))
+			return true;
+	if (cls->bases.empty() && cls->base_class)
+		return class_has_nonpublic_members(cls->base_class, depth + 1);
+	return false;
+}
+
+// The show of such a class (a stream: its buffer, flags and locale) names the
+// object by its type and address, as cling's value printer does —
+// `(std::ostream &) 0x…` — instead of walking its implementation. Its members
+// are not re-enterable syntax (D10) either: only a constructor makes one.
+bool CirBuilder::dump_show_object(const DumpAccess &acc, DataDefCLASS *cls,
+				  std::vector<node_t> &out, TokenBase *origin)
+{
+	const bool cxx = m_prog && m_prog->presents_as_cpp();
+	std::string word = show_spells_type(false) ? dump_class_type_word(cls) + " &"
+						   : std::string();
+	need_dump_extern("__madc_dump_sh_ptr",
+			 { { {N_CHAR}, true }, { {N_VOID}, true },
+			   { {N_INT}, false } });
+	node_t a = list();
+	append(a, str(word.c_str(), word.size() + 1, origin));
+	append(a, node2(N_CAST, void_ptr_type(), node1(N_ADDR, acc(), origin),
+			origin));
+	append(a, integer(cxx ? 1 : 0, origin));
+	out.push_back(dump_call_stmt("__madc_dump_sh_ptr", a, origin));
+	return true;
+}
+
 bool CirBuilder::dump_show_pointer(const DumpAccess &acc, DataDef *dd,
 				   std::vector<node_t> &out, TokenBase *origin)
 {
-	const bool cxx = m_prog && m_prog->is_cpp_mode();
+	const bool cxx = m_prog && m_prog->presents_as_cpp();
 	// A function DESIGNATOR (as_funcdef_dd; bare is_function() is also true
 	// of a function pointer) decays to its pointer.
 	DataDef *pdd = (dd->as_funcdef_dd() && m_prog) ? m_prog->getPointerType(dd)
 							: dd;
-	std::string word = dump_show_type_word(pdd);
+	std::string word = show_spells_type(false) ? dump_show_type_word(pdd)
+						   : std::string();
 	need_dump_extern("__madc_dump_sh_ptr",
 			 { { {N_CHAR}, true }, { {N_VOID}, true },
 			   { {N_INT}, false } });
@@ -1873,6 +1919,19 @@ bool CirBuilder::dump_show_pointer(const DumpAccess &acc, DataDef *dd,
 	append(a, node2(N_CAST, void_ptr_type(), acc(), origin));
 	append(a, integer(cxx ? 1 : 0, origin));
 	out.push_back(dump_call_stmt("__madc_dump_sh_ptr", a, origin));
+	return true;
+}
+
+bool CirBuilder::dump_show_row_text(const DumpAccess &acc,
+				    std::vector<node_t> &out, TokenBase *origin)
+{
+	const bool cxx = m_prog && m_prog->presents_as_cpp();
+	need_dump_extern("__madc_dump_sh_rowtext",
+			 { { {N_VOID}, true }, { {N_INT}, false } });
+	node_t a = list();
+	append(a, node2(N_CAST, void_ptr_type(), acc(), origin));
+	append(a, integer(cxx ? 1 : 0, origin));
+	out.push_back(dump_call_stmt("__madc_dump_sh_rowtext", a, origin));
 	return true;
 }
 
@@ -2390,13 +2449,17 @@ bool CirBuilder::dump_any(DumpFlavor fl, const DumpAccess &acc, DataDef *dd,
 					    + dump_class_type_word(ccls) + "' yet";
 					return false;
 				}
+				if (class_has_nonpublic_members(ccls))
+					return dump_show_object(acc, ccls, out, origin);
 			}
 			return dump_struct(fl, acc, sdd, depth, nested, out, origin,
 					   why);
 		}
-		// A row follows no pointer, text included.
-		if (dd->is_function()
-		    || (dd->is_pointer() && (!dd->is_cstr() || m_show_limits.row)))
+		// A row follows no pointer but a character pointer, whose text it
+		// reads through the fault-safe copy.
+		if (m_show_limits.row && dd->is_cstr())
+			return dump_show_row_text(acc, out, origin);
+		if (dd->is_function() || (dd->is_pointer() && !dd->is_cstr()))
 			return dump_show_pointer(acc, dd, out, origin);
 		return dump_scalar(fl, acc, dd, depth, out, origin, why);
 	}

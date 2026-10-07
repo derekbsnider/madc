@@ -29,9 +29,13 @@ class Madc < Formula
   depends_on "autoconf" => :build
   depends_on "automake" => :build
   # pkg-config finds libgit2 for the madcgit module (the IDE's git layer, as
-  # the packages ship it); the GUI's webview module needs webkitgtk, which
-  # Homebrew does not carry, so it is left out.
+  # the packages ship it), built only when that libgit2 meets the module's
+  # floor (1.8.7 / 1.9.7 or newer, src/modules/madcgit/libgit2_floor.h), and
+  # cmark-gfm for the madcmark module (Markdown: the IDE's help and previews).
+  # The GUI's webview module needs webkitgtk, which Homebrew does not carry,
+  # so it is left out.
   depends_on "pkgconf" => :build
+  depends_on "cmark-gfm"
   depends_on "libgit2"
   depends_on "zstd"
   uses_from_macos "zlib"
@@ -47,6 +51,7 @@ class Madc < Formula
     system "make", "-C", "src", "-j#{ENV.make_jobs}", "release", runpath
     mkdir_p "tmp"
     system "bin/madc-release", "-o", "tmp/madcide-pkg", "tools/madcide/madcide.mad"
+    system "bin/madc-release", "-shared", "-o", "lib/libmadcide.so", "tools/madcide/madcide_base.mad"
     system "scripts/build_shipped_plugins.sh", "tmp/plugins-pkg", "tmp/madcide-pkg"
     system "scripts/stage_install.sh", prefix, "lib", ""
   end

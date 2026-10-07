@@ -1,0 +1,43 @@
+// Pointer arithmetic on an array whose element is a class with a
+// constructor: `a + n` decays to element* ([conv.array], [expr.add]), so
+// a by-value template parameter deduces the pointer, `auto` holds the
+// pointer, and a member-template copy over [a, a + n) instantiates.
+// madc typed `a + n` as int there (the array read as a class object).
+// Oracle: g++ 13 and clang++ 18 print the .expect lines.
+#include <stdio.h>
+#include <new>
+#include <utility>
+struct P { int v; P(int x) : v(x) { } P(const P &o) : v(o.v + 10) { } };
+struct D { int v; D() : v(1) { } };
+struct Q { int v; };
+template<typename T> int kind(T) { return sizeof(T); }
+template<typename T> inline T *addr(T &r) noexcept { return __builtin_addressof(r); }
+template<typename T, typename... Args>
+inline void construct(T *p, Args &&... args)
+{ ::new (static_cast<void *>(p)) T(std::forward<Args>(args)...); }
+template<bool B>
+struct uc
+{
+	template<typename I, typename F>
+	static F copy(I first, I last, F result)
+	{
+		F cur = result;
+		for (; first != last; ++first, (void)++cur)
+			construct(addr(*cur), *first);
+		return cur;
+	}
+};
+int main()
+{
+	P ps[2] = { P(3), P(4) };
+	D ds[2];
+	Q qs[2] = { { 5 }, { 6 } };
+	printf("plus: %d %d %d %d\n", kind(ps + 1), kind(1 + ds), kind(ds - 0), kind(qs + 1));
+	auto x = ds + 1;
+	printf("auto: %d %d\n", (int)sizeof(x), x->v);
+	alignas(P) unsigned char raw[2 * sizeof(P)];
+	P *t = reinterpret_cast<P *>(raw);
+	P *f = uc<false>::copy(ps, ps + 2, t);
+	printf("copy: %d %d %d\n", t[0].v, t[1].v, (int)(f - t));
+	return 0;
+}

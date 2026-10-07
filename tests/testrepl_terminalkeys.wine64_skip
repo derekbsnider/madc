@@ -1,0 +1,1 @@
+the REPL runs on a pseudo-terminal (pty://), which Windows lacks (ConPTY is the named residue), and Ctrl-\ is a POSIX terminal's SIGQUIT

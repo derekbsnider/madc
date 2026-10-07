@@ -1,0 +1,10 @@
+hosts: 1 1
+terminal menu: 0
+terminal: msg=[A terminal keeps its own window.] request=none
+window menu: 1
+parked: msg=[] request=fullscreen
+host fullscreen: -1 -> full
+served: msg=[] request=none
+host fullscreen: -1 -> windowed
+host fullscreen: -1 -> full
+page: msg=[This window cannot go full screen.] request=none

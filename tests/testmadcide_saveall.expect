@@ -1,0 +1,7 @@
+before: a=1 b=1 untitled=1 active-untitled=1
+saveall: msg=[Saved 2 files. 1 untitled (Save As names it).]
+disk-a: [Aalpha|]
+disk-b: [Bbeta|]
+after: a=0 b=0 untitled=1 active=untitled
+again: msg=[1 untitled (Save As names it).]
+clean: msg=[Nothing to save.]

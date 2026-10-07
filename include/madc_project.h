@@ -26,6 +26,23 @@ struct ProjectManifest {
 	std::string entry = "main";	// entry symbol
 	std::string output_name;	// informational in v1 (no object output)
 	ProjectKind kind = ProjectKind::console;
+	// "icon": the program's Windows icon file (.ico), resolved against the
+	// manifest's directory; "" = none. A PE image carries it as its icon
+	// resources (Explorer, the window); ELF and Mach-O images carry no
+	// icon, but the file is read and checked on every target.
+	std::string icon;
+	// "libs": the libraries the program links, as `-l` names them on the
+	// command line — a name (`madcide`: madc_module_library_spelling makes
+	// it libmadcide.so / libmadcide.dylib / madcide.dll) or a path, resolved
+	// against the manifest's directory. Each binds through the binder
+	// `import` uses (Program::bind_module_namespace, link form): a run opens
+	// it (madc's own lib directory first), a native build records it as
+	// needed.
+	std::vector<std::string> libs;
+	// "madc": the oldest madc release that builds the project
+	// ("major.minor.patch", VERSION's form); "" = any. The reader refuses
+	// the manifest when the running madc is older, naming both versions.
+	std::string madc_min;
 };
 
 // The manifest spelling of a kind and back (the one table): "console" /
@@ -53,8 +70,9 @@ class Program;
 bool apply_project_tu_options(Program &prog, const ProjectTU &tu,
 			      std::string &err);
 
-// Engine: build+link+JIT-run the manifest. Returns the program's exit code,
-// or -1 on a build/link error. Defined in madc_cir.cpp.
+// Engine: build+link+JIT-run the manifest. Returns the run's exit status:
+// main()'s return value, or 1 on a build/link error (madc_cir_execute's
+// contract). Defined in madc_cir.cpp.
 // forest_bind: each TU binds grove-backed system #includes from the frozen
 // container (forest_bind_path, or the blob appended to this executable when
 // empty) — the compile-mode default, with silent live fall-through when no

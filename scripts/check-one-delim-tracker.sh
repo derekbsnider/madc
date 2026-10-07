@@ -48,7 +48,9 @@ fi
 # one statement (four counters it had never seen; round 9).
 # 19 on 2026-10-02: parseFunction's trailing-return capture (three counters,
 # no angle axis) now runs on DelimDepth (B132).
-BASELINE=19
+# 18 on 2026-10-06: the C braced scalar initializer (06d7523ec) reads its
+# braces through DelimDepth.
+BASELINE=18
 
 # A hand-rolled tracker always declares at least one delimiter-depth local.
 #

@@ -1,0 +1,3 @@
+// The file testrepl_buildcmd.input builds with %build: it does not compile,
+// so nothing is built.
+int main(void) { return nope; }

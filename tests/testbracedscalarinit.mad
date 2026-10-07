@@ -1,0 +1,24 @@
+// A scalar's initializer may be enclosed in braces (C11 6.7.9p11): `short
+// b = {a + 1};`, `char *p = {"Hello" + 1};`, at file scope and in a block,
+// with a trailing comma, doubled braces (gcc: "braces around scalar
+// initializer"), empty braces (zero) and excess elements (gcc and clang:
+// "excess elements in scalar initializer", the first one counts). madc's C
+// modes read the `{` as the start of an expression ("expected ',' or ';'
+// before '}' token").
+// gcc 13.3 and clang 18.1 (-std=c11) print the .expect line.
+#include <stdio.h>
+static int fs = { 3 };
+char *greet = { "Hello" + 1 };
+int main(void)
+{
+	int a = 42;
+	short b = { a + 1 };
+	double d = { 2.5, };
+	int nested = { { 7 } };
+	int empty = {};
+	int ex = { 4, 5 };
+	long *p = { 0 };
+	printf("brace: %d %s %d %.1f %d %d %d %d\n", fs, greet, b, d, nested,
+	       empty, ex, p == 0);
+	return 0;
+}

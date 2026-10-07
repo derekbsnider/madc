@@ -1,0 +1,6 @@
+no session: msg=[Nothing is running in the REPL.]
+idle: msg=[Nothing is running in the REPL.]
+interrupt: interrupted=1 restarted=0 busy=0
+kept: c11> n > 0|1|
+copy-interrupt: interrupted=1 restarted=0 busy=0
+copy idle: msg=[Nothing selected.]

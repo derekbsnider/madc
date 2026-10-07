@@ -61,7 +61,7 @@ std::string unquote(const std::string &s)
 // something in whatever directory the process happened to start in.
 std::string resolve_path(const std::string &value, const std::string &file)
 {
-	if (value.empty() || value[0] == '/')
+	if (value.empty() || madc::detail::host_path_absolute(value))
 		return value;
 	if (value[0] == '~' && (value.size() == 1 || value[1] == '/')) {
 		const char *home = getenv("HOME");

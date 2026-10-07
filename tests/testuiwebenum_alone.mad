@@ -1,0 +1,21 @@
+// A program whose only dialect word is ui::WEB, the UI level it asks for:
+// the auto-include serves <ns_ui_web> (the target that registers the level's
+// host), and that fragment's own mentions of the dialect intrinsics
+// (`println(stderr, ...)`) pull bits/std_format ahead of it. A fragment's
+// unqualified mention reaches an intrinsic provider (bits/*); only a sibling
+// namespace surface (ns_*) needs a qualified use (`madc::x`).
+// Before the fix the program was refused: "ns_ui_web:117:6: use of
+// undeclared identifier 'println'", unless the program itself happened to
+// say print/println/format. So this program says none of them: its output is
+// printf's. An IDE product's main unit (a madcide product built on the
+// base) has the same shape: a descriptor naming ui::WEB, and no output of
+// its own.
+// Oracle: n/a for gcc/clang (the dialect's auto-include); the C analogue
+// `long level = 3; printf(...)` prints the same line under gcc 13 and
+// clang 18.
+int main(void)
+{
+    long level = ui::WEB;
+    printf("ui-web-alone: web-above-tui=%d\n", level > ui::TUI ? 1 : 0);
+    return 0;
+}

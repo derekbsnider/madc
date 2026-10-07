@@ -376,6 +376,16 @@ typedef enum : uint32_t { vfLOCAL	=    1, // local vs global
 			                        // has been declared in this TU (C11 6.9.2,
 			                        // [basic.def]/2) — Program::declare_object
 			                        // sets it; a second definition is refused
+			  vfUNBOUNDED  =33554432, // the declarator wrote no outermost
+			                        // array bound (`T a[]`): dims[0] == 0
+			                        // means "incomplete", not GNU `[0]` — an
+			                        // extern declaration, or a file-scope
+			                        // tentative definition the end of the TU
+			                        // completes to one element (C11 6.9.2p2)
+			  vfWEAK       =67108864, // __attribute__((weak)) on a file-scope
+			                        // object with external linkage: the
+			                        // definition binds weak (STB_WEAK), and a
+			                        // strong one in another TU replaces it
 			} varflag_t;
 
 // The rt{None,Val,Ptr,Ref,DePtr,DeRef} tag-arithmetic macros are retired:
@@ -1946,7 +1956,11 @@ public:
     // operator's declared result type.
     // Prefers a parameterized (binary) overload; searches the unmangled name then
     // the mangled ClassName__operatorX family, then the base chain. NULL if none.
+    // The type is the function's return VALUE type (a reference's referent);
+    // binary_operator_function is the lookup itself, whose returns_reference()
+    // says whether the expression is an lvalue ([expr.call]/14).
     DataDef *binary_operator_return_type(const std::string &opname);
+    FuncDef *binary_operator_function(const std::string &opname);
     // True iff this class declares at least one binary `opname` member AND every
     // such member's explicit parameter is a NON-class (arithmetic/pointer) type —
     // i.e. no member can bind a class-object rhs. The iterator signature
@@ -1958,6 +1972,7 @@ public:
     // `operator++`, etc.). `postfix` selects the parameterized postfix form for
     // ++/-- and the nullary form otherwise.
     DataDef *unary_operator_return_type(const std::string &opname, bool postfix);
+    FuncDef *unary_operator_function(const std::string &opname, bool postfix);
     void register_extern_ctor_dtor(void *ctor, void *dtor) {
 	extern_ctor = ctor; extern_dtor = dtor; _dtor_ptr = dtor;
     }
@@ -2288,6 +2303,10 @@ public:
     DataDef *element_type;
     size_t count;
     TokenBase *count_expr;
+    // The declarator wrote no bound: an array of UNKNOWN size, an incomplete
+    // type (`T (*p)[]`, C11 6.7.6.2p4). count is 0, as for a written GNU
+    // zero-length `[0]`, which is a complete type; the emitter renders `[]`.
+    bool unbounded = false;
 
     DataDefCArray(DataDef &elem, const std::string &alias_name,
 		  size_t cnt, TokenBase *expr = NULL)

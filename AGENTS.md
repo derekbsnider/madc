@@ -112,10 +112,17 @@ deepest layer. See `.claude/rules/rule-trailers.md`.
    leaves no trace when skipped, which is why it fails silently.
    Standing instances: balanced-delimiter scanning is `DelimDepth`
    (`delimiter-tracking.md`); path canonicalization for comparison is
-   `canonical_path_for_compare()`; a library's platform spelling (the `lib`
+   `canonical_path_for_compare()`, and "is this path inside that directory"
+   is `host_path_within()` (the host's separators; gated by
+   `check-one-path-within.sh`), and "is this path absolute" is
+   `host_path_absolute()` (a Windows drive included; gated by
+   `check-one-path-absolute.sh`); a library's platform spelling (the `lib`
    prefix, `.so` / `.dylib` / `.dll`, the real runtime image names) is
    `madc_module_library_spelling()` in `src/madc_modules.cpp` (gated by
-   `check-one-library-spelling.sh`); a parse over its own token run — an
+   `check-one-library-spelling.sh`), and a library a program names (`import`,
+   `#load`, `"libs"`, `-l`) opens through `madc_module_open()` beside it —
+   madc's own lib directory first (gated by `check-one-library-opener.sh`);
+   a parse over its own token run — an
    isolated sub-stream or a run injected ahead of the live stream — is
    `Program::NestedTokenStream`, which also returns the outer read context
    (`curToken` / `prevToken` / `ParsePosition`) on every exit (gated by
@@ -158,7 +165,7 @@ deepest layer. See `.claude/rules/rule-trailers.md`.
 
 6. **THREE test tiers, not two — name the one you are running.**
    TIER 1 targeted, per change (seconds). **TIER 2 `bash scripts/fast_lanes.sh`,
-   per COMMIT that touches code — SIX conformance lanes in under three
+   per COMMIT that touches code — SEVEN conformance lanes in under three
    minutes, and NOT optional.** After each BATCH of fixes (never per fix),
    the batch checkpoint `bash scripts/batch_lane.sh`: the whole tests/ suite,
    JIT only, about ten minutes. TIER 3 `bash scripts/seam_battery.sh`, ONCE
@@ -244,7 +251,7 @@ downstream and the transport for upstream PR branches only (see
 | CIR builder | `src/cir_builder.cpp`    | Lowers the AST to a `cir_node` tree (c2mir-friendly C11 AST), the IR fed to c2mir → MIR |
 | php::     | `src/ns_php.cpp`           | 36 PHP-style string + array functions                          |
 | perl::    | `src/ns_perl.cpp`          | 20 Perl-style functions (chop, grep, glob, split)              |
-| python::  | `src/ns_python.cpp`        | 15 Python-style functions (title, center, zfill, format)       |
+| python::  | `src/ns_python.cpp`        | 16 Python-style functions (title, center, zfill, format, shlex_split) |
 | ruby::    | `src/ns_ruby.cpp`          | 12 Ruby-style functions (squeeze, tr, chars, rotate)           |
 | js::      | `src/ns_js.cpp`            | 6 JS-style functions (base64, URL encoding, JSON)              |
 | rust::    | `src/ns_rust.cpp`          | 18 Rust-style string + array helpers (plus `rust::match`)      |
@@ -283,7 +290,7 @@ another test — runners skip it; skip it when running by hand too.
 
 `/commit` (`.claude/commands/commit.md`) is the commit path: it names the test
 tier the change needs, runs Tier 1 (targeted) and Tier 2
-(`scripts/fast_lanes.sh` — six conformance lanes, under three minutes), and
+(`scripts/fast_lanes.sh` — seven conformance lanes, under three minutes), and
 writes the four rule trailers. Use it instead of deciding the tier per commit;
 choosing between "a few targeted tests" and "the multi-hour battery" is the
 documented way this goes wrong. The pre-push hook enforces the commit tier on
@@ -393,7 +400,7 @@ no matter how small.
 | [no-parallel-implementations.md](.claude/rules/no-parallel-implementations.md) | 22 | One implementation per concern; A/B scaffolding expires; tests use production entry points; cap every test run |
 | [parse-once.md](.claude/rules/parse-once.md)     |    24 | New C++ support resolves on the parse-once generic spine (g++ tsubst model), NEVER via re-parse; re-parse is a transitional fallback slated for deletion at suite-wide burndown=0; every change moves the `[why:]` fallback count down or flat |
 | [code-style.md](.claude/rules/code-style.md)     |     6 | C++11, tabs, header guards, DBG                |
-| [value-first.md](.claude/rules/value-first.md)   |    39 | madc-dialect code: ZERO includes/`using`/`std::` (bare print/println/format; auto-include reaches user modules); var/value over std::string; missing capability = fix the CARRIER/compiler, never spell around it |
+| [value-first.md](.claude/rules/value-first.md)   |    40 | madc-dialect code: ZERO includes/`using`/`std::` (bare print/println/format; auto-include reaches user modules); var/value over std::string; missing capability = fix the CARRIER/compiler, never spell around it |
 | [dialect-lean.md](.claude/rules/dialect-lean.md) |    37 | OWNER LAW: the `--std=madc` surface (prelude fragments included) never depends on C++ system header parsing or std::string; the one include a fragment may carry is a sibling `bits/` fragment (`<bits/ui_enums>`); interop conveniences behind the stdlib guards; polyglot publics need lean PRIMARY forms; gated by `check-dialect-lean.sh` |
 | [dialect-literals.md](.claude/rules/dialect-literals.md) | 24 | In dialect PRODUCTION code (`tools/`), build objects with literals `var x = { "k": v };` — never a bare `var x;` filled field-by-field; imperative key-assign is for MUTATION / computed keys / indices; gated by `check-dialect-literals.sh` |
 | [enum-over-strings.md](.claude/rules/enum-over-strings.md) |  32 | Enums (not chars/strings) for type/category discriminators; convert C-string node names to enums at the boundary |
@@ -407,7 +414,7 @@ that fails any of these is not merged.
 | Rule                                             | Lines | Scope                                          |
 |--------------------------------------------------|------:|------------------------------------------------|
 | [build.md](.claude/rules/build.md)               |    35 | `make -C src`, the in-tree MIR subtree model   |
-| [testing-fulltest.md](.claude/rules/testing-fulltest.md) | 74 | THREE tiers: targeted per change · `scripts/fast_lanes.sh` per COMMIT (six lanes, under three minutes, gated by the pre-push hook on every branch) · `scripts/batch_lane.sh` (tests/ JIT) per BATCH of fixes · `scripts/fix_lanes.sh` = Tier 1 + Tier 2 as ONE per-fix command · `scripts/seam_battery.sh` once per merge wave (the full suite on the packed -O2 binary, headerless; on-disk subsets; exe + obj on the same binary) — and the merge wave is the SEAM the arc's plan names (its release boundary), never a slice/phase/V · a red test's history across releases: `scripts/release_bins.sh run` |
+| [testing-fulltest.md](.claude/rules/testing-fulltest.md) | 74 | THREE tiers: targeted per change · `scripts/fast_lanes.sh` per COMMIT (seven lanes, under three minutes, gated by the pre-push hook on every branch) · `scripts/batch_lane.sh` (tests/ JIT) per BATCH of fixes · `scripts/fix_lanes.sh` = Tier 1 + Tier 2 as ONE per-fix command · `scripts/seam_battery.sh` once per merge wave (the full suite on the packed -O2 binary, headerless; on-disk subsets; exe + obj on the same binary) — and the merge wave is the SEAM the arc's plan names (its release boundary), never a slice/phase/V · a red test's history across releases: `scripts/release_bins.sh run` |
 | [testing.md](.claude/rules/testing.md)           |    32 | Integration + unit test conventions            |
 | [test-fixtures.md](.claude/rules/test-fixtures.md) |  16 | Per-test `.input` / `.argv` / `.expect` files; runner stays generic |
 
@@ -426,14 +433,14 @@ editing — don't try to memorize all of them.
 | [clang-methodology.md](.claude/rules/clang-methodology.md) | 46 | Same methodology against clang, the co-equal canon; cross-check lowering with both gcc and clang |
 | [debug.md](.claude/rules/debug.md)               |    18 | `DBG(x)` macro usage and rules                 |
 | [c11-transpiler.md](.claude/rules/c11-transpiler.md) | 70 | `--emit=c11` lowers every C++ feature to strict C11; c2mir limits, lowering patterns, emission hygiene |
-| [embedded-headers.md](.claude/rules/embedded-headers.md) |  67 | `include/madc/` headers, lazy registration, `#load`, real return types (signed `int` libc fns) |
+| [embedded-headers.md](.claude/rules/embedded-headers.md) |  75 | `include/madc/` headers, lazy registration, `#load`, real return types (signed `int` libc fns), a fragment's namespace-scope variables `inline` (gated) |
 | [gcc-parity.md](.claude/rules/gcc-parity.md)     |    15 | GCC as a reference baseline (verbose `-fverbose-asm` disassembly) for codegen / type / runtime parity |
 | [clang-parity.md](.claude/rules/clang-parity.md) |    16 | clang as the co-equal reference baseline (second lowering opinion); both gcc and clang are canon |
 | [indirection.md](.claude/rules/indirection.md) |   114 | **ONE owner per layered-pointer/reference concern**, indexed: the `*` operand is `parseCastExpression` (the engine, bounded) + `build_indirection` (gated by `check-one-deref-builder.sh`); an operand's value + integer promotions (`operand_value_type` / `promoted_operand_type`, gated), type minting/peeling, an array operand's element (`array_operand_element_type`), decay, declarators, symbol counting (angle brackets → `delimiter-tracking.md`) |
 
 ### Total rule footprint
 
-- **36 rules, 1255 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
+- **36 rules, 1261 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
 - **This file (AGENTS.md): ~487 lines** — loaded by Claude via
   `@AGENTS.md` in `CLAUDE.md`, read directly by Codex / Gemini / etc.
 - **Grand total loaded by Claude Code per turn: ~1750 lines.**

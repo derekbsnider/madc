@@ -17,6 +17,12 @@
 #
 # Per-artifact probes (each asserts its failure mode loudly, and every
 # positive probe has a NEGATIVE CONTROL proving the gate can fail):
+#   every    the shipped notices: each carrier packaging/notices.tsv names for
+#            the artifact's platform is in it, and so is its notice — a file
+#            check, so mactar runs it on Linux too [control: hide the last
+#            row's notice => reported missing]. Except winzip: every entry
+#            of the artifact's listing is readable by every user, every
+#            directory searchable [control: a 0640 entry => reported].
 #   deb/rpm  dpkg -x / rpm2cpio|cpio extract; installed madc runs a probe
 #            program (output asserted) with LD_LIBRARY_PATH=<root libdir>
 #            (an extracted root has no ldconfig — the real install
@@ -31,6 +37,10 @@
 #            foreign cwd (scripts/madcide_save_quit_pty.py: joe's keys, then
 #            the rescue keys with the profiles hidden) [control: hide
 #            share/madcide/verbs => it refuses to start, with the reason].
+#            installed madcide prints its usage line and `-c check`s a
+#            <stdio.h> program clean from a foreign cwd [control: a syntax
+#            error => 1 problem, rc 1]; its View menu offers every shipped
+#            key style [control: hide the profiles => none listed].
 #   tar      same probes with NO LD_LIBRARY_PATH at all (env -u) — the
 #            run-time $ORIGIN proof (the packager's ldd check is static;
 #            this one executes) [control: hide lib/libmadc.so.0 => madc
@@ -46,6 +56,13 @@
 #   mactar   (darwin host only — the release.yml mac jobs; the container
 #            cannot execute darwin binaries and prints a stated SKIP) tar
 #            extract; the shipped bin/madc runs the probe (output asserted);
+#            `madc -v` says `forest-bind: [library-image] opened container`
+#            — the forest served from the shipped lib/libmadc-0.dylib, the
+#            thin CLI carrying none [control: hide lib/libmadc-0.dylib =>
+#            madc must fail to run];
+#            the shipped madcide prints its usage line and `-c check`s a
+#            <stdio.h> program clean from a foreign cwd [control: a syntax
+#            error => 1 problem, rc 1], and offers every key style;
 #            scripts/mac_battery.sh against the extracted tarball layout
 #            holds the PASS floor (MAC_BATTERY_FLOOR, default 8 = the
 #            owner-hardware baseline) and prints every FAIL line [control:
@@ -86,6 +103,62 @@ write_probes() {
         > "$GATE_TMP/pk4probe.mad"
 }
 
+# ---------- shipped notices (packaging/notices.tsv) ----------
+# A static check — file names only — so it runs on every artifact, mactar
+# included where the container cannot execute darwin binaries.
+NOTICES=packaging/notices.tsv
+
+# notices_missing <platform> <root>: one line per row whose carrier or notice
+# is absent from the extracted artifact (by file name, anywhere under root).
+notices_missing() {
+    local platform="$1" root="$2" p carrier notice rest
+    while IFS=$'\t' read -r p carrier notice rest; do
+        case "$p" in ''|'#'*) continue ;; esac
+        [ "$p" = "$platform" ] || continue
+        [ -n "$(find "$root" -name "$carrier" -print -quit)" ] || echo "carrier $carrier"
+        [ -n "$(find "$root" -name "$notice" -print -quit)" ] || echo "notice $notice (for $carrier)"
+    done < "$NOTICES"
+}
+
+# check_notices <kind> <platform> <root>: every carrier the platform's rows
+# name ships, and so does its notice [control: hide the last row's notice —
+# the check must report it].
+check_notices() {
+    local kind="$1" platform="$2" root="$3" rows missing last hidden
+    rows=$(awk -F'\t' -v p="$platform" '$1 == p' "$NOTICES" | wc -l)
+    [ "$rows" -gt 0 ] || fail "$kind" "$NOTICES has no $platform rows"
+    missing=$(notices_missing "$platform" "$root")
+    [ -z "$missing" ] || fail "$kind" "missing from the artifact ($NOTICES): $(echo $missing)"
+    ok "$kind" "every carrier ships its notice ($rows rows, $NOTICES)"
+    last=$(awk -F'\t' -v p="$platform" '$1 == p { n = $3 } END { print n }' "$NOTICES")
+    hidden=$(find "$root" -name "$last" -print -quit)
+    mv "$hidden" "$hidden.hidden"
+    missing=$(notices_missing "$platform" "$root")
+    mv "$hidden.hidden" "$hidden"
+    case "$missing" in
+        *"notice $last "*) ok "$kind" "negative control: hidden $last => reported missing" ;;
+        *) fail "$kind" "negative control broken: hidden $last was not reported" ;;
+    esac
+}
+
+# check_modes <kind> <long listing>: every entry of the artifact (its own
+# listing, so no extraction's umask intervenes) is readable by every user and
+# every directory searchable [control: a 0640 entry => reported].
+modes_wrong() {
+    awk 'substr($1, 8, 1) != "r" || (substr($1, 1, 1) == "d" && substr($1, 10, 1) !~ /[xt]/)' <<< "$1"
+}
+check_modes() {
+    local kind="$1" wrong
+    wrong=$(modes_wrong "$2")
+    [ -z "$wrong" ] || fail "$kind" "entries another user cannot read: $(echo "$wrong" | head -5 | tr '\n' ';')"
+    ok "$kind" "every entry is readable, and every directory searchable, by every user"
+    wrong=$(modes_wrong "-rw-r----- root/root 1 2026-10-05 12:00 ./usr/pk4modes")
+    case "$wrong" in
+        *pk4modes*) ok "$kind" "negative control: a 0640 entry => reported" ;;
+        *) fail "$kind" "negative control broken: a 0640 entry was not reported" ;;
+    esac
+}
+
 # ---------- the linux probe battery ----------
 # run_linux <kind> <root> <bindir> <libdir-or-"">
 #   libdir nonempty => run with LD_LIBRARY_PATH=<libdir> (deb/rpm roots)
@@ -99,13 +172,14 @@ run_linux() {
     [ -x "$madc" ]    || fail "$kind" "no executable $madc in the artifact"
     [ -x "$madcide" ] || fail "$kind" "no executable $madcide in the artifact"
 
-    # MADCIDE_CONFIG_DIR: no ambient user settings.json or plugins/ (the
-    # run_tests.sh hermeticity); the artifact's own data is what is gated.
+    # MADCIDE_CONFIG_DIR: no ambient user settings.json or plugins/, and no
+    # MADCIDE_PLUGIN_PATH (the run_tests.sh hermeticity); the artifact's own
+    # data is what is gated.
     local -a runenv
     if [ -n "$libdir" ]; then
-        runenv=(env "LD_LIBRARY_PATH=$libdir" "MADCIDE_CONFIG_DIR=$GATE_TMP/no-config")
+        runenv=(env -u MADCIDE_PLUGIN_PATH "LD_LIBRARY_PATH=$libdir" "MADCIDE_CONFIG_DIR=$GATE_TMP/no-config")
     else
-        runenv=(env -u LD_LIBRARY_PATH "MADCIDE_CONFIG_DIR=$GATE_TMP/no-config")
+        runenv=(env -u MADCIDE_PLUGIN_PATH -u LD_LIBRARY_PATH "MADCIDE_CONFIG_DIR=$GATE_TMP/no-config")
     fi
 
     # 1. installed madc runs a program
@@ -199,6 +273,80 @@ run_linux() {
         *"EXITED rc=1 "*"VERBSMISSING"*) ok "$kind" "negative control: hidden verbs => refused to start ($out)" ;;
         *) fail "$kind" "negative control broken: verbs hidden but madcide did not refuse (got: $out)" ;;
     esac
+
+    # 6. installed madcide's usage line, then `-c check` from a foreign cwd
+    #    over a C file that includes <stdio.h> — the installed verbs
+    #    (share/madcide) and the forest in the installed libmadc serve it —
+    #    clean; [control: a file with a syntax error reports its problem and
+    #    exits 1, proving the check read it].
+    local chk="$PWD/$GATE_TMP/pk4chk.c" bad="$PWD/$GATE_TMP/pk4bad.c"
+    out=$( ( ulimit -t 120; timeout 60 "${runenv[@]}" "$madcide" --help ) 2>&1 )
+    case "$out" in
+        *"usage: madcide"*) ok "$kind" "installed madcide prints its usage line" ;;
+        *) fail "$kind" "installed madcide --help did not print its usage line (got: $out)" ;;
+    esac
+    printf '#include <stdio.h>\nint main(void) { printf("%%d\\n", 5); return 0; }\n' > "$chk"
+    printf '#include <stdio.h>\nint main(void) { return 0 }\n' > "$bad"
+    ide_check_gate "$kind" "installed" "$madcide" "$chk" "$bad" timeout "${runenv[@]}"
+
+    # 7. installed madcide offers every shipped key style from its menu:
+    #    View ▸ Key Bindings… is on its View menu, and the list it opens
+    #    names the six styles share/madcide/profiles carries [control: hide
+    #    the profiles => the list names none of them].
+    keystyle_gate "$kind" "$madcide" "$chk" "$pdir" timeout "${runenv[@]}"
+}
+
+# An IDE's `-c check` (probe 6, every artifact that runs madcide): over a
+# <stdio.h> program from a foreign cwd it is clean (rc 0); [control: a syntax
+# error => 1 problem, rc 1]. `what` says where the IDE came from
+# (installed, shipped); `tmo` is the platform's timeout command; the rest is
+# the run environment.
+ide_check_gate() {
+    local kind="$1" what="$2" ide="$3" chk="$4" bad="$5" tmo="$6" out rc
+    shift 6
+    out=$( ( cd /tmp && ulimit -t 120 && "$tmo" 60 "$@" "$ide" "$chk" -c check ) 2>&1 )
+    rc=$?
+    case "$rc:$out" in
+        0:*Problems*) ok "$kind" "$what madcide -c check over <stdio.h> is clean (rc 0)" ;;
+        *) fail "$kind" "$what madcide -c check over <stdio.h> was not clean (rc $rc: $out)" ;;
+    esac
+    out=$( ( cd /tmp && ulimit -t 120 && "$tmo" 60 "$@" "$ide" "$bad" -c check ) 2>&1 )
+    rc=$?
+    case "$rc:$out" in
+        1:*"1 problem"*) ok "$kind" "negative control: a syntax error => madcide -c check reports 1 problem (rc 1)" ;;
+        *) fail "$kind" "negative control broken: madcide -c check over a syntax error (rc $rc: $out)" ;;
+    esac
+}
+
+# The installed madcide's key styles (probe 7, every artifact that runs it):
+# `-c "menushow View"` lists the Key Bindings… row, `-c keystyle` lists the
+# styles by their display names, all six; with the profiles directory hidden
+# the list names none. `tmo` is the platform's timeout command (timeout, or
+# brew coreutils' gtimeout on a Mac runner); the rest is the run environment.
+KEY_STYLES=("Chthonia" "VS Code" "Vim" "Emacs" "JOE" "Pico")
+keystyle_gate() {
+    local kind="$1" ide="$2" file="$3" pdir="$4" tmo="$5"
+    shift 5
+    local out style missing="" named=""
+    out=$( ( cd /tmp && ulimit -t 120 && "$tmo" 60 "$@" "$ide" "$file" -c "menushow View" ) 2>&1 )
+    case "$out" in
+        *"Key Bindings"*) ok "$kind" "installed madcide's View menu has Key Bindings…" ;;
+        *) fail "$kind" "installed madcide's View menu has no Key Bindings… row (got: $out)" ;;
+    esac
+    out=$( ( cd /tmp && ulimit -t 120 && "$tmo" 60 "$@" "$ide" "$file" -c keystyle ) 2>&1 )
+    for style in "${KEY_STYLES[@]}"; do
+        case "$out" in *". $style"*) ;; *) missing="$missing [$style]" ;; esac
+    done
+    [ -z "$missing" ] || fail "$kind" "installed madcide's Key Bindings list lacks$missing (got: $out)"
+    ok "$kind" "installed madcide's Key Bindings list names all ${#KEY_STYLES[@]} styles"
+    mv "$pdir" "$pdir.hidden"
+    out=$( ( cd /tmp && ulimit -t 120 && "$tmo" 60 "$@" "$ide" "$file" -c keystyle ) 2>&1 )
+    mv "$pdir.hidden" "$pdir"
+    for style in "${KEY_STYLES[@]}"; do
+        case "$out" in *". $style"*) named="$named [$style]" ;; esac
+    done
+    [ -z "$named" ] || fail "$kind" "negative control broken: profiles hidden but the list still names$named"
+    ok "$kind" "negative control: hidden profiles => the Key Bindings list names no style"
 }
 
 gate_deb() {
@@ -207,6 +355,8 @@ gate_deb() {
     rm -rf "$root"; mkdir -p "$root"
     dpkg -x "$artifact" "$root" || fail deb "dpkg -x refused $artifact"
     root=$(readlink -f "$root")
+    check_notices deb linux "$root"
+    check_modes deb "$(dpkg-deb -c "$artifact")"
     run_linux deb "$root" "$root/usr/bin" "$root/usr/lib/x86_64-linux-gnu"
     echo "package_install_gate: PASS deb ($artifact)"
 }
@@ -219,6 +369,8 @@ gate_rpm() {
     ( cd "$root" && rpm2cpio "$abs" | cpio -idm --quiet ) \
         || fail rpm "rpm2cpio|cpio refused $artifact"
     root=$(readlink -f "$root")
+    check_notices rpm linux "$root"
+    check_modes rpm "$(rpm -qlvp "$artifact")"
     run_linux rpm "$root" "$root/usr/bin" "$root/usr/lib64"
     echo "package_install_gate: PASS rpm ($artifact)"
 }
@@ -231,6 +383,8 @@ gate_tar() {
     root=$(echo "$scratch"/madc-*-linux-x86_64)
     [ -d "$root" ] || fail tar "expected one madc-*-linux-x86_64 root in $artifact"
     root=$(readlink -f "$root")
+    check_notices tar linux "$root"
+    check_modes tar "$(tar -tzvf "$artifact")"
     run_linux tar "$root" "$root/bin" ""
     # tarball-only negative control: hide the shipped library — the run
     # must FAIL, proving the green run above bound THIS lib via $ORIGIN
@@ -254,8 +408,14 @@ gate_winzip() {
     unzip -q "$artifact" -d "$scratch" || fail winzip "unzip refused $artifact"
     root=$(echo "$scratch"/madc-*-windows-x86_64)
     [ -d "$root" ] || fail winzip "expected one madc-*-windows-x86_64 root in $artifact"
+    check_notices winzip windows "$root"
     bindir=$(readlink -f "$root/bin")
     export WINEDEBUG=-all
+    # Adjacency is the binding under test: a caller's WINEPATH (the Windows
+    # packager points it at bin/release-windows for its own builds) would
+    # serve libmadc-0.dll from elsewhere, and the negative control below
+    # would find the exe still running.
+    unset WINEPATH
     wineserver -p 2> /dev/null || true
 
     # 1. the zipped madc.exe compiles a runtime-needing program with -o,
@@ -315,18 +475,20 @@ gate_winzip() {
 gate_mactar() {
     local artifact="$1" scratch="$GATE_TMP/mactar" root out host want passed floor tmo
     [ -f "$artifact" ] || fail mactar "artifact not found: $artifact"
-    host=$(uname -s)
-    if [ "$host" != Darwin ]; then
-        echo "package_install_gate: SKIP mactar ($artifact — darwin binaries do not execute on $host; the release.yml mac job runs this leg)"
-        return 0
-    fi
-    tmo=$(command -v timeout || command -v gtimeout || true)
-    [ -n "$tmo" ] || fail mactar "no timeout/gtimeout on this host (brew coreutils)"
     rm -rf "$scratch"; mkdir -p "$scratch"
     tar -C "$scratch" -xzf "$artifact" || fail mactar "tar refused $artifact"
     root=$(echo "$scratch"/madc-*-macos-*)
     [ -d "$root" ] || fail mactar "expected one madc-*-macos-<arch> root in $artifact"
     root=$(cd "$root" && pwd)
+    check_notices mactar macos "$root"
+    check_modes mactar "$(tar -tzvf "$artifact")"
+    host=$(uname -s)
+    if [ "$host" != Darwin ]; then
+        echo "package_install_gate: SKIP mactar's run legs ($artifact — darwin binaries do not execute on $host; the release.yml mac job runs them)"
+        return 0
+    fi
+    tmo=$(command -v timeout || command -v gtimeout || true)
+    [ -n "$tmo" ] || fail mactar "no timeout/gtimeout on this host (brew coreutils)"
     want=$(uname -m)
     case "$root" in
         *"-macos-$want") ;;
@@ -335,6 +497,7 @@ gate_mactar() {
     [ -x "$root/bin/madc" ]        || fail mactar "no executable bin/madc in the artifact"
     [ -f "$root/lib/libmadc_rt.a" ] || fail mactar "no lib/libmadc_rt.a in the artifact"
     [ -f "$root/lib/libmadcwebview.dylib" ] || fail mactar "no lib/libmadcwebview.dylib in the artifact"
+    [ -f "$root/lib/libmadc-0.dylib" ] || fail mactar "no lib/libmadc-0.dylib in the artifact"
 
     # 1. the shipped madc runs a program
     out=$( ( ulimit -t 120; "$tmo" 60 "$root/bin/madc" "$PWD/$GATE_TMP/pk4hello.mad" ) 2>&1 )
@@ -342,6 +505,44 @@ gate_mactar() {
         *"$MARKER"*) ok mactar "shipped madc runs (JIT output asserted)" ;;
         *) fail mactar "shipped madc did not produce '$MARKER' (got: $out)" ;;
     esac
+
+    # 1b. the forest is served from the shipped library image (the thin CLI
+    # carries none); the grep's control is the non-verbose run above, which
+    # asserted the marker and so ran with no -v evidence lines.
+    out=$( ( ulimit -t 120; "$tmo" 60 "$root/bin/madc" -v "$PWD/$GATE_TMP/pk4hello.mad" ) 2>&1 \
+           | grep 'forest-bind:' )
+    case "$out" in
+        *"forest-bind: [library-image] opened container"*)
+            ok mactar "forest served from the shipped lib/libmadc-0.dylib ([library-image])" ;;
+        *) fail mactar "-v never said 'forest-bind: [library-image] opened container' (got: $out)" ;;
+    esac
+    # control: hide the library => the thin CLI cannot run at all (proves
+    # the pass was served by THIS tarball's library, not some other copy).
+    mv "$root/lib/libmadc-0.dylib" "$root/lib/libmadc-0.dylib.hidden"
+    out=$( ( ulimit -t 120; "$tmo" 60 "$root/bin/madc" "$PWD/$GATE_TMP/pk4hello.mad" ) 2>&1 )
+    mv "$root/lib/libmadc-0.dylib.hidden" "$root/lib/libmadc-0.dylib"
+    case "$out" in
+        *"$MARKER"*) fail mactar "negative control broken: lib/libmadc-0.dylib hidden but madc still ran" ;;
+        *) ok mactar "negative control: hidden lib/libmadc-0.dylib => madc does not run" ;;
+    esac
+
+    # 1c. the IDE (a darwin host of this arch builds it into the tarball):
+    # madcide's usage line, then `-c check` from a foreign cwd over a
+    # <stdio.h> program — share/madcide's verbs and the library's forest
+    # serve it — clean [control: a syntax error => 1 problem, rc 1].
+    [ -x "$root/bin/madcide" ] || fail mactar "no executable bin/madcide in the artifact"
+    [ -d "$root/share/madcide/verbs" ] || fail mactar "no share/madcide/verbs in the artifact"
+    out=$( ( ulimit -t 120; "$tmo" 60 "$root/bin/madcide" --help ) 2>&1 )
+    case "$out" in
+        *"usage: madcide"*) ok mactar "shipped madcide prints its usage line" ;;
+        *) fail mactar "shipped madcide --help did not print its usage line (got: $out)" ;;
+    esac
+    local chk="$PWD/$GATE_TMP/pk4chk.c" bad="$PWD/$GATE_TMP/pk4bad.c"
+    printf '#include <stdio.h>\nint main(void) { printf("%%d\\n", 5); return 0; }\n' > "$chk"
+    printf '#include <stdio.h>\nint main(void) { return 0 }\n' > "$bad"
+    ide_check_gate mactar "shipped" "$root/bin/madcide" "$chk" "$bad" "$tmo"
+    # 1d. its key styles, the menu row and the list (keystyle_gate).
+    keystyle_gate mactar "$root/bin/madcide" "$chk" "$root/share/madcide/profiles" "$tmo"
 
     # 2. the Mac battery against the extracted tarball layout (bin/madc +
     # lib/libmadc_rt.a beside it = leg 6c's shape). The full output is the

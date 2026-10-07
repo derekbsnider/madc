@@ -1,0 +1,109 @@
+// A terminal's interrupt keys while an entry runs in the CLI REPL (`madc -i`
+// on a pseudo-terminal). Ctrl-C returns the entry to the prompt with the
+// session's names kept (D8, plan
+// docs/plans/madc-repl-thonny-plan-2026-09-24.md §41.12a). Ctrl-\ (SIGQUIT)
+// ends the backend and a fresh session answers the next entry: the host
+// ignores both keys while an entry runs, as system(3) does while its child
+// runs, so the REPL itself lives on. Ctrl-D ends a reading entry's input,
+// and the next entry reads new input: each entry starts with stdin's
+// end-of-file state clear (plan §41.12a, Send EOF).
+// The REPL inherits this program's TERM: the .env fixture pins TERM=dumb,
+// the cooked-line mode whose echo the checks below read (any other TERM
+// gets the line editor's escape sequences around each answer).
+
+// What the REPL wrote, until `want` appears or `ms` pass.
+bool read_until(var &got, madc::channel &c, const char *want, long ms)
+{
+    char buf[4096];
+    for ( long waited = 0; waited < ms; waited = waited + 10 )
+    {
+	while ( c.poll_state() == 1 )
+	{
+	    long n = c.read(buf, 4095);
+	    if ( n <= 0 )
+		return got.index(want) >= 0;
+	    buf[n] = 0;
+	    got = format("{}{}", got, buf);
+	}
+	if ( got.index(want) >= 0 )
+	    return true;
+	madc::sleep_ms(10);
+    }
+    return false;
+}
+
+// Send a line, and wait for the prompt that follows it.
+bool enter(var &got, madc::channel &c, const char *line)
+{
+    got = "";
+    var text = format("{}\r", line);
+    c.write(text);
+    return read_until(got, c, "c11> ", 20000);
+}
+
+// Start a loop that runs until a key ends it, send the key once the loop
+// runs, and say what came back before the next prompt.
+void key_entry(madc::channel &c, const char *label, const char *loop,
+	       const char *key)
+{
+    var got = "";
+    var text = format("{}\r", loop);
+    c.write(text);
+    read_until(got, c, loop, 20000);
+    madc::sleep_ms(300);
+    got = "";
+    c.write(key);
+    bool prompt = read_until(got, c, "c11> ", 20000);
+    println("{}: prompt={} interrupted={} new-session={}", label, prompt,
+	    got.index("interrupted") >= 0, got.index("a new one started") >= 0);
+}
+
+// Start an entry that reads its input, type `keys` once it runs, and wait
+// for the prompt after it.
+void reading_entry(madc::channel &c, const char *line, const char *keys)
+{
+    var got = "";
+    var text = format("{}\r", line);
+    c.write(text);
+    read_until(got, c, line, 20000);
+    madc::sleep_ms(300);
+    got = "";
+    c.write(keys);
+    read_until(got, c, "c11> ", 20000);
+}
+
+int main()
+{
+    var uri = format("pty://{} --no-config --std=c11 -i", madc::compiler_path());
+    madc::channel c(uri.c_str());
+    var got = "";
+    println("open: {} prompt: {}", c.ok(), read_until(got, c, "c11> ", 20000));
+    enter(got, c, "long n = 0;");
+
+    key_entry(c, "ctrl-c", "while (1) n++;", "\x03");
+    enter(got, c, "n > 0");
+    println("kept: {}", got.index("\n1\r\n") >= 0);
+
+    key_entry(c, "ctrl-backslash", "while (1) n--;", "\x1c");
+    enter(got, c, "int fresh = 7;");
+    enter(got, c, "fresh");
+    println("fresh: {}", got.index("\n7\r\n") >= 0);
+
+    // Ctrl-D: the reading entry sees its input's end; the next one reads.
+    enter(got, c, "#include <stdio.h>");
+    enter(got, c, "long lines(void) { long k = 0; int ch; while ((ch = getchar()) != EOF) if (ch == 10) k++; return k; }");
+    enter(got, c, "long k = 0; int ch = 0;");
+    reading_entry(c, "k = lines();", "one\rtwo\r\x04");
+    enter(got, c, "k");
+    println("ctrl-d: {}", got.index("\n2\r\n") >= 0);
+    reading_entry(c, "ch = getchar();", "x\r");
+    enter(got, c, "ch == 'x'");
+    println("after ctrl-d: {}", got.index("\n1\r\n") >= 0);
+
+    c.write("%quit\r");
+    var rest = "";
+    read_until(rest, c, "never", 2000);
+    c.close();
+    println("host status: {}", c.exit_status());
+    return 0;
+}

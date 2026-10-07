@@ -36,14 +36,15 @@
 
 #include "include/madcide/plugin_api"	// the API version, the handler contracts
 
-// Where madcide's configuration lives, from its inputs (the environment's
-// values; NULL or "" = unset): MADCIDE_CONFIG_DIR (madcide's own override —
-// the test suite points it at a fixture, or nowhere), then
-// $XDG_CONFIG_HOME/madcide, then %APPDATA%/madcide on Windows, then
-// ~/.config/madcide. "" = none (no home): no settings and no user plugins,
-// never an error.
-void config_dir_of(var &out, const char *over, const char *xdg,
-		   const char *appdata, const char *home, bool win)
+// Where product `name`'s configuration lives (madcide's, chthonia's: the
+// product in use), from its inputs (the environment's values; NULL or "" =
+// unset): MADCIDE_CONFIG_DIR (the base's own override — the test suite
+// points it at a fixture, or nowhere), then $XDG_CONFIG_HOME/<name>, then
+// %APPDATA%/<name> on Windows, then ~/.config/<name>. "" = none (no home):
+// no settings and no user plugins, never an error.
+void config_dir_of(var &out, const char *name, const char *over,
+		   const char *xdg, const char *appdata, const char *home,
+		   bool win)
 {
     out = "";
     if ( over != 0 && strlen(over) > 0 )
@@ -53,23 +54,24 @@ void config_dir_of(var &out, const char *over, const char *xdg,
     }
     if ( xdg != 0 && strlen(xdg) > 0 )
     {
-	out = format("{}/madcide", xdg);
+	out = format("{}/{}", xdg, name);
 	return;
     }
     if ( win && appdata != 0 && strlen(appdata) > 0 )
     {
-	out = format("{}/madcide", appdata);
+	out = format("{}/{}", appdata, name);
 	return;
     }
     if ( home != 0 && strlen(home) > 0 )
-	out = format("{}/.config/madcide", home);
+	out = format("{}/.config/{}", home, name);
 }
 
 void madcide_config_dir(var &out)
 {
     bool win = strcmp(madc::sys.platform, "win32") == 0;
-    config_dir_of(out, getenv("MADCIDE_CONFIG_DIR"), getenv("XDG_CONFIG_HOME"),
-		  getenv("APPDATA"), getenv("HOME"), win);
+    config_dir_of(out, product_in_use().name, getenv("MADCIDE_CONFIG_DIR"),
+		  getenv("XDG_CONFIG_HOME"), getenv("APPDATA"), getenv("HOME"),
+		  win);
 }
 
 // A JSON OBJECT from a file (a manifest, settings.json). False = it cannot
@@ -114,8 +116,24 @@ bool plugin_name_ok(const char *name)
     return true;
 }
 
+// The directories of a path list (MADCIDE_PLUGIN_PATH), appended to `out` in
+// order: separated as the platform's PATH is (';' on Windows, where ':' is a
+// drive's, else ':'); an empty entry names nothing.
+void plugin_path_dirs(array &out, const char *list, bool win)
+{
+    if ( list == 0 )
+	return;
+    array parts;
+    php::explode(parts, win ? ";" : ":", list);
+    for ( var d : parts )
+	if ( strlen(d.c_str()) > 0 )
+	    out.push(d);
+}
+
 // The plugin search path (§5.1): the user's plugins/ first, so a user's
-// bundle overrides a shipped one of the same name, then the shipped
+// bundle overrides a shipped one of the same name; then MADCIDE_PLUGIN_PATH's
+// directories, where a bundle is found from its own checkout without being
+// installed (a product's tests and its uninstalled build); then the shipped
 // plugins/ (beside this file in the source tree, else the install layouts:
 // resolve_data_dir, the one data-location owner).
 void plugin_dirs(array &out)
@@ -124,6 +142,8 @@ void plugin_dirs(array &out)
     madcide_config_dir(cfg);
     if ( strlen(cfg.c_str()) > 0 )
 	out.push(format("{}/plugins", cfg));
+    plugin_path_dirs(out, getenv("MADCIDE_PLUGIN_PATH"),
+		     strcmp(madc::sys.platform, "win32") == 0);
     var shipped;
     resolve_data_dir(shipped, "madcide", php::dirname(__FILE__), "plugins");
     out.push(shipped);
@@ -268,9 +288,10 @@ bool plugin_manifest_read(var &m, var &why, var &dir, const char *name0)
 // (testmadcide_bundles pins the two to one reading).
 const char *default_bundle_text()
 {
-    return "{ \"name\": \"default\", \"title\": \"Workbench\", \"api\": 2,"
+    return "{ \"name\": \"default\", \"title\": \"Workbench\", \"api\": 3,"
 	   " \"contributes\": { \"keys\": \"joe\", \"status\": \"joe\","
-	   " \"theme\": \"default\", \"menu\": \"default\", \"layout\": \"default\" } }";
+	   " \"theme\": \"default\", \"menu\": \"default\", \"layout\": \"default\","
+	   " \"help\": \"default\" } }";
 }
 
 // The user's settings.json (§5.2), in the configuration directory, onto the
@@ -355,6 +376,28 @@ bool user_settings_save(long w, long es)
     return true;
 }
 
+// A setting the user chose: settings.json's top-level `key` set to `value`
+// on the bag's usersettings, and the file written (user_settings_save:
+// false, with the reason on the status line, when it cannot be — the value
+// still holds for the session). The one writer of a top-level setting: the
+// language standard, the key style, the font size.
+bool setting_put(long w, long es, const char *key0, var &value)
+{
+    var key = key0;		// ring discipline: own the text first
+    var us;
+    ui::get(us, w, es, "usersettings");
+    if ( us.is_null() || !us.is_object() )
+    {
+	var top;
+	top[key.c_str()] = value;
+	us = top;
+    }
+    else
+	us[key.c_str()] = value;
+    ui::set(w, es, "usersettings", us);
+    return user_settings_save(w, es);
+}
+
 // The key style a bundle keeps (plan §41.11a step 3e): settings.json's
 // "keys" object, by bundle name (`"keys": { "chthonia": "vscode" }`), so a
 // choice made in one bundle leaves the others' keys as they ship. "" when
@@ -394,15 +437,7 @@ bool keys_choice_save(long w, long es, const char *name0)
     }
     else
 	ks[b.c_str()] = name;
-    if ( us.is_null() || !us.is_object() )
-    {
-	var top = { "keys": ks };
-	us = top;
-    }
-    else
-	us["keys"] = ks;
-    ui::set(w, es, "usersettings", us);
-    return user_settings_save(w, es);
+    return setting_put(w, es, "keys", ks);
 }
 
 void path_sans_ext(var &out, var &p);	// madcide_core.inc: THE {base} rule
@@ -424,11 +459,15 @@ void program_name(var &out)
 // WHICH bundle (§5.2): the command line's --profile (`cli`, "" = not
 // given), then the program's own name when a bundle of that name exists (a
 // `chthonia` binary, or a link named chthonia, opens the chthonia bundle
-// with no flag; owner 2026-09-30), then settings.json's "profile", then
+// with no flag; owner 2026-09-30), then settings.json's "profile", then the
+// product's bundle (<madcide/product>: chthonia's, even renamed), then
 // `default`, so nothing changes without one of them.
 void active_profile(var &out, long w, long es, const char *cli)
 {
     out = "default";
+    const char *pb = product_in_use().bundle;
+    if ( strlen(pb) > 0 )
+	out = pb;
     if ( cli != 0 && strlen(cli) > 0 )
     {
 	out = cli;
@@ -475,6 +514,7 @@ bool bundle_base_load(long w, long es, var &dir, var &why)
     if ( strlen(dir.c_str()) == 0 )
 	js::parse(base, default_bundle_text());
     ui::set(w, es, "bundlebase", base);
+    ui::set(w, es, "bundlebasedir", dir);	// its help's directory (madcide_help.inc)
     return ok;
 }
 
@@ -810,6 +850,48 @@ long plugin_command_hosted(long w, const char *name0, const char *title0,
     return code;
 }
 
+// Register a REPL command (API 3; plan §7f, the IDE layer): `%name ARGS`
+// typed in the REPL pane runs command `code` (any command: a plugin's own,
+// registered first) with ARGS. The name is one the session's rule reads as a
+// whole command name (madc::session_command_of — the one rule), names none
+// of the session's own commands or aliases, and is new. False = refused.
+bool plugin_repl_command(long w, const char *name0, const char *usage0,
+			 const char *summary0, long code)
+{
+    var name = name0;		// ring discipline: own the texts first
+    var usage = usage0;
+    var summary = summary0;
+    var q;
+    var typed = format("%{}", name);
+    if ( !madc::session_command_of(q, typed.c_str()) || !(q["word"] == name)
+	 || !(q["command"] == madc::session_command::none) )
+	return false;
+    var cn;
+    cmd_name_w(cn, w, code);
+    if ( code == cmdNONE || strlen(cn.c_str()) == 0 )
+	return false;
+    if ( registry_named_index(w, "repl", name) >= 0 )
+	return false;
+    long reg = plugin_registry_make(w);
+    var rows;
+    registry_rows(rows, w, "repl");
+    rows[] = { "name": name, "usage": usage, "summary": summary, "code": code };
+    ui::set(w, reg, "repl", rows);
+    return true;
+}
+
+// The command a REPL command name runs (plugin_repl_command); cmdNONE when
+// no plugin registered the name.
+long plugin_repl_code(long w, var &name)
+{
+    long at = registry_named_index(w, "repl", name);
+    if ( at < 0 )
+	return cmdNONE;
+    var rows;
+    registry_rows(rows, w, "repl");
+    return rows[at]["code"].as_integer();
+}
+
 // A host's invocation, sent to its child (madcide_plugin_host.inc).
 bool plugin_host_invoke(long w, long es, long doc, var &host, long hid,
 			const char *arg, var &event);
@@ -981,6 +1063,10 @@ long view_row_cmd(long kind)
 	return cmdGOTO;
     if ( kind == viewOUTLINE )
 	return cmdGOTODEF;
+    if ( kind == viewHELP )
+	return cmdHELPTOPIC;	// a link row (madcide_help.inc)
+    if ( kind == viewMDPREVIEW )
+	return cmdMDPREVIEWROW;	// a row: its line, or its link (madcide_preview.inc)
     if ( view_contributed(kind) )
 	return cmd_view_row_base() + kind - view_contrib_base();
     return cmdNONE;
@@ -993,6 +1079,10 @@ long view_of_row_cmd(long code)
 	return viewPROBLEMS;
     if ( code == cmdGOTODEF )
 	return viewOUTLINE;
+    if ( code == cmdHELPTOPIC )
+	return viewHELP;
+    if ( code == cmdMDPREVIEWROW )
+	return viewMDPREVIEW;
     if ( cmd_view_row(code) )
 	return view_contrib_base() + code - cmd_view_row_base();
     return viewNONE;
@@ -1066,6 +1156,8 @@ void view_rows_key(var &out, long w, long kind)
 	out = "diags";
     else if ( kind == viewOUTLINE )
 	out = "outline";
+    else if ( kind == viewMDPREVIEW )
+	out = "mdpreviewrows";	// madcide_preview.inc
     else if ( view_contributed(kind) )
     {
 	var r;

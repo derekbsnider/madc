@@ -1066,6 +1066,41 @@ TEST_CASE("compose — a content row's prompt / confirm hints become quick-input
     CHECK((*pl).find("popup") == (*pl).end());
 }
 
+// A root carrying only a `title` hint (`title` "" = none).
+static uinode title_tree(world &w, const char *title)
+{
+    roles r = roles::standard(w);
+    uinode root(r.group);
+    uinode edit(r.edit);
+    edit.content = madc::value(std::string("ab"));
+    root.add(edit);
+    if ( *title )
+    {
+	std::map<std::string, madc::value> h;
+	h["title"] = madc::value(std::string(title));
+	root.hints = madc::value::make_object(h);
+    }
+    return root;
+}
+
+TEST_CASE("compose — the root's title hint reaches the host only when it changes")
+{
+    world w;
+    roles r = roles::standard(w);
+    web_model m;
+    m.compose(r, title_tree(w, ""));		// no title: nothing to send
+    CHECK(!m.title_changed());
+    CHECK(m.title().empty());
+    m.compose(r, title_tree(w, "madcide - a.c @ 1 : 1"));
+    CHECK(m.title_changed());
+    CHECK(m.title() == "madcide - a.c @ 1 : 1");
+    m.compose(r, title_tree(w, "madcide - a.c @ 1 : 1"));	// the same: not again
+    CHECK(!m.title_changed());
+    m.compose(r, title_tree(w, "madcide - a.c @ 2 : 1"));	// the caret moved
+    CHECK(m.title_changed());
+    CHECK(m.title() == "madcide - a.c @ 2 : 1");
+}
+
 TEST_CASE("compose — the root's menu hint becomes the host's menu JSON with bound chords, sent only on change")
 {
     world w;
@@ -1418,6 +1453,70 @@ TEST_CASE("compose — the root's toolbar hint becomes button rows with the boun
     CHECK(ev[0].kind == tui_event_kind::action);
     CHECK(ev[0].action_name == "replrun");
     CHECK(ev[0].action_code == 77);
+}
+
+TEST_CASE("compose — a toolbar row's icon goes out as its name, a separator as a divider, a drop as its action and argument")
+{
+    // An IDE toolbar: a row's `icon` (a ui::icon code) is sent
+    // as the name the page draws (ui_icon_name); a {sep} row is a divider,
+    // never leading or trailing; a row's `drop` ({action, code, arg}) is its
+    // dropdown arrow, whose code joins the action map so the posted name
+    // converts. An icon code with no name sends none.
+    world w;
+    roles r = roles::standard(w);
+    tui_bindings b;
+    std::string err;
+    REQUIRE(b.finalize(err));
+    web_model m;
+    m.set_bindings(b);
+    uinode root(r.group);
+    uinode body(r.content);
+    body.content = madc::value(std::string("x"));
+    root.add(body);
+    std::vector<madc::value> rows;
+    std::map<std::string, madc::value> sep;
+    sep["sep"] = madc::value((int64_t)1);
+    rows.push_back(madc::value::make_object(sep));	// leading: dropped
+    std::map<std::string, madc::value> open;
+    open["label"] = madc::value(std::string("Open"));
+    open["action"] = madc::value(std::string("editfile"));
+    open["icon"] = madc::value((int64_t)::ui::icon::open);
+    rows.push_back(madc::value::make_object(open));
+    rows.push_back(madc::value::make_object(sep));
+    std::map<std::string, madc::value> drop;
+    drop["action"] = madc::value(std::string("menushow"));
+    drop["code"] = madc::value((int64_t)91);
+    drop["arg"] = madc::value(std::string("Run"));
+    std::map<std::string, madc::value> run;
+    run["label"] = madc::value(std::string("Run"));
+    run["action"] = madc::value(std::string("replrun"));
+    run["icon"] = madc::value((int64_t)::ui::icon::run);
+    run["drop"] = madc::value::make_object(drop);
+    rows.push_back(madc::value::make_object(run));
+    std::map<std::string, madc::value> odd;
+    odd["label"] = madc::value(std::string("Odd"));
+    odd["action"] = madc::value(std::string("odd"));
+    odd["icon"] = madc::value((int64_t)200);	// no such icon: no name
+    rows.push_back(madc::value::make_object(odd));
+    rows.push_back(madc::value::make_object(sep));	// trailing: dropped
+    std::map<std::string, madc::value> h;
+    h["toolbar"] = madc::value::make_array(rows);
+    root.hints = madc::value::make_object(h);
+
+    nlohmann::json ops = nlohmann::json::parse(m.compose(r, root));
+    const nlohmann::json *p = node_by_key(ops, "0");
+    REQUIRE(p);
+    CHECK((*p)["toolbar"] == nlohmann::json::parse(
+	"[{\"label\":\"Open\",\"action\":\"editfile\",\"enabled\":true,\"icon\":\"open\"},"
+	"{\"sep\":true},"
+	"{\"label\":\"Run\",\"action\":\"replrun\",\"enabled\":true,\"icon\":\"run\","
+	"\"drop\":{\"action\":\"menushow\",\"arg\":\"Run\"}},"
+	"{\"label\":\"Odd\",\"action\":\"odd\",\"enabled\":true}]"));
+    // The arrow posts its action with the argument; the code converts.
+    std::vector<tui_event> ev = m.apply_input("{\"kind\":\"action\",\"action\":\"menushow\",\"arg\":\"Run\"}");
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].action_code == 91);
+    CHECK(ev[0].text == "Run");
 }
 
 TEST_CASE("compose / apply_input — a tab carries a command ARGUMENT; the action input reports it as the event's text")

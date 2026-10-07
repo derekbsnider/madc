@@ -1,0 +1,22 @@
+// A declaration list whose next declarator after a FUNCTION declarator is an
+// object's (`int a = 42, half(int a), b = 2;`): every object keeps its
+// initializer (C11 6.7p1, init-declarator-list), at block scope and file
+// scope, a pointer declarator and a later initializer reading an earlier
+// object included. A block-scope `b` came out uninitialized.
+// gcc 13.3 and clang 18.1 (-std=c11) print the .expect lines.
+#include <stdio.h>
+int twice(int), seven = 7, *pseven = &seven;
+int main(void)
+{
+	int a = 42, half(int a), b = 2;
+	int inc(int), c = 3, d = c + 1;
+	int e = 5, zero(void), *pe = &e;
+	printf("block: %d %d %d %d %d %d\n", a, b, c, d, e, *pe);
+	printf("file: %d %d\n", seven, *pseven);
+	printf("calls: %d %d %d %d\n", twice(a + b), half(10), inc(c), zero());
+	return 0;
+}
+int twice(int x) { return 2 * x; }
+int half(int x) { return x / 2; }
+int inc(int x) { return x + 1; }
+int zero(void) { return 0; }

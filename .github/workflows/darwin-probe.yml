@@ -95,8 +95,10 @@ jobs:
           echo "LIBCXX_HEADERS_HOME=$HOME/libcxx-headers" >> "$GITHUB_ENV"
           # madcgit's build-time dep: the minimal static libgit2 (#2), staged
           # under a runner-writable dir — the container's /workspace/libgit2
-          # default is unwritable here. Staged in its own step below.
+          # default is unwritable here. Staged in its own step below; madcmark's
+          # cmark-gfm likewise (src/madcmark.mk's CMARK_GFM_DIR).
           echo "LIBGIT2_DIR=$HOME/libgit2" >> "$GITHUB_ENV"
+          echo "CMARK_GFM_DIR=$HOME/cmark-gfm" >> "$GITHUB_ENV"
       - name: fetch the pinned input trees (darwin open C headers; the container's exact libc++ text)
         run: |
           make --version | head -1
@@ -129,7 +131,13 @@ jobs:
           # reads THIS host's SDK from the MODE (print-MACOS_SDK), so the recipe
           # serves the native build with no path hardcoded to the container.
           bash scripts/stage_libgit2.sh ${{ matrix.arch }}-macos
-          ls -la "$LIBGIT2_DIR/libgit2-${{ matrix.arch }}-macos.a" "$LIBGIT2_DIR/src/include/git2.h"
+          ls -la "$(bash scripts/stage_libgit2.sh --path ${{ matrix.arch }}-macos)"
+      - name: stage the static cmark-gfm (the madcmark module's build-time dep)
+        run: |
+          # release-%-macos builds the markdown:: module too, cmark-gfm
+          # linked into libmadcmark.dylib; staged like libgit2 above.
+          bash scripts/stage_cmark_gfm.sh ${{ matrix.arch }}-macos
+          ls -la "$(bash scripts/stage_cmark_gfm.sh --path ${{ matrix.arch }}-macos)"
       - name: make release-macos — host arch, self-frozen, stripped, verified
         run: |
           make -C src -j"$(sysctl -n hw.ncpu)" release-macos 2>&1 | tee probe-make.log
@@ -137,6 +145,7 @@ jobs:
           echo "=== freeze + verify evidence ==="
           grep -E "forest_pack_gate:|forest_pack_darwin: OK|verify_macho_release:|Froze " probe-make.log
           ls -la bin/madc-hosted-${{ matrix.arch }}-macos bin/madc-release-${{ matrix.arch }}-macos \
+                 obj/hosted-${{ matrix.arch }}-macos/libmadc-0.dylib lib/libmadc-0.dylib \
                  obj/hosted-${{ matrix.arch }}-macos/forest.bin obj/hosted-${{ matrix.arch }}-macos/madc-freezer \
                  lib/libmadc_rt-hosted-${{ matrix.arch }}-macos.a
           echo "forest units (container cross-pack baseline: 835):"
@@ -147,7 +156,7 @@ jobs:
           mkdir -p tmp/freeze-evidence
           cp obj/hosted-${{ matrix.arch }}-macos/forest.bin.dump.txt obj/hosted-${{ matrix.arch }}-macos/forest.bin.freeze.log \
              obj/hosted-${{ matrix.arch }}-macos/forest.bin.tu.cpp obj/hosted-${{ matrix.arch }}-macos/sys_include_paths.cpp \
-             obj/hosted-${{ matrix.arch }}-macos/darwin_prelude/.MANIFEST src/predefined_macros.cpp tmp/freeze-evidence/
+             obj/hosted-${{ matrix.arch }}-macos/darwin_prelude/.MANIFEST obj/hosted-${{ matrix.arch }}-macos/predefined_macros.cpp tmp/freeze-evidence/
           cp obj/hosted-${{ matrix.arch }}-macos/darwin_prelude/*.h tmp/freeze-evidence/ 2>/dev/null || true
           ls -la tmp/freeze-evidence
       - name: run the STRIPPED release binary — the hello gate
@@ -159,12 +168,14 @@ jobs:
           bin/madc-release-${{ matrix.arch }}-macos --version | head -1
       - name: mac battery on the runner (tarball-shaped stage)
         run: |
-          # The battery expects the tarball layout: bin/madc + lib/libmadc_rt.a
-          # beside it (leg 6c). Owner-hardware baseline: 8 passed / 3 failed
-          # (three standing known-opens) — the gate holds the PASS floor and
-          # prints every FAIL line for the leg-for-leg compare.
+          # The battery expects the tarball layout: the thin bin/madc, the
+          # lib/libmadc-0.dylib it loads (the engine + the forest), and
+          # lib/libmadc_rt.a beside it (leg 6c). Owner-hardware baseline: 8
+          # passed / 3 failed (three standing known-opens) — the gate holds the
+          # PASS floor and prints every FAIL line for the leg-for-leg compare.
           mkdir -p tmp/stage/bin tmp/stage/lib
           cp bin/madc-release-${{ matrix.arch }}-macos tmp/stage/bin/madc
+          cp obj/hosted-${{ matrix.arch }}-macos/libmadc-0.dylib tmp/stage/lib/libmadc-0.dylib
           cp lib/libmadc_rt-hosted-${{ matrix.arch }}-macos.a tmp/stage/lib/libmadc_rt.a
           set +e
           bash scripts/mac_battery.sh tmp/stage/bin/madc 2>&1 | tee mac-battery.log

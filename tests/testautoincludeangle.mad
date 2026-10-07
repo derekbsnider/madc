@@ -1,0 +1,45 @@
+// A header a madc program includes with angle brackets from one of its own
+// include directories (-I, a manifest's "include_dirs") is the program's
+// code, not a system header: the dialect's include-free service reaches it
+// as it reaches the main file and a quoted module. Its bare `php::` and
+// `madc::` mentions resolve though the main file mentions neither.
+// madcide's <madcide/harness> is such a header: a product's test includes
+// it from madcide's installed include directory.
+// Before the fix the program was refused: "Unknown namespace or class 'php'"
+// at the header's mention (the angle spelling was read as a system header).
+// Oracle: g++ 13 and clang++ 18 classify by directory, not by spelling: a
+// header found through -I is the user's (`-Wall` reports an unused
+// variable in it), the same header through -isystem is a system header
+// (nothing reported).
+int main()
+{
+	var dir = "tmp/testautoincludeangle";
+	var inc = format("{}/inc", dir);
+	php::mkdir(dir.c_str());
+	php::mkdir(inc.c_str());
+	var hdr = format("{}/aia_helper", inc);
+	php::file_put_contents(hdr.c_str(),
+		"inline long aia_count(var &v) { return php::count(v); }\n"
+		"inline long aia_nap() { madc::sleep_ms(1); return 1; }\n");
+	var src = format("{}/prog.mad", dir);
+	php::file_put_contents(src.c_str(),
+		"#include <aia_helper>\n"
+		"int main()\n{\n\tvar v = { 1, 2, 3 };\n"
+		"\tprintln(\"aia: count={} nap={}\", aia_count(v), aia_nap());\n"
+		"\treturn 0;\n}\n");
+	var abs_inc;
+	madc::canonical_path(abs_inc, inc.c_str());
+	var incs = { abs_inc };
+	var tu = { "file": "prog.mad", "include_dirs": incs };
+	var tus = { tu };
+	var m = { "tus": tus };
+	var manifest = format("{}/prog.prj.json", dir);
+	php::file_put_contents(manifest.c_str(), js::stringify(m));
+	println("run: status={}", madc::project_run(manifest.c_str()));
+	php::unlink(manifest.c_str());
+	php::unlink(src.c_str());
+	php::unlink(hdr.c_str());
+	php::rmdir(inc.c_str());
+	php::rmdir(dir.c_str());
+	return 0;
+}

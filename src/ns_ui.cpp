@@ -38,6 +38,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <deque>
 #include <fstream>
 #include <map>
@@ -100,8 +101,8 @@ const std::string *find_embedded_header(const std::string &name);
 // A script-hosted ui TARGET (the web target is one, a test fake is
 // another): a table of C function pointers a madc fragment fills and
 // registers ONCE under a target name. LAYOUT CONTRACT with the script-side
-// declaration in include/madc/ns_ui (namespace ui) — the same four
-// pointers in the same order, append-only, keep both in sync. The engine
+// declaration in include/madc/ns_ui (namespace ui) — the same pointers in
+// the same order, append-only, keep both in sync. The engine
 // calls them on the opening thread only (design §3.7).
 namespace ui {
     typedef void *(*ui_host_open_fn)(const char *title, const char *page,
@@ -114,6 +115,8 @@ namespace ui {
     typedef int64_t (*ui_host_tick_fn)(void *host, int64_t ms);
     typedef int64_t (*ui_host_clip_set_fn)(void *host, const char *text);
     typedef const char *(*ui_host_clip_get_fn)(void *host);
+    typedef int64_t (*ui_host_title_fn)(void *host, const char *text);
+    typedef int64_t (*ui_host_fullscreen_fn)(void *host, int64_t on);
     struct ui_host_ops
     {
 	ui_host_open_fn	 open;	// build the surface; the engine's `ctx` is
@@ -142,6 +145,18 @@ namespace ui {
 				// now ("" = it holds none); the host owns it
 				// until its next call; NULL = no clipboard
 				// here; optional
+	ui_host_title_fn title;	// show `text` as the window's title (the
+				// composed root's `title` hint, sent when it
+				// changes); 0 = shown; optional
+	ui_host_fullscreen_fn fullscreen; // the window full screen: on = 1
+				// enters, 0 leaves, -1 toggles its current
+				// state; 0 = done; nonzero = not here;
+				// optional
+	const char *identity;	// the host's name for itself (a host
+				// fragment's header name, "ns_ui_web"): two
+				// registrations stating one identity are one
+				// host, from whichever image; NULL = none
+				// (the entries say it); optional
     };
 }
 
@@ -246,6 +261,9 @@ struct ui_frontend
     virtual bool clipboards() const { return false; }
     virtual bool clipboard_set(const char *) { return false; }
     virtual bool clipboard_get(std::string &) { return false; }
+    // The window full screen (on: 1 enter, 0 leave, -1 toggle). A grid is
+    // the terminal's own window: false.
+    virtual bool fullscreen(int) { return false; }
 };
 
 struct ui_grid_frontend : ui_frontend
@@ -486,6 +504,10 @@ struct ui_dom_frontend : ui_frontend
 	// against the bindings, reaches the host only when it changed.
 	if ( ops->menu && model.menu_changed() )
 	    ops->menu(host, model.menu_json().c_str());
+	// The window's title: the composed root's `title` hint, sent when it
+	// changed and is not empty.
+	if ( ops->title && model.title_changed() && !model.title().empty() )
+	    ops->title(host, model.title().c_str());
     }
     // The window's wait is the cooperative scheduler's ONE blocking
     // decision, as the terminal's is (src/ui_term.cpp): fire what is due
@@ -605,6 +627,10 @@ struct ui_dom_frontend : ui_frontend
 	    return false;
 	out = t;
 	return true;
+    }
+    bool fullscreen(int on)
+    {
+	return host && ops->fullscreen && ops->fullscreen(host, on) == 0;
     }
 };
 
@@ -1639,6 +1665,14 @@ int64_t lens_to_stored(madc::value &map, int64_t display)
     return (int64_t)m.to_stored((size_t)display);
 }
 
+int64_t lens_to_stored_after(madc::value &map, int64_t display)
+{
+    madc::hub::doc_map m;
+    if ( display < 0 || !madc::hub::doc_map::from_value(map, m) )
+	return -1;
+    return (int64_t)m.to_stored_after((size_t)display);
+}
+
 // ---- the target-generic session surface (slice 2): open(target) ------
 // The MODEL owns layout, focus, key semantics and diffing; a FRONTEND
 // pairs it with the thing that shows it — the grid frontend behind the
@@ -1751,6 +1785,19 @@ void page_html(madc::value &out)
     out = madc::value(ui_dom_frontend::page_html());
 }
 
+// Two registrations of one name are the same host when they state the same
+// identity, or, when the host states none, hold the same entries. Entries
+// identify a host only inside one image: a library and the program that
+// links it are two images, each with its own copy of a host fragment's
+// functions (g++ and clang++ give the same two copies without -rdynamic), so
+// their tables differ though the host is one.
+static bool same_host(const ui_host_ops &a, const ui_host_ops &b)
+{
+    if ( a.identity && a.identity[0] && b.identity )
+	return strcmp(a.identity, b.identity) == 0;
+    return memcmp(&a, &b, sizeof a) == 0;
+}
+
 bool register_host(const char *target, ui::level lvl, const ui_host_ops *ops)
 {
     std::string name = target ? target : "";
@@ -1766,6 +1813,14 @@ bool register_host(const char *target, ui::level lvl, const ui_host_ops *ops)
 		name.c_str());
 	return false;
     }
+    // The same host registered again is already served: each unit of a
+    // multi-unit program that names its level runs the host fragment's
+    // initializer (<ns_ui_web>'s, the <iostream> ios_base::Init shape), and
+    // so does each image — a library the program links (libmadcide) names
+    // the level too. Another host under a taken name is refused.
+    if ( const ui_host_reg *had = ui_host_named(name) )
+	if ( had->level == lvl && same_host(*had->ops, *ops) )
+	    return true;
     if ( name == "term" || ui_host_named(name) )
     {
 	fprintf(stderr, "ui::register_host: target '%s' is already registered\n",
@@ -1857,6 +1912,14 @@ bool clipboard_get(madc::value &out, int64_t t)
     }
     out = madc::value(lf);
     return true;
+}
+
+// The window full screen (View ▸ Full screen): on = 1 enters, 0 leaves, -1
+// toggles the window's current state.
+bool fullscreen(int64_t t, int64_t on)
+{
+    ui_frontend *f = ui_frontend_get(t);
+    return f && f->fullscreen(on < 0 ? -1 : on != 0);
 }
 
 int64_t rows(int64_t t)
@@ -2178,6 +2241,21 @@ const char *side_name(int64_t code)
     if ( code < (int64_t)ui::side::none || code > (int64_t)ui::side::bottom )
 	return "";
     return madc::hub::ui_side_name((ui::side)code);
+}
+
+int64_t icon_code(const char *name)
+{
+    madc::hub::ui_icon ic;
+    if ( !name || !madc::hub::ui_icon_from_name(name, ic) )
+	return (int64_t)ui::icon::none;
+    return (int64_t)ic;
+}
+
+const char *icon_name(int64_t code)
+{
+    if ( code < (int64_t)ui::icon::none || code > (int64_t)ui::icon::breakpoints )
+	return "";
+    return madc::hub::ui_icon_name((ui::icon)code);
 }
 
 // ---- level-1 TUI (R5): the "term" target's spellings ------------------

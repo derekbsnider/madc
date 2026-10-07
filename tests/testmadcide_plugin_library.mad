@@ -72,10 +72,10 @@ void plugin_fixture(var &files, var &made, var &plugins, const char *name,
     mkdirs(made, dir.c_str());
     var mp = format("{}/{}.plugin", dir, name);
     if ( strlen(code) == 0 )
-	put(files, mp, format("{{\"name\": \"{}\", \"api\": 2}}\n", name));
+	put(files, mp, format("{{\"name\": \"{}\", \"api\": 3}}\n", name));
     else
     {
-	put(files, mp, format("{{\"name\": \"{}\", \"api\": 2, \"code\": \"{}\"}}\n",
+	put(files, mp, format("{{\"name\": \"{}\", \"api\": 3, \"code\": \"{}\"}}\n",
 			      name, code));
 	var sp = format("{}/{}", dir, code);
 	put(files, sp, source);
@@ -161,6 +161,8 @@ int main()
 	"        return false;\n"
 	"    if ( ide::command(w, \"greetagain\", \"Greet again\", hello_again) == 0 )\n"
 	"        return false;\n"
+	"    if ( !ide::repl_command(w, \"hi\", \"%hi [WHO]\", \"greet WHO\", hello_greet) )\n"
+	"        return false;\n"
 	"    return ide::view(w, \"hellolist\", \"Hello\", \"hello.rows\", 0) != 0;\n"
 	"}\n");
     plugin_fixture(files, made, plugins, "srconly", "srconly.mad",
@@ -177,12 +179,12 @@ int main()
 	"}\n");
     plugin_fixture(files, made, plugins, "stale", "stale.mad",
 	"#include <madcide/plugin_api>\n"
-	"extern \"C\" long madcide_plugin_api()\n{\n    return 3;\n}\n"
+	"extern \"C\" long madcide_plugin_api()\n{\n    return 4;\n}\n"
 	"extern \"C\" bool madcide_plugin_activate(const ide_api *api, long w)\n"
 	"{\n    return true;\n}\n");
     plugin_fixture(files, made, plugins, "future", "future.mad",
 	"#include <madcide/plugin_api>\n"
-	"extern \"C\" long madcide_plugin_api()\n{\n    return 3;\n}\n"
+	"extern \"C\" long madcide_plugin_api()\n{\n    return 4;\n}\n"
 	"extern \"C\" bool madcide_plugin_activate(const ide_api *api, long w)\n"
 	"{\n    return true;\n}\n");
     plugin_fixture(files, made, plugins, "noentry", "noentry.mad",
@@ -215,7 +217,7 @@ int main()
 	"}\n");
     var amp = format("{}/asks/asks.plugin", plugins);
     php::file_put_contents(amp.c_str(),
-	"{\"name\": \"asks\", \"api\": 2, \"code\": \"asks.mad\", \"transport\": \"host\"}\n");
+	"{\"name\": \"asks\", \"api\": 3, \"code\": \"asks.mad\", \"transport\": \"host\"}\n");
 
     // 1. --build-plugin's owner.
     build(files, plugins, "hello");
@@ -225,7 +227,7 @@ int main()
     build(files, plugins, "broken");
     build(files, plugins, "nocode");
     build(files, plugins, "stale");
-    // stale's library stays built against API 3; its source is then fixed.
+    // stale's library stays built against API 4; its source is then fixed.
     var stsrc = format("{}/stale/stale.mad", plugins);
     php::file_put_contents(stsrc.c_str(),
 	"#include <madcide/plugin>\n"
@@ -265,9 +267,13 @@ int main()
     run_named(S, doc, "stalecmd", "");
     var vn = "hellolist";
     println("hello-view: {}", view_of_w(S.w, vn) != viewNONE ? 1 : 0);
+    // Its REPL command (API 3): `%hi` runs its command, the one it registered.
+    var hn = "hi";
+    long hc = cmd_of_w(S.w, "hi");
+    println("hello-repl: {}", hc != cmdNONE && plugin_repl_code(S.w, hn) == hc ? 1 : 0);
 
     // 3. A second view of the world activates nothing twice (the active rows:
-    // the three plugins and madcide's builtin REPL pane).
+    // the three plugins and madcide's builtin modules, the REPL pane and git).
     long es2 = S.spawn_view(doc);
     var m2;
     ui::get(m2, S.w, es2, "msg");

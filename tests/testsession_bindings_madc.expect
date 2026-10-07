@@ -1,0 +1,7 @@
+madc: c type=Color value=Color::Green
+madc: count type=int () value=
+madc: greet type=std::string (std::string) value=
+madc: name type=std::string value="bob"
+madc: p type=Pt value={ .x = 1, .y = 2 }
+madc: vec type=std::vector<int> value={ 1, 2, 3 }
+rows=6 same-as-c++17=1

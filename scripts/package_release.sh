@@ -24,9 +24,12 @@
 #   /usr/lib/<multiarch|lib64>/libmadcwebview.so the platform webview library (WebKitGTK 6.0 / GTK4 +
 #                                               native chrome; GUI programs: import madcwebview) —
 #                                               a WEAK dependency (Recommends): madc never loads it itself
-#   /usr/lib/<multiarch|lib64>/libmadcgit.so    the madcgit module: madc's read-only git view over the
-#                                               SYSTEM libgit2 (the nexus's PAST verbs; git:: programs) —
-#                                               a WEAK dependency too: libgit2 is the IDE's, not madc's
+#   /usr/lib/<multiarch|lib64>/libmadcgit.so    the madcgit module: madc's read-only git view, the
+#                                               pinned libgit2 linked in statically (the nexus's PAST
+#                                               verbs; git:: programs) — no libgit2 package needed
+#   /usr/lib/<multiarch|lib64>/libmadcmark.so   the madcmark module: Markdown parsed by cmark-gfm,
+#                                               linked in statically (markdown:: programs; the IDE's
+#                                               help and previews) — no cmark-gfm package needed
 #   /usr/share/madcide/profiles/                keybinding/theme profiles
 #   /usr/share/madcide/plugins/                 the shipped plugins (bundles: default, …)
 #   /usr/share/madcide/include/madcide/         the plugin API headers (<madcide/plugin>)
@@ -34,11 +37,22 @@
 #   /usr/share/man/man1/madc.1.gz + madcide.1.gz
 #   /usr/share/doc/madc/copyright               LICENSE (MPL-2.0)
 #   /usr/share/doc/madc/webview-copyright       webview/webview (MIT) — the webview library's notice
+#   /usr/share/doc/madc/libgit2-copyright       libgit2's COPYING — linked into libmadcgit.so
+#   /usr/share/doc/madc/cmark-gfm-copyright     cmark-gfm's notices — linked into libmadcmark.so
 #   /usr/share/doc/madc/changelog.gz            CHANGELOG.md
 #   /usr/share/doc/madc/examples/madc.ini       documented example config
 #
-# Output artifacts: madc_<ver>-<rel>_amd64.deb, madc-<ver>-<rel>.x86_64.rpm,
+# Output artifacts: madc_<ver>-<debrel>_amd64.deb, madc-<ver>-<rel>.x86_64.rpm,
 # madc-<ver>-linux-x86_64.tar.gz (+ README-linux.txt inside).
+#
+# One .deb per Ubuntu release, each built ON that release (its libc and
+# libstdc++, and its headers in the forest): on Ubuntu <debrel> is
+# <rel>~ubuntu<VERSION_ID> (0.102.0-1~ubuntu22.04), so an older release's
+# package sorts below a newer one's and a distribution upgrade upgrades it.
+# Its Depends is what the shipped binaries link, at this host's versions
+# (dpkg-shlibdeps). `--deb` builds the .deb alone — another Ubuntu release's
+# package, beside the full set built on the newest — and refreshes only its
+# line in dist/SHA256SUMS.
 #
 # libmadc.so.0 ships because madc -o executables reference it at run time
 # (DT_NEEDED); installing it to the system lib dir makes AOT output run
@@ -51,8 +65,19 @@
 set -e
 
 cd "$(dirname "$0")/.."
+DEB_ONLY=0
+case "${1:-}" in
+"") ;;
+--deb) DEB_ONLY=1 ;;
+*) echo "usage: $0 [--deb]" >&2; exit 2 ;;
+esac
 VER=$(cat VERSION)
 REL="${PKG_RELEASE:-1}"
+DEBREL=$REL
+os_id=$( (. /etc/os-release 2>/dev/null; echo "${ID:-}") )
+if [ "$os_id" = ubuntu ]; then
+    DEBREL="${REL}~ubuntu$( (. /etc/os-release; echo "$VERSION_ID") )"
+fi
 MAINT="Derek Snider <coding@psychedeliccanada.ca>"
 HOMEPAGE="https://github.com/derekbsnider/madc"
 SUMMARY="My Advanced Dialect of C - C/C++ JIT compiler and native toolchain"
@@ -107,10 +132,28 @@ make -C src -j"$(nproc)" release > /dev/null
 # libwebkitgtk-6.0-dev in release.yml) and shipped as a WEAK dependency:
 # madc itself never loads it, only a program that imports it does.
 make -C src -j"$(nproc)" libmadcwebview > /dev/null
-# The madcgit module (src/madcgit.mk): the read-only git view over the build
-# host's libgit2 (libgit2-dev in release.yml), shipped as a WEAK dependency —
-# the nexus degrades to "no repository" without it.
+# The madcgit module (src/madcgit.mk): the read-only git view, statically
+# linking the pinned libgit2 scripts/stage_libgit2.sh staged for this host
+# (the floor: 1.8.7 / 1.9.7 or newer; Ubuntu's libgit2 is 1.7.2). The
+# packages depend on no libgit2, so the stage is required: madcgit.mk's
+# system-libgit2 arm (the Homebrew formula's) would leave a runtime
+# dependency no package declares.
+lg2=$(bash scripts/stage_libgit2.sh --path host)
+if [ ! -f "$lg2" ]; then
+    echo "package_release: $lg2 missing — bash scripts/stage_libgit2.sh host" >&2
+    exit 1
+fi
 make -C src -j"$(nproc)" libmadcgit > /dev/null
+# The madcmark module (src/madcmark.mk): Markdown, statically linking the
+# pinned cmark-gfm scripts/stage_cmark_gfm.sh staged for this host. Required
+# for the same reason as libgit2's stage: the system arm (the Homebrew
+# formula's) links a shared cmark-gfm no package declares.
+cm=$(bash scripts/stage_cmark_gfm.sh --path host)
+if [ ! -f "$cm/libcmark-gfm.a" ]; then
+    echo "package_release: $cm/libcmark-gfm.a missing — bash scripts/stage_cmark_gfm.sh host" >&2
+    exit 1
+fi
+make -C src -j"$(nproc)" libmadcmark > /dev/null
 
 if ldd bin/madc-release | grep -Eq "qdbm|gdbm|libdb|sqlite"; then
     echo "package_release: distribution binary still links storage libs" >&2
@@ -125,6 +168,12 @@ fi
 echo "== madcide (AOT via the release compiler) =="
 ( ulimit -t 240; timeout 300 bin/madc-release -o tmp/madcide-pkg tools/madcide/madcide.mad )
 strip --strip-unneeded tmp/madcide-pkg
+# libmadcide: madcide's base as the library a product links (a product's
+# manifest names it in its "libs"), built by the same compiler into that
+# compiler's own lib directory (bin/../lib), where a manifest's library is
+# found first.
+echo "== libmadcide (via the release compiler) =="
+( ulimit -t 240; timeout 300 bin/madc-release -shared -o lib/libmadcide.so tools/madcide/madcide_base.mad )
 # The shipped plugins: a plugin with code carries its library, built by
 # this madcide (plan §41.11a step 6); every stage() copies the one set.
 echo "== madcide plugins (each with code built by the packaged madcide) =="
@@ -159,28 +208,58 @@ DEBROOT=tmp/pkgroot/deb
 stage "$DEBROOT" "usr/lib/x86_64-linux-gnu" usr
 mkdir -p "$DEBROOT/DEBIAN"
 chmod 0755 "$DEBROOT/DEBIAN"
+# Depends: the libraries the shipped binaries link, at the versions this
+# host's packages carry (dpkg-shlibdeps over a minimal debian/control). The
+# webview module is left out: its WebKitGTK and GTK are the Recommends below
+# (madc never loads it itself). The modules' references to libmadc's own
+# symbols (the host process supplies them) are warnings, kept in the log.
+SHLIB=tmp/pkgroot/shlibdeps
+mkdir -p "$SHLIB/debian"
+printf 'Source: madc\n\nPackage: madc\nArchitecture: any\n' > "$SHLIB/debian/control"
+DEBLIB="$PWD/$DEBROOT/usr/lib/x86_64-linux-gnu"
+DEBBIN="$PWD/$DEBROOT/usr/bin"
+DEPENDS=$(cd "$SHLIB" && dpkg-shlibdeps -O --ignore-missing-info -l"$DEBLIB" \
+              "$DEBBIN/madc" "$DEBBIN/madcide" \
+              "$DEBLIB/libmadc.so.0" "$DEBLIB/libmadcide.so" \
+              "$DEBLIB/libmadcgit.so" "$DEBLIB/libmadcmark.so" 2> shlibdeps.log |
+          sed -n 's/^shlibs:Depends=//p')
+if [ -z "$DEPENDS" ]; then
+    echo "package_release: dpkg-shlibdeps named no dependencies (see $SHLIB/shlibdeps.log)" >&2
+    exit 1
+fi
 cat > "$DEBROOT/DEBIAN/control" << EOF
 Package: madc
-Version: ${VER}-${REL}
+Version: ${VER}-${DEBREL}
 Section: devel
 Priority: optional
 Architecture: amd64
 Maintainer: ${MAINT}
-Depends: libc6 (>= 2.38), libstdc++6, libgcc-s1, zlib1g, libzstd1
-Recommends: libwebkitgtk-6.0-4, libgtk-4-1, libgit2-1.7
+Depends: ${DEPENDS}
+Recommends: libwebkitgtk-6.0-4, libgtk-4-1
 Homepage: ${HOMEPAGE}
 Description: ${SUMMARY}
 $(printf '%s\n' "$DESC_BODY" | sed 's/^/ /')
 EOF
 printf 'activate-noawait ldconfig\n' > "$DEBROOT/DEBIAN/triggers"
-DEB="dist/madc_${VER}-${REL}_amd64.deb"
+DEB="dist/madc_${VER}-${DEBREL}_amd64.deb"
 dpkg-deb --build --root-owner-group "$DEBROOT" "$DEB"
+if [ "$DEB_ONLY" = 1 ]; then
+    echo "== install gate (the .deb) =="
+    bash scripts/package_install_gate.sh deb "$DEB"
+    ( cd dist && { grep -v "  $(basename "$DEB")\$" SHA256SUMS 2>/dev/null || true
+                   sha256sum "$(basename "$DEB")"; } > SHA256SUMS.new && mv SHA256SUMS.new SHA256SUMS )
+    echo "packaged $DEB (Depends: $DEPENDS)"
+    exit 0
+fi
 
 # ---------- rpm ----------
 RPMTOP=$(pwd)/tmp/rpmtop
 mkdir -p "$RPMTOP"/{BUILD,RPMS,SPECS,SOURCES,BUILDROOT}
 BUILDROOT="$RPMTOP/BUILDROOT/madc-${VER}-${REL}.x86_64"
 stage "$BUILDROOT" "usr/lib64" usr
+# %files names the staged layout's directories, never its files:
+# stage_install.sh is the one owner of what ships (the deb and the tarball
+# take its tree whole), so a newly staged file needs no edit here.
 cat > "$RPMTOP/SPECS/madc.spec" << EOF
 Name: madc
 Version: ${VER}
@@ -195,7 +274,7 @@ Recommends: gtk4
 # The webview library's own DT_NEEDED (webkitgtk, gtk4 and their world) must
 # not become hard Requires of the whole package: the GUI is optional, the
 # weak dependencies above name it.
-%global __requires_exclude_from ^/usr/lib64/(libmadcwebview|libmadcgit)\\.so\$
+%global __requires_exclude_from ^/usr/lib64/(libmadcwebview|libmadcgit|libmadcmark)\\.so\$
 %define __strip /bin/true
 %define _build_id_links none
 
@@ -206,20 +285,11 @@ ${DESC_BODY}
 %postun -p /sbin/ldconfig
 
 %files
-/usr/bin/madc
-/usr/bin/madcide
-/usr/lib64/libmadc.so.0
-/usr/lib64/libmadc.so
-/usr/lib64/libmadc_rt.a
-/usr/lib64/libmadcwebview.so
-/usr/lib64/libmadcgit.so
+/usr/bin/*
+/usr/lib64/*
 /usr/share/madcide
-%doc /usr/share/doc/madc/copyright
-%doc /usr/share/doc/madc/webview-copyright
-%doc /usr/share/doc/madc/changelog.gz
-%doc /usr/share/doc/madc/examples/madc.ini
-/usr/share/man/man1/madc.1.gz
-/usr/share/man/man1/madcide.1.gz
+%doc /usr/share/doc/madc
+/usr/share/man/man1/*
 EOF
 rpmbuild --define "_topdir $RPMTOP" --buildroot "$BUILDROOT" -bb "$RPMTOP/SPECS/madc.spec"
 cp "$RPMTOP/RPMS/x86_64/madc-${VER}-${REL}.x86_64.rpm" dist/
@@ -263,11 +333,16 @@ it from this lib/; madcide's window mode is one:
 
     bin/madcide file.c --gui
 
-Git: lib/libmadcgit.so is madc's read-only view of a git repository over
-the system libgit2 (the \`git::\` namespace; madcide's MCP seat reads
-history, blame and revisions through it). It is loaded on first use, so
-without libgit2 installed madc runs unchanged and the IDE's history
-answers as for a file outside any repository.
+Git: lib/libmadcgit.so is madc's read-only view of a git repository, with
+libgit2 linked into it (the \`git::\` namespace; madcide's MCP seat reads
+history, blame and revisions through it). It is loaded on first use and
+needs no libgit2 installed; libgit2's notice is
+share/doc/madc/libgit2-copyright.
+
+Markdown: lib/libmadcmark.so parses Markdown with cmark-gfm linked into
+it (the \`markdown::\` namespace; the IDEs' help and previews read
+through it). It is loaded on first use and needs no cmark-gfm installed;
+cmark-gfm's notice is share/doc/madc/cmark-gfm-copyright.
 
 It needs the WebKitGTK 6.0 and GTK 4 runtime libraries installed
 (Debian/Ubuntu: libwebkitgtk-6.0-4 libgtk-4-1; Fedora: webkitgtk6.0
@@ -302,7 +377,7 @@ bash scripts/package_install_gate.sh rpm "dist/madc-${VER}-${REL}.x86_64.rpm"
 bash scripts/package_install_gate.sh tar "dist/$TROOT.tar.gz"
 
 # ---------- checksums ----------
-( cd dist && sha256sum "madc_${VER}-${REL}_amd64.deb" "madc-${VER}-${REL}.x86_64.rpm" \
+( cd dist && sha256sum "$(basename "$DEB")" "madc-${VER}-${REL}.x86_64.rpm" \
                        "$TROOT.tar.gz" > SHA256SUMS )
 echo "== dist/ =="
 ls -la dist/

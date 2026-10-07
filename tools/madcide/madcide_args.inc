@@ -3,14 +3,21 @@
 // the file, and a later `ro` opens it read-only. The strings are compared
 // only here, at the input boundary: main reads the parsed record.
 //
-//   madcide [<file>] [ro] [--profile NAME] [--gui|--line] [-c "<command> [arg]"]
-//           [--serve <host:port>] [--mcp] [--lsp] [--attach [<host:port>]]
+//   madcide [<file>] [ro] [--profile NAME] [--std=STD] [--gui|--tui|--line]
+//           [-c "<command> [arg]"] [--serve <host:port>] [--mcp] [--lsp] [--attach [<host:port>]]
 //           [--no-serve] [--sessions] [--build-plugin DIR] [--help] [--] [<file>]
 //
 // No file opens the editor on an untitled buffer (decided 2026-09-30); the
 // headless faces (-c, --mcp, --lsp, --serve) act on a file and need one.
 // --build-plugin DIR builds the plugin in DIR into its library and exits
 // (plan §41.11a step 4); like --sessions it needs no file.
+//
+// The face with no flag is the product's (<madcide/product>): madcide's is
+// the console editor, chthonia's a window; --gui and --tui ask for either.
+//
+// --std=STD is the session's language standard (madcide_lang.inc), converted
+// here to its kind: a standard madc's own --std= names canonically (c17,
+// c++20, madc); unset, each file's family decides.
 //
 // `--` ends the flags (a file whose name starts with '-'). An unknown flag, a
 // flag missing its value and a second file are refused with the reason and
@@ -25,10 +32,11 @@ struct ide_args
 {
     const char *file;		// NULL = none given
     const char *profile;	// --profile NAME; NULL = not given
+    long std;			// --std=STD: a standard's kind; 0 = not given
     const char *once;		// -c "<command> [arg]"
     const char *serve;		// --serve <host:port>
     const char *attach_addr;	// --attach's address; NULL = discover
-    ui::level level;		// --gui (ui::WEB), --line (ui::LINE), else ui::TUI
+    ui::level level;		// --gui (ui::WEB), --tui (ui::TUI), --line (ui::LINE), else the product's
     bool ro;
     bool mcp;
     bool lsp;
@@ -39,15 +47,19 @@ struct ide_args
     bool help;			// --help / -h
 };
 
-// The usage text (printed for --help, and after a refusal).
-const char *ide_usage()
+// The usage text (printed for --help, and after a refusal), under the
+// product's name.
+void ide_usage(var &out)
 {
-    return "usage: madcide [<file>] [ro] [--profile NAME] [--gui|--line] [--no-serve]  (no file = an untitled buffer)\n"
-	   "       madcide <file> [ro] [--profile NAME] [-c \"<command> [arg]\"] [--serve <host:port>] [--mcp] [--lsp [--serve <host:port>]]\n"
+    var text = "usage: madcide [<file>] [ro] [--profile NAME] [--std=STD] [--gui|--tui|--line] [--no-serve]  (no file = an untitled buffer)\n"
+	   "       madcide <file> [ro] [--profile NAME] [--std=STD] [-c \"<command> [arg]\"] [--serve <host:port>] [--mcp] [--lsp [--serve <host:port>]]\n"
 	   "       madcide <file> --lsp|--mcp --attach [<host:port>]  (join a running session; no address = discover one)\n"
 	   "       madcide --sessions                                 (what is running, and how to join it)\n"
 	   "       madcide --build-plugin DIR                         (build the plugin in DIR into its library)\n"
-	   "       --profile NAME   the profile (a bundle of keys, layout, menu and settings; default: settings.json's \"profile\", else default)\n";
+	   "       --profile NAME   the profile (a bundle of keys, layout, menu and settings; default: settings.json's \"profile\", else default)\n"
+	   "       --std=STD        the language standard (c17, c++17, madc, ...; default: settings.json's \"std\", else each file's own)\n";
+    var pn = format("{} ", product_in_use().name);
+    out = php::str_replace("madcide ", pn.c_str(), text);
 }
 
 // A flag's value: the index of the next word, or 0 when there is none (`why`
@@ -80,10 +92,11 @@ bool ide_args_parse(ide_args &a, var &why, int argc, const char **argv)
 {
     a.file = NULL;
     a.profile = NULL;
+    a.std = 0;
     a.once = NULL;
     a.serve = NULL;
     a.attach_addr = NULL;
-    a.level = ui::TUI;
+    a.level = product_in_use().level;
     a.ro = false;
     a.mcp = false;
     a.lsp = false;
@@ -102,6 +115,8 @@ bool ide_args_parse(ide_args &a, var &why, int argc, const char **argv)
 		flags = false;
 	    else if ( strcmp(w, "--gui") == 0 )
 		a.level = ui::WEB;
+	    else if ( strcmp(w, "--tui") == 0 )
+		a.level = ui::TUI;
 	    else if ( strcmp(w, "--line") == 0 )
 		a.level = ui::LINE;
 	    else if ( strcmp(w, "--mcp") == 0 )
@@ -114,6 +129,15 @@ bool ide_args_parse(ide_args &a, var &why, int argc, const char **argv)
 		a.sessions = true;
 	    else if ( strcmp(w, "--help") == 0 || strcmp(w, "-h") == 0 )
 		a.help = true;
+	    else if ( strncmp(w, "--std=", 6) == 0 )
+	    {
+		a.std = lang_kind_of(w);
+		if ( a.std == madc::fkUNKNOWN )
+		{
+		    why = format("{} names no standard (c89 ... c23, c++98 ... c++26, madc)", w);
+		    return false;
+		}
+	    }
 	    else if ( strcmp(w, "-c") == 0 || strcmp(w, "--serve") == 0
 		      || strcmp(w, "--profile") == 0
 		      || strcmp(w, "--build-plugin") == 0 )
@@ -174,4 +198,15 @@ const char *ide_face_needs_file(ide_args &a)
     if ( a.serve != NULL )
 	return "--serve";
     return NULL;
+}
+
+// The flags open the WINDOW (ui::WEB, the editor face) and nothing that
+// speaks on the standard streams: the help, a one-shot, a protocol server,
+// the attach relay, --sessions and --build-plugin all do. Every other run
+// needs a console (madc::console_attach — a Windows GUI image starts
+// without one).
+bool ide_face_is_window(ide_args &a)
+{
+    return a.level == ui::WEB && !a.help && ide_face_needs_file(a) == NULL
+	&& !a.attach && !a.sessions && a.build_plugin == NULL;
 }

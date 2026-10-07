@@ -1,0 +1,90 @@
+// Help ▸ About in the window (docs/plans/2026-10-03-chthonia-windows-macos.md
+// §7a): the `about` action posted from the page opens the About pane as a
+// dialog — titled `About <title>`, the descriptor's lines (madcide_product.inc
+// product_about), each blank line between the parts a real blank line of the
+// list's height (an empty row is not collapsed), and a Close button that
+// closes it. Runs under Xvfb through the gui lane.
+#include "../../tools/texteditor/lined_core.inc"
+#include "../../tools/texteditor/editor_events.inc"
+#include "../../tools/madcide/madcide_core.inc"
+
+const ide_product about_product = { "learner", "", ui::WEB, "", 0, "Learner", "9.8.7",
+				    "https://example.org/learner", "A. Holder",
+				    "Line one.\nLine two." };
+
+void render(IdeSession &S, long t, long doc)
+{
+    var tree;
+    S.compose_ide_tree(tree, doc);
+    ui::render(t, S.w, tree);
+}
+
+int main()
+{
+    const char *path = "madc_ide_about_gui.c";
+    php::file_put_contents(path, "int main(void) { return 0; }\n");
+    product_use(about_product);
+    IdeSession S;
+    long doc = S.open(path, false);
+    long t = ui::open(ui::WEB);
+    if ( !t )
+	return 1;
+    println("ABOUT open");
+    var ev;
+    int stage = 0;
+    while ( ui::event(ev, t, S.w) )
+    {
+	if ( ev["event"] == "resize" )
+	{
+	    if ( stage != 0 )
+		continue;
+	    stage = 1;
+	    S.viewport(ui::cols(t), ui::rows(t));
+	    render(S, t, doc);
+	    ui::eval_page(t, "window.madc(JSON.stringify({kind:'action',action:'about'}))");
+	}
+	else if ( ev["event"] == "action" )
+	{
+	    var an;
+	    cmd_name_w(an, S.world(), ev_code(ev));
+	    println("ABOUT action={}", an);
+	    S.apply_ide_event(doc, ev);
+	    render(S, t, doc);
+	    if ( stage == 1 )
+	    {
+		stage = 2;
+		// The dialog's title, its rows, its blank rows, and the blank
+		// rows drawn shorter than a line (collapsed).
+		ui::eval_page(t, "(function(){var rows=document.querySelectorAll('.dlg-list .opt');"
+		    "var blank=0,flat=0;for(var i=0;i<rows.length;i++){if(rows[i].textContent===''){blank++;"
+		    "if(rows[i].getBoundingClientRect().height<10)flat++;}}"
+		    "var tt=document.querySelector('.dlg-title');"
+		    "window.madc(JSON.stringify({kind:'snapshot',text:'title='+(tt?tt.textContent:'')"
+		    "+' rows='+rows.length+' blank='+blank+' flat='+flat}));})()");
+	    }
+	    else if ( stage == 3 )
+	    {
+		stage = 4;
+		ui::eval_page(t, "window.madc(JSON.stringify({kind:'snapshot',"
+		    "text:'closed='+(document.querySelector('.dlg-list')?0:1)}))");
+	    }
+	}
+	else if ( ev["event"] == "snapshot" )
+	{
+	    println("ABOUT {}", ev["text"]);
+	    if ( stage == 2 )
+	    {
+		stage = 3;
+		ui::eval_page(t, "(function(){var b=document.querySelectorAll('button.cf-btn');"
+		    "for(var k=0;k<b.length;k++)if(b[k].textContent==='Close')b[k].click();})()");
+	    }
+	    else if ( stage == 4 )
+		break;
+	}
+    }
+    S.close();
+    ui::close(t);
+    remove(path);
+    println("ABOUT closed");
+    return 0;
+}

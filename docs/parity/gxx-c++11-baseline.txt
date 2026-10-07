@@ -120,6 +120,14 @@
 #   indirection (`noexcept(*p)`) and an explicit destructor call
 #   (`x.~T()`, the destructor's specification) — cpp0x/constexpr-noexcept4 and
 #   cpp0x/noexcept10 pass.
+# EXPOSED + SHRUNK 2026-10-05 (444 -> 444): a const object holds a parse-time
+#   value only when its constant initializer was baked (Variable::
+#   holds_constant_value), and the bake reads the one constant evaluator —
+#   cpp0x/constexpr-cache1 passes. cpp0x/sfinae69 compiled only because
+#   `static_assert(!b)` read b's unset slot as 0; b's initializer, a SFINAE
+#   constexpr call with explicit template arguments and a class prvalue
+#   argument (`is_throwable<moveonly>(moveonly{})`), is outside the evaluator
+#   (BUGS.md B182), so b is no constant and the assertion refuses, honestly.
 
 g++.dg/cpp0x/addressof3.C
 g++.dg/cpp0x/alias-decl-15.C
@@ -141,7 +149,6 @@ g++.dg/cpp0x/auto19.C
 g++.dg/cpp0x/auto23.C
 g++.dg/cpp0x/auto40.C
 g++.dg/cpp0x/auto47.C
-g++.dg/cpp0x/constexpr-104226.C
 g++.dg/cpp0x/constexpr-105321.C
 g++.dg/cpp0x/constexpr-52282-1.C
 g++.dg/cpp0x/constexpr-52892-2.C
@@ -181,7 +188,6 @@ g++.dg/cpp0x/constexpr-base7.C
 g++.dg/cpp0x/constexpr-bitfield2.C
 g++.dg/cpp0x/constexpr-bitfield3.C
 g++.dg/cpp0x/constexpr-builtin4.C
-g++.dg/cpp0x/constexpr-cache1.C
 g++.dg/cpp0x/constexpr-comma1.C
 g++.dg/cpp0x/constexpr-compare1.C
 g++.dg/cpp0x/constexpr-compare2.C
@@ -307,8 +313,6 @@ g++.dg/cpp0x/initlist-deduce2.C
 g++.dg/cpp0x/initlist-deduce3.C
 g++.dg/cpp0x/initlist-explicit-sfinae.C
 g++.dg/cpp0x/initlist-explicit2.C
-g++.dg/cpp0x/initlist-opt2.C
-g++.dg/cpp0x/initlist-opt5.C
 g++.dg/cpp0x/initlist-opt7.C
 g++.dg/cpp0x/initlist-overload1.C
 g++.dg/cpp0x/initlist-ref3.C
@@ -331,7 +335,6 @@ g++.dg/cpp0x/initlist54.C
 g++.dg/cpp0x/initlist67.C
 g++.dg/cpp0x/initlist73.C
 g++.dg/cpp0x/initlist96.C
-g++.dg/cpp0x/initlist98.C
 g++.dg/cpp0x/keywords2.C
 g++.dg/cpp0x/lambda/lambda-61148.C
 g++.dg/cpp0x/lambda/lambda-80947.C
@@ -445,6 +448,7 @@ g++.dg/cpp0x/sfinae60.C
 g++.dg/cpp0x/sfinae61.C
 g++.dg/cpp0x/sfinae63.C
 g++.dg/cpp0x/sfinae66.C
+g++.dg/cpp0x/sfinae69.C
 g++.dg/cpp0x/sfinae9.C
 g++.dg/cpp0x/std-layout1.C
 g++.dg/cpp0x/stddef.C

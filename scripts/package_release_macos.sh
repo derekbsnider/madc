@@ -10,21 +10,32 @@
 # into dist/, named
 #   madc-<ver>-macos-arm64.tar.gz / madc-<ver>-macos-x86_64.tar.gz
 # each containing
-#   madc-<ver>-macos-<arch>/bin/madc          stripped, forest-packed hosted binary
+#   madc-<ver>-macos-<arch>/bin/madc          the stripped thin CLI: it loads
+#                                             lib/libmadc-0.dylib (@loader_path/../lib)
 #   madc-<ver>-macos-<arch>/lib/libmadc_rt.a  emitted-C runtime (W3: try/catch + VLA)
-#   madc-<ver>-macos-<arch>/lib/libmadc-0.dylib  the madc runtime (D5): what a
+#   madc-<ver>-macos-<arch>/lib/libmadc-0.dylib  the madc engine and runtime (D5),
+#                                             carrying the frozen header forest
+#                                             (__MADC,__forest): what the CLI and a
 #                                             runtime-needing program madc -o builds
-#                                             loads (@rpath/libmadc-0.dylib)
+#                                             load (@rpath/libmadc-0.dylib)
 #   madc-<ver>-macos-<arch>/lib/libmadcwebview.dylib  the platform webview library
 #                                             (WKWebView + native chrome; GUI programs:
 #                                             import madcwebview) — macOS 13.3+
-#   madc-<ver>-macos-<arch>/share/man/man1/madc.1.gz
+#   madc-<ver>-macos-<arch>/lib/libmadcgit.dylib   the madcgit module (git::, libgit2 linked in)
+#   madc-<ver>-macos-<arch>/lib/libmadcmark.dylib  the madcmark module (markdown::, cmark-gfm linked in)
+#   madc-<ver>-macos-<arch>/bin/madcide       the IDE, AOT-compiled by bin/madc (darwin host of this arch only)
+#   madc-<ver>-macos-<arch>/lib/libmadcide.dylib  madcide's base as a library, for a product built on it
+#   madc-<ver>-macos-<arch>/share/madcide/    madcide's data (profiles, plugins, plugin headers,
+#                                             verbs, checks — scripts/stage_madcide_data.sh)
+#   madc-<ver>-macos-<arch>/share/man/man1/madc.1.gz (+ madcide.1.gz with the IDE)
 #   madc-<ver>-macos-<arch>/share/doc/madc/examples/madc.ini
 #   madc-<ver>-macos-<arch>/LICENSE
 #   madc-<ver>-macos-<arch>/THIRD_PARTY_NOTICES/libc++-copyright.txt
 #   madc-<ver>-macos-<arch>/THIRD_PARTY_NOTICES/darwin-libc-NOTICE.txt
 #   madc-<ver>-macos-<arch>/THIRD_PARTY_NOTICES/APSL-2.0.txt
 #   madc-<ver>-macos-<arch>/THIRD_PARTY_NOTICES/webview-LICENSE.txt  (webview/webview, MIT)
+#   madc-<ver>-macos-<arch>/THIRD_PARTY_NOTICES/libgit2-COPYING.txt, cmark-gfm-COPYING.txt
+#   madc-<ver>-macos-<arch>/THIRD_PARTY_NOTICES/zstd-LICENSE.txt  (zstd, BSD — linked into libmadc-0.dylib)
 #   madc-<ver>-macos-<arch>/README-macos.txt  ad-hoc signing / quarantine notes
 # and refreshes their lines in dist/SHA256SUMS (other lines preserved — run
 # scripts/package_release.sh FIRST; it rewrites that file wholesale).
@@ -103,7 +114,7 @@ package_arch() {
     if [ "$HOST_OS" = Darwin ] && [ -z "${MADC_READER:-}" ]; then
         reader="bin/madc-hosted-${bin_arch}-macos"
     fi
-    if ! MADC_READER="$reader" bash scripts/verify_macho_release.sh "$bin" "obj/hosted-${bin_arch}-macos/forest.bin"; then
+    if ! MADC_READER="$reader" bash scripts/verify_macho_release.sh "$bin" "obj/hosted-${bin_arch}-macos/libmadc-0.dylib" "obj/hosted-${bin_arch}-macos/forest.bin"; then
         echo "package_release_macos: $bin failed verify_macho_release — refusing to package" >&2
         exit 1
     fi
@@ -121,9 +132,10 @@ package_arch() {
         echo "package_release_macos: $webview missing — run 'make -C src release-macos' first (it builds webview-${bin_arch}-macos)" >&2
         exit 1
     fi
-    # The madc runtime (D5): libmadc-0.dylib, built per arch beside forest.bin;
-    # a runtime-needing image loads it as @rpath/libmadc-0.dylib, its
-    # LC_RPATH @executable_path/../lib reaching this lib/ next to bin/.
+    # The madc engine and runtime (D5): libmadc-0.dylib, built per arch beside
+    # forest.bin and carrying it. The thin CLI and a runtime-needing image load
+    # it as @rpath/libmadc-0.dylib, their LC_RPATHs reaching this lib/ next to
+    # bin/ (the verify above checked the CLI's).
     local rtdylib="obj/hosted-${bin_arch}-macos/libmadc-0.dylib"
     if [ ! -f "$rtdylib" ]; then
         echo "package_release_macos: $rtdylib missing — run 'make -C src release-macos' first" >&2
@@ -138,6 +150,33 @@ package_arch() {
         echo "package_release_macos: $madcgit missing — run 'make -C src release-macos' first (it builds madcgit-${bin_arch}-macos)" >&2
         exit 1
     fi
+    # The madcmark module (a program that says `markdown::…`, e.g. the IDEs'
+    # help), built the same way with cmark-gfm STATIC-linked inside it.
+    local madcmark="lib/madcmark/${bin_arch}-macos/libmadcmark.dylib"
+    if [ ! -f "$madcmark" ]; then
+        echo "package_release_macos: $madcmark missing — run 'make -C src release-macos' first (it builds madcmark-${bin_arch}-macos)" >&2
+        exit 1
+    fi
+
+    # madcide (owner ruling 2026-09-01: the packages ship the IDE; chthonia
+    # plan §7 D4), AOT-compiled by THIS arch's release madc, libmadcide, and
+    # the plugins built by that madcide — the package_release.sh shape. Only
+    # a darwin host of this arch can run them (building a plugin runs the
+    # built madcide), so a cross host packages the compiler alone and says so.
+    local ide=0
+    if [ "$HOST_OS" = Darwin ] && [ "$(uname -m | sed 's/x86_64/x86-64/')" = "$bin_arch" ]; then
+        ide=1
+        echo "== madcide + libmadcide + plugins ($bin_arch, AOT via $bin) =="
+        rm -f "tmp/madcide-pkg-$bin_arch"
+        mkdir -p tmp
+        "$bin" -o "tmp/madcide-pkg-$bin_arch" tools/madcide/madcide.mad
+        # libmadcide (madcide's base as a library) into this madc's own lib
+        # directory (bin/../lib), where a product's manifest "libs" finds it.
+        "$bin" -shared -o lib/libmadcide.dylib tools/madcide/madcide_base.mad
+        scripts/build_shipped_plugins.sh "tmp/plugins-pkg-$bin_arch" "tmp/madcide-pkg-$bin_arch"
+    else
+        echo "package_release_macos: SKIP madcide for $bin_arch — they are built by the $bin_arch release madc on a darwin host of that arch (the release.yml mac job); this tarball carries the compiler alone"
+    fi
 
     rm -rf "$stage"
     mkdir -p "$stage/$root/bin" "$stage/$root/lib" "$stage/$root/share/man/man1" \
@@ -151,7 +190,16 @@ package_arch() {
     install -m 755 "$rtdylib" "$stage/$root/lib/libmadc-0.dylib"
     install -m 755 "$webview" "$stage/$root/lib/libmadcwebview.dylib"
     install -m 755 "$madcgit" "$stage/$root/lib/libmadcgit.dylib"
+    install -m 755 "$madcmark" "$stage/$root/lib/libmadcmark.dylib"
     gzip -9n < docs/man/madc.1 > "$stage/$root/share/man/man1/madc.1.gz"
+    if [ "$ide" = 1 ]; then
+        install -m 755 "tmp/madcide-pkg-$bin_arch" "$stage/$root/bin/madcide"
+        install -m 755 lib/libmadcide.dylib "$stage/$root/lib/libmadcide.dylib"
+        # madcide's data under share/madcide, where an installed madcide
+        # looks (<exedir>/../share/madcide): the one staging owner.
+        scripts/stage_madcide_data.sh "$stage/$root/share/madcide" "tmp/plugins-pkg-$bin_arch"
+        gzip -9n < docs/man/madcide.1 > "$stage/$root/share/man/man1/madcide.1.gz"
+    fi
     install -m 644 LICENSE "$stage/$root/LICENSE"
     # The frozen C++ groves derive from LLVM's libc++ headers
     # (Apache-2.0-with-LLVM-exception): carry the license text — the pinned
@@ -177,25 +225,50 @@ package_arch() {
     # libmadcgit.dylib statically links libgit2 (GPLv2 WITH the linking
     # exception, which permits linking into a differently-licensed application):
     # its notice ships.
-    install -m 644 "${LIBGIT2_DIR:-/workspace/libgit2}/src/COPYING" \
+    install -m 644 "$(make -C src -s print-LIBGIT2_STAGE)/src/COPYING" \
         "$stage/$root/THIRD_PARTY_NOTICES/libgit2-COPYING.txt"
+    # libmadc-0.dylib statically links the pinned zstd (BSD, the
+    # scripts/stage_darwin_zstd.sh stage the hosted MODE links): its notice
+    # ships, as the Windows zip's does.
+    local zstd_license
+    zstd_license="$(make -C src -s MODE="hosted-${bin_arch}-macos" print-DARWIN_ZSTD_DIR)/LICENSE"
+    if [ ! -f "$zstd_license" ]; then
+        echo "package_release_macos: $zstd_license missing — the zstd stage libmadc-0.dylib links (scripts/stage_darwin_zstd.sh)" >&2
+        exit 1
+    fi
+    install -m 644 "$zstd_license" "$stage/$root/THIRD_PARTY_NOTICES/zstd-LICENSE.txt"
+    # libmadcmark.dylib statically links cmark-gfm (BSD-2 and MIT): its notice
+    # ships.
+    install -m 644 "$(make -C src -s print-CMARK_GFM_STAGE)/src/COPYING" \
+        "$stage/$root/THIRD_PARTY_NOTICES/cmark-gfm-COPYING.txt"
+    local ide_text=""
+    if [ "$ide" = 1 ]; then
+        ide_text="
+madcide (bin/madcide): the madc IDE — a terminal editor (bin/madcide
+file.c), or a window with --gui. Its keybinding profiles, plugins and
+the line editor's verbs live in share/madcide next to this README.
+"
+    fi
     cat > "$stage/$root/README-macos.txt" <<EOF
 madc ${VER} for macOS (${pkg_arch})
 ====================================
 
-Install: copy bin/madc anywhere on your PATH.
+Install: keep bin/ and lib/ together (bin/madc loads lib/libmadc-0.dylib,
+which holds the compiler and its headers) and put bin/ on your PATH.
 
 This binary is ad-hoc signed (no Apple Developer ID). Because it was
 downloaded, macOS quarantines it; the first run will be blocked by
 Gatekeeper. Either:
 
-    xattr -d com.apple.quarantine bin/madc
+    xattr -dr com.apple.quarantine .
 
-or right-click the binary in Finder and choose Open once.
+(from this directory: it clears bin/ and lib/ together), or right-click
+the binary in Finder and choose Open once.
 
-The binary is self-contained: the C standard headers and the frozen C++
-standard-library groves (<string>, <vector>, <iostream>, ...) are embedded,
-so no Xcode or Command Line Tools installation is required. C++ headers
+The installation is self-contained: the C standard headers and the frozen
+C++ standard-library groves (<string>, <vector>, <iostream>, ...) are
+embedded in lib/libmadc-0.dylib, so no Xcode or Command Line Tools
+installation is required. C++ headers
 outside the packed set are not available on a machine without headers and
 fail with a clear error.
 
@@ -213,13 +286,16 @@ bin/ (or next to the madc that built it), so keep bin/ and lib/ together.
 
 GUI programs: lib/libmadcwebview.dylib is madc's binding of the platform
 webview (WKWebView) with the native menu bar and file dialogs. A program
-that says \`import madcwebview;\` (madc's ui "web" target — madcide's
---gui mode, once madcide ships here) loads it from this lib/ next to
-bin/madc. It requires macOS 13.3 or later.
-
+that says \`import madcwebview;\` (madc's ui "web" target) loads it from
+this lib/ next to bin/madc. It requires macOS 13.3 or later.
+${ide_text}
 share/doc/madc/examples/madc.ini is a documented example configuration
 file; to use one, copy it to ~/.config/madc/madc.ini.
 EOF
+    # Every entry gets the modes an install gives every user (the one owner
+    # stage_install.sh shares): the copied plugin bundles otherwise keep the
+    # checkout's modes and the gzipped pages the umask's.
+    scripts/install_modes.sh "$stage/$root"
     tar -C "$stage" -czf "dist/$root.tar.gz" "$root"
     rm -rf "$stage"
     echo "packaged dist/$root.tar.gz"

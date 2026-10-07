@@ -1,0 +1,33 @@
+// Every declarator of one declaration names the same type (C11 6.7p1):
+// `struct { ... } a, b;` declares objects of ONE tagless struct type, so
+// `a = b` assigns compatible types — at file scope and at block scope, for a
+// union, through array and pointer declarators, with an initializer on
+// either declarator. madc emitted the body once per declarator, distinct
+// types, and refused the assignment.
+// gcc 13.3 and clang 18.1 (-std=c11) print the .expect line.
+#include <stdio.h>
+struct {
+	short s;
+} p1 = { 1 }, p2 = { 2 };
+struct {
+	char a;
+	short b, c;
+} q1 = { 3 }, q2 = { 4 }, *qp = &q2;
+union {
+	int i;
+	char c;
+} u1, u2 = { 7 };
+struct {
+	int v;
+} arr[2] = { { 8 }, { 9 } }, one;
+int main(void)
+{
+	struct { int x, y; } l1 = { 5, 6 }, l2;
+	p1 = p2;
+	q1 = *qp;
+	u1 = u2;
+	l2 = l1;
+	one = arr[1];
+	printf("shared: %d %d %d %d %d %d %d\n", p1.s, q1.a, q1.b, u1.i, l2.x, l2.y, one.v);
+	return 0;
+}

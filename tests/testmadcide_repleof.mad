@@ -1,0 +1,125 @@
+// Run ▸ Send EOF in madcide's shell (plan
+// docs/plans/madc-repl-thonny-plan-2026-09-24.md §41.12a; Thonny's Run ▸
+// Send EOF and its Ctrl+D in the Shell): `repleof` ends the running entry's
+// standard input. What the input line holds goes first, as a terminal's
+// Ctrl-D sends the line typed so far; then the program's read sees the end,
+// and the entry after it reads new input. With nothing running it says so.
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+#include "../tools/madcide/include/madcide/harness"	// <madcide/harness>: ev_*, settle, enter_line
+
+// The transcript's text after `from` bytes (what the last steps added).
+void transcript_since(var &out, long w, long es, long from)
+{
+    var t = "";
+    long rd = repl_doc_if_any(w, es);
+    if ( rd != 0 )
+	ui::text(t, w, rd);
+    out = t.substr(from, strlen(t.c_str()) - from);
+}
+
+long transcript_size(long w, long es)
+{
+    long rd = repl_doc_if_any(w, es);
+    return rd == 0 ? 0 : ui::text_size(w, rd);
+}
+
+void show_msg(long w, long es, const char *label)
+{
+    var m;
+    ui::get(m, w, es, "msg");
+    println("{}: msg=[{}]", label, m);
+}
+
+// Type `text` into the input without pressing enter.
+void type_text(IdeSession &S, long doc, const char *text)
+{
+    var e;
+    ev_text(e, text);
+    S.apply_ide_event(doc, e);
+}
+
+// A line of the running program's input: typed, then enter (no settle —
+// the entry is still running).
+void input_line(IdeSession &S, long doc, const char *text)
+{
+    var e;
+    type_text(S, doc, text);
+    ev_key(e, "enter");
+    S.apply_ide_event(doc, e);
+}
+
+// Offer a line that reads its input, and wait until it runs.
+void start_reader(IdeSession &S, long doc, long w, long es, const char *text)
+{
+    var e;
+    type_text(S, doc, text);
+    ev_key(e, "enter");
+    S.apply_ide_event(doc, e);
+    settle(w, es, true);
+}
+
+// What the last steps added to the transcript, one line.
+void show_since(long w, long es, long from, const char *label)
+{
+    var t;
+    transcript_since(t, w, es, from);
+    println("{}: {}", label, php::str_replace("\n", "|", t));
+}
+
+int main()
+{
+    const char *path = "madc_ide_repleof.mad";
+    php::file_put_contents(path, "long add(long a, long b) { return a + b; }\n");
+    long w = ui::world_new();
+    long doc = setup_editor(w, path, false);
+    long es = ui::entity_by_name(w, "editor-state");
+    builtins_activate(w, es);	// madcide's own modules, as IdeSession::open activates them
+    ui::set(w, es, "profile_dir", "tools/madcide/profiles");
+    ui::set(w, es, "profile", "joe");
+    ui::set(w, lang_world(w), "std", (long)madc::fkC11);	// as --std=c11 sets it
+    IdeSession S;
+    S.attach(w, es);
+
+    var e;
+    ev_action(e, "repleof", "");
+    S.apply_ide_event(doc, e);
+    show_msg(w, es, "no session");
+
+    ev_action(e, "repl", "");
+    S.apply_ide_event(doc, e);
+    enter_line(S, doc, w, es, "#include <stdio.h>");
+    enter_line(S, doc, w, es, "long count(void) { long n = 0; while (getchar() != EOF) n++; return n; }");
+    // C: a file-scope object's initializer is a constant (C11 6.7.9p4), so
+    // the reads are assignments.
+    enter_line(S, doc, w, es, "long n = 0; int c = 0;");
+    ev_action(e, "repleof", "");
+    S.apply_ide_event(doc, e);
+    show_msg(w, es, "idle");
+
+    // A line sent, a partial one typed, then Send EOF: count() sees "ab\n"
+    // and "cd", then the end.
+    start_reader(S, doc, w, es, "n = count();");
+    input_line(S, doc, "ab");
+    type_text(S, doc, "cd");
+    ev_action(e, "repleof", "");
+    S.apply_ide_event(doc, e);
+    show_msg(w, es, "eof");
+    settle(w, es, false);
+    long from = transcript_size(w, es);
+    enter_line(S, doc, w, es, "n");
+    show_since(w, es, from, "count");
+
+    // The next entry reads new input.
+    start_reader(S, doc, w, es, "c = getchar();");
+    input_line(S, doc, "x");
+    settle(w, es, false);
+    from = transcript_size(w, es);
+    enter_line(S, doc, w, es, "c == 'x'");
+    show_since(w, es, from, "after");
+
+    S.close();
+    php::unlink(path);
+    return 0;
+}

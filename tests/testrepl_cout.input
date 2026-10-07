@@ -1,0 +1,5 @@
+std::cout << "Hello World!" << std::endl
+ans << "again" << std::endl;
+struct P { int x; P(int a) : x(a) {} };
+P p(3);
+p

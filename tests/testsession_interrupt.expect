@@ -1,0 +1,16 @@
+idle: sent=true
+n + 1 -> ok=true shown=1
+while: sent=true kind-offer=true ok=false interrupted=true
+n > 0 -> ok=true shown=1
+for-continue: sent=true kind-offer=true ok=false interrupted=true
+do: sent=true kind-offer=true ok=false interrupted=true
+n != 0 -> ok=true shown=1
+function: sent=true kind-offer=true ok=false interrupted=true
+n > 0 -> ok=true shown=1
+native wait: stopped=true
+fresh session: ok=true
+close: true
+template defined: ok=true
+template: sent=true kind-offer=true ok=false interrupted=true
+m > 0 -> ok=true shown=true
+close c++: true

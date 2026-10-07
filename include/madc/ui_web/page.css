@@ -5,7 +5,7 @@
    so a scheme that omits one keeps the default look. */
 html, body { margin: 0; padding: 0; height: 100%;
              background: var(--bg, #1b1d24); color: var(--fg, #d9dbe4); }
-body { font: 14px/1.35 var(--font, "DejaVu Sans Mono", "Menlo", "Consolas", monospace);
+body { font: var(--font-size, 14px)/1.35 var(--font, "DejaVu Sans Mono", "Menlo", "Consolas", monospace);
        overflow: hidden; }
 #root { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 #kb { position: fixed; left: -1000px; top: 0; width: 1px; height: 1px; opacity: 0; }
@@ -119,15 +119,56 @@ body { font: 14px/1.35 var(--font, "DejaVu Sans Mono", "Menlo", "Consolas", mono
     "foot foot foot";
   flex: 1 1 auto; min-height: 0;
 }
+/* A right-hand sidebar (the layout's `pane sidebar right`: Thonny's
+   Variables) spans the editor and the panel on the right; its border and
+   its splitter move to its left edge. */
+.node.group.workbench[data-sidebar-side="right"] {
+  grid-template-columns: auto 1fr auto;
+  grid-template-areas:
+    "toolbar toolbar toolbar"
+    "rail editor sidebar"
+    "rail panel sidebar"
+    "statusbar statusbar statusbar"
+    "foot foot foot";
+}
+.workbench[data-sidebar-side="right"] > .slot[data-slot="sidebar"] {
+  border-right: none; border-left: 1px solid #2d3448; }
+.workbench[data-sidebar-side="right"]:has(> .slot[data-slot="sidebar"]:not(:empty)) > .splitter[data-for="sidebar"] {
+  justify-self: start; margin-right: 0; margin-left: -2px; }
 /* The toolbar (plan §41.11a): the root's `toolbar` rows as a row of
    buttons across the top; empty (the default menu places none), the slot
    takes no space. */
 .workbench > .slot[data-slot="toolbar"] { grid-area: toolbar; flex-direction: row;
-  gap: 4px; padding: 3px 8px; background: var(--sb-bg, #22252f); }
+  gap: 4px; padding: 4px 8px; background: var(--sb-bg, #22252f); }
 .workbench > .slot[data-slot="toolbar"] > .tb-btn { padding: 2px 12px; }
 .workbench > .slot[data-slot="toolbar"] > .tb-btn:first-child { background: #3b4a6b;
   border-color: #4a5a80; color: #f2f4ff; }	/* no primary button on a toolbar */
 .workbench > .slot[data-slot="toolbar"] > .tb-btn:disabled { opacity: 0.45; cursor: default; }
+/* The toolbar's pictures (ui::icon, the chthonia mockup): a button with an
+   icon is the picture (Run ▾ adds its label), flat until hovered; a divider
+   between groups; a ▾ beside a button that drops a menu down. */
+.workbench > .slot[data-slot="toolbar"] { align-items: center; }
+.workbench > .slot[data-slot="toolbar"] > .tb-btn.tb-has-icon,
+.workbench > .slot[data-slot="toolbar"] > .tb-btn.tb-drop {
+  display: inline-flex; align-items: center; gap: 6px; padding: 4px 6px;
+  background: transparent; border-color: transparent; color: var(--fg, #d8dbe6); }
+.workbench > .slot[data-slot="toolbar"] > .tb-btn.tb-has-icon:hover:not(:disabled),
+.workbench > .slot[data-slot="toolbar"] > .tb-btn.tb-drop:hover:not(:disabled) {
+  background: #2f3445; border-color: #3d4458; }
+.workbench > .slot[data-slot="toolbar"] > .tb-btn.tb-drop { padding: 4px 2px; margin-left: -4px; }
+.tb-drop svg { stroke: currentColor; stroke-width: 1.6; }
+.tb-sep { width: 1px; align-self: stretch; margin: 2px 6px; background: #3d4458; }
+.tb-ic { display: inline-flex; }
+.tb-ic svg { stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
+.tb-ic svg .fill { fill: currentColor; stroke: none; }
+.tb-ic-new { color: #e6e9f2; }
+.tb-ic-open { color: #f0b232; }
+.tb-ic-save { color: #4f9cf0; }
+.tb-ic-run { color: #3fbf5f; }
+.tb-ic-debug { color: #4f9cf0; }
+.tb-ic-stop { color: #8b90a0; }
+.tb-ic-step-over, .tb-ic-step-into, .tb-ic-step-out { color: #f0b232; }
+.tb-ic-breakpoints { color: #a9adbb; }
 .slot { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
 .slot:empty { display: none; }
 .workbench > .slot[data-slot="rail"]      { grid-area: rail; background: #22252f; }
@@ -205,7 +246,7 @@ body { font: 14px/1.35 var(--font, "DejaVu Sans Mono", "Menlo", "Consolas", mono
 .qi-label { color: #c9cde0; }
 .qi-input { display: flex; align-items: center; padding: 5px 9px; min-height: 1.35em;
             background: var(--bg, #1b1d24); border: 1px solid var(--accent, #9fc2ff);
-            border-radius: 4px; font: 14px/1.35 var(--font, "DejaVu Sans Mono", "Menlo", "Consolas", monospace);
+            border-radius: 4px; font: var(--font-size, 14px)/1.35 var(--font, "DejaVu Sans Mono", "Menlo", "Consolas", monospace);
             white-space: pre; }
 .qi-hint { color: #7d829a; font-size: 11px; }
 .node.popup.confirm { min-width: 28em; gap: 14px; }
@@ -231,9 +272,12 @@ body { font: 14px/1.35 var(--font, "DejaVu Sans Mono", "Menlo", "Consolas", mono
              background: var(--sb-bg, #262b3a); border-bottom: 1px solid var(--sb-line, #343b52); }
 .dlg-filter { margin: 0 14px; }
 .dlg-list { display: flex; flex-direction: column; overflow: auto; min-height: 0;
-            font: 14px/1.5 var(--font, "DejaVu Sans Mono", "Menlo", "Consolas", monospace);
+            font: var(--font-size, 14px)/1.5 var(--font, "DejaVu Sans Mono", "Menlo", "Consolas", monospace);
             white-space: pre; }
 .dlg-list .opt { padding: 1px 14px; cursor: pointer; }
+/* An empty row is a blank line (the terminal draws one): a zero-width space
+   gives it the list's line box — About's blank lines between its parts. */
+.dlg-list .opt:empty::before { content: "\200b"; }
 .dlg-list .opt:hover { background: #343b52; }
 .dlg-list .opt.sel { background: var(--sb-active, #2f3a55); box-shadow: inset 3px 0 0 var(--accent, #9fc2ff); color: #f2f4ff; }
 .node.popup.dialog.focus .dlg-list .opt.sel { background: #3b4a6b; }

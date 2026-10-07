@@ -1,0 +1,26 @@
+// Brace elision in a list that mixes braced and brace-elided elements (C11
+// 6.7.9p20): `int foo[2][3] = {{1, 2,}, 3, 4, 5};` — the first row braced,
+// the second spelled by the flat 3, 4, 5; the same for an array of structs
+// and for an array whose outer bound the list decides. madc counted the
+// clauses against the rows ("Too many initializers for array (expected 2)").
+// gcc 13.3 and clang 18.1 (-std=c11) print the .expect lines.
+#include <stdio.h>
+int foo[2][3] = { { 1, 2, }, 3, 4, 5 };
+struct P {
+	int x, y;
+};
+struct P pts[3] = { { 1, 2 }, 3, 4, { 5 } };
+int grid[][2] = { 1, 2, { 3 }, 4, 5 };
+int main(void)
+{
+	int loc[2][2] = { { 9 }, 8, 7 };
+	printf("foo: %d %d %d %d %d %d\n", foo[0][0], foo[0][1], foo[0][2],
+	       foo[1][0], foo[1][1], foo[1][2]);
+	printf("pts: %d %d %d %d %d %d\n", pts[0].x, pts[0].y, pts[1].x,
+	       pts[1].y, pts[2].x, pts[2].y);
+	printf("grid: %zu %d %d %d %d %d %d\n", sizeof(grid) / sizeof(grid[0]),
+	       grid[0][0], grid[0][1], grid[1][0], grid[1][1], grid[2][0],
+	       grid[2][1]);
+	printf("loc: %d %d %d %d\n", loc[0][0], loc[0][1], loc[1][0], loc[1][1]);
+	return 0;
+}

@@ -62,8 +62,9 @@ public:
     // (the path, then the program's arguments): `madc -i file`, the core of
     // %run (D25). False when the file was refused.
     virtual bool run_file(int argc, char **argv) = 0;
-    // The session ended the process (an exit(n) in an entry): its status.
-    // An in-process session never says so (the exit already happened).
+    // The session ended, and its status: an exit(n) in an entry ended a
+    // backend's process (in this process the exit already happened), or
+    // %quit asked to end it (status 0).
     virtual bool ended(int &status) const { (void)status; return false; }
 };
 
@@ -145,18 +146,68 @@ public:
     const std::string &shown() const override;
     std::string standard_name() override;
     bool continues_if(const std::string &line) override;
+    // %quit ended the session (plan §7f): status 0.
+    bool ended(int &status) const override;
 
     // The session's commands (plan §41.8a, D13/D24): an entry whose first
-    // line starts with `%name` or `:name` is a command, never C. The typed
-    // name becomes one of these codes once, at input. `?NAME` is %pinfo NAME,
-    // and `?` alone %help (IPython).
-    enum class Command : unsigned char { help, type, pinfo, whos };
+    // line starts with `%name`, `:name` or `.name` is a command, never C.
+    // The typed name, a command's or an alias's (cling's `.L`, plan §7f),
+    // becomes one of these codes once, at input. `?NAME` is %pinfo NAME, and
+    // `?` alone %help (IPython). The codes' one text is <bits/session_enums>,
+    // the dialect's too.
+    typedef ::madc::session_command Command;
+    // What `text` is as an entry (plan §7f, the IDE layer, which answers its
+    // own commands before the session sees them): false when it is no
+    // command; else the name typed (`L`; `pinfo` or `help` for `?NAME` and
+    // `?`), the command it names (none: none of the session's) and the rest
+    // of its first line, without the blanks before it.
+    static bool command_of(const std::string &text, std::string &word,
+			   Command &code, std::string &argument);
+    // What the last taken command asks its host (IPython's payloads; the
+    // codes are <bits/session_enums>' session_payload), with payload_argv()
+    // — the file, then its arguments. A host that honors them says so with
+    // host_honors_payloads(true) (the backend server: its clients read the
+    // file, an IDE's open buffer as its live text, and only a client can
+    // start a FRESH session for %run, D16). With any other host the session
+    // loads %load's and %run -i's file itself, and %run refuses, naming
+    // %run -i. %call's payload is FILE, then the call's text: the host loads
+    // FILE, then asks for the call (call_file). %build's is FILE, then OUT:
+    // the host hands FILE's text (an open buffer's) to build_file. %open's
+    // and %edit's is FILE, then the line when one is named: an IDE opens
+    // its editor there; the terminal runs madc::run_terminal_editor. %quit's payload has no argv;
+    // a host that honors no payloads reads %quit from ended().
+    madc::session_payload payload() const { return payload_kind; }
+    const std::vector<std::string> &payload_argv() const { return payload_args; }
+    void host_honors_payloads(bool on) { payload_host = on; }
+    // The last file loaded defined main (a main an earlier unit defined is
+    // not the file's: a second main is refused): only then does running the
+    // file run main (run_file, and a host's run after its load).
+    bool loaded_main() const { return load_main; }
+    // %call's call (cling's .x; plan §7f), once FILE (`path`) is loaded: the
+    // function named after FILE (its name without the directory and the last
+    // extension), else FILE's main, with the arguments `call` holds — the
+    // command's line with everything before its `(` blanked, so a diagnostic
+    // cites the column typed. The call is an entry under the command's
+    // REPL[N]; its value is shown() and kept by none (D12). FILE's main with
+    // no arguments runs as %run -i runs it (argv: FILE; its return value to
+    // *status). False when the session defines neither, or the call was
+    // refused or stopped.
+    bool call_file(const std::string &path, const std::string &call, int *status);
+    // %build's build (plan §7f; madcide's Build menu): FILE (`path`) — its
+    // `text`, or the file when `text` is empty — compiled to the native
+    // executable `out` under the session's standard, through the live-tree
+    // build (madc_parse_build over a parse of FILE). Its diagnostics are the
+    // Program's, rendered; shown() says what was built. False when it was
+    // refused.
+    bool build_file(const std::string &path, const std::string &text,
+		    const std::string &out);
     // The names the session defined (plan §41.11a step 3d): the one owner
     // %whos and the bindings wire op read. A row per object and function a
     // session unit (an entry, a loaded file) defined, sorted by name:
     // {name, kind (a madc::name_kind code), type (the source's spelling),
-    // value (an object's, the show's row form: no pointer followed, text
-    // included, at most 16 elements of an aggregate, 80 columns), file,
+    // value (an object's, the show's row form: no type spelled, no pointer
+    // followed but a character pointer's text through the fault-safe copy,
+    // `0x… "Test"`, at most 16 elements of an aggregate, 80 columns), file,
     // line}. The values come from one quiet entry, which takes no number,
     // keeps no result and says nothing; its module stays loaded, as every
     // entry's does.
@@ -168,13 +219,33 @@ public:
 
 private:
     Offered enter(const std::string &text, bool final, const TakenHook &taken);
-    void render_parse_diagnostics();
+    // The recorded diagnostics nothing has rendered yet, rendered.
+    void render_pending_diagnostics();
     // A command entry's run: its output goes to command_output. False when
     // it is refused (its diagnostics are the Program's).
     bool run_command(const std::string &text, const std::string &name);
     bool type_command(const std::string &expression, const std::string &name);
     bool pinfo_command(const std::string &argument, const std::string &name);
     void whos_command();
+    // %load FILE and %run [-i] FILE [ARGS] (D25, D16): ARGS split by the
+    // shell's rules (ns_common::shell_words).
+    bool load_command(const std::string &argument, const std::string &name);
+    bool run_file_command(const std::string &argument, const std::string &name);
+    bool build_command(const std::string &argument, const std::string &name);
+    bool call_command(const std::string &argument, const std::string &name);
+    bool open_command(const std::string &argument, const std::string &name);
+    bool edit_command(const std::string &argument, const std::string &name);
+    // FILE in its host's editor at `line` (0: none): the `open` payload,
+    // else madc::run_terminal_editor.
+    bool open_in_editor(const std::string &path, int line, const std::string &name);
+    bool quit_command(const std::string &argument, const std::string &name);
+    // A session unit (an entry, a loaded file) defines a function NAME.
+    bool defines_function(const std::string &name);
+    // A file command's file, once it opens: the payload `kind` for a host
+    // that honors payloads, else loaded (and run) here.
+    bool file_command(madc::session_payload kind, std::vector<std::string> &words);
+    // A command's usage error, cited at the entry's first column.
+    void command_error(const std::string &message, const std::string &name);
     // The quiet entry: each object shown through the row form, the texts in
     // order. False when it did not run (then the texts are fewer).
     bool show_rows(const std::vector<Variable *> &objects,
@@ -185,9 +256,22 @@ private:
     unsigned submit_count;
     std::string command_output;		// the last command's output
     bool showed_command;		// the last entry was a command
+    madc::session_payload payload_kind;	// the last command's ask of its host
+    std::vector<std::string> payload_args;
+    bool payload_host;			// the host honors payloads
+    bool load_main;			// the last loaded file defined main
+    bool quit_asked;			// %quit ended the session
     unsigned quiet_count;		// the quiet entries' units, each its own
     InteractiveSession(const InteractiveSession &);
     InteractiveSession &operator=(const InteractiveSession &);
 };
+
+namespace madc {
+// The terminal's editor (%open, %edit; IPython's %edit): $EDITOR (its words
+// split by the shell's rules), else vi (notepad on Windows), given `+LINE`
+// before `path` when `line` > 0 (never the notepad default), on this
+// terminal, waited for. False when it did not start (`why` says so).
+bool run_terminal_editor(const std::string &path, int line, std::string &why);
+}
 
 #endif

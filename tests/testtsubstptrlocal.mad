@@ -1,0 +1,44 @@
+// Oracle (g++ 13, clang++ 18, -std=c++17): "copy: 3 3 2" / "cv: b 8 8".
+// A member function template whose type parameter is a pointer, a pointer to
+// const or a function pointer keeps that type in every place its body spells
+// the parameter: a local (`F cur = result;`), a cast, sizeof. libstdc++ 11's
+// __uninitialized_copy<false>::__uninit_copy is the shape: `_ForwardIterator
+// __cur = __result;` in a static member template (std::vector's copy).
+#include <stdio.h>
+
+struct ucopy
+{
+	template<typename I, typename F>
+	static F copy(I first, I last, F result)
+	{
+		F cur = result;
+		for (; first != last; ++first, (void)++cur)
+			*cur = *first;
+		return cur;
+	}
+};
+
+template<bool B>
+struct reader
+{
+	template<typename P>
+	char second(P p) const
+	{
+		P q = p;
+		++q;
+		return *(P)q;
+	}
+	template<typename P>
+	int width() const { return (int)sizeof(P); }
+};
+
+int main()
+{
+	int a[3] = { 1, 2, 3 }, b[3] = { 0, 0, 0 };
+	int *e = ucopy::copy(a, a + 3, b);
+	printf("copy: %d %d %d\n", b[2], (int)(e - b), b[1]);
+	reader<true> r;
+	const char *s = "abc";
+	printf("cv: %c %d %d\n", r.second(s), r.width<const char *>(), r.width<int (*)(int)>());
+	return 0;
+}

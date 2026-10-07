@@ -293,6 +293,7 @@ const Entry signatures[] = {
 	{ "__madc_bswap16", LibcRet::UInt16 },
 	{ "__madc_bswap32", LibcRet::UInt32 },
 	{ "__madc_bswap64", LibcRet::UInt64 },
+	{ "__madc_ia32_sfence", LibcRet::Void },
 	{ "__madc_builtin_object_size", LibcRet::ULong },
 	{ "__madc_builtin_uabs", LibcRet::UInt32 },
 	{ "__madc_builtin_umaxabs", LibcRet::UInt64 },

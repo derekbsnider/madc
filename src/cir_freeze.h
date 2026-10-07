@@ -564,11 +564,12 @@ bool cir_freeze_read(const madc::dis::snapshot_reader &r, uint32_t seg_id_base,
 // packaged target can instead tokenize the producer's exact header bytes
 // under another --std=/-D/POSIX config. This is source fallback, never a
 // relaxation of LOADED == parsed.
+// v53: DK_MEMBERPTR records a pointer to member (data or function) reached as a member / param / return type; a v52 pack has no such record, and an aggregate holding one (libstdc++ 11's _Nocopy_types, std::function's buffer) dropped at load.
 // v52: node flags bit2 CIR_FROZEN_ARG_UNCOERCED — a pattern call argument lowered with no formal (a template-placeholder callee); a v51 recipe lacks it and would pass the argument unconverted.
 // v51: a token's recorded column is its START (D26: gcc's anchor), no longer its last byte.
 // v50: DK_FUNC preserves = default/delete. Older snapshots lack those flags.
 // v49: DF_ENUM_C_COMPATIBLE — an enum defined in C promotes as its underlying (compatible) type, C11 6.7.2.2p4; v48: DK_ENUM carries its STORAGE raw type (defrec.datatype) and DF_ENUM_FIXED_BASE — a restored enum lowers to the same C type as live, and a computed base is no longer re-adopted as declared; v47: the producer-config word's language_std bits carry the file-kind vocabulary's values (Program::LanguageStd = madc::fk* ranges, <bits/file_kinds>) — a v46 pack's word would compare against different numbers; v46: defrec ovl_spelling_id / ovl_targ run — a DK_FUNC's overload-set declaration identity (FuncDef::overload_spelling + overload_template_args); v45: DF_FUNC_C_LINKAGE (a namespace fn's extern "C" linkage — restore re-derives the C alias); v44: DK_NSALIAS namespace-alias records; v42: defrec vslot/vmeth runs (flat vtable_slots + virtual_methods)
-enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 52 };
+enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 53 };
 	// v43: defrec friendfn/friendcls runs — the friendship grants
 	// (friend_function_names / friend_class_names), parse-time access
 	// state a restored class never carried (hoisted hidden-friend bodies

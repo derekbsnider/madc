@@ -73,7 +73,7 @@ native)
 	PROFILE_CC="gcc"
 	;;
 win64)
-	PROFILE_BIN="bin/madc-release-x86-64-windows.exe"
+	PROFILE_BIN="bin/release-windows/madc.exe"
 	PROFILE_WRAPPER="wine"
 	# BOTH domains on top of headerless: a wine run of the win64 binary is
 	# already two domains (see remote_build.sh's wine stage), and this lane

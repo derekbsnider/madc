@@ -1,0 +1,74 @@
+// An installed program's data is its install's, wherever it is started
+// (owner, Chthonia on the Intel MacBook: started from inside a madc checkout,
+// chthonia showed madcide's default bundle — "About madcide", no REPL, no
+// Symbols). resolve_data_dir (tools/texteditor/lined_core.inc) finds
+// madcide's plugins, profiles, verbs, checks and headers; its source-tree
+// arm is dirname(__FILE__), which a library compiled from the tree root
+// spells RELATIVE (tools/madcide), so a binary started where a
+// tools/madcide/<sub> exists read THAT tree's data instead of its own.
+// The test makes two madc shapes under tmp/, each bin/madc a hard link (or a
+// copy) of this lane's madc with lib/ links to the libraries beside it, and
+// runs a probe from the repository root, where tools/madcide/plugins exists:
+//   1. an install (share/madcide/plugins/ beside bin/): its share/madcide/plugins;
+//   2. a build tree's madc (no install layout): the source-tree spelling, as
+//      before.
+// Both shapes are the test's own, so the answer never depends on the lane's
+// madc (an installed one, the brew lane's keg, has share/madcide itself).
+// Before the fix, run 1 printed tools/madcide/plugins.
+// Oracle: n/a for gcc/clang (a program's data lookup, not a language rule);
+// the contract is the function's own — never a cwd-relative path for an
+// installed program — and the FHS / Windows layouts it names.
+// A madc under `root` (bin/madc, lib/ links): its path in `out`; the status.
+long madc_shape(var &out, var &root)
+{
+	const char *madc = madc::compiler_path();
+	var madc_lib;
+	madc::canonical_path(madc_lib, format("{}/../lib", php::dirname(madc)));
+	var bin = format("{}/bin", root);
+	var lib = format("{}/lib", root);
+	php::mkdir(root.c_str());
+	php::mkdir(bin.c_str());
+	php::mkdir(lib.c_str());
+	out = format("{}/madc", bin);
+	long rc = system(format("ln -f {} {} 2>/dev/null || cp {} {}", madc, out, madc, out));
+	return rc + system(format("ln -s {}/* {}/", madc_lib, lib));
+}
+
+int main()
+{
+	var dir = "tmp/testdatadir_install_first";
+	php::mkdir(dir.c_str());
+	var inst = format("{}/inst", dir);
+	var linked;
+	long rc = madc_shape(linked, inst);
+	var share = format("{}/share", inst);
+	php::mkdir(share.c_str());
+	var mshare = format("{}/madcide", share);
+	php::mkdir(mshare.c_str());
+	var plugins = format("{}/plugins", mshare);
+	php::mkdir(plugins.c_str());
+	var tree = format("{}/tree", dir);
+	var plain;
+	rc = rc + madc_shape(plain, tree);
+	var probe = format("{}/probe.mad", dir);
+	php::file_put_contents(probe.c_str(),
+		"#include \"../../tools/texteditor/lined_core.inc\"\n"
+		"int main()\n{\n\tvar d;\n"
+		"\tresolve_data_dir(d, \"madcide\", \"tools/madcide\", \"plugins\");\n"
+		"\tprintln(\"{}\", d);\n\treturn 0;\n}\n");
+	println("setup: rc={} tree-plugins={}", rc,
+		php::file_exists("tools/madcide/plugins") ? 1 : 0);
+	var o1 = format("{}/installed.out", dir);
+	system(format("{} --no-config {} > {} 2>&1", linked, probe, o1));
+	var out;
+	php::file_get_contents(out, o1.c_str());
+	var want = format("{}/bin/../share/madcide/plugins", inst);
+	println("installed: install-share={} got-tree={}", out.index(want.c_str()) >= 0 ? 1 : 0,
+		out.index("tools/madcide/plugins") == 0 ? 1 : 0);
+	var o2 = format("{}/tree.out", dir);
+	system(format("{} --no-config {} > {} 2>&1", plain, probe, o2));
+	php::file_get_contents(out, o2.c_str());
+	println("source-tree: tree={}", out.index("tools/madcide/plugins") == 0 ? 1 : 0);
+	system(format("rm -rf {}", dir));
+	return 0;
+}

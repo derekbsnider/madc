@@ -15,13 +15,7 @@
 #include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
-
-void ev_key(var &e, const char *k)
-{
-    var f = { "event": "key", "event_code": ui::event_kind::key,
-	      "key": k, "key_code": ui::key_code(k) };
-    e = f;
-}
+#include "../tools/madcide/include/madcide/harness"	// <madcide/harness>: ev_text, ev_key, ev_action
 
 void show(long w, long doc, const char *label, long es)
 {

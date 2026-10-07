@@ -1,0 +1,42 @@
+// The C++ face of testconstruntimeinit: a const object initialized from a
+// reference (a parameter or a local), or from a function template's parameter,
+// holds no parse-time value. madc read such a variable as a known constant 0
+// in a const-declared integer's initializer, so libstdc++'s scalar __fill_a1
+// (`const _Tp __tmp = __value;`) stored 0 — std::fill wrote zeros, and with
+// libstdc++ 11 (Ubuntu 22.04) so did std::vector's fill constructor. A const
+// initialized from a constant expression — `N * 2`, a constexpr call, a
+// noexcept operator — folds, into a template argument and a static_assert.
+// Oracle: g++ 13.3 and clang++ 18.1 (-std=c++17) print exactly the .expect lines.
+#include <cstdio>
+#include <algorithm>
+#include <vector>
+
+int byref(const int &v) { const int t = v; return t; }
+int refloc(int x) { const int &r = x; const int t = r; return t; }
+template<typename T> T twice(const T &v) { const T t = v; return t + t; }
+
+const int N = 3;
+const int M = N + 2;
+const int M2 = N * 2;
+template<int K> struct X { static const int v = K; };
+
+// A constexpr call and a noexcept operator are constant initializers too.
+constexpr int fn(const int b) { return b; }
+constexpr int c = fn(alignof(int));
+alignas(c) char d;
+static_assert(c == alignof(int), "constexpr call");
+template<class T> constexpr T value(T t) noexcept(false) { return t; }
+constexpr bool nx = noexcept(value(42));
+static_assert(!nx, "a potentially-throwing call");
+
+int main()
+{
+	int b[4] = { 0, 0, 0, 0 };
+	std::fill(b, b + 4, 6);
+	std::vector<int> v(5, 7);
+	printf("ref: %d %d %d\n", byref(5), refloc(8), twice(21));
+	printf("fill: %d %d vector: %zu %d %d\n", b[0], b[3], v.size(), v[0], v[4]);
+	const int R = N * N;
+	printf("constant: %d %d %d %d %d\n", X<M>::v, X<M2>::v, X<R>::v, c, (int)nx);
+	return 0;
+}

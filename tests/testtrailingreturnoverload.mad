@@ -1,0 +1,28 @@
+// A call to a function template overload set types as the SELECTED
+// specialization's return ([temp.deduct]), including a trailing
+// `-> decltype(...)` return of the more specialized overload. madc typed
+// `mb(w)` by the generic `I mb(I)` (I = wrap<int *>) although it instantiated
+// the wrap<I> overload: `auto u = mb(w)` was not a pointer, and std::copy over
+// move_iterator (std::__miter_base's unwrap — libstdc++ 11's vector growth)
+// passed the iterator object where int * was expected.
+// Oracle: g++ 13 and clang++ 18 print the .expect lines.
+#include <stdio.h>
+#include <algorithm>
+#include <iterator>
+template<typename T> struct wrap { T p; T base() const { return p; } };
+template<typename I> I mb(I it) { return it; }
+template<typename I> auto mb(wrap<I> it) -> decltype(mb(it.base())) { return mb(it.base()); }
+template<typename T> int kind(T) { return sizeof(T); }
+template<typename W> int inner(W w) { auto x = mb(w); return kind(mb(w)) * 100 + (int)sizeof(x); }
+int main()
+{
+	int a[3] = { 1, 2, 3 }, b[3] = { 0, 0, 0 };
+	wrap<int *> w{ a + 1 };
+	wrap<char> c{ 'x' };
+	auto u = mb(w);
+	printf("mb: %d %d %d %d %d\n", *u, (int)sizeof(u), kind(mb(w)), inner(w), inner(c));
+	int *e = std::copy(std::make_move_iterator(a), std::make_move_iterator(a + 3), b);
+	int *m = std::__miter_base(std::make_move_iterator(a + 2));
+	printf("move: %d %d %d\n", b[2], (int)(e - b), *m);
+	return 0;
+}

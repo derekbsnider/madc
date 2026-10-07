@@ -1,0 +1,7 @@
+// %build typed in the REPL (plan §7f): `madc -i` loads this file, then the
+// entries in testrepl_buildcmd.input run. `%build FILE -o OUT` compiles FILE
+// to a native executable through the session (the terminal's backend builds
+// the file), which an entry then runs and removes; a FILE that does not
+// compile is refused with its diagnostics, and nothing is built.
+#include <stdio.h>
+#include <stdlib.h>

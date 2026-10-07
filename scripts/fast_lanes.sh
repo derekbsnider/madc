@@ -20,6 +20,10 @@
 #   gxx-c++11     ~85s    g++.dg compile-clean subset (a ROADMAP metric, never
 #                         a gate — owner ruling 2026-09-04 — but cheap, so it
 #                         is measured here rather than drifting)
+#   commonmark    ~1s     the CommonMark spec's 670 examples, the madcmark
+#                         module's Markdown tree rendered as HTML against each
+#                         (scripts/commonmark_lane.sh; needs the staged
+#                         cmark-gfm, as the module's build does)
 #
 # MEASURED 2026-09-21 on the desktop container: 4 + 28 + 5 + 51 + 86 = under
 # three minutes for the whole tier, incremental webview build included.
@@ -85,6 +89,7 @@ run_lane c2mir-tests c2mir-tests yes bash scripts/c2mir_tests_lane.sh
 run_lane gui         gui         yes bash scripts/gui_lane.sh
 run_lane gxx-c++11   gxx-c++11   no  bash scripts/gxx_lane.sh
 run_lane index-c     index-c     yes bash scripts/index_c_lane.sh
+run_lane commonmark  commonmark  yes bash scripts/commonmark_lane.sh
 
 if [ "$rc_total" -ne 0 ]; then
 	echo "fast_lanes: RED — a gated fast lane failed above" >&2

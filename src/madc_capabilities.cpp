@@ -7,12 +7,14 @@
  * madc_project.cpp and include/madcdis/web_model.h use — never hand-rolled
  * string escaping.
  *
- * The two lists most prone to drift are DERIVED, not re-typed here:
+ * The lists most prone to drift are DERIVED, not re-typed here:
  *   - accepted C/C++ standards come from Program's one --std= table
  *     (Program::supported_c_standard_names / supported_cpp_standard_names),
  *     the single owner of the recognizer, so this manifest cannot advertise a
  *     standard the compiler rejects, or omit one it accepts (a hand-kept copy
  *     once dropped c95).
+ *   - stdlib flavors come from the generated flavor table that -stdlib=
+ *     looks up (Program::supported_stdlib_flavor_names).
  *   - CIR emission targets come from CIR_EMIT_TARGETS — the same string the
  *     `--emit=` "unknown target" error cites — split on '|', never re-listed.
  *
@@ -90,6 +92,10 @@ void madc_print_capabilities_json()
     m["input"]["c_standards"] = Program::supported_c_standard_names();
     m["input"]["cpp_standards"] = Program::supported_cpp_standard_names();
     m["input"]["project_manifest"] = true;
+    // The -stdlib= flavors THIS build serves: a build-host property (the
+    // generated sys-include table holds what the build host could probe), so
+    // a libstdc++-only host builds a libstdc++-only madc.
+    m["input"]["stdlib_flavors"] = Program::supported_stdlib_flavor_names();
 
     m["emit_targets"] = split_pipe(CIR_EMIT_TARGETS);
 

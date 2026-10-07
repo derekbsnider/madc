@@ -1,0 +1,1 @@
+NDEBUG does not disable assert on macOS: the flattened prelude (scripts/gen_darwin_prelude.sh) froze <assert.h>'s !NDEBUG arm into its guarded umbrella, so the re-include under a different NDEBUG changes nothing (clang on macOS: evals=1; madc: evals=2); BUGS.md B193

@@ -9,7 +9,7 @@
 # is green before a master release).
 #
 # EVERY branch, including a feature branch, requires the COMMIT tier
-# (check --commit: scripts/fast_lanes.sh — six lanes, under three minutes
+# (check --commit: scripts/fast_lanes.sh — seven lanes, under three minutes
 # in total). "Feature branches push freely" used to mean freely of ALL
 # lanes, and on 2026-09-22 a branch carrying five fixes across mir-gen,
 # c2mir and cir_builder was pushed five times without one conformance lane

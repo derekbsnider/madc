@@ -22,4 +22,12 @@ void madc_crash_write_formatted(const char *data, int length,
 // default consequence happen (core dump / WER / the real exit status).
 void madc_install_crash_handler(void);
 
+// A child whose parent reports its end (a run child of self, a session
+// backend): a fault ends it with its status and nothing else — no fault
+// dialog, no debugger (Win32: a top-level filter that ends the process with
+// the exception code, after the reporter's report when one is installed;
+// SEM_NOGPFAULTERRORBOX for its own children). POSIX needs nothing: a fatal
+// signal already ends the process with 128 + signal.
+void madc_crash_quiet_child(void);
+
 #endif // __MADC_CRASH_H

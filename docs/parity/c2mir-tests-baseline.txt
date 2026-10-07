@@ -22,57 +22,27 @@
 # designator lists hold an index (`.data[1] = {42}`, `.bs[0].cs[0].x = 1`,
 # `.data[1].x = 1, {2}, .data[3] = {3}`).
 #
-# The `new/` failures are MIR's own regression tests and are the best
-# available reducers for the C constructs madc still cannot compile in
-# c2mir.c (119 errors as of b3dc26b79). Largest cluster: cleanup-* (6),
-# __attribute__((cleanup)), which the in-tree MIR supports natively.
-lacc/comment.c
-lacc/declaration-default-int.c
-lacc/declarator-parens.c
-lacc/declare-auto-func.c
-lacc/function-incomplete.c
-lacc/include.c
-lacc/initialize-array.c
-lacc/initialize-object.c
-lacc/initialize-string.c
-lacc/linebreak.c
-lacc/pointer-immediate.c
-lacc/preprocess.c
-lacc/printstr.c
-lacc/signed-division.c
-lacc/sizeof.c
-lacc/string-addr.c
-lacc/string-conversion.c
-lacc/string-index.c
-lacc/stringify.c
-lacc/struct-assign.c
-lacc/struct-init-swap.c
-lacc/struct-padding.c
-lacc/typedef.c
-new/add-issue211.c
-new/cleanup-break.c
-new/cleanup-fall.c
-new/cleanup-goto.c
-new/cleanup-matrix.c
-new/cleanup-prefix-attr.c
-new/cleanup-return.c
-new/empty-asm.c
-new/int_min.c
-new/issue186-1.c
-new/issue189.c
-new/issue197.c
-new/issue198.c
-new/issue199.c
-new/issue202.c
-new/issue211.c
-new/issue241.c
-new/issue253.c
-new/issue441.c
-new/propcond-5.c
-new/propcond-6.c
-new/propcond-7.c
-new/ssa-ccp.c
-new/stmt-exprs.c
-new/typedef.c
-new/vector-size.c
-new/weak-linkonce.c
+# SHRUNK 2026-10-05 (six) by GNU __attribute__((cleanup(f))):
+# new/cleanup-break.c, cleanup-fall.c, cleanup-goto.c, cleanup-matrix.c,
+# cleanup-prefix-attr.c and cleanup-return.c — madc read the attribute and
+# dropped it; the declaration now carries c2mir's own cleanup attribute.
+#
+# SHRUNK 2026-10-05 (seven) by c2mir typing a statement expression whose last
+# statement is not an expression as void (GNU), instead of refusing it:
+# new/issue186-1.c, issue189.c, issue197.c, issue198.c, issue199.c,
+# issue202.c and stmt-exprs.c.
+#
+# SHRUNK 2026-10-05 (nine) by the lane following MIR's own runner conventions
+# (c-tests/runtests.sh): new/add-issue211.c is issue211.c's second
+# translation unit — the two compile together (madc --project) and
+# new/issue211.c passes; new/propcond-5.c, -6.c and -7.c carry a `.opt` (the
+# -eb execution mode) and new/issue253.c an `add-issue253.mir` companion
+# (MIR textual IR), so the lane skips them, counted. lacc/ runs under
+# --std=c11, the ISO C its expectrc fixtures assume: lacc/pointer-immediate.c,
+# string-conversion.c and struct-padding.c pass.
+#
+# EMPTY 2026-10-06: every test of the corpus passes (359 of 363, the 4 skips
+# counted above). The last entry, new/vector-size.c, left with the vector
+# builtins (__builtin_convertvector, __builtin_shufflevector,
+# __builtin_shuffle). Keep it empty: a failure here is a regression in a
+# corpus madc's own backend ships.

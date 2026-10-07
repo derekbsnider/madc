@@ -112,6 +112,17 @@ namespace ui {
     // composed chrome node carries it as its `side` hint beside `size`
     // (a percent of the window's columns or rows).
     enum class side : unsigned char { none = 0, left, right, top, bottom };
+
+    // A command's ICON (the toolbar, plan §41.11a; the chthonia mockup): the
+    // picture a renderer draws for it. Menu data names one in a row's
+    // `{ICON}` (a misspelling refuses the menu at load); a composed toolbar
+    // row carries the code as its `icon` hint, and the page draws the
+    // picture its name selects. `none` = text only.
+    enum class icon : unsigned char
+    {
+	none = 0, file_new, open, save, run, debug, stop, step_over,
+	step_into, step_out, breakpoints
+    };
 }
 
 #endif // __MADC_BITS_UI_ENUMS

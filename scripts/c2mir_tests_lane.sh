@@ -22,9 +22,20 @@
 #
 # The corpus needs no fetch step: it rides in the third_party/mir subtree.
 #
-# C MODE (--std=gnu11), the c_testsuite_lane.sh ruling: these are C language
-# tests measured in the mode their oracles use, and MIR leans on GNU
-# extensions.
+# C MODE, the c_testsuite_lane.sh ruling: these are C language tests measured
+# in the mode their oracles use. new/ and havoc/ are MIR's, which leans on GNU
+# extensions: --std=gnu11. lacc/ is an ISO C compiler's suite, and its
+# expectrc fixtures follow ISO C (lacc/comment.c's 39 needs its `??=`
+# trigraph replaced, which gnu11 does not do): --std=c11.
+#
+# MIR's OWN runner conventions (c-tests/runtests.sh), followed exactly:
+#   - `<test>.opt` names the execution mode the test is for (propcond-*: -eb,
+#     lazy basic-block versioning); runtests.sh SKIPS it under every other
+#     mode, and madc's JIT is none of MIR's modes: skipped, counted.
+#   - `add-<name>.c` is not a test but the second translation unit of
+#     `<name>.c`: both are compiled together (madc --project). An
+#     `add-<name>.mir` companion is MIR textual IR, which madc does not read:
+#     that test is skipped, counted.
 #
 # RATCHET shape (the torture-set precedent): known-fails live in
 # docs/parity/c2mir-tests-baseline.txt (one `dir/name.c` per line, #
@@ -63,7 +74,7 @@ if [ -f "$BASE" ]; then
 	done < "$BASE"
 fi
 
-pass=0; fail=0; newfail=0; fixed=0
+pass=0; fail=0; skip=0; newfail=0; fixed=0
 newfail_names=""
 fixed_names=""
 mkdir -p tmp
@@ -71,6 +82,7 @@ for d in $DIRS; do
 	for src in "$ROOT/$d"/*.c; do
 		[ -e "$src" ] || continue
 		name="$d/$(basename "$src")"
+		case "$(basename "$src")" in add-*) continue;; esac
 		# MIR's own fixture convention (c-tests/runtests.sh): the suffix
 		# hangs off the FULL filename — havoc1.c.expectrc, not
 		# havoc1.expectrc. runtests.sh also accepts the .c-stripped form
@@ -84,11 +96,29 @@ for d in $DIRS; do
 		exp=""
 		[ -f "$stem.expect" ] && exp="$stem.expect"
 		[ -f "$src.expect" ] && exp="$src.expect"
-		opts=""
-		[ -f "$src.opt" ] && opts=$(cat "$src.opt")
-		[ -f "$stem.opt" ] && opts=$(cat "$stem.opt")
-		out=$( ( ulimit -t 10; timeout 15 "$BIN" --std=gnu11 $opts "$src" ) 2>/dev/null )
-		rc=$?
+		if [ -f "$src.opt" ] || [ -f "$stem.opt" ]; then
+			skip=$((skip + 1))
+			continue
+		fi
+		add_c="$ROOT/$d/add-$(basename "$src")"
+		if [ -f "$ROOT/$d/add-$(basename "$stem").mir" ]; then
+			skip=$((skip + 1))
+			continue
+		fi
+		std=gnu11
+		[ "$d" = lacc ] && std=c11
+		if [ -f "$add_c" ]; then
+			manifest="tmp/c2mir_lane_project.$$.json"
+			printf '[\n  {"directory":"%s","file":"%s","command":"gcc -std=%s -c %s"},\n  {"directory":"%s","file":"%s","command":"gcc -std=%s -c %s"}\n]\n' \
+				"$ROOT/$d" "$(basename "$src")" "$std" "$(basename "$src")" \
+				"$ROOT/$d" "$(basename "$add_c")" "$std" "$(basename "$add_c")" > "$manifest"
+			out=$( ( ulimit -t 10; timeout 15 "$BIN" --std=$std --project "$manifest" ) 2>/dev/null )
+			rc=$?
+			rm -f "$manifest"
+		else
+			out=$( ( ulimit -t 10; timeout 15 "$BIN" --std=$std "$src" ) 2>/dev/null )
+			rc=$?
+		fi
 		ok=0
 		if [ "$rc" -eq "$want_rc" ]; then
 			if [ -n "$exp" ]; then
@@ -120,7 +150,7 @@ if [ $((pass + fail)) -eq 0 ]; then
 	exit 1
 fi
 
-echo "c2mir-tests: $pass passed, $fail failed" \
+echo "c2mir-tests: $pass passed, $fail failed, $skip skipped" \
      "($newfail outside baseline, $fixed baseline tests now passing)"
 if [ "$fixed" -gt 0 ]; then
 	echo "c2mir-tests: SHRINK THE BASELINE — now passing:$fixed_names"

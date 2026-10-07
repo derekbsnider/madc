@@ -1,0 +1,36 @@
+== chthonia
+new: primary+n
+open: primary+o
+close: primary+w
+closeall: primary+shift+w
+save: primary+s
+saveall: primary+alt+s
+saveas: primary+shift+s
+undo: primary+z
+redo: primary+y
+find: primary+f
+replace: (unbound)
+indent: (unbound)
+dedent: shift+tab
+togglecomment: primary+3
+fontlarger: primary+= primary+plus
+fontsmaller: primary+-
+fullscreen: f11
+== vscode
+new: primary+n
+open: primary+o
+close: primary+w
+closeall: primary+k primary+w
+save: primary+s
+saveall: primary+k s
+saveas: primary+shift+s
+undo: primary+z
+redo: primary+y
+find: primary+f
+replace: primary+h
+indent: primary+]
+dedent: primary+[ shift+tab
+togglecomment: primary+/
+fontlarger: primary+=
+fontsmaller: primary+-
+fullscreen: f11

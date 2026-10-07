@@ -92,8 +92,8 @@ counts the assets:
         `dist/SHA256SUMS`).
      2. Windows: `scripts/remote_build.sh release-win` (build +
         verify_pe_release), then the wine packed suite
-        (`WINEDEBUG=-all WINEPATH='Z:\workspace\madc\bin'
-        MADC_BIN=bin/madc-release-x86-64-windows.exe MADC_WRAPPER=wine
+        (`WINEDEBUG=-all WINEPATH='Z:\workspace\madc\bin\release-windows'
+        MADC_BIN=bin/release-windows/madc.exe MADC_WRAPPER=wine
         MADC_SKIP_EXT='win64 wine64' bash scripts/run_tests.sh`) —
         must be green — then `bash scripts/package_release_windows.sh`
         (appends to the container's SHA256SUMS).

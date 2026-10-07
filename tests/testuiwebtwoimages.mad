@@ -1,0 +1,42 @@
+// Two images that both name ui::WEB, the level a program asks for: this
+// program and a shared library it opens. Each image gets <ns_ui_web> from
+// the auto-include and runs the fragment's initializer, which registers the
+// web host, and each image carries its own copy of the host's functions, so
+// the two tables' entries differ. The host states its identity, so the
+// library's registration is the same host again: it is accepted with
+// nothing said (.expect_quiet gates stderr). chthonia and libmadcide, the
+// library it links, have this shape (testuiwebtwounits is the one-image
+// case).
+// Before the fix opening the library printed "ui::register_host: target
+// 'web' is already registered".
+// Oracle: g++ 13 and clang++ 18 over the C++ analogue (a header defining
+// the host's functions and registering its table from a static
+// initializer, compiled into an executable and into a library it dlopens,
+// the registry in a third shared library): the library's table holds
+// different entries unless the executable is linked -rdynamic, the two
+// copies madc's images have.
+typedef long (*level_fn)(void);
+
+int main()
+{
+	var dir = "tmp/testuiwebtwoimages";
+	php::mkdir(dir.c_str());
+	var src = format("{}/lib.mad", dir);
+	php::file_put_contents(src.c_str(),
+		"extern \"C\" long lib_level(void)\n{\n\treturn ui::WEB;\n}\n");
+	var lib = format("{}/libtwoimages{}", dir, madc::library_suffix());
+	var d;
+	bool built = madc::build_native(d, src.c_str(), "shared", lib.c_str());
+	println("library: ok={} rows={}", built ? 1 : 0, php::count(d));
+	var why;
+	int64_t h = madc::library_open(format("./{}", lib), why);
+	println("open: {}", h != 0 ? 1 : 0);
+	level_fn f = (level_fn)madc::library_symbol(h, "lib_level");
+	long mine = ui::WEB;
+	println("same level: {}", f() == mine ? 1 : 0);
+	madc::library_close(h);
+	php::unlink(lib.c_str());
+	php::unlink(src.c_str());
+	php::rmdir(dir.c_str());
+	return 0;
+}

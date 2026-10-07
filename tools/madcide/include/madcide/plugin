@@ -104,6 +104,16 @@ namespace ide
     {
 	return api->show(w, es, kind);
     }
+
+    // A REPL command (API 3): handler `h` registered as command `name`, and
+    // `%name ARGS` typed in the REPL pane runs it with ARGS. %help lists it
+    // with `usage` (`%vars [NAME]`) and `summary`.
+    bool repl_command(long w, const char *name, const char *usage,
+		      const char *summary, cmd_handler h)
+    {
+	long code = api->command(w, name, summary, h);
+	return code != 0 && api->repl_command(w, name, usage, summary, code);
+    }
 }
 
 // The plugin API version this library was built against, read by madcide
@@ -113,9 +123,5 @@ extern "C" long madcide_plugin_api()
 {
     return MADCIDE_PLUGIN_API;
 }
-
-// The activation the plugin defines (plugin_activate_fn's contract), declared
-// here so a definition of another shape is refused when the plugin is built.
-extern "C" bool madcide_plugin_activate(const ide_api *api, long w);
 
 #endif

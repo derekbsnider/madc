@@ -1,0 +1,3 @@
+setup: rc=0 built=1
+sld: twice(21)=42
+run: rc=0

@@ -4,7 +4,9 @@
   similar runner). No `case "$base" in testfoo.mad) …` branches.
 - Per-test setup lives in sibling fixture files, discovered by the runner
   via filename convention:
-  - `tests/foo.flags` — whitespace-split compiler flags prepended before the source path
+  - `tests/foo.flags` — whitespace-split compiler flags prepended before the source path;
+    one pinning a `-stdlib=` flavor the binary was not built with (its
+    `--capabilities=json` `stdlib_flavors`) skips the test, counted on its own line
   - `tests/foo.input` — redirected to stdin
   - `tests/foo.argv` — whitespace-split, appended as argv
   - `tests/foo.expect` — each non-empty line must appear in the output
@@ -12,6 +14,8 @@
     timeout) and stderr must contain each non-empty line; EXE pass skips it
   - `tests/foo.expect_quiet` — JIT run must produce EMPTY stderr (content
     of the fixture file is ignored; presence enables the check)
+  - `tests/foo.expect_rc` — the exit status every run (JIT, exe, obj) must
+    end with, in place of 0 (one number: what the gcc-built program exits with)
   - `tests/foo.helper` — `foo.mad` is a compilation unit owned by another
     test (content = one line naming the owner); every suite runner skips
     it as a standalone test

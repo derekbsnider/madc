@@ -1,0 +1,2 @@
+b: cli_only=42 both=own CLI_D=7 a_sum=49
+run: rc=0

@@ -1,0 +1,39 @@
+// A function template whose body destroys through its type parameter
+// (`p->~T()`), called from a member function template with a dependent
+// argument (`dst(addr(*f))` — libstdc++'s _Destroy_aux<false>::__destroy
+// calling std::_Destroy(std::__addressof(*__first))), runs its destructor
+// call per instance. madc lowered the whole call to a bare `0` in the
+// parse-once pattern (no element type to destroy yet), so no destructor
+// ever ran; and any body CONTAINING `->~T` was treated as the bare destroy,
+// dropping its other statements. A scalar T destroys nothing.
+// Oracle: g++ 13 and clang++ 18 print the .expect lines.
+#include <stdio.h>
+static int hits = 0;
+struct S { int v; ~S() { hits += 100; } };
+template<typename T> T *addr(T &r) { return __builtin_addressof(r); }
+template<typename T> void dstb(T *p) { p->~T(); }
+template<typename T> void dstd(T *p) { p->~T(); hits += 1; }
+template<typename T> void dsts(T *p) { if (!p) return; p->~T(); }
+template<bool> struct da
+{
+	template<typename I> static void d2(I f, I l) { for (; f != l; ++f) dstb(addr(*f)); }
+	template<typename I> static void d3(I f, I l) { for (; f != l; ++f) dstd(addr(*f)); }
+	template<typename I> static void d4(I f, I l) { for (; f != l; ++f) dstb(&*f); }
+	template<typename I> static void d6(I f, I l) { for (; f != l; ++f) dsts(addr(*f)); }
+};
+int main()
+{
+	S s[2] = { { 1 }, { 2 } };
+	int n[2] = { 7, 8 };
+	int h[5];
+	da<false>::d2(s, s + 2); h[0] = hits; hits = 0;
+	da<false>::d3(s, s + 2); h[1] = hits; hits = 0;
+	da<false>::d4(s, s + 2); h[2] = hits; hits = 0;
+	da<false>::d6(s, s + 2); h[3] = hits; hits = 0;
+	da<false>::d2(n, n + 2);
+	dsts(n);
+	dstd(n + 1);
+	h[4] = hits; hits = 0;
+	printf("dtors: %d %d %d %d %d %d\n", h[0], h[1], h[2], h[3], h[4], n[0] + n[1]);
+	return 0;
+}

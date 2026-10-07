@@ -1,0 +1,61 @@
+// __attribute__((cleanup(f))) on a block-scope automatic object (GNU C):
+// f(&object) runs whenever the object's scope is left — fall-through, break,
+// return, goto — innermost first, in reverse declaration order. A cleanup in
+// the declaration's head or among its specifiers is every declarator's; one
+// after a declarator is that object's alone; a static object ignores it.
+// madc read the attribute and dropped it, so no cleanup ever ran (MIR's own
+// new/cleanup-* tests in the c2mir-tests lane: exit 0, wrong output).
+// gcc 13.3 and clang 18.1 (-std=gnu11) print the .expect lines.
+#include <stdio.h>
+
+static void cl(int *p) { printf("cl %d\n", *p); }
+static void c2(int *p) { printf("c2 %d\n", *p); }
+
+static int ret(int x)
+{
+	int a __attribute__((cleanup(cl))) = 10 + x;
+	if (x)
+		return a + 1;
+	printf("no early return\n");
+	return 0;
+}
+
+static void lists(void)
+{
+	int a __attribute__((cleanup(cl))) = 20, b __attribute__((cleanup(c2))) = 21, c = 22;
+	__attribute__((cleanup(c2))) int d = 23, e = 24;
+	static int s __attribute__((cleanup(cl))) = 99;
+	printf("lists %d %d %d %d %d %d\n", a, b, c, d, e, s);
+}
+
+static void loops(void)
+{
+	for (int i = 0; i < 3; i++) {
+		int k __attribute__((cleanup(cl))) = 30 + i;
+		if (i == 1)
+			continue;
+		if (i == 2)
+			break;
+	}
+	{
+		int g __attribute__((cleanup(c2))) = 40;
+		if (g)
+			goto out;
+	}
+out:
+	printf("after goto\n");
+}
+
+int main(void)
+{
+#if __has_attribute(cleanup)
+	printf("has: 1\n");
+#else
+	printf("has: 0\n");
+#endif
+	printf("ret: %d\n", ret(1));
+	printf("ret: %d\n", ret(0));
+	lists();
+	loops();
+	return 0;
+}

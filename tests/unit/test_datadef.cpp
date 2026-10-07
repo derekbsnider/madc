@@ -2124,3 +2124,24 @@ TEST_CASE("constexpr subobject failures restore the token stream")
 	CHECK(pgm.curToken() == head);
 	CHECK(pgm.prevToken() == previous);
 }
+
+TEST_CASE("_FloatN spellings are C++ built-ins from the g++ that added them")
+{
+	// g++ 13 has every _FloatN spelling as a C++ type; g++ 12 only _Float16
+	// (x86); g++ 11 (Ubuntu 22.04) none — glibc 2.35's bits/floatn.h then
+	// typedefs them. 0 is a clang identity, which keeps the built-ins.
+	const char *wide[] = { "_Float32", "_Float64", "_Float128", "_Float32x", "_Float64x" };
+	for ( const char *w : wide ) {
+		CHECK(Program::cpp_floatn_builtin(w, 13));
+		CHECK_FALSE(Program::cpp_floatn_builtin(w, 12));
+		CHECK_FALSE(Program::cpp_floatn_builtin(w, 11));
+		CHECK(Program::cpp_floatn_builtin(w, 0));
+	}
+	CHECK(Program::cpp_floatn_builtin("_Float16", 13));
+	CHECK(Program::cpp_floatn_builtin("_Float16", 12));
+	CHECK_FALSE(Program::cpp_floatn_builtin("_Float16", 11));
+	CHECK(Program::cpp_floatn_builtin("_Float16", 0));
+	// The capture this binary carries: a g++ of 7 or later, or clang.
+	int major = Program::captured_gxx_major();
+	CHECK((major == 0 || major >= 7));
+}

@@ -1,8 +1,11 @@
 // madc_modules — module map + the ONE platform-spelling owner. Contract in
 // include/madc_modules.h.
+#include <stdio.h>
+#include <stdint.h>
 #include <string.h>
 #include "madc_modules.h"
 #include "madc_dl.h"
+#include "madc_posix_io.h"	// resolve_real_path, host_path_dirname
 
 // The rows. `c` and `m` name the C runtime images by their REAL sonames /
 // install names / module names — a dev-symlink spelling (libm.so) needs the
@@ -21,6 +24,11 @@ static const MadcModuleSpec madc_modules[] = {
 	// src/madcgit.mk where pkg-config finds libgit2; the <ns_git> fragment
 	// imports it and asks madc::module_available before the first call.
 	{ "madcgit", "madcgit.h", "libmadcgit.so", "libmadcgit.dylib", "madcgit.dll", MADC_MODULE_LAZY },
+	// GitHub-flavoured Markdown (plan 2026-10-03-chthonia-windows-macos.md
+	// §7d): cmark-gfm, a dependency linked statically into the module
+	// (src/madcmark.mk); the <ns_markdown> fragment imports it and asks
+	// madc::module_available before the first call.
+	{ "madcmark", "madcmark.h", "libmadcmark.so", "libmadcmark.dylib", "madcmark.dll", MADC_MODULE_LAZY },
 	{ NULL, NULL, NULL, NULL, NULL, 0 }
 };
 
@@ -118,19 +126,98 @@ std::string madc_module_library_spelling(const std::string &name)
 	return madc_module_library_spelling(name, madc_target_os);
 }
 
-void *madc_module_open(const std::string &spelling, std::string &error)
+// A Mach-O dylib's LC_ID_DYLIB, read from the file at `path` ("" = not a
+// readable 64-bit little-endian Mach-O dylib). A universal file answers from
+// its first slice: a library's slices share one install name.
+static uint32_t macho_u32(const unsigned char *p, bool big)
+{
+	return big ? (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3]
+		   : (uint32_t)p[3] << 24 | (uint32_t)p[2] << 16 | (uint32_t)p[1] << 8 | p[0];
+}
+
+static std::string macho_dylib_id(const std::string &path)
+{
+	const uint32_t mh_magic_64 = 0xfeedfacfu, fat_magic = 0xcafebabeu;
+	const uint32_t mh_dylib = 6, lc_id_dylib = 0xd;
+	FILE *f = fopen(path.c_str(), "rb");
+	if (!f)
+		return "";
+	std::string id;
+	unsigned char h[32];
+	long base = 0;
+	if (fread(h, 1, 8, f) == 8 && macho_u32(h, true) == fat_magic
+	    && macho_u32(h + 4, true) > 0) {
+		unsigned char arch[20];	// the first fat_arch: cputype .. align
+		if (fread(arch, 1, sizeof arch, f) == sizeof arch)
+			base = (long)macho_u32(arch + 8, true);
+	}
+	if (fseek(f, base, SEEK_SET) == 0 && fread(h, 1, sizeof h, f) == sizeof h
+	    && macho_u32(h, false) == mh_magic_64 && macho_u32(h + 12, false) == mh_dylib) {
+		uint32_t ncmds = macho_u32(h + 16, false), sizeofcmds = macho_u32(h + 20, false);
+		std::string cmds(sizeofcmds, '\0');
+		if (sizeofcmds && fread(&cmds[0], 1, sizeofcmds, f) == sizeofcmds) {
+			const unsigned char *c = (const unsigned char *)cmds.data();
+			uint32_t off = 0;
+			for (uint32_t i = 0; i < ncmds && off + 8 <= sizeofcmds; i++) {
+				uint32_t cmd = macho_u32(c + off, false), size = macho_u32(c + off + 4, false);
+				if (size < 8 || off + size > sizeofcmds)
+					break;
+				if (cmd == lc_id_dylib && size >= 24) {
+					uint32_t name = macho_u32(c + off + 8, false);
+					if (name < size)
+						id = std::string((const char *)c + off + name,
+								 strnlen((const char *)c + off + name, size - name));
+					break;
+				}
+				off += size;
+			}
+		}
+	}
+	fclose(f);
+	return id;
+}
+
+std::string madc_darwin_install_name(const std::string &spelling)
+{
+	std::string path = spelling;
+	if (!is_path_spelling(spelling)) {
+		std::string libdir = madc_self_lib_dir();
+		if (libdir.empty())
+			return spelling;
+		path = libdir + "/" + spelling;
+	}
+	std::string id = macho_dylib_id(path);
+	return id.empty() ? spelling : id;
+}
+
+std::string madc_darwin_link_rpath(const std::string &spelling)
+{
+	if (!is_path_spelling(spelling)
+	    || macho_dylib_id(spelling).compare(0, 7, "@rpath/") != 0)
+		return "";
+	// The REAL directory: a versioned link (libx.dylib -> libx.1.dylib)
+	// names the file the install name's <file> is, wherever it lives.
+	std::string dir = madc::detail::host_path_dirname(
+		madc::detail::resolve_real_path(spelling.c_str()));
+	if (dir.size() > 1)
+		dir.pop_back();	// the splitter keeps the trailing separator
+	return dir;
+}
+
+void *madc_module_open(const std::string &spelling, std::string &error,
+		       bool bind_now)
 {
 	error.clear();
 	if (!is_path_spelling(spelling)) {
 		std::string libdir = madc_self_lib_dir();
 		if (!libdir.empty()) {
 			std::string beside = libdir + "/" + spelling;
-			if (void *h = madcdl_open_global(beside.c_str()))
+			if (void *h = madcdl_open_global(beside.c_str(), bind_now))
 				return h;
 			(void)madcdl_error();	// consume; the loader's own search follows
 		}
 	}
-	void *h = madcdl_open_global(spelling.c_str());
+	void *h = madcdl_open_global(spelling.c_str(), bind_now);
 	if (!h) {
 		const char *e = madcdl_error();
 		error = e ? e : "cannot open";

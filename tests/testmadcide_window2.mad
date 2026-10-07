@@ -17,17 +17,7 @@
 #include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
-
-// The exact value object ui::event produces for typed text.
-void ev_text(var &e, const char *t)
-{
-    var f = {
-	"event": "text",
-	"event_code": ui::event_kind::text,
-	"text": t
-    };
-    e = f;
-}
+#include "../tools/madcide/include/madcide/harness"	// <madcide/harness>: ev_text, ev_key, ev_action
 
 // Does the level-0 typeset of this client's compose contain `needle`?
 // (perl::index returns -1 when absent.)

@@ -23,6 +23,7 @@ TEST_CASE("identity map — display == stored at every caret position")
     {
 	CHECK(m.to_display(i) == i);
 	CHECK(m.to_stored(i) == i);
+	CHECK(m.to_stored_after(i) == i);	// no boundary to take a side of
     }
     // Past the end: just after the last image.
     CHECK(m.to_display(11) == 10u);
@@ -81,6 +82,18 @@ TEST_CASE("concealed ranges — the markdown caret math")
     // gap-free here, so it carries no ambiguity).
     for ( size_t d = 0; d <= 5; ++d )
 	CHECK(m.to_display(m.to_stored(d)) == d);
+
+    // The LATER side: a boundary lands past the concealed run (where a
+    // deletion starting there begins); every other offset as to_stored.
+    CHECK(m.to_stored_after(0) == 0u);
+    CHECK(m.to_stored_after(1) == 1u);
+    CHECK(m.to_stored_after(2) == 4u);	// past the opening **
+    CHECK(m.to_stored_after(3) == 5u);
+    CHECK(m.to_stored_after(4) == 8u);	// past the closing **
+    CHECK(m.to_stored_after(5) == 9u);	// the last copy's end is its own
+    CHECK(m.to_stored_after(6) == 9u);	// past the end
+    for ( size_t d = 0; d <= 5; ++d )
+	CHECK(m.to_display(m.to_stored_after(d)) == d);
 }
 
 TEST_CASE("synthetic ranges — display decoration with no stored home")
@@ -102,6 +115,10 @@ TEST_CASE("synthetic ranges — display decoration with no stored home")
     CHECK(m.to_display(3) == 3u);	// the stored caret stays BEFORE
     CHECK(m.to_display(4) == 6u);	// the synthetic run
     CHECK(m.to_display(5) == 7u);
+
+    // No stored bytes are concealed, so the later side is the same place.
+    for ( size_t d = 0; d <= 8; ++d )
+	CHECK(m.to_stored_after(d) == m.to_stored(d));
 }
 
 TEST_CASE("empty map — a wholly rendered view: everything parks at 0")
@@ -112,6 +129,7 @@ TEST_CASE("empty map — a wholly rendered view: everything parks at 0")
     CHECK(m.to_display(42) == 0u);
     CHECK(m.to_stored(0) == 0u);
     CHECK(m.to_stored(42) == 0u);
+    CHECK(m.to_stored_after(42) == 0u);
 }
 
 TEST_CASE("add — monotone in BOTH axes, non-empty; refusals change nothing")

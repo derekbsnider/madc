@@ -3265,7 +3265,7 @@ There is no patch release before it: B85's fix rides this release.
 
    - **Named out:**
      - Thonny's debugger keys wait for Phase 7's stepper;
-     - Interrupt needs D8's interrupt op (Stop restarts meanwhile);
+     - Interrupt is §41.12a's (done 2026-10-05: `replinterrupt`, Ctrl+C in the Shell with nothing selected);
      - Auto-complete waits for the editor's completion popup;
      - VS Code's multi-cursor.
    - **Thread contract:** a key table and the clipboard belong to the session's thread. `settings.json` is written whole by the session that changed it, and between processes the last write wins.
@@ -3326,6 +3326,117 @@ Then the seam battery, every platform lane's full suite, and the master release.
 2. **The learning IDE's language is a Run ▸ Language… choice** (C17, C++17, madc). The one rule that `madc file`, `madc -i` and F5 share stays. It sets `repl.std` for the session (the setting's value from the bundle or `settings.json` is where it starts) and restarts the session, and the prompt already names the standard (D22). A course would otherwise teach C from a textbook while getting madc's answers without knowing it.
 3. **chthonia follows Thonny's look, layout, menus, keys and features, in C/C++ form, GUI first,** so someone who learned Python in Thonny can use it with little relearning. Thonny's documented or source behaviour is the precedent every teaching-IDE command is checked against.
 4. **The key style is a menu choice** (step 3e): JOE, Vim, Emacs, Pico, Thonny and VS Code. chthonia opens with Thonny's keys, and the choice persists.
+
+**Superseded (owner, 2026-10-03), item 2:** the standard is the SESSION's, not the REPL's. A buffer named hello.c opened a `madc>` REPL, so unset, each file's family now decides (hello.c is C17 and its REPL a C one). `--std=` on madcide's command line and settings.json's `"std"` set it, and the `language` command replaces `repllang` (a By file row returns to the file's). Every buffer's parse and Build/Run use it as well as the REPL and F5. `tools/madcide/madcide_lang.inc`; `docs/madcide.md`, "The language standard".
+
+### 41.12a Interrupt (D8) and Send EOF, designed against the code (2026-10-05)
+
+Thonny's Run ▸ Interrupt and Send EOF (Chthonia plan §7a; split plan §6 step 1
+names both in madc v0.102.0's scope). Today an interrupt stops the backend and
+a fresh one starts (D8's interim), and there is no way to end a running
+program's input short of Stop.
+
+**Interrupt — the poll and the entry boundary that exist.**
+- `cir_run_at_entry_boundary` (`src/madc_cir.cpp`) arms one `setjmp` around an
+  entry's TU init, its run and a loaded file's `main`. A return to it unwinds
+  the exception runtime's cleanup stack to its mark (registered destructors
+  run) and restores the runtime's state as it was when the boundary armed.
+  `__madc_session_unbound` already returns there: it records a runtime
+  diagnostic on the running entry and longjmps, no C++ exception, so no script
+  `try` sees it.
+- The interrupt is a third such return. `__madc_session_poll()` (extern "C",
+  compiler machinery like `__madc_session_show`): when an interrupt is
+  pending and a boundary armed on the running task, it clears the flag,
+  records the runtime diagnostic `interrupted` on the entry and longjmps to
+  the boundary. Not catchable by a script `catch (...)`: a loop that catches
+  everything cannot keep Ctrl-C out. The entry stays linked with its
+  definitions, as an undefined reference's does; the session's state is kept.
+- The poll is emitted only in a session Program (`Program::interactive_session`:
+  entries and the files `%load`/`%run`/F5 load into it), once per iteration of
+  every USER loop: the loop's body starts with `__madc_session_poll();`, so
+  an iteration a `continue` begins reaches it too. One builder helper owns it
+  (`CirBuilder::translate_loop_body`, through which every user loop's body
+  comes); the compiler's own loops (array construction and destruction) carry
+  none. Code outside a session is unchanged byte for byte.
+- Code that is not polled (a native library call, a loop in non-session code,
+  a deep recursion with no loop) cannot return to the prompt: a SECOND
+  interrupt while the first is still pending takes the default action, the
+  backend ends, and the client starts a fresh one (D8's second clause).
+- The pending flag: a `volatile sig_atomic_t`, cleared when the backend takes
+  up each request (`madc_session_interrupt_reset`): an interrupt while idle
+  does nothing, and one that arrives while the entry is still compiling (the
+  running notice comes before the compile) waits for its first poll. POSIX: the backend's SIGINT handler sets
+  it (the second one restores SIG_DFL and re-raises); the client's
+  `session_interrupt` sends SIGINT to the backend's pid, and a terminal's
+  Ctrl-C reaches it already (the CLI host ignores SIGINT while an entry runs).
+  Windows (no signals): the client sets an auto-reset event named from the
+  session's token (`Local\madc-session-interrupt-<token>`, made before the
+  backend starts); a watcher thread in the backend waits on it and sets the
+  flag (the backend's session thread stays the only one touching the
+  session), and the console's Ctrl+C reaches a backend on the host's terminal.
+  The platform halves are `src/madc_session_interrupt.cpp`'s.
+- Faces: `madc::session_interrupt(h)` (`<ns_madc>`); madcide's Run ▸ Interrupt
+  (`replinterrupt`), its transcript line `[interrupted]` with the session
+  kept. Chthonia's key is Thonny's Ctrl+C in the Shell while an entry runs
+  (the `@repl` scope); elsewhere Ctrl+C copies.
+
+**Send EOF.**
+- The backend's stdin is the `Process`'s pipe. A pipe ends only when its
+  writer closes it, and then every later read sees the end too.
+- Send EOF closes the write end, so the running program's read returns 0
+  (`getchar` gives EOF, `fgets` NULL). The next entry gets a fresh pipe: the
+  client makes it and hands the read end to the backend with the request
+  (POSIX: `SCM_RIGHTS` over the request socketpair; Windows: `DuplicateHandle`
+  into the child, whose handle value rides the request), and the backend puts
+  it on fd 0 and calls `clearerr(stdin)` before the entry runs. No tty: the
+  program's stdin stays a pipe, as it is today.
+- Faces: `madc::session_eof(h)`; madcide's Run ▸ Send EOF (`repleof`), Ctrl+D
+  in the Shell (Thonny's key).
+
+Thread contract: unchanged (D9). The flag is written by a signal handler or
+the watcher thread and read by the session thread; everything else stays on
+the session's thread.
+
+Gate: a session test whose entry loops forever is interrupted and the next
+entry sees the earlier names (POSIX and the Windows backend); a second
+interrupt into a native wait restarts the backend; an entry reading stdin to
+its end after Send EOF, and a following entry reading new input; madcide's
+`testmadcide_repl` Interrupt and Send EOF sections; a non-session program's
+emitted C (`--emit=c11`) unchanged.
+
+Progress (2026-10-05): Interrupt done. `__madc_session_poll` and
+`madc_session_interrupt_raise` (`src/madc_cir.cpp`), the poll in
+`translate_loop_body`, the platform halves (`src/madc_session_interrupt.cpp`:
+`session_interrupt_arm_backend`, `SessionInterruptor`, `HostIgnoresInterrupt`,
+and `Process::interrupt`), `SessionClient::interrupt` and
+`madc::session_interrupt`; madcide's `replinterrupt` (Run ▸ Interrupt in both
+menus) and Copy with nothing selected in the Shell's input (`seINTERRUPT`).
+Gates: `testsession_interrupt` (`while`, `for` with a `continue`, `do`, a
+function an earlier entry defined, the session's names kept after each; idle
+does nothing; a second interrupt into `getchar` restarts the backend),
+`testmadcide_replinterrupt` (Run ▸ Interrupt, Copy's interrupt, both messages
+with nothing running). The interrupt's diagnostic has no source position, so
+the CLI prints it as `REPL[n]:0:0: error: interrupted`.
+
+Progress (2026-10-05): Send EOF done. `Process::renew_stdin` (the old write
+end closes, a fresh pipe replaces it), the hand-off
+(`src/madc_session_stdin.cpp`: `SessionStdinHandOff` — POSIX passes the read
+end over a socketpair made with the backend, `SCM_RIGHTS`; Windows
+duplicates it into the backend and the request names its handle — and
+`session_stdin_take`, which puts it on fd 0), the request `stdin` (no seq,
+no reply), `SessionClient::eof` and `madc::session_eof`; every request
+starts with stdin's end-of-file state clear (`clearerr(stdin)`,
+`std::cin.clear()` in `serve_session`), so the entry after one that read to
+the end reads new input — after Send EOF, and after a terminal's own Ctrl-D
+in `madc -i`, where the next entry's `getchar()` returned -1 at once before; madcide's `repleof` (Run ▸ Send
+EOF in both menus; `@repl ^d` in `chthonia.keys`), which sends what the input
+line holds first. Gates: `testsession_eof` (two lines then the end; the next
+entry reads new input; a second Send EOF; one while idle),
+`testmadcide_repleof` (Run ▸ Send EOF with a partial line typed, and with
+nothing running), `testrepl_terminalkeys` (Ctrl-D in `madc -i` on a
+pseudo-terminal, then a read of new input). Measured on the way: a C session refuses `long n =
+lines();` at file scope, as gcc does (C11 6.7.9p4), but through c2mir's
+message (BUGS.md B16), so the tests assign to declared globals.
 
 ## 42. Decisions (owner, 2026-09-25)
 

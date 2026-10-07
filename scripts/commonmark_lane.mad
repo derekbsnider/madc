@@ -1,0 +1,435 @@
+// commonmark_lane.mad — the CommonMark conformance lane's harness (plan
+// docs/plans/2026-10-03-chthonia-windows-macos.md §7d; driven by
+// scripts/commonmark_lane.sh). It reads the spec the madcmark module's
+// pinned cmark-gfm ships (its test/spec.txt, from the dependency's staged
+// source — never copied into this repository), parses each example's
+// Markdown through markdown:: (the module's tree, the one every madcide
+// consumer reads) and renders that TREE as HTML the way cmark-gfm's own
+// renderer writes it (html.c, the table and tasklist extensions), then
+// compares the result with the example's HTML byte for byte.
+//
+// What it measures is the TREE: an example renders right only when the
+// module's tree carries everything the HTML needs (a link's title, an
+// image's alt text, a code block's info string, a list's start and
+// tightness, a table's alignment). The module always attaches its four
+// extensions (table, strikethrough, autolink, tasklist), which madcide's
+// panes read with; a core example the extensions change is a baseline row
+// of scripts/commonmark_lane.sh, never a second configuration.
+//
+// Usage: madc scripts/commonmark_lane.mad SPEC.txt [EXAMPLE]
+// Prints `FAIL <example> <section>` per mismatch, then
+// `commonmark: N passed, M failed (of T examples)`; with EXAMPLE, a failing
+// example also prints its Markdown, the wanted HTML and the rendered HTML.
+
+// HTML text escaping (cmark's houdini_escape_html, not secure mode).
+void esc_html(var &out, var &s)
+{
+    var t = php::str_replace("&", "&amp;", s.c_str());
+    t = php::str_replace("<", "&lt;", t.c_str());
+    t = php::str_replace(">", "&gt;", t.c_str());
+    t = php::str_replace("\"", "&quot;", t.c_str());
+    out = format("{}{}", out, t);
+}
+
+// A byte cmark's href escaping leaves as it is: alphanumerics and the URL
+// characters it trusts (houdini_href_e.c's table; `&` and `'` are entity
+// escapes, every other byte is %XX).
+bool href_safe(long c)
+{
+    if ( (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') )
+	return true;
+    const char *ok = "-_.+!*(),%#@?=;:/$~";
+    for ( long i = 0; ok[i] != 0; i = i + 1 )
+	if ( ok[i] == c )
+	    return true;
+    return false;
+}
+
+void esc_href(var &out, var &s)
+{
+    var hex = "0123456789ABCDEF";
+    var u = s;
+    // The bytes to escape, read before any text call: c_str() is
+    // ring-lifetime, so `p` must not outlive the next substr or format.
+    var at = {};
+    var code = {};
+    const char *p = u.c_str();
+    long n = strlen(p);
+    for ( long i = 0; i < n; i = i + 1 )
+    {
+	long c = (long)(unsigned char)p[i];
+	if ( !href_safe(c) )
+	{
+	    at[] = i;
+	    code[] = c;
+	}
+    }
+    var t = "";
+    long run = 0;		// the start of the pending safe run
+    long ne = php::count(at);
+    for ( long j = 0; j < ne; j = j + 1 )
+    {
+	long i = at[j].as_integer();
+	long c = code[j].as_integer();
+	t = format("{}{}", t, perl::substr(u, run, i - run));
+	if ( c == '&' )
+	    t = format("{}&amp;", t);
+	else if ( c == '\'' )
+	    t = format("{}&#x27;", t);
+	else
+	    t = format("{}%{}{}", t, perl::substr(hex, c / 16, 1), perl::substr(hex, c % 16, 1));
+	run = i + 1;
+    }
+    t = format("{}{}", t, perl::substr(u, run, n - run));
+    out = format("{}{}", out, t);
+}
+
+// cmark's cr(): a newline unless the output is empty or ends in one.
+void cr(var &out)
+{
+    const char *p = out.c_str();
+    long n = strlen(p);
+    if ( n > 0 && p[n - 1] != '\n' )
+	out = format("{}\n", out);
+}
+
+// An image's alt text: its inlines as plain text (cmark's plain mode).
+void plain(var &out, var &n)
+{
+    for ( var c : n["children"] )
+    {
+	if ( c["kind"] == markdown::node_kind::text || c["kind"] == markdown::node_kind::code
+	  || c["kind"] == markdown::node_kind::html_inline )
+	{
+	    var t = c["text"];
+	    esc_html(out, t);
+	}
+	else if ( c["kind"] == markdown::node_kind::softbreak
+	       || c["kind"] == markdown::node_kind::linebreak )
+	    out = format("{} ", out);
+	else
+	    plain(out, c);
+    }
+}
+
+void render(var &out, var &n, var &parent, var &grand);
+
+void render_children(var &out, var &n, var &parent)
+{
+    for ( var c : n["children"] )
+	render(out, c, n, parent);
+}
+
+void render(var &out, var &n, var &parent, var &grand)
+{
+    var k = n["kind"];
+    if ( k == markdown::node_kind::document )
+	render_children(out, n, parent);
+    else if ( k == markdown::node_kind::block_quote )
+    {
+	cr(out);
+	out = format("{}<blockquote>\n", out);
+	render_children(out, n, parent);
+	cr(out);
+	out = format("{}</blockquote>\n", out);
+    }
+    else if ( k == markdown::node_kind::list )
+    {
+	bool ordered = n["list"] == markdown::list_kind::ordered;
+	cr(out);
+	if ( !ordered )
+	    out = format("{}<ul>\n", out);
+	else if ( n["start"].as_integer() == 1 )
+	    out = format("{}<ol>\n", out);
+	else
+	    out = format("{}<ol start=\"{}\">\n", out, n["start"].as_integer());
+	render_children(out, n, parent);
+	out = format("{}{}", out, ordered ? "</ol>\n" : "</ul>\n");
+    }
+    else if ( k == markdown::node_kind::item )
+    {
+	cr(out);
+	out = format("{}<li>", out);
+	if ( n["task"].as_boolean() )
+	    out = format("{}{}", out, n["checked"].as_boolean()
+			 ? "<input type=\"checkbox\" checked=\"\" disabled=\"\" /> "
+			 : "<input type=\"checkbox\" disabled=\"\" /> ");
+	render_children(out, n, parent);
+	out = format("{}</li>\n", out);
+    }
+    else if ( k == markdown::node_kind::heading )
+    {
+	cr(out);
+	out = format("{}<h{}>", out, n["level"].as_integer());
+	render_children(out, n, parent);
+	out = format("{}</h{}>\n", out, n["level"].as_integer());
+    }
+    else if ( k == markdown::node_kind::code_block )
+    {
+	cr(out);
+	var info = n["info"];
+	if ( strlen(info.c_str()) == 0 )
+	    out = format("{}<pre><code>", out);
+	else
+	{
+	    // the info string's first word (cmark: up to the first space)
+	    long sp = perl::index(info.c_str(), " ");
+	    var word = info;
+	    if ( sp >= 0 )
+		word = perl::substr(info, 0, sp);
+	    out = format("{}<pre><code class=\"language-", out);
+	    esc_html(out, word);
+	    out = format("{}\">", out);
+	}
+	var lit = n["text"];
+	esc_html(out, lit);
+	out = format("{}</code></pre>\n", out);
+    }
+    else if ( k == markdown::node_kind::html_block )
+    {
+	cr(out);
+	out = format("{}{}", out, n["text"]);
+	cr(out);
+    }
+    else if ( k == markdown::node_kind::thematic_break )
+    {
+	cr(out);
+	out = format("{}<hr />\n", out);
+    }
+    else if ( k == markdown::node_kind::paragraph )
+    {
+	// A paragraph in a tight list's item shows its inlines bare.
+	bool tight = !grand.is_null() && grand["kind"] == markdown::node_kind::list
+		     && grand["tight"].as_boolean();
+	if ( !tight )
+	{
+	    cr(out);
+	    out = format("{}<p>", out);
+	}
+	render_children(out, n, parent);
+	if ( !tight )
+	    out = format("{}</p>\n", out);
+    }
+    else if ( k == markdown::node_kind::text )
+    {
+	var t = n["text"];
+	esc_html(out, t);
+    }
+    else if ( k == markdown::node_kind::softbreak )
+	out = format("{}\n", out);
+    else if ( k == markdown::node_kind::linebreak )
+	out = format("{}<br />\n", out);
+    else if ( k == markdown::node_kind::code )
+    {
+	var t = n["text"];
+	out = format("{}<code>", out);
+	esc_html(out, t);
+	out = format("{}</code>", out);
+    }
+    else if ( k == markdown::node_kind::html_inline )
+	out = format("{}{}", out, n["text"]);
+    else if ( k == markdown::node_kind::emph )
+    {
+	out = format("{}<em>", out);
+	render_children(out, n, parent);
+	out = format("{}</em>", out);
+    }
+    else if ( k == markdown::node_kind::strong )
+    {
+	// cmark-gfm writes no tags for a strong directly inside a strong
+	bool nested = !parent.is_null() && parent["kind"] == markdown::node_kind::strong;
+	if ( !nested )
+	    out = format("{}<strong>", out);
+	render_children(out, n, parent);
+	if ( !nested )
+	    out = format("{}</strong>", out);
+    }
+    else if ( k == markdown::node_kind::strikethrough )
+    {
+	out = format("{}<del>", out);
+	render_children(out, n, parent);
+	out = format("{}</del>", out);
+    }
+    else if ( k == markdown::node_kind::link )
+    {
+	var url = n["url"];
+	out = format("{}<a href=\"", out);
+	esc_href(out, url);
+	out = format("{}\"", out);
+	var title = n["title"];
+	if ( strlen(title.c_str()) > 0 )
+	{
+	    out = format("{} title=\"", out);
+	    esc_html(out, title);
+	    out = format("{}\"", out);
+	}
+	out = format("{}>", out);
+	render_children(out, n, parent);
+	out = format("{}</a>", out);
+    }
+    else if ( k == markdown::node_kind::image )
+    {
+	var url = n["url"];
+	out = format("{}<img src=\"", out);
+	esc_href(out, url);
+	out = format("{}\" alt=\"", out);
+	plain(out, n);
+	out = format("{}\"", out);
+	var title = n["title"];
+	if ( strlen(title.c_str()) > 0 )
+	{
+	    out = format("{} title=\"", out);
+	    esc_html(out, title);
+	    out = format("{}\"", out);
+	}
+	out = format("{} />", out);
+    }
+    else if ( k == markdown::node_kind::table )
+    {
+	var aligns = n["align"];
+	bool body = false;
+	cr(out);
+	out = format("{}<table>", out);
+	cr(out);
+	for ( var row : n["children"] )
+	{
+	    bool header = row["header"].as_boolean();
+	    cr(out);
+	    if ( header )
+	    {
+		out = format("{}<thead>", out);
+		cr(out);
+	    }
+	    else if ( !body )
+	    {
+		out = format("{}<tbody>", out);
+		cr(out);
+		body = true;
+	    }
+	    out = format("{}<tr>", out);
+	    cr(out);
+	    long ci = 0;
+	    for ( var cell : row["children"] )
+	    {
+		cr(out);
+		out = format("{}<{}", out, header ? "th" : "td");
+		if ( ci < php::count(aligns) )
+		{
+		    var a = aligns[ci];
+		    if ( a == markdown::column_align::left )
+			out = format("{} align=\"left\"", out);
+		    else if ( a == markdown::column_align::center )
+			out = format("{} align=\"center\"", out);
+		    else if ( a == markdown::column_align::right )
+			out = format("{} align=\"right\"", out);
+		}
+		out = format("{}>", out);
+		render_children(out, cell, row);
+		out = format("{}</{}>", out, header ? "th" : "td");
+		cr(out);
+		ci = ci + 1;
+	    }
+	    cr(out);
+	    out = format("{}</tr>", out);
+	    cr(out);
+	    if ( header )
+	    {
+		out = format("{}</thead>", out);
+		cr(out);
+	    }
+	}
+	if ( body )
+	{
+	    cr(out);
+	    out = format("{}</tbody>", out);
+	    cr(out);
+	}
+	cr(out);
+	out = format("{}</table>", out);
+	cr(out);
+    }
+    else
+	render_children(out, n, parent);	// footnotes and the rest: their content
+}
+
+int main(int argc, char **argv)
+{
+    if ( argc < 2 )
+    {
+	println(stderr, "usage: commonmark_lane.mad SPEC.txt");
+	return 2;
+    }
+    if ( !markdown::available() )
+    {
+	println(stderr, "commonmark_lane: the madcmark module is not available");
+	return 2;
+    }
+    var spec;
+    if ( !php::file_get_contents(spec, argv[1]) )
+    {
+	println(stderr, "commonmark_lane: cannot read {}", argv[1]);
+	return 2;
+    }
+    array lines;
+    php::explode(lines, "\n", spec.c_str());
+    var fence = php::str_repeat("`", 32);
+    var opener = format("{} example", fence);
+    long state = 0;		// 0 prose, 1 an example's Markdown, 2 its HTML
+    long number = 0;
+    long show = argc > 2 ? atol(argv[2]) : 0;	// the example to dump
+    long pass = 0;
+    long fail = 0;
+    var section = "";
+    var md = "";
+    var html = "";
+    bool skip = false;
+    for ( var raw : lines )
+    {
+	var l = php::trim(raw.c_str());
+	if ( perl::index(l.c_str(), opener.c_str()) == 0 )
+	{
+	    state = 1;
+	    md = "";
+	    html = "";
+	    skip = perl::index(l.c_str(), "disabled") >= 0;
+	}
+	else if ( l == fence )
+	{
+	    state = 0;
+	    number = number + 1;
+	    if ( skip )
+		continue;
+	    var tmd = php::str_replace("→", "\t", md.c_str());
+	    var want = php::str_replace("→", "\t", html.c_str());
+	    var tree;
+	    markdown::parse(tree, tmd.c_str());
+	    var got = "";
+	    var none;
+	    render(got, tree, none, none);
+	    if ( got == want )
+		pass = pass + 1;
+	    else
+	    {
+		fail = fail + 1;
+		println("FAIL {} {}", number, section);
+		if ( show == number )
+		    println("--- markdown\n{}--- want\n{}--- got\n{}---", tmd, want, got);
+	    }
+	}
+	else if ( l == "." )
+	    state = 2;
+	else if ( state == 1 )
+	    md = format("{}{}\n", md, raw);
+	else if ( state == 2 )
+	    html = format("{}{}\n", html, raw);
+	else if ( perl::index(raw.c_str(), "#") == 0 )
+	{
+	    // a section heading: `#`s, a space, the title
+	    long sp = perl::index(raw.c_str(), " ");
+	    if ( sp > 0 )
+		section = php::trim(perl::substr(raw, sp + 1, strlen(raw.c_str()) - sp - 1));
+	}
+    }
+    println("commonmark: {} passed, {} failed (of {} examples)", pass, fail, pass + fail);
+    return 0;
+}

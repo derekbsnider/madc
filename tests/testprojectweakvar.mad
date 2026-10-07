@@ -1,0 +1,4 @@
+// Project-mode test: a weak object definition yields to a strong one in
+// another TU, in either order. The real build is driven by
+// testprojectweakvar.cc.json via the --project flag in testprojectweakvar.flags.
+// This file is an ignored positional.

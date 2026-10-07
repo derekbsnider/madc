@@ -6,7 +6,8 @@
 // (the document's kind from <bits/file_kinds>, the repository above it, the
 // session's project, the test records and this node's runners) — no verb
 // assumes a layer below it exists. Included by madcide_mcp.inc after
-// madcide_past.inc (git_handle_of / git_relpath_of) and before the verb
+// madcide_past.inc (git_handle_of / git_relpath_of come from the core's
+// madcide_repo.inc) and before the verb
 // families; the test-record read reaches madcide_nexus.inc's fold through the
 // declaration below (the L4d precedent: a declaration resolves a later body).
 //
@@ -19,18 +20,12 @@ void nexus_fold(var &out, long w);		// madcide_nexus.inc (included later)
 // what the tokenizer lexes and the parser accepts. <bits/file_kinds> makes
 // depth of support a table per layer owned by that layer; this predicate is
 // the seat's table for BOTH the lexed and the parsed layer today (they part
-// the day a lexer-only kind gains rows). Beside it, not over it:
-// cxx_view_applies (madcide_core.inc) answers the narrower C / C++ FAMILY
-// question for the c++ render — a different concept, its own range test.
+// the day a lexer-only kind gains rows). The ranges are kind_family's
+// (madcide_lang.inc), the one reader of the C / C++ / madc ranges, which
+// cxx_view_applies (madcide_core.inc) reads for the c++ render too.
 bool kind_compiler_range(long k)
 {
-    if ( k >= madc::fkC && k <= madc::fkC_LAST )
-	return true;
-    if ( k >= madc::fkCPP && k <= madc::fkCPP_LAST )
-	return true;
-    if ( k >= madc::fkMADC && k <= madc::fkMADC_LAST )
-	return true;
-    return false;
+    return kind_family(k) != madc::fkUNKNOWN;
 }
 
 // An ASSET is a file; a pseudo-buffer is bytes only: path_is_asset, the one

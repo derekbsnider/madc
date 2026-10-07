@@ -116,7 +116,7 @@ jobs:
           sudo apt-get update -qq
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
             g++-13 clang make autoconf rpm cpio libzstd-dev zlib1g-dev \
-            libwebkitgtk-6.0-dev libgit2-dev
+            libwebkitgtk-6.0-dev cmake
       - name: configure
         # configure and include/config.h.in are autoconf/autoheader OUTPUT,
         # untracked by design — a clean checkout regenerates them
@@ -124,6 +124,22 @@ jobs:
         run: |
           autoreconf -i
           ./configure
+      - name: stage the minimal static libgit2 (the madcgit module links it on Linux too)
+        # Ubuntu's libgit2-dev is 1.7.2, below the floor (1.8.7 / 1.9.7 or
+        # newer, owner 2026-10-04), so the module statically links the tag
+        # src/madcgit.mk pins, staged under a runner-writable dir. It reads
+        # the build's CC/AR from src/Makefile, so it runs AFTER configure.
+        run: |
+          echo "LIBGIT2_DIR=$HOME/libgit2" >> "$GITHUB_ENV"
+          LIBGIT2_DIR=$HOME/libgit2 bash scripts/stage_libgit2.sh host
+          ls -la "$(LIBGIT2_DIR=$HOME/libgit2 bash scripts/stage_libgit2.sh --path host)"
+      - name: stage the static cmark-gfm (the madcmark module links it)
+        # The tag src/madcmark.mk pins, staged like libgit2's (after configure:
+        # it reads the build's CC/AR from src/Makefile).
+        run: |
+          echo "CMARK_GFM_DIR=$HOME/cmark-gfm" >> "$GITHUB_ENV"
+          CMARK_GFM_DIR=$HOME/cmark-gfm bash scripts/stage_cmark_gfm.sh host
+          ls -la "$(CMARK_GFM_DIR=$HOME/cmark-gfm bash scripts/stage_cmark_gfm.sh --path host)"
       - name: build + package + install-gate smoke (deb, rpm, tarball)
         run: |
           # Suite skipped, citation: a v* tag exists only on content the
@@ -139,6 +155,43 @@ jobs:
             dist/madc_*.deb
             dist/madc-*.x86_64.rpm
             dist/madc-*-linux-x86_64.tar.gz
+          if-no-files-found: error
+
+  linux-packages-jammy:
+    # Ubuntu 22.04's .deb (madc_<ver>-1~ubuntu22.04_amd64.deb), built ON
+    # 22.04: its glibc 2.35 and libstdc++, its g++ 11 headers in the forest
+    # (scripts/package_release.sh: one .deb per Ubuntu release). The rpm and
+    # the tarball come from the 24.04 job alone.
+    runs-on: ubuntu-22.04
+    needs: gate
+    if: needs.gate.outputs.build == 'true'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.build_ref || inputs.tag || github.ref_name }}
+      - name: dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+            g++ make autoconf libzstd-dev zlib1g-dev libwebkitgtk-6.0-dev cmake
+      - name: configure
+        run: |
+          autoreconf -i
+          ./configure
+      - name: stage the minimal static libgit2 and cmark-gfm
+        run: |
+          echo "LIBGIT2_DIR=$HOME/libgit2" >> "$GITHUB_ENV"
+          echo "CMARK_GFM_DIR=$HOME/cmark-gfm" >> "$GITHUB_ENV"
+          LIBGIT2_DIR=$HOME/libgit2 bash scripts/stage_libgit2.sh host
+          CMARK_GFM_DIR=$HOME/cmark-gfm bash scripts/stage_cmark_gfm.sh host
+      - name: build + package + install-gate smoke (the .deb)
+        run: |
+          MADC_PKG_SKIP_SUITE=1 MADC_PKG_NO_RESTORE=1 \
+            bash scripts/package_release.sh --deb
+      - uses: actions/upload-artifact@v7
+        with:
+          name: linux-packages-jammy
+          path: dist/madc_*~ubuntu22.04_amd64.deb
           if-no-files-found: error
 
   windows-package:
@@ -204,7 +257,13 @@ jobs:
         # MODE's own CC/AR from src/Makefile, so it must run AFTER configure.
         run: |
           bash scripts/stage_libgit2.sh x86-64-windows
-          ls -la /workspace/libgit2/libgit2-x86-64-windows.a /workspace/libgit2/src/include/git2.h
+          ls -la "$(bash scripts/stage_libgit2.sh --path x86-64-windows)"
+      - name: stage the static cmark-gfm (the madcmark module's build-time dep)
+        # release-windows builds the markdown:: module too, cmark-gfm linked
+        # into madcmark.dll; staged like libgit2 above (after configure).
+        run: |
+          bash scripts/stage_cmark_gfm.sh x86-64-windows
+          ls -la "$(bash scripts/stage_cmark_gfm.sh --path x86-64-windows)"
       - name: initialize wine prefix
         # A fresh runner HOME has no ~/.wine; without this, the FIRST wine
         # invocation happens inside forest_pack_windows.sh's freeze and the
@@ -274,8 +333,10 @@ jobs:
           echo "DARWIN_ZSTD_DIR=$HOME/zstd" >> "$GITHUB_ENV"
           # madcgit's build-time dep, staged under a runner-writable dir: the
           # container's /workspace/libgit2 default is unwritable on a mac
-          # runner. Same knob darwin-probe.yml sets.
+          # runner. Same knob darwin-probe.yml sets. madcmark's cmark-gfm
+          # likewise (src/madcmark.mk's CMARK_GFM_DIR).
           echo "LIBGIT2_DIR=$HOME/libgit2" >> "$GITHUB_ENV"
+          echo "CMARK_GFM_DIR=$HOME/cmark-gfm" >> "$GITHUB_ENV"
       - name: fetch the pinned input trees (darwin open C headers; the container's exact libc++ text + copyright)
         run: |
           make --version | head -1
@@ -309,7 +370,13 @@ jobs:
         # path hardcoded to the container.
         run: |
           bash scripts/stage_libgit2.sh ${{ matrix.arch }}-macos
-          ls -la "$LIBGIT2_DIR/libgit2-${{ matrix.arch }}-macos.a" "$LIBGIT2_DIR/src/include/git2.h"
+          ls -la "$(bash scripts/stage_libgit2.sh --path ${{ matrix.arch }}-macos)"
+      - name: stage the static cmark-gfm (the madcmark module's build-time dep)
+        # The darwin twin of the windows step: release-macos builds
+        # libmadcmark.dylib with the arch's stage linked in.
+        run: |
+          bash scripts/stage_cmark_gfm.sh ${{ matrix.arch }}-macos
+          ls -la "$(bash scripts/stage_cmark_gfm.sh --path ${{ matrix.arch }}-macos)"
       - name: make release-macos — host arch, self-frozen, stripped, verified
         run: |
           make -C src -j"$(sysctl -n hw.ncpu)" release-macos 2>&1 | tee release-make.log
@@ -376,7 +443,7 @@ jobs:
 
   attach-release:
     runs-on: ubuntu-24.04
-    needs: [linux-packages, windows-package, macos-package, linux-brew-bottle]
+    needs: [linux-packages, linux-packages-jammy, windows-package, macos-package, linux-brew-bottle]
     steps:
       - uses: actions/download-artifact@v8
         with:

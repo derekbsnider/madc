@@ -1,0 +1,28 @@
+// Oracle (g++ 13, clang++ 18, -std=c++17): "seed: 7 7 9".
+// An explicit specialization whose argument is spelled through a typedef in
+// a namespace (libstdc++'s `template<> struct hash<pmr::string>`) is the
+// specialization of the class the typedef names: a use spelled any other
+// way — the typedef, the class itself — selects it, never the primary.
+#include <stdio.h>
+
+template<typename T> struct box { T item; };
+
+namespace lib {
+	typedef box<int> boxed;
+	namespace deep { typedef box<long> wide; }
+}
+
+template<typename S> struct hash_base { int seed() const { return 7; } };
+
+template<typename T> struct hasher;
+template<> struct hasher<lib::boxed> : hash_base<lib::boxed> { };
+template<> struct hasher<lib::deep::wide> { int seed() const { return 9; } };
+
+int main()
+{
+	hasher<lib::boxed> a;
+	hasher<box<int> > b;
+	hasher<box<long> > c;
+	printf("seed: %d %d %d\n", a.seed(), b.seed(), c.seed());
+	return 0;
+}

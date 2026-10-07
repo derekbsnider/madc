@@ -1,0 +1,38 @@
+// python::shlex_split — Python's shlex.split (POSIX mode). Oracle: CPython
+// 3's shlex.split over the same inputs (measured 2026-10-04): each line is
+// the input as Python's repr would write it, then the words, or the
+// ValueError Python raises (here: false and an empty list).
+void show(const char *label, const char *text)
+{
+    var words;
+    bool ok = python::shlex_split(words, text);
+    var s = "";
+    for ( var w : words )
+	s = format("{}<{}>", s, w);
+    println("{}: ok={} n={} [{}]", label, ok ? 1 : 0, php::count(words), s);
+}
+
+int main()
+{
+    show("spaces", "a b  c");
+    show("double", "\"hello world\" x");
+    show("single-adjacent", "'it''s'");
+    show("escaped-space", "a\\ b");
+    show("escaped-quote", "\"a\\\"b\"");
+    show("double-keeps-n", "\"a\\nb\"");
+    show("single-literal", "'a\\b'");
+    show("empty", "");
+    show("blank", "   ");
+    show("empty-word", "x \"\" y");
+    show("hash", "#not a comment");
+    show("joined", "a\"b c\"d");
+    show("tab-newline", "a\tb\nc");
+    show("double-keeps-dollar", "\"\\$HOME\"");
+    show("double-backslash", "\"a\\\\b\"");
+    show("plain-backslash", "a\\\\b");
+    show("escaped-apostrophe", "it\\'s");
+    show("unclosed-double", "\"abc");
+    show("trailing-escape", "abc\\");
+    show("unclosed-single", "'abc");
+    return 0;
+}

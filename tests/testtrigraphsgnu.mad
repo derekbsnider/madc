@@ -1,0 +1,9 @@
+// Trigraphs belong to the ISO dialects (testtrigraphs): a GNU dialect reads
+// `??=` and the rest as written — gcc's -std=gnu11, the default gnu17 and
+// C23 alike. gcc 13.3 and clang 18.1 (-std=gnu11) print the .expect line.
+#include <stdio.h>
+int main(void)
+{
+	printf("str: %s %d\n", "??=??(??)??<??>??!??'??-", (int)sizeof("??="));
+	return 0;
+}

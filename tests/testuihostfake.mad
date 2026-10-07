@@ -119,13 +119,39 @@ const char *fake_clip_get(void *host)
     return "one\r\ntwo";
 }
 
-static ui::ui_host_ops fake_ops = { fake_open, fake_close, fake_eval, fake_run, fake_menu, fake_dialog, fake_tick, fake_clip_set, fake_clip_get };
+// The window's title: the composed root's `title` hint, sent only when it
+// changes (and never an empty one).
+int title_calls = 0;
+int64_t fake_title(void *host, const char *text)
+{
+    title_calls++;
+    println("fake title: {}", text);
+    return 0;
+}
+
+// Full screen: the host keeps the window's state; -1 toggles it from
+// whatever it is now (the user may have left full screen by other means).
+bool fake_full = false;
+int64_t fake_fullscreen(void *host, int64_t on)
+{
+    fake_full = on < 0 ? !fake_full : on != 0;
+    println("fake fullscreen: {} -> {}", on, fake_full ? "full" : "windowed");
+    return 0;
+}
+
+static ui::ui_host_ops fake_ops = { fake_open, fake_close, fake_eval, fake_run, fake_menu, fake_dialog, fake_tick, fake_clip_set, fake_clip_get, fake_title, fake_fullscreen };
 static bool fake_registered = ui::register_host("fake", ui::WEB, &fake_ops);
+// Another host: one entry differs (no clipboard read).
+static ui::ui_host_ops other_ops = { fake_open, fake_close, fake_eval, fake_run, fake_menu, fake_dialog, fake_tick, fake_clip_set, 0 };
 
 int main()
 {
     println("registered -> {}", fake_registered ? "yes" : "no");
-    println("duplicate -> {}", ui::register_host("fake", ui::WEB, &fake_ops) ? "yes" : "no");
+    // The same host registered again (each unit of a program that names the
+    // level runs its fragment's initializer) is accepted; another host under
+    // a taken name is refused.
+    println("same host again -> {}", ui::register_host("fake", ui::WEB, &fake_ops) ? "yes" : "no");
+    println("another host, taken name -> {}", ui::register_host("fake", ui::WEB, &other_ops) ? "yes" : "no");
     println("term taken -> {}", ui::register_host("term", ui::WEB, &fake_ops) ? "yes" : "no");
     println("no-level host -> {}", ui::register_host("nolevel", ui::NONE, &fake_ops) ? "yes" : "no");
 
@@ -210,6 +236,13 @@ int main()
     root["hints"] = { "menu": mmenu2 };
     ui::render(t, w, root);		// a changed title: sent
     println("menu calls after changed render: {}", menu_calls);
+    println("title calls before a title: {}", title_calls);
+    root["hints"] = { "menu": mmenu2, "title": "fake - a.c @ 1 : 1" };
+    ui::render(t, w, root);		// a title: sent
+    ui::render(t, w, root);		// the same title: not sent again
+    root["hints"] = { "menu": mmenu2, "title": "fake - a.c @ 2 : 1" };
+    ui::render(t, w, root);		// the caret moved: sent
+    println("title calls: {}", title_calls);
 
     // Native dialogs: the fake host has the op, so the target says yes; the
     // request goes out as JSON and the answer comes back as a dialog event.
@@ -225,6 +258,12 @@ int main()
     bool got = ui::clipboard_get(clip, t);
     println("clipboard get -> {} [{}] {}", got ? "answered" : "refused",
 	    php::str_replace("\n", "|", clip), strchr(clip.c_str(), '\r') ? "CR kept" : "no CR");
+    println("fullscreen toggle -> {}", ui::fullscreen(t, -1) ? "done" : "refused");
+    fake_full = false;			// the user left it by the platform's means
+    println("fullscreen toggle -> {}", ui::fullscreen(t, -1) ? "done" : "refused");
+    println("fullscreen leave -> {}", ui::fullscreen(t, 0) ? "done" : "refused");
+    println("fullscreen enter -> {}", ui::fullscreen(t, 1) ? "done" : "refused");
+    println("fullscreen bad handle -> {}", ui::fullscreen(t + 1000, -1) ? "done" : "refused");
     var ev;
     while ( ui::event(ev, t, w) )
     {

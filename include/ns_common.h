@@ -12,6 +12,7 @@
 //////////////////////////////////////////////////////////////////////////
 
 #include <string>
+#include <vector>
 #include <cstdint>
 
 #include "datadef.h"
@@ -43,6 +44,18 @@ void repeat(std::string &s, int64_t count);
 bool starts_with(const std::string &s, const std::string &prefix);
 bool ends_with  (const std::string &s, const std::string &suffix);
 bool contains   (const std::string &s, const std::string &needle);
+
+// ---- Command-line words -----------------------------------------------
+
+// The words of a shell-like command line, Python's shlex.split in POSIX
+// mode: THE splitter (python::shlex_split and the REPL's %run read it).
+// Whitespace (space, tab, CR, LF) separates words; '...' is literal; inside
+// "..." a backslash escapes only `"` and `\`; outside quotes a backslash
+// takes the next character; quoted and plain runs that touch form one word,
+// and "" is an empty word; `#` is ordinary. False for an unclosed quote or a
+// trailing backslash (Python's ValueError), with `out` empty.
+// Thread contract: a pure function over its arguments.
+bool shell_words(const std::string &text, std::vector<std::string> &out);
 
 // ---- madc::value stringification --------------------------------------
 
@@ -242,7 +255,7 @@ bool madc_code_close(int64_t code);
 // parsed state; a project handle groups a cc.json manifest's TUs. Handles
 // are int64 (>= 1; 0 = failure); result = madc::value*, strings =
 // std::string*.
-int64_t madc_parse_open(void *source, void *filename);
+int64_t madc_parse_open(void *source, void *filename, int64_t standard);
 int64_t madc_parse_open_file(void *path);
 bool madc_parse_refresh(int64_t handle, void *source);
 bool madc_parse_close(int64_t handle);
@@ -290,9 +303,10 @@ int64_t madc_graph_route(int64_t handle, int64_t id);
 // madc IS the compiler): madc_parse_build emits a native artifact from
 // the handle's EXISTING parsed tree (no re-parse; kind/outpath =
 // std::string*, result = diagnostics rows — a false always carries an
-// error row); madc_parse_run runs that tree in a fork() child and
-// returns the guest's exit status (negative = never ran: -1 bad handle,
-// -2 parse errors, -3 fork failed / no fork on this platform).
+// error row); madc_parse_run runs that tree in a fork() child (Windows:
+// a child of self, madc_run_child.h) and returns the guest's exit status
+// (negative = never ran: -1 bad handle, -2 parse errors, -3 the child did
+// not start).
 bool madc_parse_build(void *result, int64_t handle, void *kind,
 		      void *outpath);
 int64_t madc_parse_run(int64_t handle);

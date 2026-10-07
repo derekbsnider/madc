@@ -210,6 +210,98 @@ int main()
 EOF
 run_case fnptrbody "r=42 ptrnull=1"
 
+# --- case: memberptr (v53) — members whose type is a POINTER TO MEMBER: a union
+#     holding `void (fbg_undefined::*)()` over a class that is never defined
+#     (libstdc++'s _Nocopy_types, the buffer std::function sizes itself from),
+#     and an `int fbg_point::*` data member pointer. Before v53 the freeze wrote
+#     no record for either type, so the union and the struct holding it dropped
+#     at load and a bound consumer lost both names; the data member pointer
+#     also pinned as a plain `long`. Ubuntu 22.04's packed forest dropped
+#     std::function's _Function_base this way (libstdc++ 11's <algorithm>
+#     reaches <functional>).
+cat > tmp/fbgate_memberptr.h <<'EOF'
+#ifndef FBGATE_MEMBERPTR_H
+#define FBGATE_MEMBERPTR_H
+class fbg_undefined;
+union fbg_nocopy {
+    void *obj;
+    void (*fn)();
+    void (fbg_undefined::*memfn)();
+};
+struct fbg_point { int x; int y; };
+struct fbg_holder {
+    fbg_nocopy u;
+    int fbg_point::*field;
+    int k;
+};
+#endif
+EOF
+cat > tmp/fbgate_memberptr_producer.cpp <<'EOF'
+#include <fbgate_memberptr.h>
+int main() { fbg_holder h; h.k = 0; return h.k; }
+EOF
+cat > tmp/fbgate_memberptr_consumer.cpp <<'EOF'
+#include <fbgate_memberptr.h>
+#include <cstdio>
+int main()
+{
+    fbg_point p = { 3, 4 };
+    fbg_holder h;
+    h.u.obj = 0;
+    h.field = &fbg_point::y;
+    h.k = 5;
+    printf("sizes %d %d %d y=%d k=%d\n", (int)sizeof(fbg_nocopy), (int)alignof(fbg_nocopy),
+           (int)sizeof(fbg_holder), p.*h.field, h.k);
+    return 0;
+}
+EOF
+run_case memberptr "sizes 16 8 32 y=4 k=5"
+
+# --- case: unionclass — a UNION WITH MEMBER FUNCTIONS (a class with union
+#     layout: libstdc++'s _Any_data) held by value in a struct (_Function_base).
+#     The recordability cache fenced every union-layout class, so the union and
+#     every aggregate holding it dropped at load and a bound consumer lost both
+#     names; Ubuntu 22.04's packed forest dropped std::function's _Function_base
+#     this way. The restore keeps the union's overlap: the members' recorded
+#     offsets, verbatim, with the class's union layout.
+cat > tmp/fbgate_unionclass.h <<'EOF'
+#ifndef FBGATE_UNIONCLASS_H
+#define FBGATE_UNIONCLASS_H
+union fbg_anydata {
+    void *access() { return &pod[0]; }
+    const void *access() const { return &pod[0]; }
+    long unused;
+    char pod[16];
+};
+struct fbg_fnbase {
+    fbg_anydata functor;
+    int (*manager)(int);
+    int tag;
+};
+#endif
+EOF
+cat > tmp/fbgate_unionclass_producer.cpp <<'EOF'
+#include <fbgate_unionclass.h>
+int main() { fbg_fnbase b; b.tag = 0; return b.tag; }
+EOF
+cat > tmp/fbgate_unionclass_consumer.cpp <<'EOF'
+#include <fbgate_unionclass.h>
+#include <cstdio>
+#include <cstring>
+int main()
+{
+    fbg_fnbase b;
+    std::memset(&b, 0, sizeof b);
+    int v = 7;
+    std::memcpy(b.functor.access(), &v, sizeof v);
+    b.tag = 3;
+    printf("sizes %d %d first=%d unused=%ld tag=%d\n", (int)sizeof(fbg_anydata),
+           (int)sizeof(fbg_fnbase), *(int *)b.functor.access(), b.functor.unused, b.tag);
+    return 0;
+}
+EOF
+run_case unionclass "sizes 16 32 first=7 unused=7 tag=3"
+
 # --- case: nested (slice 3a reach) — a struct with a by-value struct member.
 #     The freeze assigns Inner a system id, then Outer's `in` member references
 #     it; restore's restored_by_sysid map links them (definition order), so a
@@ -1805,5 +1897,5 @@ run_case patternalias "1 2"
 # coverage. Worse in the other direction: deleting a case would leave this line
 # still claiming it runs. Deriving it from run_case would need the ~12 bespoke
 # cases below to register too; until then, update it when you add a case.
-echo "forest_bind_gate: GREEN 32/32 — typedef + struct + nested + bitfield + class + method + fwd + ptr + nestedenumfn + ldouble + ns + anon + declonlymt + flavorgate + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec + iobind + traitfold + deletedctor + constcopy + subbind + redecl + husk + silbody grove headers bound (unit-granular husk recovery only), output == live == g++ + secvptr + friendgrant + patternalias + quietbind"
+echo "forest_bind_gate: GREEN 38/38 — typedef + struct + nested + bitfield + class + method + fwd + ptr + nestedenumfn + ldouble + ns + anon + declonlymt + flavorgate + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec + iobind + traitfold + deletedctor + constcopy + subbind + redecl + husk + silbody grove headers bound (unit-granular husk recovery only), output == live == g++ + secvptr + friendgrant + patternalias + quietbind + memberptr + unionclass"
 exit 0

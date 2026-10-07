@@ -1,0 +1,28 @@
+// A program's own function named like a madc builtin (`printstr`, `puti`) is
+// the function its calls reach: the source definition replaces the builtin
+// registration (gcc canon: an explicit declaration replaces a builtin). madc
+// routed every call SPELLED `printstr` or `puti` to its runtime printer —
+// two arguments against one parameter, an int result from a void printer.
+// gcc 13.3 and clang 18.1 (-std=c11) print the .expect lines.
+#include <stdio.h>
+static void printstr(FILE *stream, const char *str)
+{
+	fprintf(stream, "<%s>\n", str);
+}
+static int puti(int v)
+{
+	return v * 2;
+}
+// Declared before the call, defined after it: the call still reaches it.
+static unsigned putu(unsigned v);
+int main(void)
+{
+	printstr(stdout, "own");
+	printf("puti: %d\n", puti(21));
+	printf("putu: %u\n", putu(7));
+	return 0;
+}
+static unsigned putu(unsigned v)
+{
+	return v + 1;
+}

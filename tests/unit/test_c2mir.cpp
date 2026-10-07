@@ -13,6 +13,8 @@
 #include <utility>
 #include <vector>
 
+#include "../../src/madc_posix_io.h"	// the one mapping owner (a src/ header: relative, the unit flags carry only -I../include)
+
 extern "C" {
 #include "mir.h"
 #include "mir-gen.h"
@@ -53,18 +55,22 @@ static MIR_module_t compile_c_module(MIR_context_t ctx, const char *c_source) {
     return DLIST_TAIL(MIR_module_t, *MIR_get_module_list(ctx));
 }
 
+// A module's function item by name
+static MIR_item_t module_func_item(MIR_module_t mod, const char *func_name) {
+    for (MIR_item_t item = DLIST_HEAD(MIR_item_t, mod->items);
+	 item != nullptr;
+	 item = DLIST_NEXT(MIR_item_t, item))
+	if (item->item_type == MIR_func_item &&
+	    strcmp(item->u.func->name, func_name) == 0)
+	    return item;
+    return nullptr;
+}
+
 // A module's function by name, generated
 static void *module_func_code(MIR_context_t ctx, MIR_module_t mod,
 			      const char *func_name) {
-    for (MIR_item_t item = DLIST_HEAD(MIR_item_t, mod->items);
-	 item != nullptr;
-	 item = DLIST_NEXT(MIR_item_t, item)) {
-	if (item->item_type == MIR_func_item &&
-	    strcmp(item->u.func->name, func_name) == 0) {
-	    return MIR_gen(ctx, item);
-	}
-    }
-    return nullptr;
+    MIR_item_t item = module_func_item(mod, func_name);
+    return item != nullptr ? MIR_gen(ctx, item) : nullptr;
 }
 
 // Compile C text, generate, and return function pointer
@@ -88,6 +94,43 @@ static void collect_link_refusal(MIR_error_type_t error_type,
     ((LinkRefusals *)arg)->seen.push_back(std::make_pair(error_type,
 							 std::string(name)));
 }
+
+#if defined(__linux__) && defined(__x86_64__)
+// A code allocator that puts each mapping 8 GiB past the previous one,
+// beyond a rel32's reach, as a Windows address space can scatter MIR's
+// code holders.
+struct FarCodeSpace {
+    uintptr_t next;
+    std::vector<uintptr_t> maps;
+};
+
+static const uintptr_t FAR_CODE_BASE = (uintptr_t)0x200000000000ULL;
+static const uintptr_t FAR_CODE_STRIDE = (uintptr_t)0x200000000ULL;
+
+static void *far_mem_map(size_t len, void *user_data) {
+    FarCodeSpace *fs = (FarCodeSpace *)user_data;
+    for (int tries = 0; tries < 64; tries++) {
+	void *want = (void *)fs->next;
+	fs->next += FAR_CODE_STRIDE;
+	void *p = madc::detail::map_exec_region_at(want, len);
+	if (p == nullptr)
+	    continue;
+	fs->maps.push_back((uintptr_t)p);
+	return p;
+    }
+    return nullptr;	// the code-allocator contract's failure value
+}
+
+static int far_mem_unmap(void *addr, size_t len, void *) {
+    return madc::detail::unmap_exec_region(addr, len);
+}
+
+static int far_mem_protect(void *addr, size_t len, MIR_mem_protect_t prot,
+			   void *) {
+    return madc::detail::protect_exec_region(addr, len,
+					     prot == PROT_WRITE_EXEC);
+}
+#endif
 
 TEST_SUITE("c2mir → MIR pipeline") {
 
@@ -378,4 +421,53 @@ TEST_SUITE("c2mir → MIR pipeline") {
 	c2mir_finish(ctx);
 	MIR_finish(ctx);
     }
+
+#if defined(__linux__) && defined(__x86_64__)
+    TEST_CASE("MIR lazy generation: a wrapper beyond rel32 reach of the wrapper tail") {
+	FarCodeSpace space;
+	space.next = FAR_CODE_BASE;
+	struct MIR_code_alloc far_alloc = {far_mem_map, far_mem_unmap,
+					   far_mem_protect, &space};
+	MIR_context_t ctx = MIR_init2(NULL, &far_alloc);
+	c2mir_init(ctx);
+	MIR_gen_init(ctx);
+	REQUIRE(!space.maps.empty());	// MIR_init's holder: the wrapper tail
+
+	// Machine code longer than a page cannot fit that holder; it opens
+	// a second one, 8 GiB away.
+	std::string big = "volatile int big_v;\nvoid big(void) {\n";
+	for (int i = 0; i < 1024; i++)
+	    big += "  big_v += " + std::to_string(i) + ";\n";
+	big += "}\n";
+	MIR_module_t first = compile_c_module(ctx, big.c_str());
+	REQUIRE(first != nullptr);
+	MIR_load_module(ctx, first);
+	MIR_link(ctx, MIR_set_gen_interface, test_import_resolver);
+	REQUIRE(space.maps.size() >= 2);
+
+	// The lazy module's thunks and wrappers land in the far holder.
+	MIR_module_t second = compile_c_module(ctx,
+	    "int far_callee(int x) { return x + 1; }\n"
+	    "int far_entry(int x) { return far_callee(x) * 2; }\n");
+	REQUIRE(second != nullptr);
+	MIR_load_module(ctx, second);
+	MIR_link(ctx, MIR_set_lazy_gen_interface, test_import_resolver);
+	MIR_item_t entry = module_func_item(second, "far_entry");
+	REQUIRE(entry != nullptr);
+	uintptr_t wrapper = (uintptr_t)_MIR_get_thunk_addr(ctx, entry->addr);
+	uintptr_t tail_holder = space.maps[0];
+	REQUIRE((wrapper > tail_holder ? wrapper - tail_holder
+				       : tail_holder - wrapper) > (uintptr_t)INT32_MAX);
+
+	// thunk -> wrapper -> wrapper tail -> generate -> code
+	typedef int (*fn_t)(int);
+	fn_t far_entry = (fn_t)entry->addr;
+	CHECK(far_entry(20) == 42);
+	CHECK(far_entry(1) == 4);
+
+	MIR_gen_finish(ctx);
+	c2mir_finish(ctx);
+	MIR_finish(ctx);
+    }
+#endif
 }

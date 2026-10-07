@@ -7,7 +7,8 @@
 //          GSimpleActionGroup inserted on the window under the `menu.`
 //          prefix; the webview widget is re-parented into a vertical box
 //          under the bar (upstream sets the widget as the window's child
-//          and never touches it again). Dialogs: GtkFileDialog (4.10+).
+//          and never touches it again). Dialogs: GtkFileDialog (4.10+;
+//          GtkFileChooserNative on an older GTK 4).
 //          Clipboard: the window's GdkClipboard.
 //   Cocoa: the application's main menu (NSMenu on NSApp — the bar lives at
 //          the top of the screen, the window is untouched); each item
@@ -348,13 +349,15 @@ WEBVIEW_API int madcwebview_menu_activate(webview_t w, const char *id)
 
 } // extern "C" — the menu API
 
-// ---- file dialogs (S4): GtkFileDialog (GTK 4.10+), asynchronous ----------
+// ---- file dialogs (S4): asynchronous -------------------------------------
 // The dialog runs inside the platform loop the host is already in
 // (webview_run); its completion callback resolves the GFile to a path and
 // hands it to the caller's callback — "" when the user cancelled or the
 // platform reported an error. The context is freed after the one call.
+// GTK 4.10+ has GtkFileDialog; an older GTK 4 (Ubuntu 22.04's 4.6) runs the
+// same dialog through GtkFileChooserNative, which 4.10 deprecates in its
+// favour. The GTK the library is built against picks the arm.
 
-#if GTK_CHECK_VERSION(4, 10, 0)
 namespace {
 
 struct dialog_ctx {
@@ -363,6 +366,18 @@ struct dialog_ctx {
 	bool save;
 };
 
+// The chosen file to the caller's callback, then the context freed.
+void dialog_finish(dialog_ctx *c, GFile *f)
+{
+	char *path = f ? g_file_get_path(f) : 0;
+	if (c->cb)
+		c->cb(path ? path : "", c->arg);
+	if (path)
+		g_free(path);
+	delete c;
+}
+
+#if GTK_CHECK_VERSION(4, 10, 0)
 void on_dialog_done(GObject *source, GAsyncResult *result, gpointer data)
 {
 	dialog_ctx *c = static_cast<dialog_ctx *>(data);
@@ -370,16 +385,11 @@ void on_dialog_done(GObject *source, GAsyncResult *result, gpointer data)
 	GFile *f = c->save
 		? gtk_file_dialog_save_finish(GTK_FILE_DIALOG(source), result, &err)
 		: gtk_file_dialog_open_finish(GTK_FILE_DIALOG(source), result, &err);
-	char *path = f ? g_file_get_path(f) : 0;
-	if (c->cb)
-		c->cb(path ? path : "", c->arg);
-	if (path)
-		g_free(path);
+	dialog_finish(c, f);
 	if (f)
 		g_object_unref(f);
 	if (err)
 		g_error_free(err);
-	delete c;
 }
 
 int dialog_run(webview_t w, const char *title, const char *initial,
@@ -411,6 +421,49 @@ int dialog_run(webview_t w, const char *title, const char *initial,
 	g_object_unref(d);	// the operation holds its own reference
 	return 0;
 }
+#else
+// The chooser is not a widget: the reference _new returns is ours, dropped
+// once it answers. Modal over the window, as GtkFileDialog is by default.
+void on_chooser_response(GtkNativeDialog *d, int response, gpointer data)
+{
+	dialog_ctx *c = static_cast<dialog_ctx *>(data);
+	GFile *f = response == GTK_RESPONSE_ACCEPT
+		? gtk_file_chooser_get_file(GTK_FILE_CHOOSER(d)) : 0;
+	dialog_finish(c, f);
+	if (f)
+		g_object_unref(f);
+	g_object_unref(d);
+}
+
+int dialog_run(webview_t w, const char *title, const char *initial,
+	       madcwebview_dialog_fn cb, void *arg, bool save)
+{
+	menu_state *st = state_of(w);
+	if (!st)
+		return 1;
+	GtkFileChooserNative *n = gtk_file_chooser_native_new(
+		title && *title ? title : NULL, GTK_WINDOW(st->win),
+		save ? GTK_FILE_CHOOSER_ACTION_SAVE : GTK_FILE_CHOOSER_ACTION_OPEN,
+		NULL, NULL);
+	gtk_native_dialog_set_modal(GTK_NATIVE_DIALOG(n), TRUE);
+	if (initial && *initial) {
+		GFile *g = g_file_new_for_path(initial);
+		if (g_file_query_file_type(g, G_FILE_QUERY_INFO_NONE, NULL)
+		    == G_FILE_TYPE_DIRECTORY)
+			gtk_file_chooser_set_current_folder(GTK_FILE_CHOOSER(n), g, NULL);
+		else
+			gtk_file_chooser_set_file(GTK_FILE_CHOOSER(n), g, NULL);
+		g_object_unref(g);
+	}
+	dialog_ctx *c = new dialog_ctx;
+	c->cb = cb;
+	c->arg = arg;
+	c->save = save;
+	g_signal_connect(n, "response", G_CALLBACK(on_chooser_response), c);
+	gtk_native_dialog_show(GTK_NATIVE_DIALOG(n));
+	return 0;
+}
+#endif
 
 } // namespace
 
@@ -431,14 +484,6 @@ WEBVIEW_API int madcwebview_dialog_save(webview_t w, const char *title,
 }
 
 } // extern "C"
-#else
-extern "C" {
-WEBVIEW_API int madcwebview_dialog_open(webview_t, const char *, const char *,
-					madcwebview_dialog_fn, void *) { return 1; }
-WEBVIEW_API int madcwebview_dialog_save(webview_t, const char *, const char *,
-					madcwebview_dialog_fn, void *) { return 1; }
-}
-#endif
 
 // The one-shot UI-thread timer (the window's bounded wait): a GLib timeout
 // source on the main context the webview's loop runs; fires once.
@@ -532,6 +577,23 @@ WEBVIEW_API int madcwebview_clipboard_get(webview_t w, madcwebview_text_fn cb,
 		g_source_remove(timer);
 	g_object_unref(r.cancel);
 	cb(r.text.c_str(), arg);
+	return 0;
+}
+
+// Full screen: the window's own (gtk_window_fullscreen), the menu bar kept —
+// the window manager makes it cover the monitor.
+WEBVIEW_API int madcwebview_fullscreen(webview_t w, int on)
+{
+	menu_state *st = state_of(w);
+	if (!st)
+		return 1;
+	GtkWindow *win = GTK_WINDOW(st->win);
+	bool full = gtk_window_is_fullscreen(win);
+	bool want = on < 0 ? !full : on != 0;
+	if (want && !full)
+		gtk_window_fullscreen(win);
+	else if (!want && full)
+		gtk_window_unfullscreen(win);
 	return 0;
 }
 } // extern "C"
@@ -935,6 +997,29 @@ WEBVIEW_API int madcwebview_clipboard_get(webview_t w, madcwebview_text_fn cb,
 	cb(u ? u : "", arg);
 	return 0;
 }
+
+// Full screen: the window's own space (toggleFullScreen:, animated — the
+// style mask reports the change once it is done). The window is made a
+// full-screen primary window first, so the call is never ignored.
+namespace {
+const unsigned long style_fullscreen = 1UL << 14;	// NSWindowStyleMaskFullScreen
+const unsigned long behavior_fullscreen = 1UL << 7;	// NSWindowCollectionBehaviorFullScreenPrimary
+} // namespace
+
+WEBVIEW_API int madcwebview_fullscreen(webview_t w, int on)
+{
+	menu_state *st = state_of(w);
+	if (!st)
+		return 1;
+	unsigned long beh = send<unsigned long>(st->win, sel("collectionBehavior"));
+	if (!(beh & behavior_fullscreen))
+		send<void>(st->win, sel("setCollectionBehavior:"), beh | behavior_fullscreen);
+	bool full = (send<unsigned long>(st->win, sel("styleMask")) & style_fullscreen) != 0;
+	bool want = on < 0 ? !full : on != 0;
+	if (want != full)
+		send<void>(st->win, sel("toggleFullScreen:"), (id)0);
+	return 0;
+}
 } // extern "C"
 
 #else
@@ -990,8 +1075,15 @@ struct menu_state {
 	void *arg;
 	madcwebview_tick_fn tick_cb;	// the armed one-shot tick (WM_TIMER)
 	void *tick_arg;
+	bool full;			// full screen: the style and placement
+	LONG_PTR full_style;		// it restores on leaving
+	WINDOWPLACEMENT full_place;
 	menu_state() : w(0), win(0), bar(0), root(0), subclassed(false), cb(0), arg(0),
-		       tick_cb(0), tick_arg(0) {}
+		       tick_cb(0), tick_arg(0), full(false), full_style(0)
+	{
+		memset(&full_place, 0, sizeof(full_place));
+		full_place.length = sizeof(full_place);
+	}
 };
 
 std::map<webview_t, menu_state> &states()
@@ -1351,6 +1443,50 @@ WEBVIEW_API int madcwebview_tick(webview_t w, unsigned ms, madcwebview_tick_fn c
 	return 0;
 }
 
+// The engine's wait: the UI thread's loop, ended by a FLAG (madcwebview_stop)
+// read after every dispatch. Upstream's terminate is a WM_QUIT, and a modal
+// loop running inside a dispatch — a menu being tracked, a file dialog —
+// takes a WM_QUIT for itself (the dialog ends; the menu loop consumes it), so
+// the engine's periodic tick could end the user's dialog, or its quit be lost
+// and leave the engine waiting on a loop nothing would end again. Every stop comes from a
+// callback dispatched inside this loop (through such a modal loop too), so
+// the flag is read as soon as that dispatch returns: no wake message. The
+// flag is the RUN's, not the window's: WM_NCDESTROY erases the window's
+// menu_state while a dispatch is under way. UI-thread confined (thread_local);
+// a nested run keeps the outer run's flag and restores it.
+static thread_local bool *run_stop = 0;
+
+WEBVIEW_API int madcwebview_run(webview_t w)
+{
+	if (!w)
+		return 1;
+	bool stop = false;
+	bool *outer = run_stop;
+	run_stop = &stop;
+	int rc = 0;
+	MSG msg;
+	while (!stop) {
+		BOOL got = GetMessageW(&msg, nullptr, 0, 0);
+		if (got <= 0) {		// WM_QUIT: upstream's on window destroy (or an error)
+			rc = 1;
+			break;
+		}
+		TranslateMessage(&msg);
+		DispatchMessageW(&msg);
+	}
+	run_stop = outer;
+	return rc;
+}
+
+WEBVIEW_API int madcwebview_stop(webview_t w)
+{
+	if (!w)
+		return 1;
+	if (run_stop)
+		*run_stop = true;
+	return 0;
+}
+
 // The clipboard: CF_UNICODETEXT, opened on the window. Windows text keeps
 // "\r\n" line ends, so set writes them; get passes on what it holds.
 WEBVIEW_API int madcwebview_clipboard_set(webview_t w, const char *text)
@@ -1413,6 +1549,56 @@ WEBVIEW_API int madcwebview_clipboard_get(webview_t w, madcwebview_text_fn cb,
 	return 0;
 }
 
+// Full screen: Win32 has no window state for it, so the window drops its
+// frame (WS_OVERLAPPEDWINDOW) and covers its monitor; leaving puts the style
+// and the placement back. The menu bar stays.
+WEBVIEW_API int madcwebview_fullscreen(webview_t w, int on)
+{
+	menu_state *st = state_of(w);
+	if (!st)
+		return 1;
+	bool want = on < 0 ? !st->full : on != 0;
+	if (want && !st->full) {
+		MONITORINFO mi;
+		memset(&mi, 0, sizeof(mi));
+		mi.cbSize = sizeof(mi);
+		if (!GetWindowPlacement(st->win, &st->full_place)
+		    || !GetMonitorInfoW(MonitorFromWindow(st->win, MONITOR_DEFAULTTONEAREST), &mi))
+			return 1;
+		st->full_style = GetWindowLongPtrW(st->win, GWL_STYLE);
+		SetWindowLongPtrW(st->win, GWL_STYLE, st->full_style & ~(LONG_PTR)WS_OVERLAPPEDWINDOW);
+		SetWindowPos(st->win, HWND_TOP, mi.rcMonitor.left, mi.rcMonitor.top,
+			     mi.rcMonitor.right - mi.rcMonitor.left,
+			     mi.rcMonitor.bottom - mi.rcMonitor.top,
+			     SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+		st->full = true;
+	} else if (!want && st->full) {
+		SetWindowLongPtrW(st->win, GWL_STYLE, st->full_style);
+		SetWindowPlacement(st->win, &st->full_place);
+		SetWindowPos(st->win, NULL, 0, 0, 0, 0,
+			     SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER
+			     | SWP_FRAMECHANGED);
+		st->full = false;
+	}
+	return 0;
+}
+
 } // extern "C"
 
+#endif
+
+#ifndef _WIN32
+// The engine's wait on GTK and Cocoa: upstream's loop and terminate. Their
+// loop does not tell a close from a stop (0 either way).
+extern "C" {
+WEBVIEW_API int madcwebview_run(webview_t w)
+{
+	return webview_run(w) == WEBVIEW_ERROR_OK ? 0 : 1;
+}
+
+WEBVIEW_API int madcwebview_stop(webview_t w)
+{
+	return webview_terminate(w) == WEBVIEW_ERROR_OK ? 0 : 1;
+}
+} // extern "C"
 #endif

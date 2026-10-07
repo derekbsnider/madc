@@ -1,0 +1,8 @@
+open: true prompt: true
+ctrl-c: prompt=true interrupted=true new-session=false
+kept: true
+ctrl-backslash: prompt=true interrupted=false new-session=true
+fresh: true
+ctrl-d: true
+after ctrl-d: true
+host status: 0

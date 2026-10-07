@@ -1,0 +1,43 @@
+// `-l<name>` opens a library from madc's own lib directory first (<exe
+// dir>/../lib, the relocatable install's shape), then where the loader
+// searches: the rule `import` and a manifest's "libs" use (madc_module_open).
+// An installed madc runs `madc -lmadcide prog.mad` against the libmadcide
+// installed beside it.
+// The test makes such an install under tmp/: bin/madc is a hard link to this
+// lane's madc, and lib/ holds links to the libraries beside that madc plus
+// a library built "shared" there (libsld). The loader's own search never
+// looks in that lib/, so only madc's own rule finds it.
+// Before the fix the run refused: "madc: -l: failed to load libsld.so:
+// libsld.so: cannot open shared object file".
+// Oracle: n/a for gcc/clang (their -l is a link-time search; madc's JIT -l
+// opens the library into the running process). The binding matches what
+// `import` and "libs" do for the same spelling (tests/testproject_libs).
+int main()
+{
+	var dir = "tmp/testlink_selflibdir";
+	var bin = format("{}/bin", dir);
+	var lib = format("{}/lib", dir);
+	php::mkdir(dir.c_str());
+	php::mkdir(bin.c_str());
+	php::mkdir(lib.c_str());
+	const char *madc = madc::compiler_path();
+	var madc_lib;
+	madc::canonical_path(madc_lib, format("{}/../lib", php::dirname(madc)));
+	var linked = format("{}/madc", bin);
+	long rc = system(format("ln -f {} {} 2>/dev/null || cp {} {}", madc, linked, madc, linked));
+	rc = rc + system(format("ln -s {}/* {}/", madc_lib, lib));
+	var lsrc = format("{}/sld.mad", dir);
+	php::file_put_contents(lsrc.c_str(), "long sld_twice(long x) { return 2 * x; }\n");
+	var built = format("{}/libsld{}", lib, madc::library_suffix());
+	var d;
+	bool ok = madc::build_native(d, lsrc.c_str(), "shared", built.c_str());
+	var src = format("{}/prog.mad", dir);
+	php::file_put_contents(src.c_str(),
+		"long sld_twice(long x);\nint main()\n{\n"
+		"\tprintln(\"sld: twice(21)={}\", sld_twice(21));\n\treturn 0;\n}\n");
+	println("setup: rc={} built={}", rc, ok ? 1 : 0);
+	rc = system(format("{} --no-config -lsld {}", linked, src));
+	println("run: rc={}", rc);
+	system(format("rm -rf {}", dir));
+	return 0;
+}

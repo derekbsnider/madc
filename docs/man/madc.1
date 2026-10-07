@@ -80,10 +80,12 @@ to libc++, it never
 libc++.
 .TP
 .BI \-D name\fR[=\fIvalue\fR]
-Define a preprocessor macro.
+Define a preprocessor macro. Under \fB\-\-project\fR it applies to every
+translation unit, after the unit's own defines, so it overrides them.
 .TP
 .BI \-I dir
-Add an include search directory.
+Add an include search directory. Under \fB\-\-project\fR it applies to
+every translation unit, searched after the unit's own directories.
 .TP
 .BI \-l name
 Bind a library so its symbols resolve at link time (e.g. \fB\-lcrypt\fR).

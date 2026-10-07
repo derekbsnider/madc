@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <stdarg.h>
 #include <setjmp.h>
+#include <signal.h>	// sig_atomic_t: the session interrupt's flag (D8)
 #include <chrono>
 #include <sys/stat.h>	// -o: chmod 0755 on the emitted executable
 #include <errno.h>
@@ -55,6 +56,7 @@ extern "C" {
 #include "c2mir/c2mir_api.h"
 #include "mir-gen.h"
 #include "mir-debug.h"
+#include "madc_pe_icon.h"
 }
 
 extern thread_local bool madc_verbose;
@@ -175,7 +177,7 @@ static void cir_open_stdlib_runtime(const madc_stdlib_flavor *flavor)
 	const char *lib = madc_stdlib_probe_standin_libs[i];
 	if (!opened.insert(lib).second)
 	    continue;
-	if (!madcdl_open_global(lib))
+	if (!madcdl_open_global(lib))	// system runtime: a fixed image, not a user library
 	    fprintf(stderr, "madc: warning: probe stand-in runtime %s: %s\n",
 		    lib, madcdl_error());
     }
@@ -194,7 +196,7 @@ static void cir_open_stdlib_runtime(const madc_stdlib_flavor *flavor)
 	const char *lib = flavor->link_libs[i];
 	if (!opened.insert(lib).second)
 	    continue;
-	if (!madcdl_open_global(lib))
+	if (!madcdl_open_global(lib))	// system runtime: a fixed image, not a user library
 	    fprintf(stderr, "madc: warning: stdlib flavor %s runtime %s: %s\n",
 		    flavor->name ? flavor->name : "?", lib, madcdl_error());
     }
@@ -1447,11 +1449,13 @@ bool CirJitSession::build_frozen(const void *image, size_t image_len,
 
     // Recreate the freezing process's link environment (#load / -l dlopens)
     // BEFORE materialize + link, so import resolution sees the same symbols.
+    // The same opener as the freezing run's -l (madc_module_open).
     for (size_t i = 0; i < forest->libs().size(); ++i) {
 	const std::string &lib = forest->libs()[i];
-	if (!madcdl_open_global(lib.c_str())) {
+	std::string lerr;
+	if (!madc_module_open(lib, lerr)) {
 	    fprintf(stderr, "madc: frozen forest needs %s: %s\n",
-		    lib.c_str(), madcdl_error());
+		    lib.c_str(), lerr.c_str());
 	    teardown();
 	    return false;
 	}
@@ -1715,6 +1719,47 @@ extern "C" void *__madc_session_unbound(const char *sym)
     longjmp(b->jb, 1);
 }
 
+// The interrupt (D8, plan madc-repl-thonny §41.12a). Pending is set by a
+// SIGINT handler or the Windows watcher thread (madc_session_interrupt_raise)
+// and read by the entry's own polls. The backend clears it as it takes up
+// each request (madc_session_interrupt_reset), so an interrupt while no entry
+// runs does nothing, and one that arrives while the entry is still being
+// compiled waits for its first poll.
+static volatile sig_atomic_t cir_interrupt_pending = 0;
+
+bool madc_session_interrupt_raise()
+{
+    if (cir_interrupt_pending)
+	return true;
+    cir_interrupt_pending = 1;
+    return false;
+}
+
+void madc_session_interrupt_reset()
+{
+    cir_interrupt_pending = 0;
+}
+
+// The poll a session Program's loops make once per iteration (the first
+// statement of each user loop's body, CirBuilder::translate_loop_body). With
+// an interrupt pending and a boundary armed on
+// this task, the entry returns to its boundary as an undefined reference
+// does: the runtime diagnostic recorded, no C++ exception, so no script `try`
+// keeps it. A task the entry spawned keeps running; the entry's own next poll
+// takes the interrupt.
+extern "C" void __madc_session_poll(void)
+{
+    if (!cir_interrupt_pending)
+	return;
+    CirEntryBoundary *b = cir_entry_boundary;
+    if (!b || b->task != __madc_task_current())
+	return;
+    cir_interrupt_pending = 0;
+    b->prog->record_frontend_error(Program::DiagnosticPhase::runtime,
+				   "interrupted", b->entry_name, 0, 0);
+    longjmp(b->jb, 1);
+}
+
 // D10 (plan §41.4a): the show's hand-off. The value text the generated walk
 // captured in SINK is recorded on the running entry's Program
 // (Program::entry_shown), which the session reads (InteractiveSession::shown).
@@ -1743,6 +1788,37 @@ extern "C" void __madc_session_bind(void *sink)
     b->prog->entry_rows_shown.push_back(text);
 }
 
+// A row's character pointer (rt_dump.h states the contract): the address,
+// then the text through the fault-safe copy. Reading one byte past a row's 80
+// columns is enough to know the text is longer than the row can show.
+extern "C" void __madc_dump_sh_rowtext(void *sink, const void *p, int cxx)
+{
+    __madc_dump_sh_ptr(sink, "", p, cxx);
+    if (!p)
+	return;
+    char text[81];
+    size_t got = madc::detail::read_process_memory(text, p, sizeof text);
+    if (got == 0) {
+	__madc_dump_raw(sink, " <unreadable>", 13);
+	return;
+    }
+    const char *nul = static_cast<const char *>(memchr(text, '\0', got));
+    size_t len = nul ? (size_t)(nul - text) : got;
+    if (!nul) {
+	// The read may end inside a UTF-8 sequence: keep whole characters.
+	size_t lead = len;
+	while (lead > 0 && ((unsigned char)text[lead - 1] & 0xC0) == 0x80)
+	    --lead;
+	if (lead > 0
+	    && madc::utf8_seq_len((unsigned char)text[lead - 1]) > len - (lead - 1))
+	    len = lead - 1;
+    }
+    __madc_dump_raw(sink, " ", 1);
+    __madc_dump_sh_text(sink, text, (long long)len);
+    if (!nul)
+	__madc_dump_raw(sink, "...", 3);
+}
+
 static void cir_call_tu_init(void *code)
 {
     ((void (*)(int, char **, char **))code)(0, NULL, NULL);
@@ -1769,7 +1845,7 @@ static void cir_call_main(void *call)
 }
 
 // Run an entry's code at the entry's boundary. False when a use of an
-// undefined symbol returned here. The return destroys what the run registered
+// undefined symbol or an interrupt (__madc_session_poll) returned here. The return destroys what the run registered
 // on the exception runtime's cleanup stack, as a throw past it would, and
 // gives that runtime back the state it had when the boundary armed.
 static bool cir_run_at_entry_boundary(Program *prog, const char *entry_name,
@@ -1785,6 +1861,7 @@ static bool cir_run_at_entry_boundary(Program *prog, const char *entry_name,
 	return false;
     __madc_except_state_save(b.except_state);
     b.outer = cir_entry_boundary;
+
     if (setjmp(b.jb)) {
 	__madc_cleanup_unwind_to(b.cleanup_mark);
 	__madc_except_state_restore(b.except_state);
@@ -1808,7 +1885,7 @@ static bool cir_run_at_entry_boundary(Program *prog, const char *entry_name,
 // The stubs for the functions an admitted entry names and nothing defines, in
 // a module of their own that load_and_link loads ahead of the entry's. Each is
 // a WEAK definition, so a later definition replaces it and takes its address
-// (MIR's loader, replaced_weak_func): every reference already bound then
+// (MIR's loader, replaced_weak_def): every reference already bound then
 // reaches the definition. A stub is never in session_defined, so the builder
 // still emits a later definition.
 void CirJitSession::make_function_stubs(const std::vector<std::string> &names)
@@ -2086,7 +2163,7 @@ int madc_cir_execute(Program *prog, const char *source_name,
     bool stop = false;
     if (!session.build(prog, source_name, dump_tree, dump_nodes,
 		       dump_checked, &stop))
-	return stop ? 0 : -1;
+	return stop ? 0 : 1;
 
     bool ok = false;
     // main() is a host-call boundary just like program::call and the
@@ -2108,7 +2185,7 @@ int madc_cir_execute(Program *prog, const char *source_name,
     prog->pop_runtime_scope();
     if (!ok) {
 	fprintf(stderr, "madc_cir_execute: main() not found\n");
-	return -1;
+	return 1;
     }
     return result;
 }
@@ -2537,8 +2614,14 @@ static bool cir_cxx_runtime_import(const std::string &s)
     return s.compare(0, 2, "_Z") == 0 || s.compare(0, 6, "__cxa_") == 0;
 }
 
+// A user library's load command is its install name, as ld64 records it
+// (madc_darwin_install_name): "@rpath/<file>" for a library madc built or
+// ships, which the runpath's LC_RPATHs find — a relocatable install's lib
+// dir, or the directory a path-linked one was found in (cir_native_link_env)
+// — and the writer emits them for @rpath loads alone. The entry of `other` is
+// rewritten in place — `libs` points into it.
 static void cir_apple_extra_dylibs(const std::vector<std::string> &imports,
-				   const std::vector<std::string> &other,
+				   std::vector<std::string> &other,
 				   std::vector<const char *> &libs)
 {
     for (const std::string &s : imports)
@@ -2546,7 +2629,7 @@ static void cir_apple_extra_dylibs(const std::vector<std::string> &imports,
 	    libs.push_back("/usr/lib/libc++.1.dylib");
 	    break;
 	}
-    for (const std::string &l : other) {
+    for (std::string &l : other) {
 	if (!madc_spelled_library_p(l, TargetOS::Darwin))
 	    continue;
 	// The WORLD's libraries share this list with the user's: libSystem is
@@ -2558,17 +2641,53 @@ static void cir_apple_extra_dylibs(const std::vector<std::string> &imports,
 	std::string base = madc::detail::host_path_basename(l);
 	if (base.compare(0, 9, "libSystem") == 0 || base.compare(0, 6, "libc++") == 0)
 	    continue;
+	l = madc_darwin_install_name(l);
 	libs.push_back(l.c_str());
     }
 }
 #endif
+
+static bool cir_read_file(const char *path, std::vector<unsigned char> &bytes);
+
+// What a build says about its image beyond the code: the PE subsystem (the
+// CLI's -mwindows, a manifest's "kind": "gui") and the program's icon (a
+// manifest's "icon", an .ico file). The ELF and Mach-O writers carry
+// neither; the icon file is still read and checked on every target, so a
+// manifest naming a bad one fails the same way everywhere.
+struct CirImageTraits {
+    bool gui_subsystem = false;
+    std::string icon_path;	// "" = no icon
+};
+
+// The icon as the image's resources (PE targets: RT_ICON + RT_GROUP_ICON,
+// madc_pe_icon.h). `icon` owns the bytes the entries point at and outlives
+// the emit. False = unreadable or not an icon file (printed).
+static bool cir_icon_attach(MIR_object_exec_params &xp, const std::string &path,
+			    PeIcon &icon)
+{
+    if (path.empty()) return true;
+    std::vector<unsigned char> bytes;
+    if (!cir_read_file(path.c_str(), bytes)) return false;
+    std::string err;
+    if (!icon.parse(std::move(bytes), err)) {
+	fprintf(stderr, "madc: %s: %s\n", path.c_str(), err.c_str());
+	return false;
+    }
+#if MADC_TARGET_WINDOWS_P
+    xp.resources = icon.resources().data();
+    xp.n_resources = icon.resources().size();
+#else
+    (void)xp;
+#endif
+    return true;
+}
 
 // capture out of ctx and write it to disk. Shared by the single-TU session
 // (emit_native_executable) and the --project whole-program lane.
 static bool cir_write_native_image(MIR_context_t ctx, const char *out_path,
 				   const std::vector<std::string> &needed,
 				   const std::string &runpath,
-				   MadcNativeKind kind, bool gui_subsystem)
+				   MadcNativeKind kind, const CirImageTraits &traits)
 {
     bool shared = kind == mnkShared;
     // Conditional runtime dependency: a program whose every dynamic import
@@ -2609,12 +2728,15 @@ static bool cir_write_native_image(MIR_context_t ctx, const char *out_path,
 	libs.push_back(l.c_str());
 #endif
     MIR_object_exec_params xp;
-    cir_fill_exec_params(xp, kind, libs, runpath, gui_subsystem);
+    cir_fill_exec_params(xp, kind, libs, runpath, traits.gui_subsystem);
     // The output basename: Apple targets' ad-hoc code-signature identifier,
     // a PE DLL's own name in its export directory (ignored by the ELF
     // writer).
     const char *out_base = strrchr(out_path, '/');
     xp.identifier = out_base ? out_base + 1 : out_path;
+    PeIcon icon;
+    if (!cir_icon_attach(xp, traits.icon_path, icon))
+	return false;
     std::vector<uint8_t> pack_blob;
     if (madc_pack_forest_path && !cir_pack_forest_load(pack_blob))
 	return false;
@@ -2638,8 +2760,18 @@ bool CirJitSession::emit_native_executable(const char *out_path,
 					   MadcNativeKind kind)
 {
     if (!ctx || !mod) return false;
+    CirImageTraits traits;
+    traits.gui_subsystem = madc_gui_subsystem;
     return cir_write_native_image(ctx, out_path, needed, runpath, kind,
-				  madc_gui_subsystem);
+				  traits);
+}
+
+// A user library's TARGET spelling: the CLI resolves -l<name> through
+// madc_modules before the link env sees it; a raw -l<name> word from a
+// caller that still forwards one resolves through the same owner.
+static std::string cir_user_library_spelling(const std::string &l)
+{
+    return l.compare(0, 2, "-l") == 0 ? madc_module_library_spelling(l.substr(2)) : l;
 }
 
 // DT_NEEDED / DT_RUNPATH for every produced binary — shared by the
@@ -2696,15 +2828,12 @@ static void cir_native_link_env(const madc_stdlib_flavor *flavor,
     needed.push_back("libm.so.6");
     needed.push_back("libc.so.6");
 #endif
-    // User libraries arrive as TARGET spellings (the CLI resolves -l<name>
-    // through madc_modules before it gets here); a raw -l<name> word from a
-    // caller that still forwards one resolves through the same owner. Once
-    // each: `-lm` / `import m;` names libm.so.6, which the base set above
+    // User libraries (cir_user_library_spelling), once each: `-lm` /
+    // `import m;` names libm.so.6, which the base set above
     // already carries on ELF — a repeated DT_NEEDED is noise the linker
     // would never emit.
     for (const std::string &l : user_libs) {
-	std::string spelling = l.compare(0, 2, "-l") == 0
-			       ? madc_module_library_spelling(l.substr(2)) : l;
+	std::string spelling = cir_user_library_spelling(l);
 	if (std::find(needed.begin(), needed.end(), spelling) == needed.end())
 	    needed.push_back(spelling);
     }
@@ -2719,6 +2848,20 @@ static void cir_native_link_env(const madc_stdlib_flavor *flavor,
     // its value stays what it was, unread by the writer.
 #if MADC_TARGET_APPLE_P
     runpath = "@executable_path/../lib:";
+    // A library the link named by PATH whose install name is @rpath/<file>
+    // (every library madc builds) loads from the directory the link found
+    // it in — ld64's `-rpath <dir>` beside the recorded install name
+    // (cir_apple_extra_dylibs) — after the relocatable arm, ahead of the
+    // compiling madc's lib dir and the system fallback.
+    std::vector<std::string> link_dirs;
+    for (const std::string &l : user_libs) {
+	std::string dir = madc_darwin_link_rpath(cir_user_library_spelling(l));
+	if (!dir.empty()
+	    && std::find(link_dirs.begin(), link_dirs.end(), dir) == link_dirs.end()) {
+	    link_dirs.push_back(dir);
+	    runpath += dir + ":";
+	}
+    }
 #elif MADC_TARGET_WINDOWS_P
     runpath = "";
 #else
@@ -3372,10 +3515,13 @@ static uint32_t forest_pinned_primitive_id(DataDef *dd)
 	// inherits btSimple and reports is_integer()==true with the POINTEE's rawtype
 	// — it is NOT a scalar. Exclude it structurally so the derived-type
 	// record path (DK_PTR/DK_REF/DK_CONST) handles it. Likewise an enum (named
-	// constants), SIMD vector, template param, or _Complex is its own concept.
+	// constants), SIMD vector, template param, or _Complex is its own concept,
+	// and so is a pointer to DATA member — an integer-typed (ptrdiff_t offset)
+	// DataDef whose owner and member type a `long` would lose (DK_MEMBERPTR).
 	if (dynamic_cast<DataDefPTR *>(dd) || dynamic_cast<DataDefQUAL *>(dd) // allowed-exception: structural (exact-class dispatch)
 	    || dynamic_cast<DataDefENUM *>(dd) || dd->is_simd()
-	    || dd->is_template_param() || dd->is_complex())
+	    || dd->is_template_param() || dd->is_complex()
+	    || dd->is_member_pointer())
 		return 0;
 	if (!(dd->is_integer() || dd->is_real()))
 		return 0;
@@ -4069,6 +4215,13 @@ void Program::forest_arena_record_fptr(DataDef *dd)
 			}
 			return;
 		}
+		// v53: a pointer to member ends the chain the same way — no
+		// completion funnel of its own (libstdc++'s _Nocopy_types holds
+		// `void (_Undefined_class::*)()`).
+		if (dd->is_member_pointer()) {
+			forest_arena_record_member_pointer(dd);
+			return;
+		}
 		// REF is-a PTR; both (and CONST) expose the operand as base_type.
 		if (DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd)) { // allowed-exception: structural (exact-class dispatch)
 			dd = p->base_type;
@@ -4080,6 +4233,57 @@ void Program::forest_arena_record_fptr(DataDef *dd)
 		}
 		return;			// chain ended without an FPTR
 	}
+}
+
+// v53: record a POINTER-TO-MEMBER type reached through a member / param /
+// return cross-ref (forest_arena_record_fptr's walk ends here). The defrec is
+// written BEFORE the member type or signature recurses, so a self-referential
+// chain terminates; has_def makes it idempotent. The owner is a cross-ref
+// only: an undefined owner (_Undefined_class) has no record, and the restore
+// keeps its spelling with owner_class NULL — the parse's own unresolved state.
+void Program::forest_arena_record_member_pointer(DataDef *dd)
+{
+	if (!forest_arena_enabled || !dd)
+		return;
+	DataDefMemberFnPtr *mf = dynamic_cast<DataDefMemberFnPtr *>(dd); // allowed-exception: structural type-graph walk
+	DataDefMemberPtr *md = mf ? NULL : dynamic_cast<DataDefMemberPtr *>(dd); // allowed-exception: structural type-graph walk
+	if (!mf && !md)
+		return;
+	uint32_t tid = type_id_for(dd);
+	if (!madc::dis::arena_id_is_project(tid) || forest_arena.has_def(tid))
+		return;
+	DataDef *owner = mf ? mf->owner_class : md->owner_class;
+	const std::string &owner_name = mf ? mf->owner_name : md->owner_name;
+	madc::dis::defrec r;
+	memset(&r, 0, sizeof(r));
+	r.kind      = madc::dis::DK_MEMBERPTR;
+	r.name_id   = forest_arena.strings.intern(dd->name.c_str());
+	r.size      = (uint32_t)dd->size;
+	r.datatype  = (uint32_t)dd->rawtype();
+	r.disp_id   = owner_name.empty()
+		    ? 0u : forest_arena.strings.intern(owner_name.c_str());
+	r.body_unit = owner ? forest_serialize_type_id(owner) : 0u;
+	if (mf) {
+		r.flags |= madc::dis::DF_MEMBERPTR_FUNCTION;
+		if (mf->is_const_method)
+			r.flags |= madc::dis::DF_MEMBERPTR_CONST_METHOD;
+	}
+	forest_arena.set_def_at(tid, r);	// self-ref guard: write first
+	if (mf) {
+		if (!mf->target)
+			return;
+		r.ref0 = forest_serialize_type_id(mf->target);
+		forest_arena.set_def_at(tid, r);
+		if (madc::dis::arena_id_is_project(r.ref0)
+		    && !forest_arena.has_def(r.ref0))
+			forest_arena_record_func(mf->target);
+		return;
+	}
+	if (!md->member_type)
+		return;
+	r.ref0 = forest_serialize_type_id(md->member_type);
+	forest_arena.set_def_at(tid, r);
+	forest_arena_record_fptr(md->member_type);	// a fn-ptr or member-pointer member
 }
 
 // File-scope global VARIABLE definitions (v13/v14/v16) — the CIR_GLOBALS
@@ -6508,7 +6712,7 @@ int madc_cir_execute_frozen(const char *container_path,
     if (!cir_forest_map_image(container_path, image, image_len)) {
 	fprintf(stderr, "madc: %s: cannot map frozen container\n",
 		container_path ? container_path : "<self-executable>");
-	return -1;
+	return 1;
     }
 
     // A frozen run never parses, so no Program binds the string substrate;
@@ -6521,7 +6725,7 @@ int madc_cir_execute_frozen(const char *container_path,
     auto _th0 = std::chrono::steady_clock::now();  // --show-stats: thaw wall
     CirJitSession session;
     if (!session.build_frozen(image, image_len, "frozen"))
-	return -1;
+	return 1;
     auto _th1 = std::chrono::steady_clock::now();
 
     bool ok = false;
@@ -6529,7 +6733,7 @@ int madc_cir_execute_frozen(const char *container_path,
     int result = session.run_main(user_argc, user_argv, &ok, &exec_secs);
     if (!ok) {
 	fprintf(stderr, "madc: frozen module has no main()\n");
-	return -1;
+	return 1;
     }
     // --show-stats: the frozen lane's phases (no parse — map, thaw+link,
     // run). main() appends the process total.
@@ -6781,6 +6985,29 @@ static bool project_parse_all(MadcEngine &engine,
 		pt.name = tu.file;
 		parsed.push_back(std::move(pt));
 	}
+	// The manifest's "libs" bind on the first TU as a link-form `import`
+	// in it would: the library opens before the program links, a native
+	// build's closure names it (module_link_libs), and a GUI module row
+	// lifts the memory guard (module-map data, as `import` reads it).
+	Program &first = *parsed.front().prog;
+	for (const std::string &lib : manifest.libs) {
+		if (!first.is_dynamic_library_loading_enabled()) {
+			fprintf(stderr, "madc: \"libs\": library binding is disabled"
+					" by registration policy\n");
+			return false;
+		}
+		std::string spelling = madc_module_library_spelling(lib);
+		const MadcModuleSpec *row = madc_module_find_spelled(spelling);
+		if (row && (row->flags & MADC_MODULE_GUI))
+			first.bound_gui_module = true;
+		std::string err;
+		if (!first.bind_module_namespace("", spelling,
+						 /*link_form=*/true, err)) {
+			fprintf(stderr, "madc: \"libs\": cannot load '%s': %s\n",
+				spelling.c_str(), err.c_str());
+			return false;
+		}
+	}
 	return true;
 }
 
@@ -6791,7 +7018,7 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 {
 	if (manifest.tus.empty()) {
 		fprintf(stderr, "madc_project_execute: empty manifest\n");
-		return -1;
+		return 1;
 	}
 
 	// Phase 1: tokenize + parse EVERY TU before any MIR/c2m context exists.
@@ -6803,7 +7030,7 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 	if (!project_parse_all(engine, group, manifest, forest_bind,
 			       forest_bind_path,
 			       class_pattern_live_capture, parsed))
-		return -1;	// no MIR/c2m created yet — nothing to tear down
+		return 1;	// no MIR/c2m created yet — nothing to tear down
 	// A GUI module row bound by any TU lifts an armed memory guard before
 	// the program runs (the single-TU driver does the same after its parse).
 	for (const CirParsedTU &pt : parsed)
@@ -6835,7 +7062,7 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 		MIR_gen_finish(ctx);
 		c2mir_finish(ctx);
 		MIR_finish(ctx);
-		return -1;
+		return 1;
 	}
 
 	// Builders must outlive MIR_gen()+run: their arenas back the modules.
@@ -6861,7 +7088,7 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 		builders.push_back(builder);	// may be NULL on failure; delete NULL is safe
 		if (!mod) {
 			teardown();
-			return -1;
+			return 1;
 		}
 		modules.push_back(mod);
 	}
@@ -6905,7 +7132,7 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 		fprintf(stderr, "madc_project_execute: entry '%s' not found\n",
 			manifest.entry.c_str());
 		teardown();
-		return -1;
+		return 1;
 	}
 
 	// Dynamic global initialization, every TU (the engine plays ld.so's
@@ -6928,7 +7155,7 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 				" not found in its module\n",
 				parsed[bi].name.c_str(), ini.c_str());
 			teardown();
-			return -1;
+			return 1;
 		}
 		((void (*)(int, char **, char **))icode)(user_argc, user_argv,
 							 nullptr);
@@ -7181,10 +7408,13 @@ int madc_project_emit_native(MadcEngine &engine,
 					all_libs.push_back(l);
 		cir_native_link_env(flavor, all_libs, needed, runpath);
 		// The manifest's kind decides the subsystem for a project
-		// build (the CLI's -mwindows is the single-TU lane's spelling).
+		// build (the CLI's -mwindows is the single-TU lane's
+		// spelling); its "icon" is the image's icon.
+		CirImageTraits traits;
+		traits.gui_subsystem = manifest.kind == ProjectKind::gui;
+		traits.icon_path = manifest.icon;
 		ok = cir_write_native_image(ctx, out_path, needed, runpath,
-					    kind,
-					    manifest.kind == ProjectKind::gui);
+					    kind, traits);
 	}
 	teardown();
 	return ok ? 0 : -1;

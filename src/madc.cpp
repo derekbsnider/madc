@@ -42,6 +42,7 @@
 #include "madc_session.h" // InteractiveSession: the REPL's session (D20)
 #include "madc_session_client.h" // BackendSession: the session in a backend (D2)
 #include "madc_repl.h"    // madc_repl_run: the REPL's loop (D20)
+#include "madc_run_child.h" // a Run child of self (Windows: no fork)
 #include "madcdis/tui_provider.h"	// create_line_target: the editor's terminal (D23)
 
 // Supplied by the build as -DMADC_VERSION_STR='"x.y.z"' from ../VERSION (the
@@ -562,6 +563,9 @@ int main(int argc, char **argv)
     gettimeofday(&_t_main, NULL);
 
     madc_install_crash_handler();
+    // A Run child of self (madc_run_child.h): the parent named the run in
+    // the environment; serve it and exit before this command line is read.
+    madc_serve_run_child();
 
     stringstream ss;
     MadcEngine engine;
@@ -594,6 +598,8 @@ int main(int argc, char **argv)
     bool do_emit = false;         // --emit=c11|mc11: render cir_node tree as C, no run
     CirEmitLang emit_lang = celC11;
     const char *project_manifest = NULL;  // --project <compile_commands.json>
+    std::vector<std::string> cli_include_dirs; // -I as given: a --project build adds them to every TU
+    std::vector<std::string> cli_define_args;  // -D as given: likewise
     std::vector<std::string> link_libs;   // -l<name>: TARGET spellings (madc_modules) opened RTLD_GLOBAL
     std::vector<std::string> cc_link_args; // -l<name> → DT_NEEDED in AOT mode
     bool compile_object = false;          // -c: emit a relocatable .o, no run
@@ -689,6 +695,8 @@ int main(int argc, char **argv)
             if ( *path == '\0' && i + 1 < argc )
                 path = argv[++i];
             prog->add_include_dir(path);	// guards empty + normalizes trailing '/'
+            if ( *path )
+                cli_include_dirs.push_back(path);
             filearg = i + 1;
         } else if (strncmp(argv[i], "-D", 2) == 0) {
             // -DNAME, -DNAME=VALUE, or -D NAME (repeatable). A bare NAME defines
@@ -699,6 +707,8 @@ int main(int argc, char **argv)
             if ( *def == '\0' && i + 1 < argc )
                 def = argv[++i];
             prog->add_cli_define(def);	// guards empty + splits NAME[=VALUE]
+            if ( *def )
+                cli_define_args.push_back(def);
             filearg = i + 1;
         } else if (strcmp(argv[i], "--emit-pch") == 0) {
             emit_pch = true;
@@ -1094,6 +1104,17 @@ int main(int argc, char **argv)
             std::cerr << "madc --project: " << err << std::endl;
             return 1;
         }
+        // The command line's -I and -D apply to every TU, after the TU's
+        // own (gcc's `-I dir a.c b.c`; a compilation database's extra
+        // arguments, as clang's tools append them): a TU's own directories
+        // are searched first, and a -D here overrides the manifest's.
+        for ( ProjectTU &tu : manifest.tus )
+        {
+            tu.include_dirs.insert(tu.include_dirs.end(),
+                                   cli_include_dirs.begin(), cli_include_dirs.end());
+            tu.defines.insert(tu.defines.end(),
+                              cli_define_args.begin(), cli_define_args.end());
+        }
     }
     madc_install_resource_guards(manifest.tus.size(), config);
 
@@ -1197,14 +1218,18 @@ int main(int argc, char **argv)
     // before any compile/run so it applies to both the single-file and
     // --project paths. In AOT mode nothing reads import addresses (they become
     // undefined ELF symbols) — the libs go to the host link line instead.
+    // The opener is import's (madc_module_open): madc's own lib directory
+    // first, then the loader, so an installed madc's -lmadcide finds the
+    // libmadcide beside it.
     for ( const std::string &lib : link_libs )
     {
         if ( emit_native )
             break;
-        if ( !madcdl_open_global(lib.c_str(), /*bind_now=*/true) )
+        std::string lerr;
+        if ( !madc_module_open(lib, lerr, /*bind_now=*/true) )
         {
             std::cerr << "madc: -l: failed to load " << lib << ": "
-                      << madcdl_error() << std::endl;
+                      << lerr << std::endl;
             return 1;
         }
         prog->loaded_lib_paths.push_back(lib);   // the frozen-forest link closure
@@ -1260,7 +1285,7 @@ int main(int argc, char **argv)
                     (_t_now.tv_sec - _t_main.tv_sec)
                     + (_t_now.tv_usec - _t_main.tv_usec) / 1e6);
         }
-        return (rc < 0) ? 1 : rc;
+        return rc;
     }
 
     // --dump-forest: print a container's directory + grove payload v2
@@ -1396,7 +1421,7 @@ int main(int argc, char **argv)
 		    (_t_now.tv_sec - _t_main.tv_sec)
 		    + (_t_now.tv_usec - _t_main.tv_usec) / 1e6);
 	}
-	return (rc < 0) ? 1 : rc;
+	return rc;
     }
 
     // No program file (D20, plan §41.5a). An artifact or dump request names
@@ -1928,8 +1953,9 @@ int main(int argc, char **argv)
 	DBG(std::cout << "CIR elapsed time: " << time_diff(before, after) << std::endl);
 	print_stats();
 	// main()'s return value IS the process exit status (gcc parity:
-	// `./prog; echo $?`). Negative = infrastructure failure → 1.
-	return (result < 0) ? 1 : result;
+	// `./prog; echo $?`), a negative one included; a run that never
+	// reached main() comes back as 1.
+	return result;
     }
     // Not reached: with no program file the D20 dispatch above ran the REPL
     // or named stdin as the program.

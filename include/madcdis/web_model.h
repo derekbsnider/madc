@@ -269,6 +269,11 @@ class web_model
     // changes no title, key or enablement costs nothing on the wire).
     std::string _menu_json;
     bool _menu_dirty;	// edit key -> its basis
+    // The window's title (the root's `title` hint), handed to the host only
+    // when it differs from the last compose's ("" = none given: the host
+    // keeps the title it opened with).
+    std::string _title;
+    bool _title_dirty;
     std::set<std::string> _seen;		// edit keys this compose visited
 
     // A node op that carries a focus flag, patched after end_compose()
@@ -649,12 +654,16 @@ class web_model
 		    op["tabs"] = true;
 	    }
 	    // The toolbar (plan §41.11a): a `toolbar` hint (madcide puts it on
-	    // the root) is an array of {label, action, code?, enabled?}; the
-	    // page draws a button per row and a click posts the action by name
-	    // (the S1 rule). Each row gains the chord the LOADED profile binds
-	    // (`key`, omitted when unbound — the menu items' rule) and
-	    // `enabled` made explicit; its code joins the action map. A row
-	    // with no label or no action is dropped.
+	    // the root) is an array of {label, action, code?, enabled?, icon?,
+	    // drop?} and {sep} rows; the page draws a button per row, a divider
+	    // per separator, and a click posts the action by name (the S1
+	    // rule). Each row gains the chord the LOADED profile binds (`key`,
+	    // omitted when unbound — the menu items' rule) and `enabled` made
+	    // explicit; its code joins the action map. `icon` (a ui::icon code)
+	    // goes out as its name (ui_icon_name), the picture the page draws;
+	    // `drop` ({action, code, arg}) is the button's dropdown arrow, whose
+	    // click posts that action with that argument. A row with no label or
+	    // no action is dropped.
 	    if ( n.hints.is_object() )
 	    {
 		const std::map<std::string, madc::value> &tbo = n.hints.as_object();
@@ -667,6 +676,16 @@ class web_model
 		    {
 			if ( !rows[k].is_object() )
 			    continue;
+			if ( hint_of(rows[k], "sep", 0) )
+			{
+			    if ( !bar.empty() )
+			    {
+				nlohmann::json sp = nlohmann::json::object();
+				sp["sep"] = true;
+				bar.push_back(sp);
+			    }
+			    continue;
+			}
 			const std::string label = hint_str(rows[k], "label");
 			const std::string action = hint_str(rows[k], "action");
 			if ( label.empty() || action.empty() )
@@ -684,8 +703,33 @@ class web_model
 			if ( !key.empty() )
 			    bt["key"] = key;
 			bt["enabled"] = hint_of(rows[k], "enabled", 1) != 0;
+			const long icode = hint_of(rows[k], "icon", 0);
+			if ( icode > 0 )
+			{
+			    const std::string iname = ui_icon_name((ui_icon)icode);
+			    if ( !iname.empty() )
+				bt["icon"] = iname;
+			}
+			const std::map<std::string, madc::value> &ro = rows[k].as_object();
+			std::map<std::string, madc::value>::const_iterator di = ro.find("drop");
+			if ( di != ro.end() && di->second.is_object() )
+			{
+			    const std::string dact = hint_str(di->second, "action");
+			    if ( !dact.empty() )
+			    {
+				nlohmann::json dr = nlohmann::json::object();
+				dr["action"] = dact;
+				dr["arg"] = hint_str(di->second, "arg");
+				const long dcode = hint_of(di->second, "code", 0);
+				if ( dcode )
+				    _action_codes[dact] = dcode;
+				bt["drop"] = dr;
+			    }
+			}
 			bar.push_back(bt);
 		    }
+		    while ( !bar.empty() && bar.back().contains("sep") )
+			bar.erase(bar.end() - 1);	// no trailing divider
 		    if ( !bar.empty() )
 			op["toolbar"] = bar;
 		}
@@ -1041,7 +1085,7 @@ class web_model
     }
 
 public:
-    web_model() : _rows(24), _cols(80), _menu_dirty(false) {}
+    web_model() : _rows(24), _cols(80), _menu_dirty(false), _title_dirty(false) {}
 
     void set_bindings(const tui_bindings &b) { _keys.set_bindings(b); }
     const std::string &pending_chord() const { return _keys.pending(); }
@@ -1083,6 +1127,9 @@ public:
 	const std::string mj = menu_json_of(tree);
 	_menu_dirty = mj != _menu_json;
 	_menu_json = mj;
+	const std::string tt = hint_str(tree.hints, "title");
+	_title_dirty = tt != _title;
+	_title = tt;
 	return ops.dump();
     }
 
@@ -1090,6 +1137,11 @@ public:
     // compose with a menu: yes; a compose that dropped it: yes, to "".)
     bool menu_changed() const { return _menu_dirty; }
     const std::string &menu_json() const { return _menu_json; }
+
+    // Did the last compose change the window's title? ("" = the root gave
+    // none; the host then keeps the title it shows.)
+    bool title_changed() const { return _title_dirty; }
+    const std::string &title() const { return _title; }
 
     // Forget what the page holds: the NEXT compose paints every edit node
     // in full (ui::refresh — the grid model's painted-grid reset).

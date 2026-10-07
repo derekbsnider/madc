@@ -1,0 +1,54 @@
+// The command line's -I and -D apply to every unit of a --project build,
+// after the unit's own: `madc -I dir -D NAME=V --project m.json`. A unit's
+// own include directories are searched first, and a command-line -D
+// overrides the manifest's (a later -D wins, as in gcc). An installed
+// product build names its library's headers this way
+// (`-I <prefix>/share/madcide/include`).
+// Pins: the header found only through the command line's -I is read; a
+// header in both directories is read from the unit's own; the command
+// line's -D is seen and overrides the manifest's define; both units see
+// both.
+// Before the fix a command-line -I was dropped for a project's units:
+// "Failed to open include file: cli_only.h".
+// Oracle: gcc 13 and clang 18 apply a command-line -I to every file named
+// (`gcc -I inc a.c b.c`), searched after an #include's own directory, and
+// a later -D overrides an earlier one; clang's tools append a compilation
+// database's extra arguments (--extra-arg) to every entry.
+int main()
+{
+	var dir = "tmp/testproject_cliinclude";
+	var own = format("{}/own", dir);
+	var cli = format("{}/cli", dir);
+	php::mkdir(dir.c_str());
+	php::mkdir(own.c_str());
+	php::mkdir(cli.c_str());
+	var files = {
+		format("{}/cli_only.h", cli), format("{}/both.h", cli), format("{}/both.h", own),
+		format("{}/a.mad", dir), format("{}/b.mad", dir), format("{}/m.prj.json", dir)
+	};
+	php::file_put_contents(files[0].c_str(), "inline long cli_only() { return 42; }\n");
+	php::file_put_contents(files[1].c_str(), "inline const char *both_from() { return \"cli\"; }\n");
+	php::file_put_contents(files[2].c_str(), "inline const char *both_from() { return \"own\"; }\n");
+	php::file_put_contents(files[3].c_str(),
+		"#include <cli_only.h>\n#include <both.h>\n"
+		"long a_sum() { return cli_only() + CLI_D; }\n");
+	php::file_put_contents(files[4].c_str(),
+		"#include <cli_only.h>\n#include <both.h>\nlong a_sum();\n"
+		"int main()\n{\n\tprintln(\"b: cli_only={} both={} CLI_D={} a_sum={}\",\n"
+		"\t\tcli_only(), both_from(), CLI_D, a_sum());\n\treturn 0;\n}\n");
+	var incs = { "own" };
+	var defs = { "CLI_D=1" };
+	var ta = { "file": "a.mad", "include_dirs": incs, "defines": defs };
+	var tb = { "file": "b.mad", "include_dirs": incs, "defines": defs };
+	var tus = { ta, tb };
+	var m = { "tus": tus };
+	php::file_put_contents(files[5].c_str(), js::stringify(m));
+	long rc = system(format("{} -I {} -D CLI_D=7 --project {}", madc::compiler_path(), cli, files[5]));
+	println("run: rc={}", rc);
+	for ( long i = php::count(files) - 1; i >= 0; i-- )
+		php::unlink(files[i].c_str());
+	php::rmdir(own.c_str());
+	php::rmdir(cli.c_str());
+	php::rmdir(dir.c_str());
+	return 0;
+}

@@ -1,0 +1,7 @@
+scalar identity: 1
+class identity: 1
+class value: 3
+class copy: 4 abc
+map: 3 al=9 bo=4 cy=1
+insert: 1 dee 4
+set: 2 a

@@ -126,9 +126,9 @@ int main()
     // The File menu: items in file order, a separator as its own row.
     var file = menu["bar"][0];
     var f0 = file["items"][0];
-    var f2 = file["items"][2];
+    var f4 = file["items"][4];		// New, Open File…, Recent Files…, Insert File…, then the separator
     println("file: title={} first={}/{} sep={}", file["title"],
-	    f0["id"], f0["title"], f2["sep"].is_null() ? "no" : "yes");
+	    f0["id"], f0["title"], f4["sep"].is_null() ? "no" : "yes");
     // [when] against the live context: one window -> the window verbs
     // that need a split are disabled; split -> enabled (no key at all).
     var nw;

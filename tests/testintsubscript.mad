@@ -1,0 +1,17 @@
+// E1[E2] is (*((E1)+(E2))) (C11 6.5.2.1p2), so the integer may come first:
+// `2["World"]`, `i[p]` and `(i - 1)[arr]` read the same elements as
+// `"World"[2]`, `p[i]` and `arr[i - 1]`, and `1[arr]` is assignable. madc
+// read a `[` after an integer as a lambda introducer.
+// gcc 13.3 and clang 18.1 (-std=c11) print the .expect line.
+#include <stdio.h>
+int main(void)
+{
+	int arr[4] = { 10, 20, 30, 40 };
+	int *p = arr;
+	int i = 3;
+	char a = "Hello"[2];
+	char b = 2["World"];
+	1[arr] = 21;
+	printf("swap: %c %c %d %d %d\n", a, b, i[p], 1[arr], (i - 1)[arr]);
+	return 0;
+}

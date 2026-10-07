@@ -22,41 +22,8 @@
 // as an integer; a misspelt enumerator does not compile.
 //
 // Thread contract: constants and pure functions over them.
-enum ide_cmd : unsigned short
-{
-    cmdNONE = 0,			// unbound chord / unknown name
-    // ---- the command registry (profiles/default.menu) ----
-    cmdBEND, cmdBLOCKCOPY, cmdBLOCKDEL, cmdBLOCKMOVE, cmdBOTTOM, cmdBUFSEL,
-    cmdBUILD, cmdCHECK, cmdCOLON, cmdCOPY, cmdCUT, cmdDELLINE, cmdDELWORD, cmdDISCARD,
-    cmdEDITFILE, cmdFIND, cmdFINDNEXT, cmdGOTOLINE, cmdGROWW, cmdHELP,
-    cmdINSERTFILE, cmdKEYSTYLE, cmdKILLWIN, cmdMARK, cmdMODES, cmdNEXTW, cmdONLYWIN,
-    cmdOPENPROJECT, cmdOPTIONS, cmdOUTLINE, cmdOUTPUT, cmdPANEL, cmdPASTE, cmdPREVW,
-    cmdPROBLEMS, cmdPROFILE, cmdPROJADDCUR, cmdPROJECT, cmdQUIT, cmdREDO,
-    cmdREFRESH, cmdSAVE, cmdSAVEAS,
-    cmdSAVEQUIT, cmdSELECTALL, cmdSHELL,
-    cmdSHRINKW, cmdSPLITW, cmdTERMINAL, cmdTHEME, cmdTOP, cmdUNDO, cmdVIEW,
-    cmdVIEWCLOSE, cmdVIEWDOCK, cmdVIEWFOCUS, cmdVIEWOPEN, cmdVIEWSIZE,
-    cmdVIEWSPLIT, cmdVIEWSYNC, cmdVIEWWINDOW,
-    cmdVIMODE, cmdWORDLEFT, cmdWORDRIGHT,
-    // ---- motions: the action name IS the key spelling (edit_key's keys) ----
-    cmdLEFT, cmdRIGHT, cmdUP, cmdDOWN, cmdHOME, cmdEND,
-    cmdPGUP, cmdPGDN, cmdBACKSPACE, cmdDEL, cmdENTER,
-    // ---- modal-scope actions (@prompt @confirm @project @modes @pane @terminal @insert) ----
-    cmdPCOMMIT, cmdPCANCEL, cmdPDELCHAR, cmdPYES, cmdPROJCLOSE, cmdPROJDELCHAR,
-    cmdPROJADD, cmdPROJDEL, cmdPROJOPEN, cmdMODESOPEN, cmdMODESCLOSE, cmdPANECLOSE,
-    cmdTERMUNFOCUS, cmdVINORMAL,
-    // ---- the vi grammar (@normal): operators, the G motion, insert entries ----
-    cmdVIDELETE, cmdVICHANGE, cmdVIGOTO, cmdVIINSERT, cmdVIINSERTBOL, cmdVIAPPEND,
-    cmdVIAPPENDEOL, cmdVIOPENBELOW, cmdVIOPENABOVE,
-    // ---- pane-row verbs: diagnostics/outline goto, the editor menu's w f q,
-    //      the ^T Options rows, the choice list's rows, the ^B palette's rows ----
-    cmdGOTO, cmdGOTODEF, cmdW, cmdF, cmdQ, cmdOPT_TABWIDTH, cmdOPT_SCHEME,
-    cmdOPT_KEYMAP, cmdOPT_PROJKIND, cmdCHOICE, cmdBLD_CHECK, cmdBLD_NATIVE, cmdBLD_RUN, cmdBLD_RUN_CMD,
-    cmdBLD_STOP, cmdBLD_PROJ_CHECK, cmdBLD_PROJ_BUILD, cmdBLD_PROJ_RUN,
-    cmdBUILDROW				// a Build MENU row "build-<n>": the
-					// NAME carries the 1-based row (an
-					// argument, not a discriminator)
-};
+#include "include/madcide/vocabulary"	// ide_cmd, ide_pane, ide_slot, ide_view:
+					// the codes a product and its tests use
 
 // The ONE name <-> code table (rows, source order = the enum's groups). Built
 // on demand — the callers that convert many names (parse_keys, load_menu)
@@ -64,6 +31,7 @@ enum ide_cmd : unsigned short
 void cmd_table(var &t)
 {
     var rows = {};
+    rows[] = { "name": "about", "code": cmdABOUT };
     rows[] = { "name": "bend", "code": cmdBEND };
     rows[] = { "name": "blockcopy", "code": cmdBLOCKCOPY };
     rows[] = { "name": "blockdel", "code": cmdBLOCKDEL };
@@ -72,23 +40,37 @@ void cmd_table(var &t)
     rows[] = { "name": "bufsel", "code": cmdBUFSEL };
     rows[] = { "name": "build", "code": cmdBUILD };
     rows[] = { "name": "check", "code": cmdCHECK };
+    rows[] = { "name": "close", "code": cmdCLOSE };
+    rows[] = { "name": "closeall", "code": cmdCLOSEALL };
     rows[] = { "name": "colon", "code": cmdCOLON };
     rows[] = { "name": "copy", "code": cmdCOPY };
     rows[] = { "name": "cut", "code": cmdCUT };
+    rows[] = { "name": "dedent", "code": cmdDEDENT };
     rows[] = { "name": "delline", "code": cmdDELLINE };
     rows[] = { "name": "delword", "code": cmdDELWORD };
     rows[] = { "name": "discard", "code": cmdDISCARD };
     rows[] = { "name": "editfile", "code": cmdEDITFILE };
     rows[] = { "name": "find", "code": cmdFIND };
     rows[] = { "name": "findnext", "code": cmdFINDNEXT };
+    rows[] = { "name": "fontlarger", "code": cmdFONTLARGER };
+    rows[] = { "name": "fontsmaller", "code": cmdFONTSMALLER };
+    rows[] = { "name": "fullscreen", "code": cmdFULLSCREEN };
     rows[] = { "name": "gotoline", "code": cmdGOTOLINE };
     rows[] = { "name": "groww", "code": cmdGROWW };
     rows[] = { "name": "help", "code": cmdHELP };
+    rows[] = { "name": "helpcontents", "code": cmdHELPCONTENTS };
+    rows[] = { "name": "helptopic", "code": cmdHELPTOPIC };
+    rows[] = { "name": "indent", "code": cmdINDENT };
     rows[] = { "name": "insertfile", "code": cmdINSERTFILE };
     rows[] = { "name": "keystyle", "code": cmdKEYSTYLE };
     rows[] = { "name": "killwin", "code": cmdKILLWIN };
+    rows[] = { "name": "language", "code": cmdLANGUAGE };
     rows[] = { "name": "mark", "code": cmdMARK };
+    rows[] = { "name": "mdpreview", "code": cmdMDPREVIEW };
+    rows[] = { "name": "mdpreviewrow", "code": cmdMDPREVIEWROW };
+    rows[] = { "name": "menushow", "code": cmdMENUSHOW };
     rows[] = { "name": "modes", "code": cmdMODES };
+    rows[] = { "name": "new", "code": cmdNEW };
     rows[] = { "name": "nextw", "code": cmdNEXTW };
     rows[] = { "name": "onlywin", "code": cmdONLYWIN };
     rows[] = { "name": "openproject", "code": cmdOPENPROJECT };
@@ -100,12 +82,16 @@ void cmd_table(var &t)
     rows[] = { "name": "prevw", "code": cmdPREVW };
     rows[] = { "name": "problems", "code": cmdPROBLEMS };
     rows[] = { "name": "profile", "code": cmdPROFILE };
+    rows[] = { "name": "progargs", "code": cmdPROGARGS };
     rows[] = { "name": "projaddcur", "code": cmdPROJADDCUR };
     rows[] = { "name": "project", "code": cmdPROJECT };
     rows[] = { "name": "quit", "code": cmdQUIT };
+    rows[] = { "name": "recent", "code": cmdRECENT };
     rows[] = { "name": "redo", "code": cmdREDO };
     rows[] = { "name": "refresh", "code": cmdREFRESH };
+    rows[] = { "name": "replace", "code": cmdREPLACE };
     rows[] = { "name": "save", "code": cmdSAVE };
+    rows[] = { "name": "saveall", "code": cmdSAVEALL };
     rows[] = { "name": "saveas", "code": cmdSAVEAS };
     rows[] = { "name": "savequit", "code": cmdSAVEQUIT };
     rows[] = { "name": "selectall", "code": cmdSELECTALL };
@@ -114,6 +100,7 @@ void cmd_table(var &t)
     rows[] = { "name": "splitw", "code": cmdSPLITW };
     rows[] = { "name": "terminal", "code": cmdTERMINAL };
     rows[] = { "name": "theme", "code": cmdTHEME };
+    rows[] = { "name": "togglecomment", "code": cmdTOGGLECOMMENT };
     rows[] = { "name": "top", "code": cmdTOP };
     rows[] = { "name": "undo", "code": cmdUNDO };
     rows[] = { "name": "view", "code": cmdVIEW };
@@ -143,6 +130,8 @@ void cmd_table(var &t)
     rows[] = { "name": "pcancel", "code": cmdPCANCEL };
     rows[] = { "name": "pdelchar", "code": cmdPDELCHAR };
     rows[] = { "name": "pyes", "code": cmdPYES };
+    rows[] = { "name": "pno", "code": cmdPNO };
+    rows[] = { "name": "pall", "code": cmdPALL };
     rows[] = { "name": "projclose", "code": cmdPROJCLOSE };
     rows[] = { "name": "projdelchar", "code": cmdPROJDELCHAR };
     rows[] = { "name": "projadd", "code": cmdPROJADD };
@@ -270,10 +259,6 @@ ui::key motion_key_of(long code)
 // tool Views (problems, outline, output, terminal) are not panes here: they
 // live in the layout's chrome panes (V2, design §2.2) and show through
 // show_view.
-enum ide_pane : unsigned char
-{
-    paneNONE = 0, paneHELP, paneOPTIONS, paneBUILD, paneMODES, panePROJECT, paneCHOICE
-};
 const char *pane_name(long p)
 {
     switch ( p )
@@ -284,6 +269,7 @@ const char *pane_name(long p)
 	case paneMODES: return "modes";
 	case panePROJECT: return "project";
 	case paneCHOICE: return "choice";
+	case paneABOUT: return "about";
     }
     return "";
 }
@@ -293,7 +279,8 @@ enum ide_prompt : unsigned char
 {
     pmNONE = 0, pmCONFIRM, pmFIND, pmGOTOLINE, pmINSERTFILE, pmEDITFILE,
     pmSAVEAS, pmOPENPROJECT, pmBUFSEL, pmPROJADD, pmTABWIDTH, pmTHEME, pmCOLON,
-    pmSAVEASQUIT
+    pmSAVEASQUIT, pmREPLACE, pmREPLACEWITH, pmREPLACEASK, pmCLOSEASK, pmSAVEASCLOSE,
+    pmPROGARGS
 };
 const char *prompt_name(long m)
 {
@@ -312,6 +299,12 @@ const char *prompt_name(long m)
 	case pmTHEME: return "theme";
 	case pmCOLON: return "colon";
 	case pmSAVEASQUIT: return "saveasquit";
+	case pmREPLACE: return "replace";
+	case pmREPLACEWITH: return "replacewith";
+	case pmREPLACEASK: return "replaceask";
+	case pmCLOSEASK: return "closeask";
+	case pmSAVEASCLOSE: return "saveasclose";
+	case pmPROGARGS: return "progargs";
     }
     return "";
 }
@@ -334,7 +327,8 @@ enum ide_req : unsigned char
 {
     rqNONE = 0, rqREFRESH, rqFILEDIALOG, rqRUN, rqPROJRUN, rqCMD, rqSHELL,
     rqCLIPSET,		// put the session's copy on the platform clipboard
-    rqPASTE		// read the platform clipboard and paste it
+    rqPASTE,		// read the platform clipboard and paste it
+    rqFULLSCREEN	// toggle the window full screen
 };
 const char *req_name(long k)
 {
@@ -348,6 +342,7 @@ const char *req_name(long k)
 	case rqSHELL: return "shell";
 	case rqCLIPSET: return "clipset";
 	case rqPASTE: return "paste";
+	case rqFULLSCREEN: return "fullscreen";
     }
     return "";
 }
@@ -355,18 +350,17 @@ const char *req_name(long k)
 // The IDE's own dialog kind: what a native file dialog's answer MEANS. The
 // host speaks only the dialog MODE (ui::dialog_mode's names, open | save) —
 // dlg_host_mode is that wire word; the kind waits on the bag for the answer.
-// dlgSAVEQUIT is a save whose answer then quits (^K X on an untitled buffer).
-enum ide_dlg : unsigned char { dlgOPEN = 0, dlgSAVE, dlgOPENPROJECT, dlgSAVEQUIT };
+// dlgSAVEQUIT is a save whose answer then quits (^K X on an untitled buffer);
+// dlgSAVECLOSE one whose answer then closes the buffer (File ▸ Close).
+enum ide_dlg : unsigned char { dlgOPEN = 0, dlgSAVE, dlgOPENPROJECT, dlgSAVEQUIT,
+			       dlgSAVECLOSE };
 const char *dlg_host_mode(long d)
 {
-    return d == dlgSAVE || d == dlgSAVEQUIT ? "save" : "open";
+    return d == dlgSAVE || d == dlgSAVEQUIT || d == dlgSAVECLOSE ? "save" : "open";
 }
 
-// Where a menu file's rows go (plan §41.11a, the toolbar): a row's MENU word
-// names the bar menu it joins, except the two PLACEMENT words — `palette`
-// (the command palette only, never the bar) and `toolbar` (the toolbar's
-// buttons) — converted once, at load, onto the menu entry.
-enum menu_place : unsigned char { mpBAR = 0, mpPALETTE, mpTOOLBAR, mpLAST };
+// A menu row's placement word, converted once, at load, onto the menu entry
+// (the codes, menu_place: <madcide/vocabulary>).
 const char *menu_place_name(long p)
 {
     switch ( p )
@@ -392,12 +386,48 @@ long menu_place_of(var &word)
 #include "include/madcide/plugin_api"
 
 // The session's own events (plan §41.11a step 8): its open (after the layout
-// loads), its tasks' stop (IdeSession::stop_tasks) and its close (after the
-// drain), published to the handlers subscribed to them (plugin_event), so a
-// module with a task or a process starts and ends it with the session. Their
+// loads), its tasks' stop (IdeSession::stop_tasks), its close (after the
+// drain), its language standard's change (madcide_lang.inc) and an interrupt
+// for a console's program (seINTERRUPT: Copy with nothing selected in a
+// console's input — Thonny's Shell, VS Code's and Windows Terminal's Ctrl+C —
+// its reply {view: the console's kind}), published to the handlers
+// subscribed to them (plugin_event), so a module with a task or a process
+// starts and ends it with the session. Their
 // range is disjoint from repl_event's; builtin form first: they join
 // <madcide/plugin_api> when a plugin outside madcide needs them.
-enum session_event : unsigned char { seNONE = 32, seOPEN, seSTOP, seCLOSE, seLAST };
+enum session_event : unsigned char { seNONE = 32, seOPEN, seSTOP, seCLOSE, seLANGUAGE,
+				     seINTERRUPT, seLAST };
+
+// The IDE's git verbs (plan docs/plans/2026-10-03-chthonia-windows-macos.md
+// §7e stage 1, §7f item 4; madcide_git.inc): `%git VERB` converts its word
+// ONCE (git_verb_of, over git_verb_table — the one list of names and their
+// usages, %help's too) and dispatches on the code. gtNONE = no such verb.
+enum git_verb : unsigned char { gtNONE = 0, gtLOG, gtSHOW, gtBLAME, gtSTATUS, gtDIFF };
+
+void git_verb_table(var &out)
+{
+    long lg = gtLOG;
+    long sh = gtSHOW;
+    long bl = gtBLAME;
+    long st = gtSTATUS;
+    long df = gtDIFF;
+    out = {};
+    out[] = { "name": "log", "code": lg, "usage": "log [-n N] [FILE]" };
+    out[] = { "name": "show", "code": sh, "usage": "show REV[:FILE]" };
+    out[] = { "name": "blame", "code": bl, "usage": "blame FILE[:LINE]" };
+    out[] = { "name": "status", "code": st, "usage": "status" };
+    out[] = { "name": "diff", "code": df, "usage": "diff [FILE]" };
+}
+
+long git_verb_of(var &word)
+{
+    var t;
+    git_verb_table(t);
+    for ( var r : t )
+	if ( r["name"] == word )
+	    return r["code"].as_integer();
+    return gtNONE;
+}
 
 // A kind plugin_event subscribes to: a repl_event or a session_event.
 bool event_kind_ok(long kind)
@@ -439,7 +469,6 @@ long bmode_of(var &m)
 // chrome, docked by the client's layout), or the editor region. Placement is
 // the layout's data (profiles/default.layout); slot_name is its wire word
 // (the page docks by `region`).
-enum ide_slot : unsigned char { slotNONE = 0, slotPOPUP, slotSIDEBAR, slotPANEL, slotEDITOR };
 const char *slot_name(long s)
 {
     switch ( s )
@@ -520,11 +549,6 @@ long pmode_of(var &name)
 // shows) and, from V2, the layout profile's INPUT words (`views source
 // problems`) — view_of converts once at load; a misspelling is viewNONE, the
 // caller's refusal, never a dead View.
-enum ide_view : unsigned char
-{
-    viewNONE = 0, viewSOURCE, viewCODE, viewPROBLEMS, viewOUTPUT, viewTERMINAL,
-    viewPROJECT, viewOUTLINE, viewHELP
-};
 const char *view_name(long k)
 {
     switch ( k )
@@ -537,6 +561,7 @@ const char *view_name(long k)
 	case viewPROJECT: return "project";
 	case viewOUTLINE: return "outline";
 	case viewHELP: return "help";
+	case viewMDPREVIEW: return "mdpreview";
     }
     return "";
 }
@@ -554,6 +579,7 @@ const char *view_title(long k)
 	case viewPROJECT: return "Project";
 	case viewOUTLINE: return "Outline";
 	case viewHELP: return "Help";
+	case viewMDPREVIEW: return "Markdown Preview";
     }
     return "";
 }
@@ -561,7 +587,7 @@ long view_of(var &name)
 {
     if ( name.is_null() )
 	return viewNONE;
-    for ( long k = viewSOURCE; k <= viewHELP; k = k + 1 )
+    for ( long k = viewSOURCE; k <= viewMDPREVIEW; k = k + 1 )
 	if ( name == view_name(k) )
 	    return k;
     return viewNONE;
@@ -579,7 +605,8 @@ long view_show_cmd(long kind)
 	case viewTERMINAL: return cmdTERMINAL;
 	case viewOUTLINE: return cmdOUTLINE;
 	case viewPROJECT: return cmdPROJECT;
-	case viewHELP: return cmdHELP;
+	case viewHELP: return cmdHELPTOPIC;	// the current topic (madcide_help.inc)
+	case viewMDPREVIEW: return cmdMDPREVIEW;	// madcide_preview.inc
     }
     return cmdNONE;
 }
@@ -588,16 +615,61 @@ long view_show_cmd(long kind)
 // the -c line's, a choice list row's) instead of answering a prompt they
 // open: IdeSession::command hands them the argument directly, as it hands a
 // contributed command its own. Without an argument keystyle opens its own
-// choice list, and paste pastes the clipboard.
+// choice list (language too), and paste pastes the clipboard.
 bool cmd_takes_arg(long code)
 {
     switch ( code )
     {
 	case cmdKEYSTYLE:
+	case cmdLANGUAGE:
+	case cmdMENUSHOW:	// the menu's title (a toolbar arrow's)
+	case cmdHELPTOPIC:	// the topic (a link row's, the palette's)
+	case cmdRECENT:		// the file (a Recent files row's)
 	case cmdPASTE:		// the text to paste (a client's platform read)
 	    return true;
     }
     return false;
+}
+
+// Which side of a concealed run an edit lands on, when it reaches the stored
+// text through a concealing lens (plan 2026-10-03 §7d, slice 2): typing,
+// a paste and a backward deletion at the boundary's EARLIER side (text
+// typed after `bold` stays inside `**bold**`), a forward deletion at its
+// LATER side (the run before the deleted text stays). sideNONE = the event
+// is no edit — it runs over the display, as a motion does.
+enum lens_side : unsigned char { sideNONE = 0, sideBEFORE, sideAFTER };
+
+// An edit key's side: the keys edit_key changes the text with (`k` an
+// event's key_code — the ui::key enumerator, as edit_key reads it).
+long key_edit_side(var &k)
+{
+    if ( k == ui::key::backspace || k == ui::key::enter || k == ui::key::tab )
+	return sideBEFORE;
+    if ( k == ui::key::del )
+	return sideAFTER;
+    return sideNONE;
+}
+
+// A command's side: the commands that change the buffer's text and reach
+// the stored text through a concealing lens — the clipboard's cut and
+// paste, the line edits, the block deletion, the edit history and the
+// deletions (the edit keys spelled as commands are key_edit_side's,
+// through motion_key_of). Block copy and block move are not among them:
+// over the stored text they would copy or move half a construct's
+// concealed delimiters, so the formatted view refuses them. A new
+// mutating verb goes here.
+long cmd_edit_side(long code)
+{
+    switch ( code )
+    {
+	case cmdDELWORD:
+	    return sideAFTER;
+	case cmdCUT: case cmdPASTE: case cmdINDENT: case cmdDEDENT:
+	case cmdTOGGLECOMMENT: case cmdBLOCKDEL: case cmdUNDO: case cmdREDO:
+	case cmdDELLINE:
+	    return sideBEFORE;
+    }
+    return sideNONE;
 }
 
 // The commands a text FIELD honours (the REPL pane's input, plan §41.9a):
@@ -718,10 +790,12 @@ long cmd_min_tier(long code)
     case cmdSAVE:
     case cmdSAVEAS:
     case cmdKEYSTYLE:	// it writes settings.json, as a save writes
+    case cmdLANGUAGE:	// settings.json, and every buffer re-parses
     case cmdSAVEQUIT:
     // editor — project mutation / opening
     case cmdOPENPROJECT:
     case cmdEDITFILE:
+    case cmdNEW:
     case cmdPROJADDCUR:
     case cmdPROJADD:
     case cmdPROJDEL:
@@ -1663,10 +1737,7 @@ long plugin_field_of(var &word)
     return pfNONE;
 }
 
-// How a plugin's CODE reached madcide's process (§5.4): compiled into
-// madcide, its library loaded, its source compiled in when it activates, or a
-// child process speaking over the seat. An active plugin's row records it.
-enum plugin_transport : unsigned char { ptNONE = 0, ptBUILTIN, ptLIBRARY, ptSOURCE, ptHOST, ptLAST };
+// A plugin transport's name (the codes, plugin_transport: <madcide/vocabulary>).
 const char *plugin_transport_name(long t)
 {
     switch ( t )
@@ -1675,6 +1746,7 @@ const char *plugin_transport_name(long t)
 	case ptLIBRARY: return "library";
 	case ptSOURCE: return "source";
 	case ptHOST: return "host";
+	case ptLINKED: return "linked";
     }
     return "";
 }
@@ -1698,7 +1770,7 @@ enum plugin_host_state : unsigned char { hsNONE = 0, hsRUNNING, hsRESTARTING, hs
 // calls (command, view, event at activation; run, command_id, get, set,
 // show) and its activation's end (activated) — and what madcide sends it
 // (start, invoke). The word is read once, at the line.
-enum plugin_verb : unsigned char { plvNONE = 0, plvSTART, plvCOMMAND, plvVIEW, plvEVENT, plvRUN, plvCOMMAND_ID, plvGET, plvSET, plvSHOW, plvACTIVATED, plvINVOKE, plvLAST };
+enum plugin_verb : unsigned char { plvNONE = 0, plvSTART, plvCOMMAND, plvVIEW, plvEVENT, plvRUN, plvCOMMAND_ID, plvGET, plvSET, plvSHOW, plvACTIVATED, plvINVOKE, plvREPL_COMMAND, plvLAST };
 const char *plugin_verb_name(long v)
 {
     switch ( v )
@@ -1714,6 +1786,7 @@ const char *plugin_verb_name(long v)
 	case plvSHOW: return "show";
 	case plvACTIVATED: return "activated";
 	case plvINVOKE: return "invoke";
+	case plvREPL_COMMAND: return "repl_command";
     }
     return "";
 }
@@ -1730,9 +1803,11 @@ long plugin_verb_of(var &word)
 // A CONTRIBUTION's kind (§5.3): the words under "contributes". The data kinds
 // name a file in its existing format, and the kind's word IS the file's
 // extension (`"layout": "chthonia"` is chthonia.layout); `settings` carries
-// the plugin's setting defaults. Stage A serves these; the code kinds
-// (commands, views, events) join with the contribution points.
-enum contribution_kind : unsigned char { cbNONE = 0, cbKEYS, cbLAYOUT, cbMENU, cbTHEME, cbSTATUS, cbSETTINGS, cbLAST };
+// the plugin's setting defaults; `help` names a DIRECTORY the same way
+// (`"help": "chthonia"` is chthonia.help/, the bundle's Markdown topics —
+// madcide_help.inc). Stage A serves these; the code kinds (commands, views,
+// events) join with the contribution points.
+enum contribution_kind : unsigned char { cbNONE = 0, cbKEYS, cbLAYOUT, cbMENU, cbTHEME, cbSTATUS, cbSETTINGS, cbHELP, cbLAST };
 const char *contribution_kind_name(long k)
 {
     switch ( k )
@@ -1743,6 +1818,7 @@ const char *contribution_kind_name(long k)
 	case cbTHEME: return "theme";
 	case cbSTATUS: return "status";
 	case cbSETTINGS: return "settings";
+	case cbHELP: return "help";
     }
     return "";
 }
@@ -1755,8 +1831,9 @@ long contribution_kind_of(var &word)
 	    return k;
     return cbNONE;
 }
-// A data kind names a FILE (every kind but settings).
+// A data kind is a WORD naming its file (help: its directory) — every kind
+// but settings.
 bool contribution_is_data(long k)
 {
-    return k >= cbKEYS && k <= cbSTATUS;
+    return k > cbNONE && k < cbLAST && k != cbSETTINGS;
 }

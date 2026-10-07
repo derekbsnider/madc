@@ -1,0 +1,31 @@
+// __float128, and the _FloatN names a C++ compile has as built-in types only
+// from g++ 13 (_Float16 from 12) — the shape of glibc 2.35's bits/floatn.h
+// (Ubuntu 22.04), which typedefs them for every C++ compiler, since it
+// predates g++ 13. The #if below is glibc 2.39's test: g++ 13+ has the
+// built-ins; an older g++ (and clang, which announces __GNUC__ 4) gets the
+// typedefs. madc announces its host's g++, so on Ubuntu 22.04 (g++ 11) it
+// takes the typedef branch and on 24.04 (g++ 13) the built-in one; both
+// print the same lines. madc's _FloatN posture is the nearest-supported
+// approximation (~double), and every value below is exact in double.
+// Oracle: g++ 13.3 and clang++ 18.1 (Ubuntu 24.04) and g++ 11.4 (Ubuntu
+// 22.04), each -std=c++17, print the .expect lines.
+#include <stdio.h>
+
+#if !defined __clang__ && __GNUC__ >= 13
+// _Float128, _Float64 and _Float64x are built-in types
+#else
+typedef __float128 _Float128;
+typedef double _Float64;
+typedef long double _Float64x;
+#endif
+
+int main()
+{
+	__float128 a = 1.5;
+	_Float128 b = 2.25;
+	_Float64 c = 3.0;
+	_Float64x d = 4.5;
+	printf("float128: %d %d\n", (int)(a * 2), (int)(b * 4));
+	printf("floatn: %d %d\n", (int)c, (int)(d * 2));
+	return 0;
+}

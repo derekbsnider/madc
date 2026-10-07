@@ -21,7 +21,9 @@ madc --capabilities=json
 ```
 
 The response is a versioned JSON manifest describing the compiler version and
-target, the accepted `--std=` C/C++ standards, project-mode support, the
+target, the accepted `--std=` C/C++ standards, the `-stdlib=` flavors this
+build serves (`input.stdlib_flavors` — a build host without libc++ builds a
+libstdc++-only madc), project-mode support, the
 execution and native-output modes, the CIR emission targets, the introspection
 surfaces, and the public `libmadc` / C API boundary. The advertised standards
 and emit targets are derived from the same sources the compiler enforces, so
@@ -121,7 +123,13 @@ madc prog.o                       # execute .o files as a precompiled cache
 - `-pie` / `-no-pie` select the image layout, gcc-style.
 - `-mwindows` / `-mconsole` (Windows) select the executable's subsystem,
   mingw-gcc-style: a windowed program allocates no console at start; a
-  `--project` build takes the manifest's `kind` instead.
+  `--project` build takes the manifest's `kind` instead. A windowed
+  program that also has console faces (a `--help`, a terminal mode) calls
+  `madc::console_attach()` first: it attaches to the console of the
+  process that started it and points the standard streams the parent left
+  without a handle at it (a redirected stream stays redirected). A command
+  prompt does not wait for a windowed program, so its prompt returns while
+  the program runs.
 - Emitted executables otherwise locate `libmadc.so` via their `DT_RUNPATH`.
 
 ## Rendering and introspection

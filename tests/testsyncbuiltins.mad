@@ -1,0 +1,54 @@
+// gcc's legacy __sync_* builtins: each is an __atomic_* operation at the
+// memory order gcc implies (SEQ_CST; ACQUIRE for lock_test_and_set, RELEASE
+// for lock_release), yielding the object's own type. madc had none: C took
+// implicit declarations that failed at link, C++ refused the call — and
+// mingw's <psdk_inc/intrin-impl.h> uses five of them in inline bodies that
+// <windows.h> reaches (B167). They ride the __atomic_ table
+// (include/atomic_builtins.h) and its runtime helpers.
+//
+// Oracles: gcc 13 and clang 18 (-std=c17, x86-64 Linux) print the lines in
+// tests/testsyncbuiltins.expect.
+#include <stdio.h>
+
+int main(void)
+{
+	int x = 10;
+	int r1 = __sync_fetch_and_add(&x, 5);
+	int r2 = __sync_add_and_fetch(&x, 5);
+	int r3 = __sync_fetch_and_sub(&x, 3);
+	int r4 = __sync_sub_and_fetch(&x, 7);
+	printf("add-sub: %d %d %d %d x=%d\n", r1, r2, r3, r4, x);
+
+	int r5 = __sync_fetch_and_or(&x, 5);
+	int r6 = __sync_and_and_fetch(&x, 6);
+	int r7 = __sync_xor_and_fetch(&x, 3);
+	int r8 = __sync_or_and_fetch(&x, 8);
+	int r9 = __sync_fetch_and_xor(&x, 1);
+	printf("bitwise: %d %d %d %d %d x=%d\n", r5, r6, r7, r8, r9, x);
+
+	unsigned char c = 0xF0;
+	unsigned char rc = __sync_fetch_and_and(&c, 0x3C);
+	printf("byte: old=%#x c=%#x size=%d\n", rc, c,
+	       (int)sizeof(__sync_fetch_and_and(&c, 0xFF)));
+
+	int n = 5;
+	int rn1 = __sync_fetch_and_nand(&n, 1);
+	int rn2 = __sync_nand_and_fetch(&n, -1);
+	printf("nand: %d %d n=%d\n", rn1, rn2, n);
+
+	long l = 100;
+	long v1 = __sync_val_compare_and_swap(&l, 100, 200);
+	long v2 = __sync_val_compare_and_swap(&l, 100, 300);
+	printf("val-cas: %ld %ld l=%ld\n", v1, v2, l);
+	int b1 = __sync_bool_compare_and_swap(&l, 200, 7);
+	int b2 = __sync_bool_compare_and_swap(&l, 200, 9);
+	printf("bool-cas: %d %d l=%ld\n", b1, b2, l);
+
+	int lock = 0;
+	int was = __sync_lock_test_and_set(&lock, 1);
+	int held = lock;
+	__sync_lock_release(&lock);
+	__sync_synchronize();
+	printf("lock: was=%d held=%d now=%d\n", was, held, lock);
+	return 0;
+}

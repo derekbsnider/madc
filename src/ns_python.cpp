@@ -424,3 +424,25 @@ std::string *__py_replace(std::string *a, const char *b, const char *c) { return
 std::string *__py_format(std::string *a, const char *b, madc::value *c) { return python_format(a, b, c); }
 madc::value *__py_format_value(madc::value *a, const char *b, madc::value *c) { return python_format_value(a, b, c); }
 }
+
+// ---- script-facing publics, resolved mangled-direct (cpp-first-api) ----
+namespace python {
+
+// python::shlex_split — Python's shlex.split (POSIX mode) over
+// ns_common::shell_words, the one splitter (its rules are stated there).
+// False = Python's ValueError ("No closing quotation", "No escaped
+// character"): `out` is left empty.
+// Thread contract: a pure function over its arguments.
+bool shlex_split(madc::value &out, const char *text)
+{
+	std::vector<madc::value> &words
+		= ns_common::value_array_reset_for_write(out, "python::shlex_split");
+	std::vector<std::string> taken;
+	if ( !ns_common::shell_words(python_text_arg(text), taken) )
+		return false;
+	for ( size_t k = 0; k < taken.size(); ++k )
+		words.push_back(madc::value(taken[k]));
+	return true;
+}
+
+} // namespace python

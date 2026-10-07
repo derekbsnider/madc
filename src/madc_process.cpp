@@ -1009,6 +1009,65 @@ void Process::terminate()
 #endif
 }
 
+bool Process::interrupt()
+{
+#ifdef _WIN32
+	return false;
+#else
+	return _->has_started && !_->has_exited && _->child > 0
+		&& ::kill(_->child, SIGINT) == 0;
+#endif
+}
+
+bool Process::renew_stdin(intptr_t &child_end, error *err)
+{
+	if ( !_->has_started || _->has_exited || _->options.inherit_stdin )
+	{
+		set_process_error(err, "process stdin is not a pipe this process writes");
+		return false;
+	}
+#ifdef _WIN32
+	HANDLE write_end = NULL;
+	HANDLE read_end = NULL;
+	if ( !make_process_pipe(write_end, read_end, true, err) )
+		return false;
+	// The read end moves INTO the child (closed here by the duplication);
+	// the child learns its handle value from the caller.
+	HANDLE in_child = NULL;
+	if ( !DuplicateHandle(GetCurrentProcess(), read_end, _->child, &in_child, 0,
+			      FALSE, DUPLICATE_SAME_ACCESS | DUPLICATE_CLOSE_SOURCE) )
+	{
+		set_process_last_error(err, "process stdin renewal: handle duplication failed");
+		CloseHandle(write_end);
+		return false;
+	}
+	int fd = ::_open_osfhandle((intptr_t)write_end, _O_BINARY);
+	if ( fd < 0 )
+	{
+		set_process_error(err, "process stdin renewal: fd conversion failed");
+		CloseHandle(write_end);
+		return false;
+	}
+	_->stdin_pipe.flush(err);
+	_->stdin_pipe.assign(fd);	// the old write end closes: the child's end
+	child_end = (intptr_t)in_child;
+	return true;
+#else
+	if ( _->options.pty )
+	{
+		set_process_error(err, "process stdin is a terminal");
+		return false;
+	}
+	int fds[2];
+	if ( !make_cloexec_pipe(fds, err) )
+		return false;
+	_->stdin_pipe.flush(err);
+	_->stdin_pipe.assign(fds[1]);	// the old write end closes: the child's end
+	child_end = fds[0];
+	return true;
+#endif
+}
+
 int Process::run_and_wait(const std::string &executable,
 			  const std::vector<std::string> &argv,
 			  error *err)

@@ -3,7 +3,7 @@
 // madc forked — nothing execs), its transcript in the tab and an input field
 // under it. madcide's first BUILTIN plugin (plan §41.11a step 8): included
 // at the end of madcide_core.inc, it registers through the plugin points at
-// its activation (repl_activate) — its ten commands, its console view
+// its activation (repl_activate) — its twelve commands, its console view
 // `repl` (vsCONSOLE: the core composes it from `repl.pane` and routes the
 // keyboard to its input while the input has it, `consolefocus`) and its
 // handlers of the session's open, stop and close — and the core names none
@@ -23,8 +23,8 @@
 // in memory, at the input's first / last line), replunfocus.
 //
 // While an entry runs, the input is the program's standard input: enter
-// sends the line (Thonny's shell). A crash restarts the session (the
-// verbs' rule) and the transcript says so.
+// sends the line (Thonny's shell), repleof ends it (Send EOF). A crash
+// restarts the session (the verbs' rule) and the transcript says so.
 //
 // F5 (`replrun`, plan §41.10a) runs the editor's buffer into the tab: a
 // fresh session, `%run <name>` in the transcript, the buffer's live text
@@ -37,18 +37,20 @@
 // of the entry offered, or
 // of F5's load / run, 0 when none), replrunning (it was taken and runs, or
 // F5's main runs), replsent (its text), replcseq / replccaret / replctext
-// (a pending completion), replloadseq / replrunseq / replrunpath (F5's
-// load and run requests, and the path main runs under), replbseq (a
+// (a pending completion), replloadseq / replrunseq / replrunpath /
+// replrunargv (a file's load and run requests — F5's or a typed %run's
+// or %load's — the path it loads under and main's argv, empty when main
+// does not run), replbseq (a
 // pending bindings request, replbindings), replin (the input
 // buffer, a field: its caret is the field's own), replhist / replhpos /
-// repldraft (the history), replstd (the `--std=` spelling a new session
-// takes; "" = the engine's default).
+// repldraft (the history). Its standard is the session's (madcide_lang.inc):
+// a new backend takes the one the buffer it starts for compiles under.
 //
 // Thread contract: session-thread bag state; the pump is a cooperative task
 // on the same thread (term_pump's contract).
 
-// The pane's own registrations in a world (its view's kind, Run ▸
-// Language…'s code), kept at its activation on the world's `repl-pane`
+// The pane's own registrations in a world (its view's kind), kept at its
+// activation on the world's `repl-pane`
 // entity: a code converted once, never a name looked up at use.
 long repl_world(long w)
 {
@@ -73,9 +75,7 @@ long repl_doc(long w, long es)
     long existing = repl_doc_if_any(w, es);
     if ( existing != 0 )
 	return existing;
-    long nd = new_document(w, "[repl]", "");
-    push_buffer_row(w, es, nd, "[repl]");
-    return nd;
+    return new_panel_buffer(w, es, "[repl]");
 }
 
 // The input field's buffer: not a buffer-table row (it is the tab's, not a
@@ -202,6 +202,9 @@ bool repl_history_step(long w, long es, long dir)
 // ---- the session: open, pump, replies ----
 void repl_pump(long w, long es, long h, long stopc);
 void repl_pane_sync(long w, long es);
+bool repl_run_payload(long w, long es, var &r);
+bool repl_restart(long w, long es, long doc);
+void repl_ide_help(var &out, long w);
 
 // F5's rows into Problems (plan §41.11a step 3): the replies to its load
 // and to its run carry the rows the unit recorded, citing the buffer's
@@ -229,6 +232,20 @@ void repl_clear_marks(long w, long es)
     ui::set(w, es, "replloadseq", 0);
     ui::set(w, es, "replrunseq", 0);
     ui::set(w, es, "replbseq", 0);
+    ui::set(w, es, "replruncall", 0);
+    ui::set(w, es, "replbuildseq", 0);
+    ui::set(w, es, "replhelpseq", 0);
+}
+
+// The `--std=` spelling a backend for `doc` takes: the standard the buffer
+// compiles under (doc_standard — the session's, else its file's), "" for
+// the engine's default.
+void repl_std_of(var &out, long w, long doc)
+{
+    out = "";
+    long k = doc_standard(w, doc);
+    if ( k != 0 )
+	out = madc::file_kind_name(k);
 }
 
 void repl_start(long w, long es)
@@ -239,8 +256,8 @@ void repl_start(long w, long es)
     if ( h == 0 )
     {
 	var sp;
-	ui::get(sp, w, es, "replstd");
-	h = madc::session_open(sp.is_null() ? "" : sp.c_str());
+	repl_std_of(sp, w, active_doc(w, es, 0));
+	h = madc::session_open(sp.c_str());
 	ui::set(w, es, "replh", h);
     }
     if ( !madc::session_running(h) )
@@ -330,7 +347,13 @@ void repl_reply(long w, long es, var &r)
 	if ( seq != es_int(w, es, "replbusy", 0) )
 	    return;
 	bool taken = r["state"] == madc::offer_state::taken;
-	ui::set(w, es, "replbusy", 0);
+	bool quits = taken && r["payload"] == madc::session_payload::quit;
+	// A file command's payload keeps the pane busy into its file's load
+	// (repl_load_file sets the load's seq), so it never reads idle between.
+	bool files = taken && !quits
+		     && !(r["payload"] == madc::session_payload::none);
+	if ( !files )
+	    ui::set(w, es, "replbusy", 0);
 	ui::set(w, es, "replrunning", 0);
 	if ( !taken )
 	{
@@ -342,9 +365,27 @@ void repl_reply(long w, long es, var &r)
 	var sv = r["shown"];
 	if ( strlen(sv.c_str()) > 0 )
 	    repl_feed(w, es, format("{}\n", sv));
+	if ( seq == es_int(w, es, "replhelpseq", 0) )
+	{
+	    // %help: the IDE's own commands follow the session's.
+	    ui::set(w, es, "replhelpseq", 0);
+	    var more;
+	    repl_ide_help(more, w);
+	    repl_feed(w, es, more.c_str());
+	}
 	var rd = r["rendered"];
 	repl_feed(w, es, rd.c_str());
 	repl_publish(w, es, reTAKEN, r);
+	if ( quits )
+	{
+	    // %quit (.q, .exit): the session ends, and the pane starts a fresh
+	    // one, as when a backend ends (Thonny's exit()).
+	    if ( repl_restart(w, es, active_doc(w, es, 0)) )
+		repl_feed(w, es, "[the session ended; a new one started]\n");
+	    return;
+	}
+	if ( files && !repl_run_payload(w, es, r) )
+	    ui::set(w, es, "replbusy", 0);
 	return;
     }
     if ( r["kind"] == madc::session_reply::complete )
@@ -365,12 +406,19 @@ void repl_reply(long w, long es, var &r)
     }
     if ( r["kind"] == madc::session_reply::load )
     {
-	// F5's buffer loaded: its main runs, and the lines typed meanwhile
-	// are main's stdin, as for a running entry. Refused: its diagnostics,
-	// and the prompt is the fresh, empty session's.
+	// A file loaded (F5's buffer, a typed %run's, %load's or %call's
+	// file): its main, when it defined one, runs (%call's: its call), and
+	// the lines typed meanwhile are its stdin, as for a running entry;
+	// %load's runs nothing. Refused:
+	// its diagnostics, and the prompt is the session's (a fresh run's is
+	// fresh and empty).
 	if ( seq != es_int(w, es, "replloadseq", 0) )
 	    return;
 	ui::set(w, es, "replloadseq", 0);
+	// %call's file: the session makes the call (the function named after
+	// the file, else its main), whether or not the file defined main.
+	bool calls = es_int(w, es, "replruncall", 0) != 0;
+	ui::set(w, es, "replruncall", 0);
 	var rd = r["rendered"];
 	repl_feed(w, es, rd.c_str());
 	repl_problems(w, es, r);
@@ -380,11 +428,18 @@ void repl_reply(long w, long es, var &r)
 	    repl_publish(w, es, reREFUSED, r);
 	    return;
 	}
-	var rp;
-	ui::get(rp, w, es, "replrunpath");
-	var argv = {};
-	argv.push(rp);
-	long rs = madc::session_run(es_int(w, es, "replh", 0), argv);
+	var argv;
+	ui::get(argv, w, es, "replrunargv");
+	if ( !calls && (php::count(argv) == 0 || !(r["main"] == true)) )
+	{
+	    // Nothing runs (%load, or a file without main: a main an
+	    // earlier unit defined is not the file's): its work is done.
+	    ui::set(w, es, "replbusy", 0);
+	    repl_publish(w, es, reRAN, r);
+	    return;
+	}
+	long h = es_int(w, es, "replh", 0);
+	long rs = calls ? madc::session_call(h, argv) : madc::session_run(h, argv);
 	ui::set(w, es, "replrunseq", rs);
 	ui::set(w, es, "replbusy", rs);
 	ui::set(w, es, "replrunning", 1);
@@ -392,22 +447,48 @@ void repl_reply(long w, long es, var &r)
     }
     if ( r["kind"] == madc::session_reply::run )
     {
-	// F5's main returned: what it printed came before this reply.
+	// F5's main (or %call's call) returned: what it printed came before
+	// this reply.
 	if ( seq != es_int(w, es, "replrunseq", 0) )
 	    return;
 	ui::set(w, es, "replrunseq", 0);
 	ui::set(w, es, "replbusy", 0);
 	ui::set(w, es, "replrunning", 0);
+	var sv = r["shown"];			// a %call's value
+	if ( strlen(sv.c_str()) > 0 )
+	    repl_feed(w, es, format("{}\n", sv));
 	var rd = r["rendered"];
 	repl_feed(w, es, rd.c_str());
 	repl_problems(w, es, r);
 	repl_publish(w, es, reRAN, r);
 	return;
     }
+    if ( r["kind"] == madc::session_reply::build )
+    {
+	// %build's file built (or refused): what was built, its diagnostics,
+	// and its rows into Problems, as F5's are.
+	if ( seq != es_int(w, es, "replbuildseq", 0) )
+	    return;
+	ui::set(w, es, "replbuildseq", 0);
+	ui::set(w, es, "replbusy", 0);
+	var bsv = r["shown"];
+	if ( strlen(bsv.c_str()) > 0 )
+	    repl_feed(w, es, format("{}\n", bsv));
+	var brd = r["rendered"];
+	repl_feed(w, es, brd.c_str());
+	repl_problems(w, es, r);
+	return;
+    }
     if ( r["kind"] == madc::session_reply::stopped )
     {
 	repl_clear_marks(w, es);
-	var st = r["exit_status"];
+	// A Windows backend's crash status is an NTSTATUS (0xC0000005: an
+	// access violation), negative as an int: spelled as Windows tools
+	// spell it. POSIX statuses (128 + signal for a signal) stay decimal.
+	long code = r["exit_status"].as_integer();
+	var st = format("{}", code);
+	if ( code < 0 )
+	    st = format("0x{:08X}", code & 4294967295);
 	if ( r["restarted"] == true )
 	    repl_feed(w, es, format("[the session stopped (exit {}); a new one started]\n", st));
 	else
@@ -458,6 +539,55 @@ void repl_pump(long w, long es, long h, long stopc)
 }
 
 // ---- the REPL's commands ----
+// The IDE's own REPL commands (plan §7f; ide::repl_command) as %help lists
+// them after the session's: a heading, then each usage and summary. Empty
+// when no plugin registered one.
+void repl_ide_help(var &out, long w)
+{
+    out = "";
+    var rows;
+    registry_rows(rows, w, "repl");
+    if ( php::count(rows) == 0 )
+	return;
+    long width = 0;
+    for ( var r : rows )
+    {
+	var u = r["usage"];
+	if ( strlen(u.c_str()) > width )
+	    width = strlen(u.c_str());
+    }
+    out = "IDE commands:\n";
+    for ( var r : rows )
+    {
+	var u = r["usage"];
+	var sm = r["summary"];
+	out = format("{}{}{}{}\n", out, u, php::str_repeat(" ", width + 2 - strlen(u.c_str())), sm);
+    }
+}
+
+// An IDE REPL command typed (query: session_command_of's row for the
+// entry): answered here, before the session sees the entry — the entry shows
+// and goes to history as a taken one does, then its command runs through the
+// one dispatcher with the rest of the line as its argument. False = the
+// entry names no IDE command.
+bool repl_ide_command(long w, long es, var &text, var &query)
+{
+    var word = query["word"];
+    long code = plugin_repl_code(w, word);
+    if ( code == cmdNONE || !(query["command"] == madc::session_command::none) )
+	return false;
+    var p;
+    repl_prompt(p, w, es);
+    var shown;
+    console_entry_display(shown, p.c_str(), text.c_str());
+    repl_feed(w, es, format("{}\n", shown));
+    repl_history_push(w, es, text.c_str());
+    repl_set_input(w, es, "");
+    var arg = query["argument"];
+    ide_api_run(w, es, active_doc(w, es, 0), code, arg.c_str());
+    return true;
+}
+
 void repl_enter(long w, long es)
 {
     long h = es_int(w, es, "replh", 0);
@@ -487,6 +617,11 @@ void repl_enter(long w, long es)
     var trimmed = php::rtrim(s);
     if ( strlen(trimmed.c_str()) == 0 )
 	return;
+    // What the entry is as a command, by the session's own rule.
+    var query;
+    bool command = madc::session_command_of(query, s);
+    if ( command && repl_ide_command(w, es, text, query) )
+	return;
     // D11: a blank last line submits what is there (a finished if with no
     // else runs; an unfinished entry is refused).
     long last = len;
@@ -499,6 +634,8 @@ void repl_enter(long w, long es)
     long seq = madc::session_offer(h, s, blank_last);
     ui::set(w, es, "replbusy", seq);
     ui::set(w, es, "replsent", text);
+    bool help = command && query["command"] == madc::session_command::help;
+    ui::set(w, es, "replhelpseq", help ? seq : 0);
 }
 
 void repl_complete(long w, long es)
@@ -560,20 +697,17 @@ void repl_show(long w, long es)
     ui::set(w, es, "consolefocus", repl_view(w));
 }
 
-// A fresh backend for the tab's session: F5's, Stop's and Language's one
-// restart (Thonny's Stop/Restart), under the tab's standard (replstd), so a
-// language change restarts through it too. The old state is gone, so no
-// reply is owed and the stopped event is published, as when a backend ends
-// (a plugin's rows of the old state clear). False = the restart failed; the
-// transcript says why.
-bool repl_restart(long w, long es)
+// A fresh backend for the tab's session: F5's, Stop's and the language's
+// one restart (Thonny's Stop/Restart), under the standard `doc` compiles
+// under (repl_std_of), so a language change restarts through it too. The old
+// state is gone, so no reply is owed and the stopped event is published, as
+// when a backend ends (a plugin's rows of the old state clear). False = the
+// restart failed; the transcript says why.
+bool repl_restart(long w, long es, long doc)
 {
     long h = es_int(w, es, "replh", 0);
-    var sp;
-    ui::get(sp, w, es, "replstd");
-    var spelling = "";
-    if ( !sp.is_null() )
-	spelling = sp;
+    var spelling;
+    repl_std_of(spelling, w, doc);
     if ( !madc::session_restart(h, spelling.c_str()) )
     {
 	var why = madc::session_error(h);
@@ -593,111 +727,79 @@ void repl_stop_restart(long w, long es)
 {
     if ( es_int(w, es, "replh", 0) == 0 )
     {
-	ui::set(w, es, "msg", "The shell has no session to stop.");
+	ui::set(w, es, "msg", "The REPL has no session to stop.");
 	return;
     }
-    if ( repl_restart(w, es) )
+    if ( repl_restart(w, es, active_doc(w, es, 0)) )
 	repl_feed(w, es, "[stopped; a new session started]\n");
 }
 
-// Run ▸ Language… (`repllang`, plan §41.11a; decided 2026-09-30): the
-// standards the tab offers, by the spelling a session takes and the title a
-// row shows — the one table the choice list and an argument read.
-void repl_lang_rows(var &out)
+// The session's language changed (seLANGUAGE, madcide_lang.inc): a live
+// backend restarts under the standard the active buffer now compiles under
+// (its state is lost, as Stop's is) and the transcript says so; without one,
+// the next session opens under it.
+void repl_on_language(long w, long es, long doc, var &event)
 {
-    var rows = {};
-    rows[] = { "std": "c17", "title": "C17" };
-    rows[] = { "std": "c++17", "title": "C++17" };
-    rows[] = { "std": "madc", "title": "madc" };
-    out = rows;
-}
-
-// The tab's standard now: the running session's (its canonical name), else
-// the one the next session opens under ("" = the engine's default).
-void repl_lang_current(var &out, long w, long es)
-{
-    long h = es_int(w, es, "replh", 0);
-    if ( h != 0 && madc::session_running(h) )
-    {
-	out = madc::session_standard(h);
-	return;
-    }
-    var sp;
-    ui::get(sp, w, es, "replstd");
-    out = "";
-    if ( !sp.is_null() )
-	out = sp;
-}
-
-// The tab's standard becomes `spelling` (one of repl_lang_rows'): a live
-// session restarts under it (its state is lost, as Stop's is) and the
-// transcript says so; without one, the next session opens under it. An
-// unknown spelling is refused with the choices.
-void repl_set_lang(long w, long es, const char *spelling0)
-{
-    var spelling = spelling0;	// ring discipline: own the text first
-    var rows;
-    repl_lang_rows(rows);
-    var names = "";
-    bool known = false;
-    for ( var r : rows )
-    {
-	if ( r["std"] == spelling )
-	    known = true;
-	if ( strlen(names.c_str()) > 0 )
-	    names = format("{}, ", names);
-	names = format("{}{}", names, r["std"]);
-    }
-    if ( !known )
-    {
-	ui::set(w, es, "msg", format("Unknown language '{}' ({}).", spelling, names));
-	return;
-    }
-    ui::set(w, es, "replstd", spelling);
     if ( es_int(w, es, "replh", 0) == 0 )
-    {
-	ui::set(w, es, "msg", format("The shell's language is {}.", spelling));
 	return;
-    }
-    if ( repl_restart(w, es) )
-	repl_feed(w, es, format("[the language is {}; a new session started]\n", spelling));
+    if ( !repl_restart(w, es, active_doc(w, es, 0)) )
+	return;
+    var sp;
+    repl_std_of(sp, w, active_doc(w, es, 0));
+    if ( strlen(sp.c_str()) == 0 )
+	sp = "madc";
+    repl_feed(w, es, format("[the language is {}; a new session started]\n", sp));
+    repl_pane_sync(w, es);
 }
 
-// `repllang`: with an argument (the seat's, -c's, a choice row's) the
-// language becomes it; without one the choice list opens, the current
-// standard marked, each row carrying repllang and its standard.
-void repl_lang(long w, long es, const char *arg0)
+// A file loaded into the tab's session: `text` under the unit name `p`, then
+// its main given `argv` once the load is answered (repl_reply) — none when
+// argv is empty (%load). F5's and the typed file commands' one path
+// (repl_run; the offer reply's payloads, plan §7f). `fresh` (F5, %run)
+// restarts a session that already existed under `doc`'s standard first, so
+// the run is clean and an entry still running stops with the old one.
+// `line`, when not empty, goes to the transcript as the prompt's entry (F5's
+// `%run name args`; a typed command's line is already there). `call`
+// (%call): argv is the file and the call's text, and the session makes the
+// call (session_call) instead of running main.
+bool repl_load_file(long w, long es, long doc, const char *p, const char *text,
+		    var &argv, const char *line, bool fresh, bool call)
 {
-    var arg = arg0;
-    if ( strlen(arg.c_str()) > 0 )
+    var path = p;			// ring discipline: own the texts first
+    var body = text;
+    var shown_line = line;
+    bool had = es_int(w, es, "replh", 0) != 0;
+    repl_show(w, es);
+    long h = es_int(w, es, "replh", 0);
+    if ( !madc::session_running(h) )
+	return false;			// repl_start said why
+    if ( fresh && had && !repl_restart(w, es, doc) )
+	return false;
+    if ( fresh )
+	repl_clear_marks(w, es);	// a fresh session owes nothing either
+    if ( strlen(shown_line.c_str()) > 0 )
     {
-	repl_set_lang(w, es, arg.c_str());
-	return;
+	var pr;
+	repl_prompt(pr, w, es);
+	var shown;
+	console_entry_display(shown, pr.c_str(), shown_line.c_str());
+	repl_feed(w, es, format("{}\n", shown));
     }
-    var rows;
-    repl_lang_rows(rows);
-    var cur;
-    repl_lang_current(cur, w, es);
-    var crows = {};
-    long lang = es_int(w, repl_world(w), "lang", cmdNONE);
-    for ( var r : rows )
-    {
-	long mark = 0;
-	if ( r["std"] == cur )
-	    mark = 1;
-	crows[] = { "title": r["title"], "code": lang, "arg": r["std"],
-		    "current": mark };
-    }
-    choice_show(w, es, "Language", crows);
+    ui::set(w, es, "replruncall", call ? 1 : 0);
+    long seq = madc::session_load(h, path.c_str(), body.c_str());
+    ui::set(w, es, "replloadseq", seq);
+    ui::set(w, es, "replrunpath", path);
+    ui::set(w, es, "replrunargv", argv);
+    ui::set(w, es, "replbusy", seq);
+    return true;
 }
 
 // F5, `replrun` (plan §41.10a; Thonny's F5, IPython's %run): the buffer
-// `doc` run into the tab's session. A session that already existed is
-// restarted, so the run is clean and an entry still running stops with the
-// old one. The buffer's live text runs, unsaved edits included, under its
-// path and the tab's standard; its main runs once the load is answered
-// (repl_reply), with argv [path]. An untitled buffer runs under the unit
-// name `untitled` (doc_name), as Thonny's runs its <untitled>.
+// `doc` run into a fresh session (repl_load_file). The buffer's live text
+// runs, unsaved edits included, under its path and the standard it compiles
+// under (repl_std_of), with argv [path, the Program arguments]. An untitled
+// buffer runs under the unit name `untitled` (doc_name), as Thonny's runs its
+// <untitled>.
 void repl_run(long w, long es, long doc)
 {
     var p;
@@ -715,25 +817,82 @@ void repl_run(long w, long es, long doc)
 	ui::set(w, es, "msg", "The buffer is empty.");
 	return;
     }
-    bool had = es_int(w, es, "replh", 0) != 0;
-    repl_show(w, es);
-    long h = es_int(w, es, "replh", 0);
-    if ( !madc::session_running(h) )
-	return;				// repl_start said why
-    if ( had && !repl_restart(w, es) )
-	return;
-    repl_clear_marks(w, es);		// a fresh session owes nothing either
     var name = php::basename(p.c_str());
+    // The Program arguments (the core's progargs) as typed, taken now: the
+    // %run line shows them (Thonny's `%Run hello.py a b`), the run passes
+    // them.
+    var args;
+    ui::get(args, w, es, "progargs");
+    if ( args.is_null() )
+	args = "";
     var line = format("%run {}", name);
-    var pr;
-    repl_prompt(pr, w, es);
-    var shown;
-    console_entry_display(shown, pr.c_str(), line.c_str());
-    repl_feed(w, es, format("{}\n", shown));
-    long seq = madc::session_load(h, p.c_str(), text.c_str());
-    ui::set(w, es, "replloadseq", seq);
-    ui::set(w, es, "replrunpath", p);
-    ui::set(w, es, "replbusy", seq);
+    if ( strlen(args.c_str()) > 0 )
+	line = format("%run {} {}", name, args);
+    var argv;
+    program_argv(argv, p.c_str(), args.c_str());
+    repl_load_file(w, es, doc, p.c_str(), text.c_str(), argv, line.c_str(), true,
+		   false);
+}
+
+// A typed file command (plan §7f): the engine split the line and asks, as
+// IPython's payloads do, for its file to be loaded — %load (nothing runs),
+// %run -i (main runs in this session), %run (main runs in a fresh one,
+// which is this pane's to start), %call (the session then calls the
+// function named after the file, else its main), %build (the session
+// builds it) or %open / %edit (the editor opens it). An open buffer of the file is its live
+// text and compiles under its standard, as F5 runs it; otherwise the file
+// loads from disk (session_load's empty text reads it) under the active
+// buffer's. False when nothing was sent.
+bool repl_run_payload(long w, long es, var &r)
+{
+    var argv = r["argv"];
+    if ( php::count(argv) == 0 )
+	return false;
+    var p = argv[0];
+    long doc = buffer_doc_named(w, es, p.c_str());
+    var text = "";
+    if ( doc != 0 )
+	ui::text(text, w, doc);
+    else
+	doc = active_doc(w, es, 0);
+    if ( r["payload"] == madc::session_payload::load )
+    {
+	var noargs = {};
+	return repl_load_file(w, es, doc, p.c_str(), text.c_str(), noargs, "", false,
+			      false);
+    }
+    if ( r["payload"] == madc::session_payload::open )
+    {
+	// %open, %edit: the file in the editor, at the line when one is
+	// named, and the editor takes the keyboard. Nothing is owed.
+	long from = active_doc(w, es, 0);
+	edit_file(w, es, from, p.c_str());
+	if ( php::count(argv) > 1 )
+	{
+	    var ln = argv[1];
+	    ui::set(w, es, "caret", caret_to_line(w, active_doc(w, es, from),
+						  php::intval(ln), 0));
+	}
+	ui::set(w, es, "consolefocus", 0);
+	return false;
+    }
+    if ( r["payload"] == madc::session_payload::build )
+    {
+	// %build: the session builds the file's live text to argv[1].
+	if ( php::count(argv) < 2 )
+	    return false;
+	var out = argv[1];
+	long bs = madc::session_build(es_int(w, es, "replh", 0), p.c_str(),
+				      text.c_str(), out.c_str());
+	ui::set(w, es, "replbuildseq", bs);
+	ui::set(w, es, "replbusy", bs);
+	return bs != 0;
+    }
+    if ( r["payload"] == madc::session_payload::call )	// then the call
+	return repl_load_file(w, es, doc, p.c_str(), text.c_str(), argv, "", false,
+			      true);
+    return repl_load_file(w, es, doc, p.c_str(), text.c_str(), argv, "",
+			  r["payload"] == madc::session_payload::run, false);
 }
 
 // The console view's state (repl.pane), as composition reads it: the
@@ -773,18 +932,88 @@ bool repl_cmd_stop(long w, long es, long doc, const char *arg)
     return true;
 }
 
-bool repl_cmd_bindings(long w, long es, long doc, const char *arg)
+// Interrupt (`replinterrupt`, Thonny's Run ▸ Interrupt; D8, plan
+// madc-repl-thonny §41.12a): the running entry, or F5's load or run, returns
+// to the prompt at its next loop iteration with the session kept, its reply
+// saying `interrupted`; a second one before it does ends the backend and a
+// fresh session starts (the transcript says so, as for a crash). False =
+// nothing runs.
+bool repl_interrupt(long w, long es)
 {
-    repl_bindings(w, es);
+    long h = es_int(w, es, "replh", 0);
+    if ( h == 0 || es_int(w, es, "replbusy", 0) == 0 )
+	return false;
+    madc::session_interrupt(h);
     return true;
 }
 
-// Run ▸ Language…: its argument (the seat's, -c's, a choice row's) or the
-// choice list.
-bool repl_cmd_lang(long w, long es, long doc, const char *arg)
+bool repl_cmd_interrupt(long w, long es, long doc, const char *arg)
 {
-    repl_lang(w, es, arg);
+    if ( repl_interrupt(w, es) )
+	ui::set(w, es, "msg", "");
+    else
+	ui::set(w, es, "msg", "Nothing is running in the REPL.");
+    return true;
+}
+
+// Send EOF (`repleof`, Thonny's Run ▸ Send EOF and its Ctrl+D in the Shell;
+// plan madc-repl-thonny §41.12a): the running entry's standard input ends.
+// What the input line holds goes first, as a terminal's Ctrl-D sends the line
+// typed so far; then the program's next read sees the end, and the entry
+// after it reads new input. False = nothing runs.
+bool repl_eof(long w, long es)
+{
+    long h = es_int(w, es, "replh", 0);
+    if ( h == 0 || es_int(w, es, "replbusy", 0) == 0 )
+	return false;
+    var text;
+    ui::text(text, w, repl_input_doc(w, es));
+    if ( es_int(w, es, "replrunning", 0) != 0 && strlen(text.c_str()) > 0 )
+    {
+	madc::session_input(h, text.c_str());
+	repl_feed(w, es, text.c_str());
+	repl_set_input(w, es, "");
+    }
+    return madc::session_eof(h);
+}
+
+bool repl_cmd_eof(long w, long es, long doc, const char *arg)
+{
+    if ( repl_eof(w, es) )
+	ui::set(w, es, "msg", "");
+    else
+	ui::set(w, es, "msg", "Nothing is running in the REPL.");
     repl_pane_sync(w, es);
+    return true;
+}
+
+// Copy with nothing selected in the shell's input (seINTERRUPT): Ctrl+C
+// there interrupts what runs, as in Thonny's Shell; with nothing running,
+// Copy's own "Nothing selected." stands.
+void repl_on_interrupt(long w, long es, long doc, var &event)
+{
+    var view;
+    keyed_get(view, event["reply"], "view");
+    if ( view.is_null() || view.as_integer() != repl_view(w) )
+	return;
+    if ( repl_interrupt(w, es) )
+	ui::set(w, es, "msg", "");
+}
+
+// Clear (`replclear`, Thonny's Edit ▸ Clear shell): the transcript empties —
+// the screen model's own erase-display (CSI 2J, term_screen), the one way
+// its text is cleared; the session, its names and an entry running keep on.
+bool repl_cmd_clear(long w, long es, long doc, const char *arg)
+{
+    if ( repl_doc_if_any(w, es) != 0 )
+	repl_feed(w, es, "\033[2J");
+    repl_pane_sync(w, es);
+    return true;
+}
+
+bool repl_cmd_bindings(long w, long es, long doc, const char *arg)
+{
+    repl_bindings(w, es);
     return true;
 }
 
@@ -833,18 +1062,12 @@ bool repl_cmd_newer(long w, long es, long doc, const char *arg)
 }
 
 // ---- the session's events (event_handler) ----
-// The open: the REPL's standard (repl.std, the setting's first home) seeds
-// the session value a new REPL session takes (replstd; "" = the engine's
-// default), and the session starts when the layout SHOWS the pane — a
+// The open: the session starts when the layout SHOWS the pane — a
 // visible pane whose active View is the REPL, as Thonny starts its backend
 // with its window (chthonia.layout). Layout data decides, never the bundle's
 // name; the default layout keeps the REPL hidden, so it forks nothing.
 void repl_on_open(long w, long es, long doc, var &event)
 {
-    var rs;
-    setting_get(rs, w, es, "repl.std");
-    if ( !rs.is_null() && rs.is_string() && strlen(rs.c_str()) > 0 )
-	ui::set(w, es, "replstd", rs);
     if ( view_shown(w, es, repl_view(w)) )
 	repl_start(w, es);
     repl_pane_sync(w, es);
@@ -868,15 +1091,16 @@ void repl_on_close(long w, long es, long doc, var &event)
 bool repl_activate(long w)
 {
     long show = plugin_command(w, "repl", "REPL", repl_cmd_show);
-    long lang = plugin_command(w, "repllang", "REPL language", repl_cmd_lang);
     long view = plugin_view_shaped(w, "repl", "REPL", "repl.pane", show, vsCONSOLE);
-    if ( show == 0 || lang == 0 || view == viewNONE )
+    if ( show == 0 || view == viewNONE )
 	return false;
     long rw = repl_world(w);
     ui::set(w, rw, "view", view);
-    ui::set(w, rw, "lang", lang);
     return plugin_command(w, "replrun", "Run in REPL", repl_cmd_run) != 0
 	&& plugin_command(w, "replstop", "Stop the REPL", repl_cmd_stop) != 0
+	&& plugin_command(w, "replinterrupt", "Interrupt the REPL", repl_cmd_interrupt) != 0
+	&& plugin_command(w, "repleof", "Send EOF to the REPL", repl_cmd_eof) != 0
+	&& plugin_command(w, "replclear", "Clear the shell", repl_cmd_clear) != 0
 	&& plugin_command(w, "replbindings", "REPL bindings", repl_cmd_bindings) != 0
 	&& plugin_command(w, "replenter", "REPL enter", repl_cmd_enter) != 0
 	&& plugin_command(w, "replcomplete", "REPL complete", repl_cmd_complete) != 0
@@ -885,5 +1109,7 @@ bool repl_activate(long w)
 	&& plugin_command(w, "replunfocus", "REPL unfocus", repl_cmd_unfocus) != 0
 	&& plugin_event(w, seOPEN, repl_on_open)
 	&& plugin_event(w, seSTOP, repl_on_stop)
-	&& plugin_event(w, seCLOSE, repl_on_close);
+	&& plugin_event(w, seCLOSE, repl_on_close)
+	&& plugin_event(w, seLANGUAGE, repl_on_language)
+	&& plugin_event(w, seINTERRUPT, repl_on_interrupt);
 }

@@ -13,6 +13,8 @@
   var nodes = new Map();            // key -> element
   var visited = new Set();          // keys seen since the last "root" op
   var placed = new Map();           // parent element -> children placed this cycle
+  var appliedTheme = null;          // the theme bag last applied (its JSON)
+  var appliedPresence = null;       // the presence palette last applied (its JSON)
   var lastRows = 0, lastCols = 0;
   var ws = null;                    // the ws transport (V6b), when served over HTTP
 
@@ -50,9 +52,21 @@
     return s;
   }
 
+  // The PAGE's own state classes on a node element — the workbench grid
+  // (makeWorkbench), the splitter's resizing / panel-max — which no op
+  // carries. elementFor writes the op's classes each frame and keeps these
+  // (el._own), so a frame never drops one: a `workbench` gone until the first
+  // region child was placed let a measure in between lay the page out with
+  // no grid, and the docked console's scroll was clamped near its top.
+  function ownClass(el, name, on) {
+    if (!el._own) el._own = new Set();
+    if (on) el._own.add(name); else el._own.delete(name);
+    el.classList.toggle(name, !!on);
+  }
+
   function makeWorkbench(container) {
     if (container.classList.contains('workbench')) return;
-    container.classList.add('workbench');
+    ownClass(container, 'workbench', true);
     // Siblings placed before the first region'd child arrived this cycle
     // were laid directly; they belong to the foot, ahead of what follows.
     var foot = slotOf(container, 'foot');
@@ -91,7 +105,10 @@
     var dragging = null;
     function size(e) {
       var r = wb.getBoundingClientRect();
-      var v = horizontal ? (r.bottom - e.clientY - dragging.foot) : (e.clientX - r.left - dragging.rail);
+      // A right-hand sidebar grows leftward, from the workbench's right edge.
+      var v = horizontal ? (r.bottom - e.clientY - dragging.foot)
+            : wb.dataset.sidebarSide === 'right' ? (r.right - e.clientX)
+            : (e.clientX - r.left - dragging.rail);
       var lim = horizontal ? r.height : r.width;
       v = Math.max(48, Math.min(lim * 0.9, v));
       wb.style.setProperty('--' + varName, Math.round(v) + 'px');
@@ -115,7 +132,7 @@
       var r = wb.getBoundingClientRect();
       // What sits below the panel (status bar, foot) / left of the sidebar (the rail).
       dragging = { foot: r.bottom - slot.bottom, rail: slot.left - r.left };
-      wb.classList.add('resizing');
+      ownClass(wb, 'resizing', true);
     });
     document.addEventListener('mousemove', function (e) {
       if (!dragging) return;
@@ -125,7 +142,7 @@
       if (!dragging) return;
       size(e);
       dragging = null;
-      wb.classList.remove('resizing');
+      ownClass(wb, 'resizing', false);
       store(varName, wb.style.getPropertyValue('--' + varName));
       postSize();
     });
@@ -134,11 +151,11 @@
         e.preventDefault(); e.stopPropagation();
         var cur = wb.style.getPropertyValue('--' + varName);
         if (wb.classList.contains('panel-max')) {
-          wb.classList.remove('panel-max');
+          ownClass(wb, 'panel-max', false);
           wb.style.setProperty('--' + varName, wb._panelBefore || '');
         } else {
           wb._panelBefore = cur;
-          wb.classList.add('panel-max');
+          ownClass(wb, 'panel-max', true);
           wb.style.setProperty('--' + varName, Math.round(wb.getBoundingClientRect().height * 0.85) + 'px');
         }
         store(varName, wb.style.getPropertyValue('--' + varName));
@@ -179,8 +196,13 @@
       el.dataset.key = op.key;
       nodes.set(op.key, el);
     }
-    el.className = 'node ' + op['class'] + (op.focus ? ' focus' : '') +
-                   (op.popup ? ' popup' : '') + (op.terminal ? ' terminal' : '');
+    // The op's classes, then the page's own (ownClass) — a key re-used for
+    // another kind sheds those with the rest of its furniture (below).
+    if (el._cls !== undefined && el._cls !== op['class']) el._own = null;
+    var cls = 'node ' + op['class'] + (op.focus ? ' focus' : '') +
+              (op.popup ? ' popup' : '') + (op.terminal ? ' terminal' : '');
+    if (el._own) el._own.forEach(function (c) { cls += ' ' + c; });
+    if (el.className !== cls) el.className = cls;
     // A key re-used for a different KIND of node — keys are tree paths, so
     // when a dialog closes the panel group shifts into its key and inherits
     // its element. The old kind's furniture (a dialog's title bar, option
@@ -215,7 +237,11 @@
     // the row's action by name through the button handler below. No rows:
     // the slot empties, and an empty slot takes no space.
     if (Array.isArray(op.toolbar)) toolbar(el, op.toolbar);
-    else if (el._slots && el._slots.get('toolbar')) el._slots.get('toolbar').textContent = '';
+    else if (el._slots && el._slots.get('toolbar')) {
+      var tbs = el._slots.get('toolbar');
+      tbs.textContent = '';
+      tbs._sig = null;
+    }
     // Slice 3 workbench: a `region` node docks into that region's slot of
     // its parent's grid (the page's own CSS placement, keyed by data-slot),
     // and a parent that holds region'd children becomes the workbench
@@ -237,16 +263,27 @@
     // The @gui theme (slice 3): a node's `theme` bag sets CSS custom
     // properties on the document root, so the workbench CSS reads them via
     // var(--name, fallback). The composer attaches it to the root group.
-    if (op.theme) {
+    // Applied when it CHANGES: the root group carries it every frame, and
+    // re-setting the document's custom properties then re-measuring the cell
+    // (reportSize) forced a restyle and a layout per keystroke.
+    var themeSig = op.theme ? JSON.stringify(op.theme) : null;
+    if (op.theme && themeSig !== appliedTheme) {
+      appliedTheme = themeSig;
       for (var tk in op.theme)
         if (Object.prototype.hasOwnProperty.call(op.theme, tk))
           document.documentElement.style.setProperty('--' + tk, op.theme[tk]);
+      // A new --font-size changes the text cell, not the window: re-report
+      // the rows x cols it now holds (no ResizeObserver fires for it).
+      reportSize();
     }
     // The @presence palette (client-server V3c): slot -> colour spec on the
     // root group; set a --pcaret-<slot> custom property the .pslot-<slot> rule
     // reads. An edit node's `presence` is a caret ARRAY (handled in applyEdit),
     // so only the palette-OBJECT case is applied here.
-    if (op.presence && !Array.isArray(op.presence)) {
+    // Applied when it changes, as the theme is.
+    var presenceSig = op.presence && !Array.isArray(op.presence) ? JSON.stringify(op.presence) : null;
+    if (presenceSig && presenceSig !== appliedPresence) {
+      appliedPresence = presenceSig;
       for (var ps in op.presence)
         if (Object.prototype.hasOwnProperty.call(op.presence, ps))
           document.documentElement.style.setProperty('--pcaret-' + ps, presenceColour(op.presence[ps]));
@@ -265,6 +302,11 @@
       // percent, read here into the workbench var (as px against the current
       // workbench, the unit the splitter uses) so a fresh viewer and the TUI
       // share the session's size. A stored per-viewer size still wins.
+      // The sidebar's SIDE (the layout's `pane sidebar right`, Thonny's
+      // Variables): the workbench lays the sidebar to the right of the
+      // editor and the panel when it says so (page.css), else to the left.
+      if (op.region === 'sidebar')
+        container.dataset.sidebarSide = op.side === 'right' ? 'right' : 'left';
       if (op.region === 'sidebar' || op.region === 'panel') {
         var horiz = op.region === 'panel';
         var vn = horiz ? 'panel-h' : 'sidebar-w';
@@ -309,21 +351,76 @@
     }
   }
 
-  // The toolbar's buttons (plan §41.11a): one per row, its label shown and
-  // its chord (the loaded profile's, from web_model) as the tooltip; a
-  // disabled row's button is disabled. The slot is the workbench's.
+  // The toolbar's icons (the chthonia mockup): one 16-unit SVG picture per
+  // ui::icon name (web_model sends the name); strokes and fills take the
+  // button's colour class (tb-ic-<name> in page.css). An unknown name draws
+  // nothing and the button keeps its label.
+  var TB_ICONS = {
+    'new': '<path d="M4 1.5h5.5L13 5v9.5H4z" fill="none"/><path d="M9.5 1.5V5H13" fill="none"/>',
+    'open': '<path d="M1.5 4V13h11.5l1.5-6H4.5L3 13" fill="none"/><path d="M1.5 4V2.5h4l1.5 1.5h5V7" fill="none"/>',
+    'save': '<path d="M2 2h9.5L14 4.5V14H2z" fill="none"/><path d="M4.5 2v3.5h6V2M4.5 14v-4.5h7V14" fill="none"/>',
+    'run': '<path d="M4 2.5v11l9.5-5.5z" class="fill"/>',
+    'debug': '<ellipse cx="8" cy="9.5" rx="3.5" ry="4.5" class="fill"/><path d="M6 4.5l-1.5-2M10 4.5l1.5-2M4.5 8H1.5M11.5 8h3M4.5 11.5l-2.5 1.5M11.5 11.5l2.5 1.5" fill="none"/>',
+    'stop': '<rect x="3" y="3" width="10" height="10" rx="1" class="fill"/>',
+    'step-over': '<path d="M3 9a5 5 0 0 1 9.5-2.5" fill="none"/><path d="M13 3.5v3.5H9.5" fill="none"/><circle cx="8" cy="13" r="1.3" class="fill"/>',
+    'step-into': '<path d="M2 6.5h9M8 3.5l3 3-3 3" fill="none"/><path d="M4 13.5h8" fill="none"/>',
+    'step-out': '<path d="M8 1.5v8M5 6.5l3 3 3-3" fill="none"/><path d="M4 13.5h8" fill="none"/>',
+    'breakpoints': '<path d="M2 2h2M7 2h2M12 2h2M2 14h2M7 14h2M12 14h2M2 7v2M14 7v2M5 5l6 6M11 5l-6 6" fill="none"/>'
+  };
+  function tbIcon(name) {
+    var body = TB_ICONS[name];
+    if (!body) return null;
+    var i = document.createElement('span');
+    i.className = 'tb-ic tb-ic-' + name;
+    i.innerHTML = '<svg viewBox="0 0 16 16" width="20" height="20" aria-hidden="true">' + body + '</svg>';
+    return i;
+  }
+
+  // The toolbar's buttons (plan §41.11a): one per row; a row with an icon
+  // shows the picture (and its label too when it drops a menu down, the
+  // mockup's Run ▾), else its label; the label and its chord (the loaded
+  // profile's, from web_model) are the tooltip; a disabled row's button is
+  // disabled. A row's `drop` is a ▾ beside it posting its action and
+  // argument; a separator row is a divider. The slot is the workbench's.
   function toolbar(el, rows) {
     var s = slotOf(el, 'toolbar');
+    // The root group arrives every frame; rows that did not change leave the
+    // toolbar alone — rebuilding it (its SVG icons re-parsed) relaid out the
+    // workbench grid around the editor on every keystroke.
+    var sig = JSON.stringify(rows);
+    if (s._sig === sig) return;
+    s._sig = sig;
     s.textContent = '';
     for (var i = 0; i < rows.length; i++) {
+      var r = rows[i];
+      if (r.sep) { s.appendChild(span('tb-sep', '')); continue; }
       var b = document.createElement('button');
       b.type = 'button';
       b.className = 'cf-btn tb-btn';
-      b.dataset.action = rows[i].action || '';
-      b.textContent = rows[i].label || '';
-      if (rows[i].key) b.title = (rows[i].label || '') + ' (' + rows[i].key + ')';
-      if (rows[i].enabled === false) b.disabled = true;
+      b.dataset.action = r.action || '';
+      var ic = r.icon ? tbIcon(r.icon) : null;
+      if (ic) {
+        b.classList.add('tb-has-icon');
+        b.appendChild(ic);
+        if (r.drop) b.appendChild(span('tb-label', r.label || ''));
+      } else {
+        b.textContent = r.label || '';
+      }
+      b.title = (r.label || '') + (r.key ? ' (' + r.key + ')' : '');
+      b.setAttribute('aria-label', r.label || '');
+      if (r.enabled === false) b.disabled = true;
       s.appendChild(b);
+      if (r.drop && r.drop.action) {
+        var d = document.createElement('button');
+        d.type = 'button';
+        d.className = 'cf-btn tb-btn tb-drop';
+        d.dataset.action = r.drop.action;
+        if (r.drop.arg != null) d.dataset.arg = r.drop.arg;
+        d.title = (r.label || '') + ' \u2026';
+        d.setAttribute('aria-label', d.title);
+        d.innerHTML = '<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none"/></svg>';
+        s.appendChild(d);
+      }
     }
   }
 
@@ -667,6 +764,11 @@
     } else if (cls === 'edit') {
       return applyEdit(el, op);
     }
+    // The node's tab strip (tabStrip, in elementFor) is its own furniture: a
+    // kind that drew its text above rewrote the node's content and took the
+    // strip with it, so it goes back first — the editor's buffer tabs ride a
+    // content node docked above the editor.
+    if (el._strip && el.firstChild !== el._strip) el.insertBefore(el._strip, el.firstChild);
     // group / separator / node: structure only — children carry it.
     return false;
   }
@@ -969,7 +1071,9 @@
     }
     if (b && b.dataset.action) {
       e.preventDefault();
-      post({ kind: 'action', action: b.dataset.action });
+      var bmsg = { kind: 'action', action: b.dataset.action };
+      if (b.dataset.arg != null) bmsg.arg = b.dataset.arg;
+      post(bmsg);
       kb.focus();
       return;
     }

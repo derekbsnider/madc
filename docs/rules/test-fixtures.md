@@ -65,6 +65,19 @@ reported as `NOISY(stderr):`. Use it on tests that compile real system
 headers, where a reintroduced diagnostic leak would otherwise regress
 silently.
 
+## Why `.expect_rc` exists (2026-10-05)
+
+`main`'s return value is the process exit status (C11 5.1.2.2.3), and a
+test of that contract cannot assert it from inside the program — the
+status only exists once the process ends. Every lane used to require exit
+0, so a program returning anything else could only be tested by the MIR
+corpus's own `.expectrc` files in the c2mir-tests lane. That is where the
+JIT's mapping of every negative `main` value to 1 surfaced
+(`lacc/signed-division.c`: gcc exits 112, madc exited 1). `.expect_rc`
+names the one status the JIT, exe and obj runs must all end with — the
+value the gcc-built program exits with — so the reducer for that fix
+(`testmainnegativestatus`) gates all three lanes in tests/.
+
 ## How to add a new capability
 
 If the runner needs a new knob (say, compiler flags or environment variables), resist the
@@ -167,3 +180,18 @@ pairs that the runner hands to `env(1)` in front of every invocation of that
 test (JIT, exe and obj alike), exactly as `.argv` and `.input` shape the
 other two ends of the process. No `MADC_TEST_ENV_<name>` switch, no per-test
 branch: the fixture file is the convention.
+
+## A `.flags` pin on a flavor the binary lacks (2026-10-05)
+
+The `-stdlib=` flavors a madc serves are a property of its build host:
+`gen_sys_includes.sh` records what that host could probe, so a host without
+libc++ builds a libstdc++-only madc (the Ubuntu 22.04 root: no llvm-18). The
+32 tests whose `.flags` pin `-stdlib=libc++` then fail on that binary with
+"Unknown -stdlib flavor" — a statement about the build, not about the test.
+Marking them per build host would be a fixture per host per test, so the runner
+asks the binary instead: `madc --capabilities=json` lists `stdlib_flavors`
+(derived from the same table `-stdlib=` looks up, gated by
+`capabilities_json_gate.sh`), and a test pinning a flavor outside it is
+skipped and counted on its own `FLAVOR NOT BUILT` summary line. The line is
+loud on purpose: a build that LOST a flavor it should have would skip every
+test pinning it, and that line is where the loss shows.

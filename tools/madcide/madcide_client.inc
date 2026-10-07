@@ -70,6 +70,14 @@ void client_service(IdeSession &S, long t)
 	ui::clipboard_set(t, req["text"].c_str());
 	return;
     }
+    // Full screen: the window's own state, toggled; a window that cannot
+    // (a browser page) says so.
+    if ( kind == rqFULLSCREEN )
+    {
+	if ( !ui::fullscreen(t, -1) )
+	    S.request_refused(req);
+	return;
+    }
     if ( kind == rqPASTE )
     {
 	var txt;
@@ -171,6 +179,7 @@ void spawn_client(var &clients, IdeSession &S, long w, ui::level lvl,
     S.dialogs(ui::dialogs(nt));
     S.clipboard(ui::clipboards(nt));
     S.panel(!ht);
+    S.remember(true);
     var cN;
     make_client(cN, nextid, nt, nes, trLOCAL, lvl, tierOWNER);
     clients.push(cN);
@@ -196,6 +205,7 @@ void run_ide(IdeSession &S, long doc, ui::level lvl)
     S.dialogs(ui::dialogs(t));	// a window's host may draw native file dialogs
     S.clipboard(ui::clipboards(t));	// ... and reach the platform's clipboard
     S.panel(!has_term);		// a window renders regions: the bottom panel (P3a)
+    S.remember(true);		// a person's window or terminal: Recent Files
     // Client 0 = the launching window/terminal over open()'s es. `clients`
     // is a dialect var array of the general records; ONE IdeSession is
     // re-pointed per client via S.attach(w, es) — attach is the seam.

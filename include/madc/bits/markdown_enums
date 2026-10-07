@@ -1,0 +1,36 @@
+// madc embedded <bits/markdown_enums> — the markdown namespace's codes as
+// ENUMS, the ONE text for two readers: the engine (the madcmark module,
+// src/modules/madcmark/madcmark.cpp, converts cmark-gfm's node types to
+// these once) and the dialect (<ns_markdown> includes it, so a renderer
+// switches on `n["kind"] == markdown::node_kind::heading` — an enumerator the
+// compiler checks — instead of comparing a word).
+// Plain C++11 enums, nothing else (dialect-lean).
+//
+// Thread contract: constants.
+#ifndef __MADC_BITS_MARKDOWN_ENUMS
+#define __MADC_BITS_MARKDOWN_ENUMS 1
+
+namespace markdown {
+    // A node's kind: CommonMark's blocks and inlines, then GitHub's
+    // extensions (tables, strikethrough; a task list item is an `item`
+    // with `task` set).
+    enum class node_kind : unsigned char
+    {
+	none,
+	// blocks
+	document, block_quote, list, item, code_block, html_block, paragraph,
+	heading, thematic_break, footnote_definition,
+	// inlines
+	text, softbreak, linebreak, code, html_inline, emph, strong, link,
+	image, footnote_reference,
+	// GitHub's extensions
+	table, table_row, table_cell, strikethrough
+    };
+    // A list's kind: `- a` bullets, `1. a` numbers.
+    enum class list_kind : unsigned char { bullet, ordered };
+    // A table column's alignment, from its delimiter row (`:--`, `:-:`,
+    // `--:`).
+    enum class column_align : unsigned char { none, left, center, right };
+}
+
+#endif

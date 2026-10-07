@@ -54,7 +54,7 @@ void tool_answer(var &out, var &snap)
 }
 
 // The layer owner and this node's offers (madcide_layers.inc, included right
-// after the PAST axis — it reads git_handle_of from there): graph.status
+// after the PAST axis; git_handle_of is the core's madcide_repo.inc): graph.status
 // reports both, so the declarations come first (Nexus L4e).
 long asset_layers_of(long w, long es, long doc, long node);
 void node_offers(var &out, long w, long es);
@@ -482,7 +482,7 @@ void mcp_tools(var &out, long w)
     {
 	var nm = r["name"];
 	long tier = cmd_min_tier_w(w, r["code"].as_integer());
-	var desc = format("madcide '{}' command (requires {} tier)",
+	var desc = format("{} '{}' command (requires {} tier)", product_in_use().name,
 		nm, tier_name(tier));
 	var tool = { "name": nm, "description": desc, "inputSchema": schema };
 	tools[] = tool;
@@ -563,11 +563,7 @@ void line_indent_at(var &out, var &t, long w, long doc, long line)
 {
     long ls = line_start_of(w, doc, line);
     const char *s = t.c_str();		// ONE copy per scan: a c_str() copies the whole text
-    long n = strlen(s);
-    long i = ls;
-    while ( i < n && (s[i] == ' ' || s[i] == '\t') )
-	i = i + 1;
-    out = perl::substr(t, ls, i - ls);
+    out = perl::substr(t, ls, blank_run(s + ls));
 }
 
 // Does [at, end) own its line(s): only whitespace before it on its first line
@@ -845,8 +841,10 @@ void edit_preview(var &out, long w, long adoc, var &t, var &cand, var &ops)
 	    hi = at + del;
 	delta = delta + strlen(s["ins"].c_str()) - del;
     }
-    long line0 = line_of(w, adoc, lo);
-    long line1 = line_of(w, adoc, hi > lo ? hi - 1 : hi);
+    var lr;
+    range_lines(lr, w, adoc, lo, hi);
+    long line0 = lr["first"].as_integer();
+    long line1 = lr["last"].as_integer();
     long rs = line_start_of(w, adoc, line0);
     long re = line_start_of(w, adoc, line1) + ui::text_line_len(w, adoc, line1);
     if ( re < hi )
@@ -1731,10 +1729,10 @@ bool mcp_handle(IdeSession &S, long doc, long self_id, var &req, var &out)
 // client is the operator: self_id -1 (untracked -> owner via eff_tier, the -c
 // seat's rule), so it may edit and save. Drives mcp_handle over the SAME
 // api_run core the --serve api seat uses.
-long run_mcp(const char *path, bool ro, const char *profile = "")
+long run_mcp(const char *path, bool ro, const char *profile = "", long std = 0)
 {
     IdeSession S;
-    long doc = S.open(path, ro, profile);
+    long doc = S.open(path, ro, profile, std);
     if ( doc <= 0 )
 	return 1;
     S.terminal(false);			// headless: no interactive terminal

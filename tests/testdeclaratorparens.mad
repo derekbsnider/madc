@@ -1,0 +1,34 @@
+// Parentheses around a declarator-id alone are redundant (C11 6.7.6p6):
+// `static int ((foo))(int wat)` defines the function foo exactly as `int
+// foo(int wat)` does, and `int (x) = 3;` declares x. madc read the
+// parenthesized name followed by a parameter list as a function-pointer
+// declarator and the body as an expression ("Unexpected keyword in
+// expression"). A typedef name is not a declarator-id inside a parameter
+// (C11 6.7.6.3p11): in `int ((tx))` the inner `(tx)` is a parameter list, so
+// callit's parameter is `int (*)(int)`.
+// gcc 13.3 and clang 18.1 (-std=c11) print the .expect line.
+#include <stdio.h>
+typedef int tx;
+static int ((foo))(int wat)
+{
+	return wat + 1;
+}
+int (bar)(int);
+int (bar)(int v)
+{
+	return v * 2;
+}
+int ((g)) = 5;
+static int callit(int((tx)));
+static int callit(int (*f)(int))
+{
+	return f(5);
+}
+int main(void)
+{
+	int (x) = 3;
+	int ((y))[2] = { 7, 8 };
+	printf("parens: %d %d %d %d %d %d\n", foo(41), bar(4), g, x, y[1],
+	       callit(foo));
+	return 0;
+}

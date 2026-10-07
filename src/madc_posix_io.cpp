@@ -5,10 +5,12 @@
 #include "madc_posix_io.h"
 
 #include <cerrno>
+#include <climits>	// PIPE_BUF: read_process_memory's span
+#include <cstdint>	// uintptr_t: read_process_memory's page arithmetic
 #include <cstdlib>
+#include <cstring>
 #ifdef _WIN32
 #include <cstdio>
-#include <cstring>
 #include <fcntl.h>	// _O_CREAT/_O_EXCL — make_temp_file's atomic claim
 #include <io.h>
 #include <limits.h>
@@ -163,14 +165,22 @@ std::string resolve_real_path(const char *path)
 #endif
 }
 
-// The one separator predicate both splitters share (header contract).
+// The one separator set the splitters and host_path_within share (header
+// contract): '/' and '\\' on Windows, '/' elsewhere.
+#ifdef _WIN32
+static const char host_path_separators[] = "/\\";
+#else
+static const char host_path_separators[] = "/";
+#endif
+
+static bool host_path_is_separator(char c)
+{
+	return c != '\0' && std::strchr(host_path_separators, c) != nullptr;
+}
+
 static size_t host_path_last_separator(const std::string &path)
 {
-#ifdef _WIN32
-	return path.find_last_of("/\\");
-#else
-	return path.rfind('/');
-#endif
+	return path.find_last_of(host_path_separators);
 }
 
 std::string host_path_dirname(const std::string &path)
@@ -187,6 +197,46 @@ std::string host_path_basename(const std::string &path)
 	if ( sep == std::string::npos )
 		return path;
 	return path.substr(sep + 1);
+}
+
+bool host_path_absolute(const std::string &path)
+{
+	if ( path.empty() )
+		return false;
+	if ( host_path_is_separator(path[0]) )
+		return true;
+#ifdef _WIN32
+	char d = path[0];
+	if ( path.size() >= 2 && path[1] == ':'
+	     && ((d >= 'A' && d <= 'Z') || (d >= 'a' && d <= 'z')) )
+		return true;
+#endif
+	return false;
+}
+
+bool host_path_within(const std::string &dir, const std::string &path,
+		      std::size_t *rel_at)
+{
+	size_t n = dir.size();
+	while ( n > 0 && host_path_is_separator(dir[n - 1]) )
+		--n;
+	// A root (`/`, `Z:\\`) is all separator past its drive: keep that one.
+	if ( n < dir.size() && (n == 0 || dir[n - 1] == ':') )
+		++n;
+	if ( n == 0 || path.size() <= n || path.compare(0, n, dir, 0, n) != 0 )
+		return false;
+	size_t at = n;
+	if ( !host_path_is_separator(dir[n - 1]) )
+	{
+		if ( !host_path_is_separator(path[n]) )
+			return false;
+		++at;
+	}
+	if ( at >= path.size() )
+		return false;
+	if ( rel_at )
+		*rel_at = at;
+	return true;
 }
 
 std::string get_host_name()
@@ -489,6 +539,52 @@ void *map_file_readonly(const char *path, std::size_t &length)
 #endif
 }
 
+void *map_exec_region_at(void *addr, std::size_t length)
+{
+#ifdef _WIN32
+	// VirtualAlloc at an address fails when any page of the range is taken.
+	return VirtualAlloc(addr, length, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE);
+#else
+	int flags = MAP_PRIVATE | MAP_ANONYMOUS;
+#ifdef MAP_FIXED_NOREPLACE
+	flags |= MAP_FIXED_NOREPLACE;
+#endif
+	void *m = ::mmap(addr, length, PROT_EXEC, flags, -1, 0);
+	if ( m == MAP_FAILED )
+		return NULL;
+	if ( m != addr )	// taken as a hint and placed elsewhere
+	{
+		::munmap(m, length);
+		return NULL;
+	}
+	return m;
+#endif
+}
+
+int protect_exec_region(void *addr, std::size_t length, bool writable)
+{
+#ifdef _WIN32
+	DWORD old = 0;
+	return VirtualProtect(addr, length,
+			      writable ? PAGE_EXECUTE_READWRITE : PAGE_EXECUTE_READ,
+			      &old) ? 0 : -1;
+#else
+	return ::mprotect(addr, length,
+			  writable ? PROT_READ | PROT_WRITE | PROT_EXEC
+				   : PROT_READ | PROT_EXEC);
+#endif
+}
+
+int unmap_exec_region(void *addr, std::size_t length)
+{
+#ifdef _WIN32
+	(void)length;	// MEM_RELEASE frees the whole reservation
+	return VirtualFree(addr, 0, MEM_RELEASE) ? 0 : -1;
+#else
+	return ::munmap(addr, length);
+#endif
+}
+
 int make_temp_file(const char *prefix, std::string &path_out)
 {
 	path_out.clear();
@@ -584,6 +680,69 @@ unsigned long long process_resident_bytes()
 		return 0;
 	return pages_resident * (unsigned long long)page_size;
 #endif
+}
+
+std::size_t read_process_memory(void *dst, const void *src, std::size_t size)
+{
+	std::size_t page = 4096;
+#ifdef _WIN32
+	SYSTEM_INFO si;
+	GetSystemInfo(&si);
+	if ( si.dwPageSize )
+		page = si.dwPageSize;
+#else
+	long page_size = ::sysconf(_SC_PAGESIZE);
+	if ( page_size > 0 )
+		page = (std::size_t)page_size;
+	int fds[2];
+	if ( ::pipe(fds) != 0 )
+		return 0;
+	set_fd_close_on_exec(fds[0]);
+	set_fd_close_on_exec(fds[1]);
+#endif
+	std::size_t done = 0;
+	while ( done < size )
+	{
+		std::uintptr_t at = reinterpret_cast<std::uintptr_t>(src) + done;
+		std::size_t span = page - (std::size_t)(at % page);
+		if ( span > size - done )
+			span = size - done;
+#ifdef _WIN32
+		SIZE_T got = 0;
+		if ( !ReadProcessMemory(GetCurrentProcess(),
+					reinterpret_cast<const void *>(at),
+					static_cast<char *>(dst) + done, span, &got) )
+			break;
+		done += (std::size_t)got;
+		if ( (std::size_t)got < span )
+			break;
+#else
+		// At most PIPE_BUF bytes into an empty pipe: the write never blocks.
+		if ( span > PIPE_BUF )
+			span = PIPE_BUF;
+		ssize_t w = write_fd_without_sigpipe(
+			fds[1], reinterpret_cast<const void *>(at), span);
+		if ( w <= 0 )
+			break;
+		std::size_t back = 0;
+		while ( back < (std::size_t)w )
+		{
+			ssize_t r = read_fd(fds[0], static_cast<char *>(dst) + done + back,
+					    (std::size_t)w - back);
+			if ( r <= 0 )
+				break;
+			back += (std::size_t)r;
+		}
+		done += back;
+		if ( back < span )
+			break;
+#endif
+	}
+#ifndef _WIN32
+	::close(fds[0]);
+	::close(fds[1]);
+#endif
+	return done;
 }
 
 } // namespace detail
