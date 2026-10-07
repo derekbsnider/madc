@@ -5,7 +5,7 @@ node: label=Help — Sample Help link-code=true
 chosen: topic=getting-started title=Getting started back=◂ Contents back-target=contents.md
 code-row:            printf("Hello!\n");
 menus: title=Menus and commands run-heading=true
-menus-run: • Run (f5) — replrun: Runs the buffer's program in the shell: a fresh session, the buffer loaded, then its main.
+menus-run: • Run (f5) — replrun: Runs the buffer's program in the REPL: a fresh session, the buffer loaded, then its main.
 table: header=Entry          │ What it does rule=true
 unknown: msg=No help topic 'nosuch'. topic=shell
 default: title=madcide Help menus-target=menus

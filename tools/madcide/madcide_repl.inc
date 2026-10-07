@@ -727,7 +727,7 @@ void repl_stop_restart(long w, long es)
 {
     if ( es_int(w, es, "replh", 0) == 0 )
     {
-	ui::set(w, es, "msg", "The shell has no session to stop.");
+	ui::set(w, es, "msg", "The REPL has no session to stop.");
 	return;
     }
     if ( repl_restart(w, es, active_doc(w, es, 0)) )
@@ -952,7 +952,7 @@ bool repl_cmd_interrupt(long w, long es, long doc, const char *arg)
     if ( repl_interrupt(w, es) )
 	ui::set(w, es, "msg", "");
     else
-	ui::set(w, es, "msg", "Nothing is running in the shell.");
+	ui::set(w, es, "msg", "Nothing is running in the REPL.");
     return true;
 }
 
@@ -982,7 +982,7 @@ bool repl_cmd_eof(long w, long es, long doc, const char *arg)
     if ( repl_eof(w, es) )
 	ui::set(w, es, "msg", "");
     else
-	ui::set(w, es, "msg", "Nothing is running in the shell.");
+	ui::set(w, es, "msg", "Nothing is running in the REPL.");
     repl_pane_sync(w, es);
     return true;
 }

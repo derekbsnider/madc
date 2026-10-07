@@ -32,7 +32,7 @@ f5 problems: rows=true goto line3=true
 f5 problems clean: rows=0
 f5 pseudo: Not a file: [repl]
 f5 empty: The buffer is empty.
-stop before: The shell has no session to stop.
+stop before: The REPL has no session to stop.
 stop: running=1 then=0 said=true fresh=true
 lang: pane=choice listed=true
 lang kept: true

@@ -116,29 +116,30 @@ Shows the terminal, where a program started by Build ▸ Run runs.
 Opens a command shell in the terminal.
 
 ## repl
-Shows the shell, where code is typed and run one entry at a time.
+Shows the REPL (a Read–eval–print loop), where code is typed and run one
+entry at a time.
 
 ## replrun
-Runs the buffer's program in the shell: a fresh session, the buffer
+Runs the buffer's program in the REPL: a fresh session, the buffer
 loaded, then its main.
 
 ## replstop
-Stops what the shell is running.
+Stops what the REPL is running.
 
 ## replinterrupt
-Interrupts what the shell is running: it returns to the prompt at its next
+Interrupts what the REPL is running: it returns to the prompt at its next
 loop, and the names you defined stay. Copy with nothing selected in the
-shell's input does the same, as Ctrl+C does in a terminal. A program waiting
-inside a library call cannot stop there: interrupt it again, and the shell
+REPL's input does the same, as Ctrl+C does in a terminal. A program waiting
+inside a library call cannot stop there: interrupt it again, and the REPL
 starts a fresh session.
 
 ## repleof
-Ends the standard input of what the shell is running, as Ctrl+D does in a
+Ends the standard input of what the REPL is running, as Ctrl+D does in a
 terminal: what the input line holds is sent first, then the program's next
 read sees the end of its input. What you run after it reads new input.
 
 ## replclear
-Clears the shell's transcript.
+Clears the REPL's transcript.
 
 ## build
 Lists the ways to check, build and run the buffer or the project.

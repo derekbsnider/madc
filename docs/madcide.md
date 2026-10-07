@@ -561,18 +561,18 @@ keeps every name earlier entries made. An entry's loops answer it at their
 next iteration; a wait no loop of the session's own code is in (a read with
 no input, a native library call) takes a second interrupt, which ends the
 backend, and a fresh session starts. With nothing running, the status line
-says "Nothing is running in the shell." Copy with nothing selected in the
-Shell's input interrupts too, as a terminal's Ctrl+C does, so Ctrl+C in the
-Shell is Interrupt under every key style that binds it to Copy. The command
+says "Nothing is running in the REPL." Copy with nothing selected in the
+REPL's input interrupts too, as a terminal's Ctrl+C does, so Ctrl+C in the
+REPL is Interrupt under every key style that binds it to Copy. The command
 publishes nothing; Copy's interrupt is the `seINTERRUPT` event, whose reply
 names the console view, and the REPL pane answers it for its own view.
 
-`repleof` (Run ▸ Send EOF, Thonny's; Ctrl+D in the Shell's input under the
+`repleof` (Run ▸ Send EOF, Thonny's; Ctrl+D in the REPL's input under the
 `chthonia` keys) ends the running entry's standard input. What the input line
 holds goes first, as a terminal's Ctrl-D sends the line typed so far; then
 the program's read returns the end of its input (`getchar` gives `EOF`). The
 entry after it reads new input. With nothing running, the status line says
-"Nothing is running in the shell." On the host's own terminal (`madc -i`) the
+"Nothing is running in the REPL." On the host's own terminal (`madc -i`) the
 terminal's Ctrl-D does this, and `madc::session_eof` answers false.
 
 View ▸ Program arguments… (`progargs`) sets the words F5 passes the program
