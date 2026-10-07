@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+## [v0.102.1] — 2026-10-07
+
+The bug-fix release for v0.102.0, carrying every fix banked since it rather
+than only the Ubuntu 24.04 packaging patch. The MIR backend gains several
+codegen fixes: aarch64 now passes homogeneous floating-point aggregates per
+AAPCS64, aarch64 and macOS executables find libmir's `mir.va_arg` /
+`mir.va_block_arg`, an inlined call's by-value-struct argument copy is released
+each execution, a native Mach-O image places the segments after `__DATA` at its
+memory end so a large zero-fill `__DATA` no longer overlaps `__LINKEDIT`, and
+four upstream varargs/inlining fixes from Cyan Ogilvie are adopted; MIR also compiles itself on aarch64 and no longer depends on plain
+char's sign (source byte 0xFF). c2mir stops crashing under `-pedantic`, reads
+errno correctly on a numeric literal's range check, and parses an `_Alignas`
+on a struct or union member. A Windows GUI program run with `--tui` from a
+command prompt now gets a usable console, and madcide gains autoindent. The
+`.deb` built on Ubuntu 24.04 and later carries an AppArmor profile, so madc's
+and madcide's windows — any `ui::` program run by `/usr/bin/madc` — get the
+user namespaces WebKit's bwrap sandbox needs; the release's `SHA256SUMS` names
+the `.deb` assets as GitHub stores them; and release tooling no longer stales
+the test lanes. Chthonia's packages each carry their own madc release —
+Chthonia is its own product, with nothing to install from madc.
+
 ### mir: Mach-O executable writer places the segments after __DATA at its memory end, not its file end
 
 A native Mach-O image whose zero-fill `__DATA` (bss) reaches past its data's
@@ -16,26 +37,6 @@ the file and at its memory end (`vmaddr + vmsize`) in the address space. On a
 fileoff 12288, identical to ld64's; a shared library with one word of data and
 64 KiB of bss builds, opens, and reads and writes both, matching Apple clang
 `-dynamiclib` + a dlopen host.
-
-## [v0.102.1] — 2026-10-07
-
-The bug-fix release for v0.102.0, carrying every fix banked since it rather
-than only the Ubuntu 24.04 packaging patch. The MIR backend gains several
-codegen fixes: aarch64 now passes homogeneous floating-point aggregates per
-AAPCS64, aarch64 and macOS executables find libmir's `mir.va_arg` /
-`mir.va_block_arg`, an inlined call's by-value-struct argument copy is released
-each execution, and four upstream varargs/inlining fixes from Cyan Ogilvie are
-adopted; MIR also compiles itself on aarch64 and no longer depends on plain
-char's sign (source byte 0xFF). c2mir stops crashing under `-pedantic`, reads
-errno correctly on a numeric literal's range check, and parses an `_Alignas`
-on a struct or union member. A Windows GUI program run with `--tui` from a
-command prompt now gets a usable console, and madcide gains autoindent. The
-`.deb` built on Ubuntu 24.04 and later carries an AppArmor profile, so madc's
-and madcide's windows — any `ui::` program run by `/usr/bin/madc` — get the
-user namespaces WebKit's bwrap sandbox needs; the release's `SHA256SUMS` names
-the `.deb` assets as GitHub stores them; and release tooling no longer stales
-the test lanes. Chthonia's packages each carry their own madc release —
-Chthonia is its own product, with nothing to install from madc.
 
 ### c2mir: An alignment-specifier on a struct or union member parses (C11 6.7.2.1p1)
 
