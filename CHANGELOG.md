@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### c2mir: A source byte is never the end of the file, and MIR's own sources don't depend on plain char's sign
+
+Where plain char is unsigned (aarch64 / ppc64 / s390x Linux, the targets whose
+c2m compiles MIR itself in the c2mir-bootstrap tests), c2m's line buffer popped
+a byte as a char and `cs_unget` stored EOF (-1) there, read back by the next
+`cs_get` as 255 ("syntax error on 255"); where plain char is signed, a source
+byte 0xFF popped from the buffer as -1, i.e. EOF, and ended the translation unit
+early ("unfinished comment"). `cs_get` and `str_getc` now return a source byte
+as unsigned char the way `fgetc` does, and `cs_unget` drops EOF instead of
+pushing it. In `mir-gen-aarch64.c`'s `out_insn`, a `hex_value()` result (-1 for
+"no digit") held in a char and compared `>= 0` never failed once char was
+unsigned, so the hex scan ran off the end of the pattern; the value is an `int`
+now. `c-tests/new/source-byte-ff.c` places byte 0xFF in a comment, a string
+literal and a character constant and returns 0, as gcc and clang do.
+`scripts/check-mir-plain-char.sh` (in `make gates`) keeps MIR's sources from
+depending on plain char's sign.
+
 ## [v0.102.1] — 2026-10-07
 
 The Ubuntu 24.04 packaging patch to v0.102.0. The `.deb` built on Ubuntu 24.04

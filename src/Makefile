@@ -1185,6 +1185,7 @@ gates: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/check-one-nontype-splice.sh
 	@cd .. && bash scripts/check-one-string-char-fill.sh
 	@cd .. && bash scripts/check-volatile-accesses.sh
+	@cd .. && bash scripts/check-mir-plain-char.sh
 	@cd .. && bash scripts/check-one-delim-tracker.sh
 	@cd .. && bash scripts/check-one-declarator-reader.sh
 	@cd .. && bash scripts/check-clone-origin.sh
