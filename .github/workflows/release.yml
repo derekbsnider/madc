@@ -455,6 +455,12 @@ jobs:
         run: |
           set -e
           cd dist
+          # GitHub stores '~' in an asset's name as '.' (the debs'
+          # <rel>~ubuntu<VERSION_ID>): rename first, so SHA256SUMS names the
+          # files people download. The package's Version keeps its '~'.
+          for f in madc_*~*.deb; do
+            [ -e "$f" ] && mv "$f" "${f//\~/.}"
+          done
           files=$(ls madc_*.deb madc-*.x86_64.rpm \
                      madc-*-linux-x86_64.tar.gz madc-*-windows-x86_64.zip \
                      madc-*-macos-arm64.tar.gz madc-*-macos-x86_64.tar.gz \
