@@ -8,11 +8,11 @@ wine64	yes	c3c10e1f30f2	2026-10-06	the packed PE under wine: headerless-win 1950
 macos	yes	c3c10e1f30f2	2026-10-06	BUILD lane: hosted builds + release-macos rc=0 on both arches; forest_pack_gate OK [darwin]; verify_macho_release OK (837 units hosted dylib, 836 thin release, arm64 + x86_64) — seam_battery.sh
 aarch64-ld	yes	c3c10e1f30f2	2026-10-06	aarch64_ldouble_lane GREEN (control; aot + jit on every fixture) — seam_battery.sh
 tests-jit	batch	c3c10e1f30f2	2026-10-06	2026 passed, 0 failed, 0 timed out, 9 skipped (seam exeobj JIT pass, packed -O2)
-c-testsuite	commit	3e1513382cb7	2026-10-06	c-testsuite: 220 passed, 0 failed (0 outside baseline) [at 3e1513382]
-c-torture	commit	3e1513382cb7	2026-10-06	c-torture: 1617 passed, 7 failing, 0 outside baseline, 61 skipped (--std=c17) [at 3e1513382]
-c2mir-tests	commit	3e1513382cb7	2026-10-06	c2mir-tests: 359 passed, 0 failed, 4 skipped (0 outside baseline) [at 3e1513382]
-gui	commit	3e1513382cb7	2026-10-06	gui: 27 passed, 0 failed | EXE 27/0 | OBJ 27/0 [at 3e1513382]
-gxx-c++11	no	3e1513382cb7	2026-10-06	gxx-c++11: 1505 passed, 441 failing, 0 outside baseline, 2722 skipped [at 3e1513382]
-index-c	yes	3e1513382cb7	2026-10-06	index-c: 50/50 tasks OK, 0 failed [-O2] [at 3e1513382]
-commonmark	commit	3e1513382cb7	2026-10-06	commonmark: 664 passed, 6 failed of 670 (0 outside baseline) [at 3e1513382]
-darwin-suite	release	f917f1ea35bf	2026-10-06	arm64 1995/0/0TO/40skip, Intel 1997/0/0TO/38skip — native on the owner Macs (madc-mini macOS 14.8.4 M1; madc-mac-x86 macOS 15.7.4) via the darwin-probe recipe (tmp/darwin_host_lane.sh) at 4c6c42a6e: release-macos + verify_macho OK; the tarballs (madcide included, pinned zstd stage) pass package_install_gate mactar with mac_battery 11/0 on both arches; EXE advisory (D5)
+darwin-suite	release	4c9d6a52c270	2026-10-06	darwin-suite (native, libc++, 4c9d6a52c): arm64 Mac Mini macOS 14.8.4 1995 passed / 0 failed / 40 skipped; Intel MacBook macOS 15.7.4 1997 passed / 0 failed / 38 skipped (rerun; first Intel run 1996/0/1 timeout testmadcide_plugin_library, load-slow 6.7 s vs 10 s cap); packages PASS mactar both arches
+c-testsuite	commit	9c500243ae67	2026-10-07	c-testsuite: 220 passed, 0 failed (0 outside baseline, 0 baseline tests now passing)
+c-torture	commit	9c500243ae67	2026-10-07	c-torture: 1617 passed, 2 compile-failed, 5 runtime-failed, 0 timed out, 61 skipped (--std=c17) c-torture: 7 failing, 0 outside baseline, 0 baseline tests now passing
+c2mir-tests	commit	9c500243ae67	2026-10-07	c2mir-tests: 359 passed, 0 failed, 4 skipped (0 outside baseline, 0 baseline tests now passing)
+gui	commit	9c500243ae67	2026-10-07	gui: 27 passed, 0 failed, 0 timed out, 0 skipped | EXE: 27 passed, 0 failed (of 27 JIT-passing tests) | OBJ: 27 passed, 0 failed (of 27 JIT-passing tests)
+gxx-c++11	no	9c500243ae67	2026-10-07	gxx-c++11: 1505 passed, 441 compile-failed, 0 runtime-failed, 0 timed out, 2722 skipped gxx-c++11: 441 failing, 0 outside baseline, 0 baseline tests now passing
+index-c	yes	9c500243ae67	2026-10-07	index-c: 50/50 tasks OK, 0 failed (rc=0) [-O2] — Summary: 84.0940s, 50, 50, 0
+commonmark	commit	9c500243ae67	2026-10-07	commonmark: 664 passed, 6 failed (of 670 examples) (0 outside baseline, 0 baseline examples now passing)
