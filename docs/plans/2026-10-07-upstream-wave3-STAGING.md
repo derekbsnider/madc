@@ -37,6 +37,30 @@ a8ab7c31 vs ours vs gcc):
 | #466 / #468 | aarch64 disp gate / spill bounds | adopted (98bee3d93 / 1cb0c1872) | nothing |
 | #465 richarddd | stp/ldp prologue | closed by its author (6% slower on M5) | nothing |
 
+**Open upstream issues since September, against the PRs (re-checked
+2026-10-07 via `gh api`, owner request):**
+
+| Issue | Opened | A PR that resolves it | Our side |
+|---|---|---|---|
+| #472 `extern T x = …` (08-31) | — | none filed yet | our PR A, unfiled |
+| #473 anonymous-union aliases (08-31) | — | none filed yet | our PR B, unfiled |
+| #474 win64 32-byte spill area per call (09-01) | — | **none** | open in ours: performance (sub/add rsp around every call, frame pointer forced), not wrong code; the fix is msvc/clang's shape, the outgoing area reserved once in the prologue — ours to fix in `third_party/mir`, win64 lanes, then file |
+| #475 `op_nums` overflow (09-03) | — | **#468** (wshlavacek, open since 08-18) — same root | adopted (`1cb0c1872`); optional note on #475 pointing at #468 |
+| #476 inliner growth check (10-05) | — | none (Cyan offered one) | adopt Cyan's `625be9104`; file nothing |
+| #482 part 1, x86-64 stack long double (10-07) | — | none filed yet | our PR C, unfiled |
+| #482 part 2, block alignment (10-07) | — | **none** — Cyan asked Vladimir for the design first | **MEASURED open in ours, silent**: a gcc-compiled callee taking `struct { long double }` by value after seven `long`s — gcc+gcc `take_s 2.5`; upstream c2m, our c2m AND `bin/madc` callers `take_s -nan`, exit 0 (container `tmp/blk482/`). `MIR_T_BLK` carries a size only. Our part-1 work (`4fbffc77e` x86-64, `d123c3b0a` / `62e86e2db` aarch64, `d1f6c8539` Apple) aligns 16-byte SCALAR and VECTOR slots, never a block |
+
+Unresolved by any PR, ours or theirs: **#474** and **#482 part 2** — part 2 is a
+silent wrong answer for madc programs calling C libraries, so it outranks #474
+(performance). Proposal: fix it in `third_party/mir` now with the alignment
+carried on the block type (the option our draft #482 comment backs), offer it
+upstream once Vladimir answers Cyan.
+
+Found on the way (2026-10-07): c2m's PARSER rejects `_Alignas (16)` on a
+struct member (`syntax error on struct`), upstream and ours; gcc accepts it and
+madc's own parser does too (`bin/madc --std=c11` rc 0), so it is c2m-only —
+a small standalone upstream candidate.
+
 ## 1. File now — the six held branches (owner review of each body)
 
 Each is one commit on a8ab7c31, authored by us, verified at upstream HEAD,
@@ -157,18 +181,54 @@ upstream `make test` green (re-run 2026-10-07). Head: `derekbsnider:<branch>`, b
 > plain char; I left those headers unchanged for you to judge. Happy to
 > rework.
 
-**Amendment (recon 2026-10-07, §5):** D needs a SECOND commit before filing.
-`out_insn` in `mir-gen-aarch64.c` (ours :2418, upstream the same) scans hex
-digits with `char d` against `hex_value()`, which returns `int` and `-1` on a
-non-digit; with plain char unsigned, `(d = hex_value (...)) >= 0` never fails
-and the scan spins. MIR's own gcc build is shielded by `-fsigned-char`
-(GNUmakefile:28, CMakeLists.txt:19), but c2m compiling MIR's own sources (the
-bootstrap tests) under D's unsigned char on aarch64 would hang. `mir-gen-riscv64.c`
-:2197 has the same scan. Fix: `int d` at both sites — in `third_party/mir`
-first (our aarch64 lane already carries unsigned char; fix-what-you-find), then
-the same one-liner as D's second commit, with a sentence in the body:
-"The one place MIR itself relied on signed char — the hex scan in
-`out_insn` — now uses `int`, so the bootstrap builds under the new ABI."
+**Amendment (measured 2026-10-07): D as staged BREAKS upstream's aarch64
+bootstrap; file PR G first and stack D on it.** Upstream's
+`c2mir-bootstrap-test` recipe, run on aarch64 under qemu (aarch64 c2m built by
+gcc with MIR's flags; it compiles MIR's sources, then runs itself from the
+.bmir to compile them again):
+
+| upstream tree | stage 1 | stage 2 | result |
+|---|---|---|---|
+| a8ab7c31 (control) | rc 0 | rc 0 | Passed |
+| + D | rc 0 | rc 1 (`features.h:472: wrong result of ##`) | FAIL |
+| + D + G's two source edits | rc 0 | rc 0 | Passed |
+
+Cause: MIR's sources assume signed plain char (its gcc/CMake builds force
+`-fsigned-char`); D makes c2m compile them with aarch64-linux's unsigned char.
+Two dependencies, both found and fixed in G: c2mir's line buffer (`cs_unget`
+pushes EOF into a `char` buffer, `cs_get` pops it as 255) and `out_insn`'s hex
+scan (`char d` holding `hex_value()`'s -1). The recon's riscv64 site is NOT one:
+its `d` holds a non-negative displacement. A `-fsigned-char` option for c2m was
+rejected: plain char's sign is read at ~90 context-free `signed_integer_type_p`
+sites. D's body gains one sentence: "This builds on #G, without which MIR's own
+bootstrap on aarch64 Linux stops in stage 2."
+
+### PR G — `pr/c2mir-source-byte-ff-is-not-eof` (NEW; file before D)
+
+**Title:** c2mir: a 0xFF source byte is not EOF
+
+> Thank you for MIR. A small lexer fix, found while checking plain char's sign
+> on aarch64 Linux:
+>
+> c2mir's line buffer is a `VARR (char)`, and `cs_get` returns the popped
+> `char` as an `int`. Where char is signed, a source byte 0xFF pops as -1, which
+> is `EOF`, so the file ends there: a Latin-1 'ÿ' in a comment gives
+> "unfinished comment" on x86-64 today; gcc and clang accept it. Where char is
+> unsigned, the reverse: `cs_unget (EOF)` stores -1 in the buffer and it pops
+> back as 255 ("syntax error on 255").
+>
+> `cs_get` and `str_getc` now return the byte as `unsigned char` (as `fgetc`
+> does), and `cs_unget` leaves EOF out of the buffer (the next `cs_get` finds
+> the end again). The same commit makes `out_insn` in `mir-gen-aarch64.c` hold
+> `hex_value ()` in an `int`: as a `char` its -1 never compares below zero
+> when char is unsigned. Together these let MIR compile itself where plain
+> char is unsigned. A test is in `c-tests/new/source-byte-ff.c`. Happy to rework.
+
+Evidence: reducer under gcc rc 0, clang rc 0, upstream c2m `-ei`/`-eg` rc 1
+"unfinished comment", fixed c2m rc 0 (both). Our side: `e3359770c` on
+`fix/mir-plain-char-claude` with the gate `scripts/check-mir-plain-char.sh`.
+The clean upstream branch is still to build (one commit on a8ab7c31, then
+`tmp/upstream-pr-check.sh`); D is then rebased onto it.
 
 ### PR E — `pr/apple-interp-shim-fp-stack-imm12`
 
@@ -223,6 +283,12 @@ C before Cyan sends a duplicate), then D, E, F. Mechanics as wave 1:
 #480, #479, #478 (small), #476 (our fix), then #477 (large: careful merge
 with our aarch64 V128 / Apple va_list work; the aarch64 and macOS lanes).
 These are madc changes, not filings; they ride the next release.
+
+**Clash rule (owner, 2026-10-07):** where an external hunk clashes with a fix
+of ours, OURS STAYS if it is more correct — the gcc/clang oracle on a reducer
+decides, never provenance; take theirs where theirs is more correct; merge
+where each covers a different case. Each adoption commit names every kept-ours
+hunk and the oracle that decided it.
 
 Adoption sources, per §5 (each PR's branch head IS its PR head; nothing
 moved past it): #480 `35185c926`, #479 `976096d37`, #478 `f7594a507`,
