@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### mir: aarch64 and macOS executables find mir.va_arg / mir.va_block_arg
+
+A madc-compiled program that defines a variadic function calls libmir's va_arg / va_block_arg builtins through the dotted imports `mir.va_arg` and `mir.va_block_arg`. libmir exported those names only on x86-64 ELF and PE, so on aarch64 Linux the executable failed to link (undefined `mir.va_arg`) and on macOS — arm64 and x86-64 alike, with the released madc 0.102 — it built and then aborted at launch (`dyld: symbol not found in flat namespace '_mir.va_arg'`, exit 134); the JIT was unaffected. libmir now exports both on ELF and Mach-O (Mach-O as a wrapper under the platform label prefix), with `mir.arg_memcpy` beside them on x86-64. A program using `int`, struct, long double and 160-byte by-value struct va_arg builds with `-o` and prints `3 6 6 6.25` as gcc does on the Mac mini (arm64, macOS 14.8) and the Intel MacBook (macOS 15.7), where before both aborted with 134.
+
+### mir: an inlined call's block-arg copy is released after each execution
+
+An inlined call copies each block (by-value struct) argument into an alloca at the call site, but the inlined body was bracketed with BSTART/BEND only when the callee itself had non-top allocas. An inlined call with a struct argument inside a loop therefore grew the stack every iteration: a 20M-iteration loop over a 24-byte struct overflowed the stack at -O1 and above (rc 139), where gcc -O2 prints `280000000.0`. The copy is now treated like a non-top alloca of the callee, so BSTART/BEND release it each execution.
+
+### mir: aarch64 passes homogeneous floating-point aggregates (HFAs) per AAPCS64
+
+MIR's aarch64 block arguments always took the general composite rule (up to 16 bytes in integer registers, larger by reference) and c2mir returned small aggregates in x0/x1, so c2m code and natively compiled code disagreed on every HFA (a struct of 1–4 floats, doubles or long doubles) crossing between them — named args, varargs (e.g. a `struct { double }` passed to printf) and returns. aarch64 now passes and returns HFAs in consecutive FP argument registers, spilling to the stack in memory layout when the FP registers run out (never by reference), and HFA results come back in v0–v3; a `_Complex` argument is now also passed as a two-member HFA block, named or variadic, instead of split into two scalar FP args, so it leaves the FP registers whole when they run out, as gcc does. Validated on aarch64 Linux against gcc-compiled code and under qemu, where c2m `-eg`/`-ei` at -O0/-O2 and the madc-aarch64-linux AOT build now match the all-gcc oracle; the Apple paths are untested. Adopted from vnmakarov/mir#477 by Cyan Ogilvie, merged with madc's aarch64 work.
+
+### mir: adopted upstream codegen fixes for varargs and inlining
+
+Four fixes from Cyan Ogilvie's upstream pull requests. On x86-64, a variadic call now counts block arguments passed in XMM registers in `%al`, so a natively compiled variadic callee saves its XMM argument registers and va_arg no longer reads garbage for a `struct { double }` passed to snprintf (#479). GVN now treats `va_start`/`va_arg`/`va_block_arg`/`va_end` as memory clobbers, so a va_list field loaded or stored before a `va_arg` is no longer reused with its stale value by a frontend that adjusts va_list fields directly (#480). On aarch64, address computations are no longer folded into a memory operand the target cannot encode (scaled FP load/store offsets), which previously died with "fatal failure in matching insn" for a misaligned FP access (#478). The inline growth limit now compares against the grown size rather than the original, so a caller larger than 200 insns can again inline a small callee (#476).
+
+### c2mir: -pedantic no longer crashes, and a number's range check reads errno correctly
+
+Under `-pedantic`, `c2m` previously died with SIGSEGV on `int x = 1;` because attribute parsing returned NULL and the declaration appended it as an AST child; it now returns the error node after clearing the asm part, so a second declarator (`int x = 1, y = 5;`) no longer shares the first's asm node (`x + y` had come out 10). Separately, a numeric literal's range check now clears errno immediately before each `strtoull`/`strtof`/`strtod`/`strtold` conversion and reads it right after, instead of once before node allocation, which under C11 7.5p3 may set errno even on success — the aarch64 `c2m` under qemu had reported a plain `1` as "number 1 is out of range" under `-pedantic`. Both cases now match `gcc -pedantic`.
+
 ## [v0.102.1] — 2026-10-07
 
 The Ubuntu 24.04 packaging patch to v0.102.0. The `.deb` built on Ubuntu 24.04
