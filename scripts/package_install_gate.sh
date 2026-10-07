@@ -577,9 +577,10 @@ gate_mactar() {
 # ON as a 24.04 desktop has it, a display (xvfb-run), sudo. By the profile
 # the .deb installs, /usr/bin/madc runs a ui:: program to its first rendered
 # page (tests/gui/ui_web_hello.mad's GUI_SNAPSHOT: WebKit's web process
-# runs only in its bwrap sandbox) and madcide's window stays up 15 s;
-# [control: the profile unloaded, the same program dies before its page —
-# LP: #2046844].
+# runs only in its bwrap sandbox) and madcide's window (--gui: madcide's own
+# default is the console editor) stays up 15 s; [control: the profile
+# unloaded, the same program dies before its page and the same window ends
+# by itself — LP: #2046844].
 gate_apparmor() {
     local prof=/etc/apparmor.d/madc prog=tests/gui/ui_web_hello.mad out rc p
     [ -f "$prof" ] || fail apparmor "no $prof (the .deb installs it on Ubuntu 24.04 and later)"
@@ -590,25 +591,29 @@ gate_apparmor() {
             || fail apparmor "the $p profile is not loaded (the .deb's postinst loads it)"
     done
     ok apparmor "the .deb's madc and madcide profiles are loaded"
+    printf 'int main(void) { return 0; }\n' > "$GATE_TMP/aa.c"
     out=$( ( ulimit -t 120; timeout 60 /usr/bin/madc "$prog" ) 2>&1 )
     rc=$?
     case "$rc:$out" in
         0:*GUI_SNAPSHOT*) ok apparmor "/usr/bin/madc runs a ui:: window to its rendered page" ;;
         *) fail apparmor "/usr/bin/madc's ui:: window did not render (rc $rc: $(echo "$out" | tail -3 | tr '\n' ' '))" ;;
     esac
-    printf 'int main(void) { return 0; }\n' > "$GATE_TMP/aa.c"
-    timeout 15 /usr/bin/madcide "$GATE_TMP/aa.c" < /dev/null > /dev/null 2>&1
+    timeout 15 /usr/bin/madcide "$GATE_TMP/aa.c" --gui < /dev/null > /dev/null 2>&1
     rc=$?
     [ $rc -eq 124 ] || fail apparmor "madcide's window ended by itself (rc $rc)"
     ok apparmor "madcide's window ran 15 s"
     sudo apparmor_parser -R "$prof" || fail apparmor "could not unload $prof"
     out=$( ( ulimit -t 120; timeout 60 /usr/bin/madc "$prog" ) 2>&1 )
     rc=$?
+    timeout 15 /usr/bin/madcide "$GATE_TMP/aa.c" --gui < /dev/null > /dev/null 2>&1
+    p=$?
     sudo apparmor_parser -r -T -W "$prof" || fail apparmor "could not load $prof again"
     case "$out" in
         *GUI_SNAPSHOT*) fail apparmor "control broken: the profile unloaded, the window still rendered" ;;
         *) ok apparmor "control: the profile unloaded, the window died before its page (rc $rc)" ;;
     esac
+    [ $p -ne 124 ] || fail apparmor "control broken: the profile unloaded, madcide's window ran 15 s too"
+    ok apparmor "control: the profile unloaded, madcide's window ended by itself (rc $p)"
     echo "package_install_gate: PASS apparmor"
 }
 
