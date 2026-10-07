@@ -297,14 +297,16 @@ on this content), with public binaries built by CI for Linux
 (deb/rpm/tarball), Windows x86-64, and macOS (Apple Silicon + Intel).
 
 Latest validated results — the seam battery and the native macOS lanes on one
-content (`c3c10e1f3`, 2026-10-06), on the shipped packed -O2 `madc-release`.
-Measured conformance against third-party suites is published separately in
+content (`c3c10e1f3`, 2026-10-06), on the shipped packed -O2 `madc-release`;
+the tests/ suite JIT batch lane re-ran green at HEAD (`6becfb085`,
+2026-10-07). Measured conformance against third-party suites is published
+separately in
 [`docs/conformance-coverage.md`](docs/conformance-coverage.md):
 
 - Linux, on the shipped packed -O2 `madc-release` with no headers on disk:
   **1992 passed / 0 failed / 43 skipped**, plus the on-disk header-needing
-  subset **34/0**; the whole suite as native artifacts: JIT **2026/0/9**,
-  EXE **1846/0**, OBJ **1846/0**
+  subset **34/0**; the whole suite as native artifacts: JIT **2031/0/9**
+  (batch lane), EXE **1846/0**, OBJ **1846/0**
 - Windows: the packed Win64 PE under Wine, headerless, **1950/0/85 skipped**
 - macOS, libc++, native on both owner Macs: arm64 (macOS 14.8.4)
   **1995/0/40 skipped**, Intel x86_64 (macOS 15.7.4) **1997/0/38 skipped**

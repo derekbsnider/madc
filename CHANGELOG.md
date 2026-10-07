@@ -2,14 +2,18 @@
 
 ## [Unreleased]
 
-## [v0.102.0] — 2026-10-06
+## [v0.102.0] — 2026-10-07
 
 The Chthonia-split release: everything since v0.101.0, without Chthonia —
 the teaching IDE moves to its own repository, requiring and installing into
 madc. Alongside it, a C-conformance correctness burn-down (declarator
 parentheses, implicit int, C's auto storage class, va_arg type names, the
 vector builtins, initializer edge cases), REPL `.`- and `%`-commands,
-madcide Markdown and git views, and one `.deb` per Ubuntu release.
+madcide Markdown and git views, and one `.deb` per Ubuntu release. A final
+round of madcide and Chthonia polish lands on top: the editor grows a
+buffer-tab strip, Help opens as an editor tab, the one-entry pane is named the
+REPL and keeps its scroll-back, and the Windows-zip install gate tests
+adjacency binding again.
 
 ### ui_web: A content node's tab strip stays drawn across frames — madcide's editor shows its buffer tabs
 
