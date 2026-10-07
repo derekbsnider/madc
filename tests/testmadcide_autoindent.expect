@@ -1,0 +1,10 @@
+open: int f(void) {|\t
+copy: int f(void) {|\tint x = 1;|\t
+close: int f(void) {|\tint x = 1;|}
+after: int f(void) {|\tint x = 1;|}|x
+undo: int f(void) {|\tint x = 1;|\t
+split:     a|    b
+toggle: Autoindent off. kept=true
+off: \tif (x) {|}
+options row: true
+toggle: Autoindent on.

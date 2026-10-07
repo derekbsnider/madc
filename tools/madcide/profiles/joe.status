@@ -9,11 +9,11 @@
 # its AST-backed enclosing function here — exact where JOE's is a
 # textual backward heuristic) · %y the active VIEW name in JOE's
 # "(syntax)" seat · %G the git branch, `*` when the buffer differs from its
-# last commit (a madcide seat; joerc has no letter for it) · %% a literal
-# percent.
+# last commit (a madcide seat; joerc has no letter for it) · %I "A" while
+# autoindent is on · %% a literal percent.
 #
 # Unsupported joerc escapes render EMPTY and light up as their features
-# land (%T overtype, %W wordwrap, %I autoindent, %X rectangle, %M macro,
+# land (%T overtype, %W wordwrap, %X rectangle, %M macro,
 # %S shell, ...). \i..\l attribute escapes are consumed — the row
 # renders inverse whole-line; intra-line styling is a named seat.
 lmsg \i%k%T%W%I%X %n %m%y%R %M %x

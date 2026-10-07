@@ -66,6 +66,8 @@ Edit -
 Edit indent Indent Lines [editable]
 Edit dedent Dedent Lines [editable]
 Edit togglecomment Toggle Comment [editable]
+Edit -
+Edit autoindent Toggle Autoindent
 
 Search find Find…
 Search findnext Find Next

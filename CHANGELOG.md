@@ -81,6 +81,21 @@ Four fixes from Cyan Ogilvie's upstream pull requests. On x86-64, a variadic cal
 
 Under `-pedantic`, `c2m` previously died with SIGSEGV on `int x = 1;` because attribute parsing returned NULL and the declaration appended it as an AST child; it now returns the error node after clearing the asm part, so a second declarator (`int x = 1, y = 5;`) no longer shares the first's asm node (`x + y` had come out 10). Separately, a numeric literal's range check now clears errno immediately before each `strtoull`/`strtof`/`strtod`/`strtold` conversion and reads it right after, instead of once before node allocation, which under C11 7.5p3 may set errno even on success — the aarch64 `c2m` under qemu had reported a plain `1` as "number 1 is out of range" under `-pedantic`. Both cases now match `gcc -pedantic`.
 
+### madcide: Autoindent — Enter copies the line's indentation, one step deeper after a block opener
+
+Autoindent is on by default. Enter starts the new line with the indentation
+the current line has before the caret, so splitting an indented line keeps the
+indentation ahead of the split. After a line that ends in a block opener — `{`
+for C, C++, madc and the languages that share C's braces, `:` for Python — the
+new line gets one more tab. A block closer (`}`) typed first on a line blank up
+to the caret first removes one indentation step, as Edit ▸ Dedent does, and one
+undo takes back both the dedent and the character. The new Edit ▸ Toggle
+Autoindent command (`autoindent`, also the `I` row of `^T` Options) turns it off
+or on again and keeps the choice in settings.json's `"autoindent"`; JOE's status
+line shows `A` (`%I`) while it is on. The language's block delimiters come from
+`block_open_of` / `block_close_of`; a language the editor knows no block
+delimiters for (plain text, markup, data) just copies the line's indentation.
+
 ## [v0.102.1] — 2026-10-07
 
 The Ubuntu 24.04 packaging patch to v0.102.0. The `.deb` built on Ubuntu 24.04

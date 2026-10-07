@@ -18,7 +18,7 @@ enum ide_cmd : unsigned short
 {
     cmdNONE = 0,			// unbound chord / unknown name
     // ---- the command registry (profiles/default.menu) ----
-    cmdABOUT, cmdBEND, cmdBLOCKCOPY, cmdBLOCKDEL, cmdBLOCKMOVE, cmdBOTTOM, cmdBUFSEL,
+    cmdABOUT, cmdAUTOINDENT, cmdBEND, cmdBLOCKCOPY, cmdBLOCKDEL, cmdBLOCKMOVE, cmdBOTTOM, cmdBUFSEL,
     cmdBUILD, cmdCHECK, cmdCLOSE, cmdCLOSEALL, cmdCOLON, cmdCOPY, cmdCUT, cmdDEDENT,
     cmdDELLINE, cmdDELWORD, cmdDISCARD,
     cmdEDITFILE, cmdFIND, cmdFINDNEXT, cmdFONTLARGER, cmdFONTSMALLER, cmdFULLSCREEN, cmdGOTOLINE, cmdGROWW, cmdHELP, cmdHELPCONTENTS, cmdHELPTOPIC,
