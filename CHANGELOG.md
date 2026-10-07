@@ -2,6 +2,57 @@
 
 ## [Unreleased]
 
+## [v0.102.1] — 2026-10-07
+
+The Ubuntu 24.04 packaging patch to v0.102.0. The `.deb` built on Ubuntu 24.04
+and later carries an AppArmor profile, so madc's and madcide's windows — any
+`ui::` program run by `/usr/bin/madc` — get the user namespaces WebKit's bwrap
+sandbox needs; the release's `SHA256SUMS` names the `.deb` assets as GitHub
+stores them; and release tooling no longer stales the test lanes. Chthonia's
+packages each carry their own madc release — Chthonia is its own product, with
+nothing to install from madc.
+
+### packaging: The Ubuntu 24.04 .deb carries an AppArmor profile — madc's and madcide's windows get their user namespaces
+
+Ubuntu 24.04 and later set `kernel.apparmor_restrict_unprivileged_userns=1`,
+denying an unprofiled program the user namespaces WebKit's bwrap sandbox needs,
+so on a native 24.04 desktop madcide's window — and any `ui::` program run by
+`/usr/bin/madc` — died at its first rendered page with SIGTRAP, exit status 133
+(LP: #2046844); WSL, containers and Ubuntu 22.04 do not restrict them. The
+`.deb` built on Ubuntu 24.04 and later now installs `/etc/apparmor.d/madc`
+(profiles `madc` and `madcide`: unconfined plus userns for `/usr/bin/madc` and
+`/usr/bin/madcide`, the shape of Ubuntu's own WebKit-app profiles), loaded by
+postinst as `dh_apparmor` does. `package_install_gate.sh apparmor` proves it on
+the installed `.deb` with the restriction on: madc runs
+`tests/gui/ui_web_hello.mad` to its rendered page and madcide's window stays up
+15 s, while the control with the profile unloaded never renders (exit status
+133). On Chthonia's GitHub `ubuntu-24.04` runner with the restriction on, the
+same profile shape kept the window alive 15 s; `release.yml` runs the gate on
+the 24.04 runner.
+
+### release: SHA256SUMS names the .deb assets as GitHub stores them — one .deb per Ubuntu release makes 10 assets
+
+GitHub stores a `~` in a release asset's name as `.`, so v0.102.0's published
+`SHA256SUMS` listed `madc_0.102.0-1~ubuntu22.04_amd64.deb` while GitHub stored
+the asset as `madc_0.102.0-1.ubuntu22.04_amd64.deb`, and `sha256sum -c` failed
+for both debs. `attach-release` now renames the debs to the GitHub spelling
+before checksumming (the package Version keeps its `~`); the published v0.102.0
+`SHA256SUMS` was re-uploaded with the `.` names, hashes verified against the
+downloaded debs. `promote_release.sh` expected 9 assets; one `.deb` per Ubuntu
+release makes 10.
+
+### lane ledger: release tooling no longer stales the test lanes
+
+A packaging, release-archive or gate script change shares nothing with the
+source the test suite runs, yet every edit under `scripts/` staled every lane
+because they live there. `RELEASE_TOOLING` names those scripts; a lane's
+content is now `CODE_PATHS` less that set, plus what the lane itself runs
+(`lane_tools`: the brew lane its bottling, the darwin lane its native
+packaging). The release workflow's install gates prove packaging on every
+runner, and the gate's selftest now checks the table both ways. The brew lane
+never runs `package_install_gate.sh` and the darwin lane's recorded tally is
+the macOS suite, so neither stales on a packaging change.
+
 ## [v0.102.0] — 2026-10-07
 
 The Chthonia-split release: everything since v0.101.0, without Chthonia —
