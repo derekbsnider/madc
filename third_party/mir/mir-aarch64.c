@@ -170,6 +170,22 @@ void va_block_arg_builtin (void *res, void *p, size_t s, uint64_t ncase) {
 #endif
 }
 
+#if defined(__GNUC__) && (defined(__ELF__) || defined(__APPLE__))
+/* AOT object mode: the "mir.va_arg" / "mir.va_block_arg" imports of an emitted
+   object (mir-gen-aarch64.c) resolve to these, so a program defining a
+   variadic function links and loads (see mir-aot-export.h; the mir-x86_64.c
+   exports' twin). */
+#include "mir-aot-export.h"
+void *mir_va_arg_obj_export (void *p, uint64_t t) asm (MIR_AOT_SYM ("mir.va_arg"))
+  __attribute__ ((used));
+void *mir_va_arg_obj_export (void *p, uint64_t t) { return va_arg_builtin (p, t); }
+void mir_va_block_arg_obj_export (void *res, void *p, size_t s, uint64_t ncase)
+  asm (MIR_AOT_SYM ("mir.va_block_arg")) __attribute__ ((used));
+void mir_va_block_arg_obj_export (void *res, void *p, size_t s, uint64_t ncase) {
+  va_block_arg_builtin (res, p, s, ncase);
+}
+#endif
+
 void va_start_interp_builtin (MIR_context_t ctx MIR_UNUSED, void *p, void *a) {
   struct aarch64_va_list *va = p;
   va_list *vap = a;

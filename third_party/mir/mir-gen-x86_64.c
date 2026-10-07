@@ -867,6 +867,15 @@ static void *mir_arg_memcpy (void *dest, const void *src, size_t n) {
 }
 extern __typeof (mir_arg_memcpy) mir_arg_memcpy_obj_export asm ("mir.arg_memcpy")
   __attribute__ ((alias ("mir_arg_memcpy"), used));
+#elif defined(__APPLE__) && defined(__GNUC__)
+/* The same export on Mach-O: a wrapper under the '_'-prefixed label (see
+   mir-aot-export.h), as Mach-O has no alias attribute. */
+#include "mir-aot-export.h"
+void *mir_arg_memcpy_obj_export (void *dest, const void *src, size_t n)
+  asm (MIR_AOT_SYM ("mir.arg_memcpy")) __attribute__ ((used));
+void *mir_arg_memcpy_obj_export (void *dest, const void *src, size_t n) {
+  return memcpy (dest, src, n);
+}
 #endif
 
 static void get_builtin (gen_ctx_t gen_ctx, MIR_insn_code_t code, MIR_item_t *proto_item,
