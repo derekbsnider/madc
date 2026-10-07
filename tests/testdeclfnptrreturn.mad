@@ -17,6 +17,9 @@ static void h(int s) { (void)s; }
 
 int main(void)
 {
+	/* SIGINT starts at its default, whatever the run inherited: a shell's
+	   background job starts with it ignored, and `prev` would be SIG_IGN */
+	signal(2, (void (*)(int))0);
 	void (*prev)(int) = signal(2, h);
 	void (*now)(int) = signal(2, prev);
 	printf("signal: %d %d\n", prev == (void (*)(int))0, now == h);
