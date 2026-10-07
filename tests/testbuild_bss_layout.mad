@@ -1,0 +1,52 @@
+// A native image whose zero-fill data (bss) reaches past its data's file
+// pages: the segments after the data start at the data's MEMORY end, not
+// its file end. madc's Mach-O writer placed __LINKEDIT at the data's file
+// end, inside the bss range, and dyld refused the image ("vm range of
+// segment '__DATA' overlaps segment '__LINKEDIT'"; an executable was killed
+// at load) — libmadcide.dylib on Intel macOS, once its bss outgrew the
+// slack. Pins: a shared library with one word of data and 64 KiB of bss
+// (past a 16K arm64 page too) builds, opens, and reads and writes both.
+// Oracle: clang 18 / Apple clang `-dynamiclib` (and gcc 13 `-shared` on
+// Linux) over the same source, opened by a dlopen + dlsym host, print
+// `bss 7 65535`; ld64 places __LINKEDIT at vmaddr __DATA.vmaddr +
+// __DATA.vmsize with its fileoff at __DATA's file end.
+typedef long (*probe_fn)(long x);
+
+int main()
+{
+	var dir = "tmp/testbuild_bss_layout";
+	php::mkdir(dir.c_str());
+	var src = format("{}/madc_bss.mad", dir);
+	php::file_put_contents(src.c_str(),
+		"long madc_bss_seed = 5;\n"
+		"static char madc_bss_buf[65536];\n"
+		"extern \"C\" long madc_bss_probe(long x)\n"
+		"{\n"
+		"\tmadc_bss_buf[sizeof madc_bss_buf - 1] = (char)x;\n"
+		"\treturn madc_bss_seed + madc_bss_buf[sizeof madc_bss_buf - 1];\n"
+		"}\n"
+		"extern \"C\" long madc_bss_size(long x)\n"
+		"{\n"
+		"\treturn (long)sizeof madc_bss_buf - x;\n"
+		"}\n");
+	var lib = format("{}/madc_bss{}", dir, madc::library_suffix());
+	var d;
+	bool ok = madc::build_native(d, src.c_str(), "shared", lib.c_str());
+	println("built: ok={} rows={}", ok ? 1 : 0, php::count(d));
+	var why;
+	int64_t h = madc::library_open(format("./{}", lib), why);
+	println("open: {} why-null={}", h != 0 ? 1 : 0, why.is_null() ? 1 : 0);
+	if ( h != 0 )
+	{
+		probe_fn pf = (probe_fn)madc::library_symbol(h, "madc_bss_probe");
+		probe_fn sf = (probe_fn)madc::library_symbol(h, "madc_bss_size");
+		println("bss {} {}", pf(2), sf(1));
+		madc::library_close(h);
+	}
+	else
+		println("why: {}", why);
+	php::unlink(lib.c_str());
+	php::unlink(src.c_str());
+	php::rmdir(dir.c_str());
+	return 0;
+}

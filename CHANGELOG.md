@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### mir: Mach-O executable writer places the segments after __DATA at its memory end, not its file end
+
+A native Mach-O image whose zero-fill `__DATA` (bss) reaches past its data's
+file pages placed `__LINKEDIT` at the data's file end — inside the bss address
+range — and dyld refused the image ("vm range of segment '__DATA' overlaps
+segment '__LINKEDIT'"), killing an executable at load and failing a shared
+library's open (`libmadcide.dylib` on Intel macOS once its bss outgrew the
+slack). Past `__DATA` the file and the address space part ways as in ld64's
+layout: the extra carrier and `__LINKEDIT` now start at `__DATA`'s file end in
+the file and at its memory end (`vmaddr + vmsize`) in the address space. On a
+3-page-bss executable `otool -l` shows `__LINKEDIT` at vmaddr `0x100006000`,
+fileoff 12288, identical to ld64's; a shared library with one word of data and
+64 KiB of bss builds, opens, and reads and writes both, matching Apple clang
+`-dynamiclib` + a dlopen host.
+
 ## [v0.102.1] — 2026-10-07
 
 The bug-fix release for v0.102.0, carrying every fix banked since it rather
