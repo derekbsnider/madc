@@ -52,9 +52,21 @@
     return s;
   }
 
+  // The PAGE's own state classes on a node element — the workbench grid
+  // (makeWorkbench), the splitter's resizing / panel-max — which no op
+  // carries. elementFor writes the op's classes each frame and keeps these
+  // (el._own), so a frame never drops one: a `workbench` gone until the first
+  // region child was placed let a measure in between lay the page out with
+  // no grid, and the docked console's scroll was clamped near its top.
+  function ownClass(el, name, on) {
+    if (!el._own) el._own = new Set();
+    if (on) el._own.add(name); else el._own.delete(name);
+    el.classList.toggle(name, !!on);
+  }
+
   function makeWorkbench(container) {
     if (container.classList.contains('workbench')) return;
-    container.classList.add('workbench');
+    ownClass(container, 'workbench', true);
     // Siblings placed before the first region'd child arrived this cycle
     // were laid directly; they belong to the foot, ahead of what follows.
     var foot = slotOf(container, 'foot');
@@ -120,7 +132,7 @@
       var r = wb.getBoundingClientRect();
       // What sits below the panel (status bar, foot) / left of the sidebar (the rail).
       dragging = { foot: r.bottom - slot.bottom, rail: slot.left - r.left };
-      wb.classList.add('resizing');
+      ownClass(wb, 'resizing', true);
     });
     document.addEventListener('mousemove', function (e) {
       if (!dragging) return;
@@ -130,7 +142,7 @@
       if (!dragging) return;
       size(e);
       dragging = null;
-      wb.classList.remove('resizing');
+      ownClass(wb, 'resizing', false);
       store(varName, wb.style.getPropertyValue('--' + varName));
       postSize();
     });
@@ -139,11 +151,11 @@
         e.preventDefault(); e.stopPropagation();
         var cur = wb.style.getPropertyValue('--' + varName);
         if (wb.classList.contains('panel-max')) {
-          wb.classList.remove('panel-max');
+          ownClass(wb, 'panel-max', false);
           wb.style.setProperty('--' + varName, wb._panelBefore || '');
         } else {
           wb._panelBefore = cur;
-          wb.classList.add('panel-max');
+          ownClass(wb, 'panel-max', true);
           wb.style.setProperty('--' + varName, Math.round(wb.getBoundingClientRect().height * 0.85) + 'px');
         }
         store(varName, wb.style.getPropertyValue('--' + varName));
@@ -184,8 +196,13 @@
       el.dataset.key = op.key;
       nodes.set(op.key, el);
     }
-    el.className = 'node ' + op['class'] + (op.focus ? ' focus' : '') +
-                   (op.popup ? ' popup' : '') + (op.terminal ? ' terminal' : '');
+    // The op's classes, then the page's own (ownClass) — a key re-used for
+    // another kind sheds those with the rest of its furniture (below).
+    if (el._cls !== undefined && el._cls !== op['class']) el._own = null;
+    var cls = 'node ' + op['class'] + (op.focus ? ' focus' : '') +
+              (op.popup ? ' popup' : '') + (op.terminal ? ' terminal' : '');
+    if (el._own) el._own.forEach(function (c) { cls += ' ' + c; });
+    if (el.className !== cls) el.className = cls;
     // A key re-used for a different KIND of node — keys are tree paths, so
     // when a dialog closes the panel group shifts into its key and inherits
     // its element. The old kind's furniture (a dialog's title bar, option

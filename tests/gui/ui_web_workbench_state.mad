@@ -1,0 +1,123 @@
+// The page's own state on a node survives every frame (owner, Chthonia on
+// Windows and Ubuntu 22.04: "pressing enter" in the REPL pane scrolled it
+// back up). The root group is the workbench grid; the page marks it
+// `workbench` itself (makeWorkbench), and the panel splitter marks it
+// `panel-max` (a double-click) — classes no op carries. A frame that wrote
+// the node's class from the op alone dropped both: `workbench` came back
+// only when the first region child was placed, and a measure in between
+// (the theme's reportSize) laid the page out with no grid, so the docked
+// console grew past its content and its scroll was clamped near the top —
+// a frame that moved no caret never scrolled it back; `panel-max` never
+// came back, so a maximized panel forgot it at the next frame. Pins, in a
+// real page under Xvfb:
+//   1. the first paint scrolls the panel's console to its caret (the end);
+//   2. a frame that changes the theme and no line keeps it there;
+//   3. a double-clicked panel-max survives the next frame (its mark only:
+//      this app answers no viewsize, so the frame's size stands).
+// Oracle: the page's own contract — a frame that changes no line and no
+// caret leaves the view where it was (applyEdit's "never pulls a
+// wheel-scrolled view"); before the fix, step 2 printed bottom=0 and step 3
+// panelmax=0.
+long theme_n = 0;
+
+void compose(var &tree)
+{
+    var lines = "";
+    for ( long i = 1; i <= 60; i = i + 1 )
+	lines = format("{}line {}\n", lines, i);
+    long caret = strlen(lines.c_str());
+    var ch = { "caret": caret, "focus": 1 };
+    var con = { "role": "edit", "content": lines, "hints": ch };
+    var pkids = {};
+    pkids.push(con);
+    var ph = { "region": "panel", "size": 30 };
+    var panel = { "role": "group", "children": pkids, "hints": ph };
+    var eh = { "caret": 0, "region": "editor" };
+    var editor = { "role": "edit", "content": "int main() {}", "hints": eh };
+    var sh = { "region": "statusbar" };
+    var status = { "role": "status", "content": "untitled", "hints": sh };
+    var kids = {};
+    kids.push(editor);
+    kids.push(status);
+    kids.push(panel);
+    var bg = theme_n == 0 ? "#1b1d24" : "#1b1d25";
+    var theme = { "bg": bg };
+    var rh = { "theme": theme };
+    var root = { "role": "group", "children": kids, "hints": rh };
+    tree = root;
+}
+
+// The console's view and the workbench's page-owned mark, as one snapshot.
+void probe(long t)
+{
+    ui::eval_page(t,
+	"(function(){var e=document.querySelector('.slot[data-slot=panel] .edit');"
+	"var wb=document.querySelector('.node.group');"
+	"window.madc(JSON.stringify({kind:'snapshot',"
+	"text:'bottom='+(e.scrollTop+e.clientHeight>=e.scrollHeight-2?1:0)"
+	"+' scrolled='+(e.scrollTop>0?1:0)"
+	"+' panelmax='+(wb.classList.contains('panel-max')?1:0)}));})()");
+}
+
+// The workbench's page-owned maximize mark alone.
+void probe_max(long t)
+{
+    ui::eval_page(t,
+	"(function(){var wb=document.querySelector('.node.group');"
+	"window.madc(JSON.stringify({kind:'snapshot',"
+	"text:'panelmax='+(wb.classList.contains('panel-max')?1:0)}));})()");
+}
+
+int main()
+{
+    long w = ui::world_new();
+    long t = ui::open(ui::WEB);
+    if ( !t )
+	return 1;
+    println("WBSTATE open");
+    var tree;
+    var ev;
+    int stage = 0;
+    while ( ui::event(ev, t, w) )
+    {
+	if ( ev["event"] == "resize" )
+	{
+	    if ( stage != 0 )
+		continue;
+	    stage = 1;
+	    compose(tree);
+	    ui::render(t, w, tree);		// the first paint: the caret's end
+	    probe(t);
+	}
+	else if ( ev["event"] == "snapshot" )
+	{
+	    println("WBSTATE {} {}", stage, ev["text"]);
+	    if ( stage == 1 )
+	    {
+		// A theme change, no line and no caret moved.
+		stage = 2;
+		theme_n = 1;
+		compose(tree);
+		ui::render(t, w, tree);
+		probe(t);
+	    }
+	    else if ( stage == 2 )
+	    {
+		// The page's own maximize, then a frame.
+		stage = 3;
+		ui::eval_page(t,
+		    "(function(){var s=document.querySelector('.splitter[data-for=panel]');"
+		    "s.dispatchEvent(new MouseEvent('dblclick',{bubbles:true}));})()");
+		compose(tree);
+		ui::render(t, w, tree);
+		probe_max(t);
+	    }
+	    else
+		break;
+	}
+    }
+    ui::close(t);
+    ui::world_close(w);
+    println("WBSTATE closed");
+    return 0;
+}
