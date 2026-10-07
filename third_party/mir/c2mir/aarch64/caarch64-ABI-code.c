@@ -8,9 +8,84 @@ typedef int target_arg_info_t;
 static void target_init_arg_vars (c2m_ctx_t c2m_ctx MIR_UNUSED,
                                   target_arg_info_t *arg_info MIR_UNUSED) {}
 
+static MIR_type_t complex_component_mir_type (struct type *type);
+
+/* Homogeneous floating-point aggregates (HFAs, AAPCS64 4.3.5): structs/unions/
+   arrays of 1-4 members, all of the same float, double or long double type,
+   with no padding; a _Complex T member counts as two T members (C.1, C.2).
+   They are passed in FP registers (MIR_T_BLK + 1..3 block args, see
+   mir-aarch64.h) and returned in v0-v3.  */
+static int hfa_walk (c2m_ctx_t c2m_ctx, struct type *type, MIR_type_t *el, mir_size_t *count) {
+  MIR_type_t t;
+  mir_size_t n = 1;
+
+  switch (type->mode) {
+  case TM_BASIC:
+    if (complex_type_p (type)) {
+      t = complex_component_mir_type (type);
+      n = 2;
+    } else if (type->u.basic_type == TP_FLOAT || type->u.basic_type == TP_DOUBLE
+               || type->u.basic_type == TP_LDOUBLE) {
+      t = get_mir_type (c2m_ctx, type);
+    } else {
+      return FALSE;
+    }
+    if (*el != MIR_T_UNDEF && *el != t) return FALSE;
+    *el = t;
+    *count += n;
+    return TRUE;
+  case TM_ARR: {
+    mir_size_t el_size = type_size (c2m_ctx, type->u.arr_type->el_type);
+
+    n = 0;
+    if (!hfa_walk (c2m_ctx, type->u.arr_type->el_type, el, &n) || el_size == 0) return FALSE;
+    *count += n * (type_size (c2m_ctx, type) / el_size);
+    return TRUE;
+  }
+  case TM_STRUCT:
+  case TM_UNION: {
+    mir_size_t max = 0;
+
+    for (node_t member = NL_HEAD (NL_EL (type->u.tag_type->u.ops, 1)->u.ops); member != NULL;
+         member = NL_NEXT (member))
+      if (member->code == N_MEMBER) {
+        decl_t decl = member->attr;
+
+        n = 0;
+        if (decl->bit_offset >= 0 || !hfa_walk (c2m_ctx, decl->decl_spec.type, el, &n))
+          return FALSE;
+        if (type->mode == TM_STRUCT)
+          *count += n;
+        else if (max < n)
+          max = n;
+      }
+    *count += max;
+    return TRUE;
+  }
+  default: return FALSE;
+  }
+}
+
+/* Return the member count of HFA aggregate TYPE and set up its member MIR type,
+   or return 0.  A bare _Complex is not an aggregate here: its result is two FP
+   results on every target (simple_add_res_proto).  */
+static int hfa_members (c2m_ctx_t c2m_ctx, struct type *type, MIR_type_t *el_type) {
+  MIR_type_t el = MIR_T_UNDEF;
+  mir_size_t count = 0;
+
+  if (type->mode != TM_STRUCT && type->mode != TM_UNION) return 0;
+  if (!hfa_walk (c2m_ctx, type, &el, &count) || count < 1 || count > 4
+      || type_size (c2m_ctx, type) != count * _MIR_type_size (c2m_ctx->ctx, el))
+    return 0;
+  *el_type = el;
+  return (int) count;
+}
+
 static int target_return_by_addr_p (c2m_ctx_t c2m_ctx, struct type *ret_type) {
+  MIR_type_t el_type;
+
   return ((ret_type->mode == TM_STRUCT || ret_type->mode == TM_UNION)
-          && type_size (c2m_ctx, ret_type) > 2 * 8);
+          && type_size (c2m_ctx, ret_type) > 2 * 8 && hfa_members (c2m_ctx, ret_type, &el_type) == 0);
 }
 
 static int reg_aggregate_size (c2m_ctx_t c2m_ctx, struct type *type) {
@@ -32,8 +107,13 @@ static int reg_aggregate_size (c2m_ctx_t c2m_ctx, struct type *type) {
 static void target_add_res_proto (c2m_ctx_t c2m_ctx, struct type *ret_type,
                                   target_arg_info_t *arg_info, VARR (MIR_type_t) * res_types,
                                   VARR (MIR_var_t) * arg_vars) {
-  int size;
+  MIR_type_t el_type;
+  int size, n;
 
+  if ((n = hfa_members (c2m_ctx, ret_type, &el_type)) != 0) {
+    for (int i = 0; i < n; i++) VARR_PUSH (MIR_type_t, res_types, el_type);
+    return;
+  }
   if ((size = reg_aggregate_size (c2m_ctx, ret_type)) < 0) {
     simple_add_res_proto (c2m_ctx, ret_type, arg_info, res_types, arg_vars);
     return;
@@ -47,8 +127,14 @@ static int target_add_call_res_op (c2m_ctx_t c2m_ctx, struct type *ret_type,
                                    target_arg_info_t *arg_info, size_t call_arg_area_offset) {
   gen_ctx_t gen_ctx = c2m_ctx->gen_ctx;
   MIR_context_t ctx = c2m_ctx->ctx;
-  int size;
+  MIR_type_t el_type;
+  int size, n;
 
+  if ((n = hfa_members (c2m_ctx, ret_type, &el_type)) != 0) {
+    for (int i = 0; i < n; i++)
+      VARR_PUSH (MIR_op_t, call_ops, get_new_temp (c2m_ctx, el_type).mir_op);
+    return n;
+  }
   if ((size = reg_aggregate_size (c2m_ctx, ret_type)) < 0)
     return simple_add_call_res_op (c2m_ctx, ret_type, arg_info, call_arg_area_offset);
   if (size == 0) return -1;
@@ -60,11 +146,32 @@ static int target_add_call_res_op (c2m_ctx_t c2m_ctx, struct type *ret_type,
   return size <= 8 ? 1 : 2;
 }
 
+/* Move N HFA members of type EL_TYPE between REGS and the aggregate at MEM.  */
+static void hfa_load_store (c2m_ctx_t c2m_ctx, MIR_type_t el_type, int n, MIR_op_t *regs,
+                            MIR_op_t mem, int load_p) {
+  gen_ctx_t gen_ctx = c2m_ctx->gen_ctx;
+  MIR_context_t ctx = c2m_ctx->ctx;
+  mir_size_t el_size = _MIR_type_size (ctx, el_type);
+
+  for (int i = 0; i < n; i++) {
+    MIR_op_t mem_op = mem_part_op (ctx, mem, el_type, (MIR_disp_t) (i * el_size));
+    MIR_append_insn (ctx, curr_func,
+                     MIR_new_insn (ctx, tp_mov (el_type), load_p ? regs[i] : mem_op,
+                                   load_p ? mem_op : regs[i]));
+  }
+}
+
 static op_t target_gen_post_call_res_code (c2m_ctx_t c2m_ctx, struct type *ret_type, op_t res,
                                            MIR_insn_t call, size_t call_ops_start) {
   gen_ctx_t gen_ctx = c2m_ctx->gen_ctx;
-  int size;
+  MIR_type_t el_type;
+  int size, n;
 
+  if ((n = hfa_members (c2m_ctx, ret_type, &el_type)) != 0) {
+    hfa_load_store (c2m_ctx, el_type, n, &VARR_ADDR (MIR_op_t, call_ops)[call_ops_start + 2],
+                    res.mir_op, FALSE);
+    return res;
+  }
   if ((size = reg_aggregate_size (c2m_ctx, ret_type)) < 0)
     return simple_gen_post_call_res_code (c2m_ctx, ret_type, res, call, call_ops_start);
   if (size != 0)
@@ -75,8 +182,15 @@ static op_t target_gen_post_call_res_code (c2m_ctx_t c2m_ctx, struct type *ret_t
 
 static void target_add_ret_ops (c2m_ctx_t c2m_ctx, struct type *ret_type, op_t res) {
   gen_ctx_t gen_ctx = c2m_ctx->gen_ctx;
-  int i, size;
+  MIR_type_t el_type;
+  int i, size, n;
 
+  if ((n = hfa_members (c2m_ctx, ret_type, &el_type)) != 0) {
+    assert (res.mir_op.mode == MIR_OP_MEM && VARR_LENGTH (MIR_op_t, ret_ops) == 0);
+    for (i = 0; i < n; i++) VARR_PUSH (MIR_op_t, ret_ops, get_new_temp (c2m_ctx, el_type).mir_op);
+    hfa_load_store (c2m_ctx, el_type, n, VARR_ADDR (MIR_op_t, ret_ops), res.mir_op, TRUE);
+    return;
+  }
   if ((size = reg_aggregate_size (c2m_ctx, ret_type)) < 0) {
     simple_add_ret_ops (c2m_ctx, ret_type, res);
     return;
@@ -87,98 +201,64 @@ static void target_add_ret_ops (c2m_ctx_t c2m_ctx, struct type *ret_type, op_t r
   gen_multiple_load_store (c2m_ctx, ret_type, VARR_ADDR (MIR_op_t, ret_ops), res.mir_op, TRUE);
 }
 
-static MIR_type_t target_get_blk_type (c2m_ctx_t c2m_ctx MIR_UNUSED,
-                                       struct type *arg_type MIR_UNUSED) {
-  return MIR_T_BLK; /* one BLK is enough */
+/* Block type for an argument passed by value: an HFA block type (MIR_T_BLK + 1,
+   2, 3 for float, double, long double members) or MIR_T_BLK.  _Complex T is an
+   HFA of two T (AAPCS64 C.1, C.2): it travels in two consecutive FP registers --
+   s0,s1 / d0,d1 / q0,q1 -- or, when they run out, whole on the stack, the same
+   lane as struct { T re, im; }, named or variadic.  */
+static MIR_type_t target_get_blk_type (c2m_ctx_t c2m_ctx, struct type *arg_type) {
+  MIR_type_t el_type;
+
+  if (complex_type_p (arg_type))
+    el_type = complex_component_mir_type (arg_type);
+  else if (hfa_members (c2m_ctx, arg_type, &el_type) == 0)
+    return MIR_T_BLK;
+  return el_type == MIR_T_F ? MIR_T_BLK + 1 : el_type == MIR_T_D ? MIR_T_BLK + 2 : MIR_T_BLK + 3;
 }
 
-/* _Complex T is a Homogeneous Floating-point Aggregate (AAPCS64 C.1, C.2):
-   its two components travel in two consecutive SIMD/FP registers -- s0,s1 /
-   d0,d1 / q0,q1 -- never in GPRs.  c2mir keeps complex values memory-shaped
-   (memory_value_type_p), so the argument is split into two scalar FP args at
-   the call and gathered back into the parameter's frame home in the callee's
-   prologue; the return side already travels as two FP results.  The BLK lane
-   the simple_* helpers take put the 8 / 16 bytes in x0(:x1) instead: a libm
-   callee compiled by clang (conjf, crealf, cimag) read s0/s1 -- garbage --
-   and the tests' own abort() on the wrong value read as a MIR crash
-   (dispatch #9: testbuiltinconjf, testbuiltincomplexparts).  Fidelity note:
-   when the FP registers are exhausted AAPCS64 moves the WHOLE HFA to the
-   stack; two independent scalar args may split -- both MIR sides agree, and
-   no libm entry takes nine FP arguments. */
 static MIR_type_t complex_component_mir_type (struct type *type) {
   return (type->u.basic_type == TP_CFLOAT    ? MIR_T_F
           : type->u.basic_type == TP_CDOUBLE ? MIR_T_D
                                              : MIR_T_LD);
 }
 
-static int complex_imag_offset (struct type *type) {
-  return (type->u.basic_type == TP_CFLOAT    ? (int) sizeof (mir_float)
-          : type->u.basic_type == TP_CDOUBLE ? (int) sizeof (mir_double)
-                                             : (int) sizeof (mir_ldouble));
+/* TRUE for an argument that takes an HFA block: every other one keeps the
+   generic lane (simple_add_arg_proto / simple_add_call_arg_op).  */
+static int hfa_arg_p (c2m_ctx_t c2m_ctx, struct type *arg_type) {
+  return ((arg_type->mode == TM_STRUCT || arg_type->mode == TM_UNION || complex_type_p (arg_type))
+          && target_get_blk_type (c2m_ctx, arg_type) != MIR_T_BLK);
 }
 
 static void target_add_arg_proto (c2m_ctx_t c2m_ctx, const char *name, struct type *arg_type,
                                   target_arg_info_t *arg_info, VARR (MIR_var_t) * arg_vars) {
   MIR_var_t var;
 
-  if (complex_type_p (arg_type)) {
-    var.type = complex_component_mir_type (arg_type);
-    var.name = gen_get_indexed_name (c2m_ctx, name, 0);
-    VARR_PUSH (MIR_var_t, arg_vars, var);
-    var.name = gen_get_indexed_name (c2m_ctx, name, 1);
-    VARR_PUSH (MIR_var_t, arg_vars, var);
+  if (!hfa_arg_p (c2m_ctx, arg_type)) {
+    simple_add_arg_proto (c2m_ctx, name, arg_type, arg_info, arg_vars);
     return;
   }
-  simple_add_arg_proto (c2m_ctx, name, arg_type, arg_info, arg_vars);
+  var.name = name;
+  var.type = target_get_blk_type (c2m_ctx, arg_type);
+  var.size = type_size (c2m_ctx, arg_type);
+  VARR_PUSH (MIR_var_t, arg_vars, var);
 }
 
 static void target_add_call_arg_op (c2m_ctx_t c2m_ctx, struct type *arg_type,
                                     target_arg_info_t *arg_info, op_t arg) {
   gen_ctx_t gen_ctx = c2m_ctx->gen_ctx;
 
-  /* Declared parameters only: a _Complex VARARG stays a block -- MIR's aarch64
-     va_block_arg reads the GP/stack area, so the two sides of a MIR<->MIR
-     variadic call keep agreeing (AAPCS64 conformance for variadic HFAs is a
-     recorded refinement, together with the va_arg side). */
-  if (complex_type_p (arg_type) && !call_arg_vararg_p) {
-    MIR_type_t ct = complex_component_mir_type (arg_type);
-
-    assert (arg.mir_op.mode == MIR_OP_MEM);
-    VARR_PUSH (MIR_op_t, call_ops, complex_load (c2m_ctx, arg, ct, 0).mir_op);
-    VARR_PUSH (MIR_op_t, call_ops,
-               complex_load (c2m_ctx, arg, ct, complex_imag_offset (arg_type)).mir_op);
+  if (!hfa_arg_p (c2m_ctx, arg_type)) {
+    simple_add_call_arg_op (c2m_ctx, arg_type, arg_info, arg);
     return;
   }
-  simple_add_call_arg_op (c2m_ctx, arg_type, arg_info, arg);
+  assert (arg.mir_op.mode == MIR_OP_MEM);
+  arg = mem_to_address (c2m_ctx, arg, TRUE);
+  VARR_PUSH (MIR_op_t, call_ops,
+             MIR_new_mem_op (c2m_ctx->ctx, target_get_blk_type (c2m_ctx, arg_type),
+                             type_size (c2m_ctx, arg_type), arg.mir_op.u.reg, 0, 1));
 }
 
 static int target_gen_gather_arg (c2m_ctx_t c2m_ctx, const char *name, struct type *arg_type,
-                                  decl_t param_decl, target_arg_info_t *arg_info MIR_UNUSED) {
-  gen_ctx_t gen_ctx = c2m_ctx->gen_ctx;
-  MIR_context_t ctx = c2m_ctx->ctx;
-  MIR_type_t ct;
-  MIR_reg_t fp_reg;
-  MIR_alias_t alias;
-  op_t home;
-
-  /* every other register-class parameter that needs a gather -- the 128-bit
-     vector -- is the generic lane's (v128_gen_gather_arg) */
-  if (!complex_type_p (arg_type))
-    return simple_gen_gather_arg (c2m_ctx, name, arg_type, param_decl, arg_info);
-  ct = complex_component_mir_type (arg_type);
-  fp_reg = MIR_reg (ctx, FP_NAME, curr_func->u.func);
-  alias = get_type_alias (c2m_ctx, arg_type);
-  home = new_op (param_decl,
-                 MIR_new_alias_mem_op (ctx, ct, param_decl->offset, fp_reg, 0, 1, alias, 0));
-  emit2 (c2m_ctx, tp_mov (ct), home.mir_op,
-         MIR_new_reg_op (ctx, get_reg_var (c2m_ctx, MIR_T_UNDEF,
-                                           gen_get_indexed_name (c2m_ctx, name, 0), NULL)
-                                .reg));
-  home.mir_op = MIR_new_alias_mem_op (ctx, ct, param_decl->offset + complex_imag_offset (arg_type),
-                                      fp_reg, 0, 1, alias, 0);
-  emit2 (c2m_ctx, tp_mov (ct), home.mir_op,
-         MIR_new_reg_op (ctx, get_reg_var (c2m_ctx, MIR_T_UNDEF,
-                                           gen_get_indexed_name (c2m_ctx, name, 1), NULL)
-                                .reg));
-  return TRUE;
+                                  decl_t param_decl, target_arg_info_t *arg_info) {
+  return simple_gen_gather_arg (c2m_ctx, name, arg_type, param_decl, arg_info);
 }
