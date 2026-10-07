@@ -747,8 +747,8 @@ bool invoke_program_zero_arg_function(Program &pgm,
     }
 }
 
-#ifndef _WIN32
-// Subprocess-machinery consumer only (child stdout/stderr read-back).
+// A whole file's bytes ("" when it does not open): the subprocess
+// machinery's stdout/stderr read-back, and a file-opened parse handle's text.
 std::string read_text_file(const std::string &path)
 {
     std::ifstream is(path.c_str(), std::ios::binary);
@@ -756,7 +756,6 @@ std::string read_text_file(const std::string &path)
     os << is.rdbuf();
     return os.str();
 }
-#endif
 
 bool text_list_contains(const std::vector<std::string> &items, const std::string &value)
 {
@@ -5071,6 +5070,10 @@ struct parse_tu_state
 {
     ::Program *child;
     std::string display_name;
+    // The text the child was parsed from (open, refresh, a checked refresh
+    // it accepted): the lexical feeder colours what the parse did not reach
+    // (internal_program_parse_spans).
+    std::string source_text;
     // L1b body-node id registry (snapshot-stable handles; spec §6.3). Body
     // nodes are TokenBase* (not DataDefs), so they need their own id space,
     // partitioned from L1's type-ids by GRAPH_BODY_ID_BASE. Populated lazily
@@ -5419,6 +5422,7 @@ int64_t internal_program_parse_open(::Program &self,
     self.clear_error();
     parse_tu_state *st = new parse_tu_state();
     st->display_name = display_name;
+    st->source_text = source_text;
     st->standard = standard;
     st->child = new ::Program(self.engine);
     parse_handle_child_init(*st->child, *st);
@@ -5445,6 +5449,7 @@ static int64_t parse_open_file_with(::Program &self, const std::string &path,
     self.clear_error();
     parse_tu_state *st = new parse_tu_state();
     st->display_name = path;
+    st->source_text = read_text_file(path);
     st->child = new ::Program(self.engine);
     parse_handle_child_init(*st->child, *st);
     st->child->registration_policy =
@@ -5487,6 +5492,7 @@ bool internal_program_parse_refresh(::Program &self, int64_t handle,
     // fresh child in the same slot — the handle's identity survives.
     delete st->child;
     st->child = new ::Program(self.engine);
+    st->source_text = source_text;
     parse_handle_child_init(*st->child, *st);
     compile_source_child_frontend(self, *st->child, source_text,
 				  st->display_name);
@@ -5562,6 +5568,7 @@ bool internal_program_parse_refresh_checked(::Program &self, int64_t handle,
 	return true;					// would accept — nothing swapped, cand deleted here
     delete st->child;
     st->child = cand.release();
+    st->source_text = source_text;
     st->body_nodes.clear();
     st->body_ids.clear();
     ++st->generation;
@@ -5801,6 +5808,78 @@ static void highlight_token_rows(::Program &child,
 			    rows);
 }
 
+// The classifier's LEXICAL feeder: the text lexed alone — no header
+// ingested, its macros unexpanded identifiers (the lexical truth) —
+// classified, the child discarded. lex_spans' rows, and the rows a parse
+// that stopped short completes with.
+static void lexical_highlight_rows(::Program &owner, const std::string &source_text,
+				   const std::string &disp, std::vector<madc::value> &rows)
+{
+    ::Program child(owner.engine);
+    child.keep_trivia = true;		// comment spans ride leading trivia
+    child.skip_includes = true;		// lex ONLY the buffer text
+    {
+	DiagnosticRenderMute mute;
+	child.tokenize_buffer(source_text, disp);
+    }
+    std::map<long, std::set<std::string> > no_heads;
+    highlight_token_rows(child, disp, no_heads, rows);
+}
+
+// An integer field of a highlight_row row (0 when absent).
+static int64_t highlight_row_field(const madc::value &r, const char *key)
+{
+    const std::map<std::string, madc::value> &o = r.as_object();
+    std::map<std::string, madc::value>::const_iterator i = o.find(key);
+    return i == o.end() ? 0 : i->second.as_integer();
+}
+
+// How far a parse's OWN stream reached: the furthest (line, 0-based column
+// just past it) any of its own-file tokens or emitted rows ends at.
+static void parse_stream_reach(::Program &child, const std::string &disp,
+			       const std::vector<madc::value> &rows, long &line, long &col)
+{
+    line = 0;
+    col = 0;
+    for ( TokenBase *t : child.tokens )
+    {
+	if ( !t || !t->file || disp != t->file || t->is_synthetic_position() )
+	    continue;
+	int el = 0, ec = 0;
+	madc_token_end(t, el, ec);
+	if ( el > line || (el == line && ec > col) )
+	{
+	    line = el;
+	    col = ec;
+	}
+    }
+    for ( const madc::value &r : rows )
+    {
+	long rl = (long)highlight_row_field(r, "line");
+	long re = (long)(highlight_row_field(r, "column") + highlight_row_field(r, "length"));
+	if ( rl > line || (rl == line && re > col) )
+	{
+	    line = rl;
+	    col = re;
+	}
+    }
+}
+
+// Does `text` hold anything but whitespace from (1-based line, 0-based
+// column) on?
+static bool text_continues_after(const std::string &text, long line, long col)
+{
+    size_t at = 0;
+    for ( long l = 1; l < line && at < text.size(); ++at )
+	if ( text[at] == '\n' )
+	    ++l;
+    at += (size_t)(col > 0 ? col : 0);
+    for ( ; at < text.size(); ++at )
+	if ( text[at] != ' ' && text[at] != '\t' && text[at] != '\r' && text[at] != '\n' )
+	    return true;
+    return false;
+}
+
 bool internal_program_parse_spans(int64_t handle, madc::value &out)
 {
     out = value();
@@ -5815,6 +5894,24 @@ bool internal_program_parse_spans(int64_t handle, madc::value &out)
 	    fn_heads[(long)tf->line].insert(tf->var.name);
     std::vector<madc::value> rows;
     highlight_token_rows(child, st->display_name, fn_heads, rows);
+    // The parse REFINES the lexical colour and never removes it: a parse
+    // that stopped short — a header that does not open, a syntax error
+    // mid-edit — holds no tokens past where it stopped, so the text it did
+    // not reach keeps the lexical feeder's rows.
+    long reach_line = 0, reach_col = 0;
+    parse_stream_reach(child, st->display_name, rows, reach_line, reach_col);
+    if ( text_continues_after(st->source_text, reach_line, reach_col) )
+    {
+	std::vector<madc::value> lex;
+	lexical_highlight_rows(child, st->source_text, st->display_name, lex);
+	for ( const madc::value &r : lex )
+	{
+	    long rl = (long)highlight_row_field(r, "line");
+	    if ( rl > reach_line
+		 || (rl == reach_line && highlight_row_field(r, "column") >= reach_col) )
+		rows.push_back(r);
+	}
+    }
     out = value::make_array(rows);
     return true;
 }
@@ -7779,8 +7876,9 @@ int64_t internal_program_parse_run(int64_t handle)
 // — from the buffer text ONLY. skip_includes lexes the TU without
 // ingesting headers (their macros stay unexpanded identifiers — the
 // lexical truth), so this is milliseconds where a C++ parse is seconds;
-// the full parse's spans REPLACE these when it lands (type / function
-// join then). No handle, no retained state — lex, classify, discard.
+// the full parse's spans refine these when it lands (type / function join
+// then; what the parse did not reach keeps these — parse_spans). No
+// handle, no retained state — lex, classify, discard.
 bool internal_program_lex_spans(::Program &self,
 				const std::string &source_text,
 				const std::string &display_name,
@@ -7789,19 +7887,11 @@ bool internal_program_lex_spans(::Program &self,
     out = value();
     self.clear_diagnostics();
     self.clear_error();
-    ::Program child(self.engine);
-    child.keep_trivia = true;		// comment spans ride leading trivia
-    child.skip_includes = true;		// lex ONLY the buffer text
     // tokenize_buffer's empty-name rule, mirrored so the token-file
-    // filter below matches what the tokens were stamped with.
+    // filter matches what the tokens were stamped with.
     std::string disp = display_name.empty() ? "<memory>" : display_name;
-    {
-	DiagnosticRenderMute mute;
-	child.tokenize_buffer(source_text, disp);
-    }
-    std::map<long, std::set<std::string> > no_heads;
     std::vector<madc::value> rows;
-    highlight_token_rows(child, disp, no_heads, rows);
+    lexical_highlight_rows(self, source_text, disp, rows);
     out = value::make_array(rows);
     return true;
 }
