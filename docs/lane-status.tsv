@@ -9,10 +9,10 @@ aarch64-ld	yes	8a3c5518b07a	2026-10-07	aarch64_ldouble_lane GREEN — seam_batte
 brew-linux	release	8a3c5518b07a	2026-10-07	2032/0/0TO/9skip - scripts/brew_lane.sh on the container at 8a3c5518b content: brew install --build-bottle + brew bottle + the 0.102.0 keg POURED back + brew test green; runpath resolves libmadc.so.0 from the keg and from HOMEBREW_PREFIX/lib; suite on the linked madc (testdatadir_install_first green on the keg)
 genuine-win	release	8a3c5518b07a	2026-10-07	1954/0/0TO/87skip — the FULL suite on the owner Windows 11 box (scripts/win_suite.sh from the container, the packed bin/release-windows/madc.exe at 8a3c5518b content, MADC_SKIP_EXT="win64 win"); win_suite rc=0
 tests-jit	batch	8a3c5518b07a	2026-10-07	2032 passed, 0 failed, 0 timed out, 9 skipped (tests/ JIT, batch_lane at 8a3c5518b content)
-c-testsuite	commit	6dde093062de	2026-10-07	c-testsuite: 220 passed, 0 failed (0 outside baseline, 0 baseline tests now passing)
-c-torture	commit	6dde093062de	2026-10-07	c-torture: 1617 passed, 2 compile-failed, 5 runtime-failed, 0 timed out, 61 skipped (--std=c17) c-torture: 7 failing, 0 outside baseline, 0 baseline tests now passing
-c2mir-tests	commit	6dde093062de	2026-10-07	c2mir-tests: 359 passed, 0 failed, 4 skipped (0 outside baseline, 0 baseline tests now passing)
-gui	commit	6dde093062de	2026-10-07	gui: 30 passed, 0 failed, 0 timed out, 0 skipped | EXE: 30 passed, 0 failed (of 30 JIT-passing tests) | OBJ: 30 passed, 0 failed (of 30 JIT-passing tests)
-gxx-c++11	no	6dde093062de	2026-10-07	gxx-c++11: 1505 passed, 441 compile-failed, 0 runtime-failed, 0 timed out, 2722 skipped gxx-c++11: 441 failing, 0 outside baseline, 0 baseline tests now passing
-index-c	yes	6dde093062de	2026-10-07	index-c: 50/50 tasks OK, 0 failed (rc=0) [-O2] — Summary: 83.8167s, 50, 50, 0
-commonmark	commit	6dde093062de	2026-10-07	commonmark: 664 passed, 6 failed (of 670 examples) (0 outside baseline, 0 baseline examples now passing)
+c-testsuite	commit	391bbc52a7d9	2026-10-07	c-testsuite: 220 passed, 0 failed (0 outside baseline, 0 baseline tests now passing)
+c-torture	commit	391bbc52a7d9	2026-10-07	c-torture: 1617 passed, 2 compile-failed, 5 runtime-failed, 0 timed out, 61 skipped (--std=c17) c-torture: 7 failing, 0 outside baseline, 0 baseline tests now passing
+c2mir-tests	commit	391bbc52a7d9	2026-10-07	c2mir-tests: 359 passed, 0 failed, 4 skipped (0 outside baseline, 0 baseline tests now passing)
+gui	commit	391bbc52a7d9	2026-10-07	gui: 30 passed, 0 failed, 0 timed out, 0 skipped | EXE: 30 passed, 0 failed (of 30 JIT-passing tests) | OBJ: 30 passed, 0 failed (of 30 JIT-passing tests)
+gxx-c++11	no	391bbc52a7d9	2026-10-07	gxx-c++11: 1505 passed, 441 compile-failed, 0 runtime-failed, 0 timed out, 2722 skipped gxx-c++11: 441 failing, 0 outside baseline, 0 baseline tests now passing
+index-c	yes	391bbc52a7d9	2026-10-07	index-c: 50/50 tasks OK, 0 failed (rc=0) [-O2] — Summary: 84.4573s, 50, 50, 0
+commonmark	commit	391bbc52a7d9	2026-10-07	commonmark: 664 passed, 6 failed (of 670 examples) (0 outside baseline, 0 baseline examples now passing)
