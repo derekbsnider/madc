@@ -4569,7 +4569,7 @@ static void change_inline_insn_regs (MIR_context_t ctx, MIR_insn_t new_insn) {
 /* Only simplified code should be inlined because we need already
    extensions and one return.  */
 static void process_inlines (MIR_context_t ctx, MIR_item_t func_item) {
-  int non_top_alloca_p, func_top_alloca_used_p, called_func_top_alloca_used_p;
+  int non_top_alloca_p, func_top_alloca_used_p, called_func_top_alloca_used_p, blk_arg_p;
   int64_t alloca_size, alloca_align, max_func_top_alloca_align;
   int64_t init_func_top_alloca_size, curr_func_top_alloca_size, max_func_top_alloca_size;
   size_t i, nargs, arg_num;
@@ -4654,6 +4654,7 @@ static void process_inlines (MIR_context_t ctx, MIR_item_t func_item) {
                    ? 0
                    : VARR_LENGTH (MIR_var_t, called_func->global_vars));
     nargs = called_func->nargs;
+    blk_arg_p = FALSE;
     for (i = 2 + called_func->nres, arg_num = 0; arg_num < nargs && i < call->nops;
          i++, arg_num++) { /* Parameter passing */
       MIR_op_t op = call->ops[i];
@@ -4668,6 +4669,7 @@ static void process_inlines (MIR_context_t ctx, MIR_item_t func_item) {
 
       mir_assert (!MIR_all_blk_type_p (type) || (op.mode == MIR_OP_MEM && type == MIR_T_I64));
       if (MIR_blk_type_p (var.type)) { /* alloca and block move: */
+        blk_arg_p = TRUE;
         new_label_num
           = add_blk_move (ctx, func_item, anchor, MIR_new_reg_op (ctx, new_reg),
                           MIR_new_reg_op (ctx, op.u.mem.base), var.size, (long) new_label_num);
@@ -4684,6 +4686,10 @@ static void process_inlines (MIR_context_t ctx, MIR_item_t func_item) {
     ret_reg = 0;
     called_func_top_alloca = func_alloca_features (ctx, called_func, &called_func_top_alloca_used_p,
                                                    &non_top_alloca_p, &alloca_size);
+    /* A block arg's copy is an alloca at the call site: like a non-top alloca of the
+       callee, it needs BSTART/BEND, or each execution of the inlined call (e.g. in a
+       loop) grows the stack until it overflows.  */
+    if (blk_arg_p) non_top_alloca_p = TRUE;
     if (called_func_top_alloca != NULL && called_func_top_alloca_used_p) {
       alloca_size = get_alloca_size_align (alloca_size, &alloca_align);
       if (max_func_top_alloca_align < alloca_align) {
