@@ -148,6 +148,15 @@ jobs:
           # this job's smoke. No restore: the runner is discarded.
           MADC_PKG_SKIP_SUITE=1 MADC_PKG_NO_RESTORE=1 \
             bash scripts/package_release.sh
+      - name: the installed .deb's windows under Ubuntu's AppArmor default
+        # The user-namespace restriction on, as a 24.04 desktop has it: by the
+        # profile the .deb installs, madc's and madcide's windows come up
+        # (scripts/package_install_gate.sh apparmor, with its control).
+        run: |
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq xvfb
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=1
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ./dist/madc_*~ubuntu24.04_amd64.deb
+          xvfb-run -a bash scripts/package_install_gate.sh apparmor
       - uses: actions/upload-artifact@v7
         with:
           name: linux-packages

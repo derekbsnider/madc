@@ -14,6 +14,8 @@
 #   bash scripts/package_install_gate.sh winzip dist/madc-<ver>-windows-x86_64.zip
 #   bash scripts/package_install_gate.sh mactar dist/madc-<ver>-macos-<arch>.tar.gz   (darwin host)
 #   bash scripts/package_install_gate.sh all    # every gateable artifact for VERSION
+#   xvfb-run -a bash scripts/package_install_gate.sh apparmor   # the INSTALLED 24.04 .deb's
+#            windows under AppArmor's user-namespace restriction (sudo; release.yml)
 #
 # Per-artifact probes (each asserts its failure mode loudly, and every
 # positive probe has a NEGATIVE CONTROL proving the gate can fail):
@@ -570,6 +572,46 @@ gate_mactar() {
     echo "package_install_gate: PASS mactar ($artifact)"
 }
 
+# ---------- the installed .deb's windows under AppArmor (Ubuntu 24.04+) ----------
+# gate_apparmor: madc's .deb INSTALLED (apt), the user-namespace restriction
+# ON as a 24.04 desktop has it, a display (xvfb-run), sudo. By the profile
+# the .deb installs, /usr/bin/madc runs a ui:: program to its first rendered
+# page (tests/gui/ui_web_hello.mad's GUI_SNAPSHOT: WebKit's web process
+# runs only in its bwrap sandbox) and madcide's window stays up 15 s;
+# [control: the profile unloaded, the same program dies before its page —
+# LP: #2046844].
+gate_apparmor() {
+    local prof=/etc/apparmor.d/madc prog=tests/gui/ui_web_hello.mad out rc p
+    [ -f "$prof" ] || fail apparmor "no $prof (the .deb installs it on Ubuntu 24.04 and later)"
+    [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null)" = 1 ] \
+        || fail apparmor "the user-namespace restriction is off; this gate needs it on"
+    for p in madc madcide; do
+        sudo grep -q "^$p " /sys/kernel/security/apparmor/profiles \
+            || fail apparmor "the $p profile is not loaded (the .deb's postinst loads it)"
+    done
+    ok apparmor "the .deb's madc and madcide profiles are loaded"
+    out=$( ( ulimit -t 120; timeout 60 /usr/bin/madc "$prog" ) 2>&1 )
+    rc=$?
+    case "$rc:$out" in
+        0:*GUI_SNAPSHOT*) ok apparmor "/usr/bin/madc runs a ui:: window to its rendered page" ;;
+        *) fail apparmor "/usr/bin/madc's ui:: window did not render (rc $rc: $(echo "$out" | tail -3 | tr '\n' ' '))" ;;
+    esac
+    printf 'int main(void) { return 0; }\n' > "$GATE_TMP/aa.c"
+    timeout 15 /usr/bin/madcide "$GATE_TMP/aa.c" < /dev/null > /dev/null 2>&1
+    rc=$?
+    [ $rc -eq 124 ] || fail apparmor "madcide's window ended by itself (rc $rc)"
+    ok apparmor "madcide's window ran 15 s"
+    sudo apparmor_parser -R "$prof" || fail apparmor "could not unload $prof"
+    out=$( ( ulimit -t 120; timeout 60 /usr/bin/madc "$prog" ) 2>&1 )
+    rc=$?
+    sudo apparmor_parser -r -T -W "$prof" || fail apparmor "could not load $prof again"
+    case "$out" in
+        *GUI_SNAPSHOT*) fail apparmor "control broken: the profile unloaded, the window still rendered" ;;
+        *) ok apparmor "control: the profile unloaded, the window died before its page (rc $rc)" ;;
+    esac
+    echo "package_install_gate: PASS apparmor"
+}
+
 # ---------- dispatch ----------
 mode="${1:-}"
 write_probes
@@ -579,6 +621,7 @@ case "$mode" in
     tar)    gate_tar    "${2:?usage: package_install_gate.sh tar <artifact>}" ;;
     winzip) gate_winzip "${2:?usage: package_install_gate.sh winzip <artifact>}" ;;
     mactar) gate_mactar "${2:?usage: package_install_gate.sh mactar <artifact>}" ;;
+    apparmor) gate_apparmor ;;
     all)
         VER=$(cat VERSION)
         found=0
@@ -597,7 +640,7 @@ case "$mode" in
         echo "package_install_gate: PASS all (version ${VER})"
         ;;
     *)
-        echo "usage: package_install_gate.sh <deb|rpm|tar|winzip|mactar> <artifact> | all" >&2
+        echo "usage: package_install_gate.sh <deb|rpm|tar|winzip|mactar> <artifact> | apparmor | all" >&2
         exit 2
         ;;
 esac
