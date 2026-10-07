@@ -46,6 +46,8 @@ bool compose_menu_bar(var &out, long w, long es, long doc, long nav);
 // The REPL pane.
 long repl_doc_if_any(long w, long es);
 long repl_view(long w);
+// The Help buffer, where the layout's editor pane hosts Help (0 = none open).
+long help_doc_if_any(long w, long es);
 // Bundles, plugins and the configuration directory.
 void madcide_config_dir(var &out);
 bool json_object_read(var &out, var &why, var &path);

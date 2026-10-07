@@ -1022,8 +1022,10 @@ void layout_indent(var &out, long depth)
 // One pane line: `pane <slot> [<side>] [<size>%] <mode> views <kind>...
 // [focus] [hidden]` — mode and size BEFORE `views` and the flags after (so
 // the `views` list stops at a flag), the exact word order parse_layout reads.
-// An editor pane persists as a SOURCE pane (its tabs' Views are session
-// state); a chrome pane persists its tool tabs (fixed kinds).
+// An editor pane persists as a SOURCE pane plus the Views its layout lists
+// beside the buffer ring (`help`: Help opens as an editor tab) — never a code
+// render (viewCODE, a split's session state); a chrome pane persists its tool
+// tabs (fixed kinds).
 void layout_emit_pane(var &out, var &node, long depth, long w)
 {
     var ind;
@@ -1039,13 +1041,15 @@ void layout_emit_pane(var &out, var &node, long depth, long w)
     line = format("{} {} views", line, pmode_name(node["mode"].as_integer()));
     if ( slot == slotEDITOR )
 	line = format("{} {}", line, view_name(viewSOURCE));
-    else
-	for ( var t : node["tabs"] )
-	{
-	    var vn;
-	    view_name_w(vn, w, t["kind"].as_integer());
-	    line = format("{} {}", line, vn);
-	}
+    for ( var t : node["tabs"] )
+    {
+	long k = t["kind"].as_integer();
+	if ( slot == slotEDITOR && (k == viewSOURCE || k == viewCODE) )
+	    continue;
+	var vn;
+	view_name_w(vn, w, k);
+	line = format("{} {}", line, vn);
+    }
     if ( node["focus"].as_integer() != 0 )
 	line = format("{} focus", line);
     if ( node["hidden"].as_integer() != 0 )
@@ -4221,6 +4225,40 @@ long new_panel_buffer(long w, long es, const char *name)
 bool doc_is_panel_buffer(long w, long doc)
 {
     return es_int(w, doc, "panel", 0) != 0;
+}
+
+// The editor's Help buffer (a layout whose editor pane lists the Help view,
+// editor_hosts): an editor tab the Help view's rows show in — read-only, its
+// document marked ("help"; doc_is_help_buffer reads it), named like a
+// panel's buffer ([help]: never a path looked up on disk). Found by its mark,
+// made once.
+bool doc_is_help_buffer(long w, long doc)
+{
+    return es_int(w, doc, "help", 0) != 0;
+}
+
+long help_doc_if_any(long w, long es)
+{
+    var bufs;
+    ui::get(bufs, w, es, "buffers");
+    if ( bufs.is_null() )
+	return 0;
+    for ( var b : bufs )
+	if ( doc_is_help_buffer(w, b["doc"].as_integer()) )
+	    return b["doc"].as_integer();
+    return 0;
+}
+
+long help_doc(long w, long es)
+{
+    long existing = help_doc_if_any(w, es);
+    if ( existing != 0 )
+	return existing;
+    long nd = new_document(w, "[help]", "");
+    ui::set(w, nd, "help", 1);
+    ui::set(w, nd, "read_only", true);
+    push_buffer_row(w, es, nd, "[help]");
+    return nd;
 }
 
 // The buffer-table row showing `doc` (a document has one row); -1 when
@@ -7483,6 +7521,24 @@ long editor_leaf_count(var &node)
     return n;
 }
 
+// Does a pane of the editor tree list View `kind` on its tabs — chrome_hosting's
+// question for the editor region? `pane editor tabs views source help` opens
+// Help in the editor, as a tab of the buffer ring (help_open).
+bool editor_hosts(var &node, long kind)
+{
+    if ( node["kind"] == ctSPLIT )
+    {
+	for ( var c : node["children"] )
+	    if ( editor_hosts(c, kind) )
+		return true;
+	return false;
+    }
+    for ( var t : node["tabs"] )
+	if ( t["kind"] == kind )
+	    return true;
+    return false;
+}
+
 // The tree-order index of the focused leaf (-1 = none), a running counter.
 long editor_focus_scan(var &node, long &seen)
 {
@@ -7749,6 +7805,11 @@ long leaf_view_of(long w, long es, var &leaf, bool primary)
 // S5 window stack is up (one axis at a time in V2b; the stack is JOE's).
 void view_split(long w, long es, long doc, long dir, long lang)
 {
+    if ( doc_is_help_buffer(w, active_doc(w, es, doc)) )
+    {
+	ui::set(w, es, "msg", "Help shows in one view; switch to a file to split.");
+	return;
+    }
     if ( window_count(w, es) >= 2 )
     {
 	ui::set(w, es, "msg",
@@ -8585,14 +8646,14 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 	    case cmdHELPCONTENTS:
 	    {
 		// Help ▸ Help Contents: the bundle's first topic.
-		help_open(w, es, "contents");
+		help_open(w, es, doc, "contents");
 		return true;
 	    }
 	    case cmdHELPTOPIC:
 	    {
 		// A topic by name (the palette's, -c's), else the one open now
 		// (the Help tab's click), else the contents.
-		help_topic_cmd(w, es, ev);
+		help_topic_cmd(w, es, doc, ev);
 		return true;
 	    }
 	    case cmdABOUT:
@@ -8915,7 +8976,7 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 		return true;
 	    case cmdHELPTOPIC:
 		// A Help row: a link opens its topic (madcide_help.inc).
-		help_choose(w, es, ev["option"].as_integer());
+		help_choose(w, es, doc, ev["option"].as_integer());
 		return true;
 	    case cmdMDPREVIEWROW:
 		// A preview row: its source line, or its link's file
@@ -9355,6 +9416,8 @@ void compose_editor_flat(var &kids, long w, long es, var &ed, var &status,
 		var bp;
 		doc_name(bp, w, b["doc"].as_integer());	// `untitled` without a file
 		var bn = php::basename(bp);
+		if ( doc_is_help_buffer(w, b["doc"].as_integer()) )
+		    bn = "Help";		// the Help tab (help_doc), not its [help] name
 		var title = bn;
 		if ( doc_modified(w, b["doc"].as_integer()) )
 		    title = format("{}*", bn);
@@ -9617,8 +9680,15 @@ void IdeSession::compose_ide_tree(var &root, long doc)
     // The JOE screen model (IDE-9b): no heading banner — the path, the
     // modified/read-only badges, and the view name all render in the
     // status line's %n / %m / %R / %y seats.
+    // The editor's Help tab (help_doc) shows the Help view's rows — the list
+    // the chrome pane shows elsewhere — never its empty read-only document;
+    // the edit node's hints below are not its.
+    bool helping = doc_is_help_buffer(w, nav);
     var ed;
-    compose_view_node(ed, w, es, fv, doc, caret);
+    if ( helping )
+	help_view_node(ed, w, es, editor_has_keyboard(w, es));
+    else
+	compose_view_node(ed, w, es, fv, doc, caret);
     // ONE read-modify-write of the edit node's hints: every hint below
     // lands on this local and it is written back ONCE, after the region
     // block. A var assignment is a deep copy, and with the highlight
@@ -9626,9 +9696,9 @@ void IdeSession::compose_ide_tree(var &root, long doc)
     // three RMW passes cost two ~3 ms copies per composed keystroke
     // (measured 2026-09-07).
     var eh = ed["hints"];
-    if ( viewing )
+    if ( viewing && !helping )
 	view_lens_hints(eh, w, es, fvrow);
-    else
+    else if ( !helping )
     {
 	// Highlight spans (AST-2): the bag's themed byte-range rows ride
 	// the hints — the document's stored-space rows, computed at
@@ -9643,12 +9713,12 @@ void IdeSession::compose_ide_tree(var &root, long doc)
     // The display tab width (IDE-9d ^T option) rides the edit node's
     // hints like the caret — the model owns the expansion math.
     long tabw = es_int(w, es, "tabwidth", 0);
-    if ( tabw > 0 )
+    if ( tabw > 0 && !helping )
 	eh["tabwidth"] = tabw;
     // While the editor has the keyboard, tab is the editor's key — it types
     // a tab (edit_key), never a focus cycle (B55; the terminal's and the
     // REPL input's `tabkey` precedent).
-    if ( editor_has_keyboard(w, es) )
+    if ( editor_has_keyboard(w, es) && !helping )
 	eh["tabkey"] = 1;
 
     // The status line's enclosing-function seat (%x, AST-1): a RETAINED-

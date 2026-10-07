@@ -1,0 +1,195 @@
+// Help as an editor tab (owner, Chthonia: "load the help page into the editor
+// pane as a new tab instead of the info pane"). Where Help opens is the
+// layout's: this test's bundle (helptab, written into its configuration
+// directory's plugins/, its .env) lists the help view on the EDITOR pane
+// (`pane editor tabs views source help`), so Help ▸ Help Contents opens the
+// Help buffer as a tab of the buffer ring and the editor shows the Help
+// view's rows there. Pins:
+//   1. Help Contents adds a Help tab beside the file, makes it current, and
+//      the editor's node is the Help list (no sidebar Help);
+//   2. a choose on a link row opens that topic in the same tab;
+//   3. Help Contents again reuses the tab;
+//   4. typing on the Help tab changes nothing (read-only);
+//   5. the file's tab shows the file again; File ▸ Close on the Help tab
+//      leaves the file;
+//   6. the default bundle's layout still shows Help in its sidebar pane;
+//   7. the layout madcide writes back (layout_persist) keeps the editor
+//      pane's help view.
+// Oracle: the layout grammar's contract (profiles/default.layout: a pane
+// lists the Views it hosts) and VS Code / Thonny's editor notebook, where a
+// help page is a tab beside the files.
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+
+#include "../tools/madcide/include/madcide/harness"	// <madcide/harness>: ev_*, settle, enter_line
+
+void write_bundle()
+{
+    var cfg;
+    madcide_config_dir(cfg);
+    php::mkdir(cfg.c_str());
+    var pl = format("{}/plugins", cfg);
+    php::mkdir(pl.c_str());
+    var b = format("{}/helptab", pl);
+    php::mkdir(b.c_str());
+    var h = format("{}/helptab.help", b);
+    php::mkdir(h.c_str());
+    php::file_put_contents(format("{}/helptab.plugin", b),
+	"{ \"name\": \"helptab\", \"api\": 3, \"contributes\": { \"menu\": \"helptab\","
+	" \"help\": \"helptab\", \"layout\": \"helptab\" } }\n");
+    php::file_put_contents(format("{}/helptab.menu", b),
+	"File close Close\nHelp helpcontents Help Contents\n");
+    php::file_put_contents(format("{}/helptab.layout", b),
+	"@window main\npane editor tabs views source help focus\n"
+	"pane sidebar right 25% tabs views outline hidden\n"
+	"pane panel bottom 25% tabs views problems output hidden\n");
+    php::file_put_contents(format("{}/contents.md", h),
+	"# Tab Help\n\n- [Getting started](getting-started.md)\n");
+    php::file_put_contents(format("{}/getting-started.md", h),
+	"# Getting started\n\nType a program.\n");
+}
+
+void remove_tree(var &dir)
+{
+    var kids;
+    var pat = format("{}/*", dir);
+    perl::glob(kids, pat.c_str());
+    for ( var k : kids )
+    {
+	if ( php::is_dir(k.c_str()) )
+	    remove_tree(k);
+	else
+	    php::unlink(k.c_str());
+    }
+    php::rmdir(dir.c_str());
+}
+
+// The editor's tab strip and the editor region's node, as composed.
+void editor_state(IdeSession &S, long doc, const char *when)
+{
+    var tree;
+    S.compose_ide_tree(tree, active_doc(S.w, S.es, doc));	// the run loop's: the active buffer
+    var titles = "";
+    var active = "";
+    var enode = "";
+    for ( var c : tree["children"] )
+    {
+	var h;
+	keyed_get(h, c, "hints");
+	if ( h.is_null() || !(h["region"] == "editor") )
+	    continue;
+	var t;
+	keyed_get(t, h, "tabs");
+	if ( !t.is_null() && t.is_array() )
+	{
+	    for ( var tb : t )
+	    {
+		var sep = strlen(titles.c_str()) > 0 ? "|" : "";
+		titles = format("{}{}{}", titles, sep, tb["title"]);
+		var a;
+		keyed_get(a, tb, "active");
+		if ( !a.is_null() )
+		    active = tb["title"];
+	    }
+	    continue;
+	}
+	if ( c["role"] == "choice" )
+	    enode = format("list {}", c["label"]);
+	else if ( c["role"] == "edit" )
+	    enode = "edit";
+    }
+    println("{}: tabs={} active={} editor={}", when, titles, active, enode);
+}
+
+// The rows' index (1-based) of the first row whose content holds `needle`.
+long row_with(long w, long es, const char *needle)
+{
+    var rows;
+    ui::get(rows, w, es, "helprows");
+    long i = 1;
+    for ( var r : rows )
+    {
+	if ( perl::index(r["content"].c_str(), needle) >= 0 )
+	    return i;
+	i = i + 1;
+    }
+    return 0;
+}
+
+int main()
+{
+    const char *path = "madc_ide_helptab.c";
+    php::file_put_contents(path, "int main(void) { return 0; }\n");
+    write_bundle();
+
+    IdeSession S;
+    long doc = S.open(path, false, "helptab");
+    long w = S.w;
+    long es = S.es;
+    S.panel(true);			// what run_ide pushes for a window
+    bool cont = true;
+
+    // 1. Help Contents: a Help tab, current, the editor shows the list.
+    S.command(doc, cmd_of_w(w, "helpcontents"), "", cont);
+    editor_state(S, doc, "contents");
+    println("contents: sidebar-help={}", view_shown(w, es, viewHELP) ? 1 : 0);
+
+    // 2. A link opens its topic in the same tab.
+    long hd = help_doc_if_any(w, es);
+    long gs = row_with(w, es, "Getting started");
+    var ch = { "event": "choose", "event_code": ui::event_kind::choose,
+	       "option": gs, "action": "", "action_code": view_row_cmd(viewHELP) };
+    S.apply_ide_event(active_doc(w, es, doc), ch);
+    editor_state(S, doc, "link");
+    println("link: same-tab={}", help_doc_if_any(w, es) == hd ? 1 : 0);
+
+    // 3. Help Contents again: the same tab, the contents.
+    S.command(active_doc(w, es, doc), cmd_of_w(w, "helpcontents"), "", cont);
+    editor_state(S, doc, "again");
+    println("again: same-tab={}", help_doc_if_any(w, es) == hd ? 1 : 0);
+
+    // 4. Typing on the Help tab changes nothing.
+    var te = { "event": "text", "event_code": ui::event_kind::text, "text": "x" };
+    S.apply_ide_event(active_doc(w, es, doc), te);
+    var ht;
+    ui::text(ht, w, hd);
+    println("typed: help-text-len={}", strlen(ht.c_str()));
+
+    // 5. The file's tab (a click: bufsel with its ring index), then back to
+    //    Help and File ▸ Close.
+    var e = { "event": "action", "event_code": ui::event_kind::action,
+	      "action": "bufsel", "arg": "0" };
+    S.apply_ide_event(active_doc(w, es, doc), e);
+    editor_state(S, doc, "file");
+    S.command(active_doc(w, es, doc), cmd_of_w(w, "helpcontents"), "", cont);
+    ev_action(e, "close", "");
+    S.apply_ide_event(active_doc(w, es, doc), e);
+    editor_state(S, doc, "closed");
+    println("closed: help-row={}", help_doc_if_any(w, es) != 0 ? 1 : 0);
+
+    // 7. The layout as madcide writes it back (layout_persist's text): the
+    //    editor pane still lists the help view.
+    var lo;
+    layout_get(lo, w, es);
+    var txt;
+    layout_to_text(txt, lo, w);
+    println("persist: editor-help={}",
+	    perl::index(txt.c_str(), "pane editor tabs views source help") >= 0 ? 1 : 0);
+
+    // 6. The default bundle: Help in its sidebar pane, no Help tab.
+    IdeSession D;
+    long ddoc = D.open(path, false);
+    D.panel(true);
+    D.command(ddoc, cmd_of_w(D.w, "helpcontents"), "", cont);
+    println("default: sidebar-help={} help-tab={}", view_shown(D.w, D.es, viewHELP) ? 1 : 0,
+	    help_doc_if_any(D.w, D.es) != 0 ? 1 : 0);
+
+    S.close();
+    D.close();
+    php::unlink(path);
+    var cfg;
+    madcide_config_dir(cfg);
+    remove_tree(cfg);
+    return 0;
+}

@@ -10,6 +10,11 @@
 // One topic is made, not read: `menus`, every menu of the loaded menus with
 // each item's key in the current key style, its command and its description.
 //
+// Where Help opens is the layout's: a chrome pane listing the Help view shows
+// it there (show_view); an editor pane listing it (`pane editor tabs views
+// source help`, editor_hosts) opens it as an editor TAB — the Help buffer
+// (help_doc) in the buffer ring, where the editor shows the same rows.
+//
 // The Help view (viewHELP) lists the topic's ROWS, made by the one Markdown
 // renderer (madcide_markdown.inc): a heading, a paragraph, a list item, a
 // code line, a table row. A link is a row of its own whose target is a topic
@@ -21,6 +26,12 @@
 // Thread contract: the session's thread; the rows are the session's.
 
 bool show_view(long w, long es, long kind);	// madcide_core.inc, the one show owner
+// madcide_core.inc, where help_open opens a topic:
+void layout_get(var &lo, long w, long es);
+bool editor_hosts(var &node, long kind);
+long help_doc(long w, long es);
+long buffer_index_of(long w, long es, long doc);
+void switch_buffer(long w, long es, long olddoc, long idx);
 
 // A help directory: the active bundle's (base false) or the default
 // bundle's; "" when that bundle contributes none.
@@ -162,10 +173,11 @@ void help_target_topic(var &out, var &url)
     out = perl::substr(u, 0, strlen(u.c_str()) - 3);
 }
 
-// Open topic `name` in the Help view: its file's rows, or the made topic's.
-// False, with the reason on the status line, for a topic no help directory
-// has, or without the madcmark module.
-bool help_open(long w, long es, const char *name0)
+// Open topic `name` in the Help view: its file's rows, or the made topic's —
+// in the editor's Help tab when the layout's editor pane lists the view, else
+// in the chrome pane hosting it. False, with the reason on the status line,
+// for a topic no help directory has, or without the madcmark module.
+bool help_open(long w, long es, long doc, const char *name0)
 {
     var name = name0;		// ring discipline: own the text first
     if ( !markdown::available() )
@@ -185,18 +197,18 @@ bool help_open(long w, long es, const char *name0)
 	    return false;
 	}
     }
-    var doc;
-    markdown::parse(doc, text.c_str());
+    var md;
+    markdown::parse(md, text.c_str());
     var rows = {};
     if ( !(name == "contents") )
     {
 	rows[] = { "content": "◂ Contents", "target": "contents.md" };
 	rows[] = { "content": "" };
     }
-    var blocks = doc["children"];
+    var blocks = md["children"];
     md_blocks_rows(rows, blocks, "", "");
     var title = format("{}", name);
-    for ( var b : doc["children"] )
+    for ( var b : md["children"] )
 	if ( b["kind"] == markdown::node_kind::heading )
 	{
 	    title = "";
@@ -206,12 +218,21 @@ bool help_open(long w, long es, const char *name0)
     ui::set(w, es, "helprows", rows);
     ui::set(w, es, "helptopic", name);
     ui::set(w, es, "helptitle", title);
+    var lo;
+    layout_get(lo, w, es);
+    if ( editor_hosts(lo["editor"], viewHELP) )
+    {
+	long idx = buffer_index_of(w, es, help_doc(w, es));
+	if ( idx >= 0 && idx != es_int(w, es, "bufidx", 0) )
+	    switch_buffer(w, es, doc, idx);
+	return true;
+    }
     show_view(w, es, viewHELP);
     return true;
 }
 
 // helptopic's argument, else the topic open now, else the contents.
-bool help_topic_cmd(long w, long es, var &ev)
+bool help_topic_cmd(long w, long es, long doc, var &ev)
 {
     var ta;
     keyed_get(ta, ev, "arg");
@@ -226,12 +247,12 @@ bool help_topic_cmd(long w, long es, var &ev)
 	if ( !cur.is_null() && strlen(cur.c_str()) > 0 )
 	    topic = cur;
     }
-    return help_open(w, es, topic.c_str());
+    return help_open(w, es, doc, topic.c_str());
 }
 
 // A choose on a Help row (1-based `option`): a link row opens its topic, or
 // says its URL; another row does nothing.
-void help_choose(long w, long es, long option)
+void help_choose(long w, long es, long doc, long option)
 {
     var rows;
     ui::get(rows, w, es, "helprows");
@@ -244,7 +265,7 @@ void help_choose(long w, long es, long option)
     var topic;
     help_target_topic(topic, target);
     if ( strlen(topic.c_str()) > 0 )
-	help_open(w, es, topic.c_str());
+	help_open(w, es, doc, topic.c_str());
     else
 	ui::set(w, es, "msg", format("Link: {}", target));
 }

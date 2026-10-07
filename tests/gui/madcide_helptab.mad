@@ -1,0 +1,162 @@
+// Help as an editor tab in a REAL window, driven from the keyboard (the
+// headless pins: tests/testmadcide_helptab.mad). This test's bundle
+// (helptab, written into its configuration directory, the .env) lists the
+// help view on the editor pane, so Help ▸ Help Contents shows the topic's
+// rows where the editor was, with the keyboard: the page's ArrowDown moves
+// the list's selection to the link row and its Enter chooses it, through the
+// page's own key path — and the linked topic opens in the same Help tab.
+// Runs under Xvfb through the gui lane.
+#include "../../tools/texteditor/lined_core.inc"
+#include "../../tools/texteditor/editor_events.inc"
+#include "../../tools/madcide/madcide_core.inc"
+#include "../../tools/madcide/madcide_args.inc"
+#include "../../tools/madcide/madcide_discover.inc"
+#include "../../tools/madcide/madcide_client.inc"
+
+void write_bundle()
+{
+    var cfg;
+    madcide_config_dir(cfg);
+    php::mkdir(cfg.c_str());
+    var pl = format("{}/plugins", cfg);
+    php::mkdir(pl.c_str());
+    var b = format("{}/helptab", pl);
+    php::mkdir(b.c_str());
+    var h = format("{}/helptab.help", b);
+    php::mkdir(h.c_str());
+    php::file_put_contents(format("{}/helptab.plugin", b),
+	"{ \"name\": \"helptab\", \"api\": 3, \"contributes\": { \"menu\": \"helptab\","
+	" \"help\": \"helptab\", \"layout\": \"helptab\" } }\n");
+    php::file_put_contents(format("{}/helptab.menu", b),
+	"File close Close\nHelp helpcontents Help Contents\n");
+    php::file_put_contents(format("{}/helptab.layout", b),
+	"@window main\npane editor tabs views source help focus\n"
+	"pane sidebar right 25% tabs views outline hidden\n"
+	"pane panel bottom 25% tabs views problems output hidden\n");
+    php::file_put_contents(format("{}/contents.md", h),
+	"# Tab Help\n\n- [Getting started](getting-started.md)\n");
+    php::file_put_contents(format("{}/getting-started.md", h),
+	"# Getting started\n\nType a program.\n");
+}
+
+void remove_tree(var &dir)
+{
+    var kids;
+    var pat = format("{}/*", dir);
+    perl::glob(kids, pat.c_str());
+    for ( var k : kids )
+    {
+	if ( php::is_dir(k.c_str()) )
+	    remove_tree(k);
+	else
+	    php::unlink(k.c_str());
+    }
+    php::rmdir(dir.c_str());
+}
+
+// A key pressed in the page: its keydown handler spells it and posts it.
+void press(long t, const char *key)
+{
+    ui::eval_page(t, "window.__press=function(k){document.getElementById('kb')"
+		     ".dispatchEvent(new KeyboardEvent('keydown',"
+		     "{key:k,bubbles:true,cancelable:true}));};");
+    var js = format("window.__press('{}')", key);
+    ui::eval_page(t, js.c_str());
+}
+
+void show(IdeSession &S, long t, long doc)
+{
+    var tree;
+    S.compose_ide_tree(tree, S.active(doc));
+    ui::render(t, S.world(), tree);
+}
+
+// The help rows' index (1-based) of the first row whose content holds `needle`.
+long row_with(long w, long es, const char *needle)
+{
+    var rows;
+    ui::get(rows, w, es, "helprows");
+    long i = 1;
+    for ( var r : rows )
+    {
+	if ( perl::index(r["content"].c_str(), needle) >= 0 )
+	    return i;
+	i = i + 1;
+    }
+    return 0;
+}
+
+int main()
+{
+    const char *path = "madc_ide_helptab_gui.c";
+    php::file_put_contents(path, "int main(void) { return 0; }\n");
+    write_bundle();
+    IdeSession S;
+    long doc = S.open(path, false, "helptab");
+    long w = S.world();
+    long t = ui::open(ui::WEB);
+    if ( !t )
+	return 1;
+    S.panel(true);			// what run_ide says of a window
+    var table;
+    S.key_table(table);
+    ui::bind_keys(t, table);
+    println("HELPTAB open");
+    var ev;
+    int started = 0;
+    long downs = 0;
+    while ( ui::event(ev, t, w) )
+    {
+	var kind = ev["event_code"];
+	if ( kind == ui::event_kind::resize )
+	{
+	    S.viewport(ui::cols(t), ui::rows(t));
+	    if ( !started )
+	    {
+		started = 1;
+		bool cont = true;
+		S.command(doc, cmd_of_w(w, "helpcontents"), "", cont);
+		show(S, t, doc);
+		downs = row_with(w, S.es, "Getting started") - 1;
+		println("HELPTAB contents tab={} rows-to-link={}",
+			help_doc_if_any(w, S.es) == S.active(doc) ? 1 : 0, downs > 0 ? 1 : 0);
+		for ( long i = 0; i < downs; i = i + 1 )
+		    press(t, "ArrowDown");
+		press(t, "Enter");
+	    }
+	    else
+		show(S, t, doc);
+	    continue;
+	}
+	if ( kind == ui::event_kind::choose )
+	{
+	    long adoc = S.active(doc);
+	    S.apply_ide_event(adoc, ev);
+	    show(S, t, adoc);
+	    var topic;
+	    ui::get(topic, w, S.es, "helptopic");
+	    var title;
+	    ui::get(title, w, S.es, "helptitle");
+	    println("HELPTAB choose topic={} title={} same-tab={}", topic, title,
+		    help_doc_if_any(w, S.es) == S.active(doc) ? 1 : 0);
+	    break;
+	}
+	if ( kind == ui::event_kind::key || kind == ui::event_kind::text
+	  || kind == ui::event_kind::action )
+	{
+	    // A key the list did not take reached the session: say which.
+	    println("HELPTAB stray {} {}", ev["event"], ev["key"]);
+	    long adoc = S.active(doc);
+	    S.apply_ide_event(adoc, ev);
+	    show(S, t, adoc);
+	}
+    }
+    ui::close(t);
+    S.close();
+    php::unlink(path);
+    var cfg;
+    madcide_config_dir(cfg);
+    remove_tree(cfg);
+    println("HELPTAB closed");
+    return 0;
+}
