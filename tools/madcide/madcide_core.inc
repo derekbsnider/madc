@@ -9331,8 +9331,11 @@ void compose_editor_flat(var &kids, long w, long es, var &ed, var &status,
     // one tab per buffer (its base name, `*` while modified), the active
     // buffer marked, each tab naming the `bufsel` command WITH its argument
     // (the ring index) — a command that takes an argument, the gateway
-    // shape (a human client's prompt collects the same argument). The
-    // terminal keeps ^P's buffer rows; it never composes this node.
+    // shape (a human client's prompt collects the same argument). A panel's
+    // buffer (doc_is_panel_buffer: the REPL's transcript, a build's output,
+    // the Terminal's screen) is its panel's, never an editor tab; ^P still
+    // reaches it. The terminal keeps ^P's buffer rows; it never composes
+    // this node.
     if ( es_flag(w, es, "haspanel") )
     {
 	var bufs;
@@ -9347,6 +9350,8 @@ void compose_editor_flat(var &kids, long w, long es, var &ed, var &status,
 	    for ( long i = 0; i < nb; i = i + 1 )
 	    {
 		var b = bufs[i];
+		if ( doc_is_panel_buffer(w, b["doc"].as_integer()) )
+		    continue;
 		var bp;
 		doc_name(bp, w, b["doc"].as_integer());	// `untitled` without a file
 		var bn = php::basename(bp);
