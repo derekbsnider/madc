@@ -49,14 +49,13 @@ RELEASE_TOOLING="scripts/package_release.sh scripts/package_release_macos.sh
 	scripts/install_gate_pty.py scripts/promote_release.sh
 	scripts/release_bins.sh scripts/brew_bottle.sh scripts/brew_formula.sh
 	scripts/brew_lane.sh scripts/lane_ledger.sh scripts/git-hooks/pre-push"
-# The release tooling each lane runs itself, by lane: the brew lane
-# bottles and pours the keg, the darwin lane packages the tarball natively.
+# The release tooling a lane's recorded tally covers, by lane: the brew lane
+# bottles, pours and tests the keg. (The darwin lane's tally is the macOS
+# suite; the macOS packages are proven by release.yml's macos-package jobs.)
 lane_tools() {
 	case "$1" in
 	brew-linux) echo "scripts/brew_bottle.sh scripts/brew_formula.sh
-		scripts/brew_lane.sh scripts/package_install_gate.sh packaging/homebrew" ;;
-	darwin-suite) echo "scripts/package_release_macos.sh
-		scripts/package_install_gate.sh" ;;
+		scripts/brew_lane.sh packaging/homebrew" ;;
 	esac
 }
 
