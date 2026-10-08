@@ -15,6 +15,9 @@
 #   0  pre-build every toolchain (Linux dev + release, packed and hosted
 #      win64 PEs, both macOS arches, the aarch64-linux cross) + static gates
 #   1  gates      unit tests + every repository gate, no suite (make gates)
+#      parse-cost the profiling gate (owner 2026-10-08): callgrind instruction
+#                 counts of scripts/parse_cost/ on the shipped binary, ratcheted
+#                 against scripts/parse_cost/baseline.tsv
 #   2  headerless the FULL suite, Linux packed binary, no headers on disk
 #      ondisk     the headerless-skipped tests, same binary, headers on disk
 #   3  headerless-win / ondisk-win   the win64 twins (packed PE under wine)
@@ -26,7 +29,8 @@
 # Every stage runs even after a red one (a battery reports the whole picture);
 # the exit status is non-zero when any stage was red. Logs: tmp/logs/seam-*.log.
 # Records nothing: copy the printed tallies into scripts/lane_ledger.sh on the
-# NAS (linux-battery, headerless-win, wine64, macos, aarch64-ld, tests-jit).
+# NAS (linux-battery, headerless-win, wine64, macos, aarch64-ld, tests-jit,
+# parse-cost).
 set -u
 cd "$(dirname "$0")/.." || exit 9
 mkdir -p tmp/logs
@@ -68,6 +72,7 @@ remote static-gates 'fail=0; for g in scripts/check-*.sh; do out=$( ( ulimit -t 
 
 # --- 1. the gates (no suite) -------------------------------------------------
 stage gates gates
+remote parse-cost '( ulimit -t 3600; timeout 2400 bash scripts/parse_cost_gate.sh )'
 
 # --- 2. the full suite on the shipped Linux artifact -------------------------
 stage headerless headerless
