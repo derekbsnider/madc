@@ -320,6 +320,18 @@ istring: one hash of the text per character examined). All went back to
 | Interned fast paths: trim / strip-namespace / despace return the input or a slice; one-character spellings from a 256-entry table; operator tokens intern their spelling once per class | the top conversion sites of a line-attributed profile |
 | Hash tail: fixed-size loads (two overlapping 4-byte reads for 4..7 bytes, first/middle/last byte for 1..3) — never a variable-length `memcpy` call | most names are under 8 bytes |
 
+Embedded headers are never searched for (owner: "madc is supposed to be
+completely self contained"). Whether a system directory ahead of the
+compiler-owned slot supplies an embedded header's name is decided when madc
+is BUILT — `scripts/gen_sys_includes.sh` writes per-flavor `{dir, name}`
+pairs (`madc_stdlib_flavor::embedded_shadows`); libstdc++: none, libc++:
+`float.h` `stdbool.h` `stddef.h` `stdint.h` from `c++/v1`. The ranking
+readers (`embedded_header_outranked`, `embedded_wins_include_next`) read the
+table; only a `-I` directory (the program's own) is probed. Before, that
+probe decoded the packed forest (14 zstd segments) on every compile: the
+dialect workload spent 49% of its Ir there and dropped from 143.5M to 72.4M
+Ir (−49.6%); header-parsing workloads unchanged.
+
 Parse-cost gate, Ir vs the baseline committed before the interning work:
 cxx_stl.live −14.0%, cxx_stl.forest −14.1%, c_headers.live −13.5%,
 dialect.live −1.2%, subscript.live −14.3%, subscript.forest −14.9%.

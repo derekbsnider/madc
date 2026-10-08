@@ -5604,14 +5604,41 @@ bool Program::embedded_wins_include_next(const madc::dis::istring &incfile)
     {
 	if ( search[i] == owned )
 	    return true;    // reached the slot before any real provider
-	std::string candidate = search[i]
-	    + (search[i].empty() || search[i].back() == '/' ? "" : "/") + incfile;
-	// On disk or in the pack — the same provider test resolve_include_next_path
-	// applies, and the one embedded_header_outranked applies from the top.
-	if ( resolved_include_provider_exists(candidate) )
+	// A -I directory is the program's own (probed); a system directory's
+	// answer is the build's (system_dir_shadows_embedded) — the same two
+	// tests embedded_header_outranked applies from the top.
+	if ( i < include_paths.size()
+	     ? user_dir_supplies(search[i], incfile)
+	     : system_dir_shadows_embedded(search[i].c_str(), incfile) )
 	    return false;   // a real directory between here and the slot wins
     }
     return true;   // slot not reached in the list — preserve the old order
+}
+
+// Does a -I directory (the program's own headers) supply `name`?
+bool Program::user_dir_supplies(const madc::dis::istring &dir,
+				const madc::dis::istring &name) const
+{
+    std::string candidate = dir
+	+ (dir.empty() || dir.back() == '/' ? "" : "/") + name;
+    std::ifstream probe(candidate.c_str());
+    return probe.good();
+}
+
+// Does a SYSTEM directory supply the embedded header `name` under the same
+// name? Decided when madc was built (madc_stdlib_flavor::embedded_shadows);
+// madc carries its headers, so this never searches disk or the pack.
+bool Program::system_dir_shadows_embedded(const char *dir,
+					  const madc::dis::istring &name) const
+{
+    const madc_stdlib_flavor *f = active_stdlib_flavor();
+    const char *const *p = f ? f->embedded_shadows : NULL;
+    if ( !p || !dir )
+	return false;
+    for ( ; p[0] && p[1]; p += 2 )
+	if ( name == p[1] && strcmp(dir, p[0]) == 0 )
+	    return true;
+    return false;
 }
 
 // The macro an #if's WHOLE condition tests as `! defined NAME` /

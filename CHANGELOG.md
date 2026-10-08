@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### headers: embedded headers ranked by a build-time table, never searched per compile
+
+Whether a system directory ahead of the compiler-owned slot supplies an
+embedded header under the same name is decided when madc is built, not probed
+on disk or in the pack on every compile — madc carries its headers and is
+self-contained. `scripts/gen_sys_includes.sh` records per-flavor `{dir, name}`
+pairs in `madc_stdlib_flavor::embedded_shadows` (libstdc++: none; libc++:
+`float.h`, `stdbool.h`, `stddef.h`, `stdint.h` from `c++/v1`); the ranking
+readers read the table and probe disk only for a `-I` directory (the program's
+own headers). The former probe decoded the packed forest on every compile, 49%
+of the dialect compile's Ir; the dialect parse-cost workload drops from 143.5M
+to 72.4M Ir (−49.6%) with the header-parsing workloads unchanged.
+
 ### compiler core: names held as interned `madc::dis::istring`, interned once at the source
 
 The compiler core (lexer, parser, CIR builder/dump/format/emit, madc_cir,

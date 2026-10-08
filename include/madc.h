@@ -6980,7 +6980,12 @@ public:
     // dirs (and every -I dir) come before it and win; C library dirs come after
     // it and lose. Lets a real libc++/libstdc++ wrapper header take precedence
     // while an unsupplied name still resolves from the embedded copy.
-    bool embedded_header_outranked(const madc::dis::istring &name);	// non-const: may open the source forest
+    bool embedded_header_outranked(const madc::dis::istring &name);
+    // The two provider answers the embedded-ranking readers use: a -I
+    // directory is probed (the program's own headers); a system directory's
+    // answer is the build-time table (madc_stdlib_flavor::embedded_shadows).
+    bool user_dir_supplies(const madc::dis::istring &dir, const madc::dis::istring &name) const;
+    bool system_dir_shadows_embedded(const char *dir, const madc::dis::istring &name) const;
     bool is_dynamic_symbol_allowed(const madc::dis::istring &name) const;
     bool is_known_namespace(const madc::dis::istring &name) const;
     Variable *runtime_eval_scope_target(Variable *var) const;

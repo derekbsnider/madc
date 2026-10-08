@@ -29986,11 +29986,8 @@ bool Program::embedded_header_is_system_library_shim(const madc::dis::istring &n
 bool Program::embedded_header_outranked(const madc::dis::istring &name)
 {
     for ( std::size_t i = 0; i < include_paths.size(); ++i )
-    {
-	std::ifstream probe((include_paths[i] + name).c_str());
-	if ( probe.good() )
+	if ( user_dir_supplies(include_paths[i], name) )
 	    return true;
-    }
     const madc::dis::istring owned = compiler_owned_include_dir();
     // No slot recorded (no compiler at build time, or the fallback list is in
     // use): the embedded set keeps its historical unconditional precedence
@@ -30002,17 +29999,16 @@ bool Program::embedded_header_outranked(const madc::dis::istring &name)
     {
 	if ( owned == paths[i] )
 	    return false;   // reached the slot — everything after it loses
-	// "Does this directory supply the name" is the ONE existence predicate
-	// resolved_include_provider_exists(): ordinary storage OR the pack's
-	// raw-source slot. The header-less-Mac promise cuts both ways: with
-	// nothing on disk, the PACK is the installed header set. libc++'s
-	// <stddef.h> wrapper exists there as a unit (c++/v1/stddef.h) exactly
-	// as it would on disk, and it must outrank the embedded copy just the
-	// same — a filesystem-only probe here let the embedded copy shadow it
-	// and <cstddef> #errored that its wrapper was bypassed (darwin D4:
-	// `--std=c++17 #include <iostream>` on a Mac without the staged libc++
-	// tree; the runner has the tree and never saw it).
-	if ( resolved_include_provider_exists(std::string(paths[i]) + name) )
+	// Whether this system directory supplies the name is the BUILD's
+	// answer (system_dir_shadows_embedded): madc carries its headers, so
+	// the ranking is decided once, where they were collected, never by
+	// searching disk or the pack per compile. That build-time table is also
+	// what keeps the header-less Mac right: libc++'s <stddef.h> wrapper
+	// (c++/v1/stddef.h) outranks the embedded copy there exactly as on the
+	// build machine — darwin D4, where a filesystem-only probe let the
+	// embedded copy shadow it and <cstddef> #errored that its wrapper was
+	// bypassed.
+	if ( system_dir_shadows_embedded(paths[i], name) )
 	    return true;
     }
     return false;          // slot not in the list — preserve the old order
