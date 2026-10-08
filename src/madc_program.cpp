@@ -4755,6 +4755,27 @@ bool internal_program_source_outline(::Program &self,
     return true;
 }
 
+// A source text's LINE INDEX: the byte offset each 1-based line starts at.
+// The one line -> offset map of this file's source-text readers (the emit
+// doc map, the span classifier's comment / escape / continuation passes).
+struct text_line_index
+{
+    std::vector<size_t> starts;
+    explicit text_line_index(const std::string &text) : starts(1, 0)
+    {
+	for ( size_t k = 0; k < text.size(); ++k )
+	    if ( text[k] == '\n' )
+		starts.push_back(k + 1);
+    }
+    // Where 1-based `line` starts; npos when the text has no such line.
+    size_t offset(long line) const
+    {
+	if ( line <= 0 || line > (long)starts.size() )
+	    return std::string::npos;
+	return starts[(size_t)(line - 1)];
+    }
+};
+
 // The render query (madcide AST-3 code views): parse the buffer in a
 // child and render its cir_node tree as the target KIND (madc::file_kind —
 // the emitter's depth table cir_emit_lang_of_kind says which kinds render;
@@ -4772,24 +4793,15 @@ bool internal_program_source_outline(::Program &self,
 static madc::value build_emit_doc_map(const std::string &src,
 				      const std::vector<CirEmitMapRow> &rows)
 {
-    // line_start[k] = byte offset of line (k+1) in the source buffer — the
-    // SAME buffer the container's stored-space caret indexes.
-    std::vector<size_t> line_start;
-    line_start.push_back(0);
-    for ( size_t i = 0; i < src.size(); ++i )
-	if ( src[i] == '\n' )
-	    line_start.push_back(i + 1);
-
+    // The SAME buffer the container's stored-space caret indexes.
+    text_line_index lines(src);
     madc::hub::doc_map dm;
     for ( size_t i = 0; i < rows.size(); ++i )
     {
-	int line = rows[i].line;
-	if ( line < 1 )
+	size_t at = lines.offset(rows[i].line);
+	if ( at == std::string::npos )
 	    continue;
-	size_t li = (size_t)(line - 1);
-	if ( li >= line_start.size() )
-	    continue;
-	dm.add(rows[i].disp, line_start[li], 1);	// add() enforces monotonicity
+	dm.add(rows[i].disp, at, 1);	// add() enforces monotonicity
     }
     return dm.to_value();
 }
@@ -5656,17 +5668,15 @@ static madc::value highlight_row(long line, long col, long len,
 static void recorded_comment_rows(::Program &child, const std::string &display_name,
 				  const std::string &text, std::vector<madc::value> &rows)
 {
-    std::vector<size_t> starts(1, 0);
-    for ( size_t k = 0; k < text.size(); ++k )
-	if ( text[k] == '\n' )
-	    starts.push_back(k + 1);
+    text_line_index lines(text);
     for ( const ::Program::TriviaComment &c : child._trivia_comments )
     {
-	if ( !c.file || display_name != c.file || c.line < 1
-	  || (size_t)c.line > starts.size() || c.column < 1 )
+	size_t bol = lines.offset(c.line);
+	if ( !c.file || display_name != c.file || bol == std::string::npos
+	  || c.column < 1 )
 	    continue;
 	long line = c.line;
-	size_t at = starts[line - 1] + (size_t)(c.column - 1);
+	size_t at = bol + (size_t)(c.column - 1);
 	size_t end = at + c.length;
 	if ( end > text.size() )
 	    end = text.size();
@@ -5914,10 +5924,10 @@ static void parse_stream_reach(::Program &child, const std::string &disp,
 // column) on?
 static bool text_continues_after(const std::string &text, long line, long col)
 {
-    size_t at = 0;
-    for ( long l = 1; l < line && at < text.size(); ++at )
-	if ( text[at] == '\n' )
-	    ++l;
+    // line 0: nothing reached — the whole text follows.
+    size_t at = line <= 1 ? 0 : text_line_index(text).offset(line);
+    if ( at == std::string::npos )
+	return false;
     at += (size_t)(col > 0 ? col : 0);
     for ( ; at < text.size(); ++at )
 	if ( text[at] != ' ' && text[at] != '\t' && text[at] != '\r' && text[at] != '\n' )
@@ -6122,10 +6132,7 @@ static size_t escape_length(const std::string &s, size_t i, size_t end)
 // and a quote — is cooked: a raw string's backslashes are its text.
 static void split_escape_rows(const std::string &text, std::vector<madc::value> &rows)
 {
-    std::vector<size_t> starts(1, 0);
-    for ( size_t k = 0; k < text.size(); ++k )
-	if ( text[k] == '\n' )
-	    starts.push_back(k + 1);
+    text_line_index lines(text);
     std::vector<madc::value> out;
     out.reserve(rows.size());
     for ( const madc::value &r : rows )
@@ -6135,13 +6142,14 @@ static void split_escape_rows(const std::string &text, std::vector<madc::value> 
 	long line = (long)highlight_row_field(r, "line");
 	long col = (long)highlight_row_field(r, "column");
 	long len = (long)highlight_row_field(r, "length");
+	size_t bol = lines.offset(line);
 	if ( ci == o.end() || ci->second.as_string() != "string"
-	  || line < 1 || (size_t)line > starts.size() )
+	  || bol == std::string::npos )
 	{
 	    out.push_back(r);
 	    continue;
 	}
-	size_t b = starts[line - 1] + (size_t)col;
+	size_t b = bol + (size_t)col;
 	size_t e = b + (size_t)len;
 	if ( e > text.size() )
 	{
@@ -6165,9 +6173,9 @@ static void split_escape_rows(const std::string &text, std::vector<madc::value> 
 	    if ( n == 0 )
 		break;
 	    if ( k > run )
-		out.push_back(highlight_row(line, (long)(run - starts[line - 1]),
+		out.push_back(highlight_row(line, (long)(run - bol),
 					    (long)(k - run), "string"));
-	    out.push_back(highlight_row(line, (long)(k - starts[line - 1]), (long)n,
+	    out.push_back(highlight_row(line, (long)(k - bol), (long)n,
 				highlight_class_name(HighlightClass::hcEscape)));
 	    k += n - 1;
 	    run = k + 1;
@@ -6175,7 +6183,7 @@ static void split_escape_rows(const std::string &text, std::vector<madc::value> 
 	if ( run == b )
 	    out.push_back(r);
 	else if ( run < e )
-	    out.push_back(highlight_row(line, (long)(run - starts[line - 1]),
+	    out.push_back(highlight_row(line, (long)(run - bol),
 					(long)(e - run), "string"));
     }
     rows.swap(out);
