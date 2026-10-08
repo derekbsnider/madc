@@ -8,27 +8,40 @@
 #   bash scripts/parse_cost_gate.sh                 # check (exit 1 on red)
 #   bash scripts/parse_cost_gate.sh --record        # re-record (refuses growth)
 #   bash scripts/parse_cost_gate.sh --record --accept-increase='<reason>'
+#   bash scripts/parse_cost_gate.sh --map=DIR [--label=TEXT]
+#                                                   # a callgrind MAP, no verdict
 #   MADC_BIN=bin/madc-release (default) — the shipped -O2 binary
 #
 # Workloads live in scripts/parse_cost/: <name>.<ext> + <name>.expect (its
-# exact stdout). Each runs as a LIVE parse (--no-forest-bind: the parser and
-# instantiator are what is measured); cxx_stl also runs through the packed
-# forest, the path a default C++ compile takes. The baseline records the
+# exact stdout), optionally <name>.modes ("live forest"; default "live"). A
+# LIVE row parses every header (--no-forest-bind: the parser and instantiator
+# are what is measured); a FOREST row takes the packed forest, the path a
+# default compile takes. A workload may be a symlink to a test (subscript.mad
+# is tests/testsubscript.mad, the owner's benchmark against g++). The baseline records the
 # toolchain it was measured on (compiler, libc, libstdc++ headers, valgrind):
 # a different toolchain parses different headers, so a mismatch REFUSES the
 # comparison instead of passing or failing on someone else's numbers.
 # Every run is capped (timeout + ulimit -t).
+#
+# --map=DIR keeps each live workload's full callgrind profile (DIR/<row>.cg.gz)
+# and writes DIR/summary.tsv: the toolchain, then per workload its total and
+# its top functions by self and by inclusive cost. scripts/release_bins.sh map
+# runs it on a SYMBOLIZED build of each release (owner 2026-10-08: keep a
+# callgrind map for every release); forest rows are not mapped (a symbolized
+# build carries no forest, and the map tracks the parser).
 set -u
 cd "$(dirname "$0")/.." || exit 9
 DIR=scripts/parse_cost
 BASE=$DIR/baseline.tsv
 BIN=${MADC_BIN:-bin/madc-release}
 TOL=${PARSE_COST_TOL:-0.5}	# percent (repeat runs agree to ~1e-8)
-record=0; reason=""
+record=0; reason=""; mapdir=""; label=""
 for a in "$@"; do
 	case "$a" in
 	--record) record=1 ;;
 	--accept-increase=*) reason="${a#--accept-increase=}" ;;
+	--map=*) mapdir="${a#--map=}" ;;
+	--label=*) label="${a#--label=}" ;;
 	*) echo "parse_cost_gate: unknown argument '$a'" >&2; exit 2 ;;
 	esac
 done
@@ -65,8 +78,15 @@ rows=()
 for src in "$DIR"/*.cpp "$DIR"/*.c "$DIR"/*.mad; do
 	[ -e "$src" ] || continue
 	name=$(basename "$src"); name="${name%.*}"
-	rows+=("$name.live|$src|--no-forest-bind")
-	[ "${src##*.}" = cpp ] && rows+=("$name.forest|$src|")
+	modes=live
+	[ -f "$DIR/$name.modes" ] && modes=$(cat "$DIR/$name.modes")
+	for m in $modes; do
+		case "$m" in
+		live) rows+=("$name.live|$src|--no-forest-bind") ;;
+		forest) [ -z "$mapdir" ] && rows+=("$name.forest|$src|") ;;
+		*) echo "parse_cost_gate: $DIR/$name.modes: unknown mode '$m'" >&2; exit 2 ;;
+		esac
+	done
 done
 
 fp=$(fingerprint)
@@ -79,6 +99,35 @@ for r in "${rows[@]}"; do
 	now[$row]=$(measure "$row" "$src" "$DIR/$name.expect" $flags)
 	case "${now[$row]}" in FAIL*) echo "RED  $row: ${now[$row]}"; red=$((red + 1)) ;; esac
 done
+
+if [ -n "$mapdir" ]; then
+	mkdir -p "$mapdir" || exit 2
+	{
+		printf '# parse-cost map (scripts/parse_cost_gate.sh --map): %s\n' "$label"
+		printf '# toolchain\t%s\n' "$fp"
+		printf '# columns: total <row> <Ir> | self|incl <row> <Ir> <function>\n'
+		for r in "${rows[@]}"; do
+			row="${r%%|*}"
+			printf 'total\t%s\t%s\n' "$row" "${now[$row]}"
+			case "${now[$row]}" in FAIL*) continue ;; esac
+			for kind in self incl; do
+				flag=no; [ "$kind" = incl ] && flag=yes
+				callgrind_annotate --inclusive=$flag --threshold=100 "$SP/$row.cg" 2>/dev/null |
+					awk -v k="$kind" -v r="$row" '
+					/^ *[0-9,]+ +\(/ {
+						c = $1; gsub(",", "", c)
+						l = $0; sub(/^.*%\) +/, "", l); sub(/ \[.*$/, "", l)
+						if (l ~ /PROGRAM TOTALS/) next
+						if (++n > 40) exit
+						printf "%s\t%s\t%s\t%s\n", k, r, c, l
+					}'
+			done
+			gzip -c "$SP/$row.cg" > "$mapdir/$row.cg.gz"
+		done
+	} > "$mapdir/summary.tsv"
+	grep '^total' "$mapdir/summary.tsv"
+	exit 0
+fi
 
 base_fp=$(awk -F'\t' '$1=="# toolchain"{print $2}' "$BASE" 2>/dev/null)
 if [ "$record" -eq 1 ]; then

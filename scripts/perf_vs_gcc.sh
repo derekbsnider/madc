@@ -16,6 +16,17 @@
 #
 # Usage:
 #   scripts/perf_vs_gcc.sh <file.c> [--std=STD] [--threshold=N] [--callgrind] [--refresh]
+#   scripts/perf_vs_gcc.sh <file> --pipeline [--runs=N] [--std=STD]
+#
+#   --pipeline      WHOLE-PIPELINE comparison, apples to apples (owner 2026-10-08,
+#                   benchmark tests/testsubscript.mad): gcc/g++ compile + link +
+#                   run against madc compile + run, on the forest (default) and
+#                   --no-forest-bind. Timed fresh every call, INTERLEAVED per round
+#                   (gcc, madc, madc live), median of N rounds (default 5); every
+#                   run's exit status and stdout are checked against the gcc-built
+#                   program's. A .c file goes to gcc, anything else to g++ -x c++.
+#                   madc is $MADC_BIN (default bin/madc-release, the shipped -O2
+#                   binary). Plan: docs/plans/2026-10-08-compile-time-vs-gxx.md.
 #
 #   --std=STD       pass -std=STD to gcc/tinycc and --std=STD to madc (default: none).
 #   --threshold=N   flag when madc/gcc ratio exceeds N (default 2.0).
@@ -33,18 +44,67 @@ SP="${TMPDIR:-/tmp}/perf_vs_gcc.$$"
 mkdir -p "$SP"
 trap 'rm -rf "$SP"' EXIT
 
-file=""; std=""; threshold="2.0"; force_cg=0; refresh=0
+file=""; std=""; threshold="2.0"; force_cg=0; refresh=0; pipeline=0; runs=5
 for a in "$@"; do
     case "$a" in
         --std=*)       std="${a#--std=}" ;;
         --threshold=*) threshold="${a#--threshold=}" ;;
         --callgrind)   force_cg=1 ;;
         --refresh)     refresh=1 ;;
+        --pipeline)    pipeline=1 ;;
+        --runs=*)      runs="${a#--runs=}" ;;
         -*)            echo "unknown option: $a" >&2; exit 2 ;;
         *)             file="$a" ;;
     esac
 done
 [ -n "$file" ] && [ -f "$file" ] || { echo "usage: $0 <file.c> [--std=STD] [--threshold=N] [--callgrind] [--refresh]" >&2; exit 2; }
+
+# --- Whole pipeline: compile (+ link) + run, interleaved, median of N ---
+if [ "$pipeline" = 1 ]; then
+    PBIN="${MADC_BIN:-$ROOT/bin/madc-release}"
+    [ -x "$PBIN" ] || { echo "no $PBIN (make -C src release, or set MADC_BIN)" >&2; exit 2; }
+    pstd_c=(); pstd_m=()
+    [ -n "$std" ] && { pstd_c=(-std="$std"); pstd_m=(--std="$std"); }
+    case "$file" in
+        *.c) cc=(gcc "${pstd_c[@]}") ;;
+        *)   cc=(g++ -x c++ "${pstd_c[@]}") ;;
+    esac
+    pdir="$(dirname "$file")"
+    # The oracle: what the gcc-built program prints and exits with.
+    ( ulimit -t 300; timeout 300 "${cc[@]}" -I"$pdir" "$file" -o "$SP/a.out" ) > /dev/null 2>&1 \
+        || { echo "pipeline: ${cc[*]} cannot build $file" >&2; exit 2; }
+    ( ulimit -t 60; timeout 60 "$SP/a.out" ) > "$SP/oracle.out" 2> /dev/null
+    oracle_rc=$?
+    # one_run <label> cmd... -> appends "<seconds>" to $SP/<label>.t; exits on a mismatch
+    one_run() {
+        local label="$1" t rc; shift
+        t="$( { TIMEFORMAT='%R'; time ( ulimit -t 300; timeout 300 "$@" > "$SP/$label.out" 2> /dev/null; \
+                echo $? > "$SP/$label.rc" ); } 2>&1 )"
+        rc="$(cat "$SP/$label.rc")"
+        if [ "$rc" != "$oracle_rc" ] || ! cmp -s "$SP/$label.out" "$SP/oracle.out"; then
+            echo "pipeline: $label run differs from the gcc-built program (rc $rc, oracle rc $oracle_rc)" >&2
+            exit 1
+        fi
+        echo "$t" >> "$SP/$label.t"
+    }
+    # timeout runs a program, not a shell function: the gcc leg is a script.
+    printf '#!/bin/sh\n"$@" -o "%s/b.out" || exit 125\nexec "%s/b.out"\n' "$SP" "$SP" > "$SP/gcc_run"
+    chmod +x "$SP/gcc_run"
+    for _ in $(seq "$runs"); do
+        one_run gcc "$SP/gcc_run" "${cc[@]}" -I"$pdir" "$file"
+        one_run forest "$PBIN" "${pstd_m[@]}" -I"$pdir" "$file"
+        one_run live "$PBIN" "${pstd_m[@]}" --no-forest-bind -I"$pdir" "$file"
+    done
+    median() { sort -n "$SP/$1.t" | awk '{v[NR]=$1} END{print (NR%2 ? v[(NR+1)/2] : (v[NR/2]+v[NR/2+1])/2)}'; }
+    g="$(median gcc)"; f="$(median forest)"; l="$(median live)"
+    printf '%-34s %s\n' "file:" "${file#$ROOT/} ${std:+(--std=$std)}  [median of $runs, interleaved]"
+    printf '%-34s %ss\n' "${cc[0]} compile+link+run:" "$g"
+    printf '%-34s %ss  (%sx %s)\n' "madc forest compile+run:" "$f" \
+        "$(awk -v a="$f" -v b="$g" 'BEGIN{printf "%.2f", a/b}')" "${cc[0]}"
+    printf '%-34s %ss  (%sx %s)\n' "madc --no-forest-bind:" "$l" \
+        "$(awk -v a="$l" -v b="$g" 'BEGIN{printf "%.2f", a/b}')" "${cc[0]}"
+    exit 0
+fi
 
 # Key the recorded reference by repo-relative path + std.
 relfile="${file#$ROOT/}"

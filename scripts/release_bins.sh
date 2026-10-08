@@ -43,6 +43,18 @@
 #                                         stubs that cannot run
 #   release_bins.sh sync                  (NAS) mirror the build container's
 #                                         entries here (never overwrites)
+#   release_bins.sh map [vX.Y.Z...]       the release's CALLGRIND MAP (owner
+#                                         2026-10-08): build the release commit
+#                                         WITH symbols (the shipped binary is
+#                                         stripped), run the parse-cost
+#                                         workloads under callgrind
+#                                         (parse_cost_gate.sh --map) into
+#                                         vX.Y.Z/callgrind/ (*.cg.gz + summary.tsv);
+#                                         every unmapped release when none is
+#                                         named (build host only)
+#   release_bins.sh trend                 total instructions per workload across
+#                                         the mapped releases (docs/perf/
+#                                         release-maps/, any host)
 #   release_bins.sh run [--since vX.Y.Z] [--last N] [--head] <test>...
 #                                         the regression matrix: each named
 #                                         test (run_tests.sh globs) on each
@@ -233,10 +245,32 @@ cmd_archive() {
 	put_entry "$v" "$c" "the release tree $dir (HEAD ${head:0:9})" "$dir/bin/madc-release" "$dir/lib/release"
 }
 
+# build_release <commit> <dir> <log> [symbols]: the release commit's tree in
+# <dir>, built the way every release tree was — the dev build THEN release
+# (through v0.100.1 the release link resolved -lmadc in lib/, where only a dev
+# build leaves a libmadc.so: src/Makefile CLI_LINK). `symbols` keeps them: a
+# no-op strip shadows strip(1) and the forest pack is skipped (WITH_FOREST=none),
+# so callgrind can name every function.
+build_release() {
+	local c="$1" b="$2" log="$3" sym="${4:-}" path="$PATH" extra=""
+	rm -rf "$b"; mkdir -p "$b" || return 1
+	if [ "$sym" = symbols ]; then
+		mkdir -p "$b.nostrip" && printf '#!/bin/sh\nexit 0\n' > "$b.nostrip/strip" &&
+			chmod +x "$b.nostrip/strip" || return 1
+		path="$b.nostrip:$PATH"; extra="WITH_FOREST=none"
+	fi
+	{
+		git -C "$ROOT" archive --format=tar "$c" | tar -x -C "$b" &&
+		( cd "$b" && autoheader && autoconf && ./configure ) &&
+		( ulimit -t 14400; timeout 5400 make -C "$b/src" -j"${MADC_RELBUILD_JOBS:-8}" ) &&
+		( ulimit -t 14400; PATH="$path" timeout 5400 make -C "$b/src" -j"${MADC_RELBUILD_JOBS:-8}" release $extra )
+	} > "$log" 2>&1
+	local rc=$?
+	rm -rf "$b.nostrip"
+	return $rc
+}
+
 # recover <vX.Y.Z> <commit>: the shipped tarball, else a build of the commit.
-# The build is the dev build THEN release, as every release tree was built:
-# through v0.100.1 the release link resolved -lmadc in lib/, where only a
-# dev build leaves a libmadc.so (src/Makefile CLI_LINK).
 recover() {
 	local v="$1" c="$2" tgz="$ROOT/dist/madc-${1#v}-linux-x86_64.tar.gz" x b log
 	if [ -f "$tgz" ]; then
@@ -248,14 +282,9 @@ recover() {
 		local rc=$?; rm -rf "$x"; return $rc
 	fi
 	b="$ROOT/tmp/relbuild/$v"; log="$ROOT/tmp/relbuild/$v.log"
-	rm -rf "$b"; mkdir -p "$b"
 	echo "release_bins: building $v from ${c:0:9} (log: tmp/relbuild/$v.log)"
-	{
-		git -C "$ROOT" archive --format=tar "$c" | tar -x -C "$b" &&
-		( cd "$b" && autoheader && autoconf && ./configure ) &&
-		( ulimit -t 14400; timeout 5400 make -C "$b/src" -j"${MADC_RELBUILD_JOBS:-8}" ) &&
-		( ulimit -t 14400; timeout 5400 make -C "$b/src" -j"${MADC_RELBUILD_JOBS:-8}" release )
-	} > "$log" 2>&1 || { echo "release_bins: $v: build failed — tail of $log:" >&2; tail -5 "$log" >&2; rm -rf "$b"; return 1; }
+	build_release "$c" "$b" "$log" ||
+		{ echo "release_bins: $v: build failed — tail of $log:" >&2; tail -5 "$log" >&2; rm -rf "$b"; return 1; }
 	put_entry "$v" "$c" "built from the release commit (git archive ${c:0:9}; autoheader; autoconf; ./configure; make -C src; make -C src release)" \
 		"$b/bin/madc-release" "$b/lib/release" || return 1
 	rm -rf "$b"
@@ -324,6 +353,49 @@ cmd_migrate() {
 # The build container holds the archive (entries are verified where they
 # run); the NAS checkout mirrors its entries. Entries are immutable, so the
 # copy never replaces one (--ignore-existing) and carries only entry dirs.
+# The parse-cost workloads and the gate's --map mode are THIS tree's, run
+# against every release's build: one fixed yardstick, so the totals compare.
+cmd_map() {
+	need_build_host map
+	local v c want=" $* " bad=0 b log
+	while read -r v c; do
+		[ $# -eq 0 ] || [[ "$want" == *" $v "* ]] || continue
+		if [ $# -eq 0 ] && [ -f "$ARCH/$v/callgrind/summary.tsv" ]; then
+			continue
+		fi
+		b="$ROOT/tmp/relbuild/$v-sym"; log="$ROOT/tmp/relbuild/$v-sym.log"
+		echo "release_bins: mapping $v (symbolized build of ${c:0:9}; log: tmp/relbuild/$v-sym.log)"
+		if ! build_release "$c" "$b" "$log" symbols; then
+			echo "release_bins: $v: symbolized build failed — tail of $log:" >&2
+			tail -5 "$log" >&2; rm -rf "$b"; bad=$((bad+1)); continue
+		fi
+		mkdir -p "$ARCH/$v"
+		env -u LD_LIBRARY_PATH MADC_BIN="$b/bin/madc-release" bash scripts/parse_cost_gate.sh \
+			--map="$ARCH/$v/callgrind" --label="$v ${c:0:12}" || bad=$((bad+1))
+		rm -rf "$b"
+	done < <(releases)
+	[ $bad -eq 0 ]
+}
+
+cmd_trend() {
+	local d="$ROOT/docs/perf/release-maps" f
+	ls "$d"/v*.tsv > /dev/null 2>&1 || die "no release maps in docs/perf/release-maps (release_bins.sh map, then sync)"
+	for f in $(ls "$d"/v*.tsv | sort -V); do
+		awk -F'\t' -v v="$(basename "$f" .tsv)" '$1 == "total" { printf "%s\t%s\t%s\n", v, $2, $3 }' "$f"
+	done | awk -F'\t' '
+		{ if (!($2 in seen)) { seen[$2] = 1; rows[++nr] = $2 }
+		  if (!($1 in vs)) { vs[$1] = 1; cols[++nc] = $1 }
+		  ir[$1, $2] = $3 }
+		END {
+			printf "%-16s", "workload"; for (i = 1; i <= nc; i++) printf " %14s", cols[i]; printf "\n"
+			for (r = 1; r <= nr; r++) {
+				printf "%-16s", rows[r]
+				for (i = 1; i <= nc; i++) printf " %14s", ((cols[i], rows[r]) in ir) ? ir[cols[i], rows[r]] : "-"
+				printf "\n"
+			}
+		}'
+}
+
 cmd_sync() {
 	on_nas || die "sync runs on the NAS checkout (it pulls the container's archive over ssh -p $REMOTE_PORT)"
 	ssh -p "$REMOTE_PORT" -o BatchMode=yes "$REMOTE" "bash $REMOTE_ROOT/scripts/release_bins.sh migrate" || return 1
@@ -334,6 +406,14 @@ cmd_sync() {
 	rsync -az --no-perms --no-owner --no-group --ignore-existing \
 		--include='/v*/***' --exclude='*' -e "ssh -p $REMOTE_PORT" \
 		"$REMOTE:$REMOTE_ROOT/tmp/release-bins/" "$ARCH/" || return 1
+	# Each release's map summary is versioned: the profiles stay in the
+	# archive, the summary joins docs/perf/release-maps/ (trend reads it).
+	local m
+	mkdir -p "$ROOT/docs/perf/release-maps"
+	for m in "$ARCH"/v*/callgrind/summary.tsv; do
+		[ -f "$m" ] || continue
+		cp -p "$m" "$ROOT/docs/perf/release-maps/$(basename "$(dirname "$(dirname "$m")")").tsv"
+	done
 	cmd_migrate
 	cmd_check
 }
@@ -393,5 +473,7 @@ case "${1:-}" in
 	migrate) shift; cmd_migrate "$@";;
 	sync) shift; cmd_sync "$@";;
 	run) shift; cmd_run "$@";;
+	map) shift; cmd_map "$@";;
+	trend) shift; cmd_trend "$@";;
 	*) sed -n '2,/^set -u/p' "$0" | sed '$d'; exit 2;;
 esac
