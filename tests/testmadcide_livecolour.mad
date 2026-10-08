@@ -5,8 +5,9 @@
 //   1. as you type: a typed line's keyword, number and comment take their
 //      colour in the next frame, no save; the lines around keep theirs;
 //   2. typing inside a block comment keeps the comment's colour over the
-//      new text; typing `/*` turns the rest of the buffer into comment once
-//      the pause passes, and the undo brings the code's colour back;
+//      new text, at the start of a continuation line too; typing `/*`
+//      turns the rest of the buffer into comment once the pause passes,
+//      and the undo brings the code's colour back;
 //   3. on the pause the background re-parse adds what only the parse knows:
 //      a typed use of a struct's name is a type (bold);
 //   4. a save while the background re-parse is in flight waits for it.
@@ -118,15 +119,27 @@ int main()
     // 2. Inside the block comment: the comment's colour covers the new text.
     var t;
     ui::text(t, w, doc);
-    long inside = strstr(t.c_str(), "over") - t.c_str();
+    const char *ts = t.c_str();		// ONE pointer: c_str() is ring-lifetime
+    long inside = strstr(ts, "over") - ts;
     ui::set(w, es, "caret", inside);
     type_text(S, doc, "xyz ");
     frame(S, doc, false);
     colour_of(c, w, es, doc, "xyz", 0);
     println("in comment: xyz={}", c);
+    //    At the very START of the comment's continuation line (the edit
+    //    moves that line's own span; the line before says it is comment).
+    ui::text(t, w, doc);
+    ts = t.c_str();
+    long cont = ui::text_line_start(w, doc, ui::text_line_of(w, doc, strstr(ts, "xyz") - ts));
+    ui::set(w, es, "caret", cont);
+    type_text(S, doc, "Q9");
+    frame(S, doc, false);
+    colour_of(c, w, es, doc, "Q9", 0);
+    println("comment line start: Q9={}", c);
     //    `/*` at the start of `return`'s line: the rest is comment after the pause.
     ui::text(t, w, doc);
-    long ret = strstr(t.c_str(), "return") - t.c_str();
+    ts = t.c_str();
+    long ret = strstr(ts, "return") - ts;
     ui::set(w, es, "caret", ret);
     type_text(S, doc, "/*");
     frame(S, doc, true);

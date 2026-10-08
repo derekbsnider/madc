@@ -1877,7 +1877,9 @@ void span_rows_append(var &hs, long w, long es, long doc, var &rows, long line0)
 	if ( ls < 0 )
 	    continue;			// a stale line (edited since the parse)
 	long s = ls + r["column"].as_integer();
-	hs[] = { "s": s, "e": s + r["length"].as_integer(), "c": c };
+	// "k": the span's class as a code (the line re-lex reads it)
+	hs[] = { "s": s, "e": s + r["length"].as_integer(), "c": c,
+		 "k": lsp_token_of_class(cls) };
     }
 }
 
@@ -1998,10 +2000,43 @@ void background_parse(long w, long es, long doc)
 // background (colour_refresh, spawned by IdeSession::parse_pending). The
 // edit record is the editor layer's (editor_events.inc colour_dirty).
 
+// Does line `n` of `doc` end INSIDE an open block comment? Its last span is
+// then a comment running to the line's end that is not a `//` comment and
+// does not close there. (A block comment's spans are one per line, so a
+// line's lexer state is read off the line before it — which an edit below
+// it never moves.)
+bool line_ends_in_block_comment(var &hs, long w, long doc, long n)
+{
+    if ( n < 1 )
+	return false;
+    long ls = ui::text_line_start(w, doc, n);
+    if ( ls < 0 )
+	return false;
+    long le = ls + ui::text_line_len(w, doc, n);
+    var l;
+    ui::text_line(l, w, doc, n);
+    if ( l.is_null() )
+	return false;
+    const char *s = l.c_str();
+    long len = strlen(s);
+    for ( var r : hs )
+    {
+	if ( r["k"].as_integer() != lttCOMMENT || r["e"].as_integer() != le )
+	    continue;
+	long cs = r["s"].as_integer() - ls;
+	if ( cs < 0 || cs >= len )
+	    continue;
+	if ( s[cs] == '/' && cs + 1 < len && s[cs + 1] == '/' )
+	    return false;		// a line comment ends with its line
+	return !(len >= 2 && s[len - 2] == '*' && s[len - 1] == '/');
+    }
+    return false;
+}
+
 // Lines `a`..`b` of `doc` lexed ALONE, their spans replacing the old ones on
-// `es` — unless a span crosses into or out of them (the edit is inside a
-// block comment or a raw string, whose shifted span already covers the new
-// text). False = not re-lexed.
+// `es`. A first line that begins inside a block comment lexes in that state
+// (the text behind a `/*`, its two columns taken back off line 1). False =
+// not re-lexed: a span crosses into or out of the lines.
 bool colour_relex_lines(long w, long es, long doc, long a, long b)
 {
     long ls = ui::text_line_start(w, doc, a);
@@ -2030,10 +2065,36 @@ bool colour_relex_lines(long w, long es, long doc, long a, long b)
 	if ( !l.is_null() )
 	    text = format("{}{}", text, l);
     }
+    bool in_comment = line_ends_in_block_comment(hs, w, doc, a - 1);
+    if ( in_comment )
+	text = format("/*{}", text);
     var p;
     doc_name(p, w, doc);
     var rows;
     madc::lex_spans(rows, text.c_str(), p.c_str());
+    if ( in_comment )
+    {
+	var shifted = {};
+	for ( var r : rows )
+	{
+	    if ( r["line"].as_integer() == 1 )
+	    {
+		long col = r["column"].as_integer() - 2;
+		long len = r["length"].as_integer();
+		if ( col < 0 )
+		{
+		    len = len + col;	// the prefix's own two columns
+		    col = 0;
+		}
+		if ( len <= 0 )
+		    continue;
+		r["column"] = col;
+		r["length"] = len;
+	    }
+	    shifted.push(r);
+	}
+	rows = shifted;
+    }
     // the spans before the lines, the lines' own, the spans after them:
     // the order every renderer reads
     var out = {};

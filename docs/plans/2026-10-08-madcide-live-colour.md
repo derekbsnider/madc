@@ -31,9 +31,13 @@ colour up:
 
 - the dirty range's lines are lexed ALONE (`madc::lex_spans` over their
   text), their old spans dropped and the new ones spliced in;
-- unless a span crosses the range's first or last line boundary (the edit is
-  inside a block comment or a raw string): the shifted span already covers
-  the typed text, and nothing is re-lexed;
+- a first line that begins inside a block comment lexes in that state: the
+  line BEFORE it (which the edit did not move) ends in an open block comment
+  — its last span is a comment to the line's end that is no `//` and does
+  not close — so the lines lex behind a `/*` whose two columns come back off
+  line 1. (The lexer emits a block comment one span per line, so "a span
+  crosses the line boundary" never sees one; each span carries its class as
+  a code, `k`, for this test);
 - a multi-line-capable edit marks the buffer LEX-DIRTY: the line re-lex runs
   now (best effort) and the whole buffer re-lexes at the next pause (layer 2).
 
@@ -66,3 +70,13 @@ confined to the thread that opened it (ns_madc's contract).
 - after the pause, the parse's colour of a typed type name appears (layer 2),
   and spans of a parse whose text moved meanwhile are not applied;
 - undo restores colour for the restored text.
+
+## Status (2026-10-08)
+
+Both layers work (tests/testmadcide_livecolour.mad). The two compiler gaps
+layer 2 needed are fixed on their own branches: an unclosed `/*` colours to
+the end of the buffer (fix/lexspans-open-comment-claude) and a user type name
+colours as a type wherever the parse reads it as one
+(fix/parse-spans-type-names-claude). Next: Chthonia in VS Code's Dark+ — the
+TUI facelift plan's S1 colour value (`#RRGGBB` in the one style spec, exact
+in the window, truecolor or nearest in the terminal) and then S1b's classes.
