@@ -40,6 +40,6 @@ styles:
  1 0+8:fg=#c586c0 9+9:fg=#ce9178
  2 0+12:fg=#6a9955
  3 0+3:fg=#569cd6 4+4:fg=#dcdcaa 9+4:fg=#569cd6
- 5 15+6:fg=#ce9178 21+2:fg=#d7ba7d 23+1:fg=#ce9178 26+2:fg=#b5cea8
+ 5 8+6:fg=#dcdcaa 15+6:fg=#ce9178 21+2:fg=#d7ba7d 23+1:fg=#ce9178 26+2:fg=#b5cea8
  6 8+6:fg=#c586c0 15+1:fg=#b5cea8
 34 26+22:inverse

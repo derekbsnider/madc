@@ -161,7 +161,13 @@ enum class HighlightClass : unsigned char
 			// class, struct, enum, typedef — note_type_name_use)
     hcDirective,	// a preprocessor directive's `#name` (from the line text)
     hcIncludePath,	// the header-name an #include / #load names
-    hcEscape		// an escape sequence inside a string or char literal
+    hcEscape,		// an escape sequence inside a string or char literal
+    // A NAME, by what the parse tree resolved it to (the use node's
+    // TokenVar::name_tok / TokenMember::object_tok):
+    hcVariable,		// a variable (global or local)
+    hcParameter,	// a function parameter
+    hcMember,		// a data member after `.` / `->`
+    hcEnumerator	// an enumeration constant
 };
 
 inline const char *highlight_class_name(HighlightClass c)
@@ -181,6 +187,10 @@ inline const char *highlight_class_name(HighlightClass c)
 	case HighlightClass::hcDirective: return "directive";
 	case HighlightClass::hcIncludePath: return "include";
 	case HighlightClass::hcEscape:	 return "escape";
+	case HighlightClass::hcVariable: return "variable";
+	case HighlightClass::hcParameter: return "parameter";
+	case HighlightClass::hcMember:	 return "member";
+	case HighlightClass::hcEnumerator: return "enumerator";
     }
     return "none";
 }
@@ -334,6 +344,13 @@ public:
     static int _parse_column;
     static int _parse_end_line;
     static int _parse_end_column;
+    // ... and that token ITSELF: a name node the parser builds from it links
+    // to it (TokenVar::name_tok, cursor_name_token). Identity only — a copy
+    // of the position may outlive the token and never reads through it.
+    static TokenBase *_parse_token;
+    // The most recently consumed token when it SPELLS `name` (the last
+    // component of a qualified name), else NULL (parser.cpp).
+    static TokenBase *cursor_name_token(const std::string &name);
     // Active interned-spelling pool for spelling() (interning Step 4). Bound to the
     // currently-processing Program's strpool at lex/parse entry (compile is
     // sequential per-Program, incl. --project per-TU). Lets the arg-less spelling()
@@ -506,18 +523,19 @@ struct ParsePosition
     int column;
     int end_line;
     int end_column;
+    TokenBase *token;		// the token itself (identity, never read through)
     static ParsePosition current()
     {
 	ParsePosition p = { TokenBase::_parse_file, TokenBase::_parse_line,
 			    TokenBase::_parse_column, TokenBase::_parse_end_line,
-			    TokenBase::_parse_end_column };
+			    TokenBase::_parse_end_column, TokenBase::_parse_token };
 	return p;
     }
     // No position: a unit's lexing starts here, so its tokens take their
     // positions from its own text.
     static void reset()
     {
-	ParsePosition none = { NULL, 0, 0, 0, 0 };
+	ParsePosition none = { NULL, 0, 0, 0, 0, NULL };
 	none.restore();
     }
     void restore() const
@@ -527,6 +545,7 @@ struct ParsePosition
 	TokenBase::_parse_column = column;
 	TokenBase::_parse_end_line = end_line;
 	TokenBase::_parse_end_column = end_column;
+	TokenBase::_parse_token = token;
     }
     // The position of token `t` as a value: its file, start and end (the
     // recorded lexical end, else the one derived from its spelling). A copy
@@ -534,7 +553,7 @@ struct ParsePosition
     static ParsePosition of(TokenBase *t)
     {
 	ParsePosition p = { t->file, t->line, t->column, t->lex_end_line,
-		    t->lex_end_column };
+		    t->lex_end_column, t };
 	if ( !t->lex_end_column )
 	    end_from_spelling(t, p);
 	return p;

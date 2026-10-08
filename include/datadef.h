@@ -386,6 +386,11 @@ typedef enum : uint32_t { vfLOCAL	=    1, // local vs global
 			                        // object with external linkage: the
 			                        // definition binds weak (STB_WEAK), and a
 			                        // strong one in another TU replaces it
+			  vfENUMERATOR=134217728, // an enumeration constant (C11 6.7.2.2,
+			                        // [dcl.enum]): what the name IS — in C its
+			                        // type is int and its value constant, so
+			                        // neither tells it from `const int`.
+			                        // Variable::make_enumerator sets it
 			} varflag_t;
 
 // The rt{None,Val,Ptr,Ref,DePtr,DeRef} tag-arithmetic macros are retired:

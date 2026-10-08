@@ -189,6 +189,9 @@ public:
     // `v->name = x` on a registered variable silently breaks sid lookups.
     inline void rename(const std::string &n) { name = n; name_sid = 0; }
     inline void makeconstant() { flags |= vfCONSTANT; }
+    // An enumerator's registration (TokenENUM::parse, the forest restore).
+    inline void make_enumerator() { flags |= vfCONSTANT | vfENUMERATOR; }
+    inline bool is_enumerator() const { return (flags & vfENUMERATOR) != 0; }
     inline bool is_global()   const { if ( (flags & vfLOCAL) && !(flags &vfSTATIC) ) return false; return true; }
     inline bool is_constant() const { if ( (flags & vfCONSTANT) ) return true; return false; }
     // The VALUE is known at parse time: set() into `data` (an enumerator, a
@@ -395,7 +398,14 @@ class TokenVar: public virtual TokenBase
 {
 public:
     Variable &var;
-    TokenVar(Variable &v) : TokenBase(), var(v) { _datatype = v.type; }
+    // The lexed source token that SPELLED this node's name — the name of a
+    // variable use, a call's callee, a member after `.` / `->` (the last
+    // component of a qualified name). NULL = no source name (a synthesized
+    // node). The tree's provenance link (mc11-ir.md): the span classifier
+    // colours that token by what this node resolved to.
+    TokenBase *name_tok;
+    TokenVar(Variable &v) : TokenBase(), var(v), name_tok(TokenBase::cursor_name_token(v.name))
+	{ _datatype = v.type; }
     virtual TokenType type() const override { return TokenType::ttVariable; }
     virtual int64_t get() const override { return var.get<int64_t>(); }
     virtual int val() const     { return var.get<int>(); }
@@ -420,6 +430,7 @@ public:
 	tv->file = file;
 	tv->line = line;
 	tv->column = column;
+	tv->name_tok = name_tok;
 	return tv;
     }
     virtual TokenVar *as_var_tok() override { return this; }

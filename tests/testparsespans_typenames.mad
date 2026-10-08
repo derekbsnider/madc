@@ -21,7 +21,9 @@ void show(const char *src, const char *name)
     for ( var r : sp )
     {
 	if ( r["class"] != "type" && r["class"] != "typename"
-	  && r["class"] != "ident" )
+	  && r["class"] != "ident" && r["class"] != "variable"
+	  && r["class"] != "parameter" && r["class"] != "member"
+	  && r["class"] != "enumerator" )
 	    continue;
 	var lv = lines[r["line"].as_integer() - 1];
 	var word = lv.substr(r["column"].as_integer(), r["length"].as_integer());

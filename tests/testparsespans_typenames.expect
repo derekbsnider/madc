@@ -5,22 +5,22 @@ types.cpp:
   type 2:8 int
   typename 2:12 T
   typename 3:0 S
-  ident 3:2 v
+  variable 3:2 v
   typename 4:0 T
-  ident 4:2 y
+  variable 4:2 y
   typename 5:7 S
-  ident 5:9 w
+  variable 5:9 w
   type 6:0 int
   typename 6:6 S
   ident 6:8 s
   typename 6:11 T
   ident 6:13 t
   typename 6:18 S
-  ident 6:21 p
-  ident 6:26 s
+  variable 6:21 p
+  parameter 6:26 s
   typename 6:37 T
-  ident 6:39 p
-  ident 6:42 x
+  variable 6:39 p
+  member 6:42 x
   typename 6:53 T
   typename 7:6 C
   type 7:18 int
@@ -29,31 +29,31 @@ types.cpp:
   ident 8:9 A
   ident 8:12 B
   typename 9:0 E
-  ident 9:2 e
-  ident 9:6 A
+  variable 9:2 e
+  enumerator 9:6 A
   typename 10:0 C
-  ident 10:2 c
+  variable 10:2 c
   ident 11:10 N
   typename 11:21 Q
   ident 12:0 N
   typename 12:3 Q
-  ident 12:5 q
+  variable 12:5 q
   type 13:0 int
-  ident 13:4 x
+  variable 13:4 x
   typename 13:22 S
 types.c:
   typename 1:7 P
   type 1:11 int
   ident 1:15 a
   typename 2:7 P
-  ident 2:9 p
+  variable 2:9 p
   typename 3:15 P
   typename 3:17 PT
   typename 4:0 PT
-  ident 4:3 q
+  variable 4:3 q
   ident 5:15 R
   ident 5:18 G
   typename 5:22 Col
   typename 6:0 Col
-  ident 6:4 k
-  ident 6:8 G
+  variable 6:4 k
+  enumerator 6:8 G

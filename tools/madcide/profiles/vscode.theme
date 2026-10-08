@@ -15,6 +15,10 @@ comment #6a9955
 directive #c586c0
 include #ce9178
 escape #d7ba7d
+variable #9cdcfe
+parameter #9cdcfe
+member #9cdcfe
+enumerator #4fc1ff
 
 # @gui: the window's workbench in Dark+ (the editor's own surfaces).
 @gui bg #1e1e1e

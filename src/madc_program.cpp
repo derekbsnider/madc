@@ -21,6 +21,7 @@
 #include <stack>
 #include <string>
 #include <unordered_map>	// L1b body-node id registry (parse_tu_state::body_ids)
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -5685,6 +5686,86 @@ static void recorded_comment_rows(::Program &child, const std::string &display_n
     }
 }
 
+// ---- names, by the parse tree (TUI facelift S1b): a name's class is what
+// the tree's node for it resolved to, at the lexed token the node was built
+// from (TokenVar::name_tok, TokenMember::object_tok — the provenance links).
+// The tree is the one record; the classifier reads it, never a second one.
+typedef std::unordered_map<const TokenBase *, HighlightClass> name_class_map;
+
+static void graph_body_children(const TokenBase *t, std::vector<const TokenBase *> &out);
+
+// What a use of `v` is: an enumerator, a parameter, a function designator
+// (a call's callee, `&f`) or a variable. A function POINTER is a variable.
+static HighlightClass variable_use_class(const Variable &v)
+{
+    if ( v.is_enumerator() )
+	return HighlightClass::hcEnumerator;
+    if ( v.flags & vfPARAM )
+	return HighlightClass::hcParameter;
+    if ( v.type && v.type->as_funcdef_dd() )
+	return HighlightClass::hcFunction;
+    return HighlightClass::hcVariable;
+}
+
+// The source names ONE node spelled, each with its class.
+static void node_name_classes(const TokenBase *t, name_class_map &out)
+{
+    TokenBase *nt = const_cast<TokenBase *>(t);
+    TokenVar *tv = nt->as_var_tok();
+    if ( !tv )
+	return;
+    if ( TokenMember *m = nt->as_member_tok() )	// also a method call
+    {
+	if ( m->object_tok )
+	    out[m->object_tok] = variable_use_class(m->object);
+	if ( tv->name_tok )
+	    out[tv->name_tok] = nt->as_callmethod_tok() ? HighlightClass::hcFunction
+							: HighlightClass::hcMember;
+	return;
+    }
+    if ( tv->name_tok )
+	out[tv->name_tok] = variable_use_class(tv->var);
+}
+
+// The source name of a node that holds its variable directly — `&g`, `*p`,
+// `*p++`, `a[i]` (a use node the builder replaced; its link moved here).
+static void leaf_name_classes(const TokenBase *t, name_class_map &out)
+{
+    TokenBase *nt = const_cast<TokenBase *>(t);
+    if ( TokenAddrOf *a = nt->as_addr_of_tok() )
+    { if ( a->name_tok ) out[a->name_tok] = variable_use_class(a->var); }
+    else if ( TokenDeref *d = nt->as_deref_tok() )
+    { if ( d->name_tok ) out[d->name_tok] = variable_use_class(d->var); }
+    else if ( TokenDerefStep *ds = nt->as_deref_step_tok() )
+    { if ( ds->name_tok ) out[ds->name_tok] = variable_use_class(ds->var); }
+    else if ( TokenSubscript *sb = nt->as_subscript_tok() )
+    { if ( sb->object_tok ) out[sb->object_tok] = variable_use_class(sb->object); }
+}
+
+// Every name the TU's own code spelled: its function bodies and its global
+// declarations' initializers (TopDecl::decl), through the one body walker
+// (graph_body_children).
+static void tree_name_classes(::Program &child, const std::string &display_name,
+			      name_class_map &out)
+{
+    std::vector<const TokenBase *> q;
+    for ( size_t f = 0; f < child.pending_funcs.size(); ++f )
+	if ( TokenFunc *fn = tu_own_function(child.pending_funcs[f], display_name) )
+	    q.push_back(fn);
+    for ( const ::Program::TopDecl &td : child.top_decls )
+	if ( td.decl && td.decl->file && display_name == td.decl->file )
+	    q.push_back(td.decl);
+    std::unordered_set<const TokenBase *> seen;	// a node shared by two parents
+    for ( size_t qi = 0; qi < q.size(); ++qi )
+    {
+	if ( !seen.insert(q[qi]).second )
+	    continue;
+	node_name_classes(q[qi], out);
+	leaf_name_classes(q[qi], out);
+	graph_body_children(q[qi], q);
+    }
+}
+
 // The highlight-span query (madcide AST-2 / IDE-7): classification rows
 // for the TU's OWN tokens, from the handle's RETAINED stream — data, not
 // styling (a theme maps class names to colours; the compiler never
@@ -5706,6 +5787,7 @@ static void highlight_token_rows(::Program &child,
 				 const std::string &display_name,
 				 const std::string &source_text,
 				 const std::map<long, std::set<std::string> > &fn_heads,
+				 const name_class_map &names,
 				 std::vector<madc::value> &rows)
 {
     recorded_comment_rows(child, display_name, source_text, rows);
@@ -5737,6 +5819,12 @@ static void highlight_token_rows(::Program &child,
 	}
 	HighlightClass hc = madc_token_highlight_class(t);
 	std::string sp = madc_token_spelling(t);
+	if ( hc == HighlightClass::hcIdent )
+	{
+	    name_class_map::const_iterator nc = names.find(t);
+	    if ( nc != names.end() )
+		hc = nc->second;
+	}
 	if ( hc == HighlightClass::hcIdent )
 	{
 	    std::map<long, std::set<std::string> >::const_iterator fh =
@@ -5779,7 +5867,8 @@ static void lexical_highlight_rows(::Program &owner, const std::string &source_t
 	child.tokenize_buffer(source_text, disp);
     }
     std::map<long, std::set<std::string> > no_heads;
-    highlight_token_rows(child, disp, source_text, no_heads, rows);
+    name_class_map no_names;
+    highlight_token_rows(child, disp, source_text, no_heads, no_names, rows);
 }
 
 // An integer field of a highlight_row row (0 when absent).
@@ -6130,7 +6219,9 @@ bool internal_program_parse_spans(int64_t handle, madc::value &out)
 					     st->display_name) )
 	    fn_heads[(long)tf->line].insert(tf->var.name);
     std::vector<madc::value> rows;
-    highlight_token_rows(child, st->display_name, st->source_text, fn_heads, rows);
+    name_class_map names;
+    tree_name_classes(child, st->display_name, names);
+    highlight_token_rows(child, st->display_name, st->source_text, fn_heads, names, rows);
     // The parse REFINES the lexical colour and never removes it: a parse
     // that stopped short — a header that does not open, a syntax error
     // mid-edit — holds no tokens past where it stopped, so the text it did

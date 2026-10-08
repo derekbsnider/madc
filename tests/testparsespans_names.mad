@@ -1,0 +1,42 @@
+// madc::parse_spans colours a NAME by what the parse resolved it to — the
+// tree's own node, at the source token that node was built from: a variable
+// (global or local), a parameter, a member (after `.` / `->`, and the object
+// before it), a function (its definition and every call), an enumerator.
+// Before: every use was a plain `ident`, and the tree's nodes sat where the
+// parse cursor stood when each was built (a call at its `(`, the object of
+// `local.x` nowhere).
+// Oracle: C's own name resolution over the source text (C11 6.2.1, 6.5.2.3)
+// — clangd's semantic tokens over the same file: variable, parameter,
+// property, function, enumMember; every row's text is the name itself.
+int main()
+{
+    var src = "enum Colour { RED, GREEN };\n"
+	      "struct P { int x; struct P *next; };\n"
+	      "int total;\n"
+	      "int add(int a, int b) { return a + b; }\n"
+	      "int walk(struct P *p, int n)\n"
+	      "{\n"
+	      "    struct P local;\n"
+	      "    local.x = n;\n"
+	      "    local.next = p;\n"
+	      "    total = add(local.x, p->next->x) + GREEN;\n"
+	      "    return total;\n"
+	      "}\n";
+    array lines;
+    php::explode(lines, "\n", src.c_str());
+    long h = madc::parse_open(src.c_str(), "names.c");
+    var rows;
+    madc::parse_spans(rows, h);
+    for ( var r : rows )
+    {
+	var c = r["class"];
+	if ( c != "variable" && c != "parameter" && c != "member"
+	  && c != "function" && c != "enumerator" && c != "ident" )
+	    continue;
+	var lv = lines[r["line"].as_integer() - 1];
+	println("{}:{} {} |{}|", r["line"], r["column"], c,
+		perl::substr(lv, r["column"].as_integer(), r["length"].as_integer()));
+    }
+    madc::parse_close(h);
+    return 0;
+}

@@ -1632,6 +1632,8 @@ long lsp_token_of_class(var &cls)
 	return lttKEYWORD;		// no `macro` in this legend yet
     if ( cls == "include" || cls == "escape" )
 	return lttSTRING;
+    if ( cls == "parameter" || cls == "member" || cls == "enumerator" )
+	return lttVARIABLE;		// the legend's one name kind for now
     for ( long k = lttKEYWORD; k <= lttFUNCTION; k = k + 1 )
 	if ( cls == lsp_token_name(k) )
 	    return k;

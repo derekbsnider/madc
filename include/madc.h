@@ -1414,6 +1414,10 @@ public:
     Variable &object;
     size_t offset;
     TokenBase *parent_expr;  // non-null for chained -> (e.g. ch->in_room->name)
+    // The lexed token that spelled `object` when the object is a named
+    // variable (`s` in `s.m`; NULL under a parent_expr, an implicit `this`,
+    // a synthesized object). The member's own token is name_tok (TokenVar).
+    TokenBase *object_tok = nullptr;
     TokenMember(Variable &o, Variable &m, size_t ofs)
         : TokenCallFunc(m), object(o), offset(ofs), parent_expr(nullptr) { _datatype = m.type; }
     TokenMember(Variable &o, Variable &m, size_t ofs, TokenBase *parent)
@@ -1463,6 +1467,7 @@ class TokenAddrOf: public TokenBase
 public:
     Variable &var;
     DataDef *ptr_type;  // pointer-to-var type
+    TokenBase *name_tok = nullptr;	// the operand's name token (build_address_of)
     TokenAddrOf(Variable &v, DataDef *pt) : var(v), ptr_type(pt) {}
     virtual TokenType type() const override { return TokenType::ttBase; }
     virtual DataDef *datadef() const override { return ptr_type ? ptr_type : &ddVOID; }
@@ -1557,6 +1562,7 @@ class TokenDeref: public TokenBase
 public:
     Variable &var;
     DataDef *deref_type;  // pointed-to type
+    TokenBase *name_tok = nullptr;	// the operand's name token (build_indirection)
     TokenDeref(Variable &v, DataDef *dt) : var(v), deref_type(dt) { _datatype = dt; }
     virtual TokenType type() const override { return TokenType::ttMember; }  // reuse member type for assignment compat
     virtual DataDef *datadef() const override { return deref_type; }
@@ -1607,6 +1613,7 @@ public:
     Variable &var;
     DataDef *deref_type;
     bool increment;
+    TokenBase *name_tok = nullptr;	// the pointer's name token (build_indirection)
     TokenDerefStep(Variable &v, DataDef *dt, bool inc)
         : var(v), deref_type(dt), increment(inc) { _datatype = dt; }
     virtual TokenType type() const override { return TokenType::ttBase; }
@@ -1663,6 +1670,7 @@ class TokenSubscript: public TokenBase
 {
 public:
     Variable &object;    // the container variable
+    TokenBase *object_tok = nullptr;	// the container's name token, from its use node
     TokenBase *index;    // the primary (first) index expression
     std::vector<TokenBase *> extra_indices; // additional indices for multi-dim fixed arrays
     Variable *tmp_var;   // temp string variable for string-returning subscripts (or NULL)

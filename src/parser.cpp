@@ -229,6 +229,42 @@ thread_local bool DiagnosticRenderMute::active = false;
 int TokenBase::_parse_column = 0;
 int TokenBase::_parse_end_line = 0;
 int TokenBase::_parse_end_column = 0;
+TokenBase *TokenBase::_parse_token = NULL;
+
+// A name node's source token is the parser's last consumed token when that
+// token SPELLS the node's name — the parser builds a use node right as it
+// reads the name (a call's node before its `(`). A qualified name's Variable
+// may carry its scope (`ns::x`): the token spells the last component.
+TokenBase *TokenBase::cursor_name_token(const std::string &name)
+{
+    TokenBase *t = _parse_token;
+    if ( !t || name.empty() )
+	return NULL;
+    TokenIdent *id = t->as_ident_tok();
+    if ( !id )
+	return NULL;
+    const char *sp = id->spelling();
+    if ( !sp || !*sp )
+	return NULL;
+    size_t n = strlen(sp);
+    if ( name.size() < n || name.compare(name.size() - n, n, sp) != 0 )
+	return NULL;
+    if ( name.size() > n && (name.size() < n + 2
+			     || name.compare(name.size() - n - 2, 2, "::") != 0) )
+	return NULL;
+    return t;
+}
+
+// The name token of the use node an object access CONSUMES — `s` in `s.m`,
+// `p` in `p->f()`: a named variable's node (its TokenVar::name_tok), else
+// NULL (an expression object rides parent_expr and keeps its own links).
+static TokenBase *object_name_token(TokenBase *object_node)
+{
+    if ( !object_node || object_node->type() != TokenType::ttVariable )
+	return NULL;
+    TokenVar *tv = object_node->as_var_tok();
+    return tv ? tv->name_tok : NULL;
+}
 madc::dis::intern_table *TokenBase::_active_strpool = NULL;
 madc::dis::value_pool *TokenBase::_active_valpool = NULL;
 
@@ -15710,6 +15746,21 @@ static void copy_token_location(TokenBase *dst, TokenBase *src)
     dst->column = src->column;
 }
 
+// A use node REPLACING another (an overload re-selected, a call re-bound):
+// its location and its source links — the name token, and a member's object
+// token — move to the replacement.
+static void copy_use_origin(TokenVar *dst, TokenVar *src)
+{
+    if ( !dst || !src )
+	return;
+    copy_token_location(dst, src);
+    dst->name_tok = src->name_tok;
+    TokenMember *dm = dst->as_member_tok();
+    TokenMember *sm = src->as_member_tok();
+    if ( dm && sm )
+	dm->object_tok = sm->object_tok;
+}
+
 TokenBase *Program::make_expression_context_literal(const madc::value &resolved,
 						  TokenBase *src)
 {
@@ -23215,9 +23266,7 @@ TokenCallMethod *Program::reselect_method_overload(TokenCallMethod *tc,
 	selected->user_argc = tc->user_argc;
 	selected->explicit_template_args = tc->explicit_template_args;
 	selected->parent_expr = tc->parent_expr;
-	selected->file = tc->file;
-	selected->line = tc->line;
-	selected->column = tc->column;
+	copy_use_origin(selected, tc);
     }
     // C++ default arguments: fill omitted TRAILING args from the SELECTED
     // overload's parameter defaults — the method analogue of parseCallFunc's
@@ -23279,9 +23328,7 @@ TokenCallMethod *Program::reselect_method_overload(TokenCallMethod *tc,
 	    bound->parameters = selected->parameters;
 	    bound->explicit_template_args = selected->explicit_template_args;
 	    bound->parent_expr = selected->parent_expr;
-	    bound->file = selected->file;
-	    bound->line = selected->line;
-	    bound->column = selected->column;
+	    copy_use_origin(bound, selected);
 	    selected = bound;
 	}
     }
@@ -23657,9 +23704,7 @@ TokenCallFunc *Program::reselect_static_member_overload(TokenCallFunc *tc,
 	    sel->parameters = tc->parameters;
 	    sel->explicit_template_args = tc->explicit_template_args;
 	    sel->auto_scope_context = tc->auto_scope_context;
-	    sel->file = tc->file;
-	    sel->line = tc->line;
-	    sel->column = tc->column;
+	    copy_use_origin(sel, tc);
 	    return sel;
 	}
 	return tc;
@@ -23702,9 +23747,7 @@ TokenCallFunc *Program::reselect_static_member_overload(TokenCallFunc *tc,
 	sel->parameters = tc->parameters;
 	sel->explicit_template_args = tc->explicit_template_args;
 	sel->auto_scope_context = tc->auto_scope_context;
-	sel->file = tc->file;
-	sel->line = tc->line;
-	sel->column = tc->column;
+	copy_use_origin(sel, tc);
     }
     // Ensure the selected member template is instantiated (idempotent / memoized
     // when parseCallFunc already ran the hook on the original binding).
@@ -23726,9 +23769,7 @@ TokenCallFunc *Program::reselect_static_member_overload(TokenCallFunc *tc,
 	    tc3->parameters = sel->parameters;
 	    tc3->explicit_template_args = sel->explicit_template_args;
 	    tc3->auto_scope_context = sel->auto_scope_context;
-	    tc3->file = sel->file;
-	    tc3->line = sel->line;
-	    tc3->column = sel->column;
+	    copy_use_origin(tc3, sel);
 	    return tc3;
 	}
 	// No __mti definition — a BODY-LESS member template (the
@@ -23785,9 +23826,7 @@ TokenCallFunc *Program::reselect_static_member_overload(TokenCallFunc *tc,
 			tc4->parameters = sel->parameters;
 			tc4->explicit_template_args = sel->explicit_template_args;
 			tc4->auto_scope_context = sel->auto_scope_context;
-			tc4->file = sel->file;
-			tc4->line = sel->line;
-			tc4->column = sel->column;
+			copy_use_origin(tc4, sel);
 			tc4->return_override = rt2;
 			return tc4;
 		    }
@@ -27322,7 +27361,7 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 		    Variable *evar = new Variable(rt.enumerators[e].first,
 						  *rt.dd, 1, NULL, true);
 		    evar->set(rt.enumerators[e].second);
-		    evar->makeconstant();
+		    evar->make_enumerator();
 		    scope_ns[rt.enumerators[e].first] = evar;
 		}
 	    }
@@ -33485,6 +33524,8 @@ TokenBase *Program::parsePostfixChainFrom(TokenBase *result, Variable *var)
 			    TokenCallMethod *tc = new TokenCallMethod(*recv_var, *mvar);
 			    if ( recv_parent )
 				tc->parent_expr = recv_parent;
+			    else
+				tc->object_tok = object_name_token(result);
 			    if ( explicit_targs_follow )
 				tc->explicit_template_args = capture_call_template_args();
 			    TokenBase *open = nextToken();
@@ -33530,6 +33571,7 @@ TokenBase *Program::parsePostfixChainFrom(TokenBase *result, Variable *var)
 	    {
 		TokenVar *tv = dynamic_cast<TokenVar *>(result);
 		tm = new TokenMember(tv->var, *mvar, ofs);
+		tm->object_tok = tv->name_tok;
 	    }
 	    else
 	    {
@@ -33581,6 +33623,7 @@ TokenBase *Program::parsePostfixChainFrom(TokenBase *result, Variable *var)
 		if ( atv )
 		{
 		    TokenSubscript *ts = new TokenSubscript(atv->var, NULL);
+		    ts->object_tok = atv->name_tok;	// the container's use node gives way
 		    ts->setDataType(madc_array_subscript_type());
 		    app = ts;
 		}
@@ -33614,6 +33657,7 @@ TokenBase *Program::parsePostfixChainFrom(TokenBase *result, Variable *var)
 		  && TokenSubscript::subscript_operator_element_type(tvr->var.type) )
 		{
 		    TokenSubscript *tsr = new TokenSubscript(tvr->var, idx_expr);
+		    tsr->object_tok = tvr->name_tok;	// the container's use node gives way
 		    tsr->file = open->file;
 		    tsr->line = open->line;
 		    tsr->column = open->column;
@@ -33845,9 +33889,17 @@ TokenBase *Program::build_indirection(TokenBase *operand, TokenBase *star)
 	    base = dependent_deref_result_type(var.type);
 	if ( base )
 	{
+	    // The variable's use node gives way to the dereference: its
+	    // name token moves with it (TokenVar::name_tok).
 	    if ( step )
-		return new TokenDerefStep(var, base, step->id() == TokenID::tkInc);
-	    return new TokenDeref(var, base);
+	    {
+		TokenDerefStep *ds = new TokenDerefStep(var, base, step->id() == TokenID::tkInc);
+		ds->name_tok = tv->name_tok;
+		return ds;
+	    }
+	    TokenDeref *d = new TokenDeref(var, base);
+	    d->name_tok = tv->name_tok;
+	    return d;
 	}
     }
 
@@ -34152,7 +34204,9 @@ TokenBase *Program::build_address_of(TokenBase *operand, TokenBase *amp)
     if ( tv )
     {
 	tv->var.flags |= vfADDRTAKEN;
-	return new TokenAddrOf(tv->var, addressof_result_type(target_type));
+	TokenAddrOf *a = new TokenAddrOf(tv->var, addressof_result_type(target_type));
+	a->name_tok = tv->name_tok;	// the operand's use node gives way
+	return a;
     }
     if ( !is_addressable_expression(operand) )
 	Throw(amp) << "expecting addressable expression after '&'" << flush;
@@ -41890,9 +41944,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 				    TokenCallFunc *tc2 = new TokenCallFunc(*ov);
 				    tc2->parameters = tc->parameters;
 				    tc2->explicit_template_args = tc->explicit_template_args;
-				    tc2->file = tc->file;
-				    tc2->line = tc->line;
-				    tc2->column = tc->column;
+				    copy_use_origin(tc2, tc);
 				    tc = tc2;
 				}
 			    var = &tc->var;
@@ -41942,6 +41994,8 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			TokenCallMethod *tc = new TokenCallMethod(*tv_var, *var);
 			if ( recv_parent )
 			    tc->parent_expr = recv_parent;
+			else
+			    tc->object_tok = object_name_token(lhs_dot);
 			if ( peekToken() && peekToken()->id() == TokenID::tkLT )
 			    tc->explicit_template_args = capture_call_template_args();
 			tb = nextToken();
@@ -42024,6 +42078,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			    if ( rtv )
 			    {
 				TokenSubscript *tsn = new TokenSubscript(rtv->var, key);
+				tsn->object_tok = rtv->name_tok;	// the container's use node gives way
 				tsn->setDataType(&ddARRAY);
 				keyed = tsn;
 			    }
@@ -42138,7 +42193,11 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		       || lhs_dot->type() == TokenType::ttSubscript) )
 			exStack.push(new TokenMember(*tv_var, *var, ofs, lhs_dot));
 		    else
-			exStack.push(new TokenMember(*tv_var, *var, ofs));
+		    {
+			TokenMember *tm = new TokenMember(*tv_var, *var, ofs);
+			tm->object_tok = object_name_token(lhs_dot);
+			exStack.push(tm);
+		    }
 		    // remove TokenDot from opStack
 		    if ( !opStack.empty() && opStack.top()->id() == TokenID::tkDot )
 			opStack.pop();
@@ -42346,9 +42405,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 					TokenCallFunc *tc2 = new TokenCallFunc(*ov);
 					tc2->parameters = tc->parameters;
 					tc2->explicit_template_args = tc->explicit_template_args;
-					tc2->file = tc->file;
-					tc2->line = tc->line;
-					tc2->column = tc->column;
+					copy_use_origin(tc2, tc);
 					tc = tc2;
 				    }
 				var = &tc->var;
@@ -42404,6 +42461,8 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			    TokenCallMethod *tc = new TokenCallMethod(*obj_var, *var);
 			    if ( recv_parent )
 				tc->parent_expr = recv_parent;
+			    else
+				tc->object_tok = object_name_token(lhs);
 			    if ( peekToken() && peekToken()->id() == TokenID::tkLT )
 				tc->explicit_template_args = capture_call_template_args();
 			    tb = nextToken();
@@ -42485,7 +42544,11 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		      || ref_collapsed_lhs )
 			exStack.push(new TokenMember(*obj_var, *var, ofs, lhs));
 		    else
-			exStack.push(new TokenMember(*obj_var, *var, ofs));
+		    {
+			TokenMember *tm = new TokenMember(*obj_var, *var, ofs);
+			tm->object_tok = object_name_token(lhs);
+			exStack.push(tm);
+		    }
 		    // remove TokenDeRef from opStack
 		    if ( !opStack.empty() && opStack.top()->id() == TokenID::tkDeRef )
 			opStack.pop();
@@ -42729,8 +42792,9 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    {
 			if ( mvar->flags & vfSTATIC )
 			{
-			    tb = nextToken();
+			    // Built at its name, as every call node (name_tok).
 			    TokenCallFunc *tc = new TokenCallFunc(*mvar);
+			    tb = nextToken();
 			    tc->line = tb->line;
 			    tc->column = tb->column;
 			    tb = parseCallFunc(tc);
@@ -43666,6 +43730,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			    DBG(cout << "parseExpression: append subscript on "
 				     << tv->var.name << endl);
 			    TokenSubscript *tapp = new TokenSubscript(tv->var, NULL);
+			    tapp->object_tok = tv->name_tok;	// the container's use node gives way
 			    tapp->setDataType(madc_array_subscript_type());
 			    exStack.push(tapp);
 			    return done ? ExprStep::Done : ExprStep::Break;
@@ -43704,6 +43769,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			    return done ? ExprStep::Done : ExprStep::Break;
 			}
 			TokenSubscript *tsn = new TokenSubscript(tv->var, idx);
+			tsn->object_tok = tv->name_tok;	// the container's use node gives way
 			// madc array subscript: every carrier subscript types as
 			// the carrier — the slot model (madc_array_subscript_type).
 			// sub_recv (hoisted above) already unwrapped a
@@ -44660,6 +44726,8 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			    TokenCallMethod *tc = new TokenCallMethod(*recv_var, *fmethod);
 			    if ( recv_parent )
 				tc->parent_expr = recv_parent;
+			    else
+				tc->object_tok = object_name_token(recv_node);
 			    exStack.pop();
 			    tc->file = tb->file;
 			    tc->line = tb->line;
@@ -44710,6 +44778,8 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			    TokenCallMethod *tc = new TokenCallMethod(*recv_var, *pmv);
 			    if ( recv_parent )
 				tc->parent_expr = recv_parent;
+			    else
+				tc->object_tok = object_name_token(recv_node);
 			    exStack.pop();
 			    tc->file = tb->file;
 			    tc->line = tb->line;
@@ -56989,7 +57059,7 @@ TokenBase *TokenENUM::parse(Program &pgm)
 	    Variable *evar = new Variable(name, enum_dd ? *enum_dd : ddINT,
 					  1, NULL, true);
 	    evar->set(val);
-	    evar->makeconstant();
+	    evar->make_enumerator();
 	    pgm.pack_tap_name(scoped_ns_key + "::" + name,
 			      Program::pdkVariable);	// B4a tap (scoped enumerator)
 	    (*scope_ns)[name] = evar;
@@ -57022,7 +57092,7 @@ TokenBase *TokenENUM::parse(Program &pgm)
 		Variable *evar = new Variable(name, enum_dd ? *enum_dd : ddINT,
 					      1, NULL, true);
 		evar->set(val);
-		evar->makeconstant();
+		evar->make_enumerator();
 		pgm.pack_tap_name(scoped_ns_key + "::" + name,
 				  Program::pdkVariable);	// B4a tap
 		(*scope_ns)[name] = evar;
@@ -57045,7 +57115,7 @@ TokenBase *TokenENUM::parse(Program &pgm)
 	    DataDef &enumerator_type = (enum_dd && !pgm.is_c_mode()) ? *enum_dd : ddINT;
 	    Variable *evar = pgm.addVariable(NULL, enumerator_type, name, 1, NULL, true);
 	    evar->set(val);
-	    evar->makeconstant();
+	    evar->make_enumerator();
 	    if ( pgm.is_c_mode() || !enum_dd )
 		close_typed_enumerators.push_back(evar);
 	    // v26 forest SAVE state: the constant has no TopDecl and no link
