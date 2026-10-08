@@ -36,14 +36,21 @@ ESC = b'\x1b'
 KEY = {
     'options': b'\x14',             # ^T
     'esc': ESC,
+    'enter': b'\r',
+    'down': ESC + b'[B',
     'f5': ESC + b'[15~',
 }
 
-# (name, [ (key name | None, text to wait for | None) ... ])
+# (name, [ (key name | 'text:<chars>', text to wait for | None) ... ],
+#  terminal environment, sizes) — sizes None = every size in SIZES.
 SCENARIOS = [
-    ('startup', []),
-    ('options', [('options', None)]),
-    ('replrun', [('f5', 'hi 42')]),
+    ('startup', [], {}, None),
+    ('options', [('options', None)], {}, None),
+    ('replrun', [('f5', 'hi 42')], {}, None),
+    # a popup takes the keyboard: ^T Options, down to Scheme, Enter = the
+    # Theme prompt (the arrows and Enter reach the list, not the buffer)
+    ('options-scheme', [('options', None), ('down', None), ('enter', None)],
+     {}, None),
 ]
 
 
@@ -68,7 +75,7 @@ def wait_for(fd, scr, text, limit=30.0):
     return False
 
 
-def run_scenario(name, steps, rows, cols, work):
+def run_scenario(name, steps, env, rows, cols, work):
     path = os.path.join(work, 'golden.cpp')
     with open(path, 'w') as f:
         f.write(SOURCE)
@@ -77,12 +84,12 @@ def run_scenario(name, steps, rows, cols, work):
     # the file is opened by its RELATIVE name so the status line is stable
     pid, fd = spawn([os.path.abspath(MADC), os.path.abspath('tools/madcide/madcide.mad'),
                      'golden.cpp'], rows, cols,
-                    env_extra={'MADCIDE_CONFIG_DIR': cfg}, cwd=work)
+                    env_extra=dict(env, MADCIDE_CONFIG_DIR=cfg), cwd=work)
     scr = Screen(rows, cols)
     try:
         settle(fd, scr, quiet=1.5, limit=40)
         for key, text in steps:
-            os.write(fd, KEY[key])
+            os.write(fd, key[5:].encode() if key.startswith('text:') else KEY[key])
             if text is not None:
                 if not wait_for(fd, scr, text):
                     return None, 'never showed %r' % text
@@ -104,10 +111,10 @@ def main():
     failures = []
     checked = 0
     try:
-        for name, steps in SCENARIOS:
-            for rows, cols in SIZES:
+        for name, steps, env, sizes in SCENARIOS:
+            for rows, cols in (sizes or SIZES):
                 label = '%s %dx%d' % (name, cols, rows)
-                scr, why = run_scenario(name, steps, rows, cols, work)
+                scr, why = run_scenario(name, steps, env, rows, cols, work)
                 if scr is None:
                     failures.append('%s: %s' % (label, why))
                     continue

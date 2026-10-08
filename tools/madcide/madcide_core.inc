@@ -2958,6 +2958,7 @@ void dialog_hints(var &box, long w, long es, const char *scope,
 {
     var bh = box["hints"];
     bh["popup"] = 1;
+    bh["focus"] = 1;		// a popup takes the keyboard while it is up
     var title = box["label"];
     var dlg = { "title": title };
     if ( !filter.is_null() )
