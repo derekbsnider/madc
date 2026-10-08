@@ -37191,8 +37191,11 @@ class ClassPatternNormalizer
 		    // instantiation arm (memo_kind 3) passes it through.
 		    pattern.types[id].kind =
 			Program::ClassTypePatternKind::DependentMember;
-		    pattern.types[id].operand =
+		    // normalize_type appends to pattern.types: compute first,
+		    // then index (the LHS reference is not sequenced after it).
+		    Program::ClassTypePatternId owner_operand =
 			normalize_type(shell->second.owner_class);
+		    pattern.types[id].operand = owner_operand;
 		    pattern.types[id].name = shell->second.tname;
 		    pattern.types[id].flags = 1u;
 		}
@@ -72044,10 +72047,13 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	    flat_datatype_map_iter ri = pgm.datatype_map.find(registered_mangled);
 	    if ( ri != pgm.datatype_map.end() )
 	    {
-		pgm.datatype_map[alias_key] = (*ri);
+		// The value, not the iterator: inserting alias_key may grow the
+		// map's storage, which `ri` points into.
+		TokenDataType *registered = *ri;
+		pgm.datatype_map[alias_key] = registered;
 		if ( !td.defining_namespace.empty() )
 		    pgm.namespace_datatype_map[td.defining_namespace][alias_key] =
-			(TokenDataType *)(*ri);
+			registered;
 	    }
 	    datadef_map_citer si = pgm.struct_map.find(registered_mangled);
 	    if ( si != pgm.struct_map.end() )
@@ -72066,7 +72072,8 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	    flat_datatype_map_iter bi = pgm.datatype_map.find(mangled);
 	    if ( bi != pgm.datatype_map.end() )
 	    {
-		pgm.datatype_map[registered_mangled] = (*bi);
+		TokenDataType *bare = *bi;	// the value: the insert may grow the storage
+		pgm.datatype_map[registered_mangled] = bare;
 		datadef_map_citer bsi = pgm.struct_map.find(mangled);
 		if ( bsi != pgm.struct_map.end() )
 		    pgm.struct_map.set(registered_mangled, bsi->second);
