@@ -19,6 +19,7 @@
 // Thread contract: as the Program it reads (one thread, between entries).
 
 #include <string>
+#include "madcdis/istring.h"	// names are interned (madc::dis::istring)
 
 class Program;
 class DataDef;
@@ -32,35 +33,35 @@ class TypeSpeller
 public:
     explicit TypeSpeller(Program *pgm) : pgm(pgm) {}
     // A value's type, as D10's show writes it before the value.
-    std::string shown(DataDef *dd) const;
+    madc::dis::istring shown(DataDef *dd) const;
     // A class (or an aggregate a template instantiated): the source's name
     // for an instantiation (`std::string`), else its template-id as g++ and
     // clang++ write it (`std::vector<int>`), else its canonical spelling,
     // else `struct X` / `union U`.
-    std::string class_word(DataDefSTRUCT *cls) const;
+    madc::dis::istring class_word(DataDefSTRUCT *cls) const;
     // The name an aggregate's word carries, without C's tag: an aggregate a
     // template instantiated by its template-id (`Box<int>`), any other by
     // its tag's name. The show, var_dump and print_r name one with it.
-    std::string aggregate_name(DataDefSTRUCT *s) const;
+    madc::dis::istring aggregate_name(DataDefSTRUCT *s) const;
     // The source's own name for a type, found by identity in the datatype
     // maps; empty when nothing names it.
-    std::string alias(DataDef *dd) const;
+    madc::dis::istring alias(DataDef *dd) const;
     // An inline namespace is not part of the name anybody writes.
-    std::string strip_inline_namespaces(const std::string &spelling) const;
+    madc::dis::istring strip_inline_namespaces(const madc::dis::istring &spelling) const;
     // A scalar's word, from its DataType (var_dump's canonical word).
-    static std::string scalar_word(DataDef *dd);
+    static madc::dis::istring scalar_word(DataDef *dd);
     // A declaration: the type with `name` where C writes its declarator-id
     // (`int a[3]`, `int (*fp)(int)`); an empty name spells the type alone.
-    std::string declared(DataDef *dd, const std::string &name) const;
+    madc::dis::istring declared(DataDef *dd, const madc::dis::istring &name) const;
     // A function's signature, as `?name` prints it (plan §41.8a):
     // `int sq(int n)`, the parameter names from its Method when given, the
     // receiver and varargs slots madc adds left out.
-    std::string signature(const std::string &name, FuncDef *fd,
+    madc::dis::istring signature(const madc::dis::istring &name, FuncDef *fd,
 			  const Method *m) const;
 private:
-    std::string parameter_list(FuncDef *fd, const Method *m) const;
-    std::string template_word(const std::string &canon) const;
-    std::string argument_word(const std::string &arg) const;
+    madc::dis::istring parameter_list(FuncDef *fd, const Method *m) const;
+    madc::dis::istring template_word(const madc::dis::istring &canon) const;
+    madc::dis::istring argument_word(const madc::dis::istring &arg) const;
     Program *pgm;
 };
 

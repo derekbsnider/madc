@@ -73,7 +73,7 @@ static void write_f64(std::vector<uint8_t> &buf, double v)
     write_i64(buf, bits);
 }
 
-static void write_str(std::vector<uint8_t> &buf, const std::string &s)
+static void write_str(std::vector<uint8_t> &buf, const madc::dis::istring &s)
 {
     write_u32(buf, (uint32_t)s.size());
     buf.insert(buf.end(), s.begin(), s.end());
@@ -126,11 +126,11 @@ struct Reader
 	memcpy(&v, &bits, 8);
 	return v;
     }
-    std::string read_str()
+    madc::dis::istring read_str()
     {
 	uint32_t slen = read_u32();
 	if ( !has(slen) ) return "";
-	std::string s((const char *)data + pos, slen);
+	madc::dis::istring s((const char *)data + pos, slen);
 	pos += slen;
 	return s;
     }
@@ -249,7 +249,7 @@ TokenBase *token_from_id(TokenID ti)
     }
 }
 
-static DataDef *builtin_datadef_from_spelling(const std::string &s)
+static DataDef *builtin_datadef_from_spelling(const madc::dis::istring &s)
 {
     // The ONE builtin-spelling -> canonical-DataDef table is
     // Program::resolve_builtin_type_spelling. This codec used to carry a
@@ -409,7 +409,7 @@ bool deserialize_tokens(const uint8_t *data, size_t len,
 	case PchValueType::IntStr:
 	{
 	    int64_t val = r.read_i64();
-	    std::string src = r.read_str();
+	    madc::dis::istring src = r.read_str();
 	    tb = new TokenInt(val, src);
 	    break;
 	}
@@ -421,7 +421,7 @@ bool deserialize_tokens(const uint8_t *data, size_t len,
 	}
 	case PchValueType::String:
 	{
-	    std::string s = r.read_str();
+	    madc::dis::istring s = r.read_str();
 	    if ( tt == TokenType::ttString )
 	    {
 		uint8_t wide = r.read_u8();

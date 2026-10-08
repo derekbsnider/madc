@@ -11,6 +11,7 @@
 #include <map>
 #include <set>
 #include <vector>
+#include "madcdis/istring.h"	// names are interned (madc::dis::istring)
 
 // madc::value — THE one tagged value type (libmadc embedding API and the
 // script-side `array` / `madc::array` builtin alike). Depends only on the
@@ -289,10 +290,10 @@ inline const char *cv_prefix_spelling(unsigned cv)
 // order both ways. The one rule for every renderer (the DataDefQUAL name,
 // basic_class_datadef_spelling, the parameter mangle spelling): a prefix on a
 // pointer reads back as a pointer TO a qualified type — another type.
-inline std::string cv_qualified_spelling(const std::string &operand, unsigned cv,
+inline madc::dis::istring cv_qualified_spelling(const madc::dis::istring &operand, unsigned cv,
 					 bool operand_is_pointer)
 {
-    std::string cvs = cv_prefix_spelling(cv);
+    madc::dis::istring cvs = cv_prefix_spelling(cv);
     if ( cvs.empty() )
 	return operand;
     if ( operand_is_pointer )
@@ -402,7 +403,7 @@ class DataDef
 protected:
     uint32_t     _type;
 public:
-    std::string	 name;
+    madc::dis::istring name;
     size_t	 size;
     // Canonical C++ type spelling for Itanium mangling, e.g.
     // "ns::Box<T>". Empty = use `name` (or a builtin spelling). Set from parsed
@@ -413,7 +414,7 @@ public:
     // dd must bump canonical_spelling_gen — set_canonical_spelling() is the
     // only write channel.
 private:
-    std::string	 canonical_cpp_spelling_;
+    madc::dis::istring canonical_cpp_spelling_;
     // The despaced, namespace-stripped rendering of the spelling above — the
     // key StructRegistry's despaced index files this dd under. It is a PURE
     // function of canonical_cpp_spelling_ (parser.cpp's strip_type_namespace
@@ -429,7 +430,7 @@ private:
     // not changed. Caching here is orthogonal to WHEN the index rebuilds; it
     // makes each rebuild cheap. parser.cpp owns the derivation (both helpers
     // are static there); this is storage plus its invalidation.
-    std::string	 despaced_canonical_;
+    madc::dis::istring despaced_canonical_;
     bool	 despaced_canonical_valid_;
 public:
     // Despaced-canonical index invalidation counter (defined in parser.cpp).
@@ -438,7 +439,7 @@ public:
     // rewrite on an unswept dd needs no gen bump (the registry's size-stamp
     // top-up sees it fresh).
     bool	 canonical_swept;
-    const std::string &canonical_cpp_spelling() const { return canonical_cpp_spelling_; }
+    const madc::dis::istring &canonical_cpp_spelling() const { return canonical_cpp_spelling_; }
     // The class spelling the Itanium encoders receive: the canonical C++
     // spelling when the parser recorded one (a namespaced, nested or
     // template-instance class), else the bare name — which IS the spelling of
@@ -446,19 +447,19 @@ public:
     // "Foo" encodes to 3Foo either way). ONE accessor, so the user-member
     // mint, the vtable/RTTI symbols and the synthesized special members can
     // never disagree about which class they name.
-    const std::string &cpp_linkage_spelling() const
+    const madc::dis::istring &cpp_linkage_spelling() const
     { return canonical_cpp_spelling_.empty() ? name : canonical_cpp_spelling_; }
     // Derived-key cache. Only StructRegistry's sweep fills it; every reader
     // must treat !has_despaced_canonical() as "derive it yourself", never as
     // "this dd has no key".
     bool has_despaced_canonical() const { return despaced_canonical_valid_; }
-    const std::string &despaced_canonical() const { return despaced_canonical_; }
-    void set_despaced_canonical(const std::string &s)
+    const madc::dis::istring &despaced_canonical() const { return despaced_canonical_; }
+    void set_despaced_canonical(const madc::dis::istring &s)
     {
 	despaced_canonical_ = s;
 	despaced_canonical_valid_ = true;
     }
-    void set_canonical_spelling(const std::string &s)
+    void set_canonical_spelling(const madc::dis::istring &s)
     {
 	if ( canonical_cpp_spelling_ == s )
 	    return;			// not a rewrite: index and cache stand
@@ -541,14 +542,14 @@ public:
     // a plain scalar (enum/class/pointer/complex/... keep their own
     // spelling). Itanium mangling encodes canonical types, never typedef
     // names. Defined in src/madc_mangle.cpp.
-    std::string mangle_scalar_spelling() const;
+    madc::dis::istring mangle_scalar_spelling() const;
     // The one DataType -> target C spelling table behind it: "long" /
     // "unsigned long" for the 64-bit rows on LP64, the `long long` forms on
     // LLP64, "" for a DataType that is not a plain scalar. No alias guard:
     // the type model asks it for the PINNED builtins whose display name is
     // not this target's spelling of the type (see
     // madc_stamp_primitive_type_ids). Defined in src/madc_mangle.cpp.
-    std::string target_scalar_spelling() const;
+    madc::dis::istring target_scalar_spelling() const;
     // Strict-equality (===) type-domain identity: do two types share one
     // value domain? Spec: docs/superpowers/specs/2026-06-11-strict-equality-design.md
     // §2.1. Defined in src/parser.cpp (needs the DataDef subclass set).
@@ -583,7 +584,7 @@ public:
 	  despaced_canonical_(), despaced_canonical_valid_(false),
 	  canonical_swept(false), type_id(0), scalar_alias_of(NULL),
 	  speculative_class_capture(madc_class_pattern_capture_active) {}
-    DataDef(std::string n, size_t s, DataType d)
+    DataDef(madc::dis::istring n, size_t s, DataType d)
 	: _type((uint32_t)d), name(n), size(s), canonical_cpp_spelling_(),
 	  despaced_canonical_(), despaced_canonical_valid_(false),
 	  canonical_swept(false), type_id(0), scalar_alias_of(NULL),
@@ -916,13 +917,13 @@ inline madc_wide_int apply_integer_cast_value(DataDef *cast_dd,
 // member's declaration site (empty for raw types), so the CIR layer
 // can emit ID("alias") instead of the underlying type nodes.
 struct memberpair_t {
-    std::string first;          // member name
+    madc::dis::istring first;          // member name
     DataDef *second;            // member type
-    std::string typedef_name;   // source typedef alias, "" if raw type
+    madc::dis::istring typedef_name;   // source typedef alias, "" if raw type
     TokenBase *origin;          // member-name source token (CIR origin), NULL if none
     memberpair_t() : second(nullptr), origin(nullptr) {}
-    memberpair_t(const std::string &n, DataDef *d) : first(n), second(d), origin(nullptr) {}
-    memberpair_t(const std::string &n, DataDef *d, const std::string &td)
+    memberpair_t(const madc::dis::istring &n, DataDef *d) : first(n), second(d), origin(nullptr) {}
+    memberpair_t(const madc::dis::istring &n, DataDef *d, const madc::dis::istring &td)
 	: first(n), second(d), typedef_name(td), origin(nullptr) {}
 };
 
@@ -991,14 +992,14 @@ public:
     // direct-initializes from it, for any member not explicitly initialized.
     // Absent = no in-class initializer (or one that did not parse — the member is
     // then default-initialized). Name-keyed (survives MI reordering).
-    std::map<std::string, TokenBase *> member_default_inits;
+    std::map<madc::dis::istring, TokenBase *> member_default_inits;
     // The BRACE form of a default member initializer ([class.mem]
     // brace-or-equal-initializer), absent for `= expr`: `m{e}` is List (the
     // entry above holds e), `m{}` is Empty (the entry above holds the scalar
     // application's 0). A class-type member list-initializes from List and
     // value-initializes from Empty.
     enum class NsdmiBraces : uint8_t { List, Empty };
-    std::map<std::string, NsdmiBraces> member_nsdmi_braces;
+    std::map<madc::dis::istring, NsdmiBraces> member_nsdmi_braces;
     TokenBase *runtime_size_expr;
     size_t pack;	// 0 = natural C ABI alignment, 1 = packed, N = max alignment N
     size_t pragma_pack;	// the #pragma pack(N) part of `pack` (0 = none): a class's base subobjects take only this cap
@@ -1098,7 +1099,7 @@ public:
 
     // The VIRTUAL base hosting the named member (member_vbase provenance), or
     // NULL for an own / non-virtual-base member.
-    DataDefCLASS *member_vbase_host(const std::string &mname) const
+    DataDefCLASS *member_vbase_host(const madc::dis::istring &mname) const
     {
 	for ( std::map<size_t, DataDefCLASS *>::const_iterator vi = member_vbase.begin();
 	      vi != member_vbase.end(); ++vi )
@@ -1108,13 +1109,13 @@ public:
     }
 
 //    DataDefSTRUCT(std::string n) : DataDef(n, 0, DataType::dtRESERVED) {}
-    DataDefSTRUCT(std::string n, size_t s, DataType d=DataType::dtRESERVED)
+    DataDefSTRUCT(madc::dis::istring n, size_t s, DataType d=DataType::dtRESERVED)
 	: DataDef(n, s, d), runtime_size_expr(NULL), pack(0), pragma_pack(0), max_align(1), tag_explicit_align(0), union_layout(false),
 	  is_complete(false), has_anon_aggregate(false),
 	  reverse_scalar_storage(false), bitfield_active(false), previous_was_nonzero_bitfield(false),
 	  definition_origin(AggregateDefinitionOrigin::Unknown), bitfield_unit_offset(0),
 	  bitfield_unit_size(0), bitfield_next_bit(0) {}
-    DataDefSTRUCT(std::string n, std::vector<memberpair_t> m)
+    DataDefSTRUCT(madc::dis::istring n, std::vector<memberpair_t> m)
 	: DataDef(n, 0, DataType::dtRESERVED), runtime_size_expr(NULL), pack(0), pragma_pack(0), max_align(1), tag_explicit_align(0),
 	  union_layout(false), is_complete(false), has_anon_aggregate(false),
 	  reverse_scalar_storage(false), bitfield_active(false), previous_was_nonzero_bitfield(false),
@@ -1166,7 +1167,7 @@ public:
 	bitfield_unit_size = 0;
 	bitfield_next_bit = 0;
     }
-    void addMember(std::string n, DataDef &dd, size_t cnt, TokenBase *count_expr = NULL,
+    void addMember(madc::dis::istring n, DataDef &dd, size_t cnt, TokenBase *count_expr = NULL,
 	bool is_array_decl = false, const std::vector<carray_dim_t> *dims = NULL)
     {
 	DBG(std::cout << "DataDefSTRUCT::addMember(" << n << ") at offset " << size << std::endl);
@@ -1208,7 +1209,7 @@ public:
     }
     BitFieldInfo allocateBitField(DataDef &dd, size_t width)
     {
-	auto is_builtin_signed_integer_name = [](const std::string &name) -> bool {
+	auto is_builtin_signed_integer_name = [](const madc::dis::istring &name) -> bool {
 	    return name == "char"
 		|| name == "short"
 		|| name == "int"
@@ -1317,7 +1318,7 @@ public:
 	previous_was_nonzero_bitfield = true;
 	return info;
     }
-    void addBitField(std::string n, DataDef &dd, size_t width)
+    void addBitField(madc::dis::istring n, DataDef &dd, size_t width)
     {
 	if ( n.empty() )
 	{
@@ -1374,7 +1375,7 @@ public:
 	// Unnamed bit-fields are real ordered C members.  Keeping them in the
 	// member stream lets MC11-IR preserve `:N` and `:0` instead of relying on
 	// a later named field's already-folded offset to remember an absent node.
-	members.emplace_back(std::string(), &dd);
+	members.emplace_back(madc::dis::istring(), &dd);
 	member_counts.push_back(1);
 	member_array_flags.push_back(false);
 	member_offsets.push_back(info.storage_offset);
@@ -1591,45 +1592,45 @@ public:
 	    size += delta;
 	}
     }
-    ssize_t m_offset(std::string &member)
+    ssize_t m_offset(const madc::dis::istring &member) const
     {
 	DBG(std::cout << "DataDefSTRUCT::offset(" << member << ')' << std::endl);
 	for ( size_t i = 0; i < members.size(); ++i )
 	{
 	    size_t ofs = (i < member_offsets.size()) ? member_offsets[i] : 0;
 	    DBG(std::cout << "DataDefSTRUCT::offset(" << member << ") looking at " << members[i].first << " ofs=" << ofs << std::endl);
-	    if ( !member.compare(members[i].first) )
+	    if ( member == members[i].first )
 		return (ssize_t)ofs;
 	}
 	return -1;
     }
     // Per-member fixed-array count (1 for scalar / non-array members).
-    size_t m_count(std::string &member)
+    size_t m_count(const madc::dis::istring &member) const
     {
 	for ( size_t i = 0; i < members.size(); ++i )
-	    if ( !member.compare(members[i].first) )
+	    if ( member == members[i].first )
 		return (i < member_counts.size()) ? member_counts[i] : 1;
 	return 1;
     }
     // Per-member access flag (0=public, vfPRIVATE, vfPROTECTED). Returns 0
     // (public) for an unknown member or a struct with no access info (a plain
     // C struct never sets member_access entries past the default 0).
-    uint32_t m_access(const std::string &member) const
+    uint32_t m_access(const madc::dis::istring &member) const
     {
 	for ( size_t i = 0; i < members.size(); ++i )
-	    if ( !member.compare(members[i].first) )
+	    if ( member == members[i].first )
 		return (i < member_access.size())
 		? member_access[i] & (vfPRIVATE | vfPROTECTED) : 0;
 	return 0;
     }
-    TokenBase *m_count_expr(const std::string &member) const
+    TokenBase *m_count_expr(const madc::dis::istring &member) const
     {
 	for ( size_t i = 0; i < members.size(); ++i )
 	    if ( !member.compare(members[i].first) )
 		return (i < member_count_exprs.size()) ? member_count_exprs[i] : NULL;
 	return NULL;
     }
-    bool m_is_array_decl(const std::string &member) const
+    bool m_is_array_decl(const madc::dis::istring &member) const
     {
 	for ( size_t i = 0; i < members.size(); ++i )
 	    if ( !member.compare(members[i].first) )
@@ -1640,7 +1641,7 @@ public:
     // not a virtual base's (the complete object's, laid out apart), and of a
     // union — this one or an anonymous one flattened in — only the first.
     bool member_is_zero_initialized(size_t i) const;
-    const std::vector<carray_dim_t> *m_dims(const std::string &member) const
+    const std::vector<carray_dim_t> *m_dims(const madc::dis::istring &member) const
     {
 	for ( size_t i = 0; i < members.size(); ++i )
 	    if ( !member.compare(members[i].first) )
@@ -1649,12 +1650,12 @@ public:
     }
     // A fixed-array member's extents, outermost first (no recorded shape is
     // one extent of m_count), as Variable::array_dims gives an object's.
-    std::vector<carray_dim_t> m_array_dims(const std::string &member)
+    std::vector<carray_dim_t> m_array_dims(const madc::dis::istring &member)
     {
 	const std::vector<carray_dim_t> *md = m_dims(member);
 	if ( md && !md->empty() )
 	    return *md;
-	std::string name = member;
+	madc::dis::istring name = member;
 	return std::vector<carray_dim_t>(1, m_count(name));
     }
     bool has_runtime_size() const
@@ -1669,7 +1670,7 @@ public:
     // sole/leading dimension is 0. Such a member contributes no fixed size and
     // is sized by its initializer (file-scope object) — c2mir wants its array
     // declarator emitted with an UNSPECIFIED size (N_IGNORE), not a literal 0.
-    bool m_is_flexible_array(const std::string &member) const
+    bool m_is_flexible_array(const madc::dis::istring &member) const
     {
 	if ( members.empty() )
 	    return false;
@@ -1689,7 +1690,7 @@ public:
 	    }
 	return false;
     }
-    DataDef *m_type(const std::string &member)
+    DataDef *m_type(const madc::dis::istring &member)
     {
 	std::vector<memberpair_t>::iterator dvpi;
 	DBG(std::cout << "DataDefSTRUCT::type(" << member << ')' << std::endl);
@@ -1705,7 +1706,7 @@ public:
 	DBG(std::cout << "DataDefSTRUCT::type() returning NULL" << std::endl);
 	return NULL;
     }
-    const BitFieldInfo *m_bitfield(const std::string &member) const
+    const BitFieldInfo *m_bitfield(const madc::dis::istring &member) const
     {
 	for ( size_t i = 0; i < members.size(); ++i )
 	    if ( !member.compare(members[i].first) )
@@ -1713,7 +1714,7 @@ public:
 		    ? &member_bitfields[i] : NULL;
 	return NULL;
     }
-    bool m_is_bitfield(const std::string &member) const
+    bool m_is_bitfield(const madc::dis::istring &member) const
     {
 	return m_bitfield(member) != NULL;
     }
@@ -1751,18 +1752,18 @@ public:
     // And for the dropped DESTRUCTOR, consumed by __is_destructible: a class
     // whose `~X() = delete` never registers must still answer 0.
     bool has_deleted_dtor = false;
-    std::map<std::string, Variable *> method_map; // unmangled name -> method variable
-    std::map<std::string, DataDef *> type_aliases; // class-scope typedef/using aliases
-    std::vector<std::string> friend_class_names; // class names granted friend access
-    std::vector<std::string> friend_function_names; // friend FUNCTION declarations
+    std::map<madc::dis::istring, Variable *> method_map; // unmangled name -> method variable
+    std::map<madc::dis::istring, DataDef *> type_aliases; // class-scope typedef/using aliases
+    std::vector<madc::dis::istring> friend_class_names; // class names granted friend access
+    std::vector<madc::dis::istring> friend_function_names; // friend FUNCTION declarations
 				// (name-based grant, like friend_class_names —
 				// hidden-friend operators hoisted to namespace scope)
-    std::map<std::string, DataDef *> static_member_types; // class-scope static data members
+    std::map<madc::dis::istring, DataDef *> static_member_types; // class-scope static data members
     // Integral static-const data members with a constant in-class initializer
     // (e.g. `static const bool value = __is_class(T);` — the std::integral_constant
     // pattern). Captured at parse so `X::value` / `X<T>::value` read the real value
     // instead of a 0 placeholder.
-    std::map<std::string, int64_t> static_member_const_values;
+    std::map<madc::dis::istring, int64_t> static_member_const_values;
     // Constructor overload set (each entry's FuncDef carries the param signature
     // and, for class-bound externals, an emit_symbol naming the real ctor).
     // A class with one ClassName() ctor has a single entry; a class with
@@ -1852,8 +1853,8 @@ public:
     void collect_vbases(std::vector<DataDefCLASS *> &out,
 			std::set<DataDefCLASS *> &seen, int depth = 0) const;
     // Virtual function table
-    std::vector<std::string> vtable_slots; // method names in vtable slot order
-    std::map<std::string, bool> virtual_methods;  // names of methods declared virtual
+    std::vector<madc::dis::istring> vtable_slots; // method names in vtable slot order
+    std::map<madc::dis::istring, bool> virtual_methods;  // names of methods declared virtual
     void **vtable;         // runtime vtable (array of function pointers, filled at compile time)
     bool has_vtable;       // true if this class or any base has virtual methods
     bool from_system_header;  // defined in a system/toolchain header (glibc/libstdc++):
@@ -1869,7 +1870,7 @@ public:
 			      // does not cover. The data-driven signal distinguishes exported
 			      // template instantiations from inline-only local instantiations
 			      // — never a name test.
-    int vtable_slot(const std::string &name) const {
+    int vtable_slot(const madc::dis::istring &name) const {
 	for ( size_t i = 0; i < vtable_slots.size(); ++i )
 	    if ( vtable_slots[i] == name ) return (int)i;
 	return -1;
@@ -1881,7 +1882,7 @@ public:
     struct VtableGroup {
 	DataDefCLASS *owner;
 	size_t this_offset;
-	std::vector<std::string> slots;
+	std::vector<madc::dis::istring> slots;
 	size_t addr_point;
     };
     std::vector<VtableGroup> vtable_groups;
@@ -1892,13 +1893,13 @@ public:
     void secondary_vptr_owners_from_groups();
     // Resolve a virtual method name to its (group, in-group slot). Returns false if
     // not a virtual method of any group.
-    bool find_vslot(const std::string &m, size_t &group, int &slot) const {
+    bool find_vslot(const madc::dis::istring &m, size_t &group, int &slot) const {
 	for ( size_t g = 0; g < vtable_groups.size(); g++ )
 	    for ( size_t i = 0; i < vtable_groups[g].slots.size(); i++ )
 		if ( vtable_groups[g].slots[i] == m ) { group = g; slot = (int)i; return true; }
 	return false;
     }
-    bool is_virtual_method(const std::string &name) const {
+    bool is_virtual_method(const madc::dis::istring &name) const {
 	if ( virtual_methods.find(name) != virtual_methods.end() ) return true;
 	if ( base_class ) return base_class->is_virtual_method(name);
 	return false;
@@ -1914,7 +1915,7 @@ public:
 	return false;
     }
 
-    DataDefCLASS(std::string n, size_t s, DataType d)
+    DataDefCLASS(madc::dis::istring n, size_t s, DataType d)
 	: DataDefSTRUCT(n, s, d), has_user_ctor(false), has_user_dtor(false),
 	  extern_ctor(NULL), extern_dtor(NULL), _dtor_ptr(NULL),
 	  enclosing_class(NULL), base_class(NULL), nvsize(0), own_block_off(0),
@@ -1923,7 +1924,7 @@ public:
 	  has_dependent_surface(false), vtable(NULL), has_vtable(false),
 	  from_system_header(false), is_extern_template_instantiated(false) {}
     virtual BaseType basetype() const override { return BaseType::btClass; }
-    Variable *findMethod(const std::string &s);
+    Variable *findMethod(const madc::dis::istring &s);
     // Among the same-name method overloads (this class + base chain), pick the
     // one whose parameter types best match `argtypes` (overload resolution by
     // argument type). Returns NULL when no same-name method exists; falls back
@@ -1944,7 +1945,7 @@ public:
     // categories (optional, index-aligned with argtypes): each argument's
     // value category — a reference parameter's binding reads it
     // (reference_param_binding_rank); NULL ranks every argument Unknown.
-    Variable *findMethodOverload(const std::string &name,
+    Variable *findMethodOverload(const madc::dis::istring &name,
 				 const std::vector<const DataDef *> &argtypes,
 				 int obj_cv = -1,
 				 bool *all_rejections_proven = 0,
@@ -1964,20 +1965,20 @@ public:
     // The type is the function's return VALUE type (a reference's referent);
     // binary_operator_function is the lookup itself, whose returns_reference()
     // says whether the expression is an lvalue ([expr.call]/14).
-    DataDef *binary_operator_return_type(const std::string &opname);
-    FuncDef *binary_operator_function(const std::string &opname);
+    DataDef *binary_operator_return_type(const madc::dis::istring &opname);
+    FuncDef *binary_operator_function(const madc::dis::istring &opname);
     // True iff this class declares at least one binary `opname` member AND every
     // such member's explicit parameter is a NON-class (arithmetic/pointer) type —
     // i.e. no member can bind a class-object rhs. The iterator signature
     // (`operator-(difference_type)` only) where `iter - iter` must instead bind
     // the free cross-type operator template. Members taking a class parameter
     // make this false (they own the expression by normal overload rules).
-    bool binary_operator_only_takes_nonclass(const std::string &opname);
+    bool binary_operator_only_takes_nonclass(const madc::dis::istring &opname);
     // Return type of a unary operator method (`operator-`, `operator!`,
     // `operator++`, etc.). `postfix` selects the parameterized postfix form for
     // ++/-- and the nullary form otherwise.
-    DataDef *unary_operator_return_type(const std::string &opname, bool postfix);
-    FuncDef *unary_operator_function(const std::string &opname, bool postfix);
+    DataDef *unary_operator_return_type(const madc::dis::istring &opname, bool postfix);
+    FuncDef *unary_operator_function(const madc::dis::istring &opname, bool postfix);
     void register_extern_ctor_dtor(void *ctor, void *dtor) {
 	extern_ctor = ctor; extern_dtor = dtor; _dtor_ptr = dtor;
     }
@@ -2266,9 +2267,9 @@ class DataDefMemberPtr : public DataDef
 {
 public:
     DataDef *owner_class;        // the `C` in `T C::*` (NULL if unresolved at parse)
-    std::string owner_name;      // the spelled owner (e.g. a nested-in-template class)
+    madc::dis::istring owner_name;      // the spelled owner (e.g. a nested-in-template class)
     DataDef *member_type;        // the pointee/member type `T`
-    DataDefMemberPtr(DataDef *owner, const std::string &owner_nm, DataDef &member)
+    DataDefMemberPtr(DataDef *owner, const madc::dis::istring &owner_nm, DataDef &member)
 	: DataDef(member.name + " " + owner_nm + "::*", 8, DataType::dtINT64),
 	  owner_class(owner), owner_name(owner_nm), member_type(&member) {}
     virtual bool is_numeric() const override { return true; }
@@ -2289,10 +2290,10 @@ class DataDefMemberFnPtr : public DataDef
 {
 public:
     DataDef *owner_class;
-    std::string owner_name;
+    madc::dis::istring owner_name;
     FuncDef *target;
     bool is_const_method;
-    DataDefMemberFnPtr(DataDef *owner, const std::string &owner_nm, FuncDef *fd,
+    DataDefMemberFnPtr(DataDef *owner, const madc::dis::istring &owner_nm, FuncDef *fd,
 		       bool const_method)
 	: DataDef("memfnptr " + owner_nm, 16, DataType::dtRESERVED),
 	  owner_class(owner), owner_name(owner_nm), target(fd),
@@ -2313,7 +2314,7 @@ public:
     // zero-length `[0]`, which is a complete type; the emitter renders `[]`.
     bool unbounded = false;
 
-    DataDefCArray(DataDef &elem, const std::string &alias_name,
+    DataDefCArray(DataDef &elem, const madc::dis::istring &alias_name,
 		  size_t cnt, TokenBase *expr = NULL)
 	: DataDef(alias_name, expr ? 0 : (elem.size * cnt), DataType::dtRESERVED),
 	  element_type(&elem), count(cnt), count_expr(expr) {}
@@ -2342,7 +2343,7 @@ public:
 class DataDefENUM : public DataDef
 {
 public:
-    std::string enum_name;
+    madc::dis::istring enum_name;
     // The enumeration's underlying type ([dcl.enum]): the declared fixed
     // base (`enum E : short`) when present, else computed from the
     // enumerator range at the definition's close (the canon g++/clang
@@ -2391,12 +2392,12 @@ public:
     // is legal C, both names are real, and dropping one here would make this
     // list disagree with the source. Consumers that must pick ONE name for a
     // value take the first (see CirBuilder::dump_enum_name_fn).
-    std::vector<std::pair<std::string, int64_t> > enumerators;
+    std::vector<std::pair<madc::dis::istring, int64_t> > enumerators;
     // Each enumerator's declarator-id token, PARALLEL to `enumerators` (its
     // declaration's provenance; shorter, or NULL, for a restored enum).
     std::vector<TokenBase *> enumerator_toks;
 
-    DataDefENUM(const std::string &name)
+    DataDefENUM(const madc::dis::istring &name)
 	: DataDef(name, sizeof(int), DataType::dtINT), enum_name(name) {}
 
     // [dcl.enum]p8: sizeof(E) == sizeof(its underlying type). Adopting the
@@ -2454,7 +2455,7 @@ public:
     // integer _Complex == struct{T,T}). The lowered form is emitted as a real
     // struct definition, so its tag must be a clean C identifier; the native
     // form is never emitted by name.
-    static std::string type_name(DataDef &elem)
+    static madc::dis::istring type_name(DataDef &elem)
     {
 	if ( elem.is_real() )
 	    return elem.name + " _Complex";
@@ -2494,7 +2495,7 @@ public:
 
     size_t component_offset(bool imag_part) const
     {
-	std::string member = imag_part ? "__im" : "__re";
+	madc::dis::istring member = imag_part ? "__im" : "__re";
 	return const_cast<DataDefCOMPLEX *>(this)->m_offset(member);
     }
     virtual DataDefCOMPLEX *as_complex_dd() override { return this; }
@@ -2539,7 +2540,7 @@ public:
     DataDef *element_type;
     size_t vector_bytes;
     size_t lane_count;
-    DataDefSIMD(DataDef *elem, const std::string &name, size_t bytes)
+    DataDefSIMD(DataDef *elem, const madc::dis::istring &name, size_t bytes)
 	: DataDef(name, bytes, DataType::dtSIMD), element_type(elem),
 	  vector_bytes(bytes), lane_count((elem && elem->size) ? (bytes / elem->size) : 0) {}
     virtual bool is_numeric() const override { return true; }
@@ -2613,7 +2614,7 @@ class DataDefTemplateParam: public DataDef
 {
 public:
     unsigned param_index;   // 0-based position in the template parameter list
-    DataDefTemplateParam(const std::string &nm, unsigned idx)
+    DataDefTemplateParam(const madc::dis::istring &nm, unsigned idx)
 	: DataDef(nm, 0, DataType::dtVOID), param_index(idx) {}
     virtual BaseType basetype() const override { return BaseType::btTemplateParam; }
     virtual bool is_template_param() const override { return true; }
@@ -2682,8 +2683,8 @@ public:
     // encode PF…E) needs this instead. `core` is the declarator between the
     // parens: "*" a function pointer, "&" a function REFERENCE (Itanium
     // RF…E), "" the function type itself, `Ret (P1,P2)`. Defined in parser.cpp.
-    std::string structural_spelling_core(const std::string &core) const;
-    std::string structural_spelling(bool as_pointer = true) const
+    madc::dis::istring structural_spelling_core(const madc::dis::istring &core) const;
+    madc::dis::istring structural_spelling(bool as_pointer = true) const
     { return structural_spelling_core(as_pointer ? "*" : ""); }
     virtual BaseType basetype() const override { return BaseType::btFunct; }
     virtual bool is_function() const override { return true; }
@@ -2702,7 +2703,7 @@ public:
 // `typedef int (*fptr4[4])(int)` mint ONE Itanium symbol. Every DataDefFPTR is
 // named "funcptr" and its pointer "funcptr*", so a name-based spelling of
 // either encodes a class that nothing exports.
-inline std::string fptr_structural_spelling(DataDef *dd)
+inline madc::dis::istring fptr_structural_spelling(DataDef *dd)
 {
     // The layers peeled, outermost first: '*' a pointer (or a decayed
     // array), '&' a reference — a reference layer spells `&` (Itanium R),
@@ -2714,14 +2715,14 @@ inline std::string fptr_structural_spelling(DataDef *dd)
 	if ( DataDefFPTR *fp = base->as_fptr_dd() )
 	{
 	    if ( !fp->target )
-		return std::string();
+		return madc::dis::istring();
 	    // A function TYPE's innermost layer is its own declarator: a
 	    // pointer to it IS the function pointer (getPointerType's fold), a
 	    // reference to it a function reference, `int (&)(int)` (RFiiE).
-	    std::string core = "*";
+	    madc::dis::istring core = "*";
 	    if ( !fp->ptr_syntax && !layers.empty() )
 	    {
-		core = std::string(1, layers[layers.size() - 1]);
+		core = madc::dis::istring(1, layers[layers.size() - 1]);
 		layers.erase(layers.size() - 1);
 	    }
 	    return fp->structural_spelling_core(core)
@@ -2733,18 +2734,18 @@ inline std::string fptr_structural_spelling(DataDef *dd)
 	if ( DataDefCArray *ca = dynamic_cast<DataDefCArray *>(base) )
 	{
 	    if ( base != dd || !ca->element_type )
-		return std::string();
+		return madc::dis::istring();
 	    layers += '*';
 	    base = ca->element_type;
 	    continue;
 	}
 	DataDefPTR *ptr = dynamic_cast<DataDefPTR *>(base); // allowed-exception: structural (exact-class dispatch)
 	if ( !ptr || !ptr->base_type )
-	    return std::string();
+	    return madc::dis::istring();
 	layers += ptr->is_reference() ? '&' : '*';
 	base = ptr->base_type;
     }
-    return std::string();
+    return madc::dis::istring();
 }
 
 #endif // __DATADEF_H

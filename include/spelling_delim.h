@@ -15,6 +15,7 @@
 
 #include <cctype>
 #include <string>
+#include "madcdis/istring.h"	// names are interned (std::string)
 #include <vector>
 
 struct SpellingDelimDepth
@@ -124,6 +125,21 @@ inline bool split_template_id_parts(const std::string &s, std::string &head,
 	return true;
 }
 
+// The same split for a caller that keeps the head and arguments as NAMES:
+// splits as text, interns each piece once.
+inline bool split_template_id_parts(const std::string &s, madc::dis::istring &head,
+				    std::vector<madc::dis::istring> &args,
+				    SpellingTail tail = SpellingTail::Reject)
+{
+	std::string h;
+	std::vector<std::string> a;
+	if ( !split_template_id_parts(s, h, a, tail) )
+		return false;
+	head = h;
+	args.assign(a.begin(), a.end());
+	return true;
+}
+
 // Split a qualified spelling at TOP-LEVEL "::". Each component may carry its
 // own `<...>`, which is why this cannot be a plain string split.
 inline std::vector<std::string> split_scope_spelling(const std::string &s)
@@ -143,6 +159,13 @@ inline std::vector<std::string> split_scope_spelling(const std::string &s)
 	}
 	out.push_back(s.substr(start));
 	return out;
+}
+
+// The scope split for a caller that keeps the components as NAMES.
+inline std::vector<madc::dis::istring> split_scope_names(const std::string &s)
+{
+	std::vector<std::string> parts = split_scope_spelling(s);
+	return std::vector<madc::dis::istring>(parts.begin(), parts.end());
 }
 
 // Split a template-argument list body (the text BETWEEN the outer angles) at
@@ -241,7 +264,7 @@ inline SpelledReference spelled_reference(const std::string &sp)
 // `T &&...`; never `const T &&`, never `vector<T> &&`). The one test over a
 // declared parameter spelling.
 inline bool spelling_is_forwarding_reference(const std::string &sp,
-				const std::vector<std::string> &typeparams)
+				const std::vector<madc::dis::istring> &typeparams)
 {
 	SpelledReference r = spelled_reference(sp);
 	if ( !r.rvalue || r.referent_const )

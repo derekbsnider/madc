@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+### compiler core: names held as interned `madc::dis::istring`, interned once at the source
+
+The compiler core (lexer, parser, CIR builder/dump/format/emit, madc_cir,
+cir_freeze, type spelling, mangler, completion, keywords, pch, and their
+headers) holds every NAME as `madc::dis::istring` — an 8-byte handle to a
+process-wide deduplicated spelling, so a name copy is 8 bytes, `==` is a
+pointer compare, and a name enters the process table once per token pool
+rather than once per use. Only text that is built or edited, output and source
+text, OS-boundary paths and lists, and the libmadc API boundary stay
+`std::string`. Spellings are interned once at the source — the table's mutex is
+held once per CLI compile, each token pool memoizes its spellings, and the hash
+reads whole 8-byte words. Parse-cost falls against the pre-interning baseline:
+`cxx_stl.live` −14.0%, `cxx_stl.forest` −14.1%, `c_headers.live` −13.5%,
+`subscript.live` −14.3%, `subscript.forest` −14.9%, `dialect.live` −1.2% (Ir).
+A system header's include-guard is now decided in the one lex that reads it
+(gcc's multiple-include rules), with an `#else`/`#elif` on the guard group
+disqualifying it as in gcc — not a second full-text read and line scan on first
+visit; 876/876 lex verdicts equal the full-text verdict over the gate workloads
+and include tests. The new `scripts/check-istring-fields.sh` gate (fulltest)
+ratchets the core's `std::string` count per file and flags five lifetime
+hazards the interned type exposes, so the migration cannot regrow.
+
 ## [v0.102.1] — 2026-10-07
 
 The bug-fix release for v0.102.0, carrying every fix banked since it rather

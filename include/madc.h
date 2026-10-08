@@ -32,6 +32,7 @@
 #include "madc/bits/file_kinds"	// madc::file_kind — LanguageStd's values ARE its C/C++/madc ranges
 #include "madc/bits/session_enums"	// madc::name_kind — TopLevelName::Kind's one enum text
 #include "madcdis/intern_table.h"
+#include "madcdis/istring.h"	// madc::dis::istring — interned names (FuncDef symbols, Variable names)
 #include "madcdis/id_table.h"		// madc::dis::id_table — segmented stable-id registry
 #include "madcdis/value_pool.h"		// madc::dis::value_pool — >64-bit value handles
 #include "madc_typeid.h"		// MADC_TYPEID_PROJECT_BASE (the project segment base)
@@ -77,16 +78,16 @@ enum class GnuAttributeKind : uint8_t {
     Cleanup
 };
 
-GnuAttributeKind madc_gnu_attribute_kind(const std::string &name);
+GnuAttributeKind madc_gnu_attribute_kind(const madc::dis::istring &name);
 // The GNU attribute-specifier introducer: __attribute__ / __attribute, and
 // c2mir's __mirc_attribute__ (the spelling libc's sys/cdefs.h cannot define
 // away) — the one spelling owner.
-bool madc_gnu_attribute_introducer(const std::string &word);
+bool madc_gnu_attribute_introducer(const madc::dis::istring &word);
 // alignof / _Alignof / __alignof__ / __alignof — the one spelling owner.
-bool is_alignof_identifier(const std::string &name);
+bool is_alignof_identifier(const madc::dis::istring &name);
 // An attribute's own words (a `mode` argument's QI, HI, ...) take the same
 // two spellings as its name: `word` or `__word__`.
-bool madc_gnu_attribute_word_is(const std::string &id, const char *word);
+bool madc_gnu_attribute_word_is(const madc::dis::istring &id, const char *word);
 
 // scalar_storage_order("big-endian" | "little-endian"): the argument string,
 // converted once where the attribute is read.
@@ -203,13 +204,13 @@ public:
     CaptureMode capture_default;
     bool lambda_mutable;
     struct CaptureEntry {
-	std::string name;
+	madc::dis::istring name;
 	DataDef *type;
 	CaptureMode mode;
 	Variable *source;
-	std::string storage_name;
+	madc::dis::istring storage_name;
 	bool storage_materialized;
-	CaptureEntry(const std::string &n = std::string(), DataDef *t = NULL,
+	CaptureEntry(const madc::dis::istring &n = madc::dis::istring(), DataDef *t = NULL,
 		     CaptureMode m = CaptureMode::None, Variable *s = NULL)
 	    : name(n), type(t), mode(m), source(s), storage_name(),
 	      storage_materialized(false) {}
@@ -238,7 +239,7 @@ public:
     // Empty for the common case (call sites use the default scheme). DISTINCT
     // from emit_symbol: this still takes the normal madc-emitted-body path; it
     // is NOT the extern-binding (no-body) path that emit_symbol triggers.
-    std::string local_emit_name;
+    madc::dis::istring local_emit_name;
     // multiple return values (empty = single return via `returns`)
     std::vector<DataDef *> return_types;
     // Multi-return transport: the synthesized `struct { T0 v0; ... }` this
@@ -265,7 +266,7 @@ public:
     // hidden `__this` slot (param 0 of a method) holds an empty string. Fed to
     // the Itanium mangler so a header-declared C++ method binds to its real
     // external symbol.
-    std::vector<std::string> param_cpp_spellings;
+    std::vector<madc::dis::istring> param_cpp_spellings;
     // DataDefREF spells '&' for both `&` and `&&`, so the captured spelling is
     // the only carrier that can distinguish an rvalue-reference parameter.
     bool param_spells_rvalue_reference(size_t i) const {
@@ -352,7 +353,7 @@ public:
     }
     // Source typedef alias used for each parameter, when the declaration named
     // one. Index-aligned with `parameters`; empty means render from DataDef.
-    std::vector<std::string> param_typedef_names;
+    std::vector<madc::dis::istring> param_typedef_names;
     // True when a class-template method parameter spelled its base type as the
     // template parameter itself, rather than through a class-scope alias that
     // resolves to the same DataDef. Definition-capture provenance only; the
@@ -423,31 +424,31 @@ public:
 	}
 	return req;
     }
-    std::string template_return_param_name;
+    madc::dis::istring template_return_param_name;
     int template_return_deduce_arg_index;
     bool template_return_deduce_from_pointer;
     // The deduced parameter is a forwarding reference (`T &&`, cv-unqualified):
     // an lvalue argument deduces T as `A &` ([temp.deduct.call]/3).
     bool template_return_deduce_forwarding;
     RefKind template_return_ref;	// the identity return's `&` / `&&`
-    std::string return_typedef_name;
+    madc::dis::istring return_typedef_name;
     // When non-empty, the C symbol this function is CALLED as / DEFINED as,
     // instead of the default ClassName__method scheme. Used to bind a class
     // method directly to an externally-provided C++ ABI symbol. madc emits no
     // body for such methods.
-    std::string emit_symbol;
+    madc::dis::istring emit_symbol;
     // The UNMANGLED display name of a class method (`take`, `find`, `operator=`),
     // independent of the mangled call symbol stored as the Variable's name
     // (`Box__take`, `Box__take__o2`). Lets overload resolution enumerate the
     // same-named overloads in DataDefCLASS::methods (whose entries are keyed by
     // their mangled names). Empty for non-method FuncDefs.
-    std::string method_display_name;
+    madc::dis::istring method_display_name;
     // Namespace/free-function source identity for overloaded C++ functions.
     // These let call-site resolution enumerate overloads registered under unique
     // internal symbols while preserving the source name.
-    std::string function_display_name;
-    std::string namespace_name;
-    std::string inline_builtin_kind;
+    madc::dis::istring function_display_name;
+    madc::dis::istring namespace_name;
+    madc::dis::istring inline_builtin_kind;
     // Overload-set DECLARATION IDENTITY — the ranker's inputs, owned by the
     // declaration (g++: the FUNCTION_DECL carries its parameter-type-list and
     // DECL_TEMPLATE_INFO; the overload set is a list of decls) and frozen on
@@ -462,14 +463,14 @@ public:
     // (template_binding_identity_spelling) of an instantiation product's bound
     // template arguments, pack elements flattened positionally — the
     // explicit-template-argument prefix match binds a call to the instance.
-    std::string overload_spelling;
-    std::vector<std::string> overload_template_args;
+    madc::dis::istring overload_spelling;
+    std::vector<madc::dis::istring> overload_template_args;
     // A function-template instantiation product, by its declaration identity:
     // it carries its bound template arguments, or the "\x01@<identity>"
     // suffix its registrar stamped (parseFunction's fold).
     bool is_specialization_product() const {
 	return !overload_template_args.empty()
-	    || overload_spelling.find("\x01@") != std::string::npos;
+	    || overload_spelling.find("\x01@") != madc::dis::istring::npos;
     }
     // The identity a function template's PLACEHOLDER carries in
     // overload_spelling (register_skipped_namespace_template_function, the
@@ -496,8 +497,8 @@ public:
     // (__madc_dl_member(dyn_module_library, dyn_module_member)) — one
     // lowering for JIT and native. dyn_module_library is the TARGET
     // spelling the module map chose (madc_modules).
-    std::string dyn_module_library;
-    std::string dyn_module_member;
+    madc::dis::istring dyn_module_library;
+    madc::dis::istring dyn_module_member;
     // The slot form with the REAL prototype: a lazy module row's interface
     // function (dyn_module_library/member set by parseFunction under the
     // lazy pragma) is called through a pointer of its declared type, not
@@ -526,7 +527,7 @@ public:
     // an extern-template class instantiation does not export arbitrary member
     // template specializations.
     bool is_member_template;
-    std::vector<std::string> template_param_names;
+    std::vector<madc::dis::istring> template_param_names;
     // Pack-ness per template_param_names entry (a `typename... _Args` parameter
     // pack vs a plain `typename _Up`). Needed so a variadic member template
     // (allocator_traits::construct) instantiates its `_Args...` correctly.
@@ -537,8 +538,8 @@ public:
     // member-template ctor with non-type packs (std::pair's indexed ctor)
     // instantiates with the correct typeparam_is_type classification.
     std::vector<bool> template_param_is_type;
-    std::string template_return_spelling;
-    std::vector<std::string> template_param_spellings;
+    madc::dis::istring template_return_spelling;
+    std::vector<madc::dis::istring> template_param_spellings;
     // For a STATIC member function template of a madc-LOCAL (monomorphized,
     // not libstdc++-exported) class, the retained body declaration tokens
     // (declarator + params + `{ ... }`, WITHOUT the `template<...>` header) and
@@ -629,7 +630,7 @@ public:
     // deduction, or a source with no pattern).
     bool tsubst_body_skipped;
     struct CtorInitializer {
-	std::string name;
+	madc::dis::istring name;
 	std::vector<TokenBase *> args;
 	// `m{...}` (list-init) vs `m(...)` (direct-init) — [dcl.init]. For an
 	// aggregate member the brace form initializes its FIELDS in order, so
@@ -652,7 +653,7 @@ public:
     std::vector<CtorInitializer> ctor_initializers;
     // Initializer order matches member declaration order (avoids -Wreorder).
     FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), capture_default(CaptureMode::None), lambda_mutable(false), template_return_param_name(), template_return_deduce_arg_index(-1), template_return_deduce_from_pointer(false), template_return_deduce_forwarding(false), template_return_ref(RefKind::None), return_typedef_name(), emit_symbol(), method_display_name(), function_display_name(), namespace_name(), inline_builtin_kind(), dyn_module_library(), dyn_module_member(), dyn_module_typed(false), ctor_trailing_self(false), is_member_template(false), template_param_names(), template_param_is_pack(), template_param_is_type(), template_return_spelling(), template_param_spellings(), member_template_decl(), member_template_owner(NULL), member_template_return_tokens(), member_template_param_type_tokens(), member_tmpl_frozen(NULL), dependent_pattern(NULL), tsubst_source(NULL), tsubst_type_args(), tsubst_type_arg_packs(), tsubst_body_skipped(false), ctor_initializers(), is_varargs(false), is_void_params(false), no_instrument_function(false), no_strict_aliasing(false), weak_binding(false), has_large_struct_retbuf(false), declaration_only(false), defaulted_or_deleted(false), is_deleted(false), noexcept_spec(0), pure_virtual(false), is_const_method(false), ref_qualifier(0), vague_linkage(false), internal_linkage(false), c_linkage(false) {}
-    DataDef *findParameter(const std::string &);
+    DataDef *findParameter(const madc::dis::istring &);
     virtual BaseType basetype() const override { return BaseType::btFunct; }
     virtual size_t alignment() const override { return explicit_alignment ? explicit_alignment : DataDef::alignment(); }
     bool is_varargs;  // function declared with ... (variadic)
@@ -660,7 +661,7 @@ public:
     // empty captured spelling; give a mangle param list its "..." entry (the
     // Itanium encoders spell it `z`). No-op when the tail slot isn't the
     // parsed pseudo-param.
-    void spell_varargs_tail(std::vector<std::string> &psp) const
+    void spell_varargs_tail(std::vector<madc::dis::istring> &psp) const
     {
 	if ( is_varargs && !psp.empty() && psp.back().empty() )
 	    psp.back() = "...";
@@ -671,10 +672,10 @@ public:
     // — Itanium encodes canonical types, never typedef names. Decorated
     // spellings (*, &, <...>) keep the captured form: the alias dd behind
     // them is not the parameter's own DataDef.
-    std::string mangle_param_spelling(size_t i) const
+    madc::dis::istring mangle_param_spelling(size_t i) const
     {
-	std::string sp = i < param_cpp_spellings.size() ? param_cpp_spellings[i]
-							: std::string();
+	madc::dis::istring sp = i < param_cpp_spellings.size() ? param_cpp_spellings[i]
+							: madc::dis::istring();
 	return mangle_spelling_for(i < parameters.size() ? parameters[i] : NULL, sp);
     }
     // Does the body this FuncDef carries DEFINE its emit_symbol? THE question
@@ -686,7 +687,7 @@ public:
     // redeclaration's freshly parsed parameter (parseFunction's C-linkage
     // signature clash compares the two; both sides MUST spell alike, or a
     // prototype and its own definition "conflict").
-    static std::string mangle_spelling_for(DataDef *dd, const std::string &sp)
+    static madc::dis::istring mangle_spelling_for(DataDef *dd, const madc::dis::istring &sp)
     {
 	if ( sp.empty() || !dd )
 	    return sp;
@@ -697,13 +698,13 @@ public:
 	// types (PF…E, PPF…E); the captured typedef name — or the dd's generic
 	// "funcptr" / "funcptr*" — encodes as a class name nothing exports.
 	// Before the decorated-spelling early-out: `funcptr*` ends in `*` too.
-	std::string fps = fptr_structural_spelling(dd);
+	madc::dis::istring fps = fptr_structural_spelling(dd);
 	if ( !fps.empty() )
 	    return fps;
-	if ( sp.find('<') != std::string::npos
+	if ( sp.find('<') != madc::dis::istring::npos
 	  || sp.back() == '*' || sp.back() == '&' )
 	    return sp;
-	std::string scalar = dd->mangle_scalar_spelling();
+	madc::dis::istring scalar = dd->mangle_scalar_spelling();
 	if ( scalar.empty() || scalar == sp )
 	    return sp;
 	return scalar;
@@ -910,10 +911,10 @@ enum class HoistedDeclKind
 struct HoistedDeclIdentity
 {
     HoistedDeclKind kind;
-    std::string owner_symbol;
-    std::string source_name;
+    madc::dis::istring owner_symbol;
+    madc::dis::istring source_name;
     size_t ordinal;
-    std::string symbol;
+    madc::dis::istring symbol;
 
     HoistedDeclIdentity()
 	: kind(HoistedDeclKind::LocalClass), ordinal(0) {}
@@ -933,7 +934,7 @@ public:
     // forward declaration and its definition reuse one identity while equal
     // source names in distinct lexical blocks remain distinct.
     size_t next_hoisted_decl_ordinal;
-    typedef std::pair<HoistedDeclKind, std::string> hoisted_decl_key_t;
+    typedef std::pair<HoistedDeclKind, madc::dis::istring> hoisted_decl_key_t;
     std::map<const TokenCpnd *,
 	     std::map<hoisted_decl_key_t, HoistedDeclIdentity> > hoisted_decls;
     Method(Variable &v) : returns(v), x86code(NULL), env_param(NULL),
@@ -944,8 +945,8 @@ public:
 	hoisted_decls.clear();
     }
     Variable *getParameter(unsigned int i) { if ( i >= parameters.size() ) return NULL; return parameters[i]; }
-    Variable *findParameter(const std::string &);
-    Variable *findVariable(const std::string &);
+    Variable *findParameter(const madc::dis::istring &);
+    Variable *findVariable(const madc::dis::istring &);
 };
 
 // Only a bodied FREE / NAMESPACE function's body defines its emit_symbol
@@ -1042,19 +1043,19 @@ public:
 	return dd ? dd : &ddVOID;
     }
     Variable *getParameter(unsigned int);
-    Variable *findParameter(const std::string &s);
+    Variable *findParameter(const madc::dis::istring &s);
     // Walk this scope chain for `id`. The (intern_table&, std::string&) entry interns
     // the query ONCE; the inner overload takes the pre-interned sid and recurses up
     // `parent` probing the sid-keyed index at each level (no per-level re-hash).
-    Variable *findVariable(const madc::dis::intern_table &sp, const std::string &id);
-    Variable *findVariable(const madc::dis::intern_table &sp, uint32_t qsid, const std::string &id);
+    Variable *findVariable(const madc::dis::intern_table &sp, const madc::dis::istring &id);
+    Variable *findVariable(const madc::dis::intern_table &sp, uint32_t qsid, const madc::dis::istring &id);
     // Single-level lookup in THIS scope only (no parent walk).
     Variable *findVariableThisScope(const madc::dis::intern_table &sp, uint32_t qsid,
-				    const std::string &id);
+				    const madc::dis::istring &id);
     // Function-local lookup: walk THIS scope chain up to (but not into) the
     // program/global scope. A name found here is a parameter or block local,
     // which in C++ unqualified lookup shadows any same-named namespace member.
-    Variable *findVariableLocal(const madc::dis::intern_table &sp, const std::string &id);
+    Variable *findVariableLocal(const madc::dis::intern_table &sp, const madc::dis::istring &id);
     virtual TokenCpnd *as_cpnd_tok() override { return this; }
 };
 
@@ -1150,9 +1151,9 @@ public:
 class TokenTypedefDecl: public TokenBase
 {
 public:
-    std::string alias;       // typedef alias name (e.g. "EXT_BV")
+    madc::dis::istring alias;       // typedef alias name (e.g. "EXT_BV")
     DataDef *target_type;    // what the typedef resolves to
-    TokenTypedefDecl(const std::string &a, DataDef *t) : alias(a), target_type(t) {}
+    TokenTypedefDecl(const madc::dis::istring &a, DataDef *t) : alias(a), target_type(t) {}
     virtual TokenType type() const override { return TokenType::ttTypedefDecl; }
     virtual TokenTypedefDecl *as_typedef_decl_tok() override { return this; }
 };
@@ -1179,7 +1180,7 @@ public:
     // this holds the alias so the CIR builder can render the type-name spec as
     // ID("T") instead of re-deriving an anonymous struct/union layout. Empty for
     // a bare `struct Tag` / `union Tag` / builtin element type.
-    std::string typedef_name;
+    madc::dis::istring typedef_name;
     // Non-null for a C99 ARRAY compound literal `(T[]){...}` / `(T[N]){...}`.
     // The brace reader uses a synthetic `__compound_array` struct only while
     // collecting initializer slots. The expression's datadef() is the real
@@ -1238,7 +1239,7 @@ public:
     {
 	bool index = false;
 	size_t first = 0, last = 0;
-	std::string name;
+	madc::dis::istring name;
 	TokenBase *where = NULL;
     };
     // `slots` is the list's own slot vector; `member_indexed` the list's
@@ -1435,7 +1436,7 @@ public:
 	// not the struct itself. Walk through any pointer wrapper.
 	DataDefSTRUCT *sdd = owner_struct_type();
 	if ( !sdd ) return false;
-	std::string mname = var.name;
+	madc::dis::istring mname = var.name;
 	return sdd->m_is_array_decl(mname);
     }
     DataDefSTRUCT *owner_struct_type() const
@@ -1487,10 +1488,10 @@ class TokenMemberPtrConst: public TokenBase
 public:
     DataDefCLASS *owner;	// the C in &C::m
     Variable *method;		// the member function's Variable (function form), else NULL
-    std::string member_name;	// the member's source name
+    madc::dis::istring member_name;	// the member's source name
     ssize_t data_offset;	// data form: the member's byte offset
     DataDef *mp_type;		// DataDefMemberFnPtr / DataDefMemberPtr
-    TokenMemberPtrConst(DataDefCLASS *c, Variable *m, const std::string &nm,
+    TokenMemberPtrConst(DataDefCLASS *c, Variable *m, const madc::dis::istring &nm,
 			ssize_t off, DataDef *t)
 	: owner(c), method(m), member_name(nm), data_offset(off), mp_type(t) {}
     virtual TokenType type() const override { return TokenType::ttBase; }
@@ -1537,9 +1538,9 @@ public:
 class TokenLabelAddr: public TokenBase
 {
 public:
-    std::string name;
+    madc::dis::istring name;
     DataDef *ptr_type;
-    TokenLabelAddr(const std::string &n, DataDef *pt) : name(n), ptr_type(pt) {}
+    TokenLabelAddr(const madc::dis::istring &n, DataDef *pt) : name(n), ptr_type(pt) {}
     virtual TokenType type() const override { return TokenType::ttBase; }
     virtual TokenBase *clone() override { return new TokenLabelAddr(name, ptr_type); }
     virtual DataDef *datadef() const override { return ptr_type ? ptr_type : &ddVOID; }
@@ -1548,9 +1549,9 @@ public:
 class TokenExprContextObject: public TokenBase
 {
 public:
-    std::string path;
+    madc::dis::istring path;
     const madc::value *context_value;
-    TokenExprContextObject(const std::string &p, const madc::value *v)
+    TokenExprContextObject(const madc::dis::istring &p, const madc::value *v)
 	: path(p), context_value(v) {}
     virtual TokenType type() const override { return TokenType::ttBase; }
     virtual TokenBase *clone() override { return new TokenExprContextObject(path, context_value); }
@@ -1625,7 +1626,7 @@ public:
 // A scoped spelling as a C identifier fragment (`std::__1::__fs` ->
 // `std____1____fs`): the emitted-identity rename the parser's scope arms, the
 // forest restore and the CIR emitter's collision dedup all apply (parser.cpp).
-std::string flat_scope_identifier(const std::string &scoped);
+madc::dis::istring flat_scope_identifier(const madc::dis::istring &scoped);
 
 class TokenCast: public TokenBase
 {
@@ -1832,8 +1833,8 @@ typedef madc::dis::intern_keyed_map<TokenKeyword *> keyword_map_t;
 // (datatype_map_t below) because they are enumerated by key; only the flat map
 // is hot enough to intern. See docs/plans/2026-06-12-type-table-value-abi-design.md.
 typedef madc::dis::intern_keyed_map<TokenDataType *> flat_datatype_map_t;
-typedef std::map<std::string, TokenDataType *> datatype_map_t;
-typedef std::map<std::string, DataDef *> datadef_map_t;
+typedef std::map<madc::dis::istring, TokenDataType *> datatype_map_t;
+typedef std::map<madc::dis::istring, DataDef *> datadef_map_t;
 
 // The registries' transactions NEST (an interactive entry's transaction holds
 // the class journals opened inside it, plan §41.3): a transaction begun while
@@ -2138,9 +2139,9 @@ public:
     }
 };
 
-typedef registration_map<std::string, FuncDef *> funcdef_map_t;
-typedef registration_map<std::string, Variable *> variable_map_t;
-typedef std::map<std::string, variable_map_t> namespace_map_t;
+typedef registration_map<madc::dis::istring, FuncDef *> funcdef_map_t;
+typedef registration_map<madc::dis::istring, Variable *> variable_map_t;
+typedef std::map<madc::dis::istring, variable_map_t> namespace_map_t;
 // Outer map (namespace -> inner type-name map) on the substrate primitive,
 // keyed via Program::namespace_name_pool. `::iterator` is datatype_map_t* now
 // (find() returns a pointer to the inner map; end()==nullptr). The INNER
@@ -2153,9 +2154,9 @@ typedef madc::dis::intern_keyed_map<datatype_map_t> namespace_datatype_map_t;
 // map-iterators
 typedef keyword_map_t::iterator keyword_map_iter;
 typedef flat_datatype_map_t::iterator flat_datatype_map_iter;	// TokenDataType ** (NULL = absent)
-typedef std::map<std::string, TokenDataType *>::iterator datatype_map_iter;
-typedef std::map<std::string, DataDef *>::iterator datadef_map_iter;
-typedef std::map<std::string, DataDef *>::const_iterator datadef_map_citer;
+typedef std::map<madc::dis::istring, TokenDataType *>::iterator datatype_map_iter;
+typedef std::map<madc::dis::istring, DataDef *>::iterator datadef_map_iter;
+typedef std::map<madc::dis::istring, DataDef *>::const_iterator datadef_map_citer;
 typedef funcdef_map_t::iterator funcdef_map_iter;
 typedef variable_map_t::iterator variable_map_iter;
 
@@ -2177,29 +2178,34 @@ public:
     typedef datadef_map_t::const_iterator const_iterator;
     struct transaction_state {
 	struct SavedValue {
-	    std::string key;
+	    madc::dis::istring key;
 	    bool existed;
 	    DataDef *value;
-	    SavedValue(const std::string &k, bool e, DataDef *v)
+	    SavedValue(const madc::dis::istring &k, bool e, DataDef *v)
 		: key(k), existed(e), value(v) {}
 	};
 	std::vector<SavedValue> saved;
-	std::set<std::string> touched;
+	std::set<madc::dis::istring> touched;
 	transaction_state *enclosing;
 	transaction_state() : enclosing(NULL) {}
     };
+    StructRegistry() {}
+    // The index holds addresses of map_'s nodes: a copy would point into the
+    // source's map.
+    StructRegistry(const StructRegistry &) = delete;
+    StructRegistry &operator=(const StructRegistry &) = delete;
     ~StructRegistry();				// MADC_DESPACE_PROBE counter dump
     const_iterator begin() const { return map_.begin(); }
     const_iterator end() const { return map_.end(); }
-    const_iterator find(const std::string &k) const { return map_.find(k); }
-    size_t count(const std::string &k) const { return map_.count(k); }
+    const_iterator find(const madc::dis::istring &k) const { return map_.find(k); }
+    size_t count(const madc::dis::istring &k) const { return map_.count(k); }
     size_t size() const { return map_.size(); }
     bool empty() const { return map_.empty(); }
-    void set(const std::string &key, DataDef *dd);
+    void set(const madc::dis::istring &key, DataDef *dd);
     // Remove one key (block-scope tag-shadow unwind). Erasure invalidates
     // the despaced index's node-address cache, so it rebuilds — exactly
     // rollback_transaction's discipline; shadow unwinds are rare.
-    void erase_scoped(const std::string &key);
+    void erase_scoped(const madc::dis::istring &key);
     datadef_map_t snapshot() const { return map_; }
     void restore(const datadef_map_t &entries);
     void begin_transaction(transaction_state &state);
@@ -2207,7 +2213,7 @@ public:
     void rollback_transaction(transaction_state &state);
     // First entry (in key order) whose despaced, namespace-stripped canonical
     // spelling equals `want` — exactly the old linear scan's answer.
-    DataDef *find_despaced(const std::string &want);
+    DataDef *find_despaced(const madc::dis::istring &want);
     // Namespace-faithful lookup: among the entries whose despaced,
     // namespace-stripped canonical spelling equals `want`, the first (in key
     // order) whose canonical spelling's namespace qualifier is compatible
@@ -2215,16 +2221,19 @@ public:
     // closure (`std` matches `std::__cxx11`). NULL when no flavor matches
     // the qualifier: a qualified query must never receive a same-named
     // entity from a DIFFERENT namespace just because it despaces alike.
-    DataDef *find_despaced(const std::string &want, const std::string &want_ns,
+    DataDef *find_despaced(const madc::dis::istring &want, const madc::dis::istring &want_ns,
 			   Program &pgm);
 private:
-    struct Hit { const std::string *key; DataDef *dd; };
+    struct Hit { const madc::dis::istring *key; DataDef *dd; };
     void topup_index_();	// (re)build + top up the despaced index
     datadef_map_t map_;
     transaction_state *transaction_ = NULL;
-    std::unordered_map<std::string, std::vector<Hit>> index_;
-    std::unordered_set<const void *> seen_;	// map-node key addrs (map never erases)
-    size_t size_stamp_ = 0;
+    std::unordered_map<madc::dis::istring, std::vector<Hit>> index_;
+    // Keys set() inserted since the last top-up — filed by the next top-up
+    // alone, never by rescanning map_. Node addresses stay valid until an
+    // erase, and every erase forces the full rebuild that clears this.
+    std::vector<const madc::dis::istring *> pending_;
+    void file_(const madc::dis::istring &key, DataDef *dd);	// one entry into index_
     uint64_t gen_stamp_ = 0;
     // MADC_DESPACE_PROBE counters (always maintained — increments are noise)
     uint64_t probe_lookups_ = 0, probe_rebuilds_ = 0, probe_swept_ = 0;
@@ -2271,7 +2280,7 @@ const std::string *find_embedded_header(const std::string &name);
 // answer from the SAME registry — a standard library that guards a trait with
 // `#if __has_builtin(__has_trivial_destructor)` must be told the truth about
 // what madc actually implements. One registry, two consumers.
-bool is_type_trait_builtin(const std::string &name);
+bool is_type_trait_builtin(const madc::dis::istring &name);
 
 class Source
 {
@@ -2279,7 +2288,7 @@ protected:
     struct PushbackFrame
     {
 	size_t remaining;
-	std::string disabled_macro;
+	madc::dis::istring disabled_macro;
 	// The names a function-like macro's ARGUMENT pre-expansion consumed.
 	// C11 6.10.3.4p2 hides a macro name found while rescanning its own
 	// replacement; madc's paint is per-FRAME text, not per-token, and an
@@ -2288,7 +2297,7 @@ protected:
 	// Carrying the set here is what keeps `#define str_tab c2m_ctx->str_tab`
 	// expanded ONCE when it reaches the rescan through `HTAB_CREATE(T,
 	// str_tab, ...)` — see the filter in lexer.cpp's argument loop.
-	std::set<std::string> arg_disabled;
+	std::set<madc::dis::istring> arg_disabled;
 	bool recount = true;   // false: text was already read once; re-reading
 			       // it must not re-advance the column counter
 	bool synthesized = false; // true: text never existed in the source
@@ -2303,14 +2312,19 @@ protected:
     // the dominant lex self-cost in callgrind (P2 perf lever, 2026-06-23).
     std::string _buf;			// entire source text
     size_t _gpos = 0;			// read cursor into _buf
-    std::string _pushback;		// pushback buffer for #define substitution
+    // Pushback text for #define substitution and lexer rewinds, stored
+    // REVERSED: the next char to read is back(). Pushing text in front of the
+    // stream appends it reversed (cost: the new text only), and get() pops the
+    // back (no move of what is left) — never a prepend copy or erase(0, 1).
+    std::string _pushback;
+    void push_front_text(const std::string &s) { _pushback.append(s.rbegin(), s.rend()); }
     std::deque<PushbackFrame> _pushback_frames;
-    std::set<std::string> _inherited_disabled_macros;
+    std::set<madc::dis::istring> _inherited_disabled_macros;
     // Every macro name this Source has expanded, accumulated. Read by the
     // argument pre-expansion in lexer.cpp: the throwaway Source that expands
     // one argument reports back which names it consumed, so the outer
     // replacement's frame can hide them during its rescan.
-    std::set<std::string> _expanded_macro_names;
+    std::set<madc::dis::istring> _expanded_macro_names;
     // The argument paint of every region that has SERVED characters since
     // the last reset. A macro's replacement is segmented, so a painted
     // argument region drains and pops while its text is still being
@@ -2319,14 +2333,14 @@ protected:
     // `OUTER(tab)` -> `GET (ctx->tab)` is the shape: GET's argument text
     // came from OUTER's painted region, and without this it re-expanded
     // to ctx->ctx->tab.
-    std::set<std::string> _served_arg_paint;
+    std::set<madc::dis::istring> _served_arg_paint;
     size_t _synth_gets = 0;		// chars served from synthesized frames
     int _lf, _cr, _column;
     int _last_token_line = 0;		// see last_token_line()
-    std::string _fname;
-    void add_pushback_frame_len(size_t len, const std::string &disabled_macro,
+    madc::dis::istring _fname;
+    void add_pushback_frame_len(size_t len, const madc::dis::istring &disabled_macro,
 			       bool recount = true, bool synthesized = false,
-			       const std::set<std::string> *arg_disabled = NULL)
+			       const std::set<madc::dis::istring> *arg_disabled = NULL)
     {
 	if ( !len )
 	    return;
@@ -2339,9 +2353,9 @@ protected:
 	frame.synthesized = synthesized;
 	_pushback_frames.push_front(frame);
     }
-    void add_pushback_frame(const std::string &s, const std::string &disabled_macro,
+    void add_pushback_frame(const std::string &s, const madc::dis::istring &disabled_macro,
 			    bool recount = true, bool synthesized = false,
-			    const std::set<std::string> *arg_disabled = NULL)
+			    const std::set<madc::dis::istring> *arg_disabled = NULL)
     {
 	add_pushback_frame_len(s.size(), disabled_macro, recount, synthesized,
 			       arg_disabled);
@@ -2359,14 +2373,47 @@ public:
     {
 	size_t off;
 	size_t len;
-	std::string param;
+	madc::dis::istring param;
     };
+    // gcc's multiple-include optimization, decided DURING the file's one lex
+    // (libcpp push_conditional / do_endif / _cpp_pop_file_buffer): the file
+    // is guarded by `guard` when its first significant line opens
+    // `#ifndef guard` / `#if !defined guard` at the file's base depth, that
+    // group has no #else / #elif, and nothing significant follows its
+    // #endif. Lives on the Source so every stream swap carries its own.
+    struct IncludeGuardWatch
+    {
+	madc::dis::istring key;		// file the verdict is for; empty = not watching
+	size_t base = 0;		// conditional-group depth at the file's start
+	madc::dis::istring guard;	// the opening group's macro
+	bool valid = true;		// nothing significant outside that group yet
+	bool closed = false;		// that group's #endif was reached
+	madc::dis::istring verdict() const
+	{ return valid && closed ? guard : madc::dis::istring(); }
+    };
+    IncludeGuardWatch guard_watch;
+    // The current physical line's unread bytes, when no pushback stands in
+    // front of them — the raw text of a directive's operand.
+    bool raw_line_ahead(const char *&b, const char *&e) const
+    {
+	if ( !_pushback.empty() )
+	    return false;
+	b = _buf.data() + _gpos;
+	e = b;
+	const char *end = _buf.data() + _buf.size();
+	while ( e < end && *e != '\n' && *e != '\r' )
+	    ++e;
+	return true;
+    }
     Source() { _lf = 0; _cr = 0; _column = 0; }
     const char *fname() const { return _fname.c_str(); }
     const char *fname(const char *s)  { _fname = s; return _fname.c_str(); }
-    const char *fname(std::string &s) { _fname = s; return _fname.c_str(); }
+    const char *fname(madc::dis::istring &s) { _fname = s; return _fname.c_str(); }
     void copybuf(std::streambuf *sb)  { std::ostringstream tmp; tmp << sb; _buf = tmp.str(); _gpos = 0; }
+    // Source TEXT, never a name: interning it would hash and keep every
+    // header's bytes in the process-wide name table.
     void str(const std::string &s) { _buf = s; _gpos = 0; }
+    void str(std::string &&s) { _buf = std::move(s); _gpos = 0; }
     // A fresh unit read into the same Source (an interactive entry, plan
     // §41.2a): its text, cursor and position all start over at line 1.
     void start_unit(const std::string &s)
@@ -2378,7 +2425,7 @@ public:
 	_last_token_line = 0;
     }
     const std::string &text() const { return _buf; }
-    void pushback(const std::string &s) { _pushback = s + _pushback; add_pushback_frame(s, ""); }
+    void pushback(const std::string &s) { push_front_text(s); add_pushback_frame(s, ""); }
     // Push back text that was ALREADY read (lexer lookahead/backtrack). Those
     // source characters were counted on the first read, so the drain must not
     // leave the column double-advanced (contrast pushback(), used for
@@ -2396,11 +2443,11 @@ public:
 	  && (int)s.size() <= _column )
 	{
 	    _column -= (int)s.size();
-	    _pushback = s + _pushback;
+	    push_front_text(s);
 	    add_pushback_frame(s, "", true);
 	    return;
 	}
-	_pushback = s + _pushback;
+	push_front_text(s);
 	add_pushback_frame(s, "", false);
     }
     // The argument paint in effect AT THE CURSOR: the frame the cursor is
@@ -2411,12 +2458,12 @@ public:
     // collection; read after, to learn what paint covered the argument
     // TEXT this invocation consumed.
     void reset_served_arg_paint() { _served_arg_paint.clear(); }
-    const std::set<std::string> &served_arg_paint() const
+    const std::set<madc::dis::istring> &served_arg_paint() const
     { return _served_arg_paint; }
-    std::set<std::string> current_arg_paint() const
+    std::set<madc::dis::istring> current_arg_paint() const
     {
 	if ( _pushback_frames.empty() )
-	    return std::set<std::string>();
+	    return std::set<madc::dis::istring>();
 	return _pushback_frames.front().arg_disabled;
     }
     // Push a function-like macro's replacement as one frame PER SEGMENT:
@@ -2427,10 +2474,10 @@ public:
     // mir-gen.c's `DEBUG (4, { fprintf (debug_file, ...); })` as
     // `gen_ctx->gen_ctx->debug_file` — 49 hard errors in one file).
     void pushback_macro_spans(const std::string &s,
-			      const std::string &disabled_macro,
+			      const madc::dis::istring &disabled_macro,
 			      const std::vector<ArgSpan> &spans,
-			      const std::map<std::string,
-					     std::set<std::string> > &param_paint)
+			      const std::map<madc::dis::istring,
+					     std::set<madc::dis::istring> > &param_paint)
     {
 	// BODY segments carry NO paint. A nested macro's replacement body is
 	// the macro's own text, and its occurrences of a name must expand even
@@ -2438,18 +2485,18 @@ public:
 	// is exactly glibc's __MATHCALL chain (`CALL(fn, (WIDE x))` whose body
 	// also spells WIDE), and painting it emitted `extern WIDE acos(...)`.
 	// Only the argument-substituted ranges are painted, below.
-	std::set<std::string> inherited;
-	_pushback = s + _pushback;
+	std::set<madc::dis::istring> inherited;
+	push_front_text(s);
 	if ( !disabled_macro.empty() )
 	    _expanded_macro_names.insert(disabled_macro);
 	// A name hidden for any segment was expanded while building this
 	// replacement, so it is reported upward (an argument three macros
 	// deep otherwise loses the paint at every level but the innermost).
-	for ( std::map<std::string, std::set<std::string> >::const_iterator
+	for ( std::map<madc::dis::istring, std::set<madc::dis::istring> >::const_iterator
 		it = param_paint.begin(); it != param_paint.end(); ++it )
 	    _expanded_macro_names.insert(it->second.begin(), it->second.end());
 
-	struct Seg { size_t len; std::set<std::string> paint; };
+	struct Seg { size_t len; std::set<madc::dis::istring> paint; };
 	std::vector<Seg> segs;
 	size_t pos = 0;
 	for ( size_t i = 0; i < spans.size(); ++i )
@@ -2466,7 +2513,7 @@ public:
 		segs.push_back(body);
 	    }
 	    Seg arg; arg.len = sp.len; arg.paint = inherited;
-	    std::map<std::string, std::set<std::string> >::const_iterator
+	    std::map<madc::dis::istring, std::set<madc::dis::istring> >::const_iterator
 		pp = param_paint.find(sp.param);
 	    if ( pp != param_paint.end() )
 		arg.paint.insert(pp->second.begin(), pp->second.end());
@@ -2484,10 +2531,10 @@ public:
 	    add_pushback_frame_len(segs[i].len, disabled_macro, true, true,
 				   segs[i].paint.empty() ? NULL : &segs[i].paint);
     }
-    void pushback_macro(const std::string &s, const std::string &disabled_macro,
-			const std::set<std::string> *arg_disabled = NULL)
+    void pushback_macro(const std::string &s, const madc::dis::istring &disabled_macro,
+			const std::set<madc::dis::istring> *arg_disabled = NULL)
     {
-	_pushback = s + _pushback;
+	push_front_text(s);
 	if ( !disabled_macro.empty() )
 	    _expanded_macro_names.insert(disabled_macro);
 	// A name hidden for THIS frame was expanded while building it, so it
@@ -2501,12 +2548,12 @@ public:
 	add_pushback_frame(s, disabled_macro, true, true, arg_disabled);
     }
     // The names expanded while serving this Source (see _expanded_macro_names).
-    const std::set<std::string> &expanded_macro_names() const
+    const std::set<madc::dis::istring> &expanded_macro_names() const
     { return _expanded_macro_names; }
     // Chars served from synthesized frames since open — the lexer compares
     // across one token read to stamp tfSYNTHPOS.
     size_t synth_reads() const { return _synth_gets; }
-    bool macro_disabled(const std::string &name) const
+    bool macro_disabled(const madc::dis::istring &name) const
     {
 	if ( _inherited_disabled_macros.count(name) )
 	    return true;
@@ -2531,8 +2578,8 @@ public:
     // ARGUMENT's own region paint. It is passed explicitly because by the
     // time an argument is pre-expanded its region has drained, popped, and
     // the per-argument accumulator has been reset for the next one.
-    void inherit_macro_disables(const Source &from, const std::string &current,
-				const std::set<std::string> *extra = NULL)
+    void inherit_macro_disables(const Source &from, const madc::dis::istring &current,
+				const std::set<madc::dis::istring> *extra = NULL)
     {
 	_inherited_disabled_macros = from._inherited_disabled_macros;
 	for ( const PushbackFrame &frame : from._pushback_frames )
@@ -2574,8 +2621,8 @@ public:
 	    // `A`<->`B`) expands once and stops instead of recursing to a crash.
 	    while ( !_pushback_frames.empty() && _pushback_frames.front().remaining == 0 )
 		_pushback_frames.pop_front();
-	    int ch = (unsigned char)_pushback[0];
-	    _pushback.erase(0, 1);
+	    int ch = (unsigned char)_pushback.back();
+	    _pushback.pop_back();
 	    bool recount = true;
 	    bool synthesized = false;
 	    if ( !_pushback_frames.empty() )
@@ -2622,7 +2669,7 @@ public:
     int peek()
     {
 	if ( !_pushback.empty() )
-	    return (unsigned char)_pushback[0];
+	    return (unsigned char)_pushback.back();
 	if ( _gpos >= _buf.size() ) return -1;
 	// A line splice is consumed here too, so the peeked char is the real one.
 	if ( size_t splice = splice_length_at(_gpos) )
@@ -2641,7 +2688,7 @@ public:
     void replace_trigraphs()
     {
 	size_t first = _buf.find("??");
-	if ( first == std::string::npos )
+	if ( first == madc::dis::istring::npos )
 	    return;
 	static const char from[] = "=(/)'<!>-";
 	static const char to[] = "#[\\]^{|}~";
@@ -2686,7 +2733,7 @@ public:
     bool ends_in_line_splice() const
     {
 	size_t bs = _buf.rfind('\\');
-	return bs != std::string::npos && splice_length_at(bs) == _buf.size() - bs;
+	return bs != madc::dis::istring::npos && splice_length_at(bs) == _buf.size() - bs;
     }
     // Fast-path identifier-continuation scan (perf lever, 2026-06-23). When NOT
     // inside a pushback/macro expansion, scan the maximal identifier-continuation
@@ -2801,7 +2848,7 @@ bool madc_show_file_error(const char *fname, int row, int col,
 // The last byte of line `row` (its text `ln`) that a token starting at
 // `col` and ending at (end_line, end_col) covers: end_col on its own line,
 // the line's end when it runs on, 0 when there is no end (D26).
-int madc_underline_end(const std::string &ln, int row, int col,
+int madc_underline_end(const madc::dis::istring &ln, int row, int col,
 		       int end_line, int end_col);
 // Line `row` of file `fname`, reread from disk (false: unreadable or short).
 bool madc_file_line(const char *fname, int row, std::string &ln);
@@ -2809,7 +2856,7 @@ bool madc_file_line(const char *fname, int row, std::string &ln);
 // stops, code-point widths), and the one a diagnostic's header prints for a
 // position — its line read from `src` when that is the position's file, else
 // from disk; the byte column when neither has the line (D26).
-int madc_screen_column(const std::string &ln, int col);
+int madc_screen_column(const madc::dis::istring &ln, int col);
 int madc_diag_screen_column(Source *src, const char *fname, int row, int col);
 
 // Mute diagnostic RENDERING (Program::print_diagnostic's header + source
@@ -2830,7 +2877,7 @@ public:
 // Does a loaded native library export this symbol? ONE owner (defined in
 // cir_builder.cpp, beside the mangled-direct bind sites that ask it most) —
 // the same dlsym the MIR import resolver uses, so a yes here always links.
-bool external_symbol_available(const std::string &sym);
+bool external_symbol_available(const madc::dis::istring &sym);
 
 // very simple exception container
 class Exception: public std::exception
@@ -2838,7 +2885,7 @@ class Exception: public std::exception
 protected:
     std::string _msg;
 public:
-    explicit Exception(const std::string& message): _msg(message) {}
+    explicit Exception(const madc::dis::istring& message): _msg(message) {}
     virtual ~Exception() throw() {}
     virtual const char *what() const throw () override { return _msg.c_str(); }
 };
@@ -2887,7 +2934,7 @@ public:
     // every error after the first into a spurious "basic_ios::clear: iostream
     // error" and discarding the real message. str("") drops any stale message.
     throwstream& operator()(TokenBase *t)
-    { clear(); _tbuf.str(std::string()); _tbuf.at(t); return *this; }
+    { clear(); _tbuf.str(madc::dis::istring()); _tbuf.at(t); return *this; }
 };
 
 
@@ -2959,7 +3006,7 @@ TokenBase *madc_token_for_slot(uint32_t id);
 // reverse-render (--emit=c++) both read it. Numeric/char literals are
 // canonicalized where the original text was not retained (they re-lex to
 // the same value); pair with TokenBase::leading_trivia for layout.
-std::string madc_token_spelling(TokenBase *tb);
+madc::dis::istring madc_token_spelling(TokenBase *tb);
 
 // Where token `tb` ENDS (D26): the line and the column of its last byte —
 // the recorded lexical end (TokenBase::lex_end_*), else its start advanced
@@ -2973,7 +3020,7 @@ void madc_token_end(TokenBase *tb, int &line, int &column);
 // re-lexes/recompiles to the same bytes — canonical escapes, octal for
 // non-printables (octal caps at 3 digits; hex is maximal-munch). The
 // token-spelling owner and the C11/C++ renderers all read this one rule.
-std::string madc_c_escape_string(const char *s, size_t len);
+madc::dis::istring madc_c_escape_string(const char *s, size_t len);
 
 // THE token highlight classifier (defined in lexer.cpp beside the
 // spelling owner — token vocabulary): what KIND of thing a lexed token
@@ -3187,8 +3234,8 @@ struct MadcCompileGroup
     // decl-index sweep. Config-coherent because the instance key is.
     struct DeclVerdicts
     {
-	std::unordered_map<std::string, bool> bound;
-	std::unordered_map<std::string, bool> system;
+	std::unordered_map<madc::dis::istring, bool> bound;
+	std::unordered_map<madc::dis::istring, bool> system;
     };
     std::map<std::pair<const void *, std::vector<uint32_t> >,
 	     std::shared_ptr<const DeclVerdicts> > decl_verdicts;
@@ -3215,7 +3262,7 @@ struct MadcCompileGroup
 // is_template_template (`template<class> class TT` — the one parameter kind
 // that IS a template-name before a `<`, [temp.names]/3).
 struct ParsedTemplateParameterList {
-    std::vector<std::string> names;
+    std::vector<madc::dis::istring> names;
     std::vector<std::vector<TokenBase *> > defaults;
     std::vector<std::vector<TokenBase *> > constraints;
     std::vector<bool> is_type;
@@ -3232,7 +3279,7 @@ class Program
 public:
     struct FunctionRegistrationSpec
     {
-	std::string id;
+	madc::dis::istring id;
 	datatype_vec_t params;
 	fVOIDFUNC extfunc;
 	bool is_method;
@@ -3241,7 +3288,7 @@ public:
 	// collides with a real host-library name (dlopen, system) must emit
 	// the thunk's own symbol, or every lane binds the host function
 	// against the script signature instead of the registered thunk.
-	std::string emit_symbol;
+	madc::dis::istring emit_symbol;
     };
 
     struct BuiltinRegistry
@@ -3251,16 +3298,16 @@ public:
 	std::vector<FunctionRegistrationSpec> process_functions;
 	std::vector<FunctionRegistrationSpec> dlfcn_functions;
 
-	void add_core_function(const std::string &id, const datatype_vec_t &params, fVOIDFUNC extfunc, bool is_method=false);
-	void add_process_function(const std::string &id, const datatype_vec_t &params, fVOIDFUNC extfunc, bool is_method=false, const std::string &emit_symbol=std::string());
-	void add_dlfcn_function(const std::string &id, const datatype_vec_t &params, fVOIDFUNC extfunc, bool is_method=false, const std::string &emit_symbol=std::string());
+	void add_core_function(const madc::dis::istring &id, const datatype_vec_t &params, fVOIDFUNC extfunc, bool is_method=false);
+	void add_process_function(const madc::dis::istring &id, const datatype_vec_t &params, fVOIDFUNC extfunc, bool is_method=false, const madc::dis::istring &emit_symbol=madc::dis::istring());
+	void add_dlfcn_function(const madc::dis::istring &id, const datatype_vec_t &params, fVOIDFUNC extfunc, bool is_method=false, const madc::dis::istring &emit_symbol=madc::dis::istring());
     };
 
     typedef void (*namespace_init_fn_t)(Program &);
 
     struct NamespaceRegistrationSpec
     {
-	std::string name;
+	madc::dis::istring name;
 	namespace_init_fn_t init;
     };
 
@@ -3269,7 +3316,7 @@ public:
 	bool defaults_loaded = false;
 	std::vector<NamespaceRegistrationSpec> specs;
 
-	void add_namespace(const std::string &name, namespace_init_fn_t init);
+	void add_namespace(const madc::dis::istring &name, namespace_init_fn_t init);
     };
 
     struct RegistrationPolicy
@@ -3289,7 +3336,7 @@ public:
 	    bool enable_rust_namespace = true;
 	    bool restrict_headers_to_allowlist = false;
 	    bool restrict_dlfcn_symbols_to_allowlist = false;
-	    std::vector<std::string> allowed_headers;
+	    std::vector<std::string> allowed_headers;	// mirrors the public API policy (std::string there)
 	    std::vector<std::string> allowed_dlfcn_symbols;
 	};
 
@@ -3359,7 +3406,7 @@ public:
 	// enable_external_forest with the sidecar/env arms: a file that can
 	// redirect where the compiler loads frozen state from is precisely
 	// what a sandboxed host turns off.
-	std::string forest_config_path;
+	madc::dis::istring forest_config_path;
 	// May this compile bind frozen state at all (the --forest-bind /
 	// --no-forest-bind switch, and the library's enable_forest_bind
 	// compile_option)? OFF is the Program default because a FREEZE must
@@ -3381,7 +3428,7 @@ public:
 	// view sys_include_paths() returns — so resolution, __has_include,
 	// #include_next and system-header classification cannot disagree.
 	bool enable_sysroot_includes = true;
-	std::vector<std::string> allowed_headers;
+	std::vector<std::string> allowed_headers;	// mirrors the public API policy (std::string there)
 	std::vector<std::string> allowed_dlfcn_symbols;
 	RuntimeEvalChildPolicy runtime_eval_source_policy;
     };
@@ -3390,7 +3437,7 @@ public:
     {
 	bool has_error = false;
 	std::string message;
-	std::string file;
+	madc::dis::istring file;
 	int line = 0;
 	int column = 0;
     };
@@ -3409,7 +3456,7 @@ public:
 	// Stamped by add_diagnostic (diagnostic_cause_for), never by a caller.
 	DiagnosticCause cause = DiagnosticCause::none;
 	std::string message;
-	std::string file;
+	madc::dis::istring file;
 	int line = 0;
 	int column = 0;
 	// Where the cited token ends (madc_token_end), 0 when the position is
@@ -3437,7 +3484,8 @@ protected:
     // shared madc_pch::token_from_id switch; payload kinds construct directly.
     // See docs/plans/2026-06-23-p1-token-arena-implementation-plan.md.
     TokenBase *make_token(TokenID kind);                       // payload-free
-    TokenBase *make_ident(const std::string &spelling);        // TokenIdent
+    TokenBase *make_ident(const madc::dis::istring &spelling);        // TokenIdent
+    TokenBase *make_ident(uint32_t spelling_id);	// TokenIdent over an already-pooled spelling
     TokenBase *make_int(int64_t value);                        // TokenInt
     TokenBase *make_int(int64_t value, const std::string &src);// TokenInt + text
     TokenBase *make_real(long double value);                   // TokenReal
@@ -3450,7 +3498,7 @@ protected:
     TokenBase *make_space(int cnt);                            // TokenSpace
     TokenBase *make_tab(int cnt);                              // TokenTab
     TokenBase *make_eol(int cnt);                              // TokenEOL
-    TokenBase *read_wide_literal(const std::string &prefix = "L");   // L/u/U/u8 string/char literal -> pop-1 token
+    TokenBase *read_wide_literal(const madc::dis::istring &prefix = "L");   // L/u/U/u8 string/char literal -> pop-1 token
     // Fill the immutable (ROM) TokenRec of a lexed pop-1 token from the formed
     // shell — kind/value/spelling/provenance — so a fresh mutable (RAM) shell
     // can later be rebuilt from the rec alone (the no-clone substitution split,
@@ -3464,29 +3512,29 @@ protected:
     // answers from madc's OWN state and answers TRUTHFULLY: a yes madc cannot
     // back turns a library's clean "#error not implemented" into a mystifying
     // failure deeper in its headers, so an unknown query answers 0.
-    int64_t evaluateHasQuery(const std::string &op, const std::string &expr,
+    int64_t evaluateHasQuery(const madc::dis::istring &op, const std::string &expr,
 			     size_t &pos);
     // Does madc implement this builtin? (`__has_builtin`, and the same
     // question the parser answers when it sees the call.)
     // (not const: intern_keyed_map::count() is not const-qualified)
-    bool has_builtin(const std::string &name);
+    bool has_builtin(const madc::dis::istring &name);
     // Is this `__has_*` operator one madc ANSWERS from its own state? The ONE
     // list: evaluateHasQuery declines everything else, and macro_name_defined
     // makes exactly these visible to `#ifdef` — so an operator can never be
     // answerable but invisible, or visible but unanswerable.
-    static bool has_query_operator_implemented(const std::string &op);
+    static bool has_query_operator_implemented(const madc::dis::istring &op);
     // Is this name DEFINED for `#ifdef` / `#ifndef` / `defined()`? A macro in
     // either table, or an implemented `__has_*` operator (gcc and clang both
     // make those visible to #ifdef, and libstdc++ gates whole feature families
     // on it).
     // (not const: intern_keyed_map::count() is not const-qualified)
-    bool macro_name_defined(const std::string &name);
+    bool macro_name_defined(const madc::dis::istring &name);
     // A predefined macro whose text is the current source position —
     // __FILE__, __FILE_NAME__ (gcc 12+, clang), __LINE__: true, and the
     // replacement text into *out when given. The ONE list getToken's builtin
     // arm, the #if expander and macro_name_defined read, so a name is never
     // expanded but undefined, or defined but left unexpanded.
-    bool builtin_position_macro(const std::string &name, std::string *out);
+    bool builtin_position_macro(const madc::dis::istring &name, madc::dis::istring *out);
     void popOperator(std::stack<TokenBase *> &, std::stack<TokenBase *> &);
     // The end of an expression (every exit of parseExpression): bind the
     // pending operators, refuse juxtaposed operands, return the one left.
@@ -3536,19 +3584,19 @@ public:
     // The type a WORD lexes as, NULL when it lexes as an identifier. The one
     // answer for the word lexer and PCH replay (lexer.cpp says why a session
     // entry's lexer knows only madc's own types).
-    TokenDataType *lexer_type_token(const std::string &word);
+    TokenDataType *lexer_type_token(const madc::dis::istring &word);
     // C tag namespace for enums (C11 6.2.3): in C mode `enum TAG` resolves
     // here and the bare TAG never becomes a type name (a variable named like
     // the tag stays legal). C++/madc modes keep registering enum tags as
     // type names in datatype_map. No decl-index tap: the two-token `enum X`
     // spelling is never a bare-name lookup, and C TUs are not packed.
-    std::map<std::string, TokenDataType *> c_enum_tag_map;
+    std::map<madc::dis::istring, TokenDataType *> c_enum_tag_map;
     // The one lookup for a C enum tag reference — both `enum TAG` resolvers
     // (TokenENUM::parse's no-brace arm, resolve_declared_type_token's
     // elaborated-specifier arm) consult this before their int decay.
-    TokenDataType *find_c_enum_tag(const std::string &tag)
+    TokenDataType *find_c_enum_tag(const madc::dis::istring &tag)
     {
-	std::map<std::string, TokenDataType *>::iterator it =
+	std::map<madc::dis::istring, TokenDataType *>::iterator it =
 	    c_enum_tag_map.find(tag);
 	return it != c_enum_tag_map.end() ? it->second : NULL;
     }
@@ -3557,20 +3605,20 @@ public:
     // register_scoped_typedef() records; unwind_block_typedef_shadows() restores
     // at block exit so a local typedef's meaning ends with its block
     // ([basic.scope.block]) instead of leaking into the flat map forever.
-    std::vector<std::vector<std::pair<std::string, TokenDataType *> > >
+    std::vector<std::vector<std::pair<madc::dis::istring, TokenDataType *> > >
 	block_typedef_shadows;
-    void register_scoped_typedef(const std::string &alias, TokenDataType *tdt);
+    void register_scoped_typedef(const madc::dis::istring &alias, TokenDataType *tdt);
     // An object or parameter declared in a block hides a typedef name of an
     // enclosing scope until the block ends (C11 6.2.1p4): the same frame.
-    void hide_typedef_name_in_block(const std::string &name);
+    void hide_typedef_name_in_block(const madc::dis::istring &name);
     void unwind_block_typedef_shadows(size_t depth, const char *site = "?");
     // The struct-TAG twin of the typedef frames: a block-scope definition
     // that re-uses a live struct_map key records the prior mapping (or its
     // absence) and unwinds with its block (c-testsuite 00053). Unwound by
     // unwind_block_typedef_shadows under the same depth contract.
-    std::vector<std::vector<std::pair<std::string, DataDef *> > >
+    std::vector<std::vector<std::pair<madc::dis::istring, DataDef *> > >
 	block_struct_tag_shadows;
-    void register_scoped_struct_tag_shadow(const std::string &key);
+    void register_scoped_struct_tag_shadow(const madc::dis::istring &key);
     size_t block_struct_tag_seq = 0;	// unique emitted-identity counter
     // Struct-tag first declaration — the ONE mint recipe (incomplete
     // DataDefSTRUCT + pack tap + struct_map + C++ bare-name registration).
@@ -3578,14 +3626,14 @@ public:
     // resolve_declared_type_token's elaborated-type-specifier miss
     // ([basic.scope.pdecl]/7 — `wp<struct nat>` first-declares `nat`).
     DataDefCLASS *nested_aggregate_owner() const;
-    std::string block_scoped_struct_tag(const std::string &name);	// the function-body arm alone
-    std::string scoped_struct_tag(const std::string &name);
-    TokenDataType *register_cpp_aggregate_name(const std::string &name,
+    madc::dis::istring block_scoped_struct_tag(const madc::dis::istring &name);	// the function-body arm alone
+    madc::dis::istring scoped_struct_tag(const madc::dis::istring &name);
+    TokenDataType *register_cpp_aggregate_name(const madc::dis::istring &name,
 					       DataDefSTRUCT *sdd);
     // standalone_declaration: `struct B;` on its own (class-scoped when inside a
     // class); false = an elaborated-type-specifier in a TYPE position, which
     // first-declares the tag in the enclosing namespace/block scope.
-    DataDefSTRUCT *mint_incomplete_struct_tag(const std::string &name,
+    DataDefSTRUCT *mint_incomplete_struct_tag(const madc::dis::istring &name,
 					      bool is_union,
 					      bool standalone_declaration = false);
     // The ONE owner of an incomplete aggregate's OBJECT KIND. A first
@@ -3599,7 +3647,7 @@ public:
     // complete: a DataDefCLASS in every C++ mode, a DataDefSTRUCT in C. A
     // DataDefSTRUCT placeholder the class parser had to REPLACE left every
     // pointer typed against it (DataDefPTR::base_type) on the empty object.
-    DataDefSTRUCT *new_incomplete_aggregate(const std::string &emitted_name,
+    DataDefSTRUCT *new_incomplete_aggregate(const madc::dis::istring &emitted_name,
 					    bool is_union);
     // An elaborated-type-specifier's implicit first declaration inside a
     // declaration ([dcl.type.elab]/3, [basic.scope.pdecl]/7 — `struct S *p;`
@@ -3615,9 +3663,9 @@ public:
     // the nested-name-specifier's scope; clang LookupQualifiedName in the
     // specifier's DeclContext). Only an INCOMPLETE prior is returned; a
     // complete one is a redefinition and the callers keep their diagnostics.
-    DataDefSTRUCT *incomplete_prior_aggregate(const std::string &store_key,
+    DataDefSTRUCT *incomplete_prior_aggregate(const madc::dis::istring &store_key,
 					      DataDefCLASS *owner,
-					      const std::string &source_name);
+					      const madc::dis::istring &source_name);
     // Dedicated dense pool for the template-name domain (template/partial-spec/
     // alias/var-template/fn-template map keys). Separate from strpool so each
     // intern_keyed_map's _slot array stays sized to the small template-name set,
@@ -3628,7 +3676,7 @@ public:
     datadef_map_t  datadef_map;		// data definitions defined by typedef or class
     StructRegistry struct_map;		// data definitions defined by struct
 					// (writes via .set() ONLY — despaced index)
-    std::map<std::string, DataDefSTRUCT *> tsubst_local_aggregate_map;
+    std::map<madc::dis::istring, DataDefSTRUCT *> tsubst_local_aggregate_map;
     // Multi-return transport structs, memoized per slot-type vector (pointer
     // identity) so every function with the same signature shares one struct.
     std::map<std::vector<DataDef *>, DataDefSTRUCT *> multi_ret_transport_map;
@@ -3774,7 +3822,7 @@ public:
 	uint32_t template_param_index;
 	uint32_t nested_node_id;
 	uint32_t pack_param_index;
-	std::string name;
+	madc::dis::istring name;
 	std::vector<ClassTypePatternId> arguments;
 	std::vector<uint64_t> dimensions;
 	ClassTypePattern()
@@ -3789,12 +3837,12 @@ public:
 	ClassBasePattern() : type(0), access(0), is_virtual(false) {}
     };
     struct ClassAliasPattern {
-	std::string name;
+	madc::dis::istring name;
 	ClassTypePatternId type;
 	ClassAliasPattern() : type(0) {}
     };
     struct ClassMemberPattern {
-	std::string name;
+	madc::dis::istring name;
 	ClassTypePatternId type;
 	uint64_t count;
 	uint32_t access;
@@ -3808,13 +3856,13 @@ public:
 	      is_bitfield(false), is_anonymous(false), bit_width(0) {}
     };
     struct ClassMethodParamPattern {
-	std::string name;
+	madc::dis::istring name;
 	ClassTypePatternId type;
 	uint32_t flags;
 	bool is_const;
 	bool template_param_spelled_directly;
-	std::string cpp_spelling;
-	std::string typedef_name;
+	madc::dis::istring cpp_spelling;
+	madc::dis::istring typedef_name;
 	std::vector<TokenBase *> default_tokens;
 	ClassMethodParamPattern()
 	    : type(0), flags(0), is_const(false),
@@ -3822,12 +3870,12 @@ public:
     };
     struct ClassMethodPattern {
 	ClassMethodKind kind;
-	std::string variable_name;
-	std::string display_name;
-	std::string storage_alias_name;
-	std::string local_emit_name;
-	std::string emit_symbol;
-	std::string return_typedef_name;
+	madc::dis::istring variable_name;
+	madc::dis::istring display_name;
+	madc::dis::istring storage_alias_name;
+	madc::dis::istring local_emit_name;
+	madc::dis::istring emit_symbol;
+	madc::dis::istring return_typedef_name;
 	ClassTypePatternId return_type;
 	uint32_t flags;
 	bool is_varargs;
@@ -3843,11 +3891,11 @@ public:
 	bool is_member_template;
 	bool has_eager_body;
 	std::vector<ClassMethodParamPattern> parameters;
-	std::vector<std::string> template_param_names;
+	std::vector<madc::dis::istring> template_param_names;
 	std::vector<bool> template_param_is_type;
 	std::vector<bool> template_param_is_pack;
-	std::string template_return_spelling;
-	std::vector<std::string> template_param_spellings;
+	madc::dis::istring template_return_spelling;
+	std::vector<madc::dis::istring> template_param_spellings;
 	std::vector<TokenBase *> body_tokens;
 	std::vector<TokenBase *> definition_tokens;
 	std::vector<TokenBase *> trailing_ret_tokens;
@@ -3876,19 +3924,19 @@ public:
     };
     struct ClassUsingMemberPattern {
 	ClassTypePatternId owner_type;
-	std::string name;
+	madc::dis::istring name;
 	ClassUsingMemberPattern() : owner_type(0) {}
     };
     struct ClassNestedTemplatePattern {
 	ClassNestedTemplateKind kind;
-	std::vector<std::string> typeparams;
+	std::vector<madc::dis::istring> typeparams;
 	std::vector<std::vector<TokenBase *> > typeparam_defaults;
 	std::vector<bool> typeparam_is_type;
 	std::vector<bool> typeparam_is_pack;
 	bool has_non_type_params;
-	std::string class_name;
+	madc::dis::istring class_name;
 	std::vector<TokenBase *> body;
-	std::string defining_namespace;
+	madc::dis::istring defining_namespace;
 	int definition_pack;	// TemplateDef::definition_pack, carried through the pattern
 	bool is_partial_specialization;
 	std::vector<std::vector<TokenBase *> > spec_pattern;
@@ -3903,8 +3951,8 @@ public:
 	uint32_t local_id;
 	uint32_t parent_id;
 	ClassAggregateKind kind;
-	std::string source_name;
-	std::string canonical_spelling;
+	madc::dis::istring source_name;
+	madc::dis::istring canonical_spelling;
 	bool complete;
 	bool from_system_header;
 	std::vector<ClassBasePattern> bases;
@@ -3914,18 +3962,18 @@ public:
 	std::vector<ClassMethodPattern> methods;
 	std::vector<ClassUsingMemberPattern> using_members;
 	std::vector<ClassNestedTemplatePattern> nested_templates;
-	std::vector<std::pair<std::string, ClassTypePatternId> > static_members;
-	std::vector<std::pair<std::string, int64_t> > static_values;
-	std::vector<std::string> friend_classes;
-	std::vector<std::string> friend_functions;
+	std::vector<std::pair<madc::dis::istring, ClassTypePatternId> > static_members;
+	std::vector<std::pair<madc::dis::istring, int64_t> > static_values;
+	std::vector<madc::dis::istring> friend_classes;
+	std::vector<madc::dis::istring> friend_functions;
 	ClassAggregatePatternNode()
 	    : local_id(0), parent_id(0), kind(ClassAggregateKind::Class),
 	      complete(false), from_system_header(false) {}
     };
     struct ClassPattern {
-	std::string identity;
-	std::string class_name;
-	std::string defining_namespace;
+	madc::dis::istring identity;
+	madc::dis::istring class_name;
+	madc::dis::istring defining_namespace;
 	bool is_partial_specialization;
 	ClassParseReason capture_reason;
 	uint64_t semantic_fingerprint;
@@ -3995,7 +4043,7 @@ public:
     std::map<DataDefCLASS *, std::vector<ClassDeclKind> >
 	*class_pattern_decl_capture = NULL;
     std::map<DataDefCLASS *,
-	std::vector<std::pair<DataDefCLASS *, std::string> > >
+	std::vector<std::pair<DataDefCLASS *, madc::dis::istring> > >
 	*class_pattern_using_capture = NULL;
 
     // Captured `template<typename T> class Name {...}` definitions for
@@ -4003,15 +4051,15 @@ public:
     // range}. `Name<ConcreteT>` clones+substitutes+re-parses it as a concrete
     // class. See docs/plans/2026-05-30-template-instantiation.md.
 	struct TemplateDef {
-	    std::vector<std::string> typeparams;   // e.g. ["T"]
+	    std::vector<madc::dis::istring> typeparams;   // e.g. ["T"]
 	    std::vector<std::vector<TokenBase *>> typeparam_defaults;
 	    std::vector<bool> typeparam_is_type;
 	    std::vector<bool> typeparam_is_pack;
 	    bool has_non_type_params;
-	    std::string class_name;                // e.g. "Box"
+	    madc::dis::istring class_name;                // e.g. "Box"
 	uint32_t registry_name_id;             // template_name_pool id for class_name
 	    std::vector<TokenBase *> body;         // cloned tokens: `class Name { ... }`
-	std::string defining_namespace;        // current_namespace at capture (e.g. "std")
+	madc::dis::istring defining_namespace;        // current_namespace at capture (e.g. "std")
 	int definition_pack;                   // #pragma pack at capture (0 = default layout); instantiations lay out under it
 	DataDefCLASS *owner_class;             // enclosing class for member templates
 	bool is_partial_specialization;        // template<class T> struct X<T*> {...}
@@ -4145,8 +4193,8 @@ public:
 	void commit();
 	void rollback();
 	void record_type_alias_write(DataDefCLASS *owner,
-				     const std::string &name);
-	variable_map_t &namespace_for_write(const std::string &name);
+				     const madc::dis::istring &name);
+	variable_map_t &namespace_for_write(const madc::dis::istring &name);
 	std::vector<TemplateDef> &class_template_variants_for_write(
 		uint32_t name_id, DataDefCLASS *owner, bool partial);
 	std::vector<TemplateAliasDef> &alias_template_variants_for_write(
@@ -4201,7 +4249,7 @@ public:
     { if ( active_entry_transaction && agg ) active_entry_transaction->save_entity(agg); }
     void journal_entity(FuncDef *fd)
     { if ( active_entry_transaction && fd ) active_entry_transaction->save_entity(fd); }
-    variable_map_t &namespace_variables_for_write(const std::string &name);
+    variable_map_t &namespace_variables_for_write(const madc::dis::istring &name);
     DataDef *find_class_pattern_resolution(uint64_t resolution_hash,
 	uint8_t kind, uint32_t name_id, uint32_t namespace_id,
 	DataDefCLASS *owner,
@@ -4210,7 +4258,7 @@ public:
 	uint8_t kind, uint32_t name_id, uint32_t namespace_id,
 	DataDefCLASS *owner,
 	const std::vector<DataDef *> &arguments, DataDef *result);
-    void set_class_type_alias(DataDefCLASS *owner, const std::string &name,
+    void set_class_type_alias(DataDefCLASS *owner, const madc::dis::istring &name,
 			      DataDef *type);
     // Namespace/global templates are keyed by bare name; member templates are
     // partitioned by their concrete owner. Same-key namespace variants remain
@@ -4222,32 +4270,32 @@ public:
     // ns_hint != "" => exact defining_namespace match (or NULL); ns_hint == ""
     // => the sole matching-owner variant if unique, else prefer current_namespace,
     // then the global ("") variant, then the first matching-owner variant.
-    TemplateDef *find_template(const std::string &name,
-			       const std::string &ns_hint = std::string(),
+    TemplateDef *find_template(const madc::dis::istring &name,
+			       const madc::dis::istring &ns_hint = madc::dis::istring(),
 			       DataDefCLASS *owner_hint = NULL);
     TemplateDef *find_template(uint32_t name_id,
-			       const std::string &ns_hint,
+			       const madc::dis::istring &ns_hint,
 			       DataDefCLASS *owner_hint);
     // task #25 B2: the selection core (no thaw). Selection reads only
     // identity fields (defining_namespace / owner_class); find_template
     // wraps it and thaws the returned definition, so every caller-visible
     // TemplateDef is hydrated.
     TemplateDef *find_template_raw(uint32_t name_id,
-				   const std::string &ns_hint,
+				   const madc::dis::istring &ns_hint,
 				   DataDefCLASS *owner_hint);
     // The inline-namespace closure of `parent`: parent first, then every
     // inline descendant in BFS order. The ONE enumeration behind
     // find_template's / find_template_alias's qualified variant scans and
     // StructRegistry::find_despaced's namespace filter.
-    void namespace_inline_closure(const std::string &parent,
-				  std::vector<std::string> &out);
+    void namespace_inline_closure(const madc::dis::istring &parent,
+				  std::vector<madc::dis::istring> &out);
     // The variant carrying a parsed body, if any (for completion gating).
-    TemplateDef *template_with_body(const std::string &name);
+    TemplateDef *template_with_body(const madc::dis::istring &name);
     // The type a spelling names (a canonical one, as an instantiation's
     // records write it: "int32_t", "std::allocator<int32_t>",
     // "const int32_t*"), when that type already EXISTS: lookups only, never
     // an instantiation (resolve_arg_spelling_datadef). NULL = none.
-    DataDef *existing_type_of_spelling(const std::string &spelling);
+    DataDef *existing_type_of_spelling(const madc::dis::istring &spelling);
     // Replace the same-namespace variant (merging template-default args from the
     // prior one) or append a new variant. only_if_absent => leave an existing
     // same-namespace variant untouched (first-wins, for bodyless forward decls).
@@ -4262,28 +4310,28 @@ public:
     // Choose the most-specialized partial spec of `name` whose pattern unifies with
     // the concrete arguments. Type slots deduce into out_subst; non-type slots must
     // fold to the same constant value. Returns NULL to fall back to the primary.
-    TemplateDef *match_partial_specialization(const std::string &name,
+    TemplateDef *match_partial_specialization(const madc::dis::istring &name,
 	    const std::vector<TokenDataType *> &arg_types_by_slot,
-	    const std::vector<std::string> &arg_spellings,
+	    const std::vector<madc::dis::istring> &arg_spellings,
 	    const std::vector<std::vector<TokenBase *>> &arg_tokens_by_slot,
 	    const std::vector<bool> &param_is_type,
-	    std::map<std::string, TokenDataType *> &out_subst,
-	    std::map<std::string, std::string> &out_template_subst,
-	    std::map<std::string, std::vector<std::string> > &out_pack_subst,
-	    std::map<std::string, std::vector<TokenBase *> > &out_nontype_subst,
-	    const std::string &ns_hint, DataDefCLASS *owner_hint = NULL,
+	    std::map<madc::dis::istring, TokenDataType *> &out_subst,
+	    std::map<madc::dis::istring, madc::dis::istring> &out_template_subst,
+	    std::map<madc::dis::istring, std::vector<madc::dis::istring> > &out_pack_subst,
+	    std::map<madc::dis::istring, std::vector<TokenBase *> > &out_nontype_subst,
+	    const madc::dis::istring &ns_hint, DataDefCLASS *owner_hint = NULL,
 	    uint32_t name_id = 0);
     // Unify a nested template-id pattern arg (e.g. `allocator<_Tp>`) against a
     // concrete type spelling (e.g. `std::allocator<char>`), deducing the spec's
     // type params. Fallback used by match_partial_specialization when the flat
     // unifier cannot match a template-id-shaped pattern slot.
-    bool unify_nested_spec_pattern_arg(const std::string &pat_spelling,
-	    const std::vector<std::string> &spec_params,
-	    const std::string &concrete_spelling,
-	    std::map<std::string, DataDef *> &ded, int &score,
-	    std::map<std::string, std::string> *out_tmpl = NULL,
-	    std::map<std::string, std::vector<std::string> > *out_pack = NULL,
-	    std::map<std::string, std::vector<TokenBase *> > *out_nontype = NULL);
+    bool unify_nested_spec_pattern_arg(const madc::dis::istring &pat_spelling,
+	    const std::vector<madc::dis::istring> &spec_params,
+	    const madc::dis::istring &concrete_spelling,
+	    std::map<madc::dis::istring, DataDef *> &ded, int &score,
+	    std::map<madc::dis::istring, madc::dis::istring> *out_tmpl = NULL,
+	    std::map<madc::dis::istring, std::vector<madc::dis::istring> > *out_pack = NULL,
+	    std::map<madc::dis::istring, std::vector<TokenBase *> > *out_nontype = NULL);
     // Evaluate a `__void_t<Args...>` detection-idiom partial-spec slot: matches a
     // concrete void IFF every Arg (a `typename PARAM::member` dependent type) resolves
     // after substituting the already-deduced params. The SFINAE half of the std
@@ -4296,9 +4344,9 @@ public:
     // `decltype(EXPR)` arm — libc++'s spelling of the same idiom, which carries no
     // void_t wrapper to force void, so the probe's resolved type must be COMPARED
     // against the concrete arg rather than merely proven well-formed.
-    bool eval_void_t_detection_slot(const std::string &slot_spelling,
-	    const std::string &concrete_spelling,
-	    const std::map<std::string, DataDef *> &ded, int &score,
+    bool eval_void_t_detection_slot(const madc::dis::istring &slot_spelling,
+	    const madc::dis::istring &concrete_spelling,
+	    const std::map<madc::dis::istring, DataDef *> &ded, int &score,
 	    const std::vector<TokenBase *> *slot_tokens = NULL,
 	    DataDef *concrete_dd = NULL);
     // Evaluate the nth `decltype ( ... )` run inside a spec-pattern slot's
@@ -4306,7 +4354,7 @@ public:
     // `out_type` optionally receives the resolved type (the bare-decltype arm
     // needs the type itself, not just well-formedness).
     bool eval_decltype_probe_tokens(const std::vector<TokenBase *> &slot_tokens,
-	    size_t nth, const std::map<std::string, DataDef *> &ded,
+	    size_t nth, const std::map<madc::dis::istring, DataDef *> &ded,
 	    DataDef **out_type = NULL);
     // General non-deduced pattern slot ([temp.class.spec.match]/2): substitute
     // the deduced params into the WHOLE slot token run, resolve it as a type
@@ -4316,7 +4364,7 @@ public:
     // mentions no deduced name (the literal matchers own that case), when
     // resolution fails (SFINAE reject), or when it resolves to another type.
     bool eval_substituted_slot_type(const std::vector<TokenBase *> *slot_tokens,
-	    const std::map<std::string, DataDef *> &ded,
+	    const std::map<madc::dis::istring, DataDef *> &ded,
 	    DataDef *concrete_dd, int &score);
     // Confirm that a dependent member chain `BASE::seg1::seg2::...` (where some
     // seg names a TEMPLATE member, e.g. `rebind<_Up>`) resolves to a real type —
@@ -4324,8 +4372,8 @@ public:
     // Builds the qualified-id tokens with deduced params substituted and resolves
     // via resolve_typename_type_token in an isolated stream. True iff it resolves.
     bool confirm_dependent_member_type(DataDef *base,
-	    const std::vector<std::string> &segs,
-	    const std::map<std::string, DataDef *> &ded);
+	    const std::vector<madc::dis::istring> &segs,
+	    const std::map<madc::dis::istring, DataDef *> &ded);
     // Constant-fold ONE non-type template argument from its already-collected
     // token vector (+ spelling), WITHOUT touching the live token stream or
     // instantiating anything — a LOCAL cursor only. Recognizes manifest integer/
@@ -4333,7 +4381,7 @@ public:
     // `__is_same(A,B)`, …). Returns false (→ keep the spelling) for any form it
     // cannot fold with certainty (dependent / value-dependent / unsupported).
     bool fold_nontype_template_arg(const std::vector<TokenBase *> &argtoks,
-				   const std::string &spelling, int64_t &out);
+				   const madc::dis::istring &spelling, int64_t &out);
     // Evaluate a NON-dependent non-type template argument (a `<...>` slot that is
     // an integral/bool constant expression — `(1==1)`, `is_trivial<int>::value`,
     // `__is_bitwise_relocatable<T>::value` for concrete T) to its value via the
@@ -4353,8 +4401,8 @@ public:
     // key-build site routes through this so keys agree corpus-wide — the
     // canonical-forms discipline (docs/plans/2026-06-13-canonical-forms-on-mc11ir-sketch.md);
     // canonicalizing at only SOME sites shatters identity (the 202-regression).
-    std::string canonical_arg_key_fragment(const std::vector<TokenBase *> &argtoks,
-					   const std::string &spelling);
+    madc::dis::istring canonical_arg_key_fragment(const std::vector<TokenBase *> &argtoks,
+					   const madc::dis::istring &spelling);
     // Canonicalize ONE template-argument SPELLING to the form a use site
     // produces for the RESOLVED type (template_type_arg_spelling reads
     // canonical_cpp_spelling()); template-ids canonicalize their inner args
@@ -4362,17 +4410,17 @@ public:
     // of canonical_arg_key_fragment's one-key rule. Returns EMPTY unless
     // every part resolves concretely — a dependent spelling must keep its
     // raw fragment, never a context-dependent rewrite.
-    std::string canonical_template_arg_spelling(const std::string &spelling);
+    madc::dis::istring canonical_template_arg_spelling(const madc::dis::istring &spelling);
     struct TemplateAliasDef {
-	    std::vector<std::string> typeparams;
+	    std::vector<madc::dis::istring> typeparams;
 	    std::vector<std::vector<TokenBase *>> typeparam_defaults;
 	    std::vector<bool> typeparam_is_type;
 	    std::vector<bool> typeparam_is_pack;
 	    bool has_non_type_params;
-	    std::string alias_name;
+	    madc::dis::istring alias_name;
 	uint32_t registry_name_id;
 	std::vector<TokenBase *> target;
-	std::string defining_namespace;
+	madc::dis::istring defining_namespace;
 	DataDefCLASS *owner_class;
 	// task #25 B2: lazy payload source (see TemplateDef::frozen_src).
 	CirRestoredTemplate *frozen_src;
@@ -4409,7 +4457,7 @@ public:
 	class_nested_template_capture_t;
     class_nested_template_capture_t *class_pattern_nested_template_capture = NULL;
     void record_class_pattern_nested_template(DataDefCLASS *owner,
-	ClassNestedTemplateKind kind, const std::string &key,
+	ClassNestedTemplateKind kind, const madc::dis::istring &key,
 	bool partial_specialization = false);
     void record_class_pattern_nested_template(DataDefCLASS *owner,
 	ClassNestedTemplateKind kind, uint32_t name_id,
@@ -4420,10 +4468,10 @@ public:
     // `name<Arg>` resolves to its arg-substituted initializer expression (parsed
     // inline at the use site). Keyed by simple name AND `ns::name`.
     struct VarTemplateDef {
-	std::vector<std::string> typeparams;
+	std::vector<madc::dis::istring> typeparams;
 	std::vector<bool> typeparam_is_pack;    // parallel to typeparams; last may be a pack
 	std::vector<TokenBase *> init;          // tokens after '=' up to ';'
-	std::string defining_namespace;
+	madc::dis::istring defining_namespace;
     };
     madc::dis::intern_keyed_map<VarTemplateDef> var_template_map; // keyed via template_name_pool
     // C++20 CONCEPT: `template<...> concept Name = <constraint-expr>;`. madc does
@@ -4434,32 +4482,32 @@ public:
     // Until the evaluator lands this is storage-only (no behavior change). Keyed by
     // simple name AND `ns::name`.
     struct ConceptDef {
-	std::vector<std::string> typeparams;
+	std::vector<madc::dis::istring> typeparams;
 	std::vector<TokenBase *> constraint;    // tokens after '=' up to ';'
-	std::string defining_namespace;
+	madc::dis::istring defining_namespace;
     };
-    registration_map<std::string, ConceptDef> concept_map;
+    registration_map<madc::dis::istring, ConceptDef> concept_map;
     std::vector<TokenBase *> last_skipped_template_decl;
     // The SOURCE name of the tracked free-function overload parseDeclaration
     // is about to hand to parseFunction ("operator<"), stamped on the FuncDef
     // BEFORE its body parses (the hidden-friend access grant compares
     // display names mid-body). Cleared after the parseFunction call.
-    std::string pending_function_display_name;
+    madc::dis::istring pending_function_display_name;
     // The inst_key of the fn-template instantiation whose substituted decl is
     // being re-parsed (instantiate_fn_template_binding). parseFunction's
     // overload tracking folds it into the overload identity: two
     // specializations differing only in a non-type value (g<int,3> / g<int,7>)
     // share a parameter spelling but are distinct functions
     // ([temp.over.link]). Saved/restored around nested instantiations.
-    std::string pending_fn_instantiation_identity;
+    madc::dis::istring pending_fn_instantiation_identity;
     // C++ SYMBOL MANGLING phase 3b: the Itanium template-specialization symbol
     // of the product being instantiated (empty = not minted: library pattern,
     // packs / non-type params, member template) and the template's name the
     // product declaration must match — set by instantiate_fn_template_binding,
     // consumed by parseDeclaration's symbol arm (the one mint owner).
-    std::string pending_fn_instantiation_symbol;
-    std::string pending_fn_instantiation_symbol_name;
-    std::vector<std::string> last_skipped_template_typeparams;
+    madc::dis::istring pending_fn_instantiation_symbol;
+    madc::dis::istring pending_fn_instantiation_symbol_name;
+    std::vector<madc::dis::istring> last_skipped_template_typeparams;
     // Pack-ness of last_skipped_template_typeparams (parallel vector), so a
     // skipped member template's variadic typeparam (`typename... _Args`) is
     // preserved through register_skipped_class_template_function.
@@ -4491,11 +4539,11 @@ public:
     // the declaration (signature as spellings + the ordered template params)
     // so deduction + mangling are data-driven, never a stream-specific picker.
     struct FreeOperatorOverload {
-	std::string ns;                            // "std"
-	std::string opname;                        // "operator<<"
-	std::vector<std::string> template_params;  // ordered: $T0,$T1,…
-	std::string return_spelling;               // "basic_ostream<char,_Traits>&"
-	std::vector<std::string> param_spellings;  // {"basic_ostream<char,_Traits>&","const char*"}
+	madc::dis::istring ns;                            // "std"
+	madc::dis::istring opname;                        // "operator<<"
+	std::vector<madc::dis::istring> template_params;  // ordered: $T0,$T1,…
+	madc::dis::istring return_spelling;               // "basic_ostream<char,_Traits>&"
+	std::vector<madc::dis::istring> param_spellings;  // {"basic_ostream<char,_Traits>&","const char*"}
     };
     std::vector<FreeOperatorOverload> free_operator_overloads;
     // Named (non-operator) free-function template overloads captured from REAL
@@ -4523,13 +4571,13 @@ public:
 	Variable *var;
 	NamespaceFnOverload() : var(NULL) {}
 	FuncDef *funcdef() const;
-	const std::string &spelling() const;
-	const std::vector<std::string> &template_args() const;
+	const madc::dis::istring &spelling() const;
+	const std::vector<madc::dis::istring> &template_args() const;
 	// A function-template specialization (an instantiation product), not
 	// a declared function.
 	bool specialization() const;
     };
-    registration_map<std::string, std::vector<NamespaceFnOverload> >
+    registration_map<madc::dis::istring, std::vector<NamespaceFnOverload> >
 	namespace_fn_overload_sets;
     // Rank ns::name's parsed overloads against the call's arg types; returns
     // the winning Variable, or NULL when no set (or no viable overload) exists.
@@ -4556,13 +4604,13 @@ public:
     // `categories` (optional, index-aligned): each argument's value category
     // (argument_value_category) — a reference parameter's binding reads it;
     // NULL ranks every argument Unknown.
-    Variable *find_namespace_function_overload(const std::string &ns,
-					       const std::string &name,
+    Variable *find_namespace_function_overload(const madc::dis::istring &ns,
+					       const madc::dis::istring &name,
 					       const std::vector<const DataDef *> &argtypes,
 					       const std::vector<bool> *zero_args = NULL,
 					       const std::vector<DataDef *> *explicit_template_args = NULL,
 					       bool *strict_no_viable = NULL,
-					       std::string *ambiguity = NULL,
+					       madc::dis::istring *ambiguity = NULL,
 					       const FnTemplateDeduction *deduction = NULL,
 					       const std::vector<ArgValueCategory> *categories = NULL);
     // A parsed CONCRETE free-operator function viable for the operand types:
@@ -4570,7 +4618,7 @@ public:
     // namespaces + the global "" key). NULL when none binds. `zero_args`
     // (optional, index-aligned) marks integer-literal-zero arguments
     // (null-pointer constants).
-    Variable *find_free_operator_function(const std::string &opname,
+    Variable *find_free_operator_function(const madc::dis::istring &opname,
 					  const std::vector<const DataDef *> &argtypes,
 					  const std::vector<bool> *zero_args = NULL);
     // The DataDef an operand denotes for free-operator overload ranking
@@ -4591,7 +4639,7 @@ public:
     // lifetime model as last_skipped_template_decl) and cloned per
     // instantiation.
     struct FnTemplateDef {
-	std::vector<std::string> typeparams;
+	std::vector<madc::dis::istring> typeparams;
 	std::vector<std::vector<TokenBase *>> typeparam_defaults;
 	// Per-parameter constraint-TYPE token runs (parallel to typeparams;
 	// an empty run = unconstrained). Captured for a NON-TYPE parameter
@@ -4603,8 +4651,8 @@ public:
 	std::vector<bool> typeparam_is_type;
 	std::vector<bool> typeparam_is_pack;
 	std::vector<TokenBase *> decl;
-	std::string ns;
-	std::string inline_builtin_kind;
+	madc::dis::istring ns;
+	madc::dis::istring inline_builtin_kind;
 	// Owner class for a MEMBER function template being instantiated: pushed
 	// on class_scope_stack during the body parse so the params/body resolve
 	// class-scope members ([basic.scope.class]). NULL for free/namespace fn
@@ -4624,13 +4672,13 @@ public:
 	// on that name lets two call SHAPES that resolve to the SAME binding
 	// mint duplicate definitions — g++ has one instantiation per
 	// (template, binding). Set to the placeholder's stable symbol.
-	std::string inst_identity;
+	madc::dis::istring inst_identity;
 	// When non-empty, a FRESH instantiation's declarator is named
 	// instance_overload_symbol(inst_name_base, <memo identity>) — the
 	// specialization's identity, so every request that reaches it (another
 	// call shape, another TU, a forest consumer binding the producer's
 	// frozen instance) names it alike. Empty: the caller's declarator name.
-	std::string inst_name_base;
+	madc::dis::istring inst_name_base;
 	// task #25 B2: lazy payload source (see TemplateDef::frozen_src).
 	CirRestoredTemplate *frozen_src;
 	CirFrozenForest *frozen_src_forest;
@@ -4651,7 +4699,7 @@ public:
     // fn_template_map.
     struct FnTemplateOrderingSignature {
 	bool ok = false;	// the declaration yielded a parameter list
-	std::vector<std::vector<std::string> > param_words;
+	std::vector<std::vector<madc::dis::istring> > param_words;
     };
     struct TokenSequenceHash {
 	size_t operator()(const std::vector<TokenBase *> &v) const
@@ -4678,13 +4726,13 @@ public:
     // hand (count_queued_call_arguments' template-argument-comma gate). Built
     // lazily from the map keys on first query; the two registration sites add
     // names incrementally, a transaction rollback invalidates.
-    std::set<std::string> fn_template_bare_names;
+    std::set<madc::dis::istring> fn_template_bare_names;
     bool fn_template_bare_names_valid = false;
-    bool fn_template_name_declared(const std::string &name);
+    bool fn_template_name_declared(const madc::dis::istring &name);
     // task #25 B2 thaw owners, fn lanes: find + thaw every def of the key.
     void thaw_fn_def(FnTemplateDef &fd);
-    std::vector<FnTemplateDef> *thawed_fn_templates(const std::string &key);
-    std::vector<FnTemplateDef> *thawed_fn_template_decls(const std::string &key);
+    std::vector<FnTemplateDef> *thawed_fn_templates(const madc::dis::istring &key);
+    std::vector<FnTemplateDef> *thawed_fn_template_decls(const madc::dis::istring &key);
     // task #25 B3: free-overload surface recaptures (free_operator_overloads /
     // manipulator / free_function_overloads signature tables) deferred at
     // restore — the derivation needs the decl tokens. Flushed one-shot by
@@ -4699,7 +4747,7 @@ public:
     std::vector<PendingOverloadRecapture> forest_pending_overload_recaptures;
     size_t forest_overload_recaptures_flushed = 0;	// first un-flushed index
     void ensure_free_overload_surfaces();
-    registration_set<std::string> fn_template_instantiated; // "ns::name<t1,t2,...>" memo
+    registration_set<madc::dis::istring> fn_template_instantiated; // "ns::name<t1,t2,...>" memo
     // inst_key -> the overload Variable that instantiation registered, so an
     // operator USE site can call the instantiated definition directly.
     madc::dis::intern_keyed_map<Variable *> fn_template_instantiated_vars; // keyed via template_name_pool
@@ -4708,7 +4756,7 @@ public:
     // body parse must NOT treat the missing var as a stale memo and erase the
     // guard — that re-enters the instantiation unboundedly (same-set siblings:
     // variadic_inst_in_progress, member_fn_inst_in_progress).
-    std::set<std::string> fn_template_inst_in_progress;
+    std::set<madc::dis::istring> fn_template_inst_in_progress;
     // > 0 while re-parsing an instantiated function-template body (nesting =
     // instantiation triggering instantiation). static_asserts inside such a
     // body are consumed unevaluated, exactly like instantiated class-template
@@ -4768,7 +4816,7 @@ public:
     // Class-template real-instantiations in flight, keyed by mangled name. Re-entering
     // the same key while variadic_real_inst_sticky is on returns the opaque placeholder
     // instead of recursing — the recursion bound for the sticky forwarding-trait path.
-    std::set<std::string> variadic_inst_in_progress;
+    std::set<madc::dis::istring> variadic_inst_in_progress;
     // Class instantiations in flight — BOTH lanes (pattern serve AND legacy
     // body re-parse) — keyed by registered mangled name. A cyclic dependency
     // web, or a template whose base clause names its own specialization as a
@@ -4777,7 +4825,7 @@ public:
     // mid-flight; the re-entry returns the early-registered incomplete shell
     // instead of recursing. The re-parse lane going unguarded was a stack
     // overflow on `#include <string>` under -stdlib=libc++.
-    std::set<std::string> class_inst_in_progress;
+    std::set<madc::dis::istring> class_inst_in_progress;
     // Registry identities parallel to the keyed guards above. The exact key
     // bounds one specialization; this stack identifies an indirect use of
     // another specialization of the template whose body is being parsed.
@@ -4788,7 +4836,7 @@ public:
     // parser, which can reach f again; keyed on name AND argument types so
     // that legitimate per-level recursion (each level a different T)
     // proceeds and only a true cycle is cut.
-    std::set<std::string> fn_template_return_in_progress;
+    std::set<madc::dis::istring> fn_template_return_in_progress;
     // The compound depth each in-flight class instantiation's body started at
     // (ClassInstInFlightGuard, both lanes): the innermost entry equal to the
     // live depth means the parse is in that body's own declarative region,
@@ -4808,7 +4856,7 @@ public:
     // __list_node_pointer_traits was mid-parse). A class or function body
     // parse and every demand replay run at depth 0 (TemplateArgReplayScope).
     size_t template_arg_resolve_depth = 0;
-    std::vector<std::string> deferred_arg_instantiations;
+    std::vector<madc::dis::istring> deferred_arg_instantiations;
     struct TemplateArgResolveScope {
 	Program &pgm;
 	TemplateArgResolveScope(Program &p) : pgm(p)
@@ -4856,19 +4904,19 @@ public:
     // (class_completion_demand); so does the argument's own definition
     // (complete_shells_awaiting) — the point from which eager instantiation
     // builds the same class.
-    std::map<std::string, std::vector<std::string> > shells_awaiting_argument;
+    std::map<madc::dis::istring, std::vector<madc::dis::istring> > shells_awaiting_argument;
     DataDefCLASS *awaited_class_argument(const std::vector<TokenDataType *> &args) const;
-    void complete_shells_awaiting(const std::string &completed_class);
+    void complete_shells_awaiting(const madc::dis::istring &completed_class);
     // The shell a completeness demand is completing right now
     // (request_template_instantiation_completion, complete_shell_class_type):
     // the one template-id instantiate_template_use instantiates even while an
     // argument awaits its definition. Keyed, not a flag, so the template-ids
     // its instantiation names keep their own rule.
-    std::string class_completion_demand;
+    madc::dis::istring class_completion_demand;
     struct CompletionDemandScope {
 	Program &pgm;
-	std::string saved;
-	CompletionDemandScope(Program &p, const std::string &shell)
+	madc::dis::istring saved;
+	CompletionDemandScope(Program &p, const madc::dis::istring &shell)
 	    : pgm(p), saved(p.class_completion_demand)
 	{ pgm.class_completion_demand = shell; }
 	~CompletionDemandScope() { pgm.class_completion_demand = saved; }
@@ -4878,18 +4926,18 @@ public:
     // reachable because variadic members really instantiate) — it short-circuits to
     // the opaque placeholder instead of recursing into a stack overflow. A genuine
     // (acyclic) deep nest uses distinct keys and resolves normally.
-    std::set<std::string> alias_resolve_in_progress;
+    std::set<madc::dis::istring> alias_resolve_in_progress;
     // Member-fn-template instantiations currently in flight, keyed by LOGICAL identity
     // (owner + fn name + arg-type spellings), NOT call site. Breaks the allocator
     // trait cycle construct -> _S_construct -> __has_construct -> __test -> construct:
     // re-entering the same logical instantiation returns early (the body completes in
     // the outer frame) instead of recursing into a stack overflow. Call-site keying
     // (tc->var.name) can't catch this — each cycle hop is a distinct call site.
-    std::set<std::string> member_fn_inst_in_progress;
+    std::set<madc::dis::istring> member_fn_inst_in_progress;
     // Memoize member-ctor-template instantiations (keyed class + arg-type
     // spellings) so a repeated construction shape instantiates the ctor once;
     // doubles as the recursion guard for the construct -> forward -> construct chain.
-    std::set<std::string> member_ctor_inst_done;
+    std::set<madc::dis::istring> member_ctor_inst_done;
     // Dependent-pattern builds currently in flight. A dependent parse triggered
     // FROM a pattern build (e.g. a delegating mem-init constructing the ctor's
     // own class) must not re-enter the SAME fd's pattern build —
@@ -4930,7 +4978,7 @@ public:
     // call-lane twin of member_ctor_inst_done (which memoizes but needs no
     // symbol map — ctor instances register into cdd->ctors and re-select per
     // construction).
-    std::map<std::string, std::string> member_fn_inst_names;
+    std::map<madc::dis::istring, madc::dis::istring> member_fn_inst_names;
     // A member-template CONSTRUCTOR whose parameters use the template pack
     // (`template<class... A> C(B&, A&&...)`, e.g. libstdc++'s _Rb_tree::_Auto_node)
     // is registered declaration-only as a ctor (register_skipped_class_template_function)
@@ -4969,7 +5017,7 @@ public:
     // retained template with that exact signature is instantiated (one
     // [over.match.best] decision, not a second registration-order walk);
     // NULL = no ranked winner, this lane's own candidate walk applies.
-    DataDef *instantiate_free_operator_template(const std::string &opname,
+    DataDef *instantiate_free_operator_template(const madc::dis::istring &opname,
 						TokenBase *lhs, TokenBase *rhs,
 						Variable **callee_out,
 						const FreeOperatorOverload *want = NULL);
@@ -4987,7 +5035,7 @@ public:
     // "operator*" for build_indirection); the TokenOperator form reads a
     // prefix / postfix / unary token's operand.
     TokenBase *free_unary_operator_call(TokenBase *operand,
-					const std::string &opname,
+					const madc::dis::istring &opname,
 					bool postfix, TokenBase *at);
     TokenBase *lower_free_unary_operator_to_call(class TokenOperator *to);
     // C++20 rewritten candidates ([over.match.oper]): != via ==, reversed
@@ -5003,14 +5051,14 @@ public:
     // as a value token (storage-backed TokenVar for object-typed statics,
     // folded constant for scalars). NULL when no such static member.
     TokenBase *class_static_member_value_token(DataDefCLASS *scope,
-						const std::string &member,
+						const madc::dis::istring &member,
 						TokenBase *at);
     // Namespaces named by `using namespace X;` directives (C++
     // [namespace.udir]). The single-Variable import model skips a member
     // whose name a global already claimed; unqualified CALL resolution
     // consults these to bind the namespace overload when the global's arity
     // rejects the call (using_namespace_call_fallback).
-    std::vector<std::string> active_using_namespaces;
+    std::vector<madc::dis::istring> active_using_namespaces;
     Variable *using_namespace_call_fallback(Variable *var, size_t argc);
     bool is_using_directive_import_alias(Variable *v) const;
     // Parse an explicit template-argument list after a resolved function name
@@ -5022,13 +5070,13 @@ public:
     // Record (then push back) the upcoming balanced parameter-list tokens —
     // the parser sits just after the function declarator's '(' — returning a
     // normalized spelling used as the overload-identity key.
-    std::string peek_param_list_spelling();
+    madc::dis::istring peek_param_list_spelling();
     struct PendingTemplateInstantiation {
-	std::string mangled_name;
-	std::string canonical_spelling;
+	madc::dis::istring mangled_name;
+	madc::dis::istring canonical_spelling;
 	std::vector<TokenDataType *> args;
     };
-    registration_map<std::string, std::vector<PendingTemplateInstantiation> >
+    registration_map<madc::dis::istring, std::vector<PendingTemplateInstantiation> >
 	pending_template_instantiations;
     // Template-origin structure for a DEPENDENT template-id placeholder shell
     // (`tuple<_Args1...>`, `_Index_tuple<__integer_pack(sizeof...(_Args1))...>`),
@@ -5039,11 +5087,11 @@ public:
     // shell DataDef; arg token runs are clones (structural type tokens, not
     // source text).
     struct DependentShellOrigin {
-	std::string tname;			// class-template name (template map key)
+	madc::dis::istring tname;			// class-template name (template map key)
 	uint32_t registry_name_id = 0;
-	std::string defining_namespace;
+	madc::dis::istring defining_namespace;
 	DataDefCLASS *owner_class = NULL;
-	std::vector<std::string> arg_spellings;
+	std::vector<madc::dis::istring> arg_spellings;
 	std::vector<std::vector<TokenBase *>> raw_arg_tokens;
     };
     registration_map<DataDef *, DependentShellOrigin> dependent_shell_origin;
@@ -5059,16 +5107,16 @@ public:
     struct DependentDerivedOrigin {
 	DataDef *source = NULL;
 	enum Kind { Deref, MemberType } kind = Deref;
-	std::string member;			// MemberType only
+	madc::dis::istring member;			// MemberType only
 	bool member_is_template = false;		// MemberType only; preserves member<>
 	std::vector<std::vector<TokenBase *> > raw_arg_tokens;
     };
     registration_map<DataDef *, DependentDerivedOrigin> dependent_derived_origin;
     // Thin public accessor over the class-scope member-type lookup
     // (type_aliases + bases + enclosing walk) for the tsubst re-derivation.
-    static DataDef *class_member_type(DataDefCLASS *cls, const std::string &name);
-    registration_set<std::string> template_completion_requested; // mangled aliases awaiting completion
-    std::set<std::string> template_instantiated;           // mangled names done
+    static DataDef *class_member_type(DataDefCLASS *cls, const madc::dis::istring &name);
+    registration_set<madc::dis::istring> template_completion_requested; // mangled aliases awaiting completion
+    std::set<madc::dis::istring> template_instantiated;           // mangled names done
     std::vector<DataDefCLASS *> class_scope_stack;	// active C++ class scopes for nested type lookup
     // Data-only aggregates whose BODY is open (TokenSTRUCT::parse and its
     // nested-body lambda push/pop them): a tag declared inside one is that
@@ -5079,10 +5127,10 @@ public:
     // The struct tag visible HERE for a bare name: function scope, the open
     // data-only aggregates innermost->outermost, the class owner, then the
     // flat registration. ONE owner for every bare-tag lookup.
-    datadef_map_citer find_visible_struct_tag(const std::string &name);
-    std::string key_nested_aggregate(DataDefSTRUCT *nested, const std::string &tag,
-				     const std::string &owner_name,
-				     const std::string &owner_spelling);
+    datadef_map_citer find_visible_struct_tag(const madc::dis::istring &name);
+    madc::dis::istring key_nested_aggregate(DataDefSTRUCT *nested, const madc::dis::istring &tag,
+				     const madc::dis::istring &owner_name,
+				     const madc::dis::istring &owner_spelling);
     // An isolated definition-context type resolve (member-template defaults /
     // constraints) must outrank the ambient method owner. Both remain live
     // while a callee's SFINAE is evaluated from inside a caller method, so a
@@ -5118,7 +5166,7 @@ public:
     // Computed symbol -> full source identity. Repeated parses of the same
     // definition are allowed; two distinct definitions minting one symbol are
     // a hard collision rather than a counter-based silent uniquification.
-    registration_map<std::string, std::string> hoisted_symbol_identity_keys;
+    registration_map<madc::dis::istring, madc::dis::istring> hoisted_symbol_identity_keys;
     // Scoped template-parameter registry (two-tree Phase 2 / 2a). A stack of
     // {param-name -> DataDefTemplateParam*} frames, pushed (via TemplateParamScope)
     // for the duration of a DEPENDENT template-body parse so a bare `T` resolves to
@@ -5128,7 +5176,7 @@ public:
     // byte-identical until 2a pushes a frame. Placeholders are owned by
     // template_param_pool (Program lifetime, same never-freed-on-exit convention as
     // ptr_type_cache) so a Tree-1 pattern referencing one outlives the per-TU frame.
-    std::vector<std::map<std::string, DataDef *>> template_param_scopes;
+    std::vector<std::map<madc::dis::istring, DataDef *>> template_param_scopes;
     std::vector<DataDefTemplateParam *> template_param_pool;
     // The parameter lists of every TokenTEMPLATE::parse in flight (innermost
     // last) — the head, base clause and body CAPTURE run before any
@@ -5140,8 +5188,8 @@ public:
     std::vector<const std::vector<bool> *> template_param_scope_types;
     enum class TemplateParamKind { None, Type, Value, TemplateTemplate,
 				   ValueOrTemplate };
-    TemplateParamKind scan_template_param_kind(const std::string &name) const;
-    bool scan_name_is_template_param(const std::string &name) const;
+    TemplateParamKind scan_template_param_kind(const madc::dis::istring &name) const;
+    bool scan_name_is_template_param(const madc::dis::istring &name) const;
     struct ScanTemplateParams {
 	Program &pgm;
 	ScanTemplateParams(Program &p, const ParsedTemplateParameterList &list)
@@ -5159,18 +5207,18 @@ public:
     // the expression parser's class-qualified name site. Defined in parser.cpp
     // beside the template-parameter kind query.
     enum class LtReading { Opens, LessThan, Unknown };
-    LtReading class_member_lt_reading(DataDefCLASS *owner, const std::string &name);
-    LtReading unqualified_name_lt_reading(const std::string &name);
+    LtReading class_member_lt_reading(DataDefCLASS *owner, const madc::dis::istring &name);
+    LtReading unqualified_name_lt_reading(const madc::dis::istring &name);
     // A qualifier token that is a DEPENDENT scope (a template parameter by
     // name or typed placeholder, a dependent placeholder class).
     bool scan_qualifier_is_dependent(TokenBase *tok) const;
     // The concrete class a `q0::q1::...::` chain (root first) denotes, or NULL.
     DataDefCLASS *scan_resolve_qualifier_chain(const std::vector<TokenBase *> &root_first);
     // get-or-create a placeholder for parameter `name` at 0-based `index`.
-    DataDefTemplateParam *intern_template_param(const std::string &name, unsigned index);
+    DataDefTemplateParam *intern_template_param(const madc::dis::istring &name, unsigned index);
     // resolve `name` to an active template-parameter placeholder, innermost frame
     // first; NULL if no frame is active or the name is not a parameter.
-    DataDef *resolve_template_param(const std::string &name);
+    DataDef *resolve_template_param(const madc::dis::istring &name);
     // Two-tree Phase 2 — TRUE while build_dependent_pattern is parsing a dependent
     // body. The template-instantiation entry points bail when this is set, so a
     // param-dependent call/construction in the body is left DEPENDENT (bound to its
@@ -5201,7 +5249,7 @@ public:
     // function with this id (marking fd->tsubst_body_skipped); name-keying
     // means parses nested under the signature / SFINAE / mem-init machinery
     // never misfire. Empty == no skip armed.
-    std::string tsubst_skip_body_name;
+    madc::dis::istring tsubst_skip_body_name;
     // Two-tree Phase 2: capability predicate — true only for the conservative
     // first-slice shape the dependent-parse / tsubst path handles (one TYPE param,
     // no pack, NON-DEPENDENT return, body uses `T` only in scalar positions). False
@@ -5217,14 +5265,14 @@ public:
     // silently mis-parsed at arity >= 2).
     // A STACK because instantiations nest; lookup runs innermost -> outermost so
     // an inner template's own pack shadows an enclosing one of the same name.
-    std::vector<std::map<std::string, size_t> > pack_arity_scopes;
+    std::vector<std::map<madc::dis::istring, size_t> > pack_arity_scopes;
     void push_pack_arity_scope()
-	{ pack_arity_scopes.push_back(std::map<std::string, size_t>()); }
+	{ pack_arity_scopes.push_back(std::map<madc::dis::istring, size_t>()); }
     void pop_pack_arity_scope()
 	{ if ( !pack_arity_scopes.empty() ) pack_arity_scopes.pop_back(); }
-    void publish_pack_arity(const std::string &n, size_t c)
+    void publish_pack_arity(const madc::dis::istring &n, size_t c)
 	{ if ( !pack_arity_scopes.empty() ) pack_arity_scopes.back()[n] = c; }
-    bool lookup_pack_arity(const std::string &n, size_t &out) const;
+    bool lookup_pack_arity(const madc::dis::istring &n, size_t &out) const;
     // RAII: an instantiation body parse can throw (SFINAE probes do it routinely),
     // and a leaked scope would make a later sizeof...(P) resolve against a dead
     // binding instead of failing.
@@ -5257,7 +5305,7 @@ public:
     DataDefCLASS *materialize_pattern_local_class(FuncDef *source,
 						  DataDefCLASS *pattern_class,
 						  DataDefCLASS *owner,
-						  const std::string &enclosing_symbol);
+						  const madc::dis::istring &enclosing_symbol);
     registration_map<DataDef *, DataDef *> ptr_type_cache; // cached pointer-to-T DataDefs (a fn type's twin included)
     // the ANONYMOUS vector types the parser mints (an inline vector_size cast
     // or declaration attribute, a vector comparison's result), one DataDefSIMD
@@ -5272,7 +5320,7 @@ public:
     variable_map_t literal_map;		// string literals
     namespace_map_t namespace_map;	// namespace registries (std::, etc.)
     namespace_datatype_map_t namespace_datatype_map; // namespace-owned type names
-    std::map<std::string, std::vector<std::string>> inline_namespace_children;
+    std::map<madc::dis::istring, std::vector<madc::dis::istring>> inline_namespace_children;
     // namespace-alias-definitions ([namespace.alias]): "scope::alias" (the
     // alias's own qualified key; bare at global scope) -> the CANONICAL target
     // namespace. Read FIRST by canonical_nested_namespace, the one existence
@@ -5282,15 +5330,15 @@ public:
     // clang: NamespaceAliasDecl::getNamespace). Parse-time Program state, one
     // per Program (the inline_namespace_children contract); transported by the
     // forest pack as DK_NSALIAS records.
-    std::map<std::string, std::string> namespace_aliases;
+    std::map<madc::dis::istring, madc::dis::istring> namespace_aliases;
     // Lexical namespace context. Each entry is the FULL active namespace
     // ("std::__cxx11"); back() is the active one (empty stack = global scope).
     // The idiomatic twin of class_scope_stack: a vector (not std::stack) so
     // the enclosing-chain walk stays possible. Mutate ONLY via NamespaceScope.
-    std::vector<std::string> namespace_stack;
-    const std::string &current_namespace() const
+    std::vector<madc::dis::istring> namespace_stack;
+    const madc::dis::istring &current_namespace() const
     {
-	static const std::string global_scope;
+	static const madc::dis::istring global_scope;
 	return namespace_stack.empty() ? global_scope : namespace_stack.back();
     }
     // RAII guard for namespace_stack — exception-safe by construction.
@@ -5300,7 +5348,7 @@ public:
 	NamespaceScope(const NamespaceScope &);
 	NamespaceScope &operator=(const NamespaceScope &);
     public:
-	NamespaceScope(Program &p, const std::string &ns) : pgm(p)
+	NamespaceScope(Program &p, const madc::dis::istring &ns) : pgm(p)
 	{ pgm.namespace_stack.push_back(ns); }
 	~NamespaceScope() { pgm.namespace_stack.pop_back(); }
     };
@@ -5316,10 +5364,10 @@ public:
 	// `is_type` (parallel to names, the pusher's typeparam_is_type) lets
 	// scan_template_param_kind tell a type parameter from a value / template
 	// template one inside the frame; NULL records no kinds.
-	TemplateParamScope(Program &p, const std::vector<std::string> &names,
+	TemplateParamScope(Program &p, const std::vector<madc::dis::istring> &names,
 			   const std::vector<bool> *is_type = NULL) : pgm(p)
 	{
-	    std::map<std::string, DataDef *> frame;
+	    std::map<madc::dis::istring, DataDef *> frame;
 	    for ( size_t i = 0; i < names.size(); ++i )
 		if ( !names[i].empty() )
 		    frame[names[i]] = pgm.intern_template_param(names[i], (unsigned)i);
@@ -5336,7 +5384,7 @@ public:
     // stashed by instantiate_template_use around the class re-parse so
     // TokenCLASS::parse can record it on the new DataDefCLASS for bodyless C++
     // method binding.
-    std::string instantiating_canonical_spelling;
+    madc::dis::istring instantiating_canonical_spelling;
     // The spelling above belongs ONLY to the class the instantiation is
     // creating — a top-level (class-scope) definition. A class/struct defined
     // at FUNCTION-LOCAL (block) scope while the flag is set is a LOCAL class
@@ -5347,26 +5395,26 @@ public:
     { return !instantiating_canonical_spelling.empty() && compounds.empty(); }
     bool instantiating_dependent_surface;
     bool parsing_defaulted_member_template_constructor;
-    std::vector<std::string> namespace_preference; // ordered namespace lookup; "c" means normal lexical/global resolution
-    std::map<std::string, void *> dlopen_map;	// dlopen handles for loaded libraries
+    std::vector<madc::dis::istring> namespace_preference; // ordered namespace lookup; "c" means normal lexical/global resolution
+    std::map<madc::dis::istring, void *> dlopen_map;	// dlopen handles for loaded libraries
     // import/#load: namespace -> the TARGET library spelling it is bound to
     // (what the alias-form call lowering passes to __madc_dl_member; the
     // member resolves at run time in every lane, so no per-link address
     // table exists any more).
-    std::map<std::string, std::string> dl_library_spelling;
-    std::vector<std::string> loaded_lib_paths;	// library names actually dlopen'd
+    std::map<madc::dis::istring, madc::dis::istring> dl_library_spelling;
+    std::vector<madc::dis::istring> loaded_lib_paths;	// library names actually dlopen'd
 						// (#load / -l) — the link-environment
 						// closure a frozen forest re-loads
     // import (module form): the TARGET spellings of the modules whose library
     // must join a native artifact's link closure (DT_NEEDED / load command /
     // PE import); madc.cpp appends them to the link line after the parse. The
     // alias form resolves at run time and never lands here.
-    std::vector<std::string> module_link_libs;
+    std::vector<madc::dis::istring> module_link_libs;
     // LAZY module rows this TU imported (the interface form): not linked,
     // not opened at parse — recorded so the object's module list can carry
     // them as OPTIONAL entries (the loader lifts the guard for a GUI row and
     // opens what it can without failing).
-    std::vector<std::string> module_optional_libs;
+    std::vector<madc::dis::istring> module_optional_libs;
     // A module row flagged MADC_MODULE_GUI was bound by this TU (`import
     // madcwebview;`): the driver lifts an armed memory guard before running.
     bool bound_gui_module;
@@ -5377,8 +5425,8 @@ public:
     // a prototype's own `;` token — a token-identity fact, so the auto-
     // include injector's later reordering of the stream cannot move a
     // fragment INTO the range (a time-based marker did exactly that).
-    std::string lazy_module_spelling;
-    std::unordered_map<const TokenBase *, std::string> _lazy_module_tokens;
+    madc::dis::istring lazy_module_spelling;
+    std::unordered_map<const TokenBase *, madc::dis::istring> _lazy_module_tokens;
     // function-like macro definitions: #define NAME(params) body
     struct MacroDef {
 	struct ReplacementToken {
@@ -5389,43 +5437,46 @@ public:
 	    Kind kind;
 	    size_t begin;
 	    size_t end;
+	    // An identifier of a cached macro BODY, interned once with the
+	    // body's tokens (empty otherwise): parameter matches compare it.
+	    madc::dis::istring ident;
 	    ReplacementToken(Kind k, size_t b, size_t e)
 		: kind(k), begin(b), end(e) {}
 	};
-	std::vector<std::string> params;  // parameter names
+	std::vector<madc::dis::istring> params;  // parameter names
 	bool variadic = false;           // trailing ... / __VA_ARGS__
-	std::string variadic_param;       // GNU named varargs parameter (`args...`)
+	madc::dis::istring variadic_param;       // GNU named varargs parameter (`args...`)
 	std::string body;                 // body template with param names as placeholders
 	// Lexer-private lazy cache. The spelling mirror makes direct body writes
 	// and forest thaw self-invalidating without widening the wire format.
-	mutable std::string replacement_tokens_for;
+	mutable std::string replacement_tokens_for;	// the body text the cache was built from
 	mutable std::vector<ReplacementToken> replacement_tokens;
     };
     madc::dis::intern_keyed_map<MacroDef> macro_map;	// function-like macros (key = interned spelling-id)
     enum LazyKind { lkVariable = 1, lkFunction = 2, lkType = 3, lkStruct = 4 };
     struct LazyEntry { int header; LazyKind kind; };
-    std::map<std::string, LazyEntry> lazy_map;	// deferred symbol registration
+    std::map<madc::dis::istring, LazyEntry> lazy_map;	// deferred symbol registration
     madc::dis::intern_keyed_map<std::string> define_map;	// #define name value (key = interned spelling-id)
-    std::set<std::string> disabled_builtin_names;	// -fno-builtin-foo from CLI/tests
-    std::map<std::string, std::stack<std::string>> _macro_save_stack; // #pragma push_macro / pop_macro
-    std::vector<std::string> include_paths;	// -I include search paths (for #include "file.h")
-    std::vector<std::pair<std::string,std::string>> cli_defines;	// -DNAME[=VALUE] command-line defines (applied after builtins)
+    std::set<madc::dis::istring> disabled_builtin_names;	// -fno-builtin-foo from CLI/tests
+    std::map<madc::dis::istring, std::stack<madc::dis::istring>> _macro_save_stack; // #pragma push_macro / pop_macro
+    std::vector<madc::dis::istring> include_paths;	// -I include search paths (for #include "file.h")
+    std::vector<std::pair<madc::dis::istring,madc::dis::istring>> cli_defines;	// -DNAME[=VALUE] command-line defines (applied after builtins)
     // Selected C++ standard library flavor (-stdlib=), NULL = the build's
     // default. It picks a WHOLE generated search list, never a prefix — see
     // include/madc_sys_includes.h. Orthogonal to the target/object format: a
     // Mach-O target defaults to libc++, it never MEANS libc++.
     const madc_stdlib_flavor *stdlib_flavor = NULL;
-    mutable std::vector<std::string> _canon_prefixes;		// cache: see sys_include_prefixes_canonical()
+    mutable std::vector<madc::dis::istring> _canon_prefixes;		// cache: see sys_include_prefixes_canonical()
     mutable const madc_stdlib_flavor *_canon_prefix_flavor = NULL;
     mutable std::vector<const char *> _toolchain_paths;		// cache: see sys_include_paths() (enable_sysroot_includes == false)
     mutable const madc_stdlib_flavor *_toolchain_paths_flavor = NULL;
     void add_include_dir(const std::string &dir);	// normalize (trailing '/') + append to include_paths
     void add_cli_define(const std::string &def);	// split NAME[=VALUE] (bare => "1") into cli_defines
-    std::map<std::string, bool> included_files;	// #include files already tokenized (require_once semantics)
+    std::map<madc::dis::istring, bool> included_files;	// #include files already tokenized (require_once semantics)
     // realpath -> detected include-guard macro ("" = guard-less, always
     // re-tokenize). Drives gcc's multiple-include optimization in
     // should_tokenize_include.
-    std::map<std::string, std::string> include_guard_by_file;
+    std::map<madc::dis::istring, madc::dis::istring> include_guard_by_file;
     std::stack<bool> ifdef_stack;	// conditional compilation state stack
     // One OPEN conditional group (#if / #ifdef / #ifndef ... #endif), pushed
     // at its opening directive and popped at its #endif: whether a branch has
@@ -5453,7 +5504,7 @@ public:
     // no-ops when the flag is off, so default lexing/parsing is unchanged.
     struct PackMacroEvent {		// one PP-export delta, in directive order
 	enum : uint8_t { peDefine = 0, peDefineFn = 1, peUndef = 2 };
-	std::string name;
+	madc::dis::istring name;
 	uint8_t     tag;
 	std::string value;		// object-like body (peDefine)
 	MacroDef    macro;		// function-like payload (peDefineFn)
@@ -5467,7 +5518,7 @@ public:
 	PACK_DECL_FUZZY_BOUNDS = 2u	// stream pushback was non-empty at a boundary
     };
     struct PackDeclEntry {
-	std::string name;		// exported (namespace-qualified) name
+	madc::dis::istring name;		// exported (namespace-qualified) name
 	uint32_t    kind;		// PackDeclKind
 	uint32_t    begin, end;		// GLOBAL token-stream indices [begin,end)
 	uint32_t    aux;		// PACK_DECL_* flags
@@ -5475,7 +5526,7 @@ public:
     struct PackDeclFrame {		// one in-flight top-level decl parse
 	size_t begin;			// stream cursor at open
 	bool   fuzzy;			// pushback non-empty at open
-	std::vector<std::pair<std::string, uint32_t> > names; // (name, kind)
+	std::vector<std::pair<madc::dis::istring, uint32_t> > names; // (name, kind)
     };
     bool pack_recording = false;
     bool class_registration_taps_muted = false;
@@ -5483,7 +5534,7 @@ public:
     std::set<const char *> pack_units_seen;
     std::map<const char *, std::vector<PackMacroEvent> > pack_pp_exports; // unit -> ordered deltas
     std::map<const char *, std::vector<const char *> > pack_unit_edges;   // includer -> includees, in order
-    std::set<std::string> pack_branch_macros;	// names PP conditionals consulted
+    std::set<madc::dis::istring> pack_branch_macros;	// names PP conditionals consulted
     // v40 (task #57): per-unit EXTERNAL branch dependencies — a PP-conditional
     // consult whose macro state was established OUTSIDE the current top-level
     // include's closure (an earlier sibling's #define, or undefined). Bind
@@ -5493,7 +5544,7 @@ public:
     // state (defined, no recorded origin root) is pinned by the v27 config
     // word and skipped too.
     struct PackBranchDep {
-	std::string name;
+	madc::dis::istring name;
 	bool defined;			// state observed at the consult
 	bool has_value;			// object-like body captured below
 	std::string value;
@@ -5503,14 +5554,14 @@ public:
 	const char *unit;		// innermost unit whose parse defined it
 	bool defined;			// false after #undef
     };
-    std::map<std::string, PackMacroOrigin> pack_macro_origin;
+    std::map<madc::dis::istring, PackMacroOrigin> pack_macro_origin;
     std::map<const char *, std::vector<PackBranchDep> > pack_unit_branch_deps;
-    std::map<const char *, std::set<std::string> > pack_unit_branch_dep_seen;
+    std::map<const char *, std::set<madc::dis::istring> > pack_unit_branch_dep_seen;
     // v41: exact pre-preprocessor source text for every packed unit. A
     // compiler-less target whose consumer config cannot bind the producer's
     // semantic grove (another --std=, -D set, or POSIX posture) tokenizes this
     // text under the CONSUMER config instead of chasing build-host paths.
-    std::map<const char *, std::string> pack_unit_sources;
+    std::map<const char *, madc::dis::istring> pack_unit_sources;
     // Consumers bind ANY unit directly, so "reproduced by the replay" means
     // the definer sits in the CONSULTING unit's own edge subtree — a sibling
     // under the same top-level include (mingw stdlib.h defining
@@ -5538,22 +5589,22 @@ public:
     // one gates on pack_recording so default builds pay one predicted branch).
     void pack_note_unit(const char *interned_file);
     void pack_record_source(const char *interned_file, const std::string &text);
-    void pack_record_define(const std::string &name, const std::string &value);
-    void pack_record_define_fn(const std::string &name, const MacroDef &m);
-    void pack_record_undef(const std::string &name);
-    void pack_record_edge(const std::string &includee);	// includer = current source
+    void pack_record_define(const madc::dis::istring &name, const std::string &value);
+    void pack_record_define_fn(const madc::dis::istring &name, const MacroDef &m);
+    void pack_record_undef(const madc::dis::istring &name);
+    void pack_record_edge(const madc::dis::istring &includee);	// includer = current source
     // A dedup-SKIPPED include still needs its bytes in the corpus — see the
     // definition. Freeze-time only, at most one read per unit.
-    void pack_record_skipped_source(const std::string &path);
-    void pack_record_branch_macro(const std::string &name,
+    void pack_record_skipped_source(const madc::dis::istring &path);
+    void pack_record_branch_macro(const std::string &name,	// interned only when recording
 				  bool include_probe = false);
     const char *pack_current_unit();	// interned current source file (NULL off)
     void dump_macros(FILE *out);	// -dM: effective macro table, sorted
     void pack_open_toplevel_decl();	// loop-top: push a decl frame
     void pack_close_toplevel_decl();	// after parseStatement: pop + emit entries
-    void pack_tap_name(const std::string &name, uint32_t kind); // registration tap
-    void pack_tap_type(const std::string &name);   // flat + ns-qualified typedef tap
-    void pack_tap_struct(const std::string &name); // struct_map-key tap
+    void pack_tap_name(const madc::dis::istring &name, uint32_t kind); // registration tap
+    void pack_tap_type(const madc::dis::istring &name);   // flat + ns-qualified typedef tap
+    void pack_tap_struct(const madc::dis::istring &name); // struct_map-key tap
     void dump_registered_names(FILE *out); // --dump-registered: oracle side B
     std::vector<TokenBase *> ast;	// Abstract Syntax Tree in source order
     TokenStream tokens;			// parsed token stream (flat arena + cursor; P1)
@@ -5606,7 +5657,7 @@ public:
     double _forest_work_seconds = 0.0;
     int    _forest_work_depth   = 0;
     double _cir_forest_seconds  = 0.0;
-    std::vector<std::pair<std::string, double> > _forest_unit_bind_costs;
+    std::vector<std::pair<madc::dis::istring, double> > _forest_unit_bind_costs;
     // Plain snapshot of the above plus the forest-owned counters (unit loads,
     // arena materialize, reader decode) so display code needs no
     // CirFrozenForest type. Implemented beside ensure_bind_forest (lexer.cpp).
@@ -5654,13 +5705,13 @@ public:
 	std::string reason;	// why this template shape fell back (first seen)
 	TsubstBodyProfile() : count(0), sample(), reason() {}
     };
-    std::map<std::string, TsubstBodyProfile> _tsubst_body_fallback_profile;
+    std::map<madc::dis::istring, TsubstBodyProfile> _tsubst_body_fallback_profile;
     // Class-template dispatch accounting. A parse is counted only after the
     // selected body is known to take the sole parser lane; cache and dependent
     // shells are disjoint outcomes. ClassParseReason stays typed until the
     // --show-stats rendering boundary.
     struct ClassParseProfileKey {
-	std::string identity;
+	madc::dis::istring identity;
 	ClassParseReason reason;
 	bool operator<(const ClassParseProfileKey &o) const
 	{
@@ -5672,7 +5723,7 @@ public:
 	unsigned long long count;
 	unsigned long long body_calls;
 	unsigned long long base_specs;
-	std::string sample;
+	madc::dis::istring sample;
 	std::map<ClassDeclKind, unsigned long long> decls;
 	ClassParseProfile() : count(0), body_calls(0), base_specs(0), sample() {}
     };
@@ -5694,8 +5745,8 @@ public:
     std::vector<ClassParseProfileKey> _class_parse_census_stack;
     static const char *class_parse_reason_name(ClassParseReason reason);
     static const char *class_decl_kind_name(ClassDeclKind kind);
-    void note_class_parse(const std::string &identity,
-			  ClassParseReason reason, const std::string &sample);
+    void note_class_parse(const madc::dis::istring &identity,
+			  ClassParseReason reason, const madc::dis::istring &sample);
     void note_class_body_parse();
     void note_class_base_spec();
     void note_class_decl(ClassDeclKind kind, unsigned long long count = 1);
@@ -5706,8 +5757,8 @@ public:
 	ClassParseCensusScope(const ClassParseCensusScope &);
 	ClassParseCensusScope &operator=(const ClassParseCensusScope &);
     public:
-	ClassParseCensusScope(Program &p, const std::string &identity,
-		ClassParseReason reason, const std::string &sample);
+	ClassParseCensusScope(Program &p, const madc::dis::istring &identity,
+		ClassParseReason reason, const madc::dis::istring &sample);
 	~ClassParseCensusScope();
     };
     // User-defined function AST nodes, in source order. Parallel to the
@@ -5772,7 +5823,7 @@ public:
     // definitions) and dissolves walls in unused inline bodies. The cir_builder
     // reachability fixpoint
     // materializes a deferred body the moment its symbol enters referenced_funcs.
-    registration_map<std::string, DeferredFunctionBody> deferred_lazy_bodies;
+    registration_map<madc::dis::istring, DeferredFunctionBody> deferred_lazy_bodies;
     // Out-of-line member DEFINITIONS of a class template
     // (`template<class T> RET ClassName<T>::member(params){body}` — the bits/*.tcc
     // shape, e.g. std::vector::_M_realloc_insert). A class instantiation re-parses
@@ -5785,8 +5836,8 @@ public:
     // ([temp.inst]p2) exactly like an in-class-defined member (lazy, not eager —
     // unused out-of-line members never instantiate).
     struct OutOfLineMemberDef {
-	std::string member_name;
-	std::vector<std::string> typeparams;	// CLASS (outer) type-params
+	madc::dis::istring member_name;
+	std::vector<madc::dis::istring> typeparams;	// CLASS (outer) type-params
 	std::vector<TokenBase *> decl;	// full decl incl body, owned clones
 	// The class-head's template arguments, one token run per slot (owned
 	// clones): `vector<_Tp, _Alloc>::f` -> {_Tp}, {_Alloc}; the PARTIAL
@@ -5804,11 +5855,11 @@ public:
 	// member def becomes a deferred (ODR-use-lazy) full body. inner_typeparams /
 	// inner_is_pack are the MEMBER (inner) template parameters.
 	bool is_member_template = false;
-	std::vector<std::string> inner_typeparams;
+	std::vector<madc::dis::istring> inner_typeparams;
 	std::vector<bool> inner_is_pack;
 	std::vector<bool> inner_is_type;	// false = non-type param (`size_t... _Indexes`)
     };
-    registration_map<std::string, std::vector<OutOfLineMemberDef> >
+    registration_map<madc::dis::istring, std::vector<OutOfLineMemberDef> >
 	out_of_line_member_defs;
     // The partial specialization an instantiation came from, as its
     // out-of-line members need it ([temp.class.spec.mfunc]/1): a member
@@ -5817,13 +5868,13 @@ public:
     // the definition's parameters bind to what the specialization's deduced.
     struct OutOfLineSpecSource {
 	std::vector<std::vector<TokenBase *> > pattern;
-	std::vector<std::string> typeparams;
-	std::map<std::string, TokenDataType *> type_args;
-	std::map<std::string, std::vector<TokenBase *> > token_args;
+	std::vector<madc::dis::istring> typeparams;
+	std::map<madc::dis::istring, TokenDataType *> type_args;
+	std::map<madc::dis::istring, std::vector<TokenBase *> > token_args;
 	bool has_pack = false;
     };
     struct OutOfLineMemberInstantiation {
-	std::string registered_mangled;
+	madc::dis::istring registered_mangled;
 	std::vector<TokenDataType *> arg_types_by_slot;
 	std::vector<std::vector<TokenBase *> > arg_tokens_by_slot;
 	// Produced from a PARTIAL specialization's pattern: the primary's
@@ -5834,18 +5885,18 @@ public:
 	bool has_spec_source = false;
 	OutOfLineSpecSource spec_source;
     };
-    registration_map<std::string, std::vector<OutOfLineMemberInstantiation> >
+    registration_map<madc::dis::istring, std::vector<OutOfLineMemberInstantiation> >
 	out_of_line_member_instantiations;
     void attach_outofline_member_instantiations(
-	const std::string &class_name, const std::string &defining_namespace,
-	const std::string &registered_mangled, DataDefCLASS *ddc,
+	const madc::dis::istring &class_name, const madc::dis::istring &defining_namespace,
+	const madc::dis::istring &registered_mangled, DataDefCLASS *ddc,
 	const std::vector<TokenDataType *> &arg_types_by_slot,
 	const std::vector<std::vector<TokenBase *> > &arg_tokens_by_slot,
 	bool from_partial_specialization = false,
 	const OutOfLineSpecSource *spec_source = NULL);
     void register_outofline_member_instantiations(
-	const std::string &class_name, const std::string &defining_namespace,
-	const std::string &registered_mangled, DataDefCLASS *ddc,
+	const madc::dis::istring &class_name, const madc::dis::istring &defining_namespace,
+	const madc::dis::istring &registered_mangled, DataDefCLASS *ddc,
 	const std::vector<TokenDataType *> &arg_types_by_slot,
 	const std::vector<std::vector<TokenBase *> > &arg_tokens_by_slot,
 	bool from_partial_specialization = false,
@@ -5861,17 +5912,17 @@ public:
     // owner's member bodies needs the type); method bodies inside it stay
     // ODR-use-lazy via the normal member-body deferral.
     struct OutOfLineNestedClassDef {
-	std::string nested_name;
-	std::vector<std::string> typeparams;	// owner type-params (positional)
+	madc::dis::istring nested_name;
+	std::vector<madc::dis::istring> typeparams;	// owner type-params (positional)
 	std::vector<bool> typeparam_is_pack;
 	std::vector<std::vector<TokenBase *> > head_args;	// Owner<...>'s arguments, owned clones
 	std::vector<TokenBase *> decl;	// full decl incl body, owned clones
     };
-    registration_map<std::string, std::vector<OutOfLineNestedClassDef> >
+    registration_map<madc::dis::istring, std::vector<OutOfLineNestedClassDef> >
 	out_of_line_nested_class_defs;
     void instantiate_outofline_nested_classes(
-	const std::string &class_name, const std::string &defining_namespace,
-	const std::string &registered_mangled,
+	const madc::dis::istring &class_name, const madc::dis::istring &defining_namespace,
+	const madc::dis::istring &registered_mangled,
 	const std::vector<TokenDataType *> &arg_types_by_slot,
 	const std::vector<std::vector<TokenBase *> > &arg_tokens_by_slot,
 	bool from_partial_specialization = false,
@@ -5901,15 +5952,15 @@ public:
     // active_cpp_lookup_namespace() consults it first, and parseCallFunc /
     // parseCallMethod clear it before the argument loop so arguments resolve
     // in the lexical namespace. Set/restored only via QualifiedCalleeScope.
-    std::string stmt_callee_namespace;
+    madc::dis::istring stmt_callee_namespace;
     class QualifiedCalleeScope
     {
 	Program &pgm;
-	std::string saved;
+	madc::dis::istring saved;
 	QualifiedCalleeScope(const QualifiedCalleeScope &);
 	QualifiedCalleeScope &operator=(const QualifiedCalleeScope &);
     public:
-	QualifiedCalleeScope(Program &p, const std::string &ns)
+	QualifiedCalleeScope(Program &p, const madc::dis::istring &ns)
 	    : pgm(p), saved(p.stmt_callee_namespace)
 	{ pgm.stmt_callee_namespace = ns; }
 	~QualifiedCalleeScope() { pgm.stmt_callee_namespace = saved; }
@@ -5927,7 +5978,7 @@ public:
     // A data-only `struct Outer` pushes no class scope, so the nested class
     // would otherwise spell itself `Inner` — its members' Itanium names and
     // its RTTI encode `Outer::Inner` ([class.nest]; g++: _ZN5Outer5Inner1gEv).
-    std::string enclosing_aggregate_spelling;
+    madc::dis::istring enclosing_aggregate_spelling;
     // Source-ordered top-level declarations for CIR tree generation.
     // Each entry records what was declared and in what order, matching
     // the order c2m's parser produces in its MODULE LIST. The legacy
@@ -5935,7 +5986,7 @@ public:
     enum class DeclKind { dkTypedef, dkStruct, dkUnion, dkEnum, dkGlobalVar };
     struct TopDecl {
 	DeclKind kind;
-	std::string name;	// typedef alias, struct tag, or variable name
+	madc::dis::istring name;	// typedef alias, struct tag, or variable name
 	DataDef *dd;		// the DataDef (struct, typedef target, etc.)
 	TokenDataType *tdt;	// for typedefs: the TokenDataType entry
 	Variable *var;		// for global vars: the Variable
@@ -5977,8 +6028,8 @@ public:
     // survive Program re-creation across recompiles.
     struct HostCallbackReg {
 	enum Kind { K_VOID = 0, K_BOOL, K_INT, K_REAL, K_CSTR };
-	std::string name;	 // script-visible function name
-	std::string import_sym;	 // __madc_host_cb_<k> the trampoline calls
+	madc::dis::istring name;	 // script-visible function name
+	madc::dis::istring import_sym;	 // __madc_host_cb_<k> the trampoline calls
 	uintptr_t entry = 0;	 // host address bound to import_sym at link
 	uintptr_t bound = 0;	 // deduced-form callback passed as hidden first arg (0 = none)
 	int returns = K_VOID;
@@ -5990,7 +6041,7 @@ public:
     // alias so CIR emits ID("alias"); distinguishes user typedefs from
     // builtin type keywords (whose token str can differ from the DataDef
     // name, e.g. `int` -> "int32_t", making a name compare unreliable).
-    registration_set<std::string> user_typedef_names;
+    registration_set<madc::dis::istring> user_typedef_names;
     std::stack<TokenCpnd *> compounds;	// stack to manage nested brackets
     std::vector<TokenSWITCH *> switch_stack; // active switch parse contexts for nested case/default hoisting
     std::vector<TokenCASE *> switch_case_stack; // current active case/default while parsing each switch
@@ -5998,7 +6049,7 @@ public:
     TokenProgram *tkProgram;		// program token
     TokenCpnd *tkFunction;		// function we are currently in
     int try_depth;			// >0 when compiling inside a try body
-    std::string cur_func_name;		// name of current function being compiled (for diagnostics)
+    madc::dis::istring cur_func_name;		// name of current function being compiled (for diagnostics)
     throwstream Throw;			// throw an error
     int script_argc;			// argc for the .mad script
     char **script_argv;			// argv for the .mad script
@@ -6035,10 +6086,10 @@ public:
     // interned pointer (the header-line-under-main-file diagnostic
     // misattribution, and expression-unit user tokens whose file read
     // as reused-heap garbage).
-    const char *intern_file(const std::string &s) {
+    const char *intern_file(const madc::dis::istring &s) {
 	return interned_files.emplace(s).first->c_str();
     }
-    std::set<std::string> interned_files;	// stable token file names (never cleared)
+    std::set<madc::dis::istring> interned_files;	// stable token file names (never cleared)
     // Single-entry cache for finalize_pop1_rec's per-token file_id intern. Tokens
     // are finalized in stream order, so consecutive tokens almost always share the
     // same (stable, intern_file'd) file pointer — caching the last (ptr -> id) skips
@@ -6057,7 +6108,7 @@ public:
     // access path. Both are set in the ctor init list (group or private).
     std::shared_ptr<madc::dis::intern_table> _strpool_owner;
     madc::dis::intern_table &strpool;
-    uint32_t   intern_spelling(const std::string &s) { return strpool.intern(s); }
+    uint32_t   intern_spelling(const madc::dis::istring &s) { return strpool.intern(s); }
     const char *spelling(uint32_t id) const { return strpool.c_str(id); }
     // Wide-value pool (P0 slice 2): >64-bit integer values live here behind a
     // uint32 handle (TokenInt::wide_handle); ≤64-bit values stay inline in the
@@ -6069,7 +6120,7 @@ public:
     // mangled-name rewrites). Keeps the interned rec.spelling_id in sync with the
     // new bytes — the bare `t->str = x` rewrites left spelling_id stale. Defined in
     // parser.cpp (needs the full TokenIdent type).
-    void set_token_spelling(class TokenIdent *t, const std::string &s);
+    void set_token_spelling(class TokenIdent *t, const madc::dis::istring &s);
 
     enum class LinkageSpec { Cpp, C };
     LinkageSpec current_linkage = LinkageSpec::Cpp;
@@ -6082,7 +6133,7 @@ public:
     // parameter names to folded argument values while its retained return
     // expression runs through parse_constant_integer_expression. No shared
     // mutable state: distinct Program instances evaluate independently.
-    std::vector<std::map<std::string, ConstValue> > constexpr_call_bindings;
+    std::vector<std::map<madc::dis::istring, ConstValue> > constexpr_call_bindings;
     bool constexpr_recursion_limit_hit = false;
     // Current declaration is a for-init clause (TokenFOR::parse sets it around
     // parseDeclaration). The class ctor-call arm consumes the trailing ';' in
@@ -6114,7 +6165,7 @@ public:
 	DataDef *computed_base = NULL;	// unfixed: the computed underlying type
 	DataDef *storage = NULL;	// unfixed: its layout (NULL = int)
 	bool packed = false;		// unfixed and packed: computed_base drives the layout
-	std::vector<std::pair<std::string, int64_t> > enumerators;
+	std::vector<std::pair<madc::dis::istring, int64_t> > enumerators;
 	std::vector<TokenBase *> enumerator_toks;	// parallel: declarator-id tokens
     } last_anon_enum;
     int unnamed_namespace_depth = 0;	// > 0 while parsing the members of an unnamed namespace (`namespace { ... }`): they register in the ENCLOSING namespace (the implicit using-directive, [namespace.unnamed]) and every file-scope function/variable defined there has internal linkage — parseDeclaration folds it into gotstatic
@@ -6143,10 +6194,10 @@ public:
     bool script_statement_result(TokenBase *ts) const;
     bool adopt_script_statement(TokenBase *ts);
     void ensure_script_main(TokenBase *loc);
-    TokenFunc *synthesize_function(const std::string &name, FuncDef *func, TokenBase *loc);
+    TokenFunc *synthesize_function(const madc::dis::istring &name, FuncDef *func, TokenBase *loc);
     void finalize_script_main();
-    Variable *script_param_var(const std::string &id);
-    Variable *script_param_lookup(const std::string &id);
+    Variable *script_param_var(const madc::dis::istring &id);
+    Variable *script_param_lookup(const madc::dis::istring &id);
     TokenCpnd *script_statement_scope(TokenBase *loc);
     // The scope a `:=` declares into: script_statement_scope's, except at an
     // interactive entry's top level, where a `:=` declares a session global
@@ -6348,7 +6399,7 @@ public:
     // of it is a redeclaration of the C library's function, not a C++ overload
     // set member. parseFunction replaces the registration wholesale and keeps
     // its C linkage.
-    bool prior_declaration_is_registration(const std::string &name)
+    bool prior_declaration_is_registration(const madc::dis::istring &name)
     {
 	Variable *v = findVariable(name);
 	FuncDef *fd = v && v->type ? v->type->as_funcdef_dd() : NULL;
@@ -6383,7 +6434,7 @@ public:
     // cur_func_name so a lambda / local-method body parsed inside a block is
     // never misjudged (its own returns are its own). parse_loop_depth counts
     // loop/switch parse nesting (RAII guards in the loop parsers).
-    struct ScopeBlockCtx { int loop_floor; std::string func; };
+    struct ScopeBlockCtx { int loop_floor; madc::dis::istring func; };
     std::vector<ScopeBlockCtx> scope_block_stack;
     int parse_loop_depth = 0;
     // Inside a `scope { }` block of the function being parsed right now.
@@ -6412,11 +6463,11 @@ public:
     // presenting as an older g++ (Ubuntu 22.04's 11) leaves the name an
     // identifier, which glibc 2.35's bits/floatn.h then typedefs. The g++ is
     // the one the captured predefines impersonate (captured_gxx_major).
-    bool floatn_keyword_active(const std::string &spelling) const
+    bool floatn_keyword_active(const madc::dis::istring &spelling) const
     { return !presents_as_cpp() || cpp_floatn_builtin(spelling, captured_gxx_major()); }
     // Whether g++ `gxx_major` has `spelling` as a built-in type in C++; 0 is a
     // clang identity, which keeps the built-ins (clang's set is not modelled).
-    static bool cpp_floatn_builtin(const std::string &spelling, int gxx_major);
+    static bool cpp_floatn_builtin(const madc::dis::istring &spelling, int gxx_major);
     // The g++ major the captured predefines (gen_predefined_macros.sh)
     // impersonate — the __GNUC__ madc announces; 0 for a clang identity.
     static int captured_gxx_major();
@@ -6440,8 +6491,8 @@ public:
     const char *cplusplus_value_for_std() const {
 	return cplusplus_value_for(is_cpp_mode() ? language_std : default_cpp_std);
     }
-    bool set_language_standard(const std::string &standard);
-    bool set_language_standard_option(const std::string &arg);
+    bool set_language_standard(const madc::dis::istring &standard);
+    bool set_language_standard_option(const madc::dis::istring &arg);
     // The canonical `--std=` spellings, no Program/source/config needed: the
     // capability manifest (madc_capabilities.cpp) reads these instead of
     // re-listing them. ONE table (parser.cpp) owns both the recognizer above
@@ -6450,8 +6501,8 @@ public:
     // recognizer also accepts non-canonical aliases (`c90`, `c`, `c++`/`cpp`,
     // `cppNN`) that these lists deliberately omit; STD_MADC is the dialect,
     // not a standard, so it is excluded here too.
-    static std::vector<std::string> supported_c_standard_names();
-    static std::vector<std::string> supported_cpp_standard_names();
+    static std::vector<madc::dis::istring> supported_c_standard_names();
+    static std::vector<madc::dis::istring> supported_cpp_standard_names();
     // The same table, one row at a time, for the file-kind vocabulary's
     // boundary converters (madc::file_kind_name / file_kind_of, src/
     // file_kinds.cpp): the CANONICAL spelling of a standard ("" when the
@@ -6466,7 +6517,7 @@ public:
     // The first standard of a language (C: c78, C++: c++98), from the table.
     static LanguageStd lowest_standard(bool cpp);
     // A standard's name as prose writes it: C99, C++11.
-    static std::string standard_display_name(LanguageStd std);
+    static madc::dis::istring standard_display_name(LanguageStd std);
     // The standards' keyword lists (src/madc_keywords.cpp): the standard a
     // keyword first arrived in, in C and in C++, or the extension it is.
     // Facts about the languages; what madc reserves in a mode is
@@ -6481,13 +6532,13 @@ public:
 	LanguageStd cpp_since;
 	Extension ext;
     };
-    static const KeywordOrigin *keyword_origin(const std::string &spelling);
+    static const KeywordOrigin *keyword_origin(const madc::dis::istring &spelling);
     // Where a keyword comes from, as `?name` says it: "C" or "C++" for one
     // the language's first standard has, else the standard it first arrived
     // in ("C99", "C++11"), among the session's languages (a C session's are
     // C's; C++'s is named for a keyword C lacks); "madc" or "GNU C" for an
     // extension. Empty for a spelling the lists do not know.
-    std::string keyword_provenance(const std::string &spelling) const;
+    madc::dis::istring keyword_provenance(const madc::dis::istring &spelling) const;
     bool aot_tracking;
     bool aot_skip_eval_shims;	// this build's artifact can never be host-called
 				// through the value ABI (standalone executable; any
@@ -6497,18 +6548,18 @@ public:
 				// libmadc.so.0 DT_NEEDED cover-drop can fire)
     bool instrument_functions;
     bool skip_includes;		// --emit-function: lex without processing #include
-    std::set<std::string> pending_auto_include_headers;
-    std::set<std::string> pending_auto_include_identifiers;
+    std::set<madc::dis::istring> pending_auto_include_headers;
+    std::set<madc::dis::istring> pending_auto_include_identifiers;
     // Identifiers this TU declares in a declarator position (after a type
     // or a struct/class/enum tag keyword): the auto-include scan never
     // answers for them again — the TU provides the name itself.
-    std::set<std::string> auto_include_declared_words;
+    std::set<madc::dis::istring> auto_include_declared_words;
     bool suppress_auto_include_scan;
     // Tokenizing a dialect FRAGMENT (an extensionless include/madc/ file):
     // the scan stays on, restricted to the intrinsic (bits/*) and C-header
     // providers — never a C++ system header (the dialect-lean line).
     bool auto_include_fragment_scan;
-    std::string auto_include_fragment_name;	// the dialect fragment being
+    madc::dis::istring auto_include_fragment_name;	// the dialect fragment being
 						// tokenized ("" outside one):
 						// a fragment never pulls ITSELF
     struct AotDataRef {
@@ -6520,7 +6571,7 @@ public:
     std::vector<AotDataRef> aot_data_refs;
     std::vector<char *> aot_string_constants;
     struct AotDiscoveredData {
-	std::string name;
+	madc::dis::istring name;
 	void *address;
 	size_t size;
 	DataDef *type;
@@ -6550,7 +6601,7 @@ public:
     bool lookup_aot_data_offset(uintptr_t address, size_t &out_offset) const;
     size_t aot_variable_storage_size(const Variable *var) const;
     void record_aot_variable_data(Variable *var);
-    void record_aot_data(const std::string &name, void *address, size_t size,
+    void record_aot_data(const madc::dis::istring &name, void *address, size_t size,
 	DataDef *type = NULL, uint32_t count = 1);
 
     void add_keywords();
@@ -6563,7 +6614,7 @@ public:
     std::ostream &error();
     // (end_line, end_column): where the cited token ends (Diagnostic).
     void add_diagnostic(DiagnosticSeverity severity, DiagnosticPhase phase,
-	const std::string &message, const char *file=NULL, int line=0, int column=0,
+	const madc::dis::istring &message, const char *file=NULL, int line=0, int column=0,
 	int end_line=0, int end_column=0);
     // WHY an error refused (Diagnostic::cause), from the refusal's own
     // context: a lexer refusal's is its Source's (the MAIN unit's only — a
@@ -6579,15 +6630,15 @@ public:
     const Diagnostic *first_error_diagnostic() const;
     bool has_error_diagnostic() const { return first_error_diagnostic() != NULL; }
     size_t error_diagnostic_count() const;
-    void report_warning(DiagnosticPhase phase, const std::string &message,
+    void report_warning(DiagnosticPhase phase, const madc::dis::istring &message,
 	const char *file=NULL, int line=0, int column=0);
-    void report_error(DiagnosticPhase phase, const std::string &message,
+    void report_error(DiagnosticPhase phase, const madc::dis::istring &message,
 	const char *file=NULL, int line=0, int column=0,
 	int end_line=0, int end_column=0);
-    void set_error(DiagnosticPhase phase, const std::string &message,
+    void set_error(DiagnosticPhase phase, const madc::dis::istring &message,
 	const char *file=NULL, int line=0, int column=0,
 	int end_line=0, int end_column=0);
-    void set_error(const std::string &message, const char *file=NULL, int line=0, int column=0);
+    void set_error(const madc::dis::istring &message, const char *file=NULL, int line=0, int column=0);
     const char *diagnostic_severity_name(DiagnosticSeverity severity) const;
     const char *diagnostic_phase_name(DiagnosticPhase phase) const;
     bool can_show_diagnostic_source(const Diagnostic &diag) const;
@@ -6595,7 +6646,7 @@ public:
     void print_last_diagnostic(std::ostream &os, const char *suffix=NULL);
     void print_unrendered_diagnostic();
     void populate_builtin_registry();
-    bool is_builtin_disabled(const std::string &name) const;
+    bool is_builtin_disabled(const madc::dis::istring &name) const;
     void populate_namespace_registry();
     void register_function_specs(const std::vector<FunctionRegistrationSpec> &specs);
     void register_namespace_specs();
@@ -6608,10 +6659,10 @@ public:
     void add_iostream();	// populates lazy_map for cout, cin, cerr (via #include <iostream>)
     void add_stdio();		// placeholder for #include <stdio.h> registration
     struct PendingForestFunc;
-    Variable *lazy_resolve(const std::string &name);	// on-demand variable/function registration
-    DataDef  *lazy_resolve_type(const std::string &name);	// on-demand type/struct registration
+    Variable *lazy_resolve(const madc::dis::istring &name);	// on-demand variable/function registration
+    DataDef  *lazy_resolve_type(const madc::dis::istring &name);	// on-demand type/struct registration
     Variable *register_forest_func(const PendingForestFunc &pf);
-    Variable *activate_forest_func(const std::string &name);
+    Variable *activate_forest_func(const madc::dis::istring &name);
     // A restored function's default arguments, re-derived from their frozen
     // token runs (the flush's v23 rebuild): one function's rebuild, and the
     // deferred rebuild of a FREE function registered after the flush.
@@ -6635,14 +6686,14 @@ public:
     // Apple arm64 reads its variadic arguments from the STACK while the K&R
     // call put them in registers. NULL = the pack declares no such bare
     // variadic function in that shape: the caller's guess stands, as before.
-    Variable *forest_adopt_declared_function(const std::string &fname);
+    Variable *forest_adopt_declared_function(const madc::dis::istring &fname);
     // `__builtin_X` IS X: register the adopted twin's prototype under the
     // builtin spelling (a copy emitting as X). NULL when X is not adopted.
-    Variable *register_builtin_twin_alias(const std::string &fname,
-					  const std::string &twin);
-    void activate_forest_function_family(const std::string &ns,
-	const std::string &display_name);
-    void activate_forest_function_display(const std::string &display_name);
+    Variable *register_builtin_twin_alias(const madc::dis::istring &fname,
+					  const madc::dis::istring &twin);
+    void activate_forest_function_family(const madc::dis::istring &ns,
+	const madc::dis::istring &display_name);
+    void activate_forest_function_display(const madc::dis::istring &display_name);
     // Phase 6 (forest = serialized Tree-1): RECONSTRUCT symbol tables from a
     // loaded forest's typed decl records — never re-parse. Slice 1b: file-scope
     // typedefs. (Declared with an incomplete CirFrozenForest — pointer/ref only.)
@@ -6655,14 +6706,14 @@ public:
     // registration_policy.enable_forest_bind (the ONE owner of "may this
     // compile bind frozen state"), so the default path is one predicted
     // branch; knob OFF = byte-identical behavior.
-    std::string forest_bind_path;	// explicit container; empty = the discovery chain
+    madc::dis::istring forest_bind_path;	// explicit container; empty = the discovery chain
     // v24: the TU's ROOT source file (set by tokenize/tokenize_buffer). The
     // forest holds the #include files' state ONLY — never the program's — so
     // the freeze stamps every record whose defining file IS the root
     // (DF_TU_ROOT_ORIGIN / CIR_GLOBALF_TU_ROOT / CIR_TMPLF_TU_ROOT) and the
     // bind restore fences those out. The records stay in the arena for
     // --run-frozen's cross-process typeid->name closure.
-    std::string forest_root_file;
+    madc::dis::istring forest_root_file;
     bool forest_is_tu_root_file(const char *f) const
     {
 	return f && *f && !forest_root_file.empty() && forest_root_file == f;
@@ -6693,25 +6744,25 @@ public:
     // providers while compiler-less packaged targets remain multi-dialect.
     CirFrozenForest *source_forest = NULL;
     bool source_forest_tried = false;
-    std::map<uint32_t, std::string> forest_source_cache;
+    std::map<uint32_t, madc::dis::istring> forest_source_cache;
     // MIR module cache, rung 3 (JIT bind lane ONLY — the emit/dump lanes never
     // populate this, keeping their output byte-identical to live). Func names
     // exported by the container's MIR cache module: the m&l fixpoint emits a
     // forward proto instead of the loaded def for these, and the call resolves
     // as a MIR import against the loaded cache module at link.
-    std::set<std::string> mir_cache_exports;
+    std::set<madc::dis::istring> mir_cache_exports;
     // The interactive session (plan §41.2a): symbols a module ALREADY LINKED
     // into the session's live MIR context defines (its exported items, by
     // emitted name). The CIR builder emits a declaration for each, never a
     // second definition, so a later entry's module links to the live one.
     // Unlike mir_cache_exports, where the consumer module wins every overlap,
     // here the earlier module does.
-    std::set<std::string> session_defined;
+    std::set<madc::dis::istring> session_defined;
     // Plan §42 D27: functions an earlier module calls through a session stub
     // because nothing defined them yet (by emitted name). The CIR builder
     // emits such a function's vague-linkage body in the entry that defines
     // it, whether or not that entry uses it, so the stub's callers reach it.
-    std::set<std::string> session_awaited;
+    std::set<madc::dis::istring> session_awaited;
     bool forest_decls_restored = false;	// one-shot decl-record restore (forest-global for now)
     // v13: file-scope globals restored from a bound header. forest_restore_decls
     // runs during lexer #include handling, BEFORE tkProgram exists, so the globals
@@ -6719,11 +6770,11 @@ public:
     // and flushed by flush_forest_pending_globals() once tkProgram is created. The
     // name/type/flags are the loaded CirRestoredGlobal fields (type owned by the forest).
     struct PendingForestGlobal {
-	std::string name; std::string ns; DataDef *type;
+	madc::dis::istring name; madc::dis::istring ns; DataDef *type;
 	// v39: Variable::storage_alias_name as the PRODUCER derived it (empty =
 	// none). Transported, not re-derived — the consumer had one derivation
 	// for every category and mis-mangled class-scope static data members.
-	std::string alias;
+	madc::dis::istring alias;
 	uint32_t flags; uint32_t gflags; int64_t init_value;
 	// v25: the ctor-args raw-token run (CIR_GLOBALF_CTOR_ARG_TOKENS) — a
 	// span into the bound forest's arena tokbytes; the flush re-runs the
@@ -6747,15 +6798,15 @@ public:
     // struct"). Stage the writes here; the post-tokenize flush applies them in
     // restore order (last wins, the live registration semantics) before parse.
     // Namespace/struct/template maps stay eager — the lexer never reads them.
-    std::vector<std::pair<std::string, TokenDataType *> > forest_pending_datatypes;
-    std::set<std::string> forest_pending_datatype_names;	// staged-key guard
-    std::set<std::string> forest_restored_datatype_names;	// v40: aliases whose datatype_map entry came from a forest RESTORE — persists the whole TU (the typedef arm's live-wins provenance, task #57)
+    std::vector<std::pair<madc::dis::istring, TokenDataType *> > forest_pending_datatypes;
+    std::set<madc::dis::istring> forest_pending_datatype_names;	// staged-key guard
+    std::set<madc::dis::istring> forest_restored_datatype_names;	// v40: aliases whose datatype_map entry came from a forest RESTORE — persists the whole TU (the typedef arm's live-wins provenance, task #57)
     // RC2: free-function declarations restored from a bound header. Same deferral
     // as the globals — the Variable lives in tkProgram scope, so registration
     // (funcdef_map + addVariable + Method, the parseFunction prototype shape)
     // waits for the post-tkProgram flush. The FuncDef is owned by the forest.
     struct PendingForestFunc {
-	std::string name;
+	madc::dis::istring name;
 	FuncDef *fd;
 	Variable *mvar;		// non-NULL: a restored class METHOD — the class's own
 				// Variable (live keeps ONE object shared by tkProgram
@@ -6773,7 +6824,7 @@ public:
     // here without eagerly constructing parser Variables/Methods. A source
     // overload-family lookup or a CIR reference promotes only the demanded
     // records through the same registration owner used by eager declarations.
-    std::map<std::string, PendingForestFunc> forest_deferred_funcs;
+    std::map<madc::dis::istring, PendingForestFunc> forest_deferred_funcs;
     // A restored FREE function's defaults re-derive when this TU registers it
     // (register_forest_func), as a live parse parses a default with its
     // declaration — never at bind for a function the closure filter dropped
@@ -6784,13 +6835,13 @@ public:
     // forest_settle_param_defaults when the function registers.
     std::set<const FuncDef *> forest_registered_funcs;
     std::map<const FuncDef *, size_t> forest_unsettled_defaults;
-    std::map<std::string, std::vector<std::string> >
+    std::map<madc::dis::istring, std::vector<madc::dis::istring> >
 	forest_deferred_func_families;
     // forest_adopt_declared_function: the bare FUNCTION names the pack's decl
     // index carries (kind pdkFunction; a qualified form is C++ surface), built
     // once per bound forest on first demand — the "is this a library
     // function" question answered from the pack, never from a name list.
-    std::unordered_set<std::string> _forest_bare_func_names;
+    std::unordered_set<madc::dis::istring> _forest_bare_func_names;
     bool _forest_bare_func_names_built = false;
     unsigned long long _forest_funcs_eager = 0;
     unsigned long long _forest_funcs_deferred = 0;
@@ -6801,7 +6852,7 @@ public:
     // live registration under forest_arena_enabled; the freeze reads it to
     // serialize the constant (CIR_GLOBALF_CONST_SCALAR) and classify its
     // TU-root fence.
-    std::map<std::string, const char *> forest_enum_const_origin;
+    std::map<madc::dis::istring, const char *> forest_enum_const_origin;
     // Default-arg RAW-TOKEN capture (parseFunction's `= expr` param branches).
     // begin() returns true and snapshots the stream position (buffer cursor + a
     // copy of the pushback LIFO) when arena recording is on, or when the caller
@@ -6831,8 +6882,8 @@ public:
     // Registration needs tkProgram, hence the stage.
     struct PendingForestMemberTmpl {
 	DataDefCLASS *owner;
-	std::string key;			// the placeholder's funcdef_map symbol (the record key)
-	std::string disp;			// live method_display_name (the declarator name)
+	madc::dis::istring key;			// the placeholder's funcdef_map symbol (the record key)
+	madc::dis::istring disp;			// live method_display_name (the declarator name)
 	CirRestoredTemplate *rt;		// the un-hydrated record (identity walked, payload frozen)
 	CirFrozenForest *forest;		// the record's forest (stable process-cached instance)
 	PendingForestMemberTmpl() : owner(NULL), rt(NULL), forest(NULL) {}
@@ -6871,19 +6922,19 @@ public:
     CirFrozenForest *ensure_ledger_forest();
     CirFrozenForest *ensure_source_forest();
     void forest_missing_fallback(bool config_mismatch); // discovery exhausted: apply forest_missing_policy (mismatch = container seen, wrong std/-D)
-    std::string forest_probed_arms() const;	// the arms probe_forest_chain walked, for the failure diagnostics (one owner)
-    int forest_unit_for_include(const std::string &incfile); // spelling/path lookup; -1 miss
+    madc::dis::istring forest_probed_arms() const;	// the arms probe_forest_chain walked, for the failure diagnostics (one owner)
+    int forest_unit_for_include(const madc::dis::istring &incfile); // spelling/path lookup; -1 miss
     bool forest_source_path(const std::string &candidate,
-			    bool allow_tail, std::string &resolved);
-    bool forest_source_text(const std::string &path, std::string &text);
+			    bool allow_tail, madc::dis::istring &resolved);
+    bool forest_source_text(const madc::dis::istring &path, std::string &text);
     // A __need_* request macro is live: the next include is a protocol
     // visit (re-tokenize the protocol text; no once-only/PCH/forest).
     bool need_protocol_macro_live();
     void forest_bind_include(uint32_t unit);	// bind time: DAG walk — install PP + arm chain
     std::set<uint32_t> forest_live_present;	// v40: units ALREADY PRESENT via a live parse (guard prune) — bind skips them, the decl-restore filter must NOT see them
     std::set<uint32_t> forest_husk_live_pending;	// task #57: missing-content closure units selected for exact live tokenization; never enter forest_chain_set
-    std::set<std::string> forest_live_tokenized;	// v40: canonical keys of files whose tokens ENTERED this TU's live stream (should_tokenize_include true-verdicts) — the prune's honest "already live" source
-    bool live_tokenize_record(const std::string &canonical, bool tok);	// one recording owner for the set above
+    std::set<madc::dis::istring> forest_live_tokenized;	// v40: canonical keys of files whose tokens ENTERED this TU's live stream (should_tokenize_include true-verdicts) — the prune's honest "already live" source
+    bool live_tokenize_record(const madc::dis::istring &canonical, bool tok);	// one recording owner for the set above
     bool forest_unit_file_live_tokenized(uint32_t unit);	// v40: was this unit's FILE live-tokenized here?
     bool forest_bind_env_ok(uint32_t unit);	// v40: closure branch-dep env check (task #57)
     bool forest_bind_env_ok(uint32_t unit, std::set<uint32_t> &visited);
@@ -6894,44 +6945,44 @@ public:
     // task #57 masked-bind: unit -> its guarded-fallback macros whose guard is
     // live-defined; forest_install_pp skips those define events (live-order
     // parity — the live arm skipped them). Rebuilt per env check of the unit.
-    std::map<uint32_t, std::set<std::string> > forest_pp_install_mask;
+    std::map<uint32_t, std::set<madc::dis::istring> > forest_pp_install_mask;
     void forest_install_pp(uint32_t unit);	// apply one unit's frozen macro delta to the live tables
     void add_namespaces();
     void add_madc_namespace();
     void add_array_methods();	// native count()/size() on the builtin array (ddARRAY)
     void add_carrier_free_operators();	// `1 + v`: per-Program free rows (D28)
-    bool is_namespace_registration_enabled(const std::string &name) const;
+    bool is_namespace_registration_enabled(const madc::dis::istring &name) const;
     bool is_dynamic_library_loading_enabled() const;
     bool is_auto_library_loading_enabled() const;
     // import (alias form): mark a freshly registered namespace member as a
     // dynamic-module member (FuncDef::dyn_module_library/member) so the CIR
     // builder lowers its calls to the runtime-resolved shape.
-    void stamp_lazy_module_prototype(FuncDef *fd, const std::string &name,
+    void stamp_lazy_module_prototype(FuncDef *fd, const madc::dis::istring &name,
 				     DataDefCLASS *owner_class,
 				     const TokenBase *proto_end);
-    void stamp_dynamic_module_member(Variable *var, const std::string &ns,
-				     const std::string &member);
+    void stamp_dynamic_module_member(Variable *var, const madc::dis::istring &ns,
+				     const madc::dis::istring &member);
     bool is_dynamic_symbol_fallback_enabled() const;
     bool is_runtime_eval_source_scope_access_enabled() const;
     bool is_runtime_eval_expression_scope_access_enabled() const;
-    bool is_embedded_header_allowed(const std::string &name) const;
+    bool is_embedded_header_allowed(const madc::dis::istring &name) const;
 	bool posix_compat_enabled() const;
-	bool is_posix_compat_header_name(const std::string &name) const;
-	bool is_posix_compat_header_allowed(const std::string &name) const;
+	bool is_posix_compat_header_name(const madc::dis::istring &name) const;
+	bool is_posix_compat_header_allowed(const madc::dis::istring &name) const;
     // True iff a real system header named `name` exists in a glibc/libstdc++
     // include dir (i.e. NOT the compiler-owned freestanding dir, and not a
     // madc-own header with no real twin). Used to bypass embedded system-library
     // shims to the real headers while keeping madc-own + freestanding embedded.
-    bool embedded_header_is_system_library_shim(const std::string &name) const;
+    bool embedded_header_is_system_library_shim(const madc::dis::istring &name) const;
     // True iff a search directory that OUTRANKS madc's embedded set supplies
     // `name`. The embedded freestanding headers ARE madc's compiler resource
     // dir, so they sit at the compiler_owned_include_dir() slot: C++ stdlib
     // dirs (and every -I dir) come before it and win; C library dirs come after
     // it and lose. Lets a real libc++/libstdc++ wrapper header take precedence
     // while an unsupplied name still resolves from the embedded copy.
-    bool embedded_header_outranked(const std::string &name);	// non-const: may open the source forest
-    bool is_dynamic_symbol_allowed(const std::string &name) const;
-    bool is_known_namespace(const std::string &name) const;
+    bool embedded_header_outranked(const madc::dis::istring &name);	// non-const: may open the source forest
+    bool is_dynamic_symbol_allowed(const madc::dis::istring &name) const;
+    bool is_known_namespace(const madc::dis::istring &name) const;
     Variable *runtime_eval_scope_target(Variable *var) const;
     Variable *runtime_eval_scope_public_target(Variable *var);
     void collect_runtime_eval_scope_variables(std::vector<Variable *> &out) const;
@@ -6941,28 +6992,28 @@ public:
     // would otherwise capture the uninitialized x AND emit the capture
     // setter ahead of x's C declaration.
     Variable *decl_init_self = NULL;
-    void set_namespace_preference(const std::vector<std::string> &order, TokenBase *tb = NULL);
+    void set_namespace_preference(const std::vector<madc::dis::istring> &order, TokenBase *tb = NULL);
     // THE namespace-member lookup. A namespace bound to a dynamic module
     // (`import name as ns;` / `#load`) has the library's exports for members:
     // the miss path materializes one through resolve_module_member, so every
     // route into the namespace sees the same registration. `diag` non-NULL
     // (a qualified `ns::m` site): a policy denial or an unexported member is
     // reported at that token; NULL (a lookup walk): the miss is silent.
-    Variable *find_namespace_member(const std::string &ns_name, const std::string &member_name,
+    Variable *find_namespace_member(const madc::dis::istring &ns_name, const madc::dis::istring &member_name,
 				    TokenBase *diag = NULL);
-    Variable *resolve_module_member(const std::string &ns_name, const std::string &member_name,
+    Variable *resolve_module_member(const madc::dis::istring &ns_name, const madc::dis::istring &member_name,
 				    TokenBase *diag);
-    std::string canonical_nested_namespace(const std::string &parent, const std::string &comp);
-    std::vector<std::string> inline_namespace_descendants(const std::string &ns) const;
+    madc::dis::istring canonical_nested_namespace(const madc::dis::istring &parent, const madc::dis::istring &comp);
+    std::vector<madc::dis::istring> inline_namespace_descendants(const madc::dis::istring &ns) const;
     // The element of NS's inline namespace set ({NS} + its inline
     // descendants) that DECLARES `name` — where a qualified definition
     // `T NS::name` defines it ([dcl.meaning]/1). Empty when none does.
-    std::string declaring_inline_set_namespace(const std::string &ns,
-					       const std::string &name) const;
-    std::string canonical_namespace_path(const std::string &base, const std::string &dotted);
+    madc::dis::istring declaring_inline_set_namespace(const madc::dis::istring &ns,
+					       const madc::dis::istring &name) const;
+    madc::dis::istring canonical_namespace_path(const madc::dis::istring &base, const madc::dis::istring &dotted);
     Variable *resolve_preferred_identifier(class TokenIdent *ident_tb, bool expression_head);
-    bool class_scope_hides_unqualified_name(class TokenCpnd *code, const std::string &name);
-    TokenDataType *declare_class_placeholder(class TokenIdent *tag, const std::string &class_source_name,
+    bool class_scope_hides_unqualified_name(class TokenCpnd *code, const madc::dis::istring &name);
+    TokenDataType *declare_class_placeholder(class TokenIdent *tag, const madc::dis::istring &class_source_name,
 					     DataDefCLASS *nested_owner_class,
 					     const struct HoistedDeclIdentity *local_class_identity,
 					     bool register_local_source_alias);
@@ -6971,18 +7022,31 @@ public:
     bool has_expression_context_root() const;
     TokenBase *resolve_expression_context_identifier(class TokenIdent *ident_tb);
     TokenBase *resolve_expression_context_member(TokenBase *lhs, class TokenIdent *member_tb);
-    std::string current_source_directory();
-    bool include_already_seen(const std::string &path);
-    std::string resolve_include_path(const std::string &incfile, bool is_system);
-    std::string resolve_include_next_path(const std::string &incfile);
+    madc::dis::istring current_source_directory();
+    bool include_already_seen(const madc::dis::istring &path);
+    madc::dis::istring resolve_include_path(const madc::dis::istring &incfile, bool is_system);
+    // The includer-independent half of that search — the -I directories, then
+    // the selected flavor's system directories (disk, then the packed forest)
+    // — memoized per Program, hits only (gcc's per-directory file cache): a
+    // header included N times is looked up once, not once per search
+    // directory per inclusion. add_include_dir and a flavor change drop it.
+    bool search_include_dirs(const madc::dis::istring &incfile, madc::dis::istring &found);
+    std::unordered_map<madc::dis::istring, madc::dis::istring> include_search_memo;
+    const madc_stdlib_flavor *include_search_memo_flavor = NULL;
+    bool include_search_memo_sysroot = false;
+    // A resolved include path's canonical spelling (canonical_path_for_compare,
+    // one realpath per distinct path), memoized per Program.
+    madc::dis::istring canonical_include_key(const std::string &path);
+    std::unordered_map<std::string, madc::dis::istring> canonical_include_memo;
+    madc::dis::istring resolve_include_next_path(const madc::dis::istring &incfile);
     // The ordered #include_next walk (search list + start position after the
     // current file's directory) — ONE builder shared by the path resolver and
     // the embedded-ranking test so their notion of "after" cannot diverge.
-    size_t include_next_search_list(std::vector<std::string> &search);
+    size_t include_next_search_list(std::vector<madc::dis::istring> &search);
     // Position-aware twin of embedded_header_outranked for #include_next:
     // from the current position, does the embedded set's resource-dir slot
     // come before any real directory that supplies <name>?
-    bool embedded_wins_include_next(const std::string &name);
+    bool embedded_wins_include_next(const madc::dis::istring &name);
     bool is_system_header_path(const char *path) const;
     // The ONE reader of the generated include tables: every consumer asks these
     // rather than the globals, so selecting a -stdlib= flavor switches the whole
@@ -6992,22 +7056,22 @@ public:
     const char *compiler_owned_include_dir() const;
     // realpath'd copy of the above, cached per flavor — a compiler's reported
     // search list is not always canonical (clang: `.../bin/../include/c++/v1`).
-    const std::vector<std::string> &sys_include_prefixes_canonical() const;
+    const std::vector<madc::dis::istring> &sys_include_prefixes_canonical() const;
     // -stdlib=<name>: true when consumed. An unknown/unbuilt flavor is NOT
     // consumed, so the caller reports it (available flavors are a build-host
     // property, so the diagnostic has to name what this binary actually has).
-    bool set_stdlib_flavor_option(const std::string &arg);
-    std::string stdlib_flavor_names() const;	// ", "-joined, for that diagnostic
+    bool set_stdlib_flavor_option(const madc::dis::istring &arg);
+    madc::dis::istring stdlib_flavor_names() const;	// ", "-joined, for that diagnostic
     // The flavor names this binary was built with (the generated table's
     // named entries, in table order) — the diagnostic and the capability
     // manifest both read this one list.
-    static std::vector<std::string> supported_stdlib_flavor_names();
+    static std::vector<madc::dis::istring> supported_stdlib_flavor_names();
     // The selected flavor, defaulted: table entry 0 when no -stdlib= was given.
     const madc_stdlib_flavor *active_stdlib_flavor() const;
     // Push the std ABI inline namespace into the mangler when `name` is one of
     // the stdlib config macros (_LIBCPP_ABI_NAMESPACE / _GLIBCXX_USE_CXX11_ABI).
     // Called at every define_map write site: directive, forest replay, CLI -D.
-    void note_std_abi_define(const std::string &name, const std::string &value);
+    void note_std_abi_define(const madc::dis::istring &name, const std::string &value);
     std::string expandIfMacros(const std::string &raw);
     // Macro-replace what remains of the current Source and return its
     // spelling, whitespace kept (a macro argument's pre-expansion).
@@ -7020,17 +7084,17 @@ public:
     // positional=false skips the token-stream position gates (declaration
     // head, member access, non-std qualifier) for callers feeding names
     // that have no stream position (the `#pragma prefer` char-level read).
-    bool auto_include_standard_identifier(const std::string &word,
+    bool auto_include_standard_identifier(const madc::dis::istring &word,
 					  bool positional = true,
 					  bool qualified_use = false);
     // May the scan pull `header` for `word`? The host's include and
     // namespace policies say (lexer.cpp).
-    bool auto_include_permitted(const std::string &word, const char *header);
+    bool auto_include_permitted(const madc::dis::istring &word, const char *header);
     // The words the scan answers for unqualified, for completion (plan
     // §41.7a); empty outside the madc dialect.
-    void auto_include_words(std::vector<std::string> &out);
+    void auto_include_words(std::vector<madc::dis::istring> &out);
     void inject_pending_auto_includes();
-	void tokenize_synthetic_system_include(const std::string &header,
+	void tokenize_synthetic_system_include(const madc::dis::istring &header,
 					       const char *origin_name);
 	// import (C++20 [cpp.pre] made whole; docs/language/import.md): the
 	// directive-position test, the directive reader, and the binder it
@@ -7039,27 +7103,45 @@ public:
 	// open (false + err); each caller words the refusal.
 	bool import_directive_position();
 	TokenBase *tokenize_import_directive();
-	bool bind_module_namespace(const std::string &ns, const std::string &spelling,
+	bool bind_module_namespace(const madc::dis::istring &ns, const madc::dis::istring &spelling,
 				   bool link_form, std::string &err);
-	void tokenize_embedded_header_text(const std::string &name,
+	void tokenize_embedded_header_text(const madc::dis::istring &name,
 					 const std::string &text,
 					 bool protocol_visit);
-	void tokenize_posix_header_supplement(const std::string &incfile);
-	bool posix_whole_provider_serves(const std::string &incfile,
-					 const std::string &resolved,
+	void tokenize_posix_header_supplement(const madc::dis::istring &incfile);
+	bool posix_whole_provider_serves(const madc::dis::istring &incfile,
+					 const madc::dis::istring &resolved,
 					 const std::string **text = NULL);
-	bool tokenize_posix_whole_provider(const std::string &incfile,
-					   const std::string &resolved);
+	bool tokenize_posix_whole_provider(const madc::dis::istring &incfile,
+					   const madc::dis::istring &resolved);
 	bool resolved_include_provider_exists(const std::string &path);
 	// The READING twin of the predicate above — same provider order, one
 	// owner. Every consumer that needs a resolved include's BYTES goes
 	// through it, so none can see a header the others cannot.
 	bool read_resolved_include(const std::string &path, std::string &text);
-	std::string detect_include_guard(const std::string &file_path);
+	// The include guard a header's TEXT carries under gcc's
+	// multiple-include rules (Source::IncludeGuardWatch), read without
+	// lexing: the whole verdict, or with head_only only the opening
+	// group's macro (empty when the first significant line opens none).
+	static madc::dis::istring include_guard_of_text(const std::string &text,
+							bool head_only);
+	// The lexing file's guard watch, one event each: a significant token or
+	// non-conditional directive; a group opening (its candidate macro, or
+	// empty); an #else / #elif; a group's #endif (after the pop).
+	void guard_watch_content();
+	void guard_watch_open(const madc::dis::istring &cmacro);
+	void guard_watch_branch();
+	void guard_watch_close();
+	// should_tokenize_include -> the include site that lexes the file: the
+	// bytes the first-visit probe already read (one read per header), and
+	// the file whose guard verdict the lex decides.
+	std::string include_probe_text;
+	std::string include_probe_path;
+	madc::dis::istring include_guard_watch_key;
     void expand_pending_auto_include_macros(size_t original_start);
     std::vector<TokenBase *> tokenize_auto_include_define(const std::string &value,
 							  const TokenBase *origin);
-    void mark_embedded_include_flag(const std::string &incfile);
+    void mark_embedded_include_flag(const madc::dis::istring &incfile);
     // Every include-serving arm's completion return (lexer.cpp): fires the
     // include-completion side effects, then continues the outer scan.
     TokenBase *include_completed_token();
@@ -7069,17 +7151,17 @@ public:
     void push_runtime_scope();
     void pop_runtime_scope();
     static Program *active_runtime_program();
-    bool runtime_eval_source(const std::string &source_text,
+    bool runtime_eval_source(const madc::dis::istring &source_text,
 			     madc::value &result,
-			     const std::string &display_name = "__madc_runtime_eval",
+			     const madc::dis::istring &display_name = "__madc_runtime_eval",
 			     const madc::value *context = NULL,
 			     const char *wrapper_return_type = NULL);
-    bool runtime_eval_expression(const std::string &expression,
+    bool runtime_eval_expression(const madc::dis::istring &expression,
 				 madc::value &result,
-				 const std::string &display_name = "__madc_runtime_eval_expression",
+				 const madc::dis::istring &display_name = "__madc_runtime_eval_expression",
 				 const madc::value *context = NULL);
 
-    Variable *addFunction(std::string, datatype_vec_t, fVOIDFUNC, bool isMethod=false, bool builtin_registration=false, const std::string &emit_symbol=std::string());
+    Variable *addFunction(madc::dis::istring, datatype_vec_t, fVOIDFUNC, bool isMethod=false, bool builtin_registration=false, const madc::dis::istring &emit_symbol=madc::dis::istring());
 
     // manage compound nesting
     void pushCompound();
@@ -7087,17 +7169,17 @@ public:
     // [stmt.select]/1, [stmt.iter]/1: parse the substatement of a selection or
     // iteration statement in its own implicit block scope (see the definition).
     TokenBase *parse_substatement(TokenBase *tn);
-    static std::string hoisted_decl_symbol(const std::string &owner_symbol,
-					    const std::string &source_name,
+    static madc::dis::istring hoisted_decl_symbol(const madc::dis::istring &owner_symbol,
+					    const madc::dis::istring &source_name,
 					    size_t ordinal,
 					    HoistedDeclKind kind);
-    std::string function_body_emission_symbol(const Variable &var) const;
+    madc::dis::istring function_body_emission_symbol(const Variable &var) const;
     HoistedDeclIdentity declare_hoisted_declaration(TokenCpnd *scope,
 						    HoistedDeclKind kind,
-						    const std::string &source_name,
+						    const madc::dis::istring &source_name,
 						    TokenBase *origin);
     bool find_hoisted_declaration(TokenCpnd *scope, HoistedDeclKind kind,
-					  const std::string &source_name,
+					  const madc::dis::istring &source_name,
 					  HoistedDeclIdentity &out) const;
     void remember_hoisted_identity(const HoistedDeclIdentity &identity,
 				   TokenBase *origin);
@@ -7138,8 +7220,8 @@ public:
     // Full-fidelity source reconstruction from the token stream (requires
     // keep_trivia set before tokenizing). See TokenBase::leading_trivia.
     std::string reconstruct_source();
-    TokenProgram *tokenize_buffer(const std::string &source_text,
-				  const std::string &display_name);
+    TokenProgram *tokenize_buffer(const madc::dis::istring &source_text,
+				  const madc::dis::istring &display_name);
     // The ONE lex loop of tokenize and tokenize_buffer (lexer.cpp); false
     // after a recorded refusal.
     bool lex_main_unit(const char *fname);
@@ -7153,7 +7235,7 @@ public:
     // first one gets dropped by parser exStack semantics.
     void push_token_with_literal_concat(TokenBase *tb);
     void pin_pending_pack_ops(TokenBase *tb);
-    void queue_fragment_prerequisites(std::set<std::string> &batch);
+    void queue_fragment_prerequisites(std::set<madc::dis::istring> &batch);
 
     // for debugging
     void printt(TokenBase *);
@@ -7388,21 +7470,21 @@ public:
     }
     // parse tokens into AST
     bool load_file(const char *fname);
-    bool load_buffer(const std::string &source_text,
-		     const std::string &display_name);
+    bool load_buffer(const madc::dis::istring &source_text,
+		     const madc::dis::istring &display_name);
     bool parse(TokenProgram *);
     // --- error-tolerant parse (slice A: panic recovery at the top-level
     //     statement loop; design doc §3.5). ---
     // THE record-and-render rule for front-end catch arms (lexer + parser):
     // set_error + mute-aware render. Returns the diagnostic's index.
     size_t record_frontend_error(DiagnosticPhase phase,
-				 const std::string &message,
+				 const madc::dis::istring &message,
 				 const char *file, int line, int column,
 				 int end_line = 0, int end_column = 0);
     // The parser-phase convenience (token position, diagnostic_file_for).
     // Consumers: the recovery arms (which then CONTINUE the loop), the
     // terminal catch cluster, parse_expression_unit's cluster.
-    size_t record_parse_error(const std::string &message,
+    size_t record_parse_error(const madc::dis::istring &message,
 			      TokenBase *where, TokenProgram *tp);
     // THE Throw-origin recording rule: message from Throw's buffer (e.what()
     // fallback). Recording only — the render already happened
@@ -7444,14 +7526,14 @@ public:
 				      size_t diag_index,
 				      size_t saved_compounds,
 				      size_t saved_class_scopes,
-				      const std::string &saved_func,
+				      const madc::dis::istring &saved_func,
 				      size_t cursor_watermark);
     TokenBase *parse_expression_unit(TokenProgram *);
     void parseIdentifier(TokenIdent *);
-    void parseFunction(DataDef &, std::string &, DataDefCLASS *owner_class = NULL,
+    void parseFunction(DataDef &, madc::dis::istring &, DataDefCLASS *owner_class = NULL,
 		       std::vector<DataDef *> *multi_ret = NULL,
 		       bool return_ref = false,
-		       std::string return_typedef_alias = std::string(),
+		       madc::dis::istring return_typedef_alias = madc::dis::istring(),
 		       bool static_class_method = false,
 		       bool inline_specified = false,
 		       bool static_specified = false,
@@ -7503,7 +7585,7 @@ public:
     // is the argument; its trailing symbol(s) are consumed from the stream.
     // When `consumed` is non-null, each consumed symbol token is appended to it
     // (so angle-bracket scanners can re-emit the operator-id verbatim).
-    std::string parseOperatorId(TokenBase *operator_tok,
+    madc::dis::istring parseOperatorId(TokenBase *operator_tok,
 				std::vector<TokenBase *> *consumed = NULL);
     // True when `t` is the `operator` keyword that introduces an
     // operator-function-id. The scanners use this so an operator symbol
@@ -7535,10 +7617,10 @@ public:
     // parameter names in constexpr_call_bindings, then evaluate its retained
     // `return expr;` token run. Recursion is bounded and reports a hard error.
     ConstValue evaluate_constexpr_function_call(TokenBase *name_tb,
-						    const std::string &name);
-    bool constexpr_binding_value(const std::string &name,
+						    const madc::dis::istring &name);
+    bool constexpr_binding_value(const madc::dis::istring &name,
 				 madc_wide_int &out) const;
-    bool is_constexpr_function_name(const std::string &name);
+    bool is_constexpr_function_name(const madc::dis::istring &name);
     // [expr.cast] in constant context: the token count of a parenthesized run
     // (the `(` already consumed) that IS a type-id up to its `)`, with the cast
     // target and `unsigned`-ness; 0 when the run is a parenthesized EXPRESSION
@@ -7621,13 +7703,13 @@ public:
     // unchanged if `tn` does not begin an initializer. Shared by the struct and
     // class body parsers.
     TokenBase *capture_member_default_init(TokenBase *tn, DataDefSTRUCT *dds,
-					   const std::string &mname);
+					   const madc::dis::istring &mname);
     // A captured default member initializer, parsed when its class is complete:
     // the initializer is a complete-class context ([class.mem]/7), so it may
     // name `this`, any member, and a member function declared after it.
     struct PendingMemberDefaultInit {
 	DataDefSTRUCT *dds;
-	std::string member;
+	madc::dis::istring member;
 	std::vector<TokenBase *> tokens;
     };
     std::vector<PendingMemberDefaultInit> pending_member_default_inits;
@@ -7644,17 +7726,17 @@ public:
     // fold-query probe). Scans the token stream from the current position.
     bool bracket_dim_constant_expression_parses();
     bool bracket_dim_uses_runtime_value(
-		const std::set<std::string> *runtime_names = NULL);
+		const std::set<madc::dis::istring> *runtime_names = NULL);
     bool bracket_dim_has_constant_fold_query();
     bool bracket_dim_needs_runtime_value(
-		const std::set<std::string> *runtime_names = NULL);
+		const std::set<madc::dis::istring> *runtime_names = NULL);
     // After a method call's arguments are parsed, re-bind `tc` to the overload
     // of `cls`'s method `id` that best matches the argument types (the initial
     // findMethod() bound the first by-name match). Returns `tc` unchanged when
     // it already names the best overload, or a fresh TokenCallMethod on `recv`
     // bound to the winning overload (same parameters / parent_expr / position).
     class TokenCallMethod *reselect_method_overload(class TokenCallMethod *tc,
-		Variable &recv, class DataDefCLASS *cls, const std::string &id);
+		Variable &recv, class DataDefCLASS *cls, const madc::dis::istring &id);
     // [over.match.funcs]/4 — cv of the implicit object ARGUMENT a member call
     // on `recv` supplies. The hidden __this receiver takes the ENCLOSING
     // method's cv (a const member's this points at const T); a named receiver
@@ -7672,7 +7754,7 @@ public:
     // the member-template instantiation hooks re-run on it) when one is found,
     // else the original `tc`.
     class TokenCallFunc *reselect_static_member_overload(class TokenCallFunc *tc,
-		class DataDefCLASS *owner, const std::string &member);
+		class DataDefCLASS *owner, const madc::dis::istring &member);
     // The class-object DataDef an operand expression DENOTES for operator /
     // overload resolution: its datadef's class, or — for a reference-typed
     // expression / a REFERENCE variable (`const A &p`, vfREFERENCE stored as
@@ -7746,7 +7828,7 @@ public:
     // stores arrays flattened; this is where the extents are read back.
     DataDef *array_operand_type(TokenBase *e);
     DataDef *object_array_type(const Variable &v);
-    DataDef *member_array_type(DataDefSTRUCT &sdd, const std::string &member);
+    DataDef *member_array_type(DataDefSTRUCT &sdd, const madc::dis::istring &member);
     // Its element (the ROW, multi-dimensional) — the type of e[0] — or NULL.
     DataDef *array_operand_element_type(TokenBase *e);
     // The return CLASS of a captured FREE namespace binary operator on class
@@ -7755,11 +7837,11 @@ public:
     // arbitration, and symbol binding happen at lowering
     // (CirBuilder::resolve_free_operator_byvalue). NULL = no such operator.
     DataDef *free_binary_operator_return_class(class DataDefCLASS *lc,
-		const std::string &opname, TokenBase *right);
+		const madc::dis::istring &opname, TokenBase *right);
     // Literal-lhs sibling (`"pre" + s`): param[0] non-class pointer/value,
     // param[1] the class by const-ref; returns the by-value return class.
     DataDef *free_binary_operator_return_class_nonclass_lhs(TokenBase *left,
-		const std::string &opname, TokenBase *right);
+		const madc::dis::istring &opname, TokenBase *right);
     TokenBase *parseCompound();
     TokenBase *parseStatement(TokenBase *);
     TokenBase *parseStatementBody(TokenBase *);	// the grammar; parseStatement stamps its extent
@@ -7873,7 +7955,7 @@ public:
 	unsigned entry;		// REPL[N]
 	Variable *object;	// the kept value; NULL when it was not kept
 	bool alias;		// object points at the value (an aggregate glvalue)
-	std::string not_kept;	// why, when object is NULL
+	madc::dis::istring not_kept;	// why, when object is NULL
     };
     std::vector<SessionResult> session_results;
     unsigned entry_number = 0;		// the entry being parsed: REPL[N]
@@ -7883,7 +7965,7 @@ public:
     // `%type` prints (plan §41.8a). NULL when no final expression shows.
     DataDef *entry_value_type = NULL;
     bool entry_result_alias = false;	// that result points at the value
-    std::string entry_result_not_kept;	// or why its value is not kept
+    madc::dis::istring entry_result_not_kept;	// or why its value is not kept
     unsigned entry_result_serial = 0;	// __madc_result_K, never reused
     TokenBase *keep_entry_value(TokenBase *value, TokenBase *loc);
     TokenBase *session_result_value(Variable *result, bool alias, TokenBase *loc);
@@ -7892,7 +7974,7 @@ public:
     { return v && v == entry_result_object; }
     TokenBase *resolve_session_result_name(class TokenIdent *ident_tb);
     // The result a spelling (`ans`, `__`, `_4`) names, or NULL.
-    const SessionResult *session_result_named(const std::string &spelling) const;
+    const SessionResult *session_result_named(const madc::dis::istring &spelling) const;
     // Does the code being parsed run as part of the entry, now? Not a
     // function or lambda body, a default argument or a class member's
     // initializer: those run later, when the moving result names mean
@@ -7913,8 +7995,8 @@ public:
 	Diagnostic diagnostic;		// the deciding error (Incomplete / Invalid)
 	bool shows_value = false;	// D10: the final statement omitted its `;`
     };
-    EntryClassification classify_entry(const std::string &text,
-				       const std::string &display_name);
+    EntryClassification classify_entry(const madc::dis::istring &text,
+				       const madc::dis::istring &display_name);
     // Stage 1b: the entry's `(` `[` `{` balance (DelimDepth + an order check).
     struct EntryBalance
     {
@@ -7940,25 +8022,25 @@ public:
     // its module links.
     TokenFunc *entry_function = NULL;
     unsigned entry_function_serial = 0;
-    std::string entry_function_name;
+    madc::dis::istring entry_function_name;
     TokenFunc *ensure_entry_function(TokenBase *loc);
     void adopt_entry_statement(TokenBase *ts, TokenBase *head);
     void place_entry_initializers(size_t decls_before);
-    bool begin_interactive_session(const std::string &display_name);
-    EntryVerdict parse_entry(const std::string &text, const std::string &display_name);
+    bool begin_interactive_session(const madc::dis::istring &display_name);
+    EntryVerdict parse_entry(const madc::dis::istring &text, const madc::dis::istring &display_name);
     // A program file loaded into the session, a unit in its own grammar
     // (the caller holds ParseMode::TranslationUnit; plan §41.5a, slice 2).
-    bool parse_file_unit(const std::string &text, const std::string &path);
+    bool parse_file_unit(const madc::dis::istring &text, const madc::dis::istring &path);
     // Does a line typed after an extendable if continue it (D11)? Its first
     // word is the `else` keyword.
-    bool entry_line_continues_if(const std::string &line);
+    bool entry_line_continues_if(const madc::dis::istring &line);
     // Around a session unit's parse (an entry's, or a loaded file's):
     // begin_entry clears the last unit's state and its unread tokens;
     // finish_entry makes the unit's own statics session names (one unit,
     // plan §41.5a), shows an entry's value and queues its run.
     void begin_entry();
     void finish_entry(size_t decls_before, size_t funcs_before);
-    bool lex_entry(const std::string &text, const std::string &display_name);
+    bool lex_entry(const madc::dis::istring &text, const madc::dis::istring &display_name);
     // Completion (plan §41.7a, slice 3; src/madc_complete.cpp). Where the word
     // before the caret stands: a name, a tag after struct/union/enum, a
     // member after `.` or `->`, a member after `::`, or nowhere names are
@@ -7968,14 +8050,14 @@ public:
     // starts at `start`, and these names complete it (sorted, no repeats).
     // The text is lexed as an attempt still being typed, inside an entry
     // transaction that rolls back, so a query leaves nothing behind.
-    std::vector<std::string> complete_entry(const std::string &text,
+    std::vector<madc::dis::istring> complete_entry(const madc::dis::istring &text,
 					    size_t caret, size_t &start);
     // The context, read from the lexed attempt (which the caller's entry
     // transaction holds). For a member, `chain` gets the names joined by `.`
     // or `->` back to the root and `arrows` which joins are `->` (the last
     // join is the word's own); for a qualified name, the qualifier's names.
-    CompletionContext completion_context(const std::string &before,
-					 std::vector<std::string> &chain,
+    CompletionContext completion_context(const madc::dis::istring &before,
+					 std::vector<madc::dis::istring> &chain,
 					 std::vector<bool> &arrows);
     // A name a top-level entry can write, and what it names (plan §41.8a):
     // the one walk completion's names and `?name` both read, so `?` never
@@ -7989,13 +8071,13 @@ public:
 	// code the dialect switches on.
 	typedef ::madc::name_kind Kind;
 	Kind kind;
-	std::string name;
+	madc::dis::istring name;
 	Variable *var;
 	FuncDef *fd;
 	DataDef *type;
 	const std::string *definition;
 	const MacroDef *macro;
-	TopLevelName(Kind k, const std::string &n)
+	TopLevelName(Kind k, const madc::dis::istring &n)
 	    : kind(k), name(n), var(NULL), fd(NULL), type(NULL), definition(NULL),
 	      macro(NULL) {}
     };
@@ -8006,18 +8088,18 @@ public:
     void visit_top_level_names(CompletionContext ctx,
 			       const std::function<void(const TopLevelName &)> &visit);
     // The names visible at the top level that start with `word`.
-    void completion_names(const std::string &word, CompletionContext ctx,
-			  std::vector<std::string> &out);
+    void completion_names(const madc::dis::istring &word, CompletionContext ctx,
+			  std::vector<madc::dis::istring> &out);
     // `?name` (plan §41.8a, slice 2): what the session knows of a name, in
     // IPython's fields. False when nothing is named so (`out` says so).
-    bool describe_name(const std::string &name, std::string &out);
+    bool describe_name(const madc::dis::istring &name, std::string &out);
     // Where the Program recorded an entity (`@ REPL[2]:1`, `@ file`), empty
     // when it recorded nothing: an object's latest TopDecl, a type name's
     // first, a function's latest definition in the tree, else its
     // prototype's file.
-    std::string object_location(const Variable *v) const;
-    std::string type_location(const std::string &name, const DataDef *dd) const;
-    std::string function_location(const Variable *v, const FuncDef *fd) const;
+    madc::dis::istring object_location(const Variable *v) const;
+    madc::dis::istring type_location(const madc::dis::istring &name, const DataDef *dd) const;
+    madc::dis::istring function_location(const Variable *v, const FuncDef *fd) const;
     // The same records as a file and a line (0 when none): the locations
     // above format these, and a binding row carries them.
     void object_origin(const Variable *v, const char *&file, int &line) const;
@@ -8026,7 +8108,7 @@ public:
     // The session's units (plan §41.11a step 3d): the entries and loaded
     // files it linked, by name. Session state: only the session's submit and
     // load add to it (D9).
-    std::set<std::string> session_units;
+    std::set<madc::dis::istring> session_units;
     // A name the session defined: an object or a function whose origin is
     // one of session_units, never a header's or the prelude's,
     // named as an entry writes it (Tab's rule: no result name, no reserved
@@ -8035,21 +8117,21 @@ public:
     struct SessionBinding
     {
 	TopLevelName::Kind kind;
-	std::string name;
+	madc::dis::istring name;
 	Variable *var;		// an object's
-	std::string type;
+	madc::dis::istring type;
 	const char *file;
 	int line;
     };
     void session_bindings(std::vector<SessionBinding> &out);
     // Slice 4: an object's members after its chain, and a scope's (a
     // namespace's or a class's) members after its qualifier.
-    void completion_members(const std::vector<std::string> &chain,
+    void completion_members(const std::vector<madc::dis::istring> &chain,
 			    const std::vector<bool> &arrows,
-			    const std::string &word, std::vector<std::string> &out);
-    void completion_scope_names(const std::string &scope, const std::string &word,
-				std::vector<std::string> &out);
-    DataDefCLASS *completion_scope_class(const std::string &scope);
+			    const madc::dis::istring &word, std::vector<madc::dis::istring> &out);
+    void completion_scope_names(const madc::dis::istring &scope, const madc::dis::istring &word,
+				std::vector<madc::dis::istring> &out);
+    DataDefCLASS *completion_scope_class(const madc::dis::istring &scope);
     bool lex_unit_text(const char *fname, const std::string &text);
     // The top-level parse loop parse() and parse_entry() share: statements
     // to the end of the token stream (a TU) or to the end-of-entry token.
@@ -8202,7 +8284,7 @@ public:
     // constraint evaluation — a member-type-chain miss leaves tokens behind).
     DataDef *resolve_template_param_default_type(
 		const std::vector<TokenBase *> &default_tokens,
-		const std::map<std::string, DataDef *> &binding,
+		const std::map<madc::dis::istring, DataDef *> &binding,
 		DataDefCLASS *owner, bool require_full_parse = false);
     // A template-parameter default's token run with the already-bound
     // parameters substituted in ([temp.deduct]/5), as fresh clones the caller
@@ -8212,15 +8294,15 @@ public:
     // a type default (`class U = A<N * 3>`) alike.
     std::vector<TokenBase *> substitute_template_binding(
 		const std::vector<TokenBase *> &tokens,
-		const std::map<std::string, DataDef *> &binding);
+		const std::map<madc::dis::istring, DataDef *> &binding);
     // Fold a NON-type parameter's default under the binding of the parameters
     // before it (`int N = sizeof(T) + 1`, [temp.deduct]/5), in the template's
     // defining namespace. False when it does not fold (still dependent, or not
     // a constant expression).
     bool fold_nontype_default_under_binding(
 		const std::vector<TokenBase *> &default_tokens,
-		const std::map<std::string, DataDef *> &binding,
-		const std::string &defining_ns, int64_t &out);
+		const std::map<madc::dis::istring, DataDef *> &binding,
+		const madc::dis::istring &defining_ns, int64_t &out);
     // Consume a declarator's pointer-star run: a sequence of `*` interleaved with
     // cv-qualifiers (const/volatile/restrict). Each `*` on a NON-fn-ptr base wraps
     // `dd` via getPointerType (the type reflects the indirection); a DataDefFPTR
@@ -8253,7 +8335,7 @@ public:
 			//   there, leave it unread (function_pending)
     };
     struct DeclaratorResult {
-	std::string name;		// the declarator-id ("" = abstract / anonymous)
+	madc::dis::istring name;		// the declarator-id ("" = abstract / anonymous)
 	TokenBase *name_tok = NULL;
 	bool is_pack = false;		// `...` before the id
 	int ptr_depth = 0;		// `*`s read at the top level (before any parens)
@@ -8307,7 +8389,7 @@ public:
     DataDef *qualify_array_elements(DataDef *arr, unsigned cv);
     DataDef *parse_declarator(DataDef *base, DeclaratorMode mode,
 			      DeclaratorResult &out,
-			      const std::set<std::string> *runtime_names = NULL,
+			      const std::set<madc::dis::istring> *runtime_names = NULL,
 			      unsigned leading_cv = cvNONE);
     bool nested_declarator_opens(DeclaratorMode mode, size_t at = 0);
     void drop_redundant_declarator_parens(DeclaratorMode mode);
@@ -8317,12 +8399,12 @@ public:
 private:
     DataDef *parse_declarator_level(DataDef *base, DeclaratorMode mode,
 				    DeclaratorResult &out,
-				    const std::set<std::string> *runtime_names,
+				    const std::set<madc::dis::istring> *runtime_names,
 				    int depth, bool base_built_here,
 				    unsigned leading_cv = cvNONE);
     DataDef *parse_declarator_suffixes(DataDef *dd, DeclaratorMode mode,
 				       DeclaratorResult &out,
-				       const std::set<std::string> *runtime_names,
+				       const std::set<madc::dis::istring> *runtime_names,
 				       int depth, bool id_here, bool &built_fn);
 public:
     // The pointer-to-function twin of a FUNCTION type (a fresh DataDefFPTR over
@@ -8342,7 +8424,7 @@ public:
     // declarator's OWN dims (count = their product, 0 for `[]`; the first
     // runtime dim as count_expr). name_tok is the declarator-id token.
     struct MemberDeclarator {
-	std::string name;
+	madc::dis::istring name;
 	TokenBase *name_tok = NULL;
 	size_t count = 1;
 	TokenBase *count_expr = NULL;
@@ -8398,7 +8480,7 @@ public:
 				std::vector<TokenBase *> &dim_exprs,
 				TokenBase *ctx, const char *what,
 				bool capture_runtime_dims,
-				const std::set<std::string> *runtime_names = NULL,
+				const std::set<madc::dis::istring> *runtime_names = NULL,
 				bool param_qualifiers = false,
 				bool *first_unbounded = NULL);
     // outer_unbounded: the declarator wrote no outermost bound (`[]`) — that
@@ -8406,7 +8488,7 @@ public:
     DataDef *nest_carray_dims(DataDef *elem_dd,
 			      const std::vector<carray_dim_t> &dims,
 			      const std::vector<TokenBase *> &dim_exprs,
-			      const std::string &outer_name, bool forest_record,
+			      const madc::dis::istring &outer_name, bool forest_record,
 			      bool outer_unbounded = false);
     DataDef *parse_ptr_array_suffix(DataDef *elem_dd, TokenBase *ctx,
 				    const char *what,
@@ -8526,20 +8608,20 @@ public:
     bool is_old_style_parameter_declaration_start(TokenBase *tb);
     DataDef *parse_old_style_parameter_base(TokenBase *&nt, unsigned *lead_cv = NULL);
     void parse_old_style_parameter_declaration(TokenBase *nt,
-		const std::vector<std::string> &param_ids,
-		std::map<std::string, DataDef *> &param_types,
-		std::map<std::string, unsigned> *param_object_cvs = NULL);
+		const std::vector<madc::dis::istring> &param_ids,
+		std::map<madc::dis::istring, DataDef *> &param_types,
+		std::map<madc::dis::istring, unsigned> *param_object_cvs = NULL);
     bool scan_old_style_definition_suffix();
     // Namespace resolution helpers: walk the enclosing-namespace chain to find
     // a member, resolve a bare name against the active namespace scope, and
     // report the namespace the current C++ scope looks up in.
-    Variable *find_namespace_member_in_scope_chain(const std::string &ns_name,
-						   const std::string &member_name);
-    std::string resolve_namespace_name_in_scope(const std::string &name);
+    Variable *find_namespace_member_in_scope_chain(const madc::dis::istring &ns_name,
+						   const madc::dis::istring &member_name);
+    madc::dis::istring resolve_namespace_name_in_scope(const madc::dis::istring &name);
     // `<class-in-scope>::name` when that names a registered pseudo-namespace —
     // how a CLASS-nested enum's relative `Tag::Value` spelling resolves.
-    std::string resolve_class_scoped_ns(const std::string &name);
-    std::string active_cpp_lookup_namespace();
+    madc::dis::istring resolve_class_scoped_ns(const madc::dis::istring &name);
+    madc::dis::istring active_cpp_lookup_namespace();
     // static_assert: parse the statement form (folds the constant condition,
     // throws with the message on failure), consume the deferred form inside an
     // uninstantiated template body, and consume the class-scope declaration.
@@ -8552,14 +8634,14 @@ public:
     // yields the typeof()'d type; try_parse_constant_offsetof_address folds
     // offsetof-style addresses.
     DataDef *resolve_type_query_datadef(TokenBase *type_tb,
-					const std::string &op_name,
+					const madc::dis::istring &op_name,
 					bool &have_value, size_t &query_value);
     // With `deferred` (an expression operand position), an operand whose
     // measure is not knowable at parse time — a VLA type-id, or a type-id or
     // expression whose type depends on a template parameter in a parse-once
     // pattern — comes back there as a TokenTypeQuery, and the return value
     // is 0. Without it (a constant context) every operand folds.
-    size_t evaluate_type_query(TokenBase *op_tb, const std::string &op_name,
+    size_t evaluate_type_query(TokenBase *op_tb, const madc::dis::istring &op_name,
 			       TokenBase **deferred = NULL);
     // The parenthesized operand of a type query or an alignment specifier,
     // its `(` consumed, read as a TYPE-ID when the type-id is the whole
@@ -8568,7 +8650,7 @@ public:
     // may also end at a `,` or a pack expansion's `...`, and the terminator
     // is left unconsumed. NULL, nothing consumed, when the operand is an
     // expression.
-    DataDef *parenthesized_type_id_operand(const std::string &op_name,
+    DataDef *parenthesized_type_id_operand(const madc::dis::istring &op_name,
 					   bool operand_list = false);
     // The operand of `_Alignas ( ... )` / `alignas ( ... )`, the stream past
     // the specifier: a type-id's alignment or a constant expression's value,
@@ -8585,25 +8667,25 @@ public:
     // Type-trait builtins (__is_class/__is_base_of/…): parse `( type-list )` and
     // fold to a bool constant token. See parser.cpp for the supported (faithful)
     // set; unsupported traits are not recognized (clear error, never a wrong bool).
-    TokenBase *evaluate_type_trait(TokenBase *op_tb, const std::string &name);
+    TokenBase *evaluate_type_trait(TokenBase *op_tb, const madc::dis::istring &name);
     TokenDataType *parse_typeof_datatype(TokenBase *op_tb);
     bool try_parse_constant_offsetof_address(int64_t &out);
     // Named C++ casts (static_cast/reinterpret_cast/const_cast/dynamic_cast):
     // parse the expression form and the constant-folded form; plus the
     // C-style cast operand helpers (deref/function-call/literal materialization).
     ConstValue parse_constant_named_cpp_cast(TokenBase *cast_tb,
-						const std::string &cast_name);
+						const madc::dis::istring &cast_name);
     bool try_parse_constant_functional_cast(TokenBase *type_tb,
 					    madc_wide_int &out);
     TokenBase *parse_named_cpp_cast(TokenBase *cast_tb,
-				    const std::string &cast_name);
+				    const madc::dis::istring &cast_name);
     // The `< type-id >` both forms share, read by parse_type_id.
     DataDef *parse_named_cast_target(TokenBase *cast_tb,
-				     const std::string &cast_name,
+				     const madc::dis::istring &cast_name,
 				     TokenBase **type_head = NULL);
     // A type-name operand (its cv, its type, its abstract declarator) — a
     // named cast's target, a vector builtin's.
-    DataDef *parse_type_name_operand(TokenBase *ctx, const std::string &what,
+    DataDef *parse_type_name_operand(TokenBase *ctx, const madc::dis::istring &what,
 				     TokenBase **type_head = NULL);
     // __builtin_convertvector / __builtin_shufflevector / __builtin_shuffle,
     // the stream at the `(` after the name.
@@ -8637,7 +8719,7 @@ public:
     // shapes the bare-name reader throws on today; the consumer returns the
     // declared name (empty when abstract) and whether it carried a pack `...`.
     bool template_parameter_declarator_ahead();
-    void consume_template_parameter_declarator(std::string &name_out,
+    void consume_template_parameter_declarator(madc::dis::istring &name_out,
 					       bool &is_pack_out);
     std::vector<TokenBase *> collect_template_default_argument();
     // Template-machinery core: <…> argument scanning, template-id / alias /
@@ -8698,16 +8780,16 @@ public:
     // `ranked` (optional): the candidates to try, in order, in place of every
     // template registered under `key`; `deduced` (optional, with a `ranked`
     // of one): that candidate's binding as call deduction formed it.
-    DataDef *resolve_fn_template_return_by_key(const std::string &key,
+    DataDef *resolve_fn_template_return_by_key(const madc::dis::istring &key,
 				const std::vector<DataDef *> &explicit_args,
 				int depth,
 				const std::vector<DataDef *> *call_arg_types = NULL,
 				const std::vector<FnTemplateDef *> *ranked = NULL,
-				const std::map<std::string, DataDef *> *deduced = NULL);
+				const std::map<madc::dis::istring, DataDef *> *deduced = NULL);
     // Resolve `decltype ( IDENT < targs > ( args ) )` (substituted tokens) by
     // recursing into IDENT's template return type in namespace `ns`. No emit.
     DataDef *resolve_decltype_call_return(const std::vector<TokenBase *> &sub,
-				const std::string &ns, int depth);
+				const madc::dis::istring &ns, int depth);
     TokenBase *collect_template_argument_spelling(TokenBase *first,
 						  std::string &spelling,
 						  std::vector<TokenBase *> *tokens_out = NULL);
@@ -8715,13 +8797,13 @@ public:
     TokenBase *consume_template_type_arg_qualifiers(TokenBase *tb,
 						    std::string &spelling);
     void consume_trailing_type_arg_qualifiers(std::string &spelling);
-    TokenDataType *instantiate_template_use(const std::string &tname,
+    TokenDataType *instantiate_template_use(const madc::dis::istring &tname,
 					    TokenBase *tb,
-					    const std::string &ns_hint = std::string(),
+					    const madc::dis::istring &ns_hint = madc::dis::istring(),
 					    DataDefCLASS *owner_hint = NULL);
-    TokenDataType *instantiate_template_alias_use(const std::string &tname,
+    TokenDataType *instantiate_template_alias_use(const madc::dis::istring &tname,
 						  TokenBase *tb,
-						  const std::string &ns_hint = std::string(),
+						  const madc::dis::istring &ns_hint = madc::dis::istring(),
 						  DataDefCLASS *owner_hint = NULL);
     // True iff EVERY collected alias-use argument is non-dependent (concrete):
     // each non-type arg folds to a constant and each type arg resolves to a
@@ -8745,18 +8827,18 @@ public:
     // namespace-scope aliases live ONLY in namespace_datatype_map (never
     // flat-leaked), so `true_type` used unqualified inside namespace std
     // resolves here. Returns the shared prototype token — callers clone.
-    TokenDataType *namespace_chain_datatype(const std::string &nm);
+    TokenDataType *namespace_chain_datatype(const madc::dis::istring &nm);
     // Resolve a template-id `Name<...>` to its concrete type: an alias template
     // first, then a class template (the order every call site used by hand).
     // Single seam for the namespace hint so qualified uses pick the right
     // same-named variant. Returns NULL if Name is not a (alias-or-class)
     // template-id.
-    TokenDataType *instantiate_template_id(const std::string &tname,
+    TokenDataType *instantiate_template_id(const madc::dis::istring &tname,
 					   TokenBase *tb,
-					   const std::string &ns_hint = std::string(),
+					   const madc::dis::istring &ns_hint = madc::dis::istring(),
 					   DataDefCLASS *owner_hint = NULL);
     TokenDataType *instantiate_opaque_template_use(TemplateDef &td,
-						   const std::string &tname,
+						   const madc::dis::istring &tname,
 						   TokenBase *tb);
     // tsubst TYPE-half of a dependent template-id shell: replay SUBSTITUTED
     // structural arg-token runs (concrete TokenDataType / TokenInt elements —
@@ -8825,7 +8907,7 @@ public:
     // called for a namespace-level lookup (never owner-scoped — the stream
     // rewrite must not fire on a speculative member probe).
     TokenDataType *instantiate_make_integer_seq(TokenBase *tb,
-						const std::string &ns_hint);
+						const madc::dis::istring &ns_hint);
     // clang's __type_pack_element builtin template:
     // `__type_pack_element<I, T0, ..., Tn>` (I a concrete constant) IS the
     // I-th type argument. Consumes the live stream's `< I , T... >` region
@@ -8833,17 +8915,17 @@ public:
     // is one of the given args); NULL (ordinary path) when I is dependent /
     // non-constant / out of range. Same owner gating as the sibling above.
     TokenDataType *instantiate_type_pack_element(TokenBase *tb,
-						 const std::string &ns_hint);
-    TemplateAliasDef *find_template_alias(const std::string &name,
-					  const std::string &ns_hint = std::string(),
+						 const madc::dis::istring &ns_hint);
+    TemplateAliasDef *find_template_alias(const madc::dis::istring &name,
+					  const madc::dis::istring &ns_hint = madc::dis::istring(),
 					  DataDefCLASS *owner_hint = NULL);
     TemplateAliasDef *find_template_alias(uint32_t name_id,
-					  const std::string &ns_hint,
+					  const madc::dis::istring &ns_hint,
 					  DataDefCLASS *owner_hint);
     // task #25 B2: the alias selection core (no thaw). find_template_alias
     // wraps it and thaws the returned definition.
     TemplateAliasDef *find_template_alias_raw(uint32_t name_id,
-					      const std::string &ns_hint,
+					      const madc::dis::istring &ns_hint,
 					      DataDefCLASS *owner_hint);
     void register_template_alias(const TemplateAliasDef &td);
     // Owner is any dependent-surface type: an opaque placeholder CLASS or a
@@ -8853,10 +8935,10 @@ public:
     // argument list: `rebind_alloc<__node_type>` and `rebind_alloc<__node_base>`
     // in one class are two placeholders with two derivation recipes.
     DataDefCLASS *materialize_dependent_member_type(DataDef *owner,
-						    const std::string &member_name,
+						    const madc::dis::istring &member_name,
 						    const std::vector<std::vector<TokenBase *> > *member_template_args = NULL);
-    DataDefCLASS *materialize_opaque_class_type(const std::string &name,
-						const std::string &canonical);
+    DataDefCLASS *materialize_opaque_class_type(const madc::dis::istring &name,
+						const madc::dis::istring &canonical);
     // Stamp a freshly-minted opaque dependent shell/tag with its mint
     // context: outside a dependent (pattern) parse the placeholder is a
     // CONCRETE forward tag (e.g. the empty-pack recursion tail
@@ -8864,13 +8946,13 @@ public:
     // a pack artifact the freeze kills.
     void stamp_opaque_mint_context(DataDefCLASS *dep);
     DataDef *dependent_deref_result_type(DataDef *dd);
-    void complete_pending_template_instantiations(const std::string &class_name);
-    bool request_template_instantiation_completion(const std::string &mangled_name);
+    void complete_pending_template_instantiations(const madc::dis::istring &class_name);
+    bool request_template_instantiation_completion(const madc::dis::istring &mangled_name);
     // Is a lazy completion RECORDED for this mangled instance (the
     // :7776-arm's pending record)? Read-only twin of the request above.
-    bool has_pending_template_instantiation(const std::string &mangled_name) const;
+    bool has_pending_template_instantiation(const madc::dis::istring &mangled_name) const;
     const PendingTemplateInstantiation *find_pending_template_instantiation(
-	const std::string &mangled_name) const;
+	const madc::dis::istring &mangled_name) const;
     DataDef *complete_class_type_on_demand(DataDef *dd);
     DataDef *require_complete_class(DataDef *dd);
     // A non-static data member's type head, read as the storage context it
@@ -8879,8 +8961,8 @@ public:
     TokenDataType *resolve_member_storage_type(TokenBase *type_head);
     TokenDataType *complete_member_storage_type(TokenDataType *mtype,
 						TokenBase *type_head);
-    bool template_declared_in_namespace(const std::string &name,
-					const std::string &ns_name);
+    bool template_declared_in_namespace(const madc::dis::istring &name,
+					const madc::dis::istring &ns_name);
     TokenBase *consume_unresolved_dependent_call(TokenBase *open);
     // Type-token resolution: resolve a declared / namespaced / typename-qualified
     // type name (optionally consuming the tokens, allowing lazy types, walking a
@@ -8931,7 +9013,7 @@ public:
     // Type-name resolution helpers: look up a named DataDef (struct/typedef/lazy),
     // a current-class type alias, a variable matching a contextual type name, and
     // the class scope an expression name resolves to.
-    DataDef *resolve_named_datadef(const std::string &name);
+    DataDef *resolve_named_datadef(const madc::dis::istring &name);
     // Key-vs-element classification for a carrier subscript INDEX — the
     // ONE owner of the question; the CIR's slot-call routing and the
     // literal kind-mix wall both read it. A char pointer or a
@@ -8946,7 +9028,7 @@ public:
     // (a value lvalue over madarray_key_slot / madarray_index_slot). See
     // parser.cpp for the rules and the owner law behind it.
     DataDef *madc_array_subscript_type();
-    static DataDef *resolve_builtin_type_spelling(const std::string &name);
+    static DataDef *resolve_builtin_type_spelling(const madc::dis::istring &name);
     // The fundamental type a SCALAR dd denotes, PROVEN through that one
     // table (cv peeled, namespace-alias chain walked, identity spelling
     // resolved), or NULL when the identity cannot be established. Distinct
@@ -8957,7 +9039,7 @@ public:
     // madc::value): `array` / `value` / `var`. Gated to STD_MADC; NULL in
     // every strict C/C++ mode. Instance method on purpose — these names
     // must never enter the static identity-canonicalization table above.
-    DataDef *madc_dialect_type_spelling(const std::string &name) const;
+    DataDef *madc_dialect_type_spelling(const madc::dis::istring &name) const;
     static DataDef *builtin_va_list_type();
     DataDef *use_builtin_va_list();
     // The one DataDefCOMPLEX per element type (process-wide cache) — lexer,
@@ -8967,32 +9049,32 @@ public:
     // Parse the operand of __real__/__imag__ into a TokenComplexPart (shared
     // by the identifier-expression arm and the cast-operand dispatch).
     TokenBase *parse_complex_component_operand(bool want_imag, TokenBase *anchor);
-    bool typedef_alias_matches_datadef(const std::string &alias, DataDef *dd);
+    bool typedef_alias_matches_datadef(const madc::dis::istring &alias, DataDef *dd);
     // Record on the LAST member appended to `agg` what the member's TYPE
     // SPELLING carried and the declarator cannot recover: the user typedef
     // alias it was written with, and the token that locates it. EVERY
     // member-list reader calls this — see docs/rules/design-principles.md.
     void note_member_source_spelling(DataDefSTRUCT *agg,
-				     const std::string &type_spelling,
+				     const madc::dis::istring &type_spelling,
 				     DataDef *base_dd, TokenBase *name_tok);
-    DataDef *resolve_current_class_type_alias(const std::string &name);
-    bool resolve_current_class_static_member_const_value(const std::string &name, int64_t &out);
+    DataDef *resolve_current_class_type_alias(const madc::dis::istring &name);
+    bool resolve_current_class_static_member_const_value(const madc::dis::istring &name, int64_t &out);
     bool fold_constant_qualified_member(TokenBase *first, madc_wide_int &out);
     bool fold_constant_qualified_member_walk(TokenBase *first,
 					     madc_wide_int &out);
-    Variable *find_variable_for_contextual_type_name(const std::string &name);
+    Variable *find_variable_for_contextual_type_name(const madc::dis::istring &name);
     // Member (data/static/method) of the currently-parsing method's owner
     // class — the class-scope half of the contextual-type-name shadow test
     // (a member named value/array/var wins over the dialect type spelling).
-    bool current_method_class_has_member(const std::string &name);
+    bool current_method_class_has_member(const madc::dis::istring &name);
     // `lazy` = false skips the lazy libc type registration tail — a SCAN's
     // lookup (DelimDepth::lt_reads_as_less_than) must not register anything.
-    DataDefCLASS *resolve_expression_class_scope(const std::string &name,
+    DataDefCLASS *resolve_expression_class_scope(const madc::dis::istring &name,
 						 bool lazy = true);
     // The class, struct or union `name` names in expression scope (a
     // data-only C++ aggregate stays a DataDefSTRUCT); the class form above
     // is this answer when it is a DataDefCLASS.
-    DataDefSTRUCT *resolve_expression_aggregate_scope(const std::string &name,
+    DataDefSTRUCT *resolve_expression_aggregate_scope(const madc::dis::istring &name,
 						      bool lazy = true);
     // What a qualifier names before `::` in an expression — THE one classify
     // policy for the expression arms (postfix chain, address-of, identifier
@@ -9001,18 +9083,18 @@ public:
     struct QualifierScope {
 	DataDefSTRUCT *agg;	// non-NULL: names a class, struct or union in expression scope
 	DataDefCLASS *cls;	// agg when it is a class
-	std::string ns_name;	// alias-resolved qualifier spelling
+	madc::dis::istring ns_name;	// alias-resolved qualifier spelling
 	bool has_variable_ns;	// present in namespace_map
 	bool has_datatype_ns;	// present in namespace_datatype_map
 	bool is_namespace() const { return has_variable_ns || has_datatype_ns; }
     };
-    QualifierScope classify_qualifier_before_scope(const std::string &name,
+    QualifierScope classify_qualifier_before_scope(const madc::dis::istring &name,
 						   TokenBase *at);
     // Class-body parsing: detect when a struct body needs the class parser /
     // an inline enum follows, parse anonymous aggregates, bind a declared C++
     // member symbol, mint a unique overload symbol, collect a deferred function
     // body's tokens and parse them later, and promote a struct base to a class.
-    bool cpp_struct_body_needs_class_parser(const std::string &tag_name,
+    bool cpp_struct_body_needs_class_parser(const madc::dis::istring &tag_name,
 					    TokenBase *after_tag);
     // Its body scan, from the `{` at or after tokens[start]. `nested`: the
     // body is a nested aggregate's, which the struct parser's inline nested
@@ -9035,25 +9117,25 @@ public:
     bool class_body_enum_definition_follows();
     struct ClassMethodRegistration {
 	ClassMethodKind kind;
-	std::string display_name;
+	madc::dis::istring display_name;
 	uint32_t access_flags;
 	bool is_static;
 	bool is_virtual;
 	bool is_operator;
 	bool bind_cpp_symbol;
-	std::string local_emit_name;
+	madc::dis::istring local_emit_name;
 	// Conversion kind only: the conversion-type-id as the source spells it
 	// (`const char *`, `bool`, `T &`) — the type the Itanium `cv<type>`
 	// encodes. Captured from the tokens, like param_cpp_spellings.
-	std::string conversion_type;
+	madc::dis::istring conversion_type;
 	ClassMethodRegistration()
 	    : kind(ClassMethodKind::Method), access_flags(0), is_static(false),
 	      is_virtual(false), is_operator(false), bind_cpp_symbol(true) {}
     };
     TokenDataType *register_class_shell(DataDefCLASS *ddc,
-		const std::string &registered_name,
-		const std::string &source_name,
-		const std::string &constructor_source_name,
+		const madc::dis::istring &registered_name,
+		const madc::dis::istring &source_name,
+		const madc::dis::istring &constructor_source_name,
 		DataDefCLASS *owner, bool completing_forward,
 		bool register_source_alias);
     void initialize_class_bases(DataDefCLASS *ddc,
@@ -9073,10 +9155,10 @@ public:
     //    exported symbol — FuncDef::emit_symbol, "external definition" to the
     //    lowering (madc emits no body). The historical libstdc++ bind.
     void bind_declared_cpp_symbol(DataDefCLASS *ddc, Variable *mvar,
-				  CppSymKind kind, const std::string &mname,
+				  CppSymKind kind, const madc::dis::istring &mname,
 				  bool is_operator,
-				  const std::string &conversion_type
-				      = std::string());
+				  const madc::dis::istring &conversion_type
+				      = madc::dis::istring());
     // A class madc DEFINES in a C++-presenting mode — its member, vtable,
     // RTTI, static-data-member and synthesized-special-member symbols are
     // madc's to name, by the Itanium ABI. A class a system/toolchain header
@@ -9104,19 +9186,19 @@ public:
     // user-written dtor's binding (bind_declared_cpp_symbol's user arm) and
     // the synthesized dtor (CirBuilder::class_synth_dtor_symbol) both read it.
     const char *madc_dtor_body_flavor(DataDefCLASS *ddc) const;
-    std::string member_itanium_symbol(DataDefCLASS *ddc, Variable *mvar,
-				      CppSymKind kind, const std::string &mname,
+    madc::dis::istring member_itanium_symbol(DataDefCLASS *ddc, Variable *mvar,
+				      CppSymKind kind, const madc::dis::istring &mname,
 				      bool is_operator,
-				      const std::string &conversion_type
-					  = std::string(),
+				      const madc::dis::istring &conversion_type
+					  = madc::dis::istring(),
 				      const char *flavor = NULL);
     // The conversion-type-id tokens after `operator`, spelled and rewound.
-    std::string peek_conversion_type_spelling();
-    std::string unique_overload_symbol(std::string base);
+    madc::dis::istring peek_conversion_type_spelling();
+    madc::dis::istring unique_overload_symbol(madc::dis::istring base);
     // A template instance's symbol under `base`, keyed on the request's
     // identity (deterministic across TUs — instances link linkonce).
-    std::string instance_overload_symbol(const std::string &base,
-					 const std::string &identity);
+    madc::dis::istring instance_overload_symbol(const madc::dis::istring &base,
+					 const madc::dis::istring &identity);
     // C++20 abbreviated function template ([dcl.fct]/18): token-level
     // desugar — `auto` parameter placeholders become invented identifiers
     // under a synthesized `template<...>` head pushed onto the stream, so
@@ -9132,7 +9214,7 @@ public:
     // Lazy member-function-body instantiation: parse a single deferred body by
     // emit symbol on first ODR-use (returns the materialized TokenFunc, or NULL
     // if the symbol has no deferred body / was already parsed).
-    TokenFunc *parse_deferred_lazy_body(const std::string &emit_symbol);
+    TokenFunc *parse_deferred_lazy_body(const madc::dis::istring &emit_symbol);
     // Deferred bodies are keyed by the member's REGISTRATION name (its
     // Variable's). A reader holding only the EMIT symbol — a user member's
     // Itanium name, which bind_declared_cpp_symbol's user arm records in
@@ -9140,27 +9222,27 @@ public:
     // that index. ONE translation for every symbol-keyed reader: the key
     // itself when it is one, the mapped registration name, or "" when no
     // deferred body answers to the symbol.
-    std::map<std::string, std::string> body_symbol_keys;
-    std::string deferred_lazy_body_key(const std::string &sym) const;
-    bool has_deferred_lazy_body(const std::string &sym) const
+    std::map<madc::dis::istring, madc::dis::istring> body_symbol_keys;
+    madc::dis::istring deferred_lazy_body_key(const madc::dis::istring &sym) const;
+    bool has_deferred_lazy_body(const madc::dis::istring &sym) const
 	{ return !deferred_lazy_body_key(sym).empty(); }
     // The registration key a body SYMBOL was recorded under (body_symbol_keys,
     // filled by every body registrar), else the symbol itself — for the
     // name-keyed body structures (funcdef_map, the pack's forest maps) when
     // asked about a referenced symbol.
-    const std::string &body_registration_key(const std::string &sym) const
+    madc::dis::istring body_registration_key(const madc::dis::istring &sym) const
     {
-	std::map<std::string, std::string>::const_iterator ki = body_symbol_keys.find(sym);
+	std::map<madc::dis::istring, madc::dis::istring>::const_iterator ki = body_symbol_keys.find(sym);
 	return ki != body_symbol_keys.end() ? ki->second : sym;
     }
-    DataDefCLASS *promote_struct_base_to_class(const std::string &name,
+    DataDefCLASS *promote_struct_base_to_class(const madc::dis::istring &name,
 					       DataDef *dd);
     // GNU/C23 attribute consumers: skip/collect __attribute__((…)) (optionally
     // capturing attrs / alias target / alignment / vector size), an asm("label")
     // alias, [[…]] C23 attributes, a vector_size attribute value, and `...`.
     TokenBase *consume_gnu_attributes(TokenBase *nt,
-				      std::set<std::string> *attrs = NULL,
-				      std::string *alias_target = NULL,
+				      std::set<madc::dis::istring> *attrs = NULL,
+				      madc::dis::istring *alias_target = NULL,
 				      size_t *explicit_align = NULL,
 				      size_t *vector_bytes = NULL,
 				      GnuScalarStorageOrder *storage_order = NULL);
@@ -9208,7 +9290,7 @@ public:
     // declarator's: push_declarator_list_tail carries it past the statement
     // reset to the list's tail, as specifier_cleanup carries cleanup(f).
     bool pending_specifier_weak = false;
-    TokenBase *consume_gnu_asm_label(TokenBase *nt, std::string *alias_target);
+    TokenBase *consume_gnu_asm_label(TokenBase *nt, madc::dis::istring *alias_target);
     // Read a GNU asm STATEMENT and lower it to its operands' observable
     // effect (each operand expression evaluated once; under an empty
     // template a matching constraint copies its input to its output).
@@ -9218,7 +9300,7 @@ public:
     TokenBase *skip_gnu_asm_statement(TokenBase *tb);
     void skip_c23_attributes();
     size_t parse_gnu_vector_size_attribute();
-    void consume_typedef_gnu_attributes(std::string *mode_name = NULL,
+    void consume_typedef_gnu_attributes(madc::dis::istring *mode_name = NULL,
 					size_t *vector_bytes = NULL);
     bool ellipsis_ahead();
     bool consume_ellipsis();
@@ -9227,8 +9309,8 @@ public:
     // upcoming function parameter list, resolve/parse parameter signatures, find a
     // matching constructor, and parse a qualified special-member definition.
     size_t count_queued_call_arguments();
-    DataDefCLASS *resolve_qualified_class_owner(const std::vector<std::string> &scope_parts);
-    std::string parse_qualified_declarator_part(TokenBase *part_tb);
+    DataDefCLASS *resolve_qualified_class_owner(const std::vector<madc::dis::istring> &scope_parts);
+    madc::dis::istring parse_qualified_declarator_part(TokenBase *part_tb);
     bool split_upcoming_function_params(std::vector<std::vector<TokenBase *> > &params);
     DataDef *resolve_param_type_from_tokens(const std::vector<TokenBase *> &param,
 					    size_t &idx);
@@ -9241,7 +9323,7 @@ public:
     // one non-template overload matches (see parser.cpp for why an ambiguous
     // probe must decline rather than guess).
     Variable *find_method_definition_target(DataDefCLASS *owner,
-					    const std::string &member);
+					    const madc::dis::istring &member);
     // pre_owner + src_class_name: the TEMPLATE-ID-qualified form
     // (`bs<0,0>::bs(...) {}` — an explicit specialization's out-of-line
     // special member, defined WITHOUT a template<> prefix per
@@ -9251,7 +9333,7 @@ public:
     // the mangled instantiation key and can never match the source text).
     bool parse_qualified_special_member_definition(TokenBase *first_tb,
 	    DataDefCLASS *pre_owner = NULL,
-	    const std::string *src_class_name = NULL);
+	    const madc::dis::istring *src_class_name = NULL);
     // Assorted parse helpers (expression/declaration/statement support).
     DataDef *effective_pointer_type_for_member_access(TokenBase *tb);
     // A `.` receiver that is a class/struct PRVALUE with no storage of its
@@ -9275,7 +9357,7 @@ public:
     TokenBase *materialize_vla_dim_capture(TokenCpnd *code,
 					   TokenBase *&dim_expr, TokenBase *loc);
     TokenBase *try_parse_vla_variable_sizeof(TokenBase *op_tb,
-					     const std::string &op_name);
+					     const madc::dis::istring &op_name);
     TokenBase *try_parse_vla_row_sizeof(TokenBase *op_tb, class Variable *v,
 					bool paren, bool deref,
 					size_t after_ix);
@@ -9346,7 +9428,7 @@ public:
     TokenBase *reference_bind_address_expr(TokenBase *expr,
 					   DataDef *referent_type,
 					   bool allow_temporary,
-					   const std::string &binding_name,
+					   const madc::dis::istring &binding_name,
 					   bool unsupported_storage_duration = false);
     TokenBase *skip_expression_whitespace();
     TokenCASE *parse_switch_label(TokenSWITCH *sw, TokenBase *tn,
@@ -9369,15 +9451,15 @@ public:
     bool paren_group_is_function_def();
     bool paren_group_is_nonclass_direct_init();
     bool paren_group_can_be_param_decl_clause();
-    bool unqualified_name_is_type_or_template(const std::string &nm);
+    bool unqualified_name_is_type_or_template(const madc::dis::istring &nm);
     // task #69: the HOST-flavor twin of a namespace public's Itanium symbol
     // (the marshalling boundary's bind target when script flavor != host).
-    std::string host_flavor_fn_symbol(const std::string &ns_name,
-				      const std::string &member_name,
+    madc::dis::istring host_flavor_fn_symbol(const madc::dis::istring &ns_name,
+				      const madc::dis::istring &member_name,
 				      FuncDef *fd);
     // The method half: the HOST-flavor twin of a host-implemented class
     // method's Itanium symbol (madc::channel::readline under -stdlib=libc++).
-    std::string host_flavor_method_symbol(FuncDef *fd);
+    madc::dis::istring host_flavor_method_symbol(FuncDef *fd);
     // C11 6.7.9p1 `designation: designator-list =` — `[ constant ]` (GNU
     // `[ a ... b ]`) and `. identifier`, as many as written; with `gnu_field`
     // also the obsolete `identifier :`. `first` is a clause's first token; on a
@@ -9410,14 +9492,14 @@ public:
     // parse_builtin_types_compatible_operand (with lvalue conversion and
     // array/function decay).
     TokenBase *parse_generic_selection(TokenBase *generic_tb);
-    std::string generic_controlling_signature(TokenBase *ctrl);
+    madc::dis::istring generic_controlling_signature(TokenBase *ctrl);
     bool parse_builtin_types_compatible_operand(TokenBase *type_tb,
-						std::string &sig);
+						madc::dis::istring &sig);
     bool resolve_integer_constant(TokenBase *tb, madc_wide_int &out);
     bool token_starts_type_name(TokenBase *tb);
     void configure_nested_function_captures(FuncDef *func);
-    void mirror_inline_namespace_into_parent(const std::string &parent_ns,
-					     const std::string &inline_ns);
+    void mirror_inline_namespace_into_parent(const madc::dis::istring &parent_ns,
+					     const madc::dis::istring &inline_ns);
     // Statement-level expression parse: parseExpression + comma-chain.
     // parseExpression treats `,` as a hard stop (callers like for-loop
     // init/incr and call-arg lists rely on this). In statement contexts
@@ -9436,7 +9518,7 @@ public:
     // The contextual-claim eligibility test the MT keywords share: the
     // name resolves to NOTHING (no variable/function, no type) — a
     // declared name always wins (the error-shape rule).
-    bool contextual_name_unclaimed(const std::string &name);
+    bool contextual_name_unclaimed(const madc::dis::istring &name);
     // THE TokenAWAIT builder (one construction rule, three grammar
     // positions): parses the channel-handle expression from the stream at
     // the already-consumed `await`, hands the enclosing expression's
@@ -9460,9 +9542,9 @@ public:
     TokenFunc *build_expression_function(TokenProgram *tp,
 					 TokenBase *expr,
 					 DataDef *return_type,
-					 const std::string &function_name,
+					 const madc::dis::istring &function_name,
 					 bool have_result,
-					 const std::string &result_name = "__madc_expr_value");
+					 const madc::dis::istring &result_name = "__madc_expr_value");
     TokenBase *parseLambda();  // parse [](params) { body } / [] { body } lambda expression
     // THE lambda dispatch for expression context: parse the lambda AND
     // continue the postfix chain, so an immediately-invoked lambda
@@ -9493,7 +9575,7 @@ public:
     {
 	void *code_base;
 	size_t code_size;
-	std::map<std::string, void *> functions;
+	std::map<madc::dis::istring, void *> functions;
 	LoadedObject() : code_base(NULL), code_size(0) {}
     };
     LoadedObject loaded_object;
@@ -9506,7 +9588,7 @@ public:
     void execute();
 
     // data management
-    Variable *addVariable(TokenCpnd *, DataDef &, const std::string &, int c=1, void *init=NULL, bool alloc=true);
+    Variable *addVariable(TokenCpnd *, DataDef &, const madc::dis::istring &, int c=1, void *init=NULL, bool alloc=true);
     // An object DECLARATOR's binding — the one owner of its redeclaration
     // rules (gcc's duplicate_decls for objects): C11 6.7p3 (a no-linkage
     // identifier is declared once per block), 6.7p4 (every declaration of one
@@ -9515,12 +9597,12 @@ public:
     // addVariable, which stays the plain registration primitive its other
     // callers rely on. `dims` / `object_cv` are the declarator's own array
     // bounds and top-level cv (C11 6.7.3p7).
-    Variable *declare_object(TokenCpnd *code, DataDef &type, const std::string &id,
+    Variable *declare_object(TokenCpnd *code, DataDef &type, const madc::dis::istring &id,
 			     int count, bool alloc, bool has_initializer, TokenBase *where,
 			     const std::vector<carray_dim_t> *dims = NULL,
 			     unsigned object_cv = 0);
     bool object_declaration_is_definition(TokenCpnd *code, bool has_initializer) const;
-    Variable *same_scope_object(TokenCpnd *code, const std::string &id);
+    Variable *same_scope_object(TokenCpnd *code, const madc::dis::istring &id);
     // The parse is at the scope of a NAMED C++ namespace ([basic.namespace]):
     // its members are registered per-namespace, not in the TU's bare-name
     // index. An unnamed namespace and a C-linkage block are not.
@@ -9532,7 +9614,7 @@ public:
     // The object `id` already registered in the CURRENT namespace — a pure
     // probe (no forest materialization, no module binding: that is
     // find_namespace_member's miss path).
-    Variable *current_namespace_variable(const std::string &id);
+    Variable *current_namespace_variable(const madc::dis::istring &id);
     bool object_redeclaration_conflicts(Variable *prior, DataDef *type,
 					const std::vector<carray_dim_t> *dims,
 					unsigned object_cv);
@@ -9541,14 +9623,14 @@ public:
     // pointer and a function carry theirs elsewhere.
     DataDef *object_declared_type(DataDef *type, unsigned object_cv);
     Variable *resolve_global_storage_variable(Variable *var) const;
-    Variable *addGlobal(DataDef &d, std::string str, int c=1, void *init=NULL)
+    Variable *addGlobal(DataDef &d, madc::dis::istring str, int c=1, void *init=NULL)
     {
 	return addVariable(NULL, d, str, c, init, true);
     }
-    Variable *findVariable(TokenCpnd *, const std::string &);
-    Variable *findVariable(const std::string &);
-    Variable *addLiteral(const std::string &);
-    Variable *addWideLiteral(const std::string &);
+    Variable *findVariable(TokenCpnd *, const madc::dis::istring &);
+    Variable *findVariable(const madc::dis::istring &);
+    Variable *addLiteral(const madc::dis::istring &);
+    Variable *addWideLiteral(const madc::dis::istring &);
 //  Method *findMethod(const std::string &);
 };
 
@@ -9567,7 +9649,7 @@ public:
 	debug
     };
 
-    typedef std::function<void(LogLevel, const std::string &)> LogSink;
+    typedef std::function<void(LogLevel, const madc::dis::istring &)> LogSink;
 
     std::istream *input_stream;
     std::ostream *output_stream;
@@ -9585,17 +9667,17 @@ public:
     LogLevel log_threshold;
     bool log_to_error_stream;
     bool syslog_active;
-    std::string syslog_ident;
+    madc::dis::istring syslog_ident;
     int syslog_option;
     int syslog_facility;
     bool file_sink_active;
     std::unique_ptr<std::ofstream> log_file;
-    std::string log_file_path;
+    madc::dis::istring log_file_path;
     size_t log_file_max_bytes;
     int log_file_max_files;
     bool json_sink_active;
     std::unique_ptr<std::ofstream> json_file;
-    std::string json_file_path;
+    madc::dis::istring json_file_path;
     std::vector<LogSink> log_sinks;
     bool verbose = false;
     Program::RegistrationPolicy registration_policy;
@@ -9610,7 +9692,7 @@ public:
     void bind_input_stream(std::istream &is);
     void bind_output_stream(std::ostream &os);
     void bind_error_stream(std::ostream &os);
-    void bind_input_string(const std::string &text);
+    void bind_input_string(const madc::dis::istring &text);
     void capture_output_to_buffer();
     void capture_error_to_buffer();
     // Scoped-capture support (libmadc invocation scopes): create the owned
@@ -9627,26 +9709,26 @@ public:
     const char *log_level_name(LogLevel level) const;
     std::string format_log_message(LogLevel level, const std::string &message) const;
     bool should_log(LogLevel level) const;
-    void write_log(LogLevel level, const std::string &message);
-    void write_builtin_sinks(LogLevel level, const std::string &message);
+    void write_log(LogLevel level, const madc::dis::istring &message);
+    void write_builtin_sinks(LogLevel level, const madc::dis::istring &message);
     void add_log_sink(LogSink sink);
     void clear_log_sinks();
     static int syslog_priority_for(LogLevel level);
     void enable_syslog_sink(const char *ident = "madc", int option = -1, int facility = -1);
     void disable_syslog_sink();
-    bool enable_file_sink(const std::string &path,
+    bool enable_file_sink(const madc::dis::istring &path,
 			  size_t max_bytes = 0,
 			  int max_files = 5);
     void disable_file_sink();
     void rotate_log_file();
     void reopen_log_file();
-    bool enable_json_sink(const std::string &path);
+    bool enable_json_sink(const madc::dis::istring &path);
     void disable_json_sink();
     static std::string json_escape(const std::string &s);
     std::string format_json_log_line(LogLevel level, const std::string &message) const;
-    void write_syslog_sink(LogLevel level, const std::string &message);
-    void write_file_sink(LogLevel level, const std::string &message);
-    void write_json_sink(LogLevel level, const std::string &message);
+    void write_syslog_sink(LogLevel level, const madc::dis::istring &message);
+    void write_file_sink(LogLevel level, const madc::dis::istring &message);
+    void write_json_sink(LogLevel level, const madc::dis::istring &message);
 
     struct Config
     {
@@ -9656,17 +9738,17 @@ public:
 	bool error_stream;
 
 	bool file_sink;
-	std::string file_path;
+	madc::dis::istring file_path;
 	size_t file_max_bytes;
 	int file_max_files;
 
 	bool syslog_sink;
-	std::string syslog_ident;
+	madc::dis::istring syslog_ident;
 	int syslog_option;
 	int syslog_facility;
 
 	bool json_sink;
-	std::string json_path;
+	madc::dis::istring json_path;
 
 	Config()
 	    : threshold(LogLevel::debug),

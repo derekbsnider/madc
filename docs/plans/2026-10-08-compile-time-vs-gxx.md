@@ -200,8 +200,9 @@ and zero intern ids.
 
 ### The type: `madc::dis::istring` (include/madcdis/istring.h)
 - A handle to ONE permanent, process-wide, deduplicated `std::string`: it holds
-  `const std::string *` into a node-based table (`std::unordered_set<std::string>`
-  — nodes never move on rehash, so the pointer is stable for the process).
+  `const std::string *` to a heap entry the table never frees; the table is an
+  `std::unordered_set` of byte-view keys pointing at those entries, so a lookup
+  from `const char *` + length builds no temporary string.
 - Copy = 8 bytes. `==` / `!=` = pointer compare. Hash = the pointer.
 - `operator const std::string &()` and `str()` return the interned string BY
   REFERENCE — every read-only use of a `std::string` field (`.c_str()`,
@@ -234,20 +235,91 @@ follows the C++ stdlib convention. No other state. Memory: bounded by the
 number of distinct spellings ever interned (the same lifetime as the token
 arena's permanent tokens).
 
-### Migration — one stage per commit, each gated (Tier 1 + Tier 2 + parse-cost gate)
-1. The type + its unit test (`tests/unit/test_istring.cpp`).
-2. `FuncDef` symbol fields (`emit_symbol`, `local_emit_name`,
-   `function_display_name`, `method_display_name`, `namespace_name`) and
-   `Variable::name` / `storage_alias_name`; `var_emit_name` /
-   `call_emit_symbol` / `func_emit_name` / `body_emit_symbol` return `istring`.
-   Removes the emit-name copies.
-3. `DataDef::name` and its subclasses' name fields.
-4. Map keys by measured copy share: the template substitution maps
-   (`std::map<std::string, TokenDataType*>`, copied per instantiation),
-   `StructRegistry`, `funcdef_map` / `struct_map` / `namespace_map`.
-5. Template records (`TemplateDef`, `FnTemplateDef`, `OutOfLineMemberInstantiation`,
-   instantiation keys `registered_mangled`) — with step 4's index-keyed
-   substitution maps.
+### Migration — done as ONE flip (owner: "make a list of what _needs_ to be an std::string")
+Every `std::string` in the compiler core (lexer, parser, CIR builder/dump/format/
+emit, madc_cir, cir_freeze, type spelling, mangler, completion, keywords, pch,
+and their headers) became `madc::dis::istring`; the compiler then named every
+site that mutates, and only those went back. The keep-list — what stays
+`std::string`, by kind:
+
+| Kind | Why it is not a name |
+|---|---|
+| Text BUILDERS (`+=`, `append`, `push_back`, `erase`, `&s[0]`) | edited in place; interned once complete when stored as a name |
+| Diagnostic / dump / emitted-C text (`why`, `err`, `msg` out-params, `std::string(x) + …` temporaries) | output text, built and printed once |
+| Source text (`Source::_buf`, pushback, macro args/body, comments, `TokenStr::str`, `TokenREM::str`, include text) | the program's bytes, not identifiers |
+| libmadc public API (`madc_program.cpp`, `madc_session.cpp`, the `void *` eval bridge in parser.cpp, `madc::value` object keys, the registration-policy mirror) | the C++ API boundary carries `std::string` (cpp-first-api.md) |
+| Paths and link / CLI lists (`canonical_path_for_compare`, `madc_self_*_path`, DT_NEEDED / `-l` / `-I` / `-D` lists, runpath, embedded-header table) | OS-boundary text, used once per compile |
+| `std::getline` targets, `_trailing_trivia`, completion `entry_rows_shown` | stream / UI text |
+| Text PROCESSORS: the spelling splitter (`spelling_delim.h`), the mangler's internals (`madc_mangle.cpp` below its `madc_mangle.h` interface), scanner words, macro-expansion slices, literal / comment token factories | transient slices of text; a piece is interned only where it is KEPT as a name (`split_scope_names`, the name-shaped `split_template_id_parts`, the mangler's exported returns) |
+
+Hazards the flip exposed — each now a gate check (below):
+- A `void *` that carries a `std::string *` across the eval bridge, cast back
+  as `istring *`, compiles and reads garbage. Bridge casts name `std::string`.
+- A `const istring &` DATA MEMBER bound from a `std::string` argument binds a
+  temporary that dies at the end of the constructor's full-expression
+  (`InstLiveGuard` crashed this way). Hold an `istring` by value — it is a pointer.
+- A function returning `const istring &` that may return its `const istring &`
+  PARAMETER dangles when called with a `std::string`. Return `istring` by value.
+- `istring(x.str())` on an istring `x` re-interns for nothing; `istring(a) + b`
+  interns a temporary that is only concatenated. Both swept.
+- A function or lambda that stores the ADDRESS of its `const istring &`
+  parameter (`n.definition = &body;`) keeps a pointer to a temporary when the
+  caller passed a `std::string` (the REPL's `?NAME` read freed memory this way
+  once `define_map` held text again).
+### Cost: intern ONCE, at the source — measured (parse-cost gate, Ir vs the pre-flip baseline)
+The first flip changed the types but left the hot paths converting text to an
+istring at every USE (1.5M interns on `c_headers`, ~340 Ir each: byte hash +
+mutex + probe). It went RED on every workload (+6% … +35%). What turned it:
+
+| Step | c_headers.live | cxx_stl.live | subscript.live |
+|---|---|---|---|
+| flip as-was | +34.6% | +19.0% | +17.0% |
+| 8-byte-word hash (was FNV-1a per byte) | +24.4% | +13.1% | +10.6% |
+| + hold, pool memo, lexer `wname`, macro-body idents | −2.9% | −2.6% | −3.2% |
+| + text processors back to std::string | **−3.9%** | **−5.1%** | **−5.3%** |
+
+The mechanisms:
+- `istring_table::hold` — the CLI's tokenize + parse take the table's mutex
+  ONCE; `intern` skips the per-call lock on the owning thread (an atomic owner
+  id, not TLS: a `__tls_get_addr` in libmadc.so costs what the lock did).
+  Released before the program runs (its threads may compile through eval).
+- `intern_table::name(id)` — the per-Program token pool memoizes each
+  spelling's istring, so `TokenIdent::spelling_name()` is a memo read: the
+  process table sees each distinct spelling once per pool, not once per use.
+- The lexer takes the identifier's name once (`wname`) and passes it to every
+  probe; `make_ident(spelling_id)` stops re-pooling the spelling.
+- A macro body's identifiers are interned once with its cached replacement
+  tokens; parameter matches compare pointers; argument text stays std::string.
+- `MADC_ISTRING_LITERAL("int")` — a literal handed to an istring parameter on
+  a hot path interns once per call site.
+- Next (when a profile names the site): a NON-inserting `istring_table::find`
+  for probes of text that may never have been a name — a miss proves absence
+  from every istring-keyed container without growing the table.
+
 A gate (`scripts/check-istring-fields.sh`, fulltest) then fails any NEW
 `std::string` field holding a name in the migrated structs, so the migration
 cannot regrow.
+
+### Second sweep: text that still reached the table, and headers read once
+An audit of the table's contents after `cxx_stl` (every entry, longest first)
+showed TEXT interned through `const istring &` parameters and returns —
+the conversion is implicit, so it hid at the call: whole embedded headers
+(`Source::str`), every object-like macro body (`define_map`'s value type),
+every function-like macro expansion, `#if` conditions, macro-argument
+pre-expansion, the `-dM` dump, error and log text, and the preprocessor's
+per-POSITION literal check (`pp_literal_start` took the whole text as an
+istring: one hash of the text per character examined). All went back to
+`std::string`. Table after `cxx_stl`: 28,620 entries / 1.84 MB → 26,102 /
+1.69 MB; entries holding a newline 106 → 1.
+
+| Change | Measured |
+|---|---|
+| Include guards decided in the ONE lex (gcc's multiple-include rules: `push_conditional` / `do_endif`), not a second read + line scan of every system header on its first visit; the first-visit probe reads the opening line only and hands its bytes to the lexer | 876 / 876 lex verdicts equal the full-text verdict (differential run over the gate workloads + include tests); `#else`/`#elif` on the guard group now disqualifies it, as in gcc |
+| Include search memoized per Program (`search_include_dirs`, gcc's per-directory cache — hits only; `add_include_dir` and a flavor change drop it) and `realpath` per distinct path once | `resolve_include_path` was 2.45% of `cxx_stl` |
+| Despaced class index: inserts filed incrementally (no full-map rescan + address set per top-up); rebuilds empty buckets in place | `topup_index_` was 3.05% of `cxx_stl` (121 full rebuilds) |
+| Interned fast paths: trim / strip-namespace / despace return the input or a slice; one-character spellings from a 256-entry table; operator tokens intern their spelling once per class | the top conversion sites of a line-attributed profile |
+| Hash tail: fixed-size loads (two overlapping 4-byte reads for 4..7 bytes, first/middle/last byte for 1..3) — never a variable-length `memcpy` call | most names are under 8 bytes |
+
+Parse-cost gate, Ir vs the baseline committed before the interning work:
+cxx_stl.live −14.0%, cxx_stl.forest −14.1%, c_headers.live −13.5%,
+dialect.live −1.2%, subscript.live −14.3%, subscript.forest −14.9%.

@@ -34,7 +34,7 @@
 // spelling comes from the type's own DataType, so it is the CANONICAL type and
 // not the source's typedef — the same thing g++'s typeid reports. `long long`
 // and `long` share dtINT64 in madc and therefore share the word "long".
-std::string TypeSpeller::scalar_word(DataDef *dd)
+madc::dis::istring TypeSpeller::scalar_word(DataDef *dd)
 {
 	if (!dd)
 		return "?";
@@ -80,11 +80,11 @@ std::string TypeSpeller::scalar_word(DataDef *dd)
 //
 // Shortest qualified spelling wins, then alphabetical, so the answer is
 // deterministic when several aliases name one type. Empty when none does.
-std::string TypeSpeller::alias(DataDef *dd) const
+madc::dis::istring TypeSpeller::alias(DataDef *dd) const
 {
 	if (!pgm || !dd)
-		return std::string();
-	std::string best;
+		return madc::dis::istring();
+	madc::dis::istring best;
 	pgm->namespace_datatype_map.for_each_readonly(
 		[&](const char *ns, const datatype_map_t &m) -> bool {
 			for (datatype_map_t::const_iterator it = m.begin(); it != m.end(); ++it) {
@@ -98,14 +98,14 @@ std::string TypeSpeller::alias(DataDef *dd) const
 				// "alias" found for std::vector<int> is
 				// std::vector_int32_t_std__allocator_int32_t_ —
 				// worse than the spelling it replaced.
-				if (it->first.find('<') != std::string::npos)
+				if (it->first.find('<') != madc::dis::istring::npos)
 					continue;
 				if (it->first == dd->name)
 					continue;
 				if (&it->second->definition != dd)
 					continue;
-				std::string cand = (ns && *ns)
-						 ? std::string(ns) + "::" + it->first
+				madc::dis::istring cand = (ns && *ns)
+						 ? madc::dis::istring(std::string(ns) + "::" + it->first)
 						 : it->first;
 				if (best.empty() || cand.size() < best.size()
 				    || (cand.size() == best.size() && cand < best))
@@ -137,16 +137,16 @@ std::string TypeSpeller::alias(DataDef *dd) const
 // With no alias, an instantiation is its template-id as g++ and clang++ write
 // it (template_word): `std::vector<int>`, never the canonical
 // `std::vector<int32_t,std::allocator<int32_t>>`.
-std::string TypeSpeller::class_word(DataDefSTRUCT *cls) const
+madc::dis::istring TypeSpeller::class_word(DataDefSTRUCT *cls) const
 {
 	if (cls->union_layout)
 		return "union " + cls->name;
-	const std::string &canon = cls->canonical_cpp_spelling();
-	if (canon.find('<') != std::string::npos) {
-		std::string named = alias(cls);
+	const madc::dis::istring &canon = cls->canonical_cpp_spelling();
+	if (canon.find('<') != madc::dis::istring::npos) {
+		madc::dis::istring named = alias(cls);
 		if (!named.empty())
 			return strip_inline_namespaces(named);
-		std::string word = template_word(canon);
+		madc::dis::istring word = template_word(canon);
 		if (!word.empty())
 			return strip_inline_namespaces(word);
 	}
@@ -158,18 +158,18 @@ std::string TypeSpeller::class_word(DataDefSTRUCT *cls) const
 // An aggregate a template instantiated (`Box<int>`: no class members, so
 // never promoted to a class) is named as a class is; any other keeps its
 // tag's name.
-std::string TypeSpeller::aggregate_name(DataDefSTRUCT *s) const
+madc::dis::istring TypeSpeller::aggregate_name(DataDefSTRUCT *s) const
 {
 	if (s->union_layout
-	    || s->canonical_cpp_spelling().find('<') == std::string::npos)
+	    || s->canonical_cpp_spelling().find('<') == madc::dis::istring::npos)
 		return s->name;
-	std::string word = class_word(s);
+	madc::dis::istring word = class_word(s);
 	if (word.compare(0, 7, "struct ") == 0)
 		word = word.substr(7);
 	return word;
 }
 
-static std::string trim_spaces(const std::string &s)
+static madc::dis::istring trim_spaces(const madc::dis::istring &s)
 {
 	size_t a = 0, b = s.size();
 	while (a < b && s[a] == ' ')
@@ -179,7 +179,7 @@ static std::string trim_spaces(const std::string &s)
 	return s.substr(a, b - a);
 }
 
-static std::string despaced(const std::string &s)
+static madc::dis::istring despaced(const madc::dis::istring &s)
 {
 	std::string out;
 	for (size_t i = 0; i < s.size(); i++)
@@ -193,26 +193,26 @@ static std::string despaced(const std::string &s)
 // up where it says; an unqualified one from `from` (the namespace whose
 // default argument names it) outward, as unqualified lookup goes. False =
 // no such template.
-static bool qualified_template_name(Program *pgm, const std::string &from,
-				    const std::string &name0, std::string &out)
+static bool qualified_template_name(Program *pgm, const madc::dis::istring &from,
+				    const madc::dis::istring &name0, madc::dis::istring &out)
 {
-	std::string name = name0.compare(0, 2, "::") == 0 ? name0.substr(2)
+	madc::dis::istring name = name0.compare(0, 2, "::") == 0 ? madc::dis::istring(name0.substr(2))
 							 : name0;
 	size_t sc = name.rfind("::");
-	if (sc != std::string::npos) {
-		std::string bare = name.substr(sc + 2);
+	if (sc != madc::dis::istring::npos) {
+		madc::dis::istring bare = name.substr(sc + 2);
 		Program::TemplateDef *t = pgm->find_template(bare,
 							     name.substr(0, sc));
 		if (!t)
 			return false;
 		out = t->defining_namespace.empty()
-		    ? bare : t->defining_namespace + "::" + bare;
+		    ? bare : madc::dis::istring(t->defining_namespace + "::" + bare);
 		return true;
 	}
-	for (std::string ns = from; ; ) {
+	for (madc::dis::istring ns = from; ; ) {
 		Program::TemplateDef *t = pgm->find_template(name, ns);
 		if (t && t->defining_namespace == ns) {
-			out = ns.empty() ? name : ns + "::" + name;
+			out = ns.empty() ? name : madc::dis::istring(ns + "::" + name);
 			return true;
 		}
 		if (t && !ns.empty() && t->defining_namespace.compare(0,
@@ -223,7 +223,7 @@ static bool qualified_template_name(Program *pgm, const std::string &from,
 		if (ns.empty())
 			return false;
 		size_t up = ns.rfind("::");
-		ns = up == std::string::npos ? std::string() : ns.substr(0, up);
+		ns = up == madc::dis::istring::npos ? madc::dis::istring() : madc::dis::istring(ns.substr(0, up));
 	}
 }
 
@@ -236,11 +236,11 @@ static bool qualified_template_name(Program *pgm, const std::string &from,
 // member type, an expression): its argument is then shown, never guessed
 // away.
 static bool default_argument_text(Program *pgm, const Program::TemplateDef &td,
-				  const std::string &text, size_t slot,
-				  const std::vector<std::string> &args,
+				  const madc::dis::istring &text, size_t slot,
+				  const std::vector<madc::dis::istring> &args,
 				  std::string &out)
 {
-	std::string s = trim_spaces(text);
+	madc::dis::istring s = trim_spaces(text);
 	std::string cv;
 	for (bool peeled = true; peeled; ) {
 		peeled = false;
@@ -258,10 +258,10 @@ static bool default_argument_text(Program *pgm, const Program::TemplateDef &td,
 			out = cv + args[j];
 			return true;
 		}
-	std::string head;
-	std::vector<std::string> sub;
+	madc::dis::istring head;
+	std::vector<madc::dis::istring> sub;
 	if (split_template_id_parts(s, head, sub, SpellingTail::Reject)) {
-		std::string qualified;
+		madc::dis::istring qualified;
 		if (!qualified_template_name(pgm, td.defining_namespace,
 					     despaced(head), qualified))
 			return false;
@@ -275,14 +275,14 @@ static bool default_argument_text(Program *pgm, const Program::TemplateDef &td,
 		out += ">";
 		return true;
 	}
-	if (s.find_first_of("<>(),:*&") != std::string::npos)
+	if (s.find_first_of("<>(),:*&") != madc::dis::istring::npos)
 		return false;
 	if (DataDef *bd = Program::resolve_builtin_type_spelling(s)) {
 		out = cv + bd->name;
 		return true;
 	}
 	size_t d = s.compare(0, 1, "-") == 0 ? 1 : 0;
-	if (d < s.size() && s.find_first_not_of("0123456789", d) == std::string::npos) {
+	if (d < s.size() && s.find_first_not_of("0123456789", d) == madc::dis::istring::npos) {
 		out = s;
 		return true;
 	}
@@ -293,16 +293,16 @@ static bool default_argument_text(Program *pgm, const Program::TemplateDef &td,
 // the template's defaults, the arguments before each substituted — the ones
 // g++ and clang++ leave out when they name the type ([temp.arg]/4's defaults
 // are not part of what anybody writes).
-static size_t defaulted_tail(Program *pgm, const std::string &head0,
-			     const std::vector<std::string> &args)
+static size_t defaulted_tail(Program *pgm, const madc::dis::istring &head0,
+			     const std::vector<madc::dis::istring> &args)
 {
-	std::string head = head0.compare(0, 2, "::") == 0 ? head0.substr(2)
+	madc::dis::istring head = head0.compare(0, 2, "::") == 0 ? madc::dis::istring(head0.substr(2))
 							 : head0;
 	size_t sc = head.rfind("::");
-	std::string ns = sc == std::string::npos ? std::string()
-						 : head.substr(0, sc);
+	madc::dis::istring ns = sc == madc::dis::istring::npos ? madc::dis::istring()
+						 : madc::dis::istring(head.substr(0, sc));
 	Program::TemplateDef *found = pgm->find_template(
-		sc == std::string::npos ? head : head.substr(sc + 2), ns);
+		sc == madc::dis::istring::npos ? head : madc::dis::istring(head.substr(sc + 2)), ns);
 	if (!found || found->defining_namespace != ns)
 		return 0;
 	// A copy: the lookups below may thaw other templates in the registry,
@@ -334,13 +334,13 @@ static size_t defaulted_tail(Program *pgm, const std::string &head0,
 // canonical spelling is the type's identity (mangling, deduction), so it is
 // read here and never rewritten. Empty = not a template-id this reads (a
 // member of an instantiation, `A<B>::C<D>`): the caller keeps the canonical.
-std::string TypeSpeller::template_word(const std::string &canon) const
+madc::dis::istring TypeSpeller::template_word(const madc::dis::istring &canon) const
 {
-	std::string head;
-	std::vector<std::string> args;
+	madc::dis::istring head;
+	std::vector<madc::dis::istring> args;
 	if (!pgm || !split_template_id_parts(canon, head, args,
 					     SpellingTail::Reject))
-		return std::string();
+		return madc::dis::istring();
 	head = despaced(head);
 	size_t shown_n = args.size() - defaulted_tail(pgm, head, args);
 	std::string out = head + "<";
@@ -352,7 +352,7 @@ std::string TypeSpeller::template_word(const std::string &canon) const
 // One template argument by its source name: a type's (shown: `int`, a
 // class's own template-id or alias; a leading cv kept, `const int`), a value
 // as the canonical spelling writes it.
-std::string TypeSpeller::argument_word(const std::string &arg) const
+madc::dis::istring TypeSpeller::argument_word(const madc::dis::istring &arg) const
 {
 	static const char *const words[] = { "const ", "volatile " };
 	for (size_t w = 0; w < 2; w++)
@@ -376,7 +376,7 @@ std::string TypeSpeller::argument_word(const std::string &arg) const
 // the one the source wrote: a member function's receiver slot (`__this`,
 // which only its name tells from a real parameter) and the varargs slot
 // (past fixed_param_count) are madc's, not the source's.
-std::string TypeSpeller::parameter_list(FuncDef *fd, const Method *m) const
+madc::dis::istring TypeSpeller::parameter_list(FuncDef *fd, const Method *m) const
 {
 	const bool cxx = pgm && pgm->presents_as_cpp();
 	size_t first = 0;
@@ -388,7 +388,7 @@ std::string TypeSpeller::parameter_list(FuncDef *fd, const Method *m) const
 		const Variable *p = m && i < m->parameters.size()
 				  ? m->parameters[i] : NULL;
 		params += (i > first ? ", " : "")
-			+ declared(fd->parameters[i], p ? p->name : std::string());
+			+ declared(fd->parameters[i], p ? p->name : madc::dis::istring());
 	}
 	if (fd->is_varargs)
 		params += params.empty() ? "..." : ", ...";
@@ -400,7 +400,7 @@ std::string TypeSpeller::parameter_list(FuncDef *fd, const Method *m) const
 // A declaration's spelling: the type with its declarator-id where C writes
 // it, inside the declarator (`int a[3]`, `int (*fp)(int)`, `char *s`); an
 // empty name is the type's abstract spelling, as shown() writes it.
-std::string TypeSpeller::declared(DataDef *dd, const std::string &name) const
+madc::dis::istring TypeSpeller::declared(DataDef *dd, const madc::dis::istring &name) const
 {
 	if (dd) {
 		if (FuncDef *fd = dd->as_funcdef_dd())
@@ -413,8 +413,8 @@ std::string TypeSpeller::declared(DataDef *dd, const std::string &name) const
 			     && (c = elem->unqualified()->as_carray_dd()) != NULL;
 			     elem = c->element_type)
 				dims += c->count_expr || !c->count
-				      ? std::string("[]")
-				      : "[" + std::to_string(c->count) + "]";
+				      ? madc::dis::istring("[]")
+				      : madc::dis::istring("[" + std::to_string(c->count) + "]");
 			return declared(elem, name + dims);
 		}
 		// A function pointer: the name goes with its stars, inside.
@@ -432,14 +432,14 @@ std::string TypeSpeller::declared(DataDef *dd, const std::string &name) const
 					+ ")(" + parameter_list(fp->target, NULL) + ")");
 		}
 	}
-	std::string word = shown(dd);
+	madc::dis::istring word = shown(dd);
 	if (name.empty())
 		return word;
 	const char last = word[word.size() - 1];
 	return word + (last == '*' || last == '&' ? "" : " ") + name;
 }
 
-std::string TypeSpeller::signature(const std::string &name, FuncDef *fd,
+madc::dis::istring TypeSpeller::signature(const madc::dis::istring &name, FuncDef *fd,
 				   const Method *m) const
 {
 	// A member function's cv-qualifier-seq and ref-qualifier follow its
@@ -451,7 +451,7 @@ std::string TypeSpeller::signature(const std::string &name, FuncDef *fd,
 	return declared(&fd->returns, d);
 }
 
-std::string TypeSpeller::shown(DataDef *dd) const
+madc::dis::istring TypeSpeller::shown(DataDef *dd) const
 {
 	if (!dd)
 		return "void *";
@@ -460,7 +460,7 @@ std::string TypeSpeller::shown(DataDef *dd) const
 	// referent, then `&`. madc lowers T& as T *, which the arms below
 	// would spell; a value's type (the show's) is never one.
 	if (DataDefREF *r = dd->as_reference_dd()) {
-		const std::string w = shown(r->base_type);
+		const madc::dis::istring w = shown(r->base_type);
 		const char *amp = r->is_rvalue_reference() ? "&&" : "&";
 		return w + (w[w.size() - 1] == '*' ? "" : " ") + amp;
 	}
@@ -477,8 +477,8 @@ std::string TypeSpeller::shown(DataDef *dd) const
 		     && (c = elem->unqualified()->as_carray_dd()) != NULL;
 		     elem = c->element_type)
 			dims += c->count_expr || !c->count
-			      ? std::string("[]")
-			      : "[" + std::to_string(c->count) + "]";
+			      ? madc::dis::istring("[]")
+			      : madc::dis::istring("[" + std::to_string(c->count) + "]");
 		return shown(elem) + " " + dims;
 	}
 	// A function pointer, through any pointer layers above it, spelled from
@@ -508,8 +508,8 @@ std::string TypeSpeller::shown(DataDef *dd) const
 	if (!ub || ub->is_void())
 		word = "void";
 	else if (DataDefENUM *e = dynamic_cast<DataDefENUM *>(ub)) {
-		const std::string &canon = e->canonical_cpp_spelling();
-		word = cxx ? (canon.empty() ? e->name : canon) : "enum " + e->name;
+		const madc::dis::istring &canon = e->canonical_cpp_spelling();
+		word = cxx ? (canon.empty() ? e->name : canon) : madc::dis::istring("enum " + e->name);
 	} else if (DataDefCLASS *c = dynamic_cast<DataDefCLASS *>(ub)) {
 		// The carrier is `var` in the madc dialect (value-first), and
 		// its canonical class elsewhere.
@@ -531,7 +531,7 @@ std::string TypeSpeller::shown(DataDef *dd) const
 	}
 	else if (DataDefSTRUCT *s = dynamic_cast<DataDefSTRUCT *>(ub))
 		word = cxx ? aggregate_name(s)
-			   : (s->union_layout ? "union " : "struct ") + s->name;
+			   : madc::dis::istring((s->union_layout ? "union " : "struct ") + s->name);
 	else
 		word = scalar_word(ub);
 	if (!level_cv.empty())
@@ -558,7 +558,7 @@ std::string TypeSpeller::shown(DataDef *dd) const
 // spelling is hardcoded here and libc++'s __1 is handled by the same code.
 // Each replacement strictly shortens the string (a child's qualified name
 // contains its parent's as a prefix), so the outer pass terminates.
-std::string TypeSpeller::strip_inline_namespaces(const std::string &spelling) const
+madc::dis::istring TypeSpeller::strip_inline_namespaces(const madc::dis::istring &spelling) const
 {
 	if (!pgm)
 		return spelling;
@@ -566,19 +566,19 @@ std::string TypeSpeller::strip_inline_namespaces(const std::string &spelling) co
 	bool again = true;
 	while (again) {
 		again = false;
-		std::map<std::string, std::vector<std::string> >::const_iterator it;
+		std::map<madc::dis::istring, std::vector<madc::dis::istring> >::const_iterator it;
 		for (it = pgm->inline_namespace_children.begin();
 		     it != pgm->inline_namespace_children.end(); ++it) {
 			for (size_t i = 0; i < it->second.size(); i++) {
-				const std::string &child = it->second[i];
+				const madc::dis::istring &child = it->second[i];
 				if (child.empty() || child == it->first)
 					continue;
 				std::string from = child + "::";
-				std::string to = it->first.empty()
-					       ? std::string()
-					       : it->first + "::";
+				madc::dis::istring to = it->first.empty()
+					       ? madc::dis::istring()
+					       : madc::dis::istring(it->first + "::");
 				size_t at;
-				while ((at = out.find(from)) != std::string::npos) {
+				while ((at = out.find(from)) != madc::dis::istring::npos) {
 					out.replace(at, from.size(), to);
 					again = true;
 				}

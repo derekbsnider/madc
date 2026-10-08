@@ -6,6 +6,7 @@
 #include <cstring>
 #include <vector>
 #include <string>
+#include "madcdis/istring.h"
 
 // madcdis/intern_table.h — the FIRST madc::dis substrate primitive.
 //
@@ -60,6 +61,11 @@ private:
     mutable std::vector<char>     _bytes;     // spelling bytes, append-only ('\0' separated)
     mutable std::vector<Entry>    _entries;   // id == index; id 0 = empty
     mutable std::vector<uint32_t> _buckets;   // power-of-two; head entry-index or NIL
+    // id -> the spelling as a process-wide interned NAME, filled on first ask
+    // (an empty slot = not yet asked; only id 0 is legitimately empty). So a
+    // token's name is one memo read, and each distinct spelling enters the
+    // process table once per pool, not once per use.
+    mutable std::vector<istring>  _names;
     enum : uint32_t { NIL = 0xffffffffu };  // enum (prvalue) → no ODR definition needed
 
     void rehash(size_t nbuckets) const
@@ -177,12 +183,25 @@ public:
     {
 	_bytes.resize(state.bytes_size);
 	_entries.resize(state.entries_size);
+	if ( _names.size() > state.entries_size )
+	    _names.resize(state.entries_size);
 	rehash(_buckets.size());
     }
 
     const char *c_str(uint32_t id)  const { return &_bytes[_entries[id].off]; }
     uint32_t    length(uint32_t id) const { return _entries[id].len; }
     std::string str(uint32_t id)    const { return std::string(c_str(id), length(id)); }
+    istring     name(uint32_t id)   const
+    {
+	if ( id == 0 )
+	    return istring();
+	if ( _names.size() <= id )
+	    _names.resize(_entries.size());
+	istring &n = _names[id];
+	if ( n.empty() )
+	    n = istring(c_str(id), length(id));
+	return n;
+    }
     size_t      count()             const { return _entries.size() - 1; } // excl. id 0
 
     // --- serialization accessors: the three blocks, exactly as a madc::dat

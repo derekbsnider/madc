@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <string>
 #include <vector>
+#include "madcdis/istring.h"	// names are interned (madc::dis::istring)
 #include <ios>
 #include "madcdis/intern_table.h"
 #include "madcdis/value_pool.h"
@@ -332,7 +333,7 @@ public:
     // Leading trivia (whitespace + comments) preserved before this token, for
     // byte-faithful source reconstruction. Populated only in full-fidelity mode
     // (Program::keep_trivia); empty in lean/batch mode (zero cost there).
-    std::string leading_trivia;
+    madc::dis::istring leading_trivia;
     // Current parse position — updated by nextToken(), inherited by
     // all new tokens so synthetic parser-created tokens automatically
     // get the position of the most recently consumed source token: its
@@ -351,8 +352,8 @@ public:
     // `t` when it SPELLS `name` (the last component of a qualified name),
     // else NULL; cursor_name_token asks it of the most recently consumed
     // token (parser.cpp).
-    static TokenBase *spelled_name_token(TokenBase *t, const std::string &name);
-    static TokenBase *cursor_name_token(const std::string &name);
+    static TokenBase *spelled_name_token(TokenBase *t, const madc::dis::istring &name);
+    static TokenBase *cursor_name_token(const madc::dis::istring &name);
     // Active interned-spelling pool for spelling() (interning Step 4). Bound to the
     // currently-processing Program's strpool at lex/parse entry (compile is
     // sequential per-Program, incl. --project per-TU). Lets the arg-less spelling()
@@ -657,10 +658,10 @@ public:
 class TokenMultiOp: public TokenOperator
 {
 public:
-    std::string str;
+    madc::dis::istring str;
     TokenMultiOp() : TokenOperator() {}
     TokenMultiOp(const char *s)  : TokenOperator() { str = s; }
-    TokenMultiOp(std::string &s) : TokenOperator() { str = s; }
+    TokenMultiOp(const madc::dis::istring &s) : TokenOperator() { str = s; }
     virtual TokenBase *clone() override { TokenMultiOp *to = new TokenMultiOp(); to->left = left; to->right = right; to->resolved_type = resolved_type; to->resolved_reference = resolved_reference; return to; }
     virtual TokenType type() const override { return TokenType::ttMultiOp; }
     virtual TokenID   id()   const override { return TokenID::tkMultiOp; }
@@ -951,7 +952,7 @@ public:
 class TokenInc: public TokenMultiOp
 {
 public:
-    TokenInc() : TokenMultiOp("++") {}
+    TokenInc() : TokenMultiOp(MADC_ISTRING_LITERAL("++")) {}
     virtual TokenBase *clone() override { TokenInc *to = new TokenInc(); to->left = left; to->right = right; to->resolved_type = resolved_type; to->resolved_reference = resolved_reference; return to; }
     virtual TokenID id() const override { return TokenID::tkInc; }
     virtual DataDef *datadef() const override
@@ -970,7 +971,7 @@ public:
 class TokenDec: public TokenMultiOp
 {
 public:
-    TokenDec() : TokenMultiOp("--") {}
+    TokenDec() : TokenMultiOp(MADC_ISTRING_LITERAL("--")) {}
     virtual TokenBase *clone() override { TokenDec *to = new TokenDec(); to->left = left; to->right = right; to->resolved_type = resolved_type; to->resolved_reference = resolved_reference; return to; }
     virtual TokenID id() const override { return TokenID::tkDec; }
     virtual DataDef *datadef() const override
@@ -1121,7 +1122,7 @@ public:
 class TokenFuncOp: public TokenMultiOp
 {
 public:
-    TokenFuncOp() : TokenMultiOp("()") {}
+    TokenFuncOp() : TokenMultiOp(MADC_ISTRING_LITERAL("()")) {}
     virtual TokenID id() const override { return TokenID::tkFuncOp; }
     virtual TokenBase *clone() override { return new TokenFuncOp(); }
     virtual inline int precedence() const override { return 1; }
@@ -1131,7 +1132,7 @@ public:
 class TokenArrayOp: public TokenMultiOp
 {
 public:
-    TokenArrayOp() : TokenMultiOp("[]") {}
+    TokenArrayOp() : TokenMultiOp(MADC_ISTRING_LITERAL("[]")) {}
     virtual TokenID id() const override { return TokenID::tkArrayOp; }
     virtual TokenBase *clone() override { return new TokenArrayOp(); }
     virtual inline int precedence() const override { return 1; }
@@ -1200,7 +1201,7 @@ public:
 class TokenLand: public TokenMultiOp
 {
 public:
-    TokenLand() : TokenMultiOp("&&") {}
+    TokenLand() : TokenMultiOp(MADC_ISTRING_LITERAL("&&")) {}
     virtual TokenID id() const override { return TokenID::tkLand; }
     virtual TokenBase *clone() override { return new TokenLand(); }
     virtual inline int precedence() const override { return 11; }
@@ -1230,7 +1231,7 @@ public:
 class TokenLor: public TokenMultiOp
 {
 public:
-    TokenLor() : TokenMultiOp("||") {}
+    TokenLor() : TokenMultiOp(MADC_ISTRING_LITERAL("||")) {}
     virtual TokenID id() const override { return TokenID::tkLor; }
     virtual TokenBase *clone() override { return new TokenLor(); }
     virtual inline int precedence() const override { return 12; }
@@ -1288,7 +1289,7 @@ public:
 class TokenEquals: public TokenMultiOp
 {
 public:
-    TokenEquals() : TokenMultiOp("==") {}
+    TokenEquals() : TokenMultiOp(MADC_ISTRING_LITERAL("==")) {}
     virtual TokenID id() const override { return TokenID::tkEquals; }
     virtual TokenBase *clone() override { return new TokenEquals(); }
     virtual inline int precedence() const override { return 7; }
@@ -1299,7 +1300,7 @@ public:
 class Token3Eq: public TokenMultiOp
 {
 public:
-    Token3Eq() : TokenMultiOp("===") {}
+    Token3Eq() : TokenMultiOp(MADC_ISTRING_LITERAL("===")) {}
     virtual TokenID id() const override { return TokenID::tk3Eq; }
     virtual TokenBase *clone() override { return new Token3Eq(); }
     virtual inline int precedence() const override { return 7; }
@@ -1310,7 +1311,7 @@ public:
 class Token3NotEq: public TokenMultiOp
 {
 public:
-    Token3NotEq() : TokenMultiOp("!==") {}
+    Token3NotEq() : TokenMultiOp(MADC_ISTRING_LITERAL("!==")) {}
     virtual TokenID id() const override { return TokenID::tk3NotEq; }
     virtual TokenBase *clone() override { return new Token3NotEq(); }
     virtual inline int precedence() const override { return 7; }
@@ -1321,7 +1322,7 @@ public:
 class TokenNotEq: public TokenMultiOp
 {
 public:
-    TokenNotEq() : TokenMultiOp("!=") {}
+    TokenNotEq() : TokenMultiOp(MADC_ISTRING_LITERAL("!=")) {}
     virtual TokenID id() const override { return TokenID::tkNotEq; }
     virtual TokenBase *clone() override { return new TokenNotEq(); }
     virtual inline int precedence() const override { return 7; }
@@ -1354,7 +1355,7 @@ public:
 class TokenLE: public TokenMultiOp
 {
 public:
-    TokenLE() : TokenMultiOp("<=") {}
+    TokenLE() : TokenMultiOp(MADC_ISTRING_LITERAL("<=")) {}
     virtual TokenID id() const override { return TokenID::tkLE; }
     virtual TokenBase *clone() override { return new TokenLE(); }
     virtual inline int precedence() const override { return 6; }
@@ -1365,7 +1366,7 @@ public:
 class TokenGE: public TokenMultiOp
 {
 public:
-    TokenGE() : TokenMultiOp(">=") {}
+    TokenGE() : TokenMultiOp(MADC_ISTRING_LITERAL(">=")) {}
     virtual TokenID id() const override { return TokenID::tkGE; }
     virtual TokenBase *clone() override { return new TokenGE(); }
     virtual inline int precedence() const override { return 6; }
@@ -1377,7 +1378,7 @@ public:
 class Token3Way: public TokenMultiOp
 {
 public:
-    Token3Way() : TokenMultiOp("<=>") {}
+    Token3Way() : TokenMultiOp(MADC_ISTRING_LITERAL("<=>")) {}
     virtual TokenID id() const override { return TokenID::tk3Way; }
     virtual TokenBase *clone() override { return new Token3Way(); }
     virtual inline int precedence() const override { return 6; }
@@ -1386,7 +1387,7 @@ public:
 // bitwise shift left <<
 class TokenBSL: public TokenMultiOp
 {
-    public: TokenBSL() : TokenMultiOp("<<") {}
+    public: TokenBSL() : TokenMultiOp(MADC_ISTRING_LITERAL("<<")) {}
     virtual TokenID id() const override { return TokenID::tkBSL; }
     virtual TokenBase *clone() override { TokenBSL *to = new TokenBSL(); to->left = left; to->right = right; to->resolved_type = resolved_type; to->resolved_reference = resolved_reference; return to; }
     virtual inline int precedence() const override { return 5; }
@@ -1410,7 +1411,7 @@ class TokenBSL: public TokenMultiOp
 // bitwise shift right >>
 class TokenBSR: public TokenMultiOp
 {
-    public: TokenBSR() : TokenMultiOp(">>") {}
+    public: TokenBSR() : TokenMultiOp(MADC_ISTRING_LITERAL(">>")) {}
     virtual TokenID id() const override { return TokenID::tkBSR; }
     virtual TokenBase *clone() override { TokenBSR *to = new TokenBSR(); to->left = left; to->right = right; to->resolved_type = resolved_type; to->resolved_reference = resolved_reference; return to; }
     virtual inline int precedence() const override { return 5; }
@@ -1432,7 +1433,7 @@ class TokenBSR: public TokenMultiOp
 class TokenNS: public TokenMultiOp
 {
 public:
-    TokenNS() : TokenMultiOp("::") {}
+    TokenNS() : TokenMultiOp(MADC_ISTRING_LITERAL("::")) {}
     virtual TokenID id() const override { return TokenID::tkNS; }
     virtual TokenBase *clone() override { return new TokenNS(); }
     virtual inline int precedence() const override { return 1; }
@@ -1443,7 +1444,7 @@ public:
 class TokenDeRef: public TokenMultiOp
 {
 public:
-    TokenDeRef() : TokenMultiOp("->") {}
+    TokenDeRef() : TokenMultiOp(MADC_ISTRING_LITERAL("->")) {}
     virtual TokenID id() const override { return TokenID::tkDeRef; }
     virtual TokenBase *clone() override { return new TokenDeRef(); }
     virtual inline int precedence() const override { return 1; }
@@ -1456,7 +1457,7 @@ public:
 class TokenFatArrow: public TokenMultiOp
 {
 public:
-    TokenFatArrow() : TokenMultiOp("=>") {}
+    TokenFatArrow() : TokenMultiOp(MADC_ISTRING_LITERAL("=>")) {}
     virtual TokenID id() const override { return TokenID::tkFatArrow; }
     virtual TokenBase *clone() override { return new TokenFatArrow(); }
 };
@@ -1700,14 +1701,30 @@ public:
     // TokenKeyword) reintroduce their own `str` and override spelling() — their bytes
     // are mutable/large/embedded-NUL and are NOT identifier spellings.
     TokenIdent() { _datatype = &ddCHARptr; }
-    TokenIdent(const std::string &s) { _datatype = &ddCHARptr; if (_active_strpool) rec.spelling_id = _active_strpool->intern(s); }
+    TokenIdent(const madc::dis::istring &s) { _datatype = &ddCHARptr; if (_active_strpool) rec.spelling_id = _active_strpool->intern(s); }
     TokenIdent(const char *s)        { _datatype = &ddCHARptr; if (_active_strpool && s) rec.spelling_id = _active_strpool->intern(s); }
     // The spelling accessor: interned bytes for this token's spelling_id. VIRTUAL so
     // content subclasses return their retained `str` (NUL-safe) instead of the pool.
     virtual const char *spelling() const {
 	return (rec.spelling_id && _active_strpool) ? _active_strpool->c_str(rec.spelling_id) : "";
     }
+    // The spelling as an interned NAME: the pool's memo for spelling_id, so
+    // a parser lookup or compare never re-interns the token's text.
+    virtual madc::dis::istring spelling_name() const {
+	return (rec.spelling_id && _active_strpool) ? _active_strpool->name(rec.spelling_id)
+						    : madc::dis::istring(spelling(), spelling_len());
+    }
     bool spelling_is(const char *s) const   { return !std::strcmp(spelling(), s); }
+protected:
+    // A subclass that keeps its spelling as a NAME member takes it from the
+    // pool the base ctor just filled (one memo read, not a process intern).
+    // Static and fed the id: a member initializer must not reach the virtual
+    // spelling(), which would read the member being built.
+    static madc::dis::istring pooled_name(uint32_t id, const char *k)
+    {
+	return (id && _active_strpool) ? _active_strpool->name(id) : madc::dis::istring(k);
+    }
+public:
     bool spelling_empty() const             { return !*spelling(); }
     virtual size_t spelling_len() const {
 	return (rec.spelling_id && _active_strpool) ? _active_strpool->length(rec.spelling_id) : 0;
@@ -1740,7 +1757,7 @@ inline DataDef *TokenBase::type_name_use()
 class TokenStr: public TokenIdent
 {
 public:
-    std::string str;
+    std::string str;	// the literal's bytes (embedded NULs; edited by wide conversion): text, not a name
     bool wide;
     // Source extent of each concatenated literal PIECE (line, start column
     // of the opening quote/prefix, RAW source length including the quotes),
@@ -1755,9 +1772,10 @@ public:
     std::vector<SrcPiece> src_pieces;
     TokenStr() : wide(false) {}
     TokenStr(const char *k, bool w = false) : TokenIdent(k), str(k ? k : ""), wide(w) {}
-    TokenStr(std::string k, bool w = false) : TokenIdent(k), str(k), wide(w) {}
+    TokenStr(const std::string &k, bool w = false) : TokenIdent(k.c_str()), str(k), wide(w) {}
     virtual const char *spelling() const override { return str.c_str(); }
     virtual size_t spelling_len() const override { return str.size(); }
+    virtual madc::dis::istring spelling_name() const override { return madc::dis::istring(str); }
     virtual int64_t ival() const override   { return atol(str.c_str()); }
     virtual bool is_constant() const override { return true; }
     virtual TokenType type() const override { return TokenType::ttString; }
@@ -1770,12 +1788,13 @@ public:
 class TokenREM: public TokenIdent
 {
 public:
-    std::string str;
+    std::string str;	// comment text, not a name
     TokenREM() {}
     TokenREM(const char *k) : TokenIdent(k), str(k ? k : "") {}
-    TokenREM(std::string k) : TokenIdent(k), str(k) {}
+    TokenREM(const std::string &k) : TokenIdent(k.c_str()), str(k) {}
     virtual const char *spelling() const override { return str.c_str(); }
     virtual size_t spelling_len() const override { return str.size(); }
+    virtual madc::dis::istring spelling_name() const override { return madc::dis::istring(str); }
     virtual bool is_constant() const override { return true; }
     virtual TokenType type() const override { return TokenType::ttComment; }
     virtual TokenID   id()   const override { return TokenID::tkREM; }
@@ -1788,11 +1807,14 @@ public:
 class TokenKeyword: public TokenIdent
 {
 public:
-    std::string str;
-    TokenKeyword(const char *k) : TokenIdent(k), str(k ? k : "") {}
-    TokenKeyword(std::string k) : TokenIdent(k), str(k) {}
+    madc::dis::istring str;
+    // The base ctor pooled the spelling: take the NAME from the pool's memo
+    // (never through the virtual spelling(), which would read `str` unbuilt).
+    TokenKeyword(const char *k) : TokenIdent(k), str(pooled_name(rec.spelling_id, k)) {}
+    TokenKeyword(madc::dis::istring k) : TokenIdent(k), str(k) {}
     virtual const char *spelling() const override { return str.c_str(); }
     virtual size_t spelling_len() const override { return str.size(); }
+    virtual madc::dis::istring spelling_name() const override { return str; }
     virtual TokenType type() const override { return TokenType::ttKeyword; }
 //  virtual TokenBase *clone(){ return new TokenKeyword(str); }
     virtual TokenBase *clone() override{ return this; }
@@ -1819,7 +1841,7 @@ class TokenCppKeyword: public TokenKeyword
 {
 public:
     TokenCppKeyword(const char *k) : TokenKeyword(k) {}
-    TokenCppKeyword(const std::string &k) : TokenKeyword(k) {}
+    TokenCppKeyword(const madc::dis::istring &k) : TokenKeyword(k) {}
     virtual TokenID id() const override { return TokenID::tkCPPKEYWORD; }
     virtual TokenBase *clone() override { return new TokenCppKeyword(str); }
     // Ignored declaration-specifiers (constexpr/consteval/constinit) consume
@@ -1858,7 +1880,7 @@ class TokenELSE:     public TokenKeyword { public: TokenELSE()     : TokenKeywor
 class TokenGOTO: public TokenKeyword
 {
 public:
-    std::string target;   // label name (set by parse)
+    madc::dis::istring target;   // label name (set by parse)
     TokenBase *indirect_target;
     TokenGOTO() : TokenKeyword("goto"), indirect_target(NULL) {}
     virtual TokenID id() const override { return TokenID::tkGOTO; }
@@ -1872,14 +1894,14 @@ public:
 class TokenLabel: public TokenBase
 {
 public:
-    std::string name;
+    madc::dis::istring name;
     // The statement the label prefixes (C grammar: `label : statement`).
     // A label is not a standalone statement — it names the statement that
     // follows it. Carrying it here lets every statement context (compound
     // block, switch case body, if/while/for body) emit the labeled statement
     // uniformly, instead of only the compound-block path re-associating labels.
     TokenBase *labeled;
-    TokenLabel(const std::string &n) : name(n), labeled(NULL) {}
+    TokenLabel(const madc::dis::istring &n) : name(n), labeled(NULL) {}
     virtual TokenType type() const override { return TokenType::ttBase; }
     virtual TokenBase *clone()
  override    {
@@ -1985,7 +2007,7 @@ public:
     // its enclosing structure with a TokenLabel of this name in place, and
     // the switch dispatch emits `case V: goto <name>;` — restructuring the
     // body into per-case buckets would gut the enclosing loop/if.
-    std::string in_place_label;
+    madc::dis::istring in_place_label;
     TokenCASE() : TokenKeyword("case"), value(NULL), range_high(NULL) {}
     virtual TokenID id() const override { return TokenID::tkCASE; }
     virtual TokenBase *clone() override { return new TokenCASE(); }
@@ -1998,7 +2020,7 @@ public:
     TokenBase *try_body;                     // compound statement for try block
     // catch clauses: parallel vectors (type, var name, body)
     std::vector<int> catch_types;            // MADC_EXCEPT_* type tags (99 = catch(...))
-    std::vector<std::string> catch_varnames; // catch variable names (empty for catch(...))
+    std::vector<madc::dis::istring> catch_varnames; // catch variable names (empty for catch(...))
     std::vector<TokenBase *> catch_bodies;   // compound statements for each catch
     TokenTRY() : TokenKeyword("try") { try_body = NULL; }
     virtual TokenID id() const override { return TokenID::tkTRY; }
@@ -2459,7 +2481,7 @@ class TokenFOREACH: public TokenKeyword
 {
 public:
     DataDef *elemtype;
-    std::string elemname;
+    madc::dis::istring elemname;
     Variable *elemvar;
     TokenBase *container;
     TokenBase *statement;

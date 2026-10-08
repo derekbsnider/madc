@@ -663,7 +663,7 @@ TEST_CASE("B3 structural registration transactions restore first writes")
 	pack_frame.names.push_back(std::make_pair("before", Program::pdkStruct));
 	program.pack_decl_stack.push_back(pack_frame);
 	program.block_typedef_shadows.push_back(
-		std::vector<std::pair<std::string, TokenDataType *> >());
+		std::vector<std::pair<madc::dis::istring, TokenDataType *> >());
 	program.block_typedef_shadows.back().push_back(
 		std::make_pair("before", (TokenDataType *)NULL));
 	Program::ConceptDef original_concept;
@@ -733,7 +733,7 @@ TEST_CASE("B3 structural registration transactions restore first writes")
 		program.block_typedef_shadows[0].push_back(
 			std::make_pair("during", (TokenDataType *)NULL));
 		program.block_typedef_shadows.push_back(
-			std::vector<std::pair<std::string, TokenDataType *> >());
+			std::vector<std::pair<madc::dis::istring, TokenDataType *> >());
 		Program::ConceptDef replacement_concept;
 		replacement_concept.defining_namespace = "replacement";
 		program.concept_map["existing"] = replacement_concept;

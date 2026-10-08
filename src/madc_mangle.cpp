@@ -177,7 +177,7 @@ static std::string operator_code(const std::string &op, bool unary)
 }
 
 // RTTI symbols for an un-namespaced user class (S5b.1).
-std::string itanium_typeinfo_sym(const std::string &class_name)
+madc::dis::istring itanium_typeinfo_sym(const madc::dis::istring &class_name)
 {
 	return "_ZTI" + source_name(class_name);
 }
@@ -189,12 +189,12 @@ std::string itanium_typeinfo_sym(const std::string &class_name)
 // _ZTISt... instead of synthesizing its own). For an un-namespaced name the
 // encoding equals source_name, so itanium_typeinfo_sym_cpp("C") == _ZTI1C.
 //   "std::bad_alloc" -> _ZTVSt9bad_alloc / _ZTISt9bad_alloc
-std::string itanium_vtable_sym_cpp(const std::string &cpp_spelling)
+madc::dis::istring itanium_vtable_sym_cpp(const madc::dis::istring &cpp_spelling)
 {
 	return "_ZTV" + itanium_encode_type_sub(cpp_spelling);
 }
 
-std::string itanium_typeinfo_sym_cpp(const std::string &cpp_spelling)
+madc::dis::istring itanium_typeinfo_sym_cpp(const madc::dis::istring &cpp_spelling)
 {
 	return "_ZTI" + itanium_encode_type_sub(cpp_spelling);
 }
@@ -203,22 +203,22 @@ std::string itanium_typeinfo_sym_cpp(const std::string &cpp_spelling)
 // a class named by its canonical C++ spelling: "ns::VB" → _ZTSN2ns2VBE holding
 // "N2ns2VBE" (g++/clang). The bare-name forms above spell _ZTS2VB, which names
 // nothing once the class lives in a namespace.
-std::string itanium_typeinfo_name_sym_cpp(const std::string &cpp_spelling)
+madc::dis::istring itanium_typeinfo_name_sym_cpp(const madc::dis::istring &cpp_spelling)
 {
 	return "_ZTS" + itanium_encode_type_sub(cpp_spelling);
 }
 
-std::string itanium_typeinfo_name_string_cpp(const std::string &cpp_spelling)
+madc::dis::istring itanium_typeinfo_name_string_cpp(const madc::dis::istring &cpp_spelling)
 {
 	return itanium_encode_type_sub(cpp_spelling);
 }
 
-std::string itanium_typeinfo_name_sym(const std::string &class_name)
+madc::dis::istring itanium_typeinfo_name_sym(const madc::dis::istring &class_name)
 {
 	return "_ZTS" + source_name(class_name);
 }
 
-std::string itanium_typeinfo_name_string(const std::string &class_name)
+madc::dis::istring itanium_typeinfo_name_string(const madc::dis::istring &class_name)
 {
 	return source_name(class_name);
 }
@@ -613,7 +613,7 @@ public:
 	// <bare-function-type>: `v` for no parameters, else each parameter type
 	// in order (top-level cv dropped by parse_param_type). The one spelling
 	// of that rule — every function-shaped symbol ends in it.
-	std::string params_enc(const std::vector<std::string> &params)
+	std::string params_enc(const std::vector<madc::dis::istring> &params)
 	{
 		if (params.empty()) return "v";
 		std::string out;
@@ -626,7 +626,7 @@ public:
 	std::string mangle_member(const std::string &qualified_class,
 	                          const std::string &unqualified,
 	                          const std::string &special,    // C1 / D1 / op code
-	                          const std::vector<std::string> &params,
+	                          const std::vector<madc::dis::istring> &params,
 	                          unsigned method_cv)
 	{
 		std::string out = member_prefix(qualified_class, method_cv);
@@ -653,9 +653,9 @@ public:
 
 	std::string mangle_member_template(const std::string &qualified_class,
 	                          const std::string &unqualified,
-	                          const std::vector<std::string> &targs,
+	                          const std::vector<madc::dis::istring> &targs,
 	                          const std::string &ret,
-	                          const std::vector<std::string> &params,
+	                          const std::vector<madc::dis::istring> &params,
 	                          unsigned method_cv)
 	{
 		std::string out = member_prefix(qualified_class, method_cv);
@@ -684,9 +684,9 @@ public:
 	// parameter list is `v` like any function's (_Z4makeIiET_v).
 	std::string function_template_tail(const std::string &scope, bool nested,
 	                                    const std::string &opOrName,
-	                                    const std::vector<std::string> &targs,
+	                                    const std::vector<madc::dis::istring> &targs,
 	                                    const std::string &ret,
-	                                    const std::vector<std::string> &params)
+	                                    const std::vector<madc::dis::istring> &params)
 	{
 		add_sub("@fn:" + opOrName);
 		std::string out = (nested ? "_ZN" : "_Z") + scope + opOrName + "I";
@@ -704,9 +704,9 @@ public:
 	// already the operator code ("ls") or a length-prefixed source name
 	// ("7getline").
 	std::string mangle_std_free_template(const std::string &opOrName,
-	        const std::vector<std::string> &targs,
+	        const std::vector<madc::dis::istring> &targs,
 	        const std::string &ret,
-	        const std::vector<std::string> &params)
+	        const std::vector<madc::dis::istring> &params)
 	{
 		reset();
 		bool nested = false;
@@ -718,11 +718,11 @@ public:
 	// mangle_nested_function: no qualifiers is global (_Z5identIiET_S0_), a
 	// plain {"std"} the unversioned St, anything else a nested-name chain
 	// (_ZN2ns6nidentIiEET_S1_). The minter for USER function templates.
-	std::string mangle_function_template(const std::vector<std::string> &qualifiers,
+	std::string mangle_function_template(const std::vector<madc::dis::istring> &qualifiers,
 	        const std::string &opOrName,
-	        const std::vector<std::string> &targs,
+	        const std::vector<madc::dis::istring> &targs,
 	        const std::string &ret,
-	        const std::vector<std::string> &params)
+	        const std::vector<madc::dis::istring> &params)
 	{
 		reset();
 		if (qualifiers.empty())
@@ -749,9 +749,9 @@ public:
 		return out;
 	}
 
-	std::string mangle_nested_function(const std::vector<std::string> &qualifiers,
+	std::string mangle_nested_function(const std::vector<madc::dis::istring> &qualifiers,
 	                                   const std::string &name,
-	                                   const std::vector<std::string> &params,
+	                                   const std::vector<madc::dis::istring> &params,
 	                                   bool internal_linkage)
 	{
 		reset();
@@ -769,7 +769,7 @@ public:
 		// g++/clang: `static void s_fn(int)` is _ZL4s_fni, never _Z4s_fni,
 		// and inside a namespace _ZN2nsL1fEv. Operator codes take no prefix.
 		std::string uname = !opcode.empty() ? opcode
-		                  : internal_linkage ? "L" + source_name(name)
+		                  : internal_linkage ? std::string("L" + source_name(name))
 		                  : source_name(name);
 		// GLOBAL-scope function: _Z<name><params> with no N..E nesting.
 		if (qualifiers.empty()) {
@@ -809,7 +809,7 @@ public:
 		return out;
 	}
 
-	std::string mangle_nested_variable(const std::vector<std::string> &qualifiers,
+	std::string mangle_nested_variable(const std::vector<madc::dis::istring> &qualifiers,
 	                                   const std::string &name)
 	{
 		reset();
@@ -1107,7 +1107,7 @@ std::string op_special(const std::string &op, bool unary)
 
 // ---- public substitution-aware API -----------------------------------------
 
-std::string itanium_encode_type_sub(const std::string &cpp_type)
+madc::dis::istring itanium_encode_type_sub(const madc::dis::istring &cpp_type)
 {
 	// MEMOIZED. Encoding a type means parsing it back out of its C++ spelling
 	// character by character (parse_type -> parse_component ->
@@ -1152,9 +1152,9 @@ std::string itanium_encode_type_sub(const std::string &cpp_type)
 	return encoded;
 }
 
-std::string itanium_mangle_member_sub(const std::string &qualified_class,
-                                       const std::string &member,
-                                       const std::vector<std::string> &param_types,
+madc::dis::istring itanium_mangle_member_sub(const madc::dis::istring &qualified_class,
+                                       const madc::dis::istring &member,
+                                       const std::vector<madc::dis::istring> &param_types,
                                        unsigned method_cv)
 {
 	ItaniumMangler m;
@@ -1162,11 +1162,11 @@ std::string itanium_mangle_member_sub(const std::string &qualified_class,
 	                       param_types, method_cv));
 }
 
-std::string itanium_mangle_member_template_sub(const std::string &qualified_class,
-                                       const std::string &member,
-                                       const std::vector<std::string> &template_arg_types,
-                                       const std::string &return_type,
-                                       const std::vector<std::string> &param_types,
+madc::dis::istring itanium_mangle_member_template_sub(const madc::dis::istring &qualified_class,
+                                       const madc::dis::istring &member,
+                                       const std::vector<madc::dis::istring> &template_arg_types,
+                                       const madc::dis::istring &return_type,
+                                       const std::vector<madc::dis::istring> &param_types,
                                        unsigned method_cv)
 {
 	ItaniumMangler m;
@@ -1175,8 +1175,8 @@ std::string itanium_mangle_member_template_sub(const std::string &qualified_clas
 	                                param_types, method_cv));
 }
 
-std::string itanium_mangle_ctor_sub(const std::string &qualified_class,
-                                      const std::vector<std::string> &param_types,
+madc::dis::istring itanium_mangle_ctor_sub(const madc::dis::istring &qualified_class,
+                                      const std::vector<madc::dis::istring> &param_types,
                                       const char *flavor)
 {
 	ItaniumMangler m;
@@ -1184,7 +1184,7 @@ std::string itanium_mangle_ctor_sub(const std::string &qualified_class,
 	                       param_types, false));
 }
 
-std::string itanium_mangle_dtor_sub(const std::string &qualified_class,
+madc::dis::istring itanium_mangle_dtor_sub(const madc::dis::istring &qualified_class,
                                     const char *flavor)
 {
 	ItaniumMangler m;
@@ -1192,9 +1192,9 @@ std::string itanium_mangle_dtor_sub(const std::string &qualified_class,
 	                       {}, false));
 }
 
-std::string itanium_mangle_operator_sub(const std::string &qualified_class,
-                                         const std::string &op,
-                                         const std::vector<std::string> &param_types,
+madc::dis::istring itanium_mangle_operator_sub(const madc::dis::istring &qualified_class,
+                                         const madc::dis::istring &op,
+                                         const std::vector<madc::dis::istring> &param_types,
                                          unsigned method_cv)
 {
 	// A member operator is unary iff it takes no explicit parameter.
@@ -1205,18 +1205,18 @@ std::string itanium_mangle_operator_sub(const std::string &qualified_class,
 	                       param_types, method_cv));
 }
 
-std::string itanium_mangle_conversion_sub(const std::string &qualified_class,
-                                           const std::string &target_type,
+madc::dis::istring itanium_mangle_conversion_sub(const madc::dis::istring &qualified_class,
+                                           const madc::dis::istring &target_type,
                                            unsigned method_cv)
 {
 	ItaniumMangler m;
 	return m.settled(m.mangle_conversion(qualified_class, target_type, method_cv));
 }
 
-std::string itanium_mangle_std_free_template(const std::string &name,
-        const std::vector<std::string> &targs,
-        const std::string &ret,
-        const std::vector<std::string> &params)
+madc::dis::istring itanium_mangle_std_free_template(const madc::dis::istring &name,
+        const std::vector<madc::dis::istring> &targs,
+        const madc::dis::istring &ret,
+        const std::vector<madc::dis::istring> &params)
 {
 	std::string code = op_special(name, params.size() == 1);
 	std::string opOrName = code.empty() ? source_name(name) : code;
@@ -1224,12 +1224,12 @@ std::string itanium_mangle_std_free_template(const std::string &name,
 	return m.settled(m.mangle_std_free_template(opOrName, targs, ret, params));
 }
 
-std::string itanium_mangle_function_template_sub(
-        const std::vector<std::string> &qualifiers,
-        const std::string &name,
-        const std::vector<std::string> &targs,
-        const std::string &ret,
-        const std::vector<std::string> &params)
+madc::dis::istring itanium_mangle_function_template_sub(
+        const std::vector<madc::dis::istring> &qualifiers,
+        const madc::dis::istring &name,
+        const std::vector<madc::dis::istring> &targs,
+        const madc::dis::istring &ret,
+        const std::vector<madc::dis::istring> &params)
 {
 	// The parse-faithful NAME — "ident", or an operator-function-id
 	// ("operator<<", unary iff one parameter) — as itanium_mangle_nested_sub.
@@ -1241,9 +1241,9 @@ std::string itanium_mangle_function_template_sub(
 	return m.settled(m.mangle_function_template(qualifiers, opOrName, targs, ret, params));
 }
 
-std::string itanium_mangle_nested_sub(const std::vector<std::string> &qualifiers,
-                                      const std::string &name,
-                                      const std::vector<std::string> &param_types,
+madc::dis::istring itanium_mangle_nested_sub(const std::vector<madc::dis::istring> &qualifiers,
+                                      const madc::dis::istring &name,
+                                      const std::vector<madc::dis::istring> &param_types,
                                       bool internal_linkage)
 {
 	ItaniumMangler m;
@@ -1251,8 +1251,8 @@ std::string itanium_mangle_nested_sub(const std::vector<std::string> &qualifiers
 	                                internal_linkage));
 }
 
-std::string itanium_mangle_nested_var(const std::vector<std::string> &qualifiers,
-                                      const std::string &name)
+madc::dis::istring itanium_mangle_nested_var(const std::vector<madc::dis::istring> &qualifiers,
+                                      const madc::dis::istring &name)
 {
 	ItaniumMangler m;
 	return m.settled(m.mangle_nested_variable(qualifiers, name));
@@ -1272,7 +1272,7 @@ void madc_mangle_set_stdlib_gnu(bool cxx11_abi)
 	++g_std_abi_gen;
 }
 
-void madc_mangle_set_stdlib_llvm(const std::string &abi_ns)
+void madc_mangle_set_stdlib_llvm(const madc::dis::istring &abi_ns)
 {
 	if (g_std_stdlib == mstdlibLlvm && g_std_abi_ns == abi_ns)
 		return;
@@ -1329,7 +1329,7 @@ static std::string std_prefix_untagged()
 	return g_std_stdlib == mstdlibLlvm ? std_prefix_tagged() : "std::";
 }
 
-std::string itanium_mangle_std_var(const std::string &name)
+madc::dis::istring itanium_mangle_std_var(const madc::dis::istring &name)
 {
 	// GNU: namespace-scope std vars (cout, cin, ...) live directly in std
 	// (never in __cxx11): _ZSt <length-prefixed-name>. LLVM: everything
@@ -1343,7 +1343,7 @@ std::string itanium_mangle_std_var(const std::string &name)
 
 // ---- canonical std:: type spellings -----------------------------------------
 
-std::string std_string_type()
+madc::dis::istring std_string_type()
 {
 	return std_prefix_tagged() + "basic_string<char,"
 	       + std_prefix_untagged() + "char_traits<char>,"
@@ -1364,7 +1364,7 @@ std::string std_string_type()
 // instances: every derived kind (enum, class, pointer, complex, SIMD, ...)
 // spells itself. char-width types stay out — dtCHAR == dtINT8, so `c` vs `a`
 // is not recoverable from the DataType alone.
-std::string DataDef::mangle_scalar_spelling() const
+madc::dis::istring DataDef::mangle_scalar_spelling() const
 {
 	if (typeid(*this) != typeid(DataDef))
 		return "";
@@ -1378,7 +1378,7 @@ std::string DataDef::mangle_scalar_spelling() const
 // (madc_stamp_primitive_type_ids), for a PINNED builtin whose display name
 // is not this target's spelling of the type. No alias guard here — that is
 // the desugar's concern, not the table's.
-std::string DataDef::target_scalar_spelling() const
+madc::dis::istring DataDef::target_scalar_spelling() const
 {
 	switch (rawtype()) {
 	case DataType::dtBOOL:    return "bool";
@@ -1444,27 +1444,27 @@ bool DataDef::is_std_initializer_list() const
 	return spelling.compare(0, tagged.size(), tagged) == 0;
 }
 
-std::string std_vector_type(const std::string &elem)
+madc::dis::istring std_vector_type(const madc::dis::istring &elem)
 {
 	const std::string ns = std_prefix_untagged();
 	return ns + "vector<" + elem + "," + ns + "allocator<" + elem + ">>";
 }
 
-std::string std_map_type(const std::string &key, const std::string &val)
+madc::dis::istring std_map_type(const madc::dis::istring &key, const madc::dis::istring &val)
 {
 	const std::string ns = std_prefix_untagged();
 	return ns + "map<" + key + "," + val + "," + ns + "less<" + key + ">,"
 	       + ns + "allocator<" + ns + "pair<const " + key + "," + val + ">>>";
 }
 
-std::string std_set_type(const std::string &elem)
+madc::dis::istring std_set_type(const madc::dis::istring &elem)
 {
 	const std::string ns = std_prefix_untagged();
 	return ns + "set<" + elem + "," + ns + "less<" + elem + ">,"
 	       + ns + "allocator<" + elem + ">>";
 }
 
-std::string std_stringstream_type()
+madc::dis::istring std_stringstream_type()
 {
 	return std_prefix_tagged() + "basic_stringstream<char,"
 	       + std_prefix_untagged() + "char_traits<char>,"
@@ -1474,8 +1474,8 @@ std::string std_stringstream_type()
 // Replace each template-param NAME (whole identifier) in a type spelling with the
 // mangler's $Tn marker (parse_type maps $Tn -> Itanium T_/T0_/...). E.g.
 // "basic_istream<_CharT,_Traits>&" + [_CharT,_Traits,_Alloc] -> "basic_istream<$T0,$T1>&".
-std::string itanium_substitute_tparams(const std::string &spell,
-		const std::vector<std::string> &tparams)
+madc::dis::istring itanium_substitute_tparams(const madc::dis::istring &spell,
+		const std::vector<madc::dis::istring> &tparams)
 {
 	std::string out;
 	size_t i = 0, n = spell.size();

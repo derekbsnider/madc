@@ -1474,7 +1474,7 @@ TEST_CASE("Phase 6 slice 3d: a class's non-virtual methods reconstruct into meth
 	REQUIRE(cd != nullptr);
 
 	// get(): returns int, one param (the hidden __this — a pointer to Counter).
-	std::map<std::string, Variable *>::iterator gi = cd->method_map.find("get");
+	std::map<madc::dis::istring, Variable *>::iterator gi = cd->method_map.find("get");
 	REQUIRE(gi != cd->method_map.end());
 	FuncDef *gf = dynamic_cast<FuncDef *>(gi->second->type);
 	REQUIRE(gf != nullptr);
@@ -1485,7 +1485,7 @@ TEST_CASE("Phase 6 slice 3d: a class's non-virtual methods reconstruct into meth
 	CHECK(gi->second->name == "Counter__get");	// mangled call symbol
 
 	// add(int): returns void, __this + one explicit int param.
-	std::map<std::string, Variable *>::iterator ai = cd->method_map.find("add");
+	std::map<madc::dis::istring, Variable *>::iterator ai = cd->method_map.find("add");
 	REQUIRE(ai != cd->method_map.end());
 	FuncDef *af = dynamic_cast<FuncDef *>(ai->second->type);
 	REQUIRE(af != nullptr);
@@ -1703,7 +1703,7 @@ TEST_CASE("Phase 6 v12: std::string's ctors + dtor + operator= reconstruct into 
 	// The dtor is discoverable exactly as CirBuilder::class_own_dtor does — a "~"
 	// method_map key whose Variable is also in methods — and carries its D1 symbol.
 	Variable *dtor = NULL;
-	for (std::map<std::string, Variable *>::const_iterator kv = str->method_map.begin();
+	for (std::map<madc::dis::istring, Variable *>::const_iterator kv = str->method_map.begin();
 	     kv != str->method_map.end(); ++kv) {
 		if (kv->first.empty() || kv->first[0] != '~' || !kv->second)
 			continue;
@@ -2048,7 +2048,7 @@ TEST_CASE("B3 flip chunk 1: the dumped arena carries typedefs, namespace ids, an
 			r_counter = true;
 			DataDefCLASS *cdd = dynamic_cast<DataDefCLASS *>(av[i].dd);
 			REQUIRE(cdd != nullptr);
-			std::map<std::string, Variable *>::iterator gi =
+			std::map<madc::dis::istring, Variable *>::iterator gi =
 				cdd->method_map.find("get");
 			REQUIRE(gi != cdd->method_map.end());
 			FuncDef *gfd = dynamic_cast<FuncDef *>(gi->second->type);
@@ -2463,7 +2463,7 @@ TEST_CASE("v20: template-NAME state (pattern maps + token bodies) freezes and re
 		REQUIRE(owner_it != progA->struct_map.end());
 		DataDefCLASS *live_owner = dynamic_cast<DataDefCLASS *>(owner_it->second);
 		REQUIRE(live_owner != nullptr);
-		for (std::map<std::string, DataDef *>::const_iterator it =
+		for (std::map<madc::dis::istring, DataDef *>::const_iterator it =
 		     live_owner->type_aliases.begin();
 		     it != live_owner->type_aliases.end(); ++it)
 			CHECK(it->first.find("__madc_class_pattern_") == std::string::npos);

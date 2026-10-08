@@ -120,7 +120,7 @@ const Program::KeywordOrigin kKeywords[] = {
 
 } // namespace
 
-const Program::KeywordOrigin *Program::keyword_origin(const std::string &spelling)
+const Program::KeywordOrigin *Program::keyword_origin(const madc::dis::istring &spelling)
 {
     for ( size_t i = 0; i < sizeof(kKeywords) / sizeof(kKeywords[0]); ++i )
 	if ( spelling == kKeywords[i].spelling )
@@ -128,11 +128,11 @@ const Program::KeywordOrigin *Program::keyword_origin(const std::string &spellin
     return NULL;
 }
 
-std::string Program::keyword_provenance(const std::string &spelling) const
+madc::dis::istring Program::keyword_provenance(const madc::dis::istring &spelling) const
 {
     const KeywordOrigin *k = keyword_origin(spelling);
     if ( !k )
-	return std::string();
+	return madc::dis::istring();
     switch ( k->ext )
     {
 	case KeywordOrigin::Extension::madc:
@@ -160,7 +160,7 @@ std::string Program::keyword_provenance(const std::string &spelling) const
     if ( k->in_cpp && (!c_session || !k->in_c) )
 	consider(k->cpp_since);
     if ( !have )
-	return std::string();
+	return madc::dis::istring();
     // A keyword the language has had from its first standard is the
     // language's own.
     if ( first == lowest_standard(false) )

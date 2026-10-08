@@ -1780,7 +1780,7 @@ bool flatten_expression_context_fields(const std::map<std::string, value> &field
 	if ( bound.is_object() )
 	{
 	    if ( !flatten_expression_context_fields(bound.as_object(),
-						    prefix.empty() ? field : prefix + "." + field,
+						    prefix.empty() ? field : std::string(prefix + "." + field),
 						    base_bindings,
 						    reason) )
 		return false;
@@ -5804,7 +5804,7 @@ static void tree_decl_classes(::Program &child, const std::string &display_name,
 	    take_type(&tdt->definition);
 	return false;
     });
-    for ( std::map<std::string, TokenDataType *>::const_iterator i = child.c_enum_tag_map.begin();
+    for ( std::map<madc::dis::istring, TokenDataType *>::const_iterator i = child.c_enum_tag_map.begin();
 	  i != child.c_enum_tag_map.end(); ++i )
 	if ( i->second )
 	    take_type(&i->second->definition);
@@ -6385,10 +6385,10 @@ static madc::value graph_stale_result(const parse_tu_state *st, int64_t id)
 	? std::string("node id 0 is not a node of this handle (a missing or "
 		      "non-integer `id` argument reads as 0) - pass an id from a "
 		      "graph.* result")
-	: std::string("stale node id: minted at parse generation ")
+	: std::string(std::string("stale node id: minted at parse generation ")
 	    + std::to_string(graph_id_gen(id)) + ", the handle is at generation "
 	    + std::to_string(st->generation) + " (a refresh or an edit re-parsed the"
-	    " TU) - re-query";
+	    " TU) - re-query");
     f["error"] = madc::value(why);
     f["stale"] = value(true);
     f["nodes"] = value::make_array(std::vector<madc::value>());
@@ -9071,6 +9071,7 @@ void Program::add_include_dir(const std::string &dir)
 	if (p.back() != '/')
 		p += '/';
 	include_paths.push_back(p);
+	include_search_memo.clear();	// the search list changed
 }
 
 void Program::add_cli_define(const std::string &def)
@@ -9078,8 +9079,8 @@ void Program::add_cli_define(const std::string &def)
 	if (def.empty())
 		return;
 	std::string::size_type eq = def.find('=');
-	std::string name = (eq == std::string::npos) ? def : def.substr(0, eq);
-	std::string value = (eq == std::string::npos) ? std::string("1") : def.substr(eq + 1);
+	std::string name = (eq == std::string::npos) ? def : std::string(def.substr(0, eq));
+	std::string value = (eq == std::string::npos) ? std::string("1") : std::string(def.substr(eq + 1));
 	if (!name.empty())
 		cli_defines.push_back(std::make_pair(name, value));
 }

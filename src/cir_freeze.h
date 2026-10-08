@@ -56,6 +56,7 @@
 #define __CIR_FREEZE_H 1
 
 #include <chrono>
+#include "madcdis/istring.h"	// names are interned (madc::dis::istring)
 #include <cstdint>
 #include <deque>
 #include <map>
@@ -975,7 +976,7 @@ struct cir_frozen_forest
 	// madc_forest_defines_hash) — bind requires an exact consumer match.
 	uint32_t                     language_std = 0;
 	uint32_t                     defines_hash = 0;
-	std::vector<std::string>     libs;	// dlopen closure (#load / -l paths)
+	std::vector<madc::dis::istring>     libs;	// dlopen closure (#load / -l paths)
 	// --- grove payload v2 (B4a; container-global) ---
 	std::vector<uint32_t>        branch_macros;	// pool name ids, sorted
 	std::vector<uint32_t>        canon_order;	// unit indices, canonical include order
@@ -996,7 +997,7 @@ struct cir_frozen_forest
 	// symbol -> its (unit, record-idx) in the partitioned AST. cir_forest_arena_complete
 	// looks a method's mangled symbol up here to record where its INLINE body lives
 	// (a symbol with no func-def in the AST is a LIBRARY method: no body location).
-	std::map<std::string, std::pair<uint32_t, uint32_t> > funcdef_locs;
+	std::map<madc::dis::istring, std::pair<uint32_t, uint32_t> > funcdef_locs;
 	// v21: each func-def's OWN source file (its origin token's file) — an
 	// INSTANTIATED definition physically lands in the main-file unit but its
 	// tokens carry the template's header origin. v25: this is the BODY-origin
@@ -1004,7 +1005,7 @@ struct cir_frozen_forest
 	// discriminator); the defrec's DF_TU_ROOT_ORIGIN carries the DECLARATION
 	// provenance (decl_file), which differs when a header prototype meets a
 	// root-file definition. Falls back to the unit name when absent.
-	std::map<std::string, const char *> funcdef_files;
+	std::map<madc::dis::istring, const char *> funcdef_files;
 };
 
 // The context-hash pin: madc version + record/position layout + the c2mir
@@ -1323,7 +1324,7 @@ struct CirMaterializeFilter
 	// whole derived population. Monotone with the rest: a later non-exact
 	// filter (a bound closure) WIDENS an installed exact one and re-runs.
 	bool exact = false;
-	std::unordered_map<std::string, bool> declared_bound;
+	std::unordered_map<madc::dis::istring, bool> declared_bound;
 };
 
 // --show-stats (task #25 slice D): ONE depth-guarded forest-work clock, the
@@ -1368,10 +1369,10 @@ class CirFrozenForest
 	c2m_ctx_t _c2m;
 	std::vector<cir_forest_dir_unit> _units;
 	std::vector<CirFrozenSegment *> _segs;	// lazily constructed per unit
-	std::vector<std::string> _libs;
+	std::vector<madc::dis::istring> _libs;
 	std::vector<uint32_t> _lib_ids;	// dir lib name-ids (resolved in complete_open)
 	std::map<uint32_t, uint32_t> _live_ids;	// frozen str id -> live pool id
-	std::map<std::string, uint32_t> _unit_by_name;	// unit-name spelling -> index (Phase 6 bind)
+	std::map<madc::dis::istring, uint32_t> _unit_by_name;	// unit-name spelling -> index (Phase 6 bind)
 	uint32_t _root_unit, _root_idx;
 	uint32_t _language_std = 0, _defines_hash = 0;	// v27 producer config (dir header)
 
@@ -1429,7 +1430,7 @@ class CirFrozenForest
 	// v20 container-global: extern-decl index (symbol -> frozen location).
 	// R1 (startup latency): built LAZILY on the first extern_loc_for query
 	// — a compile that never asks (trivial C) never decodes the segment.
-	std::map<std::string, std::pair<uint32_t, uint32_t> > _extern_by_name;
+	std::map<madc::dis::istring, std::pair<uint32_t, uint32_t> > _extern_by_name;
 	bool _extern_index_built = false;
 	// R1: two-stage open. open_header = footer + pin + directory (cheap);
 	// complete_open = pools/arena/global segments (heavy, memoized).
@@ -1557,17 +1558,17 @@ public:
 	// v27 producer config (bind gate: both must equal the consumer's).
 	uint32_t language_std() const { return _language_std; }
 	uint32_t defines_hash() const { return _defines_hash; }
-	const std::vector<std::string> &libs() const { return _libs; }
+	const std::vector<madc::dis::istring> &libs() const { return _libs; }
 	const char *unit_name(uint32_t unit) const;
 	// Reverse directory (Phase 6 bind): unit-name spelling -> unit index, or
 	// -1 if no unit carries that name. Built once in open() over the directory.
 	// The key is the exact unit_name string — a resolved include path or a bare
 	// compiler-builtin/embedded name (e.g. "stddef.h").
-	int find_unit(const std::string &name) const;
+	int find_unit(const madc::dis::istring &name) const;
 	// Machine-portable fallback: the unit whose path-name ends in
 	// "/<incfile>" (see the .cpp comment — consumers on machines without
 	// the producer's header tree cannot spell full-path unit names).
-	int find_unit_path_tail(const std::string &incfile) const;
+	int find_unit_path_tail(const madc::dis::istring &incfile) const;
 	const char *type_name_for(uint32_t type_id) const;  // NULL if unknown
 
 	// --- grove payload v2 readers (B4a observability, B4b bind) ---
@@ -1661,7 +1662,7 @@ public:
 	// `sym` (false = none indexed). The bind layer loads the decl node via
 	// node_for when a loaded body references the symbol. The index builds
 	// on the first query (R1) — see _extern_by_name.
-	bool extern_loc_for(const std::string &sym,
+	bool extern_loc_for(const madc::dis::istring &sym,
 			    uint32_t &unit, uint32_t &idx);
 	// The read-only view over the dumped B3 DefArena (an empty view on a
 	// type-less freeze).
