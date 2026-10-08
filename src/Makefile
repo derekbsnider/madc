@@ -1167,6 +1167,7 @@ gates: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/check-one-forwarding-test.sh
 	@cd .. && bash scripts/check-one-nested-stream.sh
 	@cd .. && bash scripts/check-one-stream-rewind.sh
+	@cd .. && bash scripts/check-one-silent-replay.sh
 	@cd .. && bash scripts/check-one-token-run.sh
 	@cd .. && bash scripts/check-one-ptr-operator-fold.sh
 	@cd .. && bash scripts/check-one-reference-call-result.sh

@@ -61,44 +61,24 @@ extern thread_local bool madc_verbose;
 extern thread_local bool madc_object_mode;
 
 namespace {
-class CirNullStreambuf : public std::streambuf
-{
-protected:
-	int overflow(int c) override { return c; }
-};
-
-CirNullStreambuf g_cir_tsubst_null_streambuf;
-
+// A tsubst attempt is a speculative scope: Program::SilentReplay, the one
+// owner (no render, cerr silenced, the diagnostic state snapshotted). The
+// builder has no Program in the bare unit harness, where there is nothing to
+// silence or restore. restore_public_state() closes the scope and drops what
+// the attempt recorded — every caller calls it as the attempt's block ends.
 class TsubstSpeculativeDiagnostics
 {
-	Program *m_prog;
-	size_t m_diag_count;
-	Program::ErrorInfo m_error;
-	std::streambuf *m_cerr_buf;
-	std::ios::iostate m_cerr_state;
+	std::unique_ptr<Program::SilentReplay> m_quiet;
 public:
 	explicit TsubstSpeculativeDiagnostics(Program *prog)
-		: m_prog(prog),
-		  m_diag_count(prog ? prog->diagnostics.size() : 0),
-		  m_error(prog ? prog->last_error : Program::ErrorInfo()),
-		  m_cerr_buf(std::cerr.rdbuf()),
-		  m_cerr_state(std::cerr.rdstate())
-	{
-		std::cerr.rdbuf(&g_cir_tsubst_null_streambuf);
-	}
-
-	~TsubstSpeculativeDiagnostics()
-	{
-		std::cerr.rdbuf(m_cerr_buf);
-		std::cerr.clear(m_cerr_state);
-	}
+		: m_quiet(prog ? new Program::SilentReplay(*prog) : NULL) {}
 
 	void restore_public_state()
 	{
-		if (!m_prog)
+		if (!m_quiet)
 			return;
-		m_prog->diagnostics.resize(m_diag_count);
-		m_prog->last_error = m_error;
+		m_quiet->end();
+		m_quiet->rewind();
 	}
 };
 }

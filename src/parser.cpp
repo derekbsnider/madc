@@ -7794,18 +7794,50 @@ DataDefCLASS *Program::complete_shell_class_type(DataDefCLASS *cls)
     return NULL;
 }
 
-Program::SilentReplay::SilentReplay(Program &p)
-    : pgm(p), saved_diagnostics(p.diagnostics.size()), saved_error(p.last_error)
+// A streambuf that silently swallows output — SilentReplay's cerr while a
+// speculative scope is open. Muting via rdbuf(NULL) is FRAGILE: a NULL rdbuf
+// makes every insertion set badbit, and a write that reaches the
+// throwstream's exceptions(badbit) during a nested instantiation throws
+// basic_ios::clear — which ABORTS that (legitimate) instantiation instead of
+// merely suppressing a message, and corrupts the real error into a spurious
+// "iostream error". A real swallowing buffer keeps the stream good.
+namespace { struct MadcNullStreambuf : std::streambuf {
+    int overflow(int c) override { return c; }   // allowed-exception: the owner
+}; MadcNullStreambuf g_madc_null_streambuf; }
+
+Program::SilentReplay::SilentReplay(Program &p, bool loud)
+    : pgm(p), saved_diagnostics(p.diagnostics.size()), saved_error(p.last_error),
+      saved_cerr_state(std::cerr.rdstate()),
+      saved_cerr(loud ? std::cerr.rdbuf()
+		      : std::cerr.rdbuf(&g_madc_null_streambuf)),	// allowed-exception: the owner
+      saved_mute(DiagnosticRenderMute::active), silenced(!loud), open(true)
 {
-    struct ReplayNullBuf : std::streambuf
-    { int overflow(int c) { return c; } };
-    static ReplayNullBuf replay_null_buf;
-    saved_cerr = std::cerr.rdbuf(&replay_null_buf);
+    if ( silenced )
+	DiagnosticRenderMute::active = true;
 }
 
 Program::SilentReplay::~SilentReplay()
 {
+    end();
+}
+
+// Leave the scope. A diagnostic recorded inside it and kept (the caller did
+// not rewind) counts as shown, as it did when its text went to the null
+// stream — a REPL unit's render_pending_diagnostics must not print it later.
+// Under an OUTER mute it stays unrendered, as it always did.
+void Program::SilentReplay::end()
+{
+    if ( !open )
+	return;
+    open = false;
+    if ( !silenced )
+	return;
+    if ( !saved_mute )
+	for ( size_t i = saved_diagnostics; i < pgm.diagnostics.size(); ++i )
+	    pgm.diagnostics[i].rendered = true;
+    DiagnosticRenderMute::active = saved_mute;
     std::cerr.rdbuf(saved_cerr);
+    std::cerr.clear(saved_cerr_state);
 }
 
 void Program::SilentReplay::rewind()
@@ -20015,19 +20047,6 @@ TokenInt *Program::make_folded_integer_token(madc_wide_int v)
     return tok;
 }
 
-// A streambuf that silently swallows output. The speculative constant-folds below
-// (fold_if_constexpr_condition / fold_nontype_arg_constant) mute std::cerr so a
-// non-constant arg's caught Throw doesn't leak a diagnostic. Muting via
-// rdbuf(NULL) is FRAGILE: a NULL rdbuf makes every insertion set badbit, and a
-// write that reaches the throwstream's exceptions(badbit) during the nested
-// instantiation the fold triggers throws basic_ios::clear — which ABORTS that
-// (legitimate) instantiation instead of merely suppressing a message, and corrupts
-// the real error into a spurious "iostream error". A real swallowing buffer keeps
-// the stream good, so only the intended suppression happens.
-namespace { struct MadcNullStreambuf : std::streambuf {
-    int overflow(int c) override { return c; }   // accept and discard
-}; MadcNullStreambuf g_madc_null_streambuf; }
-
 bool Program::fold_if_constexpr_condition(int64_t &out)
 {
     // Collect the balanced condition tokens (stream is just past the opening `(`),
@@ -20054,19 +20073,14 @@ bool Program::fold_if_constexpr_condition(int64_t &out)
 	return false;
     }
 
-    // Fold a CLONE in an isolated stream (same idiom as fold_nontype_arg_constant:
-    // muted std::cerr, since a non-constant condition Throws and throwbuf::sync
-    // prints before the exception we catch).
-    size_t saved_diag_count = diagnostics.size();
-    Program::ErrorInfo saved_error = last_error;
+    // Fold a CLONE in an isolated stream, silently (SilentReplay: a
+    // non-constant condition Throws, and the runtime path is still valid).
     std::vector<TokenBase *> body;
     for ( TokenBase *ct : cond_toks )
 	body.push_back(ct->clone_origin());
     body.push_back(new TokenSemi());
     NestedTokenStream nested(*this, std::move(body));
-    std::streambuf *saved_cerr = std::cerr.rdbuf();
-    std::ios::iostate saved_cerr_state = std::cerr.rdstate();
-    std::cerr.rdbuf(&g_madc_null_streambuf);
+    SilentReplay quiet(*this);
     constexpr_recursion_limit_hit = false;
     bool ok = false;
     try
@@ -20084,13 +20098,11 @@ bool Program::fold_if_constexpr_condition(int64_t &out)
     catch ( ... ) { ok = false; }
     bool recursion_limit_hit = constexpr_recursion_limit_hit;
     constexpr_recursion_limit_hit = false;
-    std::cerr.rdbuf(saved_cerr);
-    std::cerr.clear(saved_cerr_state);
+    quiet.end();
     nested.close();
     if ( !ok )
     {
-	diagnostics.resize(saved_diag_count);
-	last_error = saved_error;
+	quiet.rewind();
 	// Restore the live stream: the condition tokens and its ')'.
 	rewind_stream(cond_start);
     }
@@ -20305,8 +20317,6 @@ bool Program::capture_constant_initializer_value(int64_t &out, bool brace_form,
     if ( constant_initializer_has_runtime_access(*this, declarator) )
 	return false;
     StreamMark saved_tokens = mark_stream();
-    size_t saved_diag_count = diagnostics.size();
-    Program::ErrorInfo saved_error = last_error;
     // Brace-or-equal-init, brace spelling (`static constexpr int n{7};`):
     // this function owns the '{' so a failed capture restores the INTACT
     // group for the caller's structural skip. `{}` is value-init — 0 for an
@@ -20331,14 +20341,10 @@ bool Program::capture_constant_initializer_value(int64_t &out, bool brace_form,
     }
     // A non-constant / still-dependent initializer (a dependent `static constexpr`
     // member like libstdc++'s `value = static_cast<...>(...)`) makes
-    // parse_constant_integer_expression Throw, and throwbuf::sync() prints to stderr
-    // BEFORE the exception we catch — so this legitimate "skip the non-constant
-    // initializer" fallback would leak a spurious error. Mute std::cerr for the
-    // speculative parse only; restore + clear its state after. (Same idiom as
-    // fold_nontype_arg_constant / constraint_expression_well_formed.)
-    std::streambuf *saved_cerr = std::cerr.rdbuf();
-    std::ios::iostate saved_cerr_state = std::cerr.rdstate();
-    std::cerr.rdbuf(&g_madc_null_streambuf);
+    // parse_constant_integer_expression Throw — a legitimate "skip the
+    // non-constant initializer" fallback, so the speculative parse is silent
+    // (SilentReplay).
+    SilentReplay quiet(*this);
     TokenBase *fold_anchor = peekToken();
     constexpr_recursion_limit_hit = false;
     bool ok = false;
@@ -20364,16 +20370,14 @@ bool Program::capture_constant_initializer_value(int64_t &out, bool brace_form,
     catch ( ... ) { ok = false; }
     bool recursion_limit_hit = constexpr_recursion_limit_hit;
     constexpr_recursion_limit_hit = false;
-    std::cerr.rdbuf(saved_cerr);
-    std::cerr.clear(saved_cerr_state);
+    quiet.end();
     if ( ok )
     {
 	out = v;
 	return true;                // keep the consumed position (stream at ';')
     }
     rewind_stream(saved_tokens);
-    diagnostics.resize(saved_diag_count);
-    last_error = saved_error;
+    quiet.rewind();
     if ( recursion_limit_hit )
 	report_constexpr_recursion_limit(*this, fold_anchor);
     return false;
@@ -37954,11 +37958,7 @@ Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
     class_pattern_using_capture = &captured_using;
     class_pattern_body_capture = &captured_bodies;
     class_pattern_nested_template_capture = &captured_nested_templates;
-    size_t saved_diag_count = diagnostics.size();
-    ErrorInfo saved_error = last_error;
-    std::streambuf *saved_cerr = std::cerr.rdbuf();
-    std::ios::iostate saved_cerr_state = std::cerr.rdstate();
-    std::cerr.rdbuf(&g_madc_null_streambuf);
+    SilentReplay quiet(*this);
     NestedTokenStream class_run(*this, injected, NestedTokenStream::Injected);
     cur_func_name.clear();
     tkFunction = NULL;
@@ -38096,10 +38096,8 @@ Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
     // The run's mark holds the body-origin stamp above — restore the
     // caller's true statics instead.
     capture_pl_pos.restore();
-    std::cerr.rdbuf(saved_cerr);
-    std::cerr.clear(saved_cerr_state);
-    diagnostics.resize(saved_diag_count);
-    last_error = saved_error;
+    quiet.end();
+    quiet.rewind();
 
     if ( !parsed )
     {
@@ -39084,25 +39082,19 @@ bool Program::eval_substituted_slot_type(
     // Resolve under the same muted SFINAE trap as the decltype probe: a
     // resolution failure IS the answer (the spec is rejected), never a
     // narrated error.
-    size_t saved_diag_count = diagnostics.size();
-    ErrorInfo saved_error = last_error;
-    std::streambuf *saved_cerr = std::cerr.rdbuf();
-    std::ios::iostate saved_cerr_state = std::cerr.rdstate();
-    std::cerr.rdbuf(&g_madc_null_streambuf);
+    SilentReplay quiet(*this);
     DataDef *rt = NULL;
     try
     {
 	rt = resolve_type_token_range(body, 0, body.size());
     }
     catch ( ... ) { rt = NULL; }
-    std::cerr.rdbuf(saved_cerr);
-    std::cerr.clear(saved_cerr_state);
+    quiet.end();
     for ( TokenBase *t : body )
 	delete t;
     if ( !rt )
     {
-	diagnostics.resize(saved_diag_count);
-	last_error = saved_error;
+	quiet.rewind();
 	return false;
     }
     if ( rt->name != concrete_dd->name )
@@ -39177,33 +39169,25 @@ bool Program::eval_decltype_probe_tokens(const std::vector<TokenBase *> &slot_to
 	}
 	body.push_back(t ? t->clone_origin() : NULL);
     }
-    // A failing probe IS the SFINAE answer, not an error. Rewinding the
-    // diagnostics watermark is not enough on its own: throwbuf::sync prints to
-    // cerr BEFORE the exception is caught, so the miss must also be muted through
-    // g_madc_null_streambuf — the same pairing fold_nontype_arg_constant and the
-    // discarded-condition folder use. Without it, answering "no, const nope has no
-    // max_size()" — the CORRECT answer — printed `error: no member named
-    // 'max_size'`, and every libc++ detector would narrate each negative arm it
-    // evaluates on the way to a right answer.
-    size_t saved_diag_count = diagnostics.size();
-    ErrorInfo saved_error = last_error;
-    std::streambuf *saved_cerr = std::cerr.rdbuf();
-    std::ios::iostate saved_cerr_state = std::cerr.rdstate();
-    std::cerr.rdbuf(&g_madc_null_streambuf);
+    // A failing probe IS the SFINAE answer, not an error, so it runs under
+    // SilentReplay: rewinding the diagnostics alone is not enough, since an
+    // unmuted Throw renders before the exception is caught. Without it,
+    // answering "no, const nope has no max_size()" — the CORRECT answer —
+    // printed `error: no member named 'max_size'`, and every libc++ detector
+    // would narrate each negative arm it evaluates on the way to a right answer.
+    SilentReplay quiet(*this);
     DataDef *rt = NULL;
     try
     {
 	rt = resolve_type_token_range(body, 0, body.size());
     }
     catch ( ... ) { rt = NULL; }
-    std::cerr.rdbuf(saved_cerr);
-    std::cerr.clear(saved_cerr_state);
+    quiet.end();
     for ( TokenBase *t : body )
 	delete t;
     if ( !rt )
     {
-	diagnostics.resize(saved_diag_count);
-	last_error = saved_error;
+	quiet.rewind();
     }
     // A `__void_t<decltype(EXPR)>` wrapper only needs well-formedness, but a BARE
     // decltype slot must also compare its resolved type against the concrete arg
@@ -39506,8 +39490,6 @@ bool Program::fold_nontype_arg_constant(const std::vector<TokenBase *> &argtoks,
     // (a `Trait<int>::value` arg instantiates Trait) is self-contained. Mirror
     // capture_constant_initializer_value's save/try/restore idiom; require the
     // whole arg to fold (sentinel reached) so a partial parse can't masquerade.
-    size_t saved_diag_count = diagnostics.size();
-    Program::ErrorInfo saved_error = last_error;
     std::vector<TokenBase *> body;
     for ( TokenBase *t : argtoks )
 	if ( t )
@@ -39519,15 +39501,11 @@ bool Program::fold_nontype_arg_constant(const std::vector<TokenBase *> &argtoks,
     // `declval<F>()(args)` to a stale sentinel — SFINAE T1).
     NestedTokenStream nested(*this, std::move(body));
     // A non-constant / still-dependent arg (`N` with N unbound, a pointer non-type
-    // arg) makes parse_constant_integer_expression Throw, and throwbuf::sync()
-    // prints to stderr BEFORE the exception we catch — so a legitimate "keep the
-    // raw tokens" fallback would leak a spurious error. Mute std::cerr for the
-    // speculative parse only; restore + clear its state after.
-    std::streambuf *saved_cerr = std::cerr.rdbuf();
-    std::ios::iostate saved_cerr_state = std::cerr.rdstate();
+    // arg) makes parse_constant_integer_expression Throw — a legitimate "keep
+    // the raw tokens" fallback, so the speculative parse is silent
+    // (SilentReplay; MADC_ARGFRAG_LOUD lets its errors render).
     static const char *afp_loud = ::getenv("MADC_ARGFRAG_LOUD");
-    if ( !afp_loud )
-	std::cerr.rdbuf(&g_madc_null_streambuf);
+    SilentReplay quiet(*this, afp_loud != NULL);
     constexpr_recursion_limit_hit = false;
     bool ok = false;
     try
@@ -39542,13 +39520,11 @@ bool Program::fold_nontype_arg_constant(const std::vector<TokenBase *> &argtoks,
     catch ( ... ) { ok = false; }
     bool recursion_limit_hit = constexpr_recursion_limit_hit;
     constexpr_recursion_limit_hit = false;
-    std::cerr.rdbuf(saved_cerr);
-    std::cerr.clear(saved_cerr_state);
+    quiet.end();
     nested.close();
     if ( !ok )
     {
-	diagnostics.resize(saved_diag_count);
-	last_error = saved_error;
+	quiet.rewind();
     }
     if ( recursion_limit_hit )
 	report_constexpr_recursion_limit(*this, argtoks.front());
@@ -39568,17 +39544,13 @@ bool Program::constraint_expression_well_formed(
 	*out_type = NULL;
     if ( exprtoks.empty() )
 	return false;
-    size_t saved_diag_count = diagnostics.size();
-    Program::ErrorInfo saved_error = last_error;
     std::vector<TokenBase *> body;
     for ( TokenBase *t : exprtoks )
 	if ( t )
 	    body.push_back(t->clone_origin());
     body.push_back(new TokenSemi());
     NestedTokenStream nested(*this, std::move(body));
-    std::streambuf *saved_cerr = std::cerr.rdbuf();
-    std::ios::iostate saved_cerr_state = std::cerr.rdstate();
-    std::cerr.rdbuf(&g_madc_null_streambuf);
+    SilentReplay quiet(*this);
     ++unevaluated_operand_depth;
     bool ok = false;
     try
@@ -39594,13 +39566,11 @@ bool Program::constraint_expression_well_formed(
     }
     catch ( ... ) { ok = false; }
     --unevaluated_operand_depth;
-    std::cerr.rdbuf(saved_cerr);
-    std::cerr.clear(saved_cerr_state);
+    quiet.end();
     nested.close();
     if ( !ok )
     {
-	diagnostics.resize(saved_diag_count);
-	last_error = saved_error;
+	quiet.rewind();
     }
     return ok;
 }
@@ -39714,17 +39684,13 @@ int64_t Program::evaluate_requires_expression_constant()
     auto fold_isolated = [&](const std::vector<TokenBase *> &toks) -> int64_t {
 	if ( toks.empty() )
 	    return 0;
-	size_t sd = diagnostics.size();
-	Program::ErrorInfo se = last_error;
 	std::vector<TokenBase *> body;
 	for ( TokenBase *t : toks )
 	    if ( t )
 		body.push_back(t->clone_origin());
 	body.push_back(new TokenSemi());
 	NestedTokenStream nested(*this, std::move(body));
-	std::streambuf *sc = std::cerr.rdbuf();
-	std::ios::iostate ss = std::cerr.rdstate();
-	std::cerr.rdbuf(&g_madc_null_streambuf);
+	SilentReplay quiet(*this);
 	constexpr_recursion_limit_hit = false;
 	int64_t v = 0;
 	bool ok = false;
@@ -39732,11 +39698,10 @@ int64_t Program::evaluate_requires_expression_constant()
 	catch ( ... ) { ok = false; }
 	bool recursion_limit_hit = constexpr_recursion_limit_hit;
 	constexpr_recursion_limit_hit = false;
-	std::cerr.rdbuf(sc);
-	std::cerr.clear(ss);
+	quiet.end();
 	nested.close();
 	if ( !ok )
-	{ diagnostics.resize(sd); last_error = se; }
+	    quiet.rewind();
 	if ( recursion_limit_hit )
 	    report_constexpr_recursion_limit(*this, toks.front());
 	return ok ? v : 0;
@@ -39745,17 +39710,13 @@ int64_t Program::evaluate_requires_expression_constant()
     auto type_resolves = [&](const std::vector<TokenBase *> &ty) -> bool {
 	if ( ty.empty() )
 	    return false;
-	size_t sd = diagnostics.size();
-	Program::ErrorInfo se = last_error;
 	std::vector<TokenBase *> body;
 	for ( TokenBase *t : ty )
 	    if ( t )
 		body.push_back(t->clone_origin());
 	body.push_back(new TokenSemi());
 	NestedTokenStream nested(*this, std::move(body));
-	std::streambuf *sc = std::cerr.rdbuf();
-	std::ios::iostate ss = std::cerr.rdstate();
-	std::cerr.rdbuf(&g_madc_null_streambuf);
+	SilentReplay quiet(*this);
 	bool ok = false;
 	try
 	{
@@ -39790,11 +39751,10 @@ int64_t Program::evaluate_requires_expression_constant()
 	    if ( shellc_probe )
 		fprintf(stderr, "[shellc] type_resolves THREW\n");
 	}
-	std::cerr.rdbuf(sc);
-	std::cerr.clear(ss);
+	quiet.end();
 	nested.close();
 	if ( !ok )
-	{ diagnostics.resize(sd); last_error = se; }
+	    quiet.rewind();
 	return ok;
     };
 
@@ -40493,27 +40453,22 @@ Program::TemplateDef *Program::match_partial_specialization(
 	    bool satisfied = false;
 	    if ( !ctoks.empty() )
 	    {
-		size_t sd = diagnostics.size();
-		Program::ErrorInfo se = last_error;
 		std::vector<TokenBase *> cbody;
 		for ( TokenBase *t : ctoks )
 		    if ( t )
 			cbody.push_back(t->clone_origin());
 		cbody.push_back(new TokenSemi());
 		NestedTokenStream nested(*this, std::move(cbody));
-		std::streambuf *sc = std::cerr.rdbuf();
-		std::ios::iostate sst = std::cerr.rdstate();
-		std::cerr.rdbuf(&g_madc_null_streambuf);
+		SilentReplay quiet(*this);
 		constexpr_recursion_limit_hit = false;
 		try { satisfied = parse_constant_integer_expression() != 0; }
 		catch ( ... ) { satisfied = false; }
 		bool recursion_limit_hit = constexpr_recursion_limit_hit;
 		constexpr_recursion_limit_hit = false;
-		std::cerr.rdbuf(sc);
-		std::cerr.clear(sst);
+		quiet.end();
 		nested.close();
 		if ( !satisfied )
-		{ diagnostics.resize(sd); last_error = se; }
+		quiet.rewind();
 		if ( recursion_limit_hit )
 		    report_constexpr_recursion_limit(*this, ctoks.front());
 	    }
@@ -64727,8 +64682,6 @@ DataDef *Program::resolve_template_param_default_type(
 	}
     }
 
-    size_t saved_diag_count = diagnostics.size();
-    ErrorInfo saved_error = last_error;
     // The parser's POSITION rides beside the stream (NestedTokenStream returns
     // it): when this probe restored only the stream, once expression SFINAE
     // made defaults substitute on every `declval<T>()`, the `(` following the
@@ -64746,9 +64699,7 @@ DataDef *Program::resolve_template_param_default_type(
     // fold_nontype_arg_constant documents), and a resolution MISS here is an
     // expected event (an unsatisfied SFINAE constraint per rejected overload,
     // an unresolvable default), not an error to surface.
-    std::streambuf *saved_cerr = std::cerr.rdbuf();
-    std::ios::iostate saved_cerr_state = std::cerr.rdstate();
-    std::cerr.rdbuf(&g_madc_null_streambuf);
+    SilentReplay quiet(*this);
     TokenDataType *resolved = NULL;
     try
     {
@@ -64786,8 +64737,7 @@ DataDef *Program::resolve_template_param_default_type(
     // ([temp.deduct]/8), never the class itself.
     if ( resolved && peekToken() && peekToken()->id() == TokenID::tkNS )
 	resolved = NULL;
-    std::cerr.rdbuf(saved_cerr);
-    std::cerr.clear(saved_cerr_state);
+    quiet.end();
 
     if ( pushed_owner && !class_scope_stack.empty()
       && class_scope_stack.back() == owner )
@@ -64803,8 +64753,7 @@ DataDef *Program::resolve_template_param_default_type(
 		    last_error.line, default_tokens.size(),
 		    substituted_debug.c_str());
 	}
-	diagnostics.resize(saved_diag_count);
-	last_error = saved_error;
+	quiet.rewind();
 	return NULL;
     }
     return &resolved->definition;
@@ -66321,22 +66270,17 @@ static bool instantiate_fn_template_binding(Program &pgm,
     // ([temp.deduct]/8: not an error, nothing printed). The parser's Throw
     // prints to std::cerr at throw time (throwbuf::sync), so a failing attempt
     // leaks hard-error noise for silent-by-canon failures (<cmath>'s
-    // __enable_if<false,_>::__type overloads on every scoring pass). Mute cerr
-    // for the attempt (same idiom as fold_if_constexpr_condition); a FAILED
-    // attempt also rolls back the diagnostics ledger. A placeholder that turns
+    // __enable_if<false,_>::__type overloads on every scoring pass). The
+    // attempt runs under SilentReplay; a FAILED attempt also rolls back the
+    // diagnostics ledger. A placeholder that turns
     // out to be genuinely needed still fails loudly later (unresolved import),
     // and MADC_DIAG_FNTPLTHROW's fprintf bypasses the mute for developers.
-    size_t saved_diag_count = pgm.diagnostics.size();
-    Program::ErrorInfo saved_last_error = pgm.last_error;
-    std::streambuf *saved_cerr = std::cerr.rdbuf();
-    std::ios::iostate saved_cerr_state = std::cerr.rdstate();
     // Env-gated diagnosis (MADC_FNTPL_LOUD=1): skip the SFINAE mute so the
     // REAL error prints with its location via the normal throwbuf::sync path
     // — Throw.str() at catch time can hold a STALE message from an earlier
     // recovered candidate (the __copy 'unexpected token type 13' hunt).
     static const char *fntpl_loud = ::getenv("MADC_FNTPL_LOUD");
-    if ( !fntpl_loud )
-	std::cerr.rdbuf(&g_madc_null_streambuf);
+    Program::SilentReplay quiet(pgm, fntpl_loud != NULL);
     std::string saved_inst_identity = pgm.pending_fn_instantiation_identity;
     pgm.pending_fn_instantiation_identity = inst_key;
     std::string saved_inst_symbol = pgm.pending_fn_instantiation_symbol;
@@ -66393,12 +66337,10 @@ static bool instantiate_fn_template_binding(Program &pgm,
     pgm.pending_fn_instantiation_identity = saved_inst_identity;
     pgm.pending_fn_instantiation_symbol = saved_inst_symbol;
     pgm.pending_fn_instantiation_symbol_name = saved_inst_symbol_name;
-    std::cerr.rdbuf(saved_cerr);
-    std::cerr.clear(saved_cerr_state);
+    quiet.end();
     if ( !ok )
     {
-	pgm.diagnostics.resize(saved_diag_count);
-	pgm.last_error = saved_last_error;
+	quiet.rewind();
     }
 #if MADC_DEBUG_FNTPL
     if ( pgm.tokens.size() != body_run.base_depth() )
@@ -68183,11 +68125,7 @@ TokenFunc *Program::build_dependent_pattern(FuncDef *fd)
     bool saved_pat_ctor_inits = dependent_pattern_ctor_inits;
     dependent_pattern_ctor_inits = fd_is_ctor;
 
-    size_t saved_diag_count = diagnostics.size();
-    ErrorInfo saved_error = last_error;
-    std::streambuf *saved_cerr = std::cerr.rdbuf();
-    std::ios::iostate saved_cerr_state = std::cerr.rdstate();
-    std::cerr.rdbuf(&g_madc_null_streambuf);
+    SilentReplay quiet(*this);
     bool parsed_pattern = false;
     try
     {
@@ -68208,10 +68146,8 @@ TokenFunc *Program::build_dependent_pattern(FuncDef *fd)
     if ( dependent_parse_poisoned )
 	parsed_pattern = false;
     dependent_parse_poisoned = saved_poisoned;
-    std::cerr.rdbuf(saved_cerr);
-    std::cerr.clear(saved_cerr_state);
-    diagnostics.resize(saved_diag_count);
-    last_error = saved_error;
+    quiet.end();
+    quiet.rewind();
 
     if ( !parsed_pattern )
     {
