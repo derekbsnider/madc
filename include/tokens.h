@@ -348,8 +348,10 @@ public:
     // to it (TokenVar::name_tok, cursor_name_token). Identity only — a copy
     // of the position may outlive the token and never reads through it.
     static TokenBase *_parse_token;
-    // The most recently consumed token when it SPELLS `name` (the last
-    // component of a qualified name), else NULL (parser.cpp).
+    // `t` when it SPELLS `name` (the last component of a qualified name),
+    // else NULL; cursor_name_token asks it of the most recently consumed
+    // token (parser.cpp).
+    static TokenBase *spelled_name_token(TokenBase *t, const std::string &name);
     static TokenBase *cursor_name_token(const std::string &name);
     // Active interned-spelling pool for spelling() (interning Step 4). Bound to the
     // currently-processing Program's strpool at lex/parse entry (compile is

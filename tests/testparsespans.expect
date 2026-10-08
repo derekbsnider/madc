@@ -3,9 +3,9 @@ spans: 16
   type 2:0 +4
   function 2:5 +3
   type 2:9 +4
-  ident 2:14 +1
+  parameter 2:14 +1
   type 2:17 +4
-  ident 2:22 +1
+  parameter 2:22 +1
   control 4:4 +6
   parameter 4:11 +1
   number 4:15 +2

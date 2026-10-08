@@ -231,13 +231,10 @@ int TokenBase::_parse_end_line = 0;
 int TokenBase::_parse_end_column = 0;
 TokenBase *TokenBase::_parse_token = NULL;
 
-// A name node's source token is the parser's last consumed token when that
-// token SPELLS the node's name — the parser builds a use node right as it
-// reads the name (a call's node before its `(`). A qualified name's Variable
-// may carry its scope (`ns::x`): the token spells the last component.
-TokenBase *TokenBase::cursor_name_token(const std::string &name)
+// `t` when it SPELLS `name` — a qualified name's Variable may carry its scope
+// (`ns::x`): the token spells the last component — else NULL.
+TokenBase *TokenBase::spelled_name_token(TokenBase *t, const std::string &name)
 {
-    TokenBase *t = _parse_token;
     if ( !t || name.empty() )
 	return NULL;
     TokenIdent *id = t->as_ident_tok();
@@ -253,6 +250,14 @@ TokenBase *TokenBase::cursor_name_token(const std::string &name)
 			     || name.compare(name.size() - n - 2, 2, "::") != 0) )
 	return NULL;
     return t;
+}
+
+// A name node's source token is the parser's last consumed token when that
+// token spells the node's name — the parser builds a use node right as it
+// reads the name (a call's node before its `(`).
+TokenBase *TokenBase::cursor_name_token(const std::string &name)
+{
+    return spelled_name_token(_parse_token, name);
 }
 
 // The name token of the use node an object access CONSUMES — `s` in `s.m`,
@@ -52809,6 +52814,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 			pgm.Throw(tn ? tn : agg_kw)
 			    << "Expecting member name after anonymous class aggregate" << flush;
 		    std::string member_name = contextual_identifier_name(tn);
+		    TokenBase *member_name_tok = tn;
 		    size_t member_count = 1;
 		    bool member_is_array = false;
 		    std::vector<carray_dim_t> member_dims;
@@ -52843,6 +52849,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		    }
 		    ddc->addMember(member_name, *member_dd, member_count, NULL,
 			member_is_array, member_is_array ? &member_dims : NULL);
+		    pgm.note_member_source_spelling(ddc, "", NULL, member_name_tok);
 		    tn = pgm.nextToken();
 		    if ( !tn )
 			pgm.Throw(agg_kw)
@@ -52991,6 +52998,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		    pgm.Throw(gmd.name_tok) << "Class member array dimension must be constant" << flush;
 		ddc->addMember(gmd.name, *cmember_dd, gmd.count, NULL, gmd.is_array,
 			       gmd.is_array ? &gmd.dims : NULL);
+		pgm.note_member_source_spelling(ddc, "", NULL, gmd.name_tok);
 		if ( access_flags && !ddc->member_access.empty() )
 		    ddc->member_access.back() = access_flags;
 		DBG(cout << "TokenCLASS::parse() added function pointer member " << gmd.name
@@ -53030,6 +53038,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    tn = pgm.nextToken();
 	}
 	std::string mname;
+	TokenBase *mname_tok = NULL;	// its declarator-id (a member's origin)
 	bool is_operator_method = (tn->id() == TokenID::tkOPEROVER);
 	if ( tn->id() == TokenID::tkOPEROVER )
 	    mname = pgm.parseOperatorId(tn);
@@ -53043,7 +53052,10 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    pgm.Throw(tn) << "Expecting member name in class definition" << flush;
 	}
 	else
+	{
 	    mname = contextual_identifier_name(tn);
+	    mname_tok = tn;
+	}
 
 	// peek: is this a method (followed by '(') or a data member (followed by ';')?
 	tn = pgm.peekToken();
@@ -53455,6 +53467,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    }
 	    ddc->addMember(mname, *cmember_dd, member_count, NULL, member_is_array,
 		member_is_array ? &member_dims : NULL);
+	    pgm.note_member_source_spelling(ddc, "", NULL, mname_tok);
 	    pgm.note_class_decl(Program::ClassDeclKind::DataMember);
 	    if ( access_flags && !ddc->member_access.empty() )
 		ddc->member_access.back() = access_flags;
@@ -53484,6 +53497,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 				pgm.Throw(nm) << "Class member array dimension must be constant" << flush;
 			ddc->addMember(nmname, *next_dd, ncount, NULL, nis_array,
 				nis_array ? &ndims : NULL);
+			pgm.note_member_source_spelling(ddc, "", NULL, nmd.name_tok);
 			pgm.note_class_decl(Program::ClassDeclKind::DataMember);
 			if ( access_flags && !ddc->member_access.empty() )
 				ddc->member_access.back() = access_flags;
@@ -55340,6 +55354,7 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	    }
 	    enum_alias_dd->c_compatible = pgm.is_c_mode();
 	    enum_alias_dd->enumerators = pgm.last_anon_enum.enumerators;
+	    enum_alias_dd->enumerator_toks = pgm.last_anon_enum.enumerator_toks;
 	    pgm.last_anon_enum = Program::AnonEnumDefinition();	// consumed
 	}
 	TokenDataType *tdt = new TokenDataType(alias.c_str(), *enum_alias_dd);
@@ -57144,9 +57159,15 @@ TokenBase *TokenENUM::parse(Program &pgm)
 	// and the value are both known whichever branch ran — so the type's list
 	// cannot fall out of step with the constants that were registered.
 	if ( DataDefENUM *tag_edd = dynamic_cast<DataDefENUM *>(enum_dd) )
+	{
 	    tag_edd->enumerators.push_back(std::make_pair(name, val));
+	    tag_edd->enumerator_toks.push_back(ntok);
+	}
 	else
+	{
 	    pgm.last_anon_enum.enumerators.push_back(std::make_pair(name, val));
+	    pgm.last_anon_enum.enumerator_toks.push_back(ntok);
+	}
 	if ( val < enum_min_val )
 	    enum_min_val = val;
 	if ( val > enum_max_val )
@@ -73045,6 +73066,10 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 			    bool destructor_declarator,
 			    bool return_rvalue_ref)
 {
+    // The function's declarator-id, for the TokenFunc's name_tok: callers
+    // enter with its `(` just consumed, the name the token before it (a
+    // method's mangled `id` spells no token — no link).
+    TokenBase *fn_name_tok = TokenBase::spelled_name_token(prevToken(), id);
     // Compound balance on THROW: a parse error escaping mid-function leaves the
     // param-scope / body compounds pushed. Callers that swallow the exception
     // and continue (build_dependent_pattern's pattern parse, deferred-body error
@@ -73080,6 +73105,9 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
     Variable *var;
 
     vector<std::string> ids;  // vector of variable names
+    // Each parameter's declarator-id token, PARALLEL to `ids` (NULL for a
+    // synthesized or unnamed one): the parameter Variable's decl_tok.
+    vector<TokenBase *> id_toks;
     // Per-parameter typedef alias, PARALLEL to `ids`. Empty when the parameter
     // type was not a user typedef. Propagated to the param Variable's
     // typedef_name so the CIR builder emits `Alias *p` (keeping the pointee
@@ -73093,6 +73121,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
     std::string param_alias;  // alias for the parameter currently being parsed
     TokenDataType *pb = NULL; // parameter basetype
     std::string pid;          // parameter id
+    TokenBase *pid_tok = NULL;	// its declarator-id token (DeclaratorResult::name_tok)
     RefType rtype = RefType::rtNone;
     // Number of `*` levels seen for the parameter currently being parsed.
     // Reset per parameter (where rtype is reset to rtValue). Used together with
@@ -73420,6 +73449,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    func->param_defaults.push_back(NULL);    // keep aligned with parameters
 	}
 	ids.push_back("__this");
+	id_toks.push_back(NULL);
 	param_aliases.push_back("");
 
 	param_object_cvs.push_back(cvNONE);
@@ -73477,6 +73507,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 		if ( old_style_param_name_exists(old_style_ids, pid) )
 		    Throw(nt) << "Duplicate K&R parameter name" << flush;
 		ids.push_back(pid);
+		id_toks.push_back(nt);
 		param_aliases.push_back("");
 		param_object_cvs.push_back(cvNONE);
 		old_style_ids.push_back(pid);
@@ -73560,6 +73591,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 		func->param_defaults.push_back(NULL);    // keep aligned with parameters
 	    }
 	    ids.push_back("__va_args");
+	    id_toks.push_back(NULL);
 	    param_aliases.push_back("");
 
 	    param_object_cvs.push_back(cvNONE);
@@ -73704,6 +73736,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 					&earlier_params, param_leading_cv);
 	    pid = pr.name.empty()
 		? "__anon_param_" + std::to_string(anon_param_index++) : pr.name;
+	    pid_tok = pr.name.empty() ? NULL : pr.name_tok;
 	    // The declared TYPE's pointer levels: the stars read before a
 	    // parenthesized declarator AND inside it — `int (*x)` is `int *x`
 	    // (c-testsuite 00162 redeclares `fooc(int x[const 5])` as
@@ -73845,6 +73878,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    if ( func_already_declared )
 	    {
 		ids.push_back(pid);
+		id_toks.push_back(pid_tok);
 		param_aliases.push_back(param_alias);
 
 		param_object_cvs.push_back(param_object_cv);
@@ -73869,6 +73903,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    else if ( !func->findParameter(pid) )
 	    {
 		ids.push_back(pid);
+		id_toks.push_back(pid_tok);
 		param_aliases.push_back(param_alias);
 
 		param_object_cvs.push_back(param_object_cv);
@@ -74648,6 +74683,8 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	DBG(cout << "parseFunction() adding parameter variable " << pname << endl);
 	v = new Variable(pname, *d, 1, NULL, false);
 	v->flags |= vfPARAM | vfLOCAL;
+	if ( (size_t)user_param_index < id_toks.size() )
+	    v->decl_tok = id_toks[user_param_index];
 	// Carry the parameter's typedef alias (parallel to `ids`) so the CIR
 	// builder emits `Alias *p` and the pointee resolves through the
 	// typedef's complete definition.
@@ -74771,6 +74808,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
     }
 
     TokenFunc *tf = new TokenFunc(*var);
+    tf->name_tok = fn_name_tok;
     // Capture the function declaration's source position before
     // parseCompound overwrites it.  The previous token is the `{`
     // which sits on the declaration line (or the line after the

@@ -5752,6 +5752,64 @@ static void leaf_name_classes(const TokenBase *t, name_class_map &out)
     { if ( sb->object_tok ) out[sb->object_tok] = variable_use_class(sb->object); }
 }
 
+// The names the TU's own DECLARATIONS spelled, from the entities that record
+// their declarator-id token: a function's parameters (Variable::decl_tok), a
+// struct's / union's / class's members (memberpair_t::origin), an
+// enumeration's enumerators (DataDefENUM::enumerator_toks). Variables and
+// functions are use-shaped nodes the body walk already reads (TokenDecl,
+// TokenFunc). A type definition leaves no node of its own in the tree (an
+// enum's parse returns none; classes are not top_decls), so the types come
+// from their registries — struct_map, the datatype map, C's enum tags — and
+// a record counts only when its token is this file's.
+static void tree_decl_classes(::Program &child, const std::string &display_name,
+			      name_class_map &out)
+{
+    for ( size_t f = 0; f < child.pending_funcs.size(); ++f )
+    {
+	TokenFunc *fn = tu_own_function(child.pending_funcs[f], display_name);
+	if ( !fn || !fn->method )
+	    continue;
+	for ( Variable *p : fn->method->parameters )
+	    if ( p && p->decl_tok )
+		out[p->decl_tok] = HighlightClass::hcParameter;
+    }
+    // This file's interned name, as its own tokens carry it.
+    const char *own = NULL;
+    for ( TokenBase *t : child.tokens )
+	if ( t && t->file && display_name == t->file )
+	{
+	    own = t->file;
+	    break;
+	}
+    if ( !own )
+	return;
+    std::unordered_set<const DataDef *> seen;
+    std::function<void(DataDef *)> take_type = [&](DataDef *dd) {
+	if ( !dd || !seen.insert(dd).second )
+	    return;
+	if ( DataDefSTRUCT *sd = dd->as_struct_dd() )
+	    for ( const memberpair_t &m : sd->members )
+		if ( m.origin && m.origin->file == own )
+		    out[m.origin] = HighlightClass::hcMember;
+	if ( DataDefENUM *ed = dd->as_enum_dd() )
+	    for ( TokenBase *e : ed->enumerator_toks )
+		if ( e && e->file == own )
+		    out[e] = HighlightClass::hcEnumerator;
+    };
+    for ( StructRegistry::const_iterator i = child.struct_map.begin();
+	  i != child.struct_map.end(); ++i )
+	take_type(i->second);
+    child.datatype_map.for_each_readonly([&](const char *, TokenDataType *const &tdt) {
+	if ( tdt )
+	    take_type(&tdt->definition);
+	return false;
+    });
+    for ( std::map<std::string, TokenDataType *>::const_iterator i = child.c_enum_tag_map.begin();
+	  i != child.c_enum_tag_map.end(); ++i )
+	if ( i->second )
+	    take_type(&i->second->definition);
+}
+
 // Every name the TU's own code spelled: its function bodies and its global
 // declarations' initializers (TopDecl::decl), through the one body walker
 // (graph_body_children).
@@ -5783,20 +5841,16 @@ static void tree_name_classes(::Program &child, const std::string &display_name,
 // the app owns the buffer text and converts to byte offsets. Length is
 // the token's lex-recorded source extent (the render spelling's length
 // only for a token with none). Comments come from the lexer's comment
-// record at their own positions. An identifier the
-// tree defines as a function, on that definition's head line, classifies
-// as "function" (head-line name match; the exact name-token feeder is
-// the named refinement).
+// record at their own positions. A name's class is the tree's (names: the
+// node built from the token, or the declaration that records it).
 // THE span classifier (one implementation, two feeders): walk a child's
 // retained token stream and emit {line, column, length, class} rows for
-// the TU's own tokens. parse_spans feeds it a PARSED child (fn_heads
-// carries the tree's function-head knowledge); lex_spans feeds it a
-// lex-only child (empty fn_heads — no tree, no type/function classes
-// beyond what lexing knows).
+// the TU's own tokens. parse_spans feeds it a PARSED child (names carries
+// the tree's resolution of each name token); lex_spans feeds it a lex-only
+// child (no names — no tree, no name classes beyond what lexing knows).
 static void highlight_token_rows(::Program &child,
 				 const std::string &display_name,
 				 const std::string &source_text,
-				 const std::map<long, std::set<std::string> > &fn_heads,
 				 const name_class_map &names,
 				 std::vector<madc::value> &rows)
 {
@@ -5835,13 +5889,6 @@ static void highlight_token_rows(::Program &child,
 	    if ( nc != names.end() )
 		hc = nc->second;
 	}
-	if ( hc == HighlightClass::hcIdent )
-	{
-	    std::map<long, std::set<std::string> >::const_iterator fh =
-		fn_heads.find((long)t->line);
-	    if ( fh != fn_heads.end() && fh->second.count(sp) )
-		hc = HighlightClass::hcFunction;
-	}
 	if ( hc != HighlightClass::hcNone && !sp.empty() )
 	{
 	    // A token's stamp is its 1-based START (D26); a span's contract
@@ -5876,9 +5923,8 @@ static void lexical_highlight_rows(::Program &owner, const std::string &source_t
 	DiagnosticRenderMute mute;
 	child.tokenize_buffer(source_text, disp);
     }
-    std::map<long, std::set<std::string> > no_heads;
     name_class_map no_names;
-    highlight_token_rows(child, disp, source_text, no_heads, no_names, rows);
+    highlight_token_rows(child, disp, source_text, no_names, rows);
 }
 
 // An integer field of a highlight_row row (0 when absent).
@@ -6221,15 +6267,11 @@ bool internal_program_parse_spans(int64_t handle, madc::value &out)
     if ( !st )
 	return false;
     ::Program &child = *st->child;
-    std::map<long, std::set<std::string> > fn_heads;
-    for ( size_t i = 0; i < child.pending_funcs.size(); ++i )
-	if ( TokenFunc *tf = tu_own_function(child.pending_funcs[i],
-					     st->display_name) )
-	    fn_heads[(long)tf->line].insert(tf->var.name);
     std::vector<madc::value> rows;
     name_class_map names;
+    tree_decl_classes(child, st->display_name, names);
     tree_name_classes(child, st->display_name, names);
-    highlight_token_rows(child, st->display_name, st->source_text, fn_heads, names, rows);
+    highlight_token_rows(child, st->display_name, st->source_text, names, rows);
     // The parse REFINES the lexical colour and never removes it: a parse
     // that stopped short — a header that does not open, a syntax error
     // mid-edit — holds no tokens past where it stopped, so the text it did

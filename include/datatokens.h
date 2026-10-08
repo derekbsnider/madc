@@ -102,6 +102,12 @@ public:
     size_t aot_cstr_offset;
     uint32_t count;
     uint32_t flags;
+    // The lexed declarator-id token of a PARAMETER's declaration (its name
+    // in the function head — parseFunction): the declaration's provenance
+    // link, as TokenVar::name_tok is a use's. NULL for any other Variable
+    // (a variable's declaration is its TokenDecl node; a member's and an
+    // enumerator's are their type's records) or a synthesized parameter.
+    TokenBase *decl_tok = nullptr;
     std::string storage_alias_name;
     // storage_alias_name answers "what symbol does a REFERENCE to this
     // declaration resolve to" — it is a redirect, written by the GNU asm

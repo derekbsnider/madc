@@ -2392,6 +2392,9 @@ public:
     // list disagree with the source. Consumers that must pick ONE name for a
     // value take the first (see CirBuilder::dump_enum_name_fn).
     std::vector<std::pair<std::string, int64_t> > enumerators;
+    // Each enumerator's declarator-id token, PARALLEL to `enumerators` (its
+    // declaration's provenance; shorter, or NULL, for a restored enum).
+    std::vector<TokenBase *> enumerator_toks;
 
     DataDefENUM(const std::string &name)
 	: DataDef(name, sizeof(int), DataType::dtINT), enum_name(name) {}
