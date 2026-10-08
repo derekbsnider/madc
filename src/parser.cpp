@@ -47904,6 +47904,9 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	pgm.parsing_cpp_struct_class = saved_cpp_struct_class;
 	pgm.parsing_cpp_union_class = saved_cpp_union_class;
 	pgm.parsing_cpp_final_class = saved_cpp_final_class;
+	// The class parser read (and recorded) the stand-in name token; the
+	// source spelling names the same class.
+	tag_tb->note_type_name_use(class_tag->type_name_use());
 	return result;
     }
 

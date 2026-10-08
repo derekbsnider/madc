@@ -9,7 +9,8 @@
 // Oracle: clang++ -fsyntax-only -Xclang -ast-dump on the same text resolves
 // each "type" name below as a type (VarDecl v 'S', ParmVarDecl s 'S',
 // CStyleCastExpr 'T', sizeof 'T', CXXRecordDecl S / C / Q, TypedefDecl T,
-// EnumDecl E); gcc accepts the same text.
+// EnumDecl E, CXXRecordDecl K — a struct with a static member, which the
+// struct parser hands to the class parser); gcc accepts the same text.
 void show(const char *src, const char *name)
 {
     long h = madc::parse_open(src, name);
@@ -34,7 +35,7 @@ void show(const char *src, const char *name)
 
 int main()
 {
-    show("struct S { int x; };\ntypedef int T;\nS v;\nT y;\nstatic S w;\nint f(S s, T t) { S *p = &s; return (T)p->x + sizeof(T); }\nclass C { public: int m; };\nenum E { A, B };\nE e = A;\nC c;\nnamespace N { struct Q { }; }\nN::Q q;\nint x = sizeof(struct S);\n",
+    show("struct S { int x; };\ntypedef int T;\nS v;\nT y;\nstatic S w;\nint f(S s, T t) { S *p = &s; return (T)p->x + sizeof(T); }\nclass C { public: int m; };\nenum E { A, B };\nE e = A;\nC c;\nnamespace N { struct Q { }; }\nN::Q q;\nint x = sizeof(struct S);\nstruct K { static int n; };\n",
 	 "types.cpp");
     show("struct P { int a; };\nstruct P p;\ntypedef struct P PT;\nPT q;\ntypedef enum { R, G } Col;\nCol k = G;\n", "types.c");
     return 0;
