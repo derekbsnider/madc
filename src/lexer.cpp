@@ -1317,44 +1317,70 @@ static bool gnu_attribute_text_has_supported_name(const std::string &text)
     return false;
 }
 
+// The compound type specifiers' bits (C99 6.7.2): a word's flag, summed by
+// the lexer's accumulator (chibicc-style), so order never matters and two
+// LONGs are LONG+LONG.
+enum CompoundTypeSpecifier {
+    TS_VOID     = 1 << 0,
+    TS_CHAR     = 1 << 2,
+    TS_SHORT    = 1 << 4,
+    TS_INT      = 1 << 6,
+    TS_LONG     = 1 << 8,
+    TS_FLOAT    = 1 << 10,
+    TS_DOUBLE   = 1 << 12,
+    TS_SIGNED   = 1 << 14,
+    TS_UNSIGNED = 1 << 16,
+    TS_COMPLEX  = 1 << 18,
+    TS_INT128   = 1 << 20,
+    // C23 _FloatN family, combinable with _Complex only (gcc's
+    // avx512fp16intrin.h: `_Float16 _Complex __A`). Two flags, one per
+    // approximation class (float / double) — the exact SPELLING for the
+    // minted token comes from the words themselves, not the bit.
+    TS_FLOATN_F = 1 << 22,	// _Float16, _Float32  (~float)
+    TS_FLOATN_D = 1 << 24,	// _Float64/_Float128/_Float32x/_Float64x (~double)
+};
+
+// The one list of compound-specifier words. The lexer asks it of EVERY
+// identifier, so a word is matched on its length first: almost every
+// identifier is refused by integer compares, never a string compare. A _FloatN
+// spelling is a specifier only where it is a built-in type
+// (Program::floatn_keyword_active); elsewhere it is an identifier, the name a
+// header's typedef declares (`typedef long double _Float64x;`).
+struct CompoundSpecifierWord
+{
+    const char *spelling;
+    size_t length;
+    int flag;
+    bool floatn;
+};
+#define COMPOUND_WORD(s, f, fn) { s, sizeof(s) - 1, f, fn }
+static const CompoundSpecifierWord compound_specifier_words[] = {
+    COMPOUND_WORD("char", TS_CHAR, false),
+    COMPOUND_WORD("short", TS_SHORT, false),
+    COMPOUND_WORD("int", TS_INT, false),
+    COMPOUND_WORD("long", TS_LONG, false),
+    COMPOUND_WORD("float", TS_FLOAT, false),
+    COMPOUND_WORD("double", TS_DOUBLE, false),
+    COMPOUND_WORD("signed", TS_SIGNED, false),
+    COMPOUND_WORD("unsigned", TS_UNSIGNED, false),
+    COMPOUND_WORD("__int128", TS_INT128, false),
+    COMPOUND_WORD("_Complex", TS_COMPLEX, false),
+    COMPOUND_WORD("__complex__", TS_COMPLEX, false),
+    COMPOUND_WORD("__complex", TS_COMPLEX, false),
+    COMPOUND_WORD("_Float16", TS_FLOATN_F, true),
+    COMPOUND_WORD("_Float32", TS_FLOATN_F, true),
+    COMPOUND_WORD("_Float64", TS_FLOATN_D, true),
+    COMPOUND_WORD("_Float128", TS_FLOATN_D, true),
+    COMPOUND_WORD("_Float32x", TS_FLOATN_D, true),
+    COMPOUND_WORD("_Float64x", TS_FLOATN_D, true),
+};
+#undef COMPOUND_WORD
+
 static int compound_type_specifier_flag(const std::string &w, const Program &pgm)
 {
-    enum {
-	TS_CHAR     = 1 << 2,
-	TS_SHORT    = 1 << 4,
-	TS_INT      = 1 << 6,
-	TS_LONG     = 1 << 8,
-	TS_FLOAT    = 1 << 10,
-	TS_DOUBLE   = 1 << 12,
-	TS_SIGNED   = 1 << 14,
-	TS_UNSIGNED = 1 << 16,
-	TS_COMPLEX  = 1 << 18,
-	TS_INT128   = 1 << 20,
-	// C23 _FloatN family, combinable with _Complex only (gcc's
-	// avx512fp16intrin.h: `_Float16 _Complex __A`). Two flags, one per
-	// approximation class (float / double) — the exact SPELLING for the
-	// minted token comes from the words themselves, not the bit.
-	TS_FLOATN_F = 1 << 22,	// _Float16, _Float32  (~float)
-	TS_FLOATN_D = 1 << 24,	// _Float64/_Float128/_Float32x/_Float64x (~double)
-    };
-    if ( w == "char" ) return TS_CHAR;
-    if ( w == "short" ) return TS_SHORT;
-    if ( w == "int" ) return TS_INT;
-    if ( w == "long" ) return TS_LONG;
-    if ( w == "float" ) return TS_FLOAT;
-    if ( w == "double" ) return TS_DOUBLE;
-    if ( w == "signed" ) return TS_SIGNED;
-    if ( w == "unsigned" ) return TS_UNSIGNED;
-    if ( w == "__int128" ) return TS_INT128;
-    if ( w == "_Complex" || w == "__complex__" || w == "__complex" ) return TS_COMPLEX;
-    // A _FloatN spelling is a specifier only where it is a built-in type
-    // (Program::floatn_keyword_active); elsewhere it is an identifier, the
-    // name a header's typedef declares (`typedef long double _Float64x;`).
-    if ( (w == "_Float16" || w == "_Float32") && pgm.floatn_keyword_active(w) )
-	return TS_FLOATN_F;
-    if ( (w == "_Float64" || w == "_Float128"
-       || w == "_Float32x" || w == "_Float64x") && pgm.floatn_keyword_active(w) )
-	return TS_FLOATN_D;
+    for ( const CompoundSpecifierWord &e : compound_specifier_words )
+	if ( e.length == w.size() && memcmp(e.spelling, w.data(), e.length) == 0 )
+	    return !e.floatn || pgm.floatn_keyword_active(w) ? e.flag : 0;
     return 0;
 }
 
@@ -8760,21 +8786,6 @@ TokenBase *Program::_getToken()
 		// The words are compound_type_specifier_flag's, its one list.
 		if ( compound_type_specifier_flag(word, *this) )
 		{
-		    enum {
-			TS_VOID     = 1 << 0,
-			TS_CHAR     = 1 << 2,
-			TS_SHORT    = 1 << 4,
-			TS_INT      = 1 << 6,
-			TS_LONG     = 1 << 8,  // two LONGs = LONG+LONG
-			TS_FLOAT    = 1 << 10,
-			TS_DOUBLE   = 1 << 12,
-			TS_SIGNED   = 1 << 14,
-			TS_UNSIGNED = 1 << 16,
-			TS_COMPLEX  = 1 << 18,
-			TS_INT128   = 1 << 20,
-			TS_FLOATN_F = 1 << 22,	// _Float16/_Float32 (~float)
-			TS_FLOATN_D = 1 << 24,	// _Float64/.../_Float64x (~double)
-		    };
 		    int counter = compound_type_specifier_flag(word, *this);
 		    // Accumulate subsequent type-specifier keywords.
 		    // ws_count reports the whitespace consumed BEFORE the

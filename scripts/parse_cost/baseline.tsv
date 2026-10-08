@@ -1,7 +1,7 @@
 # parse-cost baseline (scripts/parse_cost_gate.sh): callgrind Ir per workload
 # toolchain	g++-13.3.0 glibc-2.39 13 valgrind-3.22.0
 # recorded	2026-10-08 (the commit is the ledger row parse-cost)
-cxx_stl.live	3628768919
-cxx_stl.forest	2183861468
-c_headers.live	1544034336
-dialect.live	146292285
+cxx_stl.live	3588684042
+cxx_stl.forest	2183747715
+c_headers.live	1521080703
+dialect.live	145356751
