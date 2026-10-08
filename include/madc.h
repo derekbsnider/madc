@@ -3604,8 +3604,8 @@ public:
     // An elaborated-type-specifier's implicit first declaration inside a
     // declaration ([dcl.type.elab]/3, [basic.scope.pdecl]/7 — `struct S *p;`
     // with S undeclared): the bare-keyed struct_map entry, minted on a miss.
-    DataDef *struct_tag_or_implicit_forward(const std::string &sname,
-					    bool is_union);
+    // The tag token records the aggregate it names (note_type_name_use).
+    DataDef *struct_tag_or_implicit_forward(TokenBase *tag_tb, bool is_union);
     // The prior declaration a class-head DEFINITION completes ([class.pre],
     // [dcl.type.elab]): the aggregate registered under the caller's store key
     // for the tag, or — for a nested class-head, whose two parsers key the

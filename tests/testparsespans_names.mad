@@ -7,7 +7,8 @@
 // `local.x` nowhere).
 // Oracle: C's own name resolution over the source text (C11 6.2.1, 6.5.2.3)
 // — clangd's semantic tokens over the same file: variable, parameter,
-// property, function, enumMember; every row's text is the name itself.
+// property, function, enumMember, struct/enum (the tags — a tag names the
+// type its declaration resolves to); every row's text is the name itself.
 int main()
 {
     var src = "enum Colour { RED, GREEN };\n"
@@ -31,7 +32,8 @@ int main()
     {
 	var c = r["class"];
 	if ( c != "variable" && c != "parameter" && c != "member"
-	  && c != "function" && c != "enumerator" && c != "ident" )
+	  && c != "function" && c != "enumerator" && c != "typename"
+	  && c != "ident" )
 	    continue;
 	var lv = lines[r["line"].as_integer() - 1];
 	println("{}:{} {} |{}|", r["line"], r["column"], c,

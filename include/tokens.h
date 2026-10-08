@@ -243,9 +243,9 @@ typedef enum : uint16_t { tfBRACKETED	=    1,
 						// (macro expansion, __FILE__/__LINE__):
 						// line/column name the invocation site,
 						// not source bytes of this spelling
-			  tfTYPENAME	=    8,	// an identifier the parser READ as a
-						// type-name (a declaration's, a cast's,
-						// sizeof's); the span classifier colours it
+			  // 8 is RETIRED: it was tfTYPENAME, a bit for "read
+			  // as a type-name"; the identifier now records WHICH
+			  // type (TokenIdent::named_type)
 			} tokflag_t;
 
 // TokenRec — the flat, POD, serializable per-token DATA record (Phase 2 of
@@ -415,11 +415,13 @@ public:
     virtual bool is_bracketed() const { return (_flags & tfBRACKETED) ? true : false;  }
     virtual bool is_overloaded() const { return (_flags & tfOVERLOADED) ? true : false; }
     bool is_synthetic_position() const { return (_flags & tfSYNTHPOS) ? true : false; }
-    // The ONE mark of "the parser read this identifier as a type-name"
-    // (tfTYPENAME): set where a lookup resolves it as a type, read by
-    // madc_token_highlight_class. Only an identifier carries it.
-    void note_type_name_use() { if ( id() == TokenID::tkIdent ) _flags |= tfTYPENAME; }
-    bool is_type_name_use() const { return (_flags & tfTYPENAME) ? true : false; }
+    // The ONE link from a type SPELLING to the type it named
+    // (TokenIdent::named_type): set where a lookup resolves an identifier as
+    // a type-name — a type use has no tree node to carry it. NULL for any
+    // other token. Read by madc_token_highlight_class (and a caret's
+    // go-to-type). Only an identifier carries it.
+    inline void note_type_name_use(DataDef *dd);
+    inline DataDef *type_name_use();
     virtual bool is_operator() const { return false; }
     virtual bool is_constant() const { return false; }
     virtual bool is_real()     const { return false; }
@@ -1715,7 +1717,21 @@ public:
     virtual TokenBase *clone() override     { TokenIdent *t = new TokenIdent(); t->rec.spelling_id = rec.spelling_id; return t; }
     virtual void setDataType(DataDef *d) override { if (d) _datatype = d; }
     virtual TokenIdent *as_ident_tok() override { return this; }
+    DataDef *named_type = nullptr;	// the type this spelling named (note_type_name_use)
 };
+
+inline void TokenBase::note_type_name_use(DataDef *dd)
+{
+    if ( dd && id() == TokenID::tkIdent )
+	if ( TokenIdent *t = as_ident_tok() )
+	    t->named_type = dd;
+}
+
+inline DataDef *TokenBase::type_name_use()
+{
+    TokenIdent *t = id() == TokenID::tkIdent ? as_ident_tok() : NULL;
+    return t ? t->named_type : NULL;
+}
 
 // quoted string. `str` holds the literal CONTENT (embedded NULs, mutated by the
 // wide-string conversion) — NOT an identifier spelling — so it is retained here and

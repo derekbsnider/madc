@@ -10585,7 +10585,7 @@ HighlightClass madc_token_highlight_class(TokenBase *tb)
 	    break;
     }
     if ( tb->id() == TokenID::tkIdent )
-	return tb->is_type_name_use() ? HighlightClass::hcTypeName	// a user type the parse resolved
+	return tb->type_name_use() ? HighlightClass::hcTypeName	// a user type the parse resolved
 				      : HighlightClass::hcIdent;
     return HighlightClass::hcNone;
 }
