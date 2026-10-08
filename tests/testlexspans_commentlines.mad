@@ -1,0 +1,35 @@
+// madc::lex_spans / parse_spans place a comment on its OWN lines when
+// consumed directive lines sit between it and the next token. The comment's
+// line was reckoned back from the next token through its leading trivia,
+// which omits the consumed `#if 0` / `#endif` lines: the block comment
+// coloured one line low (lines 3-4 for 2-3), the `#if 0` line as comment.
+// Oracle: the source text, and gcc -E -C over the same text (it keeps the
+// comment, at lines 2-3, ahead of the line marker for `int b`).
+void show(const char *what, var &rows, var &lines)
+{
+    for ( var r : rows )
+    {
+	if ( r["class"] != "comment" )
+	    continue;
+	var lv = lines[r["line"].as_integer() - 1];
+	println("{} {}:{} |{}|", what, r["line"], r["column"],
+		perl::substr(lv, r["column"].as_integer(),
+			     r["length"].as_integer()));
+    }
+}
+
+int main()
+{
+    var src = "int a;\n/* before\n   a group */\n#if 0\n#endif\nint b; // tail\n";
+    array lines;
+    php::explode(lines, "\n", src.c_str());
+    var rows;
+    madc::lex_spans(rows, src.c_str(), "cl.c");
+    show("lex", rows, lines);
+    long h = madc::parse_open(src.c_str(), "cl.c");
+    var pr;
+    madc::parse_spans(pr, h);
+    show("parse", pr, lines);
+    madc::parse_close(h);
+    return 0;
+}

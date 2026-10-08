@@ -10434,6 +10434,11 @@ TokenBase *Program::getRealToken()
 	    case TokenType::ttComment:
 		if ( keep_trivia )
 		{
+		    if ( tb->type() == TokenType::ttComment
+		      && !tb->is_synthetic_position() )
+			_trivia_comments.push_back({ intern_file(source.fname()),
+						     tb->line, tb->column,
+						     trivia_text(tb).size() });
 		    pending_trivia += trivia_text(tb);
 		    // An unterminated comment ran to the end of input: the
 		    // next read raises its refusal, and the text read so far

@@ -5977,6 +5977,13 @@ public:
 					// off by default → zero cost for batch
     std::string _trailing_trivia;	// whitespace/comments after the last token
 					// (full-fidelity; reconstruct_source appends it)
+    // Fidelity mode (keep_trivia) only: every comment the lexer read, at its
+    // OWN source position (1-based line and column, the file interned) and
+    // byte length. The span classifier's comment anchor: the trivia text
+    // omits consumed directive lines, so a position reckoned back from the
+    // next token drifts across them.
+    struct TriviaComment { const char *file; int line; int column; size_t length; };
+    std::vector<TriviaComment> _trivia_comments;
     // Fidelity mode (keep_trivia) only: every #include directive AS WRITTEN,
     // paired with the file that wrote it — the reverse-render (--emit=c++)
     // re-emits a TU's own directives in place of the expanded header

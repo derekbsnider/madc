@@ -5645,67 +5645,41 @@ static madc::value highlight_row(long line, long col, long len,
     return value::make_object(f);
 }
 
-// Comment rows from ONE token's leading trivia (the handles' fidelity
-// mode). The trivia's END is anchored by the token's recorded position:
-// its first line = token.line - (newlines in the trivia); every line
-// after a newline starts at column 0 exactly. Only the FIRST segment's
-// column base comes from the previous token's end — exact unless
-// consumed-at-lex text (an #include directive line) sat between them;
-// that drift is bounded to the one segment and resyncs at this token.
-// A block comment emits one row per line it covers.
-static void trivia_comment_rows(const std::string &tr, long line, long col,
-				std::vector<madc::value> &rows)
+// Comment rows from the lexer's comment record (Program::_trivia_comments,
+// the fidelity mode's): each comment at its OWN position, read over the
+// source text — one row per line a block comment covers. (Reckoning a
+// comment's line back from the next token through its leading trivia
+// drifted wherever a consumed directive line sat between the two.)
+static void recorded_comment_rows(::Program &child, const std::string &display_name,
+				  const std::string &text, std::vector<madc::value> &rows)
 {
-    size_t i = 0;
-    while ( i < tr.size() )
+    std::vector<size_t> starts(1, 0);
+    for ( size_t k = 0; k < text.size(); ++k )
+	if ( text[k] == '\n' )
+	    starts.push_back(k + 1);
+    for ( const ::Program::TriviaComment &c : child._trivia_comments )
     {
-	char ch = tr[i];
-	if ( ch == '\n' )
+	if ( !c.file || display_name != c.file || c.line < 1
+	  || (size_t)c.line > starts.size() || c.column < 1 )
+	    continue;
+	long line = c.line;
+	size_t at = starts[line - 1] + (size_t)(c.column - 1);
+	size_t end = at + c.length;
+	if ( end > text.size() )
+	    end = text.size();
+	long col = c.column - 1;
+	while ( at < end )
 	{
+	    size_t nl = text.find('\n', at);
+	    size_t seg_end = nl == std::string::npos || nl > end ? end : nl;
+	    if ( seg_end > at )
+		rows.push_back(highlight_row(line, col, (long)(seg_end - at), "comment"));
+	    if ( seg_end == end )
+		break;
+	    at = seg_end + 1;
 	    ++line;
 	    col = 0;
-	    ++i;
-	    continue;
 	}
-	bool line_c = ch == '/' && i + 1 < tr.size() && tr[i + 1] == '/';
-	bool block_c = ch == '/' && i + 1 < tr.size() && tr[i + 1] == '*';
-	if ( !line_c && !block_c )
-	{
-	    ++col;
-	    ++i;
-	    continue;
-	}
-	long seg_col = col;
-	long seg_len = 0;
-	bool done = false;
-	while ( i < tr.size() && !done )
-	{
-	    if ( tr[i] == '\n' )
-	    {
-		if ( seg_len > 0 )
-		    rows.push_back(highlight_row(line, seg_col, seg_len,
-						 "comment"));
-		seg_len = 0;
-		if ( line_c )
-		    done = true;	// the newline stays for the outer loop
-		else
-		{
-		    ++line;
-		    col = 0;
-		    seg_col = 0;
-		    ++i;
-		}
-		continue;
-	    }
-	    ++seg_len;
-	    ++col;
-	    ++i;
-	    if ( block_c && seg_len >= 2 && tr[i - 1] == '/'
-	      && tr[i - 2] == '*' )
-		done = true;		// consumed the closing */
-	}
-	if ( seg_len > 0 )
-	    rows.push_back(highlight_row(line, seg_col, seg_len, "comment"));
     }
 }
 
@@ -5714,9 +5688,9 @@ static void trivia_comment_rows(const std::string &tr, long line, long col,
 // styling (a theme maps class names to colours; the compiler never
 // styles). Rows: { line, column, length, class } in source coordinates —
 // the app owns the buffer text and converts to byte offsets. Length is
-// the render spelling's length (exact for identifiers/keywords/types;
-// a literal written non-canonically can drift cosmetically — a
-// lex-recorded token extent is the named refinement). An identifier the
+// the token's lex-recorded source extent (the render spelling's length
+// only for a token with none). Comments come from the lexer's comment
+// record at their own positions. An identifier the
 // tree defines as a function, on that definition's head line, classifies
 // as "function" (head-line name match; the exact name-token feeder is
 // the named refinement).
@@ -5728,27 +5702,15 @@ static void trivia_comment_rows(const std::string &tr, long line, long col,
 // beyond what lexing knows).
 static void highlight_token_rows(::Program &child,
 				 const std::string &display_name,
+				 const std::string &source_text,
 				 const std::map<long, std::set<std::string> > &fn_heads,
 				 std::vector<madc::value> &rows)
 {
-    long prev_line = 1;
-    long prev_end_col = 0;
+    recorded_comment_rows(child, display_name, source_text, rows);
     for ( TokenBase *t : child.tokens )
     {
 	if ( !t || !t->file || display_name != t->file )
 	    continue;
-	if ( !t->leading_trivia.empty() )
-	{
-	    const std::string &tr = t->leading_trivia;
-	    long nl = 0;
-	    for ( size_t k = 0; k < tr.size(); ++k )
-		if ( tr[k] == '\n' )
-		    ++nl;
-	    long first_line = (long)t->line - nl;
-	    trivia_comment_rows(tr, first_line,
-				first_line == prev_line ? prev_end_col : 0,
-				rows);
-	}
 	// A macro-expansion token's spelling occupies no source bytes — its
 	// line/column name the invocation site (tfSYNTHPOS). Its leading
 	// trivia (real source, folded above) still anchors; the token itself
@@ -5768,9 +5730,6 @@ static void highlight_token_rows(::Program &child,
 		for ( const TokenStr::SrcPiece &pc : ts->src_pieces )
 		    rows.push_back(highlight_row(pc.line, pc.col, pc.len,
 						 "string"));
-		const TokenStr::SrcPiece &lastp = ts->src_pieces.back();
-		prev_line = lastp.line;
-		prev_end_col = lastp.col + lastp.len;
 		continue;
 	    }
 	}
@@ -5800,18 +5759,7 @@ static void highlight_token_rows(::Program &child,
 	    rows.push_back(highlight_row((long)t->line, start, len,
 					 highlight_class_name(hc)));
 	}
-	// The cursor after the token: its end (the column of its last byte,
-	// which is the 0-based column just past it).
-	int end_line = 0, end_column = 0;
-	madc_token_end(t, end_line, end_column);
-	prev_line = (long)end_line;
-	prev_end_col = (long)end_column;
     }
-    // A comment after the LAST token lives in the trailing trivia, not on
-    // any token; the cursor the loop left is its exact anchor.
-    if ( !child._trailing_trivia.empty() )
-	trivia_comment_rows(child._trailing_trivia, prev_line, prev_end_col,
-			    rows);
 }
 
 // The classifier's LEXICAL feeder: the text lexed alone — no header
@@ -5822,14 +5770,14 @@ static void lexical_highlight_rows(::Program &owner, const std::string &source_t
 				   const std::string &disp, std::vector<madc::value> &rows)
 {
     ::Program child(owner.engine);
-    child.keep_trivia = true;		// comment spans ride leading trivia
+    child.keep_trivia = true;		// comment spans: the lexer's comment record
     child.skip_includes = true;		// lex ONLY the buffer text
     {
 	DiagnosticRenderMute mute;
 	child.tokenize_buffer(source_text, disp);
     }
     std::map<long, std::set<std::string> > no_heads;
-    highlight_token_rows(child, disp, no_heads, rows);
+    highlight_token_rows(child, disp, source_text, no_heads, rows);
 }
 
 // An integer field of a highlight_row row (0 when absent).
@@ -5899,7 +5847,7 @@ bool internal_program_parse_spans(int64_t handle, madc::value &out)
 					     st->display_name) )
 	    fn_heads[(long)tf->line].insert(tf->var.name);
     std::vector<madc::value> rows;
-    highlight_token_rows(child, st->display_name, fn_heads, rows);
+    highlight_token_rows(child, st->display_name, st->source_text, fn_heads, rows);
     // The parse REFINES the lexical colour and never removes it: a parse
     // that stopped short — a header that does not open, a syntax error
     // mid-edit — holds no tokens past where it stopped, so the text it did
