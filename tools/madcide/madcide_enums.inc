@@ -32,6 +32,7 @@ void cmd_table(var &t)
 {
     var rows = {};
     rows[] = { "name": "about", "code": cmdABOUT };
+    rows[] = { "name": "autoindent", "code": cmdAUTOINDENT };
     rows[] = { "name": "bend", "code": cmdBEND };
     rows[] = { "name": "blockcopy", "code": cmdBLOCKCOPY };
     rows[] = { "name": "blockdel", "code": cmdBLOCKDEL };
@@ -790,6 +791,7 @@ long cmd_min_tier(long code)
     case cmdSAVE:
     case cmdSAVEAS:
     case cmdKEYSTYLE:	// it writes settings.json, as a save writes
+    case cmdAUTOINDENT:	// settings.json
     case cmdLANGUAGE:	// settings.json, and every buffer re-parses
     case cmdSAVEQUIT:
     // editor — project mutation / opening

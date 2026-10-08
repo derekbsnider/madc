@@ -38,6 +38,42 @@ LEDGER="${MADC_LANE_LEDGER:-docs/lane-status.tsv}"
 # Content that constitutes "the code a lane validates". Docs and status
 # files are excluded on purpose.
 CODE_PATHS="src include third_party tests scripts tools examples"
+# The release tooling — packaging, the release archive, this gate (owner
+# 2026-10-07: a packaging change has nothing to do with the source code). No
+# test suite runs it, so it stales only the lanes that do (lane_tools): the
+# release workflow's install gates prove the packaging on every platform's
+# runner before a release is published, and this gate proves itself (its
+# selftest runs first on every check and every push).
+RELEASE_TOOLING="scripts/package_release.sh scripts/package_release_macos.sh
+	scripts/package_release_windows.sh scripts/package_install_gate.sh
+	scripts/install_gate_pty.py scripts/promote_release.sh
+	scripts/release_bins.sh scripts/brew_bottle.sh scripts/brew_formula.sh
+	scripts/brew_lane.sh scripts/lane_ledger.sh scripts/git-hooks/pre-push"
+# The release tooling a lane's recorded tally covers, by lane: the brew lane
+# bottles, pours and tests the keg. (The darwin lane's tally is the macOS
+# suite; the macOS packages are proven by release.yml's macos-package jobs.)
+lane_tools() {
+	case "$1" in
+	brew-linux) echo "scripts/brew_bottle.sh scripts/brew_formula.sh
+		scripts/brew_lane.sh packaging/homebrew" ;;
+	esac
+}
+
+# lane_paths <lane> -> the pathspecs of the content <lane> validates: the
+# code less the release tooling, plus the tooling the lane runs. An
+# exclude beats an include in git, so a lane's own tools are never excluded.
+lane_paths() {
+	local tools p f
+	tools=" $(lane_tools "$1" | tr -s '[:space:]' ' ') "
+	p="$CODE_PATHS"
+	for f in $RELEASE_TOOLING; do
+		case "$tools" in
+		*" $f "*) ;;
+		*) p="$p :(exclude)$f" ;;
+		esac
+	done
+	echo "$p$tools"
+}
 
 HEADER=$'# lane\tpromote\tlast_green_commit\tdate\ttally'
 
@@ -70,17 +106,17 @@ record() {
 	echo "lane_ledger: recorded $lane green at $sha ($date): $tally"
 }
 
-# stale_reason <sha> -> prints why the recorded content is stale (empty =
-# fresh). Unknown shas are stale by definition (rewritten history, shallow
-# clone): the lane must simply re-run.
+# stale_reason <sha> <lane> -> prints why the recorded content is stale
+# (empty = fresh). Unknown shas are stale by definition (rewritten history,
+# shallow clone): the lane must simply re-run.
 stale_reason() {
 	local sha="$1"
 	if ! git rev-parse --quiet --verify "$sha^{commit}" > /dev/null; then
 		echo "recorded commit $sha not found"
 		return
 	fi
-	# shellcheck disable=SC2086
-	if ! git diff --quiet "$sha" HEAD -- $CODE_PATHS; then
+	# shellcheck disable=SC2046
+	if ! git diff --quiet "$sha" HEAD -- $(lane_paths "$2"); then
 		echo "code content changed since $sha"
 	fi
 }
@@ -127,7 +163,7 @@ check() {
 	printf '%-16s %-8s %-14s %-12s %s\n' LANE PROMOTE STATE LAST-GREEN TALLY
 	while IFS=$'\t' read -r lane promote sha date tally; do
 		case "$lane" in ''|'#'*) continue;; esac
-		reason=$(stale_reason "$sha")
+		reason=$(stale_reason "$sha" "$lane")
 		if [ -z "$reason" ]; then
 			printf '%-16s %-8s %-14s %-12s %s\n' \
 				"$lane" "$promote" FRESH "$date" "$tally"
@@ -174,8 +210,20 @@ selftest() {
 	# A commit that certainly differs in code content from HEAD: HEAD's
 	# parent chain — walk back to the first commit that changed code.
 	local stale_sha
-	# shellcheck disable=SC2086
-	stale_sha=$(git log --format=%h -n 1 --skip=1 HEAD -- $CODE_PATHS)
+	# The release-tooling table, both ways: a test lane never watches the
+	# release tooling, and the brew lane watches its own.
+	case " $(lane_paths selftest-stale) " in
+	*" :(exclude)scripts/package_release.sh "*) ;;
+	*) echo "lane_ledger: SELFTEST FAILED — a test lane watches the release tooling" >&2
+	   rm -f "$tmp"; return 1 ;;
+	esac
+	case " $(lane_paths brew-linux) " in
+	*" :(exclude)scripts/brew_lane.sh "*)
+	   echo "lane_ledger: SELFTEST FAILED — the brew lane ignores its own tooling" >&2
+	   rm -f "$tmp"; return 1 ;;
+	esac
+	# shellcheck disable=SC2046
+	stale_sha=$(git log --format=%h -n 1 --skip=1 HEAD -- $(lane_paths selftest-stale))
 	{
 		printf '%s\n' "$HEADER"
 		printf 'selftest-stale\tyes\t%s\tnever\t0/0\n' "$stale_sha"

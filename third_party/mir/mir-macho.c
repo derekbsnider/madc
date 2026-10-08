@@ -607,7 +607,8 @@ static int macho_emit_executable (MIR_object_t obj, const MIR_object_exec_params
     }
 
 #define MACHO_ALIGN(v, a) (((v) + (uint64_t) (a) -1) & ~((uint64_t) (a) -1))
-  /* ---- layout: identity fileoff <-> vaddr-base mapping */
+  /* ---- layout: identity fileoff <-> vaddr-base mapping through __DATA (the
+     segments after it: below) */
   uint64_t text_off = MACHO_ALIGN (32 + sizeofcmds, 16); /* keeps SSE pool alignment */
   uint64_t text_end = text_off + obj->text.len;
   uint64_t text_seg_size = MACHO_ALIGN (text_end, MACHO_PAGE);
@@ -631,13 +632,18 @@ static int macho_emit_executable (MIR_object_t obj, const MIR_object_exec_params
     = MACHO_ALIGN (bss_vaddr + obj->bss_size - (base + data_off), MACHO_PAGE);
   if (data_vm_size < data_file_size) data_vm_size = data_file_size;
   /* extra carrier segment between __DATA and __LINKEDIT: page-aligned start
-     (data_off/data_file_size already are), identity fileoff <-> vaddr like
-     every other segment, read-only, hashed by the signature like the rest
-     of the file */
+     (data_off/data_file_size already are), read-only, hashed by the
+     signature like the rest of the file. Past __DATA the file and the
+     address space part ways (ld64's layout): __DATA's bss takes address
+     space but no file bytes, so the segments after it start at __DATA's
+     FILE end in the file and at its MEMORY end in the address space —
+     placing them at the file end overlaps __DATA's zero-fill range, and
+     dyld refuses the image */
   uint64_t xtra_off = data_off + data_file_size;
   uint64_t xtra_file_size = extra_p ? MACHO_ALIGN (params->extra_size, MACHO_PAGE) : 0;
-  uint64_t xtra_vaddr = base + xtra_off;
+  uint64_t xtra_vaddr = base + data_off + data_vm_size;
   uint64_t le_off = xtra_off + xtra_file_size; /* __LINKEDIT file start */
+  uint64_t le_vaddr = xtra_vaddr + xtra_file_size;
 
   uint64_t text_vaddr = base + text_off; /* builder .text offset 0 */
   uint64_t data_vaddr = base + data_off;
@@ -946,7 +952,7 @@ static int macho_emit_executable (MIR_object_t obj, const MIR_object_exec_params
                       params->extra_size, (uint32_t) xtra_off, 3, MACHO_S_REGULAR);
     }
 
-    machob_segment (&lc, "__LINKEDIT", base + le_off, MACHO_ALIGN (le_size, MACHO_PAGE),
+    machob_segment (&lc, "__LINKEDIT", le_vaddr, MACHO_ALIGN (le_size, MACHO_PAGE),
                     le_off, le_size, MACHO_VM_PROT_READ, 0);
 
     /* LC_DYLD_INFO_ONLY */

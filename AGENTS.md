@@ -414,7 +414,7 @@ that fails any of these is not merged.
 | Rule                                             | Lines | Scope                                          |
 |--------------------------------------------------|------:|------------------------------------------------|
 | [build.md](.claude/rules/build.md)               |    35 | `make -C src`, the in-tree MIR subtree model   |
-| [testing-fulltest.md](.claude/rules/testing-fulltest.md) | 74 | THREE tiers: targeted per change · `scripts/fast_lanes.sh` per COMMIT (seven lanes, under three minutes, gated by the pre-push hook on every branch) · `scripts/batch_lane.sh` (tests/ JIT) per BATCH of fixes · `scripts/fix_lanes.sh` = Tier 1 + Tier 2 as ONE per-fix command · `scripts/seam_battery.sh` once per merge wave (the full suite on the packed -O2 binary, headerless; on-disk subsets; exe + obj on the same binary) — and the merge wave is the SEAM the arc's plan names (its release boundary), never a slice/phase/V · a red test's history across releases: `scripts/release_bins.sh run` |
+| [testing-fulltest.md](.claude/rules/testing-fulltest.md) | 78 | THREE tiers: targeted per change · `scripts/fast_lanes.sh` per COMMIT (seven lanes, under three minutes, gated by the pre-push hook on every branch) · `scripts/batch_lane.sh` (tests/ JIT) per BATCH of fixes · `scripts/fix_lanes.sh` = Tier 1 + Tier 2 as ONE per-fix command · `scripts/seam_battery.sh` once per merge wave (the full suite on the packed -O2 binary, headerless; on-disk subsets; exe + obj on the same binary) — and the merge wave is the SEAM the arc's plan names (its release boundary), never a slice/phase/V · a red test's history across releases: `scripts/release_bins.sh run` |
 | [testing.md](.claude/rules/testing.md)           |    32 | Integration + unit test conventions            |
 | [test-fixtures.md](.claude/rules/test-fixtures.md) |  16 | Per-test `.input` / `.argv` / `.expect` files; runner stays generic |
 
@@ -440,7 +440,7 @@ editing — don't try to memorize all of them.
 
 ### Total rule footprint
 
-- **36 rules, 1261 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
+- **36 rules, 1271 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
 - **This file (AGENTS.md): ~487 lines** — loaded by Claude via
   `@AGENTS.md` in `CLAUDE.md`, read directly by Codex / Gemini / etc.
 - **Grand total loaded by Claude Code per turn: ~1750 lines.**

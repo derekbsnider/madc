@@ -1,0 +1,152 @@
+// madcide autoindent (Chthonia's first piece of user feedback): Enter starts
+// the new line with the current line's indentation, one step deeper after a
+// line that ends in its language's block opener; a block closer typed first
+// on a blank-indented line takes one step off it; Edit ▸ Toggle Autoindent
+// turns it off, kept in settings.json. Oracle: Thonny, VS Code and JOE's
+// autoindent (JOE's ^T I, its %I status seat "A") on the same keystrokes.
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+#include "../tools/madcide/include/madcide/harness"	// <madcide/harness>: ev_text, ev_key, ev_action
+
+void show(long w, long doc, const char *what)
+{
+    var t;
+    ui::text(t, w, doc);
+    var shown = php::str_replace("\t", "\\t", t.c_str());
+    shown = php::str_replace("\n", "|", shown.c_str());
+    println("{}: {}", what, shown);
+}
+
+void type(IdeSession &S, long doc, const char *t)
+{
+    var e;
+    ev_text(e, t);
+    S.apply_ide_event(doc, e);
+}
+
+void enter(IdeSession &S, long doc)
+{
+    var e;
+    ev_key(e, "enter");
+    S.apply_ide_event(doc, e);
+}
+
+// One buffer in its own session: `keys` is typed at `caret` — '\n' is Enter,
+// '\t' the Tab key, '<' Edit ▸ Dedent, any other byte typed text.
+void run_case(const char *label, const char *path, const char *text, long caret, const char *keys)
+{
+    php::file_put_contents(path, text);
+    long w = ui::world_new();
+    long doc = setup_editor(w, path, false);
+    long es = ui::entity_by_name(w, "editor-state");
+    builtins_activate(w, es);
+    ui::set(w, es, "profile_dir", "tools/madcide/profiles");
+    ui::set(w, es, "profile", "joe");
+    IdeSession S;
+    S.attach(w, es);
+    ui::set(w, es, "caret", caret);
+    var e;
+    for ( long i = 0; keys[i] != 0; i = i + 1 )
+    {
+	if ( keys[i] == '\n' )
+	    ev_key(e, "enter");
+	else if ( keys[i] == '\t' )
+	    ev_key(e, "tab");
+	else if ( keys[i] == '<' )
+	    ev_action(e, "dedent");
+	else
+	{
+	    var ch = format("{}", (char)keys[i]);
+	    ev_text(e, ch.c_str());
+	}
+	S.apply_ide_event(doc, e);
+    }
+    show(w, doc, label);
+    S.close();
+    php::unlink(path);
+}
+
+int main()
+{
+    const char *path = "madc_ide_autoindent.c";
+    php::file_put_contents(path, "int f(void) {");
+    long w = ui::world_new();
+    long doc = setup_editor(w, path, false);
+    long es = ui::entity_by_name(w, "editor-state");
+    builtins_activate(w, es);
+    ui::set(w, es, "profile_dir", "tools/madcide/profiles");
+    ui::set(w, es, "profile", "joe");
+    IdeSession S;
+    S.attach(w, es);
+    ui::set(w, es, "caret", 13);
+
+    // 1. After a `{`, one step deeper; then the line's own indentation.
+    enter(S, doc);
+    show(w, doc, "open");
+    type(S, doc, "int x = 1;");
+    enter(S, doc);
+    show(w, doc, "copy");
+    // 2. A `}` typed on the blank-indented line steps back; Enter after it
+    //    copies the column-0 indentation (none).
+    type(S, doc, "}");
+    show(w, doc, "close");
+    enter(S, doc);
+    type(S, doc, "x");
+    show(w, doc, "after");
+    // 3. One undo step takes the dedent and the `}` together.
+    var e;
+    ev_action(e, "undo");
+    S.apply_ide_event(doc, e);
+    ev_action(e, "undo");
+    S.apply_ide_event(doc, e);
+    ev_action(e, "undo");
+    S.apply_ide_event(doc, e);
+    show(w, doc, "undo");
+    // 4. Splitting an indented line keeps the indentation before the caret.
+    ui::text_replace(w, doc, 0, ui::text_size(w, doc), "    ab");
+    ui::set(w, es, "caret", 5);
+    enter(S, doc);
+    show(w, doc, "split");
+    // 5. The toggle: off, kept in settings.json; Enter is a bare newline.
+    ev_action(e, "autoindent");
+    S.apply_ide_event(doc, e);
+    var msg;
+    ui::get(msg, w, es, "msg");
+    var cfg;
+    madcide_config_dir(cfg);
+    var setp = format("{}/settings.json", cfg);
+    var kept;
+    php::file_get_contents(kept, setp.c_str());
+    println("toggle: {} kept={}", msg, rust::contains(kept.c_str(), "\"autoindent\": false") != 0);
+    ui::text_replace(w, doc, 0, ui::text_size(w, doc), "\tif (x) {");
+    ui::set(w, es, "caret", 9);
+    enter(S, doc);
+    type(S, doc, "}");
+    show(w, doc, "off");
+    // 6. ^T's row shows it; the row turns it back on.
+    ev_action(e, "options");
+    S.apply_ide_event(doc, e);
+    var tree;
+    S.compose_ide_tree(tree, doc);
+    var rendered;
+    ui::render_tree(rendered, w, tree);
+    println("options row: {}", rust::contains(rendered.c_str(), "I Autoindent  off") != 0);
+    ev_action(e, "autoindent");
+    S.apply_ide_event(doc, e);
+    ui::get(msg, w, es, "msg");
+    println("toggle: {}", msg);
+
+    S.close();
+    php::unlink(path);
+
+    // 7. The indent level is the buffer's: Python's four spaces (Tab and
+    //    Dedent use it too), a C file's own four-space steps, YAML's two.
+    run_case("python", "madc_ide_autoindent.py", "def f():", 8, "\nx = 1\n\t<");
+    run_case("c spaces", "madc_ide_autoindent2.c", "int g(void) {\n    if (x) {", 26, "\n}");
+    run_case("yaml", "madc_ide_autoindent.yaml", "key:", 4, "\n\t");
+
+    php::unlink(setp.c_str());
+    php::rmdir(cfg.c_str());
+    return 0;
+}

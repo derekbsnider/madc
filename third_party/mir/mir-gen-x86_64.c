@@ -306,7 +306,7 @@ static void machinize_call (gen_ctx_t gen_ctx, MIR_insn_t call_insn) {
   MIR_func_t func = curr_func_item->u.func;
   MIR_proto_t proto = call_insn->ops[0].u.ref->u.proto;
   size_t size, nargs, nops = MIR_insn_nops (ctx, call_insn), start = proto->nres + 2;
-  size_t int_arg_num = 0, fp_arg_num = 0, xmm_args = 0;
+  size_t int_arg_num = 0, fp_arg_num = 0;
   size_t init_arg_stack_size = spill_space_size, arg_stack_size = init_arg_stack_size;
 #ifdef _WIN32
   size_t block_offset = spill_space_size;
@@ -390,7 +390,6 @@ static void machinize_call (gen_ctx_t gen_ctx, MIR_insn_t call_insn) {
               : mode == MIR_OP_VECTOR  ? MIR_T_V128
                                        : MIR_T_I64);
     }
-    if (xmm_args < 8 && (type == MIR_T_F || type == MIR_T_D || type == MIR_T_V128)) xmm_args++;
     ext_insn = NULL;
     if ((ext_code = get_ext_code (type)) != MIR_INVALID_INSN) { /* extend arg if necessary */
       temp_op = _MIR_new_var_op (ctx, gen_new_temp_reg (gen_ctx, MIR_T_I64, func));
@@ -667,8 +666,10 @@ static void machinize_call (gen_ctx_t gen_ctx, MIR_insn_t call_insn) {
 #ifndef _WIN32
   if (proto->vararg_p) {
     setup_call_hard_reg_args (gen_ctx, call_insn, AX_HARD_REG);
+    /* %al: the number of XMM registers used, including those of block args
+       passed in registers (MIR_T_BLK + 2..4). */
     new_insn = MIR_new_insn (ctx, MIR_MOV, _MIR_new_var_op (ctx, AX_HARD_REG),
-                             MIR_new_int_op (ctx, xmm_args));
+                             MIR_new_int_op (ctx, fp_arg_num < 8 ? fp_arg_num : 8));
     gen_add_insn_before (gen_ctx, call_insn, new_insn);
   }
 #else
@@ -866,6 +867,15 @@ static void *mir_arg_memcpy (void *dest, const void *src, size_t n) {
 }
 extern __typeof (mir_arg_memcpy) mir_arg_memcpy_obj_export asm ("mir.arg_memcpy")
   __attribute__ ((alias ("mir_arg_memcpy"), used));
+#elif defined(__APPLE__) && defined(__GNUC__)
+/* The same export on Mach-O: a wrapper under the '_'-prefixed label (see
+   mir-aot-export.h), as Mach-O has no alias attribute. */
+#include "mir-aot-export.h"
+void *mir_arg_memcpy_obj_export (void *dest, const void *src, size_t n)
+  asm (MIR_AOT_SYM ("mir.arg_memcpy")) __attribute__ ((used));
+void *mir_arg_memcpy_obj_export (void *dest, const void *src, size_t n) {
+  return memcpy (dest, src, n);
+}
 #endif
 
 static void get_builtin (gen_ctx_t gen_ctx, MIR_insn_code_t code, MIR_item_t *proto_item,

@@ -14,6 +14,8 @@
 #   bash scripts/package_install_gate.sh winzip dist/madc-<ver>-windows-x86_64.zip
 #   bash scripts/package_install_gate.sh mactar dist/madc-<ver>-macos-<arch>.tar.gz   (darwin host)
 #   bash scripts/package_install_gate.sh all    # every gateable artifact for VERSION
+#   xvfb-run -a bash scripts/package_install_gate.sh apparmor   # the INSTALLED 24.04 .deb's
+#            windows under AppArmor's user-namespace restriction (sudo; release.yml)
 #
 # Per-artifact probes (each asserts its failure mode loudly, and every
 # positive probe has a NEGATIVE CONTROL proving the gate can fail):
@@ -570,6 +572,88 @@ gate_mactar() {
     echo "package_install_gate: PASS mactar ($artifact)"
 }
 
+# ---------- the installed .deb's windows under AppArmor (Ubuntu 24.04+) ----------
+# web_under PID: a WebKit web process runs beneath PID (WebKit starts it
+# through bwrap, so it is a grandchild or deeper). comm is cut to 15 chars.
+web_under() {
+    ps -e -o pid=,ppid=,comm= | awk -v root="$1" '
+        { up[$1] = $2; name[$1] = $3 }
+        END {
+            for (p in name) {
+                if (name[p] !~ /^WebKitWebProces/) continue
+                for (q = up[p]; q > 1 && q != root; q = up[q]) ;
+                if (q == root) exit 0
+            }
+            exit 1
+        }'
+}
+
+# ide_window SECS: madcide's window (--gui; madcide's own default is the
+# console editor) on aa.c for up to SECS, polled every half second. Sets
+# IDE_WEB (yes once its WebKit web process ran) and IDE_UP (yes if madcide
+# was still running at SECS), then ends it. The verdict is what ran, never
+# how the exit status reads: a crash's core dump can hold the dying process
+# past a `timeout`, which then reports 124 as if it were still up. No core
+# is written.
+ide_window() {
+    local secs=$1 pid t=0
+    IDE_WEB=no IDE_UP=no
+    ( ulimit -c 0; exec /usr/bin/madcide "$GATE_TMP/aa.c" --gui ) < /dev/null > "$GATE_TMP/ide.log" 2>&1 &
+    pid=$!
+    while [ $t -lt $((secs * 2)) ]; do
+        kill -0 $pid 2>/dev/null || break
+        [ $IDE_WEB = yes ] || ! web_under $pid || IDE_WEB=yes
+        sleep 0.5
+        t=$((t + 1))
+    done
+    [ $t -ge $((secs * 2)) ] && kill -0 $pid 2>/dev/null && IDE_UP=yes
+    kill $pid 2>/dev/null
+    wait $pid 2>/dev/null
+}
+
+# gate_apparmor: madc's .deb INSTALLED (apt), the user-namespace restriction
+# ON as a 24.04 desktop has it, a display (xvfb-run), sudo. By the profile
+# the .deb installs, /usr/bin/madc runs a ui:: program to its first rendered
+# page (tests/gui/ui_web_hello.mad's GUI_SNAPSHOT: WebKit's web process
+# runs only in its bwrap sandbox), and madcide's window starts its web
+# process and stays up 15 s; [control: the profile unloaded, the same
+# program dies before its page and madcide's web process never runs —
+# LP: #2046844].
+gate_apparmor() {
+    local prof=/etc/apparmor.d/madc prog=tests/gui/ui_web_hello.mad out rc p
+    [ -f "$prof" ] || fail apparmor "no $prof (the .deb installs it on Ubuntu 24.04 and later)"
+    [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null)" = 1 ] \
+        || fail apparmor "the user-namespace restriction is off; this gate needs it on"
+    for p in madc madcide; do
+        sudo grep -q "^$p " /sys/kernel/security/apparmor/profiles \
+            || fail apparmor "the $p profile is not loaded (the .deb's postinst loads it)"
+    done
+    ok apparmor "the .deb's madc and madcide profiles are loaded"
+    printf 'int main(void) { return 0; }\n' > "$GATE_TMP/aa.c"
+    out=$( ( ulimit -t 120 -c 0; timeout 60 /usr/bin/madc "$prog" ) 2>&1 )
+    rc=$?
+    case "$rc:$out" in
+        0:*GUI_SNAPSHOT*) ok apparmor "/usr/bin/madc runs a ui:: window to its rendered page" ;;
+        *) fail apparmor "/usr/bin/madc's ui:: window did not render (rc $rc: $(echo "$out" | tail -3 | tr '\n' ' '))" ;;
+    esac
+    ide_window 15
+    [ $IDE_WEB = yes ] || fail apparmor "madcide's window never started its web process ($(tail -3 "$GATE_TMP/ide.log" | tr '\n' ' '))"
+    [ $IDE_UP = yes ] || fail apparmor "madcide's window ended by itself ($(tail -3 "$GATE_TMP/ide.log" | tr '\n' ' '))"
+    ok apparmor "madcide's window started its web process and ran 15 s"
+    sudo apparmor_parser -R "$prof" || fail apparmor "could not unload $prof"
+    out=$( ( ulimit -t 120 -c 0; timeout 60 /usr/bin/madc "$prog" ) 2>&1 )
+    rc=$?
+    ide_window 15
+    sudo apparmor_parser -r -T -W "$prof" || fail apparmor "could not load $prof again"
+    case "$out" in
+        *GUI_SNAPSHOT*) fail apparmor "control broken: the profile unloaded, the window still rendered" ;;
+        *) ok apparmor "control: the profile unloaded, the window died before its page (rc $rc)" ;;
+    esac
+    [ $IDE_WEB = no ] || fail apparmor "control broken: the profile unloaded, madcide's web process ran anyway"
+    ok apparmor "control: the profile unloaded, madcide's web process never ran ($(tail -1 "$GATE_TMP/ide.log"))"
+    echo "package_install_gate: PASS apparmor"
+}
+
 # ---------- dispatch ----------
 mode="${1:-}"
 write_probes
@@ -579,6 +663,7 @@ case "$mode" in
     tar)    gate_tar    "${2:?usage: package_install_gate.sh tar <artifact>}" ;;
     winzip) gate_winzip "${2:?usage: package_install_gate.sh winzip <artifact>}" ;;
     mactar) gate_mactar "${2:?usage: package_install_gate.sh mactar <artifact>}" ;;
+    apparmor) gate_apparmor ;;
     all)
         VER=$(cat VERSION)
         found=0
@@ -597,7 +682,7 @@ case "$mode" in
         echo "package_install_gate: PASS all (version ${VER})"
         ;;
     *)
-        echo "usage: package_install_gate.sh <deb|rpm|tar|winzip|mactar> <artifact> | all" >&2
+        echo "usage: package_install_gate.sh <deb|rpm|tar|winzip|mactar> <artifact> | apparmor | all" >&2
         exit 2
         ;;
 esac

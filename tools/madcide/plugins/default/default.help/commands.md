@@ -73,6 +73,11 @@ Removes one step of indentation from the selected lines.
 ## togglecomment
 Comments the selected lines out, or back in.
 
+## autoindent
+Turns autoindent on or off. While it is on, Enter starts the new line
+with the current line's indentation, one step deeper after a line that
+opens a block.
+
 ## mark
 Marks where a block starts.
 

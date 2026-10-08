@@ -17,10 +17,15 @@
 # scalar/array/member, _Complex — which the x86-hosted cross compiler used to
 # write in the host's x87 layout; aarch64 read them as binary128 near zero), and
 # aarch64_char_sign.c (plain char is UNSIGNED here: signed char's folds, its
-# emitted spelling and _Generic's match, which read plain char). THREE LEGS each:
+# emitted spelling and _Generic's match, which read plain char), and
+# aarch64_varargs.c (a program DEFINING a variadic function: its va_arg calls
+# libmir's mir.va_arg / mir.va_block_arg, which an executable could not find). THREE LEGS each:
 #   oracle  aarch64-linux-gnu-gcc's binary under qemu — the expected output.
-#   aot     bin/madc-aarch64-linux -c, linked by aarch64 gcc, run under qemu:
-#           must import NO dotted mir.* name, and must print the oracle's bytes.
+#   aot     bin/madc-aarch64-linux -c, linked by aarch64 gcc against the target's
+#           libmir (a madc executable gets libmir through libmadc), run under
+#           qemu: every dotted mir.* name it imports must be one that libmir
+#           EXPORTS (mir.va_arg / mir.va_block_arg -- aarch64_varargs.c), and it
+#           must print the oracle's bytes.
 #   jit     a gcc-built aarch64 c2m (MIR's own driver) running the fixture
 #           through the generator (-eg) under qemu — the libmir JIT path.
 #
@@ -37,6 +42,7 @@ NM=aarch64-linux-gnu-nm
 QEMU="qemu-aarch64-static -L /usr/aarch64-linux-gnu"
 MADC=bin/madc-aarch64-linux
 JITB="$PWD/obj/mir/aarch64-native"
+LIBMIR="$JITB/libmir.a" # the native aarch64 libmir the aot leg links (obj/mir/aarch64-linux is the x86-hosted cross build's)
 D=$(mktemp -d "$PWD/tmp/aarch64ld.XXXXXX")
 fail=0
 
@@ -58,9 +64,11 @@ fi
 echo "control: oracle computes binary128 ($(wc -l < "$D/oracle") lines)"
 
 mkdir -p "$JITB"
-if ! make -C third_party/mir BUILD_DIR="$JITB" CC="$CC" "$JITB/c2m" > "$D/c2m.log" 2>&1; then
-	echo "RED  jit: the aarch64 c2m did not build"; tail -5 "$D/c2m.log"; fail=1
+if ! make -C third_party/mir BUILD_DIR="$JITB" CC="$CC" "$JITB/c2m" "$LIBMIR" > "$D/c2m.log" 2>&1; then
+	echo "RED  jit: the aarch64 c2m / libmir did not build"; tail -5 "$D/c2m.log"; fail=1
 fi
+# the dotted names libmir exports for AOT objects (mir-aot-export.h)
+mir_exports=$("$NM" --defined-only "$LIBMIR" 2>/dev/null | awk '$3 ~ /^mir\./ { print $3 }' | sort -u)
 
 for fx in tests/cross/aarch64_*.c; do
 	n=$(basename "$fx" .c)
@@ -70,16 +78,17 @@ for fx in tests/cross/aarch64_*.c; do
 	if ! "$MADC" --std=c17 -c -o "$D/$n.o" "$fx" > "$D/$n.aot.log" 2>&1; then
 		echo "RED  $n aot: madc -c failed"; sed 's/^/    /' "$D/$n.aot.log" | head -5; fail=1
 	else
-		dotted=$("$NM" -u "$D/$n.o" | grep -c ' mir\.' || true)
-		if [ "$dotted" -ne 0 ]; then
-			echo "RED  $n aot: the object imports $dotted dotted mir.* builtin(s) that nothing exports:"
-			"$NM" -u "$D/$n.o" | grep ' mir\.' | sed 's/^/    /'; fail=1
-		elif ! "$CC" "$D/$n.o" -o "$D/$n.madc" 2> "$D/$n.link.err"; then
+		unexported=$("$NM" -u "$D/$n.o" | awk '$2 ~ /^mir\./ { print $2 }' | sort -u \
+			| comm -23 - <(printf '%s\n' "$mir_exports"))
+		if [ -n "$unexported" ]; then
+			echo "RED  $n aot: the object imports dotted mir.* builtin(s) that libmir does not export:"
+			printf '%s\n' "$unexported" | sed 's/^/    /'; fail=1
+		elif ! "$CC" "$D/$n.o" "$LIBMIR" -lm -ldl -lpthread -o "$D/$n.madc" 2> "$D/$n.link.err"; then
 			echo "RED  $n aot: link failed"; sed 's/^/    /' "$D/$n.link.err" | head -5; fail=1
 		elif ! $QEMU "$D/$n.madc" > "$D/$n.aot" 2>&1 || ! diff -q "$D/$n.oracle" "$D/$n.aot" >/dev/null; then
 			echo "RED  $n aot: output differs from the gcc oracle"; diff "$D/$n.oracle" "$D/$n.aot" | head -12; fail=1
 		else
-			echo "GREEN $n aot: 0 dotted imports, links, byte-identical to gcc"
+			echo "GREEN $n aot: every dotted import exported by libmir, links, byte-identical to gcc"
 		fi
 	fi
 	# jit: a gcc-built aarch64 c2m through the generator (-eg)
@@ -94,5 +103,28 @@ for fx in tests/cross/aarch64_*.c; do
 	fi
 done
 
-[ "$fail" -eq 0 ] && echo "aarch64_ldouble_lane: GREEN (control; aot + jit on every fixture)" && rm -rf "$D"
+# boot: MIR compiles ITSELF on aarch64-linux (upstream's c2mir-bootstrap-test
+# recipe): the aarch64 c2m compiles MIR's sources to 1.bmir, then runs itself
+# from 1.bmir (-el) to compile them again; both must be byte-identical. Here
+# plain char is UNSIGNED (c2mir's aarch64-linux model) while MIR's gcc build
+# forces -fsigned-char, so MIR's own sources must not depend on char's sign
+# (scripts/check-mir-plain-char.sh is the static half), and the JIT-compiled
+# generator imports libgcc's binary128 routines by name, which the driver must
+# resolve (mir-ld-helper.h).
+if [ -x "$JITB/c2m" ]; then
+	M=third_party/mir
+	BS="$M/mir-gen.c $M/c2mir/c2mir.c $M/c2mir/c2mir-driver.c $M/mir.c $M/mir-debug.c $M/mir-debug-gdb.c"
+	BF="-w -DMIR_BOOTSTRAP -I/usr/aarch64-linux-gnu/include -I$M"
+	if ! timeout 1800 $QEMU "$JITB/c2m" $BF $BS -o "$D/boot1.bmir" > "$D/boot1.log" 2>&1; then
+		echo "RED  boot: stage 1 (gcc-built c2m compiling MIR) failed"; head -3 "$D/boot1.log"; fail=1
+	elif ! timeout 3600 $QEMU "$JITB/c2m" -DMIR_BOOTSTRAP "$D/boot1.bmir" -el $BF $BS -o "$D/boot2.bmir" > "$D/boot2.log" 2>&1; then
+		echo "RED  boot: stage 2 (MIR-compiled c2m compiling MIR) failed"; head -3 "$D/boot2.log"; fail=1
+	elif ! cmp -s "$D/boot1.bmir" "$D/boot2.bmir"; then
+		echo "RED  boot: stage 1 and stage 2 differ"; fail=1
+	else
+		echo "GREEN boot: MIR compiles itself on aarch64; both stages identical"
+	fi
+fi
+
+[ "$fail" -eq 0 ] && echo "aarch64_ldouble_lane: GREEN (control; aot + jit on every fixture; bootstrap)" && rm -rf "$D"
 exit "$fail"

@@ -980,6 +980,31 @@ long blank_run(const char *s)
     return k;
 }
 
+// One indent level as the editor types it: Edit ▸ Indent's insertion, the
+// Tab key's text, and the level autoindent adds after a block opener. The
+// buffer's own, es "indentunit" (madcide primes it per buffer: the file's
+// indentation, else its language's — autoindent_prime); unset = a tab.
+void indent_unit(var &out, long w, long es)
+{
+    ui::get(out, w, es, "indentunit");
+    if ( out.is_null() || strlen(out.c_str()) == 0 )
+	out = "\t";
+}
+
+// The leading spaces one Dedent removes when the line does not start with a
+// tab: the indent unit's width when it is spaces, else the tab width.
+long dedent_spaces(long w, long es)
+{
+    var u;
+    indent_unit(u, w, es);
+    if ( u.c_str()[0] == ' ' )
+	return strlen(u.c_str());
+    long tabw = es_int(w, es, "tabwidth", 8);
+    if ( tabw < 1 )
+	tabw = 8;
+    return tabw;
+}
+
 // A line of nothing but blanks (a CRLF file's '\r' counted as its end).
 bool blank_line(const char *s)
 {
@@ -989,13 +1014,14 @@ bool blank_line(const char *s)
 
 // The edit `op` makes to line `n`: {at, del, ins} — erase `del` bytes at
 // `at`, then insert `ins` there (0 and "" = the line is left alone).
-// Indent inserts the tab a typed Tab inserts, on a line that is not empty;
-// dedent removes one leading tab, else up to `tabw` leading spaces; the
+// Indent inserts the indent unit a typed Tab inserts, on a line that is not
+// empty; dedent removes one leading tab, else up to one unit's (or, the
+// unit a tab, one tab width's) leading spaces (dedent_spaces); the
 // comment toggle inserts `prefix` and a space at column 0 of a non-blank
 // line, or with `strip` removes the prefix after the line's blanks and the
 // one space that follows it.
-void line_edit_of(var &e, long w, long doc, long n, long op,
-		  const char *prefix, bool strip, long tabw)
+void line_edit_of(var &e, long w, long es, long doc, long n, long op,
+		  const char *prefix, bool strip)
 {
     var l;
     ui::text_line(l, w, doc, n);
@@ -1007,14 +1033,17 @@ void line_edit_of(var &e, long w, long doc, long n, long op,
     {
 	case leINDENT:
 	    if ( s[0] != 0 )
-		ins = "\t";
+		indent_unit(ins, w, es);
 	    break;
 	case leDEDENT:
 	    if ( s[0] == '\t' )
 		del = 1;
 	    else
-		while ( del < tabw && s[del] == ' ' )
+	    {
+		long most = dedent_spaces(w, es);
+		while ( del < most && s[del] == ' ' )
 		    del = del + 1;
+	    }
 	    break;
 	case leCOMMENT:
 	    if ( blank_line(s) )
@@ -1069,14 +1098,11 @@ bool edit_lines(long w, long es, long doc, long caret, long op, const char *pref
 	if ( seen == 0 )
 	    return false;
     }
-    long tabw = es_int(w, es, "tabwidth", 8);
-    if ( tabw < 1 )
-	tabw = 8;
     var edits = {};
     for ( long n = last; n >= first; n = n - 1 )
     {
 	var e;
-	line_edit_of(e, w, doc, n, op, prefix, strip, tabw);
+	line_edit_of(e, w, es, doc, n, op, prefix, strip);
 	if ( e["del"].as_integer() > 0 || strlen(e["ins"].c_str()) > 0 )
 	    edits.push(e);
     }
@@ -1204,6 +1230,85 @@ void paste_clip(long w, long es, long doc, long caret)
     paste_text(w, es, doc, caret, c.c_str());
 }
 
+// ---- autoindent (Thonny / VS Code / JOE's ^T I) ----------------------
+// On by default; es "autoindent" false turns it off (madcide primes it from
+// the "autoindent" setting each event, autoindent_prime). The language's
+// block delimiters arrive the same way: es "indentopen" (a line ending in
+// one opens a level) and "indentclose" (one typed first on a blank-indented
+// line closes a level) — unset = none, the line's indentation is copied.
+bool autoindent_on(long w, long es)
+{
+    var v;
+    ui::get(v, w, es, "autoindent");
+    return v.is_null() || v.as_boolean();
+}
+
+// True when `c` is one of es `key`'s characters.
+bool es_char_in(long w, long es, const char *key, char c)
+{
+    var set;
+    ui::get(set, w, es, key);
+    if ( set.is_null() || c == 0 )
+	return false;
+    return strchr(set.c_str(), c) != NULL;
+}
+
+// What Enter inserts at `at`: a newline, then with autoindent the blanks
+// that start `at`'s line (only those before `at`), plus one indent unit when
+// the last non-blank before `at` on that line is a block opener.
+void enter_text(var &out, long w, long es, long doc, long at)
+{
+    out = "\n";
+    if ( !autoindent_on(w, es) )
+	return;
+    long n = line_of(w, doc, at);
+    var l;
+    ui::text_line(l, w, doc, n);
+    if ( l.is_null() )
+	return;					// the phantom line: nothing to copy
+    const char *s = l.c_str();
+    long upto = at - line_start_of(w, doc, n);
+    if ( upto > (long)strlen(s) )
+	upto = strlen(s);
+    long b = blank_run(s);
+    if ( b > upto )
+	b = upto;
+    var ind = perl::substr(l, 0, b);
+    long k = upto - 1;
+    while ( k >= b && (s[k] == ' ' || s[k] == '\t' || s[k] == '\r') )
+	k = k - 1;
+    if ( k >= b && es_char_in(w, es, "indentopen", s[k]) )
+    {
+	var u;
+	indent_unit(u, w, es);
+	ind = format("{}{}", ind, u);
+    }
+    out = format("\n{}", ind);
+}
+
+// The electric close: `t`, a single block closer typed where only blanks
+// precede the caret on its line, first takes one level off that line
+// (Edit ▸ Dedent's rule, line_edit_of). Answers the caret after the erase;
+// `caret` itself when nothing changed.
+long close_dedent(long w, long es, long doc, long caret, const char *t)
+{
+    if ( !autoindent_on(w, es) || strlen(t) != 1 || !es_char_in(w, es, "indentclose", t[0]) )
+	return caret;
+    long n = line_of(w, doc, caret);
+    long start = line_start_of(w, doc, n);
+    var l;
+    ui::text_line(l, w, doc, n);
+    if ( l.is_null() || caret == start || blank_run(l.c_str()) < caret - start )
+	return caret;
+    var e;
+    line_edit_of(e, w, es, doc, n, leDEDENT, "", false);
+    long del = e["del"].as_integer();
+    if ( del <= 0 )
+	return caret;
+    ed_text_erase(w, es, doc, start, del);
+    return shift_offset(caret, start, -del, true);
+}
+
 // The kind=="text" arm both editors share: search-pattern append while
 // searching, else a gated insert at the caret.
 void edit_text_run(long w, long es, long doc, long caret, var &ev)
@@ -1221,8 +1326,9 @@ void edit_text_run(long w, long es, long doc, long caret, var &ev)
     else if ( !selection_replace(w, es, doc, caret, t.c_str()) )
     {
 	edit_checkpoint(w, es, doc, caret);
-	ed_text_insert(w, es, doc, caret, t.c_str());
-	ui::set(w, es, "caret", caret + strlen(t.c_str()));
+	long at = close_dedent(w, es, doc, caret, t.c_str());
+	ed_text_insert(w, es, doc, at, t.c_str());
+	ui::set(w, es, "caret", at + strlen(t.c_str()));
 	ui::set(w, doc, "modified", true);
     }
 }
@@ -1492,12 +1598,22 @@ bool edit_key(long w, long es, long doc, long caret, var &ev)
     if ( k == ui::key::enter )
     {
 	if ( !editable )
+	{
 	    refuse_edit(w, es);
-	else if ( !selection_replace(w, es, doc, caret, "\n") )
+	    return true;
+	}
+	// the newline lands where a selection starts, else at the caret
+	var sel;
+	long at = caret;
+	if ( selection_gui(w, es) && selection_range(sel, w, es, caret) )
+	    at = sel["lo"].as_integer();
+	var nl;
+	enter_text(nl, w, es, doc, at);
+	if ( !selection_replace(w, es, doc, caret, nl.c_str()) )
 	{
 	    edit_checkpoint(w, es, doc, caret);
-	    ed_text_insert(w, es, doc, caret, "\n");
-	    ui::set(w, es, "caret", caret + 1);
+	    ed_text_insert(w, es, doc, caret, nl.c_str());
+	    ui::set(w, es, "caret", caret + strlen(nl.c_str()));
 	    ui::set(w, doc, "modified", true);
 	}
 	return true;
@@ -1511,9 +1627,12 @@ bool edit_key(long w, long es, long doc, long caret, var &ev)
 	    edit_lines(w, es, doc, caret, leINDENT, "");
 	    return true;
 	}
-	// Otherwise Tab types a tab byte at the caret (JOE, pico, vim's
-	// insert mode): the one typed-text owner inserts it (B55).
-	var te = { "event": "text", "event_code": ui::event_kind::text, "text": "\t" };
+	// Otherwise Tab types one indent unit at the caret — a tab byte
+	// (JOE, pico, vim's insert mode), or the buffer's spaces (Thonny's
+	// four in Python): the one typed-text owner inserts it (B55).
+	var unit;
+	indent_unit(unit, w, es);
+	var te = { "event": "text", "event_code": ui::event_kind::text, "text": unit };
 	edit_text_run(w, es, doc, caret, te);
 	return true;
     }

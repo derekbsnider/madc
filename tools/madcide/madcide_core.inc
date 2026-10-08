@@ -2101,6 +2101,51 @@ void key_profile_names(var &out, long w, long es)
     out = names;
 }
 
+// Autoindent's state for the editor layer (editor_events.inc enter_text):
+// on unless the "autoindent" setting says false, and the block delimiters
+// of `doc`'s language (block_open_of / block_close_of). Beside it the
+// buffer's indent unit (Tab, Indent, Dedent and autoindent's level): the
+// one its file shows, decided once and kept on the buffer (indent_detect),
+// else its language's (indent_default_of) until a line shows one.
+void autoindent_prime(long w, long es, long doc)
+{
+    var v;
+    setting_get(v, w, es, "autoindent");
+    ui::set(w, es, "autoindent", v.is_null() || v.as_boolean());
+    ui::set(w, es, "indentopen", block_open_of(w, doc));
+    ui::set(w, es, "indentclose", block_close_of(w, doc));
+    // An undecided buffer is probed again only when its line count moves
+    // (es_int "indentprobe"): an indented line arrives with a newline.
+    var unit;
+    ui::get(unit, w, doc, "indentunit");
+    long lines = ui::text_line_count(w, doc);
+    if ( unit.is_null() && es_int(w, doc, "indentprobe", -1) != lines )
+    {
+	indent_detect(unit, w, doc);
+	if ( strlen(unit.c_str()) > 0 )
+	    ui::set(w, doc, "indentunit", unit);
+	else
+	    ui::set(w, doc, "indentprobe", lines);
+    }
+    if ( unit.is_null() || strlen(unit.c_str()) == 0 )
+	unit = indent_default_of(w, doc);
+    ui::set(w, es, "indentunit", unit);
+}
+
+// `autoindent` (Edit ▸ Toggle Autoindent, ^T's I row): flips it, kept in
+// settings.json's "autoindent".
+void toggle_autoindent(long w, long es)
+{
+    var on = !autoindent_on(w, es);
+    ui::set(w, es, "autoindent", on);
+    if ( !setting_put(w, es, "autoindent", on) )
+	return;					// setting_put said why
+    if ( on.as_boolean() )
+	ui::set(w, es, "msg", "Autoindent on.");
+    else
+	ui::set(w, es, "msg", "Autoindent off.");
+}
+
 void toggle_profile(long w, long es)
 {
     var names;
@@ -2544,6 +2589,11 @@ void status_expand(var &out, var &segs, long w, long es, long doc, long caret,
 		seat = "-- INSERT -- ";
 	    else if ( vm == viNORMAL )
 		seat = "-- NORMAL -- ";
+	}
+	if ( e == 'I' )
+	{
+	    if ( autoindent_on(w, es) )
+		seat = "A";
 	}
 	if ( e == 'x' )
 	    seat = fnctxv;
@@ -8266,6 +8316,7 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
     bool viewing = nav != doc;
     long caret = clamped_caret(w, es, nav);
     ui::set(w, es, "msg", "");
+    autoindent_prime(w, es, doc);
 
     // The embedded Terminal (polish P3b-2) owns the keyboard while it has
     // focus and a program runs; pointer/choose/dialog events pass through.
@@ -8847,6 +8898,9 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 		toggle_profile(w, es);
 		return true;
 	    }
+	    case cmdAUTOINDENT:
+		toggle_autoindent(w, es);
+		return true;
 	    // IDE-9e windows — JOE's verbs on their JOE seats.
 	    case cmdSPLITW:
 	    {
@@ -9015,6 +9069,9 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 		return true;
 	    case cmdOPT_KEYMAP:
 		toggle_profile(w, es);
+		return true;
+	    case cmdAUTOINDENT:
+		toggle_autoindent(w, es);
 		return true;
 	    case cmdOPT_PROJKIND:
 		proj_toggle_kind(w, es, doc);
@@ -9848,6 +9905,11 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 		       "act": cmdOPT_SCHEME };
 	    rows[] = { "content": format("K Keymap      {}", prof),
 		       "act": cmdOPT_KEYMAP };
+	    var ai = "off";
+	    if ( autoindent_on(w, es) )
+		ai = "on";
+	    rows[] = { "content": format("I Autoindent  {}", ai),
+		       "act": cmdAUTOINDENT };
 	    // The project kind (polish P2c): console | gui — shown while a
 	    // manifest is open (the implicit project has no manifest).
 	    if ( proj_has_manifest(w, es) )

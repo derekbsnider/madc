@@ -2,6 +2,7 @@
 #include "mir.h"
 #include "mir-gen.h"
 #include "mir-int128-helper.h"
+#include "mir-ld-helper.h"
 
 #ifdef CTAB_INCLUDE_STRING
 #include CTAB_INCLUDE_STRING
@@ -77,6 +78,7 @@ static void *import_resolver (const char *name) {
 #endif
 #endif
   if ((sym = MIR_int128_helper_resolver (name)) != NULL) return sym;
+  if ((sym = MIR_ld_helper_resolver (name)) != NULL) return sym;
   for (int i = 0; i < sizeof (libs) / sizeof (struct lib); i++) {
     if ((sym = dlsym (libs[i].handler, name)) != NULL) break;
   }

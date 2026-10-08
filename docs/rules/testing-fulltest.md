@@ -178,6 +178,20 @@ through. The hook now applies the `--commit` tier to every branch, and the
 develop/master tiers on top of it where they applied before. Docs-only pushes
 stay free, because staleness is measured over `CODE_PATHS`.
 
+The release tooling is outside it too (owner 2026-10-07): an AppArmor profile
+for the Ubuntu 24.04 `.deb`, a release asset's name, the promote script's
+asset count — none of it is source code, and no test suite runs the scripts
+that carry it, so the compiler suites can neither catch a defect in it nor
+miss one. Before the change, every such fix staled the hour-long battery all
+the same, because the packaging scripts live under `scripts/`. What proves
+packaging is the release workflow: each platform's runner builds its packages
+and runs the install gates on them, and a failing job keeps the release from
+being attached. A lane that does run a piece of the tooling itself (the brew
+lane bottles and pours the keg; the darwin lane packages natively) still stales
+on it, through `lane_tools`. The gate script is in the set as well: no suite
+exercises it, and its selftest — run first on every check and every push —
+is the test that can.
+
 `/commit` (`.claude/commands/commit.md`) is the proactive half: it runs Tier 2
 on the working-tree content BEFORE committing, so the gate is satisfied by the
 time the push happens, and a red lane is found while the change is still one

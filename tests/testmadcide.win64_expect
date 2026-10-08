@@ -31,12 +31,12 @@ Outline
   2. function twice :2
 --- end ---
 goto-outline: caret=43
-status-fn: madc_ide_test.mad   fn twice
+status-fn: A madc_ide_test.mad   fn twice
 Row    2 Col   1
 spans: n=7 first=0..4 bold second=9..13 bold
 theme-swap: Theme: classic. first-c=bold cyan
 theme-missing: No theme 'nosuch'.
-options: label=Options rows=3
+options: label=Options rows=4
 options-row0: D Tab width   8
 tabwidth: Tab width 4. hint=4 row0=D Tab width   4
 tabwidth-bad: Tab width '40' — need 1..16.

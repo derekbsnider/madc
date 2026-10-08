@@ -2,6 +2,183 @@
 
 ## [Unreleased]
 
+## [v0.102.1] — 2026-10-07
+
+The bug-fix release for v0.102.0, carrying every fix banked since it rather
+than only the Ubuntu 24.04 packaging patch. The MIR backend gains several
+codegen fixes: aarch64 now passes homogeneous floating-point aggregates per
+AAPCS64, aarch64 and macOS executables find libmir's `mir.va_arg` /
+`mir.va_block_arg`, an inlined call's by-value-struct argument copy is released
+each execution, a native Mach-O image places the segments after `__DATA` at its
+memory end so a large zero-fill `__DATA` no longer overlaps `__LINKEDIT`, and
+four upstream varargs/inlining fixes from Cyan Ogilvie are adopted; MIR also compiles itself on aarch64 and no longer depends on plain
+char's sign (source byte 0xFF). c2mir stops crashing under `-pedantic`, reads
+errno correctly on a numeric literal's range check, and parses an `_Alignas`
+on a struct or union member. A Windows GUI program run with `--tui` from a
+command prompt now gets a usable console, and madcide gains autoindent. The
+`.deb` built on Ubuntu 24.04 and later carries an AppArmor profile, so madc's
+and madcide's windows — any `ui::` program run by `/usr/bin/madc` — get the
+user namespaces WebKit's bwrap sandbox needs; the release's `SHA256SUMS` names
+the `.deb` assets as GitHub stores them; and release tooling no longer stales
+the test lanes. Chthonia's packages each carry their own madc release —
+Chthonia is its own product, with nothing to install from madc.
+
+### mir: Mach-O executable writer places the segments after __DATA at its memory end, not its file end
+
+A native Mach-O image whose zero-fill `__DATA` (bss) reaches past its data's
+file pages placed `__LINKEDIT` at the data's file end — inside the bss address
+range — and dyld refused the image ("vm range of segment '__DATA' overlaps
+segment '__LINKEDIT'"), killing an executable at load and failing a shared
+library's open (`libmadcide.dylib` on Intel macOS once its bss outgrew the
+slack). Past `__DATA` the file and the address space part ways as in ld64's
+layout: the extra carrier and `__LINKEDIT` now start at `__DATA`'s file end in
+the file and at its memory end (`vmaddr + vmsize`) in the address space. On a
+3-page-bss executable `otool -l` shows `__LINKEDIT` at vmaddr `0x100006000`,
+fileoff 12288, identical to ld64's; a shared library with one word of data and
+64 KiB of bss builds, opens, and reads and writes both, matching Apple clang
+`-dynamiclib` + a dlopen host.
+
+### c2mir: An alignment-specifier on a struct or union member parses (C11 6.7.2.1p1)
+
+A specifier-qualifier-list may hold an `_Alignas`, so `struct { _Alignas (16)
+int x; };` is valid C11 — gcc and clang accept it — but c2m's
+`spec_qual_list` parser had no `align_spec` arm and stopped at the keyword
+("syntax error on struct"). It now reads one, and the existing member-layout
+code already raises the member's offset, the aggregate's alignment and its
+size from `decl_spec.align`. Because the same list also backs a type name, an
+`_Alignas` that reaches a type name (`sizeof (_Alignas (16) int)`) is now the
+error gcc gives there rather than a parse that silently ignored it.
+Alignments above 16 stay rejected on every target (`invalid_alignment`: MIR
+frames are 16-byte aligned). `c-tests/new/alignas-member.c` checks member
+offsets, sizes and alignments for `_Alignas (N)` and `_Alignas (type)` on
+structs and a union against the gcc/clang result.
+
+### mir: MIR compiles itself on aarch64, and the long double import names resolve from one header
+
+`scripts/aarch64_ldouble_lane.sh` now runs the c2mir-bootstrap recipe: the
+aarch64 `c2m` compiles MIR's own sources to `boot1.bmir`, then runs itself from
+`boot1.bmir` (`-el`) to compile them again into `boot2.bmir`, and the two must
+be byte-identical. A generator that is itself compiled by `c2m` imports the
+aarch64-linux long double builtins' libgcc binary128 routines (`__addtf3`,
+`__floatditf`, …) by name, but libgcc links them with hidden visibility, so
+`dlsym` never finds them. `third_party/mir/mir-ld-helper.h` is new: it carries
+those routines' address-only declarations — moved out of `mir-gen-aarch64.c`,
+which now includes it — and `MIR_ld_helper_resolver`, which hands back the
+host's addresses on an aarch64-linux host. Every driver's `import_resolver`
+(`c2mir-driver.c`, `mir-bin-driver.c`, `mir-bin-run.c`) now calls it beside
+`MIR_int128_helper_resolver`.
+
+### c2mir: A source byte is never the end of the file, and MIR's own sources don't depend on plain char's sign
+
+Where plain char is unsigned (aarch64 / ppc64 / s390x Linux, the targets whose
+c2m compiles MIR itself in the c2mir-bootstrap tests), c2m's line buffer popped
+a byte as a char and `cs_unget` stored EOF (-1) there, read back by the next
+`cs_get` as 255 ("syntax error on 255"); where plain char is signed, a source
+byte 0xFF popped from the buffer as -1, i.e. EOF, and ended the translation unit
+early ("unfinished comment"). `cs_get` and `str_getc` now return a source byte
+as unsigned char the way `fgetc` does, and `cs_unget` drops EOF instead of
+pushing it. In `mir-gen-aarch64.c`'s `out_insn`, a `hex_value()` result (-1 for
+"no digit") held in a char and compared `>= 0` never failed once char was
+unsigned, so the hex scan ran off the end of the pattern; the value is an `int`
+now. `c-tests/new/source-byte-ff.c` places byte 0xFF in a comment, a string
+literal and a character constant and returns 0, as gcc and clang do.
+`scripts/check-mir-plain-char.sh` (in `make gates`) keeps MIR's sources from
+depending on plain char's sign.
+
+### win64: a Windows GUI program run with --tui from a command prompt gets its console
+
+A Windows GUI image (built `-mwindows`, such as `chthonia.exe`) run with `--tui`
+from a Command Prompt printed "ui: the terminal target needs a console on
+stdin/stdout" and refused the terminal UI. `madc::console_attach` reopened the
+inherited console's stdout and stderr write-only (`CONOUT$`, `"w"`), producing
+Win32 handles with no read access, while the terminal target's console probe
+(`GetConsoleMode`, `GetConsoleScreenBufferInfo`, `SetConsoleMode` on the output
+handle) needs read access. The two streams now reopen read/write (`"w+"`), so a
+GUI program attaching its parent command prompt's console gets a usable console
+and the terminal UI opens.
+
+### mir: aarch64 and macOS executables find mir.va_arg / mir.va_block_arg
+
+A madc-compiled program that defines a variadic function calls libmir's va_arg / va_block_arg builtins through the dotted imports `mir.va_arg` and `mir.va_block_arg`. libmir exported those names only on x86-64 ELF and PE, so on aarch64 Linux the executable failed to link (undefined `mir.va_arg`) and on macOS — arm64 and x86-64 alike, with the released madc 0.102 — it built and then aborted at launch (`dyld: symbol not found in flat namespace '_mir.va_arg'`, exit 134); the JIT was unaffected. libmir now exports both on ELF and Mach-O (Mach-O as a wrapper under the platform label prefix), with `mir.arg_memcpy` beside them on x86-64. A program using `int`, struct, long double and 160-byte by-value struct va_arg builds with `-o` and prints `3 6 6 6.25` as gcc does on the Mac mini (arm64, macOS 14.8) and the Intel MacBook (macOS 15.7), where before both aborted with 134.
+
+### mir: an inlined call's block-arg copy is released after each execution
+
+An inlined call copies each block (by-value struct) argument into an alloca at the call site, but the inlined body was bracketed with BSTART/BEND only when the callee itself had non-top allocas. An inlined call with a struct argument inside a loop therefore grew the stack every iteration: a 20M-iteration loop over a 24-byte struct overflowed the stack at -O1 and above (rc 139), where gcc -O2 prints `280000000.0`. The copy is now treated like a non-top alloca of the callee, so BSTART/BEND release it each execution.
+
+### mir: aarch64 passes homogeneous floating-point aggregates (HFAs) per AAPCS64
+
+MIR's aarch64 block arguments always took the general composite rule (up to 16 bytes in integer registers, larger by reference) and c2mir returned small aggregates in x0/x1, so c2m code and natively compiled code disagreed on every HFA (a struct of 1–4 floats, doubles or long doubles) crossing between them — named args, varargs (e.g. a `struct { double }` passed to printf) and returns. aarch64 now passes and returns HFAs in consecutive FP argument registers, spilling to the stack in memory layout when the FP registers run out (never by reference), and HFA results come back in v0–v3; a `_Complex` argument is now also passed as a two-member HFA block, named or variadic, instead of split into two scalar FP args, so it leaves the FP registers whole when they run out, as gcc does. Validated on aarch64 Linux against gcc-compiled code and under qemu, where c2m `-eg`/`-ei` at -O0/-O2 and the madc-aarch64-linux AOT build now match the all-gcc oracle; the Apple paths are untested. Adopted from vnmakarov/mir#477 by Cyan Ogilvie, merged with madc's aarch64 work.
+
+### mir: adopted upstream codegen fixes for varargs and inlining
+
+Four fixes from Cyan Ogilvie's upstream pull requests. On x86-64, a variadic call now counts block arguments passed in XMM registers in `%al`, so a natively compiled variadic callee saves its XMM argument registers and va_arg no longer reads garbage for a `struct { double }` passed to snprintf (#479). GVN now treats `va_start`/`va_arg`/`va_block_arg`/`va_end` as memory clobbers, so a va_list field loaded or stored before a `va_arg` is no longer reused with its stale value by a frontend that adjusts va_list fields directly (#480). On aarch64, address computations are no longer folded into a memory operand the target cannot encode (scaled FP load/store offsets), which previously died with "fatal failure in matching insn" for a misaligned FP access (#478). The inline growth limit now compares against the grown size rather than the original, so a caller larger than 200 insns can again inline a small callee (#476).
+
+### c2mir: -pedantic no longer crashes, and a number's range check reads errno correctly
+
+Under `-pedantic`, `c2m` previously died with SIGSEGV on `int x = 1;` because attribute parsing returned NULL and the declaration appended it as an AST child; it now returns the error node after clearing the asm part, so a second declarator (`int x = 1, y = 5;`) no longer shares the first's asm node (`x + y` had come out 10). Separately, a numeric literal's range check now clears errno immediately before each `strtoull`/`strtof`/`strtod`/`strtold` conversion and reads it right after, instead of once before node allocation, which under C11 7.5p3 may set errno even on success — the aarch64 `c2m` under qemu had reported a plain `1` as "number 1 is out of range" under `-pedantic`. Both cases now match `gcc -pedantic`.
+
+### madcide: Autoindent — Enter copies the line's indentation, one step deeper after a block opener
+
+Autoindent is on by default. Enter starts the new line with the indentation
+the current line has before the caret, so splitting an indented line keeps the
+indentation ahead of the split. After a line that ends in a block opener — `{`
+for C, C++, madc and the languages that share C's braces, `:` for Python — the
+new line gets one more indent level. A block closer (`}`) typed first on a line
+blank up to the caret first removes one indentation step, as Edit ▸ Dedent does,
+and one undo takes back both the dedent and the character. That indent level —
+what autoindent adds after a block opener, what a typed Tab inserts and what
+Edit ▸ Indent adds — is each buffer's own, taken from its file: a tab when its
+indented lines start with tabs, otherwise the number of spaces its indentation
+most often steps by; a file with no indented line yet uses its language's level
+(four spaces for Python, two for YAML, a tab for everything else, Makefiles
+included). The new Edit ▸ Toggle
+Autoindent command (`autoindent`, also the `I` row of `^T` Options) turns it off
+or on again and keeps the choice in settings.json's `"autoindent"`; JOE's status
+line shows `A` (`%I`) while it is on. The language's block delimiters come from
+`block_open_of` / `block_close_of`; a language the editor knows no block
+delimiters for (plain text, markup, data) just copies the line's indentation.
+
+### packaging: The Ubuntu 24.04 .deb carries an AppArmor profile — madc's and madcide's windows get their user namespaces
+
+Ubuntu 24.04 and later set `kernel.apparmor_restrict_unprivileged_userns=1`,
+denying an unprofiled program the user namespaces WebKit's bwrap sandbox needs,
+so on a native 24.04 desktop madcide's window — and any `ui::` program run by
+`/usr/bin/madc` — died at its first rendered page with SIGTRAP, exit status 133
+(LP: #2046844); WSL, containers and Ubuntu 22.04 do not restrict them. The
+`.deb` built on Ubuntu 24.04 and later now installs `/etc/apparmor.d/madc`
+(profiles `madc` and `madcide`: unconfined plus userns for `/usr/bin/madc` and
+`/usr/bin/madcide`, the shape of Ubuntu's own WebKit-app profiles), loaded by
+postinst as `dh_apparmor` does. `package_install_gate.sh apparmor` proves it on
+the installed `.deb` with the restriction on: madc runs
+`tests/gui/ui_web_hello.mad` to its rendered page and madcide's window stays up
+15 s, while the control with the profile unloaded never renders (exit status
+133). On Chthonia's GitHub `ubuntu-24.04` runner with the restriction on, the
+same profile shape kept the window alive 15 s; `release.yml` runs the gate on
+the 24.04 runner.
+
+### release: SHA256SUMS names the .deb assets as GitHub stores them — one .deb per Ubuntu release makes 10 assets
+
+GitHub stores a `~` in a release asset's name as `.`, so v0.102.0's published
+`SHA256SUMS` listed `madc_0.102.0-1~ubuntu22.04_amd64.deb` while GitHub stored
+the asset as `madc_0.102.0-1.ubuntu22.04_amd64.deb`, and `sha256sum -c` failed
+for both debs. `attach-release` now renames the debs to the GitHub spelling
+before checksumming (the package Version keeps its `~`); the published v0.102.0
+`SHA256SUMS` was re-uploaded with the `.` names, hashes verified against the
+downloaded debs. `promote_release.sh` expected 9 assets; one `.deb` per Ubuntu
+release makes 10.
+
+### lane ledger: release tooling no longer stales the test lanes
+
+A packaging, release-archive or gate script change shares nothing with the
+source the test suite runs, yet every edit under `scripts/` staled every lane
+because they live there. `RELEASE_TOOLING` names those scripts; a lane's
+content is now `CODE_PATHS` less that set, plus what the lane itself runs
+(`lane_tools`: the brew lane its bottling, the darwin lane its native
+packaging). The release workflow's install gates prove packaging on every
+runner, and the gate's selftest now checks the table both ways. The brew lane
+never runs `package_install_gate.sh` and the darwin lane's recorded tally is
+the macOS suite, so neither stales on a packaging change.
+
 ## [v0.102.0] — 2026-10-07
 
 The Chthonia-split release: everything since v0.101.0, without Chthonia —

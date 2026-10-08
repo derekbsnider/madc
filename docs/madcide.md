@@ -93,9 +93,10 @@ or a browser page it is madcide's own.
 Edit ▸ Indent Lines, Dedent Lines and Toggle Comment (`indent`, `dedent`,
 `togglecomment`) work on every line the selection touches, or on the
 caret's line when nothing is selected. A selection that ends at the start
-of a line leaves that line out. Indent puts a tab at the start of each
-non-empty line. Dedent removes one leading tab, or up to a tab width of
-leading spaces. Toggle Comment adds the language's line comment and a
+of a line leaves that line out. Indent puts one indent level at the start
+of each non-empty line. Dedent removes one leading tab, or up to one
+level of leading spaces (a tab width of them when the level is a tab).
+Toggle Comment adds the language's line comment and a
 space at column 0 of each non-blank line. When every non-blank line
 already starts with the comment, it removes the comment instead. The
 comment is `//` for C, C++ and madc (an untitled buffer counts as madc),
@@ -106,6 +107,23 @@ the whole lines. With a selection that crosses a line, Tab indents
 instead of replacing the selection. The Chthonia keys bind Shift+Tab and
 Ctrl+3, as Thonny does. The VS Code keys bind Ctrl+], Ctrl+[,
 Shift+Tab and Ctrl+/.
+
+Autoindent is on by default. Enter starts the new line with the
+indentation the current line has before the caret. After a line that ends
+in `{` (C, C++, madc and the other languages with C's braces) or `:`
+(Python), the new line gets one more indent level. A `}` typed on a line that is
+blank up to the caret first removes one step of indentation, as Dedent
+does; one undo takes back both. Edit ▸ Toggle Autoindent (`autoindent`),
+or the I row of `^T` Options, turns it off or on again; the choice is kept
+in settings.json's `"autoindent"`. JOE's status line shows `A` while it is
+on.
+
+One indent level is what Tab types, what Indent adds and what autoindent
+adds after a block opener. Each buffer has its own, taken from the file:
+a tab when its indented lines start with tabs, otherwise the number of
+spaces its indentation most often steps by. A file with no indented line
+yet uses its language's level: four spaces for Python, two for YAML, and a
+tab for everything else, Makefiles included.
 
 Edit ▸ Replace… (`replace`; Ctrl+H in the VS Code keys, `^\` in the Pico
 keys) works like nano's replace. It asks for the text to find, then for

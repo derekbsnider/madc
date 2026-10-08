@@ -271,27 +271,29 @@ in-tree at `third_party/mir`.
 
 ## Current Release
 
-The current release is **v0.102.0**, the Chthonia-split release. v0.102.0 is
-everything since v0.101.0 with the **Chthonia** teaching IDE moved to its own
-repository, where it requires and installs into madc; no madc release ever
-packaged Chthonia, so nothing is lost on upgrade, and libmadcide — madcide's
-base — still ships.
+The current release is **v0.102.1**, the Ubuntu 24.04 packaging patch to
+v0.102.0. The `.deb` built on Ubuntu 24.04 and later carries an **AppArmor
+profile**, so madc's and madcide's windows — any `ui::` program run by
+`/usr/bin/madc` — get the user namespaces WebKit's bwrap sandbox needs; without
+it, on a native 24.04 desktop the window died at its first rendered page with
+SIGTRAP (LP: #2046844). The release's `SHA256SUMS` names the `.deb` assets as
+GitHub stores them (one `.deb` per Ubuntu release makes 10 assets), and release
+tooling no longer stales the test lanes.
 
-The release carries a **C-conformance correctness burn-down** across
-declarators (redundant declarator-id parentheses, implicit int after a storage
-class or qualifier, C's `auto` storage class, calls through unprototyped
-declarations), declarations and initializers (brace elision in mixed lists,
-braced scalar and string-literal char arrays, a pointer to an array of unknown
-bound), `va_arg` type names, and the GNU/clang **vector builtins**
-(`__builtin_convertvector`, `__builtin_shufflevector`, `__builtin_shuffle`).
-`__FILE_NAME__` becomes a predefined macro.
+**Chthonia** — the Thonny-style teaching IDE built on madcide's base — is its
+own product in its own repository, whose packages each carry their own madc
+release; nothing is installed from madc for it.
 
-REPL `.`- and `%`-commands (`.load`, `%call`, `%build`, `%open`/`%edit`,
-`%run`/`%load` session payloads, a Variables view), madcide **Markdown** and
-read-only **git** views, a Help system, projects and native builds, and
-**one `.deb` per Ubuntu release** round it out.
+v0.102.1 is the patch to **v0.102.0**, the Chthonia-split release: a
+**C-conformance correctness burn-down** across declarators, declarations and
+initializers (redundant declarator-id parentheses, implicit int, C's `auto`
+storage class, brace elision, braced scalar and string-literal char arrays),
+`va_arg` type names and the GNU/clang **vector builtins**
+(`__builtin_convertvector`, `__builtin_shufflevector`, `__builtin_shuffle`),
+`__FILE_NAME__`, more REPL and madcide (**Markdown** and read-only **git**
+views), and one `.deb` per Ubuntu release.
 
-Branch state: v0.102.0 is released on `develop`; the `master` promotion
+Branch state: v0.102.1 is released on `develop`; the `master` promotion
 follows the release-tier lane ledger (every platform lane's FULL suite green
 on this content), with public binaries built by CI for Linux
 (deb/rpm/tarball), Windows x86-64, and macOS (Apple Silicon + Intel).
@@ -315,6 +317,11 @@ separately in
 
 ### Recent Releases
 
+- [v0.102.1](docs/release-notes/v0.102.1.md) — **the Ubuntu 24.04 packaging
+  patch**: the `.deb` built on Ubuntu 24.04 and later carries an AppArmor
+  profile, so madc's and madcide's windows get the user namespaces WebKit's
+  sandbox needs; the release's `SHA256SUMS` names the `.deb` assets as GitHub
+  stores them (10 assets); and release tooling no longer stales the test lanes.
 - [v0.102.0](docs/release-notes/v0.102.0.md) — **the Chthonia-split release**:
   the Chthonia teaching IDE moves to its own repository (nothing lost on
   upgrade; libmadcide still ships); a C-conformance correctness burn-down
@@ -339,10 +346,6 @@ separately in
   output streams into the Terminal with no keystroke (the window's wait is
   the scheduler's wait), the Build menu's `^B` rows, a dialog's Close that
   closes and leaves nothing behind, resizable panel and sidebar.
-- [v0.99.1](docs/release-notes/v0.99.1.md) — the owner's first round with
-  the desktop application: the prompts as dialogs (quick input / confirm
-  with buttons), a click picks the window, the status bar as chrome, and
-  "(^C aborts)" true in every profile.
 
 Older release notes live in [docs/release-notes/](docs/release-notes/).
 

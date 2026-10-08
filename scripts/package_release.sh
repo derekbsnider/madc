@@ -35,6 +35,9 @@
 #   /usr/share/madcide/include/madcide/         the plugin API headers (<madcide/plugin>)
 #   /usr/share/madcide/verbs/, checks/          the line editor's verb and check bodies
 #   /usr/share/man/man1/madc.1.gz + madcide.1.gz
+#   /etc/apparmor.d/madc                        the .deb on Ubuntu 24.04 and later only: profiles
+#                                               granting madc and madcide user namespaces (WebKit's
+#                                               sandbox; loaded by postinst)
 #   /usr/share/doc/madc/copyright               LICENSE (MPL-2.0)
 #   /usr/share/doc/madc/webview-copyright       webview/webview (MIT) — the webview library's notice
 #   /usr/share/doc/madc/libgit2-copyright       libgit2's COPYING — linked into libmadcgit.so
@@ -74,9 +77,18 @@ esac
 VER=$(cat VERSION)
 REL="${PKG_RELEASE:-1}"
 DEBREL=$REL
+APPARMOR=0
 os_id=$( (. /etc/os-release 2>/dev/null; echo "${ID:-}") )
 if [ "$os_id" = ubuntu ]; then
-    DEBREL="${REL}~ubuntu$( (. /etc/os-release; echo "$VERSION_ID") )"
+    os_ver=$( (. /etc/os-release; echo "$VERSION_ID") )
+    DEBREL="${REL}~ubuntu${os_ver}"
+    # Ubuntu 24.04 and later deny an unprofiled program the user namespaces
+    # WebKit's sandbox (bwrap) needs: a window — madcide's, a ui:: program's
+    # under madc — dies at its first page with SIGTRAP (LP: #2046844). There
+    # the .deb carries an AppArmor profile naming madc and madcide.
+    if dpkg --compare-versions "$os_ver" ge 24.04; then
+        APPARMOR=1
+    fi
 fi
 MAINT="Derek Snider <coding@psychedeliccanada.ca>"
 HOMEPAGE="https://github.com/derekbsnider/madc"
@@ -241,6 +253,45 @@ Description: ${SUMMARY}
 $(printf '%s\n' "$DESC_BODY" | sed 's/^/ /')
 EOF
 printf 'activate-noawait ldconfig\n' > "$DEBROOT/DEBIAN/triggers"
+if [ "$APPARMOR" = 1 ]; then
+    # The shape of Ubuntu's own profiles for its WebKit programs (epiphany,
+    # devhelp): unconfined, with user namespaces. postinst loads it as
+    # dh_apparmor's snippet does. Proven on the 24.04 runner by
+    # package_install_gate.sh apparmor (release.yml).
+    mkdir -p "$DEBROOT/etc/apparmor.d"
+    cat > "$DEBROOT/etc/apparmor.d/madc" << 'EOF'
+# madc's windows are WebKitGTK, whose sandbox (bwrap) needs user namespaces.
+# These profiles allow everything else, as before; they only name the
+# programs so AppArmor grants them.
+
+abi <abi/4.0>,
+include <tunables/global>
+
+profile madc /usr/bin/madc flags=(unconfined) {
+  userns,
+
+  # Site-specific additions and overrides. See local/README for details.
+  include if exists <local/madc>
+}
+
+profile madcide /usr/bin/madcide flags=(unconfined) {
+  userns,
+
+  include if exists <local/madcide>
+}
+EOF
+    chmod 0644 "$DEBROOT/etc/apparmor.d/madc"
+    chmod 0755 "$DEBROOT/etc" "$DEBROOT/etc/apparmor.d"
+    echo /etc/apparmor.d/madc > "$DEBROOT/DEBIAN/conffiles"
+    cat > "$DEBROOT/DEBIAN/postinst" << 'EOF'
+#!/bin/sh
+set -e
+if [ "$1" = configure ] && aa-enabled --quiet 2>/dev/null; then
+    apparmor_parser -r -T -W /etc/apparmor.d/madc || true
+fi
+EOF
+    chmod 0755 "$DEBROOT/DEBIAN/postinst"
+fi
 DEB="dist/madc_${VER}-${DEBREL}_amd64.deb"
 dpkg-deb --build --root-owner-group "$DEBROOT" "$DEB"
 if [ "$DEB_ONLY" = 1 ]; then

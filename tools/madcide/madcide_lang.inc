@@ -66,24 +66,43 @@ bool kind_is_standard(long k)
     return f != madc::fkUNKNOWN && k != f;
 }
 
-// The line-comment opener of `doc`'s language, by its kind (Edit ▸ Toggle
-// comment): "//" for C, C++ and madc and the languages that took theirs, "#"
-// for the shell's family, ";" for INI, "--" for Lua; "" = none the editor
-// knows (plain text, markup, data, a binary). An untitled buffer compiles
-// as madc (doc_standard) and takes madc's.
-const char *line_comment_of(long w, long doc)
+// `doc`'s language for the editing rules below: its kind, an untitled
+// buffer madc's (it compiles as madc, doc_standard).
+long edit_lang_kind(long w, long doc)
 {
     long k = doc_kind(w, doc);
     if ( k == madc::fkUNKNOWN && doc_untitled(w, doc) )
 	k = madc::fkMADC;
+    return k;
+}
+
+// C's syntax lineage: C, C++ and madc, and the languages that took C's
+// braces and line comment.
+bool c_syntax_kind(long k)
+{
     if ( kind_family(k) != madc::fkUNKNOWN )
-	return "//";
+	return true;
     switch ( k )
     {
 	case madc::fkJS: case madc::fkTYPESCRIPT: case madc::fkRUST:
 	case madc::fkGO: case madc::fkJAVA: case madc::fkPHP:
 	case madc::fkSWIFT: case madc::fkKOTLIN: case madc::fkCSHARP:
-	    return "//";
+	    return true;
+    }
+    return false;
+}
+
+// The line-comment opener of `doc`'s language, by its kind (Edit ▸ Toggle
+// comment): "//" for C's syntax lineage, "#" for the shell's family, ";"
+// for INI, "--" for Lua; "" = none the editor knows (plain text, markup,
+// data, a binary).
+const char *line_comment_of(long w, long doc)
+{
+    long k = edit_lang_kind(w, doc);
+    if ( c_syntax_kind(k) )
+	return "//";
+    switch ( k )
+    {
 	case madc::fkSHELL: case madc::fkMAKEFILE: case madc::fkYAML:
 	case madc::fkTOML: case madc::fkPYTHON: case madc::fkPERL:
 	case madc::fkRUBY:
@@ -94,6 +113,108 @@ const char *line_comment_of(long w, long doc)
 	    return "--";
     }
     return "";
+}
+
+// The block delimiters autoindent reads (editor_events.inc enter_text):
+// the characters that, ending a line before Enter, open one more indent
+// level, and the ones that, typed first on a blank-indented line, close
+// one. "{" / "}" for C's syntax lineage, ":" (no closer) for Python; ""
+// for every other language — Enter then copies the line's indentation.
+const char *block_open_of(long w, long doc)
+{
+    long k = edit_lang_kind(w, doc);
+    if ( c_syntax_kind(k) )
+	return "{";
+    if ( k == madc::fkPYTHON )
+	return ":";
+    return "";
+}
+
+const char *block_close_of(long w, long doc)
+{
+    return c_syntax_kind(edit_lang_kind(w, doc)) ? "}" : "";
+}
+
+// One indent level in `doc`'s language when its file does not show one:
+// four spaces for Python (PEP 8, Thonny), two for YAML (which refuses
+// tabs), a tab for the rest — a Makefile's recipe lines need one.
+const char *indent_default_of(long w, long doc)
+{
+    switch ( edit_lang_kind(w, doc) )
+    {
+	case madc::fkPYTHON:
+	    return "    ";
+	case madc::fkYAML:
+	    return "  ";
+    }
+    return "\t";
+}
+
+// The indent unit `doc`'s own text shows (VS Code's detectIndentation, in
+// small): over its first lines, a tab when as many indented lines start
+// with a tab as with spaces; else the spaces the indentation most often
+// steps by between neighbouring lines (2..8 — a one-space step is
+// alignment, a C comment's ` *`), four when no step shows. "" = no line
+// is indented yet: the language decides (indent_default_of).
+void indent_detect(var &out, long w, long doc)
+{
+    out = "";
+    long total = ui::text_line_count(w, doc);
+    if ( total > 1000 )
+	total = 1000;
+    long tabs = 0;
+    long spaces = 0;
+    long prev = 0;			// the last non-blank line's space indent
+    var steps = { "2": 0, "3": 0, "4": 0, "5": 0, "6": 0, "7": 0, "8": 0 };
+    for ( long n = 1; n <= total; n = n + 1 )
+    {
+	var l;
+	ui::text_line(l, w, doc, n);
+	if ( l.is_null() || blank_line(l.c_str()) )
+	    continue;
+	const char *s = l.c_str();
+	if ( s[0] == '\t' )
+	{
+	    tabs = tabs + 1;
+	    continue;			// a tab-led line steps nothing
+	}
+	long k = 0;
+	while ( s[k] == ' ' )
+	    k = k + 1;
+	if ( s[k] == '\t' )
+	    continue;			// mixed: neither vote
+	if ( k > 0 )
+	    spaces = spaces + 1;
+	long d = k - prev;
+	if ( d < 0 )
+	    d = -d;
+	if ( d >= 2 && d <= 8 )
+	{
+	    var key = format("{}", d);
+	    steps[key.c_str()] = steps[key.c_str()].as_integer() + 1;
+	}
+	prev = k;
+    }
+    if ( tabs == 0 && spaces == 0 )
+	return;
+    if ( tabs >= spaces )
+    {
+	out = "\t";
+	return;
+    }
+    long best = 4;
+    long most = 0;
+    for ( long d = 2; d <= 8; d = d + 1 )
+    {
+	var key = format("{}", d);
+	long c = steps[key.c_str()].as_integer();
+	if ( c > most )
+	{
+	    most = c;
+	    best = d;
+	}
+    }
+    out = php::str_repeat(" ", best);
 }
 
 // A standard's spelling where it enters (the command line, the "std"

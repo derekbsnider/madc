@@ -614,7 +614,7 @@ struct_declaration: st_assert | N_MEMBER(N_SHARE(spec_qual_list), declarator?, a
                                         settled_member_layout?)
 settled_layout: N_LIST:(version, size, align, pack)
 settled_member_layout: N_LIST:(version, byte_offset, bit_offset, bit_width)
-spec_qual_list: N_LIST:(type_qual|type_spec|attr)*
+spec_qual_list: N_LIST:(align_spec|type_qual|type_spec|attr)*
 declarator: the same as direct declarator
 direct_declarator: N_DECL(N_ID,
                           N_LIST:(N_POINTER(type_qual_list) | N_FUNC(id_list|parameter_list)
@@ -1043,7 +1043,7 @@ static void add_stream (c2m_ctx_t c2m_ctx, FILE *f, const char *fname,
 
 static int str_getc (c2m_ctx_t c2m_ctx) {
   if (*cs->curr == '\0') return EOF;
-  return *cs->curr++;
+  return (unsigned char) *cs->curr++;
 }
 
 static void add_string_stream (c2m_ctx_t c2m_ctx, const char *pos_fname, const char *str) {
@@ -1127,7 +1127,9 @@ static int cs_get (c2m_ctx_t c2m_ctx) {
       assert (VARR_GET (char, cs->ln, 0) == '\n');
     } else if (len > 0) {
       cs->pos.ln_pos++;
-      return VARR_POP (char, cs->ln);
+      /* A source byte as unsigned char, the way fgetc returns it: where char is signed,
+         byte 0xFF would otherwise read back as -1, i.e. EOF. */
+      return (unsigned char) VARR_POP (char, cs->ln);
     }
     if (cs->fname == NULL || !get_line (c2m_ctx)) return EOF;
     len = VARR_LENGTH (char, cs->ln);
@@ -1138,6 +1140,9 @@ static int cs_get (c2m_ctx_t c2m_ctx) {
 }
 
 static void cs_unget (c2m_ctx_t c2m_ctx, int c) {
+  /* EOF never entered the line buffer, so it is not pushed back: the next cs_get finds the
+     end again.  Stored in a char it would read back as a byte (255 where char is unsigned). */
+  if (c == EOF) return;
   cs->pos.ln_pos--;
   VARR_PUSH (char, cs->ln, c);
 }
@@ -1908,9 +1913,16 @@ static token_t token_stringify (c2m_ctx_t c2m_ctx, token_t t, VARR (token_t) * t
   return t;
 }
 
+/* RANGE_ERR_P is set from errno right after the conversion: anything later (a
+   node allocation) may set errno even when it succeeds (C11 7.5p3).  */
 static node_t get_int_node_from_repr (c2m_ctx_t c2m_ctx, const char *repr, char **stop, int base,
-                                      int uns_p, int long_p, int llong_p, pos_t pos) {
-  mir_ullong ull = strtoull (repr, stop, base);
+                                      int uns_p, int long_p, int llong_p, int *range_err_p,
+                                      pos_t pos) {
+  mir_ullong ull;
+
+  errno = 0;
+  ull = strtoull (repr, stop, base);
+  *range_err_p = errno != 0;
 
   if (llong_p) {
     if (!uns_p && (base == 10 || ull <= MIR_LLONG_MAX)) return new_ll_node (c2m_ctx, ull, pos);
@@ -1953,7 +1965,7 @@ static token_t pptoken2token (c2m_ctx_t c2m_ctx, token_t t, int id2kw_p) {
     return NULL;
   } else if (t->code == T_NUMBER) {
     int i, base = 10, float_p = FALSE, double_p = FALSE, ldouble_p = FALSE;
-    int uns_p = FALSE, long_p = FALSE, llong_p = FALSE, imaginary_p = FALSE;
+    int uns_p = FALSE, long_p = FALSE, llong_p = FALSE, imaginary_p = FALSE, range_err_p = FALSE;
     const char *repr = t->repr, *start = t->repr;
     char *stop;
     int last = (int) strlen (repr) - 1;
@@ -2039,39 +2051,53 @@ static token_t pptoken2token (c2m_ctx_t c2m_ctx, token_t t, int id2kw_p) {
         double_p = FALSE;
       }
     }
-    errno = 0;
     if (imaginary_p && !float_p && !double_p && !ldouble_p) {
       double_p = TRUE;  /* bare imaginary integer → _Complex double */
     }
+    /* errno is read right after each conversion: a node allocation may set it
+       even when it succeeds (C11 7.5p3) */
     if (imaginary_p) {
-      if (float_p) {
-        node_t n = new_pos_node (c2m_ctx, N_CF, t->pos);
+      node_t n = new_pos_node (c2m_ctx, float_p ? N_CF : ldouble_p ? N_CLD : N_CD, t->pos);
+
+      errno = 0;
+      if (float_p)
         n->u.f = strtof (start, &stop);
-        t->node = n;
-      } else if (ldouble_p) {
-        node_t n = new_pos_node (c2m_ctx, N_CLD, t->pos);
+      else if (ldouble_p)
         n->u.ld = strtold (start, &stop);
-        t->node = n;
-      } else {
-        node_t n = new_pos_node (c2m_ctx, N_CD, t->pos);
+      else
         n->u.d = strtod (start, &stop);
-        t->node = n;
-      }
+      range_err_p = errno != 0;
+      t->node = n;
     } else if (float_p) {
-      t->node = new_f_node (c2m_ctx, strtof (start, &stop), t->pos);
+      float f;
+
+      errno = 0;
+      f = strtof (start, &stop);
+      range_err_p = errno != 0;
+      t->node = new_f_node (c2m_ctx, f, t->pos);
     } else if (double_p) {
-      t->node = new_d_node (c2m_ctx, strtod (start, &stop), t->pos);
+      double d;
+
+      errno = 0;
+      d = strtod (start, &stop);
+      range_err_p = errno != 0;
+      t->node = new_d_node (c2m_ctx, d, t->pos);
     } else if (ldouble_p) {
-      t->node = new_ld_node (c2m_ctx, strtold (start, &stop), t->pos);
+      long double ld;
+
+      errno = 0;
+      ld = strtold (start, &stop);
+      range_err_p = errno != 0;
+      t->node = new_ld_node (c2m_ctx, ld, t->pos);
     } else {
-      t->node
-        = get_int_node_from_repr (c2m_ctx, start, &stop, base, uns_p, long_p, llong_p, t->pos);
+      t->node = get_int_node_from_repr (c2m_ctx, start, &stop, base, uns_p, long_p, llong_p,
+                                        &range_err_p, t->pos);
     }
     if (stop != &repr[last + 1]) {
       if (c2m_options->message_file != NULL)
         fprintf (c2m_options->message_file, "%s:%s:%s\n", repr, stop, &repr[last + 1]);
       error (c2m_ctx, t->pos, "wrong number: %s", t->repr);
-    } else if (errno) {
+    } else if (range_err_p) {
       if (float_p || double_p || ldouble_p) {
         warning (c2m_ctx, t->pos, "number %s is out of range -- using IEEE infinity", t->repr);
       } else {
@@ -4535,9 +4561,10 @@ D (asm_spec) {
 static node_t try_attr_spec (c2m_ctx_t c2m_ctx, pos_t pos, node_t *asm_part) {
   node_t r;
 
-  if (c2m_options->pedantic_p) return NULL;
+  if (asm_part != NULL) *asm_part = NULL; /* each declarator gets its own node */
+  /* no GNU attributes or asm in strict ISO mode: err_node is "none" to every caller */
+  if (c2m_options->pedantic_p) return err_node;
   if (asm_part != NULL) {
-    *asm_part = NULL;
     if ((r = TRY (asm_spec)) != err_node) {
       if (c2m_options->pedantic_p)
         error (c2m_ctx, pos, "asm is not implemented");
@@ -4898,6 +4925,9 @@ D (spec_qual_list) {
     spec_pos = curr_token->pos;
     if (C (T_CONST) || C (T_RESTRICT) || C (T_VOLATILE) || C (T_ATOMIC)) {
       P (type_qual);
+      op = r;
+    } else if (C (T_ALIGNAS)) { /* C11 6.7.2.1p1: a member may carry an alignment-specifier */
+      P (align_spec);
       op = r;
     } else if ((op = TRY_A (type_spec, arg)) != err_node) {
       arg = op;
@@ -12127,6 +12157,8 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     node_t abstract_declarator = NL_NEXT (specs);
     struct decl_spec decl_spec = check_decl_spec (c2m_ctx, specs, r); /* only spec_qual_list here */
 
+    if (decl_spec.align_node != NULL) /* the list allows it for a member, never a type name */
+      error (c2m_ctx, POS (decl_spec.align_node), "_Alignas in a type name");
     type = check_declarator (c2m_ctx, abstract_declarator, FALSE);
     assert (NL_HEAD (abstract_declarator->u.ops)->code == N_IGNORE);
     decl_spec.type = append_type (type, decl_spec.type);
