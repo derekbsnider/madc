@@ -216,6 +216,16 @@ tree can supply both layers:
 | S8 | The Terminal tab keeps its program's colours (`term_screen.h` maps SGR onto the one style; ROADMAP's pending item) | a coloured `ls` in the Terminal tab |
 | S9 | Windows: Windows Terminal and conhost, by driving input on the owner's box | `chthonia --tui` from cmd, keys and mouse |
 
+S0 as built (2026-10-08): the screen interpreter is madc's own
+`scripts/vtscreen.py` (VT100 + UTF-8 + SGR in every colour depth), shared with
+the scroll gate — no `pyte` dependency for the platform lanes to carry. Goldens:
+`tests/tui_golden/` (startup, ^T options, F5 into the REPL, at 120×36 and
+80×24), checked by `scripts/tui_golden_gate.sh` in fulltest with a negative
+control; `--record` re-records a deliberate look change. Chthonia's goldens live
+in the Chthonia repository, against its bundle. `tui_model.h` split into
+`tui_grid.h` (grid + repaint diff), `tui_keyparse.h` (bytes → keys) and the
+model; layout / paint / chrome separate as S2–S6 add the chrome.
+
 Each slice: unit tests in `tests/unit/test_tui_model.cpp`, its goldens,
 Tier 1 + Tier 2. The battery runs once, at the seam. A GUI or TUI change is
 verified by driving input, never by a screenshot alone.
