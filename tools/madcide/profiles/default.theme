@@ -9,7 +9,9 @@
 # bold red) are named classifier seats in the JOE look/feel recon doc.
 # One class + spec per line (JOE's spec vocabulary; ^K T swaps schemes).
 keyword bold
+control bold
 type bold
+typename bold
 string cyan
 number cyan
 comment green

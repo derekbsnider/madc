@@ -2,10 +2,12 @@
 # the colours exact (TUI facelift plan §2a). A window shows them as they are;
 # a terminal shows them in truecolor, the nearest of 256, or the nearest of
 # the 8 ANSI colours, by what it supports. ^K T (Options ▸ Scheme) switches.
-# The classes the span classifier knows today; S1b adds Dark+'s others
-# (preprocessor, control keyword, include path, escape, variable).
+# Builtin type keywords (`int`, `void`) are `type`, as Dark+ colours them like
+# keywords; a user's class / struct / enum / typedef is `typename`.
 keyword #569cd6
+control #c586c0
 type #569cd6
+typename #4ec9b0
 function #dcdcaa
 string #ce9178
 number #b5cea8

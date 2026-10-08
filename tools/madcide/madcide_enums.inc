@@ -1624,6 +1624,10 @@ long lsp_token_of_class(var &cls)
 	return lttNONE;
     if ( cls == "ident" )
 	return lttVARIABLE;
+    if ( cls == "control" )
+	return lttKEYWORD;		// LSP's keyword covers control flow
+    if ( cls == "typename" )
+	return lttTYPE;
     for ( long k = lttKEYWORD; k <= lttFUNCTION; k = k + 1 )
 	if ( cls == lsp_token_name(k) )
 	    return k;

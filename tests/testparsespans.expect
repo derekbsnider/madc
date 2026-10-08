@@ -6,7 +6,7 @@ spans: 16
   ident 2:14 +1
   type 2:17 +4
   ident 2:22 +1
-  keyword 4:4 +6
+  control 4:4 +6
   ident 4:11 +1
   number 4:15 +2
   comment 4:19 +6

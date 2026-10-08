@@ -1,4 +1,5 @@
-// madc::parse_spans colours a USER type name as a type wherever the parse
+// madc::parse_spans colours a USER type name as a type (class `typename`,
+// apart from the builtin `type` keywords) wherever the parse
 // reads it as one: a class / struct / enum tag and a typedef's name where
 // declared, and every use — a declaration's type (plain, static, a
 // parameter, a pointer), a C-style cast, sizeof, a qualified `N::Q`, an
@@ -19,7 +20,8 @@ void show(const char *src, const char *name)
     println("{}:", name);
     for ( var r : sp )
     {
-	if ( r["class"] != "type" && r["class"] != "ident" )
+	if ( r["class"] != "type" && r["class"] != "typename"
+	  && r["class"] != "ident" )
 	    continue;
 	var lv = lines[r["line"].as_integer() - 1];
 	var word = lv.substr(r["column"].as_integer(), r["length"].as_integer());

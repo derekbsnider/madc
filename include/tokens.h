@@ -155,7 +155,10 @@ enum class HighlightClass : unsigned char
     hcString,		// string AND char literals
     hcComment,		// from leading trivia (keep_trivia mode)
     hcType,		// datatype spellings (tkDeclare)
-    hcFunction		// an identifier the tree knows as a function name
+    hcFunction,		// an identifier the tree knows as a function name
+    hcControl,		// a control-flow keyword (return if for while switch ...)
+    hcTypeName		// an identifier the parse READ as a type-name (a user's
+			// class, struct, enum, typedef — note_type_name_use)
 };
 
 inline const char *highlight_class_name(HighlightClass c)
@@ -170,6 +173,8 @@ inline const char *highlight_class_name(HighlightClass c)
 	case HighlightClass::hcComment:	 return "comment";
 	case HighlightClass::hcType:	 return "type";
 	case HighlightClass::hcFunction: return "function";
+	case HighlightClass::hcControl:	 return "control";
+	case HighlightClass::hcTypeName: return "typename";
     }
     return "none";
 }

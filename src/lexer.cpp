@@ -10539,14 +10539,38 @@ std::string madc_token_spelling(TokenBase *tb)
 // owner — madcide AST-2): presentation KIND by the token's lexed type.
 // Keywords and datatypes are their own TokenType subtrees, so plain
 // identifiers are what remains under tkIdent — less the ones a parse READ as
-// a type-name (a user's class, typedef, enum: note_type_name_use), which
-// colour as types. Comments never reach the token stream (they are leading
-// trivia) — the span query derives them.
+// a type-name (a user's class, typedef, enum: note_type_name_use), which are
+// `typename` (Dark+ colours them apart from the builtin `type` keywords). A
+// control-flow keyword is `control`. Comments never reach the token stream
+// (they are leading trivia) — the span query derives them.
+// A keyword that steers control flow (Dark+'s keyword.control: return,
+// if/else, the loops, switch/case/default, break/continue/goto, try/catch/
+// throw, defer) — presentation only. The parser's is_statement_keyword_id
+// answers a different question (which keywords BEGIN a statement: never
+// else / case / catch / default).
+static bool highlight_control_keyword(TokenID id)
+{
+    switch ( id )
+    {
+	case TokenID::tkIF:     case TokenID::tkELSE:    case TokenID::tkFOR:
+	case TokenID::tkWHILE:  case TokenID::tkDO:      case TokenID::tkSWITCH:
+	case TokenID::tkCASE:   case TokenID::tkDEFAULT: case TokenID::tkBREAK:
+	case TokenID::tkCONT:   case TokenID::tkGOTO:    case TokenID::tkRETURN:
+	case TokenID::tkTRY:    case TokenID::tkCATCH:   case TokenID::tkTHROW:
+	case TokenID::tkDEFER:
+	    return true;
+	default:
+	    return false;
+    }
+}
+
 HighlightClass madc_token_highlight_class(TokenBase *tb)
 {
     switch ( tb->type() )
     {
-	case TokenType::ttKeyword:  return HighlightClass::hcKeyword;
+	case TokenType::ttKeyword:
+	    return highlight_control_keyword(tb->id()) ? HighlightClass::hcControl
+						       : HighlightClass::hcKeyword;
 	case TokenType::ttDataType: return HighlightClass::hcType;
 	case TokenType::ttInteger:
 	case TokenType::ttReal:	    return HighlightClass::hcNumber;
@@ -10556,7 +10580,7 @@ HighlightClass madc_token_highlight_class(TokenBase *tb)
 	    break;
     }
     if ( tb->id() == TokenID::tkIdent )
-	return tb->is_type_name_use() ? HighlightClass::hcType	// a user type the parse resolved
+	return tb->is_type_name_use() ? HighlightClass::hcTypeName	// a user type the parse resolved
 				      : HighlightClass::hcIdent;
     return HighlightClass::hcNone;
 }
