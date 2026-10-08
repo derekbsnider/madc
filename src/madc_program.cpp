@@ -5790,8 +5790,14 @@ static void highlight_token_rows(::Program &child,
 	    long start = (long)t->column - 1;
 	    if ( start < 0 )
 		start = 0;
-	    rows.push_back(highlight_row((long)t->line, start,
-					 (long)sp.size(),
+	    // The length is the token's LEX-RECORDED extent (its source
+	    // bytes) when it ends on its own line: a spelling re-rendered
+	    // from a cooked value (a char literal's canonical `'\x0'` for
+	    // `'\0'`) is not the source's width.
+	    long len = (long)sp.size();
+	    if ( t->lex_end_line == t->line && t->lex_end_column > start )
+		len = (long)t->lex_end_column - start;
+	    rows.push_back(highlight_row((long)t->line, start, len,
 					 highlight_class_name(hc)));
 	}
 	// The cursor after the token: its end (the column of its last byte,

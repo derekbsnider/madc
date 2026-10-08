@@ -1,0 +1,34 @@
+// madc::lex_spans / parse_spans: every span covers exactly its token's
+// SOURCE bytes. A literal whose cooked value re-renders differently (the
+// char literal `'\0'` renders canonically as `'\x0'`) measured its span from
+// that rendering: `'\0'` coloured 5 columns, swallowing the `;` after it.
+// Oracle: the source text — each row's text is the literal as written (gcc
+// -E keeps these spellings byte-for-byte).
+void show(const char *what, var &rows, var &lines)
+{
+    for ( var r : rows )
+    {
+	if ( r["class"] != "string" && r["class"] != "number" )
+	    continue;
+	var lv = lines[r["line"].as_integer() - 1];
+	println("{} {}:{} {} |{}|", what, r["line"], r["column"], r["class"],
+		perl::substr(lv, r["column"].as_integer(),
+			    r["length"].as_integer()));
+    }
+}
+
+int main()
+{
+    var src = "char a = '\\0';\nchar b = '\\x41';\nchar c = 'q';\nint d = '\\n' + 0x1F;\nunsigned long e = 10UL;\ndouble f = 1.5e3;\n";
+    array lines;
+    php::explode(lines, "\n", src.c_str());
+    var rows;
+    madc::lex_spans(rows, src.c_str(), "ext.c");
+    show("lex", rows, lines);
+    long h = madc::parse_open(src.c_str(), "ext.c");
+    var pr;
+    madc::parse_spans(pr, h);
+    show("parse", pr, lines);
+    madc::parse_close(h);
+    return 0;
+}
