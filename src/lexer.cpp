@@ -10529,8 +10529,10 @@ std::string madc_token_spelling(TokenBase *tb)
 // THE token highlight classifier (declared in madc.h beside the spelling
 // owner — madcide AST-2): presentation KIND by the token's lexed type.
 // Keywords and datatypes are their own TokenType subtrees, so plain
-// identifiers are what remains under tkIdent. Comments never reach the
-// token stream (they are leading trivia) — the span query derives them.
+// identifiers are what remains under tkIdent — less the ones a parse READ as
+// a type-name (a user's class, typedef, enum: note_type_name_use), which
+// colour as types. Comments never reach the token stream (they are leading
+// trivia) — the span query derives them.
 HighlightClass madc_token_highlight_class(TokenBase *tb)
 {
     switch ( tb->type() )
@@ -10545,7 +10547,8 @@ HighlightClass madc_token_highlight_class(TokenBase *tb)
 	    break;
     }
     if ( tb->id() == TokenID::tkIdent )
-	return HighlightClass::hcIdent;
+	return tb->is_type_name_use() ? HighlightClass::hcType	// a user type the parse resolved
+				      : HighlightClass::hcIdent;
     return HighlightClass::hcNone;
 }
 
