@@ -2742,7 +2742,24 @@ public:
     // through it. Input that ends first is an unterminated comment (C11
     // 6.4.9p1; gcc and clang refuse it): the position rewinds to the `/*`
     // and it throws, so every lexing path reports it the same way.
-    void consume_block_comment(int row, int col, std::string *keep = NULL);
+    // `defer_refusal` (the tokenizer's comment token): the comment runs to
+    // the end of input, as gcc lexes it, and the refusal waits for the read
+    // that finds the end (raise_deferred_refusal) — so the comment's text
+    // reaches the token stream's trivia first. Returns false when unterminated.
+    bool consume_block_comment(int row, int col, std::string *keep = NULL,
+			       bool defer_refusal = false);
+    // A refusal recorded by consume_block_comment(..., defer_refusal), raised
+    // by the token read that finds the end of input (Program::getToken).
+    bool refusal_deferred() const { return _deferred_refusal != NULL; }
+    void raise_deferred_refusal()
+    {
+	if ( !_deferred_refusal )
+	    return;
+	const char *message = _deferred_refusal;
+	_deferred_refusal = NULL;
+	setpos(_deferred_row, _deferred_column);
+	refuse_at_end_of_input(message);
+    }
     // WHY this Source's last refusal stopped, read once by
     // Program::diagnostic_cause_for onto the lexer diagnostic: end_of_input
     // when the text ENDED inside a construct more text would finish (a
@@ -2754,6 +2771,9 @@ public:
 	refusal_cause = ::madc::diag_cause::end_of_input;
 	throw message;
     }
+private:
+    const char *_deferred_refusal = NULL;
+    int _deferred_row = 0, _deferred_column = 0;
 };
 
 // Diagnostic source-echo helpers (lexer.cpp). show_error_source_line is the

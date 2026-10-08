@@ -1,0 +1,28 @@
+// madc::lex_spans over a buffer whose block comment never closes: the text
+// from the `/*` to the end of input is the comment (C11 6.4.9p1 — gcc lexes it
+// to the end, then refuses), so every line after the `/*` colours as comment.
+// madc's lexer refused at the `/*` and the comment's text never reached the
+// trivia the spans read: the spans stopped at line 1 (an editor showed the
+// rest of the buffer uncoloured while a comment was being typed).
+// Oracle: gcc -E on the same text: "error: unterminated comment" at 2:1, and
+// line 1's tokens only; clang "2:1: error: unterminated /* comment".
+int main()
+{
+    var src = "int a;\n/* open\nint b = 1;\nint c;\n";
+    var rows;
+    madc::lex_spans(rows, src.c_str(), "open.c");
+    println("rows: {}", php::count(rows));
+    for ( var r : rows )
+	println("{} {} {} {}", r["line"], r["column"], r["length"], r["class"]);
+
+    // Control: the comment closed, the code after it colours as code.
+    var closed = "int a;\n/* open */\nint b = 1;\n";
+    var crows;
+    madc::lex_spans(crows, closed.c_str(), "closed.c");
+    long comments = 0;
+    for ( var r : crows )
+	if ( r["class"] == "comment" )
+	    comments = comments + 1;
+    println("closed: rows {} comments {}", php::count(crows), comments);
+    return 0;
+}

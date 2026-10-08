@@ -5248,6 +5248,7 @@ TokenDataType *Program::resolve_namespaced_type_token(TokenBase *tb, bool consum
     if ( dti == nti->end() )
 	return NULL;
 
+    member_tb->note_type_name_use();	// `ns::T`: the member names the type
     if ( consume_tokens )
 	for ( size_t k = 0; k <= j; ++k )
 	    nextToken(); // each qualifier's '::' (+ ident) and the member
@@ -14069,8 +14070,10 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
 	    {
 		TokenDataType *tdt = new TokenDataType(ename.c_str(), *vis->second);
 		copy_token_location(tdt, name_tb);
+		name_tb->note_type_name_use();
 		return tdt;
 	    }
+	    name_tb->note_type_name_use();
 	    DataDefSTRUCT *sdd = mint_incomplete_struct_tag(ename,
 		    tb->id() == TokenID::tkUNION);
 	    flat_datatype_map_iter mi = datatype_map.find(ename);
@@ -14106,6 +14109,7 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
 	    pushToken(name_tb);	// `enum TAG {` — a definition, not a use
 	    return NULL;
 	}
+	name_tb->note_type_name_use();	// `enum TAG` in a type position
 	std::string ename = contextual_identifier_name(name_tb);
 	if ( TokenDataType *ctag = find_c_enum_tag(ename) )
 	    return ctag;
@@ -14155,6 +14159,7 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
 	    return NULL;
 	}
 	nextToken();	// consume the global name
+	gt->note_type_name_use();
 	if ( peekToken() && peekToken()->id() == TokenID::tkLT )
 	    if ( TokenDataType *inst = instantiate_template_id(gname, gt) )
 		return resolve_member_chain_or_type(inst, gt,
@@ -14182,6 +14187,7 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
 	    tdt->file = tb->file;
 	    tdt->line = tb->line;
 	    tdt->column = tb->column;
+	    tb->note_type_name_use();
 	    return resolve_member_chain_or_type(tdt, tb, consume_class_member_chain);
 	}
     }
@@ -14353,8 +14359,11 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
 	TokenDataType *inst = instantiate_template_id(tname, tb);
 	allow_variadic_real_inst = saved_vri;
 	if ( inst )
+	{
+	    tb->note_type_name_use();
 	    return resolve_member_chain_or_type(inst, tb,
 						consume_class_member_chain);
+	}
 	// Nested class template OR member ALIAS template used UNQUALIFIED inside
 	// its enclosing class (`_Rb_tree_impl<_Compare> _M_impl;` in the _Rb_tree
 	// body; `__pointer<_Key> _M_pkey;` where `template<class _Tp> using
@@ -14376,8 +14385,11 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
 	    for ( DataDefCLASS *sc : scopes )
 		if ( TokenDataType *inst =
 			instantiate_template_id(tname, tb, "", sc) )
+		{
+		    tb->note_type_name_use();
 		    return resolve_member_chain_or_type(inst, tb,
 							consume_class_member_chain);
+		}
 	}
     }
 
@@ -14390,6 +14402,7 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
     if ( DataDef *class_alias = resolve_current_class_type_alias(tname) )
     {
 	TokenDataType *alias_tok = make_alias_type_token(tname, class_alias, tb);
+	tb->note_type_name_use();
 	return resolve_member_chain_or_type(alias_tok, tb,
 					    consume_class_member_chain);
     }
@@ -14403,6 +14416,7 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
 	use->file   = tb->file;
 	use->line   = tb->line;
 	use->column = tb->column;
+	tb->note_type_name_use();
 	return resolve_member_chain_or_type(use, tb,
 					    consume_class_member_chain);
     }
@@ -14419,6 +14433,7 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
 	use->file   = tb->file;
 	use->line   = tb->line;
 	use->column = tb->column;
+	tb->note_type_name_use();
 	return resolve_member_chain_or_type(use, tb, consume_class_member_chain);
     }
 
@@ -14440,6 +14455,7 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
 	    tdt->file   = tb->file;
 	    tdt->line   = tb->line;
 	    tdt->column = tb->column;
+	    tb->note_type_name_use();
 	    return resolve_member_chain_or_type(tdt, tb,
 						consume_class_member_chain);
 	}
@@ -14454,8 +14470,11 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
 	TokenDataType *inst = instantiate_template_id(tname, tb);
 	allow_variadic_real_inst = saved_vri2;
 	if ( inst )
+	{
+	    tb->note_type_name_use();
 	    return resolve_member_chain_or_type(inst, tb,
 						consume_class_member_chain);
+	}
     }
 
     // `Q1::Q2::...::Name<Args>` where Name is a captured template. The maps are
@@ -14483,8 +14502,11 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
 		TokenBase *name_tok = nextToken(); // consume the template name
 		if ( TokenDataType *inst =
 			instantiate_template_id(member_name, name_tok, ns_name) )
+		{
+		    name_tok->note_type_name_use();
 		    return resolve_member_chain_or_type(inst, tb,
 						consume_class_member_chain);
+		}
 		break;
 	    }
 	    if ( tokens[j+1]->id() == TokenID::tkNS )
@@ -14515,6 +14537,7 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
     DataDef *dd = lazy_resolve_type(tname);
     if ( !dd )
 	return NULL;
+    tb->note_type_name_use();
     return new TokenDataType(dd->name.c_str(), *dd);
 }
 
@@ -15151,10 +15174,12 @@ TokenBase *Program::parse_functional_type_expression(TokenBase *type_tb,
 // the shared prototype TokenDataType held in datatype_map (which is stamped at
 // the typedef's definition site). Return a clone of `proto` positioned at the
 // use-site token `at`, so declarations and diagnostics map to the usage.
+// `at` is read as a type-name here: it carries the mark (note_type_name_use).
 static TokenDataType *use_site_type_token(TokenDataType *proto, TokenBase *at)
 {
     if ( !proto || !at )
 	return proto;
+    at->note_type_name_use();
     TokenDataType *t = (TokenDataType *)proto->clone_origin();
     t->file = at->file;
     t->line = at->line;
@@ -15952,7 +15977,10 @@ DataDef *Program::resolve_type_query_datadef(TokenBase *type_tb,
 	    return NULL;
 	dd = resolve_current_class_type_alias(tname);
 	if ( dd )
+	{
+	    type_tb->note_type_name_use();
 	    return dd;
+	}
     }
 
     if ( !is_c_mode() && is_contextual_identifier_token(type_tb)
@@ -16007,6 +16035,8 @@ DataDef *Program::resolve_type_query_datadef(TokenBase *type_tb,
 	    dd = resolve_current_class_type_alias(tname);
 	    if ( !dd )
 		dd = resolve_named_datadef(tname);
+	    if ( dd )
+		type_tb->note_type_name_use();	// `sizeof(T)`
 	    // Template-id or qualified type as the operand — sizeof(Box<int>),
 	    // alignof(std::vector<int>), sizeof(Tmpl<X>::member),
 	    // sizeof(Outer::Nested): the bare-name lookups above cannot consume
@@ -16037,6 +16067,7 @@ DataDef *Program::resolve_type_query_datadef(TokenBase *type_tb,
 	    dd = resolve_named_datadef(((TokenIdent *)tag_tb)->spelling());
 	if ( !dd )
 	    Throw(tag_tb) << "Unknown struct/union type in " << op_name << flush;
+	tag_tb->note_type_name_use();
     }
     else if ( type_tb->type() == TokenType::ttKeyword && type_tb->id() == TokenID::tkENUM )
     {
@@ -44298,6 +44329,8 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 				  && typedef_alias_matches_datadef(tname, cast_dd) )
 				    cast_typedef_name = tname;
 			    }
+			    if ( cast_dd )
+				peek1->note_type_name_use();	// `(T)x`
 			}
 		    }
 		    // C++ functional construction inside grouping parens —
@@ -47655,6 +47688,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     };
     auto record_typedef = [&](const std::string &alias, DataDef *dd, TokenDataType *tdt_, TokenBase *otok = nullptr, bool defines_body = false)
     {
+	if ( otok )
+	    otok->note_type_name_use();	// the declared alias names a type
 	pgm.pack_tap_type(alias);	// B4a: decl-index tap
 	pgm.user_typedef_names.insert(alias);
 	if ( tdt_ && !pgm.current_namespace().empty() )
@@ -47708,6 +47743,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     if ( is_contextual_identifier_token(tn) )
     {
 	TokenBase *tag_tb = pgm.nextToken(); // consume tag
+	tag_tb->note_type_name_use();	// a tag names a type
 	std::string tag_name = contextual_identifier_name(tag_tb);
 	tag = new TokenIdent(tag_name);
 	tag->file = tag_tb->file;
@@ -51305,6 +51341,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		pgm.Throw << "Unexpected end of input after class template-id" << flush;
 	}
 	bool qualified_class_name = false;
+	TokenBase *class_name_tb = tag;	// the name the chain ends at
 	if ( tn->id() == TokenID::tkNS )
 	{
 	    std::vector<std::string> qparts;
@@ -51317,6 +51354,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		    pgm.Throw(part_tb ? part_tb : tn)
 			<< "Expected name after '::' in class declaration" << flush;
 		qparts.push_back(contextual_identifier_name(part_tb));
+		class_name_tb = part_tb;
 		if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkLT )
 		    pgm.skip_template_id_suffix();
 		tn = pgm.peekToken();
@@ -51334,6 +51372,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		qualified_class_name = true;
 	    }
 	}
+	class_name_tb->note_type_name_use();	// the class's name names a type
 	bool local_definition = tn->id() == TokenID::tkOpBrc
 			     || tn->id() == TokenID::tkColon;
 	if ( tn && is_contextual_identifier_token(tn)
@@ -54919,6 +54958,8 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
     // paths ignore the node (compile() is a no-op; MIR re-parses tokens).
     auto record_typedef = [&](const std::string &alias, DataDef *dd,
 			      TokenDataType *tdt, TokenBase *otok = nullptr) -> TokenBase * {
+	if ( otok )
+	    otok->note_type_name_use();	// the declared alias names a type
 #if MADC_DEBUG_TYPEDEF_PARSE
 	std::cerr << "TYPEDEF record alias=" << alias
 		  << " dd=" << (dd ? dd->name : "<null>")
@@ -55238,6 +55279,7 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 
 	// `typedef enum {...} COMPARTMENT_ID,*PCOMPARTMENT_ID;` (winnt.h) —
 	// tail declarators are pointers/aliases of THIS enum dd.
+	tn->note_type_name_use();	// the declared alias names a type
 	TokenBase *enum_node = record_typedef(alias, enum_alias_dd, tdt);
 	enum_node = parse_typedef_list_tail(enum_alias_dd, enum_node);
 	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkSemi )
@@ -56677,6 +56719,7 @@ TokenBase *TokenENUM::parse(Program &pgm)
     if ( tn && tn->type() == TokenType::ttIdentifier )
     {
 	enum_tag = ((TokenIdent *)tn)->spelling();
+	tn->note_type_name_use();	// an enum's tag names a type
 	pgm.nextToken(); // consume tag name
     }
 

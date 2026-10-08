@@ -6819,7 +6819,7 @@ TokenBase *Program::_getToken()
 		col = source.column();
 		source.get();
 		word = "/*";
-		source.consume_block_comment(row, col, &word);
+		source.consume_block_comment(row, col, &word, true);
 		return make_rem(word);
 	    }
 	    return make_token(TokenID::tkSlash);
@@ -10082,6 +10082,8 @@ TokenBase *Program::getToken()
     int start_line = source.line();
     int start_column = source.cursor_column() + 1;
     TokenBase *tb = _getToken();
+    if ( !tb )
+	source.raise_deferred_refusal();	// an unterminated comment ran here
     if ( tb && tb->column == 0 )
     {
 	tb->line = start_line;
@@ -10431,7 +10433,14 @@ TokenBase *Program::getRealToken()
 	    case TokenType::ttEOL:
 	    case TokenType::ttComment:
 		if ( keep_trivia )
+		{
 		    pending_trivia += trivia_text(tb);
+		    // An unterminated comment ran to the end of input: the
+		    // next read raises its refusal, and the text read so far
+		    // is the stream's trailing trivia (the spans colour it).
+		    if ( source.refusal_deferred() )
+			_trailing_trivia = std::move(pending_trivia);
+		}
 		continue;
 	    default:
 		if ( keep_trivia && !pending_trivia.empty() )
@@ -10529,8 +10538,10 @@ std::string madc_token_spelling(TokenBase *tb)
 // THE token highlight classifier (declared in madc.h beside the spelling
 // owner — madcide AST-2): presentation KIND by the token's lexed type.
 // Keywords and datatypes are their own TokenType subtrees, so plain
-// identifiers are what remains under tkIdent. Comments never reach the
-// token stream (they are leading trivia) — the span query derives them.
+// identifiers are what remains under tkIdent — less the ones a parse READ as
+// a type-name (a user's class, typedef, enum: note_type_name_use), which
+// colour as types. Comments never reach the token stream (they are leading
+// trivia) — the span query derives them.
 HighlightClass madc_token_highlight_class(TokenBase *tb)
 {
     switch ( tb->type() )
@@ -10545,7 +10556,8 @@ HighlightClass madc_token_highlight_class(TokenBase *tb)
 	    break;
     }
     if ( tb->id() == TokenID::tkIdent )
-	return HighlightClass::hcIdent;
+	return tb->is_type_name_use() ? HighlightClass::hcType	// a user type the parse resolved
+				      : HighlightClass::hcIdent;
     return HighlightClass::hcNone;
 }
 
@@ -10703,7 +10715,8 @@ void Program::printt(TokenBase *tb)
     } // end switch
 }
 
-void Source::consume_block_comment(int row, int col, std::string *keep)
+bool Source::consume_block_comment(int row, int col, std::string *keep,
+				   bool defer_refusal)
 {
     int prev = 0;
     while ( good() && !eof() )
@@ -10712,8 +10725,15 @@ void Source::consume_block_comment(int row, int col, std::string *keep)
 	if ( keep )
 	    *keep += (char)c;
 	if ( prev == '*' && c == '/' )
-	    return;
+	    return true;
 	prev = c;
+    }
+    if ( defer_refusal )
+    {
+	_deferred_refusal = "unterminated comment";
+	_deferred_row = row;
+	_deferred_column = col;
+	return false;
     }
     setpos(row, col);
     refuse_at_end_of_input("unterminated comment");

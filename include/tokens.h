@@ -222,6 +222,9 @@ typedef enum : uint16_t { tfBRACKETED	=    1,
 						// (macro expansion, __FILE__/__LINE__):
 						// line/column name the invocation site,
 						// not source bytes of this spelling
+			  tfTYPENAME	=    8,	// an identifier the parser READ as a
+						// type-name (a declaration's, a cast's,
+						// sizeof's); the span classifier colours it
 			} tokflag_t;
 
 // TokenRec — the flat, POD, serializable per-token DATA record (Phase 2 of
@@ -382,6 +385,11 @@ public:
     virtual bool is_bracketed() const { return (_flags & tfBRACKETED) ? true : false;  }
     virtual bool is_overloaded() const { return (_flags & tfOVERLOADED) ? true : false; }
     bool is_synthetic_position() const { return (_flags & tfSYNTHPOS) ? true : false; }
+    // The ONE mark of "the parser read this identifier as a type-name"
+    // (tfTYPENAME): set where a lookup resolves it as a type, read by
+    // madc_token_highlight_class. Only an identifier carries it.
+    void note_type_name_use() { if ( id() == TokenID::tkIdent ) _flags |= tfTYPENAME; }
+    bool is_type_name_use() const { return (_flags & tfTYPENAME) ? true : false; }
     virtual bool is_operator() const { return false; }
     virtual bool is_constant() const { return false; }
     virtual bool is_real()     const { return false; }

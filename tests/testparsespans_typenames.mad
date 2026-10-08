@@ -1,0 +1,37 @@
+// madc::parse_spans colours a USER type name as a type wherever the parse
+// reads it as one: a class / struct / enum tag and a typedef's name where
+// declared, and every use — a declaration's type (plain, static, a
+// parameter, a pointer), a C-style cast, sizeof, a qualified `N::Q`, an
+// elaborated `struct S`. The lexer knows only builtin types, so these names
+// lexed as identifiers and painted "ident": a typed `S v;` never coloured.
+// Namespace names and enumerators stay identifiers.
+// Oracle: clang++ -fsyntax-only -Xclang -ast-dump on the same text resolves
+// each "type" name below as a type (VarDecl v 'S', ParmVarDecl s 'S',
+// CStyleCastExpr 'T', sizeof 'T', CXXRecordDecl S / C / Q, TypedefDecl T,
+// EnumDecl E); gcc accepts the same text.
+void show(const char *src, const char *name)
+{
+    long h = madc::parse_open(src, name);
+    var sp;
+    madc::parse_spans(sp, h);
+    array lines;
+    php::explode(lines, "\n", src);
+    println("{}:", name);
+    for ( var r : sp )
+    {
+	if ( r["class"] != "type" && r["class"] != "ident" )
+	    continue;
+	var lv = lines[r["line"].as_integer() - 1];
+	var word = lv.substr(r["column"].as_integer(), r["length"].as_integer());
+	println("  {} {}:{} {}", r["class"], r["line"], r["column"], word);
+    }
+    madc::parse_close(h);
+}
+
+int main()
+{
+    show("struct S { int x; };\ntypedef int T;\nS v;\nT y;\nstatic S w;\nint f(S s, T t) { S *p = &s; return (T)p->x + sizeof(T); }\nclass C { public: int m; };\nenum E { A, B };\nE e = A;\nC c;\nnamespace N { struct Q { }; }\nN::Q q;\nint x = sizeof(struct S);\n",
+	 "types.cpp");
+    show("struct P { int a; };\nstruct P p;\ntypedef struct P PT;\nPT q;\ntypedef enum { R, G } Col;\nCol k = G;\n", "types.c");
+    return 0;
+}
