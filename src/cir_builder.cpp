@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <unordered_map>
 #include <set>
 #include <stack>
 #include <list>
@@ -2719,19 +2720,56 @@ static bool pending_function_body_available(CirBuilder *cb, Program *prog,
 	return false;
 }
 
+// The FIRST bodied, non-overridden function in prog->ast whose source name
+// or emit name is `sym` — the one owner of that match. Lookups share one
+// forward scan: each function's names are recorded once, so N lookups cost
+// one pass over the AST instead of N (the materialize fixpoint's
+// funcdef_map loop made ~110k emit-name builds per compile this way). The
+// scan advances only as far as a lookup needs and checks the source name
+// before building the emit name, in AST order — exactly the emit names the
+// per-lookup scan built, in its order (func_emit_name can mint a flavor
+// thunk). Valid while prog->ast and its functions are unchanged: hold one
+// across a loop that does not parse.
+class AstFunctionBodies {
+public:
+	AstFunctionBodies(CirBuilder *cb, Program *prog) : m_cb(cb), m_prog(prog) {}
+	TokenFunc *find(const std::string &sym)
+	{
+		if (!m_cb || !m_prog || sym.empty())
+			return NULL;
+		std::unordered_map<std::string, TokenFunc *>::const_iterator hit =
+			m_by_name.find(sym);
+		if (hit != m_by_name.end())
+			return hit->second;
+		for (; m_next < m_prog->ast.size(); ++m_next) {
+			TokenFunc *tf = dynamic_cast<TokenFunc *>(m_prog->ast[m_next]);
+			FuncDef *fd = tf ? dynamic_cast<FuncDef *>(tf->var.type) : NULL;
+			if (!tf || !fd || tf->is_overridden || fd->declaration_only)
+				continue;
+			m_by_name.emplace(tf->var.name, tf);
+			if (tf->var.name == sym)
+				return tf;	// its emit name is built when a later lookup passes it
+			std::string emit = m_cb->func_emit_name(tf->var, fd);
+			m_by_name.emplace(emit, tf);
+			if (emit == sym) {
+				++m_next;
+				return tf;
+			}
+		}
+		return NULL;
+	}
+private:
+	CirBuilder *m_cb;
+	Program *m_prog;
+	size_t m_next = 0;
+	std::unordered_map<std::string, TokenFunc *> m_by_name;
+};
+
 static TokenFunc *find_ast_function_body(CirBuilder *cb, Program *prog,
 					 const std::string &sym)
 {
-	if (!cb || !prog || sym.empty())
-		return NULL;
-	for (TokenBase *tb : prog->ast) {
-		TokenFunc *tf = dynamic_cast<TokenFunc *>(tb);
-		FuncDef *fd = tf ? dynamic_cast<FuncDef *>(tf->var.type) : NULL;
-		if (tf && fd && !tf->is_overridden && !fd->declaration_only
-		    && (tf->var.name == sym || cb->func_emit_name(tf->var, fd) == sym))
-			return tf;
-	}
-	return NULL;
+	AstFunctionBodies bodies(cb, prog);
+	return bodies.find(sym);
 }
 
 static bool requeue_tsubst_instance_body(CirBuilder *cb, Program *prog, Variable &var,
@@ -35740,6 +35778,8 @@ node_t CirBuilder::translate_module(Program *prog)
 			// still records `tsubst_source`, and calls may ODR-use the concrete
 			// symbol later. Fold those already-parsed AST bodies back into the
 			// same reachable-library pipeline instead of leaving only an extern.
+			// Nothing in this loop parses, so one AST index serves its lookups.
+			AstFunctionBodies ast_bodies(this, prog);
 			for (auto &kv : prog->funcdef_map) {
 				const std::string &fname = kv.first;
 				FuncDef *nfd = kv.second;
@@ -35755,9 +35795,9 @@ node_t CirBuilder::translate_module(Program *prog)
 				if (!referenced_funcs.count(sym)
 				    && !referenced_funcs.count(fname))
 					continue;
-				TokenFunc *ntf = find_ast_function_body(this, prog, sym);
+				TokenFunc *ntf = ast_bodies.find(sym);
 				if (!ntf && sym != fname)
-					ntf = find_ast_function_body(this, prog, fname);
+					ntf = ast_bodies.find(fname);
 				if (!ntf || ntf->is_overridden)
 					continue;
 				if (!prog->is_system_header_path(ntf->file))
