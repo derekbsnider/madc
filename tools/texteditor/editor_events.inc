@@ -207,8 +207,8 @@ bool multiline_text(const char *s)
 bool multiline_range(long w, long doc, long off, long n)
 {
     long end = off + n;
-    long line = line_of(w, doc, off);
-    while ( n > 0 )
+    long last = ui::text_line_count(w, doc);
+    for ( long line = line_of(w, doc, off); n > 0 && line <= last; line = line + 1 )
     {
 	long ls = line_start_of(w, doc, line);
 	if ( ls < 0 || ls >= end )
@@ -222,7 +222,6 @@ bool multiline_range(long w, long doc, long off, long n)
 	for ( long k = 0; k < len; k = k + 1 )
 	    if ( ls + k >= off && ls + k < end && multiline_char(s[k]) )
 		return true;
-	line = line + 1;
     }
     return false;
 }
