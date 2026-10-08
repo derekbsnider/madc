@@ -41,6 +41,15 @@ KEY = {
     'f5': ESC + b'[15~',
 }
 
+# The Dark+ scheme chosen by keys, as a user does: ^T Options, down to the
+# Scheme row, Enter (the Theme prompt), its name, Enter.
+DARKPLUS = [('options', None), ('down', None), ('enter', None),
+            ('text:vscode', None), ('enter', None)]
+# The terminal colour depths a target detects (ui_term.cpp
+# detect_colour_depth): 8/16 (TERM=xterm), 256, truecolor.
+DEPTH_256 = {'TERM': 'xterm-256color'}
+DEPTH_TRUE = {'COLORTERM': 'truecolor'}
+
 # (name, [ (key name | 'text:<chars>', text to wait for | None) ... ],
 #  terminal environment, sizes) — sizes None = every size in SIZES.
 SCENARIOS = [
@@ -51,6 +60,9 @@ SCENARIOS = [
     # Theme prompt (the arrows and Enter reach the list, not the buffer)
     ('options-scheme', [('options', None), ('down', None), ('enter', None)],
      {}, None),
+    ('darkplus-16', DARKPLUS, {}, [(36, 120)]),
+    ('darkplus-256', DARKPLUS, DEPTH_256, [(36, 120)]),
+    ('darkplus-truecolor', DARKPLUS, DEPTH_TRUE, [(36, 120)]),
 ]
 
 

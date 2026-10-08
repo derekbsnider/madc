@@ -33,6 +33,8 @@
 #include "madcdis/tui_provider.h"
 
 #include <cstdio>
+#include <cstdlib>	// getenv (detect_colour_depth)
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -44,6 +46,7 @@ namespace {
 
 using madc::hub::tui_grid;
 using madc::hub::ui_style;
+using madc::hub::ui_colour_depth;
 using madc::hub::tui_keyev;
 using madc::hub::tui_key;
 using madc::hub::tui_keyparse;
@@ -66,16 +69,55 @@ void cup(std::string &out, size_t row, size_t col)
 	out += buf;
 }
 
+// The colour depth this terminal shows, read ONCE when a target is made:
+// COLORTERM=truecolor|24bit or Windows Terminal (WT_SESSION) is 24-bit, a
+// TERM naming 256color the xterm palette, anything else the 8/16 index.
+ui_colour_depth detect_colour_depth()
+{
+	const char *ct = getenv("COLORTERM");
+	if ( ct && (strcmp(ct, "truecolor") == 0 || strcmp(ct, "24bit") == 0) )
+	    return ui_colour_depth::truecolor;
+	if ( getenv("WT_SESSION") )
+	    return ui_colour_depth::truecolor;
+	const char *t = getenv("TERM");
+	if ( t && strstr(t, "256color") )
+	    return ui_colour_depth::xterm256;
+	return ui_colour_depth::ansi16;
+}
+
+// One colour's SGR parameters: an exact colour at the terminal's depth
+// (38;2;r;g;b, 38;5;n — base 38 foreground, 48 background), else the
+// 8-colour index the spec parser recorded beside it (30+c / 40+c).
+void sgr_colour(std::string &params, unsigned char index, uint32_t rgb,
+		int base, ui_colour_depth depth)
+{
+	char buf[32];
+	if ( rgb && depth == ui_colour_depth::truecolor )
+	    snprintf(buf, sizeof(buf), "%d;2;%u;%u;%u;", base,
+		     (unsigned)((rgb >> 16) & 0xff), (unsigned)((rgb >> 8) & 0xff),
+		     (unsigned)(rgb & 0xff));
+	else if ( rgb && depth == ui_colour_depth::xterm256 )
+	    snprintf(buf, sizeof(buf), "%d;5;%d;", base,
+		     madc::hub::ui_rgb_nearest_256(rgb & 0xffffff));
+	else if ( index )
+	    snprintf(buf, sizeof(buf), "%d;", base - 9 + (int)index);
+	else
+	    return;
+	params += buf;
+}
+
 // THE style->SGR table (AST-2; owner: VT-102 ANSI / JOE parity). A
 // non-normal transition RESETS and then sets the target style's full
-// parameter list — attributes 1/2/3/4/5/7, fg 30+c, bg 40+c;
+// parameter list — attributes 1/2/3/4/5/7, fg 30+c, bg 40+c (an exact
+// colour at the terminal's depth instead: sgr_colour);
 // bold-as-bright supplies the 16-colour foreground model (VT-102 /
 // 8-colour terminals brighten on bold, exactly JOE's behavior; no
 // aixterm 90–97). The historical spellings survive: pure inverse
 // entered from normal emits \x1b[7m and any->normal emits \x1b[0m,
 // so a grid using only normal/reverse produces the byte stream it
 // always did.
-void emit_sgr(std::string &out, ui_style from, ui_style to)
+void emit_sgr(std::string &out, ui_style from, ui_style to,
+	      ui_colour_depth depth)
 {
 	if ( to.is_normal() )
 	{
@@ -90,23 +132,14 @@ void emit_sgr(std::string &out, ui_style from, ui_style to)
 	    return;
 	}
 	std::string params;
-	char buf[8];
 	if ( to.flags & ui_style::BOLD )	params += "1;";
 	if ( to.flags & ui_style::DIM )		params += "2;";
 	if ( to.flags & ui_style::ITALIC )	params += "3;";
 	if ( to.flags & ui_style::UNDERLINE )	params += "4;";
 	if ( to.flags & ui_style::BLINK )	params += "5;";
 	if ( to.flags & ui_style::INVERSE )	params += "7;";
-	if ( to.fg )
-	{
-	    snprintf(buf, sizeof(buf), "%d;", 29 + (int)to.fg);
-	    params += buf;
-	}
-	if ( to.bg )
-	{
-	    snprintf(buf, sizeof(buf), "%d;", 39 + (int)to.bg);
-	    params += buf;
-	}
+	sgr_colour(params, to.fg, to.fg_rgb, 38, depth);
+	sgr_colour(params, to.bg, to.bg_rgb, 48, depth);
 	if ( params.empty() )
 	    return;			// unreachable: normal handled above
 	params.erase(params.size() - 1);	// the trailing ';'
@@ -118,7 +151,8 @@ void emit_sgr(std::string &out, ui_style from, ui_style to)
 // The whole paint plan as one byte string (the platform body just
 // writes it): diff, DECSTBM+DL/IL scroll of a shifted band, per-span
 // SGR-tracked cell emission with the EL tail, final cursor placement.
-std::string vt_paint_bytes(const tui_grid &prev, const tui_grid &next)
+std::string vt_paint_bytes(const tui_grid &prev, const tui_grid &next,
+			   ui_colour_depth depth)
 {
 	std::string out;
 	out += "\x1b[?25l";	// hidden while rows repaint
@@ -160,7 +194,7 @@ std::string vt_paint_bytes(const tui_grid &prev, const tui_grid &next)
 		    continue;		// drawn with its glyph
 		if ( cell.attr != cur )
 		{
-		    emit_sgr(out, cur, cell.attr);
+		    emit_sgr(out, cur, cell.attr, depth);
 		    cur = cell.attr;
 		}
 		cell.append_glyph(out);
@@ -247,6 +281,7 @@ class term_target : public madc::hub::tui_target,
     bool	     _suspended;
     bool	     _line;	// the line mode holds the terminal
     size_t	     _rows, _cols;
+    ui_colour_depth  _depth;	// detect_colour_depth, at construction
     tui_keyparse     _parse;
 
     static bool query_size(size_t &rows, size_t &cols)
@@ -292,7 +327,7 @@ class term_target : public madc::hub::tui_target,
 
 public:
     term_target() : _open(false), _suspended(false), _line(false),
-		    _rows(24), _cols(80) {}
+		    _rows(24), _cols(80), _depth(detect_colour_depth()) {}
     ~term_target() { close(); }
 
     // Raw keys and the resize signal: the half both screen modes share.
@@ -464,7 +499,7 @@ public:
     {
 	if ( !_open || _suspended )
 	    return;
-	emit(vt_paint_bytes(prev, next));	// the shared byte builder
+	emit(vt_paint_bytes(prev, next, _depth));	// the shared byte builder
     }
 
     virtual bool read_keys(std::vector<tui_keyev> &out)
@@ -625,6 +660,7 @@ class term_target : public madc::hub::tui_target,
     bool   _open, _suspended;
     bool   _line;		// the line mode holds the console
     size_t _rows, _cols;
+    ui_colour_depth _depth;	// detect_colour_depth, at construction
     tui_keyparse _parse;
 
     bool query_size(size_t &rows, size_t &cols)
@@ -687,7 +723,7 @@ public:
 		    _saved_in(0), _saved_out(0),
 		    _saved_cp_in(0), _saved_cp_out(0),
 		    _open(false), _suspended(false), _line(false),
-		    _rows(24), _cols(80) {}
+		    _rows(24), _cols(80), _depth(detect_colour_depth()) {}
     ~term_target() { close(); }
 
     // Raw console modes: the half both screen modes share — the termios
@@ -869,7 +905,7 @@ public:
     {
 	if ( !_open || _suspended )
 	    return;
-	emit(vt_paint_bytes(prev, next));	// the shared byte builder
+	emit(vt_paint_bytes(prev, next, _depth));	// the shared byte builder
     }
 
     virtual bool read_keys(std::vector<tui_keyev> &out)

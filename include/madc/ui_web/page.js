@@ -440,9 +440,16 @@
     return side;
   }
 
+  // A span of text in its style classes. An exact colour arrives as the class
+  // `fgx-rrggbb` / `bgx-rrggbb` (web_model.h style_classes: the theme's
+  // `#rrggbb`), shown as that colour — the palette classes cannot name it.
   function span(cls, s) {
     var e = document.createElement('span');
     e.className = cls;
+    var m = /(?:^| )fgx-([0-9a-f]{6})(?: |$)/.exec(cls);
+    if (m) e.style.color = '#' + m[1];
+    m = /(?:^| )bgx-([0-9a-f]{6})(?: |$)/.exec(cls);
+    if (m) e.style.backgroundColor = '#' + m[1];
     e.textContent = s;
     return e;
   }

@@ -22,6 +22,8 @@ using madc::hub::roles;
 using madc::hub::uinode;
 using madc::hub::name_id;
 using madc::hub::ui_style;
+using madc::hub::ui_rgb_nearest_ansi;
+using madc::hub::ui_rgb_nearest_256;
 using madc::hub::tui_grid;
 using madc::hub::tui_key;
 using madc::hub::tui_keyev;
@@ -820,6 +822,44 @@ TEST_CASE("styles — the JOE-vocabulary spec parser (one table)")
     CHECK(!ui_style_of("mauve", a));		// unknown word refuses
     CHECK(!ui_style_of("bold mauve", a));	// ... the WHOLE spec
     CHECK(!ui_style_of("", a));			// empty refuses
+}
+
+TEST_CASE("styles — an exact colour (#rrggbb) keeps its value and its nearest index")
+{
+    ui_style a;
+    REQUIRE(ui_style_of("#6a9955", a));		// Dark+ comment green
+    CHECK(a.fg_rgb == (ui_style::RGB_SET | 0x6a9955u));
+    CHECK(a.fg == 3);				// green — not the nearer-by-RGB yellow
+    REQUIRE(ui_style_of("bold #569CD6 bg_#1e1e1e", a));	// hex case-free
+    CHECK(a.fg_rgb == (ui_style::RGB_SET | 0x569cd6u));
+    CHECK(a.fg == 7);				// Dark+ keyword blue reads as cyan
+    CHECK(a.bg_rgb == (ui_style::RGB_SET | 0x1e1e1eu));
+    CHECK(a.bg == 1);				// a near-grey: black
+    CHECK((a.flags & ui_style::BOLD) != 0);
+    CHECK(!ui_style_of("#6a995", a));		// five digits refuses
+    CHECK(!ui_style_of("#6a99zz", a));		// a non-hex digit refuses
+    ui_style b;
+    REQUIRE(ui_style_of("green", b));
+    CHECK(!(a == b));
+    ui_style c;
+    REQUIRE(ui_style_of("#6a9955", c));
+    ui_style d;
+    REQUIRE(ui_style_of("green", d));
+    CHECK(c.fg == d.fg);
+    CHECK(c != d);				// the exact value is part of the style
+}
+
+TEST_CASE("styles — nearest colours: 8 by hue, 256 from the cube or the grey ramp")
+{
+    CHECK(ui_rgb_nearest_ansi(0xc586c0u) == 6);	// magenta
+    CHECK(ui_rgb_nearest_ansi(0x4ec9b0u) == 7);	// teal reads as cyan
+    CHECK(ui_rgb_nearest_ansi(0xce9178u) == 2);	// Dark+ string: red
+    CHECK(ui_rgb_nearest_ansi(0x000000u) == 1);	// black
+    CHECK(ui_rgb_nearest_ansi(0xd4d4d4u) == 8);	// a light grey: white
+    CHECK(ui_rgb_nearest_256(0xff0000u) == 196);	// the cube's pure red
+    CHECK(ui_rgb_nearest_256(0x000000u) == 16);	// the cube's black
+    CHECK(ui_rgb_nearest_256(0x808080u) == 244);	// a mid grey: the ramp
+    CHECK(ui_rgb_nearest_256(0x5f87afu) == 67);	// an exact cube entry
 }
 
 TEST_CASE("compose — highlight spans paint; the selection wins; bad rows skip")

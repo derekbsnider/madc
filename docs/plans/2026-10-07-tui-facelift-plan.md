@@ -226,6 +226,19 @@ in the Chthonia repository, against its bundle. `tui_model.h` split into
 `tui_grid.h` (grid + repaint diff), `tui_keyparse.h` (bytes → keys) and the
 model; layout / paint / chrome separate as S2–S6 add the chrome.
 
+S1 as built (2026-10-08): a theme names an exact colour `#rrggbb` (or
+`bg_#rrggbb`) in the one spec parser; `ui_style` keeps the value AND its
+nearest 8-colour index (by hue — plain RGB distance puts Dark+'s comment green
+nearer xterm's yellow), so an index-only renderer is unchanged. The window shows
+the value (`fgx-rrggbb`, page.js); a terminal detects its depth once
+(`COLORTERM`/`WT_SESSION` → 24-bit, `*256color` → the nearest xterm-256 entry,
+else the index). `vscode.theme` carries Dark+ for today's classes; goldens at
+16 / 256 / truecolor. The surfaces (editor background, chrome) arrive with the
+chrome they paint, S2/S3. Found on the way: a popup pane never took the
+keyboard in the terminal (^T Options showed but its rows could not be chosen);
+popups now take focus while up (`dialog_hints`), pinned by the
+`options-scheme` golden.
+
 Each slice: unit tests in `tests/unit/test_tui_model.cpp`, its goldens,
 Tier 1 + Tier 2. The battery runs once, at the seam. A GUI or TUI change is
 verified by driving input, never by a screenshot alone.

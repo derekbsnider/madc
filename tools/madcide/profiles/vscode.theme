@@ -1,0 +1,27 @@
+# madcide's VS Code theme: Dark+ (VS Code's default dark theme, MIT-licensed),
+# the colours exact (TUI facelift plan §2a). A window shows them as they are;
+# a terminal shows them in truecolor, the nearest of 256, or the nearest of
+# the 8 ANSI colours, by what it supports. ^K T (Options ▸ Scheme) switches.
+# The classes the span classifier knows today; S1b adds Dark+'s others
+# (preprocessor, control keyword, include path, escape, variable).
+keyword #569cd6
+type #569cd6
+function #dcdcaa
+string #ce9178
+number #b5cea8
+comment #6a9955
+
+# @gui: the window's workbench in Dark+ (the editor's own surfaces).
+@gui bg #1e1e1e
+@gui fg #d4d4d4
+@gui accent #007acc
+
+# @presence: the caret colours dealt to connected clients (as default.theme).
+@presence 0 cyan
+@presence 1 magenta
+@presence 2 yellow
+@presence 3 green
+@presence 4 red
+@presence 5 blue
+@presence 6 bold cyan
+@presence 7 bold magenta

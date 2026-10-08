@@ -193,6 +193,20 @@ TEST_CASE("compose — selection spans lines; a span across lines splits; autofo
 	"[{\"t\":\"abc\",\"s\":[[2,1,\"fg-cyan\"]]},{\"t\":\"def\",\"s\":[[0,2,\"fg-cyan\"]]}]"));
     CHECK((*e2)["caret"] == nlohmann::json{ {"line", 1}, {"col", 3} });
 
+    // An exact colour (`#rrggbb`) reaches the page as its own class, in place
+    // of the palette name: the window shows the theme's value as it is.
+    row["c"] = madc::value(std::string("bold #569cd6"));
+    spans.clear();
+    spans.push_back(madc::value::make_object(row));
+    h["spans"] = madc::value::make_array(spans);
+    edit_node.hints = madc::value::make_object(h);
+    web_model m3;
+    ops = nlohmann::json::parse(m3.compose(r, edit_node));
+    const nlohmann::json *e3 = node_by_key(ops, "0");
+    REQUIRE(e3);
+    CHECK((*e3)["lines"] == nlohmann::json::parse(
+	"[{\"t\":\"abc\",\"s\":[[2,1,\"st-bold fgx-569cd6\"]]},{\"t\":\"def\",\"s\":[[0,2,\"st-bold fgx-569cd6\"]]}]"));
+
     size_t line, col;
     web_line_col("ab\ncd", -5, line, col);
     CHECK(line == 0u);
