@@ -157,8 +157,11 @@ enum class HighlightClass : unsigned char
     hcType,		// datatype spellings (tkDeclare)
     hcFunction,		// an identifier the tree knows as a function name
     hcControl,		// a control-flow keyword (return if for while switch ...)
-    hcTypeName		// an identifier the parse READ as a type-name (a user's
+    hcTypeName,		// an identifier the parse READ as a type-name (a user's
 			// class, struct, enum, typedef — note_type_name_use)
+    hcDirective,	// a preprocessor directive's `#name` (from the line text)
+    hcIncludePath,	// the header-name an #include / #load names
+    hcEscape		// an escape sequence inside a string or char literal
 };
 
 inline const char *highlight_class_name(HighlightClass c)
@@ -175,6 +178,9 @@ inline const char *highlight_class_name(HighlightClass c)
 	case HighlightClass::hcFunction: return "function";
 	case HighlightClass::hcControl:	 return "control";
 	case HighlightClass::hcTypeName: return "typename";
+	case HighlightClass::hcDirective: return "directive";
+	case HighlightClass::hcIncludePath: return "include";
+	case HighlightClass::hcEscape:	 return "escape";
     }
     return "none";
 }

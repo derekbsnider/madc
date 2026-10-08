@@ -1435,6 +1435,20 @@ bool load_theme(long w, long es, const char *name)
 	var spec = php::trim(sp + 1);
 	th[cls.c_str()] = spec;
     }
+    // A refined class the scheme leaves unnamed takes its PARENT's colour:
+    // a scheme written before the class existed still colours `return` as a
+    // keyword and an escape as the string around it (never a plain hole).
+    var parent = { "control": "keyword", "typename": "type",
+		   "directive": "keyword", "include": "string",
+		   "escape": "string" };
+    array pk;
+    php::array_keys(pk, parent);
+    for ( var k : pk )
+    {
+	var pc = parent[k.c_str()];
+	if ( th[k.c_str()].is_null() && !th[pc.c_str()].is_null() )
+	    th[k.c_str()] = th[pc.c_str()];
+    }
     ui::set(w, es, "theme", th);
     ui::set(w, es, "gui_theme", gth);	// empty clears a prior scheme's vars
     ui::set(w, es, "presence_theme", pth);	// empty clears the prior palette

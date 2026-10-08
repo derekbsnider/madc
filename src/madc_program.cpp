@@ -3,6 +3,8 @@
 #include "libmadc/engine.h"
 #include "libmadc/program.h"
 
+#include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -5834,6 +5836,287 @@ static bool text_continues_after(const std::string &text, long line, long col)
     return false;
 }
 
+// ---- the classifier's LINE-TEXT pass (TUI facelift S1b): the classes no
+// token carries. A directive line is consumed at lex — its `#name`, its
+// header-name and its comments reach no token and no trivia — and an escape
+// sequence is a run INSIDE a string token. Both read the source text, as
+// comments read trivia. Runs once per query, after the token rows.
+
+// The (line -> [column, end)) extents the token rows already cover: a `#`
+// inside a block comment or a raw string is not a directive.
+typedef std::map<long, std::vector<std::pair<long, long> > > covered_cols;
+
+static bool cols_cover(const covered_cols &cov, long line, long col)
+{
+    covered_cols::const_iterator it = cov.find(line);
+    if ( it == cov.end() )
+	return false;
+    for ( const std::pair<long, long> &e : it->second )
+	if ( col >= e.first && col < e.second )
+	    return true;
+    return false;
+}
+
+// The directives whose operand is a header-name (`<x.h>` / `"x.h"`) — the
+// lexer's own include/include_next and madc's #load.
+static bool directive_takes_header_name(const std::string &name)
+{
+    return name == "include" || name == "include_next" || name == "load";
+}
+
+// A directive line's rows, from 0-based column `at` (just past the name) to
+// the line's end: comments, string literals, and the header-name when the
+// directive takes one. `in_block` carries a block comment the line leaves
+// open into the next line (the directive continues through it).
+static void directive_tail_scan(const std::string &ln, long line, size_t at,
+				bool header_name, bool &in_block,
+				std::vector<madc::value> &mine)
+{
+    bool first_operand = header_name;
+    size_t i = at;
+    if ( in_block )
+    {
+	size_t close = ln.find("*/", i);
+	size_t end = close == std::string::npos ? ln.size() : close + 2;
+	if ( end > i )
+	    mine.push_back(highlight_row(line, (long)i, (long)(end - i), "comment"));
+	if ( close == std::string::npos )
+	    return;
+	in_block = false;
+	i = end;
+    }
+    while ( i < ln.size() )
+    {
+	char ch = ln[i];
+	if ( ch == ' ' || ch == '\t' || ch == '\r' )
+	{
+	    ++i;
+	    continue;
+	}
+	if ( ch == '/' && i + 1 < ln.size() && ln[i + 1] == '/' )
+	{
+	    mine.push_back(highlight_row(line, (long)i, (long)(ln.size() - i), "comment"));
+	    return;
+	}
+	if ( ch == '/' && i + 1 < ln.size() && ln[i + 1] == '*' )
+	{
+	    size_t close = ln.find("*/", i + 2);
+	    size_t end = close == std::string::npos ? ln.size() : close + 2;
+	    mine.push_back(highlight_row(line, (long)i, (long)(end - i), "comment"));
+	    if ( close == std::string::npos )
+	    {
+		in_block = true;
+		return;
+	    }
+	    i = end;
+	    continue;
+	}
+	if ( ch == '"' || ch == '\'' || (ch == '<' && first_operand) )
+	{
+	    char close_ch = ch == '<' ? '>' : ch;
+	    size_t j = i + 1;
+	    while ( j < ln.size() && ln[j] != close_ch )
+		j += (ln[j] == '\\' && ch != '<' && j + 1 < ln.size()) ? 2 : 1;
+	    size_t end = j < ln.size() ? j + 1 : ln.size();
+	    mine.push_back(highlight_row(line, (long)i, (long)(end - i),
+		first_operand ? highlight_class_name(HighlightClass::hcIncludePath)
+			      : "string"));
+	    first_operand = false;
+	    i = end;
+	    continue;
+	}
+	first_operand = false;
+	++i;
+    }
+}
+
+// directive_tail_scan's rows, less a run a token row already colours (a
+// parse lexes the rest of an #include line: its comment is the lexer's).
+static void directive_tail_rows(const std::string &ln, long line, size_t at,
+				bool header_name, bool &in_block,
+				const covered_cols &cov, std::vector<madc::value> &rows)
+{
+    std::vector<madc::value> mine;
+    directive_tail_scan(ln, line, at, header_name, in_block, mine);
+    for ( const madc::value &r : mine )
+	if ( !cols_cover(cov, line, (long)highlight_row_field(r, "column")) )
+	    rows.push_back(r);
+}
+
+// Every directive line's rows: the `#name` (one row, white space between
+// them included), then its tail. A line ending in `\` or inside a block
+// comment the directive opened continues the directive.
+static void directive_rows(const std::string &text, const covered_cols &cov,
+			   std::vector<madc::value> &rows)
+{
+    bool continues = false;		// the line before ended in a splice
+    bool in_block = false;		// inside a block comment a directive opened
+    long line = 0;
+    size_t bol = 0;
+    while ( bol <= text.size() )
+    {
+	++line;
+	size_t eol = text.find('\n', bol);
+	if ( eol == std::string::npos )
+	    eol = text.size();
+	std::string ln = text.substr(bol, eol - bol);
+	bool directive_line = false;
+	if ( continues || in_block )
+	{
+	    directive_tail_rows(ln, line, 0, false, in_block, cov, rows);
+	    directive_line = true;
+	}
+	else
+	{
+	    size_t p = ln.find_first_not_of(" \t");
+	    if ( p != std::string::npos && ln[p] == '#'
+	      && !cols_cover(cov, line, (long)p) )
+	    {
+		if ( line == 1 && p == 0 && ln.compare(0, 2, "#!") == 0 )
+		    rows.push_back(highlight_row(line, 0, (long)ln.size(), "comment"));
+		else
+		{
+		    size_t q = ln.find_first_not_of(" \t", p + 1);
+		    if ( q == std::string::npos )
+			q = ln.size();
+		    size_t e = q;
+		    while ( e < ln.size() && (isalpha((unsigned char)ln[e]) || ln[e] == '_') )
+			++e;
+		    if ( e == q )
+			e = p + 1;	// `#` alone (a null directive, a line marker)
+		    rows.push_back(highlight_row(line, (long)p, (long)(e - p),
+			highlight_class_name(HighlightClass::hcDirective)));
+		    directive_tail_rows(ln, line, e,
+					directive_takes_header_name(ln.substr(q, e - q)),
+					in_block, cov, rows);
+		    directive_line = true;
+		}
+	    }
+	}
+	// A splice (`\` last on the line, a CR aside) carries the directive on.
+	size_t last = ln.find_last_not_of('\r');
+	continues = directive_line && last != std::string::npos && ln[last] == '\\';
+	if ( eol == text.size() )
+	    break;
+	bol = eol + 1;
+    }
+}
+
+// The length of the escape sequence at `s[i]` (a `\`), C11 6.4.4.4: `\x`
+// takes every hex digit after it, `\u` four and `\U` eight, an octal escape
+// up to three digits, any other one character. 0 at the run's end.
+static size_t escape_length(const std::string &s, size_t i, size_t end)
+{
+    if ( i + 1 >= end )
+	return 0;
+    char c = s[i + 1];
+    size_t n = 2;
+    if ( c == 'x' || c == 'u' || c == 'U' )
+    {
+	size_t cap = c == 'x' ? end : (c == 'u' ? 4 : 8);
+	size_t k = 0;
+	while ( i + 2 + k < end && k < cap && isxdigit((unsigned char)s[i + 2 + k]) )
+	    ++k;
+	n += k;
+    }
+    else if ( c >= '0' && c <= '7' )
+    {
+	n = 1;
+	while ( n < 4 && i + n < end && s[i + n] >= '0' && s[i + n] <= '7' )
+	    ++n;
+    }
+    return n;
+}
+
+// A string row whose text holds escapes splits into string / escape runs
+// (rows never overlap). Only a row that OPENS a literal — an encoding prefix
+// and a quote — is cooked: a raw string's backslashes are its text.
+static void split_escape_rows(const std::string &text, std::vector<madc::value> &rows)
+{
+    std::vector<size_t> starts(1, 0);
+    for ( size_t k = 0; k < text.size(); ++k )
+	if ( text[k] == '\n' )
+	    starts.push_back(k + 1);
+    std::vector<madc::value> out;
+    out.reserve(rows.size());
+    for ( const madc::value &r : rows )
+    {
+	const std::map<std::string, madc::value> &o = r.as_object();
+	std::map<std::string, madc::value>::const_iterator ci = o.find("class");
+	long line = (long)highlight_row_field(r, "line");
+	long col = (long)highlight_row_field(r, "column");
+	long len = (long)highlight_row_field(r, "length");
+	if ( ci == o.end() || ci->second.as_string() != "string"
+	  || line < 1 || (size_t)line > starts.size() )
+	{
+	    out.push_back(r);
+	    continue;
+	}
+	size_t b = starts[line - 1] + (size_t)col;
+	size_t e = b + (size_t)len;
+	if ( e > text.size() )
+	{
+	    out.push_back(r);
+	    continue;
+	}
+	size_t q = b;
+	while ( q < e && (text[q] == 'u' || text[q] == 'U' || text[q] == 'L' || text[q] == '8') )
+	    ++q;
+	if ( q >= e || (text[q] != '"' && text[q] != '\'') )
+	{
+	    out.push_back(r);
+	    continue;
+	}
+	size_t run = b;
+	for ( size_t k = q + 1; k < e; ++k )
+	{
+	    if ( text[k] != '\\' )
+		continue;
+	    size_t n = escape_length(text, k, e);
+	    if ( n == 0 )
+		break;
+	    if ( k > run )
+		out.push_back(highlight_row(line, (long)(run - starts[line - 1]),
+					    (long)(k - run), "string"));
+	    out.push_back(highlight_row(line, (long)(k - starts[line - 1]), (long)n,
+				highlight_class_name(HighlightClass::hcEscape)));
+	    k += n - 1;
+	    run = k + 1;
+	}
+	if ( run == b )
+	    out.push_back(r);
+	else if ( run < e )
+	    out.push_back(highlight_row(line, (long)(run - starts[line - 1]),
+					(long)(e - run), "string"));
+    }
+    rows.swap(out);
+}
+
+// The line-text pass over a query's finished token rows.
+static void source_text_rows(const std::string &text, std::vector<madc::value> &rows)
+{
+    covered_cols cov;
+    for ( const madc::value &r : rows )
+    {
+	long c = (long)highlight_row_field(r, "column");
+	cov[(long)highlight_row_field(r, "line")].push_back(
+	    std::make_pair(c, c + (long)highlight_row_field(r, "length")));
+    }
+    directive_rows(text, cov, rows);
+    split_escape_rows(text, rows);
+    // Source order (line, column): the pass appended its rows after the
+    // token rows; a consumer reading "a line's last span" reads position.
+    std::stable_sort(rows.begin(), rows.end(),
+		     [](const madc::value &a, const madc::value &b) {
+			 int64_t la = highlight_row_field(a, "line");
+			 int64_t lb = highlight_row_field(b, "line");
+			 if ( la != lb )
+			     return la < lb;
+			 return highlight_row_field(a, "column")
+			      < highlight_row_field(b, "column");
+		     });
+}
+
 bool internal_program_parse_spans(int64_t handle, madc::value &out)
 {
     out = value();
@@ -5866,6 +6149,7 @@ bool internal_program_parse_spans(int64_t handle, madc::value &out)
 		rows.push_back(r);
 	}
     }
+    source_text_rows(st->source_text, rows);
     out = value::make_array(rows);
     return true;
 }
@@ -7846,6 +8130,7 @@ bool internal_program_lex_spans(::Program &self,
     std::string disp = display_name.empty() ? "<memory>" : display_name;
     std::vector<madc::value> rows;
     lexical_highlight_rows(self, source_text, disp, rows);
+    source_text_rows(source_text, rows);
     out = value::make_array(rows);
     return true;
 }

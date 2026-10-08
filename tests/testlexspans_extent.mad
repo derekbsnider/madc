@@ -2,13 +2,16 @@
 // SOURCE bytes. A literal whose cooked value re-renders differently (the
 // char literal `'\0'` renders canonically as `'\x0'`) measured its span from
 // that rendering: `'\0'` coloured 5 columns, swallowing the `;` after it.
+// A literal's escape is its own row (`escape`), the quotes around it
+// `string`: together the rows cover the literal exactly.
 // Oracle: the source text — each row's text is the literal as written (gcc
 // -E keeps these spellings byte-for-byte).
 void show(const char *what, var &rows, var &lines)
 {
     for ( var r : rows )
     {
-	if ( r["class"] != "string" && r["class"] != "number" )
+	if ( r["class"] != "string" && r["class"] != "escape"
+	  && r["class"] != "number" )
 	    continue;
 	var lv = lines[r["line"].as_integer() - 1];
 	println("{} {}:{} {} |{}|", what, r["line"], r["column"], r["class"],

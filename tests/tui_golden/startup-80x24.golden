@@ -25,7 +25,8 @@ text:
 23|
 styles:
  0 0+80:inverse
+ 1 0+8:fg=4 9+9:bold,fg=6
  2 0+12:fg=2
  3 0+3:bold 9+4:bold
- 5 15+9:fg=6 26+2:fg=6
+ 5 15+6:fg=6 21+2:bold,fg=6 23+1:fg=6 26+2:fg=6
  6 8+6:bold 15+1:fg=6

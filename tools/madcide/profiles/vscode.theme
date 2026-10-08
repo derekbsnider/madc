@@ -12,6 +12,9 @@ function #dcdcaa
 string #ce9178
 number #b5cea8
 comment #6a9955
+directive #c586c0
+include #ce9178
+escape #d7ba7d
 
 # @gui: the window's workbench in Dark+ (the editor's own surfaces).
 @gui bg #1e1e1e

@@ -1628,6 +1628,10 @@ long lsp_token_of_class(var &cls)
 	return lttKEYWORD;		// LSP's keyword covers control flow
     if ( cls == "typename" )
 	return lttTYPE;
+    if ( cls == "directive" )
+	return lttKEYWORD;		// no `macro` in this legend yet
+    if ( cls == "include" || cls == "escape" )
+	return lttSTRING;
     for ( long k = lttKEYWORD; k <= lttFUNCTION; k = k + 1 )
 	if ( cls == lsp_token_name(k) )
 	    return k;

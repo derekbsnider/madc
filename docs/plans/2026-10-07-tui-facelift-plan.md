@@ -239,6 +239,25 @@ keyboard in the terminal (^T Options showed but its rows could not be chosen);
 popups now take focus while up (`dialog_hints`), pinned by the
 `options-scheme` golden.
 
+S1b as built (2026-10-08), the lexical and type-name classes: `control`
+(the classifier's own control-flow set; the parser's statement-start
+predicate answers another question) and `typename` (an identifier the parse
+read as a user's type, `tfTYPENAME`) from the tokens; `directive`, `include`
+and `escape` from the line text, in one pass after the token rows of both
+span queries (`source_text_rows`, madc_program.cpp). A directive line's
+comments and strings colour there too — the lexer consumes the line, so no
+token or trivia carries them. Rows never overlap: an escape splits its
+string row, a raw string's backslashes stay text. A theme that does not name
+a refined class gives it its parent's spec (`load_theme`: control → keyword,
+typename → type, directive → keyword, include and escape → string), so an
+older scheme never shows a plain hole. Found on the way, each its own commit
+and reducer: a span measured the re-rendered spelling, not the source
+(`'\0'` coloured its `;`; now the lex-recorded extent), and a comment before
+consumed directive lines coloured a line low (now the lexer's own comment
+positions, `Program::_trivia_comments`). Still to come: the parse-tree
+variable / parameter / member class (#9CDCFE), namespace names as
+`typename`, and `chthonia.theme` in the Chthonia repo.
+
 Each slice: unit tests in `tests/unit/test_tui_model.cpp`, its goldens,
 Tier 1 + Tier 2. The battery runs once, at the seam. A GUI or TUI change is
 verified by driving input, never by a screenshot alone.
