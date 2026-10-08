@@ -74,7 +74,7 @@ if ! grep -q 'shift_anchors(w, es, doc, off, strlen' "$OWNER"; then
 	echo "check-one-anchor-owner: ed_text_insert no longer calls shift_anchors" >&2
 	fail=1
 fi
-if ! grep -q 'shift_anchors(w, es, doc, off, -n)' "$OWNER"; then
+if ! grep -q 'shift_anchors(w, es, doc, off, -n,' "$OWNER"; then
 	echo "check-one-anchor-owner: ed_text_erase no longer calls shift_anchors" >&2
 	fail=1
 fi

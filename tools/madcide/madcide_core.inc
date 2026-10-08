@@ -1847,9 +1847,20 @@ void load_status(long w, long es, const char *name)
 // 2026-09-09: every emitted code view is coloured). Like the status
 // line, spans go stale with edits until the next check/save. A plain
 // identifier (styled by no scheme) or a stale line skips.
+void span_rows_append(var &hs, long w, long es, long doc, var &rows, long line0);
+
 void spans_to_hspans(long w, long es, long doc, var &rows, long dest)
 {
     var hs = {};
+    span_rows_append(hs, w, es, doc, rows, 0);
+    ui::set(w, dest, "hspans", hs);
+}
+
+// The converter's body: `rows` appended to `hs`, each row's line counted
+// from `line0` + 1 (0 = the rows address the whole buffer; a line re-lex's
+// rows address its first line as 1 — colour_relex_lines).
+void span_rows_append(var &hs, long w, long es, long doc, var &rows, long line0)
+{
     var th;
     ui::get(th, w, es, "theme");
     for ( var r : rows )
@@ -1862,13 +1873,12 @@ void spans_to_hspans(long w, long es, long doc, var &rows, long dest)
 	    c = th[cls.c_str()];
 	if ( c.is_null() )
 	    continue;			// a class this scheme leaves plain
-	long ls = ui::text_line_start(w, doc, r["line"].as_integer());
+	long ls = ui::text_line_start(w, doc, line0 + r["line"].as_integer());
 	if ( ls < 0 )
 	    continue;			// a stale line (edited since the parse)
 	long s = ls + r["column"].as_integer();
 	hs[] = { "s": s, "e": s + r["length"].as_integer(), "c": c };
     }
-    ui::set(w, dest, "hspans", hs);
 }
 
 // A text kind's colour (a kind that is not the compiler's, madcide_lang.inc):
@@ -1981,17 +1991,169 @@ void background_parse(long w, long es, long doc)
     ensure_phandle(w, es, doc);
 }
 
+// ---- live colour (docs/plans/2026-10-08-madcide-live-colour.md) ---------
+// Layer 1, as you type: the lines an edit touched re-lex at the next frame
+// (colour_catch_up); layer 2, on a pause: the whole buffer re-lexes when an
+// edit could have opened or closed a multi-line token, then re-parses in the
+// background (colour_refresh, spawned by IdeSession::parse_pending). The
+// edit record is the editor layer's (editor_events.inc colour_dirty).
+
+// Lines `a`..`b` of `doc` lexed ALONE, their spans replacing the old ones on
+// `es` — unless a span crosses into or out of them (the edit is inside a
+// block comment or a raw string, whose shifted span already covers the new
+// text). False = not re-lexed.
+bool colour_relex_lines(long w, long es, long doc, long a, long b)
+{
+    long ls = ui::text_line_start(w, doc, a);
+    long bs = ui::text_line_start(w, doc, b);
+    if ( ls < 0 || bs < 0 )
+	return false;
+    long le = bs + ui::text_line_len(w, doc, b);
+    var hs;
+    ui::get(hs, w, es, "hspans");
+    if ( hs.is_null() )
+	hs = {};
+    for ( var r : hs )
+    {
+	long s = r["s"].as_integer();
+	long e = r["e"].as_integer();
+	if ( (s < ls && e > ls) || (s < le && e > le) )
+	    return false;
+    }
+    var text = "";
+    for ( long n = a; n <= b; n = n + 1 )
+    {
+	var l;
+	ui::text_line(l, w, doc, n);
+	if ( n > a )
+	    text = format("{}\n", text);
+	if ( !l.is_null() )
+	    text = format("{}{}", text, l);
+    }
+    var p;
+    doc_name(p, w, doc);
+    var rows;
+    madc::lex_spans(rows, text.c_str(), p.c_str());
+    // the spans before the lines, the lines' own, the spans after them:
+    // the order every renderer reads
+    var out = {};
+    for ( var r : hs )
+	if ( r["e"].as_integer() <= ls && r["s"].as_integer() < ls )
+	    out.push(r);
+    span_rows_append(out, w, es, doc, rows, a - 1);
+    for ( var r : hs )
+	if ( r["s"].as_integer() >= le )
+	    out.push(r);
+    ui::set(w, es, "hspans", out);
+    return true;
+}
+
+// The frame's colour catches up with the edits since the last (the seat
+// every client's frame passes: compose_ide_tree, as preview_follow).
+void colour_catch_up(long w, long es, long doc)
+{
+    long cd = es_int(w, es, "cdirty_doc", 0);
+    if ( cd == 0 )
+	return;
+    bool all = es_flag(w, es, "cdirty_all");
+    bool multi = es_flag(w, es, "cdirty_multi");
+    long lo = es_int(w, es, "cdirty_lo", -1);
+    long hi = es_int(w, es, "cdirty_hi", -1);
+    long zero = 0;
+    long none = -1;
+    ui::set(w, es, "cdirty_doc", zero);
+    ui::set(w, es, "cdirty_all", false);
+    ui::set(w, es, "cdirty_multi", false);
+    ui::set(w, es, "cdirty_lo", none);
+    ui::set(w, es, "cdirty_hi", none);
+    if ( cd != doc )
+	return;				// another buffer's edits (a field's): not on show here
+    if ( !kind_reaches_compiler(doc_kind(w, doc)) )
+    {
+	refresh_text_spans(w, es, doc);	// a text kind's own colour, as check does
+	return;
+    }
+    if ( all )
+    {
+	lex_first_spans(w, es, doc);	// the whole text changed: lex it all
+	return;
+    }
+    if ( lo < 0 )
+	return;
+    if ( multi )
+	ui::set(w, es, "clexdirty", true);	// the pause re-lexes the whole buffer
+    colour_relex_lines(w, es, doc, line_of(w, doc, lo), line_of(w, doc, hi));
+}
+
+// ONE re-parse of a document's handle at a time: a refresh replaces the
+// handle's tree, and the compiler yields between slices, so a second refresh
+// in that window would free the tree the first is still building. The
+// session's synchronous re-parse (check, save) waits for a background one;
+// a background one steps aside for any (doc "cparsing").
+void parse_lock(long w, long doc)
+{
+    while ( es_int(w, doc, "cparsing", 0) != 0 )
+	madc::sleep_ms(5);
+    ui::set(w, doc, "cparsing", 1);
+}
+
+void parse_unlock(long w, long doc)
+{
+    long zero = 0;
+    ui::set(w, doc, "cparsing", zero);
+}
+
+// Layer 2 — a cooperative task: after a pause in which `doc`'s text did not
+// move, the whole buffer re-lexes if an edit asked for it, then re-parses;
+// the parse's colour lands only if the text still is the text it parsed.
+// One per document (doc "crefresh_running"); doc "cparsed_rev" is the text
+// revision its colour was last parsed from.
+void colour_refresh(long w, long es, long doc)
+{
+    long rev = es_int(w, doc, "textrev", 0);
+    madc::sleep_ms(400);
+    long zero = 0;
+    if ( es_int(w, doc, "textrev", 0) != rev || es_int(w, doc, "cparsing", 0) != 0 )
+    {
+	ui::set(w, doc, "crefresh_running", zero);	// typing (or a check) goes on: a later frame respawns
+	return;
+    }
+    if ( es_flag(w, es, "clexdirty") )
+    {
+	ui::set(w, es, "clexdirty", false);
+	lex_first_spans(w, es, doc);
+    }
+    long h = ensure_phandle(w, es, doc);
+    if ( h != 0 )
+    {
+	parse_lock(w, doc);
+	var t;
+	ui::text(t, w, doc);
+	madc::parse_refresh(h, t.c_str());
+	ui::set(w, doc, "phandle_text", t);
+	parse_unlock(w, doc);
+	if ( es_int(w, doc, "textrev", 0) == rev )
+	    refresh_spans(w, es, doc, h);
+    }
+    ui::set(w, doc, "cparsed_rev", rev);
+    ui::set(w, doc, "crefresh_running", zero);
+}
+
 // Whole-TU re-parse of the buffer's handle from the live text — the ONE
 // compiler entry (check, save, outline all route here); the themed
 // highlight spans refresh with it.
 long reparse_buffer(long w, long es, long doc)
 {
     long h = ensure_phandle(w, es, doc);
+    parse_lock(w, doc);			// a background colour refresh finishes first
+    long rev = es_int(w, doc, "textrev", 0);
     var t;
     ui::text(t, w, doc);
     madc::parse_refresh(h, t.c_str());
     ui::set(w, doc, "phandle_text", t);	// the tree now describes THIS text
+    parse_unlock(w, doc);
     refresh_spans(w, es, doc, h);
+    ui::set(w, doc, "cparsed_rev", rev);	// live colour: this text's parse is on show
     return h;
 }
 
@@ -9722,6 +9884,8 @@ void IdeSession::compose_ide_tree(var &root, long doc)
     // every client's frame passes, only when its text changed
     // (madcide_preview.inc) — the panes below only read.
     preview_follow(w, es, doc);
+    // Live colour, layer 1: the lines edited since the last frame re-lex.
+    colour_catch_up(w, es, doc);
     long caret = es_int(w, es, "caret", 0);
     // The View seam at composition: the edit node presents the focused
     // View's text (its render buffer while a lens is up) and, for a code
@@ -10386,7 +10550,19 @@ long IdeSession::active(long fallback)
 bool IdeSession::parse_pending(long adoc)
 {
     if ( es_int(w, es, "pending_parse", 0) == 0 )
+    {
+	// Live colour, layer 2: the text moved since this client's colour
+	// was parsed — one refresh in flight per client; it is not a
+	// paint-before-parse, so the client waits for input as usual.
+	if ( es_int(w, adoc, "crefresh_running", 0) == 0
+	  && kind_reaches_compiler(doc_kind(w, adoc))
+	  && es_int(w, adoc, "textrev", 0) != es_int(w, adoc, "cparsed_rev", 0) )
+	{
+	    ui::set(w, adoc, "crefresh_running", 1);
+	    go colour_refresh(w, es, adoc);
+	}
 	return false;
+    }
     ui::set(w, es, "pending_parse", 0);
     go background_parse(w, es, adoc);
     return true;

@@ -1,0 +1,168 @@
+// madcide colours what you type (docs/plans/2026-10-08-madcide-live-colour.md;
+// the owner, testing 0.102.1: a function typed into test.cpp stayed
+// uncoloured until the file was saved). Pins, on a C++ buffer under the
+// default theme (keyword/type bold, string/number cyan, comment green):
+//   1. as you type: a typed line's keyword, number and comment take their
+//      colour in the next frame, no save; the lines around keep theirs;
+//   2. typing inside a block comment keeps the comment's colour over the
+//      new text; typing `/*` turns the rest of the buffer into comment once
+//      the pause passes, and the undo brings the code's colour back;
+//   3. on the pause the background re-parse adds what only the parse knows:
+//      a typed use of a struct's name is a type (bold);
+//   4. a save while the background re-parse is in flight waits for it.
+// Oracle: VS Code and Thonny colour typed text at once; their semantic
+// layer (VS Code's semantic tokens) lands after a pause.
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+#include "../tools/madcide/include/madcide/harness"	// <madcide/harness>: ev_text, ev_key, ev_action
+
+// The colour on show at byte `off` ("none" = plain).
+void colour_at(var &out, long w, long es, long off)
+{
+    out = "none";
+    var hs;
+    ui::get(hs, w, es, "hspans");
+    if ( hs.is_null() )
+	return;
+    for ( var r : hs )
+	if ( r["s"].as_integer() <= off && off < r["e"].as_integer() )
+	    out = r["c"];
+}
+
+// The colour of the first occurrence of `what` at or after byte `from`.
+void colour_of(var &out, long w, long es, long doc, const char *what, long from)
+{
+    var t;
+    ui::text(t, w, doc);
+    const char *s = t.c_str();
+    const char *p = strstr(s + from, what);
+    if ( p == NULL )
+    {
+	out = "missing";
+	return;
+    }
+    colour_at(out, w, es, p - s);
+}
+
+void type_text(IdeSession &S, long doc, const char *t)
+{
+    var e;
+    for ( long i = 0; t[i] != 0; i = i + 1 )
+    {
+	if ( t[i] == '\n' )
+	    ev_key(e, "enter");
+	else
+	{
+	    var ch = format("{}", (char)t[i]);
+	    ev_text(e, ch.c_str());
+	}
+	S.apply_ide_event(doc, e);
+    }
+}
+
+// One frame: the client composes, then runs the pending step (the client
+// loop's order), and the session's tasks run.
+void frame(IdeSession &S, long doc, bool pause)
+{
+    var tree;
+    S.compose_ide_tree(tree, doc);
+    S.parse_pending(doc);
+    if ( pause )
+    {
+	madc::task_drain();
+	S.compose_ide_tree(tree, doc);
+    }
+}
+
+int main()
+{
+    const char *path = "madc_ide_livecolour.cpp";
+    php::file_put_contents(path,
+	"struct S { int a; };\n"
+	"int f(void)\n"
+	"{\n"
+	"\t/* a comment\n"
+	"\t   over lines */\n"
+	"\treturn 0;\n"
+	"}\n");
+    long w = ui::world_new();
+    long doc = setup_editor(w, path, false);
+    long es = ui::entity_by_name(w, "editor-state");
+    builtins_activate(w, es);
+    ui::set(w, es, "profile_dir", "tools/madcide/profiles");
+    ui::set(w, es, "profile", "joe");
+    load_theme(w, es, "default");
+    IdeSession S;
+    S.attach(w, es);
+    reparse_buffer(w, es, doc);		// the colour a load ends with
+    var c;
+    colour_of(c, w, es, doc, "return", 0);
+    println("loaded: return={}", c);
+
+    // 1. Type a line after `}` (the buffer's end).
+    long end = ui::text_size(w, doc);
+    ui::set(w, es, "caret", end);
+    type_text(S, doc, "long g = 42; // note");
+    frame(S, doc, false);
+    long at = end;
+    colour_of(c, w, es, doc, "long", at);
+    var cn;
+    colour_of(cn, w, es, doc, "42", at);
+    var cc;
+    colour_of(cc, w, es, doc, "// note", at);
+    var cr;
+    colour_of(cr, w, es, doc, "return", 0);
+    println("typed: long={} 42={} comment={} return={}", c, cn, cc, cr);
+
+    // 2. Inside the block comment: the comment's colour covers the new text.
+    var t;
+    ui::text(t, w, doc);
+    long inside = strstr(t.c_str(), "over") - t.c_str();
+    ui::set(w, es, "caret", inside);
+    type_text(S, doc, "xyz ");
+    frame(S, doc, false);
+    colour_of(c, w, es, doc, "xyz", 0);
+    println("in comment: xyz={}", c);
+    //    `/*` at the start of `return`'s line: the rest is comment after the pause.
+    ui::text(t, w, doc);
+    long ret = strstr(t.c_str(), "return") - t.c_str();
+    ui::set(w, es, "caret", ret);
+    type_text(S, doc, "/*");
+    frame(S, doc, true);
+    colour_of(c, w, es, doc, "return", 0);
+    colour_of(cn, w, es, doc, "42", 0);
+    println("opened /*: return={} 42={}", c, cn);
+    var e;
+    ev_action(e, "undo");
+    S.apply_ide_event(doc, e);
+    frame(S, doc, false);
+    colour_of(c, w, es, doc, "return", 0);
+    colour_of(cn, w, es, doc, "42", 0);
+    println("undo: return={} 42={}", c, cn);
+
+    // 3. The parse's colour: a typed use of the struct's name is a type.
+    end = ui::text_size(w, doc);
+    ui::set(w, es, "caret", end);
+    type_text(S, doc, "\nS v;");
+    frame(S, doc, false);
+    colour_of(c, w, es, doc, "S v", 0);
+    print("type use: typed={}", c);
+    frame(S, doc, true);
+    colour_of(c, w, es, doc, "S v", 0);
+    println(" paused={}", c);
+
+    // 4. A save while the background re-parse runs waits for it.
+    type_text(S, doc, " ");
+    var tree;
+    S.compose_ide_tree(tree, doc);
+    S.parse_pending(doc);			// the refresh task is spawned, not run
+    reparse_buffer(w, es, doc);		// check / save's re-parse
+    madc::task_drain();
+    println("save during refresh: parsing={} running={}",
+	    es_int(w, doc, "cparsing", 0), es_int(w, doc, "crefresh_running", 0));
+
+    S.close();
+    php::unlink(path);
+    return 0;
+}
