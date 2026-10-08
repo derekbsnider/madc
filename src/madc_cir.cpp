@@ -2580,7 +2580,7 @@ static void cir_windows_import_dlls(bool have_madc, bool drop_madc,
 {
     if (have_madc && !drop_madc)
 	libs.push_back("libmadc-0.dll");
-    for (const madc::dis::istring &l : other)
+    for (const std::string &l : other)
 	libs.push_back(l.c_str());
 }
 #endif

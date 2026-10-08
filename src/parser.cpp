@@ -2350,7 +2350,8 @@ TokenBase *Program::consume_gnu_asm_label(TokenBase *nt,
 	TokenBase *label = nextToken();
 	if ( alias_target && label && label->type() == TokenType::ttString )
 	{
-	    *alias_target = ((TokenStr *)label)->str;
+	    const std::string &text = ((TokenStr *)label)->str;
+	    size_t skip = 0;
 #if MADC_TARGET_APPLE_P
 	    // Mach-O asm labels carry the assembler-level leading underscore
 	    // (`__asm("_open")`). madc's canonical symbol space is the C/dlsym
@@ -2358,9 +2359,10 @@ TokenBase *Program::consume_gnu_asm_label(TokenBase *nt,
 	    // Mach-O writer re-prepends it at emit — so strip exactly one here,
 	    // at the boundary where the label enters madc. (ELF targets keep
 	    // labels verbatim: glibc's `__isoc99_scanf` IS the ELF symbol.)
-	    if ( !alias_target->empty() && (*alias_target)[0] == '_' )
-		alias_target->erase(0, 1);
+	    if ( !text.empty() && text[0] == '_' )
+		skip = 1;
 #endif
+	    *alias_target = madc::dis::istring(text.data() + skip, text.size() - skip);
 	}
 	TokenBase *close = nextToken();
 	if ( !close || close->id() != TokenID::tkClBrk )
@@ -18650,7 +18652,7 @@ void Program::consume_deferred_static_assert_statement(TokenBase *tb)
 	nextToken();
 }
 
-static madc::dis::istring static_assert_failure_message(const madc::dis::istring &message)
+static madc::dis::istring static_assert_failure_message(const std::string &message)
 {
     return message.empty() ? "static assertion failed" : message;
 }
@@ -25029,7 +25031,7 @@ size_t Program::error_diagnostic_count() const
     return n;
 }
 
-void Program::add_diagnostic(DiagnosticSeverity severity, DiagnosticPhase phase, const madc::dis::istring &message, const char *file, int line, int column, int end_line, int end_column)
+void Program::add_diagnostic(DiagnosticSeverity severity, DiagnosticPhase phase, const std::string &message, const char *file, int line, int column, int end_line, int end_column)
 {
     Diagnostic diag;
     diag.severity = severity;
@@ -25071,18 +25073,18 @@ Program::DiagnosticCause Program::diagnostic_cause_for(DiagnosticSeverity severi
     return DiagnosticCause::none;
 }
 
-void Program::report_warning(DiagnosticPhase phase, const madc::dis::istring &message, const char *file, int line, int column)
+void Program::report_warning(DiagnosticPhase phase, const std::string &message, const char *file, int line, int column)
 {
     add_diagnostic(DiagnosticSeverity::warning, phase, message, file, line, column);
 }
 
-void Program::report_error(DiagnosticPhase phase, const madc::dis::istring &message, const char *file, int line, int column, int end_line, int end_column)
+void Program::report_error(DiagnosticPhase phase, const std::string &message, const char *file, int line, int column, int end_line, int end_column)
 {
     add_diagnostic(DiagnosticSeverity::error, phase, message, file, line, column,
 		   end_line, end_column);
 }
 
-void Program::set_error(DiagnosticPhase phase, const madc::dis::istring &message, const char *file, int line, int column, int end_line, int end_column)
+void Program::set_error(DiagnosticPhase phase, const std::string &message, const char *file, int line, int column, int end_line, int end_column)
 {
     report_error(phase, message, file, line, column, end_line, end_column);
     last_error.has_error = true;
@@ -25092,7 +25094,7 @@ void Program::set_error(DiagnosticPhase phase, const madc::dis::istring &message
     last_error.column = column;
 }
 
-void Program::set_error(const madc::dis::istring &message, const char *file, int line, int column)
+void Program::set_error(const std::string &message, const char *file, int line, int column)
 {
     set_error(DiagnosticPhase::unknown, message, file, line, column);
 }
@@ -25341,7 +25343,7 @@ bool MadcEngine::should_log(LogLevel level) const
     return static_cast<int>(level) <= static_cast<int>(log_threshold);
 }
 
-void MadcEngine::write_log(LogLevel level, const madc::dis::istring &message)
+void MadcEngine::write_log(LogLevel level, const std::string &message)
 {
     if ( !should_log(level) )
 	return;
@@ -25355,7 +25357,7 @@ void MadcEngine::write_log(LogLevel level, const madc::dis::istring &message)
     }
 }
 
-void MadcEngine::write_builtin_sinks(LogLevel level, const madc::dis::istring &message)
+void MadcEngine::write_builtin_sinks(LogLevel level, const std::string &message)
 {
     write_syslog_sink(level, message);
     write_file_sink(level, message);
@@ -25424,12 +25426,12 @@ void MadcEngine::disable_syslog_sink()
 #endif
 }
 
-void MadcEngine::write_syslog_sink(LogLevel level, const madc::dis::istring &message)
+void MadcEngine::write_syslog_sink(LogLevel level, const std::string &message)
 {
     if ( !syslog_active )
 	return;
 #ifdef _WIN32
-    madc::dis::istring line = syslog_ident;
+    std::string line = syslog_ident;
     line += ": [";
     line += log_level_name(level);
     line += "] ";
@@ -25517,7 +25519,7 @@ void MadcEngine::reopen_log_file()
     }
 }
 
-void MadcEngine::write_file_sink(LogLevel level, const madc::dis::istring &message)
+void MadcEngine::write_file_sink(LogLevel level, const std::string &message)
 {
     if ( !(file_sink_active && log_file && log_file->is_open()) )
 	return;
@@ -25612,7 +25614,7 @@ void MadcEngine::disable_json_sink()
     json_file_path.clear();
 }
 
-void MadcEngine::write_json_sink(LogLevel level, const madc::dis::istring &message)
+void MadcEngine::write_json_sink(LogLevel level, const std::string &message)
 {
     if ( json_sink_active && json_file && json_file->is_open() )
 	(*json_file) << format_json_log_line(level, message) << '\n';
@@ -81370,7 +81372,7 @@ void Program::finalize_script_main()
 // tokenize_buffer clusters (lexer phase, source position).
 // Returns the diagnostic's index.
 size_t Program::record_frontend_error(DiagnosticPhase phase,
-				      const madc::dis::istring &message,
+				      const std::string &message,
 				      const char *file, int line, int column,
 				      int end_line, int end_column)
 {
@@ -81382,7 +81384,7 @@ size_t Program::record_frontend_error(DiagnosticPhase phase,
 // The parser-phase convenience: position from the token (the diagnostics
 // convention), file through diagnostic_file_for. Returns the diagnostic's
 // index — the TokenError's link target.
-size_t Program::record_parse_error(const madc::dis::istring &message,
+size_t Program::record_parse_error(const std::string &message,
 				   TokenBase *where, TokenProgram *tp)
 {
     int end_line, end_column;
@@ -81878,7 +81880,7 @@ Program::EntryClassification Program::classify_entry(const madc::dis::istring &t
     DiagnosticRenderMute mute;
     // A balance refusal is recorded like any other, so the session renders it
     // when the entry is final.
-    auto refusal = [this](TokenBase *t, const madc::dis::istring &message) {
+    auto refusal = [this](TokenBase *t, const std::string &message) {
 	int end_line, end_column;
 	madc_token_end(t, end_line, end_column);
 	add_diagnostic(DiagnosticSeverity::error, DiagnosticPhase::parser,

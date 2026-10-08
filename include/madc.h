@@ -6614,7 +6614,7 @@ public:
     std::ostream &error();
     // (end_line, end_column): where the cited token ends (Diagnostic).
     void add_diagnostic(DiagnosticSeverity severity, DiagnosticPhase phase,
-	const madc::dis::istring &message, const char *file=NULL, int line=0, int column=0,
+	const std::string &message, const char *file=NULL, int line=0, int column=0,
 	int end_line=0, int end_column=0);
     // WHY an error refused (Diagnostic::cause), from the refusal's own
     // context: a lexer refusal's is its Source's (the MAIN unit's only — a
@@ -6630,15 +6630,15 @@ public:
     const Diagnostic *first_error_diagnostic() const;
     bool has_error_diagnostic() const { return first_error_diagnostic() != NULL; }
     size_t error_diagnostic_count() const;
-    void report_warning(DiagnosticPhase phase, const madc::dis::istring &message,
+    void report_warning(DiagnosticPhase phase, const std::string &message,
 	const char *file=NULL, int line=0, int column=0);
-    void report_error(DiagnosticPhase phase, const madc::dis::istring &message,
+    void report_error(DiagnosticPhase phase, const std::string &message,
 	const char *file=NULL, int line=0, int column=0,
 	int end_line=0, int end_column=0);
-    void set_error(DiagnosticPhase phase, const madc::dis::istring &message,
+    void set_error(DiagnosticPhase phase, const std::string &message,
 	const char *file=NULL, int line=0, int column=0,
 	int end_line=0, int end_column=0);
-    void set_error(const madc::dis::istring &message, const char *file=NULL, int line=0, int column=0);
+    void set_error(const std::string &message, const char *file=NULL, int line=0, int column=0);
     const char *diagnostic_severity_name(DiagnosticSeverity severity) const;
     const char *diagnostic_phase_name(DiagnosticPhase phase) const;
     bool can_show_diagnostic_source(const Diagnostic &diag) const;
@@ -7478,13 +7478,13 @@ public:
     // THE record-and-render rule for front-end catch arms (lexer + parser):
     // set_error + mute-aware render. Returns the diagnostic's index.
     size_t record_frontend_error(DiagnosticPhase phase,
-				 const madc::dis::istring &message,
+				 const std::string &message,
 				 const char *file, int line, int column,
 				 int end_line = 0, int end_column = 0);
     // The parser-phase convenience (token position, diagnostic_file_for).
     // Consumers: the recovery arms (which then CONTINUE the loop), the
     // terminal catch cluster, parse_expression_unit's cluster.
-    size_t record_parse_error(const madc::dis::istring &message,
+    size_t record_parse_error(const std::string &message,
 			      TokenBase *where, TokenProgram *tp);
     // THE Throw-origin recording rule: message from Throw's buffer (e.what()
     // fallback). Recording only — the render already happened
@@ -9649,7 +9649,7 @@ public:
 	debug
     };
 
-    typedef std::function<void(LogLevel, const madc::dis::istring &)> LogSink;
+    typedef std::function<void(LogLevel, const std::string &)> LogSink;
 
     std::istream *input_stream;
     std::ostream *output_stream;
@@ -9709,8 +9709,8 @@ public:
     const char *log_level_name(LogLevel level) const;
     std::string format_log_message(LogLevel level, const std::string &message) const;
     bool should_log(LogLevel level) const;
-    void write_log(LogLevel level, const madc::dis::istring &message);
-    void write_builtin_sinks(LogLevel level, const madc::dis::istring &message);
+    void write_log(LogLevel level, const std::string &message);
+    void write_builtin_sinks(LogLevel level, const std::string &message);
     void add_log_sink(LogSink sink);
     void clear_log_sinks();
     static int syslog_priority_for(LogLevel level);
@@ -9726,9 +9726,9 @@ public:
     void disable_json_sink();
     static std::string json_escape(const std::string &s);
     std::string format_json_log_line(LogLevel level, const std::string &message) const;
-    void write_syslog_sink(LogLevel level, const madc::dis::istring &message);
-    void write_file_sink(LogLevel level, const madc::dis::istring &message);
-    void write_json_sink(LogLevel level, const madc::dis::istring &message);
+    void write_syslog_sink(LogLevel level, const std::string &message);
+    void write_file_sink(LogLevel level, const std::string &message);
+    void write_json_sink(LogLevel level, const std::string &message);
 
     struct Config
     {
