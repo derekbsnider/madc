@@ -73,7 +73,7 @@ upstream `make test` green (re-run 2026-10-07). Head: `derekbsnider:<branch>`, b
 
 > Fixes #472.
 >
-> Thank you for MIR, and thanks to aardappel for the clear report.
+> Thanks to aardappel for the clear report.
 >
 > C17 6.9.2p1 makes an external object declaration that has an initializer
 > an external definition, so `extern int x = 5;` defines `x`; gcc, clang and
@@ -100,7 +100,7 @@ upstream `make test` green (re-run 2026-10-07). Head: `derekbsnider:<branch>`, b
 
 > Fixes #473.
 >
-> Thank you for MIR, and to aardappel for the reduced Lobster case.
+> Thanks to aardappel for the reduced Lobster case.
 >
 > A member reached through an anonymous union shares storage with the union's
 > other members, so its accesses need the union's alias class — which
@@ -152,7 +152,7 @@ upstream `make test` green (re-run 2026-10-07). Head: `derekbsnider:<branch>`, b
 
 **Title:** c2mir (aarch64): plain char is unsigned on the Linux ABI
 
-> Thank you for MIR. A small target-description correction:
+> A small target-description correction:
 >
 > On AAPCS64 Linux plain `char` is unsigned — aarch64-linux-gnu-gcc and clang
 > predefine `__CHAR_UNSIGNED__`, `(char) 200 < 0` is false and `CHAR_MAX` is
@@ -207,7 +207,7 @@ bootstrap on aarch64 Linux stops in stage 2."
 
 **Title:** c2mir: a 0xFF source byte is not EOF
 
-> Thank you for MIR. A small lexer fix, found while checking plain char's sign
+> A small lexer fix, found while checking plain char's sign
 > on aarch64 Linux:
 >
 > c2mir's line buffer is a `VARR (char)`, and `cs_get` returns the popped
@@ -234,7 +234,7 @@ The clean upstream branch is still to build (one commit on a8ab7c31, then
 
 **Title:** aarch64 (Apple): encode a stack FP argument's offset in the interp shim
 
-> Thank you for MIR. A one-line encoding fix:
+> A one-line encoding fix:
 >
 > `_MIR_get_interp_shim`'s Apple arm loads the ninth and later floating-point
 > arguments from the caller's stack with `pat |= stack_arg_sp_offset |
@@ -251,7 +251,7 @@ The clean upstream branch is still to build (one commit on a8ab7c31, then
 
 **Title:** Canonicalize register and proto types like every other typed slot
 
-> Thank you for MIR. On a host whose long double is double (Apple arm64,
+> On a host whose long double is double (Apple arm64,
 > win64 — `canon_type` maps `MIR_T_LD` to `MIR_T_D`), types are canonicalized
 > on data items, a func's result and var types, memory operands and insn codes,
 > but not on a register created by `MIR_new_func_reg`, nor on a proto's result
