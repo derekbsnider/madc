@@ -67252,23 +67252,46 @@ static bool po_pattern_match(const std::vector<std::string> &pat, size_t pi,
 // "Is X at least as specialized as Y" ([temp.func.order]): deduce Y's template
 // params (deduction variables) against X's parameter list (X's template params
 // treated as unique opaque atoms). Equal arity required.
+// One template's parameter words for ordering, from the per-declaration
+// cache (Program::fn_template_ordering_signatures): extracted and split once
+// per declaration, where ordering used to re-extract both signatures from the
+// tokens on every comparison — O(n²) extractions per call site.
+static const Program::FnTemplateOrderingSignature &
+fn_template_ordering_signature(Program &pgm, Program::FnTemplateDef &ft)
+{
+    std::unordered_map<std::vector<TokenBase *>,
+		       Program::FnTemplateOrderingSignature,
+		       Program::TokenSequenceHash>::iterator it =
+	pgm.fn_template_ordering_signatures.find(ft.decl);
+    if ( it != pgm.fn_template_ordering_signatures.end() )
+	return it->second;
+    Program::FnTemplateOrderingSignature sig;
+    std::vector<std::string> spellings;
+    sig.ok = po_param_spellings(pgm, ft, spellings);
+    sig.param_words.resize(spellings.size());
+    for ( size_t i = 0; i < spellings.size(); ++i )
+	fn_template_split_words(spellings[i], sig.param_words[i]);
+    return pgm.fn_template_ordering_signatures.emplace(ft.decl, std::move(sig))
+	.first->second;
+}
+
 static bool po_at_least_specialized(Program &pgm, Program::FnTemplateDef &X,
 				    Program::FnTemplateDef &Y)
 {
-    std::vector<std::string> px, py;
-    if ( !po_param_spellings(pgm, X, px) || !po_param_spellings(pgm, Y, py) )
+    const Program::FnTemplateOrderingSignature &sx =
+	fn_template_ordering_signature(pgm, X);
+    const Program::FnTemplateOrderingSignature &sy =
+	fn_template_ordering_signature(pgm, Y);
+    if ( !sx.ok || !sy.ok )
 	return false;
-    if ( px.empty() || px.size() != py.size() )
+    const std::vector<std::vector<std::string> > &wx = sx.param_words;	// TARGET (X params opaque)
+    const std::vector<std::vector<std::string> > &wy = sy.param_words;	// PATTERN (Y params = vars)
+    if ( wx.empty() || wx.size() != wy.size() )
 	return false;
     std::map<std::string, std::string> bind;	// Y's deductions, consistent across params
-    for ( size_t i = 0; i < px.size(); ++i )
-    {
-	std::vector<std::string> wx, wy;
-	fn_template_split_words(px[i], wx);	// TARGET (X params opaque)
-	fn_template_split_words(py[i], wy);	// PATTERN (Y params = vars)
-	if ( !po_pattern_match(wy, 0, wx, 0, Y.typeparams, bind) )
+    for ( size_t i = 0; i < wx.size(); ++i )
+	if ( !po_pattern_match(wy[i], 0, wx[i], 0, Y.typeparams, bind) )
 	    return false;
-    }
     return true;
 }
 

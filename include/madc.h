@@ -4642,6 +4642,28 @@ public:
 	    frozen_src(NULL), frozen_src_forest(NULL) {}
     };
     madc::dis::intern_keyed_map<std::vector<FnTemplateDef>> fn_template_map; // keyed via template_name_pool (enumerated via for_each)
+    // [temp.func.order]'s view of one function template's parameters, each
+    // parameter's spelling split into words, keyed by the declaration's token
+    // sequence (tokens are permanent — token_arena — so the sequence is a
+    // stable identity). A pure function of those tokens: computed once per
+    // declaration by fn_template_ordering_signature (parser.cpp), never per
+    // comparison. Per-Program state, the same thread-safety contract as
+    // fn_template_map.
+    struct FnTemplateOrderingSignature {
+	bool ok = false;	// the declaration yielded a parameter list
+	std::vector<std::vector<std::string> > param_words;
+    };
+    struct TokenSequenceHash {
+	size_t operator()(const std::vector<TokenBase *> &v) const
+	{
+	    size_t h = v.size();
+	    for ( TokenBase *t : v )
+		h = h * 1000003u ^ std::hash<TokenBase *>()(t);
+	    return h;
+	}
+    };
+    std::unordered_map<std::vector<TokenBase *>, FnTemplateOrderingSignature,
+		       TokenSequenceHash> fn_template_ordering_signatures;
     // BODY-LESS free/namespace function template declarations (no `{ body }` to
     // instantiate — e.g. `template<class T> T declval();`), keyed "ns::name".
     // Kept OUT of fn_template_map (which drives body instantiation + the arity-

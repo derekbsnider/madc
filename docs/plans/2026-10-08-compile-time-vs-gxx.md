@@ -117,9 +117,28 @@ table-driven (−1.10%).
    cost belongs to steps 4 and 6 (what an instantiation costs), and to the
    allocation churn spread across them (malloc/free/`std::string`
    construction ≈ 17% self).
-6. **Class shells by pattern** (32%): widen the class-pattern lane per KIND
-   (parse-once rule), starting with `pattern-parse-error` on the variadic
-   `__and_` / `__or_`, then `dependent-value-expression`.
+6. **Class shells by pattern — the lane is not cheaper; measured
+   2026-10-08.** Two lanes build a class-template specialization
+   (`parser.cpp`, the lane choice after `materialize_class_pattern`): the
+   PATTERN lane captures a type-only `ClassPattern` once per template (on
+   its second use) and serves each specialization by substitution
+   (`instantiate_basic_class_pattern`); the PARSE lane clones the template
+   body's tokens with the arguments spliced in and runs the class parser
+   over them. testsubscript: 229 pattern / 282 parse. The 282 by reason:
+   `dependent-value-expression` 163 (35 templates — non-type parameters
+   and value-dependent bases: `enable_if`, `integral_constant`-derived
+   traits, `_PCC`, `pair`), `pattern-parse-error` 78 (`__and_` ×53,
+   `__or_` ×16 — variadic), `pattern-not-captured` 23 (first use, by
+   policy), `unsupported-friend-definition` 8, `unnormalizable-type` 8,
+   `requires-eager-body-parse` 2. BUT forcing every class onto the parse
+   lane (`MADC_CLASS_PATTERN_FORCE_LEGACY=1`) moves all 229 and costs
+   +0.11% instructions (3,323.3M → 3,326.9M): the pattern lane, capture
+   included, is no cheaper than a re-parse. Widening it would gain ~0.
+   The cost of a class instantiation is the per-member work BOTH lanes do
+   (resolving member types, registering members, minting names and
+   DataDefs, the nested instantiations that triggers) — not reading the
+   body's tokens. That is what has to get cheaper (step 4, and the
+   allocation churn), measured per lane before any design.
 7. **Fewer eager instantiations in system headers** (W2 §5.1, never
    landed): a LIVE-path lever only. With the forest, everything the headers
    instantiate by being parsed is already frozen (measured below), so this
@@ -152,3 +171,83 @@ on the live path.
 Measurement and caching changes stay per-Program; any cache added in steps
 2–8 is per-Program state or immutable forest data (C++ stdlib convention,
 `.claude/rules/thread-safety.md`).
+
+## Function-template partial ordering — DONE (2026-10-08)
+
+Not in the June–July plans; found by the same profile.
+`fn_templates_most_specialized_first` orders a name's function templates for
+every call, and each comparison (`po_at_least_specialized`) re-extracted BOTH
+templates' parameter signatures from their declaration tokens
+(`po_param_spellings`, 10.1% of the forest compile; 6,647 comparisons on
+testsubscript). The signature is a pure function of the declaration's tokens,
+which are permanent, so `Program::fn_template_ordering_signatures` holds it
+once per declaration (keyed by the token-pointer sequence; split into words
+once). Parse-cost gate: `subscript.forest` −11.49%, `cxx_stl.forest` −9.97%,
+`subscript.live` −4.44%, `cxx_stl.live` −2.53%, C and dialect rows flat.
+
+## Interned names above the token layer (owner 2026-10-08: "replace std::string with the interned strings all over the place")
+
+### Why
+The June–July interning (rung 1) put `madc::dis::intern_table` under token
+spellings and the bare-name lookup maps. Everything above that — `DataDef::name`,
+`Variable::name`, `FuncDef`'s `emit_symbol` / `local_emit_name` / display and
+namespace names, emit names, instantiation keys, substitution-map keys, the
+struct registry — is `std::string`. Profile (testsubscript, forest, -O2): 1.5M
+heap strings per compile, **831k of them copies of an existing string**
+(`_M_construct<char*>`), 186k built from `const char*`; allocation ≈ 17% self,
+`memcpy` 4.6%, `memcmp` 3.5%. `include/datadef.h` holds 86 `std::string` uses
+and zero intern ids.
+
+### The type: `madc::dis::istring` (include/madcdis/istring.h)
+- A handle to ONE permanent, process-wide, deduplicated `std::string`: it holds
+  `const std::string *` into a node-based table (`std::unordered_set<std::string>`
+  — nodes never move on rehash, so the pointer is stable for the process).
+- Copy = 8 bytes. `==` / `!=` = pointer compare. Hash = the pointer.
+- `operator const std::string &()` and `str()` return the interned string BY
+  REFERENCE — every read-only use of a `std::string` field (`.c_str()`,
+  `.size()`, `.find()`, `+`, passing as `const std::string &`) compiles
+  unchanged and copies nothing. A MUTATING use (`+=`, `append`, `[i] =`) fails
+  to compile and is rewritten as an assignment of the new value.
+- Implicit construction from `const char *` / `const std::string &` interns
+  (lookup; insert only if new), so `fd->emit_symbol = some_string;` is unchanged.
+- `operator<` compares the BYTES, so a `std::map<istring, X>` iterates in the
+  same order as the `std::map<std::string, X>` it replaces — emission order,
+  diagnostics and every ordered walk are behaviour-preserving. A map whose order
+  is unobserved moves to `std::unordered_map` keyed by the pointer, case by case.
+- The empty string is a static entry; a default-constructed `istring` is empty.
+
+### Why process-wide, not the per-Program `strpool`
+Built-in `DataDef`s (`ddINT`, ...) are static and shared by every Program, and
+DataDefs, Variables and FuncDefs cross Program boundaries (eval contexts, REPL
+sessions, the forest's restored state). A per-Program id would compare wrong
+across them — the rung-1 hand-off already kept `TokenDataType`'s spelling out of
+the per-Program pool for exactly this reason. GCC's identifier table is likewise
+one table for the compilation.
+
+### Thread-safety contract (thread-safety.md)
+Entries are IMMUTABLE once interned and never freed, so reading an `istring`
+(compare, hash, `c_str`, the `std::string` reference) is safe from any thread
+without synchronization. `intern` (construction from bytes) is synchronized
+inside the table (one mutex around lookup-and-insert). An `istring` is a value:
+operations on distinct objects are safe; a shared mutable `istring` variable
+follows the C++ stdlib convention. No other state. Memory: bounded by the
+number of distinct spellings ever interned (the same lifetime as the token
+arena's permanent tokens).
+
+### Migration — one stage per commit, each gated (Tier 1 + Tier 2 + parse-cost gate)
+1. The type + its unit test (`tests/unit/test_istring.cpp`).
+2. `FuncDef` symbol fields (`emit_symbol`, `local_emit_name`,
+   `function_display_name`, `method_display_name`, `namespace_name`) and
+   `Variable::name` / `storage_alias_name`; `var_emit_name` /
+   `call_emit_symbol` / `func_emit_name` / `body_emit_symbol` return `istring`.
+   Removes the emit-name copies.
+3. `DataDef::name` and its subclasses' name fields.
+4. Map keys by measured copy share: the template substitution maps
+   (`std::map<std::string, TokenDataType*>`, copied per instantiation),
+   `StructRegistry`, `funcdef_map` / `struct_map` / `namespace_map`.
+5. Template records (`TemplateDef`, `FnTemplateDef`, `OutOfLineMemberInstantiation`,
+   instantiation keys `registered_mangled`) — with step 4's index-keyed
+   substitution maps.
+A gate (`scripts/check-istring-fields.sh`, fulltest) then fails any NEW
+`std::string` field holding a name in the migrated structs, so the migration
+cannot regrow.
