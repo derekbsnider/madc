@@ -93,11 +93,21 @@ vi/vim user can work in. Prompt line editing stays bash/emacs by default.
 - **`%history` (one store — madc's file per standard; madcide's pane displays
   it), `%std`, `%reset`; the completion insert rule's one owner
   (`line_edit::completed`).**
-- **`%git`** — its verb bodies (`git_log_text`, `git_show_text`,
-  `git_blame_text`, `git_status_text`, `git_diff_text`, `git_relative_date`)
-  depend on no view; they move into madc over the madcgit module, with live
-  text supplied by the host as `%load` already does. madcide's Changes /
-  History / Blame VIEWS stay in madcide.
+- **`%git` — a MODULE's command, never a built-in** (owner 2026-10-09: "%git
+  depends on the git module, so it would only be present if perhaps the
+  madc.ini or a command line option indicated to load that module"). The
+  madcgit module registers `%git` into the session registry through the
+  extension point when it is loaded; without it, `%git` is an unknown command
+  like any other. Loading it: the existing `-lmadcgit` on the command line, a
+  new repeatable madc.ini key naming modules to load (the schema in
+  `include/madc_config.h` grows one key; precedence CLI > environment > ini as
+  for the others), and — to confirm — an `import madcgit;` entry at the
+  prompt. The verb bodies (`git_log_text`, `git_show_text`, `git_blame_text`,
+  `git_status_text`, `git_diff_text`, `git_relative_date`) depend on no view;
+  they move into the module's side over the madcgit API, with live text
+  supplied by the host as `%load` already does. madcide's Changes / History /
+  Blame VIEWS stay in madcide and load the module themselves. The same path
+  serves any module that brings session commands.
 - **Line mode** = `madc -i` with a buffer: the ex core at the prompt.
   `madcide --line` keeps no editing logic (it becomes that, or is retired —
   owner).
@@ -169,7 +179,7 @@ read-only verdict call the registry instead.
 2. Engine edit notification; madcide's anchors and journal subscribe.
 3. The ex core and buffers at the prompt; the regex decision.
 4. `%history` (one store), `%std`, `%reset`, the one completion insert rule.
-5. `%git` into madc.
+5. `%git` as the madcgit module's command (registered on load: `-lmadcgit`, a madc.ini modules key, or `import`).
 6. madcide re-plumbed: `colon_command` splits (editing → madc, `view*`
    registered), lined's verbs retired, `--line` = madc's line mode, the pane's
    history and completion from madc.
