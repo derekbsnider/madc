@@ -49,6 +49,8 @@ DARKPLUS = [('options', None), ('down', None), ('enter', None),
 # detect_colour_depth): 8/16 (TERM=xterm), 256, truecolor.
 DEPTH_256 = {'TERM': 'xterm-256color'}
 DEPTH_TRUE = {'COLORTERM': 'truecolor'}
+# A locale without UTF-8: the frames in ASCII (detect_glyph_set).
+ASCII = {'LC_ALL': 'C'}
 
 # (name, [ (key name | 'text:<chars>', text to wait for | None) ... ],
 #  terminal environment, sizes) — sizes None = every size in SIZES.
@@ -63,6 +65,11 @@ SCENARIOS = [
     ('darkplus-16', DARKPLUS, {}, [(36, 120)]),
     ('darkplus-256', DARKPLUS, DEPTH_256, [(36, 120)]),
     ('darkplus-truecolor', DARKPLUS, DEPTH_TRUE, [(36, 120)]),
+    # the frames (S2): the REPL's panel divider in ASCII, and in Dark+ with
+    # the gutter, the caret line and the divider in the scheme's colours
+    ('replrun-ascii', [('f5', 'hi 42')], ASCII, [(24, 80)]),
+    ('darkplus-repl', DARKPLUS + [('esc', None), ('f5', 'hi 42')], DEPTH_TRUE,
+     [(36, 120)]),
 ]
 
 

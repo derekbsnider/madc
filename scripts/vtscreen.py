@@ -314,6 +314,11 @@ def spawn(argv, rows=24, cols=80, env_extra=None, cwd=None):
     env['LINES'] = str(rows)
     env['COLUMNS'] = str(cols)
     env.pop('COLORTERM', None)
+    # The locale decides the glyphs (box drawing in UTF-8, else ASCII —
+    # ui_term.cpp detect_glyph_set): pinned, never the host's.
+    for k in ('LANG', 'LC_CTYPE'):
+        env.pop(k, None)
+    env['LC_ALL'] = 'C.UTF-8'
     if env_extra:
         env.update(env_extra)
     pid, fd = pty.fork()

@@ -32,6 +32,7 @@
 
 #include "madcdis/tui_provider.h"
 
+#include <cctype>	// tolower (detect_glyph_set)
 #include <cstdio>
 #include <cstdlib>	// getenv (detect_colour_depth)
 #include <cstring>
@@ -47,6 +48,7 @@ namespace {
 using madc::hub::tui_grid;
 using madc::hub::ui_style;
 using madc::hub::ui_colour_depth;
+using madc::hub::ui_glyph_set;
 using madc::hub::tui_keyev;
 using madc::hub::tui_key;
 using madc::hub::tui_keyparse;
@@ -83,6 +85,32 @@ ui_colour_depth detect_colour_depth()
 	if ( t && strstr(t, "256color") )
 	    return ui_colour_depth::xterm256;
 	return ui_colour_depth::ansi16;
+}
+
+// The glyphs this terminal shows, read ONCE when a target is made: box
+// drawing in a UTF-8 locale (the first of LC_ALL, LC_CTYPE, LANG that is
+// set names the locale, POSIX's order), ASCII otherwise. The Windows console
+// target switches its code page to UTF-8 when it opens.
+ui_glyph_set detect_glyph_set()
+{
+#if defined(_WIN32)
+	return ui_glyph_set::unicode;
+#else
+	const char *vars[] = { "LC_ALL", "LC_CTYPE", "LANG" };
+	for ( size_t i = 0; i < sizeof(vars) / sizeof(vars[0]); ++i )
+	{
+	    const char *v = getenv(vars[i]);
+	    if ( !v || !*v )
+		continue;
+	    std::string l(v);
+	    for ( size_t k = 0; k < l.size(); ++k )
+		l[k] = (char)tolower((unsigned char)l[k]);
+	    return (l.find("utf-8") != std::string::npos
+		 || l.find("utf8") != std::string::npos)
+		 ? ui_glyph_set::unicode : ui_glyph_set::ascii;
+	}
+	return ui_glyph_set::ascii;
+#endif
 }
 
 // One colour's SGR parameters: an exact colour at the terminal's depth
@@ -152,7 +180,7 @@ void emit_sgr(std::string &out, ui_style from, ui_style to,
 // writes it): diff, DECSTBM+DL/IL scroll of a shifted band, per-span
 // SGR-tracked cell emission with the EL tail, final cursor placement.
 std::string vt_paint_bytes(const tui_grid &prev, const tui_grid &next,
-			   ui_colour_depth depth)
+			   ui_colour_depth depth, ui_glyph_set glyphs)
 {
 	std::string out;
 	out += "\x1b[?25l";	// hidden while rows repaint
@@ -197,7 +225,12 @@ std::string vt_paint_bytes(const tui_grid &prev, const tui_grid &next,
 		    emit_sgr(out, cur, cell.attr, depth);
 		    cur = cell.attr;
 		}
-		cell.append_glyph(out);
+		char ascii = glyphs == ui_glyph_set::ascii
+			   ? madc::hub::ui_box_ascii(cell.ch) : 0;
+		if ( ascii )
+		    out += ascii;	// a frame glyph the locale cannot show
+		else
+		    cell.append_glyph(out);
 	    }
 	    if ( cur != ui_style::normal() )
 		out += "\x1b[0m";
@@ -282,6 +315,7 @@ class term_target : public madc::hub::tui_target,
     bool	     _line;	// the line mode holds the terminal
     size_t	     _rows, _cols;
     ui_colour_depth  _depth;	// detect_colour_depth, at construction
+    ui_glyph_set     _glyphs;	// detect_glyph_set, at construction
     tui_keyparse     _parse;
 
     static bool query_size(size_t &rows, size_t &cols)
@@ -327,7 +361,8 @@ class term_target : public madc::hub::tui_target,
 
 public:
     term_target() : _open(false), _suspended(false), _line(false),
-		    _rows(24), _cols(80), _depth(detect_colour_depth()) {}
+		    _rows(24), _cols(80), _depth(detect_colour_depth()),
+		    _glyphs(detect_glyph_set()) {}
     ~term_target() { close(); }
 
     // Raw keys and the resize signal: the half both screen modes share.
@@ -499,7 +534,7 @@ public:
     {
 	if ( !_open || _suspended )
 	    return;
-	emit(vt_paint_bytes(prev, next, _depth));	// the shared byte builder
+	emit(vt_paint_bytes(prev, next, _depth, _glyphs));	// the shared byte builder
     }
 
     virtual bool read_keys(std::vector<tui_keyev> &out)
@@ -661,6 +696,7 @@ class term_target : public madc::hub::tui_target,
     bool   _line;		// the line mode holds the console
     size_t _rows, _cols;
     ui_colour_depth _depth;	// detect_colour_depth, at construction
+    ui_glyph_set _glyphs;	// detect_glyph_set, at construction
     tui_keyparse _parse;
 
     bool query_size(size_t &rows, size_t &cols)
@@ -723,7 +759,8 @@ public:
 		    _saved_in(0), _saved_out(0),
 		    _saved_cp_in(0), _saved_cp_out(0),
 		    _open(false), _suspended(false), _line(false),
-		    _rows(24), _cols(80), _depth(detect_colour_depth()) {}
+		    _rows(24), _cols(80), _depth(detect_colour_depth()),
+		    _glyphs(detect_glyph_set()) {}
     ~term_target() { close(); }
 
     // Raw console modes: the half both screen modes share — the termios
@@ -905,7 +942,7 @@ public:
     {
 	if ( !_open || _suspended )
 	    return;
-	emit(vt_paint_bytes(prev, next, _depth));	// the shared byte builder
+	emit(vt_paint_bytes(prev, next, _depth, _glyphs));	// the shared byte builder
     }
 
     virtual bool read_keys(std::vector<tui_keyev> &out)

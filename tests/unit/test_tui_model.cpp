@@ -35,6 +35,26 @@ using madc::hub::tui_dirty_rows;
 using madc::hub::tui_paint_plan;
 using madc::hub::tui_diff_plan;
 using madc::hub::tui_bindings;
+using madc::hub::tui_frame;
+using madc::hub::ui_box_ascii;
+
+// `n` copies of a (UTF-8) glyph.
+static std::string repeat(const char *utf8, size_t n)
+{
+    std::string out;
+    for ( size_t i = 0; i < n; ++i )
+	out += utf8;
+    return out;
+}
+
+// A glyph as tui_cell::ch packs it (UTF-8 bytes, first byte lowest).
+static uint32_t packed(const char *utf8)
+{
+    uint32_t g = 0;
+    for ( size_t k = strlen(utf8); k > 0; --k )
+	g = (g << 8) | (unsigned char)utf8[k - 1];
+    return g;
+}
 
 static std::vector<tui_keyev> parse(const char *bytes, bool flush = true)
 {
@@ -664,11 +684,12 @@ TEST_CASE("compose — a vertical split lays two panes side by side")
     tui_model m;
     const tui_grid &g = m.compose(r, root, 6, 41);
     // width 41, one divider column -> each pane 20 cols: left 0..19, the
-    // blank divider at 20, right 21..40.
+    // divider line at 20 (S2: every row of the split), right 21..40.
     CHECK(g.at(0, 0).ch == 'L');
     CHECK(g.at(0, 1).ch == 'L');
     CHECK(g.at(1, 0).ch == 'L');
-    CHECK(g.at(0, 20).ch == ' ');
+    CHECK(g.at(0, 20).ch == packed("\xe2\x94\x82"));	// │
+    CHECK(g.at(5, 20).ch == packed("\xe2\x94\x82"));
     CHECK(g.at(0, 21).ch == 'R');
     CHECK(g.at(0, 22).ch == 'R');
     CHECK(g.at(1, 21).ch == 'R');
@@ -716,12 +737,14 @@ TEST_CASE("compose — a bottom panel carves a band with a tab strip")
     tui_model m;
     const tui_grid &g = m.compose(r, root, 8, 20);
     // 25% of 8 = 2 -> min 3 rows -> panel at rows 5..7; centre rows 0..4.
+    // The panel's first row is its divider (S2), the strip and content below.
     CHECK(g.row_text(0) == " top.mad");			// centre status
-    CHECK(g.row_text(5) == " Problems  Output");	// the strip header
-    CHECK(g.at(5, 0).attr == ui_style::reverse());	// active tab reversed
-    CHECK(g.at(5, 9).attr == ui_style::reverse());
-    CHECK(g.at(5, 11).attr != ui_style::reverse());	// Output not active
-    CHECK(g.row_text(6) == "hi");			// the panel content
+    CHECK(g.row_text(5) == repeat("\xe2\x94\x80", 20));	// ─ across
+    CHECK(g.row_text(6) == " Problems  Output");	// the strip header
+    CHECK(g.at(6, 0).attr == ui_style::reverse());	// active tab reversed
+    CHECK(g.at(6, 9).attr == ui_style::reverse());
+    CHECK(g.at(6, 11).attr != ui_style::reverse());	// Output not active
+    CHECK(g.row_text(7) == "hi");			// the panel content
 }
 
 TEST_CASE("compose — a left sidebar carves a full-height column band")
@@ -740,6 +763,8 @@ TEST_CASE("compose — a left sidebar carves a full-height column band")
     CHECK(g.at(0, 0).ch == 'd');			// sidebar content
     CHECK(g.at(0, 1).ch == 'e');
     CHECK(g.at(0, 2).ch == 'f');
+    CHECK(g.at(0, 11).ch == packed("\xe2\x94\x82"));	// its divider (S2)
+    CHECK(g.at(5, 11).ch == packed("\xe2\x94\x82"));
     CHECK(g.at(0, 12).ch == ' ');			// centre status " main.mad"
     CHECK(g.at(0, 13).ch == 'm');
     CHECK(g.at(1, 12).ch == 'x');			// the editor edit, centre cols
@@ -1321,4 +1346,158 @@ TEST_CASE("keybytes — the inverse of the parser: every key round-trips through
     CHECK(tui_key_bytes(tui_keyev(tui_key::ch, 'x')) == "x");
     CHECK(tui_key_bytes(tui_keyev(tui_key::ch, ' ')) == " ");
     CHECK(tui_key_bytes(tui_keyev()).empty());
+}
+
+// ---- facelift S2: frames, the gutter, the current line ----------------------
+
+TEST_CASE("frame — a line's arms decide its glyph; meeting lines make the junction")
+{
+    tui_frame f;
+    f.reset(5, 9);
+    f.vline(4, 0, 4);		// a full-height divider at column 4
+    f.hline(2, 0, 4);		// a divider from the left edge ONTO it
+    CHECK(std::string(tui_frame::glyph_of(f.arms[2 * 9 + 4])) == "\xe2\x94\xa4");	// ┤
+    CHECK(std::string(tui_frame::glyph_of(f.arms[2 * 9 + 0])) == "\xe2\x94\x80");	// ─ (an end)
+    CHECK(std::string(tui_frame::glyph_of(f.arms[0 * 9 + 4])) == "\xe2\x94\x82");	// │ (an end)
+    f.hline(2, 4, 8);		// continued past it: a crossing
+    CHECK(std::string(tui_frame::glyph_of(f.arms[2 * 9 + 4])) == "\xe2\x94\xbc");	// ┼
+    tui_frame t;
+    t.reset(3, 3);
+    t.hline(1, 0, 2);
+    t.vline(1, 0, 1);		// standing on the line: ┴
+    CHECK(std::string(tui_frame::glyph_of(t.arms[1 * 3 + 1])) == "\xe2\x94\xb4");
+    tui_frame c;
+    c.reset(2, 2);
+    c.hline(0, 0, 1);
+    c.vline(0, 0, 1);		// a corner
+    CHECK(std::string(tui_frame::glyph_of(c.arms[0])) == "\xe2\x94\x8c");	// ┌
+}
+
+TEST_CASE("frame — a terminal without box drawing spells each glyph in ASCII")
+{
+    CHECK(ui_box_ascii(packed("\xe2\x94\x80")) == '-');
+    CHECK(ui_box_ascii(packed("\xe2\x94\x82")) == '|');
+    CHECK(ui_box_ascii(packed("\xe2\x94\xa4")) == '+');
+    CHECK(ui_box_ascii(packed("\xe2\x94\xbc")) == '+');
+    CHECK(ui_box_ascii('a') == 0);
+    CHECK(ui_box_ascii(packed("\xc3\xa9")) == 0);		// é is text, not a frame
+}
+
+TEST_CASE("compose — a bottom panel's divider meets a right sidebar's: ┤")
+{
+    world w;
+    roles r = roles::standard(w);
+    uinode root(r.group);
+    root.add(edit_node(w, "a", 0));
+    uinode pc(r.content);
+    pc.content = madc::value(std::string("p"));
+    root.add(chrome_pane(w, "panel", "bottom", 50, pc, false));
+    uinode sc(r.content);
+    sc.content = madc::value(std::string("s"));
+    root.add(chrome_pane(w, "sidebar", "right", 25, sc, false));
+    tui_model m;
+    const tui_grid &g = m.compose(r, root, 10, 40);
+    // sidebar 12 cols (28..39), its divider column 28; centre 0..27; the
+    // panel's 5 rows from row 5, its divider row 5 reaching the sidebar's.
+    CHECK(g.at(0, 28).ch == packed("\xe2\x94\x82"));
+    CHECK(g.at(5, 0).ch == packed("\xe2\x94\x80"));
+    CHECK(g.at(5, 27).ch == packed("\xe2\x94\x80"));
+    CHECK(g.at(5, 28).ch == packed("\xe2\x94\xa4"));		// ┤
+    CHECK(g.at(0, 29).ch == 's');
+    CHECK(g.at(6, 0).ch == 'p');
+}
+
+TEST_CASE("compose — a vertical split's divider stands on a bottom panel's: ┴")
+{
+    world w;
+    roles r = roles::standard(w);
+    uinode root(r.group);
+    uinode split(r.group);
+    std::map<std::string, madc::value> sh;
+    sh["split"] = madc::value(std::string("vertical"));
+    split.hints = madc::value::make_object(sh);
+    split.add(split_pane(w, "L", 0));
+    split.add(split_pane(w, "R", 0));
+    root.add(split);
+    uinode pc(r.content);
+    pc.content = madc::value(std::string("p"));
+    root.add(chrome_pane(w, "panel", "bottom", 50, pc, false));
+    tui_model m;
+    const tui_grid &g = m.compose(r, root, 10, 41);
+    // the split's divider at column 20 over rows 0..4, the panel's at row 5
+    CHECK(g.at(0, 20).ch == packed("\xe2\x94\x82"));
+    CHECK(g.at(5, 20).ch == packed("\xe2\x94\xb4"));		// ┴
+    CHECK(g.at(5, 0).ch == packed("\xe2\x94\x80"));
+}
+
+// An edit node with the layout's `gutter` flag (and optional spans).
+static uinode gutter_edit(world &w, const std::string &doc, long caret,
+			  const char *span_spec = NULL)
+{
+    uinode e = edit_node(w, doc, caret);
+    std::map<std::string, madc::value> h = e.hints.as_object();
+    h["gutter"] = madc::value((int64_t)1);
+    if ( span_spec )
+    {
+	std::map<std::string, madc::value> sp;
+	sp["s"] = madc::value((int64_t)0);
+	sp["e"] = madc::value((int64_t)1);
+	sp["c"] = madc::value(std::string(span_spec));
+	std::vector<madc::value> rows;
+	rows.push_back(madc::value::make_object(sp));
+	h["spans"] = madc::value::make_array(rows);
+    }
+    e.hints = madc::value::make_object(h);
+    return e;
+}
+
+TEST_CASE("compose — the gutter numbers each line; the text and caret move past it")
+{
+    world w;
+    roles r = roles::standard(w);
+    uinode root(r.group);
+    root.add(gutter_edit(w, "ab\ncd", 4));		// caret on line 2, after 'c'
+    tui_model m;
+    const tui_grid &g = m.compose(r, root, 4, 20);
+    CHECK(g.row_text(0) == "   1  ab");
+    CHECK(g.row_text(1) == "   2  cd");
+    CHECK(g.at(0, 3).attr.flags == ui_style::DIM);	// the gutter is dim
+    CHECK(g.at(1, 3).attr == ui_style::normal());	// the caret line's number
+    CHECK(g.at(0, 6).attr == ui_style::normal());	// the text is not
+    CHECK(g.cursor_row == 1u);
+    CHECK(g.cursor_col == 7u);
+    // Too narrow a pane keeps its text and no gutter.
+    tui_model n;
+    uinode nroot(r.group);
+    nroot.add(gutter_edit(w, "ab", 0));
+    CHECK(n.compose(r, nroot, 2, 6).row_text(0) == "ab");
+}
+
+TEST_CASE("compose — the theme's chrome: dividers, the gutter and the caret line keep their colours")
+{
+    world w;
+    roles r = roles::standard(w);
+    uinode root(r.group);
+    std::map<std::string, madc::value> rh, ch;
+    ch["gutter"] = madc::value(std::string("blue"));
+    ch["current_line"] = madc::value(std::string("bg_#282828"));
+    ch["divider"] = madc::value(std::string("red"));
+    ch["no_such_chrome"] = madc::value(std::string("green"));	// ignored
+    rh["chrome"] = madc::value::make_object(ch);
+    root.hints = madc::value::make_object(rh);
+    root.add(gutter_edit(w, "xy\nz", 0, "cyan"));	// caret line 1, 'x' cyan
+    uinode pc(r.content);
+    pc.content = madc::value(std::string("p"));
+    root.add(chrome_pane(w, "panel", "bottom", 50, pc, false));
+    tui_model m;
+    const tui_grid &g = m.compose(r, root, 8, 20);
+    ui_style bg;
+    REQUIRE(madc::hub::ui_style_of("bg_#282828", bg));
+    CHECK(g.at(1, 3).attr.fg == 5);			// line 2's number: blue
+    CHECK(g.at(0, 6).attr.fg == 7);			// the span: cyan ...
+    CHECK(g.at(0, 6).attr.bg_rgb == bg.bg_rgb);		// ... on the caret line
+    CHECK(g.at(0, 7).attr.bg_rgb == bg.bg_rgb);		// the line's rest
+    CHECK(g.at(0, 19).attr.bg_rgb == bg.bg_rgb);
+    CHECK(g.at(1, 6).attr.bg_rgb == 0u);		// another line: none
+    CHECK(g.at(4, 0).attr.fg == 2);			// the divider: red
 }

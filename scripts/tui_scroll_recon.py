@@ -68,7 +68,14 @@ def check(scr, expected_rows, chrome, label, failures):
 def main():
     path = os.path.join('tmp', 'tui_scroll_input.c')
     doc = make_input(path)
-    expected_rows = set(expand(l) for l in doc)
+    # Each document row as the editor shows it: its number in the gutter
+    # (facelift S2 — right-aligned in at least three columns plus one, then
+    # two blanks; the text's trailing newline makes one more, empty line),
+    # then the tab-expanded text. A row is that line's, number and text.
+    numbered = doc + ['']
+    field = max(3, len(str(len(numbered)))) + 1
+    expected_rows = set(('%*d  %s' % (field, n + 1, expand(l))).rstrip()
+                        for n, l in enumerate(numbered))
     pid, fd = spawn(['bin/madc', 'tools/madcide/madcide.mad', path])
     scr = Screen()
     failures = []

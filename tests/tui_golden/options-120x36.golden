@@ -1,13 +1,13 @@
 text:
  0| A golden.cpp                                                                                           Row    1 Col   1
- 1|#include <stdio.h>
- 2|// a comment
- 3|int main(void)
- 4|{
- 5|        printf("hi %d\n", 42);
- 6|        return 0;
- 7|}
- 8|
+ 1|   1  #include <stdio.h>
+ 2|   2  // a comment
+ 3|   3  int main(void)
+ 4|   4  {
+ 5|   5          printf("hi %d\n", 42);
+ 6|   6          return 0;
+ 7|   7  }
+ 8|   8
  9|
 10|
 11|
@@ -37,9 +37,12 @@ text:
 35|Options  D Tab width   8   S Scheme      default   K Keymap      joe   I Autoindent  on
 styles:
  0 0+120:inverse
- 1 0+8:fg=4 9+9:bold,fg=6
- 2 0+12:fg=2
- 3 0+3:bold 9+4:bold
- 5 15+6:fg=6 21+2:bold,fg=6 23+1:fg=6 26+2:fg=6
- 6 8+6:bold 15+1:fg=6
+ 1 6+8:fg=4 15+9:bold,fg=6
+ 2 0+4:dim 6+12:fg=2
+ 3 0+4:dim 6+3:bold 15+4:bold
+ 4 0+4:dim
+ 5 0+4:dim 21+6:fg=6 27+2:bold,fg=6 29+1:fg=6 32+2:fg=6
+ 6 0+4:dim 14+6:bold 21+1:fg=6
+ 7 0+4:dim
+ 8 0+4:dim
 35 8+17:inverse

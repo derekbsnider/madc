@@ -266,6 +266,25 @@ enum's name before `::` is its type, not a namespace. Chthonia names
 madcide's shipped `vscode` scheme (the bundle's `"theme"`), so it needs no
 theme file of its own. S1b is complete.
 
+S2 as built (2026-10-09): the FRAME layer (`madcdis/tui_frame.h`): a divider
+is a line whose cells record their arms (up / down / left / right), and one
+pass draws each cell's glyph from its arms — so where a panel's top divider
+ends on a sidebar's it is `┤`, where a split's divider stands on it `┴`, and
+no code picks a junction (S6's dialog borders reuse it). The sidebar and the
+panel each give their edge column / row next to the centre to a divider; a
+vertical split's blank column is one. The model always paints box drawing;
+the terminal spells it in ASCII when its locale is not UTF-8
+(`detect_glyph_set` beside `detect_colour_depth`, `ui_box_ascii` at
+emission). The gutter is layout data: a pane line's `gutter` word
+(`default.layout`'s editor pane; Chthonia's too) rides the edit node as a
+hint, and the grid numbers the lines in at least three columns and marks the
+caret line. The chrome's colours are the scheme's `divider`, `gutter`,
+`gutter_current` and `current_line` (Dark+ in `vscode.theme`), handed to the
+grid as the root's `chrome` hint and read into an enum (`tui_chrome`) once;
+a syntax span keeps the caret line's background. The goldens pin the locale
+(`LC_ALL=C.UTF-8`), add the REPL's panel in ASCII and in Dark+; the scroll
+gate now expects each row's number with its line.
+
 Each slice: unit tests in `tests/unit/test_tui_model.cpp`, its goldens,
 Tier 1 + Tier 2. The battery runs once, at the seam. A GUI or TUI change is
 verified by driving input, never by a screenshot alone.

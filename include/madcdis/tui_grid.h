@@ -147,6 +147,22 @@ struct tui_grid
 	for ( size_t i = 0; i < len && c + i < cols; ++i )
 	    at(r, c + i).attr = attr;
     }
+    // fill_attr that keeps each cell's background where `attr` names none.
+    void overlay_attr(size_t r, size_t c, size_t len, ui_style attr)
+    {
+	if ( r >= rows )
+	    return;
+	for ( size_t i = 0; i < len && c + i < cols; ++i )
+	{
+	    ui_style a = attr;
+	    if ( a.bg == 0 && a.bg_rgb == 0 )
+	    {
+		a.bg = at(r, c + i).attr.bg;
+		a.bg_rgb = at(r, c + i).attr.bg_rgb;
+	    }
+	    at(r, c + i).attr = a;
+	}
+    }
     // The row as text, right-trimmed — the unit batteries' view.
     std::string row_text(size_t r) const
     {

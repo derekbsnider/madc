@@ -26,15 +26,15 @@ text:
 24|
 25|
 26|
-27|
-28|
-29|
-30|
-31|
+27|────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+28| Problems  Output  Terminal  REPL
+29|c++17> %run golden.cpp
+30|hi 42
+31|c++17>
 32|
 33|
-34|Options  D Tab width   8   S Scheme      vscode   K Keymap      joe   I Autoindent  on
-35|Theme: vscode.
+34|
+35|
 styles:
  0 0+120:inverse
  1 0+4:fg=#c6c6c6 6+8:fg=#c586c0,bg=#282828 14+1:bg=#282828 15+9:fg=#ce9178,bg=#282828 24+96:bg=#282828
@@ -45,4 +45,5 @@ styles:
  6 0+4:fg=#858585 14+6:fg=#c586c0 21+1:fg=#b5cea8
  7 0+4:fg=#858585
  8 0+4:fg=#858585
-34 26+22:inverse
+27 0+120:fg=#444444
+28 28+6:inverse

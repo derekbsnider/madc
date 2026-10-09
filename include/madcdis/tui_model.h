@@ -60,10 +60,33 @@
 #include "madcdis/ui_style.h"	// ui_style, ui_style_of — the one render style + spec parser
 #include "madcdis/text_utf16.h"	// line_layout / line_columns — the one line layout (B87)
 #include "madcdis/tui_grid.h"	// tui_cell, tui_grid, the repaint diff (S0 split)
+#include "madcdis/tui_frame.h"	// tui_frame — dividers and junctions by arms (S2)
 #include "madcdis/tui_keyparse.h"	// raw bytes -> keys (S0 split)
 
 namespace madc {
 namespace hub {
+
+// The chrome a theme colours (facelift S2): the dividers, the editor's
+// line-number gutter, the caret line's number, and the caret line itself.
+// The composer hands their style specs over as the root's `chrome` hint
+// object (keys = these names); tui_chrome_of converts each key ONCE.
+enum class tui_chrome : unsigned char
+{
+    divider = 0, gutter, gutter_current, current_line, count
+};
+inline bool tui_chrome_of(const std::string &name, tui_chrome &out)
+{
+    static const char *const names[] = {
+	"divider", "gutter", "gutter_current", "current_line"
+    };
+    for ( size_t i = 0; i < (size_t)tui_chrome::count; ++i )
+	if ( name == names[i] )
+	{
+	    out = (tui_chrome)i;
+	    return true;
+	}
+    return false;
+}
 
 // ------------------------------------------------------------------ the model
 // One instance per TUI session. Contract: compose() before apply_keys()
@@ -80,6 +103,8 @@ public:
 
 private:
     tui_grid _grid;
+    tui_frame _frame;				// this compose's dividers (S2)
+    ui_style _chrome[(size_t)tui_chrome::count];	// this compose's chrome styles
     focus_state _focus_st;			// focus slot + per-choice selection + navigation
     std::map<size_t, size_t> _scroll;		// per edit slot: top line
     std::map<size_t, size_t> _hshift;		// per edit slot: left shift
@@ -120,9 +145,11 @@ private:
 				// legacy rule (first unhinted flexible,
 				// other unhinted one row — prompts)
 	std::vector<doc_span> spans;	// highlight spans (may be empty)
+	bool gutter;		// line numbers + the caret line (hints["gutter"],
+				// the layout's pane flag)
 	edit_slot() : line_index(0), slot(0), caret(0),
 		      sel_start(-1), sel_end(-1), tabw(tab_stop),
-		      rows(0) {}
+		      rows(0), gutter(false) {}
     };
 
     // ---------------------------------------------------------- the layout tree
@@ -396,6 +423,7 @@ private:
 	    e.rows = hint_of(n.hints, "rows", 0);
 	    if ( e.rows < 0 )
 		e.rows = 0;
+	    e.gutter = hint_of(n.hints, "gutter", 0) != 0;
 	    // The same autofocus hint the choice arm honors (IDE-9e: the
 	    // active window's edit node carries it).
 	    if ( hint_of(n.hints, "focus", 0) )
@@ -542,9 +570,11 @@ private:
     // with the line [begin..end] shown at `row`, converted to display
     // columns through the line's expansion map, honoring the horizontal
     // shift and the column clip.
+    // `overlay`: the range keeps the background under it when `attr` names
+    // none (a syntax span on the caret line).
     void fill_range_overlap(size_t row, size_t col0, size_t begin, size_t end,
 	const std::vector<size_t> &dcol, size_t shift, size_t width,
-	long s0, long e0, ui_style attr)
+	long s0, long e0, ui_style attr, bool overlay = false)
     {
 	if ( s0 < 0 || e0 <= s0 )
 	    return;
@@ -558,7 +588,12 @@ private:
 	{
 	    size_t c0 = ds < shift ? 0 : ds - shift;
 	    size_t c1 = dt - shift;
-	    _grid.fill_attr(row, col0 + c0, c1 - c0, attr);
+	    if ( c1 > width )
+		c1 = width;
+	    if ( overlay )
+		_grid.overlay_attr(row, col0 + c0, c1 - c0, attr);
+	    else
+		_grid.fill_attr(row, col0 + c0, c1 - c0, attr);
 	}
     }
 
@@ -568,6 +603,11 @@ private:
     void paint_edit(const edit_slot &e, size_t top_row, size_t col0,
 		    size_t height, size_t width)
     {
+	// The line-number gutter (S2): the numbers right-aligned in at least
+	// three columns, two blank columns before the text; the text window
+	// is what remains. Too narrow a pane keeps its text and no gutter.
+	size_t gutter_w = 0;
+	size_t total_lines = 1;
 	// Line starts (byte offsets); the end sentinel makes every offset
 	// belong to exactly one line, the caret-at-EOF position included.
 	std::vector<size_t> starts;
@@ -575,6 +615,19 @@ private:
 	for ( size_t i = 0; i < e.text.size(); ++i )
 	    if ( e.text[i] == '\n' )
 		starts.push_back(i + 1);
+	total_lines = starts.size();
+	if ( e.gutter )
+	{
+	    size_t digits = 1;
+	    for ( size_t n = total_lines; n >= 10; n /= 10 )
+		++digits;
+	    gutter_w = (digits < 3 ? 3 : digits) + 3;
+	    if ( width <= gutter_w + 1 )
+		gutter_w = 0;
+	}
+	const size_t num_col0 = col0, num_w = gutter_w;
+	col0 += gutter_w;
+	width -= gutter_w;
 	size_t caret = e.caret < 0 ? 0
 		     : ((size_t)e.caret > e.text.size() ? e.text.size()
 							: (size_t)e.caret);
@@ -616,12 +669,26 @@ private:
 						 0, dcol, (size_t)e.tabw);
 	    if ( shift < dcol.back() )
 		_grid.put(top_row + k, col0, madc::line_columns(disp, shift, width));
+	    if ( num_w )
+	    {
+		std::string num = std::to_string(li + 1);
+		std::string field(num_w - 2 > num.size() ? num_w - 2 - num.size() : 0, ' ');
+		bool cur = li == caret_line;
+		_grid.put(top_row + k, num_col0, field + num,
+			  _chrome[(size_t)(cur ? tui_chrome::gutter_current
+					       : tui_chrome::gutter)]);
+		// The caret line, faintly (a theme that leaves it normal shows
+		// nothing): under the text, so the spans keep its background.
+		if ( cur && !_chrome[(size_t)tui_chrome::current_line].is_normal() )
+		    _grid.fill_attr(top_row + k, col0, width,
+				    _chrome[(size_t)tui_chrome::current_line]);
+	    }
 	    // Highlight spans first, the selection LAST (it wins where
 	    // they overlap) — both are the one range-overlap rule below.
 	    for ( size_t si = 0; si < e.spans.size(); ++si )
 		fill_range_overlap(top_row + k, col0, begin, end, dcol, shift, width,
 				   e.spans[si].start, e.spans[si].end,
-				   e.spans[si].attr);
+				   e.spans[si].attr, true);
 	    if ( e.sel_start >= 0 && e.sel_end > e.sel_start )
 		fill_range_overlap(top_row + k, col0, begin, end, dcol, shift, width,
 				   e.sel_start, e.sel_end,
@@ -632,6 +699,30 @@ private:
 		_grid.cursor_col = col0 + caret_col - shift;
 		_grid.cursor_visible = true;
 	    }
+	}
+    }
+    // This compose's chrome styles from the root's `chrome` hint object
+    // ({ "<tui_chrome name>": "<style spec>" }): an unknown name or a spec
+    // the parser refuses leaves that element's default — the gutter dim, the
+    // rest normal.
+    void read_chrome(const uinode &tree)
+    {
+	for ( size_t i = 0; i < (size_t)tui_chrome::count; ++i )
+	    _chrome[i] = ui_style::normal();
+	_chrome[(size_t)tui_chrome::gutter].flags = ui_style::DIM;
+	if ( !tree.hints.is_object() )
+	    return;
+	const std::map<std::string, madc::value> &ho = tree.hints.as_object();
+	std::map<std::string, madc::value>::const_iterator ci = ho.find("chrome");
+	if ( ci == ho.end() || !ci->second.is_object() )
+	    return;
+	for ( const auto &kv : ci->second.as_object() )
+	{
+	    tui_chrome k;
+	    ui_style st;
+	    if ( kv.second.is_string() && tui_chrome_of(kv.first, k)
+	      && ui_style_of(kv.second.as_string(), st) )
+		_chrome[(size_t)k] = st;
 	}
     }
     // Paint a collected region into the row range [r0, r0+h) (columns fixed at
@@ -660,7 +751,21 @@ private:
 	}
 	else
 	    for ( size_t i = 0; i < g.kids.size(); ++i )
+	    {
 		paint_region(g.kids[i], r0, h);
+		// The blank column between two panes is a divider (S2), reaching
+		// a line just above or below it (a panel's divider: the junction).
+		if ( i + 1 < g.kids.size() && h > 0 )
+		{
+		    size_t col = g.kids[i].c0 + g.kids[i].width;
+		    size_t a = r0, b = r0 + h - 1;
+		    if ( a > 0 && !_frame.empty_at(a - 1, col) )
+			--a;
+		    if ( !_frame.empty_at(b + 1, col) )
+			++b;
+		    _frame.vline(col, a, b);
+		}
+	    }
     }
     // A leaf flow: its header (if any), then lines/edits/subs packed top to
     // bottom -- a rows:N edit is fixed; among the unhinted, the FIRST (an edit
@@ -757,6 +862,8 @@ public:
 	size_t rows, size_t cols)
     {
 	_grid.resize(rows, cols);
+	_frame.reset(rows, cols);
+	read_chrome(tree);
 	_focus_st.begin_compose();
 	// The toolbar (plan §41.11a): a root `toolbar` hint takes the top row;
 	// the bands and the centre lay out in the rows below it. No hint = no
@@ -794,6 +901,16 @@ public:
 		bc0 = centre_c0;
 		centre_c0 += sw;
 		centre_w -= sw;
+	    }
+	    // The divider (S2): the band's column next to the centre, a full-
+	    // height line; the band's content keeps the rest.
+	    if ( sw >= 2 )
+	    {
+		size_t div = side == ui_side::right ? bc0 : bc0 + sw - 1;
+		_frame.vline(div, top, rows - 1);
+		if ( side == ui_side::right )
+		    ++bc0;
+		--sw;
 	    }
 	    band_c0[i] = bc0;
 	    band_w[i] = sw;
@@ -855,12 +972,30 @@ public:
 	    else
 		pr0 = centre_r0 + centre_h - ph;
 	    centre_h -= ph;
-	    paint_region(bands[i].content, pr0, ph);
+	    // The divider (S2): the panel's row next to the centre, across the
+	    // centre's columns and onto a sidebar divider beside them (the arms
+	    // make the junction).
+	    size_t cph = ph, cpr0 = pr0;
+	    if ( ph >= 2 )
+	    {
+		size_t div = bands[i].side == ui_side::top ? pr0 + ph - 1 : pr0;
+		size_t h0 = centre_c0, h1 = centre_c0 + centre_w - 1;
+		if ( h0 > 0 && !_frame.empty_at(div, h0 - 1) )
+		    --h0;
+		if ( !_frame.empty_at(div, h1 + 1) )
+		    ++h1;
+		_frame.hline(div, h0, h1);
+		--cph;
+		if ( bands[i].side != ui_side::top )
+		    ++cpr0;
+	    }
+	    paint_region(bands[i].content, cpr0, cph);
 	}
 	for ( size_t i = 0; i < bands.size(); ++i )
 	    if ( bands[i].side == ui_side::left || bands[i].side == ui_side::right )
 		paint_region(bands[i].content, top, body_rows);
 	paint_region(centre, centre_r0, centre_h);
+	_frame.paint(_grid, _chrome[(size_t)tui_chrome::divider]);
 	return _grid;
     }
 

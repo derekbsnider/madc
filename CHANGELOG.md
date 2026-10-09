@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+### tui: frames, the line-number gutter and the current line (facelift S2)
+
+The TUI now draws box-drawing frames. A new frame layer
+(`include/madcdis/tui_frame.h`) records each divider cell's arms (up / down /
+left / right) and renders one glyph per cell from its arms, so junctions fall
+out of geometry: a panel's top divider ending on a sidebar's is `┤`, a split's
+divider standing on a panel's is `┴`, a crossing is `┼`, a corner is `┌` — no
+code picks a junction. The sidebar and bottom panel give their edge column / row
+next to the centre to a divider, and a vertical split's former blank column is
+now a divider line on every row. The model always paints box drawing; the
+terminal spells each glyph in ASCII (`-` `|` `+`) when its locale is not UTF-8
+(`detect_glyph_set` beside `detect_colour_depth` in `src/ui_term.cpp`,
+`ui_box_ascii` at emission). An editor pane whose layout carries the new
+`gutter` word (`tools/madcide/profiles/default.layout`'s editor pane) numbers
+its lines in at least three columns and marks the caret line; the text and
+cursor move past the gutter, and too narrow a pane keeps its text and omits the
+gutter. The chrome's colours are the scheme's `divider`, `gutter`,
+`gutter_current` and `current_line` specs (Dark+ `editorLineNumber` #858585,
+active `#c6c6c6`, line highlight `#282828` in `tools/madcide/profiles/vscode.theme`),
+handed to the grid as the root's `chrome` hint and read into the `tui_chrome`
+enum once; a syntax span keeps the caret line's background. `bin/test_tui_model`
+runs 40 cases / 579 assertions (6 new S2 cases); `scripts/tui_golden_gate.sh`
+pins 13 golden screens (new `replrun-ascii-80x24` under `LC_ALL=C` and
+`darkplus-repl-120x36` truecolor), and `scripts/tui_scroll_gate.sh` now checks
+each row's line number across 70 scroll steps.
+
 ### task runtime: ASan fiber hooks name the live ucontext stack in a sanitizer build
 
 A sanitizer build now instruments the host runtime objects too: `src/Makefile`

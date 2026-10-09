@@ -6,7 +6,7 @@
 # file with its line.
 #
 #   @window <name>
-#   pane <slot> [<side> <size>%] <mode> views <kind>... [focus] [hidden]
+#   pane <slot> [<side> <size>%] <mode> views <kind>... [focus] [hidden] [gutter]
 #   split <vertical|horizontal> [<size>%]      (children indented beneath)
 #
 # slot: editor | sidebar | panel — the editor region is the window's ONE
@@ -17,8 +17,10 @@
 # code problems output terminal project outline help mdpreview repl. `focus`
 # names the pane the keyboard starts in; `hidden` keeps a pane off the screen
 # until a command shows it (check surfaces the panel, outline the sidebar) —
-# the terminal shows nothing the user did not open.
+# the terminal shows nothing the user did not open. `gutter` gives an editor
+# pane line numbers and marks the caret line (a terminal paints them; the
+# scheme's gutter / gutter_current / current_line colour them).
 @window main
-pane editor tabs views source focus
+pane editor tabs views source focus gutter
 pane sidebar left 20% tabs views outline help mdpreview hidden
 pane panel bottom 25% tabs views problems output terminal repl hidden

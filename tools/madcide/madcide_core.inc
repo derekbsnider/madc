@@ -542,7 +542,7 @@ bool bind_rescue_keys(long w, long es)
 // A LAYOUT is a tree of containers holding Views, owned by the client and
 // stored on the bag as "layout":
 //   { "window": name, "editor": <node>, "chrome": [ <pane>... ] }
-//   pane  { "kind": ctPANE, "slot", "side", "size", "mode", "tabs": [ <tab>... ], "active": 0, "focus", "hidden" }
+//   pane  { "kind": ctPANE, "slot", "side", "size", "mode", "tabs": [ <tab>... ], "active": 0, "focus", "hidden", "gutter" }
 //   tab   = layout_tab(kind, view): the CONTAINER — its View and its own navigation (caret, mark, bend, grow)
 //   split { "kind": ctSPLIT, "dir": ui::split, "size", "children": [ <node>... ] }
 // The `.layout` text is the input boundary (profiles/default.layout, the
@@ -561,6 +561,14 @@ void layout_tab(var &out, long kind, long view)
 {
     out = { "kind": kind, "view": view, "caret": 0, "mark": -1, "bend": -1,
 	    "grow": 0 };
+}
+
+// Does a pane number its lines (the layout's `gutter` word, facelift S2)?
+// A pane built before the word existed — a saved session's, a test's —
+// carries no key: no gutter.
+bool pane_gutter(var &pane)
+{
+    return !pane["gutter"].is_null() && pane["gutter"].as_integer() != 0;
 }
 
 // Split a trimmed line into its whitespace-separated words.
@@ -623,6 +631,7 @@ bool layout_pane_row(var &row, var &words, long lineno, var &err, long w)
     bool collecting = false;
     bool focus = false;
     bool hidden = false;
+    bool gutter = false;	// line numbers + the caret line (facelift S2)
     var tabs = {};
     for ( long i = 2; i < nw; i = i + 1 )
     {
@@ -641,6 +650,12 @@ bool layout_pane_row(var &row, var &words, long lineno, var &err, long w)
 	if ( wd == "hidden" )
 	{
 	    hidden = true;
+	    collecting = false;
+	    continue;
+	}
+	if ( wd == "gutter" )
+	{
+	    gutter = true;
 	    collecting = false;
 	    continue;
 	}
@@ -713,8 +728,10 @@ bool layout_pane_row(var &row, var &words, long lineno, var &err, long w)
 	mode = pnTABS;
     long f = focus ? 1 : 0;
     long h = hidden ? 1 : 0;
+    long gt = gutter ? 1 : 0;
     row = { "kind": ctPANE, "slot": slot, "side": side, "size": size,
-	    "mode": mode, "tabs": tabs, "active": 0, "focus": f, "hidden": h };
+	    "mode": mode, "tabs": tabs, "active": 0, "focus": f, "hidden": h,
+	    "gutter": gt };
     return true;
 }
 
@@ -776,7 +793,7 @@ void layout_build(var &node, var &rows, long idx)
     node = { "kind": ctPANE, "slot": r["slot"], "side": r["side"],
 	     "size": r["size"], "mode": r["mode"], "tabs": r["tabs"],
 	     "active": r["active"], "focus": r["focus"],
-	     "hidden": r["hidden"] };
+	     "hidden": r["hidden"], "gutter": r["gutter"] };
 }
 
 // The parser: text -> the layout tree. False + err (the line and the word).
@@ -964,7 +981,7 @@ const char *default_layout_text()
 {
     return "# baked default layout — profile data\n"
 	   "@window main\n"
-	   "pane editor tabs views source focus\n"
+	   "pane editor tabs views source focus gutter\n"
 	   "pane sidebar left 20% tabs views outline help mdpreview hidden\n"
 	   "pane panel bottom 25% tabs views problems output terminal repl hidden\n";
 }
@@ -1054,6 +1071,8 @@ void layout_emit_pane(var &out, var &node, long depth, long w)
 	line = format("{} focus", line);
     if ( node["hidden"].as_integer() != 0 )
 	line = format("{} hidden", line);
+    if ( pane_gutter(node) )
+	line = format("{} gutter", line);
     out = format("{}\n", line);
 }
 
@@ -8159,11 +8178,13 @@ void view_split(long w, long es, long doc, long dir, long lang)
     long snone = ui::side_code("");
     long ksed = slotEDITOR;
     long mtabs = pnTABS;
-    var newleaf = { "kind": ctPANE, "slot": ksed, "side": snone, "size": 0,
-		    "mode": mtabs, "tabs": tabs, "active": 0, "focus": 0,
-		    "hidden": 0, "pcaret": pcar, "pmark": -1, "pbend": -1 };
     var focleaf;
     editor_read_leaf(focleaf, etree, fi);
+    long gut = pane_gutter(focleaf) ? 1 : 0;	// the new view numbers lines as its sibling does
+    var newleaf = { "kind": ctPANE, "slot": ksed, "side": snone, "size": 0,
+		    "mode": mtabs, "tabs": tabs, "active": 0, "focus": 0,
+		    "hidden": 0, "gutter": gut, "pcaret": pcar, "pmark": -1,
+		    "pbend": -1 };
     var kids = {};
     kids.push(focleaf);
     kids.push(newleaf);
@@ -9840,6 +9861,8 @@ void compose_editor_leaf(var &lk, long w, long es, long doc, var &node,
 	eh["region"] = "";
 	eh["focus"] = 1;
 	eh["tag"] = myleaf;
+	if ( pane_gutter(node) )
+	    eh["gutter"] = 1;		// the pane's line numbers (facelift S2)
 	if ( es_int(w, es, "viewsync", 0) )
 	    eh["sync"] = 1;		// V5: a linked-scroll partner (the map rides too)
 	e["hints"] = eh;
@@ -9872,6 +9895,8 @@ void compose_editor_leaf(var &lk, long w, long es, long doc, var &node,
     wed["content"] = wt;
     wed["subject"] = sdoc;
     var wh = { "caret": sc, "tag": myleaf };
+    if ( pane_gutter(node) )
+	wh["gutter"] = 1;		// the pane's line numbers (facelift S2)
     if ( follow )
 	wh["follow"] = 1;	// V5: a synced pane scrolls to (and marks) its caret
     if ( es_int(w, es, "viewsync", 0) )
@@ -10055,6 +10080,13 @@ void IdeSession::compose_ide_tree(var &root, long doc)
     // status are stamped here, before the multi-window branch's own
     // read-modify-write of ed["hints"] preserves the region.
     long wc = window_count(w, es);
+    var elo;
+    layout_get(elo, w, es);
+    var etree = elo["editor"];
+    // A sole editor pane's line numbers (facelift S2, the layout's `gutter`);
+    // a split's leaves carry their own (compose_editor_leaf).
+    if ( etree["kind"] != ctSPLIT && pane_gutter(etree) && !helping )
+	eh["gutter"] = 1;
     {
 	eh["region"] = "editor";
 	// With two-plus windows the active window carries the focus hint
@@ -10077,12 +10109,9 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 
     var r = { "role": "group" };
     var kids = {};
-    // The editor slot from the layout's editor tree (V2b). A sole editor
-    // leaf emits flat — the JOE screen, byte-identical; a `viewsplit` makes
-    // it a split and the split composer wraps each leaf in its own group.
-    var elo;
-    layout_get(elo, w, es);
-    var etree = elo["editor"];
+    // The editor slot from the layout's editor tree (V2b, read above). A sole
+    // editor leaf emits flat — the JOE screen, byte-identical; a `viewsplit`
+    // makes it a split and the split composer wraps each leaf in its own group.
     if ( etree["kind"] == ctSPLIT )
 	compose_editor_split(kids, w, es, doc, etree, ed, status);
     else
@@ -10355,6 +10384,22 @@ void IdeSession::compose_ide_tree(var &root, long doc)
     ui::get(pt, w, es, "presence_theme");
     if ( !pt.is_null() && php::count(pt) > 0 )
 	rh["presence"] = pt;
+    // The chrome's colours (facelift S2): the scheme's divider, gutter,
+    // gutter_current and current_line specs, as the grid paints them; a
+    // scheme that names none leaves the grid's defaults. A hint the window
+    // ignores (its chrome is page.css's).
+    var th;
+    ui::get(th, w, es, "theme");
+    if ( !th.is_null() )
+    {
+	var chrome;		// a null var becomes the map on its first keyed write
+	var names = { "divider", "gutter", "gutter_current", "current_line" };
+	for ( var cn : names )
+	    if ( !th[cn.c_str()].is_null() )
+		chrome[cn.c_str()] = th[cn.c_str()];
+	if ( !chrome.is_null() )
+	    rh["chrome"] = chrome;
+    }
     // The menu / command data (S1): the bar's menus with their items'
     // ids, titles and enablement — a root hint the TUI ignores and a
     // chrome-rendering client (S2) draws natively.
