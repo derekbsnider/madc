@@ -1,7 +1,8 @@
 // Help as an editor tab (owner, Chthonia: "load the help page into the editor
-// pane as a new tab instead of the info pane"). Where Help opens is the
-// layout's: this test's bundle (helptab, written into its configuration
-// directory's plugins/, its .env) lists the help view on the EDITOR pane
+// pane as a new tab instead of the info pane"). A Help page always opens in
+// the editor pane (owner 2026-10-09). This test's bundle (helptab, written
+// into its configuration directory's plugins/, its .env) lists the help view
+// on the EDITOR pane
 // (`pane editor tabs views source help`), so Help ▸ Help Contents opens the
 // Help buffer as a tab of the buffer ring and the editor shows the Help
 // view's rows there. Pins:
@@ -12,7 +13,8 @@
 //   4. typing on the Help tab changes nothing (read-only);
 //   5. the file's tab shows the file again; File ▸ Close on the Help tab
 //      leaves the file;
-//   6. the default bundle's layout still shows Help in its sidebar pane;
+//   6. the default bundle opens Help in the editor's Help tab too, and its
+//      sidebar shows the Help Index (no Help page in the sidebar);
 //   7. the layout madcide writes back (layout_persist) keeps the editor
 //      pane's help view.
 // Oracle: the layout grammar's contract (profiles/default.layout: a pane
@@ -178,14 +180,16 @@ int main()
     println("persist: editor-help={}",
 	    perl::index(txt.c_str(), "pane editor tabs views source help") >= 0 ? 1 : 0);
 
-    // 6. The default bundle: Help in its sidebar pane, no Help tab.
+    // 6. The default bundle: the Help tab, and the index in its sidebar.
     IdeSession D;
     long ddoc = D.open(path, false);
     D.panel(true);
     D.tabs(true);			// ... and draws tab strips (ui::tabs)
     D.command(ddoc, cmd_of_w(D.w, "helpcontents"), "", cont);
-    println("default: sidebar-help={} help-tab={}", view_shown(D.w, D.es, viewHELP) ? 1 : 0,
-	    help_doc_if_any(D.w, D.es) != 0 ? 1 : 0);
+    println("default: sidebar-help={} help-tab={} sidebar-index={}",
+	    view_shown(D.w, D.es, viewHELP) ? 1 : 0,
+	    help_doc_if_any(D.w, D.es) != 0 ? 1 : 0,
+	    view_shown(D.w, D.es, viewHELPINDEX) ? 1 : 0);
 
     S.close();
     D.close();

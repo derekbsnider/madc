@@ -60,6 +60,8 @@ void cmd_table(var &t)
     rows[] = { "name": "groww", "code": cmdGROWW };
     rows[] = { "name": "help", "code": cmdHELP };
     rows[] = { "name": "helpcontents", "code": cmdHELPCONTENTS };
+    rows[] = { "name": "helpindex", "code": cmdHELPINDEX };
+    rows[] = { "name": "helpindexrow", "code": cmdHELPINDEXROW };
     rows[] = { "name": "helptopic", "code": cmdHELPTOPIC };
     rows[] = { "name": "indent", "code": cmdINDENT };
     rows[] = { "name": "insertfile", "code": cmdINSERTFILE };
@@ -565,6 +567,7 @@ const char *view_name(long k)
 	case viewOUTLINE: return "outline";
 	case viewHELP: return "help";
 	case viewMDPREVIEW: return "mdpreview";
+	case viewHELPINDEX: return "helpindex";
     }
     return "";
 }
@@ -583,6 +586,7 @@ const char *view_title(long k)
 	case viewOUTLINE: return "Outline";
 	case viewHELP: return "Help";
 	case viewMDPREVIEW: return "Markdown Preview";
+	case viewHELPINDEX: return "Help Index";
     }
     return "";
 }
@@ -590,7 +594,7 @@ long view_of(var &name)
 {
     if ( name.is_null() )
 	return viewNONE;
-    for ( long k = viewSOURCE; k <= viewMDPREVIEW; k = k + 1 )
+    for ( long k = viewSOURCE; k <= viewHELPINDEX; k = k + 1 )
 	if ( name == view_name(k) )
 	    return k;
     return viewNONE;
@@ -610,6 +614,7 @@ long view_show_cmd(long kind)
 	case viewPROJECT: return cmdPROJECT;
 	case viewHELP: return cmdHELPTOPIC;	// the current topic (madcide_help.inc)
 	case viewMDPREVIEW: return cmdMDPREVIEW;	// madcide_preview.inc
+	case viewHELPINDEX: return cmdHELPINDEX;	// madcide_help.inc
     }
     return cmdNONE;
 }

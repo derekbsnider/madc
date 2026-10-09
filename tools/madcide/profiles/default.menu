@@ -116,6 +116,7 @@ Build repleof Send EOF to the REPL
 Build language Language…
 
 Help helpcontents Help Contents
+Help helpindex Help Index
 Help help Keyboard Help
 Help about About madcide
 

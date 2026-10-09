@@ -667,6 +667,14 @@ bool layout_pane_row(var &row, var &words, long lineno, var &err, long w)
 		err = format("line {}: unknown view '{}'", lineno, wd);
 		return false;
 	    }
+	    // A Help page opens in the editor pane, never in a sidebar or a
+	    // panel (owner 2026-10-09); the topics' index (helpindex) docks there.
+	    if ( k == viewHELP && slot != slotEDITOR )
+	    {
+		err = format("line {}: the help view opens in the editor pane, never a {} (helpindex docks there)",
+			     lineno, sw);
+		return false;
+	    }
 	    var tb;
 	    layout_tab(tb, k, 0);
 	    tabs.push(tb);
@@ -1014,7 +1022,7 @@ const char *default_layout_text()
 	   "menubar\n"
 	   "status bottom\n"
 	   "pane editor tabs views source focus gutter\n"
-	   "pane sidebar left 20% tabs views outline help mdpreview hidden\n"
+	   "pane sidebar left 20% tabs views outline helpindex mdpreview hidden\n"
 	   "pane panel bottom 25% tabs views problems output terminal repl hidden\n";
 }
 
@@ -9039,8 +9047,16 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 	    }
 	    case cmdHELPCONTENTS:
 	    {
-		// Help ▸ Help Contents: the bundle's first topic.
+		// Help ▸ Help Contents: the bundle's first topic in the editor's
+		// Help tab, and the index beside it where the layout hosts one.
 		help_open(w, es, doc, "contents");
+		help_index_show(w, es);
+		return true;
+	    }
+	    case cmdHELPINDEX:
+	    {
+		// Help ▸ Help Index: the topics' index, toggled (madcide_help.inc).
+		help_index_cmd(w, es, doc);
 		return true;
 	    }
 	    case cmdHELPTOPIC:
@@ -9382,6 +9398,10 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 	    case cmdHELPTOPIC:
 		// A Help row: a link opens its topic (madcide_help.inc).
 		help_choose(w, es, doc, ev["option"].as_integer());
+		return true;
+	    case cmdHELPINDEXROW:
+		// A Help Index row: its page in the editor (madcide_help.inc).
+		help_index_choose(w, es, doc, ev["option"].as_integer());
 		return true;
 	    case cmdMDPREVIEWROW:
 		// A preview row: its source line, or its link's file
@@ -9737,6 +9757,13 @@ void compose_chrome_pane(var &out, long w, long es, long doc, var &c)
 	    var mn;
 	    preview_view_node(mn, w, es, focus);
 	    pkids.push(mn);
+	    break;
+	}
+	case viewHELPINDEX:
+	{
+	    var xn;
+	    help_index_node(xn, w, es, focus);
+	    pkids.push(xn);
 	    break;
 	}
 	case viewOUTLINE:

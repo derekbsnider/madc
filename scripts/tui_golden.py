@@ -135,10 +135,10 @@ SCENARIOS = [
     ('mouse-drop', [('click:25,1', None)], {}, [(24, 80)], 'tbgolden'),
     ('mouse-caret', [('click:15,6', None)], {}, [(24, 80)]),
     ('mouse-close', [('ctrl-b', None), ('click:46,12', None)], {}, [(24, 80)]),
-    # a chrome sidebar beside the editor: Help > Help Contents shows the Help
-    # view in the left sidebar, every row cut at the sidebar's divider (its
-    # long paragraphs ran on into the source's columns)
-    ('help-sidebar', [('alt-h', None), ('text:h', 'Help')], {}, [(24, 80)]),
+    # Help > Help Contents: the page in the editor's Help tab, the Help Index
+    # in the left sidebar beside it, each sidebar row cut at the divider (a
+    # chrome pane's long rows once ran on into the editor's columns)
+    ('help-contents', [('alt-h', None), ('text:h', 'Help')], {}, [(24, 80)]),
 ]
 
 

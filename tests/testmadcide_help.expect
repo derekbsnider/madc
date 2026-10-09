@@ -1,5 +1,6 @@
 module: true
-contents: topic=contents title=Sample Help shown=true
+contents: topic=contents title=Sample Help editor-tab=true index-shown=true
+index: [Sample Help][Getting started][The shell][Menus and commands]
 contents-link: row=• Getting started target=getting-started.md
 node: label=Help — Sample Help link-code=true
 chosen: topic=getting-started title=Getting started back=◂ Contents back-target=contents.md
@@ -8,4 +9,6 @@ menus: title=Menus and commands run-heading=true
 menus-run: • Run (f5) — replrun: Runs the buffer's program in the REPL: a fresh session, the buffer loaded, then its main.
 table: header=Entry          │ What it does rule=true
 unknown: msg=No help topic 'nosuch'. topic=shell
+index-choose: topic=getting-started editor-tab=true
+layout-help-sidebar: ok=false err=line 3: the help view opens in the editor pane, never a sidebar (helpindex docks there)
 default: title=madcide Help menus-target=menus

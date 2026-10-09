@@ -1,0 +1,30 @@
+text:
+ 0|  File  Edit  Search  View  Window  Build  Help
+ 1| OUTLINE  HELP │ golden.cpp  Help
+ 2|Help Index     │Help — madcide Help
+ 3|  madcide Help │  madcide Help
+ 4|  Menus and com│
+ 5|               │  madcide edits, checks, builds and runs C, C++ and madc program
+ 6|               │
+ 7|               │  • Menus and commands
+ 8|               │
+ 9|               │  Help ▸ Keyboard Help lists the loaded key style's bindings. A
+10|               │
+11|               │
+12|               │
+13|               │
+14|               │
+15|               │
+16|               │
+17|               │
+18|               │
+19|               │
+20|               │
+21|               │
+22|               │
+23| A  [help]  (Read only)                                            Row 1  Col 1
+styles:
+ 0 0+2:inverse 2+1:inverse,underline 3+5:inverse 8+1:inverse,underline 9+5:inverse 14+1:inverse,underline 15+7:inverse 22+1:inverse,underline 23+5:inverse 28+1:inverse,underline 29+7:inverse 36+1:inverse,underline 37+6:inverse 43+1:inverse,underline 44+36:inverse
+ 1 9+6:inverse 28+6:inverse
+ 3 0+14:inverse 16+14:inverse
+23 0+4:inverse 4+6:bold,inverse 10+57:inverse 67+3:dim,inverse 70+4:inverse 74+3:dim,inverse 77+3:inverse

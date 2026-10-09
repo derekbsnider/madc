@@ -16,7 +16,9 @@
 # side, `split horizontal` = one above the other, any depth); a sidebar docks
 # left|right, a panel bottom|top, and neither ever splits. mode: tabs (one
 # View behind a strip) | stack (all Views, headers between). kind: source
-# code problems output terminal project outline help mdpreview repl. `focus`
+# code problems output terminal project outline help helpindex mdpreview
+# repl — `help` (a Help page) only on an editor pane, which always shows it;
+# `helpindex` (the topics) docks in a sidebar or panel. `focus`
 # names the pane the keyboard starts in; `hidden` keeps a pane off the screen
 # until a command shows it (check surfaces the panel, outline the sidebar) —
 # the terminal shows nothing the user did not open. `gutter` gives an editor
@@ -26,5 +28,5 @@
 menubar
 status bottom
 pane editor tabs views source focus gutter
-pane sidebar left 20% tabs views outline help mdpreview hidden
+pane sidebar left 20% tabs views outline helpindex mdpreview hidden
 pane panel bottom 25% tabs views problems output terminal repl hidden
