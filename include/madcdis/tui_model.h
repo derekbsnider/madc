@@ -1069,26 +1069,35 @@ private:
     // widths). Its styled spans are BYTE positions of the text, placed
     // through the same map (B87: a span after a UTF-8 character landed a
     // column right per extra byte). A position past the text's end is a
-    // COLUMN: a full-width bar spans len = cols, the row's width.
-    void paint_line(size_t row, size_t col0, const line_out &l)
+    // COLUMN: a full-width bar spans len = cols, the row's width. The line
+    // keeps to its region's `width` columns — its text cut there as an
+    // edit's is (madc::line_columns), its spans and hit targets clipped — so
+    // a sidebar's long row never runs on into the centre.
+    void paint_line(size_t row, size_t col0, size_t width, const line_out &l)
     {
 	std::vector<size_t> col;
-	_grid.put(row, col0, madc::line_layout(l.text, 0, col));
+	_grid.put(row, col0,
+		  madc::line_columns(madc::line_layout(l.text, 0, col), 0, width));
 	const size_t n = l.text.size();
 	for ( size_t i = 0; i < l.spans.size(); ++i )
 	{
 	    size_t s = l.spans[i].col, e = l.spans[i].col + l.spans[i].len;
-	    size_t cs = s <= n ? col[s] : std::max(col[n], s);
-	    size_t ce = e <= n ? col[e] : std::max(col[n], e);
-	    _grid.fill_attr(row, col0 + cs, ce - cs, l.spans[i].attr);
+	    size_t cs = std::min(s <= n ? col[s] : std::max(col[n], s), width);
+	    size_t ce = std::min(e <= n ? col[e] : std::max(col[n], e), width);
+	    if ( ce > cs )
+		_grid.fill_attr(row, col0 + cs, ce - cs, l.spans[i].attr);
 	}
 	for ( size_t i = 0; i < l.hits.size(); ++i )
 	{
 	    size_t s = l.hits[i].col, e = l.hits[i].col + l.hits[i].len;
+	    size_t cs = std::min(s <= n ? col[s] : col[n], width);
+	    size_t ce = std::min(e <= n ? col[e] : col[n], width);
+	    if ( ce <= cs )
+		continue;			// wholly past the region's edge
 	    tui_hit h = l.hits[i].hit;
 	    h.row = row;
-	    h.c0 = col0 + (s <= n ? col[s] : col[n]);
-	    h.c1 = col0 + (e <= n ? col[e] : col[n]);
+	    h.c0 = col0 + cs;
+	    h.c1 = col0 + ce;
 	    _hits.push_back(h);
 	}
     }
@@ -1131,11 +1140,11 @@ private:
 	return l;
     }
     // A leaf pane's header line: its tab strip.
-    void paint_header(size_t row, size_t col0,
+    void paint_header(size_t row, size_t col0, size_t width,
 	const std::vector<std::string> &titles, size_t active, bool upper,
 	const std::vector<tui_hit> *acts = NULL)
     {
-	paint_line(row, col0, tab_strip(titles, active, upper, acts));
+	paint_line(row, col0, width, tab_strip(titles, active, upper, acts));
     }
 
     // A document line's byte->display-column map is madc::line_layout's
@@ -1476,7 +1485,7 @@ private:
     {
 	if ( !f.header.empty() && h > 0 )
 	{
-	    paint_header(r0, f.c0, f.header, f.header_active, f.header_upper,
+	    paint_header(r0, f.c0, f.width, f.header, f.header_active, f.header_upper,
 			 &f.header_acts);
 	    ++r0;
 	    --h;
@@ -1505,7 +1514,7 @@ private:
 	    const flow_item &it = f.order[oi];
 	    if ( it.k == flow_item::kind::line )
 	    {
-		paint_line(row, f.c0, f.lines[it.idx]);
+		paint_line(row, f.c0, f.width, f.lines[it.idx]);
 		++row;
 	    }
 	    else if ( it.k == flow_item::kind::edit )
@@ -1716,7 +1725,7 @@ public:
 		paint_region(bands[i].content, top, body_rows);
 	paint_region(centre, centre_r0, centre_h);
 	if ( bar )
-	    paint_line(rows - 1, 0, status_bar_line(*bar, cols));
+	    paint_line(rows - 1, 0, cols, status_bar_line(*bar, cols));
 	_frame.paint(_grid, _chrome[(size_t)tui_chrome::divider]);
 	// The floating windows over the workbench (S6), then the menus.
 	for ( size_t i = 0; i < _floats.size(); ++i )

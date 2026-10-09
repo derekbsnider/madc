@@ -46,6 +46,7 @@ KEY = {
     'ctrl-k': b'\x0b',
     'f10': ESC + b'[21~',
     'alt-e': ESC + b'e',            # the Meta prefix in one burst: Alt+E
+    'alt-h': ESC + b'h',            # Alt+H: the Help menu
     'ctrl-b': b'\x02',
 }
 
@@ -134,6 +135,10 @@ SCENARIOS = [
     ('mouse-drop', [('click:25,1', None)], {}, [(24, 80)], 'tbgolden'),
     ('mouse-caret', [('click:15,6', None)], {}, [(24, 80)]),
     ('mouse-close', [('ctrl-b', None), ('click:46,12', None)], {}, [(24, 80)]),
+    # a chrome sidebar beside the editor: Help > Help Contents shows the Help
+    # view in the left sidebar, every row cut at the sidebar's divider (its
+    # long paragraphs ran on into the source's columns)
+    ('help-sidebar', [('alt-h', None), ('text:h', 'Help')], {}, [(24, 80)]),
 ]
 
 
