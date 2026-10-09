@@ -2563,7 +2563,7 @@ With no program file, the tail chooses in this order:
 
 **Not in D23's slices, and named:**
 - a `.keys` profile for the REPL. madcide's parser is dialect code, so one owner moves into the engine first;
-- vi mode;
+- vi mode (owner, 2026-10-09: the prompt's line editing stays bash/emacs by default; other editing modes are considered later);
 - syntax colour (§26);
 - a pager for a long candidate list;
 - auto-indent;
