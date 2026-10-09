@@ -243,10 +243,7 @@ at activation and read at input on the session's thread. No new globals.
 
 1. ~~lined and vised~~ — decided (above): lined retired, vised kept as a
    rewritten madc example.
-2. **The ex regex flavour:** POSIX `regcomp` ERE is absent on Windows;
-   `std::regex` is portable but slow; a bundled engine is a dependency
-   (third-party libs stay dependencies). (Recommended: decide at Phase 1
-   step 3's design, measured.)
+2. ~~The ex regex flavour~~ — decided: PCRE2 (below).
 3. **Symbols:** madcide's base, Chthonia's plugin dropped (recommended) — or
    a copy.
 4. **`madcide --line`:** becomes an alias for madc's line mode on the file,
@@ -268,3 +265,28 @@ at activation and read at input on the session's thread. No new globals.
   Phase 2 both land before it (see Seams).
 - **`%git`:** the madcgit module's command (above), `import madcgit;` at the
   prompt included.
+- **Regex: PCRE2, madc's ONE regex engine** (owner 2026-10-09). Today madc's
+  only regex is the C++ library's `std::regex` (ECMAScript grammar), in
+  `src/ns_perl.cpp`, behind five functions — `madc::regex_match`,
+  `regex_search`, `regex_replace`, `perl::grep`, `perl::split` — compiled on
+  every call, differing between libstdc++ and libc++, and recursing per
+  character in libstdc++ (stack depth on long inputs). POSIX `regex.h` was
+  weighed and refused: absent on Windows (no `regex.h` in mingw or the UCRT),
+  a different engine on macOS (TRE) than on Linux (glibc), and POSIX
+  leftmost-longest semantics where vim, Perl, PHP, Python and JS are
+  leftmost-first. PCRE2 is BSD-licensed, PHP's own engine (php:: parity —
+  `preg_*`), Perl-compatible, leftmost-first like vim, optionally JIT, and
+  builds on all three platforms — a DEPENDENCY, never vendored. One engine
+  serves the ex core (`:s`, `:g`, `:v`, `/re/`, `?re?`, compiled once per
+  command), the five existing functions, and the polyglot namespaces.
+  Design items for Phase 1 step 3: module (as madcgit) vs linked into
+  libmadc; per-platform packaging (Linux distro package / Homebrew formula /
+  the Windows build's copy); how vim's spellings map onto PCRE2 syntax (D24
+  asks for the modern extended form: unescaped `+ ? | ( )`). Riding the same
+  move, as their own fixes with reducers: the five functions refuse an
+  invalid pattern instead of answering silently (today `perl::grep` falls
+  back to a substring search, `perl::split` to a literal delimiter, and
+  `madc::regex_search` answers 0 as if nothing matched), the `madc::`
+  three leave `ns_perl.cpp` for their own namespace's file, and they gain
+  lean `var` / `const char *` forms resolved mangled-direct instead of
+  extern-C `std::string` wrappers.
