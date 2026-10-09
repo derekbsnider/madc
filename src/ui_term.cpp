@@ -226,7 +226,7 @@ std::string vt_paint_bytes(const tui_grid &prev, const tui_grid &next,
 		    cur = cell.attr;
 		}
 		char ascii = glyphs == ui_glyph_set::ascii
-			   ? madc::hub::ui_box_ascii(cell.ch) : 0;
+			   ? madc::hub::ui_glyph_ascii(cell.ch) : 0;
 		if ( ascii )
 		    out += ascii;	// a frame glyph the locale cannot show
 		else

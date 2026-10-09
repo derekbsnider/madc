@@ -113,6 +113,9 @@ class focus_state
     std::vector<menu_col> _menus;		// the bar (S4), from the last compose
     size_t _menu_open;				// the open menu; npos = closed
     size_t _menu_row;				// its lit row
+    size_t _menu_anchor;			// where the model drops it (an
+						// opaque column; npos = under
+						// its bar title)
 
     static bool menu_row_selectable(const menu_row &r)
 	{ return !r.sep && r.enabled; }
@@ -133,6 +136,7 @@ class focus_state
     void menu_show(size_t m)
     {
 	_menu_open = m;
+	_menu_anchor = std::string::npos;
 	_menu_row = _menus[m].rows.empty() ? 0 : menu_row_from(0, 1);
 	if ( _menu_row == std::string::npos )
 	    _menu_row = 0;
@@ -150,7 +154,8 @@ class focus_state
     }
 
 public:
-    focus_state() : _focus(0), _menu_open(std::string::npos), _menu_row(0) {}
+    focus_state() : _focus(0), _menu_open(std::string::npos), _menu_row(0),
+		    _menu_anchor(std::string::npos) {}
 
     // compose() calls these in discovery order (the Phase-1 identity rule):
     // the list is rebuilt, focus and selections are kept.
@@ -283,6 +288,22 @@ public:
     bool menu_is_open() const { return _menu_open != std::string::npos; }
     size_t open_menu() const { return _menu_open; }
     size_t menu_lit_row() const { return _menu_row; }
+    size_t menu_anchor() const { return _menu_anchor; }
+
+    // The APPLICATION opens a menu by its title (a toolbar button's arrow —
+    // ui::menu_open, facelift S5), dropped at `anchor` (the model's column;
+    // npos = under its bar title). False = no menu has that title.
+    bool menu_open_titled(const std::string &title, size_t anchor)
+    {
+	for ( size_t m = 0; m < _menus.size(); ++m )
+	    if ( _menus[m].title == title )
+	    {
+		menu_show(m);
+		_menu_anchor = anchor;
+		return true;
+	    }
+	return false;
+    }
 
     // A key no binding took (the key owner passed it through) that OPENS the
     // bar: F10 opens the first menu, Alt and a menu's letter that menu. `e`

@@ -2,6 +2,36 @@
 
 ## [Unreleased]
 
+### tui: toolbar glyphs and the Run dropdown (facelift S5)
+
+The toolbar row is the plan's target — `New  Open  Save │ ▶ Run ▾  ■ Stop`. The
+grid paints the root's `toolbar` hint on the top row (`paint_toolbar` in
+`include/madcdis/tui_model.h`, the former `toolbar_line`): each button its icon's
+glyph and its label — a run, debug, stop, step or breakpoints icon shows its
+shape (`▶ ▷ ■ ↷ ↓ ↑ ●`, `tui_icon_glyph` over `ui::icon`), the file commands
+their words — two columns apart, a disabled button dim; a separator row a
+divider; a button whose `drop` names a menu ends in `▾`, its column recorded so
+the menu drops under it. The ASCII spelling of every chrome glyph is one owner,
+`ui_glyph_ascii` in `include/madcdis/tui_frame.h` (`ui_box_ascii` grown: box
+drawing plus `> # * v ^`), read by the VT100 target in `src/ui_term.cpp`. A
+toolbar button's `menushow` arrow is the frontend's when it draws the menus
+itself: `ui::menus(t)` (`bool menus(int64_t)` in `include/madc/ns_ui`, the grid)
+is the session's `hasmenus` fact (`IdeSession::menus(bool)`), and the command
+parks a `menuopen` request (`rqMENUOPEN`) the client serves with
+`ui::menu_open(t, title)` — the grid drops that bar menu under its toolbar button
+(`tui_model::open_menu` → `focus_state::menu_open_titled`, the same S4 dropdown,
+keys and action events, anchored at the button's column); a client that draws
+none (a window's native menu, a browser page) or a target that refuses gets the
+session's choice list (`IdeSession::menu_fallback`), as before. The scheme's
+`toolbar` colours the row (Dark+: the side-bar surface `#252526` in
+`tools/madcide/profiles/vscode.theme`). `bin/test_tui_model` runs 51 cases (2 new
+toolbar cases); the new `tests/testmadcide_menushow` pins the parked-request vs
+choice-list split; `scripts/tui_golden_gate.sh` matches 24 golden screens (3 new
+toolbar goldens in Unicode and ASCII from a fixture bundle
+`tests/tui_golden/plugins/tbgolden`, launched with `--profile`; the 21 existing
+re-recorded byte-identical), and `scripts/tui_scroll_gate.sh` stays green. The
+golden harness now clears its config directory per run, as its header promised.
+
 ### tui: the menu bar (facelift S4)
 
 The TUI now draws a menu bar. The bar is the focus owner's

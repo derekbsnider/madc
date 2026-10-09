@@ -329,7 +329,8 @@ enum ide_req : unsigned char
     rqNONE = 0, rqREFRESH, rqFILEDIALOG, rqRUN, rqPROJRUN, rqCMD, rqSHELL,
     rqCLIPSET,		// put the session's copy on the platform clipboard
     rqPASTE,		// read the platform clipboard and paste it
-    rqFULLSCREEN	// toggle the window full screen
+    rqFULLSCREEN,	// toggle the window full screen
+    rqMENUOPEN		// drop a menu by its title (the target's own, S5)
 };
 const char *req_name(long k)
 {
@@ -344,6 +345,7 @@ const char *req_name(long k)
 	case rqCLIPSET: return "clipset";
 	case rqPASTE: return "paste";
 	case rqFULLSCREEN: return "fullscreen";
+	case rqMENUOPEN: return "menuopen";
     }
     return "";
 }

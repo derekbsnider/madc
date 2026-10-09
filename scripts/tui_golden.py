@@ -61,7 +61,9 @@ def EDIT(name, wait):
             ('enter', wait)]
 
 # (name, [ (key name | 'text:<chars>', text to wait for | None) ... ],
-#  terminal environment, sizes) — sizes None = every size in SIZES.
+#  terminal environment, sizes[, bundle]) — sizes None = every size in
+# SIZES; a bundle names a fixture plugin under tests/tui_golden/plugins/,
+# installed in the run's config directory and launched with --profile.
 SCENARIOS = [
     ('startup', [], {}, None),
     ('options', [('options', None)], {}, None),
@@ -93,6 +95,10 @@ SCENARIOS = [
     ('menu-darkplus', DARKPLUS + [('esc', None), ('f10', None)], DEPTH_TRUE,
      [(36, 120)]),
     ('menu-ascii', [('f10', None)], ASCII, [(24, 80)]),
+    # the toolbar (S5): glyphs for the icons, a divider, the drop arrow;
+    # Stop disabled (no window); in ASCII the glyphs as > # v
+    ('toolbar', [], {}, None, 'tbgolden'),
+    ('toolbar-ascii', [], ASCII, [(24, 80)], 'tbgolden'),
 ]
 
 
@@ -117,15 +123,21 @@ def wait_for(fd, scr, text, limit=30.0):
     return False
 
 
-def run_scenario(name, steps, env, rows, cols, work):
+def run_scenario(name, steps, env, rows, cols, work, bundle=None):
     path = os.path.join(work, 'golden.cpp')
     with open(path, 'w') as f:
         f.write(SOURCE)
     cfg = os.path.join(work, 'cfg')
+    shutil.rmtree(cfg, ignore_errors=True)
     os.makedirs(cfg, exist_ok=True)
+    argv = [os.path.abspath(MADC), os.path.abspath('tools/madcide/madcide.mad'),
+            'golden.cpp']
+    if bundle:
+        shutil.copytree(os.path.join(GOLDEN_DIR, 'plugins', bundle),
+                        os.path.join(cfg, 'plugins', bundle))
+        argv += ['--profile', bundle]
     # the file is opened by its RELATIVE name so the status line is stable
-    pid, fd = spawn([os.path.abspath(MADC), os.path.abspath('tools/madcide/madcide.mad'),
-                     'golden.cpp'], rows, cols,
+    pid, fd = spawn(argv, rows, cols,
                     env_extra=dict(env, MADCIDE_CONFIG_DIR=cfg), cwd=work)
     scr = Screen(rows, cols)
     try:
@@ -153,10 +165,12 @@ def main():
     failures = []
     checked = 0
     try:
-        for name, steps, env, sizes in SCENARIOS:
+        for sc in SCENARIOS:
+            name, steps, env, sizes = sc[:4]
+            bundle = sc[4] if len(sc) > 4 else None
             for rows, cols in (sizes or SIZES):
                 label = '%s %dx%d' % (name, cols, rows)
-                scr, why = run_scenario(name, steps, env, rows, cols, work)
+                scr, why = run_scenario(name, steps, env, rows, cols, work, bundle)
                 if scr is None:
                     failures.append('%s: %s' % (label, why))
                     continue

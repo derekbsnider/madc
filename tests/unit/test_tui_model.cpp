@@ -36,7 +36,7 @@ using madc::hub::tui_paint_plan;
 using madc::hub::tui_diff_plan;
 using madc::hub::tui_bindings;
 using madc::hub::tui_frame;
-using madc::hub::ui_box_ascii;
+using madc::hub::ui_glyph_ascii;
 using madc::hub::key_mod_bits;
 using madc::hub::menu_col;
 using madc::hub::menu_row;
@@ -784,13 +784,13 @@ TEST_CASE("compose — a left sidebar carves a full-height column band")
     CHECK(g.at(1, 12).ch == 'x');			// the editor edit, centre cols
 }
 
-TEST_CASE("compose — a root toolbar hint takes the top row as [Label chord] buttons; the bands lay out below it")
+TEST_CASE("compose — a root toolbar hint takes the top row as buttons; the bands lay out below it")
 {
     // Plan §41.11a: the rows madcide places on the toolbar ride the root's
-    // `toolbar` hint; the grid draws them as one line, each with the chord
-    // the LOADED profile binds to its code (else nothing), and the sidebar
-    // and the centre start on the row after it. The sidebar case above,
-    // with no hint, starts at row 0 (the negative control).
+    // `toolbar` hint; the grid draws them as one row of buttons (their
+    // chords are the menus' — facelift S5), and the sidebar and the centre
+    // start on the row after it. The sidebar case above, with no hint,
+    // starts at row 0 (the negative control).
     world w;
     roles r = roles::standard(w);
     uinode root(r.group);
@@ -822,7 +822,7 @@ TEST_CASE("compose — a root toolbar hint takes the top row as [Label chord] bu
     tui_model m;
     m.set_bindings(b);
     const tui_grid &g = m.compose(r, root, 6, 40);
-    CHECK(g.row_text(0) == "[Run f5] [Save]");
+    CHECK(g.row_text(0) == " Run  Save");
     CHECK(g.at(1, 0).ch == 'd');			// the sidebar, one row down
     CHECK(g.at(1, 13).ch == 'm');			// the centre status " main.mad"
     CHECK(g.at(2, 12).ch == 'x');			// the editor edit
@@ -1389,12 +1389,17 @@ TEST_CASE("frame — a line's arms decide its glyph; meeting lines make the junc
 
 TEST_CASE("frame — a terminal without box drawing spells each glyph in ASCII")
 {
-    CHECK(ui_box_ascii(packed("\xe2\x94\x80")) == '-');
-    CHECK(ui_box_ascii(packed("\xe2\x94\x82")) == '|');
-    CHECK(ui_box_ascii(packed("\xe2\x94\xa4")) == '+');
-    CHECK(ui_box_ascii(packed("\xe2\x94\xbc")) == '+');
-    CHECK(ui_box_ascii('a') == 0);
-    CHECK(ui_box_ascii(packed("\xc3\xa9")) == 0);		// é is text, not a frame
+    CHECK(ui_glyph_ascii(packed("\xe2\x94\x80")) == '-');
+    CHECK(ui_glyph_ascii(packed("\xe2\x94\x82")) == '|');
+    CHECK(ui_glyph_ascii(packed("\xe2\x94\xa4")) == '+');
+    CHECK(ui_glyph_ascii(packed("\xe2\x94\xbc")) == '+');
+    CHECK(ui_glyph_ascii('a') == 0);
+    CHECK(ui_glyph_ascii(packed("\xc3\xa9")) == 0);		// é is text, not a frame
+    // The toolbar's glyphs (S5): ▶ ■ ▾ in ASCII; … is text, not chrome.
+    CHECK(ui_glyph_ascii(packed("\xe2\x96\xb6")) == '>');
+    CHECK(ui_glyph_ascii(packed("\xe2\x96\xa0")) == '#');
+    CHECK(ui_glyph_ascii(packed("\xe2\x96\xbe")) == 'v');
+    CHECK(ui_glyph_ascii(packed("\xe2\x80\xa6")) == 0);
 }
 
 TEST_CASE("compose — a bottom panel's divider meets a right sidebar's: ┤")
@@ -1847,4 +1852,84 @@ TEST_CASE("menu — a bound F10 or Alt+letter stays the profile's")
     CHECK(ev[0].kind == tui_event_kind::focus);
     const tui_grid &g = m.compose(r, root, 10, 30);
     CHECK(g.row_text(2).find("Undo") != std::string::npos);
+}
+
+// The toolbar (facelift S5): New, Open, a separator, Run (icon run, its
+// arrow dropping the Run menu), Stop (icon stop, disabled).
+static madc::value tb_button(const char *label, const char *action, int64_t icon,
+			     bool enabled = true, const char *drop = NULL)
+{
+    std::map<std::string, madc::value> o;
+    o["label"] = madc::value(std::string(label));
+    o["action"] = madc::value(std::string(action));
+    if ( icon )
+	o["icon"] = madc::value(icon);
+    if ( !enabled )
+	o["enabled"] = madc::value((int64_t)0);
+    if ( drop )
+    {
+	std::map<std::string, madc::value> d;
+	d["action"] = madc::value(std::string("menushow"));
+	d["arg"] = madc::value(std::string(drop));
+	o["drop"] = madc::value::make_object(d);
+    }
+    return madc::value::make_object(o);
+}
+static uinode toolbar_tree(world &w, bool held)
+{
+    uinode root = menu_tree(w, held);
+    std::vector<madc::value> tb;
+    tb.push_back(tb_button("New", "new", (int64_t)::ui::icon::file_new));
+    tb.push_back(tb_button("Open", "editfile", (int64_t)::ui::icon::open));
+    std::map<std::string, madc::value> sep;
+    sep["sep"] = madc::value((int64_t)1);
+    tb.push_back(madc::value::make_object(sep));
+    tb.push_back(tb_button("Run", "replrun", (int64_t)::ui::icon::run, true, "Edit"));
+    tb.push_back(tb_button("Stop", "replstop", (int64_t)::ui::icon::stop, false));
+    std::map<std::string, madc::value> rh = root.hints.as_object();
+    rh["toolbar"] = madc::value::make_array(tb);
+    root.hints = madc::value::make_object(rh);
+    return root;
+}
+
+TEST_CASE("toolbar — glyphs for the icons, a divider, the drop arrow; a disabled button dim")
+{
+    world w;
+    roles r = roles::standard(w);
+    uinode root = toolbar_tree(w, true);
+    tui_model m;
+    const tui_grid &g = m.compose(r, root, 8, 40);
+    // under the held bar: " New  Open │ ▶ Run ▾  ■ Stop" — the file
+    // commands are words, run and stop their shapes
+    CHECK(g.row_text(1) == " New  Open \xe2\x94\x82 \xe2\x96\xb6 Run \xe2\x96\xbe  "
+			   "\xe2\x96\xa0 Stop");
+    CHECK((g.at(1, 22).attr.flags & ui_style::DIM) != 0);	// Stop's glyph
+    CHECK((g.at(1, 13).attr.flags & ui_style::DIM) == 0);	// Run's
+    CHECK(g.row_text(2) == "text");				// the flow below
+}
+
+TEST_CASE("toolbar — the application drops a menu under its button (ui::menu_open)")
+{
+    world w;
+    roles r = roles::standard(w);
+    uinode root = toolbar_tree(w, false);
+    tui_model m;
+    m.compose(r, root, 10, 40);
+    CHECK(!m.open_menu("Nothing"));			// no such menu
+    REQUIRE(m.open_menu("Edit"));			// Run's arrow names Edit
+    const tui_grid &g = m.compose(r, root, 10, 40);
+    // no held bar: row 0 stays the toolbar; the box hangs from Run's
+    // button (column 13) on the row below it
+    CHECK(g.row_text(0).find("Run") != std::string::npos);
+    CHECK(g.at(1, 13).ch == packed("\xe2\x94\x8c"));
+    CHECK(g.at(2, 15).ch == 'U');			// "Undo" inside the box
+    // It is the bar's menu: Enter chooses its row, the bar closes.
+    std::vector<tui_event> ev = m.apply_keys(parse("\r"));
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].action_name == "undo");
+    // F10 afterwards opens the bar's first menu under its title again.
+    m.apply_keys(parse("\x1b[21~"));
+    const tui_grid &g2 = m.compose(r, root, 10, 40);
+    CHECK(g2.row_text(0) == "  File  Edit");
+    CHECK(g2.at(1, 1).ch == packed("\xe2\x94\x8c"));
 }

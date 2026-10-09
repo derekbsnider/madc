@@ -267,6 +267,12 @@ struct ui_frontend
     // Does this surface draw tab strips over its regions (the editor's open
     // files, a panel's views — facelift S3)? A line-mode surface does not.
     virtual bool tabs() const { return false; }
+    // Does this surface draw the application's menus itself (the menu bar
+    // and its dropdowns in cells — facelift S4/S5), and so open one when
+    // the application asks (open_menu, by title)? False: the host's menu is
+    // native or there is none, and the application lists a menu its own way.
+    virtual bool menus() const { return false; }
+    virtual bool open_menu(const std::string &) { return false; }
 };
 
 struct ui_grid_frontend : ui_frontend
@@ -276,6 +282,8 @@ struct ui_grid_frontend : ui_frontend
     madc::hub::tui_grid	   painted;	// the diff basis
     ui_grid_frontend() : target((madc::hub::tui_target *)0) { level = ui::TUI; }
     bool tabs() const { return true; }	// a strip is a row of cells (S3)
+    bool menus() const { return true; }	// the bar and its dropdowns (S4)
+    bool open_menu(const std::string &title) { return model.open_menu(title); }
 
     bool open(size_t &r, size_t &c)
     {
@@ -1898,6 +1906,18 @@ bool tabs(int64_t t)
 {
     ui_frontend *f = ui_frontend_get(t);
     return f && f->tabs();
+}
+
+bool menus(int64_t t)
+{
+    ui_frontend *f = ui_frontend_get(t);
+    return f && f->menus();
+}
+
+bool menu_open(int64_t t, const char *title)
+{
+    ui_frontend *f = ui_frontend_get(t);
+    return f && title && f->open_menu(title);
 }
 
 bool clipboard_set(int64_t t, const char *text)

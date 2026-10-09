@@ -274,7 +274,7 @@ no code picks a junction (S6's dialog borders reuse it). The sidebar and the
 panel each give their edge column / row next to the centre to a divider; a
 vertical split's blank column is one. The model always paints box drawing;
 the terminal spells it in ASCII when its locale is not UTF-8
-(`detect_glyph_set` beside `detect_colour_depth`, `ui_box_ascii` at
+(`detect_glyph_set` beside `detect_colour_depth`, `ui_glyph_ascii` at
 emission). The gutter is layout data: a pane line's `gutter` word
 (`default.layout`'s editor pane; Chthonia's too) rides the edit node as a
 hint, and the grid numbers the lines in at least three columns and marks the
@@ -324,6 +324,24 @@ open (JOE's rows unchanged). The scheme's `menubar`, `menu`, `menu_selected`,
 #04395e selection, underlined letters). Goldens: F10 (Unicode, ASCII, Dark+),
 F10 then `s` saving the file, Alt+E then a disabled Cut's letter (the menu
 stays). Submenus wait for submenu data (the menu file has none).
+
+S5 as built (2026-10-09): the toolbar row is the plan's target — `New  Open
+Save │ ▶ Run ▾  ■ Stop`: a button with a run, debug, stop, step or breakpoints
+icon shows its shape (`▶ ▷ ■ ↷ ↓ ↑ ●`), the file commands their words, a
+separator row a divider, a button whose `drop` names a menu ends in `▾`, a
+disabled one dim; the chords are the menus' now. The ASCII spelling of every
+chrome glyph is one owner, `ui_glyph_ascii` (`ui_box_ascii` grown: box
+drawing plus `> # * v ^`). The arrow's `menushow MENU` is the frontend's when it
+draws menus: `ui::menus(t)` (the grid) is the session's `hasmenus` fact, and
+the command parks a `menuopen` request the client serves with
+`ui::menu_open(t, title)` — the grid drops that bar menu under its toolbar
+button (the same dropdown, keys and action events as S4); a client that draws
+none (a window's native menu, a browser page) or a target that refuses gets the
+session's choice list, as before. The scheme's `toolbar` colours the row
+(Dark+: the side-bar surface). Goldens: the toolbar in Unicode and ASCII from a
+fixture bundle (`tests/tui_golden/plugins/tbgolden`, installed per run in the
+harness's config directory and launched with `--profile`); the drop itself is
+pinned by the unit cases and `testmadcide_menushow` until S7's mouse clicks it.
 
 Each slice: unit tests in `tests/unit/test_tui_model.cpp`, its goldens,
 Tier 1 + Tier 2. The battery runs once, at the seam. A GUI or TUI change is

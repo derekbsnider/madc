@@ -9173,13 +9173,21 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 	    }
 	    case cmdMENUSHOW:
 	    {
-		// A toolbar button's arrow: its menu as a choice list.
+		// A toolbar button's arrow: its menu — the client's own
+		// dropdown when it draws menus (the grid, facelift S5), else
+		// as a choice list.
 		var ma;
 		keyed_get(ma, ev, "arg");
 		var ms = "";
 		if ( !ma.is_null() )
 		    ms = format("{}", ma);
-		menu_show(w, es, doc, ms.c_str());
+		if ( es_flag(w, es, "hasmenus") )
+		{
+		    var rq = { "kind": rqMENUOPEN, "pause": 0, "menu": ms };
+		    ui::set(w, es, "termreq", rq);
+		}
+		else
+		    menu_show(w, es, doc, ms.c_str());
 		return true;
 	    }
 	    case cmdNEW:
@@ -10440,7 +10448,7 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 	rh["presence"] = pt;
     // The chrome's colours (facelift S2-S4): the scheme's divider, gutter,
     // gutter_current, current_line, tab, tab_active, statusbar and menu
-    // (menubar, menu, menu_selected, menu_hot, shadow) specs, as
+    // (menubar, menu, menu_selected, menu_hot, shadow) and toolbar specs, as
     // the grid paints them (tui_chrome's names); a
     // scheme that names none leaves the grid's defaults. A hint the window
     // ignores (its chrome is page.css's).
@@ -10451,7 +10459,7 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 	var chrome;		// a null var becomes the map on its first keyed write
 	var names = { "divider", "gutter", "gutter_current", "current_line",
 		      "tab", "tab_active", "statusbar", "menubar", "menu",
-		      "menu_selected", "menu_hot", "shadow" };
+		      "menu_selected", "menu_hot", "shadow", "toolbar" };
 	for ( var cn : names )
 	    if ( !th[cn.c_str()].is_null() )
 		chrome[cn.c_str()] = th[cn.c_str()];
@@ -10796,6 +10804,20 @@ void IdeSession::panel(bool has)
 void IdeSession::tabs(bool has)
 {
     ui::set(w, es, "hastabs", has);
+}
+
+void IdeSession::menus(bool has)
+{
+    ui::set(w, es, "hasmenus", has);
+}
+
+// The client could not drop the menu it was asked for (no menu has that
+// title there): the session's own choice list, as a client that draws no
+// menus gets directly.
+void IdeSession::menu_fallback(var &req)
+{
+    var title = req["menu"];
+    menu_show(w, es, active(0), title.c_str());
 }
 
 // The client could not show the dialog it was asked for (no native dialog

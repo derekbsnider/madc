@@ -38,6 +38,8 @@ menubar #cccccc bg_#3c3c3c
 menu #cccccc bg_#252526
 menu_selected #ffffff bg_#04395e
 menu_hot underline
+# ... and the toolbar row on Dark+'s side-bar surface (facelift S5).
+toolbar #cccccc bg_#252526
 
 # @gui: the window's workbench in Dark+ (the editor's own surfaces).
 @gui bg #1e1e1e

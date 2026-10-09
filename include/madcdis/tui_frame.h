@@ -9,7 +9,7 @@
 // it `┴`, and nobody chooses a junction glyph by hand.
 //
 // The model always paints box drawing. A terminal whose locale cannot show it
-// spells each glyph in ASCII at emission (ui_box_ascii, read by the VT100
+// spells each glyph in ASCII at emission (ui_glyph_ascii, read by the VT100
 // target beside its colour depth) — one degradation point, as for colour.
 //
 // Dependency-free beside the grid. THREAD-SAFETY CONTRACT: plain values,
@@ -107,15 +107,28 @@ struct tui_frame
     }
 };
 
-// A box-drawing glyph (U+2500..U+257F, packed as tui_cell::ch packs it:
-// UTF-8 bytes first-byte-lowest) in ASCII — `-` for a horizontal line, `|`
-// for a vertical one, `+` for a corner or junction; 0 = not box drawing.
-inline char ui_box_ascii(uint32_t packed)
+// A chrome glyph (packed as tui_cell::ch packs it: UTF-8 bytes first-byte-
+// lowest) in ASCII. Box drawing (U+2500..U+257F): `-` for a horizontal line,
+// `|` for a vertical one, `+` for a corner or junction. The toolbar's shapes
+// and arrows (S5, tui_icon_glyph): ▶ ▷ `>`, ■ `#`, ● `*`, ▾ ↓ `v`, ↑ `^`,
+// ↷ `>`. 0 = not a chrome glyph (text keeps its bytes).
+inline char ui_glyph_ascii(uint32_t packed)
 {
     unsigned b0 = packed & 0xff, b1 = (packed >> 8) & 0xff, b2 = (packed >> 16) & 0xff;
-    if ( b0 != 0xe2 || (b1 != 0x94 && b1 != 0x95) || (packed >> 24) != 0 )
+    if ( b0 != 0xe2 || (packed >> 24) != 0 )
 	return 0;
     uint32_t cp = ((b0 & 0x0fu) << 12) | ((b1 & 0x3fu) << 6) | (b2 & 0x3fu);
+    switch ( cp )
+    {
+	case 0x25b6: case 0x25b7: case 0x21b7: return '>';
+	case 0x25a0: return '#';
+	case 0x25cf: return '*';
+	case 0x25be: case 0x2193: return 'v';
+	case 0x2191: return '^';
+	default: break;
+    }
+    if ( b1 != 0x94 && b1 != 0x95 )
+	return 0;
     switch ( cp )
     {
 	case 0x2500: case 0x2501: case 0x2504: case 0x2505: case 0x2508:

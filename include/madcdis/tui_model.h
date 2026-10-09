@@ -75,6 +75,7 @@ enum class tui_chrome : unsigned char
     divider = 0, gutter, gutter_current, current_line,
     tab, tab_active, statusbar,		// S3: strips and the status bar
     menubar, menu, menu_selected, menu_hot, shadow,	// S4: the menu bar
+    toolbar,				// S5: the toolbar row
     count
 };
 inline bool tui_chrome_of(const std::string &name, tui_chrome &out)
@@ -82,7 +83,8 @@ inline bool tui_chrome_of(const std::string &name, tui_chrome &out)
     static const char *const names[] = {
 	"divider", "gutter", "gutter_current", "current_line",
 	"tab", "tab_active", "statusbar",
-	"menubar", "menu", "menu_selected", "menu_hot", "shadow"
+	"menubar", "menu", "menu_selected", "menu_hot", "shadow",
+	"toolbar"
     };
     for ( size_t i = 0; i < (size_t)tui_chrome::count; ++i )
 	if ( name == names[i] )
@@ -114,6 +116,9 @@ private:
     std::map<size_t, size_t> _scroll;		// per edit slot: top line
     std::map<size_t, size_t> _hshift;		// per edit slot: left shift
     key_resolver _keys;			// the ONE chord/key owner (madcdis/keys.h)
+    size_t _tb_row;				// the toolbar's row (npos = none) and
+    std::map<std::string, size_t> _tb_drops;	// each drop button's column, by
+						// the menu it drops (S5)
 
     // One composed output line: text plus attribute spans.
     struct span { size_t col, len; ui_style attr; };
@@ -969,7 +974,7 @@ private:
     }
 
 public:
-    tui_model() {}
+    tui_model() : _tb_row(std::string::npos) {}
 
     const tui_grid &grid() const { return _grid; }
     // Focus and selection are the shared owner's (madcdis/ui_focus.h);
@@ -1000,10 +1005,7 @@ public:
 	// The toolbar (plan §41.11a): a root `toolbar` hint takes the top row
 	// (under the bar); the bands and the centre lay out in the rows below
 	// it. No hint = no row, byte-identical to before (the negative control).
-	const std::string tbline = toolbar_line(tree);
-	const size_t top = mtop + ((!tbline.empty() && rows > mtop + 1) ? 1 : 0);
-	if ( top > mtop )
-	    _grid.put(mtop, 0, tbline);
+	const size_t top = mtop + ((rows > mtop + 1 && paint_toolbar(tree, mtop)) ? 1 : 0);
 	// The status BAR docked at the bottom (S3, the layout's `status
 	// bottom`): the screen's last row, full width, under every band. A
 	// status line at the top (JOE's place) stays in the centre flow.
@@ -1144,8 +1146,19 @@ public:
 	_frame.paint(_grid, _chrome[(size_t)tui_chrome::divider]);
 	// The menu bar and its dropdown LAST: an overlay over everything.
 	if ( mtop || _focus_st.menu_is_open() )
-	    paint_menus();
+	    paint_menus(mtop != 0);
 	return _grid;
+    }
+
+    // Open the menu titled `title` for the APPLICATION (ui::menu_open — a
+    // toolbar button's arrow, facelift S5): it drops under the toolbar
+    // button that names it, else under its bar title. False = no menu has
+    // that title (the application shows its own list instead).
+    bool open_menu(const std::string &title)
+    {
+	std::map<std::string, size_t>::const_iterator di = _tb_drops.find(title);
+	return _focus_st.menu_open_titled(title,
+	    di == _tb_drops.end() ? std::string::npos : di->second);
     }
 
     // The root's `menu` hint ({bar:[{title, items:[{id,code,title,enabled?}
@@ -1240,15 +1253,38 @@ public:
     // it right-aligned, a disabled row dim, the lit row in menu_selected, a
     // separator a rule across the box — with a shadow to its right and
     // below. Painted after everything, so it covers whatever is there.
-    void paint_menus()
+    void paint_menus(bool held)
     {
 	const std::vector<menu_col> &menus = _focus_st.menus();
 	if ( menus.empty() || _grid.rows < 3 || _grid.cols < 8 )
 	    return;
 	const size_t cols = _grid.cols;
+	const size_t open = _focus_st.open_menu();
+	// A menu the application dropped from a toolbar button hangs under
+	// the button; the bar shows only if the layout holds it.
+	const size_t anchor = _focus_st.menu_anchor();
+	if ( open < menus.size() && anchor != std::string::npos
+	  && _tb_row != std::string::npos )
+	{
+	    if ( held )
+		paint_menu_bar(menus, open);
+	    paint_dropdown(menus[open], anchor < cols ? anchor : 0, _tb_row + 1,
+			   _focus_st.menu_lit_row());
+	    return;
+	}
+	std::vector<size_t> at = paint_menu_bar(menus, open);
+	if ( open >= menus.size() )
+	    return;
+	paint_dropdown(menus[open], at[open] < cols ? at[open] : 0, 1,
+		       _focus_st.menu_lit_row());
+    }
+    // The bar on row 0, `open`'s title lit; each title's column.
+    std::vector<size_t> paint_menu_bar(const std::vector<menu_col> &menus,
+				       size_t open)
+    {
+	const size_t cols = _grid.cols;
 	const ui_style bar = _chrome[(size_t)tui_chrome::menubar];
 	const ui_style lit = _chrome[(size_t)tui_chrome::menu_selected];
-	const size_t open = _focus_st.open_menu();
 	_grid.put(0, 0, std::string(cols, ' '), bar);
 	std::vector<size_t> at(menus.size(), cols);
 	size_t c = 1;
@@ -1261,10 +1297,7 @@ public:
 	    put_menu_title(0, c + 1, menus[m].title, menus[m].hot, st);
 	    c += w + 2;
 	}
-	if ( open >= menus.size() )
-	    return;
-	paint_dropdown(menus[open], at[open] < cols ? at[open] : 0, 1,
-		       _focus_st.menu_lit_row());
+	return at;
     }
     // One menu's dropdown box with its top-left corner at (r0, c0) (moved
     // left to fit the screen; rows past the screen's bottom are cut).
@@ -1339,35 +1372,92 @@ public:
 	    _grid.overlay_attr(r1 + 1, c0 + 2, w, shadow);
     }
 
-    // The toolbar's one line (plan §41.11a): each row of the root's
-    // `toolbar` hint as `[Label chord]`, the chord the LOADED profile binds
-    // to the row's code, else to its name (the page's tooltip, the menu's
-    // accelerator: tui_bindings::chord_for). A row with no label or no
-    // action is dropped. "" when the root carries none.
-    std::string toolbar_line(const uinode &tree) const
+    // The picture a toolbar button's icon draws as (S5): the window's shapes
+    // in a cell — ▶ run, ▷ debug, ■ stop, ↷ ↓ ↑ the steps, ● breakpoints; the
+    // file commands are words (as the plan's target screen). "" = none. A
+    // terminal without Unicode spells them in ASCII (ui_glyph_ascii).
+    static const char *tui_icon_glyph(ui_icon ic)
     {
-	std::string line;
+	switch ( ic )
+	{
+	    case ui_icon::run:	       return "\xe2\x96\xb6";	// ▶
+	    case ui_icon::debug:       return "\xe2\x96\xb7";	// ▷
+	    case ui_icon::stop:	       return "\xe2\x96\xa0";	// ■
+	    case ui_icon::step_over:   return "\xe2\x86\xb7";	// ↷
+	    case ui_icon::step_into:   return "\xe2\x86\x93";	// ↓
+	    case ui_icon::step_out:    return "\xe2\x86\x91";	// ↑
+	    case ui_icon::breakpoints: return "\xe2\x97\x8f";	// ●
+	    default:		       return "";
+	}
+    }
+    // The toolbar row (plan §41.11a, facelift S5) from the root's `toolbar`
+    // hint, at `row`: each button its icon's glyph and its label, two
+    // columns apart, a disabled one dim; a button whose `drop` names a menu
+    // ends in ▾ (its column recorded: the menu drops under it, open_menu); a
+    // separator row a divider. A row with no label or no action is dropped.
+    // False (nothing painted) when the root carries none.
+    bool paint_toolbar(const uinode &tree, size_t row)
+    {
+	_tb_row = std::string::npos;
+	_tb_drops.clear();
 	if ( !tree.hints.is_object() )
-	    return line;
+	    return false;
 	const std::map<std::string, madc::value> &ho = tree.hints.as_object();
 	std::map<std::string, madc::value>::const_iterator ti = ho.find("toolbar");
 	if ( ti == ho.end() || !ti->second.is_array() )
-	    return line;
-	const std::vector<madc::value> &tbrows = ti->second.as_array();
-	for ( size_t k = 0; k < tbrows.size(); ++k )
+	    return false;
+	const ui_style base = _chrome[(size_t)tui_chrome::toolbar];
+	bool any = false, pending_sep = false;
+	size_t c = 1;
+	for ( const madc::value &b : ti->second.as_array() )
 	{
-	    if ( !tbrows[k].is_object() )
+	    if ( !b.is_object() )
 		continue;
-	    const std::string label = hint_str(tbrows[k], "label");
-	    const std::string action = hint_str(tbrows[k], "action");
+	    if ( hint_of(b, "sep", 0) )
+	    {
+		pending_sep = any;		// a divider BETWEEN buttons only
+		continue;
+	    }
+	    const std::string label = hint_str(b, "label");
+	    const std::string action = hint_str(b, "action");
 	    if ( label.empty() || action.empty() )
 		continue;
-	    const std::string key = _keys.bindings().chord_for(hint_of(tbrows[k], "code", 0), action);
-	    if ( !line.empty() )
-		line += ' ';
-	    line += "[" + label + (key.empty() ? std::string() : " " + key) + "]";
+	    if ( !any )
+		_grid.put(row, 0, std::string(_grid.cols, ' '), base);
+	    if ( pending_sep )
+	    {
+		_frame.vline(c - 1, row, row);
+		c += 1;
+		pending_sep = false;
+	    }
+	    any = true;
+	    ui_style st = base;
+	    if ( hint_of(b, "enabled", 1) == 0 )
+		st.flags |= ui_style::DIM;
+	    const size_t start = c;
+	    const char *glyph = tui_icon_glyph((ui_icon)hint_of(b, "icon", 0));
+	    if ( *glyph )
+	    {
+		_grid.put(row, c, glyph, st);
+		c += 2;
+	    }
+	    _grid.put(row, c, label, st);
+	    c += madc::line_width(label);
+	    if ( b.is_object() && b.as_object().count("drop") )
+	    {
+		const std::string menu = hint_str(b.as_object().at("drop"), "arg");
+		if ( !menu.empty() )
+		{
+		    _grid.put(row, c + 1, "\xe2\x96\xbe", st);	// ▾
+		    c += 2;
+		    _tb_drops[menu] = start;
+		}
+	    }
+	    c += 2;
 	}
-	return line;
+	if ( any )
+	    _tb_row = row;
+	return any;
     }
 
     // Install a finalized bindings table (a profile swap is a new table);
