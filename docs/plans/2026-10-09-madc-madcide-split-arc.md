@@ -281,12 +281,17 @@ at activation and read at input on the session's thread. No new globals.
 3. ~~Symbols~~ — decided (below): madcide's built-in view; Chthonia uses it.
 4. ~~`madcide --line`~~ — decided (below).
 5. ~~madc releasing while madcide is red~~ — decided: yes.
-6. **MCP as an import library** (owner suggestion 2026-10-09, getting git by
-   importing madcgit): hinges on the change-log stream — the module takes it
-   (subscribing to the buffers' edit notification, saved beside the project)
-   or only the read half moves. Proposed: the module takes it.
-7. **Seats / `--serve` / discovery** (remote control of a running madcide
-   session): proposed madcide; explained, not yet answered.
+6. **MCP layering** (owner 2026-10-09: "an import library, or at least the
+   reusable foundation"). Proposed: (1) a generic MCP protocol module — the
+   JSON-RPC server with tool registration (name, schema, handler) and the MCP
+   client; (2) the code-graph tools over madc's core (`graph_*`, buffers,
+   undo) registered into it, the git-history tools only when madcgit is
+   loaded; (3) a change-log / Nexus module (records, links, proposals, test
+   runs) subscribing to the buffers' edit notification, saved beside the
+   project; (4) registered commands (madcide's among them) exposed as tools.
+   Open: whether `madc --mcp FILE` serves (1)+(2) as `madc --lsp` serves the
+   LSP, or MCP stays import-only.
+7. ~~Seats~~ — decided (below).
 8. **Where madc.ini's `std` sits** in the standard precedence: proposed
    `--std` > file extension > madc.ini/env `std` > madc.
 
@@ -306,6 +311,15 @@ at activation and read at input on the session's thread. No new globals.
 - **madc.ini loads modules**, as php.ini loads extensions (a repeatable key).
 - **A madc release may land while madcide is red against it** (madcide pins
   its madc).
+- **The module principle** (owner): "modules are madc-language
+  extensions/libraries that any madc program could benefit from... including
+  madcide". A capability goes into a module when a program other than
+  madcide could use it; madcide is one consumer.
+- **Seats, `--serve`, `--attach`, `-c`, the ws window: madcide's** (owner:
+  "unless it could be a reusable module beyond it"). Their reusable
+  foundation is already madc's (`serve_web`, WebSocket, the `conn_*` roster,
+  `<ns_ui_ws>`). Discovery (~350 lines) becomes a module only when a second
+  consumer appears (e.g. `madc --lsp` attach).
 
 ## Decided (owner, 2026-10-09)
 
