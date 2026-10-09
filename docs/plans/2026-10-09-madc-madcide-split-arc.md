@@ -39,6 +39,10 @@ The lines (owner, 2026-10-09):
   side, and every `:` / `%` command that drives it stays on the madc side
   too. madcide presents it (menus, the Problems pane, project views).
 
+**The inventory** — every capability, its UI level, what it depends on and
+its proposed side, plus the fine-line decisions F1–F6 — is
+`2026-10-09-madc-madcide-inventory.md`.
+
 ## What the recon found
 
 1. **madc already owns the REPL commands.** Every `%` / `.` / `:` / `?`
