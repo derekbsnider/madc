@@ -97,8 +97,10 @@ its proposed side, plus the fine-line decisions F1–F6 — is
   table stays the one owner; a host (madcide, a plugin, a plain-prompt
   module) registers further names into it, resolved to an enum/code once at
   input (enum-over-strings). D24's recognition rule (any leading `. % : ?`
-  except `.`-digit, `::`, `%:`) and fall-through replace `command_text`'s
-  narrow rule.
+  except `.`-digit, `::`, `%:`) replaces `command_text`'s narrow rule, and
+  the prefixes are MODES (owner 2026-10-09): `%` and `.` the REPL's
+  commands, `?` the query, `:` ed/ex/vim commands ONLY — colon mode, the
+  host's; one mode's command may alias another mode's.
 - **The document component — file buffers are madc's** (owner 2026-10-09;
   Phase 1A.1). A `text_buffer` plus path / kind / modified / read-only /
   load-save, its parse handle, anchors and marks, a version, and the EDIT
@@ -263,10 +265,13 @@ items are their own sessions, any time.
    `new_document`, `setup_document`) become this component's operations
    (NOT madcide's — a correction to the retirement paragraph above). A
    buffer ring is a per-world entity set, not a global.
-2. **The command registry's extension point** + D24 recognition and
-   fall-through (`madc_session.cpp`'s table stays the one owner; a module
-   or a host registers names, resolved to a code once at input; `%help`
-   lists the one registry). The extension point exists today ONLY inside
+2. **The command registry's extension point** + D24 recognition with the
+   modal prefixes (owner 2026-10-09: `:` is colon mode only; `%` `.` `?`
+   the REPL's; cross-mode aliases) — design
+   `2026-10-09-command-registry-design.md`. `madc_session.cpp`'s table stays
+   the one owner of the REPL commands; a module (in the session) or a host
+   (by payload) registers names, resolved to a code once at input; `%help`
+   lists the one registry. The extension point exists today ONLY inside
    madcide's REPL pane (`plugin_repl_command`) — `madc -i` has no hook.
 3. **PCRE2 into libmadc** (decided, below) + the five regex functions'
    fixes (invalid pattern refused; `madc::` three leave `ns_perl.cpp`; lean
