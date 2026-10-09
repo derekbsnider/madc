@@ -5,7 +5,8 @@
 # what the terminal showed.
 #
 # What it models: CUP/HVP, CUU/CUD/CUF/CUB, CHA, VPA, ED, EL, IL, DL, SU, SD,
-# DECSTBM (scroll region), RI / IND, REAL tab stops (a raw 0x09 MOVES the
+# DECSTBM (scroll region), RI / IND, autowrap (DECAWM, xterm's deferred
+# wrap at the right margin), REAL tab stops (a raw 0x09 MOVES the
 # cursor without erasing the cells it skips), UTF-8 text, and SGR: the
 # attributes (bold, dim, italic, underline, blink, inverse) and the colours
 # in every depth a renderer may emit — 8/16 (30-37, 90-97), 256 (38;5;n)
@@ -62,6 +63,13 @@ class Screen:
         self.bot = rows - 1
         self.style = NORMAL
         self.carry = b''   # an escape sequence / UTF-8 split across feed()s
+        # xterm's deferred wrap (DECAWM, on by default): a glyph written in
+        # the last column leaves the cursor there with a wrap PENDING; the
+        # next glyph first moves to the next line (scrolling at the bottom
+        # margin), and any cursor control cancels it. A renderer that re-paints
+        # whole rows (Windows' ConPTY) relies on it between rows.
+        self.autowrap = True
+        self.wrap = False
 
     def _blank(self):
         return [' '] * self.COLS
@@ -136,10 +144,22 @@ class Screen:
         self.style = (fg, bg, frozenset(attrs))
 
     def _put(self, ch):
+        if self.wrap:
+            self.wrap = False
+            self.c = 0
+            self._line_feed()
         self.rows[self.r][self.c] = ch
         self.styles[self.r][self.c] = self.style
         if self.c < self.COLS - 1:
             self.c += 1
+        elif self.autowrap:
+            self.wrap = True
+
+    def _line_feed(self):
+        if self.r == self.bot:
+            self.scroll_up()
+        else:
+            self.r = min(self.ROWS-1, self.r + 1)
 
     def feed(self, data):
         data = self.carry + data
@@ -174,7 +194,13 @@ class Screen:
                 fin = chr(data[j])
                 i = j + 1
                 if body.startswith('?') or body.startswith('>'):
-                    continue                    # a DEC private mode: no screen effect
+                    # a DEC private mode: only autowrap affects the screen
+                    if body == '?7' and fin in 'hl':
+                        self.autowrap = fin == 'h'
+                        self.wrap = False
+                    continue
+                if fin != 'm':
+                    self.wrap = False           # every other CSI moves or erases
                 ps = [int(x) if x.isdigit() else 0 for x in body.split(';')] if body else []
                 p1 = ps[0] if ps else 0
                 p2 = ps[1] if len(ps) > 1 else 0
@@ -230,6 +256,7 @@ class Screen:
                         self.scroll_down()
                 continue
             if b == 0x1b:
+                self.wrap = False
                 nxt = data[i+1]
                 if nxt == 0x4d:  # RI
                     if self.r == self.top:
@@ -253,13 +280,12 @@ class Screen:
                     continue
                 i += 2
                 continue
+            if b in (0x0d, 0x0a, 0x08, 0x09):
+                self.wrap = False
             if b == 0x0d:
                 self.c = 0
             elif b == 0x0a:
-                if self.r == self.bot:
-                    self.scroll_up()
-                else:
-                    self.r = min(ROWS-1, self.r + 1)
+                self._line_feed()
             elif b == 0x08:
                 self.c = max(0, self.c - 1)
             elif b == 0x09:
