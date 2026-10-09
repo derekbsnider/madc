@@ -405,6 +405,33 @@ Tests: `bin/test_term_screen` (SGR to spans, the owner round trip, the spec
 inverse), `testmadcide_termcolour` (printf's bold red word on a pty, the
 screen's rows and the view's `spans`, the exit line plain).
 
+S9 as built (2026-10-09): the Windows build of madc paints, reads keys and reads
+the mouse as the POSIX one does — proven against the SAME goldens on genuine
+Windows (the owner's box, Windows 11 build 26200), not a second set.
+`scripts/tui_win_golden.py` (run on the container) stages the packed
+`bin/release-windows` madc.exe, its DLLs and the `tools/` tree on the box, and
+replays every `tui_golden` scenario's keys and mouse bytes. The channel is
+ssh into the box's WSL. WSL interop hands a Win32 program pipes, never a
+console, so `scripts/conpty_host.c` (cross-built with mingw, test tooling only)
+runs madc.exe inside a ConPTY — the pseudo-console Windows Terminal hosts
+programs in — and the bytes cross ssh on plain pipes, no line discipline on
+either end. Two facts of ConPTY's renderer reached the shared interpreter
+(`scripts/vtscreen.py`), not madc: it re-paints whole rows and relies on
+xterm's deferred autowrap between them, and it writes a blank run as ECH
+(`CSI n X`). Both are modelled there now, and the POSIX goldens are unchanged.
+The comparison drops a blank cell's invisible style words on both sides
+(foreground and glyph-only attributes, not inverse): ConPTY re-encodes a space
+with whatever foreground is cheapest. Result: 31 of 31 screens match — every
+scenario but the three that pin a POSIX `LC_ALL=C` locale for ASCII frames (a
+Windows console's glyphs follow its code page, which the target sets to
+UTF-8). That includes the menus, the toolbar, the dialogs, the Dark+ colours
+in 16, 256 and 24-bit depth, Alt keys, F-keys, and the mouse on menus,
+dropdowns, the caret and tab close. That
+is the [validate-win] item S7 carried (the console's mouse modes, QuickEdit
+off). Not driven: a classic conhost WINDOW and a Windows Terminal window on the
+desktop — the same console target behind a GUI window, which needs the owner's
+go to open on their desktop.
+
 Each slice: unit tests in `tests/unit/test_tui_model.cpp`, its goldens,
 Tier 1 + Tier 2. The battery runs once, at the seam. A GUI or TUI change is
 verified by driving input, never by a screenshot alone.
