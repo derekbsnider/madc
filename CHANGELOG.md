@@ -2,6 +2,35 @@
 
 ## [Unreleased]
 
+### tui: tab strips and the status bar (facelift S3)
+
+The editor's tab strip is now a frontend capability rather than a side effect
+of having a window. `ui::tabs(t)` (`bool tabs(int64_t)` in `include/madc/ns_ui`,
+dispatched to each `ui_frontend::tabs()` in `src/ns_ui.cpp`) reports whether a
+target draws tab strips over its regions: the grid and the browser page do, a
+line-mode target and a bad handle do not. The madcide session records it as the
+`hastabs` fact (`IdeSession::tabs(bool)`, pushed beside `panel()` in `run_ide`,
+`spawn_client`, `serve_ws_client`, and off in `run_line`); `haspanel` keeps its
+own meaning — "a window", where runs and the shell go — and only the editor tab
+strip moved onto `hastabs` (`compose_editor_flat` now gates its tab node on
+`hastabs`). The grid draws a node's `tabs` hint as a strip in the flow (the
+editor's open files) through `tab_strip` in `include/madcdis/tui_model.h`, the
+one strip builder that also heads a leaf pane; a chrome band's titles are
+uppercased, as the window's panel headers. The status bar's edge is layout data:
+a `status top|bottom` window line (`tools/madcide/profiles/default.layout` and
+the baked default carry `status bottom`) docks the status node at the screen's
+last row, full width under the bands, drawn from its `items` segments — the left
+side from the left edge, the right side against the right, the file name bold and
+the labels dim; a layout without the line keeps JOE's status line on top,
+byte-identical. The `tui_chrome` enum gains `tab`, `tab_active` and `statusbar`,
+coloured by the scheme's specs of those names (Dark+ `tab` #969696, `tab_active`
+bold underlined white, `statusbar` white on #007acc in
+`tools/madcide/profiles/vscode.theme`). `bin/test_tui_model` runs 43 cases (3 new
+S3 cases; the bottom-panel case now expects its strip uppercase);
+`scripts/tui_golden_gate.sh` pins 15 golden screens (new `tabs-second-80x24` and
+`tabs-back-80x24`, the strip switched by `^K E`), and `scripts/tui_scroll_gate.sh`
+stays green.
+
 ### tui: frames, the line-number gutter and the current line (facelift S2)
 
 The TUI now draws box-drawing frames. A new frame layer

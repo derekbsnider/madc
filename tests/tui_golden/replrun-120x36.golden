@@ -1,5 +1,5 @@
 text:
- 0| A golden.cpp                                                                                           Row    1 Col   1
+ 0| golden.cpp
  1|   1  #include <stdio.h>
  2|   2  // a comment
  3|   3  int main(void)
@@ -27,16 +27,16 @@ text:
 25|
 26|
 27|────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-28| Problems  Output  Terminal  REPL
+28| PROBLEMS  OUTPUT  TERMINAL  REPL
 29|c++17> %run golden.cpp
 30|hi 42
 31|c++17>
 32|
 33|
 34|
-35|
+35| A  golden.cpp                                                                                             Row 1  Col 1
 styles:
- 0 0+120:inverse
+ 0 0+12:inverse
  1 6+8:fg=4 15+9:bold,fg=6
  2 0+4:dim 6+12:fg=2
  3 0+4:dim 6+3:bold 15+4:bold
@@ -46,3 +46,4 @@ styles:
  7 0+4:dim
  8 0+4:dim
 28 28+6:inverse
+35 0+4:inverse 4+10:bold,inverse 14+93:inverse 107+3:dim,inverse 110+4:inverse 114+3:dim,inverse 117+3:inverse

@@ -1,5 +1,5 @@
 text:
- 0| A golden.cpp                                                                                           Row    1 Col   1
+ 0| golden.cpp
  1|   1  #include <stdio.h>
  2|   2  // a comment
  3|   3  int main(void)
@@ -32,11 +32,11 @@ text:
 30|
 31|
 32|
-33|
-34|Options  D Tab width   8   S Scheme      vscode   K Keymap      joe   I Autoindent  on
-35|Theme: vscode.
+33|Options  D Tab width   8   S Scheme      vscode   K Keymap      joe   I Autoindent  on
+34|Theme: vscode.
+35| A  golden.cpp                                                                                             Row 1  Col 1
 styles:
- 0 0+120:inverse
+ 0 0+12:bold,underline,fg=231
  1 0+4:fg=251 6+8:fg=175,bg=235 14+1:bg=235 15+9:fg=174,bg=235 24+96:bg=235
  2 0+4:fg=102 6+12:fg=65
  3 0+4:fg=102 6+3:fg=74 10+4:fg=187 15+4:fg=74
@@ -45,4 +45,5 @@ styles:
  6 0+4:fg=102 14+6:fg=175 21+1:fg=151
  7 0+4:fg=102
  8 0+4:fg=102
-34 26+22:inverse
+33 26+22:inverse
+35 0+4:fg=231,bg=32 4+10:bold,fg=231,bg=32 14+93:fg=231,bg=32 107+3:dim,fg=231,bg=32 110+4:fg=231,bg=32 114+3:dim,fg=231,bg=32 117+3:fg=231,bg=32

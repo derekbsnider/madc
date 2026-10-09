@@ -22,11 +22,16 @@ member #9cdcfe
 enumerator #4fc1ff
 
 # The terminal's chrome (facelift S2): the dividers, the editor's line
-# numbers, the caret line's number, and the caret line itself, in Dark+.
+# numbers, the caret line's number, and the caret line itself, in Dark+ ...
 divider #444444
 gutter #858585
 gutter_current #c6c6c6
 current_line bg_#282828
+# ... the tab strips (the active tab bright and underlined) and the status
+# bar on its accent blue (facelift S3).
+tab #969696
+tab_active bold underline #ffffff
+statusbar #ffffff bg_#007acc
 
 # @gui: the window's workbench in Dark+ (the editor's own surfaces).
 @gui bg #1e1e1e

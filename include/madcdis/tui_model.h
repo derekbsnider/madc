@@ -72,12 +72,15 @@ namespace hub {
 // object (keys = these names); tui_chrome_of converts each key ONCE.
 enum class tui_chrome : unsigned char
 {
-    divider = 0, gutter, gutter_current, current_line, count
+    divider = 0, gutter, gutter_current, current_line,
+    tab, tab_active, statusbar,		// S3: strips and the status bar
+    count
 };
 inline bool tui_chrome_of(const std::string &name, tui_chrome &out)
 {
     static const char *const names[] = {
-	"divider", "gutter", "gutter_current", "current_line"
+	"divider", "gutter", "gutter_current", "current_line",
+	"tab", "tab_active", "statusbar"
     };
     for ( size_t i = 0; i < (size_t)tui_chrome::count; ++i )
 	if ( name == names[i] )
@@ -178,13 +181,15 @@ private:
 	size_t c0, width;
 	std::vector<std::string> header;
 	size_t header_active;
+	bool header_upper;	// a chrome band's strip: titles uppercase, as the
+				// window's panel headers (S3)
 	std::vector<flow_item> order;
 	std::vector<line_out> lines;
 	std::vector<edit_slot> edits;
 	std::vector<region> subs;
 	std::vector<region> kids;
 	region() : is_split(false), dir(ui_split::none), size(0),
-	    c0(0), width(0), header_active(0) {}
+	    c0(0), width(0), header_active(0), header_upper(false) {}
     };
     static void emit_line(region &f, const line_out &l)
     {
@@ -291,6 +296,20 @@ private:
 	    fl.subs.push_back(collect_region(r, n, fl.c0, fl.width));
 	    fl.order.push_back(si);
 	    return;
+	}
+	// A node carrying a `tabs` strip (the editor's open files, S3): the
+	// strip is its line — the window docks it above the editor the same.
+	{
+	    std::vector<std::string> titles;
+	    size_t active = 0;
+	    read_header(n, titles, active);
+	    if ( !titles.empty() )
+	    {
+		emit_line(fl, tab_strip(titles, active, false));
+		for ( size_t i = 0; i < n.children.size(); ++i )
+		    collect_flow(r, n.children[i], fl);
+		return;
+	    }
 	}
 	if ( n.role == r.heading )
 	{
@@ -537,25 +556,41 @@ private:
 	    _grid.fill_attr(row, col0 + cs, ce - cs, l.spans[i].attr);
 	}
     }
-    // A leaf pane's header line: the tab titles, the active one reverse.
-    void paint_header(size_t row, size_t col0,
-	const std::vector<std::string> &titles, size_t active)
+    // A tab strip as one line: each title padded by a blank, the active
+    // one in the scheme's tab_active style, the rest in its tab style; a
+    // chrome band's titles uppercase (S3). The ONE strip builder — a leaf
+    // pane's header and the editor's open files.
+    line_out tab_strip(const std::vector<std::string> &titles, size_t active,
+		       bool upper) const
     {
 	line_out l;
 	for ( size_t i = 0; i < titles.size(); ++i )
 	{
-	    std::string seg = " " + titles[i] + " ";
-	    if ( i == active )
+	    std::string t = titles[i];
+	    if ( upper )
+		for ( size_t k = 0; k < t.size(); ++k )
+		    if ( t[k] >= 'a' && t[k] <= 'z' )
+			t[k] = (char)(t[k] - 'a' + 'A');
+	    std::string seg = " " + t + " ";
+	    const ui_style &st = _chrome[(size_t)(i == active ? tui_chrome::tab_active
+							      : tui_chrome::tab)];
+	    if ( !st.is_normal() )
 	    {
 		span s;
 		s.col = l.text.size();
 		s.len = seg.size();
-		s.attr = ui_style::reverse();
+		s.attr = st;
 		l.spans.push_back(s);
 	    }
 	    l.text += seg;
 	}
-	paint_line(row, col0, l);
+	return l;
+    }
+    // A leaf pane's header line: its tab strip.
+    void paint_header(size_t row, size_t col0,
+	const std::vector<std::string> &titles, size_t active, bool upper)
+    {
+	paint_line(row, col0, tab_strip(titles, active, upper));
     }
 
     // A document line's byte->display-column map is madc::line_layout's
@@ -701,6 +736,88 @@ private:
 	    }
 	}
     }
+    // A status node the layout docks at the BOTTOM edge (region statusbar,
+    // side bottom — facelift S3).
+    static bool is_bottom_status_bar(const roles &r, const uinode &n)
+    {
+	return n.role == r.status && hint_str(n.hints, "region") == "statusbar"
+	    && hint_str(n.hints, "side") == "bottom";
+    }
+    // The status bar's line: its `items` segments ({seat, label, text}) —
+    // the left side from the left edge, the right side against the right,
+    // each label dim and the file name (seat `n`) bold, on the scheme's
+    // statusbar style; a node without items shows its text.
+    line_out status_bar_line(const uinode &n, size_t cols) const
+    {
+	const ui_style bar = _chrome[(size_t)tui_chrome::statusbar];
+	ui_style label = bar;
+	label.flags |= ui_style::DIM;
+	ui_style name = bar;
+	name.flags |= ui_style::BOLD;
+	line_out sides[2];
+	static const char *const keys[2] = { "left", "right" };
+	const madc::value *items = NULL;
+	if ( n.hints.is_object() )
+	{
+	    const std::map<std::string, madc::value> &ho = n.hints.as_object();
+	    std::map<std::string, madc::value>::const_iterator ii = ho.find("items");
+	    if ( ii != ho.end() && ii->second.is_object() )
+		items = &ii->second;
+	}
+	if ( !items )
+	    sides[0] = line_out(" " + node_text(n));
+	for ( int k = 0; items && k < 2; ++k )
+	{
+	    const std::map<std::string, madc::value> &io = items->as_object();
+	    std::map<std::string, madc::value>::const_iterator si = io.find(keys[k]);
+	    if ( si == io.end() || !si->second.is_array() )
+		continue;
+	    line_out &l = sides[k];
+	    for ( const madc::value &seg : si->second.as_array() )
+	    {
+		if ( !seg.is_object() )
+		    continue;
+		std::string lab = hint_str(seg, "label"), txt = hint_str(seg, "text");
+		if ( txt.empty() )
+		    continue;
+		l.text += l.text.empty() ? " " : "  ";
+		if ( !lab.empty() )
+		{
+		    span s; s.col = l.text.size(); s.len = lab.size(); s.attr = label;
+		    l.spans.push_back(s);
+		    l.text += lab + " ";
+		}
+		if ( hint_str(seg, "seat") == "n" )
+		{
+		    span s; s.col = l.text.size(); s.len = txt.size(); s.attr = name;
+		    l.spans.push_back(s);
+		}
+		l.text += txt;
+	    }
+	}
+	if ( !sides[1].text.empty() )
+	    sides[1].text += " ";
+	// Justify: the right side against the right edge when both fit.
+	line_out out = sides[0];
+	size_t lw = madc::line_width(out.text), rw = madc::line_width(sides[1].text);
+	if ( rw && lw + rw + 1 <= cols )
+	{
+	    out.text += std::string(cols - lw - rw, ' ');
+	    size_t at = out.text.size();
+	    for ( const span &sp : sides[1].spans )
+	    {
+		span s = sp;
+		s.col += at;
+		out.spans.push_back(s);
+	    }
+	    out.text += sides[1].text;
+	}
+	// The bar's own style under the segments' (a span past the text is a
+	// column: the whole row).
+	span whole; whole.col = 0; whole.len = cols; whole.attr = bar;
+	out.spans.insert(out.spans.begin(), whole);
+	return out;
+    }
     // This compose's chrome styles from the root's `chrome` hint object
     // ({ "<tui_chrome name>": "<style spec>" }): an unknown name or a spec
     // the parser refuses leaves that element's default — the gutter dim, the
@@ -710,6 +827,8 @@ private:
 	for ( size_t i = 0; i < (size_t)tui_chrome::count; ++i )
 	    _chrome[i] = ui_style::normal();
 	_chrome[(size_t)tui_chrome::gutter].flags = ui_style::DIM;
+	_chrome[(size_t)tui_chrome::tab_active] = ui_style::reverse();
+	_chrome[(size_t)tui_chrome::statusbar] = ui_style::reverse();
 	if ( !tree.hints.is_object() )
 	    return;
 	const std::map<std::string, madc::value> &ho = tree.hints.as_object();
@@ -775,7 +894,7 @@ private:
     {
 	if ( !f.header.empty() && h > 0 )
 	{
-	    paint_header(r0, f.c0, f.header, f.header_active);
+	    paint_header(r0, f.c0, f.header, f.header_active, f.header_upper);
 	    ++r0;
 	    --h;
 	}
@@ -872,7 +991,16 @@ public:
 	const size_t top = (!tbline.empty() && rows > 1) ? 1 : 0;
 	if ( top )
 	    _grid.put(0, 0, tbline);
-	const size_t body_rows = rows - top;
+	// The status BAR docked at the bottom (S3, the layout's `status
+	// bottom`): the screen's last row, full width, under every band. A
+	// status line at the top (JOE's place) stays in the centre flow.
+	const uinode *bar = NULL;
+	for ( size_t i = 0; i < tree.children.size(); ++i )
+	    if ( is_bottom_status_bar(r, tree.children[i]) )
+		bar = &tree.children[i];
+	if ( bar && rows < top + 3 )
+	    bar = NULL;
+	const size_t body_rows = rows - top - (bar ? 1 : 0);
 	// Column geometry: sidebars carve columns from the full width; the
 	// centre keeps the rest; panels span the centre columns.
 	size_t centre_c0 = 0, centre_w = cols;
@@ -907,7 +1035,7 @@ public:
 	    if ( sw >= 2 )
 	    {
 		size_t div = side == ui_side::right ? bc0 : bc0 + sw - 1;
-		_frame.vline(div, top, rows - 1);
+		_frame.vline(div, top, top + body_rows - 1);
 		if ( side == ui_side::right )
 		    ++bc0;
 		--sw;
@@ -925,6 +1053,8 @@ public:
 	for ( size_t i = 0; i < tree.children.size(); ++i )
 	{
 	    const uinode &c = tree.children[i];
+	    if ( &c == bar )
+		continue;			// painted on the last row below
 	    std::string reg = hint_str(c.hints, "region");
 	    if ( reg == "sidebar" || reg == "panel" )
 	    {
@@ -944,6 +1074,7 @@ public:
 		    b.w = centre_w;
 		}
 		b.content = collect_leaf(r, c, b.c0, b.w);
+		b.content.header_upper = true;
 		bands.push_back(b);
 	    }
 	    else
@@ -995,6 +1126,8 @@ public:
 	    if ( bands[i].side == ui_side::left || bands[i].side == ui_side::right )
 		paint_region(bands[i].content, top, body_rows);
 	paint_region(centre, centre_r0, centre_h);
+	if ( bar )
+	    paint_line(rows - 1, 0, status_bar_line(*bar, cols));
 	_frame.paint(_grid, _chrome[(size_t)tui_chrome::divider]);
 	return _grid;
     }

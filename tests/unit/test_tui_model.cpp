@@ -740,7 +740,7 @@ TEST_CASE("compose — a bottom panel carves a band with a tab strip")
     // The panel's first row is its divider (S2), the strip and content below.
     CHECK(g.row_text(0) == " top.mad");			// centre status
     CHECK(g.row_text(5) == repeat("\xe2\x94\x80", 20));	// ─ across
-    CHECK(g.row_text(6) == " Problems  Output");	// the strip header
+    CHECK(g.row_text(6) == " PROBLEMS  OUTPUT");	// the strip, uppercase (S3)
     CHECK(g.at(6, 0).attr == ui_style::reverse());	// active tab reversed
     CHECK(g.at(6, 9).attr == ui_style::reverse());
     CHECK(g.at(6, 11).attr != ui_style::reverse());	// Output not active
@@ -1500,4 +1500,123 @@ TEST_CASE("compose — the theme's chrome: dividers, the gutter and the caret li
     CHECK(g.at(0, 19).attr.bg_rgb == bg.bg_rgb);
     CHECK(g.at(1, 6).attr.bg_rgb == 0u);		// another line: none
     CHECK(g.at(4, 0).attr.fg == 2);			// the divider: red
+}
+
+// ---- facelift S3: tab strips and the status bar ------------------------------
+
+TEST_CASE("compose — a node's tabs hint is a strip in the flow: the editor's open files")
+{
+    world w;
+    roles r = roles::standard(w);
+    uinode root(r.group);
+    uinode strip(r.content);
+    std::map<std::string, madc::value> t0, t1, sh;
+    t0["title"] = madc::value(std::string("main.c"));
+    t1["title"] = madc::value(std::string("util.c"));
+    t1["active"] = madc::value((int64_t)1);
+    std::vector<madc::value> tabs;
+    tabs.push_back(madc::value::make_object(t0));
+    tabs.push_back(madc::value::make_object(t1));
+    sh["tabs"] = madc::value::make_array(tabs);
+    strip.hints = madc::value::make_object(sh);
+    root.add(strip);
+    root.add(edit_node(w, "x", 0));
+    tui_model m;
+    const tui_grid &g = m.compose(r, root, 4, 30);
+    CHECK(g.row_text(0) == " main.c  util.c");		// file names keep their case
+    CHECK(g.at(0, 1).attr == ui_style::normal());	// an inactive tab
+    CHECK(g.at(0, 9).attr == ui_style::reverse());	// the active one (default)
+    CHECK(g.row_text(1) == "x");			// the editor below it
+}
+
+// A status node docked at an edge, with items segments.
+static uinode status_bar(world &w, const char *side)
+{
+    roles r = roles::standard(w);
+    uinode st(r.status);
+    st.content = madc::value(std::string(" a.c   Row 3 Col 9"));
+    std::map<std::string, madc::value> h, items, n, row, col;
+    n["seat"] = madc::value(std::string("n"));
+    n["label"] = madc::value(std::string(""));
+    n["text"] = madc::value(std::string("a.c"));
+    row["seat"] = madc::value(std::string("r"));
+    row["label"] = madc::value(std::string("Row"));
+    row["text"] = madc::value(std::string("3"));
+    col["seat"] = madc::value(std::string("c"));
+    col["label"] = madc::value(std::string("Col"));
+    col["text"] = madc::value(std::string("9"));
+    std::vector<madc::value> left, right;
+    left.push_back(madc::value::make_object(n));
+    right.push_back(madc::value::make_object(row));
+    right.push_back(madc::value::make_object(col));
+    items["left"] = madc::value::make_array(left);
+    items["right"] = madc::value::make_array(right);
+    h["items"] = madc::value::make_object(items);
+    h["region"] = madc::value(std::string("statusbar"));
+    if ( side )
+	h["side"] = madc::value(std::string(side));
+    st.hints = madc::value::make_object(h);
+    return st;
+}
+
+TEST_CASE("compose — a bottom status bar takes the last row, full width, its items justified")
+{
+    world w;
+    roles r = roles::standard(w);
+    uinode root(r.group);
+    root.add(status_bar(w, "bottom"));
+    root.add(edit_node(w, "one\ntwo", 0));
+    uinode sc(r.content);
+    sc.content = madc::value(std::string("s"));
+    root.add(chrome_pane(w, "sidebar", "left", 25, sc, false));
+    tui_model m;
+    const tui_grid &g = m.compose(r, root, 6, 40);
+    // the editor starts on row 0 (the bar left the flow); the sidebar's
+    // divider stops above the bar; the bar spans every column
+    CHECK(g.at(0, 12).ch == 'o');
+    CHECK(g.at(4, 11).ch == packed("\xe2\x94\x82"));
+    // the right side ends one blank from the edge: " a.c", 23 blanks, then
+    // "Row 3  Col 9 " — "Row" at 27, its value at 31
+    CHECK(g.row_text(5) == " a.c" + std::string(23, ' ') + "Row 3  Col 9");
+    CHECK(g.at(5, 0).attr == ui_style::reverse());		// the bar's style
+    CHECK((g.at(5, 1).attr.flags & ui_style::BOLD) != 0);	// the file name bold
+    CHECK((g.at(5, 27).attr.flags & ui_style::DIM) != 0);	// a label dim
+    CHECK((g.at(5, 31).attr.flags & ui_style::DIM) == 0);	// its value not
+    // A status line at the top (JOE's place) stays in the flow, as before.
+    tui_model j;
+    uinode jroot(r.group);
+    jroot.add(status_bar(w, NULL));
+    jroot.add(edit_node(w, "one", 0));
+    const tui_grid &jg = j.compose(r, jroot, 4, 40);
+    CHECK(jg.row_text(0) == "  a.c   Row 3 Col 9");
+    CHECK(jg.row_text(1) == "one");
+}
+
+TEST_CASE("compose — the theme's tab and statusbar chrome")
+{
+    world w;
+    roles r = roles::standard(w);
+    uinode root(r.group);
+    std::map<std::string, madc::value> rh, ch;
+    ch["tab_active"] = madc::value(std::string("bold underline white"));
+    ch["tab"] = madc::value(std::string("blue"));
+    ch["statusbar"] = madc::value(std::string("white bg_blue"));
+    rh["chrome"] = madc::value::make_object(ch);
+    root.hints = madc::value::make_object(rh);
+    root.add(status_bar(w, "bottom"));
+    root.add(edit_node(w, "x", 0));
+    uinode pc(r.content);
+    pc.content = madc::value(std::string("p"));
+    root.add(chrome_pane(w, "panel", "bottom", 50, pc, true));
+    tui_model m;
+    const tui_grid &g = m.compose(r, root, 10, 40);
+    // 9 body rows above the bar: the panel's 4 from row 5 (divider 5, strip
+    // 6); the bar on row 9
+    CHECK(g.row_text(6) == " PROBLEMS  OUTPUT");
+    CHECK(g.at(6, 1).attr.flags == (ui_style::BOLD | ui_style::UNDERLINE));
+    CHECK(g.at(6, 11).attr.fg == 5);				// an inactive tab: blue
+    CHECK(g.at(9, 0).attr.bg == 5);				// the bar on blue
+    CHECK(g.at(9, 39).attr.bg == 5);
+    CHECK((g.at(9, 1).attr.flags & ui_style::BOLD) != 0);
+    CHECK(g.at(9, 1).attr.bg == 5);				// the name keeps the bar
 }

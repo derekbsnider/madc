@@ -39,6 +39,7 @@ KEY = {
     'enter': b'\r',
     'down': ESC + b'[B',
     'f5': ESC + b'[15~',
+    'ctrl-k': b'\x0b',
 }
 
 # The Dark+ scheme chosen by keys, as a user does: ^T Options, down to the
@@ -51,6 +52,11 @@ DEPTH_256 = {'TERM': 'xterm-256color'}
 DEPTH_TRUE = {'COLORTERM': 'truecolor'}
 # A locale without UTF-8: the frames in ASCII (detect_glyph_set).
 ASCII = {'LC_ALL': 'C'}
+
+# ^K E <name> Enter: edit a file (open it, or switch to its buffer).
+def EDIT(name, wait):
+    return [('ctrl-k', None), ('text:e', None), ('text:' + name, None),
+            ('enter', wait)]
 
 # (name, [ (key name | 'text:<chars>', text to wait for | None) ... ],
 #  terminal environment, sizes) — sizes None = every size in SIZES.
@@ -70,6 +76,11 @@ SCENARIOS = [
     ('replrun-ascii', [('f5', 'hi 42')], ASCII, [(24, 80)]),
     ('darkplus-repl', DARKPLUS + [('esc', None), ('f5', 'hi 42')], DEPTH_TRUE,
      [(36, 120)]),
+    # the editor's tab strip (S3), switched by keys: ^K E opens a second
+    # file (its tab active), ^K E on the first switches back to it
+    ('tabs-second', EDIT('second.c', 'second.c'), {}, [(24, 80)]),
+    ('tabs-back', EDIT('second.c', 'second.c') + EDIT('golden.cpp', None),
+     {}, [(24, 80)]),
 ]
 
 

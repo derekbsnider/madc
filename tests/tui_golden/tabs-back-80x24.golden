@@ -1,5 +1,5 @@
 text:
- 0| golden.cpp
+ 0| golden.cpp  second.c
  1|   1  #include <stdio.h>
  2|   2  // a comment
  3|   3  int main(void)
@@ -17,11 +17,11 @@ text:
 15|
 16|
 17|
-18|--------------------------------------------------------------------------------
-19| PROBLEMS  OUTPUT  TERMINAL  REPL
-20|c++17> %run golden.cpp
-21|hi 42
-22|c++17>
+18|
+19|
+20|
+21|
+22|Editing golden.cpp.
 23| A  golden.cpp                                                     Row 1  Col 1
 styles:
  0 0+12:inverse
@@ -33,5 +33,4 @@ styles:
  6 0+4:dim 14+6:bold 21+1:fg=6
  7 0+4:dim
  8 0+4:dim
-19 28+6:inverse
 23 0+4:inverse 4+10:bold,inverse 14+53:inverse 67+3:dim,inverse 70+4:inverse 74+3:dim,inverse 77+3:inverse

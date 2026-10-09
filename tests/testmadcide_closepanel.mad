@@ -92,6 +92,7 @@ int main()
 
     // 3. The window's tab strip.
     S.panel(true);
+    S.tabs(true);			// ... and draws tab strips (ui::tabs)
     var tree;
     S.compose_ide_tree(tree, doc);
     var titles;

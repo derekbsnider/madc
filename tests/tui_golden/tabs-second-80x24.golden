@@ -1,0 +1,28 @@
+text:
+ 0| golden.cpp  second.c
+ 1|   1
+ 2|
+ 3|
+ 4|
+ 5|
+ 6|
+ 7|
+ 8|
+ 9|
+10|
+11|
+12|
+13|
+14|
+15|
+16|
+17|
+18|
+19|
+20|
+21|
+22|New file second.c.
+23| A  second.c                                                       Row 1  Col 1
+styles:
+ 0 12+10:inverse
+23 0+4:inverse 4+8:bold,inverse 12+55:inverse 67+3:dim,inverse 70+4:inverse 74+3:dim,inverse 77+3:inverse

@@ -1,5 +1,5 @@
 text:
- 0| A golden.cpp                                                                                           Row    1 Col   1
+ 0| golden.cpp
  1|   1  #include <stdio.h>
  2|   2  // a comment
  3|   3  int main(void)
@@ -27,16 +27,16 @@ text:
 25|
 26|
 27|────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-28| Problems  Output  Terminal  REPL
+28| PROBLEMS  OUTPUT  TERMINAL  REPL
 29|c++17> %run golden.cpp
 30|hi 42
 31|c++17>
 32|
 33|
 34|
-35|
+35| A  golden.cpp                                                                                             Row 1  Col 1
 styles:
- 0 0+120:inverse
+ 0 0+12:bold,underline,fg=#ffffff
  1 0+4:fg=#c6c6c6 6+8:fg=#c586c0,bg=#282828 14+1:bg=#282828 15+9:fg=#ce9178,bg=#282828 24+96:bg=#282828
  2 0+4:fg=#858585 6+12:fg=#6a9955
  3 0+4:fg=#858585 6+3:fg=#569cd6 10+4:fg=#dcdcaa 15+4:fg=#569cd6
@@ -46,4 +46,5 @@ styles:
  7 0+4:fg=#858585
  8 0+4:fg=#858585
 27 0+120:fg=#444444
-28 28+6:inverse
+28 0+28:fg=#969696 28+6:bold,underline,fg=#ffffff
+35 0+4:fg=#ffffff,bg=#007acc 4+10:bold,fg=#ffffff,bg=#007acc 14+93:fg=#ffffff,bg=#007acc 107+3:dim,fg=#ffffff,bg=#007acc 110+4:fg=#ffffff,bg=#007acc 114+3:dim,fg=#ffffff,bg=#007acc 117+3:fg=#ffffff,bg=#007acc

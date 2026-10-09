@@ -800,6 +800,7 @@ void layout_build(var &node, var &rows, long idx)
 bool parse_layout(var &layout, const char *text, var &err, long w = 0)
 {
     var window = "";
+    long status = ui::side_code("top");	// the status bar's edge (JOE's: top)
     var rows = {};		// flat: every pane / split with depth + parent
     var open = {};		// indices of the split rows still open
     array lines;
@@ -828,6 +829,21 @@ bool parse_layout(var &layout, const char *text, var &err, long w = 0)
 		return false;
 	    }
 	    window = words[1];
+	    continue;
+	}
+	// `status top|bottom` (facelift S3): the edge the status bar docks to
+	// — the window's own line, outside every pane.
+	if ( kw == "status" )
+	{
+	    long sd = php::count(words) == 2 ? ui::side_code(words[1].c_str())
+					     : ui::side_code("");
+	    var sv = sd;
+	    if ( sv != ui::side::top && sv != ui::side::bottom )
+	    {
+		err = format("line {}: the status bar docks top or bottom", lineno);
+		return false;
+	    }
+	    status = sd;
 	    continue;
 	}
 	long ct = container_of(kw);
@@ -971,7 +987,7 @@ bool parse_layout(var &layout, const char *text, var &err, long w = 0)
     }
     if ( strlen(window.c_str()) == 0 )
 	window = "main";
-    layout = { "window": window, "editor": ed, "chrome": ch };
+    layout = { "window": window, "editor": ed, "chrome": ch, "status": status };
     return true;
 }
 
@@ -981,6 +997,7 @@ const char *default_layout_text()
 {
     return "# baked default layout — profile data\n"
 	   "@window main\n"
+	   "status bottom\n"
 	   "pane editor tabs views source focus gutter\n"
 	   "pane sidebar left 20% tabs views outline help mdpreview hidden\n"
 	   "pane panel bottom 25% tabs views problems output terminal repl hidden\n";
@@ -1109,12 +1126,22 @@ void layout_emit_node(var &out, var &node, long depth, long w)
     layout_emit_pane(out, node, depth, w);
 }
 
+// Does the layout dock the status bar at the BOTTOM (its `status bottom`
+// line, facelift S3)? A layout without the line keeps JOE's top.
+bool layout_status_bottom(var &lo)
+{
+    var sv = lo["status"];
+    return !sv.is_null() && sv == ui::side::bottom;
+}
+
 // The whole tree -> text: `@window`, the editor region (a top-level pane or
 // split), then the chrome panes (top-level).
 void layout_to_text(var &out, var &lo, long w = 0)
 {
     var s = "# madcide layout — written by the session; edit or delete freely\n";
     s = format("{}@window {}\n", s, lo["window"]);
+    if ( layout_status_bottom(lo) )
+	s = format("{}status bottom\n", s);
     var ed;
     layout_emit_node(ed, lo["editor"], 0, w);
     s = format("{}{}", s, ed);
@@ -9717,9 +9744,9 @@ void compose_editor_flat(var &kids, long w, long es, var &ed, var &status,
     // shape (a human client's prompt collects the same argument). A panel's
     // buffer (doc_is_panel_buffer: the REPL's transcript, a build's output,
     // the Terminal's screen) is its panel's, never an editor tab; ^P still
-    // reaches it. The terminal keeps ^P's buffer rows; it never composes
-    // this node.
-    if ( es_flag(w, es, "haspanel") )
+    // reaches it. A client that draws no strips (line mode, a headless
+    // seat) never gets this node; ^P's buffer rows serve every client.
+    if ( es_flag(w, es, "hastabs") )
     {
 	var bufs;
 	ui::get(bufs, w, es, "buffers");
@@ -10104,6 +10131,8 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 	// slot's nodes in order, so no window's node is left unplaced.
 	var sh = status["hints"];
 	sh["region"] = wc >= 2 ? "editor" : "statusbar";
+	if ( wc < 2 && layout_status_bottom(elo) )
+	    sh["side"] = "bottom";	// the layout's edge (facelift S3)
 	status["hints"] = sh;
     }
 
@@ -10384,8 +10413,9 @@ void IdeSession::compose_ide_tree(var &root, long doc)
     ui::get(pt, w, es, "presence_theme");
     if ( !pt.is_null() && php::count(pt) > 0 )
 	rh["presence"] = pt;
-    // The chrome's colours (facelift S2): the scheme's divider, gutter,
-    // gutter_current and current_line specs, as the grid paints them; a
+    // The chrome's colours (facelift S2/S3): the scheme's divider, gutter,
+    // gutter_current, current_line, tab, tab_active and statusbar specs, as
+    // the grid paints them (tui_chrome's names); a
     // scheme that names none leaves the grid's defaults. A hint the window
     // ignores (its chrome is page.css's).
     var th;
@@ -10393,7 +10423,8 @@ void IdeSession::compose_ide_tree(var &root, long doc)
     if ( !th.is_null() )
     {
 	var chrome;		// a null var becomes the map on its first keyed write
-	var names = { "divider", "gutter", "gutter_current", "current_line" };
+	var names = { "divider", "gutter", "gutter_current", "current_line",
+		      "tab", "tab_active", "statusbar" };
 	for ( var cn : names )
 	    if ( !th[cn.c_str()].is_null() )
 		chrome[cn.c_str()] = th[cn.c_str()];
@@ -10728,6 +10759,11 @@ void IdeSession::remember(bool on)
 void IdeSession::panel(bool has)
 {
     ui::set(w, es, "haspanel", has);
+}
+
+void IdeSession::tabs(bool has)
+{
+    ui::set(w, es, "hastabs", has);
 }
 
 // The client could not show the dialog it was asked for (no native dialog

@@ -1,5 +1,5 @@
 text:
- 0| A golden.cpp                                                   Row    1 Col   1
+ 0| golden.cpp
  1|   1  #include <stdio.h>
  2|   2  // a comment
  3|   3  int main(void)
@@ -21,10 +21,10 @@ text:
 19|
 20|
 21|
-22|
-23|Options  D Tab width   8   S Scheme      default   K Keymap      joe   I Autoind
+22|Options  D Tab width   8   S Scheme      default   K Keymap      joe   I Autoind
+23| A  golden.cpp                                                     Row 1  Col 1
 styles:
- 0 0+80:inverse
+ 0 0+12:inverse
  1 6+8:fg=4 15+9:bold,fg=6
  2 0+4:dim 6+12:fg=2
  3 0+4:dim 6+3:bold 15+4:bold
@@ -33,4 +33,5 @@ styles:
  6 0+4:dim 14+6:bold 21+1:fg=6
  7 0+4:dim
  8 0+4:dim
-23 8+17:inverse
+22 8+17:inverse
+23 0+4:inverse 4+10:bold,inverse 14+53:inverse 67+3:dim,inverse 70+4:inverse 74+3:dim,inverse 77+3:inverse

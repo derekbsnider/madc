@@ -285,6 +285,22 @@ a syntax span keeps the caret line's background. The goldens pin the locale
 (`LC_ALL=C.UTF-8`), add the REPL's panel in ASCII and in Dark+; the scroll
 gate now expects each row's number with its line.
 
+S3 as built (2026-10-09): the editor's tab strip is a frontend CAPABILITY —
+`tabs()` on the ui frontend (`ui::tabs(t)`: the grid and the window draw
+strips, line mode does not), recorded as the session's `hastabs` fact — in
+place of `haspanel` ("a window"), which still decides where runs and the
+shell go (S8). The grid draws a node's `tabs` hint as a strip in the flow (the
+editor's open files) through the one strip builder that also heads a pane;
+a chrome band's titles are uppercase, as the window's. The status bar's edge
+is layout data: a `status bottom` window line (default.layout and the baked
+default carry it) docks the status node at the screen's last row, full
+width under the bands, drawn from its `items` segments (the left side from
+the edge, the right against it; the file name bold, the labels dim); a
+layout without the line keeps JOE's status line on top, byte-identical. The
+theme's `tab`, `tab_active` and `statusbar` colour them (Dark+: #969696,
+bold underlined white, white on #007acc). Goldens: the strip switched by
+keys (`^K E second.c`, then `^K E golden.cpp`).
+
 Each slice: unit tests in `tests/unit/test_tui_model.cpp`, its goldens,
 Tier 1 + Tier 2. The battery runs once, at the seam. A GUI or TUI change is
 verified by driving input, never by a screenshot alone.

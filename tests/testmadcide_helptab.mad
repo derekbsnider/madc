@@ -128,6 +128,7 @@ int main()
     long w = S.w;
     long es = S.es;
     S.panel(true);			// what run_ide pushes for a window
+    S.tabs(true);			// ... and draws tab strips (ui::tabs)
     bool cont = true;
 
     // 1. Help Contents: a Help tab, current, the editor shows the list.
@@ -181,6 +182,7 @@ int main()
     IdeSession D;
     long ddoc = D.open(path, false);
     D.panel(true);
+    D.tabs(true);			// ... and draws tab strips (ui::tabs)
     D.command(ddoc, cmd_of_w(D.w, "helpcontents"), "", cont);
     println("default: sidebar-help={} help-tab={}", view_shown(D.w, D.es, viewHELP) ? 1 : 0,
 	    help_doc_if_any(D.w, D.es) != 0 ? 1 : 0);

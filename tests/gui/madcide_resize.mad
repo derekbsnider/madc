@@ -68,6 +68,7 @@ int main()
     if ( !t )
 	return 1;
     S.panel(true);
+    S.tabs(true);			// ... and draws tab strips (ui::tabs)
     println("RSZ open");
     var ev;
     int stage = 0;

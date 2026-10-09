@@ -264,6 +264,9 @@ struct ui_frontend
     // The window full screen (on: 1 enter, 0 leave, -1 toggle). A grid is
     // the terminal's own window: false.
     virtual bool fullscreen(int) { return false; }
+    // Does this surface draw tab strips over its regions (the editor's open
+    // files, a panel's views — facelift S3)? A line-mode surface does not.
+    virtual bool tabs() const { return false; }
 };
 
 struct ui_grid_frontend : ui_frontend
@@ -272,6 +275,7 @@ struct ui_grid_frontend : ui_frontend
     madc::hub::tui_model   model;
     madc::hub::tui_grid	   painted;	// the diff basis
     ui_grid_frontend() : target((madc::hub::tui_target *)0) { level = ui::TUI; }
+    bool tabs() const { return true; }	// a strip is a row of cells (S3)
 
     bool open(size_t &r, size_t &c)
     {
@@ -609,6 +613,7 @@ struct ui_dom_frontend : ui_frontend
 	return host && ops->eval && ops->eval(host, js ? js : "") == 0;
     }
     bool dialogs() const { return host && ops->dialog; }
+    bool tabs() const { return true; }	// the page draws strips
     bool dialog(const char *json)
     {
 	return host && ops->dialog && ops->dialog(host, json ? json : "") == 0;
@@ -1887,6 +1892,12 @@ bool clipboards(int64_t t)
 {
     ui_frontend *f = ui_frontend_get(t);
     return f && f->clipboards();
+}
+
+bool tabs(int64_t t)
+{
+    ui_frontend *f = ui_frontend_get(t);
+    return f && f->tabs();
 }
 
 bool clipboard_set(int64_t t, const char *text)

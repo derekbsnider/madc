@@ -35,6 +35,7 @@ void run_line(const char *path, bool ro, const char *profile = "", long std = 0)
 	return;			// open refused (the reason on stderr)
     S.terminal(false);		// no interactive terminal to hand over
     S.panel(false);		// LINE renders no regions
+    S.tabs(false);		// ... and no strips
     bool run = true;
     while ( run )
     {
