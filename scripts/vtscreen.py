@@ -4,7 +4,7 @@
 # screens, tui_golden.py). One interpreter, so two gates never disagree about
 # what the terminal showed.
 #
-# What it models: CUP/HVP, CUU/CUD/CUF/CUB, CHA, VPA, ED, EL, IL, DL, SU, SD,
+# What it models: CUP/HVP, CUU/CUD/CUF/CUB, CHA, VPA, ED, EL, ECH, IL, DL, SU, SD,
 # DECSTBM (scroll region), RI / IND, autowrap (DECAWM, xterm's deferred
 # wrap at the right margin), REAL tab stops (a raw 0x09 MOVES the
 # cursor without erasing the cells it skips), UTF-8 text, and SGR: the
@@ -236,6 +236,8 @@ class Screen:
                         self._erase_cells(self.r, 0, self.c + 1)
                     elif p1 == 2:
                         self._erase_cells(self.r, 0, COLS)
+                elif fin == 'X':                 # ECH: blank cells, cursor stays
+                    self._erase_cells(self.r, self.c, min(COLS, self.c + max(1, p1)))
                 elif fin == 'L':
                     for _ in range(max(1, p1)):
                         if self.top <= self.r <= self.bot:
