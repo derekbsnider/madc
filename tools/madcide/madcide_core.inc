@@ -4666,8 +4666,9 @@ void ensure_buffer_table(long w, long es, long doc)
 }
 
 // ^K E's commit: an open path switches; anything else opens (missing =
-// New File). A session without the table (headless) seeds it first.
-void edit_file(long w, long es, long olddoc, const char *path0)
+// New File), read-only when `ro`. A session without the table (headless)
+// seeds it first.
+void edit_file_as(long w, long es, long olddoc, const char *path0, bool ro)
 {
     // Value-first: the caller hands a prompt value's ring-lifetime
     // c_str(); ONE immediate copy into a value carrier owns the text
@@ -4705,7 +4706,7 @@ void edit_file(long w, long es, long olddoc, const char *path0)
 	}
     }
     var note;
-    long nd = open_buffer_doc(note, w, p.c_str(), false);
+    long nd = open_buffer_doc(note, w, p.c_str(), ro);
     if ( nd == 0 )
     {
 	ui::set(w, es, "msg", note.c_str());	// the refusal's reason; the
@@ -4720,6 +4721,28 @@ void edit_file(long w, long es, long olddoc, const char *path0)
 	ui::set(w, es, "msg", note.c_str());	// New file <path>.
     else
 	ui::set(w, es, "msg", format("Editing {}.", nm));
+}
+
+void edit_file(long w, long es, long olddoc, const char *path0)
+{
+    edit_file_as(w, es, olddoc, path0, false);
+}
+
+// The command line's files after the first (`madcide a.c b.c ro`): each
+// opens into the buffer ring as ^K E opens one (read-only when its `ro`
+// followed it), and the first file keeps the focus.
+void open_more_files(long w, long es, long doc, var &more)
+{
+    long n = php::count(more);
+    if ( n == 0 )
+	return;
+    for ( long i = 0; i < n; i = i + 1 )
+    {
+	var r = more[i];
+	edit_file_as(w, es, es_int(w, es, "adoc", doc), r["path"].c_str(),
+		     r["ro"].as_integer() != 0);
+    }
+    switch_buffer(w, es, es_int(w, es, "adoc", doc), 0);
 }
 
 // ---- IDE-9e: windows (^K O split) --------------------------------------

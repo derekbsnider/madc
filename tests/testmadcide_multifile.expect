@@ -1,0 +1,5 @@
+multi-buffers: 3
+multi-buffer 0: madc_ide_multi_a.c ro=0
+multi-buffer 1: madc_ide_multi_b.c ro=0
+multi-buffer 2: madc_ide_multi_c.c ro=1
+multi-active: 0 adoc-first=1

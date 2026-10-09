@@ -169,7 +169,7 @@ int main()
     var usage;
     ide_usage(usage);
     println("product-usage: learner={} madcide={}",
-	    usage.index("usage: learner [<file>]") >= 0 ? 1 : 0,
+	    usage.index("usage: learner [<file> [ro]]...") >= 0 ? 1 : 0,
 	    usage.index("madcide") >= 0 ? 1 : 0);
 
     // 4. The product's bundle, its plugin linked.

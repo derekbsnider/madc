@@ -24,12 +24,13 @@
 // one-shot's is: diagnostics update on an explicit ':check', not on a
 // background task — the frontend's stdin read is the ONE blocking decision
 // (design §2.3b, the thread contract) and does not pump cooperative tasks.
-void run_line(const char *path, bool ro, const char *profile = "", long std = 0)
+void run_line(const char *path, bool ro, var &more, const char *profile = "", long std = 0)
 {
     IdeSession S;
     long doc = S.open(path, ro, profile, std);
     if ( doc <= 0 )
 	return;			// -1 already reported on stderr
+    open_more_files(S.world(), S.es, doc, more);	// the command line's other files
     long t = ui::open(ui::LINE);
     if ( t == 0 )
 	return;			// open refused (the reason on stderr)
