@@ -1480,11 +1480,18 @@ RT_CFLAGS = -x c -std=c11 -Wall $(WERROR_FLAG) -ffunction-sections -fdata-sectio
 # same target/sysroot flags WITHOUT that block — the two cross modes define it
 # beside their CXX; every other mode adds no C++-only flags, so it is just CXX.
 CXX_BASE ?= $(CXX)
+# A sanitizer build (CXXFLAGS carrying -fsanitize=...) instruments the HOST
+# runtime objects too — the PIC family libmadc.so carries: the task runtime's
+# fiber switches must tell the sanitizer which stack is live (rt_task.c), and
+# an uninstrumented runtime is a blind spot. The non-PIC family builds
+# libmadc_rt.a, the runtime shipped into user executables, which never link a
+# sanitizer runtime — it keeps RT_CFLAGS alone.
+RT_SANITIZE_FLAGS = $(filter -fsanitize=% -fno-omit-frame-pointer,$(CXXFLAGS))
 # -MMD cannot see command-line flag changes. Bump this version whenever
 # RT_CFLAGS or the PIC-only runtime flags change; both runtime object families
 # depend on the per-mode stamp so neither can silently retain the old flags.
-RT_FLAGS_VERSION = 2
-RT_FLAGS_STAMP = $(OBJDIR)/.rt-flags-v$(RT_FLAGS_VERSION)
+RT_FLAGS_VERSION = 3
+RT_FLAGS_STAMP = $(OBJDIR)/.rt-flags-v$(RT_FLAGS_VERSION)$(if $(RT_SANITIZE_FLAGS),-san)
 $(RT_FLAGS_STAMP):
 	@mkdir -p $(OBJDIR)
 	@rm -f $(OBJDIR)/.rt-flags-v*
@@ -1638,7 +1645,7 @@ $(PICOBJDIR)/%.o: %.cpp $(DEPENDS)
 
 $(PICOBJDIR)/%.o: rt/%.c $(DEPENDS)
 	@mkdir -p $(PICOBJDIR)
-	$(CXX_BASE) -c -o $@ $(RT_CFLAGS) -fPIC $(DEFINES) -MMD -MP -MF $(@:.o=.d) $<
+	$(CXX_BASE) -c -o $@ $(RT_CFLAGS) $(RT_SANITIZE_FLAGS) -fPIC $(DEFINES) -MMD -MP -MF $(@:.o=.d) $<
 
 # Auto-generated per-object header dependencies (from -MMD -MP above). A changed
 # .h rebuilds every .o that includes it, preventing stale-object ABI skew (e.g.

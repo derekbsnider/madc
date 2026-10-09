@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### task runtime: ASan fiber hooks name the live ucontext stack in a sanitizer build
+
+A sanitizer build now instruments the host runtime objects too: `src/Makefile`
+derives `RT_SANITIZE_FLAGS` from the `-fsanitize=`/`-fno-omit-frame-pointer`
+flags in `CXXFLAGS` and adds them to the PIC runtime family (built into
+`libmadc.so`), with the `.rt-flags-v*` stamp carrying a `-san` suffix so the
+objects rebuild when the flags change. The non-PIC family (`libmadc_rt.a`,
+shipped into user executables, which never link a sanitizer runtime) keeps
+`RT_CFLAGS` alone, so non-sanitizer builds are unchanged. In a sanitizer build
+(`MADC_TASK_ASAN`, via `__SANITIZE_ADDRESS__` or `__has_feature`), every
+`swapcontext`/`setcontext` in `rt/rt_task.c` brackets the switch with
+`__sanitizer_start_switch_fiber` / `__sanitizer_finish_switch_fiber`, telling
+ASan which task stack is live and learning main's bounds on the first switch
+away. Without the hooks, a C++ throw on a task unwound into `sigaltstack`
+writing inside a task's `malloc`'d ucontext stack, which ASan had never been
+told about, and reported it as `stack-buffer-overflow`. An ASan sweep of 66
+madcide/ui tests dropped from 5 findings (`testmadcide`,
+`testmadcide_livecolour`, `testmadcide_plugin_host`, `testmadcide_serve_propose`,
+`testmadcide_serve_web`) to 0.
+
 ### highlight: namespace names colour as `namespace`, scoped enums before `::` as `typename`
 
 An identifier the parse reads as a namespace-name — a namespace or alias
