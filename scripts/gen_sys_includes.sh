@@ -201,6 +201,18 @@ emit_paths_array() {
 # madc's search list holds. No owned slot found => no pairs (the embedded set
 # keeps its precedence), the same answer the runtime gives without a slot.
 EMBEDDED_DIR="$(dirname "$0")/../include/madc"
+# The build's OTHER embedded set, when it carries one (an Apple-target mode's
+# generated darwin prelude, a Windows mode's header fallbacks): the binary
+# embeds it beside include/madc/, so a system directory that supplies one of
+# ITS names outranks the embedded copy the same way (libc++'s c++/v1/ctype.h
+# ahead of the prelude's ctype.h).
+EMBEDDED_EXTRA_DIR="${MADC_EMBEDDED_EXTRA_DIR:-}"
+embedded_names() {
+    local d
+    for d in "$EMBEDDED_DIR" $EMBEDDED_EXTRA_DIR; do
+        [ -d "$d" ] && (cd "$d" && find . -type f | sed 's|^\./||')
+    done | LC_ALL=C sort -u
+}
 emit_shadows_array() {
     # $1 = array suffix, rest = probe command
     local idx="$1"; shift
@@ -209,7 +221,7 @@ emit_shadows_array() {
     case "$owned" in include) owned="" ;; */) ;; *) [ -n "$owned" ] && owned="$owned/" ;; esac
     echo "static const char *madc_embedded_shadows_$idx[] = {"
     if [ -n "$owned" ] && [ -d "$EMBEDDED_DIR" ]; then
-        names=$(cd "$EMBEDDED_DIR" && find . -type f | sed 's|^\./||' | LC_ALL=C sort)
+        names=$(embedded_names)
         paths=$(search_list "$@")
         while IFS= read -r p; do
             [ -z "$p" ] && continue

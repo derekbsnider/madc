@@ -526,13 +526,6 @@ ifdef SYS_INCLUDES_CPP
 PREDEF_MACROS_CPP = $(OBJDIR)/predefined_macros.cpp
 export MADC_PREDEF_MACROS_OUT = $(PREDEF_MACROS_CPP)
 endif
-# The host-derived tables (system include paths, predefined macros) are
-# regenerated at PARSE time like embedded_headers.cpp — placed HERE because
-# hosted modes override $(CXX) above, and the tables must match the compiler
-# whose binary they end up inside (a mode switch silently left the previous
-# toolchain's tables in place before; the generators are idempotent, so an
-# unchanged toolchain never churns mtimes).
-HOSTTAB_GEN := $(shell mkdir -p $(OBJDIR); CXX="$(HOSTTAB_CXX)" MADC_SYS_INCLUDE_PREFIX_MAP="$(MADC_SYS_INCLUDE_PREFIX_MAP)" MADC_LINKLIBS_STANDIN="$(MADC_LINKLIBS_STANDIN)" MADC_SYS_INCLUDES_OUT="$(MADC_SYS_INCLUDES_OUT)" ../scripts/gen_sys_includes.sh >/dev/null 2>&1; CXX="$(HOSTTAB_CXX)" MADC_PREDEF_GCC_POSTURE="$(MADC_PREDEF_GCC_POSTURE)" MADC_PREDEF_MACROS_OUT="$(MADC_PREDEF_MACROS_OUT)" ../scripts/gen_predefined_macros.sh >/dev/null 2>&1; echo done)
 # Regenerate embedded_headers.cpp NOW, at Makefile parse time, before any target
 # is evaluated — so an edited/added/DELETED embedded header is reflected in
 # embedded_headers.o within a SINGLE make. The generators are idempotent (rewrite
@@ -565,6 +558,16 @@ else
 EMBEDDED_HEADERS_CPP = $(OBJDIR)/embedded_headers.cpp
 EMBED_GEN := $(shell mkdir -p $(OBJDIR) && ../scripts/gen_embedded_headers.sh "" $(EMBEDDED_HEADERS_CPP) >/dev/null || rm -f $(EMBEDDED_HEADERS_CPP); echo done)
 endif
+EMBEDDED_EXTRA_DIR = $(DARWIN_PRELUDE_DIR)$(WIN_EMBED_FALLBACK_DIR)
+# The host-derived tables (system include paths, predefined macros) are
+# regenerated at PARSE time like embedded_headers.cpp — placed HERE because
+# hosted modes override $(CXX) above, and the tables must match the compiler
+# whose binary they end up inside (a mode switch silently left the previous
+# toolchain's tables in place before; the generators are idempotent, so an
+# unchanged toolchain never churns mtimes). They follow the embedded set's
+# generation: the include table's shadow pairs are computed over EVERY header
+# the binary embeds, the mode's generated set (EMBEDDED_EXTRA_DIR) included.
+HOSTTAB_GEN := $(shell mkdir -p $(OBJDIR); CXX="$(HOSTTAB_CXX)" MADC_SYS_INCLUDE_PREFIX_MAP="$(MADC_SYS_INCLUDE_PREFIX_MAP)" MADC_LINKLIBS_STANDIN="$(MADC_LINKLIBS_STANDIN)" MADC_SYS_INCLUDES_OUT="$(MADC_SYS_INCLUDES_OUT)" MADC_EMBEDDED_EXTRA_DIR="$(EMBEDDED_EXTRA_DIR)" ../scripts/gen_sys_includes.sh >/dev/null 2>&1; CXX="$(HOSTTAB_CXX)" MADC_PREDEF_GCC_POSTURE="$(MADC_PREDEF_GCC_POSTURE)" MADC_PREDEF_MACROS_OUT="$(MADC_PREDEF_MACROS_OUT)" ../scripts/gen_predefined_macros.sh >/dev/null 2>&1; echo done)
 # Forest carrier shape (--with-forest= configure axis; forest-carriers S3).
 # Applies to the PRODUCT modes (release + hosted darwin): what the build
 # produces (packed image / <bin>.forest sidecar / nothing) and what the
@@ -1456,7 +1459,7 @@ $(MADDAT_ARCHIVE): $(MADDAT_OBJECTS)
 # the capture logic left the existing table in place, so the build kept serving
 # a table the current generator would never have produced.
 sys_include_paths.cpp: ../scripts/gen_sys_includes.sh
-	CXX="$(HOSTTAB_CXX)" MADC_SYS_INCLUDE_PREFIX_MAP="$(MADC_SYS_INCLUDE_PREFIX_MAP)" ../scripts/gen_sys_includes.sh
+	CXX="$(HOSTTAB_CXX)" MADC_SYS_INCLUDE_PREFIX_MAP="$(MADC_SYS_INCLUDE_PREFIX_MAP)" MADC_EMBEDDED_EXTRA_DIR="$(EMBEDDED_EXTRA_DIR)" ../scripts/gen_sys_includes.sh
 
 # Host predefined compiler macros, captured from the configured compiler.
 # Same host-specific/gitignored/regenerate-if-missing treatment as above.
