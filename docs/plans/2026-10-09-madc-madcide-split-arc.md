@@ -279,10 +279,21 @@ at activation and read at input on the session's thread. No new globals.
   builds on all three platforms — a DEPENDENCY, never vendored. One engine
   serves the ex core (`:s`, `:g`, `:v`, `/re/`, `?re?`, compiled once per
   command), the five existing functions, and the polyglot namespaces.
-  Design items for Phase 1 step 3: module (as madcgit) vs linked into
-  libmadc; per-platform packaging (Linux distro package / Homebrew formula /
-  the Windows build's copy); how vim's spellings map onto PCRE2 syntax (D24
-  asks for the modern extended form: unescaped `+ ? | ( )`). Riding the same
+  **Linked into libmadc** (owner 2026-10-09: "small enough to include and
+  its BSD licensed") — a deliberate exception to the 2026-09-15 rule that an
+  unmodified third-party library binds through a lazy module: regex is part
+  of the language's own surface, and PCRE2 is BSD and ~610 KB of code (614 KB
+  measured, Ubuntu 24.04's 10.42 8-bit library: JIT 236 KB, Unicode tables
+  114 KB, matcher 86 KB, compiler 63 KB; ~380 KB without the JIT). The rest of
+  that rule stands: no PCRE2 source in the repository — libmadc links the
+  platform's library (the distro's `libpcre2-8` on Linux, a fetched or brew
+  copy for the macOS and Windows builds), the zstd precedent. Design items
+  for Phase 1 step 3: no `pcre2_*` symbol exported from libmadc
+  (`check-c-abi-surface`; never `--exclude-libs` — a shared-library dependency
+  keeps them out); the JIT in or out (the ex core and the five functions do
+  not need it); each platform's package dependency; how vim's spellings map
+  onto PCRE2 syntax (D24 asks for the modern extended form: unescaped
+  `+ ? | ( )`). Riding the same
   move, as their own fixes with reducers: the five functions refuse an
   invalid pattern instead of answering silently (today `perl::grep` falls
   back to a substring search, `perl::split` to a literal delimiter, and
