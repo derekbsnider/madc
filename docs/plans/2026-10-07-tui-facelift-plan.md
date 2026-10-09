@@ -254,9 +254,17 @@ older scheme never shows a plain hole. Found on the way, each its own commit
 and reducer: a span measured the re-rendered spelling, not the source
 (`'\0'` coloured its `;`; now the lex-recorded extent), and a comment before
 consumed directive lines coloured a line low (now the lexer's own comment
-positions, `Program::_trivia_comments`). Still to come: the parse-tree
-variable / parameter / member class (#9CDCFE), namespace names as
-`typename`, and `chthonia.theme` in the Chthonia repo.
+positions, `Program::_trivia_comments`). Then the parse-tree names
+(2026-10-08/09): `variable` / `parameter` / `member` / `enumerator` from the
+tree node built from each name (#9CDCFE; enumerator #4FC1FF), and
+`namespace` — a definition's, an alias's and a using-directive's name and
+every qualifier before `::`, marked by the qualifier owners
+(`classify_qualifier_before_scope`, `canonical_nested_namespace`) as
+`typename` is marked; a scheme without it shows its nearest named ancestor
+(`namespace` → `typename` → `type`), so it takes #4EC9B0 in Dark+. A scoped
+enum's name before `::` is its type, not a namespace. Chthonia names
+madcide's shipped `vscode` scheme (the bundle's `"theme"`), so it needs no
+theme file of its own. S1b is complete.
 
 Each slice: unit tests in `tests/unit/test_tui_model.cpp`, its goldens,
 Tier 1 + Tier 2. The battery runs once, at the seam. A GUI or TUI change is

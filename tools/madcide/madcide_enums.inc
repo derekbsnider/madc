@@ -1626,8 +1626,8 @@ long lsp_token_of_class(var &cls)
 	return lttVARIABLE;
     if ( cls == "control" )
 	return lttKEYWORD;		// LSP's keyword covers control flow
-    if ( cls == "typename" )
-	return lttTYPE;
+    if ( cls == "typename" || cls == "namespace" )
+	return lttTYPE;		// no `namespace` in this legend yet
     if ( cls == "directive" )
 	return lttKEYWORD;		// no `macro` in this legend yet
     if ( cls == "include" || cls == "escape" )

@@ -168,7 +168,10 @@ enum class HighlightClass : unsigned char
     hcVariable,		// a variable (global or local)
     hcParameter,	// a function parameter
     hcMember,		// a data member after `.` / `->`
-    hcEnumerator	// an enumeration constant
+    hcEnumerator,	// an enumeration constant
+    hcNamespace		// an identifier the parse READ as a namespace-name (a
+			// qualifier, a definition, an alias, a using-directive —
+			// note_namespace_name_use)
 };
 
 inline const char *highlight_class_name(HighlightClass c)
@@ -192,6 +195,7 @@ inline const char *highlight_class_name(HighlightClass c)
 	case HighlightClass::hcParameter: return "parameter";
 	case HighlightClass::hcMember:	 return "member";
 	case HighlightClass::hcEnumerator: return "enumerator";
+	case HighlightClass::hcNamespace: return "namespace";
     }
     return "none";
 }
@@ -423,6 +427,12 @@ public:
     // go-to-type). Only an identifier carries it.
     inline void note_type_name_use(DataDef *dd);
     inline DataDef *type_name_use();
+    // Its sibling for a NAMESPACE spelling (TokenIdent::named_namespace): the
+    // canonical namespace a lookup resolved the identifier to — a qualifier
+    // before `::`, a namespace or alias definition's name, a using-directive's
+    // name. Empty for any other token.
+    inline void note_namespace_name_use(const madc::dis::istring &ns);
+    inline madc::dis::istring namespace_name_use();
     virtual bool is_operator() const { return false; }
     virtual bool is_constant() const { return false; }
     virtual bool is_real()     const { return false; }
@@ -1735,6 +1745,7 @@ public:
     virtual void setDataType(DataDef *d) override { if (d) _datatype = d; }
     virtual TokenIdent *as_ident_tok() override { return this; }
     DataDef *named_type = nullptr;	// the type this spelling named (note_type_name_use)
+    madc::dis::istring named_namespace;	// the namespace it named (note_namespace_name_use)
 };
 
 inline void TokenBase::note_type_name_use(DataDef *dd)
@@ -1748,6 +1759,19 @@ inline DataDef *TokenBase::type_name_use()
 {
     TokenIdent *t = id() == TokenID::tkIdent ? as_ident_tok() : NULL;
     return t ? t->named_type : NULL;
+}
+
+inline void TokenBase::note_namespace_name_use(const madc::dis::istring &ns)
+{
+    if ( !ns.empty() && id() == TokenID::tkIdent )
+	if ( TokenIdent *t = as_ident_tok() )
+	    t->named_namespace = ns;
+}
+
+inline madc::dis::istring TokenBase::namespace_name_use()
+{
+    TokenIdent *t = id() == TokenID::tkIdent ? as_ident_tok() : NULL;
+    return t ? t->named_namespace : madc::dis::istring();
 }
 
 // quoted string. `str` holds the literal CONTENT (embedded NULs, mutated by the

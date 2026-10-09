@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### highlight: namespace names colour as `namespace`, scoped enums before `::` as `typename`
+
+An identifier the parse reads as a namespace-name — a namespace or alias
+definition's name, an alias target, a using-directive, and every qualifier
+before `::` (nested, global-qualified, in a type and in an expression) — now
+records the canonical namespace on its token spelling
+(`TokenIdent::named_namespace`, via `note_namespace_name_use`), and
+`madc::parse_spans` colours it `namespace` (`HighlightClass::hcNamespace`)
+instead of `ident`. The qualifier owners (`classify_qualifier_before_scope`,
+`canonical_nested_namespace`, `parse_namespace_block`, `TokenUSING::parse`)
+mark through one new sink, `Program::note_scope_name_use`, which paints a
+scoped enum's pseudo-namespace before `::` as the enum TYPE (`typename`), not
+a namespace. madcide's Dark+ `vscode` scheme takes `namespace` #4ec9b0; a
+scheme that leaves `namespace` unnamed falls back along the nearest-named-
+ancestor chain (`namespace` → `typename` → `type`), and the LSP legend maps
+`namespace` to `lttTYPE`. `clang++ -std=c++17 -Xclang -ast-dump` on the same
+text resolves a, b, c, d as NamespaceDecl, e as NamespaceAliasDecl, the
+using-directive as naming d, and K as a type; `g++ -std=c++17` accepts it.
+Completes TUI facelift slice S1b.
+
 ### carrier: `var.c_str()` borrows the payload, not a ring copy — the std::string contract
 
 A string-kind value's `c_str()` returns a borrow of the carrier's own

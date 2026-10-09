@@ -5,7 +5,8 @@
 // parameter, a pointer), a C-style cast, sizeof, a qualified `N::Q`, an
 // elaborated `struct S`. The lexer knows only builtin types, so these names
 // lexed as identifiers and painted "ident": a typed `S v;` never coloured.
-// Namespace names and enumerators stay identifiers.
+// Enumerators are `enumerator`; namespace names are `namespace`
+// (testparsespans_namespaces).
 // Oracle: clang++ -fsyntax-only -Xclang -ast-dump on the same text resolves
 // each "type" name below as a type (VarDecl v 'S', ParmVarDecl s 'S',
 // CStyleCastExpr 'T', sizeof 'T', CXXRecordDecl S / C / Q, TypedefDecl T,
@@ -22,6 +23,7 @@ void show(const char *src, const char *name)
     for ( var r : sp )
     {
 	if ( r["class"] != "type" && r["class"] != "typename"
+	  && r["class"] != "namespace"
 	  && r["class"] != "ident" && r["class"] != "variable"
 	  && r["class"] != "parameter" && r["class"] != "member"
 	  && r["class"] != "enumerator" )

@@ -7014,7 +7014,10 @@ public:
 				    TokenBase *diag = NULL);
     Variable *resolve_module_member(const madc::dis::istring &ns_name, const madc::dis::istring &member_name,
 				    TokenBase *diag);
-    madc::dis::istring canonical_nested_namespace(const madc::dis::istring &parent, const madc::dis::istring &comp);
+    // `spelled`: COMP's token, which records the scope it resolved to
+    // (note_scope_name_use) — every descent loop marks through here.
+    madc::dis::istring canonical_nested_namespace(const madc::dis::istring &parent, const madc::dis::istring &comp,
+						  TokenBase *spelled = NULL);
     std::vector<madc::dis::istring> inline_namespace_descendants(const madc::dis::istring &ns) const;
     // The element of NS's inline namespace set ({NS} + its inline
     // descendants) that DECLARES `name` — where a qualified definition
@@ -9101,6 +9104,11 @@ public:
     };
     QualifierScope classify_qualifier_before_scope(const madc::dis::istring &name,
 						   TokenBase *at);
+    // A scope NAME's spelling records what the lookup resolved it to (the
+    // highlight classes, go-to): a scoped enum's pseudo-namespace is the
+    // enum TYPE (note_type_name_use); any other scope is a namespace
+    // (note_namespace_name_use). `scope` is the canonical name.
+    void note_scope_name_use(TokenBase *spelled, const madc::dis::istring &scope);
     // Class-body parsing: detect when a struct body needs the class parser /
     // an inline enum follows, parse anonymous aggregates, bind a declared C++
     // member symbol, mint a unique overload symbol, collect a deferred function

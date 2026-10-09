@@ -1435,18 +1435,24 @@ bool load_theme(long w, long es, const char *name)
 	var spec = php::trim(sp + 1);
 	th[cls.c_str()] = spec;
     }
-    // A refined class the scheme leaves unnamed takes its PARENT's colour:
-    // a scheme written before the class existed still colours `return` as a
-    // keyword and an escape as the string around it (never a plain hole).
+    // A refined class the scheme leaves unnamed takes its nearest named
+    // ANCESTOR's colour: a scheme written before the class existed still
+    // colours `return` as a keyword, an escape as the string around it and a
+    // namespace as a user type, or as a type (never a plain hole).
     var parent = { "control": "keyword", "typename": "type",
+		   "namespace": "typename",
 		   "directive": "keyword", "include": "string",
 		   "escape": "string" };
     array pk;
     php::array_keys(pk, parent);
     for ( var k : pk )
     {
+	if ( !th[k.c_str()].is_null() )
+	    continue;
 	var pc = parent[k.c_str()];
-	if ( th[k.c_str()].is_null() && !th[pc.c_str()].is_null() )
+	while ( th[pc.c_str()].is_null() && php::array_key_exists(pc.c_str(), parent) )
+	    pc = parent[pc.c_str()];
+	if ( !th[pc.c_str()].is_null() )
 	    th[k.c_str()] = th[pc.c_str()];
     }
     ui::set(w, es, "theme", th);

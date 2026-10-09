@@ -33,9 +33,9 @@ types.cpp:
   enumerator 9:6 A
   typename 10:0 C
   variable 10:2 c
-  ident 11:10 N
+  namespace 11:10 N
   typename 11:21 Q
-  ident 12:0 N
+  namespace 12:0 N
   typename 12:3 Q
   variable 12:5 q
   type 13:0 int

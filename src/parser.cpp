@@ -5227,6 +5227,11 @@ Program::QualifierScope Program::classify_qualifier_before_scope(
     // namespace's, as before a struct could name a scope.
     if ( !r.cls && r.is_namespace() )
 	r.agg = NULL;
+    // The qualifier's own spelling records the namespace it named (a caller
+    // whose `at` is another token — the `&` of `&N::x` — marks nothing).
+    if ( r.is_namespace() && at && is_contextual_identifier_token(at)
+      && contextual_identifier_name(at) == name )
+	note_scope_name_use(at, r.ns_name);
     return r;
 }
 
@@ -5258,6 +5263,8 @@ TokenDataType *Program::resolve_namespaced_type_token(TokenBase *tb, bool consum
     madc::dis::istring resolved_ns = resolve_namespace_name_in_scope(ns_name);
     if ( !resolved_ns.empty() )
 	ns_name = resolved_ns;
+    if ( namespace_map.count(ns_name) || namespace_datatype_map.find(ns_name) != namespace_datatype_map.end() )
+	note_scope_name_use(tb, ns_name);
 
     // Extend through nested qualifiers (`a::b::member`): tokens[0] is the '::'
     // after tb; each ident+'::' pair deepens the namespace while the deeper
@@ -5271,7 +5278,7 @@ TokenDataType *Program::resolve_namespaced_type_token(TokenBase *tb, bool consum
 	 && tokens[j + 1] && tokens[j + 1]->id() == TokenID::tkNS )
     {
 	madc::dis::istring deeper = canonical_nested_namespace(ns_name,
-			contextual_identifier_name(tokens[j]));
+			contextual_identifier_name(tokens[j]), tokens[j]);
 	if ( deeper.empty() )
 	    break;
 	ns_name = deeper;
@@ -14601,7 +14608,7 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
 		// also steps over qualifiers that are not registered
 		// namespaces.
 		madc::dis::istring deeper =
-		    canonical_nested_namespace(ns_name, member_name);
+		    canonical_nested_namespace(ns_name, member_name, tokens[j]);
 		ns_name = deeper.empty() ? madc::dis::istring(ns_name + "::" + member_name)
 					 : deeper;
 		j += 2;                            // skip a namespace qualifier
@@ -15895,7 +15902,7 @@ bool Program::resolve_integer_constant(TokenBase *tb, madc_wide_int &out)
 		while ( peekToken() && peekToken()->id() == TokenID::tkNS )
 		{
 		    madc::dis::istring deeper =
-			canonical_nested_namespace(ns_name, member);
+			canonical_nested_namespace(ns_name, member, member_tb);
 		    if ( deeper.empty() )
 			break;
 		    nextToken(); // consume '::'
@@ -19462,7 +19469,7 @@ ConstValue Program::parse_constant_primary()
 		    while ( peekToken() && peekToken()->id() == TokenID::tkNS )
 		    {
 			madc::dis::istring deeper =
-			    canonical_nested_namespace(ns_name, member);
+			    canonical_nested_namespace(ns_name, member, member_tb);
 			if ( deeper.empty() )
 			    break;
 			nextToken(); // consume '::'
@@ -30544,7 +30551,8 @@ Variable *Program::resolve_module_member(const madc::dis::istring &ns_name,
 }
 
 madc::dis::istring Program::canonical_nested_namespace(const madc::dis::istring &parent,
-						const madc::dis::istring &comp)
+						const madc::dis::istring &comp,
+						TokenBase *spelled)
 {
     // [namespace.qual] applied to NAMESPACE names: PARENT::COMP may name a
     // namespace declared in PARENT's inline namespace set (libc++ registers
@@ -30552,25 +30560,68 @@ madc::dis::istring Program::canonical_nested_namespace(const madc::dis::istring 
     // Returns the canonical registered name, or empty. Scoped-enum
     // pseudo-namespaces live in namespace_datatype_map, so both maps count
     // as "exists" — same dual probe the descent loops always used.
+    madc::dis::istring found;
     madc::dis::istring cand = parent.empty() ? comp : madc::dis::istring(parent + "::" + comp);
     // A namespace ALIAS declared in PARENT under this name denotes its target
     // ([namespace.alias]) — the one place every resolver sees through it.
     std::map<madc::dis::istring, madc::dis::istring>::const_iterator ai =
 	namespace_aliases.find(cand);
     if ( ai != namespace_aliases.end() )
-	return ai->second;
-    if ( namespace_map.find(cand) != namespace_map.end()
-      || namespace_datatype_map.find(cand) != namespace_datatype_map.end() )
-	return cand;
-    std::vector<madc::dis::istring> descendants = inline_namespace_descendants(parent);
-    for ( size_t pi = 0; pi < descendants.size(); ++pi )
+	found = ai->second;
+    else if ( namespace_map.find(cand) != namespace_map.end()
+	   || namespace_datatype_map.find(cand) != namespace_datatype_map.end() )
+	found = cand;
+    else
     {
-	cand = descendants[pi] + "::" + comp;
-	if ( namespace_map.find(cand) != namespace_map.end()
-	  || namespace_datatype_map.find(cand) != namespace_datatype_map.end() )
-	    return cand;
+	std::vector<madc::dis::istring> descendants = inline_namespace_descendants(parent);
+	for ( size_t pi = 0; pi < descendants.size() && found.empty(); ++pi )
+	{
+	    cand = descendants[pi] + "::" + comp;
+	    if ( namespace_map.find(cand) != namespace_map.end()
+	      || namespace_datatype_map.find(cand) != namespace_datatype_map.end() )
+		found = cand;
+	}
     }
-    return madc::dis::istring();
+    if ( spelled && !found.empty() )
+	note_scope_name_use(spelled, found);
+    return found;
+}
+
+void Program::note_scope_name_use(TokenBase *spelled, const madc::dis::istring &scope)
+{
+    if ( !spelled || scope.empty() )
+	return;
+    // A scoped enum's pseudo-namespace is keyed by the enum's linkage
+    // spelling (`ns::Tag`, or `Tag` at global scope): the tag in its
+    // parent's type map — or, for a class-nested enum, the tag whose linkage
+    // spelling the key is.
+    size_t cut = scope.rfind("::");
+    madc::dis::istring parent = cut == madc::dis::istring::npos
+				? madc::dis::istring() : madc::dis::istring(scope.substr(0, cut));
+    madc::dis::istring tag = cut == madc::dis::istring::npos
+			     ? scope : madc::dis::istring(scope.substr(cut + 2));
+    DataDef *dd = NULL;
+    if ( !parent.empty() )
+    {
+	namespace_datatype_map_t::iterator nti = namespace_datatype_map.find(parent);
+	if ( nti != namespace_datatype_map.end() )
+	{
+	    datatype_map_iter dti = nti->find(tag);
+	    if ( dti != nti->end() )
+		dd = &dti->second->definition;
+	}
+    }
+    if ( !dd )
+    {
+	flat_datatype_map_iter ati = datatype_map.find(tag);
+	if ( ati != datatype_map.end() )
+	    dd = &(*ati)->definition;
+    }
+    DataDefENUM *edd = dd ? dd->as_enum_dd() : NULL;
+    if ( edd && (parent.empty() || edd->cpp_linkage_spelling() == scope) )
+	spelled->note_type_name_use(edd);
+    else
+	spelled->note_namespace_name_use(scope);
 }
 
 madc::dis::istring Program::canonical_namespace_path(const madc::dis::istring &base,
@@ -33189,7 +33240,7 @@ TokenBase *Program::parsePostfixChain(TokenBase *head)
 	    madc::dis::istring member = contextual_identifier_name(member_tb);
 	    while ( peekToken() && peekToken()->id() == TokenID::tkNS )
 	    {
-		madc::dis::istring deeper = canonical_nested_namespace(ns_name, member);
+		madc::dis::istring deeper = canonical_nested_namespace(ns_name, member, member_tb);
 		if ( deeper.empty() )
 		    break;
 		nextToken(); // consume '::'
@@ -42601,7 +42652,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    while ( peekToken() && peekToken()->id() == TokenID::tkNS )
 		    {
 			madc::dis::istring nested_ns_name =
-			    canonical_nested_namespace(ns_name, member_name);
+			    canonical_nested_namespace(ns_name, member_name, member_tb);
 			if ( nested_ns_name.empty() )
 			    break;
 			nextToken(); // consume '::'
@@ -45383,6 +45434,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			namespace_map_t::iterator nsi = namespace_map.find(gname);
 			if ( nsi == namespace_map.end() )
 			    Throw(name_tb) << "Unknown namespace '" << gname << "'" << flush;
+			note_scope_name_use(name_tb, gname);
 			nextToken(); // consume ::
 			TokenBase *member_tb = nextToken();
 			if ( !is_contextual_identifier_token(member_tb) )
@@ -45399,7 +45451,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			madc::dis::istring ns_name = gname;
 			while ( peekToken() && peekToken()->id() == TokenID::tkNS )
 			{
-			    madc::dis::istring nested = canonical_nested_namespace(ns_name, member_name);
+			    madc::dis::istring nested = canonical_nested_namespace(ns_name, member_name, member_tb);
 			    if ( nested.empty() )
 			    {
 				namespace_datatype_map_t::iterator nti =
@@ -45413,6 +45465,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 				if ( !sedd || !namespace_map.count(sedd->cpp_linkage_spelling()) )
 				    break;
 				nested = sedd->cpp_linkage_spelling();
+				member_tb->note_type_name_use(sedd);
 			    }
 			    nextToken(); // consume ::
 			    ns_name = nested;
@@ -46070,7 +46123,9 @@ TokenBase *Program::parse_namespace_block(bool inline_namespace)
     if ( !tn || !is_contextual_identifier_token(tn) )
 	Throw(tn) << "Expecting namespace name after 'namespace'" << flush;
     std::vector<madc::dis::istring> ns_parts;
+    std::vector<TokenBase *> ns_part_toks;	// each part's spelling (note_namespace_name_use)
     ns_parts.push_back(contextual_identifier_name(tn));
+    ns_part_toks.push_back(tn);
     while ( peekToken() && peekToken()->id() == TokenID::tkNS )
     {
 	nextToken();
@@ -46078,7 +46133,9 @@ TokenBase *Program::parse_namespace_block(bool inline_namespace)
 	if ( !part || !is_contextual_identifier_token(part) )
 	    Throw(part ? part : tn) << "Expecting namespace name after '::'" << flush;
 	ns_parts.push_back(contextual_identifier_name(part));
+	ns_part_toks.push_back(part);
     }
+    TokenBase *ns_name_tok = tn;
     std::string ns_name = ns_parts[0];
     for ( size_t i = 1; i < ns_parts.size(); ++i )
 	ns_name += "::" + ns_parts[i];
@@ -46107,6 +46164,7 @@ TokenBase *Program::parse_namespace_block(bool inline_namespace)
 	if ( !tt || !is_contextual_identifier_token(tt) )
 	    Throw(tt ? tt : tn) << "Expecting namespace name after '='" << flush;
 	std::string target = contextual_identifier_name(tt);
+	std::vector<TokenBase *> target_toks(1, tt);
 	while ( peekToken() && peekToken()->id() == TokenID::tkNS )
 	{
 	    nextToken();
@@ -46114,6 +46172,7 @@ TokenBase *Program::parse_namespace_block(bool inline_namespace)
 	    if ( !part || !is_contextual_identifier_token(part) )
 		Throw(part ? part : tt) << "Expecting namespace name after '::'" << flush;
 	    target += "::" + contextual_identifier_name(part);
+	    target_toks.push_back(part);
 	}
 	madc::dis::istring resolved = global_qualified
 	    ? canonical_namespace_path("", target)
@@ -46134,6 +46193,21 @@ TokenBase *Program::parse_namespace_block(bool inline_namespace)
 	  || namespace_datatype_map.find(key) != namespace_datatype_map.end() )
 	    Throw(tn) << "'" << ns_name << "' is already a namespace" << flush;
 	namespace_aliases[key] = resolved;
+	// The alias names its target; each target component its own prefix.
+	ns_name_tok->note_namespace_name_use(resolved);
+	{
+	    madc::dis::istring walked;
+	    for ( TokenBase *pt : target_toks )
+	    {
+		madc::dis::istring comp = contextual_identifier_name(pt);
+		walked = walked.empty() ? comp : madc::dis::istring(walked + "::" + comp);
+		madc::dis::istring at = global_qualified
+		    ? canonical_namespace_path("", walked)
+		    : resolve_namespace_name_in_scope(walked);
+		if ( !at.empty() )
+		    note_scope_name_use(pt, at);
+	    }
+	}
 	DBG(std::cout << "TokenNAMESPACE::parse() alias " << key << " = "
 		      << resolved << std::endl);
 	return NULL;
@@ -46151,6 +46225,7 @@ TokenBase *Program::parse_namespace_block(bool inline_namespace)
 	opened_namespace = opened_namespace.empty()
 			 ? ns_parts[i] : madc::dis::istring((opened_namespace + "::" + ns_parts[i]));
 	namespace_variables_for_write(opened_namespace);
+	ns_part_toks[i]->note_namespace_name_use(opened_namespace);
     }
     NamespaceScope ns_scope(*this, opened_namespace);
     if ( inline_namespace )
@@ -46389,6 +46464,7 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	if ( !tn || !is_contextual_identifier_token(tn) )
 	    pgm.Throw(tn) << "Expecting namespace name after 'using namespace'" << flush;
 	std::string raw_ns_name = contextual_identifier_name(tn);
+	std::vector<std::pair<TokenBase *, std::string> > spelled(1, std::make_pair(tn, raw_ns_name));
 	while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkNS )
 	{
 	    pgm.nextToken();
@@ -46396,10 +46472,19 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	    if ( !part || !is_contextual_identifier_token(part) )
 		pgm.Throw(part ? part : tn) << "Expecting namespace name after '::'" << flush;
 	    raw_ns_name += "::" + contextual_identifier_name(part);
+	    spelled.push_back(std::make_pair(part, raw_ns_name));
 	}
 	madc::dis::istring ns_name = resolve_source_namespace(raw_ns_name);
 	if ( ns_name.empty() )
 	    pgm.Throw(tn) << "Unknown namespace '" << raw_ns_name << "'" << flush;
+	// Each component's spelling records the namespace its prefix names.
+	for ( size_t i = 0; i < spelled.size(); ++i )
+	{
+	    madc::dis::istring at = i + 1 == spelled.size()
+		? ns_name : resolve_source_namespace(spelled[i].second);
+	    if ( !at.empty() )
+		pgm.note_scope_name_use(spelled[i].first, at);
+	}
 	namespace_map_t::iterator nsi = pgm.namespace_map.find(ns_name);
 	// Record the active directive (C++ [namespace.udir]): its members join
 	// UNQUALIFIED overload resolution even when a global already claims the

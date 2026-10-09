@@ -10796,7 +10796,8 @@ madc::dis::istring madc_token_spelling(TokenBase *tb)
 // Keywords and datatypes are their own TokenType subtrees, so plain
 // identifiers are what remains under tkIdent — less the ones a parse READ as
 // a type-name (a user's class, typedef, enum: note_type_name_use), which are
-// `typename` (Dark+ colours them apart from the builtin `type` keywords). A
+// `typename` (Dark+ colours them apart from the builtin `type` keywords), or
+// as a namespace-name (note_namespace_name_use), which are `namespace`. A
 // control-flow keyword is `control`. Comments never reach the token stream
 // (they are leading trivia) — the span query derives them.
 // A keyword that steers control flow (Dark+'s keyword.control: return,
@@ -10836,8 +10837,13 @@ HighlightClass madc_token_highlight_class(TokenBase *tb)
 	    break;
     }
     if ( tb->id() == TokenID::tkIdent )
-	return tb->type_name_use() ? HighlightClass::hcTypeName	// a user type the parse resolved
-				      : HighlightClass::hcIdent;
+    {
+	if ( tb->type_name_use() )
+	    return HighlightClass::hcTypeName;	// a user type the parse resolved
+	if ( !tb->namespace_name_use().empty() )
+	    return HighlightClass::hcNamespace;	// a namespace the parse resolved
+	return HighlightClass::hcIdent;
+    }
     return HighlightClass::hcNone;
 }
 
