@@ -42,6 +42,7 @@ KEY = {
     'ctrl-k': b'\x0b',
     'f10': ESC + b'[21~',
     'alt-e': ESC + b'e',            # the Meta prefix in one burst: Alt+E
+    'ctrl-b': b'\x02',
 }
 
 # The Dark+ scheme chosen by keys, as a user does: ^T Options, down to the
@@ -99,6 +100,16 @@ SCENARIOS = [
     # Stop disabled (no window); in ASCII the glyphs as > # v
     ('toolbar', [], {}, None, 'tbgolden'),
     ('toolbar-ascii', [], ASCII, [(24, 80)], 'tbgolden'),
+    # the floating windows (S6): ^K F's Find prompt as a titled field; an
+    # edit then ^K Q's question with its answers as buttons; ^B's build
+    # palette as a framed pick list with its Run / Close buttons; the
+    # prompt in Dark+
+    ('dialog-find', [('ctrl-k', None), ('text:f', None)], {}, None),
+    ('dialog-question', [('text:x', None), ('ctrl-k', None), ('text:q', None)],
+     {}, [(24, 80)]),
+    ('dialog-palette', [('ctrl-b', None)], {}, [(24, 80)]),
+    ('dialog-darkplus', DARKPLUS + [('esc', None), ('ctrl-k', None),
+                                    ('text:f', None)], DEPTH_TRUE, [(36, 120)]),
 ]
 
 

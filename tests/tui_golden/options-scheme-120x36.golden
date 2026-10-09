@@ -8,13 +8,13 @@ text:
  6|   5          printf("hi %d\n", 42);
  7|   6          return 0;
  8|   7  }
- 9|   8
-10|
-11|
-12|
-13|
-14|
-15|
+ 9|   8                                          ┌─ Options ────────────────┐
+10|                                              │   D Tab width   8        │
+11|                                              ┌─ Theme ──────────────────┐
+12|                                              │                          │
+13|                                              └──────────────────────────┘
+14|                                              │    [ Change ]  [ Close ] │
+15|                                              └──────────────────────────┘
 16|
 17|
 18|
@@ -32,8 +32,8 @@ text:
 30|
 31|
 32|
-33|Options  D Tab width   8   S Scheme      default   K Keymap      joe   I Autoindent  on
-34|Theme (^C aborts):
+33|
+34|
 35| A  golden.cpp                                                                                             Row 1  Col 1
 styles:
  0 0+2:inverse 2+1:inverse,underline 3+5:inverse 8+1:inverse,underline 9+5:inverse 14+1:inverse,underline 15+7:inverse 22+1:inverse,underline 23+5:inverse 28+1:inverse,underline 29+7:inverse 36+1:inverse,underline 37+6:inverse 43+1:inverse,underline 44+76:inverse
@@ -45,6 +45,12 @@ styles:
  6 0+4:dim 21+6:fg=6 27+2:bold,fg=6 29+1:fg=6 32+2:fg=6
  7 0+4:dim 14+6:bold 21+1:fg=6
  8 0+4:dim
- 9 0+4:dim
-33 26+23:inverse
+ 9 0+4:dim 48+9:bold
+10 74+2:dim,bg=0
+11 48+7:bold 74+2:dim,bg=0
+12 48+24:underline 74+2:dim,bg=0
+13 74+2:dim,bg=0
+14 48+28:dim,bg=0
+15 74+2:dim,bg=0
+16 48+28:dim,bg=0
 35 0+4:inverse 4+10:bold,inverse 14+93:inverse 107+3:dim,inverse 110+4:inverse 114+3:dim,inverse 117+3:inverse

@@ -10448,7 +10448,8 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 	rh["presence"] = pt;
     // The chrome's colours (facelift S2-S4): the scheme's divider, gutter,
     // gutter_current, current_line, tab, tab_active, statusbar and menu
-    // (menubar, menu, menu_selected, menu_hot, shadow) and toolbar specs, as
+    // (menubar, menu, menu_selected, menu_hot, shadow), toolbar and floating
+    // window (dialog, list_selected, field, button_primary) specs, as
     // the grid paints them (tui_chrome's names); a
     // scheme that names none leaves the grid's defaults. A hint the window
     // ignores (its chrome is page.css's).
@@ -10459,7 +10460,8 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 	var chrome;		// a null var becomes the map on its first keyed write
 	var names = { "divider", "gutter", "gutter_current", "current_line",
 		      "tab", "tab_active", "statusbar", "menubar", "menu",
-		      "menu_selected", "menu_hot", "shadow", "toolbar" };
+		      "menu_selected", "menu_hot", "shadow", "toolbar",
+		      "dialog", "list_selected", "field", "button_primary" };
 	for ( var cn : names )
 	    if ( !th[cn.c_str()].is_null() )
 		chrome[cn.c_str()] = th[cn.c_str()];

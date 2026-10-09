@@ -76,6 +76,7 @@ enum class tui_chrome : unsigned char
     tab, tab_active, statusbar,		// S3: strips and the status bar
     menubar, menu, menu_selected, menu_hot, shadow,	// S4: the menu bar
     toolbar,				// S5: the toolbar row
+    dialog, list_selected, field, button_primary,	// S6: floating windows
     count
 };
 inline bool tui_chrome_of(const std::string &name, tui_chrome &out)
@@ -84,7 +85,7 @@ inline bool tui_chrome_of(const std::string &name, tui_chrome &out)
 	"divider", "gutter", "gutter_current", "current_line",
 	"tab", "tab_active", "statusbar",
 	"menubar", "menu", "menu_selected", "menu_hot", "shadow",
-	"toolbar"
+	"toolbar", "dialog", "list_selected", "field", "button_primary"
     };
     for ( size_t i = 0; i < (size_t)tui_chrome::count; ++i )
 	if ( name == names[i] )
@@ -190,14 +191,35 @@ private:
 	size_t header_active;
 	bool header_upper;	// a chrome band's strip: titles uppercase, as the
 				// window's panel headers (S3)
+	bool floating;		// a floating window's content (S6): a choice
+				// lists its options one per row, its label is
+				// the window's title
+	size_t sel_line;	// the selected option's line (npos = none)
 	std::vector<flow_item> order;
 	std::vector<line_out> lines;
 	std::vector<edit_slot> edits;
 	std::vector<region> subs;
 	std::vector<region> kids;
 	region() : is_split(false), dir(ui_split::none), size(0),
-	    c0(0), width(0), header_active(0), header_upper(false) {}
+	    c0(0), width(0), header_active(0), header_upper(false),
+	    floating(false), sel_line(std::string::npos) {}
     };
+    // A FLOATING window (S6): a node hinted `popup` — a pick list with its
+    // `dialog` {title, filter?, buttons}, a prompt's `prompt` {label, input},
+    // a question's `confirm` {label, choices} — drawn over the workbench as
+    // a framed box, its content collected where the walk met it (the
+    // focusable slots keep their discovery order).
+    struct tui_float
+    {
+	std::string title;
+	bool has_field;			// an input line: the prompt's input or
+	std::string field;		// the dialog's filter (the core's text)
+	std::vector<std::string> buttons;
+	size_t primary;			// the button Enter is (npos = none)
+	region content;
+	tui_float() : has_field(false), primary(std::string::npos) {}
+    };
+    std::vector<tui_float> _floats;		// this compose's floating windows
     static void emit_line(region &f, const line_out &l)
     {
 	flow_item it;
@@ -292,6 +314,11 @@ private:
     }
     void collect_flow(const roles &r, const uinode &n, region &fl)
     {
+	if ( !fl.floating && hint_of(n.hints, "popup", 0) )
+	{
+	    collect_float(r, n);
+	    return;
+	}
 	size_t cols = fl.width;
 	ui_split sdir;
 	if ( n.role == r.group
@@ -392,9 +419,11 @@ private:
 	    if ( hint_of(n.hints, "focus", 0) )
 		_focus_st.set_focus(slot);
 	    size_t sel = selection_of(slot);
-	    if ( hint_of(n.hints, "list", 0) )
+	    // A floating window's choice is always the list shape; its label
+	    // is the window's title (collect_float), not a row.
+	    if ( fl.floating || hint_of(n.hints, "list", 0) )
 	    {
-		if ( !n.label.is_null() )
+		if ( !n.label.is_null() && !fl.floating )
 		    emit_line(fl, line_out(prose::text_of(n.label)));
 		for ( size_t i = 0; i < n.children.size(); ++i )
 		{
@@ -405,8 +434,9 @@ private:
 			span s;
 			s.col = 0;
 			s.len = l.text.size();
-			s.attr = ui_style::reverse();
+			s.attr = _chrome[(size_t)tui_chrome::list_selected];
 			l.spans.push_back(s);
+			fl.sel_line = fl.lines.size();
 		    }
 		    emit_line(fl, l);
 		}
@@ -497,6 +527,213 @@ private:
 	for ( size_t i = 0; i < n.children.size(); ++i )
 	    collect_flow(r, n.children[i], fl);
     }
+    // A `popup` node as a floating window (S6): its title, its input line,
+    // its buttons from the node's own hints, and its content collected at
+    // the widest the screen allows (paint_float shrinks the box to it). A
+    // prompt's content is its row's one-line form, so only its field shows.
+    void collect_float(const roles &r, const uinode &n)
+    {
+	tui_float f;
+	f.content.floating = true;
+	f.content.width = _grid.cols > 12 ? _grid.cols - 8 : 4;
+	f.title = prose::text_of(n.label);
+	bool body = true;
+	const std::map<std::string, madc::value> empty;
+	const std::map<std::string, madc::value> &ho =
+	    n.hints.is_object() ? n.hints.as_object() : empty;
+	std::map<std::string, madc::value>::const_iterator hi;
+	if ( (hi = ho.find("dialog")) != ho.end() && hi->second.is_object() )
+	{
+	    const std::string t = hint_str(hi->second, "title");
+	    if ( !t.empty() )
+		f.title = t;
+	    const std::map<std::string, madc::value> &d = hi->second.as_object();
+	    std::map<std::string, madc::value>::const_iterator fi = d.find("filter");
+	    if ( fi != d.end() && !fi->second.is_null() )
+	    {
+		f.has_field = true;
+		f.field = hint_str(hi->second, "filter");
+	    }
+	    std::map<std::string, madc::value>::const_iterator bi = d.find("buttons");
+	    if ( bi != d.end() && bi->second.is_array() )
+		for ( const madc::value &b : bi->second.as_array() )
+		{
+		    if ( hint_of(b, "choose", 0) && f.primary == std::string::npos )
+			f.primary = f.buttons.size();
+		    f.buttons.push_back(hint_str(b, "label"));
+		}
+	}
+	else if ( (hi = ho.find("prompt")) != ho.end() && hi->second.is_object() )
+	{
+	    f.title = hint_str(hi->second, "label");
+	    f.has_field = true;
+	    f.field = hint_str(hi->second, "input");
+	    body = false;
+	}
+	else if ( (hi = ho.find("confirm")) != ho.end() && hi->second.is_object() )
+	{
+	    f.title.clear();
+	    const std::map<std::string, madc::value> &c = hi->second.as_object();
+	    std::map<std::string, madc::value>::const_iterator ci = c.find("choices");
+	    if ( ci != c.end() && ci->second.is_array() )
+		for ( const madc::value &b : ci->second.as_array() )
+		    f.buttons.push_back(hint_str(b, "label"));
+	    if ( !f.buttons.empty() )
+		f.primary = 0;
+	}
+	if ( body )
+	    collect_flow(r, n, f.content);
+	_floats.push_back(f);
+    }
+
+    // A framed box over [r0, r1] x [c0, c1], `body` inside; the frame is its
+    // own (it never joins the workbench's dividers) — the caller paints it,
+    // in `body`, after what goes inside.
+    void paint_box(size_t r0, size_t c0, size_t r1, size_t c1, ui_style body,
+		   tui_frame &box)
+    {
+	box.reset(_grid.rows, _grid.cols);
+	for ( size_t r = r0 + 1; r < r1; ++r )
+	    _grid.put(r, c0 + 1, std::string(c1 - c0 - 1, ' '), body);
+	box.hline(r0, c0, c1);
+	box.hline(r1, c0, c1);
+	box.vline(c0, r0, r1);
+	box.vline(c1, r0, r1);
+    }
+    // The title on the top border, after the frame is painted.
+    void paint_box_title(size_t r0, size_t c0, size_t c1, ui_style body,
+			 const std::string &title)
+    {
+	if ( title.empty() || c1 < c0 + 6 )
+	    return;
+	std::vector<size_t> col;
+	std::string shown = madc::line_layout(" " + title + " ", 0, col);
+	size_t room = c1 - c0 - 3;
+	if ( col.back() > room )
+	    shown = madc::line_columns(shown, 0, room);
+	ui_style st = body;
+	st.flags |= ui_style::BOLD;
+	_grid.put(r0, c0 + 2, shown, st);
+    }
+    // The shadow of a box: two columns to its right, one row below, offset
+    // by one (Turbo Vision's).
+    void paint_shadow(size_t r0, size_t c0, size_t r1, size_t c1)
+    {
+	const ui_style shadow = _chrome[(size_t)tui_chrome::shadow];
+	for ( size_t r = r0 + 1; r <= r1 && r < _grid.rows; ++r )
+	    _grid.overlay_attr(r, c1 + 1, 2, shadow);
+	if ( r1 + 1 < _grid.rows )
+	    _grid.overlay_attr(r1 + 1, c0 + 2, c1 - c0 + 1, shadow);
+    }
+
+    // One floating window, centred, in the upper third: the title on its
+    // border, the field (the cursor at its end), the content's rows scrolled
+    // to keep the selected one in view (lit across the box), the buttons on
+    // the last inner row (the primary in button_primary). The box is as wide
+    // as its widest part, at most the screen less a margin.
+    void paint_float(const tui_float &f)
+    {
+	const size_t rows = _grid.rows, cols = _grid.cols;
+	if ( rows < 5 || cols < 16 )
+	    return;
+	const ui_style body = _chrome[(size_t)tui_chrome::dialog];
+	std::string bline;
+	std::vector<size_t> bcol;	// each button's start in bline
+	for ( size_t i = 0; i < f.buttons.size(); ++i )
+	{
+	    if ( i )
+		bline += "  ";
+	    bcol.push_back(bline.size());
+	    bline += "[ " + f.buttons[i] + " ]";
+	}
+	size_t iw = 24;
+	const std::vector<line_out> &lines = f.content.lines;
+	for ( size_t i = 0; i < lines.size(); ++i )
+	    iw = std::max(iw, madc::line_width(lines[i].text));
+	iw = std::max(iw, madc::line_width(f.title) + 4);
+	iw = std::max(iw, madc::line_width(bline));
+	if ( f.has_field )
+	    iw = std::max(iw, madc::line_width(f.field) + 2);
+	if ( iw + 6 > cols )
+	    iw = cols - 6;
+	const size_t extra = (f.has_field ? 1 : 0) + (f.buttons.empty() ? 0 : 1);
+	size_t n = lines.size();
+	if ( n + extra + 2 > rows - 1 )
+	    n = rows - 1 > extra + 2 ? rows - 1 - extra - 2 : 0;
+	const size_t w = iw + 4, h = n + extra + 2;
+	const size_t c0 = (cols - w) / 2, c1 = c0 + w - 1;
+	const size_t r0 = (rows - h) / 3, r1 = r0 + h - 1;
+	tui_frame box;
+	paint_box(r0, c0, r1, c1, body, box);
+	size_t r = r0 + 1;
+	if ( f.has_field )
+	{
+	    const ui_style fs = _chrome[(size_t)tui_chrome::field];
+	    std::vector<size_t> col;
+	    std::string shown = madc::line_layout(f.field, 0, col);
+	    size_t cw = col.back();
+	    if ( cw > iw )
+	    {
+		shown = madc::line_columns(shown, cw - iw, iw);
+		cw = iw;
+	    }
+	    _grid.put(r, c0 + 2, std::string(iw, ' '), fs);
+	    _grid.put(r, c0 + 2, shown, fs);
+	    _grid.cursor_row = r;
+	    _grid.cursor_col = c0 + 2 + (cw < iw ? cw : iw - 1);
+	    _grid.cursor_visible = true;
+	    ++r;
+	}
+	size_t top = 0;
+	if ( f.content.sel_line != std::string::npos && n > 0
+	  && f.content.sel_line >= n )
+	    top = f.content.sel_line - n + 1;
+	for ( size_t k = 0; k < n && top + k < lines.size(); ++k, ++r )
+	{
+	    const size_t li = top + k;
+	    line_out l = lines[li];
+	    std::vector<size_t> col;
+	    std::string shown = madc::line_layout(l.text, 0, col);
+	    if ( col.back() > iw )
+		l.text = madc::line_columns(shown, 0, iw);
+	    for ( size_t s = 0; s < l.spans.size(); ++s )
+		if ( l.spans[s].col + l.spans[s].len > l.text.size() )
+		    l.spans[s].len = l.spans[s].col < l.text.size()
+				     ? l.text.size() - l.spans[s].col : 0;
+	    if ( li == f.content.sel_line )
+	    {
+		const ui_style sel = _chrome[(size_t)tui_chrome::list_selected];
+		_grid.put(r, c0 + 1, std::string(w - 2, ' '), sel);
+		if ( !f.has_field )
+		{
+		    _grid.cursor_row = r;
+		    _grid.cursor_col = c0 + 1;
+		}
+		_grid.put(r, c0 + 2, l.text, sel);
+		continue;
+	    }
+	    _grid.put(r, c0 + 2, l.text, body);
+	    for ( size_t s = 0; s < l.spans.size(); ++s )
+		_grid.overlay_attr(r, c0 + 2 + madc::line_width(l.text.substr(0, l.spans[s].col)),
+				   madc::line_width(l.text.substr(l.spans[s].col, l.spans[s].len)),
+				   l.spans[s].attr);
+	}
+	if ( !f.buttons.empty() )
+	{
+	    const size_t br = r1 - 1;
+	    size_t bw = madc::line_width(bline);
+	    size_t bc = c1 - 1 - (bw < iw ? bw : iw);
+	    _grid.put(br, bc, bline, body);
+	    if ( f.primary < f.buttons.size() )
+		_grid.overlay_attr(br, bc + madc::line_width(bline.substr(0, bcol[f.primary])),
+				   madc::line_width(f.buttons[f.primary]) + 4,
+				   _chrome[(size_t)tui_chrome::button_primary]);
+	}
+	box.paint(_grid, body);
+	paint_box_title(r0, c0, c1, body, f.title);
+	paint_shadow(r0, c0, r1, c1);
+    }
+
     // Collect a LEAF pane -- its header (its tabs strip) then its children as a
     // flow -- at the given column geometry.
     region collect_leaf(const roles &r, const uinode &n, size_t c0, size_t width)
@@ -841,6 +1078,9 @@ private:
 	_chrome[(size_t)tui_chrome::menu_hot].flags = ui_style::UNDERLINE;
 	_chrome[(size_t)tui_chrome::shadow].bg = 1;	// black
 	_chrome[(size_t)tui_chrome::shadow].flags = ui_style::DIM;
+	_chrome[(size_t)tui_chrome::list_selected] = ui_style::reverse();
+	_chrome[(size_t)tui_chrome::field].flags = ui_style::UNDERLINE;
+	_chrome[(size_t)tui_chrome::button_primary] = ui_style::reverse();
 	if ( !tree.hints.is_object() )
 	    return;
 	const std::map<std::string, madc::value> &ho = tree.hints.as_object();
@@ -996,6 +1236,7 @@ public:
 	_frame.reset(rows, cols);
 	read_chrome(tree);
 	_focus_st.begin_compose();
+	_floats.clear();
 	_focus_st.set_menus(read_menus(tree));
 	// The menu bar (S4): the root's `menubar` hint (the layout's `menubar`
 	// line) keeps it on the top row; without it the bar shows only while
@@ -1144,6 +1385,9 @@ public:
 	if ( bar )
 	    paint_line(rows - 1, 0, status_bar_line(*bar, cols));
 	_frame.paint(_grid, _chrome[(size_t)tui_chrome::divider]);
+	// The floating windows over the workbench (S6), then the menus.
+	for ( size_t i = 0; i < _floats.size(); ++i )
+	    paint_float(_floats[i]);
 	// The menu bar and its dropdown LAST: an overlay over everything.
 	if ( mtop || _focus_st.menu_is_open() )
 	    paint_menus(mtop != 0);
@@ -1330,16 +1574,11 @@ public:
 	    return;
 	const size_t r1 = r0 + h - 1, c1 = c0 + w - 1;
 	tui_frame box;
-	box.reset(rows, cols);
-	box.hline(r0, c0, c1);
-	box.hline(r1, c0, c1);
-	box.vline(c0, r0, r1);
-	box.vline(c1, r0, r1);
+	paint_box(r0, c0, r1, c1, body, box);
 	for ( size_t r = r0 + 1; r < r1; ++r )
 	{
 	    const size_t i = r - r0 - 1;
 	    const menu_row &row = m.rows[i];
-	    _grid.put(r, c0 + 1, std::string(w - 2, ' '), body);
 	    if ( row.sep )
 	    {
 		box.hline(r, c0, c1);
@@ -1364,12 +1603,7 @@ public:
 	    }
 	}
 	box.paint(_grid, body);
-	// The shadow: two columns to the right, one row below, offset by one.
-	const ui_style shadow = _chrome[(size_t)tui_chrome::shadow];
-	for ( size_t r = r0 + 1; r <= r1 && r < rows; ++r )
-	    _grid.overlay_attr(r, c1 + 1, 2, shadow);
-	if ( r1 + 1 < rows )
-	    _grid.overlay_attr(r1 + 1, c0 + 2, w, shadow);
+	paint_shadow(r0, c0, r1, c1);
     }
 
     // The picture a toolbar button's icon draws as (S5): the window's shapes

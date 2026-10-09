@@ -343,6 +343,25 @@ fixture bundle (`tests/tui_golden/plugins/tbgolden`, installed per run in the
 harness's config directory and launched with `--profile`); the drop itself is
 pinned by the unit cases and `testmadcide_menushow` until S7's mouse clicks it.
 
+S6 as built (2026-10-09): a node hinted `popup` — the data the window already
+floats — is a FLOATING window in the grid: collected where the walk meets it
+(the focusable slots keep their order), painted over the workbench and under
+the menus, centred in the upper third, framed, with a shadow. A pick list
+(`dialog` {title, filter, buttons}: Options, the build palette, the project
+list, modes, key styles) shows its title on the border, its filter as a field
+line, its options one per row scrolled to keep the selected one in view and lit
+across the box, and its buttons on the last row (`[ Run ]  [ Close ]`, the
+primary lit); a prompt (`prompt` {label, input}: Find, Go to Line, a file name)
+is its label on the border over a field with the cursor at the input's end; a
+question (`confirm`) is its text over its answers as buttons. The keys are the
+core's exactly as before — the buttons are pictures until S7's mouse. The box,
+its frame and its shadow are the dropdown's (`paint_box`, `paint_shadow`). The
+scheme's `dialog`, `list_selected`, `field` and `button_primary` colour them
+(Dark+: the quick-input surface #252526, the selection #04395e, the input
+#3c3c3c, the button #0e639c); an inline list's selection is `list_selected`
+too (reverse by default, as before). Goldens: Find, the question, the build
+palette, Options (now floating) and the prompt in Dark+.
+
 Each slice: unit tests in `tests/unit/test_tui_model.cpp`, its goldens,
 Tier 1 + Tier 2. The battery runs once, at the seam. A GUI or TUI change is
 verified by driving input, never by a screenshot alone.

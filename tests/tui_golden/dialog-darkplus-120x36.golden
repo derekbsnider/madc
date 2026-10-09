@@ -8,13 +8,13 @@ text:
  6|   5          printf("hi %d\n", 42);
  7|   6          return 0;
  8|   7  }
- 9|   8                                          ┌─ Options ────────────────┐
-10|                                              │   D Tab width   8        │
-11|                                              │   S Scheme      vscode   │
-12|                                              │   K Keymap      joe      │
-13|                                              │   I Autoindent  on       │
-14|                                              │    [ Change ]  [ Close ] │
-15|                                              └──────────────────────────┘
+ 9|   8
+10|
+11|                                              ┌─ Find ───────────────────┐
+12|                                              │                          │
+13|                                              └──────────────────────────┘
+14|
+15|
 16|
 17|
 18|
@@ -33,7 +33,7 @@ text:
 31|
 32|
 33|
-34|Theme: vscode.
+34|
 35| A  golden.cpp                                                                                             Row 1  Col 1
 styles:
  0 0+2:fg=#cccccc,bg=#3c3c3c 2+1:underline,fg=#cccccc,bg=#3c3c3c 3+5:fg=#cccccc,bg=#3c3c3c 8+1:underline,fg=#cccccc,bg=#3c3c3c 9+5:fg=#cccccc,bg=#3c3c3c 14+1:underline,fg=#cccccc,bg=#3c3c3c 15+7:fg=#cccccc,bg=#3c3c3c 22+1:underline,fg=#cccccc,bg=#3c3c3c 23+5:fg=#cccccc,bg=#3c3c3c 28+1:underline,fg=#cccccc,bg=#3c3c3c 29+7:fg=#cccccc,bg=#3c3c3c 36+1:underline,fg=#cccccc,bg=#3c3c3c 37+6:fg=#cccccc,bg=#3c3c3c 43+1:underline,fg=#cccccc,bg=#3c3c3c 44+76:fg=#cccccc,bg=#3c3c3c
@@ -45,12 +45,9 @@ styles:
  6 0+4:fg=#858585 14+6:fg=#dcdcaa 21+6:fg=#ce9178 27+2:fg=#d7ba7d 29+1:fg=#ce9178 32+2:fg=#b5cea8
  7 0+4:fg=#858585 14+6:fg=#c586c0 21+1:fg=#b5cea8
  8 0+4:fg=#858585
- 9 0+4:fg=#858585 46+2:fg=#cccccc,bg=#252526 48+9:bold,fg=#cccccc,bg=#252526 57+17:fg=#cccccc,bg=#252526
-10 46+28:fg=#cccccc,bg=#252526 74+2:dim,bg=0
-11 46+1:fg=#cccccc,bg=#252526 47+26:fg=#ffffff,bg=#04395e 73+1:fg=#cccccc,bg=#252526 74+2:dim,bg=0
-12 46+28:fg=#cccccc,bg=#252526 74+2:dim,bg=0
+ 9 0+4:fg=#858585
+11 46+2:fg=#cccccc,bg=#252526 48+6:bold,fg=#cccccc,bg=#252526 54+20:fg=#cccccc,bg=#252526
+12 46+2:fg=#cccccc,bg=#252526 48+24:fg=#cccccc,bg=#3c3c3c 72+2:fg=#cccccc,bg=#252526 74+2:dim,bg=0
 13 46+28:fg=#cccccc,bg=#252526 74+2:dim,bg=0
-14 46+5:fg=#cccccc,bg=#252526 51+10:fg=#ffffff,bg=#0e639c 61+13:fg=#cccccc,bg=#252526 74+2:dim,bg=0
-15 46+28:fg=#cccccc,bg=#252526 74+2:dim,bg=0
-16 48+28:dim,bg=0
+14 48+28:dim,bg=0
 35 0+4:fg=#ffffff,bg=#007acc 4+10:bold,fg=#ffffff,bg=#007acc 14+93:fg=#ffffff,bg=#007acc 107+3:dim,fg=#ffffff,bg=#007acc 110+4:fg=#ffffff,bg=#007acc 114+3:dim,fg=#ffffff,bg=#007acc 117+3:fg=#ffffff,bg=#007acc

@@ -1933,3 +1933,141 @@ TEST_CASE("toolbar — the application drops a menu under its button (ui::menu_o
     CHECK(g2.row_text(0) == "  File  Edit");
     CHECK(g2.at(1, 1).ch == packed("\xe2\x94\x8c"));
 }
+
+// Floating windows (facelift S6): a `popup` node over the workbench.
+static uinode popup_list(world &w, bool filter)
+{
+    roles r = roles::standard(w);
+    uinode pal(r.choice);
+    pal.label = madc::value(std::string("Project p: ab_"));
+    pal.add(option(w, "a.c", "pick"));
+    pal.add(option(w, "b.c", "pick"));
+    pal.add(option(w, "c.c", "pick"));
+    std::map<std::string, madc::value> h, d, b0, b1;
+    h["list"] = madc::value((int64_t)1);
+    h["focus"] = madc::value((int64_t)1);
+    h["popup"] = madc::value((int64_t)1);
+    d["title"] = madc::value(std::string("Project"));
+    if ( filter )
+	d["filter"] = madc::value(std::string("ab"));
+    b0["label"] = madc::value(std::string("Open"));
+    b0["choose"] = madc::value((int64_t)1);
+    b1["label"] = madc::value(std::string("Close"));
+    b1["action"] = madc::value(std::string("projclose"));
+    std::vector<madc::value> bs;
+    bs.push_back(madc::value::make_object(b0));
+    bs.push_back(madc::value::make_object(b1));
+    d["buttons"] = madc::value::make_array(bs);
+    h["dialog"] = madc::value::make_object(d);
+    pal.hints = madc::value::make_object(h);
+    return pal;
+}
+
+TEST_CASE("float — a pick list is a framed window: title, filter field, rows, buttons, shadow")
+{
+    world w;
+    roles r = roles::standard(w);
+    uinode root(r.group);
+    root.add(edit_node(w, "body", 0));
+    root.add(popup_list(w, true));
+    tui_model m;
+    const tui_grid &g = m.compose(r, root, 12, 40);
+    // 24 wide inside (the minimum), 28 with the border: columns 6..33; 7
+    // rows (field, 3 rows, buttons, borders) from row (12-7)/3 = 1
+    CHECK(g.row_text(0) == "body");			// the workbench under it
+    CHECK(g.row_text(1) == std::string(6, ' ') + "\xe2\x94\x8c\xe2\x94\x80 Project "
+			   + repeat("\xe2\x94\x80", 16) + "\xe2\x94\x90");
+    CHECK(g.row_text(2) == std::string(6, ' ') + "\xe2\x94\x82 ab" + std::string(23, ' ')
+			   + "\xe2\x94\x82");
+    CHECK(g.at(2, 8).attr.flags == ui_style::UNDERLINE);	// the field
+    CHECK(g.cursor_row == 2u);
+    CHECK(g.cursor_col == 10u);					// after "ab"
+    CHECK(g.row_text(3).find("  a.c") != std::string::npos);
+    CHECK(g.at(3, 7).attr == ui_style::reverse());		// selected, across
+    CHECK(g.at(3, 32).attr == ui_style::reverse());
+    CHECK(g.at(4, 8).attr == ui_style::normal());
+    CHECK(g.row_text(6) == std::string(6, ' ') + "\xe2\x94\x82" + std::string(6, ' ')
+			   + "[ Open ]  [ Close ] \xe2\x94\x82");
+    CHECK(g.at(6, 13).attr == ui_style::reverse());		// the primary
+    CHECK(g.at(6, 23).attr == ui_style::normal());		// Close
+    CHECK(g.at(4, 34).attr.bg == 1);				// the shadow
+    // The keyboard still drives it: the pick list holds focus.
+    REQUIRE(m.focusables().size() == 2u);
+    CHECK(m.focus_slot() == 1u);
+    std::vector<tui_event> ev = m.apply_keys(parse("\x1b[B"));
+    REQUIRE(ev.size() == 1u);
+    CHECK(m.selection_of(1) == 1u);
+}
+
+TEST_CASE("float — a long list scrolls to keep the selected row in view")
+{
+    world w;
+    roles r = roles::standard(w);
+    uinode root(r.group);
+    root.add(edit_node(w, "body", 0));
+    uinode pal = popup_list(w, false);
+    for ( int i = 0; i < 10; ++i )
+	pal.add(option(w, "more", "pick"));
+    root.add(pal);
+    tui_model m;
+    m.compose(r, root, 10, 40);
+    for ( int i = 0; i < 12; ++i )
+	m.apply_keys(parse("\x1b[B"));
+    const tui_grid &g = m.compose(r, root, 10, 40);	// row 12 of 13 lit
+    // 10 rows: the box is 9 (6 visible rows, buttons, borders) from row 0
+    size_t lit = 0;
+    for ( size_t row = 1; row < 7; ++row )
+	if ( g.at(row, 7).attr == ui_style::reverse() )
+	    lit = row;
+    CHECK(lit == 6u);				// the last visible row
+}
+
+TEST_CASE("float — a prompt is a titled field; a question shows its choices as buttons")
+{
+    world w;
+    roles r = roles::standard(w);
+    uinode root(r.group);
+    root.add(edit_node(w, "body", 0));
+    uinode pr(r.content);
+    pr.content = madc::value(std::string("Find (^C aborts): xy"));
+    std::map<std::string, madc::value> h, q;
+    q["label"] = madc::value(std::string("Find"));
+    q["input"] = madc::value(std::string("xy"));
+    h["popup"] = madc::value((int64_t)1);
+    h["prompt"] = madc::value::make_object(q);
+    pr.hints = madc::value::make_object(h);
+    root.add(pr);
+    tui_model m;
+    const tui_grid &g = m.compose(r, root, 9, 40);
+    // field only: 3 rows from row (9-3)/3 = 2
+    CHECK(g.row_text(2).find(" Find ") != std::string::npos);
+    CHECK(g.row_text(3) == std::string(6, ' ') + "\xe2\x94\x82 xy" + std::string(23, ' ')
+			   + "\xe2\x94\x82");
+    CHECK(g.row_text(4).find("\xe2\x94\x94") == 6u);
+    CHECK(g.cursor_row == 3u);
+    CHECK(g.cursor_col == 10u);
+    for ( size_t row = 0; row < 9; ++row )
+	CHECK(g.row_text(row).find("aborts") == std::string::npos);
+
+    uinode root2(r.group);
+    root2.add(edit_node(w, "body", 0));
+    uinode qn(r.content);
+    qn.content = madc::value(std::string("Save changes? (y)es (n)o"));
+    std::map<std::string, madc::value> h2, cf, y, n;
+    y["label"] = madc::value(std::string("Yes"));
+    n["label"] = madc::value(std::string("No"));
+    std::vector<madc::value> ch;
+    ch.push_back(madc::value::make_object(y));
+    ch.push_back(madc::value::make_object(n));
+    cf["label"] = madc::value(std::string("Save changes?"));
+    cf["choices"] = madc::value::make_array(ch);
+    h2["popup"] = madc::value((int64_t)1);
+    h2["confirm"] = madc::value::make_object(cf);
+    qn.hints = madc::value::make_object(h2);
+    root2.add(qn);
+    tui_model m2;
+    const tui_grid &g2 = m2.compose(r, root2, 9, 40);
+    // its text, then the buttons: 4 rows from row (9-4)/3 = 1
+    CHECK(g2.row_text(2).find("Save changes? (y)es (n)o") != std::string::npos);
+    CHECK(g2.row_text(3).find("[ Yes ]  [ No ]") != std::string::npos);
+}

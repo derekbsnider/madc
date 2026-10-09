@@ -8,13 +8,13 @@ text:
  6|   5          printf("hi %d\n", 42);
  7|   6          return 0;
  8|   7  }
- 9|   8                                          ┌─ Options ────────────────┐
-10|                                              │   D Tab width   8        │
-11|                                              │   S Scheme      default  │
-12|                                              │   K Keymap      joe      │
-13|                                              │   I Autoindent  on       │
-14|                                              │    [ Change ]  [ Close ] │
-15|                                              └──────────────────────────┘
+ 9|   8
+10|
+11|                                              ┌─ Find ───────────────────┐
+12|                                              │                          │
+13|                                              └──────────────────────────┘
+14|
+15|
 16|
 17|
 18|
@@ -45,12 +45,9 @@ styles:
  6 0+4:dim 21+6:fg=6 27+2:bold,fg=6 29+1:fg=6 32+2:fg=6
  7 0+4:dim 14+6:bold 21+1:fg=6
  8 0+4:dim
- 9 0+4:dim 48+9:bold
-10 47+26:inverse 74+2:dim,bg=0
-11 74+2:dim,bg=0
-12 74+2:dim,bg=0
+ 9 0+4:dim
+11 48+6:bold
+12 48+24:underline 74+2:dim,bg=0
 13 74+2:dim,bg=0
-14 51+10:inverse 74+2:dim,bg=0
-15 74+2:dim,bg=0
-16 48+28:dim,bg=0
+14 48+28:dim,bg=0
 35 0+4:inverse 4+10:bold,inverse 14+93:inverse 107+3:dim,inverse 110+4:inverse 114+3:dim,inverse 117+3:inverse

@@ -8,13 +8,13 @@ text:
  6|   5          printf("hi %d\n", 42);
  7|   6          return 0;
  8|   7  }
- 9|   8
-10|
-11|
-12|
-13|
-14|
-15|
+ 9|   8                                          ┌─ Options ────────────────┐
+10|                                              │   D Tab width   8        │
+11|                                              │   S Scheme      vscode   │
+12|                                              │   K Keymap      joe      │
+13|                                              │   I Autoindent  on       │
+14|                                              │    [ Change ]  [ Close ] │
+15|                                              └──────────────────────────┘
 16|
 17|
 18|
@@ -32,7 +32,7 @@ text:
 30|
 31|
 32|
-33|Options  D Tab width   8   S Scheme      vscode   K Keymap      joe   I Autoindent  on
+33|
 34|Theme: vscode.
 35| A  golden.cpp                                                                                             Row 1  Col 1
 styles:
@@ -45,6 +45,12 @@ styles:
  6 0+4:fg=102 14+6:fg=187 21+6:fg=174 27+2:fg=180 29+1:fg=174 32+2:fg=151
  7 0+4:fg=102 14+6:fg=175 21+1:fg=151
  8 0+4:fg=102
- 9 0+4:fg=102
-33 26+22:inverse
+ 9 0+4:fg=102 46+2:fg=251,bg=234 48+9:bold,fg=251,bg=234 57+17:fg=251,bg=234
+10 46+28:fg=251,bg=234 74+2:dim,bg=0
+11 46+1:fg=251,bg=234 47+26:fg=231,bg=23 73+1:fg=251,bg=234 74+2:dim,bg=0
+12 46+28:fg=251,bg=234 74+2:dim,bg=0
+13 46+28:fg=251,bg=234 74+2:dim,bg=0
+14 46+5:fg=251,bg=234 51+10:fg=231,bg=25 61+13:fg=251,bg=234 74+2:dim,bg=0
+15 46+28:fg=251,bg=234 74+2:dim,bg=0
+16 48+28:dim,bg=0
 35 0+4:fg=231,bg=32 4+10:bold,fg=231,bg=32 14+93:fg=231,bg=32 107+3:dim,fg=231,bg=32 110+4:fg=231,bg=32 114+3:dim,fg=231,bg=32 117+3:fg=231,bg=32

@@ -2,6 +2,37 @@
 
 ## [Unreleased]
 
+### tui: dialogs, pick lists and prompts as floating windows (facelift S6)
+
+A node hinted `popup` — the data the window already floats — is a floating
+window in the grid: collected where the tree walk meets it (`collect_float` in
+`include/madcdis/tui_model.h`, reading the same `popup` / `dialog` / `prompt` /
+`confirm` hints the window reads), so its focusable slots keep their order,
+painted over the workbench and under the menus, centred in the upper third,
+framed, with a shadow. A pick list (`dialog` {title, filter, buttons}: Options,
+the build palette, the project list, modes, key styles) shows its title on the
+border, its filter as a field line, its options one per row scrolled to keep the
+selected one in view and lit across the box, and its buttons on the last row
+(`[ Run ]  [ Close ]`, the primary lit); a prompt (`prompt` {label, input}:
+Find, Go to Line, a file name) is its label on the border over a field with the
+cursor at the input's end; a question (`confirm`) is its text over its answers
+as buttons. The box, its frame and its shadow are the dropdown's — `paint_box`,
+`paint_box_title` and `paint_shadow`, extracted from the S4/S5 dropdown and
+shared by the dropdown and the new `paint_float`. The keys are the core's
+exactly as before — the buttons are pictures until S7's mouse. The scheme's
+`dialog`, `list_selected`, `field` and `button_primary` colour them (Dark+: the
+quick-input surface `#252526`, the selection `#04395e`, the input `#3c3c3c`, the
+button `#0e639c` in `tools/madcide/profiles/vscode.theme`); an inline list's
+selection is `list_selected` too. `bin/test_tui_model` runs 54 cases (3 new
+float cases); `python3 scripts/tui_golden.py` matches 29 golden screens (5 new:
+`dialog-find` at both sizes, `dialog-question`, `dialog-palette`,
+`dialog-darkplus`; Options and options-scheme at both sizes re-recorded as a
+floating Options dialog, and darkplus-16/256/truecolor now end with the Options
+pane up). `scripts/tui_scroll_gate.sh` PASS; `scripts/check-one-key-owner.sh`
+OK. The golden run takes 309 s, over the 300 s cap `scripts/tui_golden_gate.sh`
+puts on it, so the gate reports a failure on this commit; the next commit fixes
+the gate (parallel scenarios).
+
 ### tui: toolbar glyphs and the Run dropdown (facelift S5)
 
 The toolbar row is the plan's target — `New  Open  Save │ ▶ Run ▾  ■ Stop`. The
