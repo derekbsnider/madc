@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### carrier: `var.c_str()` borrows the payload, not a ring copy — the std::string contract
+
+A string-kind value's `c_str()` returns a borrow of the carrier's own
+NUL-terminated payload — std::string's contract, valid while the carrier lives
+unmodified — instead of copying the text into the 8-slot per-thread ring, where
+a held pointer silently changed under the ninth ring write (madcide held 48 such
+pointers across its text work; an ASan build reported heap-use-after-free in the
+REPL tests). `madarray_cstr` returns the payload directly; other value kinds,
+which have no text to borrow, still render into the ring. A `char *` function
+returning a local carrier's text (`return v;`, `return v.c_str();`, through
+either arm of a `?:`) is copied out at the return by `translate_return`
+(`__madc_text_escape`, marked by `FuncDef::borrows_receiver_text`) ahead of the
+frame's cleanups. `set_c_string` copies the new text out before releasing the
+old payload, so assigning a carrier from a pointer into its own text (`v = p + 2`)
+is alias-safe. `g++ -std=c++17` and `clang++ -std=c++17` on the std::string
+analogue both print `tests/testvarcstrborrow`'s expected output; an ASan sweep
+of 66 madcide/ui tests shows no remaining heap-use-after-free. One madcide site
+that held a borrow of a block-scoped `var` past its scope
+(`lsp_execute_command`) now declares the carrier in the pointer's scope.
+
 ### headers: embedded headers ranked by a build-time table, never searched per compile
 
 Whether a system directory ahead of the compiler-owned slot supplies an

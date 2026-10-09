@@ -7403,6 +7403,20 @@ bool CirBuilder::carrier_ternary_needs_temp(TokenTerQ *tq)
 		 && carrier_operand_lvalue(tq->false_expr));
 }
 
+bool CirBuilder::returns_carrier_text_borrow(TokenBase *e)
+{
+	if (!e) return false;
+	if (is_array_object(e->datadef()) || carrier_behind(e->datadef()))
+		return true;
+	if (TokenTerQ *tq = e->as_terq_tok())
+		return returns_carrier_text_borrow(tq->true_expr)
+		    || returns_carrier_text_borrow(tq->false_expr);
+	if (TokenCallMethod *cm = e->as_callmethod_tok())
+		if (FuncDef *fd = call_target_funcdef(cm))
+			return fd->borrows_receiver_text;
+	return false;
+}
+
 node_t CirBuilder::carrier_ternary_value(TokenTerQ *tq, TokenBase *origin)
 {
 	char name[40];
@@ -27842,9 +27856,9 @@ node_t CirBuilder::translate_return(TokenRETURN *tr)
 		// class-to-cstr owner — the dialect's value->text coercion.
 		// Without this c2mir saw an incompatible struct return (a
 		// warning, then a garbage pointer — silent empty text). The
-		// borrow survives the frame: the carrier's c_str() is
-		// ring-lifetime text (value-first.md's pre-L3 text-return
-		// convention). Scoped to the carrier — a std::string operand
+		// result is a BORROW of the carrier's text; the escape below
+		// copies it out before the frame's cleanups destroy the
+		// carrier. Scoped to the carrier — a std::string operand
 		// stays the type error g++ gives; this is dialect coercion,
 		// not a class-wide one.
 		expr = object_cstr_arg(tr->returns);
@@ -27853,6 +27867,21 @@ node_t CirBuilder::translate_return(TokenRETURN *tr)
 		expr = refused;
 	else
 		expr = tr->returns ? translate_expr(tr->returns) : ignore();
+	// A `char *` return of a carrier text BORROW (`return v;`,
+	// `return v.c_str();`, either through `?:`) would outlive the carrier
+	// the frame's cleanups destroy: copy the text out first — the ring
+	// copy `__madc_text_escape` evaluates inside the return expression,
+	// ahead of every cleanup.
+	if (m_cur_func_scalar_ret && m_cur_func_scalar_ret->is_cstr()
+	    && !m_cur_func_returns_ref
+	    && returns_carrier_text_borrow(tr->returns)) {
+		need_output_extern("__madc_text_escape", true,
+				   { { {N_CHAR}, true } }, { N_CHAR });
+		node_t ea = list();
+		append(ea, expr);
+		expr = node2(N_CALL, id("__madc_text_escape", tr), ea, tr);
+		CIR_NODE(expr)->synth_from_origin = true;
+	}
 	// Integer-_Complex return conversions (GNU ext, struct spine): a complex
 	// value returned from a scalar function takes its real part; from a
 	// native-complex function it promotes; a scalar (or other complex)

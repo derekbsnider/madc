@@ -793,6 +793,12 @@ public:
     // 'K' (e.g. _ZNKSt9basic_ios...4goodEv). Set by TokenCLASS::parse / parseFunction
     // when a trailing const follows the parameter list. Default false.
     bool is_const_method;
+    // The call returns a pointer INTO its receiver's text — a borrow, valid
+    // while the receiver lives unmodified (the value carrier's c_str(), the
+    // std::string contract). A `char *` return of such a call copies the
+    // text out (translate_return) so the borrow never outlives the frame
+    // whose value it reads.
+    bool borrows_receiver_text = false;
     // `f() volatile` ([dcl.fct]/4 cv-qualifier-seq, [class.this]): the
     // implicit object is volatile — `this` is `volatile C *`, a volatile object
     // calls only such a member, the symbol spells V. The sibling of

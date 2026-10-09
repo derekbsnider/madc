@@ -29698,8 +29698,11 @@ void Program::add_array_methods()
     // carrier the same const char* coercion surface a madc string has —
     // object_cstr_arg discovers it generically, which is what lowers a value
     // in a varargs tail (printf "%s") or into a const char* formal; scripts
-    // may also call .c_str() explicitly. String kind returns the payload;
-    // other kinds render (madc_mir_backend.cpp madarray_cstr).
+    // may also call .c_str() explicitly. String kind BORROWS the payload
+    // (std::string's c_str contract: valid while the value lives
+    // unmodified); other kinds render into the ring (madc_mir_backend.cpp
+    // madarray_cstr). A borrow returned as `char *` is copied out at the
+    // return (FuncDef::borrows_receiver_text).
     {
 	Variable *var = addFunction("c_str",
 	    datatype_vec_t{ptr_of(ddCHAR), ptr_of(ddARRAY)}, NULL, true);
@@ -29712,6 +29715,7 @@ void Program::add_array_methods()
 		fd->emit_symbol = "madarray_cstr";
 		fd->method_display_name = "c_str";
 		fd->is_const_method = true;	// a reader (value.h: const)
+		fd->borrows_receiver_text = true;
 	    }
 	    Method *md = static_cast<Method *>(var->data);
 	    if ( md )

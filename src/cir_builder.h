@@ -925,6 +925,10 @@ class CirBuilder {
 	// registered operator= row; yields `(c ? assign : assign, tmp)`.
 	bool carrier_ternary_needs_temp(class TokenTerQ *tq);
 	node_t carrier_ternary_value(class TokenTerQ *tq, TokenBase *origin);
+	// Does a returned expression BORROW a value carrier's text — the carrier
+	// itself (its implicit c_str), a call whose FuncDef borrows_receiver_text,
+	// or a conditional with such an arm? translate_return copies it out.
+	bool returns_carrier_text_borrow(TokenBase *e);
 
 	// ---- STL container (vector/map/set) object lowering ----
 	// `obj[i]` on a user class defining `operator[]` -> the method call,
