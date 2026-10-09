@@ -308,8 +308,9 @@ at activation and read at input on the session's thread. No new globals.
    Open: whether `madc --mcp FILE` serves (1)+(2) as `madc --lsp` serves the
    LSP, or MCP stays import-only.
 7. ~~Seats~~ — decided (below).
-8. **Where madc.ini's `std` sits** in the standard precedence: proposed
-   `--std` > file extension > madc.ini/env `std` > madc.
+8. ~~Where madc.ini's `std` sits~~ — decided (owner 2026-10-09): `--std` >
+   file extension > madc.ini/env `std` > madc. The ini `std` sets the
+   standard for a file with no recognised extension and for a bare `madc -i`.
 
 ## Decided (owner, 2026-10-09, inventory round)
 
