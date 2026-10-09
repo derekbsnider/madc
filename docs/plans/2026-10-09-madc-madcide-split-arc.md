@@ -99,12 +99,19 @@ its proposed side, plus the fine-line decisions F1–F6 — is
   input (enum-over-strings). D24's recognition rule (any leading `. % : ?`
   except `.`-digit, `::`, `%:`) and fall-through replace `command_text`'s
   narrow rule.
-- **Edit notification at the engine layer.** A `text_buffer` edit publishes
-  one change record (offset, erased, inserted) that every observer consumes;
-  madcide's anchor shift and change journal subscribe to it instead of being
-  the mutation path. Without this, an ex edit made through madc's core would
-  skip madcide's anchors and journal — the exact defect lined's verbs have
-  today. This is the deepest layer for "one mutation path" (Rule #2).
+- **The document component — file buffers are madc's** (owner 2026-10-09;
+  Phase 1A.1). A `text_buffer` plus path / kind / modified / read-only /
+  load-save, its parse handle, anchors and marks, a version, and the EDIT
+  NOTIFICATION: one change record (a byte-precise range replacement, plus a
+  reload event) that every observer consumes; madcide's anchor shift and
+  change journal subscribe to it instead of being the mutation path. Without
+  this, an ex edit made through madc's core would skip madcide's anchors and
+  journal — the exact defect lined's verbs have today. This is the deepest
+  layer for "one mutation path" (Rule #2). The documents live in the process
+  that edits, never the one that runs user code.
+- **The LSP** (`madc --lsp`), **the MCP as layered modules + the code-graph
+  tools in core, the project-memory module, discovery, and `madc --mcp
+  --project`** — Phase 1C; decided below.
 - **The ex core** on `text_buffer`: buffers (`:e`, `:ls`, `:b N`, `:bn`,
   `:bp`), addresses and ranges, the ed core, the ex/vim additions, `:set`, and
   `u`/`redo` on `text_buffer`'s history — D24's list, unchanged. The regex
@@ -147,8 +154,10 @@ with the corrections below — `tools/madcide/` (56 files, ~28.9k lines),
 `tools/texteditor/editor_events.inc` (madcide's editor core), `tools/vscode-madcide/`,
 the IDE half of `colon_command` (the `view*` verbs, registered into madc's
 registry), the views (Symbols, Changes/History/Blame, Help, Outline view,
-Markdown preview), LSP and MCP faces (bound to madcide's buffers and stream
-today; `madc --lsp` is a later question once madc has headless buffers).
+Markdown preview), and the seats (the api seat, the ws window, `--serve`,
+`--attach`, `-c`, permission tiers over madcide's commands) — NOT the LSP,
+the MCP, the project memory or discovery, which Phase 1C moves into madc
+(decided below; madcide loads them).
 
 **Retired: lined** (owner 2026-10-09, "completely deprecated") —
 `tools/texteditor/lined.mad`, `run_session`, its ed verbs
@@ -156,7 +165,9 @@ today; `madc --lsp` is a later question once madc has headless buffers).
 `tests/testlineed.mad`, superseded by madc's ex core. madcide's `w`/`q`/`q!`
 and its read-only verdict call the registry instead; `lined_core.inc`'s
 document helpers (`doc_set_path`, `doc_kind`, `doc_untitled`, `doc_name`,
-`new_document`, `setup_document`) and `resolve_data_dir` move into madcide.
+`new_document`, `setup_document`) become the document component's operations
+in madc (Phase 1A.1 — corrected 2026-10-09; they were to move into madcide),
+and `resolve_data_dir` moves into madcide.
 
 **Stays in madc as an example, rewritten: vised** (owner 2026-10-09: keep it
 as a simple example). `examples/vised/` — a self-contained visual editor on
@@ -167,7 +178,7 @@ includes nothing from madcide (today's 197-line `vised_core.inc` leans on
 madcide; keeping `editor_events.inc` in madc for it would make madc ship
 application code). Its test is the engine-level check of the R4/R5 contracts
 lined's retirement leaves uncovered: edits through the one mutation path,
-read-only refusing an edit, save/quit through the registry. Built in Phase 1
+read-only refusing an edit, save/quit through the registry. Built in Phase 1D
 after the registry and the edit notification, so it demonstrates them.
 `tools/texteditor/vised.mad`, `vised_core.inc` and `tests/testvised.mad`
 are replaced by it.
@@ -202,63 +213,176 @@ are replaced by it.
   MADCIDE_PLUGIN_PATH. Its unpushed `dark-plus` branch (Dark+, line numbers,
   terminal layout) is Chthonia 0.0.4 on madc 0.103.0 (madcide inside it).
 
-## Phases
+## Phases (reordered 2026-10-09, after the inventory round — dependency order)
 
-**Phase 0 — independent, any order (engine fixes and releases):**
+The critical path is **1A.1, the document component**: every slice of 1B,
+1C and 1D stands on it, and 1A.2 (the registry) is second. 1B (the prompt)
+and 1C (the headless services) are independent of each other and run in
+parallel once 1A is in. 1D (madcide re-plumbed) is last. Phase 0's parser
+items are their own sessions, any time.
+
+**Phase 0 — independent, any order:**
 1. Chthonia 0.0.4 on madc 0.103.0 (the `dark-plus` branch; madcide still inside madc).
 2. The two C++14 defects (`cpp1y/lambda-generic-ice2.C` abort,
    `cpp1y/var-templ24.C` > 30 s) — a parser session.
 3. The Outline's kinds beyond functions (`madc::parse_outline`) — a parser
    session.
 4. The GUI gutter in `page.js` / `page.css` (engine), with its gui test.
+5. **Colour only when colour is available** (owner 2026-10-09) — a defect,
+   its own commit with its test: `Program::print_diagnostic`
+   (`src/parser.cpp:25140`) emits ANSI escapes unconditionally, so
+   `madc file.c 2> log` writes them into the file. Rule, the gcc/clang one
+   (`-fdiagnostics-color=auto`): colour only on a terminal, never when
+   `NO_COLOR` is set; ONE predicate every coloured output asks (1B.9 reuses it).
 
-**Phase 1 — the interactive core into madc (one repository still):**
-1. The registry extension point + D24 recognition and fall-through.
-2. Engine edit notification; madcide's anchors and journal subscribe.
-3. The ex core and buffers at the prompt; the regex decision.
-4. `%history` (one store), `%std`, `%reset`, the one completion insert rule.
-5. `%git` as the madcgit module's command (registered on load: `-lmadcgit`, a madc.ini modules key, or `import`).
-6. madcide re-plumbed: `colon_command` splits (editing → madc, `view*`
-   registered), lined's verbs retired, `--line` = madc's line mode, the pane's
-   history and completion from madc.
-7. madcide features that ride the move: the Symbols view in madcide's base
-   (Chthonia drops its plugin in its paired release), View ▸ Line Numbers
-   (the gutter toggle, persisted through the layout).
-8. `examples/vised/`: the self-contained rewrite on `ui::`, `ui::text_*` and
-   the registry, with its R4/R5 contract test; `tools/texteditor/vised*`,
-   `lined*`, the `.madv` verbs, testlineed and testvised deleted.
-9. The engine twins (above) land.
-10. **Windows `madc -i` gets the crash-isolated backend** (owner 2026-10-09:
-    make Windows work like Linux and macOS). The child-of-self backend
-    already exists (`SessionClient::spawn_backend`,
-    `src/madc_session_client.cpp:611`, used by `madc::session_open`); only
-    `madc -i` stays in-process (`src/madc.cpp:545`), because its configured
-    Program cannot cross to the child (the `make_program` guard). Fix: the
-    child receives the CONFIGURATION (the `--std`, `-I`, `-D`, `-l`,
-    `--config` / `--no-config` arguments, never a mode or output flag) and
-    builds the identical Program itself, on every restart; the in-process
-    branch is deleted. INTERACTIVE ONLY (owner): the backend is reached only
-    from `run_repl` and `session_open`; running a file, `-c`, `-o`,
-    `--project` and `--emit` never start one. A Cygwin-style fork was weighed
-    and refused (memory-copy emulation, fragile with JIT code, MIR and
-    WebView2 DLLs). Test: a crashing entry under Windows `madc -i` restarts
-    the session; a plain `madc file.mad` starts no child.
-11. **Colour only when colour is available** (owner 2026-10-09) — a defect
-    fixed first, in its own commit with its test: `Program::print_diagnostic`
-    (`src/parser.cpp:25140`) emits ANSI escapes unconditionally, so
-    `madc file.c 2> log` writes them into the file. Rule, the gcc/clang one
-    (`-fdiagnostics-color=auto`): colour only on a terminal, never when
-    `NO_COLOR` is set; one predicate every coloured output asks.
-12. **Syntax colour at the prompt** (owner 2026-10-09). The pieces exist:
-    the token classifier (`include/tokens.h:145`, `madc::lex_spans`), the
-    one style vocabulary (`include/madcdis/ui_style.h`, depth detection
-    included), and `line_edit.h`'s `line_painter`, which repaints the entry
-    every keystroke. The painter styles each span through the same
-    style-to-SGR step the TUI uses; the echoed source line under an error
-    and `%type` / `%pinfo` output use it too. madc ships ONE built-in
-    default theme; **madc.ini can override it** (a `theme` key naming a
-    theme file, owner); madcide's themes stay its own data. Same rule as
-    step 11: no colour when colour is unavailable.
+**Phase 1 — into madc (one repository still). Four slices:**
+
+*1A — the engine foundation (sequential; nothing else starts before 1A.1–1A.2):*
+1. **The document component** (owner 2026-10-09: file buffers are madc's).
+   On the hub beside `text_buffer` (`madcdis/text_buffer.h`), generic to any
+   program that edits text — engine purity holds as it did for the text
+   component. One document = the text + undo (already per document), path,
+   file kind (stamped once at open / new / save-as), modified, read-only,
+   load / save, its parse handle (refreshed lazily — today madcide's
+   `ensure_phandle`), anchors / marks (shifted on every edit — today
+   `editor_events.inc`'s registry), a version counter, and the EDIT
+   NOTIFICATION. Rules from the practice survey (`2026-10-09-madc-madcide-
+   inventory.md`): ONE authoritative copy per document — every other copy
+   (the forked backend's input, an LSP client, a mirror) is keyed by the
+   version and resyncs when it falls behind (clangd's DraftStore); the
+   document owns the undo GROUPS, the command layer sets the boundaries
+   (one ex command = one group; a key sequence = one group); the change
+   event is a byte-precise range replacement (start row/col/byte, old end,
+   new end, version) plus a separate whole-buffer RELOAD event, applied in
+   order, delivered synchronously with mutation refused inside the callback
+   (Neovim's textlock) — line-granular events are derived. Lives in the
+   process that EDITS, never the one that runs user code (`madc -i`: the
+   prompt process; madcide: its own, the same code). Supersedes the 08-24
+   ruling "document properties are application bag keys"; lined_core's
+   document helpers (`doc_set_path`, `doc_kind`, `doc_untitled`, `doc_name`,
+   `new_document`, `setup_document`) become this component's operations
+   (NOT madcide's — a correction to the retirement paragraph above). A
+   buffer ring is a per-world entity set, not a global.
+2. **The command registry's extension point** + D24 recognition and
+   fall-through (`madc_session.cpp`'s table stays the one owner; a module
+   or a host registers names, resolved to a code once at input; `%help`
+   lists the one registry). The extension point exists today ONLY inside
+   madcide's REPL pane (`plugin_repl_command`) — `madc -i` has no hook.
+3. **PCRE2 into libmadc** (decided, below) + the five regex functions'
+   fixes (invalid pattern refused; `madc::` three leave `ns_perl.cpp`; lean
+   mangled-direct forms) — own commits with reducers.
+4. **The standard by extension**: `--std` > extension > madc.ini/env `std`
+   > madc; `.c` → C17, `.cpp`/`.cc`/`.cxx` → C++17, `.mad` → madc; and
+   **madc.ini's new keys**: `modules` (repeatable, php.ini-style; the
+   `%git` enabler) and `theme`. The ini schema in `include/madc_config.h`.
+5. **Windows `madc -i` gets the crash-isolated backend** (owner 2026-10-09:
+   make Windows work like Linux and macOS). The child-of-self backend
+   already exists (`SessionClient::spawn_backend`,
+   `src/madc_session_client.cpp:611`, used by `madc::session_open`); only
+   `madc -i` stays in-process (`src/madc.cpp:545`), because its configured
+   Program cannot cross to the child (the `make_program` guard). Fix: the
+   child receives the CONFIGURATION (the `--std`, `-I`, `-D`, `-l`,
+   `--config` / `--no-config` arguments, never a mode or output flag) and
+   builds the identical Program itself, on every restart; the in-process
+   branch is deleted. INTERACTIVE ONLY (owner): the backend is reached only
+   from `run_repl` and `session_open`; running a file, `-c`, `-o`,
+   `--project` and `--emit` never start one. A Cygwin-style fork was weighed
+   and refused (memory-copy emulation, fragile with JIT code, MIR and
+   WebView2 DLLs). Test: a crashing entry under Windows `madc -i` restarts
+   the session; a plain `madc file.mad` starts no child.
+
+*1B — the interactive core at the prompt (after 1A; parallel with 1C):*
+6. **The ex core and line mode**: buffers (`:e`, `:ls`, `:b N`, `:bn`,
+   `:bp`), addresses and ranges, the ed core, the ex/vim additions (`:s`,
+   `:g`, `:v`, `/re/`, `?re?` on PCRE2), `:r`, `:!cmd`, `:N`, `:set`,
+   `u`/redo on the document's groups — D24's list. `madc -i FILE` IS line
+   mode. The per-language editing tables (comment opener, block delimiters,
+   default indent, indent detection — `madcide_lang.inc:71-218`) and the
+   file-kind family predicates move beside `src/file_kinds.cpp` for `>`,
+   `<` and `:set`.
+7. **`%history` (one store), `%std`, `%reset`, the one completion insert
+   rule** (`line_edit::completed`).
+8. **Check, build, run and projects at the prompt** (owner: build and
+   projects are madc's): `%check` (madcide documents `:check` and never
+   handled it); `%build` / `%run` on a live BUFFER (today a file only —
+   madcide's `start_native_build` and F5 `replrun` move down); program args
+   at the prompt; `%project` — manifest write, add/remove a TU, check /
+   build / run of the project (madc already reads the manifest; madcide's
+   `proj_check_rows` and the `bld-proj-*` bodies move down).
+9. **Syntax colour at the prompt** (owner 2026-10-09). The pieces exist:
+   the token classifier (`include/tokens.h:145`, `madc::lex_spans`), the
+   one style vocabulary (`include/madcdis/ui_style.h`, depth detection
+   included), and `line_edit.h`'s `line_painter`, which repaints the entry
+   every keystroke. The painter styles each span through the same
+   style-to-SGR step the TUI uses; the echoed source line under an error
+   and `%type` / `%pinfo` output use it too. madc ships ONE built-in
+   default theme; **madc.ini's `theme` key overrides it** (owner);
+   madcide's themes stay its own data. Phase 0.5's predicate gates it.
+10. **`%git` as the madcgit module's command**, registered on load
+    (`-lmadcgit`, the ini `modules` key, or `import madcgit;`); the verb
+    bodies (`madcide_git.inc:93-613`, ~520 lines) move into the module.
+
+*1C — the headless services (after 1A; parallel with 1B):*
+11. **ONE set of language-service functions** over a document: diagnostics,
+    outline, definition, references, hover, semantic spans — mostly the
+    existing `madc::parse_*` / `graph_*`, now taking a document. The LSP,
+    the MCP tools and madcide's direct calls all read it; nothing answers
+    twice.
+12. **The LSP into madc's core** (owner: "small enough"): `madc --lsp FILE`
+    — a C++ port of `madcide_lsp.inc` (1,098 lines of dialect today; a
+    core face must not recompile its own source at every launch) over 1A.1
+    and 1C.11: document sync on madc's documents (a `didOpen` no longer
+    switches an active buffer — there is none), `executeCommand` through
+    the registry. madcide never talks to madc's buffers THROUGH the LSP
+    (it owns no copy; it calls 1C.11 directly).
+13. **The MCP protocol module** (a module by the module principle): the
+    JSON-RPC server with tool registration (name, schema, handler,
+    per-tool permission tier) and the MCP client (`madcide_mcpclient.inc`,
+    459 lines). Any madc program exposes tools with it.
+14. **The code-graph tools into core** beside the LSP (19 tools over 1C.11
+    + the document's undo for insert / replace / delete), and **the
+    git-history tools into the madcgit module** (6 tools, `madcide_past.inc`
+    502 lines) — each registered into 1C.13 when present.
+15. **The project-memory module**: the change log (`clog_*`, today
+    `editor_events.inc` — a SUBSCRIBER to 1A.1's edit notification now),
+    records and links (`madcide_nexus.inc` 514), proposals
+    (`madcide_propose.inc` 242), test discovery / runs / results
+    (`madcide_tests.inc` 546), asset layers (`madcide_layers.inc` 176);
+    saved beside the project (`<base>.prj.events`). The 21 `nexus.*` /
+    `test.*` tools register into 1C.13.
+16. **Discovery as a module** (`madcide_discover.inc`, 345 lines) and
+    **`madc --mcp --project X`** (a single file = the one-TU case): the
+    headless MCP server for a project, solely in madc — 1C.13 + 1C.14 +
+    1C.15, the history tools when madcgit is loaded. ONE OWNER PER PROJECT:
+    the first process advertises; a second attaches or refuses with the
+    owner's pid. Proposals persist with 1C.15, so a headless agent's
+    proposal is decided later in madcide.
+
+*1D — madcide re-plumbed (after 1B and 1C):*
+17. **madcide on madc's documents**: its buffer ring, `ensure_phandle`,
+    `ed_text_insert` / `ed_text_erase` and the anchor registry
+    (`editor_events.inc`, 1,778 lines) are replaced by 1A.1; its views,
+    carets, selections, panes and lenses point at madc documents. The
+    change log is now 1C.15's; madcide loads that module.
+18. **`colon_command` splits**: the editing verbs are madc's (1B.6), the
+    `view*` verbs register into madc's registry; lined's verbs retired;
+    `madcide --line FILE` = `madc -i FILE` (kept, decided); the pane's
+    history and completion from madc (1B.7).
+19. **madcide's service files deleted, madc's loaded**: `madcide_lsp.inc`,
+    `madcide_mcp.inc`, `_nexus`, `_past`, `_propose`, `_tests`, `_layers`,
+    `_mcpclient`, `_discover` (~5,600 lines) go; madcide imports 1C.13 /
+    1C.15 / 1C.16, registers its commands as tools (1C.13) and keeps the
+    seats (`madcide_api/seat/serve/ws/once.inc`, ~1,350 lines: the api
+    seat, the ws window, `--serve`, `--attach`, `-c`, tiers over its
+    commands). `tools/vscode-madcide` targets `madc --lsp`.
+20. **madcide features that ride the move**: the Symbols view in madcide's
+    base (Chthonia drops its plugin in its paired release), View ▸ Line
+    Numbers (the gutter toggle, persisted through the layout).
+21. **`examples/vised/`**: the self-contained rewrite on `ui::`, the
+    document component and the registry, with its R4/R5 contract test;
+    `tools/texteditor/vised*`, `lined*`, the `.madv` verbs, testlineed and
+    testvised deleted.
+22. **The engine twins** (above) land.
 
 **Phase 2 — the repository split** (`2026-10-08-madcide-own-repo.md` steps
 2-7, on the corrected inventory): the `git filter-repo`, madcide CI on the
@@ -285,9 +409,14 @@ branch with their targeted gates.
 
 ## Thread-safety contract
 
-The edit notification is per-world, session-thread state like the hub's
-components (`include/madcdis/hub.h`); the registry extension point is written
-at activation and read at input on the session's thread. No new globals.
+The document component and its edit notification are per-world,
+session-thread state like the hub's components (`include/madcdis/hub.h`) —
+a buffer ring is a per-world entity set, never a global; a document's
+mirrors (the forked backend's input, an LSP client) are keyed by its version
+and resync. The registry extension point is written at activation and read
+at input on the session's thread. The MCP protocol module serves one
+connection at a time per session thread; a per-tool permission tier is
+plain data. No new globals.
 
 ## Owner decisions open
 
@@ -307,8 +436,8 @@ at activation and read at input on the session's thread. No new globals.
 
 - **File buffers are madc's** — in the process that edits, never the one that
   runs user code (`madc -i`: the prompt process; madcide: its own process,
-  the same buffer code). Windows `madc -i` gets the child backend (Phase 1
-  step 10).
+  the same buffer code). Windows `madc -i` gets the child backend (Phase 1A
+  step 5).
 - **LSP is part of madc's core** ("small enough"): `madc --lsp`, its document
   sync on madc's buffers, `executeCommand` through the command registry.
 - **`madcide --line FILE` = `madc -i FILE`** (kept; it costs nothing).
@@ -398,7 +527,7 @@ at activation and read at input on the session's thread. No new globals.
   that rule stands: no PCRE2 source in the repository — libmadc links the
   platform's library (the distro's `libpcre2-8` on Linux, a fetched or brew
   copy for the macOS and Windows builds), the zstd precedent. Design items
-  for Phase 1 step 3: no `pcre2_*` symbol exported from libmadc
+  for Phase 1A.3: no `pcre2_*` symbol exported from libmadc
   (`check-c-abi-surface`; never `--exclude-libs` — a shared-library dependency
   keeps them out); the JIT in or out (the ex core and the five functions do
   not need it); each platform's package dependency; how vim's spellings map

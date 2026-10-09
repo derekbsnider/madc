@@ -146,61 +146,48 @@ styles, profiles, help panes, markdown preview, choice rows.
 | Host child-process transport, seat tiers | `madcide_plugin_host.inc` | NONE | madcide |
 | Session-command registration (`ide_api.repl_command`) | madcide | LINE | **madc** (B above) |
 
-### H. Services — the fine lines
+### H. Services — the fine lines (DECIDED 2026-10-09; see the arc plan's Phase 1C)
 
-| Capability | Lives now | Level | Depends on (madcide-side) | → |
+| Capability | Lives now | Level | Depended on (madcide-side) | → decided |
 |---|---|---|---|---|
-| LSP face `madcide --lsp` (1098 lines) | `madcide_lsp.inc` | NONE | document store (open docs → parse handles) | **owner decision F1** |
-| MCP seat: graph.* 30, nexus.* 11, test.* 5, PAST, propose, layers (`madcide_mcp/nexus/past/propose/layers/tests.inc`) | madcide | NONE | change-log stream, registry + tiers, document store | **F2** (proposed: madcide) |
-| MCP client (`madcide_mcpclient.inc`) | madcide | NONE | nexus records | madcide (with F2) |
-| graph.insert/replace/delete (node-op transactions) | `madcide_mcp.inc:560-971` | NONE | the text-mutation owner, undo, change log | madcide (with F2); writes through the engine edit notification after Phase 1 |
-| api seat, ws window seat, `--serve`, discovery, `-c` NONE client | `madcide_api/seat/serve/ws/discover/once.inc` | NONE / GUI | IdeSession + registry, es `buffers` | **F3** (proposed: madcide) |
-| `--sessions` listing, `--attach` relay, JSON-RPC envelopes | `madcide_serve/discover/api.inc` | NONE | none (advertisement files only) | madcide — no IDE state, but only meaningful against madcide's seats |
+| LSP face `madcide --lsp` (1098 lines) | `madcide_lsp.inc` | NONE | document store | **madc core**: `madc --lsp` (C++ port) over the document component; madcide calls the language-service functions directly, never through the LSP |
+| MCP protocol (JSON-RPC server, tiers) + MCP client (`madcide_mcpclient.inc`) | madcide | NONE | registry + tiers | **a madc module** (the MCP protocol module; per-tool tier is its data) |
+| graph.* reads 24 + insert/replace/delete | `madcide_mcp.inc` | NONE | document store, undo, change log | **madc core** beside the LSP, over the one set of language-service functions and the document's undo |
+| graph.* PAST 6 (`madcide_past.inc`) | madcide | NONE | git, change log | **the madcgit module**, registered when loaded |
+| nexus.* 11, test.* 5, proposals, layers, the change log | madcide + `editor_events.inc` | NONE | change-log stream | **the project-memory module**: a subscriber to the edit notification, saved beside the project |
+| discovery / advertisement (`madcide_discover.inc`, 345) | madcide | NONE | es `buffers` | **a madc module** (two consumers: the headless MCP and madcide); one owner per project |
+| `madc --mcp --project X` | — | NONE | — | **madc**: the headless MCP server for a project, solely in madc |
+| api seat, ws window seat, `--serve`, `--attach`, `-c` NONE client | `madcide_api/seat/serve/ws/once.inc` (~1,350) | NONE / GUI | IdeSession + registry | **madcide** (remote control of a running madcide session; its foundation `serve_web` / WebSocket / `conn_*` / `<ns_ui_ws>` is already madc's) |
 
-LSP detail: the reads (documentSymbol, definition, references, hover,
-semanticTokens) are pure `madc::parse_*` / `graph_*` given a doc → handle
-store; document sync writes through `ed_text_*`, and resolves a URI through
-`edit_file`, so an editor's `didOpen` switches madcide's active buffer.
-
-## The three pieces of madcide-side state behind every fine line
+## The three pieces of madcide-side state behind every fine line — all three resolved to madc
 
 Every NONE-level service above is thin over madc APIs (`madc::parse_*`,
-`graph_*`, `channel`, `frame_headers`, `serve_web`). What keeps them in
-madcide is three pieces of state:
+`graph_*`, `channel`, `frame_headers`, `serve_web`). What kept them in
+madcide was three pieces of state, and the inventory round placed each:
 
-1. **The document store** — the buffer ring and its `ensure_phandle` parse
-   handles. Phase 1 gives madc this (the ex core's buffers). Once it exists,
-   LSP reads become madc-placeable.
-2. **The change-log stream** (`clog_*`, `<base>.prj.events`) — the Nexus
-   event stream the MCP folds (records, links, proposals, runs). It stays
-   madcide's unless madc takes the journal too.
-3. **The command registry + IdeSession** (tiers, seats, compose). madc gets
-   the registry; IdeSession and seats stay madcide's.
+1. **The document store** → madc's document component (Phase 1A.1).
+2. **The change-log stream** → the project-memory module (Phase 1C.15), a
+   subscriber to the document's edit notification.
+3. **The command registry** → madc's (Phase 1A.2); IdeSession and the seats
+   stay madcide's — the only service state that does.
 
-## Owner decisions (fine lines)
+## Fine-line decisions (owner, 2026-10-09)
 
-Each has a proposed default; nothing below blocks Phase 1 steps 1–5.
-
-- **F1. LSP.** Proposed: stays madcide for the arc (bound to IdeSession);
-  `madc --lsp` over madc's own buffers is a later candidate once Phase 1
-  lands (clangd is a compiler-side server, not an editor's — so the natural
-  long-term home is madc).
-- **F2. MCP (code graph, Nexus, tests).** Proposed: madcide — it needs the
-  change-log stream, and its `PAST` axis needs git (libgit2 is kept out of
-  madc).
-- **F3. Seats / serve / discovery / attach.** Proposed: madcide (IdeSession's
-  protocol). madc keeps the channel primitives (`serve_web`, WebSocket).
-- **F4. `madcide --line`** (already open). Proposed: retire with a pointer to
-  `madc -i FILE` — line mode IS madc's after Phase 1, and an alias keeps a
-  second entry for one behaviour.
-- **F5. Per-file-family default standard.** madc today: one `--std` (default
-  madc dialect; a `.c` extension only keeps K&R implicit declarations).
-  madcide: `.c` → C17, `.cpp` → C++17, `.mad` → madc. Proposed: madc adopts
-  madcide's rule for a buffer opened at the prompt AND for `madc file.c` —
-  a semantic change of the CLI, so the owner's call.
-- **F6. Config.** Proposed: madc.ini owns every madc-semantic key (std,
-  modules — already decided for `%git`, and F5's default if adopted);
-  settings.json keeps only UI preferences (keys, theme, profile, layout).
+- **F1. LSP** — madc's core: `madc --lsp` ("small enough"); madcide calls the
+  same language-service functions directly (it holds no copy of madc's
+  buffers; LSP's editor-owns-the-text model would invert ownership and add
+  an async step per keystroke — the xi-editor mistake).
+- **F2. MCP** — layered madc modules + core tools; a headless MCP server for
+  a madc project exists solely in madc (`madc --mcp --project`).
+- **F3. Seats / serve / attach** — madcide's ("unless it could be a reusable
+  module beyond it"; its foundation already is). Discovery — a madc module.
+- **F4. `madcide --line FILE`** — kept, = `madc -i FILE`.
+- **F5. Standard by extension** — `--std` > extension > madc.ini/env `std` >
+  madc; `.c` → C17 until C23 (51.4% measured, ROADMAP 2.13) nears C17's level.
+- **F6. Config** — madc.ini owns the semantic keys (`std`, `modules`
+  php.ini-style, `theme`); settings.json keeps UI preferences.
+- **The module principle** (owner): modules are madc-language libraries any
+  program can use; madcide is one consumer.
 
 ## Found on the way (Phase 1 fixes, each with a reducer)
 
