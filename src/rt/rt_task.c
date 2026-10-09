@@ -43,6 +43,23 @@
 #endif
 #endif
 
+// AddressSanitizer fiber hooks, in a sanitizer build only (src/Makefile's
+// RT_SANITIZE_FLAGS instruments the host runtime): every ucontext switch
+// names the stack about to run, or ASan reads the frame redzones a task's
+// earlier calls left on its malloc'd stack as stack-buffer-overflow.
+#if !defined(_WIN32)
+#if defined(__SANITIZE_ADDRESS__)
+#define MADC_TASK_ASAN 1
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define MADC_TASK_ASAN 1
+#endif
+#endif
+#endif
+#if defined(MADC_TASK_ASAN)
+#include <sanitizer/common_interface_defs.h>
+#endif
+
 // ---------------------------------------------------------------------------
 // The task (a stack + state)
 // ---------------------------------------------------------------------------
@@ -87,6 +104,11 @@ typedef struct madc_task {
 #else
 	ucontext_t uc;
 	void *stack;               // malloc'd; freed by the reaper
+#if defined(MADC_TASK_ASAN)
+	const void *asan_bottom;   // this context's stack, as ASan is told it
+	size_t asan_size;          // (main's: learned on the first switch away)
+	struct madc_task *asan_from; // the context that last switched here
+#endif
 #endif
 } madc_task;
 
@@ -501,6 +523,30 @@ long long __madc_task_switch_count(void)
 	return g_switch_count;
 }
 
+#if defined(MADC_TASK_ASAN)
+// Before a switch: `to`'s stack becomes the live one. A NULL `save` says the
+// current context dies (task_exit_switch) and its fake stack goes with it.
+static void task_asan_leave(void **save, madc_task *from, madc_task *to)
+{
+	to->asan_from = from;
+	__sanitizer_start_switch_fiber(save, to->asan_bottom, to->asan_size);
+}
+
+// After arriving in `self`: restore its fake stack and learn the bounds of
+// the stack it was entered from — the only way main's become known.
+static void task_asan_arrive(madc_task *self, void *save)
+{
+	const void *bottom = NULL;
+	size_t size = 0;
+	__sanitizer_finish_switch_fiber(save, &bottom, &size);
+	madc_task *from = self->asan_from;
+	if (from && !from->asan_size) {
+		from->asan_bottom = bottom;
+		from->asan_size = size;
+	}
+}
+#endif
+
 static void task_switch(madc_task *from, madc_task *to)
 {
 	TASK_TRACE("[task] switch %p -> %p (main=%p)\n", (void *)from,
@@ -513,7 +559,14 @@ static void task_switch(madc_task *from, madc_task *to)
 	SwitchToFiber(to->fiber);
 #else
 	g_starting = to;
+#if defined(MADC_TASK_ASAN)
+	void *asan_save = NULL;
+	task_asan_leave(&asan_save, from, to);
+#endif
 	swapcontext(&from->uc, &to->uc);
+#if defined(MADC_TASK_ASAN)
+	task_asan_arrive(from, asan_save);
+#endif
 #endif
 	task_reap();
 }
@@ -546,6 +599,9 @@ static void task_exit_switch(void)
 	SwitchToFiber(next->fiber);
 #else
 	g_starting = next;
+#if defined(MADC_TASK_ASAN)
+	task_asan_leave(NULL, self, next);
+#endif
 	setcontext(&next->uc);
 #endif
 	abort();               // unreachable
@@ -615,6 +671,9 @@ static void CALLBACK task_trampoline(void *param)
 static void task_trampoline(void)
 {
 	madc_task *t = g_starting;
+#if defined(MADC_TASK_ASAN)
+	task_asan_arrive(t, NULL);
+#endif
 	task_reap();
 	TASK_TRACE("[task] trampoline enter t=%p fn=%p\n", (void *)t,
 		   (void *)(size_t)t->fn);
@@ -638,6 +697,10 @@ static int task_backend_create(madc_task *t)
 		return 0;
 	t->uc.uc_stack.ss_sp = t->stack;
 	t->uc.uc_stack.ss_size = task_stack_bytes();
+#if defined(MADC_TASK_ASAN)
+	t->asan_bottom = t->stack;
+	t->asan_size = task_stack_bytes();
+#endif
 	t->uc.uc_link = NULL;      // exits go through task_exit_switch
 	makecontext(&t->uc, task_trampoline, 0);
 	return 1;

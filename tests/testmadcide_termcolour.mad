@@ -1,0 +1,79 @@
+// The Terminal tab keeps its program's colours (TUI facelift S8): a program
+// on the pty writes SGR — here printf's bold red word — and the bounded
+// screen (madcdis/term_screen.h, through ui::term_feed) keeps the text
+// plain and the colour as a span row {s, e, c} on the [terminal] buffer,
+// which the Terminal view hands to its edit node as `spans` (the rows both
+// faces render). The IDE's own lines (the exit status, the next run's
+// header) start with SGR 0, so a colour the program leaves set never
+// reaches them.
+// Oracle: the same bytes in xterm show "red" bold red and "-ok" plain.
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+
+// The Terminal view's edit node in a composed tree (hints.terminal = 1).
+bool find_terminal(var &out, var &n)
+{
+    if ( !n["hints"].is_null() && !n["hints"]["terminal"].is_null() )
+    {
+	out = n;
+	return true;
+    }
+    if ( n["children"].is_null() )
+	return false;
+    for ( var c : n["children"] )
+	if ( find_terminal(out, c) )
+	    return true;
+    return false;
+}
+
+void show_spans(const char *label, var &rows, var &text)
+{
+    println("{}:", label);
+    if ( rows.is_null() )
+	return;
+    for ( var r : rows )
+    {
+	var word = text.substr(r["s"].as_integer(),
+			       r["e"].as_integer() - r["s"].as_integer());
+	println("  [{}] {}", word, r["c"]);
+    }
+}
+
+int main()
+{
+    const char *path = "madc_termcolour.txt";
+    php::file_put_contents(path, "x\n");
+    IdeSession S;
+    long doc = S.open(path, false);
+    S.panel(true);			// a window: runs go to the Terminal tab
+    S.tabs(true);
+    start_terminal(S.w, S.es, "colours", "pty://printf \\033[1;31mred\\033[0m-ok\\n");
+    madc::task_drain();
+    long tdoc = term_doc_if_any(S.w, S.es);
+    var text;
+    ui::text(text, S.w, tdoc);
+    var rows;
+    ui::get(rows, S.w, tdoc, "termspans");
+    println("text has red-ok: {}", text.index("red-ok") >= 0 ? 1 : 0);
+    println("no escape bytes: {}", text.index("\x1b") < 0 ? 1 : 0);
+    show_spans("screen", rows, text);
+    var tree;
+    S.compose_ide_tree(tree, doc);
+    var term;
+    if ( find_terminal(term, tree) )
+	show_spans("view", term["hints"]["spans"], text);
+    else
+	println("no terminal view");
+    // A program that leaves its colour set: the next run's header is plain.
+    start_terminal(S.w, S.es, "again", "pty://printf \\033[32mgreen");
+    madc::task_drain();
+    start_terminal(S.w, S.es, "third", "pty://true");
+    madc::task_drain();
+    ui::text(text, S.w, tdoc);
+    ui::get(rows, S.w, tdoc, "termspans");
+    show_spans("after", rows, text);
+    S.close();
+    php::unlink(path);
+    return 0;
+}

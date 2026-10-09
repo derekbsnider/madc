@@ -22,6 +22,8 @@ using madc::hub::roles;
 using madc::hub::uinode;
 using madc::hub::name_id;
 using madc::hub::ui_style;
+using madc::hub::ui_rgb_nearest_ansi;
+using madc::hub::ui_rgb_nearest_256;
 using madc::hub::tui_grid;
 using madc::hub::tui_key;
 using madc::hub::tui_keyev;
@@ -33,6 +35,30 @@ using madc::hub::tui_dirty_rows;
 using madc::hub::tui_paint_plan;
 using madc::hub::tui_diff_plan;
 using madc::hub::tui_bindings;
+using madc::hub::tui_frame;
+using madc::hub::ui_glyph_ascii;
+using madc::hub::key_mod_bits;
+using madc::hub::menu_col;
+using madc::hub::menu_row;
+using madc::hub::menu_hotkeys;
+
+// `n` copies of a (UTF-8) glyph.
+static std::string repeat(const char *utf8, size_t n)
+{
+    std::string out;
+    for ( size_t i = 0; i < n; ++i )
+	out += utf8;
+    return out;
+}
+
+// A glyph as tui_cell::ch packs it (UTF-8 bytes, first byte lowest).
+static uint32_t packed(const char *utf8)
+{
+    uint32_t g = 0;
+    for ( size_t k = strlen(utf8); k > 0; --k )
+	g = (g << 8) | (unsigned char)utf8[k - 1];
+    return g;
+}
 
 static std::vector<tui_keyev> parse(const char *bytes, bool flush = true)
 {
@@ -115,12 +141,17 @@ TEST_CASE("keyparse — CSI and SS3 escape sequences, tilde codes, bare ESC")
     REQUIRE(out.size() == 1u);
     CHECK(out[0].kind == tui_key::esc);
 
-    // ESC followed by an ordinary byte: esc, then the byte.
+    // ESC and a printable byte before the pause: the Meta prefix, Alt+q.
     k = parse("\x1bq");
+    REQUIRE(k.size() == 1u);
+    CHECK(k[0].kind == tui_key::ch);
+    CHECK(k[0].ch == 'q');
+    CHECK(k[0].mods == key_mod_bits(::ui::key_mod::alt));
+    // ESC before a control byte: esc, then the byte.
+    k = parse("\x1b\r");
     REQUIRE(k.size() == 2u);
     CHECK(k[0].kind == tui_key::esc);
-    CHECK(k[1].kind == tui_key::ch);
-    CHECK(k[1].ch == 'q');
+    CHECK(k[1].kind == tui_key::enter);
 
     // A partial CSI at the pause is dropped, and parsing recovers.
     tui_keyparse q;
@@ -152,6 +183,9 @@ TEST_CASE("keyparse — xterm's modified keys decode, and their bytes round-trip
 	{ "\x1b[27;5;43~", "ctrl+plus" },
 	{ "\x1b[115;5u", "^s" },		// CSI u: plain Ctrl+S stays ^s
 	{ "\x1b[119;6u", "ctrl+shift+w" },
+	{ "\x1b" "f", "alt+f" },			// the Meta prefix
+	{ "\x1b<", "alt+<" },
+	{ "\x1b[27;3;97~", "alt+a" },		// modifyOtherKeys' Alt+A
     };
     for ( size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); ++i )
     {
@@ -174,6 +208,8 @@ TEST_CASE("keyparse — xterm's modified keys decode, and their bytes round-trip
     // The unmodified keys' bytes are unchanged.
     CHECK(madc::hub::tui_key_bytes(tui_keyev(tui_key::up)) == "\x1b[A");
     CHECK(madc::hub::tui_key_bytes(tui_keyev(tui_key::ctrl, 's')) == "\x13");
+    // Alt and a printable writes the Meta prefix (readline's M-f).
+    CHECK(madc::hub::tui_key_bytes(parse("\x1b[27;3;102~")[0]) == "\x1b" "f");
 }
 
 TEST_CASE("keyparse — function keys: xterm's tilde codes and SS3, the Linux console's")
@@ -662,11 +698,12 @@ TEST_CASE("compose — a vertical split lays two panes side by side")
     tui_model m;
     const tui_grid &g = m.compose(r, root, 6, 41);
     // width 41, one divider column -> each pane 20 cols: left 0..19, the
-    // blank divider at 20, right 21..40.
+    // divider line at 20 (S2: every row of the split), right 21..40.
     CHECK(g.at(0, 0).ch == 'L');
     CHECK(g.at(0, 1).ch == 'L');
     CHECK(g.at(1, 0).ch == 'L');
-    CHECK(g.at(0, 20).ch == ' ');
+    CHECK(g.at(0, 20).ch == packed("\xe2\x94\x82"));	// │
+    CHECK(g.at(5, 20).ch == packed("\xe2\x94\x82"));
     CHECK(g.at(0, 21).ch == 'R');
     CHECK(g.at(0, 22).ch == 'R');
     CHECK(g.at(1, 21).ch == 'R');
@@ -714,12 +751,14 @@ TEST_CASE("compose — a bottom panel carves a band with a tab strip")
     tui_model m;
     const tui_grid &g = m.compose(r, root, 8, 20);
     // 25% of 8 = 2 -> min 3 rows -> panel at rows 5..7; centre rows 0..4.
+    // The panel's first row is its divider (S2), the strip and content below.
     CHECK(g.row_text(0) == " top.mad");			// centre status
-    CHECK(g.row_text(5) == " Problems  Output");	// the strip header
-    CHECK(g.at(5, 0).attr == ui_style::reverse());	// active tab reversed
-    CHECK(g.at(5, 9).attr == ui_style::reverse());
-    CHECK(g.at(5, 11).attr != ui_style::reverse());	// Output not active
-    CHECK(g.row_text(6) == "hi");			// the panel content
+    CHECK(g.row_text(5) == repeat("\xe2\x94\x80", 20));	// ─ across
+    CHECK(g.row_text(6) == " PROBLEMS  OUTPUT");	// the strip, uppercase (S3)
+    CHECK(g.at(6, 0).attr == ui_style::reverse());	// active tab reversed
+    CHECK(g.at(6, 9).attr == ui_style::reverse());
+    CHECK(g.at(6, 11).attr != ui_style::reverse());	// Output not active
+    CHECK(g.row_text(7) == "hi");			// the panel content
 }
 
 TEST_CASE("compose — a left sidebar carves a full-height column band")
@@ -738,18 +777,20 @@ TEST_CASE("compose — a left sidebar carves a full-height column band")
     CHECK(g.at(0, 0).ch == 'd');			// sidebar content
     CHECK(g.at(0, 1).ch == 'e');
     CHECK(g.at(0, 2).ch == 'f');
+    CHECK(g.at(0, 11).ch == packed("\xe2\x94\x82"));	// its divider (S2)
+    CHECK(g.at(5, 11).ch == packed("\xe2\x94\x82"));
     CHECK(g.at(0, 12).ch == ' ');			// centre status " main.mad"
     CHECK(g.at(0, 13).ch == 'm');
     CHECK(g.at(1, 12).ch == 'x');			// the editor edit, centre cols
 }
 
-TEST_CASE("compose — a root toolbar hint takes the top row as [Label chord] buttons; the bands lay out below it")
+TEST_CASE("compose — a root toolbar hint takes the top row as buttons; the bands lay out below it")
 {
     // Plan §41.11a: the rows madcide places on the toolbar ride the root's
-    // `toolbar` hint; the grid draws them as one line, each with the chord
-    // the LOADED profile binds to its code (else nothing), and the sidebar
-    // and the centre start on the row after it. The sidebar case above,
-    // with no hint, starts at row 0 (the negative control).
+    // `toolbar` hint; the grid draws them as one row of buttons (their
+    // chords are the menus' — facelift S5), and the sidebar and the centre
+    // start on the row after it. The sidebar case above, with no hint,
+    // starts at row 0 (the negative control).
     world w;
     roles r = roles::standard(w);
     uinode root(r.group);
@@ -781,7 +822,7 @@ TEST_CASE("compose — a root toolbar hint takes the top row as [Label chord] bu
     tui_model m;
     m.set_bindings(b);
     const tui_grid &g = m.compose(r, root, 6, 40);
-    CHECK(g.row_text(0) == "[Run f5] [Save]");
+    CHECK(g.row_text(0) == " Run  Save");
     CHECK(g.at(1, 0).ch == 'd');			// the sidebar, one row down
     CHECK(g.at(1, 13).ch == 'm');			// the centre status " main.mad"
     CHECK(g.at(2, 12).ch == 'x');			// the editor edit
@@ -820,6 +861,44 @@ TEST_CASE("styles — the JOE-vocabulary spec parser (one table)")
     CHECK(!ui_style_of("mauve", a));		// unknown word refuses
     CHECK(!ui_style_of("bold mauve", a));	// ... the WHOLE spec
     CHECK(!ui_style_of("", a));			// empty refuses
+}
+
+TEST_CASE("styles — an exact colour (#rrggbb) keeps its value and its nearest index")
+{
+    ui_style a;
+    REQUIRE(ui_style_of("#6a9955", a));		// Dark+ comment green
+    CHECK(a.fg_rgb == (ui_style::RGB_SET | 0x6a9955u));
+    CHECK(a.fg == 3);				// green — not the nearer-by-RGB yellow
+    REQUIRE(ui_style_of("bold #569CD6 bg_#1e1e1e", a));	// hex case-free
+    CHECK(a.fg_rgb == (ui_style::RGB_SET | 0x569cd6u));
+    CHECK(a.fg == 7);				// Dark+ keyword blue reads as cyan
+    CHECK(a.bg_rgb == (ui_style::RGB_SET | 0x1e1e1eu));
+    CHECK(a.bg == 1);				// a near-grey: black
+    CHECK((a.flags & ui_style::BOLD) != 0);
+    CHECK(!ui_style_of("#6a995", a));		// five digits refuses
+    CHECK(!ui_style_of("#6a99zz", a));		// a non-hex digit refuses
+    ui_style b;
+    REQUIRE(ui_style_of("green", b));
+    CHECK(!(a == b));
+    ui_style c;
+    REQUIRE(ui_style_of("#6a9955", c));
+    ui_style d;
+    REQUIRE(ui_style_of("green", d));
+    CHECK(c.fg == d.fg);
+    CHECK(c != d);				// the exact value is part of the style
+}
+
+TEST_CASE("styles — nearest colours: 8 by hue, 256 from the cube or the grey ramp")
+{
+    CHECK(ui_rgb_nearest_ansi(0xc586c0u) == 6);	// magenta
+    CHECK(ui_rgb_nearest_ansi(0x4ec9b0u) == 7);	// teal reads as cyan
+    CHECK(ui_rgb_nearest_ansi(0xce9178u) == 2);	// Dark+ string: red
+    CHECK(ui_rgb_nearest_ansi(0x000000u) == 1);	// black
+    CHECK(ui_rgb_nearest_ansi(0xd4d4d4u) == 8);	// a light grey: white
+    CHECK(ui_rgb_nearest_256(0xff0000u) == 196);	// the cube's pure red
+    CHECK(ui_rgb_nearest_256(0x000000u) == 16);	// the cube's black
+    CHECK(ui_rgb_nearest_256(0x808080u) == 244);	// a mid grey: the ramp
+    CHECK(ui_rgb_nearest_256(0x5f87afu) == 67);	// an exact cube entry
 }
 
 TEST_CASE("compose — highlight spans paint; the selection wins; bad rows skip")
@@ -1281,4 +1360,905 @@ TEST_CASE("keybytes — the inverse of the parser: every key round-trips through
     CHECK(tui_key_bytes(tui_keyev(tui_key::ch, 'x')) == "x");
     CHECK(tui_key_bytes(tui_keyev(tui_key::ch, ' ')) == " ");
     CHECK(tui_key_bytes(tui_keyev()).empty());
+}
+
+// ---- facelift S2: frames, the gutter, the current line ----------------------
+
+TEST_CASE("frame — a line's arms decide its glyph; meeting lines make the junction")
+{
+    tui_frame f;
+    f.reset(5, 9);
+    f.vline(4, 0, 4);		// a full-height divider at column 4
+    f.hline(2, 0, 4);		// a divider from the left edge ONTO it
+    CHECK(std::string(tui_frame::glyph_of(f.arms[2 * 9 + 4])) == "\xe2\x94\xa4");	// ┤
+    CHECK(std::string(tui_frame::glyph_of(f.arms[2 * 9 + 0])) == "\xe2\x94\x80");	// ─ (an end)
+    CHECK(std::string(tui_frame::glyph_of(f.arms[0 * 9 + 4])) == "\xe2\x94\x82");	// │ (an end)
+    f.hline(2, 4, 8);		// continued past it: a crossing
+    CHECK(std::string(tui_frame::glyph_of(f.arms[2 * 9 + 4])) == "\xe2\x94\xbc");	// ┼
+    tui_frame t;
+    t.reset(3, 3);
+    t.hline(1, 0, 2);
+    t.vline(1, 0, 1);		// standing on the line: ┴
+    CHECK(std::string(tui_frame::glyph_of(t.arms[1 * 3 + 1])) == "\xe2\x94\xb4");
+    tui_frame c;
+    c.reset(2, 2);
+    c.hline(0, 0, 1);
+    c.vline(0, 0, 1);		// a corner
+    CHECK(std::string(tui_frame::glyph_of(c.arms[0])) == "\xe2\x94\x8c");	// ┌
+}
+
+TEST_CASE("frame — a terminal without box drawing spells each glyph in ASCII")
+{
+    CHECK(ui_glyph_ascii(packed("\xe2\x94\x80")) == '-');
+    CHECK(ui_glyph_ascii(packed("\xe2\x94\x82")) == '|');
+    CHECK(ui_glyph_ascii(packed("\xe2\x94\xa4")) == '+');
+    CHECK(ui_glyph_ascii(packed("\xe2\x94\xbc")) == '+');
+    CHECK(ui_glyph_ascii('a') == 0);
+    CHECK(ui_glyph_ascii(packed("\xc3\xa9")) == 0);		// é is text, not a frame
+    // The toolbar's glyphs (S5): ▶ ■ ▾ in ASCII; … is text, not chrome.
+    CHECK(ui_glyph_ascii(packed("\xe2\x96\xb6")) == '>');
+    CHECK(ui_glyph_ascii(packed("\xe2\x96\xa0")) == '#');
+    CHECK(ui_glyph_ascii(packed("\xe2\x96\xbe")) == 'v');
+    CHECK(ui_glyph_ascii(packed("\xe2\x80\xa6")) == 0);
+}
+
+TEST_CASE("compose — a bottom panel's divider meets a right sidebar's: ┤")
+{
+    world w;
+    roles r = roles::standard(w);
+    uinode root(r.group);
+    root.add(edit_node(w, "a", 0));
+    uinode pc(r.content);
+    pc.content = madc::value(std::string("p"));
+    root.add(chrome_pane(w, "panel", "bottom", 50, pc, false));
+    uinode sc(r.content);
+    sc.content = madc::value(std::string("s"));
+    root.add(chrome_pane(w, "sidebar", "right", 25, sc, false));
+    tui_model m;
+    const tui_grid &g = m.compose(r, root, 10, 40);
+    // sidebar 12 cols (28..39), its divider column 28; centre 0..27; the
+    // panel's 5 rows from row 5, its divider row 5 reaching the sidebar's.
+    CHECK(g.at(0, 28).ch == packed("\xe2\x94\x82"));
+    CHECK(g.at(5, 0).ch == packed("\xe2\x94\x80"));
+    CHECK(g.at(5, 27).ch == packed("\xe2\x94\x80"));
+    CHECK(g.at(5, 28).ch == packed("\xe2\x94\xa4"));		// ┤
+    CHECK(g.at(0, 29).ch == 's');
+    CHECK(g.at(6, 0).ch == 'p');
+}
+
+TEST_CASE("compose — a vertical split's divider stands on a bottom panel's: ┴")
+{
+    world w;
+    roles r = roles::standard(w);
+    uinode root(r.group);
+    uinode split(r.group);
+    std::map<std::string, madc::value> sh;
+    sh["split"] = madc::value(std::string("vertical"));
+    split.hints = madc::value::make_object(sh);
+    split.add(split_pane(w, "L", 0));
+    split.add(split_pane(w, "R", 0));
+    root.add(split);
+    uinode pc(r.content);
+    pc.content = madc::value(std::string("p"));
+    root.add(chrome_pane(w, "panel", "bottom", 50, pc, false));
+    tui_model m;
+    const tui_grid &g = m.compose(r, root, 10, 41);
+    // the split's divider at column 20 over rows 0..4, the panel's at row 5
+    CHECK(g.at(0, 20).ch == packed("\xe2\x94\x82"));
+    CHECK(g.at(5, 20).ch == packed("\xe2\x94\xb4"));		// ┴
+    CHECK(g.at(5, 0).ch == packed("\xe2\x94\x80"));
+}
+
+// An edit node with the layout's `gutter` flag (and optional spans).
+static uinode gutter_edit(world &w, const std::string &doc, long caret,
+			  const char *span_spec = NULL)
+{
+    uinode e = edit_node(w, doc, caret);
+    std::map<std::string, madc::value> h = e.hints.as_object();
+    h["gutter"] = madc::value((int64_t)1);
+    if ( span_spec )
+    {
+	std::map<std::string, madc::value> sp;
+	sp["s"] = madc::value((int64_t)0);
+	sp["e"] = madc::value((int64_t)1);
+	sp["c"] = madc::value(std::string(span_spec));
+	std::vector<madc::value> rows;
+	rows.push_back(madc::value::make_object(sp));
+	h["spans"] = madc::value::make_array(rows);
+    }
+    e.hints = madc::value::make_object(h);
+    return e;
+}
+
+TEST_CASE("compose — the gutter numbers each line; the text and caret move past it")
+{
+    world w;
+    roles r = roles::standard(w);
+    uinode root(r.group);
+    root.add(gutter_edit(w, "ab\ncd", 4));		// caret on line 2, after 'c'
+    tui_model m;
+    const tui_grid &g = m.compose(r, root, 4, 20);
+    CHECK(g.row_text(0) == "   1  ab");
+    CHECK(g.row_text(1) == "   2  cd");
+    CHECK(g.at(0, 3).attr.flags == ui_style::DIM);	// the gutter is dim
+    CHECK(g.at(1, 3).attr == ui_style::normal());	// the caret line's number
+    CHECK(g.at(0, 6).attr == ui_style::normal());	// the text is not
+    CHECK(g.cursor_row == 1u);
+    CHECK(g.cursor_col == 7u);
+    // Too narrow a pane keeps its text and no gutter.
+    tui_model n;
+    uinode nroot(r.group);
+    nroot.add(gutter_edit(w, "ab", 0));
+    CHECK(n.compose(r, nroot, 2, 6).row_text(0) == "ab");
+}
+
+TEST_CASE("compose — the theme's chrome: dividers, the gutter and the caret line keep their colours")
+{
+    world w;
+    roles r = roles::standard(w);
+    uinode root(r.group);
+    std::map<std::string, madc::value> rh, ch;
+    ch["gutter"] = madc::value(std::string("blue"));
+    ch["current_line"] = madc::value(std::string("bg_#282828"));
+    ch["divider"] = madc::value(std::string("red"));
+    ch["no_such_chrome"] = madc::value(std::string("green"));	// ignored
+    rh["chrome"] = madc::value::make_object(ch);
+    root.hints = madc::value::make_object(rh);
+    root.add(gutter_edit(w, "xy\nz", 0, "cyan"));	// caret line 1, 'x' cyan
+    uinode pc(r.content);
+    pc.content = madc::value(std::string("p"));
+    root.add(chrome_pane(w, "panel", "bottom", 50, pc, false));
+    tui_model m;
+    const tui_grid &g = m.compose(r, root, 8, 20);
+    ui_style bg;
+    REQUIRE(madc::hub::ui_style_of("bg_#282828", bg));
+    CHECK(g.at(1, 3).attr.fg == 5);			// line 2's number: blue
+    CHECK(g.at(0, 6).attr.fg == 7);			// the span: cyan ...
+    CHECK(g.at(0, 6).attr.bg_rgb == bg.bg_rgb);		// ... on the caret line
+    CHECK(g.at(0, 7).attr.bg_rgb == bg.bg_rgb);		// the line's rest
+    CHECK(g.at(0, 19).attr.bg_rgb == bg.bg_rgb);
+    CHECK(g.at(1, 6).attr.bg_rgb == 0u);		// another line: none
+    CHECK(g.at(4, 0).attr.fg == 2);			// the divider: red
+}
+
+// ---- facelift S3: tab strips and the status bar ------------------------------
+
+TEST_CASE("compose — a node's tabs hint is a strip in the flow: the editor's open files")
+{
+    world w;
+    roles r = roles::standard(w);
+    uinode root(r.group);
+    uinode strip(r.content);
+    std::map<std::string, madc::value> t0, t1, sh;
+    t0["title"] = madc::value(std::string("main.c"));
+    t1["title"] = madc::value(std::string("util.c"));
+    t1["active"] = madc::value((int64_t)1);
+    std::vector<madc::value> tabs;
+    tabs.push_back(madc::value::make_object(t0));
+    tabs.push_back(madc::value::make_object(t1));
+    sh["tabs"] = madc::value::make_array(tabs);
+    strip.hints = madc::value::make_object(sh);
+    root.add(strip);
+    root.add(edit_node(w, "x", 0));
+    tui_model m;
+    const tui_grid &g = m.compose(r, root, 4, 30);
+    CHECK(g.row_text(0) == " main.c  util.c");		// file names keep their case
+    CHECK(g.at(0, 1).attr == ui_style::normal());	// an inactive tab
+    CHECK(g.at(0, 9).attr == ui_style::reverse());	// the active one (default)
+    CHECK(g.row_text(1) == "x");			// the editor below it
+}
+
+// A status node docked at an edge, with items segments.
+static uinode status_bar(world &w, const char *side)
+{
+    roles r = roles::standard(w);
+    uinode st(r.status);
+    st.content = madc::value(std::string(" a.c   Row 3 Col 9"));
+    std::map<std::string, madc::value> h, items, n, row, col;
+    n["seat"] = madc::value(std::string("n"));
+    n["label"] = madc::value(std::string(""));
+    n["text"] = madc::value(std::string("a.c"));
+    row["seat"] = madc::value(std::string("r"));
+    row["label"] = madc::value(std::string("Row"));
+    row["text"] = madc::value(std::string("3"));
+    col["seat"] = madc::value(std::string("c"));
+    col["label"] = madc::value(std::string("Col"));
+    col["text"] = madc::value(std::string("9"));
+    std::vector<madc::value> left, right;
+    left.push_back(madc::value::make_object(n));
+    right.push_back(madc::value::make_object(row));
+    right.push_back(madc::value::make_object(col));
+    items["left"] = madc::value::make_array(left);
+    items["right"] = madc::value::make_array(right);
+    h["items"] = madc::value::make_object(items);
+    h["region"] = madc::value(std::string("statusbar"));
+    if ( side )
+	h["side"] = madc::value(std::string(side));
+    st.hints = madc::value::make_object(h);
+    return st;
+}
+
+TEST_CASE("compose — a bottom status bar takes the last row, full width, its items justified")
+{
+    world w;
+    roles r = roles::standard(w);
+    uinode root(r.group);
+    root.add(status_bar(w, "bottom"));
+    root.add(edit_node(w, "one\ntwo", 0));
+    uinode sc(r.content);
+    sc.content = madc::value(std::string("s"));
+    root.add(chrome_pane(w, "sidebar", "left", 25, sc, false));
+    tui_model m;
+    const tui_grid &g = m.compose(r, root, 6, 40);
+    // the editor starts on row 0 (the bar left the flow); the sidebar's
+    // divider stops above the bar; the bar spans every column
+    CHECK(g.at(0, 12).ch == 'o');
+    CHECK(g.at(4, 11).ch == packed("\xe2\x94\x82"));
+    // the right side ends one blank from the edge: " a.c", 23 blanks, then
+    // "Row 3  Col 9 " — "Row" at 27, its value at 31
+    CHECK(g.row_text(5) == " a.c" + std::string(23, ' ') + "Row 3  Col 9");
+    CHECK(g.at(5, 0).attr == ui_style::reverse());		// the bar's style
+    CHECK((g.at(5, 1).attr.flags & ui_style::BOLD) != 0);	// the file name bold
+    CHECK((g.at(5, 27).attr.flags & ui_style::DIM) != 0);	// a label dim
+    CHECK((g.at(5, 31).attr.flags & ui_style::DIM) == 0);	// its value not
+    // A status line at the top (JOE's place) stays in the flow, as before.
+    tui_model j;
+    uinode jroot(r.group);
+    jroot.add(status_bar(w, NULL));
+    jroot.add(edit_node(w, "one", 0));
+    const tui_grid &jg = j.compose(r, jroot, 4, 40);
+    CHECK(jg.row_text(0) == "  a.c   Row 3 Col 9");
+    CHECK(jg.row_text(1) == "one");
+}
+
+TEST_CASE("compose — the theme's tab and statusbar chrome")
+{
+    world w;
+    roles r = roles::standard(w);
+    uinode root(r.group);
+    std::map<std::string, madc::value> rh, ch;
+    ch["tab_active"] = madc::value(std::string("bold underline white"));
+    ch["tab"] = madc::value(std::string("blue"));
+    ch["statusbar"] = madc::value(std::string("white bg_blue"));
+    rh["chrome"] = madc::value::make_object(ch);
+    root.hints = madc::value::make_object(rh);
+    root.add(status_bar(w, "bottom"));
+    root.add(edit_node(w, "x", 0));
+    uinode pc(r.content);
+    pc.content = madc::value(std::string("p"));
+    root.add(chrome_pane(w, "panel", "bottom", 50, pc, true));
+    tui_model m;
+    const tui_grid &g = m.compose(r, root, 10, 40);
+    // 9 body rows above the bar: the panel's 4 from row 5 (divider 5, strip
+    // 6); the bar on row 9
+    CHECK(g.row_text(6) == " PROBLEMS  OUTPUT");
+    CHECK(g.at(6, 1).attr.flags == (ui_style::BOLD | ui_style::UNDERLINE));
+    CHECK(g.at(6, 11).attr.fg == 5);				// an inactive tab: blue
+    CHECK(g.at(9, 0).attr.bg == 5);				// the bar on blue
+    CHECK(g.at(9, 39).attr.bg == 5);
+    CHECK((g.at(9, 1).attr.flags & ui_style::BOLD) != 0);
+    CHECK(g.at(9, 1).attr.bg == 5);				// the name keeps the bar
+}
+
+// The menu bar (facelift S4): a root `menu` hint, two menus — File (New, a
+// separator, Save disabled, Save As, Quit) and Edit (Undo).
+static madc::value menu_item(const char *id, int64_t code, const char *title,
+			     bool enabled = true)
+{
+    std::map<std::string, madc::value> o;
+    o["id"] = madc::value(std::string(id));
+    o["code"] = madc::value(code);
+    o["title"] = madc::value(std::string(title));
+    if ( !enabled )
+	o["enabled"] = madc::value((int64_t)0);
+    return madc::value::make_object(o);
+}
+static uinode menu_tree(world &w, bool held, bool save_enabled = false)
+{
+    roles r = roles::standard(w);
+    uinode root(r.group);
+    std::vector<madc::value> file, edit, bar;
+    file.push_back(menu_item("new", 11, "New"));
+    std::map<std::string, madc::value> sep;
+    sep["sep"] = madc::value((int64_t)1);
+    file.push_back(madc::value::make_object(sep));
+    file.push_back(menu_item("save", 12, "Save", save_enabled));
+    file.push_back(menu_item("saveas", 13, "Save As"));
+    file.push_back(menu_item("quit", 14, "Quit"));
+    edit.push_back(menu_item("undo", 21, "Undo"));
+    std::map<std::string, madc::value> fm, em, menu, rh;
+    fm["title"] = madc::value(std::string("File"));
+    fm["items"] = madc::value::make_array(file);
+    em["title"] = madc::value(std::string("Edit"));
+    em["items"] = madc::value::make_array(edit);
+    bar.push_back(madc::value::make_object(fm));
+    bar.push_back(madc::value::make_object(em));
+    menu["bar"] = madc::value::make_array(bar);
+    rh["menu"] = madc::value::make_object(menu);
+    if ( held )
+	rh["menubar"] = madc::value((int64_t)1);
+    root.hints = madc::value::make_object(rh);
+    root.add(edit_node(w, "text", 0));
+    return root;
+}
+
+TEST_CASE("menu — hotkey letters: each title's first letter no earlier title took")
+{
+    std::vector<menu_col> menus(2);
+    menus[0].title = "Save";
+    menus[1].title = "Search";
+    menu_row a, b, c, s;
+    a.title = "Save";
+    b.title = "Save All";
+    c.title = "Save As…";
+    s.sep = true;
+    menus[0].rows.push_back(a);
+    menus[0].rows.push_back(s);
+    menus[0].rows.push_back(b);
+    menus[0].rows.push_back(c);
+    menu_hotkeys(menus);
+    CHECK(menus[0].hot == 's');
+    CHECK(menus[1].hot == 'e');
+    CHECK(menus[0].rows[0].hot == 's');
+    CHECK(menus[0].rows[1].hot == 0);			// a separator has none
+    CHECK(menus[0].rows[2].hot == 'a');
+    CHECK(menus[0].rows[3].hot == 'v');
+}
+
+TEST_CASE("menu — the held bar takes row 0; the flow starts below it")
+{
+    world w;
+    roles r = roles::standard(w);
+    uinode root = menu_tree(w, true);
+    tui_model m;
+    const tui_grid &g = m.compose(r, root, 6, 30);
+    CHECK(g.row_text(0) == "  File  Edit");
+    CHECK(g.at(0, 0).attr == ui_style::reverse());
+    CHECK(g.at(0, 29).attr == ui_style::reverse());		// full width
+    CHECK(g.at(0, 2).attr.flags == (ui_style::INVERSE | ui_style::UNDERLINE));	// F
+    CHECK(g.at(0, 3).attr == ui_style::reverse());
+    CHECK(g.row_text(1) == "text");
+    // Without the hint the bar is not shown until it opens.
+    tui_model j;
+    uinode jroot = menu_tree(w, false);
+    const tui_grid &jg = j.compose(r, jroot, 6, 30);
+    CHECK(jg.row_text(0) == "text");
+}
+
+TEST_CASE("menu — F10 opens File: a framed dropdown, chords right, a disabled row dim, a shadow")
+{
+    world w;
+    roles r = roles::standard(w);
+    uinode root = menu_tree(w, false);
+    tui_model m;
+    tui_bindings b;
+    b.bind("^q", "quit", 14);
+    std::string err;
+    REQUIRE(b.finalize(err));
+    m.set_bindings(b);
+    m.compose(r, root, 10, 30);
+    std::vector<tui_event> ev = m.apply_keys(parse("\x1b[21~"));	// F10
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::focus);
+    const tui_grid &g = m.compose(r, root, 10, 30);
+    // the bar over row 0, File lit; its box under the title from column 1:
+    // "Quit  ^q" (8) the widest row, 12 wide with the border and spaces
+    CHECK(g.row_text(0) == "  File  Edit");
+    CHECK(g.at(0, 2).attr.flags == ui_style::UNDERLINE);	// lit: normal + hot
+    CHECK(g.row_text(1) == " \xe2\x94\x8c" + repeat("\xe2\x94\x80", 10) + "\xe2\x94\x90");
+    CHECK(g.row_text(2) == " \xe2\x94\x82 New      \xe2\x94\x82");
+    CHECK(g.row_text(3) == " \xe2\x94\x9c" + repeat("\xe2\x94\x80", 10) + "\xe2\x94\xa4");
+    CHECK(g.row_text(4) == " \xe2\x94\x82 Save     \xe2\x94\x82");
+    CHECK(g.row_text(6) == " \xe2\x94\x82 Quit  ^q \xe2\x94\x82");
+    CHECK(g.at(2, 3).attr.flags == ui_style::UNDERLINE);	// New lit (first row)
+    CHECK((g.at(4, 3).attr.flags & ui_style::DIM) != 0);	// Save disabled
+    CHECK((g.at(4, 3).attr.flags & ui_style::UNDERLINE) == 0);	// no letter
+    CHECK(g.at(3, 13).attr.bg == 1);				// the shadow, right
+    CHECK(g.at(8, 4).attr.bg == 1);				// and below
+    CHECK(g.at(2, 2).attr == ui_style::normal());		// the lit row, across
+    CHECK(g.at(2, 1).attr == ui_style::reverse());		// the border: the body's
+}
+
+TEST_CASE("menu — arrows skip the separator and the disabled row; Enter chooses the action")
+{
+    world w;
+    roles r = roles::standard(w);
+    uinode root = menu_tree(w, false);
+    tui_model m;
+    m.compose(r, root, 10, 30);
+    m.apply_keys(parse("\x1b[21~"));				// F10: File, New lit
+    m.compose(r, root, 10, 30);
+    m.apply_keys(parse("\x1b[B"));				// down: over sep + Save
+    std::vector<tui_event> ev = m.apply_keys(parse("\r"));
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::action);
+    CHECK(ev[0].action_name == "saveas");
+    CHECK(ev[0].action_code == 13);
+    // Closed: the next key is the application's again.
+    ev = m.apply_keys(parse("x"));
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::text);
+    // Up from the first row wraps to Quit; left/right move between menus.
+    m.apply_keys(parse("\x1b[21~"));
+    m.apply_keys(parse("\x1b[A"));
+    ev = m.apply_keys(parse("\r"));
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].action_name == "quit");
+    m.apply_keys(parse("\x1b[21~"));
+    m.apply_keys(parse("\x1b[C"));
+    ev = m.apply_keys(parse("\r"));
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].action_name == "undo");
+}
+
+TEST_CASE("menu — a disabled row cannot be chosen: its letter and Enter do nothing")
+{
+    world w;
+    roles r = roles::standard(w);
+    uinode root = menu_tree(w, false);
+    tui_model m;
+    m.compose(r, root, 10, 30);
+    // Alt+F (the Meta prefix) opens File. Every command row has its letter
+    // (New n, Save s, Save As a, Quit q); Save's `s` chooses nothing while
+    // Save is disabled.
+    std::vector<tui_event> ev = m.apply_keys(parse("\x1b" "f"));
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::focus);
+    ev = m.apply_keys(parse("s"));
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::focus);		// swallowed, still open
+    ev = m.apply_keys(parse("a"));				// Save As's letter
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::action);
+    CHECK(ev[0].action_name == "saveas");
+    // Enabled, Save chooses by its letter; Esc closes without an action.
+    uinode on = menu_tree(w, false, true);
+    m.compose(r, on, 10, 30);
+    m.apply_keys(parse("\x1b" "f"));
+    ev = m.apply_keys(parse("s"));
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].action_name == "save");
+    m.apply_keys(parse("\x1b" "f"));
+    ev = m.apply_keys(parse("\x1b", true));
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::focus);
+    ev = m.apply_keys(parse("q"));
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::text);			// closed
+}
+
+TEST_CASE("menu — a bound F10 or Alt+letter stays the profile's")
+{
+    world w;
+    roles r = roles::standard(w);
+    uinode root = menu_tree(w, false);
+    tui_model m;
+    tui_bindings b;
+    b.bind("f10", "stepover", 40);
+    b.bind("alt+f", "wordright", 41);
+    std::string err;
+    REQUIRE(b.finalize(err));
+    m.set_bindings(b);
+    m.compose(r, root, 10, 30);
+    std::vector<tui_event> ev = m.apply_keys(parse("\x1b[21~"));
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::action);
+    CHECK(ev[0].action_name == "stepover");
+    ev = m.apply_keys(parse("\x1b" "f"));
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].action_name == "wordright");
+    ev = m.apply_keys(parse("\x1b" "e"));			// Edit: unbound, opens
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::focus);
+    const tui_grid &g = m.compose(r, root, 10, 30);
+    CHECK(g.row_text(2).find("Undo") != std::string::npos);
+}
+
+// The toolbar (facelift S5): New, Open, a separator, Run (icon run, its
+// arrow dropping the Run menu), Stop (icon stop, disabled).
+static madc::value tb_button(const char *label, const char *action, int64_t icon,
+			     bool enabled = true, const char *drop = NULL)
+{
+    std::map<std::string, madc::value> o;
+    o["label"] = madc::value(std::string(label));
+    o["action"] = madc::value(std::string(action));
+    if ( icon )
+	o["icon"] = madc::value(icon);
+    if ( !enabled )
+	o["enabled"] = madc::value((int64_t)0);
+    if ( drop )
+    {
+	std::map<std::string, madc::value> d;
+	d["action"] = madc::value(std::string("menushow"));
+	d["arg"] = madc::value(std::string(drop));
+	o["drop"] = madc::value::make_object(d);
+    }
+    return madc::value::make_object(o);
+}
+static uinode toolbar_tree(world &w, bool held)
+{
+    uinode root = menu_tree(w, held);
+    std::vector<madc::value> tb;
+    tb.push_back(tb_button("New", "new", (int64_t)::ui::icon::file_new));
+    tb.push_back(tb_button("Open", "editfile", (int64_t)::ui::icon::open));
+    std::map<std::string, madc::value> sep;
+    sep["sep"] = madc::value((int64_t)1);
+    tb.push_back(madc::value::make_object(sep));
+    tb.push_back(tb_button("Run", "replrun", (int64_t)::ui::icon::run, true, "Edit"));
+    tb.push_back(tb_button("Stop", "replstop", (int64_t)::ui::icon::stop, false));
+    std::map<std::string, madc::value> rh = root.hints.as_object();
+    rh["toolbar"] = madc::value::make_array(tb);
+    root.hints = madc::value::make_object(rh);
+    return root;
+}
+
+TEST_CASE("toolbar — glyphs for the icons, a divider, the drop arrow; a disabled button dim")
+{
+    world w;
+    roles r = roles::standard(w);
+    uinode root = toolbar_tree(w, true);
+    tui_model m;
+    const tui_grid &g = m.compose(r, root, 8, 40);
+    // under the held bar: " New  Open │ ▶ Run ▾  ■ Stop" — the file
+    // commands are words, run and stop their shapes
+    CHECK(g.row_text(1) == " New  Open \xe2\x94\x82 \xe2\x96\xb6 Run \xe2\x96\xbe  "
+			   "\xe2\x96\xa0 Stop");
+    CHECK((g.at(1, 22).attr.flags & ui_style::DIM) != 0);	// Stop's glyph
+    CHECK((g.at(1, 13).attr.flags & ui_style::DIM) == 0);	// Run's
+    CHECK(g.row_text(2) == "text");				// the flow below
+}
+
+TEST_CASE("toolbar — the application drops a menu under its button (ui::menu_open)")
+{
+    world w;
+    roles r = roles::standard(w);
+    uinode root = toolbar_tree(w, false);
+    tui_model m;
+    m.compose(r, root, 10, 40);
+    CHECK(!m.open_menu("Nothing"));			// no such menu
+    REQUIRE(m.open_menu("Edit"));			// Run's arrow names Edit
+    const tui_grid &g = m.compose(r, root, 10, 40);
+    // no held bar: row 0 stays the toolbar; the box hangs from Run's
+    // button (column 13) on the row below it
+    CHECK(g.row_text(0).find("Run") != std::string::npos);
+    CHECK(g.at(1, 13).ch == packed("\xe2\x94\x8c"));
+    CHECK(g.at(2, 15).ch == 'U');			// "Undo" inside the box
+    // It is the bar's menu: Enter chooses its row, the bar closes.
+    std::vector<tui_event> ev = m.apply_keys(parse("\r"));
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].action_name == "undo");
+    // F10 afterwards opens the bar's first menu under its title again.
+    m.apply_keys(parse("\x1b[21~"));
+    const tui_grid &g2 = m.compose(r, root, 10, 40);
+    CHECK(g2.row_text(0) == "  File  Edit");
+    CHECK(g2.at(1, 1).ch == packed("\xe2\x94\x8c"));
+}
+
+// Floating windows (facelift S6): a `popup` node over the workbench.
+static uinode popup_list(world &w, bool filter)
+{
+    roles r = roles::standard(w);
+    uinode pal(r.choice);
+    pal.label = madc::value(std::string("Project p: ab_"));
+    pal.add(option(w, "a.c", "pick"));
+    pal.add(option(w, "b.c", "pick"));
+    pal.add(option(w, "c.c", "pick"));
+    std::map<std::string, madc::value> h, d, b0, b1;
+    h["list"] = madc::value((int64_t)1);
+    h["focus"] = madc::value((int64_t)1);
+    h["popup"] = madc::value((int64_t)1);
+    d["title"] = madc::value(std::string("Project"));
+    if ( filter )
+	d["filter"] = madc::value(std::string("ab"));
+    b0["label"] = madc::value(std::string("Open"));
+    b0["choose"] = madc::value((int64_t)1);
+    b1["label"] = madc::value(std::string("Close"));
+    b1["action"] = madc::value(std::string("projclose"));
+    std::vector<madc::value> bs;
+    bs.push_back(madc::value::make_object(b0));
+    bs.push_back(madc::value::make_object(b1));
+    d["buttons"] = madc::value::make_array(bs);
+    h["dialog"] = madc::value::make_object(d);
+    pal.hints = madc::value::make_object(h);
+    return pal;
+}
+
+TEST_CASE("float — a pick list is a framed window: title, filter field, rows, buttons, shadow")
+{
+    world w;
+    roles r = roles::standard(w);
+    uinode root(r.group);
+    root.add(edit_node(w, "body", 0));
+    root.add(popup_list(w, true));
+    tui_model m;
+    const tui_grid &g = m.compose(r, root, 12, 40);
+    // 24 wide inside (the minimum), 28 with the border: columns 6..33; 7
+    // rows (field, 3 rows, buttons, borders) from row (12-7)/3 = 1
+    CHECK(g.row_text(0) == "body");			// the workbench under it
+    CHECK(g.row_text(1) == std::string(6, ' ') + "\xe2\x94\x8c\xe2\x94\x80 Project "
+			   + repeat("\xe2\x94\x80", 16) + "\xe2\x94\x90");
+    CHECK(g.row_text(2) == std::string(6, ' ') + "\xe2\x94\x82 ab" + std::string(23, ' ')
+			   + "\xe2\x94\x82");
+    CHECK(g.at(2, 8).attr.flags == ui_style::UNDERLINE);	// the field
+    CHECK(g.cursor_row == 2u);
+    CHECK(g.cursor_col == 10u);					// after "ab"
+    CHECK(g.row_text(3).find("  a.c") != std::string::npos);
+    CHECK(g.at(3, 7).attr == ui_style::reverse());		// selected, across
+    CHECK(g.at(3, 32).attr == ui_style::reverse());
+    CHECK(g.at(4, 8).attr == ui_style::normal());
+    CHECK(g.row_text(6) == std::string(6, ' ') + "\xe2\x94\x82" + std::string(6, ' ')
+			   + "[ Open ]  [ Close ] \xe2\x94\x82");
+    CHECK(g.at(6, 13).attr == ui_style::reverse());		// the primary
+    CHECK(g.at(6, 23).attr == ui_style::normal());		// Close
+    CHECK(g.at(4, 34).attr.bg == 1);				// the shadow
+    // The keyboard still drives it: the pick list holds focus.
+    REQUIRE(m.focusables().size() == 2u);
+    CHECK(m.focus_slot() == 1u);
+    std::vector<tui_event> ev = m.apply_keys(parse("\x1b[B"));
+    REQUIRE(ev.size() == 1u);
+    CHECK(m.selection_of(1) == 1u);
+}
+
+TEST_CASE("float — a long list scrolls to keep the selected row in view")
+{
+    world w;
+    roles r = roles::standard(w);
+    uinode root(r.group);
+    root.add(edit_node(w, "body", 0));
+    uinode pal = popup_list(w, false);
+    for ( int i = 0; i < 10; ++i )
+	pal.add(option(w, "more", "pick"));
+    root.add(pal);
+    tui_model m;
+    m.compose(r, root, 10, 40);
+    for ( int i = 0; i < 12; ++i )
+	m.apply_keys(parse("\x1b[B"));
+    const tui_grid &g = m.compose(r, root, 10, 40);	// row 12 of 13 lit
+    // 10 rows: the box is 9 (6 visible rows, buttons, borders) from row 0
+    size_t lit = 0;
+    for ( size_t row = 1; row < 7; ++row )
+	if ( g.at(row, 7).attr == ui_style::reverse() )
+	    lit = row;
+    CHECK(lit == 6u);				// the last visible row
+}
+
+TEST_CASE("float — a prompt is a titled field; a question shows its choices as buttons")
+{
+    world w;
+    roles r = roles::standard(w);
+    uinode root(r.group);
+    root.add(edit_node(w, "body", 0));
+    uinode pr(r.content);
+    pr.content = madc::value(std::string("Find (^C aborts): xy"));
+    std::map<std::string, madc::value> h, q;
+    q["label"] = madc::value(std::string("Find"));
+    q["input"] = madc::value(std::string("xy"));
+    h["popup"] = madc::value((int64_t)1);
+    h["prompt"] = madc::value::make_object(q);
+    pr.hints = madc::value::make_object(h);
+    root.add(pr);
+    tui_model m;
+    const tui_grid &g = m.compose(r, root, 9, 40);
+    // field only: 3 rows from row (9-3)/3 = 2
+    CHECK(g.row_text(2).find(" Find ") != std::string::npos);
+    CHECK(g.row_text(3) == std::string(6, ' ') + "\xe2\x94\x82 xy" + std::string(23, ' ')
+			   + "\xe2\x94\x82");
+    CHECK(g.row_text(4).find("\xe2\x94\x94") == 6u);
+    CHECK(g.cursor_row == 3u);
+    CHECK(g.cursor_col == 10u);
+    for ( size_t row = 0; row < 9; ++row )
+	CHECK(g.row_text(row).find("aborts") == std::string::npos);
+
+    uinode root2(r.group);
+    root2.add(edit_node(w, "body", 0));
+    uinode qn(r.content);
+    qn.content = madc::value(std::string("Save changes? (y)es (n)o"));
+    std::map<std::string, madc::value> h2, cf, y, n;
+    y["label"] = madc::value(std::string("Yes"));
+    n["label"] = madc::value(std::string("No"));
+    std::vector<madc::value> ch;
+    ch.push_back(madc::value::make_object(y));
+    ch.push_back(madc::value::make_object(n));
+    cf["label"] = madc::value(std::string("Save changes?"));
+    cf["choices"] = madc::value::make_array(ch);
+    h2["popup"] = madc::value((int64_t)1);
+    h2["confirm"] = madc::value::make_object(cf);
+    qn.hints = madc::value::make_object(h2);
+    root2.add(qn);
+    tui_model m2;
+    const tui_grid &g2 = m2.compose(r, root2, 9, 40);
+    // its text, then the buttons: 4 rows from row (9-4)/3 = 1
+    CHECK(g2.row_text(2).find("Save changes? (y)es (n)o") != std::string::npos);
+    CHECK(g2.row_text(3).find("[ Yes ]  [ No ]") != std::string::npos);
+}
+
+// The mouse (facelift S7): xterm's SGR reports, 1-based column;row.
+static std::string sgr(int b, int col, int row, char fin = 'M')
+{
+    return "\x1b[<" + std::to_string(b) + ";" + std::to_string(col + 1) + ";"
+	   + std::to_string(row + 1) + fin;
+}
+
+TEST_CASE("keyparse — SGR mouse: press, drag, release, the wheel, modifiers")
+{
+    std::vector<tui_keyev> k = parse((sgr(0, 4, 2) + sgr(32, 5, 2) + sgr(0, 6, 2, 'm')
+				      + sgr(65, 0, 0) + sgr(16, 1, 1)).c_str());
+    REQUIRE(k.size() == 5u);
+    CHECK(k[0].kind == tui_key::pointer);
+    CHECK(k[0].col == 4);
+    CHECK(k[0].row == 2);
+    CHECK(k[0].button == madc::hub::tui_button::left);
+    CHECK(k[0].phase == ::ui::pointer_phase::down);
+    CHECK(k[1].phase == ::ui::pointer_phase::drag);
+    CHECK(k[1].col == 5);
+    CHECK(k[2].phase == ::ui::pointer_phase::up);
+    CHECK(k[3].button == madc::hub::tui_button::wheel_down);
+    CHECK(k[4].mods == key_mod_bits(::ui::key_mod::ctrl));
+    // A wheel has no release; motion with no button is dropped.
+    CHECK(parse(sgr(64, 0, 0, 'm').c_str()).empty());
+    CHECK(parse(sgr(35, 0, 0).c_str()).empty());
+}
+
+TEST_CASE("mouse — the bar: a title opens its menu, a row chooses, a disabled row and outside do nothing / close")
+{
+    world w;
+    roles r = roles::standard(w);
+    uinode root = menu_tree(w, true);
+    tui_model m;
+    m.compose(r, root, 10, 30);
+    std::vector<tui_event> ev = m.apply_keys(parse(sgr(0, 3, 0).c_str()));	// "File"
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::focus);
+    const tui_grid &g = m.compose(r, root, 10, 30);
+    CHECK(g.row_text(2).find("New") != std::string::npos);
+    // Save (row 4) is disabled: nothing; the bar stays open.
+    CHECK(m.apply_keys(parse(sgr(0, 4, 4).c_str())).empty());
+    m.compose(r, root, 10, 30);
+    ev = m.apply_keys(parse(sgr(0, 4, 5).c_str()));			// Save As
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::action);
+    CHECK(ev[0].action_name == "saveas");
+    CHECK(ev[0].action_code == 13);
+    // Open again, then a press outside closes it with no action.
+    m.compose(r, root, 10, 30);
+    m.apply_keys(parse(sgr(0, 9, 0).c_str()));				// "Edit"
+    m.compose(r, root, 10, 30);
+    ev = m.apply_keys(parse(sgr(0, 25, 8).c_str()));
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::focus);
+    const tui_grid &g2 = m.compose(r, root, 10, 30);
+    CHECK(g2.row_text(2).find("Undo") == std::string::npos);
+}
+
+TEST_CASE("mouse — the toolbar: a button posts its command; its arrow drops its menu")
+{
+    world w;
+    roles r = roles::standard(w);
+    uinode root = toolbar_tree(w, true);
+    tui_model m;
+    m.compose(r, root, 10, 40);
+    // row 1: " New  Open │ ▶ Run ▾  ■ Stop" — Open at 6..9, Run's ▾ at 19,
+    // Stop (disabled) at 22..27
+    std::vector<tui_event> ev = m.apply_keys(parse(sgr(0, 7, 1).c_str()));
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::action);
+    CHECK(ev[0].action_name == "editfile");
+    CHECK(m.apply_keys(parse(sgr(0, 24, 1).c_str())).empty());		// disabled
+    ev = m.apply_keys(parse(sgr(0, 19, 1).c_str()));
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::focus);
+    const tui_grid &g = m.compose(r, root, 10, 40);
+    CHECK(g.at(2, 13).ch == packed("\xe2\x94\x8c"));			// under Run
+}
+
+TEST_CASE("mouse — a tab posts its command with its argument")
+{
+    world w;
+    roles r = roles::standard(w);
+    uinode root(r.group);
+    uinode strip(r.content);
+    std::map<std::string, madc::value> t0, t1, sh;
+    t0["title"] = madc::value(std::string("main.c"));
+    t0["action"] = madc::value(std::string("bufsel"));
+    t0["code"] = madc::value((int64_t)50);
+    t0["arg"] = madc::value(std::string("0"));
+    t1["title"] = madc::value(std::string("util.c"));
+    t1["action"] = madc::value(std::string("bufsel"));
+    t1["code"] = madc::value((int64_t)50);
+    t1["arg"] = madc::value(std::string("1"));
+    t1["active"] = madc::value((int64_t)1);
+    std::vector<madc::value> tabs;
+    tabs.push_back(madc::value::make_object(t0));
+    tabs.push_back(madc::value::make_object(t1));
+    sh["tabs"] = madc::value::make_array(tabs);
+    strip.hints = madc::value::make_object(sh);
+    root.add(strip);
+    root.add(edit_node(w, "x", 0));
+    tui_model m;
+    m.compose(r, root, 4, 30);
+    std::vector<tui_event> ev = m.apply_keys(parse(sgr(0, 2, 0).c_str()));
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::action);
+    CHECK(ev[0].action_name == "bufsel");
+    CHECK(ev[0].action_code == 50);
+    CHECK(ev[0].text == "0");
+    ev = m.apply_keys(parse(sgr(0, 10, 0).c_str()));
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].text == "1");
+}
+
+TEST_CASE("mouse — a floating list: a row chooses it, the buttons, a press outside dismisses")
+{
+    world w;
+    roles r = roles::standard(w);
+    uinode root(r.group);
+    root.add(edit_node(w, "body", 0));
+    uinode pal = popup_list(w, true);
+    std::map<std::string, madc::value> h = pal.hints.as_object();
+    h["dismiss"] = madc::value(std::string("projclose"));
+    h["dismiss_code"] = madc::value((int64_t)61);
+    pal.hints = madc::value::make_object(h);
+    root.add(pal);
+    tui_model m;
+    m.compose(r, root, 12, 40);
+    // the box at rows 1..7, columns 6..33: rows a.c b.c c.c on 3..5
+    std::vector<tui_event> ev = m.apply_keys(parse(sgr(0, 12, 4).c_str()));
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::choose);
+    CHECK(ev[0].option == 1u);
+    // [ Open ] (the primary, columns 13..20 of row 6): the live row
+    m.compose(r, root, 12, 40);
+    ev = m.apply_keys(parse(sgr(0, 15, 6).c_str()));
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::choose);
+    CHECK(ev[0].option == 1u);
+    // [ Close ] (columns 23..31): its command
+    ev = m.apply_keys(parse(sgr(0, 25, 6).c_str()));
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::action);
+    CHECK(ev[0].action_name == "projclose");
+    // The border swallows; outside dismisses.
+    CHECK(m.apply_keys(parse(sgr(0, 6, 3).c_str())).empty());
+    ev = m.apply_keys(parse(sgr(0, 1, 10).c_str()));
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].action_name == "projclose");
+    CHECK(ev[0].action_code == 61);
+}
+
+TEST_CASE("mouse — an edit: a press places the caret by byte (gutter, tabs), a drag extends, the wheel scrolls")
+{
+    world w;
+    roles r = roles::standard(w);
+    uinode root(r.group);
+    uinode ed = gutter_edit(w, "ab\n\tx\n\xc3\xa9z", 0);
+    std::map<std::string, madc::value> h = ed.hints.as_object();
+    h["tag"] = madc::value((int64_t)3);
+    ed.hints = madc::value::make_object(h);
+    root.add(ed);
+    tui_model m;
+    m.compose(r, root, 6, 30);
+    // the gutter is 6 wide: text from column 6
+    std::vector<tui_event> ev = m.apply_keys(parse(sgr(0, 7, 0).c_str()));
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::pointer);
+    CHECK(ev[0].phase == ::ui::pointer_phase::down);
+    CHECK(ev[0].offset == 1);				// before "b"
+    CHECK(ev[0].tag == 3);
+    ev = m.apply_keys(parse(sgr(0, 2, 1).c_str()));		// the gutter
+    CHECK(ev[0].offset == 3);				// line 2's start
+    ev = m.apply_keys(parse(sgr(0, 13, 1).c_str()));	// inside the tab
+    CHECK(ev[0].offset == 3);
+    ev = m.apply_keys(parse(sgr(0, 14, 1).c_str()));	// "x" at column 8
+    CHECK(ev[0].offset == 4);
+    ev = m.apply_keys(parse(sgr(32, 7, 2).c_str()));	// a drag: past "é"
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].phase == ::ui::pointer_phase::drag);
+    CHECK(ev[0].offset == 8);				// before "z" (é is 2 bytes)
+    ev = m.apply_keys(parse(sgr(0, 20, 2, 'm').c_str()));	// released past the end
+    CHECK(ev[0].phase == ::ui::pointer_phase::up);
+    CHECK(ev[0].offset == 9);
+    ev = m.apply_keys(parse(sgr(65, 7, 0).c_str()));	// the wheel: three downs
+    REQUIRE(ev.size() == 3u);
+    CHECK(ev[0].kind == tui_event_kind::key);
+    CHECK(ev[0].key == tui_key::down);
 }

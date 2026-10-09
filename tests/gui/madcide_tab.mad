@@ -27,6 +27,7 @@ int main()
     push_buffer_row(w, es, doc, path);
     ui::set(w, es, "bufidx", 0);
     S.panel(true);			// what run_ide pushes for a window
+    S.tabs(true);			// ... and draws tab strips (ui::tabs)
 
     long t = ui::open(ui::WEB);
     if ( !t )

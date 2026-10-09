@@ -28,6 +28,11 @@ struct madc_stdlib_flavor
 	// program, minus the platform base (libc/libm/ld-*) the emitter adds
 	// unconditionally — never a hardcoded flavor→SONAME table.
 	const char *const *link_libs;
+	// The embedded headers a system directory AHEAD of compiler_owned_dir
+	// supplies under the same name, decided at build time as NULL-terminated
+	// {dir, name} pairs — the only embedded headers a system header outranks.
+	// The compiler reads this; it never searches disk or the pack for one.
+	const char *const *embedded_shadows;
 };
 
 // NULL-name terminated. Entry 0 is always the default flavor, even when its path

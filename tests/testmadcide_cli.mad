@@ -21,8 +21,10 @@
 //   5. the command line is ONE reader (ide_args_parse, madcide_args.inc):
 //      flags anywhere, the first non-flag word the file (`--profile chthonia
 //      f.c` and `f.c --profile chthonia` alike), `--` ending the flags,
-//      --attach's optional address; an unknown flag, a missing value and a
-//      second file refused with the reason; the usage names --profile;
+//      --attach's optional address; an unknown flag and a missing value
+//      refused with the reason; the usage names --profile; every further
+//      non-flag word is another file, an `ro` marking the file before it
+//      (main refuses a second file for a face that acts on one);
 //   6. the file is optional for the editor faces (the TUI, --gui, --line
 //      open an untitled buffer); the headless faces (-c, --mcp, --lsp,
 //      --serve) need one, and the usage says so.
@@ -48,6 +50,30 @@ void show_args(const char *label, int argc, const char **argv)
 	    a.file == NULL ? "-" : a.file, a.profile == NULL ? "-" : a.profile,
 	    a.ro ? 1 : 0, a.lsp ? 1 : 0, a.attach ? 1 : 0,
 	    a.attach_addr == NULL ? "-" : a.attach_addr, a.help ? 1 : 0);
+}
+
+// A command line's files: the first and its ro, then the rest, each
+// path:ro.
+void show_files(const char *label, int argc, const char **argv)
+{
+    ide_args a;
+    var why;
+    if ( !ide_args_parse(a, why, argc, argv) )
+    {
+	println("{}: refused: {}", label, why);
+	return;
+    }
+    var more = "";
+    long n = php::count(a.more);
+    for ( long i = 0; i < n; i = i + 1 )
+    {
+	var r = a.more[i];
+	more = format("{} {}:{}", more, r["path"], r["ro"].as_integer());
+    }
+    const char *f = ide_face_needs_file(a);
+    println("{}: file={} ro={} more={}{} face={}", label,
+	    a.file == NULL ? "-" : a.file, a.ro ? 1 : 0, n, more,
+	    f == NULL ? "-" : f);
 }
 
 // The face a command line with no file asks for needs one: its flag, or "-"
@@ -189,8 +215,10 @@ int main()
     show_args("cli-args-unknown", 3, v8);
     const char *v9[3] = { "madcide", "f.c", "--profile" };
     show_args("cli-args-novalue", 3, v9);
-    const char *v10[3] = { "madcide", "a.c", "b.c" };
-    show_args("cli-args-twofiles", 3, v10);
+    const char *v10[6] = { "madcide", "a.c", "ro", "b.c", "c.c", "ro" };
+    show_files("cli-args-files", 6, v10);
+    const char *v11[5] = { "madcide", "a.c", "b.c", "-c", "check" };
+    show_files("cli-args-files-once", 5, v11);
     // --build-plugin DIR (plan §41.11a step 4) takes a directory and needs
     // no file; without its directory it is refused.
     const char *b1[3] = { "madcide", "--build-plugin", "plugins/hello" };
@@ -226,7 +254,7 @@ int main()
     ide_usage(usage);
     println("cli-usage: names-profile={} file-optional={}",
 	    usage.index("--profile NAME") >= 0 ? 1 : 0,
-	    usage.index("usage: madcide [<file>]") >= 0 ? 1 : 0);
+	    usage.index("usage: madcide [<file> [ro]]...") >= 0 ? 1 : 0);
     remove(path);
     return 0;
 }

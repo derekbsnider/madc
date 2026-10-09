@@ -110,3 +110,71 @@ TEST_CASE("term_screen — the scrollback cap keeps the newest lines; load/text 
     cl.load("abc", 9);
     CHECK(cl.col == 3u);
 }
+
+// The program's colours (facelift S8): SGR sets the pen, every byte keeps
+// the pen it was written with, spans() hands the runs out as theme specs.
+TEST_CASE("term_screen — SGR colours become span rows over the text")
+{
+    term_screen s;
+    feed(s, "a \x1b[1;31merr\x1b[0m ok\n\x1b[38;5;208mx\x1b[38;2;1;2;3my\x1b[39m z");
+    CHECK(s.text() == "a err ok\nxy z");
+    std::vector<term_screen::span> sp = s.spans();
+    REQUIRE(sp.size() == 3u);
+    CHECK(sp[0].s == 2u);
+    CHECK(sp[0].e == 5u);
+    CHECK(sp[0].spec == "bold red");
+    CHECK(sp[1].s == 9u);				// "x": the 256 palette's 208
+    CHECK(sp[1].spec == "#ff8700");
+    CHECK(sp[2].spec == "#010203");			// "y": 24-bit
+    // Bright, background, inverse, and their resets.
+    term_screen b;
+    feed(b, "\x1b[92;44;7mq\x1b[27;49mr\x1b[0ms");
+    sp = b.spans();
+    REQUIRE(sp.size() == 2u);
+    CHECK(sp[0].spec == "inverse #00ff00 bg_blue");
+    CHECK(sp[1].spec == "#00ff00");
+    // An overwrite takes the new pen; an erase drops the colour with the text.
+    term_screen o;
+    feed(o, "\x1b[32mabc\r\x1b[0mA\x1b[K");
+    CHECK(o.text() == "A");
+    CHECK(o.spans().empty());
+}
+
+TEST_CASE("term_screen — the pen and the spans round-trip through an owner")
+{
+    term_screen s;
+    feed(s, "x\x1b[33my");
+    const std::string text = s.text();
+    const std::vector<term_screen::span> runs = s.spans();
+    const std::string pen = s.pen_spec();
+    CHECK(pen == "yellow");
+    term_screen t;
+    t.load(text, s.col);
+    t.load_spans(runs);
+    t.load_pen(pen);
+    feed(t, "z\x1b[0m!");
+    CHECK(t.text() == "xyz!");
+    std::vector<term_screen::span> sp = t.spans();
+    REQUIRE(sp.size() == 1u);
+    CHECK(sp[0].s == 1u);
+    CHECK(sp[0].e == 3u);				// y and z, one run
+    CHECK(sp[0].spec == "yellow");
+}
+
+TEST_CASE("ui_style_spec — the inverse of the spec parser")
+{
+    const char *specs[] = { "normal", "bold red", "dim italic underline blink inverse",
+			    "#123456 bg_#abcdef", "cyan bg_black", "bold #ff8700" };
+    for ( size_t i = 0; i < sizeof(specs) / sizeof(specs[0]); ++i )
+    {
+	CAPTURE(specs[i]);
+	madc::hub::ui_style a, b;
+	REQUIRE(madc::hub::ui_style_of(specs[i], a));
+	REQUIRE(madc::hub::ui_style_of(madc::hub::ui_style_spec(a), b));
+	CHECK(a == b);
+	CHECK(madc::hub::ui_style_spec(a) == specs[i]);
+    }
+    CHECK(madc::hub::ui_xterm256_rgb(196) == 0xff0000u);
+    CHECK(madc::hub::ui_xterm256_rgb(244) == 0x808080u);
+    CHECK(madc::hub::ui_xterm256_rgb(9) == 0xff0000u);
+}

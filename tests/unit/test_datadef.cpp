@@ -578,7 +578,7 @@ TEST_SUITE("Program isolation") {
 	CHECK(cout_var == NULL);
 	CHECK(cin_var == NULL);
 	CHECK(cerr_var == NULL);
-	std::map<std::string, variable_map_t>::iterator std_it =
+	std::map<madc::dis::istring, variable_map_t>::iterator std_it =
 	    prog->namespace_map.find("std");
 	REQUIRE(std_it != prog->namespace_map.end());
 	CHECK(std_it->second.find("cout") == std_it->second.end());

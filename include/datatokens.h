@@ -16,6 +16,7 @@
 // header, so there is no cycle.
 #include "tokens.h"
 #include "datadef.h"
+#include "madcdis/istring.h"	// Variable::name is an interned name
 
 class TokenDataType: public TokenIdent
 {
@@ -24,7 +25,7 @@ public:
     // its DataDef name (e.g. `_Bool` vs bool, `wchar_t`, `size_t`), and these tokens
     // are static/shared across Programs, so the spelling can't come from a per-Program
     // pool. Kept here (like TokenKeyword); spelling() overrides the pool path.
-    std::string str;
+    madc::dis::istring str;
     DataDef &definition;
     // True for the base datatypes madc pre-registers itself (Program::
     // add_datatypes marks the whole map). A real header may legitimately
@@ -39,9 +40,10 @@ public:
     // typedef; a keyword may never be a typedef's alias name (g++:
     // "redeclaration of C++ built-in type").
     bool keyword = false;
-    TokenDataType(const char *k, DataDef &d) : TokenIdent(k), str(k ? k : ""), definition(d) {}
+    TokenDataType(const char *k, DataDef &d) : TokenIdent(k), str(pooled_name(rec.spelling_id, k)), definition(d) {}
     virtual const char *spelling() const override { return str.c_str(); }
     virtual size_t spelling_len() const override { return str.size(); }
+    virtual madc::dis::istring spelling_name() const override { return str; }
     virtual TokenType type() const override { return TokenType::ttDataType; }
     virtual TokenBase *clone() override { return new TokenDataType(str.c_str(), definition); }
 };
@@ -88,7 +90,7 @@ class TokenAUTO:      public TokenDataType { public: TokenAUTO():  TokenDataType
 class Variable
 {
 public:
-    std::string name;
+    madc::dis::istring name;
     // Cached interned spelling-id of `name` (Program::strpool), 0 = not yet
     // interned / invalidated. Lets TokenCpnd::findVariableThisScope index the
     // scope by id without re-hashing the name on every absorption (the per-
@@ -102,7 +104,13 @@ public:
     size_t aot_cstr_offset;
     uint32_t count;
     uint32_t flags;
-    std::string storage_alias_name;
+    // The lexed declarator-id token of a PARAMETER's declaration (its name
+    // in the function head — parseFunction): the declaration's provenance
+    // link, as TokenVar::name_tok is a use's. NULL for any other Variable
+    // (a variable's declaration is its TokenDecl node; a member's and an
+    // enumerator's are their type's records) or a synthesized parameter.
+    TokenBase *decl_tok = nullptr;
+    madc::dis::istring storage_alias_name;
     // storage_alias_name answers "what symbol does a REFERENCE to this
     // declaration resolve to" — it is a redirect, written by the GNU asm
     // label, by __attribute__((alias)) and by the mangled-direct namespace /
@@ -119,14 +127,14 @@ public:
     //
     // The asm label — the name this declaration is EMITTED UNDER. Empty when
     // the declaration carries no label.
-    std::string asm_label;
+    madc::dis::istring asm_label;
     // __attribute__((alias("T"))) — the symbol this declaration is an alias
     // OF. Non-empty makes this declaration a DEFINITION of its own name (or
     // asm label) at T's address; C requires T to be defined in the same
     // translation unit, which is also why neither field is carried in the
     // frozen-forest record: a system header can never hold the definition.
-    std::string alias_definition_target;
-    std::string typedef_name; // if declared via typedef, the source alias (e.g. "EXT_BV")
+    madc::dis::istring alias_definition_target;
+    madc::dis::istring typedef_name; // if declared via typedef, the source alias (e.g. "EXT_BV")
     // Explicit '*' count written on a function-type-typedef declarator, recorded
     // because the type stays a bare DataDefFPTR (fn-ptr CALL detection keys on it,
     // so the stars can't live in the type). `DO_FUN x` -> 0 (a C function
@@ -156,14 +164,14 @@ public:
     // evaluate their runtime bound expressions on function entry.
     class TokenBase *param_vla_side_effect_expr;
     Variable() { type = &ddINT; data = NULL; aot_data_offset = (size_t)-1; aot_cstr_offset = (size_t)-1; flags = 0; count = 0; object_size_hint = -1; vla_size_expr = nullptr; param_vla_side_effect_expr = nullptr; }
-    Variable(std::string n, DataDef &d, uint32_t c = 1, void *init=NULL, bool alloc=true);
+    Variable(madc::dis::istring n, DataDef &d, uint32_t c = 1, void *init=NULL, bool alloc=true);
    ~Variable();
     inline bool is_vla() const { return vla_size_expr != nullptr; }
     inline bool is_fixed_array() const { return (flags & vfFIXEDARRAY) != 0; }
     // The variable a narrow string literal is (Program::addLiteral): its text
     // is the name after the `__literal__` prefix.
     inline bool is_string_literal() const { return name.compare(0, 11, "__literal__") == 0; }
-    inline std::string literal_text() const { return is_string_literal() ? name.substr(11) : std::string(); }
+    inline madc::dis::istring literal_text() const { return is_string_literal() ? madc::dis::istring(name.substr(11)) : madc::dis::istring(); }
     // A reference variable (`T& r`, `auto& x`, a `T&` parameter, a `for(T& v:c)`
     // loop var): its type is a DataDefREF. The single source of truth for
     // reference-ness — first-class refs Phase 2 retired the parallel vfREFERENCE
@@ -187,8 +195,11 @@ public:
     // TokenCpnd::findVariableThisScope's staleness rebuild re-interns just this
     // entry instead of force-rehashing every name in the scope. A raw
     // `v->name = x` on a registered variable silently breaks sid lookups.
-    inline void rename(const std::string &n) { name = n; name_sid = 0; }
+    inline void rename(const madc::dis::istring &n) { name = n; name_sid = 0; }
     inline void makeconstant() { flags |= vfCONSTANT; }
+    // An enumerator's registration (TokenENUM::parse, the forest restore).
+    inline void make_enumerator() { flags |= vfCONSTANT | vfENUMERATOR; }
+    inline bool is_enumerator() const { return (flags & vfENUMERATOR) != 0; }
     inline bool is_global()   const { if ( (flags & vfLOCAL) && !(flags &vfSTATIC) ) return false; return true; }
     inline bool is_constant() const { if ( (flags & vfCONSTANT) ) return true; return false; }
     // The VALUE is known at parse time: set() into `data` (an enumerator, a
@@ -329,7 +340,7 @@ public:
 	}
 	return 0;
     }
-    int cmp(std::string &s)
+    int cmp(madc::dis::istring &s)
     {
 	if (slot_type() == &ddCHARptr && data)
 	{
@@ -395,7 +406,14 @@ class TokenVar: public virtual TokenBase
 {
 public:
     Variable &var;
-    TokenVar(Variable &v) : TokenBase(), var(v) { _datatype = v.type; }
+    // The lexed source token that SPELLED this node's name — the name of a
+    // variable use, a call's callee, a member after `.` / `->` (the last
+    // component of a qualified name). NULL = no source name (a synthesized
+    // node). The tree's provenance link (mc11-ir.md): the span classifier
+    // colours that token by what this node resolved to.
+    TokenBase *name_tok;
+    TokenVar(Variable &v) : TokenBase(), var(v), name_tok(TokenBase::cursor_name_token(v.name))
+	{ _datatype = v.type; }
     virtual TokenType type() const override { return TokenType::ttVariable; }
     virtual int64_t get() const override { return var.get<int64_t>(); }
     virtual int val() const     { return var.get<int>(); }
@@ -420,6 +438,7 @@ public:
 	tv->file = file;
 	tv->line = line;
 	tv->column = column;
+	tv->name_tok = name_tok;
 	return tv;
     }
     virtual TokenVar *as_var_tok() override { return this; }

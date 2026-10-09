@@ -65,6 +65,7 @@ int main()
     show(S, "terminal");
 
     S.panel(true);			// what run_ide says of a window
+    S.tabs(true);			// ... and draws tab strips (ui::tabs)
     println("window menu: {}", item_enabled(S, doc, "fullscreen"));
     ui::set(S.w, S.es, "msg", "");
     S.command(doc, cmdFULLSCREEN, "", cont);

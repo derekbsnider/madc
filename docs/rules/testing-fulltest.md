@@ -192,6 +192,16 @@ on it, through `lane_tools`. The gate script is in the set as well: no suite
 exercises it, and its selftest — run first on every check and every push —
 is the test that can.
 
+The application is outside the compiler lanes too (owner 2026-10-09: "if only
+madcide change (and not madc sources) then we do not need the full battery of
+madc tests as that takes HOURS"). madcide is a program written in madc, not
+part of madc; the conformance suites never run it, and the hour-long platform
+suites run its tests only as one more program. A madcide-only change stales
+the lanes that run it (`app_lanes`: gui, tests-jit) and is proven by its own
+targeted tests plus Tier 2; a change to madc's sources (`src`, `include`,
+`third_party`) still stales every lane, the ones madcide runs on included.
+madcide is to move to its own repository, where its lanes will be its own.
+
 `/commit` (`.claude/commands/commit.md`) is the proactive half: it runs Tier 2
 on the working-tree content BEFORE committing, so the gate is satisfied by the
 time the push happens, and a red lane is found while the change is still one
@@ -261,4 +271,35 @@ where it runs; `backfill` recovers a missing release from the shipped tarball
 or by building its release commit; `run` is the regression matrix. The master
 push gate (`lane_ledger.sh check --release`) refuses a release missing from
 the archive, after a negative control proves the check can fail.
+
+## Why profiling is a merge gate (owner, 2026-10-08)
+
+Parse cost crept up by +22.7% between v0.99.2 and v0.102.1 (callgrind
+instructions for one libstdc++-header program, live parse, on the -O2 binary)
+and no gate saw it. About a tenth of that is more instantiation, which is what
+the C++ conformance work in that window bought. The rest is overhead spread
+over many commits:
+- speculative diagnostics rendered in full (each one re-reading a libstdc++
+  header from disk, twice) and then discarded through a null `cerr`;
+- token runs rescanned on every query;
+- a per-token check in the lexer.
+No single commit looked expensive, and wall time is too noisy to show a
+1–2% step.
+
+Instruction counts are deterministic: repeat runs of the same binary on the
+same input agree to within a few dozen instructions out of billions. That
+makes a tight ratchet possible. `scripts/parse_cost_gate.sh` measures a few
+fixed workloads in `scripts/parse_cost/` on the shipped binary and compares
+them against a recorded baseline, which:
+- **ratchets downward:** an improvement past the tolerance asks to be
+  re-recorded, so the gain is kept;
+- **refuses growth:** an increase cannot be recorded without a stated reason
+  (`--accept-increase`), so the price of a correctness change is written down
+  where the next reader sees it;
+- **is pinned to one toolchain:** a different compiler or set of system
+  headers parses different text, so a toolchain mismatch refuses the
+  comparison instead of passing or failing on numbers from another machine.
+
+It runs in the seam battery right after `gates` (about a minute), and its
+ledger row `parse-cost` is push-gated like the other battery lanes.
 

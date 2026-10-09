@@ -67,6 +67,7 @@ int main()
     println("terminal kept: {}", php::file_exists(sj.c_str()) ? 1 : 0);
 
     S.panel(true);			// what run_ide says of a window
+    S.tabs(true);			// ... and draws tab strips (ui::tabs)
     println("window menu: larger={} smaller={}", item_enabled(S, doc, "fontlarger"),
 	    item_enabled(S, doc, "fontsmaller"));
     step(S, doc, cmdFONTLARGER, "larger");

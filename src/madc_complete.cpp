@@ -55,10 +55,10 @@
 static const char completion_probe[] = "__madc_completion_probe";
 static const char completion_display[] = "<completion>";
 
-std::vector<std::string> Program::complete_entry(const std::string &text,
+std::vector<madc::dis::istring> Program::complete_entry(const madc::dis::istring &text,
 						 size_t caret, size_t &start)
 {
-    std::vector<std::string> out;
+    std::vector<madc::dis::istring> out;
     if ( caret > text.size() )
 	caret = text.size();
     size_t s = caret;
@@ -67,11 +67,11 @@ std::vector<std::string> Program::complete_entry(const std::string &text,
     while ( s > 0 && madc::hub::text_buffer::word_byte(text[s - 1]) )
 	--s;
     start = s;
-    const std::string word = text.substr(s, caret - s);
+    const madc::dis::istring word = text.substr(s, caret - s);
     // A number is not a name.
     if ( !word.empty() && word[0] >= '0' && word[0] <= '9' )
 	return out;
-    const std::string before = text.substr(0, s);
+    const madc::dis::istring before = text.substr(0, s);
     // The attempt: lexed (and for a qualified name parsed) as an entry still
     // being typed, inside transactions that roll back, so a query leaves
     // nothing. Its diagnostics and tokens go with it, however it ends, as an
@@ -83,7 +83,7 @@ std::vector<std::string> Program::complete_entry(const std::string &text,
     } attempt_end = { *this };
     ParseModeScope mode(*this, ParseMode::InteractiveEntry);
     DiagnosticRenderMute mute;
-    std::vector<std::string> chain;
+    std::vector<madc::dis::istring> chain;
     std::vector<bool> arrows;
     CompletionContext ctx;
     {
@@ -127,8 +127,8 @@ std::vector<std::string> Program::complete_entry(const std::string &text,
     return out;
 }
 
-Program::CompletionContext Program::completion_context(const std::string &before,
-						     std::vector<std::string> &chain,
+Program::CompletionContext Program::completion_context(const madc::dis::istring &before,
+						     std::vector<madc::dis::istring> &chain,
 						     std::vector<bool> &arrows)
 {
     CompletionContext ctx = CompletionContext::None;
@@ -205,31 +205,31 @@ Program::CompletionContext Program::completion_context(const std::string &before
 // that begins with `_` or holds `__`. madc's own lowering spells every class
 // member and instantiation it registers as a global that way
 // (`allocator_char__operator=`, `Box__take__o2`).
-static bool reserved_name(const std::string &n)
+static bool reserved_name(const madc::dis::istring &n)
 {
-    return (!n.empty() && n[0] == '_') || n.find("__") != std::string::npos;
+    return (!n.empty() && n[0] == '_') || n.find("__") != madc::dis::istring::npos;
 }
 
 // The namespace a canonical C++ spelling names its entity in ("" for the
 // global one).
-static std::string spelling_namespace(const std::string &spelling)
+static madc::dis::istring spelling_namespace(const madc::dis::istring &spelling)
 {
     size_t at = spelling.rfind("::");
-    return at == std::string::npos ? std::string() : spelling.substr(0, at);
+    return at == madc::dis::istring::npos ? madc::dis::istring() : madc::dis::istring(spelling.substr(0, at));
 }
 
 // Is a registered type an instantiation (`allocator<char>`, which madc
 // registers as `allocator_char`)? No one wrote its registered name.
 static bool instantiation_type(const DataDef &dd)
 {
-    return dd.canonical_cpp_spelling().find('<') != std::string::npos;
+    return dd.canonical_cpp_spelling().find('<') != madc::dis::istring::npos;
 }
 
 // The name a qualified spelling ends in (`vector` for `std::vector`).
-static std::string spelling_leaf(const std::string &spelling)
+static madc::dis::istring spelling_leaf(const madc::dis::istring &spelling)
 {
     size_t at = spelling.rfind("::");
-    return at == std::string::npos ? spelling : spelling.substr(at + 2);
+    return at == madc::dis::istring::npos ? spelling : madc::dis::istring(spelling.substr(at + 2));
 }
 
 // The name rule every completion shares: the candidates that start with the
@@ -237,11 +237,11 @@ static std::string spelling_leaf(const std::string &spelling)
 class CompletionOffer
 {
 public:
-    explicit CompletionOffer(const std::string &word)
+    explicit CompletionOffer(const madc::dis::istring &word)
 	: word(word), reserved_word(reserved_name(word)) {}
     // Does the rule offer `n` for the word? `?name` asks it of the exact name
     // (the word is the name), so it describes only what Tab would offer.
-    bool accepts(const std::string &n) const
+    bool accepts(const madc::dis::istring &n) const
     {
 	if ( n.size() < word.size() || n.compare(0, word.size(), word) != 0 )
 	    return false;
@@ -258,28 +258,28 @@ public:
 	// names and madc's lowered ones stay out of the way.
 	return reserved_word || !reserved_name(n);
     }
-    void operator()(const std::string &n)
+    void operator()(const madc::dis::istring &n)
     {
 	if ( accepts(n) )
 	    names.insert(n);
     }
-    void take(std::vector<std::string> &out) const
+    void take(std::vector<madc::dis::istring> &out) const
     {
 	out.assign(names.begin(), names.end());
     }
 private:
     // The rule's own copy: a caller may build it from a temporary
     // (session_bindings' empty word), which a reference would outlive.
-    const std::string word;
+    const madc::dis::istring word;
     const bool reserved_word;
-    std::set<std::string> names;
+    std::set<madc::dis::istring> names;
 };
 
 void Program::visit_top_level_names(CompletionContext ctx,
 				    const std::function<void(const TopLevelName &)> &visit)
 {
     typedef TopLevelName::Kind Kind;
-    auto named = [&](Kind k, const std::string &n) {
+    auto named = [&](Kind k, const madc::dis::istring &n) {
 	visit(TopLevelName(k, n));
     };
     // After struct / union / enum: a tag.
@@ -299,8 +299,8 @@ void Program::visit_top_level_names(CompletionContext ctx,
     // (libstdc++'s `std::__debug`, recorded without its scope), and in the
     // madc dialect std, whose names dialect code writes bare (value-first).
     // In C++ nothing else: g++ refuses a bare `vector` (BUGS.md B52).
-    std::set<std::string> visible;
-    visible.insert(std::string());
+    std::set<madc::dis::istring> visible;
+    visible.insert(madc::dis::istring());
     for ( size_t i = 0; i < active_using_namespaces.size(); ++i )
 	if ( !reserved_name(active_using_namespaces[i]) )
 	    visible.insert(active_using_namespaces[i]);
@@ -309,14 +309,14 @@ void Program::visit_top_level_names(CompletionContext ctx,
     // Every namespace's members, by identity: madc registers a namespace's
     // objects and functions as globals too, so the global scope alone cannot
     // say whose a Variable is.
-    std::map<const Variable *, const std::string *> member_of;
+    std::map<const Variable *, const madc::dis::istring *> member_of;
     for ( namespace_map_t::iterator ns = namespace_map.begin();
 	  ns != namespace_map.end(); ++ns )
 	for ( variable_map_iter m = ns->second.begin(); m != ns->second.end(); ++m )
 	    if ( m->second )
 		member_of.insert(std::make_pair(m->second, &ns->first));
     auto reachable = [&](const Variable *v) {
-	std::map<const Variable *, const std::string *>::const_iterator it =
+	std::map<const Variable *, const madc::dis::istring *>::const_iterator it =
 	    member_of.find(v);
 	return it == member_of.end() || visible.count(*it->second);
     };
@@ -410,10 +410,10 @@ void Program::visit_top_level_names(CompletionContext ctx,
     });
     // Names an included header registers on first use, and in the madc
     // dialect the words the auto-include scan serves (`println`, `php`).
-    for ( std::map<std::string, LazyEntry>::const_iterator it = lazy_map.begin();
+    for ( std::map<madc::dis::istring, LazyEntry>::const_iterator it = lazy_map.begin();
 	  it != lazy_map.end(); ++it )
 	named(Kind::header_name, it->first);
-    std::vector<std::string> words;
+    std::vector<madc::dis::istring> words;
     auto_include_words(words);
     for ( size_t i = 0; i < words.size(); ++i )
 	named(Kind::dialect_word, words[i]);
@@ -436,8 +436,8 @@ void Program::visit_top_level_names(CompletionContext ctx,
 	named(Kind::result, "___");
 }
 
-void Program::completion_names(const std::string &word, CompletionContext ctx,
-			       std::vector<std::string> &out)
+void Program::completion_names(const madc::dis::istring &word, CompletionContext ctx,
+			       std::vector<madc::dis::istring> &out)
 {
     CompletionOffer offer(word);
     visit_top_level_names(ctx, [&](const TopLevelName &n) { offer(n.name); });
@@ -454,20 +454,20 @@ void Program::completion_names(const std::string &word, CompletionContext ctx,
 namespace {
 
 // A field at IPython's alignment: its value at column 12.
-void describe_field(std::string &out, const std::string &label,
-		    const std::string &value)
+void describe_field(std::string &out, const madc::dis::istring &label,
+		    const madc::dis::istring &value)
 {
-    const std::string l = label.empty() ? std::string() : label + ":";
+    const madc::dis::istring l = label.empty() ? madc::dis::istring() : madc::dis::istring(label + ":");
     out += (out.empty() || out[out.size() - 1] == '\n' ? "" : "\n")
 	 + l + std::string(l.size() < 11 ? 11 - l.size() : 1, ' ') + value;
 }
 
-std::string where(const char *file, int line)
+madc::dis::istring where(const char *file, int line)
 {
     if ( !file || !*file )
-	return std::string();
+	return madc::dis::istring();
     return "@ " + std::string(file)
-	 + (line > 0 ? ":" + std::to_string(line) : std::string());
+	 + (line > 0 ? madc::dis::istring(":" + std::to_string(line)) : madc::dis::istring());
 }
 
 } // namespace
@@ -485,7 +485,7 @@ void Program::object_origin(const Variable *v, const char *&file, int &line) con
 	}
 }
 
-std::string Program::object_location(const Variable *v) const
+madc::dis::istring Program::object_location(const Variable *v) const
 {
     const char *file;
     int line;
@@ -496,7 +496,7 @@ std::string Program::object_location(const Variable *v) const
 // Where a type name was declared: the TopDecl of that name for that type,
 // the tag's (its definition's) or the typedef's. A typedef names its target
 // (`typedef struct P Pt;` records P), so the name tells the two apart.
-std::string Program::type_location(const std::string &name, const DataDef *dd) const
+madc::dis::istring Program::type_location(const madc::dis::istring &name, const DataDef *dd) const
 {
     for ( size_t i = 0; i < top_decls.size(); ++i )
     {
@@ -510,7 +510,7 @@ std::string Program::type_location(const std::string &name, const DataDef *dd) c
 	    return where(file, line);
 	}
     }
-    return std::string();
+    return madc::dis::istring();
 }
 
 // Where a function was defined: the latest definition in the session's tree
@@ -532,7 +532,7 @@ void Program::function_origin(const Variable *v, const FuncDef *fd,
     line = 0;
 }
 
-std::string Program::function_location(const Variable *v, const FuncDef *fd) const
+madc::dis::istring Program::function_location(const Variable *v, const FuncDef *fd) const
 {
     const char *file;
     int line;
@@ -547,10 +547,10 @@ void Program::session_bindings(std::vector<SessionBinding> &out)
 {
     typedef TopLevelName::Kind Kind;
     out.clear();
-    const CompletionOffer rule((std::string()));
+    const CompletionOffer rule((madc::dis::istring()));
     TypeSpeller speller(this);
     std::set<const void *> seen;
-    std::multimap<std::string, SessionBinding> sorted;	// an overload keeps its row
+    std::multimap<madc::dis::istring, SessionBinding> sorted;	// an overload keeps its row
     visit_top_level_names(CompletionContext::Name, [&](const TopLevelName &n) {
 	if ( (n.kind != Kind::object && n.kind != Kind::function)
 	  || !rule.accepts(n.name) )
@@ -574,18 +574,18 @@ void Program::session_bindings(std::vector<SessionBinding> &out)
 	else
 	{
 	    function_origin(n.var, n.fd, b.file, b.line);
-	    b.type = speller.declared(n.fd, std::string());
+	    b.type = speller.declared(n.fd, madc::dis::istring());
 	}
 	if ( !b.file || !session_units.count(b.file) )
 	    return;
 	sorted.insert(std::make_pair(b.name, b));
     });
-    for ( std::multimap<std::string, SessionBinding>::const_iterator it = sorted.begin();
+    for ( std::multimap<madc::dis::istring, SessionBinding>::const_iterator it = sorted.begin();
 	  it != sorted.end(); ++it )
 	out.push_back(it->second);
 }
 
-bool Program::describe_name(const std::string &name, std::string &out)
+bool Program::describe_name(const madc::dis::istring &name, std::string &out)
 {
     typedef TopLevelName::Kind Kind;
     out.clear();
@@ -637,7 +637,7 @@ bool Program::describe_name(const std::string &name, std::string &out)
 		if ( FuncDef *fd = v->type ? v->type->as_funcdef_dd() : NULL )
 		    fn_var.insert(std::make_pair(fd, v));
     TypeSpeller speller(this);
-    std::vector<std::string> sections;
+    std::vector<madc::dis::istring> sections;
     auto section_of = [&](Kind k) {
 	std::string s;
 	for ( size_t i = 0; i < found.size(); ++i )
@@ -671,17 +671,17 @@ bool Program::describe_name(const std::string &name, std::string &out)
 		{
 		    // Where it comes from, not the session's standard: `while`
 		    // is C's, `class` C++'s, `constexpr` C++11's.
-		    const std::string from = keyword_provenance(name);
+		    const madc::dis::istring from = keyword_provenance(name);
 		    s += name + (from.empty() ? " is a keyword" : " is a keyword of " + from);
 		    break;
 		}
 		case Kind::type:
 		{
 		    // A typedef names another type: `size_t` is unsigned long.
-		    const std::string spelled = speller.shown(n.type);
+		    const madc::dis::istring spelled = speller.shown(n.type);
 		    describe_field(s, n.kind == Kind::type && spelled != name
 				      ? "Typedef" : "Type", spelled);
-		    std::string at = type_location(name, n.type);
+		    madc::dis::istring at = type_location(name, n.type);
 		    if ( !at.empty() )
 			describe_field(s, "Defined", at);
 		    DataDefSTRUCT *st = n.type ? n.type->unqualified()->as_struct_dd() : NULL;
@@ -689,7 +689,7 @@ bool Program::describe_name(const std::string &name, std::string &out)
 		    if ( st )
 			for ( size_t m = 0; m < st->members.size(); ++m )
 			{
-			    const std::string &mn = st->members[m].first;
+			    const madc::dis::istring &mn = st->members[m].first;
 			    // What an entry may write: a public member, never one
 			    // of the session's own.
 			    if ( mn.empty() || st->m_access(mn)
@@ -702,7 +702,7 @@ bool Program::describe_name(const std::string &name, std::string &out)
 			}
 		    if ( DataDefCLASS *cls = n.type ? n.type->unqualified()->as_class_dd() : NULL )
 		    {
-			for ( std::map<std::string, DataDef *>::const_iterator t =
+			for ( std::map<madc::dis::istring, DataDef *>::const_iterator t =
 				  cls->static_member_types.begin();
 			      t != cls->static_member_types.end(); ++t )
 			{
@@ -710,7 +710,7 @@ bool Program::describe_name(const std::string &name, std::string &out)
 					   "static " + speller.declared(t->second, t->first));
 			    first = false;
 			}
-			for ( std::map<std::string, Variable *>::const_iterator m =
+			for ( std::map<madc::dis::istring, Variable *>::const_iterator m =
 				  cls->method_map.begin(); m != cls->method_map.end(); ++m )
 			{
 			    Variable *mv = m->second;
@@ -729,7 +729,7 @@ bool Program::describe_name(const std::string &name, std::string &out)
 		{
 		    DataDef *at = object_array_type(*n.var);
 		    describe_field(s, "Type", speller.shown(at ? at : n.var->type));
-		    std::string where_at = object_location(n.var);
+		    madc::dis::istring where_at = object_location(n.var);
 		    if ( !where_at.empty() )
 			describe_field(s, "Defined", where_at);
 		    break;
@@ -738,7 +738,7 @@ bool Program::describe_name(const std::string &name, std::string &out)
 		{
 		    std::map<const FuncDef *, Variable *>::const_iterator v = fn_var.find(n.fd);
 		    Variable *fv = n.var ? n.var : v != fn_var.end() ? v->second : NULL;
-		    std::string at = function_location(fv, n.fd);
+		    madc::dis::istring at = function_location(fv, n.fd);
 		    describe_field(s, "Signature",
 				   speller.signature(name, n.fd,
 						     fv ? static_cast<Method *>(fv->data) : NULL)
@@ -818,7 +818,7 @@ static DataDef *object_type(DataDef *dd)
 // A member's type in a struct or class: a data member (a base's are already
 // in `members`, flattened), else a static one, own or a base's. NULL when
 // there is none, or it is a method (whose call completes nothing yet).
-static DataDef *member_type(DataDef *dd, const std::string &name)
+static DataDef *member_type(DataDef *dd, const madc::dis::istring &name)
 {
     DataDefSTRUCT *st = dd ? dd->as_struct_dd() : NULL;
     if ( !st )
@@ -828,7 +828,7 @@ static DataDef *member_type(DataDef *dd, const std::string &name)
     DataDefCLASS *cls = dd->as_class_dd();
     if ( !cls )
 	return NULL;
-    std::map<std::string, DataDef *>::const_iterator s =
+    std::map<madc::dis::istring, DataDef *>::const_iterator s =
 	cls->static_member_types.find(name);
     if ( s != cls->static_member_types.end() )
 	return s->second;
@@ -855,20 +855,20 @@ static void offer_object_members(const DataDef *dd, CompletionOffer &offer,
     const DataDefCLASS *cls = dd->as_class_dd();
     if ( !cls )
 	return;
-    for ( std::map<std::string, Variable *>::const_iterator m = cls->method_map.begin();
+    for ( std::map<madc::dis::istring, Variable *>::const_iterator m = cls->method_map.begin();
 	  m != cls->method_map.end(); ++m )
 	if ( m->second && !(m->second->flags & (vfPRIVATE | vfPROTECTED)) )
 	    offer(m->first);
-    for ( std::map<std::string, DataDef *>::const_iterator s = cls->static_member_types.begin();
+    for ( std::map<madc::dis::istring, DataDef *>::const_iterator s = cls->static_member_types.begin();
 	  s != cls->static_member_types.end(); ++s )
 	offer(s->first);
     for ( size_t b = 0; b < cls->bases.size(); ++b )
 	offer_object_members(cls->bases[b].base, offer, seen);
 }
 
-void Program::completion_members(const std::vector<std::string> &chain,
+void Program::completion_members(const std::vector<madc::dis::istring> &chain,
 				 const std::vector<bool> &arrows,
-				 const std::string &word, std::vector<std::string> &out)
+				 const madc::dis::istring &word, std::vector<madc::dis::istring> &out)
 {
     if ( chain.empty() || chain.size() != arrows.size() || !tkProgram )
 	return;
@@ -913,10 +913,10 @@ void Program::completion_members(const std::vector<std::string> &chain,
 
 // The class a qualifier names, found in the type registries: a global type
 // or class, or a namespace's type (`std::string`). NULL for anything else.
-DataDefCLASS *Program::completion_scope_class(const std::string &scope)
+DataDefCLASS *Program::completion_scope_class(const madc::dis::istring &scope)
 {
-    const std::string ns = spelling_namespace(scope);
-    const std::string name = spelling_leaf(scope);
+    const madc::dis::istring ns = spelling_namespace(scope);
+    const madc::dis::istring name = spelling_leaf(scope);
     DataDef *dd = NULL;
     if ( ns.empty() )
     {
@@ -937,8 +937,8 @@ DataDefCLASS *Program::completion_scope_class(const std::string &scope)
     return dd ? dd->as_class_dd() : NULL;
 }
 
-void Program::completion_scope_names(const std::string &scope, const std::string &word,
-				     std::vector<std::string> &out)
+void Program::completion_scope_names(const madc::dis::istring &scope, const madc::dis::istring &word,
+				     std::vector<madc::dis::istring> &out)
 {
     CompletionOffer offer(word);
     // A namespace: its members (a scoped enum's enumerators too, as it is
@@ -952,7 +952,7 @@ void Program::completion_scope_names(const std::string &scope, const std::string
 	for ( datatype_map_t::const_iterator it = types->begin(); it != types->end(); ++it )
 	    if ( it->second && !instantiation_type(it->second->definition) )
 		offer(it->first);
-    const std::string inner = scope + "::";
+    const madc::dis::istring inner = scope + "::";
     for ( namespace_map_t::iterator it = namespace_map.lower_bound(inner);
 	  it != namespace_map.end() && it->first.compare(0, inner.size(), inner) == 0;
 	  ++it )
@@ -980,7 +980,7 @@ void Program::completion_scope_names(const std::string &scope, const std::string
     {
 	std::set<const DataDef *> seen;
 	offer_object_members(cls, offer, seen);
-	for ( std::map<std::string, DataDef *>::const_iterator t = cls->type_aliases.begin();
+	for ( std::map<madc::dis::istring, DataDef *>::const_iterator t = cls->type_aliases.begin();
 	      t != cls->type_aliases.end(); ++t )
 	    if ( t->second != cls )
 		offer(t->first);

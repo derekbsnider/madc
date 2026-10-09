@@ -60,6 +60,8 @@ void cmd_table(var &t)
     rows[] = { "name": "groww", "code": cmdGROWW };
     rows[] = { "name": "help", "code": cmdHELP };
     rows[] = { "name": "helpcontents", "code": cmdHELPCONTENTS };
+    rows[] = { "name": "helpindex", "code": cmdHELPINDEX };
+    rows[] = { "name": "helpindexrow", "code": cmdHELPINDEXROW };
     rows[] = { "name": "helptopic", "code": cmdHELPTOPIC };
     rows[] = { "name": "indent", "code": cmdINDENT };
     rows[] = { "name": "insertfile", "code": cmdINSERTFILE };
@@ -329,7 +331,8 @@ enum ide_req : unsigned char
     rqNONE = 0, rqREFRESH, rqFILEDIALOG, rqRUN, rqPROJRUN, rqCMD, rqSHELL,
     rqCLIPSET,		// put the session's copy on the platform clipboard
     rqPASTE,		// read the platform clipboard and paste it
-    rqFULLSCREEN	// toggle the window full screen
+    rqFULLSCREEN,	// toggle the window full screen
+    rqMENUOPEN		// drop a menu by its title (the target's own, S5)
 };
 const char *req_name(long k)
 {
@@ -344,6 +347,7 @@ const char *req_name(long k)
 	case rqCLIPSET: return "clipset";
 	case rqPASTE: return "paste";
 	case rqFULLSCREEN: return "fullscreen";
+	case rqMENUOPEN: return "menuopen";
     }
     return "";
 }
@@ -563,6 +567,7 @@ const char *view_name(long k)
 	case viewOUTLINE: return "outline";
 	case viewHELP: return "help";
 	case viewMDPREVIEW: return "mdpreview";
+	case viewHELPINDEX: return "helpindex";
     }
     return "";
 }
@@ -581,6 +586,7 @@ const char *view_title(long k)
 	case viewOUTLINE: return "Outline";
 	case viewHELP: return "Help";
 	case viewMDPREVIEW: return "Markdown Preview";
+	case viewHELPINDEX: return "Help Index";
     }
     return "";
 }
@@ -588,7 +594,7 @@ long view_of(var &name)
 {
     if ( name.is_null() )
 	return viewNONE;
-    for ( long k = viewSOURCE; k <= viewMDPREVIEW; k = k + 1 )
+    for ( long k = viewSOURCE; k <= viewHELPINDEX; k = k + 1 )
 	if ( name == view_name(k) )
 	    return k;
     return viewNONE;
@@ -608,6 +614,7 @@ long view_show_cmd(long kind)
 	case viewPROJECT: return cmdPROJECT;
 	case viewHELP: return cmdHELPTOPIC;	// the current topic (madcide_help.inc)
 	case viewMDPREVIEW: return cmdMDPREVIEW;	// madcide_preview.inc
+	case viewHELPINDEX: return cmdHELPINDEX;	// madcide_help.inc
     }
     return cmdNONE;
 }
@@ -1624,6 +1631,16 @@ long lsp_token_of_class(var &cls)
 	return lttNONE;
     if ( cls == "ident" )
 	return lttVARIABLE;
+    if ( cls == "control" )
+	return lttKEYWORD;		// LSP's keyword covers control flow
+    if ( cls == "typename" || cls == "namespace" )
+	return lttTYPE;		// no `namespace` in this legend yet
+    if ( cls == "directive" )
+	return lttKEYWORD;		// no `macro` in this legend yet
+    if ( cls == "include" || cls == "escape" )
+	return lttSTRING;
+    if ( cls == "parameter" || cls == "member" || cls == "enumerator" )
+	return lttVARIABLE;		// the legend's one name kind for now
     for ( long k = lttKEYWORD; k <= lttFUNCTION; k = k + 1 )
 	if ( cls == lsp_token_name(k) )
 	    return k;

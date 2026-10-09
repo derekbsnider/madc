@@ -458,11 +458,11 @@ void emit_labels(CEmit &e, node_t labels)
 // emit_declarator to compose declarator text out-of-order (the spiral rule
 // needs to wrap an already-rendered inner declarator in parentheses). The
 // capture continues the caller's line (no indentation of its own).
-std::string emit_to_string(CEmit &e, node_t n)
+madc::dis::istring emit_to_string(CEmit &e, node_t n)
 {
 	madc::detail::StringCapture cap;
 	if (!madc::detail::open_string_capture(cap))
-		return std::string();
+		return madc::dis::istring();
 	CEmit sub(cap.f, e.lang, false);
 	sub.depth = e.depth;
 	emit(sub, n, P_NONE);
@@ -941,7 +941,7 @@ void emit(CEmit &e, node_t n, int ctx)
 		size_t len = n->u.s.len;
 		if (len > 0 && s && s[len - 1] == '\0') len--;   // drop trailing NUL
 		e.put('"');
-		std::string esc = madc_c_escape_string(s, len);
+		madc::dis::istring esc = madc_c_escape_string(s, len);
 		e.put(esc.c_str());
 		e.put('"');
 		break;

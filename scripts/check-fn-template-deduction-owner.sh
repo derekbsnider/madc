@@ -44,7 +44,8 @@ if [ "$expr_calls" -ne 2 ]; then
 	exit 1
 fi
 
-shape_owners=$(grep -c '^static std::string fn_template_call_shape_suffix(' src/parser.cpp)
+# The definition, whatever its return type spelling (std::string, then istring).
+shape_owners=$(grep -c -E '^static [A-Za-z_:]+ fn_template_call_shape_suffix\(' src/parser.cpp)
 echo "member-template call-shape owner: $shape_owners definition(s) (target 1)"
 if [ "$shape_owners" -ne 1 ]; then
 	echo "  -> keep exactly one fn_template_call_shape_suffix implementation."

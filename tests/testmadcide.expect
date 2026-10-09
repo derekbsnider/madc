@@ -35,6 +35,7 @@ status-fn: A madc_ide_test.mad   fn twice
 Row    2 Col   1
 spans: n=7 first=0..4 bold second=9..13 bold
 theme-swap: Theme: classic. first-c=bold cyan
+theme-inherit: escape=bold green include=bold green directive=bold white
 theme-missing: No theme 'nosuch'.
 options: label=Options rows=4
 options-row0: D Tab width   8

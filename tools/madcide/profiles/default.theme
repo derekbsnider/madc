@@ -4,15 +4,22 @@
 # Comment=green; Constant=cyan (c.jsf: Number and String both inherit
 # +Constant); Keyword=bold; Type=bold; idents plain — so `function`
 # stays unthemed here (JOE has no function class; our AST-backed one is
-# an ADDITION, styled in the vivid/classic schemes). JOE classes we do
-# not classify yet (Preproc blue, Brace magenta, Escape bold cyan, Bad
-# bold red) are named classifier seats in the JOE look/feel recon doc.
+# an ADDITION, styled in the vivid/classic schemes). Preproc=blue,
+# Escape=bold cyan, and an include path is IncSystem's bold cyan (JOE
+# shows a "local" one plain cyan; madc classifies both as `include`).
+# JOE classes we do not classify yet (Brace magenta, Bad bold red) are
+# named classifier seats in the JOE look/feel recon doc.
 # One class + spec per line (JOE's spec vocabulary; ^K T swaps schemes).
 keyword bold
+control bold
 type bold
+typename bold
 string cyan
 number cyan
 comment green
+directive blue
+include bold cyan
+escape bold cyan
 
 # @gui (slice 3): the web target's workbench colours/fonts as CSS custom
 # properties (the @scope rule; the TUI ignores these). One file, two

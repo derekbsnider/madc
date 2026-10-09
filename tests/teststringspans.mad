@@ -4,7 +4,9 @@
 // concatenation merges pieces from different lines into ONE token — the
 // old classifier painted one mis-anchored blob from the first line
 // (madcide's embed_hello.c exec_string block). One row per SOURCE piece,
-// each inside its own physical line; the source text is the oracle.
+// each inside its own physical line; the source text is the oracle. An
+// escape sequence is its own `escape` row (the S1b class), so a piece with
+// an escape reads string / escape / string, abutting, never overlapping.
 int main()
 {
     var src = "const char *a = \"x\\\"y\";\nconst char *b = \"p\"\n    \"q\\n\";\nconst wchar_t *c = L\"w\";\n";
@@ -21,6 +23,9 @@ int main()
 	    overruns = overruns + 1;
 	if ( r["class"] == "string" )
 	    println("s line={} col={} len={}", r["line"].as_integer(),
+		    r["column"].as_integer(), r["length"].as_integer());
+	if ( r["class"] == "escape" )
+	    println("e line={} col={} len={}", r["line"].as_integer(),
 		    r["column"].as_integer(), r["length"].as_integer());
     }
     println("overruns: {}", overruns);

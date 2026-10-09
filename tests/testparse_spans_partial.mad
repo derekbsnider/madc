@@ -5,8 +5,10 @@
 // text it did not reach keeps the lexical classifier's rows. Oracle: the
 // lexical classifier itself (madc::lex_spans over the same text) — past the
 // stop point, parse_spans answers exactly its rows; before it, the parse's.
-// Each case prints the parse's last-reached line and whether the rows on
-// every later line match the lexical ones (count and every field).
+// Where the parse did reach, it may REFINE a lexical `ident` (a name it
+// resolved: `c` is a variable). Each case prints the rows after a line and
+// whether every lexical row there is kept (same place; same class, or an
+// `ident` refined).
 
 // One row as text: line:column:length:class.
 void row_text(var &out, var &r)
@@ -31,6 +33,34 @@ void tail_text(var &out, var &rows, long after)
     }
 }
 
+// Does the parse keep every lexical row of `lex` on lines > `after`: a row at
+// the same line, column and length, its class the same — or a refinement of
+// `ident` (a name the parse resolved: variable, parameter, member, ...)?
+bool covers_lexical(var &parsed, var &lex, long after)
+{
+    long n = php::count(lex);
+    long m = php::count(parsed);
+    for ( long i = 0; i < n; i = i + 1 )
+    {
+	var l = lex[i];
+	if ( l["line"].as_integer() <= after )
+	    continue;
+	bool kept = false;
+	for ( long j = 0; j < m && !kept; j = j + 1 )
+	{
+	    var p = parsed[j];
+	    if ( p["line"].as_integer() == l["line"].as_integer()
+	      && p["column"].as_integer() == l["column"].as_integer()
+	      && p["length"].as_integer() == l["length"].as_integer()
+	      && (p["class"] == l["class"] || l["class"] == "ident") )
+		kept = true;
+	}
+	if ( !kept )
+	    return false;
+    }
+    return true;
+}
+
 void check(const char *label, const char *src, long stop_line)
 {
     long h = madc::parse_open(src, "partial.c", madc::file_kind_of("c17"));
@@ -44,8 +74,9 @@ void check(const char *label, const char *src, long stop_line)
     tail_text(lt, lex, stop_line);
     println("{}: rows after line {}: {}", label, stop_line, pt);
     println("{}: lexical after line {}: {}", label, stop_line, lt);
-    println("{}: tail coloured={} matches-lexical={}", label,
-	    php::count(parsed) > 0 && strlen(pt.c_str()) > 0 ? 1 : 0, pt == lt ? 1 : 0);
+    println("{}: tail coloured={} covers-lexical={}", label,
+	    php::count(parsed) > 0 && strlen(pt.c_str()) > 0 ? 1 : 0,
+	    covers_lexical(parsed, lex, stop_line) ? 1 : 0);
     madc::parse_close(h);
 }
 

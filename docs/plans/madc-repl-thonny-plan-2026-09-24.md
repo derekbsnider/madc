@@ -2738,7 +2738,7 @@ With no program file, the tail chooses in this order:
 - **Comments:** the lexer drops them (`getRealToken` keeps trivia only under `keep_trivia`, off for the REPL). So doc comments (D15) need their own slice.
 
 **The design:**
-- **Recognition (D13, D15).** An entry is a command when its first line, after blanks, starts with `%` or `:` followed by an identifier character, or with `?`.
+- **Recognition (D13, D15).** An entry is a command when its first line, after blanks, starts with `%` or `:` followed by an identifier character, or with `?`. (Superseded 2026-10-09 by D24's recognition rule: any leading `.` `%` `:` `?` except `.`-digit, `::` and `%:`.)
   - C never starts a statement that way. `::x` (`:` then `:`) and the `%:` digraph (`%` then `:`) stay C, as does any continuation line.
   - Recognized in `InteractiveSession::enter`, before the parse, so both REPL loops and madcide's panel get it.
   - A command is one line. It is complete at its end, so `offer` takes it at once.
@@ -3596,7 +3596,7 @@ cling is the precedent for adapting IPython-style interaction to C++, so it is m
 - **D24. One command registry, and ed/ex buffer commands at the prompt.**
   - Every command, for the REPL and madcide alike, resolves by name to an enum ONCE, at input (D13, enum-over-strings).
   - madcide's `colon_command` is a chain of string compares today, which enum-over-strings forbids. It moves onto the registry. lined's `.madv` verbs, already in the engine's verb registry, register there too.
-  - `%` names IPython-style session commands (`%run`, `%load`, `%history`, `%std`). `:` accepts those AND ex buffer commands. Ex commands are colon-only, because vim's `%` range (`:%s/a/b/`) would otherwise collide with the `%` prefix. A name shared by both sets has one meaning (`:cd` = `%cd`).
+  - `%` names IPython-style session commands (`%run`, `%load`, `%history`, `%std`). `:` accepts those AND ex buffer commands. Ex commands are colon-only, so a leading `%` always means a session command: were ex reachable through `%`, `%s/a/b/` could be the session command `s` or ex's `s` over the `%` range. Through `:` nothing is ambiguous — `:%s/a/b/` is ex substitute over the whole buffer. A name shared by both sets has one meaning (`:cd` = `%cd`).
   - A buffer is a file bound to a `text_buffer` (`:e file.c`); `%run file.c` / `:source` runs or loads it (D16).
   - The command set is modern ex/vim/neovim, line-oriented, with nothing that needs visual or normal mode. Modern spellings are preferred over archaic ones.
     - **Addresses and ranges:** `N`, `.`, `$`, `%`, `N,M`, `/re/`, `?re?`, `'x` marks, offsets `+N` / `-N`.
@@ -3615,6 +3615,8 @@ cling is the precedent for adapting IPython-style interaction to C++, so it is m
     - **Excluded:** anything that needs visual or normal mode (`normal`, `visual`), and vi's archaic `open` / `z`.
     - **Regular expressions** use the modern extended syntax (ERE: unescaped `+ ? | ( )`) rather than ed's BRE. The exact flavour is settled at design time.
   - The REPL can therefore edit a file line by line and run it, with no IDE. madcide extends the same registry and buffers with panes and views.
+  - **Recognition (owner, 2026-10-09).** An entry whose first non-blank character is `.`, `%`, `:` or `?` is a command, because no C or C++ statement begins that way, except three fixed spellings that stay C: `.` and a digit (a floating literal, `.5 * x`), `::` (C++ global scope, `::x = 3`) and `%:` (the `#` digraph, `%:include`). What follows the prefix goes to the command parser, a name or an ex address alike (`:%s/a/b/`, `:1,5d`, `:.,$p`); a malformed or unknown command is refused or passed on (below), never parsed as C. The entry-start rule already keeps a continuation line C. This replaces item 8's narrower rule, which wants a name at once after the prefix.
+  - **Fall-through (owner, 2026-10-09).** The REPL may add `:` commands and aliases of its own; a `:` name it does not own passes to madc's colon mode — in madcide, the IDE's colon verbs (`w`, `q`, `e`, `!cmd`, the `view*` verbs), which register in the same registry; at the plain prompt, the ex buffer commands above. A name neither knows is refused once, by the colon mode.
 
 ### Execution model (owner, 2026-09-25)
 

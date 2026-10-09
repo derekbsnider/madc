@@ -166,7 +166,7 @@ long run_serve(const char *path, bool ro, const char *addr,
 // task must be joined BEFORE IdeSession::close() (which drains every task — a
 // parked accept would hang that drain). The client loop therefore closes its
 // frontends and returns, and the session closes here, after the join.
-long run_tui(const char *path, bool ro, ui::level lvl, const char *addr,
+long run_tui(const char *path, bool ro, var &more, ui::level lvl, const char *addr,
 	     const char *profile = "", long std = 0)
 {
     IdeSession S;
@@ -175,6 +175,7 @@ long run_tui(const char *path, bool ro, ui::level lvl, const char *addr,
 	return 1;			// -1 already reported on stderr
     long w = S.world();
     long es = S.es;
+    open_more_files(w, es, doc, more);	// the command line's other files
 
     // Someone else may already hold this file. That is not a refusal — madcide
     // has never refused an open file — it is worth SAYING, with the one command

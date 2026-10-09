@@ -168,13 +168,19 @@ bool set_c_string(madc_value *value, const char *data, size_t length)
 	return false;
     if ( !value_accepts_kind(value, MADC_TYPEID_TEXT, false) )
 	return false;
-    clear_c_value(value);
-    value->type_id = MADC_TYPEID_TEXT;
-    value->size = length;
+    // `data` may point INTO this value's own payload — a c_str() borrow
+    // (`v = p + 7` where p = v.c_str()). Copy the new text out first, then
+    // release the old payload: clearing first would read freed memory.
     if ( length <= 15 )
     {
+	char inline_copy[16];
 	if ( length > 0 && data != NULL )
-	    std::memcpy(value->inline_text, data, length);
+	    std::memcpy(inline_copy, data, length);
+	clear_c_value(value);
+	value->type_id = MADC_TYPEID_TEXT;
+	value->size = length;
+	if ( length > 0 && data != NULL )
+	    std::memcpy(value->inline_text, inline_copy, length);
 	value->inline_text[length] = '\0';
 	value->flags |= MADC_VF_INLINE_TEXT;
 	return true;
@@ -182,12 +188,17 @@ bool set_c_string(madc_value *value, const char *data, size_t length)
     char *copy = static_cast<char *>(madc_cell_alloc(length + 1));
     if ( copy == NULL )
     {
+	clear_c_value(value);
+	value->type_id = MADC_TYPEID_TEXT;
 	value->size = 0;
 	return false;	// value left as a typed null
     }
     if ( data != NULL )
 	std::memcpy(copy, data, length);
     copy[length] = '\0';
+    clear_c_value(value);
+    value->type_id = MADC_TYPEID_TEXT;
+    value->size = length;
     value->text_value = copy;
     value->flags |= MADC_VF_HEAP;
     return true;

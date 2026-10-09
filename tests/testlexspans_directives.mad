@@ -1,0 +1,49 @@
+// madc::lex_spans / parse_spans colour what the lexer consumes at a
+// directive and what sits inside a literal (TUI facelift S1b): a directive's
+// `#name` is `directive`, an #include's header-name `include`, a directive
+// line's comments and strings `comment` / `string`, and an escape sequence
+// inside a string or char literal `escape` (C11 6.4.4.4: `\x` takes every hex
+// digit, an octal escape up to three digits). A `#` inside a block comment is
+// no directive. Before: a directive line produced no rows at all — its
+// comments too stayed uncoloured.
+// Oracle: VS Code Dark+ scopes (keyword.control.directive,
+// string.quoted.other.lt-gt.include, constant.character.escape) over the
+// same text; every row's text is the source's own bytes.
+void show(const char *what, var &rows, var &lines)
+{
+    for ( var r : rows )
+    {
+	if ( r["class"] == "ident" )
+	    continue;
+	var lv = lines[r["line"].as_integer() - 1];
+	println("{} {}:{} {} |{}|", what, r["line"], r["column"], r["class"],
+		perl::substr(lv, r["column"].as_integer(),
+			     r["length"].as_integer()));
+    }
+}
+
+int main()
+{
+    var src = "#include <stdio.h> // why\n"
+	      "  #  define N 4 /* four */\n"
+	      "#include \"x.h\"\n"
+	      "#define MSG \"a\\tb\" /* open\n"
+	      "   still */ \n"
+	      "#define TWO(a) \\\n"
+	      "    ((a) * 2) // spliced\n"
+	      "/*\n#not a directive\n*/\n"
+	      "#if 0\n#endif\n"
+	      "const char *s = \"x\\x41y\\101\\n\";\n"
+	      "char c = '\\0';\n";
+    array lines;
+    php::explode(lines, "\n", src.c_str());
+    var rows;
+    madc::lex_spans(rows, src.c_str(), "dir.c");
+    show("lex", rows, lines);
+    long h = madc::parse_open(src.c_str(), "dir.c");
+    var pr;
+    madc::parse_spans(pr, h);
+    show("parse", pr, lines);
+    madc::parse_close(h);
+    return 0;
+}

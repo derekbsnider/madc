@@ -114,6 +114,15 @@ class IdeSession
 					// window): runs and the shell go to a
 					// pty in the Terminal tab; the panel
 					// itself is the layout's (V2)
+	void tabs(bool has);		// the client draws tab strips: the
+					// editor's open files as a strip
+					// (ui::tabs — facelift S3)
+	void menus(bool has);		// the client draws the menus itself
+					// (ui::menus — the grid, facelift
+					// S5): a toolbar arrow parks a
+					// menuopen request, not a list
+	void menu_fallback(var &req);	// the client could not drop that
+					// menu: the session's choice list
 	void dialog_fallback(var &req);	// the client could not show it:
 					// the request's prompt instead
 	void request_refused(var &req);	// the client cannot serve this

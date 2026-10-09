@@ -1,9 +1,11 @@
 // madcide_args.inc — madcide's COMMAND LINE (plan §41.11a step 1): the one
-// reader of argv. Flags come anywhere; the first word that is not a flag is
-// the file, and a later `ro` opens it read-only. The strings are compared
-// only here, at the input boundary: main reads the parsed record.
+// reader of argv. Flags come anywhere; the words that are not flags are the
+// files — the first is the one the editor shows, the rest open beside it in
+// the buffer ring — and an `ro` after a file opens THAT file read-only. The
+// strings are compared only here, at the input boundary: main reads the
+// parsed record.
 //
-//   madcide [<file>] [ro] [--profile NAME] [--std=STD] [--gui|--tui|--line]
+//   madcide [<file> [ro]]... [--profile NAME] [--std=STD] [--gui|--tui|--line]
 //           [-c "<command> [arg]"] [--serve <host:port>] [--mcp] [--lsp] [--attach [<host:port>]]
 //           [--no-serve] [--sessions] [--build-plugin DIR] [--help] [--] [<file>]
 //
@@ -19,9 +21,10 @@
 // here to its kind: a standard madc's own --std= names canonically (c17,
 // c++20, madc); unset, each file's family decides.
 //
-// `--` ends the flags (a file whose name starts with '-'). An unknown flag, a
-// flag missing its value and a second file are refused with the reason and
-// the usage (exit 2). `--attach`'s address is optional: the word after it is
+// `--` ends the flags (a file whose name starts with '-'). An unknown flag and
+// a flag missing its value are refused with the reason and the usage (exit
+// 2); so is a second file for a face that acts on ONE (ide_face_needs_file:
+// -c, --mcp, --lsp, --serve). `--attach`'s address is optional: the word after it is
 // the address unless it is a flag or no file has been named yet (then it is
 // the file — `madcide --lsp --attach f.c` discovers the session holding f.c).
 //
@@ -31,6 +34,7 @@
 struct ide_args
 {
     const char *file;		// NULL = none given
+    var more;			// the files after it: { "path", "ro" (0/1) } rows
     const char *profile;	// --profile NAME; NULL = not given
     long std;			// --std=STD: a standard's kind; 0 = not given
     const char *once;		// -c "<command> [arg]"
@@ -51,7 +55,7 @@ struct ide_args
 // product's name.
 void ide_usage(var &out)
 {
-    var text = "usage: madcide [<file>] [ro] [--profile NAME] [--std=STD] [--gui|--tui|--line] [--no-serve]  (no file = an untitled buffer)\n"
+    var text = "usage: madcide [<file> [ro]]... [--profile NAME] [--std=STD] [--gui|--tui|--line] [--no-serve]  (no file = an untitled buffer)\n"
 	   "       madcide <file> [ro] [--profile NAME] [--std=STD] [-c \"<command> [arg]\"] [--serve <host:port>] [--mcp] [--lsp [--serve <host:port>]]\n"
 	   "       madcide <file> --lsp|--mcp --attach [<host:port>]  (join a running session; no address = discover one)\n"
 	   "       madcide --sessions                                 (what is running, and how to join it)\n"
@@ -91,6 +95,7 @@ const char *ide_flag_wants(const char *flag)
 bool ide_args_parse(ide_args &a, var &why, int argc, const char **argv)
 {
     a.file = NULL;
+    a.more = {};
     a.profile = NULL;
     a.std = 0;
     a.once = NULL;
@@ -173,12 +178,20 @@ bool ide_args_parse(ide_args &a, var &why, int argc, const char **argv)
 	else if ( a.file == NULL )
 	    a.file = w;
 	else if ( strcmp(w, "ro") == 0 )
-	    a.ro = true;
-	else
 	{
-	    why = format("unexpected argument '{}' (the file is '{}')", w, a.file);
-	    return false;
+	    // `ro` marks the file named just before it.
+	    long nm = php::count(a.more);
+	    if ( nm == 0 )
+		a.ro = true;
+	    else
+	    {
+		var r = a.more[nm - 1];
+		r["ro"] = 1;
+		a.more[nm - 1] = r;
+	    }
 	}
+	else
+	    a.more[] = { "path": w, "ro": 0 };
     }
     return true;
 }

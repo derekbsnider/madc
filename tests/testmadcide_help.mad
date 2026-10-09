@@ -8,7 +8,10 @@
 // the loaded menus, each item's key in the loaded key style, its command and
 // its description — the default bundle's commands.md, since this bundle has
 // none; an unknown topic is refused on the status line. The default bundle
-// (plugins/default/default.help/): its own contents.
+// (plugins/default/default.help/): its own contents. A Help page always opens
+// in the editor's Help tab (the active buffer the help buffer), with the
+// Help Index (the contents page's links) in the sidebar beside it; an index
+// row opens its page there; a layout listing `help` on a sidebar is refused.
 #include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
@@ -103,7 +106,14 @@ int main()
     ui::get(topic, w, es, "helptopic");
     var title;
     ui::get(title, w, es, "helptitle");
-    println("contents: topic={} title={} shown={}", topic, title, view_shown(w, es, viewHELP));
+    println("contents: topic={} title={} editor-tab={} index-shown={}", topic, title,
+	    doc_is_help_buffer(w, es_int(w, es, "adoc", 0)), view_shown(w, es, viewHELPINDEX));
+    var ix;
+    ui::get(ix, w, es, "helpindexrows");
+    var ixs = "";
+    for ( var r : ix )
+	ixs = format("{}[{}]", ixs, r["content"]);
+    println("index: {}", ixs);
     long gs = row_with(w, es, "Getting started");
     var gr;
     row_at(gr, w, es, gs);
@@ -151,6 +161,21 @@ int main()
     ui::get(msg, w, es, "msg");
     ui::get(topic, w, es, "helptopic");
     println("unknown: msg={} topic={}", msg, topic);
+
+    // 5b. An index row opens its page in the editor's Help tab (row 2:
+    //     Getting started — after the contents row; the open topic is shell).
+    var xc = { "event": "choose", "event_code": ui::event_kind::choose,
+	       "option": 2, "action": "", "action_code": view_row_cmd(viewHELPINDEX) };
+    S.apply_ide_event(doc, xc);
+    ui::get(topic, w, es, "helptopic");
+    println("index-choose: topic={} editor-tab={}", topic,
+	    doc_is_help_buffer(w, es_int(w, es, "adoc", 0)));
+
+    // 5c. A layout listing the page view on a sidebar is refused.
+    var badlo;
+    var lerr;
+    bool lok = parse_layout(badlo, "@window main\npane editor tabs views source focus\npane sidebar left 20% tabs views outline help\n", lerr, w);
+    println("layout-help-sidebar: ok={} err={}", lok, lerr);
 
     // 6. The default bundle's own help.
     IdeSession D;

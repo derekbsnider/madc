@@ -70,6 +70,14 @@ void client_service(IdeSession &S, long t)
 	ui::clipboard_set(t, req["text"].c_str());
 	return;
     }
+    // A menu by title (a toolbar button's arrow, facelift S5): the target
+    // drops its own; one that cannot lists it as the session's choice list.
+    if ( kind == rqMENUOPEN )
+    {
+	if ( !ui::menu_open(t, req["menu"].c_str()) )
+	    S.menu_fallback(req);
+	return;
+    }
     // Full screen: the window's own state, toggled; a window that cannot
     // (a browser page) says so.
     if ( kind == rqFULLSCREEN )
@@ -179,6 +187,8 @@ void spawn_client(var &clients, IdeSession &S, long w, ui::level lvl,
     S.dialogs(ui::dialogs(nt));
     S.clipboard(ui::clipboards(nt));
     S.panel(!ht);
+    S.tabs(ui::tabs(nt));		// the editor's tab strip (facelift S3)
+    S.menus(ui::menus(nt));		// ... and its own menus (S5)
     S.remember(true);
     var cN;
     make_client(cN, nextid, nt, nes, trLOCAL, lvl, tierOWNER);
@@ -205,6 +215,8 @@ void run_ide(IdeSession &S, long doc, ui::level lvl)
     S.dialogs(ui::dialogs(t));	// a window's host may draw native file dialogs
     S.clipboard(ui::clipboards(t));	// ... and reach the platform's clipboard
     S.panel(!has_term);		// a window renders regions: the bottom panel (P3a)
+    S.tabs(ui::tabs(t));		// ... and tab strips: the window and the grid
+    S.menus(ui::menus(t));		// the grid draws the menus itself (S5)
     S.remember(true);		// a person's window or terminal: Recent Files
     // Client 0 = the launching window/terminal over open()'s es. `clients`
     // is a dialect var array of the general records; ONE IdeSession is

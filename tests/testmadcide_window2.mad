@@ -112,6 +112,7 @@ int main()
     // needs a window target.
     S.attach(w, esA);
     S.panel(true);			// esA renders regions: a windowed client
+    S.tabs(true);			// ... and draws tab strips (ui::tabs)
     S.post(doc, cmdVIEWWINDOW);
     long sdoc = 0;
     bool parked = S.take_spawn(sdoc);

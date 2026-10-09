@@ -1,0 +1,64 @@
+lex 1:0 directive |#include|
+lex 1:9 include |<stdio.h>|
+lex 1:19 comment |// why|
+lex 2:2 directive |#  define|
+lex 2:16 comment |/* four */|
+lex 3:0 directive |#include|
+lex 3:9 include |"x.h"|
+lex 4:0 directive |#define|
+lex 4:12 string |"a|
+lex 4:14 escape |\t|
+lex 4:16 string |b"|
+lex 4:19 comment |/* open|
+lex 5:0 comment |   still */|
+lex 6:0 directive |#define|
+lex 7:14 comment |// spliced|
+lex 8:0 comment |/*|
+lex 9:0 comment |#not a directive|
+lex 10:0 comment |*/|
+lex 11:0 directive |#if|
+lex 12:0 directive |#endif|
+lex 13:0 keyword |const|
+lex 13:6 type |char|
+lex 13:16 string |"x|
+lex 13:18 escape |\x41|
+lex 13:22 string |y|
+lex 13:23 escape |\101|
+lex 13:27 escape |\n|
+lex 13:29 string |"|
+lex 14:0 type |char|
+lex 14:9 string |'|
+lex 14:10 escape |\0|
+lex 14:12 string |'|
+parse 1:0 directive |#include|
+parse 1:9 include |<stdio.h>|
+parse 1:19 comment |// why|
+parse 2:2 directive |#  define|
+parse 2:16 comment |/* four */|
+parse 3:0 directive |#include|
+parse 3:9 include |"x.h"|
+parse 4:0 directive |#define|
+parse 4:12 string |"a|
+parse 4:14 escape |\t|
+parse 4:16 string |b"|
+parse 4:19 comment |/* open|
+parse 5:0 comment |   still */|
+parse 6:0 directive |#define|
+parse 7:14 comment |// spliced|
+parse 8:0 comment |/*|
+parse 9:0 comment |#not a directive|
+parse 10:0 comment |*/|
+parse 11:0 directive |#if|
+parse 12:0 directive |#endif|
+parse 13:0 keyword |const|
+parse 13:6 type |char|
+parse 13:16 string |"x|
+parse 13:18 escape |\x41|
+parse 13:22 string |y|
+parse 13:23 escape |\101|
+parse 13:27 escape |\n|
+parse 13:29 string |"|
+parse 14:0 type |char|
+parse 14:9 string |'|
+parse 14:10 escape |\0|
+parse 14:12 string |'|

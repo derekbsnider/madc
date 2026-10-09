@@ -562,7 +562,7 @@ void mcp_call(var &out, IdeSession &S, long doc, long self_id, var &nm, var &par
 void line_indent_at(var &out, var &t, long w, long doc, long line)
 {
     long ls = line_start_of(w, doc, line);
-    const char *s = t.c_str();		// ONE copy per scan: a c_str() copies the whole text
+    const char *s = t.c_str();		// a borrow of t's text: valid while t is unmodified
     out = perl::substr(t, ls, blank_run(s + ls));
 }
 
@@ -571,7 +571,7 @@ void line_indent_at(var &out, var &t, long w, long doc, long line)
 // insert takes a line of its own; a node sharing its line is placed inline.
 bool region_owns_lines(var &t, long at, long end)
 {
-    const char *s = t.c_str();		// ONE copy per scan
+    const char *s = t.c_str();		// a borrow of t's text
     long n = strlen(s);
     long i = at - 1;
     while ( i >= 0 && s[i] != '\n' )
@@ -720,7 +720,7 @@ bool edit_op_plan(var &op, long w, long adoc, long h, var &t, long gv, var &args
 	if ( owns )
 	{
 	    // The node owns its line(s): take them whole, newline included.
-	    const char *s = t.c_str();		// ONE copy for this scan
+	    const char *s = t.c_str();		// a borrow of t's text
 	    at = line_start_of(w, adoc, l0);
 	    long nl = end;
 	    while ( nl < size && s[nl] != '\n' )
@@ -750,7 +750,7 @@ bool edit_op_plan(var &op, long w, long adoc, long h, var &t, long gv, var &args
 	    at = line_start_of(w, adoc, l0);
 	else
 	{
-	    const char *s = t.c_str();		// ONE copy for this scan
+	    const char *s = t.c_str();		// a borrow of t's text
 	    long nl = end;
 	    while ( nl < size && s[nl] != '\n' )
 		nl = nl + 1;

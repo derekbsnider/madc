@@ -31,7 +31,10 @@ namespace ui {
 	wake,		// synthesized by the target when cooperative background
 			// tasks drained (stage-2: a spawned parse finished while
 			// the loop was waiting for input — recompose)
-	fkey		// a function key; `ch` = its number, 1..12 (F1..F12)
+	fkey,		// a function key; `ch` = its number, 1..12 (F1..F12)
+	pointer		// a pointing-device report (a terminal's SGR mouse,
+			// facelift S7): the key event's row / col / button /
+			// phase; the grid model hit-tests it
     };
 
     // A key's modifiers (plan §41.11a step 3e): bits over any key, a key

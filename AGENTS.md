@@ -400,8 +400,8 @@ no matter how small.
 | [no-parallel-implementations.md](.claude/rules/no-parallel-implementations.md) | 22 | One implementation per concern; A/B scaffolding expires; tests use production entry points; cap every test run |
 | [parse-once.md](.claude/rules/parse-once.md)     |    24 | New C++ support resolves on the parse-once generic spine (g++ tsubst model), NEVER via re-parse; re-parse is a transitional fallback slated for deletion at suite-wide burndown=0; every change moves the `[why:]` fallback count down or flat |
 | [code-style.md](.claude/rules/code-style.md)     |     6 | C++11, tabs, header guards, DBG                |
-| [value-first.md](.claude/rules/value-first.md)   |    40 | madc-dialect code: ZERO includes/`using`/`std::` (bare print/println/format; auto-include reaches user modules); var/value over std::string; missing capability = fix the CARRIER/compiler, never spell around it |
-| [dialect-lean.md](.claude/rules/dialect-lean.md) |    37 | OWNER LAW: the `--std=madc` surface (prelude fragments included) never depends on C++ system header parsing or std::string; the one include a fragment may carry is a sibling `bits/` fragment (`<bits/ui_enums>`); interop conveniences behind the stdlib guards; polyglot publics need lean PRIMARY forms; gated by `check-dialect-lean.sh` |
+| [value-first.md](.claude/rules/value-first.md)   |    41 | madc-dialect code: ZERO includes/`using`/`std::` (bare print/println/format; auto-include reaches user modules); var/value over std::string; missing capability = fix the CARRIER/compiler, never spell around it |
+| [dialect-lean.md](.claude/rules/dialect-lean.md) |    39 | OWNER LAW: the `--std=madc` surface (prelude fragments included) never depends on C++ system header parsing or std::string; the one include a fragment may carry is a sibling `bits/` fragment (`<bits/ui_enums>`); interop conveniences behind the stdlib guards; polyglot publics need lean PRIMARY forms; gated by `check-dialect-lean.sh` |
 | [dialect-literals.md](.claude/rules/dialect-literals.md) | 24 | In dialect PRODUCTION code (`tools/`), build objects with literals `var x = { "k": v };` — never a bare `var x;` filled field-by-field; imperative key-assign is for MUTATION / computed keys / indices; gated by `check-dialect-literals.sh` |
 | [enum-over-strings.md](.claude/rules/enum-over-strings.md) |  32 | Enums (not chars/strings) for type/category discriminators; convert C-string node names to enums at the boundary |
 | [thread-safety.md](.claude/rules/thread-safety.md) | 22 | OWNER LAW: every language addition STATES its thread-safety contract (C++ stdlib convention default); shared mutation routes through the hub/verbs; no new bare mutable globals |
@@ -414,7 +414,7 @@ that fails any of these is not merged.
 | Rule                                             | Lines | Scope                                          |
 |--------------------------------------------------|------:|------------------------------------------------|
 | [build.md](.claude/rules/build.md)               |    35 | `make -C src`, the in-tree MIR subtree model   |
-| [testing-fulltest.md](.claude/rules/testing-fulltest.md) | 78 | THREE tiers: targeted per change · `scripts/fast_lanes.sh` per COMMIT (seven lanes, under three minutes, gated by the pre-push hook on every branch) · `scripts/batch_lane.sh` (tests/ JIT) per BATCH of fixes · `scripts/fix_lanes.sh` = Tier 1 + Tier 2 as ONE per-fix command · `scripts/seam_battery.sh` once per merge wave (the full suite on the packed -O2 binary, headerless; on-disk subsets; exe + obj on the same binary) — and the merge wave is the SEAM the arc's plan names (its release boundary), never a slice/phase/V · a red test's history across releases: `scripts/release_bins.sh run` |
+| [testing-fulltest.md](.claude/rules/testing-fulltest.md) | 84 | THREE tiers: targeted per change · `scripts/fast_lanes.sh` per COMMIT (seven lanes, under three minutes, gated by the pre-push hook on every branch) · `scripts/batch_lane.sh` (tests/ JIT) per BATCH of fixes · `scripts/fix_lanes.sh` = Tier 1 + Tier 2 as ONE per-fix command · `scripts/seam_battery.sh` once per merge wave (the profiling gate `parse-cost` — callgrind instruction counts ratcheted against `scripts/parse_cost/baseline.tsv`; the full suite on the packed -O2 binary, headerless; on-disk subsets; exe + obj on the same binary) — and the merge wave is the SEAM the arc's plan names (its release boundary), never a slice/phase/V · a red test's history across releases: `scripts/release_bins.sh run` |
 | [testing.md](.claude/rules/testing.md)           |    32 | Integration + unit test conventions            |
 | [test-fixtures.md](.claude/rules/test-fixtures.md) |  16 | Per-test `.input` / `.argv` / `.expect` files; runner stays generic |
 
@@ -440,10 +440,10 @@ editing — don't try to memorize all of them.
 
 ### Total rule footprint
 
-- **36 rules, 1271 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
+- **36 rules, 1278 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
 - **This file (AGENTS.md): ~487 lines** — loaded by Claude via
   `@AGENTS.md` in `CLAUDE.md`, read directly by Codex / Gemini / etc.
-- **Grand total loaded by Claude Code per turn: ~1750 lines.**
+- **Grand total loaded by Claude Code per turn: ~1780 lines.**
 
 Rule bloat ages: if any tier exceeds a few hundred lines, split the
 heaviest rule into a narrower sub-rule or move more content into the

@@ -1,0 +1,18 @@
+# The TUI golden harness's toolbar bundle (facelift S5): a small menu whose
+# toolbar rows carry icons, a separator and a drop arrow naming the Run menu
+# (the shape Chthonia's menu has), so the goldens pin the toolbar's glyphs.
+File new New
+File editfile Open File…
+File save Save [editable]
+File -
+File quit Quit
+
+Run replrun Run
+Run replstop Stop [window]
+
+toolbar new {new} New
+toolbar editfile {open} Open
+toolbar save {save} Save [editable]
+toolbar -
+toolbar replrun {run Run} Run
+toolbar replstop {stop} Stop [window]

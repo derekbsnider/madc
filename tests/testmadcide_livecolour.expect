@@ -1,0 +1,8 @@
+loaded: return=bold
+typed: long=bold 42=cyan comment=green return=bold
+in comment: xyz=green
+comment line start: Q9=green
+opened /*: return=green 42=green
+undo: return=bold 42=cyan
+type use: typed=none paused=bold
+save during refresh: parsing=0 running=0

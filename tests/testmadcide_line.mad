@@ -32,7 +32,8 @@ int main()
     // 1. The ex / edlin client over stdin (the .input transcript): the
     //    level-0 projection each cycle to stdout. It inserts "hello" (a
     //    bare line is text), saves (:w), and quits (:q).
-    run_line(path, false);
+    var none = {};		// no further files on the command line
+    run_line(path, false, none);
 
     // 2. The twin: the SAME lines applied DIRECTLY through the classifier
     //    (no frontend) on the copy. line_input is the one owner the

@@ -21,7 +21,8 @@ enum ide_cmd : unsigned short
     cmdABOUT, cmdAUTOINDENT, cmdBEND, cmdBLOCKCOPY, cmdBLOCKDEL, cmdBLOCKMOVE, cmdBOTTOM, cmdBUFSEL,
     cmdBUILD, cmdCHECK, cmdCLOSE, cmdCLOSEALL, cmdCOLON, cmdCOPY, cmdCUT, cmdDEDENT,
     cmdDELLINE, cmdDELWORD, cmdDISCARD,
-    cmdEDITFILE, cmdFIND, cmdFINDNEXT, cmdFONTLARGER, cmdFONTSMALLER, cmdFULLSCREEN, cmdGOTOLINE, cmdGROWW, cmdHELP, cmdHELPCONTENTS, cmdHELPTOPIC,
+    cmdEDITFILE, cmdFIND, cmdFINDNEXT, cmdFONTLARGER, cmdFONTSMALLER, cmdFULLSCREEN, cmdGOTOLINE, cmdGROWW, cmdHELP, cmdHELPCONTENTS,
+    cmdHELPINDEX, cmdHELPINDEXROW, cmdHELPTOPIC,
     cmdINDENT, cmdINSERTFILE, cmdKEYSTYLE, cmdKILLWIN, cmdLANGUAGE, cmdMARK, cmdMDPREVIEW,
     cmdMDPREVIEWROW, cmdMENUSHOW, cmdMODES,
     cmdNEW, cmdNEXTW, cmdONLYWIN,
@@ -68,7 +69,7 @@ enum ide_slot : unsigned char { slotNONE = 0, slotPOPUP, slotSIDEBAR, slotPANEL,
 enum ide_view : unsigned char
 {
     viewNONE = 0, viewSOURCE, viewCODE, viewPROBLEMS, viewOUTPUT, viewTERMINAL,
-    viewPROJECT, viewOUTLINE, viewHELP, viewMDPREVIEW
+    viewPROJECT, viewOUTLINE, viewHELP, viewMDPREVIEW, viewHELPINDEX
 };
 
 // How a plugin's CODE reached madcide's process: compiled into madcide, its

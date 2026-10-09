@@ -1,0 +1,13 @@
+{
+  "name": "tbgolden",
+  "title": "Toolbar golden",
+  "api": 3,
+  "contributes": {
+    "keys": "joe",
+    "status": "joe",
+    "theme": "default",
+    "menu": "tbgolden",
+    "help": "default",
+    "layout": "default"
+  }
+}

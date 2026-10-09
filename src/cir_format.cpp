@@ -93,7 +93,7 @@ static bool format_type_allowed(char t, const char *allowed)
 // Emission helpers
 // ---------------------------------------------------------------------------
 
-node_t CirBuilder::format_sink_arg(const std::string &sink_var,
+node_t CirBuilder::format_sink_arg(const madc::dis::istring &sink_var,
 				   TokenBase *origin)
 {
 	if ( sink_var.empty() )
@@ -102,8 +102,8 @@ node_t CirBuilder::format_sink_arg(const std::string &sink_var,
 	return id(sink_var.c_str(), origin);
 }
 
-node_t CirBuilder::format_text_stmt(const std::string &bytes,
-				    const std::string &sink_var,
+node_t CirBuilder::format_text_stmt(const madc::dis::istring &bytes,
+				    const madc::dis::istring &sink_var,
 				    TokenBase *origin)
 {
 	need_output_extern("__madc_fmt_text", false,
@@ -304,8 +304,8 @@ bool CirBuilder::format_arg_bind(TokenBase *arg, FormatArg &fa,
 }
 
 
-bool CirBuilder::format_field_stmt(const FormatArg &fa, const std::string &spec,
-				   const std::string &sink_var,
+bool CirBuilder::format_field_stmt(const FormatArg &fa, const madc::dis::istring &spec,
+				   const madc::dis::istring &sink_var,
 				   std::vector<node_t> &out, TokenBase *origin,
 				   std::string &why)
 {
@@ -582,7 +582,7 @@ node_t CirBuilder::lower_format_call(TokenCallFunc *tcf, FuncDef *fd,
 	// parseExpr materializes via addLiteral — the bytes ARE the name
 	// suffix, the same read the subscript and global-init arms do.
 	TokenBase *ftok = tcf->parameters[fmt_at];
-	std::string f;
+	madc::dis::istring f;
 	bool have_literal = false;
 	if ( ftok && ftok->type() == TokenType::ttString )
 	{
@@ -614,7 +614,7 @@ node_t CirBuilder::lower_format_call(TokenCallFunc *tcf, FuncDef *fd,
 	size_t nargs = tcf->parameters.size() - 1 - fmt_at;
 
 	std::vector<node_t> stmts;
-	std::string sink_var;
+	madc::dis::istring sink_var;
 	if ( fl == ffFormat || stream_tok )
 	{
 		// void *<sink> = __madc_dump_sink_open();   (format capture)
@@ -690,7 +690,7 @@ node_t CirBuilder::lower_format_call(TokenCallFunc *tcf, FuncDef *fd,
 		{
 			if ( it.text_n > 0 )
 				stmts.push_back(format_text_stmt(
-					std::string(it.text,
+					madc::dis::istring(it.text,
 						    (size_t)it.text_n),
 					sink_var, origin));
 			continue;
@@ -725,7 +725,7 @@ node_t CirBuilder::lower_format_call(TokenCallFunc *tcf, FuncDef *fd,
 				 fname, ai, nargs);
 			return error_node(msg, origin);
 		}
-		std::string spec(it.spec ? it.spec : "", (size_t)it.spec_n);
+		madc::dis::istring spec(it.spec ? it.spec : "", (size_t)it.spec_n);
 		std::string why;
 		if ( !format_field_stmt(bound[ai], spec, sink_var, stmts, origin,
 					why) )
@@ -733,7 +733,7 @@ node_t CirBuilder::lower_format_call(TokenCallFunc *tcf, FuncDef *fd,
 					   + why).c_str(), origin);
 	}
 	if ( fl == ffPrintln )
-		stmts.push_back(format_text_stmt(std::string("\n"), sink_var,
+		stmts.push_back(format_text_stmt(madc::dis::istring("\n"), sink_var,
 						 origin));
 	// The stream sink is per-call: release it after the last byte.
 	if ( stream_tok )

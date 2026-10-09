@@ -191,6 +191,53 @@ emit_paths_array() {
     echo '};'
 }
 
+# The embedded headers a system directory AHEAD of the compiler-owned slot
+# supplies under the same name — the only ones a real header outranks (gcc's
+# search order: the embedded set occupies the slot). Decided HERE, once, on the
+# build machine whose headers the binary carries (on disk or in the pack), as
+# {dir, name} pairs; the compiler reads the table and never searches disk or
+# the pack for an embedded header (the binary is self-contained). The test runs
+# on the raw (unmapped) directory; the pair records the mapped one the running
+# madc's search list holds. No owned slot found => no pairs (the embedded set
+# keeps its precedence), the same answer the runtime gives without a slot.
+EMBEDDED_DIR="$(dirname "$0")/../include/madc"
+# The build's OTHER embedded set, when it carries one (an Apple-target mode's
+# generated darwin prelude, a Windows mode's header fallbacks): the binary
+# embeds it beside include/madc/, so a system directory that supplies one of
+# ITS names outranks the embedded copy the same way (libc++'s c++/v1/ctype.h
+# ahead of the prelude's ctype.h).
+EMBEDDED_EXTRA_DIR="${MADC_EMBEDDED_EXTRA_DIR:-}"
+embedded_names() {
+    local d
+    for d in "$EMBEDDED_DIR" $EMBEDDED_EXTRA_DIR; do
+        [ -d "$d" ] && (cd "$d" && find . -type f | sed 's|^\./||')
+    done | LC_ALL=C sort -u
+}
+emit_shadows_array() {
+    # $1 = array suffix, rest = probe command
+    local idx="$1"; shift
+    local owned paths p d name names
+    owned=$("$@" -print-file-name=include 2>/dev/null)
+    case "$owned" in include) owned="" ;; */) ;; *) [ -n "$owned" ] && owned="$owned/" ;; esac
+    echo "static const char *madc_embedded_shadows_$idx[] = {"
+    if [ -n "$owned" ] && [ -d "$EMBEDDED_DIR" ]; then
+        names=$(embedded_names)
+        paths=$(search_list "$@")
+        while IFS= read -r p; do
+            [ -z "$p" ] && continue
+            case "$p" in */) ;; *) p="$p/";; esac
+            [ "$p" = "$owned" ] && break
+            [ "$(cd "$p" 2>/dev/null && pwd -P)/" = "$(cd "$owned" 2>/dev/null && pwd -P)/" ] && break
+            d=$(map_prefix "$p")
+            while IFS= read -r name; do
+                [ -n "$name" ] && [ -f "$p$name" ] && printf '    "%s", "%s",\n' "$d" "$name"
+            done <<< "$names"
+        done <<< "$paths"
+    fi
+    echo '    (const char *)0'
+    echo '};'
+}
+
 DEFAULT_FLAVOR=$(detect_flavor $CXX)
 DEFAULT_TARGET=$($CXX -dumpmachine 2>/dev/null)
 
@@ -236,21 +283,25 @@ emit() {
     emit_paths_array 0 $CXX
     echo
     emit_link_libs_array 0 $CXX
+    echo
+    emit_shadows_array 0 $CXX
     if [ -n "$ALT_CXX" ]; then
         echo
         emit_paths_array 1 $ALT_CXX
         echo
         emit_link_libs_array 1 $ALT_CXX
+        echo
+        emit_shadows_array 1 $ALT_CXX
     fi
     echo
     echo 'const madc_stdlib_flavor madc_stdlib_flavors[] = {'
-    printf '    { "%s", madc_sys_include_paths_0, "%s", madc_stdlib_link_libs_0 },\n' \
+    printf '    { "%s", madc_sys_include_paths_0, "%s", madc_stdlib_link_libs_0, madc_embedded_shadows_0 },\n' \
            "$DEFAULT_FLAVOR" "$(resource_dir $CXX)"
     if [ -n "$ALT_CXX" ]; then
-        printf '    { "%s", madc_sys_include_paths_1, "%s", madc_stdlib_link_libs_1 },\n' \
+        printf '    { "%s", madc_sys_include_paths_1, "%s", madc_stdlib_link_libs_1, madc_embedded_shadows_1 },\n' \
                "$ALT_FLAVOR" "$(resource_dir $ALT_CXX)"
     fi
-    echo '    { (const char *)0, (const char *const *)0, "", (const char *const *)0 }'
+    echo '    { (const char *)0, (const char *const *)0, "", (const char *const *)0, (const char *const *)0 }'
     echo '};'
     echo "const char *madc_default_stdlib_flavor = \"$DEFAULT_FLAVOR\";"
     echo

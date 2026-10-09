@@ -2,7 +2,9 @@
 # default) — every class gets a colour, including the AST-backed function
 # class JOE doesn't have. Swap with ^K T.
 keyword yellow
+control yellow
 type green
+typename green
 string red
 number magenta
 comment cyan

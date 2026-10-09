@@ -11,6 +11,7 @@
 
 #include "cir_node.h"
 #include <string>
+#include "madcdis/istring.h"	// emit names are interned (madc::dis::istring)
 #include <set>
 #include <unordered_set>
 #include <cassert>
@@ -52,17 +53,17 @@ class Method;
 // mark) when rollback() wasn't called — matching the old copy pattern's
 // behavior on exception unwind, where the restore line never ran.
 class RefFuncSet {
-	std::unordered_set<std::string> s_;
-	std::vector<std::string> journal_;	// keys newly inserted while marked
+	std::unordered_set<madc::dis::istring> s_;
+	std::vector<madc::dis::istring> journal_;	// keys newly inserted while marked
 	std::vector<size_t> marks_;
 public:
-	typedef std::unordered_set<std::string>::const_iterator const_iterator;
-	void insert(const std::string &k)
+	typedef std::unordered_set<madc::dis::istring>::const_iterator const_iterator;
+	void insert(const madc::dis::istring &k)
 	{
 		if (s_.insert(k).second && !marks_.empty())
 			journal_.push_back(k);
 	}
-	size_t count(const std::string &k) const { return s_.count(k); }
+	size_t count(const madc::dis::istring &k) const { return s_.count(k); }
 	const_iterator begin() const { return s_.begin(); }
 	const_iterator end() const { return s_.end(); }
 	void mark() { marks_.push_back(journal_.size()); }
@@ -115,25 +116,25 @@ class CirBuilder {
 	// Global variables referenced while translating bodies. Used to emit
 	// extern decls for libc globals (stderr/stdout/stdin, registered lazily
 	// via addGlobal but absent from top_decls) so the emitted C compiles.
-	std::map<std::string, Variable *> referenced_globals;
-	std::map<std::string, node_t> m_output_externs; // symbol -> proto SPEC_DECL (dedup)
-	std::set<std::string> m_rtti_data_externs;    // dedup extern data decls for RTTI (S5b)
+	std::map<madc::dis::istring, Variable *> referenced_globals;
+	std::map<madc::dis::istring, node_t> m_output_externs; // symbol -> proto SPEC_DECL (dedup)
+	std::set<madc::dis::istring> m_rtti_data_externs;    // dedup extern data decls for RTTI (S5b)
 	// Set during translate_module. Used to resolve a typedef alias to its
 	// base DataDef so we can tell the typedef's own pointer depth apart from
 	// the explicit stars written at the usage site.
 	Program *m_prog;
 	// TU identity (the source path) — set by the caller before
 	// translate_module; seeds the object-mode per-TU init symbol.
-	std::string m_tu_name;
+	madc::dis::istring m_tu_name;
 	// Object mode (ELF-completion S3): the TU-unique STATIC init function
 	// translate_module synthesized (empty = this TU has none). madc_cir
 	// registers it into the capture's .init_array after generation.
 	// Project JIT mode reuses the same shape — the engine plays ld.so's
 	// init_array role and calls each TU's init before main.
-	std::string m_tu_init_name;
+	madc::dis::istring m_tu_init_name;
 	// Plan §42 D27: every function this module declares or defines, by
 	// emitted name (declares_function). Recorded in an interactive entry only.
-	std::set<std::string> m_function_decl_syms;
+	std::set<madc::dis::istring> m_function_decl_syms;
 	// True when this TU is one of a --project JIT build: the per-TU init
 	// takes the object-mode shape (TU-unique static, sys-init-once inside)
 	// instead of `__madc_global_init` + the main-prologue call — N TUs
@@ -351,11 +352,11 @@ class CirBuilder {
 	// the symbol `sym`, in a module linked into the live context
 	// (Program::session_defined)? Such a definition is declared, never
 	// defined again: this module links to the live one.
-	bool session_defines(const std::string &sym) const;
+	bool session_defines(const madc::dis::istring &sym) const;
 	// Plan §42 D27: does a session stub wait for the function `sym`
 	// (Program::session_awaited)? Its vague-linkage body is then emitted in
 	// the entry that defines it, used there or not.
-	bool session_awaits(const std::string &sym) const;
+	bool session_awaits(const madc::dis::istring &sym) const;
 	// Plan §42 D27, slice 2: code in an interactive entry reads an object that
 	// an entry declared and nothing defines yet through a session CELL, so a
 	// later definition is the object it reaches. late_bound_object is the
@@ -365,14 +366,14 @@ class CirBuilder {
 	// (late_cells()).
 	bool late_bound_object(const class Variable &v) const;
 	node_t var_storage_node(const class Variable &v, TokenBase *origin);
-	std::map<std::string, std::string> m_late_cells;
+	std::map<madc::dis::istring, madc::dis::istring> m_late_cells;
 	// Wide string literals (parser addWideLiteral): the sanitized module
 	// symbol (__wlit_<n>) each synthetic __wliteral__ Variable emits under.
 	// The Variable's own name embeds the raw UTF-32 payload (binary-safe for
 	// parse-time dedup, NOT a valid C identifier). Populated by the
 	// translate_module pre-scan that also emits the definitions; read by
 	// var_emit_name. Cleared per module.
-	std::map<const Variable *, std::string> m_wide_literal_syms;
+	std::map<const Variable *, madc::dis::istring> m_wide_literal_syms;
 	// Rung 3: the conditional-emission map. A node recorded here survives the
 	// end-of-translate referenced-surface filter only if referenced: TYPE
 	// nodes (is_type) by struct tag — or, for typedef-bearing decls, any of
@@ -380,12 +381,12 @@ class CirBuilder {
 	// SYMBOL nodes by their declared name (key). Everything NOT in this map
 	// is a root and seeds the reference harvest. Populated at the emission
 	// sites (only for system-header-origin entities), cleared per module.
-	struct CondEmit { bool is_type; std::string key; };
+	struct CondEmit { bool is_type; madc::dis::istring key; };
 	std::map<node_t, CondEmit> m_cond_nodes;
 	void cond_mark_type(node_t n) {
 		if (n) { CondEmit c; c.is_type = true; m_cond_nodes[n] = c; }
 	}
-	void cond_mark_sym(node_t n, const std::string &key) {
+	void cond_mark_sym(node_t n, const madc::dis::istring &key) {
 		if (n && !key.empty()) {
 			CondEmit c; c.is_type = false; c.key = key;
 			m_cond_nodes[n] = c;
@@ -395,12 +396,12 @@ class CirBuilder {
 	// TokenFuncs). Set in translate_module while bodies are translated; NULL
 	// otherwise. Used with the materialized/deferred sets to decide whether a
 	// resolved symbol is emitted by this module and can therefore link.
-	const std::set<std::string> *m_user_func_names = nullptr;
+	const std::set<madc::dis::istring> *m_user_func_names = nullptr;
 	// Emit symbols of deferred lazy bodies ([temp.inst]) MATERIALIZED this
 	// module. They are not in m_user_func_names, and deferred_lazy_bodies erases
 	// each entry as it materializes, so retain the symbols for linkability and
 	// reachability decisions made later in the module pass.
-	std::set<std::string> m_materialized_lib_syms;
+	std::set<madc::dis::istring> m_materialized_lib_syms;
 
 	// ---- Pack-time drain / check-gate state (rung 1) ----
 	// Hoisted from translate_module locals so the pack-side c2mir check gate
@@ -408,32 +409,32 @@ class CirBuilder {
 	// drop check-defective drained defs, revert them to DEFBODY, and re-run
 	// the callee cascade post-hoc. All cleared at translate_module entry;
 	// meaningful only under prog->pack_recording.
-	std::set<std::string> drain_failed_syms;
-	std::map<std::string, Program::DeferredFunctionBody> drain_saved;
+	std::set<madc::dis::istring> drain_failed_syms;
+	std::map<madc::dis::istring, Program::DeferredFunctionBody> drain_saved;
 	std::vector<std::pair<TokenFunc *, node_t> > pack_defs;
-	std::vector<std::set<std::string> > pack_def_callees;
+	std::vector<std::set<madc::dis::istring> > pack_def_callees;
 	std::vector<char> pack_is_dropped;
-	std::set<std::string> pack_dropped;
+	std::set<madc::dis::istring> pack_dropped;
 	// Symbols of materialized bodies whose pack-time LOWERING failed (the
 	// drain's policy drop): no def was ever stashed or tree-flushed, so no
 	// decl surface may carry their broken signature — the late proto pass
 	// and the output-extern flush skip them, and the check gate splices
 	// (rather than TU-aborts on) any residual decl bearing one.
-	std::set<std::string> pack_defless_syms;
+	std::set<madc::dis::istring> pack_defless_syms;
 	// Symbols whose tree-resident defs must NOT stamp DF_HAS_FOREST_BODY
 	// (consumer-excluded under the emission split): DEFBODY-reverted bodies
 	// and cascade-excluded callers. Consumed by
 	// madc_cir_freeze (erased from funcdef_locs pre-arena_complete).
-	std::set<std::string> pack_stamp_excluded;
+	std::set<madc::dis::istring> pack_stamp_excluded;
 	// Symbol -> the Pass-1.95 forward-proto node of a materialized body.
 	// When the check gate drops a def, its proto must leave the tree with
 	// it — a defective def's proto can carry the def's broken ABI shape and
 	// conflict with the Pass-0.75 extern ("incompatible declarations").
-	std::map<std::string, node_t> pack_proto_nodes;
-	std::set<std::string> user_func_names;
-	std::map<std::string, size_t> pack_stash_idx;
-	std::set<std::string> pack_synth_dtor_syms;
-	std::map<std::string, bool> pack_dlsym_memo;
+	std::map<madc::dis::istring, node_t> pack_proto_nodes;
+	std::set<madc::dis::istring> user_func_names;
+	std::map<madc::dis::istring, size_t> pack_stash_idx;
+	std::set<madc::dis::istring> pack_synth_dtor_syms;
+	std::map<madc::dis::istring, bool> pack_dlsym_memo;
 	// Drop a stashed pack def: revert its DEFBODY (drain_saved) so consumers
 	// derive the body on use, else mark the symbol un-carriable so callers
 	// cascade-drop. Every drop is logged (no silent caps).
@@ -441,7 +442,7 @@ class CirBuilder {
 	// TRUE when a bound consumer can resolve sym: a surviving sibling stash,
 	// a (non-local-class) DEFBODY derived on use, a TU-root user fn, a synth
 	// dtor, a c2mir builtin, a forest-carried body, or a dlsym external.
-	bool pack_callee_homed(const std::string &sym);
+	bool pack_callee_homed(const madc::dis::istring &sym);
 	// Drop every stashed def calling an un-homed symbol, to fixpoint.
 	void pack_run_cascade();
 
@@ -450,7 +451,7 @@ class CirBuilder {
 	// std::pmr::string both alias the bare name `string`). Flat C would then get
 	// two conflicting `typedef <tag> string;` -> c2mir "repeated declaration".
 	// Populated once per module (translate_module); empty for the common case.
-	std::set<std::string> m_ambiguous_typedef_aliases;
+	std::set<madc::dis::istring> m_ambiguous_typedef_aliases;
 	// Struct-tag name -> the COMBINED `typedef struct Tag {...} Alias;` TopDecl that
 	// is the tag's body-definition point. When emit_struct_with_deps must hoist such
 	// a struct (a by-value member needs it complete early), it emits the WHOLE
@@ -459,24 +460,24 @@ class CirBuilder {
 	// at its original, later position -> "unknown type Alias"). Populated in the
 	// translate_module pre-scan; the aliases it emits early are recorded below so
 	// the source-order Pass 0 skips re-emitting them.
-	std::map<std::string, Program::TopDecl *> m_combined_typedef_alias;
+	std::map<madc::dis::istring, Program::TopDecl *> m_combined_typedef_alias;
 	// Emitted struct identity -> the aggregate that owns it (beside the
 	// name set the emitters thread through): the dedup reads it to tell a
 	// same-spelling twin from a different entity (struct_emission_deduped).
-	std::map<std::string, DataDefSTRUCT *> m_emitted_struct_owner;
-	void claim_emitted_struct(std::set<std::string> &emitted_structs,
+	std::map<madc::dis::istring, DataDefSTRUCT *> m_emitted_struct_owner;
+	void claim_emitted_struct(std::set<madc::dis::istring> &emitted_structs,
 				  DataDefSTRUCT *sdd);
-	std::string distinct_emitted_identity(
-		DataDefSTRUCT *sdd, const std::set<std::string> &emitted_structs);
-	bool struct_emission_deduped(const std::set<std::string> &emitted_structs,
+	madc::dis::istring distinct_emitted_identity(
+		DataDefSTRUCT *sdd, const std::set<madc::dis::istring> &emitted_structs);
+	bool struct_emission_deduped(const std::set<madc::dis::istring> &emitted_structs,
 				     DataDefSTRUCT *sdd);
-	std::set<std::string> m_hoisted_combined_aliases;
+	std::set<madc::dis::istring> m_hoisted_combined_aliases;
 	// The C identifier to EMIT for a typedef alias `alias` of type `dd`: normally
 	// the bare alias itself, but for an ambiguous alias (above) backed by a struct
 	// the already-unique struct tag instead, so std vs std::pmr stay distinct C
 	// names. Bare-alias STORAGE is unchanged (datatype_map lookups still key on
 	// the bare name); only emission of the type-spec id is rewritten.
-	std::string typedef_emit_name(const std::string &alias, DataDef *dd) const;
+	madc::dis::istring typedef_emit_name(const madc::dis::istring &alias, DataDef *dd) const;
 	// Peel array/pointer layers to the DataDefSTRUCT a typedef ultimately names
 	// (NULL if none). Shared by translate_module's typedef pass, the collision
 	// detection, and typedef_emit_name.
@@ -502,10 +503,10 @@ class CirBuilder {
 	// Explicit pointer stars at a usage site = total pointer depth of the
 	// declared type minus the typedef's own base depth. Returns -1 when
 	// alias is empty (caller falls back to the non-typedef pointer path).
-	int explicit_star_count(DataDef *full_type, const std::string &alias);
+	int explicit_star_count(DataDef *full_type, const madc::dis::istring &alias);
 	// Under a typedef alias: the cv the use ADDS at the alias's own level
 	// (level_cv = dd_peel_pointers' record of the full type).
-	unsigned alias_use_cv(const std::string &alias, int stars,
+	unsigned alias_use_cv(const madc::dis::istring &alias, int stars,
 			      const std::vector<unsigned> &level_cv);
 
 	// Build one N_MEMBER node for a struct/union member (shared by struct_def
@@ -585,7 +586,7 @@ class CirBuilder {
 	// param injection (func_def / func_proto / Pass 0.75 externs) and the
 	// call-site appends — all four MUST agree or c2mir arity-checks fail.
 	DataDefCLASS *ctor_hidden_vbase_owner(FuncDef *fd, Method *method,
-			       const std::string &fname);
+			       const madc::dis::istring &fname);
 	// Append the hidden `struct V *__madc_vb<i>` parameter declarations
 	// for `ocls`'s ctor (one per collect_vbases entry, that order).
 	void append_ctor_vbase_params(node_t param_list, DataDefCLASS *ocls,
@@ -616,7 +617,7 @@ class CirBuilder {
 	// import (alias form): the callee expression of `ns::member(args)` for
 	// a namespace bound to a dynamic module — a per-member slot resolved on
 	// first use through __madc_dl_member, cast to the K&R fn-ptr type.
-	node_t dyn_module_callee(FuncDef *fd, const std::string &callee_name,
+	node_t dyn_module_callee(FuncDef *fd, const madc::dis::istring &callee_name,
 				 TokenBase *origin);
 	node_t obj_default_ctor_call(const char *name, const char *ctor_sym,
 				     TokenBase *origin);
@@ -924,6 +925,10 @@ class CirBuilder {
 	// registered operator= row; yields `(c ? assign : assign, tmp)`.
 	bool carrier_ternary_needs_temp(class TokenTerQ *tq);
 	node_t carrier_ternary_value(class TokenTerQ *tq, TokenBase *origin);
+	// Does a returned expression BORROW a value carrier's text — the carrier
+	// itself (its implicit c_str), a call whose FuncDef borrows_receiver_text,
+	// or a conditional with such an arm? translate_return copies it out.
+	bool returns_carrier_text_borrow(TokenBase *e);
 
 	// ---- STL container (vector/map/set) object lowering ----
 	// `obj[i]` on a user class defining `operator[]` -> the method call,
@@ -983,16 +988,16 @@ private:
 	// The row form's element bound: `n` shown of `count` (count when no bound).
 	long show_element_bound(long count) const;
 	// A runtime-counted walk's loop bound, bounded in a row when `bounded`.
-	node_t show_bounded_cond(bool bounded, node_t cond, const std::string &idx,
+	node_t show_bounded_cond(bool bounded, node_t cond, const madc::dis::istring &idx,
 				 TokenBase *origin);
 	// `, …` after a bounded walk that stopped short (the runtime count `n`);
 	// NULL when the walk is not bounded.
 	node_t show_bounded_tail(node_t n, TokenBase *origin);
 	// The show's spelling of a pointer or enum TYPE (`int *`, `enum E`,
 	// `struct P *`, `int (*)(int)`), per the entry's language (C or C++).
-	std::string dump_show_type_word(DataDef *dd);
+	madc::dis::istring dump_show_type_word(DataDef *dd);
 	// A literal piece of the show's text (a brace, a designator, a separator).
-	node_t dump_show_text(const std::string &text, TokenBase *origin);
+	node_t dump_show_text(const madc::dis::istring &text, TokenBase *origin);
 	// An ACCESS FACTORY: builds a fresh access node for the same value each
 	// time it is called. A c2mir node is a tree node, so the same one cannot
 	// be handed to two parents — the walk rebuilds instead of sharing, the
@@ -1049,23 +1054,23 @@ private:
 	// print_r's PHP `$return` flag (plan §13.3): the capture sink, the
 	// madc::value the call returns, and the two statements that finish it.
 	void dump_sink_open(std::vector<node_t> &stmts, TokenBase *ret_arg,
-			    std::string &ret_var, std::string &sink_var,
+			    madc::dis::istring &ret_var, madc::dis::istring &sink_var,
 			    TokenBase *origin);
 	// The assignment a `value v = <init>;` declaration owes after its
 	// constructor (NULL for a bare `value v;`). One home, so the
 	// declaration form cannot drift from the expression lane.
 	node_t value_init_assign(class TokenDecl *sdcl);
-	std::string dump_result_value_temp(TokenBase *origin);
-	node_t dump_result_assign(const std::string &val_var,
-				  const std::string &sink_var,
-				  const std::string &ret_var,
+	madc::dis::istring dump_result_value_temp(TokenBase *origin);
+	node_t dump_result_assign(const madc::dis::istring &val_var,
+				  const madc::dis::istring &sink_var,
+				  const madc::dis::istring &ret_var,
 				  TokenBase *origin);
-	node_t dump_sink_close(const std::string &sink_var, TokenBase *origin);
+	node_t dump_sink_close(const madc::dis::istring &sink_var, TokenBase *origin);
 	// The sink expression every primitive call carries: the name of the
 	// generated `void *` local when a dump may CAPTURE its output, empty when
 	// it goes straight to stdout (then a null pointer is passed). Set by
 	// lower_dump_call for the duration of one dump's walk.
-	std::string m_dump_sink_var;
+	madc::dis::istring m_dump_sink_var;
 	// The dump walk's ancestor set in the TYPE domain — the compile-time
 	// analogue of the runtime ancestor stack in src/rt/rt_dump.c, and it exists
 	// for the same reason: `struct Node { long size(); Node &operator[](long); };`
@@ -1125,7 +1130,7 @@ private:
 	// The generated dumper for (pointee, flavor), minted on first use and
 	// MEMOIZED — so the recursive case finds a call to make instead of a
 	// second expansion. Empty string on failure, with `why` set.
-	std::string dump_pointer_fn(DumpFlavor fl, DataDef *pointee,
+	madc::dis::istring dump_pointer_fn(DumpFlavor fl, DataDef *pointee,
 				    TokenBase *origin, std::string &why);
 	// The pointee's declared spec list — its SHAPE, void included. ONE owner,
 	// because the generated function's PARAMETER type and the cast at its call
@@ -1139,7 +1144,7 @@ private:
 	node_t dump_fn_param_list(DataDef *base, int stars, TokenBase *origin);
 	node_t dump_int_local(const char *name, node_t init, TokenBase *origin);
 	// print_r's word for the frame the *RECURSION* marker replaces.
-	std::string dump_pr_recursion_word(DataDef *dd);
+	madc::dis::istring dump_pr_recursion_word(DataDef *dd);
 	// An ENUM renders as its enumerator NAME plus its backing value — PHP
 	// 8.1's own enum shape, and exactly what a C enum has.
 	bool dump_enum(DumpFlavor fl, const DumpAccess &acc,
@@ -1148,9 +1153,9 @@ private:
 		       std::string &why);
 	// The memoized value -> enumerator-name lookup generated per TAG. Flavor
 	// independent: both renderings ask the same question.
-	std::string dump_enum_name_fn(class DataDefENUM *edd, TokenBase *origin);
-	std::map<DataDef *, std::string> m_dump_enum_fn_syms;
-	std::map<std::pair<DataDef *, int>, std::string> m_dump_fn_syms;
+	madc::dis::istring dump_enum_name_fn(class DataDefENUM *edd, TokenBase *origin);
+	std::map<DataDef *, madc::dis::istring> m_dump_enum_fn_syms;
+	std::map<std::pair<DataDef *, int>, madc::dis::istring> m_dump_fn_syms;
 	// Generated dumper prototypes and definitions awaiting the module's
 	// top_list. TWO lists, because mutual recursion (`struct A { B *b; };
 	// struct B { A *a; };`) needs every prototype ahead of every definition.
@@ -1164,15 +1169,15 @@ private:
 	// pointer, an array, a function type — is named by a module-level
 	// typedef, queued with the pending top-level declarations: per-module,
 	// like the dumper memo above.
-	std::map<DataDef *, std::string> m_tsubst_type_aliases;
-	std::string tsubst_type_alias(DataDef *dd);
+	std::map<DataDef *, madc::dis::istring> m_tsubst_type_aliases;
+	madc::dis::istring tsubst_type_alias(DataDef *dd);
 	// While a generated dumper's BODY is being built: the names of its column
 	// base local, its depth parameter and its nested parameter. All empty in
 	// the ordinary in-line walk, which is what keeps every column there a
 	// compile-time constant.
-	std::string m_dump_col_base;
-	std::string m_dump_fn_depth;
-	std::string m_dump_fn_nested;
+	madc::dis::istring m_dump_col_base;
+	madc::dis::istring m_dump_fn_depth;
+	madc::dis::istring m_dump_fn_nested;
 	// ONE owner each for the three things that stop being compile-time
 	// constants inside a generated dumper: a column, the absolute depth, and
 	// whether this value is an ENTRY of an enclosing aggregate.
@@ -1181,41 +1186,41 @@ private:
 	node_t dump_nested_arg(int depth, bool nested, TokenBase *origin);
 	node_t dump_pr_end_entry(DumpFlavor fl, int depth, TokenBase *origin);
 	node_t dump_vd_null(int depth, TokenBase *origin);
-	node_t dump_head(DumpFlavor fl, int depth, const std::string &word,
+	node_t dump_head(DumpFlavor fl, int depth, const madc::dis::istring &word,
 			 size_t count, TokenBase *origin);
-	node_t dump_head_node(DumpFlavor fl, int depth, const std::string &word,
+	node_t dump_head_node(DumpFlavor fl, int depth, const madc::dis::istring &word,
 			      node_t count, TokenBase *origin);
-	node_t dump_key(DumpFlavor fl, int depth, const std::string &key,
+	node_t dump_key(DumpFlavor fl, int depth, const madc::dis::istring &key,
 			TokenBase *origin);
 	node_t dump_key_idx(DumpFlavor fl, int depth, node_t idx,
 			    TokenBase *origin);
 	node_t dump_tail(DumpFlavor fl, int depth, bool nested, TokenBase *origin);
 	// The source's own name for a type (the datatype maps inverted by type
 	// IDENTITY, never by pattern), and the type word var_dump prints.
-	std::string type_alias_spelling(DataDef *dd);
+	madc::dis::istring type_alias_spelling(DataDef *dd);
 	// Drop every INLINE-namespace component from a qualified spelling: they
 	// are transparent to qualified lookup, so nobody writes them
 	// (std::__cxx11::list -> std::list). Driven by the parser's own
 	// inline_namespace_children record, never by a hardcoded name.
-	std::string strip_inline_namespaces(const std::string &spelling);
-	std::string dump_type_word(DataDef *dd);
-	std::string dump_class_type_word(class DataDefCLASS *cls);
-	std::string dump_aggregate_name(class DataDefSTRUCT *sdd);
+	madc::dis::istring strip_inline_namespaces(const madc::dis::istring &spelling);
+	madc::dis::istring dump_type_word(DataDef *dd);
+	madc::dis::istring dump_class_type_word(class DataDefCLASS *cls);
+	madc::dis::istring dump_aggregate_name(class DataDefSTRUCT *sdd);
 	// A class's word, CONTAINER-aware: the two container recognizers decide
 	// it, so an entry's head-line word and the word the walk below it prints
 	// answer one question. dump_type_word routes every class through here.
-	std::string dump_container_type_word(class DataDefCLASS *cls);
-	std::string dump_container_type_word_inner(class DataDefCLASS *cls);
-	std::string dump_sequence_type_word(class DataDefCLASS *cls, DataDef *elem);
+	madc::dis::istring dump_container_type_word(class DataDefCLASS *cls);
+	madc::dis::istring dump_container_type_word_inner(class DataDefCLASS *cls);
+	madc::dis::istring dump_sequence_type_word(class DataDefCLASS *cls, DataDef *elem);
 	// A template container's word with only the type arguments that carry
 	// information — the canonical spelling drags in every defaulted
 	// comparator and allocator. ONE owner for both container walks.
-	std::string dump_template_word(class DataDefCLASS *cls,
+	madc::dis::istring dump_template_word(class DataDefCLASS *cls,
 				       const std::vector<DataDef *> &args);
-	std::string dump_array_type_word(DataDef *elem,
+	madc::dis::istring dump_array_type_word(DataDef *elem,
 					 const std::vector<carray_dim_t> &dims,
 					 size_t dim_ix);
-	node_t dump_vd_text_open(int depth, const std::string &word, node_t len,
+	node_t dump_vd_text_open(int depth, const madc::dis::istring &word, node_t len,
 				 TokenBase *origin);
 	node_t dump_vd_text_close(TokenBase *origin);
 	node_t dump_pr_nl(TokenBase *origin);
@@ -1252,8 +1257,8 @@ private:
 	// library flavor the c_str() / size() it is read through.
 	struct FormatArg {
 		int kind = -1;
-		std::string tmp;
-		std::string cstr_sym, size_sym;
+		madc::dis::istring tmp;
+		madc::dis::istring cstr_sym, size_sym;
 	};
 	// Classify the argument's concrete type and evaluate it into a
 	// temporary appended to `out` (false + `why` = the compile-time
@@ -1265,16 +1270,16 @@ private:
 	// presentation against the argument's kind (false + `why` = the
 	// compile-time diagnostic), and emit the typed primitive call reading
 	// the argument's temporary.
-	bool format_field_stmt(const FormatArg &fa, const std::string &spec,
-			       const std::string &sink_var,
+	bool format_field_stmt(const FormatArg &fa, const madc::dis::istring &spec,
+			       const madc::dis::istring &sink_var,
 			       std::vector<node_t> &out, TokenBase *origin,
 			       std::string &why);
 	// A literal run between fields (and println's trailing newline).
-	node_t format_text_stmt(const std::string &bytes,
-				const std::string &sink_var, TokenBase *origin);
+	node_t format_text_stmt(const madc::dis::istring &bytes,
+				const madc::dis::istring &sink_var, TokenBase *origin);
 	// The sink argument every primitive leads with: the capture sink local
 	// (std::format) or a null pointer meaning stdout (print/println).
-	node_t format_sink_arg(const std::string &sink_var, TokenBase *origin);
+	node_t format_sink_arg(const madc::dis::istring &sink_var, TokenBase *origin);
 
 	// The POSITIONAL index-iteration protocol — `size()` plus
 	// `operator[](integral)`, TYPE-CHECKED (see the definition for why naming
@@ -1418,7 +1423,7 @@ private:
 	// overload-SELECTED per instantiation (arity/types vary with the
 	// pack), so the hit path relowers the whole ctor call.
 	struct TsubstMemInitPattern {
-		std::string name;		// ci name (member, per fd source order)
+		madc::dis::istring name;		// ci name (member, per fd source order)
 		cir_node *arg = NULL;		// the single lowered arg expr (NULL = `member()` value-init)
 		bool value_init = false;	// `member()` — zero-init scalar/pointer
 		bool delegating = false;	// delegation: relower the target ctor call at hit
@@ -1430,7 +1435,7 @@ private:
 	// A substituted mem-initializer's statement: the member it initializes
 	// (empty for a delegation).
 	struct TsubstMemInitStmt {
-		std::string member;
+		madc::dis::istring member;
 		node_t stmt;
 	};
 	// Set by a tsubst_method_body HIT that substituted the mem-initializers:
@@ -1483,7 +1488,7 @@ private:
 	// the parser already built the concrete `<owner>__<local>` class + its methods;
 	// the pattern body's raw-copied ctor/dtor calls are retargeted to those. Empty
 	// outside a tsubst copy.
-	std::map<std::string, std::string> m_tsubst_local_method_remap;
+	std::map<madc::dis::istring, madc::dis::istring> m_tsubst_local_method_remap;
 	// Build a concrete instantiated member-template method's BODY by tsubst of
 	// its source template's Tree-1 recipe (instead of lowering the re-parsed
 	// body — hybrid B keeps the concrete signature/shell on the parse path).
@@ -1504,8 +1509,8 @@ private:
 	// same-name re-registration keeps the old entry's symbols; that is
 	// name-derived (class_dtor_symbol), so the symbol survives replacement
 	// and a mismatch would fail LOUD at MIR link, never silently.
-	std::set<std::string> m_synth_dtor_syms_memo;
-	std::set<std::string> m_forest_body_syms_memo;
+	std::set<madc::dis::istring> m_synth_dtor_syms_memo;
+	std::set<madc::dis::istring> m_forest_body_syms_memo;
 	std::unordered_set<const void *> m_emit_sets_seen_classes;
 	size_t m_emit_sets_struct_count = 0;	// struct_map never erases: equal size = no walk
 	// funcdef_map's forest-body subset is restore-stamped (fixed before
@@ -1529,7 +1534,7 @@ public:
 	// primitive, so the alias is resolved here at the cir layer). A function
 	// asm-label emits the labeled symbol directly. Non-aliased variables return
 	// their own name.
-	std::string var_emit_name(const class Variable &v) const;
+	madc::dis::istring var_emit_name(const class Variable &v) const;
 	// Record a file-scope reference so pass 0.78 emits its extern decl.
 	// THE one owner: every path that reads a global BY NAME must call it,
 	// or the emitted C references an identifier c2mir never saw.
@@ -1538,19 +1543,19 @@ public:
 	// that neither the loaded native libraries provide nor madc itself
 	// emits can never link — binding it is always wrong; declining lets a
 	// body/instance lane serve ([temp.inst]).
-	bool extern_symbol_can_link(const std::string &sym);
-	std::string func_emit_name(const class Variable &v, class FuncDef *fd) const;
+	bool extern_symbol_can_link(const madc::dis::istring &sym);
+	madc::dis::istring func_emit_name(const class Variable &v, class FuncDef *fd) const;
 	// The symbol a madc-emitted BODY defines (the definition, its lock-step
 	// prototype, the profiler self-address and the reachability mark all read
 	// this one rule): var_emit_name for a materialized library body,
 	// emit_symbol for a mangled file-scope user function. See the definition.
-	std::string func_def_symbol(class TokenFunc *tf, class FuncDef *fd) const;
+	madc::dis::istring func_def_symbol(class TokenFunc *tf, class FuncDef *fd) const;
 	// The symbol madc's OWN body for `v` defines: local_emit_name when the
 	// parser assigned one (a hoisted nested function, an arity-disambiguated
 	// method or operator, a user member's Itanium name), else var_emit_name.
 	// Never emit_symbol — that is an EXTERNAL definition's symbol. The body
 	// definition, the vtable slots and the thunks read THIS one rule.
-	std::string body_emit_symbol(const class Variable &v, class FuncDef *fd) const;
+	madc::dis::istring body_emit_symbol(const class Variable &v, class FuncDef *fd) const;
 	// THE single source of truth for the C symbol a CALL references. Precedence:
 	// an external ABI bind (emit_symbol, madc emits no body) wins; then a
 	// madc-emitted body's non-default symbol (local_emit_name — hoisted nested
@@ -1560,9 +1565,9 @@ public:
 	// The (fd, default_sym) form reads only FuncDef fields (no instance state)
 	// so static helpers can delegate to it; the (Variable, fd) form supplies
 	// var_emit_name(v) as the default.
-	static std::string call_emit_symbol(class FuncDef *fd,
-					    const std::string &default_sym);
-	std::string call_emit_symbol(const class Variable &v, class FuncDef *fd) const;
+	static madc::dis::istring call_emit_symbol(class FuncDef *fd,
+					    const madc::dis::istring &default_sym);
+	madc::dis::istring call_emit_symbol(const class Variable &v, class FuncDef *fd) const;
 	// The FuncDef behind a CALL token (direct call or fn-ptr target). THE one
 	// callee resolver every consumer goes through — it substitutes a per-call
 	// instantiated FuncDef (std:: free-function template bound mangled-direct
@@ -1571,7 +1576,7 @@ public:
 	class Variable *call_target_variable(class TokenCallFunc *tcf,
 					     class FuncDef **fd_out = NULL);
 	class FuncDef *call_target_funcdef(class TokenCallFunc *tcf);
-	std::string call_target_emit_name(class TokenCallFunc *tcf,
+	madc::dis::istring call_target_emit_name(class TokenCallFunc *tcf,
 					  class FuncDef **fd_out = NULL);
 	// task #69 flavor-ABI marshalling boundary. Detection: the callee is a
 	// host-implemented namespace public whose signature carries the flavor
@@ -1580,33 +1585,33 @@ public:
 	// (MADC_FLVMAR_PROBE=1): logs the script symbol, the host-flavor twin,
 	// and each one's dlsym resolution — no behavior change.
 	bool flavor_marshal_candidate(class FuncDef *fd) const;
-	void flavor_marshal_probe(const std::string &sym, class FuncDef *fd);
+	void flavor_marshal_probe(const madc::dis::istring &sym, class FuncDef *fd);
 	// Slice 2 (dark behind MADC_FLVMAR=1): swap the callee to a generated
 	// marshalling thunk when the host really exports the entry (dlsym on the
 	// callee's own symbol — extern-C twins — or on the host-flavor remint).
 	// Returns the thunk symbol, or empty when no marshalling applies.
-	std::string flavor_marshal_thunk(const std::string &sym, class FuncDef *fd);
+	madc::dis::istring flavor_marshal_thunk(const madc::dis::istring &sym, class FuncDef *fd);
 	node_t flavor_marshal_thunk_def(const char *thunk_sym,
-					const std::string &host_sym,
+					const madc::dis::istring &host_sym,
 					class FuncDef *fd);
 	bool flavor_marshal_string_syms(class DataDefCLASS *scr,
-					std::string &cstr_sym,
-					std::string &size_sym,
-					std::string &ctor_sym,
-					std::string &dtor_sym);
+					madc::dis::istring &cstr_sym,
+					madc::dis::istring &size_sym,
+					madc::dis::istring &ctor_sym,
+					madc::dis::istring &dtor_sym);
 	// The script flavor's c_str()/size() view of one of its strings (the
 	// thunk's and the format intrinsic's shared owner).
 	bool script_string_view_syms(class DataDefCLASS *scr,
-				     std::string &cstr_sym,
-				     std::string &size_sym);
-	std::map<std::string, std::string> m_flvmar_thunks;	// callee sym -> thunk ("" = miss)
+				     madc::dis::istring &cstr_sym,
+				     madc::dis::istring &size_sym);
+	std::map<madc::dis::istring, madc::dis::istring> m_flvmar_thunks;	// callee sym -> thunk ("" = miss)
 	std::vector<node_t> m_flvmar_defs;
 	int m_flvmar_counter = 0;
 	bool m_flvmar_generating = false;	// reentrancy: no thunks for a thunk's own callees
 	// std:: free-function template instantiations: one FuncDef per mangled
 	// symbol, plus a per-call memo (NULL = checked, not such a call).
 	std::map<class TokenCallFunc *, class FuncDef *> m_free_fn_inst_by_call;
-	std::map<std::string, class FuncDef *> m_free_fn_inst_by_sym;
+	std::map<madc::dis::istring, class FuncDef *> m_free_fn_inst_by_sym;
 	std::map<class TokenOperator *, class FuncDef *> m_free_op_inst_by_call;
 	std::map<class TokenOperator *, class Variable *> m_free_op_body_by_call;
 	node_t integer(int64_t val, TokenBase *origin = NULL);
@@ -1737,7 +1742,7 @@ public:
 	// mem-inits on struct members share this one shape).
 	node_t zero_struct_compound(const DataDefSTRUCT *cst, TokenBase *origin);
 	// Declare a block-local temp of dd into `items`; returns its name.
-	std::string int_complex_temp(node_t items, DataDef *dd, TokenBase *origin);
+	madc::dis::istring int_complex_temp(node_t items, DataDef *dd, TokenBase *origin);
 	// Convert an already-translated value of src_dd to the lowered type
 	// `to` (componentwise; scalar -> {v,0}; native -> {creal,cimag}).
 	node_t int_complex_from_node(node_t val, DataDef *src_dd,
@@ -1759,7 +1764,7 @@ public:
 				 const std::function<node_t()> &ai,
 				 const std::function<node_t()> &br,
 				 const std::function<node_t()> &bi,
-				 const std::string &tname, TokenBase *tb);
+				 const madc::dis::istring &tname, TokenBase *tb);
 	// Binary/unary interception from translate_expr's operator arms.
 	// Return NULL when not applicable (caller falls through).
 	node_t int_complex_binop(TokenOperator *top, TokenBase *tb);
@@ -1770,12 +1775,12 @@ public:
 	// inlined members for an anonymous aggregate, else falls back to
 	// append_type_specs. Shared by translate_struct_lit's scalar and array paths.
 	void append_lit_type_spec(node_t spec, DataDef *dd,
-				  const std::string &typedef_name);
-	node_t type_list(DataDef *dd, const std::string &typedef_alias = "");
+				  const madc::dis::istring &typedef_name);
+	node_t type_list(DataDef *dd, const madc::dis::istring &typedef_alias = "");
 	// The append form of type_list, for a spec list that must carry a
 	// storage-class specifier ahead of the type specs.
 	void append_decl_type_specs(node_t lst, DataDef *dd,
-				    const std::string &typedef_alias);
+				    const madc::dis::istring &typedef_alias);
 	// THE type-spec derivation for a VARIABLE declaration of any storage
 	// class (plain / static / extern) — anonymous aggregate inlined, else
 	// append_decl_type_specs. Callers emit their own storage class. Pass a
@@ -1831,8 +1836,8 @@ public:
 	// Extra pointer stars an fn-ptr usage carries beyond its typedef alias:
 	// `DO_FUN *m` (alias is a function typedef) -> 1; `UNOP m` (alias already
 	// a pointer-to-function typedef) -> 0. Returns 1 when the alias is unknown.
-	int fnptr_alias_stars(const std::string &alias);
-	bool fnptr_alias_is_fn(const std::string &alias);
+	int fnptr_alias_stars(const madc::dis::istring &alias);
+	bool fnptr_alias_is_fn(const madc::dis::istring &alias);
 
 	// ---- Declaration builders ----
 	// Recursively build an initializer value node: a scalar expression, or
@@ -1886,10 +1891,10 @@ public:
 	// an array for sizeof and address-of; c2mir needs an explicit pointer cast.
 	node_t decay_array_compound_literal(node_t literal, DataDef *element,
 					  TokenBase *origin,
-					  const std::string &typedef_name = std::string());
+					  const madc::dis::istring &typedef_name = madc::dis::istring());
 	node_t var_decl(Variable *v, TokenBase *origin = NULL);
 	node_t param_decl(DataDef *ptype, const char *pname,
-			  const std::string &typedef_alias = std::string());
+			  const madc::dis::istring &typedef_alias = madc::dis::istring());
 
 	// ---- Output (Phase-2) ----
 	// A param of an output extern: its type-spec node codes + whether it is a pointer.
@@ -1929,7 +1934,7 @@ public:
 	// funcdef_map), and an implicit declaration types the result int and
 	// passes a hidden result address as a plain first argument. The flush
 	// skips a symbol a pass already typed (typed_proto_syms).
-	void declare_bound_callee(FuncDef *cdf, const std::string &sym);
+	void declare_bound_callee(FuncDef *cdf, const madc::dis::istring &sym);
 	// Record (once) an extern proto for an output runtime/libstdc++ symbol.
 	// ret_ptr=true -> returns void*, else void. ret_specs overrides the
 	// return base type when non-empty (e.g. {N_LONG} for a long-returning
@@ -1967,12 +1972,12 @@ public:
 	// when `sym` is such a runtime symbol. This is the compiler's OWN fixed
 	// runtime ABI set (the extern-C compiler-machinery category), not a
 	// user-name special case.
-	bool ensure_runtime_extern_for(const std::string &sym);
+	bool ensure_runtime_extern_for(const madc::dis::istring &sym);
 	// Map a builtin print-fn name to its madc_* runtime symbol ("" if not one).
-	static const char *builtin_output_runtime(const std::string &name);
+	static const char *builtin_output_runtime(const madc::dis::istring &name);
 
-	node_t typedef_decl(const std::string &alias, DataDef *dd,
-			    const std::set<std::string> &emitted_structs,
+	node_t typedef_decl(const madc::dis::istring &alias, DataDef *dd,
+			    const std::set<madc::dis::istring> &emitted_structs,
 			    bool force_incomplete_struct = false);
 	node_t struct_def(DataDefSTRUCT *sdd);
 	// Emit a user-defined class as a plain C struct definition. Base-class
@@ -1989,11 +1994,11 @@ public:
 	// the vptr — breaking the inline ctor's __vptr install and the object layout).
 	node_t class_member_list(DataDefCLASS *cdd);
 	void emit_class_member_deps(DataDefSTRUCT *sdd, node_t top_list,
-				    std::set<std::string> &emitted_structs,
+				    std::set<madc::dis::istring> &emitted_structs,
 				    std::set<DataDefCLASS *> &emitted_classes,
 				    std::set<DataDefCLASS *> &emitting_classes);
 	void emit_class_struct_with_deps(DataDefCLASS *cdd, node_t top_list,
-					 std::set<std::string> &emitted_structs,
+					 std::set<madc::dis::istring> &emitted_structs,
 					 std::set<DataDefCLASS *> &emitted_classes,
 					 std::set<DataDefCLASS *> &emitting_classes);
 	// Topologically hoist a PLAIN struct/union (DataDefSTRUCT, not a class) whose
@@ -2001,7 +2006,7 @@ public:
 	// into its own by-value members first; emits the named struct's body (anonymous
 	// aggregates are inlined at the use site, so only their member deps are hoisted).
 	void emit_struct_with_deps(DataDefSTRUCT *sdd, node_t top_list,
-				   std::set<std::string> &emitted_structs,
+				   std::set<madc::dis::istring> &emitted_structs,
 				   std::set<DataDefCLASS *> &emitted_classes,
 				   std::set<DataDefCLASS *> &emitting_classes);
 	// Emit a class's virtual-method dispatch table as a file-scope array of
@@ -2021,8 +2026,8 @@ public:
 	// `Cls__vtable` / `_ZTI<cls>` for a class madc defines, or the REAL
 	// libstdc++ `_ZTVSt.../_ZTISt...` for an externally-defined class (whose
 	// machinery madc does not synthesize — see is_externally_defined()).
-	std::string class_vtable_symbol(DataDefCLASS *cdd);
-	std::string class_typeinfo_symbol(DataDefCLASS *cdd);
+	madc::dis::istring class_vtable_symbol(DataDefCLASS *cdd);
+	madc::dis::istring class_typeinfo_symbol(DataDefCLASS *cdd);
 	// The function symbols cdd's madc-emitted vtable initializer will name
 	// (the final overrider of every function slot, under its BODY symbol)
 	// join referenced_funcs — run ahead of the referenced-only extern sweep
@@ -2036,14 +2041,14 @@ public:
 	bool itanium_class_symbols(DataDefCLASS *cdd) const;
 	// `extern void *SYM[];` (deduped via m_rtti_data_externs), or NULL if already
 	// emitted. For referencing an externally-defined class's real _ZTVSt.../_ZTISt...
-	node_t data_extern_decl(const std::string &sym);
-	void vbase_ctor_stmts(const std::string &objname, bool addr_of,
+	node_t data_extern_decl(const madc::dis::istring &sym);
+	void vbase_ctor_stmts(const madc::dis::istring &objname, bool addr_of,
 			      DataDefCLASS *cdd, std::vector<node_t> &out, TokenBase *o);
 	// Core of vbase_ctor_stmts with a minted receiver address (a fresh node
 	// per vbase — array elements / heap temps have no bare object name).
 	void vbase_ctor_stmts_addr(const std::function<node_t()> &mint_addr,
 			      DataDefCLASS *cdd, std::vector<node_t> &out, TokenBase *o);
-	void vbase_dtor_stmts(const std::string &objname, bool addr_of,
+	void vbase_dtor_stmts(const madc::dis::istring &objname, bool addr_of,
 			      DataDefCLASS *cdd, std::vector<node_t> &out, TokenBase *o);
 	// Lower a user-defined class method call on a class OBJECT (or pointer)
 	// receiver to a free-function call on the mangled method symbol with the
@@ -2059,7 +2064,7 @@ public:
 	// signature and routes the call directly. `this_arg` is the receiver address
 	// (object_var_addr).
 	node_t emit_symbol_method_call(class TokenMember *tm, class FuncDef *callee,
-				       const std::string &sym, node_t this_arg,
+				       const madc::dis::istring &sym, node_t this_arg,
 				       TokenBase *origin);
 	node_t member_template_method_call(class TokenMember *tm,
 				       class FuncDef *callee,
@@ -2097,7 +2102,7 @@ public:
 	// defects: the frozen-libc++ __allocate_at_least garbage-pointer trap,
 	// and S{string, int} printing garbage in the plain lane.
 	node_t class_aggregate_init(
-			       const std::function<node_t(const std::string &)> &member_lvalue,
+			       const std::function<node_t(const madc::dis::istring &)> &member_lvalue,
 			       DataDefCLASS *cdd,
 			       const std::vector<TokenBase *> &ctor_args,
 			       TokenBase *origin);
@@ -2109,7 +2114,7 @@ public:
 	// ([dcl.init.aggr]/16), the rest left to the members after it. Members
 	// past the list value-initialize. FALSE declines the whole list.
 	bool aggregate_member_fill(
-			       const std::function<node_t(const std::string &)> &member_lvalue,
+			       const std::function<node_t(const madc::dis::istring &)> &member_lvalue,
 			       DataDefSTRUCT *sdd, const std::vector<TokenBase *> &args,
 			       size_t &ai, std::vector<node_t> &stmts, TokenBase *origin);
 	// Is an unbraced `clause` the first of a brace-elided run into a member
@@ -2139,7 +2144,7 @@ public:
 	// drop initializers — `S v = S{a, b}` default-constructed members and
 	// read garbage, exit 0); NULL to decline to the ctor lanes (copy shape,
 	// user-ctor list-init).
-	node_t decl_aggregate_claim(const std::string &vname,
+	node_t decl_aggregate_claim(const madc::dis::istring &vname,
 			       DataDefCLASS *cdcl,
 			       const std::vector<TokenBase *> &args,
 			       TokenBase *origin);
@@ -2147,7 +2152,7 @@ public:
 	// member-access lvalue per call (a declared variable, a mem-initializer's
 	// base or member subobject). decl_aggregate_claim is its declaration face.
 	node_t aggregate_init_claim(
-			       const std::function<node_t(const std::string &)> &member_lvalue,
+			       const std::function<node_t(const madc::dis::istring &)> &member_lvalue,
 			       DataDefCLASS *cdcl,
 			       const std::vector<TokenBase *> &args,
 			       TokenBase *origin);
@@ -2278,7 +2283,7 @@ public:
 	bool class_needs_base_construction(DataDefCLASS *cdd);
 	// The pure-virtual slot (if any) that makes `cdd` abstract — the slot
 	// name whose most-derived resolution is still `= 0`; "" when concrete.
-	std::string class_pure_virtual_of(DataDefCLASS *cdd);
+	madc::dis::istring class_pure_virtual_of(DataDefCLASS *cdd);
 	// The class declares a pure virtual DESTRUCTOR (`virtual ~A() = 0;`).
 	bool class_dtor_is_pure(DataDefCLASS *cdd);
 	// Dispatch a destructor through the receiver's vtable dtor slot; sname
@@ -2346,7 +2351,7 @@ public:
 	// already correct from the bit-copy.
 	void implicit_copy_member_reconstructs(DataDefCLASS *cdd,
 			       const char *lname, const char *rname,
-			       std::vector<std::string> &path,
+			       std::vector<madc::dis::istring> &path,
 			       std::vector<node_t> &out, TokenBase *origin,
 			       bool move);
 	// Its base half: each base of `cls` (in object `obj`, at `off0`) with
@@ -2458,7 +2463,7 @@ public:
 	// generic argument scoring. Falls back to the first by-name match. NULL when
 	// the class has no such operator.
 	class FuncDef *select_operator_overload(DataDefCLASS *cls,
-				const std::string &mname, TokenBase *rhs);
+				const madc::dis::istring &mname, TokenBase *rhs);
 	// Lower an overloaded binary operator on a user-defined class lvalue:
 	//   c <op> rhs  ->  ClassName__operator<op>(&c, rhs)
 	// when c's class defines a matching operator method. Returns NULL when
@@ -2497,7 +2502,7 @@ public:
 	// free_template) and return the call. NULL = no better free candidate (caller
 	// uses the member). member_callee may be NULL (no member operator at all).
 	node_t try_free_operator_call(class TokenOperator *top, DataDefCLASS *lcls,
-			const std::string &mname, class FuncDef *member_callee,
+			const madc::dis::istring &mname, class FuncDef *member_callee,
 			TokenBase *origin);
 	// Pattern A for free namespace OPERATORS (W2 step D): overload-select +
 	// template-arg deduction against the operand classes, Itanium-mangle via
@@ -2511,7 +2516,7 @@ public:
 	// declares NO matching member. Memoized per operator token and per
 	// symbol. NULL = the member (or generic) path keeps the call.
 	class FuncDef *std_free_operator_instantiation(class TokenOperator *top,
-			DataDefCLASS *lcls, const std::string &mname,
+			DataDefCLASS *lcls, const madc::dis::istring &mname,
 			class FuncDef *member_callee);
 	// Emit `lhs <op> rhs` against a callee bound to an EXTERNAL ABI symbol
 	// (FuncDef::emit_symbol): lhs by address (parameters[0]'s class when it
@@ -2585,7 +2590,7 @@ public:
 	// madarray_destruct on a madc `array` (madc::value) data member.
 	node_t array_member_runtime_call(const char *sym, bool returns_value,
 					 const char *recv_ptr,
-					 const std::string &mname,
+					 const madc::dis::istring &mname,
 					 TokenBase *origin);
 	// Carrier SLOT subscript (`bag["k"]`, `arr[i]` — both index kinds):
 	// the parser types every carrier subscript ddARRAY (the slot marker);
@@ -2604,7 +2609,7 @@ public:
 	// aggregates. `path` is the field chain from `__this`; the access
 	// expression is rebuilt per statement so no c2mir node is shared
 	// between two parents.
-	bool aggregate_member_init_stmts(std::vector<std::string> &path,
+	bool aggregate_member_init_stmts(std::vector<madc::dis::istring> &path,
 				    DataDef *mtype,
 				    const std::vector<TokenBase *> &args,
 				    size_t &ai, std::vector<node_t> &out,
@@ -2681,33 +2686,33 @@ public:
 	bool class_gets_synth_dtor(DataDefCLASS *cdd);
 	// The destructor symbol used as the cleanup function for a class
 	// instance (ClassName___dtor) — whether user-written or synthesized.
-	std::string class_dtor_symbol(DataDefCLASS *cdd);
+	madc::dis::istring class_dtor_symbol(DataDefCLASS *cdd);
 	// Base-subobject (Itanium D2) destruction symbol — an external D1
 	// would destroy a vbase-carrying base's virtual bases twice.
-	std::string class_base_dtor_symbol(DataDefCLASS *cdd);
-	std::string class_complete_dtor_symbol(DataDefCLASS *cdd);
+	madc::dis::istring class_base_dtor_symbol(DataDefCLASS *cdd);
+	madc::dis::istring class_complete_dtor_symbol(DataDefCLASS *cdd);
 	// The SYNTHESIZED dtor bodies' symbols (no user FuncDef behind them):
 	// the plain one (D2 of a vbase-carrying class, the one D1 otherwise),
 	// the vbase-complete wrapper (D1), the deleting one (D0).
-	std::string class_synth_dtor_symbol(DataDefCLASS *cdd);
-	std::string class_synth_complete_dtor_symbol(DataDefCLASS *cdd);
-	std::string class_deleting_dtor_symbol(DataDefCLASS *cdd);
+	madc::dis::istring class_synth_dtor_symbol(DataDefCLASS *cdd);
+	madc::dis::istring class_synth_complete_dtor_symbol(DataDefCLASS *cdd);
+	madc::dis::istring class_deleting_dtor_symbol(DataDefCLASS *cdd);
 	// The madc-EMITTED dtor body: the user-written one's own body symbol
 	// (never an external bind) when the class has it, else the synthesized.
-	std::string class_madc_dtor_body_symbol(DataDefCLASS *cdd);
+	madc::dis::istring class_madc_dtor_body_symbol(DataDefCLASS *cdd);
 	// Per-(class,N) stack-array destructor wrapper `Cls__arr<N>___dtor`: the
 	// cleanup attribute calls ONE function with &arr, so a fixed array of a
 	// dtor-carrying class destroys its N elements in REVERSE through this
 	// wrapper (g++ [class.dtor] order; mirrors the delete[] cookie arm).
-	std::string class_array_dtor_symbol(DataDefCLASS *cdd, size_t n);
+	madc::dis::istring class_array_dtor_symbol(DataDefCLASS *cdd, size_t n);
 	// Demand the wrapper: synthesize+record its definition once (emitted with
 	// the Pass 1.95 late declarations, ahead of every function definition),
 	// mark it referenced, and return its symbol.
-	std::string demand_array_dtor(DataDefCLASS *cdd, size_t n);
+	madc::dis::istring demand_array_dtor(DataDefCLASS *cdd, size_t n);
 	node_t synth_array_dtor_def(DataDefCLASS *cdd, size_t n,
-				    const std::string &sym);
+				    const madc::dis::istring &sym);
 	// Wrapper defs demanded during body translation, flushed at Pass 1.95.
-	std::map<std::string, node_t> m_array_dtor_defs;
+	std::map<madc::dis::istring, node_t> m_array_dtor_defs;
 	// --finstrument-functions (task #66): the once-per-module exit thunk
 	// `__madc_cyg_exit_thunk` — the cleanup attribute's handler that calls
 	// __cyg_profile_func_exit with the instrumented function's own address.
@@ -2721,10 +2726,10 @@ public:
 	// as an alias of the complete-object body; MIR has no symbol aliases.
 	// `fd` supplies a ctor's parameter list (__this + its own); NULL is the
 	// dtor shape, `struct Cls *__this` alone.
-	node_t base_object_alias_def(const std::string &alias,
-				     const std::string &target,
+	node_t base_object_alias_def(const madc::dis::istring &alias,
+				     const madc::dis::istring &target,
 				     DataDefCLASS *cdd, class FuncDef *fd);
-	node_t synth_dtor_proto(const std::string &sym, DataDefCLASS *cdd);
+	node_t synth_dtor_proto(const madc::dis::istring &sym, DataDefCLASS *cdd);
 	// Emit a synthesized destructor function for a class that needs a dtor
 	// (object members and/or a base dtor) but has no user-written one.
 	// Returns NULL when the class has a user dtor (its own def handles this)
@@ -2740,7 +2745,7 @@ public:
 	// class globals (their storage already rode in via the dkGlobalVar pass).
 	void collect_global_ctors(Program *prog,
 				  std::vector<node_t> &deferred_globals,
-				  std::set<std::string> &emitted_globals);
+				  std::set<madc::dis::istring> &emitted_globals);
 	// Build the constructor-call statement for a file-scope class global `v`
 	// (type `cdd`), sourcing its initializer from the linked TokenDecl when
 	// present (user source) or from v->data (a const char* literal, built-ins).
@@ -2840,7 +2845,7 @@ public:
 	node_t translate_go(TokenBase *tb);
 	// One linkonce thunk per (callee symbol, slot shape), deduped here and
 	// flushed into the module after the host-call shims (Pass 0.745).
-	std::set<std::string> m_go_thunk_names;
+	std::set<madc::dis::istring> m_go_thunk_names;
 	std::vector<node_t> m_go_thunk_defs;
 	// MT-2b: under --std=madc the user's main emits as __madc_main and a
 	// synthesized `int main(...)` wrapper joins the task root scope at
@@ -2919,16 +2924,16 @@ public:
 	void set_tu_name(const char *s) { m_tu_name = s ? s : ""; }
 	void set_project_tu(bool b) { m_project_tu = b; }
 	// The synthesized per-TU init's symbol (object mode; empty = none).
-	const std::string &tu_init_name() const { return m_tu_init_name; }
+	const madc::dis::istring &tu_init_name() const { return m_tu_init_name; }
 	// Plan §42 D27: does this interactive entry's module declare `sym` as a
 	// FUNCTION? MIR's imports do not say whether a name is a function or an
 	// object, and the session gives a stub to a function nothing defines,
 	// never to an object.
-	bool declares_function(const std::string &sym) const
+	bool declares_function(const madc::dis::istring &sym) const
 		{ return m_function_decl_syms.count(sym) != 0; }
 	// Plan §42 D27, slice 2: the session cells this module's code reads its
 	// late-bound objects through, cell symbol -> object symbol.
-	const std::map<std::string, std::string> &late_cells() const
+	const std::map<madc::dis::istring, madc::dis::istring> &late_cells() const
 		{ return m_late_cells; }
 	// Pack-side c2mir check gate, drop arm (rung 1, layer 4): called by
 	// madc_cir_freeze with the defective top-level child indices reported
@@ -2940,7 +2945,7 @@ public:
 	int pack_gate_drop(node_t tree, const std::vector<int> &bad_items);
 	// Consumer-excluded symbols (emission split): the freeze erases these
 	// from funcdef_locs so no DF_HAS_FOREST_BODY stamp points at them.
-	const std::set<std::string> &pack_stamp_exclusions() const
+	const std::set<madc::dis::istring> &pack_stamp_exclusions() const
 		{ return pack_stamp_excluded; }
 	// UN-CARRIABLE symbols (pack_dropped): no consumer-side home of ANY
 	// kind — local-class hoists, rolled-back speculative instantiations,
@@ -2948,7 +2953,7 @@ public:
 	// a body span for them either (a pattern-spelling span derives into
 	// "Expecting a type argument to iterator_traits<>" — the consumer
 	// RE-INSTANTIATES instead, its standing story).
-	const std::set<std::string> &pack_uncarriable_syms() const
+	const std::set<madc::dis::istring> &pack_uncarriable_syms() const
 		{ return pack_dropped; }
 	// Bind ctors/dtor/methods of externally-defined / extern-template classes
 	// to their exported Itanium symbols (dlsym-verified, fills only EMPTY
@@ -3027,7 +3032,7 @@ public:
 	// c2mir then compiles. Thin wrapper over copy_cir_subtree.
 	cir_node *tsubst_cir(cir_node *src,
 			     const std::map<DataDef *, DataDef *> &subst);
-	std::string copied_pack_value_name(const char *name) const;
+	madc::dis::istring copied_pack_value_name(const char *name) const;
 	node_t copied_reference_slot_arg(class TokenBase *arg, node_t src_arg,
 					 bool refp);
 	// `arg_type`: the argument's substituted type (the re-resolution's
@@ -3143,23 +3148,23 @@ const char *cir_first_error_msg(node_t tree);
 // Collect every N_CALL callee symbol in the tree into `out`. Used to re-record
 // the concrete callees of a tsubst-copied body as ODR-used (referenced_funcs)
 // so the translate_module drain materializes their deferred-lazy definitions.
-void cir_collect_call_callees(node_t tree, std::set<std::string> &out);
+void cir_collect_call_callees(node_t tree, std::set<madc::dis::istring> &out);
 
 // Parameter NAMES of a FUNC_DEF node. The pack callee-cascade subtracts them
 // from the harvested callees: a call through a fn-pointer parameter is
 // indirect, not an external symbol to judge.
-void cir_collect_funcdef_param_names(node_t fd, std::set<std::string> &out);
+void cir_collect_funcdef_param_names(node_t fd, std::set<madc::dis::istring> &out);
 
 // Names a body binds to OBJECTS: each declaration in the tree that declares
 // no function (`void (*g)(int, int) = cb;` binds g; `void f(int);` declares
 // an external f). A call through one is indirect: the object shadows any
 // function of that name, so it is no external symbol to judge.
-void cir_collect_declared_object_names(node_t tree, std::set<std::string> &out);
+void cir_collect_declared_object_names(node_t tree, std::set<madc::dis::istring> &out);
 
 // Collect every __attribute__((cleanup(F))) function symbol in the tree.
 // FOREST materialization sites only (a loaded body is pre-built — the live
 // lowering site that registers F as referenced never runs for it).
-void cir_collect_cleanup_attr_fns(node_t tree, std::set<std::string> &out);
-void cir_collect_addr_fn_refs(node_t tree, std::set<std::string> &out);	// v25
+void cir_collect_cleanup_attr_fns(node_t tree, std::set<madc::dis::istring> &out);
+void cir_collect_addr_fn_refs(node_t tree, std::set<madc::dis::istring> &out);	// v25
 
 #endif // __CIR_BUILDER_H

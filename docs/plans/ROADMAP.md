@@ -1,7 +1,7 @@
 # madc Roadmap
 
-Master plan linking all workstreams. Updated 2026-09-21 (v0.100.0 on
-`develop`, v0.99.2 promoted on `master`). **This file is forward-looking:**
+Master plan linking all workstreams. Updated 2026-10-09 (v0.103.0 prepared on
+`develop`, v0.102.1 promoted on `master`). **This file is forward-looking:**
 release history lives in [CHANGELOG.md](../../CHANGELOG.md) and
 [docs/release-notes/](../release-notes/), and the authoritative live snapshot
 in `claude_status.json`. Completed work appears here only as a status cell in
