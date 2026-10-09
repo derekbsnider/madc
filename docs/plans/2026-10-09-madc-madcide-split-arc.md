@@ -244,8 +244,7 @@ at activation and read at input on the session's thread. No new globals.
 1. ~~lined and vised~~ — decided (above): lined retired, vised kept as a
    rewritten madc example.
 2. ~~The ex regex flavour~~ — decided: PCRE2 (below).
-3. **Symbols:** madcide's base, Chthonia's plugin dropped (recommended) — or
-   a copy.
+3. ~~Symbols~~ — decided (below): madcide's built-in view; Chthonia uses it.
 4. **`madcide --line`:** becomes an alias for madc's line mode on the file,
    or is retired with a pointer to `madc -i`.
 5. Whether a madc release may land while madcide is red against it (default
@@ -265,6 +264,16 @@ at activation and read at input on the session's thread. No new globals.
   Phase 2 both land before it (see Seams).
 - **`%git`:** the madcgit module's command (above), `import madcgit;` at the
   prompt included.
+- **Symbols** (owner 2026-10-09: "madcide should have the same symbols view as
+  chthonia, and chthonia can just use it"): a BUILT-IN madcide view, the
+  behaviour of Chthonia's plugin (`plugins/chthonia/chthonia.mad`, 83
+  lines): the REPL session's names, each `name type value`, refreshed after
+  every entry and every F5 run (`replbindings` on reTAKEN / reRAN), emptied
+  when the session stops, a row the program's file defined going to its
+  definition. In madcide's default layout's sidebar and View menu, with
+  help. Chthonia deletes its plugin and lists `symbols` in its layout — in
+  Chthonia 0.1.0 (on madcide 0.7.0): both registering `symbols` would make
+  Chthonia's plugin fail to activate, so the two land together.
 - **Regex: PCRE2, madc's ONE regex engine** (owner 2026-10-09). Today madc's
   only regex is the C++ library's `std::regex` (ECMAScript grammar), in
   `src/ns_perl.cpp`, behind five functions — `madc::regex_match`,
