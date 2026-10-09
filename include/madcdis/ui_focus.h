@@ -396,6 +396,18 @@ public:
 		return;
 	    }
     }
+    // A pointer on the bar (facelift S7): a title opens its menu, or closes
+    // it when it is the one open; a press anywhere else closes the bar.
+    void menu_toggle(size_t m)
+    {
+	if ( m >= _menus.size() )
+	    return;
+	if ( _menu_open == m )
+	    _menu_open = std::string::npos;
+	else
+	    menu_show(m);
+    }
+    void menu_close() { _menu_open = std::string::npos; }
     // Choose row `i` of the open menu: an enabled command row closes the bar
     // and becomes the action event; anything else leaves it open.
     bool menu_choose(size_t i, tui_event &e)

@@ -57,8 +57,13 @@ using madc::hub::tui_diff_plan;
 
 // Grid-mode entry/exit byte streams: alternate screen, clear, home,
 // cursor hidden / SGR reset, cursor shown, primary screen.
-const char VT_ENTER_GRID[] = "\x1b[?1049h\x1b[2J\x1b[H\x1b[?25l";
-const char VT_LEAVE_GRID[] = "\x1b[0m\x1b[?25h\x1b[?1049l";
+// The grid also reports the mouse (facelift S7): presses and releases
+// (1000), drags with a button held (1002), in the SGR form (1006) that has
+// no 223-column limit; Shift and a drag still select in the terminal itself.
+const char VT_ENTER_GRID[] = "\x1b[?1049h\x1b[2J\x1b[H\x1b[?25l"
+			     "\x1b[?1000h\x1b[?1002h\x1b[?1006h";
+const char VT_LEAVE_GRID[] = "\x1b[?1006l\x1b[?1002l\x1b[?1000l"
+			     "\x1b[0m\x1b[?25h\x1b[?1049l";
 // Line-mode entry/exit (plan §41.7a): the normal screen stays; only
 // bracketed paste (xterm mode 2004) turns on and off, as Julia's prompt does.
 const char VT_ENTER_LINE[] = "\x1b[?2004h";
@@ -812,6 +817,15 @@ public:
     {
 	if ( !enter_raw() )
 	    return false;
+	// The grid reports the mouse (facelift S7): conhost hands presses to
+	// a VT-input program only with mouse input on and QuickEdit (its own
+	// drag-to-select) off — Windows Terminal reads the mode requests in
+	// VT_ENTER_GRID itself. leave_raw restores the saved input mode, so
+	// line mode (the REPL) keeps QuickEdit. [validate-win]
+	DWORD in = 0;
+	if ( GetConsoleMode(_hin, &in) )
+	    SetConsoleMode(_hin, (in | ENABLE_EXTENDED_FLAGS | ENABLE_MOUSE_INPUT)
+				 & ~(DWORD)ENABLE_QUICK_EDIT_MODE);
 	emit(VT_ENTER_GRID);
 	return true;
     }

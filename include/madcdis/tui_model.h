@@ -121,12 +121,53 @@ private:
     std::map<std::string, size_t> _tb_drops;	// each drop button's column, by
 						// the menu it drops (S5)
 
+    // What a pointer press means where it lands (facelift S7): the hit map
+    // the last paint recorded, searched from the LAST hit (an overlay is
+    // painted after what it covers, so its hits win).
+    struct tui_hit
+    {
+	enum class kind : unsigned char
+	{
+	    none,		// swallows the press (a box's border, its title)
+	    menu_close,		// anywhere outside an open menu: close it
+	    menu_title,		// a bar title: `index` the menu
+	    menu_row,		// an open dropdown's row: `index` the row
+	    action,		// a command: `action` / `code`, its `arg`
+	    drop,		// a toolbar arrow: `arg` the menu it drops
+	    choose,		// a choice's option: `slot`, `index` (npos =
+				// the live selection — a dialog's primary)
+	    edit		// an edit window: `index` into _edit_hits
+	};
+	kind k;
+	size_t row, c0, c1;	// the cells [c0, c1) of `row` (c1 = 0 and
+				// row = npos: the whole screen)
+	size_t index, slot;
+	std::string action, arg;
+	int64_t code;
+	tui_hit() : k(kind::none), row(0), c0(0), c1(0), index(0), slot(0), code(0) {}
+    };
+    // A collected line's clickable byte span (a tab, a list option); the
+    // paint turns it into cells.
+    struct line_hit { size_t col, len; tui_hit hit; };
+    // A painted edit window's geometry (S7): enough to turn a cell into a
+    // byte offset, as the window's own text layout did.
+    struct edit_hit
+    {
+	size_t r0, h, c0, w;	// the text window (after the gutter)
+	size_t top, shift, tabw, slot;
+	long tag;
+	entity_id subject;
+	std::vector<size_t> starts;
+	std::string text;
+    };
+
     // One composed output line: text plus attribute spans.
     struct span { size_t col, len; ui_style attr; };
     struct line_out
     {
 	std::string text;
 	std::vector<span> spans;
+	std::vector<line_hit> hits;	// clickable spans (S7)
 	line_out() {}
 	explicit line_out(const std::string &t) : text(t) {}
     };
@@ -158,9 +199,11 @@ private:
 	std::vector<doc_span> spans;	// highlight spans (may be empty)
 	bool gutter;		// line numbers + the caret line (hints["gutter"],
 				// the layout's pane flag)
+	long tag;		// the node's `tag` hint and subject, echoed on a
+	entity_id subject;	// pointer event (S7), as the window's are
 	edit_slot() : line_index(0), slot(0), caret(0),
 		      sel_start(-1), sel_end(-1), tabw(tab_stop),
-		      rows(0), gutter(false) {}
+		      rows(0), gutter(false), tag(-1), subject(0) {}
     };
 
     // ---------------------------------------------------------- the layout tree
@@ -188,6 +231,7 @@ private:
 	long size;
 	size_t c0, width;
 	std::vector<std::string> header;
+	std::vector<tui_hit> header_acts;	// each tab's command (S7)
 	size_t header_active;
 	bool header_upper;	// a chrome band's strip: titles uppercase, as the
 				// window's panel headers (S3)
@@ -215,11 +259,21 @@ private:
 	bool has_field;			// an input line: the prompt's input or
 	std::string field;		// the dialog's filter (the core's text)
 	std::vector<std::string> buttons;
+	std::vector<std::string> button_actions;	// each button's command
+	std::vector<int64_t> button_codes;		// ("" = the choose)
 	size_t primary;			// the button Enter is (npos = none)
+	size_t choice_slot;		// the list's focusable (npos = none)
+	std::string dismiss;		// a press outside: this command
+	int64_t dismiss_code;
 	region content;
-	tui_float() : has_field(false), primary(std::string::npos) {}
+	tui_float() : has_field(false), primary(std::string::npos),
+		      choice_slot(std::string::npos), dismiss_code(0) {}
     };
     std::vector<tui_float> _floats;		// this compose's floating windows
+    std::vector<tui_hit> _hits;			// the last paint's hit map (S7)
+    std::vector<edit_hit> _edit_hits;		// ... and its edit windows
+    size_t _drag_slot;				// the edit a press started in
+						// (npos = none): drags go there
     static void emit_line(region &f, const line_out &l)
     {
 	flow_item it;
@@ -290,7 +344,7 @@ private:
     // header line a leaf pane heads its content with; empty when the node
     // carries none (or the integer-marker form).
     static void read_header(const uinode &n, std::vector<std::string> &header,
-	size_t &active)
+	size_t &active, std::vector<tui_hit> *acts = NULL)
     {
 	active = 0;
 	if ( !n.hints.is_object() )
@@ -310,6 +364,19 @@ private:
 	    if ( hint_of(rows[i], "active", 0) != 0 )
 		active = header.size();
 	    header.push_back(title);
+	    if ( acts )
+	    {
+		// A tab's command (S7): what a press on it posts — the
+		// window's tab click (its action, code and argument).
+		tui_hit h;
+		h.k = tui_hit::kind::action;
+		h.action = hint_str(rows[i], "action");
+		h.code = hint_of(rows[i], "code", 0);
+		h.arg = hint_str(rows[i], "arg");
+		if ( h.action.empty() && !h.code )
+		    h.k = tui_hit::kind::none;
+		acts->push_back(h);
+	    }
 	}
     }
     void collect_flow(const roles &r, const uinode &n, region &fl)
@@ -335,11 +402,12 @@ private:
 	// strip is its line — the window docks it above the editor the same.
 	{
 	    std::vector<std::string> titles;
+	    std::vector<tui_hit> acts;
 	    size_t active = 0;
-	    read_header(n, titles, active);
+	    read_header(n, titles, active, &acts);
 	    if ( !titles.empty() )
 	    {
-		emit_line(fl, tab_strip(titles, active, false));
+		emit_line(fl, tab_strip(titles, active, false, &acts));
 		for ( size_t i = 0; i < n.children.size(); ++i )
 		    collect_flow(r, n.children[i], fl);
 		return;
@@ -429,6 +497,13 @@ private:
 		{
 		    line_out l;
 		    l.text = "  " + node_text(n.children[i]);
+		    line_hit lh;
+		    lh.col = 0;
+		    lh.len = l.text.size();
+		    lh.hit.k = tui_hit::kind::choose;
+		    lh.hit.slot = slot;
+		    lh.hit.index = i;
+		    l.hits.push_back(lh);
 		    if ( i == sel )
 		    {
 			span s;
@@ -480,6 +555,8 @@ private:
 	    if ( e.rows < 0 )
 		e.rows = 0;
 	    e.gutter = hint_of(n.hints, "gutter", 0) != 0;
+	    e.tag = hint_of(n.hints, "tag", -1);
+	    e.subject = n.subject;
 	    // The same autofocus hint the choice arm honors (IDE-9e: the
 	    // active window's edit node carries it).
 	    if ( hint_of(n.hints, "focus", 0) )
@@ -561,6 +638,9 @@ private:
 		    if ( hint_of(b, "choose", 0) && f.primary == std::string::npos )
 			f.primary = f.buttons.size();
 		    f.buttons.push_back(hint_str(b, "label"));
+		    f.button_actions.push_back(hint_of(b, "choose", 0)
+					       ? std::string() : hint_str(b, "action"));
+		    f.button_codes.push_back(hint_of(b, "code", 0));
 		}
 	}
 	else if ( (hi = ho.find("prompt")) != ho.end() && hi->second.is_object() )
@@ -577,13 +657,182 @@ private:
 	    std::map<std::string, madc::value>::const_iterator ci = c.find("choices");
 	    if ( ci != c.end() && ci->second.is_array() )
 		for ( const madc::value &b : ci->second.as_array() )
+		{
 		    f.buttons.push_back(hint_str(b, "label"));
+		    f.button_actions.push_back(hint_str(b, "action"));
+		    f.button_codes.push_back(hint_of(b, "code", 0));
+		}
 	    if ( !f.buttons.empty() )
 		f.primary = 0;
 	}
+	f.dismiss = hint_str(n.hints, "dismiss");
+	f.dismiss_code = hint_of(n.hints, "dismiss_code", 0);
+	const size_t before = _focus_st.count();
 	if ( body )
 	    collect_flow(r, n, f.content);
+	if ( _focus_st.count() > before )
+	    f.choice_slot = before;
 	_floats.push_back(f);
+    }
+
+    // A hit over the cells [c0, c1) of `row`, and one over the whole screen.
+    static tui_hit cell_hit(tui_hit::kind k, size_t row, size_t c0, size_t c1)
+    {
+	tui_hit h;
+	h.k = k;
+	h.row = row;
+	h.c0 = c0;
+	h.c1 = c1;
+	return h;
+    }
+    static tui_hit screen_hit(tui_hit::kind k, const std::string &action,
+			      int64_t code)
+    {
+	tui_hit h;
+	h.k = k;
+	h.row = std::string::npos;
+	h.action = action;
+	h.code = code;
+	return h;
+    }
+    // The hit at a cell: the LAST recorded one covering it; NULL = none.
+    const tui_hit *hit_at(size_t row, size_t col) const
+    {
+	for ( size_t i = _hits.size(); i-- > 0; )
+	{
+	    const tui_hit &h = _hits[i];
+	    if ( h.row == std::string::npos
+	      || (h.row == row && col >= h.c0 && col < h.c1) )
+		return &h;
+	}
+	return NULL;
+    }
+    // A cell of an edit window as a byte offset in its text: the line under
+    // the row (past the last line: the text's end), the column through the
+    // line's own layout (tabs, wide glyphs), the gutter and a column before
+    // the text the line's start, a column past its end the line's end.
+    static long edit_offset(const edit_hit &eh, long row, long col)
+    {
+	if ( eh.starts.empty() )
+	    return 0;
+	long rr = row < (long)eh.r0 ? 0 : row - (long)eh.r0;
+	if ( rr >= (long)eh.h )
+	    rr = (long)eh.h - 1;
+	size_t li = eh.top + (size_t)rr;
+	if ( li >= eh.starts.size() )
+	    return (long)eh.text.size();
+	const size_t begin = eh.starts[li];
+	const size_t end = li + 1 < eh.starts.size() ? eh.starts[li + 1] - 1
+						     : eh.text.size();
+	const long target = (col < (long)eh.c0 ? 0 : col - (long)eh.c0) + (long)eh.shift;
+	std::vector<size_t> dcol;
+	madc::line_layout(eh.text.substr(begin, end - begin), 0, dcol, eh.tabw);
+	// Before the glyph whose cells hold the column (a continuation byte
+	// shares its lead byte's column and is never a caret position).
+	const size_t len = end - begin;
+	size_t at = 0;
+	for ( size_t i = 0; i < len; ++i )
+	{
+	    if ( i > 0 && dcol[i] == dcol[i - 1] )
+		continue;
+	    if ( (long)dcol[i] > target )
+		break;
+	    at = i;
+	}
+	if ( target >= (long)dcol.back() )
+	    at = len;
+	return (long)(begin + at);
+    }
+    // A pointer report (facelift S7) against the last paint's hit map: the
+    // SAME events the keyboard or the window produce — a menu opened,
+    // closed or chosen, a command posted (a tab, a toolbar button, a dialog
+    // button, a press outside a dismissable window), an option chosen (the
+    // focus owner's pointer choose), an edit's caret placed and a drag
+    // extended (the window's pointer event: phase, byte offset, subject,
+    // tag). The wheel is three arrow keys. Middle and right presses do
+    // nothing yet.
+    void pointer(const tui_keyev &k, std::vector<tui_event> &out)
+    {
+	if ( k.button == tui_button::wheel_up || k.button == tui_button::wheel_down )
+	{
+	    std::vector<tui_keyev> arrows(3, tui_keyev(k.button == tui_button::wheel_up
+						       ? tui_key::up : tui_key::down));
+	    std::vector<tui_event> ev = ui_apply_keys(_keys, _focus_st, arrows);
+	    out.insert(out.end(), ev.begin(), ev.end());
+	    return;
+	}
+	if ( k.button != tui_button::left )
+	    return;
+	if ( k.phase != ::ui::pointer_phase::down )
+	{
+	    // A drag or the release: the edit the press started in.
+	    if ( _drag_slot == std::string::npos )
+		return;
+	    for ( size_t i = 0; i < _edit_hits.size(); ++i )
+		if ( _edit_hits[i].slot == _drag_slot )
+		{
+		    out.push_back(edit_pointer(_edit_hits[i], k));
+		    break;
+		}
+	    if ( k.phase == ::ui::pointer_phase::up )
+		_drag_slot = std::string::npos;
+	    return;
+	}
+	const tui_hit *h = hit_at(k.row, k.col);
+	if ( !h )
+	    return;
+	tui_event e;
+	e.kind = tui_event_kind::focus;
+	switch ( h->k )
+	{
+	    case tui_hit::kind::none:
+		return;
+	    case tui_hit::kind::menu_close:
+		_focus_st.menu_close();
+		break;
+	    case tui_hit::kind::menu_title:
+		_focus_st.menu_toggle(h->index);
+		break;
+	    case tui_hit::kind::menu_row:
+		if ( !_focus_st.menu_choose(h->index, e) )
+		    return;			// a disabled row: nothing
+		break;
+	    case tui_hit::kind::action:
+		e.kind = tui_event_kind::action;
+		e.action_name = h->action;
+		e.action_code = h->code;
+		e.text = h->arg;		// the command's argument (a tab's)
+		break;
+	    case tui_hit::kind::drop:
+		if ( !open_menu(h->arg) )
+		    return;
+		break;
+	    case tui_hit::kind::choose:
+		if ( !_focus_st.choose(h->slot, h->index == std::string::npos
+						? -1 : (long)h->index, e) )
+		    return;
+		break;
+	    case tui_hit::kind::edit:
+	    {
+		const edit_hit &eh = _edit_hits[h->index];
+		_focus_st.set_focus(eh.slot);
+		_drag_slot = eh.slot;
+		e = edit_pointer(eh, k);
+		break;
+	    }
+	}
+	out.push_back(e);
+    }
+    static tui_event edit_pointer(const edit_hit &eh, const tui_keyev &k)
+    {
+	tui_event e;
+	e.kind = tui_event_kind::pointer;
+	e.phase = k.phase;
+	e.mods = k.mods;
+	e.offset = edit_offset(eh, k.row, k.col);
+	e.subject = eh.subject;
+	e.tag = eh.tag;
+	return e;
     }
 
     // A framed box over [r0, r1] x [c0, c1], `body` inside; the frame is its
@@ -665,6 +914,12 @@ private:
 	const size_t r0 = (rows - h) / 3, r1 = r0 + h - 1;
 	tui_frame box;
 	paint_box(r0, c0, r1, c1, body, box);
+	// The hit map (S7): a press outside the window is its dismiss (when it
+	// has one); inside, its rows and buttons, the rest swallowed.
+	if ( !f.dismiss.empty() || f.dismiss_code )
+	    _hits.push_back(screen_hit(tui_hit::kind::action, f.dismiss, f.dismiss_code));
+	for ( size_t rr = r0; rr <= r1; ++rr )
+	    _hits.push_back(cell_hit(tui_hit::kind::none, rr, c0, c1 + 1));
 	size_t r = r0 + 1;
 	if ( f.has_field )
 	{
@@ -700,6 +955,14 @@ private:
 		if ( l.spans[s].col + l.spans[s].len > l.text.size() )
 		    l.spans[s].len = l.spans[s].col < l.text.size()
 				     ? l.text.size() - l.spans[s].col : 0;
+	    for ( size_t hi = 0; hi < l.hits.size(); ++hi )
+	    {
+		tui_hit h = l.hits[hi].hit;
+		h.row = r;
+		h.c0 = c0 + 1;
+		h.c1 = c1;
+		_hits.push_back(h);
+	    }
 	    if ( li == f.content.sel_line )
 	    {
 		const ui_style sel = _chrome[(size_t)tui_chrome::list_selected];
@@ -724,6 +987,26 @@ private:
 	    size_t bw = madc::line_width(bline);
 	    size_t bc = c1 - 1 - (bw < iw ? bw : iw);
 	    _grid.put(br, bc, bline, body);
+	    for ( size_t i = 0; i < f.buttons.size(); ++i )
+	    {
+		const size_t bs = bc + madc::line_width(bline.substr(0, bcol[i]));
+		tui_hit h = cell_hit(tui_hit::kind::action, br, bs,
+				     bs + madc::line_width(f.buttons[i]) + 4);
+		if ( f.button_actions[i].empty() && !f.button_codes[i] )
+		{
+		    h.k = tui_hit::kind::choose;	// the primary: the live row
+		    h.slot = f.choice_slot;
+		    h.index = std::string::npos;
+		    if ( f.choice_slot == std::string::npos )
+			h.k = tui_hit::kind::none;
+		}
+		else
+		{
+		    h.action = f.button_actions[i];
+		    h.code = f.button_codes[i];
+		}
+		_hits.push_back(h);
+	    }
 	    if ( f.primary < f.buttons.size() )
 		_grid.overlay_attr(br, bc + madc::line_width(bline.substr(0, bcol[f.primary])),
 				   madc::line_width(f.buttons[f.primary]) + 4,
@@ -742,7 +1025,7 @@ private:
 	f.c0 = c0;
 	f.width = width;
 	f.size = hint_of(n.hints, "size", 0);
-	read_header(n, f.header, f.header_active);
+	read_header(n, f.header, f.header_active, &f.header_acts);
 	for ( size_t i = 0; i < n.children.size(); ++i )
 	    collect_flow(r, n.children[i], f);
 	return f;
@@ -799,17 +1082,34 @@ private:
 	    size_t ce = e <= n ? col[e] : std::max(col[n], e);
 	    _grid.fill_attr(row, col0 + cs, ce - cs, l.spans[i].attr);
 	}
+	for ( size_t i = 0; i < l.hits.size(); ++i )
+	{
+	    size_t s = l.hits[i].col, e = l.hits[i].col + l.hits[i].len;
+	    tui_hit h = l.hits[i].hit;
+	    h.row = row;
+	    h.c0 = col0 + (s <= n ? col[s] : col[n]);
+	    h.c1 = col0 + (e <= n ? col[e] : col[n]);
+	    _hits.push_back(h);
+	}
     }
     // A tab strip as one line: each title padded by a blank, the active
     // one in the scheme's tab_active style, the rest in its tab style; a
     // chrome band's titles uppercase (S3). The ONE strip builder — a leaf
     // pane's header and the editor's open files.
     line_out tab_strip(const std::vector<std::string> &titles, size_t active,
-		       bool upper) const
+		       bool upper, const std::vector<tui_hit> *acts = NULL) const
     {
 	line_out l;
 	for ( size_t i = 0; i < titles.size(); ++i )
 	{
+	    if ( acts && i < acts->size() && (*acts)[i].k != tui_hit::kind::none )
+	    {
+		line_hit lh;
+		lh.col = l.text.size();
+		lh.len = titles[i].size() + 2;
+		lh.hit = (*acts)[i];
+		l.hits.push_back(lh);
+	    }
 	    std::string t = titles[i];
 	    if ( upper )
 		for ( size_t k = 0; k < t.size(); ++k )
@@ -832,9 +1132,10 @@ private:
     }
     // A leaf pane's header line: its tab strip.
     void paint_header(size_t row, size_t col0,
-	const std::vector<std::string> &titles, size_t active, bool upper)
+	const std::vector<std::string> &titles, size_t active, bool upper,
+	const std::vector<tui_hit> *acts = NULL)
     {
-	paint_line(row, col0, tab_strip(titles, active, upper));
+	paint_line(row, col0, tab_strip(titles, active, upper, acts));
     }
 
     // A document line's byte->display-column map is madc::line_layout's
@@ -934,6 +1235,35 @@ private:
 	    top = starts.size() ? starts.size() - 1 : 0;
 	size_t &shift = _hshift[e.slot];
 	shift = caret_col < width ? 0 : caret_col - width + 1;
+
+	// The hit map (S7): every row of the window, the gutter included,
+	// presses into this text.
+	{
+	    edit_hit eh;
+	    eh.r0 = top_row;
+	    eh.h = height;
+	    eh.c0 = col0;
+	    eh.w = width;
+	    eh.top = top;
+	    eh.shift = shift;
+	    eh.tabw = (size_t)e.tabw;
+	    eh.slot = e.slot;
+	    eh.tag = e.tag;
+	    eh.subject = e.subject;
+	    eh.starts = starts;
+	    eh.text = e.text;
+	    _edit_hits.push_back(eh);
+	    for ( size_t k = 0; k < height; ++k )
+	    {
+		tui_hit h;
+		h.k = tui_hit::kind::edit;
+		h.row = top_row + k;
+		h.c0 = num_col0;
+		h.c1 = col0 + width;
+		h.index = _edit_hits.size() - 1;
+		_hits.push_back(h);
+	    }
+	}
 
 	for ( size_t k = 0; k < height; ++k )
 	{
@@ -1146,7 +1476,8 @@ private:
     {
 	if ( !f.header.empty() && h > 0 )
 	{
-	    paint_header(r0, f.c0, f.header, f.header_active, f.header_upper);
+	    paint_header(r0, f.c0, f.header, f.header_active, f.header_upper,
+			 &f.header_acts);
 	    ++r0;
 	    --h;
 	}
@@ -1214,7 +1545,7 @@ private:
     }
 
 public:
-    tui_model() : _tb_row(std::string::npos) {}
+    tui_model() : _tb_row(std::string::npos), _drag_slot(std::string::npos) {}
 
     const tui_grid &grid() const { return _grid; }
     // Focus and selection are the shared owner's (madcdis/ui_focus.h);
@@ -1237,6 +1568,8 @@ public:
 	read_chrome(tree);
 	_focus_st.begin_compose();
 	_floats.clear();
+	_hits.clear();
+	_edit_hits.clear();
 	_focus_st.set_menus(read_menus(tree));
 	// The menu bar (S4): the root's `menubar` hint (the layout's `menubar`
 	// line) keeps it on the top row; without it the bar shows only while
@@ -1504,6 +1837,10 @@ public:
 	    return;
 	const size_t cols = _grid.cols;
 	const size_t open = _focus_st.open_menu();
+	// The hit map (S7): an open menu takes the whole screen — a press
+	// outside it closes it, as the window's does.
+	if ( open < menus.size() )
+	    _hits.push_back(screen_hit(tui_hit::kind::menu_close, std::string(), 0));
 	// A menu the application dropped from a toolbar button hangs under
 	// the button; the bar shows only if the layout holds it.
 	const size_t anchor = _focus_st.menu_anchor();
@@ -1539,6 +1876,9 @@ public:
 	    ui_style st = m == open ? lit : bar;
 	    _grid.put(0, c, std::string(w + 2, ' '), st);
 	    put_menu_title(0, c + 1, menus[m].title, menus[m].hot, st);
+	    tui_hit h = cell_hit(tui_hit::kind::menu_title, 0, c, c + w + 2);
+	    h.index = m;
+	    _hits.push_back(h);
 	    c += w + 2;
 	}
 	return at;
@@ -1575,10 +1915,18 @@ public:
 	const size_t r1 = r0 + h - 1, c1 = c0 + w - 1;
 	tui_frame box;
 	paint_box(r0, c0, r1, c1, body, box);
+	for ( size_t r = r0; r <= r1; ++r )
+	    _hits.push_back(cell_hit(tui_hit::kind::none, r, c0, c1 + 1));
 	for ( size_t r = r0 + 1; r < r1; ++r )
 	{
 	    const size_t i = r - r0 - 1;
 	    const menu_row &row = m.rows[i];
+	    if ( !row.sep )
+	    {
+		tui_hit h = cell_hit(tui_hit::kind::menu_row, r, c0 + 1, c1);
+		h.index = i;
+		_hits.push_back(h);
+	    }
 	    if ( row.sep )
 	    {
 		box.hline(r, c0, c1);
@@ -1669,6 +2017,13 @@ public:
 	    if ( hint_of(b, "enabled", 1) == 0 )
 		st.flags |= ui_style::DIM;
 	    const size_t start = c;
+	    tui_hit bh;
+	    bh.k = hint_of(b, "enabled", 1) == 0 ? tui_hit::kind::none
+						  : tui_hit::kind::action;
+	    bh.action = action;
+	    bh.code = hint_of(b, "code", 0);
+	    bh.row = row;
+	    bh.c0 = start;
 	    const char *glyph = tui_icon_glyph((ui_icon)hint_of(b, "icon", 0));
 	    if ( *glyph )
 	    {
@@ -1677,12 +2032,17 @@ public:
 	    }
 	    _grid.put(row, c, label, st);
 	    c += madc::line_width(label);
-	    if ( b.is_object() && b.as_object().count("drop") )
+	    bh.c1 = c;
+	    _hits.push_back(bh);
+	    if ( b.as_object().count("drop") )
 	    {
 		const std::string menu = hint_str(b.as_object().at("drop"), "arg");
 		if ( !menu.empty() )
 		{
 		    _grid.put(row, c + 1, "\xe2\x96\xbe", st);	// ▾
+		    tui_hit dh = cell_hit(tui_hit::kind::drop, row, c + 1, c + 2);
+		    dh.arg = menu;
+		    _hits.push_back(dh);
 		    c += 2;
 		    _tb_drops[menu] = start;
 		}
@@ -1712,8 +2072,28 @@ public:
     // ui_apply_keys (madcdis/ui_input.h) — the DOM model runs the same one.
     std::vector<tui_event> apply_keys(const std::vector<tui_keyev> &keys)
     {
-	// The one adapter (madcdis/ui_input.h) over this model's two owners.
-	return ui_apply_keys(_keys, _focus_st, keys);
+	// The one adapter (madcdis/ui_input.h) over this model's two owners;
+	// a pointer report between keys is hit-tested here (S7), so the keys
+	// on either side of it reach the adapter as their own runs.
+	std::vector<tui_event> out;
+	std::vector<tui_keyev> run;
+	for ( size_t i = 0; i <= keys.size(); ++i )
+	{
+	    if ( i < keys.size() && keys[i].kind != tui_key::pointer )
+	    {
+		run.push_back(keys[i]);
+		continue;
+	    }
+	    if ( !run.empty() )
+	    {
+		std::vector<tui_event> ev = ui_apply_keys(_keys, _focus_st, run);
+		out.insert(out.end(), ev.begin(), ev.end());
+		run.clear();
+	    }
+	    if ( i < keys.size() )
+		pointer(keys[i], out);
+	}
+	return out;
     }
 };
 

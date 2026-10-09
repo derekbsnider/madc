@@ -2071,3 +2071,194 @@ TEST_CASE("float — a prompt is a titled field; a question shows its choices as
     CHECK(g2.row_text(2).find("Save changes? (y)es (n)o") != std::string::npos);
     CHECK(g2.row_text(3).find("[ Yes ]  [ No ]") != std::string::npos);
 }
+
+// The mouse (facelift S7): xterm's SGR reports, 1-based column;row.
+static std::string sgr(int b, int col, int row, char fin = 'M')
+{
+    return "\x1b[<" + std::to_string(b) + ";" + std::to_string(col + 1) + ";"
+	   + std::to_string(row + 1) + fin;
+}
+
+TEST_CASE("keyparse — SGR mouse: press, drag, release, the wheel, modifiers")
+{
+    std::vector<tui_keyev> k = parse((sgr(0, 4, 2) + sgr(32, 5, 2) + sgr(0, 6, 2, 'm')
+				      + sgr(65, 0, 0) + sgr(16, 1, 1)).c_str());
+    REQUIRE(k.size() == 5u);
+    CHECK(k[0].kind == tui_key::pointer);
+    CHECK(k[0].col == 4);
+    CHECK(k[0].row == 2);
+    CHECK(k[0].button == madc::hub::tui_button::left);
+    CHECK(k[0].phase == ::ui::pointer_phase::down);
+    CHECK(k[1].phase == ::ui::pointer_phase::drag);
+    CHECK(k[1].col == 5);
+    CHECK(k[2].phase == ::ui::pointer_phase::up);
+    CHECK(k[3].button == madc::hub::tui_button::wheel_down);
+    CHECK(k[4].mods == key_mod_bits(::ui::key_mod::ctrl));
+    // A wheel has no release; motion with no button is dropped.
+    CHECK(parse(sgr(64, 0, 0, 'm').c_str()).empty());
+    CHECK(parse(sgr(35, 0, 0).c_str()).empty());
+}
+
+TEST_CASE("mouse — the bar: a title opens its menu, a row chooses, a disabled row and outside do nothing / close")
+{
+    world w;
+    roles r = roles::standard(w);
+    uinode root = menu_tree(w, true);
+    tui_model m;
+    m.compose(r, root, 10, 30);
+    std::vector<tui_event> ev = m.apply_keys(parse(sgr(0, 3, 0).c_str()));	// "File"
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::focus);
+    const tui_grid &g = m.compose(r, root, 10, 30);
+    CHECK(g.row_text(2).find("New") != std::string::npos);
+    // Save (row 4) is disabled: nothing; the bar stays open.
+    CHECK(m.apply_keys(parse(sgr(0, 4, 4).c_str())).empty());
+    m.compose(r, root, 10, 30);
+    ev = m.apply_keys(parse(sgr(0, 4, 5).c_str()));			// Save As
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::action);
+    CHECK(ev[0].action_name == "saveas");
+    CHECK(ev[0].action_code == 13);
+    // Open again, then a press outside closes it with no action.
+    m.compose(r, root, 10, 30);
+    m.apply_keys(parse(sgr(0, 9, 0).c_str()));				// "Edit"
+    m.compose(r, root, 10, 30);
+    ev = m.apply_keys(parse(sgr(0, 25, 8).c_str()));
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::focus);
+    const tui_grid &g2 = m.compose(r, root, 10, 30);
+    CHECK(g2.row_text(2).find("Undo") == std::string::npos);
+}
+
+TEST_CASE("mouse — the toolbar: a button posts its command; its arrow drops its menu")
+{
+    world w;
+    roles r = roles::standard(w);
+    uinode root = toolbar_tree(w, true);
+    tui_model m;
+    m.compose(r, root, 10, 40);
+    // row 1: " New  Open │ ▶ Run ▾  ■ Stop" — Open at 6..9, Run's ▾ at 19,
+    // Stop (disabled) at 22..27
+    std::vector<tui_event> ev = m.apply_keys(parse(sgr(0, 7, 1).c_str()));
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::action);
+    CHECK(ev[0].action_name == "editfile");
+    CHECK(m.apply_keys(parse(sgr(0, 24, 1).c_str())).empty());		// disabled
+    ev = m.apply_keys(parse(sgr(0, 19, 1).c_str()));
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::focus);
+    const tui_grid &g = m.compose(r, root, 10, 40);
+    CHECK(g.at(2, 13).ch == packed("\xe2\x94\x8c"));			// under Run
+}
+
+TEST_CASE("mouse — a tab posts its command with its argument")
+{
+    world w;
+    roles r = roles::standard(w);
+    uinode root(r.group);
+    uinode strip(r.content);
+    std::map<std::string, madc::value> t0, t1, sh;
+    t0["title"] = madc::value(std::string("main.c"));
+    t0["action"] = madc::value(std::string("bufsel"));
+    t0["code"] = madc::value((int64_t)50);
+    t0["arg"] = madc::value(std::string("0"));
+    t1["title"] = madc::value(std::string("util.c"));
+    t1["action"] = madc::value(std::string("bufsel"));
+    t1["code"] = madc::value((int64_t)50);
+    t1["arg"] = madc::value(std::string("1"));
+    t1["active"] = madc::value((int64_t)1);
+    std::vector<madc::value> tabs;
+    tabs.push_back(madc::value::make_object(t0));
+    tabs.push_back(madc::value::make_object(t1));
+    sh["tabs"] = madc::value::make_array(tabs);
+    strip.hints = madc::value::make_object(sh);
+    root.add(strip);
+    root.add(edit_node(w, "x", 0));
+    tui_model m;
+    m.compose(r, root, 4, 30);
+    std::vector<tui_event> ev = m.apply_keys(parse(sgr(0, 2, 0).c_str()));
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::action);
+    CHECK(ev[0].action_name == "bufsel");
+    CHECK(ev[0].action_code == 50);
+    CHECK(ev[0].text == "0");
+    ev = m.apply_keys(parse(sgr(0, 10, 0).c_str()));
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].text == "1");
+}
+
+TEST_CASE("mouse — a floating list: a row chooses it, the buttons, a press outside dismisses")
+{
+    world w;
+    roles r = roles::standard(w);
+    uinode root(r.group);
+    root.add(edit_node(w, "body", 0));
+    uinode pal = popup_list(w, true);
+    std::map<std::string, madc::value> h = pal.hints.as_object();
+    h["dismiss"] = madc::value(std::string("projclose"));
+    h["dismiss_code"] = madc::value((int64_t)61);
+    pal.hints = madc::value::make_object(h);
+    root.add(pal);
+    tui_model m;
+    m.compose(r, root, 12, 40);
+    // the box at rows 1..7, columns 6..33: rows a.c b.c c.c on 3..5
+    std::vector<tui_event> ev = m.apply_keys(parse(sgr(0, 12, 4).c_str()));
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::choose);
+    CHECK(ev[0].option == 1u);
+    // [ Open ] (the primary, columns 13..20 of row 6): the live row
+    m.compose(r, root, 12, 40);
+    ev = m.apply_keys(parse(sgr(0, 15, 6).c_str()));
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::choose);
+    CHECK(ev[0].option == 1u);
+    // [ Close ] (columns 23..31): its command
+    ev = m.apply_keys(parse(sgr(0, 25, 6).c_str()));
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::action);
+    CHECK(ev[0].action_name == "projclose");
+    // The border swallows; outside dismisses.
+    CHECK(m.apply_keys(parse(sgr(0, 6, 3).c_str())).empty());
+    ev = m.apply_keys(parse(sgr(0, 1, 10).c_str()));
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].action_name == "projclose");
+    CHECK(ev[0].action_code == 61);
+}
+
+TEST_CASE("mouse — an edit: a press places the caret by byte (gutter, tabs), a drag extends, the wheel scrolls")
+{
+    world w;
+    roles r = roles::standard(w);
+    uinode root(r.group);
+    uinode ed = gutter_edit(w, "ab\n\tx\n\xc3\xa9z", 0);
+    std::map<std::string, madc::value> h = ed.hints.as_object();
+    h["tag"] = madc::value((int64_t)3);
+    ed.hints = madc::value::make_object(h);
+    root.add(ed);
+    tui_model m;
+    m.compose(r, root, 6, 30);
+    // the gutter is 6 wide: text from column 6
+    std::vector<tui_event> ev = m.apply_keys(parse(sgr(0, 7, 0).c_str()));
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::pointer);
+    CHECK(ev[0].phase == ::ui::pointer_phase::down);
+    CHECK(ev[0].offset == 1);				// before "b"
+    CHECK(ev[0].tag == 3);
+    ev = m.apply_keys(parse(sgr(0, 2, 1).c_str()));		// the gutter
+    CHECK(ev[0].offset == 3);				// line 2's start
+    ev = m.apply_keys(parse(sgr(0, 13, 1).c_str()));	// inside the tab
+    CHECK(ev[0].offset == 3);
+    ev = m.apply_keys(parse(sgr(0, 14, 1).c_str()));	// "x" at column 8
+    CHECK(ev[0].offset == 4);
+    ev = m.apply_keys(parse(sgr(32, 7, 2).c_str()));	// a drag: past "é"
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].phase == ::ui::pointer_phase::drag);
+    CHECK(ev[0].offset == 8);				// before "z" (é is 2 bytes)
+    ev = m.apply_keys(parse(sgr(0, 20, 2, 'm').c_str()));	// released past the end
+    CHECK(ev[0].phase == ::ui::pointer_phase::up);
+    CHECK(ev[0].offset == 9);
+    ev = m.apply_keys(parse(sgr(65, 7, 0).c_str()));	// the wheel: three downs
+    REQUIRE(ev.size() == 3u);
+    CHECK(ev[0].kind == tui_event_kind::key);
+    CHECK(ev[0].key == tui_key::down);
+}

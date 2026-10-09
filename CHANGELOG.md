@@ -2,6 +2,42 @@
 
 ## [Unreleased]
 
+### tui: the mouse — menus, toolbar, tabs, dialogs and the caret by pointer (facelift S7)
+
+The grid reports the mouse. `src/ui_term.cpp` turns on xterm's modes 1000
+(presses), 1002 (drags with a button held) and 1006 (the SGR form, no
+223-column limit) on grid entry and off again on leave or suspend; line mode
+(the REPL) is unchanged. On Windows the console's mouse input is on and
+QuickEdit off while the grid is up, restored on leave (line mode keeps
+QuickEdit) — marked `[validate-win]`. `tui_keyparse::resolve_sgr_mouse` in
+`include/madcdis/tui_keyparse.h` reads `CSI < b;x;y M/m` as a `pointer` key
+(its 0-based cell, button, phase and modifiers); `::ui::key` in
+`include/madc/bits/ui_enums` gains `pointer` and `keys.h` a `tui_button` and
+the cell/button/phase fields on `tui_keyev`. Every paint records a hit map —
+`tui_hit` and `edit_hit` in `include/madcdis/tui_model.h`, filled by the
+existing painters (the bar's titles, a dropdown's rows, the toolbar's buttons
+and arrows, each tab of a strip, a floating window's rows and buttons, every
+edit window's rows) — and a press acts on the last-painted hit under it, so an
+overlay wins and it becomes the same event the keyboard or the window produces.
+A title opens or closes its menu (`focus_state::menu_toggle` /
+`menu_close` in `include/madcdis/ui_focus.h`), a row chooses it (a disabled row
+does nothing), a press outside an open menu closes it; a toolbar button posts
+its command and its `▾` drops its menu under it; a tab posts its command with
+its argument; a list row is the focus owner's pointer choose, the primary
+button chooses the live row and a press outside a dismissable window dismisses
+it; in an edit window a press places the caret by byte (the gutter is the
+line's start, a tab's cells its start, past the end the line's end) and a drag
+extends from there — the window's pointer event (phase, byte offset, subject,
+tag), the press's window keeping the drag. The wheel is three arrow keys. No
+new event kind — the grid emits the window's existing `tui_event_kind::pointer`.
+`bin/test_tui_model` runs 60 cases, all pass (6 new mouse cases); the whole
+unit suite passes, 72 binaries. `scripts/tui_golden_gate.sh` matches 34 golden
+screens plus the negative control (5 new `mouse-*` goldens driven by SGR mouse
+bytes; the 29 existing ones unchanged by the mode bytes).
+`scripts/tui_smoke_gate.sh` PASS with new "mouse reported" / "mouse released"
+checks (CSI ?1006h on entry, CSI ?1000l on exit); `scripts/tui_scroll_gate.sh`
+PASS; `scripts/check-one-key-owner.sh` OK. The hosted Windows PE builds (rc 0).
+
 ### line_edit: Meta-b / Meta-f / Meta-d as Alt keys too
 
 The REPL line editor's readline Meta bindings fire again when a terminal sends

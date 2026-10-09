@@ -87,9 +87,62 @@ class tui_keyparse
 		return;			// otherwise unrecognized: dropped
 	}
     }
+    // xterm's SGR mouse report (modes 1000 + 1002 + 1006, facelift S7):
+    // "CSI < b ; x ; y M" a press or a drag, "... m" a release; x / y are
+    // 1-based. b: the button in its low bits (0 left, 1 middle, 2 right),
+    // +32 a motion with the button held (a drag), +64 the wheel (0 up, 1
+    // down), +4 Shift, +8 Alt, +16 Ctrl. False = not that report.
+    static bool resolve_sgr_mouse(const std::string &params, char final_byte,
+				  std::vector<tui_keyev> &out)
+    {
+	if ( params.empty() || params[0] != '<' || (final_byte != 'M' && final_byte != 'm') )
+	    return false;
+	int p[3] = { 0, 0, 0 };
+	size_t np = 0, at = 1;
+	while ( np < 3 )
+	{
+	    size_t semi = params.find(';', at);
+	    p[np++] = atoi(params.substr(at, semi == std::string::npos
+					       ? std::string::npos : semi - at).c_str());
+	    if ( semi == std::string::npos )
+		break;
+	    at = semi + 1;
+	}
+	if ( np < 3 || p[1] < 1 || p[2] < 1 )
+	    return true;			// malformed: dropped
+	const int b = p[0];
+	tui_keyev k(tui_key::pointer);
+	k.col = (unsigned short)(p[1] - 1);
+	k.row = (unsigned short)(p[2] - 1);
+	if ( b & 4 )
+	    k.mods |= key_mod_bits(::ui::key_mod::shift);
+	if ( b & 8 )
+	    k.mods |= key_mod_bits(::ui::key_mod::alt);
+	if ( b & 16 )
+	    k.mods |= key_mod_bits(::ui::key_mod::ctrl);
+	if ( b & 64 )
+	{
+	    if ( final_byte == 'm' )
+		return true;			// a wheel has no release
+	    k.button = (b & 1) ? tui_button::wheel_down : tui_button::wheel_up;
+	}
+	else
+	{
+	    int which = b & 3;
+	    if ( which == 3 )
+		return true;			// no button (motion tracking): dropped
+	    k.button = (tui_button)which;
+	    k.phase = final_byte == 'm' ? ::ui::pointer_phase::up
+		    : (b & 32) ? ::ui::pointer_phase::drag : ::ui::pointer_phase::down;
+	}
+	out.push_back(k);
+	return true;
+    }
     static void resolve_csi(const std::string &params, char final_byte,
 			    std::vector<tui_keyev> &out)
     {
+	if ( resolve_sgr_mouse(params, final_byte, out) )
+	    return;
 	// "a;b;c": the key (or 1), the modifiers + 1, a code.
 	int p[3] = { 0, 0, 0 };
 	size_t np = 0, at = 0;

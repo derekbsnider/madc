@@ -40,14 +40,24 @@ namespace hub {
 // drift. tui_key is that enum under the engine's name.
 typedef ::ui::key tui_key;
 
+// A pointer report's button (facelift S7): the three buttons and the
+// wheel's two directions.
+enum class tui_button : unsigned char { left = 0, middle, right, wheel_up, wheel_down };
+
 struct tui_keyev
 {
     tui_key kind;
     char    ch;
     unsigned char mods;		// ui::key_mod bits held with it (0 = none)
-    tui_keyev() : kind(tui_key::none), ch(0), mods(0) {}
+    // pointer (facelift S7): the 0-based cell, the button, the gesture step
+    unsigned short row, col;
+    tui_button button;
+    ::ui::pointer_phase phase;
+    tui_keyev() : kind(tui_key::none), ch(0), mods(0), row(0), col(0),
+		  button(tui_button::left), phase(::ui::pointer_phase::down) {}
     explicit tui_keyev(tui_key k, char c = 0, unsigned char m = 0)
-	: kind(k), ch(c), mods(m) {}
+	: kind(k), ch(c), mods(m), row(0), col(0), button(tui_button::left),
+	  phase(::ui::pointer_phase::down) {}
 };
 
 // ---------------------------------------------------------------- modifiers

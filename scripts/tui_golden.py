@@ -65,6 +65,17 @@ def EDIT(name, wait):
     return [('ctrl-k', None), ('text:e', None), ('text:' + name, None),
             ('enter', wait)]
 
+# A step 'click:COL,ROW' is a left press and release at that 0-based cell, as
+# xterm reports it in its SGR mouse mode (facelift S7).
+def step_bytes(key):
+    if key.startswith('text:'):
+        return key[5:].encode()
+    if key.startswith('click:'):
+        col, row = (int(v) + 1 for v in key[6:].split(','))
+        return ('\x1b[<0;%d;%dM\x1b[<0;%d;%dm' % (col, row, col, row)).encode()
+    return KEY[key]
+
+
 # (name, [ (key name | 'text:<chars>', text to wait for | None) ... ],
 #  terminal environment, sizes[, bundle]) — sizes None = every size in
 # SIZES; a bundle names a fixture plugin under tests/tui_golden/plugins/,
@@ -114,6 +125,15 @@ SCENARIOS = [
     ('dialog-palette', [('ctrl-b', None)], {}, [(24, 80)]),
     ('dialog-darkplus', DARKPLUS + [('esc', None), ('ctrl-k', None),
                                     ('text:f', None)], DEPTH_TRUE, [(36, 120)]),
+    # the mouse (S7): a press on File opens it, on Save chooses it (the file
+    # saved); on the toolbar's Run ▾ drops the Run menu under the button; in
+    # the text places the caret (line 5, on the `r` of printf); on the
+    # build palette's [ Close ] closes it
+    ('mouse-menu', [('click:3,0', None)], {}, [(24, 80)]),
+    ('mouse-save', [('click:3,0', None), ('click:4,7', 'Wrote')], {}, [(24, 80)]),
+    ('mouse-drop', [('click:25,1', None)], {}, [(24, 80)], 'tbgolden'),
+    ('mouse-caret', [('click:15,6', None)], {}, [(24, 80)]),
+    ('mouse-close', [('ctrl-b', None), ('click:46,12', None)], {}, [(24, 80)]),
 ]
 
 
@@ -158,7 +178,7 @@ def run_scenario(name, steps, env, rows, cols, work, bundle=None):
     try:
         settle(fd, scr, quiet=1.5, limit=40)
         for key, text in steps:
-            os.write(fd, key[5:].encode() if key.startswith('text:') else KEY[key])
+            os.write(fd, step_bytes(key))
             if text is not None:
                 if not wait_for(fd, scr, text):
                     return None, 'never showed %r' % text

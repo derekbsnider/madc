@@ -362,6 +362,29 @@ scheme's `dialog`, `list_selected`, `field` and `button_primary` colour them
 too (reverse by default, as before). Goldens: Find, the question, the build
 palette, Options (now floating) and the prompt in Dark+.
 
+S7 as built (2026-10-09): the grid reports the mouse — xterm's modes 1000
+(presses), 1002 (drags) and 1006 (the SGR form, no 223-column limit), on in
+grid mode and off again on leave or suspend; on Windows the console's mouse
+input is on and QuickEdit off while the grid is up (line mode keeps
+QuickEdit). `tui_keyparse` reads `CSI < b;x;y M/m` as a `pointer` key (its
+cell, button, phase, modifiers). Every paint records a HIT MAP — the bar's
+titles, a dropdown's rows, the toolbar's buttons and arrows, each tab of a
+strip, a floating window's rows and buttons, every edit window's rows — and a
+press acts on the last-painted hit under it, so an overlay wins: it becomes
+the SAME event the keyboard or the window produces. A title opens or closes
+its menu, a row chooses it (a disabled row does nothing), a press outside an
+open menu closes it; a toolbar button posts its command, its ▾ drops its menu
+under it; a tab posts its command with its argument (the window's tab click);
+a list row is the focus owner's pointer choose, the primary button chooses
+the live row, the others post their commands, a press outside a dismissable
+window dismisses it, its border swallows the press; in an edit window a press
+places the caret by BYTE (the gutter is the line's start, a tab's cells its
+start, a wide glyph's cells before it, past the end the line's end) and a drag
+extends from there — the window's pointer event (phase, offset, subject,
+tag), the press's window keeping the drag. The wheel is three arrow keys.
+Goldens: by mouse bytes, File then Save, the toolbar's Run ▾, the caret, the
+palette's [ Close ]; the pty smoke check pins the modes on and off.
+
 Each slice: unit tests in `tests/unit/test_tui_model.cpp`, its goldens,
 Tier 1 + Tier 2. The battery runs once, at the seam. A GUI or TUI change is
 verified by driving input, never by a screenshot alone.
