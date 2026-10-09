@@ -7,10 +7,26 @@
 
 long seen = 0;
 
+// The record's kind is an enum code (<bits/ui_enums>), compared, never a
+// string: the test spells it back for its transcript.
+const char *kind_word(var &k)
+{
+    if ( k == ui::text_change_kind::splice )
+	return "splice";
+    if ( k == ui::text_change_kind::load )
+	return "load";
+    if ( k == ui::text_change_kind::undo )
+	return "undo";
+    if ( k == ui::text_change_kind::redo )
+	return "redo";
+    return "?";
+}
+
 void on_change(long w, long entity, var &c)
 {
     seen = seen + 1;
-    printf("change %s off=%s old=%s new=%s ins=[%s]\n", c["kind"], c["off"],
+    var k = c["kind"];
+    printf("change %s off=%s old=%s new=%s ins=[%s]\n", kind_word(k), c["off"],
 	   c["old_len"], c["new_len"], c["inserted"]);
 }
 

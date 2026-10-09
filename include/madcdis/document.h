@@ -33,6 +33,7 @@
 #include <vector>
 
 #include "libmadc/value.h"
+#include "madc/bits/ui_enums"	// ui::text_change_kind — the shared enum text
 
 namespace madc {
 namespace hub {
@@ -53,7 +54,7 @@ typedef uint32_t anchor_id;	// 0 = none
 // there is no second, line-granular record.
 struct text_change
 {
-    enum kind : unsigned char { splice, load, undo, redo };
+    typedef ::ui::text_change_kind kind;	// <bits/ui_enums>: one text
 
     entity_id   entity;
     uint64_t    version;
@@ -64,7 +65,7 @@ struct text_change
     const std::string *inserted;	// splice only; valid during delivery
 
     text_change()
-	: entity(0), version(0), what(splice), off(0), old_len(0), new_len(0),
+	: entity(0), version(0), what(kind::splice), off(0), old_len(0), new_len(0),
 	  inserted(0) {}
 };
 

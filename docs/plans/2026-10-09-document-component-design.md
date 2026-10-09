@@ -240,8 +240,10 @@ bool  doc_subscribe(long w, void (*fn)(long, long, value &));
 and in `<ns_madc>`: `int64_t doc_parse(long w, long e)`,
 `int64_t doc_parse_checked(value &diags, long w, long e)`.
 
-The change value a script subscriber receives: `{entity, version, kind
-("splice"|"load"|"undo"|"redo"), off, old_len, new_len, inserted}`.
+The change value a script subscriber receives: `{entity, version, kind,
+off, old_len, new_len, inserted}`, `kind` a `ui::text_change_kind` code
+(`<bits/ui_enums>`, the one enum text the engine's record aliases), compared
+as `c["kind"] == ui::text_change_kind::splice` — never a string.
 
 ## 3. What this replaces (Phase 1D's migration list)
 

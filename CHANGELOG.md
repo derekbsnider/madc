@@ -30,6 +30,14 @@ c-torture 1617 passed / 7 failing (0 outside baseline), c2mir-tests 368/0, gui
 30/30 (exe 30, obj 30), gxx-c++11 1505 passed / 441 failing (0 outside
 baseline), commonmark 664/670 (0 outside baseline).
 
+### engine: the edit notification's change kind is an enum code
+
+The `text_change` kind a dialect subscriber receives (`ui::doc_subscribe`) is
+the shared `ui::text_change_kind` enum code (`<bits/ui_enums>`, aliased by
+`madcdis/document.h` `text_change::kind`), compared as `c["kind"] ==
+ui::text_change_kind::splice` — no longer a `"splice"` / `"load"` / `"undo"` /
+`"redo"` string.
+
 ## [v0.103.0] — 2026-10-09
 
 The TUI facelift: madcide's terminal UI gains the GUI's menus, toolbar, mouse, dialogs, framed panes, tab strips and Dark+ colour, verified by golden screens on POSIX and genuine Windows; names are held as interned `istring` and embedded headers are ranked by a build-time table for a faster compile; and madcide opens every file named on its command line, with Help pages in the editor.

@@ -184,7 +184,7 @@ class world
 	std::map<entity_id, document>::iterator d = _docs.find(c.entity);
 	if ( d != _docs.end() )
 	{
-	    if ( c.what == text_change::splice )
+	    if ( c.what == text_change::kind::splice )
 		d->second.shift(c.off, c.old_len, c.new_len);
 	    else	// load: clamp; undo / redo: the caller restored the
 		d->second.clamp(c.new_len);	// snapshot's, the rest clamp
@@ -345,7 +345,7 @@ public:
 	    return false;
 	size_t before = _texts[id].size();
 	_texts[id].load(s);
-	return whole_change(id, text_change::load, before);
+	return whole_change(id, text_change::kind::load, before);
     }
     bool text_insert(entity_id id, size_t off, const std::string &s)
     {
@@ -435,7 +435,7 @@ public:
 	size_t before = it->second.size();
 	if ( !it->second.undo(meta_out) )
 	    return false;
-	return whole_change(id, text_change::undo, before);
+	return whole_change(id, text_change::kind::undo, before);
     }
     // The redo-preserving forms (madcide v2): now_meta = the payload live
     // on the document being LEFT, captured onto the opposite stack so
@@ -449,7 +449,7 @@ public:
 	size_t before = it->second.size();
 	if ( !it->second.undo(meta_out, now_meta) )
 	    return false;
-	return whole_change(id, text_change::undo, before);
+	return whole_change(id, text_change::kind::undo, before);
     }
     bool text_redo(entity_id id, madc::value &meta_out,
 		   const madc::value &now_meta)
@@ -460,7 +460,7 @@ public:
 	size_t before = it->second.size();
 	if ( !it->second.redo(meta_out, now_meta) )
 	    return false;
-	return whole_change(id, text_change::redo, before);
+	return whole_change(id, text_change::kind::redo, before);
     }
 
     // --- the edit notification (split arc 1A.1, design §2.2). Listeners
@@ -500,7 +500,7 @@ public:
 	d.set_path(path);
 	d.set_kind(kind);
 	d.mark_saved(_texts[id].version());
-	return whole_change(id, text_change::load, 0);
+	return whole_change(id, text_change::kind::load, 0);
     }
     bool doc_detach(entity_id id)
     {
@@ -593,7 +593,7 @@ public:
 	if ( !t->second.undo(meta, now) )
 	    return false;
 	d->second.restore_meta(meta, app_out, t->second.version());
-	return whole_change(id, text_change::undo, before);
+	return whole_change(id, text_change::kind::undo, before);
     }
     bool doc_redo(entity_id id, madc::value &app_out)
     {
@@ -609,7 +609,7 @@ public:
 	if ( !t->second.redo(meta, now) )
 	    return false;
 	d->second.restore_meta(meta, app_out, t->second.version());
-	return whole_change(id, text_change::redo, before);
+	return whole_change(id, text_change::kind::redo, before);
     }
     // --- anchors (design §2.3): the document's; 0 / false / absent when
     // the entity is no document.

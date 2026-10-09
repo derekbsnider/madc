@@ -59,7 +59,7 @@ TEST_CASE("every mutation publishes one byte-precise record and a new version")
     entity_id e = open_doc(w, "hello world");
     // attach = one load record
     REQUIRE(r.seen.size() == 1u);
-    CHECK(r.seen[0].what == text_change::load);
+    CHECK(r.seen[0].what == text_change::kind::load);
     CHECK(r.seen[0].old_len == 0u);
     CHECK(r.seen[0].new_len == 11u);
     uint64_t v0 = w.text_version(e);
@@ -67,7 +67,7 @@ TEST_CASE("every mutation publishes one byte-precise record and a new version")
 
     CHECK(w.text_insert(e, 5, ","));
     REQUIRE(r.seen.size() == 2u);
-    CHECK(r.seen[1].what == text_change::splice);
+    CHECK(r.seen[1].what == text_change::kind::splice);
     CHECK(r.seen[1].off == 5u);
     CHECK(r.seen[1].old_len == 0u);
     CHECK(r.seen[1].new_len == 1u);
@@ -101,7 +101,7 @@ TEST_CASE("every mutation publishes one byte-precise record and a new version")
     // A load is a whole-buffer record with both sizes.
     CHECK(w.text_load(e, "xy"));
     REQUIRE(r.seen.size() == 5u);
-    CHECK(r.seen[4].what == text_change::load);
+    CHECK(r.seen[4].what == text_change::kind::load);
     CHECK(r.seen[4].old_len == 6u);
     CHECK(r.seen[4].new_len == 2u);
     CHECK(r.seen[4].inserted == (const std::string *)0);
@@ -258,7 +258,7 @@ TEST_CASE("listeners run in subscription order; a plain text publishes too")
     CHECK(w.text_insert(plain, 0, "x"));
     CHECK(w.text_undo(plain, m));
     REQUIRE(a.seen.size() == 4u);
-    CHECK(a.seen[3].what == text_change::undo);
+    CHECK(a.seen[3].what == text_change::kind::undo);
     CHECK(a.seen[3].old_len == 6u);
     CHECK(a.seen[3].new_len == 5u);
     w.text_unsubscribe(&a);

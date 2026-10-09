@@ -314,8 +314,8 @@ namespace ui {
     bool    anchor_remove(int64_t w, int64_t entity, int64_t id);
     // The edit notification: `fn` runs synchronously after EVERY change
     // of ANY text in the session — a document's or a plain text's —
-    // with the record { entity, version, kind ("splice" | "load" |
-    // "undo" | "redo"), off, old_len, new_len, inserted }. A splice is a
+    // with the record { entity, version, kind (a ui::text_change_kind
+    // code, <bits/ui_enums>), off, old_len, new_len, inserted }. A splice is a
     // byte-precise range replacement ([off, off+old_len) became
     // `inserted`); load / undo / redo are whole-buffer events (old_len
     // and new_len the sizes before and after). Anchors have already

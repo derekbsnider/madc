@@ -185,10 +185,7 @@ struct ui_script_listener : madc::hub::text_listener
 	std::map<std::string, madc::value> &o = row.object();
 	o["entity"] = madc::value((int64_t)c.entity);
 	o["version"] = madc::value((int64_t)c.version);
-	o["kind"] = madc::value(c.what == madc::hub::text_change::splice ? "splice"
-			      : c.what == madc::hub::text_change::load ? "load"
-			      : c.what == madc::hub::text_change::undo ? "undo"
-			      : "redo");
+	o["kind"] = madc::value((int64_t)c.what);	// a ui::text_change_kind code
 	o["off"] = madc::value((int64_t)c.off);
 	o["old_len"] = madc::value((int64_t)c.old_len);
 	o["new_len"] = madc::value((int64_t)c.new_len);
