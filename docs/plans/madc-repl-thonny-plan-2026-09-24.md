@@ -3622,6 +3622,7 @@ cling is the precedent for adapting IPython-style interaction to C++, so it is m
     - madcide registers only what needs its views and panes (the `view*` verbs, layout, panes, menus).
     - madcide's line mode (`madcide --line`, `tools/madcide/madcide_line.inc`) does not work well today. It is repaired by this move, not on its own: once the ex core is madc's, line mode is madc's REPL with a buffer, and `--line` keeps no editing logic of its own.
     - madcide's `colon_command` chain (`tools/madcide/madcide_core.inc`) is split along that line when D24 lands: editing verbs move to madc, IDE verbs stay and register.
+    - Sequenced as Phase 1 of `2026-10-09-madc-madcide-split-arc.md`, which also adds two prerequisites the recon found: the registry's script extension point, and edit notification at the engine layer (`text_buffer`), so an ex edit and a madcide edit share one mutation path.
 
 ### Execution model (owner, 2026-09-25)
 

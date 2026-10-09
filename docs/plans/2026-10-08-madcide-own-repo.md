@@ -1,5 +1,12 @@
 # madcide in its own repository
 
+> **Coordinated by `2026-10-09-madc-madcide-split-arc.md`** (owner 2026-10-09).
+> That plan fixes the boundary: the ex core, line mode, `%git` and the one
+> command registry come INTO madc first (its Phase 1), and corrects this
+> plan's inventory (96 tests, the gate list, no `src/Makefile` madcide
+> target). This plan's steps 2-7 are the arc's Phase 2. The live-colour
+> predecessor below is done (v0.103.0).
+
 Owner (2026-10-08): madcide has grown enough functionality that it gets lost
 inside the madc repository, and Chthonia is one face on it. Plan the split; it
 is NOT scheduled yet. When it runs: after the live-colour + Dark+ work lands
