@@ -9,6 +9,10 @@
 #   python3 scripts/tui_golden.py --record   (re)write the goldens
 #   MADC_TUI_GOLDEN_NEGATIVE=1 ...           flip one cell's colour first: the
 #                                            check must FAIL (the gate's proof)
+#   ... --only NAME                          one scenario (the negative control
+#                                            needs one screen to prove itself)
+#   MADC_TUI_GOLDEN_JOBS=N                   scenarios run N at a time, each in
+#                                            its own work directory (default 4)
 #
 # Scenarios are DATA (SCENARIOS below): a name and its key steps; each step
 # sends its bytes and waits for the repaint (or for a text the step names).
@@ -168,56 +172,79 @@ def golden_path(name, rows, cols):
     return os.path.join(GOLDEN_DIR, '%s-%dx%d.golden' % (name, cols, rows))
 
 
-def main():
-    record = '--record' in sys.argv
-    negative = bool(os.environ.get('MADC_TUI_GOLDEN_NEGATIVE'))
-    os.makedirs(GOLDEN_DIR, exist_ok=True)
+def render_one(task):
+    """One screen in its own work directory (a pool worker): its rendering,
+    the negative control's flip applied first when asked, or None + why."""
+    name, steps, env, rows, cols, bundle, negative = task
+    label = '%s %dx%d' % (name, cols, rows)
     work = tempfile.mkdtemp(prefix='tui_golden_', dir=os.path.abspath('tmp'))
-    failures = []
-    checked = 0
     try:
-        for sc in SCENARIOS:
-            name, steps, env, sizes = sc[:4]
-            bundle = sc[4] if len(sc) > 4 else None
-            for rows, cols in (sizes or SIZES):
-                label = '%s %dx%d' % (name, cols, rows)
-                scr, why = run_scenario(name, steps, env, rows, cols, work, bundle)
-                if scr is None:
-                    failures.append('%s: %s' % (label, why))
-                    continue
-                if negative:
-                    # flip the first styled cell (or the first cell) to red
-                    done = False
-                    for r in range(rows):
-                        for c in range(cols):
-                            if scr.styles[r][c] != NORMAL or r == rows - 1:
-                                scr.styles[r][c] = (('i', 1), None, frozenset())
-                                done = True
-                                break
-                        if done:
-                            break
-                got = render(scr)
-                gp = golden_path(name, rows, cols)
-                if record:
-                    with open(gp, 'w') as f:
-                        f.write(got)
-                    print('recorded %s' % gp)
-                    continue
-                if not os.path.exists(gp):
-                    failures.append('%s: no golden %s (run --record)' % (label, gp))
-                    continue
-                want = open(gp).read()
-                checked += 1
-                if got != want:
-                    import difflib
-                    diff = ''.join(difflib.unified_diff(
-                        want.splitlines(True), got.splitlines(True),
-                        gp, 'screen', n=1))
-                    failures.append('%s differs:\n%s' % (label, diff))
+        scr, why = run_scenario(name, steps, env, rows, cols, work, bundle)
     finally:
         shutil.rmtree(work, ignore_errors=True)
+    if scr is None:
+        return label, name, rows, cols, None, why
+    if negative:
+        # flip the first styled cell (or the first cell) to red
+        done = False
+        for r in range(rows):
+            for c in range(cols):
+                if scr.styles[r][c] != NORMAL or r == rows - 1:
+                    scr.styles[r][c] = (('i', 1), None, frozenset())
+                    done = True
+                    break
+            if done:
+                break
+    return label, name, rows, cols, render(scr), None
+
+
+def main():
+    import multiprocessing
+    record = '--record' in sys.argv
+    negative = bool(os.environ.get('MADC_TUI_GOLDEN_NEGATIVE'))
+    only = sys.argv[sys.argv.index('--only') + 1] if '--only' in sys.argv else None
+    jobs = int(os.environ.get('MADC_TUI_GOLDEN_JOBS', '4'))
+    os.makedirs(GOLDEN_DIR, exist_ok=True)
+    tasks = []
+    for sc in SCENARIOS:
+        name, steps, env, sizes = sc[:4]
+        bundle = sc[4] if len(sc) > 4 else None
+        if only and name != only:
+            continue
+        for rows, cols in (sizes or SIZES):
+            tasks.append((name, steps, env, rows, cols, bundle, negative))
+    if not tasks:
+        print('FAIL: no scenario named %r' % only)
+        return 1
+    # Each screen is its own madcide on its own pty: they run side by side
+    # (a fork pool — every worker forks its pty child single-threaded).
+    with multiprocessing.get_context('fork').Pool(max(1, jobs)) as pool:
+        results = pool.map(render_one, tasks, chunksize=1)
+    failures = []
+    checked = 0
+    for label, name, rows, cols, got, why in results:
+        if got is None:
+            failures.append('%s: %s' % (label, why))
+            continue
+        gp = golden_path(name, rows, cols)
+        if record:
+            with open(gp, 'w') as f:
+                f.write(got)
+            print('recorded %s' % gp)
+            continue
+        if not os.path.exists(gp):
+            failures.append('%s: no golden %s (run --record)' % (label, gp))
+            continue
+        want = open(gp).read()
+        checked += 1
+        if got != want:
+            import difflib
+            diff = ''.join(difflib.unified_diff(
+                want.splitlines(True), got.splitlines(True),
+                gp, 'screen', n=1))
+            failures.append('%s differs:\n%s' % (label, diff))
     if record:
-        return 0
+        return 1 if failures else 0
     if failures:
         for f in failures:
             print('FAIL: ' + f)
