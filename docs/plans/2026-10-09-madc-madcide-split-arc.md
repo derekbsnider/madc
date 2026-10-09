@@ -24,6 +24,21 @@ madc; madcide adds the visual layer, as vi adds visual mode to ex, without
 being limited to vi. The REPL is both a C/C++ prompt and a line editor a
 vi/vim user can work in. Prompt line editing stays bash/emacs by default.
 
+The lines (owner, 2026-10-09):
+
+- **The hard line is the UI level.** CLI-only and line mode are madc's; TUI
+  and GUI are madcide's. The line used to sit between CLI-only and line
+  mode; the interactive madc mode moved it to between line mode and TUI.
+- **Fine lines** divide non-UI capabilities that exist only in madcide today
+  (LSP, MCP, and others) — placed by the inventory, not by where the code
+  happens to live.
+- **The line-mode commands are extensible:** a module, or madcide itself,
+  registers `:` / `%` commands into madc's registry.
+- **Build and projects are madc's.** madc builds itself and supports
+  multi-file projects (`--project`), so that functionality lives on the madc
+  side, and every `:` / `%` command that drives it stays on the madc side
+  too. madcide presents it (menus, the Problems pane, project views).
+
 ## What the recon found
 
 1. **madc already owns the REPL commands.** Every `%` / `.` / `:` / `?`
