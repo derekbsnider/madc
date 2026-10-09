@@ -162,12 +162,12 @@ read-only verdict call the registry instead.
   `<madcide/harness>`), libmadcide, `madcide --build-plugin`, madcide's
   `chthonia.keys` and `vscode.theme` profiles, MADCIDE_CONFIG_DIR /
   MADCIDE_PLUGIN_PATH. Its unpushed `dark-plus` branch (Dark+, line numbers,
-  terminal layout) is Chthonia 0.1.0 on madc 0.103.0 (owner: next version 0.1.0).
+  terminal layout) is Chthonia 0.0.4 on madc 0.103.0 (madcide inside it).
 
 ## Phases
 
 **Phase 0 — independent, any order (engine fixes and releases):**
-1. Chthonia 0.1.0 on madc 0.103.0 (the `dark-plus` branch).
+1. Chthonia 0.0.4 on madc 0.103.0 (the `dark-plus` branch; madcide still inside madc).
 2. The two C++14 defects (`cpp1y/lambda-generic-ice2.C` abort,
    `cpp1y/var-templ24.C` > 30 s) — a parser session.
 3. The Outline's kinds beyond functions (`madc::parse_outline`) — a parser
@@ -199,12 +199,17 @@ madcide repository.
 
 ## Seams (merge waves)
 
-- **Seam A — end of Phase 1:** madc release with the ex core at the prompt
-  (the "REPL edits code" release), madcide still inside it. One battery.
-- **Seam B — end of Phase 2:** the split releases — madc without madcide,
-  madcide's first release carrying its paired madc, Chthonia on madcide.
-- Phase 0 items ride whichever seam they finish before (each with its own
-  targeted gate).
+ONE seam (owner 2026-10-09): the arc's release boundary is the end of
+Phase 2. Phase 1 does not release on its own; its slices bank on the arc's
+branch with their targeted gates.
+
+- **The release:** madc **0.104.0** WITHOUT madcide; madcide **0.7.0**, its
+  first standalone release, built on madc 0.104.0; Chthonia **0.1.0**, built
+  on madcide 0.7.0 + madc 0.104.0. One battery on madc's content, then each
+  repository's own lanes.
+- **Phase 0's Chthonia release** is separate and earlier: Chthonia **0.0.4**,
+  the current `dark-plus` build on madc 0.103.0 (madcide still inside madc).
+- Phase 0's engine items ride the seam (each with its own targeted gate).
 
 ## Thread-safety contract
 
@@ -235,7 +240,10 @@ at activation and read at input on the session's thread. No new globals.
   which is madcide 0.1.0, so madcide's minor = madc's minor − 97 (madc 0.103.0
   ↔ madcide 0.6.0). The next madc release is 0.104.0, so the first standalone
   madcide release is **0.7.0**.
-- **Chthonia:** its next release is **0.1.0**, not 0.0.4 (owner: it should
-  have started at 0.1.0) — the `dark-plus` branch's release.
+- **Chthonia:** **0.0.4** = the current `dark-plus` build on madc 0.103.0
+  (Phase 0, if released); **0.1.0** = the first Chthonia on madcide 0.7.0 +
+  madc 0.104.0 (owner: it should have started at 0.1.0; it starts there now).
+- **One release boundary:** madc 0.104.0 ships WITHOUT madcide; Phase 1 and
+  Phase 2 both land before it (see Seams).
 - **`%git`:** the madcgit module's command (above), `import madcgit;` at the
   prompt included.
