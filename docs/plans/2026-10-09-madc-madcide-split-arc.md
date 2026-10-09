@@ -228,6 +228,21 @@ are replaced by it.
    the registry, with its R4/R5 contract test; `tools/texteditor/vised*`,
    `lined*`, the `.madv` verbs, testlineed and testvised deleted.
 9. The engine twins (above) land.
+10. **Windows `madc -i` gets the crash-isolated backend** (owner 2026-10-09:
+    make Windows work like Linux and macOS). The child-of-self backend
+    already exists (`SessionClient::spawn_backend`,
+    `src/madc_session_client.cpp:611`, used by `madc::session_open`); only
+    `madc -i` stays in-process (`src/madc.cpp:545`), because its configured
+    Program cannot cross to the child (the `make_program` guard). Fix: the
+    child receives the CONFIGURATION (the `--std`, `-I`, `-D`, `-l`,
+    `--config` / `--no-config` arguments, never a mode or output flag) and
+    builds the identical Program itself, on every restart; the in-process
+    branch is deleted. INTERACTIVE ONLY (owner): the backend is reached only
+    from `run_repl` and `session_open`; running a file, `-c`, `-o`,
+    `--project` and `--emit` never start one. A Cygwin-style fork was weighed
+    and refused (memory-copy emulation, fragile with JIT code, MIR and
+    WebView2 DLLs). Test: a crashing entry under Windows `madc -i` restarts
+    the session; a plain `madc file.mad` starts no child.
 
 **Phase 2 — the repository split** (`2026-10-08-madcide-own-repo.md` steps
 2-7, on the corrected inventory): the `git filter-repo`, madcide CI on the
