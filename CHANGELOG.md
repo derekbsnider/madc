@@ -2,6 +2,58 @@
 
 ## [Unreleased]
 
+## [v0.103.0] — 2026-10-09
+
+The TUI facelift: madcide's terminal UI gains the GUI's menus, toolbar, mouse, dialogs, framed panes, tab strips and Dark+ colour, verified by golden screens on POSIX and genuine Windows; names are held as interned `istring` and embedded headers are ranked by a build-time table for a faster compile; and madcide opens every file named on its command line, with Help pages in the editor.
+
+### lanes: a madcide-only change stales only the lanes that run madcide
+
+The lane ledger's APPLICATION set — `tools/`, the madcide tests, the TUI screen
+goldens and their driver — is now excluded from every lane's content except the
+application lanes (`gui`, `tests-jit`), so a change confined to those files
+stales only those two lanes instead of all of them. A change to madc's own
+sources still stales every lane. The ledger's selftest checks the split both
+ways.
+
+### madcide: Help pages open in the editor; a Help Index docks in the sidebar
+
+A help page always opens in the editor pane's Help tab. The new `helpindex`
+view — the topic list: the contents page, then its links — docks in the
+sidebar, and choosing a row opens that topic in the editor. Help Contents opens
+the contents page and shows the index; Help ▸ Help Index toggles it. A layout
+that lists the `help` view on a sidebar or panel is refused at load. Validation:
+Tier 1 `run_tests.sh` 77 passed / 0 failed (EXE 72/0, OBJ 72/0); Tier 2
+`fix_lanes.sh` green — c-testsuite 220/0, c-torture 1617 passed / 7 failing (0
+outside baseline), c2mir-tests 368/0, gui 30/0, gxx-c++11 1505 passed / 441
+failing (0 outside baseline), index-c 50/50, commonmark 664 passed / 6 failed (0
+outside baseline).
+
+### tui: a chrome pane's lines stop at its edge
+
+A chrome pane's long lines are now cut at the pane's width. `paint_line` placed
+a composed line into the grid with no width limit, so a sidebar pane's long rows
+ran past its divider into the centre's columns; `paint_edit` already cut its
+text to the flow's width through `madc::line_columns`, but plain lines and the
+header strip did not. `paint_line` now takes the region's width and cuts the
+laid-out text through the same `madc::line_columns`, clipping its styled spans
+and hit targets to that width; the callers pass their width (`paint_flow`'s
+lines and `paint_header` pass the flow's, the status bar passes the screen's).
+New golden scenario `help-sidebar` records the Help view in the shipped 20% left
+sidebar with every row cut at the divider and the source text intact.
+
+### madcide: every file named on the command line opens
+
+`madcide a.c b.c c.c` opens all three in the editor's buffer ring, the first one
+shown; an `ro` after a file opens that file read-only, and a file named twice
+stays one buffer. Before, a second file was refused as an "unexpected argument".
+The further files open through the one opener `^K E` uses, so the whole command
+line and the menu share a path. The faces that act on a single file (`-c`,
+`--mcp`, `--lsp`, `--serve`) still refuse a second file with that reason. The
+usage line now reads `madcide [<file> [ro]]...`. Reducers:
+`testmadcide_multifile` (three buffers in order, the read-only mark on its file,
+the first active) and `testmadcide_cli` (the parsed files and the one-file
+refusal's condition); Tier 1 `testmadcide*` 63/0 (EXE/OBJ 58/0), Tier 2 green.
+
 ### tui: the golden screens on genuine Windows (facelift S9)
 
 The TUI's golden screens now verify on genuine Windows, not only on POSIX.

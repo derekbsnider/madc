@@ -271,52 +271,59 @@ in-tree at `third_party/mir`.
 
 ## Current Release
 
-The current release is **v0.102.1**, the Ubuntu 24.04 packaging patch to
-v0.102.0. The `.deb` built on Ubuntu 24.04 and later carries an **AppArmor
-profile**, so madc's and madcide's windows — any `ui::` program run by
-`/usr/bin/madc` — get the user namespaces WebKit's bwrap sandbox needs; without
-it, on a native 24.04 desktop the window died at its first rendered page with
-SIGTRAP (LP: #2046844). The release's `SHA256SUMS` names the `.deb` assets as
-GitHub stores them (one `.deb` per Ubuntu release makes 10 assets), and release
-tooling no longer stales the test lanes.
+The current release is **v0.103.0**, the **TUI facelift** release. madcide's
+terminal UI grows into the GUI's shape — a **menu bar** (F10, Alt+letter, the
+mouse), a **toolbar** with icon glyphs and a Run dropdown, **framed panes** with
+a line-number gutter and current-line highlight, **tab strips** and a docked
+**status bar**, dialogs and prompts as **floating windows**, full **mouse**
+support, and the **Terminal tab** keeping a program's colours — themed in VS
+Code Dark+ and verified by golden screens on POSIX and genuine Windows. Under
+the hood the compiler holds every name as an interned **`istring`** handle and
+ranks embedded headers from a **build-time table**, roughly halving the dialect
+compile's work; and madcide **opens every file named on its command line**, with
+Help pages shown in the editor.
 
 **Chthonia** — the Thonny-style teaching IDE built on madcide's base — is its
 own product in its own repository, whose packages each carry their own madc
 release; nothing is installed from madc for it.
 
-v0.102.1 is the patch to **v0.102.0**, the Chthonia-split release: a
-**C-conformance correctness burn-down** across declarators, declarations and
-initializers (redundant declarator-id parentheses, implicit int, C's `auto`
-storage class, brace elision, braced scalar and string-literal char arrays),
-`va_arg` type names and the GNU/clang **vector builtins**
-(`__builtin_convertvector`, `__builtin_shufflevector`, `__builtin_shuffle`),
-`__FILE_NAME__`, more REPL and madcide (**Markdown** and read-only **git**
-views), and one `.deb` per Ubuntu release.
+v0.103.0 follows **v0.102.1**, the Ubuntu 24.04 packaging patch to v0.102.0: the
+`.deb` built on Ubuntu 24.04 and later carries an AppArmor profile so madc's and
+madcide's windows get the user namespaces WebKit's sandbox needs; the release's
+`SHA256SUMS` names the `.deb` assets as GitHub stores them; and release tooling
+no longer stales the test lanes.
 
-Branch state: v0.102.1 is released on `develop`; the `master` promotion
+Branch state: v0.103.0 is prepared on `develop`; the `master` promotion
 follows the release-tier lane ledger (every platform lane's FULL suite green
 on this content), with public binaries built by CI for Linux
 (deb/rpm/tarball), Windows x86-64, and macOS (Apple Silicon + Intel).
 
 Latest validated results — the seam battery and the native macOS lanes on one
-content (`c3c10e1f3`, 2026-10-06), on the shipped packed -O2 `madc-release`;
-the tests/ suite JIT batch lane re-ran green at HEAD (`6becfb085`,
-2026-10-07). Measured conformance against third-party suites is published
+content (`5fb46c910` / `57e54306e`, 2026-10-09), on the shipped packed -O2
+`madc-release`. Measured conformance against third-party suites is published
 separately in
 [`docs/conformance-coverage.md`](docs/conformance-coverage.md):
 
 - Linux, on the shipped packed -O2 `madc-release` with no headers on disk:
-  **1992 passed / 0 failed / 43 skipped**, plus the on-disk header-needing
-  subset **34/0**; the whole suite as native artifacts: JIT **2031/0/9**
-  (batch lane), EXE **1846/0**, OBJ **1846/0**
-- Windows: the packed Win64 PE under Wine, headerless, **1950/0/85 skipped**
+  **2011 passed / 0 failed / 43 skipped**, plus the on-disk header-needing
+  subset **34/0**; the whole suite as native artifacts: JIT **2045/0/9**
+  (batch lane), EXE **1864/0**, OBJ **1864/0**
+- Windows: the packed Win64 PE under Wine, headerless, **1966/0/88 skipped**,
+  and the full suite on the owner Windows 11 box **1966/0/88 skipped**
 - macOS, libc++, native on both owner Macs: arm64 (macOS 14.8.4)
-  **1995/0/40 skipped**, Intel x86_64 (macOS 15.7.4) **1997/0/38 skipped**
-- static gates: **0 red of 97**
+  **2013/0/41 skipped**, Intel x86_64 (macOS 15.7.4) **2015/0/39 skipped**
+- static gates: **0 red of 100**
 - **zero compiler warnings on every build lane**, enforced by `-Werror`
 
 ### Recent Releases
 
+- [v0.103.0](docs/release-notes/v0.103.0.md) — **the TUI facelift release**:
+  madcide's terminal UI grows into the GUI's shape — a menu bar, a toolbar,
+  framed panes with a gutter, tab strips and a status bar, floating dialogs, the
+  mouse, and Dark+ colour — verified by golden screens on POSIX and genuine
+  Windows; names held as interned `istring` and headers ranked by a build-time
+  table roughly halve the dialect compile; and madcide opens every file named on
+  its command line, with Help in the editor.
 - [v0.102.1](docs/release-notes/v0.102.1.md) — **the Ubuntu 24.04 packaging
   patch**: the `.deb` built on Ubuntu 24.04 and later carries an AppArmor
   profile, so madc's and madcide's windows get the user namespaces WebKit's
@@ -341,11 +348,6 @@ separately in
   agents edit by verbs; Itanium symbol mangling and the C++ feature work
   behind a conformance lane driven 60% → 75.1%; three standard-C regressions
   found and fixed, and suites tiered by time to run.
-- [v0.99.2](docs/release-notes/v0.99.2.md) — the owner's hands-on round
-  on the polished local IDE, the last polish before the master GUI release:
-  output streams into the Terminal with no keystroke (the window's wait is
-  the scheduler's wait), the Build menu's `^B` rows, a dialog's Close that
-  closes and leaves nothing behind, resizable panel and sidebar.
 
 Older release notes live in [docs/release-notes/](docs/release-notes/).
 
