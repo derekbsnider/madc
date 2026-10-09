@@ -243,6 +243,22 @@ are replaced by it.
     and refused (memory-copy emulation, fragile with JIT code, MIR and
     WebView2 DLLs). Test: a crashing entry under Windows `madc -i` restarts
     the session; a plain `madc file.mad` starts no child.
+11. **Colour only when colour is available** (owner 2026-10-09) — a defect
+    fixed first, in its own commit with its test: `Program::print_diagnostic`
+    (`src/parser.cpp:25140`) emits ANSI escapes unconditionally, so
+    `madc file.c 2> log` writes them into the file. Rule, the gcc/clang one
+    (`-fdiagnostics-color=auto`): colour only on a terminal, never when
+    `NO_COLOR` is set; one predicate every coloured output asks.
+12. **Syntax colour at the prompt** (owner 2026-10-09). The pieces exist:
+    the token classifier (`include/tokens.h:145`, `madc::lex_spans`), the
+    one style vocabulary (`include/madcdis/ui_style.h`, depth detection
+    included), and `line_edit.h`'s `line_painter`, which repaints the entry
+    every keystroke. The painter styles each span through the same
+    style-to-SGR step the TUI uses; the echoed source line under an error
+    and `%type` / `%pinfo` output use it too. madc ships ONE built-in
+    default theme; **madc.ini can override it** (a `theme` key naming a
+    theme file, owner); madcide's themes stay its own data. Same rule as
+    step 11: no colour when colour is unavailable.
 
 **Phase 2 — the repository split** (`2026-10-08-madcide-own-repo.md` steps
 2-7, on the corrected inventory): the `git filter-repo`, madcide CI on the
