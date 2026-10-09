@@ -1,0 +1,50 @@
+text:
+ 0|  File  Edit  Search  View  Window  Build  Help
+ 1| golden┌────────────────────────┐
+ 2|   1  #│ Undo                ^_ │
+ 3|   2  /│ Redo                ^^ │
+ 4|   3  i├────────────────────────┤
+ 5|   4  {│ Cut                    │
+ 6|   5   │ Copy                   │2);
+ 7|   6   │ Paste                  │
+ 8|   7  }│ Select All             │
+ 9|   8   ├────────────────────────┤
+10|       │ Mark Block Start  ^k b │
+11|       │ Mark Block End    ^k k │
+12|       │ Copy Block        ^k c │
+13|       │ Move Block        ^k m │
+14|       │ Delete Block      ^k y │
+15|       ├────────────────────────┤
+16|       │ Delete Line         ^y │
+17|       │ Delete Word         ^w │
+18|       ├────────────────────────┤
+19|       │ Indent Lines           │
+20|       │ Dedent Lines           │
+21|       │ Toggle Comment         │
+22|       ├────────────────────────┤
+23| A  gol└────────────────────────┘                                  Row 1  Col 1
+styles:
+ 0 0+2:inverse 2+1:inverse,underline 3+4:inverse 8+1:underline 13+1:inverse 14+1:inverse,underline 15+7:inverse 22+1:inverse,underline 23+5:inverse 28+1:inverse,underline 29+7:inverse 36+1:inverse,underline 37+6:inverse 43+1:inverse,underline 44+36:inverse
+ 1 0+33:inverse
+ 2 6+1:fg=4 7+1:inverse 9+1:underline 32+1:inverse 33+2:dim,bg=0
+ 3 0+4:dim 6+1:fg=2 7+2:inverse 9+1:inverse,underline 10+23:inverse 33+2:dim,bg=0
+ 4 0+4:dim 6+1:bold 7+26:inverse 33+2:dim,bg=0
+ 5 0+4:dim 7+2:inverse 9+3:dim,inverse 12+21:inverse 33+2:dim,bg=0
+ 6 0+4:dim 7+2:inverse 9+4:dim,inverse 13+20:inverse 33+2:dim,bg=0
+ 7 0+4:dim 7+2:inverse 9+1:inverse,underline 10+23:inverse 33+2:dim,bg=0
+ 8 0+4:dim 7+2:inverse 9+1:inverse,underline 10+23:inverse 33+2:dim,bg=0
+ 9 0+4:dim 7+26:inverse 33+2:dim,bg=0
+10 7+2:inverse 9+1:inverse,underline 10+23:inverse 33+2:dim,bg=0
+11 7+3:inverse 10+1:inverse,underline 11+22:inverse 33+2:dim,bg=0
+12 7+2:inverse 9+10:dim,inverse 19+8:inverse 27+4:dim,inverse 31+2:inverse 33+2:dim,bg=0
+13 7+2:inverse 9+10:dim,inverse 19+8:inverse 27+4:dim,inverse 31+2:inverse 33+2:dim,bg=0
+14 7+2:inverse 9+12:dim,inverse 21+6:inverse 27+4:dim,inverse 31+2:inverse 33+2:dim,bg=0
+15 7+26:inverse 33+2:dim,bg=0
+16 7+3:inverse 10+1:inverse,underline 11+22:inverse 33+2:dim,bg=0
+17 7+4:inverse 11+1:inverse,underline 12+21:inverse 33+2:dim,bg=0
+18 7+26:inverse 33+2:dim,bg=0
+19 7+2:inverse 9+1:inverse,underline 10+23:inverse 33+2:dim,bg=0
+20 7+6:inverse 13+1:inverse,underline 14+19:inverse 33+2:dim,bg=0
+21 7+2:inverse 9+1:inverse,underline 10+23:inverse 33+2:dim,bg=0
+22 7+26:inverse 33+2:dim,bg=0
+23 0+4:inverse 4+3:bold,inverse 7+26:inverse 33+2:dim,bg=0 35+32:inverse 67+3:dim,inverse 70+4:inverse 74+3:dim,inverse 77+3:inverse

@@ -1,6 +1,6 @@
 missing-header: rows after line 2: 3:0:3:type 3:4:5:ident 3:12:1:number 3:15:10:comment
 missing-header: lexical after line 2: 3:0:3:type 3:4:5:ident 3:12:1:number 3:15:10:comment
-missing-header: tail coloured=1 matches-lexical=1
-syntax-error: rows after line 2: 3:0:3:type 3:4:1:ident 3:8:1:number 3:11:7:comment
-syntax-error: tail coloured=1 matches-lexical=1
-complete: tail coloured=1 matches-lexical=1
+missing-header: tail coloured=1 covers-lexical=1
+syntax-error: rows after line 2: 3:0:3:type 3:4:1:variable 3:8:1:number 3:11:7:comment
+syntax-error: tail coloured=1 covers-lexical=1
+complete: tail coloured=1 covers-lexical=1

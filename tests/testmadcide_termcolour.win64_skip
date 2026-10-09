@@ -1,0 +1,1 @@
+runs printf(1) on a POSIX pty (the Terminal tab's program); the screen model's SGR colours are covered on every platform by bin/test_term_screen

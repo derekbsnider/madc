@@ -333,25 +333,22 @@ void *madarray_value_slot(void *ptr, void *idx)
 
 // Text view of a value — the carrier's c_str() and the coercion the CIR
 // builder applies to a value in char*-consuming positions (varargs args,
-// char* returns). EVERY kind answers with RING-lifetime text (the
-// thread-local ring — the inet_ntoa model; a pointer stays valid until
-// its slot recycles): value-first.md's pre-L3 text-return convention.
-// String kind COPIES its payload into a slot — never the payload pointer
-// itself: a payload borrow dies with the value, so `return a.c_str();`
-// crossing a frame read freed memory (the silent-empty return gap; the
-// value's cleanup dtor runs before any caller-side copy). Deliberate,
-// documented divergence from std::string::c_str(). Other kinds render
-// through the ONE value->text owner (ns_common::value_to_string);
-// container kinds render a diagnostic tag, never crash. Several value
-// args in one call keep distinct slots.
+// char* parameters). String kind BORROWS its payload — std::string's c_str()
+// contract: valid while the value lives and is not modified (the payload is
+// always NUL-terminated, madc_value.cpp set_c_string). The one place a
+// borrow would outlive its value — a `char *` RETURN of a frame's own value
+// (`return a.c_str();`, `return v;`) — is copied out by the CIR at the
+// return (__madc_text_escape, FuncDef::borrows_receiver_text). Other kinds
+// have no text to borrow: they render into the ring (the inet_ntoa model)
+// through the ONE value->text owner (ns_common::value_to_string); container
+// kinds render a diagnostic tag, never crash.
 const char *madarray_cstr(void *ptr)
     {
 	const madc::value *v = (const madc::value *)ptr;
-	if (v->is_string())
-	{
-	    std::string &slot = ns_common::ring_slot();
-	    slot.assign((const char *)v->data(), v->size());
-	    return slot.c_str();
+	if (v->is_string()) {
+	    // a typed-null text (set_c_string's allocation failure) has no payload
+	    const char *text = (const char *)v->data();
+	    return text ? text : "";
 	}
 	std::string &slot = ns_common::ring_slot();
 	if (v->is_null())
@@ -362,6 +359,15 @@ const char *madarray_cstr(void *ptr)
 	    slot = std::string("[") + madc::value::kind_name(v->type())
 		 + ":" + std::to_string((long long)v->size()) + "]";
 	return slot.c_str();
+    }
+
+// A borrowed text pointer leaving the frame that owns its value (a `char *`
+// return of a carrier borrow): copy it into the ring so the caller reads it
+// after the value's cleanup ran. CIR machinery (cpp-first-api.md's
+// __madc_* exception), emitted only by translate_return.
+const char *__madc_text_escape(const char *text)
+    {
+	return ns_common::ring_text(text ? text : "");
     }
 
 // ---- string surface (value-first.md): a string-kind value is usable

@@ -794,12 +794,12 @@ static const OracleRow *oracle_find(const std::string &sym)
 // Thin spellings of the public encoder entry points, so a check reads as
 // the declaration it mirrors. Free functions are the global-scope branch of
 // the nested-function minter (no qualifiers).
-typedef std::vector<std::string> Params;
+typedef std::vector<madc::dis::istring> Params;
 static std::string free_fn(const std::string &name, const Params &p)
 {
 	return itanium_mangle_nested_sub({}, name, p);
 }
-static std::string ns_fn(const std::vector<std::string> &quals,
+static std::string ns_fn(const std::vector<madc::dis::istring> &quals,
                          const std::string &name, const Params &p)
 {
 	return itanium_mangle_nested_sub(quals, name, p);

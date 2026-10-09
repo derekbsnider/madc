@@ -226,7 +226,10 @@ that commit holds it.
 Says which commit last changed the cursor's line, and who made it.
 
 ## helpcontents
-Opens the help at its contents.
+Opens the help at its contents, in the editor's Help tab, with the index of the topics beside it.
+
+## helpindex
+Shows or hides the index of the help topics; choosing one opens its page in the editor's Help tab.
 
 ## helptopic
 Opens a help topic by name.

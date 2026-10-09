@@ -1,0 +1,50 @@
+text:
+ 0|  File  Edit  Search  View  Window  Build  Help
+ 1| +-----------------------------------+
+ 2| | New                               |
+ 3| | Open File…                   ^k e |
+ 4| | Recent Files…                     |
+ 5| | Insert File…                 ^k r |
+ 6| +-----------------------------------+
+ 7| | Save                         ^k d |
+ 8| | Save All                          |
+ 9| | Save As…                          |
+10| | Save and Exit                ^k x |
+11| | Close                             |
+12| | Close All                         |
+13| +-----------------------------------+
+14| | Project…                       ^p |
+15| | Open Project…                     |
+16| | Add Current File to Project  ^k j |
+17| +-----------------------------------+
+18| | Shell                        ^k z |
+19| +-----------------------------------+
+20| | Quit                         ^k q |
+21| +-----------------------------------+
+22|
+23| A  golden.cpp                                                     Row 1  Col 1
+styles:
+ 0 0+1:inverse 2+1:underline 7+1:inverse 8+1:inverse,underline 9+5:inverse 14+1:inverse,underline 15+7:inverse 22+1:inverse,underline 23+5:inverse 28+1:inverse,underline 29+7:inverse 36+1:inverse,underline 37+6:inverse 43+1:inverse,underline 44+36:inverse
+ 1 0+38:inverse
+ 2 1+1:inverse 3+1:underline 37+1:inverse 38+2:dim,bg=0
+ 3 0+1:dim 1+2:inverse 3+1:inverse,underline 4+34:inverse 38+2:dim,bg=0
+ 4 0+1:dim 1+2:inverse 3+1:inverse,underline 4+34:inverse 38+2:dim,bg=0
+ 5 0+1:dim 1+2:inverse 3+1:inverse,underline 4+34:inverse 38+2:dim,bg=0
+ 6 0+1:dim 1+37:inverse 38+2:dim,bg=0
+ 7 0+1:dim 1+2:inverse 3+1:inverse,underline 4+34:inverse 38+2:dim,bg=0
+ 8 0+1:dim 1+3:inverse 4+1:inverse,underline 5+33:inverse 38+2:dim,bg=0
+ 9 0+1:dim 1+4:inverse 5+1:inverse,underline 6+32:inverse 38+2:dim,bg=0
+10 1+5:inverse 6+1:inverse,underline 7+31:inverse 38+2:dim,bg=0
+11 1+2:inverse 3+1:inverse,underline 4+34:inverse 38+2:dim,bg=0
+12 1+3:inverse 4+1:inverse,underline 5+33:inverse 38+2:dim,bg=0
+13 1+37:inverse 38+2:dim,bg=0
+14 1+2:inverse 3+1:inverse,underline 4+34:inverse 38+2:dim,bg=0
+15 1+10:inverse 11+1:inverse,underline 12+26:inverse 38+2:dim,bg=0
+16 1+3:inverse 4+1:inverse,underline 5+33:inverse 38+2:dim,bg=0
+17 1+37:inverse 38+2:dim,bg=0
+18 1+3:inverse 4+1:inverse,underline 5+33:inverse 38+2:dim,bg=0
+19 1+37:inverse 38+2:dim,bg=0
+20 1+2:inverse 3+1:inverse,underline 4+34:inverse 38+2:dim,bg=0
+21 1+37:inverse 38+2:dim,bg=0
+22 3+37:dim,bg=0
+23 0+4:inverse 4+10:bold,inverse 14+53:inverse 67+3:dim,inverse 70+4:inverse 74+3:dim,inverse 77+3:inverse

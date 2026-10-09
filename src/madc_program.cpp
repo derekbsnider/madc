@@ -3,6 +3,8 @@
 #include "libmadc/engine.h"
 #include "libmadc/program.h"
 
+#include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -19,6 +21,7 @@
 #include <stack>
 #include <string>
 #include <unordered_map>	// L1b body-node id registry (parse_tu_state::body_ids)
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -1777,7 +1780,7 @@ bool flatten_expression_context_fields(const std::map<std::string, value> &field
 	if ( bound.is_object() )
 	{
 	    if ( !flatten_expression_context_fields(bound.as_object(),
-						    prefix.empty() ? field : prefix + "." + field,
+						    prefix.empty() ? field : std::string(prefix + "." + field),
 						    base_bindings,
 						    reason) )
 		return false;
@@ -4752,6 +4755,27 @@ bool internal_program_source_outline(::Program &self,
     return true;
 }
 
+// A source text's LINE INDEX: the byte offset each 1-based line starts at.
+// The one line -> offset map of this file's source-text readers (the emit
+// doc map, the span classifier's comment / escape / continuation passes).
+struct text_line_index
+{
+    std::vector<size_t> starts;
+    explicit text_line_index(const std::string &text) : starts(1, 0)
+    {
+	for ( size_t k = 0; k < text.size(); ++k )
+	    if ( text[k] == '\n' )
+		starts.push_back(k + 1);
+    }
+    // Where 1-based `line` starts; npos when the text has no such line.
+    size_t offset(long line) const
+    {
+	if ( line <= 0 || line > (long)starts.size() )
+	    return std::string::npos;
+	return starts[(size_t)(line - 1)];
+    }
+};
+
 // The render query (madcide AST-3 code views): parse the buffer in a
 // child and render its cir_node tree as the target KIND (madc::file_kind —
 // the emitter's depth table cir_emit_lang_of_kind says which kinds render;
@@ -4769,24 +4793,15 @@ bool internal_program_source_outline(::Program &self,
 static madc::value build_emit_doc_map(const std::string &src,
 				      const std::vector<CirEmitMapRow> &rows)
 {
-    // line_start[k] = byte offset of line (k+1) in the source buffer — the
-    // SAME buffer the container's stored-space caret indexes.
-    std::vector<size_t> line_start;
-    line_start.push_back(0);
-    for ( size_t i = 0; i < src.size(); ++i )
-	if ( src[i] == '\n' )
-	    line_start.push_back(i + 1);
-
+    // The SAME buffer the container's stored-space caret indexes.
+    text_line_index lines(src);
     madc::hub::doc_map dm;
     for ( size_t i = 0; i < rows.size(); ++i )
     {
-	int line = rows[i].line;
-	if ( line < 1 )
+	size_t at = lines.offset(rows[i].line);
+	if ( at == std::string::npos )
 	    continue;
-	size_t li = (size_t)(line - 1);
-	if ( li >= line_start.size() )
-	    continue;
-	dm.add(rows[i].disp, line_start[li], 1);	// add() enforces monotonicity
+	dm.add(rows[i].disp, at, 1);	// add() enforces monotonicity
     }
     return dm.to_value();
 }
@@ -5645,67 +5660,177 @@ static madc::value highlight_row(long line, long col, long len,
     return value::make_object(f);
 }
 
-// Comment rows from ONE token's leading trivia (the handles' fidelity
-// mode). The trivia's END is anchored by the token's recorded position:
-// its first line = token.line - (newlines in the trivia); every line
-// after a newline starts at column 0 exactly. Only the FIRST segment's
-// column base comes from the previous token's end — exact unless
-// consumed-at-lex text (an #include directive line) sat between them;
-// that drift is bounded to the one segment and resyncs at this token.
-// A block comment emits one row per line it covers.
-static void trivia_comment_rows(const std::string &tr, long line, long col,
-				std::vector<madc::value> &rows)
+// Comment rows from the lexer's comment record (Program::_trivia_comments,
+// the fidelity mode's): each comment at its OWN position, read over the
+// source text — one row per line a block comment covers. (Reckoning a
+// comment's line back from the next token through its leading trivia
+// drifted wherever a consumed directive line sat between the two.)
+static void recorded_comment_rows(::Program &child, const std::string &display_name,
+				  const std::string &text, std::vector<madc::value> &rows)
 {
-    size_t i = 0;
-    while ( i < tr.size() )
+    text_line_index lines(text);
+    for ( const ::Program::TriviaComment &c : child._trivia_comments )
     {
-	char ch = tr[i];
-	if ( ch == '\n' )
+	size_t bol = lines.offset(c.line);
+	if ( !c.file || display_name != c.file || bol == std::string::npos
+	  || c.column < 1 )
+	    continue;
+	long line = c.line;
+	size_t at = bol + (size_t)(c.column - 1);
+	size_t end = at + c.length;
+	if ( end > text.size() )
+	    end = text.size();
+	long col = c.column - 1;
+	while ( at < end )
 	{
+	    size_t nl = text.find('\n', at);
+	    size_t seg_end = nl == std::string::npos || nl > end ? end : nl;
+	    if ( seg_end > at )
+		rows.push_back(highlight_row(line, col, (long)(seg_end - at), "comment"));
+	    if ( seg_end == end )
+		break;
+	    at = seg_end + 1;
 	    ++line;
 	    col = 0;
-	    ++i;
+	}
+    }
+}
+
+// ---- names, by the parse tree (TUI facelift S1b): a name's class is what
+// the tree's node for it resolved to, at the lexed token the node was built
+// from (TokenVar::name_tok, TokenMember::object_tok — the provenance links).
+// The tree is the one record; the classifier reads it, never a second one.
+typedef std::unordered_map<const TokenBase *, HighlightClass> name_class_map;
+
+static void graph_body_children(const TokenBase *t, std::vector<const TokenBase *> &out);
+
+// What a use of `v` is: an enumerator, a parameter, a function designator
+// (a call's callee, `&f`) or a variable. A function POINTER is a variable.
+static HighlightClass variable_use_class(const Variable &v)
+{
+    if ( v.is_enumerator() )
+	return HighlightClass::hcEnumerator;
+    if ( v.flags & vfPARAM )
+	return HighlightClass::hcParameter;
+    if ( v.type && v.type->as_funcdef_dd() )
+	return HighlightClass::hcFunction;
+    return HighlightClass::hcVariable;
+}
+
+// The source names ONE node spelled, each with its class.
+static void node_name_classes(const TokenBase *t, name_class_map &out)
+{
+    TokenBase *nt = const_cast<TokenBase *>(t);
+    TokenVar *tv = nt->as_var_tok();
+    if ( !tv )
+	return;
+    if ( TokenMember *m = nt->as_member_tok() )	// also a method call
+    {
+	if ( m->object_tok )
+	    out[m->object_tok] = variable_use_class(m->object);
+	if ( tv->name_tok )
+	    out[tv->name_tok] = nt->as_callmethod_tok() ? HighlightClass::hcFunction
+							: HighlightClass::hcMember;
+	return;
+    }
+    if ( tv->name_tok )
+	out[tv->name_tok] = variable_use_class(tv->var);
+}
+
+// The source name of a node that holds its variable directly — `&g`, `*p`,
+// `*p++`, `a[i]` (a use node the builder replaced; its link moved here).
+static void leaf_name_classes(const TokenBase *t, name_class_map &out)
+{
+    TokenBase *nt = const_cast<TokenBase *>(t);
+    if ( TokenAddrOf *a = nt->as_addr_of_tok() )
+    { if ( a->name_tok ) out[a->name_tok] = variable_use_class(a->var); }
+    else if ( TokenDeref *d = nt->as_deref_tok() )
+    { if ( d->name_tok ) out[d->name_tok] = variable_use_class(d->var); }
+    else if ( TokenDerefStep *ds = nt->as_deref_step_tok() )
+    { if ( ds->name_tok ) out[ds->name_tok] = variable_use_class(ds->var); }
+    else if ( TokenSubscript *sb = nt->as_subscript_tok() )
+    { if ( sb->object_tok ) out[sb->object_tok] = variable_use_class(sb->object); }
+}
+
+// The names the TU's own DECLARATIONS spelled, from the entities that record
+// their declarator-id token: a function's parameters (Variable::decl_tok), a
+// struct's / union's / class's members (memberpair_t::origin), an
+// enumeration's enumerators (DataDefENUM::enumerator_toks). Variables and
+// functions are use-shaped nodes the body walk already reads (TokenDecl,
+// TokenFunc). A type definition leaves no node of its own in the tree (an
+// enum's parse returns none; classes are not top_decls), so the types come
+// from their registries — struct_map, the datatype map, C's enum tags — and
+// a record counts only when its token is this file's.
+static void tree_decl_classes(::Program &child, const std::string &display_name,
+			      name_class_map &out)
+{
+    for ( size_t f = 0; f < child.pending_funcs.size(); ++f )
+    {
+	TokenFunc *fn = tu_own_function(child.pending_funcs[f], display_name);
+	if ( !fn || !fn->method )
 	    continue;
-	}
-	bool line_c = ch == '/' && i + 1 < tr.size() && tr[i + 1] == '/';
-	bool block_c = ch == '/' && i + 1 < tr.size() && tr[i + 1] == '*';
-	if ( !line_c && !block_c )
+	for ( Variable *p : fn->method->parameters )
+	    if ( p && p->decl_tok )
+		out[p->decl_tok] = HighlightClass::hcParameter;
+    }
+    // This file's interned name, as its own tokens carry it.
+    const char *own = NULL;
+    for ( TokenBase *t : child.tokens )
+	if ( t && t->file && display_name == t->file )
 	{
-	    ++col;
-	    ++i;
+	    own = t->file;
+	    break;
+	}
+    if ( !own )
+	return;
+    std::unordered_set<const DataDef *> seen;
+    std::function<void(DataDef *)> take_type = [&](DataDef *dd) {
+	if ( !dd || !seen.insert(dd).second )
+	    return;
+	if ( DataDefSTRUCT *sd = dd->as_struct_dd() )
+	    for ( const memberpair_t &m : sd->members )
+		if ( m.origin && m.origin->file == own )
+		    out[m.origin] = HighlightClass::hcMember;
+	if ( DataDefENUM *ed = dd->as_enum_dd() )
+	    for ( TokenBase *e : ed->enumerator_toks )
+		if ( e && e->file == own )
+		    out[e] = HighlightClass::hcEnumerator;
+    };
+    for ( StructRegistry::const_iterator i = child.struct_map.begin();
+	  i != child.struct_map.end(); ++i )
+	take_type(i->second);
+    child.datatype_map.for_each_readonly([&](const char *, TokenDataType *const &tdt) {
+	if ( tdt )
+	    take_type(&tdt->definition);
+	return false;
+    });
+    for ( std::map<madc::dis::istring, TokenDataType *>::const_iterator i = child.c_enum_tag_map.begin();
+	  i != child.c_enum_tag_map.end(); ++i )
+	if ( i->second )
+	    take_type(&i->second->definition);
+}
+
+// Every name the TU's own code spelled: its function bodies and its global
+// declarations' initializers (TopDecl::decl), through the one body walker
+// (graph_body_children).
+static void tree_name_classes(::Program &child, const std::string &display_name,
+			      name_class_map &out)
+{
+    std::vector<const TokenBase *> q;
+    for ( size_t f = 0; f < child.pending_funcs.size(); ++f )
+	if ( TokenFunc *fn = tu_own_function(child.pending_funcs[f], display_name) )
+	    q.push_back(fn);
+    for ( const ::Program::TopDecl &td : child.top_decls )
+	if ( td.decl && td.decl->file && display_name == td.decl->file )
+	    q.push_back(td.decl);
+    std::unordered_set<const TokenBase *> seen;	// a node shared by two parents
+    for ( size_t qi = 0; qi < q.size(); ++qi )
+    {
+	if ( !seen.insert(q[qi]).second )
 	    continue;
-	}
-	long seg_col = col;
-	long seg_len = 0;
-	bool done = false;
-	while ( i < tr.size() && !done )
-	{
-	    if ( tr[i] == '\n' )
-	    {
-		if ( seg_len > 0 )
-		    rows.push_back(highlight_row(line, seg_col, seg_len,
-						 "comment"));
-		seg_len = 0;
-		if ( line_c )
-		    done = true;	// the newline stays for the outer loop
-		else
-		{
-		    ++line;
-		    col = 0;
-		    seg_col = 0;
-		    ++i;
-		}
-		continue;
-	    }
-	    ++seg_len;
-	    ++col;
-	    ++i;
-	    if ( block_c && seg_len >= 2 && tr[i - 1] == '/'
-	      && tr[i - 2] == '*' )
-		done = true;		// consumed the closing */
-	}
-	if ( seg_len > 0 )
-	    rows.push_back(highlight_row(line, seg_col, seg_len, "comment"));
+	node_name_classes(q[qi], out);
+	leaf_name_classes(q[qi], out);
+	graph_body_children(q[qi], q);
     }
 }
 
@@ -5714,41 +5839,26 @@ static void trivia_comment_rows(const std::string &tr, long line, long col,
 // styling (a theme maps class names to colours; the compiler never
 // styles). Rows: { line, column, length, class } in source coordinates —
 // the app owns the buffer text and converts to byte offsets. Length is
-// the render spelling's length (exact for identifiers/keywords/types;
-// a literal written non-canonically can drift cosmetically — a
-// lex-recorded token extent is the named refinement). An identifier the
-// tree defines as a function, on that definition's head line, classifies
-// as "function" (head-line name match; the exact name-token feeder is
-// the named refinement).
+// the token's lex-recorded source extent (the render spelling's length
+// only for a token with none). Comments come from the lexer's comment
+// record at their own positions. A name's class is the tree's (names: the
+// node built from the token, or the declaration that records it).
 // THE span classifier (one implementation, two feeders): walk a child's
 // retained token stream and emit {line, column, length, class} rows for
-// the TU's own tokens. parse_spans feeds it a PARSED child (fn_heads
-// carries the tree's function-head knowledge); lex_spans feeds it a
-// lex-only child (empty fn_heads — no tree, no type/function classes
-// beyond what lexing knows).
+// the TU's own tokens. parse_spans feeds it a PARSED child (names carries
+// the tree's resolution of each name token); lex_spans feeds it a lex-only
+// child (no names — no tree, no name classes beyond what lexing knows).
 static void highlight_token_rows(::Program &child,
 				 const std::string &display_name,
-				 const std::map<long, std::set<std::string> > &fn_heads,
+				 const std::string &source_text,
+				 const name_class_map &names,
 				 std::vector<madc::value> &rows)
 {
-    long prev_line = 1;
-    long prev_end_col = 0;
+    recorded_comment_rows(child, display_name, source_text, rows);
     for ( TokenBase *t : child.tokens )
     {
 	if ( !t || !t->file || display_name != t->file )
 	    continue;
-	if ( !t->leading_trivia.empty() )
-	{
-	    const std::string &tr = t->leading_trivia;
-	    long nl = 0;
-	    for ( size_t k = 0; k < tr.size(); ++k )
-		if ( tr[k] == '\n' )
-		    ++nl;
-	    long first_line = (long)t->line - nl;
-	    trivia_comment_rows(tr, first_line,
-				first_line == prev_line ? prev_end_col : 0,
-				rows);
-	}
 	// A macro-expansion token's spelling occupies no source bytes — its
 	// line/column name the invocation site (tfSYNTHPOS). Its leading
 	// trivia (real source, folded above) still anchors; the token itself
@@ -5768,9 +5878,6 @@ static void highlight_token_rows(::Program &child,
 		for ( const TokenStr::SrcPiece &pc : ts->src_pieces )
 		    rows.push_back(highlight_row(pc.line, pc.col, pc.len,
 						 "string"));
-		const TokenStr::SrcPiece &lastp = ts->src_pieces.back();
-		prev_line = lastp.line;
-		prev_end_col = lastp.col + lastp.len;
 		continue;
 	    }
 	}
@@ -5778,10 +5885,9 @@ static void highlight_token_rows(::Program &child,
 	std::string sp = madc_token_spelling(t);
 	if ( hc == HighlightClass::hcIdent )
 	{
-	    std::map<long, std::set<std::string> >::const_iterator fh =
-		fn_heads.find((long)t->line);
-	    if ( fh != fn_heads.end() && fh->second.count(sp) )
-		hc = HighlightClass::hcFunction;
+	    name_class_map::const_iterator nc = names.find(t);
+	    if ( nc != names.end() )
+		hc = nc->second;
 	}
 	if ( hc != HighlightClass::hcNone && !sp.empty() )
 	{
@@ -5790,22 +5896,17 @@ static void highlight_token_rows(::Program &child,
 	    long start = (long)t->column - 1;
 	    if ( start < 0 )
 		start = 0;
-	    rows.push_back(highlight_row((long)t->line, start,
-					 (long)sp.size(),
+	    // The length is the token's LEX-RECORDED extent (its source
+	    // bytes) when it ends on its own line: a spelling re-rendered
+	    // from a cooked value (a char literal's canonical `'\x0'` for
+	    // `'\0'`) is not the source's width.
+	    long len = (long)sp.size();
+	    if ( t->lex_end_line == t->line && t->lex_end_column > start )
+		len = (long)t->lex_end_column - start;
+	    rows.push_back(highlight_row((long)t->line, start, len,
 					 highlight_class_name(hc)));
 	}
-	// The cursor after the token: its end (the column of its last byte,
-	// which is the 0-based column just past it).
-	int end_line = 0, end_column = 0;
-	madc_token_end(t, end_line, end_column);
-	prev_line = (long)end_line;
-	prev_end_col = (long)end_column;
     }
-    // A comment after the LAST token lives in the trailing trivia, not on
-    // any token; the cursor the loop left is its exact anchor.
-    if ( !child._trailing_trivia.empty() )
-	trivia_comment_rows(child._trailing_trivia, prev_line, prev_end_col,
-			    rows);
 }
 
 // The classifier's LEXICAL feeder: the text lexed alone — no header
@@ -5816,14 +5917,14 @@ static void lexical_highlight_rows(::Program &owner, const std::string &source_t
 				   const std::string &disp, std::vector<madc::value> &rows)
 {
     ::Program child(owner.engine);
-    child.keep_trivia = true;		// comment spans ride leading trivia
+    child.keep_trivia = true;		// comment spans: the lexer's comment record
     child.skip_includes = true;		// lex ONLY the buffer text
     {
 	DiagnosticRenderMute mute;
 	child.tokenize_buffer(source_text, disp);
     }
-    std::map<long, std::set<std::string> > no_heads;
-    highlight_token_rows(child, disp, no_heads, rows);
+    name_class_map no_names;
+    highlight_token_rows(child, disp, source_text, no_names, rows);
 }
 
 // An integer field of a highlight_row row (0 when absent).
@@ -5869,15 +5970,294 @@ static void parse_stream_reach(::Program &child, const std::string &disp,
 // column) on?
 static bool text_continues_after(const std::string &text, long line, long col)
 {
-    size_t at = 0;
-    for ( long l = 1; l < line && at < text.size(); ++at )
-	if ( text[at] == '\n' )
-	    ++l;
+    // line 0: nothing reached — the whole text follows.
+    size_t at = line <= 1 ? 0 : text_line_index(text).offset(line);
+    if ( at == std::string::npos )
+	return false;
     at += (size_t)(col > 0 ? col : 0);
     for ( ; at < text.size(); ++at )
 	if ( text[at] != ' ' && text[at] != '\t' && text[at] != '\r' && text[at] != '\n' )
 	    return true;
     return false;
+}
+
+// ---- the classifier's LINE-TEXT pass (TUI facelift S1b): the classes no
+// token carries. A directive line is consumed at lex — its `#name`, its
+// header-name and its comments reach no token and no trivia — and an escape
+// sequence is a run INSIDE a string token. Both read the source text, as
+// comments read trivia. Runs once per query, after the token rows.
+
+// The (line -> [column, end)) extents the token rows already cover: a `#`
+// inside a block comment or a raw string is not a directive.
+typedef std::map<long, std::vector<std::pair<long, long> > > covered_cols;
+
+static bool cols_cover(const covered_cols &cov, long line, long col)
+{
+    covered_cols::const_iterator it = cov.find(line);
+    if ( it == cov.end() )
+	return false;
+    for ( const std::pair<long, long> &e : it->second )
+	if ( col >= e.first && col < e.second )
+	    return true;
+    return false;
+}
+
+// The directives whose operand is a header-name (`<x.h>` / `"x.h"`) — the
+// lexer's own include/include_next and madc's #load.
+static bool directive_takes_header_name(const std::string &name)
+{
+    return name == "include" || name == "include_next" || name == "load";
+}
+
+// A directive line's rows, from 0-based column `at` (just past the name) to
+// the line's end: comments, string literals, and the header-name when the
+// directive takes one. `in_block` carries a block comment the line leaves
+// open into the next line (the directive continues through it).
+static void directive_tail_scan(const std::string &ln, long line, size_t at,
+				bool header_name, bool &in_block,
+				std::vector<madc::value> &mine)
+{
+    bool first_operand = header_name;
+    size_t i = at;
+    if ( in_block )
+    {
+	size_t close = ln.find("*/", i);
+	size_t end = close == std::string::npos ? ln.size() : close + 2;
+	if ( end > i )
+	    mine.push_back(highlight_row(line, (long)i, (long)(end - i), "comment"));
+	if ( close == std::string::npos )
+	    return;
+	in_block = false;
+	i = end;
+    }
+    while ( i < ln.size() )
+    {
+	char ch = ln[i];
+	if ( ch == ' ' || ch == '\t' || ch == '\r' )
+	{
+	    ++i;
+	    continue;
+	}
+	if ( ch == '/' && i + 1 < ln.size() && ln[i + 1] == '/' )
+	{
+	    mine.push_back(highlight_row(line, (long)i, (long)(ln.size() - i), "comment"));
+	    return;
+	}
+	if ( ch == '/' && i + 1 < ln.size() && ln[i + 1] == '*' )
+	{
+	    size_t close = ln.find("*/", i + 2);
+	    size_t end = close == std::string::npos ? ln.size() : close + 2;
+	    mine.push_back(highlight_row(line, (long)i, (long)(end - i), "comment"));
+	    if ( close == std::string::npos )
+	    {
+		in_block = true;
+		return;
+	    }
+	    i = end;
+	    continue;
+	}
+	if ( ch == '"' || ch == '\'' || (ch == '<' && first_operand) )
+	{
+	    char close_ch = ch == '<' ? '>' : ch;
+	    size_t j = i + 1;
+	    while ( j < ln.size() && ln[j] != close_ch )
+		j += (ln[j] == '\\' && ch != '<' && j + 1 < ln.size()) ? 2 : 1;
+	    size_t end = j < ln.size() ? j + 1 : ln.size();
+	    mine.push_back(highlight_row(line, (long)i, (long)(end - i),
+		first_operand ? highlight_class_name(HighlightClass::hcIncludePath)
+			      : "string"));
+	    first_operand = false;
+	    i = end;
+	    continue;
+	}
+	first_operand = false;
+	++i;
+    }
+}
+
+// directive_tail_scan's rows, less a run a token row already colours (a
+// parse lexes the rest of an #include line: its comment is the lexer's).
+static void directive_tail_rows(const std::string &ln, long line, size_t at,
+				bool header_name, bool &in_block,
+				const covered_cols &cov, std::vector<madc::value> &rows)
+{
+    std::vector<madc::value> mine;
+    directive_tail_scan(ln, line, at, header_name, in_block, mine);
+    for ( const madc::value &r : mine )
+	if ( !cols_cover(cov, line, (long)highlight_row_field(r, "column")) )
+	    rows.push_back(r);
+}
+
+// Every directive line's rows: the `#name` (one row, white space between
+// them included), then its tail. A line ending in `\` or inside a block
+// comment the directive opened continues the directive.
+static void directive_rows(const std::string &text, const covered_cols &cov,
+			   std::vector<madc::value> &rows)
+{
+    bool continues = false;		// the line before ended in a splice
+    bool in_block = false;		// inside a block comment a directive opened
+    long line = 0;
+    size_t bol = 0;
+    while ( bol <= text.size() )
+    {
+	++line;
+	size_t eol = text.find('\n', bol);
+	if ( eol == std::string::npos )
+	    eol = text.size();
+	std::string ln = text.substr(bol, eol - bol);
+	bool directive_line = false;
+	if ( continues || in_block )
+	{
+	    directive_tail_rows(ln, line, 0, false, in_block, cov, rows);
+	    directive_line = true;
+	}
+	else
+	{
+	    size_t p = ln.find_first_not_of(" \t");
+	    if ( p != std::string::npos && ln[p] == '#'
+	      && !cols_cover(cov, line, (long)p) )
+	    {
+		if ( line == 1 && p == 0 && ln.compare(0, 2, "#!") == 0 )
+		    rows.push_back(highlight_row(line, 0, (long)ln.size(), "comment"));
+		else
+		{
+		    size_t q = ln.find_first_not_of(" \t", p + 1);
+		    if ( q == std::string::npos )
+			q = ln.size();
+		    size_t e = q;
+		    while ( e < ln.size() && (isalpha((unsigned char)ln[e]) || ln[e] == '_') )
+			++e;
+		    if ( e == q )
+			e = p + 1;	// `#` alone (a null directive, a line marker)
+		    rows.push_back(highlight_row(line, (long)p, (long)(e - p),
+			highlight_class_name(HighlightClass::hcDirective)));
+		    directive_tail_rows(ln, line, e,
+					directive_takes_header_name(ln.substr(q, e - q)),
+					in_block, cov, rows);
+		    directive_line = true;
+		}
+	    }
+	}
+	// A splice (`\` last on the line, a CR aside) carries the directive on.
+	size_t last = ln.find_last_not_of('\r');
+	continues = directive_line && last != std::string::npos && ln[last] == '\\';
+	if ( eol == text.size() )
+	    break;
+	bol = eol + 1;
+    }
+}
+
+// The length of the escape sequence at `s[i]` (a `\`), C11 6.4.4.4: `\x`
+// takes every hex digit after it, `\u` four and `\U` eight, an octal escape
+// up to three digits, any other one character. 0 at the run's end.
+static size_t escape_length(const std::string &s, size_t i, size_t end)
+{
+    if ( i + 1 >= end )
+	return 0;
+    char c = s[i + 1];
+    size_t n = 2;
+    if ( c == 'x' || c == 'u' || c == 'U' )
+    {
+	size_t cap = c == 'x' ? end : (c == 'u' ? 4 : 8);
+	size_t k = 0;
+	while ( i + 2 + k < end && k < cap && isxdigit((unsigned char)s[i + 2 + k]) )
+	    ++k;
+	n += k;
+    }
+    else if ( c >= '0' && c <= '7' )
+    {
+	n = 1;
+	while ( n < 4 && i + n < end && s[i + n] >= '0' && s[i + n] <= '7' )
+	    ++n;
+    }
+    return n;
+}
+
+// A string row whose text holds escapes splits into string / escape runs
+// (rows never overlap). Only a row that OPENS a literal — an encoding prefix
+// and a quote — is cooked: a raw string's backslashes are its text.
+static void split_escape_rows(const std::string &text, std::vector<madc::value> &rows)
+{
+    text_line_index lines(text);
+    std::vector<madc::value> out;
+    out.reserve(rows.size());
+    for ( const madc::value &r : rows )
+    {
+	const std::map<std::string, madc::value> &o = r.as_object();
+	std::map<std::string, madc::value>::const_iterator ci = o.find("class");
+	long line = (long)highlight_row_field(r, "line");
+	long col = (long)highlight_row_field(r, "column");
+	long len = (long)highlight_row_field(r, "length");
+	size_t bol = lines.offset(line);
+	if ( ci == o.end() || ci->second.as_string() != "string"
+	  || bol == std::string::npos )
+	{
+	    out.push_back(r);
+	    continue;
+	}
+	size_t b = bol + (size_t)col;
+	size_t e = b + (size_t)len;
+	if ( e > text.size() )
+	{
+	    out.push_back(r);
+	    continue;
+	}
+	size_t q = b;
+	while ( q < e && (text[q] == 'u' || text[q] == 'U' || text[q] == 'L' || text[q] == '8') )
+	    ++q;
+	if ( q >= e || (text[q] != '"' && text[q] != '\'') )
+	{
+	    out.push_back(r);
+	    continue;
+	}
+	size_t run = b;
+	for ( size_t k = q + 1; k < e; ++k )
+	{
+	    if ( text[k] != '\\' )
+		continue;
+	    size_t n = escape_length(text, k, e);
+	    if ( n == 0 )
+		break;
+	    if ( k > run )
+		out.push_back(highlight_row(line, (long)(run - bol),
+					    (long)(k - run), "string"));
+	    out.push_back(highlight_row(line, (long)(k - bol), (long)n,
+				highlight_class_name(HighlightClass::hcEscape)));
+	    k += n - 1;
+	    run = k + 1;
+	}
+	if ( run == b )
+	    out.push_back(r);
+	else if ( run < e )
+	    out.push_back(highlight_row(line, (long)(run - bol),
+					(long)(e - run), "string"));
+    }
+    rows.swap(out);
+}
+
+// The line-text pass over a query's finished token rows.
+static void source_text_rows(const std::string &text, std::vector<madc::value> &rows)
+{
+    covered_cols cov;
+    for ( const madc::value &r : rows )
+    {
+	long c = (long)highlight_row_field(r, "column");
+	cov[(long)highlight_row_field(r, "line")].push_back(
+	    std::make_pair(c, c + (long)highlight_row_field(r, "length")));
+    }
+    directive_rows(text, cov, rows);
+    split_escape_rows(text, rows);
+    // Source order (line, column): the pass appended its rows after the
+    // token rows; a consumer reading "a line's last span" reads position.
+    std::stable_sort(rows.begin(), rows.end(),
+		     [](const madc::value &a, const madc::value &b) {
+			 int64_t la = highlight_row_field(a, "line");
+			 int64_t lb = highlight_row_field(b, "line");
+			 if ( la != lb )
+			     return la < lb;
+			 return highlight_row_field(a, "column")
+			      < highlight_row_field(b, "column");
+		     });
 }
 
 bool internal_program_parse_spans(int64_t handle, madc::value &out)
@@ -5887,13 +6267,11 @@ bool internal_program_parse_spans(int64_t handle, madc::value &out)
     if ( !st )
 	return false;
     ::Program &child = *st->child;
-    std::map<long, std::set<std::string> > fn_heads;
-    for ( size_t i = 0; i < child.pending_funcs.size(); ++i )
-	if ( TokenFunc *tf = tu_own_function(child.pending_funcs[i],
-					     st->display_name) )
-	    fn_heads[(long)tf->line].insert(tf->var.name);
     std::vector<madc::value> rows;
-    highlight_token_rows(child, st->display_name, fn_heads, rows);
+    name_class_map names;
+    tree_decl_classes(child, st->display_name, names);
+    tree_name_classes(child, st->display_name, names);
+    highlight_token_rows(child, st->display_name, st->source_text, names, rows);
     // The parse REFINES the lexical colour and never removes it: a parse
     // that stopped short — a header that does not open, a syntax error
     // mid-edit — holds no tokens past where it stopped, so the text it did
@@ -5912,6 +6290,7 @@ bool internal_program_parse_spans(int64_t handle, madc::value &out)
 		rows.push_back(r);
 	}
     }
+    source_text_rows(st->source_text, rows);
     out = value::make_array(rows);
     return true;
 }
@@ -6006,10 +6385,10 @@ static madc::value graph_stale_result(const parse_tu_state *st, int64_t id)
 	? std::string("node id 0 is not a node of this handle (a missing or "
 		      "non-integer `id` argument reads as 0) - pass an id from a "
 		      "graph.* result")
-	: std::string("stale node id: minted at parse generation ")
+	: std::string(std::string("stale node id: minted at parse generation ")
 	    + std::to_string(graph_id_gen(id)) + ", the handle is at generation "
 	    + std::to_string(st->generation) + " (a refresh or an edit re-parsed the"
-	    " TU) - re-query";
+	    " TU) - re-query");
     f["error"] = madc::value(why);
     f["stale"] = value(true);
     f["nodes"] = value::make_array(std::vector<madc::value>());
@@ -7892,6 +8271,7 @@ bool internal_program_lex_spans(::Program &self,
     std::string disp = display_name.empty() ? "<memory>" : display_name;
     std::vector<madc::value> rows;
     lexical_highlight_rows(self, source_text, disp, rows);
+    source_text_rows(source_text, rows);
     out = value::make_array(rows);
     return true;
 }
@@ -8691,6 +9071,7 @@ void Program::add_include_dir(const std::string &dir)
 	if (p.back() != '/')
 		p += '/';
 	include_paths.push_back(p);
+	include_search_memo.clear();	// the search list changed
 }
 
 void Program::add_cli_define(const std::string &def)
@@ -8698,8 +9079,8 @@ void Program::add_cli_define(const std::string &def)
 	if (def.empty())
 		return;
 	std::string::size_type eq = def.find('=');
-	std::string name = (eq == std::string::npos) ? def : def.substr(0, eq);
-	std::string value = (eq == std::string::npos) ? std::string("1") : def.substr(eq + 1);
+	std::string name = (eq == std::string::npos) ? def : std::string(def.substr(0, eq));
+	std::string value = (eq == std::string::npos) ? std::string("1") : std::string(def.substr(eq + 1));
 	if (!name.empty())
 		cli_defines.push_back(std::make_pair(name, value));
 }

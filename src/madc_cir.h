@@ -13,6 +13,7 @@
 #define __MADC_CIR_H 1
 
 #include <cstdint>
+#include "madcdis/istring.h"	// names are interned (madc::dis::istring)
 #include <cstdio>
 #include <map>
 #include <string>
@@ -208,7 +209,7 @@ private:
     MIR_module_t mod;
     MIR_module_t cache_mod;	// build(): the container's MIR cache module,
 				// loaded beside `mod` (rung 3); NULL = no cache
-    std::map<std::string, void *> gen_cache;
+    std::map<madc::dis::istring, void *> gen_cache;
     // Live mode: the appended modules (oldest first) and the builders whose
     // node arenas back them. `mod` is the newest.
     bool live_mode;
@@ -219,18 +220,18 @@ private:
     // last appended entry's TU init.
     MIR_module_t stub_mod;
     size_t stub_modules;
-    std::map<std::string, MIR_item_t> late_stubs;
-    std::string live_init;
+    std::map<madc::dis::istring, MIR_item_t> late_stubs;
+    madc::dis::istring live_init;
     // Slice 2: the cells late-bound objects are read through, by cell symbol
     // (a node-stable map: an import binds to a value's address), and the
     // object each unbound cell waits for.
-    std::map<std::string, void *> late_cell_slots;
-    std::map<std::string, std::string> late_cell_waits;
+    std::map<madc::dis::istring, void *> late_cell_slots;
+    std::map<madc::dis::istring, madc::dis::istring> late_cell_waits;
     void bind_late_cells(Program *prog);
     MIR_item_t find_item(const char *name, bool func) const;
     bool admits(MIR_module_t m, Program *prog, const char *entry_name,
 		CirBuilder *b);
-    void make_function_stubs(const std::vector<std::string> &names);
+    void make_function_stubs(const std::vector<madc::dis::istring> &names);
     void rebind_late_stubs(MIR_module_t m, Program *prog);
     bool init_contexts(const char *source_name, bool dump_checked);
     bool load_and_link(const char *source_name, Program *prog);
@@ -355,8 +356,8 @@ int madc_project_emit_native(MadcEngine &engine,
 // against. The wire form lives in cir_freeze.h (CIR_FOREST_SEG_LEDGER).
 struct cir_ledger_module
 {
-	std::string              name;	 // the ledger source path (module name)
-	std::vector<std::string> syms;	 // defined symbols
+	madc::dis::istring              name;	 // the ledger source path (module name)
+	std::vector<madc::dis::istring> syms;	 // defined symbols
 	std::vector<uint8_t>     bytes;	 // MIR_write_module bytes
 };
 

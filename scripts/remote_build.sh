@@ -35,6 +35,12 @@
 #   batch     the BATCH tier (scripts/batch_lane.sh): the whole tests/ suite,
 #             JIT only, once per batch of fixes; MADC_BATCH_NO_RECORD=1, so
 #             record its printed tests-jit tally HERE, as for fastlanes
+#   parsecost the profiling merge gate (scripts/parse_cost_gate.sh): callgrind
+#             instruction counts of the scripts/parse_cost/ workloads on the
+#             shipped -O2 madc-release, against scripts/parse_cost/baseline.tsv
+#   parsecost-record  re-record that baseline on the container (refuses growth
+#             unless PARSE_COST_ACCEPT='<reason>') and pull it back to the NAS
+#             checkout, where it is committed
 #   exe       bash scripts/run_tests.sh --exe
 #   obj       bash scripts/run_tests.sh --obj  (single-object loader lane)
 #   libcxx    the whole suite under -stdlib=libc++, JIT + exe + obj (the
@@ -330,6 +336,22 @@ for stage in $stages; do
 		# JIT only, once per batch of fixes. No-record for the fastlanes
 		# reason; record tests-jit on the NAS from its summary line.
 		run_remote "batch" "cd $REMOTE_MADC; MADC_BATCH_NO_RECORD=1 bash scripts/batch_lane.sh"
+		;;
+	parsecost)
+		# Build what the gate measures (make is idempotent), then check.
+		run_remote "parsecost" "make -C $REMOTE_MADC/src -j20 release; cd $REMOTE_MADC; bash scripts/parse_cost_gate.sh"
+		;;
+	parsecost-record)
+		# The baseline is measured where the battery runs (the toolchain
+		# fingerprint pins it there) but versioned on the NAS: record on
+		# the container, then bring the one file back.
+		run_remote "parsecost-record" "make -C $REMOTE_MADC/src -j20 release; cd $REMOTE_MADC; bash scripts/parse_cost_gate.sh --record ${PARSE_COST_ACCEPT:+\"--accept-increase=$PARSE_COST_ACCEPT\"}"
+		rsync -az --no-perms --no-owner --no-group -e "ssh -p $PORT" \
+			"$REMOTE:$REMOTE_MADC/scripts/parse_cost/baseline.tsv" \
+			"$LOCAL_MADC/scripts/parse_cost/baseline.tsv"
+		rc=$?
+		echo "pull parse-cost baseline rc=$rc"
+		note_stage "pull parse-cost baseline" "$rc"
 		;;
 	tests)
 		# TARGETED subset — the inner loop. TESTS holds basename globs.

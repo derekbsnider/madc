@@ -264,6 +264,15 @@ struct ui_frontend
     // The window full screen (on: 1 enter, 0 leave, -1 toggle). A grid is
     // the terminal's own window: false.
     virtual bool fullscreen(int) { return false; }
+    // Does this surface draw tab strips over its regions (the editor's open
+    // files, a panel's views — facelift S3)? A line-mode surface does not.
+    virtual bool tabs() const { return false; }
+    // Does this surface draw the application's menus itself (the menu bar
+    // and its dropdowns in cells — facelift S4/S5), and so open one when
+    // the application asks (open_menu, by title)? False: the host's menu is
+    // native or there is none, and the application lists a menu its own way.
+    virtual bool menus() const { return false; }
+    virtual bool open_menu(const std::string &) { return false; }
 };
 
 struct ui_grid_frontend : ui_frontend
@@ -272,6 +281,9 @@ struct ui_grid_frontend : ui_frontend
     madc::hub::tui_model   model;
     madc::hub::tui_grid	   painted;	// the diff basis
     ui_grid_frontend() : target((madc::hub::tui_target *)0) { level = ui::TUI; }
+    bool tabs() const { return true; }	// a strip is a row of cells (S3)
+    bool menus() const { return true; }	// the bar and its dropdowns (S4)
+    bool open_menu(const std::string &title) { return model.open_menu(title); }
 
     bool open(size_t &r, size_t &c)
     {
@@ -609,6 +621,7 @@ struct ui_dom_frontend : ui_frontend
 	return host && ops->eval && ops->eval(host, js ? js : "") == 0;
     }
     bool dialogs() const { return host && ops->dialog; }
+    bool tabs() const { return true; }	// the page draws strips
     bool dialog(const char *json)
     {
 	return host && ops->dialog && ops->dialog(host, json ? json : "") == 0;
@@ -1522,12 +1535,53 @@ int64_t term_feed(int64_t w, int64_t entity, const char *bytes, int64_t n)
 	scr.st = (madc::hub::term_screen::esc_state)(unsigned char)esc.as_integer();
     if ( params.is_string() )
 	scr.params = params.as_string();
+    // The program's colours (facelift S8): the pen and the coloured runs
+    // ride the document beside the text, as {s, e, c} span rows — the
+    // shape an edit node's `spans` hint carries, so the Terminal view hands
+    // them to either face unchanged.
+    madc::value pen, spans;
+    get(pen, w, entity, "termpen");
+    get(spans, w, entity, "termspans");
+    if ( pen.is_string() )
+	scr.load_pen(pen.as_string());
+    if ( spans.is_array() )
+    {
+	std::vector<madc::hub::term_screen::span> runs;
+	for ( const madc::value &row : spans.as_array() )
+	{
+	    if ( !row.is_object() )
+		continue;
+	    long rs = madc::hub::hint_of(row, "s", -1), re = madc::hub::hint_of(row, "e", -1);
+	    std::string c = madc::hub::hint_str(row, "c");
+	    if ( rs < 0 || re <= rs || c.empty() )
+		continue;
+	    madc::hub::term_screen::span sp;
+	    sp.s = (size_t)rs;
+	    sp.e = (size_t)re;
+	    sp.spec = c;
+	    runs.push_back(sp);
+	}
+	scr.load_spans(runs);
+    }
     scr.feed(bytes, (size_t)n);
     const std::string new_text = scr.text();
     text_replace(w, entity, 0, (int64_t)old_text.size(), new_text.c_str());
     set(w, entity, "termcol", (int64_t)scr.col);
     set(w, entity, "termesc", (int64_t)(unsigned char)scr.st);
     set(w, entity, "termparams", scr.params.c_str());
+    set(w, entity, "termpen", scr.pen_spec().c_str());
+    std::vector<madc::value> rows;
+    const std::vector<madc::hub::term_screen::span> out = scr.spans();
+    for ( size_t i = 0; i < out.size(); ++i )
+    {
+	std::map<std::string, madc::value> o;
+	o["s"] = madc::value((int64_t)out[i].s);
+	o["e"] = madc::value((int64_t)out[i].e);
+	o["c"] = madc::value(out[i].spec);
+	rows.push_back(madc::value::make_object(o));
+    }
+    madc::value arr = madc::value::make_array(rows);
+    set(w, entity, "termspans", arr);
     return (int64_t)new_text.size();
 }
 
@@ -1887,6 +1941,24 @@ bool clipboards(int64_t t)
 {
     ui_frontend *f = ui_frontend_get(t);
     return f && f->clipboards();
+}
+
+bool tabs(int64_t t)
+{
+    ui_frontend *f = ui_frontend_get(t);
+    return f && f->tabs();
+}
+
+bool menus(int64_t t)
+{
+    ui_frontend *f = ui_frontend_get(t);
+    return f && f->menus();
+}
+
+bool menu_open(int64_t t, const char *title)
+{
+    ui_frontend *f = ui_frontend_get(t);
+    return f && title && f->open_menu(title);
 }
 
 bool clipboard_set(int64_t t, const char *text)

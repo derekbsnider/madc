@@ -1,0 +1,7 @@
+host: 1
+taken: 1
+list: msg=[] request=none [] list=[Search] rows=4
+unknown: msg=[No menu 'Nope'.] request=none [] list=[] rows=0
+parked: msg=[] request=menuopen [Search] list=[] rows=0
+page draws menus: 0
+fallback: msg=[] request=none [] list=[Search] rows=4

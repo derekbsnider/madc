@@ -1067,6 +1067,8 @@ long view_row_cmd(long kind)
 	return cmdHELPTOPIC;	// a link row (madcide_help.inc)
     if ( kind == viewMDPREVIEW )
 	return cmdMDPREVIEWROW;	// a row: its line, or its link (madcide_preview.inc)
+    if ( kind == viewHELPINDEX )
+	return cmdHELPINDEXROW;	// a topic row: its page in the editor (madcide_help.inc)
     if ( view_contributed(kind) )
 	return cmd_view_row_base() + kind - view_contrib_base();
     return cmdNONE;
@@ -1083,6 +1085,8 @@ long view_of_row_cmd(long code)
 	return viewHELP;
     if ( code == cmdMDPREVIEWROW )
 	return viewMDPREVIEW;
+    if ( code == cmdHELPINDEXROW )
+	return viewHELPINDEX;
     if ( cmd_view_row(code) )
 	return view_contrib_base() + code - cmd_view_row_base();
     return viewNONE;

@@ -24,9 +24,11 @@
 - Every polyglot public needs a lean PRIMARY form (`value` / `array` /
   `const char*`); a function that exists only in std::string shape is a
   gap, not a contract.
-- Ring-lifetime `const char *` (ns_common::ring_slot, the c_str()
-  contract) is the return convention of the existing dialect text
-  returns; a script function returns a `value` by value (L3).
+- A carrier's `c_str()` is a BORROW (std::string's contract: valid while
+  the carrier lives unmodified). Ring-lifetime `const char *`
+  (ns_common::ring_slot) is the return convention of the existing dialect
+  text returns that make NEW text; a script function returns a `value` by
+  value (L3).
 - Carrier semantics never vary with which headers a TU parsed (the
   subscript SLOT model is the precedent).
 - Gate: `scripts/check-dialect-lean.sh` (in fulltest) fails the build on

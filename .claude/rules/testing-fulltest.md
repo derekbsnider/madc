@@ -12,7 +12,9 @@ and produces exactly the oscillation this rule exists to stop.
           tooling — `RELEASE_TOOLING` in scripts/lane_ledger.sh: packaging,
           the release archive, the gate; the release workflow's install
           gates prove those, and a lane that runs one names it in
-          `lane_tools`) — UNDER THREE MINUTES,
+          `lane_tools`; and LESS the application — `APPLICATION`: madcide,
+          its tests and screen goldens — which stales only the lanes that
+          run it, `app_lanes`) — UNDER THREE MINUTES,
           all of it: `bash scripts/fast_lanes.sh` (c-testsuite, c-torture,
           c2mir-tests, gui, index-c, gxx-c++11, commonmark). It is a RATCHET against
           recorded baselines, it records each green lane in the ledger, and
@@ -26,7 +28,11 @@ and produces exactly the oscillation this rule exists to stop.
   TIER 3  THE SEAM BATTERY, per MERGE WAVE — about an hour, ONE command:
           `bash scripts/seam_battery.sh`, at the arc's release boundary only.
           Cheapest first: pre-build every toolchain + static gates, then
-          `make -C src gates` (unit tests + gates, no suite), then the FULL
+          `make -C src gates` (unit tests + gates, no suite), then the
+          PROFILING gate `parse-cost` (owner 2026-10-08: callgrind instruction
+          counts of scripts/parse_cost/ on the shipped binary, ratcheted against
+          its baseline — growth is red, a gain is re-recorded downward;
+          `remote_build.sh parsecost` / `parsecost-record`), then the FULL
           tests/ suite ONE way — on the SHIPPED artifact, the -O2 packed
           madc-release, headerless (Linux and win64) — then the small on-disk
           subsets (`ondisk`, `ondisk-win`), then `exeobj` (--exe --obj on the

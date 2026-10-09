@@ -74,6 +74,7 @@ int main()
     if ( !t )
 	return 1;
     S.panel(true);			// the window renders regions (the client's fact)
+    S.tabs(true);			// ... and draws tab strips (ui::tabs)
     println("REPL open");
     var ev;
     int stage = 0;

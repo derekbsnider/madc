@@ -2,6 +2,433 @@
 
 ## [Unreleased]
 
+## [v0.103.0] — 2026-10-09
+
+The TUI facelift: madcide's terminal UI gains the GUI's menus, toolbar, mouse, dialogs, framed panes, tab strips and Dark+ colour, verified by golden screens on POSIX and genuine Windows; names are held as interned `istring` and embedded headers are ranked by a build-time table for a faster compile; and madcide opens every file named on its command line, with Help pages in the editor.
+
+### lanes: a madcide-only change stales only the lanes that run madcide
+
+The lane ledger's APPLICATION set — `tools/`, the madcide tests, the TUI screen
+goldens and their driver — is now excluded from every lane's content except the
+application lanes (`gui`, `tests-jit`), so a change confined to those files
+stales only those two lanes instead of all of them. A change to madc's own
+sources still stales every lane. The ledger's selftest checks the split both
+ways.
+
+### madcide: Help pages open in the editor; a Help Index docks in the sidebar
+
+A help page always opens in the editor pane's Help tab. The new `helpindex`
+view — the topic list: the contents page, then its links — docks in the
+sidebar, and choosing a row opens that topic in the editor. Help Contents opens
+the contents page and shows the index; Help ▸ Help Index toggles it. A layout
+that lists the `help` view on a sidebar or panel is refused at load. Validation:
+Tier 1 `run_tests.sh` 77 passed / 0 failed (EXE 72/0, OBJ 72/0); Tier 2
+`fix_lanes.sh` green — c-testsuite 220/0, c-torture 1617 passed / 7 failing (0
+outside baseline), c2mir-tests 368/0, gui 30/0, gxx-c++11 1505 passed / 441
+failing (0 outside baseline), index-c 50/50, commonmark 664 passed / 6 failed (0
+outside baseline).
+
+### tui: a chrome pane's lines stop at its edge
+
+A chrome pane's long lines are now cut at the pane's width. `paint_line` placed
+a composed line into the grid with no width limit, so a sidebar pane's long rows
+ran past its divider into the centre's columns; `paint_edit` already cut its
+text to the flow's width through `madc::line_columns`, but plain lines and the
+header strip did not. `paint_line` now takes the region's width and cuts the
+laid-out text through the same `madc::line_columns`, clipping its styled spans
+and hit targets to that width; the callers pass their width (`paint_flow`'s
+lines and `paint_header` pass the flow's, the status bar passes the screen's).
+New golden scenario `help-sidebar` records the Help view in the shipped 20% left
+sidebar with every row cut at the divider and the source text intact.
+
+### madcide: every file named on the command line opens
+
+`madcide a.c b.c c.c` opens all three in the editor's buffer ring, the first one
+shown; an `ro` after a file opens that file read-only, and a file named twice
+stays one buffer. Before, a second file was refused as an "unexpected argument".
+The further files open through the one opener `^K E` uses, so the whole command
+line and the menu share a path. The faces that act on a single file (`-c`,
+`--mcp`, `--lsp`, `--serve`) still refuse a second file with that reason. The
+usage line now reads `madcide [<file> [ro]]...`. Reducers:
+`testmadcide_multifile` (three buffers in order, the read-only mark on its file,
+the first active) and `testmadcide_cli` (the parsed files and the one-file
+refusal's condition); Tier 1 `testmadcide*` 63/0 (EXE/OBJ 58/0), Tier 2 green.
+
+### tui: the golden screens on genuine Windows (facelift S9)
+
+The TUI's golden screens now verify on genuine Windows, not only on POSIX.
+`scripts/tui_win_golden.py` stages the packed `bin/release-windows` `madc.exe`
+and the `tools/` tree on the Windows box over ssh, replays every `tui_golden`
+scenario's key and mouse bytes, and compares each rendered screen with the SAME
+golden the POSIX gate uses. `scripts/conpty_host.c` runs `madc.exe` inside a
+ConPTY — the pseudo-console Windows Terminal hosts programs in — reached because
+WSL interop gives a Win32 program pipes. Both renders drop a blank cell's
+invisible style words before comparing, because ConPTY re-encodes a space with
+the cheapest foreground. On Windows 11 build 26200, 31 of 31 screens match (the
+three ASCII `LC_ALL=C` scenarios are POSIX-locale only): menus, toolbar,
+dialogs, Dark+ in 16/256/24-bit colour, Alt and F-keys, and the mouse on menus,
+dropdowns, the caret and tab close. The stage and its processes are removed
+after the run.
+
+### vtscreen: deferred autowrap and ECH
+
+`scripts/vtscreen.py`, the reference VT interpreter the Windows golden
+comparison reads screens through, now models two more xterm behaviours.
+Deferred autowrap: a glyph written in the last column leaves the cursor there
+with a wrap pending, and the next glyph moves to the next line first (scrolling
+at the bottom margin) while any cursor control, erase or ESC sequence cancels
+the pending wrap; DECAWM (`?7h` / `?7l`) switches it. ECH (`CSI n X`) blanks n
+cells from the cursor in the current background (bce) and leaves the cursor in
+place. ConPTY re-paints whole rows relying on the wrap between them and writes
+blank runs as ECH, so interpreting both keeps the Windows screen faithful.
+madc's POSIX renderer emits neither, so the goldens are unchanged
+(`tui_golden_gate` 34 screens and `tui_scroll_gate` PASS).
+
+### gates: three owner gates read the definitions they guard again
+
+Three owner gates recognise their owners again after the names-as-istring
+change moved return types off `std::string`. `check-call-emit-symbol` and
+`check-fn-template-deduction-owner` had matched an owner by a `std::string`
+return type; with those returns now `madc::dis::istring`, the call-shape owner
+counted 0 and the two resolvers' own `local_emit_name` reads counted as drift.
+Both now match a definition by its shape, whatever the return type is spelled.
+`check-one-path-absolute` had counted the `#if`-condition reader's
+comment-opener tests in `src/lexer.cpp` (`p[0] == '/' && p[1] == '/'` and `'*'`)
+as absolute-path tests; the opener's text is removed before the line is scanned,
+so a path test sharing its line is still caught, and a positive and a negative
+control now carry the rule. All three are green on the tree with controls
+intact.
+
+### include/headers: the shadow table covers every header the binary embeds
+
+The system-header shadow table now covers every header a build embeds, not just
+`include/madc`. An Apple-target build also embeds the generated darwin prelude
+(`obj/<mode>/darwin_prelude`) and a Windows build its header fallbacks, so the
+prelude's own header names (`ctype.h` and others) previously got no shadow pair;
+libc++'s `c++/v1` wrappers for those names outrank the C header, so the darwin
+forest pack (freeze-append under `--no-sysroot-includes`) resolved the embedded
+prelude `ctype.h` first and hit libc++'s `<cctype>` `#error`.
+`gen_sys_includes.sh` now reads `MADC_EMBEDDED_EXTRA_DIR` beside `include/madc`,
+`src/Makefile` passes the darwin-prelude or Windows-fallback dir into both the
+parse-time host table and the `sys_include_paths.cpp` rule, and the host table
+is generated after the embedded set so the prelude exists when the table is
+built. The arm64 macOS table now holds 14 `c++/v1` pairs (`ctype.h`, `math.h`,
+`stdio.h`, `wctype.h` among them; before: 4); the Linux host table is unchanged.
+
+### tui: the Terminal tab keeps its program's colours (facelift S8)
+
+A program run in the Terminal tab now shows its colours. The bounded screen
+(`include/madcdis/term_screen.h`) reads SGR as a pen — bold, dim, italic,
+underline, blink and inverse with their resets; the 8 colours and their bright
+twins; the xterm 256-colour palette and 24-bit colour — and every byte keeps
+the pen it was written with, overwrites and erases included. `ui::term_feed`
+keeps the pen and the coloured runs on the `[terminal]` buffer beside its text,
+as `{s, e, c}` span rows whose `c` is a theme spec, and the Terminal view hands
+them to its edit node as `spans`, so both the window and the grid faces render
+the colours with no change of their own. `ui_style_spec` in
+`include/madcdis/ui_style.h` renders a style as the spec the parser reads back
+to the same style, and `ui_xterm256_rgb` is the palette's RGB. The IDE's own
+lines — a run's header, its exit status — start with SGR 0, so a colour a
+program leaves set never reaches them. Where a program runs is unchanged: a
+full-screen program still needs the real terminal, because the tab's screen is
+bounded, not a VT emulator. `bin/test_term_screen` runs 6 cases, all pass (SGR
+to spans, the owner round trip, the spec inverse); `testmadcide_termcolour`
+drives printf's bold red word on a pty and checks the screen's rows, the view's
+`spans`, and that the exit line is plain.
+
+### tui: the mouse — menus, toolbar, tabs, dialogs and the caret by pointer (facelift S7)
+
+The grid reports the mouse. `src/ui_term.cpp` turns on xterm's modes 1000
+(presses), 1002 (drags with a button held) and 1006 (the SGR form, no
+223-column limit) on grid entry and off again on leave or suspend; line mode
+(the REPL) is unchanged. On Windows the console's mouse input is on and
+QuickEdit off while the grid is up, restored on leave (line mode keeps
+QuickEdit) — marked `[validate-win]`. `tui_keyparse::resolve_sgr_mouse` in
+`include/madcdis/tui_keyparse.h` reads `CSI < b;x;y M/m` as a `pointer` key
+(its 0-based cell, button, phase and modifiers); `::ui::key` in
+`include/madc/bits/ui_enums` gains `pointer` and `keys.h` a `tui_button` and
+the cell/button/phase fields on `tui_keyev`. Every paint records a hit map —
+`tui_hit` and `edit_hit` in `include/madcdis/tui_model.h`, filled by the
+existing painters (the bar's titles, a dropdown's rows, the toolbar's buttons
+and arrows, each tab of a strip, a floating window's rows and buttons, every
+edit window's rows) — and a press acts on the last-painted hit under it, so an
+overlay wins and it becomes the same event the keyboard or the window produces.
+A title opens or closes its menu (`focus_state::menu_toggle` /
+`menu_close` in `include/madcdis/ui_focus.h`), a row chooses it (a disabled row
+does nothing), a press outside an open menu closes it; a toolbar button posts
+its command and its `▾` drops its menu under it; a tab posts its command with
+its argument; a list row is the focus owner's pointer choose, the primary
+button chooses the live row and a press outside a dismissable window dismisses
+it; in an edit window a press places the caret by byte (the gutter is the
+line's start, a tab's cells its start, past the end the line's end) and a drag
+extends from there — the window's pointer event (phase, byte offset, subject,
+tag), the press's window keeping the drag. The wheel is three arrow keys. No
+new event kind — the grid emits the window's existing `tui_event_kind::pointer`.
+`bin/test_tui_model` runs 60 cases, all pass (6 new mouse cases); the whole
+unit suite passes, 72 binaries. `scripts/tui_golden_gate.sh` matches 34 golden
+screens plus the negative control (5 new `mouse-*` goldens driven by SGR mouse
+bytes; the 29 existing ones unchanged by the mode bytes).
+`scripts/tui_smoke_gate.sh` PASS with new "mouse reported" / "mouse released"
+checks (CSI ?1006h on entry, CSI ?1000l on exit); `scripts/tui_scroll_gate.sh`
+PASS; `scripts/check-one-key-owner.sh` OK. The hosted Windows PE builds (rc 0).
+
+### line_edit: Meta-b / Meta-f / Meta-d as Alt keys too
+
+The REPL line editor's readline Meta bindings fire again when a terminal sends
+Alt+b / Alt+f / Alt+d as ESC and the letter in one burst. Since the key parser
+began reading that burst as one Alt key (facelift S4), the bindings table bound
+only the two-key `esc b` / `esc f` / `esc d` sequences, so backward-word,
+forward-word and kill-word no longer fired and the letter was inserted as text.
+`line_edit_bindings()` in `include/madcdis/line_edit.h` now binds `alt+b`,
+`alt+f` and `alt+d` beside the `esc` forms; readline accepts both spellings
+(Meta, and Esc typed before the key). `esc backspace` and `esc enter` are
+unchanged — the parser still reads ESC before a control byte as esc then the
+key. `bin/test_line_edit` runs 18 cases, all pass (a new case types Esc alone,
+then `b`, and expects backward-word).
+
+### tui: dialogs, pick lists and prompts as floating windows (facelift S6)
+
+A node hinted `popup` — the data the window already floats — is a floating
+window in the grid: collected where the tree walk meets it (`collect_float` in
+`include/madcdis/tui_model.h`, reading the same `popup` / `dialog` / `prompt` /
+`confirm` hints the window reads), so its focusable slots keep their order,
+painted over the workbench and under the menus, centred in the upper third,
+framed, with a shadow. A pick list (`dialog` {title, filter, buttons}: Options,
+the build palette, the project list, modes, key styles) shows its title on the
+border, its filter as a field line, its options one per row scrolled to keep the
+selected one in view and lit across the box, and its buttons on the last row
+(`[ Run ]  [ Close ]`, the primary lit); a prompt (`prompt` {label, input}:
+Find, Go to Line, a file name) is its label on the border over a field with the
+cursor at the input's end; a question (`confirm`) is its text over its answers
+as buttons. The box, its frame and its shadow are the dropdown's — `paint_box`,
+`paint_box_title` and `paint_shadow`, extracted from the S4/S5 dropdown and
+shared by the dropdown and the new `paint_float`. The keys are the core's
+exactly as before — the buttons are pictures until S7's mouse. The scheme's
+`dialog`, `list_selected`, `field` and `button_primary` colour them (Dark+: the
+quick-input surface `#252526`, the selection `#04395e`, the input `#3c3c3c`, the
+button `#0e639c` in `tools/madcide/profiles/vscode.theme`); an inline list's
+selection is `list_selected` too. `bin/test_tui_model` runs 54 cases (3 new
+float cases); `python3 scripts/tui_golden.py` matches 29 golden screens (5 new:
+`dialog-find` at both sizes, `dialog-question`, `dialog-palette`,
+`dialog-darkplus`; Options and options-scheme at both sizes re-recorded as a
+floating Options dialog, and darkplus-16/256/truecolor now end with the Options
+pane up). `scripts/tui_scroll_gate.sh` PASS; `scripts/check-one-key-owner.sh`
+OK. The golden run takes 309 s, over the 300 s cap `scripts/tui_golden_gate.sh`
+puts on it, so the gate reports a failure on this commit; the next commit fixes
+the gate (parallel scenarios).
+
+### tui: toolbar glyphs and the Run dropdown (facelift S5)
+
+The toolbar row is the plan's target — `New  Open  Save │ ▶ Run ▾  ■ Stop`. The
+grid paints the root's `toolbar` hint on the top row (`paint_toolbar` in
+`include/madcdis/tui_model.h`, the former `toolbar_line`): each button its icon's
+glyph and its label — a run, debug, stop, step or breakpoints icon shows its
+shape (`▶ ▷ ■ ↷ ↓ ↑ ●`, `tui_icon_glyph` over `ui::icon`), the file commands
+their words — two columns apart, a disabled button dim; a separator row a
+divider; a button whose `drop` names a menu ends in `▾`, its column recorded so
+the menu drops under it. The ASCII spelling of every chrome glyph is one owner,
+`ui_glyph_ascii` in `include/madcdis/tui_frame.h` (`ui_box_ascii` grown: box
+drawing plus `> # * v ^`), read by the VT100 target in `src/ui_term.cpp`. A
+toolbar button's `menushow` arrow is the frontend's when it draws the menus
+itself: `ui::menus(t)` (`bool menus(int64_t)` in `include/madc/ns_ui`, the grid)
+is the session's `hasmenus` fact (`IdeSession::menus(bool)`), and the command
+parks a `menuopen` request (`rqMENUOPEN`) the client serves with
+`ui::menu_open(t, title)` — the grid drops that bar menu under its toolbar button
+(`tui_model::open_menu` → `focus_state::menu_open_titled`, the same S4 dropdown,
+keys and action events, anchored at the button's column); a client that draws
+none (a window's native menu, a browser page) or a target that refuses gets the
+session's choice list (`IdeSession::menu_fallback`), as before. The scheme's
+`toolbar` colours the row (Dark+: the side-bar surface `#252526` in
+`tools/madcide/profiles/vscode.theme`). `bin/test_tui_model` runs 51 cases (2 new
+toolbar cases); the new `tests/testmadcide_menushow` pins the parked-request vs
+choice-list split; `scripts/tui_golden_gate.sh` matches 24 golden screens (3 new
+toolbar goldens in Unicode and ASCII from a fixture bundle
+`tests/tui_golden/plugins/tbgolden`, launched with `--profile`; the 21 existing
+re-recorded byte-identical), and `scripts/tui_scroll_gate.sh` stays green. The
+golden harness now clears its config directory per run, as its header promised.
+
+### tui: the menu bar (facelift S4)
+
+The TUI now draws a menu bar. The bar is the focus owner's
+(`include/madcdis/ui_focus.h`): the root `menu` hint — the data the window's
+native menu reads — becomes the bar's menus and rows (`read_menus` in
+`include/madcdis/tui_model.h` feeds `focus_state::set_menus`), each title given
+a hotkey letter (its first letter or digit no earlier title took, Turbo Vision's
+lit letter) by the new `menu_hotkey_of` / `menu_hotkeys` in `ui_focus.h`. The
+one keys → events loop (`ui_apply_keys` in `include/madcdis/ui_input.h`) gives an
+open bar every key but a resize or wake: left/right between menus, up/down over
+the selectable rows (a separator or a disabled row is never lit), Enter or a
+row's letter chooses — the same `action` event (id + code) a bound chord or the
+window's menu produces — and Esc or F10 closes. A key no binding took opens it:
+F10 the first menu, Alt and a menu's letter that menu (`focus_state::menu_opens`);
+a profile that binds the key keeps it (Emacs's `M-f`). A terminal's Meta prefix
+reads as Alt: ESC and a printable byte in one burst is Alt and that key
+(`tui_keyparse`), and Alt and a printable writes back as ESC and the byte. The
+grid paints the bar and the open dropdown last, over everything (`paint_menus`):
+the bar on row 0, the dropdown a framed box under its title (a second
+`tui_frame`, so its separators meet its border as `├ ┤`), each row's chord from
+the loaded profile right-aligned, a disabled row dim, a shadow to the right and
+below. The layout's `menubar` window line
+(`tools/madcide/profiles/default.layout` and the baked default) holds the bar on
+row 0; without it the bar shows only while open (JOE's rows unchanged). The
+scheme's `menubar`, `menu`, `menu_selected`, `menu_hot` and `shadow` colour it
+(Dark+: `#3c3c3c` bar, `#252526` surface, `#04395e` selection, underlined letters
+in `tools/madcide/profiles/vscode.theme`). `bin/test_tui_model` runs 49 cases
+(6 new menu cases); `scripts/tui_golden_gate.sh` pins 21 golden screens (6 new
+menu goldens; the 15 existing re-recorded with the bar on row 0 and every other
+row one lower), and `scripts/tui_scroll_gate.sh` stays green. Submenus wait for
+submenu data.
+
+### tui: tab strips and the status bar (facelift S3)
+
+The editor's tab strip is now a frontend capability rather than a side effect
+of having a window. `ui::tabs(t)` (`bool tabs(int64_t)` in `include/madc/ns_ui`,
+dispatched to each `ui_frontend::tabs()` in `src/ns_ui.cpp`) reports whether a
+target draws tab strips over its regions: the grid and the browser page do, a
+line-mode target and a bad handle do not. The madcide session records it as the
+`hastabs` fact (`IdeSession::tabs(bool)`, pushed beside `panel()` in `run_ide`,
+`spawn_client`, `serve_ws_client`, and off in `run_line`); `haspanel` keeps its
+own meaning — "a window", where runs and the shell go — and only the editor tab
+strip moved onto `hastabs` (`compose_editor_flat` now gates its tab node on
+`hastabs`). The grid draws a node's `tabs` hint as a strip in the flow (the
+editor's open files) through `tab_strip` in `include/madcdis/tui_model.h`, the
+one strip builder that also heads a leaf pane; a chrome band's titles are
+uppercased, as the window's panel headers. The status bar's edge is layout data:
+a `status top|bottom` window line (`tools/madcide/profiles/default.layout` and
+the baked default carry `status bottom`) docks the status node at the screen's
+last row, full width under the bands, drawn from its `items` segments — the left
+side from the left edge, the right side against the right, the file name bold and
+the labels dim; a layout without the line keeps JOE's status line on top,
+byte-identical. The `tui_chrome` enum gains `tab`, `tab_active` and `statusbar`,
+coloured by the scheme's specs of those names (Dark+ `tab` #969696, `tab_active`
+bold underlined white, `statusbar` white on #007acc in
+`tools/madcide/profiles/vscode.theme`). `bin/test_tui_model` runs 43 cases (3 new
+S3 cases; the bottom-panel case now expects its strip uppercase);
+`scripts/tui_golden_gate.sh` pins 15 golden screens (new `tabs-second-80x24` and
+`tabs-back-80x24`, the strip switched by `^K E`), and `scripts/tui_scroll_gate.sh`
+stays green.
+
+### tui: frames, the line-number gutter and the current line (facelift S2)
+
+The TUI now draws box-drawing frames. A new frame layer
+(`include/madcdis/tui_frame.h`) records each divider cell's arms (up / down /
+left / right) and renders one glyph per cell from its arms, so junctions fall
+out of geometry: a panel's top divider ending on a sidebar's is `┤`, a split's
+divider standing on a panel's is `┴`, a crossing is `┼`, a corner is `┌` — no
+code picks a junction. The sidebar and bottom panel give their edge column / row
+next to the centre to a divider, and a vertical split's former blank column is
+now a divider line on every row. The model always paints box drawing; the
+terminal spells each glyph in ASCII (`-` `|` `+`) when its locale is not UTF-8
+(`detect_glyph_set` beside `detect_colour_depth` in `src/ui_term.cpp`,
+`ui_box_ascii` at emission). An editor pane whose layout carries the new
+`gutter` word (`tools/madcide/profiles/default.layout`'s editor pane) numbers
+its lines in at least three columns and marks the caret line; the text and
+cursor move past the gutter, and too narrow a pane keeps its text and omits the
+gutter. The chrome's colours are the scheme's `divider`, `gutter`,
+`gutter_current` and `current_line` specs (Dark+ `editorLineNumber` #858585,
+active `#c6c6c6`, line highlight `#282828` in `tools/madcide/profiles/vscode.theme`),
+handed to the grid as the root's `chrome` hint and read into the `tui_chrome`
+enum once; a syntax span keeps the caret line's background. `bin/test_tui_model`
+runs 40 cases / 579 assertions (6 new S2 cases); `scripts/tui_golden_gate.sh`
+pins 13 golden screens (new `replrun-ascii-80x24` under `LC_ALL=C` and
+`darkplus-repl-120x36` truecolor), and `scripts/tui_scroll_gate.sh` now checks
+each row's line number across 70 scroll steps.
+
+### task runtime: ASan fiber hooks name the live ucontext stack in a sanitizer build
+
+A sanitizer build now instruments the host runtime objects too: `src/Makefile`
+derives `RT_SANITIZE_FLAGS` from the `-fsanitize=`/`-fno-omit-frame-pointer`
+flags in `CXXFLAGS` and adds them to the PIC runtime family (built into
+`libmadc.so`), with the `.rt-flags-v*` stamp carrying a `-san` suffix so the
+objects rebuild when the flags change. The non-PIC family (`libmadc_rt.a`,
+shipped into user executables, which never link a sanitizer runtime) keeps
+`RT_CFLAGS` alone, so non-sanitizer builds are unchanged. In a sanitizer build
+(`MADC_TASK_ASAN`, via `__SANITIZE_ADDRESS__` or `__has_feature`), every
+`swapcontext`/`setcontext` in `rt/rt_task.c` brackets the switch with
+`__sanitizer_start_switch_fiber` / `__sanitizer_finish_switch_fiber`, telling
+ASan which task stack is live and learning main's bounds on the first switch
+away. Without the hooks, a C++ throw on a task unwound into `sigaltstack`
+writing inside a task's `malloc`'d ucontext stack, which ASan had never been
+told about, and reported it as `stack-buffer-overflow`. An ASan sweep of 66
+madcide/ui tests dropped from 5 findings (`testmadcide`,
+`testmadcide_livecolour`, `testmadcide_plugin_host`, `testmadcide_serve_propose`,
+`testmadcide_serve_web`) to 0.
+
+### highlight: namespace names colour as `namespace`, scoped enums before `::` as `typename`
+
+An identifier the parse reads as a namespace-name — a namespace or alias
+definition's name, an alias target, a using-directive, and every qualifier
+before `::` (nested, global-qualified, in a type and in an expression) — now
+records the canonical namespace on its token spelling
+(`TokenIdent::named_namespace`, via `note_namespace_name_use`), and
+`madc::parse_spans` colours it `namespace` (`HighlightClass::hcNamespace`)
+instead of `ident`. The qualifier owners (`classify_qualifier_before_scope`,
+`canonical_nested_namespace`, `parse_namespace_block`, `TokenUSING::parse`)
+mark through one new sink, `Program::note_scope_name_use`, which paints a
+scoped enum's pseudo-namespace before `::` as the enum TYPE (`typename`), not
+a namespace. madcide's Dark+ `vscode` scheme takes `namespace` #4ec9b0; a
+scheme that leaves `namespace` unnamed falls back along the nearest-named-
+ancestor chain (`namespace` → `typename` → `type`), and the LSP legend maps
+`namespace` to `lttTYPE`. `clang++ -std=c++17 -Xclang -ast-dump` on the same
+text resolves a, b, c, d as NamespaceDecl, e as NamespaceAliasDecl, the
+using-directive as naming d, and K as a type; `g++ -std=c++17` accepts it.
+Completes TUI facelift slice S1b.
+
+### carrier: `var.c_str()` borrows the payload, not a ring copy — the std::string contract
+
+A string-kind value's `c_str()` returns a borrow of the carrier's own
+NUL-terminated payload — std::string's contract, valid while the carrier lives
+unmodified — instead of copying the text into the 8-slot per-thread ring, where
+a held pointer silently changed under the ninth ring write (madcide held 48 such
+pointers across its text work; an ASan build reported heap-use-after-free in the
+REPL tests). `madarray_cstr` returns the payload directly; other value kinds,
+which have no text to borrow, still render into the ring. A `char *` function
+returning a local carrier's text (`return v;`, `return v.c_str();`, through
+either arm of a `?:`) is copied out at the return by `translate_return`
+(`__madc_text_escape`, marked by `FuncDef::borrows_receiver_text`) ahead of the
+frame's cleanups. `set_c_string` copies the new text out before releasing the
+old payload, so assigning a carrier from a pointer into its own text (`v = p + 2`)
+is alias-safe. `g++ -std=c++17` and `clang++ -std=c++17` on the std::string
+analogue both print `tests/testvarcstrborrow`'s expected output; an ASan sweep
+of 66 madcide/ui tests shows no remaining heap-use-after-free. One madcide site
+that held a borrow of a block-scoped `var` past its scope
+(`lsp_execute_command`) now declares the carrier in the pointer's scope.
+
+### headers: embedded headers ranked by a build-time table, never searched per compile
+
+Whether a system directory ahead of the compiler-owned slot supplies an
+embedded header under the same name is decided when madc is built, not probed
+on disk or in the pack on every compile — madc carries its headers and is
+self-contained. `scripts/gen_sys_includes.sh` records per-flavor `{dir, name}`
+pairs in `madc_stdlib_flavor::embedded_shadows` (libstdc++: none; libc++:
+`float.h`, `stdbool.h`, `stddef.h`, `stdint.h` from `c++/v1`); the ranking
+readers read the table and probe disk only for a `-I` directory (the program's
+own headers). The former probe decoded the packed forest on every compile, 49%
+of the dialect compile's Ir; the dialect parse-cost workload drops from 143.5M
+to 72.4M Ir (−49.6%) with the header-parsing workloads unchanged.
+
+### compiler core: names held as interned `madc::dis::istring`, interned once at the source
+
+The compiler core (lexer, parser, CIR builder/dump/format/emit, madc_cir,
+cir_freeze, type spelling, mangler, completion, keywords, pch, and their
+headers) holds every NAME as `madc::dis::istring` — an 8-byte handle to a
+process-wide deduplicated spelling, so a name copy is 8 bytes, `==` is a
+pointer compare, and a name enters the process table once per token pool
+rather than once per use. Only text that is built or edited, output and source
+text, OS-boundary paths and lists, and the libmadc API boundary stay
+`std::string`. Spellings are interned once at the source — the table's mutex is
+held once per CLI compile, each token pool memoizes its spellings, and the hash
+reads whole 8-byte words. Parse-cost falls against the pre-interning baseline:
+`cxx_stl.live` −14.0%, `cxx_stl.forest` −14.1%, `c_headers.live` −13.5%,
+`subscript.live` −14.3%, `subscript.forest` −14.9%, `dialect.live` −1.2% (Ir).
+A system header's include-guard is now decided in the one lex that reads it
+(gcc's multiple-include rules), with an `#else`/`#elif` on the guard group
+disqualifying it as in gcc — not a second full-text read and line scan on first
+visit; 876/876 lex verdicts equal the full-text verdict over the gate workloads
+and include tests. The new `scripts/check-istring-fields.sh` gate (fulltest)
+ratchets the core's `std::string` count per file and flags five lifetime
+hazards the interned type exposes, so the migration cannot regrow.
+
 ## [v0.102.1] — 2026-10-07
 
 The bug-fix release for v0.102.0, carrying every fix banked since it rather

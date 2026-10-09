@@ -193,7 +193,7 @@ node_t CirBuilder::dump_pr_end_entry(DumpFlavor fl, int depth,
 // Type words (var_dump only)
 // ---------------------------------------------------------------------------
 // var_dump's scalar word: TypeSpeller's (include/madc_type_spelling.h).
-static std::string dump_scalar_type_word(DataDef *dd)
+static madc::dis::istring dump_scalar_type_word(DataDef *dd)
 {
 	return TypeSpeller::scalar_word(dd);
 }
@@ -202,7 +202,7 @@ static std::string dump_scalar_type_word(DataDef *dd)
 // because a struct IS what a PHP developer reads as an object. ONE owner: the
 // *RECURSION* marker prints the word of the frame it REPLACES, and a second
 // " Object" spelling there would be free to drift from this one.
-static std::string dump_pr_object_word(const std::string &name)
+static madc::dis::istring dump_pr_object_word(const madc::dis::istring &name)
 {
 	return name + " Object";
 }
@@ -211,10 +211,10 @@ static std::string dump_pr_object_word(const std::string &name)
 // a union: madc PROMOTES a plain struct to DataDefCLASS when it earns
 // class-hood (an object member, an NSDMI, a nested type), so "class" would be a
 // claim about the SOURCE that the type graph cannot support.
-static std::string dump_aggregate_type_word(DataDefSTRUCT *sdd,
-					    const std::string &name)
+static madc::dis::istring dump_aggregate_type_word(DataDefSTRUCT *sdd,
+					    const madc::dis::istring &name)
 {
-	std::string kind = sdd->union_layout ? "union " : "struct ";
+	madc::dis::istring kind = sdd->union_layout ? "union " : "struct ";
 	return kind + name;
 }
 
@@ -227,7 +227,7 @@ static std::string dump_aggregate_type_word(DataDefSTRUCT *sdd,
 // next line, rendered by the sequence walk, said std::vector<int>. The
 // container arms feed their element types back through here, so the recursion
 // terminates on the element nesting.
-std::string CirBuilder::dump_type_word(DataDef *dd)
+madc::dis::istring CirBuilder::dump_type_word(DataDef *dd)
 {
 	if (dd && !dd->is_pointer() && !dd->is_reference())
 		if (DataDefCLASS *c = is_class_object(dd)
@@ -240,7 +240,7 @@ std::string CirBuilder::dump_type_word(DataDef *dd)
 // A class's word, container-aware. The two container recognizers decide it, the
 // same ones the two container WALKS use — so the word on an entry's head line
 // and the word the walk below it prints are answers to one question.
-std::string CirBuilder::dump_container_type_word(DataDefCLASS *cls)
+madc::dis::istring CirBuilder::dump_container_type_word(DataDefCLASS *cls)
 {
 	// A SELF-REFERENTIAL container's word contains itself. Fall back to the
 	// canonical spelling rather than recursing: a `Box<int>` whose operator[]
@@ -249,14 +249,14 @@ std::string CirBuilder::dump_container_type_word(DataDefCLASS *cls)
 	// '<'). m_dump_word_expanding is its own set — see the header for why it
 	// cannot share the walk's.
 	if (!cls || m_dump_word_expanding.count(cls))
-		return cls ? dump_class_type_word(cls) : std::string("?");
+		return cls ? dump_class_type_word(cls) : madc::dis::istring("?");
 	m_dump_word_expanding.insert(cls);
-	std::string word = dump_container_type_word_inner(cls);
+	madc::dis::istring word = dump_container_type_word_inner(cls);
 	m_dump_word_expanding.erase(cls);
 	return word;
 }
 
-std::string CirBuilder::dump_container_type_word_inner(DataDefCLASS *cls)
+madc::dis::istring CirBuilder::dump_container_type_word_inner(DataDefCLASS *cls)
 {
 	Variable *szmv = NULL, *opmv = NULL;
 	if (class_index_iteration_protocol(cls, szmv, opmv)) {
@@ -300,7 +300,7 @@ std::string CirBuilder::dump_container_type_word_inner(DataDefCLASS *cls)
 // the same one the walk dumps. (A std::array's extent drops out of the spelling
 // and is printed as the COUNT instead.) A word with no '<' — a resolved alias
 // like std::string, or a plain class — is already what the source wrote.
-std::string CirBuilder::dump_sequence_type_word(DataDefCLASS *cls, DataDef *elem)
+madc::dis::istring CirBuilder::dump_sequence_type_word(DataDefCLASS *cls, DataDef *elem)
 {
 	std::vector<DataDef *> args;
 	args.push_back(elem);
@@ -313,12 +313,12 @@ std::string CirBuilder::dump_sequence_type_word(DataDefCLASS *cls, DataDef *elem
 // (std::map<int,int,std::less<int>,std::allocator<std::pair<const int,int>>>).
 // Both container walks render their word through here, so a map's word cannot
 // use a different rule from a vector's.
-std::string CirBuilder::dump_template_word(DataDefCLASS *cls,
+madc::dis::istring CirBuilder::dump_template_word(DataDefCLASS *cls,
 					   const std::vector<DataDef *> &args)
 {
-	std::string word = dump_class_type_word(cls);
+	madc::dis::istring word = dump_class_type_word(cls);
 	size_t lt = word.find('<');
-	if (lt == std::string::npos || args.empty())
+	if (lt == madc::dis::istring::npos || args.empty())
 		return word;
 	std::string out = word.substr(0, lt) + "<";
 	for (size_t i = 0; i < args.size(); i++) {
@@ -334,7 +334,7 @@ std::string CirBuilder::dump_template_word(DataDefCLASS *cls,
 // An array's type word: the element's, with every extent from THIS dimension
 // outward — `int[2][3]` at the outer level of an `int m[2][3]` and `int[3]` one
 // level in, which is the shape C declares and the nesting PHP renders.
-std::string CirBuilder::dump_array_type_word(DataDef *elem,
+madc::dis::istring CirBuilder::dump_array_type_word(DataDef *elem,
 					     const std::vector<carray_dim_t> &dims,
 					     size_t dim_ix)
 {
@@ -348,32 +348,32 @@ std::string CirBuilder::dump_array_type_word(DataDef *elem,
 }
 
 // The source's own name for a type: TypeSpeller's.
-std::string CirBuilder::type_alias_spelling(DataDef *dd)
+madc::dis::istring CirBuilder::type_alias_spelling(DataDef *dd)
 {
 	return TypeSpeller(m_prog).alias(dd);
 }
 
 // A class's type word: TypeSpeller's.
-std::string CirBuilder::dump_class_type_word(DataDefCLASS *cls)
+madc::dis::istring CirBuilder::dump_class_type_word(DataDefCLASS *cls)
 {
 	return TypeSpeller(m_prog).class_word(cls);
 }
 
 // The name var_dump's and print_r's aggregate heads carry: TypeSpeller's.
-std::string CirBuilder::dump_aggregate_name(DataDefSTRUCT *sdd)
+madc::dis::istring CirBuilder::dump_aggregate_name(DataDefSTRUCT *sdd)
 {
 	return TypeSpeller(m_prog).aggregate_name(sdd);
 }
 
 // D10's show word for a type: TypeSpeller's, which the session's %type reads
 // too (plan §41.8a).
-std::string CirBuilder::dump_show_type_word(DataDef *dd)
+madc::dis::istring CirBuilder::dump_show_type_word(DataDef *dd)
 {
 	return TypeSpeller(m_prog).shown(dd);
 }
 
 // An inline namespace is transparent to qualified lookup: TypeSpeller's.
-std::string CirBuilder::strip_inline_namespaces(const std::string &spelling)
+madc::dis::istring CirBuilder::strip_inline_namespaces(const madc::dis::istring &spelling)
 {
 	return TypeSpeller(m_prog).strip_inline_namespaces(spelling);
 }
@@ -381,12 +381,12 @@ std::string CirBuilder::strip_inline_namespaces(const std::string &spelling)
 // PHP's key spelling for a member, per flavor. print_r writes
 // "[prot:protected]" and "[priv:Foo:private]"; var_dump quotes the name and the
 // class: ["prot":protected] and ["priv":"Foo":private].
-static std::string dump_member_key(CirBuilder::DumpFlavor fl,
-				   const std::string &name, uint32_t access,
-				   const std::string &owner)
+static madc::dis::istring dump_member_key(CirBuilder::DumpFlavor fl,
+				   const madc::dis::istring &name, uint32_t access,
+				   const madc::dis::istring &owner)
 {
 	bool q = fl == CirBuilder::dfVarDump;
-	std::string key = q ? "\"" + name + "\"" : name;
+	std::string key = q ? madc::dis::istring("\"" + name + "\"") : name;
 	if (access & vfPRIVATE)
 		key += q ? ":\"" + owner + "\":private" : ":" + owner + ":private";
 	else if (access & vfPROTECTED)
@@ -429,7 +429,7 @@ node_t CirBuilder::dump_call_stmt(const char *sym, node_t args, TokenBase *origi
 		     origin);
 }
 
-node_t CirBuilder::dump_head(DumpFlavor fl, int depth, const std::string &word,
+node_t CirBuilder::dump_head(DumpFlavor fl, int depth, const madc::dis::istring &word,
 			     size_t count, TokenBase *origin)
 {
 	return dump_head_node(fl, depth, word, integer((int64_t)count, origin),
@@ -439,7 +439,7 @@ node_t CirBuilder::dump_head(DumpFlavor fl, int depth, const std::string &word,
 // A container's element count is a RUNTIME value (`c.size()`), so the count
 // arrives as a node. A compile-time count is the same call with a literal.
 node_t CirBuilder::dump_head_node(DumpFlavor fl, int depth,
-				  const std::string &word, node_t count,
+				  const madc::dis::istring &word, node_t count,
 				  TokenBase *origin)
 {
 	node_t a = list();
@@ -458,7 +458,7 @@ node_t CirBuilder::dump_head_node(DumpFlavor fl, int depth,
 	return dump_call_stmt("__madc_dump_pr_head", a, origin);
 }
 
-node_t CirBuilder::dump_key(DumpFlavor fl, int depth, const std::string &key,
+node_t CirBuilder::dump_key(DumpFlavor fl, int depth, const madc::dis::istring &key,
 			    TokenBase *origin)
 {
 	const char *sym = fl == dfVarDump ? "__madc_dump_vd_key"
@@ -560,7 +560,7 @@ node_t CirBuilder::dump_tail(DumpFlavor fl, int depth, bool nested,
 
 // var_dump's text form: `<type>(<len>) "` ... `"` with the characters between.
 // The length is the container's own size(), a runtime value.
-node_t CirBuilder::dump_vd_text_open(int depth, const std::string &word,
+node_t CirBuilder::dump_vd_text_open(int depth, const madc::dis::istring &word,
 				     node_t len, TokenBase *origin)
 {
 	need_dump_extern("__madc_dump_vd_text_open",
@@ -729,7 +729,7 @@ bool CirBuilder::dump_scalar(DumpFlavor fl, const DumpAccess &acc, DataDef *dd,
 		params.push_back({ {N_INT}, false });
 		params.push_back({ {N_CHAR}, true });
 		append(a, dump_col(fl, depth, false, origin));
-		std::string word = dump_type_word(dd);
+		madc::dis::istring word = dump_type_word(dd);
 		append(a, str(word.c_str(), word.size() + 1, origin));
 	}
 	switch (kind) {
@@ -770,7 +770,7 @@ bool CirBuilder::dump_struct(DumpFlavor fl, const DumpAccess &acc,
 	// reconstruct which. Skip it rather than print the wrong storage —
 	// including it needs one owner for the emitted field name, which is a
 	// refactor of its own.
-	std::map<std::string, int> namecount;
+	std::map<madc::dis::istring, int> namecount;
 	for (size_t i = 0; i < sdd->members.size(); i++)
 		if (!sdd->members[i].first.empty())
 			namecount[sdd->members[i].first]++;
@@ -778,7 +778,7 @@ bool CirBuilder::dump_struct(DumpFlavor fl, const DumpAccess &acc,
 
 	std::vector<size_t> shown;
 	for (size_t i = 0; i < sdd->members.size(); i++) {
-		const std::string &mn = sdd->members[i].first;
+		const madc::dis::istring &mn = sdd->members[i].first;
 		if (mn.empty())
 			continue;               // unnamed bit-field padding
 		if (namecount[mn] > 1)
@@ -797,11 +797,11 @@ bool CirBuilder::dump_struct(DumpFlavor fl, const DumpAccess &acc,
 	size_t nshow = shown.size();
 	if (show) {
 		const bool cxx = m_prog && m_prog->presents_as_cpp();
-		std::string word = dump_show_type_word(sdd);
+		madc::dis::istring word = dump_show_type_word(sdd);
 		out.push_back(dump_show_text(!show_spells_type(nested)
-					     ? std::string("{ ")
-					     : cxx ? word + "{ "
-						   : "(" + word + "){ ", origin));
+					     ? madc::dis::istring("{ ")
+					     : madc::dis::istring(cxx ? word + "{ "
+						   : "(" + word + "){ "), origin));
 		if (sdd->union_layout && nshow > 1)
 			nshow = 1;
 	} else
@@ -814,7 +814,7 @@ bool CirBuilder::dump_struct(DumpFlavor fl, const DumpAccess &acc,
 
 	for (size_t si = 0; si < nshow; si++) {
 		size_t i = shown[si];
-		const std::string &mn = sdd->members[i].first;
+		const madc::dis::istring &mn = sdd->members[i].first;
 		DataDef *mt = sdd->members[i].second;
 		size_t count = i < sdd->member_counts.size()
 			     ? sdd->member_counts[i] : 1;
@@ -845,7 +845,7 @@ bool CirBuilder::dump_struct(DumpFlavor fl, const DumpAccess &acc,
 			// 8.3.6.
 			uint32_t acc_flags = i < sdd->member_access.size()
 					   ? sdd->member_access[i] : 0;
-			std::string owner = sdd->name;
+			madc::dis::istring owner = sdd->name;
 			int origin_base = i < sdd->member_origin.size()
 					? sdd->member_origin[i] : -1;
 			if (cdd && origin_base >= 0
@@ -859,7 +859,7 @@ bool CirBuilder::dump_struct(DumpFlavor fl, const DumpAccess &acc,
 		}
 
 		// Rebuild the member access per use: a c2mir node has one parent.
-		std::string mname = mn;
+		madc::dis::istring mname = mn;
 		DumpAccess macc = [this, acc, mname, origin]() -> node_t {
 			return node2(N_FIELD, acc(), id(mname.c_str(), origin),
 				     origin);
@@ -930,7 +930,7 @@ bool CirBuilder::dump_array(DumpFlavor fl, const DumpAccess &acc, DataDef *elem,
 		return true;
 	}
 	if (show) {
-		std::string open = "{ ";
+		madc::dis::istring open = "{ ";
 		if (show_spells_type(nested) && !(m_prog && m_prog->presents_as_cpp())) {
 			std::string word = dump_show_type_word(elem);
 			for (size_t d = dim_ix; d < dims.size(); d++)
@@ -956,7 +956,7 @@ bool CirBuilder::dump_array(DumpFlavor fl, const DumpAccess &acc, DataDef *elem,
 			params.push_back({ {N_INT}, false });
 			params.push_back({ {N_CHAR}, true });
 			append(a, dump_col(fl, depth, false, origin));
-			std::string word = dump_array_type_word(elem, dims,
+			madc::dis::istring word = dump_array_type_word(elem, dims,
 							       dim_ix);
 			append(a, str(word.c_str(), word.size() + 1, origin));
 		}
@@ -975,12 +975,12 @@ bool CirBuilder::dump_array(DumpFlavor fl, const DumpAccess &acc, DataDef *elem,
 		out.push_back(dump_head(fl, depth,
 					fl == dfVarDump
 					  ? dump_array_type_word(elem, dims, dim_ix)
-					  : std::string("Array"),
+					  : madc::dis::istring("Array"),
 					count, origin));
 
 	char idx[40];
 	snprintf(idx, sizeof(idx), "__dmp_i_%d", m_strtmp_counter++);
-	std::string idxname = idx;
+	madc::dis::istring idxname = idx;
 
 	std::vector<node_t> body;
 	if (show) {
@@ -1104,7 +1104,7 @@ bool CirBuilder::dump_sequence(DumpFlavor fl, const DumpAccess &acc,
 	char nm[40], ix[40];
 	snprintf(nm, sizeof(nm), "__dmp_n_%d", m_strtmp_counter++);
 	snprintf(ix, sizeof(ix), "__dmp_i_%d", m_strtmp_counter++);
-	std::string nname = nm, idxname = ix;
+	madc::dis::istring nname = nm, idxname = ix;
 
 	node_t szcall = class_nullary_call(cls, "size",
 					   node1(N_ADDR, acc(), origin), origin);
@@ -1134,9 +1134,9 @@ bool CirBuilder::dump_sequence(DumpFlavor fl, const DumpAccess &acc,
 	};
 
 	bool is_text = dump_elem_is_char(elem);
-	std::string word = fl == dfVarDump
+	madc::dis::istring word = fl == dfVarDump
 			 ? dump_sequence_type_word(cls, elem)
-			 : (is_text ? std::string() : std::string("Array"));
+			 : (is_text ? madc::dis::istring() : madc::dis::istring("Array"));
 	// D10's show (plan §41.4a): text is its quoted characters (a std::string
 	// re-enters as its literal); any other sequence is a brace list, with its
 	// type at top level (`std::vector<int>{ 1, 2 }`, a C++ expression). An
@@ -1155,9 +1155,9 @@ bool CirBuilder::dump_sequence(DumpFlavor fl, const DumpAccess &acc,
 						      origin));
 		} else {
 			out.push_back(dump_show_text(!show_spells_type(nested)
-						     ? std::string("{ ")
-						     : dump_container_type_word(cls)
-						       + "{ ", origin));
+						     ? madc::dis::istring("{ ")
+						     : madc::dis::istring(dump_container_type_word(cls)
+						       + "{ "), origin));
 			need_dump_extern("__madc_dump_sh_sep",
 					 { { {N_LONG, N_LONG}, false } });
 			node_t sa = list();
@@ -1286,7 +1286,7 @@ bool CirBuilder::dump_iterator(DumpFlavor fl, const DumpAccess &acc,
 	// from the container, so nothing here knows the word "pair". If either is
 	// missing the element renders positionally: honest, rather than wrong.
 	DataDef *kdd = NULL, *vdd = NULL;
-	std::string kname, vname;
+	madc::dis::istring kname, vname;
 	if (keyed) {
 		DataDefSTRUCT *pair = dynamic_cast<DataDefSTRUCT *>(
 					elem ? elem->unqualified() : NULL);
@@ -1307,14 +1307,14 @@ bool CirBuilder::dump_iterator(DumpFlavor fl, const DumpAccess &acc,
 	snprintf(nm, sizeof(nm), "__dmp_n_%d", m_strtmp_counter++);
 	snprintf(kx, sizeof(kx), "__dmp_k_%d", m_strtmp_counter++);
 	snprintf(itn, sizeof(itn), "__dmp_it_%d", m_strtmp_counter++);
-	std::string nname = nm, idxname = kx, itname = itn;
+	madc::dis::istring nname = nm, idxname = kx, itname = itn;
 
 	// long n = c.size();  — the count ONCE, into a local: the head line and
 	// the loop bound must agree, and size() is a real call.
 	node_t szcall = class_nullary_call(cls, "size",
 					   node1(N_ADDR, acc(), origin), origin);
 	if (!szcall) {
-		why = std::string("its size() is not callable");
+		why = madc::dis::istring("its size() is not callable");
 		return false;
 	}
 	node_t nspec = list();
@@ -1333,7 +1333,7 @@ bool CirBuilder::dump_iterator(DumpFlavor fl, const DumpAccess &acc,
 	node_t bcall = class_nullary_call(cls, "begin",
 					  node1(N_ADDR, acc(), origin), origin);
 	if (!bcall) {
-		why = std::string("its begin() is not callable");
+		why = madc::dis::istring("its begin() is not callable");
 		return false;
 	}
 	node_t ispecs = list();
@@ -1346,7 +1346,7 @@ bool CirBuilder::dump_iterator(DumpFlavor fl, const DumpAccess &acc,
 		DataDef *ibase = ip.itptr->unqualified();
 		int stars = 1 + dd_peel_pointers(ibase);
 		if (!dump_pointee_specs(ibase, ispecs)) {
-			why = std::string("its iterator's pointee has no "
+			why = madc::dis::istring("its iterator's pointee has no "
 					  "renderable declaration");
 			return false;
 		}
@@ -1397,8 +1397,8 @@ bool CirBuilder::dump_iterator(DumpFlavor fl, const DumpAccess &acc,
 	const bool show = fl == dfShow;
 	if (show) {
 		out.push_back(dump_show_text(!show_spells_type(nested)
-					     ? std::string("{ ")
-					     : dump_container_type_word(cls) + "{ ",
+					     ? madc::dis::istring("{ ")
+					     : madc::dis::istring(dump_container_type_word(cls) + "{ "),
 					     origin));
 		need_dump_extern("__madc_dump_sh_sep",
 				 { { {N_LONG, N_LONG}, false } });
@@ -1426,8 +1426,8 @@ bool CirBuilder::dump_iterator(DumpFlavor fl, const DumpAccess &acc,
 		} else
 			show_one(eacc, elem);
 	} else {
-		std::string word = fl == dfVarDump ? dump_template_word(cls, wargs)
-						   : std::string("Array");
+		madc::dis::istring word = fl == dfVarDump ? dump_template_word(cls, wargs)
+						   : madc::dis::istring("Array");
 		out.push_back(dump_head_node(fl, depth, word,
 					     id(nname.c_str(), origin), origin));
 		if (keyed) {
@@ -1466,7 +1466,7 @@ bool CirBuilder::dump_iterator(DumpFlavor fl, const DumpAccess &acc,
 						      origin),
 						origin, true);
 		if (!inc) {
-			why = std::string("its iterator's operator++ is not "
+			why = madc::dis::istring("its iterator's operator++ is not "
 					  "callable");
 			return false;
 		}
@@ -1529,8 +1529,8 @@ static bool container_needs_iterator_walk(DataDefCLASS *cls)
 {
 	if (!cls)
 		return false;
-	Variable *b = cls->findMethod(std::string("begin"));
-	Variable *e = cls->findMethod(std::string("end"));
+	Variable *b = cls->findMethod(madc::dis::istring("begin"));
+	Variable *e = cls->findMethod(madc::dis::istring("end"));
 	return b && e && dynamic_cast<FuncDef *>(b->type) != NULL
 	    && dynamic_cast<FuncDef *>(e->type) != NULL;
 }
@@ -1568,16 +1568,16 @@ static bool container_needs_iterator_walk(DataDefCLASS *cls)
 // rejects. The FIRST name wins — the source's own order, and what a debugger
 // shows. `char *` and not `const char *` because a C string literal IS `char[]`,
 // so this needs no const plumbing to be warning-free C.
-std::string CirBuilder::dump_enum_name_fn(DataDefENUM *edd, TokenBase *origin)
+madc::dis::istring CirBuilder::dump_enum_name_fn(DataDefENUM *edd, TokenBase *origin)
 {
-	std::map<DataDef *, std::string>::iterator it
+	std::map<DataDef *, madc::dis::istring>::iterator it
 		= m_dump_enum_fn_syms.find(edd);
 	if (it != m_dump_enum_fn_syms.end())
 		return it->second;
 
 	char nm[48];
 	snprintf(nm, sizeof nm, "__madc_enumname_%d", m_dump_fn_counter++);
-	std::string fname = nm;
+	madc::dis::istring fname = nm;
 	m_dump_enum_fn_syms[edd] = fname;
 
 	static const char *P_V = "__dv";
@@ -1586,7 +1586,7 @@ std::string CirBuilder::dump_enum_name_fn(DataDefENUM *edd, TokenBase *origin)
 	for (size_t e = 0; e < edd->enumerators.size(); e++) {
 		if (!seen.insert(edd->enumerators[e].second).second)
 			continue;
-		const std::string &en = edd->enumerators[e].first;
+		const madc::dis::istring &en = edd->enumerators[e].first;
 		node_t ritems = list();
 		append(ritems, node2(N_RETURN, list(),
 				     str(en.c_str(), en.size() + 1, origin),
@@ -1664,7 +1664,7 @@ bool CirBuilder::dump_enum(DumpFlavor fl, const DumpAccess &acc,
 		      " cannot be named";
 		return false;
 	}
-	std::string fn = dump_enum_name_fn(edd, origin);
+	madc::dis::istring fn = dump_enum_name_fn(edd, origin);
 	if (fn.empty()) {
 		why = std::string("no dumper for enum '") + edd->name + "' yet";
 		return false;
@@ -1677,8 +1677,8 @@ bool CirBuilder::dump_enum(DumpFlavor fl, const DumpAccess &acc,
 	// class-nested or namespaced tag reads as `Deck::Kind` /
 	// `std::ios_base::event` rather than the bare `Kind` — the same spelling
 	// (and the same owner) the forest keys its enumerator run on.
-	const std::string &canon = edd->canonical_cpp_spelling();
-	std::string tag = canon.empty() ? edd->name : canon;
+	const madc::dis::istring &canon = edd->canonical_cpp_spelling();
+	madc::dis::istring tag = canon.empty() ? edd->name : canon;
 
 	// D10's show: the enumerator, which re-enters as the value. In C++ it is
 	// qualified by its tag (`Color::Red`): a scoped enum needs that, and an
@@ -1688,8 +1688,8 @@ bool CirBuilder::dump_enum(DumpFlavor fl, const DumpAccess &acc,
 		const bool cxx = m_prog && m_prog->presents_as_cpp();
 		const bool named = !edd->enum_name.empty()
 				   && edd->enum_name.compare(0, 2, "__") != 0;
-		std::string scope = (cxx && named) ? tag + "::" : std::string();
-		std::string ty = !show_spells_type(false) ? std::string()
+		madc::dis::istring scope = (cxx && named) ? madc::dis::istring(tag + "::") : madc::dis::istring();
+		madc::dis::istring ty = !show_spells_type(false) ? madc::dis::istring()
 				 : named ? dump_show_type_word(edd)
 					 : dump_show_type_word(under);
 		need_dump_extern("__madc_dump_sh_enum",
@@ -1723,7 +1723,7 @@ bool CirBuilder::dump_enum(DumpFlavor fl, const DumpAccess &acc,
 	}
 
 	// print_r: PHP's frame, with the real backing type after the colon.
-	std::string word = tag + " Enum:" + dump_type_word(under);
+	madc::dis::istring word = tag + " Enum:" + dump_type_word(under);
 	out.push_back(dump_head(fl, depth, word, 2, origin));
 
 	out.push_back(dump_key(fl, depth, "name", origin));
@@ -1786,7 +1786,7 @@ bool CirBuilder::dump_enum(DumpFlavor fl, const DumpAccess &acc,
 // available: these are the user's own structs (a SMAUG CHAR_DATA), there is
 // nowhere to put a flag, and a dump must never write to the data it reads.
 
-node_t CirBuilder::dump_show_text(const std::string &text, TokenBase *origin)
+node_t CirBuilder::dump_show_text(const madc::dis::istring &text, TokenBase *origin)
 {
 	need_dump_extern("__madc_dump_raw",
 			 { { {N_CHAR}, true }, { {N_LONG, N_LONG}, false } });
@@ -1811,7 +1811,7 @@ bool CirBuilder::row_class_has_session_method(DataDefCLASS *cls)
 	if (hit != m_row_session_class.end())
 		return hit->second;
 	bool found = false;
-	for (std::map<std::string, Variable *>::const_iterator m =
+	for (std::map<madc::dis::istring, Variable *>::const_iterator m =
 		     cls->method_map.begin();
 	     !found && m != cls->method_map.end(); ++m) {
 		Variable *mv = m->second;
@@ -1836,7 +1836,7 @@ long CirBuilder::show_element_bound(long count) const
 // A runtime-counted walk's loop bound: `i < n`, and in a bounded row also
 // `i < elements`.
 node_t CirBuilder::show_bounded_cond(bool bounded, node_t cond,
-				     const std::string &idx, TokenBase *origin)
+				     const madc::dis::istring &idx, TokenBase *origin)
 {
 	if (!bounded || m_show_limits.elements <= 0)
 		return cond;
@@ -1887,8 +1887,8 @@ bool CirBuilder::dump_show_object(const DumpAccess &acc, DataDefCLASS *cls,
 				  std::vector<node_t> &out, TokenBase *origin)
 {
 	const bool cxx = m_prog && m_prog->presents_as_cpp();
-	std::string word = show_spells_type(false) ? dump_class_type_word(cls) + " &"
-						   : std::string();
+	madc::dis::istring word = show_spells_type(false) ? madc::dis::istring(dump_class_type_word(cls) + " &")
+						   : madc::dis::istring();
 	need_dump_extern("__madc_dump_sh_ptr",
 			 { { {N_CHAR}, true }, { {N_VOID}, true },
 			   { {N_INT}, false } });
@@ -1909,8 +1909,8 @@ bool CirBuilder::dump_show_pointer(const DumpAccess &acc, DataDef *dd,
 	// of a function pointer) decays to its pointer.
 	DataDef *pdd = (dd->as_funcdef_dd() && m_prog) ? m_prog->getPointerType(dd)
 							: dd;
-	std::string word = show_spells_type(false) ? dump_show_type_word(pdd)
-						   : std::string();
+	madc::dis::istring word = show_spells_type(false) ? dump_show_type_word(pdd)
+						   : madc::dis::istring();
 	need_dump_extern("__madc_dump_sh_ptr",
 			 { { {N_CHAR}, true }, { {N_VOID}, true },
 			   { {N_INT}, false } });
@@ -1994,7 +1994,7 @@ node_t CirBuilder::dump_fn_param(node_t specs, int stars, const char *name,
 // mirrors dump_any's, and every spelling comes from that arm's own owner
 // (dump_pr_object_word, and the literal "Array" both array arms use) — so this
 // cannot say "Node Object" where the walk would have said "Array".
-std::string CirBuilder::dump_pr_recursion_word(DataDef *dd)
+madc::dis::istring CirBuilder::dump_pr_recursion_word(DataDef *dd)
 {
 	DataDef *u = dd ? dd->unqualified() : NULL;
 	if (!u)
@@ -2060,16 +2060,16 @@ node_t CirBuilder::dump_int_local(const char *name, node_t init,
 
 // The name of the generated dumper for (pointee, flavor), minted on first use.
 // Empty on failure, with `why` set.
-std::string CirBuilder::dump_pointer_fn(DumpFlavor fl, DataDef *pointee,
+madc::dis::istring CirBuilder::dump_pointer_fn(DumpFlavor fl, DataDef *pointee,
 					TokenBase *origin, std::string &why)
 {
 	DataDef *key = pointee ? pointee->unqualified() : NULL;
 	if (!key) {
 		why = "unresolved pointee type";
-		return std::string();
+		return madc::dis::istring();
 	}
 	std::pair<DataDef *, int> mk(key, (int)fl);
-	std::map<std::pair<DataDef *, int>, std::string>::iterator it
+	std::map<std::pair<DataDef *, int>, madc::dis::istring>::iterator it
 		= m_dump_fn_syms.find(mk);
 	if (it != m_dump_fn_syms.end())
 		return it->second;
@@ -2083,7 +2083,7 @@ std::string CirBuilder::dump_pointer_fn(DumpFlavor fl, DataDef *pointee,
 	int n = m_dump_fn_counter++;
 	char nm[48];
 	snprintf(nm, sizeof nm, "__madc_dumpfn_%d", n);
-	std::string fname = nm;
+	madc::dis::istring fname = nm;
 	// The TYPE tag for the ancestor stack. Derived from the function index, so
 	// it is a bijection with (pointee, flavor) inside this TU — and a whole walk
 	// is generated in ONE TU with ONE flavor, which makes it a bijection with
@@ -2100,10 +2100,10 @@ std::string CirBuilder::dump_pointer_fn(DumpFlavor fl, DataDef *pointee,
 	// The walk runs against the function's OWN sink, column base, depth and
 	// nested flag, at RELATIVE depth 0 — which is what makes the pointee render
 	// at the same depth as the pointer.
-	std::string saved_sink = m_dump_sink_var;
-	std::string saved_base = m_dump_col_base;
-	std::string saved_depth = m_dump_fn_depth;
-	std::string saved_nest = m_dump_fn_nested;
+	madc::dis::istring saved_sink = m_dump_sink_var;
+	madc::dis::istring saved_base = m_dump_col_base;
+	madc::dis::istring saved_depth = m_dump_fn_depth;
+	madc::dis::istring saved_nest = m_dump_fn_nested;
 	std::vector<node_t> saved_pending;
 	saved_pending.swap(m_pending_stmts);
 	// A GENERATED FUNCTION STARTS A NEW EXPANSION PATH. The type-path set exists
@@ -2152,7 +2152,7 @@ std::string CirBuilder::dump_pointer_fn(DumpFlavor fl, DataDef *pointee,
 		m_dump_fn_syms.erase(mk);
 		m_pending_top_protos.resize(proto_mark);
 		m_pending_top_defs.resize(def_mark);
-		return std::string();
+		return madc::dis::istring();
 	}
 
 	// int __dcol = <step> * __ddepth;   — the base column, computed ONCE.
@@ -2270,12 +2270,12 @@ std::string CirBuilder::dump_pointer_fn(DumpFlavor fl, DataDef *pointee,
 	node_t def_params = dump_fn_param_list(base, stars, origin);
 	if (!proto_params || !def_params) {
 		why = std::string("no dumper for a pointer to '")
-		    + (key->name.empty() ? std::string("?") : key->name)
+		    + (key->name.empty() ? madc::dis::istring("?") : key->name)
 		    + "' yet";
 		m_dump_fn_syms.erase(mk);
 		m_pending_top_protos.resize(proto_mark);
 		m_pending_top_defs.resize(def_mark);
-		return std::string();
+		return madc::dis::istring();
 	}
 
 	node_t pspecs = list();
@@ -2318,7 +2318,7 @@ bool CirBuilder::dump_pointer(DumpFlavor fl, const DumpAccess &acc, DataDef *dd,
 		why = std::string("no dumper for type '") + dd->name + "' yet";
 		return false;
 	}
-	std::string fn = dump_pointer_fn(fl, pointee, origin, why);
+	madc::dis::istring fn = dump_pointer_fn(fl, pointee, origin, why);
 	if (fn.empty()) {
 		if (why.empty())
 			why = std::string("no dumper for type '") + dd->name
@@ -2556,11 +2556,11 @@ bool CirBuilder::dump_any(DumpFlavor fl, const DumpAccess &acc, DataDef *dd,
 				why = std::string("no dumper for container '")
 				    + dump_class_type_word(ccls) + "' yet: "
 				    + (itr_why.empty()
-					 ? std::string("it has neither the "
+					 ? madc::dis::istring("it has neither the "
 						"positional size()/operator[] "
 						"protocol nor a reachable "
 						"iterator protocol")
-					 : itr_why);
+					 : madc::dis::istring(itr_why));
 				return false;
 			}
 		}
@@ -2694,7 +2694,7 @@ bool CirBuilder::dump_argument(DumpFlavor fl, TokenBase *arg,
 // need to test it. A NULL sink is what makes the walk print instead of capture,
 // so one variable expresses both PHP modes with no duplicated walk.
 void CirBuilder::dump_sink_open(std::vector<node_t> &stmts, TokenBase *ret_arg,
-				std::string &ret_var, std::string &sink_var,
+				madc::dis::istring &ret_var, madc::dis::istring &sink_var,
 				TokenBase *origin)
 {
 	char rname[40], sname[40];
@@ -2742,7 +2742,7 @@ void CirBuilder::dump_sink_open(std::vector<node_t> &stmts, TokenBase *ret_arg,
 // caller copied from the reference we hand back. var_decl emits the storage and
 // its cleanup attribute; the constructor is a separate statement (translate_block
 // normally emits it, which does not run for a hoisted temp).
-std::string CirBuilder::dump_result_value_temp(TokenBase *origin)
+madc::dis::istring CirBuilder::dump_result_value_temp(TokenBase *origin)
 {
 	char name[40];
 	snprintf(name, sizeof name, "__madc_dumpval_%d", m_strtmp_counter++);
@@ -2750,16 +2750,16 @@ std::string CirBuilder::dump_result_value_temp(TokenBase *origin)
 	tmp->flags |= vfLOCAL;
 	m_pending_stmts.push_back(var_decl(tmp, origin));
 	m_pending_stmts.push_back(array_ctor_call(name, origin));
-	return std::string(name);
+	return madc::dis::istring(name);
 }
 
 // PHP returns the TEXT when $return is true and boolean TRUE when it is not,
 // and one madc::value carries either — so this is `string|true`, not an
 // approximation of it. With no sink there is no text to return, so the answer is
 // unconditionally true.
-node_t CirBuilder::dump_result_assign(const std::string &val_var,
-				      const std::string &sink_var,
-				      const std::string &ret_var,
+node_t CirBuilder::dump_result_assign(const madc::dis::istring &val_var,
+				      const madc::dis::istring &sink_var,
+				      const madc::dis::istring &ret_var,
 				      TokenBase *origin)
 {
 	// WHICH runtime entry assigns a bool / a C string to a madc::value is
@@ -2802,7 +2802,7 @@ node_t CirBuilder::dump_result_assign(const std::string &val_var,
 			   as_true, origin), origin);
 }
 
-node_t CirBuilder::dump_sink_close(const std::string &sink_var,
+node_t CirBuilder::dump_sink_close(const madc::dis::istring &sink_var,
 				   TokenBase *origin)
 {
 	need_output_extern("__madc_dump_sink_close", false,
@@ -2857,7 +2857,7 @@ node_t CirBuilder::lower_show_call(TokenCallFunc *tcf, TokenBase *origin,
 			    origin));
 	stmts.push_back(sdecl);
 
-	std::string saved_sink = m_dump_sink_var;
+	madc::dis::istring saved_sink = m_dump_sink_var;
 	m_dump_sink_var = sname;
 	ShowLimits saved_limits = m_show_limits;
 	m_show_limits.row = row;
@@ -2882,7 +2882,7 @@ node_t CirBuilder::lower_show_call(TokenCallFunc *tcf, TokenBase *origin,
 		append(tdecl, translate_expr(arg));
 		stmts.push_back(tdecl);
 		evaluated = true;
-		std::string tn = tname;
+		madc::dis::istring tn = tname;
 		DumpAccess tacc = [this, tn, origin]() -> node_t {
 			return id(tn.c_str(), origin);
 		};
@@ -2980,7 +2980,7 @@ node_t CirBuilder::lower_dump_call(TokenCallFunc *tcf, FuncDef *fd,
 
 	std::vector<node_t> stmts;
 	std::string why;
-	std::string sink_var, ret_var, val_var;
+	madc::dis::istring sink_var, ret_var, val_var;
 	if (may_capture)
 		dump_sink_open(stmts, ret_arg, ret_var, sink_var, origin);
 	if (result_used)
@@ -2989,7 +2989,7 @@ node_t CirBuilder::lower_dump_call(TokenCallFunc *tcf, FuncDef *fd,
 	// Every primitive call inside the walk carries this sink (dump_call_stmt
 	// prepends it). Restored after, so a dump nested in another expression
 	// cannot inherit it.
-	std::string saved_sink = m_dump_sink_var;
+	madc::dis::istring saved_sink = m_dump_sink_var;
 	m_dump_sink_var = sink_var;
 	bool walked = true;
 	// print_r dumps ONLY its first argument; the second is the flag.

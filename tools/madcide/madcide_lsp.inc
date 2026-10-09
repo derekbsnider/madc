@@ -800,14 +800,14 @@ void lsp_execute_command(var &out, var &notes, IdeSession &S, long doc,
 	return;
     }
     var name = wire + plen;
+    // `arg` borrows a0's text, so a0 lives as long as it does.
     const char *arg = "";
     var args = params["arguments"];
+    var a0;
     if ( !args.is_null() && php::count(args) > 0 )
-    {
-	var a0 = args[0];
-	if ( !a0.is_null() )
-	    arg = a0.c_str();
-    }
+	a0 = args[0];
+    if ( !a0.is_null() )
+	arg = a0.c_str();
     long w = S.world();
     long es = S.es;
     long adoc = S.active(doc);

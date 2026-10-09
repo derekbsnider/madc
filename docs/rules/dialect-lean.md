@@ -59,6 +59,12 @@ uses std::string freely — scripts never parse those sources, so it costs
 the dialect nothing. The ban is on the SCRIPT-FACING surface: embedded
 fragments, intrinsic declarations, carrier semantics.
 
+The ring is for text a call MAKES (a substr, a case transform, a
+rendered number): it has no other owner, so it lives in the thread's
+ring. A carrier's `c_str()` has an owner — the carrier — so it borrows
+the carrier's payload instead, the std::string contract (reasoning in
+`docs/rules/value-first.md`).
+
 ## The gate
 
 `scripts/check-dialect-lean.sh` statically scans every dialect-served

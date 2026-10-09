@@ -304,7 +304,18 @@ class web_model
     // `st-inverse`), `fg-<colour>` / `bg-<colour>` for the 8 colour names
     // (ui_style_colour_name, the parser's own table). Bold-as-bright is the
     // page's rule (page.css: `.st-bold.fg-cyan` reads the bright entry of
-    // the palette), as it is the terminal's. Empty for the normal style.
+    // the palette), as it is the terminal's. An EXACT colour (`#rrggbb`) is
+    // `fgx-rrggbb` / `bgx-rrggbb` in place of the name — the window shows the
+    // theme's value as it is (page.js turns the class into the colour).
+    // Empty for the normal style.
+    static std::string rgb_hex(uint32_t rgb)
+    {
+	static const char hx[] = "0123456789abcdef";
+	std::string h;
+	for ( int sh = 20; sh >= 0; sh -= 4 )
+	    h += hx[(rgb >> sh) & 0xf];
+	return h;
+    }
     static std::string style_classes(const ui_style &st)
     {
 	std::string css;
@@ -314,9 +325,13 @@ class web_model
 	if ( st.flags & ui_style::UNDERLINE )	css += "st-underline ";
 	if ( st.flags & ui_style::BLINK )	css += "st-blink ";
 	if ( st.flags & ui_style::INVERSE )	css += "st-inverse ";
-	if ( st.fg )
+	if ( st.fg_rgb )
+	    css += "fgx-" + rgb_hex(st.fg_rgb) + " ";
+	else if ( st.fg )
 	    css += std::string("fg-") + ui_style_colour_name(st.fg) + " ";
-	if ( st.bg )
+	if ( st.bg_rgb )
+	    css += "bgx-" + rgb_hex(st.bg_rgb) + " ";
+	else if ( st.bg )
 	    css += std::string("bg-") + ui_style_colour_name(st.bg) + " ";
 	if ( !css.empty() )
 	    css.erase(css.size() - 1);

@@ -1,0 +1,20 @@
+// parse-cost workload: the madc dialect surface — the always-included prelude,
+// the carrier, the polyglot namespaces (scripts/parse_cost_gate.sh).
+var total(var xs)
+{
+    long sum = 0;
+    for ( var x : xs )
+	sum = sum + x.as_integer();
+    return sum;
+}
+
+int main()
+{
+    var xs = { 4, 1, 3 };
+    var who = { "name": "madc", "kind": "dialect" };
+    array words;
+    php::explode(words, ",", "a,b,c");
+    println("{} {} {} {}", total(xs), who["name"], php::count(words),
+	    php::strtoupper("ok"));
+    return 0;
+}

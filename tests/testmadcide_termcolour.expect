@@ -1,0 +1,9 @@
+text has red-ok: 1
+no escape bytes: 1
+screen:
+  [red] bold red
+view:
+  [red] bold red
+after:
+  [red] bold red
+  [green] green

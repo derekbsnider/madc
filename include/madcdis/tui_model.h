@@ -15,14 +15,16 @@
 //     slot, the per-choice selection and the tab/arrow/enter rules are the
 //     shared owner's (madcdis/ui_focus.h focus_state), consumed by this
 //     model and the DOM model alike;
-//   - the input adapter: raw terminal bytes → keys (tui_keyparse: CSI/SS3
-//     escape parsing with an explicit flush for the bare-ESC pause) and
+//   - the input adapter: raw terminal bytes → keys (tui_keyparse, in
+//     madcdis/tui_keyparse.h: CSI/SS3 escape parsing with an explicit
+//     flush for the bare-ESC pause) and
 //     keys → SEMANTIC events, coalescing printable runs into one text
 //     event (design §7.5 — five key events never become five domain
 //     transactions); the key VOCABULARY, its spelling, the bindings
 //     table and the chord resolver are the shared key owner in
 //     madcdis/keys.h — this model consumes it (key_resolver::step);
-//   - differential support: dirty-row comparison between two grids.
+//   - differential support: dirty-row comparison between two grids
+//     (the grid and its diff: madcdis/tui_grid.h).
 //
 // The TARGET (a provider behind the ui:: session surface — the hand-
 // rolled VT100/xterm one in src/ui_term.cpp, owner-decided 2026-08-25
@@ -57,745 +59,41 @@
 #include "madcdis/ui_input.h"	// ui_apply_keys — the one keys → events adapter
 #include "madcdis/ui_style.h"	// ui_style, ui_style_of — the one render style + spec parser
 #include "madcdis/text_utf16.h"	// line_layout / line_columns — the one line layout (B87)
+#include "madcdis/tui_grid.h"	// tui_cell, tui_grid, the repaint diff (S0 split)
+#include "madcdis/tui_frame.h"	// tui_frame — dividers and junctions by arms (S2)
+#include "madcdis/tui_keyparse.h"	// raw bytes -> keys (S0 split)
 
 namespace madc {
 namespace hub {
 
-// ------------------------------------------------------------------ the grid
-// The render STYLE (ui_style) and its spec parser (ui_style_of) live in
-// madcdis/ui_style.h — the one vocabulary the DOM model renders too; this
-// model paints it into cells, the VT100 target spells it as SGR.
-
-// One terminal column. `ch` is the glyph drawn there: one code point's UTF-8
-// bytes packed first-byte-lowest (an ASCII glyph is its own byte, so a cell
-// compares against 'x' directly). A wide glyph (codepoint_columns() == 2)
-// occupies its cell AND the next, which is its `tail`: no glyph of its own,
-// never emitted (the terminal advanced over it drawing the glyph).
-struct tui_cell
+// The chrome a theme colours (facelift S2): the dividers, the editor's
+// line-number gutter, the caret line's number, and the caret line itself.
+// The composer hands their style specs over as the root's `chrome` hint
+// object (keys = these names); tui_chrome_of converts each key ONCE.
+enum class tui_chrome : unsigned char
 {
-    uint32_t ch;
-    bool     tail;
-    ui_style attr;
-    tui_cell() : ch(' '), tail(false), attr(ui_style::normal()) {}
-    bool operator==(const tui_cell &o) const
-	{ return ch == o.ch && tail == o.tail && attr == o.attr; }
-    bool operator!=(const tui_cell &o) const { return !(*this == o); }
-    // The glyph's bytes, appended to `out` (nothing for a tail).
-    void append_glyph(std::string &out) const
-    {
-	if ( tail )
-	    return;
-	for ( uint32_t g = ch; g != 0; g >>= 8 )
-	    out += (char)(g & 0xFF);
-    }
+    divider = 0, gutter, gutter_current, current_line,
+    tab, tab_active, statusbar,		// S3: strips and the status bar
+    menubar, menu, menu_selected, menu_hot, shadow,	// S4: the menu bar
+    toolbar,				// S5: the toolbar row
+    dialog, list_selected, field, button_primary,	// S6: floating windows
+    count
 };
-
-struct tui_grid
+inline bool tui_chrome_of(const std::string &name, tui_chrome &out)
 {
-    size_t rows, cols;
-    std::vector<tui_cell> cells;
-    size_t cursor_row, cursor_col;	// the physical cursor (an edit caret)
-    bool   cursor_visible;
-
-    tui_grid() : rows(0), cols(0), cursor_row(0), cursor_col(0),
-		 cursor_visible(false) {}
-
-    void resize(size_t r, size_t c)
-    {
-	rows = r;
-	cols = c;
-	cells.assign(r * c, tui_cell());
-	cursor_row = cursor_col = 0;
-	cursor_visible = false;
-    }
-    tui_cell &at(size_t r, size_t c) { return cells[r * cols + c]; }
-    const tui_cell &at(size_t r, size_t c) const { return cells[r * cols + c]; }
-
-    // Clipped text write; never wraps. THE CELL INVARIANT: a cell holds one
-    // printable glyph and the grid's columns ARE the screen's — a control
-    // byte in a cell desynchronizes them (a raw tab MOVES the terminal cursor
-    // without erasing the skipped columns: stale fragments + doubled glyphs
-    // while scrolling, the IDE-9c defect), and so does a character's bytes
-    // counted as columns (B87: the caret drifted one column right per extra
-    // byte of a UTF-8 character). Tab expansion is the document projection's
-    // job (paint_edit lays lines out through madc::line_layout); here every
-    // control byte renders as a visible '?', each code point takes
-    // codepoint_columns() cells, and a wide glyph that does not fit before
-    // the right edge shows as a space.
-    void put(size_t r, size_t c, const std::string &text,
-	     ui_style attr = ui_style::normal())
-    {
-	if ( r >= rows )
-	    return;
-	size_t i = 0;
-	while ( i < text.size() && c < cols )
+    static const char *const names[] = {
+	"divider", "gutter", "gutter_current", "current_line",
+	"tab", "tab_active", "statusbar",
+	"menubar", "menu", "menu_selected", "menu_hot", "shadow",
+	"toolbar", "dialog", "list_selected", "field", "button_primary"
+    };
+    for ( size_t i = 0; i < (size_t)tui_chrome::count; ++i )
+	if ( name == names[i] )
 	{
-	    uint32_t cp = 0;
-	    size_t n = madc::utf8_decode_at(text, i, cp);
-	    uint32_t glyph = 0;
-	    size_t w = 1;
-	    if ( cp < 0x20 || cp == 0x7f )
-		glyph = '?';
-	    else
-	    {
-		for ( size_t k = n; k > 0; --k )
-		    glyph = (glyph << 8) | (unsigned char)text[i + k - 1];
-		w = madc::codepoint_columns(cp);
-	    }
-	    if ( c + w > cols )
-	    {
-		glyph = ' ';		// a wide glyph cut by the right edge
-		w = 1;
-	    }
-	    set_glyph(r, c, glyph, w, attr);
-	    c += w;
-	    i += n;
+	    out = (tui_chrome)i;
+	    return true;
 	}
-    }
-    // Place one glyph `w` columns wide at (r, c). A glyph overwriting half of
-    // a wide one leaves the other half a space, so no tail outlives its lead
-    // and no lead loses its tail.
-    void set_glyph(size_t r, size_t c, uint32_t glyph, size_t w, ui_style attr)
-    {
-	if ( at(r, c).tail && c > 0 )
-	{
-	    at(r, c - 1).ch = ' ';
-	    at(r, c - 1).tail = false;
-	}
-	size_t after = c + w;
-	if ( after < cols && at(r, after).tail )
-	{
-	    at(r, after).ch = ' ';
-	    at(r, after).tail = false;
-	}
-	tui_cell &cell = at(r, c);
-	cell.ch = glyph;
-	cell.tail = false;
-	cell.attr = attr;
-	if ( w == 2 )
-	{
-	    tui_cell &t2 = at(r, c + 1);
-	    t2.ch = 0;
-	    t2.tail = true;
-	    t2.attr = attr;
-	}
-    }
-    void fill_attr(size_t r, size_t c, size_t len, ui_style attr)
-    {
-	if ( r >= rows )
-	    return;
-	for ( size_t i = 0; i < len && c + i < cols; ++i )
-	    at(r, c + i).attr = attr;
-    }
-    // The row as text, right-trimmed — the unit batteries' view.
-    std::string row_text(size_t r) const
-    {
-	std::string out;
-	if ( r >= rows )
-	    return out;
-	for ( size_t c = 0; c < cols; ++c )
-	    at(r, c).append_glyph(out);
-	size_t end = out.find_last_not_of(' ');
-	return end == std::string::npos ? std::string() : out.substr(0, end + 1);
-    }
-    // One past the rightmost cell EL cannot erase — erase fills with the
-    // DEFAULT attributes, so only a normal-attr-space tail qualifies (an
-    // inverse status fill does not). A target paints [0..end) and clears
-    // the tail with one EL instead of emitting the spaces.
-    size_t row_paint_end(size_t r) const
-    {
-	if ( r >= rows )
-	    return 0;
-	size_t end = cols;
-	while ( end > 0 )
-	{
-	    const tui_cell &cell = at(r, end - 1);
-	    if ( cell.ch != ' ' || !cell.attr.is_normal() )
-		break;
-	    --end;
-	}
-	return end;
-    }
-};
-
-// Whole-row equality between two same-width grids.
-inline bool tui_rows_equal(const tui_grid &a, size_t ra,
-			   const tui_grid &b, size_t rb)
-{
-    for ( size_t c = 0; c < a.cols; ++c )
-	if ( a.at(ra, c) != b.at(rb, c) )
-	    return false;
-    return true;
-}
-
-// A repaint span: cells [c0..c1] of one row. Row-level diffing repaints
-// 80 columns when two digits change; the span is the cell-level truth
-// (JOE's update granularity) and the unit every target emits.
-struct tui_row_span
-{
-    size_t row, c0, c1;
-    tui_row_span(size_t r, size_t a, size_t b) : row(r), c0(a), c1(b) {}
-};
-
-// The differing spans between two grids: per changed row, the first and
-// last differing cell. A dimension change is a full repaint of every row.
-inline std::vector<tui_row_span> tui_diff_spans(const tui_grid &prev,
-						const tui_grid &next)
-{
-    std::vector<tui_row_span> out;
-    if ( prev.rows != next.rows || prev.cols != next.cols )
-    {
-	for ( size_t r = 0; r < next.rows; ++r )
-	    out.push_back(tui_row_span(r, 0, next.cols ? next.cols - 1 : 0));
-	return out;
-    }
-    for ( size_t r = 0; r < next.rows; ++r )
-    {
-	size_t c0 = next.cols, c1 = 0;
-	for ( size_t c = 0; c < next.cols; ++c )
-	    if ( prev.at(r, c) != next.at(r, c) )
-	    {
-		if ( c0 == next.cols )
-		    c0 = c;
-		c1 = c;
-	    }
-	if ( c0 != next.cols )
-	    out.push_back(tui_row_span(r, c0, c1));
-    }
-    return out;
-}
-
-// Rows differing between two grids — the span diff's row view (ONE cell
-// comparison loop owns both granularities).
-inline std::vector<size_t> tui_dirty_rows(const tui_grid &prev,
-					  const tui_grid &next)
-{
-    std::vector<tui_row_span> spans = tui_diff_spans(prev, next);
-    std::vector<size_t> out;
-    for ( size_t i = 0; i < spans.size(); ++i )
-	out.push_back(spans[i].row);
-    return out;
-}
-
-// FNV-1a over a row's cells (glyph + attribute bytes) — the O(rows*cols)
-// prefilter that keeps tui_diff_plan's offset scan at O(rows^2) hash
-// compares; equality is always confirmed by tui_rows_equal on a hit.
-inline uint64_t tui_row_hash(const tui_grid &g, size_t r)
-{
-    uint64_t h = 1469598103934665603ULL;	// 64-bit even on LLP64
-    for ( size_t c = 0; c < g.cols; ++c )
-    {
-	const tui_cell &cell = g.at(r, c);
-	unsigned char bytes[8] = { (unsigned char)(cell.ch & 0xFF),
-				   (unsigned char)((cell.ch >> 8) & 0xFF),
-				   (unsigned char)((cell.ch >> 16) & 0xFF),
-				   (unsigned char)(cell.ch >> 24),
-				   (unsigned char)cell.tail, cell.attr.fg,
-				   cell.attr.bg, cell.attr.flags };
-	for ( int i = 0; i < 8; ++i )
-	{
-	    h ^= bytes[i];
-	    h *= 1099511628211ULL;
-	}
-    }
-    return h;
-}
-
-// A repaint PLAN between two grids — differential support, level 2 (the
-// scroll-feel half of IDE-9c). Either the plain diff spans (shifted ==
-// false) or a vertical scroll: the terminal moves rows `delta` lines
-// (up == toward row 0) inside the region [top..bot], then `spans`
-// repaint. A VT100-family target emits the shift as DECSTBM + DL/IL
-// (JOE's own dl/al); the blanks the terminal inserts at the region's far
-// edge carry the default attributes.
-//
-// The repaint set is computed by SIMULATION: apply the shift to `prev`,
-// re-diff against `next`. Whatever the offset scan guessed, painting
-// plan.spans after the shift reproduces `next` exactly — detection
-// quality only affects how MUCH repaints, never what the screen shows.
-// The shift is taken only when its estimated emission cost (span widths
-// + per-span addressing + the ~30-byte scroll op) beats the plain diff's.
-struct tui_paint_plan
-{
-    bool		shifted;
-    bool		up;	// content moves toward row 0 (DL); else IL
-    size_t		top, bot;	// scroll region, inclusive
-    size_t		delta;		// lines moved
-    std::vector<tui_row_span> spans;	// repaint AFTER the shift
-    tui_paint_plan() : shifted(false), up(false), top(0), bot(0), delta(0) {}
-};
-
-// Estimated bytes to emit a span set: cells + ~10 addressing/SGR bytes each.
-inline size_t tui_span_cost(const std::vector<tui_row_span> &spans)
-{
-    size_t cost = 0;
-    for ( size_t i = 0; i < spans.size(); ++i )
-	cost += spans[i].c1 - spans[i].c0 + 1 + 10;
-    return cost;
-}
-
-inline tui_paint_plan tui_diff_plan(const tui_grid &prev, const tui_grid &next)
-{
-    tui_paint_plan plan;
-    plan.spans = tui_diff_spans(prev, next);
-    if ( prev.rows != next.rows || prev.cols != next.cols
-      || plan.spans.size() < 4 )
-	return plan;
-    std::vector<bool> is_dirty(next.rows, false);
-    for ( size_t i = 0; i < plan.spans.size(); ++i )
-	is_dirty[plan.spans[i].row] = true;
-    std::vector<uint64_t> ph(next.rows), nh(next.rows);
-    for ( size_t r = 0; r < next.rows; ++r )
-    {
-	ph[r] = tui_row_hash(prev, r);
-	nh[r] = tui_row_hash(next, r);
-    }
-    // The moved band: the run of rows matching prev at one vertical
-    // offset covering the most DIRTY rows (unchanged rows also match at
-    // offset 0 and prove nothing — only dirty rows are evidence).
-    size_t best_score = 0, best_a = 0, best_b = 0, best_delta = 0;
-    bool   best_up = false;
-    for ( size_t delta = 1; delta < next.rows; ++delta )
-    {
-	for ( int dir = 0; dir < 2; ++dir )
-	{
-	    bool up = dir == 0;
-	    size_t r = 0;
-	    while ( r < next.rows )
-	    {
-		size_t from = up ? r + delta : r - delta;
-		bool ok = (up ? r + delta < next.rows : r >= delta)
-		       && nh[r] == ph[from]
-		       && tui_rows_equal(next, r, prev, from);
-		if ( !ok )
-		{
-		    ++r;
-		    continue;
-		}
-		size_t a = r, score = 0;
-		while ( ok )
-		{
-		    score += is_dirty[r] ? 1 : 0;
-		    ++r;
-		    from = up ? r + delta : r - delta;
-		    ok = r < next.rows
-		      && (up ? r + delta < next.rows : r >= delta)
-		      && nh[r] == ph[from]
-		      && tui_rows_equal(next, r, prev, from);
-		}
-		if ( score > best_score )
-		{
-		    best_score = score;
-		    best_a = a;
-		    best_b = r - 1;
-		    best_delta = delta;
-		    best_up = up;
-		}
-	    }
-	}
-    }
-    if ( best_score == 0 )
-	return plan;
-    // The region spans the band plus the rows the shift consumes: up (DL
-    // at top) region = [a .. b+delta]; down (IL at top) = [a-delta .. b].
-    size_t T = best_up ? best_a : best_a - best_delta;
-    size_t B = best_up ? best_b + best_delta : best_b;
-    // Simulate the shift on prev, re-diff: the exact repaint set.
-    tui_grid shifted = prev;
-    for ( size_t r = T; r <= B; ++r )
-    {
-	bool   from_ok = best_up ? r + best_delta <= B : r >= T + best_delta;
-	size_t from = best_up ? r + best_delta
-			      : (from_ok ? r - best_delta : 0);
-	for ( size_t c = 0; c < next.cols; ++c )
-	    shifted.at(r, c) = from_ok ? prev.at(from, c) : tui_cell();
-    }
-    std::vector<tui_row_span> after = tui_diff_spans(shifted, next);
-    if ( tui_span_cost(after) + 30 >= tui_span_cost(plan.spans) )
-	return plan;		// the shift would not pay for itself
-    plan.shifted = true;
-    plan.up = best_up;
-    plan.top = T;
-    plan.bot = B;
-    plan.delta = best_delta;
-    plan.spans = after;
-    return plan;
-}
-
-// Raw terminal bytes -> keys: the escape-sequence state machine (CSI and
-// SS3 forms of the VT100/xterm family; the shapes every terminal library
-// parses — cross-checked against termbox2's and ncurses's tables). A bare
-// ESC is ambiguous until the input pauses: the TARGET calls flush() when
-// its read times out after an ESC, resolving it to the esc key. xterm's
-// modified keys decode with their modifiers (plan §41.11a step 3e): a
-// cursor or function key's second parameter ("CSI 1;5A" Ctrl+Up,
-// "CSI 15;2~" Shift+F5, "CSI 1;3P" Alt+F1), CSI Z (Shift+Tab), and a
-// modifyOtherKeys or CSI u report of any other key ("CSI 27;6;83~",
-// "CSI 115;5u"). ui::key_mod's bits are the parameter less one. A terminal
-// that reports none sends Ctrl+Shift+S as Ctrl+S; those chords are the
-// GUI's. NUL is Ctrl+Space. An Esc-prefixed byte is still the esc key then
-// the byte (the profiles' `esc x` Meta chords).
-//
-// A byte of 0x80 and above is a `ch`: UTF-8 input arrives as the bytes of
-// its code points, and a printable run coalesces them into one text event
-// (plan §41.7a). A BRACKETED PASTE (xterm's mode 2004: CSI 200~ ... CSI
-// 201~, which a target turns on only where it wants it) is text, not keys:
-// every byte between the markers is a literal `ch`, a tab and a line break
-// included, and a CR or CR LF becomes one '\n'. A paste spans reads; only
-// its end marker ends it.
-// The function keys' xterm tilde codes (CSI n ~), F1..F12: ONE table the
-// parser and tui_key_bytes read. F1..F4 also arrive as SS3 P..S (xterm's
-// own spelling for them, which tui_key_bytes writes back), and F1..F5 as
-// the Linux console's CSI [ A..E.
-inline int fkey_tilde_code(int n)
-{
-    static const int codes[13] = { 0, 11, 12, 13, 14, 15, 17, 18, 19, 20, 21, 23, 24 };
-    return n >= 1 && n <= 12 ? codes[n] : 0;
-}
-inline int fkey_of_tilde_code(int code)
-{
-    for ( int n = 1; n <= 12; ++n )
-	if ( fkey_tilde_code(n) == code )
-	    return n;
-    return 0;
-}
-
-class tui_keyparse
-{
-    enum class state : unsigned char { normal, esc, csi, ss3, console_fkey, paste };
-    state _st;
-    std::string _params;
-    std::string _paste_end;	// the part of the end marker matched so far
-    bool _paste_cr;		// the last pasted byte was CR (CR LF is one)
-
-    static void emit(std::vector<tui_keyev> &out, tui_key k, char c = 0,
-		     unsigned char mods = 0)
-    {
-	out.push_back(key_normalized(tui_keyev(k, c, mods)));
-    }
-    // A key a modifyOtherKeys / CSI u report names by its code.
-    static void emit_code(std::vector<tui_keyev> &out, int code,
-			  unsigned char mods)
-    {
-	switch ( code )
-	{
-	    case 9:   emit(out, tui_key::tab, 0, mods); return;
-	    case 13:  emit(out, tui_key::enter, 0, mods); return;
-	    case 27:  emit(out, tui_key::esc, 0, mods); return;
-	    case 8:
-	    case 127: emit(out, tui_key::backspace, 0, mods); return;
-	    default:
-		if ( code >= 0x20 && code <= 0x7e )
-		    emit(out, tui_key::ch, (char)code, mods);
-		return;			// otherwise unrecognized: dropped
-	}
-    }
-    static void resolve_csi(const std::string &params, char final_byte,
-			    std::vector<tui_keyev> &out)
-    {
-	// "a;b;c": the key (or 1), the modifiers + 1, a code.
-	int p[3] = { 0, 0, 0 };
-	size_t np = 0, at = 0;
-	while ( np < 3 )
-	{
-	    size_t semi = params.find(';', at);
-	    p[np++] = atoi(params.substr(at, semi == std::string::npos
-					       ? std::string::npos : semi - at).c_str());
-	    if ( semi == std::string::npos )
-		break;
-	    at = semi + 1;
-	}
-	unsigned char mods = p[1] > 1 ? (unsigned char)(p[1] - 1) : 0;
-	switch ( final_byte )
-	{
-	    case 'A': emit(out, tui_key::up, 0, mods); return;
-	    case 'B': emit(out, tui_key::down, 0, mods); return;
-	    case 'C': emit(out, tui_key::right, 0, mods); return;
-	    case 'D': emit(out, tui_key::left, 0, mods); return;
-	    case 'H': emit(out, tui_key::home, 0, mods); return;
-	    case 'F': emit(out, tui_key::end, 0, mods); return;
-	    case 'P': case 'Q': case 'R': case 'S':	// CSI 1;m P: a modified F1..F4
-		emit(out, tui_key::fkey, (char)(final_byte - 'P' + 1), mods);
-		return;
-	    case 'Z':				// back-tab
-		emit(out, tui_key::tab, 0,
-		     (unsigned char)(mods | key_mod_bits(::ui::key_mod::shift)));
-		return;
-	    case 'u':				// CSI code;m u
-		emit_code(out, p[0], mods);
-		return;
-	    case '~':
-		switch ( p[0] )
-		{
-		    case 1: case 7: emit(out, tui_key::home, 0, mods); return;
-		    case 4: case 8: emit(out, tui_key::end, 0, mods); return;
-		    case 2: emit(out, tui_key::ins, 0, mods); return;
-		    case 3: emit(out, tui_key::del, 0, mods); return;
-		    case 5: emit(out, tui_key::pgup, 0, mods); return;
-		    case 6: emit(out, tui_key::pgdn, 0, mods); return;
-		    case 27:			// modifyOtherKeys: 27;m;code
-			emit_code(out, p[2], mods);
-			return;
-		    default:
-		    {
-			int n = fkey_of_tilde_code(p[0]);
-			if ( n )
-			    emit(out, tui_key::fkey, (char)n, mods);
-			return;		// otherwise unrecognized: dropped
-		    }
-		}
-	    default: return;		// unrecognized final: dropped
-	}
-    }
-    // One pasted byte as text: a line break is '\n' whatever the terminal
-    // sent for it.
-    void paste_byte(unsigned char b, std::vector<tui_keyev> &out)
-    {
-	bool cr = _paste_cr;
-	_paste_cr = b == '\r';
-	if ( b == '\n' && cr )
-	    return;			// the LF of a CR LF
-	emit(out, tui_key::ch, b == '\r' ? '\n' : (char)b);
-    }
-    void feed_byte(unsigned char b, std::vector<tui_keyev> &out)
-    {
-	switch ( _st )
-	{
-	    case state::paste:
-	    {
-		static const char end_marker[] = "\x1b[201~";
-		if ( b == (unsigned char)end_marker[_paste_end.size()] )
-		{
-		    _paste_end += (char)b;
-		    if ( _paste_end.size() == sizeof(end_marker) - 1 )
-		    {
-			_paste_end.clear();
-			_st = state::normal;
-		    }
-		    return;
-		}
-		// A partial marker that went no further was pasted text; the
-		// byte that broke it may begin a marker itself.
-		if ( !_paste_end.empty() )
-		{
-		    std::string held;
-		    held.swap(_paste_end);
-		    for ( size_t i = 0; i < held.size(); ++i )
-			paste_byte((unsigned char)held[i], out);
-		    feed_byte(b, out);
-		    return;
-		}
-		paste_byte(b, out);
-		return;
-	    }
-	    case state::esc:
-		if ( b == '[' )
-		{
-		    _st = state::csi;
-		    _params.clear();
-		    return;
-		}
-		if ( b == 'O' )
-		{
-		    _st = state::ss3;
-		    return;
-		}
-		// ESC followed by an ordinary byte: the ESC stands alone
-		// (alt-chords are a deferred refinement) and the byte is
-		// reprocessed normally.
-		emit(out, tui_key::esc);
-		_st = state::normal;
-		feed_byte(b, out);
-		return;
-	    case state::csi:
-		if ( b == '[' && _params.empty() )
-		{
-		    _st = state::console_fkey;	// the Linux console's F1..F5
-		    return;
-		}
-		if ( b >= 0x40 && b <= 0x7e )
-		{
-		    if ( b == '~' && _params == "200" )
-		    {
-			_st = state::paste;	// a bracketed paste begins
-			_paste_end.clear();
-			_paste_cr = false;
-			return;
-		    }
-		    resolve_csi(_params, (char)b, out);
-		    _st = state::normal;
-		}
-		else if ( _params.size() < 16 )
-		    _params += (char)b;
-		else
-		    _st = state::normal;	// runaway sequence: dropped
-		return;
-	    case state::ss3:
-		switch ( b )
-		{
-		    case 'A': emit(out, tui_key::up); break;
-		    case 'B': emit(out, tui_key::down); break;
-		    case 'C': emit(out, tui_key::right); break;
-		    case 'D': emit(out, tui_key::left); break;
-		    case 'H': emit(out, tui_key::home); break;
-		    case 'F': emit(out, tui_key::end); break;
-		    case 'P': case 'Q': case 'R': case 'S':
-			emit(out, tui_key::fkey, (char)(b - 'P' + 1));
-			break;
-		    default: break;		// unrecognized: dropped
-		}
-		_st = state::normal;
-		return;
-	    case state::console_fkey:
-		if ( b >= 'A' && b <= 'E' )
-		    emit(out, tui_key::fkey, (char)(b - 'A' + 1));
-		_st = state::normal;		// anything else: dropped
-		return;
-	    case state::normal:
-	    default:
-		break;
-	}
-	if ( b == 0x1b )
-	    _st = state::esc;
-	else if ( b == '\r' || b == '\n' )
-	    emit(out, tui_key::enter);
-	else if ( b == '\t' )
-	    emit(out, tui_key::tab);
-	else if ( b == 0x7f || b == 0x08 )
-	    emit(out, tui_key::backspace);
-	else if ( b >= 0x01 && b <= 0x1a )
-	    emit(out, tui_key::ctrl, (char)('a' + b - 1));
-	else if ( b >= 0x1c && b <= 0x1f )
-	    emit(out, tui_key::ctrl, (char)(b + 0x40));	// ^\ ^] ^^ ^_
-	else if ( b >= 0x20 )
-	    emit(out, tui_key::ch, (char)b);	// ASCII, and UTF-8's bytes
-	else if ( b == 0x00 )			// the terminals' Ctrl+Space
-	    emit(out, tui_key::ch, ' ', key_mod_bits(::ui::key_mod::ctrl));
-	// A grid still draws one byte per cell, so a multibyte glyph there is
-	// the grid's named residue.
-    }
-
-public:
-    tui_keyparse() : _st(state::normal), _paste_cr(false) {}
-
-    void feed(const char *bytes, size_t n, std::vector<tui_keyev> &out)
-    {
-	for ( size_t i = 0; i < n; ++i )
-	    feed_byte((unsigned char)bytes[i], out);
-    }
-    // Mid-sequence? The target polls briefly only then — an unambiguous
-    // batch pays zero added latency. A paste is not pending: it spans
-    // reads, and a pause inside it waits for no grace read.
-    bool pending() const
-	{ return _st != state::normal && _st != state::paste; }
-    // The input paused: a pending bare ESC is the esc key; a partial
-    // CSI/SS3 is line noise and drops. A paste keeps going.
-    void flush(std::vector<tui_keyev> &out)
-    {
-	if ( _st == state::paste )
-	    return;
-	if ( _st == state::esc )
-	    emit(out, tui_key::esc);
-	_st = state::normal;
-	_params.clear();
-    }
-};
-
-// The INVERSE adapter — a key back to the bytes a terminal would have sent
-// for it (madcide polish P3b-2: what the IDE writes to a program running on
-// its embedded Terminal's pty when the user types at it). ONE table with
-// tui_keyparse above: every key the parser yields round-trips through
-// these bytes (the unit battery pins it) — the xterm/VT100 spellings the
-// parser's CSI/SS3 arms read (the CSI form for the cursor keys, the tilde
-// codes for ins/del/pgup/pgdn, 0x7f for backspace, \r for enter). A
-// control chord is its control byte; a printable is itself; `none` is
-// empty. A modified key is xterm's modified form (the parser's): the cursor
-// and function keys' "1;m" / "n;m" parameters, CSI Z for Shift+Tab,
-// modifyOtherKeys (CSI 27;m;code~) for any other key, NUL for Ctrl+Space.
-inline std::string tui_key_base_bytes(const tui_keyev &k);
-inline std::string tui_key_bytes(const tui_keyev &k)
-{
-    if ( k.mods == 0 )
-	return tui_key_base_bytes(k);
-    const unsigned char ctrl = key_mod_bits(::ui::key_mod::ctrl);
-    const unsigned char shift = key_mod_bits(::ui::key_mod::shift);
-    unsigned char mods = k.mods;
-    if ( k.kind == tui_key::ctrl )
-	mods |= ctrl;
-    const std::string m = std::to_string(1 + (int)mods);
-    switch ( k.kind )
-    {
-	case tui_key::up:    return "\x1b[1;" + m + "A";
-	case tui_key::down:  return "\x1b[1;" + m + "B";
-	case tui_key::right: return "\x1b[1;" + m + "C";
-	case tui_key::left:  return "\x1b[1;" + m + "D";
-	case tui_key::home:  return "\x1b[1;" + m + "H";
-	case tui_key::end:   return "\x1b[1;" + m + "F";
-	case tui_key::ins:   return "\x1b[2;" + m + "~";
-	case tui_key::del:   return "\x1b[3;" + m + "~";
-	case tui_key::pgup:  return "\x1b[5;" + m + "~";
-	case tui_key::pgdn:  return "\x1b[6;" + m + "~";
-	case tui_key::fkey:
-	    if ( k.ch >= 1 && k.ch <= 4 )
-		return "\x1b[1;" + m + (char)('P' + k.ch - 1);
-	    if ( k.ch >= 5 && k.ch <= 12 )
-		return "\x1b[" + std::to_string(fkey_tilde_code(k.ch)) + ";" + m + "~";
-	    return std::string();
-	case tui_key::tab:
-	    if ( k.mods == shift )
-		return std::string("\x1b[Z");
-	    return "\x1b[27;" + m + ";9~";
-	case tui_key::enter:	 return "\x1b[27;" + m + ";13~";
-	case tui_key::esc:	 return "\x1b[27;" + m + ";27~";
-	case tui_key::backspace: return "\x1b[27;" + m + ";127~";
-	case tui_key::ch:
-	    if ( k.ch == ' ' && k.mods == ctrl )
-		return std::string(1, '\0');
-	    return "\x1b[27;" + m + ";" + std::to_string((int)(unsigned char)k.ch) + "~";
-	case tui_key::ctrl:
-	{
-	    // The letter's code: upper-case under Shift, as xterm reports it.
-	    char c = k.ch;
-	    if ( (k.mods & shift) && c >= 'a' && c <= 'z' )
-		c = (char)(c - 'a' + 'A');
-	    return "\x1b[27;" + m + ";" + std::to_string((int)(unsigned char)c) + "~";
-	}
-	default:		 return std::string();
-    }
-}
-inline std::string tui_key_base_bytes(const tui_keyev &k)
-{
-    switch ( k.kind )
-    {
-	case tui_key::ch:	 return std::string(1, k.ch);
-	case tui_key::ctrl:
-	    if ( k.ch >= 'a' && k.ch <= 'z' )
-		return std::string(1, (char)(k.ch - 'a' + 1));
-	    if ( k.ch >= '\\' && k.ch <= '_' )		// ^\ ^] ^^ ^_
-		return std::string(1, (char)(k.ch - 0x40));
-	    return std::string();
-	case tui_key::enter:	 return std::string("\r");
-	case tui_key::tab:	 return std::string("\t");
-	case tui_key::backspace: return std::string("\x7f");
-	case tui_key::esc:	 return std::string("\x1b");
-	case tui_key::up:	 return std::string("\x1b[A");
-	case tui_key::down:	 return std::string("\x1b[B");
-	case tui_key::right:	 return std::string("\x1b[C");
-	case tui_key::left:	 return std::string("\x1b[D");
-	case tui_key::home:	 return std::string("\x1b[H");
-	case tui_key::end:	 return std::string("\x1b[F");
-	case tui_key::ins:	 return std::string("\x1b[2~");
-	case tui_key::del:	 return std::string("\x1b[3~");
-	case tui_key::pgup:	 return std::string("\x1b[5~");
-	case tui_key::pgdn:	 return std::string("\x1b[6~");
-	case tui_key::fkey:
-	    if ( k.ch >= 1 && k.ch <= 4 )
-		return std::string("\x1bO") + (char)('P' + k.ch - 1);
-	    if ( k.ch >= 5 && k.ch <= 12 )
-		return "\x1b[" + std::to_string(fkey_tilde_code(k.ch)) + "~";
-	    return std::string();
-	default:		 return std::string();
-    }
+    return false;
 }
 
 // ------------------------------------------------------------------ the model
@@ -813,10 +111,55 @@ public:
 
 private:
     tui_grid _grid;
+    tui_frame _frame;				// this compose's dividers (S2)
+    ui_style _chrome[(size_t)tui_chrome::count];	// this compose's chrome styles
     focus_state _focus_st;			// focus slot + per-choice selection + navigation
     std::map<size_t, size_t> _scroll;		// per edit slot: top line
     std::map<size_t, size_t> _hshift;		// per edit slot: left shift
     key_resolver _keys;			// the ONE chord/key owner (madcdis/keys.h)
+    size_t _tb_row;				// the toolbar's row (npos = none) and
+    std::map<std::string, size_t> _tb_drops;	// each drop button's column, by
+						// the menu it drops (S5)
+
+    // What a pointer press means where it lands (facelift S7): the hit map
+    // the last paint recorded, searched from the LAST hit (an overlay is
+    // painted after what it covers, so its hits win).
+    struct tui_hit
+    {
+	enum class kind : unsigned char
+	{
+	    none,		// swallows the press (a box's border, its title)
+	    menu_close,		// anywhere outside an open menu: close it
+	    menu_title,		// a bar title: `index` the menu
+	    menu_row,		// an open dropdown's row: `index` the row
+	    action,		// a command: `action` / `code`, its `arg`
+	    drop,		// a toolbar arrow: `arg` the menu it drops
+	    choose,		// a choice's option: `slot`, `index` (npos =
+				// the live selection — a dialog's primary)
+	    edit		// an edit window: `index` into _edit_hits
+	};
+	kind k;
+	size_t row, c0, c1;	// the cells [c0, c1) of `row` (c1 = 0 and
+				// row = npos: the whole screen)
+	size_t index, slot;
+	std::string action, arg;
+	int64_t code;
+	tui_hit() : k(kind::none), row(0), c0(0), c1(0), index(0), slot(0), code(0) {}
+    };
+    // A collected line's clickable byte span (a tab, a list option); the
+    // paint turns it into cells.
+    struct line_hit { size_t col, len; tui_hit hit; };
+    // A painted edit window's geometry (S7): enough to turn a cell into a
+    // byte offset, as the window's own text layout did.
+    struct edit_hit
+    {
+	size_t r0, h, c0, w;	// the text window (after the gutter)
+	size_t top, shift, tabw, slot;
+	long tag;
+	entity_id subject;
+	std::vector<size_t> starts;
+	std::string text;
+    };
 
     // One composed output line: text plus attribute spans.
     struct span { size_t col, len; ui_style attr; };
@@ -824,6 +167,7 @@ private:
     {
 	std::string text;
 	std::vector<span> spans;
+	std::vector<line_hit> hits;	// clickable spans (S7)
 	line_out() {}
 	explicit line_out(const std::string &t) : text(t) {}
     };
@@ -853,9 +197,13 @@ private:
 				// legacy rule (first unhinted flexible,
 				// other unhinted one row — prompts)
 	std::vector<doc_span> spans;	// highlight spans (may be empty)
+	bool gutter;		// line numbers + the caret line (hints["gutter"],
+				// the layout's pane flag)
+	long tag;		// the node's `tag` hint and subject, echoed on a
+	entity_id subject;	// pointer event (S7), as the window's are
 	edit_slot() : line_index(0), slot(0), caret(0),
 		      sel_start(-1), sel_end(-1), tabw(tab_stop),
-		      rows(0) {}
+		      rows(0), gutter(false), tag(-1), subject(0) {}
     };
 
     // ---------------------------------------------------------- the layout tree
@@ -883,15 +231,49 @@ private:
 	long size;
 	size_t c0, width;
 	std::vector<std::string> header;
+	std::vector<tui_hit> header_acts;	// each tab's command (S7)
 	size_t header_active;
+	bool header_upper;	// a chrome band's strip: titles uppercase, as the
+				// window's panel headers (S3)
+	bool floating;		// a floating window's content (S6): a choice
+				// lists its options one per row, its label is
+				// the window's title
+	size_t sel_line;	// the selected option's line (npos = none)
 	std::vector<flow_item> order;
 	std::vector<line_out> lines;
 	std::vector<edit_slot> edits;
 	std::vector<region> subs;
 	std::vector<region> kids;
 	region() : is_split(false), dir(ui_split::none), size(0),
-	    c0(0), width(0), header_active(0) {}
+	    c0(0), width(0), header_active(0), header_upper(false),
+	    floating(false), sel_line(std::string::npos) {}
     };
+    // A FLOATING window (S6): a node hinted `popup` — a pick list with its
+    // `dialog` {title, filter?, buttons}, a prompt's `prompt` {label, input},
+    // a question's `confirm` {label, choices} — drawn over the workbench as
+    // a framed box, its content collected where the walk met it (the
+    // focusable slots keep their discovery order).
+    struct tui_float
+    {
+	std::string title;
+	bool has_field;			// an input line: the prompt's input or
+	std::string field;		// the dialog's filter (the core's text)
+	std::vector<std::string> buttons;
+	std::vector<std::string> button_actions;	// each button's command
+	std::vector<int64_t> button_codes;		// ("" = the choose)
+	size_t primary;			// the button Enter is (npos = none)
+	size_t choice_slot;		// the list's focusable (npos = none)
+	std::string dismiss;		// a press outside: this command
+	int64_t dismiss_code;
+	region content;
+	tui_float() : has_field(false), primary(std::string::npos),
+		      choice_slot(std::string::npos), dismiss_code(0) {}
+    };
+    std::vector<tui_float> _floats;		// this compose's floating windows
+    std::vector<tui_hit> _hits;			// the last paint's hit map (S7)
+    std::vector<edit_hit> _edit_hits;		// ... and its edit windows
+    size_t _drag_slot;				// the edit a press started in
+						// (npos = none): drags go there
     static void emit_line(region &f, const line_out &l)
     {
 	flow_item it;
@@ -962,7 +344,7 @@ private:
     // header line a leaf pane heads its content with; empty when the node
     // carries none (or the integer-marker form).
     static void read_header(const uinode &n, std::vector<std::string> &header,
-	size_t &active)
+	size_t &active, std::vector<tui_hit> *acts = NULL)
     {
 	active = 0;
 	if ( !n.hints.is_object() )
@@ -982,10 +364,28 @@ private:
 	    if ( hint_of(rows[i], "active", 0) != 0 )
 		active = header.size();
 	    header.push_back(title);
+	    if ( acts )
+	    {
+		// A tab's command (S7): what a press on it posts — the
+		// window's tab click (its action, code and argument).
+		tui_hit h;
+		h.k = tui_hit::kind::action;
+		h.action = hint_str(rows[i], "action");
+		h.code = hint_of(rows[i], "code", 0);
+		h.arg = hint_str(rows[i], "arg");
+		if ( h.action.empty() && !h.code )
+		    h.k = tui_hit::kind::none;
+		acts->push_back(h);
+	    }
 	}
     }
     void collect_flow(const roles &r, const uinode &n, region &fl)
     {
+	if ( !fl.floating && hint_of(n.hints, "popup", 0) )
+	{
+	    collect_float(r, n);
+	    return;
+	}
 	size_t cols = fl.width;
 	ui_split sdir;
 	if ( n.role == r.group
@@ -997,6 +397,21 @@ private:
 	    fl.subs.push_back(collect_region(r, n, fl.c0, fl.width));
 	    fl.order.push_back(si);
 	    return;
+	}
+	// A node carrying a `tabs` strip (the editor's open files, S3): the
+	// strip is its line — the window docks it above the editor the same.
+	{
+	    std::vector<std::string> titles;
+	    std::vector<tui_hit> acts;
+	    size_t active = 0;
+	    read_header(n, titles, active, &acts);
+	    if ( !titles.empty() )
+	    {
+		emit_line(fl, tab_strip(titles, active, false, &acts));
+		for ( size_t i = 0; i < n.children.size(); ++i )
+		    collect_flow(r, n.children[i], fl);
+		return;
+	    }
 	}
 	if ( n.role == r.heading )
 	{
@@ -1072,21 +487,31 @@ private:
 	    if ( hint_of(n.hints, "focus", 0) )
 		_focus_st.set_focus(slot);
 	    size_t sel = selection_of(slot);
-	    if ( hint_of(n.hints, "list", 0) )
+	    // A floating window's choice is always the list shape; its label
+	    // is the window's title (collect_float), not a row.
+	    if ( fl.floating || hint_of(n.hints, "list", 0) )
 	    {
-		if ( !n.label.is_null() )
+		if ( !n.label.is_null() && !fl.floating )
 		    emit_line(fl, line_out(prose::text_of(n.label)));
 		for ( size_t i = 0; i < n.children.size(); ++i )
 		{
 		    line_out l;
 		    l.text = "  " + node_text(n.children[i]);
+		    line_hit lh;
+		    lh.col = 0;
+		    lh.len = l.text.size();
+		    lh.hit.k = tui_hit::kind::choose;
+		    lh.hit.slot = slot;
+		    lh.hit.index = i;
+		    l.hits.push_back(lh);
 		    if ( i == sel )
 		    {
 			span s;
 			s.col = 0;
 			s.len = l.text.size();
-			s.attr = ui_style::reverse();
+			s.attr = _chrome[(size_t)tui_chrome::list_selected];
 			l.spans.push_back(s);
+			fl.sel_line = fl.lines.size();
 		    }
 		    emit_line(fl, l);
 		}
@@ -1129,6 +554,9 @@ private:
 	    e.rows = hint_of(n.hints, "rows", 0);
 	    if ( e.rows < 0 )
 		e.rows = 0;
+	    e.gutter = hint_of(n.hints, "gutter", 0) != 0;
+	    e.tag = hint_of(n.hints, "tag", -1);
+	    e.subject = n.subject;
 	    // The same autofocus hint the choice arm honors (IDE-9e: the
 	    // active window's edit node carries it).
 	    if ( hint_of(n.hints, "focus", 0) )
@@ -1176,6 +604,419 @@ private:
 	for ( size_t i = 0; i < n.children.size(); ++i )
 	    collect_flow(r, n.children[i], fl);
     }
+    // A `popup` node as a floating window (S6): its title, its input line,
+    // its buttons from the node's own hints, and its content collected at
+    // the widest the screen allows (paint_float shrinks the box to it). A
+    // prompt's content is its row's one-line form, so only its field shows.
+    void collect_float(const roles &r, const uinode &n)
+    {
+	tui_float f;
+	f.content.floating = true;
+	f.content.width = _grid.cols > 12 ? _grid.cols - 8 : 4;
+	f.title = prose::text_of(n.label);
+	bool body = true;
+	const std::map<std::string, madc::value> empty;
+	const std::map<std::string, madc::value> &ho =
+	    n.hints.is_object() ? n.hints.as_object() : empty;
+	std::map<std::string, madc::value>::const_iterator hi;
+	if ( (hi = ho.find("dialog")) != ho.end() && hi->second.is_object() )
+	{
+	    const std::string t = hint_str(hi->second, "title");
+	    if ( !t.empty() )
+		f.title = t;
+	    const std::map<std::string, madc::value> &d = hi->second.as_object();
+	    std::map<std::string, madc::value>::const_iterator fi = d.find("filter");
+	    if ( fi != d.end() && !fi->second.is_null() )
+	    {
+		f.has_field = true;
+		f.field = hint_str(hi->second, "filter");
+	    }
+	    std::map<std::string, madc::value>::const_iterator bi = d.find("buttons");
+	    if ( bi != d.end() && bi->second.is_array() )
+		for ( const madc::value &b : bi->second.as_array() )
+		{
+		    if ( hint_of(b, "choose", 0) && f.primary == std::string::npos )
+			f.primary = f.buttons.size();
+		    f.buttons.push_back(hint_str(b, "label"));
+		    f.button_actions.push_back(hint_of(b, "choose", 0)
+					       ? std::string() : hint_str(b, "action"));
+		    f.button_codes.push_back(hint_of(b, "code", 0));
+		}
+	}
+	else if ( (hi = ho.find("prompt")) != ho.end() && hi->second.is_object() )
+	{
+	    f.title = hint_str(hi->second, "label");
+	    f.has_field = true;
+	    f.field = hint_str(hi->second, "input");
+	    body = false;
+	}
+	else if ( (hi = ho.find("confirm")) != ho.end() && hi->second.is_object() )
+	{
+	    f.title.clear();
+	    const std::map<std::string, madc::value> &c = hi->second.as_object();
+	    std::map<std::string, madc::value>::const_iterator ci = c.find("choices");
+	    if ( ci != c.end() && ci->second.is_array() )
+		for ( const madc::value &b : ci->second.as_array() )
+		{
+		    f.buttons.push_back(hint_str(b, "label"));
+		    f.button_actions.push_back(hint_str(b, "action"));
+		    f.button_codes.push_back(hint_of(b, "code", 0));
+		}
+	    if ( !f.buttons.empty() )
+		f.primary = 0;
+	}
+	f.dismiss = hint_str(n.hints, "dismiss");
+	f.dismiss_code = hint_of(n.hints, "dismiss_code", 0);
+	const size_t before = _focus_st.count();
+	if ( body )
+	    collect_flow(r, n, f.content);
+	if ( _focus_st.count() > before )
+	    f.choice_slot = before;
+	_floats.push_back(f);
+    }
+
+    // A hit over the cells [c0, c1) of `row`, and one over the whole screen.
+    static tui_hit cell_hit(tui_hit::kind k, size_t row, size_t c0, size_t c1)
+    {
+	tui_hit h;
+	h.k = k;
+	h.row = row;
+	h.c0 = c0;
+	h.c1 = c1;
+	return h;
+    }
+    static tui_hit screen_hit(tui_hit::kind k, const std::string &action,
+			      int64_t code)
+    {
+	tui_hit h;
+	h.k = k;
+	h.row = std::string::npos;
+	h.action = action;
+	h.code = code;
+	return h;
+    }
+    // The hit at a cell: the LAST recorded one covering it; NULL = none.
+    const tui_hit *hit_at(size_t row, size_t col) const
+    {
+	for ( size_t i = _hits.size(); i-- > 0; )
+	{
+	    const tui_hit &h = _hits[i];
+	    if ( h.row == std::string::npos
+	      || (h.row == row && col >= h.c0 && col < h.c1) )
+		return &h;
+	}
+	return NULL;
+    }
+    // A cell of an edit window as a byte offset in its text: the line under
+    // the row (past the last line: the text's end), the column through the
+    // line's own layout (tabs, wide glyphs), the gutter and a column before
+    // the text the line's start, a column past its end the line's end.
+    static long edit_offset(const edit_hit &eh, long row, long col)
+    {
+	if ( eh.starts.empty() )
+	    return 0;
+	long rr = row < (long)eh.r0 ? 0 : row - (long)eh.r0;
+	if ( rr >= (long)eh.h )
+	    rr = (long)eh.h - 1;
+	size_t li = eh.top + (size_t)rr;
+	if ( li >= eh.starts.size() )
+	    return (long)eh.text.size();
+	const size_t begin = eh.starts[li];
+	const size_t end = li + 1 < eh.starts.size() ? eh.starts[li + 1] - 1
+						     : eh.text.size();
+	const long target = (col < (long)eh.c0 ? 0 : col - (long)eh.c0) + (long)eh.shift;
+	std::vector<size_t> dcol;
+	madc::line_layout(eh.text.substr(begin, end - begin), 0, dcol, eh.tabw);
+	// Before the glyph whose cells hold the column (a continuation byte
+	// shares its lead byte's column and is never a caret position).
+	const size_t len = end - begin;
+	size_t at = 0;
+	for ( size_t i = 0; i < len; ++i )
+	{
+	    if ( i > 0 && dcol[i] == dcol[i - 1] )
+		continue;
+	    if ( (long)dcol[i] > target )
+		break;
+	    at = i;
+	}
+	if ( target >= (long)dcol.back() )
+	    at = len;
+	return (long)(begin + at);
+    }
+    // A pointer report (facelift S7) against the last paint's hit map: the
+    // SAME events the keyboard or the window produce — a menu opened,
+    // closed or chosen, a command posted (a tab, a toolbar button, a dialog
+    // button, a press outside a dismissable window), an option chosen (the
+    // focus owner's pointer choose), an edit's caret placed and a drag
+    // extended (the window's pointer event: phase, byte offset, subject,
+    // tag). The wheel is three arrow keys. Middle and right presses do
+    // nothing yet.
+    void pointer(const tui_keyev &k, std::vector<tui_event> &out)
+    {
+	if ( k.button == tui_button::wheel_up || k.button == tui_button::wheel_down )
+	{
+	    std::vector<tui_keyev> arrows(3, tui_keyev(k.button == tui_button::wheel_up
+						       ? tui_key::up : tui_key::down));
+	    std::vector<tui_event> ev = ui_apply_keys(_keys, _focus_st, arrows);
+	    out.insert(out.end(), ev.begin(), ev.end());
+	    return;
+	}
+	if ( k.button != tui_button::left )
+	    return;
+	if ( k.phase != ::ui::pointer_phase::down )
+	{
+	    // A drag or the release: the edit the press started in.
+	    if ( _drag_slot == std::string::npos )
+		return;
+	    for ( size_t i = 0; i < _edit_hits.size(); ++i )
+		if ( _edit_hits[i].slot == _drag_slot )
+		{
+		    out.push_back(edit_pointer(_edit_hits[i], k));
+		    break;
+		}
+	    if ( k.phase == ::ui::pointer_phase::up )
+		_drag_slot = std::string::npos;
+	    return;
+	}
+	const tui_hit *h = hit_at(k.row, k.col);
+	if ( !h )
+	    return;
+	tui_event e;
+	e.kind = tui_event_kind::focus;
+	switch ( h->k )
+	{
+	    case tui_hit::kind::none:
+		return;
+	    case tui_hit::kind::menu_close:
+		_focus_st.menu_close();
+		break;
+	    case tui_hit::kind::menu_title:
+		_focus_st.menu_toggle(h->index);
+		break;
+	    case tui_hit::kind::menu_row:
+		if ( !_focus_st.menu_choose(h->index, e) )
+		    return;			// a disabled row: nothing
+		break;
+	    case tui_hit::kind::action:
+		e.kind = tui_event_kind::action;
+		e.action_name = h->action;
+		e.action_code = h->code;
+		e.text = h->arg;		// the command's argument (a tab's)
+		break;
+	    case tui_hit::kind::drop:
+		if ( !open_menu(h->arg) )
+		    return;
+		break;
+	    case tui_hit::kind::choose:
+		if ( !_focus_st.choose(h->slot, h->index == std::string::npos
+						? -1 : (long)h->index, e) )
+		    return;
+		break;
+	    case tui_hit::kind::edit:
+	    {
+		const edit_hit &eh = _edit_hits[h->index];
+		_focus_st.set_focus(eh.slot);
+		_drag_slot = eh.slot;
+		e = edit_pointer(eh, k);
+		break;
+	    }
+	}
+	out.push_back(e);
+    }
+    static tui_event edit_pointer(const edit_hit &eh, const tui_keyev &k)
+    {
+	tui_event e;
+	e.kind = tui_event_kind::pointer;
+	e.phase = k.phase;
+	e.mods = k.mods;
+	e.offset = edit_offset(eh, k.row, k.col);
+	e.subject = eh.subject;
+	e.tag = eh.tag;
+	return e;
+    }
+
+    // A framed box over [r0, r1] x [c0, c1], `body` inside; the frame is its
+    // own (it never joins the workbench's dividers) — the caller paints it,
+    // in `body`, after what goes inside.
+    void paint_box(size_t r0, size_t c0, size_t r1, size_t c1, ui_style body,
+		   tui_frame &box)
+    {
+	box.reset(_grid.rows, _grid.cols);
+	for ( size_t r = r0 + 1; r < r1; ++r )
+	    _grid.put(r, c0 + 1, std::string(c1 - c0 - 1, ' '), body);
+	box.hline(r0, c0, c1);
+	box.hline(r1, c0, c1);
+	box.vline(c0, r0, r1);
+	box.vline(c1, r0, r1);
+    }
+    // The title on the top border, after the frame is painted.
+    void paint_box_title(size_t r0, size_t c0, size_t c1, ui_style body,
+			 const std::string &title)
+    {
+	if ( title.empty() || c1 < c0 + 6 )
+	    return;
+	std::vector<size_t> col;
+	std::string shown = madc::line_layout(" " + title + " ", 0, col);
+	size_t room = c1 - c0 - 3;
+	if ( col.back() > room )
+	    shown = madc::line_columns(shown, 0, room);
+	ui_style st = body;
+	st.flags |= ui_style::BOLD;
+	_grid.put(r0, c0 + 2, shown, st);
+    }
+    // The shadow of a box: two columns to its right, one row below, offset
+    // by one (Turbo Vision's).
+    void paint_shadow(size_t r0, size_t c0, size_t r1, size_t c1)
+    {
+	const ui_style shadow = _chrome[(size_t)tui_chrome::shadow];
+	for ( size_t r = r0 + 1; r <= r1 && r < _grid.rows; ++r )
+	    _grid.overlay_attr(r, c1 + 1, 2, shadow);
+	if ( r1 + 1 < _grid.rows )
+	    _grid.overlay_attr(r1 + 1, c0 + 2, c1 - c0 + 1, shadow);
+    }
+
+    // One floating window, centred, in the upper third: the title on its
+    // border, the field (the cursor at its end), the content's rows scrolled
+    // to keep the selected one in view (lit across the box), the buttons on
+    // the last inner row (the primary in button_primary). The box is as wide
+    // as its widest part, at most the screen less a margin.
+    void paint_float(const tui_float &f)
+    {
+	const size_t rows = _grid.rows, cols = _grid.cols;
+	if ( rows < 5 || cols < 16 )
+	    return;
+	const ui_style body = _chrome[(size_t)tui_chrome::dialog];
+	std::string bline;
+	std::vector<size_t> bcol;	// each button's start in bline
+	for ( size_t i = 0; i < f.buttons.size(); ++i )
+	{
+	    if ( i )
+		bline += "  ";
+	    bcol.push_back(bline.size());
+	    bline += "[ " + f.buttons[i] + " ]";
+	}
+	size_t iw = 24;
+	const std::vector<line_out> &lines = f.content.lines;
+	for ( size_t i = 0; i < lines.size(); ++i )
+	    iw = std::max(iw, madc::line_width(lines[i].text));
+	iw = std::max(iw, madc::line_width(f.title) + 4);
+	iw = std::max(iw, madc::line_width(bline));
+	if ( f.has_field )
+	    iw = std::max(iw, madc::line_width(f.field) + 2);
+	if ( iw + 6 > cols )
+	    iw = cols - 6;
+	const size_t extra = (f.has_field ? 1 : 0) + (f.buttons.empty() ? 0 : 1);
+	size_t n = lines.size();
+	if ( n + extra + 2 > rows - 1 )
+	    n = rows - 1 > extra + 2 ? rows - 1 - extra - 2 : 0;
+	const size_t w = iw + 4, h = n + extra + 2;
+	const size_t c0 = (cols - w) / 2, c1 = c0 + w - 1;
+	const size_t r0 = (rows - h) / 3, r1 = r0 + h - 1;
+	tui_frame box;
+	paint_box(r0, c0, r1, c1, body, box);
+	// The hit map (S7): a press outside the window is its dismiss (when it
+	// has one); inside, its rows and buttons, the rest swallowed.
+	if ( !f.dismiss.empty() || f.dismiss_code )
+	    _hits.push_back(screen_hit(tui_hit::kind::action, f.dismiss, f.dismiss_code));
+	for ( size_t rr = r0; rr <= r1; ++rr )
+	    _hits.push_back(cell_hit(tui_hit::kind::none, rr, c0, c1 + 1));
+	size_t r = r0 + 1;
+	if ( f.has_field )
+	{
+	    const ui_style fs = _chrome[(size_t)tui_chrome::field];
+	    std::vector<size_t> col;
+	    std::string shown = madc::line_layout(f.field, 0, col);
+	    size_t cw = col.back();
+	    if ( cw > iw )
+	    {
+		shown = madc::line_columns(shown, cw - iw, iw);
+		cw = iw;
+	    }
+	    _grid.put(r, c0 + 2, std::string(iw, ' '), fs);
+	    _grid.put(r, c0 + 2, shown, fs);
+	    _grid.cursor_row = r;
+	    _grid.cursor_col = c0 + 2 + (cw < iw ? cw : iw - 1);
+	    _grid.cursor_visible = true;
+	    ++r;
+	}
+	size_t top = 0;
+	if ( f.content.sel_line != std::string::npos && n > 0
+	  && f.content.sel_line >= n )
+	    top = f.content.sel_line - n + 1;
+	for ( size_t k = 0; k < n && top + k < lines.size(); ++k, ++r )
+	{
+	    const size_t li = top + k;
+	    line_out l = lines[li];
+	    std::vector<size_t> col;
+	    std::string shown = madc::line_layout(l.text, 0, col);
+	    if ( col.back() > iw )
+		l.text = madc::line_columns(shown, 0, iw);
+	    for ( size_t s = 0; s < l.spans.size(); ++s )
+		if ( l.spans[s].col + l.spans[s].len > l.text.size() )
+		    l.spans[s].len = l.spans[s].col < l.text.size()
+				     ? l.text.size() - l.spans[s].col : 0;
+	    for ( size_t hi = 0; hi < l.hits.size(); ++hi )
+	    {
+		tui_hit h = l.hits[hi].hit;
+		h.row = r;
+		h.c0 = c0 + 1;
+		h.c1 = c1;
+		_hits.push_back(h);
+	    }
+	    if ( li == f.content.sel_line )
+	    {
+		const ui_style sel = _chrome[(size_t)tui_chrome::list_selected];
+		_grid.put(r, c0 + 1, std::string(w - 2, ' '), sel);
+		if ( !f.has_field )
+		{
+		    _grid.cursor_row = r;
+		    _grid.cursor_col = c0 + 1;
+		}
+		_grid.put(r, c0 + 2, l.text, sel);
+		continue;
+	    }
+	    _grid.put(r, c0 + 2, l.text, body);
+	    for ( size_t s = 0; s < l.spans.size(); ++s )
+		_grid.overlay_attr(r, c0 + 2 + madc::line_width(l.text.substr(0, l.spans[s].col)),
+				   madc::line_width(l.text.substr(l.spans[s].col, l.spans[s].len)),
+				   l.spans[s].attr);
+	}
+	if ( !f.buttons.empty() )
+	{
+	    const size_t br = r1 - 1;
+	    size_t bw = madc::line_width(bline);
+	    size_t bc = c1 - 1 - (bw < iw ? bw : iw);
+	    _grid.put(br, bc, bline, body);
+	    for ( size_t i = 0; i < f.buttons.size(); ++i )
+	    {
+		const size_t bs = bc + madc::line_width(bline.substr(0, bcol[i]));
+		tui_hit h = cell_hit(tui_hit::kind::action, br, bs,
+				     bs + madc::line_width(f.buttons[i]) + 4);
+		if ( f.button_actions[i].empty() && !f.button_codes[i] )
+		{
+		    h.k = tui_hit::kind::choose;	// the primary: the live row
+		    h.slot = f.choice_slot;
+		    h.index = std::string::npos;
+		    if ( f.choice_slot == std::string::npos )
+			h.k = tui_hit::kind::none;
+		}
+		else
+		{
+		    h.action = f.button_actions[i];
+		    h.code = f.button_codes[i];
+		}
+		_hits.push_back(h);
+	    }
+	    if ( f.primary < f.buttons.size() )
+		_grid.overlay_attr(br, bc + madc::line_width(bline.substr(0, bcol[f.primary])),
+				   madc::line_width(f.buttons[f.primary]) + 4,
+				   _chrome[(size_t)tui_chrome::button_primary]);
+	}
+	box.paint(_grid, body);
+	paint_box_title(r0, c0, c1, body, f.title);
+	paint_shadow(r0, c0, r1, c1);
+    }
+
     // Collect a LEAF pane -- its header (its tabs strip) then its children as a
     // flow -- at the given column geometry.
     region collect_leaf(const roles &r, const uinode &n, size_t c0, size_t width)
@@ -1184,7 +1025,7 @@ private:
 	f.c0 = c0;
 	f.width = width;
 	f.size = hint_of(n.hints, "size", 0);
-	read_header(n, f.header, f.header_active);
+	read_header(n, f.header, f.header_active, &f.header_acts);
 	for ( size_t i = 0; i < n.children.size(); ++i )
 	    collect_flow(r, n.children[i], f);
 	return f;
@@ -1228,39 +1069,82 @@ private:
     // widths). Its styled spans are BYTE positions of the text, placed
     // through the same map (B87: a span after a UTF-8 character landed a
     // column right per extra byte). A position past the text's end is a
-    // COLUMN: a full-width bar spans len = cols, the row's width.
-    void paint_line(size_t row, size_t col0, const line_out &l)
+    // COLUMN: a full-width bar spans len = cols, the row's width. The line
+    // keeps to its region's `width` columns — its text cut there as an
+    // edit's is (madc::line_columns), its spans and hit targets clipped — so
+    // a sidebar's long row never runs on into the centre.
+    void paint_line(size_t row, size_t col0, size_t width, const line_out &l)
     {
 	std::vector<size_t> col;
-	_grid.put(row, col0, madc::line_layout(l.text, 0, col));
+	_grid.put(row, col0,
+		  madc::line_columns(madc::line_layout(l.text, 0, col), 0, width));
 	const size_t n = l.text.size();
 	for ( size_t i = 0; i < l.spans.size(); ++i )
 	{
 	    size_t s = l.spans[i].col, e = l.spans[i].col + l.spans[i].len;
-	    size_t cs = s <= n ? col[s] : std::max(col[n], s);
-	    size_t ce = e <= n ? col[e] : std::max(col[n], e);
-	    _grid.fill_attr(row, col0 + cs, ce - cs, l.spans[i].attr);
+	    size_t cs = std::min(s <= n ? col[s] : std::max(col[n], s), width);
+	    size_t ce = std::min(e <= n ? col[e] : std::max(col[n], e), width);
+	    if ( ce > cs )
+		_grid.fill_attr(row, col0 + cs, ce - cs, l.spans[i].attr);
+	}
+	for ( size_t i = 0; i < l.hits.size(); ++i )
+	{
+	    size_t s = l.hits[i].col, e = l.hits[i].col + l.hits[i].len;
+	    size_t cs = std::min(s <= n ? col[s] : col[n], width);
+	    size_t ce = std::min(e <= n ? col[e] : col[n], width);
+	    if ( ce <= cs )
+		continue;			// wholly past the region's edge
+	    tui_hit h = l.hits[i].hit;
+	    h.row = row;
+	    h.c0 = col0 + cs;
+	    h.c1 = col0 + ce;
+	    _hits.push_back(h);
 	}
     }
-    // A leaf pane's header line: the tab titles, the active one reverse.
-    void paint_header(size_t row, size_t col0,
-	const std::vector<std::string> &titles, size_t active)
+    // A tab strip as one line: each title padded by a blank, the active
+    // one in the scheme's tab_active style, the rest in its tab style; a
+    // chrome band's titles uppercase (S3). The ONE strip builder — a leaf
+    // pane's header and the editor's open files.
+    line_out tab_strip(const std::vector<std::string> &titles, size_t active,
+		       bool upper, const std::vector<tui_hit> *acts = NULL) const
     {
 	line_out l;
 	for ( size_t i = 0; i < titles.size(); ++i )
 	{
-	    std::string seg = " " + titles[i] + " ";
-	    if ( i == active )
+	    if ( acts && i < acts->size() && (*acts)[i].k != tui_hit::kind::none )
+	    {
+		line_hit lh;
+		lh.col = l.text.size();
+		lh.len = titles[i].size() + 2;
+		lh.hit = (*acts)[i];
+		l.hits.push_back(lh);
+	    }
+	    std::string t = titles[i];
+	    if ( upper )
+		for ( size_t k = 0; k < t.size(); ++k )
+		    if ( t[k] >= 'a' && t[k] <= 'z' )
+			t[k] = (char)(t[k] - 'a' + 'A');
+	    std::string seg = " " + t + " ";
+	    const ui_style &st = _chrome[(size_t)(i == active ? tui_chrome::tab_active
+							      : tui_chrome::tab)];
+	    if ( !st.is_normal() )
 	    {
 		span s;
 		s.col = l.text.size();
 		s.len = seg.size();
-		s.attr = ui_style::reverse();
+		s.attr = st;
 		l.spans.push_back(s);
 	    }
 	    l.text += seg;
 	}
-	paint_line(row, col0, l);
+	return l;
+    }
+    // A leaf pane's header line: its tab strip.
+    void paint_header(size_t row, size_t col0, size_t width,
+	const std::vector<std::string> &titles, size_t active, bool upper,
+	const std::vector<tui_hit> *acts = NULL)
+    {
+	paint_line(row, col0, width, tab_strip(titles, active, upper, acts));
     }
 
     // A document line's byte->display-column map is madc::line_layout's
@@ -1275,9 +1159,11 @@ private:
     // with the line [begin..end] shown at `row`, converted to display
     // columns through the line's expansion map, honoring the horizontal
     // shift and the column clip.
+    // `overlay`: the range keeps the background under it when `attr` names
+    // none (a syntax span on the caret line).
     void fill_range_overlap(size_t row, size_t col0, size_t begin, size_t end,
 	const std::vector<size_t> &dcol, size_t shift, size_t width,
-	long s0, long e0, ui_style attr)
+	long s0, long e0, ui_style attr, bool overlay = false)
     {
 	if ( s0 < 0 || e0 <= s0 )
 	    return;
@@ -1291,7 +1177,12 @@ private:
 	{
 	    size_t c0 = ds < shift ? 0 : ds - shift;
 	    size_t c1 = dt - shift;
-	    _grid.fill_attr(row, col0 + c0, c1 - c0, attr);
+	    if ( c1 > width )
+		c1 = width;
+	    if ( overlay )
+		_grid.overlay_attr(row, col0 + c0, c1 - c0, attr);
+	    else
+		_grid.fill_attr(row, col0 + c0, c1 - c0, attr);
 	}
     }
 
@@ -1301,6 +1192,11 @@ private:
     void paint_edit(const edit_slot &e, size_t top_row, size_t col0,
 		    size_t height, size_t width)
     {
+	// The line-number gutter (S2): the numbers right-aligned in at least
+	// three columns, two blank columns before the text; the text window
+	// is what remains. Too narrow a pane keeps its text and no gutter.
+	size_t gutter_w = 0;
+	size_t total_lines = 1;
 	// Line starts (byte offsets); the end sentinel makes every offset
 	// belong to exactly one line, the caret-at-EOF position included.
 	std::vector<size_t> starts;
@@ -1308,6 +1204,19 @@ private:
 	for ( size_t i = 0; i < e.text.size(); ++i )
 	    if ( e.text[i] == '\n' )
 		starts.push_back(i + 1);
+	total_lines = starts.size();
+	if ( e.gutter )
+	{
+	    size_t digits = 1;
+	    for ( size_t n = total_lines; n >= 10; n /= 10 )
+		++digits;
+	    gutter_w = (digits < 3 ? 3 : digits) + 3;
+	    if ( width <= gutter_w + 1 )
+		gutter_w = 0;
+	}
+	const size_t num_col0 = col0, num_w = gutter_w;
+	col0 += gutter_w;
+	width -= gutter_w;
 	size_t caret = e.caret < 0 ? 0
 		     : ((size_t)e.caret > e.text.size() ? e.text.size()
 							: (size_t)e.caret);
@@ -1336,6 +1245,35 @@ private:
 	size_t &shift = _hshift[e.slot];
 	shift = caret_col < width ? 0 : caret_col - width + 1;
 
+	// The hit map (S7): every row of the window, the gutter included,
+	// presses into this text.
+	{
+	    edit_hit eh;
+	    eh.r0 = top_row;
+	    eh.h = height;
+	    eh.c0 = col0;
+	    eh.w = width;
+	    eh.top = top;
+	    eh.shift = shift;
+	    eh.tabw = (size_t)e.tabw;
+	    eh.slot = e.slot;
+	    eh.tag = e.tag;
+	    eh.subject = e.subject;
+	    eh.starts = starts;
+	    eh.text = e.text;
+	    _edit_hits.push_back(eh);
+	    for ( size_t k = 0; k < height; ++k )
+	    {
+		tui_hit h;
+		h.k = tui_hit::kind::edit;
+		h.row = top_row + k;
+		h.c0 = num_col0;
+		h.c1 = col0 + width;
+		h.index = _edit_hits.size() - 1;
+		_hits.push_back(h);
+	    }
+	}
+
 	for ( size_t k = 0; k < height; ++k )
 	{
 	    size_t li = top + k;
@@ -1349,12 +1287,26 @@ private:
 						 0, dcol, (size_t)e.tabw);
 	    if ( shift < dcol.back() )
 		_grid.put(top_row + k, col0, madc::line_columns(disp, shift, width));
+	    if ( num_w )
+	    {
+		std::string num = std::to_string(li + 1);
+		std::string field(num_w - 2 > num.size() ? num_w - 2 - num.size() : 0, ' ');
+		bool cur = li == caret_line;
+		_grid.put(top_row + k, num_col0, field + num,
+			  _chrome[(size_t)(cur ? tui_chrome::gutter_current
+					       : tui_chrome::gutter)]);
+		// The caret line, faintly (a theme that leaves it normal shows
+		// nothing): under the text, so the spans keep its background.
+		if ( cur && !_chrome[(size_t)tui_chrome::current_line].is_normal() )
+		    _grid.fill_attr(top_row + k, col0, width,
+				    _chrome[(size_t)tui_chrome::current_line]);
+	    }
 	    // Highlight spans first, the selection LAST (it wins where
 	    // they overlap) — both are the one range-overlap rule below.
 	    for ( size_t si = 0; si < e.spans.size(); ++si )
 		fill_range_overlap(top_row + k, col0, begin, end, dcol, shift, width,
 				   e.spans[si].start, e.spans[si].end,
-				   e.spans[si].attr);
+				   e.spans[si].attr, true);
 	    if ( e.sel_start >= 0 && e.sel_end > e.sel_start )
 		fill_range_overlap(top_row + k, col0, begin, end, dcol, shift, width,
 				   e.sel_start, e.sel_end,
@@ -1365,6 +1317,122 @@ private:
 		_grid.cursor_col = col0 + caret_col - shift;
 		_grid.cursor_visible = true;
 	    }
+	}
+    }
+    // A status node the layout docks at the BOTTOM edge (region statusbar,
+    // side bottom — facelift S3).
+    static bool is_bottom_status_bar(const roles &r, const uinode &n)
+    {
+	return n.role == r.status && hint_str(n.hints, "region") == "statusbar"
+	    && hint_str(n.hints, "side") == "bottom";
+    }
+    // The status bar's line: its `items` segments ({seat, label, text}) —
+    // the left side from the left edge, the right side against the right,
+    // each label dim and the file name (seat `n`) bold, on the scheme's
+    // statusbar style; a node without items shows its text.
+    line_out status_bar_line(const uinode &n, size_t cols) const
+    {
+	const ui_style bar = _chrome[(size_t)tui_chrome::statusbar];
+	ui_style label = bar;
+	label.flags |= ui_style::DIM;
+	ui_style name = bar;
+	name.flags |= ui_style::BOLD;
+	line_out sides[2];
+	static const char *const keys[2] = { "left", "right" };
+	const madc::value *items = NULL;
+	if ( n.hints.is_object() )
+	{
+	    const std::map<std::string, madc::value> &ho = n.hints.as_object();
+	    std::map<std::string, madc::value>::const_iterator ii = ho.find("items");
+	    if ( ii != ho.end() && ii->second.is_object() )
+		items = &ii->second;
+	}
+	if ( !items )
+	    sides[0] = line_out(" " + node_text(n));
+	for ( int k = 0; items && k < 2; ++k )
+	{
+	    const std::map<std::string, madc::value> &io = items->as_object();
+	    std::map<std::string, madc::value>::const_iterator si = io.find(keys[k]);
+	    if ( si == io.end() || !si->second.is_array() )
+		continue;
+	    line_out &l = sides[k];
+	    for ( const madc::value &seg : si->second.as_array() )
+	    {
+		if ( !seg.is_object() )
+		    continue;
+		std::string lab = hint_str(seg, "label"), txt = hint_str(seg, "text");
+		if ( txt.empty() )
+		    continue;
+		l.text += l.text.empty() ? " " : "  ";
+		if ( !lab.empty() )
+		{
+		    span s; s.col = l.text.size(); s.len = lab.size(); s.attr = label;
+		    l.spans.push_back(s);
+		    l.text += lab + " ";
+		}
+		if ( hint_str(seg, "seat") == "n" )
+		{
+		    span s; s.col = l.text.size(); s.len = txt.size(); s.attr = name;
+		    l.spans.push_back(s);
+		}
+		l.text += txt;
+	    }
+	}
+	if ( !sides[1].text.empty() )
+	    sides[1].text += " ";
+	// Justify: the right side against the right edge when both fit.
+	line_out out = sides[0];
+	size_t lw = madc::line_width(out.text), rw = madc::line_width(sides[1].text);
+	if ( rw && lw + rw + 1 <= cols )
+	{
+	    out.text += std::string(cols - lw - rw, ' ');
+	    size_t at = out.text.size();
+	    for ( const span &sp : sides[1].spans )
+	    {
+		span s = sp;
+		s.col += at;
+		out.spans.push_back(s);
+	    }
+	    out.text += sides[1].text;
+	}
+	// The bar's own style under the segments' (a span past the text is a
+	// column: the whole row).
+	span whole; whole.col = 0; whole.len = cols; whole.attr = bar;
+	out.spans.insert(out.spans.begin(), whole);
+	return out;
+    }
+    // This compose's chrome styles from the root's `chrome` hint object
+    // ({ "<tui_chrome name>": "<style spec>" }): an unknown name or a spec
+    // the parser refuses leaves that element's default — the gutter dim, the
+    // rest normal.
+    void read_chrome(const uinode &tree)
+    {
+	for ( size_t i = 0; i < (size_t)tui_chrome::count; ++i )
+	    _chrome[i] = ui_style::normal();
+	_chrome[(size_t)tui_chrome::gutter].flags = ui_style::DIM;
+	_chrome[(size_t)tui_chrome::tab_active] = ui_style::reverse();
+	_chrome[(size_t)tui_chrome::statusbar] = ui_style::reverse();
+	_chrome[(size_t)tui_chrome::menubar] = ui_style::reverse();
+	_chrome[(size_t)tui_chrome::menu] = ui_style::reverse();
+	_chrome[(size_t)tui_chrome::menu_hot].flags = ui_style::UNDERLINE;
+	_chrome[(size_t)tui_chrome::shadow].bg = 1;	// black
+	_chrome[(size_t)tui_chrome::shadow].flags = ui_style::DIM;
+	_chrome[(size_t)tui_chrome::list_selected] = ui_style::reverse();
+	_chrome[(size_t)tui_chrome::field].flags = ui_style::UNDERLINE;
+	_chrome[(size_t)tui_chrome::button_primary] = ui_style::reverse();
+	if ( !tree.hints.is_object() )
+	    return;
+	const std::map<std::string, madc::value> &ho = tree.hints.as_object();
+	std::map<std::string, madc::value>::const_iterator ci = ho.find("chrome");
+	if ( ci == ho.end() || !ci->second.is_object() )
+	    return;
+	for ( const auto &kv : ci->second.as_object() )
+	{
+	    tui_chrome k;
+	    ui_style st;
+	    if ( kv.second.is_string() && tui_chrome_of(kv.first, k)
+	      && ui_style_of(kv.second.as_string(), st) )
+		_chrome[(size_t)k] = st;
 	}
     }
     // Paint a collected region into the row range [r0, r0+h) (columns fixed at
@@ -1393,7 +1461,21 @@ private:
 	}
 	else
 	    for ( size_t i = 0; i < g.kids.size(); ++i )
+	    {
 		paint_region(g.kids[i], r0, h);
+		// The blank column between two panes is a divider (S2), reaching
+		// a line just above or below it (a panel's divider: the junction).
+		if ( i + 1 < g.kids.size() && h > 0 )
+		{
+		    size_t col = g.kids[i].c0 + g.kids[i].width;
+		    size_t a = r0, b = r0 + h - 1;
+		    if ( a > 0 && !_frame.empty_at(a - 1, col) )
+			--a;
+		    if ( !_frame.empty_at(b + 1, col) )
+			++b;
+		    _frame.vline(col, a, b);
+		}
+	    }
     }
     // A leaf flow: its header (if any), then lines/edits/subs packed top to
     // bottom -- a rows:N edit is fixed; among the unhinted, the FIRST (an edit
@@ -1403,7 +1485,8 @@ private:
     {
 	if ( !f.header.empty() && h > 0 )
 	{
-	    paint_header(r0, f.c0, f.header, f.header_active);
+	    paint_header(r0, f.c0, f.width, f.header, f.header_active, f.header_upper,
+			 &f.header_acts);
 	    ++r0;
 	    --h;
 	}
@@ -1431,7 +1514,7 @@ private:
 	    const flow_item &it = f.order[oi];
 	    if ( it.k == flow_item::kind::line )
 	    {
-		paint_line(row, f.c0, f.lines[it.idx]);
+		paint_line(row, f.c0, f.width, f.lines[it.idx]);
 		++row;
 	    }
 	    else if ( it.k == flow_item::kind::edit )
@@ -1471,7 +1554,7 @@ private:
     }
 
 public:
-    tui_model() {}
+    tui_model() : _tb_row(std::string::npos), _drag_slot(std::string::npos) {}
 
     const tui_grid &grid() const { return _grid; }
     // Focus and selection are the shared owner's (madcdis/ui_focus.h);
@@ -1490,15 +1573,32 @@ public:
 	size_t rows, size_t cols)
     {
 	_grid.resize(rows, cols);
+	_frame.reset(rows, cols);
+	read_chrome(tree);
 	_focus_st.begin_compose();
-	// The toolbar (plan §41.11a): a root `toolbar` hint takes the top row;
-	// the bands and the centre lay out in the rows below it. No hint = no
-	// row, byte-identical to before (the negative control).
-	const std::string tbline = toolbar_line(tree);
-	const size_t top = (!tbline.empty() && rows > 1) ? 1 : 0;
-	if ( top )
-	    _grid.put(0, 0, tbline);
-	const size_t body_rows = rows - top;
+	_floats.clear();
+	_hits.clear();
+	_edit_hits.clear();
+	_focus_st.set_menus(read_menus(tree));
+	// The menu bar (S4): the root's `menubar` hint (the layout's `menubar`
+	// line) keeps it on the top row; without it the bar shows only while
+	// open, over the top row (JOE's look keeps its rows).
+	const size_t mtop = (hint_of(tree.hints, "menubar", 0) != 0
+			     && !_focus_st.menus().empty() && rows > 3) ? 1 : 0;
+	// The toolbar (plan §41.11a): a root `toolbar` hint takes the top row
+	// (under the bar); the bands and the centre lay out in the rows below
+	// it. No hint = no row, byte-identical to before (the negative control).
+	const size_t top = mtop + ((rows > mtop + 1 && paint_toolbar(tree, mtop)) ? 1 : 0);
+	// The status BAR docked at the bottom (S3, the layout's `status
+	// bottom`): the screen's last row, full width, under every band. A
+	// status line at the top (JOE's place) stays in the centre flow.
+	const uinode *bar = NULL;
+	for ( size_t i = 0; i < tree.children.size(); ++i )
+	    if ( is_bottom_status_bar(r, tree.children[i]) )
+		bar = &tree.children[i];
+	if ( bar && rows < top + 3 )
+	    bar = NULL;
+	const size_t body_rows = rows - top - (bar ? 1 : 0);
 	// Column geometry: sidebars carve columns from the full width; the
 	// centre keeps the rest; panels span the centre columns.
 	size_t centre_c0 = 0, centre_w = cols;
@@ -1528,6 +1628,16 @@ public:
 		centre_c0 += sw;
 		centre_w -= sw;
 	    }
+	    // The divider (S2): the band's column next to the centre, a full-
+	    // height line; the band's content keeps the rest.
+	    if ( sw >= 2 )
+	    {
+		size_t div = side == ui_side::right ? bc0 : bc0 + sw - 1;
+		_frame.vline(div, top, top + body_rows - 1);
+		if ( side == ui_side::right )
+		    ++bc0;
+		--sw;
+	    }
 	    band_c0[i] = bc0;
 	    band_w[i] = sw;
 	}
@@ -1541,6 +1651,8 @@ public:
 	for ( size_t i = 0; i < tree.children.size(); ++i )
 	{
 	    const uinode &c = tree.children[i];
+	    if ( &c == bar )
+		continue;			// painted on the last row below
 	    std::string reg = hint_str(c.hints, "region");
 	    if ( reg == "sidebar" || reg == "panel" )
 	    {
@@ -1560,6 +1672,7 @@ public:
 		    b.w = centre_w;
 		}
 		b.content = collect_leaf(r, c, b.c0, b.w);
+		b.content.header_upper = true;
 		bands.push_back(b);
 	    }
 	    else
@@ -1588,44 +1701,366 @@ public:
 	    else
 		pr0 = centre_r0 + centre_h - ph;
 	    centre_h -= ph;
-	    paint_region(bands[i].content, pr0, ph);
+	    // The divider (S2): the panel's row next to the centre, across the
+	    // centre's columns and onto a sidebar divider beside them (the arms
+	    // make the junction).
+	    size_t cph = ph, cpr0 = pr0;
+	    if ( ph >= 2 )
+	    {
+		size_t div = bands[i].side == ui_side::top ? pr0 + ph - 1 : pr0;
+		size_t h0 = centre_c0, h1 = centre_c0 + centre_w - 1;
+		if ( h0 > 0 && !_frame.empty_at(div, h0 - 1) )
+		    --h0;
+		if ( !_frame.empty_at(div, h1 + 1) )
+		    ++h1;
+		_frame.hline(div, h0, h1);
+		--cph;
+		if ( bands[i].side != ui_side::top )
+		    ++cpr0;
+	    }
+	    paint_region(bands[i].content, cpr0, cph);
 	}
 	for ( size_t i = 0; i < bands.size(); ++i )
 	    if ( bands[i].side == ui_side::left || bands[i].side == ui_side::right )
 		paint_region(bands[i].content, top, body_rows);
 	paint_region(centre, centre_r0, centre_h);
+	if ( bar )
+	    paint_line(rows - 1, 0, cols, status_bar_line(*bar, cols));
+	_frame.paint(_grid, _chrome[(size_t)tui_chrome::divider]);
+	// The floating windows over the workbench (S6), then the menus.
+	for ( size_t i = 0; i < _floats.size(); ++i )
+	    paint_float(_floats[i]);
+	// The menu bar and its dropdown LAST: an overlay over everything.
+	if ( mtop || _focus_st.menu_is_open() )
+	    paint_menus(mtop != 0);
 	return _grid;
     }
 
-    // The toolbar's one line (plan §41.11a): each row of the root's
-    // `toolbar` hint as `[Label chord]`, the chord the LOADED profile binds
-    // to the row's code, else to its name (the page's tooltip, the menu's
-    // accelerator: tui_bindings::chord_for). A row with no label or no
-    // action is dropped. "" when the root carries none.
-    std::string toolbar_line(const uinode &tree) const
+    // Open the menu titled `title` for the APPLICATION (ui::menu_open — a
+    // toolbar button's arrow, facelift S5): it drops under the toolbar
+    // button that names it, else under its bar title. False = no menu has
+    // that title (the application shows its own list instead).
+    bool open_menu(const std::string &title)
     {
-	std::string line;
+	std::map<std::string, size_t>::const_iterator di = _tb_drops.find(title);
+	return _focus_st.menu_open_titled(title,
+	    di == _tb_drops.end() ? std::string::npos : di->second);
+    }
+
+    // The root's `menu` hint ({bar:[{title, items:[{id,code,title,enabled?}
+    // |{sep}]}]}, the shape the window's native menu reads) as the focus
+    // owner's bar, each title's hotkey letter assigned (menu_hotkeys). A row
+    // without an id is dropped, as the window drops it.
+    static std::vector<menu_col> read_menus(const uinode &tree)
+    {
+	std::vector<menu_col> out;
 	if ( !tree.hints.is_object() )
-	    return line;
+	    return out;
+	const std::map<std::string, madc::value> &ho = tree.hints.as_object();
+	std::map<std::string, madc::value>::const_iterator mi = ho.find("menu");
+	if ( mi == ho.end() || !mi->second.is_object() )
+	    return out;
+	const std::map<std::string, madc::value> &mo = mi->second.as_object();
+	std::map<std::string, madc::value>::const_iterator bi = mo.find("bar");
+	if ( bi == mo.end() || !bi->second.is_array() )
+	    return out;
+	for ( const madc::value &mv : bi->second.as_array() )
+	{
+	    if ( !mv.is_object() )
+		continue;
+	    menu_col m;
+	    m.title = hint_str(mv, "title");
+	    const std::map<std::string, madc::value> &mm = mv.as_object();
+	    std::map<std::string, madc::value>::const_iterator ii = mm.find("items");
+	    if ( ii != mm.end() && ii->second.is_array() )
+		for ( const madc::value &iv : ii->second.as_array() )
+		{
+		    if ( !iv.is_object() )
+			continue;
+		    menu_row row;
+		    if ( hint_of(iv, "sep", 0) )
+		    {
+			row.sep = true;
+			m.rows.push_back(row);
+			continue;
+		    }
+		    row.id = hint_str(iv, "id");
+		    if ( row.id.empty() )
+			continue;
+		    row.title = hint_str(iv, "title");
+		    row.code = hint_of(iv, "code", 0);
+		    row.enabled = hint_of(iv, "enabled", 1) != 0;
+		    m.rows.push_back(row);
+		}
+	    out.push_back(m);
+	}
+	menu_hotkeys(out);
+	return out;
+    }
+
+    // `base` with the hotkey letter's look laid over it: menu_hot's colour
+    // when it names one, its attributes added.
+    ui_style menu_hot_over(ui_style base) const
+    {
+	const ui_style &h = _chrome[(size_t)tui_chrome::menu_hot];
+	if ( h.fg || h.fg_rgb )
+	{
+	    base.fg = h.fg;
+	    base.fg_rgb = h.fg_rgb;
+	}
+	base.flags |= h.flags;
+	return base;
+    }
+    // A title at (r, c) in `st`, its hotkey letter (the first occurrence of
+    // `hot`, which menu_hotkey_of chose) in menu_hot's look.
+    void put_menu_title(size_t r, size_t c, const std::string &title, char hot,
+			ui_style st)
+    {
+	_grid.put(r, c, title, st);
+	if ( !hot )
+	    return;
+	for ( size_t i = 0; i < title.size(); ++i )
+	{
+	    char ch = title[i];
+	    if ( ch >= 'A' && ch <= 'Z' )
+		ch = (char)(ch - 'A' + 'a');
+	    if ( ch == hot )
+	    {
+		_grid.overlay_attr(r, c + madc::line_width(title.substr(0, i)), 1,
+				   menu_hot_over(st));
+		return;
+	    }
+	}
+    }
+
+    // The bar on row 0 (Turbo Vision's: " File  Edit ..." with each title's
+    // letter lit) and, while one is open, its dropdown: a framed box under
+    // its title, a row per command — the chord the LOADED profile binds to
+    // it right-aligned, a disabled row dim, the lit row in menu_selected, a
+    // separator a rule across the box — with a shadow to its right and
+    // below. Painted after everything, so it covers whatever is there.
+    void paint_menus(bool held)
+    {
+	const std::vector<menu_col> &menus = _focus_st.menus();
+	if ( menus.empty() || _grid.rows < 3 || _grid.cols < 8 )
+	    return;
+	const size_t cols = _grid.cols;
+	const size_t open = _focus_st.open_menu();
+	// The hit map (S7): an open menu takes the whole screen — a press
+	// outside it closes it, as the window's does.
+	if ( open < menus.size() )
+	    _hits.push_back(screen_hit(tui_hit::kind::menu_close, std::string(), 0));
+	// A menu the application dropped from a toolbar button hangs under
+	// the button; the bar shows only if the layout holds it.
+	const size_t anchor = _focus_st.menu_anchor();
+	if ( open < menus.size() && anchor != std::string::npos
+	  && _tb_row != std::string::npos )
+	{
+	    if ( held )
+		paint_menu_bar(menus, open);
+	    paint_dropdown(menus[open], anchor < cols ? anchor : 0, _tb_row + 1,
+			   _focus_st.menu_lit_row());
+	    return;
+	}
+	std::vector<size_t> at = paint_menu_bar(menus, open);
+	if ( open >= menus.size() )
+	    return;
+	paint_dropdown(menus[open], at[open] < cols ? at[open] : 0, 1,
+		       _focus_st.menu_lit_row());
+    }
+    // The bar on row 0, `open`'s title lit; each title's column.
+    std::vector<size_t> paint_menu_bar(const std::vector<menu_col> &menus,
+				       size_t open)
+    {
+	const size_t cols = _grid.cols;
+	const ui_style bar = _chrome[(size_t)tui_chrome::menubar];
+	const ui_style lit = _chrome[(size_t)tui_chrome::menu_selected];
+	_grid.put(0, 0, std::string(cols, ' '), bar);
+	std::vector<size_t> at(menus.size(), cols);
+	size_t c = 1;
+	for ( size_t m = 0; m < menus.size() && c < cols; ++m )
+	{
+	    size_t w = madc::line_width(menus[m].title);
+	    at[m] = c;
+	    ui_style st = m == open ? lit : bar;
+	    _grid.put(0, c, std::string(w + 2, ' '), st);
+	    put_menu_title(0, c + 1, menus[m].title, menus[m].hot, st);
+	    tui_hit h = cell_hit(tui_hit::kind::menu_title, 0, c, c + w + 2);
+	    h.index = m;
+	    _hits.push_back(h);
+	    c += w + 2;
+	}
+	return at;
+    }
+    // One menu's dropdown box with its top-left corner at (r0, c0) (moved
+    // left to fit the screen; rows past the screen's bottom are cut).
+    void paint_dropdown(const menu_col &m, size_t c0, size_t r0, size_t lit_row)
+    {
+	const ui_style body = _chrome[(size_t)tui_chrome::menu];
+	const ui_style lit = _chrome[(size_t)tui_chrome::menu_selected];
+	std::vector<std::string> keys(m.rows.size());
+	size_t inner = 0;
+	for ( size_t i = 0; i < m.rows.size(); ++i )
+	{
+	    if ( m.rows[i].sep )
+		continue;
+	    keys[i] = _keys.bindings().chord_for(m.rows[i].code, m.rows[i].id);
+	    size_t w = madc::line_width(m.rows[i].title)
+		     + (keys[i].empty() ? 0 : 2 + madc::line_width(keys[i]));
+	    if ( w > inner )
+		inner = w;
+	}
+	const size_t rows = _grid.rows, cols = _grid.cols;
+	size_t w = inner + 4;			// the border and a space each side
+	if ( w > cols )
+	    w = cols;
+	if ( c0 + w > cols )
+	    c0 = cols - w;
+	size_t h = m.rows.size() + 2;
+	if ( r0 + h > rows )
+	    h = rows - r0;
+	if ( h < 2 || w < 4 )
+	    return;
+	const size_t r1 = r0 + h - 1, c1 = c0 + w - 1;
+	tui_frame box;
+	paint_box(r0, c0, r1, c1, body, box);
+	for ( size_t r = r0; r <= r1; ++r )
+	    _hits.push_back(cell_hit(tui_hit::kind::none, r, c0, c1 + 1));
+	for ( size_t r = r0 + 1; r < r1; ++r )
+	{
+	    const size_t i = r - r0 - 1;
+	    const menu_row &row = m.rows[i];
+	    if ( !row.sep )
+	    {
+		tui_hit h = cell_hit(tui_hit::kind::menu_row, r, c0 + 1, c1);
+		h.index = i;
+		_hits.push_back(h);
+	    }
+	    if ( row.sep )
+	    {
+		box.hline(r, c0, c1);
+		continue;
+	    }
+	    ui_style st = i == lit_row ? lit : body;
+	    if ( !row.enabled )
+		st.flags |= ui_style::DIM;
+	    if ( i == lit_row )
+		_grid.put(r, c0 + 1, std::string(w - 2, ' '), st);
+	    put_menu_title(r, c0 + 2, row.title, row.enabled ? row.hot : 0, st);
+	    if ( !keys[i].empty() )
+	    {
+		size_t kw = madc::line_width(keys[i]);
+		if ( kw + 3 <= w )
+		    _grid.put(r, c1 - 1 - kw, keys[i], st);
+	    }
+	    if ( i == lit_row )
+	    {
+		_grid.cursor_row = r;
+		_grid.cursor_col = c0 + 1;
+	    }
+	}
+	box.paint(_grid, body);
+	paint_shadow(r0, c0, r1, c1);
+    }
+
+    // The picture a toolbar button's icon draws as (S5): the window's shapes
+    // in a cell — ▶ run, ▷ debug, ■ stop, ↷ ↓ ↑ the steps, ● breakpoints; the
+    // file commands are words (as the plan's target screen). "" = none. A
+    // terminal without Unicode spells them in ASCII (ui_glyph_ascii).
+    static const char *tui_icon_glyph(ui_icon ic)
+    {
+	switch ( ic )
+	{
+	    case ui_icon::run:	       return "\xe2\x96\xb6";	// ▶
+	    case ui_icon::debug:       return "\xe2\x96\xb7";	// ▷
+	    case ui_icon::stop:	       return "\xe2\x96\xa0";	// ■
+	    case ui_icon::step_over:   return "\xe2\x86\xb7";	// ↷
+	    case ui_icon::step_into:   return "\xe2\x86\x93";	// ↓
+	    case ui_icon::step_out:    return "\xe2\x86\x91";	// ↑
+	    case ui_icon::breakpoints: return "\xe2\x97\x8f";	// ●
+	    default:		       return "";
+	}
+    }
+    // The toolbar row (plan §41.11a, facelift S5) from the root's `toolbar`
+    // hint, at `row`: each button its icon's glyph and its label, two
+    // columns apart, a disabled one dim; a button whose `drop` names a menu
+    // ends in ▾ (its column recorded: the menu drops under it, open_menu); a
+    // separator row a divider. A row with no label or no action is dropped.
+    // False (nothing painted) when the root carries none.
+    bool paint_toolbar(const uinode &tree, size_t row)
+    {
+	_tb_row = std::string::npos;
+	_tb_drops.clear();
+	if ( !tree.hints.is_object() )
+	    return false;
 	const std::map<std::string, madc::value> &ho = tree.hints.as_object();
 	std::map<std::string, madc::value>::const_iterator ti = ho.find("toolbar");
 	if ( ti == ho.end() || !ti->second.is_array() )
-	    return line;
-	const std::vector<madc::value> &tbrows = ti->second.as_array();
-	for ( size_t k = 0; k < tbrows.size(); ++k )
+	    return false;
+	const ui_style base = _chrome[(size_t)tui_chrome::toolbar];
+	bool any = false, pending_sep = false;
+	size_t c = 1;
+	for ( const madc::value &b : ti->second.as_array() )
 	{
-	    if ( !tbrows[k].is_object() )
+	    if ( !b.is_object() )
 		continue;
-	    const std::string label = hint_str(tbrows[k], "label");
-	    const std::string action = hint_str(tbrows[k], "action");
+	    if ( hint_of(b, "sep", 0) )
+	    {
+		pending_sep = any;		// a divider BETWEEN buttons only
+		continue;
+	    }
+	    const std::string label = hint_str(b, "label");
+	    const std::string action = hint_str(b, "action");
 	    if ( label.empty() || action.empty() )
 		continue;
-	    const std::string key = _keys.bindings().chord_for(hint_of(tbrows[k], "code", 0), action);
-	    if ( !line.empty() )
-		line += ' ';
-	    line += "[" + label + (key.empty() ? std::string() : " " + key) + "]";
+	    if ( !any )
+		_grid.put(row, 0, std::string(_grid.cols, ' '), base);
+	    if ( pending_sep )
+	    {
+		_frame.vline(c - 1, row, row);
+		c += 1;
+		pending_sep = false;
+	    }
+	    any = true;
+	    ui_style st = base;
+	    if ( hint_of(b, "enabled", 1) == 0 )
+		st.flags |= ui_style::DIM;
+	    const size_t start = c;
+	    tui_hit bh;
+	    bh.k = hint_of(b, "enabled", 1) == 0 ? tui_hit::kind::none
+						  : tui_hit::kind::action;
+	    bh.action = action;
+	    bh.code = hint_of(b, "code", 0);
+	    bh.row = row;
+	    bh.c0 = start;
+	    const char *glyph = tui_icon_glyph((ui_icon)hint_of(b, "icon", 0));
+	    if ( *glyph )
+	    {
+		_grid.put(row, c, glyph, st);
+		c += 2;
+	    }
+	    _grid.put(row, c, label, st);
+	    c += madc::line_width(label);
+	    bh.c1 = c;
+	    _hits.push_back(bh);
+	    if ( b.as_object().count("drop") )
+	    {
+		const std::string menu = hint_str(b.as_object().at("drop"), "arg");
+		if ( !menu.empty() )
+		{
+		    _grid.put(row, c + 1, "\xe2\x96\xbe", st);	// ▾
+		    tui_hit dh = cell_hit(tui_hit::kind::drop, row, c + 1, c + 2);
+		    dh.arg = menu;
+		    _hits.push_back(dh);
+		    c += 2;
+		    _tb_drops[menu] = start;
+		}
+	    }
+	    c += 2;
 	}
-	return line;
+	if ( any )
+	    _tb_row = row;
+	return any;
     }
 
     // Install a finalized bindings table (a profile swap is a new table);
@@ -1646,8 +2081,28 @@ public:
     // ui_apply_keys (madcdis/ui_input.h) — the DOM model runs the same one.
     std::vector<tui_event> apply_keys(const std::vector<tui_keyev> &keys)
     {
-	// The one adapter (madcdis/ui_input.h) over this model's two owners.
-	return ui_apply_keys(_keys, _focus_st, keys);
+	// The one adapter (madcdis/ui_input.h) over this model's two owners;
+	// a pointer report between keys is hit-tested here (S7), so the keys
+	// on either side of it reach the adapter as their own runs.
+	std::vector<tui_event> out;
+	std::vector<tui_keyev> run;
+	for ( size_t i = 0; i <= keys.size(); ++i )
+	{
+	    if ( i < keys.size() && keys[i].kind != tui_key::pointer )
+	    {
+		run.push_back(keys[i]);
+		continue;
+	    }
+	    if ( !run.empty() )
+	    {
+		std::vector<tui_event> ev = ui_apply_keys(_keys, _focus_st, run);
+		out.insert(out.end(), ev.begin(), ev.end());
+		run.clear();
+	    }
+	    if ( i < keys.size() )
+		pointer(keys[i], out);
+	}
+	return out;
     }
 };
 

@@ -362,6 +362,14 @@ InteractiveSession::Offered InteractiveSession::enter(const std::string &text,
     return Offered{ OfferState::taken, ok };
 }
 
+
+// The session API speaks std::string; the compiler's completion rows are
+// interned names. One conversion, at the API edge.
+static std::vector<std::string> entry_texts(const std::vector<madc::dis::istring> &rows)
+{
+    return std::vector<std::string>(rows.begin(), rows.end());
+}
+
 std::vector<std::string> InteractiveSession::complete(const std::string &text,
 						      size_t caret, size_t &start)
 {
@@ -387,9 +395,9 @@ std::vector<std::string> InteractiveSession::complete(const std::string &text,
 	    return out;
 	}
 	// Its argument completes as an entry, the command blanked.
-	return prog->complete_entry(command_argument(text, c), caret, start);
+	return entry_texts(prog->complete_entry(command_argument(text, c), caret, start));
     }
-    return prog->complete_entry(text, caret, start);
+    return entry_texts(prog->complete_entry(text, caret, start));
 }
 
 bool InteractiveSession::load(const std::string &path)
@@ -895,9 +903,9 @@ static void record_diagnostic_rows(Program &prog, const madc::value &rows)
 	const int64_t phase = (it = f.find("phase_code")) == f.end()
 			    ? 0 : it->second.as_integer();
 	const std::string message = (it = f.find("message")) == f.end()
-				  ? std::string() : it->second.as_string();
+				  ? std::string() : std::string(it->second.as_string());
 	const std::string file = (it = f.find("file")) == f.end()
-			       ? std::string() : it->second.as_string();
+			       ? std::string() : std::string(it->second.as_string());
 	const int64_t line = (it = f.find("line")) == f.end()
 			   ? 0 : it->second.as_integer();
 	const int64_t column = (it = f.find("column")) == f.end()

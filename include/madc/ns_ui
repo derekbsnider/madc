@@ -544,6 +544,17 @@ namespace ui {
     // terminal, a browser page, a bad handle): the application keeps its
     // own copy, and pastes that.
     bool    clipboards(int64_t t);
+    // tabs(t) — does this target draw tab strips over its regions (the
+    // editor's open files, a panel's views): a window and the grid do, a
+    // line-mode target and a bad handle do not (facelift S3).
+    bool    tabs(int64_t t);
+    // menus(t) — does this target draw the application's menus itself (the
+    // grid: the bar and its dropdowns in cells, facelift S4); menu_open(t,
+    // title) drops the menu with that title (a toolbar button's arrow, S5) —
+    // false = no such menu, or a target that draws none (a window's menu is
+    // native, a browser page's the page's): the application lists it itself.
+    bool    menus(int64_t t);
+    bool    menu_open(int64_t t, const char *title);
     bool    clipboard_set(int64_t t, const char *text);
     bool    clipboard_get(value &out, int64_t t);
     // The window full screen (View ▸ Full screen): on = 1 enters it, 0

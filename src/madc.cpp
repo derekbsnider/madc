@@ -1493,6 +1493,11 @@ int main(int argc, char **argv)
 	// lex/parse buckets can report NET compute (the clock's advance inside
 	// each window is the forest share, carved into its own stats lines).
 	double _fw_tk0 = prog->_forest_work_seconds;
+	// The CLI compile is one thread: hold the name table for tokenize + parse
+	// so every intern skips its per-call lock. Released before the program
+	// runs (its threads may compile through eval).
+	std::unique_ptr<madc::dis::istring_table::hold> intern_hold(
+	    new madc::dis::istring_table::hold());
 	// A NULL TokenProgram means a lexer-phase diagnostic already printed
 	// (failed #include, unterminated literal, bad PP directive) and
 	// compilation aborted — exit nonzero like every later phase does.
@@ -1521,6 +1526,7 @@ int main(int argc, char **argv)
 	gettimeofday(&_ps0, NULL);
 	double _fw_ps0 = prog->_forest_work_seconds;
 	bool parse_ok = prog->parse(tp);
+	intern_hold.reset();
 	gettimeofday(&_ps1, NULL);
 	// A GUI module row bound at parse (`import madcwebview;`) lifts an armed
 	// memory guard before the program runs: WebKit's address-space
@@ -1638,14 +1644,14 @@ int main(int argc, char **argv)
 		total_secs);
 	    if ( !prog->_tsubst_body_fallback_profile.empty() )
 	    {
-		std::vector<std::pair<std::string, Program::TsubstBodyProfile> > rows;
-		for (std::map<std::string, Program::TsubstBodyProfile>::const_iterator it =
+		std::vector<std::pair<madc::dis::istring, Program::TsubstBodyProfile> > rows;
+		for (std::map<madc::dis::istring, Program::TsubstBodyProfile>::const_iterator it =
 			 prog->_tsubst_body_fallback_profile.begin();
 		     it != prog->_tsubst_body_fallback_profile.end(); ++it)
 		    rows.push_back(*it);
 		std::sort(rows.begin(), rows.end(),
-			  [](const std::pair<std::string, Program::TsubstBodyProfile> &a,
-			     const std::pair<std::string, Program::TsubstBodyProfile> &b) {
+			  [](const std::pair<madc::dis::istring, Program::TsubstBodyProfile> &a,
+			     const std::pair<madc::dis::istring, Program::TsubstBodyProfile> &b) {
 			      if (a.second.count != b.second.count)
 				  return a.second.count > b.second.count;
 			      return a.first < b.first;
@@ -1742,11 +1748,11 @@ int main(int argc, char **argv)
 			fs.funcs_activated, fs.funcs_remaining);
 		    if ( !prog->_forest_unit_bind_costs.empty() )
 		    {
-			std::vector<std::pair<std::string, double> > rows =
+			std::vector<std::pair<madc::dis::istring, double> > rows =
 			    prog->_forest_unit_bind_costs;
 			std::sort(rows.begin(), rows.end(),
-				  [](const std::pair<std::string, double> &a,
-				     const std::pair<std::string, double> &b) {
+				  [](const std::pair<madc::dis::istring, double> &a,
+				     const std::pair<madc::dis::istring, double> &b) {
 				      if (a.second != b.second)
 					  return a.second > b.second;
 				      return a.first < b.first;

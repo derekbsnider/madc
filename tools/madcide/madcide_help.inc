@@ -10,10 +10,13 @@
 // One topic is made, not read: `menus`, every menu of the loaded menus with
 // each item's key in the current key style, its command and its description.
 //
-// Where Help opens is the layout's: a chrome pane listing the Help view shows
-// it there (show_view); an editor pane listing it (`pane editor tabs views
-// source help`, editor_hosts) opens it as an editor TAB — the Help buffer
-// (help_doc) in the buffer ring, where the editor shows the same rows.
+// A Help PAGE always opens in the editor pane (owner 2026-10-09): the Help
+// buffer (help_doc) in the buffer ring, its own editor tab, where the editor
+// shows the topic's rows. A layout may not list the page view `help` on a
+// chrome pane (the layout loader refuses it). The INDEX of the topics — the
+// contents page's links — is a view of its own, `helpindex` (viewHELPINDEX),
+// which a layout docks in the sidebar beside the outline; choosing one of its
+// rows opens that page in the editor.
 //
 // The Help view (viewHELP) lists the topic's ROWS, made by the one Markdown
 // renderer (madcide_markdown.inc): a heading, a paragraph, a list item, a
@@ -21,14 +24,16 @@
 // (`name.md`, `menus`) or a URL; choosing it opens the topic (helptopic) or
 // says the URL. The rows are session state on the bag:
 // "helprows" ({content, target}), the topic's name on "helptopic", its title
-// on "helptitle".
+// on "helptitle"; the index's rows on "helpindexrows" ({content, target}).
 //
 // Thread contract: the session's thread; the rows are the session's.
 
 bool show_view(long w, long es, long kind);	// madcide_core.inc, the one show owner
-// madcide_core.inc, where help_open opens a topic:
+bool view_shown(long w, long es, long kind);
+bool dismiss_view(long w, long es, long kind);
 void layout_get(var &lo, long w, long es);
-bool editor_hosts(var &node, long kind);
+long chrome_hosting(var &lo, long kind, long &tab);
+// madcide_core.inc, where help_open opens a topic:
 long help_doc(long w, long es);
 long buffer_index_of(long w, long es, long doc);
 void switch_buffer(long w, long es, long olddoc, long idx);
@@ -173,10 +178,9 @@ void help_target_topic(var &out, var &url)
     out = perl::substr(u, 0, strlen(u.c_str()) - 3);
 }
 
-// Open topic `name` in the Help view: its file's rows, or the made topic's —
-// in the editor's Help tab when the layout's editor pane lists the view, else
-// in the chrome pane hosting it. False, with the reason on the status line,
-// for a topic no help directory has, or without the madcmark module.
+// Open topic `name` in the editor's Help tab: its file's rows, or the made
+// topic's. False, with the reason on the status line, for a topic no help
+// directory has, or without the madcmark module.
 bool help_open(long w, long es, long doc, const char *name0)
 {
     var name = name0;		// ring discipline: own the text first
@@ -218,17 +222,120 @@ bool help_open(long w, long es, long doc, const char *name0)
     ui::set(w, es, "helprows", rows);
     ui::set(w, es, "helptopic", name);
     ui::set(w, es, "helptitle", title);
+    long idx = buffer_index_of(w, es, help_doc(w, es));
+    if ( idx >= 0 && idx != es_int(w, es, "bufidx", 0) )
+	switch_buffer(w, es, doc, idx);
+    return true;
+}
+
+// The index's rows: the contents page first, then every topic the contents
+// page links to, in its order — the same link rows the page shows. Empty
+// without the madcmark module or a contents page.
+void help_index_rows(var &out, long w, long es)
+{
+    var rows = {};
+    var text;
+    if ( markdown::available() && help_file(text, w, es, "contents.md") )
+    {
+	var md;
+	markdown::parse(md, text.c_str());
+	var page = {};
+	var blocks = md["children"];
+	md_blocks_rows(page, blocks, "", "");
+	var title = "Contents";
+	for ( var b : md["children"] )
+	    if ( b["kind"] == markdown::node_kind::heading )
+	    {
+		title = "";
+		md_inline(title, b);
+		break;
+	    }
+	rows[] = { "content": title, "target": "contents.md" };
+	for ( var r : page )
+	{
+	    var t;
+	    keyed_get(t, r, "target");
+	    if ( t.is_null() )
+		continue;
+	    var topic;
+	    help_target_topic(topic, t);
+	    if ( strlen(topic.c_str()) == 0 )
+		continue;
+	    // A topic's name, without the page's list bullet.
+	    var label = format("{}", r["content"]);
+	    if ( perl::index(label.c_str(), "• ") == 0 )
+		label = perl::substr(label, strlen("• "),
+				     strlen(label.c_str()) - strlen("• "));
+	    rows[] = { "content": label, "target": t };
+	}
+    }
+    out = rows;
+}
+
+// Show the index where the layout hosts it, its rows made fresh; false (and
+// nothing said) when no pane of the layout hosts it.
+bool help_index_show(long w, long es)
+{
     var lo;
     layout_get(lo, w, es);
-    if ( editor_hosts(lo["editor"], viewHELP) )
+    long tab = -1;
+    if ( chrome_hosting(lo, viewHELPINDEX, tab) < 0 )
+	return false;
+    var rows;
+    help_index_rows(rows, w, es);
+    ui::set(w, es, "helpindexrows", rows);
+    return show_view(w, es, viewHELPINDEX);
+}
+
+// Help ▸ Help Index (helpindex): the index in the pane hosting it (the
+// sidebar in the shipped layout), toggled as the outline is.
+bool help_index_cmd(long w, long es, long doc)
+{
+    if ( view_shown(w, es, viewHELPINDEX) )
+	return dismiss_view(w, es, viewHELPINDEX);
+    if ( !help_index_show(w, es) )
     {
-	long idx = buffer_index_of(w, es, help_doc(w, es));
-	if ( idx >= 0 && idx != es_int(w, es, "bufidx", 0) )
-	    switch_buffer(w, es, doc, idx);
-	return true;
+	ui::set(w, es, "msg", "No pane of the layout hosts the Help Index (list `helpindex` on a sidebar or panel).");
+	return false;
     }
-    show_view(w, es, viewHELP);
     return true;
+}
+
+// A choose on an index row (1-based `option`): its page in the editor.
+void help_index_choose(long w, long es, long doc, long option)
+{
+    var rows;
+    ui::get(rows, w, es, "helpindexrows");
+    if ( rows.is_null() || option < 1 || option > php::count(rows) )
+	return;
+    var topic;
+    var target = rows[option - 1]["target"];
+    help_target_topic(topic, target);
+    if ( strlen(topic.c_str()) > 0 )
+	help_open(w, es, doc, topic.c_str());
+}
+
+// The Help Index view's node: the topics as a list, each row carrying the
+// index's row verb.
+void help_index_node(var &out, long w, long es, bool focus)
+{
+    var rows;
+    ui::get(rows, w, es, "helpindexrows");
+    var items = {};
+    if ( !rows.is_null() )
+	for ( var r : rows )
+	{
+	    var hh = { "code": cmdHELPINDEXROW };
+	    items[] = { "role": "item", "content": r["content"], "hints": hh };
+	}
+    if ( php::count(items) == 0 )
+	items[] = { "role": "item", "content": "(no help topics)" };
+    var cb = { "role": "choice", "label": "Help Index", "children": items };
+    var ch = { "list": 1 };
+    if ( focus )
+	ch["focus"] = 1;
+    cb["hints"] = ch;
+    out = cb;
 }
 
 // helptopic's argument, else the topic open now, else the contents.

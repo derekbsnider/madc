@@ -32,9 +32,10 @@ showcase programs, docs samples, and new tests.
   carrier (ddARRAY script-method registry in `add_array_methods()` +
   `madarray_*` runtime entries; `php::` parity functions for PHP-shaped
   operations) — never fall back to `std::string` to dodge the gap.
-- A script function returns a `var` by value (L3). The carrier's
-  existing text methods (substr, case transforms) return ring-lifetime
-  `const char *` text (the `c_str()` contract) or mutate in place
-  returning the receiver.
+- A script function returns a `var` by value (L3). `c_str()` BORROWS the
+  carrier's text (std::string's contract: valid while the carrier lives
+  unmodified — hold the carrier as long as the pointer). The carrier's
+  text methods that make NEW text (substr, case transforms) return
+  ring-lifetime `const char *` or mutate in place returning the receiver.
 
 See `docs/rules/value-first.md` for the reasoning.

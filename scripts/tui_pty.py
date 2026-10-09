@@ -80,6 +80,8 @@ for line in txt.splitlines():
 checks = {
     "alt screen entered":  "\x1b[?1049h" in txt,
     "alt screen restored": "\x1b[?1049l" in txt,
+    "mouse reported":      "\x1b[?1006h" in txt,	# SGR mouse (facelift S7)
+    "mouse released":      "\x1b[?1000l" in txt,	# ... and off again on exit
     "heading drawn":       "smoke.txt" in txt,
     "document drawn":      "alpha" in txt,
     "reverse attr used":   "\x1b[7m" in txt,

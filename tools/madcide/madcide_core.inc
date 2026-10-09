@@ -542,7 +542,7 @@ bool bind_rescue_keys(long w, long es)
 // A LAYOUT is a tree of containers holding Views, owned by the client and
 // stored on the bag as "layout":
 //   { "window": name, "editor": <node>, "chrome": [ <pane>... ] }
-//   pane  { "kind": ctPANE, "slot", "side", "size", "mode", "tabs": [ <tab>... ], "active": 0, "focus", "hidden" }
+//   pane  { "kind": ctPANE, "slot", "side", "size", "mode", "tabs": [ <tab>... ], "active": 0, "focus", "hidden", "gutter" }
 //   tab   = layout_tab(kind, view): the CONTAINER — its View and its own navigation (caret, mark, bend, grow)
 //   split { "kind": ctSPLIT, "dir": ui::split, "size", "children": [ <node>... ] }
 // The `.layout` text is the input boundary (profiles/default.layout, the
@@ -561,6 +561,14 @@ void layout_tab(var &out, long kind, long view)
 {
     out = { "kind": kind, "view": view, "caret": 0, "mark": -1, "bend": -1,
 	    "grow": 0 };
+}
+
+// Does a pane number its lines (the layout's `gutter` word, facelift S2)?
+// A pane built before the word existed — a saved session's, a test's —
+// carries no key: no gutter.
+bool pane_gutter(var &pane)
+{
+    return !pane["gutter"].is_null() && pane["gutter"].as_integer() != 0;
 }
 
 // Split a trimmed line into its whitespace-separated words.
@@ -623,6 +631,7 @@ bool layout_pane_row(var &row, var &words, long lineno, var &err, long w)
     bool collecting = false;
     bool focus = false;
     bool hidden = false;
+    bool gutter = false;	// line numbers + the caret line (facelift S2)
     var tabs = {};
     for ( long i = 2; i < nw; i = i + 1 )
     {
@@ -644,12 +653,26 @@ bool layout_pane_row(var &row, var &words, long lineno, var &err, long w)
 	    collecting = false;
 	    continue;
 	}
+	if ( wd == "gutter" )
+	{
+	    gutter = true;
+	    collecting = false;
+	    continue;
+	}
 	if ( collecting )
 	{
 	    long k = view_of_w(w, wd);	// contributed views too
 	    if ( k == viewNONE )
 	    {
 		err = format("line {}: unknown view '{}'", lineno, wd);
+		return false;
+	    }
+	    // A Help page opens in the editor pane, never in a sidebar or a
+	    // panel (owner 2026-10-09); the topics' index (helpindex) docks there.
+	    if ( k == viewHELP && slot != slotEDITOR )
+	    {
+		err = format("line {}: the help view opens in the editor pane, never a {} (helpindex docks there)",
+			     lineno, sw);
 		return false;
 	    }
 	    var tb;
@@ -713,8 +736,10 @@ bool layout_pane_row(var &row, var &words, long lineno, var &err, long w)
 	mode = pnTABS;
     long f = focus ? 1 : 0;
     long h = hidden ? 1 : 0;
+    long gt = gutter ? 1 : 0;
     row = { "kind": ctPANE, "slot": slot, "side": side, "size": size,
-	    "mode": mode, "tabs": tabs, "active": 0, "focus": f, "hidden": h };
+	    "mode": mode, "tabs": tabs, "active": 0, "focus": f, "hidden": h,
+	    "gutter": gt };
     return true;
 }
 
@@ -776,13 +801,15 @@ void layout_build(var &node, var &rows, long idx)
     node = { "kind": ctPANE, "slot": r["slot"], "side": r["side"],
 	     "size": r["size"], "mode": r["mode"], "tabs": r["tabs"],
 	     "active": r["active"], "focus": r["focus"],
-	     "hidden": r["hidden"] };
+	     "hidden": r["hidden"], "gutter": r["gutter"] };
 }
 
 // The parser: text -> the layout tree. False + err (the line and the word).
 bool parse_layout(var &layout, const char *text, var &err, long w = 0)
 {
     var window = "";
+    long status = ui::side_code("top");	// the status bar's edge (JOE's: top)
+    long menubar = 0;		// the menu bar held on the top row (S4)
     var rows = {};		// flat: every pane / split with depth + parent
     var open = {};		// indices of the split rows still open
     array lines;
@@ -811,6 +838,33 @@ bool parse_layout(var &layout, const char *text, var &err, long w = 0)
 		return false;
 	    }
 	    window = words[1];
+	    continue;
+	}
+	// `status top|bottom` (facelift S3): the edge the status bar docks to
+	// — the window's own line, outside every pane.
+	if ( kw == "status" )
+	{
+	    long sd = php::count(words) == 2 ? ui::side_code(words[1].c_str())
+					     : ui::side_code("");
+	    var sv = sd;
+	    if ( sv != ui::side::top && sv != ui::side::bottom )
+	    {
+		err = format("line {}: the status bar docks top or bottom", lineno);
+		return false;
+	    }
+	    status = sd;
+	    continue;
+	}
+	// `menubar` (facelift S4): the menu bar held on the window's top
+	// row; without it a terminal shows the bar only while it is open.
+	if ( kw == "menubar" )
+	{
+	    if ( php::count(words) != 1 )
+	    {
+		err = format("line {}: menubar takes no words", lineno);
+		return false;
+	    }
+	    menubar = 1;
 	    continue;
 	}
 	long ct = container_of(kw);
@@ -954,7 +1008,8 @@ bool parse_layout(var &layout, const char *text, var &err, long w = 0)
     }
     if ( strlen(window.c_str()) == 0 )
 	window = "main";
-    layout = { "window": window, "editor": ed, "chrome": ch };
+    layout = { "window": window, "editor": ed, "chrome": ch, "status": status,
+	       "menubar": menubar };
     return true;
 }
 
@@ -964,8 +1019,10 @@ const char *default_layout_text()
 {
     return "# baked default layout — profile data\n"
 	   "@window main\n"
-	   "pane editor tabs views source focus\n"
-	   "pane sidebar left 20% tabs views outline help mdpreview hidden\n"
+	   "menubar\n"
+	   "status bottom\n"
+	   "pane editor tabs views source focus gutter\n"
+	   "pane sidebar left 20% tabs views outline helpindex mdpreview hidden\n"
 	   "pane panel bottom 25% tabs views problems output terminal repl hidden\n";
 }
 
@@ -1054,6 +1111,8 @@ void layout_emit_pane(var &out, var &node, long depth, long w)
 	line = format("{} focus", line);
     if ( node["hidden"].as_integer() != 0 )
 	line = format("{} hidden", line);
+    if ( pane_gutter(node) )
+	line = format("{} gutter", line);
     out = format("{}\n", line);
 }
 
@@ -1090,12 +1149,32 @@ void layout_emit_node(var &out, var &node, long depth, long w)
     layout_emit_pane(out, node, depth, w);
 }
 
+// Does the layout dock the status bar at the BOTTOM (its `status bottom`
+// line, facelift S3)? A layout without the line keeps JOE's top.
+bool layout_status_bottom(var &lo)
+{
+    var sv = lo["status"];
+    return !sv.is_null() && sv == ui::side::bottom;
+}
+
+// Does the layout hold the menu bar on the top row (its `menubar` line,
+// facelift S4)?
+bool layout_menubar(var &lo)
+{
+    var mv = lo["menubar"];
+    return !mv.is_null() && mv.as_integer() != 0;
+}
+
 // The whole tree -> text: `@window`, the editor region (a top-level pane or
 // split), then the chrome panes (top-level).
 void layout_to_text(var &out, var &lo, long w = 0)
 {
     var s = "# madcide layout — written by the session; edit or delete freely\n";
     s = format("{}@window {}\n", s, lo["window"]);
+    if ( layout_menubar(lo) )
+	s = format("{}menubar\n", s);
+    if ( layout_status_bottom(lo) )
+	s = format("{}status bottom\n", s);
     var ed;
     layout_emit_node(ed, lo["editor"], 0, w);
     s = format("{}{}", s, ed);
@@ -1434,6 +1513,26 @@ bool load_theme(long w, long es, const char *name)
 	var cls = php::trim(perl::substr(line, 0, cut));
 	var spec = php::trim(sp + 1);
 	th[cls.c_str()] = spec;
+    }
+    // A refined class the scheme leaves unnamed takes its nearest named
+    // ANCESTOR's colour: a scheme written before the class existed still
+    // colours `return` as a keyword, an escape as the string around it and a
+    // namespace as a user type, or as a type (never a plain hole).
+    var parent = { "control": "keyword", "typename": "type",
+		   "namespace": "typename",
+		   "directive": "keyword", "include": "string",
+		   "escape": "string" };
+    array pk;
+    php::array_keys(pk, parent);
+    for ( var k : pk )
+    {
+	if ( !th[k.c_str()].is_null() )
+	    continue;
+	var pc = parent[k.c_str()];
+	while ( th[pc.c_str()].is_null() && php::array_key_exists(pc.c_str(), parent) )
+	    pc = parent[pc.c_str()];
+	if ( !th[pc.c_str()].is_null() )
+	    th[k.c_str()] = th[pc.c_str()];
     }
     ui::set(w, es, "theme", th);
     ui::set(w, es, "gui_theme", gth);	// empty clears a prior scheme's vars
@@ -1847,9 +1946,20 @@ void load_status(long w, long es, const char *name)
 // 2026-09-09: every emitted code view is coloured). Like the status
 // line, spans go stale with edits until the next check/save. A plain
 // identifier (styled by no scheme) or a stale line skips.
+void span_rows_append(var &hs, long w, long es, long doc, var &rows, long line0);
+
 void spans_to_hspans(long w, long es, long doc, var &rows, long dest)
 {
     var hs = {};
+    span_rows_append(hs, w, es, doc, rows, 0);
+    ui::set(w, dest, "hspans", hs);
+}
+
+// The converter's body: `rows` appended to `hs`, each row's line counted
+// from `line0` + 1 (0 = the rows address the whole buffer; a line re-lex's
+// rows address its first line as 1 — colour_relex_lines).
+void span_rows_append(var &hs, long w, long es, long doc, var &rows, long line0)
+{
     var th;
     ui::get(th, w, es, "theme");
     for ( var r : rows )
@@ -1862,13 +1972,14 @@ void spans_to_hspans(long w, long es, long doc, var &rows, long dest)
 	    c = th[cls.c_str()];
 	if ( c.is_null() )
 	    continue;			// a class this scheme leaves plain
-	long ls = ui::text_line_start(w, doc, r["line"].as_integer());
+	long ls = ui::text_line_start(w, doc, line0 + r["line"].as_integer());
 	if ( ls < 0 )
 	    continue;			// a stale line (edited since the parse)
 	long s = ls + r["column"].as_integer();
-	hs[] = { "s": s, "e": s + r["length"].as_integer(), "c": c };
+	// "k": the span's class as a code (the line re-lex reads it)
+	hs[] = { "s": s, "e": s + r["length"].as_integer(), "c": c,
+		 "k": lsp_token_of_class(cls) };
     }
-    ui::set(w, dest, "hspans", hs);
 }
 
 // A text kind's colour (a kind that is not the compiler's, madcide_lang.inc):
@@ -1981,17 +2092,228 @@ void background_parse(long w, long es, long doc)
     ensure_phandle(w, es, doc);
 }
 
+// ---- live colour (docs/plans/2026-10-08-madcide-live-colour.md) ---------
+// Layer 1, as you type: the lines an edit touched re-lex at the next frame
+// (colour_catch_up); layer 2, on a pause: the whole buffer re-lexes when an
+// edit could have opened or closed a multi-line token, then re-parses in the
+// background (colour_refresh, spawned by IdeSession::parse_pending). The
+// edit record is the editor layer's (editor_events.inc colour_dirty).
+
+// Does line `n` of `doc` end INSIDE an open block comment? Its last span is
+// then a comment running to the line's end that is not a `//` comment and
+// does not close there. (A block comment's spans are one per line, so a
+// line's lexer state is read off the line before it — which an edit below
+// it never moves.)
+bool line_ends_in_block_comment(var &hs, long w, long doc, long n)
+{
+    if ( n < 1 )
+	return false;
+    long ls = ui::text_line_start(w, doc, n);
+    if ( ls < 0 )
+	return false;
+    long le = ls + ui::text_line_len(w, doc, n);
+    var l;
+    ui::text_line(l, w, doc, n);
+    if ( l.is_null() )
+	return false;
+    const char *s = l.c_str();
+    long len = strlen(s);
+    for ( var r : hs )
+    {
+	if ( r["k"].as_integer() != lttCOMMENT || r["e"].as_integer() != le )
+	    continue;
+	long cs = r["s"].as_integer() - ls;
+	if ( cs < 0 || cs >= len )
+	    continue;
+	if ( s[cs] == '/' && cs + 1 < len && s[cs + 1] == '/' )
+	    return false;		// a line comment ends with its line
+	return !(len >= 2 && s[len - 2] == '*' && s[len - 1] == '/');
+    }
+    return false;
+}
+
+// Lines `a`..`b` of `doc` lexed ALONE, their spans replacing the old ones on
+// `es`. A first line that begins inside a block comment lexes in that state
+// (the text behind a `/*`, its two columns taken back off line 1). False =
+// not re-lexed: a span crosses into or out of the lines.
+bool colour_relex_lines(long w, long es, long doc, long a, long b)
+{
+    long ls = ui::text_line_start(w, doc, a);
+    long bs = ui::text_line_start(w, doc, b);
+    if ( ls < 0 || bs < 0 )
+	return false;
+    long le = bs + ui::text_line_len(w, doc, b);
+    var hs;
+    ui::get(hs, w, es, "hspans");
+    if ( hs.is_null() )
+	hs = {};
+    for ( var r : hs )
+    {
+	long s = r["s"].as_integer();
+	long e = r["e"].as_integer();
+	if ( (s < ls && e > ls) || (s < le && e > le) )
+	    return false;
+    }
+    var text = "";
+    for ( long n = a; n <= b; n = n + 1 )
+    {
+	var l;
+	ui::text_line(l, w, doc, n);
+	if ( n > a )
+	    text = format("{}\n", text);
+	if ( !l.is_null() )
+	    text = format("{}{}", text, l);
+    }
+    bool in_comment = line_ends_in_block_comment(hs, w, doc, a - 1);
+    if ( in_comment )
+	text = format("/*{}", text);
+    var p;
+    doc_name(p, w, doc);
+    var rows;
+    madc::lex_spans(rows, text.c_str(), p.c_str());
+    if ( in_comment )
+    {
+	var shifted = {};
+	for ( var r : rows )
+	{
+	    if ( r["line"].as_integer() == 1 )
+	    {
+		long col = r["column"].as_integer() - 2;
+		long len = r["length"].as_integer();
+		if ( col < 0 )
+		{
+		    len = len + col;	// the prefix's own two columns
+		    col = 0;
+		}
+		if ( len <= 0 )
+		    continue;
+		r["column"] = col;
+		r["length"] = len;
+	    }
+	    shifted.push(r);
+	}
+	rows = shifted;
+    }
+    // the spans before the lines, the lines' own, the spans after them:
+    // the order every renderer reads
+    var out = {};
+    for ( var r : hs )
+	if ( r["e"].as_integer() <= ls && r["s"].as_integer() < ls )
+	    out.push(r);
+    span_rows_append(out, w, es, doc, rows, a - 1);
+    for ( var r : hs )
+	if ( r["s"].as_integer() >= le )
+	    out.push(r);
+    ui::set(w, es, "hspans", out);
+    return true;
+}
+
+// The frame's colour catches up with the edits since the last (the seat
+// every client's frame passes: compose_ide_tree, as preview_follow).
+void colour_catch_up(long w, long es, long doc)
+{
+    long cd = es_int(w, es, "cdirty_doc", 0);
+    if ( cd == 0 )
+	return;
+    bool all = es_flag(w, es, "cdirty_all");
+    bool multi = es_flag(w, es, "cdirty_multi");
+    long lo = es_int(w, es, "cdirty_lo", -1);
+    long hi = es_int(w, es, "cdirty_hi", -1);
+    long zero = 0;
+    long none = -1;
+    ui::set(w, es, "cdirty_doc", zero);
+    ui::set(w, es, "cdirty_all", false);
+    ui::set(w, es, "cdirty_multi", false);
+    ui::set(w, es, "cdirty_lo", none);
+    ui::set(w, es, "cdirty_hi", none);
+    if ( cd != doc )
+	return;				// another buffer's edits (a field's): not on show here
+    if ( !kind_reaches_compiler(doc_kind(w, doc)) )
+    {
+	refresh_text_spans(w, es, doc);	// a text kind's own colour, as check does
+	return;
+    }
+    if ( all )
+    {
+	lex_first_spans(w, es, doc);	// the whole text changed: lex it all
+	return;
+    }
+    if ( lo < 0 )
+	return;
+    if ( multi )
+	ui::set(w, es, "clexdirty", true);	// the pause re-lexes the whole buffer
+    colour_relex_lines(w, es, doc, line_of(w, doc, lo), line_of(w, doc, hi));
+}
+
+// ONE re-parse of a document's handle at a time: a refresh replaces the
+// handle's tree, and the compiler yields between slices, so a second refresh
+// in that window would free the tree the first is still building. The
+// session's synchronous re-parse (check, save) waits for a background one;
+// a background one steps aside for any (doc "cparsing").
+void parse_lock(long w, long doc)
+{
+    while ( es_int(w, doc, "cparsing", 0) != 0 )
+	madc::sleep_ms(5);
+    ui::set(w, doc, "cparsing", 1);
+}
+
+void parse_unlock(long w, long doc)
+{
+    long zero = 0;
+    ui::set(w, doc, "cparsing", zero);
+}
+
+// Layer 2 — a cooperative task: after a pause in which `doc`'s text did not
+// move, the whole buffer re-lexes if an edit asked for it, then re-parses;
+// the parse's colour lands only if the text still is the text it parsed.
+// One per document (doc "crefresh_running"); doc "cparsed_rev" is the text
+// revision its colour was last parsed from.
+void colour_refresh(long w, long es, long doc)
+{
+    long rev = es_int(w, doc, "textrev", 0);
+    madc::sleep_ms(400);
+    long zero = 0;
+    if ( es_int(w, doc, "textrev", 0) != rev || es_int(w, doc, "cparsing", 0) != 0 )
+    {
+	ui::set(w, doc, "crefresh_running", zero);	// typing (or a check) goes on: a later frame respawns
+	return;
+    }
+    if ( es_flag(w, es, "clexdirty") )
+    {
+	ui::set(w, es, "clexdirty", false);
+	lex_first_spans(w, es, doc);
+    }
+    long h = ensure_phandle(w, es, doc);
+    if ( h != 0 )
+    {
+	parse_lock(w, doc);
+	var t;
+	ui::text(t, w, doc);
+	madc::parse_refresh(h, t.c_str());
+	ui::set(w, doc, "phandle_text", t);
+	parse_unlock(w, doc);
+	if ( es_int(w, doc, "textrev", 0) == rev )
+	    refresh_spans(w, es, doc, h);
+    }
+    ui::set(w, doc, "cparsed_rev", rev);
+    ui::set(w, doc, "crefresh_running", zero);
+}
+
 // Whole-TU re-parse of the buffer's handle from the live text — the ONE
 // compiler entry (check, save, outline all route here); the themed
 // highlight spans refresh with it.
 long reparse_buffer(long w, long es, long doc)
 {
     long h = ensure_phandle(w, es, doc);
+    parse_lock(w, doc);			// a background colour refresh finishes first
+    long rev = es_int(w, doc, "textrev", 0);
     var t;
     ui::text(t, w, doc);
     madc::parse_refresh(h, t.c_str());
     ui::set(w, doc, "phandle_text", t);	// the tree now describes THIS text
+    parse_unlock(w, doc);
     refresh_spans(w, es, doc, h);
+    ui::set(w, doc, "cparsed_rev", rev);	// live colour: this text's parse is on show
     return h;
 }
 
@@ -2735,6 +3057,7 @@ void dialog_hints(var &box, long w, long es, const char *scope,
 {
     var bh = box["hints"];
     bh["popup"] = 1;
+    bh["focus"] = 1;		// a popup takes the keyboard while it is up
     var title = box["label"];
     var dlg = { "title": title };
     if ( !filter.is_null() )
@@ -4351,8 +4674,9 @@ void ensure_buffer_table(long w, long es, long doc)
 }
 
 // ^K E's commit: an open path switches; anything else opens (missing =
-// New File). A session without the table (headless) seeds it first.
-void edit_file(long w, long es, long olddoc, const char *path0)
+// New File), read-only when `ro`. A session without the table (headless)
+// seeds it first.
+void edit_file_as(long w, long es, long olddoc, const char *path0, bool ro)
 {
     // Value-first: the caller hands a prompt value's ring-lifetime
     // c_str(); ONE immediate copy into a value carrier owns the text
@@ -4390,7 +4714,7 @@ void edit_file(long w, long es, long olddoc, const char *path0)
 	}
     }
     var note;
-    long nd = open_buffer_doc(note, w, p.c_str(), false);
+    long nd = open_buffer_doc(note, w, p.c_str(), ro);
     if ( nd == 0 )
     {
 	ui::set(w, es, "msg", note.c_str());	// the refusal's reason; the
@@ -4405,6 +4729,28 @@ void edit_file(long w, long es, long olddoc, const char *path0)
 	ui::set(w, es, "msg", note.c_str());	// New file <path>.
     else
 	ui::set(w, es, "msg", format("Editing {}.", nm));
+}
+
+void edit_file(long w, long es, long olddoc, const char *path0)
+{
+    edit_file_as(w, es, olddoc, path0, false);
+}
+
+// The command line's files after the first (`madcide a.c b.c ro`): each
+// opens into the buffer ring as ^K E opens one (read-only when its `ro`
+// followed it), and the first file keeps the focus.
+void open_more_files(long w, long es, long doc, var &more)
+{
+    long n = php::count(more);
+    if ( n == 0 )
+	return;
+    for ( long i = 0; i < n; i = i + 1 )
+    {
+	var r = more[i];
+	edit_file_as(w, es, es_int(w, es, "adoc", doc), r["path"].c_str(),
+		     r["ro"].as_integer() != 0);
+    }
+    switch_buffer(w, es, es_int(w, es, "adoc", doc), 0);
 }
 
 // ---- IDE-9e: windows (^K O split) --------------------------------------
@@ -5858,7 +6204,7 @@ void start_build(long w, long es, const char *cmd)
 // (madcproj://<manifest>?pty), a manifest command in terminal mode or the
 // Shell (pty://<cmd>). The child's bytes fold into the [terminal] buffer
 // through ui::term_feed (the bounded screen: \r overwrite, \b, tabs,
-// CSI K / 2J; other sequences dropped); what the user types while the
+// CSI K / 2J, SGR colours as span rows; other sequences dropped); what the user types while the
 // terminal has focus (`termfocus`) travels the one input path to the core,
 // which sends the BYTES (ui::key_bytes — the inverse of the terminal's own
 // key parser) down a value channel the pump selects on (`termin`) and
@@ -5880,7 +6226,10 @@ long term_doc(long w, long es)
 
 void term_feed_text(long w, long tdoc, const char *text)
 {
-    var t = text;			// ring discipline
+    // The IDE's own lines (a run's header, its exit status) are plain:
+    // SGR 0 first, so a colour the program left set (facelift S8) never
+    // reaches them.
+    var t = format("\x1b[0m{}", text);	// ring discipline: owned
     ui::term_feed(w, tdoc, t.c_str(), strlen(t.c_str()));
     ui::set(w, tdoc, "modified", false);
 }
@@ -7915,11 +8264,13 @@ void view_split(long w, long es, long doc, long dir, long lang)
     long snone = ui::side_code("");
     long ksed = slotEDITOR;
     long mtabs = pnTABS;
-    var newleaf = { "kind": ctPANE, "slot": ksed, "side": snone, "size": 0,
-		    "mode": mtabs, "tabs": tabs, "active": 0, "focus": 0,
-		    "hidden": 0, "pcaret": pcar, "pmark": -1, "pbend": -1 };
     var focleaf;
     editor_read_leaf(focleaf, etree, fi);
+    long gut = pane_gutter(focleaf) ? 1 : 0;	// the new view numbers lines as its sibling does
+    var newleaf = { "kind": ctPANE, "slot": ksed, "side": snone, "size": 0,
+		    "mode": mtabs, "tabs": tabs, "active": 0, "focus": 0,
+		    "hidden": 0, "gutter": gut, "pcaret": pcar, "pmark": -1,
+		    "pbend": -1 };
     var kids = {};
     kids.push(focleaf);
     kids.push(newleaf);
@@ -8696,8 +9047,16 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 	    }
 	    case cmdHELPCONTENTS:
 	    {
-		// Help ▸ Help Contents: the bundle's first topic.
+		// Help ▸ Help Contents: the bundle's first topic in the editor's
+		// Help tab, and the index beside it where the layout hosts one.
 		help_open(w, es, doc, "contents");
+		help_index_show(w, es);
+		return true;
+	    }
+	    case cmdHELPINDEX:
+	    {
+		// Help ▸ Help Index: the topics' index, toggled (madcide_help.inc).
+		help_index_cmd(w, es, doc);
 		return true;
 	    }
 	    case cmdHELPTOPIC:
@@ -8856,13 +9215,21 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 	    }
 	    case cmdMENUSHOW:
 	    {
-		// A toolbar button's arrow: its menu as a choice list.
+		// A toolbar button's arrow: its menu — the client's own
+		// dropdown when it draws menus (the grid, facelift S5), else
+		// as a choice list.
 		var ma;
 		keyed_get(ma, ev, "arg");
 		var ms = "";
 		if ( !ma.is_null() )
 		    ms = format("{}", ma);
-		menu_show(w, es, doc, ms.c_str());
+		if ( es_flag(w, es, "hasmenus") )
+		{
+		    var rq = { "kind": rqMENUOPEN, "pause": 0, "menu": ms };
+		    ui::set(w, es, "termreq", rq);
+		}
+		else
+		    menu_show(w, es, doc, ms.c_str());
 		return true;
 	    }
 	    case cmdNEW:
@@ -9031,6 +9398,10 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 	    case cmdHELPTOPIC:
 		// A Help row: a link opens its topic (madcide_help.inc).
 		help_choose(w, es, doc, ev["option"].as_integer());
+		return true;
+	    case cmdHELPINDEXROW:
+		// A Help Index row: its page in the editor (madcide_help.inc).
+		help_index_choose(w, es, doc, ev["option"].as_integer());
 		return true;
 	    case cmdMDPREVIEWROW:
 		// A preview row: its source line, or its link's file
@@ -9344,6 +9715,15 @@ void compose_chrome_pane(var &out, long w, long es, long doc, var &c)
 		term["subject"] = tdoc;
 	    var th = { "terminal": 1 };
 	    th["caret"] = tsz;
+	    // The program's colours (facelift S8): the screen's coloured runs,
+	    // as the edit node's span rows both faces render.
+	    if ( tdoc != 0 )
+	    {
+		var tsp;
+		ui::get(tsp, w, tdoc, "termspans");
+		if ( !tsp.is_null() && php::count(tsp) > 0 )
+		    th["spans"] = tsp;
+	    }
 	    if ( es_int(w, es, "termfocus", 0) != 0 )
 	    {
 		th["focus"] = 1;
@@ -9377,6 +9757,13 @@ void compose_chrome_pane(var &out, long w, long es, long doc, var &c)
 	    var mn;
 	    preview_view_node(mn, w, es, focus);
 	    pkids.push(mn);
+	    break;
+	}
+	case viewHELPINDEX:
+	{
+	    var xn;
+	    help_index_node(xn, w, es, focus);
+	    pkids.push(xn);
 	    break;
 	}
 	case viewOUTLINE:
@@ -9452,9 +9839,9 @@ void compose_editor_flat(var &kids, long w, long es, var &ed, var &status,
     // shape (a human client's prompt collects the same argument). A panel's
     // buffer (doc_is_panel_buffer: the REPL's transcript, a build's output,
     // the Terminal's screen) is its panel's, never an editor tab; ^P still
-    // reaches it. The terminal keeps ^P's buffer rows; it never composes
-    // this node.
-    if ( es_flag(w, es, "haspanel") )
+    // reaches it. A client that draws no strips (line mode, a headless
+    // seat) never gets this node; ^P's buffer rows serve every client.
+    if ( es_flag(w, es, "hastabs") )
     {
 	var bufs;
 	ui::get(bufs, w, es, "buffers");
@@ -9596,6 +9983,8 @@ void compose_editor_leaf(var &lk, long w, long es, long doc, var &node,
 	eh["region"] = "";
 	eh["focus"] = 1;
 	eh["tag"] = myleaf;
+	if ( pane_gutter(node) )
+	    eh["gutter"] = 1;		// the pane's line numbers (facelift S2)
 	if ( es_int(w, es, "viewsync", 0) )
 	    eh["sync"] = 1;		// V5: a linked-scroll partner (the map rides too)
 	e["hints"] = eh;
@@ -9628,6 +10017,8 @@ void compose_editor_leaf(var &lk, long w, long es, long doc, var &node,
     wed["content"] = wt;
     wed["subject"] = sdoc;
     var wh = { "caret": sc, "tag": myleaf };
+    if ( pane_gutter(node) )
+	wh["gutter"] = 1;		// the pane's line numbers (facelift S2)
     if ( follow )
 	wh["follow"] = 1;	// V5: a synced pane scrolls to (and marks) its caret
     if ( es_int(w, es, "viewsync", 0) )
@@ -9722,6 +10113,8 @@ void IdeSession::compose_ide_tree(var &root, long doc)
     // every client's frame passes, only when its text changed
     // (madcide_preview.inc) — the panes below only read.
     preview_follow(w, es, doc);
+    // Live colour, layer 1: the lines edited since the last frame re-lex.
+    colour_catch_up(w, es, doc);
     long caret = es_int(w, es, "caret", 0);
     // The View seam at composition: the edit node presents the focused
     // View's text (its render buffer while a lens is up) and, for a code
@@ -9809,6 +10202,13 @@ void IdeSession::compose_ide_tree(var &root, long doc)
     // status are stamped here, before the multi-window branch's own
     // read-modify-write of ed["hints"] preserves the region.
     long wc = window_count(w, es);
+    var elo;
+    layout_get(elo, w, es);
+    var etree = elo["editor"];
+    // A sole editor pane's line numbers (facelift S2, the layout's `gutter`);
+    // a split's leaves carry their own (compose_editor_leaf).
+    if ( etree["kind"] != ctSPLIT && pane_gutter(etree) && !helping )
+	eh["gutter"] = 1;
     {
 	eh["region"] = "editor";
 	// With two-plus windows the active window carries the focus hint
@@ -9826,17 +10226,16 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 	// slot's nodes in order, so no window's node is left unplaced.
 	var sh = status["hints"];
 	sh["region"] = wc >= 2 ? "editor" : "statusbar";
+	if ( wc < 2 && layout_status_bottom(elo) )
+	    sh["side"] = "bottom";	// the layout's edge (facelift S3)
 	status["hints"] = sh;
     }
 
     var r = { "role": "group" };
     var kids = {};
-    // The editor slot from the layout's editor tree (V2b). A sole editor
-    // leaf emits flat — the JOE screen, byte-identical; a `viewsplit` makes
-    // it a split and the split composer wraps each leaf in its own group.
-    var elo;
-    layout_get(elo, w, es);
-    var etree = elo["editor"];
+    // The editor slot from the layout's editor tree (V2b, read above). A sole
+    // editor leaf emits flat — the JOE screen, byte-identical; a `viewsplit`
+    // makes it a split and the split composer wraps each leaf in its own group.
     if ( etree["kind"] == ctSPLIT )
 	compose_editor_split(kids, w, es, doc, etree, ed, status);
     else
@@ -10109,12 +10508,39 @@ void IdeSession::compose_ide_tree(var &root, long doc)
     ui::get(pt, w, es, "presence_theme");
     if ( !pt.is_null() && php::count(pt) > 0 )
 	rh["presence"] = pt;
+    // The chrome's colours (facelift S2-S4): the scheme's divider, gutter,
+    // gutter_current, current_line, tab, tab_active, statusbar and menu
+    // (menubar, menu, menu_selected, menu_hot, shadow), toolbar and floating
+    // window (dialog, list_selected, field, button_primary) specs, as
+    // the grid paints them (tui_chrome's names); a
+    // scheme that names none leaves the grid's defaults. A hint the window
+    // ignores (its chrome is page.css's).
+    var th;
+    ui::get(th, w, es, "theme");
+    if ( !th.is_null() )
+    {
+	var chrome;		// a null var becomes the map on its first keyed write
+	var names = { "divider", "gutter", "gutter_current", "current_line",
+		      "tab", "tab_active", "statusbar", "menubar", "menu",
+		      "menu_selected", "menu_hot", "shadow", "toolbar",
+		      "dialog", "list_selected", "field", "button_primary" };
+	for ( var cn : names )
+	    if ( !th[cn.c_str()].is_null() )
+		chrome[cn.c_str()] = th[cn.c_str()];
+	if ( !chrome.is_null() )
+	    rh["chrome"] = chrome;
+    }
     // The menu / command data (S1): the bar's menus with their items'
-    // ids, titles and enablement — a root hint the TUI ignores and a
-    // chrome-rendering client (S2) draws natively.
+    // ids, titles and enablement — a chrome-rendering client (S2) draws it
+    // natively, a terminal on its top row (facelift S4): held there when
+    // the layout says `menubar`, else only while F10 / Alt+letter opens it.
     var menu;
     if ( compose_menu_bar(menu, w, es, doc, nav) )
+    {
 	rh["menu"] = menu;
+	if ( layout_menubar(elo) )
+	    rh["menubar"] = 1;
+    }
     // The toolbar (plan §41.11a): the rows the menu data places on it, a
     // root hint beside the menu; the page draws buttons, the grid one line.
     var tbar;
@@ -10386,7 +10812,19 @@ long IdeSession::active(long fallback)
 bool IdeSession::parse_pending(long adoc)
 {
     if ( es_int(w, es, "pending_parse", 0) == 0 )
+    {
+	// Live colour, layer 2: the text moved since this client's colour
+	// was parsed — one refresh in flight per client; it is not a
+	// paint-before-parse, so the client waits for input as usual.
+	if ( es_int(w, adoc, "crefresh_running", 0) == 0
+	  && kind_reaches_compiler(doc_kind(w, adoc))
+	  && es_int(w, adoc, "textrev", 0) != es_int(w, adoc, "cparsed_rev", 0) )
+	{
+	    ui::set(w, adoc, "crefresh_running", 1);
+	    go colour_refresh(w, es, adoc);
+	}
 	return false;
+    }
     ui::set(w, es, "pending_parse", 0);
     go background_parse(w, es, adoc);
     return true;
@@ -10425,6 +10863,25 @@ void IdeSession::remember(bool on)
 void IdeSession::panel(bool has)
 {
     ui::set(w, es, "haspanel", has);
+}
+
+void IdeSession::tabs(bool has)
+{
+    ui::set(w, es, "hastabs", has);
+}
+
+void IdeSession::menus(bool has)
+{
+    ui::set(w, es, "hasmenus", has);
+}
+
+// The client could not drop the menu it was asked for (no menu has that
+// title there): the session's own choice list, as a client that draws no
+// menus gets directly.
+void IdeSession::menu_fallback(var &req)
+{
+    var title = req["menu"];
+    menu_show(w, es, active(0), title.c_str());
 }
 
 // The client could not show the dialog it was asked for (no native dialog

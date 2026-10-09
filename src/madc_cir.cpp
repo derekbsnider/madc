@@ -135,7 +135,7 @@ static thread_local const std::vector<Program::HostCallbackReg> *cir_active_host
 // An interactive session's object cells (plan §42 D27, slice 2), by cell
 // symbol: a cell import binds to its slot's address. Set around the link check
 // and the link of a session entry, like the host callbacks above.
-static thread_local std::map<std::string, void *> *cir_active_cells = NULL;
+static thread_local std::map<madc::dis::istring, void *> *cir_active_cells = NULL;
 
 // The ACTIVE stdlib flavor's C++ runtime, in the process's global symbol scope.
 //
@@ -165,7 +165,7 @@ static thread_local std::map<std::string, void *> *cir_active_cells = NULL;
 // link, which is a better diagnostic than a load error naming a whole library.
 static void cir_open_stdlib_runtime(const madc_stdlib_flavor *flavor)
 {
-    static std::set<std::string> opened;
+    static std::set<madc::dis::istring> opened;
     if (!flavor)
 	flavor = &madc_stdlib_flavors[0];
     // The cross-Apple probe stand-in (empty everywhere else): the target's
@@ -209,7 +209,7 @@ static void *cir_import_resolver(const char *name)
 	    if (r.entry && r.import_sym == name)
 		return (void *)r.entry;
     if (cir_active_cells) {
-	std::map<std::string, void *>::iterator ci = cir_active_cells->find(name);
+	std::map<madc::dis::istring, void *>::iterator ci = cir_active_cells->find(name);
 	if (ci != cir_active_cells->end())
 	    return (void *)&ci->second;
     }
@@ -240,7 +240,7 @@ static void cir_dump_undefined_imports(MIR_context_t ctx)
 {
     DLIST (MIR_module_t) *mods = MIR_get_module_list(ctx);
     if (!mods) return;
-    std::set<std::string> defined;
+    std::set<madc::dis::istring> defined;
     for (MIR_module_t m = DLIST_HEAD(MIR_module_t, *mods); m;
 	 m = DLIST_NEXT(MIR_module_t, m))
 	for (MIR_item_t it = DLIST_HEAD(MIR_item_t, m->items); it;
@@ -253,13 +253,13 @@ static void cir_dump_undefined_imports(MIR_context_t ctx)
 	    default: break;
 	    }
 	}
-    std::set<std::string> reported;
+    std::set<madc::dis::istring> reported;
     for (MIR_module_t m = DLIST_HEAD(MIR_module_t, *mods); m;
 	 m = DLIST_NEXT(MIR_module_t, m))
 	for (MIR_item_t it = DLIST_HEAD(MIR_item_t, m->items); it;
 	     it = DLIST_NEXT(MIR_item_t, it)) {
 	    if (it->item_type != MIR_import_item || !it->u.import_id) continue;
-	    std::string nm = it->u.import_id;
+	    madc::dis::istring nm = it->u.import_id;
 	    if (defined.count(nm) || reported.count(nm)) continue;
 	    if (cir_import_resolver(nm.c_str())) continue;   // dlsym/host-resolvable
 	    reported.insert(nm);
@@ -302,7 +302,7 @@ extern "C" void __madc_frozen_trap_vslot(const char *sym)
 // TRUE for Itanium-ABI DATA symbols (vtable/typeinfo/guard) — these must
 // pre-bind as data (a table of trap slots), not as a callable stub, so a
 // virtual dispatch through them traps cleanly instead of executing code bytes.
-static bool itanium_data_symbol(const std::string &nm)
+static bool itanium_data_symbol(const madc::dis::istring &nm)
 {
     return nm.compare(0, 4, "_ZTV") == 0 || nm.compare(0, 4, "_ZTI") == 0
 	|| nm.compare(0, 4, "_ZTS") == 0 || nm.compare(0, 4, "_ZGV") == 0;
@@ -311,7 +311,7 @@ static bool itanium_data_symbol(const std::string &nm)
 // Named defs of a module, appended into `defined` (the trap scanners' "has a
 // real definition somewhere" set).
 static void cir_collect_module_defs(MIR_context_t ctx, MIR_module_t mod,
-				    std::set<std::string> &defined)
+				    std::set<madc::dis::istring> &defined)
 {
     for (MIR_item_t it = DLIST_HEAD(MIR_item_t, mod->items); it;
 	 it = DLIST_NEXT(MIR_item_t, it)) {
@@ -331,7 +331,7 @@ static void cir_collect_module_defs(MIR_context_t ctx, MIR_module_t mod,
 // interactive session's function stubs (plan §42 D27) are both made of it.
 // Call inside the module being built; NM_SEQ numbers its name strings.
 static MIR_item_t cir_new_symbol_trap_fn(MIR_context_t ctx, const char *fn_name,
-					 const std::string &sym, MIR_item_t proto,
+					 const madc::dis::istring &sym, MIR_item_t proto,
 					 MIR_item_t handler, size_t &nm_seq)
 {
     char nm_item[32];
@@ -351,7 +351,7 @@ static MIR_item_t cir_new_symbol_trap_fn(MIR_context_t ctx, const char *fn_name,
 // Build + load the per-symbol trap-stub module for `undef` (shared by the
 // --run-frozen whole-module lane and the bind lane's cache module).
 static void cir_bind_trap_module(MIR_context_t ctx,
-				 const std::vector<std::string> &undef)
+				 const std::vector<madc::dis::istring> &undef)
 {
     MIR_new_module(ctx, "__madc_frozen_traps");
     MIR_item_t trap_proto = MIR_new_proto(ctx, "__madc_frozen_trap__proto",
@@ -361,7 +361,7 @@ static void cir_bind_trap_module(MIR_context_t ctx,
     size_t nm_seq = 0;
     // One trap function per symbol (both callable stubs and vtable slots) so
     // a fired trap NAMES the symbol — the whole point of this diagnostic.
-    for (const std::string &nm : undef) {
+    for (const madc::dis::istring &nm : undef) {
 	if (itanium_data_symbol(nm)) {
 	    // Data symbol (vtable/typeinfo): a table of pointers to a
 	    // per-symbol trap function, so a virtual dispatch through it
@@ -385,14 +385,14 @@ static void cir_bind_trap_module(MIR_context_t ctx,
 
 static void cir_prebind_frozen_traps(MIR_context_t ctx, MIR_module_t mod)
 {
-    std::set<std::string> defined;
+    std::set<madc::dis::istring> defined;
     cir_collect_module_defs(ctx, mod, defined);
-    std::vector<std::string> undef;
-    std::set<std::string> seen;
+    std::vector<madc::dis::istring> undef;
+    std::set<madc::dis::istring> seen;
     for (MIR_item_t it = DLIST_HEAD(MIR_item_t, mod->items); it;
 	 it = DLIST_NEXT(MIR_item_t, it)) {
 	if (it->item_type != MIR_import_item || !it->u.import_id) continue;
-	std::string nm = it->u.import_id;
+	madc::dis::istring nm = it->u.import_id;
 	if (defined.count(nm) || !seen.insert(nm).second) continue;
 	if (cir_import_resolver(nm.c_str())) continue;
 	undef.push_back(nm);
@@ -400,7 +400,7 @@ static void cir_prebind_frozen_traps(MIR_context_t ctx, MIR_module_t mod)
     if (undef.empty()) return;
     fprintf(stderr, "madc: --run-frozen: %zu unresolved drained-library "
 	    "import(s) bound to trap stubs (-v lists them)\n", undef.size());
-    DBG(for (const std::string &nm : undef)
+    DBG(for (const madc::dis::istring &nm : undef)
 	    std::cerr << "  trap-bound: " << nm << std::endl);
     cir_bind_trap_module(ctx, undef);
 }
@@ -415,20 +415,20 @@ static void cir_prebind_frozen_traps(MIR_context_t ctx, MIR_module_t mod)
 static void cir_prebind_cache_traps(MIR_context_t ctx, MIR_module_t cache_mod,
 				    MIR_module_t consumer_mod)
 {
-    std::set<std::string> defined;
+    std::set<madc::dis::istring> defined;
     cir_collect_module_defs(ctx, cache_mod, defined);
     cir_collect_module_defs(ctx, consumer_mod, defined);
-    std::set<std::string> consumer_imports;
+    std::set<madc::dis::istring> consumer_imports;
     for (MIR_item_t it = DLIST_HEAD(MIR_item_t, consumer_mod->items); it;
 	 it = DLIST_NEXT(MIR_item_t, it))
 	if (it->item_type == MIR_import_item && it->u.import_id)
 	    consumer_imports.insert(it->u.import_id);
-    std::vector<std::string> undef;
-    std::set<std::string> seen;
+    std::vector<madc::dis::istring> undef;
+    std::set<madc::dis::istring> seen;
     for (MIR_item_t it = DLIST_HEAD(MIR_item_t, cache_mod->items); it;
 	 it = DLIST_NEXT(MIR_item_t, it)) {
 	if (it->item_type != MIR_import_item || !it->u.import_id) continue;
-	std::string nm = it->u.import_id;
+	madc::dis::istring nm = it->u.import_id;
 	if (defined.count(nm) || consumer_imports.count(nm)
 	    || !seen.insert(nm).second) continue;
 	if (cir_import_resolver(nm.c_str())) continue;
@@ -437,7 +437,7 @@ static void cir_prebind_cache_traps(MIR_context_t ctx, MIR_module_t cache_mod,
     if (undef.empty()) return;
     DBG(std::cout << "mir cache: " << undef.size() << " cache-only "
 	"import(s) bound to trap stubs" << std::endl);
-    DBG(for (const std::string &nm : undef)
+    DBG(for (const madc::dis::istring &nm : undef)
 	    std::cerr << "  cache trap-bound: " << nm << std::endl);
     cir_bind_trap_module(ctx, undef);
 }
@@ -506,11 +506,11 @@ static int cir_mir_cache_read_byte(MIR_context_t)
 // seeing them once a pulled ledger module defines them — which is exactly what
 // this filter does.
 static void cir_ctx_unresolved_imports(MIR_context_t ctx,
-				       std::vector<std::string> &out,
-				       const std::vector<std::string> *extra = NULL)
+				       std::vector<madc::dis::istring> &out,
+				       const std::vector<madc::dis::istring> *extra = NULL)
 {
-    std::set<std::string> defined, seen;
-    std::vector<std::string> imports;
+    std::set<madc::dis::istring> defined, seen;
+    std::vector<madc::dis::istring> imports;
     for (MIR_module_t m = DLIST_HEAD(MIR_module_t, *MIR_get_module_list(ctx));
 	 m; m = DLIST_NEXT(MIR_module_t, m))
 	for (MIR_item_t it = DLIST_HEAD(MIR_item_t, m->items); it;
@@ -529,11 +529,11 @@ static void cir_ctx_unresolved_imports(MIR_context_t ctx,
 		defined.insert(nm);
 	}
     if (extra)
-	for (const std::string &e : *extra)
+	for (const madc::dis::istring &e : *extra)
 	    if (seen.insert(e).second)
 		imports.push_back(e);
     out.clear();
-    for (const std::string &imp : imports)
+    for (const madc::dis::istring &imp : imports)
 	if (!defined.count(imp))
 	    out.push_back(imp);
 }
@@ -592,7 +592,7 @@ static bool cir_ledger_read_module(MIR_context_t ctx,
 // link lane's inputs (see cir_ledger_relocatable). Selection is otherwise
 // identical: one pull implementation, two shapes of program.
 static void cir_ledger_pull(MIR_context_t ctx, Program *prog,
-			    const std::vector<std::string> *seed = NULL)
+			    const std::vector<madc::dis::istring> *seed = NULL)
 {
     if (!madc_static_libmadc || !prog)
 	return;
@@ -603,18 +603,18 @@ static void cir_ledger_pull(MIR_context_t ctx, Program *prog,
     if (!forest->ledger_modules(ledger))
 	return;
     cir_ledger_available = true;
-    std::map<std::string, size_t> owner;	// symbol -> ledger module index
+    std::map<madc::dis::istring, size_t> owner;	// symbol -> ledger module index
     for (size_t i = 0; i < ledger.size(); i++)
-	for (const std::string &s : ledger[i].syms)
+	for (const madc::dis::istring &s : ledger[i].syms)
 	    owner.insert(std::make_pair(s, i));
 
     std::vector<bool> pulled(ledger.size(), false);
     for (;;) {
-	std::vector<std::string> undef;
+	std::vector<madc::dis::istring> undef;
 	cir_ctx_unresolved_imports(ctx, undef, seed);
 	size_t pulled_now = 0;
-	for (const std::string &nm : undef) {
-	    std::map<std::string, size_t>::const_iterator it = owner.find(nm);
+	for (const madc::dis::istring &nm : undef) {
+	    std::map<madc::dis::istring, size_t>::const_iterator it = owner.find(nm);
 	    if (it == owner.end() || pulled[it->second])
 		continue;
 	    pulled[it->second] = true;	// once, whether or not the read works
@@ -669,7 +669,7 @@ static bool cir_ledger_emit_blob(MIR_context_t ctx, std::vector<uint8_t> &blob)
 // arms one of its own (cir_ledger_read_module), so a bracket established before
 // the pull is stale afterwards — hence the split from the link/emit frame.
 static bool cir_ledger_obj_pull(MIR_context_t ctx, Program *prog,
-				const std::vector<std::string> &seed)
+				const std::vector<madc::dis::istring> &seed)
 {
     if (setjmp(cir_mir_error_jmp)) {
 	cir_mir_error_armed = false;
@@ -708,7 +708,7 @@ static bool cir_ledger_obj_link_emit(MIR_context_t ctx,
 // SUCCESS that selected nothing: whether that was enough is the emit-time
 // verification's question, exactly as in the source lanes.
 static bool cir_ledger_relocatable(Program *prog,
-				   const std::vector<std::string> &seed,
+				   const std::vector<madc::dis::istring> &seed,
 				   std::vector<uint8_t> &blob)
 {
     blob.clear();
@@ -1146,7 +1146,7 @@ static bool cir_emit_alias_symbols(MIR_context_t ctx, Program *prog,
 	// (that IS the construct's point — `x asm("mir.va_arg")` defines
 	// "mir.va_arg", not "x"), else the declared name. NOT var_emit_name,
 	// which answers the reference question and returns the TARGET.
-	const std::string &sym = v->asm_label.empty() ? v->name : v->asm_label;
+	const madc::dis::istring &sym = v->asm_label.empty() ? v->name : v->asm_label;
 	if (sym.empty())
 	    continue;
 	if (o == NULL) {
@@ -1451,7 +1451,7 @@ bool CirJitSession::build_frozen(const void *image, size_t image_len,
     // BEFORE materialize + link, so import resolution sees the same symbols.
     // The same opener as the freezing run's -l (madc_module_open).
     for (size_t i = 0; i < forest->libs().size(); ++i) {
-	const std::string &lib = forest->libs()[i];
+	const madc::dis::istring &lib = forest->libs()[i];
 	std::string lerr;
 	if (!madc_module_open(lib, lerr)) {
 	    fprintf(stderr, "madc: frozen forest needs %s: %s\n",
@@ -1564,7 +1564,7 @@ bool CirJitSession::build_frozen(const void *image, size_t image_len,
 void *CirJitSession::function_code(const char *emitted_name)
 {
     if (!mod || !emitted_name || !emitted_name[0]) return NULL;
-    std::map<std::string, void *>::iterator gi = gen_cache.find(emitted_name);
+    std::map<madc::dis::istring, void *>::iterator gi = gen_cache.find(emitted_name);
     if (gi != gen_cache.end()) return gi->second;
     if (setjmp(cir_mir_error_jmp)) {
 	// A MIR fatal during lazy codegen longjmp'd back here.
@@ -1625,14 +1625,14 @@ MIR_item_t CirJitSession::find_item(const char *name, bool func) const
 
 // A symbol as the linker names it in a diagnostic: an Itanium name
 // demangled (ld's default), any other name as emitted.
-static std::string cir_link_display_name(const char *sym)
+static madc::dis::istring cir_link_display_name(const char *sym)
 {
     if (!sym)
-	return std::string();
+	return madc::dis::istring();
     if (sym[0] == '_' && sym[1] == 'Z') {
 	int status = 0;
 	char *dem = abi::__cxa_demangle(sym, NULL, NULL, &status);
-	std::string shown = (dem && status == 0) ? dem : sym;
+	madc::dis::istring shown = (dem && status == 0) ? dem : sym;
 	free(dem);
 	return shown;
     }
@@ -1644,7 +1644,7 @@ struct CirLinkRefusal
     Program *prog;
     const char *entry_name;
     CirBuilder *builder;		// the entry's: which names are functions
-    std::vector<std::string> late;	// functions nothing defines (D27)
+    std::vector<madc::dis::istring> late;	// functions nothing defines (D27)
     size_t refused;
 };
 
@@ -1711,7 +1711,7 @@ extern "C" void *__madc_session_unbound(const char *sym)
     }
     {
 	// Scoped: its strings are gone before the jump.
-	std::string msg = "undefined reference to '"
+	madc::dis::istring msg = "undefined reference to '"
 	    + cir_link_display_name(sym) + "'";
 	b->prog->record_frontend_error(Program::DiagnosticPhase::runtime, msg,
 				       b->entry_name, 0, 0);
@@ -1781,7 +1781,7 @@ extern "C" void __madc_session_bind(void *sink)
     CirEntryBoundary *b = cir_entry_boundary;
     if (!b || !b->prog)
 	return;
-    std::string text(__madc_dump_sink_text(sink), __madc_dump_sink_length(sink));
+    madc::dis::istring text(__madc_dump_sink_text(sink), __madc_dump_sink_length(sink));
     const size_t cap = 80;		// columns: the one layout rule's
     if (madc::line_width(text) > cap)
 	text = madc::line_columns(text, 0, cap - 1) + "…";
@@ -1888,7 +1888,7 @@ static bool cir_run_at_entry_boundary(Program *prog, const char *entry_name,
 // (MIR's loader, replaced_weak_def): every reference already bound then
 // reaches the definition. A stub is never in session_defined, so the builder
 // still emits a later definition.
-void CirJitSession::make_function_stubs(const std::vector<std::string> &names)
+void CirJitSession::make_function_stubs(const std::vector<madc::dis::istring> &names)
 {
     char mod_name[48];
     snprintf(mod_name, sizeof mod_name, "__madc_session_stubs_%zu",
@@ -1898,7 +1898,7 @@ void CirJitSession::make_function_stubs(const std::vector<std::string> &names)
 				     0, NULL, 1, MIR_T_P, "sym");
     MIR_item_t unbound = MIR_new_import(ctx, "__madc_session_unbound");
     size_t nm_seq = 0;
-    for (const std::string &nm : names) {
+    for (const madc::dis::istring &nm : names) {
 	MIR_new_export(ctx, nm.c_str());
 	MIR_item_t f = cir_new_symbol_trap_fn(ctx, nm.c_str(), nm, proto,
 					      unbound, nm_seq);
@@ -1915,7 +1915,7 @@ void CirJitSession::make_function_stubs(const std::vector<std::string> &names)
 void CirJitSession::rebind_late_stubs(MIR_module_t m, Program *prog)
 {
     cir_active_host_regs = &prog->host_callback_regs;
-    for (std::map<std::string, MIR_item_t>::iterator it = late_stubs.begin();
+    for (std::map<madc::dis::istring, MIR_item_t>::iterator it = late_stubs.begin();
 	 it != late_stubs.end(); ) {
 	if (cir_module_func_item(m, it->first.c_str())) {
 	    late_stubs.erase(it++);
@@ -1932,7 +1932,7 @@ void CirJitSession::rebind_late_stubs(MIR_module_t m, Program *prog)
     // What the stubs still wait for: the builder emits such a function's
     // inline body in the entry that defines it (Program::session_awaited).
     prog->session_awaited.clear();
-    for (std::map<std::string, MIR_item_t>::const_iterator it = late_stubs.begin();
+    for (std::map<madc::dis::istring, MIR_item_t>::const_iterator it = late_stubs.begin();
 	 it != late_stubs.end(); ++it)
 	prog->session_awaited.insert(it->first);
 }
@@ -1981,7 +1981,7 @@ bool CirJitSession::admits(MIR_module_t m, Program *prog, const char *entry_name
 void CirJitSession::bind_late_cells(Program *prog)
 {
     cir_active_host_regs = &prog->host_callback_regs;
-    for (std::map<std::string, std::string>::iterator it = late_cell_waits.begin();
+    for (std::map<madc::dis::istring, madc::dis::istring>::iterator it = late_cell_waits.begin();
 	 it != late_cell_waits.end(); ) {
 	void *addr = data_address(it->second.c_str());
 	if (!addr)
@@ -2067,7 +2067,7 @@ bool CirJitSession::append(Program *prog, const char *entry_name)
     rebind_late_stubs(m, prog);
     bind_late_cells(prog);
     // Its init runs next (run_entry_init): the entry counts from here.
-    live_init = b ? b->tu_init_name() : std::string();
+    live_init = b ? b->tu_init_name() : madc::dis::istring();
     return true;
 }
 
@@ -2347,7 +2347,7 @@ static bool cir_symbol_from_madc_image(const char *name)
     MadcDlInfo info;
     if (!madcdl_addr(addr, info) || !info.fname || !info.fname[0])
 	return false;
-    std::string img = madc::detail::resolve_real_path(info.fname);
+    madc::dis::istring img = madc::detail::resolve_real_path(info.fname);
     if (img.empty())
 	img = info.fname;
     return img == madc_self_lib_path() || img == madc_self_exe_path();
@@ -2402,7 +2402,7 @@ static bool cir_import_covered(const char *name,
     bn = bn ? bn + 1 : info.fname;
     for (const std::string &c : covers) {
 	size_t slash = c.rfind('/');
-	const char *cb = slash == std::string::npos ? c.c_str()
+	const char *cb = slash == madc::dis::istring::npos ? c.c_str()
 						    : c.c_str() + slash + 1;
 	if (strncmp(bn, cb, strlen(cb)) == 0)
 	    return true;
@@ -2424,12 +2424,12 @@ static bool cir_import_covered(const char *name,
 // module imports (in --project the TUs satisfy each other's in-context), and in
 // the .o link lane it is the merged builder's UNDEF symbols (unification
 // already netted out cross-object references). One classifier, both lanes.
-static void cir_filter_uncovered(const std::vector<std::string> &imports,
+static void cir_filter_uncovered(const std::vector<madc::dis::istring> &imports,
 				 const std::vector<std::string> &covers,
-				 std::vector<std::string> &out)
+				 std::vector<madc::dis::istring> &out)
 {
     out.clear();
-    for (const std::string &imp : imports)
+    for (const madc::dis::istring &imp : imports)
 	if (!cir_import_covered(imp.c_str(), covers)) {
 	    DBG(std::cout << "native image needs madc runtime: import '"
 			  << imp << "' is not covered by base/user libs"
@@ -2438,10 +2438,10 @@ static void cir_filter_uncovered(const std::vector<std::string> &imports,
 	}
 }
 
-static bool cir_imports_need_madc_runtime(const std::vector<std::string> &imports,
+static bool cir_imports_need_madc_runtime(const std::vector<madc::dis::istring> &imports,
 					  const std::vector<std::string> &covers)
 {
-    std::vector<std::string> uncovered;
+    std::vector<madc::dis::istring> uncovered;
     cir_filter_uncovered(imports, covers, uncovered);
     return !uncovered.empty();
 }
@@ -2449,7 +2449,7 @@ static bool cir_imports_need_madc_runtime(const std::vector<std::string> &import
 // The merged builder's unresolved references — the .o link lane's answer to
 // "what does this program still import?".
 static void cir_object_undef_names(MIR_object_t obj,
-				   std::vector<std::string> &out)
+				   std::vector<madc::dis::istring> &out)
 {
     out.clear();
     const char *nm;
@@ -2466,12 +2466,12 @@ static void cir_object_undef_names(MIR_object_t obj,
 // `hint` is an extra, lane-specific line of "what to do about it" printed
 // after the symbol list — the .o link lane can name a concrete fix its inputs
 // were built without, which the source lanes have no equivalent of.
-static bool cir_static_libmadc_verify(const std::vector<std::string> &imports,
+static bool cir_static_libmadc_verify(const std::vector<madc::dis::istring> &imports,
 				      const char *out_path,
 				      const std::vector<std::string> &covers,
 				      const char *hint = NULL)
 {
-    std::vector<std::string> uncovered;
+    std::vector<madc::dis::istring> uncovered;
     cir_filter_uncovered(imports, covers, uncovered);
     if (uncovered.empty())
 	return true;
@@ -2493,7 +2493,7 @@ static bool cir_static_libmadc_verify(const std::vector<std::string> &imports,
 	    " symbol(s) — they are not on the AOT ledger (Tier B: the C++"
 	    " script-lane runtime, which exists only as host-toolchain"
 	    " objects):\n", out_path, uncovered.size());
-    for (const std::string &s : uncovered)
+    for (const madc::dis::istring &s : uncovered)
 	fprintf(stderr, "    %s\n", s.c_str());
     if (hint)
 	fprintf(stderr, "%s", hint);
@@ -2609,7 +2609,7 @@ static void cir_windows_import_dlls(bool have_madc, bool drop_madc,
 // entry of the Itanium C++ ABI runtime (libc++abi, which libc++.1.dylib
 // re-exports) — the `__cxa_guard_*` of a block-scope static's once-init
 // ([stmt.dcl]/4) is imported by a program that names nothing from std.
-static bool cir_cxx_runtime_import(const std::string &s)
+static bool cir_cxx_runtime_import(const madc::dis::istring &s)
 {
     return s.compare(0, 2, "_Z") == 0 || s.compare(0, 6, "__cxa_") == 0;
 }
@@ -2620,11 +2620,11 @@ static bool cir_cxx_runtime_import(const std::string &s)
 // dir, or the directory a path-linked one was found in (cir_native_link_env)
 // — and the writer emits them for @rpath loads alone. The entry of `other` is
 // rewritten in place — `libs` points into it.
-static void cir_apple_extra_dylibs(const std::vector<std::string> &imports,
+static void cir_apple_extra_dylibs(const std::vector<madc::dis::istring> &imports,
 				   std::vector<std::string> &other,
 				   std::vector<const char *> &libs)
 {
-    for (const std::string &s : imports)
+    for (const madc::dis::istring &s : imports)
 	if (cir_cxx_runtime_import(s)) {
 	    libs.push_back("/usr/lib/libc++.1.dylib");
 	    break;
@@ -2638,7 +2638,7 @@ static void cir_apple_extra_dylibs(const std::vector<std::string> &imports,
 	// (/usr/lib/libc++.1.dylib), so the family test is on the BASENAME (a
 	// whole-string prefix test let it through: a pure-C image grew a libc++
 	// load command and a C++ image carried two).
-	std::string base = madc::detail::host_path_basename(l);
+	madc::dis::istring base = madc::detail::host_path_basename(l);
 	if (base.compare(0, 9, "libSystem") == 0 || base.compare(0, 6, "libc++") == 0)
 	    continue;
 	l = madc_darwin_install_name(l);
@@ -2656,13 +2656,13 @@ static bool cir_read_file(const char *path, std::vector<unsigned char> &bytes);
 // manifest naming a bad one fails the same way everywhere.
 struct CirImageTraits {
     bool gui_subsystem = false;
-    std::string icon_path;	// "" = no icon
+    madc::dis::istring icon_path;	// "" = no icon
 };
 
 // The icon as the image's resources (PE targets: RT_ICON + RT_GROUP_ICON,
 // madc_pe_icon.h). `icon` owns the bytes the entries point at and outlives
 // the emit. False = unreadable or not an icon file (printed).
-static bool cir_icon_attach(MIR_object_exec_params &xp, const std::string &path,
+static bool cir_icon_attach(MIR_object_exec_params &xp, const madc::dis::istring &path,
 			    PeIcon &icon)
 {
     if (path.empty()) return true;
@@ -2695,7 +2695,7 @@ static bool cir_write_native_image(MIR_context_t ctx, const char *out_path,
     // libmadc.so.0 DT_NEEDED — it runs on hosts without madc installed.
     std::vector<std::string> other;
     bool have_madc = cir_split_needed(needed, other);
-    std::vector<std::string> imports;
+    std::vector<madc::dis::istring> imports;
     cir_ctx_unresolved_imports(ctx, imports);
     // -static-libmadc: the ledger pull ran before the link, so the runtime is
     // IN the capture. Verify nothing madc-side is left over, then drop the
@@ -2769,9 +2769,9 @@ bool CirJitSession::emit_native_executable(const char *out_path,
 // A user library's TARGET spelling: the CLI resolves -l<name> through
 // madc_modules before the link env sees it; a raw -l<name> word from a
 // caller that still forwards one resolves through the same owner.
-static std::string cir_user_library_spelling(const std::string &l)
+static madc::dis::istring cir_user_library_spelling(const madc::dis::istring &l)
 {
-    return l.compare(0, 2, "-l") == 0 ? madc_module_library_spelling(l.substr(2)) : l;
+    return l.compare(0, 2, "-l") == 0 ? madc::dis::istring(madc_module_library_spelling(l.substr(2))) : l;
 }
 
 // DT_NEEDED / DT_RUNPATH for every produced binary — shared by the
@@ -2833,7 +2833,7 @@ static void cir_native_link_env(const madc_stdlib_flavor *flavor,
     // already carries on ELF — a repeated DT_NEEDED is noise the linker
     // would never emit.
     for (const std::string &l : user_libs) {
-	std::string spelling = cir_user_library_spelling(l);
+	madc::dis::istring spelling = cir_user_library_spelling(l);
 	if (std::find(needed.begin(), needed.end(), spelling) == needed.end())
 	    needed.push_back(spelling);
     }
@@ -2853,9 +2853,9 @@ static void cir_native_link_env(const madc_stdlib_flavor *flavor,
     // it in — ld64's `-rpath <dir>` beside the recorded install name
     // (cir_apple_extra_dylibs) — after the relocatable arm, ahead of the
     // compiling madc's lib dir and the system fallback.
-    std::vector<std::string> link_dirs;
+    std::vector<madc::dis::istring> link_dirs;
     for (const std::string &l : user_libs) {
-	std::string dir = madc_darwin_link_rpath(cir_user_library_spelling(l));
+	madc::dis::istring dir = madc_darwin_link_rpath(cir_user_library_spelling(l));
 	if (!dir.empty()
 	    && std::find(link_dirs.begin(), link_dirs.end(), dir) == link_dirs.end()) {
 	    link_dirs.push_back(dir);
@@ -3036,11 +3036,11 @@ static bool cir_open_object_module_deps(const unsigned char *bytes, size_t size,
 	    const char *p = (const char *)sb + value;
 	    const char *end = p + dsize;
 	    while (p < end && *p) {
-		std::string entry(p, strnlen(p, (size_t)(end - p)));
+		madc::dis::istring entry(p, strnlen(p, (size_t)(end - p)));
 		p += entry.size() + 1;
 		// '?' marks an OPTIONAL entry (a lazy module row): it may be absent.
 		bool optional = !entry.empty() && entry[0] == '?';
-		std::string spelling = optional ? entry.substr(1) : entry;
+		madc::dis::istring spelling = optional ? madc::dis::istring(entry.substr(1)) : entry;
 		// The object lane has no parse to record a GUI module on: the
 		// row behind the spelling says it, and the armed memory guard
 		// lifts here exactly as the drivers lift it after a parse — BEFORE
@@ -3145,7 +3145,7 @@ int madc_cir_link_objects(const std::vector<std::string> &paths,
     // linked output), so the runtime is merged exactly once, at the link that
     // produces the image — gcc's -static-libgcc placement.
     if (madc_static_libmadc) {
-	std::vector<std::string> seed;
+	std::vector<madc::dis::istring> seed;
 	cir_object_undef_names(obj, seed);
 	std::vector<uint8_t> rt;
 	if (!cir_ledger_relocatable(prog, seed, rt)) {
@@ -3181,7 +3181,7 @@ int madc_cir_link_objects(const std::vector<std::string> &paths,
 	// ledger merge above already satisfied every piece it carries).
 	std::vector<std::string> other;
 	bool have_madc = cir_split_needed(needed, other);
-	std::vector<std::string> imports;
+	std::vector<madc::dis::istring> imports;
 	cir_object_undef_names(obj, imports);
 	// -static-libmadc: same contract as the source lanes — anything still
 	// uncovered is Tier B, so refuse loudly rather than keep a dependency
@@ -3319,11 +3319,11 @@ static void cir_forest_fill_pack_payloads(Program *prog, cir_frozen_forest &f)
     // Unit lookup by NAME CONTENT: partition units interned into the live
     // pool; recording keys are lexer-interned pointers — only the spelling
     // is shared.
-    std::map<std::string, uint32_t> unit_idx;
+    std::map<madc::dis::istring, uint32_t> unit_idx;
     for (size_t u = 0; u < f.units.size(); ++u)
 	unit_idx[pool->c_str(f.units[u].unit_name_id)] = (uint32_t)u;
-    auto ensure_unit = [&](const std::string &name) -> uint32_t {
-	std::map<std::string, uint32_t>::iterator it = unit_idx.find(name);
+    auto ensure_unit = [&](const madc::dis::istring &name) -> uint32_t {
+	std::map<madc::dis::istring, uint32_t>::iterator it = unit_idx.find(name);
 	if (it != unit_idx.end())
 	    return it->second;
 	f.units.push_back(cir_forest_unit());
@@ -3406,7 +3406,7 @@ static void cir_forest_fill_pack_payloads(Program *prog, cir_frozen_forest &f)
 	    cir_forest_pp_event h;
 	    h.name_id   = pool->intern(ev.name);
 	    h.tag_flags = ev.tag;
-	    const std::string &body =
+	    const madc::dis::istring &body =
 		ev.tag == Program::PackMacroEvent::peDefineFn ? ev.macro.body
 							      : ev.value;
 	    h.body_id = body.empty() ? 0 : pool->intern(body);
@@ -3444,7 +3444,7 @@ static void cir_forest_fill_pack_payloads(Program *prog, cir_frozen_forest &f)
     }
 
     // 5. Branch-relevant macro names (sorted ids for reproducible bytes).
-    for (std::set<std::string>::const_iterator bm = prog->pack_branch_macros.begin();
+    for (std::set<madc::dis::istring>::const_iterator bm = prog->pack_branch_macros.begin();
 	 bm != prog->pack_branch_macros.end(); ++bm)
 	f.branch_macros.push_back(pool->intern(*bm));
     std::sort(f.branch_macros.begin(), f.branch_macros.end());
@@ -3474,7 +3474,7 @@ static void cir_forest_fill_pack_payloads(Program *prog, cir_frozen_forest &f)
     // 5c (v41). Preserve each unit's exact pre-preprocessor source text.
     // Semantic forest state remains config-pinned; these bytes are the
     // compiler-less target's live-parse provider for a different config.
-    for (std::map<const char *, std::string>::const_iterator
+    for (std::map<const char *, madc::dis::istring>::const_iterator
 	 si = prog->pack_unit_sources.begin();
 	 si != prog->pack_unit_sources.end(); ++si) {
 	uint32_t u = ensure_unit(si->first);
@@ -3850,8 +3850,8 @@ void Program::forest_arena_record_aggregate(DataDefSTRUCT *sdd)
 		// method_map key whose Variable is in methods; static via vfSTATIC.
 		std::set<Variable *> ctor_set(cdd->ctors.begin(), cdd->ctors.end());
 		Variable *dtor_var = NULL;
-		std::string dtor_key;
-		for (std::map<std::string, Variable *>::const_iterator kv = cdd->method_map.begin();
+		madc::dis::istring dtor_key;
+		for (std::map<madc::dis::istring, Variable *>::const_iterator kv = cdd->method_map.begin();
 		     kv != cdd->method_map.end(); ++kv) {
 			if (kv->first.empty() || kv->first[0] != '~' || !kv->second)
 				continue;
@@ -3877,9 +3877,9 @@ void Program::forest_arena_record_aggregate(DataDefSTRUCT *sdd)
 			// method_map KEY: the "~" tag for the dtor; method_display_name for a plain
 			// method/operator; empty for a concrete ctor (resolves via cdd->ctors, not by name).
 			FuncDef *mfd = mv ? dynamic_cast<FuncDef *>(mv->type) : NULL;
-			std::string key = is_dtor ? dtor_key
-					: (is_ctor ? std::string()
-					   : (mfd ? mfd->method_display_name : std::string()));
+			madc::dis::istring key = is_dtor ? dtor_key
+					: (is_ctor ? madc::dis::istring()
+					   : (mfd ? mfd->method_display_name : madc::dis::istring()));
 			md.disp_key_id = key.empty() ? 0u : forest_arena.strings.intern(key.c_str());
 			forest_arena.add_payload(md);
 		}
@@ -3932,7 +3932,7 @@ void Program::forest_arena_record_aggregate(DataDefSTRUCT *sdd)
 			forest_arena.add_word(forest_arena.strings.intern(cdd->vtable_slots[k].c_str()));
 		r.vmeth_begin = (uint32_t)forest_arena.payload.size();
 		r.vmeth_count = 0;
-		for (std::map<std::string, bool>::const_iterator vm = cdd->virtual_methods.begin();
+		for (std::map<madc::dis::istring, bool>::const_iterator vm = cdd->virtual_methods.begin();
 		     vm != cdd->virtual_methods.end(); ++vm) {
 			if (!vm->second)
 				continue;
@@ -3955,7 +3955,7 @@ void Program::forest_arena_record_aggregate(DataDefSTRUCT *sdd)
 		//     appends nothing to payload, but keep the discipline uniform),
 		//     then append each run contiguously. ---
 		std::vector<std::pair<uint32_t, uint32_t> > als;
-		for (std::map<std::string, DataDef *>::const_iterator ai = cdd->type_aliases.begin();
+		for (std::map<madc::dis::istring, DataDef *>::const_iterator ai = cdd->type_aliases.begin();
 		     ai != cdd->type_aliases.end(); ++ai) {
 			if (forest_type_is_opaque_placeholder(ai->second))
 				continue;
@@ -3973,7 +3973,7 @@ void Program::forest_arena_record_aggregate(DataDefSTRUCT *sdd)
 			forest_arena.add_payload(ar);
 		}
 		std::vector<std::pair<uint32_t, uint32_t> > sts;
-		for (std::map<std::string, DataDef *>::const_iterator si = cdd->static_member_types.begin();
+		for (std::map<madc::dis::istring, DataDef *>::const_iterator si = cdd->static_member_types.begin();
 		     si != cdd->static_member_types.end(); ++si) {
 			if (forest_type_is_opaque_placeholder(si->second))
 				continue;
@@ -3992,7 +3992,7 @@ void Program::forest_arena_record_aggregate(DataDefSTRUCT *sdd)
 		}
 		r.constval_begin = (uint32_t)forest_arena.payload.size();
 		r.constval_count = (uint32_t)cdd->static_member_const_values.size();
-		for (std::map<std::string, int64_t>::const_iterator ci =
+		for (std::map<madc::dis::istring, int64_t>::const_iterator ci =
 			 cdd->static_member_const_values.begin();
 		     ci != cdd->static_member_const_values.end(); ++ci) {
 			madc::dis::constvalrec cr;
@@ -4253,7 +4253,7 @@ void Program::forest_arena_record_member_pointer(DataDef *dd)
 	if (!madc::dis::arena_id_is_project(tid) || forest_arena.has_def(tid))
 		return;
 	DataDef *owner = mf ? mf->owner_class : md->owner_class;
-	const std::string &owner_name = mf ? mf->owner_name : md->owner_name;
+	const madc::dis::istring &owner_name = mf ? mf->owner_name : md->owner_name;
 	madc::dis::defrec r;
 	memset(&r, 0, sizeof(r));
 	r.kind      = madc::dis::DK_MEMBERPTR;
@@ -4305,7 +4305,7 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
     if (!prog || !TokenBase::_active_strpool || !prog->tkProgram)
 	return;
     madc::dis::intern_table &pool = *TokenBase::_active_strpool;
-    std::set<std::string> seen_globals;
+    std::set<madc::dis::istring> seen_globals;
     // v22: the namespace a header declared the global in. Live's var-decl inside
     // `namespace std {}` registers namespace_map["std"][name] = the SAME Variable
     // that sits in tkProgram->variables; a consumer's fresh instantiation resolves
@@ -4357,7 +4357,7 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
 	// MIR import"). The one live registration stamps the origin into
 	// forest_enum_const_origin; a name not in it is not enum-born.
 	if (v->is_constant()) {
-	    std::map<std::string, const char *>::const_iterator eo =
+	    std::map<madc::dis::istring, const char *>::const_iterator eo =
 		prog->forest_enum_const_origin.find(v->name);
 	    if (eo != prog->forest_enum_const_origin.end()) {
 		uint32_t esid = forest_serialize_type_id(v->type);
@@ -4609,7 +4609,7 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 	    words.push_back((uint32_t)(value & 0xffffffffu));
 	    words.push_back((uint32_t)(value >> 32));
 	};
-	auto intern_spelling = [&](const std::string &value) -> uint32_t {
+	auto intern_spelling = [&](const madc::dis::istring &value) -> uint32_t {
 	    return value.empty() ? 0 : pool.intern(value);
 	};
 	auto token_run = [&](const std::vector<TokenBase *> &tokens) {
@@ -4826,10 +4826,10 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
     // Emit one record: params first, then the positional run table
     // (body, constraint, per-param defaults, per-slot spec patterns) — both as
     // contiguous pod_append slices into f.template_payload.
-    auto emit = [&](uint32_t kind, const char *key, const std::string &name,
-		    const std::string &ns, const std::string &extra,
+    auto emit = [&](uint32_t kind, const char *key, const madc::dis::istring &name,
+		    const madc::dis::istring &ns, const madc::dis::istring &extra,
 		    DataDefCLASS *owner, uint32_t flags,
-		    const std::vector<std::string> &typeparams,
+		    const std::vector<madc::dis::istring> &typeparams,
 		    const std::vector<bool> &is_type,
 		    const std::vector<bool> &is_pack,
 		    const std::vector<std::vector<TokenBase *> > &defaults,
@@ -4912,7 +4912,7 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 	}
 	{
 	    static const char *cpp_probe = ::getenv("MADC_CLASS_PATTERN_PROBE");
-	    if (cpp_probe && (name.find(cpp_probe) != std::string::npos
+	    if (cpp_probe && (name.find(cpp_probe) != madc::dis::istring::npos
 			       || !strcmp(cpp_probe, "*")))
 		std::cerr << "[class-pattern-probe] freeze-emit: " << ns << "::"
 		    << name << " kind=" << kind
@@ -4931,26 +4931,26 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
     // Keep that cold wire spelling for reader compatibility and closure-filter
     // semantics; the live registry itself is keyed only by the bare-name id.
     auto frozen_template_key = [](const char *bare_name,
-	    const std::string &template_name, DataDefCLASS *owner) {
+	    const madc::dis::istring &template_name, DataDefCLASS *owner) {
 	if (!owner)
-	    return std::string(bare_name);
+	    return madc::dis::istring(bare_name);
 	std::string key;
 	key.reserve(owner->name.size() + 1 + template_name.size());
 	key.append(owner->name);
 	key.push_back('\x1f');
 	key.append(template_name);
-	return key;
+	return madc::dis::istring(key);
     };
 
     auto emit_class_registry = [&](uint32_t kind, const char *key,
 	    Program::template_registry_entry_t &registry) {
 	auto emit_variants = [&](std::vector<Program::TemplateDef> &variants) {
 	    for (Program::TemplateDef &td : variants) {
-		const std::string record_key = frozen_template_key(
+		const madc::dis::istring record_key = frozen_template_key(
 		    key, td.class_name, td.owner_class);
 		emit(kind, record_key.c_str(), td.class_name,
 		     td.defining_namespace,
-		     std::string(), td.owner_class,
+		     madc::dis::istring(), td.owner_class,
 		     (td.has_non_type_params ? CIR_TMPLF_HAS_NON_TYPE_PARAMS : 0)
 		     | (td.is_partial_specialization ? CIR_TMPLF_IS_PARTIAL_SPEC : 0),
 		     td.typeparams, td.typeparam_is_type, td.typeparam_is_pack,
@@ -4959,21 +4959,21 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 	    }
 	};
 	emit_variants(registry.namespace_variants);
-	std::vector<std::pair<std::string,
+	std::vector<std::pair<madc::dis::istring,
 	    std::vector<Program::TemplateDef> *> > owners;
 	for (std::unordered_map<DataDefCLASS *,
 		std::vector<Program::TemplateDef> >::iterator it =
 		registry.member_variants.begin();
 	     it != registry.member_variants.end(); ++it) {
-	    const std::string &canonical =
+	    const madc::dis::istring &canonical =
 		it->first->canonical_cpp_spelling();
 	    owners.push_back(std::make_pair(
 		canonical.empty() ? it->first->name : canonical, &it->second));
 	}
 	std::sort(owners.begin(), owners.end(),
-	    [](const std::pair<std::string,
+	    [](const std::pair<madc::dis::istring,
 		       std::vector<Program::TemplateDef> *> &a,
-	       const std::pair<std::string,
+	       const std::pair<madc::dis::istring,
 		       std::vector<Program::TemplateDef> *> &b) {
 		return a.first < b.first;
 	    });
@@ -4997,10 +4997,10 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 	    Program::template_alias_registry_entry_t &registry) {
 	auto emit_variants = [&](std::vector<Program::TemplateAliasDef> &variants) {
 	    for (Program::TemplateAliasDef &ad : variants) {
-		const std::string record_key = frozen_template_key(
+		const madc::dis::istring record_key = frozen_template_key(
 		    key, ad.alias_name, ad.owner_class);
 		emit(CIR_TMPLK_ALIAS, record_key.c_str(), ad.alias_name,
-		     ad.defining_namespace, std::string(), ad.owner_class,
+		     ad.defining_namespace, madc::dis::istring(), ad.owner_class,
 		     ad.has_non_type_params ? CIR_TMPLF_HAS_NON_TYPE_PARAMS : 0,
 		     ad.typeparams, ad.typeparam_is_type, ad.typeparam_is_pack,
 		     ad.typeparam_defaults, ad.target, no_toks, no_multi, NULL,
@@ -5008,21 +5008,21 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 	    }
 	};
 	emit_variants(registry.namespace_variants);
-	std::vector<std::pair<std::string,
+	std::vector<std::pair<madc::dis::istring,
 	    std::vector<Program::TemplateAliasDef> *> > owners;
 	for (std::unordered_map<DataDefCLASS *,
 		std::vector<Program::TemplateAliasDef> >::iterator it =
 		registry.member_variants.begin();
 	     it != registry.member_variants.end(); ++it) {
-	    const std::string &canonical =
+	    const madc::dis::istring &canonical =
 		it->first->canonical_cpp_spelling();
 	    owners.push_back(std::make_pair(
 		canonical.empty() ? it->first->name : canonical, &it->second));
 	}
 	std::sort(owners.begin(), owners.end(),
-	    [](const std::pair<std::string,
+	    [](const std::pair<madc::dis::istring,
 		       std::vector<Program::TemplateAliasDef> *> &a,
-	       const std::pair<std::string,
+	       const std::pair<madc::dis::istring,
 		       std::vector<Program::TemplateAliasDef> *> &b) {
 		return a.first < b.first;
 	    });
@@ -5032,7 +5032,7 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
     });
     prog->fn_template_map.for_each([&](const char *key, std::vector<Program::FnTemplateDef> &v) {	/* thaw-owner */
 	for (Program::FnTemplateDef &fd : v)
-	    emit(CIR_TMPLK_FN, key, std::string(), fd.ns, fd.inline_builtin_kind,
+	    emit(CIR_TMPLK_FN, key, madc::dis::istring(), fd.ns, fd.inline_builtin_kind,
 		 fd.owner_class,
 		 fd.instance_method ? CIR_TMPLF_INSTANCE_METHOD : 0,
 		 fd.typeparams, fd.typeparam_is_type, fd.typeparam_is_pack,
@@ -5043,7 +5043,7 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
     });
     prog->fn_template_decl_map.for_each([&](const char *key, std::vector<Program::FnTemplateDef> &v) {	/* thaw-owner */
 	for (Program::FnTemplateDef &fd : v)
-	    emit(CIR_TMPLK_FN_DECL, key, std::string(), fd.ns, fd.inline_builtin_kind,
+	    emit(CIR_TMPLK_FN_DECL, key, madc::dis::istring(), fd.ns, fd.inline_builtin_kind,
 		 fd.owner_class,
 		 fd.instance_method ? CIR_TMPLF_INSTANCE_METHOD : 0,
 		 fd.typeparams, fd.typeparam_is_type, fd.typeparam_is_pack,
@@ -5053,17 +5053,17 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 	return false;
     });
     prog->var_template_map.for_each([&](const char *key, Program::VarTemplateDef &vd) {
-	emit(CIR_TMPLK_VAR, key, std::string(), vd.defining_namespace,
-	     std::string(), NULL, 0,
+	emit(CIR_TMPLK_VAR, key, madc::dis::istring(), vd.defining_namespace,
+	     madc::dis::istring(), NULL, 0,
 	     vd.typeparams, no_bools, vd.typeparam_is_pack,
 	     no_multi, vd.init, no_toks, no_multi, NULL,
 	     Program::ClassParseReason::None);
 	return false;
     });
-    for (std::map<std::string, Program::ConceptDef>::iterator ci =
+    for (std::map<madc::dis::istring, Program::ConceptDef>::iterator ci =
 	     prog->concept_map.begin(); ci != prog->concept_map.end(); ++ci)
-	emit(CIR_TMPLK_CONCEPT, ci->first.c_str(), std::string(),
-	     ci->second.defining_namespace, std::string(), NULL, 0,
+	emit(CIR_TMPLK_CONCEPT, ci->first.c_str(), madc::dis::istring(),
+	     ci->second.defining_namespace, madc::dis::istring(), NULL, 0,
 	     ci->second.typeparams, no_bools, no_bools,
 	     no_multi, no_toks, ci->second.constraint, no_multi, NULL,
 	     Program::ClassParseReason::None);
@@ -5131,14 +5131,14 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 	// the arena type-id resolves via restored_def_by_tid (covers mangled
 	// class names datatype_map never keys); the flat name is the fallback
 	// (pinned/derived spellings); either miss degrades to the eager arm.
-	std::string ret_flat = fd->returns.is_reference()
-			     ? fd->return_value_type().name
-			       + (fd->returns.is_rvalue_reference() ? "&&" : "&")
+	madc::dis::istring ret_flat = fd->returns.is_reference()
+			     ? madc::dis::istring(fd->return_value_type().name
+			       + (fd->returns.is_rvalue_reference() ? "&&" : "&"))
 			     : fd->returns.name;
 	uint32_t ret_tid = madc_type_id_for(&fd->returns);
-	std::string ret_bank = "#" + std::to_string(ret_tid) + "#" + ret_flat;
+	madc::dis::istring ret_bank = "#" + std::to_string(ret_tid) + "#" + ret_flat;
 	emit(CIR_TMPLK_MEMBER, fi->first.c_str(), fd->method_display_name,
-	     std::string(), ret_bank, owner,
+	     madc::dis::istring(), ret_bank, owner,
 	     (instance ? CIR_TMPLF_INSTANCE_METHOD : 0)
 	     | (as_ctor ? CIR_TMPLF_MEMBER_CTOR : 0)
 	     | (body_bearing ? 0 : CIR_TMPLF_MEMBER_DECL_ONLY),
@@ -5157,7 +5157,7 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
     // has one param list; the record/run layout is identical (body run +
     // constraint run + one default run per param, so the generic reader
     // applies).
-    for (std::map<std::string, std::vector<Program::OutOfLineMemberDef> >::iterator
+    for (std::map<madc::dis::istring, std::vector<Program::OutOfLineMemberDef> >::iterator
 	     oi = prog->out_of_line_member_defs.begin();
 	 oi != prog->out_of_line_member_defs.end(); ++oi) {
 	for (size_t di = 0; di < oi->second.size(); ++di) {
@@ -5230,10 +5230,10 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 // Itanium name (FuncDef::local_emit_name / emit_symbol), not its registration
 // key — so the body is looked up under the symbol the FuncDef says it emits
 // first, and under the key itself last (a body emitted under its own name).
-static std::map<std::string, std::pair<uint32_t, uint32_t> >::const_iterator
-forest_body_loc(Program *prog, const cir_frozen_forest &f, const std::string &key)
+static std::map<madc::dis::istring, std::pair<uint32_t, uint32_t> >::const_iterator
+forest_body_loc(Program *prog, const cir_frozen_forest &f, const madc::dis::istring &key)
 {
-	typedef std::map<std::string, std::pair<uint32_t, uint32_t> >::const_iterator loc_it;
+	typedef std::map<madc::dis::istring, std::pair<uint32_t, uint32_t> >::const_iterator loc_it;
 	auto fi = prog->funcdef_map.find(key);
 	if (fi != prog->funcdef_map.end() && fi->second) {
 		FuncDef *fd = fi->second;
@@ -5252,7 +5252,7 @@ forest_body_loc(Program *prog, const cir_frozen_forest &f, const std::string &ke
 }
 
 static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f,
-				      const std::set<std::string> *pack_uncarriable)
+				      const std::set<madc::dis::istring> *pack_uncarriable)
 {
 	if (!prog || !prog->forest_arena_enabled)
 		return;
@@ -5269,7 +5269,7 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f,
 			madc::dis::methodrec md;
 			if (!a.get_payload(r.methods_begin, i, md) || !md.name_id)
 				continue;
-			std::map<std::string, std::pair<uint32_t, uint32_t> >::const_iterator
+			std::map<madc::dis::istring, std::pair<uint32_t, uint32_t> >::const_iterator
 				bl = forest_body_loc(prog, f, a.strings.str(md.name_id));
 			if (bl == f.funcdef_locs.end())
 				continue;
@@ -5309,8 +5309,8 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f,
 			    || !(r.flags & madc::dis::DF_WAS_BODIED)
 			    || (r.flags & madc::dis::DF_HAS_FOREST_BODY))
 				continue;
-			std::string fsym = a.strings.str(r.name_id);
-			std::map<std::string, std::pair<uint32_t, uint32_t> >::const_iterator
+			madc::dis::istring fsym = a.strings.str(r.name_id);
+			std::map<madc::dis::istring, std::pair<uint32_t, uint32_t> >::const_iterator
 				bl = forest_body_loc(prog, f, fsym);
 			if (bl == f.funcdef_locs.end()) {
 				DBG(std::cout << "arena_complete 1b: bodied " << fsym
@@ -5332,7 +5332,7 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f,
 			}
 			// BODY origin: the def's own file, else the unit name.
 			const char *body_file = NULL;
-			std::map<std::string, const char *>::const_iterator
+			std::map<madc::dis::istring, const char *>::const_iterator
 				ff = f.funcdef_files.find(fsym);
 			if (ff != f.funcdef_files.end() && ff->second)
 				body_file = ff->second;
@@ -5361,7 +5361,7 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f,
 	struct arena_alias { uint32_t name_id, ns_id, ref0, flags; };
 	std::vector<arena_alias> aliases;
 
-	for (std::set<std::string>::const_iterator it = prog->user_typedef_names.begin();
+	for (std::set<madc::dis::istring>::const_iterator it = prog->user_typedef_names.begin();
 	     it != prog->user_typedef_names.end(); ++it) {
 		flat_datatype_map_iter dti = prog->datatype_map.find(*it);
 		if (dti == prog->datatype_map.end() || !*dti) {
@@ -5417,7 +5417,7 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f,
 		if (!ns || !*ns)
 			return false;
 		for (datatype_map_iter it = m.begin(); it != m.end(); ++it) {
-			if (it->first.find('<') != std::string::npos || !it->second)
+			if (it->first.find('<') != madc::dis::istring::npos || !it->second)
 				continue;		// template product / empty: follow-on
 			// The madc:: intrinsic carrier prototypes (value/array ->
 			// ddARRAY, slice V1) are PROCESS state: add_madc_namespace
@@ -5550,7 +5550,7 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f,
 	// DataDef; serialize it so the flush can RE-RUN the one live mirror over
 	// restored state (stod / to_string are std::__cxx11 members a consumer
 	// resolves as members of std).
-	for (std::map<std::string, std::vector<std::string> >::const_iterator
+	for (std::map<madc::dis::istring, std::vector<madc::dis::istring> >::const_iterator
 	     li = prog->inline_namespace_children.begin();
 	     li != prog->inline_namespace_children.end(); ++li) {
 		for (size_t c = 0; c < li->second.size(); ++c, ++next) {
@@ -5568,7 +5568,7 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f,
 	// `namespace fs = std::filesystem;` inside a packed header must LOAD as
 	// it parsed: ns_id = the alias's qualified key, name_id = the canonical
 	// target. The flush re-adds the map entries verbatim.
-	for (std::map<std::string, std::string>::const_iterator
+	for (std::map<madc::dis::istring, madc::dis::istring>::const_iterator
 	     ai = prog->namespace_aliases.begin();
 	     ai != prog->namespace_aliases.end(); ++ai, ++next) {
 		madc::dis::defrec r;
@@ -5595,19 +5595,19 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f,
 	// TU-root target's record is fenced at restore, so its bind cleanly
 	// lacks.
 	{
-		std::map<FuncDef *, std::string> fd_keys;
+		std::map<FuncDef *, madc::dis::istring> fd_keys;
 		for (funcdef_map_iter fit = prog->funcdef_map.begin();
 		     fit != prog->funcdef_map.end(); ++fit)
 			if (fit->second)
 				fd_keys[fit->second] = fit->first;
-		std::set<std::string> recorded;	// ns \x01 name \x01 key
+		std::set<madc::dis::istring> recorded;	// ns \x01 name \x01 key
 		// 5a: overload-set MEMBERSHIP (flagged records).
 		for (const auto &osi : prog->namespace_fn_overload_sets) {
 			size_t sep = osi.first.rfind("::");
-			if (sep == std::string::npos || sep == 0)
+			if (sep == madc::dis::istring::npos || sep == 0)
 				continue;	// global-scope key ("::name"): no ns to rebind
-			std::string ns   = osi.first.substr(0, sep);
-			std::string name = osi.first.substr(sep + 2);
+			madc::dis::istring ns   = osi.first.substr(0, sep);
+			madc::dis::istring name = osi.first.substr(sep + 2);
 			for (size_t ei = 0; ei < osi.second.size(); ++ei) {
 				const Program::NamespaceFnOverload &e = osi.second[ei];
 				if (!e.var || !e.var->type
@@ -5620,7 +5620,7 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f,
 				if (fd->namespace_name == ns
 				    && fd->function_display_name == name)
 					continue;	// home registration: funcs-flush reproduces it
-				std::map<FuncDef *, std::string>::const_iterator
+				std::map<FuncDef *, madc::dis::istring>::const_iterator
 					ki = fd_keys.find(fd);
 				if (ki == fd_keys.end())
 					continue;
@@ -5651,7 +5651,7 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f,
 				if (fd->namespace_name == ni->first
 				    && fd->function_display_name == vi->first)
 					continue;	// the defining registration
-				std::map<FuncDef *, std::string>::const_iterator
+				std::map<FuncDef *, madc::dis::istring>::const_iterator
 					ki = fd_keys.find(fd);
 				if (ki == fd_keys.end())
 					continue;
@@ -5678,7 +5678,7 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f,
 	// as tokbytes runs + the owner class + full_definition + position; the
 	// flush rebuilds the entry (var = the restored method Variable) so the
 	// EXISTING m&l fixpoint re-runs the one live derivation on use.
-	for (std::map<std::string, Program::DeferredFunctionBody>::const_iterator
+	for (std::map<madc::dis::istring, Program::DeferredFunctionBody>::const_iterator
 	     di = prog->deferred_lazy_bodies.begin();
 	     di != prog->deferred_lazy_bodies.end(); ++di) {
 		const Program::DeferredFunctionBody &b = di->second;
@@ -5688,7 +5688,7 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f,
 		{
 			static const char *mtp = ::getenv("MADC_MTI_PROBE");
 			if (mtp && *mtp
-			    && di->first.find(mtp) != std::string::npos)
+			    && di->first.find(mtp) != madc::dis::istring::npos)
 				fprintf(stderr, "MTIPROBE defbody sym=%s file=%s"
 					" root=%d full=%d body=%zu def=%zu\n",
 					di->first.c_str(), b.file ? b.file : "(none)",
@@ -5968,7 +5968,7 @@ static void forest_record_enum(Program *prog, DataDefENUM *edd,
 // correctness). The walk runs to a fixpoint because recording can stamp fresh
 // project ids (an aggregate first reached as a cross-ref).
 static void cir_forest_arena_refresh(Program *prog,
-				     const std::set<std::string> *pack_uncarriable)
+				     const std::set<madc::dis::istring> *pack_uncarriable)
 {
 	if (!prog || !prog->forest_arena_enabled || !madc_active_project_types)
 		return;
@@ -6049,7 +6049,7 @@ static void cir_forest_arena_refresh(Program *prog,
 				continue;
 			bool oroot = ocdd->definition_origin
 				   == AggregateDefinitionOrigin::TranslationUnitRoot;
-			for (std::map<std::string, DataDef *>::const_iterator ai =
+			for (std::map<madc::dis::istring, DataDef *>::const_iterator ai =
 				     ocdd->type_aliases.begin();
 			     ai != ocdd->type_aliases.end(); ++ai)
 				if (dynamic_cast<DataDefENUM *>(ai->second))
@@ -6085,8 +6085,8 @@ static void cir_forest_arena_refresh(Program *prog,
 	     it != prog->funcdef_map.end(); ++it) {
 		FuncDef *fd = it->second;
 #ifdef MADC_DBG_PACK
-		bool rc2probe = it->first.find("stoi") != std::string::npos
-			     || it->first.find("_to_string") != std::string::npos;
+		bool rc2probe = it->first.find("stoi") != madc::dis::istring::npos
+			     || it->first.find("_to_string") != madc::dis::istring::npos;
 		if (rc2probe)
 			fprintf(stderr, "[RC2] key=%s fd=%p mt=%d tparams=%zu unc=%d\n",
 				it->first.c_str(), (void *)fd,
@@ -6392,10 +6392,10 @@ static void cir_ledger_serialize(const std::vector<cir_ledger_module> &ledger,
     lh.module_count = (uint32_t)ledger.size();
     out.assign((const uint8_t *)&lh, (const uint8_t *)&lh + sizeof lh);
 
-    std::vector<std::string> symblocks;
+    std::vector<madc::dis::istring> symblocks;
     for (const cir_ledger_module &m : ledger) {
 	std::string syms;
-	for (const std::string &s : m.syms) {
+	for (const madc::dis::istring &s : m.syms) {
 	    syms += s;
 	    syms += '\0';
 	}
@@ -6575,7 +6575,7 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 		// tree-resident for --run-frozen but must never stamp
 		// DF_HAS_FOREST_BODY — a consumer derives them on use.
 		if (builder)
-		    for (const std::string &sym : builder->pack_stamp_exclusions())
+		    for (const madc::dis::istring &sym : builder->pack_stamp_exclusions())
 			f.funcdef_locs.erase(sym);
 		cir_forest_arena_complete(prog, f,
 					  builder ? &builder->pack_uncarriable_syms()
@@ -6874,7 +6874,7 @@ int madc_cir_dump_forest(const char *container_path)
 // (`class`, `new`, `delete`, `this`, …) are NOT reserved, so ordinary C code
 // using them as identifiers parses. Matches ".c" exactly (not ".cc"/".cpp"/
 // ".cxx"/".C", which are C++).
-static bool is_c_source_file(const std::string &path)
+static bool is_c_source_file(const madc::dis::istring &path)
 {
 	return path.size() >= 2 && path.compare(path.size() - 2, 2, ".c") == 0;
 }
@@ -6910,7 +6910,7 @@ bool apply_project_tu_options(::Program &prog, const ProjectTU &tu,
 
 struct CirParsedTU {
 	std::unique_ptr<Program> prog;
-	std::string name;
+	madc::dis::istring name;
 	// --show-stats: per-TU front-end walls, recorded by project_parse_all.
 	// The deeper phase clocks (_read/_inst/_cir_build/_c2mir_seconds) are
 	// stamped on the Program at their own layers; only the tokenize/parse
@@ -6933,7 +6933,7 @@ static bool project_parse_all(MadcEngine &engine,
 			      MadcCompileGroup &group,
 			      const ProjectManifest &manifest,
 			      bool forest_bind,
-			      const std::string &forest_bind_path,
+			      const madc::dis::istring &forest_bind_path,
 			      bool class_pattern_live_capture,
 			      std::vector<CirParsedTU> &parsed)
 {
@@ -6996,7 +6996,7 @@ static bool project_parse_all(MadcEngine &engine,
 					" by registration policy\n");
 			return false;
 		}
-		std::string spelling = madc_module_library_spelling(lib);
+		madc::dis::istring spelling = madc_module_library_spelling(lib);
 		const MadcModuleSpec *row = madc_module_find_spelled(spelling);
 		if (row && (row->flags & MADC_MODULE_GUI))
 			first.bound_gui_module = true;
@@ -7144,7 +7144,7 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 	for (size_t bi = 0; bi < builders.size(); bi++) {
 		if (!builders[bi] || bi >= modules.size())
 			continue;
-		const std::string &ini = builders[bi]->tu_init_name();
+		const madc::dis::istring &ini = builders[bi]->tu_init_name();
 		if (ini.empty())
 			continue;
 		void *icode = nullptr;
@@ -7294,10 +7294,10 @@ int madc_project_emit_native(MadcEngine &engine,
 			else {
 				out = pt.name;
 				size_t slash = out.rfind('/');
-				if (slash != std::string::npos)
+				if (slash != madc::dis::istring::npos)
 					out = out.substr(slash + 1);
 				size_t dot = out.rfind('.');
-				if (dot != std::string::npos && dot > 0)
+				if (dot != madc::dis::istring::npos && dot > 0)
 					out = out.substr(0, dot);
 				out += ".o";
 			}
@@ -7402,7 +7402,7 @@ int madc_project_emit_native(MadcEngine &engine,
 		// closure beside the -l spellings, once each.
 		std::vector<std::string> all_libs(user_libs);
 		for (CirParsedTU &pt : parsed)
-			for (const std::string &l : pt.prog->module_link_libs)
+			for (const madc::dis::istring &l : pt.prog->module_link_libs)
 				if (std::find(all_libs.begin(), all_libs.end(), l)
 				    == all_libs.end())
 					all_libs.push_back(l);
@@ -7430,7 +7430,7 @@ static void cir_emit_cxx_source(FILE *out, Program *prog,
 {
     CirEmitSource si;
     si.tokens = &prog->tokens;
-    si.tu_file = prog->intern_file(std::string(source_name ? source_name
+    si.tu_file = prog->intern_file(madc::dis::istring(source_name ? source_name
 							   : ""));
     si.includes = &prog->fidelity_include_directives;
     si.trailing = &prog->_trailing_trivia;

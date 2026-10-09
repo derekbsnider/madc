@@ -9,4 +9,4 @@ file: tabs=madc_ide_helptab.c|Help active=madc_ide_helptab.c editor=edit
 closed: tabs=madc_ide_helptab.c active=madc_ide_helptab.c editor=edit
 closed: help-row=0
 persist: editor-help=1
-default: sidebar-help=1 help-tab=0
+default: sidebar-help=0 help-tab=1 sidebar-index=1

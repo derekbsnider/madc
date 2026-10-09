@@ -331,6 +331,11 @@ int main()
     S.compose_ide_tree(tree, doc);
     var shc = tree["children"][1]["hints"]["spans"];
     println("theme-swap: {} first-c={}", msg, shc[0]["c"]);
+    // a class the scheme leaves unnamed inherits its parent's spec
+    var thc;
+    ui::get(thc, w, es, "theme");
+    println("theme-inherit: escape={} include={} directive={}",
+	    thc["escape"], thc["include"], thc["directive"]);
     ev_action(e, "theme", "opt-scheme");
     S.apply_ide_event(doc, e);
     ev_text(e, "nosuch");
@@ -1969,6 +1974,7 @@ int main()
     //    The terminal composes none of it: every clause above ran with the
     //    fact off, so the TUI shape they pin is untouched.
     S.panel(true);
+    S.tabs(true);			// ... and draws tab strips (ui::tabs)
     ev_action(e, "check", "");
     S.apply_ide_event(doc, e);
     S.compose_ide_tree(tree, doc);
@@ -2114,6 +2120,7 @@ int main()
 	    tty.index("[exit 4]") >= 0 ? 1 : 0, es_int(w, es, "termlive", 0));
     remove("madc_ide_tty.mad");
     S.panel(false);
+    S.tabs(false);
 
     // :q on the now-clean buffer quits — false propagates out of the
     // prompt commit exactly like the quit chord.

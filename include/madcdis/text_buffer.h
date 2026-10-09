@@ -209,9 +209,9 @@ public:
 	    tail.off += skip + cut;
 	    tail.len -= skip + cut;
 	    p.len = skip;
-	    _pieces.insert(_pieces.begin() + i + 1, tail);
+	    _pieces.insert(_pieces.begin() + i + 1, tail);	// may move `p`'s storage
 	    len -= cut;
-	    pos += p.len;
+	    pos += skip;
 	    ++i;
 	}
     }

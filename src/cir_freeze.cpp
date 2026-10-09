@@ -214,14 +214,14 @@ static bool cir_freeze_partitioned(cir_node *root, const char *main_unit_name,
 
 	std::map<cir_node *, cir_freeze_loc> where;
 	std::vector<std::vector<cir_node *> > order;
-	std::map<std::string, uint32_t> unit_by_name;
-	std::vector<std::string> unit_names;
+	std::map<madc::dis::istring, uint32_t> unit_by_name;
+	std::vector<madc::dis::istring> unit_names;
 
 	// Unit for a source path (by_unit mode), creating it on first sight.
 	// Unit 0 is always the main unit so readers see a stable convention.
 	auto unit_for = [&](const char *fname) -> uint32_t {
-		std::string key(fname);
-		std::map<std::string, uint32_t>::iterator it = unit_by_name.find(key);
+		madc::dis::istring key(fname);
+		std::map<madc::dis::istring, uint32_t>::iterator it = unit_by_name.find(key);
 		if (it != unit_by_name.end())
 			return it->second;
 		uint32_t u = (uint32_t)order.size();
@@ -406,7 +406,7 @@ static bool cir_freeze_partitioned(cir_node *root, const char *main_unit_name,
 	// verbatim state, never a re-derived signature.
 	if (TokenBase::_active_strpool) {
 		madc::dis::intern_table &pool = *TokenBase::_active_strpool;
-		std::set<std::string> seen_externs;
+		std::set<madc::dis::istring> seen_externs;
 		for (std::map<cir_node *, cir_freeze_loc>::iterator it = where.begin();
 		     it != where.end(); ++it) {
 			node_t sd = it->first->as_node();
@@ -813,7 +813,7 @@ static bool cir_macho_find_forest(const uint8_t *m, size_t sz,
 
 bool cir_forest_map_image(const char *path, const void *&image, size_t &len)
 {
-	std::string selfpath;
+	madc::dis::istring selfpath;
 	if (!path) {
 #ifdef __APPLE__
 		// Darwin self-image carrier: signed Mach-O forbids appended
@@ -855,18 +855,18 @@ bool cir_forest_map_image(const char *path, const void *&image, size_t &len)
 	// immutable once inserted (the thread contract the decode cache
 	// states).
 	static std::mutex map_mu;
-	static std::map<std::string, std::pair<void *, size_t> > map_cache;
+	static std::map<madc::dis::istring, std::pair<void *, size_t> > map_cache;
 	void *m = NULL;
 	size_t maplen = 0;
 	{
 		std::lock_guard<std::mutex> lk(map_mu);
-		std::map<std::string, std::pair<void *, size_t> >::iterator mi =
+		std::map<madc::dis::istring, std::pair<void *, size_t> >::iterator mi =
 			map_cache.find(path);
 		if (mi == map_cache.end()) {
 			m = madc::detail::map_file_readonly(path, maplen);
 			if (!m)
 				return false;
-			mi = map_cache.emplace(std::string(path),
+			mi = map_cache.emplace(madc::dis::istring(path),
 					       std::make_pair(m, maplen)).first;
 		}
 		m = mi->second.first;
@@ -1353,7 +1353,7 @@ bool CirFrozenForest::complete_open(c2m_ctx_t c2m)
 			fprintf(stderr, "madc: forest library list corrupt\n");
 			return false;
 		}
-		_libs.push_back(std::string(s, slen));
+		_libs.push_back(madc::dis::istring(s, slen));
 	}
 
 	// v13 container-global: file-scope global VARIABLE definitions (zero-length
@@ -1514,7 +1514,7 @@ bool CirFrozenForest::complete_open(c2m_ctx_t c2m)
 		uint32_t slen = 0;
 		const char *nm = pool_cstr(_units[u].unit_name_id, slen);
 		if (nm)
-			_unit_by_name.emplace(std::string(nm, slen), u);
+			_unit_by_name.emplace(madc::dis::istring(nm, slen), u);
 	}
 
 	_segs.assign(_units.size(), (CirFrozenSegment *)NULL);
@@ -1523,9 +1523,9 @@ bool CirFrozenForest::complete_open(c2m_ctx_t c2m)
 	return true;
 }
 
-int CirFrozenForest::find_unit(const std::string &name) const
+int CirFrozenForest::find_unit(const madc::dis::istring &name) const
 {
-	std::map<std::string, uint32_t>::const_iterator it =
+	std::map<madc::dis::istring, uint32_t>::const_iterator it =
 		_unit_by_name.find(name);
 	return it == _unit_by_name.end() ? -1 : (int)it->second;
 }
@@ -1539,14 +1539,14 @@ int CirFrozenForest::find_unit(const std::string &name) const
 // machine-portable identity: match it against the name's tail component
 // path. First hit in unit order; -1 when none or when the spelling is
 // itself an absolute path.
-int CirFrozenForest::find_unit_path_tail(const std::string &incfile) const
+int CirFrozenForest::find_unit_path_tail(const madc::dis::istring &incfile) const
 {
 	if (incfile.empty() || madc::detail::host_path_absolute(incfile))
 		return -1;
-	const std::string tail = "/" + incfile;
-	for (std::map<std::string, uint32_t>::const_iterator it =
+	const madc::dis::istring tail = "/" + incfile;
+	for (std::map<madc::dis::istring, uint32_t>::const_iterator it =
 		     _unit_by_name.begin(); it != _unit_by_name.end(); ++it) {
-		const std::string &nm = it->first;
+		const madc::dis::istring &nm = it->first;
 		if (nm.size() > tail.size()
 		    && nm.compare(nm.size() - tail.size(), tail.size(), tail) == 0)
 			return (int)it->second;
@@ -1657,14 +1657,14 @@ bool CirFrozenForest::ledger_modules(std::vector<cir_ledger_module> &out) const
 			return false;
 		}
 		cir_ledger_module m;
-		m.name.assign((const char *)payload.data() + pos, e.name_bytes);
+		m.name = madc::dis::istring((const char *)payload.data() + pos, e.name_bytes);
 		pos += e.name_bytes;
 		// NUL-separated symbol names (a trailing NUL per name, so the
 		// final entry ends the block cleanly).
 		for (size_t i = 0, start = 0; i < e.sym_bytes; i++)
 			if (payload[pos + i] == '\0') {
 				if (i > start)
-					m.syms.push_back(std::string(
+					m.syms.push_back(madc::dis::istring(
 						(const char *)payload.data() + pos + start,
 						i - start));
 				start = i + 1;
@@ -2079,12 +2079,12 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_for(
 			_mat_filter.exact = false;
 			grew = true;
 		}
-		for (std::unordered_map<std::string, bool>::const_iterator it =
+		for (std::unordered_map<madc::dis::istring, bool>::const_iterator it =
 		     want.declared_bound.begin();
 		     it != want.declared_bound.end(); ++it) {
 			if (!it->second)
 				continue;
-			std::unordered_map<std::string, bool>::iterator oi =
+			std::unordered_map<madc::dis::istring, bool>::iterator oi =
 				_mat_filter.declared_bound.find(it->first);
 			if (oi == _mat_filter.declared_bound.end()) {
 				_mat_filter.declared_bound[it->first] = true;
@@ -2235,9 +2235,9 @@ void CirFrozenForest::materialize_pass()
 		// 0 unindexed (derived entity)
 		if (!nm || !*nm)
 			return 0;
-		const std::unordered_map<std::string, bool> &db =
+		const std::unordered_map<madc::dis::istring, bool> &db =
 			_mat_filter.declared_bound;
-		std::unordered_map<std::string, bool>::const_iterator it = db.end();
+		std::unordered_map<madc::dis::istring, bool>::const_iterator it = db.end();
 		if (ns && *ns)
 			it = db.find(std::string(ns) + "::" + nm);
 		if (it == db.end())
@@ -2260,7 +2260,7 @@ void CirFrozenForest::materialize_pass()
 		verdict_memo[key] = v;
 		return v;
 	};
-	std::unordered_map<std::string, int> head_memo;
+	std::unordered_map<madc::dis::istring, int> head_memo;
 	auto record_kept = [&](const madc::dis::defrec &r) -> bool {
 		if (!_mat_filter.active)
 			return true;
@@ -2285,10 +2285,10 @@ void CirFrozenForest::materialize_pass()
 		std::string head(cs, (size_t)(lt - cs));
 		while (!head.empty() && head[head.size() - 1] == ' ')
 			head.erase(head.size() - 1);
-		std::unordered_map<std::string, int>::iterator hi =
+		std::unordered_map<madc::dis::istring, int>::iterator hi =
 			head_memo.find(head);
 		if (hi == head_memo.end()) {
-			std::unordered_map<std::string, bool>::const_iterator di =
+			std::unordered_map<madc::dis::istring, bool>::const_iterator di =
 				_mat_filter.declared_bound.find(head);
 			int hv = di == _mat_filter.declared_bound.end()
 				 ? (_mat_filter.exact ? -1 : 0)
@@ -2616,10 +2616,10 @@ void CirFrozenForest::materialize_pass()
 		}
 		DataDefSTRUCT *sdd;
 		if (r.kind == madc::dis::DK_CLASS)
-			sdd = new DataDefCLASS(std::string(nm), r.size,
+			sdd = new DataDefCLASS(madc::dis::istring(nm), r.size,
 					       DataType::dtRESERVED);
 		else
-			sdd = new DataDefSTRUCT(std::string(nm), r.size);
+			sdd = new DataDefSTRUCT(madc::dis::istring(nm), r.size);
 		// A union with member functions is a CLASS with union layout
 		// (libstdc++'s _Any_data); its members overlap by their recorded
 		// offsets, restored verbatim like every aggregate's.
@@ -2652,7 +2652,7 @@ void CirFrozenForest::materialize_pass()
 		const char *nm = r.name_id ? a.c_str(r.name_id) : NULL;
 		if (!nm || !*nm)
 			continue;
-		DataDefENUM *edd = new DataDefENUM(std::string(nm));
+		DataDefENUM *edd = new DataDefENUM(madc::dis::istring(nm));
 		// v48: the underlying type (ref0, a pinned primitive id) and
 		// whether it was DECLARED (DF_ENUM_FIXED_BASE) restore apart —
 		// promotion reads them apart ([conv.prom]/3-4); v27-v47 re-adopted
@@ -2721,7 +2721,7 @@ void CirFrozenForest::materialize_pass()
 				DataDef *owner = r.body_unit
 					       ? arena_swizzle(r.body_unit, by_id) : NULL;
 				const char *on = r.disp_id ? a.c_str(r.disp_id) : NULL;
-				std::string owner_name = on ? on : "";
+				madc::dis::istring owner_name = on ? on : "";
 				DataDef *d;
 				if (r.flags & madc::dis::DF_MEMBERPTR_FUNCTION) {
 					FuncDef *tfd = restore_signature(r.ref0, a, by_id,
@@ -2764,7 +2764,7 @@ void CirFrozenForest::materialize_pass()
 					     | ((uint64_t)r.carray_count_hi << 32);
 				const char *an = r.name_id ? a.c_str(r.name_id) : NULL;
 				d = new DataDefCArray(*operand,
-						      an ? std::string(an) : operand->name,
+						      an ? madc::dis::istring(an) : operand->name,
 						      (size_t)cnt, NULL);
 			}
 			else
@@ -2879,7 +2879,7 @@ void CirFrozenForest::materialize_pass()
 	struct PendingMethodImport {
 		DataDefCLASS *cdd;
 		uint32_t      func_id;
-		std::string   disp;
+		madc::dis::istring   disp;
 		uint32_t      mflags;
 		uint32_t      rec_index;	// methodrec position — order parity
 	};
@@ -2895,7 +2895,7 @@ void CirFrozenForest::materialize_pass()
 	// Track each restored method's methodrec index so the post-pass can
 	// re-insert the import at its recorded position.
 	std::map<DataDefCLASS *, std::vector<uint32_t> > method_rec_indices;
-	std::map<std::pair<DataDefCLASS *, std::string>, uint32_t>
+	std::map<std::pair<DataDefCLASS *, madc::dis::istring>, uint32_t>
 		method_disp_first_rec;
 
 	// Pass 2: fill each aggregate VERBATIM (offsets / counts / access /
@@ -2915,7 +2915,7 @@ void CirFrozenForest::materialize_pass()
 		if (!a.get_def_at(tid, r))
 			continue;
 		bool ok = true;
-		std::string fill_why;
+		madc::dis::istring fill_why;
 		for (uint32_t m = 0; m < r.members_count; ++m) {
 			madc::dis::memberrec mr;
 			if (!a.get_payload(r.members_begin, m, mr)) {
@@ -2937,7 +2937,7 @@ void CirFrozenForest::materialize_pass()
 					 + (mdd ? " (no name)" : " (type chain)");
 				break;
 			}
-			sdd->members.push_back(memberpair_t(std::string(mnm), mdd));
+			sdd->members.push_back(memberpair_t(madc::dis::istring(mnm), mdd));
 			sdd->member_offsets.push_back(mr.offset);
 			sdd->member_counts.push_back(mr.count ? mr.count : 1);
 			// v6 parity: array flag derives from count (not the stored bit).
@@ -3241,7 +3241,7 @@ void CirFrozenForest::materialize_pass()
 					// const and spelling arrays stay index-aligned
 					// with parameters (parseFunction parity).
 					fd->const_params.push_back(false);
-					fd->param_cpp_spellings.push_back(std::string());
+					fd->param_cpp_spellings.push_back(madc::dis::istring());
 				}
 				bool pok = true;
 				// v23: a param's default-argument token run rides its
@@ -3280,8 +3280,8 @@ void CirFrozenForest::materialize_pass()
 				}
 				if (!pok)
 					continue;
-				std::string dispname =
-					dispkey ? std::string(dispkey) : std::string();
+				madc::dis::istring dispname =
+					dispkey ? madc::dis::istring(dispkey) : madc::dis::istring();
 				fd->method_display_name = dispname;	// v6 parity: the KEY rides here
 				if (fr.emit_symbol_id)
 					if (const char *es = a.c_str(fr.emit_symbol_id))
@@ -3330,7 +3330,7 @@ void CirFrozenForest::materialize_pass()
 				// `++it` emitted the canonical ClassName__operator++ (an
 				// undefined symbol) instead of the restored _un definition.
 				if (mnm && !dispname.empty()
-				    && std::string(mnm) != cdd->name + "__" + dispname)
+				    && madc::dis::istring(mnm) != cdd->name + "__" + dispname)
 					fd->local_emit_name = mnm;
 				// A CTOR has no display name; its canonical scheme is
 				// ClassName__ClassName (ctor_call_symbol's default). Live
@@ -3343,9 +3343,9 @@ void CirFrozenForest::materialize_pass()
 				// holds the canonical rank (basic_string's __sv_wrapper
 				// ctor) instead of the selected char* overload.
 				else if (mnm && dispname.empty() && is_ctor
-				    && std::string(mnm) != cdd->name + "__" + cdd->name)
+				    && madc::dis::istring(mnm) != cdd->name + "__" + cdd->name)
 					fd->local_emit_name = mnm;
-				Variable *mv = new Variable(std::string(mnm ? mnm : ""),
+				Variable *mv = new Variable(madc::dis::istring(mnm ? mnm : ""),
 							    *fd, 1, NULL, false);
 				// Env-gated probe (MADC_MTI_PROBE=<substr>): every
 				// methodrec materialization of a matching symbol —
@@ -3395,7 +3395,7 @@ void CirFrozenForest::materialize_pass()
 						     : NULL;
 					if (!pn || !*pn || !ptp)
 						continue;
-					Variable *pv = new Variable(std::string(pn),
+					Variable *pv = new Variable(madc::dis::istring(pn),
 								    *ptp, 1, NULL, false);
 					pv->flags |= vfPARAM | vfLOCAL;
 					_mat_vars.push_back(pv);
@@ -3420,7 +3420,7 @@ void CirFrozenForest::materialize_pass()
 					static const char *cpp_ =
 						::getenv("MADC_COPY_PROBE");
 					if (cpp_ && *cpp_ && cdd->name.find(cpp_)
-							     != std::string::npos)
+							     != madc::dis::istring::npos)
 						fprintf(stderr, "[ctor-push] matrec"
 							" cls=%s var=%s fd=%p len='%s'\n",
 							cdd->name.c_str(),
@@ -3464,7 +3464,7 @@ void CirFrozenForest::materialize_pass()
 					static const char *mtp =
 						::getenv("MADC_MTI_PROBE_CLASS");
 					if (mtp && *mtp
-					    && cdd->name.find(mtp) != std::string::npos)
+					    && cdd->name.find(mtp) != madc::dis::istring::npos)
 						fprintf(stderr, "MTIPROBE restore-alias"
 							" owner=%s name=%s tid=%u -> %s\n",
 							cdd->name.c_str(), an,
@@ -3542,7 +3542,7 @@ void CirFrozenForest::materialize_pass()
 			recs.insert(recs.begin() + pos, pi.rec_index);
 		}
 		if (!pi.disp.empty()) {
-			std::map<std::pair<DataDefCLASS *, std::string>,
+			std::map<std::pair<DataDefCLASS *, madc::dis::istring>,
 				 uint32_t>::iterator fr =
 				method_disp_first_rec.find(
 					std::make_pair(pi.cdd, pi.disp));
@@ -3565,7 +3565,7 @@ void CirFrozenForest::materialize_pass()
 			// Env-gated probe (MADC_COPY_PROBE=<substr>): ctor-set push.
 			static const char *cpp_ = ::getenv("MADC_COPY_PROBE");
 			if (cpp_ && *cpp_
-			    && pi.cdd->name.find(cpp_) != std::string::npos)
+			    && pi.cdd->name.find(cpp_) != madc::dis::istring::npos)
 				fprintf(stderr, "[ctor-push] import cls=%s var=%s\n",
 					pi.cdd->name.c_str(), mv->name.c_str());
 		}
@@ -4091,7 +4091,7 @@ const char *CirFrozenForest::type_name_for(uint32_t type_id) const
 // segment: one symbol -> (unit, idx) entry per producer top-level extern. A
 // decode failure logs loud and leaves the index empty (misses resolve like
 // an unindexed symbol).
-bool CirFrozenForest::extern_loc_for(const std::string &sym,
+bool CirFrozenForest::extern_loc_for(const madc::dis::istring &sym,
 				     uint32_t &unit, uint32_t &idx)
 {
 	if (!_extern_index_built && _fully_opened) {
@@ -4115,14 +4115,14 @@ bool CirFrozenForest::extern_loc_for(const std::string &sym,
 				const char *nm = pool_cstr(xl.name_id, nlen);
 				if (!nm || !nlen)
 					continue;
-				_extern_by_name[std::string(nm, nlen)] =
+				_extern_by_name[madc::dis::istring(nm, nlen)] =
 					std::make_pair(xl.unit, xl.idx);
 			}
 		} else if (xs) {
 			fprintf(stderr, "madc: forest extern index corrupt\n");
 		}
 	}
-	std::map<std::string, std::pair<uint32_t, uint32_t> >::const_iterator
+	std::map<madc::dis::istring, std::pair<uint32_t, uint32_t> >::const_iterator
 		it = _extern_by_name.find(sym);
 	if (it == _extern_by_name.end())
 		return false;

@@ -51,10 +51,25 @@ landed on 2026-09-26: `madc::value` is non-trivial for calls, so a `var`
 result is constructed through the hidden result address, the ABI g++
 and clang give it. The carrier methods written before it that
 conceptually return a NEW value (substr, case transforms) still return
-ring-lifetime `const char *` text — the established c_str() contract:
-safe to pass onward or capture into a var immediately (the ctor copies),
-not to store as a raw pointer. They can gain value-returning overloads
-without breaking callers.
+ring-lifetime `const char *` text: safe to pass onward or capture into
+a var immediately (the ctor copies), not to store as a raw pointer. They
+can gain value-returning overloads without breaking callers.
+
+`c_str()` itself is NOT ring text (owner 2026-10-09, "make it a real
+borrow"): it returns the carrier's own NUL-terminated payload, exactly
+std::string's contract. As a ring copy it handed every caller a pointer
+that silently changed under the ninth ring write on the thread — madcide
+held 48 such pointers across text work, and ASan reported
+heap-use-after-free in the REPL tests. A borrow is stable for as long as
+the carrier lives unmodified, costs no copy, and is the contract C++
+readers already assume. The one place a borrow would outlive its carrier
+— a `char *` function returning a local carrier's text (`return v;`,
+`return v.c_str();`) — is copied out by the compiler at the return
+(`__madc_text_escape`, marked by `FuncDef::borrows_receiver_text`), and
+assigning a carrier from a pointer into its own text (`v = p + 2`) is
+alias-safe. Holding a borrow past the carrier's scope is the same bug it
+is with std::string: keep the carrier in the pointer's scope
+(`testvarcstrborrow`).
 
 ## Why `var`, not `value`, in dialect source (owner rule 2026-08-31)
 

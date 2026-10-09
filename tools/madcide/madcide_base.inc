@@ -79,6 +79,16 @@ int madcide_main(int argc, char **argv, const ide_product &product)
 	print(stderr, "{}", usage);
 	return 2;
     }
+    // A face that acts on ONE file (a one-shot, a protocol server) takes
+    // one; the editor faces open every file named.
+    if ( php::count(a.more) > 0 && ide_face_needs_file(a) != NULL )
+    {
+	println(stderr, "{}: {} acts on one file", product.name, ide_face_needs_file(a));
+	var usage;
+	ide_usage(usage);
+	print(stderr, "{}", usage);
+	return 2;
+    }
     // The UI LEVEL is ONE flag (ui::level, owner 2026-09-09: a program
     // names the rendering model it wants, never a target's spelling): --gui
     // shows the same composed tree in a window through the web level
@@ -183,7 +193,7 @@ int madcide_main(int argc, char **argv, const ide_product &product)
 	// The ex / edlin client (V2.5): stdin lines in, the level-0
 	// projection out — its own loop, as the one-shot has its own, but
 	// the SAME session and composer (run_line).
-	run_line(file, ro, profile, a.std);
+	run_line(file, ro, a.more, profile, a.std);
 	return 0;
     }
     // The editor — which LISTENS by default (V6c-4 ruling R2) on a loopback
@@ -191,5 +201,5 @@ int madcide_main(int argc, char **argv, const ide_product &product)
     // or a browser joins THIS session instead of opening a second one on the
     // same file. `--no-serve` opts out. ⚠️ NO AUTH, NO TLS: loopback only.
     const char *listen_at = no_serve ? NULL : "127.0.0.1:0";
-    return run_tui(file, ro, lvl, listen_at, profile, a.std);
+    return run_tui(file, ro, a.more, lvl, listen_at, profile, a.std);
 }

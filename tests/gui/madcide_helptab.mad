@@ -98,6 +98,7 @@ int main()
     if ( !t )
 	return 1;
     S.panel(true);			// what run_ide says of a window
+    S.tabs(true);			// ... and draws tab strips (ui::tabs)
     var table;
     S.key_table(table);
     ui::bind_keys(t, table);

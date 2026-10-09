@@ -194,12 +194,18 @@ TEST_CASE("typing and moving the caret")
 
     bench w;
     w.type("foo bar_baz qux");
-    w.type("\x1b" "b" "\x1b" "b" "!");	// esc b, esc b
+    w.type("\x1b" "b" "\x1b" "b" "!");	// Alt+b twice (the Meta prefix in one burst)
     CHECK(w.ed.text() == "foo !bar_baz qux");
-    w.type("\x1b" "f" "?");		// esc f
+    w.type("\x1b" "f" "?");		// Alt+f
     CHECK(w.ed.text() == "foo !bar_baz? qux");
     w.type("\x1b[H<\x1b[F>");		// home, end
     CHECK(w.ed.text() == "<foo !bar_baz? qux>");
+    // Esc typed alone, then the key: the two-key `esc b`.
+    bench e;
+    e.type("ab cd");
+    e.type("\x1b");			// alone: the pause (flush) makes it esc
+    e.type("b!");
+    CHECK(e.ed.text() == "ab !cd");
 }
 
 TEST_CASE("deleting, killing and yanking")
@@ -231,7 +237,7 @@ TEST_CASE("deleting, killing and yanking")
     CHECK(u.ed.text() == "x keep this");
     u.type("\x1b\x7f");			// esc backspace
     CHECK(u.ed.text() == "x keep ");
-    u.type("\x01\x1b" "d");		// ^A, esc d
+    u.type("\x01\x1b" "d");		// ^A, Alt+d
     CHECK(u.ed.text() == " keep ");
 }
 

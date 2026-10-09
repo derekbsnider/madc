@@ -311,9 +311,13 @@ branch, with `*` when the file differs from its last commit.
 
 ## Help
 
-**Help ▸ Help Contents** opens the Help view (a sidebar tab) at the
-profile's contents page; **Help ▸ Keyboard Help** still lists the key
-style's bindings. Help pages are Markdown, read through the `madcmark`
+**Help ▸ Help Contents** opens the profile's contents page in the editor's
+Help tab, and the **Help Index** (the topics, the contents page's links) in
+the sidebar beside it; **Help ▸ Help Index** shows or hides the index, and
+choosing a topic there opens its page in the Help tab. A Help page always
+opens in the editor pane: a layout that lists `help` on a sidebar or panel is
+refused (`helpindex` is the view that docks there). **Help ▸ Keyboard Help**
+still lists the key style's bindings. Help pages are Markdown, read through the `madcmark`
 module. A topic shows as a list of rows, and each link has a row of its
 own. Choosing a link opens its topic, and every topic but the contents
 starts with a row back to the contents. `helptopic NAME` (the palette's

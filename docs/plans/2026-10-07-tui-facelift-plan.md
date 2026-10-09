@@ -216,6 +216,222 @@ tree can supply both layers:
 | S8 | The Terminal tab keeps its program's colours (`term_screen.h` maps SGR onto the one style; ROADMAP's pending item) | a coloured `ls` in the Terminal tab |
 | S9 | Windows: Windows Terminal and conhost, by driving input on the owner's box | `chthonia --tui` from cmd, keys and mouse |
 
+S0 as built (2026-10-08): the screen interpreter is madc's own
+`scripts/vtscreen.py` (VT100 + UTF-8 + SGR in every colour depth), shared with
+the scroll gate — no `pyte` dependency for the platform lanes to carry. Goldens:
+`tests/tui_golden/` (startup, ^T options, F5 into the REPL, at 120×36 and
+80×24), checked by `scripts/tui_golden_gate.sh` in fulltest with a negative
+control; `--record` re-records a deliberate look change. Chthonia's goldens live
+in the Chthonia repository, against its bundle. `tui_model.h` split into
+`tui_grid.h` (grid + repaint diff), `tui_keyparse.h` (bytes → keys) and the
+model; layout / paint / chrome separate as S2–S6 add the chrome.
+
+S1 as built (2026-10-08): a theme names an exact colour `#rrggbb` (or
+`bg_#rrggbb`) in the one spec parser; `ui_style` keeps the value AND its
+nearest 8-colour index (by hue — plain RGB distance puts Dark+'s comment green
+nearer xterm's yellow), so an index-only renderer is unchanged. The window shows
+the value (`fgx-rrggbb`, page.js); a terminal detects its depth once
+(`COLORTERM`/`WT_SESSION` → 24-bit, `*256color` → the nearest xterm-256 entry,
+else the index). `vscode.theme` carries Dark+ for today's classes; goldens at
+16 / 256 / truecolor. The surfaces (editor background, chrome) arrive with the
+chrome they paint, S2/S3. Found on the way: a popup pane never took the
+keyboard in the terminal (^T Options showed but its rows could not be chosen);
+popups now take focus while up (`dialog_hints`), pinned by the
+`options-scheme` golden.
+
+S1b as built (2026-10-08), the lexical and type-name classes: `control`
+(the classifier's own control-flow set; the parser's statement-start
+predicate answers another question) and `typename` (an identifier the parse
+read as a user's type, `tfTYPENAME`) from the tokens; `directive`, `include`
+and `escape` from the line text, in one pass after the token rows of both
+span queries (`source_text_rows`, madc_program.cpp). A directive line's
+comments and strings colour there too — the lexer consumes the line, so no
+token or trivia carries them. Rows never overlap: an escape splits its
+string row, a raw string's backslashes stay text. A theme that does not name
+a refined class gives it its parent's spec (`load_theme`: control → keyword,
+typename → type, directive → keyword, include and escape → string), so an
+older scheme never shows a plain hole. Found on the way, each its own commit
+and reducer: a span measured the re-rendered spelling, not the source
+(`'\0'` coloured its `;`; now the lex-recorded extent), and a comment before
+consumed directive lines coloured a line low (now the lexer's own comment
+positions, `Program::_trivia_comments`). Then the parse-tree names
+(2026-10-08/09): `variable` / `parameter` / `member` / `enumerator` from the
+tree node built from each name (#9CDCFE; enumerator #4FC1FF), and
+`namespace` — a definition's, an alias's and a using-directive's name and
+every qualifier before `::`, marked by the qualifier owners
+(`classify_qualifier_before_scope`, `canonical_nested_namespace`) as
+`typename` is marked; a scheme without it shows its nearest named ancestor
+(`namespace` → `typename` → `type`), so it takes #4EC9B0 in Dark+. A scoped
+enum's name before `::` is its type, not a namespace. Chthonia names
+madcide's shipped `vscode` scheme (the bundle's `"theme"`), so it needs no
+theme file of its own. S1b is complete.
+
+S2 as built (2026-10-09): the FRAME layer (`madcdis/tui_frame.h`): a divider
+is a line whose cells record their arms (up / down / left / right), and one
+pass draws each cell's glyph from its arms — so where a panel's top divider
+ends on a sidebar's it is `┤`, where a split's divider stands on it `┴`, and
+no code picks a junction (S6's dialog borders reuse it). The sidebar and the
+panel each give their edge column / row next to the centre to a divider; a
+vertical split's blank column is one. The model always paints box drawing;
+the terminal spells it in ASCII when its locale is not UTF-8
+(`detect_glyph_set` beside `detect_colour_depth`, `ui_glyph_ascii` at
+emission). The gutter is layout data: a pane line's `gutter` word
+(`default.layout`'s editor pane; Chthonia's too) rides the edit node as a
+hint, and the grid numbers the lines in at least three columns and marks the
+caret line. The chrome's colours are the scheme's `divider`, `gutter`,
+`gutter_current` and `current_line` (Dark+ in `vscode.theme`), handed to the
+grid as the root's `chrome` hint and read into an enum (`tui_chrome`) once;
+a syntax span keeps the caret line's background. The goldens pin the locale
+(`LC_ALL=C.UTF-8`), add the REPL's panel in ASCII and in Dark+; the scroll
+gate now expects each row's number with its line.
+
+S3 as built (2026-10-09): the editor's tab strip is a frontend CAPABILITY —
+`tabs()` on the ui frontend (`ui::tabs(t)`: the grid and the window draw
+strips, line mode does not), recorded as the session's `hastabs` fact — in
+place of `haspanel` ("a window"), which still decides where runs and the
+shell go (S8). The grid draws a node's `tabs` hint as a strip in the flow (the
+editor's open files) through the one strip builder that also heads a pane;
+a chrome band's titles are uppercase, as the window's. The status bar's edge
+is layout data: a `status bottom` window line (default.layout and the baked
+default carry it) docks the status node at the screen's last row, full
+width under the bands, drawn from its `items` segments (the left side from
+the edge, the right against it; the file name bold, the labels dim); a
+layout without the line keeps JOE's status line on top, byte-identical. The
+theme's `tab`, `tab_active` and `statusbar` colour them (Dark+: #969696,
+bold underlined white, white on #007acc). Goldens: the strip switched by
+keys (`^K E second.c`, then `^K E golden.cpp`).
+
+S4 as built (2026-10-09): the menu bar is the focus owner's
+(`madcdis/ui_focus.h`): the root `menu` hint — the data the window's native
+menu reads — becomes the bar's menus and rows, each title given its hotkey
+letter (its first letter or digit no earlier title took, Turbo Vision's lit
+letter). The one keys → events loop (`ui_apply_keys`) gives an open bar every
+key: left/right between menus, up/down over the selectable rows (a separator
+or a disabled row is never lit), Enter or a row's letter chooses — the SAME
+`action` event (id + code) a bound chord or the window's menu produces — and
+Esc or F10 closes. A key no binding took opens it: F10 the first menu, Alt and
+a menu's letter that menu; a profile that binds the key keeps it (Emacs's
+M-f). A terminal's Meta prefix reads as Alt: ESC and a printable in one burst
+is Alt and that key (`tui_keyparse`), and Alt and a printable writes back as
+ESC and the byte. The grid paints the bar and the open dropdown last, over
+everything: the bar on row 0, the dropdown a framed box under its title (a
+second `tui_frame`, so its separators meet its border as `├ ┤`), each row's
+chord from the loaded profile right-aligned, a disabled row dim, a shadow to
+the right and below. The layout's `menubar` window line (default.layout and
+the baked default) holds the bar on row 0; without it the bar shows only while
+open (JOE's rows unchanged). The scheme's `menubar`, `menu`, `menu_selected`,
+`menu_hot` and `shadow` colour it (Dark+: #3c3c3c bar, #252526 surface,
+#04395e selection, underlined letters). Goldens: F10 (Unicode, ASCII, Dark+),
+F10 then `s` saving the file, Alt+E then a disabled Cut's letter (the menu
+stays). Submenus wait for submenu data (the menu file has none).
+
+S5 as built (2026-10-09): the toolbar row is the plan's target — `New  Open
+Save │ ▶ Run ▾  ■ Stop`: a button with a run, debug, stop, step or breakpoints
+icon shows its shape (`▶ ▷ ■ ↷ ↓ ↑ ●`), the file commands their words, a
+separator row a divider, a button whose `drop` names a menu ends in `▾`, a
+disabled one dim; the chords are the menus' now. The ASCII spelling of every
+chrome glyph is one owner, `ui_glyph_ascii` (`ui_box_ascii` grown: box
+drawing plus `> # * v ^`). The arrow's `menushow MENU` is the frontend's when it
+draws menus: `ui::menus(t)` (the grid) is the session's `hasmenus` fact, and
+the command parks a `menuopen` request the client serves with
+`ui::menu_open(t, title)` — the grid drops that bar menu under its toolbar
+button (the same dropdown, keys and action events as S4); a client that draws
+none (a window's native menu, a browser page) or a target that refuses gets the
+session's choice list, as before. The scheme's `toolbar` colours the row
+(Dark+: the side-bar surface). Goldens: the toolbar in Unicode and ASCII from a
+fixture bundle (`tests/tui_golden/plugins/tbgolden`, installed per run in the
+harness's config directory and launched with `--profile`); the drop itself is
+pinned by the unit cases and `testmadcide_menushow` until S7's mouse clicks it.
+
+S6 as built (2026-10-09): a node hinted `popup` — the data the window already
+floats — is a FLOATING window in the grid: collected where the walk meets it
+(the focusable slots keep their order), painted over the workbench and under
+the menus, centred in the upper third, framed, with a shadow. A pick list
+(`dialog` {title, filter, buttons}: Options, the build palette, the project
+list, modes, key styles) shows its title on the border, its filter as a field
+line, its options one per row scrolled to keep the selected one in view and lit
+across the box, and its buttons on the last row (`[ Run ]  [ Close ]`, the
+primary lit); a prompt (`prompt` {label, input}: Find, Go to Line, a file name)
+is its label on the border over a field with the cursor at the input's end; a
+question (`confirm`) is its text over its answers as buttons. The keys are the
+core's exactly as before — the buttons are pictures until S7's mouse. The box,
+its frame and its shadow are the dropdown's (`paint_box`, `paint_shadow`). The
+scheme's `dialog`, `list_selected`, `field` and `button_primary` colour them
+(Dark+: the quick-input surface #252526, the selection #04395e, the input
+#3c3c3c, the button #0e639c); an inline list's selection is `list_selected`
+too (reverse by default, as before). Goldens: Find, the question, the build
+palette, Options (now floating) and the prompt in Dark+.
+
+S7 as built (2026-10-09): the grid reports the mouse — xterm's modes 1000
+(presses), 1002 (drags) and 1006 (the SGR form, no 223-column limit), on in
+grid mode and off again on leave or suspend; on Windows the console's mouse
+input is on and QuickEdit off while the grid is up (line mode keeps
+QuickEdit). `tui_keyparse` reads `CSI < b;x;y M/m` as a `pointer` key (its
+cell, button, phase, modifiers). Every paint records a HIT MAP — the bar's
+titles, a dropdown's rows, the toolbar's buttons and arrows, each tab of a
+strip, a floating window's rows and buttons, every edit window's rows — and a
+press acts on the last-painted hit under it, so an overlay wins: it becomes
+the SAME event the keyboard or the window produces. A title opens or closes
+its menu, a row chooses it (a disabled row does nothing), a press outside an
+open menu closes it; a toolbar button posts its command, its ▾ drops its menu
+under it; a tab posts its command with its argument (the window's tab click);
+a list row is the focus owner's pointer choose, the primary button chooses
+the live row, the others post their commands, a press outside a dismissable
+window dismisses it, its border swallows the press; in an edit window a press
+places the caret by BYTE (the gutter is the line's start, a tab's cells its
+start, a wide glyph's cells before it, past the end the line's end) and a drag
+extends from there — the window's pointer event (phase, offset, subject,
+tag), the press's window keeping the drag. The wheel is three arrow keys.
+Goldens: by mouse bytes, File then Save, the toolbar's Run ▾, the caret, the
+palette's [ Close ]; the pty smoke check pins the modes on and off.
+
+S8 as built (2026-10-09): the Terminal tab keeps its program's colours. The
+bounded screen (`madcdis/term_screen.h`) reads SGR as a PEN — bold, dim,
+italic, underline, blink, inverse and their resets; the 8 colours and their
+bright twins; the 256 palette (`ui_xterm256_rgb`) and 24-bit colour — onto
+the one style, and every byte keeps the pen it was written with (overwrites
+and erases included). `ui::term_feed` keeps the pen and the coloured runs on
+the [terminal] buffer beside its text, as `{s, e, c}` span rows whose `c` is a
+theme spec (`ui_style_spec`, the exact inverse of the spec parser), and the
+Terminal view hands them to its edit node as `spans` — the rows the window and
+the grid already render, so both faces show the colours with no change of
+their own. The IDE's own lines (a run's header, its exit status) start with
+SGR 0, so a colour a program leaves set never reaches them. Where a program
+runs is unchanged: in a window, the Terminal tab; in a terminal, the real
+terminal (JOE's ^K Z shape — `haspanel`), because the tab's screen is bounded,
+not a VT emulator: a full-screen program (an editor, `top`) needs the real
+one. Hosting those in the tab is an emulator's job, not this slice's.
+Tests: `bin/test_term_screen` (SGR to spans, the owner round trip, the spec
+inverse), `testmadcide_termcolour` (printf's bold red word on a pty, the
+screen's rows and the view's `spans`, the exit line plain).
+
+S9 as built (2026-10-09): the Windows build of madc paints, reads keys and reads
+the mouse as the POSIX one does — proven against the SAME goldens on genuine
+Windows (the owner's box, Windows 11 build 26200), not a second set.
+`scripts/tui_win_golden.py` (run on the container) stages the packed
+`bin/release-windows` madc.exe, its DLLs and the `tools/` tree on the box, and
+replays every `tui_golden` scenario's keys and mouse bytes. The channel is
+ssh into the box's WSL. WSL interop hands a Win32 program pipes, never a
+console, so `scripts/conpty_host.c` (cross-built with mingw, test tooling only)
+runs madc.exe inside a ConPTY — the pseudo-console Windows Terminal hosts
+programs in — and the bytes cross ssh on plain pipes, no line discipline on
+either end. Two facts of ConPTY's renderer reached the shared interpreter
+(`scripts/vtscreen.py`), not madc: it re-paints whole rows and relies on
+xterm's deferred autowrap between them, and it writes a blank run as ECH
+(`CSI n X`). Both are modelled there now, and the POSIX goldens are unchanged.
+The comparison drops a blank cell's invisible style words on both sides
+(foreground and glyph-only attributes, not inverse): ConPTY re-encodes a space
+with whatever foreground is cheapest. Result: 31 of 31 screens match — every
+scenario but the three that pin a POSIX `LC_ALL=C` locale for ASCII frames (a
+Windows console's glyphs follow its code page, which the target sets to
+UTF-8). That includes the menus, the toolbar, the dialogs, the Dark+ colours
+in 16, 256 and 24-bit depth, Alt keys, F-keys, and the mouse on menus,
+dropdowns, the caret and tab close. That
+is the [validate-win] item S7 carried (the console's mouse modes, QuickEdit
+off). Not driven: a classic conhost WINDOW and a Windows Terminal window on the
+desktop — the same console target behind a GUI window, which needs the owner's
+go to open on their desktop.
+
 Each slice: unit tests in `tests/unit/test_tui_model.cpp`, its goldens,
 Tier 1 + Tier 2. The battery runs once, at the seam. A GUI or TUI change is
 verified by driving input, never by a screenshot alone.

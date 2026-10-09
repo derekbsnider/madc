@@ -42,6 +42,8 @@ void serve_ws_client(IdeSession &S, long doc, madc::channel &client)
 	S.dialogs(ui::dialogs(t));
 	S.clipboard(ui::clipboards(t));	// a browser page: none (its own copy)
 	S.panel(true);
+	S.tabs(true);			// a page draws strips
+	S.menus(false);			// ... and its own menus, natively
 	S.viewport(ui::cols(t), ui::rows(t));
 	var pc;
 	ui::pending(pc, t);

@@ -1,0 +1,63 @@
+# madcide's VS Code theme: Dark+ (VS Code's default dark theme, MIT-licensed),
+# the colours exact (TUI facelift plan §2a). A window shows them as they are;
+# a terminal shows them in truecolor, the nearest of 256, or the nearest of
+# the 8 ANSI colours, by what it supports. ^K T (Options ▸ Scheme) switches.
+# Builtin type keywords (`int`, `void`) are `type`, as Dark+ colours them like
+# keywords; a user's class / struct / enum / typedef is `typename`.
+keyword #569cd6
+control #c586c0
+type #569cd6
+typename #4ec9b0
+namespace #4ec9b0
+function #dcdcaa
+string #ce9178
+number #b5cea8
+comment #6a9955
+directive #c586c0
+include #ce9178
+escape #d7ba7d
+variable #9cdcfe
+parameter #9cdcfe
+member #9cdcfe
+enumerator #4fc1ff
+
+# The terminal's chrome (facelift S2): the dividers, the editor's line
+# numbers, the caret line's number, and the caret line itself, in Dark+ ...
+divider #444444
+gutter #858585
+gutter_current #c6c6c6
+current_line bg_#282828
+# ... the tab strips (the active tab bright and underlined) and the status
+# bar on its accent blue (facelift S3).
+tab #969696
+tab_active bold underline #ffffff
+statusbar #ffffff bg_#007acc
+# ... the menu bar and its dropdowns (facelift S4): Dark+'s title bar, menu
+# surface and selection; the hotkey letter underlined.
+menubar #cccccc bg_#3c3c3c
+menu #cccccc bg_#252526
+menu_selected #ffffff bg_#04395e
+menu_hot underline
+# ... and the toolbar row on Dark+'s side-bar surface (facelift S5).
+toolbar #cccccc bg_#252526
+# ... and the floating windows — dialogs, pick lists, prompts (facelift S6):
+# Dark+'s quick-input surface, its list selection, input box and button.
+dialog #cccccc bg_#252526
+list_selected #ffffff bg_#04395e
+field #cccccc bg_#3c3c3c
+button_primary #ffffff bg_#0e639c
+
+# @gui: the window's workbench in Dark+ (the editor's own surfaces).
+@gui bg #1e1e1e
+@gui fg #d4d4d4
+@gui accent #007acc
+
+# @presence: the caret colours dealt to connected clients (as default.theme).
+@presence 0 cyan
+@presence 1 magenta
+@presence 2 yellow
+@presence 3 green
+@presence 4 red
+@presence 5 blue
+@presence 6 bold cyan
+@presence 7 bold magenta

@@ -1,0 +1,80 @@
+// A toolbar button's arrow (`menushow MENU`, plan §41.11a; facelift S5):
+// a client that draws the menus itself (ui::menus — the grid's bar and
+// dropdowns) gets a parked `menuopen` request naming the menu, and drops
+// that menu under the button (ui::menu_open); a client that draws none — a
+// window whose menu is native, a browser page — gets the session's choice
+// list of the menu's rows directly, and so does a client whose target
+// refuses the request (menu_fallback). An unknown menu is said.
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+#include "../tools/madcide/madcide_client.inc"
+
+void *fake_open(const char *title, const char *page, void *ctx) { return ctx; }
+void fake_close(void *host) {}
+int64_t fake_eval(void *host, const char *js) { return 0; }
+int64_t fake_run(void *host) { return 1; }
+static ui::ui_host_ops page_ops = { fake_open, fake_close, fake_eval, fake_run };
+static bool page_registered = ui::register_host("fakepage", ui::WEB, &page_ops);
+
+void show(IdeSession &S, const char *label)
+{
+    var msg;
+    ui::get(msg, S.w, S.es, "msg");
+    var rq;
+    ui::get(rq, S.w, S.es, "termreq");
+    var kind = "none";
+    var menu = "";
+    if ( !rq.is_null() )
+    {
+	kind = req_name(rq["kind"].as_integer());
+	menu = rq["menu"];
+    }
+    var cl;
+    ui::get(cl, S.w, S.es, "choicelabel");
+    var rows;
+    ui::get(rows, S.w, S.es, "choicerows");
+    long n = rows.is_null() ? 0 : php::count(rows);
+    println("{}: msg=[{}] request={} [{}] list=[{}] rows={}", label, msg, kind,
+	    menu, cl, n);
+}
+
+void reset(IdeSession &S)
+{
+    ui::set(S.w, S.es, "msg", "");
+    ui::set(S.w, S.es, "choicelabel", "");
+    var none;
+    ui::set(S.w, S.es, "choicerows", none);
+}
+
+int main()
+{
+    println("host: {}", page_registered ? 1 : 0);
+    const char *path = "madc_menushow.txt";
+    php::file_put_contents(path, "x\n");
+    IdeSession S;
+    long doc = S.open(path, false);
+    bool cont = true;
+    // A client that draws no menus: the choice list, nothing parked.
+    S.menus(false);
+    bool ok = S.command(doc, cmdMENUSHOW, "Search", cont);
+    println("taken: {}", ok ? 1 : 0);
+    show(S, "list");
+    reset(S);
+    S.command(doc, cmdMENUSHOW, "Nope", cont);
+    show(S, "unknown");
+    // A client that draws them: the request, naming the menu; no list.
+    reset(S);
+    S.menus(true);
+    S.command(doc, cmdMENUSHOW, "Search", cont);
+    show(S, "parked");
+    // A target that cannot drop it (a page draws no menus): the list.
+    long t = ui::open("fakepage");
+    println("page draws menus: {}", ui::menus(t) ? 1 : 0);
+    client_service(S, t);
+    show(S, "fallback");
+    ui::close(t);
+    S.close();
+    php::unlink(path);
+    return 0;
+}

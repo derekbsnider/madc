@@ -1,0 +1,38 @@
+// var.c_str() is a BORROW of the carrier's own text — the std::string::c_str()
+// contract: the pointer stays valid while the carrier lives unmodified, however
+// much other text work runs meanwhile. It was a copy into the 8-slot per-thread
+// ring, so a held pointer silently changed under the ninth ring write (madcide
+// held 48 such pointers; ASan: heap-use-after-free). A char* function returning
+// a local carrier's text copies it out before the carrier's cleanup
+// (translate_return's escape), through either arm of a conditional; assigning a
+// carrier from a pointer into its own text is alias-safe (set_c_string).
+// Oracle — the std::string analogue (const char *p = s.c_str(); twelve
+// unrelated std::string temporaries; s = p + 2; the two char* functions copy
+// the chosen text into a static std::string, the escape's C++ spelling):
+// g++ -std=c++17 and clang++ -std=c++17 both print testvarcstrborrow.expect.
+const char *pick(int which)
+{
+	var a = "a local carrier long enough for the heap";
+	var b = "short";
+	return which ? a.c_str() : b.c_str();
+}
+const char *whole(int which)
+{
+	var a = "whole carrier";
+	return which ? a : "literal";
+}
+int main()
+{
+	var s = "  held text survives  ";
+	const char *p = s.c_str();
+	for (int i = 0; i < 12; i++)
+		php::trim("  other text  ");
+	println("held=[{}]", p);
+	s = p + 2;
+	println("self=[{}]", s);
+	println("pick1=[{}]", pick(1));
+	println("pick0=[{}]", pick(0));
+	println("whole1=[{}]", whole(1));
+	println("whole0=[{}]", whole(0));
+	return 0;
+}

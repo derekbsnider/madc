@@ -845,7 +845,7 @@ TEST_CASE("CIR: scoped template-parameter registry resolves T to its placeholder
     CHECK(prog->resolve_current_class_type_alias("T") == nullptr);
 
     {
-	std::vector<std::string> params;
+	std::vector<madc::dis::istring> params;
 	params.push_back("T");
 	params.push_back("U");
 	Program::TemplateParamScope scope(*prog, params);
@@ -867,7 +867,7 @@ TEST_CASE("CIR: scoped template-parameter registry resolves T to its placeholder
 	{
 	    // a nested frame shadows the outer one for a repeated name, while the
 	    // outer-only name stays visible through it.
-	    std::vector<std::string> inner_params;
+	    std::vector<madc::dis::istring> inner_params;
 	    inner_params.push_back("T");
 	    Program::TemplateParamScope inner(*prog, inner_params);
 	    DataDef *t2 = prog->resolve_template_param("T");
@@ -1050,7 +1050,7 @@ TEST_CASE("CIR: tsubst engagement counters split hits and fallbacks") {
     CHECK(prog->_tsubst_body_fallbacks >= 1);
     unsigned long long profiled = 0;
     bool saw_dep_fallback = false;
-    for (std::map<std::string, Program::TsubstBodyProfile>::const_iterator it =
+    for (std::map<madc::dis::istring, Program::TsubstBodyProfile>::const_iterator it =
 	     prog->_tsubst_body_fallback_profile.begin();
 	 it != prog->_tsubst_body_fallback_profile.end(); ++it) {
 	profiled += it->second.count;
@@ -1132,7 +1132,7 @@ TEST_CASE("CIR: covered-shape tsubst bail is a loud error, not a fallback") {
     CHECK(prog->_tsubst_body_hits == 0);
     CHECK(prog->_tsubst_body_fallbacks >= 1);
     bool saw_loud_reason = false;
-    for (std::map<std::string, Program::TsubstBodyProfile>::const_iterator it =
+    for (std::map<madc::dis::istring, Program::TsubstBodyProfile>::const_iterator it =
 	     prog->_tsubst_body_fallback_profile.begin();
 	 it != prog->_tsubst_body_fallback_profile.end(); ++it)
 	if (it->second.reason.find("fault injection") != std::string::npos)
@@ -2693,7 +2693,7 @@ TEST_CASE("file kinds: LanguageStd = the vocabulary's ranges; one name table; th
     CHECK((int)Program::STD_CPP26 == (int)madc::fkCPP26);
     // every canonical --std= spelling names a kind inside its family's range
     // and spells back identically through the vocabulary's converters
-    std::vector<std::string> cs = Program::supported_c_standard_names();
+    std::vector<madc::dis::istring> cs = Program::supported_c_standard_names();
     CHECK(cs.size() >= 8);
     for (size_t i = 0; i < cs.size(); ++i) {
 	int64_t k = madc::file_kind_of(cs[i].c_str());
@@ -2701,7 +2701,7 @@ TEST_CASE("file kinds: LanguageStd = the vocabulary's ranges; one name table; th
 	CHECK(k <= (int64_t)madc::fkC_LAST);
 	CHECK(std::string(madc::file_kind_name(k)) == cs[i]);
     }
-    std::vector<std::string> ps = Program::supported_cpp_standard_names();
+    std::vector<madc::dis::istring> ps = Program::supported_cpp_standard_names();
     CHECK(ps.size() >= 8);
     for (size_t i = 0; i < ps.size(); ++i) {
 	int64_t k = madc::file_kind_of(ps[i].c_str());

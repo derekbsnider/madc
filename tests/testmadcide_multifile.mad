@@ -1,0 +1,54 @@
+// `madcide a.c b.c c.c ro` — every file the command line names opens in the
+// editor's buffer ring, through the ONE opener ^K E uses (edit_file_as), and
+// the first file keeps the focus; an `ro` after a file opens THAT file
+// read-only. The application under test is THE tool (tools/madcide):
+// open_more_files is what run_tui and run_line hand the command line's
+// further files to. Pins:
+//   1. three files named: three buffers, in command-line order, the first
+//      one active;
+//   2. the read-only mark lands on the file it followed, and only there;
+//   3. a file named twice is one buffer (edit_file_as's same-file rule).
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+
+int main()
+{
+    const char *a = "madc_ide_multi_a.c";
+    const char *b = "madc_ide_multi_b.c";
+    const char *c = "madc_ide_multi_c.c";
+    php::file_put_contents(a, "int a;\n");
+    php::file_put_contents(b, "int b;\n");
+    php::file_put_contents(c, "int c;\n");
+
+    IdeSession S;
+    long doc = S.open(a, false);
+    S.terminal(false);
+    long w = S.world();
+    long es = S.es;
+    var more = {};
+    more[] = { "path": b, "ro": 0 };
+    more[] = { "path": c, "ro": 1 };
+    more[] = { "path": a, "ro": 0 };	// named twice: still one buffer
+    open_more_files(w, es, doc, more);
+
+    var bufs;
+    ui::get(bufs, w, es, "buffers");
+    long n = php::count(bufs);
+    println("multi-buffers: {}", n);
+    for ( long i = 0; i < n; i = i + 1 )
+    {
+	var r = bufs[i];
+	println("multi-buffer {}: {} ro={}", i, r["path"],
+		es_flag(w, r["doc"].as_integer(), "read_only") ? 1 : 0);
+    }
+    println("multi-active: {} adoc-first={}", es_int(w, es, "bufidx", -1),
+	    es_int(w, es, "adoc", 0) == doc ? 1 : 0);
+    S.close();
+
+    // a test leaves nothing in its working directory
+    remove(a);
+    remove(b);
+    remove(c);
+    return 0;
+}

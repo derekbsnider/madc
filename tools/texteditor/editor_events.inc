@@ -178,9 +178,112 @@ void shift_es_anchors(long w, long es, long doc, long off, long delta,
 // pass instead of leaving them stale (the compose-time clamp was a lossy
 // stand-in). A peer that has since navigated to another document is skipped
 // — its "caret" now anchors into THAT document.
-void shift_anchors(long w, long es, long doc, long off, long delta)
+// ---- live colour's record of what changed (madcide colour_catch_up) ----
+// Per client state bag, since that client's colour last caught up: the
+// document the edits were in (cdirty_doc; 0 = none), the byte range they
+// touched in its CURRENT text (cdirty_lo..cdirty_hi), whether any inserted
+// or erased text held a character that opens or closes a multi-line token
+// (cdirty_multi), and whether the whole text changed at once (cdirty_all:
+// undo, redo). The document's text revision (textrev) moves with every
+// change. The editor itself reads none of it; a client with colour does.
+
+// A character that can open or close a token spanning lines: a block
+// comment's `/` `*`, a string's `"` (a raw string), a line continuation's `\`.
+bool multiline_char(char c)
 {
+    return c == '/' || c == '*' || c == '"' || c == '\\';
+}
+
+bool multiline_text(const char *s)
+{
+    for ( long i = 0; s[i] != 0; i = i + 1 )
+	if ( multiline_char(s[i]) )
+	    return true;
+    return false;
+}
+
+// True when the `n` bytes at `off` of `doc` hold a multiline_char — read
+// line by line, before an erase removes them.
+bool multiline_range(long w, long doc, long off, long n)
+{
+    long end = off + n;
+    long last = ui::text_line_count(w, doc);
+    for ( long line = line_of(w, doc, off); n > 0 && line <= last; line = line + 1 )
+    {
+	long ls = line_start_of(w, doc, line);
+	if ( ls < 0 || ls >= end )
+	    break;
+	var l;
+	ui::text_line(l, w, doc, line);
+	if ( l.is_null() )
+	    break;
+	const char *s = l.c_str();
+	long len = strlen(s);
+	for ( long k = 0; k < len; k = k + 1 )
+	    if ( ls + k >= off && ls + k < end && multiline_char(s[k]) )
+		return true;
+    }
+    return false;
+}
+
+void text_rev_bump(long w, long doc)
+{
+    ui::set(w, doc, "textrev", es_int(w, doc, "textrev", 0) + 1);
+}
+
+// Record an edit at `off` of `delta` bytes on `es`'s colour record: the
+// range already recorded moves with the edit (its start stays before an
+// insert at it, its end follows one), then grows to cover the edit.
+void colour_dirty(long w, long es, long doc, long off, long delta, bool multi)
+{
+    long lo = -1;
+    long hi = -1;
+    if ( es_int(w, es, "cdirty_doc", 0) == doc )
+    {
+	lo = shift_offset(es_int(w, es, "cdirty_lo", -1), off, delta, false);
+	hi = shift_offset(es_int(w, es, "cdirty_hi", -1), off, delta, true);
+    }
+    long end = delta > 0 ? off + delta : off;
+    if ( lo < 0 || off < lo )
+	lo = off;
+    if ( hi < 0 || end > hi )
+	hi = end;
+    ui::set(w, es, "cdirty_doc", doc);
+    ui::set(w, es, "cdirty_lo", lo);
+    ui::set(w, es, "cdirty_hi", hi);
+    if ( multi )
+	ui::set(w, es, "cdirty_multi", true);
+}
+
+// The whole of `doc` changed at once (undo, redo): every client viewing it
+// re-colours all of it.
+void colour_dirty_all(long w, long es, long doc)
+{
+    text_rev_bump(w, doc);
+    ui::set(w, es, "cdirty_doc", doc);
+    ui::set(w, es, "cdirty_all", true);
+    var reg;
+    ui::get(reg, w, doc, "anchor_es");
+    if ( reg.is_null() )
+	return;
+    for ( var r : reg )
+    {
+	long peer = r.as_integer();
+	if ( peer == es || es_int(w, peer, "adoc", -1) != doc )
+	    continue;
+	ui::set(w, peer, "cdirty_doc", doc);
+	ui::set(w, peer, "cdirty_all", true);
+    }
+}
+
+// An edit's anchors and colour record, on the editing client and every
+// peer viewing the document; `multi` = the edit's text held a
+// multiline_char.
+void shift_anchors(long w, long es, long doc, long off, long delta, bool multi)
+{
+    text_rev_bump(w, doc);
     shift_es_anchors(w, es, doc, off, delta, false);
+    colour_dirty(w, es, doc, off, delta, multi);
     var reg;
     ui::get(reg, w, doc, "anchor_es");
     if ( reg.is_null() )
@@ -191,6 +294,7 @@ void shift_anchors(long w, long es, long doc, long off, long delta)
 	if ( peer == es || es_int(w, peer, "adoc", -1) != doc )
 	    continue;
 	shift_es_anchors(w, peer, doc, off, delta, true);
+	colour_dirty(w, peer, doc, off, delta, multi);
     }
 }
 
@@ -618,14 +722,15 @@ void clog_adopt(long w, long doc)
 void ed_text_insert(long w, long es, long doc, long off, const char *s)
 {
     ui::text_insert(w, doc, off, s);
-    shift_anchors(w, es, doc, off, strlen(s));
+    shift_anchors(w, es, doc, off, strlen(s), multiline_text(s));
     journal_splice(w, es, doc, off, 0, s);
 }
 
 void ed_text_erase(long w, long es, long doc, long off, long n)
 {
+    bool multi = multiline_range(w, doc, off, n);
     ui::text_erase(w, doc, off, n);
-    shift_anchors(w, es, doc, off, -n);
+    shift_anchors(w, es, doc, off, -n, multi);
     journal_splice(w, es, doc, off, n, "");
 }
 
@@ -814,6 +919,7 @@ bool undo_edit(long w, long es, long doc)
 	return false;
     }
     restore_meta(w, es, doc, m);
+    colour_dirty_all(w, es, doc);
     return true;
 }
 
@@ -828,6 +934,7 @@ bool redo_edit(long w, long es, long doc)
 	return false;
     }
     restore_meta(w, es, doc, m);
+    colour_dirty_all(w, es, doc);
     return true;
 }
 

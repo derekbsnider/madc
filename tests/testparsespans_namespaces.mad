@@ -1,0 +1,37 @@
+// madc::parse_spans colours a NAMESPACE name as `namespace` wherever the parse
+// reads it as one: a definition's name (each part of `c::d`), an alias's name
+// and its target, a using-directive, and every qualifier before `::` — nested,
+// global-qualified, in a type and in an expression. A scoped enum's name before
+// `::` is the enum TYPE (`typename`), never a namespace, though its
+// enumerators live in a pseudo-namespace. The qualifiers lexed as identifiers
+// and painted "ident".
+// Oracle: clang++ -fsyntax-only -Xclang -ast-dump on the same text: NamespaceDecl
+// a, b, c, d; NamespaceAliasDecl e -> a::b; UsingDirectiveDecl c::d; each
+// qualifier a NestedNameSpecifier Namespace (a, b, e, c, d) or TypeSpec (K,
+// the enum); gcc accepts the same text.
+void show(const char *src, const char *name)
+{
+    long h = madc::parse_open(src, name);
+    var sp;
+    madc::parse_spans(sp, h);
+    array lines;
+    php::explode(lines, "\n", src);
+    println("{}:", name);
+    for ( var r : sp )
+    {
+	if ( r["class"] != "namespace" && r["class"] != "typename"
+	  && r["class"] != "ident" && r["class"] != "variable" )
+	    continue;
+	var lv = lines[r["line"].as_integer() - 1];
+	var word = lv.substr(r["column"].as_integer(), r["length"].as_integer());
+	println("  {} {}:{} {}", r["class"], r["line"], r["column"], word);
+    }
+    madc::parse_close(h);
+}
+
+int main()
+{
+    show("namespace a { namespace b { int v; enum class K { X, Y }; } }\nnamespace c::d { int w; }\nnamespace e = a::b;\nusing namespace c::d;\nint f() { return a::b::v + e::v + ::a::b::v + w + c::d::w; }\na::b::K k = a::b::K::X;\n",
+	 "ns.cpp");
+    return 0;
+}
