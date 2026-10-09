@@ -1,0 +1,20 @@
+open ok=1 kind=c untitled=0 modified=0
+find same=1 other=0
+parse handle=1 gen=0 again=1
+gen unchanged=1
+change splice off=20 old=1 new=1 ins=[0]
+modified=1 caret=24 version_moved=1
+reparsed=1 gen advanced=1
+diags=0
+change splice off=0 old=0 new=6 ins=[// hi
+]
+caret shifted=30
+change undo off=0 old=31 new=25 ins=[]
+undo caret=24 text_restored=1 modified=0
+anchor restored=24
+change splice off=20 old=1 new=1 ins=[2]
+save=1 modified=0 on_disk=[int main() { return 2; }
+]ro refused=1 text=1
+change load off=0 old=0 new=0 ins=[]
+untitled kind=madc ring=2 find_untitled=1
+close=1 gone=1 seen=5

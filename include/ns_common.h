@@ -255,6 +255,13 @@ bool madc_code_close(int64_t code);
 // parsed state; a project handle groups a cc.json manifest's TUs. Handles
 // are int64 (>= 1; 0 = failure); result = madc::value*, strings =
 // std::string*.
+// The ui world behind a script session handle (split arc 1A.1): the one
+// seam through which madc::doc_parse (src/ns_madc.cpp, the compiler-facing
+// public over a document) reaches the hub world src/ns_ui.cpp owns. NULL for
+// a closed or unknown handle. The world is session-thread state.
+namespace madc { namespace hub { class world; } }
+madc::hub::world *madc_ui_world(int64_t w);
+
 int64_t madc_parse_open(void *source, void *filename, int64_t standard);
 int64_t madc_parse_open_file(void *path);
 bool madc_parse_refresh(int64_t handle, void *source);

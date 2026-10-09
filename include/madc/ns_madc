@@ -175,6 +175,20 @@ namespace madc {
     //       identifier the tree defines as a function, on its head
     //       line). Data, not styling: a theme maps names to colours.
     value &parse_spans(value &out, int64_t handle);
+    // A DOCUMENT's parse handle (split arc 1A.1; the document component is
+    // ui::doc_*): the handle parsed from the document's CURRENT text —
+    // opened on first use under the standard its kind answers (the
+    // family's default: C17, C++17, madc), refreshed when the document's
+    // version moved since the last parse, returned unchanged otherwise.
+    // ONE version compare replaces a text compare. 0 = no such document,
+    // or a kind the compiler does not parse (text, data, binary). The
+    // handle is the document's: ui::doc_close closes it. doc_parse_checked
+    // is the validated form (parse_refresh_checked's rule — the old tree
+    // stays when the new text has MORE errors; the candidate's
+    // diagnostics in `diags`); it returns the handle, 0 on the same
+    // refusals.
+    int64_t doc_parse(int64_t w, int64_t entity);
+    int64_t doc_parse_checked(value &diags, int64_t w, int64_t entity);
 
     // Code-graph MCP L1 (design 2026-09-12): the live declaration/type
     // graph as node-addressed reads over a parse handle. A node id is a

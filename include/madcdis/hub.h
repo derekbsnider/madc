@@ -47,6 +47,7 @@
 #include "madcdis/id_table.h"
 #include "madcdis/intern_table.h"
 #include "madcdis/text_buffer.h"
+#include "madcdis/document.h"
 #include "libmadc/value.h"
 
 namespace madc {
@@ -166,11 +167,60 @@ class world
     std::vector<link>		    _links;
     std::map<name_id, std::vector<name_id> > _implies;	// key -> keys it provides
     std::map<entity_id, text_buffer> _texts;	// sparse text components
+    std::map<entity_id, document>    _docs;	// sparse document components
+    std::vector<text_listener *>     _listeners;	// the edit notification's
+    bool                             _publishing;	// a delivery is in progress
 
     world(const world &);		// identities are not copyable
     world &operator=(const world &);
+
+    // THE ONE PUBLISH POINT (split arc 1A.1, design §2.2): every text
+    // mutator below ends here. The document's anchors shift FIRST, so a
+    // listener reads shifted positions; then every listener, in order,
+    // with mutation locked (_publishing) — a mutator called inside a
+    // listener returns false.
+    void publish(text_change &c)
+    {
+	std::map<entity_id, document>::iterator d = _docs.find(c.entity);
+	if ( d != _docs.end() )
+	{
+	    if ( c.what == text_change::splice )
+		d->second.shift(c.off, c.old_len, c.new_len);
+	    else	// load: clamp; undo / redo: the caller restored the
+		d->second.clamp(c.new_len);	// snapshot's, the rest clamp
+	}
+	if ( _listeners.empty() )
+	    return;
+	_publishing = true;
+	for ( size_t i = 0; i < _listeners.size(); ++i )
+	    _listeners[i]->on_text_change(*this, c);
+	_publishing = false;
+    }
+    // A mutation is admitted when no delivery is in progress and the
+    // entity is not a read-only document (a load — a reload from disk — is
+    // admitted on a read-only document; the command layer gates saving).
+    bool admit(entity_id id, bool is_load) const
+    {
+	if ( _publishing )
+	    return false;
+	if ( is_load )
+	    return true;
+	std::map<entity_id, document>::const_iterator d = _docs.find(id);
+	return d == _docs.end() || !d->second.read_only();
+    }
+    bool whole_change(entity_id id, text_change::kind what, size_t before)
+    {
+	text_change c;
+	c.entity = id;
+	c.what = what;
+	c.old_len = before;
+	c.new_len = _texts[id].size();
+	c.version = _texts[id].version();
+	publish(c);
+	return true;
+    }
 public:
-    world() : _entities(1) {}
+    world() : _entities(1), _publishing(false) {}
     ~world()
     {
 	for ( size_t i = 0; i < _owned.size(); ++i )
@@ -282,37 +332,110 @@ public:
     // RUNTIME-ONLY today: world_save does not carry it — a document's
     // text persists in the document's own file, written by the
     // application's save verb.
-    void text_load(entity_id id, const std::string &s)
+    //
+    // Every mutator PUBLISHES (split arc 1A.1): one text_change record to
+    // the world's listeners, after the change — see publish() above. Each
+    // returns false when refused: a delivery in progress, or a read-only
+    // document (a load is admitted on one). A no-op (an empty insert, an
+    // erase of nothing, a replace of nothing by nothing) is admitted and
+    // publishes nothing.
+    bool text_load(entity_id id, const std::string &s)
     {
+	if ( !admit(id, true) )
+	    return false;
+	size_t before = _texts[id].size();
 	_texts[id].load(s);
+	return whole_change(id, text_change::load, before);
     }
-    void text_insert(entity_id id, size_t off, const std::string &s)
+    bool text_insert(entity_id id, size_t off, const std::string &s)
     {
-	_texts[id].insert(off, s);
+	if ( !admit(id, false) )
+	    return false;
+	if ( s.empty() )
+	    return true;
+	text_buffer &b = _texts[id];
+	if ( off > b.size() )
+	    off = b.size();
+	b.insert(off, s);
+	text_change c;
+	c.entity = id;
+	c.version = b.version();
+	c.off = off;
+	c.new_len = s.size();
+	c.inserted = &s;
+	publish(c);
+	return true;
     }
-    void text_erase(entity_id id, size_t off, size_t len)
+    bool text_erase(entity_id id, size_t off, size_t len)
     {
-	_texts[id].erase(off, len);
+	if ( !admit(id, false) )
+	    return false;
+	text_buffer &b = _texts[id];
+	if ( off >= b.size() || len == 0 )
+	    return true;
+	if ( len > b.size() - off )
+	    len = b.size() - off;
+	b.erase(off, len);
+	text_change c;
+	c.entity = id;
+	c.version = b.version();
+	c.off = off;
+	c.old_len = len;
+	publish(c);
+	return true;
     }
-    void text_replace(entity_id id, size_t off, size_t len,
+    // ONE record for a replace (an anchor inside the range lands once).
+    bool text_replace(entity_id id, size_t off, size_t len,
 		      const std::string &s)
     {
-	_texts[id].replace(off, len, s);
+	if ( !admit(id, false) )
+	    return false;
+	text_buffer &b = _texts[id];
+	if ( off > b.size() )
+	    off = b.size();
+	if ( len > b.size() - off )
+	    len = b.size() - off;
+	if ( len == 0 && s.empty() )
+	    return true;
+	b.replace(off, len, s);
+	text_change c;
+	c.entity = id;
+	c.version = b.version();
+	c.off = off;
+	c.old_len = len;
+	c.new_len = s.size();
+	c.inserted = &s;
+	publish(c);
+	return true;
+    }
+    uint64_t text_version(entity_id id) const
+    {
+	std::map<entity_id, text_buffer>::const_iterator it = _texts.find(id);
+	return it == _texts.end() ? 0 : it->second.version();
     }
     // History (madcide IDE-2): a checkpoint snapshots the buffer state
     // with an OPAQUE application payload; undo restores the top snapshot
     // and hands the payload back (false: no component or empty history).
-    // Both are writes — they mutate the component's state.
-    void text_checkpoint(entity_id id, const madc::value &meta)
+    // Both are writes — they mutate the component's state. An undo or
+    // redo publishes a whole-buffer record. On a DOCUMENT, use the doc_*
+    // forms below, which ride the anchors and the saved version in the
+    // payload; these raw forms are the text-only component's.
+    bool text_checkpoint(entity_id id, const madc::value &meta)
     {
+	if ( _publishing )
+	    return false;
 	_texts[id].checkpoint(meta);
+	return true;
     }
     bool text_undo(entity_id id, madc::value &meta_out)
     {
 	std::map<entity_id, text_buffer>::iterator it = _texts.find(id);
-	if ( it == _texts.end() )
+	if ( it == _texts.end() || !admit(id, false) )
 	    return false;
-	return it->second.undo(meta_out);
+	size_t before = it->second.size();
+	if ( !it->second.undo(meta_out) )
+	    return false;
+	return whole_change(id, text_change::undo, before);
     }
     // The redo-preserving forms (madcide v2): now_meta = the payload live
     // on the document being LEFT, captured onto the opposite stack so
@@ -321,17 +444,198 @@ public:
 		   const madc::value &now_meta)
     {
 	std::map<entity_id, text_buffer>::iterator it = _texts.find(id);
-	if ( it == _texts.end() )
+	if ( it == _texts.end() || !admit(id, false) )
 	    return false;
-	return it->second.undo(meta_out, now_meta);
+	size_t before = it->second.size();
+	if ( !it->second.undo(meta_out, now_meta) )
+	    return false;
+	return whole_change(id, text_change::undo, before);
     }
     bool text_redo(entity_id id, madc::value &meta_out,
 		   const madc::value &now_meta)
     {
 	std::map<entity_id, text_buffer>::iterator it = _texts.find(id);
-	if ( it == _texts.end() )
+	if ( it == _texts.end() || !admit(id, false) )
 	    return false;
-	return it->second.redo(meta_out, now_meta);
+	size_t before = it->second.size();
+	if ( !it->second.redo(meta_out, now_meta) )
+	    return false;
+	return whole_change(id, text_change::redo, before);
+    }
+
+    // --- the edit notification (split arc 1A.1, design §2.2). Listeners
+    // are not owned; a listener unsubscribes before it dies. Per world,
+    // session-thread.
+    void text_subscribe(text_listener *l)
+    {
+	if ( l )
+	    _listeners.push_back(l);
+    }
+    bool text_unsubscribe(text_listener *l)
+    {
+	for ( size_t i = 0; i < _listeners.size(); ++i )
+	    if ( _listeners[i] == l )
+	    {
+		_listeners.erase(_listeners.begin() + i);
+		return true;
+	    }
+	return false;
+    }
+    bool publishing() const { return _publishing; }
+
+    // --- document component (split arc 1A.1; madcdis/document.h): the
+    // hub's THIRD component kind, sparse like the text. doc_attach makes an
+    // entity a document (its text component is made too, empty, if
+    // absent) with the loaded text as its saved state; doc_detach drops
+    // the document AND its text. Reads are const; the setters are writes
+    // (mutation_context mirrors them). The parse slot, the kind and the
+    // disk I/O are the publics' — see the design's layering rule.
+    bool doc_attach(entity_id id, const std::string &path, int64_t kind,
+		    const std::string &text)
+    {
+	if ( _publishing || _docs.count(id) )
+	    return false;
+	_texts[id].load(text);
+	document &d = _docs[id];
+	d.set_path(path);
+	d.set_kind(kind);
+	d.mark_saved(_texts[id].version());
+	return whole_change(id, text_change::load, 0);
+    }
+    bool doc_detach(entity_id id)
+    {
+	if ( _publishing )
+	    return false;
+	std::map<entity_id, document>::iterator d = _docs.find(id);
+	if ( d == _docs.end() )
+	    return false;
+	_docs.erase(d);
+	_texts.erase(id);
+	return true;
+    }
+    const document *doc_of(entity_id id) const
+    {
+	std::map<entity_id, document>::const_iterator d = _docs.find(id);
+	return d == _docs.end() ? (const document *)0 : &d->second;
+    }
+    bool has_doc(entity_id id) const { return _docs.count(id) != 0; }
+    // The ring: every document, in entity (creation) order.
+    std::vector<entity_id> docs() const
+    {
+	std::vector<entity_id> out;
+	for ( std::map<entity_id, document>::const_iterator d = _docs.begin();
+	      d != _docs.end(); ++d )
+	    out.push_back(d->first);
+	return out;
+    }
+    bool doc_set_path(entity_id id, const std::string &path, int64_t kind)
+    {
+	std::map<entity_id, document>::iterator d = _docs.find(id);
+	if ( d == _docs.end() )
+	    return false;
+	d->second.set_path(path);
+	d->second.set_kind(kind);
+	return true;
+    }
+    bool doc_set_read_only(entity_id id, bool ro)
+    {
+	std::map<entity_id, document>::iterator d = _docs.find(id);
+	if ( d == _docs.end() )
+	    return false;
+	d->second.set_read_only(ro);
+	return true;
+    }
+    bool doc_mark_saved(entity_id id)
+    {
+	std::map<entity_id, document>::iterator d = _docs.find(id);
+	if ( d == _docs.end() )
+	    return false;
+	d->second.mark_saved(text_version(id));
+	return true;
+    }
+    bool doc_modified(entity_id id) const
+    {
+	const document *d = doc_of(id);
+	return d && d->modified(text_version(id));
+    }
+    bool doc_set_parse(entity_id id, int64_t handle, uint64_t version)
+    {
+	std::map<entity_id, document>::iterator d = _docs.find(id);
+	if ( d == _docs.end() )
+	    return false;
+	d->second.set_parse(handle, version);
+	return true;
+    }
+    // The document-level history (design §2.4): the payload rides the
+    // application's meta under "app" plus the anchors and the saved
+    // version, so undo restores the document, its anchors and whether it
+    // was clean, and hands the application's meta back.
+    bool doc_checkpoint(entity_id id, const madc::value &app_meta)
+    {
+	std::map<entity_id, document>::iterator d = _docs.find(id);
+	if ( d == _docs.end() || _publishing )
+	    return false;
+	text_buffer &b = _texts[id];
+	b.checkpoint(d->second.checkpoint_meta(app_meta, b.version()));
+	return true;
+    }
+    bool doc_undo(entity_id id, madc::value &app_out)
+    {
+	std::map<entity_id, document>::iterator d = _docs.find(id);
+	std::map<entity_id, text_buffer>::iterator t = _texts.find(id);
+	app_out = madc::value();
+	if ( d == _docs.end() || t == _texts.end() || !admit(id, false) )
+	    return false;
+	madc::value now = d->second.checkpoint_meta(madc::value(),
+						    t->second.version());
+	madc::value meta;
+	size_t before = t->second.size();
+	if ( !t->second.undo(meta, now) )
+	    return false;
+	d->second.restore_meta(meta, app_out, t->second.version());
+	return whole_change(id, text_change::undo, before);
+    }
+    bool doc_redo(entity_id id, madc::value &app_out)
+    {
+	std::map<entity_id, document>::iterator d = _docs.find(id);
+	std::map<entity_id, text_buffer>::iterator t = _texts.find(id);
+	app_out = madc::value();
+	if ( d == _docs.end() || t == _texts.end() || !admit(id, false) )
+	    return false;
+	madc::value now = d->second.checkpoint_meta(madc::value(),
+						    t->second.version());
+	madc::value meta;
+	size_t before = t->second.size();
+	if ( !t->second.redo(meta, now) )
+	    return false;
+	d->second.restore_meta(meta, app_out, t->second.version());
+	return whole_change(id, text_change::redo, before);
+    }
+    // --- anchors (design §2.3): the document's; 0 / false / absent when
+    // the entity is no document.
+    anchor_id anchor_add(entity_id id, size_t off, bool right)
+    {
+	std::map<entity_id, document>::iterator d = _docs.find(id);
+	if ( d == _docs.end() )
+	    return 0;
+	std::map<entity_id, text_buffer>::const_iterator t = _texts.find(id);
+	size_t size = t == _texts.end() ? 0 : t->second.size();
+	return d->second.anchor_add(off > size ? size : off, right);
+    }
+    const anchor *anchor_of(entity_id id, anchor_id a) const
+    {
+	const document *d = doc_of(id);
+	return d ? d->anchor_of(a) : (const anchor *)0;
+    }
+    bool anchor_move(entity_id id, anchor_id a, size_t off)
+    {
+	std::map<entity_id, document>::iterator d = _docs.find(id);
+	return d != _docs.end() && d->second.anchor_move(a, off);
+    }
+    bool anchor_remove(entity_id id, anchor_id a)
+    {
+	std::map<entity_id, document>::iterator d = _docs.find(id);
+	return d != _docs.end() && d->second.anchor_remove(a);
     }
     // The component, or NULL when the entity has none. (Reads only —
     // mutation goes through the verbs above.)

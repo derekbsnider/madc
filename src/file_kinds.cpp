@@ -219,4 +219,40 @@ int64_t file_kind_of_path(const char *path)
 	return fkUNKNOWN;
 }
 
+// The family a kind belongs to: a range test on the enum's grouped ranges
+// (the head is a member of its own family). fkUNKNOWN for a kind outside
+// the three compiler families — the text, other-language and binary kinds
+// are files the editor edits, never units the compiler parses.
+int64_t file_kind_family(int64_t kind)
+{
+	if ( kind >= fkC && kind <= fkC_LAST )
+		return fkC;
+	if ( kind >= fkCPP && kind <= fkCPP_LAST )
+		return fkCPP;
+	if ( kind >= fkMADC && kind <= fkMADC_LAST )
+		return fkMADC;
+	return fkUNKNOWN;
+}
+
+// The standard a family answers when none was named (split arc 1A.1; the
+// one table madcide_lang.inc's lang_rows migrate to, and the one Phase
+// 1A.4's precedence `--std` > extension > madc.ini > madc reads): a kind
+// that already names a standard answers itself; a family head answers the
+// family's default — C17 and C++17 (gcc 13's defaults, what most installed
+// toolchains have; C23 when ROADMAP 2.13 nears the C17 level), madc for the
+// dialect; 0 (the engine's default) for a kind outside the families.
+int64_t file_kind_default_standard(int64_t kind)
+{
+	int64_t fam = file_kind_family(kind);
+	if ( fam == fkUNKNOWN )
+		return 0;
+	if ( kind != fam )
+		return kind;
+	if ( fam == fkC )
+		return fkC17;
+	if ( fam == fkCPP )
+		return fkCPP17;
+	return fkMADC;
+}
+
 }	// namespace madc

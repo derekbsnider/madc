@@ -31,6 +31,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -47,13 +48,22 @@ public:
     // definition (C++11 has no inline variables).
     enum : size_t { npos = (size_t)-1 };
 
-    text_buffer() : _size(0), _nl_dirty(true) {}
+    text_buffer() : _size(0), _nl_dirty(true), _version(0) {}
+
+    // The VERSION (split arc 1A.1, the document component's design §2.2):
+    // +1 on every change of the live text — load, insert, erase, replace,
+    // undo, redo — never rewound (an undo is a NEW version, as in LSP). A
+    // mirror of this text (a parse handle, a backend's copy, an LSP
+    // client) keys itself on it: equal = in sync, else resync. A no-op
+    // (an empty insert, an erase of nothing) is not a change.
+    uint64_t version() const { return _version; }
 
     // Reset to a single piece over a fresh immutable snapshot. History
     // dies with the old snapshot — its entries reference the replaced
     // sources.
     void load(const std::string &s)
     {
+	++_version;
 	_history.clear();
 	_redo.clear();
 	_original = s;
@@ -120,6 +130,7 @@ public:
 	if ( off > _size )
 	    off = _size;
 	_nl_dirty = true;
+	++_version;
 	piece np;
 	np.add = true;
 	np.off = _add.size();
@@ -162,6 +173,7 @@ public:
 	if ( len > _size - off )
 	    len = _size - off;
 	_nl_dirty = true;
+	++_version;
 	_size -= len;
 	size_t pos = 0;
 	for ( size_t i = 0; i < _pieces.size() && len > 0; )
@@ -216,10 +228,14 @@ public:
 	}
     }
 
+    // ONE change, one version step — however many of the two it needed.
     void replace(size_t off, size_t len, const std::string &s)
     {
+	uint64_t v = _version;
 	erase(off, len);
 	insert(off, s);
+	if ( _version > v )
+	    _version = v + 1;
     }
 
     // Lines: newline-delimited spans; a trailing unterminated span counts;
@@ -424,6 +440,7 @@ private:
 	_pieces = st.back().pieces;
 	_size = st.back().size;
 	_nl_dirty = true;
+	++_version;
 	meta_out = st.back().meta;
 	st.pop_back();
 	return true;
@@ -466,6 +483,7 @@ private:
     mutable bool _nl_dirty;
     std::vector<history_entry> _history;
     std::vector<history_entry> _redo;
+    uint64_t _version;
 };
 
 } // namespace hub

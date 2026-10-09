@@ -32,6 +32,14 @@ namespace madc {
     // manifest or --std=, never from the extension); fkUNKNOWN for an
     // extension no table names (the editor still edits it as text).
     int64_t file_kind_of_path(const char *path);
+    // The FAMILY a kind belongs to (fkC / fkCPP / fkMADC — the range head);
+    // fkUNKNOWN outside the compiler families.
+    int64_t file_kind_family(int64_t kind);
+    // The standard a kind answers when none was named: itself when it
+    // names one, the family's default (C17, C++17, madc) for a family
+    // head, 0 (the engine's default) outside the families. The ONE table
+    // for "which standard does this file get" (split arc 1A.1 / 1A.4).
+    int64_t file_kind_default_standard(int64_t kind);
 }
 
 #endif // __MADC_FILE_KINDS_H

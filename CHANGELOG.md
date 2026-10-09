@@ -2,6 +2,34 @@
 
 ## [Unreleased]
 
+### engine: file buffers are a document component, with an edit notification
+
+The data substrate gains a document component beside its existing text
+component (split arc Phase 1A.1). A text now carries a monotonic version
+(`world::text_version`), bumped once per load / insert / erase / replace / undo
+/ redo. A document (`world::_docs`, `madcdis/document.h`) adds path, file kind,
+read-only, a saved version — from which `modified` is derived, never set —
+anchors (byte positions that follow edits, with per-anchor gravity and the
+replaced-range collapse), a document-level checkpoint that rides with the
+anchors and the saved state, and an opaque parse-handle slot. Every
+`world::text_*` mutator now publishes one byte-precise `text_change` record to
+each subscriber (`text_listener`), synchronously and in subscription order; a
+text mutation attempted from inside a delivery is refused (the textlock), as is
+one on a read-only document. `madc::doc_parse` / `doc_parse_checked` open or
+refresh a document's parse handle to its current version — one version compare
+in place of the old whole-text string compare. `madc::file_kind_family` and
+`madc::file_kind_default_standard` are the one table for the standard a file
+gets (C17, C++17, madc). The script surface adds `ui::doc_*`, `ui::anchor_*`,
+`ui::text_version` and `ui::doc_subscribe` (a dialect handler receives the
+record). Gate `scripts/check-one-text-publish.sh` (in `make gates`) holds the
+single publish point: `text_buffer`'s mutators are called only from `hub.h`,
+`text_buffer.h`, `line_edit.h` and the unit tests. Validation: `make -C src
+test` green (test_document: 5 cases, 133 assertions); `fix_lanes.sh` green —
+Tier 1 testdocument 1/1 on JIT, exe and obj; Tier 2 c-testsuite 220/220,
+c-torture 1617 passed / 7 failing (0 outside baseline), c2mir-tests 368/0, gui
+30/30 (exe 30, obj 30), gxx-c++11 1505 passed / 441 failing (0 outside
+baseline), commonmark 664/670 (0 outside baseline).
+
 ## [v0.103.0] — 2026-10-09
 
 The TUI facelift: madcide's terminal UI gains the GUI's menus, toolbar, mouse, dialogs, framed panes, tab strips and Dark+ colour, verified by golden screens on POSIX and genuine Windows; names are held as interned `istring` and embedded headers are ranked by a build-time table for a faster compile; and madcide opens every file named on its command line, with Help pages in the editor.

@@ -186,14 +186,16 @@ namespace ui {
     // entity — the hub's second component kind. Offsets and lengths are
     // BYTES; lines are 1-based, length excluding the '\n'; an empty
     // buffer has zero lines and a trailing unterminated span is a line.
-    // Writes route through the hub's mutation context. Document
-    // properties (path, modified, read_only) are application bag keys —
-    // never touched here. Size/line/find reads answer -1 when the entity
-    // has no text component (or the query is out of range).
-    void text_load(int64_t w, int64_t entity, const char *text);
-    void text_insert(int64_t w, int64_t entity, int64_t off, const char *text);
-    void text_erase(int64_t w, int64_t entity, int64_t off, int64_t len);
-    void text_replace(int64_t w, int64_t entity, int64_t off, int64_t len,
+    // Writes route through the hub's mutation context and PUBLISH the edit
+    // notification (doc_subscribe below); a write answers false when
+    // refused. Document properties (path, kind, modified, read-only) are
+    // the DOCUMENT component's (doc_* below) — never a bag key here.
+    // Size/line/find reads answer -1 when the entity has no text
+    // component (or the query is out of range).
+    bool text_load(int64_t w, int64_t entity, const char *text);
+    bool text_insert(int64_t w, int64_t entity, int64_t off, const char *text);
+    bool text_erase(int64_t w, int64_t entity, int64_t off, int64_t len);
+    bool text_replace(int64_t w, int64_t entity, int64_t off, int64_t len,
 		      const char *text);
     value  &text(value &out, int64_t w, int64_t entity);
     int64_t text_size(int64_t w, int64_t entity);
@@ -258,12 +260,67 @@ namespace ui {
     // interaction state together. A checkpoint (a new edit) clears redo;
     // the three-argument undo is the legacy destructive form (clears
     // redo too).
-    void text_checkpoint(int64_t w, int64_t entity, value &meta);
+    bool text_checkpoint(int64_t w, int64_t entity, value &meta);
     bool text_undo(value &meta_out, int64_t w, int64_t entity);
     bool text_undo(value &meta_out, int64_t w, int64_t entity,
 		   value &now_meta);
     bool text_redo(value &meta_out, int64_t w, int64_t entity,
 		   value &now_meta);
+    // The text's VERSION (split arc 1A.1): +1 on every change — load,
+    // insert, erase, replace, undo, redo — never rewound. A mirror of the
+    // text (a parse handle, a backend's copy) keys on it. -1 = no session.
+    int64_t text_version(int64_t w, int64_t entity);
+
+    // ---- document component (split arc 1A.1; design docs/plans/
+    // 2026-10-09-document-component-design.md): a FILE buffer in the
+    // engine — the text component plus path, kind (<bits/file_kinds>,
+    // stamped from the path), read-only, the saved version (modified is
+    // DERIVED: the text's version differs from the one last saved), the
+    // parse slot (madc::doc_parse) and ANCHORS. A document lives in the
+    // process that edits it, never the one that runs user code. Every
+    // text_* write above now answers false when refused: the entity is a
+    // read-only document, or a delivery of the edit notification is in
+    // progress (a subscriber may not mutate; schedule it).
+    int64_t doc_new(int64_t w);			// untitled; kind madc
+    int64_t doc_open(int64_t w, const char *path);	// 0 = unreadable
+    int64_t doc_find(int64_t w, const char *path);	// the one open on it; "" = untitled
+    bool    doc_is(int64_t w, int64_t entity);		// has a document component
+    bool    doc_load_file(int64_t w, int64_t entity, const char *path);	// reload; restamps
+    bool    doc_save(int64_t w, int64_t entity);	// false: no path, I/O failure
+    bool    doc_close(int64_t w, int64_t entity);	// drops text, document, parse slot
+    value  &doc_path(value &out, int64_t w, int64_t entity);	// "" when untitled
+    bool    doc_set_path(int64_t w, int64_t entity, const char *path);	// save-as: restamps kind
+    int64_t doc_kind(int64_t w, int64_t entity);	// fkUNKNOWN when no document
+    bool    doc_modified(int64_t w, int64_t entity);
+    bool    doc_mark_saved(int64_t w, int64_t entity);	// "the file on disk IS this"
+    bool    doc_read_only(int64_t w, int64_t entity);
+    bool    doc_set_read_only(int64_t w, int64_t entity, bool ro);
+    value  &docs(value &out, int64_t w);		// the ring: every document, creation order
+    // The document-level history: the application's payload (its caret)
+    // rides WITH the document's anchors and its saved state, so undo
+    // restores all three and hands the payload back. One command, one
+    // checkpoint — the command layer sets the group boundary.
+    bool    doc_checkpoint(int64_t w, int64_t entity, value &app_meta);
+    bool    doc_undo(value &app_out, int64_t w, int64_t entity);
+    bool    doc_redo(value &app_out, int64_t w, int64_t entity);
+    // Anchors: a byte position that follows edits (a caret, a mark, a span
+    // end). right_gravity: an insert AT the anchor pushes it after the
+    // text (a caret); false: it stays before (a selection start). An edit
+    // inside a replaced range collapses the anchor to the range's start.
+    // Ids are stable; -1 / false / 0 when absent.
+    int64_t anchor_add(int64_t w, int64_t entity, int64_t off, bool right_gravity);
+    int64_t anchor_offset(int64_t w, int64_t entity, int64_t id);
+    bool    anchor_move(int64_t w, int64_t entity, int64_t id, int64_t off);
+    bool    anchor_remove(int64_t w, int64_t entity, int64_t id);
+    // The edit notification: `fn` runs synchronously after EVERY change
+    // of ANY text in the session — a document's or a plain text's —
+    // with the record { entity, version, kind ("splice" | "load" |
+    // "undo" | "redo"), off, old_len, new_len, inserted }. A splice is a
+    // byte-precise range replacement ([off, off+old_len) became
+    // `inserted`); load / undo / redo are whole-buffer events (old_len
+    // and new_len the sizes before and after). Anchors have already
+    // shifted when it runs. Released with the session.
+    bool    doc_subscribe(int64_t w, void (*fn)(int64_t w, int64_t entity, value &change));
 
     // The view seam's coordinate map (the document lens): a display
     // ("what is painted") <-> stored ("the document truth") byte map
