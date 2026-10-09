@@ -101,7 +101,7 @@ vi/vim user can work in. Prompt line editing stays bash/emacs by default.
   like any other. Loading it: the existing `-lmadcgit` on the command line, a
   new repeatable madc.ini key naming modules to load (the schema in
   `include/madc_config.h` grows one key; precedence CLI > environment > ini as
-  for the others), and — to confirm — an `import madcgit;` entry at the
+  for the others), and an `import madcgit;` entry at the (owner 2026-10-09: yes)
   prompt. The verb bodies (`git_log_text`, `git_show_text`, `git_blame_text`,
   `git_status_text`, `git_diff_text`, `git_relative_date`) depend on no view;
   they move into the module's side over the madcgit API, with live text
