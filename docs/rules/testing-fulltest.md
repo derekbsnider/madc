@@ -192,6 +192,16 @@ on it, through `lane_tools`. The gate script is in the set as well: no suite
 exercises it, and its selftest — run first on every check and every push —
 is the test that can.
 
+The application is outside the compiler lanes too (owner 2026-10-09: "if only
+madcide change (and not madc sources) then we do not need the full battery of
+madc tests as that takes HOURS"). madcide is a program written in madc, not
+part of madc; the conformance suites never run it, and the hour-long platform
+suites run its tests only as one more program. A madcide-only change stales
+the lanes that run it (`app_lanes`: gui, tests-jit) and is proven by its own
+targeted tests plus Tier 2; a change to madc's sources (`src`, `include`,
+`third_party`) still stales every lane, the ones madcide runs on included.
+madcide is to move to its own repository, where its lanes will be its own.
+
 `/commit` (`.claude/commands/commit.md`) is the proactive half: it runs Tier 2
 on the working-tree content BEFORE committing, so the gate is satisfied by the
 time the push happens, and a red lane is found while the change is still one

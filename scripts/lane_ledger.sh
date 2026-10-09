@@ -59,9 +59,23 @@ lane_tools() {
 	esac
 }
 
+# The APPLICATION — madcide (and the editor core it includes), its tests and
+# its screen goldens (owner 2026-10-09: "if only madcide change (and not madc
+# sources) then we do not need the full battery"; madcide is to leave for its
+# own repository). An application change stales only the lanes that run the
+# application (app_lanes); a change to madc's own sources stales them all.
+# One pathspec per line: they are git patterns, never shell globs.
+APPLICATION="tools
+	tests/testmadcide*
+	tests/gui/madcide_*
+	tests/tui_golden
+	scripts/tui_golden.py"
+app_lanes=" gui tests-jit "
+
 # lane_paths <lane> -> the pathspecs of the content <lane> validates: the
-# code less the release tooling, plus the tooling the lane runs. An
-# exclude beats an include in git, so a lane's own tools are never excluded.
+# code less the release tooling and (unless the lane runs it) the
+# application, plus the tooling the lane runs. An exclude beats an include
+# in git, so a lane's own tools are never excluded.
 lane_paths() {
 	local tools p f
 	tools=" $(lane_tools "$1" | tr -s '[:space:]' ' ') "
@@ -72,6 +86,12 @@ lane_paths() {
 		*) p="$p :(exclude)$f" ;;
 		esac
 	done
+	case "$app_lanes" in
+	*" $1 "*) ;;
+	*) while read -r f; do
+		p="$p :(exclude)$f"
+	   done <<< "$APPLICATION" ;;
+	esac
 	echo "$p$tools"
 }
 
@@ -220,6 +240,18 @@ selftest() {
 	case " $(lane_paths brew-linux) " in
 	*" :(exclude)scripts/brew_lane.sh "*)
 	   echo "lane_ledger: SELFTEST FAILED — the brew lane ignores its own tooling" >&2
+	   rm -f "$tmp"; return 1 ;;
+	esac
+	# The application table, both ways: a compiler lane never watches
+	# madcide, and the lanes that run it do.
+	case " $(lane_paths selftest-stale) " in
+	*" :(exclude)tests/testmadcide* "*) ;;
+	*) echo "lane_ledger: SELFTEST FAILED — a compiler lane watches the application" >&2
+	   rm -f "$tmp"; return 1 ;;
+	esac
+	case " $(lane_paths gui) " in
+	*" :(exclude)tools "*)
+	   echo "lane_ledger: SELFTEST FAILED — the gui lane ignores the application" >&2
 	   rm -f "$tmp"; return 1 ;;
 	esac
 	# shellcheck disable=SC2046

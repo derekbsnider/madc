@@ -12,7 +12,9 @@ and produces exactly the oscillation this rule exists to stop.
           tooling — `RELEASE_TOOLING` in scripts/lane_ledger.sh: packaging,
           the release archive, the gate; the release workflow's install
           gates prove those, and a lane that runs one names it in
-          `lane_tools`) — UNDER THREE MINUTES,
+          `lane_tools`; and LESS the application — `APPLICATION`: madcide,
+          its tests and screen goldens — which stales only the lanes that
+          run it, `app_lanes`) — UNDER THREE MINUTES,
           all of it: `bash scripts/fast_lanes.sh` (c-testsuite, c-torture,
           c2mir-tests, gui, index-c, gxx-c++11, commonmark). It is a RATCHET against
           recorded baselines, it records each green lane in the ledger, and
