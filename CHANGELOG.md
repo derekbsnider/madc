@@ -2,6 +2,67 @@
 
 ## [Unreleased]
 
+### tui: the golden screens on genuine Windows (facelift S9)
+
+The TUI's golden screens now verify on genuine Windows, not only on POSIX.
+`scripts/tui_win_golden.py` stages the packed `bin/release-windows` `madc.exe`
+and the `tools/` tree on the Windows box over ssh, replays every `tui_golden`
+scenario's key and mouse bytes, and compares each rendered screen with the SAME
+golden the POSIX gate uses. `scripts/conpty_host.c` runs `madc.exe` inside a
+ConPTY — the pseudo-console Windows Terminal hosts programs in — reached because
+WSL interop gives a Win32 program pipes. Both renders drop a blank cell's
+invisible style words before comparing, because ConPTY re-encodes a space with
+the cheapest foreground. On Windows 11 build 26200, 31 of 31 screens match (the
+three ASCII `LC_ALL=C` scenarios are POSIX-locale only): menus, toolbar,
+dialogs, Dark+ in 16/256/24-bit colour, Alt and F-keys, and the mouse on menus,
+dropdowns, the caret and tab close. The stage and its processes are removed
+after the run.
+
+### vtscreen: deferred autowrap and ECH
+
+`scripts/vtscreen.py`, the reference VT interpreter the Windows golden
+comparison reads screens through, now models two more xterm behaviours.
+Deferred autowrap: a glyph written in the last column leaves the cursor there
+with a wrap pending, and the next glyph moves to the next line first (scrolling
+at the bottom margin) while any cursor control, erase or ESC sequence cancels
+the pending wrap; DECAWM (`?7h` / `?7l`) switches it. ECH (`CSI n X`) blanks n
+cells from the cursor in the current background (bce) and leaves the cursor in
+place. ConPTY re-paints whole rows relying on the wrap between them and writes
+blank runs as ECH, so interpreting both keeps the Windows screen faithful.
+madc's POSIX renderer emits neither, so the goldens are unchanged
+(`tui_golden_gate` 34 screens and `tui_scroll_gate` PASS).
+
+### gates: three owner gates read the definitions they guard again
+
+Three owner gates recognise their owners again after the names-as-istring
+change moved return types off `std::string`. `check-call-emit-symbol` and
+`check-fn-template-deduction-owner` had matched an owner by a `std::string`
+return type; with those returns now `madc::dis::istring`, the call-shape owner
+counted 0 and the two resolvers' own `local_emit_name` reads counted as drift.
+Both now match a definition by its shape, whatever the return type is spelled.
+`check-one-path-absolute` had counted the `#if`-condition reader's
+comment-opener tests in `src/lexer.cpp` (`p[0] == '/' && p[1] == '/'` and `'*'`)
+as absolute-path tests; the opener's text is removed before the line is scanned,
+so a path test sharing its line is still caught, and a positive and a negative
+control now carry the rule. All three are green on the tree with controls
+intact.
+
+### include/headers: the shadow table covers every header the binary embeds
+
+The system-header shadow table now covers every header a build embeds, not just
+`include/madc`. An Apple-target build also embeds the generated darwin prelude
+(`obj/<mode>/darwin_prelude`) and a Windows build its header fallbacks, so the
+prelude's own header names (`ctype.h` and others) previously got no shadow pair;
+libc++'s `c++/v1` wrappers for those names outrank the C header, so the darwin
+forest pack (freeze-append under `--no-sysroot-includes`) resolved the embedded
+prelude `ctype.h` first and hit libc++'s `<cctype>` `#error`.
+`gen_sys_includes.sh` now reads `MADC_EMBEDDED_EXTRA_DIR` beside `include/madc`,
+`src/Makefile` passes the darwin-prelude or Windows-fallback dir into both the
+parse-time host table and the `sys_include_paths.cpp` rule, and the host table
+is generated after the embedded set so the prelude exists when the table is
+built. The arm64 macOS table now holds 14 `c++/v1` pairs (`ctype.h`, `math.h`,
+`stdio.h`, `wctype.h` among them; before: 4); the Linux host table is unchanged.
+
 ### tui: the Terminal tab keeps its program's colours (facelift S8)
 
 A program run in the Terminal tab now shows its colours. The bounded screen
