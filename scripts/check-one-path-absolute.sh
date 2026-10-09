@@ -12,7 +12,9 @@
 # is how that comes back.
 #
 # Rule: outside the owner, no source tests a path's first character against
-# '/' — `p[0] == '/'`, `p[0] != '/'`, `p.front() == '/'`.
+# '/' — `p[0] == '/'`, `p[0] != '/'`, `p.front() == '/'`. A two-character
+# COMMENT opener — `p[0] == '/' && p[1] == '/'` or `... p[1] == '*'` — is not
+# a path test and is not counted.
 #
 # Negative control: a synthetic violation must FAIL the scan, else the gate
 # itself is broken and we fail loudly.
@@ -22,10 +24,13 @@ cd "$(dirname "$0")/.." || exit 2
 
 OWNER=src/madc_posix_io.cpp
 PATTERN="(\[0\]|\.front\(\)) *[!=]= *'/'"
+COMMENT_OPENER="\[0\] *== *'/' *&& *[A-Za-z_.>-]+\[1\] *== *'[/*]'"
 
 scan() {
 	# $@ = files; prints violations, returns 0 when clean.
-	grep -nE "$PATTERN" "$@" /dev/null
+	# (the opener's own text is removed first, so a path test sharing its
+	# line is still seen)
+	grep -nE "$PATTERN" "$@" /dev/null | sed -E "s#$COMMENT_OPENER##g" | grep -E "$PATTERN"
 	test $? -ne 0
 }
 
@@ -41,6 +46,19 @@ printf "bool rooted(const std::string &p) { return !p.empty() && p.front() == '/
 if scan "$tmp" >/dev/null 2>&1; then
 	rm -f "$tmp"
 	echo "check-one-path-absolute: NEGATIVE CONTROL FAILED — the scan did not catch a front() test" >&2
+	exit 2
+fi
+printf "if (p[0] == '/' && p[1] == '/') skip(); if (p[0] == '/') rooted();\n" > "$tmp"
+if scan "$tmp" >/dev/null 2>&1; then
+	rm -f "$tmp"
+	echo "check-one-path-absolute: NEGATIVE CONTROL FAILED — a path test beside a comment opener went unseen" >&2
+	exit 2
+fi
+# Positive control: a comment opener alone is not a path test.
+printf "if ( p + 1 < e && p[0] == '/' && p[1] == '*' ) comment();\n" > "$tmp"
+if ! scan "$tmp" >/dev/null 2>&1; then
+	rm -f "$tmp"
+	echo "check-one-path-absolute: POSITIVE CONTROL FAILED — a comment opener was counted as a path test" >&2
 	exit 2
 fi
 rm -f "$tmp"

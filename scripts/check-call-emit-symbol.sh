@@ -39,7 +39,9 @@ bad=$(awk '
   # CirBuilder::body_emit_symbol definition (the two legitimate homes of a
   # local_emit_name value-read). Both call_emit_symbol overloads match; the
   # delegating one contains no local_emit_name token, so this is harmless.
-  /std::string[[:space:]]+CirBuilder::(call|body)_emit_symbol\(/ { infn=1 }
+  # The definition line, whatever its return type spelling (std::string, then
+  # madc::dis::istring) — never a call, which does not start a line with a type.
+  /^[A-Za-z_:]+[[:space:]]+CirBuilder::(call|body)_emit_symbol\(/ { infn=1 }
   infn && /^}/ { infn=0; next }
   {
     if ($0 ~ /allowed-exception/) next      # audited per-line opt-out (see header)
