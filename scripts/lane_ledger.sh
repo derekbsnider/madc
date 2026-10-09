@@ -67,6 +67,9 @@ lane_tools() {
 # One pathspec per line: they are git patterns, never shell globs.
 APPLICATION="tools
 	tests/testmadcide*
+	tests/testide*
+	tests/testvised*
+	tests/testlineed*
 	tests/gui/madcide_*
 	tests/tui_golden
 	scripts/tui_golden.py"
