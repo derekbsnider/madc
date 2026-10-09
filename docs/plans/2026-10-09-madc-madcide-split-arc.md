@@ -279,10 +279,33 @@ at activation and read at input on the session's thread. No new globals.
    rewritten madc example.
 2. ~~The ex regex flavour~~ — decided: PCRE2 (below).
 3. ~~Symbols~~ — decided (below): madcide's built-in view; Chthonia uses it.
-4. **`madcide --line`:** becomes an alias for madc's line mode on the file,
-   or is retired with a pointer to `madc -i`.
-5. Whether a madc release may land while madcide is red against it (default
-   yes).
+4. ~~`madcide --line`~~ — decided (below).
+5. ~~madc releasing while madcide is red~~ — decided: yes.
+6. **MCP as an import library** (owner suggestion 2026-10-09, getting git by
+   importing madcgit): hinges on the change-log stream — the module takes it
+   (subscribing to the buffers' edit notification, saved beside the project)
+   or only the read half moves. Proposed: the module takes it.
+7. **Seats / `--serve` / discovery** (remote control of a running madcide
+   session): proposed madcide; explained, not yet answered.
+8. **Where madc.ini's `std` sits** in the standard precedence: proposed
+   `--std` > file extension > madc.ini/env `std` > madc.
+
+## Decided (owner, 2026-10-09, inventory round)
+
+- **File buffers are madc's** — in the process that edits, never the one that
+  runs user code (`madc -i`: the prompt process; madcide: its own process,
+  the same buffer code). Windows `madc -i` gets the child backend (Phase 1
+  step 10).
+- **LSP is part of madc's core** ("small enough"): `madc --lsp`, its document
+  sync on madc's buffers, `executeCommand` through the command registry.
+- **`madcide --line FILE` = `madc -i FILE`** (kept; it costs nothing).
+- **Standard precedence:** `--std`, then the file extension, then the madc
+  dialect (a file with no recognised extension — a shebang script). `.c` →
+  C17 until C23 nears the C17 level (ROADMAP 2.13: C23 measured 51.4%), then
+  the table flips to C23.
+- **madc.ini loads modules**, as php.ini loads extensions (a repeatable key).
+- **A madc release may land while madcide is red against it** (madcide pins
+  its madc).
 
 ## Decided (owner, 2026-10-09)
 

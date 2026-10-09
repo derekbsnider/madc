@@ -41,6 +41,27 @@ under c17), so madc refusing them is **correct behaviour**, not a gap. The
 torture corpus is C-era code; measuring it under c23 measures how much of it
 is still valid C23.
 
+### C23 — the standard's own tests
+
+| corpus | `--std=` | in scope | passing | coverage |
+|--------|----------|---------:|--------:|---------:|
+| `gcc.dg/c23-*`, `c2x-*` compile-clean | c23 | 72 | 38 | **52.8%** |
+| `gcc.dg/c23-*`, `c2x-*` `dg-do run` | c23 | 70 | 35 | **50.0%** |
+| combined | c23 | 142 | 73 | **51.4%** |
+
+First measured 2026-10-09 on `bin/madc` 0.103.0 (the container, `scripts/
+run_gcc_testsuite.py` — `--suite gxx` for the compile-clean set, its
+`--emit=c11` parse/sema/lower check, and `--suite c-torture` for the run set).
+These are GCC's tests OF C23 itself, unlike the torture column above, which
+is C-era code measured under c23. 302 files; the other 160 are diagnostic
+tests (out of scope, as for C++). The 69 failures are NOT yet triaged — a few
+may be harness mismatches (`c23-binary-constants-1` fails though binary
+literals work). By name they cluster on `constexpr`, `nullptr`, `typeof`,
+`bool` and its limits, the `<float.h>` additions (12 `c23-float-*`), tag
+compatibility (9 `c23-tag-*`), storage-class compound literals, digit
+separators, `u8` character literals, `{}` empty initialisers, `auto`,
+`unreachable()`, labels at the end of a block. C23 is the C goal (ROADMAP 2.13).
+
 The 13 remaining c17 failures are listed in
 [`docs/parity/c-torture-baseline.txt`](parity/c-torture-baseline.txt). Every
 one was verified to fail on the v0.99.2 release binary as well, so the
