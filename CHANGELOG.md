@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### line_edit: Meta-b / Meta-f / Meta-d as Alt keys too
+
+The REPL line editor's readline Meta bindings fire again when a terminal sends
+Alt+b / Alt+f / Alt+d as ESC and the letter in one burst. Since the key parser
+began reading that burst as one Alt key (facelift S4), the bindings table bound
+only the two-key `esc b` / `esc f` / `esc d` sequences, so backward-word,
+forward-word and kill-word no longer fired and the letter was inserted as text.
+`line_edit_bindings()` in `include/madcdis/line_edit.h` now binds `alt+b`,
+`alt+f` and `alt+d` beside the `esc` forms; readline accepts both spellings
+(Meta, and Esc typed before the key). `esc backspace` and `esc enter` are
+unchanged — the parser still reads ESC before a control byte as esc then the
+key. `bin/test_line_edit` runs 18 cases, all pass (a new case types Esc alone,
+then `b`, and expects backward-word).
+
 ### tui: dialogs, pick lists and prompts as floating windows (facelift S6)
 
 A node hinted `popup` — the data the window already floats — is a floating

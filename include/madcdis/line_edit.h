@@ -23,8 +23,9 @@
 //
 // The keys are DATA: line_edit_bindings() binds readline's Emacs defaults
 // (Julia's and IPython's defaults share them) to line_action CODES. Meta is
-// the Esc prefix, readline's model: a terminal's Alt sends Esc first, so
-// `esc b` is a two-key sequence of the table, not a key kind of its own.
+// readline's two ways: a terminal's Alt arrives as Esc and the key in one
+// burst, which the parser reads as Alt and the key (`alt+b`), and Esc typed
+// before the key is the two-key `esc b`; the table binds both.
 //
 // Thread contract (.claude/rules/thread-safety.md): plain value objects,
 // confined to the thread that owns them (the C++ standard-library
@@ -83,7 +84,9 @@ inline const tui_bindings &line_edit_bindings()
 	    { "right",	       "forward-char",	       line_action::forward_char },
 	    { "^f",	       "forward-char",	       line_action::forward_char },
 	    { "esc b",	       "backward-word",	       line_action::backward_word },
+	    { "alt+b",	       "backward-word",	       line_action::backward_word },
 	    { "esc f",	       "forward-word",	       line_action::forward_word },
+	    { "alt+f",	       "forward-word",	       line_action::forward_word },
 	    { "home",	       "beginning-of-line",    line_action::line_start },
 	    { "^a",	       "beginning-of-line",    line_action::line_start },
 	    { "end",	       "end-of-line",	       line_action::line_end },
@@ -100,6 +103,7 @@ inline const tui_bindings &line_edit_bindings()
 	    { "^w",	       "unix-word-rubout",     line_action::kill_space_back },
 	    { "esc backspace", "backward-kill-word",   line_action::kill_word_back },
 	    { "esc d",	       "kill-word",	       line_action::kill_word_forward },
+	    { "alt+d",	       "kill-word",	       line_action::kill_word_forward },
 	    { "^y",	       "yank",		       line_action::yank },
 	    { "^t",	       "transpose-chars",      line_action::transpose },
 	    { "^_",	       "undo",		       line_action::undo },
