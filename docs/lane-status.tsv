@@ -1,6 +1,5 @@
 # lane	promote	last_green_commit	date	tally
 libcxx	no	96b3358a3d8a	2026-10-03	retired from the release tier 2026-10-03 (owner): the libc++ lane is darwin-suite on the macOS -O2 packed binary; last linux run: jit 1903/0/0TO/23skip; exe 1735/0; obj 1735/0 (-stdlib=libc++, 14 tests carry .libcxx_skip: B157-B161 + libstdc++-internal; at 028e31c36 content) [+ 96b3358a3: textual rename chthonic->chthonia, owner 2026-10-03, not re-run]
-tests-jit	batch	e60f917f0e8d	2026-10-09	2045 passed, 0 failed, 0 timed out, 9 skipped
 linux-battery	yes	5fb46c910ec0	2026-10-09	seam_battery.sh at e60f917f0 + gate/table fixes (gates rc=0 at 5fb46c910, static gates 0 red of 100): headerless 2011/0/0TO/43skip + ondisk 34/0 on packed -O2 madc-release; exeobj JIT 2045/0/0TO/9skip, EXE 1864/0, OBJ 1864/0; parse-cost 0 red of 6
 headerless-win	yes	5fb46c910ec0	2026-10-09	1966/0/0TO/88skip at 5fb46c910 (rerun after the shadow-table fix) + ondisk-win 1/0 (33 win64-skipped) — packed PE under wine
 macos	yes	5fb46c910ec0	2026-10-09	BUILD lane: release-macos + package-macos rc=0 on both arches at 5fb46c910 (darwin forest pack green after the shadow-table fix)
@@ -16,3 +15,4 @@ wine64	yes	5fb46c910ec0	2026-10-09	the packed PE under wine: headerless-win 1966
 genuine-win	release	57e54306e4d2	2026-10-09	1966/0/0TO/88skip — the FULL suite on the owner Windows 11 box (scripts/win_suite.sh from the container, the packed bin/release-windows/madc.exe at 5fb46c910 content, MADC_SKIP_EXT="win64 win"); win_suite rc=0
 darwin-suite	release	57e54306e4d2	2026-10-09	darwin-suite (native, libc++, 57e54306e content): arm64 Mac Mini macOS 14.8.4 2013 passed / 0 failed / 0 timed out / 41 skipped, mac battery 12/0; Intel MacBook macOS 15.7.4 2015 passed / 0 failed / 0 timed out / 39 skipped, mac battery 12/0 (darwin EXE pass advisory, D5)
 brew-linux	release	57e54306e4d2	2026-10-09	2045/0/0TO/9skip - scripts/brew_lane.sh on the container at 57e54306e content: brew install --build-bottle + brew bottle + the 0.102.1 keg POURED back + brew test green; runpath resolves libmadc.so.0 from the keg and from HOMEBREW_PREFIX/lib; suite on the linked madc
+tests-jit	batch	090169b90e20	2026-10-09	2045 passed, 0 failed, 0 timed out, 9 skipped
