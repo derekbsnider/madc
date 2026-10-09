@@ -162,12 +162,12 @@ read-only verdict call the registry instead.
   `<madcide/harness>`), libmadcide, `madcide --build-plugin`, madcide's
   `chthonia.keys` and `vscode.theme` profiles, MADCIDE_CONFIG_DIR /
   MADCIDE_PLUGIN_PATH. Its unpushed `dark-plus` branch (Dark+, line numbers,
-  terminal layout) is a 0.0.4 on madc 0.103.0.
+  terminal layout) is Chthonia 0.1.0 on madc 0.103.0 (owner: next version 0.1.0).
 
 ## Phases
 
 **Phase 0 — independent, any order (engine fixes and releases):**
-1. Chthonia 0.0.4 on madc 0.103.0 (the `dark-plus` branch).
+1. Chthonia 0.1.0 on madc 0.103.0 (the `dark-plus` branch).
 2. The two C++14 defects (`cpp1y/lambda-generic-ice2.C` abort,
    `cpp1y/var-templ24.C` > 30 s) — a parser session.
 3. The Outline's kinds beyond functions (`madc::parse_outline`) — a parser
@@ -225,6 +225,17 @@ at activation and read at input on the session's thread. No new globals.
    a copy.
 4. **`madcide --line`:** becomes an alias for madc's line mode on the file,
    or is retired with a pointer to `madc -i`.
-5. The own-repo plan's open items: the repository name (`madcide` assumed),
-   madcide's first version number, and whether a madc release may land while
-   madcide is red against it (default yes).
+5. Whether a madc release may land while madcide is red against it (default
+   yes).
+
+## Decided (owner, 2026-10-09)
+
+- **Repository:** `derekbsnider/madcide` — the established name.
+- **madcide's version numbers:** madcide was first released with madc 0.98.0,
+  which is madcide 0.1.0, so madcide's minor = madc's minor − 97 (madc 0.103.0
+  ↔ madcide 0.6.0). The next madc release is 0.104.0, so the first standalone
+  madcide release is **0.7.0**.
+- **Chthonia:** its next release is **0.1.0**, not 0.0.4 (owner: it should
+  have started at 0.1.0) — the `dark-plus` branch's release.
+- **`%git`:** the madcgit module's command (above), `import madcgit;` at the
+  prompt included.
