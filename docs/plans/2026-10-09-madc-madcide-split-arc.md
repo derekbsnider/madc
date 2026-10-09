@@ -119,20 +119,39 @@ vi/vim user can work in. Prompt line editing stays bash/emacs by default.
   `madcide_workbench.mad` are already engine tests (no tools/ include) —
   renamed `ui_web_*`; `tests/testbuildcancel.mad` stops compiling
   `tests/testmadcide.mad`; lined's R4 and vised's R5 engine contracts are
-  checked against `test_verbs` / `test_interaction` / `test_text_buffer` /
-  `testeditcheck` and twinned where they fall short.
+  carried by the rewritten `examples/vised/`'s test (below), checked against
+  `test_verbs` / `test_interaction` / `test_text_buffer` / `testeditcheck`
+  for anything it does not reach.
 
 **Moves to the madcide repository:** everything else the own-repo plan lists,
 with the corrections below — `tools/madcide/` (56 files, ~28.9k lines),
-`tools/texteditor/editor_events.inc` and vised (visual), `tools/vscode-madcide/`,
+`tools/texteditor/editor_events.inc` (madcide's editor core), `tools/vscode-madcide/`,
 the IDE half of `colon_command` (the `view*` verbs, registered into madc's
 registry), the views (Symbols, Changes/History/Blame, Help, Outline view,
 Markdown preview), LSP and MCP faces (bound to madcide's buffers and stream
 today; `madc --lsp` is a later question once madc has headless buffers).
 
-**Retired:** lined's ed verbs (`tools/texteditor/verbs/*.madv`, `lined.mad`,
-`run_session`) — superseded by madc's ex core; madcide's `w`/`q`/`q!` and its
-read-only verdict call the registry instead.
+**Retired: lined** (owner 2026-10-09, "completely deprecated") —
+`tools/texteditor/lined.mad`, `run_session`, its ed verbs
+(`tools/texteditor/verbs/*.madv`, `checks/editable.madv`) and
+`tests/testlineed.mad`, superseded by madc's ex core. madcide's `w`/`q`/`q!`
+and its read-only verdict call the registry instead; `lined_core.inc`'s
+document helpers (`doc_set_path`, `doc_kind`, `doc_untitled`, `doc_name`,
+`new_document`, `setup_document`) and `resolve_data_dir` move into madcide.
+
+**Stays in madc as an example, rewritten: vised** (owner 2026-10-09: keep it
+as a simple example). `examples/vised/` — a self-contained visual editor on
+madc's PUBLIC surface only: `ui::` (one tree, the terminal UI and `--web`),
+`ui::text_*` (the buffer and its undo), the command registry for `w`/`q`. It
+includes nothing from madcide (today's 197-line `vised_core.inc` leans on
+`editor_events.inc`'s key/pointer handlers and composers, which move with
+madcide; keeping `editor_events.inc` in madc for it would make madc ship
+application code). Its test is the engine-level check of the R4/R5 contracts
+lined's retirement leaves uncovered: edits through the one mutation path,
+read-only refusing an edit, save/quit through the registry. Built in Phase 1
+after the registry and the edit notification, so it demonstrates them.
+`tools/texteditor/vised.mad`, `vised_core.inc` and `tests/testvised.mad`
+are replaced by it.
 
 ## Corrections to the own-repo plan's inventory
 
@@ -186,7 +205,10 @@ read-only verdict call the registry instead.
 7. madcide features that ride the move: the Symbols view in madcide's base
    (Chthonia drops its plugin in its paired release), View ▸ Line Numbers
    (the gutter toggle, persisted through the layout).
-8. The engine twins (above) land.
+8. `examples/vised/`: the self-contained rewrite on `ui::`, `ui::text_*` and
+   the registry, with its R4/R5 contract test; `tools/texteditor/vised*`,
+   `lined*`, the `.madv` verbs, testlineed and testvised deleted.
+9. The engine twins (above) land.
 
 **Phase 2 — the repository split** (`2026-10-08-madcide-own-repo.md` steps
 2-7, on the corrected inventory): the `git filter-repo`, madcide CI on the
@@ -219,9 +241,8 @@ at activation and read at input on the session's thread. No new globals.
 
 ## Owner decisions open
 
-1. **lined and vised:** retire lined (superseded by the ex core) — and vised:
-   retire, or move to madcide as its minimal visual example? (Recommended:
-   retire lined; move vised.)
+1. ~~lined and vised~~ — decided (above): lined retired, vised kept as a
+   rewritten madc example.
 2. **The ex regex flavour:** POSIX `regcomp` ERE is absent on Windows;
    `std::regex` is portable but slow; a bundled engine is a dependency
    (third-party libs stay dependencies). (Recommended: decide at Phase 1
