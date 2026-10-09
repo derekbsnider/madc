@@ -1535,12 +1535,53 @@ int64_t term_feed(int64_t w, int64_t entity, const char *bytes, int64_t n)
 	scr.st = (madc::hub::term_screen::esc_state)(unsigned char)esc.as_integer();
     if ( params.is_string() )
 	scr.params = params.as_string();
+    // The program's colours (facelift S8): the pen and the coloured runs
+    // ride the document beside the text, as {s, e, c} span rows — the
+    // shape an edit node's `spans` hint carries, so the Terminal view hands
+    // them to either face unchanged.
+    madc::value pen, spans;
+    get(pen, w, entity, "termpen");
+    get(spans, w, entity, "termspans");
+    if ( pen.is_string() )
+	scr.load_pen(pen.as_string());
+    if ( spans.is_array() )
+    {
+	std::vector<madc::hub::term_screen::span> runs;
+	for ( const madc::value &row : spans.as_array() )
+	{
+	    if ( !row.is_object() )
+		continue;
+	    long rs = madc::hub::hint_of(row, "s", -1), re = madc::hub::hint_of(row, "e", -1);
+	    std::string c = madc::hub::hint_str(row, "c");
+	    if ( rs < 0 || re <= rs || c.empty() )
+		continue;
+	    madc::hub::term_screen::span sp;
+	    sp.s = (size_t)rs;
+	    sp.e = (size_t)re;
+	    sp.spec = c;
+	    runs.push_back(sp);
+	}
+	scr.load_spans(runs);
+    }
     scr.feed(bytes, (size_t)n);
     const std::string new_text = scr.text();
     text_replace(w, entity, 0, (int64_t)old_text.size(), new_text.c_str());
     set(w, entity, "termcol", (int64_t)scr.col);
     set(w, entity, "termesc", (int64_t)(unsigned char)scr.st);
     set(w, entity, "termparams", scr.params.c_str());
+    set(w, entity, "termpen", scr.pen_spec().c_str());
+    std::vector<madc::value> rows;
+    const std::vector<madc::hub::term_screen::span> out = scr.spans();
+    for ( size_t i = 0; i < out.size(); ++i )
+    {
+	std::map<std::string, madc::value> o;
+	o["s"] = madc::value((int64_t)out[i].s);
+	o["e"] = madc::value((int64_t)out[i].e);
+	o["c"] = madc::value(out[i].spec);
+	rows.push_back(madc::value::make_object(o));
+    }
+    madc::value arr = madc::value::make_array(rows);
+    set(w, entity, "termspans", arr);
     return (int64_t)new_text.size();
 }
 

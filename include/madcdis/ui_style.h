@@ -26,6 +26,7 @@
 // Thread contract: plain values; the C++ standard-library convention.
 
 #include <cstdint>
+#include <cstdio>
 #include <string>
 
 namespace madc {
@@ -227,6 +228,62 @@ inline bool ui_style_of(const std::string &spec, ui_style &out)
 	return false;
     out = a;
     return true;
+}
+
+// The xterm 256-colour palette's entry `n` as 0xRRGGBB: the 16 system
+// colours (xterm's defaults), the 6x6x6 cube, the 24-step grey ramp — the
+// inverse of ui_rgb_nearest_256 (a program's SGR 38;5;n, facelift S8).
+inline uint32_t ui_xterm256_rgb(int n)
+{
+    static const uint32_t sys[16] = {
+	0x000000, 0xcd0000, 0x00cd00, 0xcdcd00, 0x0000ee, 0xcd00cd, 0x00cdcd, 0xe5e5e5,
+	0x7f7f7f, 0xff0000, 0x00ff00, 0xffff00, 0x5c5cff, 0xff00ff, 0x00ffff, 0xffffff
+    };
+    if ( n < 0 || n > 255 )
+	return 0;
+    if ( n < 16 )
+	return sys[n];
+    if ( n >= 232 )
+    {
+	uint32_t g = (uint32_t)(8 + 10 * (n - 232));
+	return (g << 16) | (g << 8) | g;
+    }
+    static const uint32_t lv[6] = { 0, 95, 135, 175, 215, 255 };
+    n -= 16;
+    return (lv[n / 36] << 16) | (lv[(n / 6) % 6] << 8) | lv[n % 6];
+}
+
+// A style as the spec ui_style_of reads back to the SAME style — the
+// inverse of the one parser (a terminal program's colours carried as span
+// specs, facelift S8): attribute words, then the foreground and background
+// (an exact colour as #rrggbb, else the colour's name); "normal" for none.
+inline std::string ui_style_spec(const ui_style &s)
+{
+    static const struct { unsigned char bit; const char *word; } attrs[] = {
+	{ ui_style::BOLD, "bold" }, { ui_style::DIM, "dim" },
+	{ ui_style::ITALIC, "italic" }, { ui_style::UNDERLINE, "underline" },
+	{ ui_style::BLINK, "blink" }, { ui_style::INVERSE, "inverse" }
+    };
+    std::string out;
+    for ( size_t i = 0; i < sizeof(attrs) / sizeof(attrs[0]); ++i )
+	if ( s.flags & attrs[i].bit )
+	    out += std::string(out.empty() ? "" : " ") + attrs[i].word;
+    char hex[8];
+    if ( s.fg_rgb & ui_style::RGB_SET )
+    {
+	snprintf(hex, sizeof(hex), "#%06x", (unsigned)(s.fg_rgb & 0xffffff));
+	out += std::string(out.empty() ? "" : " ") + hex;
+    }
+    else if ( s.fg >= 1 && s.fg <= 8 )
+	out += std::string(out.empty() ? "" : " ") + ui_style_colour_name(s.fg);
+    if ( s.bg_rgb & ui_style::RGB_SET )
+    {
+	snprintf(hex, sizeof(hex), "#%06x", (unsigned)(s.bg_rgb & 0xffffff));
+	out += std::string(out.empty() ? "" : " ") + "bg_" + hex;
+    }
+    else if ( s.bg >= 1 && s.bg <= 8 )
+	out += std::string(out.empty() ? "" : " ") + "bg_" + ui_style_colour_name(s.bg);
+    return out.empty() ? std::string("normal") : out;
 }
 
 } // namespace hub

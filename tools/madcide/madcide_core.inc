@@ -6173,7 +6173,7 @@ void start_build(long w, long es, const char *cmd)
 // (madcproj://<manifest>?pty), a manifest command in terminal mode or the
 // Shell (pty://<cmd>). The child's bytes fold into the [terminal] buffer
 // through ui::term_feed (the bounded screen: \r overwrite, \b, tabs,
-// CSI K / 2J; other sequences dropped); what the user types while the
+// CSI K / 2J, SGR colours as span rows; other sequences dropped); what the user types while the
 // terminal has focus (`termfocus`) travels the one input path to the core,
 // which sends the BYTES (ui::key_bytes — the inverse of the terminal's own
 // key parser) down a value channel the pump selects on (`termin`) and
@@ -6195,7 +6195,10 @@ long term_doc(long w, long es)
 
 void term_feed_text(long w, long tdoc, const char *text)
 {
-    var t = text;			// ring discipline
+    // The IDE's own lines (a run's header, its exit status) are plain:
+    // SGR 0 first, so a colour the program left set (facelift S8) never
+    // reaches them.
+    var t = format("\x1b[0m{}", text);	// ring discipline: owned
     ui::term_feed(w, tdoc, t.c_str(), strlen(t.c_str()));
     ui::set(w, tdoc, "modified", false);
 }
@@ -9669,6 +9672,15 @@ void compose_chrome_pane(var &out, long w, long es, long doc, var &c)
 		term["subject"] = tdoc;
 	    var th = { "terminal": 1 };
 	    th["caret"] = tsz;
+	    // The program's colours (facelift S8): the screen's coloured runs,
+	    // as the edit node's span rows both faces render.
+	    if ( tdoc != 0 )
+	    {
+		var tsp;
+		ui::get(tsp, w, tdoc, "termspans");
+		if ( !tsp.is_null() && php::count(tsp) > 0 )
+		    th["spans"] = tsp;
+	    }
 	    if ( es_int(w, es, "termfocus", 0) != 0 )
 	    {
 		th["focus"] = 1;

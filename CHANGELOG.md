@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+### tui: the Terminal tab keeps its program's colours (facelift S8)
+
+A program run in the Terminal tab now shows its colours. The bounded screen
+(`include/madcdis/term_screen.h`) reads SGR as a pen — bold, dim, italic,
+underline, blink and inverse with their resets; the 8 colours and their bright
+twins; the xterm 256-colour palette and 24-bit colour — and every byte keeps
+the pen it was written with, overwrites and erases included. `ui::term_feed`
+keeps the pen and the coloured runs on the `[terminal]` buffer beside its text,
+as `{s, e, c}` span rows whose `c` is a theme spec, and the Terminal view hands
+them to its edit node as `spans`, so both the window and the grid faces render
+the colours with no change of their own. `ui_style_spec` in
+`include/madcdis/ui_style.h` renders a style as the spec the parser reads back
+to the same style, and `ui_xterm256_rgb` is the palette's RGB. The IDE's own
+lines — a run's header, its exit status — start with SGR 0, so a colour a
+program leaves set never reaches them. Where a program runs is unchanged: a
+full-screen program still needs the real terminal, because the tab's screen is
+bounded, not a VT emulator. `bin/test_term_screen` runs 6 cases, all pass (SGR
+to spans, the owner round trip, the spec inverse); `testmadcide_termcolour`
+drives printf's bold red word on a pty and checks the screen's rows, the view's
+`spans`, and that the exit line is plain.
+
 ### tui: the mouse — menus, toolbar, tabs, dialogs and the caret by pointer (facelift S7)
 
 The grid reports the mouse. `src/ui_term.cpp` turns on xterm's modes 1000

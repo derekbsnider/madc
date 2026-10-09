@@ -385,6 +385,26 @@ tag), the press's window keeping the drag. The wheel is three arrow keys.
 Goldens: by mouse bytes, File then Save, the toolbar's Run ▾, the caret, the
 palette's [ Close ]; the pty smoke check pins the modes on and off.
 
+S8 as built (2026-10-09): the Terminal tab keeps its program's colours. The
+bounded screen (`madcdis/term_screen.h`) reads SGR as a PEN — bold, dim,
+italic, underline, blink, inverse and their resets; the 8 colours and their
+bright twins; the 256 palette (`ui_xterm256_rgb`) and 24-bit colour — onto
+the one style, and every byte keeps the pen it was written with (overwrites
+and erases included). `ui::term_feed` keeps the pen and the coloured runs on
+the [terminal] buffer beside its text, as `{s, e, c}` span rows whose `c` is a
+theme spec (`ui_style_spec`, the exact inverse of the spec parser), and the
+Terminal view hands them to its edit node as `spans` — the rows the window and
+the grid already render, so both faces show the colours with no change of
+their own. The IDE's own lines (a run's header, its exit status) start with
+SGR 0, so a colour a program leaves set never reaches them. Where a program
+runs is unchanged: in a window, the Terminal tab; in a terminal, the real
+terminal (JOE's ^K Z shape — `haspanel`), because the tab's screen is bounded,
+not a VT emulator: a full-screen program (an editor, `top`) needs the real
+one. Hosting those in the tab is an emulator's job, not this slice's.
+Tests: `bin/test_term_screen` (SGR to spans, the owner round trip, the spec
+inverse), `testmadcide_termcolour` (printf's bold red word on a pty, the
+screen's rows and the view's `spans`, the exit line plain).
+
 Each slice: unit tests in `tests/unit/test_tui_model.cpp`, its goldens,
 Tier 1 + Tier 2. The battery runs once, at the seam. A GUI or TUI change is
 verified by driving input, never by a screenshot alone.
