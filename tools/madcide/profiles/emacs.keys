@@ -3,10 +3,9 @@
 # included; the chord grammar is the same data joe's ^K uses).
 #
 # Meta is `alt+` and C-SPC is `ctrl+space` (plan §41.11a step 3e). The
-# window and the browser send Meta, as does a terminal that reports
-# modified keys; a terminal that sends Meta as an ESC prefix delivers esc
-# and then the key, which this profile leaves unbound, so esc keeps
-# closing panes and prompts and the M- seats are the window's there.
+# window and the browser send Meta, as does a terminal — by reporting
+# modified keys, or as the ESC prefix (ESC and the key in one burst reads
+# as Alt and the key); a lone esc keeps closing panes and prompts.
 # C-SPC is a terminal's NUL, so it reaches every client. The region is
 # mark..caret live (no `bend` in this set), which IS the Emacs region
 # model; Shift with a motion selects too (Emacs's shift-select-mode).

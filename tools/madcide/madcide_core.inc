@@ -801,6 +801,7 @@ bool parse_layout(var &layout, const char *text, var &err, long w = 0)
 {
     var window = "";
     long status = ui::side_code("top");	// the status bar's edge (JOE's: top)
+    long menubar = 0;		// the menu bar held on the top row (S4)
     var rows = {};		// flat: every pane / split with depth + parent
     var open = {};		// indices of the split rows still open
     array lines;
@@ -844,6 +845,18 @@ bool parse_layout(var &layout, const char *text, var &err, long w = 0)
 		return false;
 	    }
 	    status = sd;
+	    continue;
+	}
+	// `menubar` (facelift S4): the menu bar held on the window's top
+	// row; without it a terminal shows the bar only while it is open.
+	if ( kw == "menubar" )
+	{
+	    if ( php::count(words) != 1 )
+	    {
+		err = format("line {}: menubar takes no words", lineno);
+		return false;
+	    }
+	    menubar = 1;
 	    continue;
 	}
 	long ct = container_of(kw);
@@ -987,7 +1000,8 @@ bool parse_layout(var &layout, const char *text, var &err, long w = 0)
     }
     if ( strlen(window.c_str()) == 0 )
 	window = "main";
-    layout = { "window": window, "editor": ed, "chrome": ch, "status": status };
+    layout = { "window": window, "editor": ed, "chrome": ch, "status": status,
+	       "menubar": menubar };
     return true;
 }
 
@@ -997,6 +1011,7 @@ const char *default_layout_text()
 {
     return "# baked default layout — profile data\n"
 	   "@window main\n"
+	   "menubar\n"
 	   "status bottom\n"
 	   "pane editor tabs views source focus gutter\n"
 	   "pane sidebar left 20% tabs views outline help mdpreview hidden\n"
@@ -1134,12 +1149,22 @@ bool layout_status_bottom(var &lo)
     return !sv.is_null() && sv == ui::side::bottom;
 }
 
+// Does the layout hold the menu bar on the top row (its `menubar` line,
+// facelift S4)?
+bool layout_menubar(var &lo)
+{
+    var mv = lo["menubar"];
+    return !mv.is_null() && mv.as_integer() != 0;
+}
+
 // The whole tree -> text: `@window`, the editor region (a top-level pane or
 // split), then the chrome panes (top-level).
 void layout_to_text(var &out, var &lo, long w = 0)
 {
     var s = "# madcide layout — written by the session; edit or delete freely\n";
     s = format("{}@window {}\n", s, lo["window"]);
+    if ( layout_menubar(lo) )
+	s = format("{}menubar\n", s);
     if ( layout_status_bottom(lo) )
 	s = format("{}status bottom\n", s);
     var ed;
@@ -10413,8 +10438,9 @@ void IdeSession::compose_ide_tree(var &root, long doc)
     ui::get(pt, w, es, "presence_theme");
     if ( !pt.is_null() && php::count(pt) > 0 )
 	rh["presence"] = pt;
-    // The chrome's colours (facelift S2/S3): the scheme's divider, gutter,
-    // gutter_current, current_line, tab, tab_active and statusbar specs, as
+    // The chrome's colours (facelift S2-S4): the scheme's divider, gutter,
+    // gutter_current, current_line, tab, tab_active, statusbar and menu
+    // (menubar, menu, menu_selected, menu_hot, shadow) specs, as
     // the grid paints them (tui_chrome's names); a
     // scheme that names none leaves the grid's defaults. A hint the window
     // ignores (its chrome is page.css's).
@@ -10424,7 +10450,8 @@ void IdeSession::compose_ide_tree(var &root, long doc)
     {
 	var chrome;		// a null var becomes the map on its first keyed write
 	var names = { "divider", "gutter", "gutter_current", "current_line",
-		      "tab", "tab_active", "statusbar" };
+		      "tab", "tab_active", "statusbar", "menubar", "menu",
+		      "menu_selected", "menu_hot", "shadow" };
 	for ( var cn : names )
 	    if ( !th[cn.c_str()].is_null() )
 		chrome[cn.c_str()] = th[cn.c_str()];
@@ -10432,11 +10459,16 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 	    rh["chrome"] = chrome;
     }
     // The menu / command data (S1): the bar's menus with their items'
-    // ids, titles and enablement — a root hint the TUI ignores and a
-    // chrome-rendering client (S2) draws natively.
+    // ids, titles and enablement — a chrome-rendering client (S2) draws it
+    // natively, a terminal on its top row (facelift S4): held there when
+    // the layout says `menubar`, else only while F10 / Alt+letter opens it.
     var menu;
     if ( compose_menu_bar(menu, w, es, doc, nav) )
+    {
 	rh["menu"] = menu;
+	if ( layout_menubar(elo) )
+	    rh["menubar"] = 1;
+    }
     // The toolbar (plan §41.11a): the rows the menu data places on it, a
     // root hint beside the menu; the page draws buttons, the grid one line.
     var tbar;

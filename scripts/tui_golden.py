@@ -40,6 +40,8 @@ KEY = {
     'down': ESC + b'[B',
     'f5': ESC + b'[15~',
     'ctrl-k': b'\x0b',
+    'f10': ESC + b'[21~',
+    'alt-e': ESC + b'e',            # the Meta prefix in one burst: Alt+E
 }
 
 # The Dark+ scheme chosen by keys, as a user does: ^T Options, down to the
@@ -81,6 +83,16 @@ SCENARIOS = [
     ('tabs-second', EDIT('second.c', 'second.c'), {}, [(24, 80)]),
     ('tabs-back', EDIT('second.c', 'second.c') + EDIT('golden.cpp', None),
      {}, [(24, 80)]),
+    # the menu bar (S4): F10 drops File; F10, File, its Save by its letter
+    # (the bar closes, the file saved); Alt+E drops Edit, where Cut is
+    # disabled with no selection — its letter chooses nothing, the menu
+    # stays; the dropdown in Dark+ and in ASCII
+    ('menu-file', [('f10', None)], {}, None),
+    ('menu-save', [('f10', None), ('text:s', None)], {}, [(24, 80)]),
+    ('menu-disabled', [('alt-e', None), ('text:c', None)], {}, [(24, 80)]),
+    ('menu-darkplus', DARKPLUS + [('esc', None), ('f10', None)], DEPTH_TRUE,
+     [(36, 120)]),
+    ('menu-ascii', [('f10', None)], ASCII, [(24, 80)]),
 ]
 
 

@@ -1,14 +1,14 @@
 text:
- 0| golden.cpp
- 1|   1  #include <stdio.h>
- 2|   2  // a comment
- 3|   3  int main(void)
- 4|   4  {
- 5|   5          printf("hi %d\n", 42);
- 6|   6          return 0;
- 7|   7  }
- 8|   8
- 9|
+ 0|  File  Edit  Search  View  Window  Build  Help
+ 1| golden.cpp
+ 2|   1  #include <stdio.h>
+ 3|   2  // a comment
+ 4|   3  int main(void)
+ 5|   4  {
+ 6|   5          printf("hi %d\n", 42);
+ 7|   6          return 0;
+ 8|   7  }
+ 9|   8
 10|
 11|
 12|
@@ -36,14 +36,15 @@ text:
 34|Theme: vscode.
 35| A  golden.cpp                                                                                             Row 1  Col 1
 styles:
- 0 0+12:bold,underline,fg=#ffffff
- 1 0+4:fg=#c6c6c6 6+8:fg=#c586c0,bg=#282828 14+1:bg=#282828 15+9:fg=#ce9178,bg=#282828 24+96:bg=#282828
- 2 0+4:fg=#858585 6+12:fg=#6a9955
- 3 0+4:fg=#858585 6+3:fg=#569cd6 10+4:fg=#dcdcaa 15+4:fg=#569cd6
- 4 0+4:fg=#858585
- 5 0+4:fg=#858585 14+6:fg=#dcdcaa 21+6:fg=#ce9178 27+2:fg=#d7ba7d 29+1:fg=#ce9178 32+2:fg=#b5cea8
- 6 0+4:fg=#858585 14+6:fg=#c586c0 21+1:fg=#b5cea8
- 7 0+4:fg=#858585
+ 0 0+2:fg=#cccccc,bg=#3c3c3c 2+1:underline,fg=#cccccc,bg=#3c3c3c 3+5:fg=#cccccc,bg=#3c3c3c 8+1:underline,fg=#cccccc,bg=#3c3c3c 9+5:fg=#cccccc,bg=#3c3c3c 14+1:underline,fg=#cccccc,bg=#3c3c3c 15+7:fg=#cccccc,bg=#3c3c3c 22+1:underline,fg=#cccccc,bg=#3c3c3c 23+5:fg=#cccccc,bg=#3c3c3c 28+1:underline,fg=#cccccc,bg=#3c3c3c 29+7:fg=#cccccc,bg=#3c3c3c 36+1:underline,fg=#cccccc,bg=#3c3c3c 37+6:fg=#cccccc,bg=#3c3c3c 43+1:underline,fg=#cccccc,bg=#3c3c3c 44+76:fg=#cccccc,bg=#3c3c3c
+ 1 0+12:bold,underline,fg=#ffffff
+ 2 0+4:fg=#c6c6c6 6+8:fg=#c586c0,bg=#282828 14+1:bg=#282828 15+9:fg=#ce9178,bg=#282828 24+96:bg=#282828
+ 3 0+4:fg=#858585 6+12:fg=#6a9955
+ 4 0+4:fg=#858585 6+3:fg=#569cd6 10+4:fg=#dcdcaa 15+4:fg=#569cd6
+ 5 0+4:fg=#858585
+ 6 0+4:fg=#858585 14+6:fg=#dcdcaa 21+6:fg=#ce9178 27+2:fg=#d7ba7d 29+1:fg=#ce9178 32+2:fg=#b5cea8
+ 7 0+4:fg=#858585 14+6:fg=#c586c0 21+1:fg=#b5cea8
  8 0+4:fg=#858585
+ 9 0+4:fg=#858585
 33 26+22:inverse
 35 0+4:fg=#ffffff,bg=#007acc 4+10:bold,fg=#ffffff,bg=#007acc 14+93:fg=#ffffff,bg=#007acc 107+3:dim,fg=#ffffff,bg=#007acc 110+4:fg=#ffffff,bg=#007acc 114+3:dim,fg=#ffffff,bg=#007acc 117+3:fg=#ffffff,bg=#007acc

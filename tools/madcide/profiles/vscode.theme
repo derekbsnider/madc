@@ -32,6 +32,12 @@ current_line bg_#282828
 tab #969696
 tab_active bold underline #ffffff
 statusbar #ffffff bg_#007acc
+# ... the menu bar and its dropdowns (facelift S4): Dark+'s title bar, menu
+# surface and selection; the hotkey letter underlined.
+menubar #cccccc bg_#3c3c3c
+menu #cccccc bg_#252526
+menu_selected #ffffff bg_#04395e
+menu_hot underline
 
 # @gui: the window's workbench in Dark+ (the editor's own surfaces).
 @gui bg #1e1e1e

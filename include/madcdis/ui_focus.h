@@ -24,6 +24,7 @@
 // them (the C++ standard-library convention).
 
 #include <map>
+#include <string>
 #include <vector>
 
 #include "madcdis/hub.h"		// name_id
@@ -49,14 +50,107 @@ struct focusable
     focusable() : k(kind::choice), option_count(0), takes_tab(false) {}
 };
 
+// The menu bar (TUI facelift S4): the root `menu` hint's menus as a grid
+// shows them — a row is a command (its action id + code, the application's
+// enum) or a separator; `hot` is the letter that picks it (menu_hotkeys),
+// 0 = none. The application's data; the focus owner keeps which menu is open
+// and which row is lit.
+struct menu_row
+{
+    std::string id;		// the action name (the menu data's command id)
+    int64_t code;		// the action's code (0 = none)
+    std::string title;
+    bool enabled, sep;
+    char hot;			// lower-case ASCII, 0 = none
+    menu_row() : code(0), enabled(true), sep(false), hot(0) {}
+};
+struct menu_col
+{
+    std::string title;
+    char hot;
+    std::vector<menu_row> rows;
+    menu_col() : hot(0) {}
+};
+
+// The hotkey letters (Turbo Vision's highlighted letters): each title's
+// first ASCII letter or digit no earlier title in the same list took — the
+// bar's menus as one list, each dropdown's command rows as another. A title
+// with every letter taken gets none (its row is still reachable by arrows).
+inline char menu_hotkey_of(const std::string &title, std::string &taken)
+{
+    for ( size_t i = 0; i < title.size(); ++i )
+    {
+	unsigned char c = (unsigned char)title[i];
+	if ( c >= 'A' && c <= 'Z' )
+	    c = (unsigned char)(c - 'A' + 'a');
+	if ( !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) )
+	    continue;
+	if ( taken.find((char)c) != std::string::npos )
+	    continue;
+	taken += (char)c;
+	return (char)c;
+    }
+    return 0;
+}
+inline void menu_hotkeys(std::vector<menu_col> &menus)
+{
+    std::string bar;
+    for ( size_t m = 0; m < menus.size(); ++m )
+    {
+	menus[m].hot = menu_hotkey_of(menus[m].title, bar);
+	std::string rows;
+	for ( size_t i = 0; i < menus[m].rows.size(); ++i )
+	    if ( !menus[m].rows[i].sep )
+		menus[m].rows[i].hot = menu_hotkey_of(menus[m].rows[i].title, rows);
+    }
+}
+
 class focus_state
 {
     std::vector<focusable> _focusables;
     size_t _focus;
     std::map<size_t, size_t> _selection;	// per choice slot
+    std::vector<menu_col> _menus;		// the bar (S4), from the last compose
+    size_t _menu_open;				// the open menu; npos = closed
+    size_t _menu_row;				// its lit row
+
+    static bool menu_row_selectable(const menu_row &r)
+	{ return !r.sep && r.enabled; }
+    // The open menu's first selectable row at or after `from` going `step`
+    // (+1 / -1), wrapping; npos when it has none.
+    size_t menu_row_from(size_t from, int step) const
+    {
+	const std::vector<menu_row> &rows = _menus[_menu_open].rows;
+	size_t n = rows.size();
+	for ( size_t k = 0; k < n; ++k )
+	{
+	    size_t i = (from + n + (size_t)(step * (long)k)) % n;
+	    if ( menu_row_selectable(rows[i]) )
+		return i;
+	}
+	return std::string::npos;
+    }
+    void menu_show(size_t m)
+    {
+	_menu_open = m;
+	_menu_row = _menus[m].rows.empty() ? 0 : menu_row_from(0, 1);
+	if ( _menu_row == std::string::npos )
+	    _menu_row = 0;
+    }
+    // A key's letter for the hotkey tests: a plain or Alt-held printable,
+    // lower-cased; 0 for anything else.
+    static char menu_letter(const tui_keyev &k)
+    {
+	if ( k.kind != tui_key::ch || (k.mods & ~key_mod_bits(::ui::key_mod::alt)) != 0 )
+	    return 0;
+	char c = k.ch;
+	if ( c >= 'A' && c <= 'Z' )
+	    c = (char)(c - 'A' + 'a');
+	return c;
+    }
 
 public:
-    focus_state() : _focus(0) {}
+    focus_state() : _focus(0), _menu_open(std::string::npos), _menu_row(0) {}
 
     // compose() calls these in discovery order (the Phase-1 identity rule):
     // the list is rebuilt, focus and selections are kept.
@@ -164,6 +258,136 @@ public:
 	    e.option = selection_of(_focus);
 	}
 	return false;
+    }
+
+    // ---- the menu bar (TUI facelift S4) ----------------------------------
+    // compose() installs the bar from the root's `menu` hint each time; a
+    // bar that shrank past the open menu closes it, the lit row re-settles.
+    void set_menus(const std::vector<menu_col> &menus)
+    {
+	_menus = menus;
+	if ( _menu_open != std::string::npos )
+	{
+	    if ( _menu_open >= _menus.size() )
+		_menu_open = std::string::npos;
+	    else if ( _menu_row >= _menus[_menu_open].rows.size()
+		      || !menu_row_selectable(_menus[_menu_open].rows[_menu_row]) )
+	    {
+		size_t r = _menus[_menu_open].rows.empty() ? std::string::npos
+							   : menu_row_from(0, 1);
+		_menu_row = r == std::string::npos ? 0 : r;
+	    }
+	}
+    }
+    const std::vector<menu_col> &menus() const { return _menus; }
+    bool menu_is_open() const { return _menu_open != std::string::npos; }
+    size_t open_menu() const { return _menu_open; }
+    size_t menu_lit_row() const { return _menu_row; }
+
+    // A key no binding took (the key owner passed it through) that OPENS the
+    // bar: F10 opens the first menu, Alt and a menu's letter that menu. `e`
+    // is a focus event (repaint). False = not the bar's key.
+    bool menu_opens(const tui_keyev &k, tui_event &e)
+    {
+	if ( _menus.empty() || menu_is_open() )
+	    return false;
+	if ( k.kind == tui_key::fkey && k.ch == 10 && k.mods == 0 )
+	{
+	    menu_show(0);
+	    e.kind = tui_event_kind::focus;
+	    return true;
+	}
+	if ( k.kind == tui_key::ch && k.mods == key_mod_bits(::ui::key_mod::alt) )
+	{
+	    char c = menu_letter(k);
+	    for ( size_t m = 0; c && m < _menus.size(); ++m )
+		if ( _menus[m].hot == c )
+		{
+		    menu_show(m);
+		    e.kind = tui_event_kind::focus;
+		    return true;
+		}
+	}
+	return false;
+    }
+
+    // An open bar takes EVERY key (the modal dropdown): left/right move
+    // between menus, up/down between selectable rows (a separator or a
+    // disabled row is never lit), Enter or a row's letter chooses — the SAME
+    // action event a bound chord produces (the row's id + code), the bar
+    // closing; Alt and a menu's letter switches menus; Esc or F10 closes.
+    // A disabled row is never chosen. Every other key is swallowed (a focus
+    // event: repaint).
+    void menu_key(const tui_keyev &k, tui_event &e)
+    {
+	e.kind = tui_event_kind::focus;
+	const size_t nm = _menus.size();
+	switch ( k.kind )
+	{
+	    case tui_key::esc:
+		_menu_open = std::string::npos;
+		return;
+	    case tui_key::fkey:
+		if ( k.ch == 10 )
+		    _menu_open = std::string::npos;
+		return;
+	    case tui_key::left:
+		menu_show((_menu_open + nm - 1) % nm);
+		return;
+	    case tui_key::right:
+		menu_show((_menu_open + 1) % nm);
+		return;
+	    case tui_key::up:
+	    case tui_key::down:
+	    {
+		if ( _menus[_menu_open].rows.empty() )
+		    return;
+		int step = k.kind == tui_key::down ? 1 : -1;
+		size_t n = _menus[_menu_open].rows.size();
+		size_t r = menu_row_from((_menu_row + n + (size_t)step) % n, step);
+		if ( r != std::string::npos )
+		    _menu_row = r;
+		return;
+	    }
+	    case tui_key::enter:
+		menu_choose(_menu_row, e);
+		return;
+	    default:
+		break;
+	}
+	char c = menu_letter(k);
+	if ( !c )
+	    return;
+	if ( k.mods )				// Alt and a letter: another menu
+	{
+	    for ( size_t m = 0; m < nm; ++m )
+		if ( _menus[m].hot == c )
+		{
+		    menu_show(m);
+		    return;
+		}
+	}
+	const std::vector<menu_row> &rows = _menus[_menu_open].rows;
+	for ( size_t i = 0; i < rows.size(); ++i )
+	    if ( !rows[i].sep && rows[i].hot == c )
+	    {
+		menu_choose(i, e);
+		return;
+	    }
+    }
+    // Choose row `i` of the open menu: an enabled command row closes the bar
+    // and becomes the action event; anything else leaves it open.
+    bool menu_choose(size_t i, tui_event &e)
+    {
+	if ( !menu_is_open() || i >= _menus[_menu_open].rows.size()
+	  || !menu_row_selectable(_menus[_menu_open].rows[i]) )
+	    return false;
+	const menu_row &row = _menus[_menu_open].rows[i];
+	e.kind = tui_event_kind::action;
+	e.action_name = row.id;
+	e.action_code = row.code;
+	_menu_open = std::string::npos;
+	return true;
     }
 
     // A pointing gesture PICKED an option (madcide polish P2, the list

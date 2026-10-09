@@ -301,6 +301,30 @@ theme's `tab`, `tab_active` and `statusbar` colour them (Dark+: #969696,
 bold underlined white, white on #007acc). Goldens: the strip switched by
 keys (`^K E second.c`, then `^K E golden.cpp`).
 
+S4 as built (2026-10-09): the menu bar is the focus owner's
+(`madcdis/ui_focus.h`): the root `menu` hint — the data the window's native
+menu reads — becomes the bar's menus and rows, each title given its hotkey
+letter (its first letter or digit no earlier title took, Turbo Vision's lit
+letter). The one keys → events loop (`ui_apply_keys`) gives an open bar every
+key: left/right between menus, up/down over the selectable rows (a separator
+or a disabled row is never lit), Enter or a row's letter chooses — the SAME
+`action` event (id + code) a bound chord or the window's menu produces — and
+Esc or F10 closes. A key no binding took opens it: F10 the first menu, Alt and
+a menu's letter that menu; a profile that binds the key keeps it (Emacs's
+M-f). A terminal's Meta prefix reads as Alt: ESC and a printable in one burst
+is Alt and that key (`tui_keyparse`), and Alt and a printable writes back as
+ESC and the byte. The grid paints the bar and the open dropdown last, over
+everything: the bar on row 0, the dropdown a framed box under its title (a
+second `tui_frame`, so its separators meet its border as `├ ┤`), each row's
+chord from the loaded profile right-aligned, a disabled row dim, a shadow to
+the right and below. The layout's `menubar` window line (default.layout and
+the baked default) holds the bar on row 0; without it the bar shows only while
+open (JOE's rows unchanged). The scheme's `menubar`, `menu`, `menu_selected`,
+`menu_hot` and `shadow` colour it (Dark+: #3c3c3c bar, #252526 surface,
+#04395e selection, underlined letters). Goldens: F10 (Unicode, ASCII, Dark+),
+F10 then `s` saving the file, Alt+E then a disabled Cut's letter (the menu
+stays). Submenus wait for submenu data (the menu file has none).
+
 Each slice: unit tests in `tests/unit/test_tui_model.cpp`, its goldens,
 Tier 1 + Tier 2. The battery runs once, at the seam. A GUI or TUI change is
 verified by driving input, never by a screenshot alone.

@@ -74,13 +74,15 @@ enum class tui_chrome : unsigned char
 {
     divider = 0, gutter, gutter_current, current_line,
     tab, tab_active, statusbar,		// S3: strips and the status bar
+    menubar, menu, menu_selected, menu_hot, shadow,	// S4: the menu bar
     count
 };
 inline bool tui_chrome_of(const std::string &name, tui_chrome &out)
 {
     static const char *const names[] = {
 	"divider", "gutter", "gutter_current", "current_line",
-	"tab", "tab_active", "statusbar"
+	"tab", "tab_active", "statusbar",
+	"menubar", "menu", "menu_selected", "menu_hot", "shadow"
     };
     for ( size_t i = 0; i < (size_t)tui_chrome::count; ++i )
 	if ( name == names[i] )
@@ -829,6 +831,11 @@ private:
 	_chrome[(size_t)tui_chrome::gutter].flags = ui_style::DIM;
 	_chrome[(size_t)tui_chrome::tab_active] = ui_style::reverse();
 	_chrome[(size_t)tui_chrome::statusbar] = ui_style::reverse();
+	_chrome[(size_t)tui_chrome::menubar] = ui_style::reverse();
+	_chrome[(size_t)tui_chrome::menu] = ui_style::reverse();
+	_chrome[(size_t)tui_chrome::menu_hot].flags = ui_style::UNDERLINE;
+	_chrome[(size_t)tui_chrome::shadow].bg = 1;	// black
+	_chrome[(size_t)tui_chrome::shadow].flags = ui_style::DIM;
 	if ( !tree.hints.is_object() )
 	    return;
 	const std::map<std::string, madc::value> &ho = tree.hints.as_object();
@@ -984,13 +991,19 @@ public:
 	_frame.reset(rows, cols);
 	read_chrome(tree);
 	_focus_st.begin_compose();
-	// The toolbar (plan §41.11a): a root `toolbar` hint takes the top row;
-	// the bands and the centre lay out in the rows below it. No hint = no
-	// row, byte-identical to before (the negative control).
+	_focus_st.set_menus(read_menus(tree));
+	// The menu bar (S4): the root's `menubar` hint (the layout's `menubar`
+	// line) keeps it on the top row; without it the bar shows only while
+	// open, over the top row (JOE's look keeps its rows).
+	const size_t mtop = (hint_of(tree.hints, "menubar", 0) != 0
+			     && !_focus_st.menus().empty() && rows > 3) ? 1 : 0;
+	// The toolbar (plan §41.11a): a root `toolbar` hint takes the top row
+	// (under the bar); the bands and the centre lay out in the rows below
+	// it. No hint = no row, byte-identical to before (the negative control).
 	const std::string tbline = toolbar_line(tree);
-	const size_t top = (!tbline.empty() && rows > 1) ? 1 : 0;
-	if ( top )
-	    _grid.put(0, 0, tbline);
+	const size_t top = mtop + ((!tbline.empty() && rows > mtop + 1) ? 1 : 0);
+	if ( top > mtop )
+	    _grid.put(mtop, 0, tbline);
 	// The status BAR docked at the bottom (S3, the layout's `status
 	// bottom`): the screen's last row, full width, under every band. A
 	// status line at the top (JOE's place) stays in the centre flow.
@@ -1129,7 +1142,201 @@ public:
 	if ( bar )
 	    paint_line(rows - 1, 0, status_bar_line(*bar, cols));
 	_frame.paint(_grid, _chrome[(size_t)tui_chrome::divider]);
+	// The menu bar and its dropdown LAST: an overlay over everything.
+	if ( mtop || _focus_st.menu_is_open() )
+	    paint_menus();
 	return _grid;
+    }
+
+    // The root's `menu` hint ({bar:[{title, items:[{id,code,title,enabled?}
+    // |{sep}]}]}, the shape the window's native menu reads) as the focus
+    // owner's bar, each title's hotkey letter assigned (menu_hotkeys). A row
+    // without an id is dropped, as the window drops it.
+    static std::vector<menu_col> read_menus(const uinode &tree)
+    {
+	std::vector<menu_col> out;
+	if ( !tree.hints.is_object() )
+	    return out;
+	const std::map<std::string, madc::value> &ho = tree.hints.as_object();
+	std::map<std::string, madc::value>::const_iterator mi = ho.find("menu");
+	if ( mi == ho.end() || !mi->second.is_object() )
+	    return out;
+	const std::map<std::string, madc::value> &mo = mi->second.as_object();
+	std::map<std::string, madc::value>::const_iterator bi = mo.find("bar");
+	if ( bi == mo.end() || !bi->second.is_array() )
+	    return out;
+	for ( const madc::value &mv : bi->second.as_array() )
+	{
+	    if ( !mv.is_object() )
+		continue;
+	    menu_col m;
+	    m.title = hint_str(mv, "title");
+	    const std::map<std::string, madc::value> &mm = mv.as_object();
+	    std::map<std::string, madc::value>::const_iterator ii = mm.find("items");
+	    if ( ii != mm.end() && ii->second.is_array() )
+		for ( const madc::value &iv : ii->second.as_array() )
+		{
+		    if ( !iv.is_object() )
+			continue;
+		    menu_row row;
+		    if ( hint_of(iv, "sep", 0) )
+		    {
+			row.sep = true;
+			m.rows.push_back(row);
+			continue;
+		    }
+		    row.id = hint_str(iv, "id");
+		    if ( row.id.empty() )
+			continue;
+		    row.title = hint_str(iv, "title");
+		    row.code = hint_of(iv, "code", 0);
+		    row.enabled = hint_of(iv, "enabled", 1) != 0;
+		    m.rows.push_back(row);
+		}
+	    out.push_back(m);
+	}
+	menu_hotkeys(out);
+	return out;
+    }
+
+    // `base` with the hotkey letter's look laid over it: menu_hot's colour
+    // when it names one, its attributes added.
+    ui_style menu_hot_over(ui_style base) const
+    {
+	const ui_style &h = _chrome[(size_t)tui_chrome::menu_hot];
+	if ( h.fg || h.fg_rgb )
+	{
+	    base.fg = h.fg;
+	    base.fg_rgb = h.fg_rgb;
+	}
+	base.flags |= h.flags;
+	return base;
+    }
+    // A title at (r, c) in `st`, its hotkey letter (the first occurrence of
+    // `hot`, which menu_hotkey_of chose) in menu_hot's look.
+    void put_menu_title(size_t r, size_t c, const std::string &title, char hot,
+			ui_style st)
+    {
+	_grid.put(r, c, title, st);
+	if ( !hot )
+	    return;
+	for ( size_t i = 0; i < title.size(); ++i )
+	{
+	    char ch = title[i];
+	    if ( ch >= 'A' && ch <= 'Z' )
+		ch = (char)(ch - 'A' + 'a');
+	    if ( ch == hot )
+	    {
+		_grid.overlay_attr(r, c + madc::line_width(title.substr(0, i)), 1,
+				   menu_hot_over(st));
+		return;
+	    }
+	}
+    }
+
+    // The bar on row 0 (Turbo Vision's: " File  Edit ..." with each title's
+    // letter lit) and, while one is open, its dropdown: a framed box under
+    // its title, a row per command — the chord the LOADED profile binds to
+    // it right-aligned, a disabled row dim, the lit row in menu_selected, a
+    // separator a rule across the box — with a shadow to its right and
+    // below. Painted after everything, so it covers whatever is there.
+    void paint_menus()
+    {
+	const std::vector<menu_col> &menus = _focus_st.menus();
+	if ( menus.empty() || _grid.rows < 3 || _grid.cols < 8 )
+	    return;
+	const size_t cols = _grid.cols;
+	const ui_style bar = _chrome[(size_t)tui_chrome::menubar];
+	const ui_style lit = _chrome[(size_t)tui_chrome::menu_selected];
+	const size_t open = _focus_st.open_menu();
+	_grid.put(0, 0, std::string(cols, ' '), bar);
+	std::vector<size_t> at(menus.size(), cols);
+	size_t c = 1;
+	for ( size_t m = 0; m < menus.size() && c < cols; ++m )
+	{
+	    size_t w = madc::line_width(menus[m].title);
+	    at[m] = c;
+	    ui_style st = m == open ? lit : bar;
+	    _grid.put(0, c, std::string(w + 2, ' '), st);
+	    put_menu_title(0, c + 1, menus[m].title, menus[m].hot, st);
+	    c += w + 2;
+	}
+	if ( open >= menus.size() )
+	    return;
+	paint_dropdown(menus[open], at[open] < cols ? at[open] : 0, 1,
+		       _focus_st.menu_lit_row());
+    }
+    // One menu's dropdown box with its top-left corner at (r0, c0) (moved
+    // left to fit the screen; rows past the screen's bottom are cut).
+    void paint_dropdown(const menu_col &m, size_t c0, size_t r0, size_t lit_row)
+    {
+	const ui_style body = _chrome[(size_t)tui_chrome::menu];
+	const ui_style lit = _chrome[(size_t)tui_chrome::menu_selected];
+	std::vector<std::string> keys(m.rows.size());
+	size_t inner = 0;
+	for ( size_t i = 0; i < m.rows.size(); ++i )
+	{
+	    if ( m.rows[i].sep )
+		continue;
+	    keys[i] = _keys.bindings().chord_for(m.rows[i].code, m.rows[i].id);
+	    size_t w = madc::line_width(m.rows[i].title)
+		     + (keys[i].empty() ? 0 : 2 + madc::line_width(keys[i]));
+	    if ( w > inner )
+		inner = w;
+	}
+	const size_t rows = _grid.rows, cols = _grid.cols;
+	size_t w = inner + 4;			// the border and a space each side
+	if ( w > cols )
+	    w = cols;
+	if ( c0 + w > cols )
+	    c0 = cols - w;
+	size_t h = m.rows.size() + 2;
+	if ( r0 + h > rows )
+	    h = rows - r0;
+	if ( h < 2 || w < 4 )
+	    return;
+	const size_t r1 = r0 + h - 1, c1 = c0 + w - 1;
+	tui_frame box;
+	box.reset(rows, cols);
+	box.hline(r0, c0, c1);
+	box.hline(r1, c0, c1);
+	box.vline(c0, r0, r1);
+	box.vline(c1, r0, r1);
+	for ( size_t r = r0 + 1; r < r1; ++r )
+	{
+	    const size_t i = r - r0 - 1;
+	    const menu_row &row = m.rows[i];
+	    _grid.put(r, c0 + 1, std::string(w - 2, ' '), body);
+	    if ( row.sep )
+	    {
+		box.hline(r, c0, c1);
+		continue;
+	    }
+	    ui_style st = i == lit_row ? lit : body;
+	    if ( !row.enabled )
+		st.flags |= ui_style::DIM;
+	    if ( i == lit_row )
+		_grid.put(r, c0 + 1, std::string(w - 2, ' '), st);
+	    put_menu_title(r, c0 + 2, row.title, row.enabled ? row.hot : 0, st);
+	    if ( !keys[i].empty() )
+	    {
+		size_t kw = madc::line_width(keys[i]);
+		if ( kw + 3 <= w )
+		    _grid.put(r, c1 - 1 - kw, keys[i], st);
+	    }
+	    if ( i == lit_row )
+	    {
+		_grid.cursor_row = r;
+		_grid.cursor_col = c0 + 1;
+	    }
+	}
+	box.paint(_grid, body);
+	// The shadow: two columns to the right, one row below, offset by one.
+	const ui_style shadow = _chrome[(size_t)tui_chrome::shadow];
+	for ( size_t r = r0 + 1; r <= r1 && r < rows; ++r )
+	    _grid.overlay_attr(r, c1 + 1, 2, shadow);
+	if ( r1 + 1 < rows )
+	    _grid.overlay_attr(r1 + 1, c0 + 2, w, shadow);
     }
 
     // The toolbar's one line (plan §41.11a): each row of the root's

@@ -1,14 +1,14 @@
 text:
- 0| golden.cpp
- 1|   1  #include <stdio.h>
- 2|   2  // a comment
- 3|   3  int main(void)
- 4|   4  {
- 5|   5          printf("hi %d\n", 42);
- 6|   6          return 0;
- 7|   7  }
- 8|   8
- 9|
+ 0|  File  Edit  Search  View  Window  Build  Help
+ 1| golden.cpp
+ 2|   1  #include <stdio.h>
+ 3|   2  // a comment
+ 4|   3  int main(void)
+ 5|   4  {
+ 6|   5          printf("hi %d\n", 42);
+ 7|   6          return 0;
+ 8|   7  }
+ 9|   8
 10|
 11|
 12|
@@ -36,14 +36,15 @@ text:
 34|Theme: vscode.
 35| A  golden.cpp                                                                                             Row 1  Col 1
 styles:
- 0 0+12:bold,underline,fg=7
- 1 0+4:fg=7 6+8:fg=5,bg=0 14+1:bg=0 15+9:fg=1,bg=0 24+96:bg=0
- 2 0+4:fg=7 6+12:fg=2
- 3 0+4:fg=7 6+3:fg=6 10+4:fg=7 15+4:fg=6
- 4 0+4:fg=7
- 5 0+4:fg=7 14+6:fg=7 21+6:fg=1 27+2:fg=3 29+1:fg=1 32+2:fg=7
- 6 0+4:fg=7 14+6:fg=5 21+1:fg=7
- 7 0+4:fg=7
+ 0 0+2:fg=7,bg=0 2+1:underline,fg=7,bg=0 3+5:fg=7,bg=0 8+1:underline,fg=7,bg=0 9+5:fg=7,bg=0 14+1:underline,fg=7,bg=0 15+7:fg=7,bg=0 22+1:underline,fg=7,bg=0 23+5:fg=7,bg=0 28+1:underline,fg=7,bg=0 29+7:fg=7,bg=0 36+1:underline,fg=7,bg=0 37+6:fg=7,bg=0 43+1:underline,fg=7,bg=0 44+76:fg=7,bg=0
+ 1 0+12:bold,underline,fg=7
+ 2 0+4:fg=7 6+8:fg=5,bg=0 14+1:bg=0 15+9:fg=1,bg=0 24+96:bg=0
+ 3 0+4:fg=7 6+12:fg=2
+ 4 0+4:fg=7 6+3:fg=6 10+4:fg=7 15+4:fg=6
+ 5 0+4:fg=7
+ 6 0+4:fg=7 14+6:fg=7 21+6:fg=1 27+2:fg=3 29+1:fg=1 32+2:fg=7
+ 7 0+4:fg=7 14+6:fg=5 21+1:fg=7
  8 0+4:fg=7
+ 9 0+4:fg=7
 33 26+22:inverse
 35 0+4:fg=7,bg=6 4+10:bold,fg=7,bg=6 14+93:fg=7,bg=6 107+3:dim,fg=7,bg=6 110+4:fg=7,bg=6 114+3:dim,fg=7,bg=6 117+3:fg=7,bg=6

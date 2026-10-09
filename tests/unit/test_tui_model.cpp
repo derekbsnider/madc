@@ -37,6 +37,10 @@ using madc::hub::tui_diff_plan;
 using madc::hub::tui_bindings;
 using madc::hub::tui_frame;
 using madc::hub::ui_box_ascii;
+using madc::hub::key_mod_bits;
+using madc::hub::menu_col;
+using madc::hub::menu_row;
+using madc::hub::menu_hotkeys;
 
 // `n` copies of a (UTF-8) glyph.
 static std::string repeat(const char *utf8, size_t n)
@@ -137,12 +141,17 @@ TEST_CASE("keyparse — CSI and SS3 escape sequences, tilde codes, bare ESC")
     REQUIRE(out.size() == 1u);
     CHECK(out[0].kind == tui_key::esc);
 
-    // ESC followed by an ordinary byte: esc, then the byte.
+    // ESC and a printable byte before the pause: the Meta prefix, Alt+q.
     k = parse("\x1bq");
+    REQUIRE(k.size() == 1u);
+    CHECK(k[0].kind == tui_key::ch);
+    CHECK(k[0].ch == 'q');
+    CHECK(k[0].mods == key_mod_bits(::ui::key_mod::alt));
+    // ESC before a control byte: esc, then the byte.
+    k = parse("\x1b\r");
     REQUIRE(k.size() == 2u);
     CHECK(k[0].kind == tui_key::esc);
-    CHECK(k[1].kind == tui_key::ch);
-    CHECK(k[1].ch == 'q');
+    CHECK(k[1].kind == tui_key::enter);
 
     // A partial CSI at the pause is dropped, and parsing recovers.
     tui_keyparse q;
@@ -174,6 +183,9 @@ TEST_CASE("keyparse — xterm's modified keys decode, and their bytes round-trip
 	{ "\x1b[27;5;43~", "ctrl+plus" },
 	{ "\x1b[115;5u", "^s" },		// CSI u: plain Ctrl+S stays ^s
 	{ "\x1b[119;6u", "ctrl+shift+w" },
+	{ "\x1b" "f", "alt+f" },			// the Meta prefix
+	{ "\x1b<", "alt+<" },
+	{ "\x1b[27;3;97~", "alt+a" },		// modifyOtherKeys' Alt+A
     };
     for ( size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); ++i )
     {
@@ -196,6 +208,8 @@ TEST_CASE("keyparse — xterm's modified keys decode, and their bytes round-trip
     // The unmodified keys' bytes are unchanged.
     CHECK(madc::hub::tui_key_bytes(tui_keyev(tui_key::up)) == "\x1b[A");
     CHECK(madc::hub::tui_key_bytes(tui_keyev(tui_key::ctrl, 's')) == "\x13");
+    // Alt and a printable writes the Meta prefix (readline's M-f).
+    CHECK(madc::hub::tui_key_bytes(parse("\x1b[27;3;102~")[0]) == "\x1b" "f");
 }
 
 TEST_CASE("keyparse — function keys: xterm's tilde codes and SS3, the Linux console's")
@@ -1619,4 +1633,218 @@ TEST_CASE("compose — the theme's tab and statusbar chrome")
     CHECK(g.at(9, 39).attr.bg == 5);
     CHECK((g.at(9, 1).attr.flags & ui_style::BOLD) != 0);
     CHECK(g.at(9, 1).attr.bg == 5);				// the name keeps the bar
+}
+
+// The menu bar (facelift S4): a root `menu` hint, two menus — File (New, a
+// separator, Save disabled, Save As, Quit) and Edit (Undo).
+static madc::value menu_item(const char *id, int64_t code, const char *title,
+			     bool enabled = true)
+{
+    std::map<std::string, madc::value> o;
+    o["id"] = madc::value(std::string(id));
+    o["code"] = madc::value(code);
+    o["title"] = madc::value(std::string(title));
+    if ( !enabled )
+	o["enabled"] = madc::value((int64_t)0);
+    return madc::value::make_object(o);
+}
+static uinode menu_tree(world &w, bool held, bool save_enabled = false)
+{
+    roles r = roles::standard(w);
+    uinode root(r.group);
+    std::vector<madc::value> file, edit, bar;
+    file.push_back(menu_item("new", 11, "New"));
+    std::map<std::string, madc::value> sep;
+    sep["sep"] = madc::value((int64_t)1);
+    file.push_back(madc::value::make_object(sep));
+    file.push_back(menu_item("save", 12, "Save", save_enabled));
+    file.push_back(menu_item("saveas", 13, "Save As"));
+    file.push_back(menu_item("quit", 14, "Quit"));
+    edit.push_back(menu_item("undo", 21, "Undo"));
+    std::map<std::string, madc::value> fm, em, menu, rh;
+    fm["title"] = madc::value(std::string("File"));
+    fm["items"] = madc::value::make_array(file);
+    em["title"] = madc::value(std::string("Edit"));
+    em["items"] = madc::value::make_array(edit);
+    bar.push_back(madc::value::make_object(fm));
+    bar.push_back(madc::value::make_object(em));
+    menu["bar"] = madc::value::make_array(bar);
+    rh["menu"] = madc::value::make_object(menu);
+    if ( held )
+	rh["menubar"] = madc::value((int64_t)1);
+    root.hints = madc::value::make_object(rh);
+    root.add(edit_node(w, "text", 0));
+    return root;
+}
+
+TEST_CASE("menu — hotkey letters: each title's first letter no earlier title took")
+{
+    std::vector<menu_col> menus(2);
+    menus[0].title = "Save";
+    menus[1].title = "Search";
+    menu_row a, b, c, s;
+    a.title = "Save";
+    b.title = "Save All";
+    c.title = "Save As…";
+    s.sep = true;
+    menus[0].rows.push_back(a);
+    menus[0].rows.push_back(s);
+    menus[0].rows.push_back(b);
+    menus[0].rows.push_back(c);
+    menu_hotkeys(menus);
+    CHECK(menus[0].hot == 's');
+    CHECK(menus[1].hot == 'e');
+    CHECK(menus[0].rows[0].hot == 's');
+    CHECK(menus[0].rows[1].hot == 0);			// a separator has none
+    CHECK(menus[0].rows[2].hot == 'a');
+    CHECK(menus[0].rows[3].hot == 'v');
+}
+
+TEST_CASE("menu — the held bar takes row 0; the flow starts below it")
+{
+    world w;
+    roles r = roles::standard(w);
+    uinode root = menu_tree(w, true);
+    tui_model m;
+    const tui_grid &g = m.compose(r, root, 6, 30);
+    CHECK(g.row_text(0) == "  File  Edit");
+    CHECK(g.at(0, 0).attr == ui_style::reverse());
+    CHECK(g.at(0, 29).attr == ui_style::reverse());		// full width
+    CHECK(g.at(0, 2).attr.flags == (ui_style::INVERSE | ui_style::UNDERLINE));	// F
+    CHECK(g.at(0, 3).attr == ui_style::reverse());
+    CHECK(g.row_text(1) == "text");
+    // Without the hint the bar is not shown until it opens.
+    tui_model j;
+    uinode jroot = menu_tree(w, false);
+    const tui_grid &jg = j.compose(r, jroot, 6, 30);
+    CHECK(jg.row_text(0) == "text");
+}
+
+TEST_CASE("menu — F10 opens File: a framed dropdown, chords right, a disabled row dim, a shadow")
+{
+    world w;
+    roles r = roles::standard(w);
+    uinode root = menu_tree(w, false);
+    tui_model m;
+    tui_bindings b;
+    b.bind("^q", "quit", 14);
+    std::string err;
+    REQUIRE(b.finalize(err));
+    m.set_bindings(b);
+    m.compose(r, root, 10, 30);
+    std::vector<tui_event> ev = m.apply_keys(parse("\x1b[21~"));	// F10
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::focus);
+    const tui_grid &g = m.compose(r, root, 10, 30);
+    // the bar over row 0, File lit; its box under the title from column 1:
+    // "Quit  ^q" (8) the widest row, 12 wide with the border and spaces
+    CHECK(g.row_text(0) == "  File  Edit");
+    CHECK(g.at(0, 2).attr.flags == ui_style::UNDERLINE);	// lit: normal + hot
+    CHECK(g.row_text(1) == " \xe2\x94\x8c" + repeat("\xe2\x94\x80", 10) + "\xe2\x94\x90");
+    CHECK(g.row_text(2) == " \xe2\x94\x82 New      \xe2\x94\x82");
+    CHECK(g.row_text(3) == " \xe2\x94\x9c" + repeat("\xe2\x94\x80", 10) + "\xe2\x94\xa4");
+    CHECK(g.row_text(4) == " \xe2\x94\x82 Save     \xe2\x94\x82");
+    CHECK(g.row_text(6) == " \xe2\x94\x82 Quit  ^q \xe2\x94\x82");
+    CHECK(g.at(2, 3).attr.flags == ui_style::UNDERLINE);	// New lit (first row)
+    CHECK((g.at(4, 3).attr.flags & ui_style::DIM) != 0);	// Save disabled
+    CHECK((g.at(4, 3).attr.flags & ui_style::UNDERLINE) == 0);	// no letter
+    CHECK(g.at(3, 13).attr.bg == 1);				// the shadow, right
+    CHECK(g.at(8, 4).attr.bg == 1);				// and below
+    CHECK(g.at(2, 2).attr == ui_style::normal());		// the lit row, across
+    CHECK(g.at(2, 1).attr == ui_style::reverse());		// the border: the body's
+}
+
+TEST_CASE("menu — arrows skip the separator and the disabled row; Enter chooses the action")
+{
+    world w;
+    roles r = roles::standard(w);
+    uinode root = menu_tree(w, false);
+    tui_model m;
+    m.compose(r, root, 10, 30);
+    m.apply_keys(parse("\x1b[21~"));				// F10: File, New lit
+    m.compose(r, root, 10, 30);
+    m.apply_keys(parse("\x1b[B"));				// down: over sep + Save
+    std::vector<tui_event> ev = m.apply_keys(parse("\r"));
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::action);
+    CHECK(ev[0].action_name == "saveas");
+    CHECK(ev[0].action_code == 13);
+    // Closed: the next key is the application's again.
+    ev = m.apply_keys(parse("x"));
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::text);
+    // Up from the first row wraps to Quit; left/right move between menus.
+    m.apply_keys(parse("\x1b[21~"));
+    m.apply_keys(parse("\x1b[A"));
+    ev = m.apply_keys(parse("\r"));
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].action_name == "quit");
+    m.apply_keys(parse("\x1b[21~"));
+    m.apply_keys(parse("\x1b[C"));
+    ev = m.apply_keys(parse("\r"));
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].action_name == "undo");
+}
+
+TEST_CASE("menu — a disabled row cannot be chosen: its letter and Enter do nothing")
+{
+    world w;
+    roles r = roles::standard(w);
+    uinode root = menu_tree(w, false);
+    tui_model m;
+    m.compose(r, root, 10, 30);
+    // Alt+F (the Meta prefix) opens File. Every command row has its letter
+    // (New n, Save s, Save As a, Quit q); Save's `s` chooses nothing while
+    // Save is disabled.
+    std::vector<tui_event> ev = m.apply_keys(parse("\x1b" "f"));
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::focus);
+    ev = m.apply_keys(parse("s"));
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::focus);		// swallowed, still open
+    ev = m.apply_keys(parse("a"));				// Save As's letter
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::action);
+    CHECK(ev[0].action_name == "saveas");
+    // Enabled, Save chooses by its letter; Esc closes without an action.
+    uinode on = menu_tree(w, false, true);
+    m.compose(r, on, 10, 30);
+    m.apply_keys(parse("\x1b" "f"));
+    ev = m.apply_keys(parse("s"));
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].action_name == "save");
+    m.apply_keys(parse("\x1b" "f"));
+    ev = m.apply_keys(parse("\x1b", true));
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::focus);
+    ev = m.apply_keys(parse("q"));
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::text);			// closed
+}
+
+TEST_CASE("menu — a bound F10 or Alt+letter stays the profile's")
+{
+    world w;
+    roles r = roles::standard(w);
+    uinode root = menu_tree(w, false);
+    tui_model m;
+    tui_bindings b;
+    b.bind("f10", "stepover", 40);
+    b.bind("alt+f", "wordright", 41);
+    std::string err;
+    REQUIRE(b.finalize(err));
+    m.set_bindings(b);
+    m.compose(r, root, 10, 30);
+    std::vector<tui_event> ev = m.apply_keys(parse("\x1b[21~"));
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::action);
+    CHECK(ev[0].action_name == "stepover");
+    ev = m.apply_keys(parse("\x1b" "f"));
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].action_name == "wordright");
+    ev = m.apply_keys(parse("\x1b" "e"));			// Edit: unbound, opens
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::focus);
+    const tui_grid &g = m.compose(r, root, 10, 30);
+    CHECK(g.row_text(2).find("Undo") != std::string::npos);
 }

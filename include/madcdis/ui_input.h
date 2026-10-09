@@ -6,7 +6,9 @@
 // pending chord consumes every key until it completes, misses, or esc
 // cancels it — resize/wake alone pass through); then printable runs
 // coalesce into ONE text event (design §7.5 — five key events never become
-// five domain transactions); resize/wake report themselves; every other
+// five domain transactions); resize/wake report themselves; an open menu
+// bar takes every key, and an unbound F10 or Alt+letter opens it (the focus
+// owner's menu state, TUI facelift S4); every other
 // key goes to the focus owner (tab cycles; arrows navigate a focused
 // choice; enter chooses; the rest reach the application as a key event
 // carrying the focused choice's selection). Moved out of tui_model::
@@ -39,6 +41,24 @@ inline std::vector<tui_event> ui_apply_keys(key_resolver &keys_owner,
     for ( size_t i = 0; i < keys.size(); ++i )
     {
 	const tui_keyev &k = keys[i];
+	// An OPEN menu bar (TUI facelift S4) takes every key but a resize or
+	// a wake: the dropdown is modal, as the window's native menu is.
+	if ( focus_owner.menu_is_open() && k.kind != tui_key::resize
+	     && k.kind != tui_key::wake )
+	{
+	    if ( !run.empty() )
+	    {
+		tui_event t;
+		t.kind = tui_event_kind::text;
+		t.text = run;
+		out.push_back(t);
+		run.clear();
+	    }
+	    tui_event e;
+	    focus_owner.menu_key(k, e);
+	    out.push_back(e);
+	    continue;
+	}
 	// The key owner FIRST: a pending chord consumes the key; a bound
 	// head fires or opens a chord; everything else is passthrough.
 	key_step step = keys_owner.step(k);
@@ -102,6 +122,16 @@ inline std::vector<tui_event> ui_apply_keys(key_resolver &keys_owner,
 	    e.kind = tui_event_kind::wake;
 	    out.push_back(e);
 	    continue;
+	}
+	// A key no binding took that opens the menu bar (F10, Alt and a
+	// menu's letter) — a profile that binds the key keeps it.
+	{
+	    tui_event e;
+	    if ( step.k == key_step::kind::passthrough && focus_owner.menu_opens(k, e) )
+	    {
+		out.push_back(e);
+		continue;
+	    }
 	}
 	// The focus owner: tab cycles, arrows move a focused choice's
 	// selection, enter chooses; any other key is the application's

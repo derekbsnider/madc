@@ -29,8 +29,9 @@ namespace hub {
 // modifyOtherKeys or CSI u report of any other key ("CSI 27;6;83~",
 // "CSI 115;5u"). ui::key_mod's bits are the parameter less one. A terminal
 // that reports none sends Ctrl+Shift+S as Ctrl+S; those chords are the
-// GUI's. NUL is Ctrl+Space. An Esc-prefixed byte is still the esc key then
-// the byte (the profiles' `esc x` Meta chords).
+// GUI's. NUL is Ctrl+Space. ESC and a printable byte in one burst (before
+// the pause) is that key with Alt, the terminals' Meta prefix; ESC before
+// any other byte is the esc key, then the byte.
 //
 // A byte of 0x80 and above is a `ch`: UTF-8 input arrives as the bytes of
 // its code points, and a printable run coalesces them into one text event
@@ -196,9 +197,16 @@ class tui_keyparse
 		    _st = state::ss3;
 		    return;
 		}
-		// ESC followed by an ordinary byte: the ESC stands alone
-		// (alt-chords are a deferred refinement) and the byte is
-		// reprocessed normally.
+		// ESC then a printable ASCII byte before the input paused: the
+		// terminals' Meta prefix — Alt and that key, one key (xterm's
+		// metaSendsEscape, every console's Alt). Any other byte: the
+		// ESC stands alone and the byte is reprocessed normally.
+		if ( b >= 0x20 && b <= 0x7e )
+		{
+		    emit(out, tui_key::ch, (char)b, key_mod_bits(::ui::key_mod::alt));
+		    _st = state::normal;
+		    return;
+		}
 		emit(out, tui_key::esc);
 		_st = state::normal;
 		feed_byte(b, out);
@@ -306,8 +314,9 @@ public:
 // codes for ins/del/pgup/pgdn, 0x7f for backspace, \r for enter). A
 // control chord is its control byte; a printable is itself; `none` is
 // empty. A modified key is xterm's modified form (the parser's): the cursor
-// and function keys' "1;m" / "n;m" parameters, CSI Z for Shift+Tab,
-// modifyOtherKeys (CSI 27;m;code~) for any other key, NUL for Ctrl+Space.
+// and function keys' "1;m" / "n;m" parameters, CSI Z for Shift+Tab, ESC and
+// the byte for Alt and a printable, modifyOtherKeys (CSI 27;m;code~) for any
+// other key, NUL for Ctrl+Space.
 inline std::string tui_key_base_bytes(const tui_keyev &k);
 inline std::string tui_key_bytes(const tui_keyev &k)
 {
@@ -347,6 +356,11 @@ inline std::string tui_key_bytes(const tui_keyev &k)
 	case tui_key::ch:
 	    if ( k.ch == ' ' && k.mods == ctrl )
 		return std::string(1, '\0');
+	    // Alt and a printable alone: the Meta prefix every terminal
+	    // program reads (readline's M-f), the parser's own reading.
+	    if ( k.mods == key_mod_bits(::ui::key_mod::alt)
+		 && (unsigned char)k.ch >= 0x20 && (unsigned char)k.ch <= 0x7e )
+		return "\x1b" + std::string(1, k.ch);
 	    return "\x1b[27;" + m + ";" + std::to_string((int)(unsigned char)k.ch) + "~";
 	case tui_key::ctrl:
 	{

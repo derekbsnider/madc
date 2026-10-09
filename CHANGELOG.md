@@ -2,6 +2,38 @@
 
 ## [Unreleased]
 
+### tui: the menu bar (facelift S4)
+
+The TUI now draws a menu bar. The bar is the focus owner's
+(`include/madcdis/ui_focus.h`): the root `menu` hint — the data the window's
+native menu reads — becomes the bar's menus and rows (`read_menus` in
+`include/madcdis/tui_model.h` feeds `focus_state::set_menus`), each title given
+a hotkey letter (its first letter or digit no earlier title took, Turbo Vision's
+lit letter) by the new `menu_hotkey_of` / `menu_hotkeys` in `ui_focus.h`. The
+one keys → events loop (`ui_apply_keys` in `include/madcdis/ui_input.h`) gives an
+open bar every key but a resize or wake: left/right between menus, up/down over
+the selectable rows (a separator or a disabled row is never lit), Enter or a
+row's letter chooses — the same `action` event (id + code) a bound chord or the
+window's menu produces — and Esc or F10 closes. A key no binding took opens it:
+F10 the first menu, Alt and a menu's letter that menu (`focus_state::menu_opens`);
+a profile that binds the key keeps it (Emacs's `M-f`). A terminal's Meta prefix
+reads as Alt: ESC and a printable byte in one burst is Alt and that key
+(`tui_keyparse`), and Alt and a printable writes back as ESC and the byte. The
+grid paints the bar and the open dropdown last, over everything (`paint_menus`):
+the bar on row 0, the dropdown a framed box under its title (a second
+`tui_frame`, so its separators meet its border as `├ ┤`), each row's chord from
+the loaded profile right-aligned, a disabled row dim, a shadow to the right and
+below. The layout's `menubar` window line
+(`tools/madcide/profiles/default.layout` and the baked default) holds the bar on
+row 0; without it the bar shows only while open (JOE's rows unchanged). The
+scheme's `menubar`, `menu`, `menu_selected`, `menu_hot` and `shadow` colour it
+(Dark+: `#3c3c3c` bar, `#252526` surface, `#04395e` selection, underlined letters
+in `tools/madcide/profiles/vscode.theme`). `bin/test_tui_model` runs 49 cases
+(6 new menu cases); `scripts/tui_golden_gate.sh` pins 21 golden screens (6 new
+menu goldens; the 15 existing re-recorded with the bar on row 0 and every other
+row one lower), and `scripts/tui_scroll_gate.sh` stays green. Submenus wait for
+submenu data.
+
 ### tui: tab strips and the status bar (facelift S3)
 
 The editor's tab strip is now a frontend capability rather than a side effect
