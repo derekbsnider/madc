@@ -297,16 +297,7 @@ at activation and read at input on the session's thread. No new globals.
 3. ~~Symbols~~ — decided (below): madcide's built-in view; Chthonia uses it.
 4. ~~`madcide --line`~~ — decided (below).
 5. ~~madc releasing while madcide is red~~ — decided: yes.
-6. **MCP layering** (owner 2026-10-09: "an import library, or at least the
-   reusable foundation"). Proposed: (1) a generic MCP protocol module — the
-   JSON-RPC server with tool registration (name, schema, handler) and the MCP
-   client; (2) the code-graph tools over madc's core (`graph_*`, buffers,
-   undo) registered into it, the git-history tools only when madcgit is
-   loaded; (3) a change-log / Nexus module (records, links, proposals, test
-   runs) subscribing to the buffers' edit notification, saved beside the
-   project; (4) registered commands (madcide's among them) exposed as tools.
-   Open: whether `madc --mcp FILE` serves (1)+(2) as `madc --lsp` serves the
-   LSP, or MCP stays import-only.
+6. ~~MCP~~ — decided (below).
 7. ~~Seats~~ — decided (below).
 8. ~~Where madc.ini's `std` sits~~ — decided (owner 2026-10-09): `--std` >
    file extension > madc.ini/env `std` > madc. The ini `std` sets the
@@ -332,11 +323,33 @@ at activation and read at input on the session's thread. No new globals.
   extensions/libraries that any madc program could benefit from... including
   madcide". A capability goes into a module when a program other than
   madcide could use it; madcide is one consumer.
+- **A headless MCP server for a madc project exists solely in madc** (owner
+  2026-10-09: "the ability to operate a headless MCP server for a madc
+  project"). `madc --mcp --project app.prj.json` (a single file is the
+  one-TU case); nothing in it needs madcide. Layers: (1) the MCP protocol —
+  a module (the JSON-RPC server with tool registration: name, schema,
+  handler, a per-tool permission tier; and the MCP client); (2) the
+  code-graph tools — madc core, beside the LSP, over the one set of
+  language-service functions (LSP, MCP and madcide's direct calls share it);
+  (3) the git-history tools — the madcgit module, registered only when it
+  is loaded; (4) project memory (the change log, records, links, proposals,
+  test runs) — a module that subscribes to the buffers' edit notification
+  and saves beside the project; (5) registered commands (madcide's among
+  them) exposed as tools. madcide is an optional UI over the same project:
+  it loads the same modules in-process and serves the same MCP, plus its
+  commands. **One owner per project at a time:** the first process to open a
+  project advertises itself, a second finds it (discovery — now a module:
+  two consumers) and attaches or refuses with the owner's pid. Proposals
+  persist with the project memory, so a headless agent's proposal is
+  accepted or rejected later in madcide. Later: whether madcide can attach
+  to a running headless server; what an edit tool does with no person
+  watching (proposed: lands in the buffer, saved only by an explicit save
+  tool).
 - **Seats, `--serve`, `--attach`, `-c`, the ws window: madcide's** (owner:
   "unless it could be a reusable module beyond it"). Their reusable
   foundation is already madc's (`serve_web`, WebSocket, the `conn_*` roster,
-  `<ns_ui_ws>`). Discovery (~350 lines) becomes a module only when a second
-  consumer appears (e.g. `madc --lsp` attach).
+  `<ns_ui_ws>`). Discovery (~350 lines) is NOT madcide's: it became a module
+  with the headless MCP (its second consumer, above).
 
 ## Decided (owner, 2026-10-09)
 
