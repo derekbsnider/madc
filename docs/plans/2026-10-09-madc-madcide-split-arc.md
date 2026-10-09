@@ -238,7 +238,7 @@ items are their own sessions, any time.
 **Phase 1 — into madc (one repository still). Four slices:**
 
 *1A — the engine foundation (sequential; nothing else starts before 1A.1–1A.2):*
-1. **The document component** (owner 2026-10-09: file buffers are madc's).
+1. **The document component** (owner 2026-10-09: file buffers are madc's) — **LANDED 2026-10-09, `56f701aa2` on `feature/document-component-claude`** (design doc `2026-10-09-document-component-design.md`; unit battery + fix lane green; not pushed).
    On the hub beside `text_buffer` (`madcdis/text_buffer.h`), generic to any
    program that edits text — engine purity holds as it did for the text
    component. One document = the text + undo (already per document), path,
