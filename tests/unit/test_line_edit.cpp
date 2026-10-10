@@ -620,3 +620,28 @@ TEST_CASE("Ctrl-R searches history incrementally; Enter leaves the match unrun")
     q.type("\x12\x12");
     CHECK(q.ed.view().lines[0] == "apple * 2");
 }
+
+// The completion rule's one owner (split arc 1B.7, design decision 7;
+// readline's): one candidate replaces the word; several, their common
+// prefix when it extends the word; else a list; none, nothing. The editor's
+// Tab answers by it (above); madcide's pane moves onto it in 1D.
+TEST_CASE("complete_word: insert one, insert the common prefix, or list")
+{
+    using madc::hub::complete_word;
+    using madc::hub::completion_kind;
+    std::vector<std::string> none;
+    CHECK(complete_word("pr", none).kind == completion_kind::none);
+    std::vector<std::string> one(1, "printf");
+    CHECK(complete_word("pr", one).kind == completion_kind::insert);
+    CHECK(complete_word("pr", one).text == "printf");
+    std::vector<std::string> two;
+    two.push_back("print_one");
+    two.push_back("print_two");
+    CHECK(complete_word("pr", two).kind == completion_kind::insert);
+    CHECK(complete_word("pr", two).text == "print_");
+    CHECK(complete_word("print_", two).kind == completion_kind::list);
+    std::vector<std::string> apart;
+    apart.push_back("alpha");
+    apart.push_back("beta");
+    CHECK(complete_word("", apart).kind == completion_kind::list);
+}

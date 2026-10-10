@@ -277,6 +277,41 @@ history_records(const std::string &file)
     return out;
 }
 
+// ------------------------------------------------------- the completion rule
+// What Tab does with a word's candidates (split arc 1B.7, design decision 7;
+// readline's): ONE rule for every host — the line editor below and, from 1D,
+// madcide's REPL pane. One candidate replaces the word; several, their
+// longest common prefix when it extends the word; else they are to be listed
+// (when a host lists them — readline on a second Tab — is the host's).
+enum class completion_kind : unsigned char { none, insert, list };
+struct completion_step
+{
+    completion_kind kind;
+    std::string text;		// insert: what replaces the word
+};
+// `word` is the text from the word's start to the caret; `candidates` are
+// sorted, without duplicates.
+inline completion_step complete_word(const std::string &word,
+				     const std::vector<std::string> &candidates)
+{
+    if ( candidates.empty() )
+	return completion_step{ completion_kind::none, std::string() };
+    if ( candidates.size() == 1 )
+	return completion_step{ completion_kind::insert, candidates[0] };
+    std::string prefix = candidates[0];
+    for ( size_t i = 1; i < candidates.size(); ++i )
+    {
+	size_t n = 0;
+	while ( n < prefix.size() && n < candidates[i].size()
+		&& prefix[n] == candidates[i][n] )
+	    ++n;
+	prefix.erase(n);
+    }
+    if ( prefix.size() > word.size() && prefix.compare(0, word.size(), word) == 0 )
+	return completion_step{ completion_kind::insert, prefix };
+    return completion_step{ completion_kind::list, std::string() };
+}
+
 // --------------------------------------------------------------- the model
 class line_edit
 {
@@ -398,34 +433,23 @@ public:
     }
 
     // The host's answer to outcome::complete: the word starts at byte
-    // `start` and these are its candidates (sorted, no duplicates). One is
-    // inserted; several insert their longest common prefix, and a second
-    // Tab in a row lists them (take_listed). None: nothing (Julia).
+    // `start` and these are its candidates (sorted, no duplicates), applied
+    // by complete_word's rule; a list shows on a second Tab in a row
+    // (take_listed), as readline's does. None: nothing (Julia).
     void completed(size_t start, const std::vector<std::string> &candidates)
     {
 	unsigned repeats = _tabs++;
-	if ( candidates.empty() || start > _caret )
+	if ( start > _caret )
 	    return;
-	const std::string word = _text.substr(start, _caret - start);
-	if ( candidates.size() == 1 )
+	const completion_step step =
+	    complete_word(_text.substr(start, _caret - start), candidates);
+	if ( step.kind == completion_kind::insert )
 	{
-	    replace_word(start, candidates[0]);
-	    _tabs = 0;
-	    return;
+	    replace_word(start, step.text);
+	    if ( candidates.size() == 1 )
+		_tabs = 0;
 	}
-	std::string prefix = candidates[0];
-	for ( size_t i = 1; i < candidates.size(); ++i )
-	{
-	    size_t n = 0;
-	    while ( n < prefix.size() && n < candidates[i].size()
-		    && prefix[n] == candidates[i][n] )
-		++n;
-	    prefix.erase(n);
-	}
-	if ( prefix.size() > word.size()
-	     && prefix.compare(0, word.size(), word) == 0 )
-	    replace_word(start, prefix);
-	else if ( repeats > 0 )
+	else if ( step.kind == completion_kind::list && repeats > 0 )
 	    _listed = candidates;
     }
 

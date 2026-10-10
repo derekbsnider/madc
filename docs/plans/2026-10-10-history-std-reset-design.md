@@ -75,9 +75,11 @@ history file's records, per-mode recall), readline (Tab).
 6. **madcide honors `reset` and `std`** as its own restart and language
    change do (`repl_restart`, the session standard); every other payload
    kind stays a file payload. Nothing else of madcide moves before 1D.
-7. **The completion rule's one owner**: `madc::hub::completion_choice(word,
-   candidates)` in `line_edit.h` — one candidate: insert it; several: their
-   common prefix when it extends the word, else list; none: nothing.
+7. **The completion rule's one owner**: `madc::hub::complete_word(word,
+   candidates)` in `line_edit.h`, answering a `completion_step` (a
+   `completion_kind` — none, insert, list — and the text to insert): one
+   candidate: insert it; several: their common prefix when it extends the
+   word, else list; none: nothing.
    `line_edit::completed` applies it (the second-Tab listing is the
    editor's, readline's). madcide's `repl_completed` moves onto it in 1D.
 
@@ -87,7 +89,7 @@ history file's records, per-mode recall), readline (Tab).
    loop on it, the session's entry texts, the `history` request, the row.
 2. **`%reset` and `%std`** — the spelling owner, the rows, the payloads, the
    hosts (both loops re-key; madcide honors both).
-3. **The completion rule** — `completion_choice`, `line_edit::completed` on it.
+3. **The completion rule** — `complete_word`, `line_edit::completed` on it.
 
 ## 4. Oracle
 

@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### The REPL's Tab completion rule gets one owner
+
+`madc::hub::complete_word(word, candidates)` (`include/madcdis/line_edit.h`)
+now answers what Tab does with a word's candidates — one candidate inserts it,
+several their longest common prefix when it extends the word else a list, none
+nothing, as readline does. The line editor's Tab applies it; madcide's REPL
+pane moves onto it in split arc 1D.
+
 ### `madc -i` gains `%std` and `%reset`
 
 The interactive session now answers `%std` and `%reset` (split arc 1B.7). `%std`
