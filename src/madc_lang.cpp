@@ -144,6 +144,80 @@ bool name_on_line(const text_buffer &b, const std::string &t, int64_t line,
     return false;
 }
 
+// The byte offset of a point (its column clamped to its line); false when
+// the text has no such line.
+bool offset_of(const text_buffer &b, point p, size_t &off)
+{
+    size_t start = 0, len = 0;
+    if ( p.line < 1 || !b.line_span((size_t)p.line, start, len) )
+	return false;
+    off = start + (p.column < 0 ? 0
+		   : (size_t)p.column > len ? len : (size_t)p.column);
+    return true;
+}
+
+// The word a point names: the one containing it, else — a caret resting
+// just past a word — the one ending there.
+bool word_under(const text_buffer &b, const std::string &t, point p,
+		std::string &word, range &r)
+{
+    size_t off = 0, s = 0, e = 0;
+    if ( !offset_of(b, p, off) )
+	return false;
+    if ( !word_span(t, off, s, e) && (off == 0 || !word_span(t, off - 1, s, e)) )
+	return false;
+    word = t.substr(s, e - s);
+    r = make_range(make_point(p.line, p.column - (int64_t)(off - s)),
+		   make_point(p.line, p.column + (int64_t)(e - off)));
+    return true;
+}
+
+// `name` as a whole word on 1-based `line`, the LAST occurrence starting at
+// or before byte column `anchor` (a use site's anchor).
+bool name_before(const text_buffer &b, const std::string &t, int64_t line,
+		 int64_t anchor, const std::string &name, range &out)
+{
+    size_t off = 0, len = 0;
+    if ( name.empty() || line < 1 || anchor < 0
+	 || !b.line_span((size_t)line, off, len) )
+	return false;
+    size_t last = off + ((size_t)anchor < len ? (size_t)anchor : len);
+    size_t at = last + 1;
+    while ( at > off )
+    {
+	size_t hit = t.rfind(name, at - 1);
+	if ( hit == std::string::npos || hit < off )
+	    return false;
+	size_t s = 0, e = 0;
+	if ( hit + name.size() <= off + len && word_span(t, hit, s, e)
+	     && s == hit && e == hit + name.size() )
+	{
+	    out = make_range(make_point(line, (int64_t)(hit - off)),
+			     make_point(line, (int64_t)(e - off)));
+	    return true;
+	}
+	at = hit;
+    }
+    return false;
+}
+
+// The graph's definition nodes for the word a point names (empty: no word,
+// or none the TU defines).
+std::vector<value> definition_nodes(int64_t handle, const std::string &word)
+{
+    value snap;
+    madc_graph_definition(&snap, handle, (void *)&word);
+    std::vector<value> nodes;
+    if ( snap.is_object() )
+    {
+	const row_fields &f = snap.as_object();
+	row_fields::const_iterator n = f.find("nodes");
+	if ( n != f.end() )
+	    nodes = rows_of(n->second);
+    }
+    return nodes;
+}
+
 // A definition row's NAME ({name, line, column, ...}: an outline row or a
 // graph node; the column a token's 1-based stamp at the declaration's
 // start): the name searched from that column, else the row's line.
@@ -297,6 +371,113 @@ bool spans(hub::world &w, hub::entity_id e, std::vector<highlight_span> &out)
     out.clear();
     int64_t handle = document_handle(w, e);
     return handle && parse_classes(handle, out);
+}
+
+bool definition(hub::world &w, hub::entity_id e, point at,
+		std::vector<range> &out)
+{
+    out.clear();
+    int64_t handle = document_handle(w, e);
+    if ( !handle )
+	return false;
+    const text_buffer &b = *text_of(w, e);
+    std::string t = b.text();
+    std::string word;
+    range wr;
+    if ( !word_under(b, t, at, word, wr) )
+	return true;
+    std::vector<value> nodes = definition_nodes(handle, word);
+    for ( size_t i = 0; i < nodes.size(); ++i )
+	if ( row_int(nodes[i], "line") > 0 )
+	    out.push_back(name_range(b, t, nodes[i]));
+    return true;
+}
+
+bool references(hub::world &w, hub::entity_id e, point at,
+		bool include_declaration, std::vector<range> &out)
+{
+    out.clear();
+    int64_t handle = document_handle(w, e);
+    if ( !handle )
+	return false;
+    const text_buffer &b = *text_of(w, e);
+    std::string t = b.text();
+    std::string word;
+    range wr;
+    if ( !word_under(b, t, at, word, wr) )
+	return true;
+    std::vector<value> defs = definition_nodes(handle, word);
+    if ( defs.empty() )
+	return true;
+    value snap;
+    madc_graph_references(&snap, handle, row_int(defs[0], "id"));
+    if ( snap.is_object() )
+    {
+	const row_fields &f = snap.as_object();
+	row_fields::const_iterator n = f.find("nodes");
+	row_fields::const_iterator g = f.find("edges");
+	const std::vector<value> &nodes = n == f.end() ? rows_of(value())
+						       : rows_of(n->second);
+	const std::vector<value> &edges = g == f.end() ? rows_of(value())
+						       : rows_of(g->second);
+	// An edge's `from` names its use site among `nodes` (the subject
+	// rides in `nodes` too).
+	std::map<int64_t, const value *> by_id;
+	for ( size_t i = 0; i < nodes.size(); ++i )
+	    by_id[row_int(nodes[i], "id")] = &nodes[i];
+	for ( size_t i = 0; i < edges.size(); ++i )
+	{
+	    std::map<int64_t, const value *>::const_iterator site =
+		by_id.find(row_int(edges[i], "from"));
+	    if ( site == by_id.end() )
+		continue;
+	    int64_t line = row_int(*site->second, "line");
+	    if ( line < 1 )
+		continue;
+	    std::string name = row_text(*site->second, "name");
+	    range r;
+	    // The site's column is a token's 1-based stamp.
+	    if ( !name_before(b, t, line, row_int(*site->second, "column") - 1,
+			      name.empty() ? word : name, r) )
+		r = whole_lines(b, line, line);
+	    out.push_back(r);
+	}
+    }
+    if ( include_declaration && row_int(defs[0], "line") > 0 )
+	out.push_back(name_range(b, t, defs[0]));
+    return true;
+}
+
+bool hover(hub::world &w, hub::entity_id e, point at, hover_info &out)
+{
+    out = hover_info();
+    out.has_range = false;
+    int64_t handle = document_handle(w, e);
+    if ( !handle )
+	return false;
+    const text_buffer &b = *text_of(w, e);
+    std::string t = b.text();
+    std::string word;
+    range wr;
+    if ( word_under(b, t, at, word, wr) )
+    {
+	std::vector<value> defs = definition_nodes(handle, word);
+	if ( !defs.empty() )
+	{
+	    out.text = row_text(defs[0], "kind") + " " + row_text(defs[0], "name");
+	    int64_t line = row_int(defs[0], "line");
+	    if ( line > 0 )
+		out.text += " — defined on line " + std::to_string(line);
+	    out.has_range = true;
+	    out.at = wr;
+	    return true;
+	}
+    }
+    symbol s;
+    if ( !enclosing(w, e, at, s) )
+	return false;
+    out.text = "in " + s.name;
+    return true;
 }
 
 } // namespace lang

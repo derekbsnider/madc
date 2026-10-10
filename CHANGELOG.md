@@ -26,6 +26,25 @@ one helper, `highlight_spans_of` (`src/madc_program.cpp`), shared by the lexical
 spans (`internal_program_lex_classes`) and a parse handle's (`parse_classes`,
 new). A document whose kind the compiler does not parse answers nothing.
 
+### `madc::lang` — definition, references and hover over a document
+
+`madc::lang` now answers the word-addressed questions over a document (split arc
+1C.11, design `docs/plans/2026-10-10-language-services-design.md` §2 decision 4,
+slice 2). `definition(w, e, point)` takes the identifier under the point — or the
+one a caret rests just past — and answers each definition's NAME range, as clangd
+answers (clangd's `twice` definition at 1:4-1:9, where madcide's LSP answered the
+whole lines); a point in no word, or a word the TU does not define, answers an
+empty list. `references(w, e, point, include_declaration)` answers every use of
+the definition the word names, each range the name at its site: a call anchors at
+its argument list, so the name is the last whole-word occurrence at or before the
+site's column — the inner `twice` in `twice(twice(1))` resolves to its own name
+(clangd's uses at 7:11, 7:17, 7:29); the declaration's name is appended last when
+asked (1:4-1:9). `hover(w, e, point)` answers `KIND NAME — defined on line N`
+over the word's range (clangd's hover at 7:11-7:16), else `in NAME` for the
+enclosing definition with no range, else nothing. Coordinates are the service's
+one unit: a 1-based line, a 0-based byte column; a use site's 1-based token stamp
+converts in the service, once.
+
 ### `%git` in the madcgit module — the repository's read verbs as a session command
 
 The `madcgit` module now brings a `%git` command to a `madc -i` session: `%git

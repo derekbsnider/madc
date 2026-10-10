@@ -99,6 +99,32 @@ bool enclosing(hub::world &w, hub::entity_id e, point at, symbol &out);
 bool spans(hub::world &w, hub::entity_id e,
 	   std::vector<highlight_span> &out);
 
+// The word-addressed answers: the identifier at `at` (the buffer's word
+// rule; a point just past a word names it, where a caret rests). A point in
+// no word, or a word the TU does not define, answers nothing — an answer,
+// not an error.
+// Where the word is defined: the definition's NAME (as clangd answers). A
+// definition the graph knows without a source span (a non-function type)
+// has no place to answer with.
+bool definition(hub::world &w, hub::entity_id e, point at,
+		 std::vector<range> &out);
+// Every use of the definition the word names: each range is the NAME at
+// the use (a call's site anchors at its argument list, so the name is the
+// last occurrence at or before the site's column — the inner one in
+// `twice(twice(1))`); the definition's name last when asked.
+bool references(hub::world &w, hub::entity_id e, point at,
+		bool include_declaration, std::vector<range> &out);
+
+// What a point is: `KIND NAME — defined on line N` over the word, else the
+// enclosing definition `in NAME` (no range). False = nothing to say.
+struct hover_info
+{
+    std::string text;
+    bool has_range;
+    range at;
+};
+bool hover(hub::world &w, hub::entity_id e, point at, hover_info &out);
+
 } // namespace lang
 } // namespace madc
 

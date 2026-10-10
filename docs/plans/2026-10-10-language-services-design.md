@@ -77,7 +77,8 @@ nothing answers twice").
    - `diagnostics(doc)`: `{range, severity, phase, message}`, the severity
      and phase the existing enums (`madc::diag_severity` / `diag_phase`). The
      range is the word starting at the diagnostic's column, else the one byte
-     there; a row without a line answers 1:0.
+     there; a column outside its line covers the line, a line outside the
+     text the first line.
    - `outline(doc)`: `{name, kind, extent, selection}`. The kind is an enum
      (`lang::symbol_kind`; `function` today: Phase 0's Outline kinds widen the
      row builder, not this face). The extent covers line..end_line as whole
@@ -88,11 +89,12 @@ nothing answers twice").
      or none.
    - `definition(doc, point)`: the word at the point, by the buffer's word
      rule (a point just past a word counts), then `graph_definition`; each
-     node's extent. An unknown word answers an empty list.
+     definition's NAME, as clangd answers (madcide's LSP answered the whole
+     lines). An unknown word answers an empty list.
    - `references(doc, point, include_declaration)`: the definition's first
-     node, then `graph_references`; each site's range is the name found
-     before the site's column (the last whole-word occurrence); the
-     declaration is appended when asked.
+     node, then `graph_references`; each site's range is the name found at
+     or before the site's column (the last whole-word occurrence); the
+     declaration's name is appended when asked.
    - `hover(doc, point)`: `KIND NAME — defined on line N` over the word's
      range, else `in NAME` with no range, else none.
    - `spans(doc)`: `parse_spans` as `highlight_span`s, each class converted

@@ -14,6 +14,7 @@
 thread_local bool madc_verbose = false;
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -162,3 +163,85 @@ TEST_CASE("spans: the parse's classes as enums, in byte columns")
     CHECK(sp.empty());
 }
 
+static const char *CALLS =
+    "int twice(int x)\n"				// 1
+    "{\n"						// 2
+    "    return x * 2;\n"				// 3
+    "}\n"						// 4
+    "int main(void)\n"					// 5
+    "{\n"						// 6
+    "    return twice(twice(1)) + twice(3);\n"		// 7
+    "}\n";						// 8
+
+static std::vector<int64_t> columns_on(const std::vector<lang::range> &rs,
+				       int64_t line)
+{
+    std::vector<int64_t> cols;
+    for ( size_t i = 0; i < rs.size(); ++i )
+	if ( rs[i].from.line == line )
+	    cols.push_back(rs[i].from.column);
+    std::sort(cols.begin(), cols.end());
+    return cols;
+}
+
+TEST_CASE("definition: the word under a point, or just before it, to its name")
+{
+    world w;
+    entity_id e = open_doc(w, CALLS);
+    std::vector<lang::range> rs;
+    REQUIRE(lang::definition(w, e, at(7, 13), rs));	// inside `twice`
+    REQUIRE(rs.size() == 1u);
+    CHECK(rs[0].from.line == 1);		// clangd: 1:4-1:9, the name
+    CHECK(rs[0].from.column == 4);
+    CHECK(covered(w, e, rs[0]) == "twice");
+    REQUIRE(lang::definition(w, e, at(7, 16), rs));	// the caret just past it
+    CHECK(rs.size() == 1u);
+    REQUIRE(lang::definition(w, e, at(7, 4), rs));	// `return`: nothing defines it
+    CHECK(rs.empty());
+    REQUIRE(lang::definition(w, e, at(7, 26), rs));	// a space after `)`: no word
+    CHECK(rs.empty());
+}
+
+TEST_CASE("references: each use is the NAME at its site, nested calls apart")
+{
+    world w;
+    entity_id e = open_doc(w, CALLS);
+    std::vector<lang::range> rs;
+    REQUIRE(lang::references(w, e, at(1, 6), false, rs));	// on the definition
+    REQUIRE(rs.size() == 3u);
+    std::vector<int64_t> cols = columns_on(rs, 7);
+    REQUIRE(cols.size() == 3u);
+    CHECK(cols[0] == 11);
+    CHECK(cols[1] == 17);		// the inner call's own name
+    CHECK(cols[2] == 29);
+    for ( size_t i = 0; i < rs.size(); ++i )
+	CHECK(covered(w, e, rs[i]) == "twice");
+
+    REQUIRE(lang::references(w, e, at(7, 30), true, rs));	// from a use
+    REQUIRE(rs.size() == 4u);
+    CHECK(rs[3].from.line == 1);		// the declaration's name, last
+    CHECK(rs[3].from.column == 4);
+    CHECK(covered(w, e, rs[3]) == "twice");
+
+    REQUIRE(lang::references(w, e, at(3, 6), false, rs));	// `return`: no definition
+    CHECK(rs.empty());
+}
+
+TEST_CASE("hover: the definition over the word, else the enclosing one")
+{
+    world w;
+    entity_id e = open_doc(w, CALLS);
+    lang::hover_info h;
+    REQUIRE(lang::hover(w, e, at(7, 13), h));
+    CHECK(h.text == "Function twice \xE2\x80\x94 defined on line 1");
+    CHECK(h.has_range);
+    CHECK(covered(w, e, h.at) == "twice");
+    CHECK(h.at.from.column == 11);
+
+    REQUIRE(lang::hover(w, e, at(3, 4), h));		// `return` inside twice
+    CHECK(h.text == "in twice");
+    CHECK_FALSE(h.has_range);
+
+    entity_id two = open_doc(w, TWO_FUNCS);
+    CHECK_FALSE(lang::hover(w, two, at(2, 0), h));	// between definitions
+}
