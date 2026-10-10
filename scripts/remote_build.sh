@@ -244,7 +244,15 @@ for stage in $stages; do
 		# src/config.mk — the WRONG PATH. The pattern is anchored to the
 		# transfer root; excluded = rsync neither sends nor deletes it,
 		# so the container keeps its own.
-		rsync -az --delete "${SYNC_GIT_EXCLUDES[@]}" \
+		# A changed file ARRIVES NEWER than every object built from the
+		# old copy: --checksum decides by content and --no-times stamps
+		# what it sends with the arrival time (what it skips keeps its
+		# time). rsync -a carried the NAS edit time instead, so an object
+		# built on the container AFTER the edit but BEFORE the sync looked
+		# current and make kept the old code (2026-10-10: a hosted Win64
+		# madc_repl.o kept the pre-colon-mode signatures and the gates
+		# link failed; a suite on such a tree runs stale code green).
+		rsync -az --checksum --no-times --delete "${SYNC_GIT_EXCLUDES[@]}" \
 			--exclude=/tmp/ --exclude=/bin/ --exclude=/obj/ --exclude=/lib/ --exclude=/dist/ \
 			--exclude=MadSMAUG --exclude=autom4te.cache \
 			--exclude=src/sys_include_paths.cpp \
@@ -277,8 +285,9 @@ for stage in $stages; do
 		# every build stage and masking the sync-stomp trap above).
 		# configure is GENERATED on the build host (never synced), so a
 		# configure.ac edit on the NAS must regenerate it there: the
-		# freshness test, not a bare existence test — rsync -a keeps
-		# configure.ac's source mtime, so `-nt` is the right question.
+		# freshness test, not a bare existence test — an edited
+		# configure.ac arrives with the sync's time, so `-nt` is the
+		# right question.
 		run_remote "configure" "set -e; cd $REMOTE_MADC; test -x configure -a configure -nt configure.ac || autoreconf -fi; test -f config.mk -a -f include/config.h -a config.mk -nt configure || ./configure"
 		run_remote "build madc" "make -C $REMOTE_MADC/src -j20"
 		# lib/ is excluded from sync; the soname link the emitted
