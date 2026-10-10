@@ -6681,8 +6681,6 @@ public:
 	const char *file=NULL, int line=0, int column=0,
 	int end_line=0, int end_column=0);
     void set_error(const std::string &message, const char *file=NULL, int line=0, int column=0);
-    const char *diagnostic_severity_name(DiagnosticSeverity severity) const;
-    const char *diagnostic_phase_name(DiagnosticPhase phase) const;
     bool can_show_diagnostic_source(const Diagnostic &diag) const;
     void print_diagnostic(std::ostream &os, const Diagnostic &diag, const char *suffix=NULL);
     void print_last_diagnostic(std::ostream &os, const char *suffix=NULL);

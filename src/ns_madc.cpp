@@ -26,7 +26,8 @@
 
 #include "ns_common.h"
 #include "libmadc/sysinfo.h"
-#include "madc_lang.h"		// doc_parse: the language services' document door
+#include "madc_lang.h"		// doc_parse + doc_*: the language services over a document
+#include "madc_diag_names.h"	// doc_diagnostics: the severity / phase names
 #include "madc_posix_io.h"	// get_host_name (host-facts seam)
 #if defined(_WIN32)
 #include <process.h>		// _getpid — sys.pid's UCRT spelling (never <windows.h>
@@ -286,6 +287,159 @@ int64_t doc_parse(int64_t w, int64_t entity)
 	{ return doc_parse_impl(NULL, w, entity); }
 int64_t doc_parse_checked(value &diags, int64_t w, int64_t entity)
 	{ diags = value(); return doc_parse_impl(&diags, w, entity); }
+
+// The language services' dialect face (split arc 1C.11): madc::lang's answers
+// as rows. A range is { line, column, end_line, end_column }; an enum is its
+// code with its name beside it. The <ns_madc> declaration carries the shapes.
+static value lang_range_value(const lang::range &r)
+{
+    std::map<std::string, value> f;
+    f["line"] = value(r.from.line);
+    f["column"] = value(r.from.column);
+    f["end_line"] = value(r.to.line);
+    f["end_column"] = value(r.to.column);
+    return value::make_object(f);
+}
+
+static value lang_symbol_value(const lang::symbol &s)
+{
+    std::map<std::string, value> f;
+    f["name"] = value(s.name);
+    f["kind"] = value(std::string(lang::symbol_kind_name(s.kind)));
+    f["kind_code"] = value((int64_t)s.kind);
+    f["range"] = lang_range_value(s.extent);
+    f["selection"] = lang_range_value(s.selection);
+    return value::make_object(f);
+}
+
+static value lang_ranges_value(const std::vector<lang::range> &rs)
+{
+    std::vector<value> rows;
+    for ( size_t i = 0; i < rs.size(); ++i )
+	rows.push_back(lang_range_value(rs[i]));
+    return value::make_array(rows);
+}
+
+static lang::point lang_point(int64_t line, int64_t column)
+{
+    lang::point p;
+    p.line = line;
+    p.column = column;
+    return p;
+}
+
+value &doc_diagnostics(value &out, int64_t w, int64_t entity)
+{
+    out = value();
+    madc::hub::world *world = madc_ui_world(w);
+    std::vector<lang::diagnostic> ds;
+    if ( !world || !lang::diagnostics(*world, (madc::hub::entity_id)entity, ds) )
+	return out;
+    std::vector<value> rows;
+    for ( size_t i = 0; i < ds.size(); ++i )
+    {
+	std::map<std::string, value> f;
+	f["range"] = lang_range_value(ds[i].at);
+	f["severity"] = value(std::string(diag_severity_name(ds[i].severity)));
+	f["severity_code"] = value((int64_t)ds[i].severity);
+	f["phase"] = value(std::string(diag_phase_name(ds[i].phase)));
+	f["phase_code"] = value((int64_t)ds[i].phase);
+	f["message"] = value(ds[i].message);
+	rows.push_back(value::make_object(f));
+    }
+    out = value::make_array(rows);
+    return out;
+}
+
+value &doc_outline(value &out, int64_t w, int64_t entity)
+{
+    out = value();
+    madc::hub::world *world = madc_ui_world(w);
+    std::vector<lang::symbol> syms;
+    if ( !world || !lang::outline(*world, (madc::hub::entity_id)entity, syms) )
+	return out;
+    std::vector<value> rows;
+    for ( size_t i = 0; i < syms.size(); ++i )
+	rows.push_back(lang_symbol_value(syms[i]));
+    out = value::make_array(rows);
+    return out;
+}
+
+value &doc_enclosing(value &out, int64_t w, int64_t entity,
+		     int64_t line, int64_t column)
+{
+    out = value();
+    madc::hub::world *world = madc_ui_world(w);
+    lang::symbol s;
+    if ( world && lang::enclosing(*world, (madc::hub::entity_id)entity,
+				  lang_point(line, column), s) )
+	out = lang_symbol_value(s);
+    return out;
+}
+
+value &doc_definition(value &out, int64_t w, int64_t entity,
+		      int64_t line, int64_t column)
+{
+    out = value();
+    madc::hub::world *world = madc_ui_world(w);
+    std::vector<lang::range> rs;
+    if ( world && lang::definition(*world, (madc::hub::entity_id)entity,
+				   lang_point(line, column), rs) )
+	out = lang_ranges_value(rs);
+    return out;
+}
+
+value &doc_references(value &out, int64_t w, int64_t entity,
+		      int64_t line, int64_t column, bool include_declaration)
+{
+    out = value();
+    madc::hub::world *world = madc_ui_world(w);
+    std::vector<lang::range> rs;
+    if ( world && lang::references(*world, (madc::hub::entity_id)entity,
+				   lang_point(line, column),
+				   include_declaration, rs) )
+	out = lang_ranges_value(rs);
+    return out;
+}
+
+value &doc_hover(value &out, int64_t w, int64_t entity,
+		 int64_t line, int64_t column)
+{
+    out = value();
+    madc::hub::world *world = madc_ui_world(w);
+    lang::hover_info h;
+    if ( !world || !lang::hover(*world, (madc::hub::entity_id)entity,
+				lang_point(line, column), h) )
+	return out;
+    std::map<std::string, value> f;
+    f["text"] = value(h.text);
+    if ( h.has_range )
+	f["range"] = lang_range_value(h.at);
+    out = value::make_object(f);
+    return out;
+}
+
+value &doc_spans(value &out, int64_t w, int64_t entity)
+{
+    out = value();
+    madc::hub::world *world = madc_ui_world(w);
+    std::vector<highlight_span> sp;
+    if ( !world || !lang::spans(*world, (madc::hub::entity_id)entity, sp) )
+	return out;
+    std::vector<value> rows;
+    for ( size_t i = 0; i < sp.size(); ++i )
+    {
+	std::map<std::string, value> f;
+	f["line"] = value((int64_t)sp[i].line);
+	f["column"] = value((int64_t)sp[i].column);
+	f["length"] = value((int64_t)sp[i].length);
+	f["class"] = value(std::string(highlight_class_name(sp[i].cls)));
+	f["class_code"] = value((int64_t)sp[i].cls);
+	rows.push_back(value::make_object(f));
+    }
+    out = value::make_array(rows);
+    return out;
+}
 
 // Code-graph MCP L1 (design 2026-09-12): the live declaration/type graph
 // as node-addressed reads over a parse handle. The <ns_madc> declaration

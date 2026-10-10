@@ -192,6 +192,41 @@ namespace madc {
     int64_t doc_parse(int64_t w, int64_t entity);
     int64_t doc_parse_checked(value &diags, int64_t w, int64_t entity);
 
+    // The language services over a DOCUMENT (split arc 1C.11; the engine's
+    // madc::lang, include/madc_lang.h): ONE answer each for an editor, the
+    // LSP and the MCP tools, parsed through doc_parse. A place is a 1-based
+    // line and a 0-based BYTE column; a range is the object { line, column,
+    // end_line, end_column }, its end exclusive. An enum rides as its code
+    // (severity_code, phase_code, kind_code, class_code) with its name
+    // beside it for display. A document the compiler does not parse answers
+    // an empty value.
+    //   doc_diagnostics: [{ range, severity, severity_code, phase,
+    //       phase_code, message }] — the range is the word at the anchor.
+    //   doc_outline: [{ name, kind, kind_code, range, selection }] — range
+    //       is the definition's lines, selection its name.
+    //   doc_enclosing: the innermost definition around (line, column), an
+    //       outline row, or an empty value.
+    //   doc_definition: [range] — each definition's name, for the word at
+    //       (line, column) (a place just past a word names it).
+    //   doc_references: [range] — the name at each use; the definition's
+    //       name last when include_declaration.
+    //   doc_hover: { text } or { text, range } (range: the word), or an
+    //       empty value.
+    //   doc_spans: [{ line, column, length, class, class_code }].
+    // Thread contract: doc_parse's (the handle's runtime-eval confinement).
+    value &doc_diagnostics(value &out, int64_t w, int64_t entity);
+    value &doc_outline(value &out, int64_t w, int64_t entity);
+    value &doc_enclosing(value &out, int64_t w, int64_t entity,
+			 int64_t line, int64_t column);
+    value &doc_definition(value &out, int64_t w, int64_t entity,
+			  int64_t line, int64_t column);
+    value &doc_references(value &out, int64_t w, int64_t entity,
+			  int64_t line, int64_t column,
+			  bool include_declaration);
+    value &doc_hover(value &out, int64_t w, int64_t entity,
+		     int64_t line, int64_t column);
+    value &doc_spans(value &out, int64_t w, int64_t entity);
+
     // Code-graph MCP L1 (design 2026-09-12): the live declaration/type
     // graph as node-addressed reads over a parse handle. A node id is a
     // type-id; a node is { id, kind, name } (+ line/column/end_line for a

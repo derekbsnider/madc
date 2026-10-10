@@ -54,6 +54,7 @@
 #include "atomic_builtins.h"	// the GCC __atomic_* family, as data
 #include "madc_mangle.h"
 #include "madc_file_kinds.h"	// adopt_file_standard: the extension table's default standard
+#include "madc_diag_names.h"	// the diagnostics vocabularies' names
 #include "ns_common.h"
 #include "cir_freeze.h"	// Phase 6: CirFrozenForest decl records (forest_restore_decls)
 #include "cir_builder.h"	// the shared iteration recognizers (range-for auto deduction)
@@ -25159,25 +25160,25 @@ void Program::set_error(const std::string &message, const char *file, int line, 
     set_error(DiagnosticPhase::unknown, message, file, line, column);
 }
 
-const char *Program::diagnostic_severity_name(DiagnosticSeverity severity) const
+const char *madc::diag_severity_name(diag_severity severity)
 {
     switch ( severity )
     {
-	case DiagnosticSeverity::warning: return "warning";
-	case DiagnosticSeverity::error:   return "error";
+	case diag_severity::warning: return "warning";
+	case diag_severity::error:   return "error";
     }
     return "diagnostic";
 }
 
-const char *Program::diagnostic_phase_name(DiagnosticPhase phase) const
+const char *madc::diag_phase_name(diag_phase phase)
 {
     switch ( phase )
     {
-	case DiagnosticPhase::lexer:    return "lexer";
-	case DiagnosticPhase::parser:   return "parser";
-	case DiagnosticPhase::compiler: return "compiler";
-	case DiagnosticPhase::runtime:  return "runtime";
-	case DiagnosticPhase::unknown:  return "unknown";
+	case diag_phase::lexer:    return "lexer";
+	case diag_phase::parser:   return "parser";
+	case diag_phase::compiler: return "compiler";
+	case diag_phase::runtime:  return "runtime";
+	case diag_phase::unknown:  return "unknown";
     }
     return "unknown";
 }
@@ -25207,7 +25208,7 @@ void Program::print_diagnostic(std::ostream &os, const Diagnostic &diag, const c
     if ( suffix && *suffix )
 	message.append(" ").append(suffix);
     madc_diagnostic_header(os, where.str(),
-			   diagnostic_severity_name(diag.severity), message);
+			   madc::diag_severity_name(diag.severity), message);
     // The echo goes where the header went (a session's captured stream, a
     // backend's reply), never to std::cerr behind the caller's back.
     if ( can_show_diagnostic_source(diag) )

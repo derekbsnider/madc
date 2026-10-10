@@ -45,6 +45,29 @@ enclosing definition with no range, else nothing. Coordinates are the service's
 one unit: a 1-based line, a 0-based byte column; a use site's 1-based token stamp
 converts in the service, once.
 
+### The `madc::doc_*` dialect face — the language services as rows
+
+The seven `madc::doc_*` functions (`<ns_madc>`, `src/ns_madc.cpp`) now give
+`madc::lang`'s answers over a document as `value` rows, so an editor, the LSP and
+the MCP tools ask the SAME questions of the live text through one parse handle
+(split arc 1C.11, design `docs/plans/2026-10-10-language-services-design.md` §2
+decision 5, slice 3). `doc_diagnostics(out, w, e)` gives `{range, severity,
+severity_code, phase, phase_code, message}`; `doc_outline(out, w, e)` gives each
+definition's `{name, kind, kind_code, range, selection}`; `doc_enclosing(out, w,
+e, line, column)` gives the innermost definition around a point as an outline
+row, or an empty value; `doc_definition` and `doc_references(..., line, column[,
+include_declaration])` give a list of name ranges; `doc_hover` gives `{text}` or
+`{text, range}`; `doc_spans(out, w, e)` gives `{line, column, length, class,
+class_code}`. A range is `{line, column, end_line, end_column}` — a 1-based line,
+a 0-based byte column, its end exclusive. Each enum rides as its code
+(`severity_code`, `kind_code`, `class_code`), with its name beside it for
+display; `severity_code` compares with `madc::diag_severity::error`. A document
+whose kind the compiler does not parse answers an empty value. The diagnostic
+severity/phase name tables moved from `Program` members to the free functions
+`madc::diag_severity_name` / `diag_phase_name` (new `include/madc_diag_names.h`),
+so a row names a diagnostic enum without a `Program`; `print_diagnostic`, the
+child-diagnostic rows and the unit test name them there now.
+
 ### `%git` in the madcgit module — the repository's read verbs as a session command
 
 The `madcgit` module now brings a `%git` command to a `madc -i` session: `%git

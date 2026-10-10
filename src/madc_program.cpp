@@ -58,6 +58,7 @@ extern thread_local bool madc_verbose;
 #include "madc_datachannel_internal.h"	// set_channel_error — the run channel factories
 #include "madc_project.h"	// read_project_manifest — the project-handle manifest reader (both shapes)
 #include "madc_file_kinds.h"	// file_kind_family: a parse handle may name a family head
+#include "madc_diag_names.h"	// a diagnostics row's severity / phase text
 #include "madc_run_child.h"	// the Windows Run: a child OF SELF serves the request
 #include "madc_session_interrupt.h"	// HostIgnoresInterrupt: ^C/^\ are the guest's
 #include "handle_table.h"	// THE slot+1 handle-registry rule (parse handles)
@@ -4655,9 +4656,9 @@ void diagnostic_rows_from_child(::Program &child, madc::value &out)
     {
 	const ::Program::Diagnostic &d = child.diagnostics[i];
 	std::map<std::string, madc::value> f;
-	f["severity"] = value(std::string(child.diagnostic_severity_name(d.severity)));
+	f["severity"] = value(std::string(madc::diag_severity_name(d.severity)));
 	f["severity_code"] = value((int64_t)d.severity);	// madc::diag_severity
-	f["phase"] = value(std::string(child.diagnostic_phase_name(d.phase)));
+	f["phase"] = value(std::string(madc::diag_phase_name(d.phase)));
 	f["phase_code"] = value((int64_t)d.phase);		// madc::diag_phase
 	f["message"] = value(d.message);
 	f["file"] = value(d.file);
