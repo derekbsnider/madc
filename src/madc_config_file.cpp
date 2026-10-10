@@ -16,8 +16,7 @@
 #include <vector>
 #include <errno.h>
 #include <stdlib.h>
-#include <sys/stat.h>
-#include "madc_posix_io.h"	// host_path_dirname
+#include "madc_posix_io.h"	// host_path_dirname / join / expand_home
 
 #include "madc_config_file.h"
 
@@ -61,18 +60,11 @@ std::string unquote(const std::string &s)
 // something in whatever directory the process happened to start in.
 std::string resolve_path(const std::string &value, const std::string &file)
 {
-	if (value.empty() || madc::detail::host_path_absolute(value))
-		return value;
-	if (value[0] == '~' && (value.size() == 1 || value[1] == '/')) {
-		const char *home = getenv("HOME");
-		if (home && *home)
-			return std::string(home) + value.substr(1);
-		return value;
-	}
-	std::string dir = madc::detail::host_path_dirname(file);
-	if (dir.empty())
-		return value;
-	return dir + value;
+	std::string home;
+	if (madc::detail::host_path_expand_home(value, home))
+		return home;
+	return madc::detail::host_path_join(madc::detail::host_path_dirname(file),
+					    value);
 }
 
 // Whole-string unsigned decimal. Trailing junk is an error, not a silent
@@ -109,8 +101,9 @@ bool parse_bool(const std::string &v, bool &out)
 
 bool file_exists(const std::string &p)
 {
-	struct stat st;
-	return !p.empty() && stat(p.c_str(), &st) == 0 && !S_ISDIR(st.st_mode);
+	const madc::detail::host_path_type t = madc::detail::host_path_type_of(p);
+	return t != madc::detail::host_path_type::none
+	       && t != madc::detail::host_path_type::directory;
 }
 
 // Every diagnostic names the file, the line, and what to do about it.

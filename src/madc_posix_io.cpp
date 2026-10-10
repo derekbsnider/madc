@@ -214,6 +214,42 @@ bool host_path_absolute(const std::string &path)
 	return false;
 }
 
+std::string host_path_join(const std::string &dir, const std::string &path)
+{
+	if ( path.empty() || host_path_absolute(path) || dir.empty()
+	     || dir == "." )
+		return path;
+	if ( host_path_is_separator(dir[dir.size() - 1]) )
+		return dir + path;
+	return dir + "/" + path;
+}
+
+host_path_type host_path_type_of(const std::string &path)
+{
+	struct stat st;
+	if ( path.empty() || stat(path.c_str(), &st) != 0 )
+		return host_path_type::none;
+	if ( S_ISDIR(st.st_mode) )
+		return host_path_type::directory;
+	if ( S_ISREG(st.st_mode) )
+		return host_path_type::file;
+	return host_path_type::other;
+}
+
+bool host_path_expand_home(const std::string &path, std::string &out)
+{
+	if ( path.empty() || path[0] != '~'
+	     || (path.size() > 1 && !host_path_is_separator(path[1])) )
+		return false;
+#ifdef _WIN32
+	const char *home = getenv("USERPROFILE");
+#else
+	const char *home = getenv("HOME");
+#endif
+	out = home && *home ? std::string(home) + path.substr(1) : path;
+	return true;
+}
+
 bool host_path_within(const std::string &dir, const std::string &path,
 		      std::size_t *rel_at)
 {

@@ -52,6 +52,24 @@ std::string host_path_basename(const std::string &path);
 // joined `Z:\work\inc` onto the manifest's directory.
 bool host_path_absolute(const std::string &path);
 
+// `path` against the directory `dir` — THE owner of joining a relative path
+// to a base: an absolute or empty `path` stays as it is, as it does beside an
+// empty or "." `dir` (the caller's own spelling, never a "./" twin of it);
+// otherwise `dir`, one separator ('/' unless `dir` already ends in one of the
+// splitters' set), then `path`.
+std::string host_path_join(const std::string &dir, const std::string &path);
+
+// What `path` names on the host (stat): nothing, a file, a directory, or
+// something else (a device, a fifo) — THE owner of "does it exist / is it a
+// directory" for a path the caller is about to open, create or enter.
+enum class host_path_type : unsigned char { none, file, directory, other };
+host_path_type host_path_type_of(const std::string &path);
+
+// A `~` or `~/...` (`~\...` on Windows) path against the user's home ($HOME;
+// %USERPROFILE% on Windows) into `out`. False when `path` is no such form;
+// true with `path` unchanged in `out` when the home is unknown.
+bool host_path_expand_home(const std::string &path, std::string &out);
+
 // Is `path` inside the directory `dir`? Both are COMPARISON spellings
 // (canonical_path_for_compare). THE owner of "under this directory": dir's
 // spelling, less any trailing separator, must be followed in path by a

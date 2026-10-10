@@ -3,6 +3,8 @@
 #include "doctest.h"
 
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <string>
 
 thread_local bool madc_verbose = false;
@@ -14,6 +16,8 @@ using madc::detail::host_path_dirname;
 using madc::detail::host_path_basename;
 using madc::detail::host_path_within;
 using madc::detail::host_path_absolute;
+using madc::detail::host_path_join;
+using madc::detail::host_path_expand_home;
 
 TEST_CASE("host_path_dirname/basename: POSIX separators on every host")
 {
@@ -119,6 +123,55 @@ TEST_CASE("host_path_absolute: a drive spelling is a relative name on POSIX")
 	CHECK_FALSE(host_path_absolute("\\rooted"));
 }
 #endif
+
+TEST_CASE("host_path_join: a relative path under a directory, one separator")
+{
+	CHECK(host_path_join("/work/proj", "src/a.c") == "/work/proj/src/a.c");
+	CHECK(host_path_join("/work/proj/", "a.c") == "/work/proj/a.c");
+	CHECK(host_path_join("/", "a.c") == "/a.c");
+	CHECK(host_path_join("/work", "/etc/x") == "/etc/x");	// absolute stays
+	CHECK(host_path_join("/work", "") == "");
+	CHECK(host_path_join("", "a.c") == "a.c");
+	CHECK(host_path_join(".", "a.c") == "a.c");		// never a ./ twin
+#ifdef _WIN32
+	CHECK(host_path_join("Z:\\work\\", "a.c") == "Z:\\work\\a.c");
+	CHECK(host_path_join("Z:\\work", "C:\\x") == "C:\\x");
+#endif
+}
+
+TEST_CASE("host_path_type_of: nothing, a file, a directory")
+{
+	using madc::detail::host_path_type;
+	using madc::detail::host_path_type_of;
+	CHECK(host_path_type_of("") == host_path_type::none);
+	CHECK(host_path_type_of("no/such/path/at/all") == host_path_type::none);
+	CHECK(host_path_type_of(".") == host_path_type::directory);
+	const char *made = "test_posix_io_type_of.tmp";
+	FILE *f = fopen(made, "w");
+	REQUIRE(f);
+	fclose(f);
+	CHECK(host_path_type_of(made) == host_path_type::file);
+	remove(made);
+	CHECK(host_path_type_of(made) == host_path_type::none);
+}
+
+TEST_CASE("host_path_expand_home: ~ and ~/x against the home, nothing else")
+{
+	std::string out;
+#ifdef _WIN32
+	const char *home = getenv("USERPROFILE");
+#else
+	const char *home = getenv("HOME");
+#endif
+	REQUIRE(home);
+	CHECK(host_path_expand_home("~/notes.txt", out));
+	CHECK(out == std::string(home) + "/notes.txt");
+	CHECK(host_path_expand_home("~", out));
+	CHECK(out == home);
+	CHECK_FALSE(host_path_expand_home("~user/x", out));	// not ours
+	CHECK_FALSE(host_path_expand_home("a/~/b", out));
+	CHECK_FALSE(host_path_expand_home("", out));
+}
 
 TEST_CASE("map_exec_region_at: placed exactly, refused when taken, writable on request")
 {

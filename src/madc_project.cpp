@@ -57,11 +57,7 @@ void shell_split(const std::string &cmd, std::vector<std::string> &out) {
 // spelling, not a "./"-prefixed twin of it (buffer paths compare by
 // spelling; "./x" and "x" would open twice).
 std::string resolve(const std::string &base, const std::string &p) {
-	if (p.empty() || madc::detail::host_path_absolute(p)) return p;
-	if (base.empty() || base == ".") return p;
-	std::string b = base;
-	if (b.back() != '/') b += '/';
-	return b + p;
+	return madc::detail::host_path_join(base, p);
 }
 
 // Scan argv tokens for -D/-I/-std=/-stdlib=, filling the TU. Ignores the rest.
