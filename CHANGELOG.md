@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### `madc -i` opens each buffer with the indent its text — or its language — shows
+
+In colon mode (split arc 1B.6, ex core slice 6), a buffer now opens with its
+`shiftwidth` and `expandtab` set from the indent its own text shows over its
+first 1000 lines — a tab when tab-indented lines are at least as common as
+space-indented, else the spaces the indentation most often steps by between
+neighbouring lines (2..8; a one-space step is alignment) — or, when no line is
+indented, its file kind's default: four spaces for Python, two for YAML, a tab
+for the rest. `>` and `<` then shift by that unit. The per-language editing
+tables — the line-comment opener, the block delimiters, the default indent and
+indent detection, keyed on the file-kind enum — now live in madc
+(`src/file_kind_editing.cpp`, declared in `include/madc_file_kinds.h`) beside the
+file-kind owner; madcide's dialect copies move onto them later in the split arc.
+
 ### Windows `madc -i` shares a piped stdin with its backend byte-exactly
 
 On genuine Windows, an entry that reads stdin from a piped transcript now sees

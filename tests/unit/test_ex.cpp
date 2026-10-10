@@ -336,6 +336,7 @@ TEST_CASE("ex: global, move / copy, and the shell forms")
 // the text it leaves, and the current line after it.
 
 #include "madcdis/hub.h"
+#include "madc_file_kinds.h"	// slice 6: the kinds a buffer opens with
 
 using madc::ex::outcome;
 using madc::ex::session;
@@ -506,6 +507,8 @@ TEST_CASE("ex session: shifts by shiftwidth, tabs unless expandtab")
     entity_id e = open_doc(w, "x\n\n  y\n");
     session s(w);
     REQUIRE(s.use(e));
+    s.settings().shiftwidth = 8;		// vim's defaults, not the text's
+    s.settings().expandtab = false;		// two-space unit (slice 6)
     ran(s, "%>");
     CHECK(body(w, e) == "\tx\n\n\t  y\n");	// an empty line stays empty
     s.settings().shiftwidth = 4;
@@ -1082,3 +1085,51 @@ TEST_CASE("ex session: :!cmd, :r !cmd and :w !cmd through the shell")
     CHECK(s.current_line() == 2u);
 }
 #endif
+
+// ------------------------------------------------------ editing tables
+// Slice 6 (design decision 12): a buffer's indent as it opens — the unit its
+// text shows (madc::indent_detect), else its kind's default.
+
+TEST_CASE("ex session: a buffer opens with the indent its text or kind shows")
+{
+    world w;
+    session s(w);
+    REQUIRE(s.use(open_doc(w, "if x:\n    y\n        z\n")));
+    CHECK(s.settings().expandtab);			// four-space steps
+    CHECK(s.settings().shiftwidth == 4u);
+    REQUIRE(s.use(open_doc(w, "{\n\tx;\n}\n")));
+    CHECK_FALSE(s.settings().expandtab);		// tabs
+    CHECK(s.settings().shiftwidth == 8u);
+    entity_id py = w.create("document");
+    REQUIRE(w.doc_attach(py, "t.py", madc::fkPYTHON, "x = 1\n"));
+    REQUIRE(s.use(py));
+    CHECK(s.settings().expandtab);			// PEP 8: four spaces
+    CHECK(s.settings().shiftwidth == 4u);
+    ran(s, ">");
+    CHECK(body(w, py) == "    x = 1\n");
+}
+
+TEST_CASE("editing tables: comment openers, block delimiters, indents by kind")
+{
+    CHECK(std::string(madc::file_kind_line_comment(madc::fkC)) == "//");
+    CHECK(std::string(madc::file_kind_line_comment(madc::fkMADC)) == "//");
+    CHECK(std::string(madc::file_kind_line_comment(madc::fkRUST)) == "//");
+    CHECK(std::string(madc::file_kind_line_comment(madc::fkPYTHON)) == "#");
+    CHECK(std::string(madc::file_kind_line_comment(madc::fkMAKEFILE)) == "#");
+    CHECK(std::string(madc::file_kind_line_comment(madc::fkINI)) == ";");
+    CHECK(std::string(madc::file_kind_line_comment(madc::fkLUA)) == "--");
+    CHECK(std::string(madc::file_kind_line_comment(madc::fkMARKDOWN)).empty());
+    CHECK(std::string(madc::file_kind_block_open(madc::fkCPP)) == "{");
+    CHECK(std::string(madc::file_kind_block_close(madc::fkCPP)) == "}");
+    CHECK(std::string(madc::file_kind_block_open(madc::fkPYTHON)) == ":");
+    CHECK(std::string(madc::file_kind_block_close(madc::fkPYTHON)).empty());
+    CHECK(std::string(madc::file_kind_indent_default(madc::fkYAML)) == "  ");
+    CHECK(std::string(madc::file_kind_indent_default(madc::fkC)) == "\t");
+    // indent_detect: tabs win a tie; else the commonest 2..8 step; a
+    // one-space step (a C comment's ` *`) is alignment, no vote.
+    CHECK(madc::indent_detect("a\n\tb\n  c\n") == "\t");
+    CHECK(madc::indent_detect("a\n  b\n    c\n  d\n") == "  ");
+    CHECK(madc::indent_detect("/*\n * x\n */\nint y;\n") == "    ");
+    CHECK(madc::indent_detect("a\nb\n").empty());
+    CHECK(madc::indent_detect("").empty());
+}

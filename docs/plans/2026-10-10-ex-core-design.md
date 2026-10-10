@@ -119,10 +119,13 @@ and its Layering bullet — madc is ex, madcide is the visual part.
     - Input mode in the line editor: a continuation prompt; in cooked input:
       plain lines.
 12. **The per-language editing tables move into madc** beside
-    `src/file_kinds.cpp`: the line-comment opener, the block delimiters, the
-    default indent and indent detection, by file kind (enum codes, not
-    names). `>` / `<` / `ret` and `:set`'s defaults read them; madcide's
-    `madcide_lang.inc` calls them through `madc::` publics in 1D.
+    `src/file_kinds.cpp` — `src/file_kind_editing.cpp`, declared in
+    `include/madc_file_kinds.h`: the line-comment opener, the block
+    delimiters, the default indent and `indent_detect`, by file kind (enum
+    codes, not names). A buffer opens with the unit its first lines show,
+    else its kind's default (`shiftwidth` / `expandtab` — `>` / `<` read
+    them); madcide's `madcide_lang.inc` copies move onto these publics in 1D
+    (item 18) and are deleted there.
 
 ## 3. Slices (each its own commit, Tier 1 + Tier 2)
 

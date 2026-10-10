@@ -23,6 +23,7 @@
 
 #include "madc_documents.h"	// :e :r :w :sav — the document file owner
 #include "madc_ex.h"
+#include "madc_file_kinds.h"	// a buffer's indent: indent_detect, the kind's default
 #include "madc_posix_io.h"	// host_path_join / _type_of / _within: paths
 #include "madc_regex.h"		// /re/ ?re? s g v sor — madc's one regex engine
 #include "madcdis/hub.h"
@@ -2532,6 +2533,27 @@ bool session::use(entity_id doc)
 	    b->line_span(n, off, len);
 	mutation_context mc(w);
 	st.dot = mc.anchor_add(doc, n ? off : 0, false);
+	// The buffer's indent (design decision 12), as a buffer opens: the
+	// unit its first lines show, else its language's — a tab keeps
+	// 'noexpandtab', spaces set 'expandtab' and 'shiftwidth'.
+	size_t head = 0, head_len = 0;
+	if ( n )
+	    b->line_span(n < 1000 ? n : 1000, head, head_len);
+	std::string unit = madc::indent_detect(n ? b->slice(0, head + head_len)
+						 : std::string());
+	const madc::hub::document *d = w.doc_of(doc);
+	if ( unit.empty() && d )
+	    unit = madc::file_kind_indent_default(d->kind());
+	if ( unit == "\t" )
+	{
+	    opts.expandtab = false;
+	    opts.shiftwidth = opts.tabstop;
+	}
+	else if ( !unit.empty() )
+	{
+	    opts.expandtab = true;
+	    opts.shiftwidth = unit.size();
+	}
     }
     return true;
 }
