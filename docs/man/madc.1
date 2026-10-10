@@ -48,7 +48,17 @@ The REPL, even when standard input is not a terminal. With a
 .IR file ,
 run it first and keep its names (as
 .B python \-i
-does). A line starting with
+does).
+.B %help
+lists the session's commands, among them
+.B %history
+(this session's entries; \fB\-l\fR and \fB\-g\fR search the history file),
+.B %std
+[\fIname\fR] (the standard in force, or a fresh session under
+.IR name )
+and
+.B %reset
+(a fresh session). A line starting with
 .B :
 is an ex command on the file's buffer, as in vim's colon mode:
 .BR :p ,

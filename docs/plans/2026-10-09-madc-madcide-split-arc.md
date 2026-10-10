@@ -337,7 +337,15 @@ items are their own sessions, any time.
    file-kind family predicates move beside `src/file_kinds.cpp` for `>`,
    `<` and `:set`.
 7. **`%history` (one store), `%std`, `%reset`, the one completion insert
-   rule** (`line_edit::completed`).
+   rule — LANDED 2026-10-10: `a447285bc` (the store's one owner
+   `madc_history.{h,cpp}`; `%history`, the session's, `-n` / `-l` / `-g`),
+   `a0d9d9ffe` + `11bf07919` (`%reset`, `%std [NAME]`; the `--std=` spelling
+   owner `Program::standard_of_spelling` / `standard_spelling`; both loops
+   re-key on a new standard; madcide honors both payloads), `e6eded028`
+   (`madc::hub::complete_word`, `line_edit::completed` on it)** (design
+   `2026-10-10-history-std-reset-design.md`; unit, fix lanes and gates
+   green; the batch checkpoint 2056/0/9 at `11bf07919`; the REPL, colon and session subset on genuine Windows 24/0/4; not
+   pushed). madcide's pane moves onto the store and the rule in 1D (item 18).
 8. **Check, build, run and projects at the prompt** (owner: build and
    projects are madc's): `%check` (madcide documents `:check` and never
    handled it); `%build` / `%run` on a live BUFFER (today a file only —
