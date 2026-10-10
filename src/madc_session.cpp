@@ -26,6 +26,7 @@
 #include <sstream>
 #include <fstream>
 #include <memory>
+#include <type_traits>
 #include <stdint.h>
 
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
@@ -44,6 +45,8 @@
 #include "madc_history.h"	// %history's store (1B.7)
 #include "madc_posix_io.h"	// host_path_stem / drop_extension: %call's and %build's names
 #include "madc_project.h"	// %project: the manifest's reader and writer
+#include "madc_modules.h"	// a module's row: the commands it brings (1B.10)
+#include "madc_dl.h"		// madcdl_sym: its row function
 
 // The command registry (plan §41.8a, D13/D24; the modes and the extension
 // point: split arc 1A.2, docs/plans/2026-10-09-command-registry-design.md):
@@ -319,6 +322,43 @@ bool InteractiveSession::add_command(const std::string &name, const std::string 
     return handler && add_row(name, usage, summary, handler, 0);
 }
 
+static_assert(std::is_same<decltype(madc_module_command::handler),
+			   InteractiveSession::CommandHandler>::value,
+	      "a module's command handler is the registry's CommandHandler");
+
+size_t InteractiveSession::add_module_commands(madc_module_commands_fn rows_of)
+{
+    size_t count = 0, added = 0;
+    const madc_module_command *rows = rows_of ? rows_of(&count) : NULL;
+    for ( size_t i = 0; rows && i < count; ++i )
+	if ( rows[i].name && rows[i].handler
+	  && add_command(rows[i].name, rows[i].usage ? rows[i].usage : "",
+			 rows[i].summary ? rows[i].summary : "", rows[i].handler) )
+	    ++added;
+    return added;
+}
+
+void InteractiveSession::register_module_commands()
+{
+    const std::vector<madc::dis::istring> *loaded[] = {
+	&prog->loaded_lib_paths, &prog->module_optional_libs
+    };
+    for ( const std::vector<madc::dis::istring> *list : loaded )
+	for ( const madc::dis::istring &spelling : *list )
+	{
+	    if ( !modules_seen.insert(spelling).second )
+		continue;
+	    const MadcModuleSpec *row = madc_module_find_spelled(spelling);
+	    if ( !row || !row->commands || !prog->is_auto_library_loading_enabled() )
+		continue;
+	    std::string why;
+	    void *handle = madc_module_open(spelling, why);
+	    if ( handle )
+		add_module_commands(reinterpret_cast<madc_module_commands_fn>(
+				       madcdl_sym(handle, row->commands)));
+	}
+}
+
 bool InteractiveSession::add_host_command(const std::string &name,
 					  const std::string &usage,
 					  const std::string &summary, int64_t code)
@@ -399,7 +439,10 @@ bool InteractiveSession::begin(const std::string &std_option)
     if ( !prog->begin_interactive_session("REPL") )
 	return false;
     prog->owning_session = this;	// madc::command_add's way in
-    return jit->begin_live("REPL");
+    if ( !jit->begin_live("REPL") )
+	return false;
+    register_module_commands();		// the configured Program's modules (1B.10)
+    return true;
 }
 
 bool InteractiveSession::submit(const std::string &text, const TakenHook &taken)
@@ -514,6 +557,7 @@ InteractiveSession::Offered InteractiveSession::enter(const std::string &text,
     {
 	++entry_count;
 	prog->session_units.insert(name);	// its names are the session's
+	register_module_commands();		// its imports' (1B.10)
     }
     // D12: an entry whose show ran keeps its value as REPL[N]'s result, as
     // IPython's Out[N] (a run that stopped before its show keeps nothing).
@@ -606,6 +650,7 @@ bool InteractiveSession::load_text(const std::string &text, const std::string &p
     {
 	prog->session_units.insert(path);	// its names are the session's
 	load_main = !had_main && function("main") != NULL;
+	register_module_commands();		// its imports' (1B.10)
     }
     return ok;
 }

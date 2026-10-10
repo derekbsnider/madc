@@ -40,6 +40,9 @@ struct MadcModuleSpec {
 	const char *darwin;	// Mach-O install name (bare file name)
 	const char *windows;	// PE module name
 	unsigned flags;		// MADC_MODULE_* bits
+	const char *commands;	// the exported madc_module_commands_fn that brings
+				// the module's REPL commands, or NULL (split arc
+				// 1B.10; madc_module_commands.h)
 };
 
 const MadcModuleSpec *madc_module_find(const std::string &name);

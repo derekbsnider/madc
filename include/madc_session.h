@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -26,6 +27,7 @@
 #include "libmadc/value.h"		// madc::value: a bindings row
 #include "madcdis/istring.h"	// a buffer's name and path (BufferSource)
 #include "highlight_class.h"	// code_range: the shown text that is code
+#include "madc_module_commands.h"	// a module's REPL command rows (1B.10)
 
 class Program;
 class Variable;
@@ -218,6 +220,11 @@ public:
 		     const std::string &summary, CommandHandler handler);
     bool add_host_command(const std::string &name, const std::string &usage,
 			  const std::string &summary, int64_t code);
+    // A module's rows (split arc 1B.10, madc_module_commands.h): each that
+    // registers (add_command) as a session row; the count registered.
+    // `rows_of` NULL brings none. The session calls it for each module that
+    // enters its Program (register_module_commands); a test hands its own.
+    size_t add_module_commands(madc_module_commands_fn rows_of);
     // The host's rows replaced by `rows` ({name, usage, summary, code} each;
     // the wire's `commands` request, sent after every backend start). A row
     // that cannot register is skipped; the count registered is returned.
@@ -342,6 +349,13 @@ private:
     // A command's output begins: the entry was a command, and nothing it
     // shows yet (no text, no code).
     void begin_command_output();
+    // The REPL commands of each module the Program has loaded and this
+    // session has not looked at yet (split arc 1B.10, design §2.3): the
+    // configured Program's (-l, the ini's modules) at begin, a kept unit's
+    // imports after it. A module whose map row names `commands` is opened (a
+    // LAZY one here, as its first call would; under --no-auto-load never)
+    // and its rows added; one that does not open brings none.
+    void register_module_commands();
     // A command's usage error, cited at the entry's first column.
     void command_error(const std::string &message, const std::string &name);
     // The quiet entry: each object shown through the row form, the texts in
@@ -356,6 +370,7 @@ private:
     std::vector<madc::code_range> command_code;	// its ranges that are code
     std::vector<madc::code_range> no_code;	// an entry's shown value: none
     bool showed_command;		// the last entry was a command
+    std::set<madc::dis::istring> modules_seen;	// register_module_commands' spellings
     madc::session_payload payload_kind;	// the last command's ask of its host
     std::vector<std::string> payload_args;
     int64_t payload_command;		// the `command` payload's row code

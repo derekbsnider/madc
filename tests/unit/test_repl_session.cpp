@@ -2588,6 +2588,49 @@ TEST_CASE("session commands: registered rows, the session's and the host's")
     CHECK(c.shown() == "hello, cy");
 }
 
+// A module's REPL commands (split arc 1B.10, design §2.2-§2.3): the rows a
+// module's map-row function hands the session register as session rows —
+// each one that can (a built-in's name, a row without a handler, a name
+// already taken are skipped; the first registration stands) — and run as
+// any session row does.
+static bool module_echo(madc::value &out, const char *argument)
+{
+    out = madc::value(std::string("echo: ") + argument);
+    return true;
+}
+
+static const madc_module_command module_rows[] = {
+    { "echoit", "%echoit TEXT", "echo TEXT", module_echo },
+    { "whos", "%whos", "a built-in's name", module_echo },
+    { "bare", "%bare", "no handler", NULL },
+    { "greet2", "%greet2 NAME", "say hello", greet_command },
+};
+
+static const madc_module_command *module_rows_of(size_t *count)
+{
+    *count = sizeof(module_rows) / sizeof(module_rows[0]);
+    return module_rows;
+}
+
+TEST_CASE("session commands: a module's rows register as session rows (1B.10)")
+{
+    InteractiveSession c;
+    REQUIRE(c.begin("--std=c17"));
+    std::ostringstream err;
+    c.program().error_stream = &err;
+    CHECK(c.add_module_commands(module_rows_of) == 2u);
+    CHECK(c.add_module_commands(module_rows_of) == 0u);	// the first stands
+    CHECK(c.add_module_commands(NULL) == 0u);
+    REQUIRE(c.submit("%echoit two words"));
+    CHECK(c.shown() == "echo: two words");
+    CHECK_FALSE(c.submit("%greet2"));
+    CHECK(first_error(c) == "%greet needs a NAME");
+    CHECK_FALSE(c.submit("%bare"));
+    REQUIRE(c.submit("%help"));
+    CHECK(c.shown().find("%echoit TEXT") != std::string::npos);
+    CHECK(c.shown().find("%bare") == std::string::npos);
+}
+
 // Slice 2 (plan §41.8a): `?name` / `%pinfo name` describe what the session
 // knows of a name, in IPython's fields, each overload with its location
 // (Julia), from the walk completion reads: `?` describes a name exactly

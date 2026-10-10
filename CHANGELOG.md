@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+### A module brings its REPL commands to a session, registered when the module loads
+
+A loaded native module can now bring REPL commands to a `madc -i` session, and
+the session registers them when the module enters its Program (split arc 1B.10,
+design `docs/plans/2026-10-10-git-module-command-design.md`). A module's map row
+(`src/madc_modules.cpp`) gains a `commands` column: the name of the function the
+module exports that hands back its command rows. `include/madc_module_commands.h`
+holds the row shape `madc_module_command {name, usage, summary, handler}` and the
+function type `madc_module_commands_fn`, with a `static_assert` tying the handler
+to the registry's own `InteractiveSession::CommandHandler`.
+`InteractiveSession::register_module_commands()` looks once per spelling at the
+Program's loaded modules — `loaded_lib_paths` (`-l`, the ini's `modules`, an
+eager `import`) and `module_optional_libs` (a lazy `import`) — opens a
+row-carrying module through `madc_module_open` (never under `--no-auto-load`),
+finds the function through `madcdl_sym`, and `add_module_commands` adds each row
+as a session row; it runs at `begin()` for the configured Program's modules and
+after each kept unit (an entry, a loaded file) for its imports. A built-in's
+name, a row without a handler, and a name already taken are skipped, and the
+first registration stands. madcgit's row names `madcgit_commands` (its export
+lands in the slice that moves the verbs); every other module row is NULL and
+brings none. The model is IPython's `%load_ext`, which registers an extension's
+magics when the extension loads.
+
 ### `git log -- PATH` in the git module hides a commit TREESAME to any parent
 
 `madc`'s git module (`madcgit`) now follows git's history-simplification rule
