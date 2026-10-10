@@ -215,8 +215,12 @@ BUILT_FLAVORS=$($MADC_WRAPPER "$MADC" --capabilities=json 2>/dev/null \
 # suite: `run_tests.sh 'testmadceval*' testevalexterncapture`. No test name is
 # hard-coded here — the caller supplies the pattern, so this stays a generic
 # runner capability (.claude/rules/test-fixtures.md). With no globs the whole
-# suite runs, which is what every pre-merge invocation does.
-TEST_GLOBS="$*"
+# suite runs, which is what every pre-merge invocation does. They are kept as
+# an array and never expanded as FILENAMES: an unquoted `for g in $globs`
+# matched them against the cwd, so a stray file there named like a test
+# (a manifest a test wrote, `testrepl_project.prj.json`) replaced its glob
+# and silently deselected every later test the glob named.
+TEST_GLOBS=("$@")
 
 # The suites' resource cap is the RUNNER's to ask for (owner ruling 2026-09-07:
 # madc itself arms no guard by default): every test process runs under the
@@ -284,9 +288,9 @@ for t in "$TEST_DIR"/*.mad; do
     # A .helper fixture marks a compilation unit owned by another test
     # (content = one line naming the owner) — never run standalone.
     [ -f "${TEST_DIR}/$base.helper" ] && continue
-    if [ -n "$TEST_GLOBS" ]; then
+    if [ ${#TEST_GLOBS[@]} -gt 0 ]; then
         keep=0
-        for g in $TEST_GLOBS; do
+        for g in "${TEST_GLOBS[@]}"; do
             case "$base" in $g) keep=1; break ;; esac
         done
         [ $keep -eq 0 ] && continue
@@ -624,11 +628,11 @@ for t in "$TEST_DIR"/*.mad; do
         fi
     fi
 done
-if [ -n "$TEST_GLOBS" ]; then
+if [ ${#TEST_GLOBS[@]} -gt 0 ]; then
     # Never let a filtered run read as a full one. A subset that says
     # only "N passed" is indistinguishable from the suite at a glance,
     # and that is exactly how a partial run gets quoted as a baseline.
-    say "SUBSET RUN — filter: $TEST_GLOBS ($SELECTED of $(ls "$TEST_DIR"/*.mad | wc -l) tests; NOT a suite baseline)"
+    say "SUBSET RUN — filter: ${TEST_GLOBS[*]} ($SELECTED of $(ls "$TEST_DIR"/*.mad | wc -l) tests; NOT a suite baseline)"
 fi
 if [ -n "$STDLIB_NAME" ]; then
     # Never let a FLAVORED run read as the default-lane baseline. The two lanes

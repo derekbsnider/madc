@@ -370,7 +370,7 @@ for stage in $stages; do
 			echo "stage 'tests' needs TESTS='<glob> [glob...]'" >&2
 			note_stage "tests" 1
 		else
-			run_remote "tests" "cd $REMOTE_MADC; bash scripts/run_tests.sh $TESTS"
+			run_remote "tests" "cd $REMOTE_MADC; set -f; bash scripts/run_tests.sh $TESTS"
 		fi
 		;;
 	tests-all)
@@ -380,16 +380,16 @@ for stage in $stages; do
 			echo "stage 'tests-all' needs TESTS='<glob> [glob...]'" >&2
 			note_stage "tests-all" 1
 		else
-			run_remote "tests jit" "cd $REMOTE_MADC; bash scripts/run_tests.sh $TESTS"
-			run_remote "tests exe" "cd $REMOTE_MADC; bash scripts/run_tests.sh --exe $TESTS"
-			run_remote "tests obj" "cd $REMOTE_MADC; bash scripts/run_tests.sh --obj $TESTS"
+			run_remote "tests jit" "cd $REMOTE_MADC; set -f; bash scripts/run_tests.sh $TESTS"
+			run_remote "tests exe" "cd $REMOTE_MADC; set -f; bash scripts/run_tests.sh --exe $TESTS"
+			run_remote "tests obj" "cd $REMOTE_MADC; set -f; bash scripts/run_tests.sh --obj $TESTS"
 		fi
 		;;
 	exe)
-		run_remote "exe" "cd $REMOTE_MADC; bash scripts/run_tests.sh --exe"
+		run_remote "exe" "cd $REMOTE_MADC; set -f; bash scripts/run_tests.sh --exe"
 		;;
 	obj)
-		run_remote "obj" "cd $REMOTE_MADC; bash scripts/run_tests.sh --obj"
+		run_remote "obj" "cd $REMOTE_MADC; set -f; bash scripts/run_tests.sh --obj"
 		;;
 	libcxx)
 		# The PARITY lane: the whole suite under the alternate stdlib
@@ -397,15 +397,15 @@ for stage in $stages; do
 		# behaves like the default flavor" is MEASURED — a flavor-specific
 		# fixture proves only that one fixture works. Out-of-scope tests
 		# carry tests/<base>.libcxx_skip with a reason.
-		run_remote "libcxx jit" "cd $REMOTE_MADC; bash scripts/run_tests.sh --stdlib=libc++"
-		run_remote "libcxx exe" "cd $REMOTE_MADC; bash scripts/run_tests.sh --stdlib=libc++ --exe"
-		run_remote "libcxx obj" "cd $REMOTE_MADC; bash scripts/run_tests.sh --stdlib=libc++ --obj"
+		run_remote "libcxx jit" "cd $REMOTE_MADC; set -f; bash scripts/run_tests.sh --stdlib=libc++"
+		run_remote "libcxx exe" "cd $REMOTE_MADC; set -f; bash scripts/run_tests.sh --stdlib=libc++ --exe"
+		run_remote "libcxx obj" "cd $REMOTE_MADC; set -f; bash scripts/run_tests.sh --stdlib=libc++ --obj"
 		;;
 	libcxxjit)
 		# JIT leg only — the per-batch lane checkpoint; the EXE/OBJ legs
 		# move to session end / pre-merge (they are ~2/3 of the lane's
 		# wall time and rarely flip for front-end work).
-		run_remote "libcxx jit" "cd $REMOTE_MADC; bash scripts/run_tests.sh --stdlib=libc++"
+		run_remote "libcxx jit" "cd $REMOTE_MADC; set -f; bash scripts/run_tests.sh --stdlib=libc++"
 		;;
 	release)
 		run_remote "release" "make -C $REMOTE_MADC/src -j20 release"
