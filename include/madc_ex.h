@@ -93,17 +93,19 @@ struct line
     // Operands some commands carry, parsed here:
     address     destination;	// m / t / co: the line the text goes after
     bool        has_count;	// p nu l d j > < s: a trailing count
-    size_t      count;
+    size_t      count;		// that count; ret: the new tabstop (0: none)
     int         levels;		// > / <: one per `>` or `<` typed
-    std::string pattern;	// s, g, v: the pattern (empty: the last one)
+    std::string pattern;	// s, g, v, sor: the pattern (empty: the last one)
+    bool        has_pattern;	// sor: a /pattern/ was typed
     std::string replacement;	// s
-    std::string flags;		// s: `g` `i` `I` `n`, and `&` (keep the last)
+    std::string flags;		// s: `g` `i` `I` `n` `e`, and `&` (keep the
+				// last); sor: `i` `u` `r` and one of `n x o b f`
     std::string subcommand;	// g, v: the command run on each line
     bool        shell_form;	// :r !cmd, :w !cmd — the argument is a command
 
     line()
 	: code(command::none), force(false), has_count(false), count(0),
-	  levels(0), shell_form(false) {}
+	  levels(0), has_pattern(false), shell_form(false) {}
 };
 
 // A typed command name (`s`, `sub`, `substitute`, `bn`) as its code: the
@@ -186,11 +188,21 @@ private:
 	size_t  last;
 	pending_text() : code(command::none), first(0), last(0) {}
     };
+    // The last :s, for `&` / `&&` / a bare `:s`.
+    struct last_substitute
+    {
+	bool        set;
+	std::string pattern;
+	std::string replacement;
+	std::string flags;
+	last_substitute() : set(false) {}
+    };
 
     madc::hub::world &w;
     madc::hub::entity_id cur;
     std::map<madc::hub::entity_id, buffer_state> buffers;
     std::string last_pattern;
+    last_substitute last_sub;
     options opts;
     pending_text pending;
 

@@ -591,3 +591,262 @@ TEST_CASE("ex session: a, i and c take their text in one group")
     s3.text({ "b" });
     CHECK(body(w3, u) == "a\nb");
 }
+
+// ------------------------------------------------- search and substitute
+// Slice 3. ORACLE: vim 9.1 `vim -u NONE -i NONE -N -e -s -S cmds file` on
+// the same buffer, writing the buffer and line('.') after the commands
+// (vim's patterns spelled very-magic `\v` there, PCRE2 here — decision 6).
+
+static const char *ALPHA = "alpha one\nbeta two\nalpha three\ngamma four\n";
+
+// A fresh session on `text`, its current line the last (as vim's).
+struct ex_buffer
+{
+    world w;
+    entity_id e;
+    session s;
+    explicit ex_buffer(const char *text) : e(open_doc(w, text)), s(w)
+    {
+	REQUIRE(s.use(e));
+    }
+    std::string text() { return body(w, e); }
+};
+
+TEST_CASE("ex session: :s — first or every match, groups, &, line breaks")
+{
+    {
+	ex_buffer b(ALPHA);				// vim: %s/alpha/A/
+	ran(b.s, "%s/alpha/A/");
+	CHECK(b.text() == "A one\nbeta two\nA three\ngamma four\n");
+	CHECK(b.s.current_line() == 3u);
+    }
+    {
+	ex_buffer b(ALPHA);				// vim: 2, s/o/0/g
+	ran(b.s, "2");
+	ran(b.s, "s/o/0/g");
+	CHECK(b.text() == "alpha one\nbeta tw0\nalpha three\ngamma four\n");
+	CHECK(b.s.current_line() == 2u);
+    }
+    {
+	ex_buffer b(ALPHA);		// vim: %s/\v(\w+) (\w+)/\2 \1/
+	ran(b.s, "%s/(\\w+) (\\w+)/\\2 \\1/");
+	CHECK(b.text() == "one alpha\ntwo beta\nthree alpha\nfour gamma\n");
+	CHECK(b.s.current_line() == 4u);
+    }
+    {
+	ex_buffer b(ALPHA);				// vim: 3, s/a/[&]/g
+	ran(b.s, "3");
+	ran(b.s, "s/a/[&]/g");
+	CHECK(b.text() == "alpha one\nbeta two\n[a]lph[a] three\ngamma four\n");
+    }
+    {
+	ex_buffer b(ALPHA);				// vim: 1s/ /\r/
+	ran(b.s, "1s/ /\\r/");
+	CHECK(b.text() == "alpha\none\nbeta two\nalpha three\ngamma four\n");
+	CHECK(b.s.current_line() == 2u);
+	ran(b.s, "1s/l/\\n/");				// sed's spelling, alike
+	CHECK(b.text() == "a\npha\none\nbeta two\nalpha three\ngamma four\n");
+    }
+    {
+	ex_buffer b(ALPHA);				// vim: %s/ALPHA/Z/i
+	ran(b.s, "%s/ALPHA/Z/i");
+	CHECK(b.text() == "Z one\nbeta two\nZ three\ngamma four\n");
+	CHECK(refused_run(b.s, "%s/ALPHA/Z/") == "pattern not found: ALPHA");
+	ran(b.s, "%s/ALPHA/Z/e");			// e: no match, no error
+	CHECK(refused_run(b.s, "s/(/x/").find("invalid pattern '('") == 0);
+    }
+    {
+	ex_buffer b(ALPHA);				// vim: %s/a//gn
+	CHECK(ran(b.s, "%s/a//gn") == "7 matches on 4 lines\n");
+	CHECK(b.text() == ALPHA);			// n: counted only
+	CHECK(ran(b.s, "1s/a//n") == "1 match on 1 line\n");
+    }
+    {
+	ex_buffer b(ALPHA);
+	ran(b.s, "1s/x/y/e");
+	ran(b.s, "1d");
+	ran(b.s, "u");				// one undo group per :s
+	ran(b.s, "%s/a/b/g");
+	ran(b.s, "u");
+	CHECK(b.text() == ALPHA);
+    }
+}
+
+TEST_CASE("ex session: :& and :&& repeat the last :s; // is the last pattern")
+{
+    {
+	ex_buffer b(ALPHA);			// vim: 1s/a/X/g, 3&, 4&&
+	CHECK(refused_run(b.s, "&") == "no previous substitute");
+	ran(b.s, "1s/a/X/g");
+	ran(b.s, "3&");				// & drops the flags,
+	ran(b.s, "4&&");			// so && keeps none
+	CHECK(b.text() == "XlphX one\nbeta two\nXlpha three\ngXmma four\n");
+	CHECK(b.s.current_line() == 4u);
+	ran(b.s, "2s");				// a bare :s is :&
+	CHECK(b.text() == "XlphX one\nbetX two\nXlpha three\ngXmma four\n");
+    }
+    {
+	ex_buffer b(ALPHA);			// vim: 1s/a/X/, 3&g, 4&&
+	ran(b.s, "1s/a/X/");
+	ran(b.s, "3&g");
+	ran(b.s, "4&&");			// && keeps the g & took
+	CHECK(b.text() == "Xlpha one\nbeta two\nXlphX three\ngXmmX four\n");
+    }
+    {
+	ex_buffer b(ALPHA);			// vim: 1s/a/X/gi, 3&&
+	ran(b.s, "1s/a/X/gi");
+	ran(b.s, "3&&");
+	CHECK(b.text() == "XlphX one\nbeta two\nXlphX three\ngamma four\n");
+	CHECK(b.s.current_line() == 3u);
+    }
+    {
+	ex_buffer b(ALPHA);
+	ran(b.s, "/three/");
+	ran(b.s, "s//3/");			// the search's pattern
+	CHECK(b.text() == "alpha one\nbeta two\nalpha 3\ngamma four\n");
+	ran(b.s, "/two/s//2/");			// the range's search first
+	CHECK(b.text() == "alpha one\nbeta 2\nalpha 3\ngamma four\n");
+    }
+}
+
+TEST_CASE("ex session: :g and :v run a command on each marked line")
+{
+    {
+	ex_buffer b(ALPHA);				// vim: g/alpha/d
+	ran(b.s, "g/alpha/d");
+	CHECK(b.text() == "beta two\ngamma four\n");
+	CHECK(b.s.current_line() == 2u);
+	ran(b.s, "u");				// one group for every d
+	CHECK(b.text() == ALPHA);
+    }
+    {
+	ex_buffer b(ALPHA);				// vim: v/alpha/d
+	ran(b.s, "v/alpha/d");
+	CHECK(b.text() == "alpha one\nalpha three\n");
+	CHECK(b.s.current_line() == 2u);
+    }
+    {
+	ex_buffer b(ALPHA);			// vim: g!/alpha/s/$/!/
+	ran(b.s, "g!/alpha/s/$/!/");
+	CHECK(b.text() == "alpha one\nbeta two!\nalpha three\ngamma four!\n");
+	CHECK(b.s.current_line() == 4u);
+    }
+    {
+	ex_buffer b(ALPHA);				// vim: g/a/s/a/@/g
+	ran(b.s, "g/a/s/a/@/g");
+	CHECK(b.text() == "@lph@ one\nbet@ two\n@lph@ three\ng@mm@ four\n");
+	CHECK(b.s.current_line() == 4u);
+	// :s under :g: a line without a match is no error; none at all is.
+	CHECK(refused_run(b.s, "g/@/s/q/r/") == "pattern not found: q");
+	// No g: the first match on each line. vim says "4 substitutions on 4
+	// lines" here (its :g reports n as substitutions); nothing was
+	// substituted, so madc says matches, as vim's own :s n does.
+	CHECK(ran(b.s, "g/@/s/@//n") == "4 matches on 4 lines\n");
+	CHECK(ran(b.s, "g/@/s/@//gn") == "7 matches on 4 lines\n");
+    }
+    {
+	ex_buffer b(ALPHA);				// vim: g/^/m0
+	ran(b.s, "g/^/m0");
+	CHECK(b.text() == "gamma four\nalpha three\nbeta two\nalpha one\n");
+	CHECK(b.s.current_line() == 1u);
+    }
+    {
+	ex_buffer b("a\n\n\n\nb\n\nc\n");		// vim: g/^$/,/./-j
+	ran(b.s, "g/^$/,/./-j");
+	CHECK(b.text() == "a\n\nb\n\nc\n");
+	CHECK(b.s.current_line() == 4u);
+    }
+    {
+	ex_buffer b("x1\nx2\nx3\ny\n");			// vim: g/x/.,+1j
+	ran(b.s, "g/x/.,+1j");				// x2: joined away
+	CHECK(b.text() == "x1 x2\nx3 y\n");
+	CHECK(b.s.current_line() == 2u);
+    }
+    {
+	ex_buffer b(ALPHA);
+	CHECK(ran(b.s, "g/alpha/") == "alpha one\nalpha three\n");	// p
+	CHECK(ran(b.s, "g/zzz/p") == "pattern not found: zzz\n");
+	CHECK(refused_run(b.s, "g/a/g/b/p") == "cannot nest :global");
+	CHECK(refused_run(b.s, "g/a/a") == "append cannot run under :global");
+	CHECK(refused_run(b.s, "g/a/u") == "undo cannot run under :global");
+    }
+}
+
+static const char *SORTME = "b10\na2\nB1\na2\nc-3\nx0x1F\n";
+
+static std::string sorted(const char *cmd)
+{
+    ex_buffer b(SORTME);
+    ran(b.s, cmd);
+    CHECK(b.s.current_line() == 1u);		// vim: the range's first
+    return b.text();
+}
+
+TEST_CASE("ex session: :sort — text, numbers, case, unique, a pattern, reversed")
+{
+    // vim: sort, sort!, sort i, sort u, sort n, sort x, sort! n
+    CHECK(sorted("sort") == "B1\na2\na2\nb10\nc-3\nx0x1F\n");
+    CHECK(sorted("sort!") == "x0x1F\nc-3\nb10\na2\na2\nB1\n");
+    CHECK(sorted("sor i") == "a2\na2\nB1\nb10\nc-3\nx0x1F\n");
+    CHECK(sorted("sort u") == "B1\na2\nb10\nc-3\nx0x1F\n");
+    CHECK(sorted("sort n") == "c-3\nx0x1F\nB1\na2\na2\nb10\n");
+    CHECK(sorted("sort x") == "c-3\nx0x1F\na2\na2\nB1\nb10\n");
+    CHECK(sorted("sort! n") == "b10\na2\na2\nB1\nx0x1F\nc-3\n");
+    // vim: sort /\a/ (after the first letter), sort /\d\+/ r (the match)
+    CHECK(sorted("sort /[A-Za-z]/") == "c-3\nx0x1F\nB1\nb10\na2\na2\n");
+    CHECK(sorted("sort /\\d+/ r") == "x0x1F\nB1\nb10\na2\na2\nc-3\n");
+    {
+	ex_buffer b("b\nA\na\nB\na\n");			// vim: sort iu
+	ran(b.s, "sort iu");
+	CHECK(b.text() == "A\nb\n");
+    }
+    {
+	ex_buffer b(SORTME);
+	ran(b.s, "2,4sort");				// a range
+	CHECK(b.text() == "b10\nB1\na2\na2\nc-3\nx0x1F\n");
+	CHECK(b.s.current_line() == 2u);
+	ran(b.s, "u");
+	CHECK(b.text() == SORTME);
+    }
+    {
+	ex_buffer b("1\n2\n3");				// unterminated stays so
+	ran(b.s, "sort!");
+	CHECK(b.text() == "3\n2\n1");
+    }
+    ex_buffer b(SORTME);
+    CHECK(refused_run(b.s, "sort nx") == "sort takes one of n x o b f");
+    CHECK(refused_run(b.s, "sort q") == "invalid sort argument: 'q'");
+}
+
+static const char *TABBED = "\tone\n    two\n  \t three\nx\ty  z\n";
+
+TEST_CASE("ex session: :retab — runs holding a tab, ! for spaces, expandtab")
+{
+    {
+	ex_buffer b(TABBED);				// vim: retab 4
+	ran(b.s, "retab 4");
+	CHECK(b.text() == "\t\tone\n    two\n\t\t three\nx\t\ty  z\n");
+	CHECK(b.s.settings().tabstop == 4u);
+    }
+    {
+	ex_buffer b(TABBED);				// vim: set et, retab
+	b.s.settings().expandtab = true;
+	ran(b.s, "ret");
+	CHECK(b.text()
+	      == "        one\n    two\n         three\nx       y  z\n");
+    }
+    {
+	ex_buffer b(TABBED);				// vim: retab! 4
+	ran(b.s, "retab! 4");
+	CHECK(b.text() == "\t\tone\n\ttwo\n\t\t three\nx\t\ty  z\n");
+    }
+    {
+	ex_buffer b(TABBED);			// vim: set ts=4, retab! 8
+	b.s.settings().tabstop = 4;
+	ran(b.s, "retab! 8");
+	CHECK(b.text() == "    one\n    two\n     three\nx   y  z\n");
+	CHECK(b.s.settings().tabstop == 8u);
+    }
+    ex_buffer b(TABBED);
+    CHECK(refused_run(b.s, "retab x") == "trailing characters: 'x'");
+}

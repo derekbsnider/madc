@@ -102,6 +102,30 @@ TEST_CASE("regex: each match, empty ones once per position (Perl's //g)")
     CHECK(u[1].begin == 2u);
 }
 
+TEST_CASE("regex: each_groups — every match's capture groups, unset ones npos")
+{
+    // perl -e '$_="a1 b c3"; while(/([a-z])(\d)?/g){print "$-[0]-$+[0]:",
+    //   defined $-[2] ? "$-[2]-$+[2]" : "unset", " "}'
+    //   → 0-2:1-2 3-4:unset 5-7:6-7
+    const regex re("([a-z])(\\d)?");
+    std::vector<std::vector<regex::span> > g = re.each_groups("a1 b c3");
+    REQUIRE(g.size() == 3u);
+    REQUIRE(g[0].size() == 3u);
+    CHECK(g[0][0].begin == 0u);
+    CHECK(g[0][0].end == 2u);
+    CHECK(g[0][2].begin == 1u);
+    CHECK(g[1][0].begin == 3u);
+    CHECK(g[1][0].end == 4u);
+    CHECK(g[1][2].begin == std::string::npos);
+    CHECK(g[1][2].end == std::string::npos);
+    CHECK(g[2][1].begin == 5u);
+    CHECK(g[2][2].end == 7u);
+    // The same matches as each(), empty ones included.
+    std::vector<std::vector<regex::span> > e = regex("x*").each_groups("abc");
+    REQUIRE(e.size() == 4u);
+    CHECK(e[3][0].begin == 3u);
+}
+
 TEST_CASE("regex: replace — PCRE2's $0 $1 ${1} $$, every match")
 {
     std::string out;

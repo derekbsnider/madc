@@ -10,14 +10,19 @@
 // over their input and one immutable table; a session is confined to its
 // world's thread.
 
+#include <algorithm>
 #include <cctype>
+#include <cfloat>
+#include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "madc_ex.h"
-#include "madc_regex.h"		// /re/, ?re? — madc's one regex engine
+#include "madc_regex.h"		// /re/ ?re? s g v sor — madc's one regex engine
 #include "madcdis/hub.h"
 #include "madcdis/verbs.h"	// mutation_context: the one write surface
 
@@ -391,6 +396,59 @@ bool read_global(reader &r, line &out, std::string &error)
     return true;
 }
 
+// `sor`'s options and pattern, in any order (vim's): `i` `u` `r`, one of
+// `n x o b f`, and a pattern between any non-letter delimiters.
+bool read_sort(reader &r, line &out, std::string &error)
+{
+    for ( ;; )
+    {
+	r.skip_blanks();
+	if ( r.end() )
+	    return true;
+	const char c = r.peek();
+	if ( strchr("iur", c) )
+	    out.flags += r.s[r.at++];
+	else if ( strchr("nxobf", c) )
+	{
+	    for ( char f : out.flags )
+		if ( strchr("nxobf", f) && f != c )
+		{
+		    error = "sort takes one of n x o b f";
+		    return false;
+		}
+	    out.flags += r.s[r.at++];
+	}
+	else if ( !isalnum((unsigned char)c) && c != '"' && c != '\\'
+		  && c != '|' )
+	{
+	    ++r.at;
+	    out.pattern = r.delimited(c, false);
+	    out.has_pattern = true;
+	}
+	else
+	{
+	    error = "invalid sort argument: '" + r.rest() + "'";
+	    return false;
+	}
+    }
+}
+
+// `ret`'s new tabstop: digits, or none (0 — the current one, vim's).
+bool read_tabstop(reader &r, line &out, std::string &error)
+{
+    r.skip_blanks();
+    size_t n = 0;
+    if ( r.digits(n) )
+	out.count = n;
+    r.skip_blanks();
+    if ( !r.end() )
+    {
+	error = "trailing characters: '" + r.rest() + "'";
+	return false;
+    }
+    return true;
+}
+
 } // namespace
 
 const char *command_name(command c)
@@ -541,6 +599,10 @@ bool parse(const std::string &text, line &out, std::string &error)
 	    return read_count(r, out, error);
 	case command::global: case command::vglobal:
 	    return read_global(r, out, error);
+	case command::sort:
+	    return read_sort(r, out, error);
+	case command::retab:
+	    return read_tabstop(r, out, error);
 	case command::move: case command::copy:
 	{
 	    r.skip_blanks();
@@ -598,7 +660,7 @@ bool parse(const std::string &text, line &out, std::string &error)
 	    }
 	    return true;
 	default:
-	    // e, sav, cd, b, se, h, sor, ret, marks: the rest as typed.
+	    // e, sav, cd, b, se, h, marks: the rest as typed.
 	    r.skip_blanks();
 	    out.argument = r.rest();
 	    return true;
@@ -637,8 +699,56 @@ struct executor
 {
     session &s;
     outcome &out;
+    bool checkpointed;		// this command line's undo group is open
+    bool under_global;		// running :g's command on one of its lines
+    size_t global_matches;	// :s under :g: its matches, every line
+    size_t global_lines;	//   and the lines they were on
+    // :g's marked lines not yet run, ascending, each stored less `bias` (an
+    // edit before every one of them moves them all at once).
+    std::deque<long long> global_marks;
+    long long global_bias;
 
-    executor(session &ss, outcome &o) : s(ss), out(o) {}
+    executor(session &ss, outcome &o)
+	: s(ss), out(o), checkpointed(false), under_global(false),
+	  global_matches(0), global_lines(0), global_bias(0) {}
+
+    // ---- :g's marks follow every edit a command makes (vim keeps the
+    // mark on the line itself): a deleted line loses its mark, the lines
+    // after an edit move with it.
+    void marks_deleted(size_t first, size_t last)
+    {
+	if ( global_marks.empty() )
+	    return;
+	const long long gone = (long long)(last - first + 1);
+	if ( global_marks.front() + global_bias > (long long)last )
+	{
+	    global_bias -= gone;
+	    return;
+	}
+	std::deque<long long> kept;
+	for ( long long stored : global_marks )
+	{
+	    const long long at = stored + global_bias;
+	    if ( at < (long long)first )
+		kept.push_back(stored);
+	    else if ( at > (long long)last )
+		kept.push_back(stored - gone);
+	}
+	global_marks.swap(kept);
+    }
+    void marks_inserted(size_t after, size_t count)
+    {
+	if ( global_marks.empty() || count == 0 )
+	    return;
+	if ( global_marks.front() + global_bias > (long long)after )
+	{
+	    global_bias += (long long)count;
+	    return;
+	}
+	for ( long long &stored : global_marks )
+	    if ( stored + global_bias > (long long)after )
+		stored += (long long)count;
+    }
 
     bool fail(const std::string &why)
     {
@@ -695,9 +805,9 @@ struct executor
 	const std::string pattern = typed.empty() ? s.last_pattern : typed;
 	if ( pattern.empty() )
 	    return fail("no previous pattern");
-	madc::regex re(pattern);
-	if ( !re.ok() )
-	    return fail("invalid pattern '" + pattern + "': " + re.error());
+	std::unique_ptr<madc::regex> re;
+	if ( !compile(pattern, false, re) )
+	    return false;
 	s.last_pattern = pattern;
 	const size_t n = lines();
 	const size_t base = from == 0 ? (forward ? 0 : n + 1) : from;
@@ -707,7 +817,7 @@ struct executor
 	    // `from` to `from` itself, backward from the line before it.
 	    size_t l = forward ? (base + i - 1) % n + 1
 			       : (base - 1 + n - i) % n + 1;
-	    if ( re.search(line_text(l)) )
+	    if ( re->search(line_text(l)) )
 	    {
 		found = l;
 		return true;
@@ -850,11 +960,16 @@ struct executor
     }
 
     // ---- editing (every edit inside one checkpointed group)
+    // Before a command line's first edit: one undo group per command line,
+    // :g's included (every command it runs edits inside the one group).
     bool begin_change()
     {
 	const madc::hub::document *d = s.w.doc_of(s.cur);
 	if ( d && d->read_only() )
 	    return fail("the buffer is read-only");
+	if ( checkpointed )
+	    return true;
+	checkpointed = true;
 	mutation_context mc(s.w);
 	mc.doc_checkpoint(s.cur, madc::value());
 	return true;
@@ -878,6 +993,7 @@ struct executor
 	    --off;
 	mutation_context mc(s.w);
 	mc.text_erase(s.cur, off, end - off);
+	marks_deleted(first, last);
     }
     // Put `body` after line `after` (0: before the first). After an
     // unterminated last line the new lines stay unterminated too.
@@ -901,6 +1017,7 @@ struct executor
 	    off = line_start(after + 1);
 	mutation_context mc(s.w);
 	mc.text_insert(s.cur, off, ins);
+	marks_inserted(after, body.size());
     }
     void replace_line(size_t n, const std::string &with)
     {
@@ -910,6 +1027,33 @@ struct executor
 	    return;
 	mutation_context mc(s.w);
 	mc.text_replace(s.cur, off, len, with);
+	marks_inserted(n, (size_t)std::count(with.begin(), with.end(), '\n'));
+    }
+    // Lines [first, last] become `body`; the last line's break stays as it
+    // was.
+    void replace_lines(size_t first, size_t last,
+		       const std::vector<std::string> &body)
+    {
+	size_t loff = 0, llen = 0;
+	if ( !text()->line_span(last, loff, llen) )
+	    return;
+	std::string joined;
+	for ( size_t i = 0; i < body.size(); ++i )
+	    joined += (i ? "\n" : "") + body[i];
+	const size_t off = line_start(first);
+	mutation_context mc(s.w);
+	mc.text_replace(s.cur, off, loff + llen - off, joined);
+	marks_deleted(first, last);
+	marks_inserted(first - 1, body.size());
+    }
+    // A pattern as madc::regex compiles it, or the refusal.
+    bool compile(const std::string &pattern, bool ignore_case,
+		 std::unique_ptr<madc::regex> &re)
+    {
+	re.reset(new madc::regex(ignore_case ? "(?i)" + pattern : pattern));
+	if ( !re->ok() )
+	    return fail("invalid pattern '" + pattern + "': " + re->error());
+	return true;
     }
 
     // The screen width of a line's leading blanks (tabs to 'tabstop').
@@ -1029,6 +1173,7 @@ struct executor
 	text()->line_span(last, loff, llen);
 	mutation_context mc(s.w);
 	mc.text_replace(s.cur, off, loff + llen - off, joined);
+	marks_deleted(first + 1, last);
 	set_dot(first);
 	return true;
     }
@@ -1136,6 +1281,474 @@ struct executor
 	return true;
     }
 
+    // ---- search and substitute (slice 3)
+
+    // One match's replacement text (design decision 6): `&` and `\0` the
+    // match, `\1`-`\9` a group (unset: empty), `\n` and `\r` a line break
+    // (sed's and vim's spellings), `\t` a tab, any other escaped character
+    // itself (`\&`, `\\`).
+    static std::string group_text(const std::string &t,
+				  const std::vector<madc::regex::span> &g,
+				  size_t k)
+    {
+	if ( k >= g.size() || g[k].begin == std::string::npos )
+	    return std::string();
+	return t.substr(g[k].begin, g[k].end - g[k].begin);
+    }
+    static std::string expand(const std::string &rep, const std::string &t,
+			      const std::vector<madc::regex::span> &g)
+    {
+	std::string r;
+	for ( size_t i = 0; i < rep.size(); ++i )
+	{
+	    const char c = rep[i];
+	    if ( c == '&' )
+		r += group_text(t, g, 0);
+	    else if ( c == '\\' && i + 1 < rep.size() )
+	    {
+		const char e = rep[++i];
+		if ( e >= '0' && e <= '9' )
+		    r += group_text(t, g, (size_t)(e - '0'));
+		else if ( e == 'n' || e == 'r' )
+		    r += '\n';
+		else if ( e == 't' )
+		    r += '\t';
+		else
+		    r += e;
+	    }
+	    else
+		r += c;
+	}
+	return r;
+    }
+    static std::string counted(size_t n, const char *one, const char *many)
+    {
+	return std::to_string(n) + " " + (n == 1 ? one : many);
+    }
+
+    // :s, :& and :&& (vim's :substitute): on each line of the range, the
+    // first match — every one with `g` — replaced; `n` counts instead, `e`
+    // makes no match no error, `i` / `I` set the case, a leading `&` keeps
+    // the last :s's flags. An empty pattern is the last one used. The
+    // current line ends on the last line changed.
+    bool substitute(const line &l)
+    {
+	// The range first: a /re/ in it is the last pattern an empty one uses.
+	size_t first = 0, last = 0;
+	if ( !resolve_range(l, default_range::current, first, last) )
+	    return false;
+	std::string pattern = l.pattern;
+	std::string replacement = l.replacement;
+	std::string flags = l.flags;
+	if ( l.code != command::substitute )
+	{
+	    if ( !s.last_sub.set )
+		return fail("no previous substitute");
+	    pattern = s.last_sub.pattern;
+	    replacement = s.last_sub.replacement;
+	    if ( l.code == command::repeat_sub_flags )
+		flags = "&" + flags;
+	}
+	if ( !flags.empty() && flags[0] == '&' )
+	    flags = s.last_sub.flags + flags.substr(1);
+	bool every = false, count_only = false, quiet = false, icase = false;
+	for ( char f : flags )
+	{
+	    if ( f == 'g' )
+		every = true;
+	    else if ( f == 'n' )
+		count_only = true;
+	    else if ( f == 'e' )
+		quiet = true;
+	    else if ( f == 'i' )
+		icase = true;
+	    else if ( f == 'I' )
+		icase = false;
+	}
+	if ( pattern.empty() )
+	    pattern = s.last_pattern;
+	if ( pattern.empty() )
+	    return fail("no previous pattern");
+	std::unique_ptr<madc::regex> re;
+	if ( !compile(pattern, icase, re) )
+	    return false;
+	s.last_pattern = pattern;
+	s.last_sub.set = true;
+	s.last_sub.pattern = pattern;
+	s.last_sub.replacement = replacement;
+	s.last_sub.flags = flags;
+
+	size_t matches = 0, hit_lines = 0, last_hit = 0;
+	size_t added = 0;		// lines the replacements' breaks made
+	for ( size_t k = first; k <= last && k != 0; ++k )
+	{
+	    const size_t at = k + added;
+	    const std::string t = line_text(at);
+	    std::vector<std::vector<madc::regex::span> > m = re->each_groups(t);
+	    if ( m.empty() )
+		continue;
+	    if ( !every )
+		m.resize(1);
+	    matches += m.size();
+	    ++hit_lines;
+	    if ( count_only )
+		continue;
+	    std::string r;
+	    size_t from = 0;
+	    for ( const std::vector<madc::regex::span> &g : m )
+	    {
+		r += t.substr(from, g[0].begin - from);
+		r += expand(replacement, t, g);
+		from = g[0].end;
+	    }
+	    r += t.substr(from);
+	    if ( !begin_change() )
+		return false;
+	    replace_line(at, r);
+	    const size_t breaks = (size_t)std::count(r.begin(), r.end(), '\n');
+	    added += breaks;
+	    last_hit = at + breaks;
+	}
+	if ( under_global )
+	{
+	    // :g reports for every line together (no match on one line is
+	    // not an error there).
+	    global_matches += matches;
+	    global_lines += hit_lines;
+	    if ( last_hit )
+		set_dot(last_hit);
+	    return true;
+	}
+	if ( matches == 0 )
+	    return quiet ? true : fail("pattern not found: " + pattern);
+	if ( count_only )
+	{
+	    out.shown += counted(matches, "match", "matches") + " on "
+			 + counted(hit_lines, "line", "lines") + "\n";
+	    return true;
+	}
+	set_dot(last_hit);
+	return true;
+    }
+
+    // :g and :v (vim's :global; `g!` is `v`): mark the range's lines whose
+    // text matches (v: does not), then run the command on each marked line
+    // still there, top first, the current line set to it — ONE undo group
+    // for all. The marks follow the commands' edits (marks_deleted /
+    // marks_inserted), so a line a command deleted or joined away is not
+    // run.
+    bool global(const line &l)
+    {
+	if ( under_global )
+	    return fail("cannot nest :global");
+	size_t first = 0, last = 0;
+	if ( !resolve_range(l, default_range::whole, first, last) )
+	    return false;
+	const std::string pattern = l.pattern.empty() ? s.last_pattern
+						      : l.pattern;
+	if ( pattern.empty() )
+	    return fail("no previous pattern");
+	std::unique_ptr<madc::regex> re;
+	if ( !compile(pattern, false, re) )
+	    return false;
+	s.last_pattern = pattern;
+	line sub;
+	std::string error;
+	if ( !parse(l.subcommand.empty() ? std::string("p") : l.subcommand,
+		    sub, error) )
+	    return fail(error);
+	switch ( sub.code )
+	{
+	    case command::global: case command::vglobal:
+		return fail("cannot nest :global");
+	    case command::append: case command::insert: case command::change:
+	    case command::undo: case command::redo:
+		return fail(std::string(command_name(sub.code))
+			    + " cannot run under :global");
+	    default:
+		break;
+	}
+	const bool wanted = l.code == command::global && !l.force;
+	global_marks.clear();
+	global_bias = 0;
+	for ( size_t k = first; k <= last && k != 0; ++k )
+	    if ( re->search(line_text(k)) == wanted )
+		global_marks.push_back((long long)k);
+	if ( global_marks.empty() )
+	{
+	    out.shown += (wanted ? "pattern not found: "
+				 : "pattern found in every line: ")
+			 + pattern + "\n";
+	    return true;
+	}
+	under_global = true;
+	bool ok = true;
+	while ( ok && !global_marks.empty() )
+	{
+	    const size_t at = (size_t)(global_marks.front() + global_bias);
+	    global_marks.pop_front();
+	    set_dot(at);
+	    ok = execute(sub);
+	}
+	under_global = false;
+	global_marks.clear();
+	if ( !ok )
+	    return false;
+	if ( sub.code == command::substitute || sub.code == command::repeat_sub
+	     || sub.code == command::repeat_sub_flags )
+	{
+	    const bool counting = s.last_sub.flags.find('n') != std::string::npos;
+	    const bool quiet = s.last_sub.flags.find('e') != std::string::npos;
+	    if ( global_matches == 0 && !quiet )
+		return fail("pattern not found: " + s.last_sub.pattern);
+	    if ( counting && global_matches )
+		out.shown += counted(global_matches, "match", "matches") + " on "
+			     + counted(global_lines, "line", "lines") + "\n";
+	}
+	return true;
+    }
+
+    // :sort (vim's ex_sort): the range's lines, stable — by text, or with
+    // `n` `x` `o` `b` `f` by the line's first number of that kind (a line
+    // without one first; `f`: the text as a float, an empty line first);
+    // `i` ignores case; a /pattern/ keys each line on the text after its
+    // match (`r`: the match), a line without one keyed empty; `!` reverses;
+    // `u` keeps the first of equal lines (the whole line, `i` ignoring
+    // case). The current line is the range's first.
+    struct sort_row
+    {
+	size_t      at;		// the original order
+	std::string text;
+	std::string key;
+	bool        numbered;
+	long long   number;
+	double      real;
+    };
+    static int compare_text(const std::string &a, const std::string &b,
+			    bool icase)
+    {
+	const size_t n = a.size() < b.size() ? a.size() : b.size();
+	for ( size_t i = 0; i < n; ++i )
+	{
+	    int x = (unsigned char)a[i], y = (unsigned char)b[i];
+	    if ( icase )
+	    {
+		x = tolower(x);
+		y = tolower(y);
+	    }
+	    if ( x != y )
+		return x < y ? -1 : 1;
+	}
+	return a.size() == b.size() ? 0 : a.size() < b.size() ? -1 : 1;
+    }
+    // vim's number per kind: the first digit of the base (`x`: a 0x
+    // prefix, `b`: a 0b prefix allowed), negative after a `-`.
+    static void sort_number(sort_row &r, char kind)
+    {
+	const std::string &k = r.key;
+	if ( kind == 'f' )
+	{
+	    size_t i = 0;
+	    while ( i < k.size() && blank_byte(k[i]) )
+		++i;
+	    if ( i < k.size() && k[i] == '+' )
+		for ( ++i; i < k.size() && blank_byte(k[i]); ++i )
+		    ;
+	    r.numbered = true;
+	    r.real = i >= k.size() ? -DBL_MAX : strtod(k.c_str() + i, 0);
+	    return;
+	}
+	const int base = kind == 'x' ? 16 : kind == 'o' ? 8 : kind == 'b' ? 2
+							  : 10;
+	size_t i = 0;
+	for ( ; i < k.size(); ++i )
+	{
+	    const char c = k[i];
+	    if ( base == 16 ? isxdigit((unsigned char)c) != 0
+			    : c >= '0' && c < '0' + (base < 10 ? base : 10) )
+		break;
+	}
+	r.numbered = i < k.size();
+	if ( !r.numbered )
+	    return;
+	const bool negative = i > 0 && k[i - 1] == '-';
+	if ( base == 2 && k[i] == '0' && i + 2 < k.size()
+	     && (k[i + 1] == 'b' || k[i + 1] == 'B')
+	     && (k[i + 2] == '0' || k[i + 2] == '1') )
+	    i += 2;
+	const long long v = strtoll(k.c_str() + i, 0, base);
+	r.number = negative ? -v : v;
+    }
+    bool sort(const line &l)
+    {
+	size_t first = 0, last = 0;
+	if ( !resolve_range(l, default_range::whole, first, last) )
+	    return false;
+	if ( last == 0 )
+	    return true;		// an empty buffer: nothing to sort
+	bool icase = false, unique = false, on_match = false;
+	char kind = 0;
+	for ( char f : l.flags )
+	{
+	    if ( f == 'i' )
+		icase = true;
+	    else if ( f == 'u' )
+		unique = true;
+	    else if ( f == 'r' )
+		on_match = true;
+	    else
+		kind = f;
+	}
+	std::unique_ptr<madc::regex> re;
+	if ( l.has_pattern )
+	{
+	    const std::string pattern = l.pattern.empty() ? s.last_pattern
+							  : l.pattern;
+	    if ( pattern.empty() )
+		return fail("no previous pattern");
+	    if ( !compile(pattern, false, re) )
+		return false;
+	    s.last_pattern = pattern;
+	}
+	std::vector<sort_row> rows;
+	for ( size_t k = first; k <= last; ++k )
+	{
+	    sort_row r;
+	    r.at = k;
+	    r.text = line_text(k);
+	    r.numbered = false;
+	    r.number = 0;
+	    r.real = 0;
+	    r.key = r.text;
+	    if ( re )
+	    {
+		std::vector<madc::regex::span> m = re->each(r.text);
+		if ( m.empty() )
+		    r.key.clear();
+		else if ( on_match )
+		    r.key = r.text.substr(m[0].begin, m[0].end - m[0].begin);
+		else
+		    r.key = r.text.substr(m[0].end);
+	    }
+	    if ( kind )
+		sort_number(r, kind);
+	    rows.push_back(r);
+	}
+	std::stable_sort(rows.begin(), rows.end(),
+			 [kind, icase](const sort_row &a, const sort_row &b) {
+	    if ( kind == 'f' )
+		return a.real < b.real;
+	    if ( kind )
+	    {
+		if ( a.numbered != b.numbered )
+		    return !a.numbered;
+		return a.number < b.number;
+	    }
+	    return compare_text(a.key, b.key, icase) < 0;
+	});
+	if ( l.force )
+	    std::reverse(rows.begin(), rows.end());
+	std::vector<std::string> sorted;
+	for ( const sort_row &r : rows )
+	    if ( !unique || sorted.empty()
+		 || compare_text(r.text, sorted.back(), icase) != 0 )
+		sorted.push_back(r.text);
+	if ( sorted != take_lines(first, last) )
+	{
+	    if ( !begin_change() )
+		return false;
+	    replace_lines(first, last, sorted);
+	}
+	set_dot(first);
+	return true;
+    }
+
+    // :retab (vim's ex_retab): each run of blanks that holds a tab — with
+    // `!`, a run of two spaces or more too — rewritten for the new tabstop
+    // (`:ret N`; none or 0: the current one), its end column kept: spaces
+    // under 'expandtab', else tabs then spaces; then 'tabstop' is the new
+    // one. Columns count tabs at the old tabstop; a UTF-8 continuation
+    // byte takes no column.
+    std::string retabbed(const std::string &t, size_t old_ts, size_t new_ts,
+			 bool force) const
+    {
+	std::string r;
+	size_t vcol = 0, start_vcol = 0, start_col = 0, spaces = 0;
+	bool got_tab = false;
+	for ( size_t col = 0; ; ++col )
+	{
+	    const bool white = col < t.size() && blank_byte(t[col]);
+	    if ( white )
+	    {
+		if ( !got_tab && spaces == 0 )
+		{
+		    start_vcol = vcol;
+		    start_col = col;
+		}
+		if ( t[col] == ' ' )
+		    ++spaces;
+		else
+		    got_tab = true;
+	    }
+	    else
+	    {
+		if ( got_tab || spaces )
+		{
+		    const size_t len = vcol - start_vcol;
+		    size_t nsp = len, ntabs = 0;
+		    if ( !s.opts.expandtab )
+		    {
+			const size_t to_stop = new_ts - start_vcol % new_ts;
+			if ( nsp >= to_stop )
+			{
+			    nsp -= to_stop;
+			    ++ntabs;
+			}
+			ntabs += nsp / new_ts;
+			nsp %= new_ts;
+		    }
+		    const bool rewrite = (got_tab || (force && spaces > 1))
+					 && (s.opts.expandtab || got_tab
+					     || nsp + ntabs < len);
+		    if ( rewrite )
+			r += std::string(ntabs, '\t') + std::string(nsp, ' ');
+		    else
+			r += t.substr(start_col, col - start_col);
+		}
+		got_tab = false;
+		spaces = 0;
+		if ( col >= t.size() )
+		    break;
+		r += t[col];
+	    }
+	    if ( t[col] == '\t' )
+		vcol += old_ts - vcol % old_ts;
+	    else if ( ((unsigned char)t[col] & 0xC0) != 0x80 )
+		++vcol;
+	}
+	return r;
+    }
+    bool retab(const line &l)
+    {
+	size_t first = 0, last = 0;
+	if ( !resolve_range(l, default_range::whole, first, last) )
+	    return false;
+	const size_t old_ts = s.opts.tabstop ? s.opts.tabstop : 8;
+	const size_t new_ts = l.count ? l.count : old_ts;
+	for ( size_t k = first; k <= last && k != 0; ++k )
+	{
+	    const std::string t = line_text(k);
+	    const std::string r = retabbed(t, old_ts, new_ts, l.force);
+	    if ( r == t )
+		continue;
+	    if ( !begin_change() )
+		return false;
+	    replace_line(k, r);
+	}
+	s.opts.tabstop = new_ts;
+	return true;
+    }
+
     bool want_text(const line &l)
     {
 	size_t first = 0, last = 0;
@@ -1182,6 +1795,15 @@ struct executor
 		return marks();
 	    case command::append: case command::insert: case command::change:
 		return want_text(l);
+	    case command::substitute: case command::repeat_sub:
+	    case command::repeat_sub_flags:
+		return substitute(l);
+	    case command::global: case command::vglobal:
+		return global(l);
+	    case command::sort:
+		return sort(l);
+	    case command::retab:
+		return retab(l);
 	    default:
 		return fail(std::string("'") + command_name(l.code)
 			    + "' is not an editor command yet");

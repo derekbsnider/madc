@@ -58,6 +58,9 @@ public:
 	size_t end;
     };
     std::vector<span> each(const std::string &subject) const;
+    // each()'s matches with their capture groups: a match's element k is
+    // group k (0: the whole match); an unset group is {npos, npos}.
+    std::vector<std::vector<span> > each_groups(const std::string &subject) const;
 
     // Every match replaced by `replacement` into `out`. False when the
     // replacement is malformed (an unknown group, a stray `$`); `why`, when
@@ -75,8 +78,13 @@ public:
 private:
     // The match at or after `from` under PCRE2 match `options`; false when
     // there is none.
+    // `groups`, when given, gets every capture group's span too.
     bool find(const std::string &subject, size_t from, unsigned options,
-	      span &found) const;
+	      span &found, std::vector<span> *groups = 0) const;
+    // each()'s global-match loop, the one copy: the matches, and each one's
+    // groups into `groups` when given.
+    std::vector<span> walk(const std::string &subject,
+			   std::vector<std::vector<span> > *groups) const;
 
     pcre2_real_code_8 *code;	// NULL when the pattern did not compile
     std::string text;

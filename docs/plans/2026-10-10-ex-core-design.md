@@ -67,10 +67,18 @@ and its Layering bullet — madc is ex, madcide is the visual part.
    `bp`, `h`/`help`, `!cmd`, `r !cmd`, `w !cmd`, and a bare address (`:N`,
    `:$`, `:/re/`) moving the current line. No visual or normal mode.
 6. **Regular expressions are PCRE2's modern syntax** (D24: unescaped
-   `+ ? | ( )`), through `madc::regex`. A replacement reads `&` (the match),
-   `\0`–`\9`, `\n` (a line break: the line splits), `\&` / `\\` literal.
-   `s` flags: `g`, `i` / `I`, `n` (count only); `c` (confirm) needs normal
-   mode — refused. An empty pattern is the last one used.
+   `+ ? | ( )`), through `madc::regex` (`each_groups` gives a match's capture
+   groups). A replacement reads `&` (the match), `\0`–`\9`, `\n` and `\r`
+   (a line break: the line splits — sed's and vim's spellings), `\t` a tab,
+   `\&` / `\\` literal. `s` flags: `g`, `i` / `I`, `n` (count only), `e` (no
+   match is no error), a leading `&` (the last flags); `:&` repeats the last
+   `:s` without its flags and remembers none, `:&&` with them (vim's rule).
+   `c` (confirm) needs normal mode — refused. An empty pattern is the last
+   one used, the range's own search included. `:g`'s marks follow the
+   commands' edits as vim's line marks do (a deleted or joined-away line is
+   not run); `a i c u red` are refused under `:g`. One divergence from vim:
+   `:g/re/s/x//n` reports "N matches", as `:s n` does — vim's `:g` calls them
+   substitutions though none was made.
 7. **One ex command = one undo group** (the document owns the groups, the
    command layer sets the boundaries — 1A.1's rule): the core checkpoints
    before a command that edits; `:g` is ONE group for every command it runs;

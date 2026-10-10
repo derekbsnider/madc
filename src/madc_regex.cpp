@@ -77,7 +77,7 @@ std::string regex::refusal(const char *who) const
 }
 
 bool regex::find(const std::string &subject, size_t from, unsigned options,
-		 span &found) const
+		 span &found, std::vector<span> *groups) const
 {
     if ( !code || from > subject.size() )
 	return false;
@@ -91,6 +91,18 @@ bool regex::find(const std::string &subject, size_t from, unsigned options,
     const PCRE2_SIZE *ov = pcre2_get_ovector_pointer(m.md);
     found.begin = (size_t)ov[0];
     found.end = (size_t)ov[1];
+    if ( groups )
+    {
+	// Pairs past rc are unset; PCRE2_UNSET marks an unset one within.
+	const uint32_t pairs = pcre2_get_ovector_count(m.md);
+	groups->assign(pairs, span());
+	for ( uint32_t k = 0; k < pairs; ++k )
+	{
+	    const bool set = (int)k < rc && ov[2 * k] != PCRE2_UNSET;
+	    (*groups)[k].begin = set ? (size_t)ov[2 * k] : std::string::npos;
+	    (*groups)[k].end = set ? (size_t)ov[2 * k + 1] : std::string::npos;
+	}
+    }
     return true;
 }
 
@@ -108,14 +120,28 @@ bool regex::search(const std::string &subject) const
 
 std::vector<regex::span> regex::each(const std::string &subject) const
 {
+    return walk(subject, 0);
+}
+
+std::vector<std::vector<regex::span> > regex::each_groups(const std::string &subject) const
+{
+    std::vector<std::vector<span> > groups;
+    walk(subject, &groups);
+    return groups;
+}
+
+std::vector<regex::span> regex::walk(const std::string &subject,
+				     std::vector<std::vector<span> > *groups) const
+{
     std::vector<span> out;
+    std::vector<span> found_groups;
     size_t from = 0;
     bool after_empty = false;
     while ( from <= subject.size() )
     {
 	span s;
 	const unsigned options = after_empty ? (PCRE2_NOTEMPTY_ATSTART | PCRE2_ANCHORED) : 0;
-	if ( !find(subject, from, options, s) )
+	if ( !find(subject, from, options, s, groups ? &found_groups : 0) )
 	{
 	    // After an empty match: no non-empty one here either, so the
 	    // next search starts a code point on.
@@ -126,6 +152,8 @@ std::vector<regex::span> regex::each(const std::string &subject) const
 	    continue;
 	}
 	out.push_back(s);
+	if ( groups )
+	    groups->push_back(found_groups);
 	from = s.end;
 	after_empty = s.begin == s.end;
     }
