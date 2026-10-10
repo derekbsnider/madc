@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### A project manifest's directory is read by the host's separators
+
+`read_project_manifest` split the manifest path with `find_last_of('/')`, so a
+Windows manifest named with `\` (`C:\work\p.prj.json`) read `.` for its directory
+and resolved its relative TUs, icon and libs against the process cwd — a silent
+wrong file whenever the cwd differs — while a POSIX manifest at the root
+(`/p.prj.json`) read `""` (the cwd) instead of `/`. The directory now comes from
+`host_path_dirname`, the host's path splitter, and is `.` when the path has none;
+relative names resolve against the manifest's own directory on either host.
+
 ### `madc -i` gains `%build` / `%run` on the current buffer, and `%args`
 
 `%build` and `%run` now take FILE as optional (split arc 1B.8): with no FILE a

@@ -51,6 +51,15 @@ void shell_split(const std::string &cmd, std::vector<std::string> &out) {
 	if (in) out.push_back(cur);
 }
 
+// The directory a manifest's relative names resolve against: its path's
+// directory part by the host's separators (a Windows manifest named with '\'
+// included), "." when the path has none. A root keeps its separator — "/"
+// for "/x.prj.json", never "" (which names the cwd).
+std::string manifest_directory(const std::string &path) {
+	std::string dir = madc::detail::host_path_dirname(path);
+	return dir.empty() ? std::string(".") : dir;
+}
+
 // Resolve a (possibly relative) path against a base directory. A "."
 // base adds nothing — a manifest in the cwd (madcide's default
 // <base>.prj.json beside the launch file) must yield the TU's own
@@ -261,12 +270,7 @@ bool read_project_manifest(const std::string &path,
 	// stay portable, resolving the same regardless of the process cwd (which a
 	// project's program may need to set elsewhere — e.g. SMAUG runs from its
 	// data directory). An explicit "directory" is honored unchanged.
-	std::string manifest_dir;
-	{
-		size_t s = path.find_last_of('/');
-		manifest_dir = (s == std::string::npos) ? std::string(".")
-						       : path.substr(0, s);
-	}
+	std::string manifest_dir = manifest_directory(path);
 
 	// The shape routes: OBJECT = the native madc manifest, ARRAY = a
 	// compile_commands.json import (owner ruling 2026-08-31).

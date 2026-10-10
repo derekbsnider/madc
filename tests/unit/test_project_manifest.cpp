@@ -85,7 +85,7 @@ TEST_CASE("read_project_manifest: native object — bare-string TUs, entry, "
 	REQUIRE(read_project_manifest(path, m, err));
 	REQUIRE(m.tus.size() == 2);
 	CHECK(m.tus[0].file == "/tmp/a.mad");
-	CHECK(m.tus[0].working_dir == "/tmp");
+	CHECK(m.tus[0].working_dir == "/tmp/");	// host_path_dirname's spelling
 	CHECK(m.tus[1].file == "/tmp/sub/b.mad");
 	CHECK(m.entry == "start");
 	CHECK(m.output_name == "prog");
@@ -127,6 +127,21 @@ TEST_CASE("read_project_manifest: a manifest in the cwd adds no ./ prefix "
 	CHECK(m.tus[0].working_dir == ".");
 	std::remove("madc_unit_cwd.prj.json");
 }
+
+#ifdef _WIN32
+TEST_CASE("read_project_manifest: a manifest named with '\\' resolves its "
+	  "TUs against its own directory (the host's separators)") {
+	// A '/'-only split read "." for this path: the TUs resolved against
+	// the cwd instead of the manifest's directory.
+	std::string path = write_tmp("native_bs.prj.json", "{\"tus\":[\"a.mad\"]}");
+	for (char &c : path)
+		if (c == '/') c = '\\';
+	ProjectManifest m; std::string err;
+	REQUIRE(read_project_manifest(path, m, err));
+	REQUIRE(m.tus.size() == 1);
+	CHECK(m.tus[0].file == "\\tmp\\a.mad");
+}
+#endif
 
 TEST_CASE("read_project_manifest: native object — empty tus is a valid "
 	  "(empty) project; a missing file field is rejected") {
