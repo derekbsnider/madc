@@ -2,6 +2,44 @@
 
 ## [Unreleased]
 
+### engine: a source's standard follows its extension, and madc.ini's `modules` key
+
+A source compiled without `--std` now takes the standard its extension names,
+as plain `gcc` and `g++` do (split arc Phase 1A.4): a `.c` / `.h` file
+compiles as `gnu17`, a `.cpp` / `.cc` / `.cxx` (and the other C++ extensions)
+as `gnu++17`, and a `.mad` file as the madc dialect — where previously every
+source compiled in the madc dialect regardless of extension. The precedence is
+`--std` > the source's extension > madc.ini `std` > `madc`; the madc.ini `std`
+key now applies only to a source with no recognised extension (a shebang
+script, stdin). One owner decides it for every consumer —
+`Program::adopt_file_standard` — so the CLI, a `--project` TU and the editor's
+document parse of the same file give the same answer.
+
+User-visible behaviour changes:
+
+- `madc foo.c` with no `--std` now compiles as `gnu17` (was the madc dialect);
+  `madc foo.cpp` as `gnu++17`. The GNU dialect means a C source sees glibc's
+  feature gates as plain gcc does (no `__STRICT_ANSI__`); the C++ modes keep
+  the strict presentation (a known divergence until `__float128` / `_FloatN`
+  land).
+- A `--project` C++ TU without `-std=` is now `gnu++17` (was the madc dialect);
+  a `.c` TU was already compiled as C.
+- The editor's document parse of a `.c` / `.cpp` file now matches the CLI —
+  `gnu17` / `gnu++17` (was strict `c17` / `c++17`); `madc::parse_open` accepts
+  a C or C++ family head.
+- madc.ini gains `modules` (repeatable) — each value a module or library name
+  as `-l<name>` takes it, loaded after the command line's `-l` libraries, a
+  name the command line already gives loaded once; in an AOT build it joins the
+  link line. CLI and ini are additive.
+- A `.c` / `.cpp` source no longer binds the packed madc-dialect forest: it now
+  compiles under `gnu17` / `gnu++17`, which the corpus (the madc dialect's) does
+  not match, so it falls through to a live parse with no notice — as a
+  `--std=c17` compile always did.
+
+Validation: 146b2aa8c (the standard by extension, its one owner and three
+consumers) and 0c71ce892 (the madc.ini `modules` key) — unit tests, `fix_lanes`
+Tier 1/2 and `make -C src gates` green for the pair.
+
 ### engine: one regex engine (PCRE2) behind madc:: and perl::
 
 madc now has ONE regex engine, PCRE2 — the engine behind PHP's `preg_*` —

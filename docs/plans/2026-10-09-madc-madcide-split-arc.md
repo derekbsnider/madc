@@ -282,7 +282,12 @@ items are their own sessions, any time.
    `2026-10-10-pcre2-design.md`) + the five regex functions'
    fixes (invalid pattern refused; `madc::` three leave `ns_perl.cpp`; lean
    mangled-direct forms) — own commits with reducers.
-4. **The standard by extension**: `--std` > extension > madc.ini/env `std`
+4. **The standard by extension** — **LANDED 2026-10-10, `146b2aa8c` (one
+   owner `Program::adopt_file_standard` for the CLI, `--project` TUs and the
+   document parse; the forest packs pin `--std=madc`) and `0c71ce892`
+   (madc.ini `modules`); `theme` lands with its consumer, 1B.9** (design
+   `2026-10-10-standard-by-extension-design.md`; unit battery, fix lane and
+   `make gates` green; not pushed): `--std` > extension > madc.ini/env `std`
    > madc; `.c` → C17, `.cpp`/`.cc`/`.cxx` → C++17, `.mad` → madc; and
    **madc.ini's new keys**: `modules` (repeatable, php.ini-style; the
    `%git` enabler) and `theme`. The ini schema in `include/madc_config.h`.
