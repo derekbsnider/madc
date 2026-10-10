@@ -174,6 +174,11 @@ public:
     // fresh one from the next request on. False = no backend, its stdin is
     // the host's terminal (set_inherit_stdio), or the hand-off failed.
     bool eof();
+    // The bytes the backend's program read from a SHARED stdin
+    // (set_inherit_stdio) past what it consumed, handed back with its
+    // replies (madc::session_stdin_unread; Windows' C runtime reads ahead):
+    // the host reads them before its own input. Taking them clears them.
+    std::string take_returned_stdin();
 
     // Wait up to timeout_ms (-1: no limit) for the next reply. The output the
     // backend printed before it is appended to `output` first. 1: a reply;
@@ -258,6 +263,7 @@ private:
     std::string standard_name;
     madc::value host_rows;		// the host's REPL command rows
     bool inherit_stdio;			// the backend's stdio is the host's
+    std::string returned_stdin;		// handed back by replies, not yet taken
     madc::SessionInterruptor interruptor;	// D8: reaches the backend
     madc::SessionStdinHandOff stdin_handoff;	// Send EOF: the fresh stdin's way in
     SessionClient(const SessionClient &);
@@ -285,6 +291,7 @@ public:
     bool continues_if(const std::string &line) override;
     bool run_file(int argc, char **argv) override;
     bool ended(int &status) const override;
+    std::string take_returned_input() override;
 
     // A REPL command THIS host runs (split arc 1A.2; design
     // docs/plans/2026-10-09-command-registry-design.md §2.7): registered on

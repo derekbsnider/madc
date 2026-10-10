@@ -42,18 +42,19 @@ Design for Phase 1A step 5 of `2026-10-09-madc-madcide-split-arc.md` (owner
 5. **Interactive only**: the backend is reached from `run_repl` and
    `madc::session_open`; running a file, `-c`, `-o`, `--project` and `--emit`
    start no child.
-6. **A piped stdin on genuine Windows is a measured limit.** Host and
-   backend share stdin and both read it unbuffered (the POSIX design: an
-   entry's `scanf` takes what it parses, the host's next line follows). The
-   UCRT reads an unbuffered stream two bytes at a time — measured on the
-   owner's Windows 11 box: after `scanf("%d")` on a piped `4321\nn * 2`, the
-   next OS byte is ` `, the `n` sitting in the backend's FILE — so an entry
-   that reads a PIPED stdin can take one byte past what it parses, which the
-   host then never sees. A console delivers whole lines (CRLF is two bytes)
-   and is exact; wine's CRT reads byte by byte and is exact.
-   `testrepl_stdin` carries `.win_skip` with the measurement. **Owner call:**
-   accept the limit, or keep a Windows REPL whose stdin is a pipe (a
-   transcript fed to `madc -i`) in-process, without crash isolation.
+6. **A piped stdin is shared byte-exactly on every platform.** Host and
+   backend share stdin (the POSIX design: an entry's `scanf` takes what it
+   parses, the host's next line follows). The UCRT reads even an unbuffered
+   stream two bytes at a time — measured on the owner's Windows 11 box: after
+   `scanf("%d")` on a piped `4321\nn * 2`, the next OS byte is ` `, the `n`
+   sitting in the backend's FILE. Resolved (2026-10-10) by a hand-back, not a
+   limit: after each request the backend takes the bytes its stdin FILE holds
+   unread (`_get_stream_buffer_pointers`, looked up in ucrtbase at run time)
+   and returns them in its reply (`unread`, a byte array); the host reads its
+   stdin one byte at a time from the OS (`madc::shared_stdin_input`, no C
+   runtime buffer in front) and reads the handed-back bytes first. POSIX and
+   a console hand back nothing (byte-by-byte reads; whole console lines).
+   `testrepl_stdin` runs on genuine Windows.
 
 ## 3. Commits
 

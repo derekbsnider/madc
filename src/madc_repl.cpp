@@ -351,6 +351,16 @@ int madc_repl_edit(ReplSession &session, line_target &term,
     return 0;
 }
 
+// The bytes of a shared piped stdin the backend read past what its entry
+// parsed (ReplSession::take_returned_input) go back to `in`, read next.
+static void reclaim_input(ReplSession &session, std::istream &in)
+{
+    const std::string back = session.take_returned_input();
+    for ( std::string::const_reverse_iterator it = back.rbegin();
+	  it != back.rend(); ++it )
+	in.putback(*it);
+}
+
 int madc_repl_run(ReplSession &session, std::istream &in,
 		  std::ostream &out, bool terminal)
 {
@@ -366,6 +376,8 @@ int madc_repl_run(ReplSession &session, std::istream &in,
 	    out << (pending.empty() ? prompt : continuation) << std::flush;
 	if ( !std::getline(in, line) )
 	    break;
+	if ( !line.empty() && line[line.size() - 1] == '\r' )
+	    line.erase(line.size() - 1);	// a CRLF transcript's line
 	if ( extendable )
 	{
 	    // D11: an else continues the if; an empty line runs it; any other
@@ -374,6 +386,7 @@ int madc_repl_run(ReplSession &session, std::istream &in,
 	    if ( !session.continues_if(line) )
 	    {
 		session.submit(pending);
+		reclaim_input(session, in);
 		print_shown(session, out);
 		pending.clear();
 		if ( session.ended(status) )
@@ -385,6 +398,7 @@ int madc_repl_run(ReplSession &session, std::istream &in,
 	pending += line;
 	pending += '\n';
 	ReplSession::Offered r = session.offer(pending);
+	reclaim_input(session, in);
 	switch ( r.state )
 	{
 	    case ReplSession::OfferState::incomplete:

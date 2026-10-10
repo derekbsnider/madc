@@ -258,9 +258,12 @@ void attach_diagnostics(nlohmann::json &rep, InteractiveSession &session)
 
 // The backend: one session, a request per line until the channel closes.
 // The program's output is flushed before each reply, so the client reads
-// an entry's output before its result.
+// an entry's output before its result. `shared_stdin`: the host reads this
+// stdin too (madc -i, whatever its stdin), so what the program's FILE read ahead
+// goes back to it with each reply.
 int serve_session(madc::DataChannel &wire, std::unique_ptr<Program> prog,
-		  const std::string &std_option, int stdin_socket)
+		  const std::string &std_option, int stdin_socket,
+		  bool shared_stdin)
 {
     InteractiveSession session(std::move(prog));
     // A file command's payload is the client's to honor: it reads the file
@@ -440,6 +443,17 @@ int serve_session(madc::DataChannel &wire, std::unique_ptr<Program> prog,
 		break;
 	}
 	rep["rendered"] = err.str();
+	// One stdin, two readers: what the program's FILE read ahead goes back
+	// to the host (bytes, not text: a transcript need not be UTF-8).
+	const std::string unread =
+	    shared_stdin ? madc::session_stdin_unread() : std::string();
+	if ( !unread.empty() )
+	{
+	    std::vector<int> bytes;
+	    for ( char c : unread )
+		bytes.push_back((unsigned char)c);
+	    rep["unread"] = bytes;
+	}
 	flush_program();
 	if ( !write_line(wire, rep.dump()) )
 	    return 0;
@@ -587,7 +601,8 @@ bool SessionClient::spawn_backend()
 	std::unique_ptr<Program> prog(factory ? factory() : std::unique_ptr<Program>(new Program()));
 	std::unique_ptr<madc::DataChannel> child_wire =
 	    madc::detail::socket_channel_over(child_end, "session");
-	return serve_session(*child_wire, std::move(prog), opt, handoff_end);
+	return serve_session(*child_wire, std::move(prog), opt, handoff_end,
+			     on_terminal);
     };
     process.reset(new madc::Process(madc::DataSource("exec://<madcsession>"), options));
     madc::error perr;
@@ -950,6 +965,15 @@ bool SessionClient::eof()
     return send(req.dump());
 }
 
+// The piped stdin bytes the backend read ahead and handed back (its reply's
+// `unread`), for the host to read next.
+std::string SessionClient::take_returned_stdin()
+{
+    std::string r;
+    r.swap(returned_stdin);
+    return r;
+}
+
 void SessionClient::take_output(std::string &output)
 {
     read_output(output, 0);
@@ -1024,6 +1048,10 @@ int SessionClient::poll(Reply &reply, std::string &output, int timeout_ms)
 	answered_seq = reply.seq;
     reply.rendered = j.value("rendered", std::string());
     reply.ok = j.value("ok", false);
+    if ( j.contains("unread") && j["unread"].is_array() )
+	for ( const nlohmann::json &b : j["unread"] )
+	    if ( b.is_number_integer() )
+		returned_stdin += (char)b.get<int>();
     // A taken entry's, a load's and a run's reply carry their rows.
     if ( j.contains("diagnostics") )
 	reply.diagnostics = madc::hub::detail::wt_json_to_value(j["diagnostics"]);
@@ -1345,6 +1373,11 @@ bool BackendSession::ended(int &status) const
     return has_ended;
 }
 
+std::string BackendSession::take_returned_input()
+{
+    return client.take_returned_stdin();
+}
+
 // A synchronous caller's wait for request `seq`'s reply: its running notice
 // calls `taken`; replies to earlier requests are dropped, their output kept.
 int SessionClient::wait_reply(unsigned seq, Reply &reply, std::string &output,
@@ -1464,5 +1497,5 @@ int madc_session_serve_child(const std::string &request,
 	return 1;
     }
     madc::session_interrupt_arm_backend(token);	// the event, the console (D8)
-    return serve_session(*wire, std::move(prog), std_opt, -1);
+    return serve_session(*wire, std::move(prog), std_opt, -1, on_terminal == "1");
 }

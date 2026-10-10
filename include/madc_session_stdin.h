@@ -24,6 +24,10 @@
 
 #include <stdint.h>
 
+#include <deque>
+#include <streambuf>
+#include <string>
+
 namespace madc {
 
 class Process;
@@ -64,6 +68,39 @@ private:
 // the POSIX socketpair's backend end (-1 on Windows); `handle` the
 // request's.
 bool session_stdin_take(int socket_end, uint64_t handle);
+
+// ---- One stdin, two readers (a REPL host and its backend share a PIPED
+// stdin: an entry's scanf takes what it parses, the host's next line follows).
+//
+// The backend's half, after each request: the bytes stdin's FILE holds that
+// the program did not read, taken out of it to hand back to the host. Windows
+// only: the C runtime reads even an unbuffered stream through a 2-byte buffer
+// (setvbuf's smallest), so a read can take one byte past what the program
+// parsed. POSIX reads an unbuffered stream byte by byte — nothing is read ahead,
+// and a byte the program pushed back stays in its FILE, as one FILE keeps it —
+// so the answer there, and for a console, is always empty.
+std::string session_stdin_unread();
+
+// The host's half: its piped stdin read one byte at a time from the OS (no C
+// runtime buffer in front, so the host never takes a byte the backend's
+// program should read), with what the backend handed back read first.
+// pbackfail is the hand-back (std::istream::putback). A trailing '\r' is the
+// line reader's to drop (a CRLF transcript).
+class shared_stdin_input : public std::streambuf
+{
+public:
+    shared_stdin_input() : current_(0) {}
+protected:
+    int_type underflow() override;
+    int_type uflow() override;
+    int_type pbackfail(int_type c) override;
+private:
+    shared_stdin_input(const shared_stdin_input &);
+    shared_stdin_input &operator=(const shared_stdin_input &);
+    bool fill();		// one byte into current_; false at the end
+    std::deque<char> back_;	// handed back, read before the OS
+    char current_;
+};
 
 } // namespace madc
 

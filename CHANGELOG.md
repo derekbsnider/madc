@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Windows `madc -i` shares a piped stdin with its backend byte-exactly
+
+On genuine Windows, an entry that reads stdin from a piped transcript now sees
+the exact next bytes, and the host's next REPL line follows them precisely — one
+stdin serves both the host and its crash-isolated backend (split arc Phase
+1A.5). The Windows C runtime reads even an unbuffered stream two bytes at a
+time, so a backend entry's `scanf` could leave a byte past what it parsed
+sitting in the backend process; after each entry the backend now hands those
+bytes back in its reply and the host reads them before its own input. POSIX and
+a Windows console were already exact and are unchanged.
+
 ### Diagnostics are coloured only where colour reaches the terminal
 
 madc's diagnostics now carry colour only when they reach a terminal that shows
@@ -34,11 +45,6 @@ session (its state starts empty).
 A session that stops on Windows now names the exception code in its message
 rather than reading "signal 0": a Windows crash ends the process with its
 exception code and no signal, so the stop line reads `(exception 0xc0000005)`.
-
-Limit: on genuine Windows, an entry that reads stdin from a piped transcript may
-not see the exact next bytes — the Windows C runtime reads an unbuffered stdin
-two bytes at a time, so a byte past what the entry parsed can sit in the backend
-where the host never reads it. A console delivers whole lines and is exact.
 
 ### engine: a source's standard follows its extension, and madc.ini's `modules` key
 

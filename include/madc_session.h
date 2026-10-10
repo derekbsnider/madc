@@ -67,6 +67,11 @@ public:
     // backend's process (in this process the exit already happened), or
     // %quit asked to end it (status 0).
     virtual bool ended(int &status) const { (void)status; return false; }
+    // Input the session's program read from a stdin it shares with the host
+    // past what it consumed (a backend's C runtime reads ahead on a pipe —
+    // Windows), handed back: the host reads it before its own input. Taking
+    // it clears it. Empty when nothing was read ahead.
+    virtual std::string take_returned_input() { return std::string(); }
 };
 
 class InteractiveSession : public ReplSession

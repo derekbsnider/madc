@@ -21,12 +21,16 @@ thread_local bool madc_verbose = false;
 #include <stack>
 #include <string>
 #include <vector>
+#ifndef _WIN32
+#include <unistd.h>
+#endif
 
 #include "datadef.h"
 #include "tokens.h"
 #include "datatokens.h"
 #include "madc.h"
 #include "madc_session.h"
+#include "madc_session_stdin.h"
 #include "madc_repl.h"
 #include "madcdis/line_edit.h"
 #include "madcdis/tui_model.h"
@@ -408,3 +412,49 @@ TEST_CASE("?name answers at the line editor (§37, D15)")
 	"Signature: int twice(int a)  @ REPL[1]:1\nType:      function\n";
     CHECK(out.str() == twice + twice);
 }
+
+#ifndef _WIN32
+// One stdin, two readers (Windows REPL backend design, decision 6): the
+// host's stdin is read byte by byte from fd 0 through shared_stdin_input,
+// and what the backend's FILE read ahead comes back after an entry, read
+// before fd 0's next byte. A CRLF line is the line without its '\r'.
+namespace {
+struct handing_back : InteractiveSession
+{
+    std::string ahead;		// the "backend's" read-ahead, returned once
+    std::string take_returned_input() override
+    {
+	std::string r;
+	r.swap(ahead);
+	return r;
+    }
+};
+}
+
+TEST_CASE("a piped stdin's handed-back bytes are the host's next input")
+{
+    int p[2];
+    REQUIRE(::pipe(p) == 0);
+    const int saved = ::dup(0);
+    REQUIRE(saved >= 0);
+    REQUIRE(::dup2(p[0], 0) == 0);
+    ::close(p[0]);
+    const std::string piped = "int x = 4;\r\nx + 1\n";
+    REQUIRE(::write(p[1], piped.data(), piped.size()) == (ssize_t)piped.size());
+    ::close(p[1]);
+
+    handing_back s;
+    REQUIRE(s.begin("--std=c17"));
+    s.ahead = "x * 2\r\n";	// handed back after the first entry
+    std::ostringstream out;
+    {
+	madc::shared_stdin_input shared;
+	std::istream in(&shared);
+	CHECK(madc_repl_run(s, in, out, false) == 0);
+    }
+    ::dup2(saved, 0);
+    ::close(saved);
+    CHECK(out.str() == "8\n5\n");
+    CHECK(s.submitted() == 3);
+}
+#endif

@@ -519,7 +519,11 @@ static int repl_loops(ReplSession &session, bool terminal,
 		return rc;
 	}
     }
-    return madc_repl_run(session, std::cin, std::cout, terminal);
+    // Cooked lines come byte by byte from the OS, so the backend's entry
+    // reads the stdin bytes after them (one stdin for both).
+    madc::shared_stdin_input shared;
+    std::istream in(&shared);
+    return madc_repl_run(session, in, std::cout, terminal);
 }
 
 static int run_repl(std::unique_ptr<Program> prog, bool terminal,
@@ -536,12 +540,11 @@ static int run_repl(std::unique_ptr<Program> prog, bool terminal,
     // each restart (the command line and madc.ini hold there): on POSIX the
     // fork's copy; on Windows, which has no fork, this executable run on the
     // same `options`, whose main configures its Program exactly as this one
-    // was (split arc 1A.5). This one never begins. One stdin for both: read
-    // unbuffered here, as the backend reads it.
+    // was (split arc 1A.5). This one never begins. One stdin for both: the
+    // backend reads it unbuffered, this host through shared_stdin_input.
     SessionClient client;
     client.set_inherit_stdio(true);
     client.set_backend_arguments(options);
-    setvbuf(stdin, NULL, _IONBF, 0);
 #ifndef _WIN32
     Program *configured = prog.get();
     SessionClient::ProgramFactory copy = [configured]() {
