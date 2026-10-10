@@ -237,6 +237,28 @@ host_path_type host_path_type_of(const std::string &path)
 	return host_path_type::other;
 }
 
+// The offset of the final component's extension dot; npos when it has none.
+static size_t host_path_extension_dot(const std::string &path)
+{
+	const size_t sep = host_path_last_separator(path);
+	const size_t base = sep == std::string::npos ? 0 : sep + 1;
+	const size_t dot = path.rfind('.');
+	if ( dot == std::string::npos || dot <= base )
+		return std::string::npos;
+	return dot;
+}
+
+std::string host_path_drop_extension(const std::string &path)
+{
+	const size_t dot = host_path_extension_dot(path);
+	return dot == std::string::npos ? path : path.substr(0, dot);
+}
+
+std::string host_path_stem(const std::string &path)
+{
+	return host_path_basename(host_path_drop_extension(path));
+}
+
 void host_path_make_parents(const std::string &path)
 {
 	for ( size_t i = 1; i < path.size(); ++i )

@@ -65,6 +65,16 @@ std::string host_path_join(const std::string &dir, const std::string &path);
 enum class host_path_type : unsigned char { none, file, directory, other };
 host_path_type host_path_type_of(const std::string &path);
 
+// A path's extension and stem — THE one rule (gated by
+// check-one-path-stem.sh): the extension is what follows the last dot of the
+// final component, never a dot in a directory and never a leading dot
+// (".bashrc" has none). drop_extension: `path` without it ("dir.d/foo.c" ->
+// "dir.d/foo"; unchanged when there is none); stem: the final component
+// without it ("dir/foo.tar.gz" -> "foo.tar"), as gcc names an artifact and
+// cling a file's function.
+std::string host_path_drop_extension(const std::string &path);
+std::string host_path_stem(const std::string &path);
+
 // Make every directory above `path` that is missing (`mkdir -p` of its
 // parent; owner-only on POSIX). A drive (`C:`) is never made. Failure shows
 // at the caller's open of `path`.

@@ -188,3 +188,28 @@ TEST_CASE("map_exec_region_at: placed exactly, refused when taken, writable on r
 	CHECK(*(volatile unsigned char *)p == 0xc3);
 	CHECK(madc::detail::unmap_exec_region(p, len) == 0);
 }
+
+// The one extension / stem rule (check-one-path-stem.sh): the extension
+// follows the last dot of the FINAL component; a dot in a directory and a
+// leading dot are none.
+TEST_CASE("host_path_drop_extension / host_path_stem: the final component's last dot")
+{
+	using madc::detail::host_path_drop_extension;
+	using madc::detail::host_path_stem;
+	CHECK(host_path_drop_extension("foo.c") == "foo");
+	CHECK(host_path_drop_extension("dir.d/foo.c") == "dir.d/foo");
+	CHECK(host_path_drop_extension("dir.d/foo") == "dir.d/foo");
+	CHECK(host_path_drop_extension("../tool") == "../tool");	// was "."
+	CHECK(host_path_drop_extension(".bashrc") == ".bashrc");
+	CHECK(host_path_drop_extension("dir/.hidden") == "dir/.hidden");
+	CHECK(host_path_drop_extension("a.tar.gz") == "a.tar");
+	CHECK(host_path_stem("dir/foo.tar.gz") == "foo.tar");
+	CHECK(host_path_stem("foo") == "foo");
+	CHECK(host_path_stem("dir.d/") == "");
+#ifdef _WIN32
+	CHECK(host_path_stem("C:\\src\\demo.c") == "demo");
+	CHECK(host_path_drop_extension("C:\\v1.2\\tool") == "C:\\v1.2\\tool");
+#else
+	CHECK(host_path_stem("dir\\demo.c") == "dir\\demo");	// '\' is a name character
+#endif
+}

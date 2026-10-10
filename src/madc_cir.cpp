@@ -7283,14 +7283,7 @@ int madc_project_emit_native(MadcEngine &engine,
 			if (out_path && *out_path && parsed.size() == 1)
 				out = out_path;
 			else {
-				out = pt.name;
-				size_t slash = out.rfind('/');
-				if (slash != madc::dis::istring::npos)
-					out = out.substr(slash + 1);
-				size_t dot = out.rfind('.');
-				if (dot != madc::dis::istring::npos && dot > 0)
-					out = out.substr(0, dot);
-				out += ".o";
+				out = madc::detail::host_path_stem(pt.name) + ".o";
 			}
 			if (!session.emit_native_object(out.c_str()))
 				return -1;

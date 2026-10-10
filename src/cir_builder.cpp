@@ -50,6 +50,7 @@
 #include "cir_freeze.h"	// CirFrozenForest: load an INLINE method's saved body on use
 #include "madc_mangle.h"
 #include "spelling_delim.h"
+#include "madc_posix_io.h"	// host_path_stem: a TU's init symbol
 
 extern "C" {
 #include "c2mir/c2mir_api.h"
@@ -34785,13 +34786,7 @@ static madc::dis::istring tu_init_symbol(const madc::dis::istring &tu)
 		h ^= (unsigned char)tu[i];
 		h *= 16777619u;
 	}
-	madc::dis::istring stem = tu;
-	size_t sl = stem.rfind('/');
-	if (sl != madc::dis::istring::npos)
-		stem = stem.substr(sl + 1);
-	size_t dot = stem.rfind('.');
-	if (dot != madc::dis::istring::npos && dot > 0)
-		stem = stem.substr(0, dot);
+	const madc::dis::istring stem(madc::detail::host_path_stem(tu));
 	std::string out = "__madc_init_";
 	for (size_t i = 0; i < stem.size(); i++) {
 		char c = stem[i];

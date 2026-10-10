@@ -42,6 +42,7 @@
 #include "madcdis/text_utf16.h"	// madc::line_width: %whos's columns
 #include "madcdis/process.h"	// the terminal's editor (%open, %edit)
 #include "madc_history.h"	// %history's store (1B.7)
+#include "madc_posix_io.h"	// host_path_stem / drop_extension: %call's and %build's names
 
 // The command registry (plan §41.8a, D13/D24; the modes and the extension
 // point: split arc 1A.2, docs/plans/2026-10-09-command-registry-design.md):
@@ -1283,16 +1284,13 @@ bool InteractiveSession::build_command(const std::string &argument,
     }
     if ( out.empty() )
     {
-	const size_t sep = file.find_last_of("/\\");
-	const size_t base = sep == std::string::npos ? 0 : sep + 1;
-	const size_t dot = file.rfind('.');
-	if ( dot == std::string::npos || dot <= base )
+	out = madc::detail::host_path_drop_extension(file);
+	if ( out == file )
 	{
 	    command_error("%build: FILE has no extension to drop; name the"
 			  " executable: %build FILE -o OUT", name);
 	    return false;
 	}
-	out = file.substr(0, dot);
     }
     std::vector<std::string> fw;
     fw.push_back(file);
@@ -1485,11 +1483,7 @@ bool InteractiveSession::call_file(const std::string &path,
     // The function is named after FILE: its name without the directory and
     // the last extension (cling's rule). Else FILE's own main (a main an
     // earlier unit defined is not FILE's, as for %run).
-    const size_t sep = path.find_last_of("/\\");
-    std::string stem = sep == std::string::npos ? path : path.substr(sep + 1);
-    const size_t dot = stem.rfind('.');
-    if ( dot != std::string::npos && dot > 0 )
-	stem.erase(dot);
+    const std::string stem = madc::detail::host_path_stem(path);
     std::string callee;
     if ( defines_function(stem) )
 	callee = stem;

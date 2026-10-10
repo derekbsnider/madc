@@ -1435,11 +1435,7 @@ int main(int argc, char **argv)
 	    outpath = generic_output_path;
 	else
 	{
-	    outpath = input;
-	    size_t dot = outpath.rfind('.');
-	    if ( dot != std::string::npos )
-		outpath = outpath.substr(0, dot);
-	    outpath += ".madh";
+	    outpath = madc::detail::host_path_drop_extension(input) + ".madh";
 	}
 
 	// Choose compression: prefer zstd if available
@@ -2036,11 +2032,7 @@ int main(int argc, char **argv)
 	    {
 		// gcc semantics: strip the directory and extension, land the
 		// artifact in the current directory (foo.mad -> foo.o / foo.so).
-		outpath = madc::detail::host_path_basename(argv[filearg]);
-		size_t dot = outpath.rfind('.');
-		if ( dot != std::string::npos && dot > 0 )
-		    outpath = outpath.substr(0, dot);
-		outpath += dflt_suffix;
+		outpath = madc::detail::host_path_stem(argv[filearg]) + dflt_suffix;
 	    }
 	    else
 		outpath = "a.out";
