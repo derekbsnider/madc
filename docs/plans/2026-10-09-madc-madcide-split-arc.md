@@ -346,13 +346,24 @@ items are their own sessions, any time.
    `2026-10-10-history-std-reset-design.md`; unit, fix lanes and gates
    green; the batch checkpoint 2056/0/9 at `11bf07919`; the REPL, colon and session subset on genuine Windows 24/0/4; not
    pushed). madcide's pane moves onto the store and the rule in 1D (item 18).
-8. **Check, build, run and projects at the prompt** (owner: build and
-   projects are madc's): `%check` (madcide documents `:check` and never
-   handled it); `%build` / `%run` on a live BUFFER (today a file only —
-   madcide's `start_native_build` and F5 `replrun` move down); program args
-   at the prompt; `%project` — manifest write, add/remove a TU, check /
-   build / run of the project (madc already reads the manifest; madcide's
-   `proj_check_rows` and the `bld-proj-*` bodies move down).
+8. **Check, build, run and projects at the prompt — LANDED 2026-10-10:
+   `355ec077e` (`%check [FILE]`: a buffer's diagnostics, its live text
+   checked in the backend), `c90bc554f` (`%build` / `%run` with no FILE: the
+   current buffer's live text; `%args`, host state), `e5b782347` (the
+   manifest's one writer beside its reader: create / add / remove, madcide's
+   bytes), `e6c1b0882` (`%project`: open-or-create, add, del, check, build,
+   run ARGS, close; the `project` payload and wire op keep it across
+   restarts; `project_run` takes the program's arguments, on Windows through
+   `MADC_RUN_CHILD_ARGS` and `ns_common::shell_quote`)** (design
+   `2026-10-10-check-build-run-project-design.md`). Found on the way and
+   fixed: `f740783b6` (one owner for a path's extension and stem, gated),
+   `0fc1442c4` (a manifest's directory by the host's separators),
+   `b781963f2` (a mistyped manifest field refused, not an abort), `775a27ca3`
+   (the test runner's globs never expand as filenames). Unit, fix lanes and
+   gates green; the batch checkpoint 2059/0/9 at `e6c1b0882`; the REPL,
+   colon and session subset on genuine Windows 27/0/4; not pushed.
+   madcide's `start_native_build`, F5 `replrun`, `proj_check_rows`, the
+   `bld-proj-*` bodies and its manifest writers move onto these in 1D.
 9. **Syntax colour at the prompt** (owner 2026-10-09). The pieces exist:
    the token classifier (`include/tokens.h:145`, `madc::lex_spans`), the
    one style vocabulary (`include/madcdis/ui_style.h`, depth detection
