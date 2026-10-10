@@ -2,6 +2,41 @@
 
 ## [Unreleased]
 
+### engine: one regex engine (PCRE2) behind madc:: and perl::
+
+madc now has ONE regex engine, PCRE2 — the engine behind PHP's `preg_*` —
+reached through `madc::regex_match` / `regex_search` / `regex_replace` and the
+regex-aware `perl::grep` / `perl::split` (split arc Phase 1A.3). The five
+functions previously ran on `std::regex` (ECMAScript, recompiled per call,
+divergent between libstdc++ and libc++); they now share the single
+`madc::regex` owner, so a pattern means the same thing on every platform —
+Linux links the distribution's `libpcre2-8`, and the macOS and Windows
+packages carry a pinned static PCRE2 10.42. Patterns use PCRE2 / Perl / PHP
+syntax written without delimiters, so lookbehind, lazy quantifiers, named
+groups and inline flags that `std::regex` lacked now work; patterns and
+subjects are UTF-8 (`.` matches one code point, invalid UTF-8 in a subject
+never faults), and `regex_replace` names `$0`, `$1` / `${1}` and `$$` in its
+replacement.
+
+User-visible behaviour changes:
+
+- An invalid pattern is now refused on stderr — one line naming the function,
+  the pattern, PCRE2's reason and the byte offset — and a neutral answer is
+  returned (`regex_match` / `regex_search` false, `regex_replace` leaves `out`
+  the unchanged source, `perl::grep` / `perl::split` leave `dest` an empty
+  array). Previously the pattern was answered silently by a substring (grep) /
+  literal-delimiter (split) fallback. A malformed replacement (`$9` with no
+  ninth group) is refused the same way.
+- `perl::split` on an empty pattern now splits the string into its code
+  points; previously it returned the whole string as one field.
+- `libpcre2-dev` is a new Linux build dependency; the Homebrew formula depends
+  on `pcre2`, and the macOS and Windows packages ship `pcre2-LICENCE.txt`.
+
+Validation: 461773c96 (engine + build/link/packaging wiring) and 2f44803b8
+(the five functions moved onto it) — unit tests and `fix_lanes.sh` Tier 1/2
+green for each; release-windows and release-macos (both arches) built and
+packaged against the pinned static PCRE2 10.42.
+
 ### engine: modal REPL prefixes, and a command registry modules and hosts extend
 
 An interactive entry's first non-blank character is now its MODE (split arc

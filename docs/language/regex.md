@@ -1,68 +1,104 @@
 # Regex Support
 
-Regular expressions via `std::regex`, available through the `madc::`
-namespace and regex-aware `perl::` functions.
+madc has ONE regex engine, [PCRE2](https://github.com/PCRE2Project/pcre2) —
+the engine behind PHP's `preg_*` — reached through the `madc::` namespace and
+the regex-aware `perl::` functions. The same engine runs on every platform
+(Linux links the distribution's `libpcre2-8`; the macOS and Windows packages
+carry a pinned static PCRE2 10.42), so a pattern means the same thing
+everywhere.
+
+## Syntax
+
+PCRE2's own — Perl / PHP syntax, written WITHOUT delimiters (`"\\d+"`, not
+`"/\\d+/"`):
+
+- unescaped `+ ? | ( ) { }`; `\d \w \s \b`; character classes `[a-z]`
+- lazy quantifiers `+? *? ??`
+- lookahead `(?=…)` `(?!…)` and lookbehind `(?<=…)` `(?<!…)`
+- named groups `(?<name>…)`, inline flags `(?i)` `(?m)` `(?s)` `(?x)`
+
+Patterns and subjects are **UTF-8**: `.` matches one code point (`é` is one,
+not two bytes), and a subject holding invalid UTF-8 never faults — those bytes
+simply cannot match a UTF construct. A backslash in a madc string literal is
+itself escaped: the pattern `\d+` is written `"\\d+"`.
 
 ## madc:: Functions
 
 | Function | Meaning |
 |----------|---------|
-| `madc::regex_match(str, pattern)` | 1 if the **entire** string matches, else 0 |
-| `madc::regex_search(str, pattern)` | 1 if the pattern matches **anywhere**, else 0 |
-| `madc::regex_replace(result, source, pattern, replacement)` | replace all occurrences into `result`; `source` unchanged |
+| `madc::regex_match(str, pattern)` | true if the **entire** string matches |
+| `madc::regex_search(str, pattern)` | true if the pattern matches **anywhere** |
+| `madc::regex_replace(out, source, pattern, replacement)` | `out` = `source` with **every** match replaced; `source` unchanged |
+
+A replacement names `$0` (the whole match), `$1` / `${1}` (a group) and `$$`
+(a dollar sign); a group that did not take part in the match is empty.
 
 ```c
-string s = "hello123";
-cout << madc::regex_match(s, "hello[0-9]+") << endl;
+println("{}", madc::regex_match("hello123", "hello[0-9]+"));	// true
+println("{}", madc::regex_search("price: 10USD", "\\d+(?=USD)"));	// true
 
-string s2 = "foo bar baz";
-cout << madc::regex_search(s2, "bar") << endl;
-
-string result;
-madc::regex_replace(result, "The quick brown fox", "quick|brown", "slow");
-cout << result << endl;
+var out;
+madc::regex_replace(out, "The quick brown fox", "quick|brown", "slow");
+println("{}", out);	// The slow slow fox
+madc::regex_replace(out, "me@host", "(\\w+)@(\\w+)", "$2 at ${1}");
+println("{}", out);	// host at me
 ```
 
-Output:
-
-```
-1
-1
-The slow slow fox
-```
+The functions take `const char *` (a `var` passes its text); a program that
+includes `<string>` also gets `std::string` forms, with `out` a
+`std::string &`.
 
 ## Regex-aware perl:: Functions
 
-`perl::grep` uses `std::regex_search` internally; `perl::split` uses
-`std::sregex_token_iterator`. Either falls back to plain substring /
-literal-delimiter behavior when the pattern is not a valid regex.
+| Function | Meaning |
+|----------|---------|
+| `perl::grep(dest, pattern, src)` | `dest` = the string elements of `src` the pattern matches (Perl's `grep { /p/ } @src`) |
+| `perl::split(dest, pattern, str)` | `dest` = Perl's `split(/p/, str)` fields |
+
+`perl::split` follows Perl: a match at the very start keeps an empty leading
+field, TRAILING empty fields are dropped, and an empty pattern splits the
+string into its code points.
 
 ```c
-array words;
-php::explode(words, ",", "apple,banana,cherry,avocado");
-array matches;
-perl::grep(matches, "^a", words);
-cout << perl::scalar(matches) << endl;
-
 array parts;
 perl::split(parts, ":+", "one:two::three:::four");
-cout << perl::scalar(parts) << endl;
+println("{}", perl::join("|", parts));	// one|two|three|four
+perl::split(parts, ":", ":a:b::");
+println("{}", perl::join("|", parts));	// |a|b
+perl::split(parts, "", "abc");
+println("{}", perl::join("|", parts));	// a|b|c
 ```
 
-Output:
+## An invalid pattern is refused
+
+A pattern that does not compile is never quietly answered. The function
+prints one line on stderr naming itself, the pattern, PCRE2's reason and the
+byte offset where it stopped, and returns a neutral answer:
 
 ```
-2
-4
+madc::regex_search: invalid pattern "a(b": missing closing parenthesis at offset 3
 ```
 
-## Error Handling
+| Function | Answer on a refused pattern |
+|----------|-----------------------------|
+| `regex_match` / `regex_search` | false |
+| `regex_replace` | `out` = the source, unchanged |
+| `perl::grep` / `perl::split` | `dest` = an empty array |
 
-Invalid regex patterns are caught internally and fall back gracefully —
-no exception propagates into the madc program.
+A malformed replacement (`$9` with no ninth group) is refused the same way by
+`regex_replace` (`invalid replacement "$9": …`, `out` = the source).
+
+## Thread safety
+
+Each call compiles its own pattern and keeps no state between calls: the
+functions are safe to call concurrently (the C++ standard library's
+convention — distinct objects are independent).
 
 ## Files
 
-- `src/ns_perl.cpp` — regex-aware `perl::grep`, `perl::split`
-- `src/parser.cpp` — `madc::regex_match` / `regex_search` /
-  `regex_replace` registration and bindings
+- `include/madc_regex.h`, `src/madc_regex.cpp` — `madc::regex`, the one
+  engine (the only includer of `pcre2.h`; gate:
+  `scripts/check-one-regex-engine.sh`)
+- `src/ns_madc.cpp` — `madc::regex_match` / `regex_search` / `regex_replace`
+- `src/ns_perl.cpp` — `perl::grep`, `perl::split`
+- `scripts/stage_pcre2.sh` — the macOS / Windows static PCRE2 stage

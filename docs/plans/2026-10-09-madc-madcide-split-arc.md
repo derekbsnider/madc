@@ -274,7 +274,11 @@ items are their own sessions, any time.
    (by payload) registers names, resolved to a code once at input; `%help`
    lists the one registry. The extension point exists today ONLY inside
    madcide's REPL pane (`plugin_repl_command`) — `madc -i` has no hook.
-3. **PCRE2 into libmadc** (decided, below; design
+3. **PCRE2 into libmadc** — **LANDED 2026-10-10, `461773c96` (the engine
+   `madc::regex` + build / link / packaging) and `2f44803b8` (the five script
+   functions on it; gate `check-one-regex-engine.sh`)** (unit battery + fix
+   lane green; Windows + macOS release builds and packages green; not pushed)
+   (decided, below; design
    `2026-10-10-pcre2-design.md`) + the five regex functions'
    fixes (invalid pattern refused; `madc::` three leave `ns_perl.cpp`; lean
    mangled-direct forms) — own commits with reducers.
