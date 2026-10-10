@@ -451,6 +451,30 @@ items are their own sessions, any time.
     owner's pid. Proposals persist with 1C.15, so a headless agent's
     proposal is decided later in madcide.
 
+    **1C items 12-16 LANDED 2026-10-10** (part 1C complete): `madc --lsp`
+    (design `2026-10-10-lsp-in-core-design.md`, `b457dfd2e`;
+    `87b7121a2` `madc::lsp::server`, `91694375c` the stdio server,
+    `38679dd3e` `executeCommand` through a backend session); `madc --mcp`,
+    the tool registry and the code-graph tools `8187d0126`, their edits
+    `2f7292e98`; `madc::memory`, the project memory with its `nexus.*` /
+    `test.*` / proposal tools, `2547d1417`; the version history from the
+    madcgit module (`graph.commits` / `revision` / `diff`, a read's `rev`)
+    `7b950b67d`; `madc --mcp --project` and `madc::discovery` (one owner per
+    project; a second process refuses naming the owner's pid — v1 never
+    attaches) `78455c1c8`; the MCP client and `nexus.sources` /
+    `nexus.sync` `481fc8daa`. Fixes found on the way: `8c904f889` a
+    document's parse searches its opener's include directories, `e77ce3852`
+    the static gates see files not yet committed, `7976e77a4` a project TU's
+    handle keeps its manifest options across a refresh, `fa41b861f` a
+    single-file project's memory is memory-only (madcide's
+    `proj_events_path`). Unit, fix lanes and static gates green per commit;
+    the batch checkpoint 2066/0/9 at `fa41b861f`; genuine Windows subset
+    (`testlsp_` / `testmcp_` / `testlang_` / `testdocument` /
+    `testparsehandle`) 7/0/1 — `testlsp_stdio.win64_expect` carries the
+    program's text-mode `\r\n` (the mingw-gcc oracle); not pushed. madcide's
+    LSP, MCP, memory, history, discovery and MCP-client dialect stay the
+    second implementation until **1D.19**.
+
 *1D — madcide re-plumbed (after 1B and 1C):*
 17. **madcide on madc's documents**: its buffer ring, `ensure_phandle`,
     `ed_text_insert` / `ed_text_erase` and the anchor registry

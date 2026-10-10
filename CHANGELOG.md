@@ -2,6 +2,160 @@
 
 ## [Unreleased]
 
+### The Windows expected output for `madc --lsp`'s `executeCommand`
+
+`tests/testlsp_stdio.win64_expect` holds the Windows answer for `madc --lsp`'s
+`executeCommand` output: a program's text-mode stdout through a pipe on Windows
+ends its lines `\r\n` (a mingw-gcc build of the same program, run on the
+Windows host, emits `d \r \n` per `od -c`).
+
+### A single-file `madc --mcp --project` keeps its project memory in memory
+
+A single source file given to `madc --mcp --project` is the implicit one-TU
+project; its memory is memory-only — no `<file>.events` file is written beside
+the source, and a write such as `nexus.create` keeps the record in memory for
+the server's life. A memory bound to a change log appears only beside a
+manifest, as `<manifest less its extension>.events`.
+
+`project_path_is_manifest` / `project_events_path` (`include/madc_project.h`,
+`src/madc_project.cpp`) are the one owner of where a project's memory lives —
+an `.events` path beside a manifest, `""` (memory-only) for the implicit one-TU
+project — and `project_of_path` uses the predicate. `run_mcp_project`
+(`src/madc.cpp`) binds only a non-empty events path and sets the `{project}`
+manifest only for a manifest. `graph.status` (`src/madc_memory.cpp`) now reports
+the bound log file as `"log"` (`""` when the memory is memory-only).
+
+`docs/man/madc.1` states the split. Reducer `tests/testmcp_project` adds a
+`nexus.create` then `graph.status` and expects `"log":"","log_head":1` with no
+events file left behind; unit `tests/unit/test_project_manifest.cpp` covers the
+events path beside a manifest and its absence for the one-TU project.
+
+### `madc::mcp` gains a client — `nexus.sources` and `nexus.sync` pull an external system's tasks
+
+`madc::mcp` now has a client (`include/madc_mcp.h`, `src/madc_mcp.cpp`) over one
+channel: `start()` runs `initialize` then the `notifications/initialized`
+notification; `call()` writes a request with its own id and reads replies until
+one whose id matches — a non-JSON line, a notification and another id's reply
+are skipped; `rows_of()` reads a tool result's first text content as JSON (an
+array, or an object's `"rows"`). A refused call answers `{error, code?}` in
+`result`.
+
+The project memory gains its sources: `nexus.sources` (owner tier) lists the
+loaded `*.mcp.json` manifests, reloading the directory; each manifest describes
+one external MCP server (name, transport, command words, env prefix, a
+vocabulary of MCP tools). The default directory is the `mcp/` subdirectory of
+madc's user config directory — `$XDG_CONFIG_HOME/madc/mcp` or
+`~/.config/madc/mcp` (`cfg::config_file::user_config_dir`,
+`include/madc_config_file.h`). An unknown transport word refuses at load; a
+duplicate source name across manifests refuses. `nexus.sync` (editor tier)
+spawns one source's server over `exec://`, runs `initialize` / `tools/list`
+(every vocabulary tool must be advertised), calls its `list_tasks`, renames each
+row by the source's map and upserts it as a task record with origin = the
+source.
+
+`jsonrpc::next_line` (`include/madc_jsonrpc.h`, `src/madc_jsonrpc.cpp`) is the
+one idle-deadline line reader over a channel — 1 with the line, 0 on the
+deadline, -1 when the peer is gone; the client's reply loop and the memory's
+`child_lines` both read through it.
+
+Tests: `tests/unit/test_memory.cpp` "nexus.sync pulls a source's tasks over MCP
+into task records" drives a fake shell MCP server, covering the sync upsert, a
+skipped non-JSON line and mismatched-id reply, a keyless row, a server exiting
+with status 3, a non-advertised tool, and three manifest refusals.
+
+### `madc --mcp --project` — one owner per project, its TUs as documents
+
+`madc --mcp --project X` runs the headless MCP server over a project: `X` is a
+manifest or a single source file (the one-TU case). The project's translation
+units are the served documents, each parsing as its manifest entry compiles it;
+a tool call's `file` argument names one, the first TU otherwise.
+`mcp::server::set_documents` maps a call's `file` to its document, advertises
+`file` on every tool, and answers an unknown file as `isError` content.
+
+One owner per project (`madc::discovery`, `include/madc_discovery.h`,
+`src/madc_discovery.cpp`): a claim holds an advertisement file
+`<dir>/<slug(key)>.json` for its life and publishes `{key, pid, started,
+version, host}`; a second process is refused, naming the owner's pid. The
+directory is `$MADC_SESSION_DIR`, else `$XDG_STATE_HOME/madc/sessions`, else
+`~/.local/state/madc/sessions`. Liveness is the OS-held file, not a pid or a
+stale file. `held_file` / `host_file_held` (`src/madc_posix_io.h/.cpp`) are the
+one owner of "one process at a time holds this file" — `flock` on POSIX,
+`LockFileEx` on a far byte on Win32 — and the OS drops the hold when the process
+ends.
+
+A served document parses as its TU: `document` carries `parse_tu`
+(`include/madcdis/document.h`), reached through the hub and
+`lang::document_set_tu`; the handle opens through `madc_parse_open_tu` →
+`parse_open_text_with` (`src/madc_program.cpp`), applying the manifest entry's
+`-I`/`-D`/standard at open and at every refresh. `project_of_path` resolves a
+path to a manifest or a single-file one-TU project.
+
+Tests: `tests/unit/test_discovery.cpp` (session dir / slug / one owner / scan),
+the `held_file` case in `tests/unit/test_posix_io.cpp`, the TU-document case in
+`tests/unit/test_lang.cpp`, and `tests/testmcp_project.mad`.
+
+### A project TU's parse handle keeps its manifest options across a refresh
+
+A project TU's parse handle applied the manifest entry's options
+(`-I`/`-D`/standard/stdlib) only at open; a refresh and a checked refresh's
+candidate re-initialised the child from an empty include list, so the TU's
+`-D`/`-I`/standard were lost after the first refresh — a silent wrong parse with
+spurious diagnostics. The options now apply through `parse_handle_child_init`
+(`src/madc_program.cpp`), the one init every child goes through (open-from-text,
+open-from-file, refresh, checked-refresh candidate), which refuses when they are
+rejected (e.g. an unknown `-stdlib` flavor). `tests/unit/test_lang.cpp` covers
+the TU handle keeping its `-D` across a refresh.
+
+### The version history — commits, revisions and diff over the served files, from the madcgit module
+
+The engine's history tools read the served document's past over a
+`history_source` the madcgit module supplies: `graph.commits` (the commits
+touching the file), `graph.revision` (the file at a rev-parse spec, opened
+read-only), `graph.diff` (declarations added/removed/changed between two
+revisions or the live text), and `graph.history` (a node's rows, git commits
+first). A read's `rev` argument selects a revision. A revision's parse is a
+read-only handle in `revisions` — at most eight per document, least-recently-used
+closing first.
+
+A module row carries a `tools` column (`madc_module_tools.h`) beside its
+commands column: the function a tool server calls for each module its Program
+loaded. madcgit exports `madcgit_tools`, giving `tools::add_history_tools` a
+`GitRepo`-backed `history_source`
+(`modules/madcgit/madcgit_history.cpp`). `madc_module_entry_point`
+(`src/madc_modules.cpp`) is the one module entry-point lookup — commands or
+tools — over `Program::loaded_modules()`, replacing the hand-rolled lookup in
+the session; `madc --mcp` uses it for module tools.
+
+Consolidations: `tools::served_path` is the one served-document path;
+`tools::span_extent` the one span-to-byte-extent conversion; `graph.status`'s
+per-handle error count now comes from the parse engine's `child_error_count`
+(`madc_parse_error_count`). Tests: `test_memory`'s version-history cases (a fake
+`history_source`), `test_gitrepo`'s history-source case over its fixture
+repository, and `testmcp_git` driving `madc --mcp` with `-lmadcgit`.
+
+### `madc::memory` — the project memory and its tools over `--mcp`
+
+A project's memory (`include/madc_memory.h`, `src/madc_memory.cpp`) is one event
+stream every document of a hub world rides — text splices and checkpoints,
+applied node-ops, proposals and their decisions, intent records and links, and
+test runs. Each record is a JSON object `{seq, ts, kind, path, doc, actor,
+...}`; the folds derive state (a proposal's status, a record's fields, a test's
+latest run), nothing derived is stored.
+
+The stream is memory-only until bound to a `<base>.events` file beside the
+project's manifest: bound, every record is appended as one JSON line and a
+restore reads one back; a torn line (a crash mid-append) is skipped.
+
+`madc::memory::project` subscribes to the world's text changes and registers its
+tools into a registry — `graph.proposals` / `proposal` / `accept` / `reject` /
+`withdraw`; `nexus.record` / `records` / `create` / `update` / `close` / `link` /
+`unlink` / `context` / `explain`; `test.discover` / `list` / `candidates` /
+`run` / `results`. `madc --mcp` constructs the memory before the open and
+registers its tools; the lone local client's actor is -1. Tests:
+`tests/unit/test_memory.cpp` drives the stream, its file and the tools through
+the registry; `testmcp_stdio` adds `nexus.create` and `nexus.records` over the
+session's memory.
+
 ### The code-graph edits — `graph.insert`, `graph.replace`, `graph.delete` on madc's documents
 
 `add_graph_tools` registers three editing tools beside the 16 reads:

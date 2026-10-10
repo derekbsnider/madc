@@ -1,0 +1,14 @@
+Content-Length: 38
+"serverInfo":{"name":"madc"
+"positionEncoding":"utf-16"
+"method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"file:///lsp-test/calc.c"}
+{"kind":12,"name":"add","range":{"end":{"character":1,"line":3},"start":{"character":0,"line":0}},"selectionRange":{"end":{"character":8,"line":0},"start":{"character":5,"line":0}}}
+"value":"Function add — defined on line 1"},"range":{"end":{"character":19,"line":7},"start":{"character":16,"line":7}}
+{"error":{"code":-32601,"message":"Method not found: textDocument/completion"},"id":4
+{"error":{"code":-32700,"message":"the message is not JSON"},"id":null
+{"id":5,"jsonrpc":"2.0","result":null}
+"executeCommandProvider":{"commands":[
+"madc.check"
+"output":"piped, not framed\r\n"
+"id":6,"jsonrpc":"2.0","result":{"diagnostics":"","ok":true
+"id":7,"jsonrpc":"2.0","result":{"diagnostics":"","ok":true
