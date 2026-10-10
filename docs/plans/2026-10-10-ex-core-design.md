@@ -107,12 +107,13 @@ and its Layering bullet — madc is ex, madcide is the visual part.
 1. **Addresses, ranges and the command table** — the parser alone, unit
    tested against vim's answers (`tests/unit/test_ex.cpp`).
 2. **The ed core on a world** — `p nu l = a i c d j m t > < u red`, marks,
-   the current line; `madc::document_*` and the `ui::doc_*` delegation; unit
-   tests over a world.
+   the current line; unit tests over a world.
 3. **Search and substitute** — `/re/`, `?re?`, `s`, `&`, `&&`, `g`, `v`,
    `sor`, `ret`.
-4. **Files and buffers** — `e`, `r`, `w`, `wq`, `x`, `up`, `sav`, `q`, `ls`,
-   `b`, `bn`, `bp`, `cd`, `pwd`, `se`, the shell forms.
+4. **Files and buffers** — `madc::document_*` and the `ui::doc_*`
+   delegation (its first consumers are these commands); `e`, `r`, `w`, `wq`,
+   `x`, `up`, `sav`, `q`, `ls`, `b`, `bn`, `bp`, `cd`, `pwd`, `se`, the shell
+   forms.
 5. **The hosts** — `madc -i` colon mode in both loops, `madc -i FILE` as the
    current buffer, `:q` / `:h`; transcript tests (`tests/testex_*.mad` +
    `.input`).

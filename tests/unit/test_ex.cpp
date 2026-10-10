@@ -329,3 +329,265 @@ TEST_CASE("ex: global, move / copy, and the shell forms")
     CHECK_FALSE(l.force);
     CHECK(l.argument == "wc -l");
 }
+
+// ---------------------------------------------------------------- session
+// Slice 2: the ed core applied to a world's document. ORACLE: GNU ed and
+// vim's ex (`vim -e -s`) on the same buffer — the lines a command shows,
+// the text it leaves, and the current line after it.
+
+#include "madcdis/hub.h"
+
+using madc::ex::outcome;
+using madc::ex::session;
+using madc::hub::entity_id;
+using madc::hub::world;
+
+static entity_id open_doc(world &w, const std::string &text)
+{
+    entity_id e = w.create("document");
+    REQUIRE(w.doc_attach(e, "t.c", 33, text));	// 33: any kind code
+    return e;
+}
+
+static std::string body(world &w, entity_id e)
+{
+    return w.text_of(e)->text();
+}
+
+static std::string ran(session &s, const char *cmd)
+{
+    CAPTURE(cmd);
+    outcome o = s.run(cmd);
+    CAPTURE(o.error);
+    CHECK(o.ok);
+    return o.shown;
+}
+
+static std::string refused_run(session &s, const char *cmd)
+{
+    CAPTURE(cmd);
+    outcome o = s.run(cmd);
+    CHECK_FALSE(o.ok);
+    return o.error;
+}
+
+static const char *FIVE = "one\ntwo\nthree\nfour\nfive\n";
+
+TEST_CASE("ex session: printing, the current line and line numbers")
+{
+    world w;
+    entity_id e = open_doc(w, FIVE);
+    session s(w);
+    CHECK(refused_run(s, "p") == "no buffer (:e FILE opens one)");
+    REQUIRE(s.use(e));
+    CHECK(s.current_line() == 5u);		// ex: a read file ends at $
+    CHECK(ran(s, "1p") == "one\n");
+    CHECK(s.current_line() == 1u);
+    CHECK(ran(s, "") == "two\n");		// an empty line: the next one
+    CHECK(ran(s, "=") == "5\n");		// = is $= (ed, vim)
+    CHECK(ran(s, ".=") == "2\n");
+    CHECK(ran(s, "2,3nu") == "  2 two\n  3 three\n");
+    CHECK(ran(s, "#") == "  3 three\n");
+    CHECK(ran(s, "4") == "four\n");		// a bare address prints (ex)
+    CHECK(ran(s, "0") == "one\n");		// :0 is the first line
+    CHECK(ran(s, "$-1,$p") == "four\nfive\n");
+    CHECK(ran(s, "1p 2") == "one\ntwo\n");	// a count from the address
+    CHECK(refused_run(s, "9p") == "invalid range");
+    CHECK(refused_run(s, "3,1p") == "backwards range");
+    s.settings().number = true;
+    CHECK(ran(s, "1p") == "  1 one\n");
+    s.settings().number = false;
+
+    world w2;
+    entity_id t = open_doc(w2, "a\tb\x01\n");
+    session s2(w2);
+    REQUIRE(s2.use(t));
+    CHECK(ran(s2, "l") == "a^Ib^A$\n");
+}
+
+TEST_CASE("ex session: searches wrap; the empty pattern is the last one")
+{
+    world w;
+    entity_id e = open_doc(w, FIVE);
+    session s(w);
+    REQUIRE(s.use(e));
+    CHECK(ran(s, "/t(hr|w)/p") == "two\n");	// from $ it wraps to 1
+    CHECK(ran(s, "//p") == "three\n");
+    CHECK(ran(s, "?o?p") == "two\n");		// backward
+    CHECK(ran(s, "?o?p") == "one\n");
+    CHECK(ran(s, "?o?p") == "four\n");		// wraps to the end
+    CHECK(refused_run(s, "/nomatch/") == "pattern not found: nomatch");
+    CHECK(refused_run(s, "/(/") .find("invalid pattern '('") == 0);
+}
+
+TEST_CASE("ex session: delete, undo and redo as one group per command")
+{
+    world w;
+    entity_id e = open_doc(w, FIVE);
+    session s(w);
+    REQUIRE(s.use(e));
+    ran(s, "2,3d");
+    CHECK(body(w, e) == "one\nfour\nfive\n");
+    CHECK(s.current_line() == 2u);		// the line after the range
+    ran(s, "$d");
+    CHECK(body(w, e) == "one\nfour\n");
+    CHECK(s.current_line() == 2u);
+    ran(s, "u");
+    CHECK(body(w, e) == "one\nfour\nfive\n");
+    ran(s, "u");
+    CHECK(body(w, e) == FIVE);
+    CHECK(refused_run(s, "u") == "already at oldest change");
+    ran(s, "red");
+    CHECK(body(w, e) == "one\nfour\nfive\n");
+    ran(s, "%d");
+    CHECK(body(w, e).empty());
+    CHECK(s.current_line() == 0u);
+    CHECK(refused_run(s, "p") == "no lines in the buffer");
+
+    // An unterminated last line stays unterminated.
+    world w2;
+    entity_id t = open_doc(w2, "a\nb\nc");
+    session s2(w2);
+    REQUIRE(s2.use(t));
+    ran(s2, "$d");
+    CHECK(body(w2, t) == "a\nb");
+    ran(s2, "1d");
+    CHECK(body(w2, t) == "b");
+
+    w2.doc_set_read_only(t, true);
+    CHECK(refused_run(s2, "d") == "the buffer is read-only");
+}
+
+TEST_CASE("ex session: join, move, copy")
+{
+    world w;
+    entity_id e = open_doc(w, "a\n   b\nf(x\n)\n\nend\n");
+    session s(w);
+    REQUIRE(s.use(e));
+    ran(s, "1j");				// :Nj joins N and N+1
+    CHECK(body(w, e) == "a b\nf(x\n)\n\nend\n");
+    ran(s, "2j");				// no space before `)`
+    CHECK(body(w, e) == "a b\nf(x)\n\nend\n");
+    ran(s, "2,3j");				// nor for an empty line
+    CHECK(body(w, e) == "a b\nf(x)\nend\n");
+    ran(s, "1,2j!");				// j! joins as is
+    CHECK(body(w, e) == "a bf(x)\nend\n");
+    CHECK(s.current_line() == 1u);
+
+    world w2;
+    entity_id t = open_doc(w2, FIVE);
+    session s2(w2);
+    REQUIRE(s2.use(t));
+    ran(s2, "1m$");
+    CHECK(body(w2, t) == "two\nthree\nfour\nfive\none\n");
+    CHECK(s2.current_line() == 5u);
+    ran(s2, "4,5m0");
+    CHECK(body(w2, t) == "five\none\ntwo\nthree\nfour\n");
+    CHECK(s2.current_line() == 2u);
+    CHECK(refused_run(s2, "2,4m3")
+	  == "cannot move a range of lines into itself");
+    ran(s2, "1t.");				// copy after the current line
+    CHECK(body(w2, t) == "five\none\nfive\ntwo\nthree\nfour\n");
+    CHECK(s2.current_line() == 3u);
+    ran(s2, "1,2co$");
+    CHECK(body(w2, t) == "five\none\nfive\ntwo\nthree\nfour\nfive\none\n");
+
+    world w3;
+    entity_id u = open_doc(w3, "a\nb");	// unterminated
+    session s3(w3);
+    REQUIRE(s3.use(u));
+    ran(s3, "2m0");
+    CHECK(body(w3, u) == "b\na");
+}
+
+TEST_CASE("ex session: shifts by shiftwidth, tabs unless expandtab")
+{
+    world w;
+    entity_id e = open_doc(w, "x\n\n  y\n");
+    session s(w);
+    REQUIRE(s.use(e));
+    ran(s, "%>");
+    CHECK(body(w, e) == "\tx\n\n\t  y\n");	// an empty line stays empty
+    s.settings().shiftwidth = 4;
+    s.settings().expandtab = true;
+    ran(s, "1<");
+    CHECK(body(w, e) == "    x\n\n\t  y\n");
+    ran(s, "3<<");
+    CHECK(body(w, e) == "    x\n\n  y\n");	// width 10 - 8, as spaces
+    ran(s, "1,3< 5");				// a count starts at the last
+    CHECK(body(w, e) == "    x\n\ny\n");	// address (3) and clamps at $
+}
+
+TEST_CASE("ex session: marks follow the edits around them")
+{
+    world w;
+    entity_id e = open_doc(w, FIVE);
+    session s(w);
+    REQUIRE(s.use(e));
+    ran(s, "3ka");				// :k leaves the current line
+    CHECK(s.current_line() == 5u);
+    ran(s, "3");
+    ran(s, "ma b");				// :mark on the current line (3)
+    ran(s, "4mark c");
+    CHECK(ran(s, "'ap") == "three\n");
+    ran(s, "1d");
+    CHECK(ran(s, "'ap") == "three\n");		// the mark followed its line
+    CHECK(ran(s, "'a") == "three\n");
+    CHECK(ran(s, "'a,'cp") == "three\nfour\n");
+    CHECK(ran(s, "marks")
+	  == "mark line  text\n a     2  three\n b     2  three\n"
+	     " c     3  four\n");
+    CHECK(refused_run(s, "'zp") == "mark not set: 'z");
+}
+
+TEST_CASE("ex session: a, i and c take their text in one group")
+{
+    world w;
+    entity_id e = open_doc(w, FIVE);
+    session s(w);
+    REQUIRE(s.use(e));
+    outcome o = s.run("2a");
+    CHECK(o.ok);
+    CHECK(o.wants_text);
+    CHECK(s.wants_text());
+    CHECK_FALSE(s.run("p").ok);			// text is pending
+    o = s.text({ "x", "y" });
+    CHECK(o.ok);
+    CHECK_FALSE(s.wants_text());
+    CHECK(body(w, e) == "one\ntwo\nx\ny\nthree\nfour\nfive\n");
+    CHECK(s.current_line() == 4u);
+    s.run("1i");
+    s.text({ "zero" });
+    CHECK(body(w, e) == "zero\none\ntwo\nx\ny\nthree\nfour\nfive\n");
+    CHECK(s.current_line() == 1u);
+    s.run("4,5c");
+    s.text({ "X" });
+    CHECK(body(w, e) == "zero\none\ntwo\nX\nthree\nfour\nfive\n");
+    CHECK(s.current_line() == 4u);
+    ran(s, "u");
+    CHECK(body(w, e) == "zero\none\ntwo\nx\ny\nthree\nfour\nfive\n");
+    s.run("$a");
+    s.text({});					// no lines: nothing changes
+    CHECK(body(w, e) == "zero\none\ntwo\nx\ny\nthree\nfour\nfive\n");
+    CHECK_FALSE(s.text({ "late" }).ok);		// nothing is waiting
+
+    world w2;
+    entity_id t = open_doc(w2, "");
+    session s2(w2);
+    REQUIRE(s2.use(t));
+    CHECK(s2.current_line() == 0u);
+    s2.run("a");				// an empty buffer: after line 0
+    s2.text({ "first" });
+    CHECK(body(w2, t) == "first\n");
+    s2.run("0i");
+    s2.text({ "top" });
+    CHECK(body(w2, t) == "top\nfirst\n");
+
+    world w3;
+    entity_id u = open_doc(w3, "a");		// unterminated
+    session s3(w3);
+    REQUIRE(s3.use(u));
+    s3.run("$a");
+    s3.text({ "b" });
+    CHECK(body(w3, u) == "a\nb");
+}
