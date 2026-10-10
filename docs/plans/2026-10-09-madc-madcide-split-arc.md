@@ -364,15 +364,22 @@ items are their own sessions, any time.
    colon and session subset on genuine Windows 27/0/4; not pushed.
    madcide's `start_native_build`, F5 `replrun`, `proj_check_rows`, the
    `bld-proj-*` bodies and its manifest writers move onto these in 1D.
-9. **Syntax colour at the prompt** (owner 2026-10-09). The pieces exist:
-   the token classifier (`include/tokens.h:145`, `madc::lex_spans`), the
-   one style vocabulary (`include/madcdis/ui_style.h`, depth detection
-   included), and `line_edit.h`'s `line_painter`, which repaints the entry
-   every keystroke. The painter styles each span through the same
-   style-to-SGR step the TUI uses; the echoed source line under an error
-   and `%type` / `%pinfo` output use it too. madc ships ONE built-in
-   default theme; **madc.ini's `theme` key overrides it** (owner);
-   madcide's themes stay its own data. Phase 0.5's predicate gates it.
+9. **Syntax colour at the prompt — LANDED 2026-10-10: `266b25ab7` (the
+   owners: `HighlightClass` in `include/highlight_class.h`, the classifier's
+   C++ face `madc::lex_classes(text, standard)`, the style-to-SGR step
+   `madc::hub::sgr` / `terminal_colour_depth` out of the TUI, the theme
+   `madc::theme` with madcide's `.theme` format and its parent rule,
+   `theme_default` = madcide's `default.theme`, JOE parity), `e46783288` (the
+   entry coloured as it is typed: `line_layout`'s shown offsets, the painter's
+   marks of no width, madc.ini `theme = PATH`), `bca0d61af` (`%type` /
+   `%pinfo` code ranges — `shown_code` on the reply — and the diagnostic's
+   echoed source line, the caret unmoved; `hub::mark_line` the one mark
+   rule)** (design `2026-10-10-prompt-colour-design.md`). Found on the way and
+   fixed: `9317547b5` (the REPL backend rendered its diagnostics into a string,
+   so Phase 0.5's colour never reached `madc -i`; the host now sends its
+   verdict). Unit, fix lanes and gates green; the batch checkpoint 2059/0/9 at
+   `bca0d61af`; not pushed. madcide's `load_theme` / `spans_to_hspans` move
+   onto the theme owner in 1D.
 10. **`%git` as the madcgit module's command**, registered on load
     (`-lmadcgit`, the ini `modules` key, or `import madcgit;`); the verb
     bodies (`madcide_git.inc:93-613`, ~520 lines) move into the module.
