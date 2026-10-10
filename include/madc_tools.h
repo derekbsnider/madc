@@ -49,6 +49,21 @@ struct context
 // {error: why}.
 typedef std::function<bool(const context &c, const value &args, value &result)> handler;
 
+// The project memory a registry's edit tools report to (item 15): a
+// proposer's edit is stored there as a proposal, an applied edit's node-op
+// is recorded there. A registry without one refuses proposals and records
+// nothing.
+class edit_memory
+{
+public:
+    virtual ~edit_memory() {}
+    // `proposal` {ops, preview, diagnostics} stored; `result` answers the
+    // caller ({proposal: seq, ...}). False, with {error}, when refused.
+    virtual bool propose(const context &c, const value &proposal, value &result) = 0;
+    // An applied edit, recorded after it landed: {verb, target, src}.
+    virtual void applied(const context &c, const value &nodeop) = 0;
+};
+
 struct tool
 {
     std::string name;
@@ -69,9 +84,17 @@ public:
     // tool has the name or the caller's tier is below the tool's.
     bool call(const context &c, const std::string &name, const value &args,
 	      value &result) const;
+    // The project memory the edit tools report to (not owned); none: 0.
+    void set_memory(edit_memory *m) { _memory = m; }
+    edit_memory *memory() const { return _memory; }
+
+    registry() : _memory(0) {}
 
 private:
     std::vector<tool> _tools;
+    edit_memory *_memory;
+    registry(const registry &);
+    registry &operator=(const registry &);
 };
 
 // The answer every refusal shares: {error: why}.
@@ -80,7 +103,13 @@ value refusal(const std::string &why);
 // The code-graph tools (item 14): node-addressed reads over the served
 // document's parse — graph.symbols, definition, node, type_of, members,
 // bases, enclosing, body, children, callees, callers, references, search,
-// impact, span and at. Each answers the graph's own result object.
+// impact, span and at — each answering the graph's own result object; and
+// the edits, graph.insert (src before | after a node), graph.replace and
+// graph.delete. An edit's extent is the node's span; its candidate text is
+// validated by the compiler (no new error) before anything changes. An
+// editor's edit lands as ONE undo step and answers {ok, node, splice_at,
+// splice_del}; a proposer's — or any caller's asking `propose` — is stored
+// in the registry's memory as a proposal {ops, preview, diagnostics}.
 void add_graph_tools(registry &r);
 
 } // namespace tools

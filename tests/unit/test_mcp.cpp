@@ -184,3 +184,107 @@ TEST_CASE("a document the compiler does not parse refuses the graph tools")
     CHECK(err);
     CHECK(r["error"].get<std::string>().find("does not parse") != std::string::npos);
 }
+
+namespace {
+
+std::string text_of(fixture &f)
+{
+    return f.w.text_of(f.doc)->text();
+}
+
+json id_of(fixture &f, const char *name)
+{
+    return f.call("graph.definition", { { "name", name } })["nodes"][0]["id"];
+}
+
+// A project memory that keeps what it is handed.
+struct kept_memory : madc::tools::edit_memory
+{
+    std::vector<json> proposals, applied_ops;
+    bool propose(const madc::tools::context &, const madc::value &proposal,
+		 madc::value &result) override
+    {
+	proposals.push_back(wt_value_to_json(proposal));
+	result = madc::value::make_object();
+	result.object()["proposal"] = madc::value((int64_t)proposals.size());
+	return true;
+    }
+    void applied(const madc::tools::context &, const madc::value &nodeop) override
+    {
+	applied_ops.push_back(wt_value_to_json(nodeop));
+    }
+};
+
+} // namespace
+
+// The edits (madcide's graph.insert / replace / delete, testgraphedit.mad's
+// record): the node's span is the extent, the compiler validates the
+// candidate, an editor's edit is one undo step. ORACLE: gcc -fsyntax-only on
+// each candidate text (the rejected one is gcc's "expected expression").
+TEST_CASE("an editor's edit lands validated, as one undo step")
+{
+    fixture f;
+    kept_memory memory;
+    f.tools.set_memory(&memory);
+    bool err = true;
+    json r = f.call("graph.replace",
+		    { { "id", id_of(f, "add") },
+		      { "src", "long add(long a, long b)\n{\n    return b + a;\n}" } }, &err);
+    CHECK_FALSE(err);
+    CHECK(r["ok"] == true);
+    CHECK(text_of(f).find("return b + a;") != std::string::npos);
+    REQUIRE(memory.applied_ops.size() == 1u);
+    CHECK(memory.applied_ops[0]["verb"] == "graph.replace");
+
+    madc::value meta;
+    madc::hub::mutation_context mc(f.w);
+    REQUIRE(mc.doc_undo(f.doc, meta));
+    CHECK(text_of(f) == CALC);				// one step back
+
+    json bad = f.call("graph.replace", { { "id", id_of(f, "add") },
+					 { "src", "long add(long a, long b) { return a +; }" } },
+		      &err);
+    CHECK(err);
+    CHECK(bad["error"].get<std::string>().find("rejected") != std::string::npos);
+    CHECK(text_of(f) == CALC);				// nothing changed
+
+    f.call("graph.insert", { { "id", id_of(f, "add") }, { "where", "after" },
+			     { "src", "long sub(long a, long b) { return a - b; }" } },
+	   &err);
+    CHECK_FALSE(err);
+    CHECK(text_of(f).find("}\nlong sub(long a, long b) { return a - b; }\n")
+	  != std::string::npos);			// a line of its own
+
+    f.call("graph.delete", { { "id", id_of(f, "main") } }, &err);
+    CHECK_FALSE(err);
+    CHECK(text_of(f).find("main") == std::string::npos);	// its lines whole
+
+    f.call("graph.insert", { { "id", id_of(f, "add") }, { "where", "beside" },
+			     { "src", "int z;" } }, &err);
+    CHECK(err);						// where names before | after
+}
+
+TEST_CASE("a proposer's edit is stored as a proposal, the text untouched")
+{
+    fixture f(madc::tools::tier::proposer);
+    bool err = false;
+    json none = f.call("graph.delete", { { "id", id_of(f, "main") } }, &err);
+    CHECK(err);						// no memory holds proposals
+    CHECK(none["error"].get<std::string>().find("project memory") != std::string::npos);
+
+    kept_memory memory;
+    f.tools.set_memory(&memory);
+    json r = f.call("graph.delete", { { "id", id_of(f, "main") } }, &err);
+    CHECK_FALSE(err);
+    CHECK(r["proposal"] == 1);
+    CHECK(text_of(f) == CALC);
+    REQUIRE(memory.proposals.size() == 1u);
+    CHECK(memory.proposals[0]["ops"][0]["verb"] == "graph.delete");
+    CHECK(memory.proposals[0]["preview"]["before"].get<std::string>().find("int main")
+	  != std::string::npos);
+    CHECK(memory.applied_ops.empty());
+
+    fixture o(madc::tools::tier::observer);
+    o.call("graph.delete", { { "id", id_of(o, "main") } }, &err);
+    CHECK(err);						// requires proposer
+}

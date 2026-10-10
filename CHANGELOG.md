@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+### The code-graph edits — `graph.insert`, `graph.replace`, `graph.delete` on madc's documents
+
+`add_graph_tools` registers three editing tools beside the 16 reads:
+`graph.insert` (src before | after a node), `graph.replace` and `graph.delete`,
+least tier proposer, ported from madcide's L3 node-ops onto madc's served
+documents. An edit's extent is the node's span (`madc_graph_span`). The line
+rules follow madcide's: a node that owns its line(s) — only blanks beside it —
+is deleted whole with its newline and takes an insert on a line of its own at
+the node's indent (a target ending the text with no newline still gets its own
+line); a node sharing its line is edited at its exact boundary, one space apart.
+The candidate text is validated by the compiler (`madc_parse_would_accept`, no
+new error) before anything changes; a rejected candidate answers `{error:
+"... rejected ...", diagnostics}` and nothing changes.
+
+An editor's (or owner's) edit lands through `hub::mutation_context` as ONE undo
+step (`doc_checkpoint`, then `text_replace`), the document re-parses through
+`madc::lang::document_handle`, and the answer is `{ok, node, splice_at,
+splice_del}` — `node` is `graph.at` where the edited node starts. A read-only
+document refuses. A proposer's edit — or any caller passing `propose: true` —
+is stored, not applied: `tools::edit_memory` (`include/madc_tools.h`) is the
+project memory a registry's edit tools report to (`registry::set_memory` /
+`memory()`); `propose()` receives `{ops, preview {line0, line1, before, after},
+diagnostics}`, `applied()` receives an applied edit's `{verb, target, src}`. A
+registry without a memory refuses proposals. The registry is now non-copyable.
+
 ### `madc --mcp` — the Model Context Protocol server, the tool registry, and the code-graph tools
 
 `madc --mcp FILE` runs a Model Context Protocol server on stdin/stdout:
