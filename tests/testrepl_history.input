@@ -1,0 +1,6 @@
+int a = 20;
+a + 1
+%history
+%history -n
+%history -l
+a + 100

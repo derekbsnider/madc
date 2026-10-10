@@ -52,9 +52,9 @@ namespace madc { namespace hub { class line_target; } }
 // editor on `term`, which holds the terminal only while it reads. Enter
 // asks the session (offer) and the entry runs as a cooked line's would;
 // shown values go to `out`. Up recalls, and Ctrl-R searches, the entries
-// of the history file at `history_path` typed in the session's language,
-// and each entry taken is appended there (Julia's records); an empty path
-// keeps history for the session alone. Returns the exit status at the end
+// of the history store at `history_path` (madc_history.h) typed in the
+// session's language, and each entry taken is appended there; an empty
+// path keeps history for the session alone. Returns the exit status at the end
 // of input (Ctrl-D on an empty entry), or -1 when `term` cannot begin the
 // first entry, which is the host's cue for cooked lines. The unit tests
 // give it a scripted target.
@@ -62,9 +62,5 @@ int madc_repl_edit(ReplSession &session, madc::hub::line_target &term,
 		   std::ostream &out, const std::string &history_path,
 		   const repl_colon &colon = repl_colon());
 
-// The history file's default place: $XDG_STATE_HOME/madc/history
-// (~/.local/state/madc/history), or %LOCALAPPDATA%\madc\history on
-// Windows. Empty when there is no home for it.
-std::string madc_repl_history_path();
 
 #endif

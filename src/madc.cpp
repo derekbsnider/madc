@@ -44,6 +44,7 @@
 #include "madc_session.h" // InteractiveSession: the REPL's session (D20)
 #include "madc_session_client.h" // BackendSession: the session in a backend (D2)
 #include "madc_repl.h"    // madc_repl_run: the REPL's loop (D20)
+#include "madc_history.h" // the REPL history store's default place (1B.7)
 #include "madc_ex.h"      // colon mode: the host's ex session (D24)
 #include "madc_documents.h" // the host's buffer: madc -i FILE's file
 #include "madcdis/hub.h"     // the host's world of buffers
@@ -563,6 +564,7 @@ static int run_repl(std::unique_ptr<Program> prog, bool terminal,
     SessionClient client;
     client.set_inherit_stdio(true);
     client.set_backend_arguments(options);
+    client.set_history_file(history);	// %history's store, on every start
 #ifndef _WIN32
     Program *configured = prog.get();
     SessionClient::ProgramFactory copy = [configured]() {
@@ -1534,7 +1536,7 @@ int main(int argc, char **argv)
 	if ( interactive || terminal )
 	    return run_repl(std::move(prog), terminal,
 			    history_file_given ? history_file
-					       : madc_repl_history_path(),
+					       : madc::history_default_path(),
 			    repl_options);
 	static char stdin_path[] = "-";
 	stdin_argv.assign(argv, argv + argc);
@@ -1546,7 +1548,7 @@ int main(int argc, char **argv)
     else if ( interactive )
 	return run_repl(std::move(prog), terminal,
 			history_file_given ? history_file
-					   : madc_repl_history_path(),
+					   : madc::history_default_path(),
 			repl_options, argc - filearg, argv + filearg);
 
     if ( argc >= 2 && filearg < argc )

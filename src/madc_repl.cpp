@@ -39,6 +39,7 @@
 #include "madc.h"
 #include "madc_session.h"
 #include "madc_ex.h"		// colon mode: the host's ex session (D24)
+#include "madc_history.h"	// the history store (1B.7)
 #include "madc_repl.h"
 #include "madc_posix_io.h"
 #include "madcdis/line_edit.h"
@@ -49,117 +50,6 @@ using madc::hub::line_edit;
 using madc::hub::line_history;
 using madc::hub::line_painter;
 using madc::hub::line_target;
-
-// ---------------------------------------------------------------- history
-// The history file (plan §41.7a, slice 2): Julia's records, one per entry
-// the session took, appended as it is taken, so a crash loses nothing.
-
-// Where the file lives by default: the XDG state directory (history is
-// state, not configuration: madc.ini's search takes the config one), or the
-// local application data on Windows. Empty when there is no home for it.
-std::string madc_repl_history_path()
-{
-#ifdef _WIN32
-    const char *local = getenv("LOCALAPPDATA");
-    if ( local && *local )
-	return std::string(local) + "\\madc\\history";
-    return std::string();
-#else
-    const char *state = getenv("XDG_STATE_HOME");
-    if ( state && *state )
-	return std::string(state) + "/madc/history";
-    const char *home = getenv("HOME");
-    if ( home && *home )
-	return std::string(home) + "/.local/state/madc/history";
-    return std::string();
-#endif
-}
-
-// Make every directory above `path` that is missing (mkdir -p of its
-// parent). Failure shows at the first append, which then writes nothing.
-static void make_parent_directories(const std::string &path)
-{
-    for ( size_t i = 1; i < path.size(); ++i )
-    {
-	if ( path[i] != '/' && path[i] != '\\' )
-	    continue;
-	std::string dir = path.substr(0, i);
-#ifdef _WIN32
-	if ( dir.size() == 2 && dir[1] == ':' )
-	    continue;			// a drive, not a directory
-	_mkdir(dir.c_str());
-#else
-	mkdir(dir.c_str(), 0700);
-#endif
-    }
-}
-
-static std::string utc_now()
-{
-    time_t t = time(NULL);
-    struct tm parts;
-#ifdef _WIN32
-    gmtime_s(&parts, &t);
-#else
-    gmtime_r(&t, &parts);
-#endif
-    char buf[32];
-    strftime(buf, sizeof buf, "%Y-%m-%d %H:%M:%SZ", &parts);
-    return buf;
-}
-
-// One record, in one write with the file opened for appending, so two
-// sessions' records interleave whole. Owner-only (0600): an entry can hold
-// anything typed.
-static void append_record(const std::string &path, const std::string &record)
-{
-#ifdef _WIN32
-    std::ofstream f(path.c_str(), std::ios::app | std::ios::binary);
-    f << record;
-#else
-    int fd = ::open(path.c_str(), O_WRONLY | O_APPEND | O_CREAT, 0600);
-    if ( fd < 0 )
-	return;
-    ssize_t n = madc::detail::write_fd_without_sigpipe(fd, record.data(), record.size());
-    (void)n;
-    ::close(fd);
-#endif
-}
-
-// The language a standard names: recall and search see the session's own
-// (C, C++ or madc), as each of Julia's modes searches its own. The Program's
-// is_c_mode / is_cpp_mode ask the same of the standard in force.
-enum class entry_language : unsigned char { c, cpp, madc };
-static entry_language language_of(Program::LanguageStd s)
-{
-    if ( s == Program::STD_MADC )
-	return entry_language::madc;
-    if ( s >= Program::STD_CPP98 && s <= Program::STD_CPP26 )
-	return entry_language::cpp;
-    return entry_language::c;
-}
-
-// Read the file's records into `ring`: the entries typed in the session's
-// language, oldest first. A missing file is an empty history.
-static void load_history(const std::string &path, Program::LanguageStd std,
-			 line_history &ring)
-{
-    std::ifstream f(path.c_str(), std::ios::binary);
-    if ( !f )
-	return;
-    std::ostringstream text;
-    text << f.rdbuf();
-    const entry_language want = language_of(std);
-    std::vector<std::pair<std::string, std::string> > records =
-	madc::hub::history_records(text.str());
-    for ( size_t i = 0; i < records.size(); ++i )
-    {
-	Program::LanguageStd mode;
-	if ( Program::standard_of_canonical_name(records[i].first.c_str(), mode)
-	     && language_of(mode) == want )
-	    ring.add(records[i].second);
-    }
-}
 
 // An entry the session took: print what it shows (D10). A refused one
 // showed nothing; its diagnostics are already on the error stream.
@@ -276,20 +166,16 @@ int madc_repl_edit(ReplSession &session, line_target &term,
     // History (§41.7a slice 2): the file's entries in this language, then
     // each entry the session takes, a refused one included, as Julia keeps
     // an input that failed. A record's mode is the prompt's standard (D22).
+    // The store is madc_history.h's.
     line_history ring;
     const std::string mode = session.standard_name();
-    Program::LanguageStd mode_std = Program::STD_MADC;
-    if ( !history_path.empty()
-	 && Program::standard_of_canonical_name(mode.c_str(), mode_std) )
-    {
-	load_history(history_path, mode_std, ring);
-	make_parent_directories(history_path);
-    }
+    const std::vector<std::string> kept = madc::history_entries(history_path, mode);
+    for ( const std::string &entry : kept )
+	ring.add(entry);
     ed.set_history(&ring);
     auto remember = [&](const std::string &entry) {
-	if ( ring.add(entry) && !history_path.empty() )
-	    append_record(history_path,
-			  madc::hub::history_record(utc_now(), mode, entry));
+	if ( ring.add(entry) )
+	    madc::history_append(history_path, mode, entry);
     };
     line_painter paint;
     madc::hub::key_resolver keys;

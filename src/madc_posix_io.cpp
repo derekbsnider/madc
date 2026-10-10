@@ -15,6 +15,7 @@
 #include <io.h>
 #include <limits.h>
 #include <share.h>	// _SH_DENYNO for _sopen_s
+#include <direct.h>	// _mkdir: host_path_make_parents
 #include <sys/stat.h>	// _fstat64 — the 64-bit stat the 32-bit CRT default hides
 #include <windows.h>
 // Version 2 = the K32* kernel32 inlines — no psapi.dll import needed.
@@ -234,6 +235,23 @@ host_path_type host_path_type_of(const std::string &path)
 	if ( S_ISREG(st.st_mode) )
 		return host_path_type::file;
 	return host_path_type::other;
+}
+
+void host_path_make_parents(const std::string &path)
+{
+	for ( size_t i = 1; i < path.size(); ++i )
+	{
+		if ( !host_path_is_separator(path[i]) )
+			continue;
+		const std::string dir = path.substr(0, i);
+#ifdef _WIN32
+		if ( dir.size() == 2 && dir[1] == ':' )
+			continue;		// a drive, not a directory
+		_mkdir(dir.c_str());
+#else
+		mkdir(dir.c_str(), 0700);
+#endif
+	}
 }
 
 bool host_path_expand_home(const std::string &path, std::string &out)

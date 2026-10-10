@@ -41,6 +41,7 @@
 #include "madcdis/text_buffer.h"	// the one word rule (word_byte)
 #include "madcdis/text_utf16.h"	// madc::line_width: %whos's columns
 #include "madcdis/process.h"	// the terminal's editor (%open, %edit)
+#include "madc_history.h"	// %history's store (1B.7)
 
 // The command registry (plan §41.8a, D13/D24; the modes and the extension
 // point: split arc 1A.2, docs/plans/2026-10-09-command-registry-design.md):
@@ -83,6 +84,9 @@ const CommandRow command_rows[] = {
       "the file that defines NAME, in an editor at its line" },
     { "quit", InteractiveSession::Command::quit, "%quit",
       "end the session" },
+    { "history", InteractiveSession::Command::history,
+      "%history [OPTIONS]",
+      "this session's entries; -l [N] the last N kept, -g TEXT those holding TEXT, -n numbered" },
 };
 
 const size_t command_count = sizeof(command_rows) / sizeof(command_rows[0]);
@@ -344,7 +348,8 @@ InteractiveSession::InteractiveSession()
     : prog(new Program()), jit(new CirJitSession()), entry_count(0),
       submit_count(0), showed_command(false),
       payload_kind(madc::session_payload::none), payload_command(0),
-      payload_host(false), load_main(false), quit_asked(false), quiet_count(0)
+      payload_host(false), load_main(false), quit_asked(false), quiet_count(0),
+      history_file(madc::history_default_path())
 {
 }
 
@@ -352,7 +357,8 @@ InteractiveSession::InteractiveSession(std::unique_ptr<Program> configured)
     : prog(std::move(configured)), jit(new CirJitSession()), entry_count(0),
       submit_count(0), showed_command(false),
       payload_kind(madc::session_payload::none), payload_command(0),
-      payload_host(false), load_main(false), quit_asked(false), quiet_count(0)
+      payload_host(false), load_main(false), quit_asked(false), quiet_count(0),
+      history_file(madc::history_default_path())
 {
 }
 
@@ -470,6 +476,7 @@ InteractiveSession::Offered InteractiveSession::enter(const std::string &text,
 	if ( taken )
 	    taken();
 	++submit_count;
+	inputs.push_back(text);
 	bool ok = run_command(text, name);
 	render_pending_diagnostics();
 	return Offered{ OfferState::taken, ok };
@@ -484,6 +491,7 @@ InteractiveSession::Offered InteractiveSession::enter(const std::string &text,
     if ( taken )
 	taken();
     ++submit_count;
+    inputs.push_back(text);
     render_pending_diagnostics();
     if ( verdict != Program::EntryVerdict::Complete
       && verdict != Program::EntryVerdict::CompleteExtendable )
@@ -728,6 +736,8 @@ bool InteractiveSession::run_command(const std::string &text,
 	    return edit_command(command_argument(text, c), name);
 	case Command::quit:
 	    return quit_command(command_argument(text, c), name);
+	case Command::history:
+	    return history_command(command_argument(text, c), name);
 	case Command::none:		// no row names it
 	    break;
     }
@@ -924,6 +934,105 @@ bool InteractiveSession::quit_command(const std::string &argument,
     quit_asked = true;
     if ( payload_host )
 	payload_kind = madc::session_payload::quit;
+    return true;
+}
+
+// `%history [-n] [-l [N]] [-g [TEXT]]` (split arc 1B.7, design decision 2;
+// IPython's, which the kernel answers): this session's entries, REPL[1] on,
+// the %history entry itself the last. -l: the store's last N entries in the
+// session's language (10 without N); -g: the store's entries holding TEXT
+// (the rest of the line, Ctrl-R's literal rule; bare -g: all of them),
+// oldest first, the last N of them with -l. -n numbers each: REPL[N]'s N,
+// or its place in the store.
+bool InteractiveSession::history_command(const std::string &argument,
+					 const std::string &name)
+{
+    static const char blanks[] = " \t\r";
+    bool numbered = false, last = false, holding = false;
+    size_t count = 10;
+    std::string needle;
+    size_t at = 0;
+    for (;;)
+    {
+	at = argument.find_first_not_of(blanks, at);
+	if ( at == std::string::npos )
+	    break;
+	size_t end = argument.find_first_of(blanks, at);
+	if ( end == std::string::npos )
+	    end = argument.size();
+	const std::string word = argument.substr(at, end - at);
+	at = end;
+	if ( word == "-n" )
+	    numbered = true;
+	else if ( word == "-g" )
+	{
+	    holding = true;
+	    size_t b = argument.find_first_not_of(blanks, at);
+	    size_t e = argument.find_last_not_of(blanks);
+	    if ( b != std::string::npos )
+		needle = argument.substr(b, e + 1 - b);
+	    break;
+	}
+	else if ( word == "-l" )
+	{
+	    last = true;
+	    size_t b = argument.find_first_not_of(blanks, at);
+	    size_t e = b == std::string::npos ? b : argument.find_first_of(blanks, b);
+	    const std::string n = b == std::string::npos ? std::string()
+		: argument.substr(b, (e == std::string::npos ? argument.size() : e) - b);
+	    if ( !n.empty() && n.find_first_not_of("0123456789") == std::string::npos )
+	    {
+		count = (size_t)strtoul(n.c_str(), NULL, 10);
+		at = e == std::string::npos ? argument.size() : e;
+	    }
+	}
+	else
+	{
+	    command_error("%history: unknown option " + word
+			  + " (-n, -l [N], -g [TEXT])", name);
+	    return false;
+	}
+    }
+    std::vector<std::string> entries;
+    if ( last || holding )
+    {
+	if ( history_file.empty() )
+	{
+	    command_error("%history: this session keeps no history file", name);
+	    return false;
+	}
+	entries = madc::history_entries(history_file, standard_name());
+    }
+    else
+	entries = inputs;
+    std::vector<size_t> shown;
+    for ( size_t i = 0; i < entries.size(); ++i )
+	if ( !holding || entries[i].find(needle) != std::string::npos )
+	    shown.push_back(i);
+    if ( last && shown.size() > count )
+	shown.erase(shown.begin(), shown.end() - count);
+    command_output.clear();
+    for ( size_t i : shown )
+    {
+	std::string entry = entries[i];
+	while ( !entry.empty()
+		&& (entry[entry.size() - 1] == '\n' || entry[entry.size() - 1] == '\r') )
+	    entry.erase(entry.size() - 1);
+	if ( !command_output.empty() )
+	    command_output += "\n";
+	if ( numbered )
+	{
+	    char number[16];
+	    snprintf(number, sizeof number, "%4u: ", (unsigned)(i + 1));
+	    command_output += number;
+	}
+	for ( char ch : entry )
+	{
+	    command_output += ch;
+	    if ( ch == '\n' && numbered )
+		command_output += "      ";	// under the first line's text
+	}
+    }
     return true;
 }
 

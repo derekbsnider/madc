@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### `madc -i` gains `%history`, and the REPL history store gets one owner
+
+The interactive session now answers `%history` (split arc 1B.7): plain
+`%history` lists this session's entries numbered from `REPL[1]`, the `%history`
+line itself included, as IPython's does; `-n` prefixes each with its number;
+`-l [N]` lists the last N entries saved in the session's language (10 without
+N); and `-g TEXT` lists the saved entries holding TEXT, oldest first. The
+session answers it, so every host gets it — `madc -i`, madcide's REPL pane, an
+embedding's. `-g`'s match is a literal substring, Ctrl-R's rule, not IPython's
+glob. A session the host kept no history file for (`--history-file=no`) still
+lists its own entries, but refuses `-l` and `-g`.
+
+The history file — Julia's records, one per entry, keyed by the standard it was
+typed at — now has one owner, `madc::history_*` (`include/madc_history.h` /
+`src/madc_history.cpp`): the default place (`~/.local/state/madc/history`, or
+`%LOCALAPPDATA%\madc\history` on Windows), the entries of one language (C, C++
+or madc), and one append in one `O_APPEND` write so concurrent sessions
+interleave whole records. The terminal loop's Up / Ctrl-R ring and the
+session's `%history` both read through it; the record format is unchanged.
+
 ### `madc -i` opens each buffer with the indent its text — or its language — shows
 
 In colon mode (split arc 1B.6, ex core slice 6), a buffer now opens with its

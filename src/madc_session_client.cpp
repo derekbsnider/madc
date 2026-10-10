@@ -89,7 +89,7 @@ namespace {
 // client handed over (madc_session_stdin.h). `commands`: the host's REPL
 // command rows (split arc 1A.2), sent after every start. Those two are the
 // requests with no seq and no reply.
-enum class Op : unsigned char { begin, offer, complete, running, load, run, continues, bindings, build, stdin_renew, commands, unknown };
+enum class Op : unsigned char { begin, offer, complete, running, load, run, continues, bindings, build, stdin_renew, commands, history, unknown };
 
 struct OpRow { const char *name; Op op; };
 const OpRow op_rows[] = {
@@ -97,7 +97,7 @@ const OpRow op_rows[] = {
     { "running", Op::running }, { "load", Op::load }, { "run", Op::run },
     { "continues", Op::continues }, { "bindings", Op::bindings },
     { "build", Op::build }, { "stdin", Op::stdin_renew },
-    { "commands", Op::commands },
+    { "commands", Op::commands }, { "history", Op::history },
 };
 
 const char *op_name(Op op)
@@ -314,6 +314,12 @@ int serve_session(madc::DataChannel &wire, std::unique_ptr<Program> prog,
 		session.set_host_commands(madc::hub::detail::wt_json_to_value(req["rows"]));
 	    continue;
 	}
+	if ( op == Op::history )
+	{
+	    // The history store the host names (%history's; "" names none).
+	    session.set_history_file(req.value("file", std::string()));
+	    continue;
+	}
 	// An interrupt from before this request (one sent while the backend
 	// waited) is none; one from here on waits for the entry's first poll.
 	madc_session_interrupt_reset();
@@ -438,6 +444,7 @@ int serve_session(madc::DataChannel &wire, std::unique_ptr<Program> prog,
 	    case Op::running:
 	    case Op::stdin_renew:	// taken above, no reply
 	    case Op::commands:
+	    case Op::history:
 	    case Op::unknown:
 		rep["ok"] = false;
 		break;
@@ -472,7 +479,7 @@ SessionClient::Reply::Reply()
 
 SessionClient::SessionClient()
     : output_done(false), next_seq(1), answered_seq(0), configured_backend(false),
-      inherit_stdio(false)
+      history_named(false), inherit_stdio(false)
 {
 }
 
@@ -533,6 +540,7 @@ bool SessionClient::start(const std::string &std_opt, const ProgramFactory &make
 	    {
 		standard_name = j.value("standard", std::string());
 		send_host_commands();	// the host's rows, before any entry
+		send_history_file();
 	    }
 	    if ( !ok )
 	    {
@@ -779,6 +787,23 @@ bool SessionClient::set_host_commands(const madc::value &rows)
 {
     host_rows = rows;
     return send_host_commands();
+}
+
+void SessionClient::set_history_file(const std::string &path)
+{
+    history_named = true;
+    history_path = path;
+    send_history_file();
+}
+
+bool SessionClient::send_history_file()
+{
+    if ( !wire || !history_named )
+	return false;
+    nlohmann::json req;
+    req["op"] = op_name(Op::history);
+    req["file"] = history_path;
+    return send(req.dump());
 }
 
 bool SessionClient::send_host_commands()
@@ -1099,6 +1124,7 @@ int SessionClient::poll(Reply &reply, std::string &output, int timeout_ms)
 	case Op::begin:
 	case Op::stdin_renew:	// a request's only: never a reply
 	case Op::commands:
+	case Op::history:
 	case Op::unknown:
 	    break;
     }

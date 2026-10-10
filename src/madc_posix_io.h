@@ -65,6 +65,11 @@ std::string host_path_join(const std::string &dir, const std::string &path);
 enum class host_path_type : unsigned char { none, file, directory, other };
 host_path_type host_path_type_of(const std::string &path);
 
+// Make every directory above `path` that is missing (`mkdir -p` of its
+// parent; owner-only on POSIX). A drive (`C:`) is never made. Failure shows
+// at the caller's open of `path`.
+void host_path_make_parents(const std::string &path);
+
 // A `~` or `~/...` (`~\...` on Windows) path against the user's home ($HOME;
 // %USERPROFILE% on Windows) into `out`. False when `path` is no such form;
 // true with `path` unchanged in `out` when the home is unknown.

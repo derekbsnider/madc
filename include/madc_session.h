@@ -257,6 +257,9 @@ public:
     unsigned entries() const { return entry_count; }
     // The entries submitted, refused ones included: entry N is REPL[N].
     unsigned submitted() const { return submit_count; }
+    // The history store %history -l / -g read (madc_history.h; split arc
+    // 1B.7): the one its host names ("" names none), else the default store.
+    void set_history_file(const std::string &path) { history_file = path; }
 
 private:
     Offered enter(const std::string &text, bool final, const TakenHook &taken);
@@ -280,6 +283,7 @@ private:
     // else madc::run_terminal_editor.
     bool open_in_editor(const std::string &path, int line, const std::string &name);
     bool quit_command(const std::string &argument, const std::string &name);
+    bool history_command(const std::string &argument, const std::string &name);
     // A session unit (an entry, a loaded file) defines a function NAME.
     bool defines_function(const std::string &name);
     // A file command's file, once it opens: the payload `kind` for a host
@@ -319,6 +323,8 @@ private:
     bool load_main;			// the last loaded file defined main
     bool quit_asked;			// %quit ended the session
     unsigned quiet_count;		// the quiet entries' units, each its own
+    std::vector<std::string> inputs;	// REPL[N]'s text is inputs[N - 1]
+    std::string history_file;		// %history's store ("" none)
     InteractiveSession(const InteractiveSession &);
     InteractiveSession &operator=(const InteractiveSession &);
 };

@@ -215,6 +215,10 @@ public:
     // (the rows still go to the next one).
     bool set_host_commands(const madc::value &rows);
     const madc::value &host_commands() const { return host_rows; }
+    // The history store %history reads (madc_history.h; split arc 1B.7):
+    // sent now and after every start, as the command rows are. "" names
+    // none. A backend no host named one for reads the default store.
+    void set_history_file(const std::string &path);
 
     // Readiness, for a select (plan §41.9a slice 2). pending(): 1 when a
     // reply or output waits (or the backend's end, which poll() reports), 0
@@ -237,6 +241,7 @@ private:
     bool spawn_backend();
     bool send(const std::string &line);
     bool send_host_commands();
+    bool send_history_file();
     bool take_line(std::string &line);
     void read_output(std::string &output, int timeout_ms);
     int stopped(Reply &reply, std::string &output);
@@ -262,6 +267,8 @@ private:
     std::string error_text;
     std::string standard_name;
     madc::value host_rows;		// the host's REPL command rows
+    bool history_named;			// set_history_file was called
+    std::string history_path;		// its store ("" none)
     bool inherit_stdio;			// the backend's stdio is the host's
     std::string returned_stdin;		// handed back by replies, not yet taken
     madc::SessionInterruptor interruptor;	// D8: reaches the backend

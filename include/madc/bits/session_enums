@@ -56,7 +56,8 @@ namespace madc {
     // typo the session refuses.
     enum class session_command : unsigned char
     {
-	none, help, type, pinfo, whos, load, run, build, call, open, edit, quit
+	none, help, type, pinfo, whos, load, run, build, call, open, edit, quit,
+	history
     };
     // What a top-level name names (plan §41.8a; the engine's
     // Program::TopLevelName::Kind aliases it): a binding row's `kind`

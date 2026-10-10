@@ -29,6 +29,7 @@ thread_local bool madc_verbose = false;
 #include "datatokens.h"
 #include "madc.h"
 #include "madc_session.h"
+#include "madcdis/line_edit.h"	// history_record: a %history store
 #include "../../src/madc_posix_io.h"
 
 #include <cstdio>
@@ -2945,4 +2946,50 @@ TEST_CASE("a qualified typedef's object is the entry's own (B94)")
     REQUIRE(c.submit("t += \"y\";"));
     REQUIRE(c.submit("t"));
     CHECK(c.shown() == "\"xy\"");
+}
+
+// %history (split arc 1B.7, design 2026-10-10-history-std-reset-design.md
+// decision 2; IPython's): this session's entries, REPL[1] on, the %history
+// entry itself the last; -n numbers them (a continuation line under its
+// text); -l [N] and -g TEXT read the store the host named, in the session's
+// language only (the C++ record stays out of a C session); a session with
+// no store refuses -l and -g, and an unknown option is refused.
+TEST_CASE("%history: the session's entries, and the store's by -l and -g (1B.7)")
+{
+    std::string store =
+	madc::hub::history_record("2026-10-10 10:00:00Z", "c17", "3 * 3")
+	+ madc::hub::history_record("2026-10-10 10:00:01Z", "c++17", "4 * 4")
+	+ madc::hub::history_record("2026-10-10 10:00:02Z", "c11", "5 * 5")
+	+ madc::hub::history_record("2026-10-10 10:00:03Z", "c17", "int seven = 7;");
+    std::string path = temp_source(store.c_str(), "madc_repl_history");
+    InteractiveSession s;
+    REQUIRE(s.begin("--std=c17"));
+    std::ostringstream err;
+    s.program().error_stream = &err;
+    s.set_history_file(path);
+    REQUIRE(s.submit("1 + 1"));
+    REQUIRE(s.submit("int f(void)\n{\n  return 2;\n}"));
+    REQUIRE(s.submit("%history"));
+    CHECK(s.shown() == "1 + 1\nint f(void)\n{\n  return 2;\n}\n%history");
+    REQUIRE(s.submit("%history -n"));
+    CHECK(s.shown() == "   1: 1 + 1\n   2: int f(void)\n      {\n        return 2;\n"
+		       "      }\n   3: %history\n   4: %history -n");
+    REQUIRE(s.submit("%history -l 2"));
+    CHECK(s.shown() == "5 * 5\nint seven = 7;");
+    REQUIRE(s.submit("%history -l"));
+    CHECK(s.shown() == "3 * 3\n5 * 5\nint seven = 7;");
+    REQUIRE(s.submit("%history -n -g 5 * 5"));
+    CHECK(s.shown() == "   2: 5 * 5");
+    REQUIRE(s.submit("%history -g"));
+    CHECK(s.shown() == "3 * 3\n5 * 5\nint seven = 7;");
+    REQUIRE(s.submit("%history -g nothing like it"));
+    CHECK(s.shown() == "");
+    CHECK_FALSE(s.submit("%history -x"));
+    CHECK(err.str().find("%history: unknown option -x") != std::string::npos);
+    s.set_history_file("");
+    CHECK_FALSE(s.submit("%history -l"));
+    CHECK(err.str().find("keeps no history file") != std::string::npos);
+    REQUIRE(s.submit("%history -n"));
+    CHECK(s.shown().find("  11: %history -l\n  12: %history -n") != std::string::npos);
+    std::remove(path.c_str());
 }
