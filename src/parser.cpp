@@ -470,6 +470,8 @@ bool internal_program_lex_spans(::Program &self, const std::string &source_text,
 void internal_program_lex_classes(::Program &self, const std::string &source_text,
 				  int64_t standard,
 				  std::vector<madc::highlight_span> &out);
+bool internal_program_parse_classes(int64_t handle,
+				    std::vector<madc::highlight_span> &out);
 int64_t internal_program_project_open(::Program &self,
 				      const std::string &manifest_path);
 bool internal_program_project_tus(int64_t handle, value &out);
@@ -1458,6 +1460,11 @@ void madc::lex_classes(const std::string &text, int64_t standard,
     Program *active = require_runtime_eval_program(owned);
     if ( active )
 	madc::internal_program_lex_classes(*active, text, standard, out);
+}
+
+bool madc::parse_classes(int64_t handle, std::vector<highlight_span> &out)
+{
+    return madc::internal_program_parse_classes(handle, out);
 }
 
 int64_t madc_project_open(void *manifest_path)

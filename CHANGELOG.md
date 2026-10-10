@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+### `madc::lang` — one set of language services over a document
+
+A new C++ owner, `madc::lang` (`include/madc_lang.h`, `src/madc_lang.cpp`),
+answers a document's language-service questions in one place, so the LSP, the
+MCP tools and an editor's status line, Problems and colour read ONE set of
+answers (split arc 1C.11, design
+`docs/plans/2026-10-10-language-services-design.md` §2 decisions 1-4, slice 1).
+The subject is a document of a hub world (`world &, entity_id`); its parse
+handle comes through one door, `lang::document_handle`, which re-parses only
+when the buffer's live text version moved since the slot was parsed —
+`doc_parse_impl` moved here out of `src/ns_madc.cpp`, and `madc::doc_parse` /
+`doc_parse_checked` are now faces over it. One coordinate for every answer: a
+point is a 1-based line and a 0-based BYTE column, a range half-open; the
+compiler's 1-based stamps convert in the service, once. `diagnostics` gives
+`{range, severity, phase, message}`, the range the word at the anchor (gcc's
+3:12 diagnostic becomes 3:11 over `undefined_name`); `outline` gives each
+function definition's whole lines as the extent and its name as the selection
+(clangd's selection range); `enclosing` gives the innermost definition around a
+point, its first byte included; `spans` gives the parse's classes as
+`highlight_span` enums. The span class-name → `HighlightClass` conversion is now
+one helper, `highlight_spans_of` (`src/madc_program.cpp`), shared by the lexical
+spans (`internal_program_lex_classes`) and a parse handle's (`parse_classes`,
+new). A document whose kind the compiler does not parse answers nothing.
+
 ### `%git` in the madcgit module — the repository's read verbs as a session command
 
 The `madcgit` module now brings a `%git` command to a `madc -i` session: `%git

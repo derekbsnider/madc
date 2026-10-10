@@ -121,6 +121,12 @@ struct code_range
 void lex_classes(const std::string &text, int64_t standard,
 		 std::vector<highlight_span> &out);
 
+// A parse handle's spans (madc::parse_spans' rows) as enums, through the
+// same conversion: the parse's classes refine the lexical ones, and text the
+// parse did not reach keeps them. False (and an empty `out`) = a bad handle.
+// Defined in parser.cpp.
+bool parse_classes(int64_t handle, std::vector<highlight_span> &out);
+
 } // namespace madc
 
 #endif // __HIGHLIGHT_CLASS_H

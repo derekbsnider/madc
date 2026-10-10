@@ -8286,18 +8286,13 @@ bool internal_program_lex_spans(::Program &self,
     return true;
 }
 
-// The same spans under `standard`, each class converted ONCE to its enum
-// (madc::lex_classes, split arc 1B.9: the REPL's painter). The owner keeps
-// its diagnostics: only the child lexes.
-void internal_program_lex_classes(::Program &self, const std::string &source_text,
-				  int64_t standard,
-				  std::vector<madc::highlight_span> &out)
+// Highlight rows as spans, each row's class NAME converted ONCE to its enum
+// (the value boundary's inverse): the lexical spans' and a parse handle's
+// one conversion. A row whose class names no HighlightClass is dropped.
+static void highlight_spans_of(const std::vector<madc::value> &rows,
+			       std::vector<madc::highlight_span> &out)
 {
     out.clear();
-    const std::string disp("<memory>");
-    std::vector<madc::value> rows;
-    lexical_highlight_rows(self, source_text, disp, rows, standard);
-    source_text_rows(source_text, rows);
     for ( const madc::value &r : rows )
     {
 	const std::map<std::string, madc::value> &f = r.as_object();
@@ -8312,6 +8307,33 @@ void internal_program_lex_classes(::Program &self, const std::string &source_tex
 	span.cls = cls;
 	out.push_back(span);
     }
+}
+
+// The same spans under `standard`, as enums (madc::lex_classes, split arc
+// 1B.9: the REPL's painter). The owner keeps its diagnostics: only the
+// child lexes.
+void internal_program_lex_classes(::Program &self, const std::string &source_text,
+				  int64_t standard,
+				  std::vector<madc::highlight_span> &out)
+{
+    const std::string disp("<memory>");
+    std::vector<madc::value> rows;
+    lexical_highlight_rows(self, source_text, disp, rows, standard);
+    source_text_rows(source_text, rows);
+    highlight_spans_of(rows, out);
+}
+
+// A parse handle's spans as enums (madc::parse_classes, split arc 1C.11: the
+// language services' spans). False = a bad handle.
+bool internal_program_parse_classes(int64_t handle,
+				    std::vector<madc::highlight_span> &out)
+{
+    out.clear();
+    madc::value rows;
+    if ( !internal_program_parse_spans(handle, rows) )
+	return false;
+    highlight_spans_of(rows.as_array(), out);
+    return true;
 }
 
 // ---- project handles (the cc.json manifest grouped as TU handles) -------

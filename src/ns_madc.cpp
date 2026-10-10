@@ -26,8 +26,7 @@
 
 #include "ns_common.h"
 #include "libmadc/sysinfo.h"
-#include "madcdis/verbs.h"	// doc_parse: the document component's parse slot
-#include "madc_file_kinds.h"	// doc_parse: the kind's default standard
+#include "madc_lang.h"		// doc_parse: the language services' document door
 #include "madc_posix_io.h"	// get_host_name (host-facts seam)
 #if defined(_WIN32)
 #include <process.h>		// _getpid — sys.pid's UCRT spelling (never <windows.h>
@@ -273,52 +272,15 @@ value &parse_enclosing(value &out, int64_t handle, int64_t line,
 value &parse_spans(value &out, int64_t handle)
 	{ madc_parse_spans(&out, handle); return out; }
 
-// A document's parse handle (split arc 1A.1, design §2.5): the ONE place
-// that decides when a document is re-parsed — its text's version against
-// the version the slot was parsed from. The document component stores the
-// slot (madcdis/document.h); this public, compiler-side, opens and
-// refreshes it. `checked` = parse_refresh_checked's rule.
+// A document's parse handle (split arc 1A.1, design §2.5): the ONE door is
+// madc::lang::document_handle (split arc 1C.11) — the document's version
+// against the version its slot was parsed from. These are its dialect face.
 static int64_t doc_parse_impl(value *diags, int64_t w, int64_t entity)
 {
     madc::hub::world *world = madc_ui_world(w);
-    const madc::hub::document *d =
-	world ? world->doc_of((madc::hub::entity_id)entity)
-	      : (const madc::hub::document *)0;
-    const madc::hub::text_buffer *b =
-	world ? world->text_of((madc::hub::entity_id)entity)
-	      : (const madc::hub::text_buffer *)0;
-    if ( !d || !b )
-	return 0;
-    if ( d->kind() != fkUNKNOWN && file_kind_default_standard(d->kind()) == 0 )
-	return 0;		// a kind the compiler does not parse
-    // The handle adopts the KIND (split arc 1A.4): a family head is its
-    // default, as the CLI compiles the same file (Program::adopt_file_standard).
-    int64_t standard = d->kind() == fkUNKNOWN ? 0 : d->kind();
-    int64_t handle = d->parse_handle();
-    uint64_t version = b->version();
-    if ( handle && d->parse_version() == version )
-    {
-	if ( diags )
-	    madc_parse_diagnostics(diags, handle);
-	return handle;
-    }
-    std::string text = b->text();
-    if ( !handle )
-    {
-	std::string name = d->path().empty() ? "untitled" : d->path();
-	handle = madc_parse_open(&text, &name, standard);
-	if ( !handle )
-	    return 0;
-	if ( diags )
-	    madc_parse_diagnostics(diags, handle);
-    }
-    else if ( diags )
-	madc_parse_refresh_checked(diags, handle, &text);
-    else
-	madc_parse_refresh(handle, &text);
-    madc::hub::mutation_context mc(*world);
-    mc.doc_set_parse((madc::hub::entity_id)entity, handle, version);
-    return handle;
+    return world ? lang::document_handle(*world, (madc::hub::entity_id)entity,
+					 diags)
+		 : 0;
 }
 int64_t doc_parse(int64_t w, int64_t entity)
 	{ return doc_parse_impl(NULL, w, entity); }
