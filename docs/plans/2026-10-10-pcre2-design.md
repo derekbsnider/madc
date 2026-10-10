@@ -44,8 +44,10 @@ ex core (`:s`, `:g`, `:v`, `/re/`, `?re?`) is the next consumer.
    a new `scripts/stage_pcre2.sh` (the `stage_cmark_gfm.sh` shape: the tag
    in one place, the target's hosted MODE's compiler through
    `stage_cmake_args.sh`, static only, no programs or tests built). The
-   pin is PCRE2 10.42, the Linux build host's version, so every platform
-   runs one engine version.
+   pin is PCRE2 10.42, the build container's and Ubuntu 24.04's version; a
+   Linux package uses its distribution's (Ubuntu 22.04: 10.39). Every
+   PCRE2 feature madc uses dates from 10.34 or earlier
+   (`PCRE2_MATCH_INVALID_UTF`).
 2. **No `pcre2_*` export from libmadc.** On Linux the shared dependency keeps
    them out; `check-c-abi-surface.sh` (ELF) proves it, and never by
    `--exclude-libs`. The dylib and DLL surfaces follow zstd's precedent
@@ -103,12 +105,16 @@ ex core (`:s`, `:g`, `:v`, `/re/`, `?re?`) is the next consumer.
    errors with offsets, anchored match, UTF-8 code points, invalid UTF-8,
    substitute, split), the Homebrew formula, `packaging/notices.tsv` (macOS
    and Windows `libmadc` carry `pcre2-LICENCE` — PCRE2's file name), both
-   release packagers' notice copy, the one-engine gate. Platform builds
+   release packagers' notice copy, the CI workflows (the runners'
+   packages; the macOS and Windows stage steps), `provision_container.sh`.
+   Platform builds
    proven: `win`, `release-macos` (both arches) on the container.
 2. **The five on the owner, refusing invalid patterns**: `perl::grep` /
    `perl::split` in `ns_perl.cpp`; the `madc::` three in `ns_madc.cpp` with
    their lean forms; `parser.cpp`'s registrations and the extern-C names
-   gone. Reducer `tests/testregex_refuse.mad` (+ `.expect`): each function
+   gone. The one-engine gate (`check-one-regex-engine.sh`, decision 7)
+   lands here, once `<regex>` has left `ns_perl.cpp`. Reducer
+   `tests/testregex_refuse.mad` (+ `.expect`): each function
    on an invalid pattern — its stderr line and its neutral answer; the
    oracle is PHP's `preg_match` / `preg_replace` / `preg_split` on the same
    patterns (`php -r`), recorded in the test's comment. `testregex.mad`

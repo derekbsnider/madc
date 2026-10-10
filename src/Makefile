@@ -132,7 +132,7 @@ RT_OFILES := $(notdir $(RT_LEDGER_SRCS:.c=.o))
 ifeq ($(strip $(RT_OFILES)),)
 $(error scripts/ledger_sources.txt lists no C-lane runtime sources)
 endif
-CORE_OFILES = lexer.o parser.o madc_value.o madc_error.o madc_program.o madc_api.o madc_c_api.o madc_config.o madc_config_file.o madc_globals.o madc_dl.o madc_modules.o madc_guards.o madc_crash.o ns_common.o ns_php.o ns_perl.o ns_python.o ns_ruby.o ns_js.o ns_rust.o ns_madc.o ns_ui.o ui_term.o va_helpers.o $(RT_OFILES) pch.o madc_posix_io.o madc_datachannel.o madc_socket_channel.o madc_channel_stream.o madc_websocket_channel.o madc_header_channel.o madc_process.o madc_run_child.o madc_channel_object.o madcdis_driver.o madcdis_query.o madcdis_source_adapter.o madcdis_snapshot.o madcdis_storage.o embedded_headers.o sys_include_paths.o predefined_macros.o precompiled_headers.o madc_mir_backend.o madc_mangle.o libc_signatures.o madc_cir.o cir_builder.o cir_dump.o madc_type_spelling.o rt_dump_value.o cir_format.o rt_format_value.o rt_task.o madc_task_chan.o madc_io_reactor.o cir_freeze.o cir_emit_c.o file_kinds.o madc_capabilities.o madc_console.o madc_project.o madc_pe_icon.o madc_complete.o madc_keywords.o madc_session.o madc_session_client.o madc_session_interrupt.o madc_session_stdin.o madc_session_verbs.o madc_repl.o madc.o
+CORE_OFILES = lexer.o parser.o madc_value.o madc_error.o madc_program.o madc_api.o madc_c_api.o madc_config.o madc_config_file.o madc_globals.o madc_dl.o madc_modules.o madc_guards.o madc_crash.o ns_common.o madc_regex.o ns_php.o ns_perl.o ns_python.o ns_ruby.o ns_js.o ns_rust.o ns_madc.o ns_ui.o ui_term.o va_helpers.o $(RT_OFILES) pch.o madc_posix_io.o madc_datachannel.o madc_socket_channel.o madc_channel_stream.o madc_websocket_channel.o madc_header_channel.o madc_process.o madc_run_child.o madc_channel_object.o madcdis_driver.o madcdis_query.o madcdis_source_adapter.o madcdis_snapshot.o madcdis_storage.o embedded_headers.o sys_include_paths.o predefined_macros.o precompiled_headers.o madc_mir_backend.o madc_mangle.o libc_signatures.o madc_cir.o cir_builder.o cir_dump.o madc_type_spelling.o rt_dump_value.o cir_format.o rt_format_value.o rt_task.o madc_task_chan.o madc_io_reactor.o cir_freeze.o cir_emit_c.o file_kinds.o madc_capabilities.o madc_console.o madc_project.o madc_pe_icon.o madc_complete.o madc_keywords.o madc_session.o madc_session_client.o madc_session_interrupt.o madc_session_stdin.o madc_session_verbs.o madc_repl.o madc.o
 MADDAT_OFILES = $(MADC_STORAGE_DB_OFILES)
 MADHDRS = $(wildcard ../include/madc/*)
 # embedded_headers.cpp regeneration (EMBED_GEN) happens below, AFTER the
@@ -190,6 +190,19 @@ ifeq ($(MODE),cross-aarch64-linux)
 MIRLIB	= $(MIRBUILD)/aarch64-linux/libmir.a
 DEFINES += -DMIR_TARGET_AARCH64_LINUX -DMADC_CROSS_TARGET='"aarch64-linux"'
 endif
+# PCRE2 — madc's ONE regex engine (split arc 1A.3,
+# docs/plans/2026-10-10-pcre2-design.md). Linux and the emit-only cross
+# MODEs link configure's -lpcre2-8 (the distribution's shared library). The
+# hosted macOS and Windows MODEs link the pinned STATIC PCRE2 that
+# scripts/stage_pcre2.sh builds per target (JIT off), one directory per tag:
+# $(PCRE2_STAGE)/<target>/{include/pcre2.h,libpcre2-8.a}, its LICENCE the
+# notice those packages ship. THE PIN: PCRE2_TAG — the Linux build host's
+# version, so every platform runs one engine. A missing stage fails the link
+# loudly (scripts/provision_container.sh lists it).
+PCRE2_DIR ?= /workspace/pcre2
+PCRE2_TAG := pcre2-10.42
+PCRE2_STAGE = $(PCRE2_DIR)/$(PCRE2_TAG)
+
 # Shared Apple-target facts (cross + hosted MODEs). DARWIN_PRELUDE_TARGET is
 # the clang triple the embedded darwin C prelude is generated against — set
 # for EVERY Apple-target mode so the cross madcs embed the SAME prelude text
@@ -258,6 +271,15 @@ LLVM_LIBCXX_INC ?= $(or $(LIBCXX_HEADERS_HOME),/workspace/libcxx-headers)/includ
 ifeq ($(origin DARWIN_ZSTD_DIR),undefined)
 DARWIN_ZSTD_INC ?= $(DARWIN_ZSTD_PREFIX)/include
 DARWIN_ZSTD_LIB ?= $(DARWIN_ZSTD_PREFIX)/lib/libzstd.a
+endif
+# brew pcre2 for the native PROBE build when this arch has no stage (the
+# zstd shape); the stage, when present, is what the hosted block links.
+ifeq ($(origin PCRE2_LIB),undefined)
+ifeq (,$(wildcard $(PCRE2_STAGE)/$(HOST_DARWIN_ARCH)-macos/libpcre2-8.a))
+DARWIN_PCRE2_PREFIX := $(shell brew --prefix pcre2 2>/dev/null)
+PCRE2_INC ?= $(DARWIN_PCRE2_PREFIX)/include
+PCRE2_LIB ?= $(DARWIN_PCRE2_PREFIX)/lib/libpcre2-8.a
+endif
 endif
 endif
 # The CROSS spellings (the container): versioned apt names, ld64.lld.
@@ -364,8 +386,10 @@ FEATURE_DEFINES =
 DARWIN_ZSTD_DIR ?= /workspace/zstd
 DARWIN_ZSTD_INC ?= $(DARWIN_ZSTD_DIR)/lib
 DARWIN_ZSTD_LIB ?= $(DARWIN_ZSTD_DIR)/libzstd-$(DARWIN_ARCH)-macos.a
-OPTIONAL_CPPFLAGS = -DHAVE_ZSTD -I$(DARWIN_ZSTD_INC)
-OPTIONAL_LIBS = $(DARWIN_ZSTD_LIB)
+PCRE2_INC ?= $(PCRE2_STAGE)/$(DARWIN_ARCH)-macos/include
+PCRE2_LIB ?= $(PCRE2_STAGE)/$(DARWIN_ARCH)-macos/libpcre2-8.a
+OPTIONAL_CPPFLAGS = -DHAVE_ZSTD -I$(DARWIN_ZSTD_INC) -DPCRE2_STATIC -I$(PCRE2_INC)
+OPTIONAL_LIBS = $(DARWIN_ZSTD_LIB) $(PCRE2_LIB)
 MADC_STORAGE_DB_OFILES =
 # darwin link facts: dl*/pthread live in libSystem (no -ldl), executables
 # export their globals to dlsym without -rdynamic, and --whole-archive is
@@ -433,8 +457,10 @@ MIRLIB	= $(MIRBUILD)/$(MODE)/libmir.a
 HAVE_MADCDAT = 0
 FEATURE_DEFINES =
 WIN_ZSTD_DIR ?= /workspace/zstd
-OPTIONAL_CPPFLAGS = -DHAVE_ZSTD -I$(WIN_ZSTD_DIR)/lib
-OPTIONAL_LIBS = $(WIN_ZSTD_DIR)/libzstd-x86-64-windows.a
+PCRE2_INC ?= $(PCRE2_STAGE)/x86-64-windows/include
+PCRE2_LIB ?= $(PCRE2_STAGE)/x86-64-windows/libpcre2-8.a
+OPTIONAL_CPPFLAGS = -DHAVE_ZSTD -I$(WIN_ZSTD_DIR)/lib -DPCRE2_STATIC -I$(PCRE2_INC)
+OPTIONAL_LIBS = $(WIN_ZSTD_DIR)/libzstd-x86-64-windows.a $(PCRE2_LIB)
 MADC_STORAGE_DB_OFILES =
 # win64 link facts: no ELF -rdynamic/-ldl (madcdl rides LoadLibrary out of
 # kernel32); -Wl,--export-all-symbols is the -rdynamic analogue — madcdl's

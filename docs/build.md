@@ -13,6 +13,9 @@
   `github.com/derekbsnider/mir` is the historical former downstream,
   kept for provenance and upstream-PR transport (see
   `.claude/rules/build.md`).
+- `libpcre2-dev` (PCRE2, madc's one regex engine; required — macOS:
+  `brew install pcre2`). The macOS and Windows release builds link a pinned
+  static PCRE2 instead (`scripts/stage_pcre2.sh <target>`).
 - `libzstd-dev` (the packed forest's codec). `./configure --without-zstd`
   accepts a zlib fallback, which produces much larger packed binaries and
   slower binds — not recommended.

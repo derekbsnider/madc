@@ -70,7 +70,7 @@ PKGS_base="build-essential g++-13 autoconf ccache make git rsync python3 pkg-con
 # `clang++`), and a container with only clang++-18 fails that gate — loudly,
 # which is how this was found after the 2026-07-26 container rebuild.
 PKGS_llvm18="clang-18 clang lld-18 llvm-18 libc++-18-dev libc++abi-18-dev"
-PKGS_codec="libzstd-dev zlib1g-dev"
+PKGS_codec="libzstd-dev libpcre2-dev zlib1g-dev"
 # libxqdbm-dev is QDBM's C++ API and a SEPARATE package from libqdbm-dev:
 # without it configure reports xqdbm=0 and the build quietly loses a
 # backend (and its unit-test surface) versus the pre-crash config.
@@ -223,6 +223,21 @@ report() {
 			case $t in
 			*-macos) printf '  MISSING libgit2 stage (%s) — scripts/stage_libgit2.sh %s (needs the SDK)\n' "$lg2" "$t" ;;
 			*)       printf '  MISSING libgit2 stage (%s) — scripts/stage_libgit2.sh %s\n' "$lg2" "$t" ;;
+			esac
+			missing=1
+		fi
+	done
+	# libmadc's pinned static PCRE2 (scripts/stage_pcre2.sh; split arc 1A.3):
+	# the hosted macOS and Windows MODEs link it (Linux links the distro's).
+	local pc
+	for t in x86-64-windows arm64-macos x86-64-macos; do
+		pc=$(bash "$(dirname "$0")/stage_pcre2.sh" --path "$t")
+		if [ -f "$pc/libpcre2-8.a" ]; then
+			printf '  ok      pcre2 stage (%s)\n' "$pc"
+		else
+			case $t in
+			*-macos) printf '  MISSING pcre2 stage (%s) — scripts/stage_pcre2.sh %s (needs the SDK)\n' "$pc" "$t" ;;
+			*)       printf '  MISSING pcre2 stage (%s) — scripts/stage_pcre2.sh %s\n' "$pc" "$t" ;;
 			esac
 			missing=1
 		fi

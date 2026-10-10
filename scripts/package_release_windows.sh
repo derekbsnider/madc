@@ -143,6 +143,14 @@ if [ ! -f /workspace/zstd/LICENSE ]; then
     exit 1
 fi
 install -m 644 /workspace/zstd/LICENSE "$STAGE/$ROOT/THIRD_PARTY_NOTICES/zstd-LICENSE.txt"
+# libmadc-0.dll statically links the pinned PCRE2 (BSD; scripts/stage_pcre2.sh,
+# split arc 1A.3): its LICENCE ships.
+pcre2_licence="$(make -C src -s print-PCRE2_STAGE)/src/LICENCE"
+if [ ! -f "$pcre2_licence" ]; then
+    echo "package_release_windows: $pcre2_licence missing — the PCRE2 stage libmadc-0.dll links (scripts/stage_pcre2.sh x86-64-windows)" >&2
+    exit 1
+fi
+install -m 644 "$pcre2_licence" "$STAGE/$ROOT/THIRD_PARTY_NOTICES/pcre2-LICENCE.txt"
 # The webview library binds webview/webview (MIT): its notice ships with it.
 install -m 644 third_party/webview/LICENSE "$STAGE/$ROOT/THIRD_PARTY_NOTICES/webview-LICENSE.txt"
 # madcgit.dll statically links libgit2 (GPLv2 WITH the linking exception, which

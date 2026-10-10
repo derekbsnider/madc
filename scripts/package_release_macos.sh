@@ -237,6 +237,15 @@ package_arch() {
         exit 1
     fi
     install -m 644 "$zstd_license" "$stage/$root/THIRD_PARTY_NOTICES/zstd-LICENSE.txt"
+    # libmadc-0.dylib statically links the pinned PCRE2 (BSD;
+    # scripts/stage_pcre2.sh, split arc 1A.3): its LICENCE ships.
+    local pcre2_licence
+    pcre2_licence="$(make -C src -s print-PCRE2_STAGE)/src/LICENCE"
+    if [ ! -f "$pcre2_licence" ]; then
+        echo "package_release_macos: $pcre2_licence missing — the PCRE2 stage libmadc-0.dylib links (scripts/stage_pcre2.sh ${bin_arch}-macos)" >&2
+        exit 1
+    fi
+    install -m 644 "$pcre2_licence" "$stage/$root/THIRD_PARTY_NOTICES/pcre2-LICENCE.txt"
     # libmadcmark.dylib statically links cmark-gfm (BSD-2 and MIT): its notice
     # ships.
     install -m 644 "$(make -C src -s print-CMARK_GFM_STAGE)/src/COPYING" \

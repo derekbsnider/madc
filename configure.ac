@@ -59,6 +59,21 @@ if test "$with_zstd" != no; then
 fi
 AC_SUBST([HAVE_ZSTD])
 
+# PCRE2 — madc's ONE regex engine (split arc 1A.3,
+# docs/plans/2026-10-10-pcre2-design.md): the regex functions and the ex
+# core's :s / :g / /re/ have no other engine, so it is REQUIRED (no opt-out).
+# Linux links the distribution's shared libpcre2-8 (the .deb's Depends names
+# it through dpkg-shlibdeps); the hosted macOS and Windows MODEs link the
+# pinned static stage scripts/stage_pcre2.sh builds (src/Makefile).
+AC_CHECK_HEADER([pcre2.h], [madc_pcre2_h=yes], [madc_pcre2_h=no],
+    [#define PCRE2_CODE_UNIT_WIDTH 8])
+AC_CHECK_LIB([pcre2-8], [pcre2_compile_8], [madc_pcre2_lib=yes], [madc_pcre2_lib=no])
+if test "$madc_pcre2_h" = yes && test "$madc_pcre2_lib" = yes; then
+    OPTIONAL_LIBS="$OPTIONAL_LIBS -lpcre2-8"
+else
+    AC_MSG_ERROR([PCRE2 development files not found (install libpcre2-dev; macOS: brew install pcre2) — madc's regex engine])
+fi
+
 # Forest carrier shape (forest-carriers plan S3): what the PRODUCT build
 # (make release + the hosted darwin MODEs) produces and expects — embedded
 # packs the container into the binary's own image (the no-installation
