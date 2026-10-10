@@ -2631,6 +2631,61 @@ TEST_CASE("session commands: a module's rows register as session rows (1B.10)")
     CHECK(c.shown().find("%bare") == std::string::npos);
 }
 
+// The session's buffer question (split arc 1B.10, design decision 4): a
+// command running in the session reads a FILE through the host's buffers —
+// its live text when a buffer holds it, else the disk's path; "" the
+// current buffer. With no host source, every FILE is the disk's and no FILE
+// is refused.
+static bool buffer_probe(madc::value &out, const char *argument)
+{
+    std::string path, text, why;
+    bool has_text = false;
+    if ( !madc::session_buffer(argument, path, text, has_text, why) )
+    {
+	out = madc::value(why);
+	return false;
+    }
+    out = madc::value(path + (has_text ? " [" + text + "]" : " (disk)"));
+    return true;
+}
+
+TEST_CASE("session commands: a command asks the host's buffers (1B.10)")
+{
+    InteractiveSession c;
+    REQUIRE(c.begin("--std=c17"));
+    std::ostringstream err;
+    c.program().error_stream = &err;
+    REQUIRE(c.add_command("probe", "%probe FILE", "a buffer", buffer_probe));
+    REQUIRE(c.submit("%probe b.c"));
+    CHECK(c.shown() == "b.c (disk)");
+    CHECK_FALSE(c.submit("%probe"));
+    CHECK(first_error(c) == "no FILE, and this host holds no buffer");
+    c.set_buffers([](const madc::dis::istring &name, madc::dis::istring &path,
+		     std::string &text, bool &has_text, std::string &why) {
+	if ( name.empty() || name == "a.c" )
+	{
+	    path = name.empty() ? "/w/current.c" : "/w/a.c";
+	    text = name.empty() ? "int cur;" : "int a = 1;";
+	    has_text = true;
+	    return true;
+	}
+	if ( name == "untitled" )
+	{
+	    why = "the buffer has no file name";
+	    return false;
+	}
+	return true;		// the name is the path: the disk's
+    });
+    REQUIRE(c.submit("%probe a.c"));
+    CHECK(c.shown() == "/w/a.c [int a = 1;]");
+    REQUIRE(c.submit("%probe"));
+    CHECK(c.shown() == "/w/current.c [int cur;]");
+    REQUIRE(c.submit("%probe b.c"));
+    CHECK(c.shown() == "b.c (disk)");
+    CHECK_FALSE(c.submit("%probe untitled"));
+    CHECK(first_error(c) == "the buffer has no file name");
+}
+
 // Slice 2 (plan §41.8a): `?name` / `%pinfo name` describe what the session
 // knows of a name, in IPython's fields, each overload with its location
 // (Julia), from the walk completion reads: `?` describes a name exactly

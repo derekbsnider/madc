@@ -92,7 +92,7 @@ namespace {
 // client handed over (madc_session_stdin.h). `commands`: the host's REPL
 // command rows (split arc 1A.2), sent after every start. Those two are the
 // requests with no seq and no reply.
-enum class Op : unsigned char { begin, offer, complete, running, load, run, continues, bindings, build, stdin_renew, commands, history, check, project, colour, unknown };
+enum class Op : unsigned char { begin, offer, complete, running, load, run, continues, bindings, build, stdin_renew, commands, history, check, project, colour, buffer, unknown };
 
 struct OpRow { const char *name; Op op; };
 const OpRow op_rows[] = {
@@ -103,6 +103,7 @@ const OpRow op_rows[] = {
     { "commands", Op::commands }, { "history", Op::history },
     { "check", Op::check },
     { "project", Op::project }, { "colour", Op::colour },
+    { "buffer", Op::buffer },
 };
 
 const char *op_name(Op op)
@@ -266,6 +267,57 @@ void attach_diagnostics(nlohmann::json &rep, InteractiveSession &session)
     rep["diagnostics"] = madc::hub::detail::wt_value_to_json(rows);
 }
 
+// The session's buffer question in a backend (split arc 1B.10, design
+// decision 4): asked of the HOST mid-entry — a `buffer` request, its answer
+// the next `buffer` line on the wire. A Send EOF the host sends meanwhile is
+// taken as the loop takes it; any other request waits for the loop, in order.
+bool ask_host_buffer(madc::DataChannel &wire, std::string &buf, int stdin_socket,
+		     const madc::dis::istring &name, madc::dis::istring &path,
+		     std::string &text, bool &has_text, std::string &why)
+{
+    nlohmann::json req;
+    req["op"] = op_name(Op::buffer);
+    req["name"] = std::string(name);
+    if ( !write_line(wire, req.dump()) )
+    {
+	why = "the host is gone";
+	return false;
+    }
+    std::string deferred;
+    for (;;)
+    {
+	size_t nl;
+	while ( (nl = buf.find('\n')) == std::string::npos )
+	    if ( !read_wire(wire, buf) )
+	    {
+		buf = deferred + buf;
+		why = "the host is gone";
+		return false;
+	    }
+	const std::string line = buf.substr(0, nl + 1);
+	buf.erase(0, nl + 1);
+	nlohmann::json j = nlohmann::json::parse(line, nullptr, false);
+	const Op op = j.is_discarded() || !j.is_object()
+	    ? Op::unknown : op_of(j.value("op", std::string()));
+	if ( op == Op::stdin_renew )
+	{
+	    madc::session_stdin_take(stdin_socket, j.value("handle", (uint64_t)0));
+	    continue;
+	}
+	if ( op != Op::buffer )
+	{
+	    deferred += line;
+	    continue;
+	}
+	buf = deferred + buf;
+	path = madc::dis::istring(j.value("path", std::string()));
+	text = j.value("text", std::string());
+	has_text = j.value("has_text", false);
+	why = j.value("why", std::string());
+	return j.value("ok", false);
+    }
+}
+
 // The backend: one session, a request per line until the channel closes.
 // The program's output is flushed before each reply, so the client reads
 // an entry's output before its result. `shared_stdin`: the host reads this
@@ -299,6 +351,13 @@ int serve_session(madc::DataChannel &wire, std::unique_ptr<Program> prog,
     if ( !write_line(wire, hello.dump()) || !hello["ok"].get<bool>() )
 	return 1;
     std::string buf;
+    // A command running here (a module's) asks the host for its buffers.
+    session.set_buffers([&wire, &buf, stdin_socket](const madc::dis::istring &name,
+						     madc::dis::istring &path,
+						     std::string &text, bool &has_text,
+						     std::string &why) {
+	return ask_host_buffer(wire, buf, stdin_socket, name, path, text, has_text, why);
+    });
     for (;;)
     {
 	size_t nl;
@@ -336,6 +395,8 @@ int serve_session(madc::DataChannel &wire, std::unique_ptr<Program> prog,
 	    session.set_project(req.value("file", std::string()));
 	    continue;
 	}
+	if ( op == Op::buffer )
+	    continue;		// an answer no question waits for
 	if ( op == Op::colour )
 	{
 	    // The host's error stream shows colour, or not: the rendered
@@ -492,6 +553,7 @@ int serve_session(madc::DataChannel &wire, std::unique_ptr<Program> prog,
 	    case Op::history:
 	    case Op::project:
 	    case Op::colour:
+	    case Op::buffer:
 	    case Op::unknown:
 		rep["ok"] = false;
 		break;
@@ -862,6 +924,28 @@ bool SessionClient::send_project()
     return send(req.dump());
 }
 
+void SessionClient::set_buffers(const ReplSession::BufferSource &source)
+{
+    buffer_source = source;
+}
+
+bool SessionClient::answer_buffer(const std::string &name)
+{
+    madc::dis::istring path;
+    std::string text, why;
+    bool has_text = false;
+    const bool ok = madc::resolve_buffer(buffer_source, madc::dis::istring(name),
+					 path, text, has_text, why);
+    nlohmann::json a;
+    a["op"] = op_name(Op::buffer);
+    a["ok"] = ok;
+    a["path"] = std::string(path);
+    a["text"] = text;
+    a["has_text"] = has_text;
+    a["why"] = why;
+    return send(a.dump());
+}
+
 void SessionClient::set_diagnostic_colour(bool on)
 {
     colour_named = true;
@@ -1134,32 +1218,42 @@ int SessionClient::poll(Reply &reply, std::string &output, int timeout_ms)
     if ( !wire )
 	return stopped(reply, output);
     std::string line;
-    while ( !take_line(line) )
+    nlohmann::json j;
+    Op op = Op::unknown;
+    for (;;)
     {
-	std::vector<madc::poll_handle> hs;
-	wait_handles(hs);		// the wire, then the output pipe (until its end)
-	int r = wait_any_readable(hs, timeout_ms);
-	if ( r == 0 )
-	    return 0;
-	if ( r < 0 )
-	    return stopped(reply, output);
-	// The wire first: the backend writes a running notice before the
-	// entry prints, so once a line is whole, its op decides where the
-	// output waiting in the pipe belongs (below). The pipe is drained
-	// only while no line is, so a full pipe never stalls the backend.
-	if ( r & 1 )
+	while ( !take_line(line) )
 	{
-	    if ( !read_wire(*wire, inbuf) )
+	    std::vector<madc::poll_handle> hs;
+	    wait_handles(hs);		// the wire, then the output pipe (until its end)
+	    int r = wait_any_readable(hs, timeout_ms);
+	    if ( r == 0 )
+		return 0;
+	    if ( r < 0 )
 		return stopped(reply, output);
-	    if ( inbuf.find('\n') != std::string::npos )
-		continue;
+	    // The wire first: the backend writes a running notice before the
+	    // entry prints, so once a line is whole, its op decides where the
+	    // output waiting in the pipe belongs (below). The pipe is drained
+	    // only while no line is, so a full pipe never stalls the backend.
+	    if ( r & 1 )
+	    {
+		if ( !read_wire(*wire, inbuf) )
+		    return stopped(reply, output);
+		if ( inbuf.find('\n') != std::string::npos )
+		    continue;
+	    }
+	    if ( r & 2 )
+		read_output(output, 0);
 	}
-	if ( r & 2 )
-	    read_output(output, 0);
+	j = nlohmann::json::parse(line, nullptr, false);
+	op = j.is_discarded() || !j.is_object()
+	    ? Op::unknown : op_of(j.value("op", std::string()));
+	// The backend's buffer question (1B.10): answered here, at once, and
+	// the wait goes on — the entry asking it runs on.
+	if ( op != Op::buffer )
+	    break;
+	answer_buffer(j.value("name", std::string()));
     }
-    nlohmann::json j = nlohmann::json::parse(line, nullptr, false);
-    const Op op = j.is_discarded() || !j.is_object()
-	? Op::unknown : op_of(j.value("op", std::string()));
     // The backend flushed an entry's output before its result: take it
     // first, so the output comes before the result. A running notice
     // comes before its entry's output (nothing prints between the last
@@ -1241,6 +1335,7 @@ int SessionClient::poll(Reply &reply, std::string &output, int timeout_ms)
 	case Op::history:
 	case Op::project:
 	case Op::colour:
+	case Op::buffer:	// answered in poll, never a reply
 	case Op::unknown:
 	    break;
     }
@@ -1521,21 +1616,15 @@ bool BackendSession::continues_if(const std::string &line)
 bool BackendSession::resolve(const char *command, const std::string &name,
 			     std::string &path, std::string &text, bool &has_text)
 {
-    madc::dis::istring found(name);
-    text.clear();
-    has_text = false;
+    madc::dis::istring found;
     std::string why;
-    if ( buffers && !buffers(madc::dis::istring(name), found, text, has_text, why) )
+    if ( !madc::resolve_buffer(buffers, madc::dis::istring(name), found, text,
+			       has_text, why) )
     {
 	err << command << ": " << why << std::endl;
 	return false;
     }
     path = found;
-    if ( path.empty() )
-    {
-	err << command << ": no FILE, and this host holds no buffer" << std::endl;
-	return false;
-    }
     return true;
 }
 

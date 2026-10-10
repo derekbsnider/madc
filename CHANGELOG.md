@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+### A command running in a session reads the host's buffers
+
+A REPL command that runs in a `madc -i` session can now read the host's open
+buffers — a FILE's live unsaved text, or the current buffer — the way a
+host-side command already did (split arc 1B.10, design
+`docs/plans/2026-10-10-git-module-command-design.md` §1, decision 4). Before,
+the host's buffers had one asker (`BackendSession::resolve`, 1B.8) and the
+session never asked. `madc::resolve_buffer` is now THE buffer rule: the
+`ReplSession::BufferSource` a host hands over answers when there is one; with no
+source, or for a FILE no buffer holds, the name is the path and the disk is read
+(`has_text` false); with no FILE and no current buffer it is refused with `no
+FILE, and this host holds no buffer`. `BackendSession::resolve` now calls it
+instead of its own copy. `InteractiveSession::set_buffers` keeps the source (it
+ignored it before) and `buffer_text` asks it;
+`madc::session_buffer(name, path, text, has_text, why)` is the question a
+module's command asks — reaching the running session through
+`active_runtime_program()->owning_session`, or the disk's outside a session —
+and `<ns_madc>`'s `madc::session_buffer(out, name)` is its dialect face,
+`{path, text, has_text}` or `{error}`. In a backend the command runs across the
+wire: `serve_session` installs a source that writes a `buffer` request to the
+host mid-entry and reads the answer (a Send EOF meanwhile is taken as the loop
+takes it; any other request waits in order), and the host's `SessionClient::poll`
+answers it from the source `SessionClient::set_buffers` holds
+(`BackendSession::set_buffers` hands it on) and keeps waiting.
+
 ### A module brings its REPL commands to a session, registered when the module loads
 
 A loaded native module can now bring REPL commands to a `madc -i` session, and

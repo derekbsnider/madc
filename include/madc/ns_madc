@@ -887,6 +887,12 @@ namespace madc {
     //     registration); handler(out, argument) answers true with the text
     //     it shows in out, or false with its error. False outside a session
     //     or for a taken name.
+    //   session_buffer(out, name): what a command running IN the session
+    //     reads for FILE `name` ("" the host's current buffer; split arc
+    //     1B.10): {path, text, has_text} — has_text: the host's buffer holds
+    //     it and `text` is its live text; else the disk's file at path — or
+    //     {error} when there is nothing to read. In a backend the host
+    //     answers it mid-entry; outside a session, the disk's.
     // Thread contract: a handle is confined to the thread that opened it.
     int64_t session_open(const char *std);
     bool session_running(int64_t handle);
@@ -904,6 +910,7 @@ namespace madc {
 			     const char *summary, int64_t code);
     bool command_add(const char *name, const char *usage, const char *summary,
 		     bool (*handler)(value &out, const char *argument));
+    bool session_buffer(value &out, const char *name);
     int64_t session_bindings(int64_t handle);
     int64_t session_poll(value &reply, int64_t handle);
     value &session_output(value &out, int64_t handle);

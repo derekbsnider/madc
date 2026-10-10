@@ -85,8 +85,8 @@ public:
     typedef std::function<bool(const madc::dis::istring &name,
 			       madc::dis::istring &path, std::string &text,
 			       bool &has_text, std::string &why)> BufferSource;
-    // A host that holds buffers hands them to the session it drives; a
-    // session in this process holds none and ignores it.
+    // A host that holds buffers hands them to the session it drives (the
+    // session's buffer question: InteractiveSession::buffer_text).
     virtual void set_buffers(const BufferSource &source) { (void)source; }
     // Input the session's program read from a stdin it shares with the host
     // past what it consumed (a backend's C runtime reads ahead on a pipe —
@@ -172,6 +172,15 @@ public:
     // renders nothing: a client prints it.
     const std::string &shown() const override;
     const std::vector<madc::code_range> &shown_code() const override;
+    // The host's buffers (split arc 1B.10, design decision 4): the source a
+    // host in this process hands it, or the backend server's, which asks the
+    // host over the wire. None: every FILE is the disk's.
+    void set_buffers(const BufferSource &source) override { buffers = source; }
+    // The session's buffer question (madc::resolve_buffer's rule over its
+    // source): what a command running in the session — a module's — reads
+    // for FILE ("" the host's current buffer).
+    bool buffer_text(const madc::dis::istring &name, madc::dis::istring &path,
+		     std::string &text, bool &has_text, std::string &why);
     std::string standard_name() override;
     bool continues_if(const std::string &line) override;
     // %quit ended the session (plan §7f): status 0.
@@ -396,6 +405,7 @@ private:
     std::vector<std::string> inputs;	// REPL[N]'s text is inputs[N - 1]
     std::string history_file;		// %history's store ("" none)
     std::string project_file;		// %project's manifest ("" none)
+    BufferSource buffers;		// the host's (set_buffers); empty: the disk
     InteractiveSession(const InteractiveSession &);
     InteractiveSession &operator=(const InteractiveSession &);
 };
@@ -413,6 +423,22 @@ bool run_terminal_editor(const std::string &path, int line, std::string &why);
 // that cannot register.
 bool command_add(const char *name, const char *usage, const char *summary,
 		 bool (*handler)(value &out, const char *argument));
+// THE buffer rule (split arc 1B.8's BufferSource contract), asked by a host
+// before it sends a payload's request or by the session for a command running
+// in it: `source` answers when there is one; with none, or for a FILE no
+// buffer holds, the name is the path and the disk is read (has_text false).
+// False, with `why`, when there is nothing to read: no FILE and no current
+// buffer, an untitled one.
+bool resolve_buffer(const ReplSession::BufferSource &source,
+		    const dis::istring &name, dis::istring &path,
+		    std::string &text, bool &has_text, std::string &why);
+// The running session's buffer question (InteractiveSession::buffer_text):
+// what a module's command reads for FILE ("" the current buffer). Outside a
+// session, the disk's (no FILE: refused).
+bool session_buffer(const std::string &name, std::string &path,
+		    std::string &text, bool &has_text, std::string &why);
+// <ns_madc>'s face of it: {path, text, has_text}, or {error}.
+bool session_buffer(value &out, const char *name);
 }
 
 #endif

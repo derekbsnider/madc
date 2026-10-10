@@ -240,6 +240,10 @@ public:
     // them. Sent now and after every start; a host that never says gets them
     // plain.
     void set_diagnostic_colour(bool on);
+    // The host's buffers (split arc 1B.10, design decision 4): a command
+    // running in the backend (a module's) asks for a FILE's live text
+    // mid-entry; the wait answers it from `source` (none: the disk's).
+    void set_buffers(const ReplSession::BufferSource &source);
 
     // Readiness, for a select (plan §41.9a slice 2). pending(): 1 when a
     // reply or output waits (or the backend's end, which poll() reports), 0
@@ -265,6 +269,7 @@ private:
     bool send_history_file();
     bool send_project();
     bool send_diagnostic_colour();
+    bool answer_buffer(const std::string &name);	// the backend's buffer question
     bool take_line(std::string &line);
     void read_output(std::string &output, int timeout_ms);
     int stopped(Reply &reply, std::string &output);
@@ -295,6 +300,7 @@ private:
     std::string project_path;		// the session's project ("" none)
     bool colour_named;			// set_diagnostic_colour was called
     bool colour_on;			// its verdict
+    ReplSession::BufferSource buffer_source;	// set_buffers'; empty: the disk
     bool inherit_stdio;			// the backend's stdio is the host's
     std::string returned_stdin;		// handed back by replies, not yet taken
     madc::SessionInterruptor interruptor;	// D8: reaches the backend
@@ -326,7 +332,11 @@ public:
     bool run_file(int argc, char **argv) override;
     bool ended(int &status) const override;
     std::string take_returned_input() override;
-    void set_buffers(const BufferSource &source) override { buffers = source; }
+    void set_buffers(const BufferSource &source) override
+    {
+	buffers = source;
+	client.set_buffers(source);	// the backend's question, answered here
+    }
 
     // A REPL command THIS host runs (split arc 1A.2; design
     // docs/plans/2026-10-09-command-registry-design.md §2.7): registered on

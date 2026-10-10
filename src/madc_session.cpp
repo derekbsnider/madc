@@ -875,6 +875,60 @@ bool InteractiveSession::run_registered(const Registered &row,
     return ok;
 }
 
+bool madc::resolve_buffer(const ReplSession::BufferSource &source,
+			  const dis::istring &name, dis::istring &path,
+			  std::string &text, bool &has_text, std::string &why)
+{
+    path = name;
+    text.clear();
+    has_text = false;
+    why.clear();
+    if ( source && !source(name, path, text, has_text, why) )
+	return false;
+    if ( path.empty() )
+    {
+	why = "no FILE, and this host holds no buffer";
+	return false;
+    }
+    return true;
+}
+
+bool InteractiveSession::buffer_text(const madc::dis::istring &name,
+				     madc::dis::istring &path, std::string &text,
+				     bool &has_text, std::string &why)
+{
+    return madc::resolve_buffer(buffers, name, path, text, has_text, why);
+}
+
+bool madc::session_buffer(const std::string &name, std::string &path,
+			  std::string &text, bool &has_text, std::string &why)
+{
+    Program *p = Program::active_runtime_program();
+    InteractiveSession *s = p ? p->owning_session : NULL;
+    dis::istring found;
+    const bool ok = s ? s->buffer_text(dis::istring(name), found, text, has_text, why)
+		      : resolve_buffer(ReplSession::BufferSource(), dis::istring(name),
+				       found, text, has_text, why);
+    path = found;
+    return ok;
+}
+
+bool madc::session_buffer(value &out, const char *name)
+{
+    std::string path, text, why;
+    bool has_text = false;
+    out = value::make_object();
+    if ( !session_buffer(name ? name : "", path, text, has_text, why) )
+    {
+	out.object()["error"] = value(why);
+	return false;
+    }
+    out.object()["path"] = value(path);
+    out.object()["text"] = value(text);
+    out.object()["has_text"] = value(has_text);
+    return true;
+}
+
 // The terminal's editor (its contract is madc_session.h's), run by the one
 // spawn owner (Process): no shell.
 bool madc::run_terminal_editor(const std::string &path, int line,
