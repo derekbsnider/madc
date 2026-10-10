@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### A parse handle searches the include directories of its opener
+
+A plain parse handle — `madc::parse_open` / `madc::parse_open_file`, and so
+`madc::lang`'s documents, madcide's buffers and `madc --lsp` — now parses in a
+child Program that inherits the opening Program's include search list (`-I` and
+madc.ini's `include`), as the CLI's compile of the same file does. Before, the
+child inherited none, so the IDE/LSP reported "file not found" for a header the
+command-line compile of the same file finds. A project TU's handle still takes
+its manifest entry's own options, as the `--project` build does.
+
 ### `madc::lsp::server` — the LSP's answers in madc's core
 
 A new C++ owner, `madc::lsp::server` (`include/madc_lsp.h`, `src/madc_lsp.cpp`),

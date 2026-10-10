@@ -5107,6 +5107,11 @@ struct parse_tu_state
     // 0 = the engine's default): every child the handle builds — the open,
     // each refresh, a checked refresh's candidate — takes it.
     int64_t standard;
+    // The include search list (-I, madc.ini's `include`) of the Program that
+    // opened a plain handle: every child the handle builds searches it, as
+    // the CLI's compile of the same file does. A project TU's handle takes
+    // its manifest entry's options instead, as the --project build does.
+    std::vector<madc::dis::istring> include_paths;
     parse_tu_state() : child((::Program *)0), generation(0), standard(0) {}
     ~parse_tu_state() { delete child; }
 };
@@ -5122,6 +5127,7 @@ static void parse_handle_child_init(::Program &child, const parse_tu_state &st)
 {
     if ( st.standard != 0 )
 	child.adopt_file_standard(st.standard);
+    child.include_paths = st.include_paths;
     child.keep_trivia = true;
 #ifdef _WIN32
     child.forest_arena_enabled = true;
@@ -5444,6 +5450,7 @@ int64_t internal_program_parse_open(::Program &self,
     st->display_name = display_name;
     st->source_text = source_text;
     st->standard = standard;
+    st->include_paths = self.include_paths;
     st->child = new ::Program(self.engine);
     parse_handle_child_init(*st->child, *st);
     compile_source_child_frontend(self, *st->child, source_text,
@@ -5470,6 +5477,8 @@ static int64_t parse_open_file_with(::Program &self, const std::string &path,
     parse_tu_state *st = new parse_tu_state();
     st->display_name = path;
     st->source_text = read_text_file(path);
+    if ( !tu )
+	st->include_paths = self.include_paths;
     st->child = new ::Program(self.engine);
     parse_handle_child_init(*st->child, *st);
     st->child->registration_policy =

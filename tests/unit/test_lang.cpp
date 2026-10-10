@@ -15,9 +15,21 @@ thread_local bool madc_verbose = false;
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
 
 #include <algorithm>
+#include <cstdio>
+#include <deque>
+#include <fstream>
+#include <map>
+#include <memory>
+#include <queue>
+#include <stack>
 #include <string>
 #include <vector>
+#include <unistd.h>
 
+#include "datadef.h"
+#include "tokens.h"
+#include "datatokens.h"
+#include "madc.h"
 #include "madcdis/hub.h"
 #include "madc_lang.h"
 #include "madc/bits/file_kinds"
@@ -244,4 +256,38 @@ TEST_CASE("hover: the definition over the word, else the enclosing one")
 
     entity_id two = open_doc(w, TWO_FUNCS);
     CHECK_FALSE(lang::hover(w, two, at(2, 0), h));	// between definitions
+}
+
+TEST_CASE("a document's parse searches the include directories of its opener")
+{
+    // gcc -fsyntax-only -I DIR: clean; without -I DIR: lang_inc.h not found.
+    char tmpl[] = "/tmp/madc_lang_XXXXXX";
+    char *made = mkdtemp(tmpl);
+    REQUIRE(made != NULL);
+    const std::string dir = made;
+    const std::string header = dir + "/lang_inc.h";
+    {
+	std::ofstream h(header.c_str());
+	h << "#define LANG_INC_VALUE 7\n";
+    }
+    const char *text =
+	"#include \"lang_inc.h\"\nint f(void) { return LANG_INC_VALUE; }\n";
+
+    world w;
+    std::vector<lang::diagnostic> ds;
+    entity_id bare = open_doc(w, text, madc::fkC17, "/nowhere/bare.c");
+    REQUIRE(lang::diagnostics(w, bare, ds));
+    CHECK_FALSE(ds.empty());			// no -I: the header is not found
+
+    MadcEngine engine;
+    std::unique_ptr<Program> prog = engine.create_program();
+    prog->add_include_dir(dir);
+    prog->push_runtime_scope();
+    entity_id found = open_doc(w, text, madc::fkC17, "/nowhere/found.c");
+    REQUIRE(lang::diagnostics(w, found, ds));
+    CHECK(ds.empty());				// the opener's -I DIR is searched
+    prog->pop_runtime_scope();
+
+    std::remove(header.c_str());
+    rmdir(dir.c_str());
 }
