@@ -50,9 +50,9 @@
 
 #include "handle_table.h"
 #include "libmadc/value.h"
-#include "madc_file_kinds.h"	// doc_open / doc_set_path: the kind stamp
+#include "madc_documents.h"	// doc_*: the document file owner
+#include "madc_file_kinds.h"	// doc_kind: fkUNKNOWN
 #include "ns_common.h"		// doc_close: the parse slot
-#include "madc_posix_io.h"	// doc_find: canonical_path_for_compare, the one path-comparison owner
 #include "madcdis/doc_lens.h"
 #include "madcdis/hub.h"
 #include "madcdis/interaction.h"
@@ -1553,37 +1553,16 @@ bool text_redo(madc::value &meta_out, int64_t w, int64_t entity,
 }
 
 // ---- document component (split arc 1A.1; madcdis/document.h; design
-// docs/plans/2026-10-09-document-component-design.md). The publics do what
-// the substrate may not: the disk I/O and the kind stamp (madc::
-// file_kind_of_path). The parse slot's public is madc::doc_parse (src/
-// ns_madc.cpp). Every document is created with the canonical entity name
-// "document" (lined_core's convention: a document's identity is its path).
-
-static const char *UI_DOC_ENTITY = "document";
-
-// The one whole-file read the document publics perform.
-static bool ui_read_file(const char *path, std::string &out)
-{
-    std::ifstream in(path, std::ios::binary);
-    if ( !in )
-	return false;
-    std::ostringstream ss;
-    ss << in.rdbuf();
-    out = ss.str();
-    return true;
-}
+// docs/plans/2026-10-09-document-component-design.md). The file I/O, the
+// entity name and the kind stamp are madc::document_*'s (include/
+// madc_documents.h — the one owner the ex core's :e / :r / :w share); these
+// publics resolve the window's world and delegate. The parse slot's public
+// is madc::doc_parse (src/ns_madc.cpp).
 
 int64_t doc_new(int64_t w)
 {
     ui_session *s = ui_get(w);
-    if ( !s )
-	return 0;
-    madc::hub::mutation_context mc(s->w);
-    entity_id e = mc.create(UI_DOC_ENTITY);
-    // An untitled document is the dialect's until it is named (madcide's
-    // edit_lang_kind rule for untitled + unknown).
-    mc.doc_attach(e, std::string(), madc::fkMADC, std::string());
-    return (int64_t)e;
+    return s ? (int64_t)madc::document_new(s->w, std::string()) : 0;
 }
 
 int64_t doc_open(int64_t w, const char *path)
@@ -1591,71 +1570,29 @@ int64_t doc_open(int64_t w, const char *path)
     ui_session *s = ui_get(w);
     if ( !s || !path || !*path )
 	return 0;
-    std::string text;
-    if ( !ui_read_file(path, text) )
-	return 0;
-    madc::hub::mutation_context mc(s->w);
-    entity_id e = mc.create(UI_DOC_ENTITY);
-    mc.doc_attach(e, path, madc::file_kind_of_path(path), text);
-    return (int64_t)e;
+    return (int64_t)madc::document_open(s->w, path);
 }
 
-// The document already open on `path` (identity: madc::canonical_path, the
-// one path-comparison owner), else 0. An untitled document matches "".
+// The document already open on `path`, else 0. An untitled document
+// matches "".
 int64_t doc_find(int64_t w, const char *path)
 {
     ui_session *s = ui_get(w);
-    if ( !s )
-	return 0;
-    std::string want = path ? path : "";
-    if ( !want.empty() )
-	want = madc::detail::canonical_path_for_compare(want);
-    std::vector<entity_id> all = s->w.docs();
-    for ( size_t i = 0; i < all.size(); ++i )
-    {
-	const madc::hub::document *d = s->w.doc_of(all[i]);
-	if ( !d )
-	    continue;
-	if ( want.empty() ? d->path().empty()
-	   : madc::detail::canonical_path_for_compare(d->path()) == want )
-	    return (int64_t)all[i];
-    }
-    return 0;
+    return s ? (int64_t)madc::document_find(s->w, path ? path : "") : 0;
 }
 
 bool doc_load_file(int64_t w, int64_t entity, const char *path)
 {
     ui_session *s = ui_get(w);
-    if ( !s || !entity || !path || !*path || !s->w.has_doc((entity_id)entity) )
+    if ( !s || !entity || !path || !*path )
 	return false;
-    std::string text;
-    if ( !ui_read_file(path, text) )
-	return false;
-    madc::hub::mutation_context mc(s->w);
-    if ( !mc.text_load((entity_id)entity, text) )
-	return false;
-    mc.doc_set_path((entity_id)entity, path, madc::file_kind_of_path(path));
-    return mc.doc_mark_saved((entity_id)entity);
+    return madc::document_reload(s->w, (entity_id)entity, path);
 }
 
 bool doc_save(int64_t w, int64_t entity)
 {
     ui_session *s = ui_get(w);
-    const madc::hub::document *d = s ? s->w.doc_of((entity_id)entity)
-				     : (const madc::hub::document *)0;
-    const madc::hub::text_buffer *b = s ? s->w.text_of((entity_id)entity)
-					: (const madc::hub::text_buffer *)0;
-    if ( !d || !b || d->path().empty() )
-	return false;
-    std::ofstream out(d->path().c_str(), std::ios::binary);
-    if ( !out )
-	return false;
-    out << b->text();
-    if ( !out )
-	return false;
-    out.close();
-    madc::hub::mutation_context mc(s->w);
-    return mc.doc_mark_saved((entity_id)entity);
+    return s && madc::document_save(s->w, (entity_id)entity);
 }
 
 bool doc_close(int64_t w, int64_t entity)
@@ -1682,13 +1619,8 @@ madc::value &doc_path(madc::value &out, int64_t w, int64_t entity)
 bool doc_set_path(int64_t w, int64_t entity, const char *path)
 {
     ui_session *s = ui_get(w);
-    if ( !s || !entity )
-	return false;
-    madc::hub::mutation_context mc(s->w);
-    std::string p = path ? path : "";
-    return mc.doc_set_path((entity_id)entity, p,
-			   p.empty() ? (int64_t)madc::fkMADC
-				     : madc::file_kind_of_path(p.c_str()));
+    return s && madc::document_set_path(s->w, (entity_id)entity,
+					path ? path : "");
 }
 
 int64_t doc_kind(int64_t w, int64_t entity)
