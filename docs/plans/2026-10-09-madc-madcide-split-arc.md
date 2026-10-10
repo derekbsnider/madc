@@ -230,7 +230,11 @@ items are their own sessions, any time.
 3. The Outline's kinds beyond functions (`madc::parse_outline`) — a parser
    session.
 4. The GUI gutter in `page.js` / `page.css` (engine), with its gui test.
-5. **Colour only when colour is available** (owner 2026-10-09) — a defect,
+5. **Colour only when colour is available** (owner 2026-10-09) — **LANDED
+   2026-10-10, `b13aff979`** (one predicate `madc::colour_reaches`,
+   `include/madc_console.h`; gcc's `-fdiagnostics-color[=WHEN]` /
+   `-fno-diagnostics-color`; unit battery, fix lane, `make gates` and the
+   wine subset green; not pushed) — a defect,
    its own commit with its test: `Program::print_diagnostic`
    (`src/parser.cpp:25140`) emits ANSI escapes unconditionally, so
    `madc file.c 2> log` writes them into the file. Rule, the gcc/clang one
