@@ -265,15 +265,17 @@ items are their own sessions, any time.
    `new_document`, `setup_document`) become this component's operations
    (NOT madcide's — a correction to the retirement paragraph above). A
    buffer ring is a per-world entity set, not a global.
-2. **The command registry's extension point** + D24 recognition with the
-   modal prefixes (owner 2026-10-09: `:` is colon mode only; `%` `.` `?`
+2. **The command registry's extension point** — **LANDED 2026-10-10,
+   `886c7fa09`** (unit battery + fix lane green; not pushed) — + D24
+   recognition with the modal prefixes (owner 2026-10-09: `:` is colon mode only; `%` `.` `?`
    the REPL's; cross-mode aliases) — design
    `2026-10-09-command-registry-design.md`. `madc_session.cpp`'s table stays
    the one owner of the REPL commands; a module (in the session) or a host
    (by payload) registers names, resolved to a code once at input; `%help`
    lists the one registry. The extension point exists today ONLY inside
    madcide's REPL pane (`plugin_repl_command`) — `madc -i` has no hook.
-3. **PCRE2 into libmadc** (decided, below) + the five regex functions'
+3. **PCRE2 into libmadc** (decided, below; design
+   `2026-10-10-pcre2-design.md`) + the five regex functions'
    fixes (invalid pattern refused; `madc::` three leave `ns_perl.cpp`; lean
    mangled-direct forms) — own commits with reducers.
 4. **The standard by extension**: `--std` > extension > madc.ini/env `std`
