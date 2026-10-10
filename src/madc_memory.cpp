@@ -1912,6 +1912,7 @@ bool t_status(const seat &s, const context &c, const value &args, value &out)
     r["generation"] = value(h ? madc_parse_generation(h) : (int64_t)-1);
     r["synced"] = value(true);			// document_handle parses the current text
     r["errors"] = value(h ? madc_parse_error_count(h) : (int64_t)0);
+    r["log"] = value(s.m.bound_path());		// "" = memory-only
     r["log_head"] = value(s.m.head());
     r["revisions"] = value::make_array(revs);
     r["git"] = git;
@@ -2181,8 +2182,9 @@ struct tool_row
 
 const tool_row tool_rows[] = {
     { "graph.status", tier::observer, l_text, t_status,
-      "the served asset in one call: handle, generation, error count, log head, open"
-      " revisions, git head/branch/dirty, layers, this node's offers" },
+      "the served asset in one call: handle, generation, error count, the log's head and"
+      " file (\"\" = memory-only), open revisions, git head/branch/dirty, layers, this"
+      " node's offers" },
     { "graph.history", tier::observer, l_parseable, t_history,
       "who changed this node and when: the commits that last touched it (with the"
       " version history) and the session's events (node-ops, text edits),"

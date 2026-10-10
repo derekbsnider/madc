@@ -63,6 +63,13 @@ bool read_project_manifest(const std::string &path,
 // TU's (madc --mcp --project FILE). False + err when neither reads.
 bool project_of_path(const std::string &path, ProjectManifest &out,
 		     std::string &err);
+// Is `path` a project manifest (".json")? Otherwise project_of_path reads
+// it as the one-TU project.
+bool project_path_is_manifest(const std::string &path);
+// Where a project's memory lives: <manifest less its extension>.events
+// beside a manifest; "" — memory-only — for the implicit one-TU project
+// (no surprise artifact beside a source file).
+std::string project_events_path(const std::string &path);
 
 // The manifest's one WRITER, beside its reader (split arc 1B.8): each call
 // is a read-modify-write of the native manifest's JSON object that keeps

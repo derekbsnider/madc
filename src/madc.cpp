@@ -714,9 +714,11 @@ static int run_mcp_project(std::unique_ptr<Program> prog, const char *path,
     madc::hub::world w;
     madc::memory::project memory(w);
     std::string why;
-    if ( !memory.bind(madc::detail::host_path_drop_extension(path) + ".events", why) )
+    const std::string events = project_events_path(path);
+    if ( !events.empty() && !memory.bind(events, why) )
 	std::cerr << "madc: --mcp --project: " << why << std::endl;
-    memory.set_manifest(path);
+    if ( project_path_is_manifest(path) )
+	memory.set_manifest(path);
     prog->push_runtime_scope();
     // A TU's document, opened on first use and parsing as its TU.
     auto open_tu = [&w, &manifest](size_t i) {

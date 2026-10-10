@@ -298,8 +298,17 @@ bool read_project_manifest(const std::string &path,
 	return false;
 }
 
+bool project_path_is_manifest(const std::string &path) {
+	return ns_common::ends_with(path, ".json");
+}
+
+std::string project_events_path(const std::string &path) {
+	return project_path_is_manifest(path)
+		? madc::detail::host_path_drop_extension(path) + ".events" : std::string();
+}
+
 bool project_of_path(const std::string &path, ProjectManifest &out, std::string &err) {
-	if (ns_common::ends_with(path, ".json"))
+	if (project_path_is_manifest(path))
 		return read_project_manifest(path, out, err);
 	if (madc::detail::host_path_type_of(path) != madc::detail::host_path_type::file) {
 		err = "cannot open " + path;

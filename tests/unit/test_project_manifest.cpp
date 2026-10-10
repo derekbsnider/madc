@@ -434,3 +434,11 @@ TEST_CASE("project_default_output: the manifest's output, else its path less "
 	m.output_name = "/abs/prog";
 	CHECK(project_default_output("/p/x.prj.json", m) == "/abs/prog");
 }
+
+TEST_CASE("project_events_path: beside a manifest; none for the one-TU project") {
+	CHECK(project_path_is_manifest("/p/x.prj.json"));
+	CHECK_FALSE(project_path_is_manifest("/p/calc.c"));
+	CHECK(project_events_path("/p/x.prj.json") == "/p/x.prj.events");
+	CHECK(project_events_path("compile_commands.json") == "compile_commands.events");
+	CHECK(project_events_path("/p/calc.c") == "");
+}
