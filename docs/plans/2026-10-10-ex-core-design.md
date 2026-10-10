@@ -47,7 +47,16 @@ and its Layering bullet — madc is ex, madcide is the visual part.
    marks `'a`–`'z` as anchors too, the last search pattern, the last
    substitute (pattern, replacement, flags — for `&` / `&&`), and the
    options (`number`, `tabstop`, `shiftwidth`, `expandtab`; per session, the
-   per-language default indent applied when a buffer opens).
+   per-language default indent applied when a buffer opens), and the
+   session's DIRECTORY: `:cd` / `:pwd` are the session's, relative names in
+   `:e :r :w :sav` and the shell commands resolve against it, and the
+   process's own directory never changes (no global state; vim's `:lcd`
+   shape). The buffer list is the world's documents — every one, madcide's
+   included — numbered for `:ls` / `:b N` in the order first seen; a
+   document stays loaded when another becomes current (vim's `hidden`).
+   Messages are vim's: `"name" 3L, 14B`, `"name" [New] 2L, 4B written`,
+   `... appended`, `:ls`'s rows. One divergence: vim's `:sav` keeps a
+   buffer for the old name as the alternate; madc renames the one buffer.
 4. **Grammar — vim's ex, line-oriented**:
    - addresses `N`, `.`, `$`, `/re/`, `?re?`, `'x`, `\/` `\?` (last search),
      each with `+N` / `-N` offsets (a bare `+` / `-` is 1); `%` = `1,$`;
@@ -92,8 +101,13 @@ and its Layering bullet — madc is ex, madcide is the visual part.
    writes to a stream — madcide's pane and the plain prompt show the same
    text.
 10. **The shell forms run through `madc::Process`** (the one spawn owner):
-    `/bin/sh -c` on POSIX, `cmd /c` on Windows; `%` in the command is the
-    current buffer's path (vim's expansion, the one useful one).
+    `/bin/sh -c` on POSIX, `cmd /c` on Windows, in the session's directory;
+    `%` in the command is the current buffer's name (vim's expansion, the
+    one useful one), `\%` a `%`. The output is stdout then stderr; a
+    nonzero status adds `shell returned N` (vim's). A path a command names
+    joins the session's directory through `host_path_join` (the one
+    relative-path owner, beside `host_path_absolute`); existence and
+    directory tests are `host_path_type_of`.
 11. **The hosts** (`madc -i`, both loops): an entry `command_of` calls
     colon mode goes to the host's `ex::session`, never to the session.
     - The host starts with ONE buffer, as vim does: `madc -i FILE` opens

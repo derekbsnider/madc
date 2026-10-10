@@ -99,7 +99,8 @@ struct line
     bool        has_pattern;	// sor: a /pattern/ was typed
     std::string replacement;	// s
     std::string flags;		// s: `g` `i` `I` `n` `e`, and `&` (keep the
-				// last); sor: `i` `u` `r` and one of `n x o b f`
+				// last); sor: `i` `u` `r` and one of `n x o b f`;
+				// w: `>>` (append)
     std::string subcommand;	// g, v: the command run on each line
     bool        shell_form;	// :r !cmd, :w !cmd — the argument is a command
 
@@ -157,11 +158,15 @@ public:
     explicit session(madc::hub::world &w);
     ~session();
 
-    // The current buffer (0: none), and making a world's document current;
-    // a buffer seen for the first time starts at its last line (ex's rule
-    // after a file is read).
+    // The current buffer (0: none), and making a world's document current
+    // (the one before it becomes the alternate, `#`); a buffer seen for the
+    // first time starts at its last line (ex's rule after a file is read).
     madc::hub::entity_id current() const { return cur; }
     bool use(madc::hub::entity_id doc);
+    // The session's working directory (:cd, :pwd; the process's at the
+    // start): :e :r :w :sav and the shell commands resolve a relative path
+    // against it. The process's own directory never changes.
+    const std::string &directory() const { return dir; }
     // The current buffer's current line (0: no buffer, or an empty one).
     size_t current_line() const;
 
@@ -200,11 +205,21 @@ private:
 
     madc::hub::world &w;
     madc::hub::entity_id cur;
+    madc::hub::entity_id alternate;
     std::map<madc::hub::entity_id, buffer_state> buffers;
+    // :ls's buffer numbers, given in the order the world's documents are
+    // first seen; a number is never reused.
+    std::map<madc::hub::entity_id, size_t> numbers;
+    size_t next_number;
+    std::string dir;
+    std::string previous_dir;	// :cd -
     std::string last_pattern;
     last_substitute last_sub;
     options opts;
     pending_text pending;
+
+    // `doc`'s :ls number, given now when it has none.
+    size_t number_of(madc::hub::entity_id doc);
 
     session(const session &);
     session &operator=(const session &);

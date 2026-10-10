@@ -850,3 +850,235 @@ TEST_CASE("ex session: :retab — runs holding a tab, ! for spaces, expandtab")
     ex_buffer b(TABBED);
     CHECK(refused_run(b.s, "retab x") == "trailing characters: 'x'");
 }
+
+// ------------------------------------------------------ files and buffers
+// Slice 4. ORACLE: vim 9.1 `vim -u NONE -i NONE -N -e -s -S` with :redir,
+// in a directory holding a.txt ("one\ntwo\nthree\n") and b.txt ("x\ny\n"):
+// e a.txt, e b.txt, e new.txt, ls, e #, ls, w c.txt, 2w d.txt, w >> d.txt,
+// 1,2w c.txt, r b.txt, pwd, 2, q, sav e.txt, ls. One divergence: vim's
+// :sav keeps a buffer for the old name as the alternate; madc renames the
+// one buffer and the alternate stays.
+
+#include <cstdio>
+#include <fstream>
+#include <iterator>
+#ifdef _WIN32
+#include <direct.h>
+#include <process.h>
+#else
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
+
+// A directory the test makes under the current one and removes, with
+// every file named in it.
+struct scratch_dir
+{
+    std::string name;
+    std::vector<std::string> files;
+    scratch_dir() : name("test_ex_files." + std::to_string((long)getpid()))
+    {
+#ifdef _WIN32
+	REQUIRE(_mkdir(name.c_str()) == 0);
+#else
+	REQUIRE(mkdir(name.c_str(), 0700) == 0);
+#endif
+    }
+    void put(const std::string &file, const std::string &text)
+    {
+	std::ofstream(path(file).c_str(), std::ios::binary) << text;
+	files.push_back(file);
+    }
+    std::string path(const std::string &file) const { return name + "/" + file; }
+    std::string read(const std::string &file) const
+    {
+	std::ifstream in(path(file).c_str(), std::ios::binary);
+	return std::string((std::istreambuf_iterator<char>(in)),
+			   std::istreambuf_iterator<char>());
+    }
+    ~scratch_dir()
+    {
+	for ( size_t i = 0; i < files.size(); ++i )
+	    remove(path(files[i]).c_str());
+#ifdef _WIN32
+	_rmdir(name.c_str());
+#else
+	rmdir(name.c_str());
+#endif
+    }
+};
+
+static std::string ran(session &s, const std::string &cmd)
+{
+    return ran(s, cmd.c_str());
+}
+
+TEST_CASE("ex session: :e :r :w :sav, :ls, :q — vim's messages")
+{
+    scratch_dir d;
+    d.put("a.txt", "one\ntwo\nthree\n");
+    d.put("b.txt", "x\ny\n");
+    d.files.push_back("c.txt");
+    d.files.push_back("d.txt");
+    d.files.push_back("e.txt");
+    world w;
+    session s(w);
+    CHECK(ran(s, "cd " + d.name) == "");
+    CHECK(ran(s, "e a.txt") == "\"a.txt\" 3L, 14B\n");
+    CHECK(s.current_line() == 3u);
+    CHECK(ran(s, "e b.txt") == "\"b.txt\" 2L, 4B\n");
+    CHECK(ran(s, "e new.txt") == "\"new.txt\" [New]\n");
+    CHECK(ran(s, "ls")
+	  == "  1      \"a.txt\"                        line 3\n"
+	     "  2 #    \"b.txt\"                        line 2\n"
+	     "  3 %a   \"new.txt\"                      line 1\n");
+    CHECK(ran(s, "e #") == "\"b.txt\" 2L, 4B\n");
+    CHECK(ran(s, "ls")
+	  == "  1      \"a.txt\"                        line 3\n"
+	     "  2 %a   \"b.txt\"                        line 2\n"
+	     "  3 #    \"new.txt\"                      line 1\n");
+    CHECK(ran(s, "w c.txt") == "\"c.txt\" [New] 2L, 4B written\n");
+    CHECK(ran(s, "2w d.txt") == "\"d.txt\" [New] 1L, 2B written\n");
+    CHECK(ran(s, "w >> d.txt") == "\"d.txt\" 2L, 4B appended\n");
+    CHECK(refused_run(s, "1,2w c.txt") == "file exists (add ! to override)");
+    CHECK(ran(s, "r b.txt") == "\"b.txt\" 2L, 4B\n");
+    CHECK(s.current_line() == 4u);
+    CHECK(ran(s, "2") == "y\n");
+    CHECK(refused_run(s, "q")
+	  == "no write since last change (add ! to override)");
+    CHECK(refused_run(s, "1w") == "use ! to write a partial buffer");
+    CHECK(ran(s, "sav e.txt") == "\"e.txt\" [New] 4L, 8B written\n");
+    CHECK(ran(s, "ls")
+	  == "  1      \"a.txt\"                        line 3\n"
+	     "  2 %a   \"e.txt\"                        line 2\n"
+	     "  3 #    \"new.txt\"                      line 1\n");
+    CHECK(d.read("c.txt") == "x\ny\n");
+    CHECK(d.read("d.txt") == "y\nx\ny\n");
+    CHECK(d.read("e.txt") == "x\ny\nx\ny\n");
+    CHECK(d.read("b.txt") == "x\ny\n");		// :sav leaves the old file
+    outcome o = s.run("q");
+    CHECK(o.ok);
+    CHECK(o.quit);
+}
+
+TEST_CASE("ex session: :w writes the buffer and its state; :x and :up only changes")
+{
+    scratch_dir d;
+    d.put("f.txt", "1\n2\n");
+    world w;
+    session s(w);
+    ran(s, "cd " + d.name);
+    ran(s, "e f.txt");
+    CHECK(ran(s, "up") == "");			// nothing changed
+    ran(s, "1d");
+    CHECK(refused_run(s, "e") == "no write since last change (add ! to override)");
+    CHECK(ran(s, "up") == "\"f.txt\" 1L, 2B written\n");
+    CHECK(d.read("f.txt") == "2\n");
+    CHECK_FALSE(w.doc_modified(s.current()));
+    ran(s, "a");
+    s.text(std::vector<std::string>(1, "3"));
+    CHECK(ran(s, "e!") == "\"f.txt\" 1L, 2B\n");	// the changes dropped
+    CHECK(body(w, s.current()) == "2\n");
+    ran(s, "$a");
+    s.text(std::vector<std::string>(1, "4"));
+    outcome o = s.run("x");
+    CHECK(o.ok);
+    CHECK(o.quit);
+    CHECK(o.shown == "\"f.txt\" 2L, 4B written\n");
+    CHECK(d.read("f.txt") == "2\n4\n");
+
+    world w2;
+    session u(w2);
+    ran(u, "cd " + d.name);
+    ran(u, "e untitled.txt");			// a new buffer: nothing written
+    CHECK(refused_run(u, "w nested/x.txt") == "cannot write \"nested/x.txt\"");
+    outcome q = u.run("q");
+    CHECK(q.quit);
+}
+
+TEST_CASE("ex session: :b :bn :bp switch buffers; :cd and :pwd are the session's")
+{
+    scratch_dir d;
+    d.put("one.c", "1\n");
+    d.put("two.c", "2\n");
+    d.put("three.h", "3\n");
+    world w;
+    session s(w);
+    CHECK(refused_run(s, "p") == "no buffer (:e FILE opens one)");
+    CHECK(refused_run(s, "cd no-such-dir") == "cannot change directory: no-such-dir");
+    const std::string before = s.directory();
+    ran(s, "cd " + d.name);
+    CHECK(ran(s, "pwd") == s.directory() + "\n");
+    CHECK(s.directory() != before);
+    ran(s, "e one.c");
+    ran(s, "e two.c");
+    ran(s, "e three.h");
+    ran(s, "b 1");
+    CHECK(body(w, s.current()) == "1\n");
+    ran(s, "bn");
+    CHECK(body(w, s.current()) == "2\n");
+    ran(s, "bp");
+    ran(s, "bp");				// wraps to the last
+    CHECK(body(w, s.current()) == "3\n");
+    ran(s, "b two");
+    CHECK(body(w, s.current()) == "2\n");
+    CHECK(refused_run(s, "b .c") == "more than one match for .c");
+    CHECK(refused_run(s, "b 9") == "buffer 9 does not exist");
+    ran(s, "b #");
+    CHECK(body(w, s.current()) == "3\n");
+    ran(s, "cd -");
+    CHECK(s.directory() == before);
+    ran(s, "cd -");
+    CHECK(ran(s, "e one.c") == "\"one.c\" 1L, 2B\n");	// the same buffer
+    CHECK(w.docs().size() == 3u);
+}
+
+TEST_CASE("ex session: :set — the four options in vim's forms")
+{
+    world w;
+    session s(w);
+    CHECK(ran(s, "set") == "--- Options ---\n");
+    CHECK(ran(s, "set ts=4 et") == "");
+    CHECK(ran(s, "set") == "--- Options ---\n  expandtab\n  tabstop=4\n");
+    CHECK(ran(s, "se ts?") == "  tabstop=4\n");
+    CHECK(ran(s, "set nu?") == "nonumber\n");
+    ran(s, "set invnu");
+    CHECK(ran(s, "set nu?") == "  number\n");
+    ran(s, "set nu!");
+    CHECK_FALSE(s.settings().number);
+    CHECK(ran(s, "set sw") == "  shiftwidth=8\n");
+    ran(s, "set sw:2 noet");
+    CHECK(s.settings().shiftwidth == 2u);
+    CHECK_FALSE(s.settings().expandtab);
+    ran(s, "set ts&");
+    CHECK(s.settings().tabstop == 8u);
+    CHECK(ran(s, "set all")
+	  == "--- Options ---\nnoexpandtab\nnonumber\n  shiftwidth=2\n"
+	     "  tabstop=8\n");
+    CHECK(refused_run(s, "set foo") == "unknown option: foo");
+    CHECK(refused_run(s, "set ts=0") == "argument must be positive: ts=0");
+    CHECK(refused_run(s, "set nu=3") == "invalid argument: nu=3");
+}
+
+#ifndef _WIN32
+TEST_CASE("ex session: :!cmd, :r !cmd and :w !cmd through the shell")
+{
+    scratch_dir d;
+    d.put("s.txt", "b\na\n");
+    world w;
+    session s(w);
+    ran(s, "cd " + d.name);
+    CHECK(ran(s, "!echo hi") == "hi\n");
+    CHECK(ran(s, "!pwd") == s.directory() + "\n");	// the session's directory
+    CHECK(ran(s, "!exit 3") == "shell returned 3\n");
+    CHECK(refused_run(s, "!echo %") == "no file name for '%'");
+    ran(s, "e s.txt");
+    CHECK(ran(s, "!echo % \\%") == "s.txt %\n");
+    CHECK(ran(s, "w !sort") == "a\nb\n");
+    CHECK(ran(s, "2w !cat") == "a\n");
+    CHECK(ran(s, "w !head -1") == "b\n");	// stops reading: no error
+    ran(s, "0r !printf 'x\\ny\\n'");
+    CHECK(body(w, s.current()) == "x\ny\nb\na\n");
+    CHECK(s.current_line() == 2u);
+}
+#endif

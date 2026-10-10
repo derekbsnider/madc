@@ -21,9 +21,12 @@
 #include <string>
 #include <vector>
 
+#include "madc_documents.h"	// :e :r :w :sav — the document file owner
 #include "madc_ex.h"
+#include "madc_posix_io.h"	// host_path_join / _type_of / _within: paths
 #include "madc_regex.h"		// /re/ ?re? s g v sor — madc's one regex engine
 #include "madcdis/hub.h"
+#include "madcdis/process.h"	// :! :r ! :w ! — the one spawn owner
 #include "madcdis/verbs.h"	// mutation_context: the one write surface
 
 namespace madc {
@@ -639,6 +642,13 @@ bool parse(const std::string &text, line &out, std::string &error)
 	    return true;
 	case command::read: case command::write:
 	    r.skip_blanks();
+	    if ( out.code == command::write && r.peek() == '>'
+		 && r.at + 1 < r.s.size() && r.s[r.at + 1] == '>' )
+	    {
+		out.flags = ">>";		// :w >> FILE appends
+		r.at += 2;
+		r.skip_blanks();
+	    }
 	    if ( !out.shell_form && r.peek() == '!' )
 	    {
 		++r.at;
@@ -1749,6 +1759,610 @@ struct executor
 	return true;
     }
 
+    // ---- files and buffers (slice 4)
+
+    // A typed file name as a path: `~` against the home, then against the
+    // session's directory.
+    std::string path_of(const std::string &typed) const
+    {
+	std::string p;
+	if ( !madc::detail::host_path_expand_home(typed, p) )
+	    p = typed;
+	return madc::detail::host_path_join(s.dir, p);
+    }
+    // A path as a message names it: below the session's directory, the part
+    // below it (vim's); untitled, [No Name].
+    std::string shown_name(const std::string &path) const
+    {
+	if ( path.empty() )
+	    return "[No Name]";
+	const std::string d = madc::detail::canonical_path_for_compare(s.dir);
+	const std::string p = madc::detail::canonical_path_for_compare(path);
+	size_t at = 0;
+	if ( madc::detail::host_path_within(d, p, &at) )
+	    return p.substr(at);
+	return path;
+    }
+    static bool same_path(const std::string &a, const std::string &b)
+    {
+	return !a.empty() && !b.empty()
+	       && madc::detail::canonical_path_for_compare(a)
+		  == madc::detail::canonical_path_for_compare(b);
+    }
+    static size_t text_lines(const std::string &t)
+    {
+	size_t n = (size_t)std::count(t.begin(), t.end(), '\n');
+	return !t.empty() && t[t.size() - 1] != '\n' ? n + 1 : n;
+    }
+    // vim's file message: "name" [New] NL, NB[ written / appended].
+    void file_message(const std::string &path, const std::string &text,
+		      bool fresh, const char *done)
+    {
+	out.shown += "\"" + shown_name(path) + "\" " + (fresh ? "[New] " : "")
+		     + std::to_string(text_lines(text)) + "L, "
+		     + std::to_string(text.size()) + "B"
+		     + (done ? std::string(" ") + done : std::string()) + "\n";
+    }
+    // A file's text as lines (a final line break ends the last line).
+    static std::vector<std::string> split_lines(const std::string &t)
+    {
+	std::vector<std::string> r;
+	size_t at = 0;
+	while ( at < t.size() )
+	{
+	    size_t nl = t.find('\n', at);
+	    if ( nl == std::string::npos )
+		nl = t.size();
+	    r.push_back(t.substr(at, nl - at));
+	    at = nl + 1;
+	}
+	return r;
+    }
+    std::string range_text(size_t first, size_t last) const
+    {
+	std::string t;
+	for ( size_t k = first; k <= last && k != 0; ++k )
+	    t += line_text(k) + "\n";
+	return t;
+    }
+
+    // A shell command (design decision 10): `/bin/sh -c` (`cmd /c` on
+    // Windows) through madc::Process, in the session's directory, `input`
+    // its stdin; its stdout then stderr into `output`.
+    bool run_shell(const std::string &command, const std::string &input,
+		   std::string &output, int &status)
+    {
+	madc::ProcessOptions o;
+#ifdef _WIN32
+	const char *shell = "cmd";
+	o.args.push_back("/c");
+#else
+	const char *shell = "/bin/sh";
+	o.args.push_back("-c");
+#endif
+	o.args.push_back(command);
+	o.working_directory = s.dir;
+	madc::Process p(madc::DataSource(std::string("exec://") + shell), o);
+	if ( !p.start() )
+	    return fail(std::string("the shell '") + shell + "' did not start");
+	madc::MemoryDataChannel in(std::vector<unsigned char>(input.begin(),
+							      input.end()));
+	madc::MemoryDataChannel stdout_text, stderr_text;
+	// The pump's false covers a nonzero exit and a command that stopped
+	// reading its stdin (`:w !head -1`); both ran — only an unreaped
+	// child (no status) did not.
+	madc::ProcessPumpResult r;
+	madc::pump_process(in, p, stdout_text, &stderr_text, r);
+	if ( r.exit_status < 0 )
+	    return fail("the shell command did not run: " + command);
+	output.assign(stdout_text.bytes().begin(), stdout_text.bytes().end());
+	output.append(stderr_text.bytes().begin(), stderr_text.bytes().end());
+	status = r.exit_status;
+	return true;
+    }
+    // `%` in a shell command is the current buffer's name (vim's one
+    // useful expansion); `\%` is a `%`.
+    bool expand_command(const std::string &typed, std::string &command)
+    {
+	command.clear();
+	for ( size_t i = 0; i < typed.size(); ++i )
+	{
+	    if ( typed[i] == '\\' && i + 1 < typed.size() && typed[i + 1] == '%' )
+	    {
+		command += '%';
+		++i;
+	    }
+	    else if ( typed[i] == '%' )
+	    {
+		const madc::hub::document *d = s.cur ? s.w.doc_of(s.cur) : 0;
+		if ( !d || d->path().empty() )
+		    return fail("no file name for '%'");
+		command += shown_name(d->path());
+	    }
+	    else
+		command += typed[i];
+	}
+	return true;
+    }
+    void shell_output(const std::string &output, int status)
+    {
+	out.shown += output;
+	if ( !output.empty() && output[output.size() - 1] != '\n' )
+	    out.shown += "\n";
+	if ( status != 0 )
+	    out.shown += "shell returned " + std::to_string(status) + "\n";
+    }
+
+    // :!cmd
+    bool shell(const line &l)
+    {
+	std::string command, output;
+	int status = 0;
+	if ( !expand_command(l.argument, command)
+	     || !run_shell(command, std::string(), output, status) )
+	    return false;
+	shell_output(output, status);
+	return true;
+    }
+
+    // :e[!] [FILE] — FILE's buffer current: the open one, else read, else
+    // a new one named FILE; `#` the alternate. No FILE: the current file
+    // read again (refused over changes unless !).
+    bool edit(const line &l)
+    {
+	const std::string &arg = l.argument;
+	if ( arg == "#" )
+	{
+	    if ( !s.alternate || !s.w.has_doc(s.alternate) )
+		return fail("no alternate file");
+	    s.use(s.alternate);
+	    file_message(s.w.doc_of(s.cur)->path(), text_of_buffer(), false, 0);
+	    return true;
+	}
+	if ( arg.empty() )
+	{
+	    const madc::hub::document *d = s.cur ? s.w.doc_of(s.cur) : 0;
+	    if ( !d )
+		return fail("no buffer (:e FILE opens one)");
+	    if ( d->path().empty() )
+		return fail("no file name");
+	    if ( s.w.doc_modified(s.cur) && !l.force )
+		return fail("no write since last change (add ! to override)");
+	    const std::string path = d->path();
+	    if ( !madc::document_reload(s.w, s.cur, path) )
+		return fail("cannot read \"" + shown_name(path) + "\"");
+	    file_message(path, text()->text(), false, 0);
+	    return true;
+	}
+	const std::string path = path_of(arg);
+	madc::hub::entity_id e = madc::document_find(s.w, path);
+	if ( e )
+	{
+	    s.use(e);
+	    file_message(path, text_of_buffer(), false, 0);
+	    return true;
+	}
+	e = madc::document_open(s.w, path);
+	if ( e )
+	{
+	    s.use(e);
+	    file_message(path, s.w.text_of(e)->text(), false, 0);
+	    return true;
+	}
+	if ( madc::detail::host_path_type_of(path)
+	     != madc::detail::host_path_type::none )
+	    return fail("cannot read \"" + shown_name(path) + "\"");
+	s.use(madc::document_new(s.w, path));
+	out.shown += "\"" + shown_name(path) + "\" [New]\n";
+	return true;
+    }
+
+    // :r [FILE] / :r !cmd — the text after the addressed line (0: before
+    // the first); the current line its last.
+    bool read(const line &l)
+    {
+	size_t first = 0, last = 0;
+	if ( !resolve_range(l, default_range::current, first, last, true) )
+	    return false;
+	std::string text;
+	std::string path;
+	if ( l.shell_form )
+	{
+	    std::string command;
+	    int status = 0;
+	    if ( !expand_command(l.argument, command)
+		 || !run_shell(command, std::string(), text, status) )
+		return false;
+	    if ( status != 0 )
+		out.shown += "shell returned " + std::to_string(status) + "\n";
+	}
+	else
+	{
+	    const madc::hub::document *d = s.w.doc_of(s.cur);
+	    path = l.argument.empty() ? d->path() : path_of(l.argument);
+	    if ( path.empty() )
+		return fail("no file name");
+	    if ( !madc::document_read_file(path, text) )
+		return fail("cannot read \"" + shown_name(path) + "\"");
+	}
+	const std::vector<std::string> body = split_lines(text);
+	if ( !body.empty() )
+	{
+	    if ( !begin_change() )
+		return false;
+	    insert_after(last, body);
+	    set_dot(last + body.size());
+	}
+	if ( !path.empty() )
+	    file_message(path, text, false, 0);
+	return true;
+    }
+
+    // Any buffer with changes not written blocks quitting (vim's E37 for
+    // the current, E162 for another) — every document of the world.
+    bool quit_allowed(bool force, madc::hub::entity_id written)
+    {
+	if ( force )
+	    return true;
+	if ( s.cur && s.cur != written && s.w.doc_modified(s.cur) )
+	    return fail("no write since last change (add ! to override)");
+	const std::vector<madc::hub::entity_id> all = s.w.docs();
+	for ( size_t i = 0; i < all.size(); ++i )
+	    if ( all[i] != written && s.w.doc_modified(all[i]) )
+		return fail("no write since last change for buffer \""
+			    + shown_name(s.w.doc_of(all[i])->path())
+			    + "\" (add ! to override)");
+	return true;
+    }
+    bool quit(const line &l)
+    {
+	if ( !quit_allowed(l.force, 0) )
+	    return false;
+	out.quit = true;
+	return true;
+    }
+
+    // :w :wq :x :up — the range (default the whole buffer) to FILE or the
+    // buffer's own file; `>>` appends; :w !cmd pipes it to a command. :x
+    // and :up write only a buffer with changes; :wq and :x then quit.
+    bool write(const line &l)
+    {
+	size_t first = 0, last = 0;
+	if ( !resolve_range(l, default_range::whole, first, last, true) )
+	    return false;
+	if ( l.shell_form )
+	{
+	    std::string command, output;
+	    int status = 0;
+	    if ( !expand_command(l.argument, command)
+		 || !run_shell(command, range_text(first, last), output, status) )
+		return false;
+	    shell_output(output, status);
+	    return true;
+	}
+	const madc::hub::document *d = s.w.doc_of(s.cur);
+	const bool append = l.flags == ">>";
+	std::string target = l.argument.empty() ? d->path()
+						: path_of(l.argument);
+	if ( target.empty() )
+	    return fail("no file name");
+	const bool whole = first <= 1 && last == lines();
+	if ( d->path().empty() && !append && whole )
+	    madc::document_set_path(s.w, s.cur, target);	// vim names it
+	const bool own = same_path(target, d->path());
+	const bool when_changed = l.code == command::exit
+				  || l.code == command::update;
+	if ( !(when_changed && own && !s.w.doc_modified(s.cur)) )
+	{
+	    if ( own && !whole && !append && !l.force )
+		return fail("use ! to write a partial buffer");
+	    if ( own && d->read_only() && !l.force )
+		return fail("the buffer is read-only (add ! to override)");
+	    const bool fresh = madc::detail::host_path_type_of(target)
+			       == madc::detail::host_path_type::none;
+	    if ( !own && !append && !fresh && !l.force )
+		return fail("file exists (add ! to override)");
+	    const std::string text = own && whole && !append ? text_of_buffer()
+							     : range_text(first, last);
+	    const bool written = own && whole && !append
+				 ? madc::document_save(s.w, s.cur)
+				 : madc::document_write_file(target, text, append);
+	    if ( !written )
+		return fail("cannot write \"" + shown_name(target) + "\"");
+	    file_message(target, text, fresh, append ? "appended" : "written");
+	}
+	if ( l.code == command::write_quit || l.code == command::exit )
+	{
+	    if ( !quit_allowed(l.force, s.cur) )
+		return false;
+	    out.quit = true;
+	}
+	return true;
+    }
+    std::string text_of_buffer() const
+    {
+	const text_buffer *b = text();
+	return b ? b->text() : std::string();
+    }
+
+    // :sav[!] FILE — the buffer renamed FILE and written there.
+    bool saveas(const line &l)
+    {
+	if ( l.argument.empty() )
+	    return fail("saveas needs a file name");
+	const std::string target = path_of(l.argument);
+	const bool fresh = madc::detail::host_path_type_of(target)
+			   == madc::detail::host_path_type::none;
+	if ( !fresh && !l.force && !same_path(target, s.w.doc_of(s.cur)->path()) )
+	    return fail("file exists (add ! to override)");
+	if ( !madc::document_set_path(s.w, s.cur, target)
+	     || !madc::document_save(s.w, s.cur) )
+	    return fail("cannot write \"" + shown_name(target) + "\"");
+	file_message(target, text_of_buffer(), fresh, "written");
+	return true;
+    }
+
+    // ---- the buffer list
+    // The world's documents in :ls order, numbering any first seen.
+    std::vector<madc::hub::entity_id> numbered_docs()
+    {
+	std::vector<madc::hub::entity_id> all = s.w.docs();
+	std::vector<std::pair<size_t, madc::hub::entity_id> > by;
+	for ( size_t i = 0; i < all.size(); ++i )
+	    by.push_back(std::make_pair(s.number_of(all[i]), all[i]));
+	std::sort(by.begin(), by.end());
+	std::vector<madc::hub::entity_id> r;
+	for ( size_t i = 0; i < by.size(); ++i )
+	    r.push_back(by[i].second);
+	return r;
+    }
+    // A buffer's current line as :ls shows it (vim's: 1 for an empty one).
+    size_t listed_line(madc::hub::entity_id e)
+    {
+	const text_buffer *b = s.w.text_of(e);
+	const size_t n = b ? b->line_count() : 0;
+	size_t at = n;
+	std::map<madc::hub::entity_id, session::buffer_state>::const_iterator st =
+	    s.buffers.find(e);
+	const anchor *a = st == s.buffers.end() || !st->second.dot
+			  ? (const anchor *)0 : s.w.anchor_of(e, st->second.dot);
+	if ( a && b )
+	    at = b->line_of(a->off);
+	if ( at > n )
+	    at = n;
+	return at ? at : 1;
+    }
+    // :ls (vim's buflist_list): number, `%` current / `#` alternate, `a`
+    // shown / `h` hidden, `=` read-only, `+` changed, the name, its line.
+    bool list_buffers()
+    {
+	const std::vector<madc::hub::entity_id> all = numbered_docs();
+	for ( size_t i = 0; i < all.size(); ++i )
+	{
+	    const madc::hub::entity_id e = all[i];
+	    const madc::hub::document *d = s.w.doc_of(e);
+	    std::string num = std::to_string(s.number_of(e));
+	    std::string row = std::string(num.size() < 3 ? 3 - num.size() : 0, ' ')
+			      + num + " ";
+	    row += e == s.cur ? '%' : e == s.alternate ? '#' : ' ';
+	    row += e == s.cur ? 'a' : ' ';
+	    row += d->read_only() ? '=' : ' ';
+	    row += s.w.doc_modified(e) ? '+' : ' ';
+	    row += " \"" + shown_name(d->path()) + "\"";
+	    row += std::string(row.size() < 40 ? 40 - row.size() : 1, ' ');
+	    out.shown += row + "line " + std::to_string(listed_line(e)) + "\n";
+	}
+	return true;
+    }
+    // :b N / :b # / :b NAME (a unique part of a buffer's name).
+    bool buffer(const line &l)
+    {
+	const std::string &arg = l.argument;
+	if ( arg.empty() )
+	    return s.cur ? true : fail("no buffer (:e FILE opens one)");
+	const std::vector<madc::hub::entity_id> all = numbered_docs();
+	if ( arg == "#" )
+	{
+	    if ( !s.alternate || !s.w.has_doc(s.alternate) )
+		return fail("no alternate file");
+	    s.use(s.alternate);
+	    return true;
+	}
+	if ( arg.find_first_not_of("0123456789") == std::string::npos )
+	{
+	    const size_t want = (size_t)strtoul(arg.c_str(), 0, 10);
+	    for ( size_t i = 0; i < all.size(); ++i )
+		if ( s.number_of(all[i]) == want )
+		{
+		    s.use(all[i]);
+		    return true;
+		}
+	    return fail("buffer " + arg + " does not exist");
+	}
+	madc::hub::entity_id found = 0;
+	for ( size_t i = 0; i < all.size(); ++i )
+	    if ( shown_name(s.w.doc_of(all[i])->path()).find(arg)
+		 != std::string::npos )
+	    {
+		if ( found )
+		    return fail("more than one match for " + arg);
+		found = all[i];
+	    }
+	if ( !found )
+	    return fail("no matching buffer for " + arg);
+	s.use(found);
+	return true;
+    }
+    // :bn / :bp — the next or previous buffer by number, wrapping.
+    bool cycle(const line &l)
+    {
+	const std::vector<madc::hub::entity_id> all = numbered_docs();
+	if ( all.empty() )
+	    return fail("no buffer (:e FILE opens one)");
+	size_t at = 0;
+	for ( size_t i = 0; i < all.size(); ++i )
+	    if ( all[i] == s.cur )
+		at = i;
+	const size_t n = all.size();
+	const size_t steps = l.has_count ? l.count % n : 1;
+	at = l.code == command::bnext ? (at + steps) % n : (at + n - steps) % n;
+	s.use(all[at]);
+	return true;
+    }
+
+    // :cd [DIR] (none: the home; `-`: the one before) and :pwd — the
+    // session's directory only.
+    bool cd(const line &l)
+    {
+	std::string to;
+	if ( l.argument == "-" )
+	{
+	    if ( s.previous_dir.empty() )
+		return fail("no previous directory");
+	    to = s.previous_dir;
+	}
+	else
+	    to = path_of(l.argument.empty() ? std::string("~") : l.argument);
+	if ( madc::detail::host_path_type_of(to)
+	     != madc::detail::host_path_type::directory )
+	    return fail("cannot change directory: " + l.argument);
+	const std::string real = madc::detail::resolve_real_path(to.c_str());
+	s.previous_dir = s.dir;
+	s.dir = real.empty() ? to : real;
+	return true;
+    }
+
+    // :set (design decision 3's four options), vim's forms: `opt` (a
+    // boolean on; a number shown), `noopt`, `invopt` / `opt!`, `opt?`,
+    // `opt=N` / `opt:N`, `opt&` (the default); no argument: the options
+    // that differ from their defaults; `all`: every one.
+    enum class option_code : unsigned char { number, tabstop, shiftwidth,
+					     expandtab };
+    struct option_row
+    {
+	const char *name;
+	const char *short_name;
+	option_code code;
+	bool boolean;
+    };
+    static const option_row *option_named(const std::string &word)
+    {
+	static const option_row rows[] = {
+	    { "number", "nu", option_code::number, true },
+	    { "tabstop", "ts", option_code::tabstop, false },
+	    { "shiftwidth", "sw", option_code::shiftwidth, false },
+	    { "expandtab", "et", option_code::expandtab, true },
+	};
+	for ( const option_row &r : rows )
+	    if ( word == r.name || word == r.short_name )
+		return &r;
+	return 0;
+    }
+    bool *flag_of(option_code c)
+    {
+	return c == option_code::number ? &s.opts.number
+	     : c == option_code::expandtab ? &s.opts.expandtab : 0;
+    }
+    size_t *size_of(option_code c)
+    {
+	return c == option_code::tabstop ? &s.opts.tabstop
+	     : c == option_code::shiftwidth ? &s.opts.shiftwidth : 0;
+    }
+    std::string option_shown(const option_row &r)
+    {
+	if ( r.boolean )
+	    return (*flag_of(r.code) ? "  " : "no") + std::string(r.name);
+	return "  " + std::string(r.name) + "=" + std::to_string(*size_of(r.code));
+    }
+    bool set(const line &l)
+    {
+	static const char *const all_names[] = { "expandtab", "number",
+						 "shiftwidth", "tabstop" };
+	const options defaults;
+	std::vector<std::string> words;
+	{
+	    reader r(l.argument);
+	    while ( r.skip_blanks(), !r.end() )
+	    {
+		std::string w;
+		while ( !r.end() && !blank(r.peek()) )
+		    w += r.s[r.at++];
+		words.push_back(w);
+	    }
+	}
+	if ( words.empty() || (words.size() == 1 && words[0] == "all") )
+	{
+	    out.shown += "--- Options ---\n";
+	    for ( const char *name : all_names )
+	    {
+		const option_row &r = *option_named(name);
+		const bool differs = r.boolean
+		    ? *flag_of(r.code) != (r.code == option_code::number
+					   ? defaults.number : defaults.expandtab)
+		    : *size_of(r.code) != (r.code == option_code::tabstop
+					   ? defaults.tabstop : defaults.shiftwidth);
+		if ( differs || !words.empty() )
+		    out.shown += option_shown(r) + "\n";
+	    }
+	    return true;
+	}
+	for ( const std::string &w : words )
+	{
+	    size_t cut = w.find_first_of("=:?!&");
+	    std::string name = w.substr(0, cut);
+	    const std::string rest = cut == std::string::npos ? std::string()
+							       : w.substr(cut);
+	    bool to_no = false, invert = false;
+	    const option_row *r = option_named(name);
+	    if ( !r && name.compare(0, 2, "no") == 0 )
+	    {
+		r = option_named(name.substr(2));
+		to_no = r != 0;
+	    }
+	    if ( !r && name.compare(0, 3, "inv") == 0 )
+	    {
+		r = option_named(name.substr(3));
+		invert = r != 0;
+	    }
+	    if ( !r )
+		return fail("unknown option: " + name);
+	    if ( rest == "?" || (!r->boolean && rest.empty()) )
+	    {
+		out.shown += option_shown(*r) + "\n";
+		continue;
+	    }
+	    if ( rest == "&" )
+	    {
+		if ( r->boolean )
+		    *flag_of(r->code) = r->code == option_code::number
+					? defaults.number : defaults.expandtab;
+		else
+		    *size_of(r->code) = r->code == option_code::tabstop
+					? defaults.tabstop : defaults.shiftwidth;
+		continue;
+	    }
+	    if ( r->boolean )
+	    {
+		if ( rest == "!" )
+		    invert = true;
+		else if ( !rest.empty() )
+		    return fail("invalid argument: " + w);
+		bool &f = *flag_of(r->code);
+		f = invert ? !f : !to_no;
+		continue;
+	    }
+	    if ( to_no || invert || rest.size() < 2
+		 || (rest[0] != '=' && rest[0] != ':')
+		 || rest.find_first_not_of("0123456789", 1) != std::string::npos )
+		return fail("invalid argument: " + w);
+	    const size_t v = (size_t)strtoul(rest.c_str() + 1, 0, 10);
+	    if ( v == 0 && r->code == option_code::tabstop )
+		return fail("argument must be positive: " + w);
+	    *size_of(r->code) = v;
+	}
+	return true;
+    }
+
     bool want_text(const line &l)
     {
 	size_t first = 0, last = 0;
@@ -1769,6 +2383,32 @@ struct executor
 
     bool execute(const line &l)
     {
+	// The commands that need no buffer: files, buffers, the directory,
+	// the options, the shell.
+	switch ( l.code )
+	{
+	    case command::edit:
+		return edit(l);
+	    case command::quit:
+		return quit(l);
+	    case command::buffers:
+		return list_buffers();
+	    case command::buffer:
+		return buffer(l);
+	    case command::bnext: case command::bprevious:
+		return cycle(l);
+	    case command::cd:
+		return cd(l);
+	    case command::pwd:
+		out.shown += s.dir + "\n";
+		return true;
+	    case command::set:
+		return set(l);
+	    case command::shell:
+		return shell(l);
+	    default:
+		break;
+	}
 	if ( !s.cur )
 	    return fail("no buffer (:e FILE opens one)");
 	switch ( l.code )
@@ -1804,6 +2444,13 @@ struct executor
 		return sort(l);
 	    case command::retab:
 		return retab(l);
+	    case command::read:
+		return read(l);
+	    case command::write: case command::write_quit:
+	    case command::exit: case command::update:
+		return write(l);
+	    case command::saveas:
+		return saveas(l);
 	    default:
 		return fail(std::string("'") + command_name(l.code)
 			    + "' is not an editor command yet");
@@ -1834,7 +2481,22 @@ struct executor
     }
 };
 
-session::session(madc::hub::world &world) : w(world), cur(0) {}
+session::session(madc::hub::world &world)
+    : w(world), cur(0), alternate(0), next_number(1),
+      dir(madc::detail::resolve_real_path("."))
+{
+    if ( dir.empty() )
+	dir = ".";
+}
+
+size_t session::number_of(entity_id doc)
+{
+    std::map<entity_id, size_t>::iterator it = numbers.find(doc);
+    if ( it != numbers.end() )
+	return it->second;
+    numbers[doc] = next_number;
+    return next_number++;
+}
 
 session::~session()
 {
@@ -1856,7 +2518,10 @@ bool session::use(entity_id doc)
 {
     if ( !doc || !w.has_doc(doc) )
 	return false;
+    if ( cur && cur != doc && w.has_doc(cur) )
+	alternate = cur;
     cur = doc;
+    number_of(doc);
     buffer_state &st = buffers[doc];
     if ( !st.dot )
     {
