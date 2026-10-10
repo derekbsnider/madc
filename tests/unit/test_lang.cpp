@@ -32,6 +32,7 @@ thread_local bool madc_verbose = false;
 #include "madc.h"
 #include "madcdis/hub.h"
 #include "madc_lang.h"
+#include "ns_common.h"		// madc_project_open / madc_parse_*: a project TU's handle
 #include "madc/bits/file_kinds"
 
 using madc::hub::world;
@@ -289,5 +290,48 @@ TEST_CASE("a document's parse searches the include directories of its opener")
     prog->pop_runtime_scope();
 
     std::remove(header.c_str());
+    rmdir(dir.c_str());
+}
+
+// A project TU's handle parses under its manifest entry's options — at open
+// AND at every refresh (the --project build's rule). ORACLE: gcc
+// -fsyntax-only -DLANG_TU_VALUE=7 tu.c: clean; without the -D: the #error.
+TEST_CASE("a project TU's handle keeps its manifest options across a refresh")
+{
+    char tmpl[] = "/tmp/madc_lang_XXXXXX";
+    char *made = mkdtemp(tmpl);
+    REQUIRE(made != NULL);
+    const std::string dir = made;
+    const std::string tu = dir + "/tu.c", manifest = dir + "/app.prj.json";
+    std::string text = "#if LANG_TU_VALUE != 7\n#error no define\n#endif\n"
+	"int f(void) { return LANG_TU_VALUE; }\n";
+    {
+	std::ofstream f(tu.c_str());
+	f << text;
+	std::ofstream m(manifest.c_str());
+	m << "{\"entry\": \"f\", \"tus\": [{\"file\": \"tu.c\","
+	     " \"defines\": [\"LANG_TU_VALUE=7\"]}]}\n";
+    }
+    std::string path = manifest;
+    const int64_t project = madc_project_open(&path);
+    REQUIRE(project > 0);
+    madc::value tus;
+    madc_project_tus(&tus, project);
+    REQUIRE(tus.is_array());
+    const std::vector<madc::value> &rows = tus.as_array();
+    REQUIRE(rows.size() == 1u);
+    const int64_t h = rows[0].as_object().at("handle").as_integer();
+    REQUIRE(h > 0);
+    madc::value diags;
+    madc_parse_diagnostics(&diags, h);
+    REQUIRE(diags.is_array());
+    CHECK(diags.as_array().empty());				// open: the -D applies
+    REQUIRE(madc_parse_refresh(h, &text));
+    madc_parse_diagnostics(&diags, h);
+    REQUIRE(diags.is_array());
+    CHECK(diags.as_array().empty());				// refresh: still applies
+    madc_project_close(project);
+    std::remove(tu.c_str());
+    std::remove(manifest.c_str());
     rmdir(dir.c_str());
 }

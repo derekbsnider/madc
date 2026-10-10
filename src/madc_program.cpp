@@ -5112,18 +5112,25 @@ struct parse_tu_state
     // the CLI's compile of the same file does. A project TU's handle takes
     // its manifest entry's options instead, as the --project build does.
     std::vector<madc::dis::istring> include_paths;
-    parse_tu_state() : child((::Program *)0), generation(0), standard(0) {}
+    // A project TU's handle: its manifest entry, whose options every child
+    // the handle builds takes (the --project build's rule) — at open and at
+    // every refresh.
+    ProjectTU tu;
+    bool has_tu;
+    parse_tu_state() : child((::Program *)0), generation(0), standard(0), has_tu(false) {}
     ~parse_tu_state() { delete child; }
 };
 
-// Every parse handle's child starts here — the one init for the three
-// handle constructors (open-from-text, open-from-file, refresh): the
-// handle's standard, IDE fidelity (comment spans ride leading trivia),
-// and on Windows the forest arena records DURING the parse — Run has no
-// fork there, so parse_run freezes the tree for a child madc (design (b),
-// owner ruling 2026-08-28), and the arena is the freezable type graph: it
-// must exist before tokenize, exactly like the CLI's --freeze-run lane.
-static void parse_handle_child_init(::Program &child, const parse_tu_state &st)
+// Every parse handle's child starts here — the one init for the handle's
+// constructors (open-from-text, open-from-file, refresh, a checked
+// refresh's candidate): the handle's standard, then a project TU's manifest
+// options or the opener's include list, IDE fidelity (comment spans ride
+// leading trivia), and on Windows the forest arena records DURING the parse
+// — Run has no fork there, so parse_run freezes the tree for a child madc
+// (design (b), owner ruling 2026-08-28), and the arena is the freezable type
+// graph: it must exist before tokenize, exactly like the CLI's --freeze-run
+// lane. False = the TU's options are refused (an unknown -stdlib flavor).
+static bool parse_handle_child_init(::Program &child, const parse_tu_state &st)
 {
     if ( st.standard != 0 )
 	child.adopt_file_standard(st.standard);
@@ -5132,6 +5139,8 @@ static void parse_handle_child_init(::Program &child, const parse_tu_state &st)
 #ifdef _WIN32
     child.forest_arena_enabled = true;
 #endif
+    std::string opt_err;
+    return !st.has_tu || apply_project_tu_options(child, st.tu, opt_err);
 }
 
 static handle_table<parse_tu_state> &parse_tu_handles()
@@ -5477,21 +5486,21 @@ static int64_t parse_open_file_with(::Program &self, const std::string &path,
     parse_tu_state *st = new parse_tu_state();
     st->display_name = path;
     st->source_text = read_text_file(path);
-    if ( !tu )
-	st->include_paths = self.include_paths;
-    st->child = new ::Program(self.engine);
-    parse_handle_child_init(*st->child, *st);
-    st->child->registration_policy =
-	runtime_eval_registration_policy_for_source_child(self.registration_policy);
     if ( tu )
     {
-	std::string opt_err;
-	if ( !apply_project_tu_options(*st->child, *tu, opt_err) )
-	{
-	    delete st;
-	    return 0;
-	}
+	st->tu = *tu;
+	st->has_tu = true;
     }
+    else
+	st->include_paths = self.include_paths;
+    st->child = new ::Program(self.engine);
+    if ( !parse_handle_child_init(*st->child, *st) )
+    {
+	delete st;
+	return 0;
+    }
+    st->child->registration_policy =
+	runtime_eval_registration_policy_for_source_child(self.registration_policy);
     {
 	DiagnosticRenderMute mute;
 	TokenProgram *tp = st->child->tokenize(path.c_str());
