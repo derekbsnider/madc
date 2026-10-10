@@ -380,9 +380,25 @@ items are their own sessions, any time.
    verdict). Unit, fix lanes and gates green; the batch checkpoint 2059/0/9 at
    `bca0d61af`; not pushed. madcide's `load_theme` / `spans_to_hspans` move
    onto the theme owner in 1D.
-10. **`%git` as the madcgit module's command**, registered on load
-    (`-lmadcgit`, the ini `modules` key, or `import madcgit;`); the verb
-    bodies (`madcide_git.inc:93-613`, ~520 lines) move into the module.
+10. **`%git` as the madcgit module's command — LANDED 2026-10-10:
+    `b90bef9e3` (a module brings REPL commands: the map row's `commands`
+    names the module's exported row table, `include/madc_module_commands.h`;
+    the session registers them at `begin()` and after each kept unit that
+    loaded a module — `-lmadcgit`, the ini `modules` key, `import madcgit;`),
+    `2f89dfda7` (the session's buffer question: `madc::resolve_buffer` the one
+    rule, `InteractiveSession::set_buffers` / `buffer_text`,
+    `madc::session_buffer` in C++ and `<ns_madc>`; in a backend the `buffer`
+    wire request asks the host mid-entry), `9cb83bf3b` (the verbs `log` /
+    `show` / `blame` / `status` / `diff` in C++ in the module,
+    `src/modules/madcgit/madcgit_verbs.cpp`, over `GitRepo`;
+    `GitRepo::relpath` the one owner)** (design
+    `2026-10-10-git-module-command-design.md`, `eb0082c5e`). Found on the way
+    and fixed: `2ce42505d` (`git log -- PATH` listed a commit TREESAME to a
+    parent; git hides it). Unit, fix lanes and gates green; the batch
+    checkpoint 2061/0/9 at `9cb83bf3b`; the REPL, colon and session subset on
+    genuine Windows 27/0/6 (1B.9 + 1B.10); not pushed. madcide's dialect
+    `%git` verbs (`madcide_git.inc`) are the second implementation until
+    **1D.18**, when its REPL pane resolves `%git` through the session.
 
 *1C — the headless services (after 1A; parallel with 1B):*
 11. **ONE set of language-service functions** over a document: diagnostics,
