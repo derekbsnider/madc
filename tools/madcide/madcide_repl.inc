@@ -354,9 +354,11 @@ void repl_reply(long w, long es, var &r)
 	bool restd = taken && r["payload"] == madc::session_payload::standard;
 	// %check [FILE] (split arc 1B.8): the buffer's check, into Problems.
 	bool checks = taken && r["payload"] == madc::session_payload::check;
+	// %args [ARGS] (split arc 1B.8): the program's arguments — progargs.
+	bool argset = taken && r["payload"] == madc::session_payload::args;
 	// A file command's payload keeps the pane busy into its file's load
 	// (repl_load_file sets the load's seq), so it never reads idle between.
-	bool files = taken && !quits && !resets && !restd && !checks
+	bool files = taken && !quits && !resets && !restd && !checks && !argset
 		     && !(r["payload"] == madc::session_payload::none);
 	if ( !files )
 	    ui::set(w, es, "replbusy", 0);
@@ -393,6 +395,27 @@ void repl_reply(long w, long es, var &r)
 	if ( resets )
 	{
 	    repl_restart(w, es, active_doc(w, es, 0));
+	    return;
+	}
+	if ( argset )
+	{
+	    var argv = r["argv"];
+	    var line = "";
+	    if ( php::count(argv) > 0 )
+		line = argv[0];
+	    if ( strlen(line.c_str()) == 0 )
+	    {
+		var cur;
+		ui::get(cur, w, es, "progargs");
+		if ( cur.is_null() || strlen(cur.c_str()) == 0 )
+		    repl_feed(w, es, "no arguments\n");
+		else
+		    repl_feed(w, es, format("{}\n", cur));
+	    }
+	    else if ( line == "--" )
+		set_program_args(w, es, "");
+	    else
+		set_program_args(w, es, line.c_str());
 	    return;
 	}
 	if ( checks )
@@ -885,7 +908,36 @@ bool repl_run_payload(long w, long es, var &r)
     if ( php::count(argv) == 0 )
 	return false;
     var p = argv[0];
-    long doc = buffer_doc_named(w, es, p.c_str());
+    // No FILE (split arc 1B.8): the active buffer, by its path; a run takes
+    // the program arguments (progargs).
+    bool current = strlen(p.c_str()) == 0;
+    long doc = 0;
+    if ( current )
+    {
+	doc = active_doc(w, es, 0);
+	ui::get(p, w, doc, "path");
+	if ( p.is_null() || strlen(p.c_str()) == 0 )
+	{
+	    repl_feed(w, es, "the buffer has no file name (save it first)\n");
+	    return false;
+	}
+	if ( r["payload"] == madc::session_payload::run
+	     || r["payload"] == madc::session_payload::run_here )
+	{
+	    var pa = "";
+	    var got;
+	    ui::get(got, w, es, "progargs");
+	    if ( !got.is_null() )
+		pa = got;
+	    var runargv;
+	    program_argv(runargv, p.c_str(), pa.c_str());
+	    argv = runargv;
+	}
+	else
+	    argv[0] = p;
+    }
+    else
+	doc = buffer_doc_named(w, es, p.c_str());
     var text = "";
     if ( doc != 0 )
 	ui::text(text, w, doc);
@@ -918,6 +970,8 @@ bool repl_run_payload(long w, long es, var &r)
 	if ( php::count(argv) < 2 )
 	    return false;
 	var out = argv[1];
+	if ( strlen(out.c_str()) == 0 )
+	    path_sans_ext(out, p);
 	long bs = madc::session_build(es_int(w, es, "replh", 0), p.c_str(),
 				      text.c_str(), out.c_str());
 	ui::set(w, es, "replbuildseq", bs);

@@ -205,6 +205,12 @@ public:
     int bindings_wait(Reply &reply, int timeout_ms = -1);
     int build_wait(const std::string &path, const std::string &out,
 		   Reply &reply, std::string &output);
+    // The build from `text` when non-null (a host's buffer, an empty one
+    // included), else the file (split arc 1B.8).
+    unsigned build_text(const std::string &path, const std::string *text,
+			const std::string &out);
+    int build_text_wait(const std::string &path, const std::string *text,
+			const std::string &out, Reply &reply, std::string &output);
     // %check's check in the backend (split arc 1B.8): FILE's diagnostics,
     // from `text` when non-null (a host's buffer), else the file.
     unsigned check(const std::string &path, const std::string *text);
@@ -332,8 +338,9 @@ private:
     // %call's: FILE (argv[0]) loaded, then the call (argv[1], the call's
     // text) made by the backend; shown() is its value.
     bool call_file(const std::vector<std::string> &argv);
-    // %build's: FILE (argv[0]) built to OUT (argv[1]) by the backend, from
-    // the file; shown() says what was built.
+    // %build's: FILE (argv[0]; "" the current buffer) built to OUT (argv[1];
+    // "" FILE without its extension) by the backend, from the buffer's live
+    // text or the file; shown() says what was built.
     bool build_file(const std::vector<std::string> &argv);
     // FILE loaded into the session (D25), its diagnostics shown; false
     // when it was refused. *defines_main: FILE defined main.
@@ -341,6 +348,21 @@ private:
     // %check's: FILE (argv[0]; "" the current buffer) resolved through the
     // host's buffers to its path and live text, checked by the backend.
     bool check_file(const std::vector<std::string> &argv);
+    // A FILE a command names ("" the current buffer) through the host's
+    // buffers (split arc 1B.8, design decision 1): its path and, when a
+    // buffer holds it, its live text. False, said on `err`, when there is
+    // nothing to read — before anything restarts.
+    bool resolve(const char *command, const std::string &name,
+		 std::string &path, std::string &text, bool &has_text);
+    // FILE loaded from `text` when non-null, else from the file.
+    bool load_source(const std::string &path, const std::string *text,
+		     bool *defines_main = NULL);
+    // FILE loaded, then its main run with `args` (the path first).
+    bool run_source(const std::string &path, const std::string *text,
+		    const std::vector<std::string> &args);
+    // %args (design decision 4): "" shows them, `--` clears them, else the
+    // line's shell words replace them.
+    bool program_args_command(const std::string &line);
     SessionClient &client;
     std::ostream &err;
     std::ostream *out;
@@ -349,6 +371,8 @@ private:
     struct HostCommand { std::string name, usage, summary; CommandRun run; };
     std::vector<HostCommand> host_commands;
     BufferSource buffers;		// the host's (set_buffers); empty: the disk only
+    std::vector<std::string> program_args;	// %args: %run's of the current buffer
+    std::string program_args_text;		// as typed
     bool has_ended;
     int end_status;
 };

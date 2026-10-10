@@ -24,6 +24,7 @@
 
 #include "madc/bits/session_enums"	// offer_state: the verdict's one enum text
 #include "libmadc/value.h"		// madc::value: a bindings row
+#include "madcdis/istring.h"	// a buffer's name and path (BufferSource)
 
 class Program;
 class Variable;
@@ -72,9 +73,11 @@ public:
     // text a command on it reads (has_text). A FILE no buffer holds: true,
     // the name as the path, has_text false (the disk's). False, with why,
     // when there is nothing to read: no current buffer, an untitled one.
-    typedef std::function<bool(const std::string &name, std::string &path,
-			       std::string &text, bool &has_text,
-			       std::string &why)> BufferSource;
+    // The name and the path are names (istrings); the text and the refusal
+    // are built text.
+    typedef std::function<bool(const madc::dis::istring &name,
+			       madc::dis::istring &path, std::string &text,
+			       bool &has_text, std::string &why)> BufferSource;
     // A host that holds buffers hands them to the session it drives; a
     // session in this process holds none and ignores it.
     virtual void set_buffers(const BufferSource &source) { (void)source; }
@@ -256,6 +259,10 @@ public:
     // refused.
     bool build_file(const std::string &path, const std::string &text,
 		    const std::string &out);
+    // The same build from `text` when non-null — a host's buffer, an empty
+    // one included — else the file (split arc 1B.8).
+    bool build_text(const std::string &path, const std::string *text,
+		    const std::string &out);
     // %check's check (split arc 1B.8, design decision 2): FILE (`path`) — its
     // `text` when non-null, else the file — parsed under the session's
     // standard in a parse of its own (nothing joins the session), its
@@ -308,6 +315,7 @@ private:
     bool reset_command(const std::string &argument, const std::string &name);
     bool std_command(const std::string &argument, const std::string &name);
     bool check_command(const std::string &argument, const std::string &name);
+    bool args_command(const std::string &argument, const std::string &name);
     // A session unit (an entry, a loaded file) defines a function NAME.
     bool defines_function(const std::string &name);
     // A file command's file, once it opens: the payload `kind` for a host

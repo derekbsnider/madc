@@ -518,9 +518,9 @@ static int repl_loops(ReplSession &session, bool terminal,
     // The session's commands on a buffer (%check; split arc 1B.8, design
     // decision 1) read these: a FILE's buffer, "" the current one, by its
     // live text; a FILE no buffer holds is the disk's.
-    session.set_buffers([&buffers, &ex](const std::string &name, std::string &path,
-					std::string &text, bool &has_text,
-					std::string &why) -> bool {
+    session.set_buffers([&buffers, &ex](const madc::dis::istring &name,
+					madc::dis::istring &path, std::string &text,
+					bool &has_text, std::string &why) -> bool {
 	const madc::hub::entity_id doc = name.empty()
 	    ? ex.current() : madc::document_find(buffers, name);
 	has_text = false;

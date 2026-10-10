@@ -1801,9 +1801,9 @@ TEST_CASE("session commands: %load and %run, with and without a payload host (§
     CHECK(first_error(s) == "%run starts a fresh session, which this host"
 			    " cannot; %run -i FILE runs it in this one");
     CHECK_FALSE(s.submit("%run"));
-    CHECK(first_error(s) == "%run needs a FILE");
+    CHECK(first_error(s) == "%run needs a FILE: this host holds no buffer");
     CHECK_FALSE(s.submit("%run -i"));
-    CHECK(first_error(s) == "%run needs a FILE");
+    CHECK(first_error(s) == "%run needs a FILE: this host holds no buffer");
     CHECK_FALSE(s.submit("%load"));
     CHECK(first_error(s) == "%load takes one FILE");
     CHECK_FALSE(s.submit("%load " + lib + " " + lib));
@@ -2351,7 +2351,7 @@ TEST_CASE("session commands: %build FILE [-o OUT] (§7f)")
     CHECK(first_error(s) == "%build: FILE has no extension to drop; name the"
 			    " executable: %build FILE -o OUT");
     CHECK_FALSE(s.submit("%build"));
-    CHECK(first_error(s) == "%build needs a FILE");
+    CHECK(first_error(s) == "%build needs a FILE: this host holds no buffer");
     CHECK_FALSE(s.submit("%build " + prog + " -o"));
     CHECK(first_error(s) == "%build takes one FILE and -o OUT");
     err.str("");
@@ -3083,4 +3083,51 @@ TEST_CASE("%check: a file's diagnostics, the payload, a buffer's text (1B.8)")
     CHECK_FALSE(s.submit("%check a.c b.c"));
     std::remove(clean.c_str());
     std::remove(bad.c_str());
+}
+
+// %build / %run on the current buffer and %args (split arc 1B.8, design
+// decisions 3-4): with no FILE a payload host gets FILE "" (its current
+// buffer) — %build's OUT left to it, %run's arguments its %args — and
+// %args hands the host the argument line; a host that honors no payloads
+// refuses all three. A host's text wins over the disk even when EMPTY: an
+// emptied buffer builds as empty (no main), never as the file's old text.
+TEST_CASE("%build / %run of the current buffer, %args, and an empty buffer's build (1B.8)")
+{
+    InteractiveSession s;
+    REQUIRE(s.begin("--std=c17"));
+    std::ostringstream err;
+    s.program().error_stream = &err;
+    CHECK_FALSE(s.submit("%build"));
+    CHECK(err.str().find("%build needs a FILE: this host holds no buffer") != std::string::npos);
+    CHECK_FALSE(s.submit("%run"));
+    CHECK(err.str().find("%run needs a FILE: this host holds no buffer") != std::string::npos);
+    CHECK_FALSE(s.submit("%args a b"));
+    CHECK(err.str().find("%args sets what %run gives a host's buffer") != std::string::npos);
+
+    s.host_honors_payloads(true);
+    REQUIRE(s.submit("%build"));
+    CHECK(s.payload() == madc::session_payload::build);
+    REQUIRE(s.payload_argv().size() == 2u);
+    CHECK(s.payload_argv()[0] == "");
+    CHECK(s.payload_argv()[1] == "");
+    REQUIRE(s.submit("%build -o prog"));
+    CHECK(s.payload_argv()[1] == "prog");
+    REQUIRE(s.submit("%run"));
+    CHECK(s.payload() == madc::session_payload::run);
+    REQUIRE(s.payload_argv().size() == 1u);
+    CHECK(s.payload_argv()[0] == "");
+    REQUIRE(s.submit("%run -i"));
+    CHECK(s.payload() == madc::session_payload::run_here);
+    REQUIRE(s.submit("%args  one \"two words\" "));
+    CHECK(s.payload() == madc::session_payload::args);
+    CHECK(s.payload_argv()[0] == "one \"two words\"");
+    REQUIRE(s.submit("%args"));
+    CHECK(s.payload_argv()[0] == "");
+
+    s.host_honors_payloads(false);
+    std::string src = temp_source("int main(void) { return 0; }\n", "madc_repl_emptybuf");
+    const std::string empty;
+    CHECK_FALSE(s.build_text(src, &empty, src + ".out"));	// no main: not the disk's
+    std::remove(src.c_str());
+    std::remove((src + ".out").c_str());
 }

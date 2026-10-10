@@ -64,6 +64,8 @@
 #include "madc_task_io.h"	// taskio::handle_closing, taskio::poll_readable
 #include "madc_datachannel_internal.h"	// socket_channel_over: the socketpair's ends
 #include "madc_run_child.h"	// Windows: the backend is a run child of self
+#include "ns_common.h"		// shell_words: %args
+#include "madc_posix_io.h"	// host_path_drop_extension: %build's OUT
 
 namespace madc {
 // src/madc_program.cpp: the one diagnostic-row builder, and the fork child's
@@ -155,6 +157,7 @@ const PayloadRow payload_rows[] = {
     { "reset", madc::session_payload::reset },
     { "std", madc::session_payload::standard },
     { "check", madc::session_payload::check },
+    { "args", madc::session_payload::args },
 };
 
 const char *payload_name(madc::session_payload p)
@@ -403,12 +406,15 @@ int serve_session(madc::DataChannel &wire, std::unique_ptr<Program> prog,
 	    case Op::build:
 		// %build's: the host's text of the file (an editor's buffer),
 		// or, without, the file at path.
-		rep["ok"] = session.build_file(req.value("path", std::string()),
-					       req.value("text", std::string()),
+	    {
+		const std::string text = req.value("text", std::string());
+		rep["ok"] = session.build_text(req.value("path", std::string()),
+					       req.contains("text") ? &text : NULL,
 					       req.value("out", std::string()));
 		rep["shown"] = session.shown();
 		attach_diagnostics(rep, session);
 		break;
+	    }
 	    case Op::check:
 	    {
 		// %check's: the host's text of a buffer, or, without, the file.
@@ -956,13 +962,19 @@ unsigned SessionClient::run(const std::vector<std::string> &argv, bool call)
 unsigned SessionClient::build(const std::string &path, const std::string &text,
 			      const std::string &out)
 {
+    return build_text(path, text.empty() ? NULL : &text, out);
+}
+
+unsigned SessionClient::build_text(const std::string &path, const std::string *text,
+				   const std::string &out)
+{
     nlohmann::json req;
     const unsigned seq = next_seq++;
     req["seq"] = seq;
     req["op"] = op_name(Op::build);
     req["path"] = path;
-    if ( !text.empty() )
-	req["text"] = text;
+    if ( text )
+	req["text"] = *text;
     req["out"] = out;
     return send(req.dump()) ? seq : 0;
 }
@@ -1329,10 +1341,17 @@ bool BackendSession::honor(const SessionClient::Reply &reply)
     }
     if ( reply.payload == madc::session_payload::check )
 	return check_file(reply.argv);
+    if ( reply.payload == madc::session_payload::args )
+	return program_args_command(reply.argv.empty() ? std::string() : reply.argv[0]);
     if ( reply.payload == madc::session_payload::none || reply.argv.empty() )
 	return true;
     if ( reply.payload == madc::session_payload::load )
-	return load_file(reply.argv[0]);
+    {
+	std::string path, text;
+	bool has_text = false;
+	return resolve("%load", reply.argv[0], path, text, has_text)
+	    && load_source(path, has_text ? &text : NULL);
+    }
     if ( reply.payload == madc::session_payload::call )
 	return call_file(reply.argv);
     if ( reply.payload == madc::session_payload::build )
@@ -1347,6 +1366,18 @@ bool BackendSession::honor(const SessionClient::Reply &reply)
 	err << "madc: " << why << std::endl;
 	return false;
     }
+    // %run, %run -i (D16, D25): FILE's or the current buffer's live text,
+    // resolved before anything restarts; the current buffer runs with
+    // %args (split arc 1B.8, design decisions 3-4).
+    std::string path, text;
+    bool has_text = false;
+    if ( !resolve("%run", reply.argv[0], path, text, has_text) )
+	return false;
+    std::vector<std::string> args(1, path);
+    if ( reply.argv[0].empty() )
+	args.insert(args.end(), program_args.begin(), program_args.end());
+    else
+	args.insert(args.end(), reply.argv.begin() + 1, reply.argv.end());
     if ( reply.payload == madc::session_payload::run && !client.restart() )
     {
 	err << "madc: " << client.last_error() << std::endl;
@@ -1354,29 +1385,16 @@ bool BackendSession::honor(const SessionClient::Reply &reply)
 	end_status = 1;
 	return false;
     }
-    std::vector<std::string> args(reply.argv);
-    std::vector<char *> argv;
-    for ( std::string &a : args )
-	argv.push_back(&a[0]);
-    argv.push_back(NULL);
-    return run_file((int)args.size(), argv.data());
+    return run_source(path, has_text ? &text : NULL, args);
 }
 
 bool BackendSession::check_file(const std::vector<std::string> &argv)
 {
-    const std::string name = argv.empty() ? std::string() : argv[0];
-    std::string path(name), text, why;
+    std::string path, text;
     bool has_text = false;
-    if ( buffers && !buffers(name, path, text, has_text, why) )
-    {
-	err << "%check: " << why << std::endl;
+    if ( !resolve("%check", argv.empty() ? std::string() : argv[0], path, text,
+		  has_text) )
 	return false;
-    }
-    if ( path.empty() )
-    {
-	err << "%check: no FILE, and this host holds no buffer" << std::endl;
-	return false;
-    }
     SessionClient::Reply r;
     std::string output;
     int rc = client.check_wait(path, has_text ? &text : NULL, r, output);
@@ -1407,11 +1425,39 @@ bool BackendSession::continues_if(const std::string &line)
     return settle(rc, r, std::string()) && r.continues;
 }
 
+bool BackendSession::resolve(const char *command, const std::string &name,
+			     std::string &path, std::string &text, bool &has_text)
+{
+    madc::dis::istring found(name);
+    text.clear();
+    has_text = false;
+    std::string why;
+    if ( buffers && !buffers(madc::dis::istring(name), found, text, has_text, why) )
+    {
+	err << command << ": " << why << std::endl;
+	return false;
+    }
+    path = found;
+    if ( path.empty() )
+    {
+	err << command << ": no FILE, and this host holds no buffer" << std::endl;
+	return false;
+    }
+    return true;
+}
+
 bool BackendSession::load_file(const std::string &path, bool *defines_main)
+{
+    return load_source(path, NULL, defines_main);
+}
+
+bool BackendSession::load_source(const std::string &path, const std::string *text,
+				 bool *defines_main)
 {
     SessionClient::Reply r;
     std::string output;
-    int rc = client.load_wait(path, r, output);
+    int rc = text ? client.load_wait_text(*text, path, r, output)
+		  : client.load_wait(path, r, output);
     if ( defines_main )
 	*defines_main = r.defines_main;
     return settle(rc, r, output) && r.ok;
@@ -1419,17 +1465,48 @@ bool BackendSession::load_file(const std::string &path, bool *defines_main)
 
 bool BackendSession::run_file(int argc, char **argv)
 {
+    if ( argc < 1 )
+	return false;
+    return run_source(argv[0], NULL, std::vector<std::string>(argv, argv + argc));
+}
+
+bool BackendSession::run_source(const std::string &path, const std::string *text,
+				const std::vector<std::string> &args)
+{
     bool has_main = false;
-    if ( argc < 1 || !load_file(argv[0], &has_main) )
+    if ( !load_source(path, text, &has_main) )
 	return false;
     if ( !has_main )
 	return true;			// a main an earlier unit defined is not FILE's
     SessionClient::Reply r;
     std::string output;
-    std::vector<std::string> args(argv, argv + argc);
     HostIgnoresInterrupt quiet;
     int rc = client.run_wait(args, r, output);	// no main: ok false, nothing ran
     settle(rc, r, output);
+    return true;
+}
+
+bool BackendSession::program_args_command(const std::string &line)
+{
+    if ( line.empty() )
+    {
+	shown_text = program_args_text.empty() ? "no arguments" : program_args_text;
+	return true;
+    }
+    if ( line == "--" )
+    {
+	program_args.clear();
+	program_args_text.clear();
+	return true;
+    }
+    std::vector<std::string> words;
+    if ( !ns_common::shell_words(line, words) )
+    {
+	err << "%args: no closing quotation, or a backslash at the end" << std::endl;
+	return false;
+    }
+    program_args = words;
+    program_args_text = line;
     return true;
 }
 
@@ -1437,7 +1514,10 @@ bool BackendSession::run_file(int argc, char **argv)
 // call; its value is the entry's shown.
 bool BackendSession::call_file(const std::vector<std::string> &argv)
 {
-    if ( argv.size() != 2 || !load_file(argv[0]) )
+    std::string path, text;
+    bool has_text = false;
+    if ( argv.size() != 2 || !resolve("%call", argv[0], path, text, has_text)
+	 || !load_source(path, has_text ? &text : NULL) )
 	return false;
     SessionClient::Reply r;
     std::string output;
@@ -1449,14 +1529,27 @@ bool BackendSession::call_file(const std::vector<std::string> &argv)
     return r.ok;
 }
 
-// %build's: the backend builds the file (this host has no buffer of it).
+// %build's: the backend builds the buffer's live text, or the file.
 bool BackendSession::build_file(const std::vector<std::string> &argv)
 {
-    if ( argv.size() != 2 )
+    std::string path, text;
+    bool has_text = false;
+    if ( argv.size() != 2 || !resolve("%build", argv[0], path, text, has_text) )
 	return false;
+    std::string out = argv[1];
+    if ( out.empty() )
+    {
+	out = madc::detail::host_path_drop_extension(path);
+	if ( out == path )
+	{
+	    err << "%build: " << path << " has no extension to drop; name the"
+		   " executable: %build -o OUT" << std::endl;
+	    return false;
+	}
+    }
     SessionClient::Reply r;
     std::string output;
-    int rc = client.build_wait(argv[0], argv[1], r, output);
+    int rc = client.build_text_wait(path, has_text ? &text : NULL, out, r, output);
     if ( !settle(rc, r, output) )
 	return false;
     shown_text = r.shown;
@@ -1537,6 +1630,14 @@ int SessionClient::build_wait(const std::string &path, const std::string &out,
 			      Reply &reply, std::string &output)
 {
     return wait_reply(build(path, std::string(), out), reply, output, -1,
+		      InteractiveSession::TakenHook());
+}
+
+int SessionClient::build_text_wait(const std::string &path, const std::string *text,
+				   const std::string &out, Reply &reply,
+				   std::string &output)
+{
+    return wait_reply(build_text(path, text, out), reply, output, -1,
 		      InteractiveSession::TakenHook());
 }
 

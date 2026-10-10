@@ -1,0 +1,8 @@
+%args one "two words"
+%args
+%run
+:%s/argc=/count=/
+%run
+%args --
+%args
+%run

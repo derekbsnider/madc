@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### `madc -i` gains `%build` / `%run` on the current buffer, and `%args`
+
+`%build` and `%run` now take FILE as optional (split arc 1B.8): with no FILE a
+payload host builds or runs its current buffer's live text — `madc -i` and
+madcide resolve the buffer to a path and text, the backend builds or runs that
+text, and `%build`'s OUT defaults to the buffer's path without its extension. An
+emptied buffer builds its empty text, never the file's old contents. A session no
+payload host drives refuses with `needs a FILE: this host holds no buffer`.
+`%args [ARGS]` sets the program arguments a buffer `%run` passes — no ARGS prints
+them, ARGS (shell words) replaces them, `%args --` clears them — kept by the host
+across restarts, as madcide's progargs is, and composed into `%run`'s argv.
+`%run FILE ARGS` is unchanged.
+
 ### `madc -i` gains `%check`
 
 The interactive session now answers `%check [FILE]` (split arc 1B.8): FILE's

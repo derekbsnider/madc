@@ -1,0 +1,11 @@
+// %run of the current buffer and %args at madc -i FILE (split arc 1B.8,
+// design 2026-10-10-check-build-run-project-design.md decisions 1, 3-4):
+// %run with no FILE runs the buffer's LIVE text in a fresh session with the
+// arguments %args set — a colon-mode edit shows in the next run — and
+// `%args --` clears them.
+#include <stdio.h>
+int main(int argc, char **argv)
+{
+    printf("argc=%d last=%s\n", argc, argv[argc - 1]);
+    return 0;
+}

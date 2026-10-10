@@ -74,9 +74,9 @@ const CommandRow command_rows[] = {
     { "load", InteractiveSession::Command::load, "%load FILE",
       "define FILE's names in this session; nothing runs" },
     { "run", InteractiveSession::Command::run, "%run [-i] FILE [ARGS]",
-      "FILE's main with ARGS, in a fresh session (-i: this one); its names stay" },
+      "FILE's main with ARGS, in a fresh session (-i: this one); its names stay. No FILE: the current buffer's, with %args" },
     { "build", InteractiveSession::Command::build, "%build FILE [-o OUT]",
-      "FILE built to a native executable, OUT (default: FILE without its extension)" },
+      "FILE built to a native executable, OUT (default: FILE without its extension). No FILE: the current buffer" },
     { "call", InteractiveSession::Command::call, "%call FILE[(ARGS)]",
       "FILE loaded, then the function named after it called with ARGS, else FILE's main" },
     { "open", InteractiveSession::Command::open, "%open FILE",
@@ -94,6 +94,8 @@ const CommandRow command_rows[] = {
       "the standard in force; NAME (c17, gnu++20, madc): a fresh session under it" },
     { "check", InteractiveSession::Command::check, "%check [FILE]",
       "FILE's diagnostics (the current buffer's when none); nothing runs" },
+    { "args", InteractiveSession::Command::args, "%args [ARGS]",
+      "the arguments %run gives the current buffer's program; -- clears them" },
 };
 
 const size_t command_count = sizeof(command_rows) / sizeof(command_rows[0]);
@@ -751,6 +753,8 @@ bool InteractiveSession::run_command(const std::string &text,
 	    return std_command(command_argument(text, c), name);
 	case Command::check:
 	    return check_command(command_argument(text, c), name);
+	case Command::args:
+	    return args_command(command_argument(text, c), name);
 	case Command::none:		// no row names it
 	    break;
     }
@@ -1165,8 +1169,17 @@ bool InteractiveSession::run_file_command(const std::string &argument,
 	words.erase(words.begin());
     if ( words.empty() )
     {
-	command_error("%run needs a FILE", name);
-	return false;
+	// No FILE: the host's current buffer, its live text, with the
+	// arguments %args set (split arc 1B.8, design decision 3).
+	if ( !payload_host )
+	{
+	    command_error("%run needs a FILE: this host holds no buffer", name);
+	    return false;
+	}
+	payload_kind = here ? madc::session_payload::run_here
+			    : madc::session_payload::run;
+	payload_args.assign(1, std::string());
+	return true;
     }
     if ( !here && !payload_host )
     {
@@ -1279,8 +1292,18 @@ bool InteractiveSession::build_command(const std::string &argument,
     }
     if ( file.empty() )
     {
-	command_error("%build needs a FILE", name);
-	return false;
+	// No FILE: the host's current buffer (design decision 3); the host
+	// names OUT from its path when -o does not.
+	if ( !payload_host )
+	{
+	    command_error("%build needs a FILE: this host holds no buffer", name);
+	    return false;
+	}
+	payload_kind = madc::session_payload::build;
+	payload_args.clear();
+	payload_args.push_back(std::string());
+	payload_args.push_back(out);
+	return true;
     }
     if ( out.empty() )
     {
@@ -1356,11 +1379,18 @@ bool InteractiveSession::build_file(const std::string &path,
 				    const std::string &text,
 				    const std::string &out)
 {
+    return build_text(path, text.empty() ? NULL : &text, out);
+}
+
+bool InteractiveSession::build_text(const std::string &path,
+				    const std::string *text,
+				    const std::string &out)
+{
     showed_command = true;
     command_output.clear();
     prog->clear_diagnostics();		// the build's rows only
     std::string source;
-    if ( !command_source(*prog, path, text.empty() ? NULL : &text, source) )
+    if ( !command_source(*prog, path, text, source) )
     {
 	render_pending_diagnostics();
 	return false;
@@ -1413,6 +1443,27 @@ bool InteractiveSession::check_command(const std::string &argument,
 	return false;
     }
     return check_text(file, NULL);
+}
+
+// `%args [ARGS]` (split arc 1B.8, design decision 4; madcide's progargs at
+// the prompt): the program's arguments a host's %run of its current buffer
+// passes — the HOST's to keep across restarts: the `args` payload, argv the
+// argument line ("" asks for them; `--` clears them).
+bool InteractiveSession::args_command(const std::string &argument,
+				      const std::string &name)
+{
+    if ( !payload_host )
+    {
+	command_error("%args sets what %run gives a host's buffer; this host"
+		      " holds none (%run FILE ARGS)", name);
+	return false;
+    }
+    static const char blanks[] = " \t\r";
+    const size_t b = argument.find_first_not_of(blanks);
+    payload_kind = madc::session_payload::args;
+    payload_args.assign(1, b == std::string::npos ? std::string()
+		: argument.substr(b, argument.find_last_not_of(blanks) + 1 - b));
+    return true;
 }
 
 bool InteractiveSession::check_text(const std::string &path,
