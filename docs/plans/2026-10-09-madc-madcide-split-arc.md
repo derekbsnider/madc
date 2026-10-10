@@ -319,7 +319,16 @@ items are their own sessions, any time.
    the session; a plain `madc file.mad` starts no child.
 
 *1B — the interactive core at the prompt (after 1A; parallel with 1C):*
-6. **The ex core and line mode**: buffers (`:e`, `:ls`, `:b N`, `:bn`,
+6. **The ex core and line mode — LANDED 2026-10-10: `f3a37492e` (addresses,
+   ranges, the command table), `0d6af3817` (the ed core and undo groups),
+   `b946179c8` (`:s` `:&` `:&&` `:g` `:v` `:sort` `:retab`), `26f8007fc` +
+   `8b61bd167` (one owner for path join / `~` / file type; the document owner
+   below `ui::`), `e828a25eb` (files and buffers, `:!`, `:set`), `36655badb`
+   (colon mode in both REPL loops; `madc -i FILE` is line mode), `abd00fb2d`
+   (the editing tables)** (design `2026-10-10-ex-core-design.md`; every
+   expectation checked against vim `-e -s`; unit battery, fix lanes and
+   gates green per slice; the batch checkpoint 2054/0/9 at `a84982613`; the
+   REPL, colon and session subset on genuine Windows 22/0/4; not pushed). Buffers (`:e`, `:ls`, `:b N`, `:bn`,
    `:bp`), addresses and ranges, the ed core, the ex/vim additions (`:s`,
    `:g`, `:v`, `/re/`, `?re?` on PCRE2), `:r`, `:!cmd`, `:N`, `:set`,
    `u`/redo on the document's groups — D24's list. `madc -i FILE` IS line
