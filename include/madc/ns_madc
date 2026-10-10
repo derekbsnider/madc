@@ -515,6 +515,20 @@ namespace madc {
     int64_t library_symbol(int64_t lib, const char *name);
     void library_close(int64_t lib);
     const char *library_suffix();
+    // Regular expressions — madc's ONE engine, PCRE2 (split arc 1A.3;
+    // docs/plans/2026-10-10-pcre2-design.md): Perl / PHP syntax, UTF-8.
+    //   regex_match: the WHOLE of s matches pattern.
+    //   regex_search: pattern matches somewhere in s.
+    //   regex_replace: out = s with every match replaced; the replacement
+    //       names $0 (the match), $1 / ${1} (a group), $$ (a dollar).
+    // A pattern that does not compile (and a malformed replacement) is
+    // refused: one line on stderr naming the function, the pattern, the
+    // reason and its offset, and a neutral answer — false, or out = s.
+    // Thread contract: pure functions (each call compiles its own pattern).
+    bool regex_match(const char *s, const char *pattern);
+    bool regex_search(const char *s, const char *pattern);
+    value &regex_replace(value &out, const char *s, const char *pattern,
+			 const char *replacement);
     // Code compiled into THIS process from a source file — a madcide
     // plugin's `source` form (plan §41.11a step 5), the library verbs'
     // source twin:
@@ -566,6 +580,11 @@ namespace madc {
     void context_set_real(value &ctx, std::string &key, double v);
     void context_set_string(value &ctx, std::string &key, const char *v);
     void context_set_array(value &ctx, std::string &key, value &v);
+    bool regex_match(const std::string &s, const std::string &pattern);
+    bool regex_search(const std::string &s, const std::string &pattern);
+    std::string &regex_replace(std::string &out, const std::string &s,
+			       const std::string &pattern,
+			       const std::string &replacement);
 #endif
 
 #if defined(_GLIBCXX_OSTREAM) || defined(_LIBCPP_OSTREAM)

@@ -38,6 +38,7 @@
 #include "madc_modules.h"	// module_available: the module map + the one dl seam
 #include "madc_dl.h"		// library_open: the one dl seam
 #include "madc_run_child.h"	// serve_run_child: a Run child of self
+#include "madc_regex.h"		// regex_*: madc's one regex engine (PCRE2)
 
 // ---- madc::sys — the system object (task #91) ----------------------------
 namespace madc {
@@ -746,5 +747,91 @@ const char *fork_uri(int (*entry)())
 const char *library_suffix()
 {
     return madc_target_dso_suffix();
+}
+
+// ---- regex_match / regex_search / regex_replace (split arc 1A.3; design
+// docs/plans/2026-10-10-pcre2-design.md): madc's one regex engine
+// (madc::regex, PCRE2). A pattern that does not compile — and a malformed
+// replacement — is REFUSED: one line on stderr naming the function, and a
+// neutral answer (false; the subject unchanged), never an answer that
+// pretends the pattern matched nothing. The lean forms are the primary
+// ones; the std::string forms serve a TU that included <string>.
+
+namespace {
+
+// The pattern compiled, or its refusal said for `who`; false when refused.
+bool regex_compiled(const regex &re, const char *who)
+{
+    if ( re.ok() )
+	return true;
+    std::cerr << re.refusal(who) << std::endl;
+    return false;
+}
+
+std::string text_of(const char *s)
+{
+    return s ? std::string(s) : std::string();
+}
+
+bool regex_matched(const std::string &s, const std::string &pattern)
+{
+    regex re(pattern);
+    return regex_compiled(re, "madc::regex_match") && re.match(s);
+}
+
+bool regex_found(const std::string &s, const std::string &pattern)
+{
+    regex re(pattern);
+    return regex_compiled(re, "madc::regex_search") && re.search(s);
+}
+
+// `s` with every match of `pattern` replaced (the subject when refused).
+std::string regex_replaced(const std::string &s, const std::string &pattern,
+			   const std::string &replacement)
+{
+    regex re(pattern);
+    if ( !regex_compiled(re, "madc::regex_replace") )
+	return s;
+    std::string out, why;
+    if ( !re.replace(s, replacement, out, &why) )
+	std::cerr << "madc::regex_replace: invalid replacement \"" << replacement
+		  << "\": " << why << std::endl;
+    return out;
+}
+
+} // namespace
+
+bool regex_match(const char *s, const char *pattern)
+{
+    return regex_matched(text_of(s), text_of(pattern));
+}
+
+bool regex_search(const char *s, const char *pattern)
+{
+    return regex_found(text_of(s), text_of(pattern));
+}
+
+value &regex_replace(value &out, const char *s, const char *pattern,
+		     const char *replacement)
+{
+    out = value(regex_replaced(text_of(s), text_of(pattern), text_of(replacement)));
+    return out;
+}
+
+bool regex_match(const std::string &s, const std::string &pattern)
+{
+    return regex_matched(s, pattern);
+}
+
+bool regex_search(const std::string &s, const std::string &pattern)
+{
+    return regex_found(s, pattern);
+}
+
+std::string &regex_replace(std::string &out, const std::string &s,
+			   const std::string &pattern, const std::string &replacement)
+{
+    out = regex_replaced(s, pattern, replacement);
+    return out;
 }
 } // namespace madc

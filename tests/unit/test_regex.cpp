@@ -11,9 +11,12 @@
 thread_local bool madc_verbose = false;
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
 
+#include <iostream>
+#include <sstream>
 #include <string>
 #include <vector>
 
+#include "libmadc/value.h"
 #include "madc_regex.h"
 
 using madc::regex;
@@ -139,4 +142,65 @@ TEST_CASE("regex: split — Perl's fields")
     CHECK(regex(",").split("").empty());
     CHECK(regex(",").split("abc") == v({ "abc" }));
     CHECK(regex("").split("\xc3\xa9z") == v({ "\xc3\xa9", "z" }));
+}
+
+// The script surfaces (split arc 1A.3 commit 2): the very functions a script
+// reaches — madc::regex_* mangled-direct, perl::grep / perl::split through
+// their __perl_* entries — each REFUSE a pattern that does not compile with
+// one stderr line naming itself, and answer neutrally.
+namespace madc {
+bool regex_search(const char *s, const char *pattern);
+value &regex_replace(value &out, const char *s, const char *pattern,
+		     const char *replacement);
+}
+extern "C" {
+void __perl_grep(madc::value *, const char *, madc::value *);
+void __perl_split(madc::value *, const char *, const char *);
+}
+
+namespace {
+
+// std::cerr's text while `run` runs.
+template <typename F>
+std::string cerr_of(F run)
+{
+    std::ostringstream said;
+    std::streambuf *was = std::cerr.rdbuf(said.rdbuf());
+    run();
+    std::cerr.rdbuf(was);
+    return said.str();
+}
+
+} // namespace
+
+TEST_CASE("regex: every script surface refuses a bad pattern on stderr")
+{
+    const std::string why = ": invalid pattern \"a(b\": missing closing parenthesis at offset 3\n";
+    bool found = true;
+    CHECK(cerr_of([&] { found = madc::regex_search("a(b", "a(b"); })
+	  == "madc::regex_search" + why);
+    CHECK_FALSE(found);
+
+    madc::value out;
+    CHECK(cerr_of([&] { madc::regex_replace(out, "xa(by", "a(b", "-"); })
+	  == "madc::regex_replace" + why);
+    CHECK(out.as_string() == "xa(by");
+    CHECK(cerr_of([&] { madc::regex_replace(out, "a", "(a)", "$9"); })
+	  .find("madc::regex_replace: invalid replacement \"$9\": ") == 0);
+    CHECK(out.as_string() == "a");
+
+    madc::value words = madc::value::make_array();
+    words.array().push_back(madc::value("xa(by"));
+    madc::value hits;
+    CHECK(cerr_of([&] { __perl_grep(&hits, "a(b", &words); }) == "perl::grep" + why);
+    REQUIRE(hits.is_array());
+    CHECK(hits.as_array().empty());
+    madc::value parts;
+    CHECK(cerr_of([&] { __perl_split(&parts, "a(b", "xa(by"); }) == "perl::split" + why);
+    REQUIRE(parts.is_array());
+    CHECK(parts.as_array().empty());
+
+    // A pattern that compiles says nothing.
+    CHECK(cerr_of([&] { found = madc::regex_search("say hi", "h(i)"); }).empty());
+    CHECK(found);
 }

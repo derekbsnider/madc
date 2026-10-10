@@ -114,11 +114,15 @@ ex core (`:s`, `:g`, `:v`, `/re/`, `?re?`) is the next consumer.
    their lean forms; `parser.cpp`'s registrations and the extern-C names
    gone. The one-engine gate (`check-one-regex-engine.sh`, decision 7)
    lands here, once `<regex>` has left `ns_perl.cpp`. Reducer
-   `tests/testregex_refuse.mad` (+ `.expect`): each function
-   on an invalid pattern — its stderr line and its neutral answer; the
-   oracle is PHP's `preg_match` / `preg_replace` / `preg_split` on the same
-   patterns (`php -r`), recorded in the test's comment. `testregex.mad`
-   stays green unchanged (its patterns mean the same under PCRE2).
+   `tests/testregex_pcre.mad` (+ `.expect`): PCRE2 syntax std::regex lacked
+   (lookbehind, lazy), UTF-8, Perl's split edges, and each function on an
+   invalid pattern — its neutral answer; the oracle is PHP's `preg_match` /
+   `preg_replace` and Perl's `grep` / `split` on the same patterns, recorded
+   in the test's comment. The runner reads stdout only for a passing test, so
+   each function's stderr refusal line is checked in
+   `tests/unit/test_regex.cpp` (std::cerr captured around the very entry
+   points a script reaches). `testregex.mad` stays unchanged and gains a
+   `.expect` (its patterns mean the same under PCRE2).
 3. **Docs + mirrors**: the regex section of the language docs (syntax, the
    replacement form, UTF-8, refusal), ROADMAP / CHANGELOG / status.
 

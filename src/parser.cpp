@@ -216,12 +216,6 @@ void Program::note_class_decl(ClassDeclKind kind, unsigned long long count)
     _class_parse_profile[_class_parse_census_stack.back()].decls[kind] += count;
 }
 
-extern "C" {
-int64_t __madc_regex_match(void *, void *);
-int64_t __madc_regex_search(void *, void *);
-void *__madc_regex_replace(void *, void *, void *, void *);
-}
-
 // Static parse position — inherited by all new tokens automatically
 const char *TokenBase::_parse_file = NULL;
 int TokenBase::_parse_line = 0;
@@ -29226,8 +29220,6 @@ void Program::add_madc_namespace()
 {
     variable_map_t &madc_ns = namespace_variables_for_write("madc");
     Variable *var;
-    typespec_t objp = ptr_of(ddVOID);
-    typespec_t cstr = ptr_of(ddCHAR);
 
     // register array type as madc::array
     madc::dis::istring id = "__madc_array";
@@ -29251,15 +29243,6 @@ void Program::add_madc_namespace()
     // The Variables above stay for the expression-lane back-compat.
     namespace_datatype_map["madc"]["array"] = new TokenDataType("array", ddARRAY);
     namespace_datatype_map["madc"]["value"] = new TokenDataType("value", ddARRAY);
-
-    var = addFunction("__madc_regex_match", datatype_vec_t{DataType::dtINT64, cstr, cstr}, (fVOIDFUNC)__madc_regex_match);
-    if (var) madc_ns["regex_match"] = var;
-
-    var = addFunction("__madc_regex_search", datatype_vec_t{DataType::dtINT64, cstr, cstr}, (fVOIDFUNC)__madc_regex_search);
-    if (var) madc_ns["regex_search"] = var;
-
-    var = addFunction("__madc_regex_replace", datatype_vec_t{objp, objp, cstr, cstr, cstr}, (fVOIDFUNC)__madc_regex_replace);
-    if (var) madc_ns["regex_replace"] = var;
 
     DBG(std::cout << "add_madc_namespace() registered madc:: with " << madc_ns.size() << " members" << std::endl);
 }
