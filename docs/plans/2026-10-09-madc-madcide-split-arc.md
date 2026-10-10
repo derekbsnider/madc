@@ -405,7 +405,22 @@ items are their own sessions, any time.
     outline, definition, references, hover, semantic spans — mostly the
     existing `madc::parse_*` / `graph_*`, now taking a document. The LSP,
     the MCP tools and madcide's direct calls all read it; nothing answers
-    twice.
+    twice. **LANDED 2026-10-10: `ccb9a1fa6` (`madc::lang`,
+    `include/madc_lang.h`: the document's ONE parse door `document_handle` —
+    `doc_parse` moved onto it — one coordinate, a 1-based line and a 0-based
+    byte column; `diagnostics`, `outline`, `enclosing`, `spans`;
+    `madc::parse_classes` shares the lexical spans' one class conversion),
+    `fb0839d25` (`definition`, `references`, `hover` — the word under a
+    point by the buffer's word rule; definition answers the NAME, as
+    clangd does), `6b47b3739` (the `madc::doc_*` dialect face as rows; the
+    diagnostic severity / phase names are free functions,
+    `include/madc_diag_names.h`)** (design
+    `2026-10-10-language-services-design.md`, `7613174ad`; oracle clangd 18
+    with positionEncoding utf-8 and gcc's anchors). Unit, fix lanes and
+    gates green; the batch checkpoint 2062/0/9 at `6b47b3739`; genuine
+    Windows language-service subset 8/0; not pushed. madcide's
+    `lsp_word_at` / `lsp_name_span` / `lsp_diag_range` and its own handle
+    are the second implementation until **1D.19**.
 12. **The LSP into madc's core** (owner: "small enough"): `madc --lsp FILE`
     — a C++ port of `madcide_lsp.inc` (1,098 lines of dialect today; a
     core face must not recompile its own source at every launch) over 1A.1
