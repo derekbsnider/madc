@@ -10,6 +10,7 @@
 
 #include "madcdis/git_repo.h"
 #include "libmadc/datasource.h"
+#include "modules/madcgit/madcgit_verbs.h"	// %git's verbs (1B.10)
 
 #include <git2.h>
 
@@ -488,4 +489,131 @@ TEST_CASE("git_source_adapter extracts commit, ref and blame records")
     CHECK(!ad.extract(src, "nonsense", rows, &err));
     CHECK(err.message.find("unknown record family") != std::string::npos);
     CHECK(!ad.extract(madc::DataSource("git:///"), "commit", rows, &err));
+}
+
+namespace {
+
+// The working directory, changed for a scope (%git with no FILE reads the
+// repository above it) and restored after.
+struct in_directory
+{
+    std::string was;
+    explicit in_directory(const std::string &dir)
+    {
+	char buf[4096];
+#ifdef _WIN32
+	if ( _getcwd(buf, sizeof buf) )
+	    was = buf;
+	REQUIRE(_chdir(dir.c_str()) == 0);
+#else
+	if ( getcwd(buf, sizeof buf) )
+	    was = buf;
+	REQUIRE(chdir(dir.c_str()) == 0);
+#endif
+    }
+    ~in_directory()
+    {
+#ifdef _WIN32
+	(void)_chdir(was.c_str());
+#else
+	(void)chdir(was.c_str());
+#endif
+    }
+};
+
+bool starts_with(const std::string &s, const std::string &p)
+{
+    return s.compare(0, p.size(), p) == 0;
+}
+
+bool ends_with(const std::string &s, const std::string &p)
+{
+    return s.size() >= p.size() && s.compare(s.size() - p.size(), p.size(), p) == 0;
+}
+
+} // namespace
+
+// %git's verbs (split arc 1B.10, design 2026-10-10-git-module-command-design.md
+// decision 1) over the fixture: each prints what git prints for the same
+// question — show REV:FILE the blob, show REV the header, log
+// --format='%h %s (%ar, %an)', blame --date=relative (an uncommitted line
+// git's `00000000 (Not Committed Yet`), diff HEAD, status -sb — and the
+// refusals. Outside a session, a FILE is the disk's.
+TEST_CASE("%git's verbs over the fixture print what git prints (1B.10)")
+{
+    Fixture fx;
+    const std::string a = fx.dir + "/a.txt";
+    std::string out, why;
+    CAPTURE(why);
+    REQUIRE(madc::git_command("show " + fx.second_sha + ":" + a, out, why));
+    CHECK(out == "one\ntwo\n");
+    REQUIRE(madc::git_command("log -n 5 " + a, out, why));
+    CHECK(starts_with(out, fx.second_sha.substr(0, 7) + " second ("));
+    CHECK(out.find("\n" + fx.first_sha.substr(0, 7) + " first (") != std::string::npos);
+    CHECK(ends_with(out, " ago, Fixture)\n"));
+    REQUIRE(madc::git_command("log -n 1 " + a, out, why));
+    CHECK(out.find('\n') == out.size() - 1);	// one row
+    REQUIRE(madc::git_command("blame " + a, out, why));
+    CHECK(starts_with(out, fx.first_sha.substr(0, 8) + " (Fixture "));
+    CHECK(out.find(" 1) one\n" + fx.second_sha.substr(0, 8) + " (Fixture ") != std::string::npos);
+    CHECK(ends_with(out, " 2) two\n"));
+    REQUIRE(madc::git_command("diff " + a, out, why));
+    CHECK(out.empty());				// unchanged: nothing
+
+    fx.write("a.txt", "one\ntwo\nthree\n");
+    REQUIRE(madc::git_command("diff " + a, out, why));
+    CHECK(out.find("--- a/a.txt\n+++ b/a.txt\n") != std::string::npos);
+    CHECK(ends_with(out, "+three\n"));
+    const std::string patch = out;
+    REQUIRE(madc::git_command("blame " + a + ":3", out, why));
+    CHECK(out == "00000000 (Not Committed Yet 3) three\n");
+    {
+	// No FILE: the working directory's repository.
+	in_directory there(fx.dir);
+	REQUIRE(madc::git_command("show " + fx.first_sha, out, why));
+	CHECK(starts_with(out, "commit " + fx.first_sha
+			       + "\nAuthor: Fixture <fixture@example.com>\nDate:   "));
+	CHECK(ends_with(out, " ago\n\n    first\n"));
+	REQUIRE(madc::git_command("status", out, why));
+	CHECK(starts_with(out, "## "));
+	CHECK(ends_with(out, "\n M a.txt\n"));
+	REQUIRE(madc::git_command("diff", out, why));
+	CHECK(out == patch);
+    }
+
+    struct { const char *argument, *why; } refused[] = {
+	{ "", "which verb? log [-n N] [FILE] | show REV[:FILE] | blame FILE[:LINE] | status | diff [FILE]" },
+	{ "frob", "unknown verb 'frob': log [-n N] [FILE] | show REV[:FILE] | blame FILE[:LINE] | status | diff [FILE]" },
+	{ "log -n x", "log -n takes a count of commits" },
+	{ "log a b", "log takes one FILE" },
+	{ "show", "show takes REV or REV:FILE" },
+	{ "show :a.txt", "show takes REV or REV:FILE" },
+	{ "blame", "blame takes FILE or FILE:LINE" },
+	{ "blame a.txt:0", "blame's LINE counts from 1" },
+	{ "status now", "status takes no arguments" },
+	{ "diff a b", "diff takes at most one FILE" },
+	{ "log \"open", "a quote is not closed" },
+    };
+    for ( size_t i = 0; i < sizeof(refused) / sizeof(refused[0]); ++i )
+    {
+	CAPTURE(refused[i].argument);
+	CHECK_FALSE(madc::git_command(refused[i].argument, out, why));
+	CHECK(why == refused[i].why);
+    }
+}
+
+// git's --date=relative on fixed (when, now) pairs: what git log printed for
+// commits exactly that old (madcide's oracle pairs, testmadcide_git).
+TEST_CASE("%git's relative dates are git's date.c (1B.10)")
+{
+    const int64_t now = 1700000000, day = 86400;
+    struct { int64_t age; const char *spelled; } pairs[] = {
+	{ 1, "1 second ago" }, { 30, "30 seconds ago" }, { 100, "2 minutes ago" },
+	{ 5 * 3600, "5 hours ago" }, { 3 * day, "3 days ago" },
+	{ 20 * day, "3 weeks ago" }, { 100 * day, "3 months ago" },
+	{ 400 * day, "1 year, 1 month ago" }, { 730 * day, "2 years ago" },
+	{ 2000 * day, "5 years ago" }, { -10, "in the future" },
+    };
+    for ( size_t i = 0; i < sizeof(pairs) / sizeof(pairs[0]); ++i )
+	CHECK(madc::git_relative_date(now - pairs[i].age, now) == pairs[i].spelled);
 }

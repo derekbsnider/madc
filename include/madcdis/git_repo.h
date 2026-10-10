@@ -125,6 +125,12 @@ public:
     bool blame_buffer(std::vector<GitBlameRow> &out, const std::string &path,
 		      const std::string &text, size_t line0, size_t count,
 		      error *err = (error *)0) const;
+    // `path` (any spelling: relative to the working directory, or absolute)
+    // as git names it — relative to the working tree, forward slashes on
+    // every platform — both sides canonicalised by THE path canonicalizer.
+    // False + err when it is not inside the working tree.
+    bool relpath(const std::string &path, std::string &rel,
+		 error *err = (error *)0) const;
     // True when `path`'s working-tree state differs from HEAD/index.
     bool dirty(const std::string &path, bool &out, error *err = (error *)0) const;
     // `git status`: every file whose index or working tree differs, untracked

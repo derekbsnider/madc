@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+### `%git` in the madcgit module — the repository's read verbs as a session command
+
+The `madcgit` module now brings a `%git` command to a `madc -i` session: `%git
+log | show | blame | status | diff`, each printing what git prints for the same
+question (split arc 1B.10, design
+`docs/plans/2026-10-10-git-module-command-design.md` §2 decisions 1 and 3,
+slice 3). The verbs moved out of madcide's dialect code into the module in C++
+(`src/modules/madcgit/madcgit_verbs.cpp`), over `GitRepo` directly, with the same
+texts and refusals madcide's verbs carry (`tests/testmadcide_git.expect` is the
+oracle's record): `log [-n N] [FILE]` as `git log --format='%h %s (%ar, %an)'`,
+`show REV[:FILE]`, `blame FILE[:LINE]` as `git blame --date=relative`, `status`
+as `git status -sb`, `diff [FILE]` as `git diff HEAD`. One verb table (an enum, a
+word converted once) holds their names, codes and usage line; the relative dates
+are git's date.c (`show_date_relative` thresholds and roundings).
+`madcgit_commands` exports the one row `%git VERB [ARGS]`, so `-lmadcgit`, the
+ini's `modules` key, or `import madcgit;` at the prompt bring `%git`; without the
+module `%git` is an unknown command like any other. FILE resolves through the
+host's buffers (`madc::session_buffer`): `%git blame FILE` and `%git diff FILE`
+read a buffer's unsaved text, and the repository is the one above FILE, else
+above the current buffer, else the working directory's. `GitRepo::relpath` is now
+the one owner of "a path inside the working tree, git's forward-slash spelling";
+`madcgit_relpath` calls it instead of its own copy (same refusal text). madcide
+keeps its Changes / History / Blame views and loads the module itself; its
+dialect `%git` verbs are the second implementation until 1D.18 (the design's
+deletion deadline), with `testmadcide_git` running every commit until then.
+
 ### A command running in a session reads the host's buffers
 
 A REPL command that runs in a `madc -i` session can now read the host's open

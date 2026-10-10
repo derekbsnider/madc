@@ -1,0 +1,15 @@
+%git
+%git frob
+%git status
+%git log -n 1 tests/testint.mad
+%git log -n 0
+%git show HEAD
+%git show HEAD:tests/testint.mad
+%git show HEAD:
+%git blame tests/testint.mad:1
+%git blame tests/testint.mad:0
+%git blame
+%git diff tests/testint.mad
+%git diff a b
+%git log -n 1 /nonexistent-madc-dir/x.c
+%help

@@ -426,6 +426,29 @@ bool GitRepo::blame_buffer(std::vector<GitBlameRow> &out, const std::string &pat
     return true;
 }
 
+bool GitRepo::relpath(const std::string &path, std::string &rel, error *err) const
+{
+    const std::string wd = detail::canonical_path_for_compare(workdir());
+    const std::string p = detail::canonical_path_for_compare(path);
+    std::size_t rel_at = 0;
+    if ( !detail::host_path_within(wd, p, &rel_at) )
+    {
+	detail::set_channel_error(err, "git: `" + path
+				  + "` is not inside the repository's working tree");
+	return false;
+    }
+    // git paths are forward-slash on every platform (libgit2's own convention);
+    // the OS canonicalizer (resolve_real_path) yields NATIVE separators, so on
+    // Windows the working-tree-relative result would read "tests\\file" — the
+    // git face normalizes to forward slashes at its output boundary, the same
+    // platform-path discipline the session-discovery layer applies to its slug.
+    rel = p.substr(rel_at);
+    for ( std::size_t i = 0; i < rel.size(); ++i )
+	if ( rel[i] == '\\' )
+	    rel[i] = '/';
+    return true;
+}
+
 bool GitRepo::dirty(const std::string &path, bool &out, error *err) const
 {
     unsigned int flags = 0;
@@ -949,24 +972,13 @@ void *madcgit_relpath(void *result, int64_t handle, const char *path)
     madc::git_repo_state *st = madc::state_or_refuse(handle, out);
     if ( !st )
 	return result;
-    std::string wd = madc::detail::canonical_path_for_compare(st->repo.workdir());
-    std::string given = madc::text_of(path);
-    std::string p = madc::detail::canonical_path_for_compare(given);
-    std::size_t rel_at = 0;
-    if ( !madc::detail::host_path_within(wd, p, &rel_at) )
+    std::string rel;
+    madc::error err;
+    if ( !st->repo.relpath(madc::text_of(path), rel, &err) )
     {
-	out = madc::error_value("git: `" + given + "` is not inside the repository's working tree");
+	out = madc::error_value(err.message);
 	return result;
     }
-    // git paths are forward-slash on every platform (libgit2's own convention);
-    // the OS canonicalizer (resolve_real_path) yields NATIVE separators, so on
-    // Windows the working-tree-relative result would read "tests\file" — the
-    // git:: face normalizes to forward slashes at its output boundary, the same
-    // platform-path discipline the session-discovery layer applies to its slug.
-    std::string rel = p.substr(rel_at);
-    for ( size_t i = 0; i < rel.size(); ++i )
-	if ( rel[i] == '\\' )
-	    rel[i] = '/';
     std::map<std::string, value> f;
     f["path"] = value(rel);
     out = value::make_object(f);
