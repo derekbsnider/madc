@@ -40,6 +40,16 @@ mkdir -p tmp
 
 fail() { echo "forest_bind_gate: $1"; exit 1; }
 
+# The subject compiles in the madc dialect — the packed corpus's profile. The
+# fixtures are .c / .cpp files g++ compiles too (the oracle), and they ran in
+# the madc dialect until split arc 1A.4 let a source's extension pick gnu17 /
+# gnu++17; the subject pins --std=madc so every leg tests what it was written
+# for (a later --std= on a leg's own line would still win).
+SUBJECT=tmp/fbgate_madc
+printf '#!/bin/sh\nexec "%s" --std=madc "$@"\n' "$PWD/$BIN" > "$SUBJECT"
+chmod +x "$SUBJECT"
+BIN=$SUBJECT
+
 # run_case <tag> <expected-output>
 # Expects tmp/fbgate_<tag>.h / _producer.cpp / _consumer.cpp already written.
 run_case() {

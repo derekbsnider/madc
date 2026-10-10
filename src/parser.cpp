@@ -53,6 +53,7 @@
 #include "libc_signatures.h"	// what an UNDECLARED libc symbol returns
 #include "atomic_builtins.h"	// the GCC __atomic_* family, as data
 #include "madc_mangle.h"
+#include "madc_file_kinds.h"	// adopt_file_standard: the extension table's default standard
 #include "ns_common.h"
 #include "cir_freeze.h"	// Phase 6: CirFrozenForest decl records (forest_restore_decls)
 #include "cir_builder.h"	// the shared iteration recognizers (range-for auto deduction)
@@ -24956,6 +24957,19 @@ bool Program::set_language_standard_option(const madc::dis::istring &arg)
     if ( arg.compare(0, prefix.size(), prefix) != 0 )
 	return false;
     return set_language_standard(arg.substr(prefix.size()));
+}
+
+bool Program::adopt_file_standard(int64_t kind)
+{
+    int64_t standard = madc::file_kind_default_standard(kind);
+    if ( standard == 0 )
+	return false;
+    language_std = (LanguageStd)standard;
+    // A family HEAD is the family's default — the GNU dialect, as plain gcc
+    // and g++ compile it; a kind that names a standard is that standard.
+    int64_t family = madc::file_kind_family(kind);
+    gnu_dialect = kind == family && family != madc::fkMADC;
+    return true;
 }
 
 void Program::attach_engine(MadcEngine *eng)

@@ -57,6 +57,7 @@ extern thread_local bool madc_verbose;
 				// madcrun:// / madcproj://: Process child_body
 #include "madc_datachannel_internal.h"	// set_channel_error — the run channel factories
 #include "madc_project.h"	// read_project_manifest — the project-handle manifest reader (both shapes)
+#include "madc_file_kinds.h"	// file_kind_family: a parse handle may name a family head
 #include "madc_run_child.h"	// the Windows Run: a child OF SELF serves the request
 #include "madc_session_interrupt.h"	// HostIgnoresInterrupt: ^C/^\ are the guest's
 #include "handle_table.h"	// THE slot+1 handle-registry rule (parse handles)
@@ -5101,8 +5102,9 @@ struct parse_tu_state
     // generation is refused as stale by every verb (design §6.3).
     uint32_t generation;
     // The standard the handle compiles under (a <bits/file_kinds> standard
-    // code; 0 = the engine's default): every child the handle builds — the
-    // open, each refresh, a checked refresh's candidate — takes it.
+    // code, or a family head for the family's default — adopt_file_standard;
+    // 0 = the engine's default): every child the handle builds — the open,
+    // each refresh, a checked refresh's candidate — takes it.
     int64_t standard;
     parse_tu_state() : child((::Program *)0), generation(0), standard(0) {}
     ~parse_tu_state() { delete child; }
@@ -5118,8 +5120,7 @@ struct parse_tu_state
 static void parse_handle_child_init(::Program &child, const parse_tu_state &st)
 {
     if ( st.standard != 0 )
-	child.set_language_standard(
-	    ::Program::standard_canonical_name((::Program::LanguageStd)st.standard));
+	child.adopt_file_standard(st.standard);
     child.keep_trivia = true;
 #ifdef _WIN32
     child.forest_arena_enabled = true;
@@ -5426,11 +5427,14 @@ int64_t internal_program_parse_open(::Program &self,
 				    const std::string &display_name,
 				    int64_t standard)
 {
-    // A standard is a code the --std= table spells; a family head (madc::fkC)
-    // or a text kind names none — refused, as an unknown --std= is.
+    // A standard is a code the --std= table spells, or a family head
+    // (madc::fkC / fkCPP / fkMADC): the family's default, as the CLI compiles
+    // a file of that family (Program::adopt_file_standard, split arc 1A.4). A
+    // text kind names none — refused, as an unknown --std= is.
     if ( standard != 0
       && (standard < 0 || standard > 0xFFFF
-	  || !*::Program::standard_canonical_name((::Program::LanguageStd)standard)) )
+	  || (madc::file_kind_family(standard) != standard
+	      && !*::Program::standard_canonical_name((::Program::LanguageStd)standard))) )
 	return 0;
     register_run_channel_factories(self);	// madcrun:// serves this handle
     self.clear_diagnostics();

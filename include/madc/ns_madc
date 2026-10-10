@@ -135,8 +135,10 @@ namespace madc {
     // `standard` (a <bits/file_kinds> code naming a standard — madc::fkC17,
     // madc::fkCPP17, madc::fkMADC; 0 = the engine's default, which is the
     // two-argument form's) compiles under that standard, and the handle
-    // keeps it through every refresh (0 = a code that names no standard,
-    // a family head included); parse_open_file opens
+    // keeps it through every refresh; a family head (madc::fkC, fkCPP,
+    // fkMADC) is the family's default as the CLI compiles a file of it —
+    // gnu17, gnu++17, madc (split arc 1A.4); 0 = a code that names neither;
+    // parse_open_file opens
     // a TU from disk through the lexer's own file ingestion (0 = the path
     // is unreadable); parse_refresh whole-TU re-parses the handle with
     // new text; parse_close frees it (handles are never reused within a

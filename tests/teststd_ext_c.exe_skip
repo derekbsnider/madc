@@ -1,0 +1,1 @@
+structurally JIT-only: .flags names the .c source, and AOT refuses the trailing .mad stub as an unconsumed argument; the JIT run covers the CLI's standard-by-extension rule

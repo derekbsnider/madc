@@ -240,14 +240,16 @@ int64_t file_kind_family(int64_t kind)
 // that already names a standard answers itself; a family head answers the
 // family's default — C17 and C++17 (gcc 13's defaults, what most installed
 // toolchains have; C23 when ROADMAP 2.13 nears the C17 level), madc for the
-// dialect; 0 (the engine's default) for a kind outside the families.
+// dialect; 0 (the engine's default) for a kind outside the families and
+// for a family member that names no standard (madc::fkMC11, the IR's text).
 int64_t file_kind_default_standard(int64_t kind)
 {
 	int64_t fam = file_kind_family(kind);
 	if ( fam == fkUNKNOWN )
 		return 0;
 	if ( kind != fam )
-		return kind;
+		return *Program::standard_canonical_name((Program::LanguageStd)kind)
+			? kind : 0;
 	if ( fam == fkC )
 		return fkC17;
 	if ( fam == fkCPP )

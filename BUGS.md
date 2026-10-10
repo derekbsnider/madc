@@ -2006,6 +2006,18 @@ int main() { auto [x, y] = arr; arr[0] = 9; printf("%d %d\n", x, y); return 0; }
   `3:20`.
 - D12's slice 2 builds the element-by-element array copy that this binding
   needs.
+- Widened 2026-10-10 (split arc 1A.4's reducer): NO structured binding parses
+  — a class object's too, in every mode (`--std=c++17`, `c++20`, `madc`):
+
+```cpp
+#include <cstdio>
+struct P { int a, b; };
+int main() { P p{1, 2}; auto [a, b] = p; std::printf("%d %d\n", a, b); return 0; }
+```
+
+  g++ 13: `1 2`. madc: "Expecting integer constant expression" at the `[`
+  (`auto [` is read as an array declarator's bound). A parser feature
+  ([dcl.struct.bind]) for its own focused session.
 
 ### B41. A function name after `==` and before `;` is called
 

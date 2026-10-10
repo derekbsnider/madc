@@ -289,9 +289,11 @@ static int64_t doc_parse_impl(value *diags, int64_t w, int64_t entity)
 	      : (const madc::hub::text_buffer *)0;
     if ( !d || !b )
 	return 0;
-    int64_t standard = file_kind_default_standard(d->kind());
-    if ( d->kind() != fkUNKNOWN && standard == 0 )
+    if ( d->kind() != fkUNKNOWN && file_kind_default_standard(d->kind()) == 0 )
 	return 0;		// a kind the compiler does not parse
+    // The handle adopts the KIND (split arc 1A.4): a family head is its
+    // default, as the CLI compiles the same file (Program::adopt_file_standard).
+    int64_t standard = d->kind() == fkUNKNOWN ? 0 : d->kind();
     int64_t handle = d->parse_handle();
     uint64_t version = b->version();
     if ( handle && d->parse_version() == version )

@@ -34,6 +34,7 @@
 #include "madcdis/process.h"	// Process::run_and_wait (--freeze-run re-exec)
 #include "madc_pch.h"
 #include "madc_config.h"  // madc.ini reader (forest-carriers S6)
+#include "madc_file_kinds.h"  // file_kind_of_path: the source's standard by extension
 #include "cir_emit_c.h"   // CirEmitLang
 #include "madc_capabilities.h" // --capabilities=json (source-free manifest)
 #include "madc_project.h" // --project: compile_commands.json multi-TU driver
@@ -1033,6 +1034,13 @@ int main(int argc, char **argv)
                   << config.std_option << "'" << std::endl;
         return 1;
     }
+    // The source's extension outranks madc.ini (split arc 1A.4): `--std` >
+    // extension > madc.ini `std` > madc. The rule is the one a --project TU
+    // and the editor's parse take (Program::adopt_file_standard); a source
+    // with no recognised extension — a shebang script, stdin — keeps the ini's
+    // standard. Under --run-frozen the positionals are the program's argv.
+    if ( !cli_set_std && !run_frozen && filearg < argc )
+        prog->adopt_file_standard(madc::file_kind_of_path(argv[filearg]));
     // A -stdlib= on the command line already set prog->stdlib_flavor, and CLI
     // outranks madc.ini — same precedence as `std` above.
     if ( config.has_stdlib && !prog->stdlib_flavor

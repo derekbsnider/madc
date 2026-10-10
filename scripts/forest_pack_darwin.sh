@@ -108,7 +108,7 @@ PACK_LOG="$OUT.freeze.log"
 # answer a `__has_include` or an #include_next inside the groves. The first
 # native self-freeze froze the runner's real <sys/_types/_mbstate_t.h> into a
 # shipped forest through exactly that probe (darwin-host port D2, round 3).
-if ! "$TIMEOUT" 900 "$CROSS" --no-config --no-sysroot-includes --freeze-mir-cache "${LEDGER_ARGS[@]}" --freeze-append="$OUT" "$TU" > "$PACK_LOG" 2>&1; then
+if ! "$TIMEOUT" 900 "$CROSS" --no-config --std=madc --no-sysroot-includes --freeze-mir-cache "${LEDGER_ARGS[@]}" --freeze-append="$OUT" "$TU" > "$PACK_LOG" 2>&1; then
     cat "$PACK_LOG"
     echo "forest_pack_darwin: FAILED - freeze-append exited nonzero" >&2
     exit 1

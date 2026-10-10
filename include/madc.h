@@ -6500,6 +6500,14 @@ public:
     }
     bool set_language_standard(const madc::dis::istring &standard);
     bool set_language_standard_option(const madc::dis::istring &arg);
+    // The standard a FILE gets when nothing named one (split arc 1A.4) — THE
+    // one rule, for the CLI's source, a --project TU and the editor's parse:
+    // madc::file_kind_default_standard's answer for the kind, a C or C++
+    // family default taken as gcc / g++ take it (gnu17 / gnu++17: the GNU
+    // dialect; __STRICT_ANSI__ as strict_ansi_mode presents it), a kind
+    // naming a standard strictly, madc's kinds the dialect. False (nothing set) for a kind outside the compiler
+    // families. `kind` is a <bits/file_kinds> code (madc::file_kind_of_path).
+    bool adopt_file_standard(int64_t kind);
     // The canonical `--std=` spellings, no Program/source/config needed: the
     // capability manifest (madc_capabilities.cpp) reads these instead of
     // re-listing them. ONE table (parser.cpp) owns both the recognizer above

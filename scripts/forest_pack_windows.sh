@@ -133,7 +133,7 @@ ulimit -t 1800
 # Captured for the degradation gate (task #63) — see scripts/forest_pack.sh for
 # why this is redirect-then-cat and never `| tee`.
 PACK_LOG=tmp/forest_pack_win_freeze.log
-if ! timeout 1800 "$WINE" "$PACKER" --no-config --freeze-mir-cache "${LEDGER_ARGS[@]}" --freeze-append="$APPEND_TO" "$TU" > "$PACK_LOG" 2>&1; then
+if ! timeout 1800 "$WINE" "$PACKER" --no-config --std=madc --freeze-mir-cache "${LEDGER_ARGS[@]}" --freeze-append="$APPEND_TO" "$TU" > "$PACK_LOG" 2>&1; then
     cat "$PACK_LOG"
     echo "forest_pack_windows: FAILED - freeze-append exited nonzero" >&2
     exit 1

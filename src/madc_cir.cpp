@@ -46,6 +46,7 @@
 #include "rt/rt_dump.h"	// the shown value's capture sink (plan §41.4a, D10)
 #include "madc_sys_includes.h"	// per-flavor C++ runtime link set (cir_native_link_env)
 #include "madc_project.h"
+#include "madc_file_kinds.h"	// file_kind_of_path: a TU's standard by extension
 #include "cir_builder.h"
 #include "cir_emit_c.h"
 #include "cir_freeze.h"
@@ -6869,24 +6870,16 @@ int madc_cir_dump_forest(const char *container_path)
 // must outlive MIR_gen()+run — they are held for the whole call and torn down
 // only after the run completes.
 
-// A `.c` source is C, not C++ — gcc/clang select the language from the file
-// extension, and a build driver must do the same: in C mode the C++ keywords
-// (`class`, `new`, `delete`, `this`, …) are NOT reserved, so ordinary C code
-// using them as identifiers parses. Matches ".c" exactly (not ".cc"/".cpp"/
-// ".cxx"/".C", which are C++).
-static bool is_c_source_file(const madc::dis::istring &path)
-{
-	return path.size() >= 2 && path.compare(path.size() - 2, 2, ".c") == 0;
-}
-
 // Apply one manifest TU's language options to its Program — THE one rule,
 // shared by the --project build lane (project_parse_all) and the AST-1
 // project parse handles (internal_program_project_open): -I include dirs,
 // -D defines, the -stdlib flavor, and the std selection. An explicit
-// --std wins; a plain .c file defaults to gnu17 — gcc's actual default C
-// dialect (C17 base + GNU, no __STRICT_ANSI__) — so C++ keywords stay
-// usable as C identifiers AND glibc's feature gates (timercmp, strdup,
-// …) match plain gcc. False + err = unknown -stdlib flavor.
+// --std wins; otherwise the TU's extension, by the one rule the CLI and the
+// editor's parse take (Program::adopt_file_standard, split arc 1A.4): a .c
+// file is gnu17 — gcc's actual default C dialect (C17 base + GNU, no
+// __STRICT_ANSI__) — so C++ keywords stay usable as C identifiers AND
+// glibc's feature gates (timercmp, strdup, …) match plain gcc; a C++ file
+// gnu++17, as g++. False + err = unknown -stdlib flavor.
 bool apply_project_tu_options(::Program &prog, const ProjectTU &tu,
 			      std::string &err)
 {
@@ -6903,8 +6896,8 @@ bool apply_project_tu_options(::Program &prog, const ProjectTU &tu,
 	}
 	if (!tu.std_option.empty())
 		prog.set_language_standard_option("--std=" + tu.std_option);
-	else if (is_c_source_file(tu.file))
-		prog.set_language_standard_option("--std=gnu17");
+	else
+		prog.adopt_file_standard(madc::file_kind_of_path(tu.file.c_str()));
 	return true;
 }
 

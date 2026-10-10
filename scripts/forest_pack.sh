@@ -119,7 +119,9 @@ fi
 # --no-config: the pack must be reproducible. An ambient madc.ini (repo root,
 # developer config dir, system config dir) carrying a `std` or `include` key
 # would silently change the frozen corpus's PRODUCER CONFIG, after which every
-# ordinary compile would fall through the v27 config gate.
+# ordinary compile would fall through the v27 config gate. --std=madc for the
+# same reason: the TU is a .cpp, and a source's extension now picks its
+# standard (split arc 1A.4: gnu++17) — the corpus is the madc dialect's.
 #
 # The output is CAPTURED for the degradation gate (task #63): the pack's
 # tolerated parse errors live in it, and a pack that exits 0 while a header
@@ -127,7 +129,7 @@ fi
 # Redirect-then-cat, never `| tee` — without pipefail a pipeline's status is
 # tee's, so a pack FAILURE would read as success.
 PACK_LOG=tmp/forest_pack_freeze.log
-if ! timeout 900 tmp/forest_packer_madc --no-config --freeze-mir-cache "${LEDGER_ARGS[@]}" --freeze-append="$APPEND_TO" "$TU" > "$PACK_LOG" 2>&1; then
+if ! timeout 900 tmp/forest_packer_madc --no-config --std=madc --freeze-mir-cache "${LEDGER_ARGS[@]}" --freeze-append="$APPEND_TO" "$TU" > "$PACK_LOG" 2>&1; then
     cat "$PACK_LOG"
     echo "forest_pack: FAILED - freeze-append exited nonzero" >&2
     exit 1

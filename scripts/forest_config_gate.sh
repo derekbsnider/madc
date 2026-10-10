@@ -65,12 +65,16 @@ timeout 120 "$BIN" --freeze="$ROOT/$D/stdio.msnap" "$D/consumer.c" >/dev/null 2>
 echo "not a container" > "$D/junk.txt"
 
 # ---- dialect: baked default vs the ini `std` key vs a CLI --std= -----------
-# -dM is the observable: the selected dialect decides __STDC_VERSION__, and the
-# baked default for a direct .c compile defines it not at all. So the baseline
-# is the ABSENCE of the macro and each configured dialect is a distinct value —
-# no leg can pass without the setting actually taking effect.
+# -dM is the observable: the selected dialect decides __STDC_VERSION__. The
+# precedence is `--std` > the source's extension > the ini `std` > the madc
+# dialect (split arc 1A.4), so the ini legs compile a source with NO
+# recognised extension (a shebang script's shape), whose baked default — the
+# madc dialect — defines the macro not at all. The baseline is the ABSENCE of
+# the macro and each configured dialect is a distinct value — no leg can pass
+# without the setting actually taking effect.
+cp "$D/consumer.c" "$D/consumer"
 std_of() {   # $1.. = extra args; runs in $D so ./madc.ini is in scope
-    ( cd "$D" && env -u MADC_FOREST timeout 120 ./madc -dM "$@" consumer.c 2>/dev/null )
+    ( cd "$D" && env -u MADC_FOREST timeout 120 ./madc -dM "$@" consumer 2>/dev/null )
 }
 
 base=$(std_of --no-config) || fail "[baseline-std] -dM run failed"
@@ -93,6 +97,17 @@ grep -q <<<"$out" '__STDC_VERSION__ 201112L' \
 out=$(std_of --no-config) || fail "[no-config] -dM run failed"
 grep -q <<<"$out" '__STDC_VERSION__' \
     && fail "[no-config] --no-config still read the ini: $(grep <<<"$out" __STDC_VERSION__)"
+
+# The extension outranks the ini: a .c source is gnu17 (plain gcc's default)
+# whatever the ini says, and the command line still outranks both.
+out=$( cd "$D" && env -u MADC_FOREST timeout 120 ./madc -dM consumer.c 2>/dev/null ) \
+    || fail "[ext-beats-ini] -dM run failed"
+grep -q <<<"$out" '__STDC_VERSION__ 201710L' \
+    || fail "[ext-beats-ini] the ini overrode the .c extension: $(grep <<<"$out" __STDC_VERSION__)"
+out=$( cd "$D" && env -u MADC_FOREST timeout 120 ./madc -dM --std=c11 consumer.c 2>/dev/null ) \
+    || fail "[cli-beats-ext] -dM run failed"
+grep -q <<<"$out" '__STDC_VERSION__ 201112L' \
+    || fail "[cli-beats-ext] the extension overrode the command line: $(grep <<<"$out" __STDC_VERSION__)"
 
 # ---- include dirs: the ini adds them, and only the ini can reach this one ---
 rm -f "$D/madc.ini"
@@ -195,4 +210,4 @@ out=$(MADC_MEM_LIMIT=4096 timeout 120 "$MADC" --config="$ROOT/$D/mem.ini" "$D/co
     || fail "[env-beats-ini] the environment did not override the ini mem-limit"
 [ "$out" = "cfggate ok" ] || fail "[env-beats-ini] wrong output: '$out'"
 
-echo "forest_config_gate: OK (madc.ini: keys apply, CLI/env precedence pinned, arm 5 last, bad configs refuse)"
+echo "forest_config_gate: OK (madc.ini: keys apply, CLI > extension > ini std, CLI/env precedence pinned, arm 5 last, bad configs refuse)"
