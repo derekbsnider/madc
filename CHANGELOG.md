@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+### Windows `madc` and `madc -i` run the session in a crash-isolated backend
+
+On Windows, `madc` and `madc -i` now run the interactive session in a backend
+process, as they already did on Linux and macOS (split arc Phase 1A.5) — the
+counterpart of the earlier change that gave POSIX its backend. The backend is a
+run of madc itself, started with the same options you gave the session (`--std`,
+`-I`, `-D`, `-l`, `--config` / `--no-config`, ...) and configured the same way —
+madc.ini and the `-l` libraries — then restarted with those same options after a
+crash or `%run`. If an entry crashes, madc prints `madc: the session stopped
+(exception 0xc0000005); a new one started` and the REPL carries on with a fresh
+session (its state starts empty).
+
+A session that stops on Windows now names the exception code in its message
+rather than reading "signal 0": a Windows crash ends the process with its
+exception code and no signal, so the stop line reads `(exception 0xc0000005)`.
+
+Limit: on genuine Windows, an entry that reads stdin from a piped transcript may
+not see the exact next bytes — the Windows C runtime reads an unbuffered stdin
+two bytes at a time, so a byte past what the entry parsed can sit in the backend
+where the host never reads it. A console delivers whole lines and is exact.
+
 ### engine: a source's standard follows its extension, and madc.ini's `modules` key
 
 A source compiled without `--std` now takes the standard its extension names,

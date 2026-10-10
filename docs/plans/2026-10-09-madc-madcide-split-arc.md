@@ -291,7 +291,14 @@ items are their own sessions, any time.
    > madc; `.c` → C17, `.cpp`/`.cc`/`.cxx` → C++17, `.mad` → madc; and
    **madc.ini's new keys**: `modules` (repeatable, php.ini-style; the
    `%git` enabler) and `theme`. The ini schema in `include/madc_config.h`.
-5. **Windows `madc -i` gets the crash-isolated backend** (owner 2026-10-09:
+5. **Windows `madc -i` gets the crash-isolated backend** — **LANDED
+   2026-10-10, `138cf2258` (run-child kind `configured-session`: the backend
+   is the CLI run on the host's options, configured by `main` itself; the
+   in-process branch deleted) and `79a34faad` (a Windows stop line names the
+   exception code, never "signal 0")** (design
+   `2026-10-10-windows-repl-backend-design.md`; unit battery, fix lane, wine
+   and genuine-Windows REPL subsets green; owner call: a piped stdin on
+   genuine Windows, decision 6; not pushed) (owner 2026-10-09:
    make Windows work like Linux and macOS). The child-of-self backend
    already exists (`SessionClient::spawn_backend`,
    `src/madc_session_client.cpp:611`, used by `madc::session_open`); only
