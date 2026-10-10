@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### The REPL backend's rendered diagnostics are coloured as the host's error stream shows colour
+
+`madc -i` on a terminal now colours its diagnostics under the default
+`-fdiagnostics-color=auto`, matching gcc's coloured output on a terminal stderr.
+The CLI REPL always runs its session in a crash-isolated backend, whose rendered
+diagnostic text is a string the host prints on `std::cerr`; the backend's own
+`colour_reaches` saw that string, never the terminal, so it emitted plain text
+even where `std::cerr` would show colour. The host now sends its own
+`colour_reaches(std::cerr)` verdict as a `colour` request after every backend
+start (the pattern the history and project requests already use), and the backend
+sets its colour mode to match (`always` / `never`), so it colours the rendered
+diagnostics as that stream would show them. A host that never sends the verdict —
+madcide, whose backend writes to a pipe — keeps the plain diagnostics as before.
+
 ### The REPL prompt colours the entry as it is typed
 
 `madc -i` now colours each entry in the theme's colours as it is typed (split

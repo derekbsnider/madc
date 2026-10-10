@@ -233,6 +233,12 @@ public:
     // The project %project opened (split arc 1B.8): the backend's own now;
     // sent after every start, so a fresh session keeps it. "" none.
     void set_project(const std::string &path);
+    // Whether colour reaches the host's error stream (madc::colour_reaches,
+    // Phase 0.5's gate): the backend renders its diagnostics into a string
+    // the host prints there, so it colours them as that stream would show
+    // them. Sent now and after every start; a host that never says gets them
+    // plain.
+    void set_diagnostic_colour(bool on);
 
     // Readiness, for a select (plan §41.9a slice 2). pending(): 1 when a
     // reply or output waits (or the backend's end, which poll() reports), 0
@@ -257,6 +263,7 @@ private:
     bool send_host_commands();
     bool send_history_file();
     bool send_project();
+    bool send_diagnostic_colour();
     bool take_line(std::string &line);
     void read_output(std::string &output, int timeout_ms);
     int stopped(Reply &reply, std::string &output);
@@ -285,6 +292,8 @@ private:
     bool history_named;			// set_history_file was called
     std::string history_path;		// its store ("" none)
     std::string project_path;		// the session's project ("" none)
+    bool colour_named;			// set_diagnostic_colour was called
+    bool colour_on;			// its verdict
     bool inherit_stdio;			// the backend's stdio is the host's
     std::string returned_stdin;		// handed back by replies, not yet taken
     madc::SessionInterruptor interruptor;	// D8: reaches the backend

@@ -189,6 +189,32 @@ TEST_CASE("session backend: an offer's verdict, a refused entry's diagnostics")
     CHECK(out.empty());
 }
 
+// The backend renders into a string the host prints on its error stream:
+// coloured as that stream shows colour (Phase 0.5's gate, the host's
+// verdict), the header's severity and the caret gcc's way; plain when it
+// does not.
+TEST_CASE("session backend: the rendered diagnostics are coloured as the host's error stream is")
+{
+    SessionClient c;
+    c.set_diagnostic_colour(true);
+    REQUIRE(c.start("--std=c11"));
+    SessionClient::Reply r;
+    std::string out;
+    REQUIRE(c.offer_wait("int y = nosuch_name;", true, r, out, kWait) == 1);
+    CAPTURE(r.rendered);
+    CHECK(r.rendered.find("\x1b[1;31merror:") != std::string::npos);
+    CHECK(r.rendered.find("\x1b[1;32m^") != std::string::npos);
+    c.set_diagnostic_colour(false);
+    REQUIRE(c.offer_wait("int z = nosuch_name;", true, r, out, kWait) == 1);
+    CHECK(r.rendered.find("use of undeclared identifier 'nosuch_name'") != std::string::npos);
+    CHECK(r.rendered.find('\x1b') == std::string::npos);
+    // A restart keeps the verdict.
+    c.set_diagnostic_colour(true);
+    REQUIRE(c.restart("--std=c11"));
+    REQUIRE(c.offer_wait("int w = nosuch_name;", true, r, out, kWait) == 1);
+    CHECK(r.rendered.find("\x1b[1;31merror:") != std::string::npos);
+}
+
 TEST_CASE("session backend: completion asks the backend's session")
 {
     SessionClient c;

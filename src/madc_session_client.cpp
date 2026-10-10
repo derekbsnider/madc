@@ -66,6 +66,7 @@
 #include "madc_run_child.h"	// Windows: the backend is a run child of self
 #include "ns_common.h"		// shell_words: %args
 #include "madc_posix_io.h"	// host_path_drop_extension: %build's OUT
+#include "madc_console.h"	// set_colour_when: the host's colour verdict
 
 namespace madc {
 // src/madc_program.cpp: the one diagnostic-row builder, and the fork child's
@@ -91,7 +92,7 @@ namespace {
 // client handed over (madc_session_stdin.h). `commands`: the host's REPL
 // command rows (split arc 1A.2), sent after every start. Those two are the
 // requests with no seq and no reply.
-enum class Op : unsigned char { begin, offer, complete, running, load, run, continues, bindings, build, stdin_renew, commands, history, check, project, unknown };
+enum class Op : unsigned char { begin, offer, complete, running, load, run, continues, bindings, build, stdin_renew, commands, history, check, project, colour, unknown };
 
 struct OpRow { const char *name; Op op; };
 const OpRow op_rows[] = {
@@ -101,7 +102,7 @@ const OpRow op_rows[] = {
     { "build", Op::build }, { "stdin", Op::stdin_renew },
     { "commands", Op::commands }, { "history", Op::history },
     { "check", Op::check },
-    { "project", Op::project },
+    { "project", Op::project }, { "colour", Op::colour },
 };
 
 const char *op_name(Op op)
@@ -335,6 +336,14 @@ int serve_session(madc::DataChannel &wire, std::unique_ptr<Program> prog,
 	    session.set_project(req.value("file", std::string()));
 	    continue;
 	}
+	if ( op == Op::colour )
+	{
+	    // The host's error stream shows colour, or not: the rendered
+	    // diagnostics are coloured as it would show them.
+	    madc::set_colour_when(req.value("on", false) ? madc::colour_when::always
+							   : madc::colour_when::never);
+	    continue;
+	}
 	// An interrupt from before this request (one sent while the backend
 	// waited) is none; one from here on waits for the entry's first poll.
 	madc_session_interrupt_reset();
@@ -474,6 +483,7 @@ int serve_session(madc::DataChannel &wire, std::unique_ptr<Program> prog,
 	    case Op::commands:
 	    case Op::history:
 	    case Op::project:
+	    case Op::colour:
 	    case Op::unknown:
 		rep["ok"] = false;
 		break;
@@ -508,7 +518,8 @@ SessionClient::Reply::Reply()
 
 SessionClient::SessionClient()
     : output_done(false), next_seq(1), answered_seq(0), configured_backend(false),
-      history_named(false), inherit_stdio(false)
+      history_named(false), colour_named(false), colour_on(false),
+      inherit_stdio(false)
 {
 }
 
@@ -571,6 +582,7 @@ bool SessionClient::start(const std::string &std_opt, const ProgramFactory &make
 		send_host_commands();	// the host's rows, before any entry
 		send_history_file();
 		send_project();
+		send_diagnostic_colour();
 	    }
 	    if ( !ok )
 	    {
@@ -839,6 +851,23 @@ bool SessionClient::send_project()
     nlohmann::json req;
     req["op"] = op_name(Op::project);
     req["file"] = project_path;
+    return send(req.dump());
+}
+
+void SessionClient::set_diagnostic_colour(bool on)
+{
+    colour_named = true;
+    colour_on = on;
+    send_diagnostic_colour();
+}
+
+bool SessionClient::send_diagnostic_colour()
+{
+    if ( !wire || !colour_named )
+	return false;
+    nlohmann::json req;
+    req["op"] = op_name(Op::colour);
+    req["on"] = colour_on;
     return send(req.dump());
 }
 
@@ -1194,6 +1223,7 @@ int SessionClient::poll(Reply &reply, std::string &output, int timeout_ms)
 	case Op::commands:
 	case Op::history:
 	case Op::project:
+	case Op::colour:
 	case Op::unknown:
 	    break;
     }

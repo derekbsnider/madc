@@ -600,6 +600,9 @@ static int run_repl(std::unique_ptr<Program> prog, bool terminal,
     client.set_inherit_stdio(true);
     client.set_backend_arguments(options);
     client.set_history_file(history);	// %history's store, on every start
+    // The backend renders diagnostics into a string this host prints on
+    // std::cerr: coloured as std::cerr shows colour (Phase 0.5's gate).
+    client.set_diagnostic_colour(madc::colour_reaches(std::cerr));
 #ifndef _WIN32
     Program *configured = prog.get();
     SessionClient::ProgramFactory copy = [configured]() {
