@@ -48,6 +48,8 @@ struct config_settings
     bool has_cpu_limit = false;			// the guards' one knob parser at parse)
     std::string mem_limit;			// mem-limit = off|auto|<MB>
     bool has_mem_limit = false;
+    std::string theme;				// theme = <file>    -> the REPL's colours
+    bool has_theme = false;
 };
 
 // madc's lookup chain (./madc.ini → the user config dir → the system config

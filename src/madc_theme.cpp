@@ -4,6 +4,8 @@
 
 #include <cstddef>
 
+#include "madcdis/ui_sgr.h"	// sgr: a style's bytes at a depth
+
 namespace madc {
 
 namespace {
@@ -110,6 +112,54 @@ const theme &theme_default()
 	return t;
     }();
     return built_in;
+}
+
+void theme_marks(const theme &t, const std::vector<std::string> &lines,
+		 int64_t standard, hub::ui_colour_depth depth,
+		 std::vector<hub::line_mark> &out)
+{
+    std::string text;
+    for ( std::size_t i = 0; i < lines.size(); ++i )
+    {
+	if ( i )
+	    text += '\n';
+	text += lines[i];
+    }
+    std::vector<highlight_span> spans;
+    lex_classes(text, standard, spans);
+    std::vector<std::vector<int> > cls(lines.size());
+    for ( std::size_t i = 0; i < lines.size(); ++i )
+	cls[i].assign(lines[i].size(), -1);
+    for ( const highlight_span &sp : spans )
+    {
+	if ( sp.line < 1 || (std::size_t)sp.line > lines.size() || sp.column < 0 )
+	    continue;
+	std::vector<int> &row = cls[sp.line - 1];
+	for ( std::size_t b = (std::size_t)sp.column;
+	      b < (std::size_t)(sp.column + sp.length) && b < row.size(); ++b )
+	    row[b] = (int)sp.cls;
+    }
+    for ( std::size_t i = 0; i < cls.size(); ++i )
+	for ( std::size_t b = 0; b < cls[i].size(); )
+	{
+	    std::size_t e = b + 1;
+	    while ( e < cls[i].size() && cls[i][e] == cls[i][b] )
+		++e;
+	    if ( cls[i][b] >= 0 )
+	    {
+		const hub::ui_style &st = t.of((HighlightClass)cls[i][b]);
+		if ( !st.is_normal() )
+		{
+		    hub::line_mark m;
+		    m.line = i;
+		    m.from = b;
+		    m.to = e;
+		    hub::sgr(m.on, hub::ui_style(), st, depth);
+		    out.push_back(m);
+		}
+	    }
+	    b = e;
+	}
 }
 
 } // namespace madc

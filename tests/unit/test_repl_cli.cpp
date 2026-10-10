@@ -532,3 +532,35 @@ TEST_CASE("colon mode at the line editor: input mode reads at the continuation p
     CHECK(term.painted.find("c17>") != std::string::npos);
     CHECK(s.submitted() == 1);
 }
+
+#include "madc_console.h"
+#include "madc_theme.h"
+
+// Syntax colour at the prompt (split arc 1B.9, design decision 5): with the
+// gate open, each entry is painted in the theme's colours as it is typed —
+// marks of no width, so the values are as before — and a command entry
+// stays plain; with the gate shut nothing is coloured.
+TEST_CASE("the entry is coloured as it is typed when colour reaches the terminal (1B.9)")
+{
+    InteractiveSession s;
+    REQUIRE(s.begin("--std=c17"));
+    scripted_terminal term({ "int x = 42; // n\r", "%whos\r", "x\r", "\x04" });
+    std::ostringstream out;
+    madc::set_colour_when(madc::colour_when::always);
+    CHECK(madc_repl_edit(s, term, out, "", repl_colon(), &madc::theme_default()) == 0);
+    madc::set_colour_when(madc::colour_when::automatic);
+    CHECK(out.str().find("42\n") != std::string::npos);
+    CHECK(term.painted.find("\x1b[1mint\x1b[0m x = \x1b[36m42\x1b[0m; \x1b[32m// n\x1b[0m")
+	  != std::string::npos);
+    CHECK(term.painted.find("c17> %whos") != std::string::npos);	// a command: plain
+
+    InteractiveSession t;
+    REQUIRE(t.begin("--std=c17"));
+    scripted_terminal plain({ "int y = 1;\r", "\x04" });
+    std::ostringstream tout;
+    madc::set_colour_when(madc::colour_when::never);
+    CHECK(madc_repl_edit(t, plain, tout, "", repl_colon(), &madc::theme_default()) == 0);
+    madc::set_colour_when(madc::colour_when::automatic);
+    CHECK(plain.painted.find("\x1b[1m") == std::string::npos);
+    CHECK(plain.painted.find("c17> int y = 1;") != std::string::npos);
+}

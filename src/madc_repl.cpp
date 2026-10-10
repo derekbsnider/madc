@@ -43,6 +43,9 @@
 #include "madc_repl.h"
 #include "madc_posix_io.h"
 #include "madcdis/line_edit.h"
+#include "madcdis/ui_sgr.h"		// sgr / terminal_colour_depth: the entry's marks (1B.9)
+#include "madc_console.h"		// colour_reaches: Phase 0.5's gate
+#include "madc_theme.h"			// the prompt's colours (1B.9)
 #include "madcdis/tui_provider.h"
 #include "madcdis/ui_input.h"
 
@@ -50,6 +53,7 @@ using madc::hub::line_edit;
 using madc::hub::line_history;
 using madc::hub::line_painter;
 using madc::hub::line_target;
+using madc::hub::line_view;
 
 // An entry the session took: print what it shows (D10). A refused one
 // showed nothing; its diagnostics are already on the error stream.
@@ -156,10 +160,41 @@ static std::string entry_prompt(ReplSession &session)
     return session.standard_name() + "> ";
 }
 
+// A standard's --std= spelling as the classifier's code (0: the default).
+static int64_t standard_code(const std::string &name)
+{
+    Program::LanguageStd std = Program::LanguageStd();
+    bool gnu = false;
+    return Program::standard_of_spelling(madc::dis::istring(name), std, gnu)
+	? (int64_t)std : 0;
+}
+
+// The entry's syntax colour (split arc 1B.9, design decision 5): the theme
+// owner's marks over its lines, under the session's standard. A command
+// entry (%, ., ?, :) is no code: it stays plain.
+static void colour_entry(line_view &v, const madc::theme &theme,
+			 int64_t standard, madc::hub::ui_colour_depth depth)
+{
+    std::string text;
+    for ( size_t i = 0; i < v.lines.size(); ++i )
+	text += (i ? "\n" : "") + v.lines[i];
+    InteractiveSession::Mode mode;
+    InteractiveSession::Command code;
+    std::string word, argument;
+    if ( !InteractiveSession::command_of(text, mode, word, code, argument) )
+	madc::theme_marks(theme, v.lines, standard, depth, v.marks);
+}
+
 int madc_repl_edit(ReplSession &session, line_target &term,
 		   std::ostream &out, const std::string &history_path,
-		   const repl_colon &colon)
+		   const repl_colon &colon, const madc::theme *theme)
 {
+    // The entry's colour (split arc 1B.9): a theme, and Phase 0.5's gate on
+    // the output (NO_COLOR, TERM=dumb, -fdiagnostics-color=never); the
+    // terminal's depth read once.
+    const bool colour = theme && madc::colour_reaches(out);
+    const madc::hub::ui_colour_depth depth = madc::hub::terminal_colour_depth();
+    int64_t standard = 0;
     // History (§41.7a slice 2): the file's entries in this language, then
     // each entry the session takes, a refused one included, as Julia keeps
     // an input that failed. A record's mode is the prompt's standard (D22).
@@ -170,6 +205,7 @@ int madc_repl_edit(ReplSession &session, line_target &term,
     line_history ring;
     auto rekey = [&]() {
 	mode = session.standard_name();
+	standard = standard_code(mode);
 	prompt = entry_prompt(session);
 	continuation.assign(prompt.size(), ' ');
 	ring = line_history();
@@ -185,6 +221,12 @@ int madc_repl_edit(ReplSession &session, line_target &term,
 	    madc::history_append(history_path, mode, entry);
     };
     line_painter paint;
+    // What the painter shows: the editor's view, coloured when colour is on.
+    auto shown = [&](line_view v) {
+	if ( colour )
+	    colour_entry(v, *theme, standard, depth);
+	return v;
+    };
     madc::hub::key_resolver keys;
     keys.set_bindings(madc::hub::line_edit_bindings());
     madc::hub::focus_state focus;	// nothing to focus: every key is the editor's
@@ -222,7 +264,7 @@ int madc_repl_edit(ReplSession &session, line_target &term,
 	auto release = [&](const std::string &tail) {
 	    if ( !held )
 		return;
-	    term.write(paint.finish(ed.view_at_end(), cols, tail));
+	    term.write(paint.finish(shown(ed.view_at_end()), cols, tail));
 	    term.end();
 	    held = false;
 	};
@@ -241,10 +283,10 @@ int madc_repl_edit(ReplSession &session, line_target &term,
 		    std::vector<std::string> listed = ed.take_listed();
 		    if ( !listed.empty() )
 		    {
-			term.write(paint.finish(ed.view(), cols, ""));
+			term.write(paint.finish(shown(ed.view()), cols, ""));
 			term.write(line_painter::list(listed, cols));
 		    }
-		    term.write(paint.paint(ed.view(), cols));
+		    term.write(paint.paint(shown(ed.view()), cols));
 		    kv.clear();
 		    if ( !term.read_keys(kv) )
 		    {

@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### The REPL prompt colours the entry as it is typed
+
+`madc -i` now colours each entry in the theme's colours as it is typed (split
+arc 1B.9, design `docs/plans/2026-10-10-prompt-colour-design.md`), when colour
+reaches the terminal (Phase 0.5's `colour_reaches` — `-fdiagnostics-color`,
+`NO_COLOR`, `TERM`). The line painter paints colour MARKS it is handed — a byte
+range of a line with an opaque SGR prefix — around the glyphs each covers,
+zero-width, so the layout's columns, the wrap and the caret are the unmarked
+line's; `line_layout` (the one width owner) now reports where each byte's glyph
+starts in the shown bytes, so the painter never counts an escape as a column.
+`madc_repl_edit` composes the marks per paint through `madc::theme_marks`, which
+lexes the entry under the session's standard (`%std` re-keys it) and coalesces
+each run of one non-plain style into a mark of its SGR; a command entry (`%`,
+`.`, `?`, `:`) is no code and stays plain. madc.ini's new `theme = PATH` key
+reads a madcide `.theme` file in place of the built-in theme — a file that
+cannot be read or whose spec is refused keeps the built-in theme and warns at
+start. `madc.1` now documents `theme=` and the previously undocumented
+`modules=`.
+
 ### The syntax-colour owners: highlight classes, the SGR step, the theme, the classifier's C++ face
 
 The colour machinery the REPL prompt will paint through now has its owners (split

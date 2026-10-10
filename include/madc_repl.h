@@ -46,7 +46,7 @@ int madc_repl_run(ReplSession &session, std::istream &in,
 		  std::ostream &out, bool terminal,
 		  const repl_colon &colon = repl_colon());
 
-namespace madc { namespace hub { class line_target; } }
+namespace madc { namespace hub { class line_target; } struct theme; }
 
 // The REPL on a terminal (plan §41.7a, D23): each entry is read by the line
 // editor on `term`, which holds the terminal only while it reads. Enter
@@ -57,10 +57,13 @@ namespace madc { namespace hub { class line_target; } }
 // path keeps history for the session alone. Returns the exit status at the end
 // of input (Ctrl-D on an empty entry), or -1 when `term` cannot begin the
 // first entry, which is the host's cue for cooked lines. The unit tests
-// give it a scripted target.
+// give it a scripted target. `theme` (split arc 1B.9) colours each entry
+// as it is typed, when Phase 0.5's gate lets colour reach `out`
+// (madc::colour_reaches); NULL paints it plain.
 int madc_repl_edit(ReplSession &session, madc::hub::line_target &term,
 		   std::ostream &out, const std::string &history_path,
-		   const repl_colon &colon = repl_colon());
+		   const repl_colon &colon = repl_colon(),
+		   const madc::theme *theme = 0);
 
 
 #endif

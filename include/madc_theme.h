@@ -11,9 +11,12 @@
 // Thread contract: a theme is a plain value, immutable once read; the
 // default is a function's constant (C++11 static initialization).
 
+#include <cstdint>
 #include <string>
+#include <vector>
 
 #include "highlight_class.h"
+#include "madcdis/line_edit.h"		// line_mark: a coloured byte range
 #include "madcdis/ui_chrome.h"
 #include "madcdis/ui_style.h"
 
@@ -48,6 +51,15 @@ const theme &theme_default();
 // the line, for a name neither vocabulary has or a spec ui_style_of cannot
 // read; `out` is then unchanged.
 bool theme_read(const std::string &text, theme &out, std::string &err);
+
+// Source lines coloured for a terminal (split arc 1B.9): `lines` (one
+// text's lines) lexed under `standard` (lex_classes), each byte the style
+// of the last span that covers it (an escape inside its string), each run of
+// one non-plain style a mark of its SGR at `depth` (hub::sgr), appended to
+// `out` in line and byte order — what the painter and marked_layout write.
+void theme_marks(const theme &t, const std::vector<std::string> &lines,
+		 int64_t standard, hub::ui_colour_depth depth,
+		 std::vector<hub::line_mark> &out);
 
 } // namespace madc
 

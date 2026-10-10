@@ -70,7 +70,9 @@ sets what
 passes it) and
 .B %project
 (a project manifest: open or create it, add and remove its files, check,
-build and run it). A line starting with
+build and run it). The entry is coloured as it is typed (see
+.B theme=
+under FILES). A line starting with
 .B :
 is an ex command on the file's buffer, as in vim's colon mode:
 .BR :p ,
@@ -384,6 +386,23 @@ Default for
 .BR MADC_MEM_LIMIT ;
 .B 0
 disables. The environment variable overrides it.
+.TP
+.BI modules= name
+A module to load at start, as
+.BI \-l name
+does; repeatable, after the command line's.
+.TP
+.BI theme= file
+The REPL's colours: a theme file of
+.I name spec
+lines \(em a class (keyword, control, type, typename, string, number,
+comment, directive, include, escape, ident, function, variable, parameter,
+member, enumerator, namespace) and a style in JOE's words (bold, dim,
+italic, underline, inverse, a colour, \fB#\fIrrggbb\fR, \fBbg_\fIcolour\fR).
+madcide's \fB.theme\fR files read unchanged. It replaces the built-in
+theme (JOE's default scheme); an empty file colours nothing. Colour reaches
+the terminal only when diagnostics' colour does
+(\fB\-fdiagnostics\-color\fR, NO_COLOR, TERM).
 .PP
 Configuration-file support is a build-time option
 (\fBconfigure \-\-disable\-config\-file\fR removes it, which embedding

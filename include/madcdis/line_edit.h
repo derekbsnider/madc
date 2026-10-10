@@ -128,14 +128,60 @@ inline const tui_bindings &line_edit_bindings()
 // line_layout / line_width, madcdis/text_utf16.h: the one rule this editor's
 // painter and the compiler's diagnostic caret share.
 
-// What the painter shows: the prompt, the entry's lines, and the caret as a
-// line and a byte in it.
+// A coloured range of an entry's line (split arc 1B.9): bytes [from, to)
+// of lines[line], painted after `on` — opaque bytes of no width, an SGR
+// sequence — and followed by a reset. The painter knows no classes, styles
+// or depths; the host composes the marks (the classifier, a theme, the SGR
+// step).
+struct line_mark
+{
+    size_t line;
+    size_t from;
+    size_t to;
+    std::string on;
+};
+
+// Line `line` (lines[`index`] of a view) laid out from column `origin` (its
+// columns into `col`, as line_layout), each of the marks on it written
+// around the glyphs it covers: zero-width bytes, so the columns, the wrap
+// and the caret are the unmarked line's. A mark that runs backward or
+// overlaps the one before is skipped. The painter and the diagnostic's
+// echoed source line (split arc 1B.9) both lay a marked line out here.
+inline std::string marked_layout(const std::string &line, size_t index,
+				 const std::vector<line_mark> &marks,
+				 size_t origin, std::vector<size_t> &col)
+{
+    std::vector<size_t> at;
+    const std::string shown = line_layout(line, origin, col, 8, &at);
+    const size_t n = line.size();
+    std::string out;
+    size_t pos = 0, done = 0;
+    for ( const line_mark &m : marks )
+    {
+	if ( m.line != index || m.from < done || m.from >= m.to || m.from >= n )
+	    continue;
+	const size_t to = m.to < n ? m.to : n;
+	out.append(shown, pos, at[m.from] - pos);
+	out += m.on;
+	out.append(shown, at[m.from], at[to] - at[m.from]);
+	out += "\x1b[0m";
+	pos = at[to];
+	done = to;
+    }
+    out.append(shown, pos, std::string::npos);
+    return out;
+}
+
+// What the painter shows: the prompt, the entry's lines, the caret as a
+// line and a byte in it, and the marks that colour the lines (in order
+// within a line, none overlapping).
 struct line_view
 {
     std::string prompt;
     std::vector<std::string> lines;
     size_t caret_line;
     size_t caret_byte;
+    std::vector<line_mark> marks;
     line_view() : caret_line(0), caret_byte(0) {}
 };
 
@@ -1113,7 +1159,7 @@ public:
 		out += "\r\n";
 		out.append(origin, ' ');
 	    }
-	    out += line_layout(v.lines[i], origin, col);
+	    out += marked_layout(v.lines[i], i, v.marks, origin, col);
 	    const size_t w = col.back();
 	    const bool exact = w > 0 && w % cols == 0;
 	    if ( i == v.caret_line )

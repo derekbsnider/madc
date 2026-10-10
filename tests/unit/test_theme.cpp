@@ -160,3 +160,22 @@ TEST_CASE("lex_classes: lex spans as enums, under the caller's standard")
     madc::lex_classes("x = \"open", madc::fkC17, spans);	// an incomplete entry lexes
     CHECK_FALSE(spans.empty());
 }
+
+TEST_CASE("theme_marks: runs of one style, an escape inside its string")
+{
+    std::vector<madc::hub::line_mark> marks;
+    std::vector<std::string> lines = { "int s = \"a\\n\"; /* c", "c */ x" };
+    madc::theme_marks(madc::theme_default(), lines, madc::fkC17,
+		      ui_colour_depth::ansi16, marks);
+    REQUIRE(marks.size() == 6u);
+    CHECK((marks[0].line == 0 && marks[0].from == 0 && marks[0].to == 3));	// int
+    CHECK(marks[0].on == "\x1b[1m");
+    CHECK((marks[1].from == 8 && marks[1].to == 10));		// "a
+    CHECK(marks[1].on == "\x1b[36m");
+    CHECK((marks[2].from == 10 && marks[2].to == 12));		// \n
+    CHECK(marks[2].on == "\x1b[1;36m");
+    CHECK((marks[3].from == 12 && marks[3].to == 13));		// "
+    CHECK((marks[4].line == 0 && marks[4].from == 15 && marks[4].to == 19));	// /* c
+    CHECK(marks[4].on == "\x1b[32m");
+    CHECK((marks[5].line == 1 && marks[5].from == 0 && marks[5].to == 4));	// c */
+}

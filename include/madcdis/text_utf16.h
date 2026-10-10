@@ -140,21 +140,29 @@ inline unsigned codepoint_columns(uint32_t cp)
 // -ftabstop (madcide's ^T option sets another); any other control byte shows
 // as ^X, two columns; a code point is codepoint_columns() wide, and its
 // continuation bytes share its column. Returns the bytes the painter writes
-// for the line: printable glyphs only.
+// for the line: printable glyphs only. `shown_at`, when given, receives the
+// offset in those bytes where each byte's glyph starts (a continuation byte
+// shares its glyph's; [size] is the end), so a painter can insert
+// zero-width bytes (an SGR mark) without counting them as columns.
 inline std::string line_layout(const std::string &line, std::size_t origin,
 			       std::vector<std::size_t> &col,
-			       std::size_t tabw = 8)
+			       std::size_t tabw = 8,
+			       std::vector<std::size_t> *shown_at = 0)
 {
 	if ( tabw < 1 )
 		tabw = 8;
 	std::string shown;
 	col.assign(line.size() + 1, 0);
+	if ( shown_at )
+		shown_at->assign(line.size() + 1, 0);
 	std::size_t c = origin;
 	std::size_t i = 0;
 	while ( i < line.size() )
 	{
 		unsigned char b = (unsigned char)line[i];
 		col[i] = c;
+		if ( shown_at )
+			(*shown_at)[i] = shown.size();
 		if ( b == '\t' )
 		{
 			std::size_t next = (c / tabw + 1) * tabw;
@@ -174,12 +182,18 @@ inline std::string line_layout(const std::string &line, std::size_t origin,
 		uint32_t cp = 0;
 		std::size_t n = utf8_decode_at(line, i, cp);
 		for ( std::size_t k = 1; k < n; ++k )
+		{
 			col[i + k] = c;
+			if ( shown_at )
+				(*shown_at)[i + k] = shown.size();
+		}
 		shown.append(line, i, n);
 		c += codepoint_columns(cp);
 		i += n;
 	}
 	col[line.size()] = c;
+	if ( shown_at )
+		(*shown_at)[line.size()] = shown.size();
 	return shown;
 }
 

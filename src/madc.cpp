@@ -45,6 +45,7 @@
 #include "madc_session_client.h" // BackendSession: the session in a backend (D2)
 #include "madc_repl.h"    // madc_repl_run: the REPL's loop (D20)
 #include "madc_history.h" // the REPL history store's default place (1B.7)
+#include "madc_theme.h"   // the REPL's colours: madc.ini's theme (1B.9)
 #include "madc_ex.h"      // colon mode: the host's ex session (D24)
 #include "madc_documents.h" // the host's buffer: madc -i FILE's file
 #include "madcdis/hub.h"     // the host's world of buffers
@@ -498,9 +499,11 @@ static TokenProgram *tokenize_input(Program &prog, const char *path)
 // it has one, runs with the file lane's argv (the path, then the program's
 // arguments). The prompt follows whatever they did, as python's does: a
 // refused file leaves nothing, a stopped main leaves the file's names.
-// `history` is the line editor's history file (D23; empty: none).
+// `history` is the line editor's history file (D23; empty: none); `theme`
+// colours each entry as it is typed (split arc 1B.9).
 static int repl_loops(ReplSession &session, bool terminal,
-		      const std::string &history, int file_argc, char **file_argv)
+		      const std::string &history, const madc::theme *theme,
+		      int file_argc, char **file_argv)
 {
     // Colon mode (D24; ex core design decision 11) is this host's: an ex
     // session over the host's own world, holding ONE buffer as vim starts
@@ -564,7 +567,8 @@ static int repl_loops(ReplSession &session, bool terminal,
 	    madc::hub::create_line_target());
 	if ( term )
 	{
-	    int rc = madc_repl_edit(session, *term, std::cout, history, colon);
+	    int rc = madc_repl_edit(session, *term, std::cout, history, colon,
+				    theme);
 	    if ( rc >= 0 )
 		return rc;
 	}
@@ -577,7 +581,7 @@ static int repl_loops(ReplSession &session, bool terminal,
 }
 
 static int run_repl(std::unique_ptr<Program> prog, bool terminal,
-		    const std::string &history,
+		    const std::string &history, const madc::theme *theme,
 		    const std::vector<std::string> &options,
 		    int file_argc = 0, char **file_argv = NULL)
 {
@@ -610,7 +614,7 @@ static int run_repl(std::unique_ptr<Program> prog, bool terminal,
 	return 1;
     }
     BackendSession session(client, std::cerr, NULL);
-    return repl_loops(session, terminal, history, file_argc, file_argv);
+    return repl_loops(session, terminal, history, theme, file_argc, file_argv);
 }
 
 int main(int argc, char **argv)
@@ -1127,6 +1131,22 @@ int main(int argc, char **argv)
                   << prog->stdlib_flavor_names() << ")" << std::endl;
         return 1;
     }
+    // `theme` (split arc 1B.9): the REPL's colours, madc's built-in theme
+    // unless madc.ini names a `.theme` file. One that does not read keeps the
+    // built-in, and says why.
+    madc::theme repl_theme = madc::theme_default();
+    if ( config.has_theme )
+    {
+        std::string text, why;
+        if ( !madc::document_read_file(config.theme, text) )
+            why = "cannot be read";
+        else if ( !madc::theme_read(text, repl_theme, why) )
+            repl_theme = madc::theme_default();
+        if ( !why.empty() )
+            std::cerr << "madc: " << config.source_path << ": theme "
+                      << config.theme << ": " << why
+                      << "; the built-in theme stays" << std::endl;
+    }
     // Appended AFTER the command line's -I dirs (gcc searches configured
     // directories last).
     for ( const std::string &dir : config.include_dirs )
@@ -1564,7 +1584,7 @@ int main(int argc, char **argv)
 	    return run_repl(std::move(prog), terminal,
 			    history_file_given ? history_file
 					       : madc::history_default_path(),
-			    repl_options);
+			    &repl_theme, repl_options);
 	static char stdin_path[] = "-";
 	stdin_argv.assign(argv, argv + argc);
 	stdin_argv.push_back(stdin_path);
@@ -1576,7 +1596,7 @@ int main(int argc, char **argv)
 	return run_repl(std::move(prog), terminal,
 			history_file_given ? history_file
 					   : madc::history_default_path(),
-			repl_options, argc - filearg, argv + filearg);
+			&repl_theme, repl_options, argc - filearg, argv + filearg);
 
     if ( argc >= 2 && filearg < argc )
     {

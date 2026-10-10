@@ -41,6 +41,9 @@ void register_madc_keys(cfg::config_file &cf, config_settings &out)
 	cf.accept_text_list("modules", out.modules);
 	cf.accept_text("cpu-limit", out.cpu_limit, &out.has_cpu_limit);
 	cf.accept_text("mem-limit", out.mem_limit, &out.has_mem_limit);
+	// The REPL's colours (split arc 1B.9): a `.theme` file (madc_theme.h)
+	// in place of the built-in theme.
+	cf.accept_path("theme", out.theme, &out.has_theme);
 }
 
 // The guard knobs read `off`, `auto` or a whole number — the guards' ONE
