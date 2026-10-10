@@ -2,6 +2,37 @@
 
 ## [Unreleased]
 
+### `workspace/executeCommand` runs the REPL registry in a backend session
+
+`madc --lsp` now answers `workspace/executeCommand`: a client runs the REPL's
+`%` commands as `madc.NAME` (`madc.check`, `madc.run`, `madc.open`, ...). The
+names are advertised in `executeCommandProvider.commands` only when the server
+has a command host (`lsp::command_host`), and come from the session's
+completion of `%`. `madc.NAME` with `arguments[0]` — a `file://` URI or a path,
+passed as one shell word through `ns_common::shell_quote` — runs `%NAME ARG`
+in the CLI's crash-isolated backend session (`madc -i`'s `SessionClient` +
+`BackendSession`, `lsp::backend_commands`), started again after the session
+ends; its program's output is piped into the result rather than the protocol's
+stdout, its diagnostics are plain, and `%history` names no store. The result is
+`{ok, text, output, diagnostics}`; an unknown name answers -32602; a command
+with no FILE is refused ("no document is current"). The server's documents
+answer the session's buffer question, so a command reads a document's unsaved
+text. The editor a command asks for (`%open`, `%edit`) is the client's: when
+the client declared `window.showDocument.support`, the editor sends a
+`window/showDocument` request (a server-generated id, the client's response
+dropped) for the document's URI — the client's own spelling for an open
+document, else a `file://` URI encoded one path segment at a time through
+`js::encodeURIComponent`, now declared in `include/ns_common.h` as the one
+percent-encoder. `madc::show_in_editor` is the one choice behind `%open` and
+`%edit`: the host's editor (`ReplSession::set_editor`, held by
+`InteractiveSession` and `BackendSession`), else the terminal's
+(`madc::run_terminal_editor`). A defect the feature exposed is fixed in the
+same change: `InteractiveSession::file_command` refused a FILE absent from disk
+before asking the host's buffers, so `%run` of an LSP client's unsaved new file
+failed with "Failed to open file"; a new `InteractiveSession::buffer_holds`
+asks the buffer question first when the host honors payloads.
+`docs/man/madc.1`'s `--lsp` entry documents `executeCommand`.
+
 ### The static gates see files a commit has not yet committed
 
 Every `scripts/check-*.sh` gate now enumerates its files with `git ls-files

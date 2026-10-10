@@ -7,3 +7,8 @@ Content-Length: 38
 {"error":{"code":-32601,"message":"Method not found: textDocument/completion"},"id":4
 {"error":{"code":-32700,"message":"the message is not JSON"},"id":null
 {"id":5,"jsonrpc":"2.0","result":null}
+"executeCommandProvider":{"commands":[
+"madc.check"
+"output":"piped, not framed\n"
+"id":6,"jsonrpc":"2.0","result":{"diagnostics":"","ok":true
+"id":7,"jsonrpc":"2.0","result":{"diagnostics":"","ok":true

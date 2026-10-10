@@ -337,6 +337,9 @@ public:
 	buffers = source;
 	client.set_buffers(source);	// the backend's question, answered here
     }
+    // The host's editor (split arc 1C.12): the `open` payload (%open, %edit)
+    // is honored with it, else with the terminal's.
+    void set_editor(const Editor &e) override { editor = e; }
 
     // A REPL command THIS host runs (split arc 1A.2; design
     // docs/plans/2026-10-09-command-registry-design.md §2.7): registered on
@@ -402,6 +405,7 @@ private:
     struct HostCommand { std::string name, usage, summary; CommandRun run; };
     std::vector<HostCommand> host_commands;
     BufferSource buffers;		// the host's (set_buffers); empty: the disk only
+    Editor editor;			// the host's (set_editor); empty: the terminal's
     std::vector<std::string> program_args;	// %args: %run's of the current buffer
     std::string program_args_text;		// as typed
     bool has_ended;

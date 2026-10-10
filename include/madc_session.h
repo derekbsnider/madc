@@ -88,6 +88,15 @@ public:
     // A host that holds buffers hands them to the session it drives (the
     // session's buffer question: InteractiveSession::buffer_text).
     virtual void set_buffers(const BufferSource &source) { (void)source; }
+    // The editor a command asks for (%open, %edit; split arc 1C.12): a host
+    // that shows files — an IDE, an LSP client — hands its own to the session
+    // it drives, as it hands its buffers. True when `path` was shown (at
+    // `line` when > 0); false with `why`. None: the terminal's
+    // (madc::run_terminal_editor). One request at a time, on the session's
+    // thread.
+    typedef std::function<bool(const std::string &path, int line,
+			       std::string &why)> Editor;
+    virtual void set_editor(const Editor &editor) { (void)editor; }
     // Input the session's program read from a stdin it shares with the host
     // past what it consumed (a backend's C runtime reads ahead on a pipe —
     // Windows), handed back: the host reads it before its own input. Taking
@@ -176,6 +185,8 @@ public:
     // host in this process hands it, or the backend server's, which asks the
     // host over the wire. None: every FILE is the disk's.
     void set_buffers(const BufferSource &source) override { buffers = source; }
+    // The host's editor (split arc 1C.12): %open / %edit in this process.
+    void set_editor(const Editor &e) override { editor = e; }
     // The session's buffer question (madc::resolve_buffer's rule over its
     // source): what a command running in the session — a module's — reads
     // for FILE ("" the host's current buffer).
@@ -355,6 +366,11 @@ private:
     // A file command's file, once it opens: the payload `kind` for a host
     // that honors payloads, else loaded (and run) here.
     bool file_command(madc::session_payload kind, std::vector<std::string> &words);
+    // Does a buffer of the host's hold FILE's live text (the buffer
+    // question)? A host that honors payloads reads such a FILE from its
+    // buffer, so the disk need not have it yet (an LSP client's unsaved new
+    // file).
+    bool buffer_holds(const std::string &file);
     // A command's output begins: the entry was a command, and nothing it
     // shows yet (no text, no code).
     void begin_command_output();
@@ -406,6 +422,7 @@ private:
     std::string history_file;		// %history's store ("" none)
     std::string project_file;		// %project's manifest ("" none)
     BufferSource buffers;		// the host's (set_buffers); empty: the disk
+    Editor editor;			// the host's (set_editor); empty: the terminal's
     InteractiveSession(const InteractiveSession &);
     InteractiveSession &operator=(const InteractiveSession &);
 };
@@ -416,6 +433,11 @@ namespace madc {
 // before `path` when `line` > 0 (never the notepad default), on this
 // terminal, waited for. False when it did not start (`why` says so).
 bool run_terminal_editor(const std::string &path, int line, std::string &why);
+// The editor a session's host gave it (ReplSession::set_editor), else the
+// terminal's: the ONE choice behind %open and %edit, in process and in a
+// backend's host.
+bool show_in_editor(const ReplSession::Editor &editor, const std::string &path,
+		    int line, std::string &why);
 // <ns_madc>'s command_add (split arc 1A.2): a REPL command registered by
 // code running IN a session (a module's own registration) — the running
 // Program's session (Program::owning_session) adds it as a session row

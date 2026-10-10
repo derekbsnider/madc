@@ -931,6 +931,13 @@ bool madc::session_buffer(value &out, const char *name)
 
 // The terminal's editor (its contract is madc_session.h's), run by the one
 // spawn owner (Process): no shell.
+bool madc::show_in_editor(const ReplSession::Editor &editor,
+			  const std::string &path, int line, std::string &why)
+{
+    return editor ? editor(path, line, why)
+		  : madc::run_terminal_editor(path, line, why);
+}
+
 bool madc::run_terminal_editor(const std::string &path, int line,
 			       std::string &why)
 {
@@ -1046,7 +1053,7 @@ bool InteractiveSession::open_in_editor(const std::string &path, int line,
 	return true;
     }
     std::string why;
-    if ( madc::run_terminal_editor(path, line, why) )
+    if ( madc::show_in_editor(editor, path, line, why) )
 	return true;
     command_error(why, name);
     return false;
@@ -1309,11 +1316,21 @@ bool InteractiveSession::run_file_command(const std::string &argument,
 // A file command's FILE (plan §7f) opens first, so a mistyped name is refused
 // before anything is restarted or loaded and the session survives it. A host
 // that honors payloads reads the file itself (an IDE's open buffer is its
-// live text, as F5 runs it); with any other host the session loads it here.
+// live text, as F5 runs it), so a FILE its buffer holds needs no file on disk;
+// with any other host the session loads it here.
+bool InteractiveSession::buffer_holds(const std::string &file)
+{
+    madc::dis::istring path;
+    std::string text, why;
+    bool has_text = false;
+    return buffer_text(madc::dis::istring(file), path, text, has_text, why) && has_text;
+}
+
 bool InteractiveSession::file_command(madc::session_payload kind,
 				      std::vector<std::string> &words)
 {
-    if ( !std::ifstream(words[0].c_str()) )
+    if ( !(payload_host && buffer_holds(words[0]))
+	 && !std::ifstream(words[0].c_str()) )
     {
 	prog->record_frontend_error(Program::DiagnosticPhase::lexer,
 				    "Failed to open file", words[0].c_str(),

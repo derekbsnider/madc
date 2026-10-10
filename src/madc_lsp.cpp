@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cstring>
 #include <map>
+#include <sstream>
 #include <string>
 #include <vector>
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
@@ -27,6 +28,7 @@
 #include "libmadc/sysinfo.h"	// madc::sys.version: serverInfo
 #include "madcdis/channel.h"	// serve: a Content-Length framed channel
 #include "madcdis/world_text.h"	// the one value<->JSON bridge
+#include "madc_session_client.h"	// backend_commands: madc -i's backend session
 
 namespace madc {
 namespace lsp {
@@ -43,7 +45,8 @@ enum class method : unsigned char
     did_open, did_change, did_save, did_close, will_save,
     did_change_configuration, did_change_watched_files,
     did_change_workspace_folders, cancel_request, set_trace,
-    document_symbol, definition, references, hover, semantic_tokens_full
+    document_symbol, definition, references, hover, semantic_tokens_full,
+    execute_command
 };
 
 struct method_row
@@ -73,6 +76,7 @@ const method_row method_rows[] = {
     { "textDocument/references", method::references, false },
     { "textDocument/hover", method::hover, false },
     { "textDocument/semanticTokens/full", method::semantic_tokens_full, false },
+    { "workspace/executeCommand", method::execute_command, false },
 };
 
 const method_row *method_of(const std::string &name)
@@ -224,6 +228,14 @@ value notification(const char *name, const value &params)
     return value::make_object(f);
 }
 
+// A request the server sends; the client's response is dropped (handle).
+value request(int64_t id, const char *name, const value &params)
+{
+    value r = notification(name, params);
+    r.object()["id"] = value(id);
+    return r;
+}
+
 // ---- URIs: a file:// URI names a path ----------------------------------
 
 // The path a file:// URI names, percent-decoded. RFC 8089's DOS drive form
@@ -240,6 +252,19 @@ bool uri_path(const std::string &uri, std::string &path)
     if ( path.size() > 1 && detail::host_path_absolute(path.substr(1)) )
 	path.erase(0, 1);
     return !path.empty();
+}
+
+// A path encoded for a URI one segment at a time: encodeURIComponent escapes
+// the separators too, so they are joined outside it, as '/'.
+std::string encoded_path(const std::string &path)
+{
+    std::string dir = detail::host_path_dirname(path), seg;
+    js_encodeURIComponent(&seg, detail::host_path_basename(path).c_str());
+    if ( dir.empty() )
+	return seg;
+    if ( dir.size() == 1 )
+	return "/" + seg;			// the root's
+    return encoded_path(dir.substr(0, dir.size() - 1)) + "/" + seg;
 }
 
 // ---- positions: the negotiated encoding against lang's byte columns -----
@@ -329,8 +354,14 @@ struct server::state
     bool exited;
     std::string root;			// the workspace's path (L0); "" = none
     std::map<hub::entity_id, std::string> uris;	// an open document's URI, as the client spells it
+    command_host *host;			// executeCommand's session; none: no commands
+    std::vector<std::string> commands;	// the advertised names, without "madc."
+    bool shows_documents;		// the client answers window/showDocument
+    int64_t next_request;		// the server's own request ids
+    std::vector<value> *pending;	// a running command's notes; else none
     state() : enc(position_encoding::utf16), initialized(false), shut(false),
-	      exited(false) {}
+	      exited(false), host(0), shows_documents(false), next_request(0),
+	      pending(0) {}
 };
 
 namespace {
@@ -380,7 +411,7 @@ value diagnostics_note(hub::world &w, hub::entity_id e, const std::string &uri,
     return notification("textDocument/publishDiagnostics", value::make_object(p));
 }
 
-value capabilities(position_encoding enc)
+value capabilities(position_encoding enc, const std::vector<std::string> &commands)
 {
     fields sync;
     sync["openClose"] = value(true);
@@ -407,6 +438,15 @@ value capabilities(position_encoding enc)
     c["referencesProvider"] = value(true);
     c["documentSymbolProvider"] = value(true);
     c["semanticTokensProvider"] = value::make_object(tokens);
+    if ( !commands.empty() )
+    {
+	std::vector<value> names;
+	for ( size_t i = 0; i < commands.size(); ++i )
+	    names.push_back(value("madc." + commands[i]));
+	fields exec;
+	exec["commands"] = value::make_array(names);
+	c["executeCommandProvider"] = value::make_object(exec);
+    }
     return value::make_object(c);
 }
 
@@ -442,6 +482,7 @@ std::string root_of(const value &params)
 server::server() : _s(new state()) {}
 server::~server() {}
 
+void server::set_command_host(command_host *host) { _s->host = host; }
 bool server::exited() const { return _s->exited; }
 int server::exit_code() const { return _s->shut ? 0 : 1; }
 position_encoding server::encoding() const { return _s->enc; }
@@ -565,11 +606,22 @@ bool server::handle(const value &message, value &reply, std::vector<value> &note
 	s.initialized = true;
 	s.enc = negotiate(params);
 	s.root = root_of(params);
+	const value *shows = field(object_field(object_field(object_field(
+	    params, "capabilities"), "window"), "showDocument"), "support");
+	s.shows_documents = shows && shows->is_boolean() && shows->as_boolean();
+	std::string why;
+	ReplSession *session = s.host ? s.host->session(why) : 0;
+	if ( session )
+	{
+	    // The registry's names: the session's completion of `%`.
+	    size_t start = 0;
+	    s.commands = session->complete("%", 1, start);
+	}
 	fields info;
 	info["name"] = value("madc");
 	info["version"] = value(sys.version);
 	fields r;
-	r["capabilities"] = capabilities(s.enc);
+	r["capabilities"] = capabilities(s.enc, s.commands);
 	r["serverInfo"] = value::make_object(info);
 	reply = response(id, value::make_object(r));
 	return true;
@@ -658,6 +710,9 @@ bool server::handle(const value &message, value &reply, std::vector<value> &note
 	notes.push_back(diagnostics_note(s.w, 0, uri, s.enc));	// clears them
 	return false;
     }
+    case method::execute_command:
+	reply = run_command(id, params, notes);
+	return true;
     case method::document_symbol:
     case method::definition:
     case method::references:
@@ -784,6 +839,154 @@ bool server::handle(const value &message, value &reply, std::vector<value> &note
 	break;
     }
     return false;
+}
+
+// workspace/executeCommand (design decision 5): `madc.NAME` runs `%NAME ARG`
+// in the host's session, ARG the path arguments[0] names (a file:// URI or a
+// path), one shell word. The server's documents are the session's buffers, so a command
+// reads a document's unsaved text; the client is its editor
+// (window/showDocument). The result is what the command showed, what its
+// program printed and its rendered diagnostics.
+value server::run_command(const value &id, const value &params, std::vector<value> &notes)
+{
+    state &s = *_s;
+    static const char prefix[] = "madc.";
+    const size_t n = sizeof(prefix) - 1;
+    const std::string command = text_field(params, "command");
+    const std::string name = command.compare(0, n, prefix) == 0
+	? command.substr(n) : std::string();
+    if ( name.empty()
+	 || std::find(s.commands.begin(), s.commands.end(), name) == s.commands.end() )
+	return error_response(id, error_code::invalid_params,
+			      "no such command: " + command);
+    std::string why;
+    ReplSession *session = s.host ? s.host->session(why) : 0;
+    if ( !session )
+	return error_response(id, error_code::request_failed,
+			      "no session runs commands: " + why);
+    std::string line = "%" + name;
+    const value &args = object_field(params, "arguments");
+    if ( args.is_array() && !args.as_array().empty()
+	 && args.as_array()[0].is_string() )
+    {
+	const std::string &arg = args.as_array()[0].as_string();
+	std::string path;
+	line += " " + ns_common::shell_quote(uri_path(arg, path) ? path : arg);
+    }
+
+    hub::world &w = s.w;
+    session->set_buffers([&w](const dis::istring &name, dis::istring &path,
+			      std::string &text, bool &has_text, std::string &why) {
+	if ( name.empty() )
+	{
+	    why = "an LSP command names its FILE: no document is current";
+	    return false;
+	}
+	path = name;
+	hub::entity_id e = document_find(w, name.str());
+	has_text = e && w.text_of(e);
+	if ( has_text )
+	    text = w.text_of(e)->text();
+	return true;
+    });
+    state *sp = &s;
+    session->set_editor([sp](const std::string &path, int at, std::string &why) {
+	if ( !sp->pending || !sp->shows_documents )
+	{
+	    why = "the client shows no documents (window/showDocument)";
+	    return false;
+	}
+	hub::entity_id e = document_find(sp->w, path);
+	std::map<hub::entity_id, std::string>::const_iterator u = sp->uris.find(e);
+	std::string uri = u != sp->uris.end() ? u->second : std::string();
+	if ( uri.empty() )
+	{
+	    std::string real = detail::resolve_real_path(path.c_str());
+	    std::string enc = encoded_path(real.empty() ? path : real);
+	    uri = std::string("file://") + (enc.compare(0, 1, "/") == 0 ? "" : "/") + enc;
+	}
+	fields p;
+	p["uri"] = value(uri);
+	p["takeFocus"] = value(true);
+	if ( at > 0 )
+	{
+	    fields pos;
+	    pos["line"] = value((int64_t)(at - 1));
+	    pos["character"] = value((int64_t)0);
+	    fields sel;
+	    sel["start"] = value::make_object(pos);
+	    sel["end"] = value::make_object(pos);
+	    p["selection"] = value::make_object(sel);
+	}
+	sp->pending->push_back(request(++sp->next_request, "window/showDocument",
+				       value::make_object(p)));
+	return true;
+    });
+
+    s.pending = &notes;
+    const bool ok = session->submit(line);
+    s.pending = 0;
+    std::string output, diagnostics;
+    s.host->take(output, diagnostics);
+    fields r;
+    r["ok"] = value(ok);
+    r["text"] = value(session->shown());
+    r["output"] = value(output);
+    r["diagnostics"] = value(diagnostics);
+    return response(id, value::make_object(r));
+}
+
+// ---- madc --lsp's command host -----------------------------------------
+
+struct backend_commands::state
+{
+    std::vector<std::string> options;
+    ProgramFactory make_program;
+    std::string std_option;
+    std::ostringstream output, diagnostics;
+    std::unique_ptr<SessionClient> client;
+    std::unique_ptr<BackendSession> session;	// destroyed before its client
+};
+
+backend_commands::backend_commands(const std::vector<std::string> &options,
+				   const ProgramFactory &make_program,
+				   const std::string &std_option)
+    : _s(new state())
+{
+    _s->options = options;
+    _s->make_program = make_program;
+    _s->std_option = std_option;
+}
+
+backend_commands::~backend_commands() {}
+
+ReplSession *backend_commands::session(std::string &why)
+{
+    state &s = *_s;
+    int status = 0;
+    if ( s.session && !s.session->ended(status) )
+	return s.session.get();
+    s.session.reset();
+    s.client.reset(new SessionClient());
+    s.client->set_backend_arguments(s.options);
+    s.client->set_history_file(std::string());	// %history: none
+    s.client->set_diagnostic_colour(false);		// JSON text carries no escapes
+    if ( !s.client->start(s.std_option, s.make_program) )
+    {
+	why = s.client->last_error();
+	s.client.reset();
+	return 0;
+    }
+    s.session.reset(new BackendSession(*s.client, s.diagnostics, &s.output));
+    return s.session.get();
+}
+
+void backend_commands::take(std::string &output, std::string &diagnostics)
+{
+    output = _s->output.str();
+    diagnostics = _s->diagnostics.str();
+    _s->output.str(std::string());
+    _s->diagnostics.str(std::string());
 }
 
 } // namespace lsp

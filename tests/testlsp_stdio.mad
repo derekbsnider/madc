@@ -3,10 +3,13 @@
 // `madc --no-config --lsp tests/testlsp_stdio.mad` (.flags) with
 // tests/testlsp_stdio.input on stdin: a Content-Length framed conversation —
 // initialize, initialized, didOpen of a C document, documentSymbol, hover, a
-// request no server method answers, a body that is not JSON, shutdown, exit.
-// This file is the FILE the server opens before any client asks. ORACLE: LSP
-// 3.17 (the framing, the lifecycle, the error codes -32601 and -32700, exit
-// status 0 after shutdown) and clangd 18 for the answers' shapes.
+// request no server method answers, a body that is not JSON, executeCommand
+// (madc.run of an unsaved document that prints — its output comes back in
+// the result, never on the protocol's stdout — and madc.check), shutdown,
+// exit. This file is the FILE the server opens before any client asks.
+// ORACLE: LSP 3.17 (the framing, the lifecycle, the error codes -32601 and
+// -32700, exit status 0 after shutdown), clangd 18 for the answers' shapes,
+// and madc -i's %run / %check on the same text.
 
 int twice(int v)
 {

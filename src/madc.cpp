@@ -591,8 +591,12 @@ static int repl_loops(ReplSession &session, bool terminal,
 // stdin/stdout, Content-Length framed. The configured Program is the active
 // runtime Program for the server's life, so every document's parse is its
 // child and searches its include directories (-I, madc.ini's `include`) as a
-// compile does; a document's standard is its kind's.
-static int run_lsp(std::unique_ptr<Program> prog, const char *file)
+// compile does; a document's standard is its kind's. workspace/executeCommand
+// runs in a backend session as -i's does — the configured Program again on
+// each restart (POSIX: the fork's copy; Windows: `options` configure the
+// backend's) — its program's output piped, never the protocol's stdout.
+static int run_lsp(std::unique_ptr<Program> prog, const char *file,
+		   const std::vector<std::string> &options)
 {
     madc::channel io("stdio://");
     if ( !io.frame_headers() )
@@ -601,7 +605,17 @@ static int run_lsp(std::unique_ptr<Program> prog, const char *file)
 		  << std::endl;
 	return 1;
     }
+#ifndef _WIN32
+    Program *configured = prog.get();
+    madc::lsp::backend_commands::ProgramFactory copy = [configured]() {
+	return std::unique_ptr<Program>(configured);	// the child's copy
+    };
+#else
+    madc::lsp::backend_commands::ProgramFactory copy;	// the child configures its own
+#endif
+    madc::lsp::backend_commands commands(options, copy);
     madc::lsp::server server;
+    server.set_command_host(&commands);
     prog->push_runtime_scope();
     if ( file && !server.open_file(file) )
 	std::cerr << "madc: --lsp: cannot read " << file << std::endl;
@@ -1619,7 +1633,8 @@ int main(int argc, char **argv)
 			 " at most one file and no other mode" << std::endl;
 	    return 1;
 	}
-	return run_lsp(std::move(prog), filearg < argc ? argv[filearg] : NULL);
+	return run_lsp(std::move(prog), filearg < argc ? argv[filearg] : NULL,
+		       repl_options);
     }
     if ( interactive && artifact_request )
     {

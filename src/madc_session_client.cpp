@@ -1546,10 +1546,11 @@ bool BackendSession::honor(const SessionClient::Reply &reply)
 	return build_file(reply.argv);
     if ( reply.payload == madc::session_payload::open )
     {
-	// %open, %edit: this terminal's editor, at the line when one is named.
+	// %open, %edit: the host's editor, else this terminal's, at the line
+	// when one is named.
 	std::string why;
 	const int line = reply.argv.size() > 1 ? atoi(reply.argv[1].c_str()) : 0;
-	if ( madc::run_terminal_editor(reply.argv[0], line, why) )
+	if ( madc::show_in_editor(editor, reply.argv[0], line, why) )
 	    return true;
 	err << "madc: " << why << std::endl;
 	return false;

@@ -271,6 +271,10 @@ madc::hub::world *madc_ui_world(int64_t w);
 // `%XX` escapes to their bytes, every other byte as it is. The LSP's file://
 // URIs decode through it (src/madc_lsp.cpp).
 std::string *js_decodeURIComponent(std::string *result, const char *input);
+// The ONE percent-encoder (js::encodeURIComponent's body): every byte but
+// the unreserved ones (alphanumerics and `-_.~`) as `%XX`; a file:// URI is
+// built from it one path segment at a time (src/madc_lsp.cpp).
+std::string *js_encodeURIComponent(std::string *result, const char *input);
 
 int64_t madc_parse_open(void *source, void *filename, int64_t standard);
 int64_t madc_parse_open_file(void *path);

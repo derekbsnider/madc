@@ -56,6 +56,18 @@ is parsed before the client asks. A document's standard is its kind's (a
 and madc.ini's
 .B include
 are searched as for a compile.
+.B workspace/executeCommand
+runs the REPL's
+.B %
+commands as
+.BI madc. NAME
+with a file argument (\fBmadc.check\fR, \fBmadc.run\fR, ...) in a
+crash-isolated session, as
+.B \-i
+does, over the client's unsaved text; the result carries what the command
+showed, what its program printed and its diagnostics.
+.B %open
+asks the client to show the file (window/showDocument).
 .TP
 .BR \-i ", " \-\-interactive " [" \fIfile\fR ]
 The REPL, even when standard input is not a terminal. With a

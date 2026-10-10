@@ -317,3 +317,82 @@ TEST_CASE("a file:// URI's path is percent-decoded")
     CHECK(syms[0]["name"] == "f");
     CHECK(madc::document_find(c.srv.world(), "/lsp-unit/my file.c") != 0);
 }
+
+// workspace/executeCommand (design decision 5): the registry's commands run
+// in madc -i's backend session over the server's documents. ORACLE: LSP 3.17
+// (executeCommandProvider; window/showDocument, 3.16, a request from the
+// server); madc -i's own %check / %run / %open on the same text.
+TEST_CASE("executeCommand runs the registry's commands over the documents")
+{
+    client none;
+    CHECK_FALSE(none.initialize()["result"]["capabilities"]
+		.contains("executeCommandProvider"));	// no host: no commands
+
+    madc::lsp::backend_commands host(std::vector<std::string>(),
+				     madc::lsp::backend_commands::ProgramFactory(),
+				     "--std=c17");
+    client c;
+    c.srv.set_command_host(&host);
+    json init = c.request("initialize",
+			  { { "processId", nullptr }, { "rootUri", nullptr },
+			    { "capabilities",
+			      { { "window", { { "showDocument", { { "support", true } } } } } } } });
+    c.notify("initialized", json::object());
+    json names = init["result"]["capabilities"]["executeCommandProvider"]["commands"];
+    REQUIRE(names.is_array());
+    auto advertised = [&](const char *n) {
+	for ( size_t i = 0; i < names.size(); ++i )
+	    if ( names[i] == n )
+		return true;
+	return false;
+    };
+    CHECK(advertised("madc.check"));
+    CHECK(advertised("madc.run"));
+    CHECK(advertised("madc.open"));
+
+    // Neither file is on disk: the commands read the documents' text.
+    const char *good = "file:///lsp-unit/cmd.c";
+    const char *bad = "file:///lsp-unit/cmd%20bad.c";
+    c.open(good, "#include <stdio.h>\n"
+		 "int main(void)\n"
+		 "{\n"
+		 "    printf(\"unsaved text runs\\n\");\n"
+		 "    return 0;\n"
+		 "}\n");
+    c.open(bad, "int main(void) { return undeclared_x; }\n");
+    auto run = [&](const char *command, const json &args) {
+	return c.request("workspace/executeCommand",
+			 { { "command", command }, { "arguments", args } });
+    };
+
+    json checked = run("madc.check", { good })["result"];
+    CHECK(checked["ok"] == true);
+    CHECK(checked["text"].get<std::string>().find("clean") != std::string::npos);
+
+    // A check that finds problems ran (madc -i's %check): ok, the counts
+    // shown, the problems in the diagnostics. A path with a space.
+    json flagged = run("madc.check", { bad })["result"];
+    CHECK(flagged["ok"] == true);
+    CHECK(flagged["text"].get<std::string>().find("1 error") != std::string::npos);
+    CHECK(flagged["diagnostics"].get<std::string>().find("undeclared_x")
+	  != std::string::npos);
+
+    json ran = run("madc.run", { good })["result"];
+    CHECK(ran["ok"] == true);
+    CHECK(ran["output"].get<std::string>().find("unsaved text runs")
+	  != std::string::npos);
+
+    json current = run("madc.check", json::array())["result"];	// no FILE
+    CHECK(current["ok"] == false);
+    CHECK(current["diagnostics"].get<std::string>().find("no document is current")
+	  != std::string::npos);
+
+    json opened = run("madc.open", { "/lsp-unit/cmd.c" });
+    CHECK(opened["result"]["ok"] == true);
+    REQUIRE(c.notes.size() == 1u);
+    CHECK(c.notes[0]["method"] == "window/showDocument");
+    CHECK(c.notes[0].contains("id"));			// a request
+    CHECK(c.notes[0]["params"]["uri"] == good);		// the client's spelling
+
+    CHECK(run("madc.nosuch", json::array())["error"]["code"] == -32602);
+}
