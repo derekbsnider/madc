@@ -432,6 +432,9 @@ public:
     const std::string &text() const { return _text; }
     size_t caret() const { return _caret; }
     const std::string &prompt() const { return _prompt; }
+    // The prompt the next entry starts at (a host's input mode: ex's a / i /
+    // c text lines read at a continuation prompt).
+    void set_prompt(const std::string &prompt) { _prompt = prompt; }
 
     // The painter's view, with the caret where it is or at the end. During a
     // search it is readline's one line: the search prompt with its query,

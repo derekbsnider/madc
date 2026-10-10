@@ -17,6 +17,22 @@
 #include <string>
 
 class ReplSession;		// madc_session.h: in this process or a backend
+namespace madc { namespace ex { class session; } }
+
+// Colon mode (D24; ex core design decision 11): the host's ex session, over
+// the host's own world, and the stream its refusals go to. An entry whose
+// first line starts with `:` is the host's — it never reaches `session`:
+// shown lines go to `out`, a refusal to `err`; `a` / `i` / `c` read the
+// lines after it as text up to one holding only `.`; `:q` ends the loop
+// (refused while a buffer has changes, `:q!` ends it anyway); `:h` /
+// `:help` is `?` and `:h NAME` is `?NAME`. Without one (`ex` null) a `:`
+// entry goes to the session, which refuses it.
+struct repl_colon
+{
+    madc::ex::session *ex;
+    std::ostream      *err;
+    repl_colon() : ex(0), err(0) {}
+};
 
 // Read entries from `in` to its end and run each in `session`, a session
 // that has begun. Shown values (D10) go to `out`; diagnostics go to the
@@ -27,7 +43,8 @@ class ReplSession;		// madc_session.h: in this process or a backend
 // is submitted at the end of input. Returns the exit status: 0, as
 // python -i exits at the end of its input.
 int madc_repl_run(ReplSession &session, std::istream &in,
-		  std::ostream &out, bool terminal);
+		  std::ostream &out, bool terminal,
+		  const repl_colon &colon = repl_colon());
 
 namespace madc { namespace hub { class line_target; } }
 
@@ -42,7 +59,8 @@ namespace madc { namespace hub { class line_target; } }
 // first entry, which is the host's cue for cooked lines. The unit tests
 // give it a scripted target.
 int madc_repl_edit(ReplSession &session, madc::hub::line_target &term,
-		   std::ostream &out, const std::string &history_path);
+		   std::ostream &out, const std::string &history_path,
+		   const repl_colon &colon = repl_colon());
 
 // The history file's default place: $XDG_STATE_HOME/madc/history
 // (~/.local/state/madc/history), or %LOCALAPPDATA%\madc\history on

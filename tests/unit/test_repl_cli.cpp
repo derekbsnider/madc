@@ -458,3 +458,77 @@ TEST_CASE("a piped stdin's handed-back bytes are the host's next input")
     CHECK(s.submitted() == 3);
 }
 #endif
+
+// Colon mode (D24; ex core design decision 11, slice 5): a `:` entry is the
+// HOST's — its ex session edits the host's buffer and the session never sees
+// it; a / i / c read the next lines up to `.`; `:h NAME` is `?NAME`; `:q` ends
+// the loop, refused over changes, `:q!` anyway.
+#include "madc_documents.h"
+#include "madc_ex.h"
+#include "madcdis/hub.h"
+
+namespace {
+struct colon_host
+{
+    madc::hub::world w;
+    madc::ex::session ex;
+    std::ostringstream err;
+    repl_colon colon;
+    colon_host() : ex(w)
+    {
+	REQUIRE(ex.use(madc::document_new(w, "")));
+	colon.ex = &ex;
+	colon.err = &err;
+    }
+    std::string text() { return w.text_of(ex.current())->text(); }
+};
+}
+
+TEST_CASE("colon mode: `:` entries are the host's ex session's (D24)")
+{
+    InteractiveSession s;
+    REQUIRE(s.begin("--std=c17"));
+    colon_host h;
+    std::istringstream in(
+	"int x = 2;\n"
+	":a\n"
+	"first line\n"
+	"second\n"
+	".\n"
+	"x * 3\n"
+	":%p\n"
+	":2s/second/2nd/\n"
+	":nu\n"
+	":bogus\n"
+	"int twice(int a) { return a * 2; }\n"
+	":h twice\n"
+	":q\n"
+	"x\n"
+	":q!\n"
+	"x + 100\n");			// never read: :q! ended the loop
+    std::ostringstream out;
+    CHECK(madc_repl_run(s, in, out, false, h.colon) == 0);
+    CHECK(out.str()
+	  == "6\nfirst line\nsecond\n  2 2nd\n"
+	     "Signature: int twice(int a)  @ REPL[3]:1\nType:      function\n"
+	     "2\n");
+    CHECK(h.err.str() == "not an editor command: 'bogus'\n"
+			 "no write since last change (add ! to override)\n");
+    CHECK(h.text() == "first line\n2nd\n");
+    CHECK(s.submitted() == 5);	// int x, x * 3, twice, ?twice, x
+}
+
+TEST_CASE("colon mode at the line editor: input mode reads at the continuation prompt")
+{
+    InteractiveSession s;
+    REQUIRE(s.begin("--std=c17"));
+    colon_host h;
+    scripted_terminal term({ ":a\r", "one\r", "\r", ".\r", ":%p\r", "1 + 1\r",
+			     ":q!\r", "2 + 2\r" });
+    std::ostringstream out;
+    CHECK(madc_repl_edit(s, term, out, "", h.colon) == 0);
+    CHECK(out.str() == "one\n\n2\n");
+    CHECK(h.text() == "one\n\n");
+    CHECK(term.painted.find("c17>") != std::string::npos);
+    CHECK(s.submitted() == 1);
+}

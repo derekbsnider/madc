@@ -44,6 +44,9 @@
 #include "madc_session.h" // InteractiveSession: the REPL's session (D20)
 #include "madc_session_client.h" // BackendSession: the session in a backend (D2)
 #include "madc_repl.h"    // madc_repl_run: the REPL's loop (D20)
+#include "madc_ex.h"      // colon mode: the host's ex session (D24)
+#include "madc_documents.h" // the host's buffer: madc -i FILE's file
+#include "madcdis/hub.h"     // the host's world of buffers
 #include "madc_run_child.h" // a Run child of self (Windows: no fork)
 #include "madcdis/tui_provider.h"	// create_line_target: the editor's terminal (D23)
 
@@ -271,7 +274,9 @@ static void print_usage(const char *prog)
 "                          compile and run stdin, as if named -\n"
 "  -                       read the program from stdin (gcc, python)\n"
 "  -i, --interactive       the REPL, even when stdin is not a terminal; with\n"
-"                          a <file>, run it first and keep its names (python -i)\n"
+"                          a <file>, run it first and keep its names (python -i).\n"
+"                          A line starting with : is an ex command on <file>'s\n"
+"                          buffer (vim's colon mode: :p :s :g :w :e ...; :q quits)\n"
 "  --history-file=PATH|no  where the REPL keeps its history (default\n"
 "                          $XDG_STATE_HOME/madc/history); no keeps none\n"
 "  --project <prj.json>    build from a project manifest: compile each\n"
@@ -496,6 +501,19 @@ static TokenProgram *tokenize_input(Program &prog, const char *path)
 static int repl_loops(ReplSession &session, bool terminal,
 		      const std::string &history, int file_argc, char **file_argv)
 {
+    // Colon mode (D24; ex core design decision 11) is this host's: an ex
+    // session over the host's own world, holding ONE buffer as vim starts
+    // with one — FILE for madc -i FILE, else an untitled buffer.
+    madc::hub::world buffers;
+    madc::ex::session ex(buffers);
+    madc::hub::entity_id buffer =
+	file_argc > 0 ? madc::document_open(buffers, file_argv[0]) : 0;
+    if ( !buffer )
+	buffer = madc::document_new(buffers, file_argc > 0 ? file_argv[0] : "");
+    ex.use(buffer);
+    repl_colon colon;
+    colon.ex = &ex;
+    colon.err = &std::cerr;
     int status = 0;
     if ( file_argc > 0 )
     {
@@ -514,7 +532,7 @@ static int repl_loops(ReplSession &session, bool terminal,
 	    madc::hub::create_line_target());
 	if ( term )
 	{
-	    int rc = madc_repl_edit(session, *term, std::cout, history);
+	    int rc = madc_repl_edit(session, *term, std::cout, history, colon);
 	    if ( rc >= 0 )
 		return rc;
 	}
@@ -523,7 +541,7 @@ static int repl_loops(ReplSession &session, bool terminal,
     // reads the stdin bytes after them (one stdin for both).
     madc::shared_stdin_input shared;
     std::istream in(&shared);
-    return madc_repl_run(session, in, std::cout, terminal);
+    return madc_repl_run(session, in, std::cout, terminal, colon);
 }
 
 static int run_repl(std::unique_ptr<Program> prog, bool terminal,

@@ -38,6 +38,7 @@
 #include "datatokens.h"
 #include "madc.h"
 #include "madc_session.h"
+#include "madc_ex.h"		// colon mode: the host's ex session (D24)
 #include "madc_repl.h"
 #include "madc_posix_io.h"
 #include "madcdis/line_edit.h"
@@ -175,6 +176,81 @@ static bool blank_line(const std::string &line)
     return line.find_first_not_of(" \t\r\n\f\v") == std::string::npos;
 }
 
+// A cooked line without a CRLF transcript's '\r'.
+static void drop_cr(std::string &line)
+{
+    if ( !line.empty() && line[line.size() - 1] == '\r' )
+	line.erase(line.size() - 1);
+}
+
+// ---- colon mode (D24; ex core design decision 11; madc_repl.h's
+// repl_colon): what a colon entry leaves the loop to do.
+enum class colon_step : unsigned char { done, wants_text, quit };
+
+// `line` is a colon entry this loop takes (the host has an ex session):
+// `argument` is what follows the `:`.
+static bool colon_line(const repl_colon &colon, const std::string &line,
+		       std::string &argument)
+{
+    InteractiveSession::Mode mode;
+    InteractiveSession::Command code;
+    std::string word;
+    return colon.ex
+	   && InteractiveSession::command_of(line, mode, word, code, argument)
+	   && mode == InteractiveSession::Mode::colon;
+}
+
+// An ex outcome printed: its lines to `out`, its refusal to the colon
+// error stream.
+static colon_step colon_report(const madc::ex::outcome &o,
+			       const repl_colon &colon, std::ostream &out)
+{
+    out << o.shown << std::flush;
+    if ( !o.ok && colon.err )
+	*colon.err << o.error << std::endl;
+    return o.quit ? colon_step::quit
+	 : o.wants_text ? colon_step::wants_text : colon_step::done;
+}
+
+// A colon entry run: the host's ex session, but `:h` / `:help` is the
+// session's `?` (`:h NAME` its `?NAME`).
+static colon_step colon_run(ReplSession &session, const repl_colon &colon,
+			    const std::string &argument, std::ostream &out)
+{
+    madc::ex::line parsed;
+    std::string why;
+    if ( madc::ex::parse(argument, parsed, why)
+	 && parsed.code == madc::ex::command::help )
+    {
+	session.submit("?" + parsed.argument + "\n");
+	print_shown(session, out);
+	return colon_step::done;
+    }
+    return colon_report(colon.ex->run(argument), colon, out);
+}
+
+// Input mode on cooked lines: the lines up to one holding only `.` (or the
+// end of input) are the text a / i / c waits for.
+static colon_step colon_text(std::istream &in, std::ostream &out,
+			     bool terminal, const std::string &prompt,
+			     const repl_colon &colon)
+{
+    std::vector<std::string> body;
+    std::string line;
+    for (;;)
+    {
+	if ( terminal )
+	    out << prompt << std::flush;
+	if ( !std::getline(in, line) )
+	    break;
+	drop_cr(line);
+	if ( line == "." )
+	    break;
+	body.push_back(line);
+    }
+    return colon_report(colon.ex->text(body), colon, out);
+}
+
 // An entry as history keeps it: without the whitespace after its last line
 // (Julia's), so an extendable if taken at its blank line recalls as typed.
 static std::string history_text(const std::string &entry)
@@ -191,9 +267,12 @@ static std::string entry_prompt(ReplSession &session)
 }
 
 int madc_repl_edit(ReplSession &session, line_target &term,
-		   std::ostream &out, const std::string &history_path)
+		   std::ostream &out, const std::string &history_path,
+		   const repl_colon &colon)
 {
-    line_edit ed(entry_prompt(session));
+    const std::string prompt = entry_prompt(session);
+    const std::string continuation(prompt.size(), ' ');
+    line_edit ed(prompt);
     // History (§41.7a slice 2): the file's entries in this language, then
     // each entry the session takes, a refused one included, as Julia keeps
     // an input that failed. A record's mode is the prompt's standard (D22).
@@ -218,6 +297,11 @@ int madc_repl_edit(ReplSession &session, line_target &term,
     madc::hub::focus_state focus;	// nothing to focus: every key is the editor's
     std::vector<madc::hub::tui_keyev> kv;
     bool first = true;
+    // Colon mode's input mode: a / i / c's text lines, read one entry each
+    // at the continuation prompt until one holding only `.`.
+    bool colon_text_mode = false;
+    std::vector<std::string> colon_body;
+    bool quit = false;			// :q
     for (;;)
     {
 	// Output the entries wrote must reach the terminal before the prompt
@@ -286,6 +370,39 @@ int madc_repl_edit(ReplSession &session, line_target &term,
 		case line_edit::outcome::enter:
 		{
 		    const std::string text = ed.text() + "\n";
+		    std::string argument;
+		    if ( colon_text_mode )
+		    {
+			release("");
+			ed.entered(line_edit::verdict::taken);
+			over = true;
+			if ( ed.text() != "." )
+			{
+			    colon_body.push_back(ed.text());
+			    break;
+			}
+			colon_text_mode = false;
+			ed.set_prompt(prompt);
+			quit = colon_report(colon.ex->text(colon_body), colon, out)
+			       == colon_step::quit;
+			colon_body.clear();
+			break;
+		    }
+		    if ( colon_line(colon, ed.text(), argument) )
+		    {
+			release("");
+			remember(history_text(text));
+			ed.entered(line_edit::verdict::taken);
+			over = true;
+			const colon_step c = colon_run(session, colon, argument, out);
+			quit = c == colon_step::quit;
+			if ( c == colon_step::wants_text )
+			{
+			    colon_text_mode = true;
+			    ed.set_prompt(continuation);
+			}
+			break;
+		    }
 		    if ( blank_line(text) )
 		    {
 			release("");
@@ -345,8 +462,15 @@ int madc_repl_edit(ReplSession &session, line_target &term,
 	int status = 0;
 	if ( session.ended(status) )
 	    return status;		// exit(n) in an entry ends the REPL
+	if ( quit )
+	    return 0;			// :q
 	if ( input_ended )
+	{
+	    // The end of input ends a / i / c's text, as `.` would.
+	    if ( colon_text_mode )
+		colon_report(colon.ex->text(colon_body), colon, out);
 	    break;
+	}
     }
     return 0;
 }
@@ -362,7 +486,7 @@ static void reclaim_input(ReplSession &session, std::istream &in)
 }
 
 int madc_repl_run(ReplSession &session, std::istream &in,
-		  std::ostream &out, bool terminal)
+		  std::ostream &out, bool terminal, const repl_colon &colon)
 {
     const std::string prompt = entry_prompt(session);
     const std::string continuation(prompt.size(), ' ');
@@ -376,8 +500,7 @@ int madc_repl_run(ReplSession &session, std::istream &in,
 	    out << (pending.empty() ? prompt : continuation) << std::flush;
 	if ( !std::getline(in, line) )
 	    break;
-	if ( !line.empty() && line[line.size() - 1] == '\r' )
-	    line.erase(line.size() - 1);	// a CRLF transcript's line
+	drop_cr(line);			// a CRLF transcript's line
 	if ( extendable )
 	{
 	    // D11: an else continues the if; an empty line runs it; any other
@@ -395,6 +518,16 @@ int madc_repl_run(ReplSession &session, std::istream &in,
 	}
 	if ( pending.empty() && blank_line(line) )
 	    continue;
+	std::string argument;
+	if ( pending.empty() && colon_line(colon, line, argument) )
+	{
+	    colon_step c = colon_run(session, colon, argument, out);
+	    if ( c == colon_step::wants_text )
+		c = colon_text(in, out, terminal, continuation, colon);
+	    if ( c == colon_step::quit )
+		return 0;		// :q
+	    continue;
+	}
 	pending += line;
 	pending += '\n';
 	ReplSession::Offered r = session.offer(pending);
