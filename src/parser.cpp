@@ -24952,13 +24952,13 @@ bool Program::standard_of_spelling(const madc::dis::istring &spelling,
     return false;
 }
 
-std::string Program::standard_spelling(LanguageStd std, bool gnu)
+madc::dis::istring Program::standard_spelling(LanguageStd std, bool gnu)
 {
-    std::string name = standard_canonical_name(std);
+    const madc::dis::istring name(standard_canonical_name(std));
     if ( gnu && name.compare(0, 3, "c++") == 0 )
-	return "gnu++" + name.substr(3);
+	return madc::dis::istring("gnu++" + name.substr(3));
     if ( gnu && !name.empty() && name[0] == 'c' )
-	return "gnu" + name.substr(1);
+	return madc::dis::istring("gnu" + name.substr(1));
     return name;
 }
 
