@@ -46,6 +46,8 @@
 #include "madc_repl.h"    // madc_repl_run: the REPL's loop (D20)
 #include "madc_history.h" // the REPL history store's default place (1B.7)
 #include "madc_theme.h"   // the REPL's colours: madc.ini's theme (1B.9)
+#include "madc_lsp.h"     // madc --lsp: the LSP server (split arc 1C.12)
+#include "madcdis/channel.h" // madc --lsp: stdin/stdout, Content-Length framed
 #include "madc_ex.h"      // colon mode: the host's ex session (D24)
 #include "madc_documents.h" // the host's buffer: madc -i FILE's file
 #include "madcdis/hub.h"     // the host's world of buffers
@@ -279,6 +281,11 @@ static void print_usage(const char *prog)
 "                          a <file>, run it first and keep its names (python -i).\n"
 "                          A line starting with : is an ex command on <file>'s\n"
 "                          buffer (vim's colon mode: :p :s :g :w :e ...; :q quits)\n"
+"  --lsp [<file>]          a Language Server Protocol server on stdin/stdout\n"
+"                          (Content-Length framed): diagnostics, symbols,\n"
+"                          definition, references, hover, semantic tokens\n"
+"                          for the documents a client opens; <file> is\n"
+"                          parsed before the client asks\n"
 "  --history-file=PATH|no  where the REPL keeps its history (default\n"
 "                          $XDG_STATE_HOME/madc/history); no keeps none\n"
 "  --project <prj.json>    build from a project manifest: compile each\n"
@@ -580,6 +587,29 @@ static int repl_loops(ReplSession &session, bool terminal,
     return madc_repl_run(session, in, std::cout, terminal, colon, theme);
 }
 
+// madc --lsp [FILE] (split arc 1C.12): the Language Server Protocol on
+// stdin/stdout, Content-Length framed. The configured Program is the active
+// runtime Program for the server's life, so every document's parse is its
+// child and searches its include directories (-I, madc.ini's `include`) as a
+// compile does; a document's standard is its kind's.
+static int run_lsp(std::unique_ptr<Program> prog, const char *file)
+{
+    madc::channel io("stdio://");
+    if ( !io.frame_headers() )
+    {
+	std::cerr << "madc: --lsp: stdin/stdout cannot carry framed messages"
+		  << std::endl;
+	return 1;
+    }
+    madc::lsp::server server;
+    prog->push_runtime_scope();
+    if ( file && !server.open_file(file) )
+	std::cerr << "madc: --lsp: cannot read " << file << std::endl;
+    int rc = server.serve(io);
+    prog->pop_runtime_scope();
+    return rc;
+}
+
 static int run_repl(std::unique_ptr<Program> prog, bool terminal,
 		    const std::string &history, const madc::theme *theme,
 		    const std::vector<std::string> &options,
@@ -697,6 +727,7 @@ int main(int argc, char **argv)
     bool no_config = false;               // --no-config: skip the madc.ini lookup entirely
     bool cli_set_std = false;             // --std= came from the COMMAND LINE (so a madc.ini `std` key must not override it)
     bool interactive = false;             // -i / --interactive: the REPL, whatever stdin is (D20)
+    bool lsp = false;                     // --lsp: the Language Server Protocol on stdio (split arc 1C.12)
     std::string history_file;             // --history-file=PATH|no: the REPL's history (D23)
     bool history_file_given = false;
 
@@ -978,6 +1009,11 @@ int main(int argc, char **argv)
             // D20: the REPL even on a piped stdin (python -i); with a
             // program file, the file first.
             interactive = true;
+            filearg = i + 1;
+        } else if (strcmp(argv[i], "--lsp") == 0) {
+            // split arc 1C.12: madc's own LSP server; a file after it is
+            // opened before the client asks.
+            lsp = true;
             filearg = i + 1;
         } else if (strncmp(argv[i], "--history-file=", 15) == 0) {
             // D23 (plan §41.7a): the REPL's history file, Julia's flag;
@@ -1575,6 +1611,16 @@ int main(int argc, char **argv)
 	|| emit_function_name || dump_source || dump_macro_table
 	|| dump_cir || dump_nodes || dump_checked || dump_registered
 	|| freeze_path || freeze_run;
+    if ( lsp )
+    {
+	if ( interactive || artifact_request || filearg + 1 < argc )
+	{
+	    std::cerr << "madc: --lsp serves a client on stdin/stdout; it takes"
+			 " at most one file and no other mode" << std::endl;
+	    return 1;
+	}
+	return run_lsp(std::move(prog), filearg < argc ? argv[filearg] : NULL);
+    }
     if ( interactive && artifact_request )
     {
 	std::cerr << "madc: -i runs the REPL; it cannot also write an artifact"

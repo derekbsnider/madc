@@ -30,6 +30,7 @@
 namespace madc {
 
 class value;
+class channel;
 namespace hub { class world; typedef uint32_t entity_id; }
 
 namespace lsp {
@@ -49,6 +50,13 @@ public:
     // message). `notes` gains the server's notifications (diagnostics), to
     // be sent after the reply, in order.
     bool handle(const value &message, value &reply, std::vector<value> &notes);
+
+    // The framed loop over `io` (a channel in Content-Length message mode):
+    // read one message, answer it, write the reply and then each note —
+    // until `exit`, or until the client goes away. A body that is not JSON
+    // answers -32700. Returns the process exit code the protocol names: 0
+    // when `exit` followed `shutdown`, else 1.
+    int serve(channel &io);
 
     // `path`'s document opened from disk before any client asks for it
     // (madc --lsp FILE); 0 when it cannot be read.

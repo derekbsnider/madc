@@ -11,7 +11,6 @@
 //////////////////////////////////////////////////////////////////////////
 
 #include <algorithm>
-#include <cctype>
 #include <cstring>
 #include <map>
 #include <string>
@@ -22,9 +21,12 @@
 #include "madc_lsp.h"
 #include "madc_lang.h"
 #include "madc_documents.h"	// a document's file: open, find, new
+#include "madc_posix_io.h"	// host_path_absolute: a URI's drive form
 #include "madcdis/verbs.h"	// mutation_context: the client's edits
 #include "madcdis/text_utf16.h"	// col16_to_byte / col16_of_byte
 #include "libmadc/sysinfo.h"	// madc::sys.version: serverInfo
+#include "madcdis/channel.h"	// serve: a Content-Length framed channel
+#include "madcdis/world_text.h"	// the one value<->JSON bridge
 
 namespace madc {
 namespace lsp {
@@ -147,6 +149,19 @@ int64_t symbol_kind_number(lang::symbol_kind k)
     return 13;
 }
 
+// An LSP DiagnosticSeverity.
+int64_t severity_number(diag_severity s)
+{
+    switch ( s )
+    {
+    case diag_severity::error:
+	return 1;
+    case diag_severity::warning:
+	return 2;
+    }
+    return 3;					// Information
+}
+
 // ---- reading a message ------------------------------------------------
 
 const value *field(const value &v, const char *name)
@@ -211,8 +226,10 @@ value notification(const char *name, const value &params)
 
 // ---- URIs: a file:// URI names a path ----------------------------------
 
-// The path a file:// URI names: percent-decoded, and a DOS drive's
-// `/C:/...` read as `C:/...` (RFC 8089). False for any other scheme.
+// The path a file:// URI names, percent-decoded. RFC 8089's DOS drive form
+// `/C:/...` names `C:/...`: the URI path past its leading `/` is the host's
+// path when that is absolute there (a drive on Windows; never on POSIX, where
+// the leading `/` is the path's own). False for any other scheme.
 bool uri_path(const std::string &uri, std::string &path)
 {
     static const char scheme[] = "file://";
@@ -220,8 +237,7 @@ bool uri_path(const std::string &uri, std::string &path)
     if ( uri.compare(0, n, scheme) != 0 )
 	return false;
     js_decodeURIComponent(&path, uri.c_str() + n);
-    if ( path.size() >= 3 && path[0] == '/'
-	 && std::isalpha((unsigned char)path[1]) && path[2] == ':' )
+    if ( path.size() > 1 && detail::host_path_absolute(path.substr(1)) )
 	path.erase(0, 1);
     return !path.empty();
 }
@@ -352,9 +368,7 @@ value diagnostics_note(hub::world &w, hub::entity_id e, const std::string &uri,
 	{
 	    fields f;
 	    f["range"] = range_of(d, enc, ds[i].at);
-	    f["severity"] = value((int64_t)(ds[i].severity == diag_severity::error ? 1
-					    : ds[i].severity == diag_severity::warning ? 2
-					    : 3));
+	    f["severity"] = value(severity_number(ds[i].severity));
 	    f["source"] = value("madc");
 	    f["message"] = value(ds[i].message);
 	    rows.push_back(value::make_object(f));
@@ -442,6 +456,42 @@ hub::entity_id server::open_file(const std::string &path)
     if ( e )
 	lang::document_handle(_s->w, e);	// parsed before the client asks
     return e;
+}
+
+namespace {
+
+// One message on the wire. A string's bytes that are not UTF-8 are replaced,
+// never a throw: JSON text is Unicode, and a document's bytes are not
+// always.
+void write_message(channel &io, const value &v)
+{
+    std::string text = hub::detail::wt_value_to_json(v).dump(
+	-1, ' ', false, nlohmann::json::error_handler_t::replace);
+    io.write(text);
+}
+
+} // namespace
+
+int server::serve(channel &io)
+{
+    std::string body;
+    while ( !_s->exited && io.readline(body) )
+    {
+	value reply;
+	std::vector<value> notes;
+	bool answered = true;
+	nlohmann::json j = nlohmann::json::parse(body, nullptr, false);
+	if ( j.is_discarded() )
+	    reply = error_response(value(), error_code::parse_error,
+				   "the message is not JSON");
+	else
+	    answered = handle(hub::detail::wt_json_to_value(j), reply, notes);
+	if ( answered )
+	    write_message(io, reply);
+	for ( size_t i = 0; i < notes.size(); ++i )
+	    write_message(io, notes[i]);
+    }
+    return exit_code();
 }
 
 bool server::handle(const value &message, value &reply, std::vector<value> &notes)

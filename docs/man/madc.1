@@ -43,6 +43,20 @@ standard input, as if named
 .B \-
 Read the program from standard input.
 .TP
+.BR \-\-lsp " [" \fIfile\fR ]
+A Language Server Protocol server on standard input and output
+(Content-Length framed, LSP 3.17): diagnostics, document symbols,
+definition, references, hover and semantic tokens for each document the
+client opens, from the client's live text. Positions are UTF-16 unless the
+client offers UTF-8. A
+.I file
+is parsed before the client asks. A document's standard is its kind's (a
+.c file is C17); the include directories of
+.B \-I
+and madc.ini's
+.B include
+are searched as for a compile.
+.TP
 .BR \-i ", " \-\-interactive " [" \fIfile\fR ]
 The REPL, even when standard input is not a terminal. With a
 .IR file ,

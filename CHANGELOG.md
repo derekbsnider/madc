@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### `madc --lsp` — the Language Server Protocol server on stdin/stdout
+
+`madc --lsp [FILE]` now runs a Language Server Protocol server on standard
+input and output, Content-Length framed (LSP 3.17): it answers diagnostics,
+document symbols, definition, references, hover and semantic tokens for each
+document the client opens, from the client's live text, over
+`madc::lsp::server` (slice 1). `server::serve` is the framed loop — read one
+message through the one value<->JSON bridge, answer it, write the reply and
+then each note — until `exit`; a body that is not JSON answers -32700, and the
+process exits 0 when `exit` followed `shutdown`, else 1. The configured
+Program is the active runtime Program for the server's life, so every
+document's parse is its child and searches the include directories of `-I` and
+madc.ini's `include` as a compile does, and a document's standard is its
+kind's (a `.c` file is C17). A FILE is parsed before the client asks. `--lsp`
+with `-i`, an artifact request, or more than one file is refused.
+`docs/man/madc.1` documents `--lsp`. Two slice-1 corrections ride along: a
+diagnostic's severity wire number now comes from an enum switch
+(`severity_number`), and a `file://` URI's DOS-drive form is decided by
+`detail::host_path_absolute` instead of a hand-written first-byte test.
+
 ### A parse handle searches the include directories of its opener
 
 A plain parse handle — `madc::parse_open` / `madc::parse_open_file`, and so

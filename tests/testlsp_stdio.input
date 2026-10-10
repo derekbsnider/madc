@@ -1,0 +1,19 @@
+Content-Length: 121
+
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"rootUri":"file:///lsp-test","capabilities":{}}}Content-Length: 52
+
+{"jsonrpc":"2.0","method":"initialized","params":{}}Content-Length: 251
+
+{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///lsp-test/calc.c","languageId":"c","version":1,"text":"long add(long a, long b)\n{\n    return a + b;\n}\n\nint main(void)\n{\n    return (int)add(2, 3);\n}\n"}}}Content-Length: 123
+
+{"jsonrpc":"2.0","id":2,"method":"textDocument/documentSymbol","params":{"textDocument":{"uri":"file:///lsp-test/calc.c"}}}Content-Length: 151
+
+{"jsonrpc":"2.0","id":3,"method":"textDocument/hover","params":{"textDocument":{"uri":"file:///lsp-test/calc.c"},"position":{"line":7,"character":17}}}Content-Length: 155
+
+{"jsonrpc":"2.0","id":4,"method":"textDocument/completion","params":{"textDocument":{"uri":"file:///lsp-test/calc.c"},"position":{"line":0,"character":0}}}Content-Length: 16
+
+this is not jsonContent-Length: 44
+
+{"jsonrpc":"2.0","id":5,"method":"shutdown"}Content-Length: 33
+
+{"jsonrpc":"2.0","method":"exit"}

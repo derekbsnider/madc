@@ -103,20 +103,32 @@ there is none); `executeCommand` through the registry.
      never pass through text).
    - A document the compiler does not parse answers -32803, as madcide's
      does.
-5. **`executeCommand` goes through the registry.** The server keeps a REPL
-   session (the crash-isolated backend, as `madc -i` does, started on the
-   first command), and the server's documents answer the session's buffer
-   question (1B.8), so `%check` / `%build` / `%run` see unsaved text.
+5. **`executeCommand` goes through the registry.** The server runs commands
+   in a REPL session its host gives it (`lsp::command_host`). The CLI's
+   session is the crash-isolated backend (as `madc -i`'s is) with its
+   program's output PIPED, never the protocol's stdout, and it restarts
+   after a crash or a `%quit`.
+   - The server's documents answer the session's buffer question (1B.8),
+     so `%check` / `%build` / `%run` see unsaved text. A command with no
+     FILE has no current buffer to read (there is none) and says so.
    - The advertised commands (`executeCommandProvider.commands`) are the
-     registry's rows as `madc.NAME`, from a public list of the session's
-     rows (the registry gains it).
-   - `madc.NAME` with `arguments[0]` runs `%NAME ARG`. The result is
-     `{ok, text}`: the command's shown output, ok false when it refused.
+     registry's `%` names, as `madc.NAME`. They come from the session's
+     completion of `%`: the built-ins, the aliases and the module rows.
+   - `madc.NAME` with `arguments[0]` (a path or a `file://` URI) runs
+     `%NAME ARG`. The result is `{ok, text, output, diagnostics}`: what the
+     command showed, what its program printed, and its rendered
+     diagnostics.
+   - The editor a command asks for (`%open`, `%edit`) is the client's. A
+     session's host may give it an editor, as it gives it buffers; the
+     LSP's sends `window/showDocument` (LSP 3.16) for the file at the line
+     instead of starting a terminal editor.
 6. **The CLI**: `madc --lsp [FILE]`, dispatched after madc.ini like `-i`.
    The configured Program is the active runtime Program for the server's
-   life, so every parse handle inherits its standard, include directories
-   and modules. A FILE is opened as a document at start, so its first
-   `didOpen` finds it parsed. `--lsp` with `-i` or `--exe` is refused.
+   life, so every document's parse is its child and searches its include
+   directories (`-I`, madc.ini's `include`) as a compile does; a document's
+   standard is its kind's. A FILE is opened as a document at start, so its
+   first `didOpen` finds it parsed. `--lsp` with `-i` or an artifact
+   request is refused.
 7. **Thread-safety** (C++ standard library convention): one server, on one
    thread, per process; its world and documents are its own; parse handles
    keep the runtime-eval confinement; the session is the server's.
@@ -131,9 +143,11 @@ there is none); `executeCommand` through the registry.
    configured Program active. An integration test pipes a Content-Length
    framed conversation (`.flags` `--lsp`, a CRLF `.input`) and checks the
    framed replies and the exit code. `docs/man/madc.1` gains `--lsp`.
-3. **`executeCommand`**: the session, the registry's public row list, and
-   the documents as the session's buffers. Unit and integration tests:
-   `madc.check` on unsaved text.
+3. **`executeCommand`**: `command_host`, the documents as the session's
+   buffers, the session's editor (`ReplSession::set_editor`, honored by
+   the backend's host), the CLI's piped backend session. Unit and
+   integration tests: `madc.check` on unsaved text, `madc.run`'s output
+   in the result, `madc.open` as `window/showDocument`.
 
 ## 4. Oracle
 
