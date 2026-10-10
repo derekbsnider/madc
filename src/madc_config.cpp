@@ -1,6 +1,6 @@
 ///////////////////////////////////////////////////////////////////////////
 //                                                                       //
-// madc's OWN configuration schema (forest-carriers S6): the five keys a   //
+// madc's OWN configuration schema (forest-carriers S6): the keys a        //
 // madc.ini may set, registered against the schema-blind reader in         //
 // madc_config_file.h. Everything about the FORMAT — the lookup chain, the //
 // grammar, path resolution, the strict diagnostics — lives there and is   //
@@ -37,6 +37,8 @@ void register_madc_keys(cfg::config_file &cf, config_settings &out)
 	cf.accept_text("stdlib", out.stdlib_option, &out.has_stdlib);
 	cf.accept_path("forest", out.forest);
 	cf.accept_path_list("include", out.include_dirs);
+	// php.ini's `extension =` (split arc 1A.4): a module to load, as -l<name>.
+	cf.accept_text_list("modules", out.modules);
 	cf.accept_text("cpu-limit", out.cpu_limit, &out.has_cpu_limit);
 	cf.accept_text("mem-limit", out.mem_limit, &out.has_mem_limit);
 }

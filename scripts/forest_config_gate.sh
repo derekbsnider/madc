@@ -134,6 +134,36 @@ err=$(env -u MADC_FOREST timeout 120 "$MADC" --config="$ROOT/$D/absent.ini" "$D/
 grep -q <<<"$err" "cannot read config file" \
     || fail "[explicit-miss] missing the loud diagnostic: $err"
 
+# ---- modules: the ini loads a library as -l<name> does (split arc 1A.4) ----
+# A library only the ini names: without it the program cannot link its one
+# call; with `modules = cfgmod` it runs; a -lcfgmod on the command line too is
+# the same library, named once (additive, deduplicated).
+cat > "$D/cfgmod.c" <<'EOF'
+int cfgmod_mark(void) { return 4343; }
+EOF
+cat > "$D/needsmod.c" <<'EOF'
+#include <stdio.h>
+int cfgmod_mark(void);
+int main(void) { printf("mod %d\n", cfgmod_mark()); return 0; }
+EOF
+${CC:-gcc} -shared -fPIC -o "$D/libcfgmod.so" "$D/cfgmod.c" \
+    || fail "[modules] could not build the fixture library"
+cat > "$D/modules.ini" <<'EOF'
+modules = cfgmod
+EOF
+mod_run() {   # $1.. = extra args; the fixture library resolves through the loader
+    LD_LIBRARY_PATH="$ROOT/$D:$LD_LIBRARY_PATH" env -u MADC_FOREST timeout 120 \
+        "$MADC" "$@" "$D/needsmod.c" 2>/dev/null
+}
+out=$(mod_run --no-config) \
+    && fail "[baseline-modules] linked without the ini module (fixture is not exclusive): '$out'"
+out=$(mod_run --config="$ROOT/$D/modules.ini") \
+    || fail "[ini-modules] the ini module did not load"
+[ "$out" = "mod 4343" ] || fail "[ini-modules] wrong output: '$out'"
+out=$(mod_run --config="$ROOT/$D/modules.ini" -lcfgmod) \
+    || fail "[cli-and-ini-modules] the same module from both failed"
+[ "$out" = "mod 4343" ] || fail "[cli-and-ini-modules] wrong output: '$out'"
+
 # ---- strictness: a bad config REFUSES, it never half-applies ---------------
 # The comment + blank line are deliberate: the reported line number must be the
 # real file line (3), not a count of the lines that carried settings.
@@ -147,7 +177,7 @@ err=$(env -u MADC_FOREST timeout 120 "$MADC" --config="$ROOT/$D/bad.ini" "$D/con
 [ $? -ne 0 ] || fail "[unknown-key] an unknown key was tolerated"
 grep -q <<<"$err" "unknown key 'frost'" || fail "[unknown-key] did not name the key: $err"
 grep -q <<<"$err" "bad.ini:4" || fail "[unknown-key] did not name file:line: $err"
-grep -q <<<"$err" "accepted: std, stdlib, forest, include, cpu-limit, mem-limit" \
+grep -q <<<"$err" "accepted: std, stdlib, forest, include, modules, cpu-limit, mem-limit" \
     || fail "[unknown-key] did not list the accepted keys: $err"
 
 printf 'std c99\n' > "$D/malformed.ini"
@@ -210,4 +240,4 @@ out=$(MADC_MEM_LIMIT=4096 timeout 120 "$MADC" --config="$ROOT/$D/mem.ini" "$D/co
     || fail "[env-beats-ini] the environment did not override the ini mem-limit"
 [ "$out" = "cfggate ok" ] || fail "[env-beats-ini] wrong output: '$out'"
 
-echo "forest_config_gate: OK (madc.ini: keys apply, CLI > extension > ini std, CLI/env precedence pinned, arm 5 last, bad configs refuse)"
+echo "forest_config_gate: OK (madc.ini: keys apply, CLI > extension > ini std, modules load, CLI/env precedence pinned, arm 5 last, bad configs refuse)"

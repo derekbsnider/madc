@@ -1055,6 +1055,18 @@ int main(int argc, char **argv)
     // directories last).
     for ( const std::string &dir : config.include_dirs )
         prog->add_include_dir(dir);
+    // `modules` (split arc 1A.4) — php.ini's `extension =`: each a module
+    // name as -l<name> takes it, after the command line's. Additive, not an
+    // override (a module is a capability, not a setting); a library the
+    // command line already named is not named twice.
+    for ( const std::string &name : config.modules )
+    {
+        std::string lib = madc_module_library_spelling(name);
+        if ( std::find(link_libs.begin(), link_libs.end(), lib) != link_libs.end() )
+            continue;
+        cc_link_args.push_back(lib);
+        link_libs.push_back(lib);
+    }
     // Discovery arm 5, on both the program and the engine — the engine's copy
     // is what --project TU programs and runtime-eval children inherit (the
     // MADC_FOREST_EXPECT_* block above sets the pair the same way).
