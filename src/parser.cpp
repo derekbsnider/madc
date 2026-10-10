@@ -25205,13 +25205,14 @@ void Program::print_diagnostic(std::ostream &os, const Diagnostic &diag, const c
     // backend's reply), never to std::cerr behind the caller's back.
     if ( can_show_diagnostic_source(diag) )
 	source.showerror(diag.line, diag.column, os, diag.end_line,
-			 diag.end_column);
+			 diag.end_column, echo_theme, language_std);
     else if ( !diag.file.empty() && diag.line > 0 )
 	// Diagnostic from an #included file: the live Source buffer holds the
 	// top-level TU, so echo the named file from disk (cold path); embedded
 	// headers with no on-disk presence skip the echo gracefully.
 	madc_show_file_error(diag.file.c_str(), diag.line, diag.column, os,
-			     diag.end_line, diag.end_column);
+			     diag.end_line, diag.end_column, echo_theme,
+			     language_std);
 }
 
 void Program::print_last_diagnostic(std::ostream &os, const char *suffix)

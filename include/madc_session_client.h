@@ -98,6 +98,7 @@ public:
 	bool ok;
 	unsigned submitted;
 	std::string shown;
+	std::vector<madc::code_range> shown_code;	// an offer's: shown's code (1B.9)
 	std::string rendered;
 	madc::value diagnostics;
 	// A taken command's ask of its host (IPython's payloads; a
@@ -318,6 +319,7 @@ public:
     bool submit(const std::string &text, const TakenHook &taken = TakenHook()) override;
     Offered offer(const std::string &text, const TakenHook &taken = TakenHook()) override;
     const std::string &shown() const override { return shown_text; }
+    const std::vector<madc::code_range> &shown_code() const override { return shown_code_ranges; }
     std::vector<std::string> complete(const std::string &text, size_t caret,
 				      size_t &start) override;
     bool continues_if(const std::string &line) override;
@@ -380,7 +382,12 @@ private:
     SessionClient &client;
     std::ostream &err;
     std::ostream *out;
+    // What shows: the text, and its ranges that are code (only a command
+    // the backend ran has any).
+    void show(const std::string &text,
+	      const std::vector<madc::code_range> &code = std::vector<madc::code_range>());
     std::string shown_text;
+    std::vector<madc::code_range> shown_code_ranges;
     // The host rows, in registration order: a row's code is its index + 1.
     struct HostCommand { std::string name, usage, summary; CommandRun run; };
     std::vector<HostCommand> host_commands;

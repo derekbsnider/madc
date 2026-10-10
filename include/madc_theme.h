@@ -61,6 +61,15 @@ void theme_marks(const theme &t, const std::vector<std::string> &lines,
 		 int64_t standard, hub::ui_colour_depth depth,
 		 std::vector<hub::line_mark> &out);
 
+// A shown text with its code coloured for a terminal (split arc 1B.9):
+// each code range (in order; one that runs backward, overlaps the one before
+// or runs past the text is skipped) lexed alone under `standard` and marked
+// by theme_marks, the rest of the text as it is — `%type`'s type and
+// `%pinfo`'s declarations among IPython's plain labels.
+std::string theme_paint(const theme &t, const std::string &text,
+			const std::vector<code_range> &code, int64_t standard,
+			hub::ui_colour_depth depth);
+
 } // namespace madc
 
 #endif // __MADC_THEME_H

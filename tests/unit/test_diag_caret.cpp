@@ -38,6 +38,7 @@ thread_local bool madc_verbose = false;
 #include "datatokens.h"
 #include "madc.h"
 #include "madc_console.h"
+#include "madc_theme.h"		// the echoed line's colours (1B.9)
 
 // A string stream is no terminal: the echo carries no colour (Phase 0.5).
 static const std::string CARET = "^";
@@ -291,5 +292,34 @@ TEST_CASE("Phase 0.5: a diagnostic is coloured only where colour reaches")
 	setenv("TERM", saved_term.c_str(), 1);
     else
 	unsetenv("TERM");
+    unsetenv("COLUMNS");
+}
+
+// Split arc 1B.9: under a theme, the echoed line's tokens are coloured where
+// colour reaches the stream — lexed under the Program's standard, marks of no
+// width, so the caret's columns are the plain line's; a wide line's tail
+// keeps the colours from the caret's byte on. Without colour, or without a
+// theme, the echo is gcc's.
+TEST_CASE("1B.9: the echoed line in the theme's colours, the caret unmoved")
+{
+    setenv("COLUMNS", "200", 1);
+    const madc::theme theme = madc::theme_default();
+    std::ostringstream plain;
+    show_error_source_line("int x = 1 foo;", 11, plain, 13, &theme, 0);
+    CHECK(plain.str() == "int x = 1 foo;\n          ^~~\n");	// a string stream
+
+    madc::set_colour_when(madc::colour_when::always);
+    std::ostringstream coloured, unthemed, wide;
+    show_error_source_line("int x = 1 foo;", 11, coloured, 13, &theme, 0);
+    show_error_source_line("int x = 1 foo;", 11, unthemed, 13);
+    setenv("COLUMNS", "20", 1);
+    show_error_source_line("int a_long_name = 1 foo; return a_long_name;", 21,
+			   wide, 23, &theme, 0);
+    madc::set_colour_when(madc::colour_when::automatic);
+    CHECK(coloured.str() == "\033[1mint\033[0m x = \033[36m1\033[0m foo;\n"
+			    "          \033[1;32m^~~\033[m\n");
+    CHECK(unthemed.str() == "int x = 1 foo;\n          \033[1;32m^~~\033[m\n");
+    CHECK(wide.str() == "  ...foo; \033[1mreturn\033[0m a_long_name;\n"
+			"     \033[1;32m^~~\033[m\n");
     unsetenv("COLUMNS");
 }

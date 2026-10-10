@@ -51,6 +51,8 @@ void madcdis_mapwrite_trap_hit(const char *key)
 #include "rt/rt_dump.h"	// __madc_c_escape: THE C-literal escape rule
 #include "madcdis/text_utf16.h"	// line_layout: THE screen layout of a line (B8)
 #include "madc_console.h"	// colour_reaches: colour only when the stream shows it
+#include "madc_theme.h"		// theme_marks: the echoed line's colours (1B.9)
+#include "madcdis/ui_sgr.h"	// terminal_colour_depth
 
 // Stage-2 cooperative parse: yield-point cadence for the token pumps (a
 // power of two — the pump check is one mask-and-compare). ~1k tokens is
@@ -11053,7 +11055,7 @@ void Source::line_text(int row, std::string &ln)
 }
 
 void Source::showerror(int row, int col, std::ostream &os, int end_line,
-		       int end_col)
+		       int end_col, const madc::theme *theme, int64_t standard)
 {
 	std::string ln;
 
@@ -11065,7 +11067,8 @@ void Source::showerror(int row, int col, std::ostream &os, int end_line,
 	}
 	line_text(row, ln);
 	show_error_source_line(ln, col, os,
-			   madc_underline_end(ln, row, col, end_line, end_col));
+			   madc_underline_end(ln, row, col, end_line, end_col),
+			   theme, standard);
 }
 
 int madc_underline_end(const madc::dis::istring &ln, int row, int col, int end_line,
@@ -11138,7 +11141,8 @@ void madc_diagnostic_header(std::ostream &os, const std::string &where,
 // Bytes col+1 .. end_col (1-based, the token's rest on this line) are
 // underlined with `~` across their screen columns: gcc's `^~~` (D26).
 void show_error_source_line(const std::string &ln, int col, std::ostream &os,
-			    int end_col)
+			    int end_col, const madc::theme *theme,
+			    int64_t standard)
 {
     char *env_columns = getenv("COLUMNS");
     size_t term_columns = env_columns ? (size_t)atoi(env_columns) : 80;
@@ -11150,10 +11154,17 @@ void show_error_source_line(const std::string &ln, int col, std::ostream &os,
     size_t at = col > 1 ? std::min((size_t)(col - 1), ln.length()) : 0;
     // One past the token's last byte on this line (a byte index).
     size_t stop = end_col > 0 ? std::min((size_t)end_col, ln.length()) : 0;
-    std::vector<size_t> screen;
-    madc::dis::istring shown = madc::line_layout(ln, 0, screen);
     // `^` then a `~` for each further screen column the token covers.
     const bool colour = madc::colour_reaches(os);
+    // The line's tokens in the theme's colours (1B.9): marks of no width,
+    // so the screen columns — and the caret under them — are the plain
+    // line's.
+    std::vector<madc::hub::line_mark> marks;
+    if ( colour && theme )
+	madc::theme_marks(*theme, std::vector<std::string>(1, ln), standard,
+			  madc::hub::terminal_colour_depth(), marks);
+    std::vector<size_t> screen;
+    const std::string shown = madc::hub::marked_layout(ln, 0, marks, 0, screen);
     auto mark = [colour](const std::vector<size_t> &cols, size_t from,
 			 size_t to) {
 	size_t width = to > from ? cols[to] - cols[from] : 0;
@@ -11167,8 +11178,14 @@ void show_error_source_line(const std::string &ln, int col, std::ostream &os,
 	// Too wide: the tail from the caret's byte, laid out where it prints
 	// (after the 5-column "  ..."), the caret under its first column.
 	const size_t lead = 5;
+	std::vector<madc::hub::line_mark> tail_marks;
+	for ( const madc::hub::line_mark &m : marks )
+	    if ( m.to > at )	// from the caret's byte on, cut there
+		tail_marks.push_back(madc::hub::line_mark{ 0, m.from > at ? m.from - at : 0,
+							   m.to - at, m.on });
 	std::vector<size_t> tail_screen;
-	os << "  ..." << madc::line_layout(ln.substr(at), lead, tail_screen)
+	os << "  ..." << madc::hub::marked_layout(ln.substr(at), 0, tail_marks,
+						  lead, tail_screen)
 	   << std::endl;
 	os << std::string(lead, ' ')
 	   << mark(tail_screen, 0, stop > at ? stop - at : 0) << std::endl;
@@ -11197,13 +11214,15 @@ bool madc_file_line(const char *fname, int row, std::string &ln)
 }
 
 bool madc_show_file_error(const char *fname, int row, int col, std::ostream &os,
-		  int end_line, int end_col)
+		  int end_line, int end_col, const madc::theme *theme,
+		  int64_t standard)
 {
     std::string ln;
     if ( !madc_file_line(fname, row, ln) )
 	return false;
     show_error_source_line(ln, col, os,
-			   madc_underline_end(ln, row, col, end_line, end_col));
+			   madc_underline_end(ln, row, col, end_line, end_col),
+			   theme, standard);
     return true;
 }
 

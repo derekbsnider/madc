@@ -25,6 +25,7 @@
 #include "madc/bits/session_enums"	// offer_state: the verdict's one enum text
 #include "libmadc/value.h"		// madc::value: a bindings row
 #include "madcdis/istring.h"	// a buffer's name and path (BufferSource)
+#include "highlight_class.h"	// code_range: the shown text that is code
 
 class Program;
 class Variable;
@@ -55,6 +56,10 @@ public:
     virtual Offered offer(const std::string &text,
 			  const TakenHook &taken = TakenHook()) = 0;
     virtual const std::string &shown() const = 0;
+    // The byte ranges of shown() that are code (`%type`'s type, `%pinfo`'s
+    // declarations, split arc 1B.9), in order: a host may colour them.
+    // Empty when nothing shown is code.
+    virtual const std::vector<madc::code_range> &shown_code() const = 0;
     virtual std::vector<std::string> complete(const std::string &text,
 					      size_t caret, size_t &start) = 0;
     // Does LINE continue an if that ended an entry (D11)? Its first word is
@@ -164,6 +169,7 @@ public:
     // command's output. Empty when the entry showed nothing. The core
     // renders nothing: a client prints it.
     const std::string &shown() const override;
+    const std::vector<madc::code_range> &shown_code() const override;
     std::string standard_name() override;
     bool continues_if(const std::string &line) override;
     // %quit ended the session (plan §7f): status 0.
@@ -333,6 +339,9 @@ private:
     // A file command's file, once it opens: the payload `kind` for a host
     // that honors payloads, else loaded (and run) here.
     bool file_command(madc::session_payload kind, std::vector<std::string> &words);
+    // A command's output begins: the entry was a command, and nothing it
+    // shows yet (no text, no code).
+    void begin_command_output();
     // A command's usage error, cited at the entry's first column.
     void command_error(const std::string &message, const std::string &name);
     // The quiet entry: each object shown through the row form, the texts in
@@ -344,6 +353,8 @@ private:
     unsigned entry_count;
     unsigned submit_count;
     std::string command_output;		// the last command's output
+    std::vector<madc::code_range> command_code;	// its ranges that are code
+    std::vector<madc::code_range> no_code;	// an entry's shown value: none
     bool showed_command;		// the last entry was a command
     madc::session_payload payload_kind;	// the last command's ask of its host
     std::vector<std::string> payload_args;

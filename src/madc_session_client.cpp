@@ -384,6 +384,14 @@ int serve_session(madc::DataChannel &wire, std::unique_ptr<Program> prog,
 		if ( o.state == InteractiveSession::OfferState::taken )
 		{
 		    rep["shown"] = session.shown();
+		    // The shown text's code: [from, to] byte pairs (1B.9).
+		    if ( !session.shown_code().empty() )
+		    {
+			nlohmann::json code = nlohmann::json::array();
+			for ( const madc::code_range &r : session.shown_code() )
+			    code.push_back(nlohmann::json::array({ r.from, r.to }));
+			rep["shown_code"] = code;
+		    }
 		    rep["submitted"] = session.submitted();
 		    if ( session.payload() != madc::session_payload::none )
 		    {
@@ -1182,6 +1190,15 @@ int SessionClient::poll(Reply &reply, std::string &output, int timeout_ms)
 	    reply.kind = Reply::Kind::offer;
 	    reply.state = state_of(j.value("state", std::string()));
 	    reply.shown = j.value("shown", std::string());
+	    if ( j.contains("shown_code") && j["shown_code"].is_array() )
+		for ( const nlohmann::json &r : j["shown_code"] )
+		    if ( r.is_array() && r.size() == 2 && r[0].is_number_unsigned()
+		      && r[1].is_number_unsigned() )
+		    {
+			const madc::code_range c{ r[0].get<size_t>(), r[1].get<size_t>() };
+			if ( c.from <= c.to && c.to <= reply.shown.size() )
+			    reply.shown_code.push_back(c);	// never past the text
+		    }
 	    reply.submitted = j.value("submitted", 0u);
 	    reply.payload = payload_of(j.value("payload", std::string()));
 	    reply.argv = j.value("argv", std::vector<std::string>());
@@ -1313,7 +1330,10 @@ bool BackendSession::submit(const std::string &text, const TakenHook &taken)
     SessionClient::Reply r;
     std::string output;
     int rc = client.offer_wait(text, true, r, output, -1, taken);
-    shown_text = rc > 0 ? r.shown : std::string();
+    if ( rc > 0 )
+	show(r.shown, r.shown_code);
+    else
+	show(std::string());
     if ( !settle(rc, r, output) )
 	return false;
     return honor(r) && r.ok;
@@ -1326,7 +1346,10 @@ ReplSession::Offered BackendSession::offer(const std::string &text,
     SessionClient::Reply r;
     std::string output;
     int rc = client.offer_wait(text, false, r, output, -1, taken);
-    shown_text = rc > 0 ? r.shown : std::string();
+    if ( rc > 0 )
+	show(r.shown, r.shown_code);
+    else
+	show(std::string());
     if ( !settle(rc, r, output) )
 	return Offered{ OfferState::taken, false };	// it ran, and stopped
     bool ok = r.ok;
@@ -1358,6 +1381,13 @@ bool BackendSession::add_command(const std::string &name, const std::string &usa
     return true;
 }
 
+void BackendSession::show(const std::string &text,
+			  const std::vector<madc::code_range> &code)
+{
+    shown_text = text;
+    shown_code_ranges = code;
+}
+
 bool BackendSession::honor(const SessionClient::Reply &reply)
 {
     if ( reply.payload == madc::session_payload::command )
@@ -1369,7 +1399,7 @@ bool BackendSession::honor(const SessionClient::Reply &reply)
 	const bool ok = host_commands[reply.code - 1].run(
 	    reply.argv.empty() ? std::string() : reply.argv[0], out);
 	if ( ok )
-	    shown_text = out;
+	    show(out);
 	else if ( !out.empty() )
 	    err << out << std::endl;
 	return ok;
@@ -1463,7 +1493,7 @@ bool BackendSession::check_file(const std::vector<std::string> &argv)
     int rc = client.check_wait(path, has_text ? &text : NULL, r, output);
     if ( !settle(rc, r, output) )
 	return false;
-    shown_text = r.shown;
+    show(r.shown);
     return r.ok;
 }
 
@@ -1553,7 +1583,7 @@ bool BackendSession::program_args_command(const std::string &line)
 {
     if ( line.empty() )
     {
-	shown_text = program_args_text.empty() ? "no arguments" : program_args_text;
+	show(program_args_text.empty() ? "no arguments" : program_args_text);
 	return true;
     }
     if ( line == "--" )
@@ -1588,7 +1618,7 @@ bool BackendSession::call_file(const std::vector<std::string> &argv)
     int rc = client.run_wait(argv, r, output, true);
     if ( !settle(rc, r, output) )
 	return false;
-    shown_text = r.shown;
+    show(r.shown);
     return r.ok;
 }
 
@@ -1615,7 +1645,7 @@ bool BackendSession::build_file(const std::vector<std::string> &argv)
     int rc = client.build_text_wait(path, has_text ? &text : NULL, out, r, output);
     if ( !settle(rc, r, output) )
 	return false;
-    shown_text = r.shown;
+    show(r.shown);
     return r.ok;
 }
 

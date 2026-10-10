@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+### The REPL colours the code it shows and the source line it echoes
+
+`madc -i` now colours the code in what a command shows — `%type`'s type and
+`%pinfo` / `?name`'s declarations, signatures and type definitions — and the
+source line it echoes under a diagnostic, both in the theme's colours where
+colour reaches the output (split arc 1B.9, design
+`docs/plans/2026-10-10-prompt-colour-design.md`). A session records which byte
+ranges of its shown text are code (`madc::code_range`): `%type` marks its whole
+output and `%pinfo` marks each declaration, signature, type and macro
+definition, while IPython's labels, locations, a keyword's provenance, a shown
+value and `%help`'s text stay plain. The backend carries those ranges on the
+offer reply (`shown_code` — `[from, to]` pairs, any that runs past the text
+dropped), and the host colours them through `madc::theme_paint`, which lexes
+each range alone under the session's standard and leaves the rest as it is. A
+diagnostic's echoed source line is now coloured too (`show_error_source_line`):
+its tokens lexed under the Program's standard with marks of no width, so the
+caret's columns are the plain line's and a too-wide line's tail keeps the
+colours from the caret's byte on — without colour, or without a theme, the echo
+is byte-identical to before (gcc's). At `madc -i` the echo is coloured in the
+crash-isolated backend, which renders diagnostics with the host's colour verdict
+(above). The painter's layout, the echoed line and the shown text's code now
+share one mark-insertion rule (`hub::mark_line`).
+
 ### The REPL backend's rendered diagnostics are coloured as the host's error stream shows colour
 
 `madc -i` on a terminal now colours its diagnostics under the default

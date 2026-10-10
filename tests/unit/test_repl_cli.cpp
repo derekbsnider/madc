@@ -564,3 +564,30 @@ TEST_CASE("the entry is coloured as it is typed when colour reaches the terminal
     CHECK(plain.painted.find("\x1b[1m") == std::string::npos);
     CHECK(plain.painted.find("c17> int y = 1;") != std::string::npos);
 }
+
+// The code a command shows (split arc 1B.9, design decision 5): `%type`'s
+// type and `?name`'s declaration in the theme's colours where colour reaches
+// the output, IPython's labels and a shown value plain; shut, as before.
+TEST_CASE("the code a command shows is coloured when colour reaches the output (1B.9)")
+{
+    const char *typed = "int x = 42;\n%type x\n?x\nx\n";
+    InteractiveSession s;
+    REQUIRE(s.begin("--std=c17"));
+    std::istringstream in(typed);
+    std::ostringstream out;
+    madc::set_colour_when(madc::colour_when::always);
+    CHECK(madc_repl_run(s, in, out, false, repl_colon(), &madc::theme_default()) == 0);
+    madc::set_colour_when(madc::colour_when::automatic);
+    CHECK(out.str() == "\x1b[1mint\x1b[0m\n"
+		       "Type:      \x1b[1mint\x1b[0m\nDefined:   @ REPL[1]:1\n"
+		       "42\n");
+
+    InteractiveSession t;
+    REQUIRE(t.begin("--std=c17"));
+    std::istringstream tin(typed);
+    std::ostringstream tout;
+    madc::set_colour_when(madc::colour_when::never);
+    CHECK(madc_repl_run(t, tin, tout, false, repl_colon(), &madc::theme_default()) == 0);
+    madc::set_colour_when(madc::colour_when::automatic);
+    CHECK(tout.str() == "int\nType:      int\nDefined:   @ REPL[1]:1\n42\n");
+}

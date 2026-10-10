@@ -141,19 +141,17 @@ struct line_mark
     std::string on;
 };
 
-// Line `line` (lines[`index`] of a view) laid out from column `origin` (its
-// columns into `col`, as line_layout), each of the marks on it written
-// around the glyphs it covers: zero-width bytes, so the columns, the wrap
-// and the caret are the unmarked line's. A mark that runs backward or
-// overlaps the one before is skipped. The painter and the diagnostic's
-// echoed source line (split arc 1B.9) both lay a marked line out here.
-inline std::string marked_layout(const std::string &line, size_t index,
-				 const std::vector<line_mark> &marks,
-				 size_t origin, std::vector<size_t> &col)
+// THE mark rule: `text` with each mark on line `index` written around the
+// bytes it covers — its `on`, the bytes, a reset — over a line of `n` bytes.
+// `at`, when given, maps each of the line's bytes (and its end) to its offset
+// in `text` (a layout's: line_layout's shown_at); without, `text` is the line
+// itself. A mark that runs backward or overlaps the one before is skipped.
+// The painter's, the echoed source line's and a shown text's code all mark
+// here (split arc 1B.9).
+inline std::string mark_line(const std::string &text, size_t n, size_t index,
+			     const std::vector<line_mark> &marks,
+			     const std::vector<size_t> *at = 0)
 {
-    std::vector<size_t> at;
-    const std::string shown = line_layout(line, origin, col, 8, &at);
-    const size_t n = line.size();
     std::string out;
     size_t pos = 0, done = 0;
     for ( const line_mark &m : marks )
@@ -161,15 +159,30 @@ inline std::string marked_layout(const std::string &line, size_t index,
 	if ( m.line != index || m.from < done || m.from >= m.to || m.from >= n )
 	    continue;
 	const size_t to = m.to < n ? m.to : n;
-	out.append(shown, pos, at[m.from] - pos);
+	const size_t from_at = at ? (*at)[m.from] : m.from;
+	const size_t to_at = at ? (*at)[to] : to;
+	out.append(text, pos, from_at - pos);
 	out += m.on;
-	out.append(shown, at[m.from], at[to] - at[m.from]);
+	out.append(text, from_at, to_at - from_at);
 	out += "\x1b[0m";
-	pos = at[to];
+	pos = to_at;
 	done = to;
     }
-    out.append(shown, pos, std::string::npos);
+    out.append(text, pos, std::string::npos);
     return out;
+}
+
+// Line `line` (lines[`index`] of a view) laid out from column `origin` (its
+// columns into `col`, as line_layout), its marks written around the glyphs
+// they cover: zero-width bytes, so the columns, the wrap and the caret are
+// the unmarked line's.
+inline std::string marked_layout(const std::string &line, size_t index,
+				 const std::vector<line_mark> &marks,
+				 size_t origin, std::vector<size_t> &col)
+{
+    std::vector<size_t> at;
+    const std::string shown = line_layout(line, origin, col, 8, &at);
+    return mark_line(shown, line.size(), index, marks, &at);
 }
 
 // What the painter shows: the prompt, the entry's lines, the caret as a

@@ -103,6 +103,15 @@ struct highlight_span
     HighlightClass cls;
 };
 
+// A byte range [from, to) of a shown text that is code — `%type`'s type,
+// `%pinfo`'s declarations (split arc 1B.9): a host lexes it and colours it.
+// A shown value is not code.
+struct code_range
+{
+    size_t from;
+    size_t to;
+};
+
 // THE classifier's C++ face: `text` lexed alone (no header ingested, its
 // macros unexpanded) under `standard` (a --std= code or a family head, as
 // madc::parse_open takes it; 0 = the default), each token classified as

@@ -644,6 +644,18 @@ const std::string &InteractiveSession::shown() const
     return showed_command ? command_output : prog->entry_shown;
 }
 
+const std::vector<madc::code_range> &InteractiveSession::shown_code() const
+{
+    return showed_command ? command_code : no_code;
+}
+
+void InteractiveSession::begin_command_output()
+{
+    showed_command = true;
+    command_output.clear();
+    command_code.clear();
+}
+
 std::string InteractiveSession::standard_name()
 {
     return Program::standard_canonical_name(prog->language_std);
@@ -658,8 +670,7 @@ bool InteractiveSession::run_command(const std::string &text,
 				     const std::string &name)
 {
     CommandText c = command_text(text);
-    command_output.clear();
-    showed_command = true;
+    begin_command_output();
     prog->begin_entry();		// no earlier entry's diagnostics or display
     if ( c.mode == Mode::colon )
     {
@@ -1391,8 +1402,7 @@ bool InteractiveSession::build_text(const std::string &path,
 				    const std::string *text,
 				    const std::string &out)
 {
-    showed_command = true;
-    command_output.clear();
+    begin_command_output();
     prog->clear_diagnostics();		// the build's rows only
     std::string source;
     if ( !command_source(*prog, path, text, source) )
@@ -1500,8 +1510,7 @@ std::string problem_counts(const Program &prog, size_t first)
 bool InteractiveSession::check_text(const std::string &path,
 				    const std::string *text)
 {
-    showed_command = true;
-    command_output.clear();
+    begin_command_output();
     prog->clear_diagnostics();		// the check's rows only
     std::string source;
     if ( !command_source(*prog, path, text, source) )
@@ -1575,8 +1584,7 @@ bool InteractiveSession::project_command(const std::string &argument,
 		      name);
 	return false;
     }
-    showed_command = true;
-    command_output.clear();
+    begin_command_output();
     const ProjectVerb verb = project_verb_of(words);
     if ( verb != ProjectVerb::show && verb != ProjectVerb::open
 	 && verb != ProjectVerb::close && project_file.empty() )
@@ -1823,8 +1831,7 @@ bool InteractiveSession::call_file(const std::string &path,
 				   const std::string &call, int *status)
 {
     const std::string name = "REPL[" + std::to_string(submit_count) + "]";
-    showed_command = true;
-    command_output.clear();
+    begin_command_output();
     // The function is named after FILE: its name without the directory and
     // the last extension (cling's rule). Else FILE's own main (a main an
     // earlier unit defined is not FILE's, as for %run).
@@ -1911,6 +1918,7 @@ bool InteractiveSession::type_command(const std::string &expression,
 	return false;
     }
     command_output = TypeSpeller(prog.get()).shown(prog->entry_value_type);
+    command_code.assign(1, madc::code_range{ 0, command_output.size() });	// a type is code
     return true;
 }
 
@@ -1940,13 +1948,14 @@ bool InteractiveSession::pinfo_command(const std::string &argument,
 	return false;
     }
     std::string described;
+    std::vector<madc::code_range> described_code;
     bool known;
     {
 	DiagnosticRenderMute mute;
 	Program::EntryTransaction attempt(*prog);
 	prog->entry_number = submit_count;
 	prog->parse_entry(argument, name);
-	known = prog->describe_name(word, described);
+	known = prog->describe_name(word, described, &described_code);
     }
     prog->begin_entry();		// the attempt's diagnostics go with it
     if ( !known )
@@ -1957,6 +1966,7 @@ bool InteractiveSession::pinfo_command(const std::string &argument,
 	return false;
     }
     command_output = described;
+    command_code = described_code;
     return true;
 }
 

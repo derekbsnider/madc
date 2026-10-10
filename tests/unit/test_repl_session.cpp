@@ -2686,6 +2686,58 @@ TEST_CASE("session commands: ?name and %pinfo describe a name")
     CHECK(m.shown() == "Type:      function template");
 }
 
+// The shown text's code (split arc 1B.9): `%type`'s type and `%pinfo`'s
+// declarations are code a host may colour; a label, a location, a keyword's
+// provenance, a shown value and %help's text are not.
+TEST_CASE("session commands: the shown text's code ranges")
+{
+    InteractiveSession c;
+    REQUIRE(c.begin("--std=c17"));
+    std::ostringstream err;
+    c.program().error_stream = &err;
+    REQUIRE(c.submit("int x = 10;"));
+    REQUIRE(c.submit("int sq(int n) { return n * n; }"));
+    REQUIRE(c.submit("struct Point { int x; int y; };"));
+    REQUIRE(c.submit("#define N 5"));
+    // Each range's text, joined by `|`.
+    auto code_of = [&c]() {
+	std::string joined;
+	for ( const madc::code_range &r : c.shown_code() )
+	{
+	    REQUIRE(r.from <= r.to);
+	    REQUIRE(r.to <= c.shown().size());
+	    joined += (joined.empty() ? "" : "|") + c.shown().substr(r.from, r.to - r.from);
+	}
+	return joined;
+    };
+    struct { const char *entry, *code; } marked[] = {
+	{ "%type x", "int" },
+	{ "%type sq", "int (int)" },
+	{ "?sq", "int sq(int n)" },
+	{ "?x", "int" },
+	{ "?Point", "struct Point|int x|int y" },
+	{ "?N", "#define N 5" },
+	{ "?while", "" },
+	{ "%help", "" },
+	{ "x", "" },
+    };
+    for ( size_t i = 0; i < sizeof(marked) / sizeof(marked[0]); ++i )
+    {
+	CAPTURE(marked[i].entry);
+	CAPTURE(c.shown());
+	REQUIRE(c.submit(marked[i].entry));
+	CHECK(code_of() == marked[i].code);
+    }
+    // Two sections: the ranges follow the blank line between them.
+    REQUIRE(c.submit("#include <sys/stat.h>"));
+    REQUIRE(c.submit("?stat"));
+    const std::string both = code_of();
+    CHECK(both.compare(0, 12, "struct stat|") == 0);	// then its members
+    const std::string sig = "|int stat(const char *, struct stat *)";
+    CHECK(both.size() > sig.size());
+    CHECK(both.compare(both.size() - sig.size(), sig.size(), sig) == 0);
+}
+
 // Where a keyword comes from (owner, 2026-09-27): the language whose first
 // standard has it ("C", "C++"), else the standard it first arrived in, among
 // the session's languages; "madc" only for the dialect's own.

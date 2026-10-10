@@ -42,6 +42,7 @@ class Method;
 class Program;
 class CirFrozenForest;	// forest grove binding (cir_freeze.h); pointer member only
 class InteractiveSession;	// madc_session.h; Program::owning_session only
+namespace madc { struct theme; }	// madc_theme.h; Program::echo_theme only
 struct MadcSharedPreludeCache; // project-local immutable auto-include snapshots
 struct CirRestoredTemplate;	// task #25 B2: lazy template-payload source (cir_freeze.h)
 struct CirRestoredTemplateRun;	// one frozen token run (cir_freeze.h)
@@ -2791,8 +2792,11 @@ public:
     // header went to, so the two never part. (end_line, end_col) is where
     // the cited token ends (0: unknown, the caret alone) — the echo
     // underlines it (D26).
+    // `theme`: the echoed line coloured by it, lexed under `standard`, when
+    // colour reaches `os` (show_error_source_line).
     void showerror(int row=0, int col=0, std::ostream &os = std::cerr,
-		   int end_line=0, int end_col=0);
+		   int end_line=0, int end_col=0,
+		   const madc::theme *theme = NULL, int64_t standard = 0);
     // Line `row` of the text, position-neutral (the header and the echo
     // read the same line).
     void line_text(int row, std::string &ln);
@@ -2847,8 +2851,11 @@ private:
 // `end_col` of the line (gcc's `^~~`; 0 or before `col`: the caret alone).
 // madc_show_file_error takes the token's end as (end_line, end_col):
 // a token that runs past the line is underlined to the line's end.
+// `theme`, when colour reaches `os`: the echoed line's tokens coloured by it,
+// lexed under `standard` (split arc 1B.9), the caret's columns unchanged.
 void show_error_source_line(const std::string &ln, int col,
-			    std::ostream &os = std::cerr, int end_col = 0);
+			    std::ostream &os = std::cerr, int end_col = 0,
+			    const madc::theme *theme = NULL, int64_t standard = 0);
 // The one formatter for a diagnostic's header line, gcc's shape
 // `WHERE: SEVERITY: MESSAGE` (WHERE as the caller spells it, e.g.
 // `file:line:column`). The header and the caret are coloured only when
@@ -2857,7 +2864,8 @@ void madc_diagnostic_header(std::ostream &os, const std::string &where,
 			    const char *severity, const std::string &message);
 bool madc_show_file_error(const char *fname, int row, int col,
 			  std::ostream &os = std::cerr,
-			  int end_line = 0, int end_col = 0);
+			  int end_line = 0, int end_col = 0,
+			  const madc::theme *theme = NULL, int64_t standard = 0);
 // The last byte of line `row` (its text `ln`) that a token starting at
 // `col` and ending at (end_line, end_col) covers: end_col on its own line,
 // the line's end when it runs on, 0 when there is no end (D26).
@@ -3571,6 +3579,10 @@ public:
     std::istream *input_stream;
     std::ostream *output_stream;
     std::ostream *error_stream;
+    // The theme a diagnostic's echoed source line is coloured by, under this
+    // Program's standard, when colour reaches its stream (split arc 1B.9: the
+    // REPL's; NULL, the echo plain — gcc's). Immutable, owned by the caller.
+    const madc::theme *echo_theme = NULL;
     const madc::value *expression_context_root;
     RegistrationPolicy registration_policy;
     BuiltinRegistry builtin_registry;
@@ -8135,7 +8147,10 @@ public:
 			  std::vector<madc::dis::istring> &out);
     // `?name` (plan §41.8a, slice 2): what the session knows of a name, in
     // IPython's fields. False when nothing is named so (`out` says so).
-    bool describe_name(const madc::dis::istring &name, std::string &out);
+    // `code`, when given: the byte ranges of `out` that are code (a
+    // declaration, a signature, a type; split arc 1B.9).
+    bool describe_name(const madc::dis::istring &name, std::string &out,
+		       std::vector<madc::code_range> *code = NULL);
     // Where the Program recorded an entity (`@ REPL[2]:1`, `@ file`), empty
     // when it recorded nothing: an object's latest TopDecl, a type name's
     // first, a function's latest definition in the tree, else its

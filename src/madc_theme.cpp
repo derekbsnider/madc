@@ -162,4 +162,35 @@ void theme_marks(const theme &t, const std::vector<std::string> &lines,
 	}
 }
 
+std::string theme_paint(const theme &t, const std::string &text,
+			const std::vector<code_range> &code, int64_t standard,
+			hub::ui_colour_depth depth)
+{
+    std::string out;
+    std::size_t pos = 0;
+    for ( const code_range &r : code )
+    {
+	if ( r.from < pos || r.from >= r.to || r.to > text.size() )
+	    continue;
+	out.append(text, pos, r.from - pos);
+	std::vector<std::string> lines;
+	for ( std::size_t b = r.from; ; )
+	{
+	    const std::size_t nl = text.find('\n', b);
+	    const std::size_t e = nl == std::string::npos || nl > r.to ? r.to : nl;
+	    lines.push_back(text.substr(b, e - b));
+	    if ( e == r.to )
+		break;
+	    b = e + 1;
+	}
+	std::vector<hub::line_mark> marks;
+	theme_marks(t, lines, standard, depth, marks);
+	for ( std::size_t i = 0; i < lines.size(); ++i )
+	    out += (i ? "\n" : "") + hub::mark_line(lines[i], lines[i].size(), i, marks);
+	pos = r.to;
+    }
+    out.append(text, pos, std::string::npos);
+    return out;
+}
+
 } // namespace madc

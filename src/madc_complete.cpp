@@ -25,6 +25,7 @@
  * roll back.
  */
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -453,13 +454,21 @@ void Program::completion_names(const madc::dis::istring &word, CompletionContext
 // header prototype's file.
 namespace {
 
-// A field at IPython's alignment: its value at column 12.
+// A field at IPython's alignment: its value at column 12. `code`, when
+// given: the value's first `code_bytes` bytes (all of it by default) are
+// code, recorded as a range of `out`.
 void describe_field(std::string &out, const madc::dis::istring &label,
-		    const madc::dis::istring &value)
+		    const madc::dis::istring &value,
+		    std::vector<madc::code_range> *code = NULL,
+		    size_t code_bytes = SIZE_MAX)
 {
     const madc::dis::istring l = label.empty() ? madc::dis::istring() : madc::dis::istring(label + ":");
     out += (out.empty() || out[out.size() - 1] == '\n' ? "" : "\n")
-	 + l + std::string(l.size() < 11 ? 11 - l.size() : 1, ' ') + value;
+	 + l + std::string(l.size() < 11 ? 11 - l.size() : 1, ' ');
+    if ( code )
+	code->push_back(madc::code_range{ out.size(),
+					  out.size() + std::min(code_bytes, value.size()) });
+    out += value;
 }
 
 madc::dis::istring where(const char *file, int line)
@@ -585,10 +594,13 @@ void Program::session_bindings(std::vector<SessionBinding> &out)
 	out.push_back(it->second);
 }
 
-bool Program::describe_name(const madc::dis::istring &name, std::string &out)
+bool Program::describe_name(const madc::dis::istring &name, std::string &out,
+			    std::vector<madc::code_range> *code)
 {
     typedef TopLevelName::Kind Kind;
     out.clear();
+    if ( code )
+	code->clear();
     // The candidates Tab would offer for the name typed whole, each entity
     // once (a function is both a global and a funcdef_map entry, a C++
     // class both a type and a tag).
@@ -637,9 +649,16 @@ bool Program::describe_name(const madc::dis::istring &name, std::string &out)
 		if ( FuncDef *fd = v->type ? v->type->as_funcdef_dd() : NULL )
 		    fn_var.insert(std::make_pair(fd, v));
     TypeSpeller speller(this);
-    std::vector<madc::dis::istring> sections;
+    // A section's text and its ranges that are code (relative to it).
+    struct Section
+    {
+	madc::dis::istring text;
+	std::vector<madc::code_range> code;
+    };
+    std::vector<Section> sections;
     auto section_of = [&](Kind k) {
 	std::string s;
+	std::vector<madc::code_range> sc;
 	for ( size_t i = 0; i < found.size(); ++i )
 	{
 	    const TopLevelName &n = found[i];
@@ -664,7 +683,7 @@ bool Program::describe_name(const madc::dis::istring &name, std::string &out)
 		    }
 		    else if ( n.definition && !n.definition->empty() )
 			def += " " + *n.definition;
-		    describe_field(s, "Macro", def);
+		    describe_field(s, "Macro", def, &sc);
 		    break;
 		}
 		case Kind::keyword:
@@ -680,7 +699,7 @@ bool Program::describe_name(const madc::dis::istring &name, std::string &out)
 		    // A typedef names another type: `size_t` is unsigned long.
 		    const madc::dis::istring spelled = speller.shown(n.type);
 		    describe_field(s, n.kind == Kind::type && spelled != name
-				      ? "Typedef" : "Type", spelled);
+				      ? "Typedef" : "Type", spelled, &sc);
 		    madc::dis::istring at = type_location(name, n.type);
 		    if ( !at.empty() )
 			describe_field(s, "Defined", at);
@@ -697,7 +716,7 @@ bool Program::describe_name(const madc::dis::istring &name, std::string &out)
 				continue;
 			    DataDef *mt = member_array_type(*st, mn);
 			    describe_field(s, first ? "Members" : "",
-					   speller.declared(mt ? mt : st->m_type(mn), mn));
+					   speller.declared(mt ? mt : st->m_type(mn), mn), &sc);
 			    first = false;
 			}
 		    if ( DataDefCLASS *cls = n.type ? n.type->unqualified()->as_class_dd() : NULL )
@@ -707,7 +726,7 @@ bool Program::describe_name(const madc::dis::istring &name, std::string &out)
 			      t != cls->static_member_types.end(); ++t )
 			{
 			    describe_field(s, first ? "Members" : "",
-					   "static " + speller.declared(t->second, t->first));
+					   "static " + speller.declared(t->second, t->first), &sc);
 			    first = false;
 			}
 			for ( std::map<madc::dis::istring, Variable *>::const_iterator m =
@@ -719,7 +738,7 @@ bool Program::describe_name(const madc::dis::istring &name, std::string &out)
 				continue;
 			    describe_field(s, first ? "Members" : "",
 					   speller.signature(m->first, mfd,
-							     static_cast<Method *>(mv->data)));
+							     static_cast<Method *>(mv->data)), &sc);
 			    first = false;
 			}
 		    }
@@ -728,7 +747,7 @@ bool Program::describe_name(const madc::dis::istring &name, std::string &out)
 		case Kind::object:
 		{
 		    DataDef *at = object_array_type(*n.var);
-		    describe_field(s, "Type", speller.shown(at ? at : n.var->type));
+		    describe_field(s, "Type", speller.shown(at ? at : n.var->type), &sc);
 		    madc::dis::istring where_at = object_location(n.var);
 		    if ( !where_at.empty() )
 			describe_field(s, "Defined", where_at);
@@ -739,10 +758,10 @@ bool Program::describe_name(const madc::dis::istring &name, std::string &out)
 		    std::map<const FuncDef *, Variable *>::const_iterator v = fn_var.find(n.fd);
 		    Variable *fv = n.var ? n.var : v != fn_var.end() ? v->second : NULL;
 		    madc::dis::istring at = function_location(fv, n.fd);
-		    describe_field(s, "Signature",
-				   speller.signature(name, n.fd,
-						     fv ? static_cast<Method *>(fv->data) : NULL)
-				   + (at.empty() ? "" : "  " + at));
+		    const madc::dis::istring sig =
+			speller.signature(name, n.fd, fv ? static_cast<Method *>(fv->data) : NULL);
+		    describe_field(s, "Signature", sig + (at.empty() ? "" : "  " + at),
+				   &sc, sig.size());
 		    break;
 		}
 		case Kind::name_space:
@@ -763,7 +782,7 @@ bool Program::describe_name(const madc::dis::istring &name, std::string &out)
 		    DataDef *t = r->object->type;
 		    if ( r->alias )
 			t = pointer_dd_of(t) ? pointer_dd_of(t)->base_type : NULL;
-		    describe_field(s, "Type", speller.shown(t));
+		    describe_field(s, "Type", speller.shown(t), &sc);
 		    describe_field(s, "Result", "REPL[" + std::to_string(r->entry) + "]");
 		    break;
 		}
@@ -780,7 +799,7 @@ bool Program::describe_name(const madc::dis::istring &name, std::string &out)
 	if ( k == Kind::function && !s.empty() )
 	    describe_field(s, "Type", "function");
 	if ( !s.empty() )
-	    sections.push_back(s);
+	    sections.push_back(Section{ s, sc });
     };
     // A macro first (it stands in for the name before any parse), then a
     // keyword, then the entities in the order a declaration names them: a
@@ -799,7 +818,13 @@ bool Program::describe_name(const madc::dis::istring &name, std::string &out)
 	     || (order[i] != Kind::header_name && order[i] != Kind::dialect_word) )
 	    section_of(order[i]);
     for ( size_t i = 0; i < sections.size(); ++i )
-	out += (i ? "\n\n" : "") + sections[i];
+    {
+	out += i ? "\n\n" : "";
+	if ( code )
+	    for ( const madc::code_range &r : sections[i].code )
+		code->push_back(madc::code_range{ out.size() + r.from, out.size() + r.to });
+	out += sections[i].text;
+    }
     if ( out.empty() )
     {
 	out = "'" + name + "' is not declared";

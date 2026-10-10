@@ -41,12 +41,14 @@ struct repl_colon
 // output is its values and diagnostics. A greeting is the host's (the CLI
 // prints one when it starts a session with no file). A pending entry
 // is submitted at the end of input. Returns the exit status: 0, as
-// python -i exits at the end of its input.
+// python -i exits at the end of its input. `theme` (split arc 1B.9) colours
+// the code a command shows (`%type`, `%pinfo`) when Phase 0.5's gate lets
+// colour reach `out`; the cooked lines themselves are never repainted.
+namespace madc { namespace hub { class line_target; } struct theme; }
 int madc_repl_run(ReplSession &session, std::istream &in,
 		  std::ostream &out, bool terminal,
-		  const repl_colon &colon = repl_colon());
-
-namespace madc { namespace hub { class line_target; } struct theme; }
+		  const repl_colon &colon = repl_colon(),
+		  const madc::theme *theme = 0);
 
 // The REPL on a terminal (plan §41.7a, D23): each entry is read by the line
 // editor on `term`, which holds the terminal only while it reads. Enter
@@ -58,8 +60,8 @@ namespace madc { namespace hub { class line_target; } struct theme; }
 // of input (Ctrl-D on an empty entry), or -1 when `term` cannot begin the
 // first entry, which is the host's cue for cooked lines. The unit tests
 // give it a scripted target. `theme` (split arc 1B.9) colours each entry
-// as it is typed, when Phase 0.5's gate lets colour reach `out`
-// (madc::colour_reaches); NULL paints it plain.
+// as it is typed, and the code a command shows, when Phase 0.5's gate lets
+// colour reach `out` (madc::colour_reaches); NULL paints it plain.
 int madc_repl_edit(ReplSession &session, madc::hub::line_target &term,
 		   std::ostream &out, const std::string &history_path,
 		   const repl_colon &colon = repl_colon(),

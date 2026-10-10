@@ -55,13 +55,33 @@ using madc::hub::line_painter;
 using madc::hub::line_target;
 using madc::hub::line_view;
 
-// An entry the session took: print what it shows (D10). A refused one
+// A standard's --std= spelling as the classifier's code (0: the default).
+static int64_t standard_code(const std::string &name)
+{
+    Program::LanguageStd std = Program::LanguageStd();
+    bool gnu = false;
+    return Program::standard_of_spelling(madc::dis::istring(name), std, gnu)
+	? (int64_t)std : 0;
+}
+
+// An entry the session took: print what it shows (D10), the code in it
+// (`%type`, `%pinfo`: the session's shown_code) in `theme`'s colours where
+// colour reaches `out` (split arc 1B.9, design decision 5). A refused one
 // showed nothing; its diagnostics are already on the error stream.
-static void print_shown(ReplSession &session, std::ostream &out)
+static void print_shown(ReplSession &session, std::ostream &out,
+			const madc::theme *theme)
 {
     const std::string &shown = session.shown();
     if ( !shown.empty() )
-	out << shown << '\n';
+    {
+	if ( theme && !session.shown_code().empty() && madc::colour_reaches(out) )
+	    out << madc::theme_paint(*theme, shown, session.shown_code(),
+				     standard_code(session.standard_name()),
+				     madc::hub::terminal_colour_depth());
+	else
+	    out << shown;
+	out << '\n';
+    }
     out << std::flush;
 }
 
@@ -109,7 +129,8 @@ static colon_step colon_report(const madc::ex::outcome &o,
 // A colon entry run: the host's ex session, but `:h` / `:help` is the
 // session's `?` (`:h NAME` its `?NAME`).
 static colon_step colon_run(ReplSession &session, const repl_colon &colon,
-			    const std::string &argument, std::ostream &out)
+			    const std::string &argument, std::ostream &out,
+			    const madc::theme *theme)
 {
     madc::ex::line parsed;
     std::string why;
@@ -117,7 +138,7 @@ static colon_step colon_run(ReplSession &session, const repl_colon &colon,
 	 && parsed.code == madc::ex::command::help )
     {
 	session.submit("?" + parsed.argument + "\n");
-	print_shown(session, out);
+	print_shown(session, out, theme);
 	return colon_step::done;
     }
     return colon_report(colon.ex->run(argument), colon, out);
@@ -158,15 +179,6 @@ static std::string history_text(const std::string &entry)
 static std::string entry_prompt(ReplSession &session)
 {
     return session.standard_name() + "> ";
-}
-
-// A standard's --std= spelling as the classifier's code (0: the default).
-static int64_t standard_code(const std::string &name)
-{
-    Program::LanguageStd std = Program::LanguageStd();
-    bool gnu = false;
-    return Program::standard_of_spelling(madc::dis::istring(name), std, gnu)
-	? (int64_t)std : 0;
 }
 
 // The entry's syntax colour (split arc 1B.9, design decision 5): the theme
@@ -298,7 +310,7 @@ int madc_repl_edit(ReplSession &session, line_target &term,
 			{
 			    session.submit(text + "\n");
 			    remember(history_text(text));
-			    print_shown(session, out);
+			    print_shown(session, out, theme);
 			}
 			input_ended = true;
 			over = true;
@@ -334,7 +346,7 @@ int madc_repl_edit(ReplSession &session, line_target &term,
 			remember(history_text(text));
 			ed.entered(line_edit::verdict::taken);
 			over = true;
-			const colon_step c = colon_run(session, colon, argument, out);
+			const colon_step c = colon_run(session, colon, argument, out, theme);
 			quit = c == colon_step::quit;
 			if ( c == colon_step::wants_text )
 			{
@@ -356,7 +368,7 @@ int madc_repl_edit(ReplSession &session, line_target &term,
 			session.submit(text, taken);
 			remember(history_text(text));
 			ed.entered(line_edit::verdict::taken);
-			print_shown(session, out);
+			print_shown(session, out, theme);
 			over = true;
 			break;
 		    }
@@ -366,7 +378,7 @@ int madc_repl_edit(ReplSession &session, line_target &term,
 			case ReplSession::OfferState::taken:
 			    remember(history_text(text));
 			    ed.entered(line_edit::verdict::taken);
-			    print_shown(session, out);
+			    print_shown(session, out, theme);
 			    over = true;
 			    break;
 			case ReplSession::OfferState::incomplete:
@@ -426,7 +438,8 @@ static void reclaim_input(ReplSession &session, std::istream &in)
 }
 
 int madc_repl_run(ReplSession &session, std::istream &in,
-		  std::ostream &out, bool terminal, const repl_colon &colon)
+		  std::ostream &out, bool terminal, const repl_colon &colon,
+		  const madc::theme *theme)
 {
     std::string prompt, continuation;	// the standard's, entry by entry (%std)
     std::string pending;		// the entry typed so far
@@ -454,7 +467,7 @@ int madc_repl_run(ReplSession &session, std::istream &in,
 	    {
 		session.submit(pending);
 		reclaim_input(session, in);
-		print_shown(session, out);
+		print_shown(session, out, theme);
 		pending.clear();
 		if ( session.ended(status) )
 		    return status;
@@ -465,7 +478,7 @@ int madc_repl_run(ReplSession &session, std::istream &in,
 	std::string argument;
 	if ( pending.empty() && colon_line(colon, line, argument) )
 	{
-	    colon_step c = colon_run(session, colon, argument, out);
+	    colon_step c = colon_run(session, colon, argument, out, theme);
 	    if ( c == colon_step::wants_text )
 		c = colon_text(in, out, terminal, continuation, colon);
 	    if ( c == colon_step::quit )
@@ -484,7 +497,7 @@ int madc_repl_run(ReplSession &session, std::istream &in,
 		extendable = true;
 		break;
 	    case ReplSession::OfferState::taken:
-		print_shown(session, out);
+		print_shown(session, out, theme);
 		pending.clear();
 		if ( session.ended(status) )
 		    return status;	// exit(n) in an entry ends the REPL
@@ -496,7 +509,7 @@ int madc_repl_run(ReplSession &session, std::istream &in,
     if ( !pending.empty() )
     {
 	session.submit(pending);
-	print_shown(session, out);
+	print_shown(session, out, theme);
 	if ( session.ended(status) )
 	    return status;
     }

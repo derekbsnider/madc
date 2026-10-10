@@ -179,3 +179,25 @@ TEST_CASE("theme_marks: runs of one style, an escape inside its string")
     CHECK(marks[4].on == "\x1b[32m");
     CHECK((marks[5].line == 1 && marks[5].from == 0 && marks[5].to == 4));	// c */
 }
+
+// A shown text's code coloured (split arc 1B.9): each range lexed alone —
+// a range across lines lexes as one text — the labels between them as they
+// are; a range that runs backward or past the text is skipped.
+TEST_CASE("theme_paint: the code ranges coloured, the rest as it is")
+{
+    const std::string text = "Members:   int x\n           int y\nDefined:   @ REPL[1]:1";
+    const std::vector<madc::code_range> code = {
+	{ 11, 16 }, { 28, 33 }, { 20, 25 }, { 40, 200 }
+    };
+    CHECK(madc::theme_paint(madc::theme_default(), text, code, madc::fkC17,
+			    ui_colour_depth::ansi16)
+	  == "Members:   \x1b[1mint\x1b[0m x\n           \x1b[1mint\x1b[0m y\n"
+	     "Defined:   @ REPL[1]:1");
+    const std::vector<madc::code_range> across = { { 11, 33 } };
+    CHECK(madc::theme_paint(madc::theme_default(), text, across, madc::fkC17,
+			    ui_colour_depth::ansi16)
+	  == "Members:   \x1b[1mint\x1b[0m x\n           \x1b[1mint\x1b[0m y\n"
+	     "Defined:   @ REPL[1]:1");
+    CHECK(madc::theme_paint(madc::theme_default(), text, {}, madc::fkC17,
+			    ui_colour_depth::ansi16) == text);
+}

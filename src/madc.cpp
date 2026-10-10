@@ -577,7 +577,7 @@ static int repl_loops(ReplSession &session, bool terminal,
     // reads the stdin bytes after them (one stdin for both).
     madc::shared_stdin_input shared;
     std::istream in(&shared);
-    return madc_repl_run(session, in, std::cout, terminal, colon);
+    return madc_repl_run(session, in, std::cout, terminal, colon, theme);
 }
 
 static int run_repl(std::unique_ptr<Program> prog, bool terminal,
@@ -596,6 +596,9 @@ static int run_repl(std::unique_ptr<Program> prog, bool terminal,
     // same `options`, whose main configures its Program exactly as this one
     // was (split arc 1A.5). This one never begins. One stdin for both: the
     // backend reads it unbuffered, this host through shared_stdin_input.
+    // The echo under a diagnostic in the theme's colours (1B.9), in the
+    // backend's copy of this Program.
+    prog->echo_theme = theme;
     SessionClient client;
     client.set_inherit_stdio(true);
     client.set_backend_arguments(options);
@@ -1145,7 +1148,7 @@ int main(int argc, char **argv)
             why = "cannot be read";
         else if ( !madc::theme_read(text, repl_theme, why) )
             repl_theme = madc::theme_default();
-        if ( !why.empty() )
+        if ( !why.empty() && configured_session.empty() )   // the host said it
             std::cerr << "madc: " << config.source_path << ": theme "
                       << config.theme << ": " << why
                       << "; the built-in theme stays" << std::endl;
@@ -1358,7 +1361,10 @@ int main(int argc, char **argv)
     // configured-session run child, the command line is the host's options,
     // and the Program is now configured exactly as the host's was.
     if ( !configured_session.empty() )
+    {
+        prog->echo_theme = &repl_theme;     // the host's run_repl sets it there
         return madc_session_serve_child(configured_session, std::move(prog));
+    }
 
     // .o inputs (AOT R4b + multi-object): execute the madc-emitted
     // relocatable object(s) as a precompiled cache — no parse, no
