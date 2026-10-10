@@ -319,6 +319,9 @@ bool  madc_parse_would_accept(void *result, int64_t handle, void *source);
 // L4b (design §3.3): revision handles by generation TAG (engine-allocated).
 int64_t madc_parse_open_tagged(void *source, void *filename);
 int64_t madc_parse_generation(int64_t handle);
+// The parse's error count (error diagnostics + synthesized error nodes: the
+// count a validated edit must not raise); -1 = no such handle.
+int64_t madc_parse_error_count(int64_t handle);
 int64_t madc_graph_route(int64_t handle, int64_t id);
 // The live-tree build/run pair (OWNER RULING 2026-08-27 — the running
 // madc IS the compiler): madc_parse_build emits a native artifact from

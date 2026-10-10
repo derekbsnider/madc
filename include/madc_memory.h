@@ -17,10 +17,11 @@
 // a crash mid-append — is skipped, never trusted).			//
 //									//
 // The memory registers its tools into a registry and is that		//
-// registry's edit memory: graph.proposals / proposal / accept / reject /	//
-// withdraw; nexus.record / records / create / update / close / link /	//
-// unlink / context / explain; test.discover / list / candidates / run /	//
-// results.								//
+// registry's edit memory: graph.status / history / proposals / proposal /	//
+// accept / reject / withdraw; nexus.record / records / create / update /	//
+// close / link / unlink / context / explain; test.discover / list /	//
+// candidates / run / results. With the registry's version history	//
+// (madcgit), a node's history begins with its commits.			//
 //									//
 // Thread contract (C++ standard library convention): a memory is used	//
 // from its world's thread; its stream and folds are its own.		//

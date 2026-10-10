@@ -14,6 +14,7 @@
 // load, from the image that imported it.
 
 #include "madcdis/git_repo.h"
+#include "madcgit_values.h"		// the value shapers this file defines
 #include "handle_table.h"		// THE slot+1 registry rule (the parse handles')
 #include "madc_datachannel_internal.h"	// detail::set_channel_error — the ONE
 					// runtime-error composer (gate:

@@ -1,0 +1,19 @@
+// madc --mcp with the madcgit module loaded (split arc 1C.14): -lmadcgit
+// (.flags) brings the version history to the server's tools — graph.status
+// answers this file's git state and the versioned layer, graph.commits the
+// commits touching it, graph.revision refuses a revision git cannot resolve,
+// and tools/list carries the history tools. Asserted by SHAPE over the
+// repository the test runs in (every lane runs the suite from a checkout
+// root) — never a sha, a branch or a count history would move. ORACLE: git
+// rev-parse's refusal of an unknown revision; the MCP specification
+// 2025-06-18 for the envelopes (isError content for a tool's own refusal).
+
+long add(long a, long b)
+{
+    return a + b;
+}
+
+int main(void)
+{
+    return (int)add(2, 3) - 5;
+}

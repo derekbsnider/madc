@@ -432,3 +432,146 @@ TEST_CASE("a tool needing a layer the asset lacks refuses, naming it")
     b.call("nexus.records", json::object(), err);	// managed: a file's asset
     CHECK_FALSE(err);
 }
+
+// ---- the version history (item 14): a source the test owns -------------
+
+namespace {
+
+// c1 is CALC; c2 swaps add's operands and adds sub; HEAD is c2. ORACLE:
+// git's answers for the same history (log newest first, rev-parse HEAD~1 =
+// the parent, blame of an uncommitted line = the zero sha, here "").
+const char *C2 =
+    "struct Point { int x; int y; };\n"
+    "\n"
+    "long add(long a, long b)\n"
+    "{\n"
+    "    return b + a;\n"
+    "}\n"
+    "\n"
+    "long sub(long a, long b) { return a - b; }\n"
+    "\n"
+    "int main(void)\n"
+    "{\n"
+    "    return (int)add(2, 3);\n"
+    "}\n";
+
+madc::value obj_of(const json &j)
+{
+    return wt_json_to_value(j);
+}
+
+struct fake_history : madc::tools::history_source
+{
+    int shows = 0;
+    bool state(const std::string &, madc::value &out) override
+    {
+	out = obj_of({ { "head", "c2" }, { "branch", "main" }, { "detached", false },
+		       { "dirty", true }, { "path", "calc.c" } });
+	return true;
+    }
+    bool commits(const std::string &, int64_t limit, madc::value &out) override
+    {
+	json rows = { { { "sha", "c2" }, { "summary", "swap" } },
+		      { { "sha", "c1" }, { "summary", "first" } } };
+	while ( (int64_t)rows.size() > limit )
+	    rows.erase(rows.size() - 1);
+	out = obj_of({ { "rows", rows } });
+	return true;
+    }
+    bool show(const std::string &, const std::string &spec, madc::value &out) override
+    {
+	++shows;
+	const bool c1 = spec == "c1" || spec == "HEAD~1";
+	if ( !c1 && spec != "c2" && spec != "HEAD" )
+	{
+	    out = obj_of({ { "error", "unknown revision '" + spec + "'" } });
+	    return false;
+	}
+	out = obj_of({ { "sha", c1 ? "c1" : "c2" }, { "text", c1 ? CALC : C2 } });
+	return true;
+    }
+    bool blame(const std::string &, const std::string &, int64_t line, int64_t count,
+	       madc::value &out) override
+    {
+	out = obj_of({ { "rows", { { { "line", line }, { "count", 1 }, { "sha", "c1" },
+				     { "author", "ann" }, { "when", 1 }, { "summary", "first" } },
+				   { { "line", line + 1 }, { "count", count - 1 }, { "sha", "" } },
+				   { { "line", line + 2 }, { "count", 1 }, { "sha", "c1" } } } } });
+	return true;
+    }
+};
+
+} // namespace
+
+TEST_CASE("without a version history a read refuses a revision; the live reads hold")
+{
+    bench b;
+    bool err = false;
+    CHECK(says(b.call("graph.symbols", { { "rev", "HEAD" } }, err), "no version history"));
+    json src = b.call("graph.source", { { "id", b.node("add")["id"] } }, err);
+    CHECK_FALSE(err);
+    CHECK(src["text"] == "long add(long a, long b)\n{\n    return a + b;\n}");
+    const bool diff_tool = b.tools.find("graph.diff") != 0;
+    CHECK_FALSE(diff_tool);					// the history tools need one
+    json st = b.call("graph.status", json::object(), err);
+    CHECK_FALSE(err);
+    CHECK(st["git"].is_null());
+    CHECK(st["errors"] == 0);
+    CHECK(st["node"]["serves"].size() == 3u);
+}
+
+TEST_CASE("a revision opens read-only; its ids route to it; diff, commits, status, history")
+{
+    bench b("/mcp-unit/calc.c", C2);
+    fake_history h;
+    madc::tools::add_history_tools(b.tools, h);
+    bool err = true;
+
+    json rev = b.call("graph.revision", { { "rev", "HEAD~1" } }, err);
+    CHECK_FALSE(err);
+    CHECK(rev["sha"] == "c1");
+    CHECK(says(b.call("graph.revision", { { "rev", "nope" } }, err), "unknown revision 'nope'"));
+
+    // A revision's symbols carry ids that name its handle.
+    json past = b.call("graph.definition", { { "name", "add" }, { "rev", "c1" } }, err);
+    CHECK_FALSE(err);
+    const json past_add = past["nodes"][0]["id"];
+    CHECK(past_add != b.node("add")["id"]);
+    json old_src = b.call("graph.source", { { "id", past_add } }, err);
+    CHECK_FALSE(err);
+    CHECK(old_src["text"].get<std::string>().find("return a + b;") != std::string::npos);
+    CHECK(says(b.call("graph.replace", { { "id", past_add }, { "src", SWAPPED } }, err,
+		      tier::editor), "read-only"));
+    CHECK(b.text() == C2);
+
+    json d = b.call("graph.diff", { { "a", "c1" }, { "b", "" } }, err);
+    CHECK_FALSE(err);
+    REQUIRE(d["added"].size() == 1u);
+    CHECK(d["added"][0]["name"] == "sub");
+    CHECK(d["removed"].empty());
+    REQUIRE(d["changed"].size() == 1u);
+    CHECK(d["changed"][0]["a"]["name"] == "add");			// main's text is the same
+
+    json commits = b.call("graph.commits", { { "limit", 1 } }, err);
+    CHECK_FALSE(err);
+    REQUIRE(commits["rows"].size() == 1u);
+    CHECK(commits["rows"][0]["sha"] == "c2");
+
+    json st = b.call("graph.status", json::object(), err);
+    CHECK(st["git"]["branch"] == "main");
+    CHECK(st["revisions"].size() == 1u);				// c1, opened once
+    bool versioned = false;
+    for ( const json &l : st["layers"] )
+	versioned = versioned || l == "versioned";
+    CHECK(versioned);
+
+    json hist = b.call("graph.history", { { "id", b.node("add")["id"] } }, err);
+    CHECK_FALSE(err);
+    REQUIRE(hist["rows"].size() >= 1u);
+    CHECK(hist["rows"][0]["provenance"] == "git");
+    CHECK(hist["rows"][0]["sha"] == "c1");
+    size_t git_rows = 0;
+    for ( const json &r : hist["rows"] )
+	git_rows += r["provenance"] == "git";
+    CHECK(git_rows == 1u);				// distinct commits; "" is the events'
+}

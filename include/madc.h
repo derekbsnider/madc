@@ -5440,6 +5440,15 @@ public:
     // them as OPTIONAL entries (the loader lifts the guard for a GUI row and
     // opens what it can without failing).
     std::vector<madc::dis::istring> module_optional_libs;
+    // The spellings of the modules this Program loaded: -l / #load, then its
+    // imports' optional rows — the walk a session's module commands and a
+    // tool server's module tools both read (madc_module_entry_point).
+    std::vector<madc::dis::istring> loaded_modules() const
+    {
+	std::vector<madc::dis::istring> all(loaded_lib_paths);
+	all.insert(all.end(), module_optional_libs.begin(), module_optional_libs.end());
+	return all;
+    }
     // A module row flagged MADC_MODULE_GUI was bound by this TU (`import
     // madcwebview;`): the driver lifts an armed memory guard before running.
     bool bound_gui_module;

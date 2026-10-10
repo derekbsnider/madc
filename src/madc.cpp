@@ -49,6 +49,7 @@
 #include "madc_lsp.h"     // madc --lsp: the LSP server (split arc 1C.12)
 #include "madc_mcp.h"     // madc --mcp: the MCP server (split arc 1C)
 #include "madc_memory.h"  // madc --mcp: the session's project memory
+#include "madc_module_tools.h"	// madc --mcp: a loaded module's tools
 #include "madcdis/channel.h" // madc --lsp: stdin/stdout, Content-Length framed
 #include "madc_ex.h"      // colon mode: the host's ex session (D24)
 #include "madc_documents.h" // the host's buffer: madc -i FILE's file
@@ -631,8 +632,9 @@ static int run_lsp(std::unique_ptr<Program> prog, const char *file,
 
 // madc --mcp FILE (split arc 1C): the Model Context Protocol on stdin/stdout,
 // one message per line — the tools over FILE's document, for the lone local
-// client, the operator (the owner tier), and the session's project memory
-// (memory-only: its events, proposals, records and test runs). The
+// client, the operator (the owner tier), the session's project memory
+// (memory-only: its events, proposals, records and test runs) and the tools
+// its loaded modules bring (-lmadcgit: the version history). The
 // configured Program is the active runtime Program for the server's life, as
 // for --lsp.
 static int run_mcp(std::unique_ptr<Program> prog, const char *file)
@@ -651,6 +653,12 @@ static int run_mcp(std::unique_ptr<Program> prog, const char *file)
     madc::tools::registry tools;
     madc::tools::add_graph_tools(tools);
     memory.add_tools(tools);
+    // The modules' tools (1C.14): the loaded madcgit brings the history.
+    if ( prog->is_auto_library_loading_enabled() )
+	for ( const madc::dis::istring &spelling : prog->loaded_modules() )
+	    if ( madc_module_tools_fn add = reinterpret_cast<madc_module_tools_fn>(
+		     madc_module_entry_point(spelling, madc_module_entry::tools)) )
+		add(tools);
     madc::mcp::server server(tools, w, doc, madc::tools::tier::owner);
     int rc = server.serve(io);
     prog->pop_runtime_scope();

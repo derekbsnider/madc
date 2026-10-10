@@ -458,6 +458,7 @@ bool internal_program_parse_refresh_checked(::Program &self, int64_t handle,
 int64_t internal_program_parse_open_tagged(::Program &self, const std::string &source_text,
 					   const std::string &display_name);
 int64_t internal_program_parse_generation(int64_t handle);
+int64_t internal_program_parse_error_count(int64_t handle);
 int64_t internal_program_graph_route(int64_t handle, int64_t id);
 // The live-tree build/run pair (OWNER RULING 2026-08-27 — the running
 // madc IS the compiler): emit a native artifact from the handle's
@@ -1389,6 +1390,10 @@ int64_t madc_parse_open_tagged(void *source, void *filename)
 int64_t madc_parse_generation(int64_t handle)
 {
     return madc::internal_program_parse_generation(handle);
+}
+int64_t madc_parse_error_count(int64_t handle)
+{
+    return madc::internal_program_parse_error_count(handle);
 }
 int64_t madc_graph_route(int64_t handle, int64_t id)
 {

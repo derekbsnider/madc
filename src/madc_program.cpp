@@ -6472,6 +6472,14 @@ int64_t internal_program_parse_generation(int64_t handle)
     return st ? (int64_t)st->generation : -1;
 }
 
+// The parse's error count — child_error_count, the count an edit must not
+// raise (error diagnostics + synthesized error nodes); -1 = no such handle.
+int64_t internal_program_parse_error_count(int64_t handle)
+{
+    parse_tu_state *st = parse_tu_get(handle);
+    return st && st->child ? (int64_t)child_error_count(*st->child) : -1;
+}
+
 // The handle an id belongs to: `handle` when the id carries its generation,
 // else the OPEN tagged handle whose tag the id carries, else 0 (stale or
 // unknown — the caller runs the verb on `handle`, whose refusal says why).

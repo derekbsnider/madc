@@ -46,7 +46,6 @@
 #include "madc_posix_io.h"	// host_path_stem / drop_extension: %call's and %build's names
 #include "madc_project.h"	// %project: the manifest's reader and writer
 #include "madc_modules.h"	// a module's row: the commands it brings (1B.10)
-#include "madc_dl.h"		// madcdl_sym: its row function
 
 // The command registry (plan §41.8a, D13/D24; the modes and the extension
 // point: split arc 1A.2, docs/plans/2026-10-09-command-registry-design.md):
@@ -340,23 +339,13 @@ size_t InteractiveSession::add_module_commands(madc_module_commands_fn rows_of)
 
 void InteractiveSession::register_module_commands()
 {
-    const std::vector<madc::dis::istring> *loaded[] = {
-	&prog->loaded_lib_paths, &prog->module_optional_libs
-    };
-    for ( const std::vector<madc::dis::istring> *list : loaded )
-	for ( const madc::dis::istring &spelling : *list )
-	{
-	    if ( !modules_seen.insert(spelling).second )
-		continue;
-	    const MadcModuleSpec *row = madc_module_find_spelled(spelling);
-	    if ( !row || !row->commands || !prog->is_auto_library_loading_enabled() )
-		continue;
-	    std::string why;
-	    void *handle = madc_module_open(spelling, why);
-	    if ( handle )
-		add_module_commands(reinterpret_cast<madc_module_commands_fn>(
-				       madcdl_sym(handle, row->commands)));
-	}
+    if ( !prog->is_auto_library_loading_enabled() )
+	return;
+    for ( const madc::dis::istring &spelling : prog->loaded_modules() )
+	if ( modules_seen.insert(spelling).second )
+	    add_module_commands(reinterpret_cast<madc_module_commands_fn>(
+				   madc_module_entry_point(spelling,
+							   madc_module_entry::commands)));
 }
 
 bool InteractiveSession::add_host_command(const std::string &name,

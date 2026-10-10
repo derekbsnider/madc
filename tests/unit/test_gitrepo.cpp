@@ -11,6 +11,7 @@
 #include "madcdis/git_repo.h"
 #include "libmadc/datasource.h"
 #include "modules/madcgit/madcgit_verbs.h"	// %git's verbs (1B.10)
+#include "madc_tools.h"			// the history source the module hands the tools (1C.14)
 
 #include <git2.h>
 
@@ -616,4 +617,60 @@ TEST_CASE("%git's relative dates are git's date.c (1B.10)")
     };
     for ( size_t i = 0; i < sizeof(pairs) / sizeof(pairs[0]); ++i )
 	CHECK(madc::git_relative_date(now - pairs[i].age, now) == pairs[i].spelled);
+}
+
+// The module's tools entry (1C.14): madcgit_tools hands the engine's history
+// tools its history source. ORACLE: git over the same fixture — `git log --
+// a.txt` (second, first), `git show HEAD~1:a.txt` ("one\n"), `git blame
+// --contents` of an edited buffer (first, second, the uncommitted line's
+// zero sha), `git status` (clean).
+extern "C" void madcgit_tools(madc::tools::registry &r);
+
+TEST_CASE("madcgit's history source answers the history tools over the fixture (1C.14)")
+{
+    Fixture fx;
+    madc::tools::registry r;
+    madcgit_tools(r);
+    const bool has_history = r.history() != 0;
+    const bool has_tools = r.find("graph.commits") && r.find("graph.revision")
+	&& r.find("graph.diff");
+    REQUIRE(has_history);
+    CHECK(has_tools);
+    madc::tools::history_source &h = *r.history();
+    const std::string file = fx.dir + "/a.txt";
+
+    madc::value st;
+    REQUIRE(h.state(file, st));
+    CHECK(st.as_object().at("head").as_string() == fx.second_sha);
+    CHECK(st.as_object().at("path").as_string() == "a.txt");
+    CHECK_FALSE(st.as_object().at("dirty").as_boolean());
+
+    madc::value log;
+    REQUIRE(h.commits(file, 20, log));
+    const std::vector<madc::value> &rows = log.as_object().at("rows").as_array();
+    REQUIRE(rows.size() == 2);
+    CHECK(rows[0].as_object().at("sha").as_string() == fx.second_sha);
+    CHECK(rows[1].as_object().at("summary").as_string() == "first");
+
+    madc::value shown;
+    REQUIRE(h.show(file, "HEAD~1", shown));
+    CHECK(shown.as_object().at("sha").as_string() == fx.first_sha);
+    CHECK(shown.as_object().at("text").as_string() == "one\n");
+    CHECK_FALSE(h.show(file, "no-such-rev", shown));
+    CHECK(shown.as_object().count("error") == 1);
+
+    madc::value bl;
+    REQUIRE(h.blame(file, "one\ntwo\nthree\n", 1, 3, bl));
+    const std::vector<madc::value> &hunks = bl.as_object().at("rows").as_array();
+    REQUIRE(hunks.size() == 3);
+    CHECK(hunks[0].as_object().at("sha").as_string() == fx.first_sha);
+    CHECK(hunks[1].as_object().at("sha").as_string() == fx.second_sha);
+    CHECK(hunks[2].as_object().at("sha").as_string().empty());
+
+    const std::string bare = make_temp_dir();
+    madc::value none;
+    CHECK_FALSE(h.state(bare + "/x.c", none));
+    CHECK(none.as_object().at("error").as_string().find("no repository above")
+	  != std::string::npos);
+    rm_rf(bare);
 }

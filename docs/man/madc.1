@@ -78,8 +78,13 @@ parse, its validated edits (\fBgraph.insert\fR, \fBgraph.replace\fR,
 \fBgraph.delete\fR: one undo step each, or a proposal), and the session's
 project memory: proposals (\fBgraph.proposals\fR, \fBgraph.accept\fR, ...),
 a node's history, records and links (\fBnexus.*\fR) and test runs
-(\fBtest.*\fR), for the operator. A tool's result is JSON text content; a
-refusal is error content.
+(\fBtest.*\fR), for the operator. With
+.B \-lmadcgit
+the file's version history joins them: \fBgraph.commits\fR,
+\fBgraph.revision\fR (the file at a revision, read-only; its ids route to
+it), \fBgraph.diff\fR, a read's \fBrev\fR argument, and the commits in a
+node's \fBgraph.history\fR. A tool's result is JSON text content; a refusal
+is error content.
 .TP
 .BR \-i ", " \-\-interactive " [" \fIfile\fR ]
 The REPL, even when standard input is not a terminal. With a

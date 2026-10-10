@@ -1,0 +1,1 @@
+the genuine-Windows stage is a staged FILE TREE, not a git checkout: the version history opens the repository the test runs in. The wine64 lane runs the same PE from the repo root and covers it.

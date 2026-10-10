@@ -69,6 +69,106 @@ value object_schema(const std::map<std::string, value> &properties)
     return value::make_object(f);
 }
 
+std::string served_path(const context &c)
+{
+    const hub::document *d = c.w.doc_of(c.doc);
+    return d ? d->path() : std::string();
+}
+
+bool span_extent(const hub::text_buffer &b, const value &span, size_t &at, size_t &end)
+{
+    const int64_t l0 = int_field(span, "line"), l1 = int_field(span, "end_line");
+    size_t s0 = 0, n0 = 0, s1 = 0, n1 = 0;
+    if ( l0 < 1 || l1 < l0 || !b.line_span((size_t)l0, s0, n0)
+	 || !b.line_span((size_t)l1, s1, n1) )
+	return false;
+    at = s0 + (size_t)int_field(span, "column");
+    end = s1 + (size_t)int_field(span, "end_column");
+    return at <= end && end <= b.size();
+}
+
+// ---- a document's past revisions ---------------------------------------
+
+namespace {
+const size_t REVISIONS_PER_DOCUMENT = 8;	// madcide's REV_HANDLES_MAX
+}
+
+revisions::~revisions()
+{
+    for ( const entry &e : _open )
+	madc_parse_close(e.handle);
+}
+
+bool revisions::open(history_source &h, hub::entity_id doc, const std::string &path,
+		     const std::string &spec, entry &out, std::string &why)
+{
+    value shown;
+    if ( !h.show(path, spec, shown) )
+    {
+	why = text_field(shown, "error");
+	return false;
+    }
+    const std::string sha = text_field(shown, "sha");
+    for ( size_t i = 0; i < _open.size(); ++i )
+	if ( _open[i].doc == doc && _open[i].sha == sha )
+	{
+	    out = _open[i];
+	    _open.erase(_open.begin() + i);
+	    _open.push_back(out);		// now the most recently used
+	    return true;
+	}
+    std::string text = text_field(shown, "text"), name = path;
+    const int64_t handle = madc_parse_open_tagged(&text, &name);
+    if ( handle <= 0 )
+    {
+	why = "the revision's text did not open as a parse handle";
+	return false;
+    }
+    size_t held = 0;
+    for ( const entry &e : _open )
+	held += e.doc == doc;
+    for ( size_t i = 0; held >= REVISIONS_PER_DOCUMENT && i < _open.size(); )
+	if ( _open[i].doc == doc )
+	{
+	    madc_parse_close(_open[i].handle);	// its ids route nowhere from now on
+	    _open.erase(_open.begin() + i);
+	    --held;
+	}
+	else
+	    ++i;
+    std::shared_ptr<hub::text_buffer> tb(new hub::text_buffer());
+    tb->load(text);
+    entry e;
+    e.doc = doc;
+    e.sha = sha;
+    e.tag = madc_parse_generation(handle);
+    e.handle = handle;
+    e.text = tb;
+    _open.push_back(e);
+    out = e;
+    return true;
+}
+
+bool revisions::of_handle(int64_t handle, entry &out) const
+{
+    for ( const entry &e : _open )
+	if ( e.handle == handle )
+	{
+	    out = e;
+	    return true;
+	}
+    return false;
+}
+
+std::vector<revisions::entry> revisions::of(hub::entity_id doc) const
+{
+    std::vector<entry> out;
+    for ( const entry &e : _open )
+	if ( e.doc == doc )
+	    out.push_back(e);
+    return out;
+}
+
 bool registry::add(const tool &t)
 {
     if ( t.name.empty() || find(t.name) || !t.run )
@@ -167,6 +267,11 @@ const verb_row verb_rows[] = {
 value schema_of(shape s)
 {
     fields p;
+    if ( s == shape::none || s == shape::name || s == shape::position || s == shape::search
+	 || s == shape::at )
+	p["rev"] = property("string", "read the file at this git revision (rev-parse spec or"
+			    " sha; optional — \"\" = the live text; needs the version"
+			    " history); its ids route themselves to it");
     switch ( s )
     {
     case shape::none:
@@ -211,14 +316,63 @@ value schema_of(shape s)
     return object_schema(p);
 }
 
-bool graph_read(verb v, const context &c, const value &args, value &result)
+// The handle `rev` names for the served document: "" = the live parse; 0
+// with the refusal in `result`.
+int64_t revision_handle(const registry &r, const context &c, int64_t live,
+			const std::string &rev, value &result)
 {
-    int64_t h = lang::document_handle(c.w, c.doc);
-    if ( !h )
+    if ( rev.empty() )
+	return live;
+    if ( !r.history() )
+    {
+	result = refusal("no version history here (the madcgit module is not loaded)");
+	return 0;
+    }
+    revisions::entry e;
+    std::string why;
+    if ( !r.past().open(*r.history(), c.doc, served_path(c), rev, e, why) )
+    {
+	result = refusal(why);
+	return 0;
+    }
+    return e.handle;
+}
+
+// The handle a read runs against (item 14): an id names its own — the live
+// parse's or an open revision's (madc_graph_route; 0, a stale or unknown id:
+// the live handle, whose read refuses it) — and an id-less read may name a
+// revision (`rev`). 0 with the refusal in `result`.
+int64_t read_handle(const registry &r, const context &c, const value &args, value &result)
+{
+    const int64_t live = lang::document_handle(c.w, c.doc);
+    if ( !live )
     {
 	result = refusal("the compiler does not parse the served document");
-	return false;
+	return 0;
     }
+    const value *id = field(args, "id") ? field(args, "id") : field(args, "func");
+    if ( id && id->is_integer() )
+    {
+	const int64_t h = madc_graph_route(live, id->as_integer());
+	return h ? h : live;
+    }
+    return revision_handle(r, c, live, text_field(args, "rev"), result);
+}
+
+// The text a handle was parsed from: an open revision's (held by `keep`),
+// else the served document's.
+const hub::text_buffer *handle_text(const registry &r, const context &c, int64_t h,
+				    revisions::entry &keep)
+{
+    return r.past().of_handle(h, keep) ? keep.text.get() : c.w.text_of(c.doc);
+}
+
+bool graph_read(verb v, const registry &r, const context &c, const value &args,
+		value &result)
+{
+    const int64_t h = read_handle(r, c, args, result);
+    if ( !h )
+	return false;
     switch ( v )
     {
     case verb::symbols:
@@ -279,6 +433,190 @@ bool graph_read(verb v, const context &c, const value &args, value &result)
     return !refused(result);
 }
 
+// graph.source: a node's text — its span's bytes in the text ITS handle was
+// parsed from (the live document's, or a revision's).
+bool node_source(const registry &r, const context &c, int64_t h, int64_t id,
+		 value &node, std::string &text, value &result)
+{
+    madc_graph_span(&node, h, id);
+    const value *span = field(node, "span");
+    if ( !span )
+    {
+	result = refused(node) ? node : refusal("the node has no source extent");
+	return false;
+    }
+    revisions::entry keep;
+    const hub::text_buffer *b = handle_text(r, c, h, keep);
+    size_t at = 0, end = 0;
+    if ( !b || !span_extent(*b, *span, at, end) )
+    {
+	result = refusal("the node's extent is outside the text");
+	return false;
+    }
+    text = b->slice(at, end - at);
+    return true;
+}
+
+bool graph_source(const registry &r, const context &c, const value &args, value &result)
+{
+    const int64_t h = read_handle(r, c, args, result);
+    value node;
+    std::string text;
+    if ( !h || !node_source(r, c, h, int_field(args, "id"), node, text, result) )
+	return false;
+    fields f;
+    f["node"] = node;
+    f["text"] = value(text);
+    result = value::make_object(f);
+    return true;
+}
+
+// ---- the history reads (add_history_tools) ----------------------------
+
+enum class history_verb : unsigned char { commits, revision, diff };
+
+struct history_row
+{
+    const char *name;
+    history_verb v;
+    const char *description;
+};
+
+const history_row history_rows[] = {
+    { "graph.commits", history_verb::commits,
+      "the commits touching the served file, newest first" },
+    { "graph.revision", history_verb::revision,
+      "open the served file at a git revision as a read-only handle; its ids route"
+      " themselves to it" },
+    { "graph.diff", history_verb::diff,
+      "declaration-level diff between two revisions (\"\" = the live text): the"
+      " symbols added, removed and changed" },
+};
+
+value history_schema(history_verb v)
+{
+    fields p;
+    const char *rev = "a git revision (rev-parse spec or sha); \"\" = the live text";
+    switch ( v )
+    {
+    case history_verb::commits:
+	p["limit"] = property("integer", "at most this many rows (optional; default 20)");
+	break;
+    case history_verb::revision:
+	p["rev"] = property("string", rev);
+	break;
+    case history_verb::diff:
+	p["a"] = property("string", rev);
+	p["b"] = property("string", rev);
+	break;
+    }
+    return object_schema(p);
+}
+
+// A handle's symbols keyed by kind and name, in the handle's order.
+void symbol_index(int64_t h, std::vector<std::string> &keys, std::map<std::string, value> &nodes)
+{
+    value sy;
+    madc_graph_symbols(&sy, h);
+    const value &list = object_field(sy, "nodes");
+    if ( !list.is_array() )
+	return;
+    for ( const value &n : list.as_array() )
+    {
+	const std::string key = text_field(n, "kind") + "\t" + text_field(n, "name");
+	if ( nodes.insert(std::make_pair(key, n)).second )
+	    keys.push_back(key);
+    }
+}
+
+// graph.diff at declaration granularity: changed = the node's text differs.
+bool graph_diff(const registry &r, const context &c, int64_t live, const value &args,
+		value &result)
+{
+    const int64_t ha = revision_handle(r, c, live, text_field(args, "a"), result);
+    const int64_t hb = ha ? revision_handle(r, c, live, text_field(args, "b"), result) : 0;
+    if ( !ha || !hb )
+	return false;
+    std::vector<std::string> ka, kb;
+    std::map<std::string, value> na, nb;
+    symbol_index(ha, ka, na);
+    symbol_index(hb, kb, nb);
+    std::vector<value> added, removed, changed;
+    for ( const std::string &k : ka )
+    {
+	std::map<std::string, value>::const_iterator xb = nb.find(k);
+	const value &xa = na[k];
+	if ( xb == nb.end() )
+	{
+	    removed.push_back(xa);
+	    continue;
+	}
+	value spa, spb, why;
+	std::string ta, tb;
+	node_source(r, c, ha, int_field(xa, "id"), spa, ta, why);
+	node_source(r, c, hb, int_field(xb->second, "id"), spb, tb, why);
+	if ( ta != tb )
+	{
+	    fields pair;
+	    pair["a"] = xa;
+	    pair["b"] = xb->second;
+	    changed.push_back(value::make_object(pair));
+	}
+    }
+    for ( const std::string &k : kb )
+	if ( !na.count(k) )
+	    added.push_back(nb[k]);
+    fields f;
+    f["added"] = value::make_array(added);
+    f["removed"] = value::make_array(removed);
+    f["changed"] = value::make_array(changed);
+    result = value::make_object(f);
+    return true;
+}
+
+bool history_read(history_verb v, const registry &r, const context &c, const value &args,
+		  value &result)
+{
+    const int64_t live = lang::document_handle(c.w, c.doc);
+    if ( !live )
+    {
+	result = refusal("the compiler does not parse the served document");
+	return false;
+    }
+    switch ( v )
+    {
+    case history_verb::commits:
+    {
+	const int64_t limit = int_field(args, "limit", 20);
+	return r.history()->commits(served_path(c), limit > 0 ? limit : 20, result);
+    }
+    case history_verb::revision:
+    {
+	const std::string rev = text_field(args, "rev");
+	if ( rev.empty() )
+	{
+	    result = refusal("graph.revision needs rev: a rev-parse spec or a sha");
+	    return false;
+	}
+	revisions::entry e;
+	std::string why;
+	if ( !r.past().open(*r.history(), c.doc, served_path(c), rev, e, why) )
+	{
+	    result = refusal(why);
+	    return false;
+	}
+	fields f;
+	f["sha"] = value(e.sha);
+	f["tag"] = value(e.tag);
+	result = value::make_object(f);
+	return true;
+    }
+    case history_verb::diff:
+	return graph_diff(r, c, live, args, result);
+    }
+    return false;
+}
+
 // ---- the edits --------------------------------------------------------
 
 enum class edit_verb : unsigned char { insert, replace, remove };
@@ -315,10 +653,7 @@ value edit_schema(edit_verb v)
     p["propose"] = property("boolean", "store the edit as a PROPOSAL for an editor"
 			    " to accept instead of applying it (the proposer tier"
 			    " always does; optional)");
-    fields f;
-    f["type"] = value("object");
-    f["properties"] = value::make_object(p);
-    return value::make_object(f);
+    return object_schema(p);
 }
 
 // One planned edit: the target node (graph.span's answer), its bytes now,
@@ -366,16 +701,17 @@ bool plan_edit(edit_verb v, const hub::text_buffer &b, const std::string &t,
 	why = refused(sp) ? text_field(sp, "error") : "the node has no source extent";
 	return false;
     }
-    const int64_t l0 = int_field(*span, "line"), c0 = int_field(*span, "column");
-    const int64_t l1 = int_field(*span, "end_line"), c1 = int_field(*span, "end_column");
-    size_t s0 = 0, n0 = 0, s1 = 0, n1 = 0;
-    if ( l0 < 1 || l1 < l0 || !b.line_span((size_t)l0, s0, n0)
-	 || !b.line_span((size_t)l1, s1, n1) )
+    size_t at = 0, end = 0;
+    if ( !span_extent(b, *span, at, end) )
     {
 	why = "the node's extent is outside the text";
 	return false;
     }
-    const size_t at = s0 + (size_t)c0, end = s1 + (size_t)c1;
+    const int64_t l0 = int_field(*span, "line"), c0 = int_field(*span, "column");
+    const int64_t l1 = int_field(*span, "end_line"), c1 = int_field(*span, "end_column");
+    size_t s0 = 0, n0 = 0, s1 = 0, n1 = 0;
+    b.line_span((size_t)l0, s0, n0);			// in the text: span_extent read them
+    b.line_span((size_t)l1, s1, n1);
     const size_t eol = s1 + n1;			// line l1's end, before its '\n'
     const size_t past = eol < t.size() ? eol + 1 : t.size();	// past its '\n'
     const size_t ind = std::min(t.find_first_not_of(" \t", s0), s0 + n0);
@@ -628,6 +964,12 @@ bool plan_op(const context &c, const std::string &verb, const value &args,
 	why = text_field(refused, "error");
 	return false;
     }
+    const int64_t routed = madc_graph_route(h, int_field(args, "id"));
+    if ( routed && routed != h )
+    {
+	why = "a revision's nodes are read-only: edit the live document's";
+	return false;
+    }
     const std::string t = b->text();
     edit_plan p;
     if ( !plan_edit(row->v, *b, t, h, args, p, why) )
@@ -699,6 +1041,7 @@ bool land_ops(const registry &r, const context &c, const value &ops,
 
 void add_graph_tools(registry &r)
 {
+    const registry *reg = &r;
     for ( size_t i = 0; i < sizeof(verb_rows) / sizeof(verb_rows[0]); ++i )
     {
 	const verb v = verb_rows[i].v;
@@ -707,11 +1050,20 @@ void add_graph_tools(registry &r)
 	t.description = verb_rows[i].description;
 	t.input_schema = schema_of(verb_rows[i].s);
 	t.least = tier::observer;
-	t.run = [v](const context &c, const value &args, value &result) {
-	    return graph_read(v, c, args, result);
+	t.run = [v, reg](const context &c, const value &args, value &result) {
+	    return graph_read(v, *reg, c, args, result);
 	};
 	r.add(t);
     }
+    tool src;
+    src.name = "graph.source";
+    src.description = "a node's source text (a live or a revision's id)";
+    src.input_schema = schema_of(shape::id);
+    src.least = tier::observer;
+    src.run = [reg](const context &c, const value &args, value &result) {
+	return graph_source(*reg, c, args, result);
+    };
+    r.add(src);
     for ( size_t i = 0; i < sizeof(edit_rows) / sizeof(edit_rows[0]); ++i )
     {
 	const edit_verb v = edit_rows[i].v;
@@ -724,6 +1076,25 @@ void add_graph_tools(registry &r)
 	t.least = tier::proposer;
 	t.run = [name, reg](const context &c, const value &args, value &result) {
 	    return graph_edit(name, *reg, c, args, result);
+	};
+	r.add(t);
+    }
+}
+
+void add_history_tools(registry &r, history_source &h)
+{
+    r.set_history(&h);
+    const registry *reg = &r;
+    for ( const history_row &row : history_rows )
+    {
+	const history_verb v = row.v;
+	tool t;
+	t.name = row.name;
+	t.description = row.description;
+	t.input_schema = history_schema(v);
+	t.least = tier::observer;
+	t.run = [v, reg](const context &c, const value &args, value &result) {
+	    return history_read(v, *reg, c, args, result);
 	};
 	r.add(t);
     }

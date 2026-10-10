@@ -39,6 +39,7 @@ using namespace jsonrpc;
 using tools::context;
 using tools::refusal;
 using tools::refused;
+using tools::served_path;
 using tools::tier;
 
 namespace {
@@ -346,11 +347,6 @@ void project::on_text_change(hub::world &w, const hub::text_change &c)
 
 namespace {
 
-std::string doc_path(const context &c)
-{
-    const hub::document *d = c.w.doc_of(c.doc);
-    return d ? d->path() : std::string();
-}
 
 // A tool's view of the memory: its records and writer, and the registry it
 // serves (the edit core lands an accepted proposal through it).
@@ -531,7 +527,7 @@ value symbol_ref(const context &c, const value &node)
 {
     fields f;
     f["ref"] = value(name_of(ref_kind_names, ref_kind::symbol));
-    f["file"] = value(doc_path(c));
+    f["file"] = value(served_path(c));
     f["kind"] = object_field(node, "kind");
     f["name"] = object_field(node, "name");
     return value::make_object(f);
@@ -540,7 +536,7 @@ value symbol_ref(const context &c, const value &node)
 // A symbol ref resolved against the served document's live tree.
 bool symbol_node(const context &c, int64_t h, const value &ref, value &node)
 {
-    if ( !h || text_field(ref, "file") != doc_path(c) )
+    if ( !h || text_field(ref, "file") != served_path(c) )
 	return false;
     std::string name = text_field(ref, "name");
     value d;
@@ -622,7 +618,7 @@ value constraints_of(const context &c, const nexus_fold &f, const value &target)
 void event_rows(const context &c, const std::vector<value> &recs, const value &span_answer,
 		size_t a, size_t b, std::vector<value> &rows, bool &complete)
 {
-    const std::string path = doc_path(c);
+    const std::string path = served_path(c);
     std::vector<value> found;
     bool walking = true;
     for ( size_t i = recs.size(); i > 0; --i )
@@ -674,17 +670,32 @@ void event_rows(const context &c, const std::vector<value> &recs, const value &s
 	rows.push_back(found[i - 1]);		// oldest first
 }
 
-// A node's byte extent in the served document [a, b); false off the text.
-bool node_extent(const context &c, const value &span, size_t &a, size_t &b)
+// The GIT rows of a node (madcide's graph_history, its git half), with the
+// version history: the live text blamed over the node's lines, folded to
+// the distinct commits that last touched them — an uncommitted hunk (sha
+// "") is the event rows' job.
+void git_rows(const seat &s, const context &c, const value &span, std::vector<value> &rows)
 {
     const hub::text_buffer *t = c.w.text_of(c.doc);
-    size_t s0 = 0, n0 = 0, s1 = 0, n1 = 0;
-    if ( !t || !t->line_span((size_t)int_field(span, "line"), s0, n0)
-	 || !t->line_span((size_t)int_field(span, "end_line"), s1, n1) )
-	return false;
-    a = s0 + (size_t)int_field(span, "column");
-    b = s1 + (size_t)int_field(span, "end_column");
-    return true;
+    const int64_t l0 = int_field(span, "line"), l1 = int_field(span, "end_line");
+    value bl;
+    if ( !s.r.history() || !t
+	 || !s.r.history()->blame(served_path(c), t->text(), l0, l1 - l0 + 1, bl) )
+	return;
+    std::set<std::string> seen;
+    for ( const value &hunk : items(object_field(bl, "rows")) )
+    {
+	const std::string sha = text_field(hunk, "sha");
+	if ( sha.empty() || !seen.insert(sha).second )
+	    continue;
+	fields row;
+	row["provenance"] = value(name_of(provenance_names, provenance::git));
+	row["sha"] = value(sha);
+	row["author"] = object_field(hunk, "author");
+	row["when"] = object_field(hunk, "when");
+	row["summary"] = object_field(hunk, "summary");
+	rows.push_back(value::make_object(row));
+    }
 }
 
 // graph.history over node `id`: the stream's rows.
@@ -694,12 +705,13 @@ bool node_history(const seat &s, const context &c, int64_t h, int64_t id, value 
     madc_graph_span(&sp, h, id);
     size_t a = 0, b = 0;
     const value *span = field(sp, "span");
-    if ( !span || !node_extent(c, *span, a, b) )
+    if ( !span || !c.w.text_of(c.doc) || !tools::span_extent(*c.w.text_of(c.doc), *span, a, b) )
     {
 	out = refused(sp) ? sp : refusal("the node has no source extent");
 	return false;
     }
     std::vector<value> rows;
+    git_rows(s, c, *span, rows);
     bool complete = true;
     event_rows(c, s.m.records(), sp, a, b, rows, complete);
     fields f;
@@ -761,13 +773,18 @@ bool tests_runnable_here(const nexus_fold &f)
 
 // The asset's layers (design §3.9): the bytes always; tracked when it is a
 // file; lexed, parsed and run when the compiler parses its kind; tested
-// when a live test record has a runner here. (Versioned is the git view's.)
-int64_t asset_layers(const seat &s, const context &c)
+// when a live test record has a runner here; versioned, asked only when
+// `versioned` (a repository read), when the version history tracks it.
+int64_t asset_layers(const seat &s, const context &c, bool versioned)
 {
     int64_t layers = l_text;
     const hub::document *d = c.w.doc_of(c.doc);
+    value state;
     if ( d && !d->path().empty() )
 	layers |= l_managed;
+    if ( versioned && d && !d->path().empty() && s.r.history()
+	 && s.r.history()->state(d->path(), state) )
+	layers |= l_versioned;
     if ( d && file_kind_family(d->kind()) != fkUNKNOWN )
 	layers |= l_lexable | l_parseable | l_executable;
     if ( tests_runnable_here(fold_nexus(s.m.records())) )
@@ -780,7 +797,7 @@ int64_t asset_layers(const seat &s, const context &c)
 bool has_layers(const seat &s, const context &c, const char *tool, int64_t need,
 		value &result)
 {
-    const int64_t have = asset_layers(s, c);
+    const int64_t have = asset_layers(s, c, (need & l_versioned) != 0);
     for ( int64_t bit = l_text; bit <= l_testable; bit <<= 1 )
 	if ( (need & bit) && !(have & bit) )
 	{
@@ -861,7 +878,7 @@ value proposal_row(const value &p)
 // refusal, when there is none or it is decided.
 bool open_proposal(const seat &s, const context &c, int64_t seq, value &p, value &result)
 {
-    proposal_fold f = fold_proposals(s.m.records(), doc_path(c));
+    proposal_fold f = fold_proposals(s.m.records(), served_path(c));
     std::map<int64_t, value>::const_iterator it = f.props.find(seq);
     if ( it == f.props.end() )
     {
@@ -953,7 +970,7 @@ bool t_proposals(const seat &s, const context &c, const value &args, value &out)
     status want;
     if ( !word_arg(args, "status", status_names, "status", want, out) )
 	return false;
-    proposal_fold f = fold_proposals(s.m.records(), doc_path(c));
+    proposal_fold f = fold_proposals(s.m.records(), served_path(c));
     std::vector<value> rows;
     for ( int64_t seq : f.seqs )
     {
@@ -969,7 +986,7 @@ bool t_proposals(const seat &s, const context &c, const value &args, value &out)
 
 bool t_proposal(const seat &s, const context &c, const value &args, value &out)
 {
-    proposal_fold f = fold_proposals(s.m.records(), doc_path(c));
+    proposal_fold f = fold_proposals(s.m.records(), served_path(c));
     std::map<int64_t, value>::const_iterator it = f.props.find(int_field(args, "seq"));
     if ( it == f.props.end() )
     {
@@ -1017,7 +1034,7 @@ bool t_accept(const seat &s, const context &c, const value &args, value &out)
 	    return false;
 	}
 	madc_graph_span(&nsp, h, int_field(node, "id"));
-	if ( !field(nsp, "span") || !node_extent(c, object_field(nsp, "span"), a, e)
+	if ( !field(nsp, "span") || !tools::span_extent(*b, object_field(nsp, "span"), a, e)
 	     || text.compare(a, e - a, text_field(op, "text")) != 0 )
 	{
 	    out = changed;
@@ -1274,7 +1291,7 @@ value context_of(const seat &s, const context &c, int64_t h, const value &ref)
 		for ( const value &hr : items(object_field(hist, "rows")) )
 		    rows.push_back(hr);
 	}
-	proposal_fold pf = fold_proposals(s.m.records(), doc_path(c));
+	proposal_fold pf = fold_proposals(s.m.records(), served_path(c));
 	for ( int64_t seq : pf.seqs )
 	{
 	    const value &p = pf.props[seq];
@@ -1404,7 +1421,7 @@ bool t_explain(const seat &s, const context &c, const value &args, value &out)
     r["why"] = value::make_array(why);
     r["plan"] = value::make_array(plan);
     r["constraints"] = constraints_of(c, f, node);
-    r["layers"] = layer_words(asset_layers(s, c));
+    r["layers"] = layer_words(asset_layers(s, c, true));
     out = value::make_object(r);
     return true;
 }
@@ -1614,7 +1631,7 @@ bool synced_to_disk(const context &c)
 {
     std::string disk;
     const hub::text_buffer *b = c.w.text_of(c.doc);
-    return b && document_read_file(doc_path(c), disk) && disk == b->text();
+    return b && document_read_file(served_path(c), disk) && disk == b->text();
 }
 
 // One testrun event and its answer row.
@@ -1654,7 +1671,7 @@ value verdict(const seat &s, const context &c, const value &r, result_word res,
 // running compiler.
 std::string command_of(const seat &s, const context &c, const std::string &cmd)
 {
-    const std::string path = doc_path(c);
+    const std::string path = served_path(c);
     const struct { const char *key; std::string text; } subst[] = {
 	{ "{path}", path },
 	{ "{base}", detail::host_path_drop_extension(path) },
@@ -1812,6 +1829,21 @@ bool run_tests(const seat &s, const context &c, const std::vector<int64_t> &ids,
     return true;
 }
 
+// This node's offers (madcide's node_offers, design §3.11): node 0, its
+// platform, its toolchains and what it serves.
+value node_offers()
+{
+    fields f;
+    f["node"] = value((int64_t)0);
+    f["platform"] = value(sys.platform);
+    f["toolchains"] = value::make_array(std::vector<value>(1, value("madc")));
+    std::vector<value> serves;
+    for ( const char *w : { "build", "run", "test" } )
+	serves.push_back(value(w));
+    f["serves"] = value::make_array(serves);
+    return value::make_object(f);
+}
+
 // test.run(ids, target?, proposal?): `target` null, "", 0 or this node's
 // platform is here; any other names a node no one offers — refused.
 bool t_run(const seat &s, const context &c, const value &args, value &out)
@@ -1825,7 +1857,7 @@ bool t_run(const seat &s, const context &c, const value &args, value &out)
     {
 	out = refusal("no node offers '" + (target.is_string() ? target.as_string()
 					    : encode(target)) + "' (this node: "
-		      + std::string(sys.platform) + "; serves build, run, test)");
+		      + encode(node_offers()) + ")");
 	return false;
     }
     std::vector<int64_t> ids;
@@ -1833,6 +1865,39 @@ bool t_run(const seat &s, const context &c, const value &args, value &out)
 	if ( v.is_integer() )
 	    ids.push_back(v.as_integer());
     return run_tests(s, c, ids, int_field(args, "proposal"), out);
+}
+
+// graph.status: the served asset in one call — its parse (handle,
+// generation, error count), the stream's head, its open revisions, its git
+// state (with the version history; null without), its layers and this
+// node's offers.
+bool t_status(const seat &s, const context &c, const value &args, value &out)
+{
+    (void)args;
+    const int64_t h = lang::document_handle(c.w, c.doc);
+    std::vector<value> revs;
+    for ( const tools::revisions::entry &e : s.r.past().of(c.doc) )
+    {
+	fields row;
+	row["sha"] = value(e.sha);
+	row["tag"] = value(e.tag);
+	revs.push_back(value::make_object(row));
+    }
+    value git;
+    if ( s.r.history() && !s.r.history()->state(served_path(c), git) )
+	git = value();				// not tracked: null
+    fields r;
+    r["handle"] = value(h);
+    r["generation"] = value(h ? madc_parse_generation(h) : (int64_t)-1);
+    r["synced"] = value(true);			// document_handle parses the current text
+    r["errors"] = value(h ? madc_parse_error_count(h) : (int64_t)0);
+    r["log_head"] = value(s.m.head());
+    r["revisions"] = value::make_array(revs);
+    r["git"] = git;
+    r["layers"] = layer_words(asset_layers(s, c, true));
+    r["node"] = node_offers();
+    out = value::make_object(r);
+    return true;
 }
 
 // ---- the table --------------------------------------------------------
@@ -1849,8 +1914,12 @@ struct tool_row
 };
 
 const tool_row tool_rows[] = {
+    { "graph.status", tier::observer, l_text, t_status,
+      "the served asset in one call: handle, generation, error count, log head, open"
+      " revisions, git head/branch/dirty, layers, this node's offers" },
     { "graph.history", tier::observer, l_parseable, t_history,
-      "who changed this node and when: the session's events (node-ops, text edits),"
+      "who changed this node and when: the commits that last touched it (with the"
+      " version history) and the session's events (node-ops, text edits),"
       " provenance-tagged" },
     { "graph.proposals", tier::observer, l_parseable, t_proposals,
       "the served file's proposals (compact rows; optional status filter)" },
