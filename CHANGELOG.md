@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### A malformed `--project` manifest is refused, not an abort
+
+A manifest field of the wrong JSON type — `{"tus":[{"file":3}]}`, a number where
+a string is read — made nlohmann's `value()` / `get()` throw `type_error.302` past
+`read_project_manifest`'s parse-only catch, so `madc --project` (and any session
+or IDE that opens the manifest) terminated with `SIGABRT`. The reader now catches
+the type error at its one entry and returns the same `manifest field of the wrong
+type: ...` refusal every other malformed manifest already gets.
+
 ### A project manifest's directory is read by the host's separators
 
 `read_project_manifest` split the manifest path with `find_last_of('/')`, so a

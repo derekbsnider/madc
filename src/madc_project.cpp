@@ -273,11 +273,18 @@ bool read_project_manifest(const std::string &path,
 	std::string manifest_dir = manifest_directory(path);
 
 	// The shape routes: OBJECT = the native madc manifest, ARRAY = a
-	// compile_commands.json import (owner ruling 2026-08-31).
-	if (root.is_object())
-		return read_native_object(root, manifest_dir, out, err);
-	if (root.is_array())
-		return read_cc_array(root, manifest_dir, out, err);
+	// compile_commands.json import (owner ruling 2026-08-31). A field of
+	// the wrong JSON type ("file": 3) throws from the readers' value() /
+	// get(): refused here, as malformed JSON is, never out of the reader.
+	try {
+		if (root.is_object())
+			return read_native_object(root, manifest_dir, out, err);
+		if (root.is_array())
+			return read_cc_array(root, manifest_dir, out, err);
+	} catch (const json::exception &e) {
+		err = std::string("manifest field of the wrong type: ") + e.what();
+		return false;
+	}
 	err = "top-level JSON is neither an object (madc manifest) nor an "
 	      "array (compile_commands.json)";
 	return false;

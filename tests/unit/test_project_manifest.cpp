@@ -72,6 +72,22 @@ TEST_CASE("read_project_manifest: malformed input is rejected") {
 	CHECK_FALSE(err.empty());
 }
 
+TEST_CASE("read_project_manifest: a field of the wrong JSON type is refused, "
+	  "never thrown") {
+	// value("file", std::string()) throws type_error.302 on a number: it
+	// aborted `madc --project`.
+	ProjectManifest m; std::string err;
+	std::string native = write_tmp("native_badtype.prj.json",
+				       "{\"tus\":[{\"file\":3}]}");
+	CHECK_FALSE(read_project_manifest(native, m, err));
+	CHECK(err.find("wrong type") != std::string::npos);
+	ProjectManifest c; err.clear();
+	std::string cc = write_tmp("cc_badtype.json",
+				   "[{\"directory\":7,\"file\":\"a.c\"}]");
+	CHECK_FALSE(read_project_manifest(cc, c, err));
+	CHECK(err.find("wrong type") != std::string::npos);
+}
+
 // ---- the NATIVE object shape (owner ruling 2026-08-31): what madcide
 // writes; --project reads it interchangeably with the cc.json import.
 
