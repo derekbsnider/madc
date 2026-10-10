@@ -5918,9 +5918,12 @@ static void highlight_token_rows(::Program &child,
 // classified, the child discarded. lex_spans' rows, and the rows a parse
 // that stopped short completes with.
 static void lexical_highlight_rows(::Program &owner, const std::string &source_text,
-				   const std::string &disp, std::vector<madc::value> &rows)
+				   const std::string &disp, std::vector<madc::value> &rows,
+				   int64_t standard = 0)
 {
     ::Program child(owner.engine);
+    if ( standard != 0 )
+	child.adopt_file_standard(standard);	// its keywords (C's vs C++'s)
     child.keep_trivia = true;		// comment spans: the lexer's comment record
     child.skip_includes = true;		// lex ONLY the buffer text
     {
@@ -8281,6 +8284,34 @@ bool internal_program_lex_spans(::Program &self,
     source_text_rows(source_text, rows);
     out = value::make_array(rows);
     return true;
+}
+
+// The same spans under `standard`, each class converted ONCE to its enum
+// (madc::lex_classes, split arc 1B.9: the REPL's painter). The owner keeps
+// its diagnostics: only the child lexes.
+void internal_program_lex_classes(::Program &self, const std::string &source_text,
+				  int64_t standard,
+				  std::vector<madc::highlight_span> &out)
+{
+    out.clear();
+    const std::string disp("<memory>");
+    std::vector<madc::value> rows;
+    lexical_highlight_rows(self, source_text, disp, rows, standard);
+    source_text_rows(source_text, rows);
+    for ( const madc::value &r : rows )
+    {
+	const std::map<std::string, madc::value> &f = r.as_object();
+	std::map<std::string, madc::value>::const_iterator c = f.find("class");
+	HighlightClass cls = HighlightClass::hcNone;
+	if ( c == f.end() || !highlight_class_of(std::string(c->second.as_string()), cls) )
+	    continue;
+	madc::highlight_span span;
+	span.line = (long)highlight_row_field(r, "line");
+	span.column = (long)highlight_row_field(r, "column");
+	span.length = (long)highlight_row_field(r, "length");
+	span.cls = cls;
+	out.push_back(span);
+    }
 }
 
 // ---- project handles (the cc.json manifest grouped as TU handles) -------

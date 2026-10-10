@@ -65,23 +65,27 @@ own data; Phase 0.5's predicate gates it).
    declared in `include/madcdis/ui_sgr.h`. `ui_style.h` stays
    dependency-free. The TUI's paint and the prompt call the same functions.
 4. **The theme: one owner, one built-in default, madcide's file format.**
-   - `madc::hub::theme`: a style per `HighlightClass`.
+   - `madc::theme` (`include/madc_theme.h`): a style per `HighlightClass`,
+     and per piece of chrome a theme names (`tui_chrome`, moved to
+     `madcdis/ui_chrome.h`: madcide's files colour the grid's chrome too).
      - `theme_default()` is madcide's `default.theme`, JOE parity: keyword,
        control, type and typename bold; string and number cyan; comment
        green; directive blue; include and escape bold cyan; the rest plain.
-     - `theme_read(text, theme, err)` reads madcide's `.theme` text: `class
-       spec` lines, `#` comments, `@scope` lines skipped (they are an IDE's).
-       An unknown class or an unreadable spec is REFUSED, naming the line (a
-       misspelling is a refusal at load, never a dead colour).
+     - `theme_read(text, theme, err)` reads madcide's `.theme` text: `name
+       spec` lines (a highlight class or a chrome name), `#` comments,
+       `@scope` lines skipped (they are an IDE's). An unknown name or an
+       unreadable spec is REFUSED, naming the line (a misspelling is a
+       refusal at load, never a dead colour).
      - A class the file leaves unnamed takes its parent's style: control from
        keyword, typename from type, namespace from typename, directive from
        keyword, include and escape from string. This is madcide's
        `load_theme` rule, moved here.
-   - A theme file is a whole scheme, not an overlay.
-   - madc.ini's `theme = PATH` (relative to the ini's directory, as its other
-     paths are) replaces the default. `theme = none` turns syntax colour off
-     and leaves diagnostic colour alone. A file that does not read is a
-     warning at start, and the default stays.
+   - A theme file is a whole scheme, not an overlay; one with no lines
+     colours nothing.
+   - madc.ini's `theme = PATH` (a path key: relative to the ini's directory,
+     `~/` expanded) replaces the default. A file that does not read is a
+     warning at start, and the default stays. Syntax colour alone is turned
+     off with an empty theme file; no word is reserved in a path key.
    - madcide's themes stay its data. Its `load_theme` and `spans_to_hspans`
      move onto this owner in 1D. One of its files named by `theme` works
      unchanged.
@@ -99,7 +103,7 @@ own data; Phase 0.5's predicate gates it).
    line. Only the terminal loop paints marks; the cooked (piped) loop never
    does. The depth is the TUI's probe (COLORTERM, TERM). There is no new flag:
    `-fdiagnostics-color=never` and NO_COLOR turn it off as they turn
-   diagnostics' off; `theme = none` turns off syntax colour alone.
+   diagnostics' off; an empty theme file turns off syntax colour alone.
 7. **Thread-safety** (C++ standard library convention): a theme is
    immutable once read (the CLI reads it once at start); the painter and its
    marks belong to one loop; the classifier keeps the runtime-eval

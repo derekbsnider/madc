@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+### The syntax-colour owners: highlight classes, the SGR step, the theme, the classifier's C++ face
+
+The colour machinery the REPL prompt will paint through now has its owners (split
+arc 1B.9, design `docs/plans/2026-10-10-prompt-colour-design.md`).
+`HighlightClass` and its name table move from `include/tokens.h` to
+`include/highlight_class.h`, which also carries `highlight_class_of` (a name back
+to its class) and `madc::lex_classes(text, standard, out)` — the classifier's
+C++ face, returning `{line, byte, length, HighlightClass}` spans lexed under the
+caller's `--std=` (`class` is an identifier under C17, a keyword under C++17),
+running no user code and leaving the calling thread's diagnostics untouched. The
+chrome a theme colours (`tui_chrome`, `tui_chrome_of`) moves from
+`include/madcdis/tui_model.h` to `include/madcdis/ui_chrome.h`. The style-to-SGR
+step and the terminal's colour-depth probe leave `src/ui_term.cpp`'s anonymous
+namespace as `madc::hub::sgr` and `madc::hub::terminal_colour_depth`
+(`include/madcdis/ui_sgr.h`), shared by the TUI's paint and the prompt's marks. A
+new `madc::theme` owner (`include/madc_theme.h`, `src/madc_theme.cpp`) holds a
+style per highlight class and per piece of chrome: `theme_default()` is madcide's
+`default.theme` (JOE 4.6 parity — keyword, control, type and typename bold;
+string and number cyan; comment green; directive blue; include and escape bold
+cyan; the rest plain); `theme_read(text, theme, err)` reads madcide's `.theme`
+text, where a class left unnamed inherits its parent's style, a whole file is a
+scheme and never an overlay, and an unknown name or unreadable spec is refused,
+naming the line. madcide's `default`, `classic`, `vivid` and `vscode` profiles
+read unchanged.
+
 ### `madc -i` gains `%project`
 
 `madc -i` now opens, edits, checks, builds and runs the session's project at the

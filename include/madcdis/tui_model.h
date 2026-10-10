@@ -58,6 +58,7 @@
 #include "madcdis/ui_focus.h"	// focusable, focus_state — the focus/navigation owner
 #include "madcdis/ui_input.h"	// ui_apply_keys — the one keys → events adapter
 #include "madcdis/ui_style.h"	// ui_style, ui_style_of — the one render style + spec parser
+#include "madcdis/ui_chrome.h"	// tui_chrome — the chrome a theme colours
 #include "madcdis/text_utf16.h"	// line_layout / line_columns — the one line layout (B87)
 #include "madcdis/tui_grid.h"	// tui_cell, tui_grid, the repaint diff (S0 split)
 #include "madcdis/tui_frame.h"	// tui_frame — dividers and junctions by arms (S2)
@@ -66,35 +67,7 @@
 namespace madc {
 namespace hub {
 
-// The chrome a theme colours (facelift S2): the dividers, the editor's
-// line-number gutter, the caret line's number, and the caret line itself.
-// The composer hands their style specs over as the root's `chrome` hint
-// object (keys = these names); tui_chrome_of converts each key ONCE.
-enum class tui_chrome : unsigned char
-{
-    divider = 0, gutter, gutter_current, current_line,
-    tab, tab_active, statusbar,		// S3: strips and the status bar
-    menubar, menu, menu_selected, menu_hot, shadow,	// S4: the menu bar
-    toolbar,				// S5: the toolbar row
-    dialog, list_selected, field, button_primary,	// S6: floating windows
-    count
-};
-inline bool tui_chrome_of(const std::string &name, tui_chrome &out)
-{
-    static const char *const names[] = {
-	"divider", "gutter", "gutter_current", "current_line",
-	"tab", "tab_active", "statusbar",
-	"menubar", "menu", "menu_selected", "menu_hot", "shadow",
-	"toolbar", "dialog", "list_selected", "field", "button_primary"
-    };
-    for ( size_t i = 0; i < (size_t)tui_chrome::count; ++i )
-	if ( name == names[i] )
-	{
-	    out = (tui_chrome)i;
-	    return true;
-	}
-    return false;
-}
+// The chrome a theme colours: madcdis/ui_chrome.h (tui_chrome, tui_chrome_of).
 
 // ------------------------------------------------------------------ the model
 // One instance per TUI session. Contract: compose() before apply_keys()
