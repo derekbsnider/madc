@@ -24745,7 +24745,6 @@ Program::Program(MadcCompileGroup *group)
       _strpool_owner(group ? group->strpool
 		     : std::make_shared<madc::dis::intern_table>()),
       strpool(*_strpool_owner),
-      colors(false),
       language_std(STD_MADC),
       default_cpp_std(STD_CPP17),
       gnu_dialect(false),
@@ -24787,7 +24786,6 @@ Program::Program(MadcEngine *eng, MadcCompileGroup *group)
       _strpool_owner(group ? group->strpool
 		     : std::make_shared<madc::dis::intern_table>()),
       strpool(*_strpool_owner),
-      colors(false),
       language_std(STD_MADC),
       default_cpp_std(STD_CPP17),
       gnu_dialect(false),
@@ -25151,17 +25149,18 @@ void Program::print_diagnostic(std::ostream &os, const Diagnostic &diag, const c
     if ( DiagnosticRenderMute::active )
 	return;		// captured as data; the record already exists
     diag.rendered = true;
+    std::ostringstream where;
     if ( !diag.file.empty() )
-	os << ANSI_WHITE << diag.file << ':' << diag.line << ':'
-	   << madc_diag_screen_column(&source, diag.file.c_str(), diag.line,
-				      diag.column);
+	where << diag.file << ':' << diag.line << ':'
+	      << madc_diag_screen_column(&source, diag.file.c_str(), diag.line,
+					 diag.column);
     else
-	os << ANSI_WHITE << ':';
-    os << ": \e[1;31m" << diagnostic_severity_name(diag.severity)
-       << ":\e[1;37m " << diag.message;
+	where << ':';
+    std::string message = diag.message;
     if ( suffix && *suffix )
-	os << ' ' << suffix;
-    os << ANSI_RESET << std::endl;
+	message.append(" ").append(suffix);
+    madc_diagnostic_header(os, where.str(),
+			   diagnostic_severity_name(diag.severity), message);
     // The echo goes where the header went (a session's captured stream, a
     // backend's reply), never to std::cerr behind the caller's back.
     if ( can_show_diagnostic_source(diag) )

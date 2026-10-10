@@ -166,6 +166,7 @@ image, the libmadc image, `<exe>.forest` / `<lib>.forest` sidecars,
 | `-v`, `--verbose` | tokenizer / parser / lowering trace |
 | `-g` | debug info: gdb can break, step, and inspect the JIT'd program (forces `-O0`) |
 | `-w` | inhibit all warning messages (gcc `-w`); errors are unaffected |
+| `-fdiagnostics-color[=auto\|always\|never]`, `-fno-diagnostics-color` | when diagnostics are coloured (gcc's spelling). `auto`, the default, colours only a terminal (`TERM` set and not `dumb`; on Windows a console, switched to VT mode) and never when `NO_COLOR` is set — so `madc file.c 2> log` writes plain text; the bare flag is `always`. A host's captured stream (an embedding, an IDE pane, a test log) is no terminal. |
 | `--show-stats` | read/lex/parse/c2mir/execute timing and size stats on stderr |
 | `-O0` … `-O3` | JIT optimization level |
 

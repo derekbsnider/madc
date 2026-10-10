@@ -2084,8 +2084,10 @@ TEST_CASE("session commands: %help, %type, an unknown command, and what stays C"
     CHECK_FALSE(c.submit("%type nope + 1"));
     CHECK(err.str().find(":1:7: ") != std::string::npos);
     // The recorded diagnostic keeps the token's end: the echo underlines
-    // `nope` (gcc's ^~~~, D26).
-    CHECK(err.str().find("\033[1;32m^~~~\033[m") != std::string::npos);
+    // `nope` (gcc's ^~~~, D26) — uncoloured: a session's captured stream is
+    // no terminal (Phase 0.5).
+    CHECK(err.str().find("^~~~\n") != std::string::npos);
+    CHECK(err.str().find('\033') == std::string::npos);
     CHECK_FALSE(c.submit("%type x;"));
     CHECK(err.str().find("%type takes an expression") != std::string::npos);
     CHECK_FALSE(c.submit("%nosuch"));

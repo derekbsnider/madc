@@ -1,0 +1,12 @@
+int main() { int x = 1 foo; return x; }
+
+// -fdiagnostics-color=always (gcc's spelling; this test's .flags) colours a
+// diagnostic on any stream — here the runner's pipe, which auto (the
+// default) leaves plain (testdiagstartcol): the locus and message 1;37, the
+// severity 1;31, the caret 1;32 (split arc Phase 0.5). The code above must
+// stay on line 1.
+//
+// Oracle: gcc 13 -fdiagnostics-color=always on the same line as a .c file
+// colours its piped stderr at 1:24 (its own palette: 01 the locus, 01;31
+// `error:` and the `^~~` under foo); -fdiagnostics-color=auto on the pipe
+// prints no SGR.

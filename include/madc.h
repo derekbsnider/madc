@@ -2849,6 +2849,12 @@ private:
 // a token that runs past the line is underlined to the line's end.
 void show_error_source_line(const std::string &ln, int col,
 			    std::ostream &os = std::cerr, int end_col = 0);
+// The one formatter for a diagnostic's header line, gcc's shape
+// `WHERE: SEVERITY: MESSAGE` (WHERE as the caller spells it, e.g.
+// `file:line:column`). The header and the caret are coloured only when
+// colour reaches `os` (madc::colour_reaches, madc_console.h).
+void madc_diagnostic_header(std::ostream &os, const std::string &where,
+			    const char *severity, const std::string &message);
 bool madc_show_file_error(const char *fname, int row, int col,
 			  std::ostream &os = std::cerr,
 			  int end_line = 0, int end_col = 0);
@@ -6287,7 +6293,6 @@ public:
 	~DefinitionPackScope() { pgm._pack_current = saved; }
     };
 
-    bool colors;
     // The language standard the front end parses under. Its enumerators
     // ARE the file-kind vocabulary's C / C++ / madc ranges (<bits/file_kinds>
     // — the ONE enum the IDE and the compiler share, design doc §2.1 of the
@@ -9861,10 +9866,6 @@ namespace madc
     extern MadcLogStream info;
     extern MadcLogStream debug;
 }
-
-#define ANSI_RED "\e[1;31m"
-#define ANSI_WHITE "\e[1;37m"
-#define ANSI_RESET "\e[m"
 
 // Macros for generating extern "C" thin wrappers.
 // Usage: MADC_EXTERN_C1(int64_t, php_trim, void *)

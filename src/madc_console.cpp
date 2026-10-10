@@ -1,18 +1,125 @@
-// madc_console.cpp — madc::console_attach (include/madc/ns_madc): a Windows
-// GUI image's standard streams onto its parent's console (plan
-// docs/plans/2026-10-03-chthonia-windows-macos.md §7a). Its own unit because
-// it needs <windows.h>, which ns_madc.cpp cannot include (the `interface`
-// macro collides with the module map). Every other platform's program keeps
-// the terminal it was started from.
+// madc_console.cpp — the process's standard streams and the terminal they
+// reach. madc::console_attach (include/madc/ns_madc): a Windows GUI image's
+// standard streams onto its parent's console (plan
+// docs/plans/2026-10-03-chthonia-windows-macos.md §7a). madc::colour_reaches
+// (include/madc_console.h): whether a stream shows colour — the one question
+// every coloured output asks (split arc Phase 0.5). Its own unit because it
+// needs <windows.h>, which ns_madc.cpp cannot include (the `interface` macro
+// collides with the module map). Every other platform's program keeps the
+// terminal it was started from.
 //
-// Thread contract: called once, from main, before any thread starts — it
-// rebinds the process's standard streams (the CRT's and Win32's).
+// Thread contract: console_attach is called once, from main, before any
+// thread starts — it rebinds the process's standard streams (the CRT's and
+// Win32's). The colour contract is madc_console.h's.
 
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include <atomic>
+#include <iostream>
+
+#include "madc_console.h"
+
+#if !defined(_WIN32)
+#include <unistd.h>
+#endif
 
 #if defined(_WIN32)
 #include <windows.h>
 #include <io.h>
+#endif
+
+namespace {
+
+// The buffers the C++ runtime gave the process's standard streams, read
+// before any capture or tee swaps a stream's rdbuf (<iostream> above
+// constructs the streams first). A stream on one of them writes that
+// descriptor; any other buffer is the host's (a capture, a tee, a string).
+std::streambuf *const process_stdout_buf = std::cout.rdbuf();
+std::streambuf *const process_stderr_buf = std::cerr.rdbuf();
+std::streambuf *const process_stdlog_buf = std::clog.rdbuf();
+
+std::atomic<unsigned char> colour_choice(
+    (unsigned char)madc::colour_when::automatic);
+
+// The descriptor `os` writes, -1 when it is not a standard stream's.
+int standard_descriptor(const std::ostream &os)
+{
+    std::streambuf *buf = os.rdbuf();
+    if ( buf == process_stdout_buf )
+	return 1;
+    if ( buf == process_stderr_buf || buf == process_stdlog_buf )
+	return 2;
+    return -1;
+}
+
+// gcc's auto: descriptor `fd` is a terminal that shows colour, and NO_COLOR
+// (no-color.org) does not ask for none.
+bool terminal_shows_colour(int fd)
+{
+    const char *no_colour = getenv("NO_COLOR");
+    if ( no_colour && *no_colour )
+	return false;
+#if defined(_WIN32)
+    // A console in VT mode (Windows 10 1809+): the mode is switched on when
+    // it is off — what the terminal target does for its own output; a
+    // console that refuses it shows no SGR. Never the legacy console-cell
+    // colour API (owner 2026-08-27).
+    if ( !_isatty(fd) )
+	return false;
+    HANDLE h = (HANDLE)_get_osfhandle(fd);
+    DWORD mode = 0;
+    if ( h == INVALID_HANDLE_VALUE || !GetConsoleMode(h, &mode) )
+	return false;
+    return (mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING) != 0
+	|| SetConsoleMode(h, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+#else
+    const char *term = getenv("TERM");
+    return isatty(fd) && term && strcmp(term, "dumb") != 0;
+#endif
+}
+
+} // namespace
+
+namespace madc {
+
+void set_colour_when(colour_when when)
+{
+    colour_choice.store((unsigned char)when);
+}
+
+bool parse_colour_when(const char *text, colour_when &when)
+{
+    static const struct { const char *name; colour_when code; } names[] = {
+	{ "auto", colour_when::automatic },
+	{ "always", colour_when::always },
+	{ "never", colour_when::never },
+    };
+    for ( const auto &n : names )
+	if ( text && strcmp(text, n.name) == 0 )
+	{
+	    when = n.code;
+	    return true;
+	}
+    return false;
+}
+
+bool colour_reaches(const std::ostream &os)
+{
+    switch ( (colour_when)colour_choice.load() )
+    {
+	case colour_when::always:    return true;
+	case colour_when::never:     return false;
+	case colour_when::automatic: break;
+    }
+    int fd = standard_descriptor(os);
+    return fd >= 0 && terminal_shows_colour(fd);
+}
+
+} // namespace madc
+
+#if defined(_WIN32)
 
 namespace {
 

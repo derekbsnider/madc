@@ -30,6 +30,7 @@
 #include "madc_modules.h"	// -l<name> -> the target library spelling (the one owner)
 #include "madc_guards.h"	// the resource guards (install + the GUI lift)
 #include "madc_crash.h"	// fault reporter + guard-handler writers (own TU: windows.h vs tokens.h)
+#include "madc_console.h"	// -fdiagnostics-color: colour only when the stream shows it
 #include "madc_posix_io.h"	// cross-platform temporary file owner (--freeze-run)
 #include "madcdis/process.h"	// Process::run_and_wait (--freeze-run re-exec)
 #include "madc_pch.h"
@@ -377,6 +378,10 @@ static void print_usage(const char *prog)
 "  -g                      debug info: gdb can break/step/inspect the JIT'd\n"
 "                          program (forces -O0, no inlining, spill-all)\n"
 "  -w                      inhibit all warning messages (gcc -w)\n"
+"  -fdiagnostics-color[=WHEN]  colour diagnostics (gcc's spelling): WHEN is\n"
+"                          auto (the default: a terminal only, never with\n"
+"                          NO_COLOR set), always, or never; bare = always\n"
+"  -fno-diagnostics-color  never colour diagnostics\n"
 "  -v, --verbose           verbose / debug output\n"
 "  -h, -?, --help          show this help\n"
 "  -V, --version           print the madc version (and the cross target, if\n"
@@ -573,7 +578,6 @@ int main(int argc, char **argv)
     std::unique_ptr<Program> prog = engine.create_program();
     TokenProgram *tp;
 
-    prog->colors = true;
 #if defined(MADC_FOREST_EXPECT_EMBEDDED) || defined(MADC_FOREST_EXPECT_SIDECAR)
     // --with-forest= product expectation (forest-carriers S3): this binary
     // was built to ship WITH a forest (embedded carrier or sidecar), so a
@@ -768,6 +772,22 @@ int main(int argc, char **argv)
             // Emit-lane state (like -static-libmadc), so every lane —
             // single-TU, --project, .o link — sees the same answer.
             madc_no_eval_shims = strcmp(argv[i], "-fno-eval-shims") == 0;
+            filearg = i + 1;
+        } else if (strcmp(argv[i], "-fdiagnostics-color") == 0
+                || strncmp(argv[i], "-fdiagnostics-color=", 20) == 0) {
+            // gcc's -fdiagnostics-color[=WHEN]: auto (the default) colours a
+            // terminal only; the bare flag is always.
+            const char *when = argv[i][19] ? argv[i] + 20 : "always";
+            madc::colour_when code;
+            if ( !madc::parse_colour_when(when, code) ) {
+                std::cerr << "Unknown -fdiagnostics-color= value: " << when
+                          << " (auto, always, never)" << std::endl;
+                return 1;
+            }
+            madc::set_colour_when(code);
+            filearg = i + 1;
+        } else if (strcmp(argv[i], "-fno-diagnostics-color") == 0) {
+            madc::set_colour_when(madc::colour_when::never);
             filearg = i + 1;
         } else if (strcmp(argv[i], "--dump-cir") == 0) {
             dump_cir = true;

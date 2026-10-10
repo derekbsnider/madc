@@ -37,8 +37,10 @@ thread_local bool madc_verbose = false;
 #include "tokens.h"
 #include "datatokens.h"
 #include "madc.h"
+#include "madc_console.h"
 
-static const std::string CARET = "\033[1;32m^\033[m";
+// A string stream is no terminal: the echo carries no colour (Phase 0.5).
+static const std::string CARET = "^";
 
 // The echo of `ln` with the caret at byte column `col`: the echoed line, and
 // the caret's screen column (the spaces before it) — -1 when the caret line
@@ -183,16 +185,13 @@ static std::string underline(const std::string &ln, int col, int end_col,
     size_t nl = out.find('\n');
     REQUIRE(nl != std::string::npos);
     std::string caret = out.substr(nl + 1);
-    const std::string open = "\033[1;32m", close = "\033[m\n";
-    size_t at = caret.find(open);
+    size_t at = caret.find('^');
     indent = -1;
     if ( at == std::string::npos || caret.find_first_not_of(' ') != at
-	 || caret.size() < at + open.size() + close.size()
-	 || caret.compare(caret.size() - close.size(), close.size(), close) )
+	 || caret.back() != '\n' )
 	return "";
     indent = (long)at;
-    return caret.substr(at + open.size(),
-			caret.size() - close.size() - at - open.size());
+    return caret.substr(at, caret.size() - 1 - at);
 }
 
 TEST_CASE("D26: the caret underlines the token (gcc's ^~~)")
@@ -231,4 +230,66 @@ TEST_CASE("D26: the underline's last byte on the cited line")
     CHECK(madc_underline_end("x + undeclared_fo\\", 1, 5, 2, 1) == 18);
     CHECK(madc_underline_end("abc", 2, 1, 0, 0) == 0);
     CHECK(madc_underline_end("abc", 2, 3, 2, 1) == 0);
+}
+
+// Colour only when colour is available (split arc Phase 0.5; gcc's
+// -fdiagnostics-color=auto): a captured stream never gets SGR; `always` and
+// `never` decide for every stream; NO_COLOR silences the process's own
+// stderr even on a terminal, and an explicit `always` overrides it.
+// Oracle: `gcc -fdiagnostics-color=always` colours a piped stderr, `auto` does
+// not; madc's palette is its own (locus/message 1;37, severity 1;31, caret
+// 1;32).
+TEST_CASE("Phase 0.5: a diagnostic is coloured only where colour reaches")
+{
+    setenv("COLUMNS", "200", 1);
+    madc::colour_when when = madc::colour_when::never;
+    CHECK(madc::parse_colour_when("auto", when));
+    CHECK(when == madc::colour_when::automatic);
+    CHECK(madc::parse_colour_when("always", when));
+    CHECK(when == madc::colour_when::always);
+    CHECK(madc::parse_colour_when("never", when));
+    CHECK(when == madc::colour_when::never);
+    CHECK_FALSE(madc::parse_colour_when("yes", when));
+    CHECK_FALSE(madc::parse_colour_when(NULL, when));
+
+    std::ostringstream plain, header;
+    show_error_source_line("int x = 1 foo;", 11, plain, 13);
+    CHECK(plain.str() == "int x = 1 foo;\n          ^~~\n");
+    madc_diagnostic_header(header, "t.c:1:11", "error", "expected ';'");
+    CHECK(header.str() == "t.c:1:11: error: expected ';'\n");
+
+    madc::set_colour_when(madc::colour_when::always);
+    std::ostringstream forced, forced_header;
+    show_error_source_line("int x = 1 foo;", 11, forced, 13);
+    madc_diagnostic_header(forced_header, "t.c:1:11", "error", "expected ';'");
+    madc::set_colour_when(madc::colour_when::automatic);
+    CHECK(forced.str()
+	  == "int x = 1 foo;\n          \033[1;32m^~~\033[m\n");
+    CHECK(forced_header.str() == "\033[1;37mt.c:1:11: \033[1;31merror:"
+				 "\033[1;37m expected ';'\033[m\n");
+
+    // The process's stderr (and a stream on its buffer): NO_COLOR wins over
+    // a terminal; `always` wins over NO_COLOR; `never` over everything.
+    std::ostream on_stderr(std::cerr.rdbuf());
+    setenv("NO_COLOR", "1", 1);
+    CHECK_FALSE(madc::colour_reaches(std::cerr));
+    CHECK_FALSE(madc::colour_reaches(on_stderr));
+    madc::set_colour_when(madc::colour_when::always);
+    CHECK(madc::colour_reaches(std::cerr));
+    CHECK(madc::colour_reaches(plain));
+    madc::set_colour_when(madc::colour_when::never);
+    unsetenv("NO_COLOR");
+    CHECK_FALSE(madc::colour_reaches(std::cerr));
+    madc::set_colour_when(madc::colour_when::automatic);
+    // A dumb terminal shows no colour (gcc's auto); a string stream never.
+    const char *term = getenv("TERM");
+    const std::string saved_term = term ? term : "";
+    setenv("TERM", "dumb", 1);
+    CHECK_FALSE(madc::colour_reaches(std::cerr));
+    CHECK_FALSE(madc::colour_reaches(plain));
+    if ( term )
+	setenv("TERM", saved_term.c_str(), 1);
+    else
+	unsetenv("TERM");
+    unsetenv("COLUMNS");
 }

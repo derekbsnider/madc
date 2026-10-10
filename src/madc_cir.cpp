@@ -6283,7 +6283,6 @@ bool madc_cir_ledger_compile(MadcEngine &engine,
     std::vector<std::unique_ptr<Program> > parsed;
     for (const std::string &src : sources) {
 	std::unique_ptr<Program> prog = engine.create_program();
-	prog->colors = true;
 	// A ledger source is madc's OWN runtime: never bind grove state into
 	// it (the container being packed is the one we would bind), and read
 	// it as the C dialect gcc uses for a .c file.
@@ -6936,7 +6935,6 @@ static bool project_parse_all(MadcEngine &engine,
 	// `parsed` so it outlives every TU Program that backpoints to it.
 	for (const ProjectTU &tu : manifest.tus) {
 		std::unique_ptr<Program> prog = engine.create_program(&group);
-		prog->colors = true;
 		// Each TU binds the one embedded/standalone forest (compiles
 		// BIND; only the build-time pack freezes). ensure_bind_forest()
 		// falls through to live parse when no container is present.

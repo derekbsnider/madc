@@ -50,6 +50,7 @@ void madcdis_mapwrite_trap_hit(const char *key)
 #include "rt/rt_task.h"	// MT-3b: the token pumps honor task cancellation
 #include "rt/rt_dump.h"	// __madc_c_escape: THE C-literal escape rule
 #include "madcdis/text_utf16.h"	// line_layout: THE screen layout of a line (B8)
+#include "madc_console.h"	// colour_reaches: colour only when the stream shows it
 
 // Stage-2 cooperative parse: yield-point cadence for the token pumps (a
 // power of two — the pump check is one mask-and-compare). ~1k tokens is
@@ -10878,6 +10879,7 @@ std::string Program::reconstruct_source()
 // print out a token with syntax highlighting, to debug parser
 void Program::printt(TokenBase *tb)
 {
+    const bool colors = madc::colour_reaches(std::cout);
     switch(tb->type())
     {
 	case TokenType::ttSpace:
@@ -11109,6 +11111,23 @@ int madc_diag_screen_column(Source *src, const char *fname, int row, int col)
     return madc_screen_column(ln, col);
 }
 
+// A diagnostic's SGR sequences (gcc's palette roles: the locus and message,
+// the severity, the caret), written only when colour reaches the stream.
+static const char SGR_LOCUS[] = "\e[1;37m";
+static const char SGR_SEVERITY[] = "\e[1;31m";
+static const char SGR_CARET[] = "\e[1;32m";
+static const char SGR_RESET[] = "\e[m";
+
+void madc_diagnostic_header(std::ostream &os, const std::string &where,
+			    const char *severity, const std::string &message)
+{
+    const bool colour = madc::colour_reaches(os);
+    os << madc::sgr(colour, SGR_LOCUS) << where << ": "
+       << madc::sgr(colour, SGR_SEVERITY) << severity << ':'
+       << madc::sgr(colour, SGR_LOCUS) << ' ' << message
+       << madc::sgr(colour, SGR_RESET) << std::endl;
+}
+
 // Shared display tail for a diagnostic source echo: the offending line and a
 // caret under the column, truncated to the terminal width — one formatter for
 // both the live-Source echo and the reread-from-disk echo. `col` is a 1-based
@@ -11134,10 +11153,13 @@ void show_error_source_line(const std::string &ln, int col, std::ostream &os,
     std::vector<size_t> screen;
     madc::dis::istring shown = madc::line_layout(ln, 0, screen);
     // `^` then a `~` for each further screen column the token covers.
-    auto mark = [](const std::vector<size_t> &cols, size_t from, size_t to) {
+    const bool colour = madc::colour_reaches(os);
+    auto mark = [colour](const std::vector<size_t> &cols, size_t from,
+			 size_t to) {
 	size_t width = to > from ? cols[to] - cols[from] : 0;
-	return std::string("\e[1;32m^")
-	       + std::string(width > 1 ? width - 1 : 0, '~') + "\e[m";
+	return std::string(madc::sgr(colour, SGR_CARET)) + '^'
+	       + std::string(width > 1 ? width - 1 : 0, '~')
+	       + madc::sgr(colour, SGR_RESET);
     };
 
     if ( screen.back() + 5 > term_columns )
@@ -11199,9 +11221,10 @@ int throwbuf::sync()
 	const char *tok_file = (_at.file && *_at.file) ? _at.file : NULL;
 	const char *fname = tok_file ? tok_file
 			  : (_src ? _src->fname() : "???");
-	cerr << ANSI_WHITE << fname << ':' << _at.line << ':'
-	     << madc_diag_screen_column(_src, fname, _at.line, _at.column)
-	     << ": \e[1;31merror:\e[1;37m " << str() << ANSI_RESET << endl;
+	std::ostringstream where;
+	where << fname << ':' << _at.line << ':'
+	      << madc_diag_screen_column(_src, fname, _at.line, _at.column);
+	madc_diagnostic_header(cerr, where.str(), "error", str());
 	if ( _src && (!tok_file || strcmp(tok_file, _src->fname()) == 0) )
 	    _src->showerror(_at.line, _at.column, cerr, _at.end_line,
 			    _at.end_column);
@@ -11212,13 +11235,14 @@ int throwbuf::sync()
     else
     if ( _src )
     {
-	cerr << ANSI_WHITE << _src->fname() << ':' << _src->line() << ':' << _src->column()
-	     << ": \e[1;31merror:\e[1;37m " << str() << ANSI_RESET << endl;
+	std::ostringstream where;
+	where << _src->fname() << ':' << _src->line() << ':' << _src->column();
+	madc_diagnostic_header(cerr, where.str(), "error", str());
 	_src->showerror();
     }
     else
     {
-	cerr << ANSI_WHITE << ": \e[1;31merror:\e[1;37m " << str() << ANSI_RESET << endl;
+	madc_diagnostic_header(cerr, "", "error", str());
     }
     throw std::exception();
     return -1;

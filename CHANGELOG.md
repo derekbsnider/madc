@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### Diagnostics are coloured only where colour reaches the terminal
+
+madc's diagnostics now carry colour only when they reach a terminal that shows
+it, matching gcc's `-fdiagnostics-color=auto` (split arc Phase 0.5). Running
+`madc file.c 2> log`, piping the output, an IDE pane, or an embedding's captured
+stream all get plain text — previously the SGR escapes were written to every
+stream unconditionally. `NO_COLOR` (set and non-empty) turns colour off even on
+a terminal, `TERM=dumb` shows none, and on Windows a console is switched to VT
+mode so the escapes display.
+
+New options follow gcc's spelling: `-fdiagnostics-color[=auto|always|never]`
+(the bare flag means `always`) and `-fno-diagnostics-color`. An unknown value is
+refused: `Unknown -fdiagnostics-color= value: yes (auto, always, never)`.
+
+As a consequence, madcide's REPL tab — whose backend writes to a pipe — now
+shows diagnostics uncoloured.
+
 ### Windows `madc` and `madc -i` run the session in a crash-isolated backend
 
 On Windows, `madc` and `madc -i` now run the interactive session in a backend
