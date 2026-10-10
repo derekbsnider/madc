@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### `madc -i` gains `%std` and `%reset`
+
+The interactive session now answers `%std` and `%reset` (split arc 1B.7). `%std`
+with no name prints the standard in force by its `--std=` spelling (`c17`,
+`gnu++20`, `madc`); `%std NAME` under a different standard is a fresh session
+under NAME, the same one changes nothing, and an unknown NAME is refused before
+anything restarts. `%reset` is a fresh session under the same standard, nothing
+printed, as IPython's `%reset -f`. A fresh session is the host's, so a host that
+cannot restart — `madc` without `-i` — refuses both, as `%run` is refused;
+`madc -i` and madcide's REPL pane honor them, restarting the backend (under
+NAME's standard for `%std`). After the standard changes, the REPL re-keys its
+prompt and the terminal loop reloads its history ring for the new language, as
+each of Julia's modes recalls its own.
+
+The `--std=` spelling now has one reader, `Program::standard_of_spelling` (the
+standard a word names and whether it is the GNU dialect — `gnu17` is C17 plus
+GNU extensions, as gcc reads it — no Program changed), and a writer,
+`Program::standard_spelling` (`c17`, `gnu17`, `c++20`, `gnu++20`, `madc`);
+`set_language_standard` reads through the owner.
+
 ### `madc -i` gains `%history`, and the REPL history store gets one owner
 
 The interactive session now answers `%history` (split arc 1B.7): plain

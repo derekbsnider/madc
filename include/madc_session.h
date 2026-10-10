@@ -214,7 +214,10 @@ public:
     // the host hands FILE's text (an open buffer's) to build_file. %open's
     // and %edit's is FILE, then the line when one is named: an IDE opens
     // its editor there; the terminal runs madc::run_terminal_editor. %quit's payload has no argv;
-    // a host that honors no payloads reads %quit from ended().
+    // a host that honors no payloads reads %quit from ended(). %reset's
+    // (`reset`, no argv) and %std NAME's (`standard`, argv: NAME as `--std=`
+    // spells it) ask for a FRESH session, which only such a host can start;
+    // any other host refuses them, as %run.
     madc::session_payload payload() const { return payload_kind; }
     const std::vector<std::string> &payload_argv() const { return payload_args; }
     // The `command` payload's row code (a host row's, add_host_command).
@@ -284,6 +287,8 @@ private:
     bool open_in_editor(const std::string &path, int line, const std::string &name);
     bool quit_command(const std::string &argument, const std::string &name);
     bool history_command(const std::string &argument, const std::string &name);
+    bool reset_command(const std::string &argument, const std::string &name);
+    bool std_command(const std::string &argument, const std::string &name);
     // A session unit (an entry, a loaded file) defines a function NAME.
     bool defines_function(const std::string &name);
     // A file command's file, once it opens: the payload `kind` for a host

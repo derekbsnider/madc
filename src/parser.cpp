@@ -24920,33 +24920,57 @@ bool Program::standard_of_canonical_name(const char *name, LanguageStd &out)
 	return false;
 }
 
-bool Program::set_language_standard(const madc::dis::istring &standard)
+bool Program::standard_of_spelling(const madc::dis::istring &spelling,
+				   LanguageStd &std, bool &gnu)
 {
     // GNU dialects map onto their base standard with the gnu_dialect
     // modifier (gcc parity: -std=gnu17 = C17 + GNU extensions, no
     // __STRICT_ANSI__; plain gcc defaults to gnu17, plain g++ to gnu++17).
-    if ( standard.compare(0, 5, "gnu++") == 0 )
+    if ( spelling.compare(0, 5, "gnu++") == 0 )
     {
-	if ( !set_language_standard("c++" + standard.substr(5)) )
+	bool base_gnu;
+	if ( !standard_of_spelling("c++" + spelling.substr(5), std, base_gnu) )
 	    return false;
-	gnu_dialect = true;
+	gnu = true;
 	return true;
     }
-    if ( standard.compare(0, 3, "gnu") == 0 )
+    if ( spelling.compare(0, 3, "gnu") == 0 )
     {
-	if ( !set_language_standard("c" + standard.substr(3)) )
+	bool base_gnu;
+	if ( !standard_of_spelling("c" + spelling.substr(3), std, base_gnu) )
 	    return false;
-	gnu_dialect = true;
+	gnu = true;
 	return true;
     }
-    gnu_dialect = false;
     for ( const LanguageStdRow &row : kLanguageStdTable )
-	if ( standard == row.name )
+	if ( spelling == row.name )
 	{
-	    language_std = row.std;
+	    std = row.std;
+	    gnu = false;
 	    return true;
 	}
     return false;
+}
+
+std::string Program::standard_spelling(LanguageStd std, bool gnu)
+{
+    std::string name = standard_canonical_name(std);
+    if ( gnu && name.compare(0, 3, "c++") == 0 )
+	return "gnu++" + name.substr(3);
+    if ( gnu && !name.empty() && name[0] == 'c' )
+	return "gnu" + name.substr(1);
+    return name;
+}
+
+bool Program::set_language_standard(const madc::dis::istring &standard)
+{
+    LanguageStd std;
+    bool gnu;
+    if ( !standard_of_spelling(standard, std, gnu) )
+	return false;
+    language_std = std;
+    gnu_dialect = gnu;
+    return true;
 }
 
 bool Program::set_language_standard_option(const madc::dis::istring &arg)

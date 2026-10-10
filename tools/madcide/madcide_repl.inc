@@ -348,9 +348,13 @@ void repl_reply(long w, long es, var &r)
 	    return;
 	bool taken = r["state"] == madc::offer_state::taken;
 	bool quits = taken && r["payload"] == madc::session_payload::quit;
+	// %reset and %std NAME (split arc 1B.7): a fresh session — the pane's
+	// restart, and its language change under NAME.
+	bool resets = taken && r["payload"] == madc::session_payload::reset;
+	bool restd = taken && r["payload"] == madc::session_payload::standard;
 	// A file command's payload keeps the pane busy into its file's load
 	// (repl_load_file sets the load's seq), so it never reads idle between.
-	bool files = taken && !quits
+	bool files = taken && !quits && !resets && !restd
 		     && !(r["payload"] == madc::session_payload::none);
 	if ( !files )
 	    ui::set(w, es, "replbusy", 0);
@@ -382,6 +386,21 @@ void repl_reply(long w, long es, var &r)
 	    // one, as when a backend ends (Thonny's exit()).
 	    if ( repl_restart(w, es, active_doc(w, es, 0)) )
 		repl_feed(w, es, "[the session ended; a new one started]\n");
+	    return;
+	}
+	if ( resets )
+	{
+	    repl_restart(w, es, active_doc(w, es, 0));
+	    return;
+	}
+	if ( restd )
+	{
+	    var argv = r["argv"];
+	    if ( php::count(argv) > 0 )
+	    {
+		var spelling = argv[0];
+		lang_command(w, es, spelling.c_str());
+	    }
 	    return;
 	}
 	if ( files && !repl_run_payload(w, es, r) )

@@ -151,6 +151,8 @@ const PayloadRow payload_rows[] = {
     { "call", madc::session_payload::call },
     { "open", madc::session_payload::open },
     { "quit", madc::session_payload::quit },
+    { "reset", madc::session_payload::reset },
+    { "std", madc::session_payload::standard },
 };
 
 const char *payload_name(madc::session_payload p)
@@ -1281,6 +1283,21 @@ bool BackendSession::honor(const SessionClient::Reply &reply)
 	has_ended = true;
 	end_status = 0;
 	return true;
+    }
+    if ( reply.payload == madc::session_payload::reset
+	 || reply.payload == madc::session_payload::standard )
+    {
+	// %reset, %std NAME (split arc 1B.7): a fresh session, under NAME's
+	// standard for %std; later restarts keep it.
+	const bool started = (reply.payload == madc::session_payload::reset
+			      || reply.argv.empty())
+	    ? client.restart() : client.restart("--std=" + reply.argv[0]);
+	if ( started )
+	    return true;
+	err << "madc: " << client.last_error() << std::endl;
+	has_ended = true;
+	end_status = 1;
+	return false;
     }
     if ( reply.payload == madc::session_payload::none || reply.argv.empty() )
 	return true;

@@ -6505,6 +6505,16 @@ public:
     }
     bool set_language_standard(const madc::dis::istring &standard);
     bool set_language_standard_option(const madc::dis::istring &arg);
+    // The ONE reader of a `--std=` spelling (without the prefix): the
+    // standard it names and whether it is the GNU dialect (gnu17 is C17 +
+    // GNU extensions, as gcc reads it), no Program changed. False for a word
+    // no standard has. set_language_standard and %std (split arc 1B.7) read
+    // through it.
+    static bool standard_of_spelling(const madc::dis::istring &spelling,
+				     LanguageStd &std, bool &gnu);
+    // The spelling `--std=` takes for a standard and dialect: c17, gnu17,
+    // c++20, gnu++20, madc. %std prints it.
+    static std::string standard_spelling(LanguageStd std, bool gnu);
     // The standard a FILE gets when nothing named one (split arc 1A.4) — THE
     // one rule, for the CLI's source, a --project TU and the editor's parse:
     // madc::file_kind_default_standard's answer for the kind, a C or C++

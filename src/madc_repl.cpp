@@ -160,18 +160,25 @@ int madc_repl_edit(ReplSession &session, line_target &term,
 		   std::ostream &out, const std::string &history_path,
 		   const repl_colon &colon)
 {
-    const std::string prompt = entry_prompt(session);
-    const std::string continuation(prompt.size(), ' ');
-    line_edit ed(prompt);
     // History (§41.7a slice 2): the file's entries in this language, then
     // each entry the session takes, a refused one included, as Julia keeps
     // an input that failed. A record's mode is the prompt's standard (D22).
-    // The store is madc_history.h's.
+    // The store is madc_history.h's. A session under another standard
+    // (%std, split arc 1B.7) re-keys the prompt and the ring: each language
+    // recalls its own.
+    std::string mode, prompt, continuation;
     line_history ring;
-    const std::string mode = session.standard_name();
-    const std::vector<std::string> kept = madc::history_entries(history_path, mode);
-    for ( const std::string &entry : kept )
-	ring.add(entry);
+    auto rekey = [&]() {
+	mode = session.standard_name();
+	prompt = entry_prompt(session);
+	continuation.assign(prompt.size(), ' ');
+	ring = line_history();
+	const std::vector<std::string> kept = madc::history_entries(history_path, mode);
+	for ( const std::string &entry : kept )
+	    ring.add(entry);
+    };
+    rekey();
+    line_edit ed(prompt);
     ed.set_history(&ring);
     auto remember = [&](const std::string &entry) {
 	if ( ring.add(entry) )
@@ -194,6 +201,11 @@ int madc_repl_edit(ReplSession &session, line_target &term,
 	// the painter writes around the streams.
 	out.flush();
 	fflush(stdout);
+	if ( session.standard_name() != mode )
+	{
+	    rekey();
+	    ed.set_prompt(colon_text_mode ? continuation : prompt);
+	}
 	size_t cols = 0;
 	if ( !term.begin(cols) )
 	    return first ? -1 : 1;
@@ -374,14 +386,18 @@ static void reclaim_input(ReplSession &session, std::istream &in)
 int madc_repl_run(ReplSession &session, std::istream &in,
 		  std::ostream &out, bool terminal, const repl_colon &colon)
 {
-    const std::string prompt = entry_prompt(session);
-    const std::string continuation(prompt.size(), ' ');
+    std::string prompt, continuation;	// the standard's, entry by entry (%std)
     std::string pending;		// the entry typed so far
     bool extendable = false;		// pending is an if waiting for else
     std::string line;
     int status = 0;			// a backend's exit(n)
     for (;;)
     {
+	if ( pending.empty() )
+	{
+	    prompt = entry_prompt(session);
+	    continuation.assign(prompt.size(), ' ');
+	}
 	if ( terminal )
 	    out << (pending.empty() ? prompt : continuation) << std::flush;
 	if ( !std::getline(in, line) )

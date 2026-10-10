@@ -87,6 +87,10 @@ const CommandRow command_rows[] = {
     { "history", InteractiveSession::Command::history,
       "%history [OPTIONS]",
       "this session's entries; -l [N] the last N kept, -g TEXT those holding TEXT, -n numbered" },
+    { "reset", InteractiveSession::Command::reset, "%reset",
+      "a fresh session under the same standard: every name is gone" },
+    { "std", InteractiveSession::Command::standard, "%std [NAME]",
+      "the standard in force; NAME (c17, gnu++20, madc): a fresh session under it" },
 };
 
 const size_t command_count = sizeof(command_rows) / sizeof(command_rows[0]);
@@ -738,6 +742,10 @@ bool InteractiveSession::run_command(const std::string &text,
 	    return quit_command(command_argument(text, c), name);
 	case Command::history:
 	    return history_command(command_argument(text, c), name);
+	case Command::reset:
+	    return reset_command(command_argument(text, c), name);
+	case Command::standard:
+	    return std_command(command_argument(text, c), name);
 	case Command::none:		// no row names it
 	    break;
     }
@@ -1033,6 +1041,67 @@ bool InteractiveSession::history_command(const std::string &argument,
 		command_output += "      ";	// under the first line's text
 	}
     }
+    return true;
+}
+
+// `%reset` (split arc 1B.7, design decision 3; IPython's %reset -f): a
+// fresh session under the same standard, which only the host can start —
+// the `reset` payload, as %run's fresh session is (D16).
+bool InteractiveSession::reset_command(const std::string &argument,
+				       const std::string &name)
+{
+    if ( argument.find_first_not_of(" \t\r") != std::string::npos )
+    {
+	command_error("%reset takes no argument", name);
+	return false;
+    }
+    if ( !payload_host )
+    {
+	command_error("%reset starts a fresh session, which this host cannot", name);
+	return false;
+    }
+    payload_kind = madc::session_payload::reset;
+    return true;
+}
+
+// `%std [NAME]` (design decision 4; plan D4: switching mid-session is
+// unsafe): without NAME, the standard in force as `--std=` spells it; with
+// one, a fresh session under it — the `standard` payload, argv NAME — when
+// it differs, nothing when it does not. An unknown NAME is refused before
+// anything restarts.
+bool InteractiveSession::std_command(const std::string &argument,
+				     const std::string &name)
+{
+    static const char blanks[] = " \t\r";
+    const size_t b = argument.find_first_not_of(blanks);
+    if ( b == std::string::npos )
+    {
+	command_output = Program::standard_spelling(prog->language_std,
+						    prog->gnu_dialect);
+	return true;
+    }
+    std::string spelling = argument.substr(b, argument.find_last_not_of(blanks) + 1 - b);
+    const std::string option("--std=");
+    if ( spelling.compare(0, option.size(), option) == 0 )
+	spelling.erase(0, option.size());
+    Program::LanguageStd std;
+    bool gnu;
+    if ( !Program::standard_of_spelling(spelling, std, gnu) )
+    {
+	command_error("%std: no standard is spelled '" + spelling
+		      + "' (c17, gnu++20, madc: as --std= takes them)", name);
+	return false;
+    }
+    if ( std == prog->language_std && gnu == prog->gnu_dialect )
+	return true;
+    if ( !payload_host )
+    {
+	command_error("%std NAME starts a fresh session, which this host cannot",
+		      name);
+	return false;
+    }
+    payload_kind = madc::session_payload::standard;
+    payload_args.assign(1, spelling);
     return true;
 }
 

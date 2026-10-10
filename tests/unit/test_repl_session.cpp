@@ -2993,3 +2993,56 @@ TEST_CASE("%history: the session's entries, and the store's by -l and -g (1B.7)"
     CHECK(s.shown().find("  11: %history -l\n  12: %history -n") != std::string::npos);
     std::remove(path.c_str());
 }
+
+// %std and %reset (split arc 1B.7, design decisions 3-4): the one spelling
+// reader and writer; %std prints the standard as --std= spells it; a NAME
+// in force changes nothing; an unknown NAME is refused before anything
+// restarts; a fresh session is the host's (the `reset` / `standard`
+// payloads), and a host that honors no payloads refuses both.
+TEST_CASE("%std and %reset: the spelling, the refusals, the payloads (1B.7)")
+{
+    Program::LanguageStd std;
+    bool gnu = false;
+    REQUIRE(Program::standard_of_spelling("gnu++17", std, gnu));
+    CHECK(std == Program::STD_CPP17);
+    CHECK(gnu);
+    REQUIRE(Program::standard_of_spelling("c11", std, gnu));
+    CHECK(std == Program::STD_C11);
+    CHECK_FALSE(gnu);
+    CHECK_FALSE(Program::standard_of_spelling("c18x", std, gnu));
+    CHECK(Program::standard_spelling(Program::STD_CPP20, true) == "gnu++20");
+    CHECK(Program::standard_spelling(Program::STD_C17, true) == "gnu17");
+    CHECK(Program::standard_spelling(Program::STD_C17, false) == "c17");
+    CHECK(Program::standard_spelling(Program::STD_MADC, false) == "madc");
+
+    InteractiveSession s;
+    REQUIRE(s.begin("--std=gnu17"));
+    std::ostringstream err;
+    s.program().error_stream = &err;
+    REQUIRE(s.submit("%std"));
+    CHECK(s.shown() == "gnu17");
+    REQUIRE(s.submit("%std gnu17"));		// in force: nothing to do
+    CHECK(s.payload() == madc::session_payload::none);
+    CHECK_FALSE(s.submit("%std c++20"));
+    CHECK(err.str().find("%std NAME starts a fresh session, which this host cannot")
+	  != std::string::npos);
+    CHECK_FALSE(s.submit("%std c18x"));
+    CHECK(err.str().find("%std: no standard is spelled 'c18x'") != std::string::npos);
+    CHECK_FALSE(s.submit("%reset"));
+    CHECK(err.str().find("%reset starts a fresh session, which this host cannot")
+	  != std::string::npos);
+
+    s.host_honors_payloads(true);
+    REQUIRE(s.submit("%reset"));
+    CHECK(s.payload() == madc::session_payload::reset);
+    CHECK(s.payload_argv().empty());
+    CHECK_FALSE(s.submit("%reset now"));
+    CHECK(err.str().find("%reset takes no argument") != std::string::npos);
+    REQUIRE(s.submit("%std  --std=c++20 "));
+    CHECK(s.payload() == madc::session_payload::standard);
+    REQUIRE(s.payload_argv().size() == 1u);
+    CHECK(s.payload_argv()[0] == "c++20");
+    REQUIRE(s.submit("%std c17"));		// the dialect differs: a switch
+    CHECK(s.payload() == madc::session_payload::standard);
+    CHECK(s.payload_argv()[0] == "c17");
+}

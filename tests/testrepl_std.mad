@@ -1,0 +1,7 @@
+// %std and %reset at madc -i (split arc 1B.7, design
+// 2026-10-10-history-std-reset-design.md decisions 3-5): %std prints the
+// standard in force; %std NAME is a fresh session under NAME (the earlier
+// `a` is gone, so defining it again is no redefinition); %reset is a fresh
+// session that keeps the standard (__cplusplus still answers).
+#include <stdio.h>
+int main(void) { printf("ready\n"); return 0; }
