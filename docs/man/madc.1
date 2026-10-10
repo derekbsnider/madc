@@ -54,10 +54,17 @@ Preprocess only (print the expanded source).
 .BI \-\-std= std
 Language standard:
 .BR c89 / c90 / c99 / c11 / c17 / c23
-(\fBc\fR = c11), \fBc++\fR\fINN\fR, or \fBmadc\fR (the default dialect;
-C++ keywords reserved). A
+(\fBc\fR = c11), \fBgnu\fR\fINN\fR, \fBc++\fR\fINN\fR, \fBgnu++\fR\fINN\fR,
+or \fBmadc\fR (the dialect; C++ keywords reserved). Without it the source's
+extension decides, as gcc and g++ do:
 .I .c
-translation unit under \fB\-\-project\fR defaults to C mode.
+is gnu17,
+.IR .cpp " / " .cc " / " .cxx
+gnu++17,
+.I .mad
+madc; a source with no recognised extension takes the madc.ini
+.B std
+key, else madc. A \fB\-\-project\fR translation unit follows the same rule.
 .TP
 .BI \-stdlib= lib
 C++ standard library flavor, in clang's spelling:
@@ -177,6 +184,19 @@ Print input/token/timing stats to stderr after the run.
 .BR \-v ", " \-\-verbose
 Verbose / debug output.
 .TP
+\fB\-fdiagnostics\-color\fR[\fB=\fIwhen\fR], \fB\-fno\-diagnostics\-color\fR
+When diagnostics are coloured, in gcc's spelling:
+.B auto
+(the default) colours only a terminal \(em never a redirected or piped
+stream, an IDE pane or an embedding's capture \(em and never when
+.B NO_COLOR
+is set;
+.B always
+and
+.B never
+decide outright. The bare flag is
+.BR always .
+.TP
 .BR \-h ", " \-? ", " \-\-help
 Show the full option list, including the frozen-forest (compile-once)
 and dump/diagnostic options not listed here.
@@ -211,6 +231,10 @@ image when madc is linked shared, the \fI<exe>\fB.forest\fR and
 \fI<lib>\fB.forest\fR sidecars, this path, and finally the
 .B forest
 key of a configuration file.
+.TP
+.B NO_COLOR
+Set and non-empty: no colour in diagnostics, even on a terminal, unless
+\fB\-fdiagnostics\-color=always\fR asks for it (no-color.org).
 .TP
 .BI XDG_CONFIG_HOME= dir
 Where the configuration-file search looks for the per-user file
