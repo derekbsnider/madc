@@ -230,6 +230,9 @@ public:
     // sent now and after every start, as the command rows are. "" names
     // none. A backend no host named one for reads the default store.
     void set_history_file(const std::string &path);
+    // The project %project opened (split arc 1B.8): the backend's own now;
+    // sent after every start, so a fresh session keeps it. "" none.
+    void set_project(const std::string &path);
 
     // Readiness, for a select (plan §41.9a slice 2). pending(): 1 when a
     // reply or output waits (or the backend's end, which poll() reports), 0
@@ -253,6 +256,7 @@ private:
     bool send(const std::string &line);
     bool send_host_commands();
     bool send_history_file();
+    bool send_project();
     bool take_line(std::string &line);
     void read_output(std::string &output, int timeout_ms);
     int stopped(Reply &reply, std::string &output);
@@ -280,6 +284,7 @@ private:
     madc::value host_rows;		// the host's REPL command rows
     bool history_named;			// set_history_file was called
     std::string history_path;		// its store ("" none)
+    std::string project_path;		// the session's project ("" none)
     bool inherit_stdio;			// the backend's stdio is the host's
     std::string returned_stdin;		// handed back by replies, not yet taken
     madc::SessionInterruptor interruptor;	// D8: reaches the backend

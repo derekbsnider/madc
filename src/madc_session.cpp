@@ -43,6 +43,7 @@
 #include "madcdis/process.h"	// the terminal's editor (%open, %edit)
 #include "madc_history.h"	// %history's store (1B.7)
 #include "madc_posix_io.h"	// host_path_stem / drop_extension: %call's and %build's names
+#include "madc_project.h"	// %project: the manifest's reader and writer
 
 // The command registry (plan §41.8a, D13/D24; the modes and the extension
 // point: split arc 1A.2, docs/plans/2026-10-09-command-registry-design.md):
@@ -96,6 +97,8 @@ const CommandRow command_rows[] = {
       "FILE's diagnostics (the current buffer's when none); nothing runs" },
     { "args", InteractiveSession::Command::args, "%args [ARGS]",
       "the arguments %run gives the current buffer's program; -- clears them" },
+    { "project", InteractiveSession::Command::project, "%project [CMD ARGS]",
+      "the project: MANIFEST opens it (created when missing); add FILE..., del FILE..., check, build [-o OUT], run [ARGS], close" },
 };
 
 const size_t command_count = sizeof(command_rows) / sizeof(command_rows[0]);
@@ -755,6 +758,8 @@ bool InteractiveSession::run_command(const std::string &text,
 	    return check_command(command_argument(text, c), name);
 	case Command::args:
 	    return args_command(command_argument(text, c), name);
+	case Command::project:
+	    return project_command(command_argument(text, c), name);
 	case Command::none:		// no row names it
 	    break;
     }
@@ -1466,6 +1471,32 @@ bool InteractiveSession::args_command(const std::string &argument,
     return true;
 }
 
+namespace {
+
+// "1 TU", "N TUs" — the counts a summary prints.
+std::string counted(size_t n, const char *one, const char *many)
+{
+    return std::to_string(n) + " " + (n == 1 ? one : many);
+}
+
+// The diagnostics recorded from `first` on, counted: "N errors, M
+// warnings" (%check's and %project check's), "" when there are none.
+std::string problem_counts(const Program &prog, size_t first)
+{
+    size_t errors = 0, warnings = 0;
+    for ( size_t i = first; i < prog.diagnostics.size(); ++i )
+	if ( prog.diagnostics[i].is_error() )
+	    ++errors;
+	else
+	    ++warnings;
+    if ( errors == 0 && warnings == 0 )
+	return std::string();
+    return counted(errors, "error", "errors") + ", "
+	+ counted(warnings, "warning", "warnings");
+}
+
+} // namespace
+
 bool InteractiveSession::check_text(const std::string &path,
 				    const std::string *text)
 {
@@ -1497,19 +1528,282 @@ bool InteractiveSession::check_text(const std::string &path,
 	render_pending_diagnostics();
 	return false;
     }
-    unsigned errors = 0, warnings = 0;
-    for ( const Program::Diagnostic &d : prog->diagnostics )
-	if ( d.is_error() )
-	    ++errors;
-	else
-	    ++warnings;
+    const std::string counts = problem_counts(*prog, 0);
     render_pending_diagnostics();
-    if ( errors == 0 && warnings == 0 )
-	command_output = path + ": clean";
-    else
-	command_output = path + ": " + std::to_string(errors)
-	    + (errors == 1 ? " error, " : " errors, ") + std::to_string(warnings)
-	    + (warnings == 1 ? " warning" : " warnings");
+    command_output = path + ": " + (counts.empty() ? std::string("clean") : counts);
+    return true;
+}
+
+// `%project [CMD ARGS]` (split arc 1B.8, design decision 6): the session's
+// project — its manifest read and written through the manifest's owners
+// (madc_project.h), checked, built and run through the project lanes
+// (madc_project_open / _build / _run). The verb is converted once, here.
+namespace {
+
+enum class ProjectVerb : unsigned char { show, open, add, del, check, build, run, close };
+
+struct ProjectVerbRow { const char *name; ProjectVerb verb; };
+const ProjectVerbRow project_verb_rows[] = {
+    { "add", ProjectVerb::add },
+    { "del", ProjectVerb::del },
+    { "check", ProjectVerb::check },
+    { "build", ProjectVerb::build },
+    { "run", ProjectVerb::run },
+    { "close", ProjectVerb::close },
+};
+
+// The verb a command's first word names; any other word is a MANIFEST.
+ProjectVerb project_verb_of(const std::vector<std::string> &words)
+{
+    if ( words.empty() )
+	return ProjectVerb::show;
+    for ( const ProjectVerbRow &r : project_verb_rows )
+	if ( words[0] == r.name )
+	    return r.verb;
+    return ProjectVerb::open;
+}
+
+} // namespace
+
+bool InteractiveSession::project_command(const std::string &argument,
+					 const std::string &name)
+{
+    std::vector<std::string> words;
+    if ( !ns_common::shell_words(argument, words) )
+    {
+	command_error("%project: no closing quotation, or a backslash at the end",
+		      name);
+	return false;
+    }
+    showed_command = true;
+    command_output.clear();
+    const ProjectVerb verb = project_verb_of(words);
+    if ( verb != ProjectVerb::show && verb != ProjectVerb::open
+	 && verb != ProjectVerb::close && project_file.empty() )
+    {
+	command_error("%project " + words[0] + ": no project is open"
+		      " (%project MANIFEST opens one)", name);
+	return false;
+    }
+    std::string err;
+    switch ( verb )
+    {
+	case ProjectVerb::show:
+	    return project_show(name);
+	case ProjectVerb::open:
+	    if ( words.size() > 1 )
+	    {
+		command_error("%project takes one MANIFEST, or add, del, check,"
+			      " build, run, close", name);
+		return false;
+	    }
+	    if ( madc::detail::host_path_type_of(words[0])
+		     == madc::detail::host_path_type::none
+		 && !project_manifest_create(words[0], err) )
+	    {
+		command_error("%project: " + err, name);
+		return false;
+	    }
+	    {
+		ProjectManifest m;
+		if ( !read_project_manifest(words[0], m, err) )
+		{
+		    command_error("%project: " + err, name);
+		    return false;
+		}
+	    }
+	    project_file = madc::detail::canonical_path_for_compare(words[0]);
+	    project_changed();
+	    return project_show(name);
+	case ProjectVerb::close:
+	    if ( words.size() > 1 )
+	    {
+		command_error("%project close takes nothing", name);
+		return false;
+	    }
+	    project_file.clear();
+	    project_changed();
+	    return true;
+	case ProjectVerb::add:
+	case ProjectVerb::del:
+	    if ( words.size() < 2 )
+	    {
+		command_error("%project " + words[0] + " takes FILE...", name);
+		return false;
+	    }
+	    for ( size_t i = 1; i < words.size(); ++i )
+	    {
+		const bool ok = verb == ProjectVerb::add
+		    ? project_manifest_add_tu(project_file, words[i], err)
+		    : project_manifest_remove_tu(project_file, words[i], err);
+		if ( !ok )
+		{
+		    if ( i > 1 )
+			project_changed();	// the earlier FILEs stay
+		    command_error("%project " + words[0] + ": " + err, name);
+		    return false;
+		}
+	    }
+	    project_changed();
+	    return true;
+	case ProjectVerb::check:
+	    if ( words.size() > 1 )
+	    {
+		command_error("%project check takes nothing", name);
+		return false;
+	    }
+	    return project_check(name);
+	case ProjectVerb::build:
+	{
+	    std::string out;
+	    if ( words.size() == 3 && words[1] == "-o" )
+		out = words[2];
+	    else if ( words.size() != 1 )
+	    {
+		command_error("%project build takes -o OUT", name);
+		return false;
+	    }
+	    return project_build(out, name);
+	}
+	case ProjectVerb::run:
+	    return project_run(std::vector<std::string>(words.begin() + 1,
+							words.end()), name);
+    }
+    return false;
+}
+
+// The open project's manifest changed or closed: a host that honors
+// payloads keeps it across restarts (and an IDE opens it), the `project`
+// payload.
+void InteractiveSession::project_changed()
+{
+    if ( !payload_host )
+	return;
+    payload_kind = madc::session_payload::project;
+    payload_args.assign(1, project_file);
+}
+
+// `%project`: the manifest, its TUs, entry, kind and output.
+bool InteractiveSession::project_show(const std::string &name)
+{
+    if ( project_file.empty() )
+    {
+	command_output = "no project";
+	return true;
+    }
+    ProjectManifest m;
+    std::string err;
+    if ( !read_project_manifest(project_file, m, err) )
+    {
+	command_error("%project: " + err, name);
+	return false;
+    }
+    std::string text = project_file + ": " + counted(m.tus.size(), "TU", "TUs")
+	+ ", entry " + m.entry + ", " + project_kind_name(m.kind);
+    if ( !m.output_name.empty() )
+	text += ", output " + m.output_name;
+    for ( const ProjectTU &tu : m.tus )
+	text += "\n  " + tu.file;
+    command_output = text;
+    return true;
+}
+
+// `%project check`: every TU's diagnostics, each TU parsed with its
+// manifest options (project_open's handles); shown, a count per TU with
+// problems, else "MANIFEST: clean".
+bool InteractiveSession::project_check(const std::string &name)
+{
+    prog->clear_diagnostics();		// the check's rows only
+    int64_t h = madc_project_open(&project_file);
+    if ( h == 0 )
+    {
+	ProjectManifest m;
+	std::string err;
+	read_project_manifest(project_file, m, err);
+	command_error("%project check: " + (err.empty()
+		      ? std::string("no parse of the project opened") : err), name);
+	return false;
+    }
+    madc::value tus;
+    madc_project_tus(&tus, h);
+    std::string text;
+    if ( tus.is_array() )
+	for ( const madc::value &row : tus.as_array() )
+	{
+	    if ( !row.is_object() )
+		continue;
+	    const std::map<std::string, madc::value> &f = row.as_object();
+	    std::map<std::string, madc::value>::const_iterator it;
+	    const std::string file = (it = f.find("file")) == f.end()
+				   ? std::string() : std::string(it->second.as_string());
+	    const int64_t th = (it = f.find("handle")) == f.end()
+			     ? 0 : it->second.as_integer();
+	    const size_t first = prog->diagnostics.size();
+	    if ( th == 0 )
+		prog->add_diagnostic(Program::DiagnosticSeverity::error,
+				     Program::DiagnosticPhase::lexer,
+				     "Failed to open file", prog->intern_file(file),
+				     0, 0);
+	    else
+	    {
+		madc::value rows;
+		madc_parse_diagnostics(&rows, th);
+		record_diagnostic_rows(*prog, rows);
+	    }
+	    const std::string counts = problem_counts(*prog, first);
+	    if ( !counts.empty() )
+		text += (text.empty() ? "" : "\n") + file + ": " + counts;
+	}
+    madc_project_close(h);
+    render_pending_diagnostics();
+    command_output = text.empty() ? project_file + ": clean" : text;
+    return true;
+}
+
+// `%project build [-o OUT]`: the --project native lane, to OUT (default:
+// project_default_output).
+bool InteractiveSession::project_build(const std::string &out_named,
+				       const std::string &name)
+{
+    std::string out = out_named;
+    if ( out.empty() )
+    {
+	ProjectManifest m;
+	std::string err;
+	if ( !read_project_manifest(project_file, m, err) )
+	{
+	    command_error("%project build: " + err, name);
+	    return false;
+	}
+	out = project_default_output(project_file, m);
+    }
+    prog->clear_diagnostics();		// the build's rows only
+    std::string kind("exe");
+    madc::value rows;
+    const bool ok = madc_project_build(&rows, &project_file, &kind, &out);
+    record_diagnostic_rows(*prog, rows);
+    render_pending_diagnostics();
+    if ( ok )
+	command_output = "built " + out;
+    return ok;
+}
+
+// `%project run [ARGS]`: the --project JIT lane in a child, its main given
+// ARGS; shown, a status other than 0.
+bool InteractiveSession::project_run(const std::vector<std::string> &args,
+				     const std::string &name)
+{
+    std::vector<std::string> argv(args);
+    const int64_t rc = madc_project_run(&project_file, &argv);
+    if ( rc < 0 )
+    {
+	command_error(rc == -2 ? "%project run: the project has no TUs"
+		      : rc == -1 ? "%project run: the manifest cannot be read"
+		      : "%project run: the program did not start", name);
+	return false;
+    }
+    if ( rc != 0 )
+	command_output = "exit " + std::to_string(rc);
     return true;
 }
 

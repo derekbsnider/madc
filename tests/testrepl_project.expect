@@ -1,0 +1,6 @@
+no project
+testrepl_project.prj.json: 1 TU, entry main, console
+testrepl_project.prj.json: clean
+argc=3 last=two words helper=40
+testrepl_project.prj.json: 2 TUs, entry main, console
+testrepl_project_b.c

@@ -27,11 +27,13 @@
 #include "madc_crash.h"		// madc_crash_quiet_child
 #include "madc_run_child.h"
 #include "madc_session_client.h"	// madc_session_serve_child: the session kind
+#include "ns_common.h"		// shell_quote / shell_words: the guest's arguments
 #include "madcdis/process.h"	// Process, ProcessOptions
 
 namespace {
 
 const char run_child_variable[] = "MADC_RUN_CHILD";
+const char run_child_args_variable[] = "MADC_RUN_CHILD_ARGS";
 
 // The request's words at the environment boundary — ONE spelling owner,
 // both directions.
@@ -58,12 +60,12 @@ bool run_child_kind_from_name(const std::string &word, MadcRunChildKind &kind)
     return false;
 }
 
-void forget_run_child_variable()
+void forget_run_child_variable(const char *name)
 {
 #ifdef _WIN32
-    _putenv_s(run_child_variable, "");	// the UCRT's unsetenv
+    _putenv_s(name, "");	// the UCRT's unsetenv
 #else
-    unsetenv(run_child_variable);
+    unsetenv(name);
 #endif
 }
 
@@ -71,10 +73,17 @@ void forget_run_child_variable()
 
 std::unique_ptr<madc::Process> madc_run_child_process(
     MadcRunChildKind kind, const std::string &path,
-    madc::ProcessOptions options)
+    madc::ProcessOptions options, const std::vector<std::string> &args)
 {
     options.environment[run_child_variable] =
 	std::string(run_child_kind_name(kind)) + " " + path;
+    if ( !args.empty() )
+    {
+	std::string words;
+	for ( const std::string &a : args )
+	    words += (words.empty() ? "" : " ") + ns_common::shell_quote(a);
+	options.environment[run_child_args_variable] = words;
+    }
     return std::unique_ptr<madc::Process>(new madc::Process(
 	madc::DataSource("exec://" + madc_self_exe_path()), options));
 }
@@ -85,7 +94,14 @@ int64_t madc_serve_run_child(std::string *configured_session)
     if ( !request )
 	return -1;
     const std::string text(request);
-    forget_run_child_variable();
+    forget_run_child_variable(run_child_variable);
+    // The guest's arguments after its argv[0], when the parent named any.
+    std::vector<std::string> args;
+    if ( const char *words = getenv(run_child_args_variable) )
+    {
+	ns_common::shell_words(words, args);
+	forget_run_child_variable(run_child_args_variable);
+    }
     madc_crash_quiet_child();		// the parent reports a crash's status
 
     // "<kind> <path>": the path is the rest of the value (a Windows temp
@@ -101,12 +117,16 @@ int64_t madc_serve_run_child(std::string *configured_session)
 	exit(1);
     }
     std::string path = text.substr(space + 1);
-    char *guest_argv[2] = { &path[0], (char *)0 };	// the CLI's argv[0]
+    std::vector<char *> guest_argv(1, &path[0]);	// the CLI's argv[0]
+    for ( std::string &a : args )
+	guest_argv.push_back(&a[0]);
+    const int guest_argc = (int)guest_argv.size();
+    guest_argv.push_back((char *)0);
     int rc = 1;		// a guest that never ran exits 1
     switch ( kind )
     {
 	case rckFrozen:
-	    rc = madc_cir_execute_frozen(path.c_str(), 1, guest_argv);
+	    rc = madc_cir_execute_frozen(path.c_str(), guest_argc, &guest_argv[0]);
 	    break;
 	case rckProject:
 	{
@@ -118,7 +138,8 @@ int64_t madc_serve_run_child(std::string *configured_session)
 		break;
 	    }
 	    MadcEngine engine;
-	    rc = madc_project_execute(engine, manifest, 1, guest_argv);
+	    rc = madc_project_execute(engine, manifest, guest_argc,
+				      &guest_argv[0]);
 	    break;
 	}
 	case rckSession:

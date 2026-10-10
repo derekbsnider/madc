@@ -30,6 +30,7 @@ thread_local bool madc_verbose = false;
 #include "madc.h"
 #include "madc_session.h"
 #include "madcdis/line_edit.h"	// history_record: a %history store
+#include "ns_common.h"		// shell_quote / shell_words: the run child's words
 #include "../../src/madc_posix_io.h"
 
 #include <cstdio>
@@ -3130,4 +3131,103 @@ TEST_CASE("%build / %run of the current buffer, %args, and an empty buffer's bui
     CHECK_FALSE(s.build_text(src, &empty, src + ".out"));	// no main: not the disk's
     std::remove(src.c_str());
     std::remove((src + ".out").c_str());
+}
+
+// %project (split arc 1B.8, design decision 6): the session's project, its
+// manifest created when missing, written through the manifest's owners,
+// checked per TU with its options and built through the --project native
+// lane (OUT: the manifest's path less ".prj.json"); a payload host gets the
+// `project` payload (argv the manifest, "" when closed) and restores it with
+// set_project. %project run's child is testrepl_project's (a real process).
+TEST_CASE("%project: open (created), add, del, check, build, close, the payload (1B.8)")
+{
+    const std::string dir = "/tmp/madc_repl_project";
+    const std::string manifest = dir + "/p.prj.json";
+    const std::string a = dir + "/a.c", b = dir + "/b.c";
+    std::remove(manifest.c_str());
+    madc::detail::host_path_make_parents(a);
+    {
+	std::ofstream fa(a.c_str());
+	fa << "int helper(void);\nint main(int argc, char **argv) { return argc + helper(); }\n";
+	std::ofstream fb(b.c_str());
+	fb << "int helper(void) { return 40; }\n";
+    }
+    InteractiveSession s;
+    REQUIRE(s.begin("--std=c17"));
+    std::ostringstream err;
+    s.program().error_stream = &err;
+    REQUIRE(s.submit("%project"));
+    CHECK(s.shown() == "no project");
+    CHECK_FALSE(s.submit("%project add " + a));
+    CHECK(err.str().find("%project add: no project is open") != std::string::npos);
+    REQUIRE(s.submit("%project " + manifest));		// created
+    CHECK(s.shown() == manifest + ": 0 TUs, entry main, console");
+    CHECK(s.project() == manifest);
+    REQUIRE(s.submit("%project add " + a + " " + b));
+    REQUIRE(s.submit("%project"));
+    CHECK(s.shown() == manifest + ": 2 TUs, entry main, console\n  " + a + "\n  " + b);
+    REQUIRE(s.submit("%project check"));
+    CHECK(s.shown() == manifest + ": clean");
+    REQUIRE(s.submit("%project build"));
+    CHECK(s.shown() == "built " + dir + "/p");
+    int rc = std::system((dir + "/p x").c_str());
+    CHECK(WEXITSTATUS(rc) == 42);			// argc 2 + helper's 40
+    REQUIRE(s.submit("%project build -o " + dir + "/q"));
+    CHECK(s.shown() == "built " + dir + "/q");
+    {
+	std::ofstream fb(b.c_str());
+	fb << "int helper(void) { return nothing; }\n";
+    }
+    REQUIRE(s.submit("%project check"));
+    CHECK(s.shown() == b + ": 1 error, 0 warnings");
+    CHECK(err.str().find("nothing") != std::string::npos);
+    REQUIRE(s.submit("%project del " + b));
+    CHECK_FALSE(s.submit("%project del " + b));
+    CHECK(err.str().find("not in the project") != std::string::npos);
+    REQUIRE(s.submit("%project"));
+    CHECK(s.shown() == manifest + ": 1 TU, entry main, console\n  " + a);
+    CHECK_FALSE(s.submit("%project close now"));
+    CHECK_FALSE(s.submit("%project a.prj.json b.prj.json"));
+
+    s.host_honors_payloads(true);
+    REQUIRE(s.submit("%project close"));
+    CHECK(s.payload() == madc::session_payload::project);
+    REQUIRE(s.payload_argv().size() == 1u);
+    CHECK(s.payload_argv()[0] == "");
+    CHECK(s.project() == "");
+    REQUIRE(s.submit("%project " + manifest));
+    CHECK(s.payload() == madc::session_payload::project);
+    CHECK(s.payload_argv()[0] == manifest);
+
+    InteractiveSession fresh;				// a host's restore
+    REQUIRE(fresh.begin("--std=c17"));
+    fresh.set_project(manifest);
+    REQUIRE(fresh.submit("%project"));
+    CHECK(fresh.shown() == manifest + ": 1 TU, entry main, console\n  " + a);
+    std::remove((dir + "/p").c_str());
+    std::remove((dir + "/q").c_str());
+    std::remove(a.c_str());
+    std::remove(b.c_str());
+    std::remove(manifest.c_str());
+    std::remove(dir.c_str());
+}
+
+// The run child's argument words (madc_run_child.cpp): shell_quote's
+// spelling reads back through shell_words as the one word (Python's
+// shlex.quote / shlex.split).
+TEST_CASE("shell_quote round-trips through shell_words")
+{
+    const char *words[] = { "plain", "", "two words", "it's", "a\"b", "back\\slash",
+			    "tab\there", "$HOME", "-o", "x=1,y=2" };
+    std::string line;
+    for ( const char *w : words )
+	line += (line.empty() ? "" : " ") + ns_common::shell_quote(w);
+    std::vector<std::string> back;
+    REQUIRE(ns_common::shell_words(line, back));
+    REQUIRE(back.size() == sizeof(words) / sizeof(words[0]));
+    for ( size_t i = 0; i < back.size(); ++i )
+	CHECK(back[i] == words[i]);
+    CHECK(ns_common::shell_quote("plain") == "plain");
+    CHECK(ns_common::shell_quote("") == "''");
+    CHECK(ns_common::shell_quote("it's") == "'it'\"'\"'s'");
 }

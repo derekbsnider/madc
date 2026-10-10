@@ -1,6 +1,7 @@
 #include "madc_project.h"
 #include "madc_posix_io.h"	// host_path_dirname / host_path_absolute: a "libs" entry, a TU path
 #include "madc_documents.h"	// document_read_file / document_write_file: the writer's bytes
+#include "ns_common.h"		// ends_with: the manifest's .prj.json
 #include "json.hpp"
 #include <algorithm>
 #include <fstream>
@@ -443,4 +444,15 @@ bool project_manifest_remove_tu(const std::string &path,
 	}
 	root["tus"].erase((size_t)at);
 	return write_manifest_object(path, root, err);
+}
+
+std::string project_default_output(const std::string &manifest_path,
+				   const ProjectManifest &manifest) {
+	if (!manifest.output_name.empty())
+		return resolve(manifest_directory(manifest_path), manifest.output_name);
+	static const std::string suffix = ".prj.json";
+	if (manifest_path.size() > suffix.size()
+	    && ns_common::ends_with(manifest_path, suffix))
+		return manifest_path.substr(0, manifest_path.size() - suffix.size());
+	return madc::detail::host_path_drop_extension(manifest_path);
 }

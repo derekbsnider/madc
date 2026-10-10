@@ -55,10 +55,22 @@ lists the session's commands, among them
 (this session's entries; \fB\-l\fR and \fB\-g\fR search the history file),
 .B %std
 [\fIname\fR] (the standard in force, or a fresh session under
-.IR name )
-and
+.IR name ),
 .B %reset
-(a fresh session). A line starting with
+(a fresh session),
+.B %check
+[\fIfile\fR] (a file's diagnostics; nothing runs),
+.B %build
+and
+.B %run
+(with no \fIfile\fR, the buffer's live text;
+.B %args
+sets what
+.B %run
+passes it) and
+.B %project
+(a project manifest: open or create it, add and remove its files, check,
+build and run it). A line starting with
 .B :
 is an ex command on the file's buffer, as in vim's colon mode:
 .BR :p ,

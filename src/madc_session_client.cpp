@@ -91,7 +91,7 @@ namespace {
 // client handed over (madc_session_stdin.h). `commands`: the host's REPL
 // command rows (split arc 1A.2), sent after every start. Those two are the
 // requests with no seq and no reply.
-enum class Op : unsigned char { begin, offer, complete, running, load, run, continues, bindings, build, stdin_renew, commands, history, check, unknown };
+enum class Op : unsigned char { begin, offer, complete, running, load, run, continues, bindings, build, stdin_renew, commands, history, check, project, unknown };
 
 struct OpRow { const char *name; Op op; };
 const OpRow op_rows[] = {
@@ -101,6 +101,7 @@ const OpRow op_rows[] = {
     { "build", Op::build }, { "stdin", Op::stdin_renew },
     { "commands", Op::commands }, { "history", Op::history },
     { "check", Op::check },
+    { "project", Op::project },
 };
 
 const char *op_name(Op op)
@@ -158,6 +159,7 @@ const PayloadRow payload_rows[] = {
     { "std", madc::session_payload::standard },
     { "check", madc::session_payload::check },
     { "args", madc::session_payload::args },
+    { "project", madc::session_payload::project },
 };
 
 const char *payload_name(madc::session_payload p)
@@ -327,6 +329,12 @@ int serve_session(madc::DataChannel &wire, std::unique_ptr<Program> prog,
 	    session.set_history_file(req.value("file", std::string()));
 	    continue;
 	}
+	if ( op == Op::project )
+	{
+	    // The project the host keeps (%project's; "" none).
+	    session.set_project(req.value("file", std::string()));
+	    continue;
+	}
 	// An interrupt from before this request (one sent while the backend
 	// waited) is none; one from here on waits for the entry's first poll.
 	madc_session_interrupt_reset();
@@ -465,6 +473,7 @@ int serve_session(madc::DataChannel &wire, std::unique_ptr<Program> prog,
 	    case Op::stdin_renew:	// taken above, no reply
 	    case Op::commands:
 	    case Op::history:
+	    case Op::project:
 	    case Op::unknown:
 		rep["ok"] = false;
 		break;
@@ -561,6 +570,7 @@ bool SessionClient::start(const std::string &std_opt, const ProgramFactory &make
 		standard_name = j.value("standard", std::string());
 		send_host_commands();	// the host's rows, before any entry
 		send_history_file();
+		send_project();
 	    }
 	    if ( !ok )
 	    {
@@ -814,6 +824,22 @@ void SessionClient::set_history_file(const std::string &path)
     history_named = true;
     history_path = path;
     send_history_file();
+}
+
+void SessionClient::set_project(const std::string &path)
+{
+    project_path = path;
+    send_project();
+}
+
+bool SessionClient::send_project()
+{
+    if ( !wire || project_path.empty() )
+	return false;
+    nlohmann::json req;
+    req["op"] = op_name(Op::project);
+    req["file"] = project_path;
+    return send(req.dump());
 }
 
 bool SessionClient::send_history_file()
@@ -1167,6 +1193,7 @@ int SessionClient::poll(Reply &reply, std::string &output, int timeout_ms)
 	case Op::stdin_renew:	// a request's only: never a reply
 	case Op::commands:
 	case Op::history:
+	case Op::project:
 	case Op::unknown:
 	    break;
     }
@@ -1343,6 +1370,12 @@ bool BackendSession::honor(const SessionClient::Reply &reply)
 	return check_file(reply.argv);
     if ( reply.payload == madc::session_payload::args )
 	return program_args_command(reply.argv.empty() ? std::string() : reply.argv[0]);
+    if ( reply.payload == madc::session_payload::project )
+    {
+	// %project (split arc 1B.8): kept for the fresh sessions to come.
+	client.set_project(reply.argv.empty() ? std::string() : reply.argv[0]);
+	return true;
+    }
     if ( reply.payload == madc::session_payload::none || reply.argv.empty() )
 	return true;
     if ( reply.payload == madc::session_payload::load )

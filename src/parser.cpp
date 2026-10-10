@@ -478,7 +478,8 @@ bool internal_program_project_build(::Program &self,
 				    const std::string &kind_name,
 				    value &out, const std::string &outpath);
 int64_t internal_program_project_run(::Program &self,
-				     const std::string &manifest_path);
+				     const std::string &manifest_path,
+				     const std::vector<std::string> &args);
 }
 
 namespace {
@@ -1487,14 +1488,16 @@ bool madc_project_build(void *result, void *manifest_path, void *kind,
 						*(const std::string *)outpath);
 }
 
-int64_t madc_project_run(void *manifest_path)
+int64_t madc_project_run(void *manifest_path, void *args)
 {
     std::unique_ptr<Program> owned;
     Program *active = require_runtime_eval_program(owned);
     if ( !active )
 	return -3;
     return madc::internal_program_project_run(*active,
-					      *(const std::string *)manifest_path);
+					      *(const std::string *)manifest_path,
+					      args ? *(const std::vector<std::string> *)args
+						   : std::vector<std::string>());
 }
 
 bool madc_runtime_eval_expression_bool(void *expr)

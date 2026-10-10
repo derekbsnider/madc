@@ -24,6 +24,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace madc { struct ProcessOptions; class Process; }
 
@@ -38,10 +39,13 @@ enum MadcRunChildKind { rckFrozen, rckProject, rckSession, rckConfiguredSession 
 // Parent: the run child for `path` (the snapshot, the manifest, or the
 // session's connection words) — THIS
 // executable, with the request in its environment and the caller's
-// options otherwise (stdio, cleanup_paths). Not started.
+// options otherwise (stdio, cleanup_paths). `args`: the guest's arguments
+// after its argv[0] (a frozen or a project run), riding MADC_RUN_CHILD_ARGS
+// as shell words (ns_common::shell_quote). Not started.
 std::unique_ptr<madc::Process> madc_run_child_process(
     MadcRunChildKind kind, const std::string &path,
-    madc::ProcessOptions options);
+    madc::ProcessOptions options,
+    const std::vector<std::string> &args = std::vector<std::string>());
 
 // Child: -1 when this process is not a run child. Otherwise it runs the
 // request and exits the process with the guest's status (1 when the guest

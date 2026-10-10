@@ -8172,7 +8172,9 @@ bool internal_program_parse_build(int64_t handle,
 // the guest's status, -3 when the spawn or the wait failed. `snapshot`:
 // `path` is the run's own temp container, removed after the reap.
 static int64_t run_child_and_wait(MadcRunChildKind kind,
-				  const std::string &path, bool snapshot)
+				  const std::string &path, bool snapshot,
+				  const std::vector<std::string> &args
+				      = std::vector<std::string>())
 {
     ProcessOptions options;
     options.inherit_stdin = true;
@@ -8180,7 +8182,8 @@ static int64_t run_child_and_wait(MadcRunChildKind kind,
     options.inherit_stderr = true;
     if ( snapshot )
 	options.cleanup_paths.push_back(path);
-    std::unique_ptr<Process> child = madc_run_child_process(kind, path, options);
+    std::unique_ptr<Process> child = madc_run_child_process(kind, path, options,
+							    args);
     madc::error err;
     if ( !child->start(&err) || !child->wait(&err) )
 	return -3;
@@ -8431,6 +8434,8 @@ bool internal_program_project_build(::Program &self,
 // link the modules, run the entry) in a fork() child — parse_run's fork
 // seam, project-wide. stdio is INHERITED (the caller owns the terminal
 // handoff); ^C reaches the guest alone (the system(3) discipline).
+// `args`: the program's arguments after its argv[0], the manifest (split
+// arc 1B.8: %project run ARGS).
 // Returns the guest's exit status (128+signal on a signal death);
 // negative = it never ran: -1 unreadable manifest, -2 empty manifest,
 // -3 fork/spawn failed.
@@ -8438,7 +8443,8 @@ bool internal_program_project_build(::Program &self,
 // (run_child_and_wait, design (b)'s child-of-self shape; the
 // frozen-project twin of parse_run's frozen snapshot is a named residue).
 int64_t internal_program_project_run(::Program &self,
-				     const std::string &manifest_path)
+				     const std::string &manifest_path,
+				     const std::vector<std::string> &args)
 {
     ProjectManifest manifest;
     std::string err;
@@ -8456,7 +8462,7 @@ int64_t internal_program_project_run(::Program &self,
     fflush(NULL);		// parent's buffered output must not
     std::cout.flush();		// duplicate into the child's console
     std::cerr.flush();
-    return run_child_and_wait(rckProject, manifest_path, false);
+    return run_child_and_wait(rckProject, manifest_path, false, args);
 #else
     fflush(NULL);		// parent's buffered output must not
     std::cout.flush();		// duplicate into the child
@@ -8469,11 +8475,14 @@ int64_t internal_program_project_run(::Program &self,
 	__madc_task_atfork_child();
 	signal(SIGINT, SIG_DFL);	// CLI parity: the guest starts
 	signal(SIGQUIT, SIG_DFL);	// with default dispositions
-	std::string argv0 = manifest_path;
-	char *guest_argv[2];
-	guest_argv[0] = &argv0[0];
-	guest_argv[1] = (char *)0;
-	exit(madc_project_execute(*self.engine, manifest, 1, guest_argv,
+	std::vector<std::string> words(1, manifest_path);
+	words.insert(words.end(), args.begin(), args.end());
+	std::vector<char *> guest_argv;
+	for ( std::string &w : words )
+	    guest_argv.push_back(&w[0]);
+	guest_argv.push_back((char *)0);
+	exit(madc_project_execute(*self.engine, manifest,
+				  (int)words.size(), &guest_argv[0],
 				  self.registration_policy.enable_forest_bind,
 				  self.forest_bind_path));
     }

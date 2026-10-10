@@ -56,6 +56,11 @@ bool contains   (const std::string &s, const std::string &needle);
 // trailing backslash (Python's ValueError), with `out` empty.
 // Thread contract: a pure function over its arguments.
 bool shell_words(const std::string &text, std::vector<std::string> &out);
+// A word spelled so shell_words reads it back as that one word — Python's
+// shlex.quote: a word of only safe characters (letters, digits, @%+=:,./-_)
+// as it is, '' for the empty word, else '...' with each ' spelled '"'"'.
+// Thread contract: a pure function over its argument.
+std::string shell_quote(const std::string &word);
 
 // ---- madc::value stringification --------------------------------------
 
@@ -328,6 +333,8 @@ bool madc_project_close(int64_t handle);
 // spawn failed).
 bool madc_project_build(void *result, void *manifest_path, void *kind,
 			void *outpath);
-int64_t madc_project_run(void *manifest_path);
+// args: a const std::vector<std::string>* — the program's arguments after
+// its argv[0] (the manifest); NULL = none.
+int64_t madc_project_run(void *manifest_path, void *args = NULL);
 
 #endif // __NS_COMMON_H

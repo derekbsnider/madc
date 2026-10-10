@@ -5467,6 +5467,16 @@ bool proj_load(long w, long es, var &pf)
     return true;
 }
 
+// The project closed (the REPL's %project close, split arc 1B.8): no
+// manifest — the implicit single-file project again.
+void proj_unload(long w, long es)
+{
+    var none;
+    ui::set(w, es, "proj", none);
+    ui::set(w, es, "projfile", none);
+    proj_touch(w, es);
+}
+
 // Startup manifest read (run_ide): a <base>.prj.json beside the launch
 // file IS the project — persistence would be pointless if nothing read
 // it back. No file = the implicit single-file project; an untitled launch

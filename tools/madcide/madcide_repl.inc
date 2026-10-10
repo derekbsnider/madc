@@ -356,10 +356,12 @@ void repl_reply(long w, long es, var &r)
 	bool checks = taken && r["payload"] == madc::session_payload::check;
 	// %args [ARGS] (split arc 1B.8): the program's arguments — progargs.
 	bool argset = taken && r["payload"] == madc::session_payload::args;
+	// %project (split arc 1B.8): the session's project is the window's.
+	bool projset = taken && r["payload"] == madc::session_payload::project;
 	// A file command's payload keeps the pane busy into its file's load
 	// (repl_load_file sets the load's seq), so it never reads idle between.
 	bool files = taken && !quits && !resets && !restd && !checks && !argset
-		     && !(r["payload"] == madc::session_payload::none);
+		     && !projset && !(r["payload"] == madc::session_payload::none);
 	if ( !files )
 	    ui::set(w, es, "replbusy", 0);
 	ui::set(w, es, "replrunning", 0);
@@ -416,6 +418,19 @@ void repl_reply(long w, long es, var &r)
 		set_program_args(w, es, "");
 	    else
 		set_program_args(w, es, line.c_str());
+	    return;
+	}
+	if ( projset )
+	{
+	    var argv = r["argv"];
+	    var pf = "";
+	    if ( php::count(argv) > 0 )
+		pf = argv[0];
+	    if ( strlen(pf.c_str()) > 0 )
+		proj_load(w, es, pf);
+	    else
+		proj_unload(w, es);
+	    project_rows(w, es, active_doc(w, es, 0));
 	    return;
 	}
 	if ( checks )

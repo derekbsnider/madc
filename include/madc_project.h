@@ -83,6 +83,12 @@ bool project_manifest_add_tu(const std::string &path, const std::string &file,
 bool project_manifest_remove_tu(const std::string &path,
 				const std::string &file, std::string &err);
 
+// The executable a project builds when no OUT is named (%project build):
+// its "output" against the manifest's directory, else the manifest's path
+// less ".prj.json" (madcide's <base>.prj.json), else less its extension.
+std::string project_default_output(const std::string &manifest_path,
+				   const ProjectManifest &manifest);
+
 // Forward decls to avoid pulling madc.h into the header.
 class MadcEngine;
 class Program;

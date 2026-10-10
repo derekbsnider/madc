@@ -422,3 +422,15 @@ TEST_CASE("project_manifest writers: a compile_commands.json import and a "
 	std::remove(cc.c_str());
 	std::remove(bad.c_str());
 }
+
+TEST_CASE("project_default_output: the manifest's output, else its path less "
+	  ".prj.json, else less its extension") {
+	ProjectManifest m;
+	CHECK(project_default_output("/p/x.prj.json", m) == "/p/x");
+	CHECK(project_default_output("/p/build.json", m) == "/p/build");
+	CHECK(project_default_output("x.prj.json", m) == "x");
+	m.output_name = "prog";
+	CHECK(project_default_output("/p/x.prj.json", m) == "/p/prog");
+	m.output_name = "/abs/prog";
+	CHECK(project_default_output("/p/x.prj.json", m) == "/abs/prog");
+}

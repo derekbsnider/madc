@@ -231,7 +231,9 @@ public:
     // a host that honors no payloads reads %quit from ended(). %reset's
     // (`reset`, no argv) and %std NAME's (`standard`, argv: NAME as `--std=`
     // spells it) ask for a FRESH session, which only such a host can start;
-    // any other host refuses them, as %run.
+    // any other host refuses them, as %run. %project's (`project`, argv: the
+    // open manifest, "" when closed) asks the host to keep the project
+    // across restarts (set_project in the fresh session); an IDE opens it.
     madc::session_payload payload() const { return payload_kind; }
     const std::vector<std::string> &payload_argv() const { return payload_args; }
     // The `command` payload's row code (a host row's, add_host_command).
@@ -288,6 +290,10 @@ public:
     // The history store %history -l / -g read (madc_history.h; split arc
     // 1B.7): the one its host names ("" names none), else the default store.
     void set_history_file(const std::string &path) { history_file = path; }
+    // The project %project opened (split arc 1B.8), its manifest's path ("":
+    // none) — a host restores it in a fresh session.
+    void set_project(const std::string &path) { project_file = path; }
+    const std::string &project() const { return project_file; }
 
 private:
     Offered enter(const std::string &text, bool final, const TakenHook &taken);
@@ -316,6 +322,12 @@ private:
     bool std_command(const std::string &argument, const std::string &name);
     bool check_command(const std::string &argument, const std::string &name);
     bool args_command(const std::string &argument, const std::string &name);
+    bool project_command(const std::string &argument, const std::string &name);
+    void project_changed();
+    bool project_show(const std::string &name);
+    bool project_check(const std::string &name);
+    bool project_build(const std::string &out, const std::string &name);
+    bool project_run(const std::vector<std::string> &args, const std::string &name);
     // A session unit (an entry, a loaded file) defines a function NAME.
     bool defines_function(const std::string &name);
     // A file command's file, once it opens: the payload `kind` for a host
@@ -357,6 +369,7 @@ private:
     unsigned quiet_count;		// the quiet entries' units, each its own
     std::vector<std::string> inputs;	// REPL[N]'s text is inputs[N - 1]
     std::string history_file;		// %history's store ("" none)
+    std::string project_file;		// %project's manifest ("" none)
     InteractiveSession(const InteractiveSession &);
     InteractiveSession &operator=(const InteractiveSession &);
 };

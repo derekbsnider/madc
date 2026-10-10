@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### `madc -i` gains `%project`
+
+`madc -i` now opens, edits, checks, builds and runs the session's project at the
+prompt (split arc 1B.8). `%project` with no CMD prints the open manifest — its TU
+count, entry, kind, output and each TU's path — or `no project`; `%project
+MANIFEST` opens it, created when it is missing; `%project add FILE...` and
+`%project del FILE...` write the manifest through its C++ writer; `%project check`
+parses every TU with its manifest options and shows `FILE: N errors, M warnings`
+per TU with problems, else `MANIFEST: clean`; `%project build [-o OUT]` builds the
+`--project` native lane, OUT defaulting to the manifest's `output`, else its path
+without `.prj.json`, else without its extension; `%project run [ARGS]` runs the
+`--project` JIT lane in a child, passing it ARGS; `%project close` closes it. The
+project is session state the host keeps across restarts — `madc -i` and madcide
+restore it into every fresh session, and madcide opens the named manifest — so it
+survives `%reset`. `%project run` now passes the program its arguments on every
+platform.
+
 ### The project manifest gains a C++ writer, beside its reader
 
 The manifest had a C++ reader (`read_project_manifest`) and no C++ writer — only
