@@ -517,42 +517,39 @@ static int repl_loops(ReplSession &session, bool terminal,
 
 static int run_repl(std::unique_ptr<Program> prog, bool terminal,
 		    const std::string &history,
+		    const std::vector<std::string> &options,
 		    int file_argc = 0, char **file_argv = NULL)
 {
 #ifdef MADC_CROSS_TARGET
     return cross_refuse_run("run the REPL");
 #endif
-#ifndef _WIN32
     // The session runs in a backend process on this terminal (D2, plan
     // §41.9a slice 4), so a crash in an entry starts a fresh session instead
-    // of ending madc. The backend's Program is the fork's copy of this
-    // configured one (the command line and madc.ini hold there, and each
-    // restart copies it again); this one never begins. One stdin for both:
-    // read unbuffered here, as the backend reads it.
-    Program *configured = prog.get();
+    // of ending madc. The backend's Program is this configured one, again on
+    // each restart (the command line and madc.ini hold there): on POSIX the
+    // fork's copy; on Windows, which has no fork, this executable run on the
+    // same `options`, whose main configures its Program exactly as this one
+    // was (split arc 1A.5). This one never begins. One stdin for both: read
+    // unbuffered here, as the backend reads it.
     SessionClient client;
     client.set_inherit_stdio(true);
+    client.set_backend_arguments(options);
     setvbuf(stdin, NULL, _IONBF, 0);
-    if ( !client.start(std::string(), [configured]() {
-	     return std::unique_ptr<Program>(configured);	// the child's copy
-	 }) )
+#ifndef _WIN32
+    Program *configured = prog.get();
+    SessionClient::ProgramFactory copy = [configured]() {
+	return std::unique_ptr<Program>(configured);	// the child's copy
+    };
+#else
+    SessionClient::ProgramFactory copy;	// the child configures its own
+#endif
+    if ( !client.start(std::string(), copy) )
     {
 	std::cerr << client.last_error() << std::endl;
 	return 1;
     }
     BackendSession session(client, std::cerr, NULL);
     return repl_loops(session, terminal, history, file_argc, file_argv);
-#else
-    // No fork on Windows: the session runs in this process until the
-    // backend there is a child of self (plan §41.9a, named).
-    InteractiveSession session(std::move(prog));
-    if ( !session.begin() )
-    {
-	session.program().print_last_diagnostic(std::cerr);
-	return 1;
-    }
-    return repl_loops(session, terminal, history, file_argc, file_argv);
-#endif
 }
 
 int main(int argc, char **argv)
@@ -565,8 +562,11 @@ int main(int argc, char **argv)
 
     madc_install_crash_handler();
     // A Run child of self (madc_run_child.h): the parent named the run in
-    // the environment; serve it and exit before this command line is read.
-    madc_serve_run_child();
+    // the environment; serve it and exit before this command line is read —
+    // except the REPL's configured session backend (split arc 1A.5), served
+    // below once this command line has configured the Program.
+    std::string configured_session;
+    madc_serve_run_child(&configured_session);
 
     stringstream ss;
     MadcEngine engine;
@@ -1255,6 +1255,12 @@ int main(int argc, char **argv)
         prog->loaded_lib_paths.push_back(lib);   // the frozen-forest link closure
     }
 
+    // The REPL host's backend (Windows, split arc 1A.5): this process is its
+    // configured-session run child, the command line is the host's options,
+    // and the Program is now configured exactly as the host's was.
+    if ( !configured_session.empty() )
+        return madc_session_serve_child(configured_session, std::move(prog));
+
     // .o inputs (AOT R4b + multi-object): execute the madc-emitted
     // relocatable object(s) as a precompiled cache — no parse, no
     // translate, no gen; several objects merge in memory first. Placed
@@ -1448,6 +1454,9 @@ int main(int argc, char **argv)
     // what to do with a translation unit, so it has nothing to work on
     // (gcc); otherwise -i or a terminal stdin is the REPL, and a piped stdin
     // is the program, as if named `-`.
+    // The REPL's options — every argument before the first positional — are
+    // its Windows backend's command line (run_repl).
+    const std::vector<std::string> repl_options(argv + 1, argv + filearg);
     std::vector<char *> stdin_argv;
     if ( interactive && filearg < argc && strcmp(argv[filearg], "-") == 0 )
     {
@@ -1482,7 +1491,8 @@ int main(int argc, char **argv)
 	if ( interactive || terminal )
 	    return run_repl(std::move(prog), terminal,
 			    history_file_given ? history_file
-					       : madc_repl_history_path());
+					       : madc_repl_history_path(),
+			    repl_options);
 	static char stdin_path[] = "-";
 	stdin_argv.assign(argv, argv + argc);
 	stdin_argv.push_back(stdin_path);
@@ -1494,7 +1504,7 @@ int main(int argc, char **argv)
 	return run_repl(std::move(prog), terminal,
 			history_file_given ? history_file
 					   : madc_repl_history_path(),
-			argc - filearg, argv + filearg);
+			repl_options, argc - filearg, argv + filearg);
 
     if ( argc >= 2 && filearg < argc )
     {

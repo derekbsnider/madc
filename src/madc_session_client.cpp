@@ -457,13 +457,20 @@ SessionClient::Reply::Reply()
 }
 
 SessionClient::SessionClient()
-    : output_done(false), next_seq(1), answered_seq(0), inherit_stdio(false)
+    : output_done(false), next_seq(1), answered_seq(0), configured_backend(false),
+      inherit_stdio(false)
 {
 }
 
 void SessionClient::set_inherit_stdio(bool on)
 {
     inherit_stdio = on;
+}
+
+void SessionClient::set_backend_arguments(const std::vector<std::string> &args)
+{
+    backend_args = args;
+    configured_backend = true;
 }
 
 SessionClient::~SessionClient()
@@ -655,8 +662,13 @@ bool SessionClient::spawn_backend()
 	error_text = "session: no interrupt event for the backend";
 	return false;
     }
+    // The CLI REPL's backend configures its Program from the host's options
+    // (its own main parses them); a bare session builds a fresh one.
+    if ( configured_backend )
+	options.args = backend_args;
     process = madc_run_child_process(
-	rckSession, acceptor->local_endpoint() + " " + token + " "
+	configured_backend ? rckConfiguredSession : rckSession,
+	acceptor->local_endpoint() + " " + token + " "
 		    + (inherit_stdio ? "1" : "0") + " " + std_option, options);
     madc::error perr;
     if ( !process->start(&perr) )
@@ -1414,6 +1426,12 @@ int SessionClient::bindings_wait(Reply &reply, int timeout_ms)
 
 int madc_session_serve_child(const std::string &request)
 {
+    return madc_session_serve_child(request, std::unique_ptr<Program>(new Program()));
+}
+
+int madc_session_serve_child(const std::string &request,
+			     std::unique_ptr<Program> prog)
+{
     std::istringstream words(request);
     std::string endpoint, token, on_terminal, std_opt;
     words >> endpoint >> token >> on_terminal;
@@ -1446,5 +1464,5 @@ int madc_session_serve_child(const std::string &request)
 	return 1;
     }
     madc::session_interrupt_arm_backend(token);	// the event, the console (D8)
-    return serve_session(*wire, std::unique_ptr<Program>(new Program()), std_opt, -1);
+    return serve_session(*wire, std::move(prog), std_opt, -1);
 }

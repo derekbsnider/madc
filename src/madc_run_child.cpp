@@ -42,13 +42,14 @@ const char *run_child_kind_name(MadcRunChildKind kind)
 	case rckFrozen:  return "frozen";
 	case rckProject: return "project";
 	case rckSession: return "session";
+	case rckConfiguredSession: return "configured-session";
     }
     return "";
 }
 
 bool run_child_kind_from_name(const std::string &word, MadcRunChildKind &kind)
 {
-    for ( int k = rckFrozen; k <= rckSession; ++k )
+    for ( int k = rckFrozen; k <= rckConfiguredSession; ++k )
 	if ( word == run_child_kind_name((MadcRunChildKind)k) )
 	{
 	    kind = (MadcRunChildKind)k;
@@ -78,7 +79,7 @@ std::unique_ptr<madc::Process> madc_run_child_process(
 	madc::DataSource("exec://" + madc_self_exe_path()), options));
 }
 
-int64_t madc_serve_run_child()
+int64_t madc_serve_run_child(std::string *configured_session)
 {
     const char *request = getenv(run_child_variable);
     if ( !request )
@@ -122,6 +123,16 @@ int64_t madc_serve_run_child()
 	}
 	case rckSession:
 	    rc = madc_session_serve_child(path);
+	    break;
+	case rckConfiguredSession:
+	    // The CLI's main serves it after configuring from its command line.
+	    if ( configured_session )
+	    {
+		*configured_session = path;
+		return 0;
+	    }
+	    fprintf(stderr, "madc: a configured session backend is the madc CLI's"
+			    " to serve\n");
 	    break;
     }
     fflush(NULL);

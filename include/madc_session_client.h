@@ -56,13 +56,21 @@ public:
     // what it parses and the host's next line follows, as one FILE would
     // split them (plan §41.9a slice 4).
     void set_inherit_stdio(bool on);
+    // Before start(), Windows: the madc CLI's options (every argument before
+    // its first positional) as the backend's command line. The backend is
+    // then the CLI's own `configured-session` run child: its main configures
+    // a Program from them exactly as the host's did (madc.ini, -l, --std),
+    // on every restart (split arc 1A.5). Ignored on POSIX, where the fork
+    // copies the configured Program (start's make_program).
+    void set_backend_arguments(const std::vector<std::string> &args);
 
     // Start the backend: fork, build the session, begin(std_option) there.
     // False when it cannot start (or begin refuses the standard; the
     // backend's rendered diagnostics are then in last_error()). Windows has
     // no fork: the backend is a run child of self that builds a fresh
-    // Program (madc_run_child.h), so a make_program factory is refused
-    // there (a configured Program cannot cross a process boundary).
+    // Program (madc_run_child.h) — or configures one from the backend
+    // arguments — so a make_program factory is refused there (a configured
+    // Program cannot cross a process boundary).
     bool start(const std::string &std_option = std::string(),
 	       const ProgramFactory &make_program = ProgramFactory());
     // Start again with the same standard and factory (after a stop).
@@ -244,6 +252,8 @@ private:
     unsigned answered_seq;		// the last request whose reply came back
     std::string std_option;
     ProgramFactory make_program;
+    std::vector<std::string> backend_args;	// Windows: the configured child's command line
+    bool configured_backend;		// set_backend_arguments was called
     std::string error_text;
     std::string standard_name;
     madc::value host_rows;		// the host's REPL command rows
@@ -328,9 +338,13 @@ std::string session_stop_words(int signal, int exit_status);
 // A session backend as a run child of self (Windows; madc_run_child.h, kind
 // `session`): `request` is "<endpoint> <token> <on-terminal 0|1> [std]".
 // It connects to the client's loopback listener, sends the token as the
-// first line, then serves one session on a fresh Program. Returns the
+// first line, then serves one session on a fresh Program — or, for the CLI
+// REPL's `configured-session` kind, on `prog`, the Program the CLI's main
+// configured from this child's command line (split arc 1A.5). Returns the
 // process's exit status.
 int madc_session_serve_child(const std::string &request);
+int madc_session_serve_child(const std::string &request,
+			     std::unique_ptr<Program> prog);
 
 // The script surface (<ns_madc>'s session_* verbs, src/madc_session_verbs.cpp),
 // declared here for C++ hosts and tests; the contract is <ns_madc>'s.
