@@ -2,6 +2,41 @@
 
 ## [Unreleased]
 
+### `madc::lsp::server` — the LSP's answers in madc's core
+
+A new C++ owner, `madc::lsp::server` (`include/madc_lsp.h`, `src/madc_lsp.cpp`),
+answers one decoded JSON-RPC message at a time — `handle(message, reply, notes)`
+— and knows no transport, so a unit test drives it in process as
+`testmadcide_lsp` drives madcide's `lsp_handle` (split arc 1C.12, design
+`docs/plans/2026-10-10-lsp-in-core-design.md` §2 decisions 1-4, slice 1). It is a
+C++ port of madcide's dialect server over 1A.1 documents and 1C.11 `madc::lang`:
+the lifecycle and the error codes are LSP 3.17's (-32002 before `initialize`,
+-32600 after `shutdown` or for a notification carrying an id, -32601, -32602,
+-32803; `exit` is 0 after `shutdown`, else 1), and every answer is `madc::lang`'s
+— the server only converts, at the boundary and once: a method name to an enum, a
+`file://` URI (percent-decoded, a DOS drive's `/C:/` read as `C:/`) to a path,
+and positions between the negotiated encoding (UTF-16 by default, UTF-8 when the
+client offers it) and lang's byte columns through one owner pair (`point_of` /
+`position_of`) over `col16_to_byte` / `col16_of_byte`. Documents are madc's, in
+the server's own hub world: `didOpen` finds or creates the document and loads the
+client's text (no document becomes active), `didChange` applies incremental
+ranges in order (a change with no range is a whole-text load), `didSave`
+republishes, and `didClose` closes the document with its parse handle and
+publishes an empty diagnostics list (clangd's behaviour). `documentSymbol` gives
+DocumentSymbol rows (`range` the extent, `selectionRange` the name; a function's
+kind is 12, else 13), `definition` and `references` give Location lists over the
+name ranges, `hover` gives plaintext `contents` with a `range` when lang gives
+one, and `semanticTokens/full` delta-encodes `lang::spans` over a seven-type
+legend (keyword, variable, number, string, comment, type, function), mapped from
+`HighlightClass` by an enum switch, with nested spans dropped so tokens do not
+overlap. `madc::lang::document_close` (`src/madc_lang.cpp`) is now the owner of
+closing a document with its parse handle, beside `document_handle`;
+`ui::doc_close` (`src/ns_ui.cpp`) calls it instead of its own copy. The one
+percent-decoder `js_decodeURIComponent` (`src/ns_js.cpp`) is declared in
+`include/ns_common.h` for the server to reuse. A function whose body holds a
+contained error (an undeclared identifier) is absent from the parse handle's
+outline while the error stands.
+
 ### `madc::lang` — one set of language services over a document
 
 A new C++ owner, `madc::lang` (`include/madc_lang.h`, `src/madc_lang.cpp`),

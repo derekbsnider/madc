@@ -88,6 +88,9 @@ struct diagnostic
 // errors) with the candidate's diagnostic rows in *checked.
 int64_t document_handle(hub::world &w, hub::entity_id e,
 			value *checked = 0);
+// The door's other side: the document closed, its parse handle with it.
+// False when there is no such document.
+bool document_close(hub::world &w, hub::entity_id e);
 
 // Each answer below parses through document_handle first; false = no
 // handle (and an empty answer).

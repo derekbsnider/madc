@@ -311,6 +311,17 @@ int64_t document_handle(hub::world &w, hub::entity_id e, value *checked)
     return handle;
 }
 
+bool document_close(hub::world &w, hub::entity_id e)
+{
+    const hub::document *d = w.doc_of(e);
+    if ( !d )
+	return false;
+    if ( d->parse_handle() )
+	madc_parse_close(d->parse_handle());
+    hub::mutation_context mc(w);
+    return mc.doc_detach(e);
+}
+
 bool diagnostics(hub::world &w, hub::entity_id e,
 		 std::vector<diagnostic> &out)
 {

@@ -51,8 +51,9 @@
 #include "handle_table.h"
 #include "libmadc/value.h"
 #include "madc_documents.h"	// doc_*: the document file owner
+#include "madc_lang.h"		// doc_close: the parse door's other side
 #include "madc_file_kinds.h"	// doc_kind: fkUNKNOWN
-#include "ns_common.h"		// doc_close: the parse slot
+#include "ns_common.h"		// madc_ui_world: the world behind a session handle
 #include "madcdis/doc_lens.h"
 #include "madcdis/hub.h"
 #include "madcdis/interaction.h"
@@ -1598,14 +1599,7 @@ bool doc_save(int64_t w, int64_t entity)
 bool doc_close(int64_t w, int64_t entity)
 {
     ui_session *s = ui_get(w);
-    const madc::hub::document *d = s ? s->w.doc_of((entity_id)entity)
-				     : (const madc::hub::document *)0;
-    if ( !d )
-	return false;
-    if ( d->parse_handle() )
-	madc_parse_close(d->parse_handle());
-    madc::hub::mutation_context mc(s->w);
-    return mc.doc_detach((entity_id)entity);
+    return s && madc::lang::document_close(s->w, (entity_id)entity);
 }
 
 madc::value &doc_path(madc::value &out, int64_t w, int64_t entity)

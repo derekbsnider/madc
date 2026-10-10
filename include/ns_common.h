@@ -267,6 +267,11 @@ bool madc_code_close(int64_t code);
 namespace madc { namespace hub { class world; } }
 madc::hub::world *madc_ui_world(int64_t w);
 
+// The ONE percent-decoder (js::decodeURIComponent's body, src/ns_js.cpp):
+// `%XX` escapes to their bytes, every other byte as it is. The LSP's file://
+// URIs decode through it (src/madc_lsp.cpp).
+std::string *js_decodeURIComponent(std::string *result, const char *input);
+
 int64_t madc_parse_open(void *source, void *filename, int64_t standard);
 int64_t madc_parse_open_file(void *path);
 bool madc_parse_refresh(int64_t handle, void *source);
