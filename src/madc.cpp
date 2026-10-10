@@ -47,6 +47,7 @@
 #include "madc_history.h" // the REPL history store's default place (1B.7)
 #include "madc_theme.h"   // the REPL's colours: madc.ini's theme (1B.9)
 #include "madc_lsp.h"     // madc --lsp: the LSP server (split arc 1C.12)
+#include "madc_mcp.h"     // madc --mcp: the MCP server (split arc 1C)
 #include "madcdis/channel.h" // madc --lsp: stdin/stdout, Content-Length framed
 #include "madc_ex.h"      // colon mode: the host's ex session (D24)
 #include "madc_documents.h" // the host's buffer: madc -i FILE's file
@@ -286,6 +287,9 @@ static void print_usage(const char *prog)
 "                          definition, references, hover, semantic tokens\n"
 "                          for the documents a client opens; <file> is\n"
 "                          parsed before the client asks\n"
+"  --mcp <file>            a Model Context Protocol server on stdin/stdout\n"
+"                          (one JSON-RPC message per line): the code-graph\n"
+"                          tools over <file>, for the operator\n"
 "  --history-file=PATH|no  where the REPL keeps its history (default\n"
 "                          $XDG_STATE_HOME/madc/history); no keeps none\n"
 "  --project <prj.json>    build from a project manifest: compile each\n"
@@ -624,6 +628,30 @@ static int run_lsp(std::unique_ptr<Program> prog, const char *file,
     return rc;
 }
 
+// madc --mcp FILE (split arc 1C): the Model Context Protocol on stdin/stdout,
+// one message per line — the tools over FILE's document, for the lone local
+// client, the operator (the owner tier). The configured Program is the
+// active runtime Program for the server's life, as for --lsp.
+static int run_mcp(std::unique_ptr<Program> prog, const char *file)
+{
+    madc::channel io("stdio://");
+    madc::hub::world w;
+    prog->push_runtime_scope();
+    madc::hub::entity_id doc = madc::document_open(w, file);
+    if ( !doc )
+    {
+	std::cerr << "madc: --mcp: cannot read " << file << std::endl;
+	prog->pop_runtime_scope();
+	return 1;
+    }
+    madc::tools::registry tools;
+    madc::tools::add_graph_tools(tools);
+    madc::mcp::server server(tools, w, doc, madc::tools::tier::owner);
+    int rc = server.serve(io);
+    prog->pop_runtime_scope();
+    return rc;
+}
+
 static int run_repl(std::unique_ptr<Program> prog, bool terminal,
 		    const std::string &history, const madc::theme *theme,
 		    const std::vector<std::string> &options,
@@ -742,6 +770,7 @@ int main(int argc, char **argv)
     bool cli_set_std = false;             // --std= came from the COMMAND LINE (so a madc.ini `std` key must not override it)
     bool interactive = false;             // -i / --interactive: the REPL, whatever stdin is (D20)
     bool lsp = false;                     // --lsp: the Language Server Protocol on stdio (split arc 1C.12)
+    bool mcp = false;                     // --mcp: the Model Context Protocol on stdio (split arc 1C)
     std::string history_file;             // --history-file=PATH|no: the REPL's history (D23)
     bool history_file_given = false;
 
@@ -1023,6 +1052,10 @@ int main(int argc, char **argv)
             // D20: the REPL even on a piped stdin (python -i); with a
             // program file, the file first.
             interactive = true;
+            filearg = i + 1;
+        } else if (strcmp(argv[i], "--mcp") == 0) {
+            // split arc 1C: madc's own MCP server over a file's document.
+            mcp = true;
             filearg = i + 1;
         } else if (strcmp(argv[i], "--lsp") == 0) {
             // split arc 1C.12: madc's own LSP server; a file after it is
@@ -1635,6 +1668,16 @@ int main(int argc, char **argv)
 	}
 	return run_lsp(std::move(prog), filearg < argc ? argv[filearg] : NULL,
 		       repl_options);
+    }
+    if ( mcp )
+    {
+	if ( interactive || artifact_request || filearg + 1 != argc )
+	{
+	    std::cerr << "madc: --mcp serves a client on stdin/stdout; it takes"
+			 " one file and no other mode" << std::endl;
+	    return 1;
+	}
+	return run_mcp(std::move(prog), argv[filearg]);
     }
     if ( interactive && artifact_request )
     {

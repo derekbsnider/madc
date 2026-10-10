@@ -2,6 +2,46 @@
 
 ## [Unreleased]
 
+### `madc --mcp` — the Model Context Protocol server, the tool registry, and the code-graph tools
+
+`madc --mcp FILE` runs a Model Context Protocol server on stdin/stdout:
+JSON-RPC 2.0 with one message per line (MCP's stdio transport), serving
+FILE's document at the owner tier — the lone local client is the operator.
+The configured Program is active for the server's life, as for `--lsp`. `--mcp`
+with `-i`, an artifact request, or other than exactly one file is refused.
+`madc_jsonrpc.o`, `madc_tools.o` and `madc_mcp.o` are built into libmadc core.
+
+The server (`madc::mcp::server`, `include/madc_mcp.h`) converts each method
+once to an enum: `initialize` answers the client's `protocolVersion` when it is
+one of 2025-06-18 / 2025-03-26 / 2024-11-05, else 2025-06-18, with
+`capabilities.tools.listChanged` false and `serverInfo` `{name madc, version}`;
+`notifications/initialized` gets no reply; `ping` answers `{}`; `tools/list`
+advertises the registry's rows (name, description with "(requires TIER)",
+`inputSchema`); `tools/call` answers the tool's result as JSON text content, a
+refusal as `isError` content, and an unknown tool as the JSON-RPC error -32602.
+An unknown method is -32601, a non-object -32600, a line that is not JSON
+-32700; a blank line carries no message. `handle()` answers one decoded message
+and knows no transport; `serve()` is the line loop.
+
+The tool registry (`madc::tools`, `include/madc_tools.h`) holds tool rows
+`{name, description, input schema, least tier, handler}` over the tiers
+observer < proposer < editor < owner; `registry::call` refuses an unknown name
+or a caller below the tool's tier with an `{error}`. `add_graph_tools`
+registers the 16 code-graph reads (`graph.symbols`, `definition`, `node`,
+`type_of`, `members`, `bases`, `enclosing`, `body`, `children`, `callees`,
+`callers`, `references`, `search`, `impact`, `span`, `at`) over the served
+document's parse through `madc::lang::document_handle` (the one door) and the
+`madc_graph_*` reads; one verb table drives both the advertised schema and the
+read. A document the compiler does not parse refuses.
+
+JSON-RPC's envelopes (`madc::jsonrpc`, `include/madc_jsonrpc.h`) — `response`,
+`error_response`, `notification`, `request` — and a message's members (`field`,
+`text_field`, `int_field`, `object_field`) are the one spelling madc's protocol
+servers share; they decode/encode through the one value<->JSON bridge (the
+encoding replaces non-UTF-8 bytes). `src/madc_lsp.cpp`'s private copies of these
+are deleted; it uses the shared owner, behaviour unchanged. `docs/man/madc.1`
+documents `--mcp`.
+
 ### `workspace/executeCommand` runs the REPL registry in a backend session
 
 `madc --lsp` now answers `workspace/executeCommand`: a client runs the REPL's

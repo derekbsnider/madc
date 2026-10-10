@@ -1,0 +1,11 @@
+"protocolVersion":"2024-11-05"
+"serverInfo":{"name":"madc"
+"name":"graph.symbols"
+"name":"graph.definition"
+"name":"graph.at"
+"id":3,"jsonrpc":"2.0","result":{"content":[{"text":
+"isError":false
+Function
+Struct
+"error":{"code":-32602,"message":"Unknown tool: graph.bogus"},"id":5
+"error":{"code":-32700,"message":"the message is not JSON"},"id":null

@@ -1,0 +1,22 @@
+// madc --mcp over stdin/stdout (split arc 1C; include/madc_mcp.h). The runner
+// starts `madc --mcp tests/testmcp_stdio.mad` (.flags) with
+// tests/testmcp_stdio.input on stdin: one JSON-RPC message per line —
+// initialize, the initialized notification, tools/list, tools/call of
+// graph.symbols and graph.definition over this file, an unknown tool, a line
+// that is not JSON — then end of input, which ends the server with status 0.
+// ORACLE: the MCP specification 2025-06-18 (initialize answers the client's
+// protocolVersion; tools/call content; -32602 for an unknown tool), JSON-RPC
+// 2.0 (-32700), and madcide's testmadcide_serve_graph record for the graph
+// results' shapes (Function / Struct nodes).
+
+struct Point { int x; int y; };
+
+long add(long a, long b)
+{
+    return a + b;
+}
+
+int twice(int v)
+{
+    return (int)add(v, v);
+}

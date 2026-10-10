@@ -27,11 +27,13 @@
 #include "madcdis/text_utf16.h"	// col16_to_byte / col16_of_byte
 #include "libmadc/sysinfo.h"	// madc::sys.version: serverInfo
 #include "madcdis/channel.h"	// serve: a Content-Length framed channel
-#include "madcdis/world_text.h"	// the one value<->JSON bridge
+#include "madc_jsonrpc.h"	// the envelopes and the JSON text
 #include "madc_session_client.h"	// backend_commands: madc -i's backend session
 
 namespace madc {
 namespace lsp {
+
+using namespace jsonrpc;
 
 namespace {
 
@@ -86,17 +88,6 @@ const method_row *method_of(const std::string &name)
 	    return &method_rows[i];
     return 0;
 }
-
-// JSON-RPC's and LSP's error codes.
-enum class error_code : int64_t
-{
-    parse_error = -32700,
-    invalid_request = -32600,
-    method_not_found = -32601,
-    invalid_params = -32602,
-    server_not_initialized = -32002,
-    request_failed = -32803
-};
 
 // The semantic-token legend, in its wire order.
 enum class token_type : unsigned char
@@ -164,76 +155,6 @@ int64_t severity_number(diag_severity s)
 	return 2;
     }
     return 3;					// Information
-}
-
-// ---- reading a message ------------------------------------------------
-
-const value *field(const value &v, const char *name)
-{
-    if ( !v.is_object() )
-	return 0;
-    const fields &f = v.as_object();
-    fields::const_iterator i = f.find(name);
-    return i == f.end() ? 0 : &i->second;
-}
-
-std::string text_field(const value &v, const char *name)
-{
-    const value *f = field(v, name);
-    return f && f->is_string() ? f->as_string() : std::string();
-}
-
-int64_t int_field(const value &v, const char *name)
-{
-    const value *f = field(v, name);
-    return f && f->is_integer() ? f->as_integer() : 0;
-}
-
-const value &object_field(const value &v, const char *name)
-{
-    static const value none;
-    const value *f = field(v, name);
-    return f ? *f : none;
-}
-
-// ---- writing one ------------------------------------------------------
-
-value response(const value &id, const value &result)
-{
-    fields f;
-    f["jsonrpc"] = value("2.0");
-    f["id"] = id;
-    f["result"] = result;
-    return value::make_object(f);
-}
-
-value error_response(const value &id, error_code code, const std::string &message)
-{
-    fields e;
-    e["code"] = value((int64_t)code);
-    e["message"] = value(message);
-    fields f;
-    f["jsonrpc"] = value("2.0");
-    f["id"] = id;
-    f["error"] = value::make_object(e);
-    return value::make_object(f);
-}
-
-value notification(const char *name, const value &params)
-{
-    fields f;
-    f["jsonrpc"] = value("2.0");
-    f["method"] = value(name);
-    f["params"] = params;
-    return value::make_object(f);
-}
-
-// A request the server sends; the client's response is dropped (handle).
-value request(int64_t id, const char *name, const value &params)
-{
-    value r = notification(name, params);
-    r.object()["id"] = value(id);
-    return r;
 }
 
 // ---- URIs: a file:// URI names a path ----------------------------------
@@ -499,38 +420,29 @@ hub::entity_id server::open_file(const std::string &path)
     return e;
 }
 
-namespace {
-
-// One message on the wire. A string's bytes that are not UTF-8 are replaced,
-// never a throw: JSON text is Unicode, and a document's bytes are not
-// always.
-void write_message(channel &io, const value &v)
-{
-    std::string text = hub::detail::wt_value_to_json(v).dump(
-	-1, ' ', false, nlohmann::json::error_handler_t::replace);
-    io.write(text);
-}
-
-} // namespace
-
 int server::serve(channel &io)
 {
     std::string body;
     while ( !_s->exited && io.readline(body) )
     {
-	value reply;
+	value message, reply;
 	std::vector<value> notes;
 	bool answered = true;
-	nlohmann::json j = nlohmann::json::parse(body, nullptr, false);
-	if ( j.is_discarded() )
+	if ( !decode(body, message) )
 	    reply = error_response(value(), error_code::parse_error,
 				   "the message is not JSON");
 	else
-	    answered = handle(hub::detail::wt_json_to_value(j), reply, notes);
+	    answered = handle(message, reply, notes);
 	if ( answered )
-	    write_message(io, reply);
+	{
+	    std::string text = encode(reply);
+	    io.write(text);
+	}
 	for ( size_t i = 0; i < notes.size(); ++i )
-	    write_message(io, notes[i]);
+	{
+	    std::string text = encode(notes[i]);
+	    io.write(text);
+	}
     }
     return exit_code();
 }

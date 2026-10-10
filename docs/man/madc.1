@@ -69,6 +69,14 @@ showed, what its program printed and its diagnostics.
 .B %open
 asks the client to show the file (window/showDocument).
 .TP
+.BR \-\-mcp " " \fIfile\fR
+A Model Context Protocol server on standard input and output (one JSON-RPC
+message per line): the code-graph tools (\fBgraph.symbols\fR,
+\fBgraph.definition\fR, \fBgraph.callers\fR, ...) over
+.IR file 's
+parse, for the operator. A tool's result is JSON text content; a refusal is
+error content.
+.TP
 .BR \-i ", " \-\-interactive " [" \fIfile\fR ]
 The REPL, even when standard input is not a terminal. With a
 .IR file ,
