@@ -78,7 +78,9 @@ parse, its validated edits (\fBgraph.insert\fR, \fBgraph.replace\fR,
 \fBgraph.delete\fR: one undo step each, or a proposal), and the session's
 project memory: proposals (\fBgraph.proposals\fR, \fBgraph.accept\fR, ...),
 a node's history, records and links (\fBnexus.*\fR) and test runs
-(\fBtest.*\fR), for the operator. With
+(\fBtest.*\fR), for the operator. \fBnexus.sync\fR pulls an external
+system's tasks into records through its own MCP server, named by a manifest
+in \fI~/.config/madc/mcp/*.mcp.json\fR (\fBnexus.sources\fR lists them). With
 .B \-lmadcgit
 the file's version history joins them: \fBgraph.commits\fR,
 \fBgraph.revision\fR (the file at a revision, read-only; its ids route to
@@ -360,7 +362,8 @@ Set and non-empty: no colour in diagnostics, even on a terminal, unless
 .TP
 .BI XDG_CONFIG_HOME= dir
 Where the configuration-file search looks for the per-user file
-(\fIdir\fB/madc/madc.ini\fR); defaults to \fB~/.config\fR.
+(\fIdir\fB/madc/madc.ini\fR), and \fB\-\-mcp\fR for the external
+systems' manifests (\fIdir\fB/madc/mcp/\fR); defaults to \fB~/.config\fR.
 .SH FILES
 .B madc
 optionally reads one

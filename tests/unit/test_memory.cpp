@@ -575,3 +575,125 @@ TEST_CASE("a revision opens read-only; its ids route to it; diff, commits, statu
 	git_rows += r["provenance"] == "git";
     CHECK(git_rows == 1u);				// distinct commits; "" is the events'
 }
+
+namespace {
+
+// A fake MCP server: a shell loop answering by method, its reply ids
+// lifted from the request; tools/list first says a non-JSON line and
+// another id's reply (the client skips both).
+const char *FAKE_SERVER =
+    "while IFS= read -r line; do\n"
+    "  id=$(printf '%s' \"$line\" | sed -n 's/.*\"id\":\\([0-9]*\\).*/\\1/p')\n"
+    "  case \"$line\" in\n"
+    "  *'\"initialize\"'*) echo '{\"jsonrpc\":\"2.0\",\"id\":'$id',\"result\":"
+    "{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"serverInfo\":{\"name\":\"fake\"}}}';;\n"
+    "  *'\"tools/list\"'*) echo 'not json'; echo '{\"jsonrpc\":\"2.0\",\"id\":999,\"result\":{}}';"
+    " echo '{\"jsonrpc\":\"2.0\",\"id\":'$id',\"result\":{\"tools\":[{\"name\":\"tasks\"}]}}';;\n"
+    "  *'\"tools/call\"'*) echo '{\"jsonrpc\":\"2.0\",\"id\":'$id',\"result\":{\"content\":"
+    "[{\"type\":\"text\",\"text\":\"[{\\\"id\\\":7,\\\"summary\\\":\\\"Ship it\\\","
+    "\\\"status\\\":\\\"active\\\"},{\\\"summary\\\":\\\"keyless\\\"}]\"}]}}';;\n"
+    "  esac\n"
+    "done\n";
+
+void write_manifest(const std::string &dir, const char *file, const json &m)
+{
+    REQUIRE(madc::document_write_file(dir + "/" + file, m.dump(), false));
+}
+
+} // namespace
+
+TEST_CASE("nexus.sync pulls a source's tasks over MCP into task records")
+{
+    const std::string dir = temp_dir();
+    REQUIRE_FALSE(dir.empty());
+    const std::string script = dir + "/server.sh";
+    REQUIRE(madc::document_write_file(script, FAKE_SERVER, false));
+    const json vocab = { { "list_tasks", { { "tool", "tasks" },
+					   { "map", { { "id", "key" }, { "summary", "title" },
+						      { "status", "state" } } } } } };
+    write_manifest(dir, "a.mcp.json", { { "name", "fake" }, { "transport", "stdio" },
+					 { "command", { "sh", script } }, { "vocabulary", vocab } });
+    const std::string dead = dir + "/dead.sh";
+    REQUIRE(madc::document_write_file(dead, "read line\nexit 3\n", false));
+    write_manifest(dir, "b.mcp.json", { { "name", "dead" }, { "command", { "sh", dead } },
+					 { "vocabulary", vocab } });
+
+    // The default directory: madc's user config directory's mcp/ (none here).
+    const char *had = getenv("XDG_CONFIG_HOME");
+    const std::string saved = had ? had : "";
+    setenv("XDG_CONFIG_HOME", dir.c_str(), 1);
+    bench b;
+    bool err = false;
+    json src = b.call("nexus.sources", json::object(), err);
+    CHECK_FALSE(err);
+    CHECK(src["rows"].size() == 0u);
+    if ( had )
+	setenv("XDG_CONFIG_HOME", saved.c_str(), 1);
+    else
+	unsetenv("XDG_CONFIG_HOME");
+
+    CHECK(says(b.call("nexus.sources", { { "dir", dir } }, err, tier::editor),
+	       "needs the owner tier"));
+    src = b.call("nexus.sources", { { "dir", dir } }, err);
+    CHECK_FALSE(err);
+    REQUIRE(src["rows"].size() == 2u);
+    CHECK(src["rows"][0]["name"] == "fake");
+    CHECK(src["rows"][0]["transport"] == "stdio");
+    CHECK(src["rows"][0]["tools"][0]["op"] == "list_tasks");
+    CHECK(src["rows"][0]["tools"][0]["tool"] == "tasks");
+
+    CHECK(says(b.call("nexus.sync", { { "source", "fake" } }, err, tier::proposer),
+	       "requires editor"));
+    CHECK(says(b.call("nexus.sync", { { "source", "nowhere" } }, err, tier::editor),
+	       "no source 'nowhere'"));
+    json s = b.call("nexus.sync", { { "source", "fake" } }, err, tier::editor);
+    CHECK_FALSE(err);
+    CHECK(s["rows"] == 2);
+    CHECK(s["created"] == 1);
+    CHECK(s["updated"] == 0);
+    CHECK(s["skipped"] == 1);				// the keyless row
+    json tasks = b.call("nexus.records", { { "rkind", "task" } }, err)["rows"];
+    REQUIRE(tasks.size() == 1u);
+    CHECK(tasks[0]["origin"] == "fake");
+    CHECK(tasks[0]["ext_key"] == "7");
+    CHECK(tasks[0]["state"] == "active");
+    CHECK(tasks[0]["fields"]["title"] == "Ship it");
+    s = b.call("nexus.sync", { { "source", "fake" } }, err, tier::editor);
+    CHECK(s["created"] == 0);
+    CHECK(s["updated"] == 1);
+    CHECK(b.call("nexus.records", { { "rkind", "task" } }, err)["rows"].size() == 1u);
+
+    // A server that exits before answering: the error and its exit status.
+    s = b.call("nexus.sync", { { "source", "dead" } }, err, tier::editor);
+    CHECK(err);
+    CHECK(says(s, "dead: the server went away"));
+    CHECK(s["exit_status"] == 3);
+
+    // A tool the server does not advertise refuses the whole sync.
+    json more = vocab;
+    more["get_task"] = { { "tool", "nope" } };
+    write_manifest(dir, "a.mcp.json", { { "name", "fake" }, { "command", { "sh", script } },
+					 { "vocabulary", more } });
+    b.call("nexus.sources", { { "dir", dir } }, err);
+    CHECK(says(b.call("nexus.sync", { { "source", "fake" } }, err, tier::editor),
+	       "tool 'nope' (vocabulary get_task) is not advertised"));
+
+    // A manifest's refusal names its file; nothing is replaced.
+    write_manifest(dir, "c.mcp.json", { { "name", "c" }, { "transport", "carrier-pigeon" },
+					 { "command", { "true" } } });
+    CHECK(says(b.call("nexus.sources", { { "dir", dir } }, err), "c.mcp.json: unknown transport"));
+    write_manifest(dir, "c.mcp.json", { { "name", "c" }, { "transport", "http" },
+					 { "command", { "true" } } });
+    CHECK(says(b.call("nexus.sources", { { "dir", dir } }, err), "is not served yet"));
+    write_manifest(dir, "c.mcp.json", { { "name", "c" }, { "command", { "true" } },
+					 { "vocabulary", { { "list_bugs", { { "tool", "x" } } } } } });
+    CHECK(says(b.call("nexus.sources", { { "dir", dir } }, err),
+	       "unknown vocabulary key 'list_bugs'"));
+    CHECK(b.call("nexus.sources", json::object(), err)["rows"].size() == 2u);
+
+    const char *const made[] = { "/a.mcp.json", "/b.mcp.json", "/c.mcp.json", "/server.sh",
+				 "/dead.sh" };
+    for ( const char *f : made )
+	std::remove((dir + f).c_str());
+    rmdir(dir.c_str());
+}

@@ -19,7 +19,8 @@
 // The memory registers its tools into a registry and is that		//
 // registry's edit memory: graph.status / history / proposals / proposal /	//
 // accept / reject / withdraw; nexus.record / records / create / update /	//
-// close / link / unlink / context / explain; test.discover / list /	//
+// close / link / unlink / context / explain / sources / sync (an	//
+// external system's tasks, from its MCP server); test.discover / list /	//
 // candidates / run / results. With the registry's version history	//
 // (madcgit), a node's history begins with its commits.			//
 //									//
@@ -72,6 +73,24 @@ public:
     // no record of the document.
     std::string replay(hub::entity_id doc, int64_t upto) const;
 
+    // An external system nexus.sync pulls tasks from, by its manifest
+    // <dir>/<file>.mcp.json: {name, transport?: "stdio", command: [words],
+    // env?: {K: V} (POSIX), vocabulary?: {list_tasks | get_task |
+    // create_task | update_task | comment: {tool, args?, map?}}}.
+    struct source
+    {
+	std::string name, file;
+	std::string command;		// the words joined by single spaces, env prefix first
+	value ops;			// a vocabulary word -> its {tool, args?, map?}
+    };
+    // Load every <dir>/*.mcp.json (by file name), replacing the sources:
+    // false, with `why` = "<file>: <why>", on the first refusal — nothing
+    // replaced. A missing directory holds no sources.
+    bool load_sources(const std::string &dir, std::string &why);
+    // The sources: on first need, madc's user config directory's mcp/
+    // unless load_sources ran.
+    bool sources(const std::vector<source> *&out, std::string &why);
+
     // The tools over this memory, and this memory as the registry's edit
     // memory.
     void add_tools(tools::registry &r);
@@ -92,6 +111,8 @@ private:
     // the checkpoint that edit's replay starts from.
     std::map<hub::entity_id, std::string> _baseline;
     std::set<std::string> _followed;	// the paths the stream holds records of
+    std::vector<source> _sources;
+    bool _sources_loaded;
     std::string path_of(hub::entity_id doc) const;
     project(const project &);
     project &operator=(const project &);

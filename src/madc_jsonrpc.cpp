@@ -5,12 +5,15 @@
 //									//
 //////////////////////////////////////////////////////////////////////////
 
+#include <chrono>
 #include <map>
 #include <string>
+#include <thread>
 
 #include "madc_jsonrpc.h"
 #include "libmadc/value.h"
 #include "madcdis/world_text.h"	// the one value<->JSON bridge
+#include "madcdis/channel.h"	// next_line: a peer's line
 
 namespace madc {
 namespace jsonrpc {
@@ -97,6 +100,22 @@ std::string encode(const value &v)
 {
     return hub::detail::wt_value_to_json(v).dump(
 	-1, ' ', false, nlohmann::json::error_handler_t::replace);
+}
+
+int next_line(channel &io, int64_t idle_ms, std::string &line)
+{
+    const int64_t step = 10;
+    for ( int64_t waited = 0; ; waited += step )
+    {
+	const int64_t st = io.poll_state();
+	if ( st < 0 )
+	    return -1;
+	if ( st > 0 )
+	    return io.readline(line) ? 1 : -1;
+	if ( waited >= idle_ms )
+	    return 0;
+	std::this_thread::sleep_for(std::chrono::milliseconds(step));
+    }
 }
 
 } // namespace jsonrpc

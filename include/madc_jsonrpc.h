@@ -19,6 +19,7 @@
 namespace madc {
 
 class value;
+class channel;
 
 namespace jsonrpc {
 
@@ -36,7 +37,7 @@ enum class error_code : int64_t
 value response(const value &id, const value &result);
 value error_response(const value &id, error_code code, const std::string &message);
 value notification(const char *method, const value &params);
-// A request a server sends; its id is the server's own.
+// A request; its id is the sender's own.
 value request(int64_t id, const char *method, const value &params);
 
 // A message's members: NULL / "" / `dflt` / a null value when absent or of
@@ -50,6 +51,12 @@ const value &object_field(const value &v, const char *name);
 bool decode(const std::string &text, value &out);
 // A value as one line of JSON text.
 std::string encode(const value &v);
+
+// The next line a peer sends on `io` (a line-delimited JSON-RPC peer, a
+// child's JSON report), waiting at most `idle_ms`: 1 = `line`, 0 = none
+// within the deadline, -1 = the peer is gone (end of input or an error).
+// It polls — never a blocking read on a silent peer.
+int next_line(channel &io, int64_t idle_ms, std::string &line);
 
 } // namespace jsonrpc
 } // namespace madc

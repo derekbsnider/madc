@@ -236,21 +236,26 @@ bool config_file::assign(const key_spec &spec, const std::string &value,
 	return true;
 }
 
+std::string config_file::user_config_dir(const std::string &app)
+{
+	const char *xdg = getenv("XDG_CONFIG_HOME");
+	if (xdg && *xdg)
+		return std::string(xdg) + "/" + app;
+	const char *home = getenv("HOME");
+	if (home && *home)
+		return std::string(home) + "/.config/" + app;
+	return std::string();
+}
+
 std::vector<std::string> config_file::search_paths() const
 {
 	std::vector<std::string> paths;
 	// 1. The current directory — a per-project config, the common case.
 	paths.push_back(_app + ".ini");
 	// 2. The user config directory (XDG; honoured on macOS too when set).
-	const char *xdg = getenv("XDG_CONFIG_HOME");
-	if (xdg && *xdg)
-		paths.push_back(std::string(xdg) + "/" + _app + "/" + _app + ".ini");
-	else {
-		const char *home = getenv("HOME");
-		if (home && *home)
-			paths.push_back(std::string(home) + "/.config/" + _app
-					+ "/" + _app + ".ini");
-	}
+	const std::string user = user_config_dir(_app);
+	if (!user.empty())
+		paths.push_back(user + "/" + _app + ".ini");
 	// 3. The system config directory, baked at build time from $(sysconfdir).
 #ifdef MADC_SYSCONFDIR
 	paths.push_back(std::string(MADC_SYSCONFDIR) + "/" + _app + ".ini");

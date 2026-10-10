@@ -1,11 +1,12 @@
 //////////////////////////////////////////////////////////////////////////
 //									//
-// madc_mcp.cpp — the Model Context Protocol server (contract in		//
-// include/madc_mcp.h). The methods convert once to an enum; the tools	//
-// are the registry's.							//
+// madc_mcp.cpp — the Model Context Protocol server and client		//
+// (contract in include/madc_mcp.h). The methods convert once to an	//
+// enum; the tools are the registry's.					//
 //									//
 //////////////////////////////////////////////////////////////////////////
 
+#include <chrono>
 #include <map>
 #include <string>
 #include <vector>
@@ -217,6 +218,83 @@ int server::serve(channel &io)
 	}
     }
     return 0;
+}
+
+bool client::call(const char *method, const value &params, value &result,
+		  int64_t deadline_ms)
+{
+    const int64_t id = _next++;
+    const std::string line = encode(request(id, method, params)) + "\n";
+    if ( !_io.write(line.data(), (int64_t)line.size()) )
+    {
+	fields f;
+	f["error"] = value(std::string(_io.last_error()));
+	result = value::make_object(f);
+	return false;
+    }
+    const std::chrono::steady_clock::time_point until
+	= std::chrono::steady_clock::now() + std::chrono::milliseconds(deadline_ms);
+    for ( ;; )
+    {
+	const int64_t left = std::chrono::duration_cast<std::chrono::milliseconds>(
+	    until - std::chrono::steady_clock::now()).count();
+	std::string text;
+	const int got = next_line(_io, left > 0 ? left : 0, text);
+	if ( got <= 0 )
+	{
+	    fields f;
+	    f["error"] = value(got < 0 ? std::string("the server went away")
+				       : "no reply to " + std::string(method) + " within "
+					 + std::to_string(deadline_ms) + " ms");
+	    result = value::make_object(f);
+	    return false;
+	}
+	value reply;
+	if ( !decode(text, reply) || int_field(reply, "id", -1) != id )
+	    continue;			// not JSON, a notification, another id's
+	const value *err = field(reply, "error");
+	if ( err )
+	{
+	    fields f;
+	    f["error"] = value(text_field(*err, "message"));
+	    f["code"] = object_field(*err, "code");
+	    result = value::make_object(f);
+	    return false;
+	}
+	result = object_field(reply, "result");
+	return true;
+    }
+}
+
+void client::notify(const char *method, const value &params)
+{
+    const std::string line = encode(notification(method, params)) + "\n";
+    _io.write(line.data(), (int64_t)line.size());
+}
+
+bool client::start(value &result, int64_t deadline_ms)
+{
+    fields info, p;
+    info["name"] = value("madc");
+    info["version"] = value(sys.version);
+    p["protocolVersion"] = value(server::latest_version());
+    p["capabilities"] = value::make_object();
+    p["clientInfo"] = value::make_object(info);
+    if ( !call("initialize", value::make_object(p), result, deadline_ms) )
+	return false;
+    notify("notifications/initialized", value::make_object());
+    return true;
+}
+
+std::vector<value> client::rows_of(const value &tool_result)
+{
+    const value &content = object_field(tool_result, "content");
+    value parsed;
+    if ( !content.is_array() || content.as_array().empty()
+	 || !decode(text_field(content.as_array()[0], "text"), parsed) )
+	return std::vector<value>();
+    const value &rows = parsed.is_object() ? object_field(parsed, "rows") : parsed;
+    return rows.is_array() ? rows.as_array() : std::vector<value>();
 }
 
 } // namespace mcp

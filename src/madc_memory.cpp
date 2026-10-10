@@ -23,6 +23,8 @@
 #include "datadef.h"		// madc_self_exe_path: the running madc runs the tests
 #include "madc_memory.h"
 #include "madc_jsonrpc.h"	// a record's members; JSON lines
+#include "madc_mcp.h"		// nexus.sync: a client of a source's server
+#include "madc_config_file.h"	// nexus sources: the user config directory
 #include "madc_lang.h"		// document_handle: the served document's parse
 #include "madc_documents.h"	// the stream's file: document_read_file / _write_file
 #include "madc_file_kinds.h"	// an asset's kind: lexed and parsed
@@ -94,6 +96,23 @@ const char *const rop_names[] = { "", "create", "update", "close" };
 
 enum class lop : unsigned char { none, link, unlink };
 const char *const lop_names[] = { "", "link", "unlink" };
+
+// An external system's manifest: its transport, and its vocabulary's words
+// (the MCP tool each maps to). A synced row's field lands in a record slot:
+// the record's key, its state, or (every other name) a field.
+enum class transport : unsigned char { none, stdio, http };
+const char *const transport_names[] = { "", "stdio", "http" };
+
+enum class nexus_op : unsigned char
+{
+    none, list_tasks, get_task, create_task, update_task, comment
+};
+const char *const nexus_op_names[] = {
+    "", "list_tasks", "get_task", "create_task", "update_task", "comment"
+};
+
+enum class row_slot : unsigned char { field, key, state };
+const char *const row_slot_names[] = { "", "key", "state" };
 
 enum class ref_kind : unsigned char { none, record, symbol, commit, proposal, external };
 const char *const ref_kind_names[] = {
@@ -185,7 +204,7 @@ const std::vector<value> &items(const value &v)
 
 // ---- the stream -------------------------------------------------------
 
-project::project(hub::world &w) : _w(w), _head(0)
+project::project(hub::world &w) : _w(w), _head(0), _sources_loaded(false)
 {
     hub::mutation_context(w).text_subscribe(this);
 }
@@ -1428,35 +1447,42 @@ bool t_explain(const seat &s, const context &c, const value &args, value &out)
 
 // ---- test.* -----------------------------------------------------------
 
-// Upsert one test record by (origin "convention", ext_key = its asset):
-// true when created.
-bool test_upsert(const seat &s, const context &c, const nexus_fold &f,
-		 const std::string &name, family fam, const std::string &asset)
+// One origin's records by ext_key (the first record of a key wins).
+std::map<std::string, int64_t> origin_index(const nexus_fold &f, const std::string &origin)
 {
-    fields flds;
-    flds["name"] = value(name);
-    flds["family"] = value(name_of(family_names, fam));
-    flds["asset"] = value(asset);
-    flds["command"] = value("");
+    std::map<std::string, int64_t> index;
     for ( int64_t id : f.ids )
     {
 	const value &r = f.records.find(id)->second;
-	if ( text_field(r, "origin") == "convention" && text_field(r, "ext_key") == asset )
-	{
-	    fields rec;
-	    rec["id"] = value(id);
-	    rec["fields"] = value::make_object(flds);
-	    record_write(s, c, rop::update, rec);
-	    return false;
-	}
+	if ( text_field(r, "origin") == origin )
+	    index.insert(std::make_pair(text_field(r, "ext_key"), id));
     }
+    return index;
+}
+
+// Upsert one record by (origin, ext_key) through `index` — that origin's
+// records, kept current: true when created. An update merges the fields
+// and sets `st` (none: unchanged); a new record starts open unless `st`.
+bool upsert_record(const seat &s, const context &c, std::map<std::string, int64_t> &index,
+		   rkind rk, const std::string &origin, const std::string &ext_key,
+		   const fields &flds, rstate st)
+{
     fields rec;
-    rec["rkind"] = value(name_of(rkind_names, rkind::test));
-    rec["state"] = value(name_of(rstate_names, rstate::open));
-    rec["origin"] = value("convention");
-    rec["ext_key"] = value(asset);
     rec["fields"] = value::make_object(flds);
-    record_write(s, c, rop::create, rec);
+    std::map<std::string, int64_t>::const_iterator it = index.find(ext_key);
+    if ( it != index.end() )
+    {
+	rec["id"] = value(it->second);
+	if ( st != rstate::none )
+	    rec["state"] = value(name_of(rstate_names, st));
+	record_write(s, c, rop::update, rec);
+	return false;
+    }
+    rec["rkind"] = value(name_of(rkind_names, rk));
+    rec["state"] = value(name_of(rstate_names, st == rstate::none ? rstate::open : st));
+    rec["origin"] = value(origin);
+    rec["ext_key"] = value(ext_key);
+    index[ext_key] = record_write(s, c, rop::create, rec);
     return true;
 }
 
@@ -1469,6 +1495,7 @@ bool t_discover(const seat &s, const context &c, const value &args, value &out)
     if ( dir.empty() )
 	dir = "tests";
     int64_t created = 0, seen = 0;
+    std::map<std::string, int64_t> index = origin_index(fold_nexus(s.m.records()), "convention");
     const struct { const char *glob; family fam; } families[] = {
 	{ "/*.mad", family::mad }, { "/unit/*.cpp", family::unit }
     };
@@ -1484,8 +1511,12 @@ bool t_discover(const seat &s, const context &c, const value &args, value &out)
 		    == detail::host_path_type::file )
 		continue;
 	    ++seen;
-	    if ( test_upsert(s, c, fold_nexus(s.m.records()), detail::host_path_stem(p),
-			     fam.fam, p) )
+	    fields flds;
+	    flds["name"] = value(detail::host_path_stem(p));
+	    flds["family"] = value(name_of(family_names, fam.fam));
+	    flds["asset"] = value(p);
+	    flds["command"] = value("");
+	    if ( upsert_record(s, c, index, rkind::test, "convention", p, flds, rstate::none) )
 		++created;
 	}
     }
@@ -1600,27 +1631,17 @@ bool t_results(const seat &s, const context &c, const value &args, value &out)
 // line within idle_ms cancels it and answers false.
 bool child_lines(channel &ch, int64_t idle_ms, std::vector<std::string> &lines)
 {
-    int64_t waited = 0;
+    std::string line;
     for ( ;; )
     {
-	const int64_t st = ch.poll_state();
-	if ( st < 0 )
+	const int got = next_line(ch, idle_ms, line);
+	if ( got < 0 )
 	    return true;			// drained
-	if ( st == 0 )
+	if ( got == 0 )
 	{
-	    if ( waited >= idle_ms )
-	    {
-		ch.cancel();
-		return false;
-	    }
-	    std::this_thread::sleep_for(std::chrono::milliseconds(20));
-	    waited += 20;
-	    continue;
+	    ch.cancel();
+	    return false;
 	}
-	std::string line;
-	if ( !ch.readline(line) )
-	    return true;
-	waited = 0;
 	lines.push_back(line);
     }
 }
@@ -1900,6 +1921,251 @@ bool t_status(const seat &s, const context &c, const value &args, value &out)
     return true;
 }
 
+// ---- nexus.sources / nexus.sync: an external system's MCP server -----
+
+const int64_t mcp_reply_ms = 5000;	// initialize, tools/list
+const int64_t mcp_call_ms = 10000;	// the list_tasks call
+
+// One manifest read into `src`: false with `why` (the file's refusal).
+bool read_source(const std::string &file, project::source &src, std::string &why)
+{
+    std::string text;
+    value m;
+    if ( !document_read_file(file, text) )
+	why = "unreadable";
+    else if ( !decode(text, m) || !m.is_object() )
+	why = "not a JSON object";
+    if ( !why.empty() )
+	return false;
+    src.name = text_field(m, "name");
+    src.file = file;
+    const value &tw = object_field(m, "transport");
+    const transport tr = tw.is_null() ? transport::stdio
+	: word_of<transport>(transport_names, text_field(m, "transport"));
+    const value &cmd = object_field(m, "command");
+    if ( src.name.empty() )
+	why = "no name";
+    else if ( tr == transport::none )
+	why = "unknown transport " + encode(tw) + " (stdio | http)";
+    else if ( tr != transport::stdio )
+	why = "transport '" + text_field(m, "transport") + "' is not served yet (stdio only;"
+	    " bridge with mcp-remote)";
+    else if ( !cmd.is_array() || cmd.as_array().empty() )
+	why = "no command";
+    if ( !why.empty() )
+	return false;
+    src.command.clear();
+    for ( const value &word : cmd.as_array() )
+	src.command += (src.command.empty() ? "" : " ")
+	    + (word.is_string() ? word.as_string() : encode(word));
+    const value &env = object_field(m, "env");
+    if ( env.is_object() && !env.as_object().empty() )
+    {
+#ifdef _WIN32
+	why = "env: not supported on this platform";
+	return false;
+#else
+	std::string prefix = "env";
+	for ( const auto &kv : env.as_object() )
+	    prefix += " " + kv.first + "="
+		+ (kv.second.is_string() ? kv.second.as_string() : encode(kv.second));
+	src.command = prefix + " " + src.command;
+#endif
+    }
+    fields ops;
+    const value &vocab = object_field(m, "vocabulary");
+    if ( vocab.is_object() )
+	for ( const auto &kv : vocab.as_object() )
+	{
+	    if ( word_of<nexus_op>(nexus_op_names, kv.first) == nexus_op::none )
+		why = "unknown vocabulary key '" + kv.first + "'";
+	    else if ( text_field(kv.second, "tool").empty() )
+		why = "vocabulary '" + kv.first + "' names no tool";
+	    if ( !why.empty() )
+		return false;
+	    ops[kv.first] = kv.second;
+	}
+    src.ops = value::make_object(ops);
+    return true;
+}
+
+value source_row(const project::source &src)
+{
+    std::vector<value> tl;
+    for ( size_t op = 1; op < sizeof(nexus_op_names) / sizeof(nexus_op_names[0]); ++op )
+    {
+	const value &e = object_field(src.ops, nexus_op_names[op]);
+	if ( !e.is_object() )
+	    continue;
+	fields t;
+	t["op"] = value(nexus_op_names[op]);
+	t["tool"] = object_field(e, "tool");
+	tl.push_back(value::make_object(t));
+    }
+    fields r;
+    r["name"] = value(src.name);
+    r["transport"] = value(name_of(transport_names, transport::stdio));
+    r["file"] = value(src.file);
+    r["tools"] = value::make_array(tl);
+    return value::make_object(r);
+}
+
+// nexus.sources(dir?): the loaded manifests; `dir` (owner tier) loads that
+// directory's in their place.
+bool t_sources(const seat &s, const context &c, const value &args, value &out)
+{
+    const std::string dir = text_field(args, "dir");
+    std::string why;
+    if ( !dir.empty() && c.caller < tier::owner )
+    {
+	out = refusal(std::string("loading a directory of sources needs the owner tier (caller: ")
+		      + tools::tier_name(c.caller) + ")");
+	return false;
+    }
+    const std::vector<project::source> *srcs = 0;
+    if ( (!dir.empty() && !s.m.load_sources(dir, why)) || !s.m.sources(srcs, why) )
+    {
+	out = refusal(why);
+	return false;
+    }
+    std::vector<value> rows;
+    for ( const project::source &src : *srcs )
+	rows.push_back(source_row(src));
+    fields r;
+    r["ok"] = value(true);
+    r["rows"] = value::make_array(rows);
+    out = value::make_object(r);
+    return true;
+}
+
+// A synced row's scalar as text: a key or a state word.
+std::string scalar_text(const value &v)
+{
+    return v.is_string() ? v.as_string() : v.is_null() ? std::string() : encode(v);
+}
+
+// nexus.sync(source): ONE child per sync (the manifest's command over
+// exec://): initialize, tools/list (every vocabulary tool advertised, or
+// the sync refuses), the list_tasks call; each row renamed by its map and
+// upserted as a task record with origin = the source, by its key.
+bool t_sync(const seat &s, const context &c, const value &args, value &out)
+{
+    const std::string name = text_field(args, "source");
+    const std::vector<project::source> *srcs = 0;
+    std::string why;
+    if ( !s.m.sources(srcs, why) )
+    {
+	out = refusal(why);
+	return false;
+    }
+    const project::source *src = 0;
+    for ( const project::source &x : *srcs )
+	if ( x.name == name )
+	    src = &x;
+    if ( !src )
+    {
+	out = refusal("no source '" + name + "' (nexus.sources lists the loaded manifests)");
+	return false;
+    }
+    const value &lt = object_field(src->ops, name_of(nexus_op_names, nexus_op::list_tasks));
+    if ( !lt.is_object() )
+    {
+	out = refusal(name + ": the manifest maps no list_tasks");
+	return false;
+    }
+    channel ch(("exec://" + command_of(s, c, src->command)).c_str());
+    if ( !ch.ok() )
+    {
+	out = refusal(name + ": cannot spawn: " + ch.last_error());
+	return false;
+    }
+    mcp::client cl(ch);
+    value res;
+    auto gone = [&]() {
+	ch.close();			// reaps the child: its exit status is real after it
+	fields f;
+	f["error"] = value(name + ": " + text_field(res, "error"));
+	f["exit_status"] = value(ch.exit_status());
+	f["source"] = value(name);
+	out = value::make_object(f);
+	return false;
+    };
+    if ( !cl.start(res, mcp_reply_ms) || !cl.call("tools/list", obj(), res, mcp_reply_ms) )
+	return gone();
+    std::set<std::string> advertised;
+    for ( const value &t : items(object_field(res, "tools")) )
+	advertised.insert(text_field(t, "name"));
+    for ( size_t op = 1; op < sizeof(nexus_op_names) / sizeof(nexus_op_names[0]); ++op )
+    {
+	const std::string tool = text_field(object_field(src->ops, nexus_op_names[op]), "tool");
+	if ( !tool.empty() && !advertised.count(tool) )
+	{
+	    ch.close();
+	    out = refusal(name + ": tool '" + tool + "' (vocabulary " + nexus_op_names[op]
+			  + ") is not advertised by the server");
+	    return false;
+	}
+    }
+    fields cp;
+    cp["name"] = object_field(lt, "tool");
+    cp["arguments"] = object_field(lt, "args").is_object() ? object_field(lt, "args") : obj();
+    if ( !cl.call("tools/call", value::make_object(cp), res, mcp_call_ms) )
+	return gone();
+    ch.close_write();
+    ch.close();
+    if ( object_field(res, "isError").is_boolean() && object_field(res, "isError").as_boolean() )
+    {
+	const std::vector<value> &content = items(object_field(res, "content"));
+	out = refusal(name + ": " + text_field(lt, "tool") + " refused: "
+		      + (content.empty() ? std::string() : text_field(content[0], "text")));
+	return false;
+    }
+    const std::vector<value> rows = mcp::client::rows_of(res);
+    const value &map = object_field(lt, "map");
+    std::map<std::string, int64_t> index = origin_index(fold_nexus(s.m.records()), name);
+    int64_t created = 0, updated = 0, skipped = 0;
+    for ( const value &row : rows )
+    {
+	fields flds;
+	std::string ext_key;
+	rstate st = rstate::none;
+	if ( row.is_object() )
+	    for ( const auto &kv : row.as_object() )
+	    {
+		const std::string to = object_field(map, kv.first.c_str()).is_string()
+		    ? object_field(map, kv.first.c_str()).as_string() : kv.first;
+		switch ( word_of<row_slot>(row_slot_names, to) )
+		{
+		case row_slot::key:
+		    ext_key = scalar_text(kv.second);
+		    break;
+		case row_slot::state:
+		    if ( word_of<rstate>(rstate_names, scalar_text(kv.second)) != rstate::none )
+			st = word_of<rstate>(rstate_names, scalar_text(kv.second));
+		    break;
+		case row_slot::field:
+		    flds[to] = kv.second;
+		    break;
+		}
+	    }
+	if ( ext_key.empty() )
+	{
+	    ++skipped;			// a row with no key cannot be upserted
+	    continue;
+	}
+	(upsert_record(s, c, index, rkind::task, name, ext_key, flds, st) ? created : updated)++;
+    }
+    fields r;
+    r["ok"] = value(true);
+    r["source"] = value(name);
+    r["rows"] = value((int64_t)rows.size());
+    r["created"] = value(created);
+    r["updated"] = value(updated);
+    r["skipped"] = value(skipped);
+    out = value::make_object(r);
+    return true;
+}
+
 // ---- the table --------------------------------------------------------
 
 typedef bool (*tool_fn)(const seat &, const context &, const value &, value &);
@@ -1955,6 +2221,14 @@ const tool_row tool_rows[] = {
     { "nexus.explain", tier::observer, l_managed | l_parseable, t_explain,
       "one call for a symbol: what (compiler), depends, history (events), why /"
       " plan / constraints (records) — every row names its authority" },
+    { "nexus.sources", tier::observer, l_managed, t_sources,
+      "the external systems nexus.sync pulls from (their *.mcp.json manifests): name,"
+      " transport, file and the tools each vocabulary word maps to; dir (owner tier)"
+      " loads that directory's manifests instead" },
+    { "nexus.sync", tier::editor, l_managed, t_sync,
+      "pull a source's tasks (editor tier): spawn its MCP server, call the manifest's"
+      " list_tasks tool, upsert each row as a task record with origin = the source,"
+      " by its key -> {rows, created, updated, skipped}" },
     { "test.discover", tier::proposer, l_managed, t_discover,
       "fold the project's test families (tests/*.mad with fixtures,"
       " tests/unit/*.cpp) into test records by the canonical conventions"
@@ -2037,6 +2311,11 @@ value tool_schema(const std::string &name)
 	p["ref"] = refp;
 	p["detail"] = tools::property("string", "summary | full (optional; default summary)");
     }
+    else if ( name == "nexus.sources" )
+	p["dir"] = tools::property("string", "load this directory's *.mcp.json manifests (optional;"
+			" owner tier; default: madc's user config directory's mcp/)");
+    else if ( name == "nexus.sync" )
+	p["source"] = tools::property("string", "a source's name (nexus.sources lists them)");
     else if ( name == "test.discover" )
 	p["dir"] = tools::property("string", "the tests directory (optional; default tests)");
     else if ( name == "test.list" )
@@ -2063,6 +2342,44 @@ value tool_schema(const std::string &name)
 void project::set_manifest(const std::string &path)
 {
     _manifest = path;
+}
+
+bool project::load_sources(const std::string &dir, std::string &why)
+{
+    std::vector<std::string> files;
+    detail::glob_paths(dir + "/*.mcp.json", files);
+    std::sort(files.begin(), files.end());
+    std::vector<source> loaded;
+    std::set<std::string> names;
+    for ( const std::string &file : files )
+    {
+	source src;
+	std::string fwhy;
+	if ( read_source(file, src, fwhy) && !names.insert(src.name).second )
+	    fwhy = "the source '" + src.name + "' is already loaded";
+	if ( !fwhy.empty() )
+	{
+	    why = file + ": " + fwhy;
+	    return false;
+	}
+	loaded.push_back(src);
+    }
+    _sources.swap(loaded);
+    _sources_loaded = true;
+    return true;
+}
+
+bool project::sources(const std::vector<source> *&out, std::string &why)
+{
+    if ( !_sources_loaded )
+    {
+	const std::string user = cfg::config_file::user_config_dir("madc");
+	if ( !user.empty() && !load_sources(user + "/mcp", why) )
+	    return false;
+	_sources_loaded = true;
+    }
+    out = &_sources;
+    return true;
 }
 
 void project::add_tools(tools::registry &r)

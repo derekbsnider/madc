@@ -1,8 +1,9 @@
 //////////////////////////////////////////////////////////////////////////
 //									//
-// madc::mcp — the Model Context Protocol server (split arc 1C, plan	//
+// madc::mcp — the Model Context Protocol (split arc 1C, plan		//
 // 2026-10-09-madc-madcide-split-arc.md item 13). JSON-RPC 2.0, one	//
-// message per line (MCP's stdio transport). A server serves a tool	//
+// message per line (MCP's stdio transport) — a server, and a client of	//
+// another program's server (nexus.sync). A server serves a tool		//
 // registry (include/madc_tools.h) over a document of a hub world (a	//
 // project's: the one a call's `file` names):				//
 // tools/list advertises the registry's rows, tools/call runs one at	//
@@ -11,7 +12,8 @@
 // knows no transport; serve() is the line loop.			//
 //									//
 // Thread contract (C++ standard library convention): one server, used	//
-// from one thread, over a registry and a world that thread owns.	//
+// from one thread, over a registry and a world that thread owns; one	//
+// client per channel, used from one thread.				//
 //									//
 //////////////////////////////////////////////////////////////////////////
 
@@ -21,6 +23,7 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <vector>
 
 #include "madc_tools.h"
 
@@ -65,6 +68,31 @@ private:
     hub::entity_id _doc;
     tools::tier _caller;
     documents _documents;
+};
+
+// A client of one MCP server over `io` (one message per line — a child's
+// stdio through exec://): each request waits at most `deadline_ms` for its
+// reply, matched by id; a notification, another id's message and a line
+// that is not JSON are skipped, never trusted. A refused call answers
+// {error, code?} in `result` (a gone server's exit status is the channel's
+// once its owner closes it).
+class client
+{
+public:
+    explicit client(channel &io) : _io(io), _next(1) {}
+    // initialize (this client's protocol revision and info), then the
+    // initialized notification.
+    bool start(value &result, int64_t deadline_ms);
+    bool call(const char *method, const value &params, value &result,
+	      int64_t deadline_ms);
+    void notify(const char *method, const value &params);
+    // A tool result's ROWS: its first text content read as JSON — an array,
+    // or an object's "rows"; none otherwise.
+    static std::vector<value> rows_of(const value &tool_result);
+
+private:
+    channel &_io;
+    int64_t _next;
 };
 
 } // namespace mcp
