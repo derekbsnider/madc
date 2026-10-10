@@ -213,3 +213,29 @@ TEST_CASE("host_path_drop_extension / host_path_stem: the final component's last
 	CHECK(host_path_stem("dir\\demo.c") == "dir\\demo");	// '\' is a name character
 #endif
 }
+
+// held_file: one process at a time holds a file (discovery's ownership and
+// liveness). ORACLE: flock(2) — an exclusive lock on one open file refuses a
+// second open file's non-blocking LOCK_EX with EWOULDBLOCK, in this process
+// as in any other (flock locks belong to the open file, not the process).
+TEST_CASE("held_file: one holder at a time; release(true) removes the file")
+{
+    const std::string path = std::string(std::getenv("TMPDIR") ? std::getenv("TMPDIR") : "/tmp")
+	+ "/madc_held_file_unit.json";
+    std::remove(path.c_str());
+    CHECK_FALSE(madc::detail::host_file_held(path));	// no file: no holder
+    madc::detail::held_file a, b;
+    REQUIRE(a.open_held(path));
+    CHECK(a.held());
+    CHECK(madc::detail::host_file_held(path));
+    CHECK_FALSE(b.open_held(path));			// held elsewhere
+    CHECK(a.replace("{\"x\":1}\n"));
+    a.release();
+    CHECK_FALSE(madc::detail::host_file_held(path));	// let go: no live holder
+    REQUIRE(b.open_held(path));
+    b.release(true);
+    FILE *gone = std::fopen(path.c_str(), "r");
+    CHECK(gone == NULL);					// removed with the hold
+    if ( gone )
+	std::fclose(gone);
+}

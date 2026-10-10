@@ -119,6 +119,10 @@ public:
     {
 	return _w.doc_set_parse(id, handle, version);
     }
+    bool doc_set_parse_tu(entity_id id, const ProjectTU &tu)
+    {
+	return _w.doc_set_parse_tu(id, tu);
+    }
     bool doc_checkpoint(entity_id id, const madc::value &app_meta)
     {
 	return _w.doc_checkpoint(id, app_meta);

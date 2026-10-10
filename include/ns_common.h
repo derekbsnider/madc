@@ -265,6 +265,7 @@ bool madc_code_close(int64_t code);
 // public over a document) reaches the hub world src/ns_ui.cpp owns. NULL for
 // a closed or unknown handle. The world is session-thread state.
 namespace madc { namespace hub { class world; } }
+struct ProjectTU;	// madc_project.h: a project TU's manifest entry
 madc::hub::world *madc_ui_world(int64_t w);
 
 // The ONE percent-decoder (js::decodeURIComponent's body, src/ns_js.cpp):
@@ -277,6 +278,11 @@ std::string *js_decodeURIComponent(std::string *result, const char *input);
 std::string *js_encodeURIComponent(std::string *result, const char *input);
 
 int64_t madc_parse_open(void *source, void *filename, int64_t standard);
+// A project TU's live text (a served project's document): the manifest
+// entry's options apply at open and at every refresh, as the --project build
+// applies them; 0 = refused (an unknown -stdlib flavor, a bad standard).
+int64_t madc_parse_open_tu(void *source, void *filename, int64_t standard,
+			   const ProjectTU *tu);
 int64_t madc_parse_open_file(void *path);
 bool madc_parse_refresh(int64_t handle, void *source);
 bool madc_parse_close(int64_t handle);

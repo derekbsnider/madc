@@ -1,0 +1,101 @@
+// Unit battery for madc::discovery (split arc 1C item 16;
+// include/madc_discovery.h): the advertisement directory, a key's one owner
+// and the scan. ORACLE: madcide's session discovery
+// (tools/madcide/madcide_discover.inc) for the directory's resolution order
+// and the slug; flock(2) for the hold — a second open file's claim on a held
+// key is refused in this process as in any other.
+
+#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+#include "doctest.h"
+
+thread_local bool madc_verbose = false;
+#define DBG(x) do { if(madc_verbose){x;} } while(0)
+
+#include <cstdio>
+#include <cstdlib>
+#include <string>
+#include <vector>
+#include <unistd.h>
+
+#include "madc_discovery.h"
+#include "libmadc/sysinfo.h"
+
+using madc::discovery::claim;
+using madc::discovery::claim_result;
+
+namespace {
+
+std::string temp_dir()
+{
+    char tmpl[] = "/tmp/madc_discovery_XXXXXX";
+    char *made = mkdtemp(tmpl);
+    return made ? std::string(made) : std::string();
+}
+
+int64_t int_of(const madc::value &rec, const char *key)
+{
+    return rec.as_object().at(key).as_integer();
+}
+
+} // namespace
+
+TEST_CASE("the advertisement directory: MADC_SESSION_DIR, XDG_STATE_HOME, the home")
+{
+    setenv("MADC_SESSION_DIR", "/over/here", 1);
+    CHECK(madc::discovery::session_dir() == "/over/here");
+    unsetenv("MADC_SESSION_DIR");
+    setenv("XDG_STATE_HOME", "/state", 1);
+    CHECK(madc::discovery::session_dir() == "/state/madc/sessions");
+    unsetenv("XDG_STATE_HOME");
+    setenv("HOME", "/home/someone", 1);
+    CHECK(madc::discovery::session_dir() == "/home/someone/.local/state/madc/sessions");
+    CHECK(madc::discovery::slug("/work/app/app.prj.json") == "work_app_app.prj.json");
+    CHECK(madc::discovery::slug("Z:\\work\\my app") == "Z__work_my_app");
+}
+
+TEST_CASE("one owner per key: the second claim is refused with the owner's record")
+{
+    const std::string dir = temp_dir();
+    REQUIRE_FALSE(dir.empty());
+    const std::string sessions = dir + "/sessions";
+    setenv("MADC_SESSION_DIR", sessions.c_str(), 1);
+    const std::string key = "/work/app/app.prj.json";
+    std::string path;
+    {
+	claim first;
+	madc::value holder;
+	madc::value rec = madc::value::make_object();
+	rec.object()["project"] = madc::value(key);
+	REQUIRE(first.take(key, rec, holder) == claim_result::owner);	// the directory made
+	path = first.path();
+	CHECK(path == sessions + "/work_app_app.prj.json.json");
+
+	claim second;
+	CHECK(second.take(key, madc::value::make_object(), holder) == claim_result::held_elsewhere);
+	REQUIRE(holder.is_object());
+	CHECK(int_of(holder, "pid") == madc::sys.pid);
+	CHECK(holder.as_object().at("project").as_string() == key);
+	CHECK(holder.as_object().at("key").as_string() == key);
+
+	std::vector<madc::value> live = madc::discovery::scan();
+	REQUIRE(live.size() == 1u);
+	CHECK(live[0].as_object().at("file").as_string() == path);
+
+	claim other;
+	CHECK(other.take("/work/other", madc::value::make_object(), holder) == claim_result::owner);
+	CHECK(madc::discovery::scan().size() == 2u);
+    }
+    FILE *gone = std::fopen(path.c_str(), "r");
+    CHECK(gone == NULL);					// released: the record goes
+    if ( gone )
+	std::fclose(gone);
+    CHECK(madc::discovery::scan().empty());
+    {
+	claim again;
+	madc::value holder;
+	CHECK(again.take(key, madc::value::make_object(), holder) == claim_result::owner);
+    }
+    unsetenv("MADC_SESSION_DIR");
+    rmdir(sessions.c_str());
+    rmdir(dir.c_str());
+}

@@ -296,7 +296,8 @@ int64_t document_handle(hub::world &w, hub::entity_id e, value *checked)
     if ( !handle )
     {
 	std::string name = d->path().empty() ? "untitled" : d->path();
-	handle = madc_parse_open(&text, &name, standard);
+	handle = d->parse_tu() ? madc_parse_open_tu(&text, &name, standard, d->parse_tu())
+			       : madc_parse_open(&text, &name, standard);
 	if ( !handle )
 	    return 0;
 	if ( checked )
@@ -309,6 +310,20 @@ int64_t document_handle(hub::world &w, hub::entity_id e, value *checked)
     hub::mutation_context mc(w);
     mc.doc_set_parse(e, handle, version);
     return handle;
+}
+
+bool document_set_tu(hub::world &w, hub::entity_id e, const ProjectTU &tu)
+{
+    const hub::document *d = w.doc_of(e);
+    if ( !d )
+	return false;
+    hub::mutation_context mc(w);
+    if ( d->parse_handle() )
+    {
+	madc_parse_close(d->parse_handle());
+	mc.doc_set_parse(e, 0, 0);
+    }
+    return mc.doc_set_parse_tu(e, tu);
 }
 
 bool document_close(hub::world &w, hub::entity_id e)

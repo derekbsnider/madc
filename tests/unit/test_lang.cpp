@@ -31,6 +31,7 @@ thread_local bool madc_verbose = false;
 #include "datatokens.h"
 #include "madc.h"
 #include "madcdis/hub.h"
+#include "madcdis/verbs.h"	// mutation_context: an edit's refresh
 #include "madc_lang.h"
 #include "ns_common.h"		// madc_project_open / madc_parse_*: a project TU's handle
 #include "madc/bits/file_kinds"
@@ -334,4 +335,29 @@ TEST_CASE("a project TU's handle keeps its manifest options across a refresh")
     std::remove(tu.c_str());
     std::remove(manifest.c_str());
     rmdir(dir.c_str());
+}
+
+// A served project's document parses as its TU (madc --mcp --project): its
+// manifest entry's -D reaches the live text's parse, at open and refresh.
+// ORACLE: gcc -fsyntax-only -DLANG_TU_VALUE=7 tu.c: clean; without: #error.
+TEST_CASE("a document set to parse as a project TU takes the TU's options")
+{
+    const char *text = "#if LANG_TU_VALUE != 7\n#error no define\n#endif\n"
+	"int f(void) { return LANG_TU_VALUE; }\n";
+    world w;
+    entity_id doc = open_doc(w, text, madc::fkC17, "/nowhere/tu.c");
+    std::vector<lang::diagnostic> ds;
+    REQUIRE(lang::diagnostics(w, doc, ds));
+    CHECK_FALSE(ds.empty());				// no -D: the #error fires
+    ProjectTU tu;
+    tu.file = "/nowhere/tu.c";
+    tu.working_dir = "/nowhere";
+    tu.defines.push_back("LANG_TU_VALUE=7");
+    REQUIRE(lang::document_set_tu(w, doc, tu));
+    REQUIRE(lang::diagnostics(w, doc, ds));
+    CHECK(ds.empty());					// the TU's -D applies
+    madc::hub::mutation_context mc(w);
+    REQUIRE(mc.text_replace(doc, 0, 0, "\n"));
+    REQUIRE(lang::diagnostics(w, doc, ds));
+    CHECK(ds.empty());					// and survives a refresh
 }

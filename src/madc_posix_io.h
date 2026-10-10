@@ -123,6 +123,38 @@ long long fd_size(int fd);
 // to non-seekable.
 bool fd_is_regular_file(int fd);
 
+// A file held EXCLUSIVELY by this process while the object lives — THE owner
+// of "one process at a time holds this file" (discovery: a project's one
+// owner, a session's liveness). open_held opens `path` (created when missing;
+// owner-only on POSIX) and takes the hold without waiting: false when another
+// process holds it, or the file cannot be opened. The OS drops the hold when
+// the process ends, however it ends, so a crash leaves no live holder — the
+// liveness question a pid cannot answer (pids are reused). POSIX: flock on
+// the open file; Win32: LockFileEx on one byte far past any content, so a
+// reader of the file is never refused. replace() rewrites the content through
+// the held descriptor; release() (and the destructor) drops the hold, and
+// release(true) removes the file with it — never another holder's: on POSIX
+// a hold is taken only while the path still names the held file (the lock-file
+// re-check), and on Win32 a file another process has open refuses deletion.
+class held_file
+{
+public:
+	held_file() : _fd(-1) {}
+	~held_file() { release(); }
+	bool open_held(const std::string &path);
+	bool held() const { return _fd >= 0; }
+	bool replace(const std::string &text);
+	void release(bool remove = false);
+private:
+	int _fd;
+	std::string _path;
+	held_file(const held_file &);
+	held_file &operator=(const held_file &);
+};
+// Does a live process hold `path` (a held_file)? A try on a descriptor of
+// its own, given back at once; false for a missing file.
+bool host_file_held(const std::string &path);
+
 // Positioned read/write on an fd (POSIX pread/pwrite): EINTR-retrying,
 // never moves the file pointer; -1 with errno on failure. The Win32 arm
 // rides ReadFile/WriteFile with an OVERLAPPED offset behind these

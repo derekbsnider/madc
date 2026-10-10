@@ -1,0 +1,7 @@
+"id":2,"jsonrpc":"2.0","result":{"content":[{"text":"{\"nodes\":[{\"column\":0,\"end_line\":14,
+\"name\":\"add\"
+"id":3,"jsonrpc":"2.0","result":{"content":[{"text":"{\"nodes\":[{\"column\":0,\"end_line\":19,
+\"name\":\"main\"
+tests/nowhere.c is not a file of the project
+"isError":true
+"file":{"description":"the project file the call acts on

@@ -5438,10 +5438,11 @@ void register_run_channel_factories(::Program &self)
 
 } // namespace
 
-int64_t internal_program_parse_open(::Program &self,
-				    const std::string &source_text,
-				    const std::string &display_name,
-				    int64_t standard)
+// Text-open core: `tu` (a project TU's live text — a document of a served
+// project) takes the manifest entry's options as the file open does.
+static int64_t parse_open_text_with(::Program &self, const std::string &source_text,
+				    const std::string &display_name, int64_t standard,
+				    const ProjectTU *tu)
 {
     // A standard is a code the --std= table spells, or a family head
     // (madc::fkC / fkCPP / fkMADC): the family's default, as the CLI compiles
@@ -5459,12 +5460,38 @@ int64_t internal_program_parse_open(::Program &self,
     st->display_name = display_name;
     st->source_text = source_text;
     st->standard = standard;
-    st->include_paths = self.include_paths;
+    if ( tu )
+    {
+	st->tu = *tu;
+	st->has_tu = true;
+    }
+    else
+	st->include_paths = self.include_paths;
     st->child = new ::Program(self.engine);
-    parse_handle_child_init(*st->child, *st);
+    if ( !parse_handle_child_init(*st->child, *st) )
+    {
+	delete st;
+	return 0;
+    }
     compile_source_child_frontend(self, *st->child, source_text,
 				  display_name);
     return parse_tu_handles().open(st);
+}
+
+int64_t internal_program_parse_open(::Program &self,
+				    const std::string &source_text,
+				    const std::string &display_name,
+				    int64_t standard)
+{
+    return parse_open_text_with(self, source_text, display_name, standard,
+				(const ProjectTU *)0);
+}
+
+int64_t internal_program_parse_open_tu(::Program &self, const std::string &source_text,
+				       const std::string &display_name, int64_t standard,
+				       const ProjectTU &tu)
+{
+    return parse_open_text_with(self, source_text, display_name, standard, &tu);
 }
 
 // File-open core: the lexer owns SOURCE ingestion (tokenize(path) reads

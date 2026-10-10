@@ -86,6 +86,18 @@ it), \fBgraph.diff\fR, a read's \fBrev\fR argument, and the commits in a
 node's \fBgraph.history\fR. A tool's result is JSON text content; a refusal
 is error content.
 .TP
+.BR \-\-mcp " " \-\-project " " \fIproject\fR
+The same server for a project: a manifest, or a single file (one
+translation unit). Its translation units are the served documents, each
+parsed as the manifest compiles it; a tool's \fBfile\fR argument names one
+(the first by default). The project memory is kept in
+.IB project-less-its-extension .events
+beside it. A project has one server at a time: a second refuses, naming the
+first one's process id (the claim is advertised in
+.BR $MADC_SESSION_DIR ,
+else \fB$XDG_STATE_HOME/madc/sessions\fR, else
+\fB~/.local/state/madc/sessions\fR).
+.TP
 .BR \-i ", " \-\-interactive " [" \fIfile\fR ]
 The REPL, even when standard input is not a terminal. With a
 .IR file ,

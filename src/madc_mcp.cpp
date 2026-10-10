@@ -152,6 +152,15 @@ bool server::handle(const value &message, value &reply)
 	    f["description"] = value(t.description + " (requires "
 				     + tools::tier_name(t.least) + ")");
 	    f["inputSchema"] = t.input_schema;
+	    if ( _documents && t.input_schema.is_object() )
+	    {
+		value &props = f["inputSchema"].object()["properties"];
+		if ( !props.is_object() )
+		    props = value::make_object();
+		props.object()["file"] = tools::property("string", "the project file the"
+							 " call acts on (optional; default:"
+							 " the served one)");
+	    }
 	    rows.push_back(value::make_object(f));
 	}
 	fields r;
@@ -168,9 +177,18 @@ bool server::handle(const value &message, value &reply)
 				   "Unknown tool: " + tool);
 	    return true;
 	}
-	tools::context c = { _w, _doc, _caller, -1 };	// the lone local client
+	const value &args = object_field(params, "arguments");
+	const std::string file = text_field(args, "file");
+	hub::entity_id doc = _doc;
+	std::string why;
+	if ( _documents && !file.empty() && !(doc = _documents(file, why)) )
+	{
+	    reply = response(id, tool_content(tools::refusal(why), false));
+	    return true;
+	}
+	tools::context c = { _w, doc, _caller, -1 };	// the lone local client
 	value result;
-	bool ok = _tools.call(c, tool, object_field(params, "arguments"), result);
+	bool ok = _tools.call(c, tool, args, result);
 	reply = response(id, tool_content(result, ok));
 	return true;
     }

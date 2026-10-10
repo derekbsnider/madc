@@ -33,6 +33,7 @@
 #include <vector>
 
 #include "libmadc/value.h"
+#include "madc_project.h"	// ProjectTU: a served project's document parses as its TU
 #include "madc/bits/ui_enums"	// ui::text_change_kind — the shared enum text
 
 namespace madc {
@@ -105,13 +106,15 @@ class document
     uint64_t    _saved_version;	// the text's version when last saved/loaded
     int64_t     _parse_handle;	// 0 = none — an opaque compiler-side handle
     uint64_t    _parse_version;	// the text version the handle was parsed from
+    ProjectTU   _parse_tu;	// the TU it parses as (when _has_tu)
+    bool        _has_tu;
     std::vector<anchor> _anchors;
     anchor_id   _next_anchor;
 
 public:
     document()
 	: _kind(0), _read_only(false), _saved_version(0), _parse_handle(0),
-	  _parse_version(0), _next_anchor(1) {}
+	  _parse_version(0), _has_tu(false), _next_anchor(1) {}
 
     // --- identity
     const std::string &path() const { return _path; }
@@ -138,6 +141,15 @@ public:
     {
 	_parse_handle = handle;
 	_parse_version = version;
+    }
+    // The TU a served project's document parses as (split arc 1C): its
+    // manifest entry's -I, -D and standard, as the --project build compiles
+    // it; none (NULL) = the opener's include list. madc::lang reads it.
+    const ProjectTU *parse_tu() const { return _has_tu ? &_parse_tu : 0; }
+    void set_parse_tu(const ProjectTU &tu)
+    {
+	_parse_tu = tu;
+	_has_tu = true;
     }
 
     // --- anchors (design §2.3)

@@ -34,6 +34,7 @@
 
 #include "highlight_class.h"
 #include "madc/bits/diag_enums"
+#include "madc_project.h"	// ProjectTU: a served project's document
 
 namespace madc {
 
@@ -91,6 +92,11 @@ int64_t document_handle(hub::world &w, hub::entity_id e,
 // The door's other side: the document closed, its parse handle with it.
 // False when there is no such document.
 bool document_close(hub::world &w, hub::entity_id e);
+// The document parses as project TU `tu` (a served project's document): its
+// manifest entry's -I, -D and standard, as the --project build compiles it —
+// the handle so far closed, the next document_handle parses under it. False
+// when there is no such document.
+bool document_set_tu(hub::world &w, hub::entity_id e, const ProjectTU &tu);
 
 // Each answer below parses through document_handle first; false = no
 // handle (and an empty answer).

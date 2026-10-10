@@ -566,6 +566,14 @@ public:
 	d->second.set_parse(handle, version);
 	return true;
     }
+    bool doc_set_parse_tu(entity_id id, const ProjectTU &tu)
+    {
+	std::map<entity_id, document>::iterator d = _docs.find(id);
+	if ( d == _docs.end() )
+	    return false;
+	d->second.set_parse_tu(tu);
+	return true;
+    }
     // The document-level history (design §2.4): the payload rides the
     // application's meta under "app" plus the anchors and the saved
     // version, so undo restores the document, its anchors and whether it

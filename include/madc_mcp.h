@@ -3,7 +3,8 @@
 // madc::mcp — the Model Context Protocol server (split arc 1C, plan	//
 // 2026-10-09-madc-madcide-split-arc.md item 13). JSON-RPC 2.0, one	//
 // message per line (MCP's stdio transport). A server serves a tool	//
-// registry (include/madc_tools.h) over one document of a hub world:	//
+// registry (include/madc_tools.h) over a document of a hub world (a	//
+// project's: the one a call's `file` names):				//
 // tools/list advertises the registry's rows, tools/call runs one at	//
 // the caller's tier and answers its result as JSON text content (a	//
 // refusal is isError content). handle() answers one decoded message and	//
@@ -18,6 +19,7 @@
 #define __MADC_MCP_H 1
 
 #include <cstdint>
+#include <functional>
 #include <string>
 
 #include "madc_tools.h"
@@ -49,11 +51,20 @@ public:
     // server does not speak.
     static const char *latest_version();
 
+    // A project's documents (madc --mcp --project): a call's `file`
+    // argument to its document (the project's TU, opened on first use); 0,
+    // with `why`, refused. Set, every tool advertises `file`, and a call
+    // naming one acts on that document — naming none, on the served one.
+    typedef std::function<hub::entity_id(const std::string &file, std::string &why)>
+	documents;
+    void set_documents(const documents &d) { _documents = d; }
+
 private:
     tools::registry &_tools;
     hub::world &_w;
     hub::entity_id _doc;
     tools::tier _caller;
+    documents _documents;
 };
 
 } // namespace mcp

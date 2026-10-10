@@ -58,6 +58,11 @@ const char *project_kind_name(ProjectKind kind);
 // and sets `err`.
 bool read_project_manifest(const std::string &path,
 			   ProjectManifest &out, std::string &err);
+// A project at `path`: a manifest (".json": read_project_manifest's two
+// shapes), or a single source file — the one-TU project, its directory the
+// TU's (madc --mcp --project FILE). False + err when neither reads.
+bool project_of_path(const std::string &path, ProjectManifest &out,
+		     std::string &err);
 
 // The manifest's one WRITER, beside its reader (split arc 1B.8): each call
 // is a read-modify-write of the native manifest's JSON object that keeps

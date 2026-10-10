@@ -50,6 +50,9 @@
 #include "madc_mcp.h"     // madc --mcp: the MCP server (split arc 1C)
 #include "madc_memory.h"  // madc --mcp: the session's project memory
 #include "madc_module_tools.h"	// madc --mcp: a loaded module's tools
+#include "madc_discovery.h"	// madc --mcp --project: one owner per project
+#include "madc_jsonrpc.h"	// madc --mcp --project: the owner's record
+#include "madc_lang.h"	// madc --mcp --project: a TU's document parses as its TU
 #include "madcdis/channel.h" // madc --lsp: stdin/stdout, Content-Length framed
 #include "madc_ex.h"      // colon mode: the host's ex session (D24)
 #include "madc_documents.h" // the host's buffer: madc -i FILE's file
@@ -637,6 +640,21 @@ static int run_lsp(std::unique_ptr<Program> prog, const char *file,
 // its loaded modules bring (-lmadcgit: the version history). The
 // configured Program is the active runtime Program for the server's life, as
 // for --lsp.
+// The registry a madc --mcp server serves: the code-graph tools, the
+// session's project memory, and the tools the Program's loaded modules bring
+// (-lmadcgit: the version history, 1C.14).
+static void add_mcp_tools(Program &prog, madc::tools::registry &tools,
+			  madc::memory::project &memory)
+{
+    madc::tools::add_graph_tools(tools);
+    memory.add_tools(tools);
+    if ( prog.is_auto_library_loading_enabled() )
+	for ( const madc::dis::istring &spelling : prog.loaded_modules() )
+	    if ( madc_module_tools_fn add = reinterpret_cast<madc_module_tools_fn>(
+		     madc_module_entry_point(spelling, madc_module_entry::tools)) )
+		add(tools);
+}
+
 static int run_mcp(std::unique_ptr<Program> prog, const char *file)
 {
     madc::channel io("stdio://");
@@ -651,15 +669,95 @@ static int run_mcp(std::unique_ptr<Program> prog, const char *file)
 	return 1;
     }
     madc::tools::registry tools;
-    madc::tools::add_graph_tools(tools);
-    memory.add_tools(tools);
-    // The modules' tools (1C.14): the loaded madcgit brings the history.
-    if ( prog->is_auto_library_loading_enabled() )
-	for ( const madc::dis::istring &spelling : prog->loaded_modules() )
-	    if ( madc_module_tools_fn add = reinterpret_cast<madc_module_tools_fn>(
-		     madc_module_entry_point(spelling, madc_module_entry::tools)) )
-		add(tools);
+    add_mcp_tools(*prog, tools, memory);
     madc::mcp::server server(tools, w, doc, madc::tools::tier::owner);
+    int rc = server.serve(io);
+    prog->pop_runtime_scope();
+    return rc;
+}
+
+// madc --mcp --project X (split arc 1C, item 16): the headless MCP server for
+// a project — X a manifest, or a single file (the one-TU case). The served
+// documents are the project's TUs, each parsing as its manifest entry (as the
+// --project build compiles it); a call's `file` names one, the first TU
+// otherwise. The project memory lives beside the project, in <X less its
+// extension>.events, so a headless agent's proposal waits there for an
+// editor. ONE OWNER PER PROJECT: the first process to claim the project
+// advertises it (madc::discovery); a second refuses, naming the owner.
+static int run_mcp_project(std::unique_ptr<Program> prog, const char *path,
+			   const ProjectManifest &manifest)
+{
+    if ( manifest.tus.empty() )
+    {
+	std::cerr << "madc: --mcp --project: " << path << " names no translation unit"
+		  << std::endl;
+	return 1;
+    }
+    const std::string project = madc::detail::canonical_path_for_compare(path);
+    std::map<std::string, madc::value> advert;
+    advert["madc"] = madc::value((int64_t)1);
+    advert["project"] = madc::value(project);
+    advert["serves"] = madc::value::make_array(std::vector<madc::value>(1, madc::value("mcp")));
+    madc::discovery::claim claim;
+    madc::value holder;
+    if ( claim.take(project, madc::value::make_object(advert), holder)
+	 == madc::discovery::claim_result::held_elsewhere )
+    {
+	const madc::value *pid = madc::jsonrpc::field(holder, "pid");
+	std::cerr << "madc: --mcp --project: " << path << " is served by madc pid "
+		  << (pid && pid->is_integer() ? std::to_string(pid->as_integer())
+					       : std::string("(starting)"))
+		  << " (one owner per project)" << std::endl;
+	return 1;
+    }
+    madc::channel io("stdio://");
+    madc::hub::world w;
+    madc::memory::project memory(w);
+    std::string why;
+    if ( !memory.bind(madc::detail::host_path_drop_extension(path) + ".events", why) )
+	std::cerr << "madc: --mcp --project: " << why << std::endl;
+    memory.set_manifest(path);
+    prog->push_runtime_scope();
+    // A TU's document, opened on first use and parsing as its TU.
+    auto open_tu = [&w, &manifest](size_t i) {
+	const ProjectTU &tu = manifest.tus[i];
+	madc::hub::entity_id doc = madc::document_find(w, tu.file);
+	if ( !doc && (doc = madc::document_open(w, tu.file)) )
+	    madc::lang::document_set_tu(w, doc, tu);
+	return doc;
+    };
+    madc::hub::entity_id first = open_tu(0);
+    if ( !first )
+    {
+	std::cerr << "madc: --mcp --project: cannot read " << manifest.tus[0].file
+		  << std::endl;
+	prog->pop_runtime_scope();
+	return 1;
+    }
+    madc::tools::registry tools;
+    add_mcp_tools(*prog, tools, memory);
+    madc::mcp::server server(tools, w, first, madc::tools::tier::owner);
+    // A call's `file`: as the caller spells it (the working directory's) or
+    // beside the project, compared canonically with each TU's.
+    const std::string base = madc::detail::host_path_dirname(path);
+    server.set_documents([&](const std::string &file, std::string &refusal) {
+	const std::string want = madc::detail::canonical_path_for_compare(file);
+	const std::string beside = madc::detail::canonical_path_for_compare(
+	    madc::detail::host_path_join(base.empty() ? "." : base, file));
+	for ( size_t i = 0; i < manifest.tus.size(); ++i )
+	{
+	    const std::string have = madc::detail::canonical_path_for_compare(manifest.tus[i].file);
+	    if ( have == want || have == beside )
+	    {
+		madc::hub::entity_id doc = open_tu(i);
+		if ( !doc )
+		    refusal = "cannot read " + manifest.tus[i].file;
+		return doc;
+	    }
+	}
+	refusal = file + " is not a file of the project";
+	return (madc::hub::entity_id)0;
+    });
     int rc = server.serve(io);
     prog->pop_runtime_scope();
     return rc;
@@ -1317,7 +1415,8 @@ int main(int argc, char **argv)
     if ( project_manifest )
     {
         std::string err;
-        if ( !read_project_manifest(project_manifest, manifest, err) )
+        if ( !(mcp ? project_of_path(project_manifest, manifest, err)
+                   : read_project_manifest(project_manifest, manifest, err)) )
         {
             std::cerr << "madc --project: " << err << std::endl;
             return 1;
@@ -1586,7 +1685,7 @@ int main(int argc, char **argv)
     if ( emit_function_name && filearg < argc )
 	return emit_function(*prog, argv[filearg], emit_function_name);
 
-    if ( project_manifest )
+    if ( project_manifest && !mcp )
     {
 	if ( emit_native )
 	{
@@ -1681,6 +1780,16 @@ int main(int argc, char **argv)
 	}
 	return run_lsp(std::move(prog), filearg < argc ? argv[filearg] : NULL,
 		       repl_options);
+    }
+    if ( mcp && project_manifest )
+    {
+	if ( interactive || artifact_request || filearg != argc )
+	{
+	    std::cerr << "madc: --mcp --project serves a client on stdin/stdout;"
+			 " it takes the project and no other mode" << std::endl;
+	    return 1;
+	}
+	return run_mcp_project(std::move(prog), project_manifest, manifest);
     }
     if ( mcp )
     {

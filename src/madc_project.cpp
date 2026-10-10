@@ -298,6 +298,21 @@ bool read_project_manifest(const std::string &path,
 	return false;
 }
 
+bool project_of_path(const std::string &path, ProjectManifest &out, std::string &err) {
+	if (ns_common::ends_with(path, ".json"))
+		return read_project_manifest(path, out, err);
+	if (madc::detail::host_path_type_of(path) != madc::detail::host_path_type::file) {
+		err = "cannot open " + path;
+		return false;
+	}
+	ProjectTU tu;
+	tu.file = path;
+	tu.working_dir = manifest_directory(path);
+	out = ProjectManifest();
+	out.tus.push_back(tu);
+	return true;
+}
+
 // ---- the manifest's one writer (split arc 1B.8) ----
 
 namespace {

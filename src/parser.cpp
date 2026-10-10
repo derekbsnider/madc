@@ -404,6 +404,9 @@ int64_t internal_program_parse_open(::Program &self,
 				    const std::string &source_text,
 				    const std::string &display_name,
 				    int64_t standard);
+int64_t internal_program_parse_open_tu(::Program &self, const std::string &source_text,
+				       const std::string &display_name, int64_t standard,
+				       const ProjectTU &tu);
 int64_t internal_program_parse_open_file(::Program &self,
 					 const std::string &path);
 bool internal_program_parse_refresh(::Program &self, int64_t handle,
@@ -1207,6 +1210,20 @@ int64_t madc_parse_open(void *source, void *filename, int64_t standard)
 					     disp.empty() ? "<source>"
 							  : disp,
 					     standard);
+}
+
+int64_t madc_parse_open_tu(void *source, void *filename, int64_t standard,
+			   const ProjectTU *tu)
+{
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
+    if ( !active || !tu )
+	return 0;
+    const std::string &src = *(const std::string *)source;
+    const std::string &disp = *(const std::string *)filename;
+    return madc::internal_program_parse_open_tu(*active, src,
+						disp.empty() ? "<source>" : disp,
+						standard, *tu);
 }
 
 int64_t madc_parse_open_file(void *path)
