@@ -4,4 +4,6 @@
 {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"graph.symbols","arguments":{}}}
 {"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"graph.definition","arguments":{"name":"Point"}}}
 {"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"graph.bogus","arguments":{}}}
+{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"nexus.create","arguments":{"rkind":"task","fields":{"title":"wire the memory"}}}}
+{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"nexus.records","arguments":{}}}
 this is not json

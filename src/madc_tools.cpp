@@ -16,11 +16,17 @@
 #include "ns_common.h"		// the madc_graph_* reads
 #include "madc_tools.h"
 #include "madc_lang.h"		// document_handle: the served document's parse
+#include "madc_jsonrpc.h"	// a message's members: the arguments
 #include "madcdis/hub.h"		// the served document's text
 #include "madcdis/verbs.h"		// mutation_context: an edit lands through it
 
 namespace madc {
 namespace tools {
+
+using jsonrpc::field;
+using jsonrpc::object_field;
+using jsonrpc::text_field;
+using jsonrpc::int_field;
 
 namespace {
 
@@ -39,6 +45,27 @@ value refusal(const std::string &why)
 {
     fields f;
     f["error"] = value(why);
+    return value::make_object(f);
+}
+
+bool refused(const value &result)
+{
+    return result.is_object() && result.as_object().count("error") != 0;
+}
+
+value property(const char *type, const char *description)
+{
+    fields f;
+    f["type"] = value(type);
+    f["description"] = value(description);
+    return value::make_object(f);
+}
+
+value object_schema(const std::map<std::string, value> &properties)
+{
+    fields f;
+    f["type"] = value("object");
+    f["properties"] = value::make_object(properties);
     return value::make_object(f);
 }
 
@@ -137,14 +164,6 @@ const verb_row verb_rows[] = {
       " 0-based column)" },
 };
 
-value property(const char *type, const char *description)
-{
-    fields f;
-    f["type"] = value(type);
-    f["description"] = value(description);
-    return value::make_object(f);
-}
-
 value schema_of(shape s)
 {
     fields p;
@@ -189,36 +208,7 @@ value schema_of(shape s)
 			       " convention: where the node's text starts)");
 	break;
     }
-    fields f;
-    f["type"] = value("object");
-    f["properties"] = value::make_object(p);
-    return value::make_object(f);
-}
-
-const value *arg(const value &args, const char *name)
-{
-    if ( !args.is_object() )
-	return 0;
-    const fields &f = args.as_object();
-    fields::const_iterator i = f.find(name);
-    return i == f.end() || i->second.is_null() ? 0 : &i->second;
-}
-
-int64_t int_arg(const value &args, const char *name, int64_t dflt = 0)
-{
-    const value *a = arg(args, name);
-    return a && a->is_integer() ? a->as_integer() : dflt;
-}
-
-std::string text_arg(const value &args, const char *name)
-{
-    const value *a = arg(args, name);
-    return a && a->is_string() ? a->as_string() : std::string();
-}
-
-bool has_error(const value &v)
-{
-    return v.is_object() && v.as_object().count("error") != 0;
+    return object_schema(p);
 }
 
 bool graph_read(verb v, const context &c, const value &args, value &result)
@@ -236,57 +226,57 @@ bool graph_read(verb v, const context &c, const value &args, value &result)
 	break;
     case verb::definition:
     {
-	std::string name = text_arg(args, "name");
+	std::string name = text_field(args, "name");
 	madc_graph_definition(&result, h, &name);
 	break;
     }
     case verb::node:
-	madc_graph_node(&result, h, int_arg(args, "id"));
+	madc_graph_node(&result, h, int_field(args, "id"));
 	break;
     case verb::type_of:
-	madc_graph_type_of(&result, h, int_arg(args, "id"));
+	madc_graph_type_of(&result, h, int_field(args, "id"));
 	break;
     case verb::members:
-	madc_graph_members(&result, h, int_arg(args, "id"));
+	madc_graph_members(&result, h, int_field(args, "id"));
 	break;
     case verb::bases:
-	madc_graph_bases(&result, h, int_arg(args, "id"));
+	madc_graph_bases(&result, h, int_field(args, "id"));
 	break;
     case verb::enclosing:
-	madc_graph_enclosing(&result, h, int_arg(args, "line"), int_arg(args, "column"));
+	madc_graph_enclosing(&result, h, int_field(args, "line"), int_field(args, "column"));
 	break;
     case verb::body:
-	madc_graph_body(&result, h, int_arg(args, "func"), int_arg(args, "depth", -1));
+	madc_graph_body(&result, h, int_field(args, "func"), int_field(args, "depth", -1));
 	break;
     case verb::children:
-	madc_graph_children(&result, h, int_arg(args, "id"), int_arg(args, "depth", 1));
+	madc_graph_children(&result, h, int_field(args, "id"), int_field(args, "depth", 1));
 	break;
     case verb::callees:
-	madc_graph_callees(&result, h, int_arg(args, "func"));
+	madc_graph_callees(&result, h, int_field(args, "func"));
 	break;
     case verb::callers:
-	madc_graph_callers(&result, h, int_arg(args, "func"));
+	madc_graph_callers(&result, h, int_field(args, "func"));
 	break;
     case verb::references:
-	madc_graph_references(&result, h, int_arg(args, "func"));
+	madc_graph_references(&result, h, int_field(args, "func"));
 	break;
     case verb::search:
     {
-	std::string kind = text_arg(args, "kind"), name = text_arg(args, "name");
+	std::string kind = text_field(args, "kind"), name = text_field(args, "name");
 	madc_graph_search(&result, h, &kind, &name);
 	break;
     }
     case verb::impact:
-	madc_graph_impact(&result, h, int_arg(args, "id"));
+	madc_graph_impact(&result, h, int_field(args, "id"));
 	break;
     case verb::span:
-	madc_graph_span(&result, h, int_arg(args, "id"));
+	madc_graph_span(&result, h, int_field(args, "id"));
 	break;
     case verb::at:
-	madc_graph_at(&result, h, int_arg(args, "line"), int_arg(args, "column"));
+	madc_graph_at(&result, h, int_field(args, "line"), int_field(args, "column"));
 	break;
     }
-    return !has_error(result);
+    return !refused(result);
 }
 
 // ---- the edits --------------------------------------------------------
@@ -355,8 +345,8 @@ bool blanks(const std::string &t, size_t from, size_t to)
 bool plan_edit(edit_verb v, const hub::text_buffer &b, const std::string &t,
 	       int64_t h, const value &args, edit_plan &p, std::string &why)
 {
-    const std::string src = text_arg(args, "src");
-    const std::string where = text_arg(args, "where");
+    const std::string src = text_field(args, "src");
+    const std::string where = text_field(args, "where");
     const bool before = where == "before";
     if ( v == edit_verb::insert && !before && where != "after" )
     {
@@ -369,15 +359,15 @@ bool plan_edit(edit_verb v, const hub::text_buffer &b, const std::string &t,
 	return false;
     }
     value sp;
-    madc_graph_span(&sp, h, int_arg(args, "id"));
-    const value *span = arg(sp, "span");
+    madc_graph_span(&sp, h, int_field(args, "id"));
+    const value *span = field(sp, "span");
     if ( !span )
     {
-	why = has_error(sp) ? text_arg(sp, "error") : "the node has no source extent";
+	why = refused(sp) ? text_field(sp, "error") : "the node has no source extent";
 	return false;
     }
-    const int64_t l0 = int_arg(*span, "line"), c0 = int_arg(*span, "column");
-    const int64_t l1 = int_arg(*span, "end_line"), c1 = int_arg(*span, "end_column");
+    const int64_t l0 = int_field(*span, "line"), c0 = int_field(*span, "column");
+    const int64_t l1 = int_field(*span, "end_line"), c1 = int_field(*span, "end_column");
     size_t s0 = 0, n0 = 0, s1 = 0, n1 = 0;
     if ( l0 < 1 || l1 < l0 || !b.line_span((size_t)l0, s0, n0)
 	 || !b.line_span((size_t)l1, s1, n1) )
@@ -447,28 +437,7 @@ bool plan_edit(edit_verb v, const hub::text_buffer &b, const std::string &t,
     return true;
 }
 
-// The touched lines, now and after (a proposal's preview).
-value edit_preview(const hub::text_buffer &b, const std::string &t,
-		   const std::string &cand, const edit_plan &p)
-{
-    const size_t line0 = b.line_of(p.at);
-    const size_t line1 = b.line_of(p.del ? p.at + p.del - 1 : p.at);
-    size_t s0 = 0, n0 = 0, s1 = 0, n1 = 0;
-    b.line_span(line0, s0, n0);
-    if ( !b.line_span(line1, s1, n1) )
-	s1 = t.size(), n1 = 0;
-    const size_t end = std::max(s1 + n1, p.at + p.del);
-    const size_t after_end = end + p.ins.size() - p.del;
-    fields f;
-    f["line0"] = value((int64_t)line0);
-    f["line1"] = value((int64_t)line1);
-    f["before"] = value(t.substr(s0, end - s0));
-    f["after"] = value(cand.substr(s0, after_end - s0));
-    return value::make_object(f);
-}
-
-value op_value(edit_verb v, const std::string &verb_name, const value &args,
-	       const edit_plan &p)
+value op_value(const std::string &verb_name, const value &args, const edit_plan &p)
 {
     fields splice;
     splice["at"] = value((int64_t)p.at);
@@ -476,23 +445,100 @@ value op_value(edit_verb v, const std::string &verb_name, const value &args,
     splice["ins"] = value(p.ins);
     fields f;
     f["verb"] = value(verb_name);
-    f["where"] = value(text_arg(args, "where"));
+    f["where"] = value(text_field(args, "where"));
     f["target"] = p.target;
     f["text"] = value(p.text);
-    f["src"] = value(text_arg(args, "src"));
+    f["src"] = value(text_field(args, "src"));
     f["splice"] = value::make_object(splice);
     f["line"] = value(p.line);
     f["column"] = value(p.column);
-    (void)v;
     return value::make_object(f);
 }
 
-// One edit: planned, its candidate validated by the compiler, then applied
-// as one undo step — or stored as a proposal.
-bool graph_edit(edit_verb v, const char *verb_name, const registry &r,
-		const context &c, const value &args, value &result)
+const edit_row *edit_row_of(const std::string &verb)
 {
-    const hub::text_buffer *b = c.w.text_of(c.doc);
+    for ( size_t i = 0; i < sizeof(edit_rows) / sizeof(edit_rows[0]); ++i )
+	if ( verb == edit_rows[i].name )
+	    return &edit_rows[i];
+    return 0;
+}
+
+// An op's splice.
+void splice_of(const value &op, size_t &at, size_t &del, std::string &ins)
+{
+    const value &s = object_field(op, "splice");
+    at = (size_t)int_field(s, "at");
+    del = (size_t)int_field(s, "del");
+    ins = text_field(s, "ins");
+}
+
+// The ops' order of application: highest offset first, so an earlier splice
+// never moves a later target.
+std::vector<size_t> splice_order(const value &ops)
+{
+    std::vector<size_t> order;
+    const std::vector<value> &v = ops.as_array();
+    for ( size_t i = 0; i < v.size(); ++i )
+	order.push_back(i);
+    std::stable_sort(order.begin(), order.end(), [&v](size_t a, size_t b) {
+	return int_field(object_field(v[a], "splice"), "at")
+	    > int_field(object_field(v[b], "splice"), "at");
+    });
+    return order;
+}
+
+// The text with every op's splice applied.
+std::string candidate_of(const std::string &t, const value &ops)
+{
+    std::string cand = t;
+    std::vector<size_t> order = splice_order(ops);
+    for ( size_t i = 0; i < order.size(); ++i )
+    {
+	size_t at, del;
+	std::string ins;
+	splice_of(ops.as_array()[order[i]], at, del, ins);
+	if ( at <= cand.size() )
+	    cand.replace(at, std::min(del, cand.size() - at), ins);
+    }
+    return cand;
+}
+
+// The touched lines, now and after (a proposal's preview): the first and
+// last line any splice touches, and the same region in the candidate.
+value edit_preview(const hub::text_buffer &b, const std::string &t,
+		   const std::string &cand, const value &ops)
+{
+    size_t lo = t.size(), hi = 0;
+    int64_t delta = 0;
+    for ( const value &op : ops.as_array() )
+    {
+	size_t at, del;
+	std::string ins;
+	splice_of(op, at, del, ins);
+	lo = std::min(lo, at);
+	hi = std::max(hi, at + del);
+	delta += (int64_t)ins.size() - (int64_t)del;
+    }
+    const size_t line0 = b.line_of(lo);
+    const size_t line1 = b.line_of(hi > lo ? hi - 1 : lo);
+    size_t s0 = 0, n0 = 0, s1 = 0, n1 = 0;
+    b.line_span(line0, s0, n0);
+    if ( !b.line_span(line1, s1, n1) )
+	s1 = t.size(), n1 = 0;
+    const size_t end = std::max(s1 + n1, hi);
+    fields f;
+    f["line0"] = value((int64_t)line0);
+    f["line1"] = value((int64_t)line1);
+    f["before"] = value(t.substr(s0, end - s0));
+    f["after"] = value(cand.substr(s0, (size_t)((int64_t)end + delta) - s0));
+    return value::make_object(f);
+}
+
+// Every edit's preconditions: the served document has text, is not
+// read-only, and parses (`h`, its current parse).
+bool edit_ready(const context &c, const hub::text_buffer *&b, int64_t &h, value &result)
+{
+    b = c.w.text_of(c.doc);
     if ( !b )
     {
 	result = refusal("the served document has no text");
@@ -503,81 +549,153 @@ bool graph_edit(edit_verb v, const char *verb_name, const registry &r,
 	result = refusal("the document is read-only");
 	return false;
     }
-    int64_t h = lang::document_handle(c.w, c.doc);
+    h = lang::document_handle(c.w, c.doc);
     if ( !h )
     {
 	result = refusal("the compiler does not parse the served document");
 	return false;
     }
-    const std::string t = b->text();
-    edit_plan p;
+    return true;
+}
+
+// The candidate's verdict: false, with the refusal and the candidate's
+// diagnostics in `result`, when it adds an error.
+bool edit_accepted(int64_t h, const std::string &cand, const char *what,
+		   value &diags, value &result)
+{
+    std::string text = cand;
+    if ( madc_parse_would_accept(&diags, h, &text) )
+	return true;
+    result = refusal(std::string(what) + " rejected: the result introduces a"
+		     " parse/semantic error (nothing changed)");
+    result.object()["diagnostics"] = diags;
+    return false;
+}
+
+// One edit tool call: the op planned, then landed — or, for a proposer (or
+// a caller asking `propose`), validated and stored as a proposal.
+bool graph_edit(const char *verb_name, const registry &r, const context &c,
+		const value &args, value &result)
+{
+    value op;
     std::string why;
-    if ( !plan_edit(v, *b, t, h, args, p, why) )
+    if ( !plan_op(c, verb_name, args, op, why) )
     {
 	result = refusal(why);
 	return false;
     }
-    std::string cand = t;
-    cand.replace(p.at, p.del, p.ins);
-    const value *pv = arg(args, "propose");
-    const bool propose = c.caller == tier::proposer
-	|| (pv && pv->is_boolean() && pv->as_boolean());
+    const value ops = value::make_array(std::vector<value>(1, op));
+    const value *pv = field(args, "propose");
+    if ( c.caller != tier::proposer && !(pv && pv->is_boolean() && pv->as_boolean()) )
+	return land_ops(r, c, ops, 0, result);
+    if ( !r.memory() )
+    {
+	result = refusal("no project memory holds proposals here");
+	return false;
+    }
+    const hub::text_buffer *b = 0;
+    int64_t h = 0;
+    if ( !edit_ready(c, b, h, result) )
+	return false;
+    const std::string t = b->text();
+    const std::string cand = candidate_of(t, ops);
     value diags;
-    std::string cand_c = cand;
-    if ( !madc_parse_would_accept(&diags, h, &cand_c) )
-    {
-	result = refusal(std::string(propose ? "proposal" : "edit")
-			 + " rejected: the result introduces a parse/semantic"
-			 " error (nothing changed)");
-	result.object()["diagnostics"] = diags;
+    if ( !edit_accepted(h, cand, "proposal", diags, result) )
 	return false;
-    }
-    const value op = op_value(v, verb_name, args, p);
-    if ( propose )
-    {
-	if ( !r.memory() )
-	{
-	    result = refusal("no project memory holds proposals here");
-	    return false;
-	}
-	fields prop;
-	prop["ops"] = value::make_array(std::vector<value>(1, op));
-	prop["preview"] = edit_preview(*b, t, cand, p);
-	prop["diagnostics"] = diags;
-	return r.memory()->propose(c, value::make_object(prop), result);
-    }
-    hub::mutation_context mc(c.w);
-    fields meta;
-    meta["kind"] = value("nodeop");
-    meta["verb"] = value(verb_name);
-    mc.doc_checkpoint(c.doc, value::make_object(meta));	// ONE undo step
-    if ( !mc.text_replace(c.doc, p.at, p.del, p.ins) )
-    {
-	result = refusal("the document refused the edit");
-	return false;
-    }
-    h = lang::document_handle(c.w, c.doc);		// the edited text's parse
-    if ( r.memory() )
-    {
-	fields rec;
-	rec["verb"] = value(verb_name);
-	rec["target"] = p.target;
-	rec["src"] = value(text_arg(args, "src"));
-	r.memory()->applied(c, value::make_object(rec));
-    }
-    value node = value::make_object();
-    if ( v != edit_verb::remove && h )
-	madc_graph_at(&node, h, p.line, p.column);
-    fields f;
-    f["ok"] = value(true);
-    f["node"] = node;
-    f["splice_at"] = value((int64_t)p.at);
-    f["splice_del"] = value((int64_t)p.del);
-    result = value::make_object(f);
-    return true;
+    fields prop;
+    prop["ops"] = ops;
+    prop["preview"] = edit_preview(*b, t, cand, ops);
+    prop["diagnostics"] = diags;
+    return r.memory()->propose(c, value::make_object(prop), result);
 }
 
 } // namespace
+
+bool plan_op(const context &c, const std::string &verb, const value &args,
+	     value &op, std::string &why)
+{
+    const edit_row *row = edit_row_of(verb);
+    if ( !row )
+    {
+	why = "no edit is named '" + verb + "'";
+	return false;
+    }
+    const hub::text_buffer *b = 0;
+    int64_t h = 0;
+    value refused;
+    if ( !edit_ready(c, b, h, refused) )
+    {
+	why = text_field(refused, "error");
+	return false;
+    }
+    const std::string t = b->text();
+    edit_plan p;
+    if ( !plan_edit(row->v, *b, t, h, args, p, why) )
+	return false;
+    op = op_value(row->name, args, p);
+    return true;
+}
+
+bool land_ops(const registry &r, const context &c, const value &ops,
+	      int64_t proposal, value &result)
+{
+    if ( !ops.is_array() || ops.as_array().empty() )
+    {
+	result = refusal("no edit to land");
+	return false;
+    }
+    const hub::text_buffer *b = 0;
+    int64_t h = 0;
+    if ( !edit_ready(c, b, h, result) )
+	return false;
+    const std::string t = b->text();
+    value diags;
+    if ( !edit_accepted(h, candidate_of(t, ops), "edit", diags, result) )
+	return false;
+    hub::mutation_context mc(c.w);
+    fields meta;
+    meta["kind"] = value("nodeop");
+    meta["verb"] = object_field(ops.as_array()[0], "verb");
+    mc.doc_checkpoint(c.doc, value::make_object(meta));	// ONE undo step
+    std::vector<size_t> order = splice_order(ops);
+    for ( size_t i = 0; i < order.size(); ++i )
+    {
+	const value &op = ops.as_array()[order[i]];
+	size_t at, del;
+	std::string ins;
+	splice_of(op, at, del, ins);
+	if ( r.memory() )
+	{
+	    fields rec;
+	    rec["verb"] = object_field(op, "verb");
+	    rec["target"] = object_field(op, "target");
+	    rec["src"] = object_field(op, "src");
+	    if ( proposal > 0 )
+		rec["proposal"] = value(proposal);
+	    r.memory()->applied(c, value::make_object(rec));
+	}
+	if ( !mc.text_replace(c.doc, at, del, ins) )
+	{
+	    result = refusal("the document refused the edit");
+	    return false;
+	}
+    }
+    h = lang::document_handle(c.w, c.doc);		// the edited text's parse
+    const value &first = ops.as_array()[0];
+    value node = value::make_object();
+    if ( text_field(first, "verb") != "graph.delete" && h )
+	madc_graph_at(&node, h, int_field(first, "line"), int_field(first, "column"));
+    size_t at, del;
+    std::string ins;
+    splice_of(first, at, del, ins);
+    fields f;
+    f["ok"] = value(true);
+    f["node"] = node;
+    f["splice_at"] = value((int64_t)at);
+    f["splice_del"] = value((int64_t)del);
+    result = value::make_object(f);
+    return true;
+}
 
 void add_graph_tools(registry &r)
 {
@@ -604,8 +722,8 @@ void add_graph_tools(registry &r)
 	t.description = edit_rows[i].description;
 	t.input_schema = edit_schema(v);
 	t.least = tier::proposer;
-	t.run = [v, name, reg](const context &c, const value &args, value &result) {
-	    return graph_edit(v, name, *reg, c, args, result);
+	t.run = [name, reg](const context &c, const value &args, value &result) {
+	    return graph_edit(name, *reg, c, args, result);
 	};
 	r.add(t);
     }

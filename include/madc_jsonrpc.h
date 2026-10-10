@@ -39,11 +39,11 @@ value notification(const char *method, const value &params);
 // A request a server sends; its id is the server's own.
 value request(int64_t id, const char *method, const value &params);
 
-// A message's members: NULL / "" / 0 / a null value when absent or of
+// A message's members: NULL / "" / `dflt` / a null value when absent or of
 // another type.
 const value *field(const value &v, const char *name);
 std::string text_field(const value &v, const char *name);
-int64_t int_field(const value &v, const char *name);
+int64_t int_field(const value &v, const char *name, int64_t dflt = 0);
 const value &object_field(const value &v, const char *name);
 
 // One message's JSON text to a value; false when it is not JSON.

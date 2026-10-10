@@ -2,8 +2,10 @@
 // starts `madc --mcp tests/testmcp_stdio.mad` (.flags) with
 // tests/testmcp_stdio.input on stdin: one JSON-RPC message per line —
 // initialize, the initialized notification, tools/list, tools/call of
-// graph.symbols and graph.definition over this file, an unknown tool, a line
-// that is not JSON — then end of input, which ends the server with status 0.
+// graph.symbols and graph.definition over this file, an unknown tool, a
+// record created in the session's project memory and read back
+// (nexus.create, nexus.records), a line that is not JSON — then end of
+// input, which ends the server with status 0.
 // ORACLE: the MCP specification 2025-06-18 (initialize answers the client's
 // protocolVersion; tools/call content; -32602 for an unknown tool), JSON-RPC
 // 2.0 (-32700), and madcide's testmadcide_serve_graph record for the graph

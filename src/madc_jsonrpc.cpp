@@ -71,10 +71,10 @@ std::string text_field(const value &v, const char *name)
     return f && f->is_string() ? f->as_string() : std::string();
 }
 
-int64_t int_field(const value &v, const char *name)
+int64_t int_field(const value &v, const char *name, int64_t dflt)
 {
     const value *f = field(v, name);
-    return f && f->is_integer() ? f->as_integer() : 0;
+    return f && f->is_integer() ? f->as_integer() : dflt;
 }
 
 const value &object_field(const value &v, const char *name)

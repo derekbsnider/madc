@@ -20,6 +20,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -36,13 +37,15 @@ namespace tools {
 enum class tier : unsigned char { observer, proposer, editor, owner };
 const char *tier_name(tier t);
 
-// One call's context: the world and the document the server serves, and
-// the caller's tier.
+// One call's context: the world and the document the server serves, the
+// caller's tier, and who the caller is (the actor its writes are recorded
+// under; -1 = the local operator).
 struct context
 {
     hub::world &w;
     hub::entity_id doc;
     tier caller;
+    int64_t actor;
 };
 
 // A handler answers into `result`; false = refused, `result` then carries
@@ -97,8 +100,15 @@ private:
     registry &operator=(const registry &);
 };
 
-// The answer every refusal shares: {error: why}.
+// The answer every refusal shares: {error: why}; refused: a result that is
+// one.
 value refusal(const std::string &why);
+bool refused(const value &result);
+
+// A tool's input schema: one property {type, description}; the object
+// schema over named properties.
+value property(const char *type, const char *description);
+value object_schema(const std::map<std::string, value> &properties);
 
 // The code-graph tools (item 14): node-addressed reads over the served
 // document's parse — graph.symbols, definition, node, type_of, members,
@@ -111,6 +121,20 @@ value refusal(const std::string &why);
 // splice_del}; a proposer's — or any caller's asking `propose` — is stored
 // in the registry's memory as a proposal {ops, preview, diagnostics}.
 void add_graph_tools(registry &r);
+
+// The edit core the edit tools and a proposal's accept share. plan_op: one
+// node-op against the served document's CURRENT parse — `verb` graph.insert
+// / graph.replace / graph.delete with its args {id, src, where} — as
+// {verb, where, target (graph.span's answer), text (the node's bytes now),
+// src, splice {at, del, ins}, line, column}; false with `why`. land_ops:
+// the ops landed as ONE undo step once the compiler accepts the candidate
+// (every splice, highest offset first), each recorded in the registry's
+// memory as applied (under `proposal` when > 0); {ok, node, splice_at,
+// splice_del}, or false with {error, diagnostics?}.
+bool plan_op(const context &c, const std::string &verb, const value &args,
+	     value &op, std::string &why);
+bool land_ops(const registry &r, const context &c, const value &ops,
+	      int64_t proposal, value &result);
 
 } // namespace tools
 } // namespace madc

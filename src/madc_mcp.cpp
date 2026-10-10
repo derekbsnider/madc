@@ -168,7 +168,7 @@ bool server::handle(const value &message, value &reply)
 				   "Unknown tool: " + tool);
 	    return true;
 	}
-	tools::context c = { _w, _doc, _caller };
+	tools::context c = { _w, _doc, _caller, -1 };	// the lone local client
 	value result;
 	bool ok = _tools.call(c, tool, object_field(params, "arguments"), result);
 	reply = response(id, tool_content(result, ok));
