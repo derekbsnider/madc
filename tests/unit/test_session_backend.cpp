@@ -410,3 +410,12 @@ TEST_CASE("session backend: POSIX only for now")
 }
 
 #endif
+
+TEST_CASE("session backend: a stop is worded by what ended it")
+{
+    // A signal, and its name (POSIX).
+    CHECK(session_stop_words(11, -1) == "signal 11, segmentation fault");
+    // No signal: a Windows crash ends the process with the exception's code
+    // as its exit status (an access violation, 0xC0000005) — never "signal 0".
+    CHECK(session_stop_words(0, (int)0xC0000005u) == "exception 0xc0000005");
+}

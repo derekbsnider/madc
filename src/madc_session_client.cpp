@@ -1085,19 +1085,25 @@ std::string BackendSession::standard_name()
     return client.standard();
 }
 
-// What the signal that ended a backend is called ("segmentation fault").
-static std::string signal_words(int sig)
+std::string session_stop_words(int signal, int exit_status)
 {
+    if ( signal == 0 )
+    {
+	char code[16];
+	snprintf(code, sizeof(code), "0x%08x", (unsigned)exit_status);
+	return std::string("exception ") + code;
+    }
+    std::string w = "signal " + std::to_string(signal);
 #ifndef _WIN32
-    const char *d = strsignal(sig);
-    std::string w = d ? d : "";
-    if ( !w.empty() )
-	w[0] = (char)tolower((unsigned char)w[0]);
-    return w;
-#else
-    (void)sig;
-    return std::string();
+    const char *d = strsignal(signal);
+    std::string name = d ? d : "";
+    if ( !name.empty() )
+    {
+	name[0] = (char)tolower((unsigned char)name[0]);
+	w += ", " + name;
+    }
 #endif
+    return w;
 }
 
 bool BackendSession::settle(int rc, const SessionClient::Reply &reply,
@@ -1118,11 +1124,9 @@ bool BackendSession::settle(int rc, const SessionClient::Reply &reply,
 	end_status = reply.exit_status;
 	return false;
     }
-    err << "madc: the session stopped (signal " << reply.signal;
-    const std::string words = signal_words(reply.signal);
-    if ( !words.empty() )
-	err << ", " << words;
-    err << "); a new one started" << std::endl;
+    err << "madc: the session stopped ("
+	<< session_stop_words(reply.signal, reply.exit_status)
+	<< "); a new one started" << std::endl;
     if ( !client.restart() )
     {
 	err << "madc: " << client.last_error() << std::endl;

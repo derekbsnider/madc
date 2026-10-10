@@ -319,6 +319,12 @@ private:
     int end_status;
 };
 
+// What ended a backend that did not exit, for "the session stopped (...)":
+// the signal and its name ("signal 11, segmentation fault"); with no signal
+// — a Windows crash ends the process with the exception's code as its exit
+// status — that code ("exception 0xc0000005"), never "signal 0".
+std::string session_stop_words(int signal, int exit_status);
+
 // A session backend as a run child of self (Windows; madc_run_child.h, kind
 // `session`): `request` is "<endpoint> <token> <on-terminal 0|1> [std]".
 // It connects to the client's loopback listener, sends the token as the
