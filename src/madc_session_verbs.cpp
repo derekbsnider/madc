@@ -132,6 +132,7 @@ madc::value reply_row(const SessionClient::Reply &r)
 	    f["rows"] = r.rows.is_array() ? r.rows : madc::value::make_array();
 	    break;
 	case madc::session_reply::build:
+	case madc::session_reply::check:
 	    f["ok"] = madc::value(r.ok);
 	    f["shown"] = madc::value(r.shown);
 	    f["rendered"] = madc::value(r.rendered);

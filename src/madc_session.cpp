@@ -91,6 +91,8 @@ const CommandRow command_rows[] = {
       "a fresh session under the same standard: every name is gone" },
     { "std", InteractiveSession::Command::standard, "%std [NAME]",
       "the standard in force; NAME (c17, gnu++20, madc): a fresh session under it" },
+    { "check", InteractiveSession::Command::check, "%check [FILE]",
+      "FILE's diagnostics (the current buffer's when none); nothing runs" },
 };
 
 const size_t command_count = sizeof(command_rows) / sizeof(command_rows[0]);
@@ -746,6 +748,8 @@ bool InteractiveSession::run_command(const std::string &text,
 	    return reset_command(command_argument(text, c), name);
 	case Command::standard:
 	    return std_command(command_argument(text, c), name);
+	case Command::check:
+	    return check_command(command_argument(text, c), name);
 	case Command::none:		// no row names it
 	    break;
     }
@@ -1327,6 +1331,29 @@ static void record_diagnostic_rows(Program &prog, const madc::value &rows)
     }
 }
 
+// A file command's source: the host's `text` when it handed one, else FILE
+// read whole. False, its refusal recorded, when FILE does not open.
+static bool command_source(Program &prog, const std::string &path,
+			   const std::string *text, std::string &source)
+{
+    if ( text )
+    {
+	source = *text;
+	return true;
+    }
+    std::ifstream file(path.c_str(), std::ios::binary);
+    if ( !file )
+    {
+	prog.record_frontend_error(Program::DiagnosticPhase::lexer,
+				   "Failed to open file", path.c_str(), 0, 0);
+	return false;
+    }
+    std::ostringstream read;
+    read << file.rdbuf();
+    source = read.str();
+    return true;
+}
+
 bool InteractiveSession::build_file(const std::string &path,
 				    const std::string &text,
 				    const std::string &out)
@@ -1334,20 +1361,11 @@ bool InteractiveSession::build_file(const std::string &path,
     showed_command = true;
     command_output.clear();
     prog->clear_diagnostics();		// the build's rows only
-    std::string source = text;
-    if ( source.empty() )
+    std::string source;
+    if ( !command_source(*prog, path, text.empty() ? NULL : &text, source) )
     {
-	std::ifstream file(path.c_str(), std::ios::binary);
-	if ( !file )
-	{
-	    prog->record_frontend_error(Program::DiagnosticPhase::lexer,
-					"Failed to open file", path.c_str(), 0, 0);
-	    render_pending_diagnostics();
-	    return false;
-	}
-	std::ostringstream read;
-	read << file.rdbuf();
-	source = read.str();
+	render_pending_diagnostics();
+	return false;
     }
     // The live-tree build (the Build menu's): a parse of FILE under the
     // session's standard, emitted from that tree.
@@ -1369,6 +1387,81 @@ bool InteractiveSession::build_file(const std::string &path,
     if ( ok )
 	command_output = "built " + out;
     return ok;
+}
+
+// `%check [FILE]` (split arc 1B.8, design decision 2; gcc -fsyntax-only):
+// FILE's diagnostics, nothing run. A host that honors payloads hands the
+// backend the buffer's text (the `check` payload, argv FILE — "" for its
+// current buffer); any other host's session reads FILE from disk.
+bool InteractiveSession::check_command(const std::string &argument,
+				       const std::string &name)
+{
+    std::vector<std::string> words;
+    if ( !ns_common::shell_words(argument, words) || words.size() > 1 )
+    {
+	command_error("%check takes one FILE (none: the current buffer)", name);
+	return false;
+    }
+    const std::string file = words.empty() ? std::string() : words[0];
+    if ( payload_host )
+    {
+	payload_kind = madc::session_payload::check;
+	payload_args.assign(1, file);
+	return true;
+    }
+    if ( file.empty() )
+    {
+	command_error("%check needs a FILE: this host holds no buffer", name);
+	return false;
+    }
+    return check_text(file, NULL);
+}
+
+bool InteractiveSession::check_text(const std::string &path,
+				    const std::string *text)
+{
+    showed_command = true;
+    command_output.clear();
+    prog->clear_diagnostics();		// the check's rows only
+    std::string source;
+    if ( !command_source(*prog, path, text, source) )
+    {
+	render_pending_diagnostics();
+	return false;
+    }
+    // A parse of its own under the session's standard (parse_check's
+    // owner): nothing joins the session.
+    std::string display(path);
+    madc::value rows;
+    int64_t h = madc_parse_open(&source, &display, (int64_t)prog->language_std);
+    if ( h != 0 )
+    {
+	madc_parse_diagnostics(&rows, h);
+	madc_parse_close(h);
+    }
+    record_diagnostic_rows(*prog, rows);
+    if ( h == 0 )
+    {
+	prog->add_diagnostic(Program::DiagnosticSeverity::error,
+			     Program::DiagnosticPhase::compiler,
+			     "%check: no parse of " + path + " opened");
+	render_pending_diagnostics();
+	return false;
+    }
+    unsigned errors = 0, warnings = 0;
+    for ( const Program::Diagnostic &d : prog->diagnostics )
+	if ( d.is_error() )
+	    ++errors;
+	else
+	    ++warnings;
+    render_pending_diagnostics();
+    if ( errors == 0 && warnings == 0 )
+	command_output = path + ": clean";
+    else
+	command_output = path + ": " + std::to_string(errors)
+	    + (errors == 1 ? " error, " : " errors, ") + std::to_string(warnings)
+	    + (warnings == 1 ? " warning" : " warnings");
+    return true;
 }
 
 // Does a session unit (an entry, a loaded file) define a function NAME?

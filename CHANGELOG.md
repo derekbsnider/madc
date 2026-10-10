@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### `madc -i` gains `%check`
+
+The interactive session now answers `%check [FILE]` (split arc 1B.8): FILE's
+diagnostics under the session's standard, reported without running anything — gcc
+`-fsyntax-only`'s shape — shown as `FILE: clean` or `FILE: N errors, M warnings`.
+With no FILE it checks the host's current buffer; with a FILE it checks that
+buffer when a host holds it, else the file on disk. The buffer stays in the host
+and the parse runs in the backend (a child parse; nothing joins the session), so
+checking a half-written buffer cannot take the session down. `madc -i` resolves a
+FILE to its live buffer text — an untitled buffer is refused (`:w FILE` names it)
+— and madcide reports the rows in Problems; a session no payload host drives
+reads FILE from disk and refuses a missing one. Colon mode gains no `:check` (ex
+has none).
+
 ### The REPL's Tab completion rule gets one owner
 
 `madc::hub::complete_word(word, candidates)` (`include/madcdis/line_edit.h`)

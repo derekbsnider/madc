@@ -3046,3 +3046,41 @@ TEST_CASE("%std and %reset: the spelling, the refusals, the payloads (1B.7)")
     CHECK(s.payload() == madc::session_payload::standard);
     CHECK(s.payload_argv()[0] == "c17");
 }
+
+// %check (split arc 1B.8, design decision 2; gcc -fsyntax-only): FILE's
+// diagnostics under the session's standard, rendered, nothing joining the
+// session; shown: "FILE: clean" or the counts. A host that honors payloads
+// answers the `check` payload (argv FILE, "" its current buffer) and hands
+// the backend the buffer's text (check_text with text); any other session
+// reads FILE from disk and refuses a missing one.
+TEST_CASE("%check: a file's diagnostics, the payload, a buffer's text (1B.8)")
+{
+    std::string clean = temp_source("int f(void) { return 1; }\n", "madc_repl_check_ok");
+    std::string bad = temp_source("int g(void) { return nothing; }\n", "madc_repl_check_bad");
+    InteractiveSession s;
+    REQUIRE(s.begin("--std=c17"));
+    std::ostringstream err;
+    s.program().error_stream = &err;
+    REQUIRE(s.submit("%check " + clean));
+    CHECK(s.shown() == clean + ": clean");
+    REQUIRE(s.submit("%check " + bad));
+    CHECK(s.shown() == bad + ": 1 error, 0 warnings");
+    CHECK(err.str().find("nothing") != std::string::npos);
+    CHECK_FALSE(s.submit("g()"));		// nothing joined the session
+    CHECK_FALSE(s.submit("%check"));
+    CHECK(err.str().find("%check needs a FILE") != std::string::npos);
+    const std::string live = "int h(void) { return 2; }\n";
+    REQUIRE(s.check_text(bad, &live));		// a buffer's text over the disk's
+    CHECK(s.shown() == bad + ": clean");
+
+    s.host_honors_payloads(true);
+    REQUIRE(s.submit("%check"));
+    CHECK(s.payload() == madc::session_payload::check);
+    REQUIRE(s.payload_argv().size() == 1u);
+    CHECK(s.payload_argv()[0] == "");
+    REQUIRE(s.submit("%check notes.c"));
+    CHECK(s.payload_argv()[0] == "notes.c");
+    CHECK_FALSE(s.submit("%check a.c b.c"));
+    std::remove(clean.c_str());
+    std::remove(bad.c_str());
+}

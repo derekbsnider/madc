@@ -352,9 +352,11 @@ void repl_reply(long w, long es, var &r)
 	// restart, and its language change under NAME.
 	bool resets = taken && r["payload"] == madc::session_payload::reset;
 	bool restd = taken && r["payload"] == madc::session_payload::standard;
+	// %check [FILE] (split arc 1B.8): the buffer's check, into Problems.
+	bool checks = taken && r["payload"] == madc::session_payload::check;
 	// A file command's payload keeps the pane busy into its file's load
 	// (repl_load_file sets the load's seq), so it never reads idle between.
-	bool files = taken && !quits && !resets && !restd
+	bool files = taken && !quits && !resets && !restd && !checks
 		     && !(r["payload"] == madc::session_payload::none);
 	if ( !files )
 	    ui::set(w, es, "replbusy", 0);
@@ -391,6 +393,21 @@ void repl_reply(long w, long es, var &r)
 	if ( resets )
 	{
 	    repl_restart(w, es, active_doc(w, es, 0));
+	    return;
+	}
+	if ( checks )
+	{
+	    var argv = r["argv"];
+	    var p = "";
+	    if ( php::count(argv) > 0 )
+		p = argv[0];
+	    long doc = active_doc(w, es, 0);
+	    if ( strlen(p.c_str()) > 0 )
+		doc = buffer_doc_named(w, es, p.c_str());
+	    if ( doc == 0 )
+		repl_feed(w, es, format("%check: {} is not open here\n", p));
+	    else
+		run_check(w, es, doc);
 	    return;
 	}
 	if ( restd )

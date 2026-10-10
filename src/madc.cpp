@@ -515,6 +515,37 @@ static int repl_loops(ReplSession &session, bool terminal,
     repl_colon colon;
     colon.ex = &ex;
     colon.err = &std::cerr;
+    // The session's commands on a buffer (%check; split arc 1B.8, design
+    // decision 1) read these: a FILE's buffer, "" the current one, by its
+    // live text; a FILE no buffer holds is the disk's.
+    session.set_buffers([&buffers, &ex](const std::string &name, std::string &path,
+					std::string &text, bool &has_text,
+					std::string &why) -> bool {
+	const madc::hub::entity_id doc = name.empty()
+	    ? ex.current() : madc::document_find(buffers, name);
+	has_text = false;
+	if ( !doc )
+	{
+	    if ( name.empty() )
+	    {
+		why = "no current buffer";
+		return false;
+	    }
+	    path = name;
+	    return true;
+	}
+	const madc::hub::document *d = buffers.doc_of(doc);
+	const madc::hub::text_buffer *t = buffers.text_of(doc);
+	if ( !d || !t || d->untitled() )
+	{
+	    why = "the buffer has no file name (:w FILE names it)";
+	    return false;
+	}
+	path = d->path();
+	text = t->text();
+	has_text = true;
+	return true;
+    });
     int status = 0;
     if ( file_argc > 0 )
     {

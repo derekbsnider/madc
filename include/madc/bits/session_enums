@@ -23,7 +23,7 @@ namespace madc {
     // main run (the cores of %load and %run), D11's question answered, or
     // the names the session defined (%whos's rows, plan §41.11a step 3d), or
     // a file built (%build, plan §7f).
-    enum class session_reply : unsigned char { running, offer, complete, stopped, load, run, continues, bindings, build };
+    enum class session_reply : unsigned char { running, offer, complete, stopped, load, run, continues, bindings, build, check };
     // What a taken command asks its HOST to do (IPython's payloads: a
     // kernel's execute reply asks its frontend to act) with the reply's
     // `argv`, the file and then its arguments, the host reading the file (an
@@ -43,8 +43,10 @@ namespace madc {
     // argv is its argument — the host runs it, nothing ran in the session);
     // reset (%reset: a fresh session under the same standard; no argv);
     // standard (%std NAME: a fresh session under the standard argv[0]
-    // spells — c17, gnu++20, madc; split arc 1B.7).
-    enum class session_payload : unsigned char { none, load, run, run_here, build, call, open, quit, command, reset, standard };
+    // spells — c17, gnu++20, madc; split arc 1B.7); check (%check [FILE]:
+    // argv FILE, "" for the host's current buffer — the host hands the
+    // backend its text; split arc 1B.8).
+    enum class session_payload : unsigned char { none, load, run, run_here, build, call, open, quit, command, reset, standard, check };
     // An entry's MODE, its first character (owner 2026-10-09; split arc
     // 1A.2, docs/plans/2026-10-09-command-registry-design.md): `%` and `.`
     // the REPL's commands (IPython / clang-repl style, cling / Node style,
@@ -60,7 +62,7 @@ namespace madc {
     enum class session_command : unsigned char
     {
 	none, help, type, pinfo, whos, load, run, build, call, open, edit, quit,
-	history, reset, standard
+	history, reset, standard, check
     };
     // What a top-level name names (plan §41.8a; the engine's
     // Program::TopLevelName::Kind aliases it): a binding row's `kind`

@@ -1,0 +1,4 @@
+ready
+testrepl_check.mad: clean
+testrepl_check.mad: 1 error, 0 warnings
+42

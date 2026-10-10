@@ -205,6 +205,11 @@ public:
     int bindings_wait(Reply &reply, int timeout_ms = -1);
     int build_wait(const std::string &path, const std::string &out,
 		   Reply &reply, std::string &output);
+    // %check's check in the backend (split arc 1B.8): FILE's diagnostics,
+    // from `text` when non-null (a host's buffer), else the file.
+    unsigned check(const std::string &path, const std::string *text);
+    int check_wait(const std::string &path, const std::string *text,
+		   Reply &reply, std::string &output);
 
     // The HOST's REPL command rows (split arc 1A.2; design
     // docs/plans/2026-10-09-command-registry-design.md §2.7): an array of
@@ -299,6 +304,7 @@ public:
     bool run_file(int argc, char **argv) override;
     bool ended(int &status) const override;
     std::string take_returned_input() override;
+    void set_buffers(const BufferSource &source) override { buffers = source; }
 
     // A REPL command THIS host runs (split arc 1A.2; design
     // docs/plans/2026-10-09-command-registry-design.md §2.7): registered on
@@ -332,6 +338,9 @@ private:
     // FILE loaded into the session (D25), its diagnostics shown; false
     // when it was refused. *defines_main: FILE defined main.
     bool load_file(const std::string &path, bool *defines_main = NULL);
+    // %check's: FILE (argv[0]; "" the current buffer) resolved through the
+    // host's buffers to its path and live text, checked by the backend.
+    bool check_file(const std::vector<std::string> &argv);
     SessionClient &client;
     std::ostream &err;
     std::ostream *out;
@@ -339,6 +348,7 @@ private:
     // The host rows, in registration order: a row's code is its index + 1.
     struct HostCommand { std::string name, usage, summary; CommandRun run; };
     std::vector<HostCommand> host_commands;
+    BufferSource buffers;		// the host's (set_buffers); empty: the disk only
     bool has_ended;
     int end_status;
 };

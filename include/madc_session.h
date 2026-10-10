@@ -67,6 +67,17 @@ public:
     // backend's process (in this process the exit already happened), or
     // %quit asked to end it (status 0).
     virtual bool ended(int &status) const { (void)status; return false; }
+    // A host's buffers (split arc 1B.8, design decision 1): `name` — a FILE
+    // typed, "" for the host's CURRENT buffer — to the path and the LIVE
+    // text a command on it reads (has_text). A FILE no buffer holds: true,
+    // the name as the path, has_text false (the disk's). False, with why,
+    // when there is nothing to read: no current buffer, an untitled one.
+    typedef std::function<bool(const std::string &name, std::string &path,
+			       std::string &text, bool &has_text,
+			       std::string &why)> BufferSource;
+    // A host that holds buffers hands them to the session it drives; a
+    // session in this process holds none and ignores it.
+    virtual void set_buffers(const BufferSource &source) { (void)source; }
     // Input the session's program read from a stdin it shares with the host
     // past what it consumed (a backend's C runtime reads ahead on a pipe —
     // Windows), handed back: the host reads it before its own input. Taking
@@ -245,6 +256,13 @@ public:
     // refused.
     bool build_file(const std::string &path, const std::string &text,
 		    const std::string &out);
+    // %check's check (split arc 1B.8, design decision 2): FILE (`path`) — its
+    // `text` when non-null, else the file — parsed under the session's
+    // standard in a parse of its own (nothing joins the session), its
+    // diagnostics rendered as an entry's are; shown() is "FILE: clean" or
+    // "FILE: N errors, M warnings". False when no parse opened (an unreadable
+    // FILE).
+    bool check_text(const std::string &path, const std::string *text);
     // The names the session defined (plan §41.11a step 3d): the one owner
     // %whos and the bindings wire op read. A row per object and function a
     // session unit (an entry, a loaded file) defined, sorted by name:
@@ -289,6 +307,7 @@ private:
     bool history_command(const std::string &argument, const std::string &name);
     bool reset_command(const std::string &argument, const std::string &name);
     bool std_command(const std::string &argument, const std::string &name);
+    bool check_command(const std::string &argument, const std::string &name);
     // A session unit (an entry, a loaded file) defines a function NAME.
     bool defines_function(const std::string &name);
     // A file command's file, once it opens: the payload `kind` for a host

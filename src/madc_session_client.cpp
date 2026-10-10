@@ -89,7 +89,7 @@ namespace {
 // client handed over (madc_session_stdin.h). `commands`: the host's REPL
 // command rows (split arc 1A.2), sent after every start. Those two are the
 // requests with no seq and no reply.
-enum class Op : unsigned char { begin, offer, complete, running, load, run, continues, bindings, build, stdin_renew, commands, history, unknown };
+enum class Op : unsigned char { begin, offer, complete, running, load, run, continues, bindings, build, stdin_renew, commands, history, check, unknown };
 
 struct OpRow { const char *name; Op op; };
 const OpRow op_rows[] = {
@@ -98,6 +98,7 @@ const OpRow op_rows[] = {
     { "continues", Op::continues }, { "bindings", Op::bindings },
     { "build", Op::build }, { "stdin", Op::stdin_renew },
     { "commands", Op::commands }, { "history", Op::history },
+    { "check", Op::check },
 };
 
 const char *op_name(Op op)
@@ -153,6 +154,7 @@ const PayloadRow payload_rows[] = {
     { "quit", madc::session_payload::quit },
     { "reset", madc::session_payload::reset },
     { "std", madc::session_payload::standard },
+    { "check", madc::session_payload::check },
 };
 
 const char *payload_name(madc::session_payload p)
@@ -407,6 +409,16 @@ int serve_session(madc::DataChannel &wire, std::unique_ptr<Program> prog,
 		rep["shown"] = session.shown();
 		attach_diagnostics(rep, session);
 		break;
+	    case Op::check:
+	    {
+		// %check's: the host's text of a buffer, or, without, the file.
+		const std::string text = req.value("text", std::string());
+		rep["ok"] = session.check_text(req.value("path", std::string()),
+					       req.contains("text") ? &text : NULL);
+		rep["shown"] = session.shown();
+		attach_diagnostics(rep, session);
+		break;
+	    }
 	    case Op::bindings:
 	    {
 		madc::value rows;
@@ -955,6 +967,18 @@ unsigned SessionClient::build(const std::string &path, const std::string &text,
     return send(req.dump()) ? seq : 0;
 }
 
+unsigned SessionClient::check(const std::string &path, const std::string *text)
+{
+    nlohmann::json req;
+    const unsigned seq = next_seq++;
+    req["seq"] = seq;
+    req["op"] = op_name(Op::check);
+    req["path"] = path;
+    if ( text )
+	req["text"] = *text;
+    return send(req.dump()) ? seq : 0;
+}
+
 bool SessionClient::input(const std::string &text)
 {
     if ( !wire || !process )
@@ -1116,6 +1140,10 @@ int SessionClient::poll(Reply &reply, std::string &output, int timeout_ms)
 	    break;
 	case Op::build:
 	    reply.kind = Reply::Kind::build;
+	    reply.shown = j.value("shown", std::string());
+	    break;
+	case Op::check:
+	    reply.kind = Reply::Kind::check;
 	    reply.shown = j.value("shown", std::string());
 	    break;
 	case Op::bindings:
@@ -1299,6 +1327,8 @@ bool BackendSession::honor(const SessionClient::Reply &reply)
 	end_status = 1;
 	return false;
     }
+    if ( reply.payload == madc::session_payload::check )
+	return check_file(reply.argv);
     if ( reply.payload == madc::session_payload::none || reply.argv.empty() )
 	return true;
     if ( reply.payload == madc::session_payload::load )
@@ -1330,6 +1360,30 @@ bool BackendSession::honor(const SessionClient::Reply &reply)
 	argv.push_back(&a[0]);
     argv.push_back(NULL);
     return run_file((int)args.size(), argv.data());
+}
+
+bool BackendSession::check_file(const std::vector<std::string> &argv)
+{
+    const std::string name = argv.empty() ? std::string() : argv[0];
+    std::string path(name), text, why;
+    bool has_text = false;
+    if ( buffers && !buffers(name, path, text, has_text, why) )
+    {
+	err << "%check: " << why << std::endl;
+	return false;
+    }
+    if ( path.empty() )
+    {
+	err << "%check: no FILE, and this host holds no buffer" << std::endl;
+	return false;
+    }
+    SessionClient::Reply r;
+    std::string output;
+    int rc = client.check_wait(path, has_text ? &text : NULL, r, output);
+    if ( !settle(rc, r, output) )
+	return false;
+    shown_text = r.shown;
+    return r.ok;
 }
 
 std::vector<std::string> BackendSession::complete(const std::string &text,
@@ -1483,6 +1537,13 @@ int SessionClient::build_wait(const std::string &path, const std::string &out,
 			      Reply &reply, std::string &output)
 {
     return wait_reply(build(path, std::string(), out), reply, output, -1,
+		      InteractiveSession::TakenHook());
+}
+
+int SessionClient::check_wait(const std::string &path, const std::string *text,
+			      Reply &reply, std::string &output)
+{
+    return wait_reply(check(path, text), reply, output, -1,
 		      InteractiveSession::TakenHook());
 }
 
