@@ -448,7 +448,7 @@ int main()
     enter_line(S, doc, w, es, "%hi bob");
     var who;
     ui::get(who, w, es, "test.hi");
-    enter_line(S, doc, w, es, ":hi ann");
+    enter_line(S, doc, w, es, ".hi ann");	// the `.` mode: `:` is colon mode
     var who2;
     ui::get(who2, w, es, "test.hi");
     enter_line(S, doc, w, es, "%help");

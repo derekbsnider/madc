@@ -2,6 +2,37 @@
 
 ## [Unreleased]
 
+### engine: modal REPL prefixes, and a command registry modules and hosts extend
+
+An interactive entry's first non-blank character is now its MODE (split arc
+Phase 1A.2): `%` and `.` are the REPL's commands (IPython / clang-repl and
+cling / Node, each with its own aliases), `?` is the query (`?NAME` is
+`%pinfo NAME`, `?` alone `%help`), and `:` is colon mode — ed / ex / vim
+commands, the host's, which the session refuses (`is a colon-mode command`)
+until Phase 1B.6 brings a colon mode. Every leading `%` `.` `?` `:` is a
+command except `.`+digit, `::` and `%:`. The other REPLs' aliases now live in
+one mode each: cling's and Node's `.L` `.x` `.q` `.exit` `.?` are `.` only, so
+`%L` `%x` `%q` `%exit` `%?` and every `:`-spelled REPL command (`:type`,
+`:help`, `:L`, `:q`) are refused, superseding the old "an alias is valid under
+every prefix".
+
+The built-in command table becomes the one registry that two kinds of
+registered row extend, resolved by the same name lookup: a session row
+(`madc::command_add` from code running in an entry, `InteractiveSession::
+add_command`) whose handler runs in the session and shows its output; and a
+host row (`madc::session_command_add`, `set_host_commands` over the wire's new
+`commands` request) that answers the new `session_payload::command` with the
+row's code and argument for the host to run. Both reach `%name` and `.name`,
+`%help` lists them in registration order after the built-ins, and completion
+offers them in both REPL modes; host rows survive a backend restart, session
+rows go with the backend. `madc::session_command_of` now also returns the
+entry's `mode` (a `madc::command_mode` code) and colon mode's whole text after
+the `:`. Validation: `make -C src test` green; `fix_lanes.sh` green — Tier 1
+33/0 on JIT (exe 19/0, obj 19/0 of the JIT-passing); Tier 2 c-testsuite
+220/0, c-torture 1617 passed (0 outside baseline), c2mir-tests 368/0, gui
+30/30, gxx-c++11 1505 passed (0 outside baseline), index-c 50/50, commonmark
+664/670 (0 outside baseline).
+
 ### engine: file buffers are a document component, with an edit notification
 
 The data substrate gains a document component beside its existing text

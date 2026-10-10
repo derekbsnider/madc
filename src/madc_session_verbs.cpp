@@ -89,6 +89,8 @@ madc::value reply_row(const SessionClient::Reply &r)
 	    // then its arguments): the pane honors it (%load, %run, %run -i,
 	    // %call, %quit).
 	    f["payload"] = madc::value((int64_t)r.payload);
+	    if ( r.payload == madc::session_payload::command )
+		f["code"] = madc::value(r.code);	// the host row's
 	    if ( r.payload != madc::session_payload::none )
 	    {
 		std::vector<madc::value> argv;
@@ -338,16 +340,43 @@ bool session_close(int64_t handle)
 bool session_command_of(value &out, const char *text)
 {
     std::string word, argument;
+    InteractiveSession::Mode mode = InteractiveSession::Mode::none;
     InteractiveSession::Command code = InteractiveSession::Command::none;
     out = value();
-    if ( !text || !InteractiveSession::command_of(text, word, code, argument) )
+    if ( !text || !InteractiveSession::command_of(text, mode, word, code, argument) )
 	return false;
     std::map<std::string, value> f;
+    f["mode"] = value((int64_t)mode);		// a madc::command_mode code
     f["word"] = value(word);
     f["command"] = value((int64_t)code);	// a madc::session_command code
     f["argument"] = value(argument);
     out = value::make_object(f);
     return true;
 }
+
+// A host row on a handle (split arc 1A.2, design §2.7): the handle keeps its
+// rows and sends them to every backend it starts.
+bool session_command_add(int64_t handle, const char *name, const char *usage,
+			 const char *summary, int64_t code)
+{
+    SessionHandle *s = session_of(handle);
+    if ( !s || !name || !InteractiveSession::registrable_name(name) )
+	return false;
+    const value &kept = s->client.host_commands();
+    value rows = kept.is_array() ? kept : value::make_array();
+    for ( const value &r : rows.as_array() )
+	if ( r.is_object() && r.as_object().count("name")
+	     && r.as_object().at("name").as_string() == name )
+	    return false;
+    std::map<std::string, value> f;
+    f["name"] = value(std::string(name));
+    f["usage"] = value(std::string(usage ? usage : ""));
+    f["summary"] = value(std::string(summary ? summary : ""));
+    f["code"] = value(code);
+    rows.array().push_back(value::make_object(f));
+    s->client.set_host_commands(rows);
+    return true;
+}
+
 
 } // namespace madc

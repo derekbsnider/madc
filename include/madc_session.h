@@ -16,6 +16,7 @@
 #ifndef __MADC_SESSION_H
 #define __MADC_SESSION_H 1
 
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
@@ -149,20 +150,53 @@ public:
     // %quit ended the session (plan §7f): status 0.
     bool ended(int &status) const override;
 
-    // The session's commands (plan §41.8a, D13/D24): an entry whose first
-    // line starts with `%name`, `:name` or `.name` is a command, never C.
-    // The typed name, a command's or an alias's (cling's `.L`, plan §7f),
-    // becomes one of these codes once, at input. `?NAME` is %pinfo NAME, and
-    // `?` alone %help (IPython). The codes' one text is <bits/session_enums>,
-    // the dialect's too.
+    // The session's commands (plan §41.8a, D13/D24; the modes, owner
+    // 2026-10-09, split arc 1A.2): an entry whose first line starts with
+    // `%`, `.`, `?` or `:` is a command, never C — except `.` and a digit,
+    // `::` and `%:`. The first character is the MODE: `%name` and `.name`
+    // are the REPL's commands (each mode with its own aliases: cling's
+    // `.L`, plan §7f), `?NAME` is %pinfo NAME and `?` alone %help
+    // (IPython), and `:` is colon mode — ed / ex / vim commands, the host's,
+    // which the session refuses. A typed name becomes its row once, at
+    // input. The codes' one text is <bits/session_enums>, the dialect's too.
     typedef ::madc::session_command Command;
-    // What `text` is as an entry (plan §7f, the IDE layer, which answers its
-    // own commands before the session sees them): false when it is no
-    // command; else the name typed (`L`; `pinfo` or `help` for `?NAME` and
-    // `?`), the command it names (none: none of the session's) and the rest
-    // of its first line, without the blanks before it.
-    static bool command_of(const std::string &text, std::string &word,
+    typedef ::madc::command_mode Mode;
+    // What `text` is as an entry (a host asks before it offers the entry:
+    // colon mode is its own): false when it is no command; else its mode,
+    // the name typed (`L`; `pinfo` or `help` for `?NAME` and `?`; empty for
+    // a `:` text, and when no name follows `%` or `.`), the BUILT-IN command
+    // it names (none: none — a registered one, or a typo) and the rest of
+    // its first line after the name (after the `:` for colon mode), without
+    // the blanks before it.
+    static bool command_of(const std::string &text, Mode &mode, std::string &word,
 			   Command &code, std::string &argument);
+
+    // The registry's extension point (split arc 1A.2; design
+    // docs/plans/2026-10-09-command-registry-design.md): a REPL command
+    // registered by a module running IN the session (its handler runs here)
+    // or by the HOST driving the session (taken, it answers the `command`
+    // payload with the row's code: the host runs it). A registered name is
+    // reachable as `%name` and `.name`, listed by %help and completed. False
+    // when `name` is no whole command name, or is a built-in's, an alias's
+    // or a registered row's already (first registration wins).
+    //
+    // A handler: true — `out`, a string, is what the command shows; false —
+    // the command is refused, and `out`, a non-empty string, is its error.
+    // It runs inside the Program's runtime scope (a JIT'd dialect function,
+    // a native module's alike).
+    typedef bool (*CommandHandler)(madc::value &out, const char *argument);
+    // `name` can be registered as far as the table itself says: a whole
+    // command name (a word run not starting with a digit), no built-in's and
+    // no alias's in any mode. (A session also refuses its registered names.)
+    static bool registrable_name(const std::string &name);
+    bool add_command(const std::string &name, const std::string &usage,
+		     const std::string &summary, CommandHandler handler);
+    bool add_host_command(const std::string &name, const std::string &usage,
+			  const std::string &summary, int64_t code);
+    // The host's rows replaced by `rows` ({name, usage, summary, code} each;
+    // the wire's `commands` request, sent after every backend start). A row
+    // that cannot register is skipped; the count registered is returned.
+    size_t set_host_commands(const madc::value &rows);
     // What the last taken command asks its host (IPython's payloads; the
     // codes are <bits/session_enums>' session_payload), with payload_argv()
     // — the file, then its arguments. A host that honors them says so with
@@ -178,6 +212,8 @@ public:
     // a host that honors no payloads reads %quit from ended().
     madc::session_payload payload() const { return payload_kind; }
     const std::vector<std::string> &payload_argv() const { return payload_args; }
+    // The `command` payload's row code (a host row's, add_host_command).
+    int64_t payload_code() const { return payload_command; }
     void host_honors_payloads(bool on) { payload_host = on; }
     // The last file loaded defined main (a main an earlier unit defined is
     // not the file's: a second main is refused): only then does running the
@@ -258,7 +294,23 @@ private:
     bool showed_command;		// the last entry was a command
     madc::session_payload payload_kind;	// the last command's ask of its host
     std::vector<std::string> payload_args;
+    int64_t payload_command;		// the `command` payload's row code
     bool payload_host;			// the host honors payloads
+    // The registered rows (split arc 1A.2), in registration order: a
+    // session row has a handler, a host row a code.
+    struct Registered
+    {
+	std::string name, usage, summary;
+	CommandHandler handler;		// NULL: a host row
+	int64_t code;
+    };
+    std::vector<Registered> registered;
+    bool add_row(const std::string &name, const std::string &usage,
+		 const std::string &summary, CommandHandler handler, int64_t code);
+    // A registered row's run: a session row's handler, or a host row's
+    // payload. False when it was refused.
+    bool run_registered(const Registered &row, const std::string &argument,
+			const std::string &name);
     bool load_main;			// the last loaded file defined main
     bool quit_asked;			// %quit ended the session
     unsigned quiet_count;		// the quiet entries' units, each its own
@@ -272,6 +324,13 @@ namespace madc {
 // before `path` when `line` > 0 (never the notepad default), on this
 // terminal, waited for. False when it did not start (`why` says so).
 bool run_terminal_editor(const std::string &path, int line, std::string &why);
+// <ns_madc>'s command_add (split arc 1A.2): a REPL command registered by
+// code running IN a session (a module's own registration) — the running
+// Program's session (Program::owning_session) adds it as a session row
+// (InteractiveSession::add_command). False outside a session, or for a name
+// that cannot register.
+bool command_add(const char *name, const char *usage, const char *summary,
+		 bool (*handler)(value &out, const char *argument));
 }
 
 #endif

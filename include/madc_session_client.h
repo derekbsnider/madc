@@ -103,6 +103,9 @@ public:
 	// (%quit).
 	::madc::session_payload payload;
 	std::vector<std::string> argv;
+	// The `command` payload's: the host row's code (argv is its
+	// argument; split arc 1A.2).
+	int64_t code;
 	// A completion's: the word's start and the names.
 	size_t start;
 	std::vector<std::string> names;
@@ -190,6 +193,16 @@ public:
     int build_wait(const std::string &path, const std::string &out,
 		   Reply &reply, std::string &output);
 
+    // The HOST's REPL command rows (split arc 1A.2; design
+    // docs/plans/2026-10-09-command-registry-design.md §2.7): an array of
+    // {name, usage, summary, code}, kept and sent to the backend now and
+    // after every start (a restart keeps them), ahead of any entry. Taken,
+    // one answers the `command` payload with its code (Reply::code) and its
+    // argument (argv): the host runs it. False when no backend runs now
+    // (the rows still go to the next one).
+    bool set_host_commands(const madc::value &rows);
+    const madc::value &host_commands() const { return host_rows; }
+
     // Readiness, for a select (plan §41.9a slice 2). pending(): 1 when a
     // reply or output waits (or the backend's end, which poll() reports), 0
     // when neither does, -1 when the backend is not running; never waits.
@@ -210,6 +223,7 @@ private:
     // socketpair; Windows: a run child of self over a loopback connection).
     bool spawn_backend();
     bool send(const std::string &line);
+    bool send_host_commands();
     bool take_line(std::string &line);
     void read_output(std::string &output, int timeout_ms);
     int stopped(Reply &reply, std::string &output);
@@ -232,6 +246,7 @@ private:
     ProgramFactory make_program;
     std::string error_text;
     std::string standard_name;
+    madc::value host_rows;		// the host's REPL command rows
     bool inherit_stdio;			// the backend's stdio is the host's
     madc::SessionInterruptor interruptor;	// D8: reaches the backend
     madc::SessionStdinHandOff stdin_handoff;	// Send EOF: the fresh stdin's way in
@@ -261,6 +276,17 @@ public:
     bool run_file(int argc, char **argv) override;
     bool ended(int &status) const override;
 
+    // A REPL command THIS host runs (split arc 1A.2; design
+    // docs/plans/2026-10-09-command-registry-design.md §2.7): registered on
+    // the session as a host row (it follows restarts); taken, the session
+    // asks for it (the `command` payload) and `run` gets the argument —
+    // true: `out` is what it shows; false: it is refused, `out` said on the
+    // error stream. False when the name cannot register
+    // (InteractiveSession::registrable_name) or this host has it already.
+    typedef std::function<bool(const std::string &argument, std::string &out)> CommandRun;
+    bool add_command(const std::string &name, const std::string &usage,
+		     const std::string &summary, const CommandRun &run);
+
 private:
     // After a wait: the output (piped), the rendered diagnostics, and the
     // backend's end. False when it stopped.
@@ -286,6 +312,9 @@ private:
     std::ostream &err;
     std::ostream *out;
     std::string shown_text;
+    // The host rows, in registration order: a row's code is its index + 1.
+    struct HostCommand { std::string name, usage, summary; CommandRun run; };
+    std::vector<HostCommand> host_commands;
     bool has_ended;
     int end_status;
 };
@@ -312,6 +341,8 @@ int64_t session_call(int64_t handle, value &argv);
 int64_t session_build(int64_t handle, const char *path, const char *text,
 		      const char *out);
 bool session_command_of(value &out, const char *text);
+bool session_command_add(int64_t handle, const char *name, const char *usage,
+			 const char *summary, int64_t code);
 int64_t session_poll(value &reply, int64_t handle);
 value &session_output(value &out, int64_t handle);
 bool session_input(int64_t handle, const char *text);

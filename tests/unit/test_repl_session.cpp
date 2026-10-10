@@ -2061,7 +2061,7 @@ TEST_CASE("session commands: %help, %type, an unknown command, and what stays C"
     CHECK(c.submitted() == 8u);			// a command takes REPL[N]
     struct { const char *entry, *type; } types[] = {
 	{ "%type x", "int" },
-	{ ":type x * 2.5", "double" },		// `:` is the alias (D13)
+	{ ".type x * 2.5", "double" },		// `.`: the other REPL mode
 	{ "  %type sq(x)", "int" },		// blanks before it
 	{ "%type &x", "int *" },
 	{ "%type p", "struct Point" },
@@ -2105,7 +2105,7 @@ TEST_CASE("session commands: %help, %type, an unknown command, and what stays C"
     size_t start = 0;
     CHECK(complete_at_end(c, "%ty", &start) == std::vector<std::string>{ "type" });
     CHECK(start == 1u);
-    CHECK(complete_at_end(c, ":he") == std::vector<std::string>{ "help" });
+    CHECK(complete_at_end(c, ".he") == std::vector<std::string>{ "help" });
     CHECK(complete_at_end(c, "%type bu", &start) == std::vector<std::string>{ "bump" });
     CHECK(start == 6u);
 
@@ -2131,9 +2131,9 @@ TEST_CASE("session commands: %help, %type, an unknown command, and what stays C"
     CHECK(m.shown() == "var");			// the dialect's carrier
 }
 
-// The third prefix (plan §7f): cling's and Node's `.name` reaches the table
-// `%` and `:` reach, and their own spellings are alias rows naming our
-// commands under every prefix — `.L` is %load, `.q` and `.exit` %quit, `.?`
+// The `.` mode (plan §7f; the modes, owner 2026-10-09): cling's and Node's
+// `.name` reaches the table `%` reaches, and their own spellings are alias
+// rows in the `.` mode only — `.L` is %load, `.q` and `.exit` %quit, `.?`
 // %help — which %help names. %quit ends the session: ended() for a host that
 // honors no payloads, the `quit` payload for one that does. What stays C:
 // `.5`, and a designator's `.x` on a continuation line.
@@ -2151,9 +2151,9 @@ TEST_CASE("session commands: the `.` prefix, alias rows and %quit (§7f)")
     REQUIRE(c.submit(".L " + lib));
     REQUIRE(c.submit("thrice(x)"));
     CHECK(c.shown() == "30");
-    CHECK_FALSE(c.submit("%L " + lib + "x"));	// %L is .L: its FILE opens first
-    CHECK(first_error(c) == "Failed to open file");
-    const char *helps[] = { ".help", ".?", "%?", ":?" };
+    CHECK_FALSE(c.submit("%L " + lib));		// cling's alias is `.` only
+    CHECK(err.str().find("unknown command '%L'") != std::string::npos);
+    const char *helps[] = { ".help", ".?", "%help", "?" };
     for ( size_t i = 0; i < sizeof(helps) / sizeof(helps[0]); ++i )
     {
 	CAPTURE(helps[i]);
@@ -2178,7 +2178,8 @@ TEST_CASE("session commands: the `.` prefix, alias rows and %quit (§7f)")
     CHECK(complete_at_end(c, ".ex", &start) == std::vector<std::string>{ "exit" });
     CHECK(start == 1u);
     CHECK(complete_at_end(c, ".q") == (std::vector<std::string>{ "q", "quit" }));
-    CHECK(complete_at_end(c, "%L") == std::vector<std::string>{ "L" });
+    CHECK(complete_at_end(c, ".L") == std::vector<std::string>{ "L" });
+    CHECK(complete_at_end(c, "%L").empty());
     // %quit: refused with an argument, else the session ends (status 0).
     int status = 7;
     CHECK_FALSE(c.ended(status));
@@ -2195,7 +2196,7 @@ TEST_CASE("session commands: the `.` prefix, alias rows and %quit (§7f)")
     REQUIRE(h.submit(".exit"));
     CHECK(h.payload() == madc::session_payload::quit);
     CHECK(h.payload_argv().empty());
-    REQUIRE(h.submit(":L " + lib));
+    REQUIRE(h.submit(".L " + lib));
     CHECK(h.payload() == madc::session_payload::load);
     CHECK(h.payload_argv() == std::vector<std::string>{ lib });
 
@@ -2420,29 +2421,167 @@ TEST_CASE("session commands: %open FILE and %edit NAME (§7f)")
     std::remove(lib.c_str());
 }
 
-// The one rule a host reads an entry's command by (an IDE answers its own
-// commands before the session sees the entry): the word, its command (none
-// for a word the session does not own) and the rest of the line.
+// The one rule a host reads an entry's command by (a host answers colon
+// mode itself, before the session sees the entry): the mode, the word, its
+// built-in command (none for a word the table does not own) and the rest of
+// the line — for colon mode, its whole text after the `:`.
 TEST_CASE("session commands: command_of reads an entry as the session does (§7f)")
 {
+    typedef InteractiveSession::Mode Mode;
     std::string word, arg;
+    Mode mode = Mode::none;
     InteractiveSession::Command code = InteractiveSession::Command::help;
-    REQUIRE(InteractiveSession::command_of(".L lib.c", word, code, arg));
+    REQUIRE(InteractiveSession::command_of(".L lib.c", mode, word, code, arg));
+    CHECK(mode == Mode::dot);
     CHECK(word == "L");
     CHECK(code == InteractiveSession::Command::load);
     CHECK(arg == "lib.c");
-    REQUIRE(InteractiveSession::command_of("%hi  bob ann", word, code, arg));
+    REQUIRE(InteractiveSession::command_of("%hi  bob ann", mode, word, code, arg));
+    CHECK(mode == Mode::percent);
     CHECK(word == "hi");
     CHECK(code == InteractiveSession::Command::none);
     CHECK(arg == "bob ann");
-    REQUIRE(InteractiveSession::command_of(":quit", word, code, arg));
+    REQUIRE(InteractiveSession::command_of("%quit", mode, word, code, arg));
     CHECK(code == InteractiveSession::Command::quit);
     CHECK(arg.empty());
-    REQUIRE(InteractiveSession::command_of("?x", word, code, arg));
+    REQUIRE(InteractiveSession::command_of("%L x.c", mode, word, code, arg));
+    CHECK(code == InteractiveSession::Command::none);	// cling's: `.` only
+    REQUIRE(InteractiveSession::command_of("?x", mode, word, code, arg));
+    CHECK(mode == Mode::query);
     CHECK(code == InteractiveSession::Command::pinfo);
     CHECK(arg == "x");
-    CHECK_FALSE(InteractiveSession::command_of("int x;", word, code, arg));
-    CHECK_FALSE(InteractiveSession::command_of("%1", word, code, arg));
+    // Colon mode: ed / ex / vim, the host's — no word, the whole text.
+    REQUIRE(InteractiveSession::command_of(":%s/a/b/g", mode, word, code, arg));
+    CHECK(mode == Mode::colon);
+    CHECK(word.empty());
+    CHECK(code == InteractiveSession::Command::none);
+    CHECK(arg == "%s/a/b/g");
+    REQUIRE(InteractiveSession::command_of(":quit", mode, word, code, arg));
+    CHECK(mode == Mode::colon);
+    CHECK(code == InteractiveSession::Command::none);	// ex's, not the REPL's
+    CHECK(arg == "quit");
+    // Every leading `%` `.` `?` `:` is a command (D24), a nameless one too...
+    REQUIRE(InteractiveSession::command_of("%1", mode, word, code, arg));
+    CHECK(word.empty());
+    REQUIRE(InteractiveSession::command_of(":5", mode, word, code, arg));
+    CHECK(arg == "5");
+    // ...except the three that stay C.
+    CHECK_FALSE(InteractiveSession::command_of("int x;", mode, word, code, arg));
+    CHECK_FALSE(InteractiveSession::command_of(".5 * 2", mode, word, code, arg));
+    CHECK_FALSE(InteractiveSession::command_of("::x = 3;", mode, word, code, arg));
+    CHECK_FALSE(InteractiveSession::command_of("%:include <stdio.h>", mode, word,
+					       code, arg));
+}
+
+// The modes at the session (owner 2026-10-09; split arc 1A.2): `:` is colon
+// mode — the host's ex commands — so the session refuses every `:` entry,
+// the REPL's own names included; a nameless `%` or `.` is refused, never
+// parsed as C.
+TEST_CASE("session commands: colon mode is the host's, and every prefix is a command")
+{
+    InteractiveSession c;
+    REQUIRE(c.begin("--std=c17"));
+    std::ostringstream err;
+    c.program().error_stream = &err;
+    REQUIRE(c.submit("int x = 10;"));
+    const char *colons[] = { ":type x", ":help", ":%s/a/b/", ":5", ":q" };
+    for ( size_t i = 0; i < sizeof(colons) / sizeof(colons[0]); ++i )
+    {
+	CAPTURE(colons[i]);
+	CHECK_FALSE(c.submit(colons[i]));
+	CHECK(first_error(c).find("is a colon-mode command") != std::string::npos);
+    }
+    CHECK(err.str().find("':%s/a/b/' is a colon-mode command") != std::string::npos);
+    CHECK_FALSE(c.submit("% x"));
+    CHECK(first_error(c) == "unknown command '%' (%help lists them)");
+    CHECK_FALSE(c.submit(".,"));
+    CHECK(first_error(c) == "unknown command '.,' (%help lists them)");
+    size_t start = 0;
+    CHECK(complete_at_end(c, ":ty", &start).empty());	// the host's to complete
+    REQUIRE(c.submit("%help"));
+    CHECK(c.shown().find("`:` starts a colon-mode (ex) command") != std::string::npos);
+    REQUIRE(c.submit("x"));
+    CHECK(c.shown() == "10");			// nothing above disturbed it
+}
+
+// The registry's extension point (split arc 1A.2, design §2.2-§2.7): a
+// session row's handler runs in the session and shows its `out`; a refusal's
+// `out` is its error; a host row answers the `command` payload with its code
+// and argument; both reach `%name` and `.name`, %help lists them and
+// completion offers them; a name the table or a row has already is refused.
+static bool greet_command(madc::value &out, const char *argument)
+{
+    if ( !*argument )
+    {
+	out = madc::value(std::string("%greet needs a NAME"));
+	return false;
+    }
+    out = madc::value(std::string("hello, ") + argument);
+    return true;
+}
+
+TEST_CASE("session commands: registered rows, the session's and the host's")
+{
+    InteractiveSession c;
+    REQUIRE(c.begin("--std=c17"));
+    std::ostringstream err;
+    c.program().error_stream = &err;
+    REQUIRE(c.add_command("greet", "%greet NAME", "say hello to NAME", greet_command));
+    CHECK_FALSE(c.add_command("greet", "%greet", "again", greet_command));
+    CHECK_FALSE(c.add_command("load", "%load", "a built-in's", greet_command));
+    CHECK_FALSE(c.add_command("L", "%L", "an alias's", greet_command));
+    CHECK_FALSE(c.add_command("9x", "%9x", "no whole name", greet_command));
+    CHECK_FALSE(c.add_command("a-b", "%a-b", "no whole name", greet_command));
+    CHECK_FALSE(InteractiveSession::registrable_name("exit"));
+    REQUIRE(c.submit("%greet ann"));
+    CHECK(c.shown() == "hello, ann");
+    REQUIRE(c.submit(".greet  bob"));
+    CHECK(c.shown() == "hello, bob");
+    CHECK_FALSE(c.submit("%greet"));
+    CHECK(first_error(c) == "%greet needs a NAME");
+    // A host row: refused while no host honors payloads...
+    REQUIRE(c.add_host_command("view", "%view NAME", "the IDE's view", 42));
+    CHECK_FALSE(c.add_host_command("greet", "%greet", "taken", 7));
+    CHECK_FALSE(c.submit("%view outline"));
+    CHECK(first_error(c).find("its host's command") != std::string::npos);
+    // ...and with one, the payload: its code and argument; nothing ran.
+    c.host_honors_payloads(true);
+    REQUIRE(c.submit("%view  outline left"));
+    CHECK(c.payload() == madc::session_payload::command);
+    CHECK(c.payload_code() == 42);
+    CHECK(c.payload_argv() == std::vector<std::string>{ "outline left" });
+    CHECK(c.shown().empty());
+    REQUIRE(c.submit("1 + 1"));
+    CHECK(c.payload() == madc::session_payload::none);	// the entry's own
+    // %help lists the one registry, in registration order after the built-ins.
+    REQUIRE(c.submit("%help"));
+    const std::string &h = c.shown();
+    const size_t quit_at = h.find("%quit");
+    const size_t greet_at = h.find("%greet NAME");
+    const size_t view_at = h.find("%view NAME");
+    REQUIRE(quit_at != std::string::npos);
+    REQUIRE(greet_at != std::string::npos);
+    REQUIRE(view_at != std::string::npos);
+    CHECK(quit_at < greet_at);
+    CHECK(greet_at < view_at);
+    CHECK(h.find("say hello to NAME\n") != std::string::npos);
+    // Completion offers them in both REPL modes.
+    CHECK(complete_at_end(c, "%gr") == std::vector<std::string>{ "greet" });
+    CHECK(complete_at_end(c, ".vi") == std::vector<std::string>{ "view" });
+    // The host's rows are replaced as a set (the wire's `commands` request).
+    madc::value rows = madc::value::make_array();
+    madc::value row = madc::value::make_object();
+    row.object()["name"] = madc::value(std::string("pane"));
+    row.object()["usage"] = madc::value(std::string("%pane"));
+    row.object()["summary"] = madc::value(std::string("a pane"));
+    row.object()["code"] = madc::value((int64_t)5);
+    rows.array().push_back(row);
+    CHECK(c.set_host_commands(rows) == 1u);
+    CHECK_FALSE(c.submit("%view x"));		// gone with the old set
+    REQUIRE(c.submit("%pane"));
+    CHECK(c.payload_code() == 5);
+    REQUIRE(c.submit("%greet cy"));		// the session's row stays
+    CHECK(c.shown() == "hello, cy");
 }
 
 // Slice 2 (plan §41.8a): `?name` / `%pinfo name` describe what the session

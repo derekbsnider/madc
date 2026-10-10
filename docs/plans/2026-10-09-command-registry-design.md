@@ -129,9 +129,10 @@ table that can be a target or hold one.
   bool handler(madc::value &out, const char *argument);
   ```
 
-  True: `out`'s text is what the command shows (`shown()`, like `%type`'s).
-  False: the command is refused; `out`'s text, when not empty, is its error
-  diagnostic, citing the argument's column. A crash in a handler is a crash
+  True: `out`, a string, is what the command shows (`shown()`, like
+  `%type`'s; any other kind shows nothing). False: the command is refused;
+  `out`, a non-empty string, is its error diagnostic, cited at the entry's
+  first column as every command's usage error is (`command_error`). A crash in a handler is a crash
   in the session: in a backend the session restarts, as for an entry.
 - **A host row**: the session takes the entry (numbered, kept in history) and
   answers with a new payload, `session_payload::command`, the row's CODE and
@@ -181,7 +182,10 @@ bool add_host_command(const std::string &name, const std::string &usage,
 		      const std::string &summary, int64_t code);	// host row
 ```
 
-Code running in the session reaches it through its Program:
+`InteractiveSession::registrable_name(name)` is the one validity rule (a
+whole name, no built-in's, no alias's in any mode); the client side asks it
+before it sends a row. Code running in the session reaches it through its
+Program:
 `Program::session` (a non-owning `InteractiveSession *`, set by `begin()`),
 read through `Program::active_runtime_program()`.
 

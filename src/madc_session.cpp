@@ -42,10 +42,15 @@
 #include "madcdis/text_utf16.h"	// madc::line_width: %whos's columns
 #include "madcdis/process.h"	// the terminal's editor (%open, %edit)
 
-// The command registry (plan §41.8a, D13/D24): one row per command. A typed
-// name becomes its code once, at input (command_named); what follows
-// dispatches on the code.
+// The command registry (plan §41.8a, D13/D24; the modes and the extension
+// point: split arc 1A.2, docs/plans/2026-10-09-command-registry-design.md):
+// one row per command. A typed name becomes its row once, at input
+// (command_named); what follows dispatches on the row. The built-ins below
+// are the table's; a module or the host adds REGISTERED rows to a session
+// (InteractiveSession::registered), resolved by the same lookup.
 namespace {
+
+typedef madc::command_mode Mode;
 
 struct CommandRow
 {
@@ -83,22 +88,33 @@ const CommandRow command_rows[] = {
 const size_t command_count = sizeof(command_rows) / sizeof(command_rows[0]);
 
 // The other REPLs' own spellings (plan §7f): each an alias row naming one of
-// the commands above, one meaning under every prefix (D24).
+// the commands above, in the MODE of the REPL it comes from (owner
+// 2026-10-09): cling's and Node's are `.` only. A mode's alias may name a
+// command of another mode (owner 2026-10-09; design §2.2a): every target
+// today is a REPL command.
 struct AliasRow
 {
     const char *name;
+    Mode mode;
     InteractiveSession::Command code;
 };
 
 const AliasRow alias_rows[] = {
-    { "?", InteractiveSession::Command::help },		// cling's .?
-    { "L", InteractiveSession::Command::load },		// cling's .L
-    { "q", InteractiveSession::Command::quit },		// cling's .q
-    { "exit", InteractiveSession::Command::quit },	// Node's .exit
-    { "x", InteractiveSession::Command::call },		// cling's .x
+    { "?", Mode::dot, InteractiveSession::Command::help },	// cling's .?
+    { "L", Mode::dot, InteractiveSession::Command::load },	// cling's .L
+    { "q", Mode::dot, InteractiveSession::Command::quit },	// cling's .q
+    { "exit", Mode::dot, InteractiveSession::Command::quit },	// Node's .exit
+    { "x", Mode::dot, InteractiveSession::Command::call },	// cling's .x
 };
 
 const size_t alias_count = sizeof(alias_rows) / sizeof(alias_rows[0]);
+
+// A built-in command's name is the REPL modes' (`%` and `.`); an alias's
+// only its own mode's.
+bool repl_mode(Mode mode)
+{
+    return mode == Mode::percent || mode == Mode::dot;
+}
 
 const CommandRow *command_coded(InteractiveSession::Command code)
 {
@@ -108,37 +124,71 @@ const CommandRow *command_coded(InteractiveSession::Command code)
     return NULL;
 }
 
-const CommandRow *command_named(const std::string &name)
+// The built-in a name names in `mode` (a command's or an alias's); NULL when
+// none does.
+const CommandRow *command_named(const std::string &name, Mode mode)
 {
-    for ( size_t i = 0; i < command_count; ++i )
-	if ( name == command_rows[i].name )
-	    return &command_rows[i];
+    if ( repl_mode(mode) )
+	for ( size_t i = 0; i < command_count; ++i )
+	    if ( name == command_rows[i].name )
+		return &command_rows[i];
     for ( size_t i = 0; i < alias_count; ++i )
-	if ( name == alias_rows[i].name )
+	if ( alias_rows[i].mode == mode && name == alias_rows[i].name )
 	    return command_coded(alias_rows[i].code);
     return NULL;
 }
 
-// Where a command stands in an entry (D13): its first line, after blanks,
-// starts with `%`, `:` or `.` and at once a name, or with `?` (D15). The name
-// after a prefix may be `?` (cling's `.?`). So `::x`, the `%:` digraph and
-// `.5` stay C, and so does every continuation line (a designator's `.x`); C
-// starts no statement with `?`, or with `.` and a letter.
+// Any built-in's or alias's name, in any mode: a registration must not
+// shadow one (one namespace).
+bool builtin_name(const std::string &name)
+{
+    for ( size_t i = 0; i < command_count; ++i )
+	if ( name == command_rows[i].name )
+	    return true;
+    for ( size_t i = 0; i < alias_count; ++i )
+	if ( name == alias_rows[i].name )
+	    return true;
+    return false;
+}
+
+// Where a command stands in an entry (D13, D24 as the owner ruled it on
+// 2026-10-09): its first line's first non-blank is the MODE — `%` or `.`
+// (the REPL's commands: a name follows, or cling's `?`), `?` (the query:
+// `?NAME` is %pinfo NAME, `?` alone %help) or `:` (colon mode: the rest of
+// the line is ex's, the host's) — except three spellings that stay C: `.`
+// and a digit (`.5`), `::` (global scope) and `%:` (the `#` digraph). Only
+// the first line is read, so every continuation line stays C (a
+// designator's `.x`).
 struct CommandText
 {
-    size_t prefix;	// the `%`, `:`, `.` or `?`; npos when the text is no command
-    size_t name_end;	// past the name (past the `?`)
+    Mode mode;		// none: the text is no command
+    size_t prefix;	// the mode's character
+    size_t name_end;	// past the name (past the prefix when there is none)
     size_t line_end;	// the first line's end
-    bool query;		// `?NAME`: IPython's %pinfo NAME; `?` alone its help
     CommandText()
-	: prefix(std::string::npos), name_end(0), line_end(0), query(false) {}
-    bool is_command() const { return prefix != std::string::npos; }
+	: mode(Mode::none), prefix(std::string::npos), name_end(0), line_end(0) {}
+    bool is_command() const { return mode != Mode::none; }
     std::string name(const std::string &text) const
     {
-	if ( query )
+	if ( mode == Mode::query )
 	    return text.find_first_not_of(" \t", name_end) < line_end
 		 ? "pinfo" : "help";
+	if ( mode == Mode::colon )
+	    return std::string();
 	return text.substr(prefix + 1, name_end - prefix - 1);
+    }
+    // The text a refusal cites: the prefix and its name, or, with no name,
+    // the first word typed.
+    std::string cited(const std::string &text) const
+    {
+	size_t end = name_end;
+	if ( end == prefix + 1 )
+	{
+	    end = text.find_first_of(" \t\n", prefix + 1);
+	    if ( end == std::string::npos || end > line_end )
+		end = line_end;
+	}
+	return text.substr(prefix, end - prefix);
     }
 };
 
@@ -146,37 +196,45 @@ CommandText command_text(const std::string &text)
 {
     CommandText c;
     size_t i = text.find_first_not_of(" \t");
-    if ( i != std::string::npos && text[i] == '?' )
+    if ( i == std::string::npos )
+	return c;
+    const char next = i + 1 < text.size() ? text[i + 1] : '\0';
+    switch ( text[i] )
     {
-	c.prefix = i;
-	c.name_end = i + 1;
-	c.query = true;
-	c.line_end = text.find('\n', i);
-	if ( c.line_end == std::string::npos )
-	    c.line_end = text.size();
-	return c;
+	case '?': c.mode = Mode::query; break;
+	case ':': if ( next != ':' ) c.mode = Mode::colon; break;
+	case '%': if ( next != ':' ) c.mode = Mode::percent; break;
+	case '.': if ( !isdigit((unsigned char)next) ) c.mode = Mode::dot; break;
+	default: break;
     }
-    if ( i == std::string::npos || i + 1 >= text.size()
-	 || (text[i] != '%' && text[i] != ':' && text[i] != '.') )
+    if ( !c.is_command() )
 	return c;
-    // The name is the REPL's one word rule's run (text_buffer::word_byte,
-    // as completion and word motion read a word), not starting with a digit,
-    // or the one byte `?`.
-    size_t e = i + 1;
-    if ( text[e] == '?' )
-	++e;
-    else if ( !madc::hub::text_buffer::word_byte(text[e])
-	      || isdigit((unsigned char)text[e]) )
-	return c;
-    else
-	while ( e < text.size() && madc::hub::text_buffer::word_byte(text[e]) )
-	    ++e;
     c.prefix = i;
+    // The name is the REPL's one word rule's run (text_buffer::word_byte,
+    // as completion and word motion read a word), not starting with a
+    // digit, or the one byte `?` (cling's `.?`). The query and colon mode
+    // read no name.
+    size_t e = i + 1;
+    if ( repl_mode(c.mode) )
+    {
+	if ( next == '?' )
+	    ++e;
+	else if ( !isdigit((unsigned char)next) )
+	    while ( e < text.size() && madc::hub::text_buffer::word_byte(text[e]) )
+		++e;
+    }
     c.name_end = e;
     c.line_end = text.find('\n', e);
     if ( c.line_end == std::string::npos )
 	c.line_end = text.size();
     return c;
+}
+
+// The built-in a command text names: its name in its mode (the query's
+// `pinfo` and `help` are the REPL's names); NULL when none does.
+const CommandRow *command_row_of(const CommandText &c, const std::string &word)
+{
+    return command_named(word, c.mode == Mode::query ? Mode::percent : c.mode);
 }
 
 // A command's argument, everything before it blanked, so a diagnostic cites
@@ -187,42 +245,122 @@ std::string command_argument(const std::string &text, const CommandText &c)
 	 + text.substr(c.name_end, c.line_end - c.name_end);
 }
 
+// The rest of a command's first line after its name, without the blanks
+// before it.
+std::string command_rest(const std::string &text, const CommandText &c)
+{
+    const std::string rest = text.substr(c.name_end, c.line_end - c.name_end);
+    const size_t b = rest.find_first_not_of(" \t");
+    return b == std::string::npos ? std::string() : rest.substr(b);
+}
+
 } // namespace
 
-bool InteractiveSession::command_of(const std::string &text, std::string &word,
-				    Command &code, std::string &argument)
+bool InteractiveSession::command_of(const std::string &text, Mode &mode,
+				    std::string &word, Command &code,
+				    std::string &argument)
 {
     CommandText c = command_text(text);
     if ( !c.is_command() )
 	return false;
+    mode = c.mode;
     word = c.name(text);
-    const CommandRow *row = command_named(word);
+    const CommandRow *row = command_row_of(c, word);
     code = row ? row->code : Command::none;
-    const std::string rest = text.substr(c.name_end, c.line_end - c.name_end);
-    const size_t b = rest.find_first_not_of(" \t");
-    argument = b == std::string::npos ? std::string() : rest.substr(b);
+    argument = command_rest(text, c);
     return true;
+}
+
+// A registered row (design §2.2): a whole command name under the
+// recognition rule (a word run not starting with a digit), unique across
+// the built-ins, the aliases and the rows registered before it.
+bool InteractiveSession::registrable_name(const std::string &name)
+{
+    if ( name.empty() || isdigit((unsigned char)name[0]) || builtin_name(name) )
+	return false;
+    for ( char ch : name )
+	if ( !madc::hub::text_buffer::word_byte(ch) )
+	    return false;
+    return true;
+}
+
+bool InteractiveSession::add_row(const std::string &name, const std::string &usage,
+				 const std::string &summary, CommandHandler handler,
+				 int64_t code)
+{
+    if ( !registrable_name(name) )
+	return false;
+    for ( const Registered &r : registered )
+	if ( r.name == name )
+	    return false;
+    registered.push_back(Registered{ name, usage, summary, handler, code });
+    return true;
+}
+
+bool InteractiveSession::add_command(const std::string &name, const std::string &usage,
+				     const std::string &summary, CommandHandler handler)
+{
+    return handler && add_row(name, usage, summary, handler, 0);
+}
+
+bool InteractiveSession::add_host_command(const std::string &name,
+					  const std::string &usage,
+					  const std::string &summary, int64_t code)
+{
+    return add_row(name, usage, summary, NULL, code);
+}
+
+size_t InteractiveSession::set_host_commands(const madc::value &rows)
+{
+    std::vector<Registered> kept;
+    for ( const Registered &r : registered )
+	if ( r.handler )
+	    kept.push_back(r);
+    registered.swap(kept);
+    size_t added = 0;
+    if ( !rows.is_array() )
+	return added;
+    for ( const madc::value &row : rows.as_array() )
+    {
+	if ( !row.is_object() )
+	    continue;
+	const std::map<std::string, madc::value> &o = row.as_object();
+	auto text = [&](const char *key) {
+	    std::map<std::string, madc::value>::const_iterator it = o.find(key);
+	    return it != o.end() && it->second.is_string() ? it->second.as_string()
+							   : std::string();
+	};
+	std::map<std::string, madc::value>::const_iterator code = o.find("code");
+	if ( code == o.end() || !code->second.is_integer() )
+	    continue;
+	if ( add_host_command(text("name"), text("usage"), text("summary"),
+			      code->second.as_integer()) )
+	    ++added;
+    }
+    return added;
 }
 
 InteractiveSession::InteractiveSession()
     : prog(new Program()), jit(new CirJitSession()), entry_count(0),
       submit_count(0), showed_command(false),
-      payload_kind(madc::session_payload::none), payload_host(false),
-      load_main(false), quit_asked(false), quiet_count(0)
+      payload_kind(madc::session_payload::none), payload_command(0),
+      payload_host(false), load_main(false), quit_asked(false), quiet_count(0)
 {
 }
 
 InteractiveSession::InteractiveSession(std::unique_ptr<Program> configured)
     : prog(std::move(configured)), jit(new CirJitSession()), entry_count(0),
       submit_count(0), showed_command(false),
-      payload_kind(madc::session_payload::none), payload_host(false),
-      load_main(false), quit_asked(false), quiet_count(0)
+      payload_kind(madc::session_payload::none), payload_command(0),
+      payload_host(false), load_main(false), quit_asked(false), quiet_count(0)
 {
 }
 
 // The JIT goes first: its modules reference the Program's token tree.
 InteractiveSession::~InteractiveSession()
 {
+    if ( prog )
+	prog->owning_session = NULL;
     jit.reset();
     prog.reset();
 }
@@ -242,6 +380,7 @@ bool InteractiveSession::begin(const std::string &std_option)
     }
     if ( !prog->begin_interactive_session("REPL") )
 	return false;
+    prog->owning_session = this;	// madc::command_add's way in
     return jit->begin_live("REPL");
 }
 
@@ -322,6 +461,7 @@ InteractiveSession::Offered InteractiveSession::enter(const std::string &text,
     // A payload is the entry's just taken, never a later one's.
     payload_kind = madc::session_payload::none;
     payload_args.clear();
+    payload_command = 0;
     if ( command_text(text).is_command() )
     {
 	// A command is one line, complete at its end (plan §41.8a): taken at
@@ -376,21 +516,33 @@ std::vector<std::string> InteractiveSession::complete(const std::string &text,
     CommandText c = command_text(text);
     if ( c.is_command() && caret <= c.line_end )
     {
-	// The command's own name: the registry's names and aliases that start
-	// with it (`?` has none: what follows it is the name it asks about).
-	if ( caret <= c.name_end && !c.query )
+	// Colon mode's text is the host's to complete (its ex core).
+	if ( c.mode == Mode::colon )
+	{
+	    start = caret;
+	    return std::vector<std::string>();
+	}
+	// The command's own name: the names valid in its mode — the
+	// built-ins', the mode's aliases', the registered rows' (`?` has
+	// none: what follows it is the name it asks about).
+	if ( caret <= c.name_end && repl_mode(c.mode) )
 	{
 	    std::vector<std::string> out;
 	    start = c.prefix + 1;
 	    if ( caret < start )
 		return out;
 	    const std::string typed = text.substr(start, caret - start);
+	    auto offer = [&](const std::string &name) {
+		if ( name.compare(0, typed.size(), typed) == 0 )
+		    out.push_back(name);
+	    };
 	    for ( size_t i = 0; i < command_count; ++i )
-		if ( strncmp(command_rows[i].name, typed.c_str(), typed.size()) == 0 )
-		    out.push_back(command_rows[i].name);
+		offer(command_rows[i].name);
 	    for ( size_t i = 0; i < alias_count; ++i )
-		if ( strncmp(alias_rows[i].name, typed.c_str(), typed.size()) == 0 )
-		    out.push_back(alias_rows[i].name);
+		if ( alias_rows[i].mode == c.mode )
+		    offer(alias_rows[i].name);
+	    for ( const Registered &r : registered )
+		offer(r.name);
 	    std::sort(out.begin(), out.end());
 	    return out;
 	}
@@ -489,14 +641,29 @@ bool InteractiveSession::run_command(const std::string &text,
     command_output.clear();
     showed_command = true;
     prog->begin_entry();		// no earlier entry's diagnostics or display
-    const CommandRow *row = command_named(c.name(text));
+    if ( c.mode == Mode::colon )
+    {
+	// Colon mode is the host's (owner 2026-10-09): a host with one
+	// answers `:` before the session sees the entry.
+	prog->add_diagnostic(Program::DiagnosticSeverity::error,
+			     Program::DiagnosticPhase::parser,
+			     "'" + c.cited(text) + "' is a colon-mode command, and"
+			     " there is no colon mode here (%help lists the"
+			     " REPL's commands)",
+			     prog->intern_file(name), 1, (int)c.prefix + 1);
+	return false;
+    }
+    const std::string word = c.name(text);
+    const CommandRow *row = command_row_of(c, word);
     if ( !row )
     {
+	for ( const Registered &r : registered )
+	    if ( r.name == word )
+		return run_registered(r, command_rest(text, c), name);
 	// IPython: "UsageError: Line magic function `%x` not found."
 	prog->add_diagnostic(Program::DiagnosticSeverity::error,
 			     Program::DiagnosticPhase::parser,
-			     "unknown command '"
-			     + text.substr(c.prefix, c.name_end - c.prefix)
+			     "unknown command '" + c.cited(text)
 			     + "' (%help lists them)",
 			     prog->intern_file(name), 1, (int)c.prefix + 1);
 	return false;
@@ -505,27 +672,39 @@ bool InteractiveSession::run_command(const std::string &text,
     {
 	case Command::help:
 	{
-	    // Each command's usage, what it does and its aliases; `:` and `.`
-	    // reach them too.
+	    // ONE registry (design §2.6): each built-in's usage, what it does
+	    // and its aliases in their modes, then every registered row, then
+	    // how the modes reach them.
 	    size_t width = 0;
 	    for ( size_t i = 0; i < command_count; ++i )
 		width = std::max(width, strlen(command_rows[i].usage));
+	    for ( const Registered &r : registered )
+		width = std::max(width, r.usage.size());
+	    auto line = [&](const std::string &usage, const std::string &summary) {
+		command_output += usage + std::string(width + 2 - usage.size(), ' ')
+				+ summary;
+	    };
 	    for ( size_t i = 0; i < command_count; ++i )
 	    {
-		command_output += std::string(command_rows[i].usage)
-		    + std::string(width + 2 - strlen(command_rows[i].usage), ' ')
-		    + command_rows[i].summary;
+		line(command_rows[i].usage, command_rows[i].summary);
 		std::string also;
 		for ( size_t a = 0; a < alias_count; ++a )
 		    if ( alias_rows[a].code == command_rows[i].code )
-			also += (also.empty() ? " (also ." : ", .")
-			      + std::string(alias_rows[a].name);
+			also += std::string(also.empty() ? " (also " : ", ")
+			      + (alias_rows[a].mode == Mode::dot ? "." : "%")
+			      + alias_rows[a].name;
 		if ( !also.empty() )
 		    command_output += also + ")";
 		command_output += "\n";
 	    }
-	    command_output += "Each name is also written with `:` or `.`"
-			      " (`:type EXPR`, `.L FILE`).";
+	    for ( const Registered &r : registered )
+	    {
+		line(r.usage, r.summary);
+		command_output += "\n";
+	    }
+	    command_output += "Each name is also written with `.` (`.type EXPR`);"
+			      " `?NAME` asks about a name; `:` starts a"
+			      " colon-mode (ex) command.";
 	    return true;
 	}
 	case Command::type:
@@ -553,6 +732,59 @@ bool InteractiveSession::run_command(const std::string &text,
 	    break;
     }
     return false;
+}
+
+bool madc::command_add(const char *name, const char *usage, const char *summary,
+		       bool (*handler)(value &out, const char *argument))
+{
+    Program *p = Program::active_runtime_program();
+    if ( !p || !p->owning_session || !name || !handler )
+	return false;
+    return p->owning_session->add_command(name, usage ? usage : "",
+					  summary ? summary : "", handler);
+}
+
+// A registered row's run (design §2.3). A host row runs nowhere here: the
+// session answers the `command` payload with its code and argument, and
+// the host runs it (one with no host to ask is refused). A session row's
+// handler is a host call into JIT code (or a native module's), inside the
+// Program's runtime scope as run_main's main is.
+bool InteractiveSession::run_registered(const Registered &row,
+					const std::string &argument,
+					const std::string &name)
+{
+    if ( !row.handler )
+    {
+	if ( !payload_host )
+	{
+	    command_error("%" + row.name + " is its host's command, and this"
+			  " session has no host to run it", name);
+	    return false;
+	}
+	payload_kind = madc::session_payload::command;
+	payload_command = row.code;
+	payload_args.assign(1, argument);
+	return true;
+    }
+    madc::value out;
+    bool ok = false;
+    prog->push_runtime_scope();
+    try
+    {
+	ok = row.handler(out, argument.c_str());
+    }
+    catch (...)
+    {
+	prog->pop_runtime_scope();
+	throw;
+    }
+    prog->pop_runtime_scope();
+    const std::string text = out.is_string() ? out.as_string() : std::string();
+    if ( ok )
+	command_output = text;
+    else if ( !text.empty() )
+	command_error(text, name);
+    return ok;
 }
 
 // The terminal's editor (its contract is madc_session.h's), run by the one

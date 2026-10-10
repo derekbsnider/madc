@@ -378,7 +378,7 @@ TEST_CASE("%type answers off a terminal and at the line editor (§37, D13)")
     REQUIRE(s.begin("--std=c17"));
     std::ostringstream err;
     s.program().error_stream = &err;
-    std::istringstream in("int x = 10;\n%type x * 2.5\n:type &x\n"
+    std::istringstream in("int x = 10;\n%type x * 2.5\n.type &x\n"
 			  "int g(int a, int b)\n{ return a\n%b; }\ng(7, 4)\n");
     std::ostringstream out;
     CHECK(madc_repl_run(s, in, out, false) == 0);

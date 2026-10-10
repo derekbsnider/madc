@@ -851,10 +851,12 @@ long plugin_command_hosted(long w, const char *name0, const char *title0,
 }
 
 // Register a REPL command (API 3; plan §7f, the IDE layer): `%name ARGS`
-// typed in the REPL pane runs command `code` (any command: a plugin's own,
-// registered first) with ARGS. The name is one the session's rule reads as a
-// whole command name (madc::session_command_of — the one rule), names none
-// of the session's own commands or aliases, and is new. False = refused.
+// (or `.name ARGS`: the REPL's two command modes) typed in the REPL pane
+// runs command `code` (any command: a plugin's own, registered first) with
+// ARGS. The name is one the session's rule reads as a whole command name
+// (madc::session_command_of — the one rule), names none of the session's
+// own commands or aliases in either mode (cling's `.q` included), and is
+// new. False = refused.
 bool plugin_repl_command(long w, const char *name0, const char *usage0,
 			 const char *summary0, long code)
 {
@@ -865,6 +867,11 @@ bool plugin_repl_command(long w, const char *name0, const char *usage0,
     var typed = format("%{}", name);
     if ( !madc::session_command_of(q, typed.c_str()) || !(q["word"] == name)
 	 || !(q["command"] == madc::session_command::none) )
+	return false;
+    var dq;
+    var dotted = format(".{}", name);
+    if ( madc::session_command_of(dq, dotted.c_str())
+	 && !(dq["command"] == madc::session_command::none) )
 	return false;
     var cn;
     cmd_name_w(cn, w, code);

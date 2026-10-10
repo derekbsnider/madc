@@ -86,9 +86,10 @@ namespace {
 // session defined, as rows (InteractiveSession::bindings, %whos's). `build`:
 // %build's (InteractiveSession::build_file), the host's text of a file.
 // `stdin`: Send EOF's (plan §41.12a) — the backend takes the fresh stdin the
-// client handed over (madc_session_stdin.h); the one request with no seq and
-// no reply.
-enum class Op : unsigned char { begin, offer, complete, running, load, run, continues, bindings, build, stdin_renew, unknown };
+// client handed over (madc_session_stdin.h). `commands`: the host's REPL
+// command rows (split arc 1A.2), sent after every start. Those two are the
+// requests with no seq and no reply.
+enum class Op : unsigned char { begin, offer, complete, running, load, run, continues, bindings, build, stdin_renew, commands, unknown };
 
 struct OpRow { const char *name; Op op; };
 const OpRow op_rows[] = {
@@ -96,6 +97,7 @@ const OpRow op_rows[] = {
     { "running", Op::running }, { "load", Op::load }, { "run", Op::run },
     { "continues", Op::continues }, { "bindings", Op::bindings },
     { "build", Op::build }, { "stdin", Op::stdin_renew },
+    { "commands", Op::commands },
 };
 
 const char *op_name(Op op)
@@ -141,6 +143,7 @@ InteractiveSession::OfferState state_of(const std::string &name)
 // the wire's word for each; none rides no field.
 struct PayloadRow { const char *name; madc::session_payload payload; };
 const PayloadRow payload_rows[] = {
+    { "command", madc::session_payload::command },
     { "load", madc::session_payload::load },
     { "run", madc::session_payload::run },
     { "run_here", madc::session_payload::run_here },
@@ -301,6 +304,13 @@ int serve_session(madc::DataChannel &wire, std::unique_ptr<Program> prog,
 	    madc::session_stdin_take(stdin_socket, req.value("handle", (uint64_t)0));
 	    continue;
 	}
+	if ( op == Op::commands )
+	{
+	    // The host's REPL command rows replace the ones it sent before.
+	    if ( req.contains("rows") )
+		session.set_host_commands(madc::hub::detail::wt_json_to_value(req["rows"]));
+	    continue;
+	}
 	// An interrupt from before this request (one sent while the backend
 	// waited) is none; one from here on waits for the entry's first poll.
 	madc_session_interrupt_reset();
@@ -346,6 +356,8 @@ int serve_session(madc::DataChannel &wire, std::unique_ptr<Program> prog,
 		    {
 			rep["payload"] = payload_name(session.payload());
 			rep["argv"] = session.payload_argv();
+			if ( session.payload() == madc::session_payload::command )
+			    rep["code"] = session.payload_code();
 		    }
 		    attach_diagnostics(rep, session);
 		}
@@ -422,6 +434,7 @@ int serve_session(madc::DataChannel &wire, std::unique_ptr<Program> prog,
 	    case Op::begin:
 	    case Op::running:
 	    case Op::stdin_renew:	// taken above, no reply
+	    case Op::commands:
 	    case Op::unknown:
 		rep["ok"] = false;
 		break;
@@ -438,7 +451,7 @@ int serve_session(madc::DataChannel &wire, std::unique_ptr<Program> prog,
 SessionClient::Reply::Reply()
     : kind(Kind::offer), seq(0), state(InteractiveSession::OfferState::taken),
       ok(false), submitted(0), payload(::madc::session_payload::none),
-      start(0), defines_main(false), status(0), continues(false),
+      code(0), start(0), defines_main(false), status(0), continues(false),
       exit_status(-1), signal(0)
 {
 }
@@ -496,7 +509,10 @@ bool SessionClient::start(const std::string &std_opt, const ProgramFactory &make
 	    nlohmann::json j = nlohmann::json::parse(line, nullptr, false);
 	    bool ok = !j.is_discarded() && j.value("ok", false);
 	    if ( ok )
+	    {
 		standard_name = j.value("standard", std::string());
+		send_host_commands();	// the host's rows, before any entry
+	    }
 	    if ( !ok )
 	    {
 		error_text = j.is_discarded() ? std::string("session: no greeting")
@@ -730,6 +746,22 @@ void SessionClient::stop()
 bool SessionClient::send(const std::string &line)
 {
     return wire && write_line(*wire, line);
+}
+
+bool SessionClient::set_host_commands(const madc::value &rows)
+{
+    host_rows = rows;
+    return send_host_commands();
+}
+
+bool SessionClient::send_host_commands()
+{
+    if ( !wire || !host_rows.is_array() )
+	return false;
+    nlohmann::json req;
+    req["op"] = op_name(Op::commands);
+    req["rows"] = madc::hub::detail::wt_value_to_json(host_rows);
+    return send(req.dump());
 }
 
 bool SessionClient::take_line(std::string &line)
@@ -995,6 +1027,7 @@ int SessionClient::poll(Reply &reply, std::string &output, int timeout_ms)
 	    reply.submitted = j.value("submitted", 0u);
 	    reply.payload = payload_of(j.value("payload", std::string()));
 	    reply.argv = j.value("argv", std::vector<std::string>());
+	    reply.code = j.value("code", (int64_t)0);
 	    break;
 	case Op::complete:
 	    reply.kind = Reply::Kind::complete;
@@ -1025,6 +1058,7 @@ int SessionClient::poll(Reply &reply, std::string &output, int timeout_ms)
 	    break;
 	case Op::begin:
 	case Op::stdin_renew:	// a request's only: never a reply
+	case Op::commands:
 	case Op::unknown:
 	    break;
     }
@@ -1132,8 +1166,45 @@ ReplSession::Offered BackendSession::offer(const std::string &text,
     return Offered{ r.state, ok };
 }
 
+bool BackendSession::add_command(const std::string &name, const std::string &usage,
+				 const std::string &summary, const CommandRun &run)
+{
+    if ( !run || !InteractiveSession::registrable_name(name) )
+	return false;
+    for ( const HostCommand &h : host_commands )
+	if ( h.name == name )
+	    return false;
+    host_commands.push_back(HostCommand{ name, usage, summary, run });
+    madc::value rows = madc::value::make_array();
+    for ( size_t i = 0; i < host_commands.size(); ++i )
+    {
+	madc::value row = madc::value::make_object();
+	row.object()["name"] = madc::value(host_commands[i].name);
+	row.object()["usage"] = madc::value(host_commands[i].usage);
+	row.object()["summary"] = madc::value(host_commands[i].summary);
+	row.object()["code"] = madc::value((int64_t)(i + 1));
+	rows.array().push_back(row);
+    }
+    client.set_host_commands(rows);
+    return true;
+}
+
 bool BackendSession::honor(const SessionClient::Reply &reply)
 {
+    if ( reply.payload == madc::session_payload::command )
+    {
+	// A host row: this host runs it (its code is its index + 1).
+	if ( reply.code < 1 || (size_t)reply.code > host_commands.size() )
+	    return false;
+	std::string out;
+	const bool ok = host_commands[reply.code - 1].run(
+	    reply.argv.empty() ? std::string() : reply.argv[0], out);
+	if ( ok )
+	    shown_text = out;
+	else if ( !out.empty() )
+	    err << out << std::endl;
+	return ok;
+    }
     if ( reply.payload == madc::session_payload::quit )
     {
 	// %quit: the session ends, and the terminal with it (status 0).

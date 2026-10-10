@@ -41,6 +41,7 @@
 class Method;
 class Program;
 class CirFrozenForest;	// forest grove binding (cir_freeze.h); pointer member only
+class InteractiveSession;	// madc_session.h; Program::owning_session only
 struct MadcSharedPreludeCache; // project-local immutable auto-include snapshots
 struct CirRestoredTemplate;	// task #25 B2: lazy template-payload source (cir_freeze.h)
 struct CirRestoredTemplateRun;	// one frozen token run (cir_freeze.h)
@@ -8028,6 +8029,11 @@ public:
     // SAME Program and parses it to its end-of-entry token, keeping every
     // macro, include, type and symbol the earlier entries made.
     bool interactive_session = false;
+    // The session that owns this Program (InteractiveSession::begin sets it;
+    // non-owning): code running in an entry reaches the session's command
+    // registry through active_runtime_program() (madc::command_add, split
+    // arc 1A.2). NULL outside a session.
+    InteractiveSession *owning_session = NULL;
     // An entry's run (D25): its statements, in source order, go into
     // `void __madc_entry_N(void)`, never into script mode's main. It is made
     // at the entry's first statement; a global declared after that point gets

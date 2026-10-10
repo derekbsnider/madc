@@ -816,7 +816,9 @@ namespace madc {
     //     reading an open buffer's live text; load it and session_call
     //     argv: %call; session_build argv[0] to argv[1]: %build; open
     //     argv[0] in the editor at line argv[1] when there is one: %open,
-    //     %edit; or, with no argv, end the session: %quit); a load's
+    //     %edit; with no argv, end the session: %quit; or run the pane's
+    //     own command: `code` names the row session_command_add made, argv
+    //     its argument); a load's
     //     ok, rendered,
     //     diagnostics and main (the file defined main, so running it runs
     //     main: one an earlier unit defined is not the file's); a run's ok,
@@ -846,11 +848,24 @@ namespace madc {
     //     and a closed session's case is dead.
     //   session_close(h): stop the backend and free the handle.
     //   session_command_of(out, text): what `text` is as an entry, asked of
-    //     the session's own rule with no session (plan §7f: an IDE answers
-    //     its own commands before the session sees them): false when it is
-    //     no command; else out = {word (the name typed), command (a
-    //     madc::session_command code: none when the session has no such
-    //     command), argument (the rest of its first line)}.
+    //     the session's own rule with no session (a host answers colon mode
+    //     itself, before the session sees the entry): false when it is no
+    //     command; else out = {mode (a madc::command_mode code: `%`, `.`,
+    //     `?` or `:` — colon mode, ed / ex / vim commands, the host's),
+    //     word (the name typed; empty for colon mode), command (a
+    //     madc::session_command code: none for no built-in), argument (the
+    //     rest of its first line; colon mode's whole text after the `:`)}.
+    //   session_command_add(h, name, usage, summary, code): a REPL command
+    //     the PANE runs (split arc 1A.2): reachable as %name and .name,
+    //     listed by %help; taken, its offer row's payload is `command`,
+    //     `code` this code and argv its argument. Kept across restarts.
+    //     False for a built-in's or an alias's name, a name added already,
+    //     or no whole name.
+    //   command_add(name, usage, summary, handler): a REPL command run IN the
+    //     session — called by code running there (a module's own
+    //     registration); handler(out, argument) answers true with the text
+    //     it shows in out, or false with its error. False outside a session
+    //     or for a taken name.
     // Thread contract: a handle is confined to the thread that opened it.
     int64_t session_open(const char *std);
     bool session_running(int64_t handle);
@@ -864,6 +879,10 @@ namespace madc {
     int64_t session_build(int64_t handle, const char *path, const char *text,
 			  const char *out);
     bool session_command_of(value &out, const char *text);
+    bool session_command_add(int64_t handle, const char *name, const char *usage,
+			     const char *summary, int64_t code);
+    bool command_add(const char *name, const char *usage, const char *summary,
+		     bool (*handler)(value &out, const char *argument));
     int64_t session_bindings(int64_t handle);
     int64_t session_poll(value &reply, int64_t handle);
     value &session_output(value &out, int64_t handle);
