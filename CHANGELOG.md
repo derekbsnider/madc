@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### The static gates see files a commit has not yet committed
+
+Every `scripts/check-*.sh` gate now enumerates its files with `git ls-files
+--cached --others --exclude-standard` (tracked files plus the new ones git does
+not ignore) instead of a bare `git ls-files`, which lists tracked files only. A
+source file a commit adds was invisible to every static gate while it was
+untracked, so `make -C src gates` passed, then the same gate failed one commit
+later once the file was tracked. A new gate,
+`scripts/check-gates-see-new-files.sh`, fails on a bare `git ls-files` in any
+`scripts/check-*.sh` and is wired into the `gates` target.
+
 ### `madc --lsp` — the Language Server Protocol server on stdin/stdout
 
 `madc --lsp [FILE]` now runs a Language Server Protocol server on standard

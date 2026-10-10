@@ -46,7 +46,7 @@ if ! scan "$tmpd/good.cpp" >/dev/null; then
 fi
 rm -rf "$tmpd"
 
-files=$(git ls-files 'src/*.cpp' 'src/*.h' 'include/*.h' 'include/**/*.h' \
+files=$(git ls-files --cached --others --exclude-standard 'src/*.cpp' 'src/*.h' 'include/*.h' 'include/**/*.h' \
 	| grep -v -E '^(src/madc_dl\.cpp|include/madc_dl\.h|src/madc_modules\.cpp)$')
 # shellcheck disable=SC2086
 if ! out=$(scan $files); then

@@ -58,7 +58,7 @@ if [ "$c" -ne 3 ]; then
 	exit 1
 fi
 
-files=$(git ls-files 'src/*.cpp' 'include/*.h')
+files=$(git ls-files --cached --others --exclude-standard 'src/*.cpp' 'include/*.h')
 hits=$(scan $files)
 n=$(printf '%s' "$hits" | grep -c . || true)
 echo "token stream rewinds outside Program::rewind_stream: $n (target 0)"

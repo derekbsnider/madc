@@ -46,7 +46,7 @@ if [ "$c" -ne 2 ]; then
 	exit 1
 fi
 
-files=$(git ls-files 'src/*.cpp')
+files=$(git ls-files --cached --others --exclude-standard 'src/*.cpp')
 hits=$(scan $files)
 n=$(printf '%s' "$hits" | grep -c . || true)
 echo "reference-return call results read by hand: $n (target 0)"

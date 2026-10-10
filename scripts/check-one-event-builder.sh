@@ -46,7 +46,7 @@ if ! scan "$tmpd/good.mad" > /dev/null; then
 fi
 rm -rf "$tmpd"
 
-files=$(git ls-files 'tests/*.mad')
+files=$(git ls-files --cached --others --exclude-standard 'tests/*.mad')
 # shellcheck disable=SC2086
 if ! out=$(scan $files); then
 	echo "check-one-event-builder: a madcide test builds its own client events:" >&2

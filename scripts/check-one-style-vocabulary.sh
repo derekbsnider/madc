@@ -86,7 +86,7 @@ if ! grep -q '^inline bool ui_style_of' "$STYLE_OWNER"; then
 	echo "check-one-style-vocabulary: owner ui_style_of not found in $STYLE_OWNER" >&2
 	exit 1
 fi
-files=$(git ls-files 'src/*.cpp' 'src/*.h' 'include/*.h' 'include/**/*.h')
+files=$(git ls-files --cached --others --exclude-standard 'src/*.cpp' 'src/*.h' 'include/*.h' 'include/**/*.h')
 # shellcheck disable=SC2086
 parsers=$(grep -lE '^(inline )?bool (ui_style_of|tui_attr_of) *\(' $files /dev/null | grep -v "^$STYLE_OWNER\$")
 if [ -n "$parsers" ]; then

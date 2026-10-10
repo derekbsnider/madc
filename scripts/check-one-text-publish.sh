@@ -42,7 +42,7 @@ fi
 # component, less the allowed owners. A bag-string receiver named `text`
 # (madc::value text; text.insert(...)) would be a false positive -- there is
 # none today; one that appears names its variable otherwise.
-files=$(git ls-files 'src/*.cpp' 'src/*.h' 'include/*.h' 'include/madcdis/*.h' 'include/libmadc/*.h' \
+files=$(git ls-files --cached --others --exclude-standard 'src/*.cpp' 'src/*.h' 'include/*.h' 'include/madcdis/*.h' 'include/libmadc/*.h' \
 	| grep -vE "^($ALLOWED)")
 bad=$(grep -nE "$PAT" $files 2>/dev/null | grep -E 'text_buffer|_texts|hub::' )
 n=$(printf '%s' "$bad" | grep -c . || true)

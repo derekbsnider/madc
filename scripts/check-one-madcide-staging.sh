@@ -47,7 +47,7 @@ rm -f "$tmp"
 
 # --- the tree ---------------------------------------------------------------
 # The gate itself is excluded: its negative controls spell violations.
-files=$(git ls-files 'scripts/*.sh' 'packaging/*' 'packaging/**' '.github/workflows/*' \
+files=$(git ls-files --cached --others --exclude-standard 'scripts/*.sh' 'packaging/*' 'packaging/**' '.github/workflows/*' \
 	| grep -v -e "^$OWNER\$" -e "^scripts/check-one-madcide-staging.sh\$")
 # shellcheck disable=SC2086
 if ! out=$(scan $files 2>&1); then

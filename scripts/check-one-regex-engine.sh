@@ -34,7 +34,7 @@ if [ "$p" -ne 1 ] || [ "$r" -ne 2 ]; then
 	exit 1
 fi
 
-files=$(git ls-files 'src/*.cpp' 'src/*.h' 'src/*.inc' 'include/*.h' 'tests/unit/*.cpp')
+files=$(git ls-files --cached --others --exclude-standard 'src/*.cpp' 'src/*.h' 'src/*.inc' 'include/*.h' 'tests/unit/*.cpp')
 bad_pcre=$(grep -nE "$PCRE" $files 2>/dev/null | grep -v "^$OWNER:")
 bad_std=$(grep -nE "$STDRE" $files 2>/dev/null)
 n=$(printf '%s\n%s' "$bad_pcre" "$bad_std" | grep -c . || true)

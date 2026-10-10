@@ -98,7 +98,7 @@ if [ "$n1" -ne 0 ]; then
 	echo "     promoted_operand_type (its promoted value)."
 	exit 1
 fi
-fl=$(floor_sites $(git ls-files 'src/*.cpp' 'include/*.h'))
+fl=$(floor_sites $(git ls-files --cached --others --exclude-standard 'src/*.cpp' 'include/*.h'))
 n2=$(printf '%s' "$fl" | grep -c . || true)
 echo "int promotion floor spelled outside the owners: $n2 (target 0)"
 if [ "$n2" -ne 0 ]; then

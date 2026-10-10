@@ -1205,6 +1205,7 @@ gates: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/check-one-return-declarator.sh
 	@cd .. && bash scripts/check-one-member-init-walk.sh
 	@cd .. && bash scripts/check-one-error-diagnostic-scan.sh
+	@cd .. && bash scripts/check-gates-see-new-files.sh
 	@cd .. && bash scripts/check-one-lexer-type-token.sh
 	@cd .. && bash scripts/check-one-mir-def-to-import.sh
 	@cd .. && bash scripts/check-one-symbol-trap.sh

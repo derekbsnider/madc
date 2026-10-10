@@ -61,7 +61,7 @@ if [ "$n" != "1" ]; then
 fi
 
 # --- the tree ---------------------------------------------------------------
-files=$(git ls-files 'tools/*.inc' 'tools/*.mad' 'tools/*.madv' | grep -v "^$OWNER\$")
+files=$(git ls-files --cached --others --exclude-standard 'tools/*.inc' 'tools/*.mad' 'tools/*.madv' | grep -v "^$OWNER\$")
 # shellcheck disable=SC2086
 if ! out=$(scan $files 2>&1); then
 	echo "check-one-blank-run: a text's leading blanks scanned outside the one owner ($OWNER):" >&2
