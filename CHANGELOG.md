@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### `git log -- PATH` in the git module hides a commit TREESAME to any parent
+
+`madc`'s git module (`madcgit`) now follows git's history-simplification rule
+for `log -- PATH`: a commit is shown only when the blob at PATH differs from
+EVERY parent's, so a commit that is TREESAME to any parent is hidden.
+`touches_path` previously returned shown as soon as ONE parent's blob differed,
+which listed a merge of an unrelated history (a subtree import) as a change to
+every path the first parent already carried. On this repository,
+`%git log -n 1 tests/testint.mad` answered the `third_party/libgit2` subtree
+merge where `git log -n 1 -- tests/testint.mad` answers `e51e4f717 fixed some
+parseExpression stuff`, the commit that last edited the file. The oracle is real
+git: after `first` (a.txt), an orphan `side` (x.txt) and
+`git merge --allow-unrelated-histories side`, `git log --format=%s -- a.txt`
+prints `first` alone and `-- x.txt` prints `side` alone; `GitRepo::log` now
+answers the same. The correction reaches madcide's `%git log` and History view,
+the git source adapter's commit records, and the module's `madcgit_log`.
+
 ### The REPL colours the code it shows and the source line it echoes
 
 `madc -i` now colours the code in what a command shows — `%type`'s type and

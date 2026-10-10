@@ -175,7 +175,9 @@ bool entry_oid_at(git_tree *tree, const char *path, git_oid &out)
 }
 
 // `git log -- path`'s keep rule: the blob at `path` differs from every
-// parent's (a root commit that has the path counts).
+// parent's (a root commit that has the path counts) — a commit TREESAME to
+// any parent is hidden, as git's history simplification hides it (a merge of
+// an unrelated history kept the path as it was).
 bool touches_path(git_commit *c, const char *path)
 {
     git_tree *tree = (git_tree *)0;
@@ -206,10 +208,10 @@ bool touches_path(git_commit *c, const char *path)
 	    }
 	    git_commit_free(p);
 	}
-	if ( !same )
-	    return true;
+	if ( same )
+	    return false;
     }
-    return false;
+    return true;
 }
 
 void fill_commit(GitCommit &row, const git_oid *id, git_commit *c)

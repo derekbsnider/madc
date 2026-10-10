@@ -18,6 +18,7 @@
 #include <cstring>
 #include <fstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #ifdef _WIN32
@@ -228,6 +229,91 @@ TEST_CASE("GitRepo opens a repository and answers head/refs/revparse/log/commit/
     fx.write("a.txt", "one\ntwo\nthree\n");
     REQUIRE(repo.dirty("a.txt", d, &err));
     CHECK(d == true);
+}
+
+namespace {
+
+// A tree of `files` (name, text) written through libgit2's treebuilder.
+git_tree *tree_of(git_repository *repo,
+		  const std::vector<std::pair<std::string, std::string> > &files)
+{
+    git_treebuilder *tb = (git_treebuilder *)0;
+    REQUIRE(git_treebuilder_new(&tb, repo, (const git_tree *)0) == 0);
+    for ( size_t i = 0; i < files.size(); ++i )
+    {
+	git_oid blob;
+	REQUIRE(git_blob_create_from_buffer(&blob, repo, files[i].second.data(),
+					    files[i].second.size()) == 0);
+	REQUIRE(git_treebuilder_insert((const git_tree_entry **)0, tb,
+				       files[i].first.c_str(), &blob,
+				       GIT_FILEMODE_BLOB) == 0);
+    }
+    git_oid id;
+    REQUIRE(git_treebuilder_write(&id, tb) == 0);
+    git_treebuilder_free(tb);
+    git_tree *tree = (git_tree *)0;
+    REQUIRE(git_tree_lookup(&tree, repo, &id) == 0);
+    return tree;
+}
+
+} // namespace
+
+// `git log -- PATH` hides a merge whose PATH is a parent's (git's TREESAME
+// rule: shown only when it differs from EVERY parent): merging an unrelated
+// history (a subtree import) is no change to a.txt. Oracle, git 2.x: after
+// `first` (a.txt), an orphan `side` (x.txt) and `git merge
+// --allow-unrelated-histories side`, `git log --format=%s -- a.txt` prints
+// `first` alone; `-- x.txt` prints `side` alone.
+TEST_CASE("GitRepo log -- path hides a merge that kept the path (git's TREESAME)")
+{
+    git_libgit2_init();
+    const std::string dir = make_temp_dir();
+    REQUIRE(!dir.empty());
+    git_repository *repo = (git_repository *)0;
+    REQUIRE(git_repository_init(&repo, dir.c_str(), 0) == 0);
+    git_signature *sig = (git_signature *)0;
+    REQUIRE(git_signature_new(&sig, "Fixture", "fixture@example.com", 1700000000, 0) == 0);
+    std::vector<std::pair<std::string, std::string> > files;
+    files.push_back(std::make_pair(std::string("a.txt"), std::string("one\n")));
+    git_tree *t_first = tree_of(repo, files);
+    git_oid first_id, side_id, merge_id;
+    REQUIRE(git_commit_create(&first_id, repo, (const char *)0, sig, sig, (const char *)0,
+			      "first", t_first, 0, (const git_commit **)0) == 0);
+    std::vector<std::pair<std::string, std::string> > side_files;
+    side_files.push_back(std::make_pair(std::string("x.txt"), std::string("ex\n")));
+    git_tree *t_side = tree_of(repo, side_files);
+    REQUIRE(git_commit_create(&side_id, repo, (const char *)0, sig, sig, (const char *)0,
+			      "side", t_side, 0, (const git_commit **)0) == 0);
+    files.push_back(side_files[0]);
+    git_tree *t_merge = tree_of(repo, files);
+    git_commit *first = (git_commit *)0, *side = (git_commit *)0;
+    REQUIRE(git_commit_lookup(&first, repo, &first_id) == 0);
+    REQUIRE(git_commit_lookup(&side, repo, &side_id) == 0);
+    const git_commit *parents[] = { first, side };
+    REQUIRE(git_commit_create(&merge_id, repo, "HEAD", sig, sig, (const char *)0,
+			      "merge", t_merge, 2, parents) == 0);
+    git_commit_free(first);
+    git_commit_free(side);
+    git_tree_free(t_first);
+    git_tree_free(t_side);
+    git_tree_free(t_merge);
+    git_signature_free(sig);
+    git_repository_free(repo);
+    {
+	madc::GitRepo r;
+	REQUIRE(r.open(dir));
+	std::vector<madc::GitCommit> rows;
+	REQUIRE(r.log(rows, "a.txt", 10));
+	REQUIRE(rows.size() == 1u);
+	CHECK(rows[0].summary == "first");
+	REQUIRE(r.log(rows, "x.txt", 10));
+	REQUIRE(rows.size() == 1u);
+	CHECK(rows[0].summary == "side");
+	REQUIRE(r.log(rows, "", 10));
+	CHECK(rows.size() == 3u);
+    }
+    git_libgit2_shutdown();
+    rm_rf(dir);
 }
 
 TEST_CASE("GitRepo blames a modified buffer against the committed file")
