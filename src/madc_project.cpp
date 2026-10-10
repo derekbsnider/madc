@@ -1,5 +1,6 @@
 #include "madc_project.h"
 #include "madc_posix_io.h"	// host_path_dirname / host_path_absolute: a "libs" entry, a TU path
+#include "madc_documents.h"	// document_read_file / document_write_file: the writer's bytes
 #include "json.hpp"
 #include <algorithm>
 #include <fstream>
@@ -58,6 +59,13 @@ void shell_split(const std::string &cmd, std::vector<std::string> &out) {
 std::string manifest_directory(const std::string &path) {
 	std::string dir = madc::detail::host_path_dirname(path);
 	return dir.empty() ? std::string(".") : dir;
+}
+
+// A JSON value of the wrong type for its field ("file": 3): thrown by
+// json.hpp's value() / get(), refused here.
+bool refuse_json_error(const json::exception &e, std::string &err) {
+	err = std::string("manifest field of the wrong type: ") + e.what();
+	return false;
 }
 
 // Resolve a (possibly relative) path against a base directory. A "."
@@ -282,10 +290,157 @@ bool read_project_manifest(const std::string &path,
 		if (root.is_array())
 			return read_cc_array(root, manifest_dir, out, err);
 	} catch (const json::exception &e) {
-		err = std::string("manifest field of the wrong type: ") + e.what();
-		return false;
+		return refuse_json_error(e, err);
 	}
 	err = "top-level JSON is neither an object (madc manifest) nor an "
 	      "array (compile_commands.json)";
 	return false;
+}
+
+// ---- the manifest's one writer (split arc 1B.8) ----
+
+namespace {
+// The native manifest at `path`, read for a rewrite: a JSON object whose
+// "tus" is an array. A compile_commands.json import (an array) is the
+// generator's file, read-only.
+bool read_manifest_object(const std::string &path, json &root,
+			  std::string &err) {
+	std::string text;
+	if (!madc::document_read_file(path, text)) {
+		err = "cannot open " + path;
+		return false;
+	}
+	try {
+		root = json::parse(text, nullptr, true, /*ignore_comments=*/true);
+	} catch (const std::exception &e) {
+		err = std::string("JSON parse error: ") + e.what();
+		return false;
+	}
+	if (!root.is_object()) {
+		err = path + " is no madc manifest (a compile_commands.json "
+		      "import is read-only)";
+		return false;
+	}
+	if (!root.contains("tus") || !root["tus"].is_array()) {
+		err = path + " has no \"tus\" array";
+		return false;
+	}
+	return true;
+}
+
+// The manifest's bytes: dump(2) and a newline.
+bool write_manifest_object(const std::string &path, const json &root,
+			   std::string &err) {
+	std::string text;
+	try {
+		text = root.dump(2) + "\n";
+	} catch (const json::exception &e) {
+		// dump() refuses a name that is no UTF-8.
+		err = "cannot write " + path + ": " + e.what();
+		return false;
+	}
+	if (madc::document_write_file(path, text, false))
+		return true;
+	err = "cannot write " + path;
+	return false;
+}
+
+// A TU entry's own spelling of its file, and the path it names as the
+// reader resolves it ("" when it names none).
+std::string tu_entry_name(const json &entry) {
+	if (entry.is_string())
+		return entry.get<std::string>();
+	if (entry.is_object())
+		return entry.value("file", std::string());
+	return std::string();
+}
+
+std::string tu_entry_path(const json &entry, const std::string &manifest_dir) {
+	const std::string name = tu_entry_name(entry);
+	if (name.empty())
+		return std::string();
+	std::string dir = manifest_dir;
+	if (entry.is_object()) {
+		const std::string own = entry.value("directory", std::string());
+		if (!own.empty())
+			dir = own;
+	}
+	return resolve(dir, name);
+}
+
+// The index of the TU entry naming `file` — its path's, compared
+// canonically, or its own spelling; -1 when none does.
+long tu_entry_index(const json &tus, const std::string &manifest_dir,
+		    const std::string &file) {
+	const std::string want = madc::detail::canonical_path_for_compare(file);
+	for (size_t i = 0; i < tus.size(); ++i) {
+		const std::string named = tu_entry_path(tus[i], manifest_dir);
+		if (named.empty())
+			continue;
+		if (madc::detail::canonical_path_for_compare(named) == want
+		    || tu_entry_name(tus[i]) == file)
+			return (long)i;
+	}
+	return -1;
+}
+} // namespace
+
+bool project_manifest_create(const std::string &path, std::string &err) {
+	if (madc::detail::host_path_type_of(path) != madc::detail::host_path_type::none) {
+		err = path + " exists";
+		return false;
+	}
+	json root = json::object();
+	root["entry"] = "main";
+	root["tus"] = json::array();
+	return write_manifest_object(path, root, err);
+}
+
+bool project_manifest_add_tu(const std::string &path, const std::string &file,
+			     std::string &err) {
+	if (madc::detail::host_path_type_of(file) != madc::detail::host_path_type::file) {
+		err = "no such file: " + file;
+		return false;
+	}
+	json root;
+	if (!read_manifest_object(path, root, err))
+		return false;
+	const std::string dir = manifest_directory(path);
+	try {
+		if (tu_entry_index(root["tus"], dir, file) >= 0) {
+			err = file + " is in the project already";
+			return false;
+		}
+	} catch (const json::exception &e) {
+		return refuse_json_error(e, err);
+	}
+	// Named below the manifest's directory relative to it (the manifest
+	// moves with its tree), else by the file's canonical path.
+	const std::string canon = madc::detail::canonical_path_for_compare(file);
+	std::string name = canon;
+	const std::string base = madc::detail::canonical_path_for_compare(dir);
+	std::size_t rel = 0;
+	if (madc::detail::host_path_within(base, canon, &rel))
+		name = canon.substr(rel);
+	root["tus"].push_back(name);
+	return write_manifest_object(path, root, err);
+}
+
+bool project_manifest_remove_tu(const std::string &path,
+				const std::string &file, std::string &err) {
+	json root;
+	if (!read_manifest_object(path, root, err))
+		return false;
+	long at = -1;
+	try {
+		at = tu_entry_index(root["tus"], manifest_directory(path), file);
+	} catch (const json::exception &e) {
+		return refuse_json_error(e, err);
+	}
+	if (at < 0) {
+		err = file + " is not in the project";
+		return false;
+	}
+	root["tus"].erase((size_t)at);
+	return write_manifest_object(path, root, err);
 }

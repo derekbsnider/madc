@@ -59,6 +59,30 @@ const char *project_kind_name(ProjectKind kind);
 bool read_project_manifest(const std::string &path,
 			   ProjectManifest &out, std::string &err);
 
+// The manifest's one WRITER, beside its reader (split arc 1B.8): each call
+// is a read-modify-write of the native manifest's JSON object that keeps
+// every key it does not change (an IDE's "commands", a TU entry's own
+// fields), written as nlohmann's dump(2) and a newline — the bytes madcide
+// writes (js::stringify(proj, 2)). A comment the reader skips is not kept
+// (JSON has none to write). A compile_commands.json import (an array) is
+// never written. False + err = refused, the file as it was.
+// Thread contract: the C++ standard library's convention; two writers of
+// one manifest race as two editors saving one file do (the last write wins).
+//
+// create: {"entry": "main", "tus": []} at `path`; refused when it exists.
+bool project_manifest_create(const std::string &path, std::string &err);
+// add: `file` (absolute, or relative to the cwd) joins "tus", named as the
+// manifest names its TUs — relative to the manifest's directory when it
+// lies below it, else by its canonical path. Refused when it is no file,
+// or a TU already.
+bool project_manifest_add_tu(const std::string &path, const std::string &file,
+			     std::string &err);
+// remove: the TU entry naming `file` leaves whole, its own fields with it —
+// the entry whose path is `file`'s, or which spells `file` as given.
+// Refused when none does. The file itself is untouched.
+bool project_manifest_remove_tu(const std::string &path,
+				const std::string &file, std::string &err);
+
 // Forward decls to avoid pulling madc.h into the header.
 class MadcEngine;
 class Program;

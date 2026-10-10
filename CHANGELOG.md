@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### The project manifest gains a C++ writer, beside its reader
+
+The manifest had a C++ reader (`read_project_manifest`) and no C++ writer — only
+madcide's dialect code wrote it. `project_manifest_create`,
+`project_manifest_add_tu` and `project_manifest_remove_tu`
+(`include/madc_project.h`, `src/madc_project.cpp`, split arc 1B.8) now write it
+beside the reader. Each is a read-modify-write of the native manifest's JSON
+object that keeps every key it does not change (an IDE's `commands`, a TU
+entry's own fields); the bytes are nlohmann's `dump(2)` and a newline —
+madcide's own (`js::stringify(proj, 2)`), keys sorted. `create` writes
+`{"entry": "main", "tus": []}` and refuses an existing file. `add_tu` names a TU
+relative to the manifest's directory when it lies below it, else by its
+canonical path, and refuses a missing file or a TU already present. `remove_tu`
+matches by canonical path or the manifest's own spelling — a file deleted from
+disk can still be removed — and leaves the TU entry's fields with it. A
+compile_commands.json import (an array) is refused as read-only, and a field of
+the wrong JSON type is refused. The bytes pass through the one whole-file
+reader/writer pair, `madc::document_read_file` / `document_write_file`.
+madcide's writers move onto it in 1D.
+
 ### A malformed `--project` manifest is refused, not an abort
 
 A manifest field of the wrong JSON type — `{"tus":[{"file":3}]}`, a number where
