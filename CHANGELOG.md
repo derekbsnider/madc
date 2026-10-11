@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### A TUI tab strip wider than its pane keeps the active tab in view
+
+The terminal tab-strip builder now takes a `width` (0 means unbounded). A strip
+whose tabs are wider than that width starts at the first tab that keeps the
+active one whole in view — the tabs before it scroll off, as a GUI tab bar
+scrolls to its active tab. Both callers pass their width: a leaf pane's header
+and the editor's open-files strip in the flow. Before this the strip was drawn
+from its first tab and clipped at the pane's edge, so an active tab past the
+edge was not shown — a sidebar's fourth tab pushed the active tab off, and
+madcide's 80x24 Help screen showed `OUTLINE  SYMBO` with the Help Index tab
+gone.
+
 ### The GUI draws the editor's line-number gutter from the theme's chrome
 
 An edit node carrying the `gutter` hint now shows a line-number gutter in the

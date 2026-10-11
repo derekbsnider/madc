@@ -380,7 +380,7 @@ private:
 	    read_header(n, titles, active, &acts);
 	    if ( !titles.empty() )
 	    {
-		emit_line(fl, tab_strip(titles, active, false, &acts));
+		emit_line(fl, tab_strip(titles, active, false, &acts, fl.width));
 		for ( size_t i = 0; i < n.children.size(); ++i )
 		    collect_flow(r, n.children[i], fl);
 		return;
@@ -1077,12 +1077,25 @@ private:
     // A tab strip as one line: each title padded by a blank, the active
     // one in the scheme's tab_active style, the rest in its tab style; a
     // chrome band's titles uppercase (S3). The ONE strip builder — a leaf
-    // pane's header and the editor's open files.
+    // pane's header and the editor's open files. A strip wider than its
+    // `width` columns (0: unbounded) starts at the first tab that keeps the
+    // active one whole in view — the tabs before it scroll off, as a GUI's
+    // tab bar scrolls to its active tab.
     line_out tab_strip(const std::vector<std::string> &titles, size_t active,
-		       bool upper, const std::vector<tui_hit> *acts = NULL) const
+		       bool upper, const std::vector<tui_hit> *acts = NULL,
+		       size_t width = 0) const
     {
 	line_out l;
-	for ( size_t i = 0; i < titles.size(); ++i )
+	size_t first = 0;
+	if ( width > 0 && active < titles.size() )
+	{
+	    size_t through = 0;			// columns of tabs first..active
+	    for ( size_t i = 0; i <= active; ++i )
+		through += madc::line_width(titles[i]) + 2;
+	    while ( first < active && through > width )
+		through -= madc::line_width(titles[first++]) + 2;
+	}
+	for ( size_t i = first; i < titles.size(); ++i )
 	{
 	    if ( acts && i < acts->size() && (*acts)[i].k != tui_hit::kind::none )
 	    {
@@ -1117,7 +1130,7 @@ private:
 	const std::vector<std::string> &titles, size_t active, bool upper,
 	const std::vector<tui_hit> *acts = NULL)
     {
-	paint_line(row, col0, width, tab_strip(titles, active, upper, acts));
+	paint_line(row, col0, width, tab_strip(titles, active, upper, acts, width));
     }
 
     // A document line's byte->display-column map is madc::line_layout's
