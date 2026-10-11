@@ -21,7 +21,7 @@ parameter #9cdcfe
 member #9cdcfe
 enumerator #4fc1ff
 
-# The terminal's chrome (facelift S2): the dividers, the editor's line
+# The chrome (facelift S2): the dividers, the editor's line
 # numbers, the caret line's number, and the caret line itself, in Dark+ ...
 divider #444444
 gutter #858585

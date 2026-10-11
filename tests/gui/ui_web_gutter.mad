@@ -1,0 +1,112 @@
+// The line-number gutter in the REAL page (WebKitGTK under Xvfb): an edit
+// node with the `gutter` hint leads every line with its number in the
+// theme's chrome — the root's `chrome` hint, the one the terminal paints
+// (gutter, gutter_current, current_line) — and the caret's line gets the
+// current number and the current-line background. The numbers are CSS
+// counters: a line's text holds no digits, and a press in the gutter lands
+// on its line's start (the terminal's rule: the gutter presses into the
+// text). The caret moving re-marks the current line; a render without the
+// hint has no gutter (the negative control). Steps: the first paint, a
+// press in line 3's gutter, the render at the new caret, the hint dropped.
+var doc = "one\ntwo\nthree";
+long caret = 5;			// line 2, "t|wo"
+bool gutter = true;
+
+void compose(var &tree)
+{
+    var hints = { "caret": caret };
+    if ( gutter )
+	hints["gutter"] = 1;
+    var edit = { "role": "edit", "content": doc, "hints": hints };
+    var kids = {};
+    kids.push(edit);
+    var chrome = { "gutter": "#858585", "gutter_current": "#c6c6c6",
+		   "current_line": "bg_#282828" };
+    var rh = { "chrome": chrome };
+    var root = { "role": "group", "children": kids, "hints": rh };
+    tree = root;
+}
+
+// The gutter as the page shows it: the class, the digit width, each line's
+// number colour and background, and line 2's text.
+void probe(long t)
+{
+    ui::eval_page(t,
+	"(function(){var ed=document.querySelector('.edit');var o=[];"
+	"o.push('gutter='+(ed.classList.contains('gutter')?1:0));"
+	"o.push('ch='+(ed.style.getPropertyValue('--gutter-ch')||'-'));"
+	"o.push('ln='+ed.querySelectorAll('.ln').length);"
+	"for(var i=0;i<ed.children.length;i++){var l=ed.children[i];var n=l.querySelector('.ln');"
+	"o.push('L'+(i+1)+'='+(n?getComputedStyle(n).color:'-')+'/'+getComputedStyle(l).backgroundColor);}"
+	"o.push('text2='+ed.children[1].textContent);"
+	"window.madc(JSON.stringify({kind:'snapshot',text:o.join(' ')}));})()");
+}
+
+// A real MouseEvent at the middle of line `li`'s number element: the
+// helper installed once, then called (the intrinsic format sees only its
+// placeholder, never the JS's braces).
+void press_gutter(long t, long li)
+{
+    ui::eval_page(t,
+	"window.__gut=function(li){var ed=document.querySelector('.edit');"
+	"var b=ed.children[li].querySelector('.ln').getBoundingClientRect();"
+	"var x=b.left+b.width/2,y=b.top+b.height/2;"
+	"var el=document.elementFromPoint(x,y)||document.body;"
+	"el.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,"
+	"clientX:x,clientY:y,button:0,buttons:1}));};");
+    var js = format("window.__gut({})", li);
+    ui::eval_page(t, js.c_str());
+}
+
+int main()
+{
+    long w = ui::world_new();
+    long t = ui::open(ui::WEB);
+    if ( !t )
+	return 1;
+    println("GUT open");
+    var tree;
+    var ev;
+    int stage = 0;
+    while ( ui::event(ev, t, w) )
+    {
+	if ( ev["event"] == "resize" && stage == 0 )
+	{
+	    stage = 1;
+	    compose(tree);
+	    ui::render(t, w, tree);
+	    probe(t);
+	}
+	else if ( ev["event"] == "snapshot" )
+	{
+	    println("GUT {} {}", stage, ev["text"]);
+	    if ( stage == 1 )
+	    {
+		stage = 2;
+		press_gutter(t, 2);
+	    }
+	    else if ( stage == 2 )
+	    {
+		stage = 3;
+		gutter = false;
+		compose(tree);
+		ui::render(t, w, tree);
+		probe(t);
+	    }
+	    else
+		break;
+	}
+	else if ( ev["event"] == "pointer" && stage == 2 )
+	{
+	    caret = ev["offset"].as_integer();
+	    println("GUT press offset={}", caret);
+	    compose(tree);
+	    ui::render(t, w, tree);
+	    probe(t);
+	}
+    }
+    ui::close(t);
+    ui::world_close(w);
+    println("GUT closed");
+    return 0;
+}

@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### The GUI draws the editor's line-number gutter from the theme's chrome
+
+An edit node carrying the `gutter` hint now shows a line-number gutter in the
+GUI page — the same hint the terminal reads. Each line leads with an empty
+number element whose value is a CSS counter, so a splice renumbers nothing and
+the line's text (the hit test's basis) holds no digits: a press in the gutter
+lands on its line's start, as the terminal's gutter press does. The numbers
+take the root `chrome` hint's `gutter` style, the caret line's number its
+`gutter_current` style and the caret line its `current_line` style — the same
+styles the terminal grid paints. The gutter is at least three digits wide (the
+last line's digit count). A render without the hint has no gutter. The root
+`chrome` hint reader moved out of `tui_model.h` into `ui_chrome.h` as
+`read_chrome_styles`, now the one reader both the terminal grid and the page
+model take their chrome from.
+
 ### `php::trim` / `ltrim` / `rtrim` / `chop` take PHP's `$characters`, and the default set is PHP's
 
 `php::trim`, `php::ltrim`, `php::rtrim` and `php::chop` now accept an optional

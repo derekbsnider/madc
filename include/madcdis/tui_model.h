@@ -1374,39 +1374,11 @@ private:
 	out.spans.insert(out.spans.begin(), whole);
 	return out;
     }
-    // This compose's chrome styles from the root's `chrome` hint object
-    // ({ "<tui_chrome name>": "<style spec>" }): an unknown name or a spec
-    // the parser refuses leaves that element's default — the gutter dim, the
-    // rest normal.
+    // This compose's chrome styles: the root's `chrome` hint through the
+    // one reader (ui_chrome.h read_chrome_styles), its defaults included.
     void read_chrome(const uinode &tree)
     {
-	for ( size_t i = 0; i < (size_t)tui_chrome::count; ++i )
-	    _chrome[i] = ui_style::normal();
-	_chrome[(size_t)tui_chrome::gutter].flags = ui_style::DIM;
-	_chrome[(size_t)tui_chrome::tab_active] = ui_style::reverse();
-	_chrome[(size_t)tui_chrome::statusbar] = ui_style::reverse();
-	_chrome[(size_t)tui_chrome::menubar] = ui_style::reverse();
-	_chrome[(size_t)tui_chrome::menu] = ui_style::reverse();
-	_chrome[(size_t)tui_chrome::menu_hot].flags = ui_style::UNDERLINE;
-	_chrome[(size_t)tui_chrome::shadow].bg = 1;	// black
-	_chrome[(size_t)tui_chrome::shadow].flags = ui_style::DIM;
-	_chrome[(size_t)tui_chrome::list_selected] = ui_style::reverse();
-	_chrome[(size_t)tui_chrome::field].flags = ui_style::UNDERLINE;
-	_chrome[(size_t)tui_chrome::button_primary] = ui_style::reverse();
-	if ( !tree.hints.is_object() )
-	    return;
-	const std::map<std::string, madc::value> &ho = tree.hints.as_object();
-	std::map<std::string, madc::value>::const_iterator ci = ho.find("chrome");
-	if ( ci == ho.end() || !ci->second.is_object() )
-	    return;
-	for ( const auto &kv : ci->second.as_object() )
-	{
-	    tui_chrome k;
-	    ui_style st;
-	    if ( kv.second.is_string() && tui_chrome_of(kv.first, k)
-	      && ui_style_of(kv.second.as_string(), st) )
-		_chrome[(size_t)k] = st;
-	}
+	read_chrome_styles(tree.hints, _chrome);
     }
     // Paint a collected region into the row range [r0, r0+h) (columns fixed at
     // collection).
