@@ -842,7 +842,7 @@ int main(int argc, char **argv)
     bool freeze_append = false;           // --freeze-append=: placement 2 (append to binary)
     bool freeze_mir_cache = false;        // --freeze-mir-cache: pack the compiled MIR module blob
     std::vector<std::string> freeze_ledger_srcs;  // --freeze-ledger=: AOT ledger sources (S5)
-    std::vector<std::string> freeze_also_std;     // --freeze-also-std=: more standards the profile serves
+    std::vector<madc::dis::istring> freeze_also_std;  // --freeze-also-std=: more standards the profile serves
     bool run_frozen = false;              // --run-frozen[=path]: thaw + run, no parse
     const char *run_frozen_path = NULL;   // NULL = the blob appended to this executable
     bool freeze_run = false;              // --freeze-run: freeze, then re-exec fresh to run

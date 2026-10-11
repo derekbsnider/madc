@@ -3320,19 +3320,19 @@ template <class M>
 static std::vector<typename M::const_iterator>
 pack_entries_in_unit_order(const M &m, const std::vector<const char *> &unit_order)
 {
-    std::map<std::string, size_t> rank;
+    std::map<madc::dis::istring, size_t> rank;
     for (size_t k = 0; k < unit_order.size(); ++k)
-	rank.insert(std::make_pair(std::string(unit_order[k]), k));
-    std::vector<std::pair<std::pair<size_t, std::string>, typename M::const_iterator> > keyed;
+	rank.insert(std::make_pair(madc::dis::istring(unit_order[k]), k));
+    typedef std::pair<std::pair<size_t, madc::dis::istring>, typename M::const_iterator> keyed_entry;
+    std::vector<keyed_entry> keyed;
     for (typename M::const_iterator it = m.begin(); it != m.end(); ++it) {
-	std::string name(it->first);
-	std::map<std::string, size_t>::const_iterator r = rank.find(name);
+	madc::dis::istring name(it->first);
+	std::map<madc::dis::istring, size_t>::const_iterator r = rank.find(name);
 	keyed.push_back(std::make_pair(std::make_pair(r == rank.end() ? (size_t)-1 : r->second,
 						      name), it));
     }
     std::sort(keyed.begin(), keyed.end(),
-	      [](const std::pair<std::pair<size_t, std::string>, typename M::const_iterator> &a,
-		 const std::pair<std::pair<size_t, std::string>, typename M::const_iterator> &b)
+	      [](const keyed_entry &a, const keyed_entry &b)
 	      { return a.first < b.first; });
     std::vector<typename M::const_iterator> out;
     for (size_t k = 0; k < keyed.size(); ++k)
@@ -6463,7 +6463,7 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 		    const char *out_path, bool append, bool mir_cache,
 		    const std::vector<cir_ledger_module> *ledger,
 		    bool progress,
-		    const std::vector<std::string> *also_std)
+		    const std::vector<madc::dis::istring> *also_std)
 {
     // The type graph rides the parse-populated DefArena (v18): a Program that
     // parsed with forest_arena_enabled OFF would freeze a type-less container
@@ -6672,7 +6672,7 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 		    const Program::LanguageStd own_std = prog->language_std;
 		    const bool own_gnu = prog->gnu_dialect;
 		    for (size_t i = 0; staged && i < also_std->size(); ++i) {
-			const std::string &spelling = (*also_std)[i];
+			const madc::dis::istring &spelling = (*also_std)[i];
 			if (!prog->set_language_standard(spelling)) {
 			    fprintf(stderr, "%s: --freeze-also-std=%s: unknown standard\n",
 				    source_name, spelling.c_str());

@@ -382,7 +382,7 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 		    const char *out_path, bool append, bool mir_cache = false,
 		    const std::vector<cir_ledger_module> *ledger = NULL,
 		    bool progress = true,
-		    const std::vector<std::string> *also_std = NULL);
+		    const std::vector<madc::dis::istring> *also_std = NULL);
 
 // Compile the AOT ledger sources (--freeze-ledger=, one per call site entry;
 // scripts/ledger_sources.txt is the canonical list) into MIR modules with
