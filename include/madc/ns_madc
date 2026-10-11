@@ -18,6 +18,7 @@
 // scope-access variants are gated by the parser's scope-access hooks.
 
 #include <bits/diag_enums>	// diag_severity / diag_phase: the rows' enum codes
+#include <bits/ex_commands>	// ex_command: the ex core's command codes
 #include <bits/file_kinds>	// madc::fk*: the ONE file-kind vocabulary (a View's lang, emit's target)
 #include <bits/session_enums>	// session_reply / offer_state: a session reply's enum codes
 #include <bits/tool_enums>	// tool_tier / claim_result: the tool host's and discovery's codes
@@ -423,6 +424,13 @@ namespace madc {
     // process lifetime; "" = the platform probe failed. Concurrent reads
     // are safe.
     const char *compiler_path();
+    // The running compiler run on `args` (an array of text: the arguments
+    // after argv[0]) with ALL stdio inherited, waited for — a host handing
+    // its terminal to madc itself (madcide --line is `madc -i FILE`).
+    // Returns its exit code; -1 when it could not run (the spawn or the
+    // wait failed, or it ended abnormally).
+    // Thread contract: blocks the calling thread until the child ends.
+    int64_t compiler_run(value &args);
     // A Run child of self. Windows has no fork, so parse_run, project_run
     // and the madcrun:// / madcproj:// channels spawn THIS executable with
     // the run named in its environment (MADC_RUN_CHILD); serve_run_child
@@ -870,6 +878,38 @@ namespace madc {
 	void *impl_;
     };
 
+    // madc's colon mode over a ui:: world's documents (split arc 1D;
+    // include/madc_ex_session.h): the ex core (D24's ed / ex / vim
+    // commands) for a host that edits — its colon line runs them here and
+    // keeps only the commands that need its views. use() makes a document
+    // current; set_line() puts `.` on a line (1-based: the caret's, so an
+    // address means what the host shows). parse(): {ok, error, command,
+    // force, argument}, never run; run(): {ok, shown, error, wants_text,
+    // quit, command} — `command` a <bits/ex_commands> ex_command code,
+    // `shown` the lines it prints; text(): a pending a / i / c's lines
+    // (no line breaks, no closing `.`). Every edit goes through the
+    // world's one mutation path and is ONE undo group per line.
+    // Declaration-only (src/madc_ex.cpp). LAYOUT CONTRACT: a single
+    // pointer member, append-only. Non-copyable.
+    // Thread contract: the world's thread.
+    class ex_session {
+    public:
+	ex_session(int64_t w);
+	~ex_session();
+	bool use(int64_t doc);
+	int64_t current();			// the current buffer (0: none)
+	bool set_line(int64_t line);
+	int64_t line();				// `.` (0: no buffer, or an empty one)
+	value &parse(value &out, const char *text);
+	value &run(value &out, const char *text);
+	value &text(value &out, value &lines);
+	bool wants_text();
+    private:
+	ex_session(const ex_session &);
+	ex_session &operator=(const ex_session &);
+	void *s_;
+    };
+
     // Discovery (split arc 1D; include/madc_discovery.h): ONE OWNER PER KEY
     // (a project's canonical path). take() holds <session_dir>/<slug>.json for
     // the claim's life and publishes `record` there, stamped { key, pid,
@@ -1024,6 +1064,20 @@ namespace madc {
     bool command_add(const char *name, const char *usage, const char *summary,
 		     bool (*handler)(value &out, const char *argument));
     bool session_buffer(value &out, const char *name);
+    // The REPL history store (include/madc_history.h; split arc 1B.7): ONE
+    // file of records, each naming the standard its entry was typed at — a
+    // pane recalls what `madc -i` keeps, and the reverse. history_path: its
+    // place ($MADC_HISTORY_FILE, else $XDG_STATE_HOME/madc/history; "" = no
+    // home for it). history_entries: the entries in the LANGUAGE (C, C++ or
+    // madc) of the standard named `standard` ("c17", "c++20", "madc" — a
+    // session_standard name), oldest first. history_append: one record (now,
+    // `standard`) in one write; false when nothing was written.
+    // Thread contract: the C++ standard library's — an append is one
+    // O_APPEND write, so sessions in other threads or processes interleave
+    // whole records.
+    value &history_path(value &out);
+    value &history_entries(value &out, const char *standard);
+    bool history_append(const char *standard, const char *entry);
     int64_t session_bindings(int64_t handle);
     int64_t session_poll(value &reply, int64_t handle);
     value &session_output(value &out, int64_t handle);

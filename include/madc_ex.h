@@ -19,31 +19,16 @@
 #include <vector>
 
 #include "madcdis/document.h"	// entity_id, anchor_id
+#include "madc/bits/ex_commands"	// ex_command: the one enum text
 
 namespace madc {
 namespace hub { class world; }
 
 namespace ex {
 
-// Every command the core knows (D24's list). A typed name becomes one of
-// these once, through the one table (src/madc_ex.cpp); `none` is a line
-// with no command — a bare address or an empty line.
-enum class command : unsigned char
-{
-    none,
-    print, number, list, line_number,		// p  nu/#  l  =
-    append, insert, change, del, join,		// a  i  c  d  j
-    move, copy, shift_right, shift_left,	// m  t/co  >  <
-    undo, redo,					// u  red
-    substitute, repeat_sub, repeat_sub_flags,	// s  &  &&
-    global, vglobal,				// g  v
-    sort, retab,				// sor  ret
-    mark, marks,				// ma/k  marks
-    read, write, write_quit, exit, update, saveas, edit, quit,
-						// r w wq x up sav e q
-    buffers, buffer, bnext, bprevious,		// ls  b  bn  bp
-    cd, pwd, set, help, shell			// cd pw se h  !
-};
+// Every command the core knows (D24's list): the one enum text is
+// <bits/ex_commands>, which a dialect host reads too.
+typedef madc::ex_command command;
 
 // The command's name as madc spells it (its full ex name), for messages.
 const char *command_name(command c);
@@ -167,8 +152,11 @@ public:
     // start): :e :r :w :sav and the shell commands resolve a relative path
     // against it. The process's own directory never changes.
     const std::string &directory() const { return dir; }
-    // The current buffer's current line (0: no buffer, or an empty one).
+    // The current buffer's current line (0: no buffer, or an empty one),
+    // and setting it (a visual host's caret line, so `.` is where the
+    // caret is): false when `n` is not one of the buffer's lines.
     size_t current_line() const;
+    bool set_current_line(size_t n);
 
     // Run one command line (the text after colon mode's `:`).
     outcome run(const std::string &text);

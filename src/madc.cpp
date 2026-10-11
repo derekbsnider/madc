@@ -296,6 +296,7 @@ static void print_usage(const char *prog)
 "                          (one JSON-RPC message per line): the code-graph\n"
 "                          tools over <file>, for the operator\n"
 "  --history-file=PATH|no  where the REPL keeps its history (default\n"
+"                          $MADC_HISTORY_FILE, else\n"
 "                          $XDG_STATE_HOME/madc/history); no keeps none\n"
 "  --project <prj.json>    build from a project manifest: compile each\n"
 "                          translation unit, link the modules, run the entry.\n"

@@ -2,6 +2,47 @@
 
 ## [Unreleased]
 
+### madc's colon mode as a dialect face — `madc::ex_session` over a ui:: world
+
+`madc::ex_session` (`include/madc_ex_session.h`, declared in `<ns_madc>` and
+resolved mangled-direct, implemented in `src/madc_ex.cpp`) is madc's colon mode
+over a ui:: world handle's documents — the ex core's ed / ex / vim commands for
+a host that edits in a script. `use()` makes a document current, `current()`
+reports it; `set_line()` / `line()` put and read `.` (1-based: a visual host's
+caret line); `parse()` reads one command line without running it,
+`{ok, error, command, force, argument}`; `run()` runs one,
+`{ok, shown, error, wants_text, quit, command}`; `text()` completes a pending
+`a` / `i` / `c` from an array of lines; `wants_text()` reports a pending one.
+`command` is a `<bits/ex_commands>` `ex_command` code. It wraps
+`madc::ex::session` over the world `madc_ui_world` names; an unknown handle
+refuses every command. Every edit goes through the world's one mutation path.
+
+The command vocabulary moves to the embedded `<bits/ex_commands>` — the ONE
+enum text (`madc::ex_command`, plain C++11, dialect-lean) read by both the
+engine (`madc::ex::command` aliases it in `include/madc_ex.h`) and the dialect
+(`<ns_madc>` includes it), so a host switches on a compiler-checked enumerator.
+The ex core gains `session::set_current_line()`, which moves `.` to a given
+line (false when it is not one of the buffer's lines) through a
+`mutation_context` anchor.
+
+The REPL history store gets dialect faces (`include/madc_history.h`,
+`src/madc_history.cpp`): `madc::history_path()`, `madc::history_entries()` for a
+standard's language, and `madc::history_append()`, all over the store's default
+place — so a pane's history is the one `madc -i` keeps and the reverse.
+`history_default_path()` now honours `$MADC_HISTORY_FILE` ahead of
+`$XDG_STATE_HOME/madc/history` (`%LOCALAPPDATA%\madc\history` on Windows);
+`docs/man/madc.1` and `madc --help` state it.
+
+`madc::compiler_run()` (`src/ns_madc.cpp`) runs the running compiler on an
+array of arguments with all stdio inherited, waited for, through
+`madc::Process::run_and_wait` with `argv[0]` the compiler's own path — a host
+handing its terminal to madc (`madcide --line` is `madc -i FILE`); it returns
+the child's exit code, -1 when it could not run.
+
+Reducer `tests/testex_session.mad` (oracle: vim on the same text) exercises
+`use` / `set_line` / `parse` / `run` / `text` / quit; unit
+`tests/unit/test_ex.cpp` adds the `set_current_line` case.
+
 ### The Windows expected output for `madc --lsp`'s `executeCommand`
 
 `tests/testlsp_stdio.win64_expect` holds the Windows answer for `madc --lsp`'s

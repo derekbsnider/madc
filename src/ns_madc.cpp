@@ -38,6 +38,7 @@
 #include "madc_modules.h"	// module_available: the module map + the one dl seam
 #include "madc_dl.h"		// library_open: the one dl seam
 #include "madc_run_child.h"	// serve_run_child: a Run child of self
+#include "madcdis/process.h"	// Process::run_and_wait: compiler_run
 #include "madc_regex.h"		// regex_*: madc's one regex engine (PCRE2)
 
 // ---- madc::sys — the system object (task #91) ----------------------------
@@ -575,6 +576,19 @@ const char *compiler_path()
 	{
 	    static const std::string p = madc_self_exe_path();
 	    return p.c_str();
+	}
+// The running compiler run on `args` with ALL stdio inherited, waited for
+// (split arc 1D: madcide --line is `madc -i FILE`) — the spawn owner's
+// run-and-wait arm, argv[0] the compiler's own path.
+int64_t compiler_run(value &args)
+	{
+	    std::vector<std::string> argv(1, std::string(compiler_path()));
+	    if ( argv[0].empty() )
+		return -1;
+	    if ( args.is_array() )
+		for ( const value &a : args.as_array() )
+		    argv.push_back(a.is_string() ? a.as_string() : std::string());
+	    return madc::Process::run_and_wait(argv[0], argv);
 	}
 // A Run child of self (madc_run_child.h): <ns_madc>'s namespace-scope
 // initializer calls it, so a program on the engine serves the run its own

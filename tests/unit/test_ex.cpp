@@ -406,6 +406,25 @@ TEST_CASE("ex session: printing, the current line and line numbers")
     CHECK(ran(s2, "l") == "a^Ib^A$\n");
 }
 
+TEST_CASE("ex session: a visual host puts `.` on its caret's line")
+{
+    world w;
+    entity_id e = open_doc(w, FIVE);
+    session s(w);
+    CHECK_FALSE(s.set_current_line(1));		// no buffer yet
+    REQUIRE(s.use(e));
+    REQUIRE(s.set_current_line(2));
+    CHECK(s.current_line() == 2u);
+    CHECK(ran(s, "s/two/TWO/") == "");		// `.` is the line set
+    CHECK(body(w, e) == "one\nTWO\nthree\nfour\nfive\n");
+    CHECK_FALSE(s.set_current_line(0));
+    CHECK_FALSE(s.set_current_line(6));		// not one of its lines
+    CHECK(s.current_line() == 2u);
+    REQUIRE(s.set_current_line(5));
+    CHECK(ran(s, "d") == "");
+    CHECK(s.current_line() == 4u);		// the last line deleted: `.` is the new last
+}
+
 TEST_CASE("ex session: searches wrap; the empty pattern is the last one")
 {
     world w;

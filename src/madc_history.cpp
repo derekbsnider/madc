@@ -36,6 +36,9 @@
 
 std::string madc::history_default_path()
 {
+    const char *over = getenv("MADC_HISTORY_FILE");
+    if ( over && *over )
+	return std::string(over);
 #ifdef _WIN32
     const char *local = getenv("LOCALAPPDATA");
     if ( local && *local )
@@ -131,4 +134,26 @@ bool madc::history_append(const std::string &path, const std::string &mode,
 	return true;
     madc::detail::host_path_make_parents(path);
     return append_once(path, record);
+}
+
+madc::value &madc::history_path(value &out)
+{
+    out = value(history_default_path());
+    return out;
+}
+
+madc::value &madc::history_entries(value &out, const char *standard)
+{
+    std::vector<value> rows;
+    for ( const std::string &e : history_entries(history_default_path(),
+						   standard ? standard : "") )
+	rows.push_back(value(e));
+    out = value::make_array(rows);
+    return out;
+}
+
+bool madc::history_append(const char *standard, const char *entry)
+{
+    return history_append(history_default_path(), standard ? standard : "",
+			  entry ? entry : "");
 }

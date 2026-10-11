@@ -16,11 +16,14 @@
 #include <string>
 #include <vector>
 
+#include "libmadc/value.h"
+
 namespace madc {
 
-// The store's default place: $XDG_STATE_HOME/madc/history
-// (~/.local/state/madc/history), or %LOCALAPPDATA%\madc\history on Windows
-// (history is state, not configuration). Empty when there is no home for it.
+// The store's default place: $MADC_HISTORY_FILE, else
+// $XDG_STATE_HOME/madc/history (~/.local/state/madc/history), or
+// %LOCALAPPDATA%\madc\history on Windows (history is state, not
+// configuration). Empty when there is no home for it.
 std::string history_default_path();
 
 // The entries the store at `path` holds in the language of the standard
@@ -34,6 +37,13 @@ std::vector<std::string> history_entries(const std::string &path,
 // above it when they are missing. False when nothing was written.
 bool history_append(const std::string &path, const std::string &mode,
 		    const std::string &entry);
+
+// <ns_madc>'s faces over the default place (a pane's history is the one
+// `madc -i` keeps): its path ("" = none), the entries in `standard`'s
+// language (an array of text), one record appended.
+value &history_path(value &out);
+value &history_entries(value &out, const char *standard);
+bool history_append(const char *standard, const char *entry);
 
 }
 

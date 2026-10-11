@@ -23,6 +23,8 @@
 
 #include "madc_documents.h"	// :e :r :w :sav — the document file owner
 #include "madc_ex.h"
+#include "madc_ex_session.h"
+#include "ns_common.h"		// madc_ui_world: a ui:: world handle's world
 #include "madc_file_kinds.h"	// a buffer's indent: indent_detect, the kind's default
 #include "madc_posix_io.h"	// host_path_join / _type_of / _within: paths
 #include "madc_regex.h"		// /re/ ?re? s g v sor — madc's one regex engine
@@ -2573,6 +2575,19 @@ size_t session::current_line() const
     return l > n ? n : l;
 }
 
+bool session::set_current_line(size_t n)
+{
+    const text_buffer *b = cur ? w.text_of(cur) : (const text_buffer *)0;
+    size_t off = 0, len = 0;
+    if ( !b || n == 0 || n > b->line_count() || !b->line_span(n, off, len) )
+	return false;
+    buffer_state &st = buffers[cur];
+    mutation_context mc(w);
+    if ( !st.dot || !mc.anchor_move(cur, st.dot, off) )
+	st.dot = mc.anchor_add(cur, off, false);
+    return true;
+}
+
 outcome session::run(const std::string &text)
 {
     outcome out;
@@ -2610,4 +2625,102 @@ outcome session::text(const std::vector<std::string> &body)
 }
 
 } // namespace ex
+
+// ---- the dialect face (include/madc_ex_session.h) ----------------------
+
+namespace {
+
+value outcome_value(const ex::outcome &o, ex::command code)
+{
+    std::map<std::string, value> f;
+    f["ok"] = value(o.ok);
+    f["shown"] = value(o.shown);
+    f["error"] = value(o.error);
+    f["wants_text"] = value(o.wants_text);
+    f["quit"] = value(o.quit);
+    f["command"] = value((int64_t)code);
+    return value::make_object(f);
+}
+
+ex::outcome refused(const char *why)
+{
+    ex::outcome o;
+    o.ok = false;
+    o.error = why;
+    return o;
+}
+
+} // namespace
+
+ex_session::ex_session(int64_t w) : _s(0)
+{
+    if ( hub::world *world = madc_ui_world(w) )
+	_s = new ex::session(*world);
+}
+
+ex_session::~ex_session()
+{
+    delete _s;
+}
+
+bool ex_session::use(int64_t doc)
+{
+    return _s && _s->use((hub::entity_id)doc);
+}
+
+int64_t ex_session::current()
+{
+    return _s ? (int64_t)_s->current() : 0;
+}
+
+bool ex_session::set_line(int64_t line)
+{
+    return _s && line > 0 && _s->set_current_line((size_t)line);
+}
+
+int64_t ex_session::line()
+{
+    return _s ? (int64_t)_s->current_line() : 0;
+}
+
+value &ex_session::parse(value &out, const char *text)
+{
+    ex::line l;
+    std::string error;
+    const bool ok = ex::parse(text ? text : "", l, error);
+    std::map<std::string, value> f;
+    f["ok"] = value(ok);
+    f["error"] = value(error);
+    f["command"] = value((int64_t)(ok ? l.code : ex::command::none));
+    f["force"] = value(ok && l.force);
+    f["argument"] = value(ok ? l.argument : std::string());
+    out = value::make_object(f);
+    return out;
+}
+
+value &ex_session::run(value &out, const char *text)
+{
+    const std::string t = text ? text : "";
+    ex::line l;
+    std::string error;
+    const ex::command code = ex::parse(t, l, error) ? l.code : ex::command::none;
+    out = outcome_value(_s ? _s->run(t) : refused("no world"), code);
+    return out;
+}
+
+value &ex_session::text(value &out, value &lines)
+{
+    std::vector<std::string> body;
+    if ( lines.is_array() )
+	for ( const value &v : lines.as_array() )
+	    body.push_back(v.is_string() ? v.as_string() : std::string());
+    out = outcome_value(_s ? _s->text(body) : refused("no world"), ex::command::none);
+    return out;
+}
+
+bool ex_session::wants_text()
+{
+    return _s && _s->wants_text();
+}
+
 } // namespace madc
