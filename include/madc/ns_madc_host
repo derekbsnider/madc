@@ -1,0 +1,193 @@
+// madc embedded <ns_madc_host> — the madc:: faces a HOST program uses (an
+// editor, an IDE, a tool server; madcide is one): a document's parse handle
+// and its language services, the tool host (the registry it serves over
+// MCP), madc's colon mode over a ui:: world, discovery's claims, and the
+// REPL history store. Declaration-only, resolved mangled-direct like every
+// <ns_madc> public (cpp-first-api.md).
+//
+// Served ONLY to a program that names one of them qualified
+// (`madc::tool_host`, `madc::doc_parse`, ...): src/lexer.cpp's auto-include
+// member rows. A program that hosts nothing never parses this surface
+// (owner 2026-10-08: an always-on surface whose only consumer is optional
+// is gated on that consumer; split out of <ns_madc> 2026-10-11, when it had
+// grown the dialect prelude 21%). The types it uses (value, channel) are
+// <ns_madc>'s, which the same `madc::` qualifier pulls first.
+
+#include <bits/ex_commands>	// ex_command: the ex core's command codes
+#include <bits/tool_enums>	// tool_tier / claim_result: the tool host's and discovery's codes
+
+namespace madc {
+    // A DOCUMENT's parse handle (split arc 1A.1; the document component is
+    // ui::doc_*): the handle parsed from the document's CURRENT text —
+    // opened on first use under the standard its kind answers (the
+    // family's default: C17, C++17, madc), refreshed when the document's
+    // version moved since the last parse, returned unchanged otherwise.
+    // ONE version compare replaces a text compare. 0 = no such document,
+    // or a kind the compiler does not parse (text, data, binary). The
+    // handle is the document's: ui::doc_close closes it. doc_parse_checked
+    // is the validated form (parse_refresh_checked's rule — the old tree
+    // stays when the new text has MORE errors; the candidate's
+    // diagnostics in `diags`); it returns the handle, 0 on the same
+    // refusals.
+    int64_t doc_parse(int64_t w, int64_t entity);
+    int64_t doc_parse_checked(value &diags, int64_t w, int64_t entity);
+    // The standard the document parses under: a <bits/file_kinds>
+    // standard, 0 = the one its kind answers (an application's language
+    // choice — an IDE's Language table). doc_parse reopens a handle opened
+    // under another standard, or another name (a Save As). One parse of a
+    // document runs at a time: doc_parse arriving while one yields waits
+    // for it. doc_parsed is the handle as the last parse left it, never
+    // parsing (0 = none yet): a composer's retained read — its tree may
+    // describe an older text.
+    bool    doc_set_standard(int64_t w, int64_t entity, int64_t standard);
+    int64_t doc_parsed(int64_t w, int64_t entity);
+
+    // The language services over a DOCUMENT (split arc 1C.11; the engine's
+    // madc::lang, include/madc_lang.h): ONE answer each for an editor, the
+    // LSP and the MCP tools, parsed through doc_parse. A place is a 1-based
+    // line and a 0-based BYTE column; a range is the object { line, column,
+    // end_line, end_column }, its end exclusive. An enum rides as its code
+    // (severity_code, phase_code, kind_code, class_code) with its name
+    // beside it for display. A document the compiler does not parse answers
+    // an empty value.
+    //   doc_diagnostics: [{ range, severity, severity_code, phase,
+    //       phase_code, message }] — the range is the word at the anchor.
+    //   doc_outline: [{ name, kind, kind_code, range, selection }] — range
+    //       is the definition's lines, selection its name.
+    //   doc_enclosing: the innermost definition around (line, column), an
+    //       outline row, or an empty value.
+    //   doc_definition: [range] — each definition's name, for the word at
+    //       (line, column) (a place just past a word names it).
+    //   doc_references: [range] — the name at each use; the definition's
+    //       name last when include_declaration.
+    //   doc_hover: { text } or { text, range } (range: the word), or an
+    //       empty value.
+    //   doc_spans: [{ line, column, length, class, class_code }].
+    // Thread contract: doc_parse's (the handle's runtime-eval confinement).
+    value &doc_diagnostics(value &out, int64_t w, int64_t entity);
+    value &doc_outline(value &out, int64_t w, int64_t entity);
+    value &doc_enclosing(value &out, int64_t w, int64_t entity,
+			 int64_t line, int64_t column);
+    value &doc_definition(value &out, int64_t w, int64_t entity,
+			  int64_t line, int64_t column);
+    value &doc_references(value &out, int64_t w, int64_t entity,
+			  int64_t line, int64_t column,
+			  bool include_declaration);
+    value &doc_hover(value &out, int64_t w, int64_t entity,
+		     int64_t line, int64_t column);
+    value &doc_spans(value &out, int64_t w, int64_t entity);
+
+    // The tools a madc process serves (split arc 1D; include/madc_tool_host.h):
+    // ONE registry over a ui:: world's documents — the code-graph tools, the
+    // project memory's (its change log, proposals, records, tests) and every
+    // loaded module's (madcgit: the version history) — that a host extends
+    // with its own commands, calls, serves over MCP and reads the change log
+    // of. A tier is a <bits/tool_enums> tool_tier code; `actor` the caller's
+    // id (-1 = the local operator). A script tool answers into `result`;
+    // false refuses (`result` then {error}); `name` is the tool called.
+    // Declaration-only: the methods resolve mangled-direct
+    // (src/madc_tool_host.cpp). LAYOUT CONTRACT: a
+    // single pointer member, append-only. Non-copyable.
+    // Thread contract: the world's thread; a script tool runs inside the
+    // call that names it.
+    class tool_host {
+    public:
+	tool_host(int64_t w);
+	~tool_host();
+	bool bind(const char *events_path, value &why);	// <base>.events; refused: no file
+	void unbind();				// the memory writes to no file from here
+	void set_manifest(const char *path);
+	bool add(const char *name, const char *description, value &input_schema,
+		 int64_t least, bool (*fn)(value &result, const char *name, int64_t w,
+					   int64_t doc, value &args, int64_t caller,
+					   int64_t actor));
+	value &list(value &out);	// [{ name, description, inputSchema, least }]
+	bool call(value &result, int64_t doc, const char *name, value &args,
+		  int64_t caller, int64_t actor);
+	bool mcp_handle(value &reply, value &message, int64_t doc,
+			int64_t caller, int64_t actor);	// false: a notification
+	int64_t serve_mcp(channel &io, int64_t doc, int64_t caller);
+	int64_t head();				// the change log's last seq
+	int64_t note(value &record, int64_t doc);	// an app record (a build run): seq, 0 refused
+	value &records(value &out, int64_t since);	// the records after `since`
+	value &replay(value &out, int64_t doc, int64_t upto);	// text at `upto`
+    private:
+	tool_host(const tool_host &);
+	tool_host &operator=(const tool_host &);
+	void *impl_;
+    };
+
+    // madc's colon mode over a ui:: world's documents (split arc 1D;
+    // include/madc_ex_session.h): the ex core (D24's ed / ex / vim
+    // commands) for a host that edits — its colon line runs them here and
+    // keeps only the commands that need its views. use() makes a document
+    // current; set_line() puts `.` on a line (1-based: the caret's, so an
+    // address means what the host shows). parse(): {ok, error, command,
+    // force, argument}, never run; run(): {ok, shown, error, wants_text,
+    // quit, command} — `command` a <bits/ex_commands> ex_command code,
+    // `shown` the lines it prints; text(): a pending a / i / c's lines
+    // (no line breaks, no closing `.`). Every edit goes through the
+    // world's one mutation path and is ONE undo group per line.
+    // Declaration-only (src/madc_ex.cpp). LAYOUT CONTRACT: a single
+    // pointer member, append-only. Non-copyable.
+    // Thread contract: the world's thread.
+    class ex_session {
+    public:
+	ex_session(int64_t w);
+	~ex_session();
+	bool use(int64_t doc);
+	int64_t current();			// the current buffer (0: none)
+	bool set_line(int64_t line);
+	int64_t line();				// `.` (0: no buffer, or an empty one)
+	value &parse(value &out, const char *text);
+	value &run(value &out, const char *text);
+	value &text(value &out, value &lines);
+	bool wants_text();
+    private:
+	ex_session(const ex_session &);
+	ex_session &operator=(const ex_session &);
+	void *s_;
+    };
+
+    // Discovery (split arc 1D; include/madc_discovery.h): ONE OWNER PER KEY
+    // (a project's canonical path). take() holds <session_dir>/<slug>.json for
+    // the claim's life and publishes `record` there, stamped { key, pid,
+    // started, version, host }; a live owner answers held_elsewhere with its
+    // record in `holder`. Returns a <bits/tool_enums> claim_result code.
+    // update() rewrites the owner's record; release() withdraws it (the
+    // destructor's, early). session_scan: every live record (+ its "file");
+    // session_find: the record serving `file` — one whose "documents" holds
+    // it beats one whose "root" holds it; null when none. Declaration-only;
+    // LAYOUT CONTRACT: a single pointer member. Non-copyable.
+    class session_claim {
+    public:
+	session_claim();
+	~session_claim();
+	int64_t take(value &holder, const char *key, value &record);
+	bool update(value &record);
+	void release();
+	value &path(value &out);
+    private:
+	session_claim(const session_claim &);
+	session_claim &operator=(const session_claim &);
+	void *claim_;
+    };
+    value &session_dir(value &out);
+    value &session_scan(value &out);
+    value &session_find(value &out, const char *file);
+
+    // The REPL history store (include/madc_history.h; split arc 1B.7): ONE
+    // file of records, each naming the standard its entry was typed at — a
+    // pane recalls what `madc -i` keeps, and the reverse. history_path: its
+    // place ($MADC_HISTORY_FILE, else $XDG_STATE_HOME/madc/history; "" = no
+    // home for it). history_entries: the entries in the LANGUAGE (C, C++ or
+    // madc) of the standard named `standard` ("c17", "c++20", "madc" — a
+    // session_standard name), oldest first. history_append: one record (now,
+    // `standard`) in one write; false when nothing was written.
+    // Thread contract: the C++ standard library's — an append is one
+    // O_APPEND write, so sessions in other threads or processes interleave
+    // whole records.
+    value &history_path(value &out);
+    value &history_entries(value &out, const char *standard);
+    bool history_append(const char *standard, const char *entry);
+}

@@ -1497,6 +1497,32 @@ static const std::map<madc::dis::istring, madc::dis::istring> &auto_include_iden
 	// MEMBER row (the word is not the fragment's own head) fires only
 	// QUALIFIED by its namespace head — a bare `WEB` is the user's word.
 	{"WEB", "ns_ui_web"},
+	// The madc:: faces a HOST program uses (<ns_madc_host>: a document's
+	// parse handle and language services, the tool host, the ex core,
+	// discovery's claims, the REPL history store): MEMBER rows, so only a
+	// program naming one qualified (`madc::tool_host`) parses that surface —
+	// an always-on face whose only consumer is optional is gated on that
+	// consumer (owner 2026-10-08).
+	{"doc_parse", "ns_madc_host"},
+	{"doc_parse_checked", "ns_madc_host"},
+	{"doc_set_standard", "ns_madc_host"},
+	{"doc_parsed", "ns_madc_host"},
+	{"doc_diagnostics", "ns_madc_host"},
+	{"doc_outline", "ns_madc_host"},
+	{"doc_enclosing", "ns_madc_host"},
+	{"doc_definition", "ns_madc_host"},
+	{"doc_references", "ns_madc_host"},
+	{"doc_hover", "ns_madc_host"},
+	{"doc_spans", "ns_madc_host"},
+	{"tool_host", "ns_madc_host"},
+	{"ex_session", "ns_madc_host"},
+	{"session_claim", "ns_madc_host"},
+	{"session_dir", "ns_madc_host"},
+	{"session_scan", "ns_madc_host"},
+	{"session_find", "ns_madc_host"},
+	{"history_path", "ns_madc_host"},
+	{"history_entries", "ns_madc_host"},
+	{"history_append", "ns_madc_host"},
 
 	{"size_t", "stddef.h"},
 	{"ptrdiff_t", "stddef.h"},
@@ -1600,6 +1626,7 @@ static std::vector<madc::dis::istring> ordered_auto_include_headers(const std::s
 	"ns_js",
 	"ns_rust",
 	"ns_madc",
+	"ns_madc_host",
 	"ns_ui",
 	"ns_ui_web",
 	"ns_ui_ws",

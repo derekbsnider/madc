@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### Host-facing `madc::` surface moves to `<ns_madc_host>`
+
+The `madc::` faces only a host program uses — a document's parse handle and its
+language services (`doc_parse`, `doc_diagnostics`, `doc_outline`, ...), the tool
+host (`tool_host`), madc's colon mode (`ex_session`), discovery's claims
+(`session_claim`, `session_dir`, `session_scan`, `session_find`) and the REPL
+history store (`history_path`, `history_entries`, `history_append`) — move out of
+the always-on `<ns_madc>` prelude into a new `<ns_madc_host>`, served only to a
+program that names one of them qualified (`madc::tool_host`, `madc::doc_parse`,
+...). The `<bits/ex_commands>` and `<bits/tool_enums>` includes they need move
+with them. A polyglot program that hosts nothing no longer parses this surface:
+the parse-cost `dialect.live` workload drops from 83,238,629 to 75,517,510
+instructions, from +14.99% over baseline to +4.32%.
+
 ### `%git log PATH` filters by walking path components
 
 The madcgit module's `%git log PATH` now compares a path against each parent one
