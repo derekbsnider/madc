@@ -2,26 +2,32 @@
 
 ## [Unreleased]
 
-### A labelled C++ consumer binds verified
+### A skipped directive-only `#ifndef` arm replays at bind
 
-A C++ consumer bound through a `--freeze-also-std` label (a C++ mode on the madc
-pack profile) now gets the verified bind — the per-unit branch-dependency check
-— whatever `MADC_FOREST_ENV_CHECK` (the task #57 rollout knob, default OFF)
-says, because its config word or `-D` hash differs from the profile's own.
-`Program::forest_bind_env_ok` gates the check on a new `verified` flag rather
-than on the knob alone; the exact-config madc consumer is unchanged. Before, a
-labelled consumer inherited the knob's default-OFF branch check, so a frozen
-unit missing a frozen-away define bound anyway and the define was lost:
-`tests/testvolatileresiduecxx.mad` (`--std=c++17`) on the packed `madc.exe`
-headerless-win lane failed with `use of undeclared identifier 'NULL'` at MinGW's
-`setjmp(BUF)` expansion `_setjmp((BUF), NULL)`, because the bound mingw
-`stdio.h`/`setjmp.h` units carry no `NULL` define (the win64 corpus TU includes
-`<cstddef>` first, so their `#ifndef NULL` arms were skipped at freeze).
-Measured under wine (win64 packed binary, `tests/testtemplatestring.mad
---std=c++17`): unbound source arm ~600 ms, bound unverified ~220 ms, bound
-verified ~250 ms (output correct). `scripts/forest_bind_gate.sh`'s new
-`labelverify` case gates it (41/41; it fails on the pre-change binary with `use
-of undeclared identifier 'FBG_MC_X'`).
+A frozen unit whose `#ifndef X` arm was skipped at freeze — because an earlier
+corpus sibling had already defined `X` — now still gives a consumer without `X`
+that arm. When the arm's body holds define / undef / conditional directives only
+and its own `#endif` closes it, the freezer captures it as `skipConditionalBlock`
+skips it (`Program::skip_and_capture_arm`, slicing the body out of the source via
+`Source::raw_offset`) and rides it on the unit's branch-dependency stream as a
+`CIR_BRANCH_DEP_PP_ARM` tuple (`[name_id, flags, text_id, none]`, forest v55). At
+bind `Program::forest_bind_env_ok` collects the arm and
+`Program::forest_replay_pp_arms` replays it through the production preprocessor
+after the unit's own macro delta, only when `X` is still undefined, so the arm's
+nested conditionals (`#ifdef __cplusplus`) answer in the consumer's macro state.
+The replay reaches every consumer — exact-config madc and
+`--freeze-also-std`-labelled C++ alike — independent of `MADC_FOREST_ENV_CHECK`.
+On the win64 pack the bind replays mingw `stdio.h`'s `#ifndef NULL` and
+`#ifndef WEOF` and `sec_api/stdio_s.h`'s `#ifndef _SECIMP`, so a C++ consumer of
+`<cstdio>` alone has `NULL`. This supersedes the earlier verified-bind widening:
+`Program::forest_bind_env_ok` gates the branch-dependency check on
+`MADC_FOREST_ENV_CHECK` alone again for every consumer, because forcing a
+`--freeze-also-std` labelled consumer through the verified path declined
+glibc/libstdc++ roots to live-parse beside frozen units (`<iosfwd>`'s
+`char_traits_char` unknown, mingw `stdlib.h`'s `div_t` defined twice). Forest
+format bumps to v55. `scripts/forest_bind_gate.sh`'s `armreplay` case gates it
+(41/41; the v54 binary fails the reducer with `use of undeclared identifier
+'FBG_MC_X'`).
 
 ### A restored class keeps its constructor's `explicit`
 

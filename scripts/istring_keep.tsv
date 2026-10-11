@@ -17,7 +17,7 @@ src/madc_complete.cpp	8
 src/madc_keywords.cpp	0
 src/pch.cpp	0
 src/madc.cpp	61
-include/madc.h	112
+include/madc.h	114
 include/datadef.h	6
 include/tokens.h	7
 include/datatokens.h	0

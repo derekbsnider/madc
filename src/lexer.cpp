@@ -4697,7 +4697,7 @@ bool Program::forest_unit_is_standalone_husk(
 	return false;
     for ( size_t k = 0; k + 4 <= deps.size(); k += 4 )
     {
-	if ( deps[k + 1] & 1u )
+	if ( deps[k + 1] & (CIR_BRANCH_DEP_DEFINED | CIR_BRANCH_DEP_PP_ARM) )
 	    continue;
 	const char *nm = bind_forest->pool_str(deps[k]);
 	if ( nm && forest_unit_defines_macro(unit, nm) )
@@ -4745,17 +4745,14 @@ bool Program::forest_bind_env_ok(uint32_t root)
 	const char *e = ::getenv("MADC_FOREST_ENV_CHECK");
 	enabled = (e && *e && strcmp(e, "0") != 0) ? 1 : 0;
     }
-    // A consumer the profile was NOT frozen for — bound through a
-    // --freeze-also-std label (a C++ mode on the madc profile) — gets the
-    // VERIFIED bind whatever the knob says. The knob's default keeps the
-    // shipping exact-config bind unchanged; a labelled consumer was on the
-    // pack's source arm until the label existed, so verifying costs it nothing
-    // it had. Missing content then live-parses its unit (mingw stdio.h's
-    // `#ifndef NULL` arm, skipped at freeze under the corpus's earlier
-    // <cstddef>) instead of binding the unit without it.
-    const bool verified = enabled
-	|| bind_forest->language_std() != madc_forest_config_word(this)
-	|| bind_forest->defines_hash() != madc_forest_defines_hash(this);
+    // Every consumer — the exact-config one and one bound through a
+    // --freeze-also-std label alike — takes the knob's verdict. Verifying a
+    // labelled consumer regardless sent it down the unfinished knob-on
+    // frontier: declined glibc/libstdc++ roots live-parsed beside frozen
+    // units (`char_traits_char` unknown in <iosfwd>, `div_t` defined twice).
+    // A skipped directive-only arm (mingw stdio.h's `#ifndef NULL`) needs no
+    // decline at all: the bind replays it (forest_replay_pp_arms).
+    const bool verified = enabled != 0;
     std::set<uint32_t> closure;
     std::set<uint32_t> husk_live;
     forest_env_collect(root, closure);
@@ -4767,11 +4764,19 @@ bool Program::forest_bind_env_ok(uint32_t root)
 	// root's declined check may have recorded masks against live tables
 	// that its own live parse then changed.
 	forest_pp_install_mask.erase(unit);
+	forest_pp_arms.erase(unit);
 	std::vector<uint32_t> deps;
 	if ( !bind_forest->unit_branch_deps(unit, deps) )
 	    continue;
 	for ( size_t k = 0; k + 4 <= deps.size(); k += 4 )
 	{
+	    // v55: a skipped directive-only arm is not a dependency — the bind
+	    // replays it when its macro is undefined (forest_replay_pp_arms).
+	    if ( deps[k + 1] & CIR_BRANCH_DEP_PP_ARM )
+	    {
+		forest_pp_arms[unit].push_back(std::make_pair(deps[k], deps[k + 2]));
+		continue;
+	    }
 	    // A dep whose DEFINER is inside this closure is replay-internal:
 	    // the bind installs the definer's events too (sys/cdefs.h
 	    // consulting _FEATURES_H under a root that carries features.h).
@@ -5002,13 +5007,19 @@ void Program::forest_bind_include(uint32_t unit)
 	for ( size_t i = 0; i < edges.size() && !husk_child; ++i )
 	    husk_child = forest_husk_live_pending.count(edges[i]) != 0;
     if ( husk_child )
+    {
 	forest_install_pp(unit);
+	forest_replay_pp_arms(unit);
+    }
     if ( have_edges )
 	for ( size_t i = 0; i < edges.size(); ++i )
 	    forest_bind_include(edges[i]);
     double _t1 = forest_stat_now();
     if ( !husk_child )
+    {
 	forest_install_pp(unit);
+	forest_replay_pp_arms(unit);
+    }
     forest_chain.push_back(unit);
     forest_chain_set.insert(unit);
     forest_bind_walking.erase(unit);
@@ -5017,6 +5028,51 @@ void Program::forest_bind_include(uint32_t unit)
     const char *nm = bind_forest->unit_name(unit);
     _forest_unit_bind_costs.push_back(
 	std::make_pair(madc::dis::istring(nm ? nm : "?"), _self));
+}
+
+// v55: replay the unit's skipped directive-only `#ifndef X` arms whose X is
+// still undefined once the unit's own delta is installed — what a live parse
+// of the unit does at that arm. The producer skipped them because an external
+// sibling had defined X first; a consumer without that sibling needs them
+// (mingw stdio.h's NULL). The arm runs through the production preprocessor on
+// its own Source, so nested conditionals (`#ifdef __cplusplus`) answer HERE.
+void Program::forest_replay_pp_arms(uint32_t unit)
+{
+    std::map<uint32_t, std::vector<std::pair<uint32_t, uint32_t> > >::iterator ai =
+	forest_pp_arms.find(unit);
+    if ( ai == forest_pp_arms.end() )
+	return;
+    std::vector<std::pair<uint32_t, uint32_t> > arms;
+    arms.swap(ai->second);
+    forest_pp_arms.erase(ai);
+    const char *unit_name = bind_forest->unit_name(unit);
+    for ( size_t i = 0; i < arms.size(); ++i )
+    {
+	const char *nm = bind_forest->pool_str(arms[i].first);
+	const char *text = bind_forest->pool_str(arms[i].second);
+	if ( !nm || !text || macro_name_defined(nm) )
+	    continue;
+	DBG(std::cout << "forest bind: unit " << (unit_name ? unit_name : "?")
+	    << " replays its skipped '#ifndef " << nm << "' arm" << std::endl);
+	Source saved = std::move(source);
+	source = Source();
+	source.fname(unit_name ? unit_name : "");
+	source.str(text);	// the arm body: source text
+	size_t groups_at_entry = cond_groups.size();
+	try
+	{
+	    if ( getRealToken() )
+		Throw << "Frozen skipped arm '#ifndef " << nm << "' of "
+		      << (unit_name ? unit_name : "?") << " produced a token" << flush;
+	    refuse_open_conditional_groups(groups_at_entry);
+	}
+	catch (...)
+	{
+	    source = std::move(saved);
+	    throw;
+	}
+	source = std::move(saved);
+    }
 }
 
 // Apply one unit's frozen PP-export delta to the live macro tables, replaying
@@ -6007,11 +6063,11 @@ void Program::pack_record_edge(const madc::dis::istring &includee)
     }
 }
 
-void Program::pack_record_branch_macro(const std::string &name,
+bool Program::pack_record_branch_macro(const std::string &name,
 				       bool include_probe)
 {
     if ( !pack_recording || name.empty() )
-	return;
+	return false;
     pack_branch_macros.insert(name);
     // An include-once GUARD PROBE (should_tokenize_include asking "is the
     // includee's guard defined") is an EDGE decision — reproduced by the
@@ -6019,7 +6075,7 @@ void Program::pack_record_branch_macro(const std::string &name,
     // dependency of the includer's CONTENT. Recording it made every libc++
     // header carry its includees' guards as deps and decline on re-binds.
     if ( include_probe )
-	return;
+	return false;
     // v40 (task #57): record the consult as an EXTERNAL branch dependency of
     // the current unit when the macro's state was NOT established within the
     // consulting unit's OWN subtree — consumers bind ANY unit directly, so a
@@ -6034,24 +6090,24 @@ void Program::pack_record_branch_macro(const std::string &name,
     // replay-internal there, and a real external elsewhere).
     const char *unit = pack_current_unit();
     if ( !unit )
-	return;
+	return false;
     bool defined_now = macro_name_defined(name);
     std::map<madc::dis::istring, PackMacroOrigin>::iterator oi =
 	pack_macro_origin.find(name);
     if ( defined_now && oi == pack_macro_origin.end() )
-	return;				// predefine / -D: config-word-pinned
+	return false;			// predefine / -D: config-word-pinned
     if ( oi != pack_macro_origin.end() && oi->second.unit )
     {
 	if ( oi->second.unit == unit )
-	    return;			// self: the unit's own replay decides
+	    return false;		// self: the unit's own replay decides
 	std::map<const char *, std::set<const char *> >::iterator sti =
 	    pack_unit_subtree.find(unit);
 	if ( sti != pack_unit_subtree.end()
 	  && sti->second.count(oi->second.unit) )
-	    return;			// subtree: edges install it before us
+	    return false;		// subtree: edges install it before us
     }
     if ( !pack_unit_branch_dep_seen[unit].insert(name).second )
-	return;
+	return defined_now;
     PackBranchDep dep;
     dep.name = name;
     dep.defined = defined_now;
@@ -6071,6 +6127,45 @@ void Program::pack_record_branch_macro(const std::string &name,
 	}
     }
     pack_unit_branch_deps[unit].push_back(dep);
+    return defined_now;
+}
+
+// v55 (freeze time): skip an `#ifndef X` arm whose X an EXTERNAL sibling
+// defined, capturing its body as skipConditionalBlock skips it. The frozen unit
+// carries none of that arm, so a consumer without X would bind it short (mingw
+// stdio.h's `#ifndef NULL` behind the win64 corpus's <cstddef>). A body of
+// define / undef / conditional directives only, closed by its own #endif, is
+// recorded for the bind to replay (forest_replay_pp_arms); any other arm stays
+// missing content for the branch-dependency check.
+TokenBase *Program::skip_and_capture_arm(const madc::dis::istring &name)
+{
+    const char *unit = pack_current_unit();
+    SkippedArmCapture cap;
+    if ( !unit || !source.raw_offset(cap.begin) )
+	return skipConditionalBlock();
+    skip_arm_capture = &cap;
+    TokenBase *next;
+    try
+    {
+	next = skipConditionalBlock();	// ends the capture at the arm's end
+    }
+    catch (...)
+    {
+	skip_arm_capture = NULL;
+	throw;
+    }
+    skip_arm_capture = NULL;
+    if ( !cap.closed || !cap.pure )
+	return next;
+    std::vector<PackSkippedArm> &arms = pack_unit_skipped_arms[unit];
+    for ( size_t i = 0; i < arms.size(); ++i )
+	if ( arms[i].name == name && arms[i].text == cap.text )
+	    return next;
+    PackSkippedArm arm;
+    arm.name = name;
+    arm.text = cap.text;
+    arms.push_back(arm);
+    return next;
 }
 
 // -dM: dump the effective macro table (object-like + function-like) in
@@ -7788,7 +7883,7 @@ TokenBase *Program::_getToken()
 		    while ( source.good() && !source.eof() && (isalnum(source.peek()) || source.peek() == '_') )
 			name += source.get();
 		    bool defined = macro_name_defined(name);
-		    pack_record_branch_macro(name);
+		    bool external = pack_record_branch_macro(name);
 		    bool active = (directive == "ifdef") ? defined : !defined;
 		    if ( !source.guard_watch.key.empty() )
 			guard_watch_open(directive == "ifndef" ? madc::dis::istring(name)
@@ -7801,6 +7896,8 @@ TokenBase *Program::_getToken()
 		    // discard the directive's trailing tokens via the lexer, so a
 		    // multi-line /* */ comment here is handled by the lexer's case '/'
 		    consume_directive_line_tail();
+		    if ( !active && external && directive == "ifndef" )
+			return skip_and_capture_arm(name);
 		    if ( !active )
 			return skipConditionalBlock();
 		    return getToken();
@@ -9297,8 +9394,14 @@ TokenBase *Program::_getToken()
 TokenBase *Program::skipConditionalBlock()
 {
     int depth = 0;
+    // v55: an arm capture in progress (skip_and_capture_arm) — the body is
+    // replayable only if every significant line is a define / undef /
+    // conditional directive and the arm's own #endif closes it.
+    SkippedArmCapture *cap = skip_arm_capture;
     while ( source.good() && !source.eof() )
     {
+	size_t line_at = 0;
+	bool line_raw = cap && source.raw_offset(line_at);
 	// skip leading horizontal whitespace; directives may be indented
 	while ( source.good() && !source.eof() && (source.peek() == ' ' || source.peek() == '\t') )
 	    source.get();
@@ -9309,6 +9412,8 @@ TokenBase *Program::skipConditionalBlock()
 	    continue;
 	if ( ch != '#' )
 	{
+	    if ( cap )
+		cap->pure = false;
 	    while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
 		source.get();
 	    continue;
@@ -9332,6 +9437,15 @@ TokenBase *Program::skipConditionalBlock()
 	    DBG(std::cout << "skipConditionalBlock: #endif depth=" << depth << " stack=" << ifdef_stack.size() << std::endl);
 	    if ( depth == 0 )
 	    {
+		if ( cap )
+		{
+		    if ( line_raw && line_at >= cap->begin )
+		    {
+			cap->text = source.text().substr(cap->begin, line_at - cap->begin);
+			cap->closed = true;
+		    }
+		    skip_arm_capture = NULL;
+		}
 		// this #endif closes our block
 		ifdef_stack.pop();
 		cond_groups.pop();
@@ -9343,6 +9457,11 @@ TokenBase *Program::skipConditionalBlock()
 	}
 	else if ( depth == 0 && dir == "else" )
 	{
+	    if ( cap )
+	    {
+		cap->pure = false;	// an #else arm ends this capture
+		skip_arm_capture = cap = NULL;
+	    }
 	    // consume the rest of the directive line (comment-aware)
 	    skip_directive_line_tail(source);
 	    guard_watch_branch();
@@ -9359,6 +9478,11 @@ TokenBase *Program::skipConditionalBlock()
 	}
 	else if ( depth == 0 && dir == "elif" )
 	{
+	    if ( cap )
+	    {
+		cap->pure = false;	// an #elif arm ends this capture
+		skip_arm_capture = cap = NULL;
+	    }
 	    // do NOT consume rest of line — evaluateIfCondition() needs to read the condition
 	    guard_watch_branch();
 	    cond_groups.top().directive = CondDirective::Elif;
@@ -9386,6 +9510,10 @@ TokenBase *Program::skipConditionalBlock()
 	}
 	else
 	{
+	    // A nested #else / #elif and #define / #undef replay as-is; any other
+	    // directive (#include, #error, #pragma) is not a pure macro body.
+	    if ( cap && dir != "define" && dir != "undef" && dir != "else" && dir != "elif" )
+		cap->pure = false;
 	    // consume rest of line for unknown directives inside skipped block
 	    while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
 		source.get();

@@ -129,7 +129,11 @@ enum : uint32_t
 	// is inside the closure being bound (replay-internal) and compares the
 	// rest against the consumer's live macro tables; a mismatch declines
 	// the whole root bind to live parse (or prunes an already-live unit
-	// via its own guard). ---
+	// via its own guard). v55: a tuple with flags bit2 (CIR_BRANCH_DEP_PP_ARM)
+	// is not a dependency but a skipped arm — [name_id, PP_ARM, text_id,
+	// 0xffffffff]: the body of an `#ifndef name` arm the producer skipped
+	// (an external sibling had defined name) that holds only define / undef /
+	// conditional directives; the bind replays it when name is undefined. ---
 	SNAP_KIND_CIR_BRANCH_DEPS      = madc::dis::SNAP_KIND_CONSUMER + 23, // per-unit: uint32 [name_id, flags, value_id, definer_unit] tuples
 	// v41: exact source bytes before preprocessing. A config-mismatched
 	// consumer may re-tokenize these without binding producer semantic state.
@@ -577,7 +581,14 @@ bool cir_freeze_read(const madc::dis::snapshot_reader &r, uint32_t seg_id_base,
 // v51: a token's recorded column is its START (D26: gcc's anchor), no longer its last byte.
 // v50: DK_FUNC preserves = default/delete. Older snapshots lack those flags.
 // v49: DF_ENUM_C_COMPATIBLE — an enum defined in C promotes as its underlying (compatible) type, C11 6.7.2.2p4; v48: DK_ENUM carries its STORAGE raw type (defrec.datatype) and DF_ENUM_FIXED_BASE — a restored enum lowers to the same C type as live, and a computed base is no longer re-adopted as declared; v47: the producer-config word's language_std bits carry the file-kind vocabulary's values (Program::LanguageStd = madc::fk* ranges, <bits/file_kinds>) — a v46 pack's word would compare against different numbers; v46: defrec ovl_spelling_id / ovl_targ run — a DK_FUNC's overload-set declaration identity (FuncDef::overload_spelling + overload_template_args); v45: DF_FUNC_C_LINKAGE (a namespace fn's extern "C" linkage — restore re-derives the C alias); v44: DK_NSALIAS namespace-alias records; v42: defrec vslot/vmeth runs (flat vtable_slots + virtual_methods)
-enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 54 };
+// v55: a skipped directive-only `#ifndef X` arm (X defined by an external sibling at freeze — mingw stdio.h's `#ifndef NULL` behind the win64 corpus's <cstddef>) rides the unit's branch-dep stream as a CIR_BRANCH_DEP_PP_ARM tuple; the bind replays it when the consumer lacks X, so a C++ consumer of <cstdio> alone has NULL.
+enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 55 };
+// Flags word of a SNAP_KIND_CIR_BRANCH_DEPS tuple.
+enum : uint32_t {
+	CIR_BRANCH_DEP_DEFINED   = 1u,	// the macro was defined at the consult
+	CIR_BRANCH_DEP_HAS_VALUE = 2u,	// value_id holds its object-like body
+	CIR_BRANCH_DEP_PP_ARM    = 4u	// v55: [name, flags, arm text, none] — not a dep
+};
 	// v43: defrec friendfn/friendcls runs — the friendship grants
 	// (friend_function_names / friend_class_names), parse-time access
 	// state a restored class never carried (hoisted hidden-friend bodies
@@ -980,7 +991,8 @@ struct cir_forest_unit
 	std::vector<uint32_t>       edges;	// directory unit indices, include order
 	// v40: external branch dependencies — [name_id, flags, value_id,
 	// definer_unit] tuples (flags bit0 = defined at freeze, bit1 =
-	// value_id valid; definer_unit 0xffffffff = none).
+	// value_id valid; definer_unit 0xffffffff = none). v55: bit2 marks a
+	// skipped directive-only arm tuple (CIR_BRANCH_DEP_PP_ARM).
 	std::vector<uint32_t>       branch_deps;
 	std::vector<uint8_t>        source_payload;	// v41: pre-PP source bytes
 };

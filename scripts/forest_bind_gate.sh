@@ -896,17 +896,19 @@ rm -f "$sh_snap" "$sh_log" tmp/fbgate_share.cpp tmp/fbgate_share_println.cpp \
       tmp/fbgate_share_var.cpp tmp/fbgate_share_nomain.cpp
 echo "forest_bind_gate: [sharegate] OK — the madc profile binds for gnu++17 and c++17 with no madc extras; c++20 does not bind"
 
-# --- case: labelverify (2026-10-11: a labelled consumer gets the VERIFIED bind) ---
-# A unit whose `#ifndef X / #define X` arm was skipped at freeze because an
-# EARLIER corpus sibling defined X carries no define of its own (mingw
-# stdio.h's NULL behind the win64 corpus's <cstddef>). A consumer that
-# includes only that unit has no X: binding it frozen loses the define. A
-# consumer bound through a --freeze-also-std label gets the branch-dependency
-# check whatever the rollout knob says, so the unit live-parses and X exists.
-# The consumer runs with the knob at its SHIPPING default (MADC_FOREST_ENV_CHECK=0,
-# overriding this gate's battery-wide =1): the case proves the LABEL turns the
-# check on, not the knob. Negative control: before the verified bind, the c++17
-# consumer failed with "use of undeclared identifier 'FBG_MC_X'".
+# --- case: armreplay (2026-10-11, forest v55: a skipped directive-only arm replays) ---
+# A unit whose `#ifndef X` arm was skipped at freeze because an EARLIER corpus
+# sibling defined X carries none of that arm (mingw stdio.h's NULL behind the
+# win64 corpus's <cstddef>). A consumer that includes only that unit has no X.
+# An arm of define / undef / conditional directives only now rides the unit's
+# branch-dep stream (CIR_BRANCH_DEP_PP_ARM), and the bind replays it through
+# the live preprocessor when the consumer lacks X: the unit still BINDS, and
+# the arm's nested conditional answers in the CONSUMER's macro state
+# (FBG_LV_WIDE, which the producer never defined, selects 50). The consumer
+# runs at the knob's shipping default (MADC_FOREST_ENV_CHECK=0, overriding this
+# gate's battery-wide =1). Negative controls: the v54 binary fails with "use of
+# undeclared identifier 'FBG_MC_X'"; d939e2a09's verified bind printed v=52
+# with fbgate_lv_b.h live-parsed, which the bound assertion refuses.
 mkdir -p tmp/fbgate_lv
 cat > tmp/fbgate_lv/fbgate_lv_a.h <<'EOF'
 #ifndef FBGATE_LV_A_H
@@ -918,7 +920,11 @@ cat > tmp/fbgate_lv/fbgate_lv_b.h <<'EOF'
 #ifndef FBGATE_LV_B_H
 #define FBGATE_LV_B_H
 #ifndef FBG_MC_X
-#define FBG_MC_X 5
+# ifdef FBG_LV_WIDE
+#  define FBG_MC_X 50	/* the consumer's choice */
+# else
+#  define FBG_MC_X 5
+# endif
 #endif
 struct fbg_lv_s { int v; };
 #endif
@@ -936,6 +942,7 @@ cat > tmp/fbgate_lv_producer.cpp <<'EOF'
 int main() { return 0; }
 EOF
 cat > tmp/fbgate_lv_consumer.cpp <<'EOF'
+#define FBG_LV_WIDE 1
 #include <fbgate_lv_c.h>
 #include <fbgate_lv_b.h>
 #include <cstdio>
@@ -945,17 +952,16 @@ lv_snap=tmp/fbgate_lv.msnap
 lv_log=tmp/fbgate_lv.log
 rm -f "$lv_snap"
 timeout 600 "$BIN" --freeze="$lv_snap" --freeze-also-std=c++17 -I tmp/fbgate_lv \
-    tmp/fbgate_lv_producer.cpp >"$lv_log" 2>&1 || fail "[labelverify] the madc --freeze-also-std FAILED: $(tail -n 3 "$lv_log")"
+    tmp/fbgate_lv_producer.cpp >"$lv_log" 2>&1 || fail "[armreplay] the madc --freeze-also-std FAILED: $(tail -n 3 "$lv_log")"
 lv_out=$(MADC_FOREST_ENV_CHECK=0 timeout 60 "$BIN" --std=c++17 --forest-bind="$lv_snap" -I tmp/fbgate_lv tmp/fbgate_lv_consumer.cpp 2>&1)
-[ "$lv_out" = "v=7" ] || fail "[labelverify] c++17 consumer output '$lv_out' != 'v=7'"
+[ "$lv_out" = "v=52" ] || fail "[armreplay] c++17 consumer output '$lv_out' != 'v=52'"
 MADC_FOREST_ENV_CHECK=0 timeout 60 "$BIN" -v --std=c++17 --forest-bind="$lv_snap" -I tmp/fbgate_lv tmp/fbgate_lv_consumer.cpp >"$lv_log" 2>/dev/null
-grep -aq "bound to grove unit.*fbgate_lv_c.h" "$lv_log" \
-    || fail "[labelverify] the c++17 consumer never bound the labelled profile (vacuous)"
-if grep -aq "bound to grove unit.*fbgate_lv_b.h" "$lv_log"; then
-    fail "[labelverify] the unit missing its frozen-away define BOUND for the c++17 consumer"
-fi
+grep -aq "bound to grove unit.*fbgate_lv_b.h" "$lv_log" \
+    || fail "[armreplay] the unit with the skipped arm did not BIND for the c++17 consumer"
+grep -aq "fbgate_lv_b.h replays its skipped '#ifndef FBG_MC_X' arm" "$lv_log" \
+    || fail "[armreplay] the bound unit never replayed its skipped arm"
 rm -rf "$lv_snap" "$lv_log" tmp/fbgate_lv tmp/fbgate_lv_producer.cpp tmp/fbgate_lv_consumer.cpp
-echo "forest_bind_gate: [labelverify] OK — a labelled consumer binds verified; a unit missing a frozen-away define live-parses"
+echo "forest_bind_gate: [armreplay] OK — a skipped directive-only arm binds and replays in the consumer's macro state"
 
 # --- case: reprogate (2026-10-11: a freeze is reproducible) ---
 # --dump-forest's `content` line digests the frozen corpus with the producer
@@ -2145,5 +2151,5 @@ run_case patternalias "1 2"
 # coverage. Worse in the other direction: deleting a case would leave this line
 # still claiming it runs. Deriving it from run_case would need the ~12 bespoke
 # cases below to register too; until then, update it when you add a case.
-echo "forest_bind_gate: GREEN 41/41 — typedef + struct + nested + bitfield + class + method + fwd + ptr + nestedenumfn + ldouble + ns + anon + declonlymt + flavorgate + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec + iobind + traitfold + nothrowfold + explicitctor + labelverify + deletedctor + constcopy + subbind + redecl + husk + silbody grove headers bound (unit-granular husk recovery only), output == live == g++ + secvptr + friendgrant + patternalias + quietbind + memberptr + unionclass"
+echo "forest_bind_gate: GREEN 41/41 — typedef + struct + nested + bitfield + class + method + fwd + ptr + nestedenumfn + ldouble + ns + anon + declonlymt + flavorgate + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec + iobind + traitfold + nothrowfold + explicitctor + armreplay + deletedctor + constcopy + subbind + redecl + husk + silbody grove headers bound (unit-granular husk recovery only), output == live == g++ + secvptr + friendgrant + patternalias + quietbind + memberptr + unionclass"
 exit 0

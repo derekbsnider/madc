@@ -3508,6 +3508,24 @@ static void cir_forest_fill_pack_payloads(Program *prog, cir_frozen_forest &f)
 	    out.push_back(definer);
 	}
     }
+    // v55: each unit's skipped directive-only `#ifndef` arms follow its
+    // dependencies as CIR_BRANCH_DEP_PP_ARM tuples [name_id, flags, text_id,
+    // none] — the bind replays one when the consumer lacks its macro.
+    typedef std::map<const char *, std::vector<Program::PackSkippedArm> > arm_map;
+    const std::vector<arm_map::const_iterator> arms_in_order =
+	pack_entries_in_unit_order(prog->pack_unit_skipped_arms, prog->pack_unit_order);
+    for (size_t ak = 0; ak < arms_in_order.size(); ++ak) {
+	arm_map::const_iterator am = arms_in_order[ak];
+	uint32_t u = ensure_unit(am->first);
+	for (size_t k = 0; k < am->second.size(); ++k) {
+	    const Program::PackSkippedArm &a = am->second[k];
+	    std::vector<uint32_t> &out = f.units[u].branch_deps;
+	    out.push_back(pool->intern(a.name));
+	    out.push_back(CIR_BRANCH_DEP_PP_ARM);
+	    out.push_back(pool->intern(a.text));
+	    out.push_back(0xffffffffu);
+	}
+    }
 
     // 5c (v41). Preserve each unit's exact pre-preprocessor source text.
     // Semantic forest state remains config-pinned; these bytes are the

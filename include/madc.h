@@ -2413,6 +2413,15 @@ public:
 	    ++e;
 	return true;
     }
+    // The read cursor's offset into text(), when no pushback stands in front
+    // of it — a caller slicing a raw region out of text() (a skipped arm).
+    bool raw_offset(size_t &off) const
+    {
+	if ( !_pushback.empty() )
+	    return false;
+	off = _gpos;
+	return true;
+    }
     Source() { _lf = 0; _cr = 0; _column = 0; }
     const char *fname() const { return _fname.c_str(); }
     const char *fname(const char *s)  { _fname = s; return _fname.c_str(); }
@@ -3527,6 +3536,19 @@ protected:
     void finalize_pop1_rec(TokenBase *tb);
     TokenBase *_getToken();
     TokenBase *skipConditionalBlock();
+    // v55 (freeze time): the body of the `#ifndef X` arm skipConditionalBlock
+    // is skipping, captured while it skips — directive-only (define / undef /
+    // conditionals) and closed by its own #endif, or not replayable. NULL =
+    // no capture in progress.
+    struct SkippedArmCapture
+    {
+	size_t begin = 0;	// raw offset of the arm's first line
+	bool pure = true;	// every significant line is a replayable directive
+	bool closed = false;	// its own #endif (no #else / #elif) ended it
+	std::string text;	// source text of the body, closing #endif excluded
+    };
+    SkippedArmCapture *skip_arm_capture = NULL;
+    TokenBase *skip_and_capture_arm(const madc::dis::istring &name);
     bool evaluateIfCondition();
     // The clang `__has_*` preprocessor operators, evaluated inside an #if.
     // `pos` enters at the operator's '(' and leaves past its ')'. Every one
@@ -5591,6 +5613,14 @@ public:
     };
     std::map<madc::dis::istring, PackMacroOrigin> pack_macro_origin;
     std::map<const char *, std::vector<PackBranchDep> > pack_unit_branch_deps;
+    // v55: per-unit skipped directive-only `#ifndef name` arms whose name an
+    // EXTERNAL sibling defined first (mingw stdio.h's NULL arm). Frozen as
+    // CIR_BRANCH_DEP_PP_ARM tuples; the bind replays one when name is undefined.
+    struct PackSkippedArm {
+	madc::dis::istring name;
+	std::string text;		// arm body source text, not a name
+    };
+    std::map<const char *, std::vector<PackSkippedArm> > pack_unit_skipped_arms;
     std::map<const char *, std::set<madc::dis::istring> > pack_unit_branch_dep_seen;
     // v41: exact pre-preprocessor source text for every packed unit. A
     // compiler-less target whose consumer config cannot bind the producer's
@@ -5631,7 +5661,9 @@ public:
     // A dedup-SKIPPED include still needs its bytes in the corpus — see the
     // definition. Freeze-time only, at most one read per unit.
     void pack_record_skipped_source(const madc::dis::istring &path);
-    void pack_record_branch_macro(const std::string &name,	// interned only when recording
+    // True when an EXTERNAL definition (an earlier sibling's #define) gates
+    // this consult — the condition a skipped `#ifndef` arm is missing content.
+    bool pack_record_branch_macro(const std::string &name,	// interned only when recording
 				  bool include_probe = false);
     const char *pack_current_unit();	// interned current source file (NULL off)
     void dump_macros(FILE *out);	// -dM: effective macro table, sorted
@@ -6996,6 +7028,11 @@ public:
     // live-defined; forest_install_pp skips those define events (live-order
     // parity — the live arm skipped them). Rebuilt per env check of the unit.
     std::map<uint32_t, std::set<madc::dis::istring> > forest_pp_install_mask;
+    // v55: unit -> its skipped directive-only arms, [name_id, text_id] pool
+    // ids, collected by forest_bind_env_ok; forest_replay_pp_arms replays one
+    // whose name is undefined once the unit's own delta is installed.
+    std::map<uint32_t, std::vector<std::pair<uint32_t, uint32_t> > > forest_pp_arms;
+    void forest_replay_pp_arms(uint32_t unit);
     void forest_install_pp(uint32_t unit);	// apply one unit's frozen macro delta to the live tables
     void add_namespaces();
     void add_madc_namespace();
