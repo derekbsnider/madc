@@ -535,9 +535,14 @@ for stage in $stages; do
 		# freshly-pulled compiler into runtime symbol-lookup errors
 		# in the exes it produces (2026-08-26: bin/madcide undefined
 		# __php_file_get_contents — the lib was 3 days behind bin/madc).
+		# The module images (lib/libmadc[a-z]*.so: madcgit, madcmark,
+		# webview) ride along: a program's `import madcgit;` opens
+		# madc's own lib directory first, so a pulled madc without them
+		# aborts at the import.
 		rsync -az --no-perms --no-owner --no-group --links \
 			-e "ssh -p $PORT" \
 			"$REMOTE:$REMOTE_MADC/lib/libmadc.so" \
+			"$REMOTE:$REMOTE_MADC/lib/libmadc[a-z]*.so" \
 			"$REMOTE:$REMOTE_MADC/lib/libmadc.so.0" \
 			"$REMOTE:$REMOTE_MADC/lib/libmadc.a" \
 			"$REMOTE:$REMOTE_MADC/lib/libmadc_rt.a" \
