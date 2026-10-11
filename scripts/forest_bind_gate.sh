@@ -903,8 +903,10 @@ echo "forest_bind_gate: [sharegate] OK — the madc profile binds for gnu++17 an
 # includes only that unit has no X: binding it frozen loses the define. A
 # consumer bound through a --freeze-also-std label gets the branch-dependency
 # check whatever the rollout knob says, so the unit live-parses and X exists.
-# Negative control: before the verified bind, the c++17 consumer failed with
-# "use of undeclared identifier 'FBG_MC_X'".
+# The consumer runs with the knob at its SHIPPING default (MADC_FOREST_ENV_CHECK=0,
+# overriding this gate's battery-wide =1): the case proves the LABEL turns the
+# check on, not the knob. Negative control: before the verified bind, the c++17
+# consumer failed with "use of undeclared identifier 'FBG_MC_X'".
 mkdir -p tmp/fbgate_lv
 cat > tmp/fbgate_lv/fbgate_lv_a.h <<'EOF'
 #ifndef FBGATE_LV_A_H
@@ -944,9 +946,9 @@ lv_log=tmp/fbgate_lv.log
 rm -f "$lv_snap"
 timeout 600 "$BIN" --freeze="$lv_snap" --freeze-also-std=c++17 -I tmp/fbgate_lv \
     tmp/fbgate_lv_producer.cpp >"$lv_log" 2>&1 || fail "[labelverify] the madc --freeze-also-std FAILED: $(tail -n 3 "$lv_log")"
-lv_out=$(timeout 60 "$BIN" --std=c++17 --forest-bind="$lv_snap" -I tmp/fbgate_lv tmp/fbgate_lv_consumer.cpp 2>&1)
+lv_out=$(MADC_FOREST_ENV_CHECK=0 timeout 60 "$BIN" --std=c++17 --forest-bind="$lv_snap" -I tmp/fbgate_lv tmp/fbgate_lv_consumer.cpp 2>&1)
 [ "$lv_out" = "v=7" ] || fail "[labelverify] c++17 consumer output '$lv_out' != 'v=7'"
-timeout 60 "$BIN" -v --std=c++17 --forest-bind="$lv_snap" -I tmp/fbgate_lv tmp/fbgate_lv_consumer.cpp >"$lv_log" 2>/dev/null
+MADC_FOREST_ENV_CHECK=0 timeout 60 "$BIN" -v --std=c++17 --forest-bind="$lv_snap" -I tmp/fbgate_lv tmp/fbgate_lv_consumer.cpp >"$lv_log" 2>/dev/null
 grep -aq "bound to grove unit.*fbgate_lv_c.h" "$lv_log" \
     || fail "[labelverify] the c++17 consumer never bound the labelled profile (vacuous)"
 if grep -aq "bound to grove unit.*fbgate_lv_b.h" "$lv_log"; then
