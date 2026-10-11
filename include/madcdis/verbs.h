@@ -127,13 +127,15 @@ public:
     {
 	return _w.doc_checkpoint(id, app_meta);
     }
-    bool doc_undo(entity_id id, madc::value &app_out)
+    bool doc_undo(entity_id id, madc::value &app_out,
+		  const madc::value &app_now = madc::value())
     {
-	return _w.doc_undo(id, app_out);
+	return _w.doc_undo(id, app_out, app_now);
     }
-    bool doc_redo(entity_id id, madc::value &app_out)
+    bool doc_redo(entity_id id, madc::value &app_out,
+		  const madc::value &app_now = madc::value())
     {
-	return _w.doc_redo(id, app_out);
+	return _w.doc_redo(id, app_out, app_now);
     }
     anchor_id anchor_add(entity_id id, size_t off, bool right)
     {

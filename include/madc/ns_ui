@@ -299,10 +299,12 @@ namespace ui {
     // The document-level history: the application's payload (its caret)
     // rides WITH the document's anchors and its saved state, so undo
     // restores all three and hands the payload back. One command, one
-    // checkpoint — the command layer sets the group boundary.
+    // checkpoint — the command layer sets the group boundary. `app_now`
+    // is the payload of the state undo/redo leaves (text_undo's now_meta):
+    // it rides to the opposite stack, so walking back hands it back.
     bool    doc_checkpoint(int64_t w, int64_t entity, value &app_meta);
-    bool    doc_undo(value &app_out, int64_t w, int64_t entity);
-    bool    doc_redo(value &app_out, int64_t w, int64_t entity);
+    bool    doc_undo(value &app_out, int64_t w, int64_t entity, value &app_now);
+    bool    doc_redo(value &app_out, int64_t w, int64_t entity, value &app_now);
     // Anchors: a byte position that follows edits (a caret, a mark, a span
     // end). right_gravity: an insert AT the anchor pushes it after the
     // text (a caret); false: it stays before (a selection start). An edit

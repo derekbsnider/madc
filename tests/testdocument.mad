@@ -68,12 +68,21 @@ int main()
     ui::text_insert(w, d, 0, "// hi\n");
     printf("caret shifted=%d\n", ui::anchor_offset(w, d, caret));
     var back;
-    ui::doc_undo(back, w, d);
+    var leaving = { "caret": 30 };
+    ui::doc_undo(back, w, d, leaving);
     var t;
     ui::text(t, w, d);
     printf("undo caret=%s text_restored=%d modified=%d\n", back["caret"],
 	   t == "int main() { return 1; }\n", ui::doc_modified(w, d));
     printf("anchor restored=%d\n", ui::anchor_offset(w, d, caret));
+    // the payload given for the state the undo left rides to the redo
+    // stack: walking forward hands it back
+    var fwd;
+    var here = { "caret": 24 };
+    ui::doc_redo(fwd, w, d, here);
+    printf("redo caret=%s modified=%d\n", fwd["caret"], ui::doc_modified(w, d));
+    ui::doc_undo(back, w, d, fwd);
+    printf("undo again caret=%s modified=%d\n", back["caret"], ui::doc_modified(w, d));
 
     ui::text_replace(w, d, 20, 1, "2");
     var disk;

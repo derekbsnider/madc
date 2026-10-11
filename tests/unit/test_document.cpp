@@ -176,7 +176,9 @@ TEST_CASE("modified is derived from the saved version; undo restores anchors and
     uint64_t v_after = w.text_version(e);
 
     madc::value back;
-    CHECK(w.doc_undo(e, back));
+    madc::value now = madc::value::make_object();
+    now.object()["caret"] = madc::value((int64_t)6);
+    CHECK(w.doc_undo(e, back, now));
     CHECK(w.text_of(e)->text() == "abc");
     CHECK(back.is_object());
     CHECK(back.as_object().find("caret")->second.as_integer() == 3);
@@ -188,6 +190,10 @@ TEST_CASE("modified is derived from the saved version; undo restores anchors and
     CHECK(w.text_of(e)->text() == "abcdef");
     CHECK(w.doc_modified(e));
     CHECK(w.anchor_of(e, caret)->off == 6u);	// the redo entry carried the live anchors
+    // ... and the application's payload the undo was given for the state
+    // it left: a redo hands back the caret that belonged to it
+    REQUIRE(back.is_object());
+    CHECK(back.as_object().find("caret")->second.as_integer() == 6);
     CHECK(!w.doc_redo(e, back));		// nothing more
 
     // save, then edit, then undo past the save: modified again

@@ -1684,24 +1684,28 @@ bool doc_checkpoint(int64_t w, int64_t entity, madc::value &app_meta)
     return mc.doc_checkpoint((entity_id)entity, app_meta);
 }
 
-bool doc_undo(madc::value &app_out, int64_t w, int64_t entity)
+bool doc_undo(madc::value &app_out, int64_t w, int64_t entity,
+	      madc::value &app_now)
 {
+    madc::value now = app_now;		// app_out may alias it
     app_out = madc::value();
     ui_session *s = ui_get(w);
     if ( !s )
 	return false;
     madc::hub::mutation_context mc(s->w);
-    return mc.doc_undo((entity_id)entity, app_out);
+    return mc.doc_undo((entity_id)entity, app_out, now);
 }
 
-bool doc_redo(madc::value &app_out, int64_t w, int64_t entity)
+bool doc_redo(madc::value &app_out, int64_t w, int64_t entity,
+	      madc::value &app_now)
 {
+    madc::value now = app_now;		// app_out may alias it
     app_out = madc::value();
     ui_session *s = ui_get(w);
     if ( !s )
 	return false;
     madc::hub::mutation_context mc(s->w);
-    return mc.doc_redo((entity_id)entity, app_out);
+    return mc.doc_redo((entity_id)entity, app_out, now);
 }
 
 int64_t anchor_add(int64_t w, int64_t entity, int64_t off, bool right)

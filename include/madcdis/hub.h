@@ -577,7 +577,10 @@ public:
     // The document-level history (design §2.4): the payload rides the
     // application's meta under "app" plus the anchors and the saved
     // version, so undo restores the document, its anchors and whether it
-    // was clean, and hands the application's meta back.
+    // was clean, and hands the application's meta back. `app_now` is the
+    // application's payload for the state being left (its caret now): it
+    // rides to the opposite stack, so a redo hands back what the undo was
+    // given (text_buffer::undo's `now`).
     bool doc_checkpoint(entity_id id, const madc::value &app_meta)
     {
 	std::map<entity_id, document>::iterator d = _docs.find(id);
@@ -587,14 +590,15 @@ public:
 	b.checkpoint(d->second.checkpoint_meta(app_meta, b.version()));
 	return true;
     }
-    bool doc_undo(entity_id id, madc::value &app_out)
+    bool doc_undo(entity_id id, madc::value &app_out,
+		  const madc::value &app_now = madc::value())
     {
 	std::map<entity_id, document>::iterator d = _docs.find(id);
 	std::map<entity_id, text_buffer>::iterator t = _texts.find(id);
 	app_out = madc::value();
 	if ( d == _docs.end() || t == _texts.end() || !admit(id, false) )
 	    return false;
-	madc::value now = d->second.checkpoint_meta(madc::value(),
+	madc::value now = d->second.checkpoint_meta(app_now,
 						    t->second.version());
 	madc::value meta;
 	size_t before = t->second.size();
@@ -603,14 +607,15 @@ public:
 	d->second.restore_meta(meta, app_out, t->second.version());
 	return whole_change(id, text_change::kind::undo, before);
     }
-    bool doc_redo(entity_id id, madc::value &app_out)
+    bool doc_redo(entity_id id, madc::value &app_out,
+		  const madc::value &app_now = madc::value())
     {
 	std::map<entity_id, document>::iterator d = _docs.find(id);
 	std::map<entity_id, text_buffer>::iterator t = _texts.find(id);
 	app_out = madc::value();
 	if ( d == _docs.end() || t == _texts.end() || !admit(id, false) )
 	    return false;
-	madc::value now = d->second.checkpoint_meta(madc::value(),
+	madc::value now = d->second.checkpoint_meta(app_now,
 						    t->second.version());
 	madc::value meta;
 	size_t before = t->second.size();
