@@ -1,17 +1,18 @@
 // tools/vscode-madcide/test/protocol_probe.js — a REAL LSP client against
-// `madcide <file> --lsp`, built on Microsoft's own protocol machinery
+// `madc --lsp <file>`, built on Microsoft's own protocol machinery
 // (vscode-jsonrpc + vscode-languageserver-protocol: the same message reader,
 // writer and types vscode-languageclient uses inside VS Code).
 //
-// WHY THIS EXISTS. The repo's own gates (tests/testmadcide_lsp,
-// tests/testmadcide_lsp_stdio) pin what madcide believes the protocol is. This
+// WHY THIS EXISTS. The repo's own gates (tests/testlsp_stdio, the
+// test_lsp unit cases) pin what madc believes the protocol is. This
 // probe asks a real client, with a real VS Code-shaped initialize, whether it
 // agrees — and it does not need VS Code, a display, or a network. It found
 // three defects on its first run (V6c-3a): references highlighting the call's
 // first ARGUMENT instead of the callee, documentSymbol selecting the whole
 // declaration line instead of the symbol's name, and three conforming-client
-// notifications landing on stderr as "unknown". Each was then pinned in
-// testmadcide_lsp, which is the gate — this is the instrument.
+// notifications landing on stderr as "unknown" (madcide's server then; the
+// server is madc's since split arc 1D). The gates pin; this is the
+// instrument.
 //
 // It is NOT part of `make -C src fulltest`: it needs `npm install`, and the
 // battery must run with no network and no node.
@@ -38,12 +39,7 @@ const TEXT = 'long twice(long a)\n{\n\treturn a + a;\n}\n\nint main()\n{\n\tlong
 fs.mkdirSync(path.dirname(DOC), { recursive: true });
 fs.writeFileSync(DOC, TEXT);
 
-// The serve FACE beside the LSP one (V6c-3b): one process, one session, so a
-// window joins the same buffers the editor is editing.
-const child = cp.spawn(MADC,
-	['--no-config', 'tools/madcide/madcide.mad', DOC, '--lsp',
-	 '--serve', '127.0.0.1:0'],
-	{ cwd: REPO, stdio: ['pipe', 'pipe', 'pipe'] });
+const child = cp.spawn(MADC, ['--lsp', DOC], { cwd: REPO, stdio: ['pipe', 'pipe', 'pipe'] });
 
 let stderr = '';
 let exited = null;
@@ -56,12 +52,7 @@ const conn = rpc.createMessageConnection(
 	new rpc.StreamMessageWriter(child.stdin));
 
 const diags = [];
-const madcNotes = [];
-let serveUrl = null;
 conn.onNotification('textDocument/publishDiagnostics', p => diags.push(p));
-conn.onNotification('$/madc/serve', p => { serveUrl = p.url; madcNotes.push('$/madc/serve'); });
-conn.onNotification('$/madc/message', p => madcNotes.push('$/madc/message: ' + p.message));
-conn.onNotification('$/madc/event', p => madcNotes.push('$/madc/event: ' + p.kind));
 conn.onUnhandledNotification(n => console.log('UNHANDLED NOTIFICATION: ' + n.method));
 conn.onError(e => console.log('CONNECTION ERROR: ' + e));
 conn.listen();
@@ -138,7 +129,6 @@ async function main() {
 
 	conn.sendNotification('initialized', {});
 	await settle(300);
-	show('serve.url', serveUrl);
 	// The notifications a real client sends unasked. Nothing may come back,
 	// and nothing may reach stderr.
 	conn.sendNotification('$/setTrace', { value: 'verbose' });
@@ -175,29 +165,18 @@ async function main() {
 	await settle(1500);
 	show('after-change.diagnostics', diags.length ? diags[diags.length - 1].diagnostics : null);
 
-	// workspace/executeCommand: madcide's real controls, through api_run.
-	madcNotes.length = 0;
-	show('executeCommand(madcide.check)', await conn.sendRequest('workspace/executeCommand', {
-		command: 'madcide.check', arguments: []
-	}).then(r => ({ ok: r.ok, errors: r.errors })));
-	await conn.sendRequest('workspace/executeCommand', { command: 'madcide.gotoline', arguments: ['8'] });
-	await conn.sendRequest('workspace/executeCommand', { command: 'madcide.delline', arguments: [] });
-	await settle(500);
-	show('madc.notifications', madcNotes);
-	show('executeCommand(unknown)', await conn.sendRequest('workspace/executeCommand', {
-		command: 'madcide.nosuchthing', arguments: []
-	}));
-
-	// The served face reaches the SAME session: the page is the engine's own.
-	if (serveUrl) {
-		const page = await new Promise(resolve => {
-			require('http').get(serveUrl, res => {
-				let body = '';
-				res.on('data', d => { body += d; });
-				res.on('end', () => resolve({ status: res.statusCode, bytes: body.length }));
-			}).on('error', e => resolve({ error: String(e) }));
-		});
-		show('serve.page', page);
+	// workspace/executeCommand: madc's commands (`madc.NAME` runs `%NAME`).
+	const cmd0 = cmds[0];
+	if (cmd0)
+		show('executeCommand(' + cmd0 + ')', await conn.sendRequest('workspace/executeCommand', {
+			command: cmd0, arguments: []
+		}));
+	try {
+		show('executeCommand(unknown)', await conn.sendRequest('workspace/executeCommand', {
+			command: 'madc.nosuchthing', arguments: []
+		}));
+	} catch (e) {
+		show('executeCommand(unknown).error', { code: e.code, message: String(e.message).slice(0, 120) });
 	}
 
 	conn.sendNotification('textDocument/willSave', { textDocument: { uri }, reason: 1 });

@@ -1,14 +1,154 @@
 // madcide_serve.inc — madcide's SERVING PROCESSES, and the one accept loop
-// they share (client-server V6b-3, V6c-2/3b/3c, V6c-4). One
+// they share (client-server V6b-3, V6c-3b/3c, V6c-4; split arc 1D). One
 // `--serve <host:port>` port carries all three seats: the `api` (JSON lines,
-// V6a), the `ws` WINDOW (a browser's page.js over an RFC6455 socket, V6b), and
-// plain HTTP GETs (the page itself, so a browser can load page.js and connect
-// back). madc::channel::serve_web classifies each accepted connection — an api
-// JSON line, a WebSocket upgrade, or a page request — and this seat dispatches
-// it. Every connection is served CONCURRENTLY on its own cooperative task (the
-// V6a serve model), parked on its own socket. Depends on madcide_seat.inc
-// (serve_api_on — the JSON-line seat, api AND JSON-RPC envelopes) and
-// madcide_ws.inc (serve_ws_client).
+// V6a, and MCP's JSON-RPC over the same lines), the `ws` WINDOW (a browser's
+// page.js over an RFC6455 socket, V6b), and plain HTTP GETs (the page
+// itself, so a browser can load page.js and connect back).
+// madc::channel::serve_web classifies each accepted connection — an api
+// JSON line, a WebSocket upgrade, or a page request — and this seat
+// dispatches it. Every connection is served CONCURRENTLY on its own
+// cooperative task (the V6a serve model), parked on its own socket. Depends
+// on madcide_seat.inc (serve_api_on) and madcide_ws.inc (serve_ws_client).
+
+// ---- the ADVERTISEMENT (V6c-4; split arc 1D: madc's discovery) -----------
+// How a client finds a running session without being told its address. ⚠️
+// AN ADVERTISEMENT, NOT A LOCK: madcide refuses no file; two sessions in one
+// root both advertise, and a client picks. The record lives in madc's state
+// directory ($MADC_SESSION_DIR, else $XDG_STATE_HOME/madc/sessions — never
+// the project root, ruling R1) under madcide's own key `<root>#<pid>`
+// (madc::session_claim: held for the process's life, so a crashed session
+// leaves no live record), and madc stamps it {key, pid, started, version,
+// host}. Every failure is NON-FATAL: no state directory, the session opens
+// unadvertised. The endpoint rides the session bag (`advertep`) for the
+// re-publish; the claim is this process's.
+madc::session_claim *session_advert = NULL;
+
+// The URL a browser opens for a session's endpoint — ONE spelling (the
+// record's `url`; the VS Code extension mirrors it by hand and says so).
+void session_url(var &out, var &endpoint)
+{
+    out = format("http://{}/", endpoint);
+}
+
+// The documents this session holds, canonically. The buffer table is the
+// truth once seeded; a headless session that has not opened a second buffer
+// still has its launch document.
+void session_documents(var &out, IdeSession &S, long doc)
+{
+    long w = S.world();
+    long es = S.es;
+    var list = {};
+    var bufs;
+    ui::get(bufs, w, es, "buffers");
+    if ( bufs.is_null() || php::count(bufs) == 0 )
+    {
+	var p;
+	buffer_path(p, w, doc);
+	if ( !p.is_null() )
+	{
+	    var c;
+	    madc::canonical_path(c, p.c_str());
+	    list.push(c);
+	}
+	out = list;
+	return;
+    }
+    for ( var r : bufs )
+    {
+	var rp;
+	keyed_get(rp, r, "path");
+	if ( rp.is_null() || !ui::doc_is(w, r["doc"].as_integer()) )
+	    continue;			// untitled, or a view buffer: no file
+	var c;
+	madc::canonical_path(c, rp.c_str());
+	list.push(c);
+    }
+    out = list;
+}
+
+// The record: everything a client needs to connect. `serves` is what the
+// connection seat accepts on this port.
+// ⚠️ The endpoint travels as a CARRIER, never as a `const char *`: a var's
+// c_str() is ring-lifetime, and this calls out (canonical_path, the document
+// scan, format) long enough for the ring to cycle.
+void session_record(var &out, IdeSession &S, long doc, var &endpoint)
+{
+    var root;
+    madc::canonical_path(root, ".");
+    var docs;
+    session_documents(docs, S, doc);
+    var url;
+    session_url(url, endpoint);
+    var serves = { "api", "ws", "http", "mcp" };
+    out = { "madcide": 1, "root": root, "endpoint": endpoint, "url": url,
+	    "serves": serves, "documents": docs };
+}
+
+void session_advertise(IdeSession &S, long doc, var &endpoint)
+{
+    long w = S.world();
+    long es = S.es;
+    ui::set(w, es, "advertep", endpoint);
+    if ( session_advert == NULL )
+	session_advert = new madc::session_claim();
+    var root;
+    madc::canonical_path(root, ".");
+    int64_t pid = madc::sys.pid;	// portable (the UCRT has no getpid)
+    var key = format("{}#{}", root, pid);
+    var rec;
+    session_record(rec, S, doc, endpoint);
+    var holder;
+    session_advert->take(holder, key.c_str(), rec);	// its own key: never held elsewhere
+}
+
+// Re-publish (the document set moved on). Silent when never advertised.
+void session_refresh(IdeSession &S, long doc)
+{
+    var ep;
+    ui::get(ep, S.world(), S.es, "advertep");
+    if ( session_advert == NULL || ep.is_null() || strlen(ep.c_str()) == 0 )
+	return;
+    var rec;
+    session_record(rec, S, doc, ep);
+    session_advert->update(rec);
+}
+
+// Withdraw. Idempotent, and never an error.
+void session_withdraw(IdeSession &S)
+{
+    if ( session_advert != NULL )
+	session_advert->release();
+    ui::set(S.world(), S.es, "advertep", "");
+}
+
+// A live madcide session (a record carrying an endpoint) serving `file`, best
+// first (madc::session_find: one holding the file beats one whose root holds
+// it). False = none — and for no file (an untitled buffer is no one's).
+bool session_find_joinable(var &out, const char *file)
+{
+    if ( file == 0 || strlen(file) == 0 )
+	return false;
+    var rec;
+    madc::session_find(rec, file);
+    var ep;
+    keyed_get(ep, rec, "endpoint");
+    if ( ep.is_null() )
+	return false;
+    out = rec;
+    return true;
+}
+
+// ONE rendering of a session for a human — `--sessions`, the editor's status
+// line and the attach hint all read it, so they never drift apart.
+void session_report(var &out, var &rec)
+{
+    var ep = rec["endpoint"];
+    var pid = rec["pid"];
+    var root = rec["root"];
+    var docs = rec["documents"];
+    long dn = php::count(docs);
+    out = format("{}  pid {}  {}  {} doc(s)", ep, pid, root, dn);
+}
 
 // One accepted connection, classified by serve_web and dispatched: a WebSocket
 // window, an api client, or a page GET (already answered — nothing more). The
@@ -33,9 +173,9 @@ void serve_conn_task(IdeSession *S, long doc, long conn)
 // THE SERVE FACE as a cooperative task (V6c-3b, generalized in V6c-4): the
 // accept loop, on a listener the caller already bound and detached, spawning
 // the SAME serve_conn_task every --serve connection gets. ONE accept task
-// serves every process that wears a second face — the language server
-// (run_lsp) and the editor itself (run_tui) — so there is one loop, not one
-// per face. One session, two faces; a second process would be a second session
+// serves every process that wears a second face — the editor itself
+// (run_tui) beside the headless server — so there is one loop, not one per
+// face. One session, two faces; a second process would be a second session
 // on the same file, which is two carets, two undo histories and last-save-wins.
 //
 // Shutdown: this task parks in accept, and `scope` joins it before its host
@@ -141,8 +281,8 @@ long run_serve(const char *path, bool ro, const char *addr,
     }
     println(stderr, "{}: serving {} on {} (api + ws + http)", product_in_use().name, path, endpoint);
 
-    // THE accept loop — the same function the LSP process and the editor spawn
-    // as a task (V6c-4). A headless server has nothing else to do, so it runs
+    // THE accept loop — the same function the editor spawns as a task
+    // (V6c-4). A headless server has nothing else to do, so it runs
     // it in its own flow rather than beside itself; the loop's own `scope`
     // joins every connection task before it returns, so no serve task touches
     // the session after this.
@@ -154,8 +294,8 @@ long run_serve(const char *path, bool ro, const char *addr,
 
 // ---- the EDITOR that also serves (V6c-4) ---------------------------------
 // `madcide <file>` — the TUI (and `--gui`), which by default LISTENS on a
-// loopback ephemeral port and advertises it, so an LSP editor, an agent's MCP
-// client or a browser can join THIS session instead of opening a second one on
+// loopback ephemeral port and advertises it, so an agent's MCP client or a
+// browser can join THIS session instead of opening a second one on
 // the same file. Ruling R2 of the V6c-4 plan: nothing is discoverable unless
 // the editor listens, so it listens; `--no-serve` (addr == NULL) opts out.
 //
@@ -182,13 +322,13 @@ long run_tui(const char *path, bool ro, var &more, ui::level lvl, const char *ad
     // that joins them (ruling R3: a second TUI does not silently become a
     // remote client; that needs the thin client, which is its own slice).
     var other;
-    if ( session_find(other, path) )
+    if ( session_find_joinable(other, path) )
     {
 	var line;
 	session_report(line, other);
 	var ep = other["endpoint"];
 	ui::set(w, es, "msg",
-		format("Also open in session {} — join it: madcide {} --lsp --attach {}",
+		format("Also open in session {} — join it: madcide {} --mcp --attach {}",
 		       line, path, ep));
     }
 
@@ -223,121 +363,89 @@ long run_tui(const char *path, bool ro, var &more, ui::level lvl, const char *ad
     return 0;
 }
 
-// Every live session, for a human (`madcide --sessions`). Returns 0 when any
-// were found — a shell can branch on it.
+// Every live madcide session, for a human (`madcide --sessions`): the
+// advertisements carrying an endpoint (madc's other records — a `madc --mcp
+// --project` server, a project's memory claim — are no madcide session).
+// Returns 0 when any were found — a shell can branch on it.
 long run_sessions()
 {
     var all;
-    session_scan(all);
-    long n = php::count(all);
+    madc::session_scan(all);
+    long n = 0;
+    for ( var rec : all )
+    {
+	var ep;
+	keyed_get(ep, rec, "endpoint");
+	if ( ep.is_null() )
+	    continue;
+	var line;
+	session_report(line, rec);
+	println("{}", line);
+	n = n + 1;
+    }
     if ( n == 0 )
     {
 	println("no madcide sessions running");
 	return 1;
     }
-    for ( long i = 0; i < n; i = i + 1 )
-    {
-	var rec = all[i];
-	var line;
-	session_report(line, rec);
-	println("{}", line);
-    }
     println("");
-    println("join one:  madcide <file> --lsp --attach <endpoint>   (or --mcp)");
-    println("           madcide <file> --lsp --attach              (discovers)");
+    println("join one:  madcide <file> --mcp --attach <endpoint>");
+    println("           madcide <file> --mcp --attach              (discovers)");
     println("⚠️  a madcide port has NO AUTH and NO TLS: loopback only, tunnel over ssh.");
     return 0;
 }
 
-// ---- the LSP-wearing processes (V6c-2 / V6c-3b / V6c-3c) -----------------
-// madcide's serving PROCESSES live here, beside run_serve and run_tui: the
-// language server (run_lsp), the second face it can wear at the same time (the
-// shared serve_accept_task — one process, one session, LSP on stdio AND
-// api/ws/http on a port), and the attach relay (run_attach — become a client of
-// a session that is already running). The LSP dispatcher itself is
-// madcide_lsp.inc; these are the entry points that wear it, and they land after
-// serve_conn_task because that is what the serve face spawns per connection.
-
-// ---- the server ---------------------------------------------------------
-// `madcide <file> --lsp`: the standard deployment — an editor spawns this
-// process and speaks over the pipe. stdio is a CHANNEL (stdio://) and the
-// framing is the channel's (frame_headers), so this loop is the MCP seat's
-// loop with one framing swapped. The lone stdio client is the operator:
-// self_id -1 (untracked -> owner via eff_tier), so it may edit and save.
-
-// The message loop itself — ONE loop, whether or not this process is also
-// wearing the serve face (two copies would be two protocols).
-void lsp_stdio_loop(IdeSession &S, long doc, madc::channel &io, long w, long es)
+// ---- the MCP server (`madcide <file> --mcp`; split arc 1D) ---------------
+// The standard MCP deployment — a client (an editor, an agent host) spawns
+// this process and speaks JSON-RPC 2.0 over the pipe, one message per line —
+// served by the session's tool host (ide_serve_mcp: madc's tools and
+// madcide's commands). stdout carries ONLY JSON-RPC (status goes to
+// stderr); the session is headless; the lone stdio client is the operator.
+long run_mcp(const char *path, bool ro, const char *profile = "", long std = 0)
 {
-    var line;
-    while ( io.readline(line) )
+    IdeSession S;
+    long doc = S.open(path, ro, profile, std);
+    if ( doc <= 0 )
+	return 1;
+    S.terminal(false);			// headless: no interactive terminal
+    madc::channel io("stdio://");
+    if ( !io.ok() )
     {
-	var req;
-	var resp;
-	var notes = {};
-	if ( !js::parse(req, line.c_str()) )
-	{
-	    var nullid;
-	    jsonrpc_error(resp, nullid, -32700, "Parse error");
-	    var js = js::stringify(resp);
-	    io.write(js.c_str());
-	    continue;
-	}
-	if ( lsp_handle(S, doc, -1, req, resp, notes) )
-	{
-	    var js = js::stringify(resp);
-	    io.write(js.c_str());
-	}
-	long n = php::count(notes);
-	for ( long i = 0; i < n; i = i + 1 )
-	{
-	    var note = notes[i];
-	    var js = js::stringify(note);
-	    io.write(js.c_str());
-	}
-	if ( es_int(w, es, "lspexit", 0) != 0 )
-	    break;				// the client said exit
+	println(stderr, "{} --mcp: {}", product_in_use().name, io.last_error());
+	S.close();
+	return 1;
     }
+    long rc = ide_serve_mcp(S, doc, io);
+    io.close();
+    S.close();
+    return rc;
 }
 
 // ---- the ATTACH RELAY (V6c-3c) -------------------------------------------
-// `madcide <file> --lsp --attach <addr>` (and `--mcp --attach <addr>`): the
-// editor or the agent host spawns this process as it always does, but instead
-// of opening a PRIVATE session it becomes a client of one that is already
-// running. That is the gatekeeper shape — VS Code, an agent's MCP client and a
-// browser window all driving one session's buffers.
-//
-// This relay opens NO session: it is pure transport. It holds no protocol
-// knowledge beyond its OWN LIFECYCLE, which is the one thing it must not
-// forward — `shutdown` and `exit` end this CONNECTION, and a session other
-// clients are still on must outlive one editor quitting.
-//
-// Two cooperative pumps, so a server push and a client request never wait on
-// each other. `<file>` is accepted on the command line (the CLI's shape) and
-// unused here: the session already has its documents, and an editor adds any
-// others with didOpen.
+// `madcide <file> --mcp --attach <addr>`: the agent host spawns this process
+// as it always does, but instead of opening a PRIVATE session it becomes a
+// client of one that is already running — an agent's MCP client and a
+// browser window driving one session's buffers. Pure transport: it opens NO
+// session (the seat speaks MCP on every connection). Two cooperative pumps,
+// so a server push and a client request never wait on each other. `<file>`
+// is accepted on the command line (the CLI's shape) and unused here.
 
-// The session -> client pump: whatever the seat sends, framed back to stdio.
-void relay_down(madc::channel *sock, madc::channel *io, bool framed)
+// The session -> client pump: whatever the seat sends, back to stdio.
+void relay_down(madc::channel *sock, madc::channel *io)
 {
     var line;
     while ( sock->readline(line) )
     {
-	if ( framed )
-	    io->write(line.c_str());
-	else
-	{
-	    var out = format("{}\n", line);
-	    io->write(out.c_str());
-	}
+	var out = format("{}\n", line);
+	io->write(out.c_str());
     }
     io->close_write();			// the session is gone: say so downstream
 }
 
-long run_attach(const char *addr, bool framed)
+long run_attach(const char *addr)
 {
     madc::channel io("stdio://");
-    if ( !io.ok() || (framed && !io.frame_headers()) )
+    if ( !io.ok() )
     {
 	println(stderr, "{} --attach: {}", product_in_use().name, io.last_error());
 	return 1;
@@ -349,122 +457,23 @@ long run_attach(const char *addr, bool framed)
 	println(stderr, "{}: cannot attach to {}: {}", product_in_use().name, addr, sock.last_error());
 	return 1;
     }
-    // Declare the dialect: `initialize` exists in both protocols, so the seat
-    // must be told rather than left to guess at the first message.
-    var hello = { "madc": framed ? seat_protocol_name(spLSP)
-				 : seat_protocol_name(spMCP) };
-    var hjs = js::stringify(hello);
-    var hline = format("{}\n", hjs);
-    sock.write(hline.c_str());
-    var ack;
-    sock.readline(ack);			// the seat's acknowledgement
-    println(stderr, "{}: attached to {} ({})", product_in_use().name, addr, hjs);
-
-    bool down = false;			// a shutdown arrived before exit
+    println(stderr, "{}: attached to {} (mcp)", product_in_use().name, addr);
     scope
     {
-	go relay_down(&sock, &io, framed);
+	go relay_down(&sock, &io);
 	var line;
 	while ( io.readline(line) )
 	{
-	    // The only messages this relay reads rather than carries: its own
-	    // lifecycle. Forwarding them would ask a SHARED session to shut
-	    // down because one editor closed.
-	    var req;
-	    if ( js::parse(req, line.c_str()) )
-	    {
-		long m = lsp_method_of(req["method"]);
-		if ( m == lmSHUTDOWN )
-		{
-		    var idv = req["id"];
-		    var nothing;
-		    var resp;
-		    jsonrpc_reply(resp, idv, nothing);
-		    var js = js::stringify(resp);
-		    io.write(js.c_str());
-		    down = true;
-		    continue;
-		}
-		if ( m == lmEXIT )
-		    break;
-	    }
 	    var out = format("{}\n", line);
 	    sock.write(out.c_str());
 	}
 	// The down-pump is PARKED on the socket, and `scope` joins it before
-	// this returns. Closing the fd under a parked poller does not reliably
-	// wake it — half-closing does the job properly: the seat reads EOF,
-	// ends this connection's loop and closes its end, which is a real
-	// readable event, so the pump returns. (lsp_serve_task's accept park
-	// has the same shape and solves it with a self-connect poke.)
+	// this returns. Half-closing wakes it properly: the seat reads EOF,
+	// ends this connection's loop and closes its end — a real readable
+	// event, so the pump returns.
 	sock.close_write();
     }
     sock.close();
     io.close();
-    // The LSP rule, for an LSP relay; an MCP host just closes stdin.
-    return framed && !down ? 1 : 0;
-}
-
-long run_lsp(const char *path, bool ro, const char *serve,
-	     const char *profile = "", long std = 0)
-{
-    IdeSession S;
-    long doc = S.open(path, ro, profile, std);
-    if ( doc <= 0 )
-	return 1;
-    S.terminal(false);				// headless: no interactive terminal
-    long w = S.world();
-    long es = S.es;
-    long enc0 = peUTF16;			// an ENUMERATOR into a slot goes
-    lsp_set_encoding(w, es, -1, enc0);		// through a long (the dialect's rule)
-
-    madc::channel io("stdio://");
-    if ( !io.ok() || !io.frame_headers() )
-    {
-	println(stderr, "{} --lsp: {}", product_in_use().name, io.last_error());
-	S.close();
-	return 1;
-    }
-
-    // The serve face, when asked for. The listener is bound HERE so its real
-    // endpoint (`:0` asks the OS for a port) is known before the task starts
-    // and can be told to the client in-protocol ($/madc/serve, on initialized).
-    long listen_handle = 0;
-    var endpoint = "";
-    if ( serve != NULL )
-    {
-	// serve_listen publishes the endpoint on the session bag (`advertep`)
-	// as well as to the state directory — the ONE slot $/madc/serve
-	// announces from. An explicit --serve that cannot bind is fatal.
-	var why;
-	listen_handle = serve_listen(S, doc, serve, endpoint, why);
-	if ( listen_handle == 0 )
-	{
-	    println(stderr, "{} --lsp: {}", product_in_use().name, why);
-	    io.close();
-	    S.close();
-	    return 1;
-	}
-	println(stderr, "{}: serving {} on {} (api + ws + http) beside --lsp", product_in_use().name,
-		path, endpoint);
-    }
-
-    scope
-    {
-	if ( listen_handle != 0 )
-	    go serve_accept_task(&S, doc, listen_handle, w, es);
-	lsp_stdio_loop(S, doc, io, w, es);
-	// A command the client ran (madcide.repl, a build) spawned its pump
-	// inside this scope: stop it before the join, as run_ide does.
-	S.stop_tasks();
-	if ( listen_handle != 0 )
-	    serve_accept_stop(w, es, endpoint);
-    }
-    session_withdraw(S);
-    // The spec's own verdict: exit after a shutdown is success, without one
-    // is an error the client reports.
-    long rc = es_int(w, es, "lspdown", 0) != 0 ? 0 : 1;
-    io.close();
-    S.close();
-    return rc;
+    return 0;
 }

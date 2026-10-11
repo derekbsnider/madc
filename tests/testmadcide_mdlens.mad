@@ -7,7 +7,6 @@
 // caret projects in (the same character) and back out (the earlier side of a
 // concealed run); the view is read-only and the cycle is original ->
 // formatted -> original. A plain-text buffer has no other view.
-#include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
 

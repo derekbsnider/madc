@@ -53,7 +53,6 @@
 //      name its rule does not read whole, a repeat and a code that names no
 //      command are refused; madcide's own `%git` (madcide_git.inc) is listed
 //      first.
-#include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
 

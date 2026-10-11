@@ -5,14 +5,15 @@
 # platform's packaging calls with its own data directory (share/madcide on
 # Linux and macOS, the exe's directory on Windows). On 2026-10-04 it was
 # written twice — scripts/stage_install.sh and scripts/package_release_windows.sh
-# each copied the profiles, plugins, plugin headers, verbs and checks — and a
-# macOS tarball was about to need a third copy. A copy that misses one
-# directory ships an editor that refuses to start (no verbs) or cannot build
-# a plugin (no headers) on that one platform.
+# each copied the profiles, plugins, plugin headers (and then the line
+# editor's verbs and checks, retired in split arc 1D) — and a macOS tarball
+# was about to need a third copy. A copy that misses one directory ships an
+# editor with no key profiles or one that cannot build a plugin (no headers)
+# on that one platform.
 #
 # Rule: outside the owner, no packaging script copies madcide's data out of
-# the tree: an `install` or `cp` naming tools/texteditor/verbs,
-# tools/texteditor/checks, tools/madcide/profiles or tools/madcide/include.
+# the tree: an `install` or `cp` naming tools/madcide/profiles or
+# tools/madcide/include.
 #
 # Negative control: a synthetic copy of each kind must FAIL the scan, else
 # the gate itself is broken and we fail loudly.
@@ -21,7 +22,7 @@ set -u
 cd "$(dirname "$0")/.." || exit 2
 
 OWNER=scripts/stage_madcide_data.sh
-PATTERN="(^|[;&|( ])(install|cp)( [^#]*)? [\"']?tools/(texteditor/(verbs|checks)|madcide/(profiles|include))"
+PATTERN="(^|[;&|( ])(install|cp)( [^#]*)? [\"']?tools/madcide/(profiles|include)"
 
 scan() {
 	# $@ = files; prints violations, returns 0 when clean.
@@ -31,10 +32,10 @@ scan() {
 
 # --- negative control -------------------------------------------------------
 tmp=$(mktemp)
-printf 'install -m 644 tools/texteditor/verbs/*.madv "$p/share/madcide/verbs/"\n' > "$tmp"
+printf 'install -m 644 tools/madcide/include/madcide/* "$p/share/madcide/include/madcide/"\n' > "$tmp"
 if scan "$tmp" >/dev/null 2>&1; then
 	rm -f "$tmp"
-	echo "check-one-madcide-staging: NEGATIVE CONTROL FAILED — the scan did not catch an install of the verbs" >&2
+	echo "check-one-madcide-staging: NEGATIVE CONTROL FAILED — the scan did not catch an install of the headers" >&2
 	exit 2
 fi
 printf '    cp -R tools/madcide/profiles "$dest/"\n' > "$tmp"

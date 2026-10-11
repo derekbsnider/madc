@@ -37,8 +37,8 @@
 // render/input/refresh/suspend + the run_ide loop); madcide_once.inc is
 // the ui::NONE client (the `-c` one-shot: one command, the projection to
 // stdout, the verdict as the exit status — client-server design §2.3b);
-// madcide_line.inc is the ui::LINE client (the `--line` ex / edlin mode:
-// stdin lines in, the level-0 projection to stdout — V2.5).
+// madcide_line.inc is `--line`: madc's line mode, the running madc run as
+// `madc -i FILE` (split arc 1D.18).
 #include "madcide_base.inc"
 
 // madcide is the base with its own descriptor (madcide_product.inc).

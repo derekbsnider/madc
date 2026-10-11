@@ -20,7 +20,6 @@
 // Oracle: the layout grammar's contract (profiles/default.layout: a pane
 // lists the Views it hosts) and VS Code / Thonny's editor notebook, where a
 // help page is a tab beside the files.
-#include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
 

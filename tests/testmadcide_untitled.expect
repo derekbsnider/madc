@@ -1,5 +1,5 @@
 untitled-open: doc=1 untitled=1 name=untitled kind-madc=1 modified=0 row-path=none
-untitled-layers: lexable=1 parseable=1 managed=0 versioned=0 session=0
+untitled-session: 0
 untitled-f5: runpath=untitled
 untitled-build: Save the buffer first: a build needs its file.
 untitled-projadd: Save the buffer first: a project starts from its file. proj=none manifest=0

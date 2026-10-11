@@ -1,7 +1,7 @@
 // madcide_core.inc — the madc IDE's core (hub doc Phase 2; plan
 // docs/plans/2026-08-25-madcide-phase2.md IDE-4 + the v2 owner review).
 // A CONSUMER of Track 7.2: the buffer is the texteditor machinery
-// (lined_core.inc + editor_events.inc, included by the entry file — one
+// (editor_events.inc, included by the entry file — one
 // implementation, never a fork); the diagnostics pane and outline are
 // PROJECTIONS of stored compiler data (madc::diagnostics / madc::outline
 // rows on the editor-state bag — composing a tree never calls the
@@ -141,8 +141,7 @@ void proj_layout_path(var &out, var &pf)
 // Where the profile/theme/status data lives (packaging arc PK7): beside
 // THIS file in the source tree, else the install layouts
 // (share/madcide/profiles, then profiles beside the exe) — the one rule,
-// resolve_data_dir (tools/texteditor/lined_core.inc), which the line
-// editor's verbs and checks read too.
+// resolve_data_dir (tools/texteditor/editor_events.inc).
 void resolve_profile_dir(var &dir)
 {
     resolve_data_dir(dir, "madcide", php::dirname(__FILE__), "profiles");
@@ -1760,7 +1759,7 @@ bool when_holds(var &ctx, var &when)
 // (the palette's and the toolbar's rows are placed elsewhere — menu_place),
 // each item { id, title } plus `enabled: 0` when its [when] fails now.
 // Titles and ids only — profile-independent by construction. (compose_menu
-// is the shared editor helpers' vised-style menu LINE — a different node.)
+// is the editor helpers' menu LINE — a different node.)
 bool compose_menu_bar(var &out, long w, long es, long doc, long nav)
 {
     var def;
@@ -2033,65 +2032,6 @@ void lex_first_spans(long w, long es, long doc)
     spans_to_hspans(w, es, doc, rows, es);
 }
 
-// ---- compiler data on the bag (the meta-level, hub demand 3) ----------
-// The buffer's PARSE HANDLE (AST-1): one live parse per buffer, opened on
-// first need (run_ide opens it at load), refreshed WHOLE on check / save /
-// outline. Composition reads its RETAINED state — the status line's
-// enclosing-function query never runs the compiler.
-long ensure_phandle(long w, long es, long doc)
-{
-    // A kind that is not the compiler's never gets a parse (a README is not
-    // C): no handle, so no diagnostics, outline or compiler colour; every
-    // caller reads 0 as "no parse", as after a failed open.
-    if ( !kind_reaches_compiler(ui::doc_kind(w, doc)) )
-	return 0;
-    long h = es_int(w, doc, "phandle", 0);
-    if ( h != 0 )
-	return h;
-    var t;
-    ui::text(t, w, doc);
-    var p;
-    doc_name(p, w, doc);		// the unit's name (`untitled` without a file)
-    h = madc::parse_open(t.c_str(), p.c_str(), doc_standard(w, doc));
-    // Stage-2: parse_open YIELDS between slices, so two flows can overlap
-    // on one doc (the spawned background parse and a synchronous check).
-    // ONE handle owner: whoever finds the bag already filled closes its
-    // own duplicate and adopts the stored handle.
-    long prior = es_int(w, doc, "phandle", 0);
-    if ( prior != 0 )
-    {
-	if ( h != 0 )
-	    madc::parse_close(h);
-	return prior;
-    }
-    ui::set(w, doc, "phandle", h);
-    if ( h == 0 )
-    {
-	// LOUD, never silent: no handle means no status-line function,
-	// no diagnostics, no highlighting — say so where it happened.
-	ui::set(w, es, "msg", format("Parse open failed for {}.", p));
-	return 0;
-    }
-    refresh_spans(w, es, doc, h);
-    // The TEXT this handle was parsed from (code-graph MCP L3): an edit verb
-    // computes byte offsets from the tree's extents, so it must first know the
-    // live buffer IS that text — typing, undo or a remote splice moves the
-    // buffer without re-parsing. reparse_buffer and an accepted node-op keep
-    // it current.
-    ui::set(w, doc, "phandle_text", t);
-    return h;
-}
-
-// Stage-2: the parse leaves the event loop. The pending step spawns this
-// task; the compiler's pumps yield back to the input wait every slice, so
-// typing stays live while it runs. ensure_phandle parks the handle and the
-// spans on the bag (race-safe, one owner above); the loop's `wake` event
-// recomposes with them when the task drains.
-void background_parse(long w, long es, long doc)
-{
-    ensure_phandle(w, es, doc);
-}
-
 // ---- live colour (docs/plans/2026-10-08-madcide-live-colour.md) ---------
 // Layer 1, as you type: the lines an edit touched re-lex at the next frame
 // (colour_catch_up); layer 2, on a pause: the whole buffer re-lexes when an
@@ -2245,37 +2185,65 @@ void colour_catch_up(long w, long es, long doc)
     colour_relex_lines(w, es, doc, line_of(w, doc, lo), line_of(w, doc, hi));
 }
 
-// ONE re-parse of a document's handle at a time: a refresh replaces the
-// handle's tree, and the compiler yields between slices, so a second refresh
-// in that window would free the tree the first is still building. The
-// session's synchronous re-parse (check, save) waits for a background one;
-// a background one steps aside for any (doc "cparsing").
-void parse_lock(long w, long doc)
+// ---- compiler data (the meta-level, hub demand 3) ----------------------
+// A buffer's PARSE HANDLE is its document's: madc::doc_parse, the one door —
+// opened on first need under the standard the session's Language table
+// names (doc_standard), refreshed when the text's version moved, reopened
+// when the standard or the document's name moved (a Save As), one parse of
+// a document at a time. Composition reads the handle as the last parse left
+// it (madc::doc_parsed) — the status line's enclosing-function query never
+// runs the compiler. A view text (a panel, the help) is no compiler unit.
+
+// The buffer's handle parsed from the live text — the ONE compiler entry
+// (check, save, outline, the colour refresh all route here); the themed
+// highlight spans refresh with it when the text did not move while it
+// parsed (a parse yields between slices). LOUD when the open fails: no
+// handle means no status-line function, no diagnostics, no highlighting.
+long reparse_buffer(long w, long es, long doc)
 {
-    while ( es_int(w, doc, "cparsing", 0) != 0 )
-	madc::sleep_ms(5);
-    ui::set(w, doc, "cparsing", 1);
+    if ( !ui::doc_is(w, doc) || !kind_reaches_compiler(ui::doc_kind(w, doc)) )
+	return 0;		// not the compiler's text: callers read 0 as "no parse"
+    madc::doc_set_standard(w, doc, doc_standard(w, doc));
+    long ver = ui::text_version(w, doc);
+    long h = madc::doc_parse(w, doc);
+    if ( h == 0 )
+    {
+	var p;
+	doc_name(p, w, doc);
+	ui::set(w, es, "msg", format("Parse open failed for {}.", p));
+	return 0;
+    }
+    if ( ui::text_version(w, doc) == ver )
+    {
+	refresh_spans(w, es, doc, h);
+	ui::set(w, doc, "cparsed_ver", ver);	// live colour: this text's parse is on show
+    }
+    return h;
 }
 
-void parse_unlock(long w, long doc)
+// Stage-2: the parse leaves the event loop. The pending step spawns this
+// task; the compiler's pumps yield back to the input wait every slice, so
+// typing stays live while it runs. reparse_buffer parks the spans on the bag
+// (the door keeps one parse of a document at a time); the loop's `wake`
+// event recomposes with them when the task drains.
+void background_parse(long w, long es, long doc)
 {
-    long zero = 0;
-    ui::set(w, doc, "cparsing", zero);
+    reparse_buffer(w, es, doc);
 }
 
 // Layer 2 — a cooperative task: after a pause in which `doc`'s text did not
 // move, the whole buffer re-lexes if an edit asked for it, then re-parses;
 // the parse's colour lands only if the text still is the text it parsed.
-// One per document (doc "crefresh_running"); doc "cparsed_rev" is the text
-// revision its colour was last parsed from.
+// One per document (doc "crefresh_running"); doc "cparsed_ver" is the text
+// version its colour was last parsed from.
 void colour_refresh(long w, long es, long doc)
 {
-    long rev = es_int(w, doc, "textrev", 0);
+    long ver = ui::text_version(w, doc);
     madc::sleep_ms(400);
     long zero = 0;
-    if ( es_int(w, doc, "textrev", 0) != rev || es_int(w, doc, "cparsing", 0) != 0 )
+    if ( ui::text_version(w, doc) != ver )
     {
-	ui::set(w, doc, "crefresh_running", zero);	// typing (or a check) goes on: a later frame respawns
+	ui::set(w, doc, "crefresh_running", zero);	// typing goes on: a later frame respawns
 	return;
     }
     if ( es_flag(w, es, "clexdirty") )
@@ -2283,38 +2251,9 @@ void colour_refresh(long w, long es, long doc)
 	ui::set(w, es, "clexdirty", false);
 	lex_first_spans(w, es, doc);
     }
-    long h = ensure_phandle(w, es, doc);
-    if ( h != 0 )
-    {
-	parse_lock(w, doc);
-	var t;
-	ui::text(t, w, doc);
-	madc::parse_refresh(h, t.c_str());
-	ui::set(w, doc, "phandle_text", t);
-	parse_unlock(w, doc);
-	if ( es_int(w, doc, "textrev", 0) == rev )
-	    refresh_spans(w, es, doc, h);
-    }
-    ui::set(w, doc, "cparsed_rev", rev);
+    reparse_buffer(w, es, doc);
+    ui::set(w, doc, "cparsed_ver", ver);	// tried: a failed parse is not retried per frame
     ui::set(w, doc, "crefresh_running", zero);
-}
-
-// Whole-TU re-parse of the buffer's handle from the live text — the ONE
-// compiler entry (check, save, outline all route here); the themed
-// highlight spans refresh with it.
-long reparse_buffer(long w, long es, long doc)
-{
-    long h = ensure_phandle(w, es, doc);
-    parse_lock(w, doc);			// a background colour refresh finishes first
-    long rev = es_int(w, doc, "textrev", 0);
-    var t;
-    ui::text(t, w, doc);
-    madc::parse_refresh(h, t.c_str());
-    ui::set(w, doc, "phandle_text", t);	// the tree now describes THIS text
-    parse_unlock(w, doc);
-    refresh_spans(w, es, doc, h);
-    ui::set(w, doc, "cparsed_rev", rev);	// live colour: this text's parse is on show
-    return h;
 }
 
 // Refresh the stored diagnostics rows from the LIVE buffer — data only;
@@ -2957,8 +2896,7 @@ void status_expand(var &out, var &segs, long w, long es, long doc, long caret,
 // TOP with lmsg left / rmsg right and rmsg's fill character between. The
 // one prompt mode, the search prompt, and transient messages do NOT
 // overlay it — JOE puts them on the BOTTOM line (the msgbuf row); see
-// compose_overlay_row. The SCREEN MODELS diverge by design: madcide is
-// JOE-shaped, vised keeps the demo's bottom bar.
+// compose_overlay_row. madcide's screen model is JOE-shaped.
 
 // The bottom message line (JOE's msgbuf): prompt > search > msg, one
 // plain row. This builds CONTENT from the editor state only; WHERE the
@@ -3239,17 +3177,28 @@ void end_prompt(long w, long es)
     ui::set(w, es, "prompt", "");
     set_pmode(w, es, pmNONE);
     ui::set(w, es, "pinput", "");
-    ui::set(w, es, "pverb", "");
+    ui::set(w, es, "pcode", (long)cmdNONE);
 }
 
 // A single-key confirm (JOE's "(y,n,^C)?" questions): the label spells
-// its own keys and the CONSEQUENCE is data — the verb y fires. Rides the
-// one prompt mode, so composition and event routing stay shared; n, esc,
-// or any bound action (^C included) cancels.
-void start_confirm(long w, long es, const char *label, const char *verb)
+// its own keys and the CONSEQUENCE is data — the command `code` y runs
+// (confirm_yes). Rides the one prompt mode, so composition and event
+// routing stay shared; n, esc, or any bound action (^C included) cancels.
+void start_confirm(long w, long es, const char *label, long code)
 {
     start_prompt(w, es, label, pmCONFIRM);
-    ui::set(w, es, "pverb", verb);
+    ui::set(w, es, "pcode", code);
+}
+
+// The confirmed command (start_confirm's y). False = quit.
+bool confirm_yes(long w, long es, long doc, long code)
+{
+    switch ( code )
+    {
+	case cmdDISCARD:
+	    return buffer_quit(w, es, doc, true);
+    }
+    return true;
 }
 
 bool prompt_active(long w, long es)
@@ -3423,9 +3372,10 @@ bool project_active(long w, long es);
 bool proj_write(long w, long es, long doc);	// polish P2c: the kind toggle persists
 void proj_show(long w, long es, long doc);	// polish P2b: Open Project… shows the window
 void project_rows(long w, long es, long doc);
-// The vi colon line (defined after the verbs it translates to): one ex
-// command, interpreted against the EXISTING vocabulary. False = quit.
+// The vi colon line (defined after the verbs it reaches): madc's colon
+// mode, the ex core over this world's documents. False = quit.
 bool colon_command(long w, long es, long doc, long caret, var &in);
+bool colon_text_line(long w, long es, long doc, var &in);
 
 // The view* verbs (V2b) — defined with the dispatcher, reached from the
 // colon line too (forward-declared for that earlier caller).
@@ -3446,11 +3396,11 @@ void viewdock_target(var &arg, long &slot, long &side);
 void viewsize_args(var &arg, long &slot, long &size);
 
 // An empty answer is no answer — except where empty IS the answer:
-// Replace's text to put in (delete each match) and the Program arguments
-// (none).
+// Replace's text to put in (delete each match), the Program arguments
+// (none) and a line of the text a colon a / i / c takes (an empty line).
 bool prompt_takes_empty(long mode)
 {
-    return mode == pmREPLACEWITH || mode == pmPROGARGS;
+    return mode == pmREPLACEWITH || mode == pmPROGARGS || mode == pmEXTEXT;
 }
 
 // ---- Program arguments (Thonny's View ▸ Program arguments) ---------------
@@ -3505,6 +3455,8 @@ bool finish_prompt(long w, long es, long doc, long caret)
 	return true;
     if ( mode == pmCOLON )
 	return colon_command(w, es, doc, caret, in);
+    if ( mode == pmEXTEXT )
+	return colon_text_line(w, es, doc, in);
     if ( mode == pmFIND )
     {
 	ui::set(w, es, "search", in.c_str());
@@ -3614,7 +3566,7 @@ bool finish_prompt(long w, long es, long doc, long caret)
 	}
 	var vw;
 	if ( !lens_name(vw, w, es) )
-	    refresh_spans(w, es, doc, ensure_phandle(w, es, doc));
+	    reparse_buffer(w, es, doc);	// the spans re-themed
 	ui::set(w, es, "msg", format("Theme: {}.", in));
     }
     return true;
@@ -3656,10 +3608,9 @@ bool prompt_event(long w, long es, long doc, long caret, var &ev)
 	    }
 	    if ( a == cmdPYES )
 	    {
-		var vb;
-		ui::get(vb, w, es, "pverb");
+		long code = es_int(w, es, "pcode", cmdNONE);
 		end_prompt(w, es);
-		return do_verb(w, es, vb.c_str());
+		return confirm_yes(w, es, doc, code);
 	    }
 	    if ( a == cmdPCANCEL )
 		end_prompt(w, es);
@@ -4236,12 +4187,75 @@ long lens_put_point(var &map, long d, bool after)
     return ui::lens_to_stored(map, d);
 }
 
-// The change log's newest seq (0 = no log yet): where an event's own
-// splices begin.
-long clog_head(long w)
+// ---- the world's tool host (split arc 1D) --------------------------------
+// madc's tools over this world's documents — the code graph, the project
+// memory (THE change log: head / records / replay, every document's edits
+// recorded as they land), the loaded modules' — with madcide's commands
+// added as tools (ide_host_commands). One per world, made by the first
+// client's init (init_view_es) and kept for the world's life; every face
+// (the seats, --mcp, the history view, the lens repair, the build pump)
+// reads it here.
+struct ide_host_row
 {
-    long le = clog_find(w);
-    return le > 0 ? es_int(w, le, "seq", 0) : 0;
+    long w;
+    madc::tool_host *host;
+    madc::ex_session *ex;		// madc's colon mode here (made on first use)
+    ide_host_row *next;
+};
+ide_host_row *ide_hosts = NULL;
+
+ide_host_row *ide_host_row_of(long w)
+{
+    for ( ide_host_row *r = ide_hosts; r != NULL; r = r->next )
+	if ( r->w == w )
+	    return r;
+    ide_host_row *row = new ide_host_row;
+    row->w = w;
+    row->host = new madc::tool_host(w);
+    row->ex = NULL;
+    row->next = ide_hosts;
+    ide_hosts = row;
+    return row;
+}
+
+madc::tool_host *ide_host(long w)
+{
+    return ide_host_row_of(w)->host;
+}
+
+// The world's ex session (split arc 1D.18): madc's colon mode — the ex core
+// over this world's documents. The colon line runs it (colon_command).
+madc::ex_session *ide_ex(long w)
+{
+    ide_host_row *r = ide_host_row_of(w);
+    if ( r->ex == NULL )
+	r->ex = new madc::ex_session(w);
+    return r->ex;
+}
+
+// The world's host (and its ex session) ends with the world, BEFORE
+// ui::world_close: its memory unsubscribes from the world's text, the ex
+// session drops its anchors.
+void ide_host_drop(long w)
+{
+    ide_host_row *prev = NULL;
+    for ( ide_host_row *r = ide_hosts; r != NULL; r = r->next )
+    {
+	if ( r->w != w )
+	{
+	    prev = r;
+	    continue;
+	}
+	if ( prev == NULL )
+	    ide_hosts = r->next;
+	else
+	    prev->next = r->next;
+	if ( r->ex != NULL )
+	    delete r->ex;		// its anchors are the documents': before the host's memory
+	delete r->host;
+	delete r;
+	return;
+    }
 }
 
 // After an edit put through a Markdown lens: what it deleted, repaired
@@ -4253,11 +4267,8 @@ long clog_head(long w)
 // text to repair.
 void lens_put_repair(long w, long es, long doc, var &before, long seq0)
 {
-    long le = clog_find(w);
-    if ( le <= 0 )
-	return;
     var recs;
-    clog_records(recs, w, le);
+    ide_host(w)->records(recs, seq0);
     var mine = {};
     for ( var rec : recs )
 	if ( rec["seq"].as_integer() > seq0 && rec["doc"].as_integer() == doc
@@ -4351,7 +4362,7 @@ bool IdeSession::lens_put(long doc, var &ev, long side)
     ui::set(w, es, "mark", sm);
     ui::set(w, es, "bend", sb);
     derive_access(w, es);
-    long seq0 = clog_head(w);
+    long seq0 = ide_host(w)->head();
     bool cont = apply_ide_event(doc, ev);
     if ( lens_conceals(lang) && code != cmdUNDO && code != cmdREDO )
 	lens_put_repair(w, es, subject, before, seq0);
@@ -4409,7 +4420,7 @@ long make_code_view(long w, long es, long subject, long lang)
 long make_history_view(long w, long es, long doc, long n)
 {
     var t;
-    clog_replay(t, w, doc, n);
+    ide_host(w)->replay(t, doc, n);
     long id = view_new(w, es, doc, viewSOURCE, ui::doc_kind(w, doc));
     var v;
     view_row(v, w, es, id);
@@ -4430,9 +4441,9 @@ long make_history_view(long w, long es, long doc, long n)
 // buffer (caret where it was), a new path opens a new buffer, a missing
 // file opens EMPTY ("New File"). The table lives on the bag: `buffers`
 // rows { doc, path, caret, mark, bend } + `bufidx`; doc-scoped facts
-// (path, modified, read_only, phandle, undo history) already live on
-// each document. The verbs follow the switch through the bag's `adoc`
-// (the subject-document rule, verbs/_subject.madv).
+// (path, modified, read_only, its parse, undo history) already live on
+// each document. The commands follow the switch through the bag's `adoc`
+// (the subject buffer, access_verdict).
 
 // The ACTIVE buffer's document; `fallback` serves table-less sessions
 // (the headless harness drives apply_ide_event without run_ide's seed).
@@ -4447,7 +4458,7 @@ long active_doc(long w, long es, long fallback)
 // existing path that cannot be read (a directory, no permission) is
 // REFUSED. `note` is the status-line text: `New file <path>.` for a new
 // file, the refusal's reason when the answer is 0, empty for a plain load.
-// setup_document's 0-on-missing contract stays what vised/lined need. No
+// setup_document's 0-on-missing contract stays the headless gates'. No
 // path at all (a launch without a file, decided 2026-09-30) is the UNTITLED
 // buffer (new_document's): nothing to announce, Save asks for its name.
 long open_buffer_doc(var &note, long w, const char *path0, bool ro)
@@ -4460,6 +4471,13 @@ long open_buffer_doc(var &note, long w, const char *path0, bool ro)
 	if ( ro )
 	    ui::doc_set_read_only(w, untitled, true);
 	return untitled;
+    }
+    long have = ui::doc_find(w, p.c_str());	// the world's document on it (the colon line's :e)
+    if ( have != 0 )
+    {
+	if ( ro )
+	    ui::doc_set_read_only(w, have, true);
+	return have;
     }
     if ( !php::file_exists(p) )
     {
@@ -4483,7 +4501,6 @@ long open_buffer_doc(var &note, long w, const char *path0, bool ro)
 	    note = format("{}: permission denied.", p);
 	return 0;
     }
-    clog_adopt(w, nd);	// a project member opened later: its restored records attach (Nexus L4c)
     return nd;
 }
 
@@ -4550,6 +4567,16 @@ void switch_buffer(long w, long es, long olddoc, long idx)
 // carries the LIVE interaction state of the buffer being adopted, not
 // fresh zeroes.
 void ensure_buffer_table(long w, long es, long doc);
+
+// A buffer row's hold on its document ("rows", on the document: every
+// client's table counts — a viewwindow's es shares the world's documents).
+// push_buffer_row and the seed row take one; drop_buffer_row gives it back
+// through doc_release, which closes the document with its last row.
+void doc_hold(long w, long doc)
+{
+    ui::set(w, doc, "rows", es_int(w, doc, "rows", 0) + 1);
+}
+
 void push_buffer_row(long w, long es, long nd, const char *path)
 {
     var bufs;
@@ -4575,6 +4602,7 @@ void push_buffer_row(long w, long es, long nd, const char *path)
 	row["path"] = path;	// an untitled buffer's row has none (doc_name)
     bufs[] = row;
     ui::set(w, es, "buffers", bufs);
+    doc_hold(w, nd);
 }
 
 // A PANEL's buffer — the REPL's transcript, a build's output, the Terminal's
@@ -4602,6 +4630,23 @@ bool doc_is_panel_buffer(long w, long doc)
 bool doc_is_help_buffer(long w, long doc)
 {
     return es_int(w, doc, "help", 0) != 0;
+}
+
+// A dropped row's hold given back: the last one closes the document, so a
+// closed tab's text — its discarded edits — never comes back when the path
+// opens again (open_buffer_doc takes the world's document on a path). A
+// panel's document stays: its panel owns it (the REPL keeps its transcript).
+void doc_release(long w, long doc)
+{
+    long n = es_int(w, doc, "rows", 0) - 1;
+    if ( n > 0 )
+    {
+	ui::set(w, doc, "rows", n);
+	return;
+    }
+    ui::set(w, doc, "rows", 0);
+    if ( !doc_is_panel_buffer(w, doc) )
+	ui::doc_close(w, doc);
 }
 
 long help_doc_if_any(long w, long es)
@@ -4665,6 +4710,7 @@ void ensure_buffer_table(long w, long es, long doc)
     ui::set(w, es, "buffers", seed);
     ui::set(w, es, "bufidx", 0);
     ui::set(w, es, "adoc", doc);
+    doc_hold(w, doc);
 }
 
 // ^K E's commit: an open path switches; anything else opens (missing =
@@ -5133,30 +5179,6 @@ bool proj_events_path(var &out, long w, long es)
     return true;
 }
 
-// Flush the SESSION's change log -- the ONE stream every document's records
-// ride (Nexus L4c) -- to <base>.prj.events (the whole buffer -> the file; the
-// buffer text IS the file's content -- one serialisation). A no-op with no
-// manifest. Follow-up: also flush on ^K S doc-save.
-void clog_persist(long w, long es, long doc)
-{
-    var path;
-    if ( !proj_events_path(path, w, es) )
-	return;
-    long le = clog_find(w);
-    if ( le <= 0 )
-	return;
-    var blob;
-    ui::text(blob, w, le);
-    php::file_put_contents(path.c_str(), blob.c_str());
-}
-
-// Restore the session's change log from <base>.prj.events on project open;
-// seq resumes at the last record's, so new events continue the sequence; the
-// restoring document's records are re-attached to it by path (clog_adopt --
-// their `doc` ids belong to the session that wrote them). A no-op with no
-// manifest or no file. ONE stream: loading a file over a session that already
-// logged events would drop the other documents' records (and collide their
-// seqs) -- refused with the reason, never silently (Nexus L4c).
 // A note BESIDE the status line's current message, never over it: a
 // startup announcement and a later note both survive.
 void msg_beside(long w, long es, const char *note0)
@@ -5170,31 +5192,50 @@ void msg_beside(long w, long es, const char *note0)
 	ui::set(w, es, "msg", format("{} {}", prior, note));
 }
 
-void clog_restore(long w, long es, long doc)
+// The project's change log is the tool host's memory (split arc 1D), bound
+// to <base>.prj.events — restored from it when it exists (seq resumes at its
+// last record; a record finds its document by path), started with this
+// session's records when it does not — and ONE writer per project: the
+// session claims the manifest's canonical path, the key `madc --mcp
+// --project` claims (madc::session_claim). Held elsewhere, the project opens
+// memory-only and the status line names the owner's pid; a session that
+// already logged events does not restore over them (the memory refuses,
+// with the reason). Every note goes BESIDE the caller's message. The claim
+// is this process's: one project at a time.
+madc::session_claim *proj_claim = NULL;
+
+void proj_memory_bind(long w, long es)
 {
     var path;
     if ( !proj_events_path(path, w, es) )
 	return;
-    var blob;
-    if ( !php::file_get_contents(blob, path.c_str()) )
-	return;
-    if ( clog_head(w, doc) > 0 )
+    var pf;
+    ui::get(pf, w, es, "projfile");
+    var key;
+    madc::canonical_path(key, pf.c_str());
+    if ( proj_claim == NULL )
+	proj_claim = new madc::session_claim();
+    proj_claim->release();		// the project before this one, if any
+    var record = { "manifest": key, "events": path };
+    var holder;
+    long got = proj_claim->take(holder, key.c_str(), record);
+    madc::tool_host *host = ide_host(w);
+    if ( got == (long)madc::claim_result::held_elsewhere )
     {
-	// Beside the caller's message (the project announcement), never over it.
-	msg_beside(w, es, "Events not restored: this session already logged events.");
+	host->unbind();			// the project before this one takes none of it
+	var note = format("Project memory is held by pid {}: this session's is not recorded.",
+			  holder["pid"]);
+	msg_beside(w, es, note.c_str());
 	return;
     }
-    long le = changelog_of(w, doc);
-    ui::text_load(w, le, blob.c_str());
-    // The head is the last record's seq — through the ONE reader (a torn
-    // line is not a record).
-    var recs;
-    clog_records_of(recs, blob);
-    long hi = 0;
-    for ( var rec : recs )
-	hi = rec["seq"].as_integer();
-    ui::set(w, le, "seq", hi);
-    clog_adopt(w, doc);
+    host->set_manifest(pf.c_str());
+    var why;
+    if ( !host->bind(path.c_str(), why) )
+    {
+	proj_claim->release();		// not recorded here: the claim is not this session's
+	var note = format("Project memory: {}.", why);
+	msg_beside(w, es, note.c_str());
+    }
 }
 
 // Toggle console <-> gui and persist the manifest AT ONCE (the immediate-
@@ -5261,8 +5302,10 @@ bool proj_write(long w, long es, long doc)
 	return false;
     }
     if ( fresh )
+    {
 	ui::set(w, es, "msg", format("Project file created: {}", pf));
-    clog_persist(w, es, doc);
+	proj_memory_bind(w, es);	// its events file takes the session's log
+    }
     return true;
 }
 
@@ -5487,7 +5530,7 @@ void proj_startup(long w, long es, long doc)
     if ( !php::file_exists(pf) )
 	return;
     proj_load(w, es, pf);
-    clog_restore(w, es, doc);
+    proj_memory_bind(w, es);
 }
 
 // File -> Open Project… (polish P2b): the manifest the user chose (the
@@ -5501,7 +5544,7 @@ void proj_open(long w, long es, long doc, const char *path0)
 	return;			// a cancelled dialog: no path given
     if ( !proj_load(w, es, mpath) )
 	return;
-    clog_restore(w, es, doc);
+    proj_memory_bind(w, es);
     proj_show(w, es, doc);
 }
 
@@ -6156,14 +6199,14 @@ void build_pump(long w, long es, long bdoc, long stopc)
     ui::set(w, es, "buildlive", 0);
     // The EVIDENCE record (Nexus L4e, design §3.11): this node's build / run
     // verdict in the ONE stream, tagged by the node that produced it (0 =
-    // here). The pump is a session-thread task: one clog_append, no push —
-    // the next command's fan-out carries it.
+    // here), noted in the tool host's memory. The pump is a session-thread
+    // task: one note, no push — the next command's fan-out carries it.
     long adoc = active_doc(w, es, 0);
     if ( adoc != 0 )
     {
-	var brec = { "kind": "buildrun", "es": es, "doc": adoc, "actor": -1, "node": 0, "uri": uri,
+	var brec = { "kind": "buildrun", "es": es, "actor": -1, "node": 0, "uri": uri,
 		     "exit": xc, "stopped": stopped };
-	clog_append(w, adoc, brec);
+	ide_host(w)->note(brec, adoc);
     }
 }
 
@@ -6837,30 +6880,18 @@ void save_as_ask(long w, long es, long doc, long dlg)
 	start_prompt(w, es, dlg_prompt_label(dlg), dlg_prompt_mode(dlg));
 }
 
-// The document's parse handle goes; the next need opens it again (under
-// the document's name and the session's standard, both read at the open).
-void doc_forget_parse(long w, long doc)
-{
-    long ph = es_int(w, doc, "phandle", 0);
-    if ( ph != 0 )
-	madc::parse_close(ph);
-    ui::set(w, doc, "phandle", 0);
-}
-
-// The document's name moved (Save As): the caches keyed on the old one go —
-// the parse handle names its unit (the diagnostics rows carry that name) and
-// the git handle answers for the old file's directory. The next need opens
-// both under the new name.
+// The document's name moved (Save As): the git handle answers for the old
+// file's directory, so it goes; the next need opens it under the new name.
+// (The parse reopens by itself: the door compares the name it opened as.)
 void doc_forget_name(long w, long doc)
 {
-    doc_forget_parse(w, doc);
     ui::set(w, doc, "ghandle", -1);
     ui::set(w, doc, "grelpath", "");
 }
 
 // Save the buffer under a NEW path (Save As…): the document's path moves,
 // its buffer row follows (the ring addresses buffers by path), then the
-// one write verb runs — the same `w` every save uses.
+// one save runs — the same buffer_write every save uses.
 bool save_as(long w, long es, long doc, const char *path0)
 {
     var p = path0;			// ring discipline: own the text first
@@ -6897,7 +6928,7 @@ bool save_as_quit(long w, long es, long doc, const char *path0)
 	return false;
     if ( ui::doc_modified(w, doc) )
 	return true;			// the write failed; its message stands
-    return do_verb(w, es, "q");
+    return buffer_quit(w, es, doc, false);
 }
 
 // ---- File ▸ Close / Close all (Thonny's) ---------------------------------
@@ -6934,7 +6965,8 @@ long close_successor_row(long w, var &bufs, long idx)
 // each window row's — and a window that showed it shows the new active
 // buffer. madcide always has an editing buffer, so the last one never goes:
 // a named file's row gives way to the untitled buffer, and the untitled
-// buffer itself is emptied (one undo step) and left clean.
+// buffer itself is emptied (one undo step) and left clean. The row gives
+// its document back (doc_release: closed with its last row).
 void drop_buffer_row(long w, long es, long idx)
 {
     var bufs;
@@ -6976,6 +7008,7 @@ void drop_buffer_row(long w, long es, long idx)
     if ( cur > idx )
 	cur = cur - 1;
     ui::set(w, es, "bufidx", cur);
+    doc_release(w, d);
     var ws;
     ui::get(ws, w, es, "windows");
     if ( ws.is_null() )
@@ -7158,9 +7191,9 @@ void run_buffer(long w, long es, long doc)
 		format("Run refused: {} error(s) — fix them first.", errs));
 	return;
     }
-    long h = es_int(w, doc, "phandle", 0);
+    long h = madc::doc_parsed(w, doc);	// the check above just parsed it
     if ( h == 0 )
-	return;			// ensure_phandle already said why
+	return;			// reparse_buffer already said why
     if ( es_flag(w, es, "haspanel") )
     {
 	// A window (polish P3b): the live parse runs in a child — the
@@ -7626,8 +7659,8 @@ void open_shell(long w, long es)
 }
 
 // ---- the action dispatch ----------------------------------------------
-// Save, then quit if the save took (the JOE ^K X shape) — two verbs from
-// the DISPATCHER, zero duplicated verb logic (verbs never re-enter act).
+// Save, then quit if the save took (the JOE ^K X shape) — the save and the
+// quit, zero duplicated logic.
 bool save_quit(long w, long es, long doc)
 {
     if ( doc_untitled(w, doc) )
@@ -7635,14 +7668,13 @@ bool save_quit(long w, long es, long doc)
 	save_as_ask(w, es, doc, dlgSAVEQUIT);	// the name first; the answer quits
 	return true;
     }
-    if ( !do_verb(w, es, "w") )
-	return false;
+    buffer_write(w, es, doc);
     if ( !ui::doc_modified(w, doc) )
-	return do_verb(w, es, "q");
+	return buffer_quit(w, es, doc, false);
     return true;	// the save failed; its message stands
 }
 
-// Save + a silent diagnostics refresh (check-on-save): the verb's own
+// Save + a silent diagnostics refresh (check-on-save): the save's own
 // answer ("Wrote N bytes." or the refusal) stays the status message. A
 // buffer with no file yet asks for its name (Save As), as Thonny's does.
 bool save_and_check(long w, long es, long doc)
@@ -7652,7 +7684,7 @@ bool save_and_check(long w, long es, long doc)
 	save_as_ask(w, es, doc, dlgSAVE);
 	return true;
     }
-    bool run = do_verb(w, es, "w");
+    bool run = buffer_write(w, es, doc);
     if ( !ui::doc_modified(w, doc) )
 	recent_note_doc(w, es, doc);	// written: File ▸ Recent Files
     refresh_diags(w, es, doc);
@@ -7660,11 +7692,10 @@ bool save_and_check(long w, long es, long doc)
 }
 
 // File ▸ Save All (Thonny's): every buffer with unsaved changes is written
-// by the `w` verb — the one persistence owner — with that buffer as the
-// verb's subject (the actor's "adoc", _subject.madv's rule) for the call,
-// the active buffer's restored after. A buffer with no file yet is left
-// for Save As and counted; a write the verb refuses is counted too. The
-// active buffer's diagnostics refresh when it was written (check-on-save).
+// by the save (buffer_write — the one persistence path). A buffer with no
+// file yet is left for Save As and counted; a write refused is counted too.
+// The active buffer's diagnostics refresh when it was written
+// (check-on-save).
 // A session without the buffer table (headless) saves its one document.
 void save_all(long w, long es, long doc)
 {
@@ -7692,9 +7723,7 @@ void save_all(long w, long es, long doc)
 	    untitled = untitled + 1;
 	    continue;
 	}
-	ui::set(w, es, "adoc", d);
-	var out;
-	ui::act(out, w, es, "w", "");
+	buffer_write(w, es, d);
 	if ( ui::doc_modified(w, d) )
 	    failed = failed + 1;
 	else
@@ -7703,7 +7732,6 @@ void save_all(long w, long es, long doc)
 	    recent_note_doc(w, es, d);	// written: File ▸ Recent Files
 	}
     }
-    ui::set(w, es, "adoc", active);
     if ( saved > 0 && !ui::doc_modified(w, active) )
 	refresh_diags(w, es, active);
     // The message names only what happened: saved, left untitled, refused.
@@ -7721,20 +7749,125 @@ void save_all(long w, long es, long doc)
 }
 
 // The vi COLON LINE (owner ruling 2026-08-31: modes are general — joe
-// reaches it through the ^N modes palette, a modal personality's
-// @normal ":" will enter the same line). One ex command, interpreted
-// against the EXISTING vocabulary — colon is a SPELLING layer over the
-// verbs and internals the chords already call, and the human face of
-// the gateway's commands-with-arguments (the prompt collects what a
-// remote client passes in the command). `:q` refuses a dirty buffer
-// with the q verb's own message (vim's shape — no confirm question);
-// `!cmd` parks a terminal request like any suspended run. False = quit.
+// reaches it through the ^N modes palette, a modal personality's @normal
+// ":" enters the same line) is madc's colon mode (split arc 1D.18): the ex
+// core over this world's documents (madc::ex_session — D24's ed / ex / vim
+// commands, every edit one undo group through the one mutation path), with
+// `.` on the caret's line, so an address means what the window shows.
+// madcide keeps only what needs its views: `!cmd` runs in the Terminal tab;
+// its registry's view* verbs; a write of an untitled buffer asks for the
+// name (Save As); a buffer the line makes current is switched to in the
+// buffer ring; a written buffer is checked (check-on-save) and noted in
+// Recent Files; text a / i / c take comes from the prompt, a line at a
+// time. False = quit.
+bool colon_view_command(long w, long es, long doc, var &verb, var &arg)
+{
+    switch ( cmd_of_w(w, verb.c_str()) )
+    {
+	case cmdVIEWSPLIT:
+	{
+	    long vdir;
+	    long vlang;
+	    viewsplit_args(arg, vdir, vlang);
+	    view_split(w, es, doc, vdir, vlang);
+	    return true;
+	}
+	case cmdVIEWFOCUS:
+	    view_focus(w, es, doc, viewfocus_dir_of(arg));
+	    return true;
+	case cmdVIEWCLOSE:
+	    view_close(w, es, doc);
+	    return true;
+	case cmdVIEWOPEN:
+	    view_open(w, es, doc, viewrepr_lang_of(arg));
+	    return true;
+	case cmdVIEWDOCK:
+	{
+	    long dslot;
+	    long dside;
+	    viewdock_target(arg, dslot, dside);
+	    view_dock(w, es, dslot, dside);
+	    return true;
+	}
+	case cmdVIEWSIZE:
+	{
+	    long zslot;
+	    long zsize;
+	    viewsize_args(arg, zslot, zsize);
+	    view_size(w, es, zslot, zsize);
+	    return true;
+	}
+	case cmdVIEWWINDOW:
+	    view_window(w, es, doc);
+	    return true;
+	case cmdVIEWSYNC:
+	    view_sync(w, es, arg);
+	    return true;
+    }
+    return false;
+}
+
+// Does ex command `code` write the buffer?
+bool ex_writes(long code)
+{
+    return code == (long)madc::ex_command::write || code == (long)madc::ex_command::write_quit
+	|| code == (long)madc::ex_command::exit || code == (long)madc::ex_command::update
+	|| code == (long)madc::ex_command::saveas;
+}
+
+// What a colon line did, shown: the buffer it made current switched to,
+// the caret on `.` when the line moved it, its printed lines (one on the
+// status line; more in the Output view), its refusal, a write's check and
+// Recent Files note. False = quit.
+bool colon_outcome(long w, long es, long doc, var &r, long before)
+{
+    madc::ex_session *ex = ide_ex(w);
+    long code = r["command"].as_integer();
+    long cur = ex->current();
+    long ad = doc;
+    if ( cur != 0 && cur != doc )
+    {
+	var cp;
+	ui::doc_path(cp, w, cur);
+	edit_file(w, es, doc, cp.c_str());	// the buffer ring follows (:e :b :bn :bp)
+	ad = active_doc(w, es, doc);
+    }
+    else if ( ex->line() != before && ex->line() > 0 )
+	ui::set(w, es, "caret", line_start_of(w, doc, ex->line()));
+    if ( !r["ok"].as_boolean() )
+    {
+	ui::set(w, es, "msg", r["error"].c_str());
+	return true;
+    }
+    var shown = php::rtrim(r["shown"].c_str());
+    if ( code != (long)madc::ex_command::none && strlen(shown.c_str()) > 0 )
+    {
+	if ( shown.index("\n") < 0 )
+	    ui::set(w, es, "msg", shown.c_str());
+	else
+	{
+	    long bdoc = build_doc(w, es);	// the Output view: what the line printed
+	    var all = r["shown"];
+	    ui::text_load(w, bdoc, all.c_str());
+	    show_output(w, es);
+	    var rows;
+	    php::explode(rows, "\n", shown.c_str());
+	    ui::set(w, es, "msg", format("{} lines in Output.", php::count(rows)));
+	}
+    }
+    if ( ex_writes(code) && !ui::doc_modified(w, ad) )
+    {
+	recent_note_doc(w, es, ad);		// written: File ▸ Recent Files
+	refresh_diags(w, es, ad);		// check-on-save
+    }
+    return !r["quit"].as_boolean();
+}
+
 bool colon_command(long w, long es, long doc, long caret, var &in)
 {
     var cmd = php::trim(in.c_str());
     const char *cs = cmd.c_str();
-    long n = strlen(cs);
-    if ( n == 0 )
+    if ( strlen(cs) == 0 )
 	return true;
     if ( cs[0] == '!' )
     {
@@ -7743,96 +7876,70 @@ bool colon_command(long w, long es, long doc, long caret, var &in)
 	    run_in_terminal(w, es, rest.c_str());
 	return true;
     }
-    bool digits = true;
-    for ( long i = 0; i < n; i = i + 1 )
-	if ( cs[i] < '0' || cs[i] > '9' )
-	    digits = false;
-    if ( digits )
+    madc::ex_session *ex = ide_ex(w);
+    var p;
+    ex->parse(p, cs);
+    if ( !p["ok"].as_boolean() )
     {
-	// :N — go to line N (clamped like the goto-line prompt).
-	ui::set(w, es, "caret", caret_to_line(w, doc, php::intval(cmd), 0));
+	// Not ex's: madcide's own colon commands (its registry's view* verbs).
+	const char *sp = strchr(cs, ' ');
+	var verb = cmd;
+	var arg = "";
+	if ( sp != 0 )
+	{
+	    verb = php::trim(perl::substr(cmd, 0, sp - cs));
+	    arg = php::trim(sp + 1);
+	}
+	if ( !colon_view_command(w, es, doc, verb, arg) )
+	    ui::set(w, es, "msg", p["error"].c_str());
 	return true;
     }
-    const char *sp = strchr(cs, ' ');
-    var verb = cmd;
-    var arg = "";
-    if ( sp != 0 )
+    long code = p["command"].as_integer();
+    if ( ex_writes(code) && doc_untitled(w, doc) && strlen(p["argument"].c_str()) == 0 )
     {
-	verb = php::trim(perl::substr(cmd, 0, sp - cs));
-	arg = php::trim(sp + 1);
-    }
-    if ( verb == "w" )
-	return save_and_check(w, es, doc);
-    if ( verb == "q" )
-	return do_verb(w, es, "q");
-    if ( verb == "q!" )
-	return do_verb(w, es, "q!");
-    if ( verb == "wq" || verb == "x" )
-	return save_quit(w, es, doc);
-    if ( verb == "e" && strlen(arg.c_str()) > 0 )
-    {
-	edit_file(w, es, doc, arg.c_str());
+	bool quits = code == (long)madc::ex_command::write_quit
+		  || code == (long)madc::ex_command::exit;
+	save_as_ask(w, es, doc, quits ? dlgSAVEQUIT : dlgSAVE);	// the name first
 	return true;
     }
-    if ( verb == "r" && strlen(arg.c_str()) > 0 )
+    ex->use(doc);
+    ex->set_line(line_of(w, doc, caret));
+    long before = ex->line();
+    var r;
+    ex->run(r, cs);
+    if ( r["wants_text"].as_boolean() )
     {
-	insert_file(w, es, doc, caret, arg.c_str());
+	start_prompt(w, es, "Text (a line holding only . ends it)", pmEXTEXT);
+	var none = {};
+	ui::set(w, es, "extext", none);
 	return true;
     }
-    // The view* verbs (V2b) reach the colon line too — `:viewsplit right
-    // mc11`, `:viewfocus next`, `:viewclose`, `:viewopen mc11`; the same
-    // owners the dispatcher calls.
-    if ( verb == "viewsplit" )
+    return colon_outcome(w, es, doc, r, before);
+}
+
+// One line of the text a colon a / i / c takes: kept until a line holding
+// only `.`, which hands them to the ex session; the prompt comes back for
+// each line before it.
+bool colon_text_line(long w, long es, long doc, var &in)
+{
+    var lines;
+    ui::get(lines, w, es, "extext");
+    if ( lines.is_null() )
+	lines = {};
+    if ( !(in == ".") )
     {
-	long vdir;
-	long vlang;
-	viewsplit_args(arg, vdir, vlang);
-	view_split(w, es, doc, vdir, vlang);
+	lines.push(in);
+	ui::set(w, es, "extext", lines);
+	start_prompt(w, es, "Text (a line holding only . ends it)", pmEXTEXT);
 	return true;
     }
-    if ( verb == "viewfocus" )
-    {
-	view_focus(w, es, doc, viewfocus_dir_of(arg));
-	return true;
-    }
-    if ( verb == "viewclose" )
-    {
-	view_close(w, es, doc);
-	return true;
-    }
-    if ( verb == "viewopen" )
-    {
-	view_open(w, es, doc, viewrepr_lang_of(arg));
-	return true;
-    }
-    if ( verb == "viewdock" )
-    {
-	long dslot;
-	long dside;
-	viewdock_target(arg, dslot, dside);
-	view_dock(w, es, dslot, dside);
-	return true;
-    }
-    if ( verb == "viewsize" )
-    {
-	long zslot;
-	long zsize;
-	viewsize_args(arg, zslot, zsize);
-	view_size(w, es, zslot, zsize);
-	return true;
-    }
-    if ( verb == "viewwindow" )
-    {
-	view_window(w, es, doc);
-	return true;
-    }
-    if ( verb == "viewsync" )
-    {
-	view_sync(w, es, arg);
-	return true;
-    }
-    ui::set(w, es, "msg", format("Unknown command :{}", cmd));
-    return true;
+    madc::ex_session *ex = ide_ex(w);
+    long before = ex->line();
+    var r;
+    ex->text(r, lines);
+    var none = {};
+    ui::set(w, es, "extext", none);
+    return colon_outcome(w, es, doc, r, before);
 }
 
 // Toggle the lower pane between `name` and hidden.
@@ -8854,17 +8961,17 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 	    case cmdQUIT:
 	    {
 		// JOE ^K Q: a dirty buffer asks JOE's question on the bottom
-		// line; the lineed q verb's refusal spelling stays lined's.
+		// line.
 		if ( ui::doc_modified(w, doc) )
 		{
 		    start_confirm(w, es, "Lose changes to this file (y,n,^C)?",
-				  "q!");
+				  cmdDISCARD);
 		    return true;
 		}
-		return do_verb(w, es, "q");
+		return buffer_quit(w, es, doc, false);
 	    }
 	    case cmdDISCARD:
-		return do_verb(w, es, "q!");
+		return buffer_quit(w, es, doc, true);
 	    case cmdFIND:
 	    {
 		start_prompt(w, es, "Find", pmFIND);
@@ -9429,7 +9536,7 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 		start_prompt(w, es, "Find", pmFIND);
 		return true;
 	    case cmdQ:
-		return do_verb(w, es, "q");
+		return buffer_quit(w, es, doc, false);
 	    // The ^T Options rows.
 	    case cmdOPT_TABWIDTH:
 		start_prompt(w, es, "Tab width (1-16)", pmTABWIDTH);
@@ -10178,7 +10285,7 @@ void IdeSession::compose_ide_tree(var &root, long doc)
     var vw_st;
     if ( !lens_name(vw_st, w, es) )
     {
-	long ph = es_int(w, doc, "phandle", 0);
+	long ph = madc::doc_parsed(w, doc);
 	if ( ph != 0 )
 	{
 	    long cl = line_of(w, doc, caret);
@@ -10571,6 +10678,7 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 bool init_view_es(long w, long es, long doc, const char *path,
 		  const char *profile, long std)
 {
+    ide_host(w);		// the world's tools and memory, before this client edits
     var p = path;		// ring discipline: own the text first — the
 				// data loads below cycle the ring, so a bare
 				// `path` pointer read empty at launchpath.
@@ -10768,9 +10876,7 @@ long IdeSession::open(const char *path0, bool ro, const char *profile, long std)
 	println(stderr, "{}: {}", product_in_use().name, note);
 	return -1;
     }
-    if ( !setup_editor_state(w, doc) )
-	return -1;		// the verbs (already reported)
-    es = ui::entity_by_name(w, "editor-state");
+    es = new_editor_state(w, doc);
     if ( !init_view_es(w, es, doc, p.c_str(), pr.c_str(), std) )
 	return -1;		// the profile AND rescue bindings both failed
     if ( strlen(note.c_str()) > 0 )
@@ -10813,7 +10919,7 @@ bool IdeSession::parse_pending(long adoc)
 	// paint-before-parse, so the client waits for input as usual.
 	if ( es_int(w, adoc, "crefresh_running", 0) == 0
 	  && kind_reaches_compiler(ui::doc_kind(w, adoc))
-	  && es_int(w, adoc, "textrev", 0) != es_int(w, adoc, "cparsed_rev", 0) )
+	  && ui::text_version(w, adoc) != es_int(w, adoc, "cparsed_ver", -1) )
 	{
 	    ui::set(w, adoc, "crefresh_running", 1);
 	    go colour_refresh(w, es, adoc);
@@ -10958,7 +11064,7 @@ void IdeSession::term_exec(var &req)
 	// Fork the buffer's LIVE parse (owner ruling 2026-08-27: the
 	// running madc IS the compiler) — the child inherits the tree.
 	long doc = req["doc"].as_integer();
-	long h = es_int(w, doc, "phandle", 0);
+	long h = madc::doc_parsed(w, doc);
 	if ( h == 0 )
 	    return;
 	long rc = madc::parse_run(h);
@@ -11025,18 +11131,11 @@ void IdeSession::close()
     madc::task_drain();
     var closing = {};
     publish_event(w, es, active_doc(w, es, 0), seCLOSE, closing);	// the REPL pane's session
-    // Every buffer's parse handle closes with the session.
-    var bufs;
-    ui::get(bufs, w, es, "buffers");
-    for ( var b : bufs )
-    {
-	long bd = b["doc"].as_integer();
-	long ph = es_int(w, bd, "phandle", 0);
-	if ( ph != 0 )
-	    madc::parse_close(ph);
-    }
     var active;
     registry_rows(active, w, "active");	// the plugins' code outlives no world
+    if ( proj_claim != NULL )
+	proj_claim->release();		// the project's memory is no longer this session's
+    ide_host_drop(w);
     ui::world_close(w);
     plugins_close(active);
 }
@@ -11104,41 +11203,6 @@ bool IdeSession::command(long doc, long code, const char *arg, bool &cont)
 	return true;			// a confirm answered (y / n)
     cont = post(doc, cmdPCOMMIT);
     return true;
-}
-
-// ONE line of the ex / edlin client (ui::LINE, client-server design §2.3b,
-// slice V2.5): the classifier the line frontend's raw-line `text` event
-// feeds (run_line). The engine frontend stays dumb — the tool's line
-// grammar lives HERE, where the registry and the colon interpreter do:
-//   - a ':' line is a colon command — the rest is the ex command, posted
-//     through the ONE argument primitive (post cmdCOLON to open the colon
-//     line, feed the text, commit by code), the SAME path the -c one-shot
-//     and the TUI ':' prompt reach colon_command by. A bare ':' runs
-//     nothing. Every colon verb (w q wq x e r, :N goto, the view* verbs,
-//     !shell) is reached with no new command language (owner: "the vi ':'
-//     mode without the TUI part").
-//   - any other line is TEXT: inserted verbatim (its bytes preserved — no
-//     trim, so indentation survives), then a newline, so successive lines
-//     stack. A read-only view refuses, as it does for a typed key.
-// cont carries the continue / quit verdict (a committed :q ends the loop).
-bool IdeSession::line_input(long doc, const char *line, bool &cont)
-{
-    cont = true;
-    var raw = line;			// ring discipline: own the text first
-    long n = strlen(raw.c_str());
-    if ( n > 0 && raw.c_str()[0] == ':' )
-    {
-	var rest = php::trim(perl::substr(raw, 1, n - 1));
-	if ( strlen(rest.c_str()) == 0 )
-	    return true;		// a bare ':' — nothing to run
-	command(doc, cmdCOLON, rest.c_str(), cont);
-	return cont;
-    }
-    var t = { "event": "text", "event_code": ui::event_kind::text, "text": raw };
-    cont = apply_ide_event(doc, t);
-    if ( cont )
-	cont = post(doc, cmdENTER);
-    return cont;
 }
 
 // ERROR rows in the problems projection after the last command — the

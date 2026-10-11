@@ -13,7 +13,6 @@
 //   4. a save while the background re-parse is in flight waits for it.
 // Oracle: VS Code and Thonny colour typed text at once; their semantic
 // layer (VS Code's semantic tokens) lands after a pause.
-#include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
 #include "../tools/madcide/include/madcide/harness"	// <madcide/harness>: ev_text, ev_key, ev_action

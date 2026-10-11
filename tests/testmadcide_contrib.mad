@@ -17,8 +17,8 @@
 //   4. a key profile line binds it when parsed against the world, and is
 //      refused without it (an unknown action);
 //   5. the seat (api_run) runs it by name, gated at the editor tier (the
-//      core cannot see what a handler does); the MCP tool list and the LSP
-//      server's executeCommand ids offer it;
+//      core cannot see what a handler does); the session's MCP tools (the
+//      tool host's list) offer it at that tier;
 //   6. a view registers above the built-in kinds; a taken name, a key that is
 //      not the plugin's own (`plugin.name`) and a show command that is not a
 //      contributed one are refused;
@@ -32,14 +32,10 @@
 //  10. a handler subscribed to a repl_event kind hears the pane's replies of
 //      that kind, with the reply, and no other; a kind outside repl_event
 //      and a missing handler are refused.
-#include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
 #include "../tools/madcide/madcide_api.inc"
-#include "../tools/madcide/madcide_mcp.inc"
-#include "../tools/madcide/madcide_discover.inc"
 #include "../tools/madcide/madcide_client.inc"
-#include "../tools/madcide/madcide_lsp.inc"
 
 // The module's handler: it says hello to its argument.
 bool greet(long w, long es, long doc, const char *arg)
@@ -127,20 +123,18 @@ int main()
     ui::get(m, w, S.es, "msg");
     println("contrib-seat: ok={} msg={} tier={}", reply["ok"].as_boolean() ? 1 : 0, m,
 	    tier_name(cmd_min_tier_w(w, code)));
+    ide_host_commands(w);
     var tools;
-    mcp_tools(tools, w);
+    ide_host(w)->list(tools);
     long listed = 0;
+    long least = -1;
     for ( var t : tools )
 	if ( t["name"] == "greet" )
+	{
 	    listed = 1;
-    var ids;
-    lsp_command_ids(ids, w);
-    var want = format("{}greet", lsp_command_prefix());
-    long offered = 0;
-    for ( var id : ids )
-	if ( id == want )
-	    offered = 1;
-    println("contrib-mcp: listed={} lsp={}", listed, offered);
+	    least = t["least"].as_integer();
+	}
+    println("contrib-mcp: listed={} tier={}", listed, tier_name(least));
 
     // 6. A view's registration.
     long show = plugin_command(w, "variables", "Variables", show_vars);

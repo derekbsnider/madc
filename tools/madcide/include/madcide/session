@@ -81,14 +81,6 @@ class IdeSession
 					// refused (an argument the command
 					// does not take); cont = the
 					// continue / quit verdict
-	bool line_input(long doc, const char *line, bool &cont);
-					// ONE line of the ex / edlin client
-					// (ui::LINE, V2.5): a ':' line is a
-					// colon command (posted through
-					// command(cmdCOLON, …)); any other
-					// line is text inserted verbatim +
-					// a newline. false = refused; cont =
-					// the continue / quit verdict
 	long error_count();		// ERROR rows in the problems
 					// projection (a one-shot's verdict)
 	void vi_open_line(long doc, bool above);	// o / O / cc's line

@@ -10,9 +10,8 @@
 # usage: madcide_save_quit_pty.py <file> <keys-hex> <program> [args...]
 #   runs `program args... file`; <keys-hex> is the key bytes after the `x`
 #   ("" types only the `x`: the negative control).
-# prints: "SAVED|UNSAVED EXITED|RUNNING rc=<n> RESCUE|NORESCUE VERBSMISSING|VERBSOK"
-#   SAVED = the file now holds `x` + its old text; VERBSMISSING = the
-#   editor refused to start because its verb bodies did not load.
+# prints: "SAVED|UNSAVED EXITED|RUNNING rc=<n> RESCUE|NORESCUE"
+#   SAVED = the file now holds `x` + its old text.
 import os, pty, select, signal, struct, sys, tempfile, time, fcntl, termios
 
 path, keyhex, prog = sys.argv[1], sys.argv[2], sys.argv[3:]
@@ -77,9 +76,8 @@ if not exited:
 rc = os.waitstatus_to_exitcode(status) if exited else -1
 after = open(path).read()
 saved = after == "x" + before
-print("%s %s rc=%d %s %s" % (
+print("%s %s rc=%d %s" % (
     "SAVED" if saved else "UNSAVED",
     "EXITED" if exited else "RUNNING",
     rc,
-    "RESCUE" if b"RESCUE" in out else "NORESCUE",
-    "VERBSMISSING" if b"cannot load the editor's verbs" in out else "VERBSOK"))
+    "RESCUE" if b"RESCUE" in out else "NORESCUE"))

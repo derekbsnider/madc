@@ -8,7 +8,6 @@
 // beginning-of-buffer, M-> end-of-buffer, M-g g goto-line. Each line is the
 // sequence the loaded table binds to the command, as a menu accelerator
 // reads it.
-#include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
 

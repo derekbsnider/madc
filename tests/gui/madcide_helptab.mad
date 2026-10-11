@@ -6,11 +6,9 @@
 // the list's selection to the link row and its Enter chooses it, through the
 // page's own key path — and the linked topic opens in the same Help tab.
 // Runs under Xvfb through the gui lane.
-#include "../../tools/texteditor/lined_core.inc"
 #include "../../tools/texteditor/editor_events.inc"
 #include "../../tools/madcide/madcide_core.inc"
 #include "../../tools/madcide/madcide_args.inc"
-#include "../../tools/madcide/madcide_discover.inc"
 #include "../../tools/madcide/madcide_client.inc"
 
 void write_bundle()

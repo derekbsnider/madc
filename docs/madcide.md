@@ -12,20 +12,22 @@ the same commands; the window adds a workbench around the editor.
 ```sh
 madcide file.mad            # in the terminal
 madcide file.mad --gui      # in a window
-madcide file.mad --line     # the ex / edlin line mode: stdin lines, text out
+madcide file.mad --line     # madc's line mode: madc -i file.mad
 madcide file.mad -c check   # no surface: one command, the projection, a verdict
 madc tools/madcide/madcide.mad file.mad   # from a source checkout
 ```
 
-`--line` is the **ex / edlin client**: the same live-parse session driven
-over stdin/stdout with no cursor addressing — it works over a pipe, in a
-dumb terminal, and as an MCP seat's transcript. Each cycle typesets the
-projection (the status line, the document, any message) to stdout and reads
-one line: a `:` line is a colon command (the vi `:` mode — `w q wq x e r`,
-`:N` to go to a line, the `viewsplit`/`viewfocus`/… verbs, `!cmd` for a
-shell), and any other line is text inserted at the caret. It is the same
-composer and the same commands as the terminal and the window; only the
-rendering model (level `line`) is lower.
+`--line` is **madc's line mode**: madcide runs the running madc as
+`madc -i file.mad` with the terminal handed over — the ex core at the REPL
+prompt (a `:` line is a colon command, D24's ed / ex / vim set; any other
+line is an entry evaluated against the file's definitions). It works over a
+pipe and in a dumb terminal; madcide keeps no line grammar of its own.
+
+The colon line in the terminal and the window is madc's colon mode too:
+the ex core over the session's documents, with `.` on the caret's line.
+madcide adds only what needs its views — the `view*` commands, `!cmd` in the
+Terminal tab, Save As for a write of an untitled buffer, and a written
+buffer's check.
 
 `-c "<command> [arg]"` runs ONE command of the registry (the names are the
 `.menu` / `.keys` files' — `check`, `outline`, `gotoline 3`, `find add`,
@@ -380,26 +382,34 @@ vi's operators are refused too.
 ## Sharing a session
 
 One madcide session can carry more than one client: the editor you are typing
-in, an LSP editor (VS Code through the extension in `tools/vscode-madcide`), an
-agent's MCP client, and a browser window — all on the same buffers, the same
-carets, the same undo history. Two processes on one file would be two sessions:
-two carets, two undo histories, last save wins.
+in, an agent's MCP client, and a browser window — all on the same buffers, the
+same carets, the same undo history. Two processes on one file would be two
+sessions: two carets, two undo histories, last save wins. (Language
+intelligence for another editor — VS Code through the extension in
+`tools/vscode-madcide` — is `madc --lsp`.)
 
 Every session **advertises itself** so nobody has to be told an address. A
-running madcide writes a small JSON file — its endpoint, root, documents, pid
-and what it serves — under `$XDG_STATE_HOME/madcide/sessions/` (or
-`~/.local/state/madcide/sessions/`; `MADCIDE_SESSION_DIR` overrides). It is an
-advertisement, not a lock: madcide never refuses a file that is already open,
-and two sessions in one project both appear.
+running madcide publishes a small JSON record — its endpoint, root, documents,
+pid and what it serves — through madc's discovery, under
+`$XDG_STATE_HOME/madc/sessions/` (or `~/.local/state/madc/sessions/`;
+`MADC_SESSION_DIR` overrides). It is an advertisement, not a lock: madcide
+never refuses a file that is already open, and two sessions in one project
+both appear.
 
 ```sh
-madcide --sessions                            # what is running, and how to join it
-madcide file.mad --lsp --attach               # join whoever holds file.mad
-madcide file.mad --mcp --attach               # the same, for an agent host
-madcide file.mad --lsp --attach 127.0.0.1:7777  # or name one explicitly
+madcide --sessions                              # what is running, and how to join it
+madcide file.mad --mcp --attach                 # an agent host joins whoever holds file.mad
+madcide file.mad --mcp --attach 127.0.0.1:7777  # or names one explicitly
 ```
 
-The MCP seat's history verbs (`graph.history`, `graph.commits`,
+A session's MCP is madc's tool host over its world: madc's tools (the code
+graph, the project memory — records, links, proposals, test runs — and the
+loaded modules') plus every madcide command as a tool. A project's change
+log has ONE writer: the session that opens a manifest claims it, and another
+session opening the same project keeps its memory in memory and says which
+process holds it.
+
+The tool host's history verbs (`graph.history`, `graph.commits`,
 `graph.revision`, `graph.diff`, blame provenance) read the repository through
 the **`madcgit` module** — madc's read-only binding of libgit2
 (`lib/libmadcgit.so`, loaded on first use). The module links libgit2
@@ -412,9 +422,9 @@ for a file outside any repository.
 An ordinary `madcide file.mad` listens on a **loopback ephemeral port** so it
 can be joined; `--no-serve` opts out. `--serve <host:port>` runs headless on a
 port you choose. A session that cannot bind, or cannot write the advertisement,
-runs anyway — undiscoverable rather than broken. A crashed session's file is
-removed by the next session that looks (the liveness test is a connection, not
-a pid: pids get reused).
+runs anyway — undiscoverable rather than broken. A crashed session leaves no
+live record: a record is live while its process holds its file, and the hold
+ends with the process, however it ends.
 
 > **madcide has no authentication and no TLS.** A port is reachable by any
 > local user. Bind loopback only, and reach a session on another machine

@@ -9,7 +9,6 @@
 // headless session — both keep their prompts exactly as before; the
 // client's fallback (dialog_fallback) starts the same prompts when the
 // platform refuses. Headless, no compiler.
-#include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
 #include "../tools/madcide/include/madcide/harness"	// <madcide/harness>: ev_text, ev_key, ev_action

@@ -42,8 +42,9 @@
 // or %load's — the path it loads under and main's argv, empty when main
 // does not run), replbseq (a
 // pending bindings request, replbindings), replin (the input
-// buffer, a field: its caret is the field's own), replhist / replhpos /
-// repldraft (the history). Its standard is the session's (madcide_lang.inc):
+// buffer, a field: its caret is the field's own), replhpos /
+// repldraft (the history's place; its entries are madc's store). Its
+// standard is the session's (madcide_lang.inc):
 // a new backend takes the one the buffer it starts for compiles under.
 //
 // Thread contract: session-thread bag state; the pump is a cooperative task
@@ -120,20 +121,28 @@ bool repl_editable(long w, long es)
     return es_int(w, es, "replbusy", 0) == 0 || es_int(w, es, "replrunning", 0) != 0;
 }
 
-// ---- the history (in memory; the CLI's file per standard is a later slice) ----
+// ---- the history: madc's store (madc::history_*, split arc 1D.18) ----
+// ONE file for `madc -i` and the pane, each record naming the standard its
+// entry was typed at; the pane recalls the entries of its session's
+// language, as each of Julia's modes recalls its own.
+void repl_history_rows(var &out, long w, long es)
+{
+    var sn = madc::session_standard(es_int(w, es, "replh", 0));
+    madc::history_entries(out, sn.c_str());
+}
+
+// A taken entry, kept: a blank one is not, nor a repeat of the last.
 void repl_history_push(long w, long es, const char *entry)
 {
     var e = php::rtrim(entry);
     if ( strlen(e.c_str()) == 0 )
 	return;
     var hist;
-    ui::get(hist, w, es, "replhist");
-    if ( hist.is_null() )
-	hist = {};
+    repl_history_rows(hist, w, es);
     long n = php::count(hist);
+    var sn = madc::session_standard(es_int(w, es, "replh", 0));
     if ( n == 0 || hist[n - 1] != e )
-	hist.push(e);
-    ui::set(w, es, "replhist", hist);
+	madc::history_append(sn.c_str(), e.c_str());
     ui::set(w, es, "replhpos", -1);
 }
 
@@ -161,8 +170,8 @@ bool repl_history_step(long w, long es, long dir)
 		return false;
     }
     var hist;
-    ui::get(hist, w, es, "replhist");
-    long n = hist.is_null() ? 0 : php::count(hist);
+    repl_history_rows(hist, w, es);
+    long n = php::count(hist);
     long pos = es_int(w, es, "replhpos", -1);
     if ( dir < 0 )
     {

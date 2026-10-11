@@ -95,8 +95,8 @@ done
 install -m 755 "$madcide" "$p/bin/madcide"
 # libmadcide: madcide's base, the library a product built on it links.
 install -m 644 lib/libmadcide.so "$root/$libdir/libmadcide.so"
-# madcide's data (profiles, plugins, the plugin API headers, the line
-# editor's verbs and checks): the one staging owner, into share/madcide —
+# madcide's data (profiles, plugins, the plugin API headers): the one
+# staging owner, into share/madcide —
 # where resolve_data_dir and resolve_profile_dir look in an install.
 scripts/stage_madcide_data.sh "$p/share/madcide" "$plugins"
 gzip -9n < docs/man/madc.1 > "$p/share/man/man1/madc.1.gz"

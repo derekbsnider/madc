@@ -6,11 +6,11 @@
 // parsed record.
 //
 //   madcide [<file> [ro]]... [--profile NAME] [--std=STD] [--gui|--tui|--line]
-//           [-c "<command> [arg]"] [--serve <host:port>] [--mcp] [--lsp] [--attach [<host:port>]]
+//           [-c "<command> [arg]"] [--serve <host:port>] [--mcp] [--attach [<host:port>]]
 //           [--no-serve] [--sessions] [--build-plugin DIR] [--help] [--] [<file>]
 //
 // No file opens the editor on an untitled buffer (decided 2026-09-30); the
-// headless faces (-c, --mcp, --lsp, --serve) act on a file and need one.
+// headless faces (-c, --mcp, --serve) act on a file and need one.
 // --build-plugin DIR builds the plugin in DIR into its library and exits
 // (plan §41.11a step 4); like --sessions it needs no file.
 //
@@ -24,9 +24,10 @@
 // `--` ends the flags (a file whose name starts with '-'). An unknown flag and
 // a flag missing its value are refused with the reason and the usage (exit
 // 2); so is a second file for a face that acts on ONE (ide_face_needs_file:
-// -c, --mcp, --lsp, --serve). `--attach`'s address is optional: the word after it is
+// -c, --mcp, --serve). `--attach`'s address is optional: the word after it is
 // the address unless it is a flag or no file has been named yet (then it is
-// the file — `madcide --lsp --attach f.c` discovers the session holding f.c).
+// the file — `madcide --mcp --attach f.c` discovers the session holding f.c).
+// Language intelligence for an editor is `madc --lsp` (split arc 1D).
 //
 // Thread contract: main's thread, before any session opens; the record points
 // into argv, which lives for the process.
@@ -43,7 +44,6 @@ struct ide_args
     ui::level level;		// --gui (ui::WEB), --tui (ui::TUI), --line (ui::LINE), else the product's
     bool ro;
     bool mcp;
-    bool lsp;
     bool attach;
     bool no_serve;
     bool sessions;		// --sessions: what is running (no file needed)
@@ -56,8 +56,8 @@ struct ide_args
 void ide_usage(var &out)
 {
     var text = "usage: madcide [<file> [ro]]... [--profile NAME] [--std=STD] [--gui|--tui|--line] [--no-serve]  (no file = an untitled buffer)\n"
-	   "       madcide <file> [ro] [--profile NAME] [--std=STD] [-c \"<command> [arg]\"] [--serve <host:port>] [--mcp] [--lsp [--serve <host:port>]]\n"
-	   "       madcide <file> --lsp|--mcp --attach [<host:port>]  (join a running session; no address = discover one)\n"
+	   "       madcide <file> [ro] [--profile NAME] [--std=STD] [-c \"<command> [arg]\"] [--serve <host:port>] [--mcp]\n"
+	   "       madcide <file> --mcp --attach [<host:port>]        (join a running session; no address = discover one)\n"
 	   "       madcide --sessions                                 (what is running, and how to join it)\n"
 	   "       madcide --build-plugin DIR                         (build the plugin in DIR into its library)\n"
 	   "       --profile NAME   the profile (a bundle of keys, layout, menu and settings; default: settings.json's \"profile\", else default)\n"
@@ -104,7 +104,6 @@ bool ide_args_parse(ide_args &a, var &why, int argc, const char **argv)
     a.level = product_in_use().level;
     a.ro = false;
     a.mcp = false;
-    a.lsp = false;
     a.attach = false;
     a.no_serve = false;
     a.sessions = false;
@@ -126,8 +125,6 @@ bool ide_args_parse(ide_args &a, var &why, int argc, const char **argv)
 		a.level = ui::LINE;
 	    else if ( strcmp(w, "--mcp") == 0 )
 		a.mcp = true;
-	    else if ( strcmp(w, "--lsp") == 0 )
-		a.lsp = true;
 	    else if ( strcmp(w, "--no-serve") == 0 )
 		a.no_serve = true;
 	    else if ( strcmp(w, "--sessions") == 0 )
@@ -197,7 +194,7 @@ bool ide_args_parse(ide_args &a, var &why, int argc, const char **argv)
 }
 
 // The face the flags ask for acts on a FILE (a one-shot command's buffer,
-// the document an MCP, LSP or served session holds): that face's flag, for
+// the document an MCP or served session holds): that face's flag, for
 // the refusal when none is given. NULL = an editor face (the TUI, --gui,
 // --line), which opens an untitled buffer without one.
 const char *ide_face_needs_file(ide_args &a)
@@ -206,8 +203,6 @@ const char *ide_face_needs_file(ide_args &a)
 	return "-c";
     if ( a.mcp )
 	return "--mcp";
-    if ( a.lsp )
-	return "--lsp";
     if ( a.serve != NULL )
 	return "--serve";
     return NULL;

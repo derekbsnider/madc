@@ -68,8 +68,6 @@ lane_tools() {
 APPLICATION="tools
 	tests/testmadcide*
 	tests/testide*
-	tests/testvised*
-	tests/testlineed*
 	tests/gui/madcide_*
 	tests/tui_golden
 	scripts/tui_golden.py"

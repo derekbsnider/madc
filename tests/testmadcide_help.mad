@@ -12,7 +12,6 @@
 // in the editor's Help tab (the active buffer the help buffer), with the
 // Help Index (the contents page's links) in the sidebar beside it; an index
 // row opens its page there; a layout listing `help` on a sidebar is refused.
-#include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
 

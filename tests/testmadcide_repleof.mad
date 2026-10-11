@@ -4,7 +4,6 @@
 // standard input. What the input line holds goes first, as a terminal's
 // Ctrl-D sends the line typed so far; then the program's read sees the end,
 // and the entry after it reads new input. With nothing running it says so.
-#include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
 #include "../tools/madcide/include/madcide/harness"	// <madcide/harness>: ev_*, settle, enter_line

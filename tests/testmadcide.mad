@@ -10,7 +10,6 @@
 //      reads the bag; a chosen row moves the caret to its line);
 //   3. a keybinding profile swap leaves the composed projection
 //      IDENTICAL (bindings are data; the composition path is untouched).
-#include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
 #include "../tools/madcide/include/madcide/harness"	// <madcide/harness>: ev_text, ev_key, ev_action
@@ -976,6 +975,7 @@ int main()
     ev_key(e, "esc");			// close the window
     S.apply_ide_event(gdoc, e);
     remove("madc_ide_open.prj.json");
+    remove("madc_ide_open.prj.events");
     proj_startup(w, es, doc);		// back to the test manifest
     // The implicit single-file project keeps the buffer semantics.
     long pes4 = ui::create(w, "editor-state-4");
@@ -1737,7 +1737,7 @@ int main()
     ev_key(e, "enter");
     S.apply_ide_event(doc, e);
     ui::get(msg, w, es, "msg");
-    println("colon-write: wrote={}", msg.index("Wrote") >= 0 ? 1 : 0);
+    println("colon-write: wrote={}", msg.index(" written") >= 0 ? 1 : 0);	// ex's vim-form file message
     // :!cmd rides the terminal-request seam (hasterm is on from the seam
     // pins above): the request parks, the drain runs the guest.
     ev_action(e, "colon", "");
@@ -2122,11 +2122,21 @@ int main()
     S.panel(false);
     S.tabs(false);
 
-    // :q on the now-clean buffer quits — false propagates out of the
+    // :q on the now-clean buffer is refused while another buffer holds
+    // unsaved text (the ast5 buffer's, AST-5 above) — vim's E162 for a
+    // hidden modified buffer; :q! quits, and false propagates out of the
     // prompt commit exactly like the quit chord.
     ev_action(e, "colon", "");
     S.apply_ide_event(doc, e);
     ev_text(e, "q");
+    S.apply_ide_event(doc, e);
+    ev_key(e, "enter");
+    cont = S.apply_ide_event(doc, e);
+    ui::get(msg, w, es, "msg");
+    println("colon-quit-other: cont={} msg={}", cont ? 1 : 0, msg);
+    ev_action(e, "colon", "");
+    S.apply_ide_event(doc, e);
+    ev_text(e, "q!");
     S.apply_ide_event(doc, e);
     ev_key(e, "enter");
     cont = S.apply_ide_event(doc, e);

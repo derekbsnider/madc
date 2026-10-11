@@ -4,7 +4,6 @@
 // status items — end to end under Xvfb. The full `madcide --gui` loop
 // (run_ide over ui::open(target)) is the manual owner gate; this drives a
 // session's compose+render+snapshot without the blocking loop.
-#include "../../tools/texteditor/lined_core.inc"
 #include "../../tools/texteditor/editor_events.inc"
 #include "../../tools/madcide/madcide_core.inc"
 

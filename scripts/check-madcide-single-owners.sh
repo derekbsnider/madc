@@ -14,7 +14,6 @@ set -u
 
 FILE="$(dirname "$0")/../tools/madcide/madcide_core.inc"
 CLIENT="$(dirname "$0")/../tools/madcide/madcide_client.inc"
-MCP="$(dirname "$0")/../tools/madcide/madcide_mcp.inc"
 TOOLS="$(dirname "$0")/../tools/madcide"
 TEXTED="$(dirname "$0")/../tools/texteditor"
 
@@ -109,60 +108,9 @@ if [ "$(count_hand_basenames "$tmp")" -ne 1 ]; then
 fi
 rm -f "$tmp"
 
-# The JSON-RPC 2.0 ENVELOPE has ONE spelling per shape: jsonrpc_reply /
-# jsonrpc_error / jsonrpc_notify / jsonrpc_request (madcide_api.inc). The V6
-# seam audit found the MCP seat, the LSP face and the MCP client each
-# building the envelope by hand — seven sites, byte-identical, unguarded.
-# Marker: the `"jsonrpc": "2.0"` literal appears exactly four times across
-# tools/madcide (the four owners). madcide's self-identification likewise:
-# `"name": "madcide"` once (madcide_self_info).
-count_envelopes()
-{
-	cat "$@" | grep -c '"jsonrpc": "2.0"'
-}
-count_self_infos()
-{
-	cat "$@" | grep -c '"name": "madcide"'
-}
-
-n=$(count_envelopes "$TOOLS"/*.inc)
-if [ "$n" -ne 4 ]; then
-	echo "check-madcide-single-owners: FAIL — $n JSON-RPC envelope spellings" \
-	     "across tools/madcide (expected 4: jsonrpc_reply / _error / _notify" \
-	     "/ _request in madcide_api.inc). Call the owner, never restate the" \
-	     "envelope." >&2
-	grep -n '"jsonrpc": "2.0"' "$TOOLS"/*.inc >&2
-	exit 1
-fi
-n=$(count_self_infos "$TOOLS"/*.inc)
-if [ "$n" -ne 1 ]; then
-	echo "check-madcide-single-owners: FAIL — $n self-identification literal(s)" \
-	     "across tools/madcide (expected 1: madcide_self_info)." >&2
-	exit 1
-fi
-
-# Negative controls for the envelope markers.
-tmp=$(mktemp)
-cat "$TOOLS"/*.inc > "$tmp"
-echo '    out = { "jsonrpc": "2.0", "id": id, "result": result };	// synthetic' >> "$tmp"
-if [ "$(count_envelopes "$tmp")" -ne 5 ]; then
-	rm -f "$tmp"
-	echo "check-madcide-single-owners: FAIL — negative control did not" \
-	     "detect a synthetic envelope (the marker went blind)." >&2
-	exit 1
-fi
-echo '    var info = { "name": "madcide", "version": "1.0.0" };	// synthetic' >> "$tmp"
-if [ "$(count_self_infos "$tmp")" -ne 2 ]; then
-	rm -f "$tmp"
-	echo "check-madcide-single-owners: FAIL — negative control did not" \
-	     "detect a synthetic self-identification (the marker went blind)." >&2
-	exit 1
-fi
-rm -f "$tmp"
-
-# A session's browser URL has ONE spelling: session_url (madcide_discover.inc)
-# — the record's `url` and the $/madc/serve announcement both call it (the V6
-# seam audit found the format restated in each). Marker: the http:// format
+# A session's browser URL has ONE spelling: session_url (madcide_serve.inc)
+# — the advertisement's `url` calls it (the V6 seam audit found the format
+# restated beside the $/madc/serve announcement). Marker: the http:// format
 # appears once across tools/madcide.
 count_url_spellings()
 {
@@ -188,41 +136,10 @@ if [ "$(count_url_spellings "$tmp")" -ne 2 ]; then
 fi
 rm -f "$tmp"
 
-# An MCP tool REFUSAL has ONE owner: tool_refuse (madcide_mcp.inc — the
-# {content:[{type:text,text}], isError:true} envelope every tool family
-# shares). The V6 seam audit found graph_call restating the envelope three
-# times beside six adopters; a field added to the owner (a code, a hint)
-# would have missed those three. Marker: the `"isError": true` literal
-# appears exactly once in madcide_mcp.inc — inside the owner.
-count_refusal_shapes()
-{
-	grep -c '"isError": true' "$1"
-}
-
-n=$(count_refusal_shapes "$MCP")
-if [ "$n" -ne 1 ]; then
-	echo "check-madcide-single-owners: FAIL — $n MCP refusal envelope" \
-	     "site(s) in tools/madcide/madcide_mcp.inc (expected 1:" \
-	     "tool_refuse). Call the owner, never restate the shape." >&2
-	exit 1
-fi
-
-# Negative control for the refusal marker.
-tmp=$(mktemp)
-cat "$MCP" > "$tmp"
-echo '    out = { "content": content, "isError": true };	// synthetic' >> "$tmp"
-if [ "$(count_refusal_shapes "$tmp")" -ne 2 ]; then
-	rm -f "$tmp"
-	echo "check-madcide-single-owners: FAIL — negative control did not" \
-	     "detect a synthetic refusal envelope (the marker went blind)." >&2
-	exit 1
-fi
-rm -f "$tmp"
-
 # A registry command is RUN by ONE core: api_run (madcide_api.inc — resolve
 # the name, gate the tier, S.command, count the error rows, compose, typeset,
 # fan out the new events). Every transport drives it — the api seat, the MCP
-# seat, the LSP face and, since the V6 seam, the ui::NONE `-c` client, which
+# tools (ide_command_tool) and, since the V6 seam, the ui::NONE `-c` client, which
 # had restated the run/compose/render sequence. Marker: a `.command(` call,
 # through ANY receiver, appears once across tools/madcide (the receiver's
 # name is not the rule: a session spelled `s` runs a command the same way). A
@@ -327,13 +244,13 @@ count_modified_slot()
 	cat "$@" | grep -cE 'ui::(get\([a-z]*, w, [^,]*|set\(w, [^,]*), "modified"'
 }
 
-n=$(count_modified_slot "$TEXTED"/*.inc "$TEXTED"/verbs/*.madv "$TOOLS"/*.inc)
+n=$(count_modified_slot "$TEXTED"/*.inc "$TOOLS"/*.inc)
 if [ "$n" -ne 0 ]; then
 	echo "check-madcide-single-owners: FAIL — $n uses of the modified bag slot" \
 	     "across tools/texteditor + tools/madcide (expected 0: ui::doc_modified" \
 	     "is the document's own, derived)." >&2
 	grep -nE 'ui::(get\([a-z]*, w, [^,]*|set\(w, [^,]*), "modified"' "$TEXTED"/*.inc \
-	     "$TEXTED"/verbs/*.madv "$TOOLS"/*.inc >&2
+	     "$TOOLS"/*.inc >&2
 	exit 1
 fi
 
@@ -378,48 +295,15 @@ if [ "$(count_keyed_reads "$tmp")" -ne 2 ]; then
 fi
 rm -f "$tmp"
 
-# The change STREAM has ONE reader: clog_records_of / clog_records
-# (editor_events.inc). The V6 seam audit found ten folds exploding and parsing
-# the JSONL blob by hand and disagreeing on a torn line — four stopped
-# (losing every record after it), five skipped it, one copied its bytes into
-# a rewritten log — so the editor's replay and the nexus's view of ONE stream
-# could differ on the same bytes. Marker: the blob explode appears once across
-# the texteditor + madcide layers — inside the reader.
-count_stream_reads()
-{
-	cat "$@" | grep -c 'php::explode(lines, "\\n", blob.c_str())'
-}
-
-n=$(count_stream_reads "$TEXTED"/*.inc "$TOOLS"/*.inc)
-if [ "$n" -ne 1 ]; then
-	echo "check-madcide-single-owners: FAIL — $n hand reads of the change" \
-	     "stream across tools/texteditor + tools/madcide (expected 1:" \
-	     "clog_records_of). Every fold consumes clog_records; a torn line" \
-	     "is the reader's to skip, never a fold's to stop at." >&2
-	grep -n 'php::explode(lines, "\\n", blob.c_str())' "$TEXTED"/*.inc "$TOOLS"/*.inc >&2
-	exit 1
-fi
-
-# Negative control for the stream-reader marker.
-tmp=$(mktemp)
-cat "$TEXTED"/*.inc "$TOOLS"/*.inc > "$tmp"
-printf '    php::explode(lines, "\\n", blob.c_str());\t// synthetic\n' >> "$tmp"
-if [ "$(count_stream_reads "$tmp")" -ne 2 ]; then
-	rm -f "$tmp"
-	echo "check-madcide-single-owners: FAIL — negative control did not" \
-	     "detect a synthetic stream read (the marker went blind)." >&2
-	exit 1
-fi
-rm -f "$tmp"
-
 # Text mutation has ONE owner pair: ed_text_insert / ed_text_erase
-# (editor_events.inc) — they shift the es bag's byte-anchored highlight
-# spans with the edit; a raw ui::text_insert/text_erase elsewhere leaves
-# spans repainting one byte off per keystroke (the "typing spaces
-# re-shades everything" defect). Allowed raw sites: the two owner bodies,
-# madcide's [build]-buffer append, and clog_append's change-log buffer
-# append (both a different, non-viewed entity — shifting the es's spans by
-# its bytes would corrupt them).
+# (editor_events.inc) — they name the client the edit is for, so the edit
+# follower (ed_text_changed) moves THAT client's byte-anchored highlight
+# spans and selection as the editor's, every other viewer's as a peer's; a
+# raw ui::text_insert/text_erase elsewhere is no client's edit (the "typing
+# spaces re-shades everything" defect was the unshifted form). Allowed raw
+# sites: the two owner bodies and madcide's [build]-buffer append (a
+# different, non-viewed entity — naming the es would shift its spans by
+# another document's bytes).
 EVENTS="$(dirname "$0")/../tools/texteditor/editor_events.inc"
 
 count_raw_mutations()
@@ -428,13 +312,12 @@ count_raw_mutations()
 }
 
 n=$(count_raw_mutations "$FILE" "$EVENTS")
-if [ "$n" -ne 4 ]; then
+if [ "$n" -ne 3 ]; then
 	echo "check-madcide-single-owners: FAIL — $n raw ui::text_insert/" \
 	     "text_erase sites across madcide_core.inc + editor_events.inc" \
-	     "(expected 4: the ed_text_insert/ed_text_erase owner bodies +" \
-	     "append_build_line's cross-doc append + clog_append's change-log" \
-	     "buffer append). Route edits through the owners so highlight" \
-	     "spans shift with the text." >&2
+	     "(expected 3: the ed_text_insert/ed_text_erase owner bodies +" \
+	     "append_build_line's cross-doc append). Route edits through the" \
+	     "owners so the editing client's spans shift with the text." >&2
 	exit 1
 fi
 
@@ -442,7 +325,7 @@ fi
 tmp=$(mktemp)
 cat "$FILE" > "$tmp"
 echo '    ui::text_insert(w, doc, caret, "x");	// synthetic' >> "$tmp"
-if [ "$(count_raw_mutations "$tmp" "$EVENTS")" -ne 5 ]; then
+if [ "$(count_raw_mutations "$tmp" "$EVENTS")" -ne 4 ]; then
 	rm -f "$tmp"
 	echo "check-madcide-single-owners: FAIL — negative control did not" \
 	     "detect a synthetic raw mutation (the marker went blind)." >&2
@@ -450,9 +333,9 @@ if [ "$(count_raw_mutations "$tmp" "$EVENTS")" -ne 5 ]; then
 fi
 rm -f "$tmp"
 
-# The change-log record KIND has ONE reader per layer (Nexus L4b, the enum
-# law): clog_kind_of (editor_events.inc) and nexus_kind_of (madcide_enums.inc)
-# convert the persisted word ONCE; every consumer switches on the code.
+# The change-log record KIND has ONE reader (Nexus L4b, the enum law):
+# clog_kind_of (editor_events.inc) converts the wire word of a record the
+# tool host's memory hands back ONCE; every consumer switches on the code.
 # Marker: a literal `["kind"] == "` compare anywhere in the dialect tools
 # must count 0 — a new one is a second reader of the wire word.
 count_kind_compares()
@@ -478,38 +361,6 @@ if [ "$(count_kind_compares "$tmp")" -ne 1 ]; then
 	rm -f "$tmp"
 	echo "check-madcide-single-owners: FAIL — negative control did not" \
 	     "detect a synthetic kind compare (the marker went blind)." >&2
-	exit 1
-fi
-rm -f "$tmp"
-
-# The candidate VALIDATOR has ONE seat (Nexus L4c, design §3.4): the engine's
-# one body with a commit flag is called as parse_refresh_checked (swap) and
-# parse_would_accept (verdict only) — each EXACTLY ONCE across the dialect
-# tools, both inside graph_edit_apply. A second call site is a second edit
-# path that will drift from the all-or-nothing transaction.
-count_validator_calls()
-{
-	cat "$@" | grep -c 'madc::parse_refresh_checked(\|madc::parse_would_accept('
-}
-
-VALIDATOR_FILES="$(dirname "$0")/../tools/madcide/*.inc $(dirname "$0")/../tools/texteditor/*.inc"
-n=$(count_validator_calls $VALIDATOR_FILES)
-if [ "$n" -ne 2 ]; then
-	echo "check-madcide-single-owners: FAIL — $n validator call sites in" \
-	     "tools/madcide + tools/texteditor (expected 2: parse_refresh_checked" \
-	     "+ parse_would_accept, both in graph_edit_apply). ONE validator with" \
-	     "a commit flag — route every candidate through graph_edit_apply." >&2
-	grep -n 'madc::parse_refresh_checked(\|madc::parse_would_accept(' $VALIDATOR_FILES >&2
-	exit 1
-fi
-
-# Negative control for the validator marker.
-tmp=$(mktemp)
-echo '    bool ok = madc::parse_would_accept(d, h, s.c_str());	// synthetic' > "$tmp"
-if [ "$(count_validator_calls $VALIDATOR_FILES "$tmp")" -ne 3 ]; then
-	rm -f "$tmp"
-	echo "check-madcide-single-owners: FAIL — negative control did not" \
-	     "detect a synthetic validator call (the marker went blind)." >&2
 	exit 1
 fi
 rm -f "$tmp"
@@ -576,11 +427,11 @@ if [ "$(count_buildstop_reads "$TOOLS"/*.inc "$tmp")" -ne 2 ]; then
 fi
 rm -f "$tmp"
 
-# Where madcide's and the line editor's DATA lives has ONE owner:
-# resolve_data_dir (tools/texteditor/lined_core.inc; B85). The install
-# layout's `share/` arm is spelled once, inside it, and no data file is read
-# through a cwd-relative "tools/..." path: that path is what made save and
-# quit (line-editor verbs) do nothing outside the repo root, and never in
+# Where madcide's DATA lives has ONE owner: resolve_data_dir
+# (tools/texteditor/editor_events.inc; B85). The install layout's `share/`
+# arm is spelled once, inside it, and no data file is read through a
+# cwd-relative "tools/..." path: that path is what made save and quit (then
+# the line editor's verbs) do nothing outside the repo root, and never in
 # the shipped package.
 count_share_arms()
 {
@@ -605,7 +456,7 @@ fi
 
 # Negative control: a synthetic cwd-relative read must trip the marker.
 tmp=$(mktemp)
-echo '    php::file_get_contents(t, "tools/texteditor/verbs/q.madv");	// synthetic' > "$tmp"
+echo '    php::file_get_contents(t, "tools/madcide/profiles/joe.keys");	// synthetic' > "$tmp"
 if [ "$(count_cwd_data_reads "$TOOLS"/*.inc "$TEXTED"/*.inc "$tmp")" -ne 1 ]; then
 	rm -f "$tmp"
 	echo "check-madcide-single-owners: FAIL — negative control did not" \
@@ -615,7 +466,7 @@ fi
 rm -f "$tmp"
 
 # Every DOCUMENT is madc's document component, minted in ONE place per way
-# in (tools/texteditor/lined_core.inc; B86, split arc 1D): new_document
+# in (tools/texteditor/editor_events.inc; B86, split arc 1D): new_document
 # (ui::doc_new — a new file, the untitled buffer) and setup_document
 # (ui::doc_open — a file read). A view buffer ([repl], [build], [terminal],
 # Help, a git view) is no document: new_view_text. A bare

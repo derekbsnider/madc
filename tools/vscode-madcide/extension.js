@@ -1,24 +1,22 @@
-// tools/vscode-madcide/extension.js — the VS Code client for madcide
-// (client-server V6c-3a + V6c-3b; plans
-// docs/plans/2026-09-14-v6c3a-vscode-extension-plan.md and
-// docs/plans/2026-09-14-v6c3b-executecommand-webview-plan.md).
+// tools/vscode-madcide/extension.js — the VS Code client for madc's language
+// server (client-server V6c-3a; split arc 1D: the server is `madc --lsp`).
 //
 // VS Code has no built-in way to point at a language server: the client lives
 // in extension code. This is that client and nothing more — it resolves the
-// madc binary, picks the document madcide opens with, spawns
-// `madc <madcide.mad> <file> --lsp [--serve 127.0.0.1:0]` and hands the pipe to
-// vscode-languageclient. Every answer the editor shows, and every command it
-// runs, comes from madcide's own compiler and its own command registry.
+// madc binary, picks the document the server opens with, spawns
+// `madc --lsp <file>` and hands the pipe to vscode-languageclient. Every
+// answer the editor shows, and every command it runs, comes from madc's own
+// compiler and its own command registry.
 //
 // Two things this file deliberately does NOT contain:
-//   - a TextMate grammar. madc's parse_spans classification reaches the editor
-//     as SEMANTIC TOKENS, from the same parse handle that produces the
-//     diagnostics and the outline; a grammar would be a second classification
-//     of the same text, free to disagree with the compiler about what a word is.
-//   - a list of madcide's commands. The server advertises them
-//     (executeCommandProvider, built from the registry's own cmd_table), so the
-//     palette is built from the capability at run time. A list here would be a
-//     copy that goes stale the moment a command is added.
+//   - a TextMate grammar. madc's parse classification reaches the editor as
+//     SEMANTIC TOKENS, from the same parse that produces the diagnostics and
+//     the outline; a grammar would be a second classification of the same
+//     text, free to disagree with the compiler about what a word is.
+//   - a list of madc's commands. The server advertises them
+//     (executeCommandProvider: madc's `%` commands as `madc.NAME`), so the
+//     palette is built from the capability at run time. A list here would be
+//     a copy that goes stale the moment a command is added.
 
 const fs = require('fs');
 const path = require('path');
@@ -27,12 +25,9 @@ const { LanguageClient, TransportKind } = require('vscode-languageclient/node');
 
 let client;
 let out;
-let status;
-let serveUrl;			// the session's other face, from $/madc/serve
-let windowPanel;
 
-// The workspace folder this session serves: the active editor's, else the
-// first. madcide is one session over one project — the folder is its root.
+// The workspace folder the server serves: the active editor's, else the
+// first — the folder is its root (its working directory).
 function workspaceRoot() {
 	const doc = vscode.window.activeTextEditor && vscode.window.activeTextEditor.document;
 	if (doc && doc.uri.scheme === 'file') {
@@ -67,10 +62,10 @@ function resolveMadc(root) {
 	return 'madc';
 }
 
-// The document madcide opens with. madcide is a SESSION over a document, so it
-// takes one on the command line; every other file the editor opens joins the
-// same session through didOpen. The active .mad editor is the honest choice —
-// the extension activates onLanguage:madc, so there almost always is one.
+// The document the server opens with (`madc --lsp FILE`: its project); every
+// other file the editor opens joins through didOpen. The active .mad editor is
+// the honest choice — the extension activates onLanguage:madc, so there
+// almost always is one.
 async function resolveStartFile(root) {
 	const configured = vscode.workspace.getConfiguration('madcide').get('serverFile');
 	if (configured) {
@@ -99,27 +94,6 @@ function serverCommands() {
 	return (provider && provider.commands) || [];
 }
 
-// madcide's own notifications (V6c-3b). A client that did not know them would
-// ignore them by the protocol's own rule for the `$/` space; this one uses them.
-function wireMadcNotifications() {
-	client.onNotification('$/madc/serve', p => {
-		serveUrl = p && p.url;
-		out.appendLine('window: ' + serveUrl);
-	});
-	client.onNotification('$/madc/message', p => {
-		const text = (p && p.message) || '';
-		if (!text) return;
-		out.appendLine('madcide: ' + text);
-		status.text = '$(tools) ' + text;
-		status.show();
-	});
-	client.onNotification('$/madc/event', p => {
-		// The session's change log, the same records every other client sees.
-		// Tracing territory, not a popup.
-		out.appendLine('event: ' + JSON.stringify(p));
-	});
-}
-
 async function runCommandPalette() {
 	if (!client) {
 		vscode.window.showWarningMessage('madcide: the language server is not running.');
@@ -131,8 +105,8 @@ async function runCommandPalette() {
 		return;
 	}
 	const picked = await vscode.window.showQuickPick(
-		ids.map(id => ({ label: id.replace(/^madcide\./, ''), description: id, id: id })),
-		{ placeHolder: 'madcide command', matchOnDescription: true });
+		ids.map(id => ({ label: id.replace(/^madc\./, ''), description: id, id: id })),
+		{ placeHolder: 'madc command', matchOnDescription: true });
 	if (!picked) return;
 	const arg = await vscode.window.showInputBox({
 		prompt: 'Argument for ' + picked.label + ' (leave empty for none)',
@@ -155,83 +129,18 @@ async function runCommandPalette() {
 	}
 }
 
-// The real madcide UI, in a webview, against the SAME session the editor is
-// using — that is the point of the server's second face. asExternalUri is what
-// makes the loopback port reachable when the extension host is remote
-// (Remote-SSH, containers): VS Code forwards it. The port is never exposed.
-async function openWindow() {
-	// A spawned server reports its own face ($/madc/serve); an ATTACHED one
-	// needs no announcement — the session it joined is the address we were
-	// told to attach to.
-	let url = serveUrl;
-	if (!url) {
-		const attach = (vscode.workspace.getConfiguration('madcide').get('attach') || '').trim();
-		// The one spelling is madcide's session_url (madcide_discover.inc);
-		// this fallback mirrors it for a hand-configured attach address and
-		// must change with it.
-		if (attach) url = 'http://' + attach + '/';
-	}
-	if (!url) {
-		vscode.window.showWarningMessage(
-			'madcide: this server has no window face. Set madcide.window and restart the server.');
-		return;
-	}
-	const external = await vscode.env.asExternalUri(vscode.Uri.parse(url));
-	if (windowPanel) {
-		windowPanel.reveal();
-		return;
-	}
-	windowPanel = vscode.window.createWebviewPanel(
-		'madcideWindow', 'madcide', vscode.ViewColumn.Beside,
-		{ enableScripts: true, retainContextWhenHidden: true });
-	windowPanel.onDidDispose(() => { windowPanel = undefined; });
-	const src = external.toString();
-	windowPanel.webview.html = '<!DOCTYPE html><html><head><meta charset="utf-8">' +
-		'<style>html,body,iframe{margin:0;padding:0;border:0;width:100%;height:100vh;display:block}</style>' +
-		'</head><body><iframe src="' + src + '" sandbox="allow-scripts allow-same-origin"></iframe></body></html>';
-	out.appendLine('window opened: ' + src);
-}
-
 async function startClient(context) {
 	const root = workspaceRoot();
 	if (!root) {
-		out.appendLine('no workspace folder is open — madcide serves a project, so it needs one.');
+		out.appendLine('no workspace folder is open — the server runs in one.');
 		return;
 	}
 	const cfg = vscode.workspace.getConfiguration('madcide');
 	const madc = resolveMadc(root);
-	const madcide = absolute(root, cfg.get('madcidePath') || 'tools/madcide/madcide.mad');
-	if (!fs.existsSync(madcide)) {
-		out.appendLine('madcide.mad not found at ' + madcide +
-			' — set madcide.madcidePath to where it lives.');
-		return;
-	}
 	const file = await resolveStartFile(root);
-	if (!file) {
-		out.appendLine('no .mad document to open — madcide takes one on its command line.');
-		return;
-	}
-
-	// Two modes. ATTACH joins a session that is already running, so this
-	// editor, an agent's MCP client and a browser share one set of buffers —
-	// and the server must NOT be given a window face, because the session it
-	// attaches to already has one. Otherwise madcide opens a private session,
-	// and the window face is what `madcide: Open Window` needs.
-	// "auto" attaches to whatever session already holds this file, discovered
-	// from madcide's advertisement — nobody types an address. The scan is NOT
-	// reimplemented here: madcide owns the matching rule, and `--attach` with
-	// no address is how it is asked.
-	const attach = (cfg.get('attach') || '').trim();
-	let args = ['--no-config', madcide, file, '--lsp'];
-	if (attach === 'auto') {
-		args = args.concat(['--attach']);
-		out.appendLine('mode: attaching to whatever session already holds ' + file);
-	} else if (attach) {
-		args = args.concat(['--attach', attach]);
-		out.appendLine('mode: attaching to the session at ' + attach);
-	} else if (cfg.get('window')) {
-		args = args.concat(['--serve', '127.0.0.1:0']);	// loopback only: no auth exists
-	}
+	let args = ['--lsp'];
+	if (file)
+		args.push(file);
 	args = args.concat(cfg.get('extraArgs') || []);
 	out.appendLine('spawning: ' + madc + ' ' + args.join(' '));
 	out.appendLine('cwd: ' + root);
@@ -250,18 +159,12 @@ async function startClient(context) {
 		revealOutputChannelOn: 4
 	};
 
-	client = new LanguageClient('madcide', 'madcide', serverOptions, clientOptions);
+	client = new LanguageClient('madcide', 'madc', serverOptions, clientOptions);
 	await client.start();
-	wireMadcNotifications();
-	out.appendLine('madcide language server started.');
+	out.appendLine('madc language server started.');
 }
 
 async function stopClient() {
-	serveUrl = undefined;
-	if (windowPanel) {
-		windowPanel.dispose();
-		windowPanel = undefined;
-	}
 	if (client) {
 		await client.stop();
 		client = undefined;
@@ -270,11 +173,9 @@ async function stopClient() {
 
 async function activate(context) {
 	out = vscode.window.createOutputChannel('madcide');
-	status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
-	context.subscriptions.push(out, status);
+	context.subscriptions.push(out);
 	context.subscriptions.push(
 		vscode.commands.registerCommand('madcide.runCommand', runCommandPalette),
-		vscode.commands.registerCommand('madcide.openWindow', openWindow),
 		vscode.commands.registerCommand('madcide.restart', async () => {
 			await stopClient();
 			await startClient(context);

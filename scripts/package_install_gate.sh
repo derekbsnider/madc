@@ -37,8 +37,7 @@
 #            share/madcide layout [control: hide share/madcide/profiles
 #            => RESCUE banner]; installed madcide SAVES and QUITS from a
 #            foreign cwd (scripts/madcide_save_quit_pty.py: joe's keys, then
-#            the rescue keys with the profiles hidden) [control: hide
-#            share/madcide/verbs => it refuses to start, with the reason].
+#            the rescue keys with the profiles hidden).
 #            installed madcide prints its usage line and `-c check`s a
 #            <stdio.h> program clean from a foreign cwd [control: a syntax
 #            error => 1 problem, rc 1]; its View menu offers every shipped
@@ -51,9 +50,9 @@
 #   winzip   unzip; the zipped madc.exe under wine compiles a
 #            runtime-needing probe with -o INTO bin/ (PE binding is
 #            adjacency) and the emitted exe runs (output asserted);
-#            zipped `madcide.exe --help` prints its usage line; bin/verbs and
-#            bin/checks sit beside it [control: hide bin/libmadc-0.dll =>
-#            both must fail].
+#            zipped `madcide.exe --help` prints its usage line; bin/profiles
+#            sits beside it [control: hide bin/libmadc-0.dll => both must
+#            fail].
 #
 #   mactar   (darwin host only — the release.yml mac jobs; the container
 #            cannot execute darwin binaries and prints a stated SKIP) tar
@@ -242,17 +241,14 @@ run_linux() {
         *) fail "$kind" "negative control broken: profiles hidden but no RESCUE (got: $out)" ;;
     esac
 
-    # 5. installed madcide SAVES and QUITS from a foreign cwd (B85: its
-    #    save and quit are the line editor's verbs, shipped under
-    #    share/madcide/verbs): joe's ^K D, ^K Q; then with the profiles
-    #    hidden, the rescue ^S, ^Q; then with the verbs hidden it must
-    #    refuse to start, with the reason.
+    # 5. installed madcide SAVES and QUITS from a foreign cwd (B85): joe's
+    #    ^K D, ^K Q; then with the profiles hidden, the rescue ^S, ^Q.
     local sq="$GATE_TMP/$kind-savequit.c"
     printf 'int main(void) { return 0; }\n' > "$sq"
     out=$( ( ulimit -t 120; timeout 120 "${runenv[@]}" \
              python3 scripts/madcide_save_quit_pty.py "$sq" 0b640b71 "$madcide" ) 2>&1 )
     case "$out" in
-        "SAVED EXITED rc=0 NORESCUE VERBSOK"*) ok "$kind" "installed madcide saves and quits ($out)" ;;
+        "SAVED EXITED rc=0 NORESCUE"*) ok "$kind" "installed madcide saves and quits ($out)" ;;
         *) fail "$kind" "installed madcide did not save and quit from a foreign cwd (got: $out)" ;;
     esac
     printf 'int main(void) { return 0; }\n' > "$sq"
@@ -261,23 +257,12 @@ run_linux() {
              python3 scripts/madcide_save_quit_pty.py "$sq" 1311 "$madcide" ) 2>&1 )
     mv "$pdir.hidden" "$pdir"
     case "$out" in
-        "SAVED EXITED rc=0 RESCUE VERBSOK"*) ok "$kind" "hidden profiles: the rescue keys save and quit ($out)" ;;
+        "SAVED EXITED rc=0 RESCUE"*) ok "$kind" "hidden profiles: the rescue keys save and quit ($out)" ;;
         *) fail "$kind" "hidden profiles: the rescue keys did not save and quit (got: $out)" ;;
-    esac
-    local vdir="$root/${libdir:+usr/}share/madcide/verbs"
-    [ -d "$vdir" ] || fail "$kind" "no verbs dir at $vdir in the artifact"
-    printf 'int main(void) { return 0; }\n' > "$sq"
-    mv "$vdir" "$vdir.hidden"
-    out=$( ( ulimit -t 120; timeout 120 "${runenv[@]}" \
-             python3 scripts/madcide_save_quit_pty.py "$sq" "" "$madcide" ) 2>&1 )
-    mv "$vdir.hidden" "$vdir"
-    case "$out" in
-        *"EXITED rc=1 "*"VERBSMISSING"*) ok "$kind" "negative control: hidden verbs => refused to start ($out)" ;;
-        *) fail "$kind" "negative control broken: verbs hidden but madcide did not refuse (got: $out)" ;;
     esac
 
     # 6. installed madcide's usage line, then `-c check` from a foreign cwd
-    #    over a C file that includes <stdio.h> — the installed verbs
+    #    over a C file that includes <stdio.h> — the installed profiles
     #    (share/madcide) and the forest in the installed libmadc serve it —
     #    clean; [control: a file with a syntax error reports its problem and
     #    exits 1, proving the check read it].
@@ -443,14 +428,12 @@ gate_winzip() {
         *"usage: madcide"*) ok winzip "zipped madcide.exe prints its usage line" ;;
         *) fail winzip "zipped madcide.exe usage smoke failed (got: $out)" ;;
     esac
-    # The line editor's verbs and checks ride beside the exe (B85: save and
-    # quit are verbs; resolve_data_dir's <exedir>/verbs arm). wine has no
-    # pty here, so the layout is checked; the save/quit run is the Linux
-    # gate's and the genuine-Windows lane's.
-    [ -f "$bindir/verbs/w.madv" ] && [ -f "$bindir/verbs/q.madv" ] \
-        && [ -f "$bindir/verbs/_subject.madv" ] && [ -f "$bindir/checks/editable.madv" ] \
-        || fail winzip "the zip carries no bin/verbs or bin/checks (madcide could not save or quit)"
-    ok winzip "zipped madcide's verbs and checks sit beside the exe"
+    # madcide's profiles ride beside the exe (resolve_data_dir's <exedir>
+    # arm). wine has no pty here, so the layout is checked; the save/quit
+    # run is the Linux gate's and the genuine-Windows lane's.
+    [ -d "$bindir/profiles" ] \
+        || fail winzip "the zip carries no bin/profiles (madcide's key and colour profiles)"
+    ok winzip "zipped madcide's profiles sit beside the exe"
     [ -f "$bindir/plugins/default/default.plugin" ] \
         || fail winzip "the zip carries no bin/plugins/default/default.plugin"
     ok winzip "zipped madcide's plugins sit beside the exe"
@@ -530,10 +513,10 @@ gate_mactar() {
 
     # 1c. the IDE (a darwin host of this arch builds it into the tarball):
     # madcide's usage line, then `-c check` from a foreign cwd over a
-    # <stdio.h> program — share/madcide's verbs and the library's forest
+    # <stdio.h> program — share/madcide's profiles and the library's forest
     # serve it — clean [control: a syntax error => 1 problem, rc 1].
     [ -x "$root/bin/madcide" ] || fail mactar "no executable bin/madcide in the artifact"
-    [ -d "$root/share/madcide/verbs" ] || fail mactar "no share/madcide/verbs in the artifact"
+    [ -d "$root/share/madcide/profiles" ] || fail mactar "no share/madcide/profiles in the artifact"
     out=$( ( ulimit -t 120; "$tmo" 60 "$root/bin/madcide" --help ) 2>&1 )
     case "$out" in
         *"usage: madcide"*) ok mactar "shipped madcide prints its usage line" ;;

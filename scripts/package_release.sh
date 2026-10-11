@@ -33,7 +33,6 @@
 #   /usr/share/madcide/profiles/                keybinding/theme profiles
 #   /usr/share/madcide/plugins/                 the shipped plugins (bundles: default, …)
 #   /usr/share/madcide/include/madcide/         the plugin API headers (<madcide/plugin>)
-#   /usr/share/madcide/verbs/, checks/          the line editor's verb and check bodies
 #   /usr/share/man/man1/madc.1.gz + madcide.1.gz
 #   /etc/apparmor.d/madc                        the .deb on Ubuntu 24.04 and later only: profiles
 #                                               granting madc and madcide user namespaces (WebKit's

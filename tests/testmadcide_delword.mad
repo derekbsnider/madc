@@ -14,7 +14,6 @@
 //   "a  \t b"       @1 -> "ab"             "x;  y"         @1 -> "x  y"
 // A caret at the end deletes nothing. A UTF-8 byte is a word byte (the one
 // word rule, text_buffer::word_byte), so a word containing one goes whole.
-#include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
 

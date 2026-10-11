@@ -4,7 +4,6 @@
 // product_about), each blank line between the parts a real blank line of the
 // list's height (an empty row is not collapsed), and a Close button that
 // closes it. Runs under Xvfb through the gui lane.
-#include "../../tools/texteditor/lined_core.inc"
 #include "../../tools/texteditor/editor_events.inc"
 #include "../../tools/madcide/madcide_core.inc"
 

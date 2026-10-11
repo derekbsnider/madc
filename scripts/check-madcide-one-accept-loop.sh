@@ -29,13 +29,13 @@
 #    face that binds advertises (2), so a test whose exec:// child runs with
 #    `--serve` publishes a record — into the developer's REAL state directory
 #    ($XDG_STATE_HOME / ~/.local/state) unless the test's .env fixture points
-#    MADCIDE_SESSION_DIR under tmp/. Found at the V6 seam: testmadcide_lsp_serve
+#    MADC_SESSION_DIR under tmp/. Found at the V6 seam: testmadcide_lsp_serve
 #    moved the mtime of ~/.local/state/madcide/sessions on every run, and while
 #    it ran a `--attach` with no address anywhere in this repo could have joined
 #    the TEST's child. (A default-TUI spawn would bind too; no test spawns one —
 #    the editor needs a pty.) Marker: every tests/*.mad with an exec:// spawn of
 #    madcide.mad carrying --serve has a sibling .env naming
-#    MADCIDE_SESSION_DIR=tmp/…
+#    MADC_SESSION_DIR=tmp/…
 #
 # 4. TESTS SPAWN THE PRODUCTION CONNECTION TASK. Until the V6 seam two
 #    spawners from earlier slices (serve_client_task, serve_ws_task) lived on
@@ -61,7 +61,7 @@ unhermetic()
 	local dir="$1" f base
 	for f in $(grep -l -E 'exec://.*madcide\.mad.*--serve' "$dir"/*.mad 2>/dev/null); do
 		base="${f%.mad}"
-		grep -q 'MADCIDE_SESSION_DIR=tmp/' "$base.env" 2>/dev/null || echo "$f"
+		grep -q 'MADC_SESSION_DIR=tmp/' "$base.env" 2>/dev/null || echo "$f"
 	done
 }
 
@@ -109,7 +109,7 @@ bad=$(unhermetic "$TESTS")
 if [ -n "$bad" ]; then
 	echo "check-madcide-one-accept-loop: FAIL — a test spawns a madcide" \
 	     "child with --serve but no .env fixture keeps its advertisement" \
-	     "under tmp/ (MADCIDE_SESSION_DIR=tmp/…); it publishes into the" \
+	     "under tmp/ (MADC_SESSION_DIR=tmp/…); it publishes into the" \
 	     "developer's real state directory while it runs:" >&2
 	echo "$bad" >&2
 	exit 1
@@ -146,11 +146,11 @@ if [ "$(unhermetic "$tmp")" != "$tmp/synthetic.mad" ]; then
 	exit 1
 fi
 # ...and the same test WITH the fixture must pass, or the check is a tautology.
-printf 'MADCIDE_SESSION_DIR=tmp/synthetic_sessions\n' > "$tmp/synthetic.env"
+printf 'MADC_SESSION_DIR=tmp/synthetic_sessions\n' > "$tmp/synthetic.env"
 if [ -n "$(unhermetic "$tmp")" ]; then
 	rm -rf "$tmp"
 	echo "check-madcide-one-accept-loop: FAIL — positive control failed: a" \
-	     "--serve test WITH a tmp/ MADCIDE_SESSION_DIR fixture was reported." >&2
+	     "--serve test WITH a tmp/ MADC_SESSION_DIR fixture was reported." >&2
 	exit 1
 fi
 # A synthetic test spawning a non-production task must be reported; one

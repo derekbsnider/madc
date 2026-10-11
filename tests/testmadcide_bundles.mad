@@ -36,7 +36,6 @@
 //      still found.
 // The configuration directory is this test's fixture (MADCIDE_CONFIG_DIR in
 // the .env); the runner points every other test at none.
-#include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
 

@@ -11,64 +11,16 @@
 // -c one-shot load through: separation of concerns, Rule #5); the rest is
 // the command's ARGUMENT, exactly as IdeSession::command takes it. The seat
 // never learns a command's grammar — it drives the session directly, as the
-// headless harness and run_once do. The MCP seat (madcide_mcp.inc) and the
-// LSP endpoint (V6c) are adapters over THIS command core (api_run); the
-// connection LOOP that carries this envelope — and the JSON-RPC envelope
-// beside it (Nexus L4c) — is madcide_seat.inc.
+// headless harness and run_once do. madcide's commands as MCP tools (below:
+// the session's tool host) are an adapter over THIS command core (api_run);
+// the connection LOOP that carries this envelope — and the JSON-RPC envelope
+// beside it — is madcide_seat.inc.
 //
 // Transport: the accepted connection is an ordinary madc::channel byte
 // stream (the listen:// acceptor, V6a step 1/2a); the {"event":…} push feed
 // (broadcast_events) and the permission tiers (grant_tier / clienttier)
 // live here beside the command core; eff_tier, which a plugin host's seat
 // reads too, is madcide_plugins.inc's, beside cmd_min_tier_w.
-
-// ---- JSON-RPC 2.0 envelopes — ONE spelling for every face --------------------
-// The MCP seat, the LSP face and madcide-as-an-MCP-client all speak JSON-RPC
-// 2.0; the ENVELOPE — the id echoed on a reply, the {code, message} error
-// object, a notification's missing id, a request's id + method + params — is
-// one rule, whichever protocol rides on top. Until the V6 seam each face built
-// its own copy (lsp_reply / mcp_reply, lsp_error / mcp_error, lsp_notify and
-// two inline requests), byte-identical and unguarded. They live here, in the
-// layer every face includes, so the gate can count the spelling once per shape.
-void jsonrpc_reply(var &out, var &id, var &result)
-{
-    out = { "jsonrpc": "2.0", "id": id, "result": result };
-}
-
-// `id` null for a parse error before an id is known; `code` the JSON-RPC
-// error code (-32601 method-not-found, -32602 invalid params, ...).
-void jsonrpc_error(var &out, var &id, long code, const char *message)
-{
-    var err = { "code": code, "message": message };
-    out = { "jsonrpc": "2.0", "id": id, "error": err };
-}
-
-// A NOTIFICATION carries no id: the receiver must not answer it.
-void jsonrpc_notify(var &out, const char *method, var &params)
-{
-    out = { "jsonrpc": "2.0", "method": method, "params": params };
-}
-
-// A REQUEST (madcide as a client): its id is the client's own counter.
-void jsonrpc_request(var &out, long id, const char *method, var &params)
-{
-    out = { "jsonrpc": "2.0", "id": id, "method": method, "params": params };
-}
-
-// madcide's self-identification on every wire (LSP serverInfo, MCP
-// serverInfo / clientInfo) — one name, and the version is madc's own, the
-// same the session advertisement carries (three faces had said "1.0.0").
-void madcide_self_info(var &out)
-{
-    var version = madc::sys.version;
-    out = { "name": "madcide", "version": version };
-}
-
-// The MCP protocol revision this seat speaks, as server and as client.
-const char *mcp_protocol_version()
-{
-    return "2024-11-05";
-}
 
 // Read the request's optional text ARGUMENT as a C string ("" when absent).
 const char *api_arg(var &req)
@@ -95,16 +47,21 @@ void api_refuse(madc::channel &client, long seq, const char *why)
     api_write(client, reply);
 }
 
-// Fan the change events past `since` on `doc` out to every OTHER connected
-// api client — one {"event":rec} JSON line each — the hub broadcast-at-append
-// (V6a duplex D2). `self_id` is the acting client's share id, excluded so it
-// sees its edit only through its own reply, never echoed back as an event.
+// Fan the change log's records past `since` on `doc` (the tool host's
+// memory) out to every OTHER connected api client — one {"event":rec} JSON
+// line each — the hub broadcast-at-append (V6a duplex D2). `self_id` is the
+// acting client's share id, excluded so it sees its edit only through its
+// own reply, never echoed back as an event.
 void broadcast_events(long w, long doc, long since, long self_id)
 {
-    var evs;
-    events_since(evs, w, doc, since);
-    for ( var e : evs )
+    var recs;
+    ide_host(w)->records(recs, since);
+    for ( var e : recs )
     {
+	var ed;
+	keyed_get(ed, e, "doc");
+	if ( ed.is_null() || ed.as_integer() != doc )
+	    continue;			// another document's (or the project's)
 	var push = { "event": e };
 	var js = js::stringify(push);
 	var pl = format("{}\n", js);
@@ -211,7 +168,7 @@ void api_run(var &out, IdeSession &S, long doc, long self_id, const char *name, 
     }
     long w = S.world();
     long adoc = S.active(doc);
-    long head_before = clog_head(w, adoc);
+    long head_before = ide_host(w)->head();
     bool cont = true;
     bool ok = S.command(adoc, code, arg, cont);
     long errors = S.error_count();
@@ -222,7 +179,7 @@ void api_run(var &out, IdeSession &S, long doc, long self_id, const char *name, 
     out = { "ok": ok, "errors": errors, "text": text };
     // An editing command advanced the change log — push the new events to the
     // other connected clients (the hub fan-out, D2).
-    if ( clog_head(w, adoc) > head_before )
+    if ( ide_host(w)->head() > head_before )
 	broadcast_events(w, adoc, head_before, self_id);
 }
 
@@ -242,7 +199,7 @@ void session_state(var &out, IdeSession &S, long doc)
     long w = S.world();
     long es = S.es;
     long adoc = S.active(doc);
-    long h = ensure_phandle(w, es, adoc);
+    long h = reparse_buffer(w, es, adoc);
     long caret = es_int(w, es, "caret", 0);
     long line = line_of(w, adoc, caret);
     long column = caret - line_start_of(w, adoc, line) + 1;
@@ -259,3 +216,92 @@ void session_state(var &out, IdeSession &S, long doc)
     out = { "cursor": cursor, "diagnostics": diags, "outline": outl };
 }
 
+// ---- madcide's commands as tools (split arc 1D) ---------------------------
+// The session's MCP is its world's tool host (ide_host): madc's tools — the
+// code graph, the project memory's, the loaded modules' — plus every
+// registry command (contributed ones too) added as a tool: one optional
+// `args` string (IdeSession::command takes one argument string), gated at
+// the command's tier. A call runs the command through api_run on the
+// session the seat is serving (ide_tool_session — set around the host's
+// dispatch, which calls a tool synchronously inside the call that names it)
+// and answers the session's raw projections after it (session_state).
+IdeSession *ide_tool_session = NULL;
+
+bool ide_command_tool(var &result, const char *name, long w, long doc, var &args,
+		      long caller, long actor)
+{
+    if ( ide_tool_session == NULL )
+    {
+	result = { "error": "no session is serving tools" };
+	return false;
+    }
+    var nm = name;			// ring discipline: own the text first
+    var av;
+    keyed_get(av, args, "args");
+    var arg = "";
+    if ( !av.is_null() )
+	arg = av;
+    var body;
+    api_run(body, *ide_tool_session, doc, actor, nm.c_str(), arg.c_str());
+    var err;
+    keyed_get(err, body, "error");
+    if ( !err.is_null() )
+    {
+	result = { "error": err };	// a refusal: the prose
+	return false;
+    }
+    var snap;
+    session_state(snap, *ide_tool_session, doc);
+    snap["ok"] = true;
+    snap["errors"] = body["errors"];
+    result = snap;
+    return true;
+}
+
+// Every registry command onto the world's host — a name already there is
+// kept (add refuses a taken name), so a contribution made since the last
+// call joins and nothing else moves.
+void ide_host_commands(long w)
+{
+    madc::tool_host *host = ide_host(w);
+    var ct;
+    cmd_table_w(ct, w);
+    var argprop = { "type": "string",
+	"description": "the command's argument text (optional)" };
+    var props = { "args": argprop };
+    var schema = { "type": "object", "properties": props };
+    for ( var r : ct )
+    {
+	var nm = r["name"];
+	long tier = cmd_min_tier_w(w, r["code"].as_integer());
+	var desc = format("{} '{}' command", product_in_use().name, nm);
+	host->add(nm.c_str(), desc.c_str(), schema, tier, ide_command_tool);
+    }
+}
+
+// One MCP message on a seat connection, under its tier; false = a
+// notification (no reply).
+bool ide_mcp_handle(IdeSession &S, long doc, long self_id, var &req, var &resp)
+{
+    long w = S.world();
+    ide_host_commands(w);
+    IdeSession *was = ide_tool_session;
+    ide_tool_session = &S;
+    bool answered = ide_host(w)->mcp_handle(resp, req, S.active(doc), eff_tier(self_id),
+					    self_id);
+    ide_tool_session = was;
+    return answered;
+}
+
+// The MCP line loop over `io` (stdio for `--mcp`) for the operator, until
+// the client goes away.
+long ide_serve_mcp(IdeSession &S, long doc, madc::channel &io)
+{
+    long w = S.world();
+    ide_host_commands(w);
+    IdeSession *was = ide_tool_session;
+    ide_tool_session = &S;
+    long rc = ide_host(w)->serve_mcp(io, S.active(doc), tierOWNER);
+    ide_tool_session = was;
+    return rc;
+}

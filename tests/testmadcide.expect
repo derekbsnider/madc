@@ -58,7 +58,7 @@ proj-open2: path=madc_ide_second.mad closed=1
 proj-addcur: Added madc_ide_ast5.txt to the project. in-manifest=1
 proj-del: Removed madc_ide_ast5.txt from the project. gone=1
 proj-esc: closed=1
-proj-startup: Project madc_ide_test.prj.json: 2 TU(s). Events not restored: this session already logged events. tus=2
+proj-startup: Project madc_ide_test.prj.json: 2 TU(s). tus=2
 proj-bad: madc_ide_test.prj.json is not valid JSON. implicit=1
 build-pane: label=Build rows=4 row0=Echo  [echo hello-{base}]
 build-start: live=1
@@ -152,7 +152,7 @@ seam-keys: moved=1 joe-save=save
 seam-viewport: split-refused=1
 modes-palette: label=Modes colon-row=1 vi-row=1
 modes-colon: pmode=colon palette-closed=1
-colon-unknown: Unknown command :zz
+colon-unknown: not an editor command: 'zz'
 modes-esc: closed=1
 vi-refuse: No @normal keys in this profile (^T Keymap row: neovim).
 colon-goto: line=2
@@ -185,6 +185,7 @@ tty-start: live=1 focus=1 tab=terminal
 tty-unfocus: focus=0
 tty-refocus: focus=1
 tty-run: prompt=1 answer=1 exit=1 live=0
+colon-quit-other: cont=1 msg=no write since last change for buffer "madc_ide_ast5.txt" (add ! to override)
 colon-quit: cont=0
 v2c-implicit: docked-side=right file=absent
 v2c-persist: file=present side=right

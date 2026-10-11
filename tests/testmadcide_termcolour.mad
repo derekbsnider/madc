@@ -7,7 +7,6 @@
 // header) start with SGR 0, so a colour the program leaves set never
 // reaches them.
 // Oracle: the same bytes in xterm show "red" bold red and "-ok" plain.
-#include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
 

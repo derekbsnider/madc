@@ -8,7 +8,6 @@
 #   madc-<ver>-windows-x86_64/bin/madc.exe            the thin CLI (its engine and forest are libmadc-0.dll)
 #   madc-<ver>-windows-x86_64/bin/madcide.exe         the IDE, AOT-compiled by that PE under wine
 #   madc-<ver>-windows-x86_64/bin/profiles/           madcide keybinding/theme profiles (data beside the exe)
-#   madc-<ver>-windows-x86_64/bin/verbs/, checks/     the line editor's verb and check bodies
 #   madc-<ver>-windows-x86_64/bin/libstdc++-6.dll     staged UCRT-flavor C++ runtime
 #   madc-<ver>-windows-x86_64/bin/libwinpthread-1.dll staged UCRT winpthreads
 #   madc-<ver>-windows-x86_64/bin/libmadc-0.dll       the full madc engine carrying the forest (win twin of libmadc.so.0; madc.exe, AOT output and madcide bind it)

@@ -25,14 +25,11 @@
 //      `About <title>` with a Close button and no primary.
 // This unit links its plugin as a product's program does (its manifest's
 // units): the plugin's code below is compiled here, beside the base.
-#include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
 #include "../tools/madcide/madcide_args.inc"
-#include "../tools/madcide/madcide_discover.inc"
 #include "../tools/madcide/madcide_client.inc"
 #include "../tools/madcide/madcide_api.inc"
-#include "../tools/madcide/madcide_mcp.inc"
 // The product's plugin, linked in: one command.
 #include <madcide/plugin>
 
@@ -203,8 +200,9 @@ int main()
 	    dlg["buttons"][0]["label"]);
 
     // 6. The tool descriptions an MCP client reads.
+    ide_host_commands(S.w);
     var tools;
-    mcp_tools(tools, S.w);
+    ide_host(S.w)->list(tools);
     long named = 0;
     long base = 0;
     for ( var t : tools )

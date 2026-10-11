@@ -1,8 +1,8 @@
 // An installed program's data is its install's, wherever it is started
 // (owner, Chthonia on the Intel MacBook: started from inside a madc checkout,
 // chthonia showed madcide's default bundle — "About madcide", no REPL, no
-// Symbols). resolve_data_dir (tools/texteditor/lined_core.inc) finds
-// madcide's plugins, profiles, verbs, checks and headers; its source-tree
+// Symbols). resolve_data_dir (tools/texteditor/editor_events.inc) finds
+// madcide's plugins, profiles and headers; its source-tree
 // arm is dirname(__FILE__), which a library compiled from the tree root
 // spells RELATIVE (tools/madcide), so a binary started where a
 // tools/madcide/<sub> exists read THAT tree's data instead of its own.
@@ -52,7 +52,7 @@ int main()
 	rc = rc + madc_shape(plain, tree);
 	var probe = format("{}/probe.mad", dir);
 	php::file_put_contents(probe.c_str(),
-		"#include \"../../tools/texteditor/lined_core.inc\"\n"
+		"#include \"../../tools/texteditor/editor_events.inc\"\n"
 		"int main()\n{\n\tvar d;\n"
 		"\tresolve_data_dir(d, \"madcide\", \"tools/madcide\", \"plugins\");\n"
 		"\tprintln(\"{}\", d);\n\treturn 0;\n}\n");

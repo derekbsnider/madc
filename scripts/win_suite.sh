@@ -61,7 +61,7 @@ if [ ${#runtime_files[@]} -gt 0 ]; then
 	fi
 fi
 # The suite's inputs beyond tests/: the editor tests include
-# ../tools/texteditor/lined_core.inc and the ui tests read
+# ../tools/texteditor/editor_events.inc and the ui tests read
 # examples/adventure/adventure.world — the same trees the Mac suite stage
 # carries. A missing tree fails six tests as "Failed to open include file" /
 # "cannot read" on the box while wine, run from the repo root, never sees it.

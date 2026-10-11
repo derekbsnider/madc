@@ -1,4 +1,4 @@
-"serverInfo":{"name":"madcide"
+"serverInfo":{"name":"madc"
 "protocolVersion"
 "listChanged":false
 "inputSchema"
@@ -7,5 +7,4 @@ cursor
 Incorrect number of parameters
 end_line
 "isError":false
-"isError":true
-unknown command 'bogus'
+Unknown tool: bogus

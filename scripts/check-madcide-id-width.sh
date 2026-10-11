@@ -21,19 +21,24 @@ DIR="$(dirname "$0")/../tools/madcide"
 # marker covers the code-graph seat files, where a `long id` parameter is a
 # graph id by construction; a View row's id (the core) or a connection's
 # share id (self_id / cid, small engine-minted counters) are not graph ids.
-GRAPH_FILES="$DIR/madcide_mcp.inc $DIR/madcide_past.inc $DIR/madcide_nexus.inc $DIR/madcide_propose.inc $DIR/madcide_lsp.inc $DIR/madcide_layers.inc $DIR/madcide_tests.inc"
+# Since split arc 1D the graph tools are madc's (C++), so no dialect file
+# is a graph seat; one that takes graph ids again joins GRAPH_FILES.
+GRAPH_FILES=""
 count_long_id_reads()  { grep -h -cE 'long [a-z0-9_]* = [^;]*\["(id|to|from|in|at|func|node)"\]' "$@" | paste -sd+ | bc; }
 count_long_id_params() { cat "$@" | grep -E '\blong [a-z0-9_]*id\)' | grep -vcE '\blong (self_id|share_id|cid|conn_id|client_id)\)'; }
 
 n=$(count_long_id_reads "$DIR"/*.inc)
-m=$(count_long_id_params $GRAPH_FILES)
+m=0
+if [ -n "$GRAPH_FILES" ]; then
+	m=$(count_long_id_params $GRAPH_FILES)
+fi
 if [ "$n" -ne 0 ] || [ "$m" -ne 0 ]; then
 	echo "check-madcide-id-width: FAIL — $n long-typed id read(s) and $m" \
 	     "long-typed id parameter(s) in tools/madcide. A graph id is 64-bit" \
 	     "(a generation tag at bit 40); the dialect's long is 32-bit on" \
 	     "LLP64. Spell it int64_t:" >&2
 	grep -nE 'long [a-z0-9_]* = [^;]*\["(id|to|from|in|at|func|node)"\]' "$DIR"/*.inc >&2
-	grep -nE '\blong [a-z0-9_]*id\)' $GRAPH_FILES | grep -vE '\blong (self_id|share_id|cid|conn_id|client_id)\)' >&2
+	[ -n "$GRAPH_FILES" ] && grep -nE '\blong [a-z0-9_]*id\)' $GRAPH_FILES | grep -vE '\blong (self_id|share_id|cid|conn_id|client_id)\)' >&2
 	exit 1
 fi
 

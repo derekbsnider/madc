@@ -43,19 +43,20 @@ cli-new-once: rc=0 unwritten=1
 cli-dir: rc=1 out-empty=1
 cli-editdir: rc=0 said=1
 cli-editnew: rc=0 said=1 unwritten=1
-cli-args-profile-first: file=f.c profile=chthonia ro=0 lsp=0 attach=0 addr=- help=0
-cli-args-profile-after: file=f.c profile=chthonia ro=1 lsp=0 attach=0 addr=- help=0
-cli-args-attach-discover: file=f.c profile=- ro=0 lsp=1 attach=1 addr=- help=0
-cli-args-attach-addr: file=f.c profile=- ro=0 lsp=1 attach=1 addr=127.0.0.1:9 help=0
-cli-args-attach-file: file=f.c profile=- ro=0 lsp=1 attach=1 addr=- help=0
-cli-args-dashdash: file=-dash.c profile=- ro=1 lsp=0 attach=0 addr=- help=0
-cli-args-help: file=- profile=- ro=0 lsp=0 attach=0 addr=- help=1
+cli-args-profile-first: file=f.c profile=chthonia ro=0 mcp=0 attach=0 addr=- help=0
+cli-args-profile-after: file=f.c profile=chthonia ro=1 mcp=0 attach=0 addr=- help=0
+cli-args-attach-discover: file=f.c profile=- ro=0 mcp=1 attach=1 addr=- help=0
+cli-args-attach-addr: file=f.c profile=- ro=0 mcp=1 attach=1 addr=127.0.0.1:9 help=0
+cli-args-attach-file: file=f.c profile=- ro=0 mcp=1 attach=1 addr=- help=0
+cli-args-lsp-gone: refused: unknown option '--lsp'
+cli-args-dashdash: file=-dash.c profile=- ro=1 mcp=0 attach=0 addr=- help=0
+cli-args-help: file=- profile=- ro=0 mcp=0 attach=0 addr=- help=1
 cli-args-unknown: refused: unknown option '--bogus'
 cli-args-novalue: refused: --profile needs a profile NAME
 cli-args-files: file=a.c ro=1 more=2 b.c:0 c.c:1 face=-
 cli-args-files-once: file=a.c ro=0 more=1 b.c:0 face=-c
-cli-args-nofile: file=- profile=- ro=0 lsp=0 attach=0 addr=- help=0
-cli-needs-file: tui=- gui=- line=- once=-c mcp=--mcp lsp=--lsp serve=--serve
+cli-args-nofile: file=- profile=- ro=0 mcp=0 attach=0 addr=- help=0
+cli-needs-file: tui=- gui=- line=- once=-c mcp=--mcp serve=--serve
 cli-window: tui=0 gui=1 line=0 gui-help=0 gui-once=0 gui-sessions=0 gui-serve=0
 cli-usage: names-profile=1 file-optional=1
 cli-args-build-plugin: ok=1 dir=plugins/hello file=-

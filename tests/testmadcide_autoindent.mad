@@ -4,7 +4,6 @@
 // on a blank-indented line takes one step off it; Edit ▸ Toggle Autoindent
 // turns it off, kept in settings.json. Oracle: Thonny, VS Code and JOE's
 // autoindent (JOE's ^T I, its %I status seat "A") on the same keystrokes.
-#include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
 #include "../tools/madcide/include/madcide/harness"	// <madcide/harness>: ev_text, ev_key, ev_action

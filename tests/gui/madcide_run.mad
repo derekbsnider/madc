@@ -6,7 +6,6 @@
 // found wrong: the ^B Build overlay floats as a fixed-position dialog (not
 // docked into the bottom panel) and its Close button closes it (the @pane
 // cancel by name as an action). Runs under Xvfb through remote_build gui.
-#include "../../tools/texteditor/lined_core.inc"
 #include "../../tools/texteditor/editor_events.inc"
 #include "../../tools/madcide/madcide_core.inc"
 

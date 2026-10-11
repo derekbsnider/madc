@@ -6,7 +6,6 @@
 // go first, a switch to an open buffer is no open, a new file counts once it is
 // saved, ten are kept, the list shows only files that still exist, and a row's
 // file opens. A session without the fact (headless) leaves the list alone.
-#include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
 

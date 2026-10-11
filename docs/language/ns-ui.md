@@ -134,9 +134,9 @@ together. A checkpoint is a new edit branch and clears redo; the
 three-argument `text_undo` is the legacy destructive form (no capture,
 so it clears redo too).
 
-The line-mode editor (`tools/texteditor/` — nine script verbs through
-the one registry, design doc §7.7) is the worked example: a line command
-composes a range edit from `text_line_start`/`text_line_len`.
+madc's ex core (`madc::ex_session`, the colon mode of `madc -i FILE` and
+of any editor built on these publics) is the worked example: a line
+command composes a range edit from `text_line_start`/`text_line_len`.
 
 ## The view seam — the document lens's coordinate map
 
@@ -270,9 +270,7 @@ loud generic reason, never a silent pass. The SAME evaluation answers
 the actor's context) and gates `act`, so enumeration and dispatch can
 never disagree; an unmet keys/levels requirement answers first. Check
 bodies are READ-ONLY by contract: no mutation, no `ui::act`, no session
-lifecycle. One body can serve many verbs (it receives `verb`) — the
-texteditor binds `checks/editable.madv` to all five document-mutating
-commands.
+lifecycle. One body can serve many verbs (it receives `verb`).
 
 The pilot application (`tests/adventure_driver.inc` +
 `tests/adventure_verbs/*.madv`) is the worked example: the whole game
@@ -376,8 +374,8 @@ the dependency-free VT100/xterm one (raw mode, alternate screen,
 differential row repaint; POSIX only — on Windows `tui_open` refuses
 until a Console target registers). The model half — layout, focus, key
 semantics, chords, coalescing, diffing — is engine code shared by every
-target. `tools/texteditor/vised.mad` is the worked example of the
-editor pair (Pico-style fixed chords); `tools/madcide/madcide.mad`
+target. `examples/vised/vised.mad` is the worked example of an editor
+on the public surface (fixed chords, madc's colon mode); `tools/madcide/madcide.mad`
 (a tool, not an example) is the worked case of profiles-as-data
 (the full JOE/WordStar set by default — `profiles/joe.keys` is the
 readable truth; the pico profile respells the single-chord subset) and
@@ -426,7 +424,7 @@ means anything in JavaScript.
 | `fullscreen(t, on)` | The window full screen: 1 enters, 0 leaves, -1 toggles the window's current state (so a window the user took out of full screen by the platform's means toggles from where it is); false = no window to make full screen here (the terminal, a browser page) |
 
 `madc::module_available("madcwebview")` answers whether the window can
-exist on this system; `tools/texteditor/vised.mad <file> --web` is the
+exist on this system; `examples/vised/vised.mad <file> --web` is the
 worked example (`tests/gui/ui_web_hello.mad` / `ui_web_edit.mad` are the
 suite's, under Xvfb in JIT, exe and `.o`).
 

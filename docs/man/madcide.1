@@ -50,7 +50,6 @@ under the name
 The one-shot and server modes
 .RB ( \-c ,
 .BR \-\-mcp ,
-.BR \-\-lsp ,
 .BR \-\-serve )
 need a file.
 .TP
@@ -91,8 +90,13 @@ does without an option; a product built as its own program on madcide's
 base chooses its own default.
 .TP
 .B \-\-line
-The line editor: commands from standard input, the screen's text to
-standard output.
+madc's line mode: the running
+.B madc
+as
+.B madc \-i
+.IR file
+(the ex core at the REPL prompt \(em colon commands on the file, entries
+evaluated against its definitions), with the terminal handed over.
 .TP
 .BI \-\-std= std
 The language standard every buffer compiles under (its diagnostics, outline,

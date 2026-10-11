@@ -261,6 +261,17 @@ EXE_LD_LIBRARY_PATH="$REPO_ROOT/lib:/usr/local/lib"
 export MADCIDE_CONFIG_DIR="$REPO_ROOT/tmp/madcide-no-config"
 unset MADCIDE_PLUGIN_PATH
 
+# madc's session records (madc::session_claim, the discovery advertisements, a
+# project's memory claim) are the developer's live sessions, never the
+# suite's: every test claims into the suite's own directory. A test that pins
+# discovery names its own in its .env (MADC_SESSION_DIR=tmp/…). The REPL
+# history store (`madc -i`'s, madcide's pane's) is the developer's too: the
+# suite's entries go to its own file. Both RELATIVE: the tests run from the
+# repository root, and a relative path crosses into a Windows process
+# (win_run.sh forwards both) where a WSL path would not.
+export MADC_SESSION_DIR="tmp/madc-suite-sessions"
+export MADC_HISTORY_FILE="tmp/madc-suite-history"
+
 # A separate fixture directory uses the same runner (GUI, etc.).
 TEST_DIR="${MADC_TEST_DIR:-tests}"
 if ! compgen -G "$TEST_DIR/*.mad" >/dev/null; then

@@ -21,7 +21,6 @@
 // then the refusals, and the relative dates on fixed (when, now) pairs: what
 // git log --date=relative printed for commits exactly that old (1 s, 30 s,
 // 100 s, 5 h, 3 d, 20 d, 100 d, 400 d, 730 d, 2000 d) and for a future one.
-#include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
 

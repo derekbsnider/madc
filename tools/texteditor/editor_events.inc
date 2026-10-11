@@ -1,11 +1,9 @@
-// editor_events.inc — the SHARED editor event core (madcide IDE-4 split
-// out of vised_core.inc, behavior-preserving: testvised pins it). Both
-// visual editors (vised, madcide) drive the SAME document actions with
-// zero duplicated mutation logic: typing-cadence edits are engine range
-// primitives at the caret; turn-cadence commands are the SAME script
-// verbs through ui::act. What differs per editor is only the DISPATCH —
-// vised's Pico single chords, madcide's bindings-table actions — layered
-// on these functions.
+// editor_events.inc — madcide's editor core (IDE-4; it moves with madcide):
+// the document actions every client of a session drives with zero
+// duplicated mutation logic — typing-cadence edits are engine range
+// primitives at the caret, save and quit are functions over madc's
+// document component (ui::doc_*). What differs per client is only the
+// DISPATCH (the bindings table's actions) layered on these functions.
 //
 // Undo (IDE-2) lives here: every mutating arm checkpoints BEFORE the
 // edit, carrying {caret} as the opaque payload, so undo_edit restores
@@ -13,9 +11,8 @@
 // its own history). One coalesced event = one semantic edit = one undo
 // step.
 //
-// Requires lined_core.inc (setup_document, bind_lineed_verbs) included
-// first by the entry file. Everything here is loop-free and terminal-
-// free (the headless gates drive it directly).
+// Everything here is loop-free and terminal-free (the headless gates drive
+// it directly).
 
 long es_int(long w, long es, const char *key, long dflt)
 {
@@ -34,6 +31,126 @@ bool es_flag(long w, long es, const char *key)
 	return false;
     return v.as_boolean();
 }
+
+// Where a program's DATA directory `sub` lives (the one owner: madcide's
+// profiles, plugins and headers through their callers). An INSTALLED program's data is its install's: the
+// running binary's own directory (madc::compiler_path) anchors the install
+// layouts, <exedir>/../share/<product>/<sub> (the Linux/mac package layout),
+// then <exedir>/<sub> (the Windows zip: data beside the exe), and they come
+// FIRST. The source tree keeps the data beside the file that owns it
+// (`src_dir`, the caller's php::dirname(__FILE__)), the answer when the
+// running binary has no install layout (madc run from its build tree). It
+// is never consulted first: a library compiled from the tree root spells
+// __FILE__ relative (tools/madcide/...), so an installed program started
+// inside a madc checkout would read that tree's data instead of its own.
+// Nothing found keeps the source-tree spelling, so a report names a real
+// place to fix.
+void resolve_data_dir(var &dir, const char *product, const char *src_dir,
+		      const char *sub)
+{
+    const char *self = madc::compiler_path();
+    if ( strlen(self) > 0 )		// "" = the platform probe failed
+    {
+	var exedir = php::dirname(self);
+	var share = format("{}/../share/{}/{}", exedir, product, sub);
+	if ( php::file_exists(share) )
+	{
+	    dir = share;
+	    return;
+	}
+	var beside = format("{}/{}", exedir, sub);
+	if ( php::file_exists(beside) )
+	{
+	    dir = beside;
+	    return;
+	}
+    }
+    dir = format("{}/{}", src_dir, sub);
+}
+
+// A DOCUMENT is madc's document component (ui::doc_*): its path, its kind
+// (stamped from the path when it opens or is renamed — madc's one file-kind
+// table; never re-derived from the name at use), whether it is read-only,
+// and its saved state (modified is DERIVED: the text's version differs from
+// the one last saved). A VIEW text — a panel's transcript ([repl], [build],
+// [terminal]), the Help buffer, a git view, an input field, a lens's render
+// buffer — is no document: a text under a display path only (bag "path"),
+// never looked up on disk, with no kind and no saved state.
+
+// An UNTITLED document has no path: the buffer a launch without a file opens
+// (Thonny's <untitled>, JOE's Unnamed). Its text is real and it lexes and
+// parses; a save asks for a name first. A view text is named, never untitled.
+bool doc_untitled(long w, long doc)
+{
+    if ( !ui::doc_is(w, doc) )
+	return false;
+    var p;
+    ui::doc_path(p, w, doc);
+    return strlen(p.c_str()) == 0;
+}
+
+// The path a buffer carries: a document's file (null when untitled), a view
+// text's display path. Every "the buffer's path" read asks here.
+void buffer_path(var &out, long w, long buf)
+{
+    if ( !ui::doc_is(w, buf) )
+    {
+	ui::get(out, w, buf, "path");
+	return;
+    }
+    var p;
+    ui::doc_path(p, w, buf);
+    var none;
+    if ( strlen(p.c_str()) > 0 )
+	out = p;
+    else
+	out = none;
+}
+
+// The name a buffer goes by: its path, or `untitled` for a document that has
+// none. The unit name a parse, a lens and a REPL run give it, the status
+// line's %n and the tab's title; where a FILE is meant, the path is read.
+void doc_name(var &out, long w, long doc)
+{
+    if ( doc_untitled(w, doc) )
+    {
+	out = "untitled";
+	return;
+    }
+    buffer_path(out, w, doc);
+}
+
+// THE empty document under `path`, unmodified — every document either
+// editor holds that is not read from its file is minted here (a new file's,
+// the untitled buffer's). An empty `path` mints the UNTITLED document, in
+// the madc dialect's kind (Save As stamps the real one).
+long new_document(long w, const char *path)
+{
+    long doc = ui::doc_new(w);
+    if ( strlen(path) > 0 )
+	ui::doc_set_path(w, doc, path);
+    return doc;
+}
+
+// THE view text named `name` (a display path), empty.
+long new_view_text(long w, const char *name)
+{
+    long t = ui::create(w, "view-buffer");
+    ui::text_load(w, t, "");
+    ui::set(w, t, "path", name);
+    return t;
+}
+
+// Open `path` as a document. 0 = the file could not be read (a refused read
+// leaves no orphan document in the world).
+long setup_document(long w, const char *path, bool ro)
+{
+    long doc = ui::doc_open(w, path);
+    if ( doc != 0 && ro )
+	ui::doc_set_read_only(w, doc, true);
+    return doc;
+}
+
 
 // True when the document ends in '\n': offset == size is then a caret
 // on the EMPTY line past the content lines — the phantom line. The
@@ -185,8 +302,8 @@ void shift_es_anchors(long w, long es, long doc, long off, long delta,
 // touched in its CURRENT text (cdirty_lo..cdirty_hi), whether any inserted
 // or erased text held a character that opens or closes a multi-line token
 // (cdirty_multi), and whether the whole text changed at once (cdirty_all:
-// undo, redo). The document's text revision (textrev) moves with every
-// change. The editor itself reads none of it; a client with colour does.
+// undo, redo). The editor itself reads none of it; a client with colour does
+// (with the text's own version, ui::text_version).
 
 // A character that can open or close a token spanning lines: a block
 // comment's `/` `*`, a string's `"` (a raw string), a line continuation's `\`.
@@ -227,11 +344,6 @@ bool multiline_range(long w, long doc, long off, long n)
     return false;
 }
 
-void text_rev_bump(long w, long doc)
-{
-    ui::set(w, doc, "textrev", es_int(w, doc, "textrev", 0) + 1);
-}
-
 // Record an edit at `off` of `delta` bytes on `es`'s colour record: the
 // range already recorded moves with the edit (its start stays before an
 // insert at it, its end follows one), then grows to cover the edit.
@@ -260,7 +372,6 @@ void colour_dirty(long w, long es, long doc, long off, long delta, bool multi)
 // re-colours all of it.
 void colour_dirty_all(long w, long es, long doc)
 {
-    text_rev_bump(w, doc);
     if ( es != 0 )
     {
 	ui::set(w, es, "cdirty_doc", doc);
@@ -285,7 +396,6 @@ void colour_dirty_all(long w, long es, long doc)
 // = the edit's text held a multiline_char.
 void shift_anchors(long w, long es, long doc, long off, long delta, bool multi)
 {
-    text_rev_bump(w, doc);
     if ( es != 0 )
     {
 	shift_es_anchors(w, es, doc, off, delta, false);
@@ -329,36 +439,12 @@ void es_view_doc(long w, long es, long doc)
     ui::set(w, doc, "anchor_es", reg);
 }
 
-// ---- the change event log (client-server arc V4; design doc S2.4) ------
-// The redo / replication / audit log: every text mutation appends one
-// splice RECORD to the document's log; replay reconstructs the buffer at
-// any seq. `seq` is the LSN -- a monotonic per-document COUNTER, never a
-// byte offset (compaction rewrites the store, so the identity is
-// rewrite-stable). NOT a WAL: no write-ahead, no fsync, tail-loss
-// tolerated. This is the NEUTRAL texteditor-layer core -- a record carries
-// only texteditor nouns (es, doc, at/del/ins); madcide adds the .prj.events
-// file and the event:N View on top. STORE: ONE "changelog" entity per
-// SESSION (world), found by name (clog_find) -- the project-scoped stream
-// (Nexus L4c, design 2026-09-13 §3.1) -- whose piece-table buffer holds JSONL
-// (one record per line): append is a text_insert at end (O(1) amortised),
-// and the buffer text IS both the persisted form and the wire form (one
-// serialisation). Every record carries `doc` (the entity) and `path` (the
-// asset's durable identity -- clog_adopt re-attaches a restored log's records
-// to this session's ids by it); the readers fold ONE document's splice /
-// checkpoint records; compaction writes one checkpoint per document at the
-// cut. Replay applies each splice to a scratch buffer through the engine's
-// own text_replace (no dialect string surgery). A "kind" token is text only
-// in the persisted line; replay applies "checkpoint" and "splice" records and
-// skips every other kind (a "nodeop" annotation -- code-graph MCP L3 -- rides
-// the same stream AHEAD of the splices it caused, and changes no text) --
-// the enum-boundary rule.
-
-// The log's record KIND is text only on the persisted line (the wire word);
-// the ONE reader converts it here and every consumer switches on the code —
-// the enum-boundary rule (Nexus L4b). ckOTHER = an annotation kind another
-// layer owns (madcide's nodeop / proposal / record …, madcide_enums.inc
-// nexus_kind): this layer replays splices and checkpoints and skips every
-// other kind by construction.
+// ---- the change log's record kinds (split arc 1D) -------------------------
+// The change log is madc's project memory (madc::tool_host: head / records /
+// replay); a record's KIND is text only on its wire line. The ONE reader
+// converts it here and every consumer switches on the code — the
+// enum-boundary rule (Nexus L4b). ckOTHER = an annotation kind the memory's
+// tools own (a nodeop, a proposal, a record …).
 enum clog_kind : unsigned char { ckNONE = 0, ckSPLICE, ckCHECKPOINT, ckOTHER };
 
 long clog_kind_of(var &rec)
@@ -383,335 +469,6 @@ void keyed_get(var &out, var &map, const char *key)
 {
     if ( map.is_object() && php::array_key_exists(key, map) )
 	out = map[key];
-}
-
-// ---- the ONE reader of the change stream -----------------------------------
-// The stream is JSONL: one record per line, appended by clog_append and
-// rewritten whole by clog_compact / clog_adopt. Its RECORDS come from here and
-// nowhere else. A line that does not parse is a TORN WRITE (a crash mid-append,
-// or the fragment the next append ran into): skipped, never trusted, never
-// re-emitted; the records after it stand on their own seq. Until the V6 seam
-// ten folds read the stream by hand and disagreed — four stopped at a torn
-// line (losing every record after it), five skipped it, one copied its bytes
-// into a rewritten log — so the editor's replay and the nexus's view of ONE
-// stream could differ on the same bytes.
-void clog_records_of(var &out, var &blob)
-{
-    out = {};
-    var lines;
-    php::explode(lines, "\n", blob.c_str());
-    for ( var ln : lines )
-    {
-	if ( strlen(ln.c_str()) == 0 )
-	    continue;
-	var rec;
-	if ( !js::parse(rec, ln) )
-	    continue;			// torn: skipped, never trusted
-	out.push(rec);
-    }
-}
-
-// The live stream's records, parsed ONCE per revision of the text and cached
-// on the log entity: every fold derives its state from these, so a long
-// history costs one parse per change, not one per query (graph.proposals and
-// test.list re-parsed the whole stream on every call). The key is the head
-// seq AND the text size — a rewrite (compact, adopt) changes the bytes without
-// moving the head, and marks the cache dirty besides. The bag hands out
-// copies, so a fold may annotate the records it gets without touching the
-// cache.
-void clog_records(var &out, long w, long le)
-{
-    long head = es_int(w, le, "seq", 0);
-    long size = ui::text_size(w, le);
-    if ( es_int(w, le, "crec_seq", -1) == head
-      && es_int(w, le, "crec_size", -1) == size )
-    {
-	ui::get(out, w, le, "crec");
-	if ( !out.is_null() )
-	    return;
-    }
-    var blob;
-    ui::text(blob, w, le);
-    clog_records_of(out, blob);
-    ui::set(w, le, "crec", out);
-    ui::set(w, le, "crec_seq", head);
-    ui::set(w, le, "crec_size", size);
-}
-
-// A rewrite of the stream's text (compact, adopt) says so.
-void clog_records_dirty(long w, long le)
-{
-    ui::set(w, le, "crec_seq", -1);
-}
-
-// The session's change-log entity WITHOUT creating it (0 = none yet): the
-// ONE stream every document's records ride (Nexus L4c, design §3.1).
-long clog_find(long w)
-{
-    return ui::entity_by_name(w, "changelog");
-}
-
-// The change-log entity, created on first need; seq lives on it. `doc` is the
-// caller's document (kept so no caller moves); the entity is the SESSION's.
-long changelog_of(long w, long doc)
-{
-    long le = clog_find(w);
-    if ( le > 0 )
-	return le;
-    le = ui::create(w, "changelog");
-    ui::text_load(w, le, "");	// initialise the piece-table component
-    ui::set(w, le, "seq", 0);
-    return le;
-}
-
-// Append one record LINE to the log; answer the seq it received.
-long clog_append(long w, long doc, var &rec)
-{
-    long le = changelog_of(w, doc);
-    long seq = es_int(w, le, "seq", 0) + 1;
-    ui::set(w, le, "seq", seq);
-    rec["seq"] = seq;
-    rec["ts"] = php::time();		// when (design §2.4's ChangeEvent.ts; L4b)
-    var p;
-    buffer_path(p, w, doc);
-    if ( !p.is_null() )
-	rec["path"] = p;		// the asset's durable identity (clog_adopt re-attaches by it)
-    var line = js::stringify(rec);
-    ui::text_insert(w, le, ui::text_size(w, le), format("{}\n", line));
-    return seq;
-}
-
-// The ONE splice record, written by the text-mutation owner below in one
-// pass with the anchor shift: at `at`, remove `del` bytes, insert `ins`.
-long journal_splice(long w, long es, long doc, long at, long del, const char *ins)
-{
-    var rec = { "kind": "splice", "es": es, "doc": doc,
-	"at": at, "del": del, "ins": ins };
-    return clog_append(w, doc, rec);
-}
-
-// A checkpoint: the whole buffer text at the current seq. Replay starts
-// from the newest checkpoint <= its target, so the log can be truncated
-// ahead of one (compaction).
-long clog_checkpoint(long w, long doc)
-{
-    var t;
-    ui::text(t, w, doc);
-    var rec = { "kind": "checkpoint", "doc": doc, "text": t };
-    return clog_append(w, doc, rec);
-}
-
-// The doc's scratch replay buffer (reused across replays), created lazily.
-long replaybuf_of(long w, long doc)
-{
-    long scr = es_int(w, doc, "replaybuf", 0);
-    if ( scr > 0 )
-	return scr;
-    scr = ui::create(w, "replay-buffer");
-    ui::set(w, doc, "replaybuf", scr);
-    return scr;
-}
-
-// Reconstruct the buffer text at seq `upto` (<= 0 = the whole log) by
-// replaying forward from the newest checkpoint whose seq <= `upto`. A seq
-// below the oldest surviving checkpoint clamps to that checkpoint (the
-// retention rule). Folds ONE document's records out of the session stream; a
-// document with no record yet IS at revision 0 (its live text). The engine of
-// the replay gate AND the event:N View.
-void clog_replay(var &out, long w, long doc, long upto)
-{
-    long le = clog_find(w);
-    if ( le <= 0 )
-    {
-	ui::text(out, w, doc);	// no log yet: the live text IS revision 0
-	return;
-    }
-    long scr = replaybuf_of(w, doc);
-    ui::text_load(w, scr, "");
-    var recs;
-    clog_records(recs, w, le);
-    bool seen = false;		// a record of this doc within range
-    bool any = false;		// any record of this doc applied
-    for ( var rec : recs )
-    {
-	if ( rec["doc"].as_integer() != doc )
-	    continue;		// another document's record (the ONE stream)
-	long seq = rec["seq"].as_integer();
-	long kind = clog_kind_of(rec);
-	if ( upto > 0 && seq > upto )
-	{
-	    // a target below the oldest surviving record clamps UP to that
-	    // checkpoint (the retention rule) -- never a silent empty answer
-	    if ( kind == ckCHECKPOINT && !seen )
-	    {
-		ui::text_load(w, scr, rec["text"].c_str());
-		any = true;
-	    }
-	    break;
-	}
-	seen = true;
-	if ( kind == ckCHECKPOINT )
-	{
-	    ui::text_load(w, scr, rec["text"].c_str());
-	    any = true;
-	}
-	else if ( kind == ckSPLICE )
-	{
-	    long at = rec["at"].as_integer();
-	    long del = rec["del"].as_integer();
-	    var ins = rec["ins"];
-	    ui::text_replace(w, scr, at, del, ins.c_str());
-	    any = true;
-	}
-	// any other kind (a node-op annotation, code-graph L3) changes no text: skipped
-    }
-    if ( !any )
-    {
-	ui::text(out, w, doc);	// no record of this doc: the live text IS revision 0
-	return;
-    }
-    ui::text(out, w, scr);
-}
-
-// The changelog head seq WITHOUT creating the log (0 = none yet) — the cheap
-// "did this edit advance the log?" probe the broadcast feed reads before and
-// after a command (V6a duplex D2). The SESSION's head (one stream); `doc` is
-// kept so no caller moves.
-long clog_head(long w, long doc)
-{
-    long le = clog_find(w);
-    if ( le <= 0 )
-	return 0;
-    return es_int(w, le, "seq", 0);
-}
-
-// The raw change-event records with seq > `since`, oldest-first — the
-// replication feed a client reads incrementally (V6a duplex D2, the
-// {"event":…} push). Unlike clog_replay (which reconstructs BUFFER TEXT at a
-// revision), this returns the events THEMSELVES, for a peer to apply/observe.
-// `doc` 0 = every document's events. A torn line is the reader's to skip
-// (clog_records): never a half-parsed event, and never a lost one after it.
-void events_since(var &out, long w, long doc, long since)
-{
-    out = {};
-    long le = clog_find(w);
-    if ( le <= 0 )
-	return;
-    var recs;
-    clog_records(recs, w, le);
-    for ( var rec : recs )
-    {
-	if ( doc != 0 && rec["doc"].as_integer() != doc )
-	    continue;		// doc 0 = every document's events
-	if ( rec["seq"].as_integer() > since )
-	    out.push(rec);
-    }
-}
-
-// Compaction (design S2.4): when the log exceeds `limit` bytes, rewrite it
-// as a fresh checkpoint at seq `cut` (= head - `keep`) followed by the last
-// `keep` records whole. ONE checkpoint PER DOCUMENT that has a record at or
-// below the cut (each document's replay starts from its own). Every
-// surviving seq stays replayable from its checkpoint -- the INVARIANT: never
-// truncate past a checkpoint a retained event needs. A no-op below the limit
-// or with fewer than `keep` events.
-void clog_compact(long w, long doc, long limit, long keep)
-{
-    long le = clog_find(w);
-    if ( le <= 0 || ui::text_size(w, le) < limit )
-	return;
-    long cut = es_int(w, le, "seq", 0) - keep;
-    if ( cut <= 0 )
-	return;
-    var recs;
-    clog_records(recs, w, le);
-    // The documents with a record at or below the cut, in first-seen order,
-    // and the path each last carried (the doc entity may be gone by now).
-    var docs = {};
-    var seen;			// doc-key -> 1 (a null var becomes the map on its first keyed write)
-    var paths;			// doc-key -> path
-    for ( var rec : recs )
-    {
-	if ( rec["seq"].as_integer() > cut )
-	    continue;
-	var key = format("{}", rec["doc"]);
-	var hit;
-	keyed_get(hit, seen, key.c_str());
-	if ( hit.is_null() )
-	{
-	    seen[key.c_str()] = 1;
-	    docs.push(rec["doc"]);
-	}
-	var rp = rec["path"];
-	if ( !rp.is_null() )
-	    paths[key.c_str()] = rp;
-    }
-    var rebuilt = "";
-    for ( var d : docs )
-    {
-	var base;
-	clog_replay(base, w, d.as_integer(), cut);
-	var cp = { "seq": cut, "kind": "checkpoint", "doc": d, "text": base, "ts": php::time() };
-	var key = format("{}", d);
-	var rp;
-	keyed_get(rp, paths, key.c_str());
-	if ( !rp.is_null() )
-	    cp["path"] = rp;
-	var js = js::stringify(cp);
-	rebuilt = format("{}{}\n", rebuilt, js);
-    }
-    // The surviving records, re-emitted from the parsed form (a record was
-    // written by js::stringify, so this is its own bytes; a torn line is not
-    // a record and is gone).
-    for ( var rec : recs )
-    {
-	if ( rec["seq"].as_integer() > cut )
-	{
-	    var js = js::stringify(rec);
-	    rebuilt = format("{}{}\n", rebuilt, js);
-	}
-    }
-    ui::text_load(w, le, rebuilt.c_str());
-    clog_records_dirty(w, le);
-}
-
-// A restored record's `doc` is an entity id of the SESSION THAT WROTE IT; the
-// asset's durable identity is its path. Rewrite every record whose `path` is
-// this document's to this document's id, so the per-document fold finds them.
-// Called by clog_restore for the restoring document and by a later open of a
-// project member; a no-op when nothing matches.
-void clog_adopt(long w, long doc)
-{
-    long le = clog_find(w);
-    if ( le <= 0 )
-	return;
-    var p;
-    buffer_path(p, w, doc);
-    if ( p.is_null() )
-	return;
-    var recs;
-    clog_records(recs, w, le);
-    var rebuilt = "";
-    bool changed = false;
-    for ( var rec : recs )
-    {
-	var rp = rec["path"];
-	if ( !rp.is_null() && rp == p && rec["doc"].as_integer() != doc )
-	{
-	    rec["doc"] = doc;
-	    changed = true;
-	}
-	// Re-emitted from the parsed form: a record's own bytes; a torn line
-	// is not a record and does not survive a rewrite (until the V6 seam
-	// this pass copied its bytes forward).
-	var js = js::stringify(rec);
-	rebuilt = format("{}{}\n", rebuilt, js);
-    }
-    if ( changed )
-    {
-	ui::text_load(w, le, rebuilt.c_str());
-	clog_records_dirty(w, le);
-    }
 }
 
 // ---- one mutation path (split arc 1D, item 17) --------------------------
@@ -764,7 +521,6 @@ void ed_text_insert(long w, long es, long doc, long off, const char *s)
     ed_editing_es = es;
     ui::text_insert(w, doc, off, s);
     ed_editing_es = was;
-    journal_splice(w, es, doc, off, 0, s);
 }
 
 void ed_text_erase(long w, long es, long doc, long off, long n)
@@ -776,7 +532,6 @@ void ed_text_erase(long w, long es, long doc, long off, long n)
     ui::text_erase(w, doc, off, n);
     ed_editing_es = was;
     ed_erase_multi = multi_was;
-    journal_splice(w, es, doc, off, n, "");
 }
 
 // A caret on `line` keeping column `col` when the line is long enough —
@@ -803,30 +558,40 @@ long caret_to_line(long w, long doc, long line, long col)
     return start + col;
 }
 
-// The read-only rule's verdict on the FILE, from the enumerated
-// affordances (verb `c`'s enumerated state): `editable` and its `reason`.
-// False = no `c` affordance is registered (`editable` stays true). The one
-// reader: derive_access stores it on the bag; a client whose display is
-// read-only over a file that is not (madcide's menus over a lens that
-// edits through to the file) asks it directly.
+// Is buffer `buf` read-only? A document's own flag (ui::doc_read_only), or a
+// view text's (bag "read_only": the help, a git view). The ONE rule: the
+// typing gate, save and the menus' state all read it.
+bool buffer_read_only(long w, long buf)
+{
+    if ( ui::doc_is(w, buf) )
+	return ui::doc_read_only(w, buf);
+    var ro;
+    ui::get(ro, w, buf, "read_only");
+    return !ro.is_null() && ro.as_boolean();
+}
+
+// The read-only verdict on the client's SUBJECT buffer — the actor's active
+// document ("adoc"), else the world's one "document" — and its refusal
+// prose: `editable` and its `reason`. False = no subject buffer
+// (`editable` stays true). The one reader: derive_access stores it on the
+// bag; a client whose display is read-only over a file that is not
+// (madcide's menus over a lens that edits through to the file) asks it
+// directly.
 bool access_verdict(bool &editable, var &reason, long w, long es)
 {
     editable = true;
     reason = "";
-    bool found = false;
-    var affs;
-    ui::affordances(affs, w, es);
-    for ( var a : affs )
+    long doc = es_int(w, es, "adoc", 0);
+    if ( doc == 0 )
+	doc = ui::entity_by_name(w, "document");
+    if ( doc == 0 )
+	return false;
+    if ( buffer_read_only(w, doc) )
     {
-	var act = format("{}", a["action"]);
-	if ( act == "c" )
-	{
-	    editable = a["enabled"].as_boolean();
-	    reason = format("{}", a["reason"]);
-	    found = true;
-	}
+	editable = false;
+	reason = "Document is read-only.";
     }
-    return found;
+    return true;
 }
 
 // The typing gate AND its refusal prose, derived ONCE from the
@@ -867,44 +632,49 @@ long new_editor_state(long w, long doc)
     return es;
 }
 
-// The editor-state half of setup_editor, over a document already in the
-// world (madcide's launch opens its document through its own open rule,
-// open_buffer_doc). False = the verbs failed to load (already reported).
-bool setup_editor_state(long w, long doc)
-{
-    if ( !bind_lineed_verbs(w) )
-	return false;
-    new_editor_state(w, doc);
-    return true;
-}
-
-// The editor session vised and the headless gates open the same way:
-// document + editor-state + the shared verbs/check + the derived access
-// verdict (madcide's launch runs the state half behind its own open rule).
-// 0 = the file could not be read; -1 = the shared verbs could not bind
-// (the reason is already on stderr), and an editor that cannot save or
-// quit must not start.
+// The editor session the headless gates open: the document + its
+// editor-state (madcide's launch opens its document through its own open
+// rule, open_buffer_doc, then new_editor_state). 0 = the file could not be
+// read.
 long setup_editor(long w, const char *path, bool ro)
 {
     long doc = setup_document(w, path, ro);
     if ( doc == 0 )
 	return 0;
-    return setup_editor_state(w, doc) ? doc : -1;
+    new_editor_state(w, doc);
+    return doc;
 }
 
-// Dispatch a turn-cadence command through the SAME script verb the line
-// editor runs; the answer (or refusal) becomes the status message. False
-// = the verb ended the session (q/q! set the quit flag).
-bool do_verb(long w, long es, const char *verb)
+// Save: the buffer written back to its file (ui::doc_save — the write and
+// "the file on disk IS this" in one); a read-only buffer, one with no file
+// and a failed write refuse. The answer is the status message; the session
+// goes on.
+bool buffer_write(long w, long es, long doc)
 {
-    var out;
-    ui::act(out, w, es, verb, "");
-    ui::set(w, es, "msg", out.c_str());
-    var qd;
-    ui::get(qd, w, es, "quit");
-    if ( !qd.is_null() && qd.as_boolean() )
-	return false;
+    var p;
+    ui::doc_path(p, w, doc);
+    if ( buffer_read_only(w, doc) )
+	ui::set(w, es, "msg", "Document is read-only.");
+    else if ( strlen(p.c_str()) == 0 )
+	ui::set(w, es, "msg", "No path.");
+    else if ( !ui::doc_save(w, doc) )
+	ui::set(w, es, "msg", "Write failed.");
+    else
+	ui::set(w, es, "msg", format("Wrote {} bytes.", ui::text_size(w, doc)));
     return true;
+}
+
+// Quit: refused while the buffer has unsaved changes, unless `discard`
+// (§7.3's modified rule). False = the session ends.
+bool buffer_quit(long w, long es, long doc, bool discard)
+{
+    if ( !discard && ui::doc_modified(w, doc) )
+    {
+	ui::set(w, es, "msg", "Unsaved changes — w to save, q! to discard.");
+	return true;
+    }
+    ui::set(w, es, "msg", "Bye.");
+    return false;
 }
 
 void enter_search(long w, long es)

@@ -6,7 +6,6 @@
 // composition byte-identical); this reducer pins the new hints. Oracle:
 // the design's role->region table (docs/plans/2026-09-06-ui-web-target-
 // and-madcide-gui.md §3.4). Runs with the madcide session, no compiler.
-#include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
 

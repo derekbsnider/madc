@@ -20,7 +20,6 @@
 // side_cxx20 — so a buffer's outline says which standard its parse saw. The
 // configuration directory is this test's fixture (MADCIDE_CONFIG_DIR in
 // testmadcide_std.env).
-#include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
 #include "../tools/madcide/madcide_args.inc"
@@ -28,7 +27,7 @@
 // The function the buffer's parse handle outlines: one per standard.
 void side_of(var &out, long w, long es, long doc)
 {
-    long h = ensure_phandle(w, es, doc);
+    long h = reparse_buffer(w, es, doc);
     var o;
     madc::parse_outline(o, h);
     out = "none";

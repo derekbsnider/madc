@@ -25,8 +25,8 @@
 #   madc-<ver>-macos-<arch>/lib/libmadcmark.dylib  the madcmark module (markdown::, cmark-gfm linked in)
 #   madc-<ver>-macos-<arch>/bin/madcide       the IDE, AOT-compiled by bin/madc (darwin host of this arch only)
 #   madc-<ver>-macos-<arch>/lib/libmadcide.dylib  madcide's base as a library, for a product built on it
-#   madc-<ver>-macos-<arch>/share/madcide/    madcide's data (profiles, plugins, plugin headers,
-#                                             verbs, checks — scripts/stage_madcide_data.sh)
+#   madc-<ver>-macos-<arch>/share/madcide/    madcide's data (profiles, plugins, plugin headers —
+#                                             scripts/stage_madcide_data.sh)
 #   madc-<ver>-macos-<arch>/share/man/man1/madc.1.gz (+ madcide.1.gz with the IDE)
 #   madc-<ver>-macos-<arch>/share/doc/madc/examples/madc.ini
 #   madc-<ver>-macos-<arch>/LICENSE
@@ -254,8 +254,8 @@ package_arch() {
     if [ "$ide" = 1 ]; then
         ide_text="
 madcide (bin/madcide): the madc IDE — a terminal editor (bin/madcide
-file.c), or a window with --gui. Its keybinding profiles, plugins and
-the line editor's verbs live in share/madcide next to this README.
+file.c), or a window with --gui. Its keybinding profiles and plugins
+live in share/madcide next to this README.
 "
     fi
     cat > "$stage/$root/README-macos.txt" <<EOF

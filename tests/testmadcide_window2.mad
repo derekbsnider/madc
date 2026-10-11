@@ -14,7 +14,6 @@
 // display) exactly as the other madcide gates drive the session. The real
 // two-window webview pump (GTK smoke + the seam lanes) is the flagged
 // platform follow-up.
-#include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
 #include "../tools/madcide/include/madcide/harness"	// <madcide/harness>: ev_text, ev_key, ev_action
@@ -38,7 +37,6 @@ int main()
 
     long w = ui::world_new();
     long doc = setup_document(w, path, false);	// the ONE shared document
-    bind_lineed_verbs(w);			// the world's edit verbs (once)
 
     // Two windows = two clients, each its own editor-state bag over the one
     // document, built by the SAME per-client init the launch window uses.

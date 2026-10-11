@@ -9,7 +9,6 @@
 // tree stays profile-independent — testmadcide's swap-identity gate
 // keeps holding. The TUI reads none of it (its shape clauses are pinned
 // elsewhere). Runs with the madcide session, no compiler.
-#include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
 

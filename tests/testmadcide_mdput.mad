@@ -13,7 +13,6 @@
 //  - the Edit menu judges the file (Undo, Cut, Paste enabled; Copy Block
 //    not, a formatted view refuses it); Cut puts what the view shows on
 //    the clipboard; a block marker is taken; Copy Block is refused.
-#include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
 

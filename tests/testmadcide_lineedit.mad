@@ -16,7 +16,6 @@
 //   - A span with one commented line and one not comments both.
 //   - A .py file takes "#"; a .txt file has no line comment and refuses; a
 //     read-only buffer refuses with its read-only reason.
-#include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
 

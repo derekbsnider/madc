@@ -5,7 +5,6 @@
 // arrives as the editor's KEY and types a tab at the caret (JOE's Tab; the
 // headless pins: tests/testmadcide_tab.mad). Runs under Xvfb through the
 // gui lane.
-#include "../../tools/texteditor/lined_core.inc"
 #include "../../tools/texteditor/editor_events.inc"
 #include "../../tools/madcide/madcide_core.inc"
 

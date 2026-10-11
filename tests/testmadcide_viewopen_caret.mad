@@ -2,7 +2,6 @@
 // when no lens is up (tools/madcide/madcide_core.inc exit_lens). The caret
 // a lens parks on entry ("ocaret") is a lens's to return; with no lens up it
 // is stale — the caret must not jump to it.
-#include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
 

@@ -7,11 +7,9 @@
 // full-screen request is served against the window's platform call
 // (madcwebview_fullscreen — GTK's, under Xvfb), which takes it. The page's
 // body is drawn at the chosen size (its computed font-size).
-#include "../../tools/texteditor/lined_core.inc"
 #include "../../tools/texteditor/editor_events.inc"
 #include "../../tools/madcide/madcide_core.inc"
 #include "../../tools/madcide/madcide_args.inc"
-#include "../../tools/madcide/madcide_discover.inc"
 #include "../../tools/madcide/madcide_client.inc"
 
 // A key pressed in the page: its keydown handler spells it and posts it.

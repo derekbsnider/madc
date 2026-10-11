@@ -4,7 +4,6 @@
 // diagnostics — before this, Check lexed the prose as C and reported the
 // apostrophe in "can't" as `missing terminating ' character`. The negative
 // control: a .c file with an undeclared name still gets its diagnostic.
-#include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
 
@@ -22,7 +21,7 @@ void check_file(const char *label, const char *path, const char *text)
     var m;
     ui::get(m, w, es, "msg");
     println("{}: reaches={} handle={} diags={} msg={}", label,
-	    kind_reaches_compiler(ui::doc_kind(w, doc)), es_int(w, doc, "phandle", 0) != 0,
+	    kind_reaches_compiler(ui::doc_kind(w, doc)), madc::doc_parsed(w, doc) != 0,
 	    d.is_null() ? 0 : php::count(d), m);
     S.close();
     php::unlink(path);

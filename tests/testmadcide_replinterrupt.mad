@@ -6,7 +6,6 @@
 // does the same (seINTERRUPT, the console rule a terminal's Ctrl+C follows);
 // with nothing running, Interrupt says so and Copy's own "Nothing selected."
 // stands.
-#include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
 #include "../tools/madcide/include/madcide/harness"	// <madcide/harness>: ev_*, settle, enter_line

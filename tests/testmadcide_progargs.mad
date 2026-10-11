@@ -9,7 +9,6 @@
 //   2. the prompt starts with the current words;
 //   3. an unclosed quote is refused and the old words stay;
 //   4. emptied, the arguments are none and main sees argc 1.
-#include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
 

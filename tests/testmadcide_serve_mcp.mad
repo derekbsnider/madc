@@ -1,19 +1,22 @@
-// V6c-1: the MCP seat. `madcide <file> --mcp` is a headless Model Context
-// Protocol server over stdio (JSON-RPC 2.0, one message per line). A tool call
-// is an `api` command by NAME — run_mcp is an adapter over api_run, the SAME
-// command core the --serve api seat drives. This test IS run_mcp: the JSON-RPC
-// requests arrive on stdin (the .input fixture), the responses go to stdout
-// (matched by .expect), exactly as a real MCP client drives the deployed
-// `--mcp` process. It exercises the whole surface: initialize, a notification
-// (no reply), tools/list (the registry as tools), tools/call on a real command
-// (isError:false), and tools/call on an unknown tool (isError:true + prose).
-#include "../tools/texteditor/lined_core.inc"
+// V6c-1, split arc 1D: the MCP seat. `madcide <file> --mcp` is a headless
+// Model Context Protocol server over stdio (JSON-RPC 2.0, one message per
+// line) served by the session's tool host: madc's tools (the code graph, the
+// project memory's) and madcide's registry commands as tools — a command
+// tool is an adapter over api_run, the SAME command core the --serve api
+// seat drives. This test IS run_mcp: the JSON-RPC requests arrive on stdin
+// (the .input fixture), the responses go to stdout (matched by .expect),
+// exactly as a real MCP client drives the deployed `--mcp` process. It
+// exercises initialize (madc's server), a notification (no reply),
+// tools/list (the registry as tools), tools/call on a real command
+// (isError:false, the session's projections) and an unknown tool (the
+// JSON-RPC invalid-params error naming it).
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
-#include "../tools/madcide/madcide_discover.inc"
 #include "../tools/madcide/madcide_client.inc"
 #include "../tools/madcide/madcide_api.inc"
-#include "../tools/madcide/madcide_mcp.inc"
+#include "../tools/madcide/madcide_seat.inc"
+#include "../tools/madcide/madcide_ws.inc"
+#include "../tools/madcide/madcide_serve.inc"
 
 int main()
 {

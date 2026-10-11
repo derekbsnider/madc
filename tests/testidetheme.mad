@@ -4,7 +4,6 @@
 // lines still feed the TUI `theme` unchanged — one file, two renderings.
 // The composer attaches the gui_theme to the root's hints. Oracle: the
 // profile files' own @gui/unscoped lines (design §3.4).
-#include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
 

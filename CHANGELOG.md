@@ -2,6 +2,45 @@
 
 ## [Unreleased]
 
+### madcide runs on madc's services — the colon line, `examples/vised`, lined retired
+
+madcide's nine service files (`madcide_lsp.inc`, `madcide_mcp.inc`,
+`madcide_nexus.inc`, `madcide_past.inc`, `madcide_propose.inc`,
+`madcide_tests.inc`, `madcide_layers.inc`, `madcide_mcpclient.inc`,
+`madcide_discover.inc`) are deleted. madcide now builds a `madc::tool_host`
+over its `ui::` world (`ide_host` in `tools/madcide/madcide_core.inc`),
+registers its commands as that host's tools, and serves MCP through it; the
+change log is the host's memory (`head` / `records` / `replay`).
+`MADC_SESSION_DIR` replaces `MADCIDE_SESSION_DIR`, and `tools/vscode-madcide`
+targets `madc --lsp`.
+
+A buffer's parse is its world document's: `reparse_buffer` in
+`madcide_core.inc` is the one entry onto `madc::doc_parse` (the per-document
+standard set through `madc::doc_set_standard`, the retained spans read back
+through `madc::doc_parsed`). `ensure_phandle`, `parse_lock` and
+`doc_forget_parse` are gone.
+
+The colon line runs madc's ex core through `madc::ex_session`; madcide's
+`view*` verbs remain its own. `tools/texteditor`'s `.madv` verbs and the
+`lined` line editor are retired. `editor_events.inc` gains `buffer_write`,
+`buffer_quit` and `new_editor_state` and the document helpers.
+`madcide --line FILE` runs `madc -i` through `madc::compiler_run`
+(`tools/madcide/madcide_line.inc`), and the REPL pane's history is madc's
+history store (`madc::history_entries` / `madc::history_append`).
+
+`examples/vised/` is a self-contained example editor on `ui::`, the document
+component and madc's colon mode; `tests/testvised.mad` is rewritten over it,
+and `tools/texteditor/vised*`, `lined*` and `testlineed` are deleted.
+
+A closed buffer row closes its world document with its last row (`doc_hold` /
+`doc_release` in `madcide_core.inc`), so reopening a path never returns a
+discarded buffer's text (`tests/testmadcide_close.mad`). `tests/testmadcide.mad`
+pins vim's refusal of `:q` while another buffer holds unsaved text (E162), then
+`:q!`. `scripts/run_tests.sh` exports relative `MADC_SESSION_DIR` and
+`MADC_HISTORY_FILE` under `tmp/` (`scripts/win_run.sh` forwards
+`MADC_HISTORY_FILE`); the packaging, staging and static-check scripts are
+updated for the removed files.
+
 ### madc's colon mode as a dialect face — `madc::ex_session` over a ui:: world
 
 `madc::ex_session` (`include/madc_ex_session.h`, declared in `<ns_madc>` and

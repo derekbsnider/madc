@@ -12,7 +12,6 @@
 //      the keyboard, and not while a prompt holds it;
 //   4. vi NORMAL mode types no text: tab is inert there (vim's normal-mode
 //      Tab walks the jump list, which madcide does not keep).
-#include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
 #include "../tools/madcide/include/madcide/harness"	// <madcide/harness>: ev_text, ev_key, ev_action

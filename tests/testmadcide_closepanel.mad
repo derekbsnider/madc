@@ -13,7 +13,6 @@
 // Oracle: madcide's own contract — the last editing buffer never goes (the
 // untitled one is emptied) — and Thonny, the UX oracle, whose Shell is a
 // view of its own that closing an editor file never touches.
-#include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
 

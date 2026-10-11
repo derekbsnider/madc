@@ -6,7 +6,6 @@
 // parks nothing, and the View menu's item is disabled (the context fact
 // `window`). A window whose host has no full screen (a browser page, the ws
 // seat) refuses with a message.
-#include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
 #include "../tools/madcide/madcide_client.inc"

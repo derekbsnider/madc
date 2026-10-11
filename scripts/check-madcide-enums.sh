@@ -22,10 +22,10 @@
 #   5. (V2 layouts) no layout node carries its discriminator as text — a
 #      `"slot": "…"`, `"side": "…"`, `"mode": "…"` or `"dir": "…"` literal
 #      field (ide_slot / ui::side / ide_pmode / ui::split belong there).
-# The seat files (madcide_mcp / _past / _propose / _seat / _nexus / _tests /
-# _mcpclient / _layers.inc) are checked by the same rules (Nexus L4c–L4e):
-# the tier, proposal-status, intent-vocabulary, layer, test-result and
-# node-serve words joined the converter list.
+# The seat files (madcide_seat.inc and the public headers) are checked by
+# the same rules (Nexus L4c); the tier words joined the converter list. (The
+# intent / layer / test / LSP / MCP vocabularies left with the service files
+# madc's tool host replaced, split arc 1D.)
 #   7. every unscoped enumerator of madcide's sources (tools/madcide/*.inc,
 #      the plugin API <madcide/plugin_api>, the shared editor core
 #      tools/texteditor/*.inc — one translation unit) is declared ONCE: C11
@@ -45,16 +45,13 @@ ENUMS="$ROOT/tools/madcide/madcide_enums.inc"
 # headers (include/madcide/*): <madcide/session> holds the IdeSession class,
 # moved out of madcide_core.inc (plan 2026-10-04-chthonia-own-repository.md
 # §3a slice 3), and stays under the core's rules.
-SEAT_FILES=$(ls "$ROOT"/tools/madcide/madcide_mcp.inc "$ROOT"/tools/madcide/madcide_past.inc \
-	"$ROOT"/tools/madcide/madcide_propose.inc "$ROOT"/tools/madcide/madcide_seat.inc \
-	"$ROOT"/tools/madcide/madcide_nexus.inc "$ROOT"/tools/madcide/madcide_tests.inc \
-	"$ROOT"/tools/madcide/madcide_mcpclient.inc "$ROOT"/tools/madcide/madcide_layers.inc \
-	"$ROOT"/tools/madcide/madcide_lsp.inc "$ROOT"/tools/madcide/include/madcide/* 2>/dev/null)
+SEAT_FILES=$(ls "$ROOT"/tools/madcide/madcide_seat.inc \
+	"$ROOT"/tools/madcide/include/madcide/* 2>/dev/null)
 
 # The name words: every `return "word";` inside the five name converters.
 name_words()
 {
-	awk '/^const char \*(pane|tab|prompt|vimode|req|view|gen|slot|container|pmode|tier|proposal_status|record_kind|record_state|record_op|link_op|ref_kind|rel|provenance|test_family|nexus_op|mcp_transport|explain_detail|layer|test_result|node_serve|pos_encoding|lsp_token|lsp_method|mcp_method)_name\(long/ { on = 1 }
+	awk '/^const char \*(pane|tab|prompt|vimode|req|view|gen|slot|container|pmode|tier|lsp_token)_name\(long/ { on = 1 }
 	     on { print }
 	     on && /^}/ { on = 0 }' "$1" |
 	grep -o 'return "[a-z/]*";' | sed 's/return "//; s/";$//' | grep -v '^$' | sort -u
@@ -107,9 +104,9 @@ check()
 		rc=1
 	fi
 	# 6. (V6 seam) no strcmp/strncmp ladder against a discriminator's name
-	#    word — the MCP seat's top-level dispatch did this while its own tool
-	#    families and the LSP face converted once; a wire method converts
-	#    through its *_of() and the seat switches on the code.
+	#    word — the old MCP seat's top-level dispatch did this while its own
+	#    tool families converted once; a wire word converts through its
+	#    *_of() and the caller switches on the code.
 	bad=$(grep -n -E "strn?cmp\([^,]+, \"($alt)\"" "$core" "$client" "$once" $SEAT_FILES)
 	if [ -n "$bad" ]; then
 		echo "check-madcide-enums: FAIL ($label) — a strcmp against a" \
@@ -222,11 +219,11 @@ if check "$tmpcore" "$CLIENT" "$ENUMS" "control" "$ONCE" 2>/dev/null; then
 	     "discriminator went undetected (rule 5 went blind)." >&2
 	exit 1
 fi
-awk '{ print } /^bool IdeSession::apply_ide_event/ { print "\tif ( strcmp(m, \"initialize\") == 0 ) return true;" }' "$CORE" > "$tmpcore"
+awk '{ print } /^bool IdeSession::apply_ide_event/ { print "\tif ( strcmp(m, \"observer\") == 0 ) return true;" }' "$CORE" > "$tmpcore"
 if check "$tmpcore" "$CLIENT" "$ENUMS" "control" "$ONCE" 2>/dev/null; then
 	rm -f "$tmpcore"
 	echo "check-madcide-enums: FAIL — negative control: a strcmp ladder" \
-	     "against a method word went undetected (rule 6 went blind)." >&2
+	     "against a name word went undetected (rule 6 went blind)." >&2
 	exit 1
 fi
 tmpenum=$(mktemp)

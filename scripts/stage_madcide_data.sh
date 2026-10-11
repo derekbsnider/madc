@@ -27,9 +27,6 @@
 #                      (<madcide/harness>, with <madcide/session> and
 #                      <madcide/vocabulary>; a product's build and tests
 #                      name it with -I and link libmadcide)
-#   verbs/, checks/    the line editor's verb and check bodies (save, quit and
-#                      the rest are verbs): madcide refuses to start without
-#                      them rather than run an editor that cannot save or quit
 set -e
 cd "$(dirname "$0")/.."
 
@@ -44,10 +41,7 @@ if [ ! -d "$plugins" ]; then
 	exit 1
 fi
 
-mkdir -p "$dest/profiles" "$dest/plugins" "$dest/include/madcide" \
-	 "$dest/verbs" "$dest/checks"
+mkdir -p "$dest/profiles" "$dest/plugins" "$dest/include/madcide"
 install -m 644 tools/madcide/profiles/* "$dest/profiles/"
 cp -R "$plugins"/. "$dest/plugins/"
 install -m 644 tools/madcide/include/madcide/* "$dest/include/madcide/"
-install -m 644 tools/texteditor/verbs/*.madv "$dest/verbs/"
-install -m 644 tools/texteditor/checks/*.madv "$dest/checks/"

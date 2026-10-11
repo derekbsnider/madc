@@ -2,8 +2,8 @@
 # check-one-blank-run.sh — the "leading blanks of a text" gate: ONE scanner.
 #
 # How many spaces and tabs a text starts with has ONE owner in the dialect
-# tools: blank_run in tools/texteditor/editor_events.inc (the shared editor
-# layer every madcide and vised file includes). On 2026-10-04 the chthonia
+# tools: blank_run in tools/texteditor/editor_events.inc (madcide's editor
+# layer every madcide file includes). On 2026-10-04 the chthonia
 # line edits (Indent, Dedent, Toggle comment) needed it and found two
 # hand-rolled copies already standing — a layout line's nesting depth
 # (madcide_core.inc) and the indent an MCP fragment inherits

@@ -319,13 +319,12 @@ bool lang_save(long w, long es, long k)
     return setting_put(w, es, "std", spelling);
 }
 
-void doc_forget_parse(long w, long doc);	// madcide_core.inc
-
 // The session's standard becomes `k` (0 = each file decides): every
-// buffer's parse handle goes (the next need opens it under the new
-// standard), the active buffer is checked again so the Problems rows and
-// the colours describe the new standard, the choice is kept, and the
-// modules hear seLANGUAGE (the REPL restarts its session under it).
+// buffer's document parses under its new standard (madc::doc_parse reopens
+// a handle opened under another), the active buffer is checked again so the
+// Problems rows and the colours describe the new standard, the choice is
+// kept, and the modules hear seLANGUAGE (the REPL restarts its session
+// under it).
 void lang_set(long w, long es, long k)
 {
     ui::set(w, lang_world(w), "std", k);
@@ -333,13 +332,13 @@ void lang_set(long w, long es, long k)
     ui::get(bufs, w, es, "buffers");
     if ( !bufs.is_null() )
 	for ( var row : bufs )
-	    doc_forget_parse(w, row["doc"].as_integer());
+	{
+	    long bd = row["doc"].as_integer();
+	    madc::doc_set_standard(w, bd, doc_standard(w, bd));
+	}
     long doc = active_doc(w, es, 0);
     if ( doc != 0 )
-    {
-	doc_forget_parse(w, doc);
-	refresh_diags(w, es, doc);
-    }
+	refresh_diags(w, es, doc);	// its standard set there too
     var title;
     lang_title(title, k);
     if ( lang_save(w, es, k) )

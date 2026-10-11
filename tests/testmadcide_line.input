@@ -1,3 +1,6 @@
+add(2,3)
+:a
 hello
+.
 :w
 :q
