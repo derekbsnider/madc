@@ -4745,6 +4745,17 @@ bool Program::forest_bind_env_ok(uint32_t root)
 	const char *e = ::getenv("MADC_FOREST_ENV_CHECK");
 	enabled = (e && *e && strcmp(e, "0") != 0) ? 1 : 0;
     }
+    // A consumer the profile was NOT frozen for — bound through a
+    // --freeze-also-std label (a C++ mode on the madc profile) — gets the
+    // VERIFIED bind whatever the knob says. The knob's default keeps the
+    // shipping exact-config bind unchanged; a labelled consumer was on the
+    // pack's source arm until the label existed, so verifying costs it nothing
+    // it had. Missing content then live-parses its unit (mingw stdio.h's
+    // `#ifndef NULL` arm, skipped at freeze under the corpus's earlier
+    // <cstddef>) instead of binding the unit without it.
+    const bool verified = enabled
+	|| bind_forest->language_std() != madc_forest_config_word(this)
+	|| bind_forest->defines_hash() != madc_forest_defines_hash(this);
     std::set<uint32_t> closure;
     std::set<uint32_t> husk_live;
     forest_env_collect(root, closure);
@@ -4805,7 +4816,7 @@ bool Program::forest_bind_env_ok(uint32_t root)
 		}
 		// Knob OFF preserves the shipping bind behavior for every broad
 		// mismatch. Only the missing-content case above bypasses it.
-		if ( !enabled )
+		if ( !verified )
 		    continue;
 		// A want-undefined dep the unit ITSELF defines is the unit's
 		// own GUARDED FALLBACK (task #57 prune redesign). Two
@@ -4869,7 +4880,7 @@ bool Program::forest_bind_env_ok(uint32_t root)
 		    << " at freeze, opposite here" << std::endl);
 		return false;
 	    }
-	    if ( enabled && want_defined && (deps[k + 1] & 2u) )
+	    if ( verified && want_defined && (deps[k + 1] & 2u) )
 	    {
 		const char *v = deps[k + 2] ? bind_forest->pool_str(deps[k + 2]) : NULL;
 		madc::dis::istring have;

@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+### A labelled C++ consumer binds verified
+
+A C++ consumer bound through a `--freeze-also-std` label (a C++ mode on the madc
+pack profile) now gets the verified bind — the per-unit branch-dependency check
+— whatever `MADC_FOREST_ENV_CHECK` (the task #57 rollout knob, default OFF)
+says, because its config word or `-D` hash differs from the profile's own.
+`Program::forest_bind_env_ok` gates the check on a new `verified` flag rather
+than on the knob alone; the exact-config madc consumer is unchanged. Before, a
+labelled consumer inherited the knob's default-OFF branch check, so a frozen
+unit missing a frozen-away define bound anyway and the define was lost:
+`tests/testvolatileresiduecxx.mad` (`--std=c++17`) on the packed `madc.exe`
+headerless-win lane failed with `use of undeclared identifier 'NULL'` at MinGW's
+`setjmp(BUF)` expansion `_setjmp((BUF), NULL)`, because the bound mingw
+`stdio.h`/`setjmp.h` units carry no `NULL` define (the win64 corpus TU includes
+`<cstddef>` first, so their `#ifndef NULL` arms were skipped at freeze).
+Measured under wine (win64 packed binary, `tests/testtemplatestring.mad
+--std=c++17`): unbound source arm ~600 ms, bound unverified ~220 ms, bound
+verified ~250 ms (output correct). `scripts/forest_bind_gate.sh`'s new
+`labelverify` case gates it (41/41; it fails on the pre-change binary with `use
+of undeclared identifier 'FBG_MC_X'`).
+
 ### A restored class keeps its constructor's `explicit`
 
 A frozen class now carries each constructor's `explicit` across freeze/bind: the
