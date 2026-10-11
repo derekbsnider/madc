@@ -1963,7 +1963,7 @@ bool t_status(const seat &s, const context &c, const value &args, value &out)
 // ---- nexus.sources / nexus.sync: an external system's MCP server -----
 
 const int64_t mcp_reply_ms = 5000;	// initialize, tools/list
-const int64_t mcp_call_ms = 10000;	// the list_tasks call
+const int64_t mcp_call_ms = 10 * 1000;	// the list_tasks call
 
 // One manifest read into `src`: false with `why` (the file's refusal).
 bool read_source(const std::string &file, project::source &src, std::string &why)
