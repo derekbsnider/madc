@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### One reader for a test's run fixtures
+
+Every script that runs or compiles `tests/*.mad` the way the suite does —
+`run_tests.sh`, `warn_census.sh`, `forest_soak.sh`, `class_parse_burndown.sh` —
+now reads a test's run fixtures (`.flags`, `.argv`, `.env`, `.input`,
+`.timeout`) and the hermetic `--no-config` flag through one owner,
+`scripts/test_fixtures.sh`'s `fixture_load`, rather than by hand. The hand
+copies had drifted: `warn_census.sh` read every fixture but `.env`, so it
+replayed `testrepl_opencmd` without its `EDITOR=echo` and the REPL's `%edit`
+started the real `vi` on the test's input, and a test with no `.input` could
+read the caller's terminal. `class_parse_burndown.sh` now runs each test with
+its `.env`, `.argv`, `.input` and the hermetic flag and skips the REPL
+(`-i`/`--interactive`) and server (`--mcp`, `--lsp`) modes beside project mode —
+modes that run no compile to census and refuse a dump — cutting its "class
+census failed" lines from 25 to 0 (41 mode-skipped). The `.timeout` default is
+10 seconds, the runner's actual value. `scripts/check-one-fixture-reader.sh`
+(in `make gates`) fails a script that reads a test's fixture by hand.
+
 ### The one pack profile serves the C++ modes it shares with madc
 
 A forest freeze under `--std=madc` can carry `--freeze-also-std=<std>` labels

@@ -111,7 +111,12 @@ BACKEND_FLAG=""
 #
 # --stdlib=NAME appends the FLAVORED-LANE flag here, which is why every leg of
 # every pass picks it up without touching a single invocation line.
-HERMETIC_FLAGS="--no-config"
+#
+# A test's fixtures (.flags .argv .env .input .timeout) and the hermetic flag
+# are read by ONE owner, scripts/test_fixtures.sh — beside this script, which a
+# program with madc's fixture protocol (madcide) runs from its own tree.
+. "$(dirname "${BASH_SOURCE[0]}")/test_fixtures.sh"
+HERMETIC_FLAGS="$FIXTURE_HERMETIC_FLAGS"
 STDLIB_NAME=""
 STDLIB_SKIP_EXT=""
 MADC="${MADC_BIN:-bin/madc}"
@@ -298,16 +303,13 @@ for t in "$TEST_DIR"/*.mad; do
     fi
     SELECTED=$((SELECTED+1))
 
-    input_file="${TEST_DIR}/$base.input"
-    argv_file="${TEST_DIR}/$base.argv"
+    fixture_load "$TEST_DIR" "$base"
+    input_file="$fx_input"
     expect_file="${TEST_DIR}/$base.expect"
     expect_err_file="${TEST_DIR}/$base.expect_err"
     expect_quiet_file="${TEST_DIR}/$base.expect_quiet"
     expect_rc_file="${TEST_DIR}/$base.expect_rc"
-    flags_file="${TEST_DIR}/$base.flags"
-    env_file="${TEST_DIR}/$base.env"
     mir_skip_file="${TEST_DIR}/$base.mir_skip"
-    timeout_file="${TEST_DIR}/$base.timeout"
 
     # Skip tests marked as not transpilable (MIR is the default backend)
     if [ -f "$mir_skip_file" ]; then
@@ -345,9 +347,13 @@ for t in "$TEST_DIR"/*.mad; do
     fi
 
     # A test pinning a -stdlib= flavor this binary was not built with.
-    if [ -n "$BUILT_FLAVORS" ] && [ -f "$flags_file" ]; then
-        pinned=$(grep -o -e '-stdlib=[^[:space:]]*' "$flags_file" | head -1)
-        pinned="${pinned#-stdlib=}"
+    pinned=""
+    for flag in "${fx_flags[@]}"; do
+        case "$flag" in
+            -stdlib=*) pinned="${flag#-stdlib=}"; break ;;
+        esac
+    done
+    if [ -n "$BUILT_FLAVORS" ] && [ -n "$pinned" ]; then
         case " $BUILT_FLAVORS " in
             *" $pinned "*) ;;
             *)  if [ -n "$pinned" ]; then
@@ -372,24 +378,16 @@ for t in "$TEST_DIR"/*.mad; do
         fi
     done
 
-    args=()
-    flags=()
-    envs=()
-    [ -f "$flags_file" ] && read -r -a flags < "$flags_file"
-    # Per-test environment: whitespace-split NAME=value pairs handed to env(1)
-    # ahead of every invocation of this test (JIT, exe, obj).
-    [ -f "$env_file" ] && read -r -a envs < "$env_file"
-    [ -f "$argv_file" ] && read -r -a args < "$argv_file"
-    # Per-test wall-clock cap (seconds); default 10. A `.timeout` fixture overrides
-    # it for tests that legitimately need longer — e.g. a real-libstdc++-header
-    # compile (no PCH yet) parses the full <iostream> closure. The default build
-    # is -O0 (optimization is a last-lap switch), so header-heavy compiles need
-    # headroom. Generic filename convention, never a per-test branch in the runner.
+    # The fixtures fixture_load read above (scripts/test_fixtures.sh): the
+    # flags, the per-test environment (NAME=value pairs handed to env(1) ahead
+    # of every invocation — JIT, exe, obj), the argv, and the wall-clock cap.
     # ONE cap for every lane of the test: the JIT run, the EXE run and the .o
     # run below all read $tmo (the obj/exe legs hard-coded 5 s and failed
     # testgraphpast, whose 60 s fixture the JIT leg honoured).
-    tmo=10
-    [ -f "$timeout_file" ] && read -r tmo < "$timeout_file"
+    flags=("${fx_flags[@]}")
+    envs=("${fx_envs[@]}")
+    args=("${fx_args[@]}")
+    tmo=$fx_timeout
     # The exit status every run of the test (JIT, exe, obj) must end with:
     # main's return value IS the status, so a test of that carries it in an
     # .expect_rc fixture. Default 0.

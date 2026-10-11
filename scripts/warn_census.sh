@@ -35,6 +35,10 @@ while [ $# -gt 0 ]; do
 done
 
 cd "$ROOT"
+# A test runs here as the suite runs it: its fixtures (the .env included — a
+# REPL test's EDITOR=echo) and the hermetic flag, read by the ONE owner.
+. scripts/test_fixtures.sh
+FIXTURE_DEFAULT_TIMEOUT="$TIMEOUT_SECONDS"
 mkdir -p "$OUT"
 : > "$OUT/per_test.txt"
 : > "$OUT/all_warns.txt"
@@ -69,24 +73,14 @@ for f in tests/*.mad; do
 	base="$(basename "$f")"
 	[ -f "${f%.mad}.helper" ] && continue
 
-	flags=()
-	args=()
-	flags_file="tests/${base%.mad}.flags"
-	input_file="tests/${base%.mad}.input"
-	argv_file="tests/${base%.mad}.argv"
-	timeout_file="tests/${base%.mad}.timeout"
-	[ -f "$flags_file" ] && read -r -a flags < "$flags_file"
-	[ -f "$argv_file" ] && read -r -a args < "$argv_file"
-	test_timeout="$TIMEOUT_SECONDS"
-	[ -f "$timeout_file" ] && read -r test_timeout < "$timeout_file"
+	fixture_load tests "${base%.mad}"
 
 	total_tests=$((total_tests + 1))
 	stderr_file="$OUT/${base%.mad}.stderr"
-	if [ -f "$input_file" ]; then
-		{ timeout "$test_timeout" "$MADC" "${flags[@]}" "$f" "${args[@]}" < "$input_file" > /dev/null; } 2> "$stderr_file"
-	else
-		{ timeout "$test_timeout" "$MADC" "${flags[@]}" "$f" "${args[@]}" > /dev/null; } 2> "$stderr_file"
-	fi
+	# No .input: stdin is /dev/null, never the caller's terminal (a REPL
+	# test without one would otherwise read it).
+	{ env "${fx_envs[@]}" timeout "$fx_timeout" "$MADC" $FIXTURE_HERMETIC_FLAGS "${fx_flags[@]}" \
+		"$f" "${fx_args[@]}" < "${fx_input:-/dev/null}" > /dev/null; } 2> "$stderr_file"
 	warn_file="$OUT/${base%.mad}.warnings"
 	grep -- 'warning --' "$stderr_file" > "$warn_file"
 	n=$(grep -c -- 'warning --' "$warn_file")

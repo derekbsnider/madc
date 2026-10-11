@@ -195,3 +195,27 @@ asks the binary instead: `madc --capabilities=json` lists `stdlib_flavors`
 skipped and counted on its own `FLAVOR NOT BUILT` summary line. The line is
 loud on purpose: a build that LOST a flavor it should have would skip every
 test pinning it, and that line is where the loss shows.
+
+## One fixture reader (2026-10-11)
+
+Running a test "the way the suite does" means reading five fixtures — the
+flags, the argv, the environment, the stdin file, the time cap — and passing
+the hermetic `--no-config`. `run_tests.sh`, `warn_census.sh` (in
+`make gates`), `forest_soak.sh` and `class_parse_burndown.sh` each did that
+reading by hand. The copies had already drifted once (the `.helper` marker
+above); then `warn_census.sh` read every fixture but `.env`. It replayed
+`testrepl_opencmd`, whose `.env` sets `EDITOR=echo`, with no editor set, and
+the REPL's `%edit` started the real `vi` with the rest of the test's input as
+its keystrokes — the seam battery of 2026-10-11 left a Vim swap file in
+`tests/`. A missed fixture is not a missing feature: it runs a DIFFERENT
+test than the suite runs.
+
+`scripts/test_fixtures.sh` is the one reader: `fixture_load DIR BASE` sets
+the arrays and the input path, and `FIXTURE_HERMETIC_FLAGS` carries
+`--no-config`. A caller with its own default cap (the census's 30 s) sets
+`FIXTURE_DEFAULT_TIMEOUT` after sourcing it. A test with no `.input`
+redirects stdin from `/dev/null` in the census and the soak, never the
+caller's terminal.
+`scripts/check-one-fixture-reader.sh` fails a script that enumerates the
+suite's tests and appends a fixture extension to a variable; its negative
+control proves the pattern catches the old hand reads.
