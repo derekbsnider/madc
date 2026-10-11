@@ -115,8 +115,13 @@ public:
     // hub::text_listener
     void on_text_change(hub::world &w, const hub::text_change &c) override;
 
+    // Its world was closed under it (a tool_host over a ui:: world HANDLE):
+    // destruction then unsubscribes from no world.
+    void world_gone() { _world_gone = true; }
+
 private:
     hub::world &_w;
+    bool _world_gone = false;
     std::vector<value> _records;
     int64_t _head;
     std::string _path;			// "" = memory-only

@@ -8,3 +8,4 @@ append: wants_text=true pending=1
 text: ok=true text=one|TWO|added|three|
 quit-dirty: ok=false quit=false error=no write since last change (add ! to override)
 quit-force: ok=true quit=true
+after-close: use=0 line=0 run=false error=no world

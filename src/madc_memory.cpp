@@ -216,7 +216,8 @@ project::project(hub::world &w) : _w(w), _head(0), _was_bound(false), _sources_l
 
 project::~project()
 {
-    hub::mutation_context(_w).text_unsubscribe(this);
+    if ( !_world_gone )
+	hub::mutation_context(_w).text_unsubscribe(this);
 }
 
 std::string project::path_of(hub::entity_id doc) const

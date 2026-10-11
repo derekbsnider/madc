@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### A ui:: world face survives its world closing
+
+`madc::ex_session` and `madc::tool_host` each hold a reference into a
+`hub::world` reached from a ui:: world HANDLE at construction; `ui::world_close`
+frees that world while the face lives. Before, a later command and the face's
+destruction read the freed world — `ex::session::~session()` ran its anchor
+removal (`mutation_context`) and `memory::project::~project()` its
+`text_unsubscribe` against freed memory. Valgrind reported invalid reads in
+`ex::session::~session()` of memory `ui::world_close` had freed; the Intel
+MacBook darwin lane crashed with SIGSEGV in `~ex_session` on testex_session; and
+`tool_host` silently ran a tool on the freed world (printing `after-close: true
+2`). Now each face re-asks `madc_ui_world(handle)` at every use via `live()` (the
+`madc::host_documents` rule) — a closed world refuses like an unknown handle
+(`no world`) — and destruction calls `world_gone()`, so `ex::session` forgets its
+buffers (no anchor to remove, `~session` returns early when empty) and
+`memory::project` skips the unsubscribe. The after-close lines of
+`tests/testex_session` and `tests/testtool_host` gate it.
+
 ### A copy-elided method-call initializer goes through the method-call owner
 
 `T v = obj.m();` (and `T v = m();` in a member body) with T a non-trivial class

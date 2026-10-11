@@ -86,6 +86,9 @@ public:
 private:
     struct impl;
     impl *_impl;
+    // _impl while its world is open: a handle-built host (the dialect's)
+    // asks madc_ui_world at every use, so a closed world refuses (NULL).
+    impl *live();
     tool_host(const tool_host &);
     tool_host &operator=(const tool_host &);
 };

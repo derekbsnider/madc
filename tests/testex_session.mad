@@ -42,6 +42,12 @@ int main()
     ex.run(r, "q!");
     println("quit-force: ok={} quit={}", r["ok"], r["quit"]);
     ui::world_close(w);
+    // The world is gone and the session outlives it (it dies at the end of
+    // main): it refuses like an unknown handle and its destruction reads no
+    // freed world (valgrind once saw ~session read the closed world).
+    ex.run(r, "1p");
+    println("after-close: use={} line={} run={} error={}", ex.use(d) ? 1 : 0,
+	    ex.line(), r["ok"], r["error"]);
     php::unlink(path);
     return 0;
 }

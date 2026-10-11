@@ -167,6 +167,11 @@ public:
 
     options &settings() { return opts; }
 
+    // Its world was closed under it (madc::ex_session, a face over a ui::
+    // world HANDLE): the documents' anchors died with the world, so the
+    // session forgets its buffers and its destruction touches no world.
+    void world_gone() { buffers.clear(); }
+
 private:
     struct buffer_state
     {

@@ -2504,7 +2504,10 @@ size_t session::number_of(entity_id doc)
 session::~session()
 {
     // The anchors are the documents'; a document outlives its session's
-    // view of it only as long as the world keeps it.
+    // view of it only as long as the world keeps it. No buffer: no anchor,
+    // and no world to reach (world_gone()).
+    if ( buffers.empty() )
+	return;
     mutation_context mc(w);
     for ( auto &b : buffers )
     {
@@ -2652,35 +2655,61 @@ ex::outcome refused(const char *why)
 
 } // namespace
 
-ex_session::ex_session(int64_t w) : _s(0)
+// The face keeps the world HANDLE beside the session: the world is handle-
+// scoped (ui::world_close frees it) while the session holds a reference into
+// it, so every use asks madc_ui_world now (madc::host_documents' rule) — a
+// closed world refuses like an unknown handle, and destruction forgets the
+// anchors that died with the world instead of reading freed memory.
+struct ex_session::face
+{
+    int64_t handle;
+    hub::world *world;
+    ex::session session;
+    face(int64_t h, hub::world &wd) : handle(h), world(&wd), session(wd) {}
+};
+
+ex_session::ex_session(int64_t w) : _f(0)
 {
     if ( hub::world *world = madc_ui_world(w) )
-	_s = new ex::session(*world);
+	_f = new face(w, *world);
 }
 
 ex_session::~ex_session()
 {
-    delete _s;
+    if ( _f && !live() )
+	_f->session.world_gone();
+    delete _f;
+}
+
+ex::session *ex_session::live()
+{
+    if ( !_f || madc_ui_world(_f->handle) != _f->world )
+	return 0;
+    return &_f->session;
 }
 
 bool ex_session::use(int64_t doc)
 {
-    return _s && _s->use((hub::entity_id)doc);
+    ex::session *s = live();
+    return s && s->use((hub::entity_id)doc);
 }
 
 int64_t ex_session::current()
 {
-    return _s ? (int64_t)_s->current() : 0;
+    ex::session *s = live();
+    return s ? (int64_t)s->current() : 0;
 }
 
 bool ex_session::set_line(int64_t line)
 {
-    return _s && line > 0 && _s->set_current_line((size_t)line);
+    ex::session *s = live();
+    return s && line > 0 && s->set_current_line((size_t)line);
 }
 
 int64_t ex_session::line()
 {
-    return _s ? (int64_t)_s->current_line() : 0;
+    ex::session *s = live();
+    return s ? (int64_t)s->current_line() : 0;
 }
 
 value &ex_session::parse(value &out, const char *text)
@@ -2704,7 +2733,8 @@ value &ex_session::run(value &out, const char *text)
     ex::line l;
     std::string error;
     const ex::command code = ex::parse(t, l, error) ? l.code : ex::command::none;
-    out = outcome_value(_s ? _s->run(t) : refused("no world"), code);
+    ex::session *s = live();
+    out = outcome_value(s ? s->run(t) : refused("no world"), code);
     return out;
 }
 
@@ -2714,13 +2744,15 @@ value &ex_session::text(value &out, value &lines)
     if ( lines.is_array() )
 	for ( const value &v : lines.as_array() )
 	    body.push_back(v.is_string() ? v.as_string() : std::string());
-    out = outcome_value(_s ? _s->text(body) : refused("no world"), ex::command::none);
+    ex::session *s = live();
+    out = outcome_value(s ? s->text(body) : refused("no world"), ex::command::none);
     return out;
 }
 
 bool ex_session::wants_text()
 {
-    return _s && _s->wants_text();
+    ex::session *s = live();
+    return s && s->wants_text();
 }
 
 } // namespace madc

@@ -32,6 +32,10 @@ struct tool_host::impl
     memory::project memory;
     tools::registry tools;
     impl(hub::world &world, int64_t handle) : w(world), ui(handle), memory(world) {}
+    // A C++ host's world is its own; a dialect world handle may be closed
+    // (ui::world_close frees it) while this host lives — asked now, as
+    // madc::host_documents does.
+    bool world_open() const { return !ui || madc_ui_world(ui) == &w; }
 };
 
 namespace {
@@ -71,7 +75,14 @@ tool_host::tool_host(int64_t w) : _impl(0)
 
 tool_host::~tool_host()
 {
+    if ( _impl && !_impl->world_open() )
+	_impl->memory.world_gone();
     delete _impl;
+}
+
+tool_host::impl *tool_host::live()
+{
+    return _impl && _impl->world_open() ? _impl : 0;
 }
 
 tools::registry &tool_host::registry()
@@ -86,28 +97,32 @@ memory::project &tool_host::memory()
 
 bool tool_host::bind(const char *events_path, value &why)
 {
+    impl *im = live();
     std::string w;
-    const bool ok = _impl && _impl->memory.bind(events_path ? events_path : "", w);
-    why = value(_impl ? w : std::string("no world"));
+    const bool ok = im && im->memory.bind(events_path ? events_path : "", w);
+    why = value(im ? w : std::string("no world"));
     return ok;
 }
 
 void tool_host::unbind()
 {
-    if ( _impl )
-	_impl->memory.unbind();
+    impl *im = live();
+    if ( im )
+	im->memory.unbind();
 }
 
 void tool_host::set_manifest(const char *path)
 {
-    if ( _impl )
-	_impl->memory.set_manifest(path ? path : "");
+    impl *im = live();
+    if ( im )
+	im->memory.set_manifest(path ? path : "");
 }
 
 bool tool_host::add(const char *name, const char *description, value &input_schema,
 		    int64_t least, script_tool fn)
 {
-    if ( !_impl || !fn )
+    impl *im = live();
+    if ( !im || !fn )
 	return false;
     tools::tool t;
     t.name = name ? name : "";
@@ -115,7 +130,7 @@ bool tool_host::add(const char *name, const char *description, value &input_sche
     t.input_schema = input_schema.is_object() ? input_schema : tools::object_schema(
 	std::map<std::string, value>());
     t.least = tier_of(least);
-    const int64_t ui = _impl->ui;
+    const int64_t ui = im->ui;
     const std::string tool_name = t.name;
     t.run = [fn, ui, tool_name](const tools::context &c, const value &args, value &result) {
 	value a = args;
@@ -126,14 +141,15 @@ bool tool_host::add(const char *name, const char *description, value &input_sche
 	    result = tools::refusal("refused");
 	return ok;
     };
-    return _impl->tools.add(t);
+    return im->tools.add(t);
 }
 
 value &tool_host::list(value &out)
 {
+    impl *im = live();
     std::vector<value> rows;
-    if ( _impl )
-	for ( const tools::tool &t : _impl->tools.all() )
+    if ( im )
+	for ( const tools::tool &t : im->tools.all() )
 	{
 	    std::map<std::string, value> r;
 	    r["name"] = value(t.name);
@@ -149,42 +165,47 @@ value &tool_host::list(value &out)
 bool tool_host::call(value &result, int64_t doc, const char *name, value &args,
 		     int64_t caller, int64_t actor)
 {
-    if ( !_impl )
+    impl *im = live();
+    if ( !im )
     {
 	result = tools::refusal("no world");
 	return false;
     }
-    tools::context c = { _impl->w, (hub::entity_id)doc, tier_of(caller), actor };
-    return _impl->tools.call(c, name ? name : "", args, result);
+    tools::context c = { im->w, (hub::entity_id)doc, tier_of(caller), actor };
+    return im->tools.call(c, name ? name : "", args, result);
 }
 
 bool tool_host::mcp_handle(value &reply, value &message, int64_t doc, int64_t caller,
 			   int64_t actor)
 {
-    if ( !_impl )
+    impl *im = live();
+    if ( !im )
 	return false;
-    mcp::server s(_impl->tools, _impl->w, (hub::entity_id)doc, tier_of(caller), actor);
+    mcp::server s(im->tools, im->w, (hub::entity_id)doc, tier_of(caller), actor);
     return s.handle(message, reply);
 }
 
 int64_t tool_host::serve_mcp(channel &io, int64_t doc, int64_t caller)
 {
-    if ( !_impl )
+    impl *im = live();
+    if ( !im )
 	return 1;
-    mcp::server s(_impl->tools, _impl->w, (hub::entity_id)doc, tier_of(caller));
+    mcp::server s(im->tools, im->w, (hub::entity_id)doc, tier_of(caller));
     return s.serve(io);
 }
 
 int64_t tool_host::head()
 {
-    return _impl ? _impl->memory.head() : 0;
+    impl *im = live();
+    return im ? im->memory.head() : 0;
 }
 
 value &tool_host::records(value &out, int64_t since)
 {
+    impl *im = live();
     std::vector<value> rows;
-    if ( _impl )
-	for ( const value &rec : _impl->memory.records() )
+    if ( im )
+	for ( const value &rec : im->memory.records() )
 	    if ( jsonrpc::int_field(rec, "seq") > since )
 		rows.push_back(rec);
     out = value::make_array(rows);
@@ -193,12 +214,14 @@ value &tool_host::records(value &out, int64_t since)
 
 int64_t tool_host::note(value &record, int64_t doc)
 {
-    return _impl ? _impl->memory.note(record, (hub::entity_id)doc) : 0;
+    impl *im = live();
+    return im ? im->memory.note(record, (hub::entity_id)doc) : 0;
 }
 
 value &tool_host::replay(value &out, int64_t doc, int64_t upto)
 {
-    out = value(_impl ? _impl->memory.replay((hub::entity_id)doc, upto) : std::string());
+    impl *im = live();
+    out = value(im ? im->memory.replay((hub::entity_id)doc, upto) : std::string());
     return out;
 }
 

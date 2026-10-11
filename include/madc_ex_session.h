@@ -51,7 +51,12 @@ public:
     bool wants_text();
 
 private:
-    ex::session *_s;
+    // The session and the world handle it edits (src/madc_ex.cpp): one
+    // pointer, the layout contract. live(): the session while its world is
+    // open, else NULL — a closed world refuses every command.
+    struct face;
+    face *_f;
+    ex::session *live();
 
     ex_session(const ex_session &);
     ex_session &operator=(const ex_session &);

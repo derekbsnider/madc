@@ -106,6 +106,12 @@ int main()
     first.release();
     madc::session_scan(all);
     println("released: {}", all.size());
+    // The world closes while the host lives (it dies at the end of main): a
+    // call is refused like an unknown handle, and destroying the host
+    // unsubscribes from no freed world.
+    ui::world_close(w);
+    println("after-close: {} {} {}", host.call(res, d, "demo.twice", n3, editor, 7),
+	    res["error"], host.head());
     var dir;
     madc::session_dir(dir);
     php::rmdir(dir.c_str());
