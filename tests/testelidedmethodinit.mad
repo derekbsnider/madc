@@ -1,0 +1,47 @@
+// `T v = <method call>;` with T a non-trivial class: the declaration is the
+// call's result slot (guaranteed copy elision), and the call still goes through
+// the one method-call owner. The elided form once built its own direct call,
+// so it skipped two things that owner does:
+//  - the receiver adjusted to the method OWNER's subobject: a member of a
+//    SECONDARY base read the primary base's bytes, explicit receiver and
+//    implicit `this` alike, in-class and out-of-class template members;
+//  - virtual dispatch: `R r = pv->get();` reached the static type's body.
+// libc++'s basic_ios::imbue (`locale __r = getloc();`) hit the first shape on
+// every darwin C++ program that imbued a stream (testregistercallback).
+// ORACLE: g++ 13 and clang++ 18 -O0 both print the lines below.
+#include <cstdio>
+
+struct R { long v; R() : v(0) {} R(const R &o) : v(o.v) {} ~R() {} };
+struct A { long a; A() : a(1) {} };
+struct B {
+    long b;
+    B() : b(2) {}
+    R getr() const { R r; r.v = b; return r; }
+    R getr_out() const;
+};
+R B::getr_out() const { R r; r.v = b * 10; return r; }
+struct D : A, B {
+    long f() const { R r = getr(); return r.v; }
+    long g() const { R r = getr_out(); return r.v; }
+};
+template<class T> struct TD : A, B { long f() const; };
+template<class T> long TD<T>::f() const { R r = getr(); return r.v; }
+
+struct V { long w; V() : w(5) {} virtual ~V() {} virtual R get() const { R r; r.v = w; return r; } };
+struct W : V { R get() const { R r; r.v = w * 100; return r; } };
+
+int main()
+{
+    D d;
+    TD<int> td;
+    D *pd = &d;
+    R e1 = d.getr();
+    R e2 = pd->getr_out();
+    printf("implicit this: %ld %ld %ld\n", d.f(), d.g(), td.f());
+    printf("explicit receiver: %ld %ld\n", e1.v, e2.v);
+    W w;
+    V *pv = &w;
+    R vr = pv->get();
+    printf("virtual: %ld\n", vr.v);
+    return 0;
+}

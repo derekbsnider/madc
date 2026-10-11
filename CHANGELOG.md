@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### A copy-elided method-call initializer goes through the method-call owner
+
+`T v = obj.m();` (and `T v = m();` in a member body) with T a non-trivial class
+now lowers through the one method-call owner (`CirBuilder::class_method_call`),
+with the declared object as the call's result slot (guaranteed copy elision),
+instead of building its own direct call. `class_method_call` and
+`emit_symbol_method_call` gained a `(ret_slot, slot_cls, slot_used)` result-slot
+parameter — the `class_operator_external_call` convention — and
+`class_decl_construction`'s initializer arm routes a `TokenCallMethod` through it
+with `&v`; a member-template placeholder keeps the direct shape. The elided
+direct call skipped two things the owner does: the receiver adjusted to the
+method OWNER's subobject — so a member of a SECONDARY base read the primary
+base's bytes, for `d.f()` / `d.g()` / `td.f()` and explicit-receiver reads alike,
+in-class and out-of-class template members — and virtual dispatch, so
+`R r = pv->get();` reached the static type's body. libc++'s `basic_ios::imbue`
+(`locale __r = getloc();`) hit the secondary-base shape on every darwin C++
+program that imbued a stream, so `testregistercallback` drew a c2mir pointer-type
+warning on both Mac lanes; it is quiet again. Reducer
+`tests/testelidedmethodinit` (g++ 13 + clang++ 18 oracle).
+
 ### A skipped directive-only `#ifndef` arm replays at bind
 
 A frozen unit whose `#ifndef X` arm was skipped at freeze — because an earlier

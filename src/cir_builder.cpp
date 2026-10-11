@@ -14452,7 +14452,8 @@ static bool is_constant_evaluated_call(TokenBase *tb)
 // `empty()` is lowered to `size()==0`.
 node_t CirBuilder::emit_symbol_method_call(TokenMember *tm, FuncDef *callee,
 					   const madc::dis::istring &sym, node_t this_arg,
-					   TokenBase *origin)
+					   TokenBase *origin, node_t ret_slot,
+					   DataDefCLASS *slot_cls, bool *slot_used)
 {
 	const madc::dis::istring &method = tm->var.name;
 
@@ -14492,7 +14493,9 @@ node_t CirBuilder::emit_symbol_method_call(TokenMember *tm, FuncDef *callee,
 	// canon: get_allocator() receives the sret slot in %rdi, this in %rsi).
 	DataDefCLASS *retc = function_retbuf_class(callee);
 	char sret_tmp[40] = { 0 };
-	if (retc)
+	// The caller's declared object is the result slot (copy elision).
+	const bool into_slot = retc && ret_slot && slot_cls == retc;
+	if (retc && !into_slot)
 		object_temp_decl(retc, sret_tmp, sizeof(sret_tmp), origin);
 
 	// Build the parameter shapes for the extern declaration and the args.
@@ -14513,7 +14516,8 @@ node_t CirBuilder::emit_symbol_method_call(TokenMember *tm, FuncDef *callee,
 		// swallow every shape).
 		eparams.push_back({ {}, true, retc, true });
 		append(args, node2(N_CAST, class_ptr_type(retc),
-				   node1(N_ADDR, id(sret_tmp, origin), origin),
+				   into_slot ? ret_slot
+					     : node1(N_ADDR, id(sret_tmp, origin), origin),
 				   origin));
 	}
 	eparams.push_back({ {N_VOID}, true });   // this (void*)
@@ -14563,6 +14567,10 @@ node_t CirBuilder::emit_symbol_method_call(TokenMember *tm, FuncDef *callee,
 			   ret_dd);
 	node_t call = node2(N_CALL, id(sym.c_str(), origin), args, origin);
 	CIR_NODE(call)->synth_from_origin = true;
+	if (into_slot) {
+		if (slot_used) *slot_used = true;
+		return call;	// the caller runs it as a statement
+	}
 	if (retc) {
 		// sret: the call runs as a statement; the expression value is the
 		// temp's object lvalue.
@@ -14905,7 +14913,9 @@ static madc::dis::istring method_slot_name(FuncDef *callee, const madc::dis::ist
 		? madc::dis::istring(sym.substr(recv_class->name.size() + 2)) : sym;
 }
 
-node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
+node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin,
+				     node_t ret_slot, DataDefCLASS *slot_cls,
+				     bool *slot_used)
 {
 	DataDefCLASS *recv_class = NULL;
 	node_t this_arg = class_this_arg(tm, recv_class, origin);
@@ -15135,7 +15145,8 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 		if (node_t mt = member_template_method_call(tm, callee, this_arg, origin))
 			return mt;
 	if (callee && !callee->emit_symbol.empty())
-		return emit_symbol_method_call(tm, callee, sym, this_arg, origin);
+		return emit_symbol_method_call(tm, callee, sym, this_arg, origin,
+					       ret_slot, slot_cls, slot_used);
 
 	// A method returning a NON-TRIVIAL class by value uses the __retbuf ABI
 	// (func_def / func_proto / fnptr_decl_pieces all lower the signature with
@@ -15147,7 +15158,9 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 	// value (`__x.get_allocator() == __a` in real _Vector_base).
 	DataDefCLASS *ret_obj = function_retbuf_class(callee);
 	char ret_tmp[40] = { 0 };
-	if (ret_obj)
+	// The caller's declared object is the result slot (copy elision).
+	const bool into_slot = ret_obj && ret_slot && slot_cls == ret_obj;
+	if (ret_obj && !into_slot)
 		object_temp_decl(ret_obj, ret_tmp, sizeof(ret_tmp), origin);
 
 	// Build the argument list: hidden __this first, then the explicit args.
@@ -15176,7 +15189,8 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 	}
 	node_t args = list();
 	if (ret_obj)
-		append(args, retbuf_slot_addr(ret_obj, ret_tmp, origin));
+		append(args, into_slot ? ret_slot
+				       : retbuf_slot_addr(ret_obj, ret_tmp, origin));
 	append(args, this_arg);
 	for (size_t i = 0; i < tm->parameters.size(); i++) {
 		TokenBase *arg = tm->parameters[i];
@@ -15256,6 +15270,10 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 		node_t fnptr_type = method_fnptr_type(callee, vowner);
 		node_t fn = node2(N_CAST, fnptr_type, slotref, origin);
 		node_t vcall = node2(N_CALL, fn, args, origin);
+		if (into_slot) {
+			if (slot_used) *slot_used = true;
+			return vcall;	// the caller runs it as a statement
+		}
 		if (ret_obj) {
 			m_pending_stmts.push_back(node2(N_EXPR, list(), vcall, origin));
 			return id(ret_tmp, origin);
@@ -15265,6 +15283,10 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 
 	referenced_funcs.insert(sym);
 	node_t mcall = node2(N_CALL, id(sym.c_str(), origin), args, origin);
+	if (into_slot) {
+		if (slot_used) *slot_used = true;
+		return mcall;	// the caller runs it as a statement
+	}
 	// __retbuf ABI: the void call writes the result into the temp; the
 	// expression value is the materialized temp lvalue.
 	if (ret_obj) {
@@ -30555,14 +30577,48 @@ void CirBuilder::class_decl_construction(TokenDecl *sdcl, DataDefCLASS *cdcl,
 			(ctor_args[0] ? ctor_args[0]->as_callfunc_tok() : NULL))) {
 		TokenCallFunc *itcf =
 			(ctor_args[0] ? ctor_args[0]->as_callfunc_tok() : NULL);
+		// A METHOD call (`T v = obj.m();`, or `T v = m();` in a member body)
+		// goes through the ONE method-call owner with the declared object as
+		// its result slot: class_method_call adjusts the receiver to the
+		// method OWNER's subobject and dispatches a virtual method through the
+		// vtable, which the direct call below skipped — a secondary base's
+		// member read the primary base's bytes and a virtual call reached the
+		// static type's body. A member-template placeholder keeps the direct
+		// shape: its arm models no result slot.
+		if (TokenCallMethod *imeth =
+		    (itcf ? itcf->as_callmethod_tok() : NULL)) {
+			FuncDef *mfd = dynamic_cast<FuncDef *>(imeth->var.type);
+			if (mfd && !mfd->is_member_template_placeholder()) {
+				bool slot_used = false;
+				node_t vaddr = node1(N_ADDR,
+					id(sdcl->var.name.c_str(), sdcl), sdcl);	// allowed-exception: guarded !file_global
+				node_t mres = class_method_call(imeth, itcf, vaddr,
+								cdcl, &slot_used);
+				if (mres) {
+					for (node_t p : m_pending_stmts)
+						append(items, p);
+					m_pending_stmts.clear();
+					// A result the owner returned as a VALUE (no
+					// retbuf ABI) initializes the object by copy.
+					node_t stmt = slot_used ? mres
+						: node2(N_ASSIGN,
+							id(sdcl->var.name.c_str(), sdcl),	// allowed-exception: guarded !file_global
+							mres, sdcl);
+					if (slot_used)
+						CIR_NODE(mres)->synth_from_origin = true;
+					append(items, node2(N_EXPR, list(), stmt, sdcl));
+					return;
+				}
+			}
+		}
 		FuncDef *ifd = NULL;
 		madc::dis::istring isym = call_target_emit_name(itcf, &ifd);
 		referenced_funcs.insert(isym);
 		node_t cargs = list();
 		append(cargs, node1(N_ADDR,
 			id(sdcl->var.name.c_str(), sdcl), sdcl));	// allowed-exception: guarded !file_global
-		// A retbuf-returning METHOD call (`T v = obj.m();`,
-		// TokenCallMethod : TokenMember) needs its hidden __this
+		// A retbuf-returning member-template METHOD call (`T v =
+		// obj.m();`, TokenCallMethod : TokenMember) needs its hidden __this
 		// receiver between the retbuf and the explicit args —
 		// build_call_args emits only explicit args. Without it the
 		// copy-elided call drops `this` (`m(&v)` instead of
