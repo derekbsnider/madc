@@ -192,6 +192,16 @@ namespace madc {
     // refusals.
     int64_t doc_parse(int64_t w, int64_t entity);
     int64_t doc_parse_checked(value &diags, int64_t w, int64_t entity);
+    // The standard the document parses under: a <bits/file_kinds>
+    // standard, 0 = the one its kind answers (an application's language
+    // choice — an IDE's Language table). doc_parse reopens a handle opened
+    // under another standard, or another name (a Save As). One parse of a
+    // document runs at a time: doc_parse arriving while one yields waits
+    // for it. doc_parsed is the handle as the last parse left it, never
+    // parsing (0 = none yet): a composer's retained read — its tree may
+    // describe an older text.
+    bool    doc_set_standard(int64_t w, int64_t entity, int64_t standard);
+    int64_t doc_parsed(int64_t w, int64_t entity);
 
     // The language services over a DOCUMENT (split arc 1C.11; the engine's
     // madc::lang, include/madc_lang.h): ONE answer each for an editor, the
@@ -837,7 +847,8 @@ namespace madc {
     public:
 	tool_host(int64_t w);
 	~tool_host();
-	bool bind(const char *events_path, value &why);	// <base>.events
+	bool bind(const char *events_path, value &why);	// <base>.events; refused: no file
+	void unbind();				// the memory writes to no file from here
 	void set_manifest(const char *path);
 	bool add(const char *name, const char *description, value &input_schema,
 		 int64_t least, bool (*fn)(value &result, const char *name, int64_t w,
@@ -850,6 +861,7 @@ namespace madc {
 			int64_t caller, int64_t actor);	// false: a notification
 	int64_t serve_mcp(channel &io, int64_t doc, int64_t caller);
 	int64_t head();				// the change log's last seq
+	int64_t note(value &record, int64_t doc);	// an app record (a build run): seq, 0 refused
 	value &records(value &out, int64_t since);	// the records after `since`
 	value &replay(value &out, int64_t doc, int64_t upto);	// text at `upto`
     private:

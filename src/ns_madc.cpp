@@ -287,6 +287,17 @@ int64_t doc_parse(int64_t w, int64_t entity)
 	{ return doc_parse_impl(NULL, w, entity); }
 int64_t doc_parse_checked(value &diags, int64_t w, int64_t entity)
 	{ diags = value(); return doc_parse_impl(&diags, w, entity); }
+bool doc_set_standard(int64_t w, int64_t entity, int64_t standard)
+{
+    madc::hub::world *world = madc_ui_world(w);
+    return world && lang::document_set_standard(*world, (madc::hub::entity_id)entity,
+						 standard);
+}
+int64_t doc_parsed(int64_t w, int64_t entity)
+{
+    madc::hub::world *world = madc_ui_world(w);
+    return world ? lang::document_parsed(*world, (madc::hub::entity_id)entity) : 0;
+}
 
 // The language services' dialect face (split arc 1C.11): madc::lang's answers
 // as rows. A range is { line, column, end_line, end_column }; an enum is its

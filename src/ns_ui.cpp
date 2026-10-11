@@ -220,6 +220,7 @@ struct ui_session
     }
     ~ui_session()
     {
+	madc::lang::close_world_parses(w);	// a document's parse goes with its world
 	for ( size_t i = 0; i < doc_listeners.size(); ++i )
 	{
 	    w.text_unsubscribe(doc_listeners[i]);

@@ -92,6 +92,12 @@ bool tool_host::bind(const char *events_path, value &why)
     return ok;
 }
 
+void tool_host::unbind()
+{
+    if ( _impl )
+	_impl->memory.unbind();
+}
+
 void tool_host::set_manifest(const char *path)
 {
     if ( _impl )
@@ -183,6 +189,11 @@ value &tool_host::records(value &out, int64_t since)
 		rows.push_back(rec);
     out = value::make_array(rows);
     return out;
+}
+
+int64_t tool_host::note(value &record, int64_t doc)
+{
+    return _impl ? _impl->memory.note(record, (hub::entity_id)doc) : 0;
 }
 
 value &tool_host::replay(value &out, int64_t doc, int64_t upto)

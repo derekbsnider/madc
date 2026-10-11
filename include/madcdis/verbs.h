@@ -123,6 +123,18 @@ public:
     {
 	return _w.doc_set_parse_tu(id, tu);
     }
+    bool doc_set_parse_standard(entity_id id, int64_t standard)
+    {
+	return _w.doc_set_parse_standard(id, standard);
+    }
+    bool doc_set_parse_opened(entity_id id, int64_t standard, const std::string &name)
+    {
+	return _w.doc_set_parse_opened(id, standard, name);
+    }
+    bool doc_set_parse_busy(entity_id id, bool busy)
+    {
+	return _w.doc_set_parse_busy(id, busy);
+    }
     bool doc_checkpoint(entity_id id, const madc::value &app_meta)
     {
 	return _w.doc_checkpoint(id, app_meta);

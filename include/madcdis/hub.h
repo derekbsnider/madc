@@ -574,6 +574,30 @@ public:
 	d->second.set_parse_tu(tu);
 	return true;
     }
+    bool doc_set_parse_standard(entity_id id, int64_t standard)
+    {
+	std::map<entity_id, document>::iterator d = _docs.find(id);
+	if ( d == _docs.end() )
+	    return false;
+	d->second.set_parse_standard(standard);
+	return true;
+    }
+    bool doc_set_parse_opened(entity_id id, int64_t standard, const std::string &name)
+    {
+	std::map<entity_id, document>::iterator d = _docs.find(id);
+	if ( d == _docs.end() )
+	    return false;
+	d->second.set_parse_opened(standard, name);
+	return true;
+    }
+    bool doc_set_parse_busy(entity_id id, bool busy)
+    {
+	std::map<entity_id, document>::iterator d = _docs.find(id);
+	if ( d == _docs.end() )
+	    return false;
+	d->second.set_parse_busy(busy);
+	return true;
+    }
     // The document-level history (design §2.4): the payload rides the
     // application's meta under "app" plus the anchors and the saved
     // version, so undo restores the document, its anchors and whether it

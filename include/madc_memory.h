@@ -55,9 +55,17 @@ public:
     // Bind the stream to `path`: its records (if the file exists) restored
     // ahead of any this session logged — refused, with `why`, when this
     // session already logged records — then every new record appended to
-    // it. A restored record's `doc` is the writing session's; the folds
-    // and replay match a record by its path.
+    // it. The stream's FIRST file, when it does not exist yet, starts with
+    // the session's records so far (a manifest made mid-session keeps what
+    // was already logged); binding the file already bound is a no-op. A
+    // refused bind leaves the stream bound to no file (unbind): another
+    // project's file never takes this one's records. A restored record's
+    // `doc` is the writing session's; the folds and replay match a record
+    // by its path.
     bool bind(const std::string &path, std::string &why);
+    // The stream writes to no file from here; its records stay in memory
+    // (a project whose memory another session holds).
+    void unbind();
     const std::string &bound_path() const { return _path; }
     // The project's manifest ("" = none): an external test command's
     // {project}.
@@ -67,6 +75,11 @@ public:
     // One record appended: seq, ts, path and doc stamped (`doc` names the
     // document it belongs to; 0 = the project's own). Returns its seq.
     int64_t append(value rec, hub::entity_id doc);
+    // An APPLICATION's record (an IDE's build run): appended as append
+    // does when its kind is one the memory folds but never writes itself;
+    // 0 = refused — no kind the memory knows, or one it writes (a splice,
+    // a checkpoint: the memory's own record of a document's text).
+    int64_t note(value rec, hub::entity_id doc);
     int64_t head() const { return _head; }
     const std::vector<value> &records() const { return _records; }
     // The text of `doc` at seq `upto` (<= 0: the latest): replayed from the
@@ -107,6 +120,7 @@ private:
     std::vector<value> _records;
     int64_t _head;
     std::string _path;			// "" = memory-only
+    bool _was_bound;			// some file held the stream once
     std::string _manifest;
     // A document's text as loaded, kept until its first edit is recorded:
     // the checkpoint that edit's replay starts from.

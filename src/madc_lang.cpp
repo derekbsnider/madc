@@ -20,6 +20,7 @@
 #include "madc_lang.h"
 #include "madc_file_kinds.h"	// the kind's default standard
 #include "madcdis/verbs.h"	// mutation_context: the document's parse slot
+#include "rt/rt_task.h"		// __madc_yield: a caller waits out a parse in flight
 
 namespace madc {
 namespace lang {
@@ -273,18 +274,52 @@ const text_buffer *text_of(hub::world &w, hub::entity_id e)
 
 } // namespace
 
-int64_t document_handle(hub::world &w, hub::entity_id e, value *checked)
+// The document once no parse of it is in flight: a parse yields between
+// slices (stage 2), so a caller arriving mid-parse — another parse, a close,
+// a new TU or standard, each of which closes the handle — waits for it and
+// finds the slot as that parse left it. NULL = no such document (or it
+// closed while the caller waited).
+static const hub::document *settled_doc(hub::world &w, hub::entity_id e)
 {
     const hub::document *d = w.doc_of(e);
+    while ( d && d->parse_busy() )
+    {
+	__madc_yield();
+	d = w.doc_of(e);
+    }
+    return d;
+}
+
+// The slot's handle closed (its next document_handle opens under the
+// document's current options).
+static void drop_parse(hub::world &w, hub::entity_id e, const hub::document &d)
+{
+    if ( !d.parse_handle() )
+	return;
+    madc_parse_close(d.parse_handle());
+    hub::mutation_context(w).doc_set_parse(e, 0, 0);
+}
+
+int64_t document_handle(hub::world &w, hub::entity_id e, value *checked)
+{
+    const hub::document *d = settled_doc(w, e);
     const text_buffer *b = w.text_of(e);
     if ( !d || !b )
 	return 0;
     if ( d->kind() != fkUNKNOWN && file_kind_default_standard(d->kind()) == 0 )
 	return 0;		// a kind the compiler does not parse
     // The handle adopts the KIND (split arc 1A.4): a family head is its
-    // default, as the CLI compiles the same file (Program::adopt_file_standard).
-    int64_t standard = d->kind() == fkUNKNOWN ? 0 : d->kind();
+    // default, as the CLI compiles the same file (Program::adopt_file_standard)
+    // — unless the document names its own standard.
+    int64_t standard = d->parse_standard() ? d->parse_standard()
+			: d->kind() == fkUNKNOWN ? 0 : d->kind();
+    const std::string name = d->path().empty() ? "untitled" : d->path();
     int64_t handle = d->parse_handle();
+    if ( handle && (d->parsed_standard() != standard || d->parsed_name() != name) )
+    {
+	drop_parse(w, e, *d);		// opened as another unit: a new standard, a Save As
+	handle = 0;
+    }
     uint64_t version = b->version();
     if ( handle && d->parse_version() == version )
     {
@@ -293,48 +328,74 @@ int64_t document_handle(hub::world &w, hub::entity_id e, value *checked)
 	return handle;
     }
     std::string text = b->text();
-    if ( !handle )
+    hub::mutation_context mc(w);
+    mc.doc_set_parse_busy(e, true);
+    const bool opening = !handle;
+    if ( opening )
     {
-	std::string name = d->path().empty() ? "untitled" : d->path();
-	handle = d->parse_tu() ? madc_parse_open_tu(&text, &name, standard, d->parse_tu())
-			       : madc_parse_open(&text, &name, standard);
-	if ( !handle )
-	    return 0;
-	if ( checked )
+	std::string unit = name;
+	handle = d->parse_tu() ? madc_parse_open_tu(&text, &unit, standard, d->parse_tu())
+			       : madc_parse_open(&text, &unit, standard);
+	if ( handle && checked )
 	    madc_parse_diagnostics(checked, handle);
     }
     else if ( checked )
 	madc_parse_refresh_checked(checked, handle, &text);
     else
 	madc_parse_refresh(handle, &text);
-    hub::mutation_context mc(w);
+    if ( !w.doc_of(e) )
+    {
+	// Closed while the parse yielded (a close waits for a parse in
+	// flight, so only a detach that bypasses the door gets here).
+	if ( handle )
+	    madc_parse_close(handle);
+	return 0;
+    }
+    mc.doc_set_parse_busy(e, false);
+    if ( !handle )
+	return 0;
     mc.doc_set_parse(e, handle, version);
+    if ( opening )
+	mc.doc_set_parse_opened(e, standard, name);
     return handle;
 }
 
 bool document_set_tu(hub::world &w, hub::entity_id e, const ProjectTU &tu)
 {
-    const hub::document *d = w.doc_of(e);
+    const hub::document *d = settled_doc(w, e);
     if ( !d )
 	return false;
-    hub::mutation_context mc(w);
-    if ( d->parse_handle() )
-    {
-	madc_parse_close(d->parse_handle());
-	mc.doc_set_parse(e, 0, 0);
-    }
-    return mc.doc_set_parse_tu(e, tu);
+    drop_parse(w, e, *d);
+    return hub::mutation_context(w).doc_set_parse_tu(e, tu);
+}
+
+bool document_set_standard(hub::world &w, hub::entity_id e, int64_t standard)
+{
+    // The door compares: a handle opened under another standard reopens.
+    return hub::mutation_context(w).doc_set_parse_standard(e, standard);
+}
+
+void close_world_parses(hub::world &w)
+{
+    std::vector<hub::entity_id> docs = w.docs();
+    for ( size_t i = 0; i < docs.size(); ++i )
+	if ( const hub::document *d = w.doc_of(docs[i]) )
+	    drop_parse(w, docs[i], *d);
+}
+
+int64_t document_parsed(const hub::world &w, hub::entity_id e)
+{
+    const hub::document *d = w.doc_of(e);
+    return d ? d->parse_handle() : 0;
 }
 
 bool document_close(hub::world &w, hub::entity_id e)
 {
-    const hub::document *d = w.doc_of(e);
+    const hub::document *d = settled_doc(w, e);
     if ( !d )
 	return false;
-    if ( d->parse_handle() )
-	madc_parse_close(d->parse_handle());
-    hub::mutation_context mc(w);
-    return mc.doc_detach(e);
+    drop_parse(w, e, *d);
+    return hub::mutation_context(w).doc_detach(e);
 }
 
 bool diagnostics(hub::world &w, hub::entity_id e,

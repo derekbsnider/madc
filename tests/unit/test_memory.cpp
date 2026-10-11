@@ -12,6 +12,7 @@
 thread_local bool madc_verbose = false;
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -125,6 +126,24 @@ TEST_CASE("the stream records a document's edits and replays any seq")
     CHECK(b.record(2)["kind"] == "checkpoint");
     CHECK(b.memory.replay(b.doc, 2).find("b + a") != std::string::npos);
     CHECK(b.memory.replay(b.doc, 3) == "int z;\n");
+}
+
+TEST_CASE("an application's record is noted; the memory's own kinds are refused")
+{
+    bench b;
+    madc::value run = madc::value::make_object();
+    run.object()["kind"] = madc::value("buildrun");
+    run.object()["exit"] = madc::value((int64_t)0);
+    CHECK(b.memory.note(run, b.doc) == 1);
+    CHECK(b.record(0)["kind"] == "buildrun");
+    CHECK(b.record(0)["path"] == "/mcp-unit/calc.c");
+    madc::value splice = madc::value::make_object();
+    splice.object()["kind"] = madc::value("splice");	// the memory's own
+    CHECK(b.memory.note(splice, b.doc) == 0);
+    madc::value odd = madc::value::make_object();
+    odd.object()["kind"] = madc::value("whatever");	// no kind it knows
+    CHECK(b.memory.note(odd, b.doc) == 0);
+    CHECK(b.memory.head() == 1);
 }
 
 TEST_CASE("a memory built after its world's documents opened still has their baselines")
@@ -431,6 +450,45 @@ TEST_CASE("a bound stream restores from its file; a torn line is skipped")
 	b.call("nexus.create", { { "rkind", "task" } }, err, tier::proposer);
 	CHECK_FALSE(b.memory.bind(path, why));			// this session logged already
 	CHECK(why.find("already logged") != std::string::npos);
+    }
+    {
+	// a refused bind leaves the stream bound to NO file: the project it
+	// was bound to before never takes the next project's records
+	bench b;
+	std::string why;
+	const std::string other = dir + "/other.events";
+	REQUIRE(b.memory.bind(other, why));
+	b.call("nexus.create", { { "rkind", "task" } }, err, tier::proposer);
+	CHECK_FALSE(b.memory.bind(path, why));
+	CHECK(b.memory.bound_path().empty());
+	b.call("nexus.create", { { "rkind", "task" } }, err, tier::proposer);
+	std::string blob;
+	REQUIRE(madc::document_read_file(other, blob));
+	CHECK(std::count(blob.begin(), blob.end(), '\n') == 1);	// the first record only
+	std::remove(other.c_str());
+    }
+    std::remove(path.c_str());
+    {
+	// a NEW file (a manifest made mid-session) starts with what this
+	// session already logged, then takes every new record
+	bench b;
+	std::string why;
+	b.call("nexus.create", { { "rkind", "task" }, { "fields", { { "title", "early" } } } },
+	       err, tier::proposer);
+	REQUIRE(b.memory.bind(path, why));
+	b.call("nexus.create", { { "rkind", "task" } }, err, tier::proposer);
+    }
+    {
+	bench b;
+	std::string why;
+	REQUIRE(b.memory.bind(path, why));
+	CHECK(b.memory.head() == 2);
+	json rows = b.call("nexus.records", json::object(), err)["rows"];
+	REQUIRE(rows.size() == 2u);
+	CHECK(rows[0]["fields"]["title"] == "early");
+	REQUIRE(b.memory.bind(path, why));			// its own file again: nothing re-read
+	CHECK(b.memory.head() == 2);
+	CHECK(b.call("nexus.records", json::object(), err)["rows"].size() == 2u);
     }
     std::remove(path.c_str());
     rmdir(dir.c_str());

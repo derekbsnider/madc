@@ -81,12 +81,15 @@ struct diagnostic
     std::string message;
 };
 
-// The document's parse handle, parsed from its CURRENT text under the
-// standard its kind answers: opened on first use, refreshed when the text's
-// version moved since the last parse, returned unchanged otherwise. 0 = no
-// such document, or a kind the compiler does not parse. `checked` non-NULL
-// is the validated refresh (the old tree stays when the new text has MORE
-// errors) with the candidate's diagnostic rows in *checked.
+// The document's parse handle, parsed from its CURRENT text under its
+// standard (document_set_standard's, else the one its kind answers): opened
+// on first use, refreshed when the text's version moved since the last
+// parse, returned unchanged otherwise. 0 = no such document, or a kind the
+// compiler does not parse. `checked` non-NULL is the validated refresh (the
+// old tree stays when the new text has MORE errors) with the candidate's
+// diagnostic rows in *checked. One parse of a document runs at a time: a
+// caller arriving while one yields waits for it (as do the close and the
+// setters below, which close the handle).
 int64_t document_handle(hub::world &w, hub::entity_id e,
 			value *checked = 0);
 // The door's other side: the document closed, its parse handle with it.
@@ -97,6 +100,18 @@ bool document_close(hub::world &w, hub::entity_id e);
 // the handle so far closed, the next document_handle parses under it. False
 // when there is no such document.
 bool document_set_tu(hub::world &w, hub::entity_id e, const ProjectTU &tu);
+// The document parses under `standard` (a <bits/file_kinds> standard; 0 =
+// the one its kind answers, the family's default): an application's
+// language choice. The next document_handle reopens a handle opened under
+// another standard — or another name (a Save As). False when there is no
+// such document.
+bool document_set_standard(hub::world &w, hub::entity_id e, int64_t standard);
+// The world is going: every document's parse handle closes with it.
+void close_world_parses(hub::world &w);
+// The handle as the document's last parse left it — never parsing; 0 = none
+// yet. Its tree may describe an older text: a composer's retained read (a
+// status line's enclosing function), never an edit's offsets.
+int64_t document_parsed(const hub::world &w, hub::entity_id e);
 
 // Each answer below parses through document_handle first; false = no
 // handle (and an empty answer).

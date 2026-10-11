@@ -108,13 +108,18 @@ class document
     uint64_t    _parse_version;	// the text version the handle was parsed from
     ProjectTU   _parse_tu;	// the TU it parses as (when _has_tu)
     bool        _has_tu;
+    int64_t     _parse_standard;	// 0 = its kind's (the family's default)
+    int64_t     _parsed_standard;	// what the handle was OPENED as: its standard
+    std::string _parsed_name;	// ... and its unit's name
+    bool        _parse_busy;	// a parse of it is in flight (it yields)
     std::vector<anchor> _anchors;
     anchor_id   _next_anchor;
 
 public:
     document()
 	: _kind(0), _read_only(false), _saved_version(0), _parse_handle(0),
-	  _parse_version(0), _has_tu(false), _next_anchor(1) {}
+	  _parse_version(0), _has_tu(false), _parse_standard(0), _parsed_standard(0),
+	  _parse_busy(false), _next_anchor(1) {}
 
     // --- identity
     const std::string &path() const { return _path; }
@@ -151,6 +156,24 @@ public:
 	_parse_tu = tu;
 	_has_tu = true;
     }
+    // The standard it parses under: 0 = its kind's, the family's default
+    // (the CLI's rule); an application's language choice (an IDE's
+    // Language table) names another. madc::lang reads it.
+    int64_t parse_standard() const { return _parse_standard; }
+    void set_parse_standard(int64_t s) { _parse_standard = s; }
+    // What the handle was OPENED as — the standard and the unit's name: the
+    // door reopens it when either moved since (a new standard, a Save As).
+    int64_t parsed_standard() const { return _parsed_standard; }
+    const std::string &parsed_name() const { return _parsed_name; }
+    void set_parse_opened(int64_t standard, const std::string &name)
+    {
+	_parsed_standard = standard;
+	_parsed_name = name;
+    }
+    // A parse yields between slices, so a second caller can arrive while
+    // one runs: it waits for this to clear (madc::lang's door owns both).
+    bool parse_busy() const { return _parse_busy; }
+    void set_parse_busy(bool b) { _parse_busy = b; }
 
     // --- anchors (design §2.3)
     anchor_id anchor_add(size_t off, bool right)

@@ -51,8 +51,10 @@ public:
     // Over a ui:: world handle's documents, with the running program's
     // modules. An unknown handle builds a host that refuses every call.
     explicit tool_host(int64_t w);
-    // The memory's file (a manifest's <base>.events): refused, with `why`.
+    // The memory's file (a manifest's <base>.events): refused, with `why`
+    // (bound to no file then). unbind: written to no file from here.
     bool bind(const char *events_path, value &why);
+    void unbind();
     void set_manifest(const char *path);
     // A host tool: `fn` answers into `result` — false refuses, `result`
     // then {error}; `name` is the tool called (one function may serve a
@@ -76,6 +78,9 @@ public:
     // `doc` is the writing session's entity), a document's text at `upto`.
     int64_t head();
     value &records(value &out, int64_t since);
+    // An application's record into the change log (memory::project::note):
+    // its seq, 0 refused.
+    int64_t note(value &record, int64_t doc);
     value &replay(value &out, int64_t doc, int64_t upto);
 
 private:

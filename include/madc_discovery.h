@@ -2,9 +2,9 @@
 //									//
 // madc::discovery — how a client finds a running madc server, and the	//
 // rule that a project has ONE owner (split arc 1C, plan			//
-// 2026-10-09-madc-madcide-split-arc.md item 16; madcide's session		//
-// discovery, tools/madcide/madcide_discover.inc, whose second consumer	//
-// this is). An ADVERTISEMENT is a JSON record in a state directory —	//
+// 2026-10-09-madc-madcide-split-arc.md item 16; madcide's sessions	//
+// advertise through it since 1D). An ADVERTISEMENT is a JSON record in	//
+// a state directory —							//
 // never the project root (madcide's R1 ruling: it would land in every	//
 // project's git status). A record is live while its process HOLDS its	//
 // file (detail::held_file): the OS drops the hold when the process ends,	//

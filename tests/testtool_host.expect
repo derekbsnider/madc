@@ -8,6 +8,7 @@ refused: false n must not be negative
 mcp: true {"actor":3,"caller":2,"tool":"demo.twice","twice":6}
 create: true
 log: true 1 5
+note: true 0
 take: true
 again: true true
 find: test:1

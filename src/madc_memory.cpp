@@ -2,10 +2,10 @@
 //									//
 // madc_memory.cpp — a project's memory (contract in			//
 // include/madc_memory.h): the event stream, its folds, and the tools	//
-// over them — a C++ port of madcide's change log			//
-// (tools/texteditor/editor_events.inc), proposals (madcide_propose.inc),	//
-// intent records and links (madcide_nexus.inc) and test runs		//
-// (madcide_tests.inc). Every wire word converts once, here, to an enum.	//
+// over them — a C++ port of madcide's change log, proposals, intent	//
+// records and links and test runs (split arc 1C; madcide's own copies	//
+// were deleted in 1D, its sessions read this through madc::tool_host).	//
+// Every wire word converts once, here, to an enum.			//
 //									//
 //////////////////////////////////////////////////////////////////////////
 
@@ -204,7 +204,7 @@ const std::vector<value> &items(const value &v)
 
 // ---- the stream -------------------------------------------------------
 
-project::project(hub::world &w) : _w(w), _head(0), _sources_loaded(false)
+project::project(hub::world &w) : _w(w), _head(0), _was_bound(false), _sources_loaded(false)
 {
     hub::mutation_context(w).text_subscribe(this);
     // A document already open (a host whose world came first): its text
@@ -247,15 +247,42 @@ int64_t project::append(value rec, hub::entity_id doc)
     return _head;
 }
 
+int64_t project::note(value rec, hub::entity_id doc)
+{
+    const kind k = kind_of(rec);
+    if ( k == kind::none || k == kind::splice || k == kind::checkpoint )
+	return 0;
+    return append(rec, doc);
+}
+
 bool project::bind(const std::string &path, std::string &why)
 {
-    if ( _head > 0 && path != _path )
+    if ( !_path.empty() && path == _path )
+	return true;				// already this stream's file
+    std::string blob;
+    const bool restoring = document_read_file(path, blob);
+    if ( _head > 0 && restoring )
     {
+	unbind();
 	why = "the events were not restored: this session already logged events";
 	return false;
     }
-    std::string blob;
-    if ( document_read_file(path, blob) )
+    if ( !restoring && !_records.empty() && !_was_bound )
+    {
+	// The FIRST events file, new (a project's manifest made mid-session):
+	// the session's records so far are its first lines. A later project's
+	// new file starts empty — another project's records are not its own.
+	std::string lines;
+	for ( const value &rec : _records )
+	    lines += encode(rec) + "\n";
+	if ( !document_write_file(path, lines, false) )
+	{
+	    unbind();
+	    why = "the events file could not be written";
+	    return false;
+	}
+    }
+    if ( restoring )
     {
 	size_t at = 0;
 	while ( at < blob.size() )
@@ -278,7 +305,13 @@ bool project::bind(const std::string &path, std::string &why)
 							// starts a line of its own
     }
     _path = path;
+    _was_bound = true;
     return true;
+}
+
+void project::unbind()
+{
+    _path.clear();
 }
 
 std::string project::replay(hub::entity_id doc, int64_t upto) const

@@ -95,6 +95,44 @@ TEST_CASE("document_handle: one handle, re-parsed only when the version moves")
     CHECK(lang::document_handle(w, (entity_id)9999) == 0);
 }
 
+TEST_CASE("document_set_standard: the document parses under the standard it names")
+{
+    world w;
+    // `class` names a class in C++ and is an identifier in C (gcc -std=c17
+    // and g++ -std=c++17 on this line): the C kind's own standard refuses
+    // the text, the C++ standard the document names takes it.
+    entity_id e = open_doc(w, "class K { public: int v; };\n");
+    std::vector<lang::diagnostic> diags;
+    REQUIRE(lang::diagnostics(w, e, diags));
+    CHECK_FALSE(diags.empty());
+    REQUIRE(lang::document_set_standard(w, e, madc::fkCPP17));
+    REQUIRE(lang::diagnostics(w, e, diags));		// reopened under it
+    CHECK(diags.empty());
+    int64_t h = lang::document_parsed(w, e);
+    CHECK(h != 0);
+    REQUIRE(lang::document_set_standard(w, e, madc::fkCPP17));	// unchanged: the handle stays
+    CHECK(lang::document_handle(w, e) == h);
+    REQUIRE(lang::document_set_standard(w, e, 0));	// back to the kind's
+    REQUIRE(lang::diagnostics(w, e, diags));
+    CHECK_FALSE(diags.empty());
+    CHECK_FALSE(lang::document_set_standard(w, (entity_id)9999, 0));
+    CHECK(lang::document_parsed(w, (entity_id)9999) == 0);
+
+    // A Save As to a C++ name: the kind moves, and the handle opened as the
+    // C unit reopens as the C++ one.
+    REQUIRE(madc::hub::mutation_context(w).doc_set_path(e, "a.cpp", madc::fkCPP17));
+    CHECK(lang::document_parsed(w, e) != 0);		// never parsing: the C unit's, as left
+    REQUIRE(lang::diagnostics(w, e, diags));
+    CHECK(diags.empty());
+
+    // The world is going: the document's parse closes with it.
+    int64_t last = lang::document_parsed(w, e);
+    REQUIRE(last != 0);
+    lang::close_world_parses(w);
+    CHECK(lang::document_parsed(w, e) == 0);
+    CHECK_FALSE(madc_parse_close(last));			// already closed
+}
+
 TEST_CASE("diagnostics: the range is the word at the anchor, in byte columns")
 {
     world w;

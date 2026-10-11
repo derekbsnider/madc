@@ -75,6 +75,9 @@ int main()
     var recs;
     host.records(recs, before);
     println("log: {} {} {}", host.head() > before, recs.size(), recs[0]["actor"]);
+    var run = { "kind": "buildrun", "exit": 0 };
+    var spl = { "kind": "splice" };
+    println("note: {} {}", host.note(run, d) == host.head(), host.note(spl, d));
 
     madc::session_claim first;
     madc::session_claim second;
