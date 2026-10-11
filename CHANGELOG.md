@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### The Windows expected output for the ex core's write message
+
+`tests/testvised.win64_expect` holds the Windows answer for the editor's write
+(`:w`) message: the ex core spells the written file with the host's path
+separator, so a path under `tmp` prints `"tmp\testvised.txt"` on Windows, as
+Vim on Windows does. `tests/testvised.win64_expect.domain` names the `saved`
+and `other` labels whose line differs from `tests/testvised.expect`.
+
 ### The anchors' one shift rule, shared by the engine and the editor
 
 How a byte position follows a splice — a position before the splice is

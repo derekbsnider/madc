@@ -501,6 +501,35 @@ items are their own sessions, any time.
     testvised deleted.
 22. **The engine twins** (above) land.
 
+    **1D items 17-22 LANDED 2026-10-11** (part 1D complete): `madc::tool_host`
+    and discovery's dialect face `23893372d`; one mutation path — madcide's
+    anchors, colour record and revision follow the session's edit
+    notification — `bd1c2c54c`; madcide's buffers are madc documents
+    `40303cffb`; the document parse door and the project memory for a host
+    `a72f6ab6f`; madc's colon mode as a dialect face over a `ui::` world
+    (`madc::ex_session`) `df93c81e1`; madcide takes madc's services
+    `61ae10fe6` — the nine service files deleted, madcide a `tool_host` over
+    its world, the colon line madc's ex core, `madcide --line` = `madc -i`,
+    the pane's history madc's store, `examples/vised/`, lined and the
+    `.madv` verbs retired (items 18, 19, 21); the Symbols view and View ▸
+    Line Numbers `258855ef7` (Phase 0's GUI gutter `329aa3aa1`); the engine
+    twins `cb6661323`; `%git` is the madcgit module's own verbs in
+    madcide's process over its live buffers (`madc::host_documents`,
+    `madc::document_buffer` the one host answer) `80f018fa2`; the anchors' ONE
+    shift rule — madcide's byte positions (carets, marks, spans, the colour
+    record) follow `ui::anchor_shift`, the rule a document's anchors follow;
+    they stay bag integers because a view text (a transcript, an input
+    field) holds no anchors — `1f6eb821c`. Fixes found on the way:
+    `756c9805a` `php::trim` / `ltrim` / `rtrim` / `chop` take PHP's
+    characters and default set, `b0b3ca1c2` a tab strip wider than its pane
+    keeps the active tab in view. Unit, fix lanes and static gates green per
+    commit; the batch checkpoint 2065/0/9 at `1f6eb821c`; genuine Windows
+    subset (`testmadcide*`, `testide*`, `testui_*`, `testex_*`, `testvised*`,
+    `testrepl*`, `testmcp_*`, `testlsp_*`, `testdocument*`,
+    `testdiscovery*` and the twins) 93/0/9 — `testvised.win64_expect`
+    carries the ex core's write message in the host's spelling
+    (`"tmp\testvised.txt"`, as Vim on Windows prints it); not pushed.
+
 *1D — how madcide takes madc's services (decided 2026-10-11, from the
 recon of the nine service files):*
 
