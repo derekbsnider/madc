@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+### madcide's git runs the madcgit module's own verbs
+
+madcide's `%git` (the REPL row, its key and its menu row) and its git views
+(Changes, and History's single-revision view) now run the madcgit module's own
+`%git` verbs in madcide's process rather than a second copy written in the IDE
+— the module's verbs are the one implementation `madc -i` also answers, so both
+print the same text. madcide's verb bodies (log, show, blame, status, diff),
+its verb table, and its relative-date routine are deleted.
+
+The module's verbs read a FILE, or the current buffer, through
+`madc::session_buffer`; outside a session that now answers from the calling
+thread's host buffers. A program that holds its own documents (the editor)
+installs them with `madc::set_host_buffers` (per thread) — its dialect face is
+`madc::host_documents(w, current)`, a ui world's documents with their live
+(unsaved) text — so `diff` and `blame` over an open file include unsaved edits.
+`madc::document_buffer` is now the one answer a host holding documents gives for
+a buffer question; the CLI REPL and the LSP call it in place of their own copies.
+
+New dialect faces `git::command`, `git::command_row`, and `git::relative_date`
+expose the module's verb runner, its `%git` row (name/usage/summary), and git's
+`--date=relative` spelling. New `python::shlex_quote` is Python's `shlex.quote`
+(over the existing shell quoter), used to quote a file name a view passes to a
+verb so the verb reads it back as one word.
+
 ### Engine-level test twins for behaviours madcide used to be the only test of
 
 New `tests/` integration tests exercise the engine surfaces directly, no

@@ -311,7 +311,8 @@ prints for the same question:
 | `diff [FILE]` | FILE against its last commit; with no FILE, every changed file | `git diff HEAD` |
 
 A file open in the editor answers with its live text, so `diff` and `blame`
-include unsaved edits. Dates are git's relative ones (`3 days ago`).
+include unsaved edits. Dates are git's relative ones (`3 days ago`). These
+are the git module's own verbs — the same `%git` that `madc -i` answers.
 
 The View menu shows the same reads for the file you are editing:
 **Changes** opens its diff against the last commit in a

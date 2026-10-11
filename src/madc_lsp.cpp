@@ -794,12 +794,7 @@ value server::run_command(const value &id, const value &params, std::vector<valu
 	    why = "an LSP command names its FILE: no document is current";
 	    return false;
 	}
-	path = name;
-	hub::entity_id e = document_find(w, name.str());
-	has_text = e && w.text_of(e);
-	if ( has_text )
-	    text = w.text_of(e)->text();
-	return true;
+	return document_buffer(w, 0, name, path, text, has_text, why);
     });
     state *sp = &s;
     session->set_editor([sp](const std::string &path, int at, std::string &why) {

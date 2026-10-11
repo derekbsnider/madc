@@ -2,6 +2,9 @@
 // 3's shlex.split over the same inputs (measured 2026-10-04): each line is
 // the input as Python's repr would write it, then the words, or the
 // ValueError Python raises (here: false and an empty list).
+// python::shlex_quote — Python's shlex.quote (CPython 3, measured
+// 2026-10-11): the quoted spelling, and that shlex_split reads it back as
+// the one word.
 void show(const char *label, const char *text)
 {
     var words;
@@ -10,6 +13,20 @@ void show(const char *label, const char *text)
     for ( var w : words )
 	s = format("{}<{}>", s, w);
     println("{}: ok={} n={} [{}]", label, ok ? 1 : 0, php::count(words), s);
+}
+
+void quote(const char *label, const char *word)
+{
+    var q = python::shlex_quote(word);
+    var back;
+    bool ok = python::shlex_split(back, q.c_str());
+    bool same = false;
+    if ( ok && php::count(back) == 1 )
+    {
+	var b0 = back[0];
+	same = b0 == word;
+    }
+    println("quote {}: [{}] round-trip={}", label, q, same);
 }
 
 int main()
@@ -34,5 +51,11 @@ int main()
     show("unclosed-double", "\"abc");
     show("trailing-escape", "abc\\");
     show("unclosed-single", "'abc");
+    quote("plain", "plain.txt");
+    quote("space", "a file.txt");
+    quote("empty", "");
+    quote("apostrophe", "it's");
+    quote("safe-set", "dir/x-1_2@v%3+=:,.");
+    quote("dollar", "$HOME");
     return 0;
 }

@@ -43,6 +43,7 @@
 #include "madcdis/text_utf16.h"	// madc::line_width: %whos's columns
 #include "madcdis/process.h"	// the terminal's editor (%open, %edit)
 #include "madc_history.h"	// %history's store (1B.7)
+#include "madc_documents.h"	// document_buffer: host_documents' answer
 #include "madc_posix_io.h"	// host_path_stem / drop_extension: %call's and %build's names
 #include "madc_project.h"	// %project: the manifest's reader and writer
 #include "madc_modules.h"	// a module's row: the commands it brings (1B.10)
@@ -889,6 +890,15 @@ bool InteractiveSession::buffer_text(const madc::dis::istring &name,
     return madc::resolve_buffer(buffers, name, path, text, has_text, why);
 }
 
+// The thread's host buffers (set_host_buffers): what session_buffer answers
+// outside a session. Per thread — the program that installs it asks on it.
+static thread_local ReplSession::BufferSource host_buffers;
+
+void madc::set_host_buffers(const ReplSession::BufferSource &source)
+{
+    host_buffers = source;
+}
+
 bool madc::session_buffer(const std::string &name, std::string &path,
 			  std::string &text, bool &has_text, std::string &why)
 {
@@ -896,7 +906,7 @@ bool madc::session_buffer(const std::string &name, std::string &path,
     InteractiveSession *s = p ? p->owning_session : NULL;
     dis::istring found;
     const bool ok = s ? s->buffer_text(dis::istring(name), found, text, has_text, why)
-		      : resolve_buffer(ReplSession::BufferSource(), dis::istring(name),
+		      : resolve_buffer(host_buffers, dis::istring(name),
 				       found, text, has_text, why);
     path = found;
     return ok;
@@ -915,6 +925,30 @@ bool madc::session_buffer(value &out, const char *name)
     out.object()["path"] = value(path);
     out.object()["text"] = value(text);
     out.object()["has_text"] = value(has_text);
+    return true;
+}
+
+bool madc::host_documents(int64_t w, int64_t current)
+{
+    if ( w == 0 )
+    {
+	set_host_buffers(ReplSession::BufferSource());
+	return true;
+    }
+    if ( !madc_ui_world(w) )
+	return false;
+    set_host_buffers([w, current](const dis::istring &name, dis::istring &path,
+				  std::string &text, bool &has_text,
+				  std::string &why) -> bool {
+	hub::world *world = madc_ui_world(w);	// asked now: the world may be gone
+	if ( !world )
+	{
+	    why = "the host's documents are closed";
+	    return false;
+	}
+	return document_buffer(*world, (hub::entity_id)current, name, path, text,
+			       has_text, why);
+    });
     return true;
 }
 

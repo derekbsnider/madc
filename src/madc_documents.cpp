@@ -127,4 +127,33 @@ bool document_set_path(hub::world &w, entity_id doc, const std::string &path)
     return mc.doc_set_path(doc, path, kind_of(path));
 }
 
+bool document_buffer(const hub::world &w, entity_id current,
+		     const dis::istring &name, dis::istring &path,
+		     std::string &text, bool &has_text, std::string &why)
+{
+    const entity_id doc = name.empty() ? current : document_find(w, name.str());
+    path = name;
+    text.clear();
+    has_text = false;
+    why.clear();
+    if ( !doc )
+    {
+	if ( !name.empty() )
+	    return true;		// no document holds it: the disk's
+	why = "no current buffer";
+	return false;
+    }
+    const hub::document *d = w.doc_of(doc);
+    const hub::text_buffer *t = w.text_of(doc);
+    if ( !d || !t || d->untitled() )
+    {
+	why = "the buffer has no file name (:w FILE names it)";
+	return false;
+    }
+    path = dis::istring(d->path());
+    text = t->text();
+    has_text = true;
+    return true;
+}
+
 } // namespace madc

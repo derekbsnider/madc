@@ -11,6 +11,8 @@
 #include <cstdint>
 #include <string>
 
+#include "madc_module_commands.h"	// madc_module_command: the %git row
+
 namespace madc {
 
 // `VERB ARGS` (the shell's word rules) to the text git prints for the same
@@ -24,5 +26,8 @@ bool git_command(const std::string &argument, std::string &out, std::string &why
 std::string git_relative_date(int64_t when, int64_t now);
 
 } // namespace madc
+
+// The module's command rows (its map row's `commands`): one, `%git`.
+extern "C" const madc_module_command *madcgit_commands(std::size_t *count);
 
 #endif

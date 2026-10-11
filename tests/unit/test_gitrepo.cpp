@@ -12,6 +12,10 @@
 #include "libmadc/datasource.h"
 #include "modules/madcgit/madcgit_verbs.h"	// %git's verbs (1B.10)
 #include "madc_tools.h"			// the history source the module hands the tools (1C.14)
+#include "madc_session.h"		// set_host_buffers: a program's own buffers
+#include "madc_documents.h"		// document_buffer: a world's documents answer
+#include "madcdis/hub.h"
+#include "madcdis/verbs.h"		// mutation_context: an unsaved edit
 
 #include <git2.h>
 
@@ -601,6 +605,43 @@ TEST_CASE("%git's verbs over the fixture print what git prints (1B.10)")
 	CHECK_FALSE(madc::git_command(refused[i].argument, out, why));
 	CHECK(why == refused[i].why);
     }
+}
+
+// A program's own buffers (split arc 1D, madcide's %git): outside a session
+// the verbs read the thread's host buffers — a world's documents through
+// document_buffer — so an unsaved edit is what diff and blame see, the current
+// document names the repository with no FILE, and an empty source returns
+// them to the disk. ORACLE: git diff / git blame --contents over the same
+// edit (a `+three` hunk; `00000000 (Not Committed Yet 3) three`).
+TEST_CASE("%git's verbs read a program's host buffers outside a session (1D)")
+{
+    Fixture fx;
+    const std::string a = fx.dir + "/a.txt";
+    madc::hub::world w;
+    const madc::hub::entity_id doc = madc::document_open(w, a);
+    REQUIRE(doc != 0);
+    {
+	madc::hub::mutation_context mc(w);
+	REQUIRE(mc.text_load(doc, "one\ntwo\nthree\n"));	// unsaved
+    }
+    madc::set_host_buffers([&w, doc](const madc::dis::istring &name,
+				     madc::dis::istring &path, std::string &text,
+				     bool &has_text, std::string &why) -> bool {
+	return madc::document_buffer(w, doc, name, path, text, has_text, why);
+    });
+    std::string out, why;
+    CAPTURE(why);
+    REQUIRE(madc::git_command("diff " + a, out, why));
+    CHECK(out.find("--- a/a.txt\n+++ b/a.txt\n") != std::string::npos);
+    CHECK(ends_with(out, "+three\n"));
+    REQUIRE(madc::git_command("blame " + a + ":3", out, why));
+    CHECK(out == "00000000 (Not Committed Yet 3) three\n");
+    REQUIRE(madc::git_command("status", out, why));	// no FILE: the current document's
+    CHECK(starts_with(out, "## "));
+    CHECK(out.find('\n') == out.size() - 1);		// the fixture's: clean on disk
+    madc::set_host_buffers(ReplSession::BufferSource());
+    REQUIRE(madc::git_command("diff " + a, out, why));	// the disk's: unchanged
+    CHECK(out.empty());
 }
 
 // git's --date=relative on fixed (when, now) pairs: what git log printed for

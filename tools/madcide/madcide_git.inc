@@ -1,10 +1,11 @@
 // madcide_git.inc — the IDE's git (plan docs/plans/2026-10-03-chthonia-
-// windows-macos.md §7e stage 1, §7f item 4): the read verbs over the madcgit
-// module (git::*, read-only), each ONE implementation that `%git VERB` in the
-// REPL, a key and a menu row reach through the `git` command. Each prints
-// what git prints for the same question (the git command named at each
-// verb is its oracle). A builtin module: builtin_plugins' row "git"
-// (madcide_core.inc), activated by git_activate.
+// windows-macos.md §7e stage 1, §7f item 4): the `git` command — what
+// `%git VERB` in the REPL, a key and a menu row reach — is the madcgit
+// module's own %git verb (git::command; its verbs and their git oracles are
+// src/modules/madcgit/madcgit_verbs.cpp), run in madcide's process over
+// madcide's buffers; the views (Changes, History, Blame line) read through
+// the same verbs or the module's rows (git::*, read-only). A builtin module:
+// builtin_plugins' row "git" (madcide_core.inc), activated by git_activate.
 //
 // A buffer's repository handle and the status line's %G seat are the
 // core's (madcide_repo.inc): the core names no function of a builtin module.
@@ -82,95 +83,7 @@ void git_live_text(var &out, long w, long es, var &file)
 	php::file_get_contents(out, file.c_str());
 }
 
-// ---- the spellings git prints ----
-void git_ago(var &out, long n, const char *unit)
-{
-    out = format("{} {}{} ago", n, unit, n == 1 ? "" : "s");
-}
-
-// A time as git's --date=relative spells it, `now` the clock (git's date.c,
-// show_date_relative: the same thresholds and roundings).
-void git_relative_date(var &out, long when, long now)
-{
-    if ( now < when )
-    {
-	out = "in the future";
-	return;
-    }
-    long diff = now - when;
-    if ( diff < 90 )
-    {
-	git_ago(out, diff, "second");
-	return;
-    }
-    diff = (diff + 30) / 60;			// minutes
-    if ( diff < 90 )
-    {
-	git_ago(out, diff, "minute");
-	return;
-    }
-    diff = (diff + 30) / 60;			// hours
-    if ( diff < 36 )
-    {
-	git_ago(out, diff, "hour");
-	return;
-    }
-    diff = (diff + 12) / 24;			// days
-    if ( diff < 14 )
-    {
-	git_ago(out, diff, "day");
-	return;
-    }
-    if ( diff < 70 )
-    {
-	git_ago(out, (diff + 3) / 7, "week");
-	return;
-    }
-    if ( diff < 365 )
-    {
-	git_ago(out, (diff + 15) / 30, "month");
-	return;
-    }
-    if ( diff < 1825 )
-    {
-	long totalmonths = (diff * 12 * 2 + 365) / (365 * 2);
-	long years = totalmonths / 12;
-	long months = totalmonths % 12;
-	if ( months == 0 )
-	{
-	    git_ago(out, years, "year");
-	    return;
-	}
-	out = format("{} year{}, {} month{} ago", years, years == 1 ? "" : "s",
-		     months, months == 1 ? "" : "s");
-	return;
-    }
-    git_ago(out, (diff + 183) / 365, "year");
-}
-
-// A side's state as git status's short format spells it (wt-status.c).
-const char *git_state_letter(var &s)
-{
-    if ( s == git::file_state::added )
-	return "A";
-    if ( s == git::file_state::modified )
-	return "M";
-    if ( s == git::file_state::deleted )
-	return "D";
-    if ( s == git::file_state::renamed )
-	return "R";
-    if ( s == git::file_state::typechange )
-	return "T";
-    if ( s == git::file_state::untracked )
-	return "?";
-    if ( s == git::file_state::ignored )
-	return "!";
-    if ( s == git::file_state::conflicted )
-	return "U";
-    return " ";
-}
-
-// ---- the reads the verbs and the views share ----
+// ---- the reads the views share ----
 // FILE's commits (every commit's with FILE ""), newest first, at most
 // `limit`: git::log's rows {sha, author, email, when, summary}.
 bool git_log_rows(var &out, var &why, long w, long es, var &file, long limit)
@@ -203,8 +116,8 @@ void git_commit_line(var &out, var &c, long now)
     var sha = c["sha"];
     var short_sha = sha.substr(0, 7);
     var rd;
-    git_relative_date(rd, c["when"].as_integer(), now);
-    out = format("{} {} ({}, {})", short_sha, c["summary"], rd, c["author"]);
+    git::relative_date(rd, c["when"].as_integer(), now);
+    out = format("{} {} ({}, {})", short_sha, c["summary"], rd["text"], c["author"]);
 }
 
 // FILE's blame rows as it is now (its open buffer's live text): `count`
@@ -236,361 +149,30 @@ bool git_blame_rows(var &out, var &text, var &why, long w, long es, var &file,
     return true;
 }
 
-// ---- the verbs ----
-// `%git log [-n N] [FILE]`: git log --format='%h %s (%ar, %an)' -N [-- FILE],
-// newest first; N defaults to 20; %h is the sha's first 7 characters.
-bool git_log_text(var &out, var &why, long w, long es, var &words)
-{
-    long limit = 20;
-    var file = "";
-    long n = php::count(words);
-    for ( long i = 1; i < n; i = i + 1 )
-    {
-	var a = words[i];
-	if ( a == "-n" )
-	{
-	    var count = "";
-	    if ( i + 1 < n )
-		count = words[i + 1];
-	    limit = php::ctype_digit(count) ? php::intval(count.c_str()) : 0;
-	    if ( limit <= 0 )
-	    {
-		why = "log -n takes a count of commits";
-		return false;
-	    }
-	    i = i + 1;
-	    continue;
-	}
-	if ( strlen(file.c_str()) > 0 )
-	{
-	    why = "log takes one FILE";
-	    return false;
-	}
-	file = a;
-    }
-    var rows;
-    if ( !git_log_rows(rows, why, w, es, file, limit) )
-	return false;
-    long now = php::time();
-    out = "";
-    for ( var c : rows )
-    {
-	var line;
-	git_commit_line(line, c, now);
-	out = format("{}{}\n", out, line);
-    }
-    return true;
-}
-
-// `%git show REV:FILE`: FILE as REV holds it (git show REV:FILE). `%git
-// show REV`: the commit's header — git show --no-patch --format='commit
-// %H%nAuthor: %an <%ae>%nDate:   %ar%n%n    %s' REV.
-bool git_show_text(var &out, var &why, long w, long es, var &words)
-{
-    if ( php::count(words) != 2 )
-    {
-	why = "show takes REV or REV:FILE";
-	return false;
-    }
-    var spec = words[1];
-    var rev = spec;
-    var file = "";
-    long colon = perl::index(spec.c_str(), ":");
-    if ( colon >= 0 )
-    {
-	rev = spec.substr(0, colon);
-	file = spec.substr(colon + 1, strlen(spec.c_str()) - colon - 1);
-	if ( strlen(rev.c_str()) == 0 || strlen(file.c_str()) == 0 )
-	{
-	    why = "show takes REV or REV:FILE";
-	    return false;
-	}
-    }
-    bool owned = false;
-    long gh = git_repo_for(why, w, es, file, owned);
-    if ( gh <= 0 )
-	return false;
-    var answer;
-    if ( strlen(file.c_str()) > 0 )
-    {
-	var rel;
-	if ( !git_path_in(rel, why, gh, file) )
-	{
-	    git_release(gh, owned);
-	    return false;
-	}
-	git::show(answer, gh, rev.c_str(), rel.c_str());
-	out = answer["text"];
-    }
-    else
-    {
-	git::commit(answer, gh, rev.c_str());
-	var rd;
-	git_relative_date(rd, answer["when"].as_integer(), php::time());
-	out = format("commit {}\nAuthor: {} <{}>\nDate:   {}\n\n    {}\n", answer["sha"],
-		     answer["author"], answer["email"], rd, answer["summary"]);
-    }
-    git_release(gh, owned);
-    if ( !answer["error"].is_null() )
-    {
-	why = answer["error"];
-	return false;
-    }
-    return true;
-}
-
-// `%git blame FILE[:LINE]`: git blame --date=relative's fields for each line
-// of FILE as it is now (its open buffer's live text: git blame --contents),
-// or for LINE alone — `SHA8 (AUTHOR DATE LINE) TEXT`; a line no commit
-// holds is git's `00000000 (Not Committed Yet LINE) TEXT`.
-bool git_blame_text(var &out, var &why, long w, long es, var &words)
-{
-    if ( php::count(words) != 2 )
-    {
-	why = "blame takes FILE or FILE:LINE";
-	return false;
-    }
-    var spec = words[1];
-    var file = spec;
-    long line = 0;
-    long colon = perl::rindex(spec.c_str(), ":");
-    if ( colon > 0 )
-    {
-	var tail = spec.substr(colon + 1, strlen(spec.c_str()) - colon - 1);
-	if ( php::ctype_digit(tail) )
-	{
-	    line = php::intval(tail.c_str());
-	    file = spec.substr(0, colon);
-	    if ( line < 1 )
-	    {
-		why = "blame's LINE counts from 1";
-		return false;
-	    }
-	}
-    }
-    var text;
-    var rows;
-    if ( !git_blame_rows(rows, text, why, w, es, file, line > 0 ? line : 1, line > 0 ? 1 : 0) )
-	return false;
-    var lines;
-    php::explode(lines, "\n", text.c_str());
-    long nlines = php::count(lines);
-    long now = php::time();
-    out = "";
-    for ( var h : rows )
-    {
-	var sha = h["sha"];
-	var who;
-	if ( strlen(sha.c_str()) == 0 )
-	    who = "00000000 (Not Committed Yet";
-	else
-	{
-	    var short_sha = sha.substr(0, 8);
-	    var rd;
-	    git_relative_date(rd, h["when"].as_integer(), now);
-	    who = format("{} ({} {}", short_sha, h["author"], rd);
-	}
-	long first = h["line"].as_integer();
-	long count = h["count"].as_integer();
-	for ( long ln = first; ln < first + count; ln = ln + 1 )
-	{
-	    var src = "";
-	    if ( ln - 1 < nlines )
-		src = lines[ln - 1];
-	    out = format("{}{} {}) {}\n", out, who, ln, src);
-	}
-    }
-    return true;
-}
-
-// `%git status`: git status -sb's text — `## BRANCH` (`## HEAD (no branch)`
-// when detached, `## No commits yet` before the first commit), then each
-// changed file as `XY PATH` (a rename `XY FROM -> PATH`; X the index's
-// state, Y the working tree's), the untracked ones (`?? PATH`) last.
-bool git_status_text(var &out, var &why, long w, long es, var &words)
-{
-    if ( php::count(words) != 1 )
-    {
-	why = "status takes no arguments";
-	return false;
-    }
-    var none = "";
-    bool owned = false;
-    long gh = git_repo_for(why, w, es, none, owned);
-    if ( gh <= 0 )
-	return false;
-    var hd;
-    git::head(hd, gh);
-    var st;
-    git::status(st, gh);
-    git_release(gh, owned);
-    if ( !st["error"].is_null() )
-    {
-	why = st["error"];
-	return false;
-    }
-    if ( !hd["error"].is_null() )
-	out = "## No commits yet\n";
-    else if ( hd["detached"].as_boolean() )
-	out = "## HEAD (no branch)\n";
-    else
-	out = format("## {}\n", hd["branch"]);
-    for ( long pass = 0; pass < 2; pass = pass + 1 )
-	for ( var r : st["rows"] )
-	{
-	    var x = r["index"];
-	    var y = r["worktree"];
-	    bool untracked = y == git::file_state::untracked;
-	    if ( untracked != (pass == 1) )
-		continue;
-	    var path = r["path"];
-	    var from = r["from"];
-	    if ( untracked )
-		out = format("{}?? {}\n", out, path);
-	    else if ( strlen(from.c_str()) > 0 )
-		out = format("{}{}{} {} -> {}\n", out, git_state_letter(x),
-			     git_state_letter(y), from, path);
-	    else
-		out = format("{}{}{} {}\n", out, git_state_letter(x),
-			     git_state_letter(y), path);
-	}
-    return true;
-}
-
-// Does a status row hold a change git diff HEAD shows (the index or the
-// working tree differs; untracked and ignored files are not diffed)?
-bool git_row_diffed(var &r)
-{
-    var x = r["index"];
-    var y = r["worktree"];
-    if ( y == git::file_state::untracked || y == git::file_state::ignored )
-	return false;
-    return !(x == git::file_state::unmodified) || !(y == git::file_state::unmodified);
-}
-
-// `%git diff [FILE]`: FILE as it is now (its open buffer's live text, else
-// the file) against its last commit — git diff HEAD -- FILE, a buffer's
-// unsaved edits included; with no FILE, each file git status names as
-// changed, from disk (git diff HEAD). Nothing changed prints nothing.
-bool git_diff_text(var &out, var &why, long w, long es, var &words)
-{
-    long n = php::count(words);
-    if ( n > 2 )
-    {
-	why = "diff takes at most one FILE";
-	return false;
-    }
-    var file = "";
-    if ( n == 2 )
-	file = words[1];
-    bool owned = false;
-    long gh = git_repo_for(why, w, es, file, owned);
-    if ( gh <= 0 )
-	return false;
-    out = "";
-    if ( n == 2 )
-    {
-	var rel;
-	if ( !git_path_in(rel, why, gh, file) )
-	{
-	    git_release(gh, owned);
-	    return false;
-	}
-	var text;
-	git_live_text(text, w, es, file);
-	var df;
-	git::diff(df, gh, "HEAD", rel.c_str(), text.c_str());
-	git_release(gh, owned);
-	if ( !df["error"].is_null() )
-	{
-	    why = df["error"];
-	    return false;
-	}
-	out = df["patch"];
-	return true;
-    }
-    var st;
-    git::status(st, gh);
-    if ( !st["error"].is_null() )
-    {
-	git_release(gh, owned);
-	why = st["error"];
-	return false;
-    }
-    var root = st["workdir"];
-    for ( var r : st["rows"] )
-    {
-	if ( !git_row_diffed(r) )
-	    continue;
-	var path = r["path"];
-	var disk = format("{}{}", root, path);
-	var text = "";
-	if ( php::file_exists(disk.c_str()) )
-	    php::file_get_contents(text, disk.c_str());
-	var df;
-	git::diff(df, gh, "HEAD", path.c_str(), text.c_str());
-	if ( !df["error"].is_null() )
-	{
-	    git_release(gh, owned);
-	    why = df["error"];
-	    return false;
-	}
-	out = format("{}{}", out, df["patch"]);
-    }
-    git_release(gh, owned);
-    return true;
-}
-
-// The verbs' usage, one line: %help's row and an unknown verb's refusal.
-void git_usage(var &out)
-{
-    var t;
-    git_verb_table(t);
-    out = "";
-    for ( var r : t )
-    {
-	if ( strlen(out.c_str()) == 0 )
-	    out = r["usage"];
-	else
-	    out = format("{} | {}", out, r["usage"]);
-    }
-}
-
-// `VERB ARGS` (the shell's word rules) to the verb's text. False = refused,
-// with `why`.
-bool git_command(var &out, var &why, long w, long es, const char *arg0)
+// `VERB ARGS` to the module's own verb's text (git::command — the session's
+// %git), FILE and the current buffer read from madcide's buffers (their live
+// text, unsaved edits included: madc::host_documents), `doc` the current
+// one. False = refused, with `why`.
+bool git_command(var &out, var &why, long w, long es, long doc, const char *arg0)
 {
     var arg = arg0;			// ring discipline: own the text first
-    var words;
     out = "";
-    if ( !python::shlex_split(words, arg.c_str()) )
+    if ( !git::available() )
     {
-	why = "a quote is not closed";
+	why = "git is not available (the madcgit module is not installed)";
 	return false;
     }
-    var usage;
-    git_usage(usage);
-    if ( php::count(words) == 0 )
+    madc::host_documents(w, active_doc(w, es, doc));
+    var r;
+    git::command(r, arg.c_str());
+    madc::host_documents(0, 0);
+    if ( !r["error"].is_null() )
     {
-	why = format("which verb? {}", usage);
+	why = r["error"];
 	return false;
     }
-    var verb = words[0];
-    switch ( git_verb_of(verb) )
-    {
-	case gtLOG:
-	    return git_log_text(out, why, w, es, words);
-	case gtSHOW:
-	    return git_show_text(out, why, w, es, words);
-	case gtBLAME:
-	    return git_blame_text(out, why, w, es, words);
-	case gtSTATUS:
-	    return git_status_text(out, why, w, es, words);
-	case gtDIFF:
-	    return git_diff_text(out, why, w, es, words);
-    }
-    why = format("unknown verb '{}': {}", verb, usage);
-    return false;
+    out = r["text"];
+    return true;
 }
 
 // The `git` command (a %git line's, a key's, a menu row's): the verb's text,
@@ -600,7 +182,7 @@ bool git_cmd(long w, long es, long doc, const char *arg)
 {
     var out;
     var why;
-    if ( !git_command(out, why, w, es, arg) )
+    if ( !git_command(out, why, w, es, doc, arg) )
     {
 	ui::set(w, es, "msg", format("git: {}", why));
 	out = format("%git: {}\n", why);
@@ -658,11 +240,10 @@ bool git_changes_cmd(long w, long es, long doc, const char *arg)
     var file;
     if ( !git_view_file(file, w, es, doc) )
 	return true;
-    var words = { "diff" };
-    words[] = file;
+    var verb = format("diff {}", python::shlex_quote(file.c_str()));
     var out;
     var why;
-    if ( !git_diff_text(out, why, w, es, words) )
+    if ( !git_command(out, why, w, es, doc, verb.c_str()) )
     {
 	ui::set(w, es, "msg", format("git: {}", why));
 	return true;
@@ -695,11 +276,10 @@ bool git_history_cmd(long w, long es, long doc, const char *arg0)
     }
     if ( strlen(arg.c_str()) > 0 )
     {
-	var words = { "show" };
-	words[] = arg;
+	var verb = format("show {}", python::shlex_quote(arg.c_str()));
 	var out;
 	var why;
-	if ( !git_show_text(out, why, w, es, words) )
+	if ( !git_command(out, why, w, es, doc, verb.c_str()) )
 	{
 	    ui::set(w, es, "msg", format("git: {}", why));
 	    return true;
@@ -773,9 +353,9 @@ bool git_blame_cmd(long w, long es, long doc, const char *arg)
     }
     var short_sha = sha.substr(0, 7);
     var rd;
-    git_relative_date(rd, h["when"].as_integer(), php::time());
-    ui::set(w, es, "msg", format("Line {}: {} {}, {}: {}", line, short_sha, h["author"], rd,
-				 h["summary"]));
+    git::relative_date(rd, h["when"].as_integer(), php::time());
+    ui::set(w, es, "msg", format("Line {}: {} {}, {}: {}", line, short_sha, h["author"],
+				 rd["text"], h["summary"]));
     return true;
 }
 
@@ -787,10 +367,9 @@ bool git_activate(long w)
     long code = plugin_command(w, "git", "Git", git_cmd);
     if ( code == 0 )
 	return false;
-    var usage;
-    git_usage(usage);
-    var summary = format("the repository's {}", usage);
-    return plugin_repl_command(w, "git", "%git VERB", summary.c_str(), code)
+    var row;
+    git::command_row(row);		// the module's own %git row's words
+    return plugin_repl_command(w, "git", row["usage"].c_str(), row["summary"].c_str(), code)
 	&& plugin_command(w, "gitchanges", "Changes", git_changes_cmd) != 0
 	&& plugin_command(w, "githistory", "History", git_history_cmd) != 0
 	&& plugin_command(w, "gitblame", "Blame line", git_blame_cmd) != 0;

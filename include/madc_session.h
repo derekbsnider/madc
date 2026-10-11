@@ -456,11 +456,20 @@ bool resolve_buffer(const ReplSession::BufferSource &source,
 		    std::string &text, bool &has_text, std::string &why);
 // The running session's buffer question (InteractiveSession::buffer_text):
 // what a module's command reads for FILE ("" the current buffer). Outside a
-// session, the disk's (no FILE: refused).
+// session, the thread's host buffers (set_host_buffers), else the disk's (no
+// FILE: refused).
 bool session_buffer(const std::string &name, std::string &path,
 		    std::string &text, bool &has_text, std::string &why);
+// The buffers a program that holds its own (an editor calling a module's verb
+// in its process) hands to session_buffer outside a session; an empty source
+// is the disk's. Per thread: the calling thread's questions only.
+void set_host_buffers(const ReplSession::BufferSource &source);
 // <ns_madc>'s face of it: {path, text, has_text}, or {error}.
 bool session_buffer(value &out, const char *name);
+// <ns_madc>'s host_documents: the thread's host buffers are ui world `w`'s
+// documents (document_buffer), `current` the current one; w 0 = the disk's.
+// False for a world handle that names no world.
+bool host_documents(int64_t w, int64_t current);
 // An entry's unit name — Julia's REPL[N], the one spelling an entry's
 // diagnostics cite, a result's description and a binding's origin name —
 // and its inverse: the entry number a unit name spells, 0 for any other

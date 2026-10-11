@@ -1046,7 +1046,13 @@ namespace madc {
     //     1B.10): {path, text, has_text} — has_text: the host's buffer holds
     //     it and `text` is its live text; else the disk's file at path — or
     //     {error} when there is nothing to read. In a backend the host
-    //     answers it mid-entry; outside a session, the disk's.
+    //     answers it mid-entry; outside a session, the program's own
+    //     (host_documents), else the disk's.
+    //   host_documents(w, current): the buffers session_buffer answers
+    //     OUTSIDE a session — what a module's verb called in this program
+    //     reads (git::command): ui world w's documents, their live text,
+    //     `current` the current buffer; w 0 returns them to the disk's. False
+    //     for a handle that names no world. Per thread: this thread's calls.
     // Thread contract: a handle is confined to the thread that opened it.
     int64_t session_open(const char *std);
     bool session_running(int64_t handle);
@@ -1065,6 +1071,7 @@ namespace madc {
     bool command_add(const char *name, const char *usage, const char *summary,
 		     bool (*handler)(value &out, const char *argument));
     bool session_buffer(value &out, const char *name);
+    bool host_documents(int64_t w, int64_t current);
     // The REPL history store (include/madc_history.h; split arc 1B.7): ONE
     // file of records, each naming the standard its entry was typed at — a
     // pane recalls what `madc -i` keeps, and the reverse. history_path: its

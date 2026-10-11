@@ -15,6 +15,7 @@
 
 #include "madcdis/git_repo.h"
 #include "madcgit_values.h"		// the value shapers this file defines
+#include "madcgit_verbs.h"		// git_command, git_relative_date: the %git verbs
 #include "handle_table.h"		// THE slot+1 registry rule (the parse handles')
 #include "madc_datachannel_internal.h"	// detail::set_channel_error — the ONE
 					// runtime-error composer (gate:
@@ -1067,6 +1068,43 @@ void *madcgit_diff(void *result, int64_t handle, const char *rev, const char *pa
     std::map<std::string, value> f;
     f["patch"] = value(patch);
     f["hunks"] = value::make_array(rows);
+    out = value::make_object(f);
+    return result;
+}
+
+void *madcgit_command(void *result, const char *argument)
+{
+    value &out = *(value *)result;
+    std::string text, why;
+    if ( !madc::git_command(argument ? argument : "", text, why) )
+    {
+	out = madc::error_value(why);
+	return result;
+    }
+    std::map<std::string, value> f;
+    f["text"] = value(text);
+    out = value::make_object(f);
+    return result;
+}
+
+void *madcgit_command_row(void *result)
+{
+    value &out = *(value *)result;
+    std::size_t n = 0;
+    const madc_module_command *rows = madcgit_commands(&n);
+    std::map<std::string, value> f;
+    f["name"] = value(std::string(rows[0].name));
+    f["usage"] = value(std::string(rows[0].usage));
+    f["summary"] = value(std::string(rows[0].summary));
+    out = value::make_object(f);
+    return result;
+}
+
+void *madcgit_relative_date(void *result, int64_t when, int64_t now)
+{
+    value &out = *(value *)result;
+    std::map<std::string, value> f;
+    f["text"] = value(madc::git_relative_date(when, now));
     out = value::make_object(f);
     return result;
 }

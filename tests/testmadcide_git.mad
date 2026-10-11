@@ -177,11 +177,11 @@ int main()
     for ( var a : ages )
     {
 	var rd;
-	git_relative_date(rd, now - a.as_integer(), now);
-	said = format("{}{} | ", said, rd);
+	git::relative_date(rd, now - a.as_integer(), now);
+	said = format("{}{} | ", said, rd["text"]);
     }
     var fut;
-    git_relative_date(fut, now + 10, now);
-    println("dates: {}{}", said, fut);
+    git::relative_date(fut, now + 10, now);
+    println("dates: {}{}", said, fut["text"]);
     return 0;
 }

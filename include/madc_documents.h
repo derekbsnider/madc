@@ -21,6 +21,7 @@
 #include <string>
 
 #include "madcdis/document.h"	// entity_id
+#include "madcdis/istring.h"	// document_buffer: a buffer's name and path
 
 namespace madc {
 namespace hub { class world; }
@@ -47,6 +48,16 @@ bool document_save(hub::world &w, hub::entity_id doc);
 // The document named `path` (its kind with it): an empty path makes it
 // untitled.
 bool document_set_path(hub::world &w, hub::entity_id doc, const std::string &path);
+// A session's buffer question (ReplSession::BufferSource's contract, split
+// arc 1B.8) answered from `w`'s documents: `name` a FILE — its document's
+// path and live text (has_text), or, when no document holds it, the name as
+// the path and has_text false (the disk's); "" — the document `current` (0:
+// false, "no current buffer"). An untitled document refuses (it has no file
+// name). The ONE answer a host that holds documents gives: the CLI's REPL,
+// the LSP's commands, a program's own buffers (madc::host_documents).
+bool document_buffer(const hub::world &w, hub::entity_id current,
+		     const dis::istring &name, dis::istring &path,
+		     std::string &text, bool &has_text, std::string &why);
 
 } // namespace madc
 

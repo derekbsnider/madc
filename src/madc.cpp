@@ -541,30 +541,8 @@ static int repl_loops(ReplSession &session, bool terminal,
     session.set_buffers([&buffers, &ex](const madc::dis::istring &name,
 					madc::dis::istring &path, std::string &text,
 					bool &has_text, std::string &why) -> bool {
-	const madc::hub::entity_id doc = name.empty()
-	    ? ex.current() : madc::document_find(buffers, name);
-	has_text = false;
-	if ( !doc )
-	{
-	    if ( name.empty() )
-	    {
-		why = "no current buffer";
-		return false;
-	    }
-	    path = name;
-	    return true;
-	}
-	const madc::hub::document *d = buffers.doc_of(doc);
-	const madc::hub::text_buffer *t = buffers.text_of(doc);
-	if ( !d || !t || d->untitled() )
-	{
-	    why = "the buffer has no file name (:w FILE names it)";
-	    return false;
-	}
-	path = d->path();
-	text = t->text();
-	has_text = true;
-	return true;
+	return madc::document_buffer(buffers, ex.current(), name, path, text,
+				     has_text, why);
     });
     int status = 0;
     if ( file_argc > 0 )
