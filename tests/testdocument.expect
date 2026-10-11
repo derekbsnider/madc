@@ -9,6 +9,7 @@ diags=0
 change splice off=0 old=0 new=6 ins=[// hi
 ]
 caret shifted=30
+anchor_shift=30 at-left=0 at-right=6 inside=4 none=-1
 change undo off=0 old=31 new=25 ins=[]
 undo caret=24 text_restored=1 modified=0
 anchor restored=24

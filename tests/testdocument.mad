@@ -67,6 +67,13 @@ int main()
 
     ui::text_insert(w, d, 0, "// hi\n");
     printf("caret shifted=%d\n", ui::anchor_offset(w, d, caret));
+    // the anchors' rule over a bare position (a client's caret on any text):
+    // the same splice moves 24 to 30; at the splice point, gravity decides;
+    // inside a replace it collapses; no position stays none
+    printf("anchor_shift=%d at-left=%d at-right=%d inside=%d none=%d\n",
+	   ui::anchor_shift(24, 0, 0, 6, true), ui::anchor_shift(0, 0, 0, 6, false),
+	   ui::anchor_shift(0, 0, 0, 6, true), ui::anchor_shift(5, 4, 6, 1, true),
+	   ui::anchor_shift(-1, 0, 0, 6, true));
     var back;
     var leaving = { "caret": 30 };
     ui::doc_undo(back, w, d, leaving);

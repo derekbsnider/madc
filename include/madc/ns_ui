@@ -314,6 +314,12 @@ namespace ui {
     int64_t anchor_offset(int64_t w, int64_t entity, int64_t id);
     bool    anchor_move(int64_t w, int64_t entity, int64_t id, int64_t off);
     bool    anchor_remove(int64_t w, int64_t entity, int64_t id);
+    // The anchors' ONE shift rule over a client's own byte position `p` on
+    // any text (a plain text holds no anchors): `p` across a splice at `off`
+    // replacing old_len bytes with new_len (an edit notification's record).
+    // A negative `p` (no position) comes back unchanged. A pure function.
+    int64_t anchor_shift(int64_t p, int64_t off, int64_t old_len, int64_t new_len,
+			 bool right_gravity);
     // The edit notification: `fn` runs synchronously after EVERY change
     // of ANY text in the session — a document's or a plain text's —
     // with the record { entity, version, kind (a ui::text_change_kind

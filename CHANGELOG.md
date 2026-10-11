@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### The anchors' one shift rule, shared by the engine and the editor
+
+How a byte position follows a splice — a position before the splice is
+unchanged, one inside a replaced range collapses to the splice point, one at or
+past its end moves by the size difference, one exactly at the splice when
+nothing was erased moves only with right gravity — is now the one free function
+`madc::hub::shift_position` in the document engine. A document's anchors
+(`document::shift`) apply it, and the new dialect face
+`ui::anchor_shift(p, off, old_len, new_len, right_gravity)` answers by it.
+
+madcide's own copy of the rule (`shift_offset`) is deleted: its carets, the
+mark / bend selection markers, the highlight spans, the colour record, the
+line-edit caret, and the replace walk's stop all shift by `ui::anchor_shift`,
+and the edit follower makes one anchor pass per splice (the erase and the
+insert together) rather than one pass for each.
+
+Behaviour difference: a passive position exactly at the start of a replaced
+range now stays before the replacement (it collapses to the splice point)
+instead of moving after it.
+
 ### madcide's git runs the madcgit module's own verbs
 
 madcide's `%git` (the REPL row, its key and its menu row) and its git views

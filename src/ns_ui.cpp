@@ -1737,6 +1737,15 @@ bool anchor_move(int64_t w, int64_t entity, int64_t id, int64_t off)
 			  (size_t)off);
 }
 
+int64_t anchor_shift(int64_t p, int64_t off, int64_t old_len, int64_t new_len,
+		     bool right)
+{
+    if ( p < 0 || off < 0 || old_len < 0 || new_len < 0 )
+	return p;			// no position, or no splice: unchanged
+    return (int64_t)madc::hub::shift_position((size_t)p, right, (size_t)off,
+					      (size_t)old_len, (size_t)new_len);
+}
+
 bool anchor_remove(int64_t w, int64_t entity, int64_t id)
 {
     ui_session *s = ui_get(w);

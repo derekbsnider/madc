@@ -160,6 +160,23 @@ TEST_CASE("anchors shift by the one rule, for every gravity and position")
     CHECK(w.anchor_add(plain, 1, true) == 0u);
 }
 
+// The rule as a pure function (split arc 1D): what a client's own positions
+// over any text (ui::anchor_shift — a plain text holds no anchors) follow,
+// the same answers the anchors above gave.
+TEST_CASE("shift_position is the anchors' rule over a bare position")
+{
+    using madc::hub::shift_position;
+    CHECK(shift_position(2, false, 5, 0, 2) == 2u);	// before
+    CHECK(shift_position(5, false, 5, 0, 2) == 5u);	// AT, left: stays
+    CHECK(shift_position(5, true, 5, 0, 2) == 7u);	// AT, right: after the text
+    CHECK(shift_position(9, false, 5, 0, 2) == 11u);	// past
+    CHECK(shift_position(5, true, 4, 6, 1) == 4u);	// inside a replace: collapses
+    CHECK(shift_position(4, true, 4, 6, 1) == 4u);	// AT a replace: collapses, either gravity
+    CHECK(shift_position(11, false, 4, 6, 1) == 6u);	// past a replace
+    CHECK(shift_position(2, true, 0, 3, 0) == 0u);	// inside an erase
+    CHECK(shift_position(3, true, 0, 3, 0) == 0u);	// at an erase's end
+}
+
 TEST_CASE("modified is derived from the saved version; undo restores anchors and the saved state")
 {
     world w;

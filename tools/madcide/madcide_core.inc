@@ -3241,7 +3241,7 @@ void insert_file(long w, long es, long doc, long caret, const char *path)
 // while the question is up; the walk ends with the count. The walk's state
 // on the bag: rfind / rwith (the answers), rat (the match asked about),
 // rstop (where the walk began, carried through each replacement by
-// shift_offset), rwrap (the walk has wrapped), rcount (replacements made).
+// ui::anchor_shift), rwrap (the walk has wrapped), rcount (replacements made).
 
 // The next match at or after `from` in the walk: past the end it wraps
 // once to the top, where a match must end by rstop. -1 = none left.
@@ -3310,8 +3310,8 @@ long replace_one(long w, long es, long doc, bool checkpoint)
 	ed_text_insert(w, es, doc, at, with.c_str());
     // The stop keeps its place before text put in AT it (the walk began
     // there; the replacement is behind it, never asked about again).
-    long stop = shift_offset(es_int(w, es, "rstop", 0), at, -n, true);
-    ui::set(w, es, "rstop", shift_offset(stop, at, m, false));
+    long stop = ui::anchor_shift(es_int(w, es, "rstop", 0), at, n, 0, true);
+    ui::set(w, es, "rstop", ui::anchor_shift(stop, at, 0, m, false));
     ui::set(w, es, "rcount", es_int(w, es, "rcount", 0) + 1);
     ui::set(w, es, "caret", at + m);
     return at + m;

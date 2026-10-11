@@ -202,58 +202,40 @@ long line_start_of(long w, long doc, long line)
 // defect), and a marker set before a keystroke goes stale.
 //
 // The shift is ONE mechanism (client-server arc V3a, the anchor registry;
-// gate check-one-anchor-owner.sh): shift_offset is the ONE splice
-// primitive over a single byte position, and shift_anchors calls it for
-// every registered anchor in ONE pass. A second hand-rolled shift (a
-// `mark + n` under a positional guard) is exactly the drift the gate bans —
-// it lived in block_copy until this slice.
+// gate check-one-anchor-owner.sh): the engine's anchor rule, ui::anchor_shift
+// (the rule a document's own anchors follow; split arc 1D), is the ONE splice
+// primitive over a single byte position, and shift_anchors applies it to
+// every registered anchor in ONE pass per splice. A second hand-rolled shift
+// (a `mark + n` under a positional guard) is exactly the drift the gate bans
+// — it lived in block_copy until V3a.
 
-// shift_offset — reanchor ONE byte position `p` across an edit at `off` of
-// `delta` bytes (delta > 0 insert, delta < 0 erase). `at` is the insert
-// gravity: true = an insert exactly AT `p` moves it right (`p` sticks to
-// the text after it — a caret / a span START); false = it stays (a span
-// END, so typing at a span's end does not extend its colour). An erase
-// collapses a position inside the erased range onto `off`. A negative `p`
-// is "unset" (a cleared marker) and passes through untouched.
-long shift_offset(long p, long off, long delta, bool at)
-{
-    if ( p < 0 )
-	return p;
-    if ( delta < 0 )
-    {
-	long dl = -delta;
-	if ( p >= off )
-	    return p >= off + dl ? p + delta : off;
-	return p;
-    }
-    if ( at ? p >= off : p > off )
-	return p + delta;
-    return p;
-}
-
-// Reanchor one es scalar anchor by name (skip when the key is absent or
-// the marker is unset). Right-gravity — a marker sticks to the text after
-// it, as the live caret does.
-void shift_es_offset(long w, long es, const char *key, long off, long delta)
+// Reanchor one es scalar anchor by name across a splice at `off` replacing
+// old_len bytes with new_len (skip when the key is absent; an unset marker,
+// negative, passes through) — by the anchors' ONE rule, ui::anchor_shift.
+// Right-gravity: a marker sticks to the text after it, as the live caret
+// does.
+void shift_es_offset(long w, long es, const char *key, long off, long old_len,
+		     long new_len)
 {
     var v;
     ui::get(v, w, es, key);
     if ( v.is_null() )
 	return;
     long p = v.as_integer();
-    long np = shift_offset(p, off, delta, true);
+    long np = ui::anchor_shift(p, off, old_len, new_len, true);
     if ( np != p )
 	ui::set(w, es, key, np);
 }
 
-// Shift the anchors carried on ONE es viewing `doc` across an edit: the
-// themed highlight ranges (start-gravity in, end-gravity out) and the
-// selection markers. `with_caret` shifts the es "caret" too — for a PEER
-// (presence) es whose caret is passive; the EDITING es passes false, its
-// caret set by the edit call site (a paste lands after the clip, a cut on
-// its start), never a passive shift.
-void shift_es_anchors(long w, long es, long doc, long off, long delta,
-		      bool with_caret)
+// Shift the anchors carried on ONE es viewing `doc` across a splice at `off`
+// replacing old_len bytes with new_len: the themed highlight ranges (an
+// insert at a range's start stays outside it, one at its end does not
+// extend it) and the selection markers. `with_caret` shifts the es "caret"
+// too — for a PEER (presence) es whose caret is passive; the EDITING es
+// passes false, its caret set by the edit call site (a paste lands after
+// the clip, a cut on its start), never a passive shift.
+void shift_es_anchors(long w, long es, long doc, long off, long old_len,
+		      long new_len, bool with_caret)
 {
     var hs;
     ui::get(hs, w, es, "hspans");
@@ -262,8 +244,8 @@ void shift_es_anchors(long w, long es, long doc, long off, long delta,
 	var out = {};
 	for ( var r : hs )
 	{
-	    long s = shift_offset(r["s"].as_integer(), off, delta, true);
-	    long e = shift_offset(r["e"].as_integer(), off, delta, false);
+	    long s = ui::anchor_shift(r["s"].as_integer(), off, old_len, new_len, true);
+	    long e = ui::anchor_shift(r["e"].as_integer(), off, old_len, new_len, false);
 	    if ( e > s )
 	    {
 		// The row is the converter's (spans_to_hspans): carry it
@@ -282,9 +264,9 @@ void shift_es_anchors(long w, long es, long doc, long off, long delta,
 	ui::set(w, es, "hspans", out);
     }
     if ( with_caret )
-	shift_es_offset(w, es, "caret", off, delta);
-    shift_es_offset(w, es, "mark", off, delta);
-    shift_es_offset(w, es, "bend", off, delta);
+	shift_es_offset(w, es, "caret", off, old_len, new_len);
+    shift_es_offset(w, es, "mark", off, old_len, new_len);
+    shift_es_offset(w, es, "bend", off, old_len, new_len);
 }
 
 // The anchor registry: shift EVERY byte-anchored thing across an edit in one
@@ -344,19 +326,21 @@ bool multiline_range(long w, long doc, long off, long n)
     return false;
 }
 
-// Record an edit at `off` of `delta` bytes on `es`'s colour record: the
-// range already recorded moves with the edit (its start stays before an
-// insert at it, its end follows one), then grows to cover the edit.
-void colour_dirty(long w, long es, long doc, long off, long delta, bool multi)
+// Record a splice at `off` replacing old_len bytes with new_len on `es`'s
+// colour record: the range already recorded moves with the edit (its start
+// stays before an insert at it, its end follows one), then grows to cover
+// the new text.
+void colour_dirty(long w, long es, long doc, long off, long old_len, long new_len,
+		  bool multi)
 {
     long lo = -1;
     long hi = -1;
     if ( es_int(w, es, "cdirty_doc", 0) == doc )
     {
-	lo = shift_offset(es_int(w, es, "cdirty_lo", -1), off, delta, false);
-	hi = shift_offset(es_int(w, es, "cdirty_hi", -1), off, delta, true);
+	lo = ui::anchor_shift(es_int(w, es, "cdirty_lo", -1), off, old_len, new_len, false);
+	hi = ui::anchor_shift(es_int(w, es, "cdirty_hi", -1), off, old_len, new_len, true);
     }
-    long end = delta > 0 ? off + delta : off;
+    long end = off + new_len;
     if ( lo < 0 || off < lo )
 	lo = off;
     if ( hi < 0 || end > hi )
@@ -391,15 +375,17 @@ void colour_dirty_all(long w, long es, long doc)
     }
 }
 
-// An edit's anchors and colour record, on the editing client (0: none —
-// the edit was no client's) and every peer viewing the document; `multi`
-// = the edit's text held a multiline_char.
-void shift_anchors(long w, long es, long doc, long off, long delta, bool multi)
+// A splice's anchors and colour record (at `off`, old_len bytes replaced by
+// new_len), on the editing client (0: none — the edit was no client's) and
+// every peer viewing the document; `multi` = the erased or inserted text
+// held a multiline_char.
+void shift_anchors(long w, long es, long doc, long off, long old_len, long new_len,
+		   bool multi)
 {
     if ( es != 0 )
     {
-	shift_es_anchors(w, es, doc, off, delta, false);
-	colour_dirty(w, es, doc, off, delta, multi);
+	shift_es_anchors(w, es, doc, off, old_len, new_len, false);
+	colour_dirty(w, es, doc, off, old_len, new_len, multi);
     }
     var reg;
     ui::get(reg, w, doc, "anchor_es");
@@ -410,8 +396,8 @@ void shift_anchors(long w, long es, long doc, long off, long delta, bool multi)
 	long peer = r.as_integer();
 	if ( peer == es || es_int(w, peer, "adoc", -1) != doc )
 	    continue;
-	shift_es_anchors(w, peer, doc, off, delta, true);
-	colour_dirty(w, peer, doc, off, delta, multi);
+	shift_es_anchors(w, peer, doc, off, old_len, new_len, true);
+	colour_dirty(w, peer, doc, off, old_len, new_len, multi);
     }
 }
 
@@ -495,10 +481,10 @@ void ed_text_changed(long w, long doc, var &c)
     long off = c["off"].as_integer();
     long del = c["old_len"].as_integer();
     var ins = c["inserted"];
-    if ( del > 0 )
-	shift_anchors(w, es, doc, off, -del, es != 0 ? ed_erase_multi : true);
-    if ( strlen(ins.c_str()) > 0 )
-	shift_anchors(w, es, doc, off, strlen(ins.c_str()), multiline_text(ins.c_str()));
+    long n = strlen(ins.c_str());
+    bool multi = (del > 0 && (es != 0 ? ed_erase_multi : true)) || multiline_text(ins.c_str());
+    if ( del > 0 || n > 0 )
+	shift_anchors(w, es, doc, off, del, n, multi);
 }
 
 // The worlds whose edit notification ed_text_changed already follows: one
@@ -871,7 +857,7 @@ bool selection_replace(long w, long es, long doc, long caret, const char *text)
 // ONE owner for an edit applied to every line the selection touches: the
 // span rule, each line's edit, and the pass that applies them (one undo
 // step; the last line first, so the lines above keep their offsets; the
-// caret carried through shift_offset; a GUI selection re-lit over the
+// caret carried through ui::anchor_shift; a GUI selection re-lit over the
 // lines' whole text).
 enum line_edit_op : unsigned char { leINDENT = 0, leDEDENT, leCOMMENT };
 
@@ -1062,13 +1048,13 @@ bool edit_lines(long w, long es, long doc, long caret, long op, const char *pref
 	if ( del > 0 )
 	{
 	    ed_text_erase(w, es, doc, at, del);
-	    c = shift_offset(c, at, -del, true);
+	    c = ui::anchor_shift(c, at, del, 0, true);
 	}
 	long n = strlen(e["ins"].c_str());
 	if ( n > 0 )
 	{
 	    ed_text_insert(w, es, doc, at, e["ins"].c_str());
-	    c = shift_offset(c, at, n, true);
+	    c = ui::anchor_shift(c, at, 0, n, true);
 	}
     }
     ui::set(w, es, "caret", c);
@@ -1241,7 +1227,7 @@ long close_dedent(long w, long es, long doc, long caret, const char *t)
     if ( del <= 0 )
 	return caret;
     ed_text_erase(w, es, doc, start, del);
-    return shift_offset(caret, start, -del, true);
+    return ui::anchor_shift(caret, start, del, 0, true);
 }
 
 // The kind=="text" arm both editors share: search-pattern append while

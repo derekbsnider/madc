@@ -97,6 +97,24 @@ struct anchor
     anchor() : id(0), off(0), right(false) {}
 };
 
+// The ONE shift rule (design §2.3): position `p` across a splice at `off`
+// replacing old_len bytes with new_len — a position before `off` is
+// unchanged; one inside the replaced range collapses to `off`; one at or past
+// its end moves by the size difference; one exactly AT `off` when nothing was
+// erased moves iff its gravity is `right`. A document's anchors shift by it;
+// a client's own byte positions over any text (ui::anchor_shift) do too.
+inline size_t shift_position(size_t p, bool right, size_t off, size_t old_len,
+			     size_t new_len)
+{
+    if ( p < off )
+	return p;
+    if ( p == off && old_len == 0 )
+	return right ? p + new_len : p;
+    if ( p < off + old_len )
+	return off;
+    return p - old_len + new_len;
+}
+
 // ------------------------------------------------------------------- document
 class document
 {
@@ -215,30 +233,13 @@ public:
     }
     size_t anchor_count() const { return _anchors.size(); }
 
-    // The ONE shift rule (design §2.3; the rule tools/texteditor/
-    // editor_events.inc shift_offset applied to bag integers): for a splice
-    // at `off` replacing old_len bytes with new_len — an anchor before
-    // `off` is unchanged; one inside the replaced range collapses to `off`;
-    // one at or past its end moves by the size difference; one exactly AT
-    // `off` when nothing was erased moves iff its gravity is right.
+    // Every anchor across a splice at `off` replacing old_len bytes with
+    // new_len, by the one rule (shift_position).
     void shift(size_t off, size_t old_len, size_t new_len)
     {
 	for ( size_t i = 0; i < _anchors.size(); ++i )
-	{
-	    anchor &a = _anchors[i];
-	    if ( a.off < off )
-		continue;
-	    if ( a.off == off && old_len == 0 )
-	    {
-		if ( a.right )
-		    a.off += new_len;
-		continue;
-	    }
-	    if ( a.off < off + old_len )
-		a.off = off;
-	    else
-		a.off = a.off - old_len + new_len;
-	}
+	    _anchors[i].off = shift_position(_anchors[i].off, _anchors[i].right,
+					     off, old_len, new_len);
     }
     // A whole-buffer change (load): every anchor clamps to the new size.
     void clamp(size_t size)

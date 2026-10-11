@@ -66,7 +66,7 @@ int main()
     // past the erased range); an unset marker stays unset.
     ui::set(w, es, "sel_unset", -1);
     ed_text_erase(w, es, doc, 0, 4);
-    shift_es_offset(w, es, "sel_unset", 0, -4);
+    shift_es_offset(w, es, "sel_unset", 0, 4, 0);
     println("after-erase mark={} bend={} unset={}",
 	    es_int(w, es, "mark", -1), es_int(w, es, "bend", -1),
 	    es_int(w, es, "sel_unset", 0));
