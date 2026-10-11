@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### The forest pack emits unit payloads in canonical order, reproducibly
+
+`cir_forest_fill_pack_payloads` now walks the per-unit pack maps
+(`pack_pp_exports`, `pack_unit_edges`, `pack_unit_branch_deps`,
+`pack_unit_sources`) in canonical unit order — first tokenization
+(`pack_unit_order`), then by spelling — rather than in map-key order, which was
+the lexer's interned file pointer, i.e. heap-address order that varied from run
+to run and from one `--std=` to another. Because those entries create units and
+intern strings, that order reached the container's bytes. On the 368-unit
+release pack TU, two freezes that previously listed the same units in different
+orders from unit 279 on (pp-only units such as `bits/sigstack.h`,
+`bits/typesizes.h`, `limits.h` moving around) now agree: a gnu++17 freeze's
+per-segment content digests equal the c++17 freeze's, and two same-config
+freezes of a small TU are byte-identical. The release pack is now reproducible.
+
 ### Parallel builds size their job count by host memory, not cores
 
 A parallel build's job count now comes from `scripts/build_jobs.sh`: the cores,

@@ -3309,6 +3309,37 @@ static const char *cir_pack_protocol_owner(void *ctx, uint32_t origin_id)
     return it == prog->pack_protocol_token_owner.end() ? NULL : it->second;
 }
 
+// The pack recording's per-unit maps are keyed by the lexer's interned file
+// POINTER, so walking one visits ADDRESS order — different from run to run
+// and from one --std= to another. Their entries create units and intern
+// strings, so that order reached the container's bytes; two freezes of one
+// corpus must be byte-identical (a shared pack profile is proven by exactly
+// that comparison). The entries in canonical unit order instead: first
+// tokenization (Program::pack_unit_order), then by spelling.
+template <class M>
+static std::vector<typename M::const_iterator>
+pack_entries_in_unit_order(const M &m, const std::vector<const char *> &unit_order)
+{
+    std::map<std::string, size_t> rank;
+    for (size_t k = 0; k < unit_order.size(); ++k)
+	rank.insert(std::make_pair(std::string(unit_order[k]), k));
+    std::vector<std::pair<std::pair<size_t, std::string>, typename M::const_iterator> > keyed;
+    for (typename M::const_iterator it = m.begin(); it != m.end(); ++it) {
+	std::string name(it->first);
+	std::map<std::string, size_t>::const_iterator r = rank.find(name);
+	keyed.push_back(std::make_pair(std::make_pair(r == rank.end() ? (size_t)-1 : r->second,
+						      name), it));
+    }
+    std::sort(keyed.begin(), keyed.end(),
+	      [](const std::pair<std::pair<size_t, std::string>, typename M::const_iterator> &a,
+		 const std::pair<std::pair<size_t, std::string>, typename M::const_iterator> &b)
+	      { return a.first < b.first; });
+    std::vector<typename M::const_iterator> out;
+    for (size_t k = 0; k < keyed.size(); ++k)
+	out.push_back(keyed[k].second);
+    return out;
+}
+
 static void cir_forest_fill_pack_payloads(Program *prog, cir_frozen_forest &f)
 {
     if (!prog || !prog->pack_recording)
@@ -3398,9 +3429,11 @@ static void cir_forest_fill_pack_payloads(Program *prog, cir_frozen_forest &f)
     }
 
     // 3. PP-export deltas, in directive order (tombstones included).
-    for (std::map<const char *, std::vector<Program::PackMacroEvent> >::const_iterator
-	     pe = prog->pack_pp_exports.begin();
-	 pe != prog->pack_pp_exports.end(); ++pe) {
+    typedef std::map<const char *, std::vector<Program::PackMacroEvent> > pp_map;
+    const std::vector<pp_map::const_iterator> pp_in_order =
+	pack_entries_in_unit_order(prog->pack_pp_exports, prog->pack_unit_order);
+    for (size_t pk = 0; pk < pp_in_order.size(); ++pk) {
+	pp_map::const_iterator pe = pp_in_order[pk];
 	uint32_t u = ensure_unit(pe->first);
 	for (size_t k = 0; k < pe->second.size(); ++k) {
 	    const Program::PackMacroEvent &ev = pe->second[k];
@@ -3434,9 +3467,11 @@ static void cir_forest_fill_pack_payloads(Program *prog, cir_frozen_forest &f)
 
     // 4. Include edges (directory unit indices, include order). Targets are
     //    ensured FIRST — ensure_unit may reallocate f.units.
-    for (std::map<const char *, std::vector<const char *> >::const_iterator
-	     ee = prog->pack_unit_edges.begin();
-	 ee != prog->pack_unit_edges.end(); ++ee) {
+    typedef std::map<const char *, std::vector<const char *> > edge_map;
+    const std::vector<edge_map::const_iterator> edges_in_order =
+	pack_entries_in_unit_order(prog->pack_unit_edges, prog->pack_unit_order);
+    for (size_t ek = 0; ek < edges_in_order.size(); ++ek) {
+	edge_map::const_iterator ee = edges_in_order[ek];
 	uint32_t u = ensure_unit(ee->first);
 	std::vector<uint32_t> tgts;
 	for (size_t k = 0; k < ee->second.size(); ++k)
@@ -3452,9 +3487,11 @@ static void cir_forest_fill_pack_payloads(Program *prog, cir_frozen_forest &f)
 
     // 5b (v40). Per-unit EXTERNAL branch dependencies — the bind-eligibility
     // environment (task #57): [name_id, flags, value_id] triplets.
-    for (std::map<const char *, std::vector<Program::PackBranchDep> >::const_iterator
-	     bd = prog->pack_unit_branch_deps.begin();
-	 bd != prog->pack_unit_branch_deps.end(); ++bd) {
+    typedef std::map<const char *, std::vector<Program::PackBranchDep> > dep_map;
+    const std::vector<dep_map::const_iterator> deps_in_order =
+	pack_entries_in_unit_order(prog->pack_unit_branch_deps, prog->pack_unit_order);
+    for (size_t dk = 0; dk < deps_in_order.size(); ++dk) {
+	dep_map::const_iterator bd = deps_in_order[dk];
 	uint32_t u = ensure_unit(bd->first);
 	for (size_t k = 0; k < bd->second.size(); ++k) {
 	    const Program::PackBranchDep &d = bd->second[k];
@@ -3475,9 +3512,11 @@ static void cir_forest_fill_pack_payloads(Program *prog, cir_frozen_forest &f)
     // 5c (v41). Preserve each unit's exact pre-preprocessor source text.
     // Semantic forest state remains config-pinned; these bytes are the
     // compiler-less target's live-parse provider for a different config.
-    for (std::map<const char *, madc::dis::istring>::const_iterator
-	 si = prog->pack_unit_sources.begin();
-	 si != prog->pack_unit_sources.end(); ++si) {
+    typedef std::map<const char *, madc::dis::istring> source_map;
+    const std::vector<source_map::const_iterator> sources_in_order =
+	pack_entries_in_unit_order(prog->pack_unit_sources, prog->pack_unit_order);
+    for (size_t sk = 0; sk < sources_in_order.size(); ++sk) {
+	source_map::const_iterator si = sources_in_order[sk];
 	uint32_t u = ensure_unit(si->first);
 	f.units[u].source_payload.assign(si->second.begin(), si->second.end());
     }
