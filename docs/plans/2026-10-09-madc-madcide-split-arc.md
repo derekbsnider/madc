@@ -579,6 +579,36 @@ pinned madc, the removal commit in madc, Chthonia repointed at a madcide
 release, the three first releases, KG + mirrors. The ledger's APPLICATION
 split is deleted with the paths it names.
 
+**Phase 2 local work LANDED 2026-10-11** (steps 2-5 and 7; step 6, the
+releases, and creating `derekbsnider/madcide` wait for the owner's go):
+the madcide repository (`/workspace/madcide`, branch `main`) made by
+`git filter-repo` from this branch's history, then `6f5775d` — the madc pin
+(`madcide.json` `"madc": "0.104.0"`), `scripts/build.sh` / `stage.sh` /
+`package_{linux,windows,macos}.sh` / `check_install.sh` /
+`check_apparmor.sh`, the test wrapper over madc's own runner
+(`MADC_SRC/scripts/run_tests.sh` — one owner for the fixture protocol) and
+`scripts/gates.sh` (its static gates, madc's `check-expect-twins.sh` over
+madcide's tree, the pty gates), CI (madc built from the pin's tag; Linux
+24.04 + 22.04, Windows under wine and genuine, macOS both arches, the
+release job), packages carrying the paired madc in a private folder
+(`/usr/lib/madcide`, AppArmor profiles `madcide` and `madcide-madc`);
+`339a958` its own CHANGELOG (0.7.0).
+Gates that spanned both trees keep one half each (`check-one-anchor-owner`,
+`check-one-style-vocabulary`). In madc, `072ea1f25` removes the 371 moved
+files, 17 gate lines, madcide from every package script, the install gate
+and the Homebrew formula, and the ledger's APPLICATION split
+(`CODE_PATHS` loses `tools`); `tests/gui/ui_web_menu` is the engine twin of
+the moved `madcide_menu` (the only madc coverage of
+`ui_web::menu_activate`). Chthonia (branch `on-madcide`) pins madcide 0.7.0
+and carries madcide's package; its own Symbols plugin is replaced by
+madcide's view. KG: `Project` nodes `madcide` and `Chthonia`,
+`DEPENDS_ON` Chthonia → madcide → madc. Validation: madcide on this
+branch's madc — static gates, suite 66/0, pty gates (35 TUI goldens), GUI
+17/0, `check_install` PASS on a staged folder; madc — unit, Tier 1 24/0
+(EXE/OBJ 2/0), Tier 2 seven lanes at baseline (gui 15/0/0 three ways), the
+static loop 92/0, the batch checkpoint 1999/0/9 (2065 less the 66 tests that moved), genuine Windows subset (`testui_*`, `testrepl_*`, `testex_*`, `testdocument*`, `testlsp_*`, `testmcp_*`) 27/0/6 staged without `tools/`; Chthonia — build, `bundle`, `window`,
+`check_install` PASS, the sanitize check clean. Not pushed.
+
 **After the arc:** the IDE plugins (`2026-10-08-ide-plugins.md`), in the
 madcide repository.
 
