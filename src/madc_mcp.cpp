@@ -81,8 +81,8 @@ value tool_content(const value &result, bool ok)
 } // namespace
 
 server::server(tools::registry &t, hub::world &w, hub::entity_id doc,
-	       tools::tier caller)
-    : _tools(t), _w(w), _doc(doc), _caller(caller)
+	       tools::tier caller, int64_t actor)
+    : _tools(t), _w(w), _doc(doc), _caller(caller), _actor(actor)
 {
 }
 
@@ -187,7 +187,7 @@ bool server::handle(const value &message, value &reply)
 	    reply = response(id, tool_content(tools::refusal(why), false));
 	    return true;
 	}
-	tools::context c = { _w, doc, _caller, -1 };	// the lone local client
+	tools::context c = { _w, doc, _caller, _actor };
 	value result;
 	bool ok = _tools.call(c, tool, args, result);
 	reply = response(id, tool_content(result, ok));

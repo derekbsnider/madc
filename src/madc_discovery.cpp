@@ -86,17 +86,34 @@ claim_result claim::take(const std::string &key, value record, value &holder)
 	    holder = rec;
 	return claim_result::held_elsewhere;
     }
+    std::map<std::string, value> stamp;
+    stamp["key"] = value(key);
+    stamp["pid"] = value(sys.pid);
+    stamp["started"] = value((int64_t)std::time(0));
+    stamp["version"] = value(sys.version);
+    stamp["host"] = value(sys.hostname);
+    _stamp = value::make_object(stamp);
+    _path = path;
+    update(record);
+    return claim_result::owner;
+}
+
+bool claim::update(value record)
+{
+    if ( _path.empty() )
+	return false;
     if ( !record.is_object() )
 	record = value::make_object();
-    std::map<std::string, value> &f = record.object();
-    f["key"] = value(key);
-    f["pid"] = value(sys.pid);
-    f["started"] = value((int64_t)std::time(0));
-    f["version"] = value(sys.version);
-    f["host"] = value(sys.hostname);
-    _path = path;
-    _file->replace(jsonrpc::encode(record) + "\n");
-    return claim_result::owner;
+    for ( const auto &kv : _stamp.as_object() )
+	record.object()[kv.first] = kv.second;
+    return _file->replace(jsonrpc::encode(record) + "\n");
+}
+
+void claim::release()
+{
+    _file->release(true);
+    _path.clear();
+    _stamp = value();
 }
 
 std::vector<value> scan()
@@ -121,5 +138,75 @@ std::vector<value> scan()
     return out;
 }
 
+value find(const std::string &file)
+{
+    if ( file.empty() )
+	return value();
+    const std::string want = detail::canonical_path_for_compare(file);
+    value covering;
+    for ( const value &rec : scan() )
+    {
+	const value *docs = jsonrpc::field(rec, "documents");
+	if ( docs && docs->is_array() )
+	    for ( const value &d : docs->as_array() )
+		if ( d.is_string() && detail::canonical_path_for_compare(d.as_string()) == want )
+		    return rec;			// an exact holder wins outright
+	const std::string root = jsonrpc::text_field(rec, "root");
+	if ( covering.is_null() && !root.empty()
+	     && detail::host_path_within(detail::canonical_path_for_compare(root), want) )
+	    covering = rec;
+    }
+    return covering;
+}
+
 } // namespace discovery
+
+session_claim::session_claim() : _claim(new discovery::claim())
+{
+}
+
+session_claim::~session_claim()
+{
+    delete _claim;
+}
+
+int64_t session_claim::take(value &holder, const char *key, value &record)
+{
+    return (int64_t)_claim->take(key ? key : "", record, holder);
+}
+
+bool session_claim::update(value &record)
+{
+    return _claim->update(record);
+}
+
+void session_claim::release()
+{
+    _claim->release();
+}
+
+value &session_claim::path(value &out)
+{
+    out = value(_claim->path());
+    return out;
+}
+
+value &session_dir(value &out)
+{
+    out = value(discovery::session_dir());
+    return out;
+}
+
+value &session_scan(value &out)
+{
+    out = value::make_array(discovery::scan());
+    return out;
+}
+
+value &session_find(value &out, const char *file)
+{
+    out = discovery::find(file ? file : "");
+    return out;
+}
+
 } // namespace madc

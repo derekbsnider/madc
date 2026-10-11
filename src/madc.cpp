@@ -48,8 +48,8 @@
 #include "madc_theme.h"   // the REPL's colours: madc.ini's theme (1B.9)
 #include "madc_lsp.h"     // madc --lsp: the LSP server (split arc 1C.12)
 #include "madc_mcp.h"     // madc --mcp: the MCP server (split arc 1C)
-#include "madc_memory.h"  // madc --mcp: the session's project memory
-#include "madc_module_tools.h"	// madc --mcp: a loaded module's tools
+#include "madc_memory.h"  // madc --mcp --project: the memory's file
+#include "madc_tool_host.h"	// madc --mcp: the tools a madc process serves
 #include "madc_discovery.h"	// madc --mcp --project: one owner per project
 #include "madc_jsonrpc.h"	// madc --mcp --project: the owner's record
 #include "madc_lang.h"	// madc --mcp --project: a TU's document parses as its TU
@@ -643,23 +643,11 @@ static int run_lsp(std::unique_ptr<Program> prog, const char *file,
 // The registry a madc --mcp server serves: the code-graph tools, the
 // session's project memory, and the tools the Program's loaded modules bring
 // (-lmadcgit: the version history, 1C.14).
-static void add_mcp_tools(Program &prog, madc::tools::registry &tools,
-			  madc::memory::project &memory)
-{
-    madc::tools::add_graph_tools(tools);
-    memory.add_tools(tools);
-    if ( prog.is_auto_library_loading_enabled() )
-	for ( const madc::dis::istring &spelling : prog.loaded_modules() )
-	    if ( madc_module_tools_fn add = reinterpret_cast<madc_module_tools_fn>(
-		     madc_module_entry_point(spelling, madc_module_entry::tools)) )
-		add(tools);
-}
-
 static int run_mcp(std::unique_ptr<Program> prog, const char *file)
 {
     madc::channel io("stdio://");
     madc::hub::world w;
-    madc::memory::project memory(w);	// before the open: its baseline
+    madc::tool_host host(w, prog.get());	// before the open: the memory's baseline
     prog->push_runtime_scope();
     madc::hub::entity_id doc = madc::document_open(w, file);
     if ( !doc )
@@ -668,9 +656,7 @@ static int run_mcp(std::unique_ptr<Program> prog, const char *file)
 	prog->pop_runtime_scope();
 	return 1;
     }
-    madc::tools::registry tools;
-    add_mcp_tools(*prog, tools, memory);
-    madc::mcp::server server(tools, w, doc, madc::tools::tier::owner);
+    madc::mcp::server server(host.registry(), w, doc, madc::tools::tier::owner);
     int rc = server.serve(io);
     prog->pop_runtime_scope();
     return rc;
@@ -698,6 +684,12 @@ static int run_mcp_project(std::unique_ptr<Program> prog, const char *path,
     advert["madc"] = madc::value((int64_t)1);
     advert["project"] = madc::value(project);
     advert["serves"] = madc::value::make_array(std::vector<madc::value>(1, madc::value("mcp")));
+    // discovery::find's fields: the project's documents and its directory.
+    std::vector<madc::value> tus;
+    for ( const ProjectTU &tu : manifest.tus )
+	tus.push_back(madc::value(madc::detail::canonical_path_for_compare(tu.file)));
+    advert["documents"] = madc::value::make_array(tus);
+    advert["root"] = madc::value(madc::detail::host_path_dirname(project));
     madc::discovery::claim claim;
     madc::value holder;
     if ( claim.take(project, madc::value::make_object(advert), holder)
@@ -712,13 +704,13 @@ static int run_mcp_project(std::unique_ptr<Program> prog, const char *path,
     }
     madc::channel io("stdio://");
     madc::hub::world w;
-    madc::memory::project memory(w);
+    madc::tool_host host(w, prog.get());	// before any open: the memory's baseline
     std::string why;
     const std::string events = project_events_path(path);
-    if ( !events.empty() && !memory.bind(events, why) )
+    if ( !events.empty() && !host.memory().bind(events, why) )
 	std::cerr << "madc: --mcp --project: " << why << std::endl;
     if ( project_path_is_manifest(path) )
-	memory.set_manifest(path);
+	host.memory().set_manifest(path);
     prog->push_runtime_scope();
     // A TU's document, opened on first use and parsing as its TU.
     auto open_tu = [&w, &manifest](size_t i) {
@@ -736,9 +728,7 @@ static int run_mcp_project(std::unique_ptr<Program> prog, const char *path,
 	prog->pop_runtime_scope();
 	return 1;
     }
-    madc::tools::registry tools;
-    add_mcp_tools(*prog, tools, memory);
-    madc::mcp::server server(tools, w, first, madc::tools::tier::owner);
+    madc::mcp::server server(host.registry(), w, first, madc::tools::tier::owner);
     // A call's `file`: as the caller spells it (the working directory's) or
     // beside the project, compared canonically with each TU's.
     const std::string base = madc::detail::host_path_dirname(path);

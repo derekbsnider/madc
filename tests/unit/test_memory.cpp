@@ -127,6 +127,20 @@ TEST_CASE("the stream records a document's edits and replays any seq")
     CHECK(b.memory.replay(b.doc, 3) == "int z;\n");
 }
 
+TEST_CASE("a memory built after its world's documents opened still has their baselines")
+{
+    madc::hub::world w;
+    madc::hub::entity_id doc = madc::document_new(w, "/mcp-unit/early.c");
+    madc::hub::mutation_context mc(w);
+    REQUIRE(mc.text_load(doc, CALC));
+    madc::memory::project memory(w);			// the world came first
+    const size_t at = w.text_of(doc)->text().find("a + b");
+    REQUIRE(mc.text_replace(doc, at, 5, "b + a"));
+    REQUIRE(memory.records().size() == 2u);
+    CHECK(memory.replay(doc, 1) == CALC);		// the text as it was
+    CHECK(memory.replay(doc, 2) == w.text_of(doc)->text());
+}
+
 TEST_CASE("a proposal is stored, then accepted through the edit core")
 {
     bench b;

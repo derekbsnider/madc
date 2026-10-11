@@ -1,0 +1,16 @@
+add: true
+add again: false
+listed: 3
+definition: true add
+observer: false 'demo.twice' requires proposer (you are observer)
+proposer: true 6 1 7
+refused: false n must not be negative
+mcp: true {"actor":3,"caller":2,"tool":"demo.twice","twice":6}
+create: true
+log: true 1 5
+take: true
+again: true true
+find: test:1
+covered: test:2 /testtool_host/project
+scan: 1
+released: 0

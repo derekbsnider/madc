@@ -26,6 +26,7 @@
 #include <vector>
 
 #include "libmadc/value.h"
+#include "madc/bits/tool_enums"	// tier: the one enum text, the dialect's too
 #include "madcdis/text_buffer.h"	// a revision's text; a span's extent
 
 namespace madc {
@@ -36,7 +37,8 @@ namespace tools {
 
 // Who may call a tool, least first: an observer reads, a proposer may
 // propose an edit, an editor may make one, the owner may do anything.
-enum class tier : unsigned char { observer, proposer, editor, owner };
+// The one text is <bits/tool_enums>, the dialect's too.
+typedef ::madc::tool_tier tier;
 const char *tier_name(tier t);
 
 // One call's context: the world and the document the server serves, the

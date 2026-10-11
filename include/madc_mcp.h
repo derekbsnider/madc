@@ -37,9 +37,11 @@ namespace mcp {
 class server
 {
 public:
-    // `tools` and `w` outlive the server; `doc` is the document tools act on.
+    // `tools` and `w` outlive the server; `doc` is the document tools act
+    // on; `caller` the client's tier and `actor` who it is (the id its
+    // writes are recorded under; -1 = the local operator).
     server(tools::registry &tools, hub::world &w, hub::entity_id doc,
-	   tools::tier caller);
+	   tools::tier caller, int64_t actor = -1);
 
     // One decoded message. True when it is answered (`reply`); a
     // notification is never answered.
@@ -67,6 +69,7 @@ private:
     hub::world &_w;
     hub::entity_id _doc;
     tools::tier _caller;
+    int64_t _actor;
     documents _documents;
 };
 

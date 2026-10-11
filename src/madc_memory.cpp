@@ -207,6 +207,11 @@ const std::vector<value> &items(const value &v)
 project::project(hub::world &w) : _w(w), _head(0), _sources_loaded(false)
 {
     hub::mutation_context(w).text_subscribe(this);
+    // A document already open (a host whose world came first): its text
+    // now is the baseline its first edit records.
+    for ( hub::entity_id d : w.docs() )
+	if ( const hub::text_buffer *b = w.text_of(d) )
+	    _baseline[d] = b->text();
 }
 
 project::~project()

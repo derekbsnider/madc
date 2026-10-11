@@ -1,0 +1,110 @@
+// The tool host's and discovery's dialect face (split arc 1D;
+// include/madc_tool_host.h, include/madc_discovery.h): a script builds the
+// tools a madc process serves over its ui:: world — the code-graph tools,
+// the project memory's, a loaded module's — adds a tool of its own, calls
+// tools at a tier, answers an MCP tools/call, reads the change log; and
+// claims a project key (one owner per key), finds the record serving a
+// file, updates and releases it. The sessions directory is the .env
+// fixture's tmp/testtool_host_sessions. ORACLE: the MCP specification
+// 2025-06-18 (a tool result is text content; a refusal isError content)
+// and the C++ owners' unit tests (tests/unit/test_mcp.cpp,
+// test_memory.cpp, test_discovery.cpp). The test removes what it creates.
+
+bool twice_tool(var &result, const char *name, long w, long doc, var &args, long caller,
+		long actor)
+{
+    long n = args["n"].as_integer();
+    if ( n < 0 )
+    {
+	result = { "error": "n must not be negative" };
+	return false;
+    }
+    long twice = n * 2;
+    result = { "tool": name, "twice": twice, "caller": caller, "actor": actor };
+    return true;
+}
+
+int main()
+{
+    long w = ui::world_new();
+    const char *path = "tmp/testtool_host_scratch.c";
+    php::file_put_contents(path, "long add(long a, long b)\n{\n    return a + b;\n}\n");
+    madc::tool_host host(w);
+    long d = ui::doc_open(w, path);
+    php::unlink(path);
+
+    var schema = { "type": "object" };
+    long editor = (long)madc::tool_tier::editor;
+    long proposer = (long)madc::tool_tier::proposer;
+    long observer = (long)madc::tool_tier::observer;
+    println("add: {}", host.add("demo.twice", "twice n", schema, proposer, twice_tool));
+    println("add again: {}", host.add("demo.twice", "twice n", schema, proposer, twice_tool));
+    var rows;
+    host.list(rows);
+    long seen = 0;
+    for ( long i = 0; i < rows.size(); i = i + 1 )
+    {
+	var r = rows[i];
+	if ( r["name"] == "graph.definition" || r["name"] == "nexus.create"
+	     || r["name"] == "demo.twice" )
+	    seen = seen + 1;
+    }
+    println("listed: {}", seen);
+
+    var args = { "name": "add" };
+    var res;
+    println("definition: {} {}", host.call(res, d, "graph.definition", args, observer, -1),
+	    res["nodes"][0]["name"]);
+    var n3 = { "n": 3 };
+    println("observer: {} {}", host.call(res, d, "demo.twice", n3, observer, 7), res["error"]);
+    println("proposer: {} {} {} {}", host.call(res, d, "demo.twice", n3, proposer, 7),
+	    res["twice"], res["caller"], res["actor"]);
+    var neg = { "n": -1 };
+    println("refused: {} {}", host.call(res, d, "demo.twice", neg, editor, 7), res["error"]);
+
+    var params = { "name": "demo.twice", "arguments": n3 };
+    var msg = { "jsonrpc": "2.0", "id": 9, "method": "tools/call", "params": params };
+    var reply;
+    println("mcp: {} {}", host.mcp_handle(reply, msg, d, editor, 3),
+	    reply["result"]["content"][0]["text"]);
+
+    long before = host.head();
+    var fields = { "title": "a task" };
+    var task = { "rkind": "task", "fields": fields };
+    println("create: {}", host.call(res, d, "nexus.create", task, proposer, 5));
+    var recs;
+    host.records(recs, before);
+    println("log: {} {} {}", host.head() > before, recs.size(), recs[0]["actor"]);
+
+    madc::session_claim first;
+    madc::session_claim second;
+    var root;
+    madc::canonical_path(root, "tmp");
+    var docs = { "tmp/testtool_host_doc.c" };
+    var rec = { "root": root, "documents": docs, "endpoint": "test:1" };
+    var holder;
+    long got = first.take(holder, "/testtool_host/project", rec);
+    println("take: {}", got == (long)madc::claim_result::owner);
+    got = second.take(holder, "/testtool_host/project", rec);
+    println("again: {} {}", got == (long)madc::claim_result::held_elsewhere,
+	    holder["pid"] == madc::sys.pid);
+    var found;
+    madc::session_find(found, "tmp/testtool_host_doc.c");
+    println("find: {}", found["endpoint"]);
+    var rec2 = { "root": root, "documents": docs, "endpoint": "test:2" };
+    first.update(rec2);
+    php::file_put_contents("tmp/testtool_host_other.c", "\n");
+    madc::session_find(found, "tmp/testtool_host_other.c");
+    php::unlink("tmp/testtool_host_other.c");
+    println("covered: {} {}", found["endpoint"], found["key"]);
+    var all;
+    madc::session_scan(all);
+    println("scan: {}", all.size());
+    first.release();
+    madc::session_scan(all);
+    println("released: {}", all.size());
+    var dir;
+    madc::session_dir(dir);
+    php::rmdir(dir.c_str());
+    return 0;
+}

@@ -47,7 +47,8 @@ namespace memory {
 class project : public tools::edit_memory, public hub::text_listener
 {
 public:
-    // Subscribes to `w`'s text changes; `w` outlives the memory.
+    // Subscribes to `w`'s text changes; `w` outlives the memory. A document
+    // already open has its text now as the baseline its first edit records.
     explicit project(hub::world &w);
     ~project();
 

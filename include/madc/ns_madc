@@ -20,6 +20,7 @@
 #include <bits/diag_enums>	// diag_severity / diag_phase: the rows' enum codes
 #include <bits/file_kinds>	// madc::fk*: the ONE file-kind vocabulary (a View's lang, emit's target)
 #include <bits/session_enums>	// session_reply / offer_state: a session reply's enum codes
+#include <bits/tool_enums>	// tool_tier / claim_result: the tool host's and discovery's codes
 
 namespace madc {
     // Full-program eval: the source must define (or be wrapped into)
@@ -818,6 +819,71 @@ namespace madc {
     // outlive it. Throws when the channel has no waitable read side
     // (memory/file reads never block, so there is nothing to wait on).
     int64_t chan_readable(channel &c);
+
+    // The tools a madc process serves (split arc 1D; include/madc_tool_host.h):
+    // ONE registry over a ui:: world's documents — the code-graph tools, the
+    // project memory's (its change log, proposals, records, tests) and every
+    // loaded module's (madcgit: the version history) — that a host extends
+    // with its own commands, calls, serves over MCP and reads the change log
+    // of. A tier is a <bits/tool_enums> tool_tier code; `actor` the caller's
+    // id (-1 = the local operator). A script tool answers into `result`;
+    // false refuses (`result` then {error}); `name` is the tool called.
+    // Declaration-only: the methods resolve mangled-direct
+    // (src/madc_tool_host.cpp). LAYOUT CONTRACT: a
+    // single pointer member, append-only. Non-copyable.
+    // Thread contract: the world's thread; a script tool runs inside the
+    // call that names it.
+    class tool_host {
+    public:
+	tool_host(int64_t w);
+	~tool_host();
+	bool bind(const char *events_path, value &why);	// <base>.events
+	void set_manifest(const char *path);
+	bool add(const char *name, const char *description, value &input_schema,
+		 int64_t least, bool (*fn)(value &result, const char *name, int64_t w,
+					   int64_t doc, value &args, int64_t caller,
+					   int64_t actor));
+	value &list(value &out);	// [{ name, description, inputSchema, least }]
+	bool call(value &result, int64_t doc, const char *name, value &args,
+		  int64_t caller, int64_t actor);
+	bool mcp_handle(value &reply, value &message, int64_t doc,
+			int64_t caller, int64_t actor);	// false: a notification
+	int64_t serve_mcp(channel &io, int64_t doc, int64_t caller);
+	int64_t head();				// the change log's last seq
+	value &records(value &out, int64_t since);	// the records after `since`
+	value &replay(value &out, int64_t doc, int64_t upto);	// text at `upto`
+    private:
+	tool_host(const tool_host &);
+	tool_host &operator=(const tool_host &);
+	void *impl_;
+    };
+
+    // Discovery (split arc 1D; include/madc_discovery.h): ONE OWNER PER KEY
+    // (a project's canonical path). take() holds <session_dir>/<slug>.json for
+    // the claim's life and publishes `record` there, stamped { key, pid,
+    // started, version, host }; a live owner answers held_elsewhere with its
+    // record in `holder`. Returns a <bits/tool_enums> claim_result code.
+    // update() rewrites the owner's record; release() withdraws it (the
+    // destructor's, early). session_scan: every live record (+ its "file");
+    // session_find: the record serving `file` — one whose "documents" holds
+    // it beats one whose "root" holds it; null when none. Declaration-only;
+    // LAYOUT CONTRACT: a single pointer member. Non-copyable.
+    class session_claim {
+    public:
+	session_claim();
+	~session_claim();
+	int64_t take(value &holder, const char *key, value &record);
+	bool update(value &record);
+	void release();
+	value &path(value &out);
+    private:
+	session_claim(const session_claim &);
+	session_claim &operator=(const session_claim &);
+	void *claim_;
+    };
+    value &session_dir(value &out);
+    value &session_scan(value &out);
+    value &session_find(value &out, const char *file);
 
     // Interactive sessions in a backend process (plan §41.9a): the running
     // madc forks (nothing execs) and the child serves one session, so a

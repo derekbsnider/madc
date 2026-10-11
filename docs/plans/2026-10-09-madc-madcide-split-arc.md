@@ -501,6 +501,49 @@ items are their own sessions, any time.
     testvised deleted.
 22. **The engine twins** (above) land.
 
+*1D — how madcide takes madc's services (decided 2026-10-11, from the
+recon of the nine service files):*
+
+- **The face.** `<ns_madc>` gains `madc::tool_host` (the registry over a
+  `ui::` world's documents: madc's code-graph, memory and module tools; a
+  host adds its own tools as script functions — one function may serve a
+  family, it receives the tool's name; `call`, `mcp_handle`, `serve_mcp`;
+  the change log's `head` / `records` / `replay`), `madc::session_claim`
+  and `session_find` / `session_scan` / `session_dir`, with
+  `<bits/tool_enums>` (`tool_tier`, `claim_result`) the one enum text.
+  `madc --mcp` serves through the same C++ `tool_host`.
+- **MCP.** madcide's MCP is a `tool_host` over its world: its registry
+  commands are added as tools (`{args}` → `api_run` → the session's
+  snapshot, as today); the seat routes a JSON-RPC message to
+  `tool_host::mcp_handle` under the connection's tier and actor;
+  `madcide FILE --mcp` is `serve_mcp` on stdio; `--mcp --attach` keeps
+  relaying to a running session's seat. madcide's `graph.*` / `nexus.*` /
+  `test.*` families are madc's.
+- **LSP** (item 19 as planned): `madcide --lsp`, the seat's LSP dialect and
+  `--lsp --attach` go with `madcide_lsp.inc`; `tools/vscode-madcide` spawns
+  `madc --lsp FILE` (the `madc.` command prefix). Going with them: VS Code
+  attached to a LIVE madcide session and the `$/madc/serve|event|message`
+  notifications — `madc --lsp` serves its own documents. A live attach for
+  the plugins is the IDE-plugins plan's (`2026-10-08-ide-plugins.md`), not
+  this arc's.
+- **Discovery** is `madc::discovery`: a madcide session claims
+  `<root>#<pid>` (its own record — several sessions per root, as today;
+  `--sessions`, `--attach`'s lookup and "Also open in" read
+  `session_find` / `session_scan`), and a project it opens claims the
+  manifest's canonical path too — the key `madc --mcp --project` claims, so
+  the project's `<base>.prj.events` has ONE writer. Held elsewhere, the
+  project opens memory-only and the status line names the owner's pid.
+  `MADC_SESSION_DIR` (`madc/sessions`) replaces `MADCIDE_SESSION_DIR`.
+- **The change log** is the tool host's memory (item 17): the history
+  view, the lens undo repair, project restore / persist, the build-run
+  record and the seat's event fan-out read `head` / `records` / `replay`;
+  `editor_events.inc`'s `clog_*` go.
+- Deleted with their last callers: `session_state`, `madcide_self_info`,
+  `mcp_protocol_version`, `jsonrpc_notify` / `_request`, and every enum in
+  `madcide_enums.inc` that served only the nine files (the LSP token types
+  the editor's spans use stay); the static gates that name the files are
+  updated in the same commits.
+
 **Phase 2 — the repository split** (`2026-10-08-madcide-own-repo.md` steps
 2-7, on the corrected inventory): the `git filter-repo`, madcide CI on the
 pinned madc, the removal commit in madc, Chthonia repointed at a madcide

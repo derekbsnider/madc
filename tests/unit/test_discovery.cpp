@@ -99,3 +99,52 @@ TEST_CASE("one owner per key: the second claim is refused with the owner's recor
     rmdir(sessions.c_str());
     rmdir(dir.c_str());
 }
+
+TEST_CASE("update restamps the record; find prefers a document's holder to a root; release withdraws")
+{
+    const std::string dir = temp_dir();
+    REQUIRE_FALSE(dir.empty());
+    const std::string sessions = dir + "/sessions";
+    setenv("MADC_SESSION_DIR", sessions.c_str(), 1);
+    CHECK(madc::discovery::find("").is_null());			// an untitled buffer: no one's
+
+    std::vector<madc::value> held(1, madc::value(dir + "/app/main.c"));
+    madc::value covers = madc::value::make_object();
+    covers.object()["root"] = madc::value(dir);
+    covers.object()["endpoint"] = madc::value("root");
+    madc::value holds = madc::value::make_object();
+    holds.object()["root"] = madc::value(dir + "/app");
+    holds.object()["documents"] = madc::value::make_array(held);
+    holds.object()["endpoint"] = madc::value("holder");
+    madc::value holder;
+    claim a, b;
+    REQUIRE(a.take("/work/a", covers, holder) == claim_result::owner);
+    REQUIRE(b.take("/work/b", holds, holder) == claim_result::owner);
+    const int64_t started = int_of(madc::discovery::scan()[0], "started");
+
+    madc::value hit = madc::discovery::find(dir + "/app/main.c");
+    REQUIRE(hit.is_object());
+    CHECK(hit.as_object().at("endpoint").as_string() == "holder");	// the holder wins
+    hit = madc::discovery::find(dir + "/lib/util.c");
+    REQUIRE(hit.is_object());
+    CHECK(hit.as_object().at("endpoint").as_string() == "root");
+    CHECK(madc::discovery::find(dir + "-sibling/x.c").is_null());	// a sibling is not inside
+
+    covers.object()["endpoint"] = madc::value("moved");
+    CHECK(a.update(covers));
+    hit = madc::discovery::find(dir + "/lib/util.c");
+    CHECK(hit.as_object().at("endpoint").as_string() == "moved");
+    CHECK(hit.as_object().at("key").as_string() == "/work/a");	// the stamp kept
+    CHECK(int_of(hit, "started") == started);
+
+    b.release();
+    CHECK(madc::discovery::scan().size() == 1u);
+    CHECK(b.update(holds) == false);				// released: holds nothing
+    hit = madc::discovery::find(dir + "/app/main.c");
+    CHECK(hit.as_object().at("endpoint").as_string() == "moved");	// now only covered
+    a.release();
+    CHECK(madc::discovery::scan().empty());
+    unsetenv("MADC_SESSION_DIR");
+    rmdir(sessions.c_str());
+    rmdir(dir.c_str());
+}
