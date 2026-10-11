@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+### Engine-level test twins for behaviours madcide used to be the only test of
+
+New `tests/` integration tests exercise the engine surfaces directly, no
+longer only through madcide. `testui_line` covers the `ui::LINE` frontend (a
+line client over stdin: each line one `text` event with the raw line, a `:`
+line left raw, a blank line an empty text, a CRLF's CR dropped, a final
+unterminated line still delivered, EOF ending the events; the tree typeset to
+stdout as `ui::render_tree` linearizes it). `testchannel_serve_web` covers
+`madc::channel::serve_web` classifying one accepted connection into a page GET,
+a WebSocket upgrade, or a buffered JSON line. `testui_term_feed` covers
+`ui::term_feed` folding pty bytes through the bounded terminal screen (CR, BS,
+HT, CSI K, CSI 2J, SGR colour as a span row, an escape split across two feeds).
+`testui_key_sequence` covers `ui::key_sequence_for` choosing a keybinding's
+canonical spelling (fewest keys, shortest spelling, table order; a continuation
+key's Ctrl folded — `^x ^c` is `^x c`, JOE's chord convention).
+
+The gui-lane tests `madcide_theme` / `madcide_workbench` are renamed
+`ui_web_theme` / `ui_web_workbench` — they test `ui::web`, not madcide.
+`testbuildcancel.mad` now builds a generated `tmp/testbuildcancel_src.c` (2000
+declarations) rather than compiling madcide's own test source.
+
 ### madcide gains a Symbols view and a Line Numbers toggle
 
 A new **Symbols** view (View ▸ Symbols, docked in the sidebar beside the

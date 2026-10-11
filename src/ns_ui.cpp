@@ -393,7 +393,7 @@ struct ui_grid_frontend : ui_frontend
 // headless one-shot uses) to stdout, and reads ONE line of stdin per
 // event. It works over a pipe, in a dumb terminal, and as an MCP seat's
 // transcript. It stays DUMB by design: a line becomes a `text` event
-// carrying the raw line; the APPLICATION (madcide's run_line) owns the
+// carrying the raw line; the APPLICATION (an ex / edlin client) owns the
 // `:`-is-a-colon-command / bare-line-is-text classification — the engine
 // ui:: layer never learns a tool's command syntax (separation of concerns,
 // Rule #5). EOF ends the input, as a closed tty ends the grid's read_keys.

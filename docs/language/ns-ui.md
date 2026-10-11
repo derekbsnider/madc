@@ -412,7 +412,7 @@ means anything in JavaScript.
 
 | Function | Description |
 |----------|-------------|
-| `open(level)` / `open(name)` / `level_of(t)` | Handle (>0), or 0 with the reason on stderr: no target serves the level here (`ui::NONE` / `ui::LINE` have no frontend yet), unknown name, cannot serve here (no tty; no display; the `madcwebview` library absent — its row is LAZY, so the program still compiles and runs without it); one already open. `level_of` = the opened target's `ui::level`, -1 for a bad handle |
+| `open(level)` / `open(name)` / `level_of(t)` | Handle (>0), or 0 with the reason on stderr: no target serves the level here (`ui::NONE` has no frontend by design — a client at that level drives the session with no surface; `ui::LINE` is the line frontend: each stdin line one `text` event with the raw line, the tree typeset to stdout as `render_tree` does, EOF the end), unknown name, cannot serve here (no tty; no display; the `madcwebview` library absent — its row is LAZY, so the program still compiles and runs without it); one already open. `level_of` = the opened target's `ui::level`, -1 for a bad handle |
 | `close(t)` / `rows(t)` / `cols(t)` | As the `tui_*` twins; a web target's rows/cols are the viewport in text cells, reported by the page |
 | `render(t, w, tree)` / `event(out, t, w)` | The one loop; `event` blocks until the page posts one event |
 | `bind_keys(t, table)` / `validate_keys(table)` / `pending(out, t)` | Profiles are data on every target |
