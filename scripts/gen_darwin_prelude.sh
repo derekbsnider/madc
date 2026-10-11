@@ -116,12 +116,26 @@ UMB_TMP="$OUTDIR/.umbrella.$$"
 # fortified (glibc needs _FORTIFY_SOURCE + optimization; mingw has none).
 if ! $CLANG -target "$TARGET" --sysroot "$SYSROOT" -x c -std=c11 -fno-blocks \
         -D_Nullable= -D_Nonnull= -D_Null_unspecified= -D_FORTIFY_SOURCE=0 \
-        -E -dD -P "$UMB_TMP.c" -o "$UMB_TMP.raw"; then
-    rm -f "$UMB_TMP.c" "$UMB_TMP.raw"
+        -E -dD "$UMB_TMP.c" -o "$UMB_TMP.lm"; then
+    rm -f "$UMB_TMP.c" "$UMB_TMP.lm"
     echo "Error: $CLANG preprocess of the darwin prelude failed" >&2
     exit 1
 fi
 rm -f "$UMB_TMP.c"
+# The prelude is HEADER text. -dD also prints the capture compiler's own
+# predefined macros (the <built-in> block) for THIS capture's -std=c11 —
+# `__STDC_VERSION__ 201112L`, `__STRICT_ANSI__ 1`, `__NO_INLINE__` — and,
+# served as header text, they overrode madc's per-standard seeding in every
+# darwin TU that included a prelude header (a c17 `.c` file read
+# __STDC_VERSION__ 201112L). madc's baked table (gen_predefined_macros.sh)
+# and its per-std seeding own every predefined macro, so the <built-in>
+# block is dropped by its linemarkers; the <command line> block stays (the
+# empty _Nullable family and _FORTIFY_SOURCE serve SDK headers the prelude
+# does not flatten). The linemarkers themselves go too, and the blank lines
+# that stood in for skipped source lines (-P printed none of either).
+awk '/^# [0-9]+ "/ { builtin = index($0, "\"<built-in>\"") > 0; next }
+     !builtin && $0 != ""' "$UMB_TMP.lm" > "$UMB_TMP.raw"
+rm -f "$UMB_TMP.lm"
 # The -dD output opens with clang's own identity macros (__clang__,
 # __GNUC__ 4, ...). Served as header text they would re-poison the GCC
 # posture the baked table presents (gen_predefined_macros.sh) the moment a
