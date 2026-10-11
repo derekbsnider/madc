@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### run_tests.sh refuses a run that executed no test
+
+`scripts/run_tests.sh` now exits nonzero with "VACUOUS RUN — no test executed"
+when a run selected and ran zero tests — a filter matching no test (a positional
+argument is one basename glob, so `'a* b*'` as a single argument matches
+nothing) or a selection its fixtures skipped entirely. "0 passed, 0 failed" with
+exit 0 no longer reads as green to callers; `headerless_suite.sh` and
+`gui_lane.sh` drop their own vacuous-run checks and take the runner's exit status
+as the verdict. A new static gate, `scripts/check-runner-refuses-vacuous.sh` (in
+`fulltest` after `check-expect-twins.sh`), holds the runner to it.
+
 ### madcide moves to its own repository
 
 madcide — the IDE and the editor core it builds on — now lives in its own

@@ -663,6 +663,16 @@ fi
 if [ $RUN_OBJ -eq 1 ] && [ "$REPORT" != json ]; then
     echo "OBJ: $OBJ_PASS passed, $OBJ_FAIL failed (of $PASS JIT-passing tests)"
 fi
+# A run that executed NOTHING is not a pass. "0 passed, 0 failed" exits 0 and
+# every caller reads it as green: a filter that matches no test (a positional
+# argument is ONE basename glob — `'a* b*'` as one argument matches nothing)
+# or a selection its fixtures skipped entirely (an empty test directory is
+# refused above). The runner refuses it here, once, so no lane needs its own
+# copy of the check.
+if [ $((PASS + FAIL + TIMEOUTS)) -eq 0 ]; then
+    echo "run_tests: VACUOUS RUN — no test executed ($SELECTED selected, $SKIP skipped${TEST_GLOBS[*]:+; filter: ${TEST_GLOBS[*]}})" >&2
+    exit 1
+fi
 [ $FAIL -eq 0 ] || exit 1
 [ $TIMEOUTS -eq 0 ] || exit 1
 # The EXE and OBJ lanes gate the exit status too. They were PRINTED and then
