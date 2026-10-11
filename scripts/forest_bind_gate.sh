@@ -1455,6 +1455,55 @@ int main() {
 EOF
 run_case traitfold "1 0 1"
 
+# --- case: nothrowfold — a noexcept(...) over a DEPENDENT operand must NOT
+#     constant-fold at CAPTURE time (traitfold's twin, 2026-10-11). The
+#     capture parse read gcc13's `__is_nt_destructible_impl`'s
+#     `decltype(__test<_Tp>(0))` with `_Tp` a placeholder: the pseudo-
+#     destructor `~_Tp()` named no class, so `noexcept(declval<_Tp&>().~_Tp())`
+#     answered 1 as for a scalar and the pattern froze integral_constant<bool,
+#     true> — every bound is_nothrow_destructible<X> read 1, a noexcept(false)
+#     destructor included (testnoexceptderefdtor, packed leg). The walk now
+#     refuses a dependent operand, and a refusal poisons the capture (the class
+#     stays on the parse lane). Negative control: the pre-fix binary binds
+#     "1 1 1".
+cat > tmp/fbgate_nothrowfold.h <<'EOF'
+#ifndef FBGATE_NOTHROWFOLD_H
+#define FBGATE_NOTHROWFOLD_H
+#include <type_traits>
+struct fbg_do_nt_destructible {
+    template<typename _Tp>
+    static std::integral_constant<bool, noexcept(std::declval<_Tp&>().~_Tp())>
+    __test(int);
+    template<typename>
+    static std::false_type __test(...);
+};
+template<typename _Tp>
+struct fbg_nt_destructible_impl : public fbg_do_nt_destructible {
+    typedef decltype(__test<_Tp>(0)) type;
+};
+template<typename _Tp>
+struct fbg_is_nt_destructible : public fbg_nt_destructible_impl<_Tp>::type { };
+#endif
+EOF
+cat > tmp/fbgate_nothrowfold_producer.cpp <<'EOF'
+#include <fbgate_nothrowfold.h>
+int main() { return 0; }
+EOF
+cat > tmp/fbgate_nothrowfold_consumer.cpp <<'EOF'
+#include <fbgate_nothrowfold.h>
+#include <cstdio>
+struct Thr { ~Thr() noexcept(false) {} };
+struct Quiet { ~Quiet() {} };
+int main() {
+    printf("%d %d %d\n",
+	   (int)fbg_is_nt_destructible<Thr>::value,
+	   (int)fbg_is_nt_destructible<Quiet>::value,
+	   (int)fbg_is_nt_destructible<int>::value);
+    return 0;
+}
+EOF
+run_case nothrowfold "0 1 1"
+
 # --- case: deletedctor — deleted copy/move metadata must survive freeze/bind.
 #     FuncDef keeps the two special-member declarations distinct because its
 #     DataDefREF parameter type intentionally erases `&` versus `&&`. The
@@ -1986,5 +2035,5 @@ run_case patternalias "1 2"
 # coverage. Worse in the other direction: deleting a case would leave this line
 # still claiming it runs. Deriving it from run_case would need the ~12 bespoke
 # cases below to register too; until then, update it when you add a case.
-echo "forest_bind_gate: GREEN 38/38 — typedef + struct + nested + bitfield + class + method + fwd + ptr + nestedenumfn + ldouble + ns + anon + declonlymt + flavorgate + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec + iobind + traitfold + deletedctor + constcopy + subbind + redecl + husk + silbody grove headers bound (unit-granular husk recovery only), output == live == g++ + secvptr + friendgrant + patternalias + quietbind + memberptr + unionclass"
+echo "forest_bind_gate: GREEN 39/39 — typedef + struct + nested + bitfield + class + method + fwd + ptr + nestedenumfn + ldouble + ns + anon + declonlymt + flavorgate + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec + iobind + traitfold + nothrowfold + deletedctor + constcopy + subbind + redecl + husk + silbody grove headers bound (unit-granular husk recovery only), output == live == g++ + secvptr + friendgrant + patternalias + quietbind + memberptr + unionclass"
 exit 0

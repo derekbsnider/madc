@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### A dependent noexcept operand no longer folds at class-pattern capture
+
+A `noexcept(...)` over a type-dependent operand no longer constant-folds when a
+class pattern is captured. `noexcept_eval_expr` now refuses an explicit
+destructor call whose object type is still a template parameter under its layers
+(a pattern parse's `~_Tp()`) and refuses the `0` stand-in a dependent call
+leaves (`make_dependent_call_placeholder`); a refusal inside a dependent parse
+poisons the capture, and `capture_class_pattern` treats a poisoned capture as a
+parse failure, so the class stays on the parse lane instead of freezing a wrong
+`integral_constant`. Before, capturing gcc 13's `__is_nt_destructible_impl` read
+`noexcept(declval<_Tp&>().~_Tp())` as 1 (as for a scalar) and froze `true`, so
+every bound `is_nothrow_destructible<X>` read 1 — a `noexcept(false)` destructor
+included (`testnoexceptderefdtor` printed `dtor: 1 1 1 1` instead of
+`dtor: 1 1 0 1` on the packed headerless and exe/obj lanes). An unfoldable
+`noexcept` condition still defers (`NxUnknown`) without poisoning its dependent
+parse. On a 12-header libstdc++ freeze, class-pattern captures move 900 -> 896:
+the only newly poisoned patterns are `std::__is_nt_destructible_impl`,
+`std::__is_nothrow_swappable_impl`, and `std::__is_nothrow_swappable_with_impl`
+(x2). `scripts/forest_bind_gate.sh`'s `nothrowfold` case gates it.
+
 ### One reader for a test's run fixtures
 
 Every script that runs or compiles `tests/*.mad` the way the suite does —

@@ -17774,9 +17774,16 @@ void Program::resolve_noexcept_spec(FuncDef *fd)
 	    pgm.class_scope_stack.resize(classes);
 	}
     } guard{*this, fd, saved_classes};
+    // A condition that does not fold yet (value-dependent in a pattern parse)
+    // leaves the specification NxUnknown — a DEFERRAL, re-resolved when the
+    // instantiated declarator needs it, never a wrong value: it must not
+    // poison the enclosing dependent parse.
+    bool saved_poisoned = dependent_parse_poisoned;
     int64_t value = 0;
     if ( fold_nontype_arg_constant(fd->noexcept_condition_tokens, value) )
 	fd->noexcept_spec = value ? FuncDef::NxTrue : FuncDef::NxNone;
+    else
+	dependent_parse_poisoned = saved_poisoned;
 }
 
 // [except.spec]: an omitted destructor specification is the conjunction of
@@ -17952,9 +17959,16 @@ static int noexcept_eval_expr(Program &pgm, TokenBase *tb, int depth)
     // libstdc++ is_nothrow_destructible probe): the object expression's walk
     // and the destructor's specification ([except.spec]/8 for one declared
     // without a specifier); a scalar or trivial type names no destructor.
+    // A destroyed type still a template parameter under its layers (a
+    // pattern parse's `~_Tp()`) names no class YET — the operand is
+    // type-dependent, so the noexcept is value-dependent
+    // ([temp.dep.constexpr]/3): refuse, never answer as for a scalar.
     if ( TokenExplicitDtor *xd = tb->as_explicit_dtor_tok() )
     {
 	int r = noexcept_eval_expr(pgm, xd->obj, depth + 1);
+	if ( !xd->dtor_class && xd->obj
+	  && template_param_under_type_layers(xd->obj->datadef()) )
+	    return -1;
 	if ( !xd->dtor_class )
 	    return r;
 	return noexcept_conjoin(r, noexcept_destructor_spec(pgm, xd->dtor_class,
@@ -17974,8 +17988,12 @@ static int noexcept_eval_expr(Program &pgm, TokenBase *tb, int depth)
 	return noexcept_conjoin(noexcept_eval_expr(pgm, to->left, depth + 1),
 				noexcept_eval_expr(pgm, to->right, depth + 1));
     }
-    if ( dynamic_cast<TokenInt *>(tb)		// TokenNullptr included
-      || dynamic_cast<TokenReal *>(tb)
+    // A dependent call's `0` stand-in (make_dependent_call_placeholder) is
+    // no literal: the call it holds the place of is unknown until
+    // instantiation.
+    if ( TokenInt *ti = dynamic_cast<TokenInt *>(tb) )	// TokenNullptr included
+	return ti->dependent_call_placeholder ? -1 : 1;
+    if ( dynamic_cast<TokenReal *>(tb)
       || dynamic_cast<TokenStr *>(tb) )
 	return 1;
     if ( tb->type() == TokenType::ttVariable
@@ -18006,6 +18024,12 @@ size_t Program::evaluate_noexcept_operator(TokenBase *op_tb)
 	Throw(close ? close : op_tb)
 	    << "Expecting ')' after noexcept(...)" << flush;
     int s = noexcept_eval_expr(*this, expr, 0);
+    // A refusal inside a DEPENDENT parse (a function pattern, a class-pattern
+    // capture) poisons it: a SFINAE trap that swallows this throw would
+    // otherwise pick a sibling overload and bake ITS constant into the
+    // pattern (`__test(...)`'s false_type for every is_nothrow_destructible).
+    if ( s < 0 && dependent_parse_in_progress )
+	dependent_parse_poisoned = true;
     if ( s < 0 )
 	Throw(op_tb) << "cannot faithfully evaluate noexcept(...) for this "
 		     << "operand" << flush;
@@ -38181,6 +38205,11 @@ Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
 	    class_scope_stack.pop_back();
     }
     bool poisoned = dependent_parse_poisoned;
+    // A poisoned capture (a dependent value or call a SFINAE trap swallowed)
+    // parsed into a structurally-valid but semantically-wrong pattern — a
+    // parse failure, exactly as the function-pattern parse treats it.
+    if ( poisoned )
+	parsed = false;
     journal.rollback();
 
     class_pattern_decl_capture = saved_decl_capture;
@@ -74427,6 +74456,9 @@ void Program::parseFunction(DataDef &dd, madc::dis::istring &id, DataDefCLASS *o
 			}
 			cond.push_back(ct);
 		    }
+		    // An unfoldable condition DEFERS (resolve_noexcept_spec's
+		    // contract): its refusal must not poison a dependent parse.
+		    bool saved_poisoned = dependent_parse_poisoned;
 		    int64_t cv = 0;
 		    if ( fold_nontype_template_arg(cond,
 			     template_tokens_spelling(cond), cv) )
@@ -74434,6 +74466,7 @@ void Program::parseFunction(DataDef &dd, madc::dis::istring &id, DataDefCLASS *o
 						 : FuncDef::NxNone;
 		    else
 		    {
+			dependent_parse_poisoned = saved_poisoned;
 			func->noexcept_spec = FuncDef::NxUnknown;
 			for ( TokenBase *ct : cond )
 			    func->noexcept_condition_tokens.push_back(ct->clone_origin());
