@@ -1,6 +1,7 @@
 // The syntax-colour owners (split arc 1B.9, design
 // docs/plans/2026-10-10-prompt-colour-design.md): the theme (madc's one
-// built-in default, the `.theme` text madcide's profiles are written in, the
+// built-in default, the `.theme` text a host's profiles are written in — the
+// fixtures in tests/unit/themes/ are madcide's profiles as of the split — the
 // parent rule), the style-to-SGR step and the terminal's depth, and the
 // classifier's C++ face under a standard.
 
@@ -58,7 +59,7 @@ TEST_CASE("theme_default is madcide's default.theme (JOE parity), with the paren
     CHECK(t.of(HighlightClass::hcFunction).is_normal());
     for ( std::size_t i = 0; i < (std::size_t)madc::hub::tui_chrome::count; ++i )
 	CHECK_FALSE(t.chrome_named[i]);				// the grid's own
-    std::ifstream f("../tools/madcide/profiles/default.theme");
+    std::ifstream f("../tests/unit/themes/default.theme");
     REQUIRE(f);
     std::ostringstream text;
     text << f.rdbuf();
@@ -69,12 +70,12 @@ TEST_CASE("theme_default is madcide's default.theme (JOE parity), with the paren
 	CHECK(read.syntax[i] == t.syntax[i]);
 }
 
-TEST_CASE("theme_read: madcide's profiles read unchanged; refusals name the line")
+TEST_CASE("theme_read: the profile fixtures read unchanged; refusals name the line")
 {
     const char *profiles[] = { "classic", "vivid", "vscode" };
     for ( const char *p : profiles )
     {
-	std::ifstream f((std::string("../tools/madcide/profiles/") + p + ".theme").c_str());
+	std::ifstream f((std::string("../tests/unit/themes/") + p + ".theme").c_str());
 	REQUIRE(f);
 	std::ostringstream text;
 	text << f.rdbuf();

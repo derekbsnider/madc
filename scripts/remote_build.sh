@@ -272,7 +272,7 @@ for stage in $stages; do
 		# is closed by construction — every libmir/c2m build product lands
 		# The five output-dir excludes are ANCHORED to the transfer root
 		# (`/bin/`, not `bin/`): an unanchored pattern matches the name at
-		# ANY depth, so tools/vscode-madcide/node_modules/semver/bin/ never
+		# ANY depth, so a node_modules/semver/bin/ (madcide's VS Code extension's) never
 		# arrived and its `.bin/semver` symlink dangled on the container —
 		# `scp -r tools` in win_suite.sh died on it before one Windows test
 		# ran (2026-09-20). Only the repo's own output directories are

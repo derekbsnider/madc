@@ -1,0 +1,4 @@
+MENU open
+MENU activate unknown=1 greet=0
+MENU action greet
+MENU closed

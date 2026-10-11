@@ -31,17 +31,7 @@
 #            registers the .so); `madc -v` must say
 #            `forest-bind: [library-image] opened container` — the frozen
 #            header forest served from the INSTALLED libmadc.so.0
-#            [control: the non-verbose run must NOT match the pattern];
-#            installed madcide on a real pty (scripts/install_gate_pty.py)
-#            = NORESCUE + probe file rendered, profiles found through the
-#            share/madcide layout [control: hide share/madcide/profiles
-#            => RESCUE banner]; installed madcide SAVES and QUITS from a
-#            foreign cwd (scripts/madcide_save_quit_pty.py: joe's keys, then
-#            the rescue keys with the profiles hidden).
-#            installed madcide prints its usage line and `-c check`s a
-#            <stdio.h> program clean from a foreign cwd [control: a syntax
-#            error => 1 problem, rc 1]; its View menu offers every shipped
-#            key style [control: hide the profiles => none listed].
+#            [control: the non-verbose run must NOT match the pattern].
 #   tar      same probes with NO LD_LIBRARY_PATH at all (env -u) — the
 #            run-time $ORIGIN proof (the packager's ldd check is static;
 #            this one executes) [control: hide lib/libmadc.so.0 => madc
@@ -49,10 +39,8 @@
 #            system copy].
 #   winzip   unzip; the zipped madc.exe under wine compiles a
 #            runtime-needing probe with -o INTO bin/ (PE binding is
-#            adjacency) and the emitted exe runs (output asserted);
-#            zipped `madcide.exe --help` prints its usage line; bin/profiles
-#            sits beside it [control: hide bin/libmadc-0.dll => both must
-#            fail].
+#            adjacency) and the emitted exe runs (output asserted)
+#            [control: hide bin/libmadc-0.dll => the exe must fail].
 #
 #   mactar   (darwin host only — the release.yml mac jobs; the container
 #            cannot execute darwin binaries and prints a stated SKIP) tar
@@ -61,9 +49,6 @@
 #            — the forest served from the shipped lib/libmadc-0.dylib, the
 #            thin CLI carrying none [control: hide lib/libmadc-0.dylib =>
 #            madc must fail to run];
-#            the shipped madcide prints its usage line and `-c check`s a
-#            <stdio.h> program clean from a foreign cwd [control: a syntax
-#            error => 1 problem, rc 1], and offers every key style;
 #            scripts/mac_battery.sh against the extracted tarball layout
 #            holds the PASS floor (MAC_BATTERY_FLOOR, default 8 = the
 #            owner-hardware baseline) and prints every FAIL line [control:
@@ -71,9 +56,8 @@
 #            the battery exercised THIS tarball's archive]. Host arch only:
 #            a tarball for the other arch is refused (no Rosetta proof).
 #
-# The pty probe forces cwd=/tmp (see install_gate_pty.py): the shipped
-# madcide's {dirname(__FILE__)}/profiles arm is baked build-tree-RELATIVE,
-# so from /tmp it misses and the INSTALLED layout is what's exercised.
+# The IDE, madcide, is its own packages, with their own installed checks
+# (github.com/derekbsnider/madcide: scripts/check_install.sh).
 set -u
 cd "$(dirname "$0")/.."
 
@@ -88,7 +72,7 @@ ok() {
     echo "package_install_gate: ok   [$1] $2"
 }
 
-# One probe pair, generated fresh per run (scratch-files rule: tmp/ only).
+# The probe, generated fresh per run (scratch-files rule: tmp/ only).
 # pk4hello: runtime-needing madc-dialect program (println pulls the madc
 # runtime, so the AOT form binds libmadc — the binding is what's under
 # test; a plain-C hello would be runtime-free and prove nothing).
@@ -98,10 +82,6 @@ write_probes() {
         printf 'var greeting = "%s";\n' "$MARKER"
         printf 'println("{}", greeting);\n'
     } > "$GATE_TMP/pk4hello.mad"
-    # The editor probe: name AND content carry the marker the pty
-    # classifier looks for after first paint.
-    printf '// pk4probe — package_install_gate editor probe\n' \
-        > "$GATE_TMP/pk4probe.mad"
 }
 
 # ---------- shipped notices (packaging/notices.tsv) ----------
@@ -166,21 +146,16 @@ check_modes() {
 #   libdir empty    => run with NO LD_LIBRARY_PATH at all (tarball $ORIGIN)
 run_linux() {
     local kind="$1" root="$2" bindir="$3" libdir="$4"
-    local madc="$bindir/madc" madcide="$bindir/madcide"
-    local hello probe out
+    local madc="$bindir/madc"
+    local hello out
     hello=$(readlink -f "$GATE_TMP/pk4hello.mad")
-    probe=$(readlink -f "$GATE_TMP/pk4probe.mad")
-    [ -x "$madc" ]    || fail "$kind" "no executable $madc in the artifact"
-    [ -x "$madcide" ] || fail "$kind" "no executable $madcide in the artifact"
+    [ -x "$madc" ] || fail "$kind" "no executable $madc in the artifact"
 
-    # MADCIDE_CONFIG_DIR: no ambient user settings.json or plugins/, and no
-    # MADCIDE_PLUGIN_PATH (the run_tests.sh hermeticity); the artifact's own
-    # data is what is gated.
     local -a runenv
     if [ -n "$libdir" ]; then
-        runenv=(env -u MADCIDE_PLUGIN_PATH "LD_LIBRARY_PATH=$libdir" "MADCIDE_CONFIG_DIR=$GATE_TMP/no-config")
+        runenv=(env "LD_LIBRARY_PATH=$libdir")
     else
-        runenv=(env -u MADCIDE_PLUGIN_PATH -u LD_LIBRARY_PATH "MADCIDE_CONFIG_DIR=$GATE_TMP/no-config")
+        runenv=(env -u LD_LIBRARY_PATH)
     fi
 
     # 1. installed madc runs a program
@@ -207,133 +182,6 @@ run_linux() {
         *"forest-bind:"*) fail "$kind" "negative control broken: non-verbose run mentions forest-bind" ;;
         *) ok "$kind" "negative control: forest-bind evidence absent without -v" ;;
     esac
-
-    # 3. installed madcide on a real pty: profile found, file painted
-    out=$( ( ulimit -t 120; timeout 90 "${runenv[@]}" \
-             python3 scripts/install_gate_pty.py "$madcide" "$probe" pk4probe ) 2>&1 )
-    case "$out" in
-        NORESCUE\ FILESEEN\ *) ok "$kind" "installed madcide: NORESCUE + probe file rendered ($out)" ;;
-        *) fail "$kind" "installed madcide pty probe expected 'NORESCUE FILESEEN' (got: $out)" ;;
-    esac
-
-    # 4. negative control: hide the installed profiles => RESCUE banner.
-    local pdir="$root/${libdir:+usr/}share/madcide/profiles"
-    [ -d "$pdir" ] || fail "$kind" "no profiles dir at $pdir in the artifact"
-    local gdir="$root/${libdir:+usr/}share/madcide/plugins"
-    [ -f "$gdir/default/default.plugin" ] \
-        || fail "$kind" "no plugins/default/default.plugin at $gdir in the artifact"
-    # Every shipped plugin with code carries its built library beside its
-    # source (scripts/build_shipped_plugins.sh; plan §41.11a step 6).
-    local pg pn
-    for pg in "$gdir"/*/; do
-        pg="${pg%/}"
-        pn=$(basename "$pg")
-        grep -q '"code"' "$pg/$pn.plugin" 2>/dev/null || continue
-        [ -f "$pg/$pn.so" ] \
-            || fail "$kind" "plugin '$pn' ships no library ($pn.so) at $pg in the artifact"
-    done
-    mv "$pdir" "$pdir.hidden"
-    out=$( ( ulimit -t 120; timeout 90 "${runenv[@]}" \
-             python3 scripts/install_gate_pty.py "$madcide" "$probe" pk4probe ) 2>&1 )
-    mv "$pdir.hidden" "$pdir"
-    case "$out" in
-        RESCUE\ *) ok "$kind" "negative control: hidden profiles => RESCUE banner ($out)" ;;
-        *) fail "$kind" "negative control broken: profiles hidden but no RESCUE (got: $out)" ;;
-    esac
-
-    # 5. installed madcide SAVES and QUITS from a foreign cwd (B85): joe's
-    #    ^K D, ^K Q; then with the profiles hidden, the rescue ^S, ^Q.
-    local sq="$GATE_TMP/$kind-savequit.c"
-    printf 'int main(void) { return 0; }\n' > "$sq"
-    out=$( ( ulimit -t 120; timeout 120 "${runenv[@]}" \
-             python3 scripts/madcide_save_quit_pty.py "$sq" 0b640b71 "$madcide" ) 2>&1 )
-    case "$out" in
-        "SAVED EXITED rc=0 NORESCUE"*) ok "$kind" "installed madcide saves and quits ($out)" ;;
-        *) fail "$kind" "installed madcide did not save and quit from a foreign cwd (got: $out)" ;;
-    esac
-    printf 'int main(void) { return 0; }\n' > "$sq"
-    mv "$pdir" "$pdir.hidden"
-    out=$( ( ulimit -t 120; timeout 120 "${runenv[@]}" \
-             python3 scripts/madcide_save_quit_pty.py "$sq" 1311 "$madcide" ) 2>&1 )
-    mv "$pdir.hidden" "$pdir"
-    case "$out" in
-        "SAVED EXITED rc=0 RESCUE"*) ok "$kind" "hidden profiles: the rescue keys save and quit ($out)" ;;
-        *) fail "$kind" "hidden profiles: the rescue keys did not save and quit (got: $out)" ;;
-    esac
-
-    # 6. installed madcide's usage line, then `-c check` from a foreign cwd
-    #    over a C file that includes <stdio.h> — the installed profiles
-    #    (share/madcide) and the forest in the installed libmadc serve it —
-    #    clean; [control: a file with a syntax error reports its problem and
-    #    exits 1, proving the check read it].
-    local chk="$PWD/$GATE_TMP/pk4chk.c" bad="$PWD/$GATE_TMP/pk4bad.c"
-    out=$( ( ulimit -t 120; timeout 60 "${runenv[@]}" "$madcide" --help ) 2>&1 )
-    case "$out" in
-        *"usage: madcide"*) ok "$kind" "installed madcide prints its usage line" ;;
-        *) fail "$kind" "installed madcide --help did not print its usage line (got: $out)" ;;
-    esac
-    printf '#include <stdio.h>\nint main(void) { printf("%%d\\n", 5); return 0; }\n' > "$chk"
-    printf '#include <stdio.h>\nint main(void) { return 0 }\n' > "$bad"
-    ide_check_gate "$kind" "installed" "$madcide" "$chk" "$bad" timeout "${runenv[@]}"
-
-    # 7. installed madcide offers every shipped key style from its menu:
-    #    View ▸ Key Bindings… is on its View menu, and the list it opens
-    #    names the six styles share/madcide/profiles carries [control: hide
-    #    the profiles => the list names none of them].
-    keystyle_gate "$kind" "$madcide" "$chk" "$pdir" timeout "${runenv[@]}"
-}
-
-# An IDE's `-c check` (probe 6, every artifact that runs madcide): over a
-# <stdio.h> program from a foreign cwd it is clean (rc 0); [control: a syntax
-# error => 1 problem, rc 1]. `what` says where the IDE came from
-# (installed, shipped); `tmo` is the platform's timeout command; the rest is
-# the run environment.
-ide_check_gate() {
-    local kind="$1" what="$2" ide="$3" chk="$4" bad="$5" tmo="$6" out rc
-    shift 6
-    out=$( ( cd /tmp && ulimit -t 120 && "$tmo" 60 "$@" "$ide" "$chk" -c check ) 2>&1 )
-    rc=$?
-    case "$rc:$out" in
-        0:*Problems*) ok "$kind" "$what madcide -c check over <stdio.h> is clean (rc 0)" ;;
-        *) fail "$kind" "$what madcide -c check over <stdio.h> was not clean (rc $rc: $out)" ;;
-    esac
-    out=$( ( cd /tmp && ulimit -t 120 && "$tmo" 60 "$@" "$ide" "$bad" -c check ) 2>&1 )
-    rc=$?
-    case "$rc:$out" in
-        1:*"1 problem"*) ok "$kind" "negative control: a syntax error => madcide -c check reports 1 problem (rc 1)" ;;
-        *) fail "$kind" "negative control broken: madcide -c check over a syntax error (rc $rc: $out)" ;;
-    esac
-}
-
-# The installed madcide's key styles (probe 7, every artifact that runs it):
-# `-c "menushow View"` lists the Key Bindings… row, `-c keystyle` lists the
-# styles by their display names, all six; with the profiles directory hidden
-# the list names none. `tmo` is the platform's timeout command (timeout, or
-# brew coreutils' gtimeout on a Mac runner); the rest is the run environment.
-KEY_STYLES=("Chthonia" "VS Code" "Vim" "Emacs" "JOE" "Pico")
-keystyle_gate() {
-    local kind="$1" ide="$2" file="$3" pdir="$4" tmo="$5"
-    shift 5
-    local out style missing="" named=""
-    out=$( ( cd /tmp && ulimit -t 120 && "$tmo" 60 "$@" "$ide" "$file" -c "menushow View" ) 2>&1 )
-    case "$out" in
-        *"Key Bindings"*) ok "$kind" "installed madcide's View menu has Key Bindings…" ;;
-        *) fail "$kind" "installed madcide's View menu has no Key Bindings… row (got: $out)" ;;
-    esac
-    out=$( ( cd /tmp && ulimit -t 120 && "$tmo" 60 "$@" "$ide" "$file" -c keystyle ) 2>&1 )
-    for style in "${KEY_STYLES[@]}"; do
-        case "$out" in *". $style"*) ;; *) missing="$missing [$style]" ;; esac
-    done
-    [ -z "$missing" ] || fail "$kind" "installed madcide's Key Bindings list lacks$missing (got: $out)"
-    ok "$kind" "installed madcide's Key Bindings list names all ${#KEY_STYLES[@]} styles"
-    mv "$pdir" "$pdir.hidden"
-    out=$( ( cd /tmp && ulimit -t 120 && "$tmo" 60 "$@" "$ide" "$file" -c keystyle ) 2>&1 )
-    mv "$pdir.hidden" "$pdir"
-    for style in "${KEY_STYLES[@]}"; do
-        case "$out" in *". $style"*) named="$named [$style]" ;; esac
-    done
-    [ -z "$named" ] || fail "$kind" "negative control broken: profiles hidden but the list still names$named"
-    ok "$kind" "negative control: hidden profiles => the Key Bindings list names no style"
 }
 
 gate_deb() {
@@ -422,36 +270,15 @@ gate_winzip() {
         *) fail winzip "emitted pk4hello.exe did not produce '$MARKER' (got: $out)" ;;
     esac
 
-    # 3. the zipped madcide.exe loads, binds, and runs (--help prints the usage line)
-    out=$( ( cd "$bindir" && ulimit -t 120 && timeout 60 wine madcide.exe --help ) 2> /dev/null | tr -d '\r' )
-    case "$out" in
-        *"usage: madcide"*) ok winzip "zipped madcide.exe prints its usage line" ;;
-        *) fail winzip "zipped madcide.exe usage smoke failed (got: $out)" ;;
-    esac
-    # madcide's profiles ride beside the exe (resolve_data_dir's <exedir>
-    # arm). wine has no pty here, so the layout is checked; the save/quit
-    # run is the Linux gate's and the genuine-Windows lane's.
-    [ -d "$bindir/profiles" ] \
-        || fail winzip "the zip carries no bin/profiles (madcide's key and colour profiles)"
-    ok winzip "zipped madcide's profiles sit beside the exe"
-    [ -f "$bindir/plugins/default/default.plugin" ] \
-        || fail winzip "the zip carries no bin/plugins/default/default.plugin"
-    ok winzip "zipped madcide's plugins sit beside the exe"
-
-    # 4. negative control: hide the engine DLL => both must fail
-    #    (proves the green runs above were bound by adjacency to the
+    # 3. negative control: hide the engine DLL => the exe must fail
+    #    (proves the green run above was bound by adjacency to the
     #    zipped libmadc-0.dll, not something on WINEPATH).
     mv "$bindir/libmadc-0.dll" "$bindir/libmadc-0.dll.hidden"
     out=$( ( cd "$bindir" && ulimit -t 120 && timeout 60 wine ./pk4hello.exe ) 2>&1 | tr -d '\r' )
-    case "$out" in
-        *"$MARKER"*) mv "$bindir/libmadc-0.dll.hidden" "$bindir/libmadc-0.dll"
-                     fail winzip "negative control broken: emitted exe ran without libmadc-0.dll" ;;
-    esac
-    out=$( ( cd "$bindir" && ulimit -t 120 && timeout 60 wine madcide.exe --help ) 2> /dev/null | tr -d '\r' )
     mv "$bindir/libmadc-0.dll.hidden" "$bindir/libmadc-0.dll"
     case "$out" in
-        *"usage: madcide"*) fail winzip "negative control broken: madcide.exe ran without libmadc-0.dll" ;;
-        *) ok winzip "negative control: hidden libmadc-0.dll => neither binary runs" ;;
+        *"$MARKER"*) fail winzip "negative control broken: emitted exe ran without libmadc-0.dll" ;;
+        *) ok winzip "negative control: hidden libmadc-0.dll => the emitted exe does not run" ;;
     esac
     echo "package_install_gate: PASS winzip ($artifact)"
 }
@@ -511,24 +338,6 @@ gate_mactar() {
         *) ok mactar "negative control: hidden lib/libmadc-0.dylib => madc does not run" ;;
     esac
 
-    # 1c. the IDE (a darwin host of this arch builds it into the tarball):
-    # madcide's usage line, then `-c check` from a foreign cwd over a
-    # <stdio.h> program — share/madcide's profiles and the library's forest
-    # serve it — clean [control: a syntax error => 1 problem, rc 1].
-    [ -x "$root/bin/madcide" ] || fail mactar "no executable bin/madcide in the artifact"
-    [ -d "$root/share/madcide/profiles" ] || fail mactar "no share/madcide/profiles in the artifact"
-    out=$( ( ulimit -t 120; "$tmo" 60 "$root/bin/madcide" --help ) 2>&1 )
-    case "$out" in
-        *"usage: madcide"*) ok mactar "shipped madcide prints its usage line" ;;
-        *) fail mactar "shipped madcide --help did not print its usage line (got: $out)" ;;
-    esac
-    local chk="$PWD/$GATE_TMP/pk4chk.c" bad="$PWD/$GATE_TMP/pk4bad.c"
-    printf '#include <stdio.h>\nint main(void) { printf("%%d\\n", 5); return 0; }\n' > "$chk"
-    printf '#include <stdio.h>\nint main(void) { return 0 }\n' > "$bad"
-    ide_check_gate mactar "shipped" "$root/bin/madcide" "$chk" "$bad" "$tmo"
-    # 1d. its key styles, the menu row and the list (keystyle_gate).
-    keystyle_gate mactar "$root/bin/madcide" "$chk" "$root/share/madcide/profiles" "$tmo"
-
     # 2. the Mac battery against the extracted tarball layout (bin/madc +
     # lib/libmadc_rt.a beside it = leg 6c's shape). The full output is the
     # release evidence — print it; gate the PASS count.
@@ -555,85 +364,35 @@ gate_mactar() {
     echo "package_install_gate: PASS mactar ($artifact)"
 }
 
-# ---------- the installed .deb's windows under AppArmor (Ubuntu 24.04+) ----------
-# web_under PID: a WebKit web process runs beneath PID (WebKit starts it
-# through bwrap, so it is a grandchild or deeper). comm is cut to 15 chars.
-web_under() {
-    ps -e -o pid=,ppid=,comm= | awk -v root="$1" '
-        { up[$1] = $2; name[$1] = $3 }
-        END {
-            for (p in name) {
-                if (name[p] !~ /^WebKitWebProces/) continue
-                for (q = up[p]; q > 1 && q != root; q = up[q]) ;
-                if (q == root) exit 0
-            }
-            exit 1
-        }'
-}
-
-# ide_window SECS: madcide's window (--gui; madcide's own default is the
-# console editor) on aa.c for up to SECS, polled every half second. Sets
-# IDE_WEB (yes once its WebKit web process ran) and IDE_UP (yes if madcide
-# was still running at SECS), then ends it. The verdict is what ran, never
-# how the exit status reads: a crash's core dump can hold the dying process
-# past a `timeout`, which then reports 124 as if it were still up. No core
-# is written.
-ide_window() {
-    local secs=$1 pid t=0
-    IDE_WEB=no IDE_UP=no
-    ( ulimit -c 0; exec /usr/bin/madcide "$GATE_TMP/aa.c" --gui ) < /dev/null > "$GATE_TMP/ide.log" 2>&1 &
-    pid=$!
-    while [ $t -lt $((secs * 2)) ]; do
-        kill -0 $pid 2>/dev/null || break
-        [ $IDE_WEB = yes ] || ! web_under $pid || IDE_WEB=yes
-        sleep 0.5
-        t=$((t + 1))
-    done
-    [ $t -ge $((secs * 2)) ] && kill -0 $pid 2>/dev/null && IDE_UP=yes
-    kill $pid 2>/dev/null
-    wait $pid 2>/dev/null
-}
-
+# ---------- the installed .deb's window under AppArmor (Ubuntu 24.04+) ----------
 # gate_apparmor: madc's .deb INSTALLED (apt), the user-namespace restriction
 # ON as a 24.04 desktop has it, a display (xvfb-run), sudo. By the profile
 # the .deb installs, /usr/bin/madc runs a ui:: program to its first rendered
 # page (tests/gui/ui_web_hello.mad's GUI_SNAPSHOT: WebKit's web process
-# runs only in its bwrap sandbox), and madcide's window starts its web
-# process and stays up 15 s; [control: the profile unloaded, the same
-# program dies before its page and madcide's web process never runs —
-# LP: #2046844].
+# runs only in its bwrap sandbox); [control: the profile unloaded, the same
+# program dies before its page — LP: #2046844].
 gate_apparmor() {
-    local prof=/etc/apparmor.d/madc prog=tests/gui/ui_web_hello.mad out rc p
+    local prof=/etc/apparmor.d/madc prog=tests/gui/ui_web_hello.mad out rc
     [ -f "$prof" ] || fail apparmor "no $prof (the .deb installs it on Ubuntu 24.04 and later)"
     [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null)" = 1 ] \
         || fail apparmor "the user-namespace restriction is off; this gate needs it on"
-    for p in madc madcide; do
-        sudo grep -q "^$p " /sys/kernel/security/apparmor/profiles \
-            || fail apparmor "the $p profile is not loaded (the .deb's postinst loads it)"
-    done
-    ok apparmor "the .deb's madc and madcide profiles are loaded"
-    printf 'int main(void) { return 0; }\n' > "$GATE_TMP/aa.c"
+    sudo grep -q "^madc " /sys/kernel/security/apparmor/profiles \
+        || fail apparmor "the madc profile is not loaded (the .deb's postinst loads it)"
+    ok apparmor "the .deb's madc profile is loaded"
     out=$( ( ulimit -t 120 -c 0; timeout 60 /usr/bin/madc "$prog" ) 2>&1 )
     rc=$?
     case "$rc:$out" in
         0:*GUI_SNAPSHOT*) ok apparmor "/usr/bin/madc runs a ui:: window to its rendered page" ;;
         *) fail apparmor "/usr/bin/madc's ui:: window did not render (rc $rc: $(echo "$out" | tail -3 | tr '\n' ' '))" ;;
     esac
-    ide_window 15
-    [ $IDE_WEB = yes ] || fail apparmor "madcide's window never started its web process ($(tail -3 "$GATE_TMP/ide.log" | tr '\n' ' '))"
-    [ $IDE_UP = yes ] || fail apparmor "madcide's window ended by itself ($(tail -3 "$GATE_TMP/ide.log" | tr '\n' ' '))"
-    ok apparmor "madcide's window started its web process and ran 15 s"
     sudo apparmor_parser -R "$prof" || fail apparmor "could not unload $prof"
     out=$( ( ulimit -t 120 -c 0; timeout 60 /usr/bin/madc "$prog" ) 2>&1 )
     rc=$?
-    ide_window 15
     sudo apparmor_parser -r -T -W "$prof" || fail apparmor "could not load $prof again"
     case "$out" in
         *GUI_SNAPSHOT*) fail apparmor "control broken: the profile unloaded, the window still rendered" ;;
         *) ok apparmor "control: the profile unloaded, the window died before its page (rc $rc)" ;;
     esac
-    [ $IDE_WEB = no ] || fail apparmor "control broken: the profile unloaded, madcide's web process ran anyway"
-    ok apparmor "control: the profile unloaded, madcide's web process never ran ($(tail -1 "$GATE_TMP/ide.log"))"
     echo "package_install_gate: PASS apparmor"
 }
 

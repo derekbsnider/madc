@@ -155,7 +155,7 @@ The compiler's own structured data, as values — compile (NEVER execute)
 a source buffer with the same front end `madc` runs, in a
 policy-clamped child, and read what it found. Diagnostics are CAPTURED,
 not printed (nothing reaches stderr); nothing in the buffer runs. This
-is the meta-level surface an IDE projects (`tools/madcide`'s
+is the meta-level surface an IDE projects (madcide's
 diagnostics pane and outline), and it serves any tool that wants
 compile results as data — a linter, a doc generator, a test harness.
 
@@ -180,7 +180,7 @@ Positions match what a file-based compile of the same text reports.
 The same child, one step further: parse the buffer and render its
 `cir_node` tree (MC11-IR) as a target language — the `--emit=`
 vocabulary, byte-identical to what `madc --emit=<target> file` prints.
-This is what feeds an editor's code views (`tools/madcide`'s `^K A`).
+This is what feeds an editor's code views (madcide's `^K A`).
 
 ```c
 value text;

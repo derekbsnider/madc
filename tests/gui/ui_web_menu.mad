@@ -1,0 +1,52 @@
+// The native menu bar through the engine alone (the engine twin of madcide's
+// tests/gui/madcide_menu, which left with madcide in the split arc's Phase 2):
+// a root's `menu` hint ({bar:[{title, items:[{id, title}|{sep}]}]}) reaches
+// the host with the first render (ui::render -> the web model's menu JSON ->
+// the host's menu builder -> the platform menu bar), and choosing an item as
+// the user would — the platform action fired by id through the test seam
+// ui_web::menu_activate — arrives as the SAME action event a chord produces,
+// named by the item's id. An id the menu does not carry is refused by the
+// platform layer. Runs under Xvfb (scripts/gui_lane.sh).
+int main()
+{
+    long w = ui::world_new();
+    long t = ui::open(ui::WEB);
+    if ( !t )
+	return 1;
+    println("MENU open");
+    var greet = { "id": "greet", "title": "Greet" };
+    var sep = { "sep": 1 };
+    var leave = { "id": "leave", "title": "Leave" };
+    var items = { greet, sep, leave };
+    var tools = { "title": "Tools", "items": items };
+    var bar = { tools };
+    var menu = { "bar": bar };
+    var hints = { "menu": menu };
+    var body = { "role": "content", "content": "the menu bar's window" };
+    var kids = { body };
+    var root = { "role": "group", "children": kids, "hints": hints };
+    var ev;
+    bool rendered = false;
+    while ( ui::event(ev, t, w) )
+    {
+	if ( ev["event"] == "resize" )
+	{
+	    if ( rendered )
+		continue;
+	    rendered = true;
+	    ui::render(t, w, root);		// the first render sends the menu
+	    println("MENU activate unknown={} greet={}",
+		    ui_web::menu_activate("no-such-command"),
+		    ui_web::menu_activate("greet"));
+	}
+	else if ( ev["event"] == "action" )
+	{
+	    println("MENU action {}", ev["action"]);
+	    break;
+	}
+    }
+    ui::close(t);
+    ui::world_close(w);
+    println("MENU closed");
+    return 0;
+}

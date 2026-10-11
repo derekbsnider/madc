@@ -2,6 +2,39 @@
 
 ## [Unreleased]
 
+### madcide moves to its own repository
+
+madcide — the IDE and the editor core it builds on — now lives in its own
+repository (github.com/derekbsnider/madcide) and ships its own packages, each
+carrying the madc release it runs on. This commit removes the moved paths from
+madc: `tools/madcide/`, `tools/texteditor/`, `tools/vscode-madcide/`, the
+madcide integration tests and the `tests/gui/madcide_*` window tests with their
+fixtures, the `check-madcide-*` static gates and the pty quit / save-and-quit /
+scroll / golden screen gates, their `fulltest` wiring, the madcide stanzas of
+the release packaging (`package_release*.sh`, the Homebrew formula's madcide
+build and smoke, the AppArmor profile's madcide line, `stage_madcide_data.sh`,
+`build_shipped_plugins.sh`), and `gui_lane.sh`'s madcide cases. `docs/madcide.md`
+and `docs/man/madcide.1` are removed; the README and the language docs point at
+the madcide repository. No `src/*.cpp` or `include/` file changes — madcide only
+consumed the engine.
+
+The lane ledger's APPLICATION split is deleted with the paths it named: `tools`
+leaves `CODE_PATHS`, the `APPLICATION` / `app_lanes` table and its selftest
+checks are gone, and a madc source change again stales every lane. Gates whose
+subject spans both repositories keep only their madc half here:
+`check-one-anchor-owner.sh` reduces to the engine's `madc::hub::shift_position`
+rule, `check-one-style-vocabulary.sh` drops the madcide converter, and
+`check-expect-twins.sh` takes an optional tree argument so madcide runs it over
+its own tree. The static gate loop is 92 `check-*.sh` scripts, down from 105
+(13 moved to madcide).
+
+Coverage that only madcide exercised keeps an engine twin in madc: the new
+`tests/gui/ui_web_menu.mad` drives the native menu bar through the engine alone
+(`ui_web::menu_activate`) in place of `tests/gui/madcide_menu`, and
+`tests/unit/test_theme.cpp` reads the four `.theme` profiles from
+`tests/unit/themes/` (copies of madcide's profiles as of the split) rather than
+from `tools/madcide/profiles/`.
+
 ### The Windows expected output for the ex core's write message
 
 `tests/testvised.win64_expect` holds the Windows answer for the editor's write

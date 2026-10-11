@@ -5,11 +5,11 @@
 # rendered copy.
 #
 # Built the way the packages are (scripts/package_release.sh): the
-# distribution configuration (madcdat off), the release compiler, madcide
-# compiled by it, the shipped plugins built by that madcide, staged into the
-# keg by scripts/stage_install.sh (the packages' one staging owner). The
-# runpath of every program madc compiles names HOMEBREW_PREFIX/lib, where
-# `brew link` puts libmadc.so.0, so a program outlives `brew upgrade`.
+# distribution configuration (madcdat off) and the release compiler, staged
+# into the keg by scripts/stage_install.sh (the packages' one staging
+# owner). The IDE, madcide, is its own project. The runpath of every
+# program madc compiles names HOMEBREW_PREFIX/lib, where `brew link` puts
+# libmadc.so.0, so a program outlives `brew upgrade`.
 #
 # @BOTTLE@ is the bottle block, rendered by `scripts/brew_formula.sh --bottle`
 # for the bottle scripts/brew_bottle.sh built and poured (the release's
@@ -28,10 +28,10 @@ class Madc < Formula
   # it (automake for the aclocal brew's autoreconf runs).
   depends_on "autoconf" => :build
   depends_on "automake" => :build
-  # pkg-config finds libgit2 for the madcgit module (the IDE's git layer, as
-  # the packages ship it), built only when that libgit2 meets the module's
-  # floor (1.8.7 / 1.9.7 or newer, src/modules/madcgit/libgit2_floor.h), and
-  # cmark-gfm for the madcmark module (Markdown: the IDE's help and previews).
+  # pkg-config finds libgit2 for the madcgit module (git::, %git; as the
+  # packages ship it), built only when that libgit2 meets the module's floor
+  # (1.8.7 / 1.9.7 or newer, src/modules/madcgit/libgit2_floor.h), and
+  # cmark-gfm for the madcmark module (Markdown: markdown::, an IDE's help).
   # The GUI's webview module needs webkitgtk, which Homebrew does not carry,
   # so it is left out.
   depends_on "pkgconf" => :build
@@ -50,10 +50,6 @@ class Madc < Formula
     system "./configure", "--enable-madcdat=no", "--with-forest=sidecar"
     system "make", "-C", "src", "-j#{ENV.make_jobs}", runpath
     system "make", "-C", "src", "-j#{ENV.make_jobs}", "release", runpath
-    mkdir_p "tmp"
-    system "bin/madc-release", "-o", "tmp/madcide-pkg", "tools/madcide/madcide.mad"
-    system "bin/madc-release", "-shared", "-o", "lib/libmadcide.so", "tools/madcide/madcide_base.mad"
-    system "scripts/build_shipped_plugins.sh", "tmp/plugins-pkg", "tmp/madcide-pkg"
     system "scripts/stage_install.sh", prefix, "lib", ""
   end
 
@@ -71,6 +67,5 @@ class Madc < Formula
       int main() { std::string s = "c++"; std::cout << "hello from " << s << "\\n"; }
     CPP
     assert_equal "hello from c++\n", shell_output("#{bin}/madc hello.cpp")
-    assert_match "madcide", shell_output("#{bin}/madcide --help 2>&1", 0)
   end
 end

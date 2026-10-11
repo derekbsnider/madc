@@ -1189,7 +1189,6 @@ gates: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/check-one-void-predicate.sh
 	@cd .. && bash scripts/check-one-slot-dispatch.sh
 	@cd .. && bash scripts/check-one-top-decl-position.sh
-	@cd .. && bash scripts/check-one-selection-rule.sh
 	@cd .. && bash scripts/check-one-deref-builder.sh
 	@cd .. && bash scripts/check-one-text-publish.sh
 	@cd .. && bash scripts/check-one-regex-engine.sh
@@ -1214,7 +1213,6 @@ gates: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/check-one-path-within.sh
 	@cd .. && bash scripts/check-one-path-absolute.sh
 	@cd .. && bash scripts/check-one-path-stem.sh
-	@cd .. && bash scripts/check-one-madcide-staging.sh
 	@cd .. && bash scripts/check-one-pointee-accessor.sh
 	@cd .. && bash scripts/check-one-operand-promotion.sh
 	@cd .. && bash scripts/check-one-nontype-splice.sh
@@ -1235,11 +1233,9 @@ gates: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/check-one-parse-error-recorder.sh
 	@cd .. && bash scripts/check-one-block-comment-reader.sh
 	@cd .. && bash scripts/check-one-escape-decoder.sh
-	@cd .. && bash scripts/check-one-subject-doc.sh
 	@cd .. && bash scripts/check-one-mingw-stdio-map.sh
 	@cd .. && bash scripts/check-policy-fanout.sh
 	@cd .. && bash scripts/check-dialect-lean.sh
-	@cd .. && bash scripts/check-dialect-literals.sh
 	@cd .. && bash scripts/check-embedded-headers-stub.sh
 	@cd .. && bash scripts/check-one-library-spelling.sh
 	@cd .. && bash scripts/check-one-library-opener.sh
@@ -1248,10 +1244,7 @@ gates: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/check-one-module-member-owner.sh
 	@cd .. && bash scripts/check-one-key-owner.sh
 	@cd .. && bash scripts/check-one-anchor-owner.sh
-	@cd .. && bash scripts/check-one-blank-run.sh
 	@cd .. && bash scripts/chthonia_sanitize_check.sh
-	@cd .. && bash scripts/check-madcide-harness.sh
-	@cd .. && bash scripts/check-one-event-builder.sh
 	@cd .. && bash scripts/check-fragment-inline-vars.sh
 	@cd .. && bash scripts/check-istring-fields.sh
 	@cd .. && bash scripts/check-module-exports.sh
@@ -1269,12 +1262,6 @@ gates: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/check-datachannel-write-owner.sh
 	@cd .. && bash scripts/check-datachannel-cloexec-owner.sh
 	@cd .. && bash scripts/check-select-fire-owner.sh
-	@cd .. && bash scripts/check-madcide-single-owners.sh
-	@cd .. && bash scripts/check-madcide-seam.sh
-	@cd .. && bash scripts/check-madcide-command-registry.sh
-	@cd .. && bash scripts/check-madcide-enums.sh
-	@cd .. && bash scripts/check-madcide-one-accept-loop.sh
-	@cd .. && bash scripts/check-madcide-id-width.sh
 	@cd .. && bash scripts/check-object-mode-scope.sh
 	@cd .. && bash scripts/check-cancel-throw-owner.sh
 	@cd .. && bash scripts/check-child-status-map-owner.sh
@@ -1302,10 +1289,6 @@ gates: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/check-hub-write-path.sh
 	@cd .. && bash scripts/check-engine-app-purity.sh
 	@cd .. && bash scripts/tui_smoke_gate.sh
-	@cd .. && bash scripts/tui_scroll_gate.sh
-	@cd .. && bash scripts/tui_golden_gate.sh
-	@cd .. && bash scripts/madcide_quit_gate.sh
-	@cd .. && bash scripts/madcide_save_quit_gate.sh
 	@cd .. && bash scripts/despace_cache_gate.sh
 	@cd .. && bash scripts/forest_selfexe_gate.sh
 	@cd .. && bash scripts/forest_bind_gate.sh

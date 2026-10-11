@@ -11,12 +11,9 @@
 #   <prefix>  "usr" for a filesystem layout, "" for a root that IS the prefix
 #
 # Inputs, built before it runs (from the repo root): bin/madc-release,
-# lib/release/libmadc.so (the forest inside), lib/release/libmadc_rt.a,
-# madcide compiled by that release compiler ($MADC_STAGE_MADCIDE, default
-# tmp/madcide-pkg), libmadcide (madcide's base as a library,
-# lib/libmadcide.so, which a product built on madcide links) and the
-# shipped plugins built by that madcide ($MADC_STAGE_PLUGINS, default
-# tmp/plugins-pkg). The optional modules
+# lib/release/libmadc.so (the forest inside), lib/release/libmadc_rt.a. The
+# IDE is madcide's own package (github.com/derekbsnider/madcide), which
+# carries this madc. The optional modules
 # (lib/libmadcwebview.so, lib/libmadcgit.so: weak dependencies, a program
 # that imports them loads them) are staged when they were built;
 # MADC_STAGE_REQUIRE_MODULES=1 (the packages) makes a missing one an error.
@@ -30,20 +27,14 @@ fi
 root="$1"
 libdir="$2"
 prefix="$3"
-madcide="${MADC_STAGE_MADCIDE:-tmp/madcide-pkg}"
-plugins="${MADC_STAGE_PLUGINS:-tmp/plugins-pkg}"
 p="$root${prefix:+/$prefix}"
 
-for f in bin/madc-release lib/release/libmadc.so lib/release/libmadc_rt.a lib/libmadcide.so "$madcide"; do
+for f in bin/madc-release lib/release/libmadc.so lib/release/libmadc_rt.a; do
 	if [ ! -f "$f" ]; then
 		echo "stage_install: missing $f (build it first)" >&2
 		exit 1
 	fi
 done
-if [ ! -d "$plugins" ]; then
-	echo "stage_install: missing $plugins (scripts/build_shipped_plugins.sh)" >&2
-	exit 1
-fi
 
 mkdir -p "$p/bin" "$root/$libdir" \
 	 "$p/share/man/man1" "$p/share/doc/madc/examples"
@@ -92,15 +83,7 @@ for m in libmadcwebview.so libmadcgit.so libmadcmark.so; do
 		exit 1
 	fi
 done
-install -m 755 "$madcide" "$p/bin/madcide"
-# libmadcide: madcide's base, the library a product built on it links.
-install -m 644 lib/libmadcide.so "$root/$libdir/libmadcide.so"
-# madcide's data (profiles, plugins, the plugin API headers): the one
-# staging owner, into share/madcide —
-# where resolve_data_dir and resolve_profile_dir look in an install.
-scripts/stage_madcide_data.sh "$p/share/madcide" "$plugins"
 gzip -9n < docs/man/madc.1 > "$p/share/man/man1/madc.1.gz"
-gzip -9n < docs/man/madcide.1 > "$p/share/man/man1/madcide.1.gz"
 install -m 644 LICENSE "$p/share/doc/madc/copyright"
 install -m 644 third_party/webview/LICENSE "$p/share/doc/madc/webview-copyright"
 # libmadcgit.so statically links the pinned libgit2 (GPLv2 WITH the linking

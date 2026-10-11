@@ -251,21 +251,11 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")"; pwd -P)
 REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.."; pwd -P)
 EXE_LD_LIBRARY_PATH="$REPO_ROOT/lib:/usr/local/lib"
 
-# madcide's user configuration (settings.json and the user's plugins/) is the
-# developer's, never the suite's — the same hermeticity as --no-config: point it
-# at a directory that does not exist, so no test reads an ambient
-# ~/.config/madcide. A test that needs one names its own fixture directory in
-# its .env (MADCIDE_CONFIG_DIR=tmp/…), which env(1) applies over this. The
-# developer's plugin path (MADCIDE_PLUGIN_PATH) is theirs too: unset, and a
-# test that needs one names it in its .env.
-export MADCIDE_CONFIG_DIR="$REPO_ROOT/tmp/madcide-no-config"
-unset MADCIDE_PLUGIN_PATH
-
 # madc's session records (madc::session_claim, the discovery advertisements, a
 # project's memory claim) are the developer's live sessions, never the
 # suite's: every test claims into the suite's own directory. A test that pins
 # discovery names its own in its .env (MADC_SESSION_DIR=tmp/…). The REPL
-# history store (`madc -i`'s, madcide's pane's) is the developer's too: the
+# history store (`madc -i`'s, an IDE's REPL pane's) is the developer's too: the
 # suite's entries go to its own file. Both RELATIVE: the tests run from the
 # repository root, and a relative path crosses into a Windows process
 # (win_run.sh forwards both) where a WSL path would not.

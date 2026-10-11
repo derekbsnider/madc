@@ -1,3 +1,0 @@
-observer-event: kind=checkpoint seq=1
-observer-event: kind=splice seq=2
-editor-reply: seq=7 ok=1

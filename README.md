@@ -9,7 +9,7 @@ same source.
 A basic madc program needs no project scaffolding, no separate compiler
 invocation, and—under the default madc dialect—no explicit `main()`.
 
-[Usage](docs/usage.md) · [Build](docs/build.md) · [madcide](docs/madcide.md) ·
+[Usage](docs/usage.md) · [Build](docs/build.md) · [madcide](https://github.com/derekbsnider/madcide) ·
 [Architecture](docs/architecture.md) · [Test status](docs/test-status.md) ·
 [Changelog](CHANGELOG.md) · [Contributing](AGENTS.md)
 
@@ -189,7 +189,10 @@ Namespace precedence can be selected explicitly with `prefer` or
 
 ## madcide and the Nexus — the IDE *is* the running compiler
 
-`madcide` is not an editor that shells out to a compiler. The live parse in
+madcide lives in its own repository,
+[derekbsnider/madcide](https://github.com/derekbsnider/madcide), and its
+packages carry the madc release they run on. It is not an editor that shells
+out to a compiler. The live parse in
 memory **is** the compilation, so diagnostics, the outline and the emitted
 views are projections of real compiler data rather than a second model that
 can drift.
@@ -227,8 +230,8 @@ walks history with PAST verbs over git, and proposes changes under a
 permission tier. LSP, a VS Code extension, attach and session discovery ride
 the same session — one process, several faces.
 
-See [`docs/madcide.md`](docs/madcide.md) and the design documents under
-[`docs/plans/`](docs/plans/).
+See madcide's [guide](https://github.com/derekbsnider/madcide/blob/main/docs/madcide.md)
+and the design documents under [`docs/plans/`](docs/plans/).
 
 ## Embedding with libmadc
 
@@ -381,7 +384,7 @@ features, installation paths, and release packaging.
 ## Documentation
 
 - [Usage and CLI](docs/usage.md)
-- [madcide — the IDE](docs/madcide.md) (terminal and window; profiles, projects, Build/Run, the panel and the Terminal)
+- [madcide — the IDE](https://github.com/derekbsnider/madcide) (its own repository: terminal and window; profiles, projects, Build/Run, the panel and the Terminal)
 - [Build and installation](docs/build.md)
 - [Compiler architecture](docs/architecture.md)
 - [Testing guide](docs/testing.md)

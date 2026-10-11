@@ -105,7 +105,7 @@ packager whose library directory moves between versions sets it to the
 stable one, as the Homebrew formula does (`make -C src
 MADC_RUNPATH_LIBDIR=$HOMEBREW_PREFIX/lib`).
 
-The full installed layout (madcide, its profiles, plugins and data,
+The full installed layout (madc, its library and modules,
 `libmadc_rt.a`, the docs) is `scripts/stage_install.sh <root> <libdir>
 <prefix>`, which the deb, rpm and tarball (`scripts/package_release.sh`)
 and the Homebrew formula share. The formula is the template

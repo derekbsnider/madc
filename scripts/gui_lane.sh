@@ -1,10 +1,12 @@
 #!/bin/bash
 # gui_lane.sh — the GUI test lane: tests/gui under a virtual display.
 #
-# tests/gui exercises the madcide surfaces that need a real window (layout,
-# splits, panels, dialogs, theming, presence carets), so it runs under Xvfb
-# against a freshly built libmadcwebview. All three execution lanes run —
-# JIT, --exe and --obj — because a GUI module binds differently in each.
+# tests/gui exercises the ui web target's surfaces that need a real window
+# (the page and its edit nodes, dialogs, the clipboard, the native menu bar,
+# theming, the workbench regions), so it runs under Xvfb against a freshly
+# built libmadcwebview. madcide's own window tests live in its repository.
+# All three execution lanes run — JIT, --exe and --obj — because a GUI
+# module binds differently in each.
 #
 # WHY IT IS A SCRIPT AND NOT AN INLINE STAGE: this body lived only inside
 # remote_build.sh's `gui` stage, which is why the lane had no ledger row for

@@ -375,8 +375,9 @@ differential row repaint; POSIX only — on Windows `tui_open` refuses
 until a Console target registers). The model half — layout, focus, key
 semantics, chords, coalescing, diffing — is engine code shared by every
 target. `examples/vised/vised.mad` is the worked example of an editor
-on the public surface (fixed chords, madc's colon mode); `tools/madcide/madcide.mad`
-(a tool, not an example) is the worked case of profiles-as-data
+on the public surface (fixed chords, madc's colon mode); madcide's
+`tools/madcide/madcide.mad` (its own repository, github.com/derekbsnider/madcide)
+is the worked case of profiles-as-data
 (the full JOE/WordStar set by default — `profiles/joe.keys` is the
 readable truth; the pico profile respells the single-chord subset) and
 of the compiler-data panes (`madc::diagnostics` / `madc::outline` rows
@@ -430,6 +431,10 @@ suite's, under Xvfb in JIT, exe and `.o`).
 
 ### The workbench (madcide GUI mode)
 
+madcide lives in its own repository (github.com/derekbsnider/madcide); the
+`tools/madcide/`, `tests/gui/madcide_*`, `tests/testide*` and
+`scripts/check-madcide-*` paths in this section are that repository's.
+
 `madc tools/madcide/madcide.mad <file> --gui` is the web target's first
 customer. ONE client loop and ONE composer serve the terminal and the
 window alike; the target is the `--gui` flag. The composer stamps additive
@@ -470,7 +475,7 @@ every compose. In a Markdown buffer's formatted view, which edits the file,
 holds when the client is a window rather than a terminal. The
 menu named `palette` lists palette-only commands (a title for every
 command the bar does not carry). `scripts/check-madcide-command-registry.sh`
-(fulltest) keeps the three in agreement: every profile action is registered
+(madcide's gates) keeps the three in agreement: every profile action is registered
 or a key spelling, every dispatched action is registered, every registered
 command is dispatched.
 
@@ -499,8 +504,9 @@ delivers it to the engine, which resolves it as the terminal would.
 Choosing an item posts `{"kind":"action","action":id}` back through the
 host's one door, so the session dispatches it exactly as it dispatches the
 chord. `ui_web::menu_activate(id)` fires an item by id — the test seam
-`tests/gui/madcide_menu.mad` drives, under Xvfb on Linux and natively on
-the owner's Windows 11 box and Intel Mac.
+madc's `tests/gui/ui_web_menu.mad` and madcide's `tests/gui/madcide_menu.mad`
+drive, under Xvfb on Linux and natively on the owner's Windows 11 box and
+Intel Mac.
 
 **Native file dialogs.** Open File and Save As are a request / response
 VERB between the session and its client, never a widget the session
@@ -566,8 +572,8 @@ web colours/fonts through the ONE `@scope` rule the key tables use
 unscoped JOE-vocabulary lines still feed the terminal — one file, two
 renderings. While a build streams, its output docks as the `panel` region
 (the VS Code Output shape); interactive Run and the shell use the terminal
-until the embedded terminal lands. `tests/gui/madcide_{workbench,theme,
-render}.mad` are the suite's fixtures (Xvfb, JIT / exe / `.o`); the full
+until the embedded terminal lands. madc's `tests/gui/ui_web_{workbench,theme}.mad`
+and madcide's `tests/gui/madcide_render.mad` are the fixtures (Xvfb); the full
 `--gui` loop is a manual gate.
 
 **Remote X displays.** GTK4 paints the window through its GL renderer,

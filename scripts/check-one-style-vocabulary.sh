@@ -20,7 +20,8 @@
 #      syntax class of its own — no `.c-<name>` selector, no `--syn-`
 #      property, no `' c-'` class prefix;
 #   2. the DOM model reads a span's style spec `c`, never a class name
-#      (`find("cls")` on a span row) — and the converter emits no `"cls"`;
+#      (`find("cls")` on a span row) — and madcide's converter emits no
+#      `"cls"`, which madcide's own half of this gate checks over its tree;
 #   3. the spec parser is defined ONCE, in ui_style.h, and both renderer
 #      models include it.
 #
@@ -35,7 +36,6 @@ PAGE_CSS=include/madc/ui_web/page.css
 PAGE_JS=include/madc/ui_web/page.js
 WEB_MODEL=include/madcdis/web_model.h
 TUI_MODEL=include/madcdis/tui_model.h
-CONVERTER=tools/madcide/madcide_core.inc
 
 PAGE_PATTERN='^\.c-[a-z]|--syn-|'"' c-'"
 MODEL_PATTERN='find\("cls"\)|"cls": '
@@ -103,7 +103,7 @@ done
 
 # --- the tree ------------------------------------------------------------------
 page_out=$(grep -nE "$PAGE_PATTERN" "$PAGE_CSS" "$PAGE_JS" /dev/null)
-model_out=$(grep -nE "$MODEL_PATTERN" "$WEB_MODEL" "$CONVERTER" /dev/null)
+model_out=$(grep -nE "$MODEL_PATTERN" "$WEB_MODEL" /dev/null)
 if [ -n "$page_out" ]; then
 	echo "check-one-style-vocabulary: the page carries a syntax vocabulary of its own:" >&2
 	echo "$page_out" >&2
