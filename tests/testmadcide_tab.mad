@@ -24,7 +24,7 @@ void show(long w, long doc, const char *label, long es)
     var s1 = php::str_replace("\n", "\\n", t);
     var shown = php::str_replace("\t", "\\t", s1);
     var mod;
-    ui::get(mod, w, doc, "modified");
+    mod = ui::doc_modified(w, doc);
     println("{}: [{}] caret={} modified={}", label, shown, es_int(w, es, "caret", 0),
 	    !mod.is_null() && mod.as_boolean() ? 1 : 0);
 }
@@ -59,13 +59,13 @@ int main()
 
     // 2. Read-only refuses.
     ui::text_load(w, doc, "ab\n");
-    ui::set(w, doc, "modified", false);
+    ui::doc_mark_saved(w, doc);
     ui::set(w, es, "caret", 1);
-    ui::set(w, doc, "read_only", true);
+    ui::doc_set_read_only(w, doc, true);
     derive_access(w, es);
     S.apply_ide_event(doc, e);
     show(w, doc, "tab-readonly", es);
-    ui::set(w, doc, "read_only", false);
+    ui::doc_set_read_only(w, doc, false);
     derive_access(w, es);
 
     // 3. The node asks for tab while the editor has the keyboard.
@@ -77,7 +77,7 @@ int main()
 
     // 4. vi NORMAL mode: inert.
     ui::text_load(w, doc, "ab\n");
-    ui::set(w, doc, "modified", false);
+    ui::doc_mark_saved(w, doc);
     ui::set(w, es, "caret", 1);
     vi_enter(w, es, viNORMAL);
     S.apply_ide_event(doc, e);

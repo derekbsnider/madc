@@ -21,7 +21,7 @@ long git_handle_of(long w, long es, long adoc)
     if ( doc_untitled(w, adoc) )
 	return 0;		// no file, no repository (not cached: Save As names it)
     var p;
-    ui::get(p, w, adoc, "path");
+    buffer_path(p, w, adoc);
     var dir = php::dirname(p);		// ring: own the text first
     // The madcgit module is LAZY (libgit2 is the system's, a dependency of
     // this nexus — never part of madc): without it there is no repository to
@@ -90,6 +90,6 @@ void git_seat(var &out, long w, long es, long doc)
     ui::get(branch, w, doc, "gbranch");
     if ( branch.is_null() || strlen(branch.c_str()) == 0 )
 	return;
-    bool differs = es_flag(w, doc, "gdirty") || doc_modified(w, doc);
+    bool differs = es_flag(w, doc, "gdirty") || ui::doc_modified(w, doc);
     out = format("{}{}", branch, differs ? "*" : "");
 }

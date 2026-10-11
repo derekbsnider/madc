@@ -22,7 +22,7 @@ void check_file(const char *label, const char *path, const char *text)
     var m;
     ui::get(m, w, es, "msg");
     println("{}: reaches={} handle={} diags={} msg={}", label,
-	    kind_reaches_compiler(doc_kind(w, doc)), es_int(w, doc, "phandle", 0) != 0,
+	    kind_reaches_compiler(ui::doc_kind(w, doc)), es_int(w, doc, "phandle", 0) != 0,
 	    d.is_null() ? 0 : php::count(d), m);
     S.close();
     php::unlink(path);

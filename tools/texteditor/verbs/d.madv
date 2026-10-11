@@ -29,5 +29,4 @@ while ( k >= n )
     }
     k = k - 1;
 }
-ui::set(w, doc, "modified", true);
 return "Deleted.";

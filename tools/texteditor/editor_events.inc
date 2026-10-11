@@ -8,9 +8,10 @@
 // on these functions.
 //
 // Undo (IDE-2) lives here: every mutating arm checkpoints BEFORE the
-// edit, carrying {caret, modified} as the opaque payload, so undo_edit
-// restores document, caret, and dirtiness together. One coalesced event
-// = one semantic edit = one undo step.
+// edit, carrying {caret} as the opaque payload, so undo_edit restores
+// document, caret, and dirtiness together (a document's saved state rides
+// its own history). One coalesced event = one semantic edit = one undo
+// step.
 //
 // Requires lined_core.inc (setup_document, bind_lineed_verbs) included
 // first by the entry file. Everything here is loop-free and terminal-
@@ -384,18 +385,6 @@ void keyed_get(var &out, var &map, const char *key)
 	out = map[key];
 }
 
-// Is the document DIRTY? The `modified` slot is unset until a document's
-// first write (setup_document seeds false; an edit sets true), and reading
-// an unset slot as a boolean THROWS — so every read is guarded here, once:
-// unset reads as clean. The V6 seam audit found ten reads across the
-// texteditor and IDE layers, nine guarded by hand and one not.
-bool doc_modified(long w, long doc)
-{
-    var m;
-    ui::get(m, w, doc, "modified");
-    return !m.is_null() && m.as_boolean();
-}
-
 // ---- the ONE reader of the change stream -----------------------------------
 // The stream is JSONL: one record per line, appended by clog_append and
 // rewritten whole by clog_compact / clog_adopt. Its RECORDS come from here and
@@ -484,7 +473,7 @@ long clog_append(long w, long doc, var &rec)
     rec["seq"] = seq;
     rec["ts"] = php::time();		// when (design §2.4's ChangeEvent.ts; L4b)
     var p;
-    ui::get(p, w, doc, "path");
+    buffer_path(p, w, doc);
     if ( !p.is_null() )
 	rec["path"] = p;		// the asset's durable identity (clog_adopt re-attaches by it)
     var line = js::stringify(rec);
@@ -697,7 +686,7 @@ void clog_adopt(long w, long doc)
     if ( le <= 0 )
 	return;
     var p;
-    ui::get(p, w, doc, "path");
+    buffer_path(p, w, doc);
     if ( p.is_null() )
 	return;
     var recs;
@@ -944,23 +933,24 @@ long clamped_caret(long w, long es, long doc)
     return clamp_caret_to(w, doc, es_int(w, es, "caret", 0));
 }
 
-// The {caret, modified} payload rule — ONE spelling; checkpoint, undo,
-// and redo all ride it, so every history entry restores document and
-// interaction state together.
+// The {caret} payload rule — ONE spelling; checkpoint, undo and redo all
+// ride it, so every history entry restores the caret that belonged to it.
+// A document's history carries its anchors and its saved state with it
+// (ui::doc_checkpoint: modified is derived, never carried); a view text's
+// (an input field) is the plain text history.
 void edit_meta(var &m, long w, long es, long doc, long caret)
 {
-    var p = { "caret": caret };
-    // Through a bool VARIABLE: a bare `a && b` is int-typed (C), and the
-    // keyed slot would store integer kind — restore_meta reads boolean.
-    bool dirty = doc_modified(w, doc);
-    p["modified"] = dirty;
-    m = p;
+    m = { "caret": caret };
 }
 
+// A payload no client of this editor wrote (madc's ex core, a tool over
+// MCP) carries no caret: the caret stays, clamped by the next event.
 void restore_meta(long w, long es, long doc, var &m)
 {
-    ui::set(w, es, "caret", m["caret"].as_integer());
-    ui::set(w, doc, "modified", m["modified"].as_boolean());
+    var c;
+    keyed_get(c, m, "caret");
+    if ( !c.is_null() )
+	ui::set(w, es, "caret", c.as_integer());
 }
 
 // One undo step (IDE-2): checkpoint BEFORE a mutation with the
@@ -969,46 +959,45 @@ void edit_checkpoint(long w, long es, long doc, long caret)
 {
     var m;
     edit_meta(m, w, es, doc, caret);
-    ui::text_checkpoint(w, doc, m);
+    if ( ui::doc_is(w, doc) )
+	ui::doc_checkpoint(w, doc, m);
+    else
+	ui::text_checkpoint(w, doc, m);
 }
 
 // Undo/redo (madcide v2 grew redo): the CURRENT payload rides to the
 // opposite stack, so walking either direction restores the caret that
-// belonged to the document being restored.
-bool undo_edit(long w, long es, long doc)
+// belonged to the text being restored. The notification recolours.
+bool history_step(long w, long es, long doc, bool undo)
 {
     var now;
     edit_meta(now, w, es, doc, clamped_caret(w, es, doc));
     var m;
     long was = ed_editing_es;
     ed_editing_es = es;
-    bool undone = ui::text_undo(m, w, doc, now);	// the notification recolours
+    bool moved = false;
+    if ( ui::doc_is(w, doc) )
+	moved = undo ? ui::doc_undo(m, w, doc, now) : ui::doc_redo(m, w, doc, now);
+    else
+	moved = undo ? ui::text_undo(m, w, doc, now) : ui::text_redo(m, w, doc, now);
     ed_editing_es = was;
-    if ( !undone )
+    if ( !moved )
     {
-	ui::set(w, es, "msg", "Nothing to undo.");
+	ui::set(w, es, "msg", undo ? "Nothing to undo." : "Nothing to redo.");
 	return false;
     }
     restore_meta(w, es, doc, m);
     return true;
 }
 
+bool undo_edit(long w, long es, long doc)
+{
+    return history_step(w, es, doc, true);
+}
+
 bool redo_edit(long w, long es, long doc)
 {
-    var now;
-    edit_meta(now, w, es, doc, clamped_caret(w, es, doc));
-    var m;
-    long was = ed_editing_es;
-    ed_editing_es = es;
-    bool redone = ui::text_redo(m, w, doc, now);	// the notification recolours
-    ed_editing_es = was;
-    if ( !redone )
-    {
-	ui::set(w, es, "msg", "Nothing to redo.");
-	return false;
-    }
-    restore_meta(w, es, doc, m);
-    return true;
+    return history_step(w, es, doc, false);
 }
 
 // ---- the selection (plan §41.11a step 3e) -------------------------------
@@ -1105,7 +1094,6 @@ bool selection_replace(long w, long es, long doc, long caret, const char *text)
     if ( strlen(t.c_str()) > 0 )
 	ed_text_insert(w, es, doc, lo, t.c_str());
     ui::set(w, es, "caret", lo + strlen(t.c_str()));
-    ui::set(w, doc, "modified", true);
     return true;
 }
 
@@ -1314,7 +1302,6 @@ bool edit_lines(long w, long es, long doc, long caret, long op, const char *pref
 	}
     }
     ui::set(w, es, "caret", c);
-    ui::set(w, doc, "modified", true);
     if ( gui )
     {
 	long lo = line_start_of(w, doc, first);
@@ -1361,7 +1348,6 @@ bool cut_selection(long w, long es, long doc, long caret, bool editable)
     else if ( nc > lo )
 	nc = lo;
     ui::set(w, es, "caret", nc);
-    ui::set(w, doc, "modified", true);
     return true;
 }
 
@@ -1397,7 +1383,6 @@ void paste_text(long w, long es, long doc, long caret, const char *text0)
     edit_checkpoint(w, es, doc, caret);
     ed_text_insert(w, es, doc, caret, text.c_str());
     ui::set(w, es, "caret", caret + strlen(text.c_str()));
-    ui::set(w, doc, "modified", true);
 }
 
 // Insert the clipboard at the caret (paste_text's rules).
@@ -1509,7 +1494,6 @@ void edit_text_run(long w, long es, long doc, long caret, var &ev)
 	long at = close_dedent(w, es, doc, caret, t.c_str());
 	ed_text_insert(w, es, doc, at, t.c_str());
 	ui::set(w, es, "caret", at + strlen(t.c_str()));
-	ui::set(w, doc, "modified", true);
     }
 }
 
@@ -1576,7 +1560,7 @@ void compose_heading(var &head, long w, long es, long doc,
     var h = { "role": "heading", "label": label };
     if ( !es_flag(w, es, "editable") )
 	h["content"] = "[read-only]";
-    else if ( doc_modified(w, doc) )
+    else if ( ui::doc_modified(w, doc) )
 	h["content"] = "[modified]";
     head = h;
 }
@@ -1757,7 +1741,6 @@ bool edit_key(long w, long es, long doc, long caret, var &ev)
 	    edit_checkpoint(w, es, doc, caret);
 	    ed_text_erase(w, es, doc, caret - 1, 1);
 	    ui::set(w, es, "caret", caret - 1);
-	    ui::set(w, doc, "modified", true);
 	}
 	return true;
     }
@@ -1771,7 +1754,6 @@ bool edit_key(long w, long es, long doc, long caret, var &ev)
 	{
 	    edit_checkpoint(w, es, doc, caret);
 	    ed_text_erase(w, es, doc, caret, 1);
-	    ui::set(w, doc, "modified", true);
 	}
 	return true;
     }
@@ -1794,7 +1776,6 @@ bool edit_key(long w, long es, long doc, long caret, var &ev)
 	    edit_checkpoint(w, es, doc, caret);
 	    ed_text_insert(w, es, doc, caret, nl.c_str());
 	    ui::set(w, es, "caret", caret + strlen(nl.c_str()));
-	    ui::set(w, doc, "modified", true);
 	}
 	return true;
     }

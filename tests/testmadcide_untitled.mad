@@ -44,8 +44,8 @@ int main()
     var row = bufs[0];
     println("untitled-open: doc={} untitled={} name={} kind-madc={} modified={} row-path={}",
 	    doc > 0 ? 1 : 0, doc_untitled(S.w, doc) ? 1 : 0, nm,
-	    doc_kind(S.w, doc) == madc::fkMADC ? 1 : 0,
-	    doc_modified(S.w, doc) ? 1 : 0, row["path"].is_null() ? "none" : "set");
+	    ui::doc_kind(S.w, doc) == madc::fkMADC ? 1 : 0,
+	    ui::doc_modified(S.w, doc) ? 1 : 0, row["path"].is_null() ? "none" : "set");
 
     // 2. Its layers, and no session holds it.
     long L = asset_layers_of(S.w, S.es, doc, 0);
@@ -91,8 +91,8 @@ int main()
     row = bufs[0];
     println("untitled-save: prompt={} cont={} written={} name={} untitled={} kind-madc={} modified={} launch={} row={}",
 	    ran ? 1 : 0, cont ? 1 : 0, read && got == text ? 1 : 0, nm,
-	    doc_untitled(S.w, doc) ? 1 : 0, doc_kind(S.w, doc) == madc::fkMADC ? 1 : 0,
-	    doc_modified(S.w, doc) ? 1 : 0, lp, row["path"]);
+	    doc_untitled(S.w, doc) ? 1 : 0, ui::doc_kind(S.w, doc) == madc::fkMADC ? 1 : 0,
+	    ui::doc_modified(S.w, doc) ? 1 : 0, lp, row["path"]);
     S.close();
 
     // 6. ^K X on an untitled buffer: the name, then save, then quit.

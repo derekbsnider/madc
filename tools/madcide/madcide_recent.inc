@@ -95,7 +95,7 @@ void recent_note(long w, long es, const char *path0)
 void recent_note_doc(long w, long es, long doc)
 {
     var p;
-    ui::get(p, w, doc, "path");
+    buffer_path(p, w, doc);
     if ( !p.is_null() )
 	recent_note(w, es, p.c_str());
 }

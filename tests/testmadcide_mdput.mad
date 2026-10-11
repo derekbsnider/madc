@@ -145,7 +145,7 @@ int main()
     show(S, doc, "after blockcopy");
 
     var md;
-    ui::get(md, w, doc, "modified");
+    md = ui::doc_modified(w, doc);
     println("modified={} editable={}", md.as_boolean() ? 1 : 0, es_flag(w, es, "editable") ? 1 : 0);
     S.command(doc, cmdVIEW, "", cont);	// formatted -> original
     show(S, doc, "exit");

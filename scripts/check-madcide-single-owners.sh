@@ -316,32 +316,35 @@ if [ "$(count_manifest_tests "$tmp")" -ne 2 ]; then
 fi
 rm -f "$tmp"
 
-# "Is the document DIRTY" has ONE owner: doc_modified (editor_events.inc).
-# The `modified` slot is unset until a document's first write and reading an
-# unset slot as a boolean throws; the V6 seam audit found ten reads, nine
-# guarded by hand and one not. Marker: the slot is READ once across the
-# texteditor + madcide layers — inside the owner.
-count_modified_reads()
+# "Is the document DIRTY" has ONE owner: madc's document component
+# (ui::doc_modified — DERIVED: the text's version differs from the one last
+# saved; split arc 1D). The bag slot `modified` it replaced was unset until a
+# first write, read ten ways (nine guarded, one not) and set by every edit
+# site by hand. Marker: the slot is neither READ nor WRITTEN anywhere in the
+# texteditor + madcide layers.
+count_modified_slot()
 {
-	cat "$@" | grep -c 'ui::get([a-z]*, w, [^,]*, "modified")'
+	cat "$@" | grep -cE 'ui::(get\([a-z]*, w, [^,]*|set\(w, [^,]*), "modified"'
 }
 
-n=$(count_modified_reads "$TEXTED"/*.inc "$TOOLS"/*.inc)
-if [ "$n" -ne 1 ]; then
-	echo "check-madcide-single-owners: FAIL — $n reads of the modified slot" \
-	     "across tools/texteditor + tools/madcide (expected 1: doc_modified)." >&2
-	grep -n 'ui::get([a-z]*, w, [^,]*, "modified")' "$TEXTED"/*.inc "$TOOLS"/*.inc >&2
+n=$(count_modified_slot "$TEXTED"/*.inc "$TEXTED"/verbs/*.madv "$TOOLS"/*.inc)
+if [ "$n" -ne 0 ]; then
+	echo "check-madcide-single-owners: FAIL — $n uses of the modified bag slot" \
+	     "across tools/texteditor + tools/madcide (expected 0: ui::doc_modified" \
+	     "is the document's own, derived)." >&2
+	grep -nE 'ui::(get\([a-z]*, w, [^,]*|set\(w, [^,]*), "modified"' "$TEXTED"/*.inc \
+	     "$TEXTED"/verbs/*.madv "$TOOLS"/*.inc >&2
 	exit 1
 fi
 
-# Negative control for the modified-read marker.
+# Negative control: a synthetic read and a synthetic write both trip it.
 tmp=$(mktemp)
-cat "$TEXTED"/*.inc "$TOOLS"/*.inc > "$tmp"
-echo '    ui::get(m, w, doc, "modified");	// synthetic' >> "$tmp"
-if [ "$(count_modified_reads "$tmp")" -ne 2 ]; then
+echo '    ui::get(m, w, doc, "modified");	// synthetic' > "$tmp"
+echo '    ui::set(w, doc, "modified", true);	// synthetic' >> "$tmp"
+if [ "$(count_modified_slot "$tmp")" -ne 2 ]; then
 	rm -f "$tmp"
 	echo "check-madcide-single-owners: FAIL — negative control did not" \
-	     "detect a synthetic modified read (the marker went blind)." >&2
+	     "detect a synthetic modified-slot read and write (the marker went blind)." >&2
 	exit 1
 fi
 rm -f "$tmp"
@@ -611,32 +614,36 @@ if [ "$(count_cwd_data_reads "$TOOLS"/*.inc "$TEXTED"/*.inc "$tmp")" -ne 1 ]; th
 fi
 rm -f "$tmp"
 
-# Every DOCUMENT entity has ONE minter: new_document (tools/texteditor/
-# lined_core.inc; B86) — text under a path, unmodified, the path's kind
-# stamped. A file's load (setup_document), a new file and every view buffer
-# ([repl], [build], [terminal]) come through it; a second
+# Every DOCUMENT is madc's document component, minted in ONE place per way
+# in (tools/texteditor/lined_core.inc; B86, split arc 1D): new_document
+# (ui::doc_new — a new file, the untitled buffer) and setup_document
+# (ui::doc_open — a file read). A view buffer ([repl], [build], [terminal],
+# Help, a git view) is no document: new_view_text. A bare
 # `ui::create(w, "document")` is the copy that let an unreadable path become
 # an empty buffer under its name and a view buffer read a same-named file.
 count_document_mints()
 {
-	cat "$@" | grep -cE 'ui::create\([^,]*, *"document"\)'
+	cat "$@" | grep -cE 'ui::create\([^,]*, *"document"\)|ui::doc_(new|open)\('
 }
 
-n=$(count_document_mints "$TOOLS"/*.inc "$TOOLS"/*.mad "$TEXTED"/*.inc "$TEXTED"/*.mad)
-if [ "$n" -ne 1 ]; then
+DOCSRC=$(ls "$TOOLS"/*.inc "$TOOLS"/*.mad "$TEXTED"/*.inc "$TEXTED"/*.mad 2>/dev/null)
+n=$(count_document_mints $DOCSRC)
+nnew=$(cat $DOCSRC | grep -c 'ui::doc_new(')
+nopen=$(cat $DOCSRC | grep -c 'ui::doc_open(')
+if [ "$n" -ne 2 ] || [ "$nnew" -ne 1 ] || [ "$nopen" -ne 1 ]; then
 	echo "check-madcide-single-owners: FAIL — $n document mint sites across" \
-	     "tools/madcide + tools/texteditor (expected 1: new_document). Open" \
-	     "a file through open_buffer_doc / setup_document, a view buffer" \
-	     "through new_document." >&2
-	grep -nE 'ui::create\([^,]*, *"document"\)' "$TOOLS"/*.inc "$TOOLS"/*.mad \
-	     "$TEXTED"/*.inc "$TEXTED"/*.mad >&2
+	     "tools/madcide + tools/texteditor (expected 2: new_document's" \
+	     "ui::doc_new, setup_document's ui::doc_open). Open a file through" \
+	     "open_buffer_doc / setup_document, a view buffer through" \
+	     "new_view_text." >&2
+	grep -nE 'ui::create\([^,]*, *"document"\)|ui::doc_(new|open)\(' $DOCSRC >&2
 	exit 1
 fi
 
-# Negative control: a synthetic second minter must trip the marker.
+# Negative control: a synthetic third minter must trip the marker.
 tmp=$(mktemp)
 echo '    long nd = ui::create(w2, "document");	// synthetic' > "$tmp"
-if [ "$(count_document_mints "$TOOLS"/*.inc "$TOOLS"/*.mad "$TEXTED"/*.inc "$TEXTED"/*.mad "$tmp")" -ne 2 ]; then
+if [ "$(count_document_mints $DOCSRC "$tmp")" -ne 3 ]; then
 	rm -f "$tmp"
 	echo "check-madcide-single-owners: FAIL — negative control did not" \
 	     "detect a synthetic document mint (the marker went blind)." >&2

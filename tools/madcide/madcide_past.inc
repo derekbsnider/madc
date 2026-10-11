@@ -94,7 +94,7 @@ void rev_handle_of(var &out, long w, long es, long adoc, const char *spec0)
 	return;
     }
     var p;
-    ui::get(p, w, adoc, "path");
+    buffer_path(p, w, adoc);
     long h = madc::parse_open_tagged(text.c_str(), p.c_str());
     if ( h <= 0 )
     {

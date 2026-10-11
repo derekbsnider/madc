@@ -176,7 +176,7 @@ void ref_key(var &out, var &ref)
 void symbol_ref_of_doc(var &out, long w, long adoc, var &node)
 {
     var p;
-    ui::get(p, w, adoc, "path");
+    buffer_path(p, w, adoc);
     var word = ref_kind_name(refSYMBOL);
     out = { "ref": word, "file": p, "kind": node["kind"], "name": node["name"] };
 }
@@ -189,7 +189,7 @@ bool symbol_node_of(var &node, long w, long es, long adoc, long h, var &ref)
     if ( h == 0 )
 	return false;			// no parseable layer: no tree to resolve against (L4e)
     var p;
-    ui::get(p, w, adoc, "path");
+    buffer_path(p, w, adoc);
     if ( !(ref["file"] == p) )
 	return false;
     var nm = ref["name"];

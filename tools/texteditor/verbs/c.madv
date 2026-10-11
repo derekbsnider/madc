@@ -15,5 +15,4 @@ if ( arg[i] == ' ' )
     i = i + 1;
 long len = ui::text_line_len(w, doc, n);
 ui::text_replace(w, doc, off, len, arg + i);
-ui::set(w, doc, "modified", true);
 return format("{}: {}", n, arg + i);

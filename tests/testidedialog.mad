@@ -64,7 +64,7 @@ int main()
     ui::get(bufs, w, es, "buffers");
     long adoc = S.active(doc);
     var ap;
-    ui::get(ap, w, adoc, "path");
+    buffer_path(ap, w, adoc);
     println("opened: buffers={} active-path={}", php::count(bufs), ap);
 
     // Save As parks a save request carrying the current path as the start.
@@ -77,7 +77,7 @@ int main()
     // row follow, and the file exists with the buffer's text.
     ev_dialog(e, "save", "madc_ide_dialog_copy.mad");
     S.apply_ide_event(adoc, e);
-    ui::get(ap, w, adoc, "path");
+    buffer_path(ap, w, adoc);
     ui::get(bufs, w, es, "buffers");
     var row = bufs[es_int(w, es, "bufidx", 0)];
     var copy;

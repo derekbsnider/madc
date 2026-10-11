@@ -209,7 +209,7 @@ long lsp_doc_for(IdeSession &S, long doc, var &tdoc)
     long es = S.es;
     long cur = S.active(doc);
     var curp;
-    ui::get(curp, w, cur, "path");
+    buffer_path(curp, w, cur);
     var curc;
     madc::canonical_path(curc, curp.is_null() ? "" : curp.c_str());
     if ( curc == path )
@@ -222,7 +222,7 @@ long lsp_doc_for(IdeSession &S, long doc, var &tdoc)
 void lsp_doc_uri(var &out, long w, long doc)
 {
     var p;
-    ui::get(p, w, doc, "path");
+    buffer_path(p, w, doc);
     var path = "";
     if ( !p.is_null() )
 	path = p;

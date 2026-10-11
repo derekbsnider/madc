@@ -68,10 +68,11 @@ int main()
     php::file_get_contents(disk, "VERSION");
     var seat0;
     git_seat(seat0, w, es, doc);
-    ui::set(w, doc, "modified", true);
+    ui::text_insert(w, doc, 0, " ");	// dirty: modified is derived from the
+    ui::text_erase(w, doc, 0, 1);	// version, the text left as it was
     var seat1;
     git_seat(seat1, w, es, doc);
-    ui::set(w, doc, "modified", false);
+    ui::doc_mark_saved(w, doc);
     println("seat: branch={} clean={} edited={}", strlen(seat0.c_str()) > 0,
 	    rust::ends_with(seat0.c_str(), "*") == 0, rust::ends_with(seat1.c_str(), "*") != 0);
 

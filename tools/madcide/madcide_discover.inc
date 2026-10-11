@@ -96,7 +96,7 @@ void session_documents(var &out, IdeSession &S, long doc)
     if ( bufs.is_null() || php::count(bufs) == 0 )
     {
 	var p;
-	ui::get(p, w, doc, "path");
+	buffer_path(p, w, doc);
 	if ( !p.is_null() )
 	{
 	    var c;

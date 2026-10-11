@@ -249,12 +249,12 @@ int main()
     ev_text(e, "junk ");
     S.apply_ide_event(doc, e);
     var m;
-    ui::get(m, w, doc, "modified");
+    m = ui::doc_modified(w, doc);
     println("edited: caret={} modified={} size={}",
 	    es_int(w, es, "caret", -1), m.as_boolean(), ui::text_size(w, doc));
     ev_action(e, "undo", "^_");
     S.apply_ide_event(doc, e);
-    ui::get(m, w, doc, "modified");
+    m = ui::doc_modified(w, doc);
     println("undo: caret={} modified={} size={}",
 	    es_int(w, es, "caret", -1), m.as_boolean(), ui::text_size(w, doc));
     ev_action(e, "undo", "^_");
@@ -443,7 +443,7 @@ int main()
     var kept;
     ui::text(kept, w, fwd);
     var mflag;
-    ui::get(mflag, w, fwd, "modified");
+    mflag = ui::doc_modified(w, fwd);
     println("editfile-again: {} kept={} modified={}", msg,
 	    kept == "fresh buffer" ? 1 : 0, mflag.as_boolean() ? 1 : 0);
     ev_action(e, "editfile", "^k e");		// home for gate 3
@@ -488,7 +488,7 @@ int main()
     S.apply_ide_event(doc, e);	// enter's MEANING is @project data
     long pdoc = active_doc(w, es, doc);
     var ppath;
-    ui::get(ppath, w, pdoc, "path");
+    buffer_path(ppath, w, pdoc);
     println("project-open: switched={} path={} closed={}",
 	    pdoc != doc ? 1 : 0, ppath, project_active(w, es) ? 0 : 1);
     ev_action(e, "project", "^p");	// open again ...
@@ -777,7 +777,7 @@ int main()
     S.apply_ide_event(doc, e);
     long sdoc = active_doc(w, es, doc);
     var spath;
-    ui::get(spath, w, sdoc, "path");
+    buffer_path(spath, w, sdoc);
     println("proj-open2: path={} closed={}", spath,
 	    project_active(w, es) ? 0 : 1);
     ev_action(e, "editfile", "^k e");	// to the ast5 buffer (a non-member)
@@ -876,7 +876,7 @@ int main()
     S.apply_ide_event(doc, e);
     long gdoc = active_doc(w, es, doc);
     var gpath;
-    ui::get(gpath, w, gdoc, "path");
+    buffer_path(gpath, w, gdoc);
     println("proj-goto: path={} switched={}", gpath, gdoc != doc ? 1 : 0);
     ev_choose(e, 3, "bld-proj-run");	// red project: the run refuses
     S.apply_ide_event(gdoc, e);
@@ -1425,7 +1425,7 @@ int main()
     ui::get(msg, w, es, "msg");
     println("shell-headless: {}", msg);
 
-    ui::get(m, w, doc, "modified");
+    m = ui::doc_modified(w, doc);
     println("v2-restored: size={} modified={}", ui::text_size(w, doc),
 	    m.as_boolean());
 
@@ -1492,7 +1492,7 @@ int main()
     ev_action(e, "view", "^k n");	// c11 -> original
     S.apply_ide_event(doc, e);
     lens_name(vname, w, es);
-    ui::get(m, w, doc, "modified");
+    m = ui::doc_modified(w, doc);
     S.compose_ide_tree(tree, doc);
     var bed;
     bed = tree["children"][1];
@@ -1535,7 +1535,7 @@ int main()
     var kname = "source";
     var kbad = "sourse";
     println("view-kinds: doc-kind={} source={} misspelt-kind={} misspelt-lang={} ext-cpp={} ext-none={} caret={}",
-	    madc::file_kind_name(doc_kind(w, doc)), view_of(kname), view_of(kbad),
+	    madc::file_kind_name(ui::doc_kind(w, doc)), view_of(kname), view_of(kbad),
 	    madc::file_kind_of("mc1l"),
 	    madc::file_kind_of_path("x/y.cpp") == madc::fkCPP ? 1 : 0,
 	    madc::file_kind_of_path("noext"), es_int(w, es, "caret", -1));
@@ -1619,7 +1619,7 @@ int main()
     println("quit-confirm: cont={} row={}", cont ? 1 : 0, qrow);
     ev_text(e, "n");
     cont = S.apply_ide_event(doc, e);
-    ui::get(m, w, doc, "modified");
+    m = ui::doc_modified(w, doc);
     println("quit-cancel: cont={} prompt-off={} modified={}", cont ? 1 : 0,
 	    prompt_active(w, es) ? 0 : 1, m);
     ev_action(e, "save", "^k s");
@@ -2050,7 +2050,7 @@ int main()
     ev_key(be, "enter");
     S.apply_ide_event(active_doc(w, es, doc), be);
     var bsp;
-    ui::get(bsp, w, active_doc(w, es, doc), "path");
+    buffer_path(bsp, w, active_doc(w, es, doc));
     println("bufsel-name: path={}", bsp);
 
     // -- polish P3b-1: Run in a window — the live parse runs in a CHILD

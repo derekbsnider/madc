@@ -100,42 +100,47 @@ bool bind_lineed_verbs(long w)
     return true;
 }
 
-// A document's PATH and its KIND move together (client-server design §2.1:
-// file extension -> kind is an INPUT-boundary table, converted ONCE when
-// the file opens or is renamed — madc::file_kind_of_path, the engine's one
-// table; the code rides the document as "kind" and is never re-derived
-// from the name at use). ONE owner for the pair — every open, new-file and
-// save-as site calls it; a view buffer is not a document and keeps only a
-// display path.
-void doc_set_path(long w, long doc, const char *path)
-{
-    ui::set(w, doc, "path", path);
-    ui::set(w, doc, "kind", madc::file_kind_of_path(path));
-}
-
-// The document's kind (madc::fk*); madc::fkUNKNOWN for a document no open
-// site stamped.
-long doc_kind(long w, long doc)
-{
-    var k;
-    ui::get(k, w, doc, "kind");
-    if ( k.is_null() )
-	return madc::fkUNKNOWN;
-    return k.as_integer();
-}
+// A DOCUMENT is madc's document component (ui::doc_*): its path, its kind
+// (stamped from the path when it opens or is renamed — madc's one file-kind
+// table; never re-derived from the name at use), whether it is read-only,
+// and its saved state (modified is DERIVED: the text's version differs from
+// the one last saved). A VIEW text — a panel's transcript ([repl], [build],
+// [terminal]), the Help buffer, a git view, an input field, a lens's render
+// buffer — is no document: a text under a display path only (bag "path"),
+// never looked up on disk, with no kind and no saved state.
 
 // An UNTITLED document has no path: the buffer a launch without a file opens
 // (Thonny's <untitled>, JOE's Unnamed). Its text is real and it lexes and
-// parses; a save asks for a name first.
+// parses; a save asks for a name first. A view text is named, never untitled.
 bool doc_untitled(long w, long doc)
 {
+    if ( !ui::doc_is(w, doc) )
+	return false;
     var p;
-    ui::get(p, w, doc, "path");
-    return p.is_null() || strlen(p.c_str()) == 0;
+    ui::doc_path(p, w, doc);
+    return strlen(p.c_str()) == 0;
 }
 
-// The name a document goes by: its path, or `untitled` for a document that
-// has none. The unit name a parse, a lens and a REPL run give it, the status
+// The path a buffer carries: a document's file (null when untitled), a view
+// text's display path. Every "the buffer's path" read asks here.
+void buffer_path(var &out, long w, long buf)
+{
+    if ( !ui::doc_is(w, buf) )
+    {
+	ui::get(out, w, buf, "path");
+	return;
+    }
+    var p;
+    ui::doc_path(p, w, buf);
+    var none;
+    if ( strlen(p.c_str()) > 0 )
+	out = p;
+    else
+	out = none;
+}
+
+// The name a buffer goes by: its path, or `untitled` for a document that has
+// none. The unit name a parse, a lens and a REPL run give it, the status
 // line's %n and the tab's title; where a FILE is meant, the path is read.
 void doc_name(var &out, long w, long doc)
 {
@@ -144,42 +149,38 @@ void doc_name(var &out, long w, long doc)
 	out = "untitled";
 	return;
     }
-    ui::get(out, w, doc, "path");
+    buffer_path(out, w, doc);
 }
 
-// THE document entity: `text` under `path`, unmodified — every document
-// either editor holds is minted here. No file is read: a loaded file's
-// text arrives from setup_document; a new file's and a view buffer's
-// ([repl], [build], [terminal]) text is empty, and a view's name is a
-// display path, never looked up on disk (a file named `[build]` in the
-// working directory is not the build pane). An empty `path` mints the
-// UNTITLED document: no path, and the madc dialect's kind, the language a
-// madc editor's unnamed buffer is written in (Save As stamps the real one).
-long new_document(long w, const char *path, const char *text)
+// THE empty document under `path`, unmodified — every document either
+// editor holds that is not read from its file is minted here (a new file's,
+// the untitled buffer's). An empty `path` mints the UNTITLED document, in
+// the madc dialect's kind (Save As stamps the real one).
+long new_document(long w, const char *path)
 {
-    long doc = ui::create(w, "document");
-    ui::text_load(w, doc, text);
-    long dialect = madc::fkMADC;	// a long: ui::set's overloads take int64_t or double
+    long doc = ui::doc_new(w);
     if ( strlen(path) > 0 )
-	doc_set_path(w, doc, path);
-    else
-	ui::set(w, doc, "kind", dialect);
-    ui::set(w, doc, "modified", false);
+	ui::doc_set_path(w, doc, path);
     return doc;
 }
 
-// Create the document entity and load its file: the setup BOTH editors
-// share (lined's line mode and vised's TUI mode edit the same document
-// shape). 0 = the file could not be read.
+// THE view text named `name` (a display path), empty.
+long new_view_text(long w, const char *name)
+{
+    long t = ui::create(w, "view-buffer");
+    ui::text_load(w, t, "");
+    ui::set(w, t, "path", name);
+    return t;
+}
+
+// Open `path` as a document: the setup BOTH editors share (lined's line
+// mode and vised's TUI mode edit the same document). 0 = the file could not
+// be read (a refused read leaves no orphan document in the world).
 long setup_document(long w, const char *path, bool ro)
 {
-    var seed;
-    if ( !php::file_get_contents(seed, path) )
-	return 0;		// read first: a refused read leaves no
-				// orphan document in the world
-    long doc = new_document(w, path, seed.c_str());
-    if ( ro )
-	ui::set(w, doc, "read_only", true);
+    long doc = ui::doc_open(w, path);
+    if ( doc != 0 && ro )
+	ui::doc_set_read_only(w, doc, true);
     return doc;
 }
 

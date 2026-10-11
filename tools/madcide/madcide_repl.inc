@@ -110,7 +110,6 @@ void repl_set_input(long w, long es, const char *text)
     var t = text;
     long rin = repl_input_doc(w, es);
     ui::text_load(w, rin, t.c_str());
-    ui::set(w, rin, "modified", false);
     field_reset(w, rin, strlen(t.c_str()));
 }
 
@@ -930,7 +929,7 @@ bool repl_run_payload(long w, long es, var &r)
     if ( current )
     {
 	doc = active_doc(w, es, 0);
-	ui::get(p, w, doc, "path");
+	buffer_path(p, w, doc);
 	if ( p.is_null() || strlen(p.c_str()) == 0 )
 	{
 	    repl_feed(w, es, "the buffer has no file name (save it first)\n");

@@ -47,7 +47,6 @@ int main()
     show("new d");
     long d = active_doc(w, es, doc);
     ed_text_insert(w, es, d, 0, "# d\n");
-    ui::set(w, d, "modified", true);
     bool cont = true;
     S.command(d, cmdSAVE, "", cont);
     show("save d");

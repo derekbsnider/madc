@@ -115,7 +115,8 @@ int main()
 		println("PROMPT dismissed: {} prompt-off={}", ev["text"],
 			prompt_active(w, es) ? 0 : 1);
 		stage = 4;
-		ui::set(w, doc, "modified", true);
+		ui::text_insert(w, doc, 0, " ");	// dirty: modified is derived
+		ui::text_erase(w, doc, 0, 1);	// from the version, the text as it was
 		ev_action(e, "quit");		// ^K Q on a dirty buffer: the question
 		S.apply_ide_event(doc, e);
 		var tree;
@@ -133,7 +134,7 @@ int main()
 	    else
 	    {
 		var m;
-		ui::get(m, w, doc, "modified");
+		m = ui::doc_modified(w, doc);
 		println("PROMPT answered: {} prompt-off={} modified={}", ev["text"],
 			prompt_active(w, es) ? 0 : 1, m.as_boolean() ? 1 : 0);
 		break;

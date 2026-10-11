@@ -47,7 +47,7 @@ void show(const char *label, IdeSession &S, long doc)
     if ( selection_range(r, S.w, S.es, caret) )
 	sel = format("{}..{}", r["lo"], r["hi"]);
     var mod;
-    ui::get(mod, S.w, doc, "modified");
+    mod = ui::doc_modified(S.w, doc);
     println("{}: [{}] caret={} sel={} modified={}", label, shown, caret, sel,
 	    !mod.is_null() && mod.as_boolean() ? 1 : 0);
 }

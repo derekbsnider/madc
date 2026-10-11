@@ -40,7 +40,7 @@ int main()
     {
 	var r = bufs[i];
 	println("multi-buffer {}: {} ro={}", i, r["path"],
-		es_flag(w, r["doc"].as_integer(), "read_only") ? 1 : 0);
+		ui::doc_read_only(w, r["doc"].as_integer()) ? 1 : 0);
     }
     println("multi-active: {} adoc-first={}", es_int(w, es, "bufidx", -1),
 	    es_int(w, es, "adoc", 0) == doc ? 1 : 0);

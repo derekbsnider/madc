@@ -53,16 +53,16 @@ int main()
     long du = active_doc(S.w, S.es, db);
     type(S, du, "x");
     println("before: a={} b={} untitled={} active-untitled={}",
-	    doc_modified(S.w, da) ? 1 : 0, doc_modified(S.w, db) ? 1 : 0,
-	    doc_modified(S.w, du) ? 1 : 0, du != da && du != db ? 1 : 0);
+	    ui::doc_modified(S.w, da) ? 1 : 0, ui::doc_modified(S.w, db) ? 1 : 0,
+	    ui::doc_modified(S.w, du) ? 1 : 0, du != da && du != db ? 1 : 0);
 
     S.post(du, cmdSAVEALL);
     msg("saveall", S);
     disk("disk-a", pa);
     disk("disk-b", pb);
     println("after: a={} b={} untitled={} active={}",
-	    doc_modified(S.w, da) ? 1 : 0, doc_modified(S.w, db) ? 1 : 0,
-	    doc_modified(S.w, du) ? 1 : 0,
+	    ui::doc_modified(S.w, da) ? 1 : 0, ui::doc_modified(S.w, db) ? 1 : 0,
+	    ui::doc_modified(S.w, du) ? 1 : 0,
 	    active_doc(S.w, S.es, da) == du ? "untitled" : "moved");
 
     S.post(du, cmdSAVEALL);

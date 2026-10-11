@@ -1705,7 +1705,7 @@ void menu_context(var &ctx, long w, long es, long doc, long nav)
     var bufs;
     ui::get(bufs, w, es, "buffers");
     bool editable = es_flag(w, es, "editable");
-    bool dirty = doc_modified(w, doc);
+    bool dirty = ui::doc_modified(w, doc);
     bool selection = es_int(w, es, "mark", -1) >= 0;
     bool split = window_count(w, es) >= 2;
     bool buffers = !bufs.is_null() && php::count(bufs) > 1;
@@ -1989,7 +1989,7 @@ void span_rows_append(var &hs, long w, long es, long doc, var &rows, long line0)
 void refresh_text_spans(long w, long es, long doc)
 {
     var rows = {};
-    if ( doc_kind(w, doc) == madc::fkMARKDOWN )
+    if ( ui::doc_kind(w, doc) == madc::fkMARKDOWN )
     {
 	var t;
 	ui::text(t, w, doc);
@@ -2000,7 +2000,7 @@ void refresh_text_spans(long w, long es, long doc)
 
 void refresh_spans(long w, long es, long doc, long h)
 {
-    if ( !kind_reaches_compiler(doc_kind(w, doc)) )
+    if ( !kind_reaches_compiler(ui::doc_kind(w, doc)) )
     {
 	refresh_text_spans(w, es, doc);	// no parse: the text kind's own colour
 	return;
@@ -2016,7 +2016,7 @@ void refresh_spans(long w, long es, long doc, long h)
 // full parse's spans replace these when the handle lands.
 void lex_first_spans(long w, long es, long doc)
 {
-    if ( !kind_reaches_compiler(doc_kind(w, doc)) )
+    if ( !kind_reaches_compiler(ui::doc_kind(w, doc)) )
     {
 	// Not the compiler's text (madcide_lang.inc): no C colour on prose —
 	// the kind's own (refresh_text_spans), which also replaces the
@@ -2043,7 +2043,7 @@ long ensure_phandle(long w, long es, long doc)
     // A kind that is not the compiler's never gets a parse (a README is not
     // C): no handle, so no diagnostics, outline or compiler colour; every
     // caller reads 0 as "no parse", as after a failed open.
-    if ( !kind_reaches_compiler(doc_kind(w, doc)) )
+    if ( !kind_reaches_compiler(ui::doc_kind(w, doc)) )
 	return 0;
     long h = es_int(w, doc, "phandle", 0);
     if ( h != 0 )
@@ -2228,7 +2228,7 @@ void colour_catch_up(long w, long es, long doc)
     ui::set(w, es, "cdirty_hi", none);
     if ( cd != doc )
 	return;				// another buffer's edits (a field's): not on show here
-    if ( !kind_reaches_compiler(doc_kind(w, doc)) )
+    if ( !kind_reaches_compiler(ui::doc_kind(w, doc)) )
     {
 	refresh_text_spans(w, es, doc);	// a text kind's own colour, as check does
 	return;
@@ -2322,7 +2322,7 @@ long reparse_buffer(long w, long es, long doc)
 // compiler.
 long refresh_diags(long w, long es, long doc)
 {
-    if ( !kind_reaches_compiler(doc_kind(w, doc)) )
+    if ( !kind_reaches_compiler(ui::doc_kind(w, doc)) )
     {
 	var none = {};		// a text kind has no compiler diagnostics
 	ui::set(w, es, "diags", none);
@@ -2369,7 +2369,7 @@ void show_output(long w, long es)
 // The check ACTION: refresh + report + show the pane.
 void run_check(long w, long es, long doc)
 {
-    long k = doc_kind(w, doc);
+    long k = ui::doc_kind(w, doc);
     if ( !kind_reaches_compiler(k) )
     {
 	refresh_diags(w, es, doc);
@@ -2726,7 +2726,7 @@ long ensure_focused_view(long w, long es, long doc)
     var v;
     if ( view_row(v, w, es, id) )
 	return id;
-    id = view_new(w, es, doc, viewSOURCE, doc_kind(w, doc));
+    id = view_new(w, es, doc, viewSOURCE, ui::doc_kind(w, doc));
     ui::set(w, es, "fview", id);
     return id;
 }
@@ -2871,7 +2871,7 @@ void status_expand(var &out, var &segs, long w, long es, long doc, long caret,
 	}
 	if ( e == 'm' )
 	{
-	    if ( doc_modified(w, doc) )
+	    if ( ui::doc_modified(w, doc) )
 		seat = "(Modified) ";
 	}
 	if ( e == 'R' )
@@ -3280,7 +3280,6 @@ void insert_file(long w, long es, long doc, long caret, const char *path)
     long tn = strlen(tc);
     ed_text_insert(w, es, doc, caret, tc);
     ui::set(w, es, "caret", caret + tn);
-    ui::set(w, doc, "modified", true);
     ui::set(w, es, "msg", format("Inserted {} bytes.", tn));
 }
 
@@ -3366,7 +3365,6 @@ long replace_one(long w, long es, long doc, bool checkpoint)
     ui::set(w, es, "rstop", shift_offset(stop, at, m, false));
     ui::set(w, es, "rcount", es_int(w, es, "rcount", 0) + 1);
     ui::set(w, es, "caret", at + m);
-    ui::set(w, doc, "modified", true);
     return at + m;
 }
 
@@ -3763,7 +3761,6 @@ void block_copy(long w, long es, long doc, long caret)
     var blk = perl::substr(t, lo, n);
     edit_checkpoint(w, es, doc, caret);
     ed_text_insert(w, es, doc, caret, blk.c_str());
-    ui::set(w, doc, "modified", true);
     // The markers past the insertion follow the text so the block keeps
     // highlighting the ORIGINAL: the anchor registry (shift_anchors, in
     // ed_text_insert) shifts mark / bend by the inserted length — this used
@@ -3802,7 +3799,6 @@ void block_move(long w, long es, long doc, long caret)
     ui::set(w, es, "caret", at);
     ui::set(w, es, "mark", -1);
     ui::set(w, es, "bend", -1);
-    ui::set(w, doc, "modified", true);
 }
 
 void clip_publish(long w, long es);	// the clipboard commands, below
@@ -3938,7 +3934,6 @@ void delete_line(long w, long es, long doc, long caret)
     edit_checkpoint(w, es, doc, caret);
     ed_text_erase(w, es, doc, start, n);
     ui::set(w, es, "caret", start);
-    ui::set(w, doc, "modified", true);
 }
 
 void delete_word(long w, long es, long doc, long caret)
@@ -3955,7 +3950,6 @@ void delete_word(long w, long es, long doc, long caret)
 	return;
     edit_checkpoint(w, es, doc, caret);
     ed_text_erase(w, es, doc, caret, e - caret);
-    ui::set(w, doc, "modified", true);
 }
 
 // ---- the lens seam (AST-3, re-expressed on Views in V1): read-only code
@@ -4059,7 +4053,7 @@ bool lens_show(long w, long es, long doc, long lang)
     doc_name(p, w, doc);
     var lname;
     lens_lang_name(lname, lang);
-    if ( lens_conceals(lang) && doc_kind(w, doc) != lang )
+    if ( lens_conceals(lang) && ui::doc_kind(w, doc) != lang )
     {
 	ui::set(w, es, "msg", format("View: {} applies to a {} buffer.", lname,
 				     madc::file_kind_name(lang)));
@@ -4152,7 +4146,7 @@ void view_row_source(long w, long es, var &v)
 {
     long subject = v["subject"].as_integer();
     v["kind"] = viewSOURCE;
-    v["lang"] = doc_kind(w, subject);
+    v["lang"] = ui::doc_kind(w, subject);
     v["generator"] = genNONE;
     v["vbuf"] = subject;
     var nomap = {};
@@ -4387,7 +4381,7 @@ long make_code_view(long w, long es, long subject, long lang)
     ui::text(t, w, subject);
     var p;
     doc_name(p, w, subject);
-    if ( lens_conceals(lang) && doc_kind(w, subject) != lang )
+    if ( lens_conceals(lang) && ui::doc_kind(w, subject) != lang )
 	return 0;
     var emitted;
     var vmap;			// V5: the source↔display coordinate map
@@ -4416,13 +4410,13 @@ long make_history_view(long w, long es, long doc, long n)
 {
     var t;
     clog_replay(t, w, doc, n);
-    long id = view_new(w, es, doc, viewSOURCE, doc_kind(w, doc));
+    long id = view_new(w, es, doc, viewSOURCE, ui::doc_kind(w, doc));
     var v;
     view_row(v, w, es, id);
     long vd = ui::create(w, "view-buffer");
     ui::text_load(w, vd, t.c_str());
     var p;
-    ui::get(p, w, doc, "path");
+    buffer_path(p, w, doc);
     ui::set(w, vd, "path", p);
     v["revision"] = n;
     v["generator"] = genNONE;
@@ -4462,16 +4456,16 @@ long open_buffer_doc(var &note, long w, const char *path0, bool ro)
     note = "";
     if ( strlen(p.c_str()) == 0 )
     {
-	long untitled = new_document(w, "", "");
+	long untitled = new_document(w, "");
 	if ( ro )
-	    ui::set(w, untitled, "read_only", true);
+	    ui::doc_set_read_only(w, untitled, true);
 	return untitled;
     }
     if ( !php::file_exists(p) )
     {
-	long fresh = new_document(w, p.c_str(), "");
+	long fresh = new_document(w, p.c_str());
 	if ( ro )
-	    ui::set(w, fresh, "read_only", true);
+	    ui::doc_set_read_only(w, fresh, true);
 	note = format("New file {}.", p);
 	return fresh;
     }
@@ -4506,7 +4500,7 @@ long buffer_view(long w, long es, long idx)
     if ( !v.is_null() && v.as_integer() != 0 )
 	return v.as_integer();
     long vid = view_new(w, es, r["doc"].as_integer(), viewSOURCE,
-			doc_kind(w, r["doc"].as_integer()));
+			ui::doc_kind(w, r["doc"].as_integer()));
     r["view"] = vid;
     bufs[idx] = r;
     ui::set(w, es, "buffers", bufs);
@@ -4574,7 +4568,7 @@ void push_buffer_row(long w, long es, long nd, const char *path)
 	var fresh = {};
 	bufs = fresh;
     }
-    long vid = view_new(w, es, nd, viewSOURCE, doc_kind(w, nd));	// the tab's
+    long vid = view_new(w, es, nd, viewSOURCE, ui::doc_kind(w, nd));	// the tab's
 				// View: the source View over its document
     var row = { "doc": nd, "caret": 0, "mark": -1, "bend": -1, "view": vid };
     if ( strlen(path) > 0 )
@@ -4589,7 +4583,7 @@ void push_buffer_row(long w, long es, long nd, const char *path)
 // its panel. The one creator of one; doc_is_panel_buffer reads the mark.
 long new_panel_buffer(long w, long es, const char *name)
 {
-    long nd = new_document(w, name, "");
+    long nd = new_view_text(w, name);
     ui::set(w, nd, "panel", 1);
     push_buffer_row(w, es, nd, name);
     return nd;
@@ -4627,7 +4621,7 @@ long help_doc(long w, long es)
     long existing = help_doc_if_any(w, es);
     if ( existing != 0 )
 	return existing;
-    long nd = new_document(w, "[help]", "");
+    long nd = new_view_text(w, "[help]");
     ui::set(w, nd, "help", 1);
     ui::set(w, nd, "read_only", true);
     push_buffer_row(w, es, nd, "[help]");
@@ -4664,7 +4658,7 @@ void ensure_buffer_table(long w, long es, long doc)
 	return;
     var seed = {};
     var op;
-    ui::get(op, w, doc, "path");
+    buffer_path(op, w, doc);
     long lv = ensure_focused_view(w, es, doc);	// the live View too
     seed[] = { "doc": doc, "path": op, "caret": es_int(w, es, "caret", 0),
 	       "mark": -1, "bend": -1, "view": lv };
@@ -5033,7 +5027,7 @@ void proj_launch_path(var &out, long w, long es, long doc)
 	out = lp;
 	return;
     }
-    ui::get(out, w, doc, "path");
+    buffer_path(out, w, doc);
 }
 
 // The launch has no file (an untitled launch): nothing anchors the implicit
@@ -5359,7 +5353,7 @@ void proj_addcur(long w, long es, long doc)
     if ( untitled_refused(w, es, doc, "a project member") )
 	return;
     var p;
-    ui::get(p, w, doc, "path");
+    buffer_path(p, w, doc);
     proj_add(w, es, doc, p.c_str());
 }
 
@@ -5546,7 +5540,7 @@ void project_rows(long w, long es, long doc)
 	    var bp = b["path"];
 	    if ( !bp.is_null() && same_file(bp.c_str(), p.c_str()) )
 	    {
-		if ( doc_modified(w, b["doc"].as_integer()) )
+		if ( ui::doc_modified(w, b["doc"].as_integer()) )
 		    mk = "*";
 	    }
 	}
@@ -5568,7 +5562,7 @@ void project_rows(long w, long es, long doc)
 	if ( fn > 0 && perl::index(lp.c_str(), lf.c_str()) < 0 )
 	    continue;
 	var mk = " ";
-	if ( doc_modified(w, b["doc"].as_integer()) )
+	if ( ui::doc_modified(w, b["doc"].as_integer()) )
 	    mk = "*";
 	rows[] = { "path": p, "tag": "open",
 		   "content": format("o{} {}", mk, p) };
@@ -5806,7 +5800,6 @@ void vi_span_del(long w, long es, long doc, long lo, long hi)
     edit_checkpoint(w, es, doc, lo);
     ed_text_erase(w, es, doc, lo, hi - lo);
     ui::set(w, es, "caret", lo);
-    ui::set(w, doc, "modified", true);
 }
 
 // Toggle modal editing (the palette's `v` row, or a profile's own
@@ -6034,7 +6027,7 @@ bool modes_event(long w, long es, long doc, long caret, var &ev)
 void build_subst(var &out, const char *cmd, long w, long es, long doc)
 {
     var p;
-    ui::get(p, w, doc, "path");
+    buffer_path(p, w, doc);
     var base;
     path_sans_ext(base, p);	// THE {base} rule, shared with the
 				// manifest default
@@ -6092,7 +6085,6 @@ void append_build_line(long w, long es, long bdoc, const char *text)
     // another doc's bytes would corrupt them. (check-madcide-single-owners
     // allowlists exactly this line.)
     ui::text_insert(w, bdoc, ui::text_size(w, bdoc), line.c_str());
-    ui::set(w, bdoc, "modified", false);
 }
 
 // The capture pump — a cooperative task (stage-2's background_parse
@@ -6241,7 +6233,6 @@ void term_feed_text(long w, long tdoc, const char *text)
     // reaches them.
     var t = format("\x1b[0m{}", text);	// ring discipline: owned
     ui::term_feed(w, tdoc, t.c_str(), strlen(t.c_str()));
-    ui::set(w, tdoc, "modified", false);
 }
 
 // The pump: the MT-4b select over {stop, the pty's readable bytes, the
@@ -6292,7 +6283,6 @@ void term_pump(long w, long es, long tdoc, long stopc, long inc)
 		if ( b == "\r" )
 		    b = "\n";
 		ui::term_feed(w, tdoc, b.c_str(), strlen(b.c_str()));
-		ui::set(w, tdoc, "modified", false);
 		tc.write(b);
 	    }
 	    continue;
@@ -6303,7 +6293,6 @@ void term_pump(long w, long es, long tdoc, long stopc, long inc)
 	if ( n <= 0 )
 	    break;			// EOF: the program ended
 	ui::term_feed(w, tdoc, buf, n);
-	ui::set(w, tdoc, "modified", false);
     }
     tc.close();
     long xc = tc.exit_status();
@@ -6489,7 +6478,7 @@ void field_reset(long w, long fdoc, long caret)
 // selection kept on it while the field is not live.
 long field_document(long w, const char *name)
 {
-    long d = new_document(w, name, "");
+    long d = new_view_text(w, name);
     ui::set(w, d, "field", true);
     field_reset(w, d, 0);
     return d;
@@ -6747,7 +6736,7 @@ void start_native_build(long w, long es, long doc, var &kind, var &outtmpl)
 	return;
     }
     var p;
-    ui::get(p, w, doc, "path");
+    buffer_path(p, w, doc);
     var o;
     build_subst(o, outtmpl.c_str(), w, es, doc);
     ui::set(w, es, "nbdoc", doc);
@@ -6760,7 +6749,7 @@ void start_native_build(long w, long es, long doc, var &kind, var &outtmpl)
     ui::set(w, es, "buildlive", 1);
     show_output(w, es);
     go native_build_task(w, es);
-    if ( doc_modified(w, doc) )
+    if ( ui::doc_modified(w, doc) )
 	ui::set(w, es, "msg",
 		format("Building {} -> {} (live buffer: unsaved edits compile).", p, o));
     else
@@ -6843,7 +6832,7 @@ void save_as_ask(long w, long es, long doc, long dlg)
 {
     var cur = "";
     if ( !doc_untitled(w, doc) )
-	ui::get(cur, w, doc, "path");
+	buffer_path(cur, w, doc);
     if ( !dialog_request(w, es, dlg, "Save As", cur) )
 	start_prompt(w, es, dlg_prompt_label(dlg), dlg_prompt_mode(dlg));
 }
@@ -6878,7 +6867,7 @@ bool save_as(long w, long es, long doc, const char *path0)
     if ( strlen(p.c_str()) == 0 )
 	return true;
     bool untitled_launch = launch_untitled(w, es, doc);	// before the name moves
-    doc_set_path(w, doc, p.c_str());	// the kind follows the new name
+    ui::doc_set_path(w, doc, p.c_str());	// the kind follows the new name
     doc_forget_name(w, doc);
     long i = buffer_index_of(w, es, doc);
     if ( i >= 0 )
@@ -6906,7 +6895,7 @@ bool save_as_quit(long w, long es, long doc, const char *path0)
 	return true;
     if ( !save_as(w, es, doc, p.c_str()) )
 	return false;
-    if ( doc_modified(w, doc) )
+    if ( ui::doc_modified(w, doc) )
 	return true;			// the write failed; its message stands
     return do_verb(w, es, "q");
 }
@@ -6963,7 +6952,7 @@ void drop_buffer_row(long w, long es, long idx)
 		edit_checkpoint(w, es, d, es_int(w, es, "caret", 0));
 		ed_text_erase(w, es, d, 0, size);
 	    }
-	    ui::set(w, d, "modified", false);
+	    ui::doc_mark_saved(w, d);	// emptied and left clean
 	    ui::set(w, es, "caret", 0);
 	    select_clear(w, es);
 	    return;
@@ -7017,7 +7006,7 @@ void close_buffer(long w, long es, long doc)
     ui::get(bufs, w, es, "buffers");
     row = bufs[idx];
     long d = row["doc"].as_integer();
-    if ( !doc_modified(w, d) )
+    if ( !ui::doc_modified(w, d) )
     {
 	drop_buffer_row(w, es, idx);
 	return;
@@ -7038,7 +7027,7 @@ void close_all(long w, long es, long doc)
     ui::get(bufs, w, es, "buffers");
     long dirty = 0;
     for ( var b : bufs )
-	if ( doc_modified(w, b["doc"].as_integer()) )
+	if ( ui::doc_modified(w, b["doc"].as_integer()) )
 	    dirty = dirty + 1;
     ui::set(w, es, "closeidx", -1);
     if ( dirty == 0 )
@@ -7076,7 +7065,7 @@ void close_answer(long w, long es, long doc, long a)
 		return;
 	    }
 	    save_and_check(w, es, d);
-	    if ( doc_modified(w, d) )
+	    if ( ui::doc_modified(w, d) )
 		return;			// the write failed; its message stands
 	}
 	drop_buffer_row(w, es, idx);
@@ -7093,7 +7082,7 @@ void close_answer(long w, long es, long doc, long a)
 	var r = bufs2[i];
 	if ( doc_is_panel_buffer(w, r["doc"].as_integer()) )
 	    continue;
-	if ( a == cmdPYES && doc_modified(w, r["doc"].as_integer()) )
+	if ( a == cmdPYES && ui::doc_modified(w, r["doc"].as_integer()) )
 	    continue;			// untitled, or its write failed
 	drop_buffer_row(w, es, i);
 	ui::get(bufs2, w, es, "buffers");
@@ -7108,7 +7097,7 @@ void save_as_close(long w, long es, long doc, const char *path0)
     if ( strlen(p.c_str()) == 0 )
 	return;
     save_as(w, es, doc, p.c_str());
-    if ( doc_modified(w, doc) )
+    if ( ui::doc_modified(w, doc) )
 	return;
     long idx = buffer_index_of(w, es, doc);
     if ( idx >= 0 )
@@ -7569,7 +7558,7 @@ void build_choose(long w, long es, long doc, long option)
 // kind_family's (madcide_lang.inc), never an extension ladder.
 bool cxx_view_applies(long w, long es, long doc)
 {
-    long f = kind_family(doc_kind(w, doc));
+    long f = kind_family(ui::doc_kind(w, doc));
     return f == madc::fkC || f == madc::fkCPP;
 }
 
@@ -7586,7 +7575,7 @@ void cycle_view(long w, long es, long doc)
     var v;
     bool up = view_row(v, w, es, focused_view(w, es))
 	   && v["kind"].as_integer() == viewCODE;
-    long k = doc_kind(w, doc);
+    long k = ui::doc_kind(w, doc);
     if ( !up )
     {
 	if ( lens_conceals(k) )
@@ -7648,7 +7637,7 @@ bool save_quit(long w, long es, long doc)
     }
     if ( !do_verb(w, es, "w") )
 	return false;
-    if ( !doc_modified(w, doc) )
+    if ( !ui::doc_modified(w, doc) )
 	return do_verb(w, es, "q");
     return true;	// the save failed; its message stands
 }
@@ -7664,7 +7653,7 @@ bool save_and_check(long w, long es, long doc)
 	return true;
     }
     bool run = do_verb(w, es, "w");
-    if ( !doc_modified(w, doc) )
+    if ( !ui::doc_modified(w, doc) )
 	recent_note_doc(w, es, doc);	// written: File ▸ Recent Files
     refresh_diags(w, es, doc);
     return run;
@@ -7683,7 +7672,7 @@ void save_all(long w, long es, long doc)
     ui::get(bufs, w, es, "buffers");
     if ( bufs.is_null() || php::count(bufs) == 0 )
     {
-	if ( doc_modified(w, doc) )
+	if ( ui::doc_modified(w, doc) )
 	    save_and_check(w, es, doc);
 	else
 	    ui::set(w, es, "msg", "Nothing to save.");
@@ -7696,7 +7685,7 @@ void save_all(long w, long es, long doc)
     for ( var b : bufs )
     {
 	long d = b["doc"].as_integer();
-	if ( !doc_modified(w, d) )
+	if ( !ui::doc_modified(w, d) )
 	    continue;
 	if ( doc_untitled(w, d) )
 	{
@@ -7706,7 +7695,7 @@ void save_all(long w, long es, long doc)
 	ui::set(w, es, "adoc", d);
 	var out;
 	ui::act(out, w, es, "w", "");
-	if ( doc_modified(w, d) )
+	if ( ui::doc_modified(w, d) )
 	    failed = failed + 1;
 	else
 	{
@@ -7715,7 +7704,7 @@ void save_all(long w, long es, long doc)
 	}
     }
     ui::set(w, es, "adoc", active);
-    if ( saved > 0 && !doc_modified(w, active) )
+    if ( saved > 0 && !ui::doc_modified(w, active) )
 	refresh_diags(w, es, active);
     // The message names only what happened: saved, left untitled, refused.
     var m = "Nothing to save.";
@@ -8866,7 +8855,7 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 	    {
 		// JOE ^K Q: a dirty buffer asks JOE's question on the bottom
 		// line; the lineed q verb's refusal spelling stays lined's.
-		if ( doc_modified(w, doc) )
+		if ( ui::doc_modified(w, doc) )
 		{
 		    start_confirm(w, es, "Lose changes to this file (y,n,^C)?",
 				  "q!");
@@ -9873,7 +9862,7 @@ void compose_editor_flat(var &kids, long w, long es, var &ed, var &status,
 		if ( doc_is_help_buffer(w, b["doc"].as_integer()) )
 		    bn = "Help";		// the Help tab (help_doc), not its [help] name
 		var title = bn;
-		if ( doc_modified(w, b["doc"].as_integer()) )
+		if ( ui::doc_modified(w, b["doc"].as_integer()) )
 		    title = format("{}*", bn);
 		var tb = { "title": title, "action": "bufsel", "code": cmdBUFSEL };
 		tb["arg"] = format("{}", i);
@@ -10738,7 +10727,7 @@ long spawn_view_es(long w, long doc, const char *path, const char *profile = "")
 long IdeSession::spawn_view(long doc)
 {
     var dp;
-    ui::get(dp, w, doc, "path");
+    buffer_path(dp, w, doc);
     var bn;
     ui::get(bn, w, es, "bundle");
     return spawn_view_es(w, doc, dp.c_str(), bn.c_str());
@@ -10823,7 +10812,7 @@ bool IdeSession::parse_pending(long adoc)
 	// was parsed — one refresh in flight per client; it is not a
 	// paint-before-parse, so the client waits for input as usual.
 	if ( es_int(w, adoc, "crefresh_running", 0) == 0
-	  && kind_reaches_compiler(doc_kind(w, adoc))
+	  && kind_reaches_compiler(ui::doc_kind(w, adoc))
 	  && es_int(w, adoc, "textrev", 0) != es_int(w, adoc, "cparsed_rev", 0) )
 	{
 	    ui::set(w, adoc, "crefresh_running", 1);

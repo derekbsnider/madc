@@ -130,7 +130,7 @@ void testrun_fold(var &out, long w, long test, long since, long node)
 bool doc_synced_to_disk(long w, long doc)
 {
     var p;
-    ui::get(p, w, doc, "path");
+    buffer_path(p, w, doc);
     var disk;
     if ( !php::file_get_contents(disk, p.c_str()) )
 	return false;

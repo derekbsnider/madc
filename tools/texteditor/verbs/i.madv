@@ -14,5 +14,4 @@ if ( arg[i] == ' ' )
     i = i + 1;
 var t = format("{}\n", arg + i);
 ui::text_insert(w, doc, off, t.c_str());
-ui::set(w, doc, "modified", true);
 return "Inserted.";

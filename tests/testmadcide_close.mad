@@ -47,7 +47,7 @@ void table(const char *label, IdeSession &S)
 	var nm;
 	doc_name(nm, S.w, d);
 	s = format("{}{}{}{} ", s, i == cur ? "*" : "", php::basename(nm),
-		   doc_modified(S.w, d) ? "+" : "");
+		   ui::doc_modified(S.w, d) ? "+" : "");
 	if ( i == cur && d == act(S) )
 	    agree = true;
 	i = i + 1;

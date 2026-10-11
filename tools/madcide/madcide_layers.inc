@@ -94,13 +94,13 @@ long asset_layers_of(long w, long es, long doc, long node)
 {
     long layers = alTEXT;
     var p;
-    ui::get(p, w, doc, "path");
+    buffer_path(p, w, doc);
     bool file = path_is_asset(p);
     if ( !file && !doc_untitled(w, doc) )
 	return layers;		// a pseudo-buffer: bytes only
     if ( file )
 	layers = layers | alMANAGED;
-    if ( kind_compiler_range(doc_kind(w, doc)) )
+    if ( kind_compiler_range(ui::doc_kind(w, doc)) )
 	layers = layers | alLEXABLE | alPARSEABLE;
     if ( file && git_handle_of(w, es, doc) > 0 )
     {
@@ -169,7 +169,7 @@ void layer_refuse(var &out, var &nm, long miss, long have, long w, long doc)
 {
     var words;
     layer_words(words, have);
-    var kw = madc::file_kind_name(doc_kind(w, doc));
+    var kw = madc::file_kind_name(ui::doc_kind(w, doc));
     var has = php::implode(", ", words);
     var why = format("no {} layer for kind {} ('{}' needs it; this asset has: {})", layer_name(miss), kw, nm, has);
     tool_refuse(out, why);

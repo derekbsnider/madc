@@ -48,7 +48,8 @@ int main()
     println("right={}", php::trim(rdesc));
     // A pending chord lights the %k seat first; a modified buffer its badge.
     ui::set(w, es, "pendingchord", "^K");
-    ui::set(w, doc, "modified", true);
+    ui::text_insert(w, doc, 0, " ");	// dirty: modified is derived from the
+    ui::text_erase(w, doc, 0, 1);	// version, the text left as it was
     S.compose_ide_tree(tree, doc);
     left = tree["children"][0]["hints"]["items"]["left"];
     lseats = "";
@@ -60,7 +61,7 @@ int main()
     // renderer's status arm prepends one space). Aligning by strlen left it
     // one column short per extra byte.
     ui::set(w, es, "pendingchord", "");
-    doc_set_path(w, doc, "caf\xc3\xa9.mad");
+    ui::doc_set_path(w, doc, "caf\xc3\xa9.mad");
     ui::set(w, es, "vcols", 80);
     S.compose_ide_tree(tree, doc);
     var wide = tree["children"][0]["content"];

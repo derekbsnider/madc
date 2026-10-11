@@ -132,7 +132,7 @@ int main()
 	    println("TOOLBAR event action {} code={}", ev["action"],
 		    ev["action_code"].as_integer() == cmdSAVE ? 1 : 0);
 	    S.apply_ide_event(doc, ev);
-	    println("TOOLBAR saved={}", doc_modified(w, doc) ? 0 : 1);
+	    println("TOOLBAR saved={}", ui::doc_modified(w, doc) ? 0 : 1);
 	    break;
 	}
     }

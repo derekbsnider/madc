@@ -5,8 +5,10 @@
 # selection markers mark / bend, and — with presence — other clients'
 # carets) is reanchored across an edit by ONE primitive: shift_offset,
 # called in one pass by shift_anchors, both in
-# tools/texteditor/editor_events.inc (the ONE text-mutation owner
-# ed_text_insert / ed_text_erase route through). Until the client-server arc
+# tools/texteditor/editor_events.inc, run by the ONE edit follower
+# ed_text_changed (every change to a text reaches it as the session's edit
+# notification — madcide's verbs, madc's ex core, a tool; split arc 1D).
+# Until the client-server arc
 # V3a, block_copy carried a SECOND copy of the splice (a `mark + n` under a
 # `caret <= mark` guard) — a hand-rolled shifter is exactly where two copies
 # of the rule drift apart (the delimiter-tracker / key-owner precedent).
@@ -14,8 +16,9 @@
 # Rule: a stored selection anchor (mark / bend) is never SET to an
 # ARITHMETIC shift of itself outside the owner — a reanchor goes through
 # shift_offset. And the owner keeps the one primitive: shift_offset and
-# shift_anchors are each defined once, in editor_events.inc, and both
-# mutation wrappers call shift_anchors (the shift is never silently dropped).
+# shift_anchors are each defined once, in editor_events.inc, and the edit
+# follower calls shift_anchors for both halves of a splice (the shift is
+# never silently dropped).
 #
 # Negative controls: a synthetic duplicate shifter must FAIL the scan, and a
 # legitimate marker set (to the caret, to -1, restored from a snapshot) must
@@ -69,13 +72,24 @@ if [ -n "$others" ]; then
 	echo "$others" >&2
 	fail=1
 fi
-# both mutation wrappers wire the registry (the shift is never dropped)
-if ! grep -q 'shift_anchors(w, es, doc, off, strlen' "$OWNER"; then
-	echo "check-one-anchor-owner: ed_text_insert no longer calls shift_anchors" >&2
+# the edit follower wires the registry for a splice's insert and its erase
+# (the shift is never dropped), and it is subscribed
+if ! grep -q 'shift_anchors(w, es, doc, off, strlen(ins' "$OWNER"; then
+	echo "check-one-anchor-owner: ed_text_changed no longer shifts across an insert" >&2
 	fail=1
 fi
-if ! grep -q 'shift_anchors(w, es, doc, off, -n,' "$OWNER"; then
-	echo "check-one-anchor-owner: ed_text_erase no longer calls shift_anchors" >&2
+if ! grep -q 'shift_anchors(w, es, doc, off, -del,' "$OWNER"; then
+	echo "check-one-anchor-owner: ed_text_changed no longer shifts across an erase" >&2
+	fail=1
+fi
+if ! grep -q 'ui::doc_subscribe(w, ed_text_changed)' "$OWNER"; then
+	echo "check-one-anchor-owner: the edit follower is no longer subscribed" >&2
+	fail=1
+fi
+# the shift runs ONLY in the follower: a second caller is a second pass
+calls=$(grep -c 'shift_anchors(w, es, doc' "$OWNER")
+if [ "$calls" != "2" ]; then
+	echo "check-one-anchor-owner: shift_anchors called $calls times in $OWNER (want 2: the follower's insert and erase)" >&2
 	fail=1
 fi
 

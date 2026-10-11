@@ -70,7 +70,7 @@ bool kind_is_standard(long k)
 // buffer madc's (it compiles as madc, doc_standard).
 long edit_lang_kind(long w, long doc)
 {
-    long k = doc_kind(w, doc);
+    long k = ui::doc_kind(w, doc);
     if ( k == madc::fkUNKNOWN && doc_untitled(w, doc) )
 	k = madc::fkMADC;
     return k;
@@ -255,7 +255,7 @@ long doc_standard(long w, long doc)
     long s = lang_session(w);
     if ( s != 0 )
 	return s;
-    long fam = kind_family(doc_kind(w, doc));
+    long fam = kind_family(ui::doc_kind(w, doc));
     if ( fam == madc::fkUNKNOWN )
 	return 0;
     var rows;

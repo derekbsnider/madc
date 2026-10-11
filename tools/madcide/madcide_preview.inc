@@ -32,7 +32,7 @@ void preview_follow(long w, long es, long doc)
 {
     if ( !view_shown(w, es, viewMDPREVIEW) )
 	return;
-    if ( doc_kind(w, doc) != madc::fkMARKDOWN )
+    if ( ui::doc_kind(w, doc) != madc::fkMARKDOWN )
     {
 	if ( es_int(w, es, "mdpreviewdoc", 0) != 0 )
 	{

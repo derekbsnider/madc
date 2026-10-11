@@ -1,15 +1,11 @@
-// lineed verb: w — write the document back to its own path (the text
-// component is runtime-only; persistence is THIS verb's file write). The
+// lineed verb: w — write the document back to its own path (ui::doc_save:
+// the file write and "the file on disk IS this" in one). The
 // read-only rule is the shared availability check (checks/editable.madv).
 // `doc` = the subject document, resolved by the prepended _subject.madv
 var p;
-ui::get(p, w, doc, "path");
-if ( p.is_null() )
+ui::doc_path(p, w, doc);
+if ( strlen(p.c_str()) == 0 )
     return "No path.";
-var t;
-ui::text(t, w, doc);
-long nb = php::file_put_contents(p.c_str(), t);
-if ( nb < 0 )
+if ( !ui::doc_save(w, doc) )
     return "Write failed.";
-ui::set(w, doc, "modified", false);
-return format("Wrote {} bytes.", nb);
+return format("Wrote {} bytes.", ui::text_size(w, doc));

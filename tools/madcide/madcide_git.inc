@@ -624,7 +624,7 @@ bool git_view_file(var &out, long w, long es, long doc)
 	ui::set(w, es, "msg", format("Not a file: {}", out));
 	return false;
     }
-    ui::get(out, w, ad, "path");
+    buffer_path(out, w, ad);
     return true;
 }
 
@@ -637,11 +637,10 @@ void git_show_buffer(long w, long es, long from, var &name, var &text)
     long d = buffer_doc_named(w, es, name.c_str());
     if ( d == 0 )
     {
-	d = new_document(w, name.c_str(), "");
+	d = new_view_text(w, name.c_str());
 	push_buffer_row(w, es, d, name.c_str());
     }
     ui::text_load(w, d, text.c_str());
-    ui::set(w, d, "modified", false);
     ui::set(w, d, "read_only", true);
     long idx = buffer_index_of(w, es, d);
     if ( idx >= 0 && idx != es_int(w, es, "bufidx", 0) )

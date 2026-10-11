@@ -107,7 +107,7 @@ void compose_tree(var &root, long w, long es, long doc)
 
     var head;
     var p;
-    ui::get(p, w, doc, "path");
+    buffer_path(p, w, doc);
     compose_heading(head, w, es, doc, p.c_str());
     var ed;
     compose_edit_node(ed, w, es, doc, caret);
