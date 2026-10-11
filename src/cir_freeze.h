@@ -1130,6 +1130,9 @@ class CirFrozenSegment : public cir_segment_source
 	std::deque<cir_node> _nodes;		// materialized node storage (stable)
 
 	bool record_at(uint32_t idx, cir_frozen_record &out) const;
+	// A new compile: forget the memo of the nodes materialized for earlier
+	// units, keeping their storage (CirFrozenForest::begin_compile).
+	void begin_compile(c2m_ctx_t c2m);
 	cir_node *shell(uint32_t idx);		// phase A: node without children
 
 	// Shared resolve driver (standalone + forest): iterative shell pass
@@ -1559,11 +1562,17 @@ public:
 	bool previous_image_len(size_t &len) const
 		{ return _reader.previous_image_len(len); }
 
-	// Rebind the c2m used to materialize nodes. The parse-time bind forest is
-	// opened with c2m=NULL (it restores only types/PP, never node segments), so
-	// the session c2m is set here before the first node materialization (inline
-	// method body load at emit time). Safe iff no segment has materialized yet.
-	void set_c2m(c2m_ctx_t c2m) { _c2m = c2m; }
+	// A compile begins (CirBuilder::translate_module, before any node
+	// materializes): each translation unit's tree gets its OWN nodes. A node
+	// materialized for an EARLIER unit is already linked into that unit's tree
+	// (c2mir's lists are intrusive) and already checked; the memo handed the
+	// same node to the next unit, so a REPL entry re-touching a body the
+	// previous entry had instantiated (libc++'s inline operator<<(ostream&,
+	// const char*)) spliced it into a second tree and reported 21 garbage
+	// error nodes. Every segment forgets its memo — the earlier nodes stay
+	// allocated (a persistent c2m session's symbols still reference them) —
+	// and the next touch materializes afresh in this compile's c2m.
+	void begin_compile(c2m_ctx_t c2m);
 
 	// Rung 2a + S2 (R4-lite): ensure everything `want` admits is
 	// materialized — THE restore entry (forest_restore_decls). The first

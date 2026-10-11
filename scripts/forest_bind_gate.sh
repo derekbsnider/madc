@@ -963,6 +963,50 @@ grep -aq "fbgate_lv_b.h replays its skipped '#ifndef FBG_MC_X' arm" "$lv_log" \
 rm -rf "$lv_snap" "$lv_log" tmp/fbgate_lv tmp/fbgate_lv_producer.cpp tmp/fbgate_lv_consumer.cpp
 echo "forest_bind_gate: [armreplay] OK — a skipped directive-only arm binds and replays in the consumer's macro state"
 
+# --- case: replreuse (2026-10-11: each unit's tree gets its own forest nodes) ---
+# A frozen inline body the program's main uses, touched again by a REPL entry
+# (madc -i), a later translation unit of the same c2m session. The segment's
+# per-record memo handed the entry the SAME nodes the first unit's tree had
+# already linked in and c2mir had already checked, so the entry's tree held
+# them twice: "repeated declaration a/b/s", or garbage error nodes (libc++'s
+# inline operator<<(ostream&, const char*) on darwin: 21 "cir error: do",
+# testrepl_cout). CirFrozenForest::begin_compile now drops the memo per
+# compile and the entry materializes its own copy. Negative control: the
+# pre-fix binary prints "repeated declaration a" and 3 c2mir check errors.
+mkdir -p tmp/fbgate_repl
+cat > tmp/fbgate_repl/fbgate_repl.h <<'EOF'
+#ifndef FBGATE_REPL_H
+#define FBGATE_REPL_H
+inline int fbg_add(int a, int b) { int s = a; s += b; return s; }
+template<class T> inline T fbg_twice(T v) { T r = v; r += v; return r; }
+#endif
+EOF
+cat > tmp/fbgate_repl_producer.mad <<'EOF'
+#include <fbgate_repl.h>
+int main() { return 0; }
+EOF
+cat > tmp/fbgate_repl_consumer.mad <<'EOF'
+#include <fbgate_repl.h>
+#include <cstdio>
+int main() { printf("main %d %d\n", fbg_add(1, 2), fbg_twice(5)); return 0; }
+EOF
+printf 'fbg_add(3, 4)\nfbg_twice(21)\n' > tmp/fbgate_repl_input.txt
+rr_snap=tmp/fbgate_repl.msnap
+rr_log=tmp/fbgate_repl.log
+rm -f "$rr_snap"
+timeout 600 "$BIN" --freeze="$rr_snap" -I tmp/fbgate_repl tmp/fbgate_repl_producer.mad \
+    >"$rr_log" 2>&1 || fail "[replreuse] the freeze FAILED: $(tail -n 3 "$rr_log")"
+rr_out=$(timeout 60 "$BIN" --forest-bind="$rr_snap" -I tmp/fbgate_repl -i tmp/fbgate_repl_consumer.mad \
+    < tmp/fbgate_repl_input.txt 2>&1)
+[ "$rr_out" = "$(printf 'main 3 10\n7\n42')" ] \
+    || fail "[replreuse] REPL output '$rr_out' != 'main 3 10 / 7 / 42'"
+timeout 60 "$BIN" -v --forest-bind="$rr_snap" -I tmp/fbgate_repl -i tmp/fbgate_repl_consumer.mad \
+    < tmp/fbgate_repl_input.txt >"$rr_log" 2>/dev/null
+grep -aq "bound to grove unit.*fbgate_repl.h" "$rr_log" \
+    || fail "[replreuse] the consumer never bound the frozen header (vacuous)"
+rm -rf "$rr_snap" "$rr_log" tmp/fbgate_repl tmp/fbgate_repl_producer.mad tmp/fbgate_repl_consumer.mad tmp/fbgate_repl_input.txt
+echo "forest_bind_gate: [replreuse] OK — a REPL entry re-touching a frozen body gets its own nodes"
+
 # --- case: reprogate (2026-10-11: a freeze is reproducible) ---
 # --dump-forest's `content` line digests the frozen corpus with the producer
 # config left out. Two freezes of one TU under standards that parse it alike
@@ -2151,5 +2195,5 @@ run_case patternalias "1 2"
 # coverage. Worse in the other direction: deleting a case would leave this line
 # still claiming it runs. Deriving it from run_case would need the ~12 bespoke
 # cases below to register too; until then, update it when you add a case.
-echo "forest_bind_gate: GREEN 41/41 — typedef + struct + nested + bitfield + class + method + fwd + ptr + nestedenumfn + ldouble + ns + anon + declonlymt + flavorgate + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec + iobind + traitfold + nothrowfold + explicitctor + armreplay + deletedctor + constcopy + subbind + redecl + husk + silbody grove headers bound (unit-granular husk recovery only), output == live == g++ + secvptr + friendgrant + patternalias + quietbind + memberptr + unionclass"
+echo "forest_bind_gate: GREEN 42/42 — typedef + struct + nested + bitfield + class + method + fwd + ptr + nestedenumfn + ldouble + ns + anon + declonlymt + flavorgate + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec + iobind + traitfold + nothrowfold + explicitctor + armreplay + replreuse + deletedctor + constcopy + subbind + redecl + husk + silbody grove headers bound (unit-granular husk recovery only), output == live == g++ + secvptr + friendgrant + patternalias + quietbind + memberptr + unionclass"
 exit 0

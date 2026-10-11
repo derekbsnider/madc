@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### Each translation unit materializes its own frozen nodes
+
+A frozen inline body an earlier translation unit materialized is no longer
+reused by a later one. The REPL (`madc -i`) compiles each entry as a new
+translation unit in one persistent c2m session; `CirFrozenSegment` memoized
+materialized nodes per record for the whole session, so a body the first unit
+instantiated was handed to the next entry already linked into the first unit's
+tree (c2mir's lists are intrusive) and already checked — the entry's tree held
+it twice, reporting "repeated declaration" or garbage error nodes. libc++'s
+inline `operator<<(ostream&, const char*)` bound from the pack made
+`std::cout << "Hello World!" << std::endl` fail with 21 untranslatable nodes on
+both Mac lanes (testrepl_cout), and the darwin `std::string s("ab"); s` entry
+reported "repeated declaration __sz/__this". Now `CirBuilder::translate_module`
+calls `CirFrozenForest::begin_compile(c2m)` once before any node materializes;
+every segment forgets its `_mat` memo (keeping node storage, which the session
+c2m symbols still reference) and the next touch materializes afresh in this
+compile's c2m. The two old `set_c2m` calls — safe only when no segment had
+materialized — are gone. Gate: forest_bind_gate `[replreuse]`.
+
 ### A ui:: world face survives its world closing
 
 `madc::ex_session` and `madc::tool_host` each hold a reference into a

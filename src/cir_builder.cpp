@@ -34939,6 +34939,10 @@ node_t CirBuilder::translate_module(Program *prog)
 {
 	if (!prog) return NULL;
 	m_prog = prog;
+	// The bind forest materializes this compile's nodes in THIS c2m; a node
+	// an earlier compile materialized lived in that compile's context.
+	if (prog->bind_forest)
+		prog->bind_forest->begin_compile(c2m);
 
 	// Rung 3 referenced-surface filter state: per-module. Cleared at entry
 	// (before Pass 0 populates it), consumed by the filter at the tail.
@@ -35441,7 +35445,6 @@ node_t CirBuilder::translate_module(Program *prog)
 	std::set<madc::dis::istring> forest_lazy_root;	// rung 3: non-system loaded bodies
 	std::set<madc::dis::istring> forest_funcdef_syms;
 	if (prog->bind_forest && !prog->forest_chain.empty()) {
-		prog->bind_forest->set_c2m(c2m);	// safe: parse-time bind materializes no node segment
 		std::set<FuncDef *> forest_method_fds;
 		for (auto &kv : prog->struct_map) {
 			DataDefCLASS *cdd = dynamic_cast<DataDefCLASS *>(kv.second);
@@ -37106,7 +37109,6 @@ node_t CirBuilder::translate_module(Program *prog)
 	// (before main and the other translated bodies) to match a live include's
 	// header-before-.cpp source order.
 	if (prog && prog->bind_forest && !prog->forest_chain.empty()) {
-		prog->bind_forest->set_c2m(c2m);	// safe: parse-time bind materializes no node segment
 		// Map every bound USER-header INLINE method's symbol -> its FuncDef
 		// (body is Tree-1). SYSTEM-header methods are excluded: those are the
 		// loaded equivalent of deferred lazy bodies and already materialized

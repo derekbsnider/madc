@@ -921,6 +921,12 @@ CirFrozenSegment::~CirFrozenSegment()
 	madc_cir_unregister_segment(_seg);
 }
 
+void CirFrozenSegment::begin_compile(c2m_ctx_t c2m)
+{
+	_c2m = c2m;
+	_mat.assign(_record_count, (cir_node *)NULL);
+}
+
 size_t CirFrozenSegment::materialized_count() const
 {
 	size_t n = 0;
@@ -1124,6 +1130,14 @@ cir_node *CirFrozenSegment::node_at(uint32_t idx)
 CirFrozenForest::CirFrozenForest()
 	: _c2m(NULL), _root_unit(0), _root_idx(0), _types_materialized(false)
 {
+}
+
+void CirFrozenForest::begin_compile(c2m_ctx_t c2m)
+{
+	_c2m = c2m;
+	for (size_t u = 0; u < _segs.size(); ++u)
+		if (_segs[u])
+			_segs[u]->begin_compile(c2m);
 }
 
 CirFrozenForest::~CirFrozenForest()
