@@ -1,18 +1,18 @@
 # lane	promote	last_green_commit	date	tally
 libcxx	no	96b3358a3d8a	2026-10-03	retired from the release tier 2026-10-03 (owner): the libc++ lane is darwin-suite on the macOS -O2 packed binary; last linux run: jit 1903/0/0TO/23skip; exe 1735/0; obj 1735/0 (-stdlib=libc++, 14 tests carry .libcxx_skip: B157-B161 + libstdc++-internal; at 028e31c36 content) [+ 96b3358a3: textual rename chthonic->chthonia, owner 2026-10-03, not re-run]
-darwin-suite	release	4ad587b7993c	2026-10-09	darwin-suite native libc++ at 1b005346c (0.103.0): arm64 Mac Mini macOS 14.8.4 2013 passed / 1 failed / 0TO / 41 skipped, mac battery 12/0 — the one fail testidemenu (stale expect, fixed in 4ad587b79, then 1/0 on the Mini) => 2014/0; Intel MacBook last full suite 2015/0/39skip at 57e54306e content [delta: TUI pane clip only]
-linux-battery	yes	161c4563b189	2026-10-11	seam_battery.sh green at 161c4563b (seam4): headerless 1965/0/0TO/43skip + ondisk 34/0 on packed -O2 madc-release; exeobj JIT 1999/0/0TO/9skip, EXE 1810/0, OBJ 1810/0; parse-cost 0 red of 6; static gates + make gates green
-headerless-win	yes	161c4563b189	2026-10-11	1926/0/0TO/82skip at 161c4563b (seam4) + ondisk-win 1/0 — packed PE under wine
-wine64	yes	161c4563b189	2026-10-11	the packed PE under wine: headerless-win 1926/0/0TO/82skip + ondisk-win 1/0 at 161c4563b (seam4)
-macos	yes	161c4563b189	2026-10-11	BUILD lane: seam4 macos-build + macos stages rc=0 at 161c4563b; darwin forest pack 837 units, consumer parse leg OK
-aarch64-ld	yes	161c4563b189	2026-10-11	aarch64_ldouble_lane GREEN — seam_battery.sh (seam4) at 161c4563b
-tests-jit	batch	161c4563b189	2026-10-11	1999 passed, 0 failed, 0 timed out, 9 skipped [seam4 exeobj JIT leg over the whole tests/ suite at 161c4563b]
-c-testsuite	commit	161c4563b189	2026-10-11	c-testsuite: 220 passed, 0 failed (0 outside baseline, 0 baseline tests now passing) [fast_lanes on 161c4563b code content]
-c-torture	commit	161c4563b189	2026-10-11	c-torture: 1617 passed, 2 compile-failed, 5 runtime-failed, 0 timed out, 61 skipped (--std=c17) 7 failing, 0 outside baseline [fast_lanes on 161c4563b code content]
-c2mir-tests	commit	161c4563b189	2026-10-11	c2mir-tests: 368 passed, 0 failed, 4 skipped (0 outside baseline, 0 baseline tests now passing) [fast_lanes on 161c4563b code content]
-gui	commit	161c4563b189	2026-10-11	gui: 15 passed, 0 failed, 0 timed out, 0 skipped | EXE: 15 passed, 0 failed | OBJ: 15 passed, 0 failed [fast_lanes on 161c4563b code content]
-gxx-c++11	no	161c4563b189	2026-10-11	gxx-c++11: 1505 passed, 441 compile-failed, 0 runtime-failed, 0 timed out, 2722 skipped; 441 failing, 0 outside baseline [fast_lanes on 161c4563b code content]
-commonmark	commit	161c4563b189	2026-10-11	commonmark: 664 passed, 6 failed (of 670 examples) (0 outside baseline, 0 baseline examples now passing) [fast_lanes on 161c4563b code content]
-index-c	yes	161c4563b189	2026-10-11	index-c: 50/50 tasks OK, 0 failed (rc=0) [-O2] [fast_lanes on 161c4563b code content]
 genuine-win	release	6525df0dd89e	2026-10-11	1925/0/0TO/83skip — the FULL suite on the owner Windows 11 box at 161c4563b content (scripts/win_suite.sh, the seam4 packed PE)
 brew-linux	release	6525df0dd89e	2026-10-11	1999/0/0TO/9skip - scripts/brew_lane.sh at 161c4563b content (bottle + pour + brew test, keg-masked runpath gate)
+darwin-suite	release	67766e2422a3	2026-10-11	darwin-suite native libc++ at 67766e242 content: arm64 Mac Mini 1968/0/0TO/41skip + mac battery 12/0; Intel MacBook 1970/0/0TO/39skip + mac battery 12/0 (the 5 seam4 darwin reds fixed: prelude predefines 8d762d1a9, REPL forest memo 71d4ad43e); EXE advisory 284/290 failed unchanged class (D5)
+linux-battery	yes	67766e2422a3	2026-10-11	seam_battery.sh green at 67766e242 (seam5): headerless 1966/0/0TO/43skip + ondisk 34/0 on packed -O2 madc-release; exeobj JIT 2000/0/0TO/9skip, EXE 1811/0, OBJ 1811/0; parse-cost 0 red of 6; static gates 0 red of 95 + make gates green
+headerless-win	yes	67766e2422a3	2026-10-11	1927/0/0TO/82skip at 67766e242 (seam5) + ondisk-win 1/0 — packed PE under wine
+wine64	yes	67766e2422a3	2026-10-11	the packed PE under wine: headerless-win 1927/0/0TO/82skip + ondisk-win 1/0 at 67766e242 (seam5)
+macos	yes	67766e2422a3	2026-10-11	BUILD lane: seam5 macos-build + macos stages rc=0 at 67766e242; darwin forest pack 837 units, consumer parse leg OK
+aarch64-ld	yes	67766e2422a3	2026-10-11	aarch64_ldouble_lane GREEN — seam_battery.sh (seam5) at 67766e242
+tests-jit	batch	67766e2422a3	2026-10-11	2000 passed, 0 failed, 0 timed out, 9 skipped [seam5 exeobj JIT leg over the whole tests/ suite at 67766e242]
+c-testsuite	commit	67766e2422a3	2026-10-11	c-testsuite: 220 passed, 0 failed (0 outside baseline, 0 baseline tests now passing) [fast_lanes on 71d4ad43e code content]
+c-torture	commit	67766e2422a3	2026-10-11	c-torture: 1617 passed, 2 compile-failed, 5 runtime-failed, 0 timed out, 61 skipped (--std=c17) 7 failing, 0 outside baseline [fast_lanes on 71d4ad43e code content]
+c2mir-tests	commit	67766e2422a3	2026-10-11	c2mir-tests: 368 passed, 0 failed, 4 skipped (0 outside baseline, 0 baseline tests now passing) [fast_lanes on 71d4ad43e code content]
+gui	commit	67766e2422a3	2026-10-11	gui: 15 passed, 0 failed, 0 timed out, 0 skipped | EXE: 15 passed, 0 failed | OBJ: 15 passed, 0 failed [fast_lanes on 71d4ad43e code content]
+gxx-c++11	no	67766e2422a3	2026-10-11	gxx-c++11: 1505 passed, 441 compile-failed, 0 runtime-failed, 0 timed out, 2722 skipped; 441 failing, 0 outside baseline [fast_lanes on 71d4ad43e code content]
+commonmark	commit	67766e2422a3	2026-10-11	commonmark: 664 passed, 6 failed (of 670 examples) (0 outside baseline, 0 baseline examples now passing) [fast_lanes on 71d4ad43e code content]
+index-c	yes	67766e2422a3	2026-10-11	index-c: 50/50 tasks OK, 0 failed (rc=0) [-O2] [fast_lanes on 71d4ad43e code content]
