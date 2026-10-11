@@ -213,7 +213,8 @@ are replaced by it.
   `<madcide/harness>`), libmadcide, `madcide --build-plugin`, madcide's
   `chthonia.keys` and `vscode.theme` profiles, MADCIDE_CONFIG_DIR /
   MADCIDE_PLUGIN_PATH. Its unpushed `dark-plus` branch (Dark+, line numbers,
-  terminal layout) is Chthonia 0.0.4 on madc 0.103.0 (madcide inside it).
+  terminal layout) was to be Chthonia 0.0.4 on madc 0.103.0 — dropped
+  (owner 2026-10-11): `on-madcide` is cut from it, so 0.1.0 carries it.
 
 ## Phases (reordered 2026-10-09, after the inventory round — dependency order)
 
@@ -224,7 +225,8 @@ parallel once 1A is in. 1D (madcide re-plumbed) is last. Phase 0's parser
 items are their own sessions, any time.
 
 **Phase 0 — independent, any order:**
-1. Chthonia 0.0.4 on madc 0.103.0 (the `dark-plus` branch; madcide still inside madc).
+1. ~~Chthonia 0.0.4 on madc 0.103.0~~ — DROPPED (owner 2026-10-11): Chthonia
+   0.1.0 is close and carries `dark-plus`; a 0.0.4 after it would go backwards.
 2. The two C++14 defects (`cpp1y/lambda-generic-ice2.C` abort,
    `cpp1y/var-templ24.C` > 30 s) — a parser session.
 3. The Outline's kinds beyond functions (`madc::parse_outline`) — a parser
@@ -622,8 +624,8 @@ branch with their targeted gates.
   first standalone release, built on madc 0.104.0; Chthonia **0.1.0**, built
   on madcide 0.7.0 + madc 0.104.0. One battery on madc's content, then each
   repository's own lanes.
-- **Phase 0's Chthonia release** is separate and earlier: Chthonia **0.0.4**,
-  the current `dark-plus` build on madc 0.103.0 (madcide still inside madc).
+- **Phase 0's Chthonia release** (0.0.4, `dark-plus` on madc 0.103.0) is
+  DROPPED (owner 2026-10-11): 0.1.0 carries `dark-plus`.
 - Phase 0's engine items ride the seam (each with its own targeted gate).
 
 ## Thread-safety contract
@@ -706,8 +708,8 @@ plain data. No new globals.
   which is madcide 0.1.0, so madcide's minor = madc's minor − 97 (madc 0.103.0
   ↔ madcide 0.6.0). The next madc release is 0.104.0, so the first standalone
   madcide release is **0.7.0**.
-- **Chthonia:** **0.0.4** = the current `dark-plus` build on madc 0.103.0
-  (Phase 0, if released); **0.1.0** = the first Chthonia on madcide 0.7.0 +
+- **Chthonia:** 0.0.4 (`dark-plus` on madc 0.103.0) is dropped (owner
+  2026-10-11); **0.1.0** = the first Chthonia on madcide 0.7.0 +
   madc 0.104.0 (owner: it should have started at 0.1.0; it starts there now).
 - **One release boundary:** madc 0.104.0 ships WITHOUT madcide; Phase 1 and
   Phase 2 both land before it (see Seams).
