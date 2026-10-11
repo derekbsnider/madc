@@ -628,6 +628,52 @@ branch with their targeted gates.
   DROPPED (owner 2026-10-11): 0.1.0 carries `dark-plus`.
 - Phase 0's engine items ride the seam (each with its own targeted gate).
 
+**Seam battery, round 1 (2026-10-11): three red stages, five findings, each
+decided by the owner and fixed before the re-run.**
+
+1. `gates` — the tag-arithmetic gate read `10000` in `src/madc_memory.cpp`'s
+   MCP call timeout as a tag literal: spelled `10 * 1000` ms (`ee2659de2`).
+2. `parse-cost` `dialect.live` — the Phase 1 host faces grew `<ns_madc>` (the
+   prelude every `madc::`/polyglot program parses) 85 → 103 KB. Split: the
+   document handle and its services, the tool host, `ex_session`,
+   discovery's claims and the history store move to `<ns_madc_host>`, served
+   only by auto-include MEMBER rows (`madc::tool_host`, `madc::doc_parse`, …)
+   — an optional consumer's surface is gated on that consumer (owner
+   2026-10-08). 83.2M → 75.5M Ir; the remaining +4.3% (the arc's new dialect
+   faces: `regex_*`, `compiler_run`, the REPL command registry,
+   `<bits/session_enums>`) accepted by the owner and the baseline re-recorded.
+   Follow-up (KG Gap `madc_faces_builtin_not_parsed`): madc's faces are meant
+   to be built-ins that cost no header parse.
+3. `parse-cost` `cxx_stl.forest` — 1A.4 made `.cpp` gnu++17, and the pack's
+   one profile is frozen under madc, so every `.cpp` compile fell through to
+   the pack's source text (~315 ms startup against ~166 ms bound). Decided:
+   ONE profile, no size growth. The madc dialect is C++17 plus extras
+   (auto-includes, auto-namespacing, auto-main, its keywords and tokens) that
+   the `--std=` gate keeps out of a C++ compile, over the same macro table, so
+   the pack labels its madc profile for gnu++17 and c++17
+   (`--freeze-also-std=`; `scripts/forest_pack_share.sh` owns the list) and
+   the bind accepts a profile's labels. Nothing is stripped from the corpus.
+   Gate: `forest_bind_gate.sh` `[sharegate]` — a gnu++17 / c++17 consumer
+   binds the madc profile, and bound it still gets no auto-include, madc
+   keyword or auto-main (each probe's madc compile is the control); c++20
+   does not bind. Found on the way: the freeze walked its pointer-keyed pack
+   maps in heap-address order, so two freezes of one corpus differed; it now
+   walks them in canonical unit order, and `--dump-forest` prints a
+   config-blind `content` digest.
+4. `headerless-win` timeouts — `%git log -n 1 PATH` re-read the whole
+   `tests/` tree for every commit and parent (3.9 s against git's 0.29 s):
+   the walk now compares one path component at a time, stops at the first
+   equal subtree id, and memoizes subtree lookups per walk. `testrepl_git`
+   and `testrepl_gitimport` take a 60 s `.timeout` (wine's tax plus
+   libgit2's blame).
+5. Fixture drift — `warn_census.sh` replayed the REPL tests without their
+   `.env` (`EDITOR=echo`), so `%edit` started the real `vi`: (a) ONE fixture
+   reader, `scripts/test_fixtures.sh` `fixture_load`, used by `run_tests.sh`,
+   `warn_census.sh`, `forest_soak.sh` and `class_parse_burndown.sh`, gated by
+   `check-one-fixture-reader.sh`; (b) the default editor (`vi`; Microsoft
+   Edit's `edit` on Windows) runs only when stdin is a terminal, else
+   "no editor: set $EDITOR".
+
 ## Thread-safety contract
 
 The document component and its edit notification are per-world,
