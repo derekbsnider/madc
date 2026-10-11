@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### `%git log PATH` filters by walking path components
+
+The madcgit module's `%git log PATH` now compares a path against each parent one
+component at a time, stopping at the first subtree whose id is unchanged rather
+than reading the whole subtree at the path for every commit and parent. Within a
+log call each tree-entry lookup is memoized by (tree id, component depth), so a
+subtree read as a commit's own tree and again as its child's parent is read once.
+`%git log -n 1 tests/testint.mad` drops from 3.9 s to 1.04 s (REPL start-up
+included) against `git log -n 1 -- tests/testint.mad` at 0.26 s, both naming the
+same commit. The `testrepl_git` and `testrepl_gitimport` tests raise their
+timeout to 60 s for the wine headerless lane, where testrepl_git ran in ~27 s.
+
 ### The REPL's default editor is vi / Microsoft Edit, and runs only on a terminal
 
 With no `$EDITOR` set, the REPL's default editor behind `%open` and `%edit` is

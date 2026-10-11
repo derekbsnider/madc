@@ -27,6 +27,7 @@
 #include <cstdint>
 #include <cstring>
 #include <map>
+#include <unordered_map>
 
 namespace madc {
 
@@ -176,42 +177,120 @@ bool entry_oid_at(git_tree *tree, const char *path, git_oid &out)
     return true;
 }
 
+// The entry id named `name` in the tree `tree_id`; false when the tree or the
+// entry is absent (a component below a blob is absent too).
+bool child_entry_id(git_repository *repo, const git_oid &tree_id, const std::string &name,
+		    git_oid &out)
+{
+    git_tree *tree = (git_tree *)0;
+    if ( git_tree_lookup(&tree, repo, &tree_id) < 0 )
+	return false;
+    const git_tree_entry *e = git_tree_entry_byname(tree, name.c_str());
+    if ( e )
+	git_oid_cpy(&out, git_tree_entry_id(e));
+    git_tree_free(tree);
+    return e != (const git_tree_entry *)0;
+}
+
+// A repository path's components: git's paths are always `/`-separated,
+// whatever the host; empty components (`a//b`, a trailing `/`) drop.
+std::vector<std::string> path_parts(const std::string &path)
+{
+    std::vector<std::string> parts;
+    size_t b = 0;
+    while ( b <= path.size() )
+    {
+	size_t e = path.find('/', b);
+	if ( e == std::string::npos )
+	    e = path.size();
+	if ( e > b )
+	    parts.push_back(path.substr(b, e - b));
+	b = e + 1;
+    }
+    return parts;
+}
+
+enum class path_change { same, differs, mine_absent };
+
+// `parts` (a path's components) below the root tree `mine` against the root
+// tree `theirs`: one component at a time, stopping at the first level whose
+// two ids are equal — an unchanged subtree holds an unchanged path, so git's
+// tree-walk never reads it. Only a subtree that changed on both sides is
+// read (most commits leave `tests/` alone; reading its thousands of entries
+// for every commit and parent made `log -n 1 tests/X` 13x slower than git).
+// One walk's child_entry_id answers, keyed by (tree id, component depth): a
+// linear history reads each changed subtree twice — as a commit's own tree
+// and as its child's parent tree — and libgit2's object cache keeps no tree
+// over 4 KB, so a `tests/` of thousands of entries was reparsed per lookup.
+// Per-walk state: one log call owns it (no sharing across threads).
+class entry_memo
+{
+public:
+    explicit entry_memo(git_repository *repo) : _repo(repo) {}
+    bool child(const git_oid &tree_id, size_t depth, const std::string &name, git_oid &out)
+    {
+	std::string key((const char *)tree_id.id, GIT_OID_RAWSZ);
+	key.push_back((char)depth);
+	std::unordered_map<std::string, answer>::const_iterator it = _seen.find(key);
+	if ( it == _seen.end() )
+	{
+	    answer a;
+	    memset(&a.id, 0, sizeof(a.id));
+	    a.present = child_entry_id(_repo, tree_id, name, a.id);
+	    it = _seen.insert(std::make_pair(key, a)).first;
+	}
+	if ( it->second.present )
+	    git_oid_cpy(&out, &it->second.id);
+	return it->second.present;
+    }
+private:
+    struct answer { bool present; git_oid id; };
+    git_repository *_repo;
+    std::unordered_map<std::string, answer> _seen;
+};
+
+path_change compare_path(entry_memo &memo, git_oid mine, git_oid theirs,
+			 const std::vector<std::string> &parts)
+{
+    bool theirs_present = true;
+    for ( size_t k = 0; k < parts.size(); ++k )
+    {
+	if ( theirs_present && git_oid_equal(&mine, &theirs) )
+	    return path_change::same;
+	git_oid m, t;
+	if ( !memo.child(mine, k, parts[k], m) )
+	    return path_change::mine_absent;
+	theirs_present = theirs_present && memo.child(theirs, k, parts[k], t);
+	mine = m;
+	if ( theirs_present )
+	    theirs = t;
+    }
+    return theirs_present && git_oid_equal(&mine, &theirs) ? path_change::same
+							     : path_change::differs;
+}
+
 // `git log -- path`'s keep rule: the blob at `path` differs from every
 // parent's (a root commit that has the path counts) — a commit TREESAME to
 // any parent is hidden, as git's history simplification hides it (a merge of
 // an unrelated history kept the path as it was).
-bool touches_path(git_commit *c, const char *path)
+bool touches_path(entry_memo &memo, git_commit *c, const std::vector<std::string> &parts)
 {
-    git_tree *tree = (git_tree *)0;
-    git_oid mine;
-    bool have = false;
-    if ( git_commit_tree(&tree, c) == 0 )
+    const git_oid mine = *git_commit_tree_id(c);
+    // A root commit is compared with no tree (the path is new if it is here);
+    // so is a parent that does not load.
+    const unsigned n = git_commit_parentcount(c);
+    for ( unsigned i = 0; i < (n ? n : 1); ++i )
     {
-	have = entry_oid_at(tree, path, mine);
-	git_tree_free(tree);
-    }
-    if ( !have )
-	return false;
-    unsigned n = git_commit_parentcount(c);
-    if ( n == 0 )
-	return true;
-    for ( unsigned i = 0; i < n; ++i )
-    {
-	git_commit *p = (git_commit *)0;
-	git_tree *pt = (git_tree *)0;
 	git_oid theirs;
-	bool same = false;
-	if ( git_commit_parent(&p, c, i) == 0 )
+	memset(&theirs, 0, sizeof(theirs));
+	git_commit *p = (git_commit *)0;
+	if ( n && git_commit_parent(&p, c, i) == 0 )
 	{
-	    if ( git_commit_tree(&pt, p) == 0 )
-	    {
-		same = entry_oid_at(pt, path, theirs) && git_oid_equal(&theirs, &mine) != 0;
-		git_tree_free(pt);
-	    }
+	    git_oid_cpy(&theirs, git_commit_tree_id(p));
 	    git_commit_free(p);
 	}
-	if ( same )
-	    return false;
+	if ( compare_path(memo, mine, theirs, parts) != path_change::differs )
+	    return false;	// TREESAME to this parent, or the path is not here
     }
     return true;
 }
@@ -246,13 +325,15 @@ bool GitRepo::log(std::vector<GitCommit> &out, const std::string &path, size_t l
 	return false;
     }
     git_revwalk_sorting(walk, GIT_SORT_TIME);
+    const std::vector<std::string> parts = path_parts(path);
+    entry_memo memo(_->repo);
     git_oid oid;
     while ( out.size() < limit && git_revwalk_next(&oid, walk) == 0 )
     {
 	git_commit *c = (git_commit *)0;
 	if ( git_commit_lookup(&c, _->repo, &oid) < 0 )
 	    break;
-	if ( path.empty() || touches_path(c, path.c_str()) )
+	if ( parts.empty() || touches_path(memo, c, parts) )
 	{
 	    GitCommit row;
 	    fill_commit(row, &oid, c);
