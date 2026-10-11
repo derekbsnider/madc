@@ -36,6 +36,7 @@ thread_local bool madc_verbose = false;
 #include <cstdio>
 #include <cstdlib>		// std::system: %build's executable runs
 #include <cstring>
+#include <fcntl.h>		// open: a non-terminal stdin for the default-editor case
 #include <sys/wait.h>		// WEXITSTATUS
 #include <unistd.h>
 
@@ -2423,6 +2424,38 @@ TEST_CASE("session commands: %open FILE and %edit NAME (§7f)")
     else
 	unsetenv("EDITOR");
     std::remove(lib.c_str());
+}
+
+// The DEFAULT editor (no $EDITOR) is a terminal program: on a stdin that is
+// no terminal (a pipe, a file — /dev/null here) it never runs, since the
+// input would become its keystrokes; the reason says what to set. An
+// $EDITOR the user set runs as given, terminal or not.
+TEST_CASE("the terminal's default editor runs only on a terminal")
+{
+    const char *was = getenv("EDITOR");
+    const std::string saved = was ? was : "";
+    const int keep = dup(0);
+    const int nul = open("/dev/null", O_RDONLY);
+    REQUIRE(keep >= 0);
+    REQUIRE(nul >= 0);
+    dup2(nul, 0);
+    unsetenv("EDITOR");
+    std::string why;
+    const bool ran_default = madc::run_terminal_editor("/nonexistent-dir/x.c", 3, why);
+    setenv("EDITOR", "true", 1);
+    std::string why_set;
+    const bool ran_set = madc::run_terminal_editor("/nonexistent-dir/x.c", 3, why_set);
+    dup2(keep, 0);
+    close(keep);
+    close(nul);
+    if ( was )
+	setenv("EDITOR", saved.c_str(), 1);
+    else
+	unsetenv("EDITOR");
+    CHECK_FALSE(ran_default);
+    CHECK(why == "no editor: set $EDITOR (input is not a terminal)");
+    CHECK(ran_set);
+    CHECK(why_set.empty());
 }
 
 // The one rule a host reads an entry's command by (a host answers colon

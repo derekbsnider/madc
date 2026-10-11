@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### The REPL's default editor is vi / Microsoft Edit, and runs only on a terminal
+
+With no `$EDITOR` set, the REPL's default editor behind `%open` and `%edit` is
+`vi` on POSIX and `edit` (Microsoft Edit) on Windows, replacing `notepad`. The
+default is a terminal program, so it runs only when stdin is a terminal:
+otherwise the call reports `"no editor: set $EDITOR (input is not a terminal)"`
+rather than feeding piped or redirected input to the editor as keystrokes. An
+explicit `$EDITOR` runs as given, terminal or not.
+
 ### run_tests.sh refuses a run that executed no test
 
 `scripts/run_tests.sh` now exits nonzero with "VACUOUS RUN — no test executed"

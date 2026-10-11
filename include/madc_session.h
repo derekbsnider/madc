@@ -429,9 +429,10 @@ private:
 
 namespace madc {
 // The terminal's editor (%open, %edit; IPython's %edit): $EDITOR (its words
-// split by the shell's rules), else vi (notepad on Windows), given `+LINE`
-// before `path` when `line` > 0 (never the notepad default), on this
-// terminal, waited for. False when it did not start (`why` says so).
+// split by the shell's rules), else — only when stdin is a terminal — vi
+// (Microsoft Edit, `edit`, on Windows), given `+LINE` before `path` when
+// `line` > 0 (never the Windows default), on this terminal, waited for.
+// False when it did not start or no default may run (`why` says so).
 bool run_terminal_editor(const std::string &path, int line, std::string &why);
 // The editor a session's host gave it (ReplSession::set_editor), else the
 // terminal's: the ONE choice behind %open and %edit, in process and in a

@@ -28,6 +28,11 @@
 #include <memory>
 #include <type_traits>
 #include <stdint.h>
+#if defined(_WIN32)
+#include <io.h>		// isatty: the default editor runs only on a terminal
+#else
+#include <unistd.h>	// isatty: the default editor runs only on a terminal
+#endif
 
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
 
@@ -990,11 +995,21 @@ bool madc::run_terminal_editor(const std::string &path, int line,
     std::vector<std::string> words;
     const bool chosen = env && *env;
     if ( !chosen )
+    {
+	// The default is a TERMINAL editor, so it runs only on one: with stdin
+	// a pipe or a file, the input would become the editor's keystrokes
+	// (`:!cmd` included). An $EDITOR the user set runs as given.
+	if ( !isatty(0) )
+	{
+	    why = "no editor: set $EDITOR (input is not a terminal)";
+	    return false;
+	}
 #ifdef _WIN32
-	words.push_back("notepad");
+	words.push_back("edit");	// Microsoft Edit (System32 on Windows 11)
 #else
 	words.push_back("vi");
 #endif
+    }
     else if ( !ns_common::shell_words(env, words) || words.empty() )
     {
 	why = "$EDITOR is no command: " + std::string(env);
@@ -1016,7 +1031,9 @@ bool madc::run_terminal_editor(const std::string &path, int line,
     Process editor(DataSource("exec://" + words[0]), options);
     if ( !editor.start() )
     {
-	why = "the editor '" + words[0] + "' did not start";
+	why = chosen ? "the editor '" + words[0] + "' did not start"
+		     : "no editor: set $EDITOR (the default '" + words[0]
+		       + "' did not start)";
 	return false;
     }
     editor.wait();
