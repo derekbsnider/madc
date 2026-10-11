@@ -4175,9 +4175,11 @@ static CirFrozenForest *forest_probe_arm(Program *prog, const char *path,
 	const uint32_t producer_config = f->language_std();
 	const uint32_t consumer_config = madc_forest_config_word(prog);
 	bool matches = config_match == Program::forestMatchAny;
+	// Exact: the profile was frozen under the consumer's config — its own
+	// header's pair, or a label the pack stamped after proving that config's
+	// frozen content identical (CIR_FOREST_SEG_SHARED_CONFIGS).
 	if ( config_match == Program::forestMatchExact )
-	    matches = producer_config == consumer_config
-		   && f->defines_hash() == madc_forest_defines_hash(prog);
+	    matches = f->serves_config(consumer_config, madc_forest_defines_hash(prog));
 	else if ( config_match == Program::forestMatchStdlibFlavor )
 	    matches = (producer_config & CIR_FOREST_CONFIG_STDLIB_MASK)
 		   == (consumer_config & CIR_FOREST_CONFIG_STDLIB_MASK);

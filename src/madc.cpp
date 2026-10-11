@@ -361,6 +361,9 @@ static void print_usage(const char *prog)
 "                          container's AOT ledger segment, so -static-libmadc\n"
 "                          programs carry it (repeatable; the build's list is\n"
 "                          scripts/ledger_sources.txt)\n"
+"  --freeze-also-std=<std> label the frozen profile to serve compiles under\n"
+"                          this --std= too (repeatable; the release pack\n"
+"                          names the C++ modes that share madc's corpus)\n"
 "  --no-sysroot-includes   resolve <...> only from the toolchain's own roots\n"
 "                          (the C++ stdlib dirs + the compiler's builtin dir)\n"
 "                          and the embedded headers — never the host's C\n"
@@ -839,6 +842,7 @@ int main(int argc, char **argv)
     bool freeze_append = false;           // --freeze-append=: placement 2 (append to binary)
     bool freeze_mir_cache = false;        // --freeze-mir-cache: pack the compiled MIR module blob
     std::vector<std::string> freeze_ledger_srcs;  // --freeze-ledger=: AOT ledger sources (S5)
+    std::vector<std::string> freeze_also_std;     // --freeze-also-std=: more standards the profile serves
     bool run_frozen = false;              // --run-frozen[=path]: thaw + run, no parse
     const char *run_frozen_path = NULL;   // NULL = the blob appended to this executable
     bool freeze_run = false;              // --freeze-run: freeze, then re-exec fresh to run
@@ -1051,6 +1055,12 @@ int main(int argc, char **argv)
             // canonical list is scripts/ledger_sources.txt, handed over by
             // scripts/forest_pack.sh — never spelled out here.
             freeze_ledger_srcs.push_back(argv[i] + 16);
+            filearg = i + 1;
+        } else if (strncmp(argv[i], "--freeze-also-std=", 18) == 0) {
+            // Repeatable: one more --std= the frozen profile serves — the
+            // madc dialect's corpus IS the C++17 one (scripts/
+            // forest_pack_share.sh names the standards at pack time).
+            freeze_also_std.push_back(argv[i] + 18);
             filearg = i + 1;
         } else if (strcmp(argv[i], "--freeze-run") == 0) {
             freeze_run = true;
@@ -2154,7 +2164,8 @@ int main(int argc, char **argv)
 		return 1;
 	    int frc = madc_cir_freeze(prog.get(), argv[filearg], freeze_path,
 				      freeze_append, freeze_mir_cache,
-				      ledger.empty() ? NULL : &ledger);
+				      ledger.empty() ? NULL : &ledger,
+				      /*progress=*/true, &freeze_also_std);
 	    print_stats();
 	    return frc == 0 ? 0 : 1;
 	}

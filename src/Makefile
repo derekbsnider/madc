@@ -1654,7 +1654,7 @@ $(CROSS_MADC_BIN): FORCE
 	@$(MAKE) MODE=cross-$(DARWIN_ARCH)-macos $(CROSS_MADC_BIN)
 endif
 
-$(DARWIN_FOREST_BIN): $(DARWIN_FREEZER) $(DARWIN_PRELUDE_DIR)/.MANIFEST ../scripts/forest_pack_darwin.sh ../scripts/forest_pack_headers_darwin.txt $(RT_LEDGER_INPUTS)
+$(DARWIN_FOREST_BIN): $(DARWIN_FREEZER) $(DARWIN_PRELUDE_DIR)/.MANIFEST ../scripts/forest_pack_darwin.sh ../scripts/forest_pack_share.sh ../scripts/forest_pack_headers_darwin.txt $(RT_LEDGER_INPUTS)
 	bash ../scripts/forest_pack_darwin.sh $(DARWIN_FREEZER) $(DARWIN_PRELUDE_DIR)/.MANIFEST $@
 endif
 

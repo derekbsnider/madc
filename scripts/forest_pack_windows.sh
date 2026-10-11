@@ -31,6 +31,7 @@
 # Pack failure = build failure (set -e).
 set -e
 cd "$(dirname "$0")/.."
+. scripts/forest_pack_share.sh	# the standards the one profile serves
 
 IMAGE=
 while [ $# -gt 0 ]; do
@@ -133,12 +134,14 @@ ulimit -t 1800
 # Captured for the degradation gate (task #63) — see scripts/forest_pack.sh for
 # why this is redirect-then-cat and never `| tee`.
 PACK_LOG=tmp/forest_pack_win_freeze.log
-if ! timeout 1800 "$WINE" "$PACKER" --no-config --std=madc --freeze-mir-cache "${LEDGER_ARGS[@]}" --freeze-append="$APPEND_TO" "$TU" > "$PACK_LOG" 2>&1; then
+if ! timeout 1800 "$WINE" "$PACKER" --no-config --std=madc --freeze-mir-cache "${LEDGER_ARGS[@]}" "${FOREST_SHARE_ARGS[@]}" --freeze-append="$APPEND_TO" "$TU" > "$PACK_LOG" 2>&1; then
     cat "$PACK_LOG"
     echo "forest_pack_windows: FAILED - freeze-append exited nonzero" >&2
     exit 1
 fi
 cat "$PACK_LOG"
+timeout 300 "$WINE" "$PACKER" --dump-forest="$APPEND_TO" > tmp/forest_pack_win_share_dump.txt
+forest_share_check tmp/forest_pack_win_share_dump.txt
 if [ "$APPEND_TO" != "$IMAGE" ]; then
     mv -f "$APPEND_TO" "$IMAGE"
 fi

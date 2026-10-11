@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### The one pack profile serves the C++ modes it shares with madc
+
+A forest freeze under `--std=madc` can carry `--freeze-also-std=<std>` labels
+(`CIR_FOREST_SEG_SHARED_CONFIGS`) naming the other standards it serves, and a
+consumer now binds a profile whose dir-header config OR one of those labels
+matches its own (`CirFrozenForest::serves_config`, read by the lexer's
+`forest_probe_arm`). The release pack labels its single madc profile for
+`gnu++17` and `c++17`: the madc dialect is C++17 plus extras — auto-includes,
+auto-namespacing, auto-main, its keywords and tokens — that the `--std=` gate
+keeps out of a C++ compile, over the same macro table, so the corpus it froze is
+the one a C++17 compile parses. After split arc 1A.4 made `.cpp` gnu++17, those
+compiles bound no profile and fell through to the pack's source text; now they
+bind the labelled profile. Parse cost on `cxx_stl` (a `.cpp`, gnu++17) drops
+from 2,840,750,381 instructions (+69.93% over baseline) to 1,665,129,311
+(-0.39%), with the pack still one profile, no size growth and nothing stripped
+from the corpus. `--dump-forest` gains a `config` line, a `shared` line per
+label, and a config-blind `content` digest line; `scripts/forest_pack_share.sh`
+is the one owner of the served standards (`gnu++17`, `c++17`), sourced by the
+three pack scripts, and checks the packed label count.
+
 ### The forest pack emits unit payloads in canonical order, reproducibly
 
 `cir_forest_fill_pack_payloads` now walks the per-unit pack maps

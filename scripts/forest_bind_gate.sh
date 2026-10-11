@@ -846,6 +846,85 @@ else
     echo "forest_bind_gate: [flavorgate] SKIP — this build has no libc++ flavor"
 fi
 
+# --- case: sharegate (owner 2026-10-11: the madc profile serves the C++ modes) ---
+# The release pack freezes once, under madc, and labels that one profile for
+# gnu++17 and c++17 (--freeze-also-std=): the madc dialect is C++17 plus
+# extras the --std= gate keeps out of a C++ compile. A C++ consumer binds the
+# madc profile — and still gets NONE of madc's extras: no auto-include
+# (println undeclared), no madc keyword (var), no auto-main (a top-level
+# statement is an error). Control: the same probes compile under madc against
+# the same profile, so each probe really exercises its extra. An unlabelled
+# standard (c++20) does not bind.
+cat > tmp/fbgate_share.cpp <<'EOF'
+#include <cstddef>
+#include <cstdio>
+int main() { size_t n = 7; printf("n=%zu\n", n); return 0; }
+EOF
+printf '#include <cstdio>\nint main() { println("x"); return 0; }\n' > tmp/fbgate_share_println.cpp
+printf '#include <cstdio>\nint main() { var x = 1; printf("%%d\\n", (int)x); return 0; }\n' > tmp/fbgate_share_var.cpp
+printf '#include <cstdio>\nprintf("x\\n");\n' > tmp/fbgate_share_nomain.cpp
+sh_snap=tmp/fbgate_share.msnap
+sh_log=tmp/fbgate_share.log
+rm -f "$sh_snap"
+timeout 600 "$BIN" --freeze="$sh_snap" --freeze-also-std=gnu++17 --freeze-also-std=c++17 \
+    tmp/fbgate_share.cpp >"$sh_log" 2>&1 || fail "[sharegate] the madc --freeze-also-std FAILED: $(tail -n 3 "$sh_log")"
+sh_labels=$(timeout 60 "$BIN" --dump-forest="$sh_snap" | grep -c '^shared	')
+[ "$sh_labels" = 2 ] || fail "[sharegate] the profile carries $sh_labels label(s), expected 2"
+for sh_std in gnu++17 c++17; do
+    sh_out=$(timeout 60 "$BIN" --std=$sh_std --forest-bind="$sh_snap" tmp/fbgate_share.cpp 2>/dev/null)
+    [ "$sh_out" = "n=7" ] || fail "[sharegate] $sh_std consumer output '$sh_out' != 'n=7'"
+    timeout 60 "$BIN" -v --std=$sh_std --forest-bind="$sh_snap" tmp/fbgate_share.cpp >"$sh_log" 2>/dev/null
+    grep -aq "bound to grove unit" "$sh_log" \
+        || fail "[sharegate] the $sh_std consumer did not bind the madc profile labelled for it"
+done
+timeout 60 "$BIN" -v --std=c++20 --forest-bind="$sh_snap" tmp/fbgate_share.cpp >"$sh_log" 2>/dev/null
+if grep -aq "bound to grove unit" "$sh_log"; then
+    fail "[sharegate] a c++20 consumer BOUND a profile not labelled for it"
+fi
+for sh_probe in println var nomain; do
+    sh_src=tmp/fbgate_share_$sh_probe.cpp
+    timeout 60 "$BIN" --forest-bind="$sh_snap" "$sh_src" >/dev/null 2>&1 \
+        || fail "[sharegate] control: the madc compile of the $sh_probe probe failed (the probe does not exercise its extra)"
+    timeout 60 "$BIN" -v --std=gnu++17 --forest-bind="$sh_snap" "$sh_src" >"$sh_log" 2>&1
+    sh_rc=$?
+    grep -aq "bound to grove unit" "$sh_log" \
+        || fail "[sharegate] the gnu++17 $sh_probe probe never bound the profile (vacuous)"
+    [ "$sh_rc" -ne 0 ] && [ "$sh_rc" -ne 124 ] \
+        || fail "[sharegate] a gnu++17 compile bound to the madc profile got madc's $sh_probe extra (rc=$sh_rc)"
+done
+rm -f "$sh_snap" "$sh_log" tmp/fbgate_share.cpp tmp/fbgate_share_println.cpp \
+      tmp/fbgate_share_var.cpp tmp/fbgate_share_nomain.cpp
+echo "forest_bind_gate: [sharegate] OK — the madc profile binds for gnu++17 and c++17 with no madc extras; c++20 does not bind"
+
+# --- case: reprogate (2026-10-11: a freeze is reproducible) ---
+# --dump-forest's `content` line digests the frozen corpus with the producer
+# config left out. Two freezes of one TU under standards that parse it alike
+# (gnu++17, c++17) print the same line — the freeze no longer walks its
+# pointer-keyed pack maps in heap-address order (the pack's units once came
+# out in a different order run to run). Negative control: a c++20 freeze
+# takes other branches and must print a different line, so equal lines are
+# not an artifact of the digest.
+cat > tmp/fbgate_repro.cpp <<'EOF'
+#include <cstddef>
+#include <cstdio>
+#include <cstdlib>
+int main() { size_t n = 7; printf("n=%zu\n", n); return EXIT_SUCCESS; }
+EOF
+rp_content() {	# rp_content <std> -> the content line of a fresh freeze
+    rm -f tmp/fbgate_repro.msnap
+    timeout 600 "$BIN" --std="$1" --freeze=tmp/fbgate_repro.msnap tmp/fbgate_repro.cpp >/dev/null 2>&1 \
+        || fail "[reprogate] the $1 --freeze FAILED"
+    timeout 60 "$BIN" --dump-forest=tmp/fbgate_repro.msnap | grep '^content	'
+}
+rp_gnu=$(rp_content gnu++17)
+rp_cxx17=$(rp_content c++17)
+rp_cxx20=$(rp_content c++20)
+[ -n "$rp_gnu" ] || fail "[reprogate] the dump printed no content line"
+[ "$rp_gnu" = "$rp_cxx17" ] || fail "[reprogate] gnu++17 and c++17 froze one TU differently ($rp_gnu / $rp_cxx17)"
+[ "$rp_gnu" != "$rp_cxx20" ] || fail "[reprogate] control: a c++20 freeze printed the same content (the digest is vacuous)"
+rm -f tmp/fbgate_repro.msnap tmp/fbgate_repro.cpp
+echo "forest_bind_gate: [reprogate] OK — gnu++17 and c++17 freeze one TU identically; c++20 differs"
+
 # --- case: strbind (v12 corpus — the FIRST std:: library class bound end-to-end) ---
 #     Freeze the REAL system <string>, then bind it while compiling a consumer that
 #     default-CONSTRUCTS a std::string, ASSIGNS a C-string to it, SIZES it, and (at

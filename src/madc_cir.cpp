@@ -6459,7 +6459,8 @@ static void cir_ledger_serialize(const std::vector<cir_ledger_module> &ledger,
 int madc_cir_freeze(Program *prog, const char *source_name,
 		    const char *out_path, bool append, bool mir_cache,
 		    const std::vector<cir_ledger_module> *ledger,
-		    bool progress)
+		    bool progress,
+		    const std::vector<std::string> *also_std)
 {
     // The type graph rides the parse-populated DefArena (v18): a Program that
     // parsed with forest_arena_enabled OFF would freeze a type-less container
@@ -6654,6 +6655,53 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 		// zero-copy binds).
 		bool staged = cir_forest_write(f, w, codec, append ? 15 : 0,
 					       append);
+		// Shared configs (--freeze-also-std=): the one pack profile serves
+		// every standard named here too. The madc dialect is C++17 plus
+		// extras — auto-includes, auto-namespacing, auto-main, its keywords
+		// and tokens — that the --std= gate keeps out of a C++ compile, and
+		// the C++ modes share madc's macro table (C++ modes keep
+		// __STRICT_ANSI__; include/madc.h), so the corpus it froze is the
+		// one a C++17 compile would parse. Each label is the config word a
+		// compile under that standard carries: this Program's own config
+		// with the standard swapped through the --std= owner.
+		if (staged && also_std && !also_std->empty()) {
+		    std::vector<cir_forest_shared_config> labels;
+		    const Program::LanguageStd own_std = prog->language_std;
+		    const bool own_gnu = prog->gnu_dialect;
+		    for (size_t i = 0; staged && i < also_std->size(); ++i) {
+			const std::string &spelling = (*also_std)[i];
+			if (!prog->set_language_standard(spelling)) {
+			    fprintf(stderr, "%s: --freeze-also-std=%s: unknown standard\n",
+				    source_name, spelling.c_str());
+			    staged = false;
+			    break;
+			}
+			cir_forest_shared_config c;
+			c.language_std = madc_forest_config_word(prog);
+			c.defines_hash = madc_forest_defines_hash(prog);
+			prog->language_std = own_std;
+			prog->gnu_dialect = own_gnu;
+			if (c.language_std == f.language_std && c.defines_hash == f.defines_hash)
+			    continue;	// this profile's own config: nothing to label
+			labels.push_back(c);
+			if (progress)
+			    fprintf(stderr, "%s: forest profile also serves --std=%s "
+				    "(config 0x%08x)\n", source_name, spelling.c_str(),
+				    c.language_std);
+		    }
+		    prog->language_std = own_std;
+		    prog->gnu_dialect = own_gnu;
+		    if (staged && !labels.empty()
+			&& !w.add_segment(CIR_FOREST_SEG_SHARED_CONFIGS,
+					  SNAP_KIND_CIR_SHARED_CONFIGS,
+					  labels.data(),
+					  labels.size() * sizeof(cir_forest_shared_config),
+					  PchCompression::None, 0)) {
+			fprintf(stderr, "%s: shared configs: segment add failed\n",
+				source_name);
+			staged = false;
+		    }
+		}
 		// MIR module cache (--freeze-mir-cache): assemble the container
 		// in memory, thaw + compile that EXACT image (what a consumer's
 		// --run-frozen builds), and stage the serialized module as one
@@ -6824,6 +6872,26 @@ int madc_cir_dump_forest(const char *container_path)
 	return -1;
 
     printf("forest\tunits=%u\n", forest.unit_count());
+    // The producer configs this profile binds under: its own, then the
+    // labels a pack proved identical (the shared-profile gate reads these).
+    printf("config\tword=0x%08x\tdefines=0x%08x\n", forest.language_std(),
+	   forest.defines_hash());
+    for (const cir_forest_shared_config &c : forest.shared_configs())
+	printf("shared\tword=0x%08x\tdefines=0x%08x\n", c.language_std,
+	       c.defines_hash);
+    // The frozen corpus, config-blind: equal lines = the same corpus.
+    {
+	std::map<uint32_t, uint64_t> digests;
+	if (cir_forest_content_digests(image, image_len, digests)) {
+	    uint64_t h = 14695981039346656037ULL;
+	    for (std::map<uint32_t, uint64_t>::const_iterator it = digests.begin();
+		 it != digests.end(); ++it) {
+		h = (h ^ it->first) * 1099511628211ULL;
+		h = (h ^ it->second) * 1099511628211ULL;
+	    }
+	    printf("content\t%016llx\n", (unsigned long long)h);
+	}
+    }
     {
 	std::vector<uint8_t> mblob;
 	if (forest.mir_module_bytes(mblob))

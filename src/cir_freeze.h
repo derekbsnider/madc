@@ -133,7 +133,13 @@ enum : uint32_t
 	SNAP_KIND_CIR_BRANCH_DEPS      = madc::dis::SNAP_KIND_CONSUMER + 23, // per-unit: uint32 [name_id, flags, value_id, definer_unit] tuples
 	// v41: exact source bytes before preprocessing. A config-mismatched
 	// consumer may re-tokenize these without binding producer semantic state.
-	SNAP_KIND_CIR_UNIT_SOURCE      = madc::dis::SNAP_KIND_CONSUMER + 24
+	SNAP_KIND_CIR_UNIT_SOURCE      = madc::dis::SNAP_KIND_CONSUMER + 24,
+	// --- The OTHER producer configs this profile is valid for (owner
+	// 2026-10-11): a pack freezes each default config, and one whose frozen
+	// content is byte-identical to this profile's rides it as a label
+	// instead of a second profile. OPTIONAL segment: absent = the dir
+	// header's config only. See cir_forest_shared_config. ---
+	SNAP_KIND_CIR_SHARED_CONFIGS   = madc::dis::SNAP_KIND_CONSUMER + 25 // container-global: cir_forest_shared_config[]
 };
 
 // One frozen node record (fixed-size POD; x86-64 little-endian first, like
@@ -608,6 +614,7 @@ enum : uint32_t
 	CIR_FOREST_SEG_ARENA_TOKBYTES   = 19,	// v23: DefArena::tokbytes (param-default token runs)
 	CIR_FOREST_SEG_MIR_MODULE       = 20,	// MIR module cache (optional; absent = no cache)
 	CIR_FOREST_SEG_LEDGER           = 21,	// S5 AOT ledger (optional; absent = no ledger)
+	CIR_FOREST_SEG_SHARED_CONFIGS   = 22,	// configs sharing this profile (optional; absent = none)
 	CIR_FOREST_SEG_UNIT_BASE     = 24,
 	CIR_FOREST_SEGS_PER_UNIT     = 10	// +0 records, +1 children, +2 connectors,
 						// +3 positions, +4 tokens, +5 decl index,
@@ -625,6 +632,17 @@ struct cir_forest_dir_header	// directory payload: header, then units, then lib 
 	uint32_t language_std;	// v27: producer config — Program::LanguageStd | (gnu_dialect << 16)
 	uint32_t defines_hash;	// v27: fold of the producer's -D cli defines (0 = none)
 	uint32_t _pad;
+};
+
+// One more producer config a profile serves (CIR_FOREST_SEG_SHARED_CONFIGS):
+// the (config word, -D fold) pair a compile under that standard carries,
+// stamped by --freeze-also-std=. The release pack labels its madc profile
+// for the C++ modes: the madc dialect is C++17 plus extras the --std= gate
+// keeps out of a C++ compile, over the same macro table.
+struct cir_forest_shared_config
+{
+	uint32_t language_std;	// madc_forest_config_word of the other config
+	uint32_t defines_hash;	// madc_forest_defines_hash of the other config
 };
 
 // MIR module cache segment header (precedes the raw MIR_write_module bytes).
@@ -1023,6 +1041,17 @@ class Program;
 uint32_t madc_forest_config_word(const Program *prog);
 uint32_t madc_forest_defines_hash(const Program *prog);
 
+// The frozen CONTENT of the last container in `image`, one digest per
+// segment id: every segment's decoded bytes, the directory with its producer
+// config fields zeroed, less the segments that are not parse output (the
+// MIR module cache and the AOT ledger are derived / dialect-agnostic; the
+// shared-config labels are labels). --dump-forest prints their fold as its
+// `content` line: two freezes of one corpus under configs that parse it
+// alike print the same line (a freeze is reproducible). False when the
+// image holds no readable container.
+bool cir_forest_content_digests(const void *image, size_t len,
+				std::map<uint32_t, uint64_t> &out);
+
 // Partition the sub-DAG rooted at `root` into per-unit segments keyed by
 // each node's origin-token source file (origin-less nodes inherit their
 // discovering parent's unit; the root falls back to `main_unit_name`).
@@ -1375,6 +1404,7 @@ class CirFrozenForest
 	std::map<madc::dis::istring, uint32_t> _unit_by_name;	// unit-name spelling -> index (Phase 6 bind)
 	uint32_t _root_unit, _root_idx;
 	uint32_t _language_std = 0, _defines_hash = 0;	// v27 producer config (dir header)
+	std::vector<cir_forest_shared_config> _shared_configs;	// more configs this profile serves
 
 	// The container's own string pool (A1 frozen view over the three
 	// blocks; decompressed copies owned here when the segments are
@@ -1558,6 +1588,11 @@ public:
 	// v27 producer config (bind gate: both must equal the consumer's).
 	uint32_t language_std() const { return _language_std; }
 	uint32_t defines_hash() const { return _defines_hash; }
+	// The other configs the pack proved this profile serves (shared labels).
+	const std::vector<cir_forest_shared_config> &shared_configs() const { return _shared_configs; }
+	// The bind gate: this profile was frozen under (config, defines) — its
+	// own header's pair or one of its shared labels.
+	bool serves_config(uint32_t config, uint32_t defines) const;
 	const std::vector<madc::dis::istring> &libs() const { return _libs; }
 	const char *unit_name(uint32_t unit) const;
 	// Reverse directory (Phase 6 bind): unit-name spelling -> unit index, or

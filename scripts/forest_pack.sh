@@ -27,6 +27,7 @@
 # Pack failure = build failure (set -e).
 set -e
 cd "$(dirname "$0")/.."
+. scripts/forest_pack_share.sh	# the standards the one profile serves
 
 SIDECAR=0
 IMAGE=
@@ -129,12 +130,14 @@ fi
 # Redirect-then-cat, never `| tee` — without pipefail a pipeline's status is
 # tee's, so a pack FAILURE would read as success.
 PACK_LOG=tmp/forest_pack_freeze.log
-if ! timeout 900 tmp/forest_packer_madc --no-config --std=madc --freeze-mir-cache "${LEDGER_ARGS[@]}" --freeze-append="$APPEND_TO" "$TU" > "$PACK_LOG" 2>&1; then
+if ! timeout 900 tmp/forest_packer_madc --no-config --std=madc --freeze-mir-cache "${LEDGER_ARGS[@]}" "${FOREST_SHARE_ARGS[@]}" --freeze-append="$APPEND_TO" "$TU" > "$PACK_LOG" 2>&1; then
     cat "$PACK_LOG"
     echo "forest_pack: FAILED - freeze-append exited nonzero" >&2
     exit 1
 fi
 cat "$PACK_LOG"
+timeout 120 tmp/forest_packer_madc --dump-forest="$APPEND_TO" > tmp/forest_pack_share_dump.txt
+forest_share_check tmp/forest_pack_share_dump.txt
 if [ "$APPEND_TO" != "$OUT" ]; then
     mv -f "$APPEND_TO" "$OUT"
 fi
