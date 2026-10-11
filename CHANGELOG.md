@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### `php::trim` / `ltrim` / `rtrim` / `chop` take PHP's `$characters`, and the default set is PHP's
+
+`php::trim`, `php::ltrim`, `php::rtrim` and `php::chop` now accept an optional
+second argument naming the bytes to strip, as PHP does: `php::trim(s, "/")`,
+and `"a..z"` names the byte run `a` through `z` (`php_charmask`, which warns on
+stderr as PHP's `E_WARNING` on a malformed run). With no second argument the
+default set is PHP's `" \n\r\t\v\0"` — it strips `\0` and leaves `\f`, where
+the previous default came from the shared python/rust whitespace trimmer
+(which strips `\f` and keeps `\0`). The one-argument forms and
+`ns_common::trim` (still serving `rust::`) are unchanged.
+
 ### madcide runs on madc's services — the colon line, `examples/vised`, lined retired
 
 madcide's nine service files (`madcide_lsp.inc`, `madcide_mcp.inc`,
