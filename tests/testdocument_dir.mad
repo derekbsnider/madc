@@ -1,0 +1,22 @@
+// A directory is no document (split arc 1D): ui::doc_open refuses it — an
+// ifstream opens a directory on POSIX hosts and its read yields nothing,
+// which minted an empty document whose save could never land — and a
+// reload onto one is refused, the document as it was. An engine contract:
+// the suite is the oracle. The test removes what it creates.
+int main()
+{
+    long w = ui::world_new();
+    php::mkdir("tmp/testdocument_dir.d");
+    printf("open dir refused=%d\n", ui::doc_open(w, "tmp/testdocument_dir.d") == 0);
+    const char *path = "tmp/testdocument_dir.c";
+    php::file_put_contents(path, "int x;\n");
+    long d = ui::doc_open(w, path);
+    printf("open file=%d\n", d != 0);
+    printf("reload dir refused=%d\n", !ui::doc_load_file(w, d, "tmp/testdocument_dir.d"));
+    var t;
+    ui::text(t, w, d);
+    printf("text kept=%d\n", t == "int x;\n");
+    php::unlink(path);
+    php::rmdir("tmp/testdocument_dir.d");
+    return 0;
+}

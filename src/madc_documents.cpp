@@ -9,7 +9,8 @@
 
 #include "madc_documents.h"
 #include "madc_file_kinds.h"	// file_kind_of_path: the kind stamp
-#include "madc_posix_io.h"	// canonical_path_for_compare: path identity
+#include "madc_posix_io.h"	// canonical_path_for_compare: path identity;
+				// host_path_type_of: a directory is refused
 #include "madcdis/hub.h"
 #include "madcdis/verbs.h"	// mutation_context: the one write surface
 
@@ -33,6 +34,10 @@ int64_t kind_of(const std::string &path)
 
 bool document_read_file(const std::string &path, std::string &text)
 {
+    // A directory is no file's text: an ifstream opens one on POSIX hosts
+    // (the read then yields nothing), so it is refused by its type.
+    if ( detail::host_path_type_of(path) == detail::host_path_type::directory )
+	return false;
     std::ifstream in(path.c_str(), std::ios::binary);
     if ( !in )
 	return false;

@@ -1,0 +1,4 @@
+open dir refused=1
+open file=1
+reload dir refused=1
+text kept=1

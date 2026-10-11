@@ -25,7 +25,8 @@
 namespace madc {
 namespace hub { class world; }
 
-// A file's whole text, bytes as they are. False when it cannot be read.
+// A file's whole text, bytes as they are. False when it cannot be read (a
+// directory included).
 bool document_read_file(const std::string &path, std::string &text);
 // `text` written to `path`, replacing it or, `append`, after it. False when
 // the file cannot be written.
