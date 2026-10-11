@@ -260,8 +260,11 @@ void colour_dirty(long w, long es, long doc, long off, long delta, bool multi)
 void colour_dirty_all(long w, long es, long doc)
 {
     text_rev_bump(w, doc);
-    ui::set(w, es, "cdirty_doc", doc);
-    ui::set(w, es, "cdirty_all", true);
+    if ( es != 0 )
+    {
+	ui::set(w, es, "cdirty_doc", doc);
+	ui::set(w, es, "cdirty_all", true);
+    }
     var reg;
     ui::get(reg, w, doc, "anchor_es");
     if ( reg.is_null() )
@@ -276,14 +279,17 @@ void colour_dirty_all(long w, long es, long doc)
     }
 }
 
-// An edit's anchors and colour record, on the editing client and every
-// peer viewing the document; `multi` = the edit's text held a
-// multiline_char.
+// An edit's anchors and colour record, on the editing client (0: none —
+// the edit was no client's) and every peer viewing the document; `multi`
+// = the edit's text held a multiline_char.
 void shift_anchors(long w, long es, long doc, long off, long delta, bool multi)
 {
     text_rev_bump(w, doc);
-    shift_es_anchors(w, es, doc, off, delta, false);
-    colour_dirty(w, es, doc, off, delta, multi);
+    if ( es != 0 )
+    {
+	shift_es_anchors(w, es, doc, off, delta, false);
+	colour_dirty(w, es, doc, off, delta, multi);
+    }
     var reg;
     ui::get(reg, w, doc, "anchor_es");
     if ( reg.is_null() )
@@ -719,18 +725,68 @@ void clog_adopt(long w, long doc)
     }
 }
 
+// ---- one mutation path (split arc 1D, item 17) --------------------------
+// Every change to a text — a document's or a view's; this editor's verbs,
+// madc's ex core, a tool over MCP — reaches madcide as the session's EDIT
+// NOTIFICATION (ui::doc_subscribe), and only here does madcide's per-client
+// state follow it: the anchor registry, the colour record, the text
+// revision (a text no client views has none of it to move). A verb of
+// this editor names the client it runs for (ed_editing_es) and, for an
+// erase, whether the erased text held a multi-line character (read before
+// it went); a change no client of this editor made treats every viewer as
+// a peer and an erase as possibly multi-line (the conservative recolour).
+long ed_editing_es = 0;
+bool ed_erase_multi = true;
+
+void ed_text_changed(long w, long doc, var &c)
+{
+    long es = ed_editing_es;
+    if ( c["kind"] != ui::text_change_kind::splice )
+    {
+	colour_dirty_all(w, es, doc);	// a load, an undo, a redo: all of it
+	return;
+    }
+    long off = c["off"].as_integer();
+    long del = c["old_len"].as_integer();
+    var ins = c["inserted"];
+    if ( del > 0 )
+	shift_anchors(w, es, doc, off, -del, es != 0 ? ed_erase_multi : true);
+    if ( strlen(ins.c_str()) > 0 )
+	shift_anchors(w, es, doc, off, strlen(ins.c_str()), multiline_text(ins.c_str()));
+}
+
+// The worlds whose edit notification ed_text_changed already follows: one
+// subscription per world, however many clients (editor states) it holds.
+var ed_followed_worlds;
+
+void ed_follow_edits(long w)
+{
+    if ( !ed_followed_worlds.is_null() )
+	for ( var f : ed_followed_worlds )
+	    if ( f.as_integer() == w )
+		return;
+    ed_followed_worlds[] = w;
+    ui::doc_subscribe(w, ed_text_changed);
+}
+
 void ed_text_insert(long w, long es, long doc, long off, const char *s)
 {
+    long was = ed_editing_es;
+    ed_editing_es = es;
     ui::text_insert(w, doc, off, s);
-    shift_anchors(w, es, doc, off, strlen(s), multiline_text(s));
+    ed_editing_es = was;
     journal_splice(w, es, doc, off, 0, s);
 }
 
 void ed_text_erase(long w, long es, long doc, long off, long n)
 {
-    bool multi = multiline_range(w, doc, off, n);
+    long was = ed_editing_es;
+    bool multi_was = ed_erase_multi;
+    ed_editing_es = es;
+    ed_erase_multi = multiline_range(w, doc, off, n);
     ui::text_erase(w, doc, off, n);
-    shift_anchors(w, es, doc, off, -n, multi);
+    ed_editing_es = was;
+    ed_erase_multi = multi_was;
     journal_splice(w, es, doc, off, n, "");
 }
 
@@ -807,18 +863,29 @@ void refuse_edit(long w, long es)
     ui::set(w, es, "msg", ro.c_str());
 }
 
+// THE client: an editor-state bag over `doc` — the launch window's and every
+// further window's (spawn_view_es) — its caret at the top, no selection,
+// the access verdict derived (the world's verbs already bound) and the
+// world's edits followed.
+long new_editor_state(long w, long doc)
+{
+    long es = ui::create(w, "editor-state");
+    ui::set(w, es, "caret", 0);
+    ui::set(w, es, "mark", -1);
+    ui::set(w, es, "adoc", doc);	// the subject-document rule's key
+    derive_access(w, es);
+    ed_follow_edits(w);
+    return es;
+}
+
 // The editor-state half of setup_editor, over a document already in the
 // world (madcide's launch opens its document through its own open rule,
 // open_buffer_doc). False = the verbs failed to load (already reported).
 bool setup_editor_state(long w, long doc)
 {
-    long es = ui::create(w, "editor-state");
     if ( !bind_lineed_verbs(w) )
 	return false;
-    ui::set(w, es, "caret", 0);
-    ui::set(w, es, "mark", -1);
-    ui::set(w, es, "adoc", doc);	// the subject-document rule's key
-    derive_access(w, es);
+    new_editor_state(w, doc);
     return true;
 }
 
@@ -913,13 +980,16 @@ bool undo_edit(long w, long es, long doc)
     var now;
     edit_meta(now, w, es, doc, clamped_caret(w, es, doc));
     var m;
-    if ( !ui::text_undo(m, w, doc, now) )
+    long was = ed_editing_es;
+    ed_editing_es = es;
+    bool undone = ui::text_undo(m, w, doc, now);	// the notification recolours
+    ed_editing_es = was;
+    if ( !undone )
     {
 	ui::set(w, es, "msg", "Nothing to undo.");
 	return false;
     }
     restore_meta(w, es, doc, m);
-    colour_dirty_all(w, es, doc);
     return true;
 }
 
@@ -928,13 +998,16 @@ bool redo_edit(long w, long es, long doc)
     var now;
     edit_meta(now, w, es, doc, clamped_caret(w, es, doc));
     var m;
-    if ( !ui::text_redo(m, w, doc, now) )
+    long was = ed_editing_es;
+    ed_editing_es = es;
+    bool redone = ui::text_redo(m, w, doc, now);	// the notification recolours
+    ed_editing_es = was;
+    if ( !redone )
     {
 	ui::set(w, es, "msg", "Nothing to redo.");
 	return false;
     }
     restore_meta(w, es, doc, m);
-    colour_dirty_all(w, es, doc);
     return true;
 }
 

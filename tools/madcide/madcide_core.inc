@@ -10725,11 +10725,7 @@ long spawn_view_es(long w, long doc, const char *path, const char *profile = "")
 {
     var p = path;		// ring discipline: own before the ring-using
     var pr = profile;		// derive_access / init below clobber the slot
-    long es = ui::create(w, "editor-state");
-    ui::set(w, es, "caret", 0);
-    ui::set(w, es, "mark", -1);
-    ui::set(w, es, "adoc", doc);
-    derive_access(w, es);
+    long es = new_editor_state(w, doc);
     if ( !init_view_es(w, es, doc, p.c_str(), pr.c_str(), 0) )
 	return 0;
     return es;
