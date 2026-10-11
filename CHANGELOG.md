@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### A restored class keeps its constructor's `explicit`
+
+A frozen class now carries each constructor's `explicit` across freeze/bind: the
+methodrec flag word gains `MF_EXPLICIT` and the `ClassMethodPattern` payload a
+word after `is_deleted`, both restored into `FuncDef::is_explicit`, and
+`class_pattern_fingerprint` includes it so a differing explicitness is a distinct
+specialization. Before, a v53 pack restored every explicit constructor as a
+converting one, so `score_arg_to_param`'s converting-constructor probe counted it
+as an implicit user-defined conversion ([over.ics.user]). A bound
+`reverse_iterator<__normal_iterator<int*, vector<int>>>`'s own
+`operator==(const reverse_iterator&, const reverse_iterator&)` then ranked viable
+for two `__normal_iterator` operands through `__x.base() == __y.base()` and
+recursed until the stack overflowed — `testvectoriterpairctor` died of SIGSEGV
+instead of printing its `.expect` lines on the packed headerless and exe/obj
+lanes. Forest format bumps to v54. `scripts/forest_bind_gate.sh`'s `explicitctor`
+case gates it (the v53 binary's bound consumer SIGSEGVs; `0 1 1` after, equal to
+live madc and g++).
+
 ### A dependent noexcept operand no longer folds at class-pattern capture
 
 A `noexcept(...)` over a type-dependent operand no longer constant-folds when a

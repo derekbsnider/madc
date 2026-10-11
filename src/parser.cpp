@@ -5738,6 +5738,7 @@ uint64_t Program::class_pattern_fingerprint(const ClassPattern &pattern) const
 	    hash.add_bool(method.declaration_only);
 	    hash.add_bool(method.defaulted_or_deleted);
 	    hash.add_bool(method.is_deleted);
+	    hash.add_bool(method.is_explicit);
 	    hash.add_u64(method.noexcept_spec);
 	    add_tokens(method.noexcept_condition_tokens);
 	    hash.add_bool(method.pure_virtual);
@@ -9698,6 +9699,7 @@ static void register_basic_class_pattern_method(
     fd->declaration_only = pattern.declaration_only;
     fd->defaulted_or_deleted = pattern.defaulted_or_deleted;
     fd->is_deleted = pattern.is_deleted;
+    fd->is_explicit = pattern.is_explicit;
     fd->implicit_dtor_noexcept = pattern.noexcept_spec == FuncDef::NxImplicitDtor;
     fd->noexcept_spec = fd->implicit_dtor_noexcept
 	? FuncDef::NxUnknown : pattern.noexcept_spec;
@@ -26464,6 +26466,7 @@ class ClassPatternPayloadReader
 	out.declaration_only = boolean();
 	out.defaulted_or_deleted = boolean();
 	out.is_deleted = boolean();
+	out.is_explicit = boolean();
 	out.noexcept_spec = (uint8_t)word();
 	out.pure_virtual = boolean();
 	{
@@ -37613,6 +37616,7 @@ class ClassPatternNormalizer
 	out.declaration_only = fd->declaration_only;
 	out.defaulted_or_deleted = fd->defaulted_or_deleted;
 	out.is_deleted = fd->is_deleted;
+	out.is_explicit = fd->is_explicit;
     out.noexcept_spec = fd->implicit_dtor_noexcept
 	? FuncDef::NxImplicitDtor : fd->noexcept_spec;
     out.noexcept_condition_tokens =

@@ -3356,6 +3356,8 @@ void CirFrozenForest::materialize_pass()
 					(fr.flags & madc::dis::DF_FUNC_DEFAULTED_OR_DELETED) != 0;
 				fd->is_deleted =
 					(fr.flags & madc::dis::DF_FUNC_IS_DELETED) != 0;
+				fd->is_explicit =
+					(md.flags & madc::dis::MF_EXPLICIT) != 0;
 				fd->noexcept_spec =
 					(fr.flags & madc::dis::DF_NOEXCEPT_TRUE) ? FuncDef::NxTrue
 					: (fr.flags & madc::dis::DF_NOEXCEPT_UNKNOWN) ? FuncDef::NxUnknown

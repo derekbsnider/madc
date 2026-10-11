@@ -3917,6 +3917,8 @@ void Program::forest_arena_record_aggregate(DataDefSTRUCT *sdd)
 			// method_map KEY: the "~" tag for the dtor; method_display_name for a plain
 			// method/operator; empty for a concrete ctor (resolves via cdd->ctors, not by name).
 			FuncDef *mfd = mv ? dynamic_cast<FuncDef *>(mv->type) : NULL;
+			if (mfd && mfd->is_explicit)
+				md.flags |= madc::dis::MF_EXPLICIT;
 			madc::dis::istring key = is_dtor ? dtor_key
 					: (is_ctor ? madc::dis::istring()
 					   : (mfd ? mfd->method_display_name : madc::dis::istring()));
@@ -4748,6 +4750,7 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 		words.push_back(method.declaration_only ? 1u : 0u);
 		words.push_back(method.defaulted_or_deleted ? 1u : 0u);
 		words.push_back(method.is_deleted ? 1u : 0u);
+		words.push_back(method.is_explicit ? 1u : 0u);
 		words.push_back((uint32_t)method.noexcept_spec);
 		words.push_back(method.pure_virtual ? 1u : 0u);
 		// the member's cv MASK (bit 0 const, bit 1 volatile): a 0/1 word

@@ -1504,6 +1504,55 @@ int main() {
 EOF
 run_case nothrowfold "0 1 1"
 
+# --- case: explicitctor — a restored class keeps its constructor's `explicit`
+#     (2026-10-11, forest v54). The forest never recorded FuncDef::is_explicit:
+#     a frozen reverse_iterator<__normal_iterator<int*, vector<int>>> came back
+#     with `explicit reverse_iterator(iterator_type)` as a CONVERTING ctor, so
+#     inside std::operator==(const reverse_iterator&, const reverse_iterator&)
+#     the body's `__x.base() == __y.base()` ranked that very operator viable
+#     for two __normal_iterator operands and recursed until the stack ran out
+#     (testvectoriterpairctor, packed leg). The ctor's explicitness now rides
+#     the method record (MF_EXPLICIT) and the class-pattern method payload.
+#     The producer instantiates W<It<int>> so the consumer restores it;
+#     W<It<long>> is a new specialization. Negative control: the v53 binary's
+#     bound consumer dies of SIGSEGV.
+cat > tmp/fbgate_explicitctor.h <<'EOF'
+#ifndef FBGATE_EXPLICITCTOR_H
+#define FBGATE_EXPLICITCTOR_H
+namespace fbgB {
+template<class T> struct It { T v; };
+template<class T> bool operator==(const It<T> &a, const It<T> &b) { return a.v == b.v; }
+}
+namespace fbgA {
+template<class I> struct W {
+    I cur;
+    W() {}
+    explicit W(I x) : cur(x) {}
+    I base() const { return cur; }
+};
+template<class I> bool operator==(const W<I> &x, const W<I> &y) { return x.base() == y.base(); }
+}
+inline int fbg_explicitctor_touch() { fbgA::W<fbgB::It<int> > w; return w.cur.v; }
+#endif
+EOF
+cat > tmp/fbgate_explicitctor_producer.cpp <<'EOF'
+#include <fbgate_explicitctor.h>
+int main() { return 0; }
+EOF
+cat > tmp/fbgate_explicitctor_consumer.cpp <<'EOF'
+#include <fbgate_explicitctor.h>
+#include <cstdio>
+int main() {
+    fbgB::It<int> i = { 1 }, j = { 2 };
+    fbgA::W<fbgB::It<int> > a(i), b(j);
+    fbgB::It<long> k = { 3 }, l = { 3 };
+    fbgA::W<fbgB::It<long> > c(k), d(l);
+    printf("%d %d %d\n", (int)(a == b), (int)(a == a), (int)(c == d));
+    return 0;
+}
+EOF
+run_case explicitctor "0 1 1"
+
 # --- case: deletedctor — deleted copy/move metadata must survive freeze/bind.
 #     FuncDef keeps the two special-member declarations distinct because its
 #     DataDefREF parameter type intentionally erases `&` versus `&&`. The
@@ -2035,5 +2084,5 @@ run_case patternalias "1 2"
 # coverage. Worse in the other direction: deleting a case would leave this line
 # still claiming it runs. Deriving it from run_case would need the ~12 bespoke
 # cases below to register too; until then, update it when you add a case.
-echo "forest_bind_gate: GREEN 39/39 — typedef + struct + nested + bitfield + class + method + fwd + ptr + nestedenumfn + ldouble + ns + anon + declonlymt + flavorgate + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec + iobind + traitfold + nothrowfold + deletedctor + constcopy + subbind + redecl + husk + silbody grove headers bound (unit-granular husk recovery only), output == live == g++ + secvptr + friendgrant + patternalias + quietbind + memberptr + unionclass"
+echo "forest_bind_gate: GREEN 40/40 — typedef + struct + nested + bitfield + class + method + fwd + ptr + nestedenumfn + ldouble + ns + anon + declonlymt + flavorgate + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec + iobind + traitfold + nothrowfold + explicitctor + deletedctor + constcopy + subbind + redecl + husk + silbody grove headers bound (unit-granular husk recovery only), output == live == g++ + secvptr + friendgrant + patternalias + quietbind + memberptr + unionclass"
 exit 0

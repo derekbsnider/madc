@@ -3908,6 +3908,7 @@ public:
 	bool declaration_only;
 	bool defaulted_or_deleted;
 	bool is_deleted;
+	bool is_explicit = false;	// FuncDef::is_explicit ([over.ics.user])
 	uint8_t noexcept_spec;	// FuncDef::NoexceptSpec value
 	std::vector<TokenBase *> noexcept_condition_tokens;
 	bool pure_virtual;
