@@ -105,6 +105,11 @@ Inserts a file's text at the cursor.
 ## outline
 Shows the definitions in the buffer; choosing one moves the cursor to it.
 
+## symbols
+Shows the names the REPL session defined, each with its type and its
+value, kept current after every entry and every run; choosing one a file
+defined moves the cursor to its definition.
+
 ## mdpreview
 Shows the Markdown buffer being edited as it reads, beside it, and keeps it current as the buffer changes; choosing a line moves the cursor to its source, and choosing a link opens the file it names.
 
@@ -177,6 +182,10 @@ Shows the editor's modes.
 Shows the program as the compiler sees it: its tree, its C, its assembly.
 On a Markdown file, shows the text as it reads, with the formatting
 characters hidden; editing there changes the file.
+
+## linenumbers
+Shows or hides the editor's line numbers; an open project keeps the
+choice in its layout.
 
 ## panel
 Shows or hides the panel below the editor.

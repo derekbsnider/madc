@@ -1,0 +1,164 @@
+// Split arc 1D item 20: the Symbols view in madcide's base (until 1D
+// Chthonia's plugin) and View ▸ Line Numbers. Headless, over the REPL's own
+// session:
+//   1. the REPL's activation registers the view as `symbols`, and the
+//      default layout docks it in the sidebar beside Outline;
+//   2. after an entry its names are the rows, `name type value`, sorted by
+//      name, without a command asking; a row an entry defined names no line
+//      (choosing it moves nothing);
+//   3. View ▸ Symbols shows it, its rows composed as a list;
+//   4. after F5 a row the file defined goes to its definition when chosen
+//      (the caret on its line);
+//   5. Stop empties it;
+//   6. View ▸ Line Numbers turns the editor's gutter off, then on (the
+//      layout's `gutter` word; the composed edit node's hint follows).
+// Oracle: Thonny's Variables view (each name with its type and value,
+// refreshed after every run, emptied when the backend stops). The test
+// removes what it creates.
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+
+#include "../tools/madcide/include/madcide/harness"	// <madcide/harness>: ev_*, settle, enter_line
+
+// The rows as `content[@line]` joined by `|`.
+void rows_text(var &out, long w, long es)
+{
+    var rows;
+    ui::get(rows, w, es, "repl.symbols");
+    var s = "";
+    if ( !rows.is_null() )
+	for ( var r : rows )
+	{
+	    var ln = r["line"];
+	    if ( ln.is_null() )
+		s = format("{}{}|", s, r["content"]);
+	    else
+		s = format("{}{}@{}|", s, r["content"], ln);
+	}
+    out = s;
+}
+
+// The 1-based row whose content starts with `name ` (0 = none).
+long row_of(long w, long es, const char *name)
+{
+    var rows;
+    ui::get(rows, w, es, "repl.symbols");
+    var head = format("{} ", name);
+    long i = 1;
+    if ( !rows.is_null() )
+	for ( var r : rows )
+	{
+	    if ( perl::index(r["content"].c_str(), head.c_str()) == 0 )
+		return i;
+	    i = i + 1;
+	}
+    return 0;
+}
+
+// A choose on row `option` of the Symbols view: its row verb.
+void choose_row(IdeSession &S, long doc, long kind, long option)
+{
+    var ch = { "event": "choose", "event_code": ui::event_kind::choose,
+	       "option": option, "action": "", "action_code": view_row_cmd(kind) };
+    S.apply_ide_event(doc, ch);
+}
+
+// Does the composed editor carry the gutter hint?
+bool edit_gutter(var &tree)
+{
+    if ( tree["role"] == "edit" )
+	return !tree["hints"]["gutter"].is_null() && tree["hints"]["gutter"].as_integer() != 0;
+    var kids = tree["children"];
+    if ( !kids.is_array() )
+	return false;
+    for ( var k : kids )
+	if ( edit_gutter(k) )
+	    return true;
+    return false;
+}
+
+int main()
+{
+    const char *path = "madc_ide_symbols.mad";
+    php::file_put_contents(path, "int answer = 1;\n\nint seed = 7;\n\nint main()\n{\n    return 0;\n}\n");
+    long w = ui::world_new();
+    long doc = setup_editor(w, path, false);
+    long es = ui::entity_by_name(w, "editor-state");
+    builtins_activate(w, es);
+    ui::set(w, es, "profile_dir", "tools/madcide/profiles");
+    ui::set(w, es, "profile", "joe");
+    ui::set(w, lang_world(w), "std", (long)madc::fkC11);
+    IdeSession S;
+    S.attach(w, es);
+
+    // 1. Registered, docked.
+    var sname = "symbols";
+    long kind = view_of_w(w, sname);
+    var lo;
+    layout_get(lo, w, es);
+    long tab = -1;
+    println("registered: view={} docked={}", kind != viewNONE ? 1 : 0,
+	    chrome_hosting(lo, kind, tab) >= 0 ? 1 : 0);
+
+    // 2. An entry's names, no command asking.
+    var e;
+    ev_action(e, "repl");
+    S.apply_ide_event(doc, e);
+    enter_line(S, doc, w, es, "int answer = 42;");
+    enter_line(S, doc, w, es, "double half = 0.5;");
+    settle(w, es, false);
+    var got;
+    rows_text(got, w, es);
+    println("entry: {}", got);
+    long before = es_int(w, es, "caret", -1);
+    choose_row(S, doc, kind, row_of(w, es, "answer"));
+    println("entry-row: caret {}", es_int(w, es, "caret", -1) == before ? "stays" : "moved");
+
+    // 3. View ▸ Symbols.
+    ev_action(e, "symbols");
+    S.apply_ide_event(doc, e);
+    var tree;
+    S.compose_ide_tree(tree, doc);
+    var text;
+    ui::render_tree(text, w, tree);
+    println("shown: {} composed={}", view_shown(w, es, kind) ? 1 : 0,
+	    rust::contains(text.c_str(), "answer int 42") != 0 ? 1 : 0);
+
+    // 4. F5: the file's names go to their definitions.
+    ev_action(e, "replrun", "f5");
+    S.apply_ide_event(doc, e);
+    settle(w, es, false);
+    settle(w, es, false);
+    rows_text(got, w, es);
+    println("run: {}", got);
+    choose_row(S, doc, kind, row_of(w, es, "seed"));	// line 3
+    println("run-row: caret on line 3={}",
+	    es_int(w, es, "caret", -1) == caret_to_line(w, doc, 3, 0) ? 1 : 0);
+
+    // 5. Stop.
+    ev_action(e, "replstop");
+    S.apply_ide_event(doc, e);
+    settle(w, es, false);
+    rows_text(got, w, es);
+    println("stopped: [{}]", got);
+
+    // 6. View ▸ Line Numbers.
+    S.compose_ide_tree(tree, doc);
+    bool g0 = edit_gutter(tree);
+    ev_action(e, "linenumbers");
+    S.apply_ide_event(doc, e);
+    var msg;
+    ui::get(msg, w, es, "msg");
+    S.compose_ide_tree(tree, doc);
+    bool g1 = edit_gutter(tree);
+    println("linenumbers-off: before={} after={} msg={}", g0 ? 1 : 0, g1 ? 1 : 0, msg);
+    ev_action(e, "linenumbers");
+    S.apply_ide_event(doc, e);
+    ui::get(msg, w, es, "msg");
+    S.compose_ide_tree(tree, doc);
+    println("linenumbers-on: after={} msg={}", edit_gutter(tree) ? 1 : 0, msg);
+
+    S.close();
+    php::unlink(path);
+    return 0;
+}

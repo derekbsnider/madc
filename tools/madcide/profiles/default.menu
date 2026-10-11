@@ -76,6 +76,7 @@ Search replace Replace… [editable]
 Search gotoline Go to Line…
 
 View outline Outline
+View symbols Symbols
 View mdpreview Markdown Preview
 View view AST Views
 View gitchanges Changes
@@ -86,6 +87,7 @@ View options Options…
 View keystyle Key Bindings…
 View modes Modes…
 View -
+View linenumbers Line Numbers
 View panel Toggle Panel
 View problems Problems
 View output Output

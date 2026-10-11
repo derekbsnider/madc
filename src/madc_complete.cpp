@@ -49,6 +49,7 @@
 #include "madc.h"
 #include "madc_type_spelling.h"
 #include "madcdis/text_buffer.h"	// the one word rule (word_byte)
+#include "madc_session.h"		// session_entry_unit: REPL[N]
 
 
 // The probe stands where the word is. It can be no macro and no declared
@@ -783,7 +784,7 @@ bool Program::describe_name(const madc::dis::istring &name, std::string &out,
 		    if ( r->alias )
 			t = pointer_dd_of(t) ? pointer_dd_of(t)->base_type : NULL;
 		    describe_field(s, "Type", speller.shown(t), &sc);
-		    describe_field(s, "Result", "REPL[" + std::to_string(r->entry) + "]");
+		    describe_field(s, "Result", madc::session_entry_unit(r->entry));
 		    break;
 		}
 		case Kind::header_name:

@@ -1021,7 +1021,7 @@ const char *default_layout_text()
 	   "menubar\n"
 	   "status bottom\n"
 	   "pane editor tabs views source focus gutter\n"
-	   "pane sidebar left 20% tabs views outline helpindex mdpreview hidden\n"
+	   "pane sidebar left 20% tabs views outline symbols helpindex mdpreview hidden\n"
 	   "pane panel bottom 25% tabs views problems output terminal repl hidden\n";
 }
 
@@ -8044,6 +8044,53 @@ bool editor_hosts(var &node, long kind)
     return false;
 }
 
+// Does a pane of the editor tree number its lines (pane_gutter)?
+bool editor_gutter_any(var &node)
+{
+    if ( node["kind"] == ctSPLIT )
+    {
+	for ( var c : node["children"] )
+	    if ( editor_gutter_any(c) )
+		return true;
+	return false;
+    }
+    return pane_gutter(node);
+}
+
+// Every pane of the editor tree numbers its lines, or none does.
+void editor_gutter_set(var &node, bool on)
+{
+    if ( node["kind"] == ctSPLIT )
+    {
+	var kids = {};
+	for ( var c : node["children"] )
+	{
+	    var nc = c;
+	    editor_gutter_set(nc, on);
+	    kids.push(nc);
+	}
+	node["children"] = kids;
+	return;
+    }
+    node["gutter"] = on ? 1 : 0;
+}
+
+// View ▸ Line Numbers: the editor region's line numbers on (when no pane
+// shows them) or off — the layout's `gutter` word on every editor pane,
+// kept with the layout (layout_persist: beside an open manifest).
+void toggle_line_numbers(long w, long es)
+{
+    var lo;
+    layout_get(lo, w, es);
+    var ed = lo["editor"];
+    bool on = !editor_gutter_any(ed);
+    editor_gutter_set(ed, on);
+    lo["editor"] = ed;
+    ui::set(w, es, "layout", lo);
+    layout_persist(w, es);
+    ui::set(w, es, "msg", on ? "Line numbers on." : "Line numbers off.");
+}
+
 // The tree-order index of the focused leaf (-1 = none), a running counter.
 long editor_focus_scan(var &node, long &seen)
 {
@@ -9122,6 +9169,11 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 	    case cmdCHECK:
 	    {
 		run_check(w, es, doc);
+		return true;
+	    }
+	    case cmdLINENUMBERS:
+	    {
+		toggle_line_numbers(w, es);
 		return true;
 	    }
 	    case cmdOUTLINE:

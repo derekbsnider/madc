@@ -1198,8 +1198,65 @@ void repl_on_close(long w, long es, long doc, var &event)
     repl_close(w, es);
 }
 
+// ---- the Symbols view (split arc 1D item 20; Thonny's Variables) ----------
+// The names the session defined, each with its type and its value, kept
+// current after every entry and every F5 run and emptied when the session
+// stops. A row a loaded file defined goes to its definition when it is
+// chosen (goto_pane_row); a row an entry defined (its `entry`, REPL[N]'s N)
+// names no line. A row view on the bag key `repl.symbols`; until split arc
+// 1D it was Chthonia's plugin — a layout lists `symbols` to dock it.
+
+long symbols_view(long w)
+{
+    return es_int(w, repl_world(w), "symview", viewNONE);
+}
+
+// View ▸ Symbols: show the view.
+bool symbols_cmd_show(long w, long es, long doc, const char *arg)
+{
+    long k = symbols_view(w);
+    if ( k != viewNONE )
+	show_view(w, es, k);
+    return true;
+}
+
+// An entry ran or F5's program returned: ask the session for its names.
+void symbols_on_ran(long w, long es, long doc, var &event)
+{
+    repl_bindings(w, es);
+}
+
+// The session's names answered: one row each, `name type value`.
+void symbols_on_bindings(long w, long es, long doc, var &event)
+{
+    var rows = {};
+    for ( var b : event["reply"]["rows"] )
+    {
+	var v = b["value"];
+	var text = format("{} {} {}", b["name"], b["type"], v);
+	if ( strlen(v.c_str()) == 0 )
+	    text = format("{} {}", b["name"], b["type"]);
+	var row = { "content": text };
+	if ( b["entry"].as_integer() == 0 && strlen(b["file"].c_str()) > 0 )
+	{
+	    row["file"] = b["file"];
+	    row["line"] = b["line"];
+	}
+	rows[] = row;
+    }
+    ui::set(w, es, "repl.symbols", rows);
+}
+
+// The session stopped: its names are gone.
+void symbols_on_stopped(long w, long es, long doc, var &event)
+{
+    var none = {};
+    ui::set(w, es, "repl.symbols", none);
+}
+
 // The activation (builtin_plugins' row): the pane's commands, its console
-// view and its handlers of the session's events, through the plugin points.
+// view, the Symbols view and their handlers of the session's events, through
+// the plugin points.
 // False = a registration refused (builtins_activate takes the rest back).
 bool repl_activate(long w)
 {
@@ -1209,6 +1266,11 @@ bool repl_activate(long w)
 	return false;
     long rw = repl_world(w);
     ui::set(w, rw, "view", view);
+    long syms = plugin_command(w, "symbols", "Symbols", symbols_cmd_show);
+    long sview = plugin_view(w, "symbols", "Symbols", "repl.symbols", syms);
+    if ( syms == 0 || sview == viewNONE )
+	return false;
+    ui::set(w, rw, "symview", sview);
     return plugin_command(w, "replrun", "Run in REPL", repl_cmd_run) != 0
 	&& plugin_command(w, "replstop", "Stop the REPL", repl_cmd_stop) != 0
 	&& plugin_command(w, "replinterrupt", "Interrupt the REPL", repl_cmd_interrupt) != 0
@@ -1224,5 +1286,9 @@ bool repl_activate(long w)
 	&& plugin_event(w, seSTOP, repl_on_stop)
 	&& plugin_event(w, seCLOSE, repl_on_close)
 	&& plugin_event(w, seLANGUAGE, repl_on_language)
-	&& plugin_event(w, seINTERRUPT, repl_on_interrupt);
+	&& plugin_event(w, seINTERRUPT, repl_on_interrupt)
+	&& plugin_event(w, reTAKEN, symbols_on_ran)
+	&& plugin_event(w, reRAN, symbols_on_ran)
+	&& plugin_event(w, reBINDINGS, symbols_on_bindings)
+	&& plugin_event(w, reSTOPPED, symbols_on_stopped);
 }

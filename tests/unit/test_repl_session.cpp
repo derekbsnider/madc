@@ -2917,6 +2917,20 @@ std::string binding_field(const madc::value &rows, const char *name,
 
 } // namespace
 
+// An entry's unit name and its inverse: the one REPL[N] spelling, and 0
+// for every name that is not exactly one (a file's unit, a malformed one).
+TEST_CASE("session entry unit: REPL[N] and its entry number")
+{
+    CHECK(madc::session_entry_unit(7) == "REPL[7]");
+    CHECK(madc::session_entry_of_unit("REPL[7]") == 7);
+    CHECK(madc::session_entry_of_unit("REPL[12]") == 12);
+    CHECK(madc::session_entry_of_unit("REPL[]") == 0);
+    CHECK(madc::session_entry_of_unit("REPL[1x]") == 0);
+    CHECK(madc::session_entry_of_unit("REPL[3]x") == 0);
+    CHECK(madc::session_entry_of_unit("prog.c") == 0);
+    CHECK(madc::session_entry_of_unit("") == 0);
+}
+
 TEST_CASE("session bindings: %whos lists the names the session defined (C17)")
 {
     InteractiveSession c;
@@ -2946,9 +2960,11 @@ TEST_CASE("session bindings: %whos lists the names the session defined (C17)")
     CHECK(binding_field(rows, "count", "value") == "3");
     CHECK(binding_field(rows, "count", "file") == "REPL[3]");
     CHECK(binding_field(rows, "count", "line") == "1");
+    CHECK(binding_field(rows, "count", "entry") == "3");
     CHECK(binding_field(rows, "square", "type") == "int (int)");
     CHECK(binding_field(rows, "square", "value").empty());
     CHECK(binding_field(rows, "square", "file") == "REPL[4]");
+    CHECK(binding_field(rows, "square", "entry") == "4");
     // The row's value spells no type (its Type column does, gdb's `info
     // locals`). A pointer shows its address; a character pointer then its
     // text, read so that a wild one cannot crash the backend.

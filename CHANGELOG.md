@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### madcide gains a Symbols view and a Line Numbers toggle
+
+A new **Symbols** view (View ▸ Symbols, docked in the sidebar beside the
+outline) lists the names the REPL session has defined — each with its type
+and its value, as Thonny's Variables view does — refreshed after every entry
+and every F5 run and emptied when the session stops. Choosing a name a loaded
+file defined moves the cursor to its definition; a name an entry defined names
+no line. The REPL plugin contributes the view (`repl.symbols`) and its command.
+**View ▸ Line Numbers** (`linenumbers`, `cmdLINENUMBERS`) shows or hides the
+editor region's line numbers in the terminal and the GUI alike (the layout's
+`gutter` word on every editor pane); an open project keeps the choice in its
+layout.
+
+A session binding row now carries `entry` — the number N of the `REPL[N]`
+entry that declared the name, 0 for a name a loaded file defined. The `REPL[N]`
+unit spelling and its inverse are now one pair, `session_entry_unit` /
+`session_entry_of_unit` in `madc_session.h`, replacing the spelling open-coded
+in `madc_session.cpp` and `madc_complete.cpp`.
+
 ### A TUI tab strip wider than its pane keeps the active tab in view
 
 The terminal tab-strip builder now takes a `width` (0 means unbounded). A strip

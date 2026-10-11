@@ -68,6 +68,7 @@ void cmd_table(var &t)
     rows[] = { "name": "keystyle", "code": cmdKEYSTYLE };
     rows[] = { "name": "killwin", "code": cmdKILLWIN };
     rows[] = { "name": "language", "code": cmdLANGUAGE };
+    rows[] = { "name": "linenumbers", "code": cmdLINENUMBERS };
     rows[] = { "name": "mark", "code": cmdMARK };
     rows[] = { "name": "mdpreview", "code": cmdMDPREVIEW };
     rows[] = { "name": "mdpreviewrow", "code": cmdMDPREVIEWROW };

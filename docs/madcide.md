@@ -268,6 +268,16 @@ a running session. It re-parses every buffer, restarts the REPL and keeps
 the choice in settings.json, and its **By file** row returns to each file's
 own (`language file`).
 
+## Symbols and line numbers
+
+View ▸ Symbols (`symbols`, in the sidebar beside the outline) lists the
+names the REPL session defined — each with its type and its value, as
+Thonny's Variables view does — kept current after every entry and every F5
+run and emptied when the session stops; choosing one a file defined moves
+the cursor to its definition. View ▸ Line Numbers (`linenumbers`) shows or
+hides the editor's line numbers in the terminal and the window alike (the
+layout's `gutter` word); an open project keeps the choice in its layout.
+
 ## Build and Run
 
 `^B` (Build…) lists the commands: Check (in-process, the live parse),

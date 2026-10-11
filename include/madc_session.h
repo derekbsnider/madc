@@ -461,6 +461,12 @@ bool session_buffer(const std::string &name, std::string &path,
 		    std::string &text, bool &has_text, std::string &why);
 // <ns_madc>'s face of it: {path, text, has_text}, or {error}.
 bool session_buffer(value &out, const char *name);
+// An entry's unit name — Julia's REPL[N], the one spelling an entry's
+// diagnostics cite, a result's description and a binding's origin name —
+// and its inverse: the entry number a unit name spells, 0 for any other
+// unit (a file's).
+std::string session_entry_unit(size_t entry);
+size_t session_entry_of_unit(const std::string &unit);
 }
 
 #endif

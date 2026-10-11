@@ -17,7 +17,7 @@
 # left|right, a panel bottom|top, and neither ever splits. mode: tabs (one
 # View behind a strip) | stack (all Views, headers between). kind: source
 # code problems output terminal project outline help helpindex mdpreview
-# repl — `help` (a Help page) only on an editor pane, which always shows it;
+# repl symbols — `help` (a Help page) only on an editor pane, which always shows it;
 # `helpindex` (the topics) docks in a sidebar or panel. `focus`
 # names the pane the keyboard starts in; `hidden` keeps a pane off the screen
 # until a command shows it (check surfaces the panel, outline the sidebar) —
@@ -28,5 +28,5 @@
 menubar
 status bottom
 pane editor tabs views source focus gutter
-pane sidebar left 20% tabs views outline helpindex mdpreview hidden
+pane sidebar left 20% tabs views outline symbols helpindex mdpreview hidden
 pane panel bottom 25% tabs views problems output terminal repl hidden

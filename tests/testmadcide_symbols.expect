@@ -1,0 +1,9 @@
+registered: view=1 docked=1
+entry: answer int 42|half double 0.5|
+entry-row: caret stays
+shown: 1 composed=1
+run: answer int 1@1|main int (void)@5|seed int 7@3|
+run-row: caret on line 3=1
+stopped: []
+linenumbers-off: before=1 after=0 msg=Line numbers off.
+linenumbers-on: after=1 msg=Line numbers on.

@@ -501,7 +501,7 @@ InteractiveSession::Offered InteractiveSession::enter(const std::string &text,
     // IPython's In [N] do, so a refused entry's number is never reused. An
     // attempt still being typed is not an entry: it cites the number it
     // would take, and takes it only when it is final.
-    std::string name = "REPL[" + std::to_string(submit_count + 1) + "]";
+    std::string name = madc::session_entry_unit(submit_count + 1);
     // The entry is one unit (plan §41.3): it is kept once its module links,
     // and a refusal (its parse, its translation or its link) rolls back
     // everything it did to the Program, as Julia leaves nothing of an input
@@ -916,6 +916,28 @@ bool madc::session_buffer(value &out, const char *name)
     out.object()["text"] = value(text);
     out.object()["has_text"] = value(has_text);
     return true;
+}
+
+std::string madc::session_entry_unit(size_t entry)
+{
+    return "REPL[" + std::to_string(entry) + "]";
+}
+
+size_t madc::session_entry_of_unit(const std::string &unit)
+{
+    static const char head[] = "REPL[";
+    const size_t hl = sizeof(head) - 1;
+    if ( unit.size() < hl + 2 || unit.compare(0, hl, head) != 0
+      || unit[unit.size() - 1] != ']' )
+	return 0;
+    size_t n = 0;
+    for ( size_t i = hl; i + 1 < unit.size(); ++i )
+    {
+	if ( unit[i] < '0' || unit[i] > '9' )
+	    return 0;
+	n = n * 10 + (size_t)(unit[i] - '0');
+    }
+    return n;
 }
 
 // The terminal's editor (its contract is madc_session.h's), run by the one
@@ -1935,7 +1957,7 @@ bool InteractiveSession::defines_function(const std::string &name)
 bool InteractiveSession::call_file(const std::string &path,
 				   const std::string &call, int *status)
 {
-    const std::string name = "REPL[" + std::to_string(submit_count) + "]";
+    const std::string name = madc::session_entry_unit(submit_count);
     begin_command_output();
     // The function is named after FILE: its name without the directory and
     // the last extension (cling's rule). Else FILE's own main (a main an
@@ -2105,6 +2127,7 @@ void InteractiveSession::bindings(madc::value &out)
 	f["value"] = madc::value(value);
 	f["file"] = madc::value(std::string(b.file ? b.file : ""));
 	f["line"] = madc::value((int64_t)b.line);
+	f["entry"] = madc::value((int64_t)madc::session_entry_of_unit(b.file ? b.file : ""));
 	rows.push_back(madc::value::make_object(f));
     }
     out = madc::value::make_array(rows);
