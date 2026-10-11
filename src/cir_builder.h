@@ -1917,6 +1917,11 @@ public:
 		// and the TARGET places it: x8 on AArch64, the first argument
 		// register on x86-64 SysV. Never spell that placement here.
 		bool ret_addr;
+		// A parameter whose declarator is neither scalar specs nor one
+		// pointer level — a function pointer: rendered by param_decl, the
+		// definition's one owner (fnptr_decl_pieces), never the 64-bit
+		// scalar its rawtype spells.
+		class DataDef *decl_dd;
 	};
 	// The ONE param-shape owner for an output extern proto: a class
 	// reference -> void*, a pointer -> its pointee shape, a by-value class

@@ -5458,6 +5458,8 @@ static std::vector<c2mir_node_code_t> native_scalar_specs(DataDef *dd)
 
 CirBuilder::ExternParam CirBuilder::native_param_shape(DataDef *dd, bool refp)
 {
+	if (!dd)
+		return { native_scalar_specs(NULL), false, NULL };	// an unknown (variadic) slot
 	if (param_object_class(dd, refp))
 		return { {N_VOID}, true, NULL };
 	// A by-value carrier formal: param_decl's `void *`.
@@ -5469,6 +5471,10 @@ CirBuilder::ExternParam CirBuilder::native_param_shape(DataDef *dd, bool refp)
 	// parameter object's address).
 	if (DataDefCLASS *ic = class_param_via_invisible_ref(dd))
 		return { {}, true, ic };
+	// A function pointer by value: param_decl's declarator (a pointer TO
+	// one is an object pointer — the `void *` below).
+	if (!refp && dd && dd->as_fptr_dd())
+		return { {}, false, NULL, false, dd };
 	if (DataDefPTR *p = pointer_dd_of(dd)) {
 		if (p->base_type && p->base_type->rawtype() == DataType::dtCHAR)
 			return { {N_CHAR}, true, NULL };
@@ -10467,6 +10473,10 @@ void CirBuilder::need_output_extern(const char *symbol, bool ret_ptr,
 				       retbuf_param((DataDef *)params[i].cls, NULL));
 				continue;
 			}
+			if (params[i].decl_dd) {
+				append(param_list, param_decl(params[i].decl_dd, NULL));
+				continue;
+			}
 			node_t specs = list();
 			// A by-value struct/union param: one tag-ref spec (struct X
 			// / union X per union_layout), no pointer. Otherwise the
@@ -14530,7 +14540,7 @@ node_t CirBuilder::emit_symbol_method_call(TokenMember *tm, FuncDef *callee,
 			// Same derived->base pointer upcast as every other call path.
 			append(args, upcast_class_ptr(translate_expr(arg), pt, arg, arg));
 		} else {
-			eparams.push_back({ {N_LONG, N_LONG}, false });
+			eparams.push_back(native_param_shape(pt, false));
 			append(args, translate_expr(arg));
 		}
 	}
@@ -19440,14 +19450,8 @@ node_t CirBuilder::ctor_call_assemble(node_t this_addr, DataDefCLASS *cdd,
 		std::vector<ExternParam> eparams;
 		eparams.push_back({ {N_VOID}, true });
 		for (size_t pi = 1; pi < ctor->parameters.size(); pi++) {
-			DataDef *pt = ctor->parameters[pi];
-			bool refp = ctor->is_ref_param(pi);
-			if (param_object_class(pt, refp) || refp)
-				eparams.push_back({ {N_VOID}, true });
-			else if (pt && pt->is_pointer())
-				eparams.push_back({ {N_CHAR}, true });
-			else
-				eparams.push_back({ {N_LONG, N_LONG}, false });
+			eparams.push_back(native_param_shape(ctor->parameters[pi],
+							     ctor->is_ref_param(pi)));
 		}
 		if (ctor->ctor_trailing_self)
 			eparams.push_back({ {N_VOID}, true });
@@ -24049,14 +24053,11 @@ node_t CirBuilder::class_subscript_addr_on(DataDefCLASS *cls, node_t recv_addr,
 	if (callee && !callee->emit_symbol.empty()) {
 		node_t this_arg = node2(N_CAST, void_ptr_type(), recv_addr, origin);
 		CIR_NODE(this_arg)->synth_from_origin = true;
-		// Param 0 = this (void*); param 1 = the index — a 64-bit scalar,
-		// or a POINTER when operator[] takes its index by reference (read
-		// from the parameter, never assumed).
+		// Param 0 = this (void*); param 1 = the index, shaped by its
+		// parameter (native_param_shape — a scalar's own type, an
+		// address when taken by reference; never assumed).
 		std::vector<ExternParam> eparams = { { {N_VOID}, true } };
-		if (refp)
-			eparams.push_back({ {N_VOID}, true });
-		else
-			eparams.push_back({ {N_LONG, N_LONG}, false });
+		eparams.push_back(native_param_shape(idx_pt, refp));
 		node_t args = list();
 		append(args, this_arg);
 		append(args, index_arg());
@@ -33385,7 +33386,8 @@ node_t CirBuilder::global_ctor_call(Variable *v, DataDefCLASS *cdd, TokenDecl *d
 	madc::dis::istring sym = ctor_call_symbol(cdd, cstr_ctor);
 	std::vector<ExternParam> eparams;
 	eparams.push_back({ {N_VOID}, true });
-	eparams.push_back({ {N_CHAR}, true });
+	eparams.push_back(native_param_shape(cstr_ctor->parameters[1],
+					     cstr_ctor->is_ref_param(1)));
 	if (cstr_ctor->ctor_trailing_self)
 		eparams.push_back({ {N_VOID}, true });
 	need_output_extern(sym.c_str(), false, eparams);

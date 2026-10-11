@@ -1194,6 +1194,7 @@ gates: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/check-one-text-publish.sh
 	@cd .. && bash scripts/check-one-regex-engine.sh
 	@cd .. && bash scripts/check-one-fptr-predicate.sh
+	@cd .. && bash scripts/check-one-extern-param-shape.sh
 	@cd .. && bash scripts/check-one-cstr-admission.sh
 	@cd .. && bash scripts/check-one-forwarding-test.sh
 	@cd .. && bash scripts/check-one-nested-stream.sh
