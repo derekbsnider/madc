@@ -128,20 +128,20 @@ restore_tree() {
         rm -f "$SAVED_CONFIG"
     fi
     make -C src clean > /dev/null
-    make -C src -j"$(nproc)" > /dev/null
-    make -C src -j"$(nproc)" release > /dev/null
+    make -C src -j"$(bash scripts/build_jobs.sh)" > /dev/null
+    make -C src -j"$(bash scripts/build_jobs.sh)" release > /dev/null
 }
 trap restore_tree EXIT
 
 ./configure --enable-madcdat=no > /dev/null
 make -C src clean > /dev/null
-make -C src -j"$(nproc)" > /dev/null
-make -C src -j"$(nproc)" release > /dev/null
+make -C src -j"$(bash scripts/build_jobs.sh)" > /dev/null
+make -C src -j"$(bash scripts/build_jobs.sh)" release > /dev/null
 # The platform webview library (GUI programs: import madcwebview) — built
 # against the build host's WebKitGTK 6.0 / GTK4 (scripts/provision_container.sh;
 # libwebkitgtk-6.0-dev in release.yml) and shipped as a WEAK dependency:
 # madc itself never loads it, only a program that imports it does.
-make -C src -j"$(nproc)" libmadcwebview > /dev/null
+make -C src -j"$(bash scripts/build_jobs.sh)" libmadcwebview > /dev/null
 # The madcgit module (src/madcgit.mk): the read-only git view, statically
 # linking the pinned libgit2 scripts/stage_libgit2.sh staged for this host
 # (the floor: 1.8.7 / 1.9.7 or newer; Ubuntu's libgit2 is 1.7.2). The
@@ -153,7 +153,7 @@ if [ ! -f "$lg2" ]; then
     echo "package_release: $lg2 missing — bash scripts/stage_libgit2.sh host" >&2
     exit 1
 fi
-make -C src -j"$(nproc)" libmadcgit > /dev/null
+make -C src -j"$(bash scripts/build_jobs.sh)" libmadcgit > /dev/null
 # The madcmark module (src/madcmark.mk): Markdown, statically linking the
 # pinned cmark-gfm scripts/stage_cmark_gfm.sh staged for this host. Required
 # for the same reason as libgit2's stage: the system arm (the Homebrew
@@ -163,7 +163,7 @@ if [ ! -f "$cm/libcmark-gfm.a" ]; then
     echo "package_release: $cm/libcmark-gfm.a missing — bash scripts/stage_cmark_gfm.sh host" >&2
     exit 1
 fi
-make -C src -j"$(nproc)" libmadcmark > /dev/null
+make -C src -j"$(bash scripts/build_jobs.sh)" libmadcmark > /dev/null
 
 if ldd bin/madc-release | grep -Eq "qdbm|gdbm|libdb|sqlite"; then
     echo "package_release: distribution binary still links storage libs" >&2

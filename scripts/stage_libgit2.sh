@@ -128,7 +128,7 @@ cmake -S "$SRC" -B "$BUILD" -G "Unix Makefiles" \
     -DREGEX_BACKEND=builtin \
     "${ZLIB[@]}"
 
-jobs=$(nproc 2>/dev/null || echo 4)
+jobs=$(bash scripts/build_jobs.sh)
 echo "libgit2 ($target): building (-j$jobs)"
 cmake --build "$BUILD" -j"$jobs"
 

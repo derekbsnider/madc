@@ -74,3 +74,25 @@ the release itself. The pin's value was never restated in prose (a
 literal `2ffebff` once sat stale in two documents) — that
 file-is-the-single-source rule survives in spirit: today the pin is
 the commit itself.
+
+## One memory-budgeted job count (2026-10-11)
+
+The build container runs inside the owner's WSL2 VM: 16 GB of RAM, 4 GB of
+swap, 20 cores and no cgroup memory cap. Builds were sized by cores alone —
+`-j20` in `remote_build.sh`, `-j"$(nproc)"` in the packaging scripts — which
+was safe only while one build ran at a time. Two -O2 release builds started
+side by side (ten jobs each, then valgrind) exhausted the VM, and the owner's
+whole WSL went down with it; the container restarted and its disk had to
+remount.
+
+`scripts/build_jobs.sh` is now the one answer to "how many jobs": the cores,
+cut down to MemAvailable less a 2 GB reserve, at 1.5 GB a job (the -O2
+compiles peak at 1.6 GB for `parser.cpp`, 0.9 GB for `cir_builder.cpp`, 0.7 GB
+for `lexer.cpp`), and capped by a cgroup `memory.max` when one is set. It reads
+memory when the build starts, so a second build beside a running one still
+over-commits — the rule keeps builds one at a time. The hard cap sits at the
+container level (`docker update --memory=12g --memory-swap=12g`, set the same
+day: the container now dies before the VM does); the script is the part the
+repository can enforce, and `check-one-build-jobs.sh` keeps a literal job
+count from coming back.
+

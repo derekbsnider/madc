@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Parallel builds size their job count by host memory, not cores
+
+A parallel build's job count now comes from `scripts/build_jobs.sh`: the cores,
+cut to MemAvailable less a 2 GB reserve at 1.5 GB a job (the -O2 compiles peak
+at 1.6 GB for `parser.cpp`, 0.9 GB for `cir_builder.cpp`, 0.7 GB for
+`lexer.cpp`), capped by a cgroup `memory.max` when one is set, never below 1 and
+never above the cores. Every build script that sized a build by `-j20`, `-j8`,
+`-j4` or `$(nproc)` — `remote_build.sh`, `package_release.sh`, `seam_battery.sh`,
+`release_bins.sh`, the `stage_*` library builds, and the rest — now asks it, and
+`make gates` runs `check-one-build-jobs.sh` so a literal job count cannot return.
+On the build container the helper answers 8 jobs with 15 GB available, 6 under a
+12 GiB cgroup cap. Memory is read when the build starts, so builds still run one
+at a time: two -O2 builds started side by side exhausted the owner's WSL2 VM and
+took it down (2026-10-11).
+
 ### Host-facing `madc::` surface moves to `<ns_madc_host>`
 
 The `madc::` faces only a host program uses — a document's parse handle and its

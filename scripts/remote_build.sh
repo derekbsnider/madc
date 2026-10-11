@@ -289,31 +289,31 @@ for stage in $stages; do
 		# configure.ac arrives with the sync's time, so `-nt` is the
 		# right question.
 		run_remote "configure" "set -e; cd $REMOTE_MADC; test -x configure -a configure -nt configure.ac || autoreconf -fi; test -f config.mk -a -f include/config.h -a config.mk -nt configure || ./configure"
-		run_remote "build madc" "make -C $REMOTE_MADC/src -j20"
+		run_remote "build madc" "make -C $REMOTE_MADC/src -j\$(bash $REMOTE_MADC/scripts/build_jobs.sh)"
 		# lib/ is excluded from sync; the soname link the emitted
 		# .so's DT_NEEDED resolves through must exist on this side.
 		run_remote "soname link" "ln -sf libmadc.so $REMOTE_MADC/lib/libmadc.so.0"
 		;;
 	unittest)
-		run_remote "unittest" "make -C $REMOTE_MADC/src -j20 test"
+		run_remote "unittest" "make -C $REMOTE_MADC/src -j\$(bash $REMOTE_MADC/scripts/build_jobs.sh) test"
 		;;
 	fulltest)
-		run_remote "fulltest" "make -C $REMOTE_MADC/src -j20 fulltest"
+		run_remote "fulltest" "make -C $REMOTE_MADC/src -j\$(bash $REMOTE_MADC/scripts/build_jobs.sh) fulltest"
 		;;
 	gates)
-		run_remote "gates" "make -C $REMOTE_MADC/src -j20 gates"
+		run_remote "gates" "make -C $REMOTE_MADC/src -j\$(bash $REMOTE_MADC/scripts/build_jobs.sh) gates"
 		;;
 	ondisk)
-		run_remote "ondisk" "make -C $REMOTE_MADC/src -j20 release; cd $REMOTE_MADC; MADC_HEADERLESS_COMPLEMENT=1 bash scripts/headerless_suite.sh"
+		run_remote "ondisk" "make -C $REMOTE_MADC/src -j\$(bash $REMOTE_MADC/scripts/build_jobs.sh) release; cd $REMOTE_MADC; MADC_HEADERLESS_COMPLEMENT=1 bash scripts/headerless_suite.sh"
 		;;
 	ondisk-win)
-		run_remote "ondisk-win" "make -C $REMOTE_MADC/src -j20 release-windows; cd $REMOTE_MADC; MADC_HEADERLESS_PROFILE=win64 MADC_HEADERLESS_COMPLEMENT=1 bash scripts/headerless_suite.sh"
+		run_remote "ondisk-win" "make -C $REMOTE_MADC/src -j\$(bash $REMOTE_MADC/scripts/build_jobs.sh) release-windows; cd $REMOTE_MADC; MADC_HEADERLESS_PROFILE=win64 MADC_HEADERLESS_COMPLEMENT=1 bash scripts/headerless_suite.sh"
 		;;
 	exeobj)
 		# The seam's native-artifact lanes run the SHIPPED -O2 packed binary
 		# (owner 2026-10-02): same coverage as exe + obj on the dev binary, at
 		# a fraction of the compile time.
-		run_remote "exeobj" "make -C $REMOTE_MADC/src -j20 release; cd $REMOTE_MADC; MADC_BIN=bin/madc-release bash scripts/run_tests.sh --exe --obj"
+		run_remote "exeobj" "make -C $REMOTE_MADC/src -j\$(bash $REMOTE_MADC/scripts/build_jobs.sh) release; cd $REMOTE_MADC; MADC_BIN=bin/madc-release bash scripts/run_tests.sh --exe --obj"
 		;;
 	gui)
 		# ONE body, in scripts/gui_lane.sh — the webview build, the Xvfb
@@ -348,13 +348,13 @@ for stage in $stages; do
 		;;
 	parsecost)
 		# Build what the gate measures (make is idempotent), then check.
-		run_remote "parsecost" "make -C $REMOTE_MADC/src -j20 release; cd $REMOTE_MADC; bash scripts/parse_cost_gate.sh"
+		run_remote "parsecost" "make -C $REMOTE_MADC/src -j\$(bash $REMOTE_MADC/scripts/build_jobs.sh) release; cd $REMOTE_MADC; bash scripts/parse_cost_gate.sh"
 		;;
 	parsecost-record)
 		# The baseline is measured where the battery runs (the toolchain
 		# fingerprint pins it there) but versioned on the NAS: record on
 		# the container, then bring the one file back.
-		run_remote "parsecost-record" "make -C $REMOTE_MADC/src -j20 release; cd $REMOTE_MADC; bash scripts/parse_cost_gate.sh --record ${PARSE_COST_ACCEPT:+\"--accept-increase=$PARSE_COST_ACCEPT\"}"
+		run_remote "parsecost-record" "make -C $REMOTE_MADC/src -j\$(bash $REMOTE_MADC/scripts/build_jobs.sh) release; cd $REMOTE_MADC; bash scripts/parse_cost_gate.sh --record ${PARSE_COST_ACCEPT:+\"--accept-increase=$PARSE_COST_ACCEPT\"}"
 		rsync -az --no-perms --no-owner --no-group -e "ssh -p $PORT" \
 			"$REMOTE:$REMOTE_MADC/scripts/parse_cost/baseline.tsv" \
 			"$LOCAL_MADC/scripts/parse_cost/baseline.tsv"
@@ -408,12 +408,12 @@ for stage in $stages; do
 		run_remote "libcxx jit" "cd $REMOTE_MADC; set -f; bash scripts/run_tests.sh --stdlib=libc++"
 		;;
 	release)
-		run_remote "release" "make -C $REMOTE_MADC/src -j20 release"
+		run_remote "release" "make -C $REMOTE_MADC/src -j\$(bash $REMOTE_MADC/scripts/build_jobs.sh) release"
 		;;
 	release-macos)
 		# The two arches build SEQUENTIALLY inside the target (shared
 		# per-arch generated tables); -j parallelizes within each.
-		run_remote "release-macos" "make -C $REMOTE_MADC/src -j20 release-macos"
+		run_remote "release-macos" "make -C $REMOTE_MADC/src -j\$(bash $REMOTE_MADC/scripts/build_jobs.sh) release-macos"
 		run_remote "package-macos" "cd $REMOTE_MADC; bash scripts/package_release_macos.sh"
 		mkdir -p "$LOCAL_MADC/dist"
 		rsync -az --no-perms --no-owner --no-group \
@@ -433,10 +433,10 @@ for stage in $stages; do
 		# is not a guarantee — `headerless-win` validated an EIGHT-HOUR-OLD
 		# madc-release-x86-64-windows.exe and reported 1010/1, a failure
 		# that belonged to a binary the fix under test was never built into.
-		run_remote "packed" "make -C $REMOTE_MADC/src -j20 release; cd $REMOTE_MADC; MADC_BIN=bin/madc-release bash scripts/run_tests.sh"
+		run_remote "packed" "make -C $REMOTE_MADC/src -j\$(bash $REMOTE_MADC/scripts/build_jobs.sh) release; cd $REMOTE_MADC; MADC_BIN=bin/madc-release bash scripts/run_tests.sh"
 		;;
 	headerless)
-		run_remote "headerless" "make -C $REMOTE_MADC/src -j20 release; cd $REMOTE_MADC; bash scripts/headerless_suite.sh"
+		run_remote "headerless" "make -C $REMOTE_MADC/src -j\$(bash $REMOTE_MADC/scripts/build_jobs.sh) release; cd $REMOTE_MADC; bash scripts/headerless_suite.sh"
 		;;
 	headerless-win)
 		# The win64 profile of the same lane: the shipped PE under wine
@@ -446,24 +446,24 @@ for stage in $stages; do
 		# The profile is an ENV knob; a positional argument is a
 		# run_tests.sh test FILTER. `headerless_suite.sh win64` ran the
 		# NATIVE profile filtered to 0 of 1063 tests and exited 0.
-		run_remote "headerless-win" "make -C $REMOTE_MADC/src -j20 release-windows; cd $REMOTE_MADC; WINEDEBUG=-all wineserver -p; MADC_HEADERLESS_PROFILE=win64 bash scripts/headerless_suite.sh"
+		run_remote "headerless-win" "make -C $REMOTE_MADC/src -j\$(bash $REMOTE_MADC/scripts/build_jobs.sh) release-windows; cd $REMOTE_MADC; WINEDEBUG=-all wineserver -p; MADC_HEADERLESS_PROFILE=win64 bash scripts/headerless_suite.sh"
 		;;
 	aarch64-ld)
-		run_remote "aarch64-ld" "make -C $REMOTE_MADC/src -j20 cross-aarch64-linux; cd $REMOTE_MADC; bash scripts/aarch64_ldouble_lane.sh"
+		run_remote "aarch64-ld" "make -C $REMOTE_MADC/src -j\$(bash $REMOTE_MADC/scripts/build_jobs.sh) cross-aarch64-linux; cd $REMOTE_MADC; bash scripts/aarch64_ldouble_lane.sh"
 		;;
 	release-win)
 		# The stripped, forest-packed PE the Windows zip ships — the
 		# artifact headerless-win and package_release_windows.sh both
 		# consume. It had no stage of its own, so the only way to refresh
 		# it was to remember the make target.
-		run_remote "release-win" "make -C $REMOTE_MADC/src -j20 release-windows"
+		run_remote "release-win" "make -C $REMOTE_MADC/src -j\$(bash $REMOTE_MADC/scripts/build_jobs.sh) release-windows"
 		;;
 	win)
 		# The hosted MinGW+UCRT PE. Named for its make target so there is
 		# one spelling to remember, and it lives here because the mingw
 		# toolchain exists ONLY on the container — a toolchain query on the
 		# NAS answers "absent" for things that are installed.
-		run_remote "win build" "make -C $REMOTE_MADC/src -j20 hosted-x86-64-windows"
+		run_remote "win build" "make -C $REMOTE_MADC/src -j\$(bash $REMOTE_MADC/scripts/build_jobs.sh) hosted-x86-64-windows"
 		;;
 	wine)
 		# The Win64 DOMAIN suite. Every argument here was re-derived from
@@ -493,7 +493,7 @@ for stage in $stages; do
 		#                      from bin/ (madcgit.dll, madcmark.dll) — the
 		#                      same rule; a stale madcgit.dll failed testgit
 		#                      with "'madcgit_status' is not exported".
-		run_remote "wine" "make -C $REMOTE_MADC/src -j20 hosted-x86-64-windows; make -C $REMOTE_MADC/src -j20 modules-windows; cd $REMOTE_MADC; WINEDEBUG=-all wineserver -p </dev/null >/dev/null 2>&1; WINEDEBUG=-all MADC_BIN=bin/madc-hosted-x86-64-windows.exe MADC_WRAPPER=wine MADC_SKIP_EXT='win64 wine64' bash scripts/run_tests.sh"
+		run_remote "wine" "make -C $REMOTE_MADC/src -j\$(bash $REMOTE_MADC/scripts/build_jobs.sh) hosted-x86-64-windows; make -C $REMOTE_MADC/src -j\$(bash $REMOTE_MADC/scripts/build_jobs.sh) modules-windows; cd $REMOTE_MADC; WINEDEBUG=-all wineserver -p </dev/null >/dev/null 2>&1; WINEDEBUG=-all MADC_BIN=bin/madc-hosted-x86-64-windows.exe MADC_WRAPPER=wine MADC_SKIP_EXT='win64 wine64' bash scripts/run_tests.sh"
 		;;
 	warnscan)
 		# Accepts lane labels: remote_build.sh 'warnscan host win64'

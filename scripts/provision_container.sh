@@ -301,7 +301,7 @@ if [ ! -f "$WZSTD_A" ]; then
 		echo "provision_container: /workspace/zstd source tree missing (clone facebook/zstd v1.5.5 there)" >&2
 		exit 1
 	fi
-	make -C /workspace/zstd/lib -j8 BUILD_DIR=obj-win64 \
+	make -C /workspace/zstd/lib -j"$(bash "$(dirname "$0")/build_jobs.sh")" BUILD_DIR=obj-win64 \
 		CC='x86_64-w64-mingw32-gcc-posix -D_UCRT -D__USE_MINGW_ANSI_STDIO=1' \
 		AR=x86_64-w64-mingw32-ar libzstd.a || exit 1
 	cp -p /workspace/zstd/lib/libzstd.a "$WZSTD_A" || exit 1

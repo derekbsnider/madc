@@ -91,7 +91,7 @@ cmake -S "$SRC" -B "$BUILD" -G "Unix Makefiles" \
     -DPCRE2_SUPPORT_LIBEDIT=OFF \
     -DPCRE2_SUPPORT_LIBREADLINE=OFF
 
-jobs=$(nproc 2>/dev/null || echo 4)
+jobs=$(bash scripts/build_jobs.sh)
 echo "pcre2 ($target): building (-j$jobs)"
 cmake --build "$BUILD" -j"$jobs" --target pcre2-8-static
 
