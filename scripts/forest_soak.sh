@@ -3,10 +3,11 @@
 # ONE capped run; the oracle is the LIVE run of the same test (state
 # equivalence), with rc + stdout compared. Failures are recorded per test with
 # their first error line so the burn-down classifies by STATE FAMILY, never
-# per test. Fixture conventions mirror scripts/run_tests.sh (.flags/.input/
-# .argv/.timeout; .helper + .mir_skip + .expect_err skipped).
+# per test. A test's fixtures are scripts/test_fixtures.sh's (the runner's
+# reader); .helper + .mir_skip + .expect_err tests are skipped.
 set -u
 cd "$(dirname "$0")/.."
+. scripts/test_fixtures.sh	# the ONE reader of a test's fixtures
 
 BIN=bin/madc
 OUT=tmp/soak
@@ -29,23 +30,19 @@ for t in tests/*.mad; do
         continue
     fi
 
-    args=()
-    flags=()
-    [ -f "tests/$base.flags" ] && read -r -a flags < "tests/$base.flags"
-    [ -f "tests/$base.argv" ]  && read -r -a args  < "tests/$base.argv"
-    tmo=10
-    [ -f "tests/$base.timeout" ] && read -r tmo < "tests/$base.timeout"
+    fixture_load tests "$base"
+    tmo=$fx_timeout
     ftmo=$(( tmo * 10 + 120 ))	# freeze parses + serializes: generous cap
     btmo=$(( tmo * 3 + 60 ))
-    input="tests/$base.input"
+    # No .input: stdin is /dev/null, never the caller's terminal.
+    input="${fx_input:-/dev/null}"
     snap="$OUT/$base.msnap"
+    # Every leg runs the test as the suite does: its .env and the hermetic flag.
+    run=(env "${fx_envs[@]}")
+    madc=("$BIN" $FIXTURE_HERMETIC_FLAGS)
 
     # 1. LIVE (the oracle)
-    if [ -f "$input" ]; then
-        live_out=$(timeout "$tmo" "$BIN" "${flags[@]}" "$t" "${args[@]}" < "$input" 2>/dev/null)
-    else
-        live_out=$(timeout "$tmo" "$BIN" "${flags[@]}" "$t" "${args[@]}" 2>/dev/null)
-    fi
+    live_out=$("${run[@]}" timeout "$tmo" "${madc[@]}" "${fx_flags[@]}" "$t" "${fx_args[@]}" < "$input" 2>/dev/null)
     live_rc=$?
     if [ $live_rc -eq 124 ]; then
         printf '%s\tLIVE_TIMEOUT\n' "$base" >> "$OUT/results.tsv"
@@ -53,11 +50,7 @@ for t in tests/*.mad; do
     fi
 
     # 2. FREEZE
-    if [ -f "$input" ]; then
-        timeout "$ftmo" "$BIN" --freeze="$snap" "${flags[@]}" "$t" "${args[@]}" < "$input" > "$OUT/$base.freeze.log" 2>&1
-    else
-        timeout "$ftmo" "$BIN" --freeze="$snap" "${flags[@]}" "$t" "${args[@]}" > "$OUT/$base.freeze.log" 2>&1
-    fi
+    "${run[@]}" timeout "$ftmo" "${madc[@]}" --freeze="$snap" "${fx_flags[@]}" "$t" "${fx_args[@]}" < "$input" > "$OUT/$base.freeze.log" 2>&1
     frc=$?
     if [ $frc -eq 124 ]; then
         printf '%s\tFREEZE_TIMEOUT\n' "$base" >> "$OUT/results.tsv"
@@ -70,11 +63,7 @@ for t in tests/*.mad; do
     fi
 
     # 3. BIND (compare rc + stdout to LIVE)
-    if [ -f "$input" ]; then
-        bind_out=$(timeout "$btmo" "$BIN" --forest-bind="$snap" "${flags[@]}" "$t" "${args[@]}" < "$input" 2> "$OUT/$base.bind.err")
-    else
-        bind_out=$(timeout "$btmo" "$BIN" --forest-bind="$snap" "${flags[@]}" "$t" "${args[@]}" 2> "$OUT/$base.bind.err")
-    fi
+    bind_out=$("${run[@]}" timeout "$btmo" "${madc[@]}" --forest-bind="$snap" "${fx_flags[@]}" "$t" "${fx_args[@]}" < "$input" 2> "$OUT/$base.bind.err")
     brc=$?
     if [ $brc -eq 124 ]; then
         printf '%s\tBIND_TIMEOUT\n' "$base" >> "$OUT/results.tsv"

@@ -1,0 +1,22 @@
+// madc --mcp --project over a single file — the one-TU project (split arc 1C,
+// item 16). The runner starts `madc --mcp --project tests/testmcp_project.mad`
+// (.flags): the project's TU is the served document, a call's `file` names
+// it (as the working directory spells it), a file outside the project is
+// refused as error content, and every tool advertises `file`. The server
+// claims the project for its life (one owner per project, madc::discovery)
+// and gives the claim back at end of input. A single file's project memory
+// is memory-only: a record lands (log_head 1) and no <file>.events appears
+// beside the source (graph.status's log is ""). ORACLE: the MCP specification
+// 2025-06-18 (isError content for a tool's own refusal); the graph results'
+// shapes as testmcp_stdio's; madcide's proj_events_path (a change log only
+// beside a manifest — the implicit single-file project is memory-only).
+
+long add(long a, long b)
+{
+    return a + b;
+}
+
+int main(void)
+{
+    return (int)add(2, 3) - 5;
+}

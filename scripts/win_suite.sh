@@ -60,22 +60,21 @@ if [ ${#runtime_files[@]} -gt 0 ]; then
 		exit 3
 	fi
 fi
-# The suite's inputs beyond tests/: the editor tests include
-# ../tools/texteditor/lined_core.inc and the ui tests read
-# examples/adventure/adventure.world — the same trees the Mac suite stage
-# carries. A missing tree fails six tests as "Failed to open include file" /
-# "cannot read" on the box while wine, run from the repo root, never sees it.
-# The suite's inputs are the REPO's tests/tools/examples: tracked files plus
-# untracked-but-not-ignored ones (a test written this session), never a
-# package manager's install tree — tools/vscode-madcide/node_modules is
-# gitignored, and its dangling `.bin/semver` symlink killed `scp -r tools`
-# before one test ran (2026-09-20). One tar stream over the channel; the box
+# The suite's inputs beyond tests/: the ui tests read
+# examples/adventure/adventure.world and the examples' tests include their
+# example — the same trees the Mac suite stage carries. A missing tree fails
+# tests as "Failed to open include file" / "cannot read" on the box while
+# wine, run from the repo root, never sees it. The suite's inputs are the
+# REPO's tests/examples: tracked files plus untracked-but-not-ignored ones (a
+# test written this session), never a package manager's install tree (a
+# gitignored node_modules' dangling `.bin/semver` symlink killed a
+# `scp -r` before one test ran, 2026-09-20). One tar stream over the channel; the box
 # (WSL) unpacks it into the stage. pipefail in the subshell so a failing
 # lister or packer fails the stage, not just the unpacker.
-if ! ( set -o pipefail; git ls-files -z -co --exclude-standard tests tools examples \
+if ! ( set -o pipefail; git ls-files -z -co --exclude-standard tests examples \
 	| tar -c --null -T - -f - \
 	| ssh -o BatchMode=yes "$WIN_SSH" "tar -x -C '$STAGE'" ); then
-	echo "win_suite: test/tools/examples tree copy failed" >&2
+	echo "win_suite: tests/examples tree copy failed" >&2
 	exit 3
 fi
 

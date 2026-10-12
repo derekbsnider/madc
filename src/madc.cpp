@@ -30,10 +30,12 @@
 #include "madc_modules.h"	// -l<name> -> the target library spelling (the one owner)
 #include "madc_guards.h"	// the resource guards (install + the GUI lift)
 #include "madc_crash.h"	// fault reporter + guard-handler writers (own TU: windows.h vs tokens.h)
+#include "madc_console.h"	// -fdiagnostics-color: colour only when the stream shows it
 #include "madc_posix_io.h"	// cross-platform temporary file owner (--freeze-run)
 #include "madcdis/process.h"	// Process::run_and_wait (--freeze-run re-exec)
 #include "madc_pch.h"
 #include "madc_config.h"  // madc.ini reader (forest-carriers S6)
+#include "madc_file_kinds.h"  // file_kind_of_path: the source's standard by extension
 #include "cir_emit_c.h"   // CirEmitLang
 #include "madc_capabilities.h" // --capabilities=json (source-free manifest)
 #include "madc_project.h" // --project: compile_commands.json multi-TU driver
@@ -42,6 +44,19 @@
 #include "madc_session.h" // InteractiveSession: the REPL's session (D20)
 #include "madc_session_client.h" // BackendSession: the session in a backend (D2)
 #include "madc_repl.h"    // madc_repl_run: the REPL's loop (D20)
+#include "madc_history.h" // the REPL history store's default place (1B.7)
+#include "madc_theme.h"   // the REPL's colours: madc.ini's theme (1B.9)
+#include "madc_lsp.h"     // madc --lsp: the LSP server (split arc 1C.12)
+#include "madc_mcp.h"     // madc --mcp: the MCP server (split arc 1C)
+#include "madc_memory.h"  // madc --mcp --project: the memory's file
+#include "madc_tool_host.h"	// madc --mcp: the tools a madc process serves
+#include "madc_discovery.h"	// madc --mcp --project: one owner per project
+#include "madc_jsonrpc.h"	// madc --mcp --project: the owner's record
+#include "madc_lang.h"	// madc --mcp --project: a TU's document parses as its TU
+#include "madcdis/channel.h" // madc --lsp: stdin/stdout, Content-Length framed
+#include "madc_ex.h"      // colon mode: the host's ex session (D24)
+#include "madc_documents.h" // the host's buffer: madc -i FILE's file
+#include "madcdis/hub.h"     // the host's world of buffers
 #include "madc_run_child.h" // a Run child of self (Windows: no fork)
 #include "madcdis/tui_provider.h"	// create_line_target: the editor's terminal (D23)
 
@@ -269,8 +284,19 @@ static void print_usage(const char *prog)
 "                          compile and run stdin, as if named -\n"
 "  -                       read the program from stdin (gcc, python)\n"
 "  -i, --interactive       the REPL, even when stdin is not a terminal; with\n"
-"                          a <file>, run it first and keep its names (python -i)\n"
+"                          a <file>, run it first and keep its names (python -i).\n"
+"                          A line starting with : is an ex command on <file>'s\n"
+"                          buffer (vim's colon mode: :p :s :g :w :e ...; :q quits)\n"
+"  --lsp [<file>]          a Language Server Protocol server on stdin/stdout\n"
+"                          (Content-Length framed): diagnostics, symbols,\n"
+"                          definition, references, hover, semantic tokens\n"
+"                          for the documents a client opens; <file> is\n"
+"                          parsed before the client asks\n"
+"  --mcp <file>            a Model Context Protocol server on stdin/stdout\n"
+"                          (one JSON-RPC message per line): the code-graph\n"
+"                          tools over <file>, for the operator\n"
 "  --history-file=PATH|no  where the REPL keeps its history (default\n"
+"                          $MADC_HISTORY_FILE, else\n"
 "                          $XDG_STATE_HOME/madc/history); no keeps none\n"
 "  --project <prj.json>    build from a project manifest: compile each\n"
 "                          translation unit, link the modules, run the entry.\n"
@@ -287,9 +313,11 @@ static void print_usage(const char *prog)
 "  -E                      preprocess only (print the expanded source)\n"
 "\n"
 "Language / preprocessor (gcc/clang-style):\n"
-"  --std=<std>             c89/c90/c99/c11/c17/c23 (c = c11), c++NN, or madc\n"
-"                          (default; C++ keywords reserved). A .c TU under\n"
-"                          --project defaults to C mode.\n"
+"  --std=<std>             c89/c90/c99/c11/c17/c23 (c = c11), gnuNN, c++NN,\n"
+"                          gnu++NN, or madc (C++ keywords reserved). Without\n"
+"                          it the extension decides, as gcc/g++ do: .c gnu17,\n"
+"                          .cpp/.cc/.cxx gnu++17, .mad madc; else madc.ini's\n"
+"                          std, else madc. A --project TU alike.\n"
 "  -stdlib=<lib>           C++ standard library flavor (clang's spelling):\n"
 "                          libstdc++ / libc++, whichever this build could probe.\n"
 "                          REPLACES the C++ include search list, as clang does —\n"
@@ -333,6 +361,9 @@ static void print_usage(const char *prog)
 "                          container's AOT ledger segment, so -static-libmadc\n"
 "                          programs carry it (repeatable; the build's list is\n"
 "                          scripts/ledger_sources.txt)\n"
+"  --freeze-also-std=<std> label the frozen profile to serve compiles under\n"
+"                          this --std= too (repeatable; the release pack\n"
+"                          names the C++ modes that share madc's corpus)\n"
 "  --no-sysroot-includes   resolve <...> only from the toolchain's own roots\n"
 "                          (the C++ stdlib dirs + the compiler's builtin dir)\n"
 "                          and the embedded headers — never the host's C\n"
@@ -376,6 +407,10 @@ static void print_usage(const char *prog)
 "  -g                      debug info: gdb can break/step/inspect the JIT'd\n"
 "                          program (forces -O0, no inlining, spill-all)\n"
 "  -w                      inhibit all warning messages (gcc -w)\n"
+"  -fdiagnostics-color[=WHEN]  colour diagnostics (gcc's spelling): WHEN is\n"
+"                          auto (the default: a terminal only, never with\n"
+"                          NO_COLOR set), always, or never; bare = always\n"
+"  -fno-diagnostics-color  never colour diagnostics\n"
 "  -v, --verbose           verbose / debug output\n"
 "  -h, -?, --help          show this help\n"
 "  -V, --version           print the madc version (and the cross target, if\n"
@@ -484,10 +519,34 @@ static TokenProgram *tokenize_input(Program &prog, const char *path)
 // it has one, runs with the file lane's argv (the path, then the program's
 // arguments). The prompt follows whatever they did, as python's does: a
 // refused file leaves nothing, a stopped main leaves the file's names.
-// `history` is the line editor's history file (D23; empty: none).
+// `history` is the line editor's history file (D23; empty: none); `theme`
+// colours each entry as it is typed (split arc 1B.9).
 static int repl_loops(ReplSession &session, bool terminal,
-		      const std::string &history, int file_argc, char **file_argv)
+		      const std::string &history, const madc::theme *theme,
+		      int file_argc, char **file_argv)
 {
+    // Colon mode (D24; ex core design decision 11) is this host's: an ex
+    // session over the host's own world, holding ONE buffer as vim starts
+    // with one — FILE for madc -i FILE, else an untitled buffer.
+    madc::hub::world buffers;
+    madc::ex::session ex(buffers);
+    madc::hub::entity_id buffer =
+	file_argc > 0 ? madc::document_open(buffers, file_argv[0]) : 0;
+    if ( !buffer )
+	buffer = madc::document_new(buffers, file_argc > 0 ? file_argv[0] : "");
+    ex.use(buffer);
+    repl_colon colon;
+    colon.ex = &ex;
+    colon.err = &std::cerr;
+    // The session's commands on a buffer (%check; split arc 1B.8, design
+    // decision 1) read these: a FILE's buffer, "" the current one, by its
+    // live text; a FILE no buffer holds is the disk's.
+    session.set_buffers([&buffers, &ex](const madc::dis::istring &name,
+					madc::dis::istring &path, std::string &text,
+					bool &has_text, std::string &why) -> bool {
+	return madc::document_buffer(buffers, ex.current(), name, path, text,
+				     has_text, why);
+    });
     int status = 0;
     if ( file_argc > 0 )
     {
@@ -506,52 +565,219 @@ static int repl_loops(ReplSession &session, bool terminal,
 	    madc::hub::create_line_target());
 	if ( term )
 	{
-	    int rc = madc_repl_edit(session, *term, std::cout, history);
+	    int rc = madc_repl_edit(session, *term, std::cout, history, colon,
+				    theme);
 	    if ( rc >= 0 )
 		return rc;
 	}
     }
-    return madc_repl_run(session, std::cin, std::cout, terminal);
+    // Cooked lines come byte by byte from the OS, so the backend's entry
+    // reads the stdin bytes after them (one stdin for both).
+    madc::shared_stdin_input shared;
+    std::istream in(&shared);
+    return madc_repl_run(session, in, std::cout, terminal, colon, theme);
+}
+
+// madc --lsp [FILE] (split arc 1C.12): the Language Server Protocol on
+// stdin/stdout, Content-Length framed. The configured Program is the active
+// runtime Program for the server's life, so every document's parse is its
+// child and searches its include directories (-I, madc.ini's `include`) as a
+// compile does; a document's standard is its kind's. workspace/executeCommand
+// runs in a backend session as -i's does — the configured Program again on
+// each restart (POSIX: the fork's copy; Windows: `options` configure the
+// backend's) — its program's output piped, never the protocol's stdout.
+static int run_lsp(std::unique_ptr<Program> prog, const char *file,
+		   const std::vector<std::string> &options)
+{
+    madc::channel io("stdio://");
+    if ( !io.frame_headers() )
+    {
+	std::cerr << "madc: --lsp: stdin/stdout cannot carry framed messages"
+		  << std::endl;
+	return 1;
+    }
+#ifndef _WIN32
+    Program *configured = prog.get();
+    madc::lsp::backend_commands::ProgramFactory copy = [configured]() {
+	return std::unique_ptr<Program>(configured);	// the child's copy
+    };
+#else
+    madc::lsp::backend_commands::ProgramFactory copy;	// the child configures its own
+#endif
+    madc::lsp::backend_commands commands(options, copy);
+    madc::lsp::server server;
+    server.set_command_host(&commands);
+    prog->push_runtime_scope();
+    if ( file && !server.open_file(file) )
+	std::cerr << "madc: --lsp: cannot read " << file << std::endl;
+    int rc = server.serve(io);
+    prog->pop_runtime_scope();
+    return rc;
+}
+
+// madc --mcp FILE (split arc 1C): the Model Context Protocol on stdin/stdout,
+// one message per line — the tools over FILE's document, for the lone local
+// client, the operator (the owner tier), the session's project memory
+// (memory-only: its events, proposals, records and test runs) and the tools
+// its loaded modules bring (-lmadcgit: the version history). The
+// configured Program is the active runtime Program for the server's life, as
+// for --lsp.
+// The registry a madc --mcp server serves: the code-graph tools, the
+// session's project memory, and the tools the Program's loaded modules bring
+// (-lmadcgit: the version history, 1C.14).
+static int run_mcp(std::unique_ptr<Program> prog, const char *file)
+{
+    madc::channel io("stdio://");
+    madc::hub::world w;
+    madc::tool_host host(w, prog.get());	// before the open: the memory's baseline
+    prog->push_runtime_scope();
+    madc::hub::entity_id doc = madc::document_open(w, file);
+    if ( !doc )
+    {
+	std::cerr << "madc: --mcp: cannot read " << file << std::endl;
+	prog->pop_runtime_scope();
+	return 1;
+    }
+    madc::mcp::server server(host.registry(), w, doc, madc::tools::tier::owner);
+    int rc = server.serve(io);
+    prog->pop_runtime_scope();
+    return rc;
+}
+
+// madc --mcp --project X (split arc 1C, item 16): the headless MCP server for
+// a project — X a manifest, or a single file (the one-TU case). The served
+// documents are the project's TUs, each parsing as its manifest entry (as the
+// --project build compiles it); a call's `file` names one, the first TU
+// otherwise. The project memory lives beside the project, in <X less its
+// extension>.events, so a headless agent's proposal waits there for an
+// editor. ONE OWNER PER PROJECT: the first process to claim the project
+// advertises it (madc::discovery); a second refuses, naming the owner.
+static int run_mcp_project(std::unique_ptr<Program> prog, const char *path,
+			   const ProjectManifest &manifest)
+{
+    if ( manifest.tus.empty() )
+    {
+	std::cerr << "madc: --mcp --project: " << path << " names no translation unit"
+		  << std::endl;
+	return 1;
+    }
+    const std::string project = madc::detail::canonical_path_for_compare(path);
+    std::map<std::string, madc::value> advert;
+    advert["madc"] = madc::value((int64_t)1);
+    advert["project"] = madc::value(project);
+    advert["serves"] = madc::value::make_array(std::vector<madc::value>(1, madc::value("mcp")));
+    // discovery::find's fields: the project's documents and its directory.
+    std::vector<madc::value> tus;
+    for ( const ProjectTU &tu : manifest.tus )
+	tus.push_back(madc::value(madc::detail::canonical_path_for_compare(tu.file)));
+    advert["documents"] = madc::value::make_array(tus);
+    advert["root"] = madc::value(madc::detail::host_path_dirname(project));
+    madc::discovery::claim claim;
+    madc::value holder;
+    if ( claim.take(project, madc::value::make_object(advert), holder)
+	 == madc::discovery::claim_result::held_elsewhere )
+    {
+	const madc::value *pid = madc::jsonrpc::field(holder, "pid");
+	std::cerr << "madc: --mcp --project: " << path << " is served by madc pid "
+		  << (pid && pid->is_integer() ? std::to_string(pid->as_integer())
+					       : std::string("(starting)"))
+		  << " (one owner per project)" << std::endl;
+	return 1;
+    }
+    madc::channel io("stdio://");
+    madc::hub::world w;
+    madc::tool_host host(w, prog.get());	// before any open: the memory's baseline
+    std::string why;
+    const std::string events = project_events_path(path);
+    if ( !events.empty() && !host.memory().bind(events, why) )
+	std::cerr << "madc: --mcp --project: " << why << std::endl;
+    if ( project_path_is_manifest(path) )
+	host.memory().set_manifest(path);
+    prog->push_runtime_scope();
+    // A TU's document, opened on first use and parsing as its TU.
+    auto open_tu = [&w, &manifest](size_t i) {
+	const ProjectTU &tu = manifest.tus[i];
+	madc::hub::entity_id doc = madc::document_find(w, tu.file);
+	if ( !doc && (doc = madc::document_open(w, tu.file)) )
+	    madc::lang::document_set_tu(w, doc, tu);
+	return doc;
+    };
+    madc::hub::entity_id first = open_tu(0);
+    if ( !first )
+    {
+	std::cerr << "madc: --mcp --project: cannot read " << manifest.tus[0].file
+		  << std::endl;
+	prog->pop_runtime_scope();
+	return 1;
+    }
+    madc::mcp::server server(host.registry(), w, first, madc::tools::tier::owner);
+    // A call's `file`: as the caller spells it (the working directory's) or
+    // beside the project, compared canonically with each TU's.
+    const std::string base = madc::detail::host_path_dirname(path);
+    server.set_documents([&](const std::string &file, std::string &refusal) {
+	const std::string want = madc::detail::canonical_path_for_compare(file);
+	const std::string beside = madc::detail::canonical_path_for_compare(
+	    madc::detail::host_path_join(base.empty() ? "." : base, file));
+	for ( size_t i = 0; i < manifest.tus.size(); ++i )
+	{
+	    const std::string have = madc::detail::canonical_path_for_compare(manifest.tus[i].file);
+	    if ( have == want || have == beside )
+	    {
+		madc::hub::entity_id doc = open_tu(i);
+		if ( !doc )
+		    refusal = "cannot read " + manifest.tus[i].file;
+		return doc;
+	    }
+	}
+	refusal = file + " is not a file of the project";
+	return (madc::hub::entity_id)0;
+    });
+    int rc = server.serve(io);
+    prog->pop_runtime_scope();
+    return rc;
 }
 
 static int run_repl(std::unique_ptr<Program> prog, bool terminal,
-		    const std::string &history,
+		    const std::string &history, const madc::theme *theme,
+		    const std::vector<std::string> &options,
 		    int file_argc = 0, char **file_argv = NULL)
 {
 #ifdef MADC_CROSS_TARGET
     return cross_refuse_run("run the REPL");
 #endif
-#ifndef _WIN32
     // The session runs in a backend process on this terminal (D2, plan
     // §41.9a slice 4), so a crash in an entry starts a fresh session instead
-    // of ending madc. The backend's Program is the fork's copy of this
-    // configured one (the command line and madc.ini hold there, and each
-    // restart copies it again); this one never begins. One stdin for both:
-    // read unbuffered here, as the backend reads it.
-    Program *configured = prog.get();
+    // of ending madc. The backend's Program is this configured one, again on
+    // each restart (the command line and madc.ini hold there): on POSIX the
+    // fork's copy; on Windows, which has no fork, this executable run on the
+    // same `options`, whose main configures its Program exactly as this one
+    // was (split arc 1A.5). This one never begins. One stdin for both: the
+    // backend reads it unbuffered, this host through shared_stdin_input.
+    // The echo under a diagnostic in the theme's colours (1B.9), in the
+    // backend's copy of this Program.
+    prog->echo_theme = theme;
     SessionClient client;
     client.set_inherit_stdio(true);
-    setvbuf(stdin, NULL, _IONBF, 0);
-    if ( !client.start(std::string(), [configured]() {
-	     return std::unique_ptr<Program>(configured);	// the child's copy
-	 }) )
+    client.set_backend_arguments(options);
+    client.set_history_file(history);	// %history's store, on every start
+    // The backend renders diagnostics into a string this host prints on
+    // std::cerr: coloured as std::cerr shows colour (Phase 0.5's gate).
+    client.set_diagnostic_colour(madc::colour_reaches(std::cerr));
+#ifndef _WIN32
+    Program *configured = prog.get();
+    SessionClient::ProgramFactory copy = [configured]() {
+	return std::unique_ptr<Program>(configured);	// the child's copy
+    };
+#else
+    SessionClient::ProgramFactory copy;	// the child configures its own
+#endif
+    if ( !client.start(std::string(), copy) )
     {
 	std::cerr << client.last_error() << std::endl;
 	return 1;
     }
     BackendSession session(client, std::cerr, NULL);
-    return repl_loops(session, terminal, history, file_argc, file_argv);
-#else
-    // No fork on Windows: the session runs in this process until the
-    // backend there is a child of self (plan §41.9a, named).
-    InteractiveSession session(std::move(prog));
-    if ( !session.begin() )
-    {
-	session.program().print_last_diagnostic(std::cerr);
-	return 1;
-    }
-    return repl_loops(session, terminal, history, file_argc, file_argv);
-#endif
+    return repl_loops(session, terminal, history, theme, file_argc, file_argv);
 }
 
 int main(int argc, char **argv)
@@ -564,15 +790,17 @@ int main(int argc, char **argv)
 
     madc_install_crash_handler();
     // A Run child of self (madc_run_child.h): the parent named the run in
-    // the environment; serve it and exit before this command line is read.
-    madc_serve_run_child();
+    // the environment; serve it and exit before this command line is read —
+    // except the REPL's configured session backend (split arc 1A.5), served
+    // below once this command line has configured the Program.
+    std::string configured_session;
+    madc_serve_run_child(&configured_session);
 
     stringstream ss;
     MadcEngine engine;
     std::unique_ptr<Program> prog = engine.create_program();
     TokenProgram *tp;
 
-    prog->colors = true;
 #if defined(MADC_FOREST_EXPECT_EMBEDDED) || defined(MADC_FOREST_EXPECT_SIDECAR)
     // --with-forest= product expectation (forest-carriers S3): this binary
     // was built to ship WITH a forest (embedded carrier or sidecar), so a
@@ -614,6 +842,7 @@ int main(int argc, char **argv)
     bool freeze_append = false;           // --freeze-append=: placement 2 (append to binary)
     bool freeze_mir_cache = false;        // --freeze-mir-cache: pack the compiled MIR module blob
     std::vector<std::string> freeze_ledger_srcs;  // --freeze-ledger=: AOT ledger sources (S5)
+    std::vector<madc::dis::istring> freeze_also_std;  // --freeze-also-std=: more standards the profile serves
     bool run_frozen = false;              // --run-frozen[=path]: thaw + run, no parse
     const char *run_frozen_path = NULL;   // NULL = the blob appended to this executable
     bool freeze_run = false;              // --freeze-run: freeze, then re-exec fresh to run
@@ -626,6 +855,8 @@ int main(int argc, char **argv)
     bool no_config = false;               // --no-config: skip the madc.ini lookup entirely
     bool cli_set_std = false;             // --std= came from the COMMAND LINE (so a madc.ini `std` key must not override it)
     bool interactive = false;             // -i / --interactive: the REPL, whatever stdin is (D20)
+    bool lsp = false;                     // --lsp: the Language Server Protocol on stdio (split arc 1C.12)
+    bool mcp = false;                     // --mcp: the Model Context Protocol on stdio (split arc 1C)
     std::string history_file;             // --history-file=PATH|no: the REPL's history (D23)
     bool history_file_given = false;
 
@@ -768,6 +999,22 @@ int main(int argc, char **argv)
             // single-TU, --project, .o link — sees the same answer.
             madc_no_eval_shims = strcmp(argv[i], "-fno-eval-shims") == 0;
             filearg = i + 1;
+        } else if (strcmp(argv[i], "-fdiagnostics-color") == 0
+                || strncmp(argv[i], "-fdiagnostics-color=", 20) == 0) {
+            // gcc's -fdiagnostics-color[=WHEN]: auto (the default) colours a
+            // terminal only; the bare flag is always.
+            const char *when = argv[i][19] ? argv[i] + 20 : "always";
+            madc::colour_when code;
+            if ( !madc::parse_colour_when(when, code) ) {
+                std::cerr << "Unknown -fdiagnostics-color= value: " << when
+                          << " (auto, always, never)" << std::endl;
+                return 1;
+            }
+            madc::set_colour_when(code);
+            filearg = i + 1;
+        } else if (strcmp(argv[i], "-fno-diagnostics-color") == 0) {
+            madc::set_colour_when(madc::colour_when::never);
+            filearg = i + 1;
         } else if (strcmp(argv[i], "--dump-cir") == 0) {
             dump_cir = true;
             filearg = i + 1;
@@ -808,6 +1055,12 @@ int main(int argc, char **argv)
             // canonical list is scripts/ledger_sources.txt, handed over by
             // scripts/forest_pack.sh — never spelled out here.
             freeze_ledger_srcs.push_back(argv[i] + 16);
+            filearg = i + 1;
+        } else if (strncmp(argv[i], "--freeze-also-std=", 18) == 0) {
+            // Repeatable: one more --std= the frozen profile serves — the
+            // madc dialect's corpus IS the C++17 one (scripts/
+            // forest_pack_share.sh names the standards at pack time).
+            freeze_also_std.push_back(argv[i] + 18);
             filearg = i + 1;
         } else if (strcmp(argv[i], "--freeze-run") == 0) {
             freeze_run = true;
@@ -891,6 +1144,15 @@ int main(int argc, char **argv)
             // D20: the REPL even on a piped stdin (python -i); with a
             // program file, the file first.
             interactive = true;
+            filearg = i + 1;
+        } else if (strcmp(argv[i], "--mcp") == 0) {
+            // split arc 1C: madc's own MCP server over a file's document.
+            mcp = true;
+            filearg = i + 1;
+        } else if (strcmp(argv[i], "--lsp") == 0) {
+            // split arc 1C.12: madc's own LSP server; a file after it is
+            // opened before the client asks.
+            lsp = true;
             filearg = i + 1;
         } else if (strncmp(argv[i], "--history-file=", 15) == 0) {
             // D23 (plan §41.7a): the REPL's history file, Julia's flag;
@@ -1033,6 +1295,13 @@ int main(int argc, char **argv)
                   << config.std_option << "'" << std::endl;
         return 1;
     }
+    // The source's extension outranks madc.ini (split arc 1A.4): `--std` >
+    // extension > madc.ini `std` > madc. The rule is the one a --project TU
+    // and the editor's parse take (Program::adopt_file_standard); a source
+    // with no recognised extension — a shebang script, stdin — keeps the ini's
+    // standard. Under --run-frozen the positionals are the program's argv.
+    if ( !cli_set_std && !run_frozen && filearg < argc )
+        prog->adopt_file_standard(madc::file_kind_of_path(argv[filearg]));
     // A -stdlib= on the command line already set prog->stdlib_flavor, and CLI
     // outranks madc.ini — same precedence as `std` above.
     if ( config.has_stdlib && !prog->stdlib_flavor
@@ -1043,10 +1312,38 @@ int main(int argc, char **argv)
                   << prog->stdlib_flavor_names() << ")" << std::endl;
         return 1;
     }
+    // `theme` (split arc 1B.9): the REPL's colours, madc's built-in theme
+    // unless madc.ini names a `.theme` file. One that does not read keeps the
+    // built-in, and says why.
+    madc::theme repl_theme = madc::theme_default();
+    if ( config.has_theme )
+    {
+        std::string text, why;
+        if ( !madc::document_read_file(config.theme, text) )
+            why = "cannot be read";
+        else if ( !madc::theme_read(text, repl_theme, why) )
+            repl_theme = madc::theme_default();
+        if ( !why.empty() && configured_session.empty() )   // the host said it
+            std::cerr << "madc: " << config.source_path << ": theme "
+                      << config.theme << ": " << why
+                      << "; the built-in theme stays" << std::endl;
+    }
     // Appended AFTER the command line's -I dirs (gcc searches configured
     // directories last).
     for ( const std::string &dir : config.include_dirs )
         prog->add_include_dir(dir);
+    // `modules` (split arc 1A.4) — php.ini's `extension =`: each a module
+    // name as -l<name> takes it, after the command line's. Additive, not an
+    // override (a module is a capability, not a setting); a library the
+    // command line already named is not named twice.
+    for ( const std::string &name : config.modules )
+    {
+        std::string lib = madc_module_library_spelling(name);
+        if ( std::find(link_libs.begin(), link_libs.end(), lib) != link_libs.end() )
+            continue;
+        cc_link_args.push_back(lib);
+        link_libs.push_back(lib);
+    }
     // Discovery arm 5, on both the program and the engine — the engine's copy
     // is what --project TU programs and runtime-eval children inherit (the
     // MADC_FOREST_EXPECT_* block above sets the pair the same way).
@@ -1099,7 +1396,8 @@ int main(int argc, char **argv)
     if ( project_manifest )
     {
         std::string err;
-        if ( !read_project_manifest(project_manifest, manifest, err) )
+        if ( !(mcp ? project_of_path(project_manifest, manifest, err)
+                   : read_project_manifest(project_manifest, manifest, err)) )
         {
             std::cerr << "madc --project: " << err << std::endl;
             return 1;
@@ -1235,6 +1533,15 @@ int main(int argc, char **argv)
         prog->loaded_lib_paths.push_back(lib);   // the frozen-forest link closure
     }
 
+    // The REPL host's backend (Windows, split arc 1A.5): this process is its
+    // configured-session run child, the command line is the host's options,
+    // and the Program is now configured exactly as the host's was.
+    if ( !configured_session.empty() )
+    {
+        prog->echo_theme = &repl_theme;     // the host's run_repl sets it there
+        return madc_session_serve_child(configured_session, std::move(prog));
+    }
+
     // .o inputs (AOT R4b + multi-object): execute the madc-emitted
     // relocatable object(s) as a precompiled cache — no parse, no
     // translate, no gen; several objects merge in memory first. Placed
@@ -1333,11 +1640,7 @@ int main(int argc, char **argv)
 	    outpath = generic_output_path;
 	else
 	{
-	    outpath = input;
-	    size_t dot = outpath.rfind('.');
-	    if ( dot != std::string::npos )
-		outpath = outpath.substr(0, dot);
-	    outpath += ".madh";
+	    outpath = madc::detail::host_path_drop_extension(input) + ".madh";
 	}
 
 	// Choose compression: prefer zstd if available
@@ -1363,7 +1666,7 @@ int main(int argc, char **argv)
     if ( emit_function_name && filearg < argc )
 	return emit_function(*prog, argv[filearg], emit_function_name);
 
-    if ( project_manifest )
+    if ( project_manifest && !mcp )
     {
 	if ( emit_native )
 	{
@@ -1428,6 +1731,9 @@ int main(int argc, char **argv)
     // what to do with a translation unit, so it has nothing to work on
     // (gcc); otherwise -i or a terminal stdin is the REPL, and a piped stdin
     // is the program, as if named `-`.
+    // The REPL's options — every argument before the first positional — are
+    // its Windows backend's command line (run_repl).
+    const std::vector<std::string> repl_options(argv + 1, argv + filearg);
     std::vector<char *> stdin_argv;
     if ( interactive && filearg < argc && strcmp(argv[filearg], "-") == 0 )
     {
@@ -1445,6 +1751,37 @@ int main(int argc, char **argv)
 	|| emit_function_name || dump_source || dump_macro_table
 	|| dump_cir || dump_nodes || dump_checked || dump_registered
 	|| freeze_path || freeze_run;
+    if ( lsp )
+    {
+	if ( interactive || artifact_request || filearg + 1 < argc )
+	{
+	    std::cerr << "madc: --lsp serves a client on stdin/stdout; it takes"
+			 " at most one file and no other mode" << std::endl;
+	    return 1;
+	}
+	return run_lsp(std::move(prog), filearg < argc ? argv[filearg] : NULL,
+		       repl_options);
+    }
+    if ( mcp && project_manifest )
+    {
+	if ( interactive || artifact_request || filearg != argc )
+	{
+	    std::cerr << "madc: --mcp --project serves a client on stdin/stdout;"
+			 " it takes the project and no other mode" << std::endl;
+	    return 1;
+	}
+	return run_mcp_project(std::move(prog), project_manifest, manifest);
+    }
+    if ( mcp )
+    {
+	if ( interactive || artifact_request || filearg + 1 != argc )
+	{
+	    std::cerr << "madc: --mcp serves a client on stdin/stdout; it takes"
+			 " one file and no other mode" << std::endl;
+	    return 1;
+	}
+	return run_mcp(std::move(prog), argv[filearg]);
+    }
     if ( interactive && artifact_request )
     {
 	std::cerr << "madc: -i runs the REPL; it cannot also write an artifact"
@@ -1462,7 +1799,8 @@ int main(int argc, char **argv)
 	if ( interactive || terminal )
 	    return run_repl(std::move(prog), terminal,
 			    history_file_given ? history_file
-					       : madc_repl_history_path());
+					       : madc::history_default_path(),
+			    &repl_theme, repl_options);
 	static char stdin_path[] = "-";
 	stdin_argv.assign(argv, argv + argc);
 	stdin_argv.push_back(stdin_path);
@@ -1473,8 +1811,8 @@ int main(int argc, char **argv)
     else if ( interactive )
 	return run_repl(std::move(prog), terminal,
 			history_file_given ? history_file
-					   : madc_repl_history_path(),
-			argc - filearg, argv + filearg);
+					   : madc::history_default_path(),
+			&repl_theme, repl_options, argc - filearg, argv + filearg);
 
     if ( argc >= 2 && filearg < argc )
     {
@@ -1826,7 +2164,8 @@ int main(int argc, char **argv)
 		return 1;
 	    int frc = madc_cir_freeze(prog.get(), argv[filearg], freeze_path,
 				      freeze_append, freeze_mir_cache,
-				      ledger.empty() ? NULL : &ledger);
+				      ledger.empty() ? NULL : &ledger,
+				      /*progress=*/true, &freeze_also_std);
 	    print_stats();
 	    return frc == 0 ? 0 : 1;
 	}
@@ -1930,11 +2269,7 @@ int main(int argc, char **argv)
 	    {
 		// gcc semantics: strip the directory and extension, land the
 		// artifact in the current directory (foo.mad -> foo.o / foo.so).
-		outpath = madc::detail::host_path_basename(argv[filearg]);
-		size_t dot = outpath.rfind('.');
-		if ( dot != std::string::npos && dot > 0 )
-		    outpath = outpath.substr(0, dot);
-		outpath += dflt_suffix;
+		outpath = madc::detail::host_path_stem(argv[filearg]) + dflt_suffix;
 	    }
 	    else
 		outpath = "a.out";

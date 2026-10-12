@@ -14,6 +14,8 @@
 // load, from the image that imported it.
 
 #include "madcdis/git_repo.h"
+#include "madcgit_values.h"		// the value shapers this file defines
+#include "madcgit_verbs.h"		// git_command, git_relative_date: the %git verbs
 #include "handle_table.h"		// THE slot+1 registry rule (the parse handles')
 #include "madc_datachannel_internal.h"	// detail::set_channel_error — the ONE
 					// runtime-error composer (gate:
@@ -25,6 +27,7 @@
 #include <cstdint>
 #include <cstring>
 #include <map>
+#include <unordered_map>
 
 namespace madc {
 
@@ -174,42 +177,122 @@ bool entry_oid_at(git_tree *tree, const char *path, git_oid &out)
     return true;
 }
 
-// `git log -- path`'s keep rule: the blob at `path` differs from every
-// parent's (a root commit that has the path counts).
-bool touches_path(git_commit *c, const char *path)
+// The entry id named `name` in the tree `tree_id`; false when the tree or the
+// entry is absent (a component below a blob is absent too).
+bool child_entry_id(git_repository *repo, const git_oid &tree_id, const std::string &name,
+		    git_oid &out)
 {
     git_tree *tree = (git_tree *)0;
-    git_oid mine;
-    bool have = false;
-    if ( git_commit_tree(&tree, c) == 0 )
-    {
-	have = entry_oid_at(tree, path, mine);
-	git_tree_free(tree);
-    }
-    if ( !have )
+    if ( git_tree_lookup(&tree, repo, &tree_id) < 0 )
 	return false;
-    unsigned n = git_commit_parentcount(c);
-    if ( n == 0 )
-	return true;
-    for ( unsigned i = 0; i < n; ++i )
+    const git_tree_entry *e = git_tree_entry_byname(tree, name.c_str());
+    if ( e )
+	git_oid_cpy(&out, git_tree_entry_id(e));
+    git_tree_free(tree);
+    return e != (const git_tree_entry *)0;
+}
+
+// A repository path's components: git's paths are always `/`-separated,
+// whatever the host; empty components (`a//b`, a trailing `/`) drop.
+std::vector<std::string> path_parts(const std::string &path)
+{
+    std::vector<std::string> parts;
+    size_t b = 0;
+    while ( b <= path.size() )
     {
-	git_commit *p = (git_commit *)0;
-	git_tree *pt = (git_tree *)0;
-	git_oid theirs;
-	bool same = false;
-	if ( git_commit_parent(&p, c, i) == 0 )
+	size_t e = path.find('/', b);
+	if ( e == std::string::npos )
+	    e = path.size();
+	if ( e > b )
+	    parts.push_back(path.substr(b, e - b));
+	b = e + 1;
+    }
+    return parts;
+}
+
+enum class path_change { same, differs, mine_absent };
+
+// `parts` (a path's components) below the root tree `mine` against the root
+// tree `theirs`: one component at a time, stopping at the first level whose
+// two ids are equal — an unchanged subtree holds an unchanged path, so git's
+// tree-walk never reads it. Only a subtree that changed on both sides is
+// read (most commits leave `tests/` alone; reading its thousands of entries
+// for every commit and parent made `log -n 1 tests/X` 13x slower than git).
+// One walk's child_entry_id answers, keyed by (tree id, component depth): a
+// linear history reads each changed subtree twice — as a commit's own tree
+// and as its child's parent tree — and libgit2's object cache keeps no tree
+// over 4 KB, so a `tests/` of thousands of entries was reparsed per lookup.
+// Per-walk state: one log call owns it (no sharing across threads).
+class entry_memo
+{
+public:
+    explicit entry_memo(git_repository *repo) : _repo(repo) {}
+    bool child(const git_oid &tree_id, size_t depth, const std::string &name, git_oid &out)
+    {
+	std::string key((const char *)tree_id.id, GIT_OID_RAWSZ);
+	key.push_back((char)depth);
+	std::unordered_map<std::string, answer>::const_iterator it = _seen.find(key);
+	if ( it == _seen.end() )
 	{
-	    if ( git_commit_tree(&pt, p) == 0 )
-	    {
-		same = entry_oid_at(pt, path, theirs) && git_oid_equal(&theirs, &mine) != 0;
-		git_tree_free(pt);
-	    }
+	    answer a;
+	    memset(&a.id, 0, sizeof(a.id));
+	    a.present = child_entry_id(_repo, tree_id, name, a.id);
+	    it = _seen.insert(std::make_pair(key, a)).first;
+	}
+	if ( it->second.present )
+	    git_oid_cpy(&out, &it->second.id);
+	return it->second.present;
+    }
+private:
+    struct answer { bool present; git_oid id; };
+    git_repository *_repo;
+    std::unordered_map<std::string, answer> _seen;
+};
+
+path_change compare_path(entry_memo &memo, git_oid mine, git_oid theirs,
+			 const std::vector<std::string> &parts)
+{
+    bool theirs_present = true;
+    for ( size_t k = 0; k < parts.size(); ++k )
+    {
+	if ( theirs_present && git_oid_equal(&mine, &theirs) )
+	    return path_change::same;
+	git_oid m, t;
+	if ( !memo.child(mine, k, parts[k], m) )
+	    return path_change::mine_absent;
+	theirs_present = theirs_present && memo.child(theirs, k, parts[k], t);
+	mine = m;
+	if ( theirs_present )
+	    theirs = t;
+    }
+    return theirs_present && git_oid_equal(&mine, &theirs) ? path_change::same
+							     : path_change::differs;
+}
+
+// `git log -- path`'s keep rule: the blob at `path` differs from every
+// parent's (a root commit that has the path counts) — a commit TREESAME to
+// any parent is hidden, as git's history simplification hides it (a merge of
+// an unrelated history kept the path as it was).
+bool touches_path(entry_memo &memo, git_commit *c, const std::vector<std::string> &parts)
+{
+    const git_oid mine = *git_commit_tree_id(c);
+    // A root commit is compared with no tree (the path is new if it is here);
+    // so is a parent that does not load.
+    const unsigned n = git_commit_parentcount(c);
+    for ( unsigned i = 0; i < (n ? n : 1); ++i )
+    {
+	git_oid theirs;
+	memset(&theirs, 0, sizeof(theirs));
+	git_commit *p = (git_commit *)0;
+	if ( n && git_commit_parent(&p, c, i) == 0 )
+	{
+	    git_oid_cpy(&theirs, git_commit_tree_id(p));
 	    git_commit_free(p);
 	}
-	if ( !same )
-	    return true;
+	if ( compare_path(memo, mine, theirs, parts) != path_change::differs )
+	    return false;	// TREESAME to this parent, or the path is not here
     }
-    return false;
+    return true;
 }
 
 void fill_commit(GitCommit &row, const git_oid *id, git_commit *c)
@@ -242,13 +325,15 @@ bool GitRepo::log(std::vector<GitCommit> &out, const std::string &path, size_t l
 	return false;
     }
     git_revwalk_sorting(walk, GIT_SORT_TIME);
+    const std::vector<std::string> parts = path_parts(path);
+    entry_memo memo(_->repo);
     git_oid oid;
     while ( out.size() < limit && git_revwalk_next(&oid, walk) == 0 )
     {
 	git_commit *c = (git_commit *)0;
 	if ( git_commit_lookup(&c, _->repo, &oid) < 0 )
 	    break;
-	if ( path.empty() || touches_path(c, path.c_str()) )
+	if ( parts.empty() || touches_path(memo, c, parts) )
 	{
 	    GitCommit row;
 	    fill_commit(row, &oid, c);
@@ -421,6 +506,29 @@ bool GitRepo::blame_buffer(std::vector<GitBlameRow> &out, const std::string &pat
 	row.count = last - first + 1;
 	out.push_back(row);
     }
+    return true;
+}
+
+bool GitRepo::relpath(const std::string &path, std::string &rel, error *err) const
+{
+    const std::string wd = detail::canonical_path_for_compare(workdir());
+    const std::string p = detail::canonical_path_for_compare(path);
+    std::size_t rel_at = 0;
+    if ( !detail::host_path_within(wd, p, &rel_at) )
+    {
+	detail::set_channel_error(err, "git: `" + path
+				  + "` is not inside the repository's working tree");
+	return false;
+    }
+    // git paths are forward-slash on every platform (libgit2's own convention);
+    // the OS canonicalizer (resolve_real_path) yields NATIVE separators, so on
+    // Windows the working-tree-relative result would read "tests\\file" — the
+    // git face normalizes to forward slashes at its output boundary, the same
+    // platform-path discipline the session-discovery layer applies to its slug.
+    rel = p.substr(rel_at);
+    for ( std::size_t i = 0; i < rel.size(); ++i )
+	if ( rel[i] == '\\' )
+	    rel[i] = '/';
     return true;
 }
 
@@ -947,24 +1055,13 @@ void *madcgit_relpath(void *result, int64_t handle, const char *path)
     madc::git_repo_state *st = madc::state_or_refuse(handle, out);
     if ( !st )
 	return result;
-    std::string wd = madc::detail::canonical_path_for_compare(st->repo.workdir());
-    std::string given = madc::text_of(path);
-    std::string p = madc::detail::canonical_path_for_compare(given);
-    std::size_t rel_at = 0;
-    if ( !madc::detail::host_path_within(wd, p, &rel_at) )
+    std::string rel;
+    madc::error err;
+    if ( !st->repo.relpath(madc::text_of(path), rel, &err) )
     {
-	out = madc::error_value("git: `" + given + "` is not inside the repository's working tree");
+	out = madc::error_value(err.message);
 	return result;
     }
-    // git paths are forward-slash on every platform (libgit2's own convention);
-    // the OS canonicalizer (resolve_real_path) yields NATIVE separators, so on
-    // Windows the working-tree-relative result would read "tests\file" — the
-    // git:: face normalizes to forward slashes at its output boundary, the same
-    // platform-path discipline the session-discovery layer applies to its slug.
-    std::string rel = p.substr(rel_at);
-    for ( size_t i = 0; i < rel.size(); ++i )
-	if ( rel[i] == '\\' )
-	    rel[i] = '/';
     std::map<std::string, value> f;
     f["path"] = value(rel);
     out = value::make_object(f);
@@ -1052,6 +1149,43 @@ void *madcgit_diff(void *result, int64_t handle, const char *rev, const char *pa
     std::map<std::string, value> f;
     f["patch"] = value(patch);
     f["hunks"] = value::make_array(rows);
+    out = value::make_object(f);
+    return result;
+}
+
+void *madcgit_command(void *result, const char *argument)
+{
+    value &out = *(value *)result;
+    std::string text, why;
+    if ( !madc::git_command(argument ? argument : "", text, why) )
+    {
+	out = madc::error_value(why);
+	return result;
+    }
+    std::map<std::string, value> f;
+    f["text"] = value(text);
+    out = value::make_object(f);
+    return result;
+}
+
+void *madcgit_command_row(void *result)
+{
+    value &out = *(value *)result;
+    std::size_t n = 0;
+    const madc_module_command *rows = madcgit_commands(&n);
+    std::map<std::string, value> f;
+    f["name"] = value(std::string(rows[0].name));
+    f["usage"] = value(std::string(rows[0].usage));
+    f["summary"] = value(std::string(rows[0].summary));
+    out = value::make_object(f);
+    return result;
+}
+
+void *madcgit_relative_date(void *result, int64_t when, int64_t now)
+{
+    value &out = *(value *)result;
+    std::map<std::string, value> f;
+    f["text"] = value(madc::git_relative_date(when, now));
     out = value::make_object(f);
     return result;
 }

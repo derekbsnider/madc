@@ -1,0 +1,9 @@
+int main() { return 0; }
+
+// An unknown -fdiagnostics-color= value is refused, naming the three the
+// option takes (this test's .flags; split arc Phase 0.5).
+//
+// Oracle: gcc 13 -fdiagnostics-color=yes exits 1 with "unrecognized argument
+// in option '-fdiagnostics-color=yes'" and "valid arguments to
+// '-fdiagnostics-color=' are: always auto never"; madc words it as its other
+// option refusals do (`Unknown --std target: ...`).

@@ -921,6 +921,12 @@ CirFrozenSegment::~CirFrozenSegment()
 	madc_cir_unregister_segment(_seg);
 }
 
+void CirFrozenSegment::begin_compile(c2m_ctx_t c2m)
+{
+	_c2m = c2m;
+	_mat.assign(_record_count, (cir_node *)NULL);
+}
+
 size_t CirFrozenSegment::materialized_count() const
 {
 	size_t n = 0;
@@ -1126,6 +1132,14 @@ CirFrozenForest::CirFrozenForest()
 {
 }
 
+void CirFrozenForest::begin_compile(c2m_ctx_t c2m)
+{
+	_c2m = c2m;
+	for (size_t u = 0; u < _segs.size(); ++u)
+		if (_segs[u])
+			_segs[u]->begin_compile(c2m);
+}
+
 CirFrozenForest::~CirFrozenForest()
 {
 	for (size_t u = 0; u < _segs.size(); ++u)
@@ -1275,6 +1289,22 @@ bool CirFrozenForest::open_header(const void *image, size_t len,
 	       hdr.unit_count * sizeof(cir_forest_dir_unit));
 	_language_std = hdr.language_std;	// v27 producer config (bind gate)
 	_defines_hash = hdr.defines_hash;
+	// The configs a pack proved this profile also serves: directory-level
+	// state like the header's own pair, since the bind gate reads it before
+	// complete_open.
+	_shared_configs.clear();
+	if (const madc::dis::snapshot_segment *ss = _reader.find(CIR_FOREST_SEG_SHARED_CONFIGS)) {
+		madc::dis::decode_bytes shared;
+		if (ss->kind != SNAP_KIND_CIR_SHARED_CONFIGS
+		    || !_reader.read_segment(*ss, shared)
+		    || shared.size() % sizeof(cir_forest_shared_config) != 0) {
+			fprintf(stderr, "madc: forest shared-config labels malformed\n");
+			return false;
+		}
+		_shared_configs.resize(shared.size() / sizeof(cir_forest_shared_config));
+		if (!_shared_configs.empty())
+			memcpy(_shared_configs.data(), shared.data(), shared.size());
+	}
 
 	// Root sanity against the directory.
 	_root_unit = hdr.root_unit;
@@ -1297,6 +1327,50 @@ bool CirFrozenForest::open_header(const void *image, size_t len,
 
 	_header_opened = true;
 	_stat_open_secs += forest_now() - _t0;
+	return true;
+}
+
+bool CirFrozenForest::serves_config(uint32_t config, uint32_t defines) const
+{
+	if (config == _language_std && defines == _defines_hash)
+		return true;
+	for (const cir_forest_shared_config &c : _shared_configs)
+		if (c.language_std == config && c.defines_hash == defines)
+			return true;
+	return false;
+}
+
+bool cir_forest_content_digests(const void *image, size_t len,
+				std::map<uint32_t, uint64_t> &out)
+{
+	out.clear();
+	madc::dis::snapshot_reader r;
+	if (!r.open(image, len))
+		return false;
+	for (uint32_t i = 0; i < r.segment_count(); ++i) {
+		const madc::dis::snapshot_segment *s = r.segment_at(i);
+		if (s->seg_id == CIR_FOREST_SEG_MIR_MODULE
+		    || s->seg_id == CIR_FOREST_SEG_LEDGER
+		    || s->seg_id == CIR_FOREST_SEG_SHARED_CONFIGS)
+			continue;
+		std::vector<uint8_t> bytes;
+		if (!r.read_segment(*s, bytes))
+			return false;
+		if (s->seg_id == CIR_FOREST_SEG_DIR) {
+			if (bytes.size() < sizeof(cir_forest_dir_header))
+				return false;
+			cir_forest_dir_header hdr;
+			memcpy(&hdr, bytes.data(), sizeof(hdr));
+			hdr.language_std = 0;
+			hdr.defines_hash = 0;
+			memcpy(bytes.data(), &hdr, sizeof(hdr));
+		}
+		// The kind rides the digest: the same bytes under another segment
+		// kind are not the same content.
+		uint64_t h = madc_pch::hash_content((const char *)&s->kind, sizeof(s->kind));
+		h ^= madc_pch::hash_content((const char *)bytes.data(), bytes.size());
+		out[s->seg_id] = h;
+	}
 	return true;
 }
 
@@ -3296,6 +3370,8 @@ void CirFrozenForest::materialize_pass()
 					(fr.flags & madc::dis::DF_FUNC_DEFAULTED_OR_DELETED) != 0;
 				fd->is_deleted =
 					(fr.flags & madc::dis::DF_FUNC_IS_DELETED) != 0;
+				fd->is_explicit =
+					(md.flags & madc::dis::MF_EXPLICIT) != 0;
 				fd->noexcept_spec =
 					(fr.flags & madc::dis::DF_NOEXCEPT_TRUE) ? FuncDef::NxTrue
 					: (fr.flags & madc::dis::DF_NOEXCEPT_UNKNOWN) ? FuncDef::NxUnknown

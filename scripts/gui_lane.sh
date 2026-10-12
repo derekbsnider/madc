@@ -1,10 +1,12 @@
 #!/bin/bash
 # gui_lane.sh — the GUI test lane: tests/gui under a virtual display.
 #
-# tests/gui exercises the madcide surfaces that need a real window (layout,
-# splits, panels, dialogs, theming, presence carets), so it runs under Xvfb
-# against a freshly built libmadcwebview. All three execution lanes run —
-# JIT, --exe and --obj — because a GUI module binds differently in each.
+# tests/gui exercises the ui web target's surfaces that need a real window
+# (the page and its edit nodes, dialogs, the clipboard, the native menu bar,
+# theming, the workbench regions), so it runs under Xvfb against a freshly
+# built libmadcwebview. madcide's own window tests live in its repository.
+# All three execution lanes run — JIT, --exe and --obj — because a GUI
+# module binds differently in each.
 #
 # WHY IT IS A SCRIPT AND NOT AN INLINE STAGE: this body lived only inside
 # remote_build.sh's `gui` stage, which is why the lane had no ledger row for
@@ -62,17 +64,13 @@ pass=${jit%% passed,*}
 
 echo "gui: ${jit:-(no summary)} | ${exe:-no EXE line} | ${obj:-no OBJ line}"
 
-# ZERO-TESTS GUARD. A runner that matched nothing prints "0 passed, 0 failed"
-# and exits 0; that reads as green on every dashboard. It is RED here.
+# run_tests.sh refuses a run that executed nothing (rc 1), so a wrong
+# MADC_TEST_DIR is red through rc; a missing summary means the runner died.
 case "$pass" in
 	''|*[!0-9]*)
 		echo "gui: RED — no runner summary in $out" >&2
 		exit 1;;
 esac
-if [ "$pass" -eq 0 ]; then
-	echo "gui: RED — ran ZERO tests (MADC_TEST_DIR or the glob is wrong)" >&2
-	exit 1
-fi
 if [ "$rc" -ne 0 ]; then
 	echo "gui: RED — runner rc=$rc, see $out" >&2
 	exit 1

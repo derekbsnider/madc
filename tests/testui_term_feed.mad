@@ -1,0 +1,42 @@
+// ui::term_feed — bytes a program wrote to its pty folded into a document's
+// text through the bounded terminal screen (madcdis/term_screen.h): the
+// printables at the cursor, CR to column 0 (the next printables overwrite),
+// BS one column back, HT to the next multiple of 8, CSI K erasing to the
+// line's end, CSI 2J clearing the screen, an SGR's colour kept beside the
+// text as a span row ({s, e, c} on `termspans`, never in the text) — and an
+// escape split across two feeds still read as one (its parser state rides
+// the entity between feeds). An entity with no text component answers -1.
+// Oracle: xterm (VT100) on the same bytes. The engine twin of
+// testmadcide_termcolour.
+void step(long w, long d, const char *label, const char *bytes)
+{
+    ui::term_feed(w, d, bytes, strlen(bytes));
+    var t;
+    ui::text(t, w, d);
+    println("{}: [{}]", label, php::str_replace("\n", "|", t));
+}
+
+int main()
+{
+    long w = ui::world_new();
+    long d = ui::create(w, "screen");
+    ui::text_load(w, d, "");
+    step(w, d, "plain", "hello\r\n");
+    step(w, d, "cr-overwrite", "abc\rX\r\n");
+    step(w, d, "backspace", "ab\bZ\r\n");
+    step(w, d, "tab", "\tT\r\n");
+    step(w, d, "erase-line", "keep\r\033[Knew\r\n");
+    step(w, d, "sgr", "\033[31mred\033[0m\r\n");
+    var sp;
+    ui::get(sp, w, d, "termspans");
+    var spans = "";
+    for ( var r : sp )
+	spans = format("{}{}-{} {};", spans, r["s"], r["e"], r["c"]);
+    println("sgr-spans: {}", spans);
+    step(w, d, "split-escape-1", "\033[");
+    step(w, d, "split-escape-2", "2Jafter");
+    long bare = ui::create(w, "bare");
+    println("no-text: {}", ui::term_feed(w, bare, "x", 1));
+    ui::world_close(w);
+    return 0;
+}

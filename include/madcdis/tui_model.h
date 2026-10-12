@@ -58,6 +58,7 @@
 #include "madcdis/ui_focus.h"	// focusable, focus_state — the focus/navigation owner
 #include "madcdis/ui_input.h"	// ui_apply_keys — the one keys → events adapter
 #include "madcdis/ui_style.h"	// ui_style, ui_style_of — the one render style + spec parser
+#include "madcdis/ui_chrome.h"	// tui_chrome — the chrome a theme colours
 #include "madcdis/text_utf16.h"	// line_layout / line_columns — the one line layout (B87)
 #include "madcdis/tui_grid.h"	// tui_cell, tui_grid, the repaint diff (S0 split)
 #include "madcdis/tui_frame.h"	// tui_frame — dividers and junctions by arms (S2)
@@ -66,35 +67,7 @@
 namespace madc {
 namespace hub {
 
-// The chrome a theme colours (facelift S2): the dividers, the editor's
-// line-number gutter, the caret line's number, and the caret line itself.
-// The composer hands their style specs over as the root's `chrome` hint
-// object (keys = these names); tui_chrome_of converts each key ONCE.
-enum class tui_chrome : unsigned char
-{
-    divider = 0, gutter, gutter_current, current_line,
-    tab, tab_active, statusbar,		// S3: strips and the status bar
-    menubar, menu, menu_selected, menu_hot, shadow,	// S4: the menu bar
-    toolbar,				// S5: the toolbar row
-    dialog, list_selected, field, button_primary,	// S6: floating windows
-    count
-};
-inline bool tui_chrome_of(const std::string &name, tui_chrome &out)
-{
-    static const char *const names[] = {
-	"divider", "gutter", "gutter_current", "current_line",
-	"tab", "tab_active", "statusbar",
-	"menubar", "menu", "menu_selected", "menu_hot", "shadow",
-	"toolbar", "dialog", "list_selected", "field", "button_primary"
-    };
-    for ( size_t i = 0; i < (size_t)tui_chrome::count; ++i )
-	if ( name == names[i] )
-	{
-	    out = (tui_chrome)i;
-	    return true;
-	}
-    return false;
-}
+// The chrome a theme colours: madcdis/ui_chrome.h (tui_chrome, tui_chrome_of).
 
 // ------------------------------------------------------------------ the model
 // One instance per TUI session. Contract: compose() before apply_keys()
@@ -407,7 +380,7 @@ private:
 	    read_header(n, titles, active, &acts);
 	    if ( !titles.empty() )
 	    {
-		emit_line(fl, tab_strip(titles, active, false, &acts));
+		emit_line(fl, tab_strip(titles, active, false, &acts, fl.width));
 		for ( size_t i = 0; i < n.children.size(); ++i )
 		    collect_flow(r, n.children[i], fl);
 		return;
@@ -1104,12 +1077,25 @@ private:
     // A tab strip as one line: each title padded by a blank, the active
     // one in the scheme's tab_active style, the rest in its tab style; a
     // chrome band's titles uppercase (S3). The ONE strip builder — a leaf
-    // pane's header and the editor's open files.
+    // pane's header and the editor's open files. A strip wider than its
+    // `width` columns (0: unbounded) starts at the first tab that keeps the
+    // active one whole in view — the tabs before it scroll off, as a GUI's
+    // tab bar scrolls to its active tab.
     line_out tab_strip(const std::vector<std::string> &titles, size_t active,
-		       bool upper, const std::vector<tui_hit> *acts = NULL) const
+		       bool upper, const std::vector<tui_hit> *acts = NULL,
+		       size_t width = 0) const
     {
 	line_out l;
-	for ( size_t i = 0; i < titles.size(); ++i )
+	size_t first = 0;
+	if ( width > 0 && active < titles.size() )
+	{
+	    size_t through = 0;			// columns of tabs first..active
+	    for ( size_t i = 0; i <= active; ++i )
+		through += madc::line_width(titles[i]) + 2;
+	    while ( first < active && through > width )
+		through -= madc::line_width(titles[first++]) + 2;
+	}
+	for ( size_t i = first; i < titles.size(); ++i )
 	{
 	    if ( acts && i < acts->size() && (*acts)[i].k != tui_hit::kind::none )
 	    {
@@ -1144,7 +1130,7 @@ private:
 	const std::vector<std::string> &titles, size_t active, bool upper,
 	const std::vector<tui_hit> *acts = NULL)
     {
-	paint_line(row, col0, width, tab_strip(titles, active, upper, acts));
+	paint_line(row, col0, width, tab_strip(titles, active, upper, acts, width));
     }
 
     // A document line's byte->display-column map is madc::line_layout's
@@ -1401,39 +1387,11 @@ private:
 	out.spans.insert(out.spans.begin(), whole);
 	return out;
     }
-    // This compose's chrome styles from the root's `chrome` hint object
-    // ({ "<tui_chrome name>": "<style spec>" }): an unknown name or a spec
-    // the parser refuses leaves that element's default — the gutter dim, the
-    // rest normal.
+    // This compose's chrome styles: the root's `chrome` hint through the
+    // one reader (ui_chrome.h read_chrome_styles), its defaults included.
     void read_chrome(const uinode &tree)
     {
-	for ( size_t i = 0; i < (size_t)tui_chrome::count; ++i )
-	    _chrome[i] = ui_style::normal();
-	_chrome[(size_t)tui_chrome::gutter].flags = ui_style::DIM;
-	_chrome[(size_t)tui_chrome::tab_active] = ui_style::reverse();
-	_chrome[(size_t)tui_chrome::statusbar] = ui_style::reverse();
-	_chrome[(size_t)tui_chrome::menubar] = ui_style::reverse();
-	_chrome[(size_t)tui_chrome::menu] = ui_style::reverse();
-	_chrome[(size_t)tui_chrome::menu_hot].flags = ui_style::UNDERLINE;
-	_chrome[(size_t)tui_chrome::shadow].bg = 1;	// black
-	_chrome[(size_t)tui_chrome::shadow].flags = ui_style::DIM;
-	_chrome[(size_t)tui_chrome::list_selected] = ui_style::reverse();
-	_chrome[(size_t)tui_chrome::field].flags = ui_style::UNDERLINE;
-	_chrome[(size_t)tui_chrome::button_primary] = ui_style::reverse();
-	if ( !tree.hints.is_object() )
-	    return;
-	const std::map<std::string, madc::value> &ho = tree.hints.as_object();
-	std::map<std::string, madc::value>::const_iterator ci = ho.find("chrome");
-	if ( ci == ho.end() || !ci->second.is_object() )
-	    return;
-	for ( const auto &kv : ci->second.as_object() )
-	{
-	    tui_chrome k;
-	    ui_style st;
-	    if ( kv.second.is_string() && tui_chrome_of(kv.first, k)
-	      && ui_style_of(kv.second.as_string(), st) )
-		_chrome[(size_t)k] = st;
-	}
+	read_chrome_styles(tree.hints, _chrome);
     }
     // Paint a collected region into the row range [r0, r0+h) (columns fixed at
     // collection).

@@ -197,6 +197,18 @@ namespace php {
     // PHP chop is an alias of rtrim.
     const char *chop(value &s) { return __php_rtrim_value(&s); }
     const char *chop(const char *s) { return __php_rtrim_cstr(s); }
+    // PHP's $characters: the bytes to strip in place of the default
+    // " \n\r\t\v\0"; "a..z" names the bytes a through z (php_charmask — a
+    // malformed run warns on stderr, PHP's E_WARNING). Resolved
+    // mangled-direct (namespace php in the host).
+    const char *trim(value &s, const char *characters);
+    const char *trim(const char *s, const char *characters);
+    const char *ltrim(value &s, const char *characters);
+    const char *ltrim(const char *s, const char *characters);
+    const char *rtrim(value &s, const char *characters);
+    const char *rtrim(const char *s, const char *characters);
+    const char *chop(value &s, const char *characters);
+    const char *chop(const char *s, const char *characters);
     const char *lcfirst(value &s) { return __php_lcfirst_value(&s); }
     const char *lcfirst(const char *s) { return __php_lcfirst_cstr(s); }
     const char *nl2br(value &s) { return __php_nl2br_value(&s); }

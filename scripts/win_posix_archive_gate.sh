@@ -74,7 +74,7 @@ cleanup() {
 trap cleanup EXIT
 
 build_log="$work/hosted-build.log"
-if ! timeout 1200 "$make_bin" -C src -j4 hosted-x86-64-windows \
+if ! timeout 1200 "$make_bin" -C src -j"$(bash scripts/build_jobs.sh)" hosted-x86-64-windows \
 	>"$build_log" 2>&1; then
 	fail "hosted Win64 build failed or timed out: $(tail -n 12 "$build_log")"
 fi

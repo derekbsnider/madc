@@ -1,0 +1,11 @@
+use: 1 current=1
+line: start=3 set=1 now=2 out-of-range=0
+parse: ok=true write=1 force=true argument=out.txt
+parse-refused: ok=false error=not an editor command: 'frobnicate'
+run-s: ok=true substitute=1 text=one|TWO|three|
+run-p: [one|TWO|]
+append: wants_text=true pending=1
+text: ok=true text=one|TWO|added|three|
+quit-dirty: ok=false quit=false error=no write since last change (add ! to override)
+quit-force: ok=true quit=true
+after-close: use=0 line=0 run=false error=no world

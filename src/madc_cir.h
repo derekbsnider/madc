@@ -374,12 +374,15 @@ struct cir_ledger_module
 // `progress` gates the SUCCESS status lines only ("Froze ...", "mir
 // cache: ... packed") — CLI lanes keep them; the library Run verb
 // (parse_run's win freeze arm) passes false so an IDE Run stays clean.
-// Warnings and errors print regardless. Returns 0 on success, -1 on
-// failure.
+// Warnings and errors print regardless. `also_std` names more --std=
+// spellings this profile serves (--freeze-also-std=): each labels it with
+// the config word a compile under that standard carries
+// (CIR_FOREST_SEG_SHARED_CONFIGS). Returns 0 on success, -1 on failure.
 int madc_cir_freeze(Program *prog, const char *source_name,
 		    const char *out_path, bool append, bool mir_cache = false,
 		    const std::vector<cir_ledger_module> *ledger = NULL,
-		    bool progress = true);
+		    bool progress = true,
+		    const std::vector<madc::dis::istring> *also_std = NULL);
 
 // Compile the AOT ledger sources (--freeze-ledger=, one per call site entry;
 // scripts/ledger_sources.txt is the canonical list) into MIR modules with

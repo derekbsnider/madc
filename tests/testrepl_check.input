@@ -1,0 +1,8 @@
+%check
+:$a
+int broken(void) { return nothing; }
+.
+%check
+:u
+%check
+40 + 2

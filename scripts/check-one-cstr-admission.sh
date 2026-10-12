@@ -69,7 +69,7 @@ if [ "$c" -ne 4 ]; then
 	exit 1
 fi
 
-files=$(git ls-files 'src/*.cpp')
+files=$(git ls-files --cached --others --exclude-standard 'src/*.cpp')
 hits=$(scan $files)
 n=$(printf '%s' "$hits" | grep -c . || true)
 echo "c_str coercion admissions outside is_class_object_expr: $n (target 0)"

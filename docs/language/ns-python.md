@@ -10,7 +10,7 @@ method returns a NEW string. Text returns are ring-lifetime
 `const char *`; subjects can be a `value` or a `const char *`:
 `python::title(s)`, `swapcase(s)`, `center(s, w, fill)`,
 `ljust(s, w, fill)`, `rjust(s, w, fill)`, `zfill(s, w)`,
-`replace(s, old, new)` — plus the value-out
+`replace(s, old, new)`, `shlex_quote(word)` — plus the value-out
 `python::format(out, fmt, args)` and `python::shlex_split(words,
 text)`. The `std::string`-flavored forms are C++-interop conveniences,
 declared only when `<string>` precedes `<ns_python>`.
@@ -59,6 +59,7 @@ declared only when `<string>` precedes `<ns_python>`.
 | Function | Description | Example |
 |----------|-------------|---------|
 | `shlex_split(words, text)` | Python's `shlex.split` (POSIX mode): the words of a shell-like command line | `python::shlex_split(words, "a 'b c' d")` — `a`, `b c`, `d` |
+| `shlex_quote(word)` | Python's `shlex.quote`: the word spelled so `shlex_split` reads it back whole | `python::shlex_quote("a file.txt")` — `'a file.txt'` |
 
 Spaces, tabs and newlines separate words. Text in single quotes is taken
 literally. Inside double quotes, a backslash escapes only `"` and `\`, and

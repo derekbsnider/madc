@@ -41,6 +41,27 @@ under c17), so madc refusing them is **correct behaviour**, not a gap. The
 torture corpus is C-era code; measuring it under c23 measures how much of it
 is still valid C23.
 
+### C23 — the standard's own tests
+
+| corpus | `--std=` | in scope | passing | coverage |
+|--------|----------|---------:|--------:|---------:|
+| `gcc.dg/c23-*`, `c2x-*` compile-clean | c23 | 72 | 38 | **52.8%** |
+| `gcc.dg/c23-*`, `c2x-*` `dg-do run` | c23 | 70 | 35 | **50.0%** |
+| combined | c23 | 142 | 73 | **51.4%** |
+
+First measured 2026-10-09 on `bin/madc` 0.103.0 (the container, `scripts/
+run_gcc_testsuite.py` — `--suite gxx` for the compile-clean set, its
+`--emit=c11` parse/sema/lower check, and `--suite c-torture` for the run set).
+These are GCC's tests OF C23 itself, unlike the torture column above, which
+is C-era code measured under c23. 302 files; the other 160 are diagnostic
+tests (out of scope, as for C++). The 69 failures are NOT yet triaged — a few
+may be harness mismatches (`c23-binary-constants-1` fails though binary
+literals work). By name they cluster on `constexpr`, `nullptr`, `typeof`,
+`bool` and its limits, the `<float.h>` additions (12 `c23-float-*`), tag
+compatibility (9 `c23-tag-*`), storage-class compound literals, digit
+separators, `u8` character literals, `{}` empty initialisers, `auto`,
+`unreachable()`, labels at the end of a block. C23 is the C goal (ROADMAP 2.13).
+
 The 13 remaining c17 failures are listed in
 [`docs/parity/c-torture-baseline.txt`](parity/c-torture-baseline.txt). Every
 one was verified to fail on the v0.99.2 release binary as well, so the
@@ -50,12 +71,19 @@ baseline holds pre-existing gaps only and no regression is parked there.
 
 | corpus | `--std=` | in scope | passing | coverage |
 |--------|----------|---------:|--------:|---------:|
-| `g++.dg/template` | c++98 | 385 | 308 | **80.0%** |
-| `g++.dg/cpp0x` | c++11 | 1565 | 1151 | **73.5%** |
-| `g++.dg/cpp0x` + `g++.dg/template` | c++11 | 1950 | 1464 | **75.1%** |
-| `g++.dg/cpp1y` | c++14 | 417 | 206 | **49.4%** |
-| `g++.dg/cpp1z` | c++17 | 308 | 128 | **41.6%** |
-| `g++.dg/cpp2a` | c++20 | 653 | 346 | **53.0%** |
+| `g++.dg/template` | c++98 | 384 | 312 | **81.3%** |
+| `g++.dg/cpp0x` | c++11 | 1562 | 1188 | **76.1%** |
+| `g++.dg/cpp0x` + `g++.dg/template` | c++11 | 1946 | 1505 | **77.3%** |
+| `g++.dg/cpp1y` | c++14 | 417 | 214 | **51.3%** |
+| `g++.dg/cpp1z` | c++17 | 308 | 133 | **43.2%** |
+| `g++.dg/cpp2a` | c++20 | 651 | 350 | **53.8%** |
+
+The C++ rows were re-measured on 2026-10-09 (16:40–16:42 UTC) on `bin/madc`
+at `1b005346c`, the v0.103.0 release content. The 2026-09-21 figures were
+80.0 / 73.5 / 75.1 / 49.4 / 41.6 / 53.0%. Of the C++14 failures, one is a madc
+abort (`cpp1y/lambda-generic-ice2.C`: the partial specialization
+`datatype<T, when<condition>>` is not chosen and the class lands in its own
+base chain) and one passes the 30 s cap (`cpp1y/var-templ24.C`).
 
 The combined `cpp0x + template` row is the **ratchet lane** recorded in
 `docs/lane-status.tsv` as `gxx-c++11` — the metric the roadmap tracks

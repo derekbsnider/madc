@@ -1,0 +1,22 @@
+// madc embedded <bits/tool_enums> — the tool host's vocabularies as ENUMS,
+// the ONE text for two readers: the engine (madc::tools::tier and
+// madc::discovery::claim_result alias these) and the dialect (<ns_madc>
+// includes it, so a host compares `caller >= (long)madc::tool_tier::editor`
+// — an enumerator the compiler checks — never a word).
+// Plain C++11 enums, nothing else (dialect-lean).
+//
+// Thread contract: constants.
+#ifndef __MADC_BITS_TOOL_ENUMS
+#define __MADC_BITS_TOOL_ENUMS 1
+
+namespace madc {
+    // Who may call a tool, least first: an observer reads, a proposer may
+    // propose an edit, an editor may make one, the owner may do anything.
+    enum class tool_tier : unsigned char { observer, proposer, editor, owner };
+    // A discovery claim's answer: this process holds the key and advertises
+    // it; a live process holds it (its record answers); nowhere to publish
+    // (this process runs, unadvertised).
+    enum class claim_result : unsigned char { owner, held_elsewhere, unadvertised };
+}
+
+#endif // __MADC_BITS_TOOL_ENUMS

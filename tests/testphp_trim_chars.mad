@@ -1,0 +1,33 @@
+// php::trim / ltrim / rtrim / chop with PHP's $characters, and PHP's
+// default set. Oracle: PHP 8.3 on the same calls (php -r): every line
+// below is its output. The mask is php_charmask's: "a..c" is a run, a
+// malformed run ("..z", "z..a") warns and its first '.' reads as itself.
+// The default set is " \n\r\t\v\0" — PHP leaves \f, which python's and
+// rust's whitespace strip.
+
+void show(const char *label, const char *s)
+{
+    println("{}: [{}]", label, php::str_replace("\f", "<FF>", s));
+}
+
+int main()
+{
+    var xs = "xxhixx";
+    show("trim-x", php::trim(xs, "x"));
+    show("trim-range", php::trim("abchelloabc", "a..c"));
+    var price = "1.500";
+    show("rtrim-zero", php::rtrim(price, "0"));
+    show("ltrim-zero", php::ltrim("0012", "0"));
+    show("chop-slash", php::chop("path///", "/"));
+    show("trim-empty", php::trim("  hi  ", ""));
+    show("trim-two", php::trim("-=hi=-", "=-"));
+    show("trim-dot", php::trim("..hi..", "."));
+    var ff = "\f hi \f";
+    show("default-ff", php::trim(ff));
+    show("default-ws", php::trim(" \t\n\r\v hi \v\r\n\t "));
+    show("rtrim-ws", php::rtrim("hi \n"));
+    show("trim-digits", php::trim("123abc456", "0..9"));
+    show("bad-left", php::trim("..zhiz..", "..z"));
+    show("bad-order", php::trim("zahiaz", "z..a"));
+    return 0;
+}

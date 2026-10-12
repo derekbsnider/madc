@@ -129,11 +129,21 @@ enum : uint32_t
 	// is inside the closure being bound (replay-internal) and compares the
 	// rest against the consumer's live macro tables; a mismatch declines
 	// the whole root bind to live parse (or prunes an already-live unit
-	// via its own guard). ---
+	// via its own guard). v55: a tuple with flags bit2 (CIR_BRANCH_DEP_PP_ARM)
+	// is not a dependency but a skipped arm — [name_id, PP_ARM, text_id,
+	// 0xffffffff]: the body of an `#ifndef name` arm the producer skipped
+	// (an external sibling had defined name) that holds only define / undef /
+	// conditional directives; the bind replays it when name is undefined. ---
 	SNAP_KIND_CIR_BRANCH_DEPS      = madc::dis::SNAP_KIND_CONSUMER + 23, // per-unit: uint32 [name_id, flags, value_id, definer_unit] tuples
 	// v41: exact source bytes before preprocessing. A config-mismatched
 	// consumer may re-tokenize these without binding producer semantic state.
-	SNAP_KIND_CIR_UNIT_SOURCE      = madc::dis::SNAP_KIND_CONSUMER + 24
+	SNAP_KIND_CIR_UNIT_SOURCE      = madc::dis::SNAP_KIND_CONSUMER + 24,
+	// --- The OTHER producer configs this profile is valid for (owner
+	// 2026-10-11): a pack freezes each default config, and one whose frozen
+	// content is byte-identical to this profile's rides it as a label
+	// instead of a second profile. OPTIONAL segment: absent = the dir
+	// header's config only. See cir_forest_shared_config. ---
+	SNAP_KIND_CIR_SHARED_CONFIGS   = madc::dis::SNAP_KIND_CONSUMER + 25 // container-global: cir_forest_shared_config[]
 };
 
 // One frozen node record (fixed-size POD; x86-64 little-endian first, like
@@ -565,12 +575,20 @@ bool cir_freeze_read(const madc::dis::snapshot_reader &r, uint32_t seg_id_base,
 // packaged target can instead tokenize the producer's exact header bytes
 // under another --std=/-D/POSIX config. This is source fallback, never a
 // relaxation of LOADED == parsed.
+// v54: a constructor's `explicit` rides methodrec MF_EXPLICIT and the ClassMethodPattern payload's word after is_deleted; a v53 pack restored every explicit ctor as a converting one (reverse_iterator's own operator== became viable for __normal_iterator operands and recursed).
 // v53: DK_MEMBERPTR records a pointer to member (data or function) reached as a member / param / return type; a v52 pack has no such record, and an aggregate holding one (libstdc++ 11's _Nocopy_types, std::function's buffer) dropped at load.
 // v52: node flags bit2 CIR_FROZEN_ARG_UNCOERCED — a pattern call argument lowered with no formal (a template-placeholder callee); a v51 recipe lacks it and would pass the argument unconverted.
 // v51: a token's recorded column is its START (D26: gcc's anchor), no longer its last byte.
 // v50: DK_FUNC preserves = default/delete. Older snapshots lack those flags.
 // v49: DF_ENUM_C_COMPATIBLE — an enum defined in C promotes as its underlying (compatible) type, C11 6.7.2.2p4; v48: DK_ENUM carries its STORAGE raw type (defrec.datatype) and DF_ENUM_FIXED_BASE — a restored enum lowers to the same C type as live, and a computed base is no longer re-adopted as declared; v47: the producer-config word's language_std bits carry the file-kind vocabulary's values (Program::LanguageStd = madc::fk* ranges, <bits/file_kinds>) — a v46 pack's word would compare against different numbers; v46: defrec ovl_spelling_id / ovl_targ run — a DK_FUNC's overload-set declaration identity (FuncDef::overload_spelling + overload_template_args); v45: DF_FUNC_C_LINKAGE (a namespace fn's extern "C" linkage — restore re-derives the C alias); v44: DK_NSALIAS namespace-alias records; v42: defrec vslot/vmeth runs (flat vtable_slots + virtual_methods)
-enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 53 };
+// v55: a skipped directive-only `#ifndef X` arm (X defined by an external sibling at freeze — mingw stdio.h's `#ifndef NULL` behind the win64 corpus's <cstddef>) rides the unit's branch-dep stream as a CIR_BRANCH_DEP_PP_ARM tuple; the bind replays it when the consumer lacks X, so a C++ consumer of <cstdio> alone has NULL.
+enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 55 };
+// Flags word of a SNAP_KIND_CIR_BRANCH_DEPS tuple.
+enum : uint32_t {
+	CIR_BRANCH_DEP_DEFINED   = 1u,	// the macro was defined at the consult
+	CIR_BRANCH_DEP_HAS_VALUE = 2u,	// value_id holds its object-like body
+	CIR_BRANCH_DEP_PP_ARM    = 4u	// v55: [name, flags, arm text, none] — not a dep
+};
 	// v43: defrec friendfn/friendcls runs — the friendship grants
 	// (friend_function_names / friend_class_names), parse-time access
 	// state a restored class never carried (hoisted hidden-friend bodies
@@ -608,6 +626,7 @@ enum : uint32_t
 	CIR_FOREST_SEG_ARENA_TOKBYTES   = 19,	// v23: DefArena::tokbytes (param-default token runs)
 	CIR_FOREST_SEG_MIR_MODULE       = 20,	// MIR module cache (optional; absent = no cache)
 	CIR_FOREST_SEG_LEDGER           = 21,	// S5 AOT ledger (optional; absent = no ledger)
+	CIR_FOREST_SEG_SHARED_CONFIGS   = 22,	// configs sharing this profile (optional; absent = none)
 	CIR_FOREST_SEG_UNIT_BASE     = 24,
 	CIR_FOREST_SEGS_PER_UNIT     = 10	// +0 records, +1 children, +2 connectors,
 						// +3 positions, +4 tokens, +5 decl index,
@@ -625,6 +644,17 @@ struct cir_forest_dir_header	// directory payload: header, then units, then lib 
 	uint32_t language_std;	// v27: producer config — Program::LanguageStd | (gnu_dialect << 16)
 	uint32_t defines_hash;	// v27: fold of the producer's -D cli defines (0 = none)
 	uint32_t _pad;
+};
+
+// One more producer config a profile serves (CIR_FOREST_SEG_SHARED_CONFIGS):
+// the (config word, -D fold) pair a compile under that standard carries,
+// stamped by --freeze-also-std=. The release pack labels its madc profile
+// for the C++ modes: the madc dialect is C++17 plus extras the --std= gate
+// keeps out of a C++ compile, over the same macro table.
+struct cir_forest_shared_config
+{
+	uint32_t language_std;	// madc_forest_config_word of the other config
+	uint32_t defines_hash;	// madc_forest_defines_hash of the other config
 };
 
 // MIR module cache segment header (precedes the raw MIR_write_module bytes).
@@ -961,7 +991,8 @@ struct cir_forest_unit
 	std::vector<uint32_t>       edges;	// directory unit indices, include order
 	// v40: external branch dependencies — [name_id, flags, value_id,
 	// definer_unit] tuples (flags bit0 = defined at freeze, bit1 =
-	// value_id valid; definer_unit 0xffffffff = none).
+	// value_id valid; definer_unit 0xffffffff = none). v55: bit2 marks a
+	// skipped directive-only arm tuple (CIR_BRANCH_DEP_PP_ARM).
 	std::vector<uint32_t>       branch_deps;
 	std::vector<uint8_t>        source_payload;	// v41: pre-PP source bytes
 };
@@ -1022,6 +1053,17 @@ uint64_t madc_cir_context_hash();
 class Program;
 uint32_t madc_forest_config_word(const Program *prog);
 uint32_t madc_forest_defines_hash(const Program *prog);
+
+// The frozen CONTENT of the last container in `image`, one digest per
+// segment id: every segment's decoded bytes, the directory with its producer
+// config fields zeroed, less the segments that are not parse output (the
+// MIR module cache and the AOT ledger are derived / dialect-agnostic; the
+// shared-config labels are labels). --dump-forest prints their fold as its
+// `content` line: two freezes of one corpus under configs that parse it
+// alike print the same line (a freeze is reproducible). False when the
+// image holds no readable container.
+bool cir_forest_content_digests(const void *image, size_t len,
+				std::map<uint32_t, uint64_t> &out);
 
 // Partition the sub-DAG rooted at `root` into per-unit segments keyed by
 // each node's origin-token source file (origin-less nodes inherit their
@@ -1088,6 +1130,9 @@ class CirFrozenSegment : public cir_segment_source
 	std::deque<cir_node> _nodes;		// materialized node storage (stable)
 
 	bool record_at(uint32_t idx, cir_frozen_record &out) const;
+	// A new compile: forget the memo of the nodes materialized for earlier
+	// units, keeping their storage (CirFrozenForest::begin_compile).
+	void begin_compile(c2m_ctx_t c2m);
 	cir_node *shell(uint32_t idx);		// phase A: node without children
 
 	// Shared resolve driver (standalone + forest): iterative shell pass
@@ -1375,6 +1420,7 @@ class CirFrozenForest
 	std::map<madc::dis::istring, uint32_t> _unit_by_name;	// unit-name spelling -> index (Phase 6 bind)
 	uint32_t _root_unit, _root_idx;
 	uint32_t _language_std = 0, _defines_hash = 0;	// v27 producer config (dir header)
+	std::vector<cir_forest_shared_config> _shared_configs;	// more configs this profile serves
 
 	// The container's own string pool (A1 frozen view over the three
 	// blocks; decompressed copies owned here when the segments are
@@ -1516,11 +1562,17 @@ public:
 	bool previous_image_len(size_t &len) const
 		{ return _reader.previous_image_len(len); }
 
-	// Rebind the c2m used to materialize nodes. The parse-time bind forest is
-	// opened with c2m=NULL (it restores only types/PP, never node segments), so
-	// the session c2m is set here before the first node materialization (inline
-	// method body load at emit time). Safe iff no segment has materialized yet.
-	void set_c2m(c2m_ctx_t c2m) { _c2m = c2m; }
+	// A compile begins (CirBuilder::translate_module, before any node
+	// materializes): each translation unit's tree gets its OWN nodes. A node
+	// materialized for an EARLIER unit is already linked into that unit's tree
+	// (c2mir's lists are intrusive) and already checked; the memo handed the
+	// same node to the next unit, so a REPL entry re-touching a body the
+	// previous entry had instantiated (libc++'s inline operator<<(ostream&,
+	// const char*)) spliced it into a second tree and reported 21 garbage
+	// error nodes. Every segment forgets its memo — the earlier nodes stay
+	// allocated (a persistent c2m session's symbols still reference them) —
+	// and the next touch materializes afresh in this compile's c2m.
+	void begin_compile(c2m_ctx_t c2m);
 
 	// Rung 2a + S2 (R4-lite): ensure everything `want` admits is
 	// materialized — THE restore entry (forest_restore_decls). The first
@@ -1558,6 +1610,11 @@ public:
 	// v27 producer config (bind gate: both must equal the consumer's).
 	uint32_t language_std() const { return _language_std; }
 	uint32_t defines_hash() const { return _defines_hash; }
+	// The other configs the pack proved this profile serves (shared labels).
+	const std::vector<cir_forest_shared_config> &shared_configs() const { return _shared_configs; }
+	// The bind gate: this profile was frozen under (config, defines) — its
+	// own header's pair or one of its shared labels.
+	bool serves_config(uint32_t config, uint32_t defines) const;
 	const std::vector<madc::dis::istring> &libs() const { return _libs; }
 	const char *unit_name(uint32_t unit) const;
 	// Reverse directory (Phase 6 bind): unit-name spelling -> unit index, or

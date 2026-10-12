@@ -1,0 +1,6 @@
+# Labels whose line legitimately DIFFERS from tests/testvised.win64_expect
+# versus tests/testvised.expect — the win64 domain's own answers (the ex
+# core's write message spells the file as the host does: a Windows path's
+# separator is a backslash, as Vim on Windows prints it).
+saved
+other

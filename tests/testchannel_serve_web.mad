@@ -1,0 +1,90 @@
+// madc::channel::serve_web — one accepted connection classified so a single
+// port serves a page, WebSocket clients and JSON-line clients: a plain HTTP
+// GET is answered with the page (0; the client reads a 200 and the page), a
+// WebSocket upgrade becomes a message channel (1; a frame each way), a JSON
+// line is left buffered for readline (2; the server reads it and answers).
+// Oracle: RFC 6455's handshake and HTTP/1.1's 200, as the client side of
+// madc::channel speaks them. The engine twin of testmadcide_serve_web (the
+// madcide seat that dispatches on the answer).
+var served = "";
+
+void serve_one(long conn)
+{
+    madc::channel c;
+    if ( !c.adopt(conn) )
+	return;
+    long kind = c.serve_web("<html>the page</html>");
+    served = format("{}{};", served, kind);
+    if ( kind == 1 )
+    {
+	c.write("hello");
+	var got;
+	c.readline(got);
+	var back = format("echo:{}", got);
+	c.write(back.c_str());
+    }
+    else if ( kind == 2 )
+    {
+	var line;
+	c.readline(line);
+	var back = format("{{\"got\":{}}}\n", line);
+	c.write(back.c_str());
+    }
+    c.close();
+}
+
+void accept_one(madc::channel &listener)
+{
+    madc::channel a;
+    listener.wait_readable();
+    listener.accept(a);
+    long h = a.detach();
+    go serve_one(h);
+}
+
+int main()
+{
+    madc::channel listener("listen://127.0.0.1:0");
+    if ( !listener.ok() )
+    {
+	println("listen-fail: {}", listener.last_error());
+	return 1;
+    }
+    var addr = listener.local_endpoint();
+    var uri = format("tcp://{}", addr);
+
+    madc::channel http(uri.c_str());
+    accept_one(listener);
+    http.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n");
+    var resp;
+    http.readall(resp);
+    println("page: 200={} body={}", strstr(resp.c_str(), "HTTP/1.1 200") != 0 ? 1 : 0,
+	    strstr(resp.c_str(), "<html>the page</html>") != 0 ? 1 : 0);
+    http.close();
+    madc::task_drain();
+
+    madc::channel ws(uri.c_str());
+    accept_one(listener);
+    println("ws: upgraded={}", ws.connect_websocket("/") ? 1 : 0);
+    var m1;
+    ws.readline(m1);
+    ws.write("ping");
+    var m2;
+    ws.readline(m2);
+    println("ws: first=[{}] echo=[{}]", m1, m2);
+    ws.close();
+    madc::task_drain();
+
+    madc::channel api(uri.c_str());
+    accept_one(listener);
+    api.write("{\"cmd\":\"check\"}\n");
+    var reply;
+    api.readline(reply);
+    println("api: reply=[{}]", php::rtrim(reply));
+    api.close();
+    madc::task_drain();
+
+    println("served: {}", served);
+    listener.close();
+    return 0;
+}

@@ -1,0 +1,7 @@
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{}}}
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"graph.definition","arguments":{"name":"add"}}}
+{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"graph.definition","arguments":{"name":"main","file":"tests/testmcp_project.mad"}}}
+{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"graph.symbols","arguments":{"file":"tests/nowhere.c"}}}
+{"jsonrpc":"2.0","id":5,"method":"tools/list"}
+{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"nexus.create","arguments":{"rkind":"task","fields":{"title":"memory-only"}}}}
+{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"graph.status","arguments":{}}}

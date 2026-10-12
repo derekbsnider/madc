@@ -48,6 +48,16 @@ body { font: var(--font-size, 14px)/1.35 var(--font, "DejaVu Sans Mono", "Menlo"
 .separator { height: 1.35em; }
 .edit { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 0 8px; tab-size: 8; }
 .edit .line { white-space: pre; min-height: 1.35em; }
+/* The line-number gutter (an edit op's `gutter`, page.js renderLine): each
+   line's empty .ln shows its counter right-aligned in --gutter-ch digits,
+   two cells before the text, in the theme's chrome classes (dim by
+   default); the caret line is .cur. Never selected, never part of the hit
+   test's text. */
+.edit.gutter { counter-reset: ln; }
+.edit.gutter > .line { counter-increment: ln; }
+.edit .ln { display: inline-block; min-width: calc(var(--gutter-ch, 3) * 1ch);
+            margin-right: 2ch; text-align: right; user-select: none; -webkit-user-select: none; }
+.edit .ln::before { content: counter(ln); }
 .caret { background: #d9dbe4; color: #1b1d24; }
 .sel { background: #4a5a80; }
 /* Syntax highlight: the SAME style the terminal paints. A span arrives as

@@ -56,6 +56,11 @@ bool contains   (const std::string &s, const std::string &needle);
 // trailing backslash (Python's ValueError), with `out` empty.
 // Thread contract: a pure function over its arguments.
 bool shell_words(const std::string &text, std::vector<std::string> &out);
+// A word spelled so shell_words reads it back as that one word — Python's
+// shlex.quote: a word of only safe characters (letters, digits, @%+=:,./-_)
+// as it is, '' for the empty word, else '...' with each ' spelled '"'"'.
+// Thread contract: a pure function over its argument.
+std::string shell_quote(const std::string &word);
 
 // ---- madc::value stringification --------------------------------------
 
@@ -255,7 +260,29 @@ bool madc_code_close(int64_t code);
 // parsed state; a project handle groups a cc.json manifest's TUs. Handles
 // are int64 (>= 1; 0 = failure); result = madc::value*, strings =
 // std::string*.
+// The ui world behind a script session handle (split arc 1A.1): the one
+// seam through which madc::doc_parse (src/ns_madc.cpp, the compiler-facing
+// public over a document) reaches the hub world src/ns_ui.cpp owns. NULL for
+// a closed or unknown handle. The world is session-thread state.
+namespace madc { namespace hub { class world; } }
+struct ProjectTU;	// madc_project.h: a project TU's manifest entry
+madc::hub::world *madc_ui_world(int64_t w);
+
+// The ONE percent-decoder (js::decodeURIComponent's body, src/ns_js.cpp):
+// `%XX` escapes to their bytes, every other byte as it is. The LSP's file://
+// URIs decode through it (src/madc_lsp.cpp).
+std::string *js_decodeURIComponent(std::string *result, const char *input);
+// The ONE percent-encoder (js::encodeURIComponent's body): every byte but
+// the unreserved ones (alphanumerics and `-_.~`) as `%XX`; a file:// URI is
+// built from it one path segment at a time (src/madc_lsp.cpp).
+std::string *js_encodeURIComponent(std::string *result, const char *input);
+
 int64_t madc_parse_open(void *source, void *filename, int64_t standard);
+// A project TU's live text (a served project's document): the manifest
+// entry's options apply at open and at every refresh, as the --project build
+// applies them; 0 = refused (an unknown -stdlib flavor, a bad standard).
+int64_t madc_parse_open_tu(void *source, void *filename, int64_t standard,
+			   const ProjectTU *tu);
 int64_t madc_parse_open_file(void *path);
 bool madc_parse_refresh(int64_t handle, void *source);
 bool madc_parse_close(int64_t handle);
@@ -298,6 +325,9 @@ bool  madc_parse_would_accept(void *result, int64_t handle, void *source);
 // L4b (design §3.3): revision handles by generation TAG (engine-allocated).
 int64_t madc_parse_open_tagged(void *source, void *filename);
 int64_t madc_parse_generation(int64_t handle);
+// The parse's error count (error diagnostics + synthesized error nodes: the
+// count a validated edit must not raise); -1 = no such handle.
+int64_t madc_parse_error_count(int64_t handle);
 int64_t madc_graph_route(int64_t handle, int64_t id);
 // The live-tree build/run pair (OWNER RULING 2026-08-27 — the running
 // madc IS the compiler): madc_parse_build emits a native artifact from
@@ -321,6 +351,8 @@ bool madc_project_close(int64_t handle);
 // spawn failed).
 bool madc_project_build(void *result, void *manifest_path, void *kind,
 			void *outpath);
-int64_t madc_project_run(void *manifest_path);
+// args: a const std::vector<std::string>* — the program's arguments after
+// its argv[0] (the manifest); NULL = none.
+int64_t madc_project_run(void *manifest_path, void *args = NULL);
 
 #endif // __NS_COMMON_H

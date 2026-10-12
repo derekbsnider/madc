@@ -40,6 +40,16 @@ mkdir -p tmp
 
 fail() { echo "forest_bind_gate: $1"; exit 1; }
 
+# The subject compiles in the madc dialect — the packed corpus's profile. The
+# fixtures are .c / .cpp files g++ compiles too (the oracle), and they ran in
+# the madc dialect until split arc 1A.4 let a source's extension pick gnu17 /
+# gnu++17; the subject pins --std=madc so every leg tests what it was written
+# for (a later --std= on a leg's own line would still win).
+SUBJECT=tmp/fbgate_madc
+printf '#!/bin/sh\nexec "%s" --std=madc "$@"\n' "$PWD/$BIN" > "$SUBJECT"
+chmod +x "$SUBJECT"
+BIN=$SUBJECT
+
 # run_case <tag> <expected-output>
 # Expects tmp/fbgate_<tag>.h / _producer.cpp / _consumer.cpp already written.
 run_case() {
@@ -836,6 +846,196 @@ else
     echo "forest_bind_gate: [flavorgate] SKIP — this build has no libc++ flavor"
 fi
 
+# --- case: sharegate (owner 2026-10-11: the madc profile serves the C++ modes) ---
+# The release pack freezes once, under madc, and labels that one profile for
+# gnu++17 and c++17 (--freeze-also-std=): the madc dialect is C++17 plus
+# extras the --std= gate keeps out of a C++ compile. A C++ consumer binds the
+# madc profile — and still gets NONE of madc's extras: no auto-include
+# (println undeclared), no madc keyword (var), no auto-main (a top-level
+# statement is an error). Control: the same probes compile under madc against
+# the same profile, so each probe really exercises its extra. An unlabelled
+# standard (c++20) does not bind.
+cat > tmp/fbgate_share.cpp <<'EOF'
+#include <cstddef>
+#include <cstdio>
+int main() { size_t n = 7; printf("n=%zu\n", n); return 0; }
+EOF
+printf '#include <cstdio>\nint main() { println("x"); return 0; }\n' > tmp/fbgate_share_println.cpp
+printf '#include <cstdio>\nint main() { var x = 1; printf("%%d\\n", (int)x); return 0; }\n' > tmp/fbgate_share_var.cpp
+printf '#include <cstdio>\nprintf("x\\n");\n' > tmp/fbgate_share_nomain.cpp
+sh_snap=tmp/fbgate_share.msnap
+sh_log=tmp/fbgate_share.log
+rm -f "$sh_snap"
+timeout 600 "$BIN" --freeze="$sh_snap" --freeze-also-std=gnu++17 --freeze-also-std=c++17 \
+    tmp/fbgate_share.cpp >"$sh_log" 2>&1 || fail "[sharegate] the madc --freeze-also-std FAILED: $(tail -n 3 "$sh_log")"
+sh_labels=$(timeout 60 "$BIN" --dump-forest="$sh_snap" | grep -c '^shared	')
+[ "$sh_labels" = 2 ] || fail "[sharegate] the profile carries $sh_labels label(s), expected 2"
+for sh_std in gnu++17 c++17; do
+    sh_out=$(timeout 60 "$BIN" --std=$sh_std --forest-bind="$sh_snap" tmp/fbgate_share.cpp 2>/dev/null)
+    [ "$sh_out" = "n=7" ] || fail "[sharegate] $sh_std consumer output '$sh_out' != 'n=7'"
+    timeout 60 "$BIN" -v --std=$sh_std --forest-bind="$sh_snap" tmp/fbgate_share.cpp >"$sh_log" 2>/dev/null
+    grep -aq "bound to grove unit" "$sh_log" \
+        || fail "[sharegate] the $sh_std consumer did not bind the madc profile labelled for it"
+done
+timeout 60 "$BIN" -v --std=c++20 --forest-bind="$sh_snap" tmp/fbgate_share.cpp >"$sh_log" 2>/dev/null
+if grep -aq "bound to grove unit" "$sh_log"; then
+    fail "[sharegate] a c++20 consumer BOUND a profile not labelled for it"
+fi
+for sh_probe in println var nomain; do
+    sh_src=tmp/fbgate_share_$sh_probe.cpp
+    timeout 60 "$BIN" --forest-bind="$sh_snap" "$sh_src" >/dev/null 2>&1 \
+        || fail "[sharegate] control: the madc compile of the $sh_probe probe failed (the probe does not exercise its extra)"
+    timeout 60 "$BIN" -v --std=gnu++17 --forest-bind="$sh_snap" "$sh_src" >"$sh_log" 2>&1
+    sh_rc=$?
+    grep -aq "bound to grove unit" "$sh_log" \
+        || fail "[sharegate] the gnu++17 $sh_probe probe never bound the profile (vacuous)"
+    [ "$sh_rc" -ne 0 ] && [ "$sh_rc" -ne 124 ] \
+        || fail "[sharegate] a gnu++17 compile bound to the madc profile got madc's $sh_probe extra (rc=$sh_rc)"
+done
+rm -f "$sh_snap" "$sh_log" tmp/fbgate_share.cpp tmp/fbgate_share_println.cpp \
+      tmp/fbgate_share_var.cpp tmp/fbgate_share_nomain.cpp
+echo "forest_bind_gate: [sharegate] OK — the madc profile binds for gnu++17 and c++17 with no madc extras; c++20 does not bind"
+
+# --- case: armreplay (2026-10-11, forest v55: a skipped directive-only arm replays) ---
+# A unit whose `#ifndef X` arm was skipped at freeze because an EARLIER corpus
+# sibling defined X carries none of that arm (mingw stdio.h's NULL behind the
+# win64 corpus's <cstddef>). A consumer that includes only that unit has no X.
+# An arm of define / undef / conditional directives only now rides the unit's
+# branch-dep stream (CIR_BRANCH_DEP_PP_ARM), and the bind replays it through
+# the live preprocessor when the consumer lacks X: the unit still BINDS, and
+# the arm's nested conditional answers in the CONSUMER's macro state
+# (FBG_LV_WIDE, which the producer never defined, selects 50). The consumer
+# runs at the knob's shipping default (MADC_FOREST_ENV_CHECK=0, overriding this
+# gate's battery-wide =1). Negative controls: the v54 binary fails with "use of
+# undeclared identifier 'FBG_MC_X'"; d939e2a09's verified bind printed v=52
+# with fbgate_lv_b.h live-parsed, which the bound assertion refuses.
+mkdir -p tmp/fbgate_lv
+cat > tmp/fbgate_lv/fbgate_lv_a.h <<'EOF'
+#ifndef FBGATE_LV_A_H
+#define FBGATE_LV_A_H
+#define FBG_MC_X 5
+#endif
+EOF
+cat > tmp/fbgate_lv/fbgate_lv_b.h <<'EOF'
+#ifndef FBGATE_LV_B_H
+#define FBGATE_LV_B_H
+#ifndef FBG_MC_X
+# ifdef FBG_LV_WIDE
+#  define FBG_MC_X 50	/* the consumer's choice */
+# else
+#  define FBG_MC_X 5
+# endif
+#endif
+struct fbg_lv_s { int v; };
+#endif
+EOF
+cat > tmp/fbgate_lv/fbgate_lv_c.h <<'EOF'
+#ifndef FBGATE_LV_C_H
+#define FBGATE_LV_C_H
+struct fbg_lv_t { int w; };
+#endif
+EOF
+cat > tmp/fbgate_lv_producer.cpp <<'EOF'
+#include <fbgate_lv_a.h>
+#include <fbgate_lv_b.h>
+#include <fbgate_lv_c.h>
+int main() { return 0; }
+EOF
+cat > tmp/fbgate_lv_consumer.cpp <<'EOF'
+#define FBG_LV_WIDE 1
+#include <fbgate_lv_c.h>
+#include <fbgate_lv_b.h>
+#include <cstdio>
+int main() { fbg_lv_t t = { 2 }; fbg_lv_s s = { FBG_MC_X + t.w }; printf("v=%d\n", s.v); return 0; }
+EOF
+lv_snap=tmp/fbgate_lv.msnap
+lv_log=tmp/fbgate_lv.log
+rm -f "$lv_snap"
+timeout 600 "$BIN" --freeze="$lv_snap" --freeze-also-std=c++17 -I tmp/fbgate_lv \
+    tmp/fbgate_lv_producer.cpp >"$lv_log" 2>&1 || fail "[armreplay] the madc --freeze-also-std FAILED: $(tail -n 3 "$lv_log")"
+lv_out=$(MADC_FOREST_ENV_CHECK=0 timeout 60 "$BIN" --std=c++17 --forest-bind="$lv_snap" -I tmp/fbgate_lv tmp/fbgate_lv_consumer.cpp 2>&1)
+[ "$lv_out" = "v=52" ] || fail "[armreplay] c++17 consumer output '$lv_out' != 'v=52'"
+MADC_FOREST_ENV_CHECK=0 timeout 60 "$BIN" -v --std=c++17 --forest-bind="$lv_snap" -I tmp/fbgate_lv tmp/fbgate_lv_consumer.cpp >"$lv_log" 2>/dev/null
+grep -aq "bound to grove unit.*fbgate_lv_b.h" "$lv_log" \
+    || fail "[armreplay] the unit with the skipped arm did not BIND for the c++17 consumer"
+grep -aq "fbgate_lv_b.h replays its skipped '#ifndef FBG_MC_X' arm" "$lv_log" \
+    || fail "[armreplay] the bound unit never replayed its skipped arm"
+rm -rf "$lv_snap" "$lv_log" tmp/fbgate_lv tmp/fbgate_lv_producer.cpp tmp/fbgate_lv_consumer.cpp
+echo "forest_bind_gate: [armreplay] OK — a skipped directive-only arm binds and replays in the consumer's macro state"
+
+# --- case: replreuse (2026-10-11: each unit's tree gets its own forest nodes) ---
+# A frozen inline body the program's main uses, touched again by a REPL entry
+# (madc -i), a later translation unit of the same c2m session. The segment's
+# per-record memo handed the entry the SAME nodes the first unit's tree had
+# already linked in and c2mir had already checked, so the entry's tree held
+# them twice: "repeated declaration a/b/s", or garbage error nodes (libc++'s
+# inline operator<<(ostream&, const char*) on darwin: 21 "cir error: do",
+# testrepl_cout). CirFrozenForest::begin_compile now drops the memo per
+# compile and the entry materializes its own copy. Negative control: the
+# pre-fix binary prints "repeated declaration a" and 3 c2mir check errors.
+mkdir -p tmp/fbgate_repl
+cat > tmp/fbgate_repl/fbgate_repl.h <<'EOF'
+#ifndef FBGATE_REPL_H
+#define FBGATE_REPL_H
+inline int fbg_add(int a, int b) { int s = a; s += b; return s; }
+template<class T> inline T fbg_twice(T v) { T r = v; r += v; return r; }
+#endif
+EOF
+cat > tmp/fbgate_repl_producer.mad <<'EOF'
+#include <fbgate_repl.h>
+int main() { return 0; }
+EOF
+cat > tmp/fbgate_repl_consumer.mad <<'EOF'
+#include <fbgate_repl.h>
+#include <cstdio>
+int main() { printf("main %d %d\n", fbg_add(1, 2), fbg_twice(5)); return 0; }
+EOF
+printf 'fbg_add(3, 4)\nfbg_twice(21)\n' > tmp/fbgate_repl_input.txt
+rr_snap=tmp/fbgate_repl.msnap
+rr_log=tmp/fbgate_repl.log
+rm -f "$rr_snap"
+timeout 600 "$BIN" --freeze="$rr_snap" -I tmp/fbgate_repl tmp/fbgate_repl_producer.mad \
+    >"$rr_log" 2>&1 || fail "[replreuse] the freeze FAILED: $(tail -n 3 "$rr_log")"
+rr_out=$(timeout 60 "$BIN" --forest-bind="$rr_snap" -I tmp/fbgate_repl -i tmp/fbgate_repl_consumer.mad \
+    < tmp/fbgate_repl_input.txt 2>&1)
+[ "$rr_out" = "$(printf 'main 3 10\n7\n42')" ] \
+    || fail "[replreuse] REPL output '$rr_out' != 'main 3 10 / 7 / 42'"
+timeout 60 "$BIN" -v --forest-bind="$rr_snap" -I tmp/fbgate_repl -i tmp/fbgate_repl_consumer.mad \
+    < tmp/fbgate_repl_input.txt >"$rr_log" 2>/dev/null
+grep -aq "bound to grove unit.*fbgate_repl.h" "$rr_log" \
+    || fail "[replreuse] the consumer never bound the frozen header (vacuous)"
+rm -rf "$rr_snap" "$rr_log" tmp/fbgate_repl tmp/fbgate_repl_producer.mad tmp/fbgate_repl_consumer.mad tmp/fbgate_repl_input.txt
+echo "forest_bind_gate: [replreuse] OK — a REPL entry re-touching a frozen body gets its own nodes"
+
+# --- case: reprogate (2026-10-11: a freeze is reproducible) ---
+# --dump-forest's `content` line digests the frozen corpus with the producer
+# config left out. Two freezes of one TU under standards that parse it alike
+# (gnu++17, c++17) print the same line — the freeze no longer walks its
+# pointer-keyed pack maps in heap-address order (the pack's units once came
+# out in a different order run to run). Negative control: a c++20 freeze
+# takes other branches and must print a different line, so equal lines are
+# not an artifact of the digest.
+cat > tmp/fbgate_repro.cpp <<'EOF'
+#include <cstddef>
+#include <cstdio>
+#include <cstdlib>
+int main() { size_t n = 7; printf("n=%zu\n", n); return EXIT_SUCCESS; }
+EOF
+rp_content() {	# rp_content <std> -> the content line of a fresh freeze
+    rm -f tmp/fbgate_repro.msnap
+    timeout 600 "$BIN" --std="$1" --freeze=tmp/fbgate_repro.msnap tmp/fbgate_repro.cpp >/dev/null 2>&1 \
+        || fail "[reprogate] the $1 --freeze FAILED"
+    timeout 60 "$BIN" --dump-forest=tmp/fbgate_repro.msnap | grep '^content	'
+}
+rp_gnu=$(rp_content gnu++17)
+rp_cxx17=$(rp_content c++17)
+rp_cxx20=$(rp_content c++20)
+[ -n "$rp_gnu" ] || fail "[reprogate] the dump printed no content line"
+[ "$rp_gnu" = "$rp_cxx17" ] || fail "[reprogate] gnu++17 and c++17 froze one TU differently ($rp_gnu / $rp_cxx17)"
+[ "$rp_gnu" != "$rp_cxx20" ] || fail "[reprogate] control: a c++20 freeze printed the same content (the digest is vacuous)"
+rm -f tmp/fbgate_repro.msnap tmp/fbgate_repro.cpp
+echo "forest_bind_gate: [reprogate] OK — gnu++17 and c++17 freeze one TU identically; c++20 differs"
+
 # --- case: strbind (v12 corpus — the FIRST std:: library class bound end-to-end) ---
 #     Freeze the REAL system <string>, then bind it while compiling a consumer that
 #     default-CONSTRUCTS a std::string, ASSIGNS a C-string to it, SIZES it, and (at
@@ -1365,6 +1565,104 @@ int main() {
 }
 EOF
 run_case traitfold "1 0 1"
+
+# --- case: nothrowfold — a noexcept(...) over a DEPENDENT operand must NOT
+#     constant-fold at CAPTURE time (traitfold's twin, 2026-10-11). The
+#     capture parse read gcc13's `__is_nt_destructible_impl`'s
+#     `decltype(__test<_Tp>(0))` with `_Tp` a placeholder: the pseudo-
+#     destructor `~_Tp()` named no class, so `noexcept(declval<_Tp&>().~_Tp())`
+#     answered 1 as for a scalar and the pattern froze integral_constant<bool,
+#     true> — every bound is_nothrow_destructible<X> read 1, a noexcept(false)
+#     destructor included (testnoexceptderefdtor, packed leg). The walk now
+#     refuses a dependent operand, and a refusal poisons the capture (the class
+#     stays on the parse lane). Negative control: the pre-fix binary binds
+#     "1 1 1".
+cat > tmp/fbgate_nothrowfold.h <<'EOF'
+#ifndef FBGATE_NOTHROWFOLD_H
+#define FBGATE_NOTHROWFOLD_H
+#include <type_traits>
+struct fbg_do_nt_destructible {
+    template<typename _Tp>
+    static std::integral_constant<bool, noexcept(std::declval<_Tp&>().~_Tp())>
+    __test(int);
+    template<typename>
+    static std::false_type __test(...);
+};
+template<typename _Tp>
+struct fbg_nt_destructible_impl : public fbg_do_nt_destructible {
+    typedef decltype(__test<_Tp>(0)) type;
+};
+template<typename _Tp>
+struct fbg_is_nt_destructible : public fbg_nt_destructible_impl<_Tp>::type { };
+#endif
+EOF
+cat > tmp/fbgate_nothrowfold_producer.cpp <<'EOF'
+#include <fbgate_nothrowfold.h>
+int main() { return 0; }
+EOF
+cat > tmp/fbgate_nothrowfold_consumer.cpp <<'EOF'
+#include <fbgate_nothrowfold.h>
+#include <cstdio>
+struct Thr { ~Thr() noexcept(false) {} };
+struct Quiet { ~Quiet() {} };
+int main() {
+    printf("%d %d %d\n",
+	   (int)fbg_is_nt_destructible<Thr>::value,
+	   (int)fbg_is_nt_destructible<Quiet>::value,
+	   (int)fbg_is_nt_destructible<int>::value);
+    return 0;
+}
+EOF
+run_case nothrowfold "0 1 1"
+
+# --- case: explicitctor — a restored class keeps its constructor's `explicit`
+#     (2026-10-11, forest v54). The forest never recorded FuncDef::is_explicit:
+#     a frozen reverse_iterator<__normal_iterator<int*, vector<int>>> came back
+#     with `explicit reverse_iterator(iterator_type)` as a CONVERTING ctor, so
+#     inside std::operator==(const reverse_iterator&, const reverse_iterator&)
+#     the body's `__x.base() == __y.base()` ranked that very operator viable
+#     for two __normal_iterator operands and recursed until the stack ran out
+#     (testvectoriterpairctor, packed leg). The ctor's explicitness now rides
+#     the method record (MF_EXPLICIT) and the class-pattern method payload.
+#     The producer instantiates W<It<int>> so the consumer restores it;
+#     W<It<long>> is a new specialization. Negative control: the v53 binary's
+#     bound consumer dies of SIGSEGV.
+cat > tmp/fbgate_explicitctor.h <<'EOF'
+#ifndef FBGATE_EXPLICITCTOR_H
+#define FBGATE_EXPLICITCTOR_H
+namespace fbgB {
+template<class T> struct It { T v; };
+template<class T> bool operator==(const It<T> &a, const It<T> &b) { return a.v == b.v; }
+}
+namespace fbgA {
+template<class I> struct W {
+    I cur;
+    W() {}
+    explicit W(I x) : cur(x) {}
+    I base() const { return cur; }
+};
+template<class I> bool operator==(const W<I> &x, const W<I> &y) { return x.base() == y.base(); }
+}
+inline int fbg_explicitctor_touch() { fbgA::W<fbgB::It<int> > w; return w.cur.v; }
+#endif
+EOF
+cat > tmp/fbgate_explicitctor_producer.cpp <<'EOF'
+#include <fbgate_explicitctor.h>
+int main() { return 0; }
+EOF
+cat > tmp/fbgate_explicitctor_consumer.cpp <<'EOF'
+#include <fbgate_explicitctor.h>
+#include <cstdio>
+int main() {
+    fbgB::It<int> i = { 1 }, j = { 2 };
+    fbgA::W<fbgB::It<int> > a(i), b(j);
+    fbgB::It<long> k = { 3 }, l = { 3 };
+    fbgA::W<fbgB::It<long> > c(k), d(l);
+    printf("%d %d %d\n", (int)(a == b), (int)(a == a), (int)(c == d));
+    return 0;
+}
+EOF
+run_case explicitctor "0 1 1"
 
 # --- case: deletedctor — deleted copy/move metadata must survive freeze/bind.
 #     FuncDef keeps the two special-member declarations distinct because its
@@ -1897,5 +2195,5 @@ run_case patternalias "1 2"
 # coverage. Worse in the other direction: deleting a case would leave this line
 # still claiming it runs. Deriving it from run_case would need the ~12 bespoke
 # cases below to register too; until then, update it when you add a case.
-echo "forest_bind_gate: GREEN 38/38 — typedef + struct + nested + bitfield + class + method + fwd + ptr + nestedenumfn + ldouble + ns + anon + declonlymt + flavorgate + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec + iobind + traitfold + deletedctor + constcopy + subbind + redecl + husk + silbody grove headers bound (unit-granular husk recovery only), output == live == g++ + secvptr + friendgrant + patternalias + quietbind + memberptr + unionclass"
+echo "forest_bind_gate: GREEN 42/42 — typedef + struct + nested + bitfield + class + method + fwd + ptr + nestedenumfn + ldouble + ns + anon + declonlymt + flavorgate + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec + iobind + traitfold + nothrowfold + explicitctor + armreplay + replreuse + deletedctor + constcopy + subbind + redecl + husk + silbody grove headers bound (unit-granular husk recovery only), output == live == g++ + secvptr + friendgrant + patternalias + quietbind + memberptr + unionclass"
 exit 0

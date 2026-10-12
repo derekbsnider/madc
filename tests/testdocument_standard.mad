@@ -1,0 +1,52 @@
+// A document's parse standard and its one parse at a time (split arc 1D).
+// madc::doc_set_standard names the standard a document parses under (an
+// IDE's language choice); 0 is its kind's. Oracle for the text: gcc -std=c17
+// refuses `class K { public: int v; };` ("unknown type name 'class'"),
+// g++ -std=c++17 takes it. Then two tasks parse one fresh document at once:
+// a parse yields between slices, and the second caller waits for the first
+// and gets its handle — before, each opened its own and one leaked.
+// The test removes what it creates.
+long got1 = 0;
+long got2 = 0;
+
+void parse_task(long w, long d, long slot)
+{
+    long h = madc::doc_parse(w, d);
+    if ( slot == 1 )
+	got1 = h;
+    else
+	got2 = h;
+}
+
+int main()
+{
+    const char *path = "tmp/testdocument_standard.c";
+    php::file_put_contents(path, "class K { public: int v; };\n");
+    long w = ui::world_new();
+    long d = ui::doc_open(w, path);
+    var diags;
+    madc::doc_diagnostics(diags, w, d);
+    println("c17 refuses: {}", php::count(diags) > 0 ? 1 : 0);
+    println("set: {}", madc::doc_set_standard(w, d, madc::fkCPP17) ? 1 : 0);
+    madc::doc_diagnostics(diags, w, d);
+    println("cpp17 problems: {}", php::count(diags));
+    madc::doc_set_standard(w, d, 0);
+    madc::doc_diagnostics(diags, w, d);
+    println("kind again refuses: {}", php::count(diags) > 0 ? 1 : 0);
+    println("no document: {}", madc::doc_set_standard(w, 9999, 0) ? 1 : 0);
+
+    // One parse at a time: a fresh document, two parsing tasks.
+    long d2 = ui::doc_new(w);
+    ui::text_load(w, d2, "long f(long x) { return x + 1; }\nlong g(long y) { return f(y) * 2; }\n");
+    go parse_task(w, d2, 1);
+    go parse_task(w, d2, 2);
+    madc::task_drain();
+    println("race: both={} same={}", got1 != 0 && got2 != 0 ? 1 : 0, got1 == got2 ? 1 : 0);
+    println("after: same={}", madc::doc_parse(w, d2) == got1 ? 1 : 0);
+
+    ui::doc_close(w, d2);
+    ui::doc_close(w, d);
+    ui::world_close(w);
+    php::unlink(path);
+    return 0;
+}

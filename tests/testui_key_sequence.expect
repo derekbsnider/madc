@@ -1,0 +1,8 @@
+valid: 1
+fewest-keys: bound=1 seq=[^q]
+shortest: bound=1 seq=[^x c]
+first: bound=1 seq=[^a]
+only: bound=1 seq=[^k q]
+unbound: bound=0 seq=[]
+bad-valid: 0
+bad: bound=0 seq=[]

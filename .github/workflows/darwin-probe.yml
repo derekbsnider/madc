@@ -84,7 +84,7 @@ jobs:
           # plain-autoconf project (ubuntu's quietly skips it).
           # cmake: scripts/stage_libgit2.sh configures the minimal static
           # libgit2 with it (the container gets it from provision_container.sh).
-          brew install llvm@18 zstd cmake autoconf automake coreutils gnu-sed grep bash make 2>&1 | tail -3
+          brew install llvm@18 zstd pcre2 cmake autoconf automake coreutils gnu-sed grep bash make 2>&1 | tail -3
           for f in make coreutils gnu-sed grep; do
             echo "$(brew --prefix $f)/libexec/gnubin" >> "$GITHUB_PATH"
           done
@@ -99,6 +99,7 @@ jobs:
           # cmark-gfm likewise (src/madcmark.mk's CMARK_GFM_DIR).
           echo "LIBGIT2_DIR=$HOME/libgit2" >> "$GITHUB_ENV"
           echo "CMARK_GFM_DIR=$HOME/cmark-gfm" >> "$GITHUB_ENV"
+          echo "PCRE2_DIR=$HOME/pcre2" >> "$GITHUB_ENV"	# libmadc's PCRE2 stage (src/Makefile's PCRE2_DIR)
       - name: fetch the pinned input trees (darwin open C headers; the container's exact libc++ text)
         run: |
           make --version | head -1
@@ -138,6 +139,13 @@ jobs:
           # linked into libmadcmark.dylib; staged like libgit2 above.
           bash scripts/stage_cmark_gfm.sh ${{ matrix.arch }}-macos
           ls -la "$(bash scripts/stage_cmark_gfm.sh --path ${{ matrix.arch }}-macos)"
+      - name: stage the static PCRE2 (libmadc's regex engine, linked in)
+        run: |
+          # The pinned PCRE2 the hosted MODE links into libmadc-0.dylib
+          # (scripts/stage_pcre2.sh; src/Makefile's PCRE2_TAG). Its LICENCE
+          # ships under THIRD_PARTY_NOTICES/.
+          bash scripts/stage_pcre2.sh ${{ matrix.arch }}-macos
+          ls -la "$(bash scripts/stage_pcre2.sh --path ${{ matrix.arch }}-macos)"
       - name: make release-macos — host arch, self-frozen, stripped, verified
         run: |
           make -C src -j"$(sysctl -n hw.ncpu)" release-macos 2>&1 | tee probe-make.log

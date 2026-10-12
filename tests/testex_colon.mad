@@ -1,0 +1,5 @@
+// madc -i FILE with colon mode (D24; ex core design decision 11, slice 5):
+// FILE runs first, then is the host's buffer; `:` entries edit it and
+// never reach the session; :q is refused over changes, :q! ends madc.
+#include <stdio.h>
+int main(void) { printf("loaded\n"); return 0; }

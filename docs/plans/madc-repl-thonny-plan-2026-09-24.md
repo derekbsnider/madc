@@ -2563,7 +2563,7 @@ With no program file, the tail chooses in this order:
 
 **Not in D23's slices, and named:**
 - a `.keys` profile for the REPL. madcide's parser is dialect code, so one owner moves into the engine first;
-- vi mode;
+- vi mode (owner, 2026-10-09: the prompt's line editing stays bash/emacs by default; other editing modes are considered later);
 - syntax colour (§26);
 - a pager for a long candidate list;
 - auto-indent;
@@ -3596,7 +3596,7 @@ cling is the precedent for adapting IPython-style interaction to C++, so it is m
 - **D24. One command registry, and ed/ex buffer commands at the prompt.**
   - Every command, for the REPL and madcide alike, resolves by name to an enum ONCE, at input (D13, enum-over-strings).
   - madcide's `colon_command` is a chain of string compares today, which enum-over-strings forbids. It moves onto the registry. lined's `.madv` verbs, already in the engine's verb registry, register there too.
-  - `%` names IPython-style session commands (`%run`, `%load`, `%history`, `%std`). `:` accepts those AND ex buffer commands. Ex commands are colon-only, so a leading `%` always means a session command: were ex reachable through `%`, `%s/a/b/` could be the session command `s` or ex's `s` over the `%` range. Through `:` nothing is ambiguous — `:%s/a/b/` is ex substitute over the whole buffer. A name shared by both sets has one meaning (`:cd` = `%cd`).
+  - **The prefixes are MODES (owner, 2026-10-09; supersedes "`:` accepts those AND ex buffer commands" and §7f's every-prefix aliases).** `%` (IPython / clang-repl style) and `.` (cling / Node style) are REPL-command modes: each reaches every session command by name (`%run`, `.load`), plus the aliases of the REPLs that spell commands its way (`.L`, `.x`, `.q`, `.exit`, `.?` are `.` only). `?` is the query mode (`?`, `?NAME`). `:` is reserved for ed / ex / vim / neovim commands ONLY: the REPL owns no `:` name, and `:` at the prompt is colon mode. One mode's command may be an ALIAS for another mode's (owner): `:help` / `:h` for `?`, `:q` for `%quit`, a candidate `%undo` for ex's `:u` — the target runs where its mode runs. `:%s/a/b/` is ex substitute over the whole buffer, and `%s/a/b/` is no command (`%` has no `s`). Design: `2026-10-09-command-registry-design.md`.
   - A buffer is a file bound to a `text_buffer` (`:e file.c`); `%run file.c` / `:source` runs or loads it (D16).
   - The command set is modern ex/vim/neovim, line-oriented, with nothing that needs visual or normal mode. Modern spellings are preferred over archaic ones.
     - **Addresses and ranges:** `N`, `.`, `$`, `%`, `N,M`, `/re/`, `?re?`, `'x` marks, offsets `+N` / `-N`.
@@ -3613,10 +3613,16 @@ cling is the precedent for adapting IPython-style interaction to C++, so it is m
       - `ls` / `b N` / `bn` / `bp` for more than one buffer;
       - `h` / `help`, which maps to the REPL's `?`.
     - **Excluded:** anything that needs visual or normal mode (`normal`, `visual`), and vi's archaic `open` / `z`.
-    - **Regular expressions** use the modern extended syntax (ERE: unescaped `+ ? | ( )`) rather than ed's BRE. The exact flavour is settled at design time.
+    - **Regular expressions** use the modern extended syntax (ERE: unescaped `+ ? | ( )`) rather than ed's BRE. The engine is PCRE2 (owner, 2026-10-09), madc's one regex engine — see `2026-10-09-madc-madcide-split-arc.md`, "Decided".
   - The REPL can therefore edit a file line by line and run it, with no IDE. madcide extends the same registry and buffers with panes and views.
-  - **Recognition (owner, 2026-10-09).** An entry whose first non-blank character is `.`, `%`, `:` or `?` is a command, because no C or C++ statement begins that way, except three fixed spellings that stay C: `.` and a digit (a floating literal, `.5 * x`), `::` (C++ global scope, `::x = 3`) and `%:` (the `#` digraph, `%:include`). What follows the prefix goes to the command parser, a name or an ex address alike (`:%s/a/b/`, `:1,5d`, `:.,$p`); a malformed or unknown command is refused or passed on (below), never parsed as C. The entry-start rule already keeps a continuation line C. This replaces item 8's narrower rule, which wants a name at once after the prefix.
-  - **Fall-through (owner, 2026-10-09).** The REPL may add `:` commands and aliases of its own; a `:` name it does not own passes to madc's colon mode — in madcide, the IDE's colon verbs (`w`, `q`, `e`, `!cmd`, the `view*` verbs), which register in the same registry; at the plain prompt, the ex buffer commands above. A name neither knows is refused once, by the colon mode.
+  - **Recognition (owner, 2026-10-09).** An entry whose first non-blank character is `.`, `%`, `:` or `?` is a command, because no C or C++ statement begins that way, except three fixed spellings that stay C: `.` and a digit (a floating literal, `.5 * x`), `::` (C++ global scope, `::x = 3`) and `%:` (the `#` digraph, `%:include`). What follows the prefix goes to that mode's parser — a name under `%` and `.`, a name or an ex address alike under `:` (`:%s/a/b/`, `:1,5d`, `:.,$p`); a malformed or unknown command is refused, never parsed as C. The entry-start rule already keeps a continuation line C. This replaces item 8's narrower rule, which wants a name at once after the prefix.
+  - **Colon mode is the host's (owner, 2026-10-09; supersedes the "fall-through" bullet that let the REPL own `:` names).** Every `:` entry goes to madc's colon mode, in the process that holds the documents — at the plain prompt, the ex buffer commands above; in madcide, those plus the IDE's colon verbs (`w`, `q`, `e`, `!cmd`, the `view*` verbs). A name the colon mode does not know is refused once, by the colon mode. The session never runs a `:` command; one offered to it is refused.
+  - **Layering: madc is ex, madcide is the visual part (owner, 2026-10-09).** madc on its own holds all the core ed/ex editing and everything inherently part of madc, which covers most of what madcide's line mode does or should do. madcide adds the visual layer, as vi adds visual mode to ex, without being limited to vi/vim/neovim behaviour. So:
+    - The editing verbs (`w`, `q`, `wq`, `x`, `e`, `r`, `:N`, `!cmd`, and the ex buffer commands above) are madc's, in the one registry, and run the same at the plain `madc` prompt as in madcide.
+    - madcide registers only what needs its views and panes (the `view*` verbs, layout, panes, menus).
+    - madcide's line mode (`madcide --line`, `tools/madcide/madcide_line.inc`) does not work well today. It is repaired by this move, not on its own: once the ex core is madc's, line mode is madc's REPL with a buffer, and `--line` keeps no editing logic of its own.
+    - madcide's `colon_command` chain (`tools/madcide/madcide_core.inc`) is split along that line when D24 lands: editing verbs move to madc, IDE verbs stay and register.
+    - Sequenced as Phase 1 of `2026-10-09-madc-madcide-split-arc.md`, which also adds two prerequisites the recon found: the registry's script extension point, and edit notification at the engine layer (`text_buffer`), so an ex edit and a madcide edit share one mutation path.
 
 ### Execution model (owner, 2026-09-25)
 

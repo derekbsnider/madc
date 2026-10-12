@@ -95,7 +95,7 @@ if [ "$c" -ne 2 ]; then
 	exit 1
 fi
 
-files=$(git ls-files 'src/*.cpp' 'include/*.h')
+files=$(git ls-files --cached --others --exclude-standard 'src/*.cpp' 'include/*.h')
 hits=$(scan $files)
 n=$(printf '%s' "$hits" | grep -c . || true)
 echo "forwarding-reference tests outside spelling_is_forwarding_reference: $n (target 0)"

@@ -1,0 +1,6 @@
+argc=1 last=
+one "two words"
+argc=3 last=two words
+count=3 last=two words
+no arguments
+count=1 last=

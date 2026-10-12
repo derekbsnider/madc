@@ -1,0 +1,10 @@
+\"detached\":
+\"path\":\"tests/testmcp_git.mad\"
+\"versioned\"
+revspec 'no-such-revision-xyz' not found
+"isError":true
+\"rows\":[
+"name":"graph.commits"
+"name":"graph.revision"
+"name":"graph.diff"
+"name":"graph.status"

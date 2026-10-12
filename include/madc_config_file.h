@@ -87,6 +87,10 @@ public:
 	// on?" unanswerable.
 	std::vector<std::string> search_paths() const;
 
+	// The user config directory of `app`: $XDG_CONFIG_HOME/<app> (or
+	// ~/.config/<app>); "" when neither is known.
+	static std::string user_config_dir(const std::string &app);
+
 	// Parse one named file. false = unreadable or malformed, reason already
 	// on `err`.
 	bool parse_file(const std::string &path, std::ostream &err);

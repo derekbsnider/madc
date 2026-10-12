@@ -26,6 +26,8 @@
 
 #include "ns_common.h"
 #include "libmadc/sysinfo.h"
+#include "madc_lang.h"		// doc_parse + doc_*: the language services over a document
+#include "madc_diag_names.h"	// doc_diagnostics: the severity / phase names
 #include "madc_posix_io.h"	// get_host_name (host-facts seam)
 #if defined(_WIN32)
 #include <process.h>		// _getpid — sys.pid's UCRT spelling (never <windows.h>
@@ -36,6 +38,8 @@
 #include "madc_modules.h"	// module_available: the module map + the one dl seam
 #include "madc_dl.h"		// library_open: the one dl seam
 #include "madc_run_child.h"	// serve_run_child: a Run child of self
+#include "madcdis/process.h"	// Process::run_and_wait: compiler_run
+#include "madc_regex.h"		// regex_*: madc's one regex engine (PCRE2)
 
 // ---- madc::sys — the system object (task #91) ----------------------------
 namespace madc {
@@ -270,6 +274,185 @@ value &parse_enclosing(value &out, int64_t handle, int64_t line,
 value &parse_spans(value &out, int64_t handle)
 	{ madc_parse_spans(&out, handle); return out; }
 
+// A document's parse handle (split arc 1A.1, design §2.5): the ONE door is
+// madc::lang::document_handle (split arc 1C.11) — the document's version
+// against the version its slot was parsed from. These are its dialect face.
+static int64_t doc_parse_impl(value *diags, int64_t w, int64_t entity)
+{
+    madc::hub::world *world = madc_ui_world(w);
+    return world ? lang::document_handle(*world, (madc::hub::entity_id)entity,
+					 diags)
+		 : 0;
+}
+int64_t doc_parse(int64_t w, int64_t entity)
+	{ return doc_parse_impl(NULL, w, entity); }
+int64_t doc_parse_checked(value &diags, int64_t w, int64_t entity)
+	{ diags = value(); return doc_parse_impl(&diags, w, entity); }
+bool doc_set_standard(int64_t w, int64_t entity, int64_t standard)
+{
+    madc::hub::world *world = madc_ui_world(w);
+    return world && lang::document_set_standard(*world, (madc::hub::entity_id)entity,
+						 standard);
+}
+int64_t doc_parsed(int64_t w, int64_t entity)
+{
+    madc::hub::world *world = madc_ui_world(w);
+    return world ? lang::document_parsed(*world, (madc::hub::entity_id)entity) : 0;
+}
+
+// The language services' dialect face (split arc 1C.11): madc::lang's answers
+// as rows. A range is { line, column, end_line, end_column }; an enum is its
+// code with its name beside it. The <ns_madc> declaration carries the shapes.
+static value lang_range_value(const lang::range &r)
+{
+    std::map<std::string, value> f;
+    f["line"] = value(r.from.line);
+    f["column"] = value(r.from.column);
+    f["end_line"] = value(r.to.line);
+    f["end_column"] = value(r.to.column);
+    return value::make_object(f);
+}
+
+static value lang_symbol_value(const lang::symbol &s)
+{
+    std::map<std::string, value> f;
+    f["name"] = value(s.name);
+    f["kind"] = value(std::string(lang::symbol_kind_name(s.kind)));
+    f["kind_code"] = value((int64_t)s.kind);
+    f["range"] = lang_range_value(s.extent);
+    f["selection"] = lang_range_value(s.selection);
+    return value::make_object(f);
+}
+
+static value lang_ranges_value(const std::vector<lang::range> &rs)
+{
+    std::vector<value> rows;
+    for ( size_t i = 0; i < rs.size(); ++i )
+	rows.push_back(lang_range_value(rs[i]));
+    return value::make_array(rows);
+}
+
+static lang::point lang_point(int64_t line, int64_t column)
+{
+    lang::point p;
+    p.line = line;
+    p.column = column;
+    return p;
+}
+
+value &doc_diagnostics(value &out, int64_t w, int64_t entity)
+{
+    out = value();
+    madc::hub::world *world = madc_ui_world(w);
+    std::vector<lang::diagnostic> ds;
+    if ( !world || !lang::diagnostics(*world, (madc::hub::entity_id)entity, ds) )
+	return out;
+    std::vector<value> rows;
+    for ( size_t i = 0; i < ds.size(); ++i )
+    {
+	std::map<std::string, value> f;
+	f["range"] = lang_range_value(ds[i].at);
+	f["severity"] = value(std::string(diag_severity_name(ds[i].severity)));
+	f["severity_code"] = value((int64_t)ds[i].severity);
+	f["phase"] = value(std::string(diag_phase_name(ds[i].phase)));
+	f["phase_code"] = value((int64_t)ds[i].phase);
+	f["message"] = value(ds[i].message);
+	rows.push_back(value::make_object(f));
+    }
+    out = value::make_array(rows);
+    return out;
+}
+
+value &doc_outline(value &out, int64_t w, int64_t entity)
+{
+    out = value();
+    madc::hub::world *world = madc_ui_world(w);
+    std::vector<lang::symbol> syms;
+    if ( !world || !lang::outline(*world, (madc::hub::entity_id)entity, syms) )
+	return out;
+    std::vector<value> rows;
+    for ( size_t i = 0; i < syms.size(); ++i )
+	rows.push_back(lang_symbol_value(syms[i]));
+    out = value::make_array(rows);
+    return out;
+}
+
+value &doc_enclosing(value &out, int64_t w, int64_t entity,
+		     int64_t line, int64_t column)
+{
+    out = value();
+    madc::hub::world *world = madc_ui_world(w);
+    lang::symbol s;
+    if ( world && lang::enclosing(*world, (madc::hub::entity_id)entity,
+				  lang_point(line, column), s) )
+	out = lang_symbol_value(s);
+    return out;
+}
+
+value &doc_definition(value &out, int64_t w, int64_t entity,
+		      int64_t line, int64_t column)
+{
+    out = value();
+    madc::hub::world *world = madc_ui_world(w);
+    std::vector<lang::range> rs;
+    if ( world && lang::definition(*world, (madc::hub::entity_id)entity,
+				   lang_point(line, column), rs) )
+	out = lang_ranges_value(rs);
+    return out;
+}
+
+value &doc_references(value &out, int64_t w, int64_t entity,
+		      int64_t line, int64_t column, bool include_declaration)
+{
+    out = value();
+    madc::hub::world *world = madc_ui_world(w);
+    std::vector<lang::range> rs;
+    if ( world && lang::references(*world, (madc::hub::entity_id)entity,
+				   lang_point(line, column),
+				   include_declaration, rs) )
+	out = lang_ranges_value(rs);
+    return out;
+}
+
+value &doc_hover(value &out, int64_t w, int64_t entity,
+		 int64_t line, int64_t column)
+{
+    out = value();
+    madc::hub::world *world = madc_ui_world(w);
+    lang::hover_info h;
+    if ( !world || !lang::hover(*world, (madc::hub::entity_id)entity,
+				lang_point(line, column), h) )
+	return out;
+    std::map<std::string, value> f;
+    f["text"] = value(h.text);
+    if ( h.has_range )
+	f["range"] = lang_range_value(h.at);
+    out = value::make_object(f);
+    return out;
+}
+
+value &doc_spans(value &out, int64_t w, int64_t entity)
+{
+    out = value();
+    madc::hub::world *world = madc_ui_world(w);
+    std::vector<highlight_span> sp;
+    if ( !world || !lang::spans(*world, (madc::hub::entity_id)entity, sp) )
+	return out;
+    std::vector<value> rows;
+    for ( size_t i = 0; i < sp.size(); ++i )
+    {
+	std::map<std::string, value> f;
+	f["line"] = value((int64_t)sp[i].line);
+	f["column"] = value((int64_t)sp[i].column);
+	f["length"] = value((int64_t)sp[i].length);
+	f["class"] = value(std::string(highlight_class_name(sp[i].cls)));
+	f["class_code"] = value((int64_t)sp[i].cls);
+	rows.push_back(value::make_object(f));
+    }
+    out = value::make_array(rows);
+    return out;
+}
+
 // Code-graph MCP L1 (design 2026-09-12): the live declaration/type graph
 // as node-addressed reads over a parse handle. The <ns_madc> declaration
 // carries the node/result shapes.
@@ -393,6 +576,19 @@ const char *compiler_path()
 	{
 	    static const std::string p = madc_self_exe_path();
 	    return p.c_str();
+	}
+// The running compiler run on `args` with ALL stdio inherited, waited for
+// (split arc 1D: madcide --line is `madc -i FILE`) — the spawn owner's
+// run-and-wait arm, argv[0] the compiler's own path.
+int64_t compiler_run(value &args)
+	{
+	    std::vector<std::string> argv(1, std::string(compiler_path()));
+	    if ( argv[0].empty() )
+		return -1;
+	    if ( args.is_array() )
+		for ( const value &a : args.as_array() )
+		    argv.push_back(a.is_string() ? a.as_string() : std::string());
+	    return madc::Process::run_and_wait(argv[0], argv);
 	}
 // A Run child of self (madc_run_child.h): <ns_madc>'s namespace-scope
 // initializer calls it, so a program on the engine serves the run its own
@@ -694,5 +890,91 @@ const char *fork_uri(int (*entry)())
 const char *library_suffix()
 {
     return madc_target_dso_suffix();
+}
+
+// ---- regex_match / regex_search / regex_replace (split arc 1A.3; design
+// docs/plans/2026-10-10-pcre2-design.md): madc's one regex engine
+// (madc::regex, PCRE2). A pattern that does not compile — and a malformed
+// replacement — is REFUSED: one line on stderr naming the function, and a
+// neutral answer (false; the subject unchanged), never an answer that
+// pretends the pattern matched nothing. The lean forms are the primary
+// ones; the std::string forms serve a TU that included <string>.
+
+namespace {
+
+// The pattern compiled, or its refusal said for `who`; false when refused.
+bool regex_compiled(const regex &re, const char *who)
+{
+    if ( re.ok() )
+	return true;
+    std::cerr << re.refusal(who) << std::endl;
+    return false;
+}
+
+std::string text_of(const char *s)
+{
+    return s ? std::string(s) : std::string();
+}
+
+bool regex_matched(const std::string &s, const std::string &pattern)
+{
+    regex re(pattern);
+    return regex_compiled(re, "madc::regex_match") && re.match(s);
+}
+
+bool regex_found(const std::string &s, const std::string &pattern)
+{
+    regex re(pattern);
+    return regex_compiled(re, "madc::regex_search") && re.search(s);
+}
+
+// `s` with every match of `pattern` replaced (the subject when refused).
+std::string regex_replaced(const std::string &s, const std::string &pattern,
+			   const std::string &replacement)
+{
+    regex re(pattern);
+    if ( !regex_compiled(re, "madc::regex_replace") )
+	return s;
+    std::string out, why;
+    if ( !re.replace(s, replacement, out, &why) )
+	std::cerr << "madc::regex_replace: invalid replacement \"" << replacement
+		  << "\": " << why << std::endl;
+    return out;
+}
+
+} // namespace
+
+bool regex_match(const char *s, const char *pattern)
+{
+    return regex_matched(text_of(s), text_of(pattern));
+}
+
+bool regex_search(const char *s, const char *pattern)
+{
+    return regex_found(text_of(s), text_of(pattern));
+}
+
+value &regex_replace(value &out, const char *s, const char *pattern,
+		     const char *replacement)
+{
+    out = value(regex_replaced(text_of(s), text_of(pattern), text_of(replacement)));
+    return out;
+}
+
+bool regex_match(const std::string &s, const std::string &pattern)
+{
+    return regex_matched(s, pattern);
+}
+
+bool regex_search(const std::string &s, const std::string &pattern)
+{
+    return regex_found(s, pattern);
+}
+
+std::string &regex_replace(std::string &out, const std::string &s,
+			   const std::string &pattern, const std::string &replacement)
+{
+    out = regex_replaced(s, pattern, replacement);
+    return out;
 }
 } // namespace madc

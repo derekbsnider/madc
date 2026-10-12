@@ -11,3 +11,6 @@ int main(void) {
 // under its f). madc before D26 cited 2:14 (foo's LAST byte, a byte column)
 // and drew the caret alone. clang cites this error at 2:11 (where it wants
 // the `;`, in bytes), a different anchor.
+// The diagnostic goes to a pipe, so it is uncoloured (split arc Phase 0.5,
+// gcc's -fdiagnostics-color=auto): the header is one plain line and the
+// caret line plain blanks then `^~~`.

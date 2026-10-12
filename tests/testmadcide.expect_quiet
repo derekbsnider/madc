@@ -1,1 +1,0 @@
-the IDE core must stay silent on stderr (captured diagnostics included)

@@ -38,7 +38,7 @@ cmp -s src/madc_console.cpp "$OUT/console_w.cpp" && fail "control: no read/write
 # build NAME FIXTURE SOURCE: a GUI image, its runtime linked in (the host
 # has no mingw DLLs on its PATH).
 build() {
-	"$CXX" -O0 -mwindows -static -o "$OUT/$1.exe" "$2" "$3" || fail "$1: build"
+	"$CXX" -O0 -mwindows -static -Iinclude -o "$OUT/$1.exe" "$2" "$3" || fail "$1: build"
 }
 fixtures=$(ls tests/cross/win64_*.cpp 2>/dev/null)
 [ -n "$fixtures" ] || fail "no tests/cross/win64_*.cpp fixture"

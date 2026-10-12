@@ -71,7 +71,7 @@ if [ "$c" -ne 1 ]; then
 	exit 1
 fi
 
-files=$(git ls-files 'src/*.cpp')
+files=$(git ls-files --cached --others --exclude-standard 'src/*.cpp')
 bad=$(stray_calls $files)
 n=$(printf '%s' "$bad" | grep -c . || true)
 echo "member-init steps called outside the walk: $n (target 0)"

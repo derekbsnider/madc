@@ -24,14 +24,14 @@ cp config.mk "$SAVED"
 restore() {
 	log "restoring tree shape (monolithic)"
 	cp "$SAVED" config.mk
-	make -C src -j20 release > /dev/null 2>&1
-	make -C src -j20 > /dev/null 2>&1
+	make -C src -j"$(bash scripts/build_jobs.sh)" release > /dev/null 2>&1
+	make -C src -j"$(bash scripts/build_jobs.sh)" > /dev/null 2>&1
 }
 trap restore EXIT
 
 log "== building the shared shape (--enable-shared) =="
 ./configure --enable-shared > /dev/null || exit 1
-make -C src -j20 release || exit 1
+make -C src -j"$(bash scripts/build_jobs.sh)" release || exit 1
 
 ldd bin/madc-release | grep libmadc || { log "FAIL: thin CLI not linked against libmadc"; exit 1; }
 if ldd bin/madc-release | grep -q "not found"; then

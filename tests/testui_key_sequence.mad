@@ -1,0 +1,30 @@
+// ui::key_sequence_for — the sequence a keybinding table binds to a command
+// code, in the table's canonical spelling (a continuation key's Ctrl
+// folded: `^x ^c` is `^x c`, JOE's chord convention — madcdis/keys.h
+// cont_spelling), by the ONE rule a menu accelerator uses:
+// fewest keys, then the shortest spelling, then the first in the table's
+// order; false and "" for a code nothing binds and for a table that does
+// not validate. Handle-free. The engine twin of testmadcide_hint /
+// testmadcide_emacs_keys (madcide's hint line and accelerators read it).
+void show(const char *label, var &tbl, long code)
+{
+    var seq;
+    bool ok = ui::key_sequence_for(seq, tbl, code);
+    println("{}: bound={} seq=[{}]", label, ok ? 1 : 0, seq);
+}
+
+int main()
+{
+    var tbl = { "^k x": 7, "^q": 7, "f10": 7, "esc esc": 9, "^x ^c": 9,
+		"^b": 5, "^a": 5, "^k q": 3 };
+    println("valid: {}", ui::validate_keys(tbl) ? 1 : 0);
+    show("fewest-keys", tbl, 7);
+    show("shortest", tbl, 9);
+    show("first", tbl, 5);
+    show("only", tbl, 3);
+    show("unbound", tbl, 4);
+    var bad = { "^k q": 3, "": 3 };
+    println("bad-valid: {}", ui::validate_keys(bad) ? 1 : 0);
+    show("bad", bad, 3);
+    return 0;
+}

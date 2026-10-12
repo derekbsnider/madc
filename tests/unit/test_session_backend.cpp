@@ -189,6 +189,91 @@ TEST_CASE("session backend: an offer's verdict, a refused entry's diagnostics")
     CHECK(out.empty());
 }
 
+// The backend renders into a string the host prints on its error stream:
+// coloured as that stream shows colour (Phase 0.5's gate, the host's
+// verdict), the header's severity and the caret gcc's way; plain when it
+// does not.
+TEST_CASE("session backend: the rendered diagnostics are coloured as the host's error stream is")
+{
+    SessionClient c;
+    c.set_diagnostic_colour(true);
+    REQUIRE(c.start("--std=c11"));
+    SessionClient::Reply r;
+    std::string out;
+    REQUIRE(c.offer_wait("int y = nosuch_name;", true, r, out, kWait) == 1);
+    CAPTURE(r.rendered);
+    CHECK(r.rendered.find("\x1b[1;31merror:") != std::string::npos);
+    CHECK(r.rendered.find("\x1b[1;32m^") != std::string::npos);
+    c.set_diagnostic_colour(false);
+    REQUIRE(c.offer_wait("int z = nosuch_name;", true, r, out, kWait) == 1);
+    CHECK(r.rendered.find("use of undeclared identifier 'nosuch_name'") != std::string::npos);
+    CHECK(r.rendered.find('\x1b') == std::string::npos);
+    // A restart keeps the verdict.
+    c.set_diagnostic_colour(true);
+    REQUIRE(c.restart("--std=c11"));
+    REQUIRE(c.offer_wait("int w = nosuch_name;", true, r, out, kWait) == 1);
+    CHECK(r.rendered.find("\x1b[1;31merror:") != std::string::npos);
+}
+
+// The session's buffer question over the wire (split arc 1B.10, design
+// decision 4): a command running in the backend — registered from an entry,
+// as a dialect module registers — asks the HOST for a FILE mid-entry, and the
+// host's source answers inside its wait; a host with no source answers with
+// the disk's rule.
+TEST_CASE("session backend: a command in the backend asks the host's buffers")
+{
+    const char *probe =
+	"bool probe(var &out, const char *name) {"
+	" var b;"
+	" if ( !madc::session_buffer(b, name) ) { out = b[\"error\"]; return false; }"
+	" out = format(\"{} {} [{}]\", b[\"path\"], b[\"has_text\"], b[\"text\"]);"
+	" return true; }";
+    const char *add = "madc::command_add(\"probe\", \"%probe FILE\", \"a buffer\", probe)";
+    SessionClient c;
+    c.set_buffers([](const madc::dis::istring &name, madc::dis::istring &path,
+		     std::string &text, bool &has_text, std::string &why) {
+	if ( name.empty() || name == "a.c" )
+	{
+	    path = name.empty() ? "/w/current.c" : "/w/a.c";
+	    text = name.empty() ? "int cur;" : "int a = 1;";
+	    has_text = true;
+	    return true;
+	}
+	if ( name == "untitled" )
+	{
+	    why = "the buffer has no file name";
+	    return false;
+	}
+	return true;
+    });
+    REQUIRE(c.start("--std=madc"));
+    SessionClient::Reply r;
+    std::string out;
+    REQUIRE(c.offer_wait(probe, true, r, out, kWait) == 1);
+    REQUIRE(r.ok);
+    REQUIRE(c.offer_wait(add, true, r, out, kWait) == 1);
+    REQUIRE(r.ok);
+    REQUIRE(c.offer_wait("%probe a.c", true, r, out, kWait) == 1);
+    CHECK(r.shown == "/w/a.c true [int a = 1;]");
+    REQUIRE(c.offer_wait("%probe", true, r, out, kWait) == 1);
+    CHECK(r.shown == "/w/current.c true [int cur;]");
+    REQUIRE(c.offer_wait("%probe b.c", true, r, out, kWait) == 1);
+    CHECK(r.shown == "b.c false []");
+    REQUIRE(c.offer_wait("%probe untitled", true, r, out, kWait) == 1);
+    CHECK_FALSE(r.ok);
+    CHECK(r.rendered.find("the buffer has no file name") != std::string::npos);
+
+    SessionClient d;		// no source: the disk's rule
+    REQUIRE(d.start("--std=madc"));
+    REQUIRE(d.offer_wait(probe, true, r, out, kWait) == 1);
+    REQUIRE(d.offer_wait(add, true, r, out, kWait) == 1);
+    REQUIRE(d.offer_wait("%probe b.c", true, r, out, kWait) == 1);
+    CHECK(r.shown == "b.c false []");
+    REQUIRE(d.offer_wait("%probe", true, r, out, kWait) == 1);
+    CHECK_FALSE(r.ok);
+    CHECK(r.rendered.find("no FILE, and this host holds no buffer") != std::string::npos);
+}
+
 TEST_CASE("session backend: completion asks the backend's session")
 {
     SessionClient c;
@@ -410,3 +495,12 @@ TEST_CASE("session backend: POSIX only for now")
 }
 
 #endif
+
+TEST_CASE("session backend: a stop is worded by what ended it")
+{
+    // A signal, and its name (POSIX).
+    CHECK(session_stop_words(11, -1) == "signal 11, segmentation fault");
+    // No signal: a Windows crash ends the process with the exception's code
+    // as its exit status (an access violation, 0xC0000005) — never "signal 0".
+    CHECK(session_stop_words(0, (int)0xC0000005u) == "exception 0xc0000005");
+}

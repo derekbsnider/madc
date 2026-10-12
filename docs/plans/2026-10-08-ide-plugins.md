@@ -6,7 +6,7 @@ fully functional plugin that interfaces it with madc. Not scheduled yet; this
 plan orders the work.
 
 **Prerequisite: madcide in its own repository** (`2026-10-08-madcide-own-repo.md`,
-owner 2026-10-08). That migration completes first; every slice below starts
+owner 2026-10-08; sequenced by `2026-10-09-madc-madcide-split-arc.md`). That migration completes first; every slice below starts
 after it, in the madcide repository, and the plugins release from there. The
 existing VS Code extension moves with madcide and is rebuilt on this plan
 there, not in the madc repository.

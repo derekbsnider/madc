@@ -1,0 +1,73 @@
+// madc's one regex engine (split arc 1A.3: PCRE2, through madc::regex;
+// design docs/plans/2026-10-10-pcre2-design.md) at every script surface —
+// madc::regex_match / regex_search / regex_replace, perl::grep, perl::split.
+// ORACLE: the same patterns through PHP 8.3 preg_match / preg_replace and
+// Perl 5 grep / split, recorded beside each line. A pattern that does not
+// compile is REFUSED: one line on stderr (its text is gated by
+// tests/unit/test_regex.cpp) and a neutral answer — false, the subject back,
+// an empty array — never the substring / literal-delimiter stand-in std::regex
+// fell back to. Pure dialect TU — zero includes.
+
+const char *yn(bool b)
+{
+	return b ? "yes" : "no";
+}
+
+int main()
+{
+	// preg_match('/^hello[0-9]+$/', 'hello123') → 1; '…say hello123' → 0
+	println("match: {} {}", yn(madc::regex_match("hello123", "hello[0-9]+")),
+		yn(madc::regex_match("say hello123", "hello[0-9]+")));
+	// preg_match('/\d+(?=USD)/', 'price: 10USD') → 1
+	println("search: {}", yn(madc::regex_search("price: 10USD", "\\d+(?=USD)")));
+	// preg_match('/^.$/u', 'é') → 1 (one code point, two bytes)
+	println("utf8: {}", yn(madc::regex_match("é", "^.$")));
+
+	var out;
+	// preg_replace('/(?<=\$)\d+/', 'N', 'cost $15 and $20') → cost $N and $N
+	madc::regex_replace(out, "cost $15 and $20", "(?<=\\$)\\d+", "N");
+	println("lookbehind: {}", out);
+	// preg_replace('/(\w+)@(\w+)/', '$2 at ${1}', 'me@host') → host at me
+	madc::regex_replace(out, "me@host", "(\\w+)@(\\w+)", "$2 at ${1}");
+	println("groups: {}", out);
+	// preg_replace('/<.+?>/', '[]', '<a><b>') → [][]
+	madc::regex_replace(out, "<a><b>", "<.+?>", "[]");
+	println("lazy: {}", out);
+
+	array words;
+	perl::push(words, "apple");
+	perl::push(words, "banana");
+	perl::push(words, "cherry");
+	perl::push(words, "avocado");
+	perl::push(words, "blueberry");
+	array hits;
+	// perl -e 'print join("|", grep { /^a|y$/ } qw(apple banana cherry avocado blueberry))'
+	//   → apple|cherry|avocado|blueberry
+	perl::grep(hits, "^a|y$", words);
+	println("grep: {}", perl::join("|", hits));
+
+	array parts;
+	// perl -e 'print join("|", split(/:+/, "one:two::three:::four"))' → one|two|three|four
+	perl::split(parts, ":+", "one:two::three:::four");
+	println("split: {}", perl::join("|", parts));
+	// perl -e 'print join("|", split(/:/, ":a:b::"))' → |a|b
+	perl::split(parts, ":", ":a:b::");
+	println("split edges: [{}] {}", perl::join("|", parts), perl::scalar(parts));
+	// perl -e 'print join("|", split(//, "abc"))' → a|b|c
+	perl::split(parts, "", "abc");
+	println("split empty: {}", perl::join("|", parts));
+
+	// Refused: "a(b" does not compile (PHP: "missing closing parenthesis at
+	// offset 3"). preg_match → false; preg_replace → NULL, here the subject.
+	println("refused search: {}", yn(madc::regex_search("a(b", "a(b")));
+	madc::regex_replace(out, "xa(by", "a(b", "-");
+	println("refused replace: {}", out);
+	perl::grep(hits, "a(b", words);
+	println("refused grep: {}", perl::scalar(hits));
+	perl::split(parts, "a(b", "xa(by");
+	println("refused split: {}", perl::scalar(parts));
+	// A malformed replacement ($9: no such group) is refused the same way.
+	madc::regex_replace(out, "a", "(a)", "$9");
+	println("refused replacement: {}", out);
+	return 0;
+}

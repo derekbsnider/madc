@@ -1,0 +1,2 @@
+// testrepl_buffer's %load file: its text joins the REPL buffer.
+int twice(int n) { return 2 * n; }

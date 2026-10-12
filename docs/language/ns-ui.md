@@ -134,9 +134,9 @@ together. A checkpoint is a new edit branch and clears redo; the
 three-argument `text_undo` is the legacy destructive form (no capture,
 so it clears redo too).
 
-The line-mode editor (`tools/texteditor/` — nine script verbs through
-the one registry, design doc §7.7) is the worked example: a line command
-composes a range edit from `text_line_start`/`text_line_len`.
+madc's ex core (`madc::ex_session`, the colon mode of `madc -i FILE` and
+of any editor built on these publics) is the worked example: a line
+command composes a range edit from `text_line_start`/`text_line_len`.
 
 ## The view seam — the document lens's coordinate map
 
@@ -270,9 +270,7 @@ loud generic reason, never a silent pass. The SAME evaluation answers
 the actor's context) and gates `act`, so enumeration and dispatch can
 never disagree; an unmet keys/levels requirement answers first. Check
 bodies are READ-ONLY by contract: no mutation, no `ui::act`, no session
-lifecycle. One body can serve many verbs (it receives `verb`) — the
-texteditor binds `checks/editable.madv` to all five document-mutating
-commands.
+lifecycle. One body can serve many verbs (it receives `verb`).
 
 The pilot application (`tests/adventure_driver.inc` +
 `tests/adventure_verbs/*.madv`) is the worked example: the whole game
@@ -376,9 +374,10 @@ the dependency-free VT100/xterm one (raw mode, alternate screen,
 differential row repaint; POSIX only — on Windows `tui_open` refuses
 until a Console target registers). The model half — layout, focus, key
 semantics, chords, coalescing, diffing — is engine code shared by every
-target. `tools/texteditor/vised.mad` is the worked example of the
-editor pair (Pico-style fixed chords); `tools/madcide/madcide.mad`
-(a tool, not an example) is the worked case of profiles-as-data
+target. `examples/vised/vised.mad` is the worked example of an editor
+on the public surface (fixed chords, madc's colon mode); madcide's
+`tools/madcide/madcide.mad` (its own repository, github.com/derekbsnider/madcide)
+is the worked case of profiles-as-data
 (the full JOE/WordStar set by default — `profiles/joe.keys` is the
 readable truth; the pico profile respells the single-chord subset) and
 of the compiler-data panes (`madc::diagnostics` / `madc::outline` rows
@@ -414,7 +413,7 @@ means anything in JavaScript.
 
 | Function | Description |
 |----------|-------------|
-| `open(level)` / `open(name)` / `level_of(t)` | Handle (>0), or 0 with the reason on stderr: no target serves the level here (`ui::NONE` / `ui::LINE` have no frontend yet), unknown name, cannot serve here (no tty; no display; the `madcwebview` library absent — its row is LAZY, so the program still compiles and runs without it); one already open. `level_of` = the opened target's `ui::level`, -1 for a bad handle |
+| `open(level)` / `open(name)` / `level_of(t)` | Handle (>0), or 0 with the reason on stderr: no target serves the level here (`ui::NONE` has no frontend by design — a client at that level drives the session with no surface; `ui::LINE` is the line frontend: each stdin line one `text` event with the raw line, the tree typeset to stdout as `render_tree` does, EOF the end), unknown name, cannot serve here (no tty; no display; the `madcwebview` library absent — its row is LAZY, so the program still compiles and runs without it); one already open. `level_of` = the opened target's `ui::level`, -1 for a bad handle |
 | `close(t)` / `rows(t)` / `cols(t)` | As the `tui_*` twins; a web target's rows/cols are the viewport in text cells, reported by the page |
 | `render(t, w, tree)` / `event(out, t, w)` | The one loop; `event` blocks until the page posts one event |
 | `bind_keys(t, table)` / `validate_keys(table)` / `pending(out, t)` | Profiles are data on every target |
@@ -426,11 +425,15 @@ means anything in JavaScript.
 | `fullscreen(t, on)` | The window full screen: 1 enters, 0 leaves, -1 toggles the window's current state (so a window the user took out of full screen by the platform's means toggles from where it is); false = no window to make full screen here (the terminal, a browser page) |
 
 `madc::module_available("madcwebview")` answers whether the window can
-exist on this system; `tools/texteditor/vised.mad <file> --web` is the
+exist on this system; `examples/vised/vised.mad <file> --web` is the
 worked example (`tests/gui/ui_web_hello.mad` / `ui_web_edit.mad` are the
 suite's, under Xvfb in JIT, exe and `.o`).
 
 ### The workbench (madcide GUI mode)
+
+madcide lives in its own repository (github.com/derekbsnider/madcide); the
+`tools/madcide/`, `tests/gui/madcide_*`, `tests/testide*` and
+`scripts/check-madcide-*` paths in this section are that repository's.
 
 `madc tools/madcide/madcide.mad <file> --gui` is the web target's first
 customer. ONE client loop and ONE composer serve the terminal and the
@@ -442,6 +445,7 @@ and the window honours:
 |------|----|-----------|
 | `region` (string) | any container / status / editor node | a workbench grid slot: `rail` · `sidebar` · `editor` · `panel` · `statusbar`; the nodes docked into one region STACK in the slot in tree order |
 | `rows` (N) | an edit node | a fixed height of N text cells — the same hint the terminal reads (an inactive window of a ^K O split); without it the editor flexes |
+| `gutter` (1) | an edit node | the line-number gutter — the same hint the terminal reads: each line leads with its number (a CSS counter, so the line's text holds no digits and a press in the gutter lands on the line's start), at least three digits wide, in the root `chrome` hint's `gutter` style, the caret line's number in `gutter_current` and the caret line in `current_line` — the styles the terminal paints |
 | `tag` (N) | an edit node | the composer's own identity for the node, echoed as data on the pointer events it yields (madcide: every window's edit node carries its window index while split) — no renderer reads it for itself |
 | `terminal` (1) | an edit node | the embedded Terminal's screen (madcide's Terminal tab: the `[terminal]` buffer a program's pty bytes fold into through `ui::term_feed`) — the page styles it as a terminal surface; a press on it gives the running program the keyboard |
 | `tabs` (`[{title, action, arg?, active?}]`) | a group (madcide's bottom panel), a content node docked first into the editor region (madcide's buffer tabs) | a tab STRIP as data — the page draws it above the node's children and a click on a tab posts its `action` by name with its `arg` (madcide: Problems / Output / Terminal show the panel on that tab; a buffer tab posts `bufsel` with the buffer's ring index) |
@@ -471,7 +475,7 @@ every compose. In a Markdown buffer's formatted view, which edits the file,
 holds when the client is a window rather than a terminal. The
 menu named `palette` lists palette-only commands (a title for every
 command the bar does not carry). `scripts/check-madcide-command-registry.sh`
-(fulltest) keeps the three in agreement: every profile action is registered
+(madcide's gates) keeps the three in agreement: every profile action is registered
 or a key spelling, every dispatched action is registered, every registered
 command is dispatched.
 
@@ -500,8 +504,9 @@ delivers it to the engine, which resolves it as the terminal would.
 Choosing an item posts `{"kind":"action","action":id}` back through the
 host's one door, so the session dispatches it exactly as it dispatches the
 chord. `ui_web::menu_activate(id)` fires an item by id — the test seam
-`tests/gui/madcide_menu.mad` drives, under Xvfb on Linux and natively on
-the owner's Windows 11 box and Intel Mac.
+madc's `tests/gui/ui_web_menu.mad` and madcide's `tests/gui/madcide_menu.mad`
+drive, under Xvfb on Linux and natively on the owner's Windows 11 box and
+Intel Mac.
 
 **Native file dialogs.** Open File and Save As are a request / response
 VERB between the session and its client, never a widget the session
@@ -567,8 +572,8 @@ web colours/fonts through the ONE `@scope` rule the key tables use
 unscoped JOE-vocabulary lines still feed the terminal — one file, two
 renderings. While a build streams, its output docks as the `panel` region
 (the VS Code Output shape); interactive Run and the shell use the terminal
-until the embedded terminal lands. `tests/gui/madcide_{workbench,theme,
-render}.mad` are the suite's fixtures (Xvfb, JIT / exe / `.o`); the full
+until the embedded terminal lands. madc's `tests/gui/ui_web_{workbench,theme}.mad`
+and madcide's `tests/gui/madcide_render.mad` are the fixtures (Xvfb); the full
 `--gui` loop is a manual gate.
 
 **Remote X displays.** GTK4 paints the window through its GL renderer,

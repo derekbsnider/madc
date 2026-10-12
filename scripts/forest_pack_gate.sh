@@ -130,8 +130,9 @@ baseline_for() {
 
 # normalize <log> <out> — one readable stream: NULs dropped (a -v dump carries
 # them, and grep would call the file binary), ANSI colour stripped (madc's
-# diagnostic prints `\e[1;31merror:\e[1;37m`, so the anchored pattern below
-# only exists after the strip), CR dropped (wine's CRT writes CRLF).
+# diagnostic on a terminal, or under -fdiagnostics-color=always, prints
+# `\e[1;31merror:\e[1;37m`, and the anchored pattern below only exists after
+# the strip), CR dropped (wine's CRT writes CRLF).
 normalize() {
 	tr -d '\000\r' < "$1" | LC_ALL=C sed -e 's/\x1b\[[0-9;]*m//g' > "$2"
 }

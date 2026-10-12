@@ -27,7 +27,7 @@
     (content = one line saying why it is outside the single-object
     domain, e.g. a multi-TU `--project` program; the `--exe` pass still
     covers it)
-  - `tests/foo.timeout` — per-test wall-clock cap in seconds (default 5); raise it for a legitimately slow test (e.g. a real-libstdc++-header compile, no PCH yet)
+  - `tests/foo.timeout` — per-test wall-clock cap in seconds (default 10); raise it for a legitimately slow test (e.g. a real-libstdc++-header compile, no PCH yet)
   - `tests/foo.env` — whitespace-split `NAME=value` pairs handed to `env(1)`
     ahead of every invocation of the test (JIT, exe, obj); the runner exports
     `MADC_MEM_LIMIT=auto`, so a test that must run unguarded says
@@ -55,5 +55,9 @@
   the runner.
 - When the runner needs a new capability, add it as another generic
   filename convention, not a per-test hook.
+- A script that runs or compiles `tests/*.mad` reads a test's run fixtures
+  (`.flags` `.argv` `.env` `.input` `.timeout`) and the hermetic flag through
+  ONE reader, `scripts/test_fixtures.sh`'s `fixture_load` — never by hand.
+  Gated by `scripts/check-one-fixture-reader.sh`.
 
 See `docs/rules/test-fixtures.md` for the reasoning and design notes.

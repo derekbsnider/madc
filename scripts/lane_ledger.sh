@@ -37,7 +37,7 @@ cd "$(dirname "$0")/.."
 LEDGER="${MADC_LANE_LEDGER:-docs/lane-status.tsv}"
 # Content that constitutes "the code a lane validates". Docs and status
 # files are excluded on purpose.
-CODE_PATHS="src include third_party tests scripts tools examples"
+CODE_PATHS="src include third_party tests scripts examples"
 # The release tooling — packaging, the release archive, this gate (owner
 # 2026-10-07: a packaging change has nothing to do with the source code). No
 # test suite runs it, so it stales only the lanes that do (lane_tools): the
@@ -46,55 +46,53 @@ CODE_PATHS="src include third_party tests scripts tools examples"
 # selftest runs first on every check and every push).
 RELEASE_TOOLING="scripts/package_release.sh scripts/package_release_macos.sh
 	scripts/package_release_windows.sh scripts/package_install_gate.sh
-	scripts/install_gate_pty.py scripts/promote_release.sh
+	scripts/promote_release.sh
 	scripts/release_bins.sh scripts/brew_bottle.sh scripts/brew_formula.sh
 	scripts/brew_lane.sh scripts/lane_ledger.sh scripts/git-hooks/pre-push"
+# The interactive faces' code (owner 2026-10-12: "because these changes only
+# effect REPL mode, they should NOT IN ANY WAY SHAPE OR FORM REQUIRE A FULL DAY
+# OF TESTING EVERY SINGLE PART OF MADC"): only `madc -i`, `madc --lsp` and a
+# dialect host (madcide) reach it — a file compile never does. It stales only
+# the interactive lanes (scripts/interactive_lane.sh: the REPL, colon-mode,
+# session and LSP tests and the interactive unit binaries, on Linux, genuine
+# Windows and macOS); any other code change stales those with every lane.
+INTERACTIVE_CODE="src/madc_repl.cpp include/madc_repl.h
+	src/madc_session.cpp src/madc_session_client.cpp src/madc_session_verbs.cpp
+	src/madc_session_interrupt.cpp src/madc_session_stdin.cpp
+	include/madc_session.h include/madc_session_client.h
+	src/madc_ex.cpp include/madc_ex.h include/madc_ex_session.h
+	include/madc/ns_madc_host src/madc_history.cpp include/madc_history.h
+	scripts/interactive_lane.sh
+	tests/testrepl_* tests/testex_* tests/testsession_* tests/testlsp_*
+	tests/unit/test_ex.cpp tests/unit/test_repl_session.cpp
+	tests/unit/test_repl_cli.cpp tests/unit/test_repl_input.cpp
+	tests/unit/test_session_backend.cpp"
 # The release tooling a lane's recorded tally covers, by lane: the brew lane
 # bottles, pours and tests the keg. (The darwin lane's tally is the macOS
 # suite; the macOS packages are proven by release.yml's macos-package jobs.)
+# The interactive lanes cover the interactive code.
 lane_tools() {
 	case "$1" in
 	brew-linux) echo "scripts/brew_bottle.sh scripts/brew_formula.sh
 		scripts/brew_lane.sh packaging/homebrew" ;;
+	interactive|interactive-win|interactive-darwin) echo "$INTERACTIVE_CODE" ;;
 	esac
 }
 
-# The APPLICATION — madcide (and the editor core it includes), its tests and
-# its screen goldens (owner 2026-10-09: "if only madcide change (and not madc
-# sources) then we do not need the full battery"; madcide is to leave for its
-# own repository). An application change stales only the lanes that run the
-# application (app_lanes); a change to madc's own sources stales them all.
-# One pathspec per line: they are git patterns, never shell globs.
-APPLICATION="tools
-	tests/testmadcide*
-	tests/testide*
-	tests/testvised*
-	tests/testlineed*
-	tests/gui/madcide_*
-	tests/tui_golden
-	scripts/tui_golden.py"
-app_lanes=" gui tests-jit "
-
 # lane_paths <lane> -> the pathspecs of the content <lane> validates: the
-# code less the release tooling and (unless the lane runs it) the
-# application, plus the tooling the lane runs. An exclude beats an include
-# in git, so a lane's own tools are never excluded.
+# code less the release tooling and the interactive code, plus what the lane
+# runs of them. An exclude beats an include in git, so a lane's own are never
+# excluded.
 lane_paths() {
 	local tools p f
 	tools=" $(lane_tools "$1" | tr -s '[:space:]' ' ') "
 	p="$CODE_PATHS"
-	for f in $RELEASE_TOOLING; do
+	for f in $RELEASE_TOOLING $INTERACTIVE_CODE; do
 		case "$tools" in
 		*" $f "*) ;;
 		*) p="$p :(exclude)$f" ;;
 		esac
 	done
-	case "$app_lanes" in
-	*" $1 "*) ;;
-	*) while read -r f; do
-		p="$p :(exclude)$f"
-	   done <<< "$APPLICATION" ;;
-	esac
 	echo "$p$tools"
 }
 
@@ -245,18 +243,21 @@ selftest() {
 	   echo "lane_ledger: SELFTEST FAILED — the brew lane ignores its own tooling" >&2
 	   rm -f "$tmp"; return 1 ;;
 	esac
-	# The application table, both ways: a compiler lane never watches
-	# madcide, and the lanes that run it do.
-	case " $(lane_paths selftest-stale) " in
-	*" :(exclude)tests/testmadcide* "*) ;;
-	*) echo "lane_ledger: SELFTEST FAILED — a compiler lane watches the application" >&2
+	# The interactive table, both ways: a full-suite lane never watches the
+	# REPL's code, and every interactive lane does.
+	case " $(lane_paths linux-battery) " in
+	*" :(exclude)src/madc_repl.cpp "*) ;;
+	*) echo "lane_ledger: SELFTEST FAILED — a full-suite lane watches the interactive code" >&2
 	   rm -f "$tmp"; return 1 ;;
 	esac
-	case " $(lane_paths gui) " in
-	*" :(exclude)tools "*)
-	   echo "lane_ledger: SELFTEST FAILED — the gui lane ignores the application" >&2
-	   rm -f "$tmp"; return 1 ;;
-	esac
+	local il
+	for il in interactive interactive-win interactive-darwin; do
+		case " $(lane_paths "$il") " in
+		*" :(exclude)src/madc_repl.cpp "*)
+		   echo "lane_ledger: SELFTEST FAILED — $il ignores the interactive code" >&2
+		   rm -f "$tmp"; return 1 ;;
+		esac
+	done
 	# shellcheck disable=SC2046
 	stale_sha=$(git log --format=%h -n 1 --skip=1 HEAD -- $(lane_paths selftest-stale))
 	{

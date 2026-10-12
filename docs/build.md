@@ -13,6 +13,9 @@
   `github.com/derekbsnider/mir` is the historical former downstream,
   kept for provenance and upstream-PR transport (see
   `.claude/rules/build.md`).
+- `libpcre2-dev` (PCRE2, madc's one regex engine; required — macOS:
+  `brew install pcre2`). The macOS and Windows release builds link a pinned
+  static PCRE2 instead (`scripts/stage_pcre2.sh <target>`).
 - `libzstd-dev` (the packed forest's codec). `./configure --without-zstd`
   accepts a zlib fallback, which produces much larger packed binaries and
   slower binds — not recommended.
@@ -102,7 +105,7 @@ packager whose library directory moves between versions sets it to the
 stable one, as the Homebrew formula does (`make -C src
 MADC_RUNPATH_LIBDIR=$HOMEBREW_PREFIX/lib`).
 
-The full installed layout (madcide, its profiles, plugins and data,
+The full installed layout (madc, its library and modules,
 `libmadc_rt.a`, the docs) is `scripts/stage_install.sh <root> <libdir>
 <prefix>`, which the deb, rpm and tarball (`scripts/package_release.sh`)
 and the Homebrew formula share. The formula is the template

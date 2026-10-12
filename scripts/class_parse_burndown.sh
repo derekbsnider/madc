@@ -6,6 +6,7 @@
 # Env:   MADC=bin/madc TESTS=tests PER_TEST_TIMEOUT=30 MADC_CPU_LIMIT=30
 
 set -u
+. "$(dirname "${BASH_SOURCE[0]}")/test_fixtures.sh"	# the ONE reader of a test's fixtures
 
 MADC="${MADC:-bin/madc}"
 TESTS="${TESTS:-tests}"
@@ -49,14 +50,15 @@ for file in "$TESTS"/*.mad; do
 	if [ -f "$base.mir_skip" ]; then
 		continue
 	fi
-	flags=()
-	if [ -f "$base.flags" ]; then
-		read -r -a flags < "$base.flags"
-	fi
+	fixture_load "$TESTS" "$(basename "$base")"
+	flags=("${fx_flags[@]}")
 	skip_mode=0
 	for flag in "${flags[@]}"; do
 		case "$flag" in
-		--project|--project=*|*.cc.json) skip_mode=1 ;;
+		# Project mode compiles several TUs; the REPL (-i) and the
+		# servers (--mcp, --lsp) run no compile to census and refuse a
+		# dump ("-i runs the REPL; it cannot also write ... a dump").
+		--project|--project=*|*.cc.json|-i|--interactive|--mcp|--lsp) skip_mode=1 ;;
 		esac
 	done
 	if [ "$skip_mode" -eq 1 ]; then
@@ -64,14 +66,17 @@ for file in "$TESTS"/*.mad; do
 		continue
 	fi
 	expect_err="$base.expect_err"
+	# The test runs as the suite runs it: its .env, .argv and .input (a REPL
+	# test's script; no .input = /dev/null) and the hermetic flag.
 	if [ -f "$expect_err" ]; then
-		out=$(env MADC_CPU_LIMIT="$MADC_CPU_LIMIT" \
-			timeout "$PER_TEST_TIMEOUT" "$MADC" --show-stats \
-			"${flags[@]}" "$file" 2>&1 >/dev/null)
+		out=$(env MADC_CPU_LIMIT="$MADC_CPU_LIMIT" "${fx_envs[@]}" \
+			timeout "$PER_TEST_TIMEOUT" "$MADC" $FIXTURE_HERMETIC_FLAGS --show-stats \
+			"${flags[@]}" "$file" "${fx_args[@]}" 2>&1 >/dev/null < "${fx_input:-/dev/null}")
 	else
-		out=$(env MADC_CPU_LIMIT="$MADC_CPU_LIMIT" \
-			timeout "$PER_TEST_TIMEOUT" "$MADC" --show-stats \
-			--dump-registered "${flags[@]}" "$file" 2>&1 >/dev/null)
+		out=$(env MADC_CPU_LIMIT="$MADC_CPU_LIMIT" "${fx_envs[@]}" \
+			timeout "$PER_TEST_TIMEOUT" "$MADC" $FIXTURE_HERMETIC_FLAGS --show-stats \
+			--dump-registered "${flags[@]}" "$file" "${fx_args[@]}" 2>&1 >/dev/null \
+			< "${fx_input:-/dev/null}")
 	fi
 	test_rc=$?
 	if [ -f "$expect_err" ]; then
@@ -130,7 +135,7 @@ done
 
 echo "=== SUITE-WIDE CLASS PARSE-ONCE BURNDOWN ==="
 echo "tests with stats       : $tests_seen"
-echo "project-mode skipped   : $tests_mode_skipped"
+echo "mode-skipped           : $tests_mode_skipped (project, REPL, servers)"
 echo "tests exercising class : $tests_with_class"
 echo "total PATTERN          : $total_pattern"
 echo "total PARSE            : $total_parse"

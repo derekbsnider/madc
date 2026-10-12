@@ -82,7 +82,7 @@ fi
 rm -rf "$tmpd"
 
 # --- the tree ---------------------------------------------------------------
-frags=$(git ls-files include/madc | grep -E '^include/madc/(ns_[^./]*|bits/[^.]*)$')
+frags=$(git ls-files --cached --others --exclude-standard include/madc | grep -E '^include/madc/(ns_[^./]*|bits/[^.]*)$')
 # shellcheck disable=SC2086
 if ! out=$(scan $frags); then
 	echo "check-fragment-inline-vars: a fragment defines a plain namespace-scope variable:" >&2

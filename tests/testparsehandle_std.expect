@@ -7,5 +7,7 @@ madc: side_cxx
 two-argument: side_cxx
 refresh: 1
 c17 after refresh: side_c17
-family head: 0
+c family head: side_c17
+c++ family head: side_cxx
 text kind: 0
+ir text: 0

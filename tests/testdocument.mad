@@ -1,0 +1,115 @@
+// The document component's script surface (split arc Phase 1A.1; design
+// docs/plans/2026-10-09-document-component-design.md): open / edit / save
+// round trip on a tmp/ file, doc_find, derived modified, anchors, the
+// document-level undo, a dialect subscriber receiving the change record,
+// and madc::doc_parse re-parsing exactly when the version moved. An engine
+// feature: the suite is the oracle. The test removes what it creates.
+
+long seen = 0;
+
+// The record's kind is an enum code (<bits/ui_enums>), compared, never a
+// string: the test spells it back for its transcript.
+const char *kind_word(var &k)
+{
+    if ( k == ui::text_change_kind::splice )
+	return "splice";
+    if ( k == ui::text_change_kind::load )
+	return "load";
+    if ( k == ui::text_change_kind::undo )
+	return "undo";
+    if ( k == ui::text_change_kind::redo )
+	return "redo";
+    return "?";
+}
+
+void on_change(long w, long entity, var &c)
+{
+    seen = seen + 1;
+    var k = c["kind"];
+    printf("change %s off=%s old=%s new=%s ins=[%s]\n", kind_word(k), c["off"],
+	   c["old_len"], c["new_len"], c["inserted"]);
+}
+
+int main()
+{
+    long w = ui::world_new();
+    const char *path = "tmp/testdocument_scratch.c";
+    php::file_put_contents(path, "int main() { return 1; }\n");
+
+    long d = ui::doc_open(w, path);
+    var p;
+    ui::doc_path(p, w, d);
+    printf("open ok=%d kind=%s untitled=%d modified=%d\n", d != 0,
+	   madc::file_kind_name(ui::doc_kind(w, d)), p == "",
+	   ui::doc_modified(w, d));
+    printf("find same=%d other=%d\n", ui::doc_find(w, path) == d,
+	   ui::doc_find(w, "tmp/nope.c"));
+
+    // the parse slot: opened once, kept while the version holds
+    long h = madc::doc_parse(w, d);
+    long g0 = madc::parse_generation(h);
+    printf("parse handle=%d gen=%d again=%d\n", h != 0, g0,
+	   madc::doc_parse(w, d) == h);
+    printf("gen unchanged=%d\n", madc::parse_generation(h) == g0);
+
+    ui::doc_subscribe(w, on_change);
+    long caret = ui::anchor_add(w, d, 24, true);	// after "}" on line 1
+    var meta = { "caret": 24 };
+    ui::doc_checkpoint(w, d, meta);
+    ui::text_replace(w, d, 20, 1, "0");		// return 1 -> return 0
+    printf("modified=%d caret=%d version_moved=%d\n", ui::doc_modified(w, d),
+	   ui::anchor_offset(w, d, caret), ui::text_version(w, d) > 0);
+    printf("reparsed=%d gen advanced=%d\n", madc::doc_parse(w, d) == h,
+	   madc::parse_generation(h) == g0 + 1);
+    var diags;
+    madc::doc_parse_checked(diags, w, d);
+    printf("diags=%d\n", diags.size());
+
+    ui::text_insert(w, d, 0, "// hi\n");
+    printf("caret shifted=%d\n", ui::anchor_offset(w, d, caret));
+    // the anchors' rule over a bare position (a client's caret on any text):
+    // the same splice moves 24 to 30; at the splice point, gravity decides;
+    // inside a replace it collapses; no position stays none
+    printf("anchor_shift=%d at-left=%d at-right=%d inside=%d none=%d\n",
+	   ui::anchor_shift(24, 0, 0, 6, true), ui::anchor_shift(0, 0, 0, 6, false),
+	   ui::anchor_shift(0, 0, 0, 6, true), ui::anchor_shift(5, 4, 6, 1, true),
+	   ui::anchor_shift(-1, 0, 0, 6, true));
+    var back;
+    var leaving = { "caret": 30 };
+    ui::doc_undo(back, w, d, leaving);
+    var t;
+    ui::text(t, w, d);
+    printf("undo caret=%s text_restored=%d modified=%d\n", back["caret"],
+	   t == "int main() { return 1; }\n", ui::doc_modified(w, d));
+    printf("anchor restored=%d\n", ui::anchor_offset(w, d, caret));
+    // the payload given for the state the undo left rides to the redo
+    // stack: walking forward hands it back
+    var fwd;
+    var here = { "caret": 24 };
+    ui::doc_redo(fwd, w, d, here);
+    printf("redo caret=%s modified=%d\n", fwd["caret"], ui::doc_modified(w, d));
+    ui::doc_undo(back, w, d, fwd);
+    printf("undo again caret=%s modified=%d\n", back["caret"], ui::doc_modified(w, d));
+
+    ui::text_replace(w, d, 20, 1, "2");
+    var disk;
+    bool saved = ui::doc_save(w, d);
+    php::file_get_contents(disk, path);
+    printf("save=%d modified=%d on_disk=[%s]", saved, ui::doc_modified(w, d),
+	   disk);
+
+    ui::doc_set_read_only(w, d, true);
+    printf("ro refused=%d text=%d\n", !ui::text_insert(w, d, 0, "x"),
+	   ui::text_size(w, d) == 25);
+    long u = ui::doc_new(w);
+    var ring;
+    ui::docs(ring, w);
+    printf("untitled kind=%s ring=%d find_untitled=%d\n",
+	   madc::file_kind_name(ui::doc_kind(w, u)), ring.size(),
+	   ui::doc_find(w, "") == u);
+    printf("close=%d gone=%d seen=%d\n", ui::doc_close(w, d), !ui::doc_is(w, d),
+	   seen);
+    ui::world_close(w);
+    php::unlink(path);
+    return 0;
+}

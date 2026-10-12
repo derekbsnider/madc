@@ -30,6 +30,13 @@
 //   madcgit_diff(out, h, rev, path, text)     -> {patch, hunks: [{old_start, old_lines,
 //                                                new_start, new_lines, header}]}
 //                                                path at rev against TEXT; equal = ""
+//   madcgit_command(out, argument)            -> {text}: `%git ARGUMENT`'s text — the
+//                                                module's own verbs (log, show, blame,
+//                                                status, diff); FILE and the current
+//                                                buffer read through madc::session_buffer
+//   madcgit_command_row(out)                  -> {name, usage, summary}: the session's
+//                                                %git row (madcgit_commands)
+//   madcgit_relative_date(out, when, now)     -> {text}: git's --date=relative
 // Thread contract: a handle is used only from the thread that opened it.
 int64_t madcgit_open(const char *path);
 bool    madcgit_close(int64_t handle);
@@ -44,3 +51,6 @@ void   *madcgit_relpath(void *result, int64_t handle, const char *path);
 void   *madcgit_status(void *result, int64_t handle);
 void   *madcgit_commit(void *result, int64_t handle, const char *rev);
 void   *madcgit_diff(void *result, int64_t handle, const char *rev, const char *path, const char *text);
+void   *madcgit_command(void *result, const char *argument);
+void   *madcgit_command_row(void *result);
+void   *madcgit_relative_date(void *result, int64_t when, int64_t now);

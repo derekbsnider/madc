@@ -1917,6 +1917,11 @@ public:
 		// and the TARGET places it: x8 on AArch64, the first argument
 		// register on x86-64 SysV. Never spell that placement here.
 		bool ret_addr;
+		// A parameter whose declarator is neither scalar specs nor one
+		// pointer level — a function pointer: rendered by param_decl, the
+		// definition's one owner (fnptr_decl_pieces), never the 64-bit
+		// scalar its rawtype spells.
+		class DataDef *decl_dd;
 	};
 	// The ONE param-shape owner for an output extern proto: a class
 	// reference -> void*, a pointer -> its pointee shape, a by-value class
@@ -2058,14 +2063,22 @@ public:
 	// A virtual call dispatches through the receiver's __vptr slot instead of
 	// naming the symbol directly. Returns NULL when the receiver is not a
 	// user-defined class (caller falls through to generic member access).
-	node_t class_method_call(class TokenMember *tm, TokenBase *origin);
+	// A NON-TRIVIAL by-value class return goes into ret_slot when the caller
+	// provides one of slot_cls (declaration-init copy elision, the
+	// class_operator_external_call convention): *slot_used reports it and the
+	// result is the bare call, which the caller wraps as a statement.
+	node_t class_method_call(class TokenMember *tm, TokenBase *origin,
+				 node_t ret_slot = NULL, DataDefCLASS *slot_cls = NULL,
+				 bool *slot_used = NULL);
 	// Lower a class method bound to an external symbol (FuncDef::emit_symbol —
 	// a parsed C++ ABI symbol): declares the extern from the method's real
 	// signature and routes the call directly. `this_arg` is the receiver address
 	// (object_var_addr).
 	node_t emit_symbol_method_call(class TokenMember *tm, class FuncDef *callee,
 				       const madc::dis::istring &sym, node_t this_arg,
-				       TokenBase *origin);
+				       TokenBase *origin, node_t ret_slot = NULL,
+				       DataDefCLASS *slot_cls = NULL,
+				       bool *slot_used = NULL);
 	node_t member_template_method_call(class TokenMember *tm,
 				       class FuncDef *callee,
 				       node_t this_arg,

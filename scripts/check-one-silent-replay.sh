@@ -57,7 +57,7 @@ if [ "$c" -ne 4 ]; then
 	exit 1
 fi
 
-files=$(git ls-files 'src/*.cpp' 'include/*.h')
+files=$(git ls-files --cached --others --exclude-standard 'src/*.cpp' 'include/*.h')
 hits=$(scan $files)
 n=$(printf '%s' "$hits" | grep -c . || true)
 echo "speculative scopes outside Program::SilentReplay: $n (target 0)"

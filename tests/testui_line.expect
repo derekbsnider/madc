@@ -1,0 +1,12 @@
+open: 1 level=1 rows=0 cols=0
+render_tree: [=== line ===|two|lines|]
+render:
+=== line ===
+two
+lines
+text 1: [first line]
+text 2: [:colon stays raw]
+text 3: []
+text 4: [crlf line]
+text 5: [last unterminated]
+eof after 5 lines

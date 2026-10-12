@@ -63,25 +63,80 @@ static const char *php_apply(const madc::value *v, std::string *(*core)(std::str
 
 // ---- C++ wrapper functions called by JIT ----
 
-// php::trim — trim whitespace from both ends (no C/C++ equivalent)
+// PHP's character mask (php_charmask): each byte of `chars`, and "a..z"
+// the bytes a through z. A malformed run warns (PHP's E_WARNING, on
+// stderr) and its first '.' is skipped; the rest read on as plain bytes.
+static void php_charmask(const char *fn, const char *chars, char mask[256])
+{
+	memset(mask, 0, 256);
+	const unsigned char *in = (const unsigned char *)chars;
+	const unsigned char *end = in + strlen(chars);
+	for ( const unsigned char *p = in; p < end; ++p )
+	{
+		const unsigned char c = *p;
+		if ( p + 3 < end && p[1] == '.' && p[2] == '.' && p[3] >= c )
+		{
+			memset(mask + c, 1, p[3] - c + 1);
+			p += 3;
+		}
+		else if ( p + 1 < end && p[0] == '.' && p[1] == '.' )
+		{
+			const char *why = p == in ? ", no character to the left of '..'"
+				: p + 2 >= end ? ", no character to the right of '..'"
+				: p[-1] > p[2] ? ", '..'-range needs to be incrementing"
+				: "";
+			fprintf(stderr, "php::%s: Invalid '..'-range%s\n", fn, why);
+		}
+		else
+			mask[c] = 1;
+	}
+}
+
+// PHP's trim (php_trim_int), in place: `sides` 1 strips the left, 2 the
+// right, 3 both; the bytes `chars` names (php_charmask), or PHP's default
+// " \n\r\t\v\0" when it is null — not \f, which python's and rust's
+// whitespace (ns_common::trim) strip.
+static std::string *php_trim_sides(std::string *ptr, int sides, const char *fn,
+				   const char *chars)
+{
+	char mask[256];
+	if ( chars )
+		php_charmask(fn, chars, mask);
+	else
+	{
+		memset(mask, 0, sizeof(mask));
+		mask[(unsigned char)' '] = mask[(unsigned char)'\n'] = mask[(unsigned char)'\r'] = 1;
+		mask[(unsigned char)'\t'] = mask[(unsigned char)'\v'] = mask[0] = 1;
+	}
+	std::string &s = *ptr;
+	size_t start = 0;
+	size_t end = s.size();
+	if ( sides & 1 )
+		while ( start < end && mask[(unsigned char)s[start]] )
+			++start;
+	if ( sides & 2 )
+		while ( end > start && mask[(unsigned char)s[end - 1]] )
+			--end;
+	s.erase(end);
+	s.erase(0, start);
+	return ptr;
+}
+
+// php::trim / ltrim / rtrim — PHP's default set from both ends, the left,
+// the right (no C/C++ equivalent)
 std::string *php_trim(std::string *ptr)
 {
-	ns_common::trim(*ptr, true, true);
-	return ptr;
+	return php_trim_sides(ptr, 3, "trim", 0);
 }
 
-// php::ltrim — trim whitespace from left
 std::string *php_ltrim(std::string *ptr)
 {
-	ns_common::trim(*ptr, true, false);
-	return ptr;
+	return php_trim_sides(ptr, 1, "ltrim", 0);
 }
 
-// php::rtrim — trim whitespace from right
 std::string *php_rtrim(std::string *ptr)
 {
-	ns_common::trim(*ptr, false, true);
-	return ptr;
+	return php_trim_sides(ptr, 2, "rtrim", 0);
 }
 
 // php::ucfirst — capitalize first character
@@ -1422,7 +1477,41 @@ void php_array_column(madc::value *dest, madc::value *src, int64_t column_index)
 	}
 }
 
+// The lean $characters forms: the subject's text in the lent ring slot,
+// stripped of the bytes `chars` names (null reads as PHP's "").
+static const char *php_trim_slot(std::string &slot, int sides, const char *fn,
+				 const char *chars)
+{
+	return php_trim_sides(&slot, sides, fn, chars ? chars : "")->c_str();
+}
+
+static const char *php_trim_cstr_chars(const char *s, int sides, const char *fn,
+				       const char *chars)
+{
+	std::string &slot = ns_common::ring_slot();
+	slot = s ? s : "";
+	return php_trim_slot(slot, sides, fn, chars);
+}
+
 namespace php {
+
+// Resolved mangled-direct from <ns_php>.
+const char *trim(madc::value &s, const char *characters)
+	{ return php_trim_slot(php_text_slot(&s), 3, "trim", characters); }
+const char *trim(const char *s, const char *characters)
+	{ return php_trim_cstr_chars(s, 3, "trim", characters); }
+const char *ltrim(madc::value &s, const char *characters)
+	{ return php_trim_slot(php_text_slot(&s), 1, "ltrim", characters); }
+const char *ltrim(const char *s, const char *characters)
+	{ return php_trim_cstr_chars(s, 1, "ltrim", characters); }
+const char *rtrim(madc::value &s, const char *characters)
+	{ return php_trim_slot(php_text_slot(&s), 2, "rtrim", characters); }
+const char *rtrim(const char *s, const char *characters)
+	{ return php_trim_cstr_chars(s, 2, "rtrim", characters); }
+const char *chop(madc::value &s, const char *characters)
+	{ return php_trim_slot(php_text_slot(&s), 2, "chop", characters); }
+const char *chop(const char *s, const char *characters)
+	{ return php_trim_cstr_chars(s, 2, "chop", characters); }
 
 std::string &trim(std::string &s) { return *php_trim(&s); }
 std::string &ltrim(std::string &s) { return *php_ltrim(&s); }

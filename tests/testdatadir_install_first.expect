@@ -1,3 +1,0 @@
-setup: rc=0 tree-plugins=1
-installed: install-share=1 got-tree=0
-source-tree: tree=1

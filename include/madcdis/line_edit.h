@@ -128,14 +128,73 @@ inline const tui_bindings &line_edit_bindings()
 // line_layout / line_width, madcdis/text_utf16.h: the one rule this editor's
 // painter and the compiler's diagnostic caret share.
 
-// What the painter shows: the prompt, the entry's lines, and the caret as a
-// line and a byte in it.
+// A coloured range of an entry's line (split arc 1B.9): bytes [from, to)
+// of lines[line], painted after `on` — opaque bytes of no width, an SGR
+// sequence — and followed by a reset. The painter knows no classes, styles
+// or depths; the host composes the marks (the classifier, a theme, the SGR
+// step).
+struct line_mark
+{
+    size_t line;
+    size_t from;
+    size_t to;
+    std::string on;
+};
+
+// THE mark rule: `text` with each mark on line `index` written around the
+// bytes it covers — its `on`, the bytes, a reset — over a line of `n` bytes.
+// `at`, when given, maps each of the line's bytes (and its end) to its offset
+// in `text` (a layout's: line_layout's shown_at); without, `text` is the line
+// itself. A mark that runs backward or overlaps the one before is skipped.
+// The painter's, the echoed source line's and a shown text's code all mark
+// here (split arc 1B.9).
+inline std::string mark_line(const std::string &text, size_t n, size_t index,
+			     const std::vector<line_mark> &marks,
+			     const std::vector<size_t> *at = 0)
+{
+    std::string out;
+    size_t pos = 0, done = 0;
+    for ( const line_mark &m : marks )
+    {
+	if ( m.line != index || m.from < done || m.from >= m.to || m.from >= n )
+	    continue;
+	const size_t to = m.to < n ? m.to : n;
+	const size_t from_at = at ? (*at)[m.from] : m.from;
+	const size_t to_at = at ? (*at)[to] : to;
+	out.append(text, pos, from_at - pos);
+	out += m.on;
+	out.append(text, from_at, to_at - from_at);
+	out += "\x1b[0m";
+	pos = to_at;
+	done = to;
+    }
+    out.append(text, pos, std::string::npos);
+    return out;
+}
+
+// Line `line` (lines[`index`] of a view) laid out from column `origin` (its
+// columns into `col`, as line_layout), its marks written around the glyphs
+// they cover: zero-width bytes, so the columns, the wrap and the caret are
+// the unmarked line's.
+inline std::string marked_layout(const std::string &line, size_t index,
+				 const std::vector<line_mark> &marks,
+				 size_t origin, std::vector<size_t> &col)
+{
+    std::vector<size_t> at;
+    const std::string shown = line_layout(line, origin, col, 8, &at);
+    return mark_line(shown, line.size(), index, marks, &at);
+}
+
+// What the painter shows: the prompt, the entry's lines, the caret as a
+// line and a byte in it, and the marks that colour the lines (in order
+// within a line, none overlapping).
 struct line_view
 {
     std::string prompt;
     std::vector<std::string> lines;
     size_t caret_line;
     size_t caret_byte;
+    std::vector<line_mark> marks;
     line_view() : caret_line(0), caret_byte(0) {}
 };
 
@@ -277,6 +336,41 @@ history_records(const std::string &file)
     return out;
 }
 
+// ------------------------------------------------------- the completion rule
+// What Tab does with a word's candidates (split arc 1B.7, design decision 7;
+// readline's): ONE rule for every host — the line editor below and, from 1D,
+// madcide's REPL pane. One candidate replaces the word; several, their
+// longest common prefix when it extends the word; else they are to be listed
+// (when a host lists them — readline on a second Tab — is the host's).
+enum class completion_kind : unsigned char { none, insert, list };
+struct completion_step
+{
+    completion_kind kind;
+    std::string text;		// insert: what replaces the word
+};
+// `word` is the text from the word's start to the caret; `candidates` are
+// sorted, without duplicates.
+inline completion_step complete_word(const std::string &word,
+				     const std::vector<std::string> &candidates)
+{
+    if ( candidates.empty() )
+	return completion_step{ completion_kind::none, std::string() };
+    if ( candidates.size() == 1 )
+	return completion_step{ completion_kind::insert, candidates[0] };
+    std::string prefix = candidates[0];
+    for ( size_t i = 1; i < candidates.size(); ++i )
+    {
+	size_t n = 0;
+	while ( n < prefix.size() && n < candidates[i].size()
+		&& prefix[n] == candidates[i][n] )
+	    ++n;
+	prefix.erase(n);
+    }
+    if ( prefix.size() > word.size() && prefix.compare(0, word.size(), word) == 0 )
+	return completion_step{ completion_kind::insert, prefix };
+    return completion_step{ completion_kind::list, std::string() };
+}
+
 // --------------------------------------------------------------- the model
 class line_edit
 {
@@ -398,40 +492,32 @@ public:
     }
 
     // The host's answer to outcome::complete: the word starts at byte
-    // `start` and these are its candidates (sorted, no duplicates). One is
-    // inserted; several insert their longest common prefix, and a second
-    // Tab in a row lists them (take_listed). None: nothing (Julia).
+    // `start` and these are its candidates (sorted, no duplicates), applied
+    // by complete_word's rule; a list shows on a second Tab in a row
+    // (take_listed), as readline's does. None: nothing (Julia).
     void completed(size_t start, const std::vector<std::string> &candidates)
     {
 	unsigned repeats = _tabs++;
-	if ( candidates.empty() || start > _caret )
+	if ( start > _caret )
 	    return;
-	const std::string word = _text.substr(start, _caret - start);
-	if ( candidates.size() == 1 )
+	const completion_step step =
+	    complete_word(_text.substr(start, _caret - start), candidates);
+	if ( step.kind == completion_kind::insert )
 	{
-	    replace_word(start, candidates[0]);
-	    _tabs = 0;
-	    return;
+	    replace_word(start, step.text);
+	    if ( candidates.size() == 1 )
+		_tabs = 0;
 	}
-	std::string prefix = candidates[0];
-	for ( size_t i = 1; i < candidates.size(); ++i )
-	{
-	    size_t n = 0;
-	    while ( n < prefix.size() && n < candidates[i].size()
-		    && prefix[n] == candidates[i][n] )
-		++n;
-	    prefix.erase(n);
-	}
-	if ( prefix.size() > word.size()
-	     && prefix.compare(0, word.size(), word) == 0 )
-	    replace_word(start, prefix);
-	else if ( repeats > 0 )
+	else if ( step.kind == completion_kind::list && repeats > 0 )
 	    _listed = candidates;
     }
 
     const std::string &text() const { return _text; }
     size_t caret() const { return _caret; }
     const std::string &prompt() const { return _prompt; }
+    // The prompt the next entry starts at (a host's input mode: ex's a / i /
+    // c text lines read at a continuation prompt).
+    void set_prompt(const std::string &prompt) { _prompt = prompt; }
 
     // The painter's view, with the caret where it is or at the end. During a
     // search it is readline's one line: the search prompt with its query,
@@ -1086,7 +1172,7 @@ public:
 		out += "\r\n";
 		out.append(origin, ' ');
 	    }
-	    out += line_layout(v.lines[i], origin, col);
+	    out += marked_layout(v.lines[i], i, v.marks, origin, col);
 	    const size_t w = col.back();
 	    const bool exact = w > 0 && w % cols == 0;
 	    if ( i == v.caret_line )

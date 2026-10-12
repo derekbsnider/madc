@@ -1,0 +1,12 @@
+Signature: int twice(int n)  @ REPL[1]:1
+Source:
+    return 2 * n;	// doubled
+Type:      int [3]
+Defined:   @ REPL[2]:1
+int table[3] = {
+    1, 2, 3
+int base = 10;
+int thrice(int n)
+    /* three of them */
+    return 3 * n;
+36

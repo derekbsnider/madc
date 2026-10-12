@@ -25,6 +25,7 @@ thread_local bool madc_verbose = false;
 #include "tokens.h"
 #include "datatokens.h"
 #include "madc.h"
+#include "madc_diag_names.h"
 
 // Global instances are defined in parser.cpp (linked via TESTOBJ)
 
@@ -538,7 +539,7 @@ TEST_SUITE("Program isolation") {
 	prog->report_warning(Program::DiagnosticPhase::runtime, "watch this");
 	const Program::Diagnostic *diag = prog->last_diagnostic();
 	REQUIRE(diag != NULL);
-	CHECK(std::string(prog->diagnostic_phase_name(diag->phase)) == "runtime");
+	CHECK(std::string(madc::diag_phase_name(diag->phase)) == "runtime");
 	prog->print_last_diagnostic(os, "(test suffix)");
 	CHECK(os.str().find("warning:") != std::string::npos);
 	CHECK(os.str().find("watch this") != std::string::npos);

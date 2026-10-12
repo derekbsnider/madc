@@ -111,7 +111,12 @@ BACKEND_FLAG=""
 #
 # --stdlib=NAME appends the FLAVORED-LANE flag here, which is why every leg of
 # every pass picks it up without touching a single invocation line.
-HERMETIC_FLAGS="--no-config"
+#
+# A test's fixtures (.flags .argv .env .input .timeout) and the hermetic flag
+# are read by ONE owner, scripts/test_fixtures.sh — beside this script, which a
+# program with madc's fixture protocol (madcide) runs from its own tree.
+. "$(dirname "${BASH_SOURCE[0]}")/test_fixtures.sh"
+HERMETIC_FLAGS="$FIXTURE_HERMETIC_FLAGS"
 STDLIB_NAME=""
 STDLIB_SKIP_EXT=""
 MADC="${MADC_BIN:-bin/madc}"
@@ -215,8 +220,12 @@ BUILT_FLAVORS=$($MADC_WRAPPER "$MADC" --capabilities=json 2>/dev/null \
 # suite: `run_tests.sh 'testmadceval*' testevalexterncapture`. No test name is
 # hard-coded here — the caller supplies the pattern, so this stays a generic
 # runner capability (.claude/rules/test-fixtures.md). With no globs the whole
-# suite runs, which is what every pre-merge invocation does.
-TEST_GLOBS="$*"
+# suite runs, which is what every pre-merge invocation does. They are kept as
+# an array and never expanded as FILENAMES: an unquoted `for g in $globs`
+# matched them against the cwd, so a stray file there named like a test
+# (a manifest a test wrote, `testrepl_project.prj.json`) replaced its glob
+# and silently deselected every later test the glob named.
+TEST_GLOBS=("$@")
 
 # The suites' resource cap is the RUNNER's to ask for (owner ruling 2026-09-07:
 # madc itself arms no guard by default): every test process runs under the
@@ -247,15 +256,16 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")"; pwd -P)
 REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.."; pwd -P)
 EXE_LD_LIBRARY_PATH="$REPO_ROOT/lib:/usr/local/lib"
 
-# madcide's user configuration (settings.json and the user's plugins/) is the
-# developer's, never the suite's — the same hermeticity as --no-config: point it
-# at a directory that does not exist, so no test reads an ambient
-# ~/.config/madcide. A test that needs one names its own fixture directory in
-# its .env (MADCIDE_CONFIG_DIR=tmp/…), which env(1) applies over this. The
-# developer's plugin path (MADCIDE_PLUGIN_PATH) is theirs too: unset, and a
-# test that needs one names it in its .env.
-export MADCIDE_CONFIG_DIR="$REPO_ROOT/tmp/madcide-no-config"
-unset MADCIDE_PLUGIN_PATH
+# madc's session records (madc::session_claim, the discovery advertisements, a
+# project's memory claim) are the developer's live sessions, never the
+# suite's: every test claims into the suite's own directory. A test that pins
+# discovery names its own in its .env (MADC_SESSION_DIR=tmp/…). The REPL
+# history store (`madc -i`'s, an IDE's REPL pane's) is the developer's too: the
+# suite's entries go to its own file. Both RELATIVE: the tests run from the
+# repository root, and a relative path crosses into a Windows process
+# (win_run.sh forwards both) where a WSL path would not.
+export MADC_SESSION_DIR="tmp/madc-suite-sessions"
+export MADC_HISTORY_FILE="tmp/madc-suite-history"
 
 # A separate fixture directory uses the same runner (GUI, etc.).
 TEST_DIR="${MADC_TEST_DIR:-tests}"
@@ -284,25 +294,22 @@ for t in "$TEST_DIR"/*.mad; do
     # A .helper fixture marks a compilation unit owned by another test
     # (content = one line naming the owner) — never run standalone.
     [ -f "${TEST_DIR}/$base.helper" ] && continue
-    if [ -n "$TEST_GLOBS" ]; then
+    if [ ${#TEST_GLOBS[@]} -gt 0 ]; then
         keep=0
-        for g in $TEST_GLOBS; do
+        for g in "${TEST_GLOBS[@]}"; do
             case "$base" in $g) keep=1; break ;; esac
         done
         [ $keep -eq 0 ] && continue
     fi
     SELECTED=$((SELECTED+1))
 
-    input_file="${TEST_DIR}/$base.input"
-    argv_file="${TEST_DIR}/$base.argv"
+    fixture_load "$TEST_DIR" "$base"
+    input_file="$fx_input"
     expect_file="${TEST_DIR}/$base.expect"
     expect_err_file="${TEST_DIR}/$base.expect_err"
     expect_quiet_file="${TEST_DIR}/$base.expect_quiet"
     expect_rc_file="${TEST_DIR}/$base.expect_rc"
-    flags_file="${TEST_DIR}/$base.flags"
-    env_file="${TEST_DIR}/$base.env"
     mir_skip_file="${TEST_DIR}/$base.mir_skip"
-    timeout_file="${TEST_DIR}/$base.timeout"
 
     # Skip tests marked as not transpilable (MIR is the default backend)
     if [ -f "$mir_skip_file" ]; then
@@ -340,9 +347,13 @@ for t in "$TEST_DIR"/*.mad; do
     fi
 
     # A test pinning a -stdlib= flavor this binary was not built with.
-    if [ -n "$BUILT_FLAVORS" ] && [ -f "$flags_file" ]; then
-        pinned=$(grep -o -e '-stdlib=[^[:space:]]*' "$flags_file" | head -1)
-        pinned="${pinned#-stdlib=}"
+    pinned=""
+    for flag in "${fx_flags[@]}"; do
+        case "$flag" in
+            -stdlib=*) pinned="${flag#-stdlib=}"; break ;;
+        esac
+    done
+    if [ -n "$BUILT_FLAVORS" ] && [ -n "$pinned" ]; then
         case " $BUILT_FLAVORS " in
             *" $pinned "*) ;;
             *)  if [ -n "$pinned" ]; then
@@ -367,24 +378,16 @@ for t in "$TEST_DIR"/*.mad; do
         fi
     done
 
-    args=()
-    flags=()
-    envs=()
-    [ -f "$flags_file" ] && read -r -a flags < "$flags_file"
-    # Per-test environment: whitespace-split NAME=value pairs handed to env(1)
-    # ahead of every invocation of this test (JIT, exe, obj).
-    [ -f "$env_file" ] && read -r -a envs < "$env_file"
-    [ -f "$argv_file" ] && read -r -a args < "$argv_file"
-    # Per-test wall-clock cap (seconds); default 10. A `.timeout` fixture overrides
-    # it for tests that legitimately need longer — e.g. a real-libstdc++-header
-    # compile (no PCH yet) parses the full <iostream> closure. The default build
-    # is -O0 (optimization is a last-lap switch), so header-heavy compiles need
-    # headroom. Generic filename convention, never a per-test branch in the runner.
+    # The fixtures fixture_load read above (scripts/test_fixtures.sh): the
+    # flags, the per-test environment (NAME=value pairs handed to env(1) ahead
+    # of every invocation — JIT, exe, obj), the argv, and the wall-clock cap.
     # ONE cap for every lane of the test: the JIT run, the EXE run and the .o
     # run below all read $tmo (the obj/exe legs hard-coded 5 s and failed
     # testgraphpast, whose 60 s fixture the JIT leg honoured).
-    tmo=10
-    [ -f "$timeout_file" ] && read -r tmo < "$timeout_file"
+    flags=("${fx_flags[@]}")
+    envs=("${fx_envs[@]}")
+    args=("${fx_args[@]}")
+    tmo=$fx_timeout
     # The exit status every run of the test (JIT, exe, obj) must end with:
     # main's return value IS the status, so a test of that carries it in an
     # .expect_rc fixture. Default 0.
@@ -624,11 +627,11 @@ for t in "$TEST_DIR"/*.mad; do
         fi
     fi
 done
-if [ -n "$TEST_GLOBS" ]; then
+if [ ${#TEST_GLOBS[@]} -gt 0 ]; then
     # Never let a filtered run read as a full one. A subset that says
     # only "N passed" is indistinguishable from the suite at a glance,
     # and that is exactly how a partial run gets quoted as a baseline.
-    say "SUBSET RUN — filter: $TEST_GLOBS ($SELECTED of $(ls "$TEST_DIR"/*.mad | wc -l) tests; NOT a suite baseline)"
+    say "SUBSET RUN — filter: ${TEST_GLOBS[*]} ($SELECTED of $(ls "$TEST_DIR"/*.mad | wc -l) tests; NOT a suite baseline)"
 fi
 if [ -n "$STDLIB_NAME" ]; then
     # Never let a FLAVORED run read as the default-lane baseline. The two lanes
@@ -657,6 +660,16 @@ if [ $RUN_EXE -eq 1 ] && [ "$REPORT" != json ]; then
 fi
 if [ $RUN_OBJ -eq 1 ] && [ "$REPORT" != json ]; then
     echo "OBJ: $OBJ_PASS passed, $OBJ_FAIL failed (of $PASS JIT-passing tests)"
+fi
+# A run that executed NOTHING is not a pass. "0 passed, 0 failed" exits 0 and
+# every caller reads it as green: a filter that matches no test (a positional
+# argument is ONE basename glob — `'a* b*'` as one argument matches nothing)
+# or a selection its fixtures skipped entirely (an empty test directory is
+# refused above). The runner refuses it here, once, so no lane needs its own
+# copy of the check.
+if [ $((PASS + FAIL + TIMEOUTS)) -eq 0 ]; then
+    echo "run_tests: VACUOUS RUN — no test executed ($SELECTED selected, $SKIP skipped${TEST_GLOBS[*]:+; filter: ${TEST_GLOBS[*]}})" >&2
+    exit 1
 fi
 [ $FAIL -eq 0 ] || exit 1
 [ $TIMEOUTS -eq 0 ] || exit 1

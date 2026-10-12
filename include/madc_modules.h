@@ -40,7 +40,21 @@ struct MadcModuleSpec {
 	const char *darwin;	// Mach-O install name (bare file name)
 	const char *windows;	// PE module name
 	unsigned flags;		// MADC_MODULE_* bits
+	const char *commands;	// the exported madc_module_commands_fn that brings
+				// the module's REPL commands, or NULL (split arc
+				// 1B.10; madc_module_commands.h)
+	const char *tools;	// the exported madc_module_tools_fn that brings the
+				// module's agent tools, or NULL (split arc 1C.14;
+				// madc_module_tools.h)
 };
+
+// A row's entry points: what a module brings to a host.
+enum class madc_module_entry : unsigned char { commands, tools };
+// The entry point `which` names in `spelling`'s row, the module opened
+// through madc_module_open: NULL when the spelling has no row, the row no
+// such entry point, or the image does not open. The ONE lookup a session's
+// module commands and a tool server's module tools share.
+void *madc_module_entry_point(const std::string &spelling, madc_module_entry which);
 
 const MadcModuleSpec *madc_module_find(const std::string &name);
 // The row whose TARGET spelling (for madc_target_os) is `spelling`, or NULL

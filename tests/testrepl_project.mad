@@ -1,0 +1,7 @@
+// %project at madc -i (split arc 1B.8, design
+// 2026-10-10-check-build-run-project-design.md decision 6): the session's
+// project opened from testrepl_project.prj.json, a TU added, every TU
+// checked, the project run with ARGS in a child (its main is
+// testrepl_project_a.c's), kept across %reset (the host re-sends it), the
+// TU removed again (the manifest's bytes as they were) and closed.
+int main(void) { return 0; }

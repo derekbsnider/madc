@@ -1,0 +1,5 @@
+page: 200=1 body=1
+ws: upgraded=1
+ws: first=[hello] echo=[echo:ping]
+api: reply=[{"got":{"cmd":"check"}}]
+served: 0;1;2;

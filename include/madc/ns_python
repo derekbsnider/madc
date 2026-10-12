@@ -65,6 +65,11 @@ namespace python {
     // Declared here, defined in the host (src/ns_python.cpp), resolved
     // mangled-direct. Thread contract: a pure function.
     bool shlex_split(value &out, const char *text);
+    // shlex.quote: WORD spelled so shlex_split reads it back as that one word
+    // — as it is when only letters, digits and @%+=:,./-_ ; '' when empty;
+    // else '...' with each ' spelled '"'"'. Ring-lifetime text; defined in
+    // the host, resolved mangled-direct. Thread contract: a pure function.
+    const char *shlex_quote(const char *word);
 }
 
 #if defined(_GLIBCXX_STRING) || defined(_LIBCPP_STRING)

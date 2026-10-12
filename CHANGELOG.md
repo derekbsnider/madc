@@ -2,6 +2,1443 @@
 
 ## [Unreleased]
 
+## [v0.104.0] — 2026-10-12
+
+The madcide split: madc's interactive mode takes the ed/ex editing core, and madcide leaves to its own repository. `madc -i` gains colon mode, a command registry modules and hosts extend, `%std` / `%reset` / `%history` / `%check` / `%build` / `%run` / `%args` / `%project`, coloured prompts and diagnostics, and host-facing language services; madc ships a Language Server (`--lsp`) and a Model Context Protocol server (`--mcp`) with a project memory, a code graph and an external-task client; the data substrate gains a document component with an edit notification, regexes run on one PCRE2 engine, and a source's standard follows its extension. madcide now lives in its own repository and releases on its own, so madc's packages no longer carry it. Forest and pack correctness and reproducibility, codegen and REPL fixes, and Windows and darwin parity round out the release.
+
+### Each translation unit materializes its own frozen nodes
+
+A frozen inline body an earlier translation unit materialized is no longer
+reused by a later one. The REPL (`madc -i`) compiles each entry as a new
+translation unit in one persistent c2m session; `CirFrozenSegment` memoized
+materialized nodes per record for the whole session, so a body the first unit
+instantiated was handed to the next entry already linked into the first unit's
+tree (c2mir's lists are intrusive) and already checked — the entry's tree held
+it twice, reporting "repeated declaration" or garbage error nodes. libc++'s
+inline `operator<<(ostream&, const char*)` bound from the pack made
+`std::cout << "Hello World!" << std::endl` fail with 21 untranslatable nodes on
+both Mac lanes (testrepl_cout), and the darwin `std::string s("ab"); s` entry
+reported "repeated declaration __sz/__this". Now `CirBuilder::translate_module`
+calls `CirFrozenForest::begin_compile(c2m)` once before any node materializes;
+every segment forgets its `_mat` memo (keeping node storage, which the session
+c2m symbols still reference) and the next touch materializes afresh in this
+compile's c2m. The two old `set_c2m` calls — safe only when no segment had
+materialized — are gone. Gate: forest_bind_gate `[replreuse]`.
+
+### A ui:: world face survives its world closing
+
+`madc::ex_session` and `madc::tool_host` each hold a reference into a
+`hub::world` reached from a ui:: world HANDLE at construction; `ui::world_close`
+frees that world while the face lives. Before, a later command and the face's
+destruction read the freed world — `ex::session::~session()` ran its anchor
+removal (`mutation_context`) and `memory::project::~project()` its
+`text_unsubscribe` against freed memory. Valgrind reported invalid reads in
+`ex::session::~session()` of memory `ui::world_close` had freed; the Intel
+MacBook darwin lane crashed with SIGSEGV in `~ex_session` on testex_session; and
+`tool_host` silently ran a tool on the freed world (printing `after-close: true
+2`). Now each face re-asks `madc_ui_world(handle)` at every use via `live()` (the
+`madc::host_documents` rule) — a closed world refuses like an unknown handle
+(`no world`) — and destruction calls `world_gone()`, so `ex::session` forgets its
+buffers (no anchor to remove, `~session` returns early when empty) and
+`memory::project` skips the unsubscribe. The after-close lines of
+`tests/testex_session` and `tests/testtool_host` gate it.
+
+### A copy-elided method-call initializer goes through the method-call owner
+
+`T v = obj.m();` (and `T v = m();` in a member body) with T a non-trivial class
+now lowers through the one method-call owner (`CirBuilder::class_method_call`),
+with the declared object as the call's result slot (guaranteed copy elision),
+instead of building its own direct call. `class_method_call` and
+`emit_symbol_method_call` gained a `(ret_slot, slot_cls, slot_used)` result-slot
+parameter — the `class_operator_external_call` convention — and
+`class_decl_construction`'s initializer arm routes a `TokenCallMethod` through it
+with `&v`; a member-template placeholder keeps the direct shape. The elided
+direct call skipped two things the owner does: the receiver adjusted to the
+method OWNER's subobject — so a member of a SECONDARY base read the primary
+base's bytes, for `d.f()` / `d.g()` / `td.f()` and explicit-receiver reads alike,
+in-class and out-of-class template members — and virtual dispatch, so
+`R r = pv->get();` reached the static type's body. libc++'s `basic_ios::imbue`
+(`locale __r = getloc();`) hit the secondary-base shape on every darwin C++
+program that imbued a stream, so `testregistercallback` drew a c2mir pointer-type
+warning on both Mac lanes; it is quiet again. Reducer
+`tests/testelidedmethodinit` (g++ 13 + clang++ 18 oracle).
+
+### A skipped directive-only `#ifndef` arm replays at bind
+
+A frozen unit whose `#ifndef X` arm was skipped at freeze — because an earlier
+corpus sibling had already defined `X` — now still gives a consumer without `X`
+that arm. When the arm's body holds define / undef / conditional directives only
+and its own `#endif` closes it, the freezer captures it as `skipConditionalBlock`
+skips it (`Program::skip_and_capture_arm`, slicing the body out of the source via
+`Source::raw_offset`) and rides it on the unit's branch-dependency stream as a
+`CIR_BRANCH_DEP_PP_ARM` tuple (`[name_id, flags, text_id, none]`, forest v55). At
+bind `Program::forest_bind_env_ok` collects the arm and
+`Program::forest_replay_pp_arms` replays it through the production preprocessor
+after the unit's own macro delta, only when `X` is still undefined, so the arm's
+nested conditionals (`#ifdef __cplusplus`) answer in the consumer's macro state.
+The replay reaches every consumer — exact-config madc and
+`--freeze-also-std`-labelled C++ alike — independent of `MADC_FOREST_ENV_CHECK`.
+On the win64 pack the bind replays mingw `stdio.h`'s `#ifndef NULL` and
+`#ifndef WEOF` and `sec_api/stdio_s.h`'s `#ifndef _SECIMP`, so a C++ consumer of
+`<cstdio>` alone has `NULL`. This supersedes the earlier verified-bind widening:
+`Program::forest_bind_env_ok` gates the branch-dependency check on
+`MADC_FOREST_ENV_CHECK` alone again for every consumer, because forcing a
+`--freeze-also-std` labelled consumer through the verified path declined
+glibc/libstdc++ roots to live-parse beside frozen units (`<iosfwd>`'s
+`char_traits_char` unknown, mingw `stdlib.h`'s `div_t` defined twice). Forest
+format bumps to v55. `scripts/forest_bind_gate.sh`'s `armreplay` case gates it
+(41/41; the v54 binary fails the reducer with `use of undeclared identifier
+'FBG_MC_X'`).
+
+### A restored class keeps its constructor's `explicit`
+
+A frozen class now carries each constructor's `explicit` across freeze/bind: the
+methodrec flag word gains `MF_EXPLICIT` and the `ClassMethodPattern` payload a
+word after `is_deleted`, both restored into `FuncDef::is_explicit`, and
+`class_pattern_fingerprint` includes it so a differing explicitness is a distinct
+specialization. Before, a v53 pack restored every explicit constructor as a
+converting one, so `score_arg_to_param`'s converting-constructor probe counted it
+as an implicit user-defined conversion ([over.ics.user]). A bound
+`reverse_iterator<__normal_iterator<int*, vector<int>>>`'s own
+`operator==(const reverse_iterator&, const reverse_iterator&)` then ranked viable
+for two `__normal_iterator` operands through `__x.base() == __y.base()` and
+recursed until the stack overflowed — `testvectoriterpairctor` died of SIGSEGV
+instead of printing its `.expect` lines on the packed headerless and exe/obj
+lanes. Forest format bumps to v54. `scripts/forest_bind_gate.sh`'s `explicitctor`
+case gates it (the v53 binary's bound consumer SIGSEGVs; `0 1 1` after, equal to
+live madc and g++).
+
+### A dependent noexcept operand no longer folds at class-pattern capture
+
+A `noexcept(...)` over a type-dependent operand no longer constant-folds when a
+class pattern is captured. `noexcept_eval_expr` now refuses an explicit
+destructor call whose object type is still a template parameter under its layers
+(a pattern parse's `~_Tp()`) and refuses the `0` stand-in a dependent call
+leaves (`make_dependent_call_placeholder`); a refusal inside a dependent parse
+poisons the capture, and `capture_class_pattern` treats a poisoned capture as a
+parse failure, so the class stays on the parse lane instead of freezing a wrong
+`integral_constant`. Before, capturing gcc 13's `__is_nt_destructible_impl` read
+`noexcept(declval<_Tp&>().~_Tp())` as 1 (as for a scalar) and froze `true`, so
+every bound `is_nothrow_destructible<X>` read 1 — a `noexcept(false)` destructor
+included (`testnoexceptderefdtor` printed `dtor: 1 1 1 1` instead of
+`dtor: 1 1 0 1` on the packed headerless and exe/obj lanes). An unfoldable
+`noexcept` condition still defers (`NxUnknown`) without poisoning its dependent
+parse. On a 12-header libstdc++ freeze, class-pattern captures move 900 -> 896:
+the only newly poisoned patterns are `std::__is_nt_destructible_impl`,
+`std::__is_nothrow_swappable_impl`, and `std::__is_nothrow_swappable_with_impl`
+(x2). `scripts/forest_bind_gate.sh`'s `nothrowfold` case gates it.
+
+### One reader for a test's run fixtures
+
+Every script that runs or compiles `tests/*.mad` the way the suite does —
+`run_tests.sh`, `warn_census.sh`, `forest_soak.sh`, `class_parse_burndown.sh` —
+now reads a test's run fixtures (`.flags`, `.argv`, `.env`, `.input`,
+`.timeout`) and the hermetic `--no-config` flag through one owner,
+`scripts/test_fixtures.sh`'s `fixture_load`, rather than by hand. The hand
+copies had drifted: `warn_census.sh` read every fixture but `.env`, so it
+replayed `testrepl_opencmd` without its `EDITOR=echo` and the REPL's `%edit`
+started the real `vi` on the test's input, and a test with no `.input` could
+read the caller's terminal. `class_parse_burndown.sh` now runs each test with
+its `.env`, `.argv`, `.input` and the hermetic flag and skips the REPL
+(`-i`/`--interactive`) and server (`--mcp`, `--lsp`) modes beside project mode —
+modes that run no compile to census and refuse a dump — cutting its "class
+census failed" lines from 25 to 0 (41 mode-skipped). The `.timeout` default is
+10 seconds, the runner's actual value. `scripts/check-one-fixture-reader.sh`
+(in `make gates`) fails a script that reads a test's fixture by hand.
+
+### The one pack profile serves the C++ modes it shares with madc
+
+A forest freeze under `--std=madc` can carry `--freeze-also-std=<std>` labels
+(`CIR_FOREST_SEG_SHARED_CONFIGS`) naming the other standards it serves, and a
+consumer now binds a profile whose dir-header config OR one of those labels
+matches its own (`CirFrozenForest::serves_config`, read by the lexer's
+`forest_probe_arm`). The release pack labels its single madc profile for
+`gnu++17` and `c++17`: the madc dialect is C++17 plus extras — auto-includes,
+auto-namespacing, auto-main, its keywords and tokens — that the `--std=` gate
+keeps out of a C++ compile, over the same macro table, so the corpus it froze is
+the one a C++17 compile parses. After split arc 1A.4 made `.cpp` gnu++17, those
+compiles bound no profile and fell through to the pack's source text; now they
+bind the labelled profile. Parse cost on `cxx_stl` (a `.cpp`, gnu++17) drops
+from 2,840,750,381 instructions (+69.93% over baseline) to 1,665,129,311
+(-0.39%), with the pack still one profile, no size growth and nothing stripped
+from the corpus. `--dump-forest` gains a `config` line, a `shared` line per
+label, and a config-blind `content` digest line; `scripts/forest_pack_share.sh`
+is the one owner of the served standards (`gnu++17`, `c++17`), sourced by the
+three pack scripts, and checks the packed label count.
+
+### The forest pack emits unit payloads in canonical order, reproducibly
+
+`cir_forest_fill_pack_payloads` now walks the per-unit pack maps
+(`pack_pp_exports`, `pack_unit_edges`, `pack_unit_branch_deps`,
+`pack_unit_sources`) in canonical unit order — first tokenization
+(`pack_unit_order`), then by spelling — rather than in map-key order, which was
+the lexer's interned file pointer, i.e. heap-address order that varied from run
+to run and from one `--std=` to another. Because those entries create units and
+intern strings, that order reached the container's bytes. On the 368-unit
+release pack TU, two freezes that previously listed the same units in different
+orders from unit 279 on (pp-only units such as `bits/sigstack.h`,
+`bits/typesizes.h`, `limits.h` moving around) now agree: a gnu++17 freeze's
+per-segment content digests equal the c++17 freeze's, and two same-config
+freezes of a small TU are byte-identical. The release pack is now reproducible.
+
+### Parallel builds size their job count by host memory, not cores
+
+A parallel build's job count now comes from `scripts/build_jobs.sh`: the cores,
+cut to MemAvailable less a 2 GB reserve at 1.5 GB a job (the -O2 compiles peak
+at 1.6 GB for `parser.cpp`, 0.9 GB for `cir_builder.cpp`, 0.7 GB for
+`lexer.cpp`), capped by a cgroup `memory.max` when one is set, never below 1 and
+never above the cores. Every build script that sized a build by `-j20`, `-j8`,
+`-j4` or `$(nproc)` — `remote_build.sh`, `package_release.sh`, `seam_battery.sh`,
+`release_bins.sh`, the `stage_*` library builds, and the rest — now asks it, and
+`make gates` runs `check-one-build-jobs.sh` so a literal job count cannot return.
+On the build container the helper answers 8 jobs with 15 GB available, 6 under a
+12 GiB cgroup cap. Memory is read when the build starts, so builds still run one
+at a time: two -O2 builds started side by side exhausted the owner's WSL2 VM and
+took it down (2026-10-11).
+
+### Host-facing `madc::` surface moves to `<ns_madc_host>`
+
+The `madc::` faces only a host program uses — a document's parse handle and its
+language services (`doc_parse`, `doc_diagnostics`, `doc_outline`, ...), the tool
+host (`tool_host`), madc's colon mode (`ex_session`), discovery's claims
+(`session_claim`, `session_dir`, `session_scan`, `session_find`) and the REPL
+history store (`history_path`, `history_entries`, `history_append`) — move out of
+the always-on `<ns_madc>` prelude into a new `<ns_madc_host>`, served only to a
+program that names one of them qualified (`madc::tool_host`, `madc::doc_parse`,
+...). The `<bits/ex_commands>` and `<bits/tool_enums>` includes they need move
+with them. A polyglot program that hosts nothing no longer parses this surface:
+the parse-cost `dialect.live` workload drops from 83,238,629 to 75,517,510
+instructions, from +14.99% over baseline to +4.32%.
+
+### `%git log PATH` filters by walking path components
+
+The madcgit module's `%git log PATH` now compares a path against each parent one
+component at a time, stopping at the first subtree whose id is unchanged rather
+than reading the whole subtree at the path for every commit and parent. Within a
+log call each tree-entry lookup is memoized by (tree id, component depth), so a
+subtree read as a commit's own tree and again as its child's parent is read once.
+`%git log -n 1 tests/testint.mad` drops from 3.9 s to 1.04 s (REPL start-up
+included) against `git log -n 1 -- tests/testint.mad` at 0.26 s, both naming the
+same commit. The `testrepl_git` and `testrepl_gitimport` tests raise their
+timeout to 60 s for the wine headerless lane, where testrepl_git ran in ~27 s.
+
+### The REPL's default editor is vi / Microsoft Edit, and runs only on a terminal
+
+With no `$EDITOR` set, the REPL's default editor behind `%open` and `%edit` is
+`vi` on POSIX and `edit` (Microsoft Edit) on Windows, replacing `notepad`. The
+default is a terminal program, so it runs only when stdin is a terminal:
+otherwise the call reports `"no editor: set $EDITOR (input is not a terminal)"`
+rather than feeding piped or redirected input to the editor as keystrokes. An
+explicit `$EDITOR` runs as given, terminal or not.
+
+### run_tests.sh refuses a run that executed no test
+
+`scripts/run_tests.sh` now exits nonzero with "VACUOUS RUN — no test executed"
+when a run selected and ran zero tests — a filter matching no test (a positional
+argument is one basename glob, so `'a* b*'` as a single argument matches
+nothing) or a selection its fixtures skipped entirely. "0 passed, 0 failed" with
+exit 0 no longer reads as green to callers; `headerless_suite.sh` and
+`gui_lane.sh` drop their own vacuous-run checks and take the runner's exit status
+as the verdict. A new static gate, `scripts/check-runner-refuses-vacuous.sh` (in
+`fulltest` after `check-expect-twins.sh`), holds the runner to it.
+
+### madcide moves to its own repository
+
+madcide — the IDE and the editor core it builds on — now lives in its own
+repository (github.com/derekbsnider/madcide) and ships its own packages, each
+carrying the madc release it runs on. This commit removes the moved paths from
+madc: `tools/madcide/`, `tools/texteditor/`, `tools/vscode-madcide/`, the
+madcide integration tests and the `tests/gui/madcide_*` window tests with their
+fixtures, the `check-madcide-*` static gates and the pty quit / save-and-quit /
+scroll / golden screen gates, their `fulltest` wiring, the madcide stanzas of
+the release packaging (`package_release*.sh`, the Homebrew formula's madcide
+build and smoke, the AppArmor profile's madcide line, `stage_madcide_data.sh`,
+`build_shipped_plugins.sh`), and `gui_lane.sh`'s madcide cases. `docs/madcide.md`
+and `docs/man/madcide.1` are removed; the README and the language docs point at
+the madcide repository. No `src/*.cpp` or `include/` file changes — madcide only
+consumed the engine.
+
+The lane ledger's APPLICATION split is deleted with the paths it named: `tools`
+leaves `CODE_PATHS`, the `APPLICATION` / `app_lanes` table and its selftest
+checks are gone, and a madc source change again stales every lane. Gates whose
+subject spans both repositories keep only their madc half here:
+`check-one-anchor-owner.sh` reduces to the engine's `madc::hub::shift_position`
+rule, `check-one-style-vocabulary.sh` drops the madcide converter, and
+`check-expect-twins.sh` takes an optional tree argument so madcide runs it over
+its own tree. The static gate loop is 92 `check-*.sh` scripts, down from 105
+(13 moved to madcide).
+
+Coverage that only madcide exercised keeps an engine twin in madc: the new
+`tests/gui/ui_web_menu.mad` drives the native menu bar through the engine alone
+(`ui_web::menu_activate`) in place of `tests/gui/madcide_menu`, and
+`tests/unit/test_theme.cpp` reads the four `.theme` profiles from
+`tests/unit/themes/` (copies of madcide's profiles as of the split) rather than
+from `tools/madcide/profiles/`.
+
+### The Windows expected output for the ex core's write message
+
+`tests/testvised.win64_expect` holds the Windows answer for the editor's write
+(`:w`) message: the ex core spells the written file with the host's path
+separator, so a path under `tmp` prints `"tmp\testvised.txt"` on Windows, as
+Vim on Windows does. `tests/testvised.win64_expect.domain` names the `saved`
+and `other` labels whose line differs from `tests/testvised.expect`.
+
+### The anchors' one shift rule, shared by the engine and the editor
+
+How a byte position follows a splice — a position before the splice is
+unchanged, one inside a replaced range collapses to the splice point, one at or
+past its end moves by the size difference, one exactly at the splice when
+nothing was erased moves only with right gravity — is now the one free function
+`madc::hub::shift_position` in the document engine. A document's anchors
+(`document::shift`) apply it, and the new dialect face
+`ui::anchor_shift(p, off, old_len, new_len, right_gravity)` answers by it.
+
+madcide's own copy of the rule (`shift_offset`) is deleted: its carets, the
+mark / bend selection markers, the highlight spans, the colour record, the
+line-edit caret, and the replace walk's stop all shift by `ui::anchor_shift`,
+and the edit follower makes one anchor pass per splice (the erase and the
+insert together) rather than one pass for each.
+
+Behaviour difference: a passive position exactly at the start of a replaced
+range now stays before the replacement (it collapses to the splice point)
+instead of moving after it.
+
+### madcide's git runs the madcgit module's own verbs
+
+madcide's `%git` (the REPL row, its key and its menu row) and its git views
+(Changes, and History's single-revision view) now run the madcgit module's own
+`%git` verbs in madcide's process rather than a second copy written in the IDE
+— the module's verbs are the one implementation `madc -i` also answers, so both
+print the same text. madcide's verb bodies (log, show, blame, status, diff),
+its verb table, and its relative-date routine are deleted.
+
+The module's verbs read a FILE, or the current buffer, through
+`madc::session_buffer`; outside a session that now answers from the calling
+thread's host buffers. A program that holds its own documents (the editor)
+installs them with `madc::set_host_buffers` (per thread) — its dialect face is
+`madc::host_documents(w, current)`, a ui world's documents with their live
+(unsaved) text — so `diff` and `blame` over an open file include unsaved edits.
+`madc::document_buffer` is now the one answer a host holding documents gives for
+a buffer question; the CLI REPL and the LSP call it in place of their own copies.
+
+New dialect faces `git::command`, `git::command_row`, and `git::relative_date`
+expose the module's verb runner, its `%git` row (name/usage/summary), and git's
+`--date=relative` spelling. New `python::shlex_quote` is Python's `shlex.quote`
+(over the existing shell quoter), used to quote a file name a view passes to a
+verb so the verb reads it back as one word.
+
+### Engine-level test twins for behaviours madcide used to be the only test of
+
+New `tests/` integration tests exercise the engine surfaces directly, no
+longer only through madcide. `testui_line` covers the `ui::LINE` frontend (a
+line client over stdin: each line one `text` event with the raw line, a `:`
+line left raw, a blank line an empty text, a CRLF's CR dropped, a final
+unterminated line still delivered, EOF ending the events; the tree typeset to
+stdout as `ui::render_tree` linearizes it). `testchannel_serve_web` covers
+`madc::channel::serve_web` classifying one accepted connection into a page GET,
+a WebSocket upgrade, or a buffered JSON line. `testui_term_feed` covers
+`ui::term_feed` folding pty bytes through the bounded terminal screen (CR, BS,
+HT, CSI K, CSI 2J, SGR colour as a span row, an escape split across two feeds).
+`testui_key_sequence` covers `ui::key_sequence_for` choosing a keybinding's
+canonical spelling (fewest keys, shortest spelling, table order; a continuation
+key's Ctrl folded — `^x ^c` is `^x c`, JOE's chord convention).
+
+The gui-lane tests `madcide_theme` / `madcide_workbench` are renamed
+`ui_web_theme` / `ui_web_workbench` — they test `ui::web`, not madcide.
+`testbuildcancel.mad` now builds a generated `tmp/testbuildcancel_src.c` (2000
+declarations) rather than compiling madcide's own test source.
+
+### madcide gains a Symbols view and a Line Numbers toggle
+
+A new **Symbols** view (View ▸ Symbols, docked in the sidebar beside the
+outline) lists the names the REPL session has defined — each with its type
+and its value, as Thonny's Variables view does — refreshed after every entry
+and every F5 run and emptied when the session stops. Choosing a name a loaded
+file defined moves the cursor to its definition; a name an entry defined names
+no line. The REPL plugin contributes the view (`repl.symbols`) and its command.
+**View ▸ Line Numbers** (`linenumbers`, `cmdLINENUMBERS`) shows or hides the
+editor region's line numbers in the terminal and the GUI alike (the layout's
+`gutter` word on every editor pane); an open project keeps the choice in its
+layout.
+
+A session binding row now carries `entry` — the number N of the `REPL[N]`
+entry that declared the name, 0 for a name a loaded file defined. The `REPL[N]`
+unit spelling and its inverse are now one pair, `session_entry_unit` /
+`session_entry_of_unit` in `madc_session.h`, replacing the spelling open-coded
+in `madc_session.cpp` and `madc_complete.cpp`.
+
+### A TUI tab strip wider than its pane keeps the active tab in view
+
+The terminal tab-strip builder now takes a `width` (0 means unbounded). A strip
+whose tabs are wider than that width starts at the first tab that keeps the
+active one whole in view — the tabs before it scroll off, as a GUI tab bar
+scrolls to its active tab. Both callers pass their width: a leaf pane's header
+and the editor's open-files strip in the flow. Before this the strip was drawn
+from its first tab and clipped at the pane's edge, so an active tab past the
+edge was not shown — a sidebar's fourth tab pushed the active tab off, and
+madcide's 80x24 Help screen showed `OUTLINE  SYMBO` with the Help Index tab
+gone.
+
+### The GUI draws the editor's line-number gutter from the theme's chrome
+
+An edit node carrying the `gutter` hint now shows a line-number gutter in the
+GUI page — the same hint the terminal reads. Each line leads with an empty
+number element whose value is a CSS counter, so a splice renumbers nothing and
+the line's text (the hit test's basis) holds no digits: a press in the gutter
+lands on its line's start, as the terminal's gutter press does. The numbers
+take the root `chrome` hint's `gutter` style, the caret line's number its
+`gutter_current` style and the caret line its `current_line` style — the same
+styles the terminal grid paints. The gutter is at least three digits wide (the
+last line's digit count). A render without the hint has no gutter. The root
+`chrome` hint reader moved out of `tui_model.h` into `ui_chrome.h` as
+`read_chrome_styles`, now the one reader both the terminal grid and the page
+model take their chrome from.
+
+### `php::trim` / `ltrim` / `rtrim` / `chop` take PHP's `$characters`, and the default set is PHP's
+
+`php::trim`, `php::ltrim`, `php::rtrim` and `php::chop` now accept an optional
+second argument naming the bytes to strip, as PHP does: `php::trim(s, "/")`,
+and `"a..z"` names the byte run `a` through `z` (`php_charmask`, which warns on
+stderr as PHP's `E_WARNING` on a malformed run). With no second argument the
+default set is PHP's `" \n\r\t\v\0"` — it strips `\0` and leaves `\f`, where
+the previous default came from the shared python/rust whitespace trimmer
+(which strips `\f` and keeps `\0`). The one-argument forms and
+`ns_common::trim` (still serving `rust::`) are unchanged.
+
+### madcide runs on madc's services — the colon line, `examples/vised`, lined retired
+
+madcide's nine service files (`madcide_lsp.inc`, `madcide_mcp.inc`,
+`madcide_nexus.inc`, `madcide_past.inc`, `madcide_propose.inc`,
+`madcide_tests.inc`, `madcide_layers.inc`, `madcide_mcpclient.inc`,
+`madcide_discover.inc`) are deleted. madcide now builds a `madc::tool_host`
+over its `ui::` world (`ide_host` in `tools/madcide/madcide_core.inc`),
+registers its commands as that host's tools, and serves MCP through it; the
+change log is the host's memory (`head` / `records` / `replay`).
+`MADC_SESSION_DIR` replaces `MADCIDE_SESSION_DIR`, and `tools/vscode-madcide`
+targets `madc --lsp`.
+
+A buffer's parse is its world document's: `reparse_buffer` in
+`madcide_core.inc` is the one entry onto `madc::doc_parse` (the per-document
+standard set through `madc::doc_set_standard`, the retained spans read back
+through `madc::doc_parsed`). `ensure_phandle`, `parse_lock` and
+`doc_forget_parse` are gone.
+
+The colon line runs madc's ex core through `madc::ex_session`; madcide's
+`view*` verbs remain its own. `tools/texteditor`'s `.madv` verbs and the
+`lined` line editor are retired. `editor_events.inc` gains `buffer_write`,
+`buffer_quit` and `new_editor_state` and the document helpers.
+`madcide --line FILE` runs `madc -i` through `madc::compiler_run`
+(`tools/madcide/madcide_line.inc`), and the REPL pane's history is madc's
+history store (`madc::history_entries` / `madc::history_append`).
+
+`examples/vised/` is a self-contained example editor on `ui::`, the document
+component and madc's colon mode; `tests/testvised.mad` is rewritten over it,
+and `tools/texteditor/vised*`, `lined*` and `testlineed` are deleted.
+
+A closed buffer row closes its world document with its last row (`doc_hold` /
+`doc_release` in `madcide_core.inc`), so reopening a path never returns a
+discarded buffer's text (`tests/testmadcide_close.mad`). `tests/testmadcide.mad`
+pins vim's refusal of `:q` while another buffer holds unsaved text (E162), then
+`:q!`. `scripts/run_tests.sh` exports relative `MADC_SESSION_DIR` and
+`MADC_HISTORY_FILE` under `tmp/` (`scripts/win_run.sh` forwards
+`MADC_HISTORY_FILE`); the packaging, staging and static-check scripts are
+updated for the removed files.
+
+### The REPL buffer — colon mode at the prompt edits a `[REPL]` scratch buffer
+
+Colon mode at the REPL (`madc -i`) edits the REPL buffer, a scratch buffer
+`[REPL]` (`ex::session::set_scratch`, vim's `buftype=nofile`) holding every entry
+the session kept and every file `%load` kept, each appended to its end as one
+undo group (`ReplSession::taken_source`, `ex::session::append`); a refused entry
+stays out. Before, colon mode started on an empty untitled buffer that nothing
+fed, so a colon edit at the REPL answered "no lines in the buffer". At a bare
+`madc -i` colon mode starts on the REPL buffer (the host's untitled buffer is
+it); `madc -i FILE` is line mode, starting on FILE, with `:b REPL` reaching the
+REPL buffer. `:ls`, `:b N` / `:b NAME`, `:bn`, `:bp` and `:e` switch between
+them. The scratch buffer never counts as unsaved for `:q`, `:w FILE` writes a
+copy (it keeps its name), `:sav` is refused, and the session's buffer question
+(`ex::session::buffer`) refuses it with no file, so `%run` / `%check` / `%build`
+with no FILE refuse it. The session carries the kept source
+(`InteractiveSession::taken_source`, `loaded_source`), which the backend server's
+offer and load replies carry as `source`, so a payload host keeps `%load`'s file
+in its REPL buffer too. Reducer `tests/testrepl_buffer.mad` (oracle: vim on the
+same text); unit `tests/unit/test_ex.cpp` adds the scratch-buffer case,
+`tests/unit/test_repl_session.cpp` the `taken_source` / `loaded_source` cases,
+and `tests/unit/test_repl_cli.cpp`'s two colon cases check the kept entries join
+the REPL buffer.
+
+### `%run` on the REPL buffer rebuilds it
+
+`%run` with no FILE and the REPL buffer current rebuilds the buffer the way an
+IDE rebuilds an edited file (Jupyter's Restart and Run All): a fresh session
+(`%reset`), then the buffer's text read back as typed lines through the cooked
+loop, each entry shown as usual and nothing appended to the buffer again. Only
+the REPL buffer rebuilds; `%run` on any other current buffer runs it as `%run`
+ran it before. Both the terminal loop (`madc_repl_edit`) and the cooked loop
+take it; the cooked loop is factored out as `cooked_loop` with the
+returned-stdin target passed in, and a rebuild passes NULL so the backend's
+read-past bytes are dropped rather than put back. Reducer
+`tests/testrepl_rebuild.mad` (`--std=c17 -i`): `:b REPL`, a `main` printing
+`hello` run once, a `:1s/hello/goodbye/` edit, then `%run` replays the edited
+text so `main` prints `goodbye`, and `:$nu` shows the buffer still two lines —
+nothing was re-appended.
+
+### `%psource`, `??NAME` / `%pinfo2`, and colon-printed code coloured
+
+The REPL (`madc -i`) answers `%psource NAME`, `%pinfo2 NAME` and `??NAME`
+(IPython's). `%psource NAME` prints the source of each definition of NAME the
+session holds — from the entry that typed it (`REPL[N]`) or the file that
+defined it (the host's buffer of it, else the disk), a function's whole body,
+an object's whole declaration — and is refused with "no source found for
+'NAME'" when it holds none. `%pinfo2 NAME` / `??NAME` is `%pinfo`'s fields plus
+a `Source:` section. All three are rows of the one pinfo command, each with a
+detail level (IPython's `_inspect` levels), so no new `session_command`
+enumerator; `%edit` and `%pinfo` share one name-argument reader
+(`name_argument`), and `%help`'s footer names `??NAME`. The ex core's outcome
+now carries `code` ranges — the buffer text that `:p`, `:nu`, a line `:g` or
+`:s` prints (never `:l`'s escaped form), a run of consecutive buffer lines one
+range so it lexes as one text — and the REPL paints them with `theme_paint`
+where colour reaches the terminal, line numbers plain. Reducer
+`tests/testrepl_psource.mad` (oracle: IPython's `%psource` / `??`; the
+arithmetic matches gcc on the same definitions); unit
+`tests/unit/test_repl_session.cpp` adds the `??x` / `%psource x` `command_of`
+cases and `tests/unit/test_repl_cli.cpp` the coloured colon-printed and
+`%psource` case.
+
+### madc's colon mode as a dialect face — `madc::ex_session` over a ui:: world
+
+`madc::ex_session` (`include/madc_ex_session.h`, declared in `<ns_madc>` and
+resolved mangled-direct, implemented in `src/madc_ex.cpp`) is madc's colon mode
+over a ui:: world handle's documents — the ex core's ed / ex / vim commands for
+a host that edits in a script. `use()` makes a document current, `current()`
+reports it; `set_line()` / `line()` put and read `.` (1-based: a visual host's
+caret line); `parse()` reads one command line without running it,
+`{ok, error, command, force, argument}`; `run()` runs one,
+`{ok, shown, error, wants_text, quit, command}`; `text()` completes a pending
+`a` / `i` / `c` from an array of lines; `wants_text()` reports a pending one.
+`command` is a `<bits/ex_commands>` `ex_command` code. It wraps
+`madc::ex::session` over the world `madc_ui_world` names; an unknown handle
+refuses every command. Every edit goes through the world's one mutation path.
+
+The command vocabulary moves to the embedded `<bits/ex_commands>` — the ONE
+enum text (`madc::ex_command`, plain C++11, dialect-lean) read by both the
+engine (`madc::ex::command` aliases it in `include/madc_ex.h`) and the dialect
+(`<ns_madc>` includes it), so a host switches on a compiler-checked enumerator.
+The ex core gains `session::set_current_line()`, which moves `.` to a given
+line (false when it is not one of the buffer's lines) through a
+`mutation_context` anchor.
+
+The REPL history store gets dialect faces (`include/madc_history.h`,
+`src/madc_history.cpp`): `madc::history_path()`, `madc::history_entries()` for a
+standard's language, and `madc::history_append()`, all over the store's default
+place — so a pane's history is the one `madc -i` keeps and the reverse.
+`history_default_path()` now honours `$MADC_HISTORY_FILE` ahead of
+`$XDG_STATE_HOME/madc/history` (`%LOCALAPPDATA%\madc\history` on Windows);
+`docs/man/madc.1` and `madc --help` state it.
+
+`madc::compiler_run()` (`src/ns_madc.cpp`) runs the running compiler on an
+array of arguments with all stdio inherited, waited for, through
+`madc::Process::run_and_wait` with `argv[0]` the compiler's own path — a host
+handing its terminal to madc (`madcide --line` is `madc -i FILE`); it returns
+the child's exit code, -1 when it could not run.
+
+Reducer `tests/testex_session.mad` (oracle: vim on the same text) exercises
+`use` / `set_line` / `parse` / `run` / `text` / quit; unit
+`tests/unit/test_ex.cpp` adds the `set_current_line` case.
+
+### The Windows expected output for `madc --lsp`'s `executeCommand`
+
+`tests/testlsp_stdio.win64_expect` holds the Windows answer for `madc --lsp`'s
+`executeCommand` output: a program's text-mode stdout through a pipe on Windows
+ends its lines `\r\n` (a mingw-gcc build of the same program, run on the
+Windows host, emits `d \r \n` per `od -c`).
+
+### A single-file `madc --mcp --project` keeps its project memory in memory
+
+A single source file given to `madc --mcp --project` is the implicit one-TU
+project; its memory is memory-only — no `<file>.events` file is written beside
+the source, and a write such as `nexus.create` keeps the record in memory for
+the server's life. A memory bound to a change log appears only beside a
+manifest, as `<manifest less its extension>.events`.
+
+`project_path_is_manifest` / `project_events_path` (`include/madc_project.h`,
+`src/madc_project.cpp`) are the one owner of where a project's memory lives —
+an `.events` path beside a manifest, `""` (memory-only) for the implicit one-TU
+project — and `project_of_path` uses the predicate. `run_mcp_project`
+(`src/madc.cpp`) binds only a non-empty events path and sets the `{project}`
+manifest only for a manifest. `graph.status` (`src/madc_memory.cpp`) now reports
+the bound log file as `"log"` (`""` when the memory is memory-only).
+
+`docs/man/madc.1` states the split. Reducer `tests/testmcp_project` adds a
+`nexus.create` then `graph.status` and expects `"log":"","log_head":1` with no
+events file left behind; unit `tests/unit/test_project_manifest.cpp` covers the
+events path beside a manifest and its absence for the one-TU project.
+
+### `madc::mcp` gains a client — `nexus.sources` and `nexus.sync` pull an external system's tasks
+
+`madc::mcp` now has a client (`include/madc_mcp.h`, `src/madc_mcp.cpp`) over one
+channel: `start()` runs `initialize` then the `notifications/initialized`
+notification; `call()` writes a request with its own id and reads replies until
+one whose id matches — a non-JSON line, a notification and another id's reply
+are skipped; `rows_of()` reads a tool result's first text content as JSON (an
+array, or an object's `"rows"`). A refused call answers `{error, code?}` in
+`result`.
+
+The project memory gains its sources: `nexus.sources` (owner tier) lists the
+loaded `*.mcp.json` manifests, reloading the directory; each manifest describes
+one external MCP server (name, transport, command words, env prefix, a
+vocabulary of MCP tools). The default directory is the `mcp/` subdirectory of
+madc's user config directory — `$XDG_CONFIG_HOME/madc/mcp` or
+`~/.config/madc/mcp` (`cfg::config_file::user_config_dir`,
+`include/madc_config_file.h`). An unknown transport word refuses at load; a
+duplicate source name across manifests refuses. `nexus.sync` (editor tier)
+spawns one source's server over `exec://`, runs `initialize` / `tools/list`
+(every vocabulary tool must be advertised), calls its `list_tasks`, renames each
+row by the source's map and upserts it as a task record with origin = the
+source.
+
+`jsonrpc::next_line` (`include/madc_jsonrpc.h`, `src/madc_jsonrpc.cpp`) is the
+one idle-deadline line reader over a channel — 1 with the line, 0 on the
+deadline, -1 when the peer is gone; the client's reply loop and the memory's
+`child_lines` both read through it.
+
+Tests: `tests/unit/test_memory.cpp` "nexus.sync pulls a source's tasks over MCP
+into task records" drives a fake shell MCP server, covering the sync upsert, a
+skipped non-JSON line and mismatched-id reply, a keyless row, a server exiting
+with status 3, a non-advertised tool, and three manifest refusals.
+
+### `madc --mcp --project` — one owner per project, its TUs as documents
+
+`madc --mcp --project X` runs the headless MCP server over a project: `X` is a
+manifest or a single source file (the one-TU case). The project's translation
+units are the served documents, each parsing as its manifest entry compiles it;
+a tool call's `file` argument names one, the first TU otherwise.
+`mcp::server::set_documents` maps a call's `file` to its document, advertises
+`file` on every tool, and answers an unknown file as `isError` content.
+
+One owner per project (`madc::discovery`, `include/madc_discovery.h`,
+`src/madc_discovery.cpp`): a claim holds an advertisement file
+`<dir>/<slug(key)>.json` for its life and publishes `{key, pid, started,
+version, host}`; a second process is refused, naming the owner's pid. The
+directory is `$MADC_SESSION_DIR`, else `$XDG_STATE_HOME/madc/sessions`, else
+`~/.local/state/madc/sessions`. Liveness is the OS-held file, not a pid or a
+stale file. `held_file` / `host_file_held` (`src/madc_posix_io.h/.cpp`) are the
+one owner of "one process at a time holds this file" — `flock` on POSIX,
+`LockFileEx` on a far byte on Win32 — and the OS drops the hold when the process
+ends.
+
+A served document parses as its TU: `document` carries `parse_tu`
+(`include/madcdis/document.h`), reached through the hub and
+`lang::document_set_tu`; the handle opens through `madc_parse_open_tu` →
+`parse_open_text_with` (`src/madc_program.cpp`), applying the manifest entry's
+`-I`/`-D`/standard at open and at every refresh. `project_of_path` resolves a
+path to a manifest or a single-file one-TU project.
+
+Tests: `tests/unit/test_discovery.cpp` (session dir / slug / one owner / scan),
+the `held_file` case in `tests/unit/test_posix_io.cpp`, the TU-document case in
+`tests/unit/test_lang.cpp`, and `tests/testmcp_project.mad`.
+
+### A project TU's parse handle keeps its manifest options across a refresh
+
+A project TU's parse handle applied the manifest entry's options
+(`-I`/`-D`/standard/stdlib) only at open; a refresh and a checked refresh's
+candidate re-initialised the child from an empty include list, so the TU's
+`-D`/`-I`/standard were lost after the first refresh — a silent wrong parse with
+spurious diagnostics. The options now apply through `parse_handle_child_init`
+(`src/madc_program.cpp`), the one init every child goes through (open-from-text,
+open-from-file, refresh, checked-refresh candidate), which refuses when they are
+rejected (e.g. an unknown `-stdlib` flavor). `tests/unit/test_lang.cpp` covers
+the TU handle keeping its `-D` across a refresh.
+
+### The version history — commits, revisions and diff over the served files, from the madcgit module
+
+The engine's history tools read the served document's past over a
+`history_source` the madcgit module supplies: `graph.commits` (the commits
+touching the file), `graph.revision` (the file at a rev-parse spec, opened
+read-only), `graph.diff` (declarations added/removed/changed between two
+revisions or the live text), and `graph.history` (a node's rows, git commits
+first). A read's `rev` argument selects a revision. A revision's parse is a
+read-only handle in `revisions` — at most eight per document, least-recently-used
+closing first.
+
+A module row carries a `tools` column (`madc_module_tools.h`) beside its
+commands column: the function a tool server calls for each module its Program
+loaded. madcgit exports `madcgit_tools`, giving `tools::add_history_tools` a
+`GitRepo`-backed `history_source`
+(`modules/madcgit/madcgit_history.cpp`). `madc_module_entry_point`
+(`src/madc_modules.cpp`) is the one module entry-point lookup — commands or
+tools — over `Program::loaded_modules()`, replacing the hand-rolled lookup in
+the session; `madc --mcp` uses it for module tools.
+
+Consolidations: `tools::served_path` is the one served-document path;
+`tools::span_extent` the one span-to-byte-extent conversion; `graph.status`'s
+per-handle error count now comes from the parse engine's `child_error_count`
+(`madc_parse_error_count`). Tests: `test_memory`'s version-history cases (a fake
+`history_source`), `test_gitrepo`'s history-source case over its fixture
+repository, and `testmcp_git` driving `madc --mcp` with `-lmadcgit`.
+
+### `madc::memory` — the project memory and its tools over `--mcp`
+
+A project's memory (`include/madc_memory.h`, `src/madc_memory.cpp`) is one event
+stream every document of a hub world rides — text splices and checkpoints,
+applied node-ops, proposals and their decisions, intent records and links, and
+test runs. Each record is a JSON object `{seq, ts, kind, path, doc, actor,
+...}`; the folds derive state (a proposal's status, a record's fields, a test's
+latest run), nothing derived is stored.
+
+The stream is memory-only until bound to a `<base>.events` file beside the
+project's manifest: bound, every record is appended as one JSON line and a
+restore reads one back; a torn line (a crash mid-append) is skipped.
+
+`madc::memory::project` subscribes to the world's text changes and registers its
+tools into a registry — `graph.proposals` / `proposal` / `accept` / `reject` /
+`withdraw`; `nexus.record` / `records` / `create` / `update` / `close` / `link` /
+`unlink` / `context` / `explain`; `test.discover` / `list` / `candidates` /
+`run` / `results`. `madc --mcp` constructs the memory before the open and
+registers its tools; the lone local client's actor is -1. Tests:
+`tests/unit/test_memory.cpp` drives the stream, its file and the tools through
+the registry; `testmcp_stdio` adds `nexus.create` and `nexus.records` over the
+session's memory.
+
+### The code-graph edits — `graph.insert`, `graph.replace`, `graph.delete` on madc's documents
+
+`add_graph_tools` registers three editing tools beside the 16 reads:
+`graph.insert` (src before | after a node), `graph.replace` and `graph.delete`,
+least tier proposer, ported from madcide's L3 node-ops onto madc's served
+documents. An edit's extent is the node's span (`madc_graph_span`). The line
+rules follow madcide's: a node that owns its line(s) — only blanks beside it —
+is deleted whole with its newline and takes an insert on a line of its own at
+the node's indent (a target ending the text with no newline still gets its own
+line); a node sharing its line is edited at its exact boundary, one space apart.
+The candidate text is validated by the compiler (`madc_parse_would_accept`, no
+new error) before anything changes; a rejected candidate answers `{error:
+"... rejected ...", diagnostics}` and nothing changes.
+
+An editor's (or owner's) edit lands through `hub::mutation_context` as ONE undo
+step (`doc_checkpoint`, then `text_replace`), the document re-parses through
+`madc::lang::document_handle`, and the answer is `{ok, node, splice_at,
+splice_del}` — `node` is `graph.at` where the edited node starts. A read-only
+document refuses. A proposer's edit — or any caller passing `propose: true` —
+is stored, not applied: `tools::edit_memory` (`include/madc_tools.h`) is the
+project memory a registry's edit tools report to (`registry::set_memory` /
+`memory()`); `propose()` receives `{ops, preview {line0, line1, before, after},
+diagnostics}`, `applied()` receives an applied edit's `{verb, target, src}`. A
+registry without a memory refuses proposals. The registry is now non-copyable.
+
+### `madc --mcp` — the Model Context Protocol server, the tool registry, and the code-graph tools
+
+`madc --mcp FILE` runs a Model Context Protocol server on stdin/stdout:
+JSON-RPC 2.0 with one message per line (MCP's stdio transport), serving
+FILE's document at the owner tier — the lone local client is the operator.
+The configured Program is active for the server's life, as for `--lsp`. `--mcp`
+with `-i`, an artifact request, or other than exactly one file is refused.
+`madc_jsonrpc.o`, `madc_tools.o` and `madc_mcp.o` are built into libmadc core.
+
+The server (`madc::mcp::server`, `include/madc_mcp.h`) converts each method
+once to an enum: `initialize` answers the client's `protocolVersion` when it is
+one of 2025-06-18 / 2025-03-26 / 2024-11-05, else 2025-06-18, with
+`capabilities.tools.listChanged` false and `serverInfo` `{name madc, version}`;
+`notifications/initialized` gets no reply; `ping` answers `{}`; `tools/list`
+advertises the registry's rows (name, description with "(requires TIER)",
+`inputSchema`); `tools/call` answers the tool's result as JSON text content, a
+refusal as `isError` content, and an unknown tool as the JSON-RPC error -32602.
+An unknown method is -32601, a non-object -32600, a line that is not JSON
+-32700; a blank line carries no message. `handle()` answers one decoded message
+and knows no transport; `serve()` is the line loop.
+
+The tool registry (`madc::tools`, `include/madc_tools.h`) holds tool rows
+`{name, description, input schema, least tier, handler}` over the tiers
+observer < proposer < editor < owner; `registry::call` refuses an unknown name
+or a caller below the tool's tier with an `{error}`. `add_graph_tools`
+registers the 16 code-graph reads (`graph.symbols`, `definition`, `node`,
+`type_of`, `members`, `bases`, `enclosing`, `body`, `children`, `callees`,
+`callers`, `references`, `search`, `impact`, `span`, `at`) over the served
+document's parse through `madc::lang::document_handle` (the one door) and the
+`madc_graph_*` reads; one verb table drives both the advertised schema and the
+read. A document the compiler does not parse refuses.
+
+JSON-RPC's envelopes (`madc::jsonrpc`, `include/madc_jsonrpc.h`) — `response`,
+`error_response`, `notification`, `request` — and a message's members (`field`,
+`text_field`, `int_field`, `object_field`) are the one spelling madc's protocol
+servers share; they decode/encode through the one value<->JSON bridge (the
+encoding replaces non-UTF-8 bytes). `src/madc_lsp.cpp`'s private copies of these
+are deleted; it uses the shared owner, behaviour unchanged. `docs/man/madc.1`
+documents `--mcp`.
+
+### `workspace/executeCommand` runs the REPL registry in a backend session
+
+`madc --lsp` now answers `workspace/executeCommand`: a client runs the REPL's
+`%` commands as `madc.NAME` (`madc.check`, `madc.run`, `madc.open`, ...). The
+names are advertised in `executeCommandProvider.commands` only when the server
+has a command host (`lsp::command_host`), and come from the session's
+completion of `%`. `madc.NAME` with `arguments[0]` — a `file://` URI or a path,
+passed as one shell word through `ns_common::shell_quote` — runs `%NAME ARG`
+in the CLI's crash-isolated backend session (`madc -i`'s `SessionClient` +
+`BackendSession`, `lsp::backend_commands`), started again after the session
+ends; its program's output is piped into the result rather than the protocol's
+stdout, its diagnostics are plain, and `%history` names no store. The result is
+`{ok, text, output, diagnostics}`; an unknown name answers -32602; a command
+with no FILE is refused ("no document is current"). The server's documents
+answer the session's buffer question, so a command reads a document's unsaved
+text. The editor a command asks for (`%open`, `%edit`) is the client's: when
+the client declared `window.showDocument.support`, the editor sends a
+`window/showDocument` request (a server-generated id, the client's response
+dropped) for the document's URI — the client's own spelling for an open
+document, else a `file://` URI encoded one path segment at a time through
+`js::encodeURIComponent`, now declared in `include/ns_common.h` as the one
+percent-encoder. `madc::show_in_editor` is the one choice behind `%open` and
+`%edit`: the host's editor (`ReplSession::set_editor`, held by
+`InteractiveSession` and `BackendSession`), else the terminal's
+(`madc::run_terminal_editor`). A defect the feature exposed is fixed in the
+same change: `InteractiveSession::file_command` refused a FILE absent from disk
+before asking the host's buffers, so `%run` of an LSP client's unsaved new file
+failed with "Failed to open file"; a new `InteractiveSession::buffer_holds`
+asks the buffer question first when the host honors payloads.
+`docs/man/madc.1`'s `--lsp` entry documents `executeCommand`.
+
+### The static gates see files a commit has not yet committed
+
+Every `scripts/check-*.sh` gate now enumerates its files with `git ls-files
+--cached --others --exclude-standard` (tracked files plus the new ones git does
+not ignore) instead of a bare `git ls-files`, which lists tracked files only. A
+source file a commit adds was invisible to every static gate while it was
+untracked, so `make -C src gates` passed, then the same gate failed one commit
+later once the file was tracked. A new gate,
+`scripts/check-gates-see-new-files.sh`, fails on a bare `git ls-files` in any
+`scripts/check-*.sh` and is wired into the `gates` target.
+
+### `madc --lsp` — the Language Server Protocol server on stdin/stdout
+
+`madc --lsp [FILE]` now runs a Language Server Protocol server on standard
+input and output, Content-Length framed (LSP 3.17): it answers diagnostics,
+document symbols, definition, references, hover and semantic tokens for each
+document the client opens, from the client's live text, over
+`madc::lsp::server` (slice 1). `server::serve` is the framed loop — read one
+message through the one value<->JSON bridge, answer it, write the reply and
+then each note — until `exit`; a body that is not JSON answers -32700, and the
+process exits 0 when `exit` followed `shutdown`, else 1. The configured
+Program is the active runtime Program for the server's life, so every
+document's parse is its child and searches the include directories of `-I` and
+madc.ini's `include` as a compile does, and a document's standard is its
+kind's (a `.c` file is C17). A FILE is parsed before the client asks. `--lsp`
+with `-i`, an artifact request, or more than one file is refused.
+`docs/man/madc.1` documents `--lsp`. Two slice-1 corrections ride along: a
+diagnostic's severity wire number now comes from an enum switch
+(`severity_number`), and a `file://` URI's DOS-drive form is decided by
+`detail::host_path_absolute` instead of a hand-written first-byte test.
+
+### A parse handle searches the include directories of its opener
+
+A plain parse handle — `madc::parse_open` / `madc::parse_open_file`, and so
+`madc::lang`'s documents, madcide's buffers and `madc --lsp` — now parses in a
+child Program that inherits the opening Program's include search list (`-I` and
+madc.ini's `include`), as the CLI's compile of the same file does. Before, the
+child inherited none, so the IDE/LSP reported "file not found" for a header the
+command-line compile of the same file finds. A project TU's handle still takes
+its manifest entry's own options, as the `--project` build does.
+
+### `madc::lsp::server` — the LSP's answers in madc's core
+
+A new C++ owner, `madc::lsp::server` (`include/madc_lsp.h`, `src/madc_lsp.cpp`),
+answers one decoded JSON-RPC message at a time — `handle(message, reply, notes)`
+— and knows no transport, so a unit test drives it in process as
+`testmadcide_lsp` drives madcide's `lsp_handle` (split arc 1C.12, design
+`docs/plans/2026-10-10-lsp-in-core-design.md` §2 decisions 1-4, slice 1). It is a
+C++ port of madcide's dialect server over 1A.1 documents and 1C.11 `madc::lang`:
+the lifecycle and the error codes are LSP 3.17's (-32002 before `initialize`,
+-32600 after `shutdown` or for a notification carrying an id, -32601, -32602,
+-32803; `exit` is 0 after `shutdown`, else 1), and every answer is `madc::lang`'s
+— the server only converts, at the boundary and once: a method name to an enum, a
+`file://` URI (percent-decoded, a DOS drive's `/C:/` read as `C:/`) to a path,
+and positions between the negotiated encoding (UTF-16 by default, UTF-8 when the
+client offers it) and lang's byte columns through one owner pair (`point_of` /
+`position_of`) over `col16_to_byte` / `col16_of_byte`. Documents are madc's, in
+the server's own hub world: `didOpen` finds or creates the document and loads the
+client's text (no document becomes active), `didChange` applies incremental
+ranges in order (a change with no range is a whole-text load), `didSave`
+republishes, and `didClose` closes the document with its parse handle and
+publishes an empty diagnostics list (clangd's behaviour). `documentSymbol` gives
+DocumentSymbol rows (`range` the extent, `selectionRange` the name; a function's
+kind is 12, else 13), `definition` and `references` give Location lists over the
+name ranges, `hover` gives plaintext `contents` with a `range` when lang gives
+one, and `semanticTokens/full` delta-encodes `lang::spans` over a seven-type
+legend (keyword, variable, number, string, comment, type, function), mapped from
+`HighlightClass` by an enum switch, with nested spans dropped so tokens do not
+overlap. `madc::lang::document_close` (`src/madc_lang.cpp`) is now the owner of
+closing a document with its parse handle, beside `document_handle`;
+`ui::doc_close` (`src/ns_ui.cpp`) calls it instead of its own copy. The one
+percent-decoder `js_decodeURIComponent` (`src/ns_js.cpp`) is declared in
+`include/ns_common.h` for the server to reuse. A function whose body holds a
+contained error (an undeclared identifier) is absent from the parse handle's
+outline while the error stands.
+
+### `madc::lang` — one set of language services over a document
+
+A new C++ owner, `madc::lang` (`include/madc_lang.h`, `src/madc_lang.cpp`),
+answers a document's language-service questions in one place, so the LSP, the
+MCP tools and an editor's status line, Problems and colour read ONE set of
+answers (split arc 1C.11, design
+`docs/plans/2026-10-10-language-services-design.md` §2 decisions 1-4, slice 1).
+The subject is a document of a hub world (`world &, entity_id`); its parse
+handle comes through one door, `lang::document_handle`, which re-parses only
+when the buffer's live text version moved since the slot was parsed —
+`doc_parse_impl` moved here out of `src/ns_madc.cpp`, and `madc::doc_parse` /
+`doc_parse_checked` are now faces over it. One coordinate for every answer: a
+point is a 1-based line and a 0-based BYTE column, a range half-open; the
+compiler's 1-based stamps convert in the service, once. `diagnostics` gives
+`{range, severity, phase, message}`, the range the word at the anchor (gcc's
+3:12 diagnostic becomes 3:11 over `undefined_name`); `outline` gives each
+function definition's whole lines as the extent and its name as the selection
+(clangd's selection range); `enclosing` gives the innermost definition around a
+point, its first byte included; `spans` gives the parse's classes as
+`highlight_span` enums. The span class-name → `HighlightClass` conversion is now
+one helper, `highlight_spans_of` (`src/madc_program.cpp`), shared by the lexical
+spans (`internal_program_lex_classes`) and a parse handle's (`parse_classes`,
+new). A document whose kind the compiler does not parse answers nothing.
+
+### `madc::lang` — definition, references and hover over a document
+
+`madc::lang` now answers the word-addressed questions over a document (split arc
+1C.11, design `docs/plans/2026-10-10-language-services-design.md` §2 decision 4,
+slice 2). `definition(w, e, point)` takes the identifier under the point — or the
+one a caret rests just past — and answers each definition's NAME range, as clangd
+answers (clangd's `twice` definition at 1:4-1:9, where madcide's LSP answered the
+whole lines); a point in no word, or a word the TU does not define, answers an
+empty list. `references(w, e, point, include_declaration)` answers every use of
+the definition the word names, each range the name at its site: a call anchors at
+its argument list, so the name is the last whole-word occurrence at or before the
+site's column — the inner `twice` in `twice(twice(1))` resolves to its own name
+(clangd's uses at 7:11, 7:17, 7:29); the declaration's name is appended last when
+asked (1:4-1:9). `hover(w, e, point)` answers `KIND NAME — defined on line N`
+over the word's range (clangd's hover at 7:11-7:16), else `in NAME` for the
+enclosing definition with no range, else nothing. Coordinates are the service's
+one unit: a 1-based line, a 0-based byte column; a use site's 1-based token stamp
+converts in the service, once.
+
+### The `madc::doc_*` dialect face — the language services as rows
+
+The seven `madc::doc_*` functions (`<ns_madc>`, `src/ns_madc.cpp`) now give
+`madc::lang`'s answers over a document as `value` rows, so an editor, the LSP and
+the MCP tools ask the SAME questions of the live text through one parse handle
+(split arc 1C.11, design `docs/plans/2026-10-10-language-services-design.md` §2
+decision 5, slice 3). `doc_diagnostics(out, w, e)` gives `{range, severity,
+severity_code, phase, phase_code, message}`; `doc_outline(out, w, e)` gives each
+definition's `{name, kind, kind_code, range, selection}`; `doc_enclosing(out, w,
+e, line, column)` gives the innermost definition around a point as an outline
+row, or an empty value; `doc_definition` and `doc_references(..., line, column[,
+include_declaration])` give a list of name ranges; `doc_hover` gives `{text}` or
+`{text, range}`; `doc_spans(out, w, e)` gives `{line, column, length, class,
+class_code}`. A range is `{line, column, end_line, end_column}` — a 1-based line,
+a 0-based byte column, its end exclusive. Each enum rides as its code
+(`severity_code`, `kind_code`, `class_code`), with its name beside it for
+display; `severity_code` compares with `madc::diag_severity::error`. A document
+whose kind the compiler does not parse answers an empty value. The diagnostic
+severity/phase name tables moved from `Program` members to the free functions
+`madc::diag_severity_name` / `diag_phase_name` (new `include/madc_diag_names.h`),
+so a row names a diagnostic enum without a `Program`; `print_diagnostic`, the
+child-diagnostic rows and the unit test name them there now.
+
+### `%git` in the madcgit module — the repository's read verbs as a session command
+
+The `madcgit` module now brings a `%git` command to a `madc -i` session: `%git
+log | show | blame | status | diff`, each printing what git prints for the same
+question (split arc 1B.10, design
+`docs/plans/2026-10-10-git-module-command-design.md` §2 decisions 1 and 3,
+slice 3). The verbs moved out of madcide's dialect code into the module in C++
+(`src/modules/madcgit/madcgit_verbs.cpp`), over `GitRepo` directly, with the same
+texts and refusals madcide's verbs carry (`tests/testmadcide_git.expect` is the
+oracle's record): `log [-n N] [FILE]` as `git log --format='%h %s (%ar, %an)'`,
+`show REV[:FILE]`, `blame FILE[:LINE]` as `git blame --date=relative`, `status`
+as `git status -sb`, `diff [FILE]` as `git diff HEAD`. One verb table (an enum, a
+word converted once) holds their names, codes and usage line; the relative dates
+are git's date.c (`show_date_relative` thresholds and roundings).
+`madcgit_commands` exports the one row `%git VERB [ARGS]`, so `-lmadcgit`, the
+ini's `modules` key, or `import madcgit;` at the prompt bring `%git`; without the
+module `%git` is an unknown command like any other. FILE resolves through the
+host's buffers (`madc::session_buffer`): `%git blame FILE` and `%git diff FILE`
+read a buffer's unsaved text, and the repository is the one above FILE, else
+above the current buffer, else the working directory's. `GitRepo::relpath` is now
+the one owner of "a path inside the working tree, git's forward-slash spelling";
+`madcgit_relpath` calls it instead of its own copy (same refusal text). madcide
+keeps its Changes / History / Blame views and loads the module itself; its
+dialect `%git` verbs are the second implementation until 1D.18 (the design's
+deletion deadline), with `testmadcide_git` running every commit until then.
+
+### A command running in a session reads the host's buffers
+
+A REPL command that runs in a `madc -i` session can now read the host's open
+buffers — a FILE's live unsaved text, or the current buffer — the way a
+host-side command already did (split arc 1B.10, design
+`docs/plans/2026-10-10-git-module-command-design.md` §1, decision 4). Before,
+the host's buffers had one asker (`BackendSession::resolve`, 1B.8) and the
+session never asked. `madc::resolve_buffer` is now THE buffer rule: the
+`ReplSession::BufferSource` a host hands over answers when there is one; with no
+source, or for a FILE no buffer holds, the name is the path and the disk is read
+(`has_text` false); with no FILE and no current buffer it is refused with `no
+FILE, and this host holds no buffer`. `BackendSession::resolve` now calls it
+instead of its own copy. `InteractiveSession::set_buffers` keeps the source (it
+ignored it before) and `buffer_text` asks it;
+`madc::session_buffer(name, path, text, has_text, why)` is the question a
+module's command asks — reaching the running session through
+`active_runtime_program()->owning_session`, or the disk's outside a session —
+and `<ns_madc>`'s `madc::session_buffer(out, name)` is its dialect face,
+`{path, text, has_text}` or `{error}`. In a backend the command runs across the
+wire: `serve_session` installs a source that writes a `buffer` request to the
+host mid-entry and reads the answer (a Send EOF meanwhile is taken as the loop
+takes it; any other request waits in order), and the host's `SessionClient::poll`
+answers it from the source `SessionClient::set_buffers` holds
+(`BackendSession::set_buffers` hands it on) and keeps waiting.
+
+### A module brings its REPL commands to a session, registered when the module loads
+
+A loaded native module can now bring REPL commands to a `madc -i` session, and
+the session registers them when the module enters its Program (split arc 1B.10,
+design `docs/plans/2026-10-10-git-module-command-design.md`). A module's map row
+(`src/madc_modules.cpp`) gains a `commands` column: the name of the function the
+module exports that hands back its command rows. `include/madc_module_commands.h`
+holds the row shape `madc_module_command {name, usage, summary, handler}` and the
+function type `madc_module_commands_fn`, with a `static_assert` tying the handler
+to the registry's own `InteractiveSession::CommandHandler`.
+`InteractiveSession::register_module_commands()` looks once per spelling at the
+Program's loaded modules — `loaded_lib_paths` (`-l`, the ini's `modules`, an
+eager `import`) and `module_optional_libs` (a lazy `import`) — opens a
+row-carrying module through `madc_module_open` (never under `--no-auto-load`),
+finds the function through `madcdl_sym`, and `add_module_commands` adds each row
+as a session row; it runs at `begin()` for the configured Program's modules and
+after each kept unit (an entry, a loaded file) for its imports. A built-in's
+name, a row without a handler, and a name already taken are skipped, and the
+first registration stands. madcgit's row names `madcgit_commands` (its export
+lands in the slice that moves the verbs); every other module row is NULL and
+brings none. The model is IPython's `%load_ext`, which registers an extension's
+magics when the extension loads.
+
+### `git log -- PATH` in the git module hides a commit TREESAME to any parent
+
+`madc`'s git module (`madcgit`) now follows git's history-simplification rule
+for `log -- PATH`: a commit is shown only when the blob at PATH differs from
+EVERY parent's, so a commit that is TREESAME to any parent is hidden.
+`touches_path` previously returned shown as soon as ONE parent's blob differed,
+which listed a merge of an unrelated history (a subtree import) as a change to
+every path the first parent already carried. On this repository,
+`%git log -n 1 tests/testint.mad` answered the `third_party/libgit2` subtree
+merge where `git log -n 1 -- tests/testint.mad` answers `e51e4f717 fixed some
+parseExpression stuff`, the commit that last edited the file. The oracle is real
+git: after `first` (a.txt), an orphan `side` (x.txt) and
+`git merge --allow-unrelated-histories side`, `git log --format=%s -- a.txt`
+prints `first` alone and `-- x.txt` prints `side` alone; `GitRepo::log` now
+answers the same. The correction reaches madcide's `%git log` and History view,
+the git source adapter's commit records, and the module's `madcgit_log`.
+
+### The REPL colours the code it shows and the source line it echoes
+
+`madc -i` now colours the code in what a command shows — `%type`'s type and
+`%pinfo` / `?name`'s declarations, signatures and type definitions — and the
+source line it echoes under a diagnostic, both in the theme's colours where
+colour reaches the output (split arc 1B.9, design
+`docs/plans/2026-10-10-prompt-colour-design.md`). A session records which byte
+ranges of its shown text are code (`madc::code_range`): `%type` marks its whole
+output and `%pinfo` marks each declaration, signature, type and macro
+definition, while IPython's labels, locations, a keyword's provenance, a shown
+value and `%help`'s text stay plain. The backend carries those ranges on the
+offer reply (`shown_code` — `[from, to]` pairs, any that runs past the text
+dropped), and the host colours them through `madc::theme_paint`, which lexes
+each range alone under the session's standard and leaves the rest as it is. A
+diagnostic's echoed source line is now coloured too (`show_error_source_line`):
+its tokens lexed under the Program's standard with marks of no width, so the
+caret's columns are the plain line's and a too-wide line's tail keeps the
+colours from the caret's byte on — without colour, or without a theme, the echo
+is byte-identical to before (gcc's). At `madc -i` the echo is coloured in the
+crash-isolated backend, which renders diagnostics with the host's colour verdict
+(above). The painter's layout, the echoed line and the shown text's code now
+share one mark-insertion rule (`hub::mark_line`).
+
+### The REPL backend's rendered diagnostics are coloured as the host's error stream shows colour
+
+`madc -i` on a terminal now colours its diagnostics under the default
+`-fdiagnostics-color=auto`, matching gcc's coloured output on a terminal stderr.
+The CLI REPL always runs its session in a crash-isolated backend, whose rendered
+diagnostic text is a string the host prints on `std::cerr`; the backend's own
+`colour_reaches` saw that string, never the terminal, so it emitted plain text
+even where `std::cerr` would show colour. The host now sends its own
+`colour_reaches(std::cerr)` verdict as a `colour` request after every backend
+start (the pattern the history and project requests already use), and the backend
+sets its colour mode to match (`always` / `never`), so it colours the rendered
+diagnostics as that stream would show them. A host that never sends the verdict —
+madcide, whose backend writes to a pipe — keeps the plain diagnostics as before.
+
+### The REPL prompt colours the entry as it is typed
+
+`madc -i` now colours each entry in the theme's colours as it is typed (split
+arc 1B.9, design `docs/plans/2026-10-10-prompt-colour-design.md`), when colour
+reaches the terminal (Phase 0.5's `colour_reaches` — `-fdiagnostics-color`,
+`NO_COLOR`, `TERM`). The line painter paints colour MARKS it is handed — a byte
+range of a line with an opaque SGR prefix — around the glyphs each covers,
+zero-width, so the layout's columns, the wrap and the caret are the unmarked
+line's; `line_layout` (the one width owner) now reports where each byte's glyph
+starts in the shown bytes, so the painter never counts an escape as a column.
+`madc_repl_edit` composes the marks per paint through `madc::theme_marks`, which
+lexes the entry under the session's standard (`%std` re-keys it) and coalesces
+each run of one non-plain style into a mark of its SGR; a command entry (`%`,
+`.`, `?`, `:`) is no code and stays plain. madc.ini's new `theme = PATH` key
+reads a madcide `.theme` file in place of the built-in theme — a file that
+cannot be read or whose spec is refused keeps the built-in theme and warns at
+start. `madc.1` now documents `theme=` and the previously undocumented
+`modules=`.
+
+### The syntax-colour owners: highlight classes, the SGR step, the theme, the classifier's C++ face
+
+The colour machinery the REPL prompt will paint through now has its owners (split
+arc 1B.9, design `docs/plans/2026-10-10-prompt-colour-design.md`).
+`HighlightClass` and its name table move from `include/tokens.h` to
+`include/highlight_class.h`, which also carries `highlight_class_of` (a name back
+to its class) and `madc::lex_classes(text, standard, out)` — the classifier's
+C++ face, returning `{line, byte, length, HighlightClass}` spans lexed under the
+caller's `--std=` (`class` is an identifier under C17, a keyword under C++17),
+running no user code and leaving the calling thread's diagnostics untouched. The
+chrome a theme colours (`tui_chrome`, `tui_chrome_of`) moves from
+`include/madcdis/tui_model.h` to `include/madcdis/ui_chrome.h`. The style-to-SGR
+step and the terminal's colour-depth probe leave `src/ui_term.cpp`'s anonymous
+namespace as `madc::hub::sgr` and `madc::hub::terminal_colour_depth`
+(`include/madcdis/ui_sgr.h`), shared by the TUI's paint and the prompt's marks. A
+new `madc::theme` owner (`include/madc_theme.h`, `src/madc_theme.cpp`) holds a
+style per highlight class and per piece of chrome: `theme_default()` is madcide's
+`default.theme` (JOE 4.6 parity — keyword, control, type and typename bold;
+string and number cyan; comment green; directive blue; include and escape bold
+cyan; the rest plain); `theme_read(text, theme, err)` reads madcide's `.theme`
+text, where a class left unnamed inherits its parent's style, a whole file is a
+scheme and never an overlay, and an unknown name or unreadable spec is refused,
+naming the line. madcide's `default`, `classic`, `vivid` and `vscode` profiles
+read unchanged.
+
+### `madc -i` gains `%project`
+
+`madc -i` now opens, edits, checks, builds and runs the session's project at the
+prompt (split arc 1B.8). `%project` with no CMD prints the open manifest — its TU
+count, entry, kind, output and each TU's path — or `no project`; `%project
+MANIFEST` opens it, created when it is missing; `%project add FILE...` and
+`%project del FILE...` write the manifest through its C++ writer; `%project check`
+parses every TU with its manifest options and shows `FILE: N errors, M warnings`
+per TU with problems, else `MANIFEST: clean`; `%project build [-o OUT]` builds the
+`--project` native lane, OUT defaulting to the manifest's `output`, else its path
+without `.prj.json`, else without its extension; `%project run [ARGS]` runs the
+`--project` JIT lane in a child, passing it ARGS; `%project close` closes it. The
+project is session state the host keeps across restarts — `madc -i` and madcide
+restore it into every fresh session, and madcide opens the named manifest — so it
+survives `%reset`. `%project run` now passes the program its arguments on every
+platform.
+
+### The project manifest gains a C++ writer, beside its reader
+
+The manifest had a C++ reader (`read_project_manifest`) and no C++ writer — only
+madcide's dialect code wrote it. `project_manifest_create`,
+`project_manifest_add_tu` and `project_manifest_remove_tu`
+(`include/madc_project.h`, `src/madc_project.cpp`, split arc 1B.8) now write it
+beside the reader. Each is a read-modify-write of the native manifest's JSON
+object that keeps every key it does not change (an IDE's `commands`, a TU
+entry's own fields); the bytes are nlohmann's `dump(2)` and a newline —
+madcide's own (`js::stringify(proj, 2)`), keys sorted. `create` writes
+`{"entry": "main", "tus": []}` and refuses an existing file. `add_tu` names a TU
+relative to the manifest's directory when it lies below it, else by its
+canonical path, and refuses a missing file or a TU already present. `remove_tu`
+matches by canonical path or the manifest's own spelling — a file deleted from
+disk can still be removed — and leaves the TU entry's fields with it. A
+compile_commands.json import (an array) is refused as read-only, and a field of
+the wrong JSON type is refused. The bytes pass through the one whole-file
+reader/writer pair, `madc::document_read_file` / `document_write_file`.
+madcide's writers move onto it in 1D.
+
+### A malformed `--project` manifest is refused, not an abort
+
+A manifest field of the wrong JSON type — `{"tus":[{"file":3}]}`, a number where
+a string is read — made nlohmann's `value()` / `get()` throw `type_error.302` past
+`read_project_manifest`'s parse-only catch, so `madc --project` (and any session
+or IDE that opens the manifest) terminated with `SIGABRT`. The reader now catches
+the type error at its one entry and returns the same `manifest field of the wrong
+type: ...` refusal every other malformed manifest already gets.
+
+### A project manifest's directory is read by the host's separators
+
+`read_project_manifest` split the manifest path with `find_last_of('/')`, so a
+Windows manifest named with `\` (`C:\work\p.prj.json`) read `.` for its directory
+and resolved its relative TUs, icon and libs against the process cwd — a silent
+wrong file whenever the cwd differs — while a POSIX manifest at the root
+(`/p.prj.json`) read `""` (the cwd) instead of `/`. The directory now comes from
+`host_path_dirname`, the host's path splitter, and is `.` when the path has none;
+relative names resolve against the manifest's own directory on either host.
+
+### `madc -i` gains `%build` / `%run` on the current buffer, and `%args`
+
+`%build` and `%run` now take FILE as optional (split arc 1B.8): with no FILE a
+payload host builds or runs its current buffer's live text — `madc -i` and
+madcide resolve the buffer to a path and text, the backend builds or runs that
+text, and `%build`'s OUT defaults to the buffer's path without its extension. An
+emptied buffer builds its empty text, never the file's old contents. A session no
+payload host drives refuses with `needs a FILE: this host holds no buffer`.
+`%args [ARGS]` sets the program arguments a buffer `%run` passes — no ARGS prints
+them, ARGS (shell words) replaces them, `%args --` clears them — kept by the host
+across restarts, as madcide's progargs is, and composed into `%run`'s argv.
+`%run FILE ARGS` is unchanged.
+
+### `madc -i` gains `%check`
+
+The interactive session now answers `%check [FILE]` (split arc 1B.8): FILE's
+diagnostics under the session's standard, reported without running anything — gcc
+`-fsyntax-only`'s shape — shown as `FILE: clean` or `FILE: N errors, M warnings`.
+With no FILE it checks the host's current buffer; with a FILE it checks that
+buffer when a host holds it, else the file on disk. The buffer stays in the host
+and the parse runs in the backend (a child parse; nothing joins the session), so
+checking a half-written buffer cannot take the session down. `madc -i` resolves a
+FILE to its live buffer text — an untitled buffer is refused (`:w FILE` names it)
+— and madcide reports the rows in Problems; a session no payload host drives
+reads FILE from disk and refuses a missing one. Colon mode gains no `:check` (ex
+has none).
+
+### The REPL's Tab completion rule gets one owner
+
+`madc::hub::complete_word(word, candidates)` (`include/madcdis/line_edit.h`)
+now answers what Tab does with a word's candidates — one candidate inserts it,
+several their longest common prefix when it extends the word else a list, none
+nothing, as readline does. The line editor's Tab applies it; madcide's REPL
+pane moves onto it in split arc 1D.
+
+### `madc -i` gains `%std` and `%reset`
+
+The interactive session now answers `%std` and `%reset` (split arc 1B.7). `%std`
+with no name prints the standard in force by its `--std=` spelling (`c17`,
+`gnu++20`, `madc`); `%std NAME` under a different standard is a fresh session
+under NAME, the same one changes nothing, and an unknown NAME is refused before
+anything restarts. `%reset` is a fresh session under the same standard, nothing
+printed, as IPython's `%reset -f`. A fresh session is the host's, so a host that
+cannot restart — `madc` without `-i` — refuses both, as `%run` is refused;
+`madc -i` and madcide's REPL pane honor them, restarting the backend (under
+NAME's standard for `%std`). After the standard changes, the REPL re-keys its
+prompt and the terminal loop reloads its history ring for the new language, as
+each of Julia's modes recalls its own.
+
+The `--std=` spelling now has one reader, `Program::standard_of_spelling` (the
+standard a word names and whether it is the GNU dialect — `gnu17` is C17 plus
+GNU extensions, as gcc reads it — no Program changed), and a writer,
+`Program::standard_spelling` (`c17`, `gnu17`, `c++20`, `gnu++20`, `madc`);
+`set_language_standard` reads through the owner.
+
+### `madc -i` gains `%history`, and the REPL history store gets one owner
+
+The interactive session now answers `%history` (split arc 1B.7): plain
+`%history` lists this session's entries numbered from `REPL[1]`, the `%history`
+line itself included, as IPython's does; `-n` prefixes each with its number;
+`-l [N]` lists the last N entries saved in the session's language (10 without
+N); and `-g TEXT` lists the saved entries holding TEXT, oldest first. The
+session answers it, so every host gets it — `madc -i`, madcide's REPL pane, an
+embedding's. `-g`'s match is a literal substring, Ctrl-R's rule, not IPython's
+glob. A session the host kept no history file for (`--history-file=no`) still
+lists its own entries, but refuses `-l` and `-g`.
+
+The history file — Julia's records, one per entry, keyed by the standard it was
+typed at — now has one owner, `madc::history_*` (`include/madc_history.h` /
+`src/madc_history.cpp`): the default place (`~/.local/state/madc/history`, or
+`%LOCALAPPDATA%\madc\history` on Windows), the entries of one language (C, C++
+or madc), and one append in one `O_APPEND` write so concurrent sessions
+interleave whole records. The terminal loop's Up / Ctrl-R ring and the
+session's `%history` both read through it; the record format is unchanged.
+
+### `madc -i` opens each buffer with the indent its text — or its language — shows
+
+In colon mode (split arc 1B.6, ex core slice 6), a buffer now opens with its
+`shiftwidth` and `expandtab` set from the indent its own text shows over its
+first 1000 lines — a tab when tab-indented lines are at least as common as
+space-indented, else the spaces the indentation most often steps by between
+neighbouring lines (2..8; a one-space step is alignment) — or, when no line is
+indented, its file kind's default: four spaces for Python, two for YAML, a tab
+for the rest. `>` and `<` then shift by that unit. The per-language editing
+tables — the line-comment opener, the block delimiters, the default indent and
+indent detection, keyed on the file-kind enum — now live in madc
+(`src/file_kind_editing.cpp`, declared in `include/madc_file_kinds.h`) beside the
+file-kind owner; madcide's dialect copies move onto them later in the split arc.
+
+### Windows `madc -i` shares a piped stdin with its backend byte-exactly
+
+On genuine Windows, an entry that reads stdin from a piped transcript now sees
+the exact next bytes, and the host's next REPL line follows them precisely — one
+stdin serves both the host and its crash-isolated backend (split arc Phase
+1A.5). The Windows C runtime reads even an unbuffered stream two bytes at a
+time, so a backend entry's `scanf` could leave a byte past what it parsed
+sitting in the backend process; after each entry the backend now hands those
+bytes back in its reply and the host reads them before its own input. POSIX and
+a Windows console were already exact and are unchanged.
+
+### Diagnostics are coloured only where colour reaches the terminal
+
+madc's diagnostics now carry colour only when they reach a terminal that shows
+it, matching gcc's `-fdiagnostics-color=auto` (split arc Phase 0.5). Running
+`madc file.c 2> log`, piping the output, an IDE pane, or an embedding's captured
+stream all get plain text — previously the SGR escapes were written to every
+stream unconditionally. `NO_COLOR` (set and non-empty) turns colour off even on
+a terminal, `TERM=dumb` shows none, and on Windows a console is switched to VT
+mode so the escapes display.
+
+New options follow gcc's spelling: `-fdiagnostics-color[=auto|always|never]`
+(the bare flag means `always`) and `-fno-diagnostics-color`. An unknown value is
+refused: `Unknown -fdiagnostics-color= value: yes (auto, always, never)`.
+
+As a consequence, madcide's REPL tab — whose backend writes to a pipe — now
+shows diagnostics uncoloured.
+
+### Windows `madc` and `madc -i` run the session in a crash-isolated backend
+
+On Windows, `madc` and `madc -i` now run the interactive session in a backend
+process, as they already did on Linux and macOS (split arc Phase 1A.5) — the
+counterpart of the earlier change that gave POSIX its backend. The backend is a
+run of madc itself, started with the same options you gave the session (`--std`,
+`-I`, `-D`, `-l`, `--config` / `--no-config`, ...) and configured the same way —
+madc.ini and the `-l` libraries — then restarted with those same options after a
+crash or `%run`. If an entry crashes, madc prints `madc: the session stopped
+(exception 0xc0000005); a new one started` and the REPL carries on with a fresh
+session (its state starts empty).
+
+A session that stops on Windows now names the exception code in its message
+rather than reading "signal 0": a Windows crash ends the process with its
+exception code and no signal, so the stop line reads `(exception 0xc0000005)`.
+
+### engine: a source's standard follows its extension, and madc.ini's `modules` key
+
+A source compiled without `--std` now takes the standard its extension names,
+as plain `gcc` and `g++` do (split arc Phase 1A.4): a `.c` / `.h` file
+compiles as `gnu17`, a `.cpp` / `.cc` / `.cxx` (and the other C++ extensions)
+as `gnu++17`, and a `.mad` file as the madc dialect — where previously every
+source compiled in the madc dialect regardless of extension. The precedence is
+`--std` > the source's extension > madc.ini `std` > `madc`; the madc.ini `std`
+key now applies only to a source with no recognised extension (a shebang
+script, stdin). One owner decides it for every consumer —
+`Program::adopt_file_standard` — so the CLI, a `--project` TU and the editor's
+document parse of the same file give the same answer.
+
+User-visible behaviour changes:
+
+- `madc foo.c` with no `--std` now compiles as `gnu17` (was the madc dialect);
+  `madc foo.cpp` as `gnu++17`. The GNU dialect means a C source sees glibc's
+  feature gates as plain gcc does (no `__STRICT_ANSI__`); the C++ modes keep
+  the strict presentation (a known divergence until `__float128` / `_FloatN`
+  land).
+- A `--project` C++ TU without `-std=` is now `gnu++17` (was the madc dialect);
+  a `.c` TU was already compiled as C.
+- The editor's document parse of a `.c` / `.cpp` file now matches the CLI —
+  `gnu17` / `gnu++17` (was strict `c17` / `c++17`); `madc::parse_open` accepts
+  a C or C++ family head.
+- madc.ini gains `modules` (repeatable) — each value a module or library name
+  as `-l<name>` takes it, loaded after the command line's `-l` libraries, a
+  name the command line already gives loaded once; in an AOT build it joins the
+  link line. CLI and ini are additive.
+- A `.c` / `.cpp` source no longer binds the packed madc-dialect forest: it now
+  compiles under `gnu17` / `gnu++17`, which the corpus (the madc dialect's) does
+  not match, so it falls through to a live parse with no notice — as a
+  `--std=c17` compile always did.
+
+Validation: 146b2aa8c (the standard by extension, its one owner and three
+consumers) and 0c71ce892 (the madc.ini `modules` key) — unit tests, `fix_lanes`
+Tier 1/2 and `make -C src gates` green for the pair.
+
+### engine: one regex engine (PCRE2) behind madc:: and perl::
+
+madc now has ONE regex engine, PCRE2 — the engine behind PHP's `preg_*` —
+reached through `madc::regex_match` / `regex_search` / `regex_replace` and the
+regex-aware `perl::grep` / `perl::split` (split arc Phase 1A.3). The five
+functions previously ran on `std::regex` (ECMAScript, recompiled per call,
+divergent between libstdc++ and libc++); they now share the single
+`madc::regex` owner, so a pattern means the same thing on every platform —
+Linux links the distribution's `libpcre2-8`, and the macOS and Windows
+packages carry a pinned static PCRE2 10.42. Patterns use PCRE2 / Perl / PHP
+syntax written without delimiters, so lookbehind, lazy quantifiers, named
+groups and inline flags that `std::regex` lacked now work; patterns and
+subjects are UTF-8 (`.` matches one code point, invalid UTF-8 in a subject
+never faults), and `regex_replace` names `$0`, `$1` / `${1}` and `$$` in its
+replacement.
+
+User-visible behaviour changes:
+
+- An invalid pattern is now refused on stderr — one line naming the function,
+  the pattern, PCRE2's reason and the byte offset — and a neutral answer is
+  returned (`regex_match` / `regex_search` false, `regex_replace` leaves `out`
+  the unchanged source, `perl::grep` / `perl::split` leave `dest` an empty
+  array). Previously the pattern was answered silently by a substring (grep) /
+  literal-delimiter (split) fallback. A malformed replacement (`$9` with no
+  ninth group) is refused the same way.
+- `perl::split` on an empty pattern now splits the string into its code
+  points; previously it returned the whole string as one field.
+- `libpcre2-dev` is a new Linux build dependency; the Homebrew formula depends
+  on `pcre2`, and the macOS and Windows packages ship `pcre2-LICENCE.txt`.
+
+Validation: 461773c96 (engine + build/link/packaging wiring) and 2f44803b8
+(the five functions moved onto it) — unit tests and `fix_lanes.sh` Tier 1/2
+green for each; release-windows and release-macos (both arches) built and
+packaged against the pinned static PCRE2 10.42.
+
+### engine: modal REPL prefixes, and a command registry modules and hosts extend
+
+An interactive entry's first non-blank character is now its MODE (split arc
+Phase 1A.2): `%` and `.` are the REPL's commands (IPython / clang-repl and
+cling / Node, each with its own aliases), `?` is the query (`?NAME` is
+`%pinfo NAME`, `?` alone `%help`), and `:` is colon mode — ed / ex / vim
+commands, the host's, which the session refuses (`is a colon-mode command`)
+until Phase 1B.6 brings a colon mode. Every leading `%` `.` `?` `:` is a
+command except `.`+digit, `::` and `%:`. The other REPLs' aliases now live in
+one mode each: cling's and Node's `.L` `.x` `.q` `.exit` `.?` are `.` only, so
+`%L` `%x` `%q` `%exit` `%?` and every `:`-spelled REPL command (`:type`,
+`:help`, `:L`, `:q`) are refused, superseding the old "an alias is valid under
+every prefix".
+
+The built-in command table becomes the one registry that two kinds of
+registered row extend, resolved by the same name lookup: a session row
+(`madc::command_add` from code running in an entry, `InteractiveSession::
+add_command`) whose handler runs in the session and shows its output; and a
+host row (`madc::session_command_add`, `set_host_commands` over the wire's new
+`commands` request) that answers the new `session_payload::command` with the
+row's code and argument for the host to run. Both reach `%name` and `.name`,
+`%help` lists them in registration order after the built-ins, and completion
+offers them in both REPL modes; host rows survive a backend restart, session
+rows go with the backend. `madc::session_command_of` now also returns the
+entry's `mode` (a `madc::command_mode` code) and colon mode's whole text after
+the `:`. Validation: `make -C src test` green; `fix_lanes.sh` green — Tier 1
+33/0 on JIT (exe 19/0, obj 19/0 of the JIT-passing); Tier 2 c-testsuite
+220/0, c-torture 1617 passed (0 outside baseline), c2mir-tests 368/0, gui
+30/30, gxx-c++11 1505 passed (0 outside baseline), index-c 50/50, commonmark
+664/670 (0 outside baseline).
+
+### engine: file buffers are a document component, with an edit notification
+
+The data substrate gains a document component beside its existing text
+component (split arc Phase 1A.1). A text now carries a monotonic version
+(`world::text_version`), bumped once per load / insert / erase / replace / undo
+/ redo. A document (`world::_docs`, `madcdis/document.h`) adds path, file kind,
+read-only, a saved version — from which `modified` is derived, never set —
+anchors (byte positions that follow edits, with per-anchor gravity and the
+replaced-range collapse), a document-level checkpoint that rides with the
+anchors and the saved state, and an opaque parse-handle slot. Every
+`world::text_*` mutator now publishes one byte-precise `text_change` record to
+each subscriber (`text_listener`), synchronously and in subscription order; a
+text mutation attempted from inside a delivery is refused (the textlock), as is
+one on a read-only document. `madc::doc_parse` / `doc_parse_checked` open or
+refresh a document's parse handle to its current version — one version compare
+in place of the old whole-text string compare. `madc::file_kind_family` and
+`madc::file_kind_default_standard` are the one table for the standard a file
+gets (C17, C++17, madc). The script surface adds `ui::doc_*`, `ui::anchor_*`,
+`ui::text_version` and `ui::doc_subscribe` (a dialect handler receives the
+record). Gate `scripts/check-one-text-publish.sh` (in `make gates`) holds the
+single publish point: `text_buffer`'s mutators are called only from `hub.h`,
+`text_buffer.h`, `line_edit.h` and the unit tests. Validation: `make -C src
+test` green (test_document: 5 cases, 133 assertions); `fix_lanes.sh` green —
+Tier 1 testdocument 1/1 on JIT, exe and obj; Tier 2 c-testsuite 220/220,
+c-torture 1617 passed / 7 failing (0 outside baseline), c2mir-tests 368/0, gui
+30/30 (exe 30, obj 30), gxx-c++11 1505 passed / 441 failing (0 outside
+baseline), commonmark 664/670 (0 outside baseline).
+
+### engine: the edit notification's change kind is an enum code
+
+The `text_change` kind a dialect subscriber receives (`ui::doc_subscribe`) is
+the shared `ui::text_change_kind` enum code (`<bits/ui_enums>`, aliased by
+`madcdis/document.h` `text_change::kind`), compared as `c["kind"] ==
+ui::text_change_kind::splice` — no longer a `"splice"` / `"load"` / `"undo"` /
+`"redo"` string.
+
 ## [v0.103.0] — 2026-10-09
 
 The TUI facelift: madcide's terminal UI gains the GUI's menus, toolbar, mouse, dialogs, framed panes, tab strips and Dark+ colour, verified by golden screens on POSIX and genuine Windows; names are held as interned `istring` and embedded headers are ranked by a build-time table for a faster compile; and madcide opens every file named on its command line, with Help pages in the editor.

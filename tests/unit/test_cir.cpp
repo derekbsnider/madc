@@ -2775,3 +2775,29 @@ TEST_CASE("file kinds: LanguageStd = the vocabulary's ranges; one name table; th
 	    ++rendered;
     CHECK(members == rendered);
 }
+
+TEST_CASE("file kinds: the standard a file gets when nothing named one (adopt_file_standard)") {
+    // split arc 1A.4: the extension's family default, taken as plain gcc /
+    // g++ take it — the GNU dialect (no __STRICT_ANSI__); a kind naming a
+    // standard is that standard, strict; madc's kinds the dialect; nothing
+    // outside the compiler families (or for the IR's text).
+    Program p;
+    REQUIRE(p.adopt_file_standard(madc::file_kind_of_path("x.c")));
+    CHECK(p.language_std == Program::STD_C17);
+    CHECK(p.gnu_dialect);
+    CHECK_FALSE(p.strict_ansi_mode());
+    REQUIRE(p.adopt_file_standard(madc::file_kind_of_path("x.cpp")));
+    CHECK(p.language_std == Program::STD_CPP17);
+    CHECK(p.gnu_dialect);
+    REQUIRE(p.adopt_file_standard(madc::fkC11));
+    CHECK(p.language_std == Program::STD_C11);
+    CHECK_FALSE(p.gnu_dialect);
+    REQUIRE(p.adopt_file_standard(madc::file_kind_of_path("x.mad")));
+    CHECK(p.language_std == Program::STD_MADC);
+    CHECK_FALSE(p.gnu_dialect);
+    CHECK_FALSE(p.adopt_file_standard(madc::file_kind_of_path("notes.md")));
+    CHECK_FALSE(p.adopt_file_standard(madc::file_kind_of_path("script")));
+    CHECK_FALSE(p.adopt_file_standard(madc::fkMC11));
+    CHECK(p.language_std == Program::STD_MADC);	// a refusal sets nothing
+    CHECK(madc::file_kind_default_standard(madc::fkMC11) == 0);
+}

@@ -1,0 +1,10 @@
+open: 1
+typed: [one|2two|] caret=5 edits=1 head=[modified] msg=
+undo: [one|two|] caret=4 edits=2 head=clean msg=
+saved: [one|2two|] caret=5 edits=3 head=clean msg="tmp\testvised.txt" 2L, 9B written
+disk: ok
+other: [>> one|2two|] caret=8 edits=4 head=[modified] msg="tmp\testvised.txt" 2L, 9B written
+ex-1d: [2two|] caret=0 edits=5 head=[modified] msg=
+quit-dirty: cont=1 msg=no write since last change (add ! to override)
+discard: cont=0
+readonly: [one|2two|] caret=0 edits= head=[read-only] msg=Document is read-only.

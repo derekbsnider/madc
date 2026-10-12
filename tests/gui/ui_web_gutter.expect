@@ -1,0 +1,6 @@
+GUT open
+GUT 1 gutter=1 ch=3 ln=3 L1=rgb(133, 133, 133)/rgba(0, 0, 0, 0) L2=rgb(198, 198, 198)/rgb(40, 40, 40) L3=rgb(133, 133, 133)/rgba(0, 0, 0, 0) text2=two
+GUT press offset=8
+GUT 2 gutter=1 ch=3 ln=3 L1=rgb(133, 133, 133)/rgba(0, 0, 0, 0) L2=rgb(133, 133, 133)/rgba(0, 0, 0, 0) L3=rgb(198, 198, 198)/rgb(40, 40, 40) text2=two
+GUT 3 gutter=0 ch=- ln=0 L1=-/rgba(0, 0, 0, 0) L2=-/rgba(0, 0, 0, 0) L3=-/rgba(0, 0, 0, 0) text2=two
+GUT closed

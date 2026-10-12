@@ -1,0 +1,15 @@
+match: yes no
+search: yes
+utf8: yes
+lookbehind: cost $N and $N
+groups: host at me
+lazy: [][]
+grep: apple|cherry|avocado|blueberry
+split: one|two|three|four
+split edges: [|a|b] 3
+split empty: a|b|c
+refused search: no
+refused replace: xa(by
+refused grep: 0
+refused split: 0
+refused replacement: a

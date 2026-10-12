@@ -93,7 +93,7 @@ would fire on every such keystroke typed into the page). Every dialog call
 is asynchronous on every platform — it returns 0 once the dialog is up and
 the callback fires later, on the UI thread, inside the platform loop the
 host is already running (`webview_run`). `madcwebview_menu_activate(id)`
-fires an item as the user would — the test seam `tests/gui/madcide_menu.mad`
+fires an item as the user would — the test seam `tests/gui/ui_web_menu.mad`
 drives it under Xvfb, and natively on the Windows and macOS staging sets.
 
 The release targets build the library beside the binaries

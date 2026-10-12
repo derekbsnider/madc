@@ -1,0 +1,6 @@
+// %psource NAME and ??NAME / %pinfo2 NAME (IPython's): the source of a name
+// the session defined — its whole definition, from the entry that typed it
+// or the file %load read — and %pinfo's fields with a Source: section after
+// them. A name the session holds no source for (a header's) is refused by
+// %psource; ??NAME then shows %pinfo alone.
+int base = 10;

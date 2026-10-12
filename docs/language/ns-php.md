@@ -38,10 +38,10 @@ declared only when `<string>` precedes `<ns_php>`.
 
 | Function | Description | Example |
 |----------|-------------|---------|
-| `trim(str)` | Strip whitespace from both ends | `php::trim(s)` |
-| `ltrim(str)` | Strip whitespace from left | `php::ltrim(s)` |
-| `rtrim(str)` | Strip whitespace from right | `php::rtrim(s)` |
-| `chop(str)` | Alias for `rtrim` | `php::chop(s)` |
+| `trim(str[, chars])` | Strip PHP's default set (`" \n\r\t\v\0"`), or the bytes `chars` names (`"a..z"` is a run), from both ends | `php::trim(s)`, `php::trim(s, "/")` |
+| `ltrim(str[, chars])` | The same, from the left | `php::ltrim(s, "0")` |
+| `rtrim(str[, chars])` | The same, from the right | `php::rtrim(s, "\n")` |
+| `chop(str[, chars])` | Alias for `rtrim` | `php::chop(s)` |
 | `ucfirst(str)` | Capitalize first character | `php::ucfirst(s)` |
 | `lcfirst(str)` | Lowercase first character | `php::lcfirst(s)` |
 | `str_repeat(str, n)` | Repeat string n times | `php::str_repeat(s, 3)` |

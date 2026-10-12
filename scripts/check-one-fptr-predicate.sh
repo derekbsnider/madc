@@ -40,7 +40,7 @@ if [ "$c1" -ne 1 ] || [ "$c2" -ne 1 ]; then
 	exit 1
 fi
 
-files=$(git ls-files 'src/*.cpp' 'src/*.c' 'include/*.h')
+files=$(git ls-files --cached --others --exclude-standard 'src/*.cpp' 'src/*.c' 'include/*.h')
 ob=$(code_lines "$OBLIQUE" $files)
 n1=$(printf '%s' "$ob" | grep -c . || true)
 echo "oblique function-pointer tests (is_function() && is_numeric()): $n1 (target 0)"

@@ -31,7 +31,7 @@ if [ "$c" -ne 1 ]; then
 	exit 1
 fi
 
-files=$(git ls-files 'src/lexer*.cpp')
+files=$(git ls-files --cached --others --exclude-standard 'src/lexer*.cpp')
 un=$(code_lines "$SCAN" $files | grep -v 'allowed-exception')
 n=$(printf '%s' "$un" | grep -c . || true)
 echo "hand-written datatype_map lookups in the lexer: $n (target 0)"

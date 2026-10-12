@@ -45,6 +45,7 @@ GCC_VER=13.2.0
 MINGW64_VER=11.0.1
 MINGW=x86_64-w64-mingw32
 ROOT=/workspace/win-ucrt-libstdc++
+JOBS=$(bash "$(dirname "$0")/build_jobs.sh")	# memory-budgeted (the container is the owner's WSL VM)
 SRC=$ROOT/gcc-$GCC_VER
 PTHREAD_SRC=$ROOT/mingw-w64-$MINGW64_VER
 BUILD=$ROOT/build
@@ -112,7 +113,7 @@ LDFLAGS="$UCRT_LINK" \
 	--prefix="$STAGE" \
 	--enable-shared \
 	--enable-static
-make -j"$(nproc)"
+make -j"$JOBS"
 make install
 
 cd "$BUILD"
@@ -127,7 +128,7 @@ LDFLAGS="$UCRT_LINK -L$STAGE/lib" \
 	--disable-libstdcxx-pch \
 	--enable-threads=posix \
 	--disable-nls
-make -j"$(nproc)"
+make -j"$JOBS"
 make install
 
 # Proof the stage is the UCRT flavor: the _Mbstatet-mangled fpos symbol

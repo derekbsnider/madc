@@ -66,8 +66,8 @@ remote() {	# remote <label> <command run on the container>
 
 # --- 0. pre-build every toolchain, then the static gates ---------------------
 stage prebuild sync build release release-win win
-remote macos-build '( ulimit -t 3600; timeout 2400 make -C src -j20 -k hosted-x86-64-macos ) && ( ulimit -t 3600; timeout 2400 make -C src -j20 -k hosted-arm64-macos )'
-remote aarch64-build '( ulimit -t 3600; timeout 2400 make -C src -j20 cross-aarch64-linux )'
+remote macos-build '( ulimit -t 3600; timeout 2400 make -C src -j"$(bash scripts/build_jobs.sh)" -k hosted-x86-64-macos ) && ( ulimit -t 3600; timeout 2400 make -C src -j"$(bash scripts/build_jobs.sh)" -k hosted-arm64-macos )'
+remote aarch64-build '( ulimit -t 3600; timeout 2400 make -C src -j"$(bash scripts/build_jobs.sh)" cross-aarch64-linux )'
 remote static-gates 'fail=0; for g in scripts/check-*.sh; do out=$( ( ulimit -t 300; timeout 300 bash "$g" ) 2>&1 ); rc=$?; if [ $rc -ne 0 ]; then fail=$((fail+1)); echo "RED  $(basename $g) rc=$rc"; echo "$out" | tail -4 | sed "s/^/       /"; fi; done; echo "static gates: $fail red of $(ls scripts/check-*.sh | wc -l)"; [ $fail -eq 0 ]'
 
 # --- 1. the gates (no suite) -------------------------------------------------

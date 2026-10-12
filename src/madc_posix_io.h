@@ -52,6 +52,39 @@ std::string host_path_basename(const std::string &path);
 // joined `Z:\work\inc` onto the manifest's directory.
 bool host_path_absolute(const std::string &path);
 
+// `path` against the directory `dir` — THE owner of joining a relative path
+// to a base: an absolute or empty `path` stays as it is, as it does beside an
+// empty or "." `dir` (the caller's own spelling, never a "./" twin of it);
+// otherwise `dir`, one separator ('/' unless `dir` already ends in one of the
+// splitters' set), then `path`.
+std::string host_path_join(const std::string &dir, const std::string &path);
+
+// What `path` names on the host (stat): nothing, a file, a directory, or
+// something else (a device, a fifo) — THE owner of "does it exist / is it a
+// directory" for a path the caller is about to open, create or enter.
+enum class host_path_type : unsigned char { none, file, directory, other };
+host_path_type host_path_type_of(const std::string &path);
+
+// A path's extension and stem — THE one rule (gated by
+// check-one-path-stem.sh): the extension is what follows the last dot of the
+// final component, never a dot in a directory and never a leading dot
+// (".bashrc" has none). drop_extension: `path` without it ("dir.d/foo.c" ->
+// "dir.d/foo"; unchanged when there is none); stem: the final component
+// without it ("dir/foo.tar.gz" -> "foo.tar"), as gcc names an artifact and
+// cling a file's function.
+std::string host_path_drop_extension(const std::string &path);
+std::string host_path_stem(const std::string &path);
+
+// Make every directory above `path` that is missing (`mkdir -p` of its
+// parent; owner-only on POSIX). A drive (`C:`) is never made. Failure shows
+// at the caller's open of `path`.
+void host_path_make_parents(const std::string &path);
+
+// A `~` or `~/...` (`~\...` on Windows) path against the user's home ($HOME;
+// %USERPROFILE% on Windows) into `out`. False when `path` is no such form;
+// true with `path` unchanged in `out` when the home is unknown.
+bool host_path_expand_home(const std::string &path, std::string &out);
+
 // Is `path` inside the directory `dir`? Both are COMPARISON spellings
 // (canonical_path_for_compare). THE owner of "under this directory": dir's
 // spelling, less any trailing separator, must be followed in path by a
@@ -89,6 +122,38 @@ long long fd_size(int fd);
 // outright on >4GB files, which would silently demote a big regular file
 // to non-seekable.
 bool fd_is_regular_file(int fd);
+
+// A file held EXCLUSIVELY by this process while the object lives — THE owner
+// of "one process at a time holds this file" (discovery: a project's one
+// owner, a session's liveness). open_held opens `path` (created when missing;
+// owner-only on POSIX) and takes the hold without waiting: false when another
+// process holds it, or the file cannot be opened. The OS drops the hold when
+// the process ends, however it ends, so a crash leaves no live holder — the
+// liveness question a pid cannot answer (pids are reused). POSIX: flock on
+// the open file; Win32: LockFileEx on one byte far past any content, so a
+// reader of the file is never refused. replace() rewrites the content through
+// the held descriptor; release() (and the destructor) drops the hold, and
+// release(true) removes the file with it — never another holder's: on POSIX
+// a hold is taken only while the path still names the held file (the lock-file
+// re-check), and on Win32 a file another process has open refuses deletion.
+class held_file
+{
+public:
+	held_file() : _fd(-1) {}
+	~held_file() { release(); }
+	bool open_held(const std::string &path);
+	bool held() const { return _fd >= 0; }
+	bool replace(const std::string &text);
+	void release(bool remove = false);
+private:
+	int _fd;
+	std::string _path;
+	held_file(const held_file &);
+	held_file &operator=(const held_file &);
+};
+// Does a live process hold `path` (a held_file)? A try on a descriptor of
+// its own, given back at once; false for a missing file.
+bool host_file_held(const std::string &path);
 
 // Positioned read/write on an fd (POSIX pread/pwrite): EINTR-retrying,
 // never moves the file pointer; -1 with errno on failure. The Win32 arm

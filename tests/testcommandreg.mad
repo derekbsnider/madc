@@ -1,0 +1,97 @@
+// The command registry's doors over a real backend (split arc 1A.2; design
+// docs/plans/2026-10-09-command-registry-design.md): a pane's REPL command
+// registered on its handle (session_command_add) comes back as the
+// `command` payload with its code and argument, and survives a restart; a
+// module's command registered by code running IN the session
+// (madc::command_add, from an entry) runs there and shows its output;
+// %help lists both; the modes — `:` is colon mode, the host's, refused by
+// the session; and command_add outside a session answers false. An engine
+// feature: the suite is the oracle.
+
+// The next reply, passing over running notices.
+long next_reply(var &r, long h)
+{
+    var cases;
+    cases[0] = madc::session_readable(h);
+    for ( ;; )
+    {
+	long got = madc::session_poll(r, h);
+	var o;
+	madc::session_output(o, h);
+	if ( got != 0 && r["kind"] == madc::session_reply::running )
+	    continue;
+	if ( got != 0 )
+	    return got;
+	var fired;
+	madc::chan_select(fired, cases);
+    }
+}
+
+// An entry offered whole, its offer row in r.
+void enter(var &r, long h, const char *text)
+{
+    madc::session_offer(h, text, true);
+    next_reply(r, h);
+}
+
+bool unused(var &out, const char *a)
+{
+    return true;
+}
+
+int main()
+{
+    println("outside a session: add={}",
+	    madc::command_add("nope", "%nope", "none", unused));
+
+    long h = madc::session_open("madc");
+    var r;
+    println("pane add={} again={} builtin={} alias={}",
+	    madc::session_command_add(h, "pane", "%pane NAME", "show a pane", 77),
+	    madc::session_command_add(h, "pane", "%pane", "twice", 78),
+	    madc::session_command_add(h, "load", "%load", "a built-in's", 79),
+	    madc::session_command_add(h, "L", "%L", "an alias's", 80));
+
+    enter(r, h, "%pane  outline left");
+    var argv = r["argv"];
+    println("pane: ok={} payload={} code={} arg=[{}]", r["ok"],
+	    r["payload"] == madc::session_payload::command, r["code"], argv[0]);
+    enter(r, h, ".pane x");
+    println("dot pane: payload={} code={}",
+	    r["payload"] == madc::session_payload::command, r["code"]);
+
+    // A module's own registration, from an entry: its handler runs in the
+    // session.
+    enter(r, h, "bool hi(var &out, const char *who) { out = format(\"hi, {}\", who); return true; }");
+    enter(r, h, "madc::command_add(\"hi\", \"%hi NAME\", \"say hi\", hi)");
+    println("registered from an entry: {}", r["shown"]);
+    enter(r, h, "%hi bob");
+    println("hi: ok={} shown={} payload={}", r["ok"], r["shown"],
+	    r["payload"] == madc::session_payload::none);
+
+    enter(r, h, "%help");
+    var help = r["shown"];
+    println("help lists pane={} hi={}",
+	    rust::contains(help.c_str(), "%pane NAME") != 0,
+	    rust::contains(help.c_str(), "%hi NAME") != 0);
+
+    // Colon mode is the host's: the session refuses it.
+    enter(r, h, ":w out.c");
+    var rendered = r["rendered"];
+    println("colon: ok={} refused={}", r["ok"],
+	    rust::contains(rendered.c_str(), "is a colon-mode command") != 0);
+    var q;
+    madc::session_command_of(q, ":%s/a/b/");
+    var qarg = q["argument"];
+    println("command_of colon: mode={} argument={}",
+	    q["mode"] == madc::command_mode::colon, qarg);
+
+    // A restart keeps the pane's rows; the module's went with the backend.
+    madc::session_restart(h);
+    enter(r, h, "%pane again");
+    println("after restart: pane code={}", r["code"]);
+    enter(r, h, "%hi bob");
+    println("after restart: hi ok={}", r["ok"]);
+    madc::session_close(h);
+    return 0;
+}

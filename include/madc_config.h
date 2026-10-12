@@ -2,7 +2,7 @@
 //                                                                       //
 // madc.ini — madc's own configuration SCHEMA (forest-carriers S6).       //
 //                                                                       //
-// The five keys a madc.ini may set, and nothing else: the format itself   //
+// The keys a madc.ini may set, and nothing else: the format itself       //
 // (lookup chain, grammar, path semantics, strict diagnostics) belongs to  //
 // the schema-blind reader in madc_config_file.h, which madcdat and any    //
 // madcdis-based tool share. Applying the values — and therefore the       //
@@ -43,10 +43,13 @@ struct config_settings
     bool has_stdlib = false;
     std::string forest;				// forest = <file>   -> discovery arm 5
     std::vector<std::string> include_dirs;	// include = <dir>   (repeatable)
+    std::vector<std::string> modules;		// modules = <name>  (repeatable) -> -l<name>
     std::string cpu_limit;			// cpu-limit = off|auto|<secs> (validated by
     bool has_cpu_limit = false;			// the guards' one knob parser at parse)
     std::string mem_limit;			// mem-limit = off|auto|<MB>
     bool has_mem_limit = false;
+    std::string theme;				// theme = <file>    -> the REPL's colours
+    bool has_theme = false;
 };
 
 // madc's lookup chain (./madc.ini → the user config dir → the system config

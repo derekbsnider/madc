@@ -9,7 +9,7 @@ same source.
 A basic madc program needs no project scaffolding, no separate compiler
 invocation, and—under the default madc dialect—no explicit `main()`.
 
-[Usage](docs/usage.md) · [Build](docs/build.md) · [madcide](docs/madcide.md) ·
+[Usage](docs/usage.md) · [Build](docs/build.md) · [madcide](https://github.com/derekbsnider/madcide) ·
 [Architecture](docs/architecture.md) · [Test status](docs/test-status.md) ·
 [Changelog](CHANGELOG.md) · [Contributing](AGENTS.md)
 
@@ -189,7 +189,10 @@ Namespace precedence can be selected explicitly with `prefer` or
 
 ## madcide and the Nexus — the IDE *is* the running compiler
 
-`madcide` is not an editor that shells out to a compiler. The live parse in
+madcide lives in its own repository,
+[derekbsnider/madcide](https://github.com/derekbsnider/madcide), and its
+packages carry the madc release they run on. It is not an editor that shells
+out to a compiler. The live parse in
 memory **is** the compilation, so diagnostics, the outline and the emitted
 views are projections of real compiler data rather than a second model that
 can drift.
@@ -227,8 +230,8 @@ walks history with PAST verbs over git, and proposes changes under a
 permission tier. LSP, a VS Code extension, attach and session discovery ride
 the same session — one process, several faces.
 
-See [`docs/madcide.md`](docs/madcide.md) and the design documents under
-[`docs/plans/`](docs/plans/).
+See madcide's [guide](https://github.com/derekbsnider/madcide/blob/main/docs/madcide.md)
+and the design documents under [`docs/plans/`](docs/plans/).
 
 ## Embedding with libmadc
 
@@ -271,52 +274,62 @@ in-tree at `third_party/mir`.
 
 ## Current Release
 
-The current release is **v0.103.0**, the **TUI facelift** release. madcide's
-terminal UI grows into the GUI's shape — a **menu bar** (F10, Alt+letter, the
-mouse), a **toolbar** with icon glyphs and a Run dropdown, **framed panes** with
-a line-number gutter and current-line highlight, **tab strips** and a docked
-**status bar**, dialogs and prompts as **floating windows**, full **mouse**
-support, and the **Terminal tab** keeping a program's colours — themed in VS
-Code Dark+ and verified by golden screens on POSIX and genuine Windows. Under
-the hood the compiler holds every name as an interned **`istring`** handle and
-ranks embedded headers from a **build-time table**, roughly halving the dialect
-compile's work; and madcide **opens every file named on its command line**, with
-Help pages shown in the editor.
+The current release is **v0.104.0**, the **madcide split** release. madc's
+interactive mode takes the ed/ex editing core — `madc -i` gains **colon mode**, a
+**command registry** modules and hosts extend, `%std` / `%reset` / `%history` /
+`%check` / `%build` / `%run` / `%project`, **coloured prompts and diagnostics**,
+and host-facing **language services** — and madc ships a **Language Server**
+(`--lsp`) and a **Model Context Protocol server** (`--mcp`) with a project
+memory, a code graph and an external-task client. Regexes now run on one
+**PCRE2** engine, and a source compiled without `--std` takes the standard its
+**extension** names (`.c` → `gnu17`, `.cpp` → `gnu++17`, `.mad` → the madc
+dialect). **madcide** moves to its own repository and releases on its own, so
+madc's packages no longer carry it.
 
-**Chthonia** — the Thonny-style teaching IDE built on madcide's base — is its
-own product in its own repository, whose packages each carry their own madc
-release; nothing is installed from madc for it.
+**madcide** — the IDE and the editor core it builds on — is now its own product
+in its own repository, releasing on its own as **madcide 0.7.0**, its first
+standalone release, built on and pinned to madc 0.104.0. **Chthonia**, the
+Thonny-style teaching IDE, builds on madcide 0.7.0 + madc 0.104.0; each is its
+own product, whose packages carry their own paired madc release.
 
-v0.103.0 follows **v0.102.1**, the Ubuntu 24.04 packaging patch to v0.102.0: the
-`.deb` built on Ubuntu 24.04 and later carries an AppArmor profile so madc's and
-madcide's windows get the user namespaces WebKit's sandbox needs; the release's
-`SHA256SUMS` names the `.deb` assets as GitHub stores them; and release tooling
-no longer stales the test lanes.
+v0.104.0 follows **v0.103.0**, the TUI facelift release: madcide's terminal UI
+grew into the GUI's shape — menus, a toolbar, framed panes with a gutter, tab
+strips and a status bar, floating dialogs, the mouse, and Dark+ colour —
+verified by golden screens on POSIX and genuine Windows; names held as interned
+`istring` and headers ranked by a build-time table roughly halved the dialect
+compile.
 
-Branch state: v0.103.0 is prepared on `develop`; the `master` promotion
+Branch state: v0.104.0 is prepared on `develop`; the `master` promotion
 follows the release-tier lane ledger (every platform lane's FULL suite green
 on this content), with public binaries built by CI for Linux
 (deb/rpm/tarball), Windows x86-64, and macOS (Apple Silicon + Intel).
 
 Latest validated results — the seam battery and the native macOS lanes on one
-content (`5fb46c910` / `57e54306e`, 2026-10-09), on the shipped packed -O2
-`madc-release`. Measured conformance against third-party suites is published
-separately in
+content (`67766e242`, 2026-10-11), on the shipped packed -O2 `madc-release`.
+Measured conformance against third-party suites is published separately in
 [`docs/conformance-coverage.md`](docs/conformance-coverage.md):
 
 - Linux, on the shipped packed -O2 `madc-release` with no headers on disk:
-  **2011 passed / 0 failed / 43 skipped**, plus the on-disk header-needing
-  subset **34/0**; the whole suite as native artifacts: JIT **2045/0/9**
-  (batch lane), EXE **1864/0**, OBJ **1864/0**
-- Windows: the packed Win64 PE under Wine, headerless, **1966/0/88 skipped**,
-  and the full suite on the owner Windows 11 box **1966/0/88 skipped**
+  **1966 passed / 0 failed / 43 skipped**, plus the on-disk header-needing
+  subset **34/0**; the whole suite as native artifacts: JIT **2000/0/9**
+  (batch lane), EXE **1811/0**, OBJ **1811/0**
+- Windows: the packed Win64 PE under Wine, headerless, **1927/0/82 skipped**,
+  and the full suite on the owner Windows 11 box **1926/0/83 skipped**
 - macOS, libc++, native on both owner Macs: arm64 (macOS 14.8.4)
-  **2013/0/41 skipped**, Intel x86_64 (macOS 15.7.4) **2015/0/39 skipped**
-- static gates: **0 red of 100**
+  **1968/0/41 skipped**, Intel x86_64 (macOS 15.7.4) **1970/0/39 skipped**
+- static gates: **0 red of 95**
 - **zero compiler warnings on every build lane**, enforced by `-Werror`
 
 ### Recent Releases
 
+- [v0.104.0](docs/release-notes/v0.104.0.md) — **the madcide split release**:
+  madc's interactive mode takes the ed/ex editing core (colon mode, a command
+  registry modules and hosts extend, coloured prompts, and language services),
+  and madc ships a Language Server (`--lsp`) and a Model Context Protocol server
+  (`--mcp`) with a project memory and an external-task client; regexes run on one
+  PCRE2 engine and a source's standard follows its extension; and madcide moves
+  to its own repository and releases on its own (madcide 0.7.0, pinned to madc
+  0.104.0), so madc's packages no longer carry it.
 - [v0.103.0](docs/release-notes/v0.103.0.md) — **the TUI facelift release**:
   madcide's terminal UI grows into the GUI's shape — a menu bar, a toolbar,
   framed panes with a gutter, tab strips and a status bar, floating dialogs, the
@@ -341,13 +354,6 @@ separately in
   sessions in their own process; madcide plugins and **Chthonia**, the
   Thonny-style teaching IDE; the B-series correctness burn-down; a Linux
   Homebrew bottle; every release binary archived.
-- [v0.100.0](docs/release-notes/v0.100.0.md) — **the Nexus release**:
-  madcide becomes a multi-client session (a window is a client, presence,
-  split-tree Views, an event-sourced change log, correlation maps) reachable
-  over api / ws / MCP / LSP / VS Code / attach; the live IR becomes a graph
-  agents edit by verbs; Itanium symbol mangling and the C++ feature work
-  behind a conformance lane driven 60% → 75.1%; three standard-C regressions
-  found and fixed, and suites tiered by time to run.
 
 Older release notes live in [docs/release-notes/](docs/release-notes/).
 
@@ -381,7 +387,7 @@ features, installation paths, and release packaging.
 ## Documentation
 
 - [Usage and CLI](docs/usage.md)
-- [madcide — the IDE](docs/madcide.md) (terminal and window; profiles, projects, Build/Run, the panel and the Terminal)
+- [madcide — the IDE](https://github.com/derekbsnider/madcide) (its own repository: terminal and window; profiles, projects, Build/Run, the panel and the Terminal)
 - [Build and installation](docs/build.md)
 - [Compiler architecture](docs/architecture.md)
 - [Testing guide](docs/testing.md)

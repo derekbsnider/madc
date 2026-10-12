@@ -1,0 +1,9 @@
+ready
+21
+int a = 20;
+%history
+1: int a = 20;
+2: a + 1
+3: %history
+4: %history -n
+120

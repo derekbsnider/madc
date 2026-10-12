@@ -1,0 +1,5 @@
+// %git is a MODULE's command (split arc 1B.10, design
+// 2026-10-10-git-module-command-design.md decision 3; owner 2026-10-09):
+// without the madcgit module it is an unknown command like any other (a
+// diagnostic); `import madcgit;` at the prompt registers it, and it answers.
+int main(void) { return 0; }

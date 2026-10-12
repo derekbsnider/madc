@@ -57,13 +57,17 @@ if [ -n "${MADC_WIN_STAGE:-}" ]; then
 	# wrapper) must reach the native Windows process, or the test behaves
 	# as if the variable were unset — a WSL env var does NOT cross into a
 	# Win32 child unless it is named in WSLENV. Forward every MADCIDE_* var
-	# that is set (the discovery tests' MADCIDE_SESSION_DIR is the live one;
-	# the box has no HOME/XDG_STATE_HOME, so without it session_dir is empty
-	# and nothing advertises). WSLENV names them; each is set in the remote
-	# env with its verbatim value.
+	# that is set, MADC_SESSION_DIR (the discovery tests' — madc's
+	# discovery since split arc 1D; the box has no HOME/XDG_STATE_HOME, so
+	# without it session_dir is empty and nothing advertises) and
+	# MADC_HISTORY_FILE (the suite's REPL history, run_tests.sh's). WSLENV
+	# names them; each is set in the remote env with its verbatim value.
 	fwd_names=(MADC_BIN MADC_FOREST_ENV_CHECK)
 	fwd_assigns=""
-	for var in $(compgen -v MADCIDE_ 2>/dev/null); do
+	fwd_vars=$(compgen -v MADCIDE_ 2>/dev/null)
+	[ -n "${MADC_SESSION_DIR:-}" ] && fwd_vars="$fwd_vars MADC_SESSION_DIR"
+	[ -n "${MADC_HISTORY_FILE:-}" ] && fwd_vars="$fwd_vars MADC_HISTORY_FILE"
+	for var in $fwd_vars; do
 		fwd_names+=("$var")
 		printf -v one ' %s=%q' "$var" "${!var}"
 		fwd_assigns+="$one"

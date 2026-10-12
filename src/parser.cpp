@@ -53,6 +53,8 @@
 #include "libc_signatures.h"	// what an UNDECLARED libc symbol returns
 #include "atomic_builtins.h"	// the GCC __atomic_* family, as data
 #include "madc_mangle.h"
+#include "madc_file_kinds.h"	// adopt_file_standard: the extension table's default standard
+#include "madc_diag_names.h"	// the diagnostics vocabularies' names
 #include "ns_common.h"
 #include "cir_freeze.h"	// Phase 6: CirFrozenForest decl records (forest_restore_decls)
 #include "cir_builder.h"	// the shared iteration recognizers (range-for auto deduction)
@@ -214,12 +216,6 @@ void Program::note_class_decl(ClassDeclKind kind, unsigned long long count)
     if ( _class_parse_census_stack.empty() )
 	return;
     _class_parse_profile[_class_parse_census_stack.back()].decls[kind] += count;
-}
-
-extern "C" {
-int64_t __madc_regex_match(void *, void *);
-int64_t __madc_regex_search(void *, void *);
-void *__madc_regex_replace(void *, void *, void *, void *);
 }
 
 // Static parse position — inherited by all new tokens automatically
@@ -408,6 +404,9 @@ int64_t internal_program_parse_open(::Program &self,
 				    const std::string &source_text,
 				    const std::string &display_name,
 				    int64_t standard);
+int64_t internal_program_parse_open_tu(::Program &self, const std::string &source_text,
+				       const std::string &display_name, int64_t standard,
+				       const ProjectTU &tu);
 int64_t internal_program_parse_open_file(::Program &self,
 					 const std::string &path);
 bool internal_program_parse_refresh(::Program &self, int64_t handle,
@@ -462,6 +461,7 @@ bool internal_program_parse_refresh_checked(::Program &self, int64_t handle,
 int64_t internal_program_parse_open_tagged(::Program &self, const std::string &source_text,
 					   const std::string &display_name);
 int64_t internal_program_parse_generation(int64_t handle);
+int64_t internal_program_parse_error_count(int64_t handle);
 int64_t internal_program_graph_route(int64_t handle, int64_t id);
 // The live-tree build/run pair (OWNER RULING 2026-08-27 — the running
 // madc IS the compiler): emit a native artifact from the handle's
@@ -472,6 +472,11 @@ bool internal_program_parse_build(int64_t handle,
 int64_t internal_program_parse_run(int64_t handle);
 bool internal_program_lex_spans(::Program &self, const std::string &source_text,
 				const std::string &display_name, value &out);
+void internal_program_lex_classes(::Program &self, const std::string &source_text,
+				  int64_t standard,
+				  std::vector<madc::highlight_span> &out);
+bool internal_program_parse_classes(int64_t handle,
+				    std::vector<madc::highlight_span> &out);
 int64_t internal_program_project_open(::Program &self,
 				      const std::string &manifest_path);
 bool internal_program_project_tus(int64_t handle, value &out);
@@ -483,7 +488,8 @@ bool internal_program_project_build(::Program &self,
 				    const std::string &kind_name,
 				    value &out, const std::string &outpath);
 int64_t internal_program_project_run(::Program &self,
-				     const std::string &manifest_path);
+				     const std::string &manifest_path,
+				     const std::vector<std::string> &args);
 }
 
 namespace {
@@ -1206,6 +1212,20 @@ int64_t madc_parse_open(void *source, void *filename, int64_t standard)
 					     standard);
 }
 
+int64_t madc_parse_open_tu(void *source, void *filename, int64_t standard,
+			   const ProjectTU *tu)
+{
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
+    if ( !active || !tu )
+	return 0;
+    const std::string &src = *(const std::string *)source;
+    const std::string &disp = *(const std::string *)filename;
+    return madc::internal_program_parse_open_tu(*active, src,
+						disp.empty() ? "<source>" : disp,
+						standard, *tu);
+}
+
 int64_t madc_parse_open_file(void *path)
 {
     std::unique_ptr<Program> owned;
@@ -1388,6 +1408,10 @@ int64_t madc_parse_generation(int64_t handle)
 {
     return madc::internal_program_parse_generation(handle);
 }
+int64_t madc_parse_error_count(int64_t handle)
+{
+    return madc::internal_program_parse_error_count(handle);
+}
 int64_t madc_graph_route(int64_t handle, int64_t id)
 {
     return madc::internal_program_graph_route(handle, id);
@@ -1451,6 +1475,21 @@ void *madc_lex_spans(void *result, void *source, void *filename)
     return result;
 }
 
+void madc::lex_classes(const std::string &text, int64_t standard,
+		       std::vector<highlight_span> &out)
+{
+    out.clear();
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
+    if ( active )
+	madc::internal_program_lex_classes(*active, text, standard, out);
+}
+
+bool madc::parse_classes(int64_t handle, std::vector<highlight_span> &out)
+{
+    return madc::internal_program_parse_classes(handle, out);
+}
+
 int64_t madc_project_open(void *manifest_path)
 {
     std::unique_ptr<Program> owned;
@@ -1492,14 +1531,16 @@ bool madc_project_build(void *result, void *manifest_path, void *kind,
 						*(const std::string *)outpath);
 }
 
-int64_t madc_project_run(void *manifest_path)
+int64_t madc_project_run(void *manifest_path, void *args)
 {
     std::unique_ptr<Program> owned;
     Program *active = require_runtime_eval_program(owned);
     if ( !active )
 	return -3;
     return madc::internal_program_project_run(*active,
-					      *(const std::string *)manifest_path);
+					      *(const std::string *)manifest_path,
+					      args ? *(const std::vector<std::string> *)args
+						   : std::vector<std::string>());
 }
 
 bool madc_runtime_eval_expression_bool(void *expr)
@@ -5697,6 +5738,7 @@ uint64_t Program::class_pattern_fingerprint(const ClassPattern &pattern) const
 	    hash.add_bool(method.declaration_only);
 	    hash.add_bool(method.defaulted_or_deleted);
 	    hash.add_bool(method.is_deleted);
+	    hash.add_bool(method.is_explicit);
 	    hash.add_u64(method.noexcept_spec);
 	    add_tokens(method.noexcept_condition_tokens);
 	    hash.add_bool(method.pure_virtual);
@@ -9657,6 +9699,7 @@ static void register_basic_class_pattern_method(
     fd->declaration_only = pattern.declaration_only;
     fd->defaulted_or_deleted = pattern.defaulted_or_deleted;
     fd->is_deleted = pattern.is_deleted;
+    fd->is_explicit = pattern.is_explicit;
     fd->implicit_dtor_noexcept = pattern.noexcept_spec == FuncDef::NxImplicitDtor;
     fd->noexcept_spec = fd->implicit_dtor_noexcept
 	? FuncDef::NxUnknown : pattern.noexcept_spec;
@@ -17733,9 +17776,16 @@ void Program::resolve_noexcept_spec(FuncDef *fd)
 	    pgm.class_scope_stack.resize(classes);
 	}
     } guard{*this, fd, saved_classes};
+    // A condition that does not fold yet (value-dependent in a pattern parse)
+    // leaves the specification NxUnknown — a DEFERRAL, re-resolved when the
+    // instantiated declarator needs it, never a wrong value: it must not
+    // poison the enclosing dependent parse.
+    bool saved_poisoned = dependent_parse_poisoned;
     int64_t value = 0;
     if ( fold_nontype_arg_constant(fd->noexcept_condition_tokens, value) )
 	fd->noexcept_spec = value ? FuncDef::NxTrue : FuncDef::NxNone;
+    else
+	dependent_parse_poisoned = saved_poisoned;
 }
 
 // [except.spec]: an omitted destructor specification is the conjunction of
@@ -17911,9 +17961,16 @@ static int noexcept_eval_expr(Program &pgm, TokenBase *tb, int depth)
     // libstdc++ is_nothrow_destructible probe): the object expression's walk
     // and the destructor's specification ([except.spec]/8 for one declared
     // without a specifier); a scalar or trivial type names no destructor.
+    // A destroyed type still a template parameter under its layers (a
+    // pattern parse's `~_Tp()`) names no class YET — the operand is
+    // type-dependent, so the noexcept is value-dependent
+    // ([temp.dep.constexpr]/3): refuse, never answer as for a scalar.
     if ( TokenExplicitDtor *xd = tb->as_explicit_dtor_tok() )
     {
 	int r = noexcept_eval_expr(pgm, xd->obj, depth + 1);
+	if ( !xd->dtor_class && xd->obj
+	  && template_param_under_type_layers(xd->obj->datadef()) )
+	    return -1;
 	if ( !xd->dtor_class )
 	    return r;
 	return noexcept_conjoin(r, noexcept_destructor_spec(pgm, xd->dtor_class,
@@ -17933,8 +17990,12 @@ static int noexcept_eval_expr(Program &pgm, TokenBase *tb, int depth)
 	return noexcept_conjoin(noexcept_eval_expr(pgm, to->left, depth + 1),
 				noexcept_eval_expr(pgm, to->right, depth + 1));
     }
-    if ( dynamic_cast<TokenInt *>(tb)		// TokenNullptr included
-      || dynamic_cast<TokenReal *>(tb)
+    // A dependent call's `0` stand-in (make_dependent_call_placeholder) is
+    // no literal: the call it holds the place of is unknown until
+    // instantiation.
+    if ( TokenInt *ti = dynamic_cast<TokenInt *>(tb) )	// TokenNullptr included
+	return ti->dependent_call_placeholder ? -1 : 1;
+    if ( dynamic_cast<TokenReal *>(tb)
       || dynamic_cast<TokenStr *>(tb) )
 	return 1;
     if ( tb->type() == TokenType::ttVariable
@@ -17965,6 +18026,12 @@ size_t Program::evaluate_noexcept_operator(TokenBase *op_tb)
 	Throw(close ? close : op_tb)
 	    << "Expecting ')' after noexcept(...)" << flush;
     int s = noexcept_eval_expr(*this, expr, 0);
+    // A refusal inside a DEPENDENT parse (a function pattern, a class-pattern
+    // capture) poisons it: a SFINAE trap that swallows this throw would
+    // otherwise pick a sibling overload and bake ITS constant into the
+    // pattern (`__test(...)`'s false_type for every is_nothrow_destructible).
+    if ( s < 0 && dependent_parse_in_progress )
+	dependent_parse_poisoned = true;
     if ( s < 0 )
 	Throw(op_tb) << "cannot faithfully evaluate noexcept(...) for this "
 		     << "operand" << flush;
@@ -24750,7 +24817,6 @@ Program::Program(MadcCompileGroup *group)
       _strpool_owner(group ? group->strpool
 		     : std::make_shared<madc::dis::intern_table>()),
       strpool(*_strpool_owner),
-      colors(false),
       language_std(STD_MADC),
       default_cpp_std(STD_CPP17),
       gnu_dialect(false),
@@ -24792,7 +24858,6 @@ Program::Program(MadcEngine *eng, MadcCompileGroup *group)
       _strpool_owner(group ? group->strpool
 		     : std::make_shared<madc::dis::intern_table>()),
       strpool(*_strpool_owner),
-      colors(false),
       language_std(STD_MADC),
       default_cpp_std(STD_CPP17),
       gnu_dialect(false),
@@ -24927,33 +24992,57 @@ bool Program::standard_of_canonical_name(const char *name, LanguageStd &out)
 	return false;
 }
 
-bool Program::set_language_standard(const madc::dis::istring &standard)
+bool Program::standard_of_spelling(const madc::dis::istring &spelling,
+				   LanguageStd &std, bool &gnu)
 {
     // GNU dialects map onto their base standard with the gnu_dialect
     // modifier (gcc parity: -std=gnu17 = C17 + GNU extensions, no
     // __STRICT_ANSI__; plain gcc defaults to gnu17, plain g++ to gnu++17).
-    if ( standard.compare(0, 5, "gnu++") == 0 )
+    if ( spelling.compare(0, 5, "gnu++") == 0 )
     {
-	if ( !set_language_standard("c++" + standard.substr(5)) )
+	bool base_gnu;
+	if ( !standard_of_spelling("c++" + spelling.substr(5), std, base_gnu) )
 	    return false;
-	gnu_dialect = true;
+	gnu = true;
 	return true;
     }
-    if ( standard.compare(0, 3, "gnu") == 0 )
+    if ( spelling.compare(0, 3, "gnu") == 0 )
     {
-	if ( !set_language_standard("c" + standard.substr(3)) )
+	bool base_gnu;
+	if ( !standard_of_spelling("c" + spelling.substr(3), std, base_gnu) )
 	    return false;
-	gnu_dialect = true;
+	gnu = true;
 	return true;
     }
-    gnu_dialect = false;
     for ( const LanguageStdRow &row : kLanguageStdTable )
-	if ( standard == row.name )
+	if ( spelling == row.name )
 	{
-	    language_std = row.std;
+	    std = row.std;
+	    gnu = false;
 	    return true;
 	}
     return false;
+}
+
+madc::dis::istring Program::standard_spelling(LanguageStd std, bool gnu)
+{
+    const madc::dis::istring name(standard_canonical_name(std));
+    if ( gnu && name.compare(0, 3, "c++") == 0 )
+	return madc::dis::istring("gnu++" + name.substr(3));
+    if ( gnu && !name.empty() && name[0] == 'c' )
+	return madc::dis::istring("gnu" + name.substr(1));
+    return name;
+}
+
+bool Program::set_language_standard(const madc::dis::istring &standard)
+{
+    LanguageStd std;
+    bool gnu;
+    if ( !standard_of_spelling(standard, std, gnu) )
+	return false;
+    language_std = std;
+    gnu_dialect = gnu;
+    return true;
 }
 
 bool Program::set_language_standard_option(const madc::dis::istring &arg)
@@ -24962,6 +25051,19 @@ bool Program::set_language_standard_option(const madc::dis::istring &arg)
     if ( arg.compare(0, prefix.size(), prefix) != 0 )
 	return false;
     return set_language_standard(arg.substr(prefix.size()));
+}
+
+bool Program::adopt_file_standard(int64_t kind)
+{
+    int64_t standard = madc::file_kind_default_standard(kind);
+    if ( standard == 0 )
+	return false;
+    language_std = (LanguageStd)standard;
+    // A family HEAD is the family's default — the GNU dialect, as plain gcc
+    // and g++ compile it; a kind that names a standard is that standard.
+    int64_t family = madc::file_kind_family(kind);
+    gnu_dialect = kind == family && family != madc::fkMADC;
+    return true;
 }
 
 void Program::attach_engine(MadcEngine *eng)
@@ -25106,25 +25208,25 @@ void Program::set_error(const std::string &message, const char *file, int line, 
     set_error(DiagnosticPhase::unknown, message, file, line, column);
 }
 
-const char *Program::diagnostic_severity_name(DiagnosticSeverity severity) const
+const char *madc::diag_severity_name(diag_severity severity)
 {
     switch ( severity )
     {
-	case DiagnosticSeverity::warning: return "warning";
-	case DiagnosticSeverity::error:   return "error";
+	case diag_severity::warning: return "warning";
+	case diag_severity::error:   return "error";
     }
     return "diagnostic";
 }
 
-const char *Program::diagnostic_phase_name(DiagnosticPhase phase) const
+const char *madc::diag_phase_name(diag_phase phase)
 {
     switch ( phase )
     {
-	case DiagnosticPhase::lexer:    return "lexer";
-	case DiagnosticPhase::parser:   return "parser";
-	case DiagnosticPhase::compiler: return "compiler";
-	case DiagnosticPhase::runtime:  return "runtime";
-	case DiagnosticPhase::unknown:  return "unknown";
+	case diag_phase::lexer:    return "lexer";
+	case diag_phase::parser:   return "parser";
+	case diag_phase::compiler: return "compiler";
+	case diag_phase::runtime:  return "runtime";
+	case diag_phase::unknown:  return "unknown";
     }
     return "unknown";
 }
@@ -25143,28 +25245,30 @@ void Program::print_diagnostic(std::ostream &os, const Diagnostic &diag, const c
     if ( DiagnosticRenderMute::active )
 	return;		// captured as data; the record already exists
     diag.rendered = true;
+    std::ostringstream where;
     if ( !diag.file.empty() )
-	os << ANSI_WHITE << diag.file << ':' << diag.line << ':'
-	   << madc_diag_screen_column(&source, diag.file.c_str(), diag.line,
-				      diag.column);
+	where << diag.file << ':' << diag.line << ':'
+	      << madc_diag_screen_column(&source, diag.file.c_str(), diag.line,
+					 diag.column);
     else
-	os << ANSI_WHITE << ':';
-    os << ": \e[1;31m" << diagnostic_severity_name(diag.severity)
-       << ":\e[1;37m " << diag.message;
+	where << ':';
+    std::string message = diag.message;
     if ( suffix && *suffix )
-	os << ' ' << suffix;
-    os << ANSI_RESET << std::endl;
+	message.append(" ").append(suffix);
+    madc_diagnostic_header(os, where.str(),
+			   madc::diag_severity_name(diag.severity), message);
     // The echo goes where the header went (a session's captured stream, a
     // backend's reply), never to std::cerr behind the caller's back.
     if ( can_show_diagnostic_source(diag) )
 	source.showerror(diag.line, diag.column, os, diag.end_line,
-			 diag.end_column);
+			 diag.end_column, echo_theme, language_std);
     else if ( !diag.file.empty() && diag.line > 0 )
 	// Diagnostic from an #included file: the live Source buffer holds the
 	// top-level TU, so echo the named file from disk (cold path); embedded
 	// headers with no on-disk presence skip the echo gracefully.
 	madc_show_file_error(diag.file.c_str(), diag.line, diag.column, os,
-			     diag.end_line, diag.end_column);
+			     diag.end_line, diag.end_column, echo_theme,
+			     language_std);
 }
 
 void Program::print_last_diagnostic(std::ostream &os, const char *suffix)
@@ -26362,6 +26466,7 @@ class ClassPatternPayloadReader
 	out.declaration_only = boolean();
 	out.defaulted_or_deleted = boolean();
 	out.is_deleted = boolean();
+	out.is_explicit = boolean();
 	out.noexcept_spec = (uint8_t)word();
 	out.pure_virtual = boolean();
 	{
@@ -29226,8 +29331,6 @@ void Program::add_madc_namespace()
 {
     variable_map_t &madc_ns = namespace_variables_for_write("madc");
     Variable *var;
-    typespec_t objp = ptr_of(ddVOID);
-    typespec_t cstr = ptr_of(ddCHAR);
 
     // register array type as madc::array
     madc::dis::istring id = "__madc_array";
@@ -29251,15 +29354,6 @@ void Program::add_madc_namespace()
     // The Variables above stay for the expression-lane back-compat.
     namespace_datatype_map["madc"]["array"] = new TokenDataType("array", ddARRAY);
     namespace_datatype_map["madc"]["value"] = new TokenDataType("value", ddARRAY);
-
-    var = addFunction("__madc_regex_match", datatype_vec_t{DataType::dtINT64, cstr, cstr}, (fVOIDFUNC)__madc_regex_match);
-    if (var) madc_ns["regex_match"] = var;
-
-    var = addFunction("__madc_regex_search", datatype_vec_t{DataType::dtINT64, cstr, cstr}, (fVOIDFUNC)__madc_regex_search);
-    if (var) madc_ns["regex_search"] = var;
-
-    var = addFunction("__madc_regex_replace", datatype_vec_t{objp, objp, cstr, cstr, cstr}, (fVOIDFUNC)__madc_regex_replace);
-    if (var) madc_ns["regex_replace"] = var;
 
     DBG(std::cout << "add_madc_namespace() registered madc:: with " << madc_ns.size() << " members" << std::endl);
 }
@@ -37522,6 +37616,7 @@ class ClassPatternNormalizer
 	out.declaration_only = fd->declaration_only;
 	out.defaulted_or_deleted = fd->defaulted_or_deleted;
 	out.is_deleted = fd->is_deleted;
+	out.is_explicit = fd->is_explicit;
     out.noexcept_spec = fd->implicit_dtor_noexcept
 	? FuncDef::NxImplicitDtor : fd->noexcept_spec;
     out.noexcept_condition_tokens =
@@ -38114,6 +38209,11 @@ Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
 	    class_scope_stack.pop_back();
     }
     bool poisoned = dependent_parse_poisoned;
+    // A poisoned capture (a dependent value or call a SFINAE trap swallowed)
+    // parsed into a structurally-valid but semantically-wrong pattern — a
+    // parse failure, exactly as the function-pattern parse treats it.
+    if ( poisoned )
+	parsed = false;
     journal.rollback();
 
     class_pattern_decl_capture = saved_decl_capture;
@@ -74360,6 +74460,9 @@ void Program::parseFunction(DataDef &dd, madc::dis::istring &id, DataDefCLASS *o
 			}
 			cond.push_back(ct);
 		    }
+		    // An unfoldable condition DEFERS (resolve_noexcept_spec's
+		    // contract): its refusal must not poison a dependent parse.
+		    bool saved_poisoned = dependent_parse_poisoned;
 		    int64_t cv = 0;
 		    if ( fold_nontype_template_arg(cond,
 			     template_tokens_spelling(cond), cv) )
@@ -74367,6 +74470,7 @@ void Program::parseFunction(DataDef &dd, madc::dis::istring &id, DataDefCLASS *o
 						 : FuncDef::NxNone;
 		    else
 		    {
+			dependent_parse_poisoned = saved_poisoned;
 			func->noexcept_spec = FuncDef::NxUnknown;
 			for ( TokenBase *ct : cond )
 			    func->noexcept_condition_tokens.push_back(ct->clone_origin());
