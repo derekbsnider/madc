@@ -885,6 +885,23 @@ bool InteractiveSession::run_file(int argc, char **argv)
     return true;
 }
 
+bool InteractiveSession::run_rebuilt_main(int argc, char **argv, int *status)
+{
+    if ( !jit || !function("main") || jit->imports("main") )
+	return true;
+    const bool ok = run_main(argc, argv, status);	// its status is not the session's
+    render_pending_diagnostics();
+    return ok;
+}
+
+bool InteractiveSession::run_rebuilt_main(const std::string &name)
+{
+    std::string arg0(name);
+    char *argv[] = { &arg0[0], NULL };
+    int status = 0;
+    return run_rebuilt_main(1, argv, &status);
+}
+
 const std::string &InteractiveSession::shown() const
 {
     return showed_command ? command_output : prog->entry_shown;

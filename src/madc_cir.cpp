@@ -2343,6 +2343,17 @@ bool CirJitSession::begin_live(const char *session_name)
     return true;
 }
 
+bool CirJitSession::imports(const char *name) const
+{
+    for (MIR_module_t m : live_mods)
+	for (MIR_item_t it = DLIST_HEAD(MIR_item_t, m->items); it;
+	     it = DLIST_NEXT(MIR_item_t, it))
+	    if (it->item_type == MIR_import_item
+		&& strcmp(MIR_item_name(ctx, it), name) == 0)
+		return true;
+    return false;
+}
+
 // A destructor called with its object's address, through the boundary's
 // one-pointer call.
 struct CirDestroyCall

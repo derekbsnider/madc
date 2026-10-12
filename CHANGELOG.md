@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### A rebuilt REPL buffer runs its uncalled main
+
+In a `madc -i` session `%run` rebuilds the REPL buffer by replaying its
+lines in a fresh session. The rebuild now ends by running the buffer's
+main — as `%run` runs a file's — when the buffer defines a main that no
+entry called; argv[0] is the buffer's name `[REPL]`, then its `%args`. A
+buffer that already calls main runs it once, in the replay, not twice.
+Before, madc ran no main when the buffer defined one but never called it
+(plan §42). An entry whose module imports `main` ran it in the replay
+already, so the rebuild leaves that main alone
+(`CirJitSession::imports`).
+
 ### A REPL session entry that redefines a type names `%run`
 
 In a `madc -i` session a `struct`, `union`, or `class` an earlier entry

@@ -182,6 +182,9 @@ public:
     // mapped. The session's end (teardown) runs it: a host may still call
     // into the program after its main returns. A second run finds nothing.
     void run_exit_handlers();
+    // Does an entry's module import NAME: use a function or an object another
+    // unit defines, or one nothing defines yet?
+    bool imports(const char *name) const;
 
     // Generate and run main(argc, argv); returns main's return value.
     // `ok` (when non-null) reports whether main was found and invoked.

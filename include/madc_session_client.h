@@ -153,8 +153,11 @@ public:
     // With `call` (%call's, cling's .x), argv is the file and the call's
     // text: the session calls the function named after the file, else its
     // main (InteractiveSession::call_file), and the reply's shown is the
-    // call's value.
-    unsigned run(const std::vector<std::string> &argv, bool call = false);
+    // call's value. With `rebuilt`, main runs as a rebuilt REPL buffer's
+    // does (InteractiveSession::run_rebuilt_main).
+    enum class RunRequest : unsigned char { main, call, rebuilt };
+    unsigned run(const std::vector<std::string> &argv,
+		 RunRequest what = RunRequest::main);
     // D11's question, asked of the session's standard: does `line` continue
     // an if that ended an entry (its first word is `else`)?
     unsigned continues(const std::string &line);
@@ -205,7 +208,7 @@ public:
     int load_wait_text(const std::string &text, const std::string &path,
 		       Reply &reply, std::string &output);
     int run_wait(const std::vector<std::string> &argv, Reply &reply,
-		 std::string &output, bool call = false);
+		 std::string &output, RunRequest what = RunRequest::main);
     int continues_wait(const std::string &line, Reply &reply);
     int bindings_wait(Reply &reply, int timeout_ms = -1);
     int build_wait(const std::string &path, const std::string &out,
@@ -338,6 +341,7 @@ public:
     const std::vector<madc::code_range> &shown_code() const override { return shown_code_ranges; }
     const std::string &taken_source() const override { return kept_source; }
     bool buffer_edited(const std::string &before, const std::string &after) override;
+    bool run_rebuilt_main(const std::string &name) override;
     std::vector<std::string> complete(const std::string &text, size_t caret,
 				      size_t &start) override;
     bool continues_if(const std::string &line) override;

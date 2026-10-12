@@ -224,7 +224,8 @@ int64_t session_bindings(int64_t handle)
 }
 
 // session_run's and session_call's one request: argv as strings.
-static int64_t run_request(int64_t handle, value &argv, bool call)
+static int64_t run_request(int64_t handle, value &argv,
+			   SessionClient::RunRequest what)
 {
     SessionHandle *s = session_of(handle);
     if ( !s || !argv.is_array() )
@@ -232,17 +233,17 @@ static int64_t run_request(int64_t handle, value &argv, bool call)
     std::vector<std::string> args;
     for ( const value &a : argv.as_array() )
 	args.push_back(a.is_string() ? a.as_string() : std::string());
-    return (int64_t)s->client.run(args, call);
+    return (int64_t)s->client.run(args, what);
 }
 
 int64_t session_run(int64_t handle, value &argv)
 {
-    return run_request(handle, argv, false);
+    return run_request(handle, argv, SessionClient::RunRequest::main);
 }
 
 int64_t session_call(int64_t handle, value &argv)
 {
-    return run_request(handle, argv, true);
+    return run_request(handle, argv, SessionClient::RunRequest::call);
 }
 
 int64_t session_build(int64_t handle, const char *path, const char *text,

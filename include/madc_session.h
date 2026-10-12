@@ -86,6 +86,12 @@ public:
     // (the path, then the program's arguments): `madc -i file`, the core of
     // %run (D25). False when the file was refused.
     virtual bool run_file(int argc, char **argv) = 0;
+    // The end of a REPL-buffer rebuild (%run, owner 2026-10-12): the
+    // buffer's main runs, as %run runs a file's, when the session defines
+    // main and no unit names it (an entry that calls main ran it already).
+    // `name` is the buffer's: main's argv[0]. False when main stopped.
+    virtual bool run_rebuilt_main(const std::string &name)
+    { (void)name; return true; }
     // The session ended, and its status: an exit(n) in an entry ended a
     // backend's process (in this process the exit already happened), or
     // %quit asked to end it (status 0).
@@ -175,6 +181,9 @@ public:
     bool run_main(int argc, char **argv, int *status);
     // load(argv[0]), then run_main when the session defines main.
     bool run_file(int argc, char **argv) override;
+    bool run_rebuilt_main(const std::string &name) override;
+    // The same with main's argv (a backend's: the name, then %args).
+    bool run_rebuilt_main(int argc, char **argv, int *status);
 
     // Tab's question (plan §41.7a, slice 3): the names that complete the
     // word before `caret` in the text typed so far, sorted; the word starts

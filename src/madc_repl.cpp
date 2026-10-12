@@ -205,6 +205,9 @@ static colon_step colon_text(std::istream &in, std::ostream &out,
 // switch between them. The session's buffer question is the ex session's
 // from here on (ex::session::buffer: the REPL buffer has no file to give). 0
 // without colon mode.
+// The REPL buffer's name (:ls, :b), and its main's argv[0] in a rebuild.
+static const char repl_buffer_name[] = "[REPL]";
+
 static madc::hub::entity_id repl_begin(ReplSession &session, const repl_colon &colon)
 {
     if ( !colon.ex )
@@ -215,7 +218,7 @@ static madc::hub::entity_id repl_begin(ReplSession &session, const repl_colon &c
     const bool repl_mode = !d || d->untitled();
     const madc::hub::entity_id doc =
 	repl_mode && cur ? cur : madc::document_new(ex->world(), "");
-    if ( !doc || !ex->set_scratch(doc, madc::dis::istring("[REPL]")) )
+    if ( !doc || !ex->set_scratch(doc, madc::dis::istring(repl_buffer_name)) )
 	return 0;
     if ( repl_mode )
 	ex->use(doc);
@@ -266,7 +269,9 @@ static bool rebuild_line(const repl_colon &colon, madc::hub::entity_id repl,
 }
 
 // The rebuild: a fresh session (%reset), then the buffer's text read as
-// typed lines, shown as any entry is and never added to the buffer again.
+// typed lines, shown as any entry is and never added to the buffer again;
+// then its main, when it defines one that no entry called (as %run runs a
+// file's), with the buffer's name as argv[0].
 static void rebuild_repl_buffer(ReplSession &session, std::istream *reclaim,
 				std::ostream &out, const madc::theme *theme,
 				const repl_colon &colon, madc::hub::entity_id repl)
@@ -276,6 +281,9 @@ static void rebuild_repl_buffer(ReplSession &session, std::istream *reclaim,
     if ( !session.submit("%reset\n") )
 	return;
     cooked_loop(session, text, reclaim, out, false, repl_colon(), theme, 0);
+    int status = 0;
+    if ( !session.ended(status) )
+	session.run_rebuilt_main(repl_buffer_name);
 }
 
 // D22: the language prompt names the standard in force; continuation lines

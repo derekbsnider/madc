@@ -1,0 +1,9 @@
+:b REPL
+#include <stdio.h>
+int runs;
+int main(int argc, char **argv) { ++runs; printf("main %s %d %d\n", argc > 0 ? argv[0] : "-", argc, runs); return 0; }
+%run
+printf("after %d\n", runs);
+main(0, 0);
+%run
+printf("final %d\n", runs);

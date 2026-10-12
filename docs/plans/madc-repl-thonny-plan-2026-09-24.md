@@ -3505,10 +3505,17 @@ FuncDef::decl_file's twin), so the session tells an entry's type from a
 header's, which keeps C's and C++'s refusal. Gate: test_repl_session "a type
 an earlier entry defined is not defined again (D6)".
 
+**Built, the rebuild's main (2026-10-12).** `%run` rebuilding the REPL
+buffer ends by running its main, as `%run` runs a file's, when the session
+defines main and no unit names it (`CirJitSession::imports`: no entry's
+module imports `main`, so an entry that calls it ran it in the replay
+already); argv[0] is the buffer's name `[REPL]`, then its `%args`
+(`ReplSession::run_rebuilt_main`; a backend's through the `run` request's
+`rebuilt` flag). Gate: `testrepl_rebuild_main`.
+
 Open: a redefined struct as a new versioned type (D6's types; old objects keep
 the old type); madcide's REPL pane (its own repository) needs the
-dialect verb; the `%run` rebuild calling `main` when the buffer defines it but
-never calls it.
+dialect verb.
 
 **Built, exit-time destruction (2026-10-12), the prerequisite for redefining
 an object with a destructor.** An object with static storage duration had its

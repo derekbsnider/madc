@@ -534,7 +534,8 @@ int serve_session(madc::DataChannel &wire, std::unique_ptr<Program> prog,
 		// main(argc, argv) at the entry boundary: the path, then the
 		// program's arguments. Its status is not the backend's. With
 		// `call` (%call's, cling's .x), argv is the file and the call's
-		// text, and call_file makes the call; its value shows.
+		// text, and call_file makes the call; its value shows. With
+		// `rebuilt`, a rebuilt REPL buffer's main (run_rebuilt_main).
 		std::vector<std::string> args =
 		    req.value("argv", std::vector<std::string>());
 		int status = 0;
@@ -550,7 +551,10 @@ int serve_session(madc::DataChannel &wire, std::unique_ptr<Program> prog,
 		    for ( std::string &a : args )
 			argv.push_back(&a[0]);
 		    argv.push_back(NULL);
-		    rep["ok"] = session.run_main((int)args.size(), argv.data(), &status);
+		    rep["ok"] = req.value("rebuilt", false)
+			? session.run_rebuilt_main((int)args.size(), argv.data(),
+						   &status)
+			: session.run_main((int)args.size(), argv.data(), &status);
 		}
 		rep["status"] = status;
 		attach_diagnostics(rep, session);
@@ -1104,15 +1108,17 @@ unsigned SessionClient::bindings()
     return send(req.dump()) ? seq : 0;
 }
 
-unsigned SessionClient::run(const std::vector<std::string> &argv, bool call)
+unsigned SessionClient::run(const std::vector<std::string> &argv, RunRequest what)
 {
     nlohmann::json req;
     const unsigned seq = next_seq++;
     req["seq"] = seq;
     req["op"] = op_name(Op::run);
     req["argv"] = argv;
-    if ( call )
+    if ( what == RunRequest::call )
 	req["call"] = true;
+    else if ( what == RunRequest::rebuilt )
+	req["rebuilt"] = true;
     return send(req.dump()) ? seq : 0;
 }
 
@@ -1609,6 +1615,18 @@ bool BackendSession::honor(const SessionClient::Reply &reply)
     return run_source(path, has_text ? &text : NULL, args);
 }
 
+// The rebuild's main gets the buffer's %args, as %run of it does.
+bool BackendSession::run_rebuilt_main(const std::string &name)
+{
+    std::vector<std::string> args(1, name);
+    args.insert(args.end(), program_args.begin(), program_args.end());
+    SessionClient::Reply r;
+    std::string output;
+    HostIgnoresInterrupt quiet;
+    int rc = client.run_wait(args, r, output, SessionClient::RunRequest::rebuilt);
+    return settle(rc, r, output) && r.ok;
+}
+
 bool BackendSession::buffer_edited(const std::string &before, const std::string &after)
 {
     HostIgnoresInterrupt quiet;	// an initializer it reads again may run
@@ -1748,7 +1766,7 @@ bool BackendSession::call_file(const std::vector<std::string> &argv)
     SessionClient::Reply r;
     std::string output;
     HostIgnoresInterrupt quiet;
-    int rc = client.run_wait(argv, r, output, true);
+    int rc = client.run_wait(argv, r, output, SessionClient::RunRequest::call);
     if ( !settle(rc, r, output) )
 	return false;
     show(r.shown);
@@ -1846,9 +1864,9 @@ int SessionClient::load_wait_text(const std::string &text, const std::string &pa
 }
 
 int SessionClient::run_wait(const std::vector<std::string> &argv, Reply &reply,
-			    std::string &output, bool call)
+			    std::string &output, RunRequest what)
 {
-    return wait_reply(run(argv, call), reply, output, -1,
+    return wait_reply(run(argv, what), reply, output, -1,
 		      InteractiveSession::TakenHook());
 }
 
