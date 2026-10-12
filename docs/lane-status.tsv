@@ -16,6 +16,6 @@ commonmark	commit	67766e2422a3	2026-10-11	commonmark: 664 passed, 6 failed (of 6
 index-c	yes	67766e2422a3	2026-10-11	index-c: 50/50 tasks OK, 0 failed (rc=0) [-O2] [fast_lanes on 71d4ad43e code content]
 genuine-win	release	8b620b8fdc82	2026-10-11	1926/0/0TO/83skip — the FULL suite on the owner Windows 11 box at 67766e242 content (scripts/win_suite.sh, the seam5 packed PE)
 brew-linux	release	8b620b8fdc82	2026-10-12	2000/0/0TO/9skip - scripts/brew_lane.sh at 67766e242 content (bottle + pour + brew test, keg-masked runpath gate)
-interactive	yes	0acf89b1bf5b	2026-10-12	42 passed, 0 failed, 0 timed out, 0 skipped + units 7/0 — scripts/interactive_lane.sh on the container at 0acf89b1b content
-interactive-win	release	0acf89b1bf5b	2026-10-12	36 passed, 0 failed, 0 timed out, 6 skipped — win_suite.sh over interactive_lane.sh's tests/ subset on the owner Windows 11 box, the packed PE at 0acf89b1b content
-interactive-darwin	release	0acf89b1bf5b	2026-10-12	arm64 Mac Mini 40/0/0TO/2skip + Intel MacBook 40/0/0TO/2skip — interactive_lane.sh's tests/ subset on the macOS packaged madc 0.104.0 at 0acf89b1b content; madcide 0.7.0 66/0 + Chthonia 0.1.0 check_install PASS on both
+interactive	yes	4c4ad82b678b	2026-10-12	43 passed, 0 failed, 0 timed out, 0 skipped + units 7/0 — scripts/interactive_lane.sh on the container at 4c4ad82b6 content
+interactive-win	release	4c4ad82b678b	2026-10-12	37 passed, 0 failed, 0 timed out, 6 skipped — win_suite.sh over interactive_lane.sh's tests/ subset on the owner Windows 11 box, the packed PE at 4c4ad82b6 content
+interactive-darwin	release	4c4ad82b678b	2026-10-12	arm64 Mac Mini 41/0/0TO/2skip + Intel MacBook 41/0/0TO/2skip — interactive_lane.sh's tests/ subset on the macOS packaged madc 0.104.0 at 4c4ad82b6 content; madcide 0.7.0 66/0 + Chthonia 0.1.0 check_install PASS on both
