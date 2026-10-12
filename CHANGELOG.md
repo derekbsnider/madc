@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### `__has_trivial_destructor` is false for the madc carrier
+
+`__has_trivial_destructor(var)` now returns false: a madc carrier (`var`,
+`madc::value`) is destroyed at runtime (`madarray_destruct`), so it is not
+trivially destructible, and neither is a struct that holds one as a member.
+A struct of only scalar members stays trivially destructible. Before, the
+trait reported the carrier, and any struct holding it, as trivial. This
+matches g++ and clang++ with `std::string` in the carrier's place
+("false true false").
+
 ### A REPL function can be redefined, and every call reaches the newest body
 
 In a `madc -i` session a function whose body an earlier entry already

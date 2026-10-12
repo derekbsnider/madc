@@ -16621,6 +16621,10 @@ bool trait_is_empty(DataDef *dd)
 // trivially destructible. Pointer members are non-class, hence trivial.
 static bool trait_has_trivial_destructor(DataDef *dd)
 {
+    // A madc carrier (`var`, madc::value) is destroyed (madarray_destruct),
+    // as the CIR builder destroys it (class_needs_dtor).
+    if ( dd && dd->is_madc_array() )
+	return false;
     DataDefCLASS *c = dynamic_cast<DataDefCLASS *>(dd);
     if ( !c )
 	return true;
