@@ -800,7 +800,16 @@ namespace madc {
     //     seq; the replies are `load` (ok, rendered) and `run` (ok, rendered,
     //     status: main's return value; shown: a call's value) rows. The
     //     cores of %load, %run and %call (D25), and madcide's F5 (plan
-    //     §41.10a).
+    //     §41.10a). session_rebuilt(h, argv): the end of a REPL-buffer
+    //     rebuild (%run, owner 2026-10-12): main runs with argv when the
+    //     session defines it and no unit names it (a `run` row; ok true
+    //     and nothing run otherwise).
+    //   session_edited(h, before, after): the host's REPL buffer edited (the
+    //     live reparse, owner 2026-10-12): its text before and after; each
+    //     entry the edit changed or added is read again as definitions only
+    //     (a function redefined, an object re-initialized, no statement
+    //     run). Its seq; the reply is an `edited` row (ok, rendered,
+    //     diagnostics).
     //   session_build(h, path, text, out): %build's build (plan §7f): the
     //     file built to the executable `out` under the session's standard,
     //     from `text` (an editor's buffer) or, with "", the file at path.
@@ -902,6 +911,8 @@ namespace madc {
     int64_t session_load(int64_t handle, const char *path, const char *text);
     int64_t session_run(int64_t handle, value &argv);
     int64_t session_call(int64_t handle, value &argv);
+    int64_t session_rebuilt(int64_t handle, value &argv);
+    int64_t session_edited(int64_t handle, const char *before, const char *after);
     int64_t session_build(int64_t handle, const char *path, const char *text,
 			  const char *out);
     bool session_command_of(value &out, const char *text);

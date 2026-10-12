@@ -246,6 +246,18 @@ int64_t session_call(int64_t handle, value &argv)
     return run_request(handle, argv, SessionClient::RunRequest::call);
 }
 
+int64_t session_rebuilt(int64_t handle, value &argv)
+{
+    return run_request(handle, argv, SessionClient::RunRequest::rebuilt);
+}
+
+int64_t session_edited(int64_t handle, const char *before, const char *after)
+{
+    SessionHandle *s = session_of(handle);
+    return s ? (int64_t)s->client.edited(before ? before : "", after ? after : "")
+	     : 0;
+}
+
 int64_t session_build(int64_t handle, const char *path, const char *text,
 		      const char *out)
 {

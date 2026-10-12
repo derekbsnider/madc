@@ -2,7 +2,9 @@
 // slice 2; the cores of %load and %run, D25): the text is one unit named by
 // its path, main runs with the argv given and prints before its reply, and
 // the entries that follow call its functions. A refused text cites its path
-// and leaves the session as it was.
+// and leaves the session as it was. session_edited reads a changed REPL
+// buffer entry again (the live reparse); session_rebuilt runs main as a
+// rebuilt REPL buffer does — until an entry names main, which ran it.
 
 // The next reply, passing over running notices; the program's output
 // printed before it is appended to `out`.
@@ -64,6 +66,32 @@ int main()
     madc::session_offer(h, "triple(14) + before", true);
     next_reply(r, h, out);
     println("entry: {}", r["shown"]);
+
+    madc::session_offer(h, "int scale = 2;", true);
+    next_reply(r, h, out);
+    madc::session_edited(h, "int scale = 2;\n", "int scale = 7;\n");
+    next_reply(r, h, out);
+    println("edited: edited={} ok={}", r["kind"] == madc::session_reply::edited,
+	    r["ok"]);
+    madc::session_offer(h, "scale", true);
+    next_reply(r, h, out);
+    println("after the edit: {}", r["shown"]);
+
+    var rebuilt = {};
+    rebuilt.push("[REPL]");
+    out = "";
+    madc::session_rebuilt(h, rebuilt);
+    next_reply(r, h, out);
+    print("rebuilt: {}", out);
+    println("rebuilt ran: run={} status={}", r["kind"] == madc::session_reply::run,
+	    r["status"]);
+    madc::session_offer(h, "main(1, (char *[]){ \"typed\", 0 })", true);
+    next_reply(r, h, out);
+    out = "";
+    madc::session_rebuilt(h, rebuilt);
+    next_reply(r, h, out);
+    println("named, not run again: ok={} output={}", r["ok"],
+	    strlen(out.c_str()) == 0);
     madc::session_close(h);
     return 0;
 }

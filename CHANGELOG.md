@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### Dialect verbs for the live reparse and the rebuild's main
+
+A madc-dialect host can now reach a session's live reparse and the REPL
+buffer's rebuilt main through two new `<ns_madc>` verbs.
+`madc::session_edited(h, before, after)` sends the REPL buffer's text before
+and after an edit; each entry the edit changed or added is read again as
+definitions only — a function redefined, an object re-initialized, no
+statement run — and the reply is an `edited` row. `madc::session_rebuilt(h,
+argv)` runs the rebuild's main with argv[0] the buffer's name `[REPL]` when
+the session defines main and no entry named it, and runs nothing once an
+entry has called main (a `run` row). Both wrap the session request machinery
+the C++ CLI REPL already uses (`ReplSession::buffer_edited`,
+`ReplSession::run_rebuilt_main`); there is no new wire op. Before, a dialect
+host — madcide — could not reach the live reparse or the rebuild's main. Gate:
+`testsession_run`.
+
 ### A rebuilt REPL buffer runs its uncalled main
 
 In a `madc -i` session `%run` rebuilds the REPL buffer by replaying its

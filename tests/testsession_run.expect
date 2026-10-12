@@ -3,3 +3,8 @@ loaded: ok=true
 output: main ran: argc=2 last=extra
 ran: run=true ok=true status=5
 entry: 43
+edited: edited=true ok=true
+after the edit: 7
+rebuilt: main ran: argc=1 last=[REPL]
+rebuilt ran: run=true status=5
+named, not run again: ok=true output=true

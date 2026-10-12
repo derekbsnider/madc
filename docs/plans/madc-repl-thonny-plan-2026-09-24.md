@@ -3513,9 +3513,16 @@ already); argv[0] is the buffer's name `[REPL]`, then its `%args`
 (`ReplSession::run_rebuilt_main`; a backend's through the `run` request's
 `rebuilt` flag). Gate: `testrepl_rebuild_main`.
 
+**Built, the dialect verbs (2026-10-12).** `madc::session_edited(h, before,
+after)` (the live reparse's `edited` request; an `edited` reply row) and
+`madc::session_rebuilt(h, argv)` (the rebuild's main, a `run` row) in
+`<ns_madc>`. madcide's REPL pane sends `session_edited` after a colon command
+changes the REPL buffer (madcide 0.8.0, paired with this release). Gate:
+`testsession_run`.
+
 Open: a redefined struct as a new versioned type (D6's types; old objects keep
-the old type); madcide's REPL pane (its own repository) needs the
-dialect verb.
+the old type); what rebuilds the REPL buffer in madcide's pane, where `%run`
+runs the editor's buffer and the REPL buffer is never an editor tab (owner).
 
 **Built, exit-time destruction (2026-10-12), the prerequisite for redefining
 an object with a destructor.** An object with static storage duration had its

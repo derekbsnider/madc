@@ -459,6 +459,8 @@ int64_t session_complete(int64_t handle, const char *text, int64_t caret);
 int64_t session_load(int64_t handle, const char *path, const char *text);
 int64_t session_run(int64_t handle, value &argv);
 int64_t session_call(int64_t handle, value &argv);
+int64_t session_rebuilt(int64_t handle, value &argv);
+int64_t session_edited(int64_t handle, const char *before, const char *after);
 int64_t session_build(int64_t handle, const char *path, const char *text,
 		      const char *out);
 bool session_command_of(value &out, const char *text);
