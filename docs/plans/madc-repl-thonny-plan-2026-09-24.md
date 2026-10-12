@@ -3519,6 +3519,47 @@ cling is the precedent for adapting IPython-style interaction to C++, so it is m
   - a refused input is rolled back whole, as in cling, and `%undo` works;
   - C mode keeps declarations now (see slice 2b).
 
+### Redefining a global variable, measured and researched (2026-10-12)
+
+Owner 2026-10-12, before deciding D6 for the live reparse: "re-recon how this
+works in all known REPL languages". Probe (measured on madc-dev,
+`tmp/live/recon/`): define `x`, a function `f` reading it, a reference to it;
+define `x` again with the same type, read through all three; then with another
+type.
+
+- **Measured.** cling 1.2: new storage — `f()` and `*p` read 1, `x` reads 2,
+  a type change is accepted the same way. clang-repl-18 and -20: refused
+  ("redefinition of 'x'"; no redefinition in the 22.1 / 23.1 release notes).
+  Python 3.12: functions read the new value (name lookup at the call);
+  references taken earlier keep the old object; a type change is accepted.
+  Node 22: `let` / `const` refused ("already been declared"), `var` rebinds
+  and functions read the new value. Ruby 3.2 (irb): a constant reassigns with
+  a warning and methods read the new value. PHP 8.3: a function cannot be
+  redeclared. madc before D6: refused, like clang-repl.
+- **Researched** (sources in the session's recon report):
+  - Julia 1.12: a non-const global is reassigned in place, visible at once; a
+    TYPED global (`x::Int`) can never change type. A `const` can be redefined
+    (also to another type), versioned by world age: earlier functions see it
+    from the next prompt. Before 1.12, same type only.
+  - Common Lisp: `defparameter` always reassigns, `defvar` keeps an existing
+    value; SLIME's `C-M-x` deliberately resets a `defvar`. Emacs Lisp
+    `eval-defun` the same. Clojure: a second `def` rebinds the root of the
+    SAME Var, so earlier functions see it; `defonce` keeps it. Scheme / Racket
+    top level: `set!` on the same location. Smalltalk: globals are
+    associations in each method's literal frame — in place, seen everywhere.
+    R: in place, lookup at the call.
+  - Shadowing (earlier code keeps the old binding): GHCi, OCaml, Scala, Elixir
+    closures, MATLAB anonymous handles, cling. Erlang refuses (single
+    assignment). Swift: "replaces the existing definition for all subsequent
+    references", type change allowed.
+  - Edit-and-reload: Revise.jl evaluates only the CHANGED expressions; under
+    `includet` it updates functions but not data (`a = [1]` → `a = [2]` is
+    not applied, because data has untracked dependencies); a package's
+    changed assignments are re-run. IPython `%autoreload` re-runs the whole
+    module, so every global is re-initialized, and patches old functions in
+    place. Clojure tools.namespace re-creates even `defonce`; clj-reload keeps
+    it.
+
 ### Engine
 
 - **D1. Persistence.** One live `Program` accepts appended entries. Each entry lowers to its own MIR module, linked into one live MIR context. Nothing is replayed (all three precedents are incremental). The core is new and is not built on `eval_*` (§40).
