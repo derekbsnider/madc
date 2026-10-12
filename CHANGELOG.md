@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [v0.104.0] — 2026-10-12
+
+The madcide split: madc's interactive mode takes the ed/ex editing core, and madcide leaves to its own repository. `madc -i` gains colon mode, a command registry modules and hosts extend, `%std` / `%reset` / `%history` / `%check` / `%build` / `%run` / `%args` / `%project`, coloured prompts and diagnostics, and host-facing language services; madc ships a Language Server (`--lsp`) and a Model Context Protocol server (`--mcp`) with a project memory, a code graph and an external-task client; the data substrate gains a document component with an edit notification, regexes run on one PCRE2 engine, and a source's standard follows its extension. madcide now lives in its own repository and releases on its own, so madc's packages no longer carry it. Forest and pack correctness and reproducibility, codegen and REPL fixes, and Windows and darwin parity round out the release.
+
 ### Each translation unit materializes its own frozen nodes
 
 A frozen inline body an earlier translation unit materialized is no longer
