@@ -467,6 +467,22 @@ same text); unit `tests/unit/test_ex.cpp` adds the scratch-buffer case,
 and `tests/unit/test_repl_cli.cpp`'s two colon cases check the kept entries join
 the REPL buffer.
 
+### `%run` on the REPL buffer rebuilds it
+
+`%run` with no FILE and the REPL buffer current rebuilds the buffer the way an
+IDE rebuilds an edited file (Jupyter's Restart and Run All): a fresh session
+(`%reset`), then the buffer's text read back as typed lines through the cooked
+loop, each entry shown as usual and nothing appended to the buffer again. Only
+the REPL buffer rebuilds; `%run` on any other current buffer runs it as `%run`
+ran it before. Both the terminal loop (`madc_repl_edit`) and the cooked loop
+take it; the cooked loop is factored out as `cooked_loop` with the
+returned-stdin target passed in, and a rebuild passes NULL so the backend's
+read-past bytes are dropped rather than put back. Reducer
+`tests/testrepl_rebuild.mad` (`--std=c17 -i`): `:b REPL`, a `main` printing
+`hello` run once, a `:1s/hello/goodbye/` edit, then `%run` replays the edited
+text so `main` prints `goodbye`, and `:$nu` shows the buffer still two lines —
+nothing was re-appended.
+
 ### `%psource`, `??NAME` / `%pinfo2`, and colon-printed code coloured
 
 The REPL (`madc -i`) answers `%psource NAME`, `%pinfo2 NAME` and `??NAME`

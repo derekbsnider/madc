@@ -229,6 +229,37 @@ static std::string history_text(const std::string &entry)
     return end == std::string::npos ? std::string() : entry.substr(0, end + 1);
 }
 
+static int cooked_loop(ReplSession &session, std::istream &in,
+		       std::istream *reclaim, std::ostream &out, bool terminal,
+		       const repl_colon &colon, const madc::theme *theme,
+		       madc::hub::entity_id repl);
+
+// `%run` (no FILE) with the REPL buffer current (owner 2026-10-12): the REPL
+// buffer is rebuilt; every other buffer runs as %run runs it.
+static bool rebuild_line(const repl_colon &colon, madc::hub::entity_id repl,
+			 const std::string &line)
+{
+    InteractiveSession::Mode mode;
+    InteractiveSession::Command code;
+    std::string word, argument;
+    return repl && colon.ex && colon.ex->current() == repl
+	   && InteractiveSession::command_of(line, mode, word, code, argument)
+	   && code == InteractiveSession::Command::run && argument.empty();
+}
+
+// The rebuild: a fresh session (%reset), then the buffer's text read as
+// typed lines, shown as any entry is and never added to the buffer again.
+static void rebuild_repl_buffer(ReplSession &session, std::istream *reclaim,
+				std::ostream &out, const madc::theme *theme,
+				const repl_colon &colon, madc::hub::entity_id repl)
+{
+    const madc::hub::text_buffer *b = colon.ex->world().text_of(repl);
+    std::istringstream text(b ? b->text() : std::string());
+    if ( !session.submit("%reset\n") )
+	return;
+    cooked_loop(session, text, reclaim, out, false, repl_colon(), theme, 0);
+}
+
 // D22: the language prompt names the standard in force; continuation lines
 // are indented to its width (Julia).
 static std::string entry_prompt(ReplSession &session)
@@ -411,6 +442,15 @@ int madc_repl_edit(ReplSession &session, line_target &term,
 			}
 			break;
 		    }
+		    if ( rebuild_line(colon, repl, ed.text()) )
+		    {
+			release("");
+			remember(history_text(text));
+			ed.entered(line_edit::verdict::taken);
+			over = true;
+			rebuild_repl_buffer(session, NULL, out, theme, colon, repl);
+			break;
+		    }
 		    if ( blank_line(text) )
 		    {
 			release("");
@@ -484,20 +524,24 @@ int madc_repl_edit(ReplSession &session, line_target &term,
 }
 
 // The bytes of a shared piped stdin the backend read past what its entry
-// parsed (ReplSession::take_returned_input) go back to `in`, read next.
-static void reclaim_input(ReplSession &session, std::istream &in)
+// parsed (ReplSession::take_returned_input) go back to `in`, read next;
+// NULL drops them.
+static void reclaim_input(ReplSession &session, std::istream *in)
 {
     const std::string back = session.take_returned_input();
+    if ( !in )
+	return;
     for ( std::string::const_reverse_iterator it = back.rbegin();
 	  it != back.rend(); ++it )
-	in.putback(*it);
+	in->putback(*it);
 }
 
-int madc_repl_run(ReplSession &session, std::istream &in,
-		  std::ostream &out, bool terminal, const repl_colon &colon,
-		  const madc::theme *theme)
+// The cooked loop over `in`; returned stdin bytes go to `reclaim`.
+static int cooked_loop(ReplSession &session, std::istream &in,
+		       std::istream *reclaim, std::ostream &out, bool terminal,
+		       const repl_colon &colon, const madc::theme *theme,
+		       madc::hub::entity_id repl)
 {
-    const madc::hub::entity_id repl = repl_begin(session, colon);
     std::string prompt, continuation;	// the standard's, entry by entry (%std)
     std::string pending;		// the entry typed so far
     bool extendable = false;		// pending is an if waiting for else
@@ -523,7 +567,7 @@ int madc_repl_run(ReplSession &session, std::istream &in,
 	    if ( !session.continues_if(line) )
 	    {
 		session.submit(pending);
-		reclaim_input(session, in);
+		reclaim_input(session, reclaim);
 		entry_taken(session, out, theme, colon, repl);
 		pending.clear();
 		if ( session.ended(status) )
@@ -542,10 +586,17 @@ int madc_repl_run(ReplSession &session, std::istream &in,
 		return 0;		// :q
 	    continue;
 	}
+	if ( pending.empty() && rebuild_line(colon, repl, line) )
+	{
+	    rebuild_repl_buffer(session, reclaim, out, theme, colon, repl);
+	    if ( session.ended(status) )
+		return status;
+	    continue;
+	}
 	pending += line;
 	pending += '\n';
 	ReplSession::Offered r = session.offer(pending);
-	reclaim_input(session, in);
+	reclaim_input(session, reclaim);
 	switch ( r.state )
 	{
 	    case ReplSession::OfferState::incomplete:
@@ -573,4 +624,12 @@ int madc_repl_run(ReplSession &session, std::istream &in,
     if ( terminal )
 	out << std::endl;
     return 0;
+}
+
+int madc_repl_run(ReplSession &session, std::istream &in,
+		  std::ostream &out, bool terminal, const repl_colon &colon,
+		  const madc::theme *theme)
+{
+    const madc::hub::entity_id repl = repl_begin(session, colon);
+    return cooked_loop(session, in, &in, out, terminal, colon, theme, repl);
 }

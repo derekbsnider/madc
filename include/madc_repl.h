@@ -32,7 +32,8 @@ namespace madc { namespace ex { class session; } }
 // (ReplSession::taken_source). Colon mode starts on it at a bare `madc -i`
 // (the host's untitled buffer is it); `madc -i FILE` is line mode, starting
 // on FILE, with `:b REPL` reaching it. :ls, :b N / NAME, :bn, :bp and :e
-// switch between the buffers.
+// switch between the buffers. `%run` with the REPL buffer current rebuilds
+// it: a fresh session, then its text as typed lines.
 struct repl_colon
 {
     madc::ex::session *ex;
