@@ -13,23 +13,28 @@
 // cannot open them. Darwin keeps both in libSystem; Windows keeps both in
 // the UCRT. The interface column is the embedded header `import` tokenizes
 // first (NULL = interface-less: the alias form's variadic member convention
-// is all there is).
+// is all there is). The commands column names the function a module exports
+// to bring REPL commands (madc_module_commands.h; NULL = none); the tools
+// column, the one that brings agent tools (madc_module_tools.h).
 static const MadcModuleSpec madc_modules[] = {
-	{ "c", NULL,     "libc.so.6", "libSystem.B.dylib", "ucrtbase.dll", 0 },
-	{ "m", "math.h", "libm.so.6", "libSystem.B.dylib", "ucrtbase.dll", 0 },
-	{ "madcwebview", "webview.h", "libmadcwebview.so", "libmadcwebview.dylib", "madcwebview.dll", MADC_MODULE_GUI | MADC_MODULE_LAZY },
+	{ "c", NULL,     "libc.so.6", "libSystem.B.dylib", "ucrtbase.dll", 0, NULL, NULL },
+	{ "m", "math.h", "libm.so.6", "libSystem.B.dylib", "ucrtbase.dll", 0, NULL, NULL },
+	{ "madcwebview", "webview.h", "libmadcwebview.so", "libmadcwebview.dylib", "madcwebview.dll", MADC_MODULE_GUI | MADC_MODULE_LAZY, NULL, NULL },
 	// The git substrate (Nexus L4a → the V6 seam): a READ-ONLY view of a
 	// local repository over the SYSTEM libgit2 — a dependency of the IDE's
 	// nexus, never part of madc (owner ruling 2026-09-15). Built by
 	// src/madcgit.mk where pkg-config finds libgit2; the <ns_git> fragment
 	// imports it and asks madc::module_available before the first call.
-	{ "madcgit", "madcgit.h", "libmadcgit.so", "libmadcgit.dylib", "madcgit.dll", MADC_MODULE_LAZY },
+	// It brings `%git` to a session that loads it (split arc 1B.10), and
+	// the version history to a tool server's history tools (1C.14).
+	{ "madcgit", "madcgit.h", "libmadcgit.so", "libmadcgit.dylib", "madcgit.dll", MADC_MODULE_LAZY,
+	  "madcgit_commands", "madcgit_tools" },
 	// GitHub-flavoured Markdown (plan 2026-10-03-chthonia-windows-macos.md
 	// §7d): cmark-gfm, a dependency linked statically into the module
 	// (src/madcmark.mk); the <ns_markdown> fragment imports it and asks
 	// madc::module_available before the first call.
-	{ "madcmark", "madcmark.h", "libmadcmark.so", "libmadcmark.dylib", "madcmark.dll", MADC_MODULE_LAZY },
-	{ NULL, NULL, NULL, NULL, NULL, 0 }
+	{ "madcmark", "madcmark.h", "libmadcmark.so", "libmadcmark.dylib", "madcmark.dll", MADC_MODULE_LAZY, NULL, NULL },
+	{ NULL, NULL, NULL, NULL, NULL, 0, NULL, NULL }
 };
 
 const MadcModuleSpec *madc_module_find(const std::string &name)
@@ -46,6 +51,18 @@ const MadcModuleSpec *madc_module_find_spelled(const std::string &spelling)
 		if (spelling == madc_module_library_spelling(madc_modules[i].name))
 			return &madc_modules[i];
 	return NULL;
+}
+
+void *madc_module_entry_point(const std::string &spelling, madc_module_entry which)
+{
+	const MadcModuleSpec *row = madc_module_find_spelled(spelling);
+	const char *name = !row ? NULL
+		: which == madc_module_entry::commands ? row->commands : row->tools;
+	if ( !name )
+		return NULL;
+	std::string why;
+	void *handle = madc_module_open(spelling, why);
+	return handle ? madcdl_sym(handle, name) : NULL;
 }
 
 bool madc_module_any_flagged(unsigned flags)

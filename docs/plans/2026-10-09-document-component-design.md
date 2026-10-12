@@ -144,15 +144,17 @@ by `shift_es_anchors` with the rule in `shift_offset` (`editor_events.inc:
 - The boundary primitive stays `text_buffer::checkpoint` — the command
   layer decides the group: one ex command, one coalesced key run, one MCP
   transaction. The document's `checkpoint(e, app_meta)` wraps it: the entry's
-  payload is `{app: app_meta, anchors: [[id, off, gravity]…], saved:
-  saved_version}`, so undo restores the document AND its anchors AND
-  whether it was clean, and hands `app_meta` back (madcide's `{caret}` keeps
-  working; the caret will become an anchor).
+  payload is `{app: app_meta, anchors: [[id, off, gravity]…], clean: bool}`,
+  so undo restores the document AND its anchors AND whether it was clean,
+  and hands `app_meta` back (madcide's `{caret}` keeps working; the caret
+  will become an anchor).
 - **`modified` is derived, never set**: `modified(e) = version(e) !=
   saved_version(e)`. `doc_mark_saved(e)` sets `saved_version = version`
-  (save, or "the file on disk IS this"). Undoing back to the saved state
-  reads clean again for free — today madcide carries `modified` in the
-  payload to approximate this.
+  (save, or "the file on disk IS this"). An undo is a NEW version (§2.2), so
+  the payload records *clean* rather than the saved number: restoring a
+  clean snapshot re-marks the new version as the saved one, a dirty one
+  stays dirty. Undoing back to the saved state reads clean again — today
+  madcide carries `modified` in the payload to approximate this.
 - `load` (a reload from disk) clears history as `text_buffer::load` does
   today, and sets `saved_version = version`.
 
@@ -212,6 +214,8 @@ inside a callback, or a read-only document). New:
 long  doc_new(long w);                        // untitled, fkMADC
 long  doc_open(long w, const char *path);     // 0 on failure
 long  doc_find(long w, const char *path);     // the entity on that file, else 0
+bool  doc_is(long w, long e);                 // has a document component
+int64_t text_version(long w, long e);         // any text's version (-1: no session)
 bool  doc_load_file(long w, long e, const char *path);   // reload
 bool  doc_save(long w, long e);
 bool  doc_close(long w, long e);              // closes the parse slot too
@@ -236,8 +240,10 @@ bool  doc_subscribe(long w, void (*fn)(long, long, value &));
 and in `<ns_madc>`: `int64_t doc_parse(long w, long e)`,
 `int64_t doc_parse_checked(value &diags, long w, long e)`.
 
-The change value a script subscriber receives: `{entity, version, kind
-("splice"|"load"|"undo"|"redo"), off, old_len, new_len, inserted}`.
+The change value a script subscriber receives: `{entity, version, kind,
+off, old_len, new_len, inserted}`, `kind` a `ui::text_change_kind` code
+(`<bits/ui_enums>`, the one enum text the engine's record aliases), compared
+as `c["kind"] == ui::text_change_kind::splice` — never a string.
 
 ## 3. What this replaces (Phase 1D's migration list)
 

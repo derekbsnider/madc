@@ -23,7 +23,7 @@ namespace madc {
     // main run (the cores of %load and %run), D11's question answered, or
     // the names the session defined (%whos's rows, plan §41.11a step 3d), or
     // a file built (%build, plan §7f).
-    enum class session_reply : unsigned char { running, offer, complete, stopped, load, run, continues, bindings, build };
+    enum class session_reply : unsigned char { running, offer, complete, stopped, load, run, continues, bindings, build, check };
     // What a taken command asks its HOST to do (IPython's payloads: a
     // kernel's execute reply asks its frontend to act) with the reply's
     // `argv`, the file and then its arguments, the host reading the file (an
@@ -38,16 +38,35 @@ namespace madc {
     // (%open, %edit: argv is FILE, then the line when one is named — an IDE
     // opens its editor there, a terminal runs $EDITOR); quit (%quit: end
     // the session, IPython's ask_exit — a terminal ends, an IDE pane starts
-    // a fresh session; no argv).
-    enum class session_payload : unsigned char { none, load, run, run_here, build, call, open, quit };
+    // a fresh session; no argv); command (a command the HOST registered on
+    // the session, split arc 1A.2: the reply's `code` is the row's code,
+    // argv is its argument — the host runs it, nothing ran in the session);
+    // reset (%reset: a fresh session under the same standard; no argv);
+    // standard (%std NAME: a fresh session under the standard argv[0]
+    // spells — c17, gnu++20, madc; split arc 1B.7); check (%check [FILE]:
+    // argv FILE, "" for the host's current buffer — the host hands the
+    // backend its text; split arc 1B.8); args (%args [ARGS]: argv the
+    // argument line — the program's arguments a host's %run of its current
+    // buffer passes, kept by the host); project (%project opened, changed
+    // or closed the session's project: argv the manifest's path, "" for
+    // none — the host keeps it across restarts, an IDE opens it).
+    enum class session_payload : unsigned char { none, load, run, run_here, build, call, open, quit, command, reset, standard, check, args, project };
+    // An entry's MODE, its first character (owner 2026-10-09; split arc
+    // 1A.2, docs/plans/2026-10-09-command-registry-design.md): `%` and `.`
+    // the REPL's commands (IPython / clang-repl style, cling / Node style,
+    // each with its own aliases), `?` the query, `:` colon mode — ed / ex /
+    // vim commands ONLY, run by the host that holds the documents, never by
+    // the session. none: not a command (C).
+    enum class command_mode : unsigned char { none, percent, dot, query, colon };
     // A session command (plan §41.8a, D13/D24; the engine's
-    // InteractiveSession::Command aliases it): what an entry's `%name`,
-    // `:name` or `.name` names, an alias's command included (cling's `.L` is
-    // load). none: no command of the session's — an IDE's own (plan §7f,
-    // ide::repl_command), or a typo the session refuses.
+    // InteractiveSession::Command aliases it): what an entry's `%name` or
+    // `.name` names, an alias's command included (cling's `.L` is load).
+    // none: no built-in command — a registered one (split arc 1A.2), or a
+    // typo the session refuses.
     enum class session_command : unsigned char
     {
-	none, help, type, pinfo, whos, load, run, build, call, open, edit, quit
+	none, help, type, pinfo, whos, load, run, build, call, open, edit, quit,
+	history, reset, standard, check, args, project
     };
     // What a top-level name names (plan §41.8a; the engine's
     // Program::TopLevelName::Kind aliases it): a binding row's `kind`

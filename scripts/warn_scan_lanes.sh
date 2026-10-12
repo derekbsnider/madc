@@ -75,7 +75,7 @@ for lane in $want; do
 	echo "=== $lane (clean) ==="
 	# Capped like every other automated invocation in this repo, so a hang
 	# fails the scan instead of pegging the host.
-	( ulimit -t 9000; timeout 7200 make -C "$repo_root/src" -j8 $target ) \
+	( ulimit -t 9000; timeout 7200 make -C "$repo_root/src" -j"$(bash "$repo_root/scripts/build_jobs.sh")" $target ) \
 		> "$log" 2>&1
 	build_rc=$?
 

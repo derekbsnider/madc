@@ -58,6 +58,48 @@ const char *project_kind_name(ProjectKind kind);
 // and sets `err`.
 bool read_project_manifest(const std::string &path,
 			   ProjectManifest &out, std::string &err);
+// A project at `path`: a manifest (".json": read_project_manifest's two
+// shapes), or a single source file — the one-TU project, its directory the
+// TU's (madc --mcp --project FILE). False + err when neither reads.
+bool project_of_path(const std::string &path, ProjectManifest &out,
+		     std::string &err);
+// Is `path` a project manifest (".json")? Otherwise project_of_path reads
+// it as the one-TU project.
+bool project_path_is_manifest(const std::string &path);
+// Where a project's memory lives: <manifest less its extension>.events
+// beside a manifest; "" — memory-only — for the implicit one-TU project
+// (no surprise artifact beside a source file).
+std::string project_events_path(const std::string &path);
+
+// The manifest's one WRITER, beside its reader (split arc 1B.8): each call
+// is a read-modify-write of the native manifest's JSON object that keeps
+// every key it does not change (an IDE's "commands", a TU entry's own
+// fields), written as nlohmann's dump(2) and a newline — the bytes madcide
+// writes (js::stringify(proj, 2)). A comment the reader skips is not kept
+// (JSON has none to write). A compile_commands.json import (an array) is
+// never written. False + err = refused, the file as it was.
+// Thread contract: the C++ standard library's convention; two writers of
+// one manifest race as two editors saving one file do (the last write wins).
+//
+// create: {"entry": "main", "tus": []} at `path`; refused when it exists.
+bool project_manifest_create(const std::string &path, std::string &err);
+// add: `file` (absolute, or relative to the cwd) joins "tus", named as the
+// manifest names its TUs — relative to the manifest's directory when it
+// lies below it, else by its canonical path. Refused when it is no file,
+// or a TU already.
+bool project_manifest_add_tu(const std::string &path, const std::string &file,
+			     std::string &err);
+// remove: the TU entry naming `file` leaves whole, its own fields with it —
+// the entry whose path is `file`'s, or which spells `file` as given.
+// Refused when none does. The file itself is untouched.
+bool project_manifest_remove_tu(const std::string &path,
+				const std::string &file, std::string &err);
+
+// The executable a project builds when no OUT is named (%project build):
+// its "output" against the manifest's directory, else the manifest's path
+// less ".prj.json" (madcide's <base>.prj.json), else less its extension.
+std::string project_default_output(const std::string &manifest_path,
+				   const ProjectManifest &manifest);
 
 // Forward decls to avoid pulling madc.h into the header.
 class MadcEngine;

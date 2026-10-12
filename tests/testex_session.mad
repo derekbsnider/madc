@@ -1,0 +1,53 @@
+// madc::ex_session — madc's colon mode over a ui:: world's documents, the
+// face a host that edits runs its colon line through (split arc 1D.18).
+// Oracle: vim on the same text — `:s/two/TWO/` from line 2 edits line 2;
+// `:a` from line 2 appends after it; `:q` on a changed buffer is refused
+// (E37's text); `:1,2p` prints those lines. The codes are <bits/ex_commands>.
+// The test removes what it creates.
+int main()
+{
+    const char *path = "tmp/testex_session.txt";
+    php::file_put_contents(path, "one\ntwo\nthree\n");
+    long w = ui::world_new();
+    long d = ui::doc_open(w, path);
+    madc::ex_session ex(w);
+    println("use: {} current={}", ex.use(d) ? 1 : 0, ex.current() == d ? 1 : 0);
+    println("line: start={} set={} now={} out-of-range={}", ex.line(),
+	    ex.set_line(2) ? 1 : 0, ex.line(), ex.set_line(9) ? 1 : 0);
+    var p;
+    ex.parse(p, "w! out.txt");
+    println("parse: ok={} write={} force={} argument={}", p["ok"],
+	    p["command"].as_integer() == (long)madc::ex_command::write ? 1 : 0,
+	    p["force"], p["argument"]);
+    ex.parse(p, "frobnicate");
+    println("parse-refused: ok={} error={}", p["ok"], p["error"]);
+    var r;
+    ex.run(r, "s/two/TWO/");
+    var t;
+    ui::text(t, w, d);
+    println("run-s: ok={} substitute={} text={}", r["ok"],
+	    r["command"].as_integer() == (long)madc::ex_command::substitute ? 1 : 0,
+	    php::str_replace("\n", "|", t));
+    ex.run(r, "1,2p");
+    println("run-p: [{}]", php::str_replace("\n", "|", r["shown"]));
+    ex.set_line(2);
+    ex.run(r, "a");
+    println("append: wants_text={} pending={}", r["wants_text"], ex.wants_text() ? 1 : 0);
+    var lines = { "added" };
+    ex.text(r, lines);
+    ui::text(t, w, d);
+    println("text: ok={} text={}", r["ok"], php::str_replace("\n", "|", t));
+    ex.run(r, "q");
+    println("quit-dirty: ok={} quit={} error={}", r["ok"], r["quit"], r["error"]);
+    ex.run(r, "q!");
+    println("quit-force: ok={} quit={}", r["ok"], r["quit"]);
+    ui::world_close(w);
+    // The world is gone and the session outlives it (it dies at the end of
+    // main): it refuses like an unknown handle and its destruction reads no
+    // freed world (valgrind once saw ~session read the closed world).
+    ex.run(r, "1p");
+    println("after-close: use={} line={} run={} error={}", ex.use(d) ? 1 : 0,
+	    ex.line(), r["ok"], r["error"]);
+    php::unlink(path);
+    return 0;
+}

@@ -1548,6 +1548,49 @@ TEST_CASE("compose — a node's tabs hint is a strip in the flow: the editor's o
     CHECK(g.row_text(1) == "x");			// the editor below it
 }
 
+// A strip wider than its region: it starts at the first tab that keeps the
+// active one whole in view (a GUI tab bar scrolls to its active tab); one
+// that fits starts at its first tab (the negative control).
+TEST_CASE("compose — a tab strip wider than its region keeps the active tab in view")
+{
+    world w;
+    roles r = roles::standard(w);
+    const char *names[] = { "Outline", "Symbols", "Help Index", "Preview" };
+    for ( int narrow = 1; narrow >= 0; --narrow )
+    {
+	uinode root(r.group);
+	uinode strip(r.content);
+	std::vector<madc::value> tabs;
+	for ( int i = 0; i < 4; ++i )
+	{
+	    std::map<std::string, madc::value> t;
+	    t["title"] = madc::value(std::string(names[i]));
+	    if ( i == 2 )
+		t["active"] = madc::value((int64_t)1);
+	    tabs.push_back(madc::value::make_object(t));
+	}
+	std::map<std::string, madc::value> sh;
+	sh["tabs"] = madc::value::make_array(tabs);
+	strip.hints = madc::value::make_object(sh);
+	root.add(strip);
+	root.add(edit_node(w, "x", 0));
+	tui_model m;
+	const tui_grid &g = m.compose(r, root, 4, narrow ? 24 : 60);
+	if ( narrow )
+	{
+	    // " Outline " (9) + " Symbols " (9) + " Help Index " (12) = 30 > 24:
+	    // Outline scrolls off, the active tab starts at column 9.
+	    CHECK(g.row_text(0).compare(0, 21, " Symbols  Help Index ") == 0);
+	    CHECK(g.at(0, 9).attr == ui_style::reverse());
+	}
+	else
+	{
+	    CHECK(g.row_text(0) == " Outline  Symbols  Help Index  Preview");
+	    CHECK(g.at(0, 18).attr == ui_style::reverse());
+	}
+    }
+}
+
 // A status node docked at an edge, with items segments.
 static uinode status_bar(world &w, const char *side)
 {

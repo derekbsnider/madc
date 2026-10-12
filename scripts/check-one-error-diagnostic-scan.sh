@@ -33,7 +33,7 @@ if [ "$c" -ne 1 ]; then
 	exit 1
 fi
 
-files=$(git ls-files 'src/*.cpp' 'src/*.c' 'src/*.h' 'include/*.h')
+files=$(git ls-files --cached --others --exclude-standard 'src/*.cpp' 'src/*.c' 'src/*.h' 'include/*.h')
 un=$(code_lines "$SCAN" $files | grep -v 'allowed-exception')
 n=$(printf '%s' "$un" | grep -c . || true)
 echo "hand-written severity tests on a diagnostic: $n (target 0)"

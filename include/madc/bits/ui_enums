@@ -126,6 +126,14 @@ namespace ui {
 	none = 0, file_new, open, save, run, debug, stop, step_over,
 	step_into, step_out, breakpoints
     };
+
+    // A TEXT CHANGE's kind (the edit notification, split arc 1A.1; design
+    // docs/plans/2026-10-09-document-component-design.md §2.2): a splice is
+    // a byte-precise range replacement; load, undo and redo are
+    // whole-buffer events. The engine's record (madcdis/document.h
+    // text_change::kind) aliases it; a dialect subscriber compares
+    // `c["kind"] == ui::text_change_kind::splice`.
+    enum class text_change_kind : unsigned char { splice, load, undo, redo };
 }
 
 #endif // __MADC_BITS_UI_ENUMS

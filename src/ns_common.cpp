@@ -112,6 +112,29 @@ bool contains(const std::string &s, const std::string &needle)
 	return s.find(needle) != std::string::npos;
 }
 
+std::string shell_quote(const std::string &word)
+{
+	if ( word.empty() )
+		return "''";
+	bool safe = true;
+	for ( char c : word )
+		if ( !std::isalnum((unsigned char)c)
+		     && (c == '\0' || !std::strchr("@%+=:,./-_", c)) )
+		{
+			safe = false;
+			break;
+		}
+	if ( safe )
+		return word;
+	std::string quoted = "'";
+	for ( char c : word )
+		if ( c == '\'' )
+			quoted += "'\"'\"'";
+		else
+			quoted += c;
+	return quoted + "'";
+}
+
 bool shell_words(const std::string &s, std::vector<std::string> &out)
 {
 	out.clear();

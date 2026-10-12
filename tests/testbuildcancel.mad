@@ -1,6 +1,7 @@
 // MT-3b: an in-process build cancels DURING ITS PARSE. The builder task
-// runs madc::build_native on a large source (testmadcide.mad — thousands
-// of tokens); the lexer pump yields every 1024 tokens, main cancels the
+// runs madc::build_native on a large source (one the test writes: 2000
+// declarations, thousands of tokens — it compiles no other test's file);
+// the lexer pump yields every 1024 tokens, main cancels the
 // builder's scope at that first yield, and the resumed pump aborts
 // CLEANLY: the build returns false with a "cancelled" diagnostic row —
 // never a throw through the lexer's frames, never an emitted artifact.
@@ -11,7 +12,7 @@ var tr;
 void builder()
 {
     var diags;
-    bool ok = madc::build_native(diags, "tests/testmadcide.mad", "exe",
+    bool ok = madc::build_native(diags, "tmp/testbuildcancel_src.c", "exe",
 				 "tmp/testbuildcancel_out");
     long n = php::count(diags);
     var m = "";
@@ -26,6 +27,11 @@ void builder()
 
 int main()
 {
+    var src = "";
+    for ( long i = 0; i < 2000; i = i + 1 )
+	src = format("{}int v{} = {};\n", src, i, i);
+    src = format("{}int main(void) {{ return v1999 - 1999; }}\n", src);
+    php::file_put_contents("tmp/testbuildcancel_src.c", src);
     long s = madc::scope_begin();
     go builder();
     yield();			// builder runs to its first lexer yield
@@ -36,5 +42,6 @@ int main()
 	tr = format("{}end({});", tr, e);
     }
     println("tr={}", tr);
+    php::unlink("tmp/testbuildcancel_src.c");
     return 0;
 }

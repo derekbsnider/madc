@@ -1,0 +1,39 @@
+// ui::LINE — the level-0 frontend (src/ns_ui.cpp ui_line_frontend), the
+// surface of a line client (an ex / edlin one): no grid (0 rows, 0 cols); a
+// render typesets the tree to stdout as ui::render_tree linearizes it; each
+// stdin line is ONE `text` event carrying the raw line — a `:` line stays
+// raw (the application owns its syntax), a blank line is an empty text, a
+// CRLF's CR is dropped, a final unterminated line still arrives — and EOF
+// ends the events. The engine twin of what testmadcide_line covered before
+// split arc 1D (madcide --line is `madc -i` now).
+int main()
+{
+    long w = ui::world_new();
+    long t = ui::open(ui::LINE);
+    println("open: {} level={} rows={} cols={}", t > 0 ? 1 : 0,
+	    ui::level_of(t) == ui::LINE ? 1 : 0, ui::rows(t), ui::cols(t));
+    var head = { "role": "heading", "label": "line", "content": "level 0" };
+    var body = { "role": "content", "content": "two\nlines" };
+    var kids = {};
+    kids.push(head);
+    kids.push(body);
+    var tree = { "role": "group", "children": kids };
+    var flat;
+    ui::render_tree(flat, w, tree);
+    println("render_tree: [{}]", php::str_replace("\n", "|", flat));
+    println("render:");
+    ui::render(t, w, tree);
+    var ev;
+    long n = 0;
+    while ( ui::event(ev, t, w) )
+    {
+	if ( !(ev["event"] == "text") )
+	    continue;
+	n = n + 1;
+	println("text {}: [{}]", n, ev["text"]);
+    }
+    println("eof after {} lines", n);
+    ui::close(t);
+    ui::world_close(w);
+    return 0;
+}

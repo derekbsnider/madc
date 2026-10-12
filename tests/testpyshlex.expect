@@ -18,3 +18,9 @@ escaped-apostrophe: ok=1 n=1 [<it's>]
 unclosed-double: ok=0 n=0 []
 trailing-escape: ok=0 n=0 []
 unclosed-single: ok=0 n=0 []
+quote plain: [plain.txt] round-trip=true
+quote space: ['a file.txt'] round-trip=true
+quote empty: [''] round-trip=true
+quote apostrophe: ['it'"'"'s'] round-trip=true
+quote safe-set: [dir/x-1_2@v%3+=:,.] round-trip=true
+quote dollar: ['$HOME'] round-trip=true

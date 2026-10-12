@@ -31,6 +31,7 @@
 ///////////////////////////////////////////////////////////////////////////
 
 #include "madcdis/tui_provider.h"
+#include "madcdis/ui_sgr.h"	// sgr / terminal_colour_depth: the one style-to-SGR step
 
 #include <cctype>	// tolower (detect_glyph_set)
 #include <cstdio>
@@ -74,22 +75,6 @@ void cup(std::string &out, size_t row, size_t col)
 	char buf[32];
 	snprintf(buf, sizeof(buf), "\x1b[%zu;%zuH", row + 1, col + 1);
 	out += buf;
-}
-
-// The colour depth this terminal shows, read ONCE when a target is made:
-// COLORTERM=truecolor|24bit or Windows Terminal (WT_SESSION) is 24-bit, a
-// TERM naming 256color the xterm palette, anything else the 8/16 index.
-ui_colour_depth detect_colour_depth()
-{
-	const char *ct = getenv("COLORTERM");
-	if ( ct && (strcmp(ct, "truecolor") == 0 || strcmp(ct, "24bit") == 0) )
-	    return ui_colour_depth::truecolor;
-	if ( getenv("WT_SESSION") )
-	    return ui_colour_depth::truecolor;
-	const char *t = getenv("TERM");
-	if ( t && strstr(t, "256color") )
-	    return ui_colour_depth::xterm256;
-	return ui_colour_depth::ansi16;
 }
 
 // The glyphs this terminal shows, read ONCE when a target is made: box
@@ -139,6 +124,23 @@ void sgr_colour(std::string &params, unsigned char index, uint32_t rgb,
 	params += buf;
 }
 
+
+} // namespace
+
+// The terminal's colour depth, read ONCE when a target is made (madcdis/ui_sgr.h).
+ui_colour_depth madc::hub::terminal_colour_depth()
+{
+	const char *ct = getenv("COLORTERM");
+	if ( ct && (strcmp(ct, "truecolor") == 0 || strcmp(ct, "24bit") == 0) )
+	    return ui_colour_depth::truecolor;
+	if ( getenv("WT_SESSION") )
+	    return ui_colour_depth::truecolor;
+	const char *t = getenv("TERM");
+	if ( t && strstr(t, "256color") )
+	    return ui_colour_depth::xterm256;
+	return ui_colour_depth::ansi16;
+}
+
 // THE style->SGR table (AST-2; owner: VT-102 ANSI / JOE parity). A
 // non-normal transition RESETS and then sets the target style's full
 // parameter list — attributes 1/2/3/4/5/7, fg 30+c, bg 40+c (an exact
@@ -149,8 +151,8 @@ void sgr_colour(std::string &params, unsigned char index, uint32_t rgb,
 // entered from normal emits \x1b[7m and any->normal emits \x1b[0m,
 // so a grid using only normal/reverse produces the byte stream it
 // always did.
-void emit_sgr(std::string &out, ui_style from, ui_style to,
-	      ui_colour_depth depth)
+void madc::hub::sgr(std::string &out, ui_style from, ui_style to,
+		    ui_colour_depth depth)
 {
 	if ( to.is_normal() )
 	{
@@ -180,6 +182,8 @@ void emit_sgr(std::string &out, ui_style from, ui_style to,
 	out += params;
 	out += 'm';
 }
+
+namespace {
 
 // The whole paint plan as one byte string (the platform body just
 // writes it): diff, DECSTBM+DL/IL scroll of a shifted band, per-span
@@ -227,7 +231,7 @@ std::string vt_paint_bytes(const tui_grid &prev, const tui_grid &next,
 		    continue;		// drawn with its glyph
 		if ( cell.attr != cur )
 		{
-		    emit_sgr(out, cur, cell.attr, depth);
+		    madc::hub::sgr(out, cur, cell.attr, depth);
 		    cur = cell.attr;
 		}
 		char ascii = glyphs == ui_glyph_set::ascii
@@ -366,7 +370,7 @@ class term_target : public madc::hub::tui_target,
 
 public:
     term_target() : _open(false), _suspended(false), _line(false),
-		    _rows(24), _cols(80), _depth(detect_colour_depth()),
+		    _rows(24), _cols(80), _depth(madc::hub::terminal_colour_depth()),
 		    _glyphs(detect_glyph_set()) {}
     ~term_target() { close(); }
 
@@ -764,7 +768,7 @@ public:
 		    _saved_in(0), _saved_out(0),
 		    _saved_cp_in(0), _saved_cp_out(0),
 		    _open(false), _suspended(false), _line(false),
-		    _rows(24), _cols(80), _depth(detect_colour_depth()),
+		    _rows(24), _cols(80), _depth(madc::hub::terminal_colour_depth()),
 		    _glyphs(detect_glyph_set()) {}
     ~term_target() { close(); }
 

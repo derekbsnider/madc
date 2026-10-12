@@ -97,7 +97,7 @@ if ! grep -q '^inline std::vector<tui_event> ui_apply_keys' "$INPUT_OWNER"; then
 fi
 
 # --- the tree: each rule outside its own owner --------------------------------
-files=$(git ls-files 'src/*.cpp' 'src/*.h' 'include/*.h' 'include/**/*.h')
+files=$(git ls-files --cached --others --exclude-standard 'src/*.cpp' 'src/*.h' 'include/*.h' 'include/**/*.h')
 # shellcheck disable=SC2086
 key_out=$(grep -nE "$KEY_PATTERN" $(echo "$files" | grep -v "^$KEY_OWNER\$") /dev/null)
 # shellcheck disable=SC2086

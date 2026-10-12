@@ -445,4 +445,14 @@ bool shlex_split(madc::value &out, const char *text)
 	return true;
 }
 
+// python::shlex_quote — Python's shlex.quote over ns_common::shell_quote,
+// the one quoter (shlex_split's inverse): ring-lifetime text.
+// Thread contract: a pure function over its argument (the ring is per thread).
+const char *shlex_quote(const char *word)
+{
+	std::string &slot = ns_common::ring_slot();
+	slot = ns_common::shell_quote(python_text_arg(word));
+	return slot.c_str();
+}
+
 } // namespace python

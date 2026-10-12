@@ -1,0 +1,101 @@
+// The language services' dialect face (split arc 1C.11; design
+// docs/plans/2026-10-10-language-services-design.md): madc::doc_* over a
+// document — outline, enclosing, definition, references, hover, spans and
+// diagnostics, the last after an edit — in the one coordinate (a 1-based
+// line, a 0-based byte column, the end exclusive). ORACLE: clangd 18 with
+// positionEncoding utf-8 for every range (definition 1:4-1:9, references
+// 7:11-7:16 / 7:17-7:22 / 7:29-7:34, hover 7:11-7:16, documentSymbol twice
+// 1:0-4:1 / 1:4-1:9; recorded in tests/unit/test_lang.cpp) and gcc for the
+// diagnostic's anchor (3:12, the undeclared identifier). The test removes
+// what it creates.
+
+void show_range(const char *label, var &r)
+{
+    println("{}: {}:{}-{}:{}", label, r["line"], r["column"], r["end_line"],
+	    r["end_column"]);
+}
+
+void show_ranges(const char *label, var &rs)
+{
+    println("{}: {}", label, rs.size());
+    for ( long i = 0; i < rs.size(); i = i + 1 )
+    {
+	var r = rs[i];
+	show_range(label, r);
+    }
+}
+
+int main()
+{
+    long w = ui::world_new();
+    const char *path = "tmp/testlang_doc_scratch.c";
+    php::file_put_contents(path,
+	"int twice(int x)\n{\n    return x * 2;\n}\nint main(void)\n{\n"
+	"    return twice(twice(1)) + twice(3);\n}\n");
+    long d = ui::doc_open(w, path);
+    php::unlink(path);
+    println("open: {}", d != 0);
+
+    var syms;
+    madc::doc_outline(syms, w, d);
+    println("outline: {}", syms.size());
+    for ( long i = 0; i < syms.size(); i = i + 1 )
+    {
+	var s = syms[i];
+	println("symbol: {} {}", s["name"], s["kind"]);
+	var r = s["range"];
+	show_range("symbol-range", r);
+	var sel = s["selection"];
+	show_range("symbol-selection", sel);
+    }
+
+    var enc;
+    madc::doc_enclosing(enc, w, d, 3, 4);
+    println("enclosing: {}", enc["name"]);
+    madc::doc_enclosing(enc, w, d, 1, 0);
+    println("enclosing-first-byte: {}", enc["name"]);
+
+    var defs;
+    madc::doc_definition(defs, w, d, 7, 13);
+    show_ranges("definition", defs);
+    madc::doc_definition(defs, w, d, 7, 4);
+    println("definition-of-return: {}", defs.size());
+
+    var refs;
+    madc::doc_references(refs, w, d, 1, 6, false);
+    show_ranges("references", refs);
+    madc::doc_references(refs, w, d, 7, 30, true);
+    println("references-with-declaration: {}", refs.size());
+
+    var h;
+    madc::doc_hover(h, w, d, 7, 13);
+    println("hover: {}", h["text"]);
+    var hr = h["range"];
+    show_range("hover-range", hr);
+    madc::doc_hover(h, w, d, 3, 4);
+    println("hover-inside: {} range={}", h["text"], h["range"].is_null());
+
+    var spans;
+    madc::doc_spans(spans, w, d);
+    for ( long i = 0; i < spans.size(); i = i + 1 )
+    {
+	var sp = spans[i];
+	if ( sp["line"] == 1 && sp["column"] == 4 )
+	    println("span-1:4: {} length={}", sp["class"], sp["length"]);
+    }
+
+    var diags;
+    madc::doc_diagnostics(diags, w, d);
+    println("diagnostics-clean: {}", diags.size());
+    ui::text_replace(w, d, 30, 1, "y");			// return x -> return y
+    madc::doc_diagnostics(diags, w, d);
+    println("diagnostics-after-edit: {}", diags.size() > 0);
+    var d0 = diags[0];
+    println("diagnostic: {} error={}", d0["severity"],
+	    d0["severity_code"] == madc::diag_severity::error);
+    var dr = d0["range"];
+    show_range("diagnostic-range", dr);
+
+    ui::doc_close(w, d);
+    return 0;
+}

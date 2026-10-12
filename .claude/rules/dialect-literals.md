@@ -17,8 +17,8 @@
   field-by-field construction never changes output — choose the literal.
 - Do not degrade existing literal syntax back to imperative construction when
   editing a file; write the good form the first time.
-- Gate: `scripts/check-dialect-literals.sh` (in fulltest) fails on a bare
-  `var NAME;` immediately followed by `NAME["…"] = …`, over `tools/**/*.{inc,mad}`.
-  It carries a two-way negative control.
+- Gate: madcide's `scripts/check-dialect-literals.sh` (its `scripts/gates.sh`)
+  fails on a bare `var NAME;` immediately followed by `NAME["…"] = …`, over its
+  `tools/**/*.{inc,mad}`. It carries a two-way negative control.
 
 See `docs/rules/dialect-literals.md` for the reasoning.

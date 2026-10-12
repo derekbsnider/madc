@@ -43,7 +43,7 @@ if [ "$c1" -ne 1 ] || [ "$c2" -ne 1 ]; then
 	exit 1
 fi
 
-files=$(git ls-files 'src/*.cpp' 'src/*.h')
+files=$(git ls-files --cached --others --exclude-standard 'src/*.cpp' 'src/*.h')
 bad=$( { code_lines "$PEEL" $files; code_lines "$LOOP" $files; } | grep -v 'allowed-exception')
 n=$(printf '%s' "$bad" | grep -c . || true)
 marked=$( { code_lines "$PEEL" $files; code_lines "$LOOP" $files; } | grep -c 'allowed-exception' || true)

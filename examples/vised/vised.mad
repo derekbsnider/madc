@@ -1,0 +1,49 @@
+// vised — a small visual editor, madc's example of its own editing surface
+// (vised_core.inc: the document component, an anchor caret, the edit
+// notification, madc's colon mode).
+// Usage: madc examples/vised/vised.mad FILE [ro] [--web]
+// Typing edits at the caret; the arrows, home and end move it; ^Z undoes;
+// ^S saves (:w), ^Q quits (:q — refused while modified), ^X discards
+// (:q!); Esc opens the colon line, where every ex command runs.
+#include "vised_core.inc"
+
+int main(int argc, char **argv)
+{
+    if ( argc < 2 )
+    {
+	println(stderr, "usage: vised FILE [ro] [--web]");
+	return 1;
+    }
+    bool ro = false;
+    ui::level lvl = ui::TUI;
+    for ( int i = 2; i < argc; i++ )
+    {
+	if ( strcmp(argv[i], "--web") == 0 )
+	    lvl = ui::WEB;		// the same tree in a window
+	else if ( strcmp(argv[i], "ro") == 0 )
+	    ro = true;
+    }
+    vised v;
+    if ( !vised_open(v, argv[1], ro) )
+    {
+	println(stderr, "vised: cannot read {}", argv[1]);
+	return 1;
+    }
+    long t = ui::open(lvl);
+    if ( t == 0 )
+	return 1;			// refused (the reason on stderr)
+    bool run = true;
+    while ( run )
+    {
+	var tree;
+	vised_tree(tree, v);
+	ui::render(t, v.w, tree);
+	var ev;
+	if ( !ui::event(ev, t, v.w) )
+	    break;
+	run = vised_event(v, ev);
+    }
+    ui::close(t);
+    vised_close(v);
+    return 0;
+}

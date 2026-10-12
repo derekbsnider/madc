@@ -89,7 +89,7 @@ cmake -S "$SRC" -B "$BUILD" -G "Unix Makefiles" \
     -DCMARK_TESTS=OFF \
     -DCMARK_LIB_FUZZER=OFF
 
-jobs=$(nproc 2>/dev/null || echo 4)
+jobs=$(bash scripts/build_jobs.sh)
 echo "cmark-gfm ($target): building (-j$jobs)"
 cmake --build "$BUILD" -j"$jobs" --target libcmark-gfm_static libcmark-gfm-extensions_static
 

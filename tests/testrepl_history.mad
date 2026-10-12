@@ -1,0 +1,6 @@
+// %history (split arc 1B.7, design 2026-10-10-history-std-reset-design.md
+// decision 2; IPython's): madc -i's session lists its own entries, -n
+// numbered from REPL[1]; FILE's run takes no number. With no store
+// (--history-file=no) -l is refused and the session goes on.
+#include <stdio.h>
+int main(void) { printf("ready\n"); return 0; }

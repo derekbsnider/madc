@@ -63,7 +63,7 @@ cout << "hypot(3,4) = " << hypot(3.0, 4.0) << endl;
 
 | Option | Effect |
 |--------|--------|
-| `--std=<std>` | `c89`…`c23`, `c++NN`, or `madc` (the default dialect; C++ keywords reserved). A `.c` TU under `--project` defaults to C mode. |
+| `--std=<std>` | `c89`…`c23`, `gnuNN`, `c++NN`, `gnu++NN`, or `madc` (the dialect; C++ keywords reserved). Without it the source's extension decides, as plain gcc / g++ do: `.c` / `.h` → `gnu17`, `.cpp` / `.cc` / `.cxx` (and the other C++ extensions) → `gnu++17`, `.mad` → `madc`; a source with no recognised extension (a shebang script, stdin) takes the `madc.ini` `std`, else `madc`. A `--project` TU without `-std=` follows the same rule. |
 | `-stdlib=libstdc++`\|`libc++` | C++ standard-library flavor (clang's spelling). Replaces the C++ include search list, as clang does. |
 | `-D<name>[=value]` | define a macro |
 | `-I<dir>` | add an include search directory |
@@ -166,6 +166,7 @@ image, the libmadc image, `<exe>.forest` / `<lib>.forest` sidecars,
 | `-v`, `--verbose` | tokenizer / parser / lowering trace |
 | `-g` | debug info: gdb can break, step, and inspect the JIT'd program (forces `-O0`) |
 | `-w` | inhibit all warning messages (gcc `-w`); errors are unaffected |
+| `-fdiagnostics-color[=auto\|always\|never]`, `-fno-diagnostics-color` | when diagnostics are coloured (gcc's spelling). `auto`, the default, colours only a terminal (`TERM` set and not `dumb`; on Windows a console, switched to VT mode) and never when `NO_COLOR` is set — so `madc file.c 2> log` writes plain text; the bare flag is `always`. A host's captured stream (an embedding, an IDE pane, a test log) is no terminal. |
 | `--show-stats` | read/lex/parse/c2mir/execute timing and size stats on stderr |
 | `-O0` … `-O3` | JIT optimization level |
 
@@ -176,9 +177,12 @@ Precedence: **CLI > environment > `madc.ini` > defaults.**
 The config search takes the first existing file of: `./madc.ini`,
 `$XDG_CONFIG_HOME/madc/madc.ini` (default `~/.config/madc/madc.ini`), then
 the system config dir. `--config=<file>` names one explicitly;
-`--no-config` skips the search (hermetic builds). Recognized keys: `std`,
-`stdlib`, `forest`, `include` (repeatable), `cpu-limit`, `mem-limit` — an
-unknown key is an error.
+`--no-config` skips the search (hermetic builds). Recognized keys: `std`
+(for a source with no recognised extension — `--std` > the extension > `std`
+> `madc`), `stdlib`, `forest`, `include` (repeatable), `modules` (repeatable:
+a module or library to load, as `-l<name>` loads it — `modules = madcgit`; the
+command line's `-l` libraries load first, and a name both give loads once),
+`cpu-limit`, `mem-limit` — an unknown key is an error.
 
 | Variable | Effect |
 |----------|--------|

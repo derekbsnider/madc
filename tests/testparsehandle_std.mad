@@ -1,9 +1,12 @@
 // madc::parse_open under a STANDARD (the editor's --std=): the handle
 // compiles under the <bits/file_kinds> standard code it was given and keeps
-// it through a refresh; a code that names no standard (a family head, a text
-// kind) is refused. The preprocessor picks one function per standard, so the
-// outline says which standard the parse saw — gcc/clang -E agree: c17 =>
-// side_c17, c11 => side_c11, c++20 => side_cxx20, c++17 => side_cxx.
+// it through a refresh; a family head is the family's default as the CLI
+// compiles a file of it (split arc 1A.4: gnu17, gnu++17 — plain gcc / g++);
+// a code that names no standard (a text kind, the IR's text) is refused. The
+// preprocessor picks one function per standard, so the outline says which
+// standard the parse saw — gcc/clang -E agree: c17 => side_c17, c11 =>
+// side_c11, c++20 => side_cxx20, c++17 => side_cxx; plain `gcc -E` =>
+// side_c17, plain `g++ -E` => side_cxx.
 
 // The one function the handle's outline holds.
 void show(const char *label, long h)
@@ -45,8 +48,11 @@ int main()
     println("refresh: {}", madc::parse_refresh(hc17, src.c_str()) ? 1 : 0);
     show("c17 after refresh", hc17);
 
-    // A family head and a text kind name no standard: no handle.
-    println("family head: {}", madc::parse_open(src.c_str(), "std.c", madc::fkC));
+    // A family head is the family's default; a text kind and the IR's
+    // text name no standard: no handle.
+    show("c family head", madc::parse_open(src.c_str(), "std.c", madc::fkC));
+    show("c++ family head", madc::parse_open(src.c_str(), "std.c", madc::fkCPP));
     println("text kind: {}", madc::parse_open(src.c_str(), "std.c", madc::fkJSON));
+    println("ir text: {}", madc::parse_open(src.c_str(), "std.c", madc::fkMC11));
     return 0;
 }

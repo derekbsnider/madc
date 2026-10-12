@@ -1,0 +1,16 @@
+%a   "tests/testrepl_buffer.mad"
+"[REPL]"
+// The REPL buffer (owner 2026-10-12): a scratch buffer, [REPL], holding every
+int early = 1;
+13
+6
+  1 int early = 1;
+  2 int x = 3;
+  3 x + base
+  4 // testrepl_buffer's %load file: its text joins the REPL buffer.
+  5 int twice(int n) { return 2 * n; }
+  6 twice(x)
+  3 // testrepl_buffer's %load file: its text joins the REPL buffer.
+x + BASE
+int base = 10;
+twice(x) // back

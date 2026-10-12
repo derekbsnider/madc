@@ -1,0 +1,26 @@
+open: true
+outline: 2
+symbol: twice function
+symbol-range: 1:0-4:1
+symbol-selection: 1:4-1:9
+symbol: main function
+symbol-range: 5:0-8:1
+symbol-selection: 5:4-5:8
+enclosing: twice
+enclosing-first-byte: twice
+definition: 1
+definition: 1:4-1:9
+definition-of-return: 0
+references: 3
+references: 7:11-7:16
+references: 7:29-7:34
+references: 7:17-7:22
+references-with-declaration: 4
+hover: Function twice — defined on line 1
+hover-range: 7:11-7:16
+hover-inside: in twice range=true
+span-1:4: function length=5
+diagnostics-clean: 0
+diagnostics-after-edit: true
+diagnostic: error error=true
+diagnostic-range: 3:11-3:12

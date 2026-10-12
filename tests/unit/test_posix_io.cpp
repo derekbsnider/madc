@@ -3,6 +3,8 @@
 #include "doctest.h"
 
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <string>
 
 thread_local bool madc_verbose = false;
@@ -14,6 +16,8 @@ using madc::detail::host_path_dirname;
 using madc::detail::host_path_basename;
 using madc::detail::host_path_within;
 using madc::detail::host_path_absolute;
+using madc::detail::host_path_join;
+using madc::detail::host_path_expand_home;
 
 TEST_CASE("host_path_dirname/basename: POSIX separators on every host")
 {
@@ -120,6 +124,55 @@ TEST_CASE("host_path_absolute: a drive spelling is a relative name on POSIX")
 }
 #endif
 
+TEST_CASE("host_path_join: a relative path under a directory, one separator")
+{
+	CHECK(host_path_join("/work/proj", "src/a.c") == "/work/proj/src/a.c");
+	CHECK(host_path_join("/work/proj/", "a.c") == "/work/proj/a.c");
+	CHECK(host_path_join("/", "a.c") == "/a.c");
+	CHECK(host_path_join("/work", "/etc/x") == "/etc/x");	// absolute stays
+	CHECK(host_path_join("/work", "") == "");
+	CHECK(host_path_join("", "a.c") == "a.c");
+	CHECK(host_path_join(".", "a.c") == "a.c");		// never a ./ twin
+#ifdef _WIN32
+	CHECK(host_path_join("Z:\\work\\", "a.c") == "Z:\\work\\a.c");
+	CHECK(host_path_join("Z:\\work", "C:\\x") == "C:\\x");
+#endif
+}
+
+TEST_CASE("host_path_type_of: nothing, a file, a directory")
+{
+	using madc::detail::host_path_type;
+	using madc::detail::host_path_type_of;
+	CHECK(host_path_type_of("") == host_path_type::none);
+	CHECK(host_path_type_of("no/such/path/at/all") == host_path_type::none);
+	CHECK(host_path_type_of(".") == host_path_type::directory);
+	const char *made = "test_posix_io_type_of.tmp";
+	FILE *f = fopen(made, "w");
+	REQUIRE(f);
+	fclose(f);
+	CHECK(host_path_type_of(made) == host_path_type::file);
+	remove(made);
+	CHECK(host_path_type_of(made) == host_path_type::none);
+}
+
+TEST_CASE("host_path_expand_home: ~ and ~/x against the home, nothing else")
+{
+	std::string out;
+#ifdef _WIN32
+	const char *home = getenv("USERPROFILE");
+#else
+	const char *home = getenv("HOME");
+#endif
+	REQUIRE(home);
+	CHECK(host_path_expand_home("~/notes.txt", out));
+	CHECK(out == std::string(home) + "/notes.txt");
+	CHECK(host_path_expand_home("~", out));
+	CHECK(out == home);
+	CHECK_FALSE(host_path_expand_home("~user/x", out));	// not ours
+	CHECK_FALSE(host_path_expand_home("a/~/b", out));
+	CHECK_FALSE(host_path_expand_home("", out));
+}
+
 TEST_CASE("map_exec_region_at: placed exactly, refused when taken, writable on request")
 {
 	// An address far from the image, the heap and the default mapping area.
@@ -134,4 +187,55 @@ TEST_CASE("map_exec_region_at: placed exactly, refused when taken, writable on r
 	CHECK(madc::detail::protect_exec_region(p, len, false) == 0);
 	CHECK(*(volatile unsigned char *)p == 0xc3);
 	CHECK(madc::detail::unmap_exec_region(p, len) == 0);
+}
+
+// The one extension / stem rule (check-one-path-stem.sh): the extension
+// follows the last dot of the FINAL component; a dot in a directory and a
+// leading dot are none.
+TEST_CASE("host_path_drop_extension / host_path_stem: the final component's last dot")
+{
+	using madc::detail::host_path_drop_extension;
+	using madc::detail::host_path_stem;
+	CHECK(host_path_drop_extension("foo.c") == "foo");
+	CHECK(host_path_drop_extension("dir.d/foo.c") == "dir.d/foo");
+	CHECK(host_path_drop_extension("dir.d/foo") == "dir.d/foo");
+	CHECK(host_path_drop_extension("../tool") == "../tool");	// was "."
+	CHECK(host_path_drop_extension(".bashrc") == ".bashrc");
+	CHECK(host_path_drop_extension("dir/.hidden") == "dir/.hidden");
+	CHECK(host_path_drop_extension("a.tar.gz") == "a.tar");
+	CHECK(host_path_stem("dir/foo.tar.gz") == "foo.tar");
+	CHECK(host_path_stem("foo") == "foo");
+	CHECK(host_path_stem("dir.d/") == "");
+#ifdef _WIN32
+	CHECK(host_path_stem("C:\\src\\demo.c") == "demo");
+	CHECK(host_path_drop_extension("C:\\v1.2\\tool") == "C:\\v1.2\\tool");
+#else
+	CHECK(host_path_stem("dir\\demo.c") == "dir\\demo");	// '\' is a name character
+#endif
+}
+
+// held_file: one process at a time holds a file (discovery's ownership and
+// liveness). ORACLE: flock(2) — an exclusive lock on one open file refuses a
+// second open file's non-blocking LOCK_EX with EWOULDBLOCK, in this process
+// as in any other (flock locks belong to the open file, not the process).
+TEST_CASE("held_file: one holder at a time; release(true) removes the file")
+{
+    const std::string path = std::string(std::getenv("TMPDIR") ? std::getenv("TMPDIR") : "/tmp")
+	+ "/madc_held_file_unit.json";
+    std::remove(path.c_str());
+    CHECK_FALSE(madc::detail::host_file_held(path));	// no file: no holder
+    madc::detail::held_file a, b;
+    REQUIRE(a.open_held(path));
+    CHECK(a.held());
+    CHECK(madc::detail::host_file_held(path));
+    CHECK_FALSE(b.open_held(path));			// held elsewhere
+    CHECK(a.replace("{\"x\":1}\n"));
+    a.release();
+    CHECK_FALSE(madc::detail::host_file_held(path));	// let go: no live holder
+    REQUIRE(b.open_held(path));
+    b.release(true);
+    FILE *gone = std::fopen(path.c_str(), "r");
+    CHECK(gone == NULL);					// removed with the hold
+    if ( gone )
+	std::fclose(gone);
 }

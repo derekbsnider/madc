@@ -1,0 +1,6 @@
+// The REPL buffer (owner 2026-10-12): a scratch buffer, [REPL], holding every
+// entry the session kept and every file %load kept — a refused entry stays
+// out — whichever buffer colon mode is on. `madc -i FILE` is line mode, so
+// colon mode starts on FILE; :ls lists both, :b NAME switches, an edit is one
+// undo group, %run of [REPL] is refused (no file) and :q never counts it.
+int base = 10;

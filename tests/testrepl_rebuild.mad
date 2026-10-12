@@ -1,0 +1,4 @@
+// %run with the REPL buffer current rebuilds it (owner 2026-10-12): a fresh
+// session, then the buffer's edited text as if typed; nothing is added to
+// the buffer again. Only the REPL buffer: a file buffer runs as before.
+int base = 1;

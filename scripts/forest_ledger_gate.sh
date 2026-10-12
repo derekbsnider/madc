@@ -49,12 +49,12 @@ mkdir -p "$D"
 run() { ( ulimit -t 300; timeout 400 "$@" ); }
 
 # --- fixtures -------------------------------------------------------------
-cat > "$D/tu.c" <<'EOF'
+cat > "$D/tu.mad" <<'EOF'
 #include <stdio.h>
 int main(void) { return 0; }
 EOF
 
-cat > "$D/trycatch.c" <<'EOF'
+cat > "$D/trycatch.mad" <<'EOF'
 #include <stdio.h>
 
 int risky(int n)
@@ -79,7 +79,7 @@ int main(void)
 }
 EOF
 
-cat > "$D/vla.c" <<'EOF'
+cat > "$D/vla.mad" <<'EOF'
 #include <stdio.h>
 
 static int total(int n)
@@ -102,7 +102,7 @@ EOF
 
 # The .o link-lane pair (leg 9): main needs try/catch, the helper needs VLA
 # scope exit — the two ledger modules, reached from two separate objects.
-cat > "$D/linkmain.c" <<'EOF'
+cat > "$D/linkmain.mad" <<'EOF'
 #include <stdio.h>
 
 int vlasum(int n);
@@ -130,7 +130,7 @@ int main(void)
 }
 EOF
 
-cat > "$D/linkhelp.c" <<'EOF'
+cat > "$D/linkhelp.mad" <<'EOF'
 int vlasum(int n)
 {
 	int a[n];
@@ -193,7 +193,7 @@ fi
 LEDGER_MODULE_COUNT=${#LEDGER_ARGS[@]}
 
 # --- leg 1: freeze a container carrying the ledger ------------------------
-if run "$MADC" "${LEDGER_ARGS[@]}" --freeze-append="$D/madc.forest" "$D/tu.c" \
+if run "$MADC" "${LEDGER_ARGS[@]}" --freeze-append="$D/madc.forest" "$D/tu.mad" \
 	> "$D/freeze.out" 2> "$D/freeze.err"; then
 	pass "freeze with ledger"
 else
@@ -232,7 +232,7 @@ emit_and_inspect()
 }
 
 # --- leg 2: baseline — no flag keeps the dependency -----------------------
-emit_and_inspect "$D/trycatch.c" base
+emit_and_inspect "$D/trycatch.mad" base
 if [ $EMIT_RC -eq 0 ] && [ -n "$NEEDED" ]; then
 	pass "baseline keeps libmadc.so.0 (the flag is what changes it)"
 else
@@ -240,7 +240,7 @@ else
 fi
 
 # --- leg 3: try/catch, -static-libmadc ------------------------------------
-emit_and_inspect "$D/trycatch.c" tc -static-libmadc
+emit_and_inspect "$D/trycatch.mad" tc -static-libmadc
 if [ $EMIT_RC -ne 0 ]; then
 	fail "try/catch -static-libmadc emit (rc=$EMIT_RC)"
 	sed -n '1,15p' "$D/tc.emit"
@@ -251,7 +251,7 @@ elif [ -n "$UND" ]; then
 else
 	pass "try/catch -static-libmadc: no madc library, no __madc_* imports"
 fi
-jit=$(run "$MADC" "$D/trycatch.c" 2>/dev/null)
+jit=$(run "$MADC" "$D/trycatch.mad" 2>/dev/null)
 aot=$(run "$D/tc" 2>/dev/null)
 if [ -n "$aot" ] && [ "$jit" = "$aot" ]; then
 	pass "try/catch output matches the JIT run"
@@ -273,14 +273,14 @@ fi
 # --- leg 5: VLA scope exit (the second ledger module) ---------------------
 # Baseline first, for the same reason as leg 2: a VLA program that did not
 # need the runtime would satisfy the -static-libmadc assertions vacuously.
-emit_and_inspect "$D/vla.c" vlabase
+emit_and_inspect "$D/vla.mad" vlabase
 if [ $EMIT_RC -eq 0 ] && [ -n "$NEEDED" ]; then
 	pass "VLA baseline is genuinely runtime-needing"
 else
 	fail "VLA baseline is genuinely runtime-needing (rc=$EMIT_RC needed='$NEEDED')"
 fi
-emit_and_inspect "$D/vla.c" vla -static-libmadc
-vjit=$(run "$MADC" "$D/vla.c" 2>/dev/null)
+emit_and_inspect "$D/vla.mad" vla -static-libmadc
+vjit=$(run "$MADC" "$D/vla.mad" 2>/dev/null)
 vaot=$(run "$D/vla" 2>/dev/null)
 if [ $EMIT_RC -eq 0 ] && [ -z "$NEEDED" ] && [ -z "$UND" ] \
    && [ -n "$vaot" ] && [ "$vjit" = "$vaot" ]; then
@@ -366,10 +366,10 @@ else
 fi
 
 # --- leg 7: a carrier with no ledger gets the BUILD-side message ----------
-run "$MADC" --freeze-append="$D/noledger.forest" "$D/tu.c" \
+run "$MADC" --freeze-append="$D/noledger.forest" "$D/tu.mad" \
 	> /dev/null 2>&1
 run "$MADC" --forest-bind="$D/noledger.forest" -static-libmadc \
-	-o "$D/nl" "$D/trycatch.c" > "$D/noledger.log" 2>&1
+	-o "$D/nl" "$D/trycatch.mad" > "$D/noledger.log" 2>&1
 nl_rc=$?
 nl=$(tr -d '\0' < "$D/noledger.log")
 if [ $nl_rc -eq 0 ]; then
@@ -384,7 +384,7 @@ else
 fi
 
 # --- leg 8: -c refuses (the runtime merges at the final link) -------------
-run "$MADC" -static-libmadc -c -o "$D/tc.o" "$D/trycatch.c" \
+run "$MADC" -static-libmadc -c -o "$D/tc.o" "$D/trycatch.mad" \
 	> "$D/dashc.log" 2>&1
 if [ $? -ne 0 ] && grep -q 'requires a linked native output' "$D/dashc.log"; then
 	pass "-static-libmadc -c refuses at the CLI"
@@ -399,8 +399,8 @@ fi
 # objects, so a per-object merge (or a missed one) cannot pass.
 # -fno-eval-shims: these objects are headed for a standalone link, so they
 # leave out the host-call adapters whose value-ABI imports are Tier B.
-run "$MADC" -fno-eval-shims -c -o "$D/lm.o" "$D/linkmain.c" > "$D/lm.log" 2>&1
-run "$MADC" -fno-eval-shims -c -o "$D/lh.o" "$D/linkhelp.c" > "$D/lh.log" 2>&1
+run "$MADC" -fno-eval-shims -c -o "$D/lm.o" "$D/linkmain.mad" > "$D/lm.log" 2>&1
+run "$MADC" -fno-eval-shims -c -o "$D/lh.o" "$D/linkhelp.mad" > "$D/lh.log" 2>&1
 if [ ! -f "$D/lm.o" ] || [ ! -f "$D/lh.o" ]; then
 	fail "could not build the .o pair for the link-lane leg"
 	sed -n '1,4p' "$D/lm.log" "$D/lh.log"
@@ -453,8 +453,8 @@ else
 	# The other half of the contract: objects that KEPT their host-call
 	# adapters cannot be covered (the value ABI is Tier B), and the refusal
 	# must name the flag that fixes it — not leave the user guessing.
-	run "$MADC" -c -o "$D/lmshim.o" "$D/linkmain.c" > /dev/null 2>&1
-	run "$MADC" -c -o "$D/lhshim.o" "$D/linkhelp.c" > /dev/null 2>&1
+	run "$MADC" -c -o "$D/lmshim.o" "$D/linkmain.mad" > /dev/null 2>&1
+	run "$MADC" -c -o "$D/lhshim.o" "$D/linkhelp.mad" > /dev/null 2>&1
 	run "$MADC" --forest-bind="$D/madc.forest" -static-libmadc \
 		-o "$D/lshim" "$D/lmshim.o" "$D/lhshim.o" > "$D/lshim.log" 2>&1
 	shim_rc=$?

@@ -32,7 +32,7 @@ if [ "$c" -ne 1 ]; then
 	exit 1
 fi
 
-files=$(git ls-files 'third_party/mir/*.c' 'third_party/mir/c2mir/*.c' 'src/*.cpp' 'src/*.c')
+files=$(git ls-files --cached --others --exclude-standard 'third_party/mir/*.c' 'third_party/mir/c2mir/*.c' 'src/*.cpp' 'src/*.c')
 un=$(code_lines "$SCAN" $files | grep -v 'allowed-exception')
 n=$(printf '%s' "$un" | grep -c . || true)
 echo "hand-written definition-to-import conversions: $n (target 0)"

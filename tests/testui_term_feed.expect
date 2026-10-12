@@ -1,0 +1,10 @@
+plain: [hello|]
+cr-overwrite: [hello|Xbc|]
+backspace: [hello|Xbc|aZ|]
+tab: [hello|Xbc|aZ|        T|]
+erase-line: [hello|Xbc|aZ|        T|new|]
+sgr: [hello|Xbc|aZ|        T|new|red|]
+sgr-spans: 27-30 red;
+split-escape-1: [hello|Xbc|aZ|        T|new|red|]
+split-escape-2: [after]
+no-text: -1

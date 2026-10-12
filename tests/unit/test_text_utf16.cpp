@@ -97,3 +97,20 @@ TEST_CASE("an empty line has exactly one position")
 	CHECK(col16_to_byte(t, 7) == 0);
 	CHECK(col16_of_byte(t, 0) == 0);
 }
+
+TEST_CASE("line_layout's shown offsets: where each byte's glyph starts in the shown bytes")
+{
+    std::vector<std::size_t> col, at;
+    // A tab expands to its stop, a control byte to ^X, a code point keeps
+    // its bytes (its continuation bytes share its start).
+    const std::string shown = madc::line_layout("a\tb\x01\xc3\xa9", 2, col, 8, &at);
+    CHECK(shown == "a     b^A\xc3\xa9");
+    REQUIRE(at.size() == 7u);
+    CHECK(at[0] == 0u);
+    CHECK(at[1] == 1u);
+    CHECK(at[2] == 6u);
+    CHECK(at[3] == 7u);
+    CHECK(at[4] == 9u);
+    CHECK(at[5] == 9u);
+    CHECK(at[6] == 11u);
+}

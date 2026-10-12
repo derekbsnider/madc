@@ -297,6 +297,9 @@ enum MethodFlags : uint32_t {
 	MF_CTOR   = 1u << 0,	// joins DataDefCLASS::ctors on load
 	MF_DTOR   = 1u << 1,	// the class_own_dtor ("~") method_map key
 	MF_STATIC = 1u << 2,	// no hidden __this
+	MF_EXPLICIT = 1u << 3,	// v54: FuncDef::is_explicit — an explicit ctor
+				// serves direct-initialization only, never an
+				// implicit conversion ([over.ics.user])
 };
 
 // Per-base flag bits (baserec.flags).

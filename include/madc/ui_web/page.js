@@ -445,12 +445,18 @@
   // `#rrggbb`), shown as that colour — the palette classes cannot name it.
   function span(cls, s) {
     var e = document.createElement('span');
+    styled(e, cls);
+    e.textContent = s;
+    return e;
+  }
+
+  // An element in style classes, its exact colours applied (span's rule).
+  function styled(e, cls) {
     e.className = cls;
     var m = /(?:^| )fgx-([0-9a-f]{6})(?: |$)/.exec(cls);
     if (m) e.style.color = '#' + m[1];
     m = /(?:^| )bgx-([0-9a-f]{6})(?: |$)/.exec(cls);
     if (m) e.style.backgroundColor = '#' + m[1];
-    e.textContent = s;
     return e;
   }
 
@@ -578,7 +584,13 @@
   // caret) coalesced into runs. Columns arrive as BYTE offsets from the
   // engine and are converted to string indices per line (unitsOf), so a
   // multi-byte character costs one cell, not two or three.
-  function renderLine(row, lineNo, caret, sel, presence) {
+  // The line-number gutter (an edit op's `gutter`: the numbers' classes n,
+  // the caret line's number's c, the caret line's l): each line leads with
+  // an EMPTY number element whose ::before shows the line's counter (page
+  // .css), so a splice renumbers nothing and the hit test's text holds no
+  // digits — a press in the gutter lands on its line's start, as the
+  // terminal's does. The caret line is the op's caret's, focused or not.
+  function renderLine(row, lineNo, caret, sel, presence, gut) {
     var t = row.t || '';
     var n = t.length;
     var classes = new Array(n + 1);
@@ -613,6 +625,12 @@
     }
     var line = document.createElement('div');
     line.className = 'line';
+    if (gut) {
+      var cur = gut.line === lineNo;
+      if (cur && gut.l) styled(line, 'line cur ' + gut.l);
+      line.appendChild(styled(document.createElement('span'),
+                              'ln' + ((cur ? gut.c : gut.n) ? ' ' + (cur ? gut.c : gut.n) : '')));
+    }
     var run = '', runCls = null;
     for (var j = 0; j <= n; j++) {
       var ch = j < n ? t[j] : (classes[j].indexOf('caret') >= 0 ? ' ' : '');
@@ -631,9 +649,10 @@
   // The caret / selection state one line carries, as a comparable key:
   // two lines with equal keys and equal rows render identically, so a
   // line whose key did not change is left alone.
-  function deco(lineNo, caret, sel, presence) {
+  function deco(lineNo, caret, sel, presence, gut) {
     var d = '';
     if (caret && caret.line === lineNo) d = 'c' + caret.col;
+    if (gut && gut.line === lineNo) d += '|g';
     if (sel) {
       var l0 = sel[0][0], l1 = sel[1][0];
       if (lineNo >= l0 && lineNo <= l1)
@@ -675,6 +694,10 @@
     var caret = (op.focus || op.follow) ? op.caret : null;
     var sel = op.sel || null;
     var presence = op.presence || null;
+    var gut = op.gutter ? { n: op.gutter.n || '', c: op.gutter.c || '', l: op.gutter.l || '',
+                            line: op.caret ? op.caret.line : -1 } : null;
+    var gutSig = gut ? gut.n + '|' + gut.c + '|' + gut.l : '';
+    ownClass(el, 'gutter', !!gut);
     // viewsync (linked scroll): the sync flag + (code pane only) the byte map.
     // Cleared line-starts so the correspondence rebuilds against fresh rows.
     el._sync = !!op.sync;
@@ -685,8 +708,10 @@
       el.textContent = '';
       el._rows = op.lines;
       for (var l = 0; l < el._rows.length; l++)
-        el.appendChild(renderLine(el._rows[l], l, caret, sel, presence));
+        el.appendChild(renderLine(el._rows[l], l, caret, sel, presence, gut));
       el._caret = caret; el._sel = sel; el._pres = presence;
+      el._gut = gut; el._gutSig = gutSig;
+      gutterWidth(el, gut);
       return true;
     }
     var rows = el._rows || [];
@@ -702,26 +727,38 @@
       return false;
     }
     var oldCaret = el._caret || null, oldSel = el._sel || null, oldPres = el._pres || null;
+    var oldGut = el._gut || null;
+    var restyle = (el._gutSig || '') !== gutSig;   // the gutter on / off, or its theme
     var at = patch ? patch.at : 0;
     if (patch) {
       var ref = el.children[at + del] || null;   // the line after the splice
       for (var d = 0; d < del; d++) el.removeChild(el.children[at]);
       for (var k = 0; k < ins; k++)
-        el.insertBefore(renderLine(patch.ins[k], at + k, caret, sel, presence), ref);
+        el.insertBefore(renderLine(patch.ins[k], at + k, caret, sel, presence, gut), ref);
       rows = rows.slice(0, at).concat(patch.ins, rows.slice(at + del));
       el._rows = rows;
     }
     // Every other line kept its row; re-render the ones whose caret /
-    // selection / presence state changed (its old index is its new index
-    // shifted past the splice).
+    // selection / presence / gutter state changed (its old index is its new
+    // index shifted past the splice).
     for (var j = 0; j < rows.length; j++) {
       if (patch && j >= at && j < at + ins) continue;
       var i = j < at ? j : j - ins + del;
-      if (deco(i, oldCaret, oldSel, oldPres) !== deco(j, caret, sel, presence))
-        el.replaceChild(renderLine(rows[j], j, caret, sel, presence), el.children[j]);
+      if (restyle || deco(i, oldCaret, oldSel, oldPres, oldGut) !== deco(j, caret, sel, presence, gut))
+        el.replaceChild(renderLine(rows[j], j, caret, sel, presence, gut), el.children[j]);
     }
     el._caret = caret; el._sel = sel; el._pres = presence;
+    el._gut = gut; el._gutSig = gutSig;
+    gutterWidth(el, gut);
     return !!caret && (!oldCaret || oldCaret.line !== caret.line || oldCaret.col !== caret.col);
+  }
+
+  // The gutter's width in digits: the last line's number, at least three
+  // (the terminal's rule).
+  function gutterWidth(el, gut) {
+    var n = gut ? Math.max(3, String((el._rows || []).length).length) : 0;
+    if (n) el.style.setProperty('--gutter-ch', String(n));
+    else el.style.removeProperty('--gutter-ch');
   }
 
   function applyNode(op) {

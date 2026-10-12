@@ -75,28 +75,94 @@ public:
     {
 	return _w.link_remove(from, rel, to);
     }
-    // Text-component writes (R4): the same one-write-surface mirror.
-    void text_load(entity_id id, const std::string &s)
+    // Text-component writes (R4): the same one-write-surface mirror. Each
+    // answers the world's verdict (false = refused: a delivery in
+    // progress, a read-only document).
+    bool text_load(entity_id id, const std::string &s)
     {
-	_w.text_load(id, s);
+	return _w.text_load(id, s);
     }
-    void text_insert(entity_id id, size_t off, const std::string &s)
+    bool text_insert(entity_id id, size_t off, const std::string &s)
     {
-	_w.text_insert(id, off, s);
+	return _w.text_insert(id, off, s);
     }
-    void text_erase(entity_id id, size_t off, size_t len)
+    bool text_erase(entity_id id, size_t off, size_t len)
     {
-	_w.text_erase(id, off, len);
+	return _w.text_erase(id, off, len);
     }
-    void text_replace(entity_id id, size_t off, size_t len,
+    bool text_replace(entity_id id, size_t off, size_t len,
 		      const std::string &s)
     {
-	_w.text_replace(id, off, len, s);
+	return _w.text_replace(id, off, len, s);
     }
-    void text_checkpoint(entity_id id, const madc::value &meta)
+    bool text_checkpoint(entity_id id, const madc::value &meta)
     {
-	_w.text_checkpoint(id, meta);
+	return _w.text_checkpoint(id, meta);
     }
+    // Document-component writes (split arc 1A.1): the same mirror.
+    bool doc_attach(entity_id id, const std::string &path, int64_t kind,
+		    const std::string &text)
+    {
+	return _w.doc_attach(id, path, kind, text);
+    }
+    bool doc_detach(entity_id id) { return _w.doc_detach(id); }
+    bool doc_set_path(entity_id id, const std::string &path, int64_t kind)
+    {
+	return _w.doc_set_path(id, path, kind);
+    }
+    bool doc_set_read_only(entity_id id, bool ro)
+    {
+	return _w.doc_set_read_only(id, ro);
+    }
+    bool doc_mark_saved(entity_id id) { return _w.doc_mark_saved(id); }
+    bool doc_set_parse(entity_id id, int64_t handle, uint64_t version)
+    {
+	return _w.doc_set_parse(id, handle, version);
+    }
+    bool doc_set_parse_tu(entity_id id, const ProjectTU &tu)
+    {
+	return _w.doc_set_parse_tu(id, tu);
+    }
+    bool doc_set_parse_standard(entity_id id, int64_t standard)
+    {
+	return _w.doc_set_parse_standard(id, standard);
+    }
+    bool doc_set_parse_opened(entity_id id, int64_t standard, const std::string &name)
+    {
+	return _w.doc_set_parse_opened(id, standard, name);
+    }
+    bool doc_set_parse_busy(entity_id id, bool busy)
+    {
+	return _w.doc_set_parse_busy(id, busy);
+    }
+    bool doc_checkpoint(entity_id id, const madc::value &app_meta)
+    {
+	return _w.doc_checkpoint(id, app_meta);
+    }
+    bool doc_undo(entity_id id, madc::value &app_out,
+		  const madc::value &app_now = madc::value())
+    {
+	return _w.doc_undo(id, app_out, app_now);
+    }
+    bool doc_redo(entity_id id, madc::value &app_out,
+		  const madc::value &app_now = madc::value())
+    {
+	return _w.doc_redo(id, app_out, app_now);
+    }
+    anchor_id anchor_add(entity_id id, size_t off, bool right)
+    {
+	return _w.anchor_add(id, off, right);
+    }
+    bool anchor_move(entity_id id, anchor_id a, size_t off)
+    {
+	return _w.anchor_move(id, a, off);
+    }
+    bool anchor_remove(entity_id id, anchor_id a)
+    {
+	return _w.anchor_remove(id, a);
+    }
+    void text_subscribe(text_listener *l) { _w.text_subscribe(l); }
+    bool text_unsubscribe(text_listener *l) { return _w.text_unsubscribe(l); }
     bool text_undo(entity_id id, madc::value &meta_out)
     {
 	return _w.text_undo(id, meta_out);

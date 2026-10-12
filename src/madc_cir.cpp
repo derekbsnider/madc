@@ -46,6 +46,7 @@
 #include "rt/rt_dump.h"	// the shown value's capture sink (plan §41.4a, D10)
 #include "madc_sys_includes.h"	// per-flavor C++ runtime link set (cir_native_link_env)
 #include "madc_project.h"
+#include "madc_file_kinds.h"	// file_kind_of_path: a TU's standard by extension
 #include "cir_builder.h"
 #include "cir_emit_c.h"
 #include "cir_freeze.h"
@@ -3308,6 +3309,37 @@ static const char *cir_pack_protocol_owner(void *ctx, uint32_t origin_id)
     return it == prog->pack_protocol_token_owner.end() ? NULL : it->second;
 }
 
+// The pack recording's per-unit maps are keyed by the lexer's interned file
+// POINTER, so walking one visits ADDRESS order — different from run to run
+// and from one --std= to another. Their entries create units and intern
+// strings, so that order reached the container's bytes; two freezes of one
+// corpus must be byte-identical (a shared pack profile is proven by exactly
+// that comparison). The entries in canonical unit order instead: first
+// tokenization (Program::pack_unit_order), then by spelling.
+template <class M>
+static std::vector<typename M::const_iterator>
+pack_entries_in_unit_order(const M &m, const std::vector<const char *> &unit_order)
+{
+    std::map<madc::dis::istring, size_t> rank;
+    for (size_t k = 0; k < unit_order.size(); ++k)
+	rank.insert(std::make_pair(madc::dis::istring(unit_order[k]), k));
+    typedef std::pair<std::pair<size_t, madc::dis::istring>, typename M::const_iterator> keyed_entry;
+    std::vector<keyed_entry> keyed;
+    for (typename M::const_iterator it = m.begin(); it != m.end(); ++it) {
+	madc::dis::istring name(it->first);
+	std::map<madc::dis::istring, size_t>::const_iterator r = rank.find(name);
+	keyed.push_back(std::make_pair(std::make_pair(r == rank.end() ? (size_t)-1 : r->second,
+						      name), it));
+    }
+    std::sort(keyed.begin(), keyed.end(),
+	      [](const keyed_entry &a, const keyed_entry &b)
+	      { return a.first < b.first; });
+    std::vector<typename M::const_iterator> out;
+    for (size_t k = 0; k < keyed.size(); ++k)
+	out.push_back(keyed[k].second);
+    return out;
+}
+
 static void cir_forest_fill_pack_payloads(Program *prog, cir_frozen_forest &f)
 {
     if (!prog || !prog->pack_recording)
@@ -3397,9 +3429,11 @@ static void cir_forest_fill_pack_payloads(Program *prog, cir_frozen_forest &f)
     }
 
     // 3. PP-export deltas, in directive order (tombstones included).
-    for (std::map<const char *, std::vector<Program::PackMacroEvent> >::const_iterator
-	     pe = prog->pack_pp_exports.begin();
-	 pe != prog->pack_pp_exports.end(); ++pe) {
+    typedef std::map<const char *, std::vector<Program::PackMacroEvent> > pp_map;
+    const std::vector<pp_map::const_iterator> pp_in_order =
+	pack_entries_in_unit_order(prog->pack_pp_exports, prog->pack_unit_order);
+    for (size_t pk = 0; pk < pp_in_order.size(); ++pk) {
+	pp_map::const_iterator pe = pp_in_order[pk];
 	uint32_t u = ensure_unit(pe->first);
 	for (size_t k = 0; k < pe->second.size(); ++k) {
 	    const Program::PackMacroEvent &ev = pe->second[k];
@@ -3433,9 +3467,11 @@ static void cir_forest_fill_pack_payloads(Program *prog, cir_frozen_forest &f)
 
     // 4. Include edges (directory unit indices, include order). Targets are
     //    ensured FIRST — ensure_unit may reallocate f.units.
-    for (std::map<const char *, std::vector<const char *> >::const_iterator
-	     ee = prog->pack_unit_edges.begin();
-	 ee != prog->pack_unit_edges.end(); ++ee) {
+    typedef std::map<const char *, std::vector<const char *> > edge_map;
+    const std::vector<edge_map::const_iterator> edges_in_order =
+	pack_entries_in_unit_order(prog->pack_unit_edges, prog->pack_unit_order);
+    for (size_t ek = 0; ek < edges_in_order.size(); ++ek) {
+	edge_map::const_iterator ee = edges_in_order[ek];
 	uint32_t u = ensure_unit(ee->first);
 	std::vector<uint32_t> tgts;
 	for (size_t k = 0; k < ee->second.size(); ++k)
@@ -3451,9 +3487,11 @@ static void cir_forest_fill_pack_payloads(Program *prog, cir_frozen_forest &f)
 
     // 5b (v40). Per-unit EXTERNAL branch dependencies — the bind-eligibility
     // environment (task #57): [name_id, flags, value_id] triplets.
-    for (std::map<const char *, std::vector<Program::PackBranchDep> >::const_iterator
-	     bd = prog->pack_unit_branch_deps.begin();
-	 bd != prog->pack_unit_branch_deps.end(); ++bd) {
+    typedef std::map<const char *, std::vector<Program::PackBranchDep> > dep_map;
+    const std::vector<dep_map::const_iterator> deps_in_order =
+	pack_entries_in_unit_order(prog->pack_unit_branch_deps, prog->pack_unit_order);
+    for (size_t dk = 0; dk < deps_in_order.size(); ++dk) {
+	dep_map::const_iterator bd = deps_in_order[dk];
 	uint32_t u = ensure_unit(bd->first);
 	for (size_t k = 0; k < bd->second.size(); ++k) {
 	    const Program::PackBranchDep &d = bd->second[k];
@@ -3470,13 +3508,33 @@ static void cir_forest_fill_pack_payloads(Program *prog, cir_frozen_forest &f)
 	    out.push_back(definer);
 	}
     }
+    // v55: each unit's skipped directive-only `#ifndef` arms follow its
+    // dependencies as CIR_BRANCH_DEP_PP_ARM tuples [name_id, flags, text_id,
+    // none] — the bind replays one when the consumer lacks its macro.
+    typedef std::map<const char *, std::vector<Program::PackSkippedArm> > arm_map;
+    const std::vector<arm_map::const_iterator> arms_in_order =
+	pack_entries_in_unit_order(prog->pack_unit_skipped_arms, prog->pack_unit_order);
+    for (size_t ak = 0; ak < arms_in_order.size(); ++ak) {
+	arm_map::const_iterator am = arms_in_order[ak];
+	uint32_t u = ensure_unit(am->first);
+	for (size_t k = 0; k < am->second.size(); ++k) {
+	    const Program::PackSkippedArm &a = am->second[k];
+	    std::vector<uint32_t> &out = f.units[u].branch_deps;
+	    out.push_back(pool->intern(a.name));
+	    out.push_back(CIR_BRANCH_DEP_PP_ARM);
+	    out.push_back(pool->intern(a.text));
+	    out.push_back(0xffffffffu);
+	}
+    }
 
     // 5c (v41). Preserve each unit's exact pre-preprocessor source text.
     // Semantic forest state remains config-pinned; these bytes are the
     // compiler-less target's live-parse provider for a different config.
-    for (std::map<const char *, madc::dis::istring>::const_iterator
-	 si = prog->pack_unit_sources.begin();
-	 si != prog->pack_unit_sources.end(); ++si) {
+    typedef std::map<const char *, madc::dis::istring> source_map;
+    const std::vector<source_map::const_iterator> sources_in_order =
+	pack_entries_in_unit_order(prog->pack_unit_sources, prog->pack_unit_order);
+    for (size_t sk = 0; sk < sources_in_order.size(); ++sk) {
+	source_map::const_iterator si = sources_in_order[sk];
 	uint32_t u = ensure_unit(si->first);
 	f.units[u].source_payload.assign(si->second.begin(), si->second.end());
     }
@@ -3877,6 +3935,8 @@ void Program::forest_arena_record_aggregate(DataDefSTRUCT *sdd)
 			// method_map KEY: the "~" tag for the dtor; method_display_name for a plain
 			// method/operator; empty for a concrete ctor (resolves via cdd->ctors, not by name).
 			FuncDef *mfd = mv ? dynamic_cast<FuncDef *>(mv->type) : NULL;
+			if (mfd && mfd->is_explicit)
+				md.flags |= madc::dis::MF_EXPLICIT;
 			madc::dis::istring key = is_dtor ? dtor_key
 					: (is_ctor ? madc::dis::istring()
 					   : (mfd ? mfd->method_display_name : madc::dis::istring()));
@@ -4708,6 +4768,7 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 		words.push_back(method.declaration_only ? 1u : 0u);
 		words.push_back(method.defaulted_or_deleted ? 1u : 0u);
 		words.push_back(method.is_deleted ? 1u : 0u);
+		words.push_back(method.is_explicit ? 1u : 0u);
 		words.push_back((uint32_t)method.noexcept_spec);
 		words.push_back(method.pure_virtual ? 1u : 0u);
 		// the member's cv MASK (bit 0 const, bit 1 volatile): a 0/1 word
@@ -6282,7 +6343,6 @@ bool madc_cir_ledger_compile(MadcEngine &engine,
     std::vector<std::unique_ptr<Program> > parsed;
     for (const std::string &src : sources) {
 	std::unique_ptr<Program> prog = engine.create_program();
-	prog->colors = true;
 	// A ledger source is madc's OWN runtime: never bind grove state into
 	// it (the container being packed is the one we would bind), and read
 	// it as the C dialect gcc uses for a .c file.
@@ -6420,7 +6480,8 @@ static void cir_ledger_serialize(const std::vector<cir_ledger_module> &ledger,
 int madc_cir_freeze(Program *prog, const char *source_name,
 		    const char *out_path, bool append, bool mir_cache,
 		    const std::vector<cir_ledger_module> *ledger,
-		    bool progress)
+		    bool progress,
+		    const std::vector<madc::dis::istring> *also_std)
 {
     // The type graph rides the parse-populated DefArena (v18): a Program that
     // parsed with forest_arena_enabled OFF would freeze a type-less container
@@ -6615,6 +6676,53 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 		// zero-copy binds).
 		bool staged = cir_forest_write(f, w, codec, append ? 15 : 0,
 					       append);
+		// Shared configs (--freeze-also-std=): the one pack profile serves
+		// every standard named here too. The madc dialect is C++17 plus
+		// extras — auto-includes, auto-namespacing, auto-main, its keywords
+		// and tokens — that the --std= gate keeps out of a C++ compile, and
+		// the C++ modes share madc's macro table (C++ modes keep
+		// __STRICT_ANSI__; include/madc.h), so the corpus it froze is the
+		// one a C++17 compile would parse. Each label is the config word a
+		// compile under that standard carries: this Program's own config
+		// with the standard swapped through the --std= owner.
+		if (staged && also_std && !also_std->empty()) {
+		    std::vector<cir_forest_shared_config> labels;
+		    const Program::LanguageStd own_std = prog->language_std;
+		    const bool own_gnu = prog->gnu_dialect;
+		    for (size_t i = 0; staged && i < also_std->size(); ++i) {
+			const madc::dis::istring &spelling = (*also_std)[i];
+			if (!prog->set_language_standard(spelling)) {
+			    fprintf(stderr, "%s: --freeze-also-std=%s: unknown standard\n",
+				    source_name, spelling.c_str());
+			    staged = false;
+			    break;
+			}
+			cir_forest_shared_config c;
+			c.language_std = madc_forest_config_word(prog);
+			c.defines_hash = madc_forest_defines_hash(prog);
+			prog->language_std = own_std;
+			prog->gnu_dialect = own_gnu;
+			if (c.language_std == f.language_std && c.defines_hash == f.defines_hash)
+			    continue;	// this profile's own config: nothing to label
+			labels.push_back(c);
+			if (progress)
+			    fprintf(stderr, "%s: forest profile also serves --std=%s "
+				    "(config 0x%08x)\n", source_name, spelling.c_str(),
+				    c.language_std);
+		    }
+		    prog->language_std = own_std;
+		    prog->gnu_dialect = own_gnu;
+		    if (staged && !labels.empty()
+			&& !w.add_segment(CIR_FOREST_SEG_SHARED_CONFIGS,
+					  SNAP_KIND_CIR_SHARED_CONFIGS,
+					  labels.data(),
+					  labels.size() * sizeof(cir_forest_shared_config),
+					  PchCompression::None, 0)) {
+			fprintf(stderr, "%s: shared configs: segment add failed\n",
+				source_name);
+			staged = false;
+		    }
+		}
 		// MIR module cache (--freeze-mir-cache): assemble the container
 		// in memory, thaw + compile that EXACT image (what a consumer's
 		// --run-frozen builds), and stage the serialized module as one
@@ -6785,6 +6893,26 @@ int madc_cir_dump_forest(const char *container_path)
 	return -1;
 
     printf("forest\tunits=%u\n", forest.unit_count());
+    // The producer configs this profile binds under: its own, then the
+    // labels a pack proved identical (the shared-profile gate reads these).
+    printf("config\tword=0x%08x\tdefines=0x%08x\n", forest.language_std(),
+	   forest.defines_hash());
+    for (const cir_forest_shared_config &c : forest.shared_configs())
+	printf("shared\tword=0x%08x\tdefines=0x%08x\n", c.language_std,
+	       c.defines_hash);
+    // The frozen corpus, config-blind: equal lines = the same corpus.
+    {
+	std::map<uint32_t, uint64_t> digests;
+	if (cir_forest_content_digests(image, image_len, digests)) {
+	    uint64_t h = 14695981039346656037ULL;
+	    for (std::map<uint32_t, uint64_t>::const_iterator it = digests.begin();
+		 it != digests.end(); ++it) {
+		h = (h ^ it->first) * 1099511628211ULL;
+		h = (h ^ it->second) * 1099511628211ULL;
+	    }
+	    printf("content\t%016llx\n", (unsigned long long)h);
+	}
+    }
     {
 	std::vector<uint8_t> mblob;
 	if (forest.mir_module_bytes(mblob))
@@ -6869,24 +6997,16 @@ int madc_cir_dump_forest(const char *container_path)
 // must outlive MIR_gen()+run — they are held for the whole call and torn down
 // only after the run completes.
 
-// A `.c` source is C, not C++ — gcc/clang select the language from the file
-// extension, and a build driver must do the same: in C mode the C++ keywords
-// (`class`, `new`, `delete`, `this`, …) are NOT reserved, so ordinary C code
-// using them as identifiers parses. Matches ".c" exactly (not ".cc"/".cpp"/
-// ".cxx"/".C", which are C++).
-static bool is_c_source_file(const madc::dis::istring &path)
-{
-	return path.size() >= 2 && path.compare(path.size() - 2, 2, ".c") == 0;
-}
-
 // Apply one manifest TU's language options to its Program — THE one rule,
 // shared by the --project build lane (project_parse_all) and the AST-1
 // project parse handles (internal_program_project_open): -I include dirs,
 // -D defines, the -stdlib flavor, and the std selection. An explicit
-// --std wins; a plain .c file defaults to gnu17 — gcc's actual default C
-// dialect (C17 base + GNU, no __STRICT_ANSI__) — so C++ keywords stay
-// usable as C identifiers AND glibc's feature gates (timercmp, strdup,
-// …) match plain gcc. False + err = unknown -stdlib flavor.
+// --std wins; otherwise the TU's extension, by the one rule the CLI and the
+// editor's parse take (Program::adopt_file_standard, split arc 1A.4): a .c
+// file is gnu17 — gcc's actual default C dialect (C17 base + GNU, no
+// __STRICT_ANSI__) — so C++ keywords stay usable as C identifiers AND
+// glibc's feature gates (timercmp, strdup, …) match plain gcc; a C++ file
+// gnu++17, as g++. False + err = unknown -stdlib flavor.
 bool apply_project_tu_options(::Program &prog, const ProjectTU &tu,
 			      std::string &err)
 {
@@ -6903,8 +7023,8 @@ bool apply_project_tu_options(::Program &prog, const ProjectTU &tu,
 	}
 	if (!tu.std_option.empty())
 		prog.set_language_standard_option("--std=" + tu.std_option);
-	else if (is_c_source_file(tu.file))
-		prog.set_language_standard_option("--std=gnu17");
+	else
+		prog.adopt_file_standard(madc::file_kind_of_path(tu.file.c_str()));
 	return true;
 }
 
@@ -6943,7 +7063,6 @@ static bool project_parse_all(MadcEngine &engine,
 	// `parsed` so it outlives every TU Program that backpoints to it.
 	for (const ProjectTU &tu : manifest.tus) {
 		std::unique_ptr<Program> prog = engine.create_program(&group);
-		prog->colors = true;
 		// Each TU binds the one embedded/standalone forest (compiles
 		// BIND; only the build-time pack freezes). ensure_bind_forest()
 		// falls through to live parse when no container is present.
@@ -7292,14 +7411,7 @@ int madc_project_emit_native(MadcEngine &engine,
 			if (out_path && *out_path && parsed.size() == 1)
 				out = out_path;
 			else {
-				out = pt.name;
-				size_t slash = out.rfind('/');
-				if (slash != madc::dis::istring::npos)
-					out = out.substr(slash + 1);
-				size_t dot = out.rfind('.');
-				if (dot != madc::dis::istring::npos && dot > 0)
-					out = out.substr(0, dot);
-				out += ".o";
+				out = madc::detail::host_path_stem(pt.name) + ".o";
 			}
 			if (!session.emit_native_object(out.c_str()))
 				return -1;

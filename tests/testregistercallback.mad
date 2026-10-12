@@ -1,0 +1,25 @@
+// A library method taking a function pointer: std::ios_base::register_callback
+// (libstdc++, bound to its host symbol). The call's extern prototype must
+// declare the parameter as the function pointer it is — the one param-shape
+// owner (native_param_shape) once typed it as its 64-bit scalar, so c2mir
+// warned "using pointer without cast for integer type parameter" on the
+// call (the right answer only by the ABI passing both in one register).
+// ORACLE: g++ 13 and clang++ 18 -O0 both print "calls 7"; the JIT's stderr
+// stays empty (.expect_quiet).
+#include <iostream>
+
+static int calls = 0;
+
+static void on_event(std::ios_base::event ev, std::ios_base &, int index)
+{
+    if ( ev == std::ios_base::imbue_event )
+	calls += index;
+}
+
+int main()
+{
+    std::cout.register_callback(on_event, 7);
+    std::cout.imbue(std::cout.getloc());
+    std::cout << "calls " << calls << std::endl;
+    return 0;
+}

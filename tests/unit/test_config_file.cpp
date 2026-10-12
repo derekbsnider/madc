@@ -57,6 +57,8 @@ TEST_CASE("every key parses, with comments, a section header and quotes") {
 		"forest = /abs/groves.msnap\n"
 		"include = /abs/one\n"
 		"include = /abs/two\n"
+		"modules = madcgit\n"
+		"modules = m\n"
 		"cpu-limit = 90\n"
 		"mem-limit = \"8192\"\n");
 	madc::config_settings cfg;
@@ -73,6 +75,11 @@ TEST_CASE("every key parses, with comments, a section header and quotes") {
 	// Order is the file's order: the caller appends them after the -I dirs.
 	CHECK(cfg.include_dirs[0] == "/abs/one");
 	CHECK(cfg.include_dirs[1] == "/abs/two");
+	// modules (split arc 1A.4): names as -l takes them, in the file's order —
+	// text, never resolved against the config file's directory.
+	REQUIRE(cfg.modules.size() == 2);
+	CHECK(cfg.modules[0] == "madcgit");
+	CHECK(cfg.modules[1] == "m");
 	CHECK(cfg.has_cpu_limit);
 	CHECK(cfg.cpu_limit == "90");
 	CHECK(cfg.has_mem_limit);
@@ -153,7 +160,7 @@ TEST_CASE("an unknown key is an error naming the key, the line and the accepted 
 	std::string msg = err.str();
 	CHECK(msg.find("unknown key 'frost'") != std::string::npos);
 	CHECK(msg.find(":2:") != std::string::npos);
-	CHECK(msg.find("std, stdlib, forest, include, cpu-limit, mem-limit") != std::string::npos);
+	CHECK(msg.find("std, stdlib, forest, include, modules, cpu-limit, mem-limit") != std::string::npos);
 	unlink(path.c_str());
 }
 

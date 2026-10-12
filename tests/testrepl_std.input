@@ -1,0 +1,11 @@
+__STDC_VERSION__
+int a = 55;
+%std
+%std c++20
+%std
+int a = 77;
+a
+%reset
+__cplusplus
+int a = 99;
+a

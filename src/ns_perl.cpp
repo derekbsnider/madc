@@ -18,7 +18,6 @@
 #include <vector>
 #include <queue>
 #include <stack>
-#include <regex>
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
 #include "madc_posix_io.h"	// glob_paths — the one pathname-expansion owner
 #include "datadef.h"
@@ -26,6 +25,7 @@
 #include "datatokens.h"
 #include "madc.h"
 #include "ns_common.h"
+#include "madc_regex.h"	// madc::regex — the one regex engine (PCRE2)
 #include <cmath>	// perl_real_text: Inf / NaN
 #include <cstdio>
 
@@ -90,28 +90,24 @@ int64_t perl_chomp(std::string *ptr)
 
 // perl::grep — filter array, keeping elements that match regex pattern
 // Perl: @matches = grep { /pattern/ } @array;
+// The pattern is madc's one regex engine's (madc::regex, PCRE2). One that
+// does not compile is REFUSED (split arc 1A.3): said on stderr, dest empty —
+// never a substring search standing in for it.
 void perl_grep(madc::value *dest, const char *needle, madc::value *src)
 {
-	std::string n = perl_text_arg(needle);
+	madc::regex re(perl_text_arg(needle));
 	std::vector<madc::value> &d
 		= ns_common::value_array_reset_for_write(*dest, "perl::grep");
+	if ( !re.ok() )
+	{
+		std::cerr << re.refusal("perl::grep") << std::endl;
+		return;
+	}
 	if ( !src->is_array() )
 		return;
-	try {
-		std::regex re(n);
-		for ( auto &v : src->as_array() )
-		{
-			if ( v.is_string() && std::regex_search(v.as_string(), re) )
-				d.push_back(v);
-		}
-	} catch (std::regex_error &) {
-		// fallback to substring match on invalid regex
-		for ( auto &v : src->as_array() )
-		{
-			if ( v.is_string() && v.as_string().find(n) != std::string::npos )
-				d.push_back(v);
-		}
-	}
+	for ( auto &v : src->as_array() )
+		if ( v.is_string() && re.search(v.as_string()) )
+			d.push_back(v);
 }
 
 // perl::glob — file globbing, returns array of matching filenames
@@ -192,29 +188,22 @@ std::string *perl_join(std::string *result, const char *sep, madc::value *arr)
 }
 
 // perl::split — split string by regex pattern into array (Perl: split(/pattern/, $str))
+// Perl's fields (madc::regex::split): a leading empty field kept, trailing
+// empty ones dropped, an empty pattern splitting into code points. A pattern
+// that does not compile is REFUSED (split arc 1A.3): said on stderr, arr
+// empty — never a literal delimiter standing in for it.
 void perl_split(madc::value *arr, const char *delim, const char *str)
 {
-	std::string d = perl_text_arg(delim);
-	std::string s = perl_text_arg(str);
+	madc::regex re(perl_text_arg(delim));
 	std::vector<madc::value> &data
 		= ns_common::value_array_reset_for_write(*arr, "perl::split");
-	if ( d.empty() ) { data.push_back(madc::value(s)); return; }
-	try {
-		std::regex re(d);
-		std::sregex_token_iterator it(s.begin(), s.end(), re, -1);
-		std::sregex_token_iterator end;
-		for ( ; it != end; ++it )
-			data.push_back(madc::value(it->str()));
-	} catch (std::regex_error &) {
-		// fallback to literal delimiter on invalid regex
-		size_t start = 0, pos;
-		while ( (pos = s.find(d, start)) != std::string::npos )
-		{
-			data.push_back(madc::value(s.substr(start, pos - start)));
-			start = pos + d.length();
-		}
-		data.push_back(madc::value(s.substr(start)));
+	if ( !re.ok() )
+	{
+		std::cerr << re.refusal("perl::split") << std::endl;
+		return;
 	}
+	for ( const std::string &f : re.split(perl_text_arg(str)) )
+		data.push_back(madc::value(f));
 }
 
 // perl::reverse — reverse string in place (Perl: reverse $str)
@@ -376,42 +365,6 @@ const char *perl_substr_value(const madc::value *v, int64_t offset,
 	return slot.c_str();
 }
 
-// ---- Regex helper functions (used by madc:: namespace) ----
-
-// madc::regex_match(string, pattern) — returns 1 if entire string matches pattern
-int64_t madc_regex_match(void *str, void *pattern)
-{
-	std::string s = perl_text_arg((const char *)str);
-	std::string p = perl_text_arg((const char *)pattern);
-	try {
-		return std::regex_match(s, std::regex(p)) ? 1 : 0;
-	} catch (std::regex_error &) { return 0; }
-}
-
-// madc::regex_search(string, pattern) — returns 1 if pattern found anywhere in string
-int64_t madc_regex_search(void *str, void *pattern)
-{
-	std::string s = perl_text_arg((const char *)str);
-	std::string p = perl_text_arg((const char *)pattern);
-	try {
-		return std::regex_search(s, std::regex(p)) ? 1 : 0;
-	} catch (std::regex_error &) { return 0; }
-}
-
-// madc::regex_replace(result, string, pattern, replacement) — regex replace, result = modified string
-void *madc_regex_replace(void *result, void *str, void *pattern, void *replacement)
-{
-	std::string s = perl_text_arg((const char *)str);
-	std::string p = perl_text_arg((const char *)pattern);
-	std::string r = perl_text_arg((const char *)replacement);
-	try {
-		*(std::string *)result = std::regex_replace(s, std::regex(p), r);
-	} catch (std::regex_error &) {
-		*(std::string *)result = s;
-	}
-	return result;
-}
-
 
 extern "C" {
 // Thin C-linkage wrappers for transpiler import resolution
@@ -453,7 +406,3 @@ int64_t __perl_rindex(const char *a, const char *b) { return perl_rindex(a, b); 
 int64_t __perl_length(const char *a) { return perl_length(a); }
 std::string *__perl_substr(std::string *a, const char *b, int64_t c, int64_t d) { return perl_substr(a, b, c, d); }
 }
-// madc:: namespace regex functions
-MADC_EXTERN_C2(int64_t, madc_regex_match, void *, void *)
-MADC_EXTERN_C2(int64_t, madc_regex_search, void *, void *)
-MADC_EXTERN_C4(void *, madc_regex_replace, void *, void *, void *, void *)

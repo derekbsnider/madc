@@ -70,7 +70,7 @@ PKGS_base="build-essential g++-13 autoconf ccache make git rsync python3 pkg-con
 # `clang++`), and a container with only clang++-18 fails that gate — loudly,
 # which is how this was found after the 2026-07-26 container rebuild.
 PKGS_llvm18="clang-18 clang lld-18 llvm-18 libc++-18-dev libc++abi-18-dev"
-PKGS_codec="libzstd-dev zlib1g-dev"
+PKGS_codec="libzstd-dev libpcre2-dev zlib1g-dev"
 # libxqdbm-dev is QDBM's C++ API and a SEPARATE package from libqdbm-dev:
 # without it configure reports xqdbm=0 and the build quietly loses a
 # backend (and its unit-test surface) versus the pre-crash config.
@@ -227,6 +227,21 @@ report() {
 			missing=1
 		fi
 	done
+	# libmadc's pinned static PCRE2 (scripts/stage_pcre2.sh; split arc 1A.3):
+	# the hosted macOS and Windows MODEs link it (Linux links the distro's).
+	local pc
+	for t in x86-64-windows arm64-macos x86-64-macos; do
+		pc=$(bash "$(dirname "$0")/stage_pcre2.sh" --path "$t")
+		if [ -f "$pc/libpcre2-8.a" ]; then
+			printf '  ok      pcre2 stage (%s)\n' "$pc"
+		else
+			case $t in
+			*-macos) printf '  MISSING pcre2 stage (%s) — scripts/stage_pcre2.sh %s (needs the SDK)\n' "$pc" "$t" ;;
+			*)       printf '  MISSING pcre2 stage (%s) — scripts/stage_pcre2.sh %s\n' "$pc" "$t" ;;
+			esac
+			missing=1
+		fi
+	done
 	# The madcmark module's pinned cmark-gfm (scripts/stage_cmark_gfm.sh), per
 	# target like libgit2's; the macOS twins need the SDK.
 	local cm
@@ -286,7 +301,7 @@ if [ ! -f "$WZSTD_A" ]; then
 		echo "provision_container: /workspace/zstd source tree missing (clone facebook/zstd v1.5.5 there)" >&2
 		exit 1
 	fi
-	make -C /workspace/zstd/lib -j8 BUILD_DIR=obj-win64 \
+	make -C /workspace/zstd/lib -j"$(bash "$(dirname "$0")/build_jobs.sh")" BUILD_DIR=obj-win64 \
 		CC='x86_64-w64-mingw32-gcc-posix -D_UCRT -D__USE_MINGW_ANSI_STDIO=1' \
 		AR=x86_64-w64-mingw32-ar libzstd.a || exit 1
 	cp -p /workspace/zstd/lib/libzstd.a "$WZSTD_A" || exit 1

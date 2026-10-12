@@ -9,6 +9,9 @@
 - All object files go to `obj/` (per-mode subtrees)
 - When work is focused on core madc / libmadc / parser / compiler code and does not touch `madcdat` or shared storage-facing surfaces, prefer `./configure --enable-madcdat=no` first to shrink rebuild and unit-test scope.
 - Re-enable `madcdat` before final validation when the task touches `madcdat`, shared public headers, build wiring, or any surface that may affect storage/federation code.
+- A parallel build's job count is `scripts/build_jobs.sh` (memory-budgeted:
+  MemAvailable, not cores) — never `-jN` or `$(nproc)`. One build at a time on
+  the build container. Gated by `scripts/check-one-build-jobs.sh`.
 
 ## Backend
 

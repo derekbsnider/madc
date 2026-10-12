@@ -55,7 +55,7 @@ cp "$BIN" "$D/madc"
 # the dev libmadc.so is unpacked, so forest-discovery arms are unaffected.
 export LD_LIBRARY_PATH="$(pwd)/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
-cat > "$D/producer.cpp" <<'EOF'
+cat > "$D/producer.mad" <<'EOF'
 #include <string>
 #include <vector>
 #include <memory>
@@ -81,7 +81,7 @@ string s = "xtu";
 __builtin_printf("%s %zu\n", s.c_str(), s.length());
 EOF
 
-timeout 120 "$BIN" --freeze="$D/corpus.msnap" "$D/producer.cpp" >/dev/null 2>&1 \
+timeout 120 "$BIN" --freeze="$D/corpus.msnap" "$D/producer.mad" >/dev/null 2>&1 \
     || fail "corpus --freeze failed"
 cp "$D/corpus.msnap" "$D/madc.forest"
 

@@ -50,6 +50,9 @@ void madcdis_mapwrite_trap_hit(const char *key)
 #include "rt/rt_task.h"	// MT-3b: the token pumps honor task cancellation
 #include "rt/rt_dump.h"	// __madc_c_escape: THE C-literal escape rule
 #include "madcdis/text_utf16.h"	// line_layout: THE screen layout of a line (B8)
+#include "madc_console.h"	// colour_reaches: colour only when the stream shows it
+#include "madc_theme.h"		// theme_marks: the echoed line's colours (1B.9)
+#include "madcdis/ui_sgr.h"	// terminal_colour_depth
 
 // Stage-2 cooperative parse: yield-point cadence for the token pumps (a
 // power of two — the pump check is one mask-and-compare). ~1k tokens is
@@ -1494,6 +1497,32 @@ static const std::map<madc::dis::istring, madc::dis::istring> &auto_include_iden
 	// MEMBER row (the word is not the fragment's own head) fires only
 	// QUALIFIED by its namespace head — a bare `WEB` is the user's word.
 	{"WEB", "ns_ui_web"},
+	// The madc:: faces a HOST program uses (<ns_madc_host>: a document's
+	// parse handle and language services, the tool host, the ex core,
+	// discovery's claims, the REPL history store): MEMBER rows, so only a
+	// program naming one qualified (`madc::tool_host`) parses that surface —
+	// an always-on face whose only consumer is optional is gated on that
+	// consumer (owner 2026-10-08).
+	{"doc_parse", "ns_madc_host"},
+	{"doc_parse_checked", "ns_madc_host"},
+	{"doc_set_standard", "ns_madc_host"},
+	{"doc_parsed", "ns_madc_host"},
+	{"doc_diagnostics", "ns_madc_host"},
+	{"doc_outline", "ns_madc_host"},
+	{"doc_enclosing", "ns_madc_host"},
+	{"doc_definition", "ns_madc_host"},
+	{"doc_references", "ns_madc_host"},
+	{"doc_hover", "ns_madc_host"},
+	{"doc_spans", "ns_madc_host"},
+	{"tool_host", "ns_madc_host"},
+	{"ex_session", "ns_madc_host"},
+	{"session_claim", "ns_madc_host"},
+	{"session_dir", "ns_madc_host"},
+	{"session_scan", "ns_madc_host"},
+	{"session_find", "ns_madc_host"},
+	{"history_path", "ns_madc_host"},
+	{"history_entries", "ns_madc_host"},
+	{"history_append", "ns_madc_host"},
 
 	{"size_t", "stddef.h"},
 	{"ptrdiff_t", "stddef.h"},
@@ -1597,6 +1626,7 @@ static std::vector<madc::dis::istring> ordered_auto_include_headers(const std::s
 	"ns_js",
 	"ns_rust",
 	"ns_madc",
+	"ns_madc_host",
 	"ns_ui",
 	"ns_ui_web",
 	"ns_ui_ws",
@@ -4145,9 +4175,11 @@ static CirFrozenForest *forest_probe_arm(Program *prog, const char *path,
 	const uint32_t producer_config = f->language_std();
 	const uint32_t consumer_config = madc_forest_config_word(prog);
 	bool matches = config_match == Program::forestMatchAny;
+	// Exact: the profile was frozen under the consumer's config — its own
+	// header's pair, or a label the pack stamped after proving that config's
+	// frozen content identical (CIR_FOREST_SEG_SHARED_CONFIGS).
 	if ( config_match == Program::forestMatchExact )
-	    matches = producer_config == consumer_config
-		   && f->defines_hash() == madc_forest_defines_hash(prog);
+	    matches = f->serves_config(consumer_config, madc_forest_defines_hash(prog));
 	else if ( config_match == Program::forestMatchStdlibFlavor )
 	    matches = (producer_config & CIR_FOREST_CONFIG_STDLIB_MASK)
 		   == (consumer_config & CIR_FOREST_CONFIG_STDLIB_MASK);
@@ -4665,7 +4697,7 @@ bool Program::forest_unit_is_standalone_husk(
 	return false;
     for ( size_t k = 0; k + 4 <= deps.size(); k += 4 )
     {
-	if ( deps[k + 1] & 1u )
+	if ( deps[k + 1] & (CIR_BRANCH_DEP_DEFINED | CIR_BRANCH_DEP_PP_ARM) )
 	    continue;
 	const char *nm = bind_forest->pool_str(deps[k]);
 	if ( nm && forest_unit_defines_macro(unit, nm) )
@@ -4713,6 +4745,14 @@ bool Program::forest_bind_env_ok(uint32_t root)
 	const char *e = ::getenv("MADC_FOREST_ENV_CHECK");
 	enabled = (e && *e && strcmp(e, "0") != 0) ? 1 : 0;
     }
+    // Every consumer — the exact-config one and one bound through a
+    // --freeze-also-std label alike — takes the knob's verdict. Verifying a
+    // labelled consumer regardless sent it down the unfinished knob-on
+    // frontier: declined glibc/libstdc++ roots live-parsed beside frozen
+    // units (`char_traits_char` unknown in <iosfwd>, `div_t` defined twice).
+    // A skipped directive-only arm (mingw stdio.h's `#ifndef NULL`) needs no
+    // decline at all: the bind replays it (forest_replay_pp_arms).
+    const bool verified = enabled != 0;
     std::set<uint32_t> closure;
     std::set<uint32_t> husk_live;
     forest_env_collect(root, closure);
@@ -4724,11 +4764,19 @@ bool Program::forest_bind_env_ok(uint32_t root)
 	// root's declined check may have recorded masks against live tables
 	// that its own live parse then changed.
 	forest_pp_install_mask.erase(unit);
+	forest_pp_arms.erase(unit);
 	std::vector<uint32_t> deps;
 	if ( !bind_forest->unit_branch_deps(unit, deps) )
 	    continue;
 	for ( size_t k = 0; k + 4 <= deps.size(); k += 4 )
 	{
+	    // v55: a skipped directive-only arm is not a dependency — the bind
+	    // replays it when its macro is undefined (forest_replay_pp_arms).
+	    if ( deps[k + 1] & CIR_BRANCH_DEP_PP_ARM )
+	    {
+		forest_pp_arms[unit].push_back(std::make_pair(deps[k], deps[k + 2]));
+		continue;
+	    }
 	    // A dep whose DEFINER is inside this closure is replay-internal:
 	    // the bind installs the definer's events too (sys/cdefs.h
 	    // consulting _FEATURES_H under a root that carries features.h).
@@ -4773,7 +4821,7 @@ bool Program::forest_bind_env_ok(uint32_t root)
 		}
 		// Knob OFF preserves the shipping bind behavior for every broad
 		// mismatch. Only the missing-content case above bypasses it.
-		if ( !enabled )
+		if ( !verified )
 		    continue;
 		// A want-undefined dep the unit ITSELF defines is the unit's
 		// own GUARDED FALLBACK (task #57 prune redesign). Two
@@ -4837,7 +4885,7 @@ bool Program::forest_bind_env_ok(uint32_t root)
 		    << " at freeze, opposite here" << std::endl);
 		return false;
 	    }
-	    if ( enabled && want_defined && (deps[k + 1] & 2u) )
+	    if ( verified && want_defined && (deps[k + 1] & 2u) )
 	    {
 		const char *v = deps[k + 2] ? bind_forest->pool_str(deps[k + 2]) : NULL;
 		madc::dis::istring have;
@@ -4959,13 +5007,19 @@ void Program::forest_bind_include(uint32_t unit)
 	for ( size_t i = 0; i < edges.size() && !husk_child; ++i )
 	    husk_child = forest_husk_live_pending.count(edges[i]) != 0;
     if ( husk_child )
+    {
 	forest_install_pp(unit);
+	forest_replay_pp_arms(unit);
+    }
     if ( have_edges )
 	for ( size_t i = 0; i < edges.size(); ++i )
 	    forest_bind_include(edges[i]);
     double _t1 = forest_stat_now();
     if ( !husk_child )
+    {
 	forest_install_pp(unit);
+	forest_replay_pp_arms(unit);
+    }
     forest_chain.push_back(unit);
     forest_chain_set.insert(unit);
     forest_bind_walking.erase(unit);
@@ -4974,6 +5028,51 @@ void Program::forest_bind_include(uint32_t unit)
     const char *nm = bind_forest->unit_name(unit);
     _forest_unit_bind_costs.push_back(
 	std::make_pair(madc::dis::istring(nm ? nm : "?"), _self));
+}
+
+// v55: replay the unit's skipped directive-only `#ifndef X` arms whose X is
+// still undefined once the unit's own delta is installed — what a live parse
+// of the unit does at that arm. The producer skipped them because an external
+// sibling had defined X first; a consumer without that sibling needs them
+// (mingw stdio.h's NULL). The arm runs through the production preprocessor on
+// its own Source, so nested conditionals (`#ifdef __cplusplus`) answer HERE.
+void Program::forest_replay_pp_arms(uint32_t unit)
+{
+    std::map<uint32_t, std::vector<std::pair<uint32_t, uint32_t> > >::iterator ai =
+	forest_pp_arms.find(unit);
+    if ( ai == forest_pp_arms.end() )
+	return;
+    std::vector<std::pair<uint32_t, uint32_t> > arms;
+    arms.swap(ai->second);
+    forest_pp_arms.erase(ai);
+    const char *unit_name = bind_forest->unit_name(unit);
+    for ( size_t i = 0; i < arms.size(); ++i )
+    {
+	const char *nm = bind_forest->pool_str(arms[i].first);
+	const char *text = bind_forest->pool_str(arms[i].second);
+	if ( !nm || !text || macro_name_defined(nm) )
+	    continue;
+	DBG(std::cout << "forest bind: unit " << (unit_name ? unit_name : "?")
+	    << " replays its skipped '#ifndef " << nm << "' arm" << std::endl);
+	Source saved = std::move(source);
+	source = Source();
+	source.fname(unit_name ? unit_name : "");
+	source.str(text);	// the arm body: source text
+	size_t groups_at_entry = cond_groups.size();
+	try
+	{
+	    if ( getRealToken() )
+		Throw << "Frozen skipped arm '#ifndef " << nm << "' of "
+		      << (unit_name ? unit_name : "?") << " produced a token" << flush;
+	    refuse_open_conditional_groups(groups_at_entry);
+	}
+	catch (...)
+	{
+	    source = std::move(saved);
+	    throw;
+	}
+	source = std::move(saved);
+    }
 }
 
 // Apply one unit's frozen PP-export delta to the live macro tables, replaying
@@ -5964,11 +6063,11 @@ void Program::pack_record_edge(const madc::dis::istring &includee)
     }
 }
 
-void Program::pack_record_branch_macro(const std::string &name,
+bool Program::pack_record_branch_macro(const std::string &name,
 				       bool include_probe)
 {
     if ( !pack_recording || name.empty() )
-	return;
+	return false;
     pack_branch_macros.insert(name);
     // An include-once GUARD PROBE (should_tokenize_include asking "is the
     // includee's guard defined") is an EDGE decision — reproduced by the
@@ -5976,7 +6075,7 @@ void Program::pack_record_branch_macro(const std::string &name,
     // dependency of the includer's CONTENT. Recording it made every libc++
     // header carry its includees' guards as deps and decline on re-binds.
     if ( include_probe )
-	return;
+	return false;
     // v40 (task #57): record the consult as an EXTERNAL branch dependency of
     // the current unit when the macro's state was NOT established within the
     // consulting unit's OWN subtree — consumers bind ANY unit directly, so a
@@ -5991,24 +6090,24 @@ void Program::pack_record_branch_macro(const std::string &name,
     // replay-internal there, and a real external elsewhere).
     const char *unit = pack_current_unit();
     if ( !unit )
-	return;
+	return false;
     bool defined_now = macro_name_defined(name);
     std::map<madc::dis::istring, PackMacroOrigin>::iterator oi =
 	pack_macro_origin.find(name);
     if ( defined_now && oi == pack_macro_origin.end() )
-	return;				// predefine / -D: config-word-pinned
+	return false;			// predefine / -D: config-word-pinned
     if ( oi != pack_macro_origin.end() && oi->second.unit )
     {
 	if ( oi->second.unit == unit )
-	    return;			// self: the unit's own replay decides
+	    return false;		// self: the unit's own replay decides
 	std::map<const char *, std::set<const char *> >::iterator sti =
 	    pack_unit_subtree.find(unit);
 	if ( sti != pack_unit_subtree.end()
 	  && sti->second.count(oi->second.unit) )
-	    return;			// subtree: edges install it before us
+	    return false;		// subtree: edges install it before us
     }
     if ( !pack_unit_branch_dep_seen[unit].insert(name).second )
-	return;
+	return defined_now;
     PackBranchDep dep;
     dep.name = name;
     dep.defined = defined_now;
@@ -6028,6 +6127,45 @@ void Program::pack_record_branch_macro(const std::string &name,
 	}
     }
     pack_unit_branch_deps[unit].push_back(dep);
+    return defined_now;
+}
+
+// v55 (freeze time): skip an `#ifndef X` arm whose X an EXTERNAL sibling
+// defined, capturing its body as skipConditionalBlock skips it. The frozen unit
+// carries none of that arm, so a consumer without X would bind it short (mingw
+// stdio.h's `#ifndef NULL` behind the win64 corpus's <cstddef>). A body of
+// define / undef / conditional directives only, closed by its own #endif, is
+// recorded for the bind to replay (forest_replay_pp_arms); any other arm stays
+// missing content for the branch-dependency check.
+TokenBase *Program::skip_and_capture_arm(const madc::dis::istring &name)
+{
+    const char *unit = pack_current_unit();
+    SkippedArmCapture cap;
+    if ( !unit || !source.raw_offset(cap.begin) )
+	return skipConditionalBlock();
+    skip_arm_capture = &cap;
+    TokenBase *next;
+    try
+    {
+	next = skipConditionalBlock();	// ends the capture at the arm's end
+    }
+    catch (...)
+    {
+	skip_arm_capture = NULL;
+	throw;
+    }
+    skip_arm_capture = NULL;
+    if ( !cap.closed || !cap.pure )
+	return next;
+    std::vector<PackSkippedArm> &arms = pack_unit_skipped_arms[unit];
+    for ( size_t i = 0; i < arms.size(); ++i )
+	if ( arms[i].name == name && arms[i].text == cap.text )
+	    return next;
+    PackSkippedArm arm;
+    arm.name = name;
+    arm.text = cap.text;
+    arms.push_back(arm);
+    return next;
 }
 
 // -dM: dump the effective macro table (object-like + function-like) in
@@ -7745,7 +7883,7 @@ TokenBase *Program::_getToken()
 		    while ( source.good() && !source.eof() && (isalnum(source.peek()) || source.peek() == '_') )
 			name += source.get();
 		    bool defined = macro_name_defined(name);
-		    pack_record_branch_macro(name);
+		    bool external = pack_record_branch_macro(name);
 		    bool active = (directive == "ifdef") ? defined : !defined;
 		    if ( !source.guard_watch.key.empty() )
 			guard_watch_open(directive == "ifndef" ? madc::dis::istring(name)
@@ -7758,6 +7896,8 @@ TokenBase *Program::_getToken()
 		    // discard the directive's trailing tokens via the lexer, so a
 		    // multi-line /* */ comment here is handled by the lexer's case '/'
 		    consume_directive_line_tail();
+		    if ( !active && external && directive == "ifndef" )
+			return skip_and_capture_arm(name);
 		    if ( !active )
 			return skipConditionalBlock();
 		    return getToken();
@@ -9254,8 +9394,14 @@ TokenBase *Program::_getToken()
 TokenBase *Program::skipConditionalBlock()
 {
     int depth = 0;
+    // v55: an arm capture in progress (skip_and_capture_arm) — the body is
+    // replayable only if every significant line is a define / undef /
+    // conditional directive and the arm's own #endif closes it.
+    SkippedArmCapture *cap = skip_arm_capture;
     while ( source.good() && !source.eof() )
     {
+	size_t line_at = 0;
+	bool line_raw = cap && source.raw_offset(line_at);
 	// skip leading horizontal whitespace; directives may be indented
 	while ( source.good() && !source.eof() && (source.peek() == ' ' || source.peek() == '\t') )
 	    source.get();
@@ -9266,6 +9412,8 @@ TokenBase *Program::skipConditionalBlock()
 	    continue;
 	if ( ch != '#' )
 	{
+	    if ( cap )
+		cap->pure = false;
 	    while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
 		source.get();
 	    continue;
@@ -9289,6 +9437,15 @@ TokenBase *Program::skipConditionalBlock()
 	    DBG(std::cout << "skipConditionalBlock: #endif depth=" << depth << " stack=" << ifdef_stack.size() << std::endl);
 	    if ( depth == 0 )
 	    {
+		if ( cap )
+		{
+		    if ( line_raw && line_at >= cap->begin )
+		    {
+			cap->text = source.text().substr(cap->begin, line_at - cap->begin);
+			cap->closed = true;
+		    }
+		    skip_arm_capture = NULL;
+		}
 		// this #endif closes our block
 		ifdef_stack.pop();
 		cond_groups.pop();
@@ -9300,6 +9457,11 @@ TokenBase *Program::skipConditionalBlock()
 	}
 	else if ( depth == 0 && dir == "else" )
 	{
+	    if ( cap )
+	    {
+		cap->pure = false;	// an #else arm ends this capture
+		skip_arm_capture = cap = NULL;
+	    }
 	    // consume the rest of the directive line (comment-aware)
 	    skip_directive_line_tail(source);
 	    guard_watch_branch();
@@ -9316,6 +9478,11 @@ TokenBase *Program::skipConditionalBlock()
 	}
 	else if ( depth == 0 && dir == "elif" )
 	{
+	    if ( cap )
+	    {
+		cap->pure = false;	// an #elif arm ends this capture
+		skip_arm_capture = cap = NULL;
+	    }
 	    // do NOT consume rest of line — evaluateIfCondition() needs to read the condition
 	    guard_watch_branch();
 	    cond_groups.top().directive = CondDirective::Elif;
@@ -9343,6 +9510,10 @@ TokenBase *Program::skipConditionalBlock()
 	}
 	else
 	{
+	    // A nested #else / #elif and #define / #undef replay as-is; any other
+	    // directive (#include, #error, #pragma) is not a pure macro body.
+	    if ( cap && dir != "define" && dir != "undef" && dir != "else" && dir != "elif" )
+		cap->pure = false;
 	    // consume rest of line for unknown directives inside skipped block
 	    while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
 		source.get();
@@ -10878,6 +11049,7 @@ std::string Program::reconstruct_source()
 // print out a token with syntax highlighting, to debug parser
 void Program::printt(TokenBase *tb)
 {
+    const bool colors = madc::colour_reaches(std::cout);
     switch(tb->type())
     {
 	case TokenType::ttSpace:
@@ -11051,7 +11223,7 @@ void Source::line_text(int row, std::string &ln)
 }
 
 void Source::showerror(int row, int col, std::ostream &os, int end_line,
-		       int end_col)
+		       int end_col, const madc::theme *theme, int64_t standard)
 {
 	std::string ln;
 
@@ -11063,7 +11235,8 @@ void Source::showerror(int row, int col, std::ostream &os, int end_line,
 	}
 	line_text(row, ln);
 	show_error_source_line(ln, col, os,
-			   madc_underline_end(ln, row, col, end_line, end_col));
+			   madc_underline_end(ln, row, col, end_line, end_col),
+			   theme, standard);
 }
 
 int madc_underline_end(const madc::dis::istring &ln, int row, int col, int end_line,
@@ -11109,6 +11282,23 @@ int madc_diag_screen_column(Source *src, const char *fname, int row, int col)
     return madc_screen_column(ln, col);
 }
 
+// A diagnostic's SGR sequences (gcc's palette roles: the locus and message,
+// the severity, the caret), written only when colour reaches the stream.
+static const char SGR_LOCUS[] = "\e[1;37m";
+static const char SGR_SEVERITY[] = "\e[1;31m";
+static const char SGR_CARET[] = "\e[1;32m";
+static const char SGR_RESET[] = "\e[m";
+
+void madc_diagnostic_header(std::ostream &os, const std::string &where,
+			    const char *severity, const std::string &message)
+{
+    const bool colour = madc::colour_reaches(os);
+    os << madc::sgr(colour, SGR_LOCUS) << where << ": "
+       << madc::sgr(colour, SGR_SEVERITY) << severity << ':'
+       << madc::sgr(colour, SGR_LOCUS) << ' ' << message
+       << madc::sgr(colour, SGR_RESET) << std::endl;
+}
+
 // Shared display tail for a diagnostic source echo: the offending line and a
 // caret under the column, truncated to the terminal width — one formatter for
 // both the live-Source echo and the reread-from-disk echo. `col` is a 1-based
@@ -11119,7 +11309,8 @@ int madc_diag_screen_column(Source *src, const char *fname, int row, int col)
 // Bytes col+1 .. end_col (1-based, the token's rest on this line) are
 // underlined with `~` across their screen columns: gcc's `^~~` (D26).
 void show_error_source_line(const std::string &ln, int col, std::ostream &os,
-			    int end_col)
+			    int end_col, const madc::theme *theme,
+			    int64_t standard)
 {
     char *env_columns = getenv("COLUMNS");
     size_t term_columns = env_columns ? (size_t)atoi(env_columns) : 80;
@@ -11131,13 +11322,23 @@ void show_error_source_line(const std::string &ln, int col, std::ostream &os,
     size_t at = col > 1 ? std::min((size_t)(col - 1), ln.length()) : 0;
     // One past the token's last byte on this line (a byte index).
     size_t stop = end_col > 0 ? std::min((size_t)end_col, ln.length()) : 0;
-    std::vector<size_t> screen;
-    madc::dis::istring shown = madc::line_layout(ln, 0, screen);
     // `^` then a `~` for each further screen column the token covers.
-    auto mark = [](const std::vector<size_t> &cols, size_t from, size_t to) {
+    const bool colour = madc::colour_reaches(os);
+    // The line's tokens in the theme's colours (1B.9): marks of no width,
+    // so the screen columns — and the caret under them — are the plain
+    // line's.
+    std::vector<madc::hub::line_mark> marks;
+    if ( colour && theme )
+	madc::theme_marks(*theme, std::vector<std::string>(1, ln), standard,
+			  madc::hub::terminal_colour_depth(), marks);
+    std::vector<size_t> screen;
+    const std::string shown = madc::hub::marked_layout(ln, 0, marks, 0, screen);
+    auto mark = [colour](const std::vector<size_t> &cols, size_t from,
+			 size_t to) {
 	size_t width = to > from ? cols[to] - cols[from] : 0;
-	return std::string("\e[1;32m^")
-	       + std::string(width > 1 ? width - 1 : 0, '~') + "\e[m";
+	return std::string(madc::sgr(colour, SGR_CARET)) + '^'
+	       + std::string(width > 1 ? width - 1 : 0, '~')
+	       + madc::sgr(colour, SGR_RESET);
     };
 
     if ( screen.back() + 5 > term_columns )
@@ -11145,8 +11346,14 @@ void show_error_source_line(const std::string &ln, int col, std::ostream &os,
 	// Too wide: the tail from the caret's byte, laid out where it prints
 	// (after the 5-column "  ..."), the caret under its first column.
 	const size_t lead = 5;
+	std::vector<madc::hub::line_mark> tail_marks;
+	for ( const madc::hub::line_mark &m : marks )
+	    if ( m.to > at )	// from the caret's byte on, cut there
+		tail_marks.push_back(madc::hub::line_mark{ 0, m.from > at ? m.from - at : 0,
+							   m.to - at, m.on });
 	std::vector<size_t> tail_screen;
-	os << "  ..." << madc::line_layout(ln.substr(at), lead, tail_screen)
+	os << "  ..." << madc::hub::marked_layout(ln.substr(at), 0, tail_marks,
+						  lead, tail_screen)
 	   << std::endl;
 	os << std::string(lead, ' ')
 	   << mark(tail_screen, 0, stop > at ? stop - at : 0) << std::endl;
@@ -11175,13 +11382,15 @@ bool madc_file_line(const char *fname, int row, std::string &ln)
 }
 
 bool madc_show_file_error(const char *fname, int row, int col, std::ostream &os,
-		  int end_line, int end_col)
+		  int end_line, int end_col, const madc::theme *theme,
+		  int64_t standard)
 {
     std::string ln;
     if ( !madc_file_line(fname, row, ln) )
 	return false;
     show_error_source_line(ln, col, os,
-			   madc_underline_end(ln, row, col, end_line, end_col));
+			   madc_underline_end(ln, row, col, end_line, end_col),
+			   theme, standard);
     return true;
 }
 
@@ -11199,9 +11408,10 @@ int throwbuf::sync()
 	const char *tok_file = (_at.file && *_at.file) ? _at.file : NULL;
 	const char *fname = tok_file ? tok_file
 			  : (_src ? _src->fname() : "???");
-	cerr << ANSI_WHITE << fname << ':' << _at.line << ':'
-	     << madc_diag_screen_column(_src, fname, _at.line, _at.column)
-	     << ": \e[1;31merror:\e[1;37m " << str() << ANSI_RESET << endl;
+	std::ostringstream where;
+	where << fname << ':' << _at.line << ':'
+	      << madc_diag_screen_column(_src, fname, _at.line, _at.column);
+	madc_diagnostic_header(cerr, where.str(), "error", str());
 	if ( _src && (!tok_file || strcmp(tok_file, _src->fname()) == 0) )
 	    _src->showerror(_at.line, _at.column, cerr, _at.end_line,
 			    _at.end_column);
@@ -11212,13 +11422,14 @@ int throwbuf::sync()
     else
     if ( _src )
     {
-	cerr << ANSI_WHITE << _src->fname() << ':' << _src->line() << ':' << _src->column()
-	     << ": \e[1;31merror:\e[1;37m " << str() << ANSI_RESET << endl;
+	std::ostringstream where;
+	where << _src->fname() << ':' << _src->line() << ':' << _src->column();
+	madc_diagnostic_header(cerr, where.str(), "error", str());
 	_src->showerror();
     }
     else
     {
-	cerr << ANSI_WHITE << ": \e[1;31merror:\e[1;37m " << str() << ANSI_RESET << endl;
+	madc_diagnostic_header(cerr, "", "error", str());
     }
     throw std::exception();
     return -1;

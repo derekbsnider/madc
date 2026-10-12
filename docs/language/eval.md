@@ -155,7 +155,7 @@ The compiler's own structured data, as values — compile (NEVER execute)
 a source buffer with the same front end `madc` runs, in a
 policy-clamped child, and read what it found. Diagnostics are CAPTURED,
 not printed (nothing reaches stderr); nothing in the buffer runs. This
-is the meta-level surface an IDE projects (`tools/madcide`'s
+is the meta-level surface an IDE projects (madcide's
 diagnostics pane and outline), and it serves any tool that wants
 compile results as data — a linter, a doc generator, a test harness.
 
@@ -180,7 +180,7 @@ Positions match what a file-based compile of the same text reports.
 The same child, one step further: parse the buffer and render its
 `cir_node` tree (MC11-IR) as a target language — the `--emit=`
 vocabulary, byte-identical to what `madc --emit=<target> file` prints.
-This is what feeds an editor's code views (`tools/madcide`'s `^K A`).
+This is what feeds an editor's code views (madcide's `^K A`).
 
 ```c
 value text;
@@ -261,6 +261,49 @@ madc::project_close(p);                           // closes its TU handles
 
 Thread contract: a handle is confined to the thread/program that opened
 it — the runtime-eval machinery's confinement.
+
+### Language services over a document (`madc::doc_*`)
+
+An editor, an LSP server and an agent's tools ask the SAME questions of a
+document (`ui::doc_*`, the document component): what is wrong, what it
+defines, what a name means and where it is used. Each has ONE answer,
+computed from the document's live text (unsaved edits included) through
+its parse handle — `madc::doc_parse` opens it on first use and re-parses
+only when the text's version moved. A place is a 1-based line and a
+0-based BYTE column; a range is `{ line, column, end_line, end_column }`,
+its end exclusive (an LSP client converts to its own encoding).
+
+```c
+long w = ui::world_new();
+long d = ui::doc_open(w, "calc.c");
+var rows;
+madc::doc_diagnostics(rows, w, d);     // [{ range, severity, severity_code,
+                                       //    phase, phase_code, message }]
+                                       // range: the word at gcc's anchor
+madc::doc_outline(rows, w, d);         // [{ name, kind, kind_code, range,
+                                       //    selection }] — range: the
+                                       // definition's lines; selection: its name
+var at;
+madc::doc_enclosing(at, w, d, 7, 4);   // the innermost definition around
+                                       // 7:4, an outline row (or empty)
+madc::doc_definition(rows, w, d, 7, 13);   // [range]: the definition's NAME
+                                           // for the word at 7:13 (a place
+                                           // just past a word names it)
+madc::doc_references(rows, w, d, 7, 13, true); // [range]: the name at each
+                                               // use, the definition's last
+var h;
+madc::doc_hover(h, w, d, 7, 13);       // { text, range }: "Function twice —
+                                       // defined on line 1"; { text } "in main"
+                                       // inside a definition; empty: nothing
+madc::doc_spans(rows, w, d);           // [{ line, column, length, class,
+                                       //    class_code }]
+```
+
+The ranges are clangd's for the same C text. An enum rides as its code
+(`severity_code` compares with `madc::diag_severity::error`) with its name
+beside it for display. A document the compiler does not parse (a text
+kind) answers an empty value. A C++ host calls the same answers through
+`madc::lang` (`include/madc_lang.h`).
 
 ### The build surface (`madc::build_native`)
 

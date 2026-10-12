@@ -4,7 +4,10 @@ thread_local bool madc_verbose = false;
 #include "doctest.h"
 #include "madc_project.h"
 #include "libmadc/sysinfo.h"	// madc::sys.version: the running release
+#include "../../src/madc_posix_io.h"	// host_path_make_parents: the writer's tree
 #include <cstdio>
+#include <fstream>
+#include <sstream>
 
 // Helper: write a temp file, return its path (in /tmp, unique per test name).
 static std::string write_tmp(const char *name, const std::string &content) {
@@ -72,6 +75,22 @@ TEST_CASE("read_project_manifest: malformed input is rejected") {
 	CHECK_FALSE(err.empty());
 }
 
+TEST_CASE("read_project_manifest: a field of the wrong JSON type is refused, "
+	  "never thrown") {
+	// value("file", std::string()) throws type_error.302 on a number: it
+	// aborted `madc --project`.
+	ProjectManifest m; std::string err;
+	std::string native = write_tmp("native_badtype.prj.json",
+				       "{\"tus\":[{\"file\":3}]}");
+	CHECK_FALSE(read_project_manifest(native, m, err));
+	CHECK(err.find("wrong type") != std::string::npos);
+	ProjectManifest c; err.clear();
+	std::string cc = write_tmp("cc_badtype.json",
+				   "[{\"directory\":7,\"file\":\"a.c\"}]");
+	CHECK_FALSE(read_project_manifest(cc, c, err));
+	CHECK(err.find("wrong type") != std::string::npos);
+}
+
 // ---- the NATIVE object shape (owner ruling 2026-08-31): what madcide
 // writes; --project reads it interchangeably with the cc.json import.
 
@@ -85,7 +104,7 @@ TEST_CASE("read_project_manifest: native object — bare-string TUs, entry, "
 	REQUIRE(read_project_manifest(path, m, err));
 	REQUIRE(m.tus.size() == 2);
 	CHECK(m.tus[0].file == "/tmp/a.mad");
-	CHECK(m.tus[0].working_dir == "/tmp");
+	CHECK(m.tus[0].working_dir == "/tmp/");	// host_path_dirname's spelling
 	CHECK(m.tus[1].file == "/tmp/sub/b.mad");
 	CHECK(m.entry == "start");
 	CHECK(m.output_name == "prog");
@@ -127,6 +146,21 @@ TEST_CASE("read_project_manifest: a manifest in the cwd adds no ./ prefix "
 	CHECK(m.tus[0].working_dir == ".");
 	std::remove("madc_unit_cwd.prj.json");
 }
+
+#ifdef _WIN32
+TEST_CASE("read_project_manifest: a manifest named with '\\' resolves its "
+	  "TUs against its own directory (the host's separators)") {
+	// A '/'-only split read "." for this path: the TUs resolved against
+	// the cwd instead of the manifest's directory.
+	std::string path = write_tmp("native_bs.prj.json", "{\"tus\":[\"a.mad\"]}");
+	for (char &c : path)
+		if (c == '/') c = '\\';
+	ProjectManifest m; std::string err;
+	REQUIRE(read_project_manifest(path, m, err));
+	REQUIRE(m.tus.size() == 1);
+	CHECK(m.tus[0].file == "\\tmp\\a.mad");
+}
+#endif
 
 TEST_CASE("read_project_manifest: native object — empty tus is a valid "
 	  "(empty) project; a missing file field is rejected") {
@@ -253,4 +287,158 @@ TEST_CASE("read_project_manifest: native object — \"madc\" is the oldest madc 
 		CHECK_FALSE(read_project_manifest(f, r, err));
 		CHECK(err == "\"madc\" must be a release version (major.minor.patch)");
 	}
+}
+
+// ---- the manifest's one writer (split arc 1B.8): madcide's bytes —
+// js::stringify(proj, 2) and a newline, keys sorted.
+
+static std::string slurp(const std::string &path) {
+	std::ifstream f(path.c_str(), std::ios::binary);
+	std::ostringstream ss;
+	ss << f.rdbuf();
+	return ss.str();
+}
+
+static void touch(const std::string &path) {
+	madc::detail::host_path_make_parents(path);
+	FILE *f = fopen(path.c_str(), "wb");
+	REQUIRE(f != nullptr);
+	fputs("int main(void) { return 0; }\n", f);
+	fclose(f);
+}
+
+TEST_CASE("project_manifest_create: madcide's empty project; an existing "
+	  "file is refused") {
+	std::string path = "/tmp/madc_test_writer_new.prj.json";
+	std::remove(path.c_str());
+	std::string err;
+	REQUIRE(project_manifest_create(path, err));
+	CHECK(slurp(path) == "{\n  \"entry\": \"main\",\n  \"tus\": []\n}\n");
+	CHECK_FALSE(project_manifest_create(path, err));
+	CHECK(err.find("exists") != std::string::npos);
+	ProjectManifest m;
+	REQUIRE(read_project_manifest(path, m, err));
+	CHECK(m.tus.empty());
+	CHECK(m.entry == "main");
+	std::remove(path.c_str());
+}
+
+TEST_CASE("project_manifest_add_tu / remove_tu: TUs named relative to the "
+	  "manifest's directory below it, canonical outside it; every other key "
+	  "kept") {
+	const std::string dir = "/tmp/madc_test_writer";
+	const std::string path = dir + "/w.prj.json";
+	const std::string a = dir + "/a.c", b = dir + "/sub/b.c";
+	const std::string out = "/tmp/madc_test_writer_out.c";
+	touch(a);
+	touch(b);
+	touch(out);
+	{
+		FILE *f = fopen(path.c_str(), "wb");
+		REQUIRE(f != nullptr);
+		fputs("{\"commands\":[{\"name\":\"later\"}],"
+		      "\"tus\":[{\"file\":\"o.c\",\"defines\":[\"X\"]}],"
+		      "\"entry\":\"main\"}", f);
+		fclose(f);
+	}
+	std::string err;
+	REQUIRE(project_manifest_add_tu(path, a, err));
+	REQUIRE(project_manifest_add_tu(path, dir + "/sub/../sub/b.c", err));
+	REQUIRE(project_manifest_add_tu(path, out, err));
+	CHECK(slurp(path) ==
+	      "{\n"
+	      "  \"commands\": [\n"
+	      "    {\n"
+	      "      \"name\": \"later\"\n"
+	      "    }\n"
+	      "  ],\n"
+	      "  \"entry\": \"main\",\n"
+	      "  \"tus\": [\n"
+	      "    {\n"
+	      "      \"defines\": [\n"
+	      "        \"X\"\n"
+	      "      ],\n"
+	      "      \"file\": \"o.c\"\n"
+	      "    },\n"
+	      "    \"a.c\",\n"
+	      "    \"sub/b.c\",\n"
+	      "    \"/tmp/madc_test_writer_out.c\"\n"
+	      "  ]\n"
+	      "}\n");
+	ProjectManifest m;
+	REQUIRE(read_project_manifest(path, m, err));
+	REQUIRE(m.tus.size() == 4);
+	CHECK(m.tus[1].file == a);
+	CHECK(m.tus[2].file == b);
+	CHECK(m.tus[3].file == out);
+
+	// Refused, the file as it was: a TU already (by another spelling), no
+	// such file, an entry no TU names.
+	const std::string before = slurp(path);
+	CHECK_FALSE(project_manifest_add_tu(path, dir + "/./a.c", err));
+	CHECK(err.find("already") != std::string::npos);
+	CHECK_FALSE(project_manifest_add_tu(path, dir + "/nosuch.c", err));
+	CHECK(err.find("no such file") != std::string::npos);
+	CHECK_FALSE(project_manifest_remove_tu(path, dir + "/nosuch.c", err));
+	CHECK(err.find("not in the project") != std::string::npos);
+	CHECK(slurp(path) == before);
+
+	// Removed: by its path; a TU entry whole, its fields with it; a file
+	// gone from the disk by the manifest's own spelling.
+	REQUIRE(project_manifest_remove_tu(path, b, err));
+	REQUIRE(project_manifest_remove_tu(path, dir + "/o.c", err));
+	std::remove(a.c_str());
+	REQUIRE(project_manifest_remove_tu(path, "a.c", err));
+	CHECK(slurp(path) ==
+	      "{\n"
+	      "  \"commands\": [\n"
+	      "    {\n"
+	      "      \"name\": \"later\"\n"
+	      "    }\n"
+	      "  ],\n"
+	      "  \"entry\": \"main\",\n"
+	      "  \"tus\": [\n"
+	      "    \"/tmp/madc_test_writer_out.c\"\n"
+	      "  ]\n"
+	      "}\n");
+	std::remove(b.c_str());
+	std::remove(out.c_str());
+	std::remove(path.c_str());
+	std::remove((dir + "/sub").c_str());
+	std::remove(dir.c_str());
+}
+
+TEST_CASE("project_manifest writers: a compile_commands.json import and a "
+	  "mistyped field are refused") {
+	std::string cc = write_tmp("writer_cc.json",
+				   "[{\"directory\":\"/p\",\"file\":\"a.c\"}]");
+	std::string err;
+	CHECK_FALSE(project_manifest_remove_tu(cc, "/p/a.c", err));
+	CHECK(err.find("read-only") != std::string::npos);
+	std::string bad = write_tmp("writer_bad.prj.json",
+				    "{\"tus\":[{\"file\":3}]}");
+	CHECK_FALSE(project_manifest_remove_tu(bad, "/p/a.c", err));
+	CHECK(err.find("wrong type") != std::string::npos);
+	std::remove(cc.c_str());
+	std::remove(bad.c_str());
+}
+
+TEST_CASE("project_default_output: the manifest's output, else its path less "
+	  ".prj.json, else less its extension") {
+	ProjectManifest m;
+	CHECK(project_default_output("/p/x.prj.json", m) == "/p/x");
+	CHECK(project_default_output("/p/build.json", m) == "/p/build");
+	CHECK(project_default_output("x.prj.json", m) == "x");
+	m.output_name = "prog";
+	CHECK(project_default_output("/p/x.prj.json", m) == "/p/prog");
+	m.output_name = "/abs/prog";
+	CHECK(project_default_output("/p/x.prj.json", m) == "/abs/prog");
+}
+
+TEST_CASE("project_events_path: beside a manifest; none for the one-TU project") {
+	CHECK(project_path_is_manifest("/p/x.prj.json"));
+	CHECK_FALSE(project_path_is_manifest("/p/calc.c"));
+	CHECK(project_events_path("/p/x.prj.json") == "/p/x.prj.events");
+	CHECK(project_events_path("compile_commands.json") == "compile_commands.events");
+	CHECK(project_events_path("/p/calc.c") == "");
 }

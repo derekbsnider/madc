@@ -1,0 +1,10 @@
+outside a session: add=false
+pane add=true again=false builtin=false alias=false
+pane: ok=true payload=true code=77 arg=[outline left]
+dot pane: payload=true code=77
+hi: ok=true shown=hi, bob payload=true
+help lists pane=true hi=true
+colon: ok=false refused=true
+command_of colon: mode=true argument=%s/a/b/
+after restart: pane code=77
+after restart: hi ok=false

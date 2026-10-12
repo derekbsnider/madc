@@ -262,8 +262,8 @@ build_release() {
 	{
 		git -C "$ROOT" archive --format=tar "$c" | tar -x -C "$b" &&
 		( cd "$b" && autoheader && autoconf && ./configure ) &&
-		( ulimit -t 14400; timeout 5400 make -C "$b/src" -j"${MADC_RELBUILD_JOBS:-8}" ) &&
-		( ulimit -t 14400; PATH="$path" timeout 5400 make -C "$b/src" -j"${MADC_RELBUILD_JOBS:-8}" release $extra )
+		( ulimit -t 14400; timeout 5400 make -C "$b/src" -j"${MADC_RELBUILD_JOBS:-$(bash "$ROOT/scripts/build_jobs.sh")}" ) &&
+		( ulimit -t 14400; PATH="$path" timeout 5400 make -C "$b/src" -j"${MADC_RELBUILD_JOBS:-$(bash "$ROOT/scripts/build_jobs.sh")}" release $extra )
 	} > "$log" 2>&1
 	local rc=$?
 	rm -rf "$b.nostrip"

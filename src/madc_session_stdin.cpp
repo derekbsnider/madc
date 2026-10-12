@@ -7,12 +7,57 @@
 #include "madc_session_stdin.h"
 #include "madcdis/process.h"
 
+#include <stdio.h>
+
 #if defined(_WIN32)
 #include <windows.h>
 #include <io.h>
 #include <fcntl.h>
 
 namespace madc {
+
+// The UCRT's view of a FILE's buffer (corecrt; no mingw header declares it):
+// looked up at run time, so a C runtime without it (an older wine) costs the
+// hand-back, never the start.
+typedef int (__cdecl *stream_buffer_pointers_fn)(FILE *, char ***, char ***, int **);
+
+std::string session_stdin_unread()
+{
+    if ( _isatty(_fileno(stdin)) )
+	return std::string();		// a console delivers whole lines
+    static const stream_buffer_pointers_fn pointers =
+	(stream_buffer_pointers_fn)(void *)GetProcAddress(
+	    GetModuleHandleA("ucrtbase.dll"), "_get_stream_buffer_pointers");
+    char **base = 0, **ptr = 0;
+    int *count = 0;
+    if ( !pointers || pointers(stdin, &base, &ptr, &count) != 0 || !count
+	 || *count <= 0 )
+	return std::string();
+    std::string unread;
+    for ( int n = *count; n > 0; --n )
+    {
+	int c = getc(stdin);		// buffered: no read reaches the OS
+	if ( c == EOF )
+	    break;
+	unread += (char)c;
+    }
+    return unread;
+}
+
+bool shared_stdin_input::fill()
+{
+    if ( !back_.empty() )
+    {
+	current_ = back_.front();
+	back_.pop_front();
+	return true;
+    }
+    DWORD got = 0;
+    if ( !ReadFile(GetStdHandle(STD_INPUT_HANDLE), &current_, 1, &got, NULL)
+	 || got != 1 )
+	return false;
+    return true;
+}
 
 SessionStdinHandOff::SessionStdinHandOff() : client_end_(-1), backend_end_(-1) {}
 
@@ -198,6 +243,30 @@ void SessionStdinHandOff::close()
     close_end(backend_end_);
 }
 
+std::string session_stdin_unread()
+{
+    return std::string();		// read byte by byte: nothing read ahead
+}
+
+bool shared_stdin_input::fill()
+{
+    if ( !back_.empty() )
+    {
+	current_ = back_.front();
+	back_.pop_front();
+	return true;
+    }
+    for ( ;; )
+    {
+	ssize_t got = ::read(0, &current_, 1);
+	if ( got == 1 )
+	    return true;
+	if ( got < 0 && errno == EINTR )
+	    continue;
+	return false;
+    }
+}
+
 bool session_stdin_take(int socket_end, uint64_t)
 {
     if ( socket_end < 0 )
@@ -215,3 +284,39 @@ bool session_stdin_take(int socket_end, uint64_t)
 } // namespace madc
 
 #endif
+
+namespace madc {
+
+// The byte fill() read is the get area's one character; uflow consumes it.
+shared_stdin_input::int_type shared_stdin_input::underflow()
+{
+    if ( gptr() && gptr() < egptr() )
+	return traits_type::to_int_type(*gptr());
+    if ( !fill() )
+	return traits_type::eof();
+    setg(&current_, &current_, &current_ + 1);
+    return traits_type::to_int_type(current_);
+}
+
+shared_stdin_input::int_type shared_stdin_input::uflow()
+{
+    int_type c = underflow();
+    if ( c != traits_type::eof() )
+	gbump(1);
+    return c;
+}
+
+// putback: the byte goes before everything not read yet (the unread byte in
+// the get area, if any, then back_).
+shared_stdin_input::int_type shared_stdin_input::pbackfail(int_type c)
+{
+    if ( traits_type::eq_int_type(c, traits_type::eof()) )
+	return traits_type::eof();
+    if ( gptr() && gptr() < egptr() )
+	back_.push_front(*gptr());	// the pending byte stays after it
+    back_.push_front(traits_type::to_char_type(c));
+    setg(&current_, &current_, &current_);	// empty: the next read is back_'s
+    return c;
+}
+
+} // namespace madc

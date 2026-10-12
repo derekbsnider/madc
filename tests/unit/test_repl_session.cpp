@@ -29,11 +29,14 @@ thread_local bool madc_verbose = false;
 #include "datatokens.h"
 #include "madc.h"
 #include "madc_session.h"
+#include "madcdis/line_edit.h"	// history_record: a %history store
+#include "ns_common.h"		// shell_quote / shell_words: the run child's words
 #include "../../src/madc_posix_io.h"
 
 #include <cstdio>
 #include <cstdlib>		// std::system: %build's executable runs
 #include <cstring>
+#include <fcntl.h>		// open: a non-terminal stdin for the default-editor case
 #include <sys/wait.h>		// WEXITSTATUS
 #include <unistd.h>
 
@@ -1757,6 +1760,25 @@ static size_t occurrences(const std::string &text, const char *needle)
     return n;
 }
 
+// The backend server's load (a payload host's %load, done by its client):
+// the kept file's text is loaded_source(), which the load reply carries to
+// the host's REPL buffer (owner 2026-10-12); a refused file leaves it empty.
+TEST_CASE("a load the session kept is its loaded_source; a refused one none")
+{
+    std::string lib = temp_source("int quad(int v) { return 4 * v; }\n",
+				  "madc_repl_loadsrc");
+    std::string bad = temp_source("int broken = nosuch;\n", "madc_repl_loadbad");
+    InteractiveSession h;
+    REQUIRE(h.begin("--std=c17"));
+    h.host_honors_payloads(true);
+    std::ostringstream err;
+    h.program().error_stream = &err;
+    REQUIRE(h.load(lib));
+    CHECK(h.loaded_source() == "int quad(int v) { return 4 * v; }\n");
+    CHECK_FALSE(h.load(bad));
+    CHECK(h.loaded_source().empty());
+}
+
 // The file commands (plan §7f). A host that honors no payloads (the
 // in-process terminal): %load and %run -i load the file in the session
 // itself, %run (a fresh session) is refused naming %run -i, and a refused
@@ -1782,8 +1804,17 @@ TEST_CASE("session commands: %load and %run, with and without a payload host (§
     s.program().error_stream = &err;
     REQUIRE(s.submit("%load " + lib));
     CHECK(s.payload() == madc::session_payload::none);
+    // What the host's REPL buffer keeps (owner 2026-10-12): %load's file
+    // text, a kept entry's text, nothing for a refused entry or another
+    // command.
+    CHECK(s.taken_source() == "int thrice(int v) { return 3 * v; }\n");
     REQUIRE(s.submit("thrice(7)"));
     CHECK(s.shown() == "21");
+    CHECK(s.taken_source() == "thrice(7)");
+    CHECK_FALSE(s.submit("int broken_here = ;"));
+    CHECK(s.taken_source().empty());
+    REQUIRE(s.submit("%whos"));
+    CHECK(s.taken_source().empty());
     REQUIRE(s.submit("%run -i " + prog + " a 'b c'"));
     REQUIRE(s.submit("ran"));
     CHECK(s.shown() == "3");
@@ -1800,9 +1831,9 @@ TEST_CASE("session commands: %load and %run, with and without a payload host (§
     CHECK(first_error(s) == "%run starts a fresh session, which this host"
 			    " cannot; %run -i FILE runs it in this one");
     CHECK_FALSE(s.submit("%run"));
-    CHECK(first_error(s) == "%run needs a FILE");
+    CHECK(first_error(s) == "%run needs a FILE: this host holds no buffer");
     CHECK_FALSE(s.submit("%run -i"));
-    CHECK(first_error(s) == "%run needs a FILE");
+    CHECK(first_error(s) == "%run needs a FILE: this host holds no buffer");
     CHECK_FALSE(s.submit("%load"));
     CHECK(first_error(s) == "%load takes one FILE");
     CHECK_FALSE(s.submit("%load " + lib + " " + lib));
@@ -1829,6 +1860,7 @@ TEST_CASE("session commands: %load and %run, with and without a payload host (§
     REQUIRE(h.submit("%load " + lib));
     CHECK(h.payload() == madc::session_payload::load);
     CHECK(h.payload_argv() == std::vector<std::string>{ lib });
+    CHECK(h.taken_source().empty());		// the host loads it, and keeps it
     CHECK(h.function("thrice") == (void *)NULL);
     CHECK(h.function("main") == (void *)NULL);
     CHECK_FALSE(h.submit("%load " + missing));
@@ -2061,7 +2093,7 @@ TEST_CASE("session commands: %help, %type, an unknown command, and what stays C"
     CHECK(c.submitted() == 8u);			// a command takes REPL[N]
     struct { const char *entry, *type; } types[] = {
 	{ "%type x", "int" },
-	{ ":type x * 2.5", "double" },		// `:` is the alias (D13)
+	{ ".type x * 2.5", "double" },		// `.`: the other REPL mode
 	{ "  %type sq(x)", "int" },		// blanks before it
 	{ "%type &x", "int *" },
 	{ "%type p", "struct Point" },
@@ -2084,8 +2116,10 @@ TEST_CASE("session commands: %help, %type, an unknown command, and what stays C"
     CHECK_FALSE(c.submit("%type nope + 1"));
     CHECK(err.str().find(":1:7: ") != std::string::npos);
     // The recorded diagnostic keeps the token's end: the echo underlines
-    // `nope` (gcc's ^~~~, D26).
-    CHECK(err.str().find("\033[1;32m^~~~\033[m") != std::string::npos);
+    // `nope` (gcc's ^~~~, D26) — uncoloured: a session's captured stream is
+    // no terminal (Phase 0.5).
+    CHECK(err.str().find("^~~~\n") != std::string::npos);
+    CHECK(err.str().find('\033') == std::string::npos);
     CHECK_FALSE(c.submit("%type x;"));
     CHECK(err.str().find("%type takes an expression") != std::string::npos);
     CHECK_FALSE(c.submit("%nosuch"));
@@ -2105,7 +2139,7 @@ TEST_CASE("session commands: %help, %type, an unknown command, and what stays C"
     size_t start = 0;
     CHECK(complete_at_end(c, "%ty", &start) == std::vector<std::string>{ "type" });
     CHECK(start == 1u);
-    CHECK(complete_at_end(c, ":he") == std::vector<std::string>{ "help" });
+    CHECK(complete_at_end(c, ".he") == std::vector<std::string>{ "help" });
     CHECK(complete_at_end(c, "%type bu", &start) == std::vector<std::string>{ "bump" });
     CHECK(start == 6u);
 
@@ -2131,9 +2165,9 @@ TEST_CASE("session commands: %help, %type, an unknown command, and what stays C"
     CHECK(m.shown() == "var");			// the dialect's carrier
 }
 
-// The third prefix (plan §7f): cling's and Node's `.name` reaches the table
-// `%` and `:` reach, and their own spellings are alias rows naming our
-// commands under every prefix — `.L` is %load, `.q` and `.exit` %quit, `.?`
+// The `.` mode (plan §7f; the modes, owner 2026-10-09): cling's and Node's
+// `.name` reaches the table `%` reaches, and their own spellings are alias
+// rows in the `.` mode only — `.L` is %load, `.q` and `.exit` %quit, `.?`
 // %help — which %help names. %quit ends the session: ended() for a host that
 // honors no payloads, the `quit` payload for one that does. What stays C:
 // `.5`, and a designator's `.x` on a continuation line.
@@ -2151,9 +2185,9 @@ TEST_CASE("session commands: the `.` prefix, alias rows and %quit (§7f)")
     REQUIRE(c.submit(".L " + lib));
     REQUIRE(c.submit("thrice(x)"));
     CHECK(c.shown() == "30");
-    CHECK_FALSE(c.submit("%L " + lib + "x"));	// %L is .L: its FILE opens first
-    CHECK(first_error(c) == "Failed to open file");
-    const char *helps[] = { ".help", ".?", "%?", ":?" };
+    CHECK_FALSE(c.submit("%L " + lib));		// cling's alias is `.` only
+    CHECK(err.str().find("unknown command '%L'") != std::string::npos);
+    const char *helps[] = { ".help", ".?", "%help", "?" };
     for ( size_t i = 0; i < sizeof(helps) / sizeof(helps[0]); ++i )
     {
 	CAPTURE(helps[i]);
@@ -2178,7 +2212,8 @@ TEST_CASE("session commands: the `.` prefix, alias rows and %quit (§7f)")
     CHECK(complete_at_end(c, ".ex", &start) == std::vector<std::string>{ "exit" });
     CHECK(start == 1u);
     CHECK(complete_at_end(c, ".q") == (std::vector<std::string>{ "q", "quit" }));
-    CHECK(complete_at_end(c, "%L") == std::vector<std::string>{ "L" });
+    CHECK(complete_at_end(c, ".L") == std::vector<std::string>{ "L" });
+    CHECK(complete_at_end(c, "%L").empty());
     // %quit: refused with an argument, else the session ends (status 0).
     int status = 7;
     CHECK_FALSE(c.ended(status));
@@ -2195,7 +2230,7 @@ TEST_CASE("session commands: the `.` prefix, alias rows and %quit (§7f)")
     REQUIRE(h.submit(".exit"));
     CHECK(h.payload() == madc::session_payload::quit);
     CHECK(h.payload_argv().empty());
-    REQUIRE(h.submit(":L " + lib));
+    REQUIRE(h.submit(".L " + lib));
     CHECK(h.payload() == madc::session_payload::load);
     CHECK(h.payload_argv() == std::vector<std::string>{ lib });
 
@@ -2347,7 +2382,7 @@ TEST_CASE("session commands: %build FILE [-o OUT] (§7f)")
     CHECK(first_error(s) == "%build: FILE has no extension to drop; name the"
 			    " executable: %build FILE -o OUT");
     CHECK_FALSE(s.submit("%build"));
-    CHECK(first_error(s) == "%build needs a FILE");
+    CHECK(first_error(s) == "%build needs a FILE: this host holds no buffer");
     CHECK_FALSE(s.submit("%build " + prog + " -o"));
     CHECK(first_error(s) == "%build takes one FILE and -o OUT");
     err.str("");
@@ -2420,29 +2455,307 @@ TEST_CASE("session commands: %open FILE and %edit NAME (§7f)")
     std::remove(lib.c_str());
 }
 
-// The one rule a host reads an entry's command by (an IDE answers its own
-// commands before the session sees the entry): the word, its command (none
-// for a word the session does not own) and the rest of the line.
+// The DEFAULT editor (no $EDITOR) is a terminal program: on a stdin that is
+// no terminal (a pipe, a file — /dev/null here) it never runs, since the
+// input would become its keystrokes; the reason says what to set. An
+// $EDITOR the user set runs as given, terminal or not.
+TEST_CASE("the terminal's default editor runs only on a terminal")
+{
+    const char *was = getenv("EDITOR");
+    const std::string saved = was ? was : "";
+    const int keep = dup(0);
+    const int nul = open("/dev/null", O_RDONLY);
+    REQUIRE(keep >= 0);
+    REQUIRE(nul >= 0);
+    dup2(nul, 0);
+    unsetenv("EDITOR");
+    std::string why;
+    const bool ran_default = madc::run_terminal_editor("/nonexistent-dir/x.c", 3, why);
+    setenv("EDITOR", "true", 1);
+    std::string why_set;
+    const bool ran_set = madc::run_terminal_editor("/nonexistent-dir/x.c", 3, why_set);
+    dup2(keep, 0);
+    close(keep);
+    close(nul);
+    if ( was )
+	setenv("EDITOR", saved.c_str(), 1);
+    else
+	unsetenv("EDITOR");
+    CHECK_FALSE(ran_default);
+    CHECK(why == "no editor: set $EDITOR (input is not a terminal)");
+    CHECK(ran_set);
+    CHECK(why_set.empty());
+}
+
+// The one rule a host reads an entry's command by (a host answers colon
+// mode itself, before the session sees the entry): the mode, the word, its
+// built-in command (none for a word the table does not own) and the rest of
+// the line — for colon mode, its whole text after the `:`.
 TEST_CASE("session commands: command_of reads an entry as the session does (§7f)")
 {
+    typedef InteractiveSession::Mode Mode;
     std::string word, arg;
+    Mode mode = Mode::none;
     InteractiveSession::Command code = InteractiveSession::Command::help;
-    REQUIRE(InteractiveSession::command_of(".L lib.c", word, code, arg));
+    REQUIRE(InteractiveSession::command_of(".L lib.c", mode, word, code, arg));
+    CHECK(mode == Mode::dot);
     CHECK(word == "L");
     CHECK(code == InteractiveSession::Command::load);
     CHECK(arg == "lib.c");
-    REQUIRE(InteractiveSession::command_of("%hi  bob ann", word, code, arg));
+    REQUIRE(InteractiveSession::command_of("%hi  bob ann", mode, word, code, arg));
+    CHECK(mode == Mode::percent);
     CHECK(word == "hi");
     CHECK(code == InteractiveSession::Command::none);
     CHECK(arg == "bob ann");
-    REQUIRE(InteractiveSession::command_of(":quit", word, code, arg));
+    REQUIRE(InteractiveSession::command_of("%quit", mode, word, code, arg));
     CHECK(code == InteractiveSession::Command::quit);
     CHECK(arg.empty());
-    REQUIRE(InteractiveSession::command_of("?x", word, code, arg));
+    REQUIRE(InteractiveSession::command_of("%L x.c", mode, word, code, arg));
+    CHECK(code == InteractiveSession::Command::none);	// cling's: `.` only
+    REQUIRE(InteractiveSession::command_of("?x", mode, word, code, arg));
+    CHECK(mode == Mode::query);
     CHECK(code == InteractiveSession::Command::pinfo);
     CHECK(arg == "x");
-    CHECK_FALSE(InteractiveSession::command_of("int x;", word, code, arg));
-    CHECK_FALSE(InteractiveSession::command_of("%1", word, code, arg));
+    // `??NAME` is %pinfo2 NAME; %psource is the pinfo command's too (a row's
+    // detail, IPython's one inspector).
+    REQUIRE(InteractiveSession::command_of("??x", mode, word, code, arg));
+    CHECK(mode == Mode::query);
+    CHECK(word == "pinfo2");
+    CHECK(code == InteractiveSession::Command::pinfo);
+    CHECK(arg == "x");
+    REQUIRE(InteractiveSession::command_of("%psource x", mode, word, code, arg));
+    CHECK(code == InteractiveSession::Command::pinfo);
+    CHECK(arg == "x");
+    // Colon mode: ed / ex / vim, the host's — no word, the whole text.
+    REQUIRE(InteractiveSession::command_of(":%s/a/b/g", mode, word, code, arg));
+    CHECK(mode == Mode::colon);
+    CHECK(word.empty());
+    CHECK(code == InteractiveSession::Command::none);
+    CHECK(arg == "%s/a/b/g");
+    REQUIRE(InteractiveSession::command_of(":quit", mode, word, code, arg));
+    CHECK(mode == Mode::colon);
+    CHECK(code == InteractiveSession::Command::none);	// ex's, not the REPL's
+    CHECK(arg == "quit");
+    // Every leading `%` `.` `?` `:` is a command (D24), a nameless one too...
+    REQUIRE(InteractiveSession::command_of("%1", mode, word, code, arg));
+    CHECK(word.empty());
+    REQUIRE(InteractiveSession::command_of(":5", mode, word, code, arg));
+    CHECK(arg == "5");
+    // ...except the three that stay C.
+    CHECK_FALSE(InteractiveSession::command_of("int x;", mode, word, code, arg));
+    CHECK_FALSE(InteractiveSession::command_of(".5 * 2", mode, word, code, arg));
+    CHECK_FALSE(InteractiveSession::command_of("::x = 3;", mode, word, code, arg));
+    CHECK_FALSE(InteractiveSession::command_of("%:include <stdio.h>", mode, word,
+					       code, arg));
+}
+
+// The modes at the session (owner 2026-10-09; split arc 1A.2): `:` is colon
+// mode — the host's ex commands — so the session refuses every `:` entry,
+// the REPL's own names included; a nameless `%` or `.` is refused, never
+// parsed as C.
+TEST_CASE("session commands: colon mode is the host's, and every prefix is a command")
+{
+    InteractiveSession c;
+    REQUIRE(c.begin("--std=c17"));
+    std::ostringstream err;
+    c.program().error_stream = &err;
+    REQUIRE(c.submit("int x = 10;"));
+    const char *colons[] = { ":type x", ":help", ":%s/a/b/", ":5", ":q" };
+    for ( size_t i = 0; i < sizeof(colons) / sizeof(colons[0]); ++i )
+    {
+	CAPTURE(colons[i]);
+	CHECK_FALSE(c.submit(colons[i]));
+	CHECK(first_error(c).find("is a colon-mode command") != std::string::npos);
+    }
+    CHECK(err.str().find("':%s/a/b/' is a colon-mode command") != std::string::npos);
+    CHECK_FALSE(c.submit("% x"));
+    CHECK(first_error(c) == "unknown command '%' (%help lists them)");
+    CHECK_FALSE(c.submit(".,"));
+    CHECK(first_error(c) == "unknown command '.,' (%help lists them)");
+    size_t start = 0;
+    CHECK(complete_at_end(c, ":ty", &start).empty());	// the host's to complete
+    REQUIRE(c.submit("%help"));
+    CHECK(c.shown().find("`:` starts a colon-mode (ex) command") != std::string::npos);
+    REQUIRE(c.submit("x"));
+    CHECK(c.shown() == "10");			// nothing above disturbed it
+}
+
+// The registry's extension point (split arc 1A.2, design §2.2-§2.7): a
+// session row's handler runs in the session and shows its `out`; a refusal's
+// `out` is its error; a host row answers the `command` payload with its code
+// and argument; both reach `%name` and `.name`, %help lists them and
+// completion offers them; a name the table or a row has already is refused.
+static bool greet_command(madc::value &out, const char *argument)
+{
+    if ( !*argument )
+    {
+	out = madc::value(std::string("%greet needs a NAME"));
+	return false;
+    }
+    out = madc::value(std::string("hello, ") + argument);
+    return true;
+}
+
+TEST_CASE("session commands: registered rows, the session's and the host's")
+{
+    InteractiveSession c;
+    REQUIRE(c.begin("--std=c17"));
+    std::ostringstream err;
+    c.program().error_stream = &err;
+    REQUIRE(c.add_command("greet", "%greet NAME", "say hello to NAME", greet_command));
+    CHECK_FALSE(c.add_command("greet", "%greet", "again", greet_command));
+    CHECK_FALSE(c.add_command("load", "%load", "a built-in's", greet_command));
+    CHECK_FALSE(c.add_command("L", "%L", "an alias's", greet_command));
+    CHECK_FALSE(c.add_command("9x", "%9x", "no whole name", greet_command));
+    CHECK_FALSE(c.add_command("a-b", "%a-b", "no whole name", greet_command));
+    CHECK_FALSE(InteractiveSession::registrable_name("exit"));
+    REQUIRE(c.submit("%greet ann"));
+    CHECK(c.shown() == "hello, ann");
+    REQUIRE(c.submit(".greet  bob"));
+    CHECK(c.shown() == "hello, bob");
+    CHECK_FALSE(c.submit("%greet"));
+    CHECK(first_error(c) == "%greet needs a NAME");
+    // A host row: refused while no host honors payloads...
+    REQUIRE(c.add_host_command("view", "%view NAME", "the IDE's view", 42));
+    CHECK_FALSE(c.add_host_command("greet", "%greet", "taken", 7));
+    CHECK_FALSE(c.submit("%view outline"));
+    CHECK(first_error(c).find("its host's command") != std::string::npos);
+    // ...and with one, the payload: its code and argument; nothing ran.
+    c.host_honors_payloads(true);
+    REQUIRE(c.submit("%view  outline left"));
+    CHECK(c.payload() == madc::session_payload::command);
+    CHECK(c.payload_code() == 42);
+    CHECK(c.payload_argv() == std::vector<std::string>{ "outline left" });
+    CHECK(c.shown().empty());
+    REQUIRE(c.submit("1 + 1"));
+    CHECK(c.payload() == madc::session_payload::none);	// the entry's own
+    // %help lists the one registry, in registration order after the built-ins.
+    REQUIRE(c.submit("%help"));
+    const std::string &h = c.shown();
+    const size_t quit_at = h.find("%quit");
+    const size_t greet_at = h.find("%greet NAME");
+    const size_t view_at = h.find("%view NAME");
+    REQUIRE(quit_at != std::string::npos);
+    REQUIRE(greet_at != std::string::npos);
+    REQUIRE(view_at != std::string::npos);
+    CHECK(quit_at < greet_at);
+    CHECK(greet_at < view_at);
+    CHECK(h.find("say hello to NAME\n") != std::string::npos);
+    // Completion offers them in both REPL modes.
+    CHECK(complete_at_end(c, "%gr") == std::vector<std::string>{ "greet" });
+    CHECK(complete_at_end(c, ".vi") == std::vector<std::string>{ "view" });
+    // The host's rows are replaced as a set (the wire's `commands` request).
+    madc::value rows = madc::value::make_array();
+    madc::value row = madc::value::make_object();
+    row.object()["name"] = madc::value(std::string("pane"));
+    row.object()["usage"] = madc::value(std::string("%pane"));
+    row.object()["summary"] = madc::value(std::string("a pane"));
+    row.object()["code"] = madc::value((int64_t)5);
+    rows.array().push_back(row);
+    CHECK(c.set_host_commands(rows) == 1u);
+    CHECK_FALSE(c.submit("%view x"));		// gone with the old set
+    REQUIRE(c.submit("%pane"));
+    CHECK(c.payload_code() == 5);
+    REQUIRE(c.submit("%greet cy"));		// the session's row stays
+    CHECK(c.shown() == "hello, cy");
+}
+
+// A module's REPL commands (split arc 1B.10, design §2.2-§2.3): the rows a
+// module's map-row function hands the session register as session rows —
+// each one that can (a built-in's name, a row without a handler, a name
+// already taken are skipped; the first registration stands) — and run as
+// any session row does.
+static bool module_echo(madc::value &out, const char *argument)
+{
+    out = madc::value(std::string("echo: ") + argument);
+    return true;
+}
+
+static const madc_module_command module_rows[] = {
+    { "echoit", "%echoit TEXT", "echo TEXT", module_echo },
+    { "whos", "%whos", "a built-in's name", module_echo },
+    { "bare", "%bare", "no handler", NULL },
+    { "greet2", "%greet2 NAME", "say hello", greet_command },
+};
+
+static const madc_module_command *module_rows_of(size_t *count)
+{
+    *count = sizeof(module_rows) / sizeof(module_rows[0]);
+    return module_rows;
+}
+
+TEST_CASE("session commands: a module's rows register as session rows (1B.10)")
+{
+    InteractiveSession c;
+    REQUIRE(c.begin("--std=c17"));
+    std::ostringstream err;
+    c.program().error_stream = &err;
+    CHECK(c.add_module_commands(module_rows_of) == 2u);
+    CHECK(c.add_module_commands(module_rows_of) == 0u);	// the first stands
+    CHECK(c.add_module_commands(NULL) == 0u);
+    REQUIRE(c.submit("%echoit two words"));
+    CHECK(c.shown() == "echo: two words");
+    CHECK_FALSE(c.submit("%greet2"));
+    CHECK(first_error(c) == "%greet needs a NAME");
+    CHECK_FALSE(c.submit("%bare"));
+    REQUIRE(c.submit("%help"));
+    CHECK(c.shown().find("%echoit TEXT") != std::string::npos);
+    CHECK(c.shown().find("%bare") == std::string::npos);
+}
+
+// The session's buffer question (split arc 1B.10, design decision 4): a
+// command running in the session reads a FILE through the host's buffers —
+// its live text when a buffer holds it, else the disk's path; "" the
+// current buffer. With no host source, every FILE is the disk's and no FILE
+// is refused.
+static bool buffer_probe(madc::value &out, const char *argument)
+{
+    std::string path, text, why;
+    bool has_text = false;
+    if ( !madc::session_buffer(argument, path, text, has_text, why) )
+    {
+	out = madc::value(why);
+	return false;
+    }
+    out = madc::value(path + (has_text ? " [" + text + "]" : " (disk)"));
+    return true;
+}
+
+TEST_CASE("session commands: a command asks the host's buffers (1B.10)")
+{
+    InteractiveSession c;
+    REQUIRE(c.begin("--std=c17"));
+    std::ostringstream err;
+    c.program().error_stream = &err;
+    REQUIRE(c.add_command("probe", "%probe FILE", "a buffer", buffer_probe));
+    REQUIRE(c.submit("%probe b.c"));
+    CHECK(c.shown() == "b.c (disk)");
+    CHECK_FALSE(c.submit("%probe"));
+    CHECK(first_error(c) == "no FILE, and this host holds no buffer");
+    c.set_buffers([](const madc::dis::istring &name, madc::dis::istring &path,
+		     std::string &text, bool &has_text, std::string &why) {
+	if ( name.empty() || name == "a.c" )
+	{
+	    path = name.empty() ? "/w/current.c" : "/w/a.c";
+	    text = name.empty() ? "int cur;" : "int a = 1;";
+	    has_text = true;
+	    return true;
+	}
+	if ( name == "untitled" )
+	{
+	    why = "the buffer has no file name";
+	    return false;
+	}
+	return true;		// the name is the path: the disk's
+    });
+    REQUIRE(c.submit("%probe a.c"));
+    CHECK(c.shown() == "/w/a.c [int a = 1;]");
+    REQUIRE(c.submit("%probe"));
+    CHECK(c.shown() == "/w/current.c [int cur;]");
+    REQUIRE(c.submit("%probe b.c"));
+    CHECK(c.shown() == "b.c (disk)");
+    CHECK_FALSE(c.submit("%probe untitled"));
+    CHECK(first_error(c) == "the buffer has no file name");
 }
 
 // Slice 2 (plan §41.8a): `?name` / `%pinfo name` describe what the session
@@ -2511,7 +2824,7 @@ TEST_CASE("session commands: ?name and %pinfo describe a name")
     size_t start = 0;
     CHECK(has(complete_at_end(c, "?s", &start), "sq"));
     CHECK(start == 1u);
-    CHECK(complete_at_end(c, "%pi") == std::vector<std::string>{ "pinfo" });
+    CHECK(complete_at_end(c, "%pi") == std::vector<std::string>{ "pinfo", "pinfo2" });
 
     // C++: an overload pair, each with its location; a class's public members
     // (a const method's qualifier, a static member; the private one not).
@@ -2541,6 +2854,58 @@ TEST_CASE("session commands: ?name and %pinfo describe a name")
     CHECK(m.shown() == "Type:      var\nDefined:   @ REPL[1]:1");
     REQUIRE(m.submit("?println"));
     CHECK(m.shown() == "Type:      function template");
+}
+
+// The shown text's code (split arc 1B.9): `%type`'s type and `%pinfo`'s
+// declarations are code a host may colour; a label, a location, a keyword's
+// provenance, a shown value and %help's text are not.
+TEST_CASE("session commands: the shown text's code ranges")
+{
+    InteractiveSession c;
+    REQUIRE(c.begin("--std=c17"));
+    std::ostringstream err;
+    c.program().error_stream = &err;
+    REQUIRE(c.submit("int x = 10;"));
+    REQUIRE(c.submit("int sq(int n) { return n * n; }"));
+    REQUIRE(c.submit("struct Point { int x; int y; };"));
+    REQUIRE(c.submit("#define N 5"));
+    // Each range's text, joined by `|`.
+    auto code_of = [&c]() {
+	std::string joined;
+	for ( const madc::code_range &r : c.shown_code() )
+	{
+	    REQUIRE(r.from <= r.to);
+	    REQUIRE(r.to <= c.shown().size());
+	    joined += (joined.empty() ? "" : "|") + c.shown().substr(r.from, r.to - r.from);
+	}
+	return joined;
+    };
+    struct { const char *entry, *code; } marked[] = {
+	{ "%type x", "int" },
+	{ "%type sq", "int (int)" },
+	{ "?sq", "int sq(int n)" },
+	{ "?x", "int" },
+	{ "?Point", "struct Point|int x|int y" },
+	{ "?N", "#define N 5" },
+	{ "?while", "" },
+	{ "%help", "" },
+	{ "x", "" },
+    };
+    for ( size_t i = 0; i < sizeof(marked) / sizeof(marked[0]); ++i )
+    {
+	CAPTURE(marked[i].entry);
+	CAPTURE(c.shown());
+	REQUIRE(c.submit(marked[i].entry));
+	CHECK(code_of() == marked[i].code);
+    }
+    // Two sections: the ranges follow the blank line between them.
+    REQUIRE(c.submit("#include <sys/stat.h>"));
+    REQUIRE(c.submit("?stat"));
+    const std::string both = code_of();
+    CHECK(both.compare(0, 12, "struct stat|") == 0);	// then its members
+    const std::string sig = "|int stat(const char *, struct stat *)";
+    CHECK(both.size() > sig.size());
+    CHECK(both.compare(both.size() - sig.size(), sig.size(), sig) == 0);
 }
 
 // Where a keyword comes from (owner, 2026-09-27): the language whose first
@@ -2624,6 +2989,20 @@ std::string binding_field(const madc::value &rows, const char *name,
 
 } // namespace
 
+// An entry's unit name and its inverse: the one REPL[N] spelling, and 0
+// for every name that is not exactly one (a file's unit, a malformed one).
+TEST_CASE("session entry unit: REPL[N] and its entry number")
+{
+    CHECK(madc::session_entry_unit(7) == "REPL[7]");
+    CHECK(madc::session_entry_of_unit("REPL[7]") == 7);
+    CHECK(madc::session_entry_of_unit("REPL[12]") == 12);
+    CHECK(madc::session_entry_of_unit("REPL[]") == 0);
+    CHECK(madc::session_entry_of_unit("REPL[1x]") == 0);
+    CHECK(madc::session_entry_of_unit("REPL[3]x") == 0);
+    CHECK(madc::session_entry_of_unit("prog.c") == 0);
+    CHECK(madc::session_entry_of_unit("") == 0);
+}
+
 TEST_CASE("session bindings: %whos lists the names the session defined (C17)")
 {
     InteractiveSession c;
@@ -2653,9 +3032,11 @@ TEST_CASE("session bindings: %whos lists the names the session defined (C17)")
     CHECK(binding_field(rows, "count", "value") == "3");
     CHECK(binding_field(rows, "count", "file") == "REPL[3]");
     CHECK(binding_field(rows, "count", "line") == "1");
+    CHECK(binding_field(rows, "count", "entry") == "3");
     CHECK(binding_field(rows, "square", "type") == "int (int)");
     CHECK(binding_field(rows, "square", "value").empty());
     CHECK(binding_field(rows, "square", "file") == "REPL[4]");
+    CHECK(binding_field(rows, "square", "entry") == "4");
     // The row's value spells no type (its Type column does, gdb's `info
     // locals`). A pointer shows its address; a character pointer then its
     // text, read so that a wild one cannot crash the backend.
@@ -2804,4 +3185,287 @@ TEST_CASE("a qualified typedef's object is the entry's own (B94)")
     REQUIRE(c.submit("t += \"y\";"));
     REQUIRE(c.submit("t"));
     CHECK(c.shown() == "\"xy\"");
+}
+
+// %history (split arc 1B.7, design 2026-10-10-history-std-reset-design.md
+// decision 2; IPython's): this session's entries, REPL[1] on, the %history
+// entry itself the last; -n numbers them (a continuation line under its
+// text); -l [N] and -g TEXT read the store the host named, in the session's
+// language only (the C++ record stays out of a C session); a session with
+// no store refuses -l and -g, and an unknown option is refused.
+TEST_CASE("%history: the session's entries, and the store's by -l and -g (1B.7)")
+{
+    std::string store =
+	madc::hub::history_record("2026-10-10 10:00:00Z", "c17", "3 * 3")
+	+ madc::hub::history_record("2026-10-10 10:00:01Z", "c++17", "4 * 4")
+	+ madc::hub::history_record("2026-10-10 10:00:02Z", "c11", "5 * 5")
+	+ madc::hub::history_record("2026-10-10 10:00:03Z", "c17", "int seven = 7;");
+    std::string path = temp_source(store.c_str(), "madc_repl_history");
+    InteractiveSession s;
+    REQUIRE(s.begin("--std=c17"));
+    std::ostringstream err;
+    s.program().error_stream = &err;
+    s.set_history_file(path);
+    REQUIRE(s.submit("1 + 1"));
+    REQUIRE(s.submit("int f(void)\n{\n  return 2;\n}"));
+    REQUIRE(s.submit("%history"));
+    CHECK(s.shown() == "1 + 1\nint f(void)\n{\n  return 2;\n}\n%history");
+    REQUIRE(s.submit("%history -n"));
+    CHECK(s.shown() == "   1: 1 + 1\n   2: int f(void)\n      {\n        return 2;\n"
+		       "      }\n   3: %history\n   4: %history -n");
+    REQUIRE(s.submit("%history -l 2"));
+    CHECK(s.shown() == "5 * 5\nint seven = 7;");
+    REQUIRE(s.submit("%history -l"));
+    CHECK(s.shown() == "3 * 3\n5 * 5\nint seven = 7;");
+    REQUIRE(s.submit("%history -n -g 5 * 5"));
+    CHECK(s.shown() == "   2: 5 * 5");
+    REQUIRE(s.submit("%history -g"));
+    CHECK(s.shown() == "3 * 3\n5 * 5\nint seven = 7;");
+    REQUIRE(s.submit("%history -g nothing like it"));
+    CHECK(s.shown() == "");
+    CHECK_FALSE(s.submit("%history -x"));
+    CHECK(err.str().find("%history: unknown option -x") != std::string::npos);
+    s.set_history_file("");
+    CHECK_FALSE(s.submit("%history -l"));
+    CHECK(err.str().find("keeps no history file") != std::string::npos);
+    REQUIRE(s.submit("%history -n"));
+    CHECK(s.shown().find("  11: %history -l\n  12: %history -n") != std::string::npos);
+    std::remove(path.c_str());
+}
+
+// %std and %reset (split arc 1B.7, design decisions 3-4): the one spelling
+// reader and writer; %std prints the standard as --std= spells it; a NAME
+// in force changes nothing; an unknown NAME is refused before anything
+// restarts; a fresh session is the host's (the `reset` / `standard`
+// payloads), and a host that honors no payloads refuses both.
+TEST_CASE("%std and %reset: the spelling, the refusals, the payloads (1B.7)")
+{
+    Program::LanguageStd std;
+    bool gnu = false;
+    REQUIRE(Program::standard_of_spelling("gnu++17", std, gnu));
+    CHECK(std == Program::STD_CPP17);
+    CHECK(gnu);
+    REQUIRE(Program::standard_of_spelling("c11", std, gnu));
+    CHECK(std == Program::STD_C11);
+    CHECK_FALSE(gnu);
+    CHECK_FALSE(Program::standard_of_spelling("c18x", std, gnu));
+    CHECK(Program::standard_spelling(Program::STD_CPP20, true) == "gnu++20");
+    CHECK(Program::standard_spelling(Program::STD_C17, true) == "gnu17");
+    CHECK(Program::standard_spelling(Program::STD_C17, false) == "c17");
+    CHECK(Program::standard_spelling(Program::STD_MADC, false) == "madc");
+
+    InteractiveSession s;
+    REQUIRE(s.begin("--std=gnu17"));
+    std::ostringstream err;
+    s.program().error_stream = &err;
+    REQUIRE(s.submit("%std"));
+    CHECK(s.shown() == "gnu17");
+    REQUIRE(s.submit("%std gnu17"));		// in force: nothing to do
+    CHECK(s.payload() == madc::session_payload::none);
+    CHECK_FALSE(s.submit("%std c++20"));
+    CHECK(err.str().find("%std NAME starts a fresh session, which this host cannot")
+	  != std::string::npos);
+    CHECK_FALSE(s.submit("%std c18x"));
+    CHECK(err.str().find("%std: no standard is spelled 'c18x'") != std::string::npos);
+    CHECK_FALSE(s.submit("%reset"));
+    CHECK(err.str().find("%reset starts a fresh session, which this host cannot")
+	  != std::string::npos);
+
+    s.host_honors_payloads(true);
+    REQUIRE(s.submit("%reset"));
+    CHECK(s.payload() == madc::session_payload::reset);
+    CHECK(s.payload_argv().empty());
+    CHECK_FALSE(s.submit("%reset now"));
+    CHECK(err.str().find("%reset takes no argument") != std::string::npos);
+    REQUIRE(s.submit("%std  --std=c++20 "));
+    CHECK(s.payload() == madc::session_payload::standard);
+    REQUIRE(s.payload_argv().size() == 1u);
+    CHECK(s.payload_argv()[0] == "c++20");
+    REQUIRE(s.submit("%std c17"));		// the dialect differs: a switch
+    CHECK(s.payload() == madc::session_payload::standard);
+    CHECK(s.payload_argv()[0] == "c17");
+}
+
+// %check (split arc 1B.8, design decision 2; gcc -fsyntax-only): FILE's
+// diagnostics under the session's standard, rendered, nothing joining the
+// session; shown: "FILE: clean" or the counts. A host that honors payloads
+// answers the `check` payload (argv FILE, "" its current buffer) and hands
+// the backend the buffer's text (check_text with text); any other session
+// reads FILE from disk and refuses a missing one.
+TEST_CASE("%check: a file's diagnostics, the payload, a buffer's text (1B.8)")
+{
+    std::string clean = temp_source("int f(void) { return 1; }\n", "madc_repl_check_ok");
+    std::string bad = temp_source("int g(void) { return nothing; }\n", "madc_repl_check_bad");
+    InteractiveSession s;
+    REQUIRE(s.begin("--std=c17"));
+    std::ostringstream err;
+    s.program().error_stream = &err;
+    REQUIRE(s.submit("%check " + clean));
+    CHECK(s.shown() == clean + ": clean");
+    REQUIRE(s.submit("%check " + bad));
+    CHECK(s.shown() == bad + ": 1 error, 0 warnings");
+    CHECK(err.str().find("nothing") != std::string::npos);
+    CHECK_FALSE(s.submit("g()"));		// nothing joined the session
+    CHECK_FALSE(s.submit("%check"));
+    CHECK(err.str().find("%check needs a FILE") != std::string::npos);
+    const std::string live = "int h(void) { return 2; }\n";
+    REQUIRE(s.check_text(bad, &live));		// a buffer's text over the disk's
+    CHECK(s.shown() == bad + ": clean");
+
+    s.host_honors_payloads(true);
+    REQUIRE(s.submit("%check"));
+    CHECK(s.payload() == madc::session_payload::check);
+    REQUIRE(s.payload_argv().size() == 1u);
+    CHECK(s.payload_argv()[0] == "");
+    REQUIRE(s.submit("%check notes.c"));
+    CHECK(s.payload_argv()[0] == "notes.c");
+    CHECK_FALSE(s.submit("%check a.c b.c"));
+    std::remove(clean.c_str());
+    std::remove(bad.c_str());
+}
+
+// %build / %run on the current buffer and %args (split arc 1B.8, design
+// decisions 3-4): with no FILE a payload host gets FILE "" (its current
+// buffer) — %build's OUT left to it, %run's arguments its %args — and
+// %args hands the host the argument line; a host that honors no payloads
+// refuses all three. A host's text wins over the disk even when EMPTY: an
+// emptied buffer builds as empty (no main), never as the file's old text.
+TEST_CASE("%build / %run of the current buffer, %args, and an empty buffer's build (1B.8)")
+{
+    InteractiveSession s;
+    REQUIRE(s.begin("--std=c17"));
+    std::ostringstream err;
+    s.program().error_stream = &err;
+    CHECK_FALSE(s.submit("%build"));
+    CHECK(err.str().find("%build needs a FILE: this host holds no buffer") != std::string::npos);
+    CHECK_FALSE(s.submit("%run"));
+    CHECK(err.str().find("%run needs a FILE: this host holds no buffer") != std::string::npos);
+    CHECK_FALSE(s.submit("%args a b"));
+    CHECK(err.str().find("%args sets what %run gives a host's buffer") != std::string::npos);
+
+    s.host_honors_payloads(true);
+    REQUIRE(s.submit("%build"));
+    CHECK(s.payload() == madc::session_payload::build);
+    REQUIRE(s.payload_argv().size() == 2u);
+    CHECK(s.payload_argv()[0] == "");
+    CHECK(s.payload_argv()[1] == "");
+    REQUIRE(s.submit("%build -o prog"));
+    CHECK(s.payload_argv()[1] == "prog");
+    REQUIRE(s.submit("%run"));
+    CHECK(s.payload() == madc::session_payload::run);
+    REQUIRE(s.payload_argv().size() == 1u);
+    CHECK(s.payload_argv()[0] == "");
+    REQUIRE(s.submit("%run -i"));
+    CHECK(s.payload() == madc::session_payload::run_here);
+    REQUIRE(s.submit("%args  one \"two words\" "));
+    CHECK(s.payload() == madc::session_payload::args);
+    CHECK(s.payload_argv()[0] == "one \"two words\"");
+    REQUIRE(s.submit("%args"));
+    CHECK(s.payload_argv()[0] == "");
+
+    s.host_honors_payloads(false);
+    std::string src = temp_source("int main(void) { return 0; }\n", "madc_repl_emptybuf");
+    const std::string empty;
+    CHECK_FALSE(s.build_text(src, &empty, src + ".out"));	// no main: not the disk's
+    std::remove(src.c_str());
+    std::remove((src + ".out").c_str());
+}
+
+// %project (split arc 1B.8, design decision 6): the session's project, its
+// manifest created when missing, written through the manifest's owners,
+// checked per TU with its options and built through the --project native
+// lane (OUT: the manifest's path less ".prj.json"); a payload host gets the
+// `project` payload (argv the manifest, "" when closed) and restores it with
+// set_project. %project run's child is testrepl_project's (a real process).
+TEST_CASE("%project: open (created), add, del, check, build, close, the payload (1B.8)")
+{
+    const std::string dir = "/tmp/madc_repl_project";
+    const std::string manifest = dir + "/p.prj.json";
+    const std::string a = dir + "/a.c", b = dir + "/b.c";
+    std::remove(manifest.c_str());
+    madc::detail::host_path_make_parents(a);
+    {
+	std::ofstream fa(a.c_str());
+	fa << "int helper(void);\nint main(int argc, char **argv) { return argc + helper(); }\n";
+	std::ofstream fb(b.c_str());
+	fb << "int helper(void) { return 40; }\n";
+    }
+    InteractiveSession s;
+    REQUIRE(s.begin("--std=c17"));
+    std::ostringstream err;
+    s.program().error_stream = &err;
+    REQUIRE(s.submit("%project"));
+    CHECK(s.shown() == "no project");
+    CHECK_FALSE(s.submit("%project add " + a));
+    CHECK(err.str().find("%project add: no project is open") != std::string::npos);
+    REQUIRE(s.submit("%project " + manifest));		// created
+    CHECK(s.shown() == manifest + ": 0 TUs, entry main, console");
+    CHECK(s.project() == manifest);
+    REQUIRE(s.submit("%project add " + a + " " + b));
+    REQUIRE(s.submit("%project"));
+    CHECK(s.shown() == manifest + ": 2 TUs, entry main, console\n  " + a + "\n  " + b);
+    REQUIRE(s.submit("%project check"));
+    CHECK(s.shown() == manifest + ": clean");
+    REQUIRE(s.submit("%project build"));
+    CHECK(s.shown() == "built " + dir + "/p");
+    int rc = std::system((dir + "/p x").c_str());
+    CHECK(WEXITSTATUS(rc) == 42);			// argc 2 + helper's 40
+    REQUIRE(s.submit("%project build -o " + dir + "/q"));
+    CHECK(s.shown() == "built " + dir + "/q");
+    {
+	std::ofstream fb(b.c_str());
+	fb << "int helper(void) { return nothing; }\n";
+    }
+    REQUIRE(s.submit("%project check"));
+    CHECK(s.shown() == b + ": 1 error, 0 warnings");
+    CHECK(err.str().find("nothing") != std::string::npos);
+    REQUIRE(s.submit("%project del " + b));
+    CHECK_FALSE(s.submit("%project del " + b));
+    CHECK(err.str().find("not in the project") != std::string::npos);
+    REQUIRE(s.submit("%project"));
+    CHECK(s.shown() == manifest + ": 1 TU, entry main, console\n  " + a);
+    CHECK_FALSE(s.submit("%project close now"));
+    CHECK_FALSE(s.submit("%project a.prj.json b.prj.json"));
+
+    s.host_honors_payloads(true);
+    REQUIRE(s.submit("%project close"));
+    CHECK(s.payload() == madc::session_payload::project);
+    REQUIRE(s.payload_argv().size() == 1u);
+    CHECK(s.payload_argv()[0] == "");
+    CHECK(s.project() == "");
+    REQUIRE(s.submit("%project " + manifest));
+    CHECK(s.payload() == madc::session_payload::project);
+    CHECK(s.payload_argv()[0] == manifest);
+
+    InteractiveSession fresh;				// a host's restore
+    REQUIRE(fresh.begin("--std=c17"));
+    fresh.set_project(manifest);
+    REQUIRE(fresh.submit("%project"));
+    CHECK(fresh.shown() == manifest + ": 1 TU, entry main, console\n  " + a);
+    std::remove((dir + "/p").c_str());
+    std::remove((dir + "/q").c_str());
+    std::remove(a.c_str());
+    std::remove(b.c_str());
+    std::remove(manifest.c_str());
+    std::remove(dir.c_str());
+}
+
+// The run child's argument words (madc_run_child.cpp): shell_quote's
+// spelling reads back through shell_words as the one word (Python's
+// shlex.quote / shlex.split).
+TEST_CASE("shell_quote round-trips through shell_words")
+{
+    const char *words[] = { "plain", "", "two words", "it's", "a\"b", "back\\slash",
+			    "tab\there", "$HOME", "-o", "x=1,y=2" };
+    std::string line;
+    for ( const char *w : words )
+	line += (line.empty() ? "" : " ") + ns_common::shell_quote(w);
+    std::vector<std::string> back;
+    REQUIRE(ns_common::shell_words(line, back));
+    REQUIRE(back.size() == sizeof(words) / sizeof(words[0]));
+    for ( size_t i = 0; i < back.size(); ++i )
+	CHECK(back[i] == words[i]);
+    CHECK(ns_common::shell_quote("plain") == "plain");
+    CHECK(ns_common::shell_quote("") == "''");
+    CHECK(ns_common::shell_quote("it's") == "'it'\"'\"'s'");
 }

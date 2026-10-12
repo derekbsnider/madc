@@ -16,13 +16,18 @@
 #ifndef __MADC_SESSION_H
 #define __MADC_SESSION_H 1
 
+#include <cstdint>
 #include <functional>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
 #include "madc/bits/session_enums"	// offer_state: the verdict's one enum text
 #include "libmadc/value.h"		// madc::value: a bindings row
+#include "madcdis/istring.h"	// a buffer's name and path (BufferSource)
+#include "highlight_class.h"	// code_range: the shown text that is code
+#include "madc_module_commands.h"	// a module's REPL command rows (1B.10)
 
 class Program;
 class Variable;
@@ -53,6 +58,17 @@ public:
     virtual Offered offer(const std::string &text,
 			  const TakenHook &taken = TakenHook()) = 0;
     virtual const std::string &shown() const = 0;
+    // The byte ranges of shown() that are code (`%type`'s type, `%pinfo`'s
+    // declarations, split arc 1B.9), in order: a host may colour them.
+    // Empty when nothing shown is code.
+    virtual const std::vector<madc::code_range> &shown_code() const = 0;
+    // The source the last taken entry added to the session, for a host's
+    // REPL buffer (colon mode at the prompt edits it; owner 2026-10-12): a
+    // code entry's text once the session kept it (its unit linked — a run
+    // that stopped included, D27), or the text of the file %load kept (an
+    // open buffer's live text when a buffer holds it). Empty after anything
+    // else: a refused entry, any other command.
+    virtual const std::string &taken_source() const = 0;
     virtual std::vector<std::string> complete(const std::string &text,
 					      size_t caret, size_t &start) = 0;
     // Does LINE continue an if that ended an entry (D11)? Its first word is
@@ -66,6 +82,33 @@ public:
     // backend's process (in this process the exit already happened), or
     // %quit asked to end it (status 0).
     virtual bool ended(int &status) const { (void)status; return false; }
+    // A host's buffers (split arc 1B.8, design decision 1): `name` — a FILE
+    // typed, "" for the host's CURRENT buffer — to the path and the LIVE
+    // text a command on it reads (has_text). A FILE no buffer holds: true,
+    // the name as the path, has_text false (the disk's). False, with why,
+    // when there is nothing to read: no current buffer, an untitled one.
+    // The name and the path are names (istrings); the text and the refusal
+    // are built text.
+    typedef std::function<bool(const madc::dis::istring &name,
+			       madc::dis::istring &path, std::string &text,
+			       bool &has_text, std::string &why)> BufferSource;
+    // A host that holds buffers hands them to the session it drives (the
+    // session's buffer question: InteractiveSession::buffer_text).
+    virtual void set_buffers(const BufferSource &source) { (void)source; }
+    // The editor a command asks for (%open, %edit; split arc 1C.12): a host
+    // that shows files — an IDE, an LSP client — hands its own to the session
+    // it drives, as it hands its buffers. True when `path` was shown (at
+    // `line` when > 0); false with `why`. None: the terminal's
+    // (madc::run_terminal_editor). One request at a time, on the session's
+    // thread.
+    typedef std::function<bool(const std::string &path, int line,
+			       std::string &why)> Editor;
+    virtual void set_editor(const Editor &editor) { (void)editor; }
+    // Input the session's program read from a stdin it shares with the host
+    // past what it consumed (a backend's C runtime reads ahead on a pipe —
+    // Windows), handed back: the host reads it before its own input. Taking
+    // it clears it. Empty when nothing was read ahead.
+    virtual std::string take_returned_input() { return std::string(); }
 };
 
 class InteractiveSession : public ReplSession
@@ -144,25 +187,85 @@ public:
     // command's output. Empty when the entry showed nothing. The core
     // renders nothing: a client prints it.
     const std::string &shown() const override;
+    const std::vector<madc::code_range> &shown_code() const override;
+    const std::string &taken_source() const override { return kept_source; }
+    // The text of the file unit the last load_text kept ("" when it was
+    // refused): the backend server's load reply carries it, so a host that
+    // honors %load's payload can keep it in its REPL buffer.
+    const std::string &loaded_source() const { return unit_text; }
+    // The host's buffers (split arc 1B.10, design decision 4): the source a
+    // host in this process hands it, or the backend server's, which asks the
+    // host over the wire. None: every FILE is the disk's.
+    void set_buffers(const BufferSource &source) override { buffers = source; }
+    // The host's editor (split arc 1C.12): %open / %edit in this process.
+    void set_editor(const Editor &e) override { editor = e; }
+    // The session's buffer question (madc::resolve_buffer's rule over its
+    // source): what a command running in the session — a module's — reads
+    // for FILE ("" the host's current buffer).
+    bool buffer_text(const madc::dis::istring &name, madc::dis::istring &path,
+		     std::string &text, bool &has_text, std::string &why);
     std::string standard_name() override;
     bool continues_if(const std::string &line) override;
     // %quit ended the session (plan §7f): status 0.
     bool ended(int &status) const override;
 
-    // The session's commands (plan §41.8a, D13/D24): an entry whose first
-    // line starts with `%name`, `:name` or `.name` is a command, never C.
-    // The typed name, a command's or an alias's (cling's `.L`, plan §7f),
-    // becomes one of these codes once, at input. `?NAME` is %pinfo NAME, and
-    // `?` alone %help (IPython). The codes' one text is <bits/session_enums>,
-    // the dialect's too.
+    // The session's commands (plan §41.8a, D13/D24; the modes, owner
+    // 2026-10-09, split arc 1A.2): an entry whose first line starts with
+    // `%`, `.`, `?` or `:` is a command, never C — except `.` and a digit,
+    // `::` and `%:`. The first character is the MODE: `%name` and `.name`
+    // are the REPL's commands (each mode with its own aliases: cling's
+    // `.L`, plan §7f), `?NAME` is %pinfo NAME, `??NAME` %pinfo2 NAME and
+    // `?` alone %help (IPython), and `:` is colon mode — ed / ex / vim commands, the host's,
+    // which the session refuses. A typed name becomes its row once, at
+    // input. The codes' one text is <bits/session_enums>, the dialect's too.
     typedef ::madc::session_command Command;
-    // What `text` is as an entry (plan §7f, the IDE layer, which answers its
-    // own commands before the session sees them): false when it is no
-    // command; else the name typed (`L`; `pinfo` or `help` for `?NAME` and
-    // `?`), the command it names (none: none of the session's) and the rest
-    // of its first line, without the blanks before it.
-    static bool command_of(const std::string &text, std::string &word,
+    typedef ::madc::command_mode Mode;
+    // What the pinfo command shows of a name, its row's detail (IPython's
+    // _inspect levels): info (%pinfo, ?NAME), info and source (%pinfo2,
+    // ??NAME), source alone (%psource).
+    enum class Inspect : unsigned char { info, info_source, source };
+    // What `text` is as an entry (a host asks before it offers the entry:
+    // colon mode is its own): false when it is no command; else its mode,
+    // the name typed (`L`; `pinfo`, `pinfo2` or `help` for `?NAME`, `??NAME`
+    // and `?`; empty for
+    // a `:` text, and when no name follows `%` or `.`), the BUILT-IN command
+    // it names (none: none — a registered one, or a typo) and the rest of
+    // its first line after the name (after the `:` for colon mode), without
+    // the blanks before it.
+    static bool command_of(const std::string &text, Mode &mode, std::string &word,
 			   Command &code, std::string &argument);
+
+    // The registry's extension point (split arc 1A.2; design
+    // docs/plans/2026-10-09-command-registry-design.md): a REPL command
+    // registered by a module running IN the session (its handler runs here)
+    // or by the HOST driving the session (taken, it answers the `command`
+    // payload with the row's code: the host runs it). A registered name is
+    // reachable as `%name` and `.name`, listed by %help and completed. False
+    // when `name` is no whole command name, or is a built-in's, an alias's
+    // or a registered row's already (first registration wins).
+    //
+    // A handler: true — `out`, a string, is what the command shows; false —
+    // the command is refused, and `out`, a non-empty string, is its error.
+    // It runs inside the Program's runtime scope (a JIT'd dialect function,
+    // a native module's alike).
+    typedef bool (*CommandHandler)(madc::value &out, const char *argument);
+    // `name` can be registered as far as the table itself says: a whole
+    // command name (a word run not starting with a digit), no built-in's and
+    // no alias's in any mode. (A session also refuses its registered names.)
+    static bool registrable_name(const std::string &name);
+    bool add_command(const std::string &name, const std::string &usage,
+		     const std::string &summary, CommandHandler handler);
+    bool add_host_command(const std::string &name, const std::string &usage,
+			  const std::string &summary, int64_t code);
+    // A module's rows (split arc 1B.10, madc_module_commands.h): each that
+    // registers (add_command) as a session row; the count registered.
+    // `rows_of` NULL brings none. The session calls it for each module that
+    // enters its Program (register_module_commands); a test hands its own.
+    size_t add_module_commands(madc_module_commands_fn rows_of);
+    // The host's rows replaced by `rows` ({name, usage, summary, code} each;
+    // the wire's `commands` request, sent after every backend start). A row
+    // that cannot register is skipped; the count registered is returned.
+    size_t set_host_commands(const madc::value &rows);
     // What the last taken command asks its host (IPython's payloads; the
     // codes are <bits/session_enums>' session_payload), with payload_argv()
     // — the file, then its arguments. A host that honors them says so with
@@ -175,9 +278,16 @@ public:
     // the host hands FILE's text (an open buffer's) to build_file. %open's
     // and %edit's is FILE, then the line when one is named: an IDE opens
     // its editor there; the terminal runs madc::run_terminal_editor. %quit's payload has no argv;
-    // a host that honors no payloads reads %quit from ended().
+    // a host that honors no payloads reads %quit from ended(). %reset's
+    // (`reset`, no argv) and %std NAME's (`standard`, argv: NAME as `--std=`
+    // spells it) ask for a FRESH session, which only such a host can start;
+    // any other host refuses them, as %run. %project's (`project`, argv: the
+    // open manifest, "" when closed) asks the host to keep the project
+    // across restarts (set_project in the fresh session); an IDE opens it.
     madc::session_payload payload() const { return payload_kind; }
     const std::vector<std::string> &payload_argv() const { return payload_args; }
+    // The `command` payload's row code (a host row's, add_host_command).
+    int64_t payload_code() const { return payload_command; }
     void host_honors_payloads(bool on) { payload_host = on; }
     // The last file loaded defined main (a main an earlier unit defined is
     // not the file's: a second main is refused): only then does running the
@@ -201,6 +311,17 @@ public:
     // refused.
     bool build_file(const std::string &path, const std::string &text,
 		    const std::string &out);
+    // The same build from `text` when non-null — a host's buffer, an empty
+    // one included — else the file (split arc 1B.8).
+    bool build_text(const std::string &path, const std::string *text,
+		    const std::string &out);
+    // %check's check (split arc 1B.8, design decision 2): FILE (`path`) — its
+    // `text` when non-null, else the file — parsed under the session's
+    // standard in a parse of its own (nothing joins the session), its
+    // diagnostics rendered as an entry's are; shown() is "FILE: clean" or
+    // "FILE: N errors, M warnings". False when no parse opened (an unreadable
+    // FILE).
+    bool check_text(const std::string &path, const std::string *text);
     // The names the session defined (plan §41.11a step 3d): the one owner
     // %whos and the bindings wire op read. A row per object and function a
     // session unit (an entry, a loaded file) defined, sorted by name:
@@ -216,6 +337,13 @@ public:
     unsigned entries() const { return entry_count; }
     // The entries submitted, refused ones included: entry N is REPL[N].
     unsigned submitted() const { return submit_count; }
+    // The history store %history -l / -g read (madc_history.h; split arc
+    // 1B.7): the one its host names ("" names none), else the default store.
+    void set_history_file(const std::string &path) { history_file = path; }
+    // The project %project opened (split arc 1B.8), its manifest's path ("":
+    // none) — a host restores it in a fresh session.
+    void set_project(const std::string &path) { project_file = path; }
+    const std::string &project() const { return project_file; }
 
 private:
     Offered enter(const std::string &text, bool final, const TakenHook &taken);
@@ -225,7 +353,16 @@ private:
     // it is refused (its diagnostics are the Program's).
     bool run_command(const std::string &text, const std::string &name);
     bool type_command(const std::string &expression, const std::string &name);
-    bool pinfo_command(const std::string &argument, const std::string &name);
+    // `%pinfo NAME` / `?NAME`, `%pinfo2 NAME` / `??NAME` and `%psource NAME`:
+    // IPython's one inspector at its detail levels (`command`, the row's
+    // name, cites a refusal).
+    bool pinfo_command(const std::string &argument, const std::string &name,
+		       Inspect detail, const char *command);
+    // The source of each definition of `word` the session holds (%psource,
+    // ??NAME; IPython's inspect.getsource): its lines from its unit's text —
+    // REPL[N]'s entry, or the file it was loaded from as the host's buffer
+    // of it holds it, else the disk — one after another. False when none.
+    bool binding_source(const std::string &word, std::string &out);
     void whos_command();
     // %load FILE and %run [-i] FILE [ARGS] (D25, D16): ARGS split by the
     // shell's rules (ns_common::shell_words).
@@ -239,11 +376,37 @@ private:
     // else madc::run_terminal_editor.
     bool open_in_editor(const std::string &path, int line, const std::string &name);
     bool quit_command(const std::string &argument, const std::string &name);
+    bool history_command(const std::string &argument, const std::string &name);
+    bool reset_command(const std::string &argument, const std::string &name);
+    bool std_command(const std::string &argument, const std::string &name);
+    bool check_command(const std::string &argument, const std::string &name);
+    bool args_command(const std::string &argument, const std::string &name);
+    bool project_command(const std::string &argument, const std::string &name);
+    void project_changed();
+    bool project_show(const std::string &name);
+    bool project_check(const std::string &name);
+    bool project_build(const std::string &out, const std::string &name);
+    bool project_run(const std::vector<std::string> &args, const std::string &name);
     // A session unit (an entry, a loaded file) defines a function NAME.
     bool defines_function(const std::string &name);
     // A file command's file, once it opens: the payload `kind` for a host
     // that honors payloads, else loaded (and run) here.
     bool file_command(madc::session_payload kind, std::vector<std::string> &words);
+    // Does a buffer of the host's hold FILE's live text (the buffer
+    // question)? A host that honors payloads reads such a FILE from its
+    // buffer, so the disk need not have it yet (an LSP client's unsaved new
+    // file).
+    bool buffer_holds(const std::string &file);
+    // A command's output begins: the entry was a command, and nothing it
+    // shows yet (no text, no code).
+    void begin_command_output();
+    // The REPL commands of each module the Program has loaded and this
+    // session has not looked at yet (split arc 1B.10, design §2.3): the
+    // configured Program's (-l, the ini's modules) at begin, a kept unit's
+    // imports after it. A module whose map row names `commands` is opened (a
+    // LAZY one here, as its first call would; under --no-auto-load never)
+    // and its rows added; one that does not open brings none.
+    void register_module_commands();
     // A command's usage error, cited at the entry's first column.
     void command_error(const std::string &message, const std::string &name);
     // The quiet entry: each object shown through the row form, the texts in
@@ -255,23 +418,93 @@ private:
     unsigned entry_count;
     unsigned submit_count;
     std::string command_output;		// the last command's output
+    std::vector<madc::code_range> command_code;	// its ranges that are code
+    std::vector<madc::code_range> no_code;	// an entry's shown value: none
     bool showed_command;		// the last entry was a command
+    std::set<madc::dis::istring> modules_seen;	// register_module_commands' spellings
     madc::session_payload payload_kind;	// the last command's ask of its host
     std::vector<std::string> payload_args;
+    int64_t payload_command;		// the `command` payload's row code
     bool payload_host;			// the host honors payloads
+    // The registered rows (split arc 1A.2), in registration order: a
+    // session row has a handler, a host row a code.
+    struct Registered
+    {
+	std::string name, usage, summary;
+	CommandHandler handler;		// NULL: a host row
+	int64_t code;
+    };
+    std::vector<Registered> registered;
+    bool add_row(const std::string &name, const std::string &usage,
+		 const std::string &summary, CommandHandler handler, int64_t code);
+    // A registered row's run: a session row's handler, or a host row's
+    // payload. False when it was refused.
+    bool run_registered(const Registered &row, const std::string &argument,
+			const std::string &name);
     bool load_main;			// the last loaded file defined main
     bool quit_asked;			// %quit ended the session
     unsigned quiet_count;		// the quiet entries' units, each its own
+    std::vector<std::string> inputs;	// REPL[N]'s text is inputs[N - 1]
+    std::string kept_source;		// taken_source()
+    std::string unit_text;		// loaded_source()
+    std::string history_file;		// %history's store ("" none)
+    std::string project_file;		// %project's manifest ("" none)
+    BufferSource buffers;		// the host's (set_buffers); empty: the disk
+    Editor editor;			// the host's (set_editor); empty: the terminal's
     InteractiveSession(const InteractiveSession &);
     InteractiveSession &operator=(const InteractiveSession &);
 };
 
 namespace madc {
 // The terminal's editor (%open, %edit; IPython's %edit): $EDITOR (its words
-// split by the shell's rules), else vi (notepad on Windows), given `+LINE`
-// before `path` when `line` > 0 (never the notepad default), on this
-// terminal, waited for. False when it did not start (`why` says so).
+// split by the shell's rules), else — only when stdin is a terminal — vi
+// (Microsoft Edit, `edit`, on Windows), given `+LINE` before `path` when
+// `line` > 0 (never the Windows default), on this terminal, waited for.
+// False when it did not start or no default may run (`why` says so).
 bool run_terminal_editor(const std::string &path, int line, std::string &why);
+// The editor a session's host gave it (ReplSession::set_editor), else the
+// terminal's: the ONE choice behind %open and %edit, in process and in a
+// backend's host.
+bool show_in_editor(const ReplSession::Editor &editor, const std::string &path,
+		    int line, std::string &why);
+// <ns_madc>'s command_add (split arc 1A.2): a REPL command registered by
+// code running IN a session (a module's own registration) — the running
+// Program's session (Program::owning_session) adds it as a session row
+// (InteractiveSession::add_command). False outside a session, or for a name
+// that cannot register.
+bool command_add(const char *name, const char *usage, const char *summary,
+		 bool (*handler)(value &out, const char *argument));
+// THE buffer rule (split arc 1B.8's BufferSource contract), asked by a host
+// before it sends a payload's request or by the session for a command running
+// in it: `source` answers when there is one; with none, or for a FILE no
+// buffer holds, the name is the path and the disk is read (has_text false).
+// False, with `why`, when there is nothing to read: no FILE and no current
+// buffer, an untitled one.
+bool resolve_buffer(const ReplSession::BufferSource &source,
+		    const dis::istring &name, dis::istring &path,
+		    std::string &text, bool &has_text, std::string &why);
+// The running session's buffer question (InteractiveSession::buffer_text):
+// what a module's command reads for FILE ("" the current buffer). Outside a
+// session, the thread's host buffers (set_host_buffers), else the disk's (no
+// FILE: refused).
+bool session_buffer(const std::string &name, std::string &path,
+		    std::string &text, bool &has_text, std::string &why);
+// The buffers a program that holds its own (an editor calling a module's verb
+// in its process) hands to session_buffer outside a session; an empty source
+// is the disk's. Per thread: the calling thread's questions only.
+void set_host_buffers(const ReplSession::BufferSource &source);
+// <ns_madc>'s face of it: {path, text, has_text}, or {error}.
+bool session_buffer(value &out, const char *name);
+// <ns_madc>'s host_documents: the thread's host buffers are ui world `w`'s
+// documents (document_buffer), `current` the current one; w 0 = the disk's.
+// False for a world handle that names no world.
+bool host_documents(int64_t w, int64_t current);
+// An entry's unit name — Julia's REPL[N], the one spelling an entry's
+// diagnostics cite, a result's description and a binding's origin name —
+// and its inverse: the entry number a unit name spells, 0 for any other
+// unit (a file's).
+std::string session_entry_unit(size_t entry);
+size_t session_entry_of_unit(const std::string &unit);
 }
 
 #endif

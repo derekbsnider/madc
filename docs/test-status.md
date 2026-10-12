@@ -1,5 +1,14 @@
 # Test Status
 
+Split arc Phase 2 — madcide leaves madc (2026-10-11, `072ea1f25`): the
+madcide tests, its window tests and its gates moved to the madcide
+repository, where they run through madc's own runner at the pinned madc
+(`scripts/run_tests.sh` there; 66/0 JIT, GUI 17/0, 35 TUI goldens, the pty
+gates). madc's suite is 1999 passed, 0 failed, 9 skipped (JIT, batch lane;
+2065 less the 66 tests that moved). The GUI lane is 15 tests three ways;
+`tests/gui/ui_web_menu` is the engine twin of the moved `madcide_menu`.
+Static loop 92 gates. Genuine Windows subset (`testui_*`, `testrepl_*`, `testex_*`, `testdocument*`, `testlsp_*`, `testmcp_*`) 27/0/6, staged by `win_suite.sh` without `tools/`.
+
 Frozen-forest const_param restoration (2026-10-01): `const_param` flag (`PF_CONST_PARAM`) is now restored from `paramrec` records when materializing function/method parameters from bound forests, fixing copy constructor selection on forest-bound classes. Reducer: forest_bind_gate constcopy case prints `v=101 live=2 after=0` (matches g++/clang++). Also: `testimplcopy` (string member copy) aborted with double-free before (forest bound), passes after. Tier 1: 5/5 JIT, 2/2 EXE, 2/2 OBJ. forest_bind_gate: 31/31 GREEN. Packed suite: 1850 passed, 0 failed, 9 skipped, 1 timeout (unrelated testmadcide_plugin_host). Tier 2: all six lanes at baselines.
 
 B37 deleted copy/move constructors (2026-09-28):

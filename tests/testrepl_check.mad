@@ -1,0 +1,6 @@
+// %check at madc -i FILE (split arc 1B.8, design 2026-10-10-check-build-run-project-design.md
+// decisions 1-2): the current buffer's LIVE text is checked in the backend —
+// clean as loaded, an error once colon mode appends a broken line, clean
+// again after :u — and nothing joins the session.
+#include <stdio.h>
+int main(void) { printf("ready\n"); return 0; }

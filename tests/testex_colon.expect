@@ -1,0 +1,11 @@
+loaded
+int main(void) { printf("loaded\n"); return 0; }
+int main(void) { printf("loaded\n"); return 7; }
+  1 #include <stdio.h>
+  2 int main(void) { printf("loaded\n"); return 7; }
+ %a + "
+testex_colon.mad"
+line 3
+Each name is also written with
+42
+123

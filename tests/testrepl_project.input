@@ -1,0 +1,10 @@
+%project
+%project tests/testrepl_project.prj.json
+%project add tests/testrepl_project_b.c
+%project check
+%project run one "two words"
+%reset
+%project
+%project del tests/testrepl_project_b.c
+%project
+%project close

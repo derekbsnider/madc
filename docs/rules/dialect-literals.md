@@ -60,7 +60,9 @@ the literal — clearer, and no parse ambiguity.
 
 ## Scope and mechanism
 
-`scripts/check-dialect-literals.sh` scans `tools/**/*.{inc,mad}` and self-tests
+The shipped dialect tools live in the madcide repository since the split arc's
+Phase 2, and the gate went with them: madcide's `scripts/check-dialect-literals.sh`
+(run by its `scripts/gates.sh`) scans `tools/**/*.{inc,mad}` and self-tests
 in both directions: a synthetic bad file must fail the scan, and a synthetic
 good file (initialized-var mutation + computed key + integer index) must pass.
 A rule without a gate decays; a gate without a negative control lies.

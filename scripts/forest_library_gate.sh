@@ -48,17 +48,17 @@ D=tmp/libgate
 rm -rf "$D"
 mkdir -p "$D/packed/bin" "$D/packed/lib" "$D/plain/bin" "$D/plain/lib"
 
-cat > "$D/producer.cpp" <<'EOF'
+cat > "$D/producer.mad" <<'EOF'
 #include <stdio.h>
 int main() { return 0; }
 EOF
-cat > "$D/consumer.cpp" <<'EOF'
+cat > "$D/consumer.mad" <<'EOF'
 #include <stdio.h>
 int main() { printf("libgate ok\n"); return 0; }
 EOF
 
 # Standalone container (the sidecar/env arms bind this file directly).
-timeout 180 "$BIN" --freeze="$D/stdio.msnap" "$D/producer.cpp" >/dev/null 2>&1 \
+timeout 180 "$BIN" --freeze="$D/stdio.msnap" "$D/producer.mad" >/dev/null 2>&1 \
     || fail "--freeze failed"
 
 # Two staged installations, identical except for the carrier: `packed` has the
@@ -70,35 +70,35 @@ cp "$THIN" "$D/plain/bin/madc"
 cp "$LIB" "$D/packed/lib/$SONAME"
 cp "$LIB" "$D/plain/lib/$SONAME"
 # Pack via the production path (--freeze-append), never a hand-rolled append.
-timeout 180 "$BIN" --freeze-append="$D/packed/lib/$SONAME" "$D/producer.cpp" >/dev/null 2>&1 \
+timeout 180 "$BIN" --freeze-append="$D/packed/lib/$SONAME" "$D/producer.mad" >/dev/null 2>&1 \
     || fail "--freeze-append into the library image failed"
 
 # Live-parse reference output (the parity oracle for every bind leg) — also
 # the thin CLI's own smoke: a shared-linked madc must behave exactly like the
 # monolithic one.
-live_out=$(env -u MADC_FOREST timeout 120 "$D/plain/bin/madc" --no-forest-bind "$D/consumer.cpp" 2>/dev/null) \
+live_out=$(env -u MADC_FOREST timeout 120 "$D/plain/bin/madc" --no-forest-bind "$D/consumer.mad" 2>/dev/null) \
     || fail "thin-CLI live-parse reference run failed"
 [ "$live_out" = "libgate ok" ] || fail "thin-CLI live reference output wrong: '$live_out'"
 
 # Leg 1 — thin CLI, no container anywhere: the shared shape compiles and runs
 # exactly like the monolithic binary (CLI parity, live lane).
-out=$(env -u MADC_FOREST timeout 120 "$D/plain/bin/madc" "$D/consumer.cpp" 2>/dev/null) \
+out=$(env -u MADC_FOREST timeout 120 "$D/plain/bin/madc" "$D/consumer.mad" 2>/dev/null) \
     || fail "[thin-live] compile failed"
 [ "$out" = "$live_out" ] || fail "[thin-live] output != live parse output"
 
 # Leg 2 — library-image arm: the container inside libmadc's image binds.
-v=$(env -u MADC_FOREST timeout 120 "$D/packed/bin/madc" -v "$D/consumer.cpp" 2>&1 | tr -d '\0') \
+v=$(env -u MADC_FOREST timeout 120 "$D/packed/bin/madc" -v "$D/consumer.mad" 2>&1 | tr -d '\0') \
     || fail "[library-image] compile failed"
 grep -q <<<"$v" '\[library-image\] opened container' || fail "[library-image] arm did not open the container"
 grep -q <<<"$v" 'bound to grove unit' || fail "[library-image] did not bind"
-out=$(env -u MADC_FOREST timeout 120 "$D/packed/bin/madc" "$D/consumer.cpp" 2>/dev/null)
+out=$(env -u MADC_FOREST timeout 120 "$D/packed/bin/madc" "$D/consumer.mad" 2>/dev/null)
 [ "$out" = "$live_out" ] || fail "[library-image] bind output != live parse output"
 
 # Leg 3 — arm order: the library image wins BEFORE any external arm is probed
 # (an <exe>.forest sidecar and a junk MADC_FOREST must go untouched).
 cp "$D/stdio.msnap" "$D/packed/bin/madc.forest"
 echo "not a container" > "$D/junk.txt"
-v=$(MADC_FOREST="$D/junk.txt" timeout 120 "$D/packed/bin/madc" -v "$D/consumer.cpp" 2>&1 | tr -d '\0') \
+v=$(MADC_FOREST="$D/junk.txt" timeout 120 "$D/packed/bin/madc" -v "$D/consumer.mad" 2>&1 | tr -d '\0') \
     || fail "[order] compile failed"
 grep -q <<<"$v" '\[library-image\] opened container' || fail "[order] library image did not win"
 grep -q <<<"$v" '\[sidecar\]' && fail "[order] sidecar arm probed despite the library-image hit"
@@ -109,11 +109,11 @@ rm -f "$D/packed/bin/madc.forest"
 # beside the LIBRARY binds (the distro-packaging shape: one forest file for
 # the CLI and every host).
 cp "$D/stdio.msnap" "$D/plain/lib/$SONAME.forest"
-v=$(env -u MADC_FOREST timeout 120 "$D/plain/bin/madc" -v "$D/consumer.cpp" 2>&1 | tr -d '\0') \
+v=$(env -u MADC_FOREST timeout 120 "$D/plain/bin/madc" -v "$D/consumer.mad" 2>&1 | tr -d '\0') \
     || fail "[lib-sidecar] compile failed"
 grep -q <<<"$v" '\[lib-sidecar\] opened container' || fail "[lib-sidecar] arm did not open the container"
 grep -q <<<"$v" 'bound to grove unit' || fail "[lib-sidecar] did not bind"
-out=$(env -u MADC_FOREST timeout 120 "$D/plain/bin/madc" "$D/consumer.cpp" 2>/dev/null)
+out=$(env -u MADC_FOREST timeout 120 "$D/plain/bin/madc" "$D/consumer.mad" 2>/dev/null)
 [ "$out" = "$live_out" ] || fail "[lib-sidecar] bind output != live parse output"
 rm -f "$D/plain/lib/$SONAME.forest"
 

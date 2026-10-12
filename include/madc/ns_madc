@@ -135,8 +135,10 @@ namespace madc {
     // `standard` (a <bits/file_kinds> code naming a standard — madc::fkC17,
     // madc::fkCPP17, madc::fkMADC; 0 = the engine's default, which is the
     // two-argument form's) compiles under that standard, and the handle
-    // keeps it through every refresh (0 = a code that names no standard,
-    // a family head included); parse_open_file opens
+    // keeps it through every refresh; a family head (madc::fkC, fkCPP,
+    // fkMADC) is the family's default as the CLI compiles a file of it —
+    // gnu17, gnu++17, madc (split arc 1A.4); 0 = a code that names neither;
+    // parse_open_file opens
     // a TU from disk through the lexer's own file ingestion (0 = the path
     // is unreadable); parse_refresh whole-TU re-parses the handle with
     // new text; parse_close frees it (handles are never reused within a
@@ -175,7 +177,6 @@ namespace madc {
     //       identifier the tree defines as a function, on its head
     //       line). Data, not styling: a theme maps names to colours.
     value &parse_spans(value &out, int64_t handle);
-
     // Code-graph MCP L1 (design 2026-09-12): the live declaration/type
     // graph as node-addressed reads over a parse handle. A node id is a
     // type-id; a node is { id, kind, name } (+ line/column/end_line for a
@@ -361,6 +362,13 @@ namespace madc {
     // process lifetime; "" = the platform probe failed. Concurrent reads
     // are safe.
     const char *compiler_path();
+    // The running compiler run on `args` (an array of text: the arguments
+    // after argv[0]) with ALL stdio inherited, waited for — a host handing
+    // its terminal to madc itself (madcide --line is `madc -i FILE`).
+    // Returns its exit code; -1 when it could not run (the spawn or the
+    // wait failed, or it ended abnormally).
+    // Thread contract: blocks the calling thread until the child ends.
+    int64_t compiler_run(value &args);
     // A Run child of self. Windows has no fork, so parse_run, project_run
     // and the madcrun:// / madcproj:// channels spawn THIS executable with
     // the run named in its environment (MADC_RUN_CHILD); serve_run_child
@@ -501,6 +509,20 @@ namespace madc {
     int64_t library_symbol(int64_t lib, const char *name);
     void library_close(int64_t lib);
     const char *library_suffix();
+    // Regular expressions — madc's ONE engine, PCRE2 (split arc 1A.3;
+    // docs/plans/2026-10-10-pcre2-design.md): Perl / PHP syntax, UTF-8.
+    //   regex_match: the WHOLE of s matches pattern.
+    //   regex_search: pattern matches somewhere in s.
+    //   regex_replace: out = s with every match replaced; the replacement
+    //       names $0 (the match), $1 / ${1} (a group), $$ (a dollar).
+    // A pattern that does not compile (and a malformed replacement) is
+    // refused: one line on stderr naming the function, the pattern, the
+    // reason and its offset, and a neutral answer — false, or out = s.
+    // Thread contract: pure functions (each call compiles its own pattern).
+    bool regex_match(const char *s, const char *pattern);
+    bool regex_search(const char *s, const char *pattern);
+    value &regex_replace(value &out, const char *s, const char *pattern,
+			 const char *replacement);
     // Code compiled into THIS process from a source file — a madcide
     // plugin's `source` form (plan §41.11a step 5), the library verbs'
     // source twin:
@@ -552,6 +574,11 @@ namespace madc {
     void context_set_real(value &ctx, std::string &key, double v);
     void context_set_string(value &ctx, std::string &key, const char *v);
     void context_set_array(value &ctx, std::string &key, value &v);
+    bool regex_match(const std::string &s, const std::string &pattern);
+    bool regex_search(const std::string &s, const std::string &pattern);
+    std::string &regex_replace(std::string &out, const std::string &s,
+			       const std::string &pattern,
+			       const std::string &replacement);
 #endif
 
 #if defined(_GLIBCXX_OSTREAM) || defined(_LIBCPP_OSTREAM)
@@ -785,8 +812,9 @@ namespace madc {
     //     madc::name_kind code), type (the source's spelling), value (an
     //     object's, no type spelled: no pointer followed but a character
     //     pointer's text, `0x… "Test"`, at most 16 elements, 80 columns),
-    //     file, line (where an entry or a loaded file declared it)}, sorted
-    //     by name. Answered between entries.
+    //     file, line (where an entry or a loaded file declared it), entry
+    //     (the entry that declared it, its N in REPL[N]; 0 for a file)},
+    //     sorted by name. Answered between entries.
     //   session_poll(reply, h): 1 with a reply, 0 when none waits, -1 when
     //     the backend stopped (reply is its row; the backend is restarted,
     //     its state empty, and the row's `restarted` says whether the new one
@@ -802,7 +830,9 @@ namespace madc {
     //     reading an open buffer's live text; load it and session_call
     //     argv: %call; session_build argv[0] to argv[1]: %build; open
     //     argv[0] in the editor at line argv[1] when there is one: %open,
-    //     %edit; or, with no argv, end the session: %quit); a load's
+    //     %edit; with no argv, end the session: %quit; or run the pane's
+    //     own command: `code` names the row session_command_add made, argv
+    //     its argument); a load's
     //     ok, rendered,
     //     diagnostics and main (the file defined main, so running it runs
     //     main: one an earlier unit defined is not the file's); a run's ok,
@@ -832,11 +862,36 @@ namespace madc {
     //     and a closed session's case is dead.
     //   session_close(h): stop the backend and free the handle.
     //   session_command_of(out, text): what `text` is as an entry, asked of
-    //     the session's own rule with no session (plan §7f: an IDE answers
-    //     its own commands before the session sees them): false when it is
-    //     no command; else out = {word (the name typed), command (a
-    //     madc::session_command code: none when the session has no such
-    //     command), argument (the rest of its first line)}.
+    //     the session's own rule with no session (a host answers colon mode
+    //     itself, before the session sees the entry): false when it is no
+    //     command; else out = {mode (a madc::command_mode code: `%`, `.`,
+    //     `?` or `:` — colon mode, ed / ex / vim commands, the host's),
+    //     word (the name typed; empty for colon mode), command (a
+    //     madc::session_command code: none for no built-in), argument (the
+    //     rest of its first line; colon mode's whole text after the `:`)}.
+    //   session_command_add(h, name, usage, summary, code): a REPL command
+    //     the PANE runs (split arc 1A.2): reachable as %name and .name,
+    //     listed by %help; taken, its offer row's payload is `command`,
+    //     `code` this code and argv its argument. Kept across restarts.
+    //     False for a built-in's or an alias's name, a name added already,
+    //     or no whole name.
+    //   command_add(name, usage, summary, handler): a REPL command run IN the
+    //     session — called by code running there (a module's own
+    //     registration); handler(out, argument) answers true with the text
+    //     it shows in out, or false with its error. False outside a session
+    //     or for a taken name.
+    //   session_buffer(out, name): what a command running IN the session
+    //     reads for FILE `name` ("" the host's current buffer; split arc
+    //     1B.10): {path, text, has_text} — has_text: the host's buffer holds
+    //     it and `text` is its live text; else the disk's file at path — or
+    //     {error} when there is nothing to read. In a backend the host
+    //     answers it mid-entry; outside a session, the program's own
+    //     (host_documents), else the disk's.
+    //   host_documents(w, current): the buffers session_buffer answers
+    //     OUTSIDE a session — what a module's verb called in this program
+    //     reads (git::command): ui world w's documents, their live text,
+    //     `current` the current buffer; w 0 returns them to the disk's. False
+    //     for a handle that names no world. Per thread: this thread's calls.
     // Thread contract: a handle is confined to the thread that opened it.
     int64_t session_open(const char *std);
     bool session_running(int64_t handle);
@@ -850,6 +905,12 @@ namespace madc {
     int64_t session_build(int64_t handle, const char *path, const char *text,
 			  const char *out);
     bool session_command_of(value &out, const char *text);
+    bool session_command_add(int64_t handle, const char *name, const char *usage,
+			     const char *summary, int64_t code);
+    bool command_add(const char *name, const char *usage, const char *summary,
+		     bool (*handler)(value &out, const char *argument));
+    bool session_buffer(value &out, const char *name);
+    bool host_documents(int64_t w, int64_t current);
     int64_t session_bindings(int64_t handle);
     int64_t session_poll(value &reply, int64_t handle);
     value &session_output(value &out, int64_t handle);

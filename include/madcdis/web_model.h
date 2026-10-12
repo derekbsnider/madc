@@ -165,6 +165,7 @@
 #include "madcdis/ui_focus.h"
 #include "madcdis/ui_input.h"
 #include "madcdis/ui_style.h"	// ui_style, ui_style_of — the one render style + spec parser
+#include "madcdis/ui_chrome.h"	// tui_chrome, read_chrome_styles — the chrome a theme colours
 #include "madcdis/text_utf16.h"	// col16_to_byte: the ONE UTF-16 column owner
 #include "madcdis/uinode.h"
 
@@ -220,6 +221,7 @@ class web_model
     focus_state _focus;			// the ONE focus/navigation owner
     size_t _rows, _cols;		// last reported viewport facts
     std::string _snapshot;		// last snapshot text (test seam)
+    ui_style _chrome[(size_t)tui_chrome::count];	// this compose's chrome styles
 
     // One line of an edit node's line-DOM as the model last emitted it:
     // the text and its clipped spans [start-in-line, len, classes]. The
@@ -1081,6 +1083,14 @@ class web_model
 	    op["tabwidth"] = tabw;
 	    if ( rows > 0 )
 		op["rows"] = rows;
+	    // The line-number gutter (the `gutter` hint, facelift S2's): the
+	    // numbers' style, the caret line's number's and the caret line's,
+	    // as the page's classes — the theme's chrome, as the grid paints it.
+	    if ( hint_of(n.hints, "gutter", 0) )
+		op["gutter"] = nlohmann::json{
+		    { "n", style_classes(_chrome[(size_t)tui_chrome::gutter]) },
+		    { "c", style_classes(_chrome[(size_t)tui_chrome::gutter_current]) },
+		    { "l", style_classes(_chrome[(size_t)tui_chrome::current_line]) } };
 	    // The embedded Terminal's screen (madcide polish P3b-2): the page
 	    // styles it as a terminal (its own surface); nothing else differs.
 	    if ( hint_of(n.hints, "terminal", 0) )
@@ -1124,6 +1134,7 @@ public:
 	_seen.clear();
 	_choice_slot.clear();
 	_action_codes.clear();
+	read_chrome_styles(tree.hints, _chrome);
 	walk(r, tree, "0", "", ops, slots);
 	_focus.end_compose();
 	// An edit key that left the tree drops its basis — the page prunes

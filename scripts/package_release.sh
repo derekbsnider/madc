@@ -17,7 +17,6 @@
 # Contents (deb/rpm under /usr; the tarball is the same layout, rootless
 # and relocatable — extract anywhere, $ORIGIN runpaths bind lib/):
 #   /usr/bin/madc                               bin/madc-release
-#   /usr/bin/madcide                            AOT-compiled by that binary
 #   /usr/lib/<multiarch|lib64>/libmadc.so.0     lib/release/libmadc.so (stripped pre-pack, forest inside)
 #   /usr/lib/<multiarch|lib64>/libmadc.so       -> libmadc.so.0
 #   /usr/lib/<multiarch|lib64>/libmadc_rt.a     emitted-C runtime (try/catch + VLA; a bare-box cc links it)
@@ -30,20 +29,19 @@
 #   /usr/lib/<multiarch|lib64>/libmadcmark.so   the madcmark module: Markdown parsed by cmark-gfm,
 #                                               linked in statically (markdown:: programs; the IDE's
 #                                               help and previews) — no cmark-gfm package needed
-#   /usr/share/madcide/profiles/                keybinding/theme profiles
-#   /usr/share/madcide/plugins/                 the shipped plugins (bundles: default, …)
-#   /usr/share/madcide/include/madcide/         the plugin API headers (<madcide/plugin>)
-#   /usr/share/madcide/verbs/, checks/          the line editor's verb and check bodies
-#   /usr/share/man/man1/madc.1.gz + madcide.1.gz
-#   /etc/apparmor.d/madc                        the .deb on Ubuntu 24.04 and later only: profiles
-#                                               granting madc and madcide user namespaces (WebKit's
-#                                               sandbox; loaded by postinst)
+#   /usr/share/man/man1/madc.1.gz
+#   /etc/apparmor.d/madc                        the .deb on Ubuntu 24.04 and later only: a profile
+#                                               granting madc user namespaces (WebKit's sandbox, for
+#                                               a ui:: program's window; loaded by postinst)
 #   /usr/share/doc/madc/copyright               LICENSE (MPL-2.0)
 #   /usr/share/doc/madc/webview-copyright       webview/webview (MIT) — the webview library's notice
 #   /usr/share/doc/madc/libgit2-copyright       libgit2's COPYING — linked into libmadcgit.so
 #   /usr/share/doc/madc/cmark-gfm-copyright     cmark-gfm's notices — linked into libmadcmark.so
 #   /usr/share/doc/madc/changelog.gz            CHANGELOG.md
 #   /usr/share/doc/madc/examples/madc.ini       documented example config
+#
+# The IDE, madcide, is its own packages (github.com/derekbsnider/madcide),
+# each carrying the madc release it is built on.
 #
 # Output artifacts: madc_<ver>-<debrel>_amd64.deb, madc-<ver>-<rel>.x86_64.rpm,
 # madc-<ver>-linux-x86_64.tar.gz (+ README-linux.txt inside).
@@ -83,9 +81,9 @@ if [ "$os_id" = ubuntu ]; then
     os_ver=$( (. /etc/os-release; echo "$VERSION_ID") )
     DEBREL="${REL}~ubuntu${os_ver}"
     # Ubuntu 24.04 and later deny an unprofiled program the user namespaces
-    # WebKit's sandbox (bwrap) needs: a window — madcide's, a ui:: program's
-    # under madc — dies at its first page with SIGTRAP (LP: #2046844). There
-    # the .deb carries an AppArmor profile naming madc and madcide.
+    # WebKit's sandbox (bwrap) needs: a window — a ui:: program's under madc —
+    # dies at its first page with SIGTRAP (LP: #2046844). There the .deb
+    # carries an AppArmor profile naming madc.
     if dpkg --compare-versions "$os_ver" ge 24.04; then
         APPARMOR=1
     fi
@@ -100,7 +98,7 @@ Standard headers are embedded; common symbols auto-include; top-level
 statements run without main(). Helper namespaces bring PHP-, Perl-,
 Python-, Ruby-, JS-, and Rust-style functions into native C code."
 
-for f in docs/man/madc.1 docs/man/madcide.1 docs/examples/madc.ini \
+for f in docs/man/madc.1 docs/examples/madc.ini \
          LICENSE CHANGELOG.md configure; do
     if [ ! -e "$f" ]; then
         echo "package_release: missing $f" >&2
@@ -130,20 +128,20 @@ restore_tree() {
         rm -f "$SAVED_CONFIG"
     fi
     make -C src clean > /dev/null
-    make -C src -j"$(nproc)" > /dev/null
-    make -C src -j"$(nproc)" release > /dev/null
+    make -C src -j"$(bash scripts/build_jobs.sh)" > /dev/null
+    make -C src -j"$(bash scripts/build_jobs.sh)" release > /dev/null
 }
 trap restore_tree EXIT
 
 ./configure --enable-madcdat=no > /dev/null
 make -C src clean > /dev/null
-make -C src -j"$(nproc)" > /dev/null
-make -C src -j"$(nproc)" release > /dev/null
+make -C src -j"$(bash scripts/build_jobs.sh)" > /dev/null
+make -C src -j"$(bash scripts/build_jobs.sh)" release > /dev/null
 # The platform webview library (GUI programs: import madcwebview) — built
 # against the build host's WebKitGTK 6.0 / GTK4 (scripts/provision_container.sh;
 # libwebkitgtk-6.0-dev in release.yml) and shipped as a WEAK dependency:
 # madc itself never loads it, only a program that imports it does.
-make -C src -j"$(nproc)" libmadcwebview > /dev/null
+make -C src -j"$(bash scripts/build_jobs.sh)" libmadcwebview > /dev/null
 # The madcgit module (src/madcgit.mk): the read-only git view, statically
 # linking the pinned libgit2 scripts/stage_libgit2.sh staged for this host
 # (the floor: 1.8.7 / 1.9.7 or newer; Ubuntu's libgit2 is 1.7.2). The
@@ -155,7 +153,7 @@ if [ ! -f "$lg2" ]; then
     echo "package_release: $lg2 missing — bash scripts/stage_libgit2.sh host" >&2
     exit 1
 fi
-make -C src -j"$(nproc)" libmadcgit > /dev/null
+make -C src -j"$(bash scripts/build_jobs.sh)" libmadcgit > /dev/null
 # The madcmark module (src/madcmark.mk): Markdown, statically linking the
 # pinned cmark-gfm scripts/stage_cmark_gfm.sh staged for this host. Required
 # for the same reason as libgit2's stage: the system arm (the Homebrew
@@ -165,31 +163,12 @@ if [ ! -f "$cm/libcmark-gfm.a" ]; then
     echo "package_release: $cm/libcmark-gfm.a missing — bash scripts/stage_cmark_gfm.sh host" >&2
     exit 1
 fi
-make -C src -j"$(nproc)" libmadcmark > /dev/null
+make -C src -j"$(bash scripts/build_jobs.sh)" libmadcmark > /dev/null
 
 if ldd bin/madc-release | grep -Eq "qdbm|gdbm|libdb|sqlite"; then
     echo "package_release: distribution binary still links storage libs" >&2
     exit 1
 fi
-
-# ---------- 1b. madcide (owner ruling 2026-09-01: the packages ship the IDE) ----------
-# Compiled BY the just-built release compiler against the shared libmadc —
-# the dogfood proof of the packaged shape (packaging arc PK7). Its data
-# files ship under /usr/share/madcide; the binary finds them through
-# resolve_profile_dir's install fallback (madcide_core.inc).
-echo "== madcide (AOT via the release compiler) =="
-( ulimit -t 240; timeout 300 bin/madc-release -o tmp/madcide-pkg tools/madcide/madcide.mad )
-strip --strip-unneeded tmp/madcide-pkg
-# libmadcide: madcide's base as the library a product links (a product's
-# manifest names it in its "libs"), built by the same compiler into that
-# compiler's own lib directory (bin/../lib), where a manifest's library is
-# found first.
-echo "== libmadcide (via the release compiler) =="
-( ulimit -t 240; timeout 300 bin/madc-release -shared -o lib/libmadcide.so tools/madcide/madcide_base.mad )
-# The shipped plugins: a plugin with code carries its library, built by
-# this madcide (plan §41.11a step 6); every stage() copies the one set.
-echo "== madcide plugins (each with code built by the packaged madcide) =="
-scripts/build_shipped_plugins.sh tmp/plugins-pkg tmp/madcide-pkg
 
 # ---------- 2. packed suite against the distribution binary ----------
 # MADC_PKG_SKIP_SUITE=1 skips the suite for a package run on content a
@@ -231,8 +210,8 @@ printf 'Source: madc\n\nPackage: madc\nArchitecture: any\n' > "$SHLIB/debian/con
 DEBLIB="$PWD/$DEBROOT/usr/lib/x86_64-linux-gnu"
 DEBBIN="$PWD/$DEBROOT/usr/bin"
 DEPENDS=$(cd "$SHLIB" && dpkg-shlibdeps -O --ignore-missing-info -l"$DEBLIB" \
-              "$DEBBIN/madc" "$DEBBIN/madcide" \
-              "$DEBLIB/libmadc.so.0" "$DEBLIB/libmadcide.so" \
+              "$DEBBIN/madc" \
+              "$DEBLIB/libmadc.so.0" \
               "$DEBLIB/libmadcgit.so" "$DEBLIB/libmadcmark.so" 2> shlibdeps.log |
           sed -n 's/^shlibs:Depends=//p')
 if [ -z "$DEPENDS" ]; then
@@ -261,8 +240,8 @@ if [ "$APPARMOR" = 1 ]; then
     mkdir -p "$DEBROOT/etc/apparmor.d"
     cat > "$DEBROOT/etc/apparmor.d/madc" << 'EOF'
 # madc's windows are WebKitGTK, whose sandbox (bwrap) needs user namespaces.
-# These profiles allow everything else, as before; they only name the
-# programs so AppArmor grants them.
+# This profile allows everything else, as before; it only names the
+# program so AppArmor grants them.
 
 abi <abi/4.0>,
 include <tunables/global>
@@ -272,12 +251,6 @@ profile madc /usr/bin/madc flags=(unconfined) {
 
   # Site-specific additions and overrides. See local/README for details.
   include if exists <local/madc>
-}
-
-profile madcide /usr/bin/madcide flags=(unconfined) {
-  userns,
-
-  include if exists <local/madcide>
 }
 EOF
     chmod 0644 "$DEBROOT/etc/apparmor.d/madc"
@@ -338,7 +311,6 @@ ${DESC_BODY}
 %files
 /usr/bin/*
 /usr/lib64/*
-/usr/share/madcide
 %doc /usr/share/doc/madc
 /usr/share/man/man1/*
 EOF
@@ -355,8 +327,8 @@ madc ${VER} for Linux (x86_64)
 ==============================
 
 Install: extract this folder anywhere and add bin/ to your PATH — no
-root needed. The layout is relocatable: bin/madc and bin/madcide find
-lib/libmadc.so.0 through their own \$ORIGIN-relative runpath, and the
+root needed. The layout is relocatable: bin/madc finds
+lib/libmadc.so.0 through its own \$ORIGIN-relative runpath, and the
 frozen system-header forest lives INSIDE that library, so the toolchain
 is self-contained (no compiler or headers installation required).
 
@@ -372,22 +344,20 @@ Emitted C (madc --emit=c11): on a machine with no madc at all, link
 the shipped archive: cc -std=c11 program.c -L<this-dir>/lib -lmadc_rt
 (only needed when the program enters try/catch or frees a VLA).
 
-madcide: keybinding profiles and colour schemes load from
-share/madcide/profiles next to this README. See share/man/man1 for the
-manual pages, and share/doc/madc/examples/madc.ini for a documented
-example configuration file.
+See share/man/man1 for the manual page, and
+share/doc/madc/examples/madc.ini for a documented example configuration
+file. The IDE, madcide, is its own download
+(https://github.com/derekbsnider/madcide), carrying a madc of its own.
 
 GUI: lib/libmadcwebview.so is madc's binding of the platform webview
 (WebKitGTK 6.0 / GTK4) with the native menu bar and file dialogs. A
 program that says \`import madcwebview;\` (madc's ui "web" target) loads
-it from this lib/; madcide's window mode is one:
-
-    bin/madcide file.c --gui
+it from this lib/.
 
 Git: lib/libmadcgit.so is madc's read-only view of a git repository, with
-libgit2 linked into it (the \`git::\` namespace; madcide's MCP seat reads
-history, blame and revisions through it). It is loaded on first use and
-needs no libgit2 installed; libgit2's notice is
+libgit2 linked into it (the \`git::\` namespace and the \`%git\`
+command; an IDE reads history, blame and revisions through it). It is
+loaded on first use and needs no libgit2 installed; libgit2's notice is
 share/doc/madc/libgit2-copyright.
 
 Markdown: lib/libmadcmark.so parses Markdown with cmark-gfm linked into
@@ -408,7 +378,7 @@ EOF
 # build-tree runpath first) still fails: its canonical path is the
 # build tree's lib, never the stage's.
 want=$(readlink -f "$TARSTAGE/$TROOT/lib/libmadc.so.0")
-for b in madc madcide; do
+for b in madc; do
     bound=$(ldd "$TARSTAGE/$TROOT/bin/$b" | grep 'libmadc\.so\.0' | awk '{print $3}')
     real=$(readlink -f "$bound" 2>/dev/null)
     if [ -z "$real" ] || [ "$real" != "$want" ]; then

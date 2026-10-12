@@ -41,6 +41,8 @@
 class Method;
 class Program;
 class CirFrozenForest;	// forest grove binding (cir_freeze.h); pointer member only
+class InteractiveSession;	// madc_session.h; Program::owning_session only
+namespace madc { struct theme; }	// madc_theme.h; Program::echo_theme only
 struct MadcSharedPreludeCache; // project-local immutable auto-include snapshots
 struct CirRestoredTemplate;	// task #25 B2: lazy template-payload source (cir_freeze.h)
 struct CirRestoredTemplateRun;	// one frozen token run (cir_freeze.h)
@@ -2411,6 +2413,15 @@ public:
 	    ++e;
 	return true;
     }
+    // The read cursor's offset into text(), when no pushback stands in front
+    // of it — a caller slicing a raw region out of text() (a skipped arm).
+    bool raw_offset(size_t &off) const
+    {
+	if ( !_pushback.empty() )
+	    return false;
+	off = _gpos;
+	return true;
+    }
     Source() { _lf = 0; _cr = 0; _column = 0; }
     const char *fname() const { return _fname.c_str(); }
     const char *fname(const char *s)  { _fname = s; return _fname.c_str(); }
@@ -2790,8 +2801,11 @@ public:
     // header went to, so the two never part. (end_line, end_col) is where
     // the cited token ends (0: unknown, the caret alone) — the echo
     // underlines it (D26).
+    // `theme`: the echoed line coloured by it, lexed under `standard`, when
+    // colour reaches `os` (show_error_source_line).
     void showerror(int row=0, int col=0, std::ostream &os = std::cerr,
-		   int end_line=0, int end_col=0);
+		   int end_line=0, int end_col=0,
+		   const madc::theme *theme = NULL, int64_t standard = 0);
     // Line `row` of the text, position-neutral (the header and the echo
     // read the same line).
     void line_text(int row, std::string &ln);
@@ -2846,11 +2860,21 @@ private:
 // `end_col` of the line (gcc's `^~~`; 0 or before `col`: the caret alone).
 // madc_show_file_error takes the token's end as (end_line, end_col):
 // a token that runs past the line is underlined to the line's end.
+// `theme`, when colour reaches `os`: the echoed line's tokens coloured by it,
+// lexed under `standard` (split arc 1B.9), the caret's columns unchanged.
 void show_error_source_line(const std::string &ln, int col,
-			    std::ostream &os = std::cerr, int end_col = 0);
+			    std::ostream &os = std::cerr, int end_col = 0,
+			    const madc::theme *theme = NULL, int64_t standard = 0);
+// The one formatter for a diagnostic's header line, gcc's shape
+// `WHERE: SEVERITY: MESSAGE` (WHERE as the caller spells it, e.g.
+// `file:line:column`). The header and the caret are coloured only when
+// colour reaches `os` (madc::colour_reaches, madc_console.h).
+void madc_diagnostic_header(std::ostream &os, const std::string &where,
+			    const char *severity, const std::string &message);
 bool madc_show_file_error(const char *fname, int row, int col,
 			  std::ostream &os = std::cerr,
-			  int end_line = 0, int end_col = 0);
+			  int end_line = 0, int end_col = 0,
+			  const madc::theme *theme = NULL, int64_t standard = 0);
 // The last byte of line `row` (its text `ln`) that a token starting at
 // `col` and ending at (end_line, end_col) covers: end_col on its own line,
 // the line's end when it runs on, 0 when there is no end (D26).
@@ -3512,6 +3536,19 @@ protected:
     void finalize_pop1_rec(TokenBase *tb);
     TokenBase *_getToken();
     TokenBase *skipConditionalBlock();
+    // v55 (freeze time): the body of the `#ifndef X` arm skipConditionalBlock
+    // is skipping, captured while it skips — directive-only (define / undef /
+    // conditionals) and closed by its own #endif, or not replayable. NULL =
+    // no capture in progress.
+    struct SkippedArmCapture
+    {
+	size_t begin = 0;	// raw offset of the arm's first line
+	bool pure = true;	// every significant line is a replayable directive
+	bool closed = false;	// its own #endif (no #else / #elif) ended it
+	std::string text;	// source text of the body, closing #endif excluded
+    };
+    SkippedArmCapture *skip_arm_capture = NULL;
+    TokenBase *skip_and_capture_arm(const madc::dis::istring &name);
     bool evaluateIfCondition();
     // The clang `__has_*` preprocessor operators, evaluated inside an #if.
     // `pos` enters at the operator's '(' and leaves past its ')'. Every one
@@ -3564,6 +3601,10 @@ public:
     std::istream *input_stream;
     std::ostream *output_stream;
     std::ostream *error_stream;
+    // The theme a diagnostic's echoed source line is coloured by, under this
+    // Program's standard, when colour reaches its stream (split arc 1B.9: the
+    // REPL's; NULL, the echo plain — gcc's). Immutable, owned by the caller.
+    const madc::theme *echo_theme = NULL;
     const madc::value *expression_context_root;
     RegistrationPolicy registration_policy;
     BuiltinRegistry builtin_registry;
@@ -3889,6 +3930,7 @@ public:
 	bool declaration_only;
 	bool defaulted_or_deleted;
 	bool is_deleted;
+	bool is_explicit = false;	// FuncDef::is_explicit ([over.ics.user])
 	uint8_t noexcept_spec;	// FuncDef::NoexceptSpec value
 	std::vector<TokenBase *> noexcept_condition_tokens;
 	bool pure_virtual;
@@ -5421,6 +5463,15 @@ public:
     // them as OPTIONAL entries (the loader lifts the guard for a GUI row and
     // opens what it can without failing).
     std::vector<madc::dis::istring> module_optional_libs;
+    // The spellings of the modules this Program loaded: -l / #load, then its
+    // imports' optional rows — the walk a session's module commands and a
+    // tool server's module tools both read (madc_module_entry_point).
+    std::vector<madc::dis::istring> loaded_modules() const
+    {
+	std::vector<madc::dis::istring> all(loaded_lib_paths);
+	all.insert(all.end(), module_optional_libs.begin(), module_optional_libs.end());
+	return all;
+    }
     // A module row flagged MADC_MODULE_GUI was bound by this TU (`import
     // madcwebview;`): the driver lifts an armed memory guard before running.
     bool bound_gui_module;
@@ -5562,6 +5613,14 @@ public:
     };
     std::map<madc::dis::istring, PackMacroOrigin> pack_macro_origin;
     std::map<const char *, std::vector<PackBranchDep> > pack_unit_branch_deps;
+    // v55: per-unit skipped directive-only `#ifndef name` arms whose name an
+    // EXTERNAL sibling defined first (mingw stdio.h's NULL arm). Frozen as
+    // CIR_BRANCH_DEP_PP_ARM tuples; the bind replays one when name is undefined.
+    struct PackSkippedArm {
+	madc::dis::istring name;
+	std::string text;		// arm body source text, not a name
+    };
+    std::map<const char *, std::vector<PackSkippedArm> > pack_unit_skipped_arms;
     std::map<const char *, std::set<madc::dis::istring> > pack_unit_branch_dep_seen;
     // v41: exact pre-preprocessor source text for every packed unit. A
     // compiler-less target whose consumer config cannot bind the producer's
@@ -5602,7 +5661,9 @@ public:
     // A dedup-SKIPPED include still needs its bytes in the corpus — see the
     // definition. Freeze-time only, at most one read per unit.
     void pack_record_skipped_source(const madc::dis::istring &path);
-    void pack_record_branch_macro(const std::string &name,	// interned only when recording
+    // True when an EXTERNAL definition (an earlier sibling's #define) gates
+    // this consult — the condition a skipped `#ifndef` arm is missing content.
+    bool pack_record_branch_macro(const std::string &name,	// interned only when recording
 				  bool include_probe = false);
     const char *pack_current_unit();	// interned current source file (NULL off)
     void dump_macros(FILE *out);	// -dM: effective macro table, sorted
@@ -6286,7 +6347,6 @@ public:
 	~DefinitionPackScope() { pgm._pack_current = saved; }
     };
 
-    bool colors;
     // The language standard the front end parses under. Its enumerators
     // ARE the file-kind vocabulary's C / C++ / madc ranges (<bits/file_kinds>
     // — the ONE enum the IDE and the compiler share, design doc §2.1 of the
@@ -6499,6 +6559,24 @@ public:
     }
     bool set_language_standard(const madc::dis::istring &standard);
     bool set_language_standard_option(const madc::dis::istring &arg);
+    // The ONE reader of a `--std=` spelling (without the prefix): the
+    // standard it names and whether it is the GNU dialect (gnu17 is C17 +
+    // GNU extensions, as gcc reads it), no Program changed. False for a word
+    // no standard has. set_language_standard and %std (split arc 1B.7) read
+    // through it.
+    static bool standard_of_spelling(const madc::dis::istring &spelling,
+				     LanguageStd &std, bool &gnu);
+    // The spelling `--std=` takes for a standard and dialect: c17, gnu17,
+    // c++20, gnu++20, madc. %std prints it.
+    static madc::dis::istring standard_spelling(LanguageStd std, bool gnu);
+    // The standard a FILE gets when nothing named one (split arc 1A.4) — THE
+    // one rule, for the CLI's source, a --project TU and the editor's parse:
+    // madc::file_kind_default_standard's answer for the kind, a C or C++
+    // family default taken as gcc / g++ take it (gnu17 / gnu++17: the GNU
+    // dialect; __STRICT_ANSI__ as strict_ansi_mode presents it), a kind
+    // naming a standard strictly, madc's kinds the dialect. False (nothing set) for a kind outside the compiler
+    // families. `kind` is a <bits/file_kinds> code (madc::file_kind_of_path).
+    bool adopt_file_standard(int64_t kind);
     // The canonical `--std=` spellings, no Program/source/config needed: the
     // capability manifest (madc_capabilities.cpp) reads these instead of
     // re-listing them. ONE table (parser.cpp) owns both the recognizer above
@@ -6645,8 +6723,6 @@ public:
 	const char *file=NULL, int line=0, int column=0,
 	int end_line=0, int end_column=0);
     void set_error(const std::string &message, const char *file=NULL, int line=0, int column=0);
-    const char *diagnostic_severity_name(DiagnosticSeverity severity) const;
-    const char *diagnostic_phase_name(DiagnosticPhase phase) const;
     bool can_show_diagnostic_source(const Diagnostic &diag) const;
     void print_diagnostic(std::ostream &os, const Diagnostic &diag, const char *suffix=NULL);
     void print_last_diagnostic(std::ostream &os, const char *suffix=NULL);
@@ -6952,6 +7028,11 @@ public:
     // live-defined; forest_install_pp skips those define events (live-order
     // parity — the live arm skipped them). Rebuilt per env check of the unit.
     std::map<uint32_t, std::set<madc::dis::istring> > forest_pp_install_mask;
+    // v55: unit -> its skipped directive-only arms, [name_id, text_id] pool
+    // ids, collected by forest_bind_env_ok; forest_replay_pp_arms replays one
+    // whose name is undefined once the unit's own delta is installed.
+    std::map<uint32_t, std::vector<std::pair<uint32_t, uint32_t> > > forest_pp_arms;
+    void forest_replay_pp_arms(uint32_t unit);
     void forest_install_pp(uint32_t unit);	// apply one unit's frozen macro delta to the live tables
     void add_namespaces();
     void add_madc_namespace();
@@ -8028,6 +8109,11 @@ public:
     // SAME Program and parses it to its end-of-entry token, keeping every
     // macro, include, type and symbol the earlier entries made.
     bool interactive_session = false;
+    // The session that owns this Program (InteractiveSession::begin sets it;
+    // non-owning): code running in an entry reaches the session's command
+    // registry through active_runtime_program() (madc::command_add, split
+    // arc 1A.2). NULL outside a session.
+    InteractiveSession *owning_session = NULL;
     // An entry's run (D25): its statements, in source order, go into
     // `void __madc_entry_N(void)`, never into script mode's main. It is made
     // at the entry's first statement; a global declared after that point gets
@@ -8106,7 +8192,10 @@ public:
 			  std::vector<madc::dis::istring> &out);
     // `?name` (plan §41.8a, slice 2): what the session knows of a name, in
     // IPython's fields. False when nothing is named so (`out` says so).
-    bool describe_name(const madc::dis::istring &name, std::string &out);
+    // `code`, when given: the byte ranges of `out` that are code (a
+    // declaration, a signature, a type; split arc 1B.9).
+    bool describe_name(const madc::dis::istring &name, std::string &out,
+		       std::vector<madc::code_range> *code = NULL);
     // Where the Program recorded an entity (`@ REPL[2]:1`, `@ file`), empty
     // when it recorded nothing: an object's latest TopDecl, a type name's
     // first, a function's latest definition in the tree, else its
@@ -9847,10 +9936,6 @@ namespace madc
     extern MadcLogStream info;
     extern MadcLogStream debug;
 }
-
-#define ANSI_RED "\e[1;31m"
-#define ANSI_WHITE "\e[1;37m"
-#define ANSI_RESET "\e[m"
 
 // Macros for generating extern "C" thin wrappers.
 // Usage: MADC_EXTERN_C1(int64_t, php_trim, void *)

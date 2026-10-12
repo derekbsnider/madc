@@ -17,8 +17,14 @@
 #
 # Negative controls: a synthetic pair whose twin differs on an unlisted
 # label must FAIL; the same pair with the label listed must PASS.
+#
+#   scripts/check-expect-twins.sh [TREE]
+#
+# TREE is the checkout whose tests/ it reads (default: this one). A program
+# whose tests follow madc's fixture protocol (madcide) runs this gate from
+# its pinned madc over its own tree.
 set -u
-cd "$(dirname "$0")/.." || exit 2
+cd "${1:-$(dirname "$0")/..}" || exit 2
 
 # $1 = base expect, $2 = twin, $3 = the twin's .domain list (may be absent).
 # Prints the violations; returns 0 when clean.

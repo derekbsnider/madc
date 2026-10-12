@@ -50,6 +50,10 @@
 
 #include "handle_table.h"
 #include "libmadc/value.h"
+#include "madc_documents.h"	// doc_*: the document file owner
+#include "madc_lang.h"		// doc_close: the parse door's other side
+#include "madc_file_kinds.h"	// doc_kind: fkUNKNOWN
+#include "ns_common.h"		// madc_ui_world: the world behind a session handle
 #include "madcdis/doc_lens.h"
 #include "madcdis/hub.h"
 #include "madcdis/interaction.h"
@@ -166,11 +170,37 @@ struct ui_session;
 bool ui_script_executor(action_env &env, const invocation &inv,
 			const std::string &source, madc::value &out);
 
+// A script subscriber to the edit notification (split arc 1A.1, design
+// §2.2): the dialect function it holds is a C-ABI pointer (as a plugin's
+// ide_api handlers and a registered host's ops are); it receives the
+// change as a value row. Owned by the session; released with it.
+struct ui_script_listener : madc::hub::text_listener
+{
+    typedef void (*handler)(int64_t w, int64_t entity, madc::value &change);
+    int64_t handle;
+    handler fn;
+    ui_script_listener(int64_t h, handler f) : handle(h), fn(f) {}
+    void on_text_change(world &, const madc::hub::text_change &c)
+    {
+	madc::value row = madc::value::make_object();
+	std::map<std::string, madc::value> &o = row.object();
+	o["entity"] = madc::value((int64_t)c.entity);
+	o["version"] = madc::value((int64_t)c.version);
+	o["kind"] = madc::value((int64_t)c.what);	// a ui::text_change_kind code
+	o["off"] = madc::value((int64_t)c.off);
+	o["old_len"] = madc::value((int64_t)c.old_len);
+	o["new_len"] = madc::value((int64_t)c.new_len);
+	o["inserted"] = madc::value(c.inserted ? *c.inserted : std::string());
+	fn(handle, (int64_t)c.entity, row);
+    }
+};
+
 struct ui_session
 {
     world w;
     madc::hub::roles r;
     verb_table verbs;
+    std::vector<ui_script_listener *> doc_listeners;	// script subscribers
     // %require gates by name: (requirement, refusal prose from the data).
     std::map<std::string, std::pair<requirement, std::string> > gates;
     credentials session_creds;
@@ -187,6 +217,15 @@ struct ui_session
     {
 	r = madc::hub::roles::standard(w);
 	verbs.set_script_executor(ui_script_executor);
+    }
+    ~ui_session()
+    {
+	madc::lang::close_world_parses(w);	// a document's parse goes with its world
+	for ( size_t i = 0; i < doc_listeners.size(); ++i )
+	{
+	    w.text_unsubscribe(doc_listeners[i]);
+	    delete doc_listeners[i];
+	}
     }
 };
 
@@ -354,7 +393,7 @@ struct ui_grid_frontend : ui_frontend
 // headless one-shot uses) to stdout, and reads ONE line of stdin per
 // event. It works over a pipe, in a dumb terminal, and as an MCP seat's
 // transcript. It stays DUMB by design: a line becomes a `text` event
-// carrying the raw line; the APPLICATION (madcide's run_line) owns the
+// carrying the raw line; the APPLICATION (an ex / edlin client) owns the
 // `:`-is-a-colon-command / bare-line-is-text classification — the engine
 // ui:: layer never learns a tool's command syntax (separation of concerns,
 // Rule #5). EOF ends the input, as a closed tty ends the grid's read_keys.
@@ -869,6 +908,14 @@ madc::value ui_event_value(const madc::hub::tui_event &e, ui_session *s,
 }
 
 } // namespace
+
+// The world behind a session handle, for the compiler-facing document
+// publics in src/ns_madc.cpp (madc::doc_parse) — ns_common.h names the seam.
+madc::hub::world *madc_ui_world(int64_t w)
+{
+    ui_session *s = ui_get(w);
+    return s ? &s->w : (madc::hub::world *)0;
+}
 
 namespace ui {
 
@@ -1399,8 +1446,10 @@ void move(int64_t w, int64_t entity, int64_t dest)
 // Writes mirror through the mutation context (the one write surface);
 // reads are const world reads. Offsets/lengths are BYTES; lines are
 // 1-based, length excluding the '\n' (the buffer's documented model).
-// Document PROPERTIES (path, modified, read_only) are application bag
-// keys — these publics never touch a bag.
+// Document PROPERTIES are the DOCUMENT component's (split arc 1A.1, the
+// doc_* publics below) — these publics never touch a bag. Every write
+// answers the world's verdict: false = refused (a delivery of the edit
+// notification is in progress, or the entity is a read-only document).
 
 // The one session+component lookup every text READ public performs.
 static const madc::hub::text_buffer *ui_text_component(int64_t w,
@@ -1411,55 +1460,61 @@ static const madc::hub::text_buffer *ui_text_component(int64_t w,
 	     : (const madc::hub::text_buffer *)0;
 }
 
-void text_load(int64_t w, int64_t entity, const char *text)
+bool text_load(int64_t w, int64_t entity, const char *text)
 {
     ui_session *s = ui_get(w);
     if ( !s || !entity )
-	return;
+	return false;
     madc::hub::mutation_context mc(s->w);
-    mc.text_load((entity_id)entity, text ? text : "");
+    return mc.text_load((entity_id)entity, text ? text : "");
 }
 
-void text_insert(int64_t w, int64_t entity, int64_t off, const char *text)
+bool text_insert(int64_t w, int64_t entity, int64_t off, const char *text)
 {
     ui_session *s = ui_get(w);
     if ( !s || !entity || off < 0 )
-	return;
+	return false;
     madc::hub::mutation_context mc(s->w);
-    mc.text_insert((entity_id)entity, (size_t)off, text ? text : "");
+    return mc.text_insert((entity_id)entity, (size_t)off, text ? text : "");
 }
 
-void text_erase(int64_t w, int64_t entity, int64_t off, int64_t len)
+bool text_erase(int64_t w, int64_t entity, int64_t off, int64_t len)
 {
     ui_session *s = ui_get(w);
     if ( !s || !entity || off < 0 || len <= 0 )
-	return;
+	return false;
     madc::hub::mutation_context mc(s->w);
-    mc.text_erase((entity_id)entity, (size_t)off, (size_t)len);
+    return mc.text_erase((entity_id)entity, (size_t)off, (size_t)len);
 }
 
-void text_replace(int64_t w, int64_t entity, int64_t off, int64_t len,
+bool text_replace(int64_t w, int64_t entity, int64_t off, int64_t len,
 		  const char *text)
 {
     ui_session *s = ui_get(w);
     if ( !s || !entity || off < 0 || len < 0 )
-	return;
+	return false;
     madc::hub::mutation_context mc(s->w);
-    mc.text_replace((entity_id)entity, (size_t)off, (size_t)len,
-		    text ? text : "");
+    return mc.text_replace((entity_id)entity, (size_t)off, (size_t)len,
+			   text ? text : "");
+}
+
+int64_t text_version(int64_t w, int64_t entity)
+{
+    ui_session *s = ui_get(w);
+    return s ? (int64_t)s->w.text_version((entity_id)entity) : -1;
 }
 
 // History (madcide IDE-2): checkpoint BEFORE mutating — one semantic
 // edit, one step. `meta` is the application's opaque payload (the caret
 // rides with the state it belongs to); undo restores the buffer and
 // hands it back. False: no such component, or empty history.
-void text_checkpoint(int64_t w, int64_t entity, madc::value &meta)
+bool text_checkpoint(int64_t w, int64_t entity, madc::value &meta)
 {
     ui_session *s = ui_get(w);
     if ( !s || !entity )
-	return;
+	return false;
     madc::hub::mutation_context mc(s->w);
-    mc.text_checkpoint((entity_id)entity, meta);
+    return mc.text_checkpoint((entity_id)entity, meta);
 }
 
 bool text_undo(madc::value &meta_out, int64_t w, int64_t entity)
@@ -1497,6 +1552,219 @@ bool text_redo(madc::value &meta_out, int64_t w, int64_t entity,
 	return false;
     madc::hub::mutation_context mc(s->w);
     return mc.text_redo((entity_id)entity, meta_out, now_meta);
+}
+
+// ---- document component (split arc 1A.1; madcdis/document.h; design
+// docs/plans/2026-10-09-document-component-design.md). The file I/O, the
+// entity name and the kind stamp are madc::document_*'s (include/
+// madc_documents.h — the one owner the ex core's :e / :r / :w share); these
+// publics resolve the window's world and delegate. The parse slot's public
+// is madc::doc_parse (src/ns_madc.cpp).
+
+int64_t doc_new(int64_t w)
+{
+    ui_session *s = ui_get(w);
+    return s ? (int64_t)madc::document_new(s->w, std::string()) : 0;
+}
+
+int64_t doc_open(int64_t w, const char *path)
+{
+    ui_session *s = ui_get(w);
+    if ( !s || !path || !*path )
+	return 0;
+    return (int64_t)madc::document_open(s->w, path);
+}
+
+// The document already open on `path`, else 0. An untitled document
+// matches "".
+int64_t doc_find(int64_t w, const char *path)
+{
+    ui_session *s = ui_get(w);
+    return s ? (int64_t)madc::document_find(s->w, path ? path : "") : 0;
+}
+
+bool doc_load_file(int64_t w, int64_t entity, const char *path)
+{
+    ui_session *s = ui_get(w);
+    if ( !s || !entity || !path || !*path )
+	return false;
+    return madc::document_reload(s->w, (entity_id)entity, path);
+}
+
+bool doc_save(int64_t w, int64_t entity)
+{
+    ui_session *s = ui_get(w);
+    return s && madc::document_save(s->w, (entity_id)entity);
+}
+
+bool doc_close(int64_t w, int64_t entity)
+{
+    ui_session *s = ui_get(w);
+    return s && madc::lang::document_close(s->w, (entity_id)entity);
+}
+
+madc::value &doc_path(madc::value &out, int64_t w, int64_t entity)
+{
+    ui_session *s = ui_get(w);
+    const madc::hub::document *d = s ? s->w.doc_of((entity_id)entity)
+				     : (const madc::hub::document *)0;
+    return ui_text_out(out, d ? d->path() : std::string());
+}
+
+bool doc_set_path(int64_t w, int64_t entity, const char *path)
+{
+    ui_session *s = ui_get(w);
+    return s && madc::document_set_path(s->w, (entity_id)entity,
+					path ? path : "");
+}
+
+int64_t doc_kind(int64_t w, int64_t entity)
+{
+    ui_session *s = ui_get(w);
+    const madc::hub::document *d = s ? s->w.doc_of((entity_id)entity)
+				     : (const madc::hub::document *)0;
+    return d ? d->kind() : (int64_t)madc::fkUNKNOWN;
+}
+
+bool doc_modified(int64_t w, int64_t entity)
+{
+    ui_session *s = ui_get(w);
+    return s && s->w.doc_modified((entity_id)entity);
+}
+
+bool doc_mark_saved(int64_t w, int64_t entity)
+{
+    ui_session *s = ui_get(w);
+    if ( !s )
+	return false;
+    madc::hub::mutation_context mc(s->w);
+    return mc.doc_mark_saved((entity_id)entity);
+}
+
+bool doc_read_only(int64_t w, int64_t entity)
+{
+    ui_session *s = ui_get(w);
+    const madc::hub::document *d = s ? s->w.doc_of((entity_id)entity)
+				     : (const madc::hub::document *)0;
+    return d && d->read_only();
+}
+
+bool doc_set_read_only(int64_t w, int64_t entity, bool ro)
+{
+    ui_session *s = ui_get(w);
+    if ( !s )
+	return false;
+    madc::hub::mutation_context mc(s->w);
+    return mc.doc_set_read_only((entity_id)entity, ro);
+}
+
+bool doc_is(int64_t w, int64_t entity)
+{
+    ui_session *s = ui_get(w);
+    return s && s->w.has_doc((entity_id)entity);
+}
+
+madc::value &docs(madc::value &out, int64_t w)
+{
+    out = madc::value::make_array();
+    ui_session *s = ui_get(w);
+    if ( !s )
+	return out;
+    std::vector<entity_id> all = s->w.docs();
+    for ( size_t i = 0; i < all.size(); ++i )
+	out.array().push_back(madc::value((int64_t)all[i]));
+    return out;
+}
+
+bool doc_checkpoint(int64_t w, int64_t entity, madc::value &app_meta)
+{
+    ui_session *s = ui_get(w);
+    if ( !s )
+	return false;
+    madc::hub::mutation_context mc(s->w);
+    return mc.doc_checkpoint((entity_id)entity, app_meta);
+}
+
+bool doc_undo(madc::value &app_out, int64_t w, int64_t entity,
+	      madc::value &app_now)
+{
+    madc::value now = app_now;		// app_out may alias it
+    app_out = madc::value();
+    ui_session *s = ui_get(w);
+    if ( !s )
+	return false;
+    madc::hub::mutation_context mc(s->w);
+    return mc.doc_undo((entity_id)entity, app_out, now);
+}
+
+bool doc_redo(madc::value &app_out, int64_t w, int64_t entity,
+	      madc::value &app_now)
+{
+    madc::value now = app_now;		// app_out may alias it
+    app_out = madc::value();
+    ui_session *s = ui_get(w);
+    if ( !s )
+	return false;
+    madc::hub::mutation_context mc(s->w);
+    return mc.doc_redo((entity_id)entity, app_out, now);
+}
+
+int64_t anchor_add(int64_t w, int64_t entity, int64_t off, bool right)
+{
+    ui_session *s = ui_get(w);
+    if ( !s || off < 0 )
+	return 0;
+    madc::hub::mutation_context mc(s->w);
+    return (int64_t)mc.anchor_add((entity_id)entity, (size_t)off, right);
+}
+
+int64_t anchor_offset(int64_t w, int64_t entity, int64_t id)
+{
+    ui_session *s = ui_get(w);
+    const madc::hub::anchor *a =
+	s ? s->w.anchor_of((entity_id)entity, (madc::hub::anchor_id)id)
+	  : (const madc::hub::anchor *)0;
+    return a ? (int64_t)a->off : -1;
+}
+
+bool anchor_move(int64_t w, int64_t entity, int64_t id, int64_t off)
+{
+    ui_session *s = ui_get(w);
+    if ( !s || off < 0 )
+	return false;
+    madc::hub::mutation_context mc(s->w);
+    return mc.anchor_move((entity_id)entity, (madc::hub::anchor_id)id,
+			  (size_t)off);
+}
+
+int64_t anchor_shift(int64_t p, int64_t off, int64_t old_len, int64_t new_len,
+		     bool right)
+{
+    if ( p < 0 || off < 0 || old_len < 0 || new_len < 0 )
+	return p;			// no position, or no splice: unchanged
+    return (int64_t)madc::hub::shift_position((size_t)p, right, (size_t)off,
+					      (size_t)old_len, (size_t)new_len);
+}
+
+bool anchor_remove(int64_t w, int64_t entity, int64_t id)
+{
+    ui_session *s = ui_get(w);
+    if ( !s )
+	return false;
+    madc::hub::mutation_context mc(s->w);
+    return mc.anchor_remove((entity_id)entity, (madc::hub::anchor_id)id);
+}
+
+bool doc_subscribe(int64_t w, void (*fn)(int64_t, int64_t, madc::value &))
+{
+    ui_session *s = ui_get(w);
+    if ( !s || !fn )
+	return false;
+    ui_script_listener *l = new ui_script_listener(w, fn);
+    s->doc_listeners.push_back(l);
+    madc::hub::mutation_context mc(s->w);
+    mc.text_subscribe(l);
+    return true;
 }
 
 madc::value &text(madc::value &out, int64_t w, int64_t entity)

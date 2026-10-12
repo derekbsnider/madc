@@ -132,7 +132,7 @@ RT_OFILES := $(notdir $(RT_LEDGER_SRCS:.c=.o))
 ifeq ($(strip $(RT_OFILES)),)
 $(error scripts/ledger_sources.txt lists no C-lane runtime sources)
 endif
-CORE_OFILES = lexer.o parser.o madc_value.o madc_error.o madc_program.o madc_api.o madc_c_api.o madc_config.o madc_config_file.o madc_globals.o madc_dl.o madc_modules.o madc_guards.o madc_crash.o ns_common.o ns_php.o ns_perl.o ns_python.o ns_ruby.o ns_js.o ns_rust.o ns_madc.o ns_ui.o ui_term.o va_helpers.o $(RT_OFILES) pch.o madc_posix_io.o madc_datachannel.o madc_socket_channel.o madc_channel_stream.o madc_websocket_channel.o madc_header_channel.o madc_process.o madc_run_child.o madc_channel_object.o madcdis_driver.o madcdis_query.o madcdis_source_adapter.o madcdis_snapshot.o madcdis_storage.o embedded_headers.o sys_include_paths.o predefined_macros.o precompiled_headers.o madc_mir_backend.o madc_mangle.o libc_signatures.o madc_cir.o cir_builder.o cir_dump.o madc_type_spelling.o rt_dump_value.o cir_format.o rt_format_value.o rt_task.o madc_task_chan.o madc_io_reactor.o cir_freeze.o cir_emit_c.o file_kinds.o madc_capabilities.o madc_console.o madc_project.o madc_pe_icon.o madc_complete.o madc_keywords.o madc_session.o madc_session_client.o madc_session_interrupt.o madc_session_stdin.o madc_session_verbs.o madc_repl.o madc.o
+CORE_OFILES = lexer.o parser.o madc_value.o madc_error.o madc_program.o madc_api.o madc_c_api.o madc_config.o madc_config_file.o madc_globals.o madc_dl.o madc_modules.o madc_guards.o madc_crash.o ns_common.o madc_regex.o madc_ex.o madc_documents.o ns_php.o ns_perl.o ns_python.o ns_ruby.o ns_js.o ns_rust.o ns_madc.o ns_ui.o ui_term.o va_helpers.o $(RT_OFILES) pch.o madc_posix_io.o madc_datachannel.o madc_socket_channel.o madc_channel_stream.o madc_websocket_channel.o madc_header_channel.o madc_process.o madc_run_child.o madc_channel_object.o madcdis_driver.o madcdis_query.o madcdis_source_adapter.o madcdis_snapshot.o madcdis_storage.o embedded_headers.o sys_include_paths.o predefined_macros.o precompiled_headers.o madc_mir_backend.o madc_mangle.o libc_signatures.o madc_cir.o cir_builder.o cir_dump.o madc_type_spelling.o rt_dump_value.o cir_format.o rt_format_value.o rt_task.o madc_task_chan.o madc_io_reactor.o cir_freeze.o cir_emit_c.o file_kinds.o file_kind_editing.o madc_capabilities.o madc_console.o madc_theme.o madc_lang.o madc_jsonrpc.o madc_lsp.o madc_tools.o madc_mcp.o madc_memory.o madc_tool_host.o madc_discovery.o madc_project.o madc_pe_icon.o madc_complete.o madc_keywords.o madc_session.o madc_session_client.o madc_session_interrupt.o madc_session_stdin.o madc_session_verbs.o madc_history.o madc_repl.o madc.o
 MADDAT_OFILES = $(MADC_STORAGE_DB_OFILES)
 MADHDRS = $(wildcard ../include/madc/*)
 # embedded_headers.cpp regeneration (EMBED_GEN) happens below, AFTER the
@@ -190,6 +190,19 @@ ifeq ($(MODE),cross-aarch64-linux)
 MIRLIB	= $(MIRBUILD)/aarch64-linux/libmir.a
 DEFINES += -DMIR_TARGET_AARCH64_LINUX -DMADC_CROSS_TARGET='"aarch64-linux"'
 endif
+# PCRE2 — madc's ONE regex engine (split arc 1A.3,
+# docs/plans/2026-10-10-pcre2-design.md). Linux and the emit-only cross
+# MODEs link configure's -lpcre2-8 (the distribution's shared library). The
+# hosted macOS and Windows MODEs link the pinned STATIC PCRE2 that
+# scripts/stage_pcre2.sh builds per target (JIT off), one directory per tag:
+# $(PCRE2_STAGE)/<target>/{include/pcre2.h,libpcre2-8.a}, its LICENCE the
+# notice those packages ship. THE PIN: PCRE2_TAG — the Linux build host's
+# version, so every platform runs one engine. A missing stage fails the link
+# loudly (scripts/provision_container.sh lists it).
+PCRE2_DIR ?= /workspace/pcre2
+PCRE2_TAG := pcre2-10.42
+PCRE2_STAGE = $(PCRE2_DIR)/$(PCRE2_TAG)
+
 # Shared Apple-target facts (cross + hosted MODEs). DARWIN_PRELUDE_TARGET is
 # the clang triple the embedded darwin C prelude is generated against — set
 # for EVERY Apple-target mode so the cross madcs embed the SAME prelude text
@@ -258,6 +271,15 @@ LLVM_LIBCXX_INC ?= $(or $(LIBCXX_HEADERS_HOME),/workspace/libcxx-headers)/includ
 ifeq ($(origin DARWIN_ZSTD_DIR),undefined)
 DARWIN_ZSTD_INC ?= $(DARWIN_ZSTD_PREFIX)/include
 DARWIN_ZSTD_LIB ?= $(DARWIN_ZSTD_PREFIX)/lib/libzstd.a
+endif
+# brew pcre2 for the native PROBE build when this arch has no stage (the
+# zstd shape); the stage, when present, is what the hosted block links.
+ifeq ($(origin PCRE2_LIB),undefined)
+ifeq (,$(wildcard $(PCRE2_STAGE)/$(HOST_DARWIN_ARCH)-macos/libpcre2-8.a))
+DARWIN_PCRE2_PREFIX := $(shell brew --prefix pcre2 2>/dev/null)
+PCRE2_INC ?= $(DARWIN_PCRE2_PREFIX)/include
+PCRE2_LIB ?= $(DARWIN_PCRE2_PREFIX)/lib/libpcre2-8.a
+endif
 endif
 endif
 # The CROSS spellings (the container): versioned apt names, ld64.lld.
@@ -364,8 +386,10 @@ FEATURE_DEFINES =
 DARWIN_ZSTD_DIR ?= /workspace/zstd
 DARWIN_ZSTD_INC ?= $(DARWIN_ZSTD_DIR)/lib
 DARWIN_ZSTD_LIB ?= $(DARWIN_ZSTD_DIR)/libzstd-$(DARWIN_ARCH)-macos.a
-OPTIONAL_CPPFLAGS = -DHAVE_ZSTD -I$(DARWIN_ZSTD_INC)
-OPTIONAL_LIBS = $(DARWIN_ZSTD_LIB)
+PCRE2_INC ?= $(PCRE2_STAGE)/$(DARWIN_ARCH)-macos/include
+PCRE2_LIB ?= $(PCRE2_STAGE)/$(DARWIN_ARCH)-macos/libpcre2-8.a
+OPTIONAL_CPPFLAGS = -DHAVE_ZSTD -I$(DARWIN_ZSTD_INC) -DPCRE2_STATIC -I$(PCRE2_INC)
+OPTIONAL_LIBS = $(DARWIN_ZSTD_LIB) $(PCRE2_LIB)
 MADC_STORAGE_DB_OFILES =
 # darwin link facts: dl*/pthread live in libSystem (no -ldl), executables
 # export their globals to dlsym without -rdynamic, and --whole-archive is
@@ -433,8 +457,10 @@ MIRLIB	= $(MIRBUILD)/$(MODE)/libmir.a
 HAVE_MADCDAT = 0
 FEATURE_DEFINES =
 WIN_ZSTD_DIR ?= /workspace/zstd
-OPTIONAL_CPPFLAGS = -DHAVE_ZSTD -I$(WIN_ZSTD_DIR)/lib
-OPTIONAL_LIBS = $(WIN_ZSTD_DIR)/libzstd-x86-64-windows.a
+PCRE2_INC ?= $(PCRE2_STAGE)/x86-64-windows/include
+PCRE2_LIB ?= $(PCRE2_STAGE)/x86-64-windows/libpcre2-8.a
+OPTIONAL_CPPFLAGS = -DHAVE_ZSTD -I$(WIN_ZSTD_DIR)/lib -DPCRE2_STATIC -I$(PCRE2_INC)
+OPTIONAL_LIBS = $(WIN_ZSTD_DIR)/libzstd-x86-64-windows.a $(PCRE2_LIB)
 MADC_STORAGE_DB_OFILES =
 # win64 link facts: no ELF -rdynamic/-ldl (madcdl rides LoadLibrary out of
 # kernel32); -Wl,--export-all-symbols is the -rdynamic analogue — madcdl's
@@ -1163,9 +1189,11 @@ gates: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/check-one-void-predicate.sh
 	@cd .. && bash scripts/check-one-slot-dispatch.sh
 	@cd .. && bash scripts/check-one-top-decl-position.sh
-	@cd .. && bash scripts/check-one-selection-rule.sh
 	@cd .. && bash scripts/check-one-deref-builder.sh
+	@cd .. && bash scripts/check-one-text-publish.sh
+	@cd .. && bash scripts/check-one-regex-engine.sh
 	@cd .. && bash scripts/check-one-fptr-predicate.sh
+	@cd .. && bash scripts/check-one-extern-param-shape.sh
 	@cd .. && bash scripts/check-one-cstr-admission.sh
 	@cd .. && bash scripts/check-one-forwarding-test.sh
 	@cd .. && bash scripts/check-one-nested-stream.sh
@@ -1177,13 +1205,14 @@ gates: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/check-one-return-declarator.sh
 	@cd .. && bash scripts/check-one-member-init-walk.sh
 	@cd .. && bash scripts/check-one-error-diagnostic-scan.sh
+	@cd .. && bash scripts/check-gates-see-new-files.sh
 	@cd .. && bash scripts/check-one-lexer-type-token.sh
 	@cd .. && bash scripts/check-one-mir-def-to-import.sh
 	@cd .. && bash scripts/check-one-symbol-trap.sh
 	@cd .. && bash scripts/check-one-c-escape.sh
 	@cd .. && bash scripts/check-one-path-within.sh
 	@cd .. && bash scripts/check-one-path-absolute.sh
-	@cd .. && bash scripts/check-one-madcide-staging.sh
+	@cd .. && bash scripts/check-one-path-stem.sh
 	@cd .. && bash scripts/check-one-pointee-accessor.sh
 	@cd .. && bash scripts/check-one-operand-promotion.sh
 	@cd .. && bash scripts/check-one-nontype-splice.sh
@@ -1204,11 +1233,9 @@ gates: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/check-one-parse-error-recorder.sh
 	@cd .. && bash scripts/check-one-block-comment-reader.sh
 	@cd .. && bash scripts/check-one-escape-decoder.sh
-	@cd .. && bash scripts/check-one-subject-doc.sh
 	@cd .. && bash scripts/check-one-mingw-stdio-map.sh
 	@cd .. && bash scripts/check-policy-fanout.sh
 	@cd .. && bash scripts/check-dialect-lean.sh
-	@cd .. && bash scripts/check-dialect-literals.sh
 	@cd .. && bash scripts/check-embedded-headers-stub.sh
 	@cd .. && bash scripts/check-one-library-spelling.sh
 	@cd .. && bash scripts/check-one-library-opener.sh
@@ -1217,15 +1244,15 @@ gates: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/check-one-module-member-owner.sh
 	@cd .. && bash scripts/check-one-key-owner.sh
 	@cd .. && bash scripts/check-one-anchor-owner.sh
-	@cd .. && bash scripts/check-one-blank-run.sh
 	@cd .. && bash scripts/chthonia_sanitize_check.sh
-	@cd .. && bash scripts/check-madcide-harness.sh
-	@cd .. && bash scripts/check-one-event-builder.sh
 	@cd .. && bash scripts/check-fragment-inline-vars.sh
 	@cd .. && bash scripts/check-istring-fields.sh
 	@cd .. && bash scripts/check-module-exports.sh
 	@cd .. && bash scripts/check-one-style-vocabulary.sh
 	@cd .. && bash scripts/check-expect-twins.sh
+	@cd .. && bash scripts/check-runner-refuses-vacuous.sh
+	@cd .. && bash scripts/check-one-fixture-reader.sh
+	@cd .. && bash scripts/check-one-build-jobs.sh
 	@cd .. && bash scripts/check-object-module-deps.sh
 	@cd .. && bash scripts/check-autoinclude-position.sh
 	@cd .. && bash scripts/check-cross-mode-compiles.sh
@@ -1238,12 +1265,6 @@ gates: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/check-datachannel-write-owner.sh
 	@cd .. && bash scripts/check-datachannel-cloexec-owner.sh
 	@cd .. && bash scripts/check-select-fire-owner.sh
-	@cd .. && bash scripts/check-madcide-single-owners.sh
-	@cd .. && bash scripts/check-madcide-seam.sh
-	@cd .. && bash scripts/check-madcide-command-registry.sh
-	@cd .. && bash scripts/check-madcide-enums.sh
-	@cd .. && bash scripts/check-madcide-one-accept-loop.sh
-	@cd .. && bash scripts/check-madcide-id-width.sh
 	@cd .. && bash scripts/check-object-mode-scope.sh
 	@cd .. && bash scripts/check-cancel-throw-owner.sh
 	@cd .. && bash scripts/check-child-status-map-owner.sh
@@ -1271,10 +1292,6 @@ gates: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/check-hub-write-path.sh
 	@cd .. && bash scripts/check-engine-app-purity.sh
 	@cd .. && bash scripts/tui_smoke_gate.sh
-	@cd .. && bash scripts/tui_scroll_gate.sh
-	@cd .. && bash scripts/tui_golden_gate.sh
-	@cd .. && bash scripts/madcide_quit_gate.sh
-	@cd .. && bash scripts/madcide_save_quit_gate.sh
 	@cd .. && bash scripts/despace_cache_gate.sh
 	@cd .. && bash scripts/forest_selfexe_gate.sh
 	@cd .. && bash scripts/forest_bind_gate.sh
@@ -1638,7 +1655,7 @@ $(CROSS_MADC_BIN): FORCE
 	@$(MAKE) MODE=cross-$(DARWIN_ARCH)-macos $(CROSS_MADC_BIN)
 endif
 
-$(DARWIN_FOREST_BIN): $(DARWIN_FREEZER) $(DARWIN_PRELUDE_DIR)/.MANIFEST ../scripts/forest_pack_darwin.sh ../scripts/forest_pack_headers_darwin.txt $(RT_LEDGER_INPUTS)
+$(DARWIN_FOREST_BIN): $(DARWIN_FREEZER) $(DARWIN_PRELUDE_DIR)/.MANIFEST ../scripts/forest_pack_darwin.sh ../scripts/forest_pack_share.sh ../scripts/forest_pack_headers_darwin.txt $(RT_LEDGER_INPUTS)
 	bash ../scripts/forest_pack_darwin.sh $(DARWIN_FREEZER) $(DARWIN_PRELUDE_DIR)/.MANIFEST $@
 endif
 

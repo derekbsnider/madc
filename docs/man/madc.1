@@ -1,4 +1,4 @@
-.TH MADC 1 "2026-09-01" "madc" "User Commands"
+.TH MADC 1 "2026-10-10" "madc" "User Commands"
 .SH NAME
 madc \- My Advanced Dialect of C: C/C++ JIT compiler, native toolchain, and script runner
 .SH SYNOPSIS
@@ -35,6 +35,132 @@ Arguments after the source file are passed to the program as
 .I file
 Compile and JIT-run a single source file.
 .TP
+(no file)
+The REPL when standard input is a terminal; otherwise compile and run
+standard input, as if named
+.BR \- .
+.TP
+.B \-
+Read the program from standard input.
+.TP
+.BR \-\-lsp " [" \fIfile\fR ]
+A Language Server Protocol server on standard input and output
+(Content-Length framed, LSP 3.17): diagnostics, document symbols,
+definition, references, hover and semantic tokens for each document the
+client opens, from the client's live text. Positions are UTF-16 unless the
+client offers UTF-8. A
+.I file
+is parsed before the client asks. A document's standard is its kind's (a
+.c file is C17); the include directories of
+.B \-I
+and madc.ini's
+.B include
+are searched as for a compile.
+.B workspace/executeCommand
+runs the REPL's
+.B %
+commands as
+.BI madc. NAME
+with a file argument (\fBmadc.check\fR, \fBmadc.run\fR, ...) in a
+crash-isolated session, as
+.B \-i
+does, over the client's unsaved text; the result carries what the command
+showed, what its program printed and its diagnostics.
+.B %open
+asks the client to show the file (window/showDocument).
+.TP
+.BR \-\-mcp " " \fIfile\fR
+A Model Context Protocol server on standard input and output (one JSON-RPC
+message per line): the code-graph tools (\fBgraph.symbols\fR,
+\fBgraph.definition\fR, \fBgraph.callers\fR, ...) over
+.IR file 's
+parse, its validated edits (\fBgraph.insert\fR, \fBgraph.replace\fR,
+\fBgraph.delete\fR: one undo step each, or a proposal), and the session's
+project memory: proposals (\fBgraph.proposals\fR, \fBgraph.accept\fR, ...),
+a node's history, records and links (\fBnexus.*\fR) and test runs
+(\fBtest.*\fR), for the operator. \fBnexus.sync\fR pulls an external
+system's tasks into records through its own MCP server, named by a manifest
+in \fI~/.config/madc/mcp/*.mcp.json\fR (\fBnexus.sources\fR lists them). With
+.B \-lmadcgit
+the file's version history joins them: \fBgraph.commits\fR,
+\fBgraph.revision\fR (the file at a revision, read-only; its ids route to
+it), \fBgraph.diff\fR, a read's \fBrev\fR argument, and the commits in a
+node's \fBgraph.history\fR. A tool's result is JSON text content; a refusal
+is error content.
+.TP
+.BR \-\-mcp " " \-\-project " " \fIproject\fR
+The same server for a project: a manifest, or a single file (one
+translation unit). Its translation units are the served documents, each
+parsed as the manifest compiles it; a tool's \fBfile\fR argument names one
+(the first by default). A manifest's project memory is kept in
+.IB manifest-less-its-extension .events
+beside it; a single file's lives in memory only. A project has one server at a time: a second refuses, naming the
+first one's process id (the claim is advertised in
+.BR $MADC_SESSION_DIR ,
+else \fB$XDG_STATE_HOME/madc/sessions\fR, else
+\fB~/.local/state/madc/sessions\fR).
+.TP
+.BR \-i ", " \-\-interactive " [" \fIfile\fR ]
+The REPL, even when standard input is not a terminal. With a
+.IR file ,
+run it first and keep its names (as
+.B python \-i
+does).
+.B %help
+lists the session's commands, among them
+.B %history
+(this session's entries; \fB\-l\fR and \fB\-g\fR search the history file),
+.B %std
+[\fIname\fR] (the standard in force, or a fresh session under
+.IR name ),
+.B %reset
+(a fresh session),
+.B %check
+[\fIfile\fR] (a file's diagnostics; nothing runs),
+.B %build
+and
+.B %run
+(with no \fIfile\fR, the buffer's live text;
+.B %args
+sets what
+.B %run
+passes it) and
+.B %project
+(a project manifest: open or create it, add and remove its files, check,
+build and run it). The entry is coloured as it is typed (see
+.B theme=
+under FILES). A line starting with
+.B :
+is an ex command on the file's buffer, as in vim's colon mode:
+.BR :p ,
+.BR :s ,
+.BR :g ,
+.BR :w ,
+.BR :e ,
+.BR :ls ,
+.BR :set ,
+.BR :! " and the rest of ex."
+.BR :a ,
+.B :i
+and
+.B :c
+read lines up to a lone
+.BR . ;
+.B :h
+is the REPL's help.
+.B :q
+quits, and is refused while a buffer is modified;
+.B :q!
+quits anyway.
+.TP
+.BI \-\-history\-file= path\fR|\fBno
+Where the REPL keeps its history (default
+.BR $MADC_HISTORY_FILE ,
+else
+.IR $XDG_STATE_HOME/madc/history );
+.B no
+keeps none.
+.TP
 .BI \-\-project " db.json"
 Build from a
 .IR compile_commands.json :
@@ -54,10 +180,17 @@ Preprocess only (print the expanded source).
 .BI \-\-std= std
 Language standard:
 .BR c89 / c90 / c99 / c11 / c17 / c23
-(\fBc\fR = c11), \fBc++\fR\fINN\fR, or \fBmadc\fR (the default dialect;
-C++ keywords reserved). A
+(\fBc\fR = c11), \fBgnu\fR\fINN\fR, \fBc++\fR\fINN\fR, \fBgnu++\fR\fINN\fR,
+or \fBmadc\fR (the dialect; C++ keywords reserved). Without it the source's
+extension decides, as gcc and g++ do:
 .I .c
-translation unit under \fB\-\-project\fR defaults to C mode.
+is gnu17,
+.IR .cpp " / " .cc " / " .cxx
+gnu++17,
+.I .mad
+madc; a source with no recognised extension takes the madc.ini
+.B std
+key, else madc. A \fB\-\-project\fR translation unit follows the same rule.
 .TP
 .BI \-stdlib= lib
 C++ standard library flavor, in clang's spelling:
@@ -177,6 +310,19 @@ Print input/token/timing stats to stderr after the run.
 .BR \-v ", " \-\-verbose
 Verbose / debug output.
 .TP
+\fB\-fdiagnostics\-color\fR[\fB=\fIwhen\fR], \fB\-fno\-diagnostics\-color\fR
+When diagnostics are coloured, in gcc's spelling:
+.B auto
+(the default) colours only a terminal \(em never a redirected or piped
+stream, an IDE pane or an embedding's capture \(em and never when
+.B NO_COLOR
+is set;
+.B always
+and
+.B never
+decide outright. The bare flag is
+.BR always .
+.TP
 .BR \-h ", " \-? ", " \-\-help
 Show the full option list, including the frozen-forest (compile-once)
 and dump/diagnostic options not listed here.
@@ -212,9 +358,14 @@ image when madc is linked shared, the \fI<exe>\fB.forest\fR and
 .B forest
 key of a configuration file.
 .TP
+.B NO_COLOR
+Set and non-empty: no colour in diagnostics, even on a terminal, unless
+\fB\-fdiagnostics\-color=always\fR asks for it (no-color.org).
+.TP
 .BI XDG_CONFIG_HOME= dir
 Where the configuration-file search looks for the per-user file
-(\fIdir\fB/madc/madc.ini\fR); defaults to \fB~/.config\fR.
+(\fIdir\fB/madc/madc.ini\fR), and \fB\-\-mcp\fR for the external
+systems' manifests (\fIdir\fB/madc/mcp/\fR); defaults to \fB~/.config\fR.
 .SH FILES
 .B madc
 optionally reads one
@@ -295,6 +446,23 @@ Default for
 .BR MADC_MEM_LIMIT ;
 .B 0
 disables. The environment variable overrides it.
+.TP
+.BI modules= name
+A module to load at start, as
+.BI \-l name
+does; repeatable, after the command line's.
+.TP
+.BI theme= file
+The REPL's colours: a theme file of
+.I name spec
+lines \(em a class (keyword, control, type, typename, string, number,
+comment, directive, include, escape, ident, function, variable, parameter,
+member, enumerator, namespace) and a style in JOE's words (bold, dim,
+italic, underline, inverse, a colour, \fB#\fIrrggbb\fR, \fBbg_\fIcolour\fR).
+madcide's \fB.theme\fR files read unchanged. It replaces the built-in
+theme (JOE's default scheme); an empty file colours nothing. Colour reaches
+the terminal only when diagnostics' colour does
+(\fB\-fdiagnostics\-color\fR, NO_COLOR, TERM).
 .PP
 Configuration-file support is a build-time option
 (\fBconfigure \-\-disable\-config\-file\fR removes it, which embedding

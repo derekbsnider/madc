@@ -498,6 +498,43 @@ TEST_CASE("the painter: Julia's full refresh, relative to the cursor")
     CHECK(line_painter::fresh_row(4) == "    \r\x1b[0K");
 }
 
+// The painter's marks (split arc 1B.9): zero-width bytes around the glyphs
+// a mark covers — the columns, the wrap and the caret are the unmarked
+// line's; a tab inside a mark keeps its stop; a backward or overlapping mark
+// is skipped.
+TEST_CASE("the painter paints marks around their glyphs, of no width")
+{
+    using madc::hub::line_mark;
+    line_view v;
+    v.prompt = "c17> ";
+    v.lines.push_back("int\tx = 42;");
+    v.caret_byte = 11;
+    line_painter plain;
+    const std::string unmarked = plain.paint(v, 80);
+    line_mark kw = { 0, 0, 3, "\x1b[1m" };
+    line_mark num = { 0, 8, 10, "\x1b[36m" };
+    line_mark back = { 0, 1, 2, "\x1b[31m" };	// before the last: skipped
+    v.marks.push_back(kw);
+    v.marks.push_back(num);
+    v.marks.push_back(back);
+    line_painter marked;
+    CHECK(marked.paint(v, 80)
+	  == "\r\x1b[0Kc17> \x1b[1mint\x1b[0m        x = \x1b[36m42\x1b[0m;\r\x1b[23C");
+    CHECK(unmarked == "\r\x1b[0Kc17> int        x = 42;\r\x1b[23C");
+
+    // A wrapped line keeps the unmarked row count: the repaint climbs as far.
+    line_view wide;
+    wide.prompt = "> ";
+    wide.lines.push_back("abcdefghij");
+    wide.caret_byte = 10;
+    line_mark all = { 0, 0, 10, "\x1b[32m" };
+    wide.marks.push_back(all);
+    line_painter w;
+    CHECK(w.paint(wide, 10) == "\r\x1b[0K> \x1b[32mabcdefghij\x1b[0m\r\x1b[2C");
+    CHECK(w.paint(wide, 10) == "\r\x1b[0K\x1b[1A\r\x1b[0K"
+				"> \x1b[32mabcdefghij\x1b[0m\r\x1b[2C");
+}
+
 TEST_CASE("history: the ring skips blanks and repeats; prefix and search lookups")
 {
     madc::hub::line_history h;
@@ -619,4 +656,29 @@ TEST_CASE("Ctrl-R searches history incrementally; Enter leaves the match unrun")
     q.type("\x03");
     q.type("\x12\x12");
     CHECK(q.ed.view().lines[0] == "apple * 2");
+}
+
+// The completion rule's one owner (split arc 1B.7, design decision 7;
+// readline's): one candidate replaces the word; several, their common
+// prefix when it extends the word; else a list; none, nothing. The editor's
+// Tab answers by it (above); madcide's pane moves onto it in 1D.
+TEST_CASE("complete_word: insert one, insert the common prefix, or list")
+{
+    using madc::hub::complete_word;
+    using madc::hub::completion_kind;
+    std::vector<std::string> none;
+    CHECK(complete_word("pr", none).kind == completion_kind::none);
+    std::vector<std::string> one(1, "printf");
+    CHECK(complete_word("pr", one).kind == completion_kind::insert);
+    CHECK(complete_word("pr", one).text == "printf");
+    std::vector<std::string> two;
+    two.push_back("print_one");
+    two.push_back("print_two");
+    CHECK(complete_word("pr", two).kind == completion_kind::insert);
+    CHECK(complete_word("pr", two).text == "print_");
+    CHECK(complete_word("print_", two).kind == completion_kind::list);
+    std::vector<std::string> apart;
+    apart.push_back("alpha");
+    apart.push_back("beta");
+    CHECK(complete_word("", apart).kind == completion_kind::list);
 }

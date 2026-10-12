@@ -39,6 +39,15 @@ If sources disagree, resolve conflicts in this order:
 3. `madc-knowledge` for project memory.
 4. `claude_status.json`, `docs/plans/ROADMAP.md`, and `CHANGELOG.md` as repo mirrors.
 
+madcide and Chthonia are separate repositories (`derekbsnider/madcide`;
+Chthonia is sanitized). Each keeps its own `CHANGELOG.md`, CI and
+packages; madcide pins a madc release (`madcide.json`) and Chthonia pins a
+madcide release (`chthonia.json`). Their state is not mirrored here: the
+KG's `Project` nodes (`madcide`, `Chthonia`, each `DEPENDS_ON` the next one
+down) and each repository's own history are the record. A madc change that
+breaks madcide is found by madcide's suite on the next madc pin
+(`MADC=... MADC_SRC=... scripts/run_tests.sh` in the madcide checkout).
+
 Do not create new ad hoc status files when an existing source can be
 updated instead.
 

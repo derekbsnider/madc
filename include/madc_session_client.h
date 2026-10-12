@@ -56,13 +56,21 @@ public:
     // what it parses and the host's next line follows, as one FILE would
     // split them (plan §41.9a slice 4).
     void set_inherit_stdio(bool on);
+    // Before start(), Windows: the madc CLI's options (every argument before
+    // its first positional) as the backend's command line. The backend is
+    // then the CLI's own `configured-session` run child: its main configures
+    // a Program from them exactly as the host's did (madc.ini, -l, --std),
+    // on every restart (split arc 1A.5). Ignored on POSIX, where the fork
+    // copies the configured Program (start's make_program).
+    void set_backend_arguments(const std::vector<std::string> &args);
 
     // Start the backend: fork, build the session, begin(std_option) there.
     // False when it cannot start (or begin refuses the standard; the
     // backend's rendered diagnostics are then in last_error()). Windows has
     // no fork: the backend is a run child of self that builds a fresh
-    // Program (madc_run_child.h), so a make_program factory is refused
-    // there (a configured Program cannot cross a process boundary).
+    // Program (madc_run_child.h) — or configures one from the backend
+    // arguments — so a make_program factory is refused there (a configured
+    // Program cannot cross a process boundary).
     bool start(const std::string &std_option = std::string(),
 	       const ProgramFactory &make_program = ProgramFactory());
     // Start again with the same standard and factory (after a stop).
@@ -90,6 +98,7 @@ public:
 	bool ok;
 	unsigned submitted;
 	std::string shown;
+	std::vector<madc::code_range> shown_code;	// an offer's: shown's code (1B.9)
 	std::string rendered;
 	madc::value diagnostics;
 	// A taken command's ask of its host (IPython's payloads; a
@@ -103,12 +112,19 @@ public:
 	// (%quit).
 	::madc::session_payload payload;
 	std::vector<std::string> argv;
+	// The `command` payload's: the host row's code (argv is its
+	// argument; split arc 1A.2).
+	int64_t code;
 	// A completion's: the word's start and the names.
 	size_t start;
 	std::vector<std::string> names;
 	// load: the file defined main (InteractiveSession::loaded_main), so
 	// running the file runs it.
 	bool defines_main;
+	// offer: the source the taken entry added to the session
+	// (InteractiveSession::taken_source); load: the text of the file it
+	// kept (loaded_source). Empty when nothing was kept.
+	std::string source;
 	// load: ok. run: ok, and main's return value.
 	int status;
 	// continues: the line continues an if that ended an entry (D11).
@@ -163,6 +179,11 @@ public:
     // fresh one from the next request on. False = no backend, its stdin is
     // the host's terminal (set_inherit_stdio), or the hand-off failed.
     bool eof();
+    // The bytes the backend's program read from a SHARED stdin
+    // (set_inherit_stdio) past what it consumed, handed back with its
+    // replies (madc::session_stdin_unread; Windows' C runtime reads ahead):
+    // the host reads them before its own input. Taking them clears them.
+    std::string take_returned_stdin();
 
     // Wait up to timeout_ms (-1: no limit) for the next reply. The output the
     // backend printed before it is appended to `output` first. 1: a reply;
@@ -189,6 +210,44 @@ public:
     int bindings_wait(Reply &reply, int timeout_ms = -1);
     int build_wait(const std::string &path, const std::string &out,
 		   Reply &reply, std::string &output);
+    // The build from `text` when non-null (a host's buffer, an empty one
+    // included), else the file (split arc 1B.8).
+    unsigned build_text(const std::string &path, const std::string *text,
+			const std::string &out);
+    int build_text_wait(const std::string &path, const std::string *text,
+			const std::string &out, Reply &reply, std::string &output);
+    // %check's check in the backend (split arc 1B.8): FILE's diagnostics,
+    // from `text` when non-null (a host's buffer), else the file.
+    unsigned check(const std::string &path, const std::string *text);
+    int check_wait(const std::string &path, const std::string *text,
+		   Reply &reply, std::string &output);
+
+    // The HOST's REPL command rows (split arc 1A.2; design
+    // docs/plans/2026-10-09-command-registry-design.md §2.7): an array of
+    // {name, usage, summary, code}, kept and sent to the backend now and
+    // after every start (a restart keeps them), ahead of any entry. Taken,
+    // one answers the `command` payload with its code (Reply::code) and its
+    // argument (argv): the host runs it. False when no backend runs now
+    // (the rows still go to the next one).
+    bool set_host_commands(const madc::value &rows);
+    const madc::value &host_commands() const { return host_rows; }
+    // The history store %history reads (madc_history.h; split arc 1B.7):
+    // sent now and after every start, as the command rows are. "" names
+    // none. A backend no host named one for reads the default store.
+    void set_history_file(const std::string &path);
+    // The project %project opened (split arc 1B.8): the backend's own now;
+    // sent after every start, so a fresh session keeps it. "" none.
+    void set_project(const std::string &path);
+    // Whether colour reaches the host's error stream (madc::colour_reaches,
+    // Phase 0.5's gate): the backend renders its diagnostics into a string
+    // the host prints there, so it colours them as that stream would show
+    // them. Sent now and after every start; a host that never says gets them
+    // plain.
+    void set_diagnostic_colour(bool on);
+    // The host's buffers (split arc 1B.10, design decision 4): a command
+    // running in the backend (a module's) asks for a FILE's live text
+    // mid-entry; the wait answers it from `source` (none: the disk's).
+    void set_buffers(const ReplSession::BufferSource &source);
 
     // Readiness, for a select (plan §41.9a slice 2). pending(): 1 when a
     // reply or output waits (or the backend's end, which poll() reports), 0
@@ -210,6 +269,11 @@ private:
     // socketpair; Windows: a run child of self over a loopback connection).
     bool spawn_backend();
     bool send(const std::string &line);
+    bool send_host_commands();
+    bool send_history_file();
+    bool send_project();
+    bool send_diagnostic_colour();
+    bool answer_buffer(const std::string &name);	// the backend's buffer question
     bool take_line(std::string &line);
     void read_output(std::string &output, int timeout_ms);
     int stopped(Reply &reply, std::string &output);
@@ -230,9 +294,19 @@ private:
     unsigned answered_seq;		// the last request whose reply came back
     std::string std_option;
     ProgramFactory make_program;
+    std::vector<std::string> backend_args;	// Windows: the configured child's command line
+    bool configured_backend;		// set_backend_arguments was called
     std::string error_text;
     std::string standard_name;
+    madc::value host_rows;		// the host's REPL command rows
+    bool history_named;			// set_history_file was called
+    std::string history_path;		// its store ("" none)
+    std::string project_path;		// the session's project ("" none)
+    bool colour_named;			// set_diagnostic_colour was called
+    bool colour_on;			// its verdict
+    ReplSession::BufferSource buffer_source;	// set_buffers'; empty: the disk
     bool inherit_stdio;			// the backend's stdio is the host's
+    std::string returned_stdin;		// handed back by replies, not yet taken
     madc::SessionInterruptor interruptor;	// D8: reaches the backend
     madc::SessionStdinHandOff stdin_handoff;	// Send EOF: the fresh stdin's way in
     SessionClient(const SessionClient &);
@@ -255,11 +329,33 @@ public:
     bool submit(const std::string &text, const TakenHook &taken = TakenHook()) override;
     Offered offer(const std::string &text, const TakenHook &taken = TakenHook()) override;
     const std::string &shown() const override { return shown_text; }
+    const std::vector<madc::code_range> &shown_code() const override { return shown_code_ranges; }
+    const std::string &taken_source() const override { return kept_source; }
     std::vector<std::string> complete(const std::string &text, size_t caret,
 				      size_t &start) override;
     bool continues_if(const std::string &line) override;
     bool run_file(int argc, char **argv) override;
     bool ended(int &status) const override;
+    std::string take_returned_input() override;
+    void set_buffers(const BufferSource &source) override
+    {
+	buffers = source;
+	client.set_buffers(source);	// the backend's question, answered here
+    }
+    // The host's editor (split arc 1C.12): the `open` payload (%open, %edit)
+    // is honored with it, else with the terminal's.
+    void set_editor(const Editor &e) override { editor = e; }
+
+    // A REPL command THIS host runs (split arc 1A.2; design
+    // docs/plans/2026-10-09-command-registry-design.md §2.7): registered on
+    // the session as a host row (it follows restarts); taken, the session
+    // asks for it (the `command` payload) and `run` gets the argument —
+    // true: `out` is what it shows; false: it is refused, `out` said on the
+    // error stream. False when the name cannot register
+    // (InteractiveSession::registrable_name) or this host has it already.
+    typedef std::function<bool(const std::string &argument, std::string &out)> CommandRun;
+    bool add_command(const std::string &name, const std::string &usage,
+		     const std::string &summary, const CommandRun &run);
 
 private:
     // After a wait: the output (piped), the rendered diagnostics, and the
@@ -276,26 +372,69 @@ private:
     // %call's: FILE (argv[0]) loaded, then the call (argv[1], the call's
     // text) made by the backend; shown() is its value.
     bool call_file(const std::vector<std::string> &argv);
-    // %build's: FILE (argv[0]) built to OUT (argv[1]) by the backend, from
-    // the file; shown() says what was built.
+    // %build's: FILE (argv[0]; "" the current buffer) built to OUT (argv[1];
+    // "" FILE without its extension) by the backend, from the buffer's live
+    // text or the file; shown() says what was built.
     bool build_file(const std::vector<std::string> &argv);
     // FILE loaded into the session (D25), its diagnostics shown; false
     // when it was refused. *defines_main: FILE defined main.
     bool load_file(const std::string &path, bool *defines_main = NULL);
+    // %check's: FILE (argv[0]; "" the current buffer) resolved through the
+    // host's buffers to its path and live text, checked by the backend.
+    bool check_file(const std::vector<std::string> &argv);
+    // A FILE a command names ("" the current buffer) through the host's
+    // buffers (split arc 1B.8, design decision 1): its path and, when a
+    // buffer holds it, its live text. False, said on `err`, when there is
+    // nothing to read — before anything restarts.
+    bool resolve(const char *command, const std::string &name,
+		 std::string &path, std::string &text, bool &has_text);
+    // FILE loaded from `text` when non-null, else from the file; the text
+    // the backend kept to *kept when non-null.
+    bool load_source(const std::string &path, const std::string *text,
+		     bool *defines_main = NULL, std::string *kept = NULL);
+    // FILE loaded, then its main run with `args` (the path first).
+    bool run_source(const std::string &path, const std::string *text,
+		    const std::vector<std::string> &args);
+    // %args (design decision 4): "" shows them, `--` clears them, else the
+    // line's shell words replace them.
+    bool program_args_command(const std::string &line);
     SessionClient &client;
     std::ostream &err;
     std::ostream *out;
+    // What shows: the text, and its ranges that are code (only a command
+    // the backend ran has any).
+    void show(const std::string &text,
+	      const std::vector<madc::code_range> &code = std::vector<madc::code_range>());
     std::string shown_text;
+    std::vector<madc::code_range> shown_code_ranges;
+    std::string kept_source;		// taken_source(): the last entry's, or %load's
+    // The host rows, in registration order: a row's code is its index + 1.
+    struct HostCommand { std::string name, usage, summary; CommandRun run; };
+    std::vector<HostCommand> host_commands;
+    BufferSource buffers;		// the host's (set_buffers); empty: the disk only
+    Editor editor;			// the host's (set_editor); empty: the terminal's
+    std::vector<std::string> program_args;	// %args: %run's of the current buffer
+    std::string program_args_text;		// as typed
     bool has_ended;
     int end_status;
 };
 
+// What ended a backend that did not exit, for "the session stopped (...)":
+// the signal and its name ("signal 11, segmentation fault"); with no signal
+// — a Windows crash ends the process with the exception's code as its exit
+// status — that code ("exception 0xc0000005"), never "signal 0".
+std::string session_stop_words(int signal, int exit_status);
+
 // A session backend as a run child of self (Windows; madc_run_child.h, kind
 // `session`): `request` is "<endpoint> <token> <on-terminal 0|1> [std]".
 // It connects to the client's loopback listener, sends the token as the
-// first line, then serves one session on a fresh Program. Returns the
+// first line, then serves one session on a fresh Program — or, for the CLI
+// REPL's `configured-session` kind, on `prog`, the Program the CLI's main
+// configured from this child's command line (split arc 1A.5). Returns the
 // process's exit status.
 int madc_session_serve_child(const std::string &request);
+int madc_session_serve_child(const std::string &request,
+			     std::unique_ptr<Program> prog);
 
 // The script surface (<ns_madc>'s session_* verbs, src/madc_session_verbs.cpp),
 // declared here for C++ hosts and tests; the contract is <ns_madc>'s.
@@ -312,6 +451,8 @@ int64_t session_call(int64_t handle, value &argv);
 int64_t session_build(int64_t handle, const char *path, const char *text,
 		      const char *out);
 bool session_command_of(value &out, const char *text);
+bool session_command_add(int64_t handle, const char *name, const char *usage,
+			 const char *summary, int64_t code);
 int64_t session_poll(value &reply, int64_t handle);
 value &session_output(value &out, int64_t handle);
 bool session_input(int64_t handle, const char *text);

@@ -1,0 +1,4 @@
+// The standard by extension (split arc 1A.4), the C++ half: teststd_ext_cpp.flags
+// names tests/teststd_ext_cpp.cpp as madc's source, with NO --std — madc must
+// compile it as plain g++ does (gnu++17). This .mad is the ignored trailing
+// positional (the C++ program's argv[1]); the oracle is in the .cpp's comment.

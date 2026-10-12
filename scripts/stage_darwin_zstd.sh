@@ -62,7 +62,7 @@ AR=$(make -C src -s MODE="$MODE" DARWIN_ZSTD_DIR="$DIR" print-AR)
 echo "darwin zstd: building $OUT"
 echo "  CC=$CC"
 echo "  AR=$AR"
-jobs=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+jobs=$(bash scripts/build_jobs.sh)
 rm -f "$DIR/lib/libzstd.a"
 make -C "$DIR/lib" -j"$jobs" BUILD_DIR="obj-$arch-macos" CC="$CC" AR="$AR" libzstd.a
 cp -p "$DIR/lib/libzstd.a" "$OUT"

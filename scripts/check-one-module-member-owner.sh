@@ -72,7 +72,7 @@ start=${range% *}
 end=${range#* }
 
 # --- the tree ---------------------------------------------------------------
-files=$(git ls-files 'src/*.cpp' 'src/*.h' 'include/*.h' 'include/**/*.h' | grep -v "^$OWNER_FILE\$")
+files=$(git ls-files --cached --others --exclude-standard 'src/*.cpp' 'src/*.h' 'include/*.h' 'include/**/*.h' | grep -v "^$OWNER_FILE\$")
 # shellcheck disable=SC2086
 out=$(grep -nE "$PATTERN" $files /dev/null)
 owner_out=$(grep -nE "$PATTERN" "$OWNER_FILE" | awk -F: -v s="$start" -v e="$end" '$1 < s || $1 > e' | sed "s|^|$OWNER_FILE:|")

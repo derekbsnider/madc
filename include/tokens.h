@@ -14,6 +14,7 @@
 #include <ios>
 #include "madcdis/intern_table.h"
 #include "madcdis/value_pool.h"
+#include "highlight_class.h"	// HighlightClass: what kind of thing a token is
 
 // DataDef is not forward-declarable here: TokenBase::datadef() returns
 // `&ddVOID` and usual_arithmetic_result() reads DataDef's members, so this
@@ -142,63 +143,7 @@ enum class TokenAssoc {
     taNone, taLeftToRight, taRightToLeft
 };
 
-// Highlight classification (madcide AST-2 / IDE-7): what KIND of thing a
-// lexed token is, for presentation. The one classifier is
-// madc_token_highlight_class (lexer.cpp — the token-vocabulary owner);
-// names cross the value boundary via highlight_class_name. A theme (app
-// data) maps these names to colours — the compiler never styles.
-enum class HighlightClass : unsigned char
-{
-    hcNone = 0,		// operators / punctuation — unstyled
-    hcKeyword,
-    hcIdent,
-    hcNumber,
-    hcString,		// string AND char literals
-    hcComment,		// from leading trivia (keep_trivia mode)
-    hcType,		// datatype spellings (tkDeclare)
-    hcFunction,		// an identifier the tree knows as a function name
-    hcControl,		// a control-flow keyword (return if for while switch ...)
-    hcTypeName,		// an identifier the parse READ as a type-name (a user's
-			// class, struct, enum, typedef — note_type_name_use)
-    hcDirective,	// a preprocessor directive's `#name` (from the line text)
-    hcIncludePath,	// the header-name an #include / #load names
-    hcEscape,		// an escape sequence inside a string or char literal
-    // A NAME, by what the parse tree resolved it to (the use node's
-    // TokenVar::name_tok / TokenMember::object_tok):
-    hcVariable,		// a variable (global or local)
-    hcParameter,	// a function parameter
-    hcMember,		// a data member after `.` / `->`
-    hcEnumerator,	// an enumeration constant
-    hcNamespace		// an identifier the parse READ as a namespace-name (a
-			// qualifier, a definition, an alias, a using-directive —
-			// note_namespace_name_use)
-};
-
-inline const char *highlight_class_name(HighlightClass c)
-{
-    switch ( c )
-    {
-	case HighlightClass::hcNone:	 return "none";
-	case HighlightClass::hcKeyword:	 return "keyword";
-	case HighlightClass::hcIdent:	 return "ident";
-	case HighlightClass::hcNumber:	 return "number";
-	case HighlightClass::hcString:	 return "string";
-	case HighlightClass::hcComment:	 return "comment";
-	case HighlightClass::hcType:	 return "type";
-	case HighlightClass::hcFunction: return "function";
-	case HighlightClass::hcControl:	 return "control";
-	case HighlightClass::hcTypeName: return "typename";
-	case HighlightClass::hcDirective: return "directive";
-	case HighlightClass::hcIncludePath: return "include";
-	case HighlightClass::hcEscape:	 return "escape";
-	case HighlightClass::hcVariable: return "variable";
-	case HighlightClass::hcParameter: return "parameter";
-	case HighlightClass::hcMember:	 return "member";
-	case HighlightClass::hcEnumerator: return "enumerator";
-	case HighlightClass::hcNamespace: return "namespace";
-    }
-    return "none";
-}
+// Highlight classification: include/highlight_class.h (its one text).
 
 // Error-node vocabulary (error-tolerant parse, 2026-08-25 owner ruling —
 // design doc 2026-08-25-madcide-ast-arc-design.md §3.5). One TokenError

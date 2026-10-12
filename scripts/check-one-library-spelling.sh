@@ -50,7 +50,7 @@ fi
 rm -f "$tmp"
 
 # --- the tree ---------------------------------------------------------------
-files=$(git ls-files 'src/*.cpp' 'src/*.h' 'include/*.h' 'include/**/*.h' \
+files=$(git ls-files --cached --others --exclude-standard 'src/*.cpp' 'src/*.h' 'include/*.h' 'include/**/*.h' \
 	'tools/*.inc' 'tools/*.mad' 'examples/*.mad' | grep -v "^$OWNER\$")
 # shellcheck disable=SC2086
 if ! out=$(scan $files 2>&1); then

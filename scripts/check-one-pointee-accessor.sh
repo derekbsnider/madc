@@ -38,7 +38,7 @@ if [ "$c1" -ne 2 ]; then
 	exit 1
 fi
 
-files=$(git ls-files 'src/*.cpp' 'src/*.c' 'include/*.h')
+files=$(git ls-files --cached --others --exclude-standard 'src/*.cpp' 'src/*.c' 'include/*.h')
 un=$(code_lines "$CAST" $files | grep -v 'allowed-exception')
 n=$(printf '%s' "$un" | grep -c . || true)
 marked=$(code_lines "$CAST" $files | grep -c 'allowed-exception' || true)

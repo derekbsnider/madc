@@ -15,6 +15,7 @@
 #include <io.h>
 #include <limits.h>
 #include <share.h>	// _SH_DENYNO for _sopen_s
+#include <direct.h>	// _mkdir: host_path_make_parents
 #include <sys/stat.h>	// _fstat64 — the 64-bit stat the 32-bit CRT default hides
 #include <windows.h>
 // Version 2 = the K32* kernel32 inlines — no psapi.dll import needed.
@@ -28,6 +29,7 @@
 #include <pthread.h>
 #include <sys/mman.h>
 #include <sys/resource.h>	// process_cpu_microseconds: getrusage
+#include <sys/file.h>	// flock: held_file
 #include <sys/stat.h>
 #include <unistd.h>
 #ifdef __APPLE__
@@ -214,6 +216,81 @@ bool host_path_absolute(const std::string &path)
 	return false;
 }
 
+std::string host_path_join(const std::string &dir, const std::string &path)
+{
+	if ( path.empty() || host_path_absolute(path) || dir.empty()
+	     || dir == "." )
+		return path;
+	if ( host_path_is_separator(dir[dir.size() - 1]) )
+		return dir + path;
+	return dir + "/" + path;
+}
+
+host_path_type host_path_type_of(const std::string &path)
+{
+	struct stat st;
+	if ( path.empty() || stat(path.c_str(), &st) != 0 )
+		return host_path_type::none;
+	if ( S_ISDIR(st.st_mode) )
+		return host_path_type::directory;
+	if ( S_ISREG(st.st_mode) )
+		return host_path_type::file;
+	return host_path_type::other;
+}
+
+// The offset of the final component's extension dot; npos when it has none.
+static size_t host_path_extension_dot(const std::string &path)
+{
+	const size_t sep = host_path_last_separator(path);
+	const size_t base = sep == std::string::npos ? 0 : sep + 1;
+	const size_t dot = path.rfind('.');
+	if ( dot == std::string::npos || dot <= base )
+		return std::string::npos;
+	return dot;
+}
+
+std::string host_path_drop_extension(const std::string &path)
+{
+	const size_t dot = host_path_extension_dot(path);
+	return dot == std::string::npos ? path : path.substr(0, dot);
+}
+
+std::string host_path_stem(const std::string &path)
+{
+	return host_path_basename(host_path_drop_extension(path));
+}
+
+void host_path_make_parents(const std::string &path)
+{
+	for ( size_t i = 1; i < path.size(); ++i )
+	{
+		if ( !host_path_is_separator(path[i]) )
+			continue;
+		const std::string dir = path.substr(0, i);
+#ifdef _WIN32
+		if ( dir.size() == 2 && dir[1] == ':' )
+			continue;		// a drive, not a directory
+		_mkdir(dir.c_str());
+#else
+		mkdir(dir.c_str(), 0700);
+#endif
+	}
+}
+
+bool host_path_expand_home(const std::string &path, std::string &out)
+{
+	if ( path.empty() || path[0] != '~'
+	     || (path.size() > 1 && !host_path_is_separator(path[1])) )
+		return false;
+#ifdef _WIN32
+	const char *home = getenv("USERPROFILE");
+#else
+	const char *home = getenv("HOME");
+#endif
+	out = home && *home ? std::string(home) + path.substr(1) : path;
+	return true;
+}
+
 bool host_path_within(const std::string &dir, const std::string &path,
 		      std::size_t *rel_at)
 {
@@ -304,6 +381,157 @@ bool fd_is_regular_file(int fd)
 		return false;
 	return S_ISREG(st.st_mode);
 #endif
+}
+
+#ifdef _WIN32
+namespace {
+// The one byte a hold locks: far past any content a held file carries.
+void held_byte(OVERLAPPED &ov)
+{
+	std::memset(&ov, 0, sizeof(ov));
+	ov.Offset = 0xFFFFFFFEu;
+	ov.OffsetHigh = 0x7FFFFFFFu;
+}
+
+bool try_hold(int fd)
+{
+	HANDLE h = (HANDLE)_get_osfhandle(fd);
+	OVERLAPPED ov;
+	held_byte(ov);
+	return h != INVALID_HANDLE_VALUE
+	    && LockFileEx(h, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &ov);
+}
+
+void drop_hold(int fd)
+{
+	HANDLE h = (HANDLE)_get_osfhandle(fd);
+	OVERLAPPED ov;
+	held_byte(ov);
+	if ( h != INVALID_HANDLE_VALUE )
+		UnlockFileEx(h, 0, 1, 0, &ov);
+}
+} // namespace
+#else
+namespace {
+bool try_hold(int fd)
+{
+	int r;
+	do
+		r = ::flock(fd, LOCK_EX | LOCK_NB);
+	while ( r != 0 && errno == EINTR );
+	return r == 0;
+}
+
+void drop_hold(int fd)
+{
+	::flock(fd, LOCK_UN);
+}
+} // namespace
+#endif
+
+bool held_file::open_held(const std::string &path)
+{
+	release();
+#ifdef _WIN32
+	int fd = -1;
+	if ( _sopen_s(&fd, path.c_str(), _O_RDWR | _O_CREAT | _O_BINARY | _O_NOINHERIT,
+		      _SH_DENYNO, _S_IREAD | _S_IWRITE) != 0 )
+		return false;
+	if ( !try_hold(fd) )
+	{
+		::_close(fd);
+		return false;
+	}
+#else
+	int fd = -1;
+	for ( int attempt = 0; ; ++attempt )
+	{
+		fd = ::open(path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+		if ( fd < 0 )
+			return false;
+		if ( !try_hold(fd) )
+		{
+			::close(fd);
+			return false;
+		}
+		// The holder before us may have removed the file as it let go: a
+		// hold on that unlinked file is no one's — open the path again.
+		struct stat held, named;
+		if ( ::fstat(fd, &held) == 0 && ::stat(path.c_str(), &named) == 0
+		     && held.st_dev == named.st_dev && held.st_ino == named.st_ino )
+			break;
+		drop_hold(fd);
+		::close(fd);
+		if ( attempt == 8 )
+			return false;
+	}
+#endif
+	_fd = fd;
+	_path = path;
+	return true;
+}
+
+bool held_file::replace(const std::string &text)
+{
+	if ( _fd < 0 )
+		return false;
+#ifdef _WIN32
+	if ( _chsize_s(_fd, 0) != 0 || _lseeki64(_fd, 0, SEEK_SET) != 0 )
+		return false;
+#else
+	if ( ::ftruncate(_fd, 0) != 0 || ::lseek(_fd, 0, SEEK_SET) != 0 )
+		return false;
+#endif
+	std::size_t at = 0;
+	while ( at < text.size() )
+	{
+		const ssize_t n = pwrite_fd(_fd, text.data() + at, text.size() - at, (long long)at);
+		if ( n <= 0 )
+			return false;
+		at += (std::size_t)n;
+	}
+	return true;
+}
+
+void held_file::release(bool remove)
+{
+	if ( _fd < 0 )
+		return;
+#ifdef _WIN32
+	drop_hold(_fd);
+	::_close(_fd);
+	if ( remove )
+		::remove(_path.c_str());	// refused while another process has it open
+#else
+	if ( remove )
+		::unlink(_path.c_str());	// while held: a later opener makes a new file
+	drop_hold(_fd);
+	::close(_fd);
+#endif
+	_fd = -1;
+	_path.clear();
+}
+
+bool host_file_held(const std::string &path)
+{
+#ifdef _WIN32
+	int fd = -1;
+	if ( _sopen_s(&fd, path.c_str(), _O_RDONLY | _O_BINARY | _O_NOINHERIT, _SH_DENYNO, 0) != 0 )
+		return false;
+#else
+	int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+	if ( fd < 0 )
+		return false;
+#endif
+	const bool free_now = try_hold(fd);
+	if ( free_now )
+		drop_hold(fd);
+#ifdef _WIN32
+	::_close(fd);
+#else
+	::close(fd);
+#endif
+	return !free_now;
 }
 
 ssize_t pread_fd(int fd, void *buffer, std::size_t size, long long offset)
