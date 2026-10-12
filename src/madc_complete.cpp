@@ -525,21 +525,43 @@ madc::dis::istring Program::type_location(const madc::dis::istring &name, const 
 
 // Where a function was defined: the latest definition in the session's tree
 // (a redefinition replaces the earlier one, D5), else a prototype's file.
-void Program::function_origin(const Variable *v, const FuncDef *fd,
-			      const char *&file, int &line) const
+TokenFunc *Program::latest_function_definition(const Variable *v, const FuncDef *fd) const
 {
     for ( size_t i = pending_funcs.size(); i-- > 0; )
     {
 	TokenFunc *tf = pending_funcs[i] ? pending_funcs[i]->as_func_tok() : NULL;
 	if ( tf && ((v && &tf->var == v) || tf->var.type == fd) )
-	{
-	    file = tf->file;
-	    line = tf->line;
-	    return;
-	}
+	    return tf;
+    }
+    return NULL;
+}
+
+void Program::function_origin(const Variable *v, const FuncDef *fd,
+			      const char *&file, int &line) const
+{
+    if ( TokenFunc *tf = latest_function_definition(v, fd) )
+    {
+	file = tf->file;
+	line = tf->line;
+	return;
     }
     file = fd ? fd->decl_file : NULL;
     line = 0;
+}
+
+// Plan §42 D5: is a second body for this function a redefinition the
+// interactive session takes, under every standard? It is when the body the
+// function has is an earlier unit's, linked and live: calls then reach the
+// newest body. A second body within one unit stays the redefinition C and
+// C++ refuse.
+bool Program::session_redefines(const Variable *v, const FuncDef *fd) const
+{
+    if ( !interactive_session || !fd || !fd->body_parsed )
+	return false;
+    const char *file;
+    int line;
+    function_origin(v, fd, file, line);
+    return file && session_units.count(file);
 }
 
 madc::dis::istring Program::function_location(const Variable *v, const FuncDef *fd) const

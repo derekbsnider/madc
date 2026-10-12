@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### A REPL function can be redefined, and every call reaches the newest body
+
+In a `madc -i` session a function whose body an earlier entry already
+linked can be defined again, and every call then reaches the newest body:
+a later call, a caller compiled before the redefinition, and a function
+pointer taken before it (plan §42 D5, Julia's rule). Before, C refused the
+second body as a "redefinition of 'f'", while under C++ and madc the old
+body stood — `f()`, a `g()` that calls `f()`, and a `p = f` all kept the
+first definition. Now the parser takes the second body as the session's
+redefinition (a same-signature C++ body however its parameters are
+spelled; a different signature is still a new overload), the CIR builder
+emits the newest definition though the symbol is already session_defined,
+and each entry's loaded functions bind weak so MIR's loader replaces the
+earlier body in place and no caller inlines it. A function the loaded file
+itself defines is redefined the same way; a second body within one unit is
+still the redefinition C and C++ refuse.
+
 ## [v0.104.0] — 2026-10-12
 
 The madcide split: madc's interactive mode takes the ed/ex editing core, and madcide leaves to its own repository. `madc -i` gains colon mode, a command registry modules and hosts extend, `%std` / `%reset` / `%history` / `%check` / `%build` / `%run` / `%args` / `%project`, coloured prompts and diagnostics, and host-facing language services; madc ships a Language Server (`--lsp`) and a Model Context Protocol server (`--mcp`) with a project memory, a code graph and an external-task client; the data substrate gains a document component with an edit notification, regexes run on one PCRE2 engine, and a source's standard follows its extension. madcide now lives in its own repository and releases on its own, so madc's packages no longer carry it. Forest and pack correctness and reproducibility, codegen and REPL fixes, and Windows and darwin parity round out the release.

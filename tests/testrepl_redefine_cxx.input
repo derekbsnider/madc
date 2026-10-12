@@ -1,0 +1,10 @@
+int f(int a) { return a + 100; }
+int g(int v) { return f(v) * 10; }
+int (*p)(int) = f;
+std::printf("first %d %d %d\n", f(1), g(1), p(1));
+int f(int b) { return b + 200; }
+std::printf("second %d %d %d\n", f(1), g(1), p(1));
+int f(int a) { return a + 300; }
+std::printf("third %d %d %d\n", f(1), g(1), p(1));
+double f(double d) { return d / 2; }
+std::printf("overload %g %d\n", f(5.0), f(1));

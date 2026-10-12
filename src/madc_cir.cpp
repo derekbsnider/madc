@@ -1245,6 +1245,8 @@ bool CirJitSession::load_and_link(const char *source_name, Program *prog)
 	stub_mod = NULL;
     }
     MIR_load_module(ctx, mod);
+    if (live_mode)
+	make_interposable(mod);
     mc_lap("load(consumer)");
     if (cache_mod)
 	cir_prebind_cache_traps(ctx, cache_mod, mod);
@@ -1910,6 +1912,21 @@ void CirJitSession::make_function_stubs(const std::vector<madc::dis::istring> &n
     stub_mod = DLIST_TAIL(MIR_module_t, *MIR_get_module_list(ctx));
 }
 
+// Plan §42 D5: once loaded, a function an entry defines is interposable, as a
+// shared library's is to ld.so: weak, so no caller bakes its body in (MIR
+// inlines no weak callee) and a later definition replaces it in place, taking
+// its address (replaced_weak_def). The callers already linked and the
+// pointers already taken then reach the newest body. A vague-linkage copy
+// keeps its binding.
+void CirJitSession::make_interposable(MIR_module_t m)
+{
+    for (MIR_item_t it = DLIST_HEAD(MIR_item_t, m->items); it;
+	 it = DLIST_NEXT(MIR_item_t, it))
+	if (it->item_type == MIR_func_item && it->export_p
+	    && it->binding == MIR_ITEM_BIND_GLOBAL)
+	    MIR_item_set_binding(ctx, it, MIR_ITEM_BIND_WEAK);
+}
+
 // After an entry links: a stub whose function the entry defined was replaced
 // by the loader, and one that a library now provides (an entry's `import` or
 // `#load`) is redirected to the library's function.
@@ -2064,6 +2081,10 @@ bool CirJitSession::append(Program *prog, const char *entry_name)
 	const char *nm = MIR_item_name(ctx, it);
 	if (nm && nm[0])
 	    prog->session_defined.insert(nm);
+	// A redefinition (D5): the code generated for the earlier body is
+	// no longer the function's.
+	if (nm && it->item_type == MIR_func_item)
+	    gen_cache.erase(nm);
     }
     rebind_late_stubs(m, prog);
     bind_late_cells(prog);

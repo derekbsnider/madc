@@ -34868,6 +34868,13 @@ bool CirBuilder::session_awaits(const madc::dis::istring &sym) const
 	return m_prog && m_prog->session_awaited.count(sym) != 0;
 }
 
+// Plan §42 D5: is TF the newest definition of a function this unit redefines?
+bool CirBuilder::session_redefinition(TokenFunc *tf, FuncDef *fd) const
+{
+	return m_prog && fd && m_prog->session_redefined.count(fd)
+	       && m_prog->latest_function_definition(&tf->var, fd) == tf;
+}
+
 // Plan §42 D27, slice 2: does this interactive entry's code read V through a
 // session cell? V is an object with static storage that an entry declared
 // (`extern int x;`, a class's static data member) and that nothing defines:
@@ -35400,8 +35407,10 @@ node_t CirBuilder::translate_module(Program *prog)
 		FuncDef *tfd = dynamic_cast<FuncDef *>(tf->var.type);
 		// An earlier module of the interactive session defines this
 		// function (plan §41.2a), or a refused entry did (§41.3): Pass 1
-		// still prototypes it, and the call links to the live body.
-		if (session_defines(func_emit_name(tf->var, tfd)))
+		// still prototypes it, and the call links to the live body. A
+		// redefinition's newest body is this module's (D5).
+		if (session_defines(func_emit_name(tf->var, tfd))
+		    && !session_redefinition(tf, tfd))
 			continue;
 		bool sys = tfd && prog->is_system_header_path(tf->file);
 		// An interactive entry emits a vague-linkage body (in-class,

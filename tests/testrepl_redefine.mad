@@ -1,0 +1,6 @@
+// Plan §42 D5 (owner 2026-10-12, the live-reparse prerequisite): a function
+// the session already linked can be defined again, and every call reaches the
+// newest body: a later call, a caller compiled earlier, a pointer taken
+// earlier (Julia; cling keeps the old body in old callers). A function this
+// file defines is redefined the same way.
+int twice(int n) { return 2 * n; }

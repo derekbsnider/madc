@@ -6845,6 +6845,14 @@ public:
     // emits such a function's vague-linkage body in the entry that defines
     // it, whether or not that entry uses it, so the stub's callers reach it.
     std::set<madc::dis::istring> session_awaited;
+    // Plan §42 D5: the functions the unit being read redefines, each a body
+    // an earlier unit linked (session_redefines). The CIR builder emits the
+    // newest definition of each though its symbol is session_defined, and
+    // the session replaces the earlier body in place. Cleared per unit.
+    std::set<const FuncDef *> session_redefined;
+    bool session_redefines(const Variable *v, const FuncDef *fd) const;
+    // The latest definition of a function in the session's tree.
+    TokenFunc *latest_function_definition(const Variable *v, const FuncDef *fd) const;
     bool forest_decls_restored = false;	// one-shot decl-record restore (forest-global for now)
     // v13: file-scope globals restored from a bound header. forest_restore_decls
     // runs during lexer #include handling, BEFORE tkProgram exists, so the globals

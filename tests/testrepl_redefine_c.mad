@@ -1,0 +1,3 @@
+// Plan §42 D5 under C: a function the session already linked can be defined
+// again with its signature, and every call reaches the newest body.
+#include <stdio.h>

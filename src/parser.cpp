@@ -3760,7 +3760,12 @@ static bool fold_same_signature_overload(Program &pgm,
 			: !pv->storage_alias_name.empty() ? pv->storage_alias_name
 			: !pfd->emit_symbol.empty() ? pfd->emit_symbol
 			: fresh_sig;
-	if ( !pfd->declaration_only && !fresh_fd->declaration_only )
+	const bool both_bodies = !pfd->declaration_only && !fresh_fd->declaration_only;
+	// Plan §42 D5: the body an earlier session unit linked is redefined —
+	// the newcomer's body becomes the function's, as a body a prior only
+	// declared does below.
+	const bool redefines = both_bodies && pgm.session_redefines(pv, pfd);
+	if ( both_bodies && !redefines )
 	{
 	    // Two BODIES with one ABI signature. A redefinition (g++ rejects it;
 	    // madc's standing policy lets the later definition stand — the
@@ -3815,11 +3820,14 @@ static bool fold_same_signature_overload(Program &pgm,
 		pfd->param_default_tokens[p] = fresh_fd->param_default_tokens[p];
 	    }
 	}
-	if ( pfd->declaration_only && !fresh_fd->declaration_only )
+	if ( redefines || (pfd->declaration_only && !fresh_fd->declaration_only) )
 	{
 	    // The newcomer brings the body: the prior identity carries it.
+	    pgm.journal_entity(pv);
 	    pv->type = fresh_fd;
 	    pgm.funcdef_map[pv->name] = fresh_fd;
+	    if ( redefines )
+		pgm.session_redefined.insert(fresh_fd);
 	}
 	for ( size_t j = 0; j < ovset.size(); ++j )
 	    if ( ovset[j].var == fresh_var )
@@ -73557,6 +73565,10 @@ void Program::parseFunction(DataDef &dd, madc::dis::istring &id, DataDefCLASS *o
     // extern "C"). C++-linkage same-signature bodies are
     // fold_same_signature_overload's — twins the type model cannot yet split.
     bool redecl_prior_bodied = false;
+    // Plan §42 D5: a second body for a function an earlier session unit
+    // defined is the session's redefinition, in every linkage.
+    const bool session_redefinition = func_already_declared && !owner_class
+				      && session_redefines(NULL, func);
     TokenBase *redecl_at = curToken();
     if ( func_already_declared && !owner_class
       && (is_c_mode() || current_linkage == LinkageSpec::C || func->c_linkage) )
@@ -74810,8 +74822,10 @@ void Program::parseFunction(DataDef &dd, madc::dis::istring &id, DataDefCLASS *o
 
     pop_param_scope();
 
-    if ( redecl_prior_bodied )
+    if ( redecl_prior_bodied && !session_redefinition )
 	Throw(redecl_at) << "redefinition of '" << id << "'" << flush;
+    if ( session_redefinition )
+	session_redefined.insert(func);
     func->declaration_only = false;
     func->body_parsed = true;
     // A class madc defines: whatever external binding its declared member
@@ -82250,6 +82264,7 @@ void Program::begin_entry()
     // A fresh stream, as every translation unit's lex starts on: the lexer's
     // reorders (the auto-include splice) count positions from cursor 0.
     tokens.reset();
+    session_redefined.clear();
     entry_function = NULL;
     entry_function_name.clear();
     entry_end_token = NULL;

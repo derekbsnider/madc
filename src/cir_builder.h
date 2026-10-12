@@ -357,6 +357,10 @@ class CirBuilder {
 	// (Program::session_awaited)? Its vague-linkage body is then emitted in
 	// the entry that defines it, used there or not.
 	bool session_awaits(const madc::dis::istring &sym) const;
+	// Plan §42 D5: is `tf` the newest definition of a function this unit
+	// redefines (Program::session_redefined)? It is emitted, and the
+	// session replaces the earlier body with it.
+	bool session_redefinition(TokenFunc *tf, FuncDef *fd) const;
 	// Plan §42 D27, slice 2: code in an interactive entry reads an object that
 	// an entry declared and nothing defines yet through a session CELL, so a
 	// later definition is the object it reaches. late_bound_object is the
