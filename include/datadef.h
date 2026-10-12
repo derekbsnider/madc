@@ -1035,6 +1035,9 @@ public:
     // zero-width field itself must not arm a second zero-width field.
     bool previous_was_nonzero_bitfield;
     AggregateDefinitionOrigin definition_origin;
+    // The file the definition is in (FuncDef::decl_file's twin): a session
+    // unit's name for an interactive entry's type; NULL when not known.
+    const char *definition_file;
     size_t bitfield_unit_offset;
     size_t bitfield_unit_size;
     size_t bitfield_next_bit;
@@ -1113,13 +1116,15 @@ public:
 	: DataDef(n, s, d), runtime_size_expr(NULL), pack(0), pragma_pack(0), max_align(1), tag_explicit_align(0), union_layout(false),
 	  is_complete(false), has_anon_aggregate(false),
 	  reverse_scalar_storage(false), bitfield_active(false), previous_was_nonzero_bitfield(false),
-	  definition_origin(AggregateDefinitionOrigin::Unknown), bitfield_unit_offset(0),
+	  definition_origin(AggregateDefinitionOrigin::Unknown), definition_file(NULL),
+	  bitfield_unit_offset(0),
 	  bitfield_unit_size(0), bitfield_next_bit(0) {}
     DataDefSTRUCT(madc::dis::istring n, std::vector<memberpair_t> m)
 	: DataDef(n, 0, DataType::dtRESERVED), runtime_size_expr(NULL), pack(0), pragma_pack(0), max_align(1), tag_explicit_align(0),
 	  union_layout(false), is_complete(false), has_anon_aggregate(false),
 	  reverse_scalar_storage(false), bitfield_active(false), previous_was_nonzero_bitfield(false),
-	  definition_origin(AggregateDefinitionOrigin::Unknown), bitfield_unit_offset(0),
+	  definition_origin(AggregateDefinitionOrigin::Unknown), definition_file(NULL),
+	  bitfield_unit_offset(0),
 	  bitfield_unit_size(0), bitfield_next_bit(0)
     {
 	DBG(std::cout << "DataDefSTRUCT(" << n << ") constructor" << std::endl);

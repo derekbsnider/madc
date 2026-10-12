@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### A REPL session entry that redefines a type names `%run`
+
+In a `madc -i` session a `struct`, `union`, or `class` an earlier entry
+defined is refused when it is defined again, and the refusal now names
+`%run`: "redefinition of 'P', a type an earlier entry defined (%run
+rebuilds the session)". The type and the objects it holds keep their value
+(plan §42 D6). Before, madc refused with "Struct 'P' already defined" or
+"Class 'C' already defined" and gave no hint. A type defined twice within
+one entry still reports the plain "Struct 'Q' already defined" — the
+redefinition C and C++ refuse. An aggregate records the file its
+definition is in (`DataDefSTRUCT::definition_file`, `FuncDef::decl_file`'s
+twin), so the session tells an entry's type from a header's.
+
 ### A REPL session object with a destructor can be redefined
 
 In a `madc -i` session an object with a destructor — the madc `var`
@@ -57,10 +70,9 @@ pointer taken earlier reads the new value (plan §42 D6, Julia's
 non-const global, Lisp's `defparameter`, Clojure's `def`). Before, the
 second definition was refused as a "redefinition of 'x'", as clang-repl
 refuses it. A type change, a `const` object (its reads fold to the old
-value), an object with a destructor (the madc `var` carrier included),
-and an initializer that changes an array's size (`char msg[] = "hello"`
-over `"hi"`) are refused with a hint to `%run`, and the object keeps its
-value. A REPL-buffer edit that re-initializes a variable definition
+value), and an initializer that changes an array's size (`char msg[] =
+"hello"` over `"hi"`) are refused with a hint to `%run`, and the object
+keeps its value. A REPL-buffer edit that re-initializes a variable definition
 applies the new initializer; an unchanged entry is never re-read, so its
 variables keep their values.
 

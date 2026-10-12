@@ -6870,6 +6870,16 @@ public:
     bool session_redefines_object(const Variable *v) const;
     // The latest file-scope declaration of an object in the session's tree.
     const TopDecl *latest_object_declaration(const Variable *v) const;
+    // Plan §42 D6, types: is AGG's definition an earlier unit's, linked and
+    // live? A session does not define such a type again yet: D6 makes a
+    // redefined type a new versioned one (old objects keep the old type).
+    bool session_defines_type(const DataDefSTRUCT *agg) const;
+    // A tag defined again (KIND "Struct" / "Class"): refused, as C and C++
+    // refuse it; when an earlier session unit defined it, the refusal names
+    // %run, which rebuilds the session from its text.
+    void refuse_type_redefinition(TokenBase *where, const char *kind,
+				  const madc::dis::istring &spelling,
+				  const DataDefSTRUCT *existing);
     bool forest_decls_restored = false;	// one-shot decl-record restore (forest-global for now)
     // v13: file-scope globals restored from a bound header. forest_restore_decls
     // runs during lexer #include handling, BEFORE tkProgram exists, so the globals

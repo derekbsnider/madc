@@ -3495,7 +3495,18 @@ definition is re-initialized; an unchanged entry is never read again, so its
 variables keep their values. Gates: `testrepl_redefine_var`, `testrepl_live`
 (`:10s/= 0/= 40/`).
 
-Open: a redefined struct (D6's types); madcide's REPL pane (its own repository) needs the
+**Built, D6's first slice for types (2026-10-12).** A struct, union or class
+an earlier entry defined is not defined again: the refusal names `%run`
+("redefinition of 'P', a type an earlier entry defined (%run rebuilds the
+session)"), and the type and its objects stay
+(`Program::refuse_type_redefinition`, every tag-definition arm). An
+aggregate records the file it is defined in (`DataDefSTRUCT::definition_file`,
+FuncDef::decl_file's twin), so the session tells an entry's type from a
+header's, which keeps C's and C++'s refusal. Gate: test_repl_session "a type
+an earlier entry defined is not defined again (D6)".
+
+Open: a redefined struct as a new versioned type (D6's types; old objects keep
+the old type); madcide's REPL pane (its own repository) needs the
 dialect verb; the `%run` rebuild calling `main` when the buffer defines it but
 never calls it.
 

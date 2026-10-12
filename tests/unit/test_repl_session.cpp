@@ -1652,6 +1652,38 @@ TEST_CASE("an entry's statics are session names (§41.5a)")
     check_entry_statics("--std=madc");
 }
 
+// A type an earlier entry defined is not defined again (plan §42 D6 makes a
+// redefined type a new versioned one): the refusal names %run, and the type
+// and its objects stay. Within one entry it is the redefinition C and C++
+// refuse.
+static void check_type_redefinition(const std::string &std_option)
+{
+    CAPTURE(std_option);
+    InteractiveSession s;
+    REQUIRE(s.begin(std_option));
+    REQUIRE(s.submit("struct P { int a; };"));
+    REQUIRE(s.submit("struct P p = {7};"));
+    CHECK_FALSE(s.submit("struct P { int a; int b; };"));
+    CHECK(first_error(s) == "redefinition of 'P', a type an earlier entry"
+	  " defined (%run rebuilds the session)");
+    REQUIRE(s.submit("p.a + (int)sizeof(struct P)"));
+    CHECK(s.shown() == "11");
+    CHECK_FALSE(s.submit("struct Q { int a; };\nstruct Q { int a; };"));
+    CHECK(first_error(s) == "Struct 'Q' already defined");
+}
+
+TEST_CASE("a type an earlier entry defined is not defined again (D6)")
+{
+    check_type_redefinition("--std=c17");
+    check_type_redefinition("--std=c++17");
+    InteractiveSession s;
+    REQUIRE(s.begin("--std=c++17"));
+    REQUIRE(s.submit("class C { public: int x; };"));
+    CHECK_FALSE(s.submit("class C { public: int x; };"));
+    CHECK(first_error(s) == "redefinition of 'C', a type an earlier entry"
+	  " defined (%run rebuilds the session)");
+}
+
 // TEXT in a fresh temporary file (the temp-file owner places it); its path.
 static std::string temp_source(const char *text, const char *prefix)
 {

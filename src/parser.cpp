@@ -80,6 +80,14 @@ AggregateDefinitionOrigin aggregate_definition_origin(
 	: AggregateDefinitionOrigin::Included;
 }
 
+// Where AGG is defined: FILE, and whether it is the translation unit's root.
+void stamp_aggregate_definition(const Program &pgm, DataDefSTRUCT *agg,
+				const char *file)
+{
+    agg->definition_origin = aggregate_definition_origin(pgm, file);
+    agg->definition_file = file;
+}
+
 struct InstTimer
 {
     Program &pgm;
@@ -10219,8 +10227,8 @@ static TokenDataType *instantiate_basic_class_pattern(
 	Program &pgm, const BasicClassPatternBinding &binding)
 {
     BasicClassPatternParsePosition parse_position(binding.definition);
-    AggregateDefinitionOrigin definition_origin = aggregate_definition_origin(
-	pgm, basic_class_pattern_source_file(binding.definition));
+    const char *definition_file =
+	basic_class_pattern_source_file(binding.definition);
     Program::ClassRegistrationJournal journal(pgm, false);
     DataDefCLASS *ddc = NULL;
     datadef_map_citer aggregate = pgm.struct_map.find(binding.registered_name);
@@ -10260,7 +10268,7 @@ static TokenDataType *instantiate_basic_class_pattern(
 	ddc->enclosing_class = binding.definition.owner_class;
 	ddc->from_system_header = node.from_system_header;
 	ddc->union_layout = node.kind == Program::ClassAggregateKind::Union;
-	ddc->definition_origin = definition_origin;
+	stamp_aggregate_definition(pgm, ddc, definition_file);
 	ddc->is_dependent_placeholder = false;
 	ddc->opaque_concrete_tag = false;
 	ddc->has_dependent_surface = false;
@@ -10304,7 +10312,7 @@ static TokenDataType *instantiate_basic_class_pattern(
 	    shell->from_system_header = nested.from_system_header;
 	    shell->union_layout =
 		nested.kind == Program::ClassAggregateKind::Union;
-	    shell->definition_origin = definition_origin;
+	    stamp_aggregate_definition(pgm, shell, definition_file);
 	    shell->is_dependent_placeholder = false;
 	    shell->opaque_concrete_tag = false;
 	    shell->has_dependent_surface = false;
@@ -48293,8 +48301,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     // non-delegating path, or __is_final answers 0 for it.
     if ( struct_head_final )
 	dds->struct_is_final = true;
-    dds->definition_origin = aggregate_definition_origin(
-	pgm, tag ? tag->file : file);
+    stamp_aggregate_definition(pgm, dds, tag ? tag->file : file);
     madc::dis::istring tag_store_key = tag ? tag->spelling() : "";
     // Set when a GLOBAL-scope definition reclaims its bare tag from a
     // relocated namespace-scoped prior (the mirror arm below): the
@@ -48413,6 +48420,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    if ( dds->struct_is_final )
 		prior->struct_is_final = true;
 	    prior->definition_origin = dds->definition_origin;
+	    prior->definition_file = dds->definition_file;
 	    delete dds;
 	    dds = prior;
 	    was_pre_registered = true;
@@ -48564,8 +48572,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    std::function<void(DataDefSTRUCT *, TokenBase *)> parse_nested_aggregate_body;
 	    parse_nested_aggregate_body = [&](DataDefSTRUCT *inner, TokenBase *loc) -> void
 	    {
-		inner->definition_origin = aggregate_definition_origin(
-		    pgm, loc ? loc->file : NULL);
+		stamp_aggregate_definition(pgm, inner, loc ? loc->file : NULL);
 		// This body is open for its own nested tags (see the top-level
 		// AggregateScope); the lambda's exit pops it, Throw included.
 		struct InnerScope {
@@ -48665,7 +48672,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 				{
 				    nested = static_cast<DataDefSTRUCT *>(sdmi->second);
 				    if ( nested->size != 0 || !nested->members.empty() )
-					pgm.Throw(inner_tag) << "Struct '" << sname << "' already defined" << flush;
+					pgm.refuse_type_redefinition(inner_tag, "Struct",
+								     sname, nested);
 				}
 				nested->union_layout = inner_union_kw;
 				apply_aggregate_attributes(nested, inner_attrs, false);
@@ -48909,7 +48917,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    {
 			inner = static_cast<DataDefSTRUCT *>(sdmi->second);
 			if ( inner->size != 0 || !inner->members.empty() )
-			    pgm.Throw(stag) << "Struct '" << sname << "' already defined" << flush;
+			    pgm.refuse_type_redefinition(stag, "Struct", sname, inner);
 			inner->union_layout = nested_union_kw;
 		    }
 		    apply_aggregate_attributes(inner, nested_attrs, false);
@@ -49186,7 +49194,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    << tag_store_key << " over forest-restored twin" << endl);
 	    }
 	    else
-		pgm.Throw(tag) << "Struct '" << tag->spelling() << "' already defined" << flush;
+		pgm.refuse_type_redefinition(tag, "Struct", tag->spelling(),
+					     existing);
 	}
 	else
 	{
@@ -49518,8 +49527,7 @@ DataDefSTRUCT *Program::parse_class_anonymous_aggregate(TokenBase *kw)
 	return NULL;
     DataDefSTRUCT *agg = new_anon_struct();
     agg->union_layout = kw && kw->id() == TokenID::tkUNION;
-    agg->definition_origin = aggregate_definition_origin(
-	*this, kw ? kw->file : NULL);
+    stamp_aggregate_definition(*this, agg, kw ? kw->file : NULL);
     apply_aggregate_attributes(agg, attrs, false);
     parse_class_anonymous_aggregate_members(agg, kw);
     TokenBase *close = nextToken();
@@ -52264,7 +52272,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		<< tag->spelling() << "'" << endl);
 	}
 	else
-	    pgm.Throw(tag) << "Class '" << tag->spelling() << "' already defined" << flush;
+	    pgm.refuse_type_redefinition(tag, "Class", tag->spelling(), fwd);
     }
     if ( !ddc )
 	ddc = new DataDefCLASS(class_emitted_name, 0, DataType::dtRESERVED);
@@ -52274,7 +52282,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     // class object, and a re-entered definition must not un-final it.
     if ( head_final )
 	ddc->struct_is_final = true;
-    ddc->definition_origin = aggregate_definition_origin(pgm, tag->file);
+    stamp_aggregate_definition(pgm, ddc, tag->file);
     if ( has_local_class_identity )
 	pgm.function_local_class_identities[ddc] = local_class_identity;
     if ( union_class )

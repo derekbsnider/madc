@@ -1122,6 +1122,7 @@ static bool clone_local_aggregate_members(
 	dst->is_anonymous = false;
 	dst->reverse_scalar_storage = src->reverse_scalar_storage;
 	dst->definition_origin = src->definition_origin;
+	dst->definition_file = src->definition_file;
 
 	bool substituted_object_member = false;
 	for (size_t i = 0; i < src->members.size(); ++i) {

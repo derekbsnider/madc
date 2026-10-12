@@ -513,6 +513,22 @@ bool Program::session_redefines_object(const Variable *v) const
     return file && session_units.count(file);
 }
 
+bool Program::session_defines_type(const DataDefSTRUCT *agg) const
+{
+    return interactive_session && agg && agg->definition_file
+	   && session_units.count(agg->definition_file);
+}
+
+void Program::refuse_type_redefinition(TokenBase *where, const char *kind,
+				       const madc::dis::istring &spelling,
+				       const DataDefSTRUCT *existing)
+{
+    if ( session_defines_type(existing) )
+	Throw(where) << "redefinition of '" << spelling << "', a type an"
+	    " earlier entry defined (%run rebuilds the session)" << std::flush;
+    Throw(where) << kind << " '" << spelling << "' already defined" << std::flush;
+}
+
 madc::dis::istring Program::object_location(const Variable *v) const
 {
     const char *file;
