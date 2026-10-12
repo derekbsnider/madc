@@ -11384,9 +11384,7 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		// and were dropped the same way (g read null, SILENTLY) — queue
 		// them too; collect_global_ctors' carrier arm emits them.
 		TokenDecl *adecl = dynamic_cast<TokenDecl *>(origin);
-		bool carrier_defines = adecl
-		    && (adecl->initialize || adecl->ctor_args_braced
-			|| !adecl->ctor_args.empty());
+		bool carrier_defines = adecl && adecl->has_initializer();
 		// `extern var X;` is a DECLARATION: storage, construction, and
 		// cleanup live in the defining TU (the class-instance arm below
 		// applies the same rule — g++ parity with `extern std::string s;`).
@@ -31020,8 +31018,7 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 				// value over the shared definition (initializer /
 				// ctor-args make it a definition, C semantics).
 				if ((sdcl->var.flags & vfEXTERN)
-				    && !sdcl->initialize && !sdcl->ctor_args_braced
-				    && sdcl->ctor_args.empty())
+				    && !sdcl->has_initializer())
 					continue;
 				// A block-scope static value is constructed and
 				// initialized ONCE ([stmt.dcl]/4): both go into
@@ -33637,6 +33634,30 @@ node_t CirBuilder::global_init_in_place(TokenGlobalInit *gi)
 	return NULL;
 }
 
+// The declaration whose initializer defines global `v`. A session
+// redefinition's is its newest (plan §42 D6: the earlier one's initializer
+// already ran). Otherwise the one that carries an initializer: `extern S s;`
+// ahead of `S s(5);` declares, and the second defines. With none, the first
+// (default initialization).
+static TokenDecl *global_defining_decl(Program *prog, Variable *v)
+{
+	if (prog->session_redefined_objects.count(v)) {
+		const Program::TopDecl *td = prog->latest_object_declaration(v);
+		return td ? td->decl : NULL;
+	}
+	TokenDecl *first = NULL;
+	for (const Program::TopDecl &td : prog->top_decls) {
+		if (td.kind != Program::DeclKind::dkGlobalVar || td.var != v
+		    || !td.decl)
+			continue;
+		if (td.decl->has_initializer())
+			return td.decl;
+		if (!first)
+			first = td.decl;
+	}
+	return first;
+}
+
 void CirBuilder::collect_global_ctors(Program *prog,
 				      std::vector<node_t> &deferred_globals,
 				      std::set<madc::dis::istring> &emitted_globals)
@@ -33687,10 +33708,7 @@ void CirBuilder::collect_global_ctors(Program *prog,
 				queue_dtor_only();
 				continue;
 			}
-			TokenDecl *sdecl = NULL;
-			for (auto &td : prog->top_decls)
-				if (td.kind == Program::DeclKind::dkGlobalVar
-				    && td.var == v) { sdecl = td.decl; break; }
+			TokenDecl *sdecl = global_defining_decl(prog, v);
 			if (!sdecl) {
 				queue_dtor_only();
 				continue;
@@ -33737,10 +33755,12 @@ void CirBuilder::collect_global_ctors(Program *prog,
 		bool already_emitted = emitted_globals.count(v->name) != 0;
 		// An earlier module of the interactive session defines this object
 		// (plan §41.2a) and ran its construction, or a refused entry did
-		// (§41.3): this module only declares it. A source global is declared by the dkGlobalVar pass (which
+		// (§41.3): this module only declares it, unless it redefines it
+		// (D6: constructed again in the same storage). A source global is declared by the dkGlobalVar pass (which
 		// never queued its dynamic init above); a built-in one is declared
 		// here.
-		if (session_defines(var_emit_name(*v))) {
+		if (session_defines(var_emit_name(*v))
+		    && !prog->session_redefined_objects.count(v)) {
 			if (!already_emitted) {
 				m_extern_decl = true;
 				node_t gd = var_decl(v, NULL);
@@ -33767,10 +33787,8 @@ void CirBuilder::collect_global_ctors(Program *prog,
 			}
 			emitted_globals.insert(v->name);
 		} else {
-			// Source-declared: locate the TokenDecl carrying the initializer.
-			for (auto &td : prog->top_decls)
-				if (td.kind == Program::DeclKind::dkGlobalVar
-				    && td.var == v) { decl = td.decl; break; }
+			// Source-declared: the TokenDecl carrying the initializer.
+			decl = global_defining_decl(prog, v);
 		}
 		node_t cc = global_ctor_call(v, cdd, decl);
 		// Rung 3: record this global's slice of the init statements as a

@@ -1127,6 +1127,14 @@ public:
     // (which never had an initializer), so the extern is not turned into a
     // second definition ("Repeated item declaration").
     bool baked_static_init = false;
+    // Does this declaration carry an initializer (`= x`, `(args)`, `{...}`,
+    // or a constant the parser baked)? One without (`extern T v;`, a
+    // tentative `T v;`) declares, or default-initializes.
+    bool has_initializer() const
+    {
+	return initialize || !ctor_args.empty() || ctor_args_braced
+	       || has_brace_init || !init_list.empty() || baked_static_init;
+    }
     // True when this is a FUNCTION-BLOCK-scope `extern T name;` that refers to a
     // file-scope global of the same name. The CIR backend must emit an actual
     // `extern T name;` inside that block so c2mir's scope resolution rebinds the

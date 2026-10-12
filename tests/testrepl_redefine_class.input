@@ -1,0 +1,9 @@
+struct S { int a; S(int x) : a(x) {} };
+S s(1);
+int *pa = &s.a;
+S s(2);
+printf("class %d %d\n", s.a, *pa);
+int f(int x) { return x * 10; }
+int g = f(1);
+int g = f(2);
+printf("dynamic %d\n", g);

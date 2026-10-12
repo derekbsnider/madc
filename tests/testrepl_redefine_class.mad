@@ -1,0 +1,6 @@
+// Plan §42 D6: a redefinition initializes the object again with its NEW
+// initializer — a class object is constructed again in the same storage (an
+// earlier pointer into it reads the new value), a dynamic initializer runs
+// the new expression. madc skipped the class object's construction (its
+// storage read 0) and re-ran the earlier declaration's initializer.
+#include <stdio.h>

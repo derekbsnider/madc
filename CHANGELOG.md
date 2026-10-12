@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### A global is initialized from its defining declaration
+
+A global declared `extern` ahead of its definition is now initialized by
+the definition: `extern S s; S s(5);` constructs `s` with 5, and `extern
+int g; int g = f();` runs `f`. Before, madc took the first declaration's
+absent initializer, so `s` was default-constructed and `g` stayed 0. In a
+`madc -i` session a redefinition (plan §42 D6) now initializes the object
+again with its new initializer — a class object is constructed again in
+the same storage, so an earlier pointer into it reads the new value, and a
+dynamic initializer runs the new expression; before, madc skipped the
+class object's construction (its storage read 0) and re-ran the earlier
+declaration's initializer.
+
 ### Objects with static storage duration are destroyed at exit
 
 An object with static storage duration — a global, an array global, a
