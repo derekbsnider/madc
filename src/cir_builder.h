@@ -375,6 +375,11 @@ class CirBuilder {
 	bool late_bound_object(const class Variable &v) const;
 	node_t var_storage_node(const class Variable &v, TokenBase *origin);
 	std::map<madc::dis::istring, madc::dis::istring> m_late_cells;
+	// Plan §42 D6: each object this entry redefines that ends its earlier
+	// lifetime first, object symbol -> the function that destroys it
+	// (redefined_destroys()).
+	std::vector<std::pair<madc::dis::istring, madc::dis::istring>>
+		m_redefined_destroys;
 	// Wide string literals (parser addWideLiteral): the sanitized module
 	// symbol (__wlit_<n>) each synthetic __wliteral__ Variable emits under.
 	// The Variable's own name embeds the raw UTF-32 payload (binary-safe for
@@ -2737,7 +2742,14 @@ public:
 	// address: the complete dtor, or a fixed array's per-(class,N) wrapper.
 	// One owner for the scope-exit cleanup of an automatic object
 	// (var_decl) and the exit-time registration of a static one.
-	madc::dis::istring class_object_dtor_symbol(Variable *v, DataDefCLASS *cdd);
+	// DEMAND false names the function without making its definition.
+	madc::dis::istring class_object_dtor_symbol(Variable *v, DataDefCLASS *cdd,
+						    bool demand = true);
+	// The function that ends V's lifetime at exit, called with its address
+	// (an object with static storage duration); empty when V needs none or
+	// ends with its thread. DEMAND makes the prototype or definition a call
+	// from this module needs.
+	madc::dis::istring static_object_destroyer(Variable *v, bool demand);
 	// The exit-time destruction of an object with static storage duration,
 	// registered right after its initialization as g++ does:
 	// `__cxa_atexit((void (*)(void *))D, (void *)&v, (void *)&__dso_handle);`
@@ -2978,6 +2990,11 @@ public:
 	// late-bound objects through, cell symbol -> object symbol.
 	const std::map<madc::dis::istring, madc::dis::istring> &late_cells() const
 		{ return m_late_cells; }
+	// Plan §42 D6: the destructible objects this entry redefines, object
+	// symbol -> the function the session calls with the earlier object's
+	// address before this module's definition takes its storage.
+	const std::vector<std::pair<madc::dis::istring, madc::dis::istring>> &
+	redefined_destroys() const { return m_redefined_destroys; }
 	// Pack-side c2mir check gate, drop arm (rung 1, layer 4): called by
 	// madc_cir_freeze with the defective top-level child indices reported
 	// by c2mir_check_tree on a COPY of the pristine translated tree. Drops

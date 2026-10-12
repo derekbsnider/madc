@@ -3482,10 +3482,9 @@ statement not run again, `:$a` adding a function).
 **Built, D6 for variables (owner 2026-10-12).** A second definition of an
 object an earlier unit defined is the session's redefinition
 (`Program::session_redefines_object`, the functions' rule), recorded in
-`session_redefined_objects`. `declare_object` refuses a changed type, a const
-object (its reads fold into earlier code) and an object with a destructor
-(`trait_has_trivial_destructor`, the madc `var` carrier included), each with
-the `%run` hint; the object keeps its value. The CIR builder emits the newest
+`session_redefined_objects`. `declare_object` refuses a changed type and a
+const object (its reads fold into earlier code), each with the `%run` hint;
+the object keeps its value. The CIR builder emits the newest
 definition (`session_object_redefinition`). In the JIT every exported object
 is WEAK once loaded (`make_interposable`), and MIR loads the new initializer
 into the weak item's storage, so the address stays and earlier functions and
@@ -3496,8 +3495,7 @@ definition is re-initialized; an unchanged entry is never read again, so its
 variables keep their values. Gates: `testrepl_redefine_var`, `testrepl_live`
 (`:10s/= 0/= 40/`).
 
-Open: redefining an object with a destructor (`var` included); a redefined
-struct (D6's types); madcide's REPL pane (its own repository) needs the
+Open: a redefined struct (D6's types); madcide's REPL pane (its own repository) needs the
 dialect verb; the `%run` rebuild calling `main` when the buffer defines it but
 never calls it.
 
@@ -3519,6 +3517,21 @@ member (no DLL exports `__cxa_atexit`). Gates: `testglobaldtor`,
 `testrepl_globaldtor`. Open: a madc-built shared object unloaded before exit
 (the writers carry no fini array); `thread_local` objects
 (`__cxa_thread_atexit`).
+
+**Built, D6 for an object with a destructor (2026-10-12), the madc `var`
+included.** The earlier object ends its lifetime first, as an assigned
+object's old value does, then the new one is constructed in the same storage.
+The CIR builder names each redefined object's destroyer
+(`static_object_destroyer`, the one the exit registration names;
+`redefined_destroys()`), and the session calls it with the object's address
+after the link check and before the load copies the new definition's bytes
+over the storage (`CirJitSession::destroy_redefined`, at the entry's
+boundary). The first definition's exit registration destroys the newest at
+session end. A global declared `extern` ahead of its definition, and a
+redefinition, now take the defining declaration's initializer
+(`global_defining_decl`). Gates: `testrepl_redefine_dtor` (g++ and clang++
+print the same trace for `t.~T(); new (&t) T(2);`), `testrepl_redefine_carrier`,
+`testrepl_redefine_class`, `testglobalexterndef`.
 
 ## 42. Decisions (owner, 2026-09-25)
 

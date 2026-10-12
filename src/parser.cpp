@@ -31500,8 +31500,9 @@ Variable *Program::declare_object(TokenCpnd *code, DataDef &type, const madc::di
 	    // defined can be defined again with its type, and the new definition
 	    // initializes the same storage, so every function and every pointer
 	    // sees it (Julia's global, Lisp's defparameter). Its type cannot
-	    // change (a typed Julia global's cannot), nor can an object whose
-	    // destructor the earlier definition registered be defined over.
+	    // change (a typed Julia global's cannot). An object with a
+	    // destructor ends its lifetime first, as an assigned object's old
+	    // value does (CirJitSession::destroy_redefined).
 	    const bool session_redefinition = is_definition
 					      && session_redefines_object(prior);
 	    if ( object_redeclaration_conflicts(prior, &type, dims, object_cv) )
@@ -31516,10 +31517,6 @@ Variable *Program::declare_object(TokenCpnd *code, DataDef &type, const madc::di
 	    if ( session_redefinition && prior->type && prior->type->is_const() )
 		Throw(where) << "redefinition of '" << id << "', which is const:"
 		    " earlier code holds its value (%run rebuilds the session)" << flush;
-	    if ( session_redefinition && prior->type
-	      && !trait_has_trivial_destructor(prior->type->unqualified()) )
-		Throw(where) << "redefinition of '" << id << "', which has a"
-		    " destructor (%run rebuilds the session)" << flush;
 	    if ( session_redefinition )
 		session_redefined_objects.insert(prior);
 	    else if ( is_definition && (prior->flags & vfDEFINED) )

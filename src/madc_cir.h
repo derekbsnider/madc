@@ -243,6 +243,7 @@ private:
     void make_function_stubs(const std::vector<madc::dis::istring> &names);
     void make_interposable(MIR_module_t m);
     bool redefinitions_fit(MIR_module_t m, Program *prog, const char *entry_name);
+    void destroy_redefined(Program *prog, const char *entry_name, CirBuilder *b);
     void rebind_late_stubs(MIR_module_t m, Program *prog);
     bool init_contexts(const char *source_name, bool dump_checked);
     bool load_and_link(const char *source_name, Program *prog);

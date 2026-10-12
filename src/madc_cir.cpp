@@ -2343,6 +2343,42 @@ bool CirJitSession::begin_live(const char *session_name)
     return true;
 }
 
+// A destructor called with its object's address, through the boundary's
+// one-pointer call.
+struct CirDestroyCall
+{
+    void *fn;
+    void *obj;
+};
+
+static void cir_call_destroy(void *call)
+{
+    CirDestroyCall *dc = (CirDestroyCall *)call;
+    ((void (*)(void *))dc->fn)(dc->obj);
+}
+
+// Plan §42 D6: a destructible object the admitted entry redefines ends its
+// lifetime first, as an assigned object's old value does. The load copies
+// the new definition's bytes over its storage and the entry's init constructs
+// the new object there; the registration the first definition made destroys
+// the newest at session end. The destructor is an entry's (generated here) or
+// a library's.
+void CirJitSession::destroy_redefined(Program *prog, const char *entry_name,
+				      CirBuilder *b)
+{
+    if (!b)
+	return;
+    for (const auto &od : b->redefined_destroys()) {
+	CirDestroyCall dc;
+	dc.obj = data_address(od.first.c_str());
+	dc.fn = function_code(od.second.c_str());
+	if (!dc.fn)
+	    dc.fn = cir_import_resolver(od.second.c_str());
+	if (dc.obj && dc.fn)
+	    cir_run_at_entry_boundary(prog, entry_name, cir_call_destroy, &dc);
+    }
+}
+
 bool CirJitSession::append(Program *prog, const char *entry_name)
 {
     if (!live_mode || !ctx || !prog)
@@ -2378,6 +2414,7 @@ bool CirJitSession::append(Program *prog, const char *entry_name)
     // Refused: never loaded, never one of live_mods, never `mod`.
     if (!admits(m, prog, entry_name, b))
 	return false;
+    destroy_redefined(prog, entry_name, b);
     live_mods.push_back(m);
     mod = m;
     if (!load_and_link(entry_name, prog)) {

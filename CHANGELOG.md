@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### A REPL session object with a destructor can be redefined
+
+In a `madc -i` session an object with a destructor — the madc `var`
+carrier included — can now be defined again (plan §42 D6). The earlier
+object's destructor runs first, then the new definition constructs a new
+object in the same storage, so a pointer taken earlier reads the new
+value; the session's end destroys the newest object once, in the first
+definition's place. An array object destroys its elements last-first
+before the new ones are constructed. Before, madc refused the
+redefinition as "redefinition of 'x', which has a destructor" with a hint
+to `%run`. A type change and a `const` object are still refused and keep
+their value.
+
 ### A global is initialized from its defining declaration
 
 A global declared `extern` ahead of its definition is now initialized by

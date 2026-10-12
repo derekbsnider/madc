@@ -1,0 +1,11 @@
+char trace[64];
+struct Last { ~Last() { printf("session end:%s\n", trace); } };
+Last last;
+struct T { int a; T(int x) : a(x) {} ~T() { sprintf(trace + strlen(trace), " %d", a); } };
+T t(1);
+T *pt = &t;
+T t(2);
+printf("now %d %d:%s\n", t.a, pt->a, trace);
+T pair[2] = {6, 7};
+T pair[2] = {8, 9};
+printf("pair %d %d:%s\n", pair[0].a, pair[1].a, trace);

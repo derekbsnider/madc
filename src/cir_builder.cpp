@@ -17068,12 +17068,14 @@ madc::dis::istring CirBuilder::demand_array_dtor(DataDefCLASS *cdd, size_t n)
 }
 
 madc::dis::istring CirBuilder::class_object_dtor_symbol(Variable *v,
-							DataDefCLASS *cdd)
+							DataDefCLASS *cdd,
+							bool demand)
 {
 	// A fixed array's wrapper destroys all N, last first (task #56): the
 	// complete dtor called with &a would destroy a[0] only.
 	if (v->is_fixed_array() && !v->is_vla() && v->total_elements() > 0)
-		return demand_array_dtor(cdd, v->total_elements());
+		return demand ? demand_array_dtor(cdd, v->total_elements())
+			      : class_array_dtor_symbol(cdd, v->total_elements());
 	return class_complete_dtor_symbol(cdd);
 }
 
@@ -17134,6 +17136,30 @@ void CirBuilder::need_exit_registration_externs()
 	}
 }
 
+madc::dis::istring CirBuilder::static_object_destroyer(Variable *v, bool demand)
+{
+	if (!v || !v->type || v->type->is_pointer()
+	    || (v->flags & (vfEXTERN | vfTHREADLOCAL)))
+		return madc::dis::istring();
+	if (is_array_object(v->type)) {
+		// One carrier: its storage is one object (array_storage_decl).
+		if (v->is_fixed_array())
+			return madc::dis::istring();
+		if (demand)
+			need_output_extern("madarray_destruct", false,
+					   { { {N_VOID}, true } });
+		return madc::dis::istring("madarray_destruct");
+	}
+	DataDefCLASS *cdd = as_class_instance(v->type);
+	if (!cdd || !class_needs_dtor(cdd))
+		return madc::dis::istring();
+	madc::dis::istring dsym = class_object_dtor_symbol(v, cdd, demand);
+	// TYPED forward proto, as synth_array_dtor_def declares it.
+	if (demand && dsym == class_complete_dtor_symbol(cdd))
+		need_output_extern(dsym.c_str(), false, { { {}, true, cdd } });
+	return dsym;
+}
+
 // g++ registers a static object's destructor right after constructing it
 // (__cxa_atexit in its static-init function and in a block-scope static's
 // guarded init), so objects end in the reverse order they began,
@@ -17141,25 +17167,8 @@ void CirBuilder::need_exit_registration_externs()
 // the image whose exit or finalization runs it.
 node_t CirBuilder::static_dtor_registration(Variable *v, TokenBase *origin)
 {
-	if (!v || !v->type || v->type->is_pointer()
-	    || (v->flags & (vfEXTERN | vfTHREADLOCAL)))
-		return NULL;
-	madc::dis::istring dsym;
-	if (is_array_object(v->type)) {
-		// One carrier: its storage is one object (array_storage_decl).
-		if (v->is_fixed_array())
-			return NULL;
-		dsym = "madarray_destruct";
-		need_output_extern(dsym.c_str(), false, { { {N_VOID}, true } });
-	} else if (DataDefCLASS *cdd = as_class_instance(v->type)) {
-		if (!class_needs_dtor(cdd))
-			return NULL;
-		dsym = class_object_dtor_symbol(v, cdd);
-		// TYPED forward proto, as synth_array_dtor_def declares it.
-		if (dsym == class_complete_dtor_symbol(cdd))
-			need_output_extern(dsym.c_str(), false,
-					   { { {}, true, cdd } });
-	} else
+	madc::dis::istring dsym = static_object_destroyer(v, true);
+	if (dsym.empty())
 		return NULL;
 	referenced_funcs.insert(dsym);
 	need_exit_registration_externs();
@@ -33664,6 +33673,7 @@ void CirBuilder::collect_global_ctors(Program *prog,
 {
 	m_global_ctor_stmts.clear();
 	m_ctor_groups.clear();
+	m_redefined_destroys.clear();
 	if (!prog || !prog->tkProgram) return;
 	// By index over the LIVE size: translating a global's initializer can
 	// instantiate a template whose objects join tkProgram->variables, and the
@@ -33682,12 +33692,21 @@ void CirBuilder::collect_global_ctors(Program *prog,
 		// initialization: a statically initialized object is destroyed
 		// as if it were initialized there ([basic.start.term]/3), in
 		// declaration order. An earlier module of the interactive session
-		// that defines the object registered it.
+		// that defines the object registered it; when this one redefines
+		// the object (D6), the session ends the earlier object before this
+		// module's definition takes its storage.
 		auto add_dtor = [&](std::vector<node_t> &grp) {
 			if (!is_array_object(v->type) && !as_class_instance(v->type))
 				return;
-			if (session_defines(var_emit_name(*v)))
+			if (session_defines(var_emit_name(*v))) {
+				if (!prog->session_redefined_objects.count(v))
+					return;
+				madc::dis::istring d = static_object_destroyer(v, false);
+				if (!d.empty())
+					m_redefined_destroys.push_back(
+						std::make_pair(var_emit_name(*v), d));
 				return;
+			}
 			if (node_t reg = static_dtor_registration(v, NULL))
 				grp.push_back(reg);
 		};
