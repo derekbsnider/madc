@@ -21,6 +21,7 @@
 #include "madcdis/document.h"	// entity_id, anchor_id
 #include "madcdis/istring.h"	// buffer(): a buffer's name and path
 #include "madc/bits/ex_commands"	// ex_command: the one enum text
+#include "highlight_class.h"	// code_range: the shown lines that are a buffer's text
 
 namespace madc {
 namespace hub { class world; }
@@ -116,10 +117,14 @@ bool parse(const std::string &text, line &out, std::string &error);
 // What one command line did: the lines it shows (each ending in '\n'), or
 // why it was refused; whether it now waits for text (a / i / c — the host
 // feeds lines until one holding only `.`) or ends the host (q / wq / x).
+// `code`: the byte ranges of `shown` that are a buffer's text (:p, :nu, a
+// line :g or :s prints; never :l's escaped form), a run of consecutive
+// buffer lines printed together one range — what a host colours.
 struct outcome
 {
     bool        ok;
     std::string shown;
+    std::vector<madc::code_range> code;
     std::string error;
     bool        wants_text;
     bool        quit;

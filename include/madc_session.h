@@ -214,15 +214,20 @@ public:
     // `%`, `.`, `?` or `:` is a command, never C — except `.` and a digit,
     // `::` and `%:`. The first character is the MODE: `%name` and `.name`
     // are the REPL's commands (each mode with its own aliases: cling's
-    // `.L`, plan §7f), `?NAME` is %pinfo NAME and `?` alone %help
-    // (IPython), and `:` is colon mode — ed / ex / vim commands, the host's,
+    // `.L`, plan §7f), `?NAME` is %pinfo NAME, `??NAME` %pinfo2 NAME and
+    // `?` alone %help (IPython), and `:` is colon mode — ed / ex / vim commands, the host's,
     // which the session refuses. A typed name becomes its row once, at
     // input. The codes' one text is <bits/session_enums>, the dialect's too.
     typedef ::madc::session_command Command;
     typedef ::madc::command_mode Mode;
+    // What the pinfo command shows of a name, its row's detail (IPython's
+    // _inspect levels): info (%pinfo, ?NAME), info and source (%pinfo2,
+    // ??NAME), source alone (%psource).
+    enum class Inspect : unsigned char { info, info_source, source };
     // What `text` is as an entry (a host asks before it offers the entry:
     // colon mode is its own): false when it is no command; else its mode,
-    // the name typed (`L`; `pinfo` or `help` for `?NAME` and `?`; empty for
+    // the name typed (`L`; `pinfo`, `pinfo2` or `help` for `?NAME`, `??NAME`
+    // and `?`; empty for
     // a `:` text, and when no name follows `%` or `.`), the BUILT-IN command
     // it names (none: none — a registered one, or a typo) and the rest of
     // its first line after the name (after the `:` for colon mode), without
@@ -348,7 +353,16 @@ private:
     // it is refused (its diagnostics are the Program's).
     bool run_command(const std::string &text, const std::string &name);
     bool type_command(const std::string &expression, const std::string &name);
-    bool pinfo_command(const std::string &argument, const std::string &name);
+    // `%pinfo NAME` / `?NAME`, `%pinfo2 NAME` / `??NAME` and `%psource NAME`:
+    // IPython's one inspector at its detail levels (`command`, the row's
+    // name, cites a refusal).
+    bool pinfo_command(const std::string &argument, const std::string &name,
+		       Inspect detail, const char *command);
+    // The source of each definition of `word` the session holds (%psource,
+    // ??NAME; IPython's inspect.getsource): its lines from its unit's text —
+    // REPL[N]'s entry, or the file it was loaded from as the host's buffer
+    // of it holds it, else the disk — one after another. False when none.
+    bool binding_source(const std::string &word, std::string &out);
     void whos_command();
     // %load FILE and %run [-i] FILE [ARGS] (D25, D16): ARGS split by the
     // shell's rules (ns_common::shell_words).

@@ -1,0 +1,6 @@
+// testrepl_psource's %load file: a definition %psource reads back.
+int thrice(int n)
+{
+    /* three of them */
+    return 3 * n;
+}

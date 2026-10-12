@@ -590,3 +590,34 @@ TEST_CASE("the code a command shows is coloured when colour reaches the output (
     madc::set_colour_when(madc::colour_when::automatic);
     CHECK(tout.str() == "int\nType:      int\nDefined:   @ REPL[1]:1\n42\n");
 }
+
+// The buffer's lines a colon command prints (:p, :nu; ex::outcome::code) and
+// the source %psource shows are code too: coloured where colour reaches the
+// output, a run of consecutive lines lexed as one text (a comment's second
+// line stays a comment), a line number plain; shut, as before.
+TEST_CASE("colon mode's printed lines and %psource are coloured when colour reaches the output")
+{
+    const char *typed = "int x = 2;\n:a\n/* one\ntwo */\n.\n:%p\n:2nu\n%psource x\n";
+    InteractiveSession s;
+    REQUIRE(s.begin("--std=c17"));
+    colon_host h;
+    std::istringstream in(typed);
+    std::ostringstream out;
+    madc::set_colour_when(madc::colour_when::always);
+    CHECK(madc_repl_run(s, in, out, false, h.colon, &madc::theme_default()) == 0);
+    madc::set_colour_when(madc::colour_when::automatic);
+    CHECK(out.str() == "\x1b[1mint\x1b[0m x = \x1b[36m2\x1b[0m;\n"
+		       "\x1b[32m/* one\x1b[0m\n\x1b[32mtwo */\x1b[0m\n"
+		       "  2 \x1b[32m/* one\x1b[0m\n"
+		       "\x1b[1mint\x1b[0m x = \x1b[36m2\x1b[0m;\n");
+
+    InteractiveSession t;
+    REQUIRE(t.begin("--std=c17"));
+    colon_host plain;
+    std::istringstream tin(typed);
+    std::ostringstream tout;
+    madc::set_colour_when(madc::colour_when::never);
+    CHECK(madc_repl_run(t, tin, tout, false, plain.colon, &madc::theme_default()) == 0);
+    madc::set_colour_when(madc::colour_when::automatic);
+    CHECK(tout.str() == "int x = 2;\n/* one\ntwo */\n  2 /* one\nint x = 2;\n");
+}

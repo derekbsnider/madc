@@ -69,6 +69,8 @@ struct CommandRow
     InteractiveSession::Command code;
     const char *usage;		// as %help prints it
     const char *summary;
+    // The pinfo command's rows: what each shows of a name (info unless set).
+    InteractiveSession::Inspect detail;
 };
 
 const CommandRow command_rows[] = {
@@ -77,7 +79,14 @@ const CommandRow command_rows[] = {
     { "type", InteractiveSession::Command::type, "%type EXPR",
       "the type of an expression, which is not run" },
     { "pinfo", InteractiveSession::Command::pinfo, "%pinfo NAME",
-      "what the session knows of a name (also ?NAME)" },
+      "what the session knows of a name (also ?NAME)",
+      InteractiveSession::Inspect::info },
+    { "pinfo2", InteractiveSession::Command::pinfo, "%pinfo2 NAME",
+      "%pinfo, and the source of a name the session defined (also ??NAME)",
+      InteractiveSession::Inspect::info_source },
+    { "psource", InteractiveSession::Command::pinfo, "%psource NAME",
+      "the source of a name the session defined",
+      InteractiveSession::Inspect::source },
     { "whos", InteractiveSession::Command::whos, "%whos",
       "the names the session defined: their types, values and origins" },
     { "load", InteractiveSession::Command::load, "%load FILE",
@@ -178,11 +187,11 @@ bool builtin_name(const std::string &name)
 // Where a command stands in an entry (D13, D24 as the owner ruled it on
 // 2026-10-09): its first line's first non-blank is the MODE — `%` or `.`
 // (the REPL's commands: a name follows, or cling's `?`), `?` (the query:
-// `?NAME` is %pinfo NAME, `?` alone %help) or `:` (colon mode: the rest of
-// the line is ex's, the host's) — except three spellings that stay C: `.`
-// and a digit (`.5`), `::` (global scope) and `%:` (the `#` digraph). Only
-// the first line is read, so every continuation line stays C (a
-// designator's `.x`).
+// `?NAME` is %pinfo NAME, `??NAME` %pinfo2 NAME, `?` alone %help) or `:`
+// (colon mode: the rest of the line is ex's, the host's) — except three
+// spellings that stay C: `.` and a digit (`.5`), `::` (global scope) and
+// `%:` (the `#` digraph). Only the first line is read, so every
+// continuation line stays C (a designator's `.x`).
 struct CommandText
 {
     Mode mode;		// none: the text is no command
@@ -195,7 +204,8 @@ struct CommandText
     std::string name(const std::string &text) const
     {
 	if ( mode == Mode::query )
-	    return text.find_first_not_of(" \t", name_end) < line_end
+	    return name_end - prefix == 2 ? "pinfo2"	// `??NAME`
+		 : text.find_first_not_of(" \t", name_end) < line_end
 		 ? "pinfo" : "help";
 	if ( mode == Mode::colon )
 	    return std::string();
@@ -247,6 +257,8 @@ CommandText command_text(const std::string &text)
 	    while ( e < text.size() && madc::hub::text_buffer::word_byte(text[e]) )
 		++e;
     }
+    else if ( c.mode == Mode::query && next == '?' )
+	++e;		// `??NAME`: %pinfo2 NAME
     c.name_end = e;
     c.line_end = text.find('\n', e);
     if ( c.line_end == std::string::npos )
@@ -276,6 +288,21 @@ std::string command_rest(const std::string &text, const CommandText &c)
     const std::string rest = text.substr(c.name_end, c.line_end - c.name_end);
     const size_t b = rest.find_first_not_of(" \t");
     return b == std::string::npos ? std::string() : rest.substr(b);
+}
+
+// A command's one NAME argument (%pinfo, %psource, %edit): the REPL's one
+// word rule's run (text_buffer::word_byte), not starting with a digit. False
+// when the argument is not one name; `at` is where its first non-blank
+// stands (npos: none).
+bool name_argument(const std::string &argument, std::string &word, size_t &at)
+{
+    at = argument.find_first_not_of(" \t\r");
+    const size_t e = argument.find_last_not_of(" \t\r");
+    word = at == std::string::npos ? std::string() : argument.substr(at, e - at + 1);
+    bool ok = !word.empty() && !isdigit((unsigned char)word[0]);
+    for ( size_t i = 0; ok && i < word.size(); ++i )
+	ok = madc::hub::text_buffer::word_byte(word[i]);
+    return ok;
 }
 
 } // namespace
@@ -778,14 +805,16 @@ bool InteractiveSession::run_command(const std::string &text,
 		command_output += "\n";
 	    }
 	    command_output += "Each name is also written with `.` (`.type EXPR`);"
-			      " `?NAME` asks about a name; `:` starts a"
+			      " `?NAME` asks about a name, `??NAME` shows its"
+			      " source too; `:` starts a"
 			      " colon-mode (ex) command.";
 	    return true;
 	}
 	case Command::type:
 	    return type_command(command_argument(text, c), name);
 	case Command::pinfo:
-	    return pinfo_command(command_argument(text, c), name);
+	    return pinfo_command(command_argument(text, c), name, row->detail,
+				 row->name);
 	case Command::whos:
 	    whos_command();
 	    return true;
@@ -1070,14 +1099,9 @@ bool InteractiveSession::open_command(const std::string &argument,
 bool InteractiveSession::edit_command(const std::string &argument,
 				      const std::string &name)
 {
-    size_t b = argument.find_first_not_of(" \t\r");
-    size_t e = argument.find_last_not_of(" \t\r");
-    const std::string word = b == std::string::npos
-			   ? std::string() : argument.substr(b, e - b + 1);
-    bool ok = !word.empty() && !isdigit((unsigned char)word[0]);
-    for ( size_t i = 0; ok && i < word.size(); ++i )
-	ok = madc::hub::text_buffer::word_byte(word[i]);
-    if ( !ok )
+    std::string word;
+    size_t at;
+    if ( !name_argument(argument, word, at) )
     {
 	command_error("%edit takes a name", name);
 	return false;
@@ -2115,24 +2139,40 @@ bool InteractiveSession::type_command(const std::string &expression,
 // dialect would register at the name's first use is registered, and the
 // description reads it before the rollback. The attempt's own diagnostics go
 // with it: a keyword or a type name is no expression, and is still described.
+// `%pinfo2 NAME` / `??NAME` adds the source of the name's definitions the
+// session holds, IPython's `Source:`; `%psource NAME` is that source alone,
+// refused when the session holds none (a header's name, a type).
 bool InteractiveSession::pinfo_command(const std::string &argument,
-				       const std::string &name)
+				       const std::string &name, Inspect detail,
+				       const char *command)
 {
-    size_t b = argument.find_first_not_of(" \t");
-    size_t e = argument.find_last_not_of(" \t");
-    const std::string word = b == std::string::npos
-			   ? std::string() : argument.substr(b, e - b + 1);
-    bool ok = !word.empty() && !isdigit((unsigned char)word[0]);
-    for ( size_t i = 0; ok && i < word.size(); ++i )
-	ok = madc::hub::text_buffer::word_byte(word[i]);
-    if ( !ok )
+    std::string word;
+    size_t b;
+    if ( !name_argument(argument, word, b) )
     {
 	prog->add_diagnostic(Program::DiagnosticSeverity::error,
 			     Program::DiagnosticPhase::parser,
-			     "%pinfo takes a name",
+			     std::string("%") + command + " takes a name",
 			     prog->intern_file(name), 1,
 			     b == std::string::npos ? 1 : (int)b + 1);
 	return false;
+    }
+    std::string source;
+    const bool has_source = detail != Inspect::info && binding_source(word, source);
+    if ( detail == Inspect::source )
+    {
+	if ( !has_source )
+	{
+	    // IPython's: "No source found for x".
+	    prog->add_diagnostic(Program::DiagnosticSeverity::error,
+				 Program::DiagnosticPhase::parser,
+				 "no source found for '" + word + "'",
+				 prog->intern_file(name), 1, (int)b + 1);
+	    return false;
+	}
+	command_output = source;
+	command_code.assign(1, madc::code_range{ 0, command_output.size() });
+	return true;
     }
     std::string described;
     std::vector<madc::code_range> described_code;
@@ -2154,7 +2194,111 @@ bool InteractiveSession::pinfo_command(const std::string &argument,
     }
     command_output = described;
     command_code = described_code;
+    if ( has_source )
+    {
+	command_output += "\nSource:\n";
+	const size_t at = command_output.size();
+	command_output += source;
+	command_code.push_back(madc::code_range{ at, command_output.size() });
+    }
     return true;
+}
+
+// Where a session binding's definition ends, its last line (0: the Program
+// recorded no end): a function's definition token's extent (the outline's
+// end_line), an object's declaration statement's (parseStatement's).
+static int definition_end_line(const Program &p, const Program::SessionBinding &b)
+{
+    if ( b.kind == Program::TopLevelName::Kind::function )
+    {
+	for ( size_t i = p.pending_funcs.size(); i-- > 0; )
+	{
+	    TokenFunc *tf = p.pending_funcs[i] ? p.pending_funcs[i]->as_func_tok() : NULL;
+	    if ( tf && tf->line == b.line && tf->var.name == b.name
+		 && tf->file && b.file && strcmp(tf->file, b.file) == 0 )
+		return tf->end_line;
+	}
+	return 0;
+    }
+    for ( size_t i = p.top_decls.size(); i-- > 0; )
+    {
+	const Program::TopDecl &td = p.top_decls[i];
+	if ( td.kind == Program::DeclKind::dkGlobalVar && td.var == b.var )
+	    return td.decl ? td.decl->end_line : 0;
+    }
+    return 0;
+}
+
+// Lines `first` to `last` (1-based) of `text`, joined by '\n' without a
+// CRLF text's '\r'. False when `first` is past its end.
+static bool text_lines(const std::string &text, int first, int last,
+		       std::string &out)
+{
+    out.clear();
+    size_t at = 0;
+    for ( int n = 1; n < first; ++n )
+    {
+	at = text.find('\n', at);
+	if ( at == std::string::npos )
+	    return false;
+	++at;
+    }
+    if ( at >= text.size() )
+	return false;
+    for ( int n = first; n <= last && at < text.size(); ++n )
+    {
+	size_t e = text.find('\n', at);
+	if ( e == std::string::npos )
+	    e = text.size();
+	std::string line = text.substr(at, e - at);
+	if ( !line.empty() && line[line.size() - 1] == '\r' )
+	    line.erase(line.size() - 1);
+	out += (n > first ? "\n" : "") + line;
+	at = e + 1;
+    }
+    return true;
+}
+
+bool InteractiveSession::binding_source(const std::string &word, std::string &out)
+{
+    out.clear();
+    std::vector<Program::SessionBinding> found;
+    prog->session_bindings(found);
+    for ( const Program::SessionBinding &r : found )
+    {
+	if ( r.name != word || !r.file || r.line < 1 )
+	    continue;
+	std::string text;
+	const size_t entry = madc::session_entry_of_unit(r.file);
+	if ( entry )
+	{
+	    if ( entry > inputs.size() )
+		continue;
+	    text = inputs[entry - 1];
+	}
+	else
+	{
+	    madc::dis::istring path;
+	    std::string why;
+	    bool has_text = false;
+	    if ( !buffer_text(madc::dis::istring(r.file), path, text, has_text, why) )
+		continue;
+	    if ( !has_text )
+	    {
+		std::ifstream file(path.c_str(), std::ios::binary);
+		if ( !file )
+		    continue;
+		std::ostringstream read;
+		read << file.rdbuf();
+		text = read.str();
+	    }
+	}
+	std::string lines;
+	if ( !text_lines(text, r.line, std::max(r.line, definition_end_line(*prog, r)), lines) )
+	    continue;
+	out += (out.empty() ? "" : "\n\n") + lines;
+    }
+    return !out.empty();
 }
 
 void InteractiveSession::bindings(madc::value &out)

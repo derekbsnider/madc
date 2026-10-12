@@ -2516,6 +2516,16 @@ TEST_CASE("session commands: command_of reads an entry as the session does (§7f
     CHECK(mode == Mode::query);
     CHECK(code == InteractiveSession::Command::pinfo);
     CHECK(arg == "x");
+    // `??NAME` is %pinfo2 NAME; %psource is the pinfo command's too (a row's
+    // detail, IPython's one inspector).
+    REQUIRE(InteractiveSession::command_of("??x", mode, word, code, arg));
+    CHECK(mode == Mode::query);
+    CHECK(word == "pinfo2");
+    CHECK(code == InteractiveSession::Command::pinfo);
+    CHECK(arg == "x");
+    REQUIRE(InteractiveSession::command_of("%psource x", mode, word, code, arg));
+    CHECK(code == InteractiveSession::Command::pinfo);
+    CHECK(arg == "x");
     // Colon mode: ed / ex / vim, the host's — no word, the whole text.
     REQUIRE(InteractiveSession::command_of(":%s/a/b/g", mode, word, code, arg));
     CHECK(mode == Mode::colon);
@@ -2814,7 +2824,7 @@ TEST_CASE("session commands: ?name and %pinfo describe a name")
     size_t start = 0;
     CHECK(has(complete_at_end(c, "?s", &start), "sq"));
     CHECK(start == 1u);
-    CHECK(complete_at_end(c, "%pi") == std::vector<std::string>{ "pinfo" });
+    CHECK(complete_at_end(c, "%pi") == std::vector<std::string>{ "pinfo", "pinfo2" });
 
     // C++: an overload pair, each with its location; a class's public members
     // (a const method's qualifier, a static member; the private one not).

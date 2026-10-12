@@ -467,6 +467,28 @@ same text); unit `tests/unit/test_ex.cpp` adds the scratch-buffer case,
 and `tests/unit/test_repl_cli.cpp`'s two colon cases check the kept entries join
 the REPL buffer.
 
+### `%psource`, `??NAME` / `%pinfo2`, and colon-printed code coloured
+
+The REPL (`madc -i`) answers `%psource NAME`, `%pinfo2 NAME` and `??NAME`
+(IPython's). `%psource NAME` prints the source of each definition of NAME the
+session holds — from the entry that typed it (`REPL[N]`) or the file that
+defined it (the host's buffer of it, else the disk), a function's whole body,
+an object's whole declaration — and is refused with "no source found for
+'NAME'" when it holds none. `%pinfo2 NAME` / `??NAME` is `%pinfo`'s fields plus
+a `Source:` section. All three are rows of the one pinfo command, each with a
+detail level (IPython's `_inspect` levels), so no new `session_command`
+enumerator; `%edit` and `%pinfo` share one name-argument reader
+(`name_argument`), and `%help`'s footer names `??NAME`. The ex core's outcome
+now carries `code` ranges — the buffer text that `:p`, `:nu`, a line `:g` or
+`:s` prints (never `:l`'s escaped form), a run of consecutive buffer lines one
+range so it lexes as one text — and the REPL paints them with `theme_paint`
+where colour reaches the terminal, line numbers plain. Reducer
+`tests/testrepl_psource.mad` (oracle: IPython's `%psource` / `??`; the
+arithmetic matches gcc on the same definitions); unit
+`tests/unit/test_repl_session.cpp` adds the `??x` / `%psource x` `command_of`
+cases and `tests/unit/test_repl_cli.cpp` the coloured colon-printed and
+`%psource` case.
+
 ### madc's colon mode as a dialect face — `madc::ex_session` over a ui:: world
 
 `madc::ex_session` (`include/madc_ex_session.h`, declared in `<ns_madc>` and

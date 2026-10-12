@@ -720,10 +720,11 @@ struct executor
     // edit before every one of them moves them all at once).
     std::deque<long long> global_marks;
     long long global_bias;
+    size_t code_line;		// the buffer line out.code's last range ends on (0: none)
 
     executor(session &ss, outcome &o)
 	: s(ss), out(o), checkpointed(false), under_global(false),
-	  global_matches(0), global_lines(0), global_bias(0) {}
+	  global_matches(0), global_lines(0), global_bias(0), code_line(0) {}
 
     // ---- :g's marks follow every edit a command makes (vim keeps the
     // mark on the line itself): a deleted line loses its mark, the lines
@@ -967,9 +968,26 @@ struct executor
 	std::string t = line_text(n);
 	if ( how == command::list )
 	    t = listed(t);
-	if ( how == command::number || s.opts.number )
-	    t = numbered(n) + t;
+	const bool number = how == command::number || s.opts.number;
+	if ( number )
+	    out.shown += numbered(n);
+	if ( how != command::list )
+	    show_code(n, t.size(), !number);
 	out.shown += t + "\n";
+    }
+    // Line n's text, the `len` bytes about to end out.shown, is code
+    // (outcome::code): it joins the range before it when it is the next
+    // buffer line, printed right after that one with nothing between
+    // (`joins`: no line number before it), so a run lexes as one text.
+    void show_code(size_t n, size_t len, bool joins)
+    {
+	const size_t from = out.shown.size();
+	if ( joins && code_line && n == code_line + 1 && !out.code.empty()
+	     && out.code.back().to + 1 == from )
+	    out.code.back().to = from + len;
+	else if ( len )
+	    out.code.push_back(madc::code_range{ from, from + len });
+	code_line = n;
     }
 
     // ---- editing (every edit inside one checkpointed group)

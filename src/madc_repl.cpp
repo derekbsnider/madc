@@ -119,9 +119,19 @@ static bool colon_line(const repl_colon &colon, const std::string &line,
 // An ex outcome printed: its lines to `out`, its refusal to the colon
 // error stream.
 static colon_step colon_report(const madc::ex::outcome &o,
-			       const repl_colon &colon, std::ostream &out)
+			       const repl_colon &colon, std::ostream &out,
+			       ReplSession *session = 0,
+			       const madc::theme *theme = 0)
 {
-    out << o.shown << std::flush;
+    // The buffer's lines it prints (:p, :nu; outcome::code) in `theme`'s
+    // colours where colour reaches `out`, as an entry's are as it is typed.
+    if ( session && theme && !o.code.empty() && madc::colour_reaches(out) )
+	out << madc::theme_paint(*theme, o.shown, o.code,
+				 standard_code(session->standard_name()),
+				 madc::hub::terminal_colour_depth());
+    else
+	out << o.shown;
+    out << std::flush;
     if ( !o.ok && colon.err )
 	*colon.err << o.error << std::endl;
     return o.quit ? colon_step::quit
@@ -143,7 +153,7 @@ static colon_step colon_run(ReplSession &session, const repl_colon &colon,
 	print_shown(session, out, theme);
 	return colon_step::done;
     }
-    return colon_report(colon.ex->run(argument), colon, out);
+    return colon_report(colon.ex->run(argument), colon, out, &session, theme);
 }
 
 // Input mode on cooked lines: the lines up to one holding only `.` (or the
