@@ -49,6 +49,13 @@ public:
     // their line breaks and without the closing `.`; the same reply.
     value &text(value &out, value &lines);
     bool wants_text();
+    // A host's scratch buffer (ex::session::set_scratch): `doc`, untitled,
+    // shown as `name` — the REPL buffer, `[REPL]`. False when `doc` is not
+    // an untitled document.
+    bool set_scratch(int64_t doc, const char *name);
+    // A host's text at the end of `doc` (ex::session::append): the REPL
+    // buffer's kept entries, one undo group each.
+    bool append(int64_t doc, const char *text);
 
 private:
     // The session and the world handle it edits (src/madc_ex.cpp): one

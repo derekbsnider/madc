@@ -85,6 +85,9 @@ madc::value reply_row(const SessionClient::Reply &r)
 	    f["rendered"] = madc::value(r.rendered);
 	    f["submitted"] = madc::value((int64_t)r.submitted);
 	    f["diagnostics"] = reply_diagnostics(r);
+	    // What the taken entry added to the session: the host's REPL
+	    // buffer keeps it ("" when nothing was kept).
+	    f["source"] = madc::value(r.source);
 	    // A taken command's ask (a session_payload code; argv is the file,
 	    // then its arguments): the pane honors it (%load, %run, %run -i,
 	    // %call, %quit).
@@ -115,6 +118,8 @@ madc::value reply_row(const SessionClient::Reply &r)
 	case madc::session_reply::load:
 	case madc::session_reply::run:
 	    f["ok"] = madc::value(r.ok);
+	    if ( r.kind == madc::session_reply::load )
+		f["source"] = madc::value(r.source);	// the file's kept text
 	    f["rendered"] = madc::value(r.rendered);
 	    f["diagnostics"] = reply_diagnostics(r);
 	    if ( r.kind == madc::session_reply::run )

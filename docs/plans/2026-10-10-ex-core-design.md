@@ -110,9 +110,25 @@ and its Layering bullet — madc is ex, madcide is the visual part.
     directory tests are `host_path_type_of`.
 11. **The hosts** (`madc -i`, both loops): an entry `command_of` calls
     colon mode goes to the host's `ex::session`, never to the session.
-    - The host starts with ONE buffer, as vim does: `madc -i FILE` opens
-      FILE (and still runs it first, D20 / D25 — `python -i`); a bare
-      `madc -i` has an empty untitled buffer.
+    - **The REPL buffer (owner, 2026-10-12; corrects this decision's
+      first form, which gave a bare `madc -i` an empty untitled buffer that
+      nothing fed — colon mode at the REPL had nothing to edit).** Colon
+      mode at the REPL exists to edit the REPL buffer: a scratch buffer
+      `[REPL]` (`ex::session::set_scratch`, vim's `buftype=nofile`) holding
+      every entry the session kept and every file `%load` kept
+      (`ReplSession::taken_source`; a refused entry stays out), each added
+      to its end as one undo group (`ex::session::append`). At a bare
+      `madc -i` (REPL mode) colon mode starts on it; `madc -i FILE` is line
+      mode (FILE is what was named; `madcide --line` is it), so colon mode
+      starts on FILE and `:b REPL` reaches the REPL buffer. `:ls`, `:b N` /
+      `:b NAME`, `:bn`, `:bp`, `:e` switch between it and the files. It never
+      counts as unsaved for `:q`, `:w FILE` writes a copy (it keeps its
+      name), `:sav` is refused, and `%run` / `%check` / `%build` with no
+      FILE refuse it (it has no file; `ex::session::buffer`). In the IDE
+      (madcide) the editor's colon line acts on the current file; the REPL
+      pane's colon line (a typed `:`, or the colon action while the REPL
+      input has the keyboard) acts on the REPL buffer and switches between
+      it and the files, and `:b REPL` from the editor brings the pane up.
     - D24's aliases: `:q` ends the REPL (refused while a buffer is modified:
       `no write since last change (add ! to override)`; `:q!` ends it
       anyway); `:h` / `:help` is `?`.

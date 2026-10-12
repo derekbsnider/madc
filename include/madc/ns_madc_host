@@ -128,6 +128,11 @@ namespace madc {
     // `shown` the lines it prints; text(): a pending a / i / c's lines
     // (no line breaks, no closing `.`). Every edit goes through the
     // world's one mutation path and is ONE undo group per line.
+    // set_scratch(): an untitled document as a host's scratch buffer,
+    // shown as `name` (the REPL buffer, `[REPL]`; never unsaved for :q,
+    // :w FILE writes a copy); append(): a host's text at a buffer's end
+    // (the REPL buffer's kept entries, a session reply's `source`), one
+    // undo group each.
     // Declaration-only (src/madc_ex.cpp). LAYOUT CONTRACT: a single
     // pointer member, append-only. Non-copyable.
     // Thread contract: the world's thread.
@@ -143,6 +148,8 @@ namespace madc {
 	value &run(value &out, const char *text);
 	value &text(value &out, value &lines);
 	bool wants_text();
+	bool set_scratch(int64_t doc, const char *name);
+	bool append(int64_t doc, const char *text);
     private:
 	ex_session(const ex_session &);
 	ex_session &operator=(const ex_session &);

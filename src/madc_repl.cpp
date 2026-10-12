@@ -39,6 +39,8 @@
 #include "madc.h"
 #include "madc_session.h"
 #include "madc_ex.h"		// colon mode: the host's ex session (D24)
+#include "madc_documents.h"	// the REPL buffer: a document in its world
+#include "madcdis/hub.h"
 #include "madc_history.h"	// the history store (1B.7)
 #include "madc_repl.h"
 #include "madc_posix_io.h"
@@ -166,6 +168,49 @@ static colon_step colon_text(std::istream &in, std::ostream &out,
     return colon_report(colon.ex->text(body), colon, out);
 }
 
+// The REPL buffer (owner 2026-10-12: colon mode at the REPL edits what the
+// session kept): a scratch buffer, `[REPL]`, in the ex session's world. At a
+// bare `madc -i` (REPL mode) the host's untitled buffer IS it, and colon mode
+// starts on it; `madc -i FILE` is line mode (split arc 1B.6 — `madcide
+// --line`), so colon mode starts on FILE and `:b REPL` reaches the REPL
+// buffer, which a new document holds. :ls, :b N / NAME, :bn, :bp and :e
+// switch between them. The session's buffer question is the ex session's
+// from here on (ex::session::buffer: the REPL buffer has no file to give). 0
+// without colon mode.
+static madc::hub::entity_id repl_begin(ReplSession &session, const repl_colon &colon)
+{
+    if ( !colon.ex )
+	return 0;
+    madc::ex::session *ex = colon.ex;
+    const madc::hub::entity_id cur = ex->current();
+    const madc::hub::document *d = cur ? ex->world().doc_of(cur) : 0;
+    const bool repl_mode = !d || d->untitled();
+    const madc::hub::entity_id doc =
+	repl_mode && cur ? cur : madc::document_new(ex->world(), "");
+    if ( !doc || !ex->set_scratch(doc, madc::dis::istring("[REPL]")) )
+	return 0;
+    if ( repl_mode )
+	ex->use(doc);
+    session.set_buffers([ex](const madc::dis::istring &name,
+			     madc::dis::istring &path, std::string &text,
+			     bool &has_text, std::string &why) -> bool {
+	return ex->buffer(name, path, text, has_text, why);
+    });
+    return doc;
+}
+
+// An entry the session took: what it shows printed (print_shown), and the
+// source it kept — a code entry's text, %load's file — at the end of the
+// REPL buffer.
+static void entry_taken(ReplSession &session, std::ostream &out,
+			const madc::theme *theme, const repl_colon &colon,
+			madc::hub::entity_id repl)
+{
+    print_shown(session, out, theme);
+    if ( repl && !session.taken_source().empty() )
+	colon.ex->append(repl, session.taken_source());
+}
+
 // An entry as history keeps it: without the whitespace after its last line
 // (Julia's), so an extendable if taken at its blank line recalls as typed.
 static std::string history_text(const std::string &entry)
@@ -204,6 +249,7 @@ int madc_repl_edit(ReplSession &session, line_target &term,
     // The entry's colour (split arc 1B.9): a theme, and Phase 0.5's gate on
     // the output (NO_COLOR, TERM=dumb, -fdiagnostics-color=never); the
     // terminal's depth read once.
+    const madc::hub::entity_id repl = repl_begin(session, colon);
     const bool colour = theme && madc::colour_reaches(out);
     const madc::hub::ui_colour_depth depth = madc::hub::terminal_colour_depth();
     int64_t standard = 0;
@@ -310,7 +356,7 @@ int madc_repl_edit(ReplSession &session, line_target &term,
 			{
 			    session.submit(text + "\n");
 			    remember(history_text(text));
-			    print_shown(session, out, theme);
+			    entry_taken(session, out, theme, colon, repl);
 			}
 			input_ended = true;
 			over = true;
@@ -368,7 +414,7 @@ int madc_repl_edit(ReplSession &session, line_target &term,
 			session.submit(text, taken);
 			remember(history_text(text));
 			ed.entered(line_edit::verdict::taken);
-			print_shown(session, out, theme);
+			entry_taken(session, out, theme, colon, repl);
 			over = true;
 			break;
 		    }
@@ -378,7 +424,7 @@ int madc_repl_edit(ReplSession &session, line_target &term,
 			case ReplSession::OfferState::taken:
 			    remember(history_text(text));
 			    ed.entered(line_edit::verdict::taken);
-			    print_shown(session, out, theme);
+			    entry_taken(session, out, theme, colon, repl);
 			    over = true;
 			    break;
 			case ReplSession::OfferState::incomplete:
@@ -441,6 +487,7 @@ int madc_repl_run(ReplSession &session, std::istream &in,
 		  std::ostream &out, bool terminal, const repl_colon &colon,
 		  const madc::theme *theme)
 {
+    const madc::hub::entity_id repl = repl_begin(session, colon);
     std::string prompt, continuation;	// the standard's, entry by entry (%std)
     std::string pending;		// the entry typed so far
     bool extendable = false;		// pending is an if waiting for else
@@ -467,7 +514,7 @@ int madc_repl_run(ReplSession &session, std::istream &in,
 	    {
 		session.submit(pending);
 		reclaim_input(session, in);
-		print_shown(session, out, theme);
+		entry_taken(session, out, theme, colon, repl);
 		pending.clear();
 		if ( session.ended(status) )
 		    return status;
@@ -497,7 +544,7 @@ int madc_repl_run(ReplSession &session, std::istream &in,
 		extendable = true;
 		break;
 	    case ReplSession::OfferState::taken:
-		print_shown(session, out, theme);
+		entry_taken(session, out, theme, colon, repl);
 		pending.clear();
 		if ( session.ended(status) )
 		    return status;	// exit(n) in an entry ends the REPL
@@ -509,7 +556,7 @@ int madc_repl_run(ReplSession &session, std::istream &in,
     if ( !pending.empty() )
     {
 	session.submit(pending);
-	print_shown(session, out, theme);
+	entry_taken(session, out, theme, colon, repl);
 	if ( session.ended(status) )
 	    return status;
     }

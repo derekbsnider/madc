@@ -518,6 +518,7 @@ InteractiveSession::Offered InteractiveSession::enter(const std::string &text,
     payload_kind = madc::session_payload::none;
     payload_args.clear();
     payload_command = 0;
+    kept_source.clear();
     if ( command_text(text).is_command() )
     {
 	// A command is one line, complete at its end (plan §41.8a): taken at
@@ -553,6 +554,7 @@ InteractiveSession::Offered InteractiveSession::enter(const std::string &text,
 	++entry_count;
 	prog->session_units.insert(name);	// its names are the session's
 	register_module_commands();		// its imports' (1B.10)
+	kept_source = text;			// the host's REPL buffer keeps it
     }
     // D12: an entry whose show ran keeps its value as REPL[N]'s result, as
     // IPython's Out[N] (a run that stopped before its show keeps nothing).
@@ -632,6 +634,7 @@ bool InteractiveSession::load_text(const std::string &text, const std::string &p
     // relaxation, bodies kept as roots, and an undefined reference refused
     // at its link (late binding, D27, is an entry's).
     load_main = false;
+    unit_text.clear();
     const bool had_main = function("main") != NULL;
     Program::ParseModeScope mode(*prog, Program::ParseMode::TranslationUnit);
     Program::EntryTransaction unit(*prog);
@@ -646,6 +649,7 @@ bool InteractiveSession::load_text(const std::string &text, const std::string &p
 	prog->session_units.insert(path);	// its names are the session's
 	load_main = !had_main && function("main") != NULL;
 	register_module_commands();		// its imports' (1B.10)
+	unit_text = text;
     }
     return ok;
 }
@@ -1330,7 +1334,12 @@ bool InteractiveSession::load_command(const std::string &argument,
 	command_error("%load takes one FILE", name);
 	return false;
     }
-    return file_command(madc::session_payload::load, words);
+    // Loaded here, FILE's kept text is the host's REPL buffer's; a host
+    // that honors the payload loads it, and keeps it, itself.
+    unit_text.clear();
+    const bool ok = file_command(madc::session_payload::load, words);
+    kept_source = unit_text;
+    return ok;
 }
 
 // `%run [-i] FILE [ARGS]` (D16, D25; IPython's %run, Thonny's F5): FILE's

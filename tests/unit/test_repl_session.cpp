@@ -1760,6 +1760,25 @@ static size_t occurrences(const std::string &text, const char *needle)
     return n;
 }
 
+// The backend server's load (a payload host's %load, done by its client):
+// the kept file's text is loaded_source(), which the load reply carries to
+// the host's REPL buffer (owner 2026-10-12); a refused file leaves it empty.
+TEST_CASE("a load the session kept is its loaded_source; a refused one none")
+{
+    std::string lib = temp_source("int quad(int v) { return 4 * v; }\n",
+				  "madc_repl_loadsrc");
+    std::string bad = temp_source("int broken = nosuch;\n", "madc_repl_loadbad");
+    InteractiveSession h;
+    REQUIRE(h.begin("--std=c17"));
+    h.host_honors_payloads(true);
+    std::ostringstream err;
+    h.program().error_stream = &err;
+    REQUIRE(h.load(lib));
+    CHECK(h.loaded_source() == "int quad(int v) { return 4 * v; }\n");
+    CHECK_FALSE(h.load(bad));
+    CHECK(h.loaded_source().empty());
+}
+
 // The file commands (plan §7f). A host that honors no payloads (the
 // in-process terminal): %load and %run -i load the file in the session
 // itself, %run (a fresh session) is refused naming %run -i, and a refused
@@ -1785,8 +1804,17 @@ TEST_CASE("session commands: %load and %run, with and without a payload host (§
     s.program().error_stream = &err;
     REQUIRE(s.submit("%load " + lib));
     CHECK(s.payload() == madc::session_payload::none);
+    // What the host's REPL buffer keeps (owner 2026-10-12): %load's file
+    // text, a kept entry's text, nothing for a refused entry or another
+    // command.
+    CHECK(s.taken_source() == "int thrice(int v) { return 3 * v; }\n");
     REQUIRE(s.submit("thrice(7)"));
     CHECK(s.shown() == "21");
+    CHECK(s.taken_source() == "thrice(7)");
+    CHECK_FALSE(s.submit("int broken_here = ;"));
+    CHECK(s.taken_source().empty());
+    REQUIRE(s.submit("%whos"));
+    CHECK(s.taken_source().empty());
     REQUIRE(s.submit("%run -i " + prog + " a 'b c'"));
     REQUIRE(s.submit("ran"));
     CHECK(s.shown() == "3");
@@ -1832,6 +1860,7 @@ TEST_CASE("session commands: %load and %run, with and without a payload host (§
     REQUIRE(h.submit("%load " + lib));
     CHECK(h.payload() == madc::session_payload::load);
     CHECK(h.payload_argv() == std::vector<std::string>{ lib });
+    CHECK(h.taken_source().empty());		// the host loads it, and keeps it
     CHECK(h.function("thrice") == (void *)NULL);
     CHECK(h.function("main") == (void *)NULL);
     CHECK_FALSE(h.submit("%load " + missing));

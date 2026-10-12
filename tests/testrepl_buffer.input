@@ -1,0 +1,23 @@
+:ls
+int early = 1;
+:1p
+:b REPL
+:1p
+int x = 3;
+x + base
+int bad = ;
+%load tests/testrepl_buffer_lib.mad
+twice(x)
+:%nu
+:3d
+:%nu
+:u
+:3s/base/BASE/
+:3p
+:b testrepl_buffer
+:$p
+:b REPL
+:$s/$/ \/\/ back/
+:$p
+%run
+:q

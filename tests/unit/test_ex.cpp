@@ -337,6 +337,7 @@ TEST_CASE("ex: global, move / copy, and the shell forms")
 
 #include "madcdis/hub.h"
 #include "madc_file_kinds.h"	// slice 6: the kinds a buffer opens with
+#include "madc_documents.h"	// the scratch buffer: a new untitled document
 
 using madc::ex::outcome;
 using madc::ex::session;
@@ -1053,6 +1054,69 @@ TEST_CASE("ex session: :b :bn :bp switch buffers; :cd and :pwd are the session's
     ran(s, "cd -");
     CHECK(ran(s, "e one.c") == "\"one.c\" 1L, 2B\n");	// the same buffer
     CHECK(w.docs().size() == 3u);
+}
+
+// A host's scratch buffer (owner 2026-10-12: the REPL buffer, [REPL], that
+// colon mode at the REPL starts on): named in :ls and :b NAME, appended to by
+// the host one undo group at a time without becoming unsaved, written by :w
+// FILE as a copy, never stopping :q, and no file for the session's buffer
+// question.
+TEST_CASE("ex session: a host's scratch buffer — its name, appends, :w a copy, :q")
+{
+    scratch_dir d;
+    d.put("f.c", "int f;\n");
+    d.files.push_back("copy.c");
+    world w;
+    session s(w);
+    ran(s, "cd " + d.name);
+    ran(s, "e f.c");
+    const entity_id file = s.current();
+    const entity_id repl = madc::document_new(w, "");
+    CHECK_FALSE(s.set_scratch(file, madc::dis::istring("[REPL]")));	// it has a file
+    REQUIRE(s.set_scratch(repl, madc::dis::istring("[REPL]")));
+    REQUIRE(s.use(repl));
+    CHECK(refused_run(s, "p") == "no lines in the buffer");
+    CHECK(s.append(repl, "int x = 3;\n"));
+    CHECK(s.append(repl, "x + 1"));		// its line break added
+    CHECK(body(w, repl) == "int x = 3;\nx + 1\n");
+    CHECK_FALSE(w.doc_modified(repl));		// the host's record, not an edit
+    CHECK(s.current_line() == 2u);
+    const std::string ls = ran(s, "ls");
+    CHECK(ls.find("  1 #    \"f.c\"") != std::string::npos);
+    CHECK(ls.find("  2 %a   \"[REPL]\"") != std::string::npos);
+    ran(s, "1d");
+    CHECK(w.doc_modified(repl));
+    ran(s, "u");
+    CHECK(body(w, repl) == "int x = 3;\nx + 1\n");
+    ran(s, "u");				// the second append's own group
+    CHECK(body(w, repl) == "int x = 3;\n");
+    ran(s, "red");
+    CHECK(ran(s, "w copy.c") == "\"copy.c\" [New] 2L, 17B written\n");
+    CHECK(d.read("copy.c") == "int x = 3;\nx + 1\n");
+    CHECK(w.doc_of(repl)->untitled());		// it keeps its name
+    CHECK(refused_run(s, "w") == "no file name");
+    CHECK(refused_run(s, "sav other.c")
+	  == "the [REPL] buffer keeps its name: :w FILE writes a copy");
+    madc::dis::istring path;
+    std::string text, why;
+    bool has_text = false;
+    CHECK_FALSE(s.buffer(madc::dis::istring(""), path, text, has_text, why));
+    CHECK(why == "the [REPL] buffer has no file: name a FILE, or write a copy with :w FILE");
+    why.clear();
+    CHECK_FALSE(s.buffer(madc::dis::istring("[REPL]"), path, text, has_text, why));
+    CHECK_FALSE(why.empty());
+    ran(s, "b f.c");
+    CHECK(s.current() == file);
+    CHECK(s.buffer(madc::dis::istring(""), path, text, has_text, why));
+    CHECK(has_text);
+    CHECK(text == "int f;\n");
+    ran(s, "b REPL");
+    CHECK(s.current() == repl);
+    ran(s, "1d");
+    CHECK(w.doc_modified(repl));
+    outcome q = s.run("q");			// a scratch buffer is never unsaved
+    CHECK(q.ok);
+    CHECK(q.quit);
 }
 
 TEST_CASE("ex session: :set — the four options in vim's forms")

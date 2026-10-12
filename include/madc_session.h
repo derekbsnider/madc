@@ -62,6 +62,13 @@ public:
     // declarations, split arc 1B.9), in order: a host may colour them.
     // Empty when nothing shown is code.
     virtual const std::vector<madc::code_range> &shown_code() const = 0;
+    // The source the last taken entry added to the session, for a host's
+    // REPL buffer (colon mode at the prompt edits it; owner 2026-10-12): a
+    // code entry's text once the session kept it (its unit linked — a run
+    // that stopped included, D27), or the text of the file %load kept (an
+    // open buffer's live text when a buffer holds it). Empty after anything
+    // else: a refused entry, any other command.
+    virtual const std::string &taken_source() const = 0;
     virtual std::vector<std::string> complete(const std::string &text,
 					      size_t caret, size_t &start) = 0;
     // Does LINE continue an if that ended an entry (D11)? Its first word is
@@ -181,6 +188,11 @@ public:
     // renders nothing: a client prints it.
     const std::string &shown() const override;
     const std::vector<madc::code_range> &shown_code() const override;
+    const std::string &taken_source() const override { return kept_source; }
+    // The text of the file unit the last load_text kept ("" when it was
+    // refused): the backend server's load reply carries it, so a host that
+    // honors %load's payload can keep it in its REPL buffer.
+    const std::string &loaded_source() const { return unit_text; }
     // The host's buffers (split arc 1B.10, design decision 4): the source a
     // host in this process hands it, or the backend server's, which asks the
     // host over the wire. None: every FILE is the disk's.
@@ -419,6 +431,8 @@ private:
     bool quit_asked;			// %quit ended the session
     unsigned quiet_count;		// the quiet entries' units, each its own
     std::vector<std::string> inputs;	// REPL[N]'s text is inputs[N - 1]
+    std::string kept_source;		// taken_source()
+    std::string unit_text;		// loaded_source()
     std::string history_file;		// %history's store ("" none)
     std::string project_file;		// %project's manifest ("" none)
     BufferSource buffers;		// the host's (set_buffers); empty: the disk

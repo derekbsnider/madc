@@ -121,6 +121,10 @@ public:
 	// load: the file defined main (InteractiveSession::loaded_main), so
 	// running the file runs it.
 	bool defines_main;
+	// offer: the source the taken entry added to the session
+	// (InteractiveSession::taken_source); load: the text of the file it
+	// kept (loaded_source). Empty when nothing was kept.
+	std::string source;
 	// load: ok. run: ok, and main's return value.
 	int status;
 	// continues: the line continues an if that ended an entry (D11).
@@ -326,6 +330,7 @@ public:
     Offered offer(const std::string &text, const TakenHook &taken = TakenHook()) override;
     const std::string &shown() const override { return shown_text; }
     const std::vector<madc::code_range> &shown_code() const override { return shown_code_ranges; }
+    const std::string &taken_source() const override { return kept_source; }
     std::vector<std::string> complete(const std::string &text, size_t caret,
 				      size_t &start) override;
     bool continues_if(const std::string &line) override;
@@ -383,9 +388,10 @@ private:
     // nothing to read — before anything restarts.
     bool resolve(const char *command, const std::string &name,
 		 std::string &path, std::string &text, bool &has_text);
-    // FILE loaded from `text` when non-null, else from the file.
+    // FILE loaded from `text` when non-null, else from the file; the text
+    // the backend kept to *kept when non-null.
     bool load_source(const std::string &path, const std::string *text,
-		     bool *defines_main = NULL);
+		     bool *defines_main = NULL, std::string *kept = NULL);
     // FILE loaded, then its main run with `args` (the path first).
     bool run_source(const std::string &path, const std::string *text,
 		    const std::vector<std::string> &args);
@@ -401,6 +407,7 @@ private:
 	      const std::vector<madc::code_range> &code = std::vector<madc::code_range>());
     std::string shown_text;
     std::vector<madc::code_range> shown_code_ranges;
+    std::string kept_source;		// taken_source(): the last entry's, or %load's
     // The host rows, in registration order: a row's code is its index + 1.
     struct HostCommand { std::string name, usage, summary; CommandRun run; };
     std::vector<HostCommand> host_commands;

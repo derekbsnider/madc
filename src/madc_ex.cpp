@@ -1786,6 +1786,22 @@ struct executor
 	    return p.substr(at);
 	return path;
     }
+    // A host's scratch buffer's name (session::set_scratch), else NULL.
+    const madc::dis::istring *scratch_name(madc::hub::entity_id e) const
+    {
+	std::map<madc::hub::entity_id, madc::dis::istring>::const_iterator it =
+	    s.scratch.find(e);
+	return it == s.scratch.end() ? (const madc::dis::istring *)0 : &it->second;
+    }
+    // A buffer as :ls, :b NAME and :q name it: a scratch buffer by its
+    // name, any other by its path.
+    std::string buffer_name(madc::hub::entity_id e) const
+    {
+	if ( const madc::dis::istring *n = scratch_name(e) )
+	    return n->str();
+	const madc::hub::document *d = s.w.doc_of(e);
+	return shown_name(d ? d->path() : std::string());
+    }
     static bool same_path(const std::string &a, const std::string &b)
     {
 	return !a.empty() && !b.empty()
@@ -2007,14 +2023,16 @@ struct executor
     {
 	if ( force )
 	    return true;
-	if ( s.cur && s.cur != written && s.w.doc_modified(s.cur) )
+	// A scratch buffer has no file to save (vim's 'buftype=nofile').
+	if ( s.cur && s.cur != written && !scratch_name(s.cur)
+	     && s.w.doc_modified(s.cur) )
 	    return fail("no write since last change (add ! to override)");
 	const std::vector<madc::hub::entity_id> all = s.w.docs();
 	for ( size_t i = 0; i < all.size(); ++i )
-	    if ( all[i] != written && s.w.doc_modified(all[i]) )
+	    if ( all[i] != written && !scratch_name(all[i])
+		 && s.w.doc_modified(all[i]) )
 		return fail("no write since last change for buffer \""
-			    + shown_name(s.w.doc_of(all[i])->path())
-			    + "\" (add ! to override)");
+			    + buffer_name(all[i]) + "\" (add ! to override)");
 	return true;
     }
     bool quit(const line &l)
@@ -2050,7 +2068,7 @@ struct executor
 	if ( target.empty() )
 	    return fail("no file name");
 	const bool whole = first <= 1 && last == lines();
-	if ( d->path().empty() && !append && whole )
+	if ( d->path().empty() && !append && whole && !scratch_name(s.cur) )
 	    madc::document_set_path(s.w, s.cur, target);	// vim names it
 	const bool own = same_path(target, d->path());
 	const bool when_changed = l.code == command::exit
@@ -2093,6 +2111,8 @@ struct executor
     {
 	if ( l.argument.empty() )
 	    return fail("saveas needs a file name");
+	if ( const madc::dis::istring *n = scratch_name(s.cur) )
+	    return fail("the " + n->str() + " buffer keeps its name: :w FILE writes a copy");
 	const std::string target = path_of(l.argument);
 	const bool fresh = madc::detail::host_path_type_of(target)
 			   == madc::detail::host_path_type::none;
@@ -2151,7 +2171,7 @@ struct executor
 	    row += e == s.cur ? 'a' : ' ';
 	    row += d->read_only() ? '=' : ' ';
 	    row += s.w.doc_modified(e) ? '+' : ' ';
-	    row += " \"" + shown_name(d->path()) + "\"";
+	    row += " \"" + buffer_name(e) + "\"";
 	    row += std::string(row.size() < 40 ? 40 - row.size() : 1, ' ');
 	    out.shown += row + "line " + std::to_string(listed_line(e)) + "\n";
 	}
@@ -2184,8 +2204,7 @@ struct executor
 	}
 	madc::hub::entity_id found = 0;
 	for ( size_t i = 0; i < all.size(); ++i )
-	    if ( shown_name(s.w.doc_of(all[i])->path()).find(arg)
-		 != std::string::npos )
+	    if ( buffer_name(all[i]).find(arg) != std::string::npos )
 	    {
 		if ( found )
 		    return fail("more than one match for " + arg);
@@ -2591,6 +2610,63 @@ bool session::set_current_line(size_t n)
     return true;
 }
 
+bool session::set_scratch(entity_id doc, const madc::dis::istring &name)
+{
+    const madc::hub::document *d = w.doc_of(doc);
+    if ( !d || !d->untitled() )
+	return false;
+    scratch[doc] = name;
+    return true;
+}
+
+bool session::buffer(const madc::dis::istring &name, madc::dis::istring &path,
+		     std::string &text, bool &has_text, std::string &why) const
+{
+    for ( std::map<entity_id, madc::dis::istring>::const_iterator it = scratch.begin();
+	  it != scratch.end(); ++it )
+	if ( name.empty() ? it->first == cur : it->second == name )
+	{
+	    why = "the " + it->second.str() + " buffer has no file: name a FILE,"
+		  " or write a copy with :w FILE";
+	    return false;
+	}
+    return madc::document_buffer(w, cur, name, path, text, has_text, why);
+}
+
+bool session::append(entity_id doc, const std::string &text)
+{
+    const text_buffer *b = w.has_doc(doc) ? w.text_of(doc) : (const text_buffer *)0;
+    if ( !b )
+	return false;
+    if ( text.empty() )
+	return true;
+    std::string add = text;
+    if ( add[add.size() - 1] != '\n' )
+	add += '\n';
+    const size_t end = b->size();
+    if ( end > 0 && b->slice(end - 1, 1) != "\n" )
+	add.insert(0, "\n");		// after an unterminated last line
+    const madc::hub::document *d = w.doc_of(doc);
+    const bool keep_clean = d && d->untitled() && !w.doc_modified(doc);
+    mutation_context mc(w);
+    mc.doc_checkpoint(doc, madc::value());
+    if ( !mc.text_insert(doc, end, add) )
+	return false;
+    if ( keep_clean )
+	mc.doc_mark_saved(doc);
+    // `.` on the new last line; a buffer not yet seen gets its `.` at use().
+    b = w.text_of(doc);
+    std::map<entity_id, buffer_state>::iterator st = buffers.find(doc);
+    const size_t n = b ? b->line_count() : 0;
+    size_t off = 0, len = 0;
+    if ( st != buffers.end() && n && b->line_span(n, off, len) )
+    {
+	if ( !st->second.dot || !mc.anchor_move(doc, st->second.dot, off) )
+	    st->second.dot = mc.anchor_add(doc, off, false);
+    }
+    return true;
+}
+
 outcome session::run(const std::string &text)
 {
     outcome out;
@@ -2753,6 +2829,18 @@ bool ex_session::wants_text()
 {
     ex::session *s = live();
     return s && s->wants_text();
+}
+
+bool ex_session::set_scratch(int64_t doc, const char *name)
+{
+    ex::session *s = live();
+    return s && name && s->set_scratch((hub::entity_id)doc, madc::dis::istring(name));
+}
+
+bool ex_session::append(int64_t doc, const char *text)
+{
+    ex::session *s = live();
+    return s && s->append((hub::entity_id)doc, text ? text : "");
 }
 
 } // namespace madc

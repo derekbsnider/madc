@@ -444,6 +444,29 @@ pins vim's refusal of `:q` while another buffer holds unsaved text (E162), then
 `MADC_HISTORY_FILE`); the packaging, staging and static-check scripts are
 updated for the removed files.
 
+### The REPL buffer — colon mode at the prompt edits a `[REPL]` scratch buffer
+
+Colon mode at the REPL (`madc -i`) edits the REPL buffer, a scratch buffer
+`[REPL]` (`ex::session::set_scratch`, vim's `buftype=nofile`) holding every entry
+the session kept and every file `%load` kept, each appended to its end as one
+undo group (`ReplSession::taken_source`, `ex::session::append`); a refused entry
+stays out. Before, colon mode started on an empty untitled buffer that nothing
+fed, so a colon edit at the REPL answered "no lines in the buffer". At a bare
+`madc -i` colon mode starts on the REPL buffer (the host's untitled buffer is
+it); `madc -i FILE` is line mode, starting on FILE, with `:b REPL` reaching the
+REPL buffer. `:ls`, `:b N` / `:b NAME`, `:bn`, `:bp` and `:e` switch between
+them. The scratch buffer never counts as unsaved for `:q`, `:w FILE` writes a
+copy (it keeps its name), `:sav` is refused, and the session's buffer question
+(`ex::session::buffer`) refuses it with no file, so `%run` / `%check` / `%build`
+with no FILE refuse it. The session carries the kept source
+(`InteractiveSession::taken_source`, `loaded_source`), which the backend server's
+offer and load replies carry as `source`, so a payload host keeps `%load`'s file
+in its REPL buffer too. Reducer `tests/testrepl_buffer.mad` (oracle: vim on the
+same text); unit `tests/unit/test_ex.cpp` adds the scratch-buffer case,
+`tests/unit/test_repl_session.cpp` the `taken_source` / `loaded_source` cases,
+and `tests/unit/test_repl_cli.cpp`'s two colon cases check the kept entries join
+the REPL buffer.
+
 ### madc's colon mode as a dialect face — `madc::ex_session` over a ui:: world
 
 `madc::ex_session` (`include/madc_ex_session.h`, declared in `<ns_madc>` and

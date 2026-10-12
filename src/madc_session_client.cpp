@@ -454,6 +454,8 @@ int serve_session(madc::DataChannel &wire, std::unique_ptr<Program> prog,
 			rep["shown_code"] = code;
 		    }
 		    rep["submitted"] = session.submitted();
+		    if ( !session.taken_source().empty() )
+			rep["source"] = session.taken_source();
 		    if ( session.payload() != madc::session_payload::none )
 		    {
 			rep["payload"] = payload_name(session.payload());
@@ -484,6 +486,8 @@ int serve_session(madc::DataChannel &wire, std::unique_ptr<Program> prog,
 		else
 		    rep["ok"] = session.load(req.value("path", std::string()));
 		rep["main"] = session.loaded_main();	// the file's main, to run
+		if ( !session.loaded_source().empty() )
+		    rep["source"] = session.loaded_source();
 		attach_diagnostics(rep, session);
 		break;
 	    case Op::continues:
@@ -1297,6 +1301,7 @@ int SessionClient::poll(Reply &reply, std::string &output, int timeout_ms)
 	    reply.payload = payload_of(j.value("payload", std::string()));
 	    reply.argv = j.value("argv", std::vector<std::string>());
 	    reply.code = j.value("code", (int64_t)0);
+	    reply.source = j.value("source", std::string());
 	    break;
 	case Op::complete:
 	    reply.kind = Reply::Kind::complete;
@@ -1306,6 +1311,7 @@ int SessionClient::poll(Reply &reply, std::string &output, int timeout_ms)
 	case Op::load:
 	    reply.kind = Reply::Kind::load;
 	    reply.defines_main = j.value("main", false);
+	    reply.source = j.value("source", std::string());
 	    break;
 	case Op::run:
 	    reply.kind = Reply::Kind::run;
@@ -1424,6 +1430,7 @@ bool BackendSession::submit(const std::string &text, const TakenHook &taken)
     HostIgnoresInterrupt quiet;
     SessionClient::Reply r;
     std::string output;
+    kept_source.clear();
     int rc = client.offer_wait(text, true, r, output, -1, taken);
     if ( rc > 0 )
 	show(r.shown, r.shown_code);
@@ -1431,6 +1438,7 @@ bool BackendSession::submit(const std::string &text, const TakenHook &taken)
 	show(std::string());
     if ( !settle(rc, r, output) )
 	return false;
+    kept_source = r.source;
     return honor(r) && r.ok;
 }
 
@@ -1440,6 +1448,7 @@ ReplSession::Offered BackendSession::offer(const std::string &text,
     HostIgnoresInterrupt quiet;
     SessionClient::Reply r;
     std::string output;
+    kept_source.clear();
     int rc = client.offer_wait(text, false, r, output, -1, taken);
     if ( rc > 0 )
 	show(r.shown, r.shown_code);
@@ -1449,7 +1458,10 @@ ReplSession::Offered BackendSession::offer(const std::string &text,
 	return Offered{ OfferState::taken, false };	// it ran, and stopped
     bool ok = r.ok;
     if ( r.state == OfferState::taken )
+    {
+	kept_source = r.source;
 	ok = honor(r) && ok;
+    }
     return Offered{ r.state, ok };
 }
 
@@ -1538,7 +1550,7 @@ bool BackendSession::honor(const SessionClient::Reply &reply)
 	std::string path, text;
 	bool has_text = false;
 	return resolve("%load", reply.argv[0], path, text, has_text)
-	    && load_source(path, has_text ? &text : NULL);
+	    && load_source(path, has_text ? &text : NULL, NULL, &kept_source);
     }
     if ( reply.payload == madc::session_payload::call )
 	return call_file(reply.argv);
@@ -1635,7 +1647,7 @@ bool BackendSession::load_file(const std::string &path, bool *defines_main)
 }
 
 bool BackendSession::load_source(const std::string &path, const std::string *text,
-				 bool *defines_main)
+				 bool *defines_main, std::string *kept)
 {
     SessionClient::Reply r;
     std::string output;
@@ -1643,6 +1655,8 @@ bool BackendSession::load_source(const std::string &path, const std::string *tex
 		  : client.load_wait(path, r, output);
     if ( defines_main )
 	*defines_main = r.defines_main;
+    if ( kept )
+	*kept = r.source;
     return settle(rc, r, output) && r.ok;
 }
 

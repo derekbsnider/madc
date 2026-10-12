@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "madcdis/document.h"	// entity_id, anchor_id
+#include "madcdis/istring.h"	// buffer(): a buffer's name and path
 #include "madc/bits/ex_commands"	// ex_command: the one enum text
 
 namespace madc {
@@ -158,6 +159,29 @@ public:
     size_t current_line() const;
     bool set_current_line(size_t n);
 
+    // A host's SCRATCH buffer (vim's 'buftype=nofile'): an untitled `doc`
+    // with no file behind it, shown as `name` (:ls, :b NAME, messages) —
+    // the REPL buffer, `[REPL]` (owner 2026-10-12: colon mode at the REPL
+    // edits it). It never counts as unsaved for :q, and :w FILE writes a
+    // copy of it: it keeps its name. False when `doc` is not an untitled
+    // document.
+    bool set_scratch(madc::hub::entity_id doc, const madc::dis::istring &name);
+    // A host's text added at the end of `doc` (the REPL buffer's kept
+    // entries): one undo group of its own, a line break added when the
+    // text lacks its last, and the buffer's current line its new last
+    // line. A buffer with no file that was unmodified stays unmodified —
+    // the host's record is not an edit to save. False when `doc` is not a
+    // document.
+    bool append(madc::hub::entity_id doc, const std::string &text);
+    // The world the session edits: a host makes its buffers there.
+    madc::hub::world &world() { return w; }
+    // A session's buffer question (ReplSession::BufferSource's contract)
+    // over this session's buffers: madc::document_buffer's answer with the
+    // current buffer, except that a scratch buffer — current ("") or named
+    // by its name — has no file to give: refused, saying so.
+    bool buffer(const madc::dis::istring &name, madc::dis::istring &path,
+		std::string &text, bool &has_text, std::string &why) const;
+
     // Run one command line (the text after colon mode's `:`).
     outcome run(const std::string &text);
     // The text a pending a / i / c waits for: `lines` without their line
@@ -204,6 +228,7 @@ private:
     // first seen; a number is never reused.
     std::map<madc::hub::entity_id, size_t> numbers;
     size_t next_number;
+    std::map<madc::hub::entity_id, madc::dis::istring> scratch;	// set_scratch's names
     std::string dir;
     std::string previous_dir;	// :cd -
     std::string last_pattern;

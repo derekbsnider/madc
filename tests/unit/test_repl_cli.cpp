@@ -462,7 +462,9 @@ TEST_CASE("a piped stdin's handed-back bytes are the host's next input")
 // Colon mode (D24; ex core design decision 11, slice 5): a `:` entry is the
 // HOST's — its ex session edits the host's buffer and the session never sees
 // it; a / i / c read the next lines up to `.`; `:h NAME` is `?NAME`; `:q` ends
-// the loop, refused over changes, `:q!` anyway.
+// the loop. The host's buffer is the REPL buffer (owner 2026-10-12): every
+// entry the session keeps is added to its end, and as a scratch buffer it
+// never stops `:q`.
 #include "madc_documents.h"
 #include "madc_ex.h"
 #include "madcdis/hub.h"
@@ -497,25 +499,22 @@ TEST_CASE("colon mode: `:` entries are the host's ex session's (D24)")
 	".\n"
 	"x * 3\n"
 	":%p\n"
-	":2s/second/2nd/\n"
+	":3s/second/2nd/\n"
 	":nu\n"
 	":bogus\n"
 	"int twice(int a) { return a * 2; }\n"
 	":h twice\n"
 	":q\n"
-	"x\n"
-	":q!\n"
-	"x + 100\n");			// never read: :q! ended the loop
+	"x + 100\n");			// never read: :q ended the loop
     std::ostringstream out;
     CHECK(madc_repl_run(s, in, out, false, h.colon) == 0);
     CHECK(out.str()
-	  == "6\nfirst line\nsecond\n  2 2nd\n"
-	     "Signature: int twice(int a)  @ REPL[3]:1\nType:      function\n"
-	     "2\n");
-    CHECK(h.err.str() == "not an editor command: 'bogus'\n"
-			 "no write since last change (add ! to override)\n");
-    CHECK(h.text() == "first line\n2nd\n");
-    CHECK(s.submitted() == 5);	// int x, x * 3, twice, ?twice, x
+	  == "6\nint x = 2;\nfirst line\nsecond\nx * 3\n  3 2nd\n"
+	     "Signature: int twice(int a)  @ REPL[3]:1\nType:      function\n");
+    CHECK(h.err.str() == "not an editor command: 'bogus'\n");
+    CHECK(h.text() == "int x = 2;\nfirst line\n2nd\nx * 3\n"
+		      "int twice(int a) { return a * 2; }\n");
+    CHECK(s.submitted() == 4);	// int x, x * 3, twice, ?twice
 }
 
 TEST_CASE("colon mode at the line editor: input mode reads at the continuation prompt")
@@ -528,7 +527,7 @@ TEST_CASE("colon mode at the line editor: input mode reads at the continuation p
     std::ostringstream out;
     CHECK(madc_repl_edit(s, term, out, "", h.colon) == 0);
     CHECK(out.str() == "one\n\n2\n");
-    CHECK(h.text() == "one\n\n");
+    CHECK(h.text() == "one\n\n1 + 1\n");	// the kept entry joins the REPL buffer
     CHECK(term.painted.find("c17>") != std::string::npos);
     CHECK(s.submitted() == 1);
 }

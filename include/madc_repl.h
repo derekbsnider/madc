@@ -26,7 +26,13 @@ namespace madc { namespace ex { class session; } }
 // lines after it as text up to one holding only `.`; `:q` ends the loop
 // (refused while a buffer has changes, `:q!` ends it anyway); `:h` /
 // `:help` is `?` and `:h NAME` is `?NAME`. Without one (`ex` null) a `:`
-// entry goes to the session, which refuses it.
+// entry goes to the session, which refuses it. The REPL buffer (owner
+// 2026-10-12) is a scratch buffer `[REPL]`: every entry the session keeps,
+// and every file %load keeps, is added to its end
+// (ReplSession::taken_source). Colon mode starts on it at a bare `madc -i`
+// (the host's untitled buffer is it); `madc -i FILE` is line mode, starting
+// on FILE, with `:b REPL` reaching it. :ls, :b N / NAME, :bn, :bp and :e
+// switch between the buffers.
 struct repl_colon
 {
     madc::ex::session *ex;
