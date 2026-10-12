@@ -12,10 +12,12 @@
 // strong definition wins), and two such objects merge.
 //
 // Windows exports __cxa_atexit from no DLL (mingw keeps it in libmingw32.a),
-// so its members keep the image's list: the image's init hands the list's
-// runner to the UCRT's exit; a JIT session, which runs no image init,
-// finalizes the list itself before its code goes. Its at_quick_exit, also
-// static in mingw, forwards to the UCRT's _crt_at_quick_exit.
+// so its members keep the image's list: an executable's init hands the
+// list's runner to the UCRT's exit; a DLL's detach runs its own (the image
+// fini, as mingw's dllcrt does), so a DLL freed before exit leaves nothing in
+// the UCRT's table; a JIT session, which runs no image init, finalizes the
+// list itself before its code goes. Its at_quick_exit, also static in mingw,
+// forwards to the UCRT's _crt_at_quick_exit.
 //
 // Thread safety: the table is immutable. glibc's and libSystem's
 // __cxa_atexit lock; the Windows list mutates under an SRW lock.
@@ -24,8 +26,17 @@
 #include "madc_cir.h"
 
 // The image handle. Its address identifies the image; its value is unused.
+// The image's fini finalizes the handlers registered with it while its code
+// is mapped (crtbegin.o's __do_global_dtors_aux): a shared object unloaded
+// before exit (dlclose) runs its objects' destructors then, and exit() never
+// calls into the unmapped image.
 static const char crt_dso_handle[] =
-	"__attribute__((linkonce)) void *__dso_handle = 0;\n";
+	"__attribute__((linkonce)) void *__dso_handle = 0;\n"
+	"void __cxa_finalize(void *);\n"
+	"__attribute__((linkonce)) void __madc_dso_fini(void)\n"
+	"{\n"
+	"	__cxa_finalize(&__dso_handle);\n"
+	"}\n";
 
 static const char crt_atexit[] =
 	"extern void *__dso_handle;\n"
@@ -45,6 +56,8 @@ static const char crt_exit_list[] =
 	"void free(void *);\n"
 	"void AcquireSRWLockExclusive(void *);\n"
 	"void ReleaseSRWLockExclusive(void *);\n"
+	"void *GetModuleHandleW(const unsigned short *);\n"
+	"int GetModuleHandleExW(unsigned long, const void *, void **);\n"
 	"int _crt_atexit(void (*)(void));\n"
 	"__attribute__((linkonce)) struct __madc_exit_entry *__madc_exit_list = 0;\n"
 	"__attribute__((linkonce)) void *__madc_exit_lock = 0;\n"
@@ -89,9 +102,14 @@ static const char crt_exit_list[] =
 	"__attribute__((linkonce)) void __madc_crt_init(int argc, char **argv,\n"
 	"	char **envp)\n"
 	"{\n"
+	"	void *self = 0;\n"
 	"	if (__madc_exit_hooked)\n"
 	"		return;\n"
 	"	__madc_exit_hooked = 1;\n"
+	"	/* FROM_ADDRESS | UNCHANGED_REFCOUNT: the image holding this list */\n"
+	"	if (GetModuleHandleExW(6, (const void *)&__madc_exit_list, &self)\n"
+	"	    && self != GetModuleHandleW(0))\n"
+	"		return;\n"
 	"	_crt_atexit(__madc_exit_run);\n"
 	"}\n";
 
@@ -124,16 +142,17 @@ static const char crt_pthread_atfork[] =
 #endif
 
 const madc_crt_member madc_crt_members[] = {
-	{ "crt:dso_handle", "__dso_handle", NULL, crt_dso_handle },
-	{ "crt:atexit", "atexit", NULL, crt_atexit },
+	{ "crt:dso_handle", "__dso_handle __madc_dso_fini", NULL,
+	  "__madc_dso_fini", crt_dso_handle },
+	{ "crt:atexit", "atexit", NULL, NULL, crt_atexit },
 #if MADC_TARGET_WINDOWS_P
 	{ "crt:exit_list", "__cxa_atexit __cxa_finalize __madc_exit_run"
 	  " __madc_crt_init __madc_exit_list __madc_exit_lock"
-	  " __madc_exit_hooked", "__madc_crt_init", crt_exit_list },
-	{ "crt:at_quick_exit", "at_quick_exit", NULL, crt_at_quick_exit },
+	  " __madc_exit_hooked", "__madc_crt_init", NULL, crt_exit_list },
+	{ "crt:at_quick_exit", "at_quick_exit", NULL, NULL, crt_at_quick_exit },
 #elif !MADC_TARGET_APPLE_P
-	{ "crt:at_quick_exit", "at_quick_exit", NULL, crt_at_quick_exit },
-	{ "crt:pthread_atfork", "pthread_atfork", NULL, crt_pthread_atfork },
+	{ "crt:at_quick_exit", "at_quick_exit", NULL, NULL, crt_at_quick_exit },
+	{ "crt:pthread_atfork", "pthread_atfork", NULL, NULL, crt_pthread_atfork },
 #endif
-	{ NULL, NULL, NULL, NULL }
+	{ NULL, NULL, NULL, NULL, NULL }
 };

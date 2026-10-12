@@ -3539,9 +3539,14 @@ as ld pulls archive members. A JIT session's end is its image's exit
 session's objects are destroyed when it ends. Windows keeps the list in its
 member (no DLL exports `__cxa_atexit`). Gates: `testglobaldtor`,
 `testglobaldtorexit`, `testatexit`, `testatquickexit`, `testpthreadatfork`,
-`testrepl_globaldtor`. Open: a madc-built shared object unloaded before exit
-(the writers carry no fini array); `thread_local` objects
-(`__cxa_thread_atexit`).
+`testrepl_globaldtor`. A madc-built shared object unloaded before exit runs
+its objects' destructors at the unload: the image handle's member carries the
+image fini `__madc_dso_fini` (`__cxa_finalize(&__dso_handle)`, crtbegin.o's
+`__do_global_dtors_aux`), named by the exec params' `fini` — ELF `DT_FINI`, a
+PE DLL's `DLL_PROCESS_DETACH` (mingw's dllcrt), and on Windows only the
+executable hooks the UCRT's exit (gate `testbuild_shared_unload`). Open:
+`thread_local` objects (`__cxa_thread_atexit`), which ride MIR's thread-local
+storage (KG `mir_thread_local_storage`).
 
 **Built, D6 for an object with a destructor (2026-10-12), the madc `var`
 included.** The earlier object ends its lifetime first, as an assigned

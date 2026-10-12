@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### A madc-built shared object finalizes its exit handlers when it is unloaded
+
+A shared object madc built and the program unloads before it exits now runs
+its objects' destructors at the unload, while the image's code is still
+mapped, and the program exits cleanly. The image handle's startup member
+carries an image fini `__madc_dso_fini` (`__cxa_finalize(&__dso_handle)`,
+crtbegin.o's `__do_global_dtors_aux`): the `madc_crt_members` table gains a
+`fini` column beside `init`, and the exec params carry it. The ELF writer
+names the fini symbol in `DT_FINI`, and the PE DLL entry stub runs it at
+`DLL_PROCESS_DETACH` (mingw's dllcrt), so ld.so and Windows run it at
+dlclose / FreeLibrary and at process exit. Before, a madc-built image
+registered its objects' destructors but carried no fini, so a shared object
+unloaded before exit never ran them and `exit()` called into the unmapped
+library (SIGSEGV). On Windows only the executable hooks the UCRT's exit, so a
+DLL freed before exit leaves nothing in the UCRT's table. Gate:
+`testbuild_shared_unload`.
+
 ### Dialect verbs for the live reparse and the rebuild's main
 
 A madc-dialect host can now reach a session's live reparse and the REPL

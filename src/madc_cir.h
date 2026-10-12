@@ -384,12 +384,14 @@ struct cir_ledger_module
 // `defines` (space-separated: the archive index, read without compiling;
 // the compiled member is checked against it), as the ledger's modules are
 // pulled. `init` names the member's image init (an executable's or shared
-// object's init array runs it), NULL = none.
+// object's init array runs it), NULL = none; `fini` its image fini (DT_FINI:
+// ld.so calls it when it unloads the image or the process exits), NULL = none.
 struct madc_crt_member
 {
 	const char *name;
 	const char *defines;
 	const char *init;
+	const char *fini;
 	const char *source;
 };
 // The target's members, ended by an all-NULL row.

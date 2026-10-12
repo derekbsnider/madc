@@ -2947,6 +2947,11 @@ static void cir_fill_exec_params(MIR_object_exec_params &xp,
 	xp.gui_subsystem_p = gui_subsystem;
     }
     xp.runpath = runpath.empty() ? NULL : runpath.c_str();
+    // The startup members' image fini (the image handle's): the writer names
+    // it in DT_FINI when the image defines it, i.e. pulled the member.
+    for (const madc_crt_member *m = madc_crt_members; m->name; m++)
+	if (m->fini)
+	    xp.fini = m->fini;
 }
 
 #if MADC_TARGET_APPLE_P

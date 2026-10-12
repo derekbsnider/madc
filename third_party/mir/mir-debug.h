@@ -367,6 +367,16 @@ typedef struct MIR_object_exec_params {
      them: their icons live outside the image (a .desktop file, a bundle). */
   const struct MIR_object_resource *resources;
   size_t n_resources;
+  /* ELF targets: a text symbol ld.so calls when it unloads the image
+     (dlclose) or the process exits -- DT_FINI, the role crtbegin.o's
+     __do_global_dtors_aux plays from .fini_array: it finalizes the image's
+     exit handlers (__cxa_finalize (&__dso_handle)) while its code is still
+     mapped.  NULL, or a name the image does not define = no DT_FINI.
+     PE targets: a DLL calls it at DLL_PROCESS_DETACH (FreeLibrary, and
+     the process's exit) -- mingw's dllcrt role; an executable ignores it.
+     Mach-O targets ignore it (dyld finalizes an unloaded image's handlers
+     itself). */
+  const char *fini;
 } MIR_object_exec_params;
 
 typedef struct MIR_object_resource {
