@@ -24,6 +24,8 @@
 #include <setjmp.h>
 #include <signal.h>	// sig_atomic_t: the session interrupt's flag (D8)
 #include <chrono>
+#include <memory>
+#include <mutex>
 #include <sys/stat.h>	// -o: chmod 0755 on the emitted executable
 #include <errno.h>
 #include <cxxabi.h>	// abi::__cxa_demangle: a link refusal names the symbol as ld does
@@ -495,6 +497,31 @@ static int cir_mir_cache_read_byte(MIR_context_t)
     return (*cir_mir_cache_read_src)[cir_mir_cache_read_pos++];
 }
 
+// Does this item DEFINE its name (a function or a data item)? An import, an
+// export, a forward and a prototype define nothing.
+static bool cir_item_defines(MIR_item_t it)
+{
+    return it->item_type != MIR_import_item
+	&& it->item_type != MIR_export_item
+	&& it->item_type != MIR_forward_item
+	&& it->item_type != MIR_proto_item;
+}
+
+// The symbols a module defines: the selection index of a ledger module and
+// of a startup member.
+static void cir_module_defined_syms(MIR_context_t ctx, MIR_module_t mod,
+				    std::vector<madc::dis::istring> &out)
+{
+    for (MIR_item_t it = DLIST_HEAD(MIR_item_t, mod->items); it;
+	 it = DLIST_NEXT(MIR_item_t, it)) {
+	if (!cir_item_defines(it))
+	    continue;
+	const char *nm = MIR_item_name(ctx, it);
+	if (nm && nm[0])
+	    out.push_back(nm);
+    }
+}
+
 // --- AOT ledger pull (-static-libmadc, forest-carriers S5) ----------------
 //
 // Collect every import no loaded module defines. The caller's two uses are
@@ -521,9 +548,7 @@ static void cir_ctx_unresolved_imports(MIR_context_t ctx,
 		    imports.push_back(it->u.import_id);
 		continue;
 	    }
-	    if (it->item_type == MIR_export_item
-		|| it->item_type == MIR_forward_item
-		|| it->item_type == MIR_proto_item)
+	    if (!cir_item_defines(it))
 		continue;
 	    const char *nm = MIR_item_name(ctx, it);
 	    if (nm && nm[0])
@@ -543,6 +568,118 @@ static void cir_ctx_unresolved_imports(MIR_context_t ctx,
 // ships no ledger" from "this program needs Tier-B pieces" — two very
 // different user actions, so they must not share a diagnostic.
 static bool cir_ledger_available = false;
+
+// --- madc's startup members (madc_crt.cpp) ---------------------------------
+//
+// A member is a few lines of self-contained C (no headers): c2mir's own front
+// end compiles it in a private context, once per process and only when a
+// link selects it, into the ledger's module shape, so one pull selects both.
+
+static bool cir_ledger_write_module(MIR_context_t ctx, MIR_module_t mod,
+				    const char *name,
+				    std::vector<uint8_t> &out);
+
+// The members' index: (symbol, member) for every name a member's `defines`
+// lists. Built once; immutable after.
+static const std::vector<std::pair<std::string, size_t> > &cir_crt_index()
+{
+    static const std::vector<std::pair<std::string, size_t> > index = [] {
+	std::vector<std::pair<std::string, size_t> > out;
+	for (size_t i = 0; madc_crt_members[i].name; i++) {
+	    std::istringstream in(madc_crt_members[i].defines);
+	    std::string nm;
+	    while (in >> nm)
+		out.push_back(std::make_pair(nm, i));
+	}
+	return out;
+    }();
+    return index;
+}
+
+// Does a member define `name`? (A link that imports none skips the pull.)
+static bool cir_crt_indexed(const char *name)
+{
+    for (const std::pair<std::string, size_t> &e : cir_crt_index())
+	if (e.first == name)
+	    return true;
+    return false;
+}
+
+struct CirCrtSource { const char *p; };
+static int cir_crt_getc(void *data)
+{
+    CirCrtSource *src = (CirCrtSource *)data;
+    return *src->p ? (unsigned char)*src->p++ : EOF;
+}
+
+// The member's module in `ctx` (its own MIR error frame), NULL when it does
+// not compile.
+static MIR_module_t cir_crt_compile_in(MIR_context_t ctx,
+				       const madc_crt_member &m)
+{
+    if (setjmp(cir_mir_error_jmp)) {
+	cir_mir_error_armed = false;
+	fprintf(stderr, "madc: startup member %s: MIR error: %s\n", m.name,
+		cir_mir_error_text);
+	return NULL;
+    }
+    cir_mir_error_armed = true;
+    struct c2mir_options opts;
+    memset(&opts, 0, sizeof opts);
+    opts.message_file = stderr;
+    CirCrtSource src = { m.source };
+    MIR_module_t before = DLIST_TAIL(MIR_module_t, *MIR_get_module_list(ctx));
+    int ok = c2mir_compile(ctx, &opts, cir_crt_getc, &src, m.name, NULL);
+    cir_mir_error_armed = false;
+    MIR_module_t got = DLIST_TAIL(MIR_module_t, *MIR_get_module_list(ctx));
+    return ok && got && got != before ? got : NULL;
+}
+
+// Compile one member. A member that does not compile, or does not define
+// what its index says, is a defect in madc: said loudly, and never pulled.
+static bool cir_crt_compile(const madc_crt_member &m, cir_ledger_module &out)
+{
+    out.name = m.name;
+    out.init = m.init ? m.init : "";
+    MIR_context_t ctx = MIR_init();
+    MIR_set_error_func(ctx, cir_mir_error);
+    c2mir_init(ctx);
+    bool ok = false;
+    if (MIR_module_t mod = cir_crt_compile_in(ctx, m)) {
+	cir_module_defined_syms(ctx, mod, out.syms);
+	ok = true;
+	for (const std::pair<std::string, size_t> &e : cir_crt_index())
+	    if (&madc_crt_members[e.second] == &m
+		&& std::find(out.syms.begin(), out.syms.end(),
+			     madc::dis::istring(e.first)) == out.syms.end()) {
+		fprintf(stderr, "madc: startup member %s does not define"
+			" '%s'\n", m.name, e.first.c_str());
+		ok = false;
+	    }
+	ok = ok && cir_ledger_write_module(ctx, mod, m.name, out.bytes);
+    } else
+	fprintf(stderr, "madc: startup member %s does not compile\n", m.name);
+    c2mir_finish(ctx);
+    MIR_finish(ctx);
+    return ok;
+}
+
+// Member i's module, compiled on first use; NULL when it cannot be.
+static const cir_ledger_module *cir_crt_module(size_t i)
+{
+    static std::mutex lock;
+    static std::map<size_t, std::unique_ptr<cir_ledger_module> > compiled;
+    std::lock_guard<std::mutex> hold(lock);
+    std::map<size_t, std::unique_ptr<cir_ledger_module> >::iterator it
+	= compiled.find(i);
+    if (it == compiled.end()) {
+	std::unique_ptr<cir_ledger_module> m(new cir_ledger_module);
+	if (!cir_crt_compile(madc_crt_members[i], *m))
+	    m.reset();
+	it = compiled.insert(std::make_pair(i, std::move(m))).first;
+    }
+    return it->second.get();
+}
 
 // Read ONE ledger module's .bmir into `ctx` and load it. The MIR error
 // bracket lives in its own frame on purpose: a longjmp leaves automatic
@@ -592,24 +729,31 @@ static bool cir_ledger_read_module(MIR_context_t ctx,
 // `seed` names references the program has that are NOT module imports — the .o
 // link lane's inputs (see cir_ledger_relocatable). Selection is otherwise
 // identical: one pull implementation, two shapes of program.
+//
+// The startup members (madc_crt.cpp) are candidates in every link, the
+// archive the link always searches (libc_nonshared.a's place); the ledger's
+// modules join under -static-libmadc when `prog` can provide them.
 static void cir_ledger_pull(MIR_context_t ctx, Program *prog,
 			    const std::vector<madc::dis::istring> *seed = NULL)
 {
-    if (!madc_static_libmadc || !prog)
-	return;
-    CirFrozenForest *forest = prog->ensure_ledger_forest();
-    if (!forest)
-	return;
+    size_t ncrt = 0;
+    while (madc_crt_members[ncrt].name)
+	ncrt++;
     std::vector<cir_ledger_module> ledger;
-    if (!forest->ledger_modules(ledger))
-	return;
-    cir_ledger_available = true;
-    std::map<madc::dis::istring, size_t> owner;	// symbol -> ledger module index
+    if (madc_static_libmadc && prog)
+	if (CirFrozenForest *forest = prog->ensure_ledger_forest())
+	    if (forest->ledger_modules(ledger))
+		cir_ledger_available = true;
+    // symbol -> candidate: the startup members by their index, then the
+    // ledger's modules
+    std::map<madc::dis::istring, size_t> owner;
+    for (const std::pair<std::string, size_t> &e : cir_crt_index())
+	owner.insert(std::make_pair(madc::dis::istring(e.first), e.second));
     for (size_t i = 0; i < ledger.size(); i++)
 	for (const madc::dis::istring &s : ledger[i].syms)
-	    owner.insert(std::make_pair(s, i));
+	    owner.insert(std::make_pair(s, ncrt + i));
 
-    std::vector<bool> pulled(ledger.size(), false);
+    std::vector<bool> pulled(ncrt + ledger.size(), false);
     for (;;) {
 	std::vector<madc::dis::istring> undef;
 	cir_ctx_unresolved_imports(ctx, undef, seed);
@@ -619,17 +763,33 @@ static void cir_ledger_pull(MIR_context_t ctx, Program *prog,
 	    if (it == owner.end() || pulled[it->second])
 		continue;
 	    pulled[it->second] = true;	// once, whether or not the read works
-	    if (cir_ledger_read_module(ctx, ledger[it->second])) {
+	    const cir_ledger_module *m = it->second < ncrt
+		? cir_crt_module(it->second) : &ledger[it->second - ncrt];
+	    if (m && cir_ledger_read_module(ctx, *m)) {
 		pulled_now++;
-		DBG(std::cout << "ledger: pulled " << ledger[it->second].name
+		DBG(std::cout << "ledger: pulled " << m->name
 			      << " for '" << nm << "' ("
-			      << ledger[it->second].syms.size() << " symbols)"
+			      << m->syms.size() << " symbols)"
 			      << std::endl);
 	    }
 	}
 	if (!pulled_now)
 	    break;	// fixpoint: nothing new selected this round
     }
+}
+
+// The startup members `m` needs, loaded into `ctx` ahead of its own load
+// (and of any armed MIR error frame: each read arms its own).
+static void cir_crt_pull_for(MIR_context_t ctx, MIR_module_t m)
+{
+    std::vector<madc::dis::istring> seed;
+    for (MIR_item_t it = DLIST_HEAD(MIR_item_t, m->items); it;
+	 it = DLIST_NEXT(MIR_item_t, it))
+	if (it->item_type == MIR_import_item && it->u.import_id
+	    && cir_crt_indexed(it->u.import_id))
+	    seed.push_back(it->u.import_id);
+    if (!seed.empty())
+	cir_ledger_pull(ctx, NULL, &seed);
 }
 
 // --- AOT ledger as a RELOCATABLE (the .o link lane, -static-libmadc) -------
@@ -656,7 +816,7 @@ static bool cir_ledger_emit_blob(MIR_context_t ctx, std::vector<uint8_t> &blob)
     void *buf = NULL;
     size_t size = 0;
     if (MIR_gen_object_emit(ctx, &buf, &size) != 0 || !buf || size == 0) {
-	fprintf(stderr, "madc: -static-libmadc: AOT-ledger object emission"
+	fprintf(stderr, "madc: startup / AOT-ledger object emission"
 		" failed\n");
 	free(buf);
 	return false;
@@ -674,8 +834,8 @@ static bool cir_ledger_obj_pull(MIR_context_t ctx, Program *prog,
 {
     if (setjmp(cir_mir_error_jmp)) {
 	cir_mir_error_armed = false;
-	fprintf(stderr, "madc: -static-libmadc: cannot prepare the AOT ledger:"
-		" %s\n", cir_mir_error_text);
+	fprintf(stderr, "madc: cannot prepare the startup / AOT-ledger"
+		" runtime: %s\n", cir_mir_error_text);
 	return false;
     }
     cir_mir_error_armed = true;
@@ -685,13 +845,17 @@ static bool cir_ledger_obj_pull(MIR_context_t ctx, Program *prog,
     return true;
 }
 
-// Link + generate + serialize, under a FRESH error frame (see above).
+static bool cir_register_crt_inits(MIR_context_t ctx, const char *source_name);
+
+// Link + generate + serialize, under a FRESH error frame (see above). A
+// pulled startup member's image init rides the relocatable's own
+// .init_array, which the merge concatenates.
 static bool cir_ledger_obj_link_emit(MIR_context_t ctx,
 				     std::vector<uint8_t> &blob)
 {
     if (setjmp(cir_mir_error_jmp)) {
 	cir_mir_error_armed = false;
-	fprintf(stderr, "madc: -static-libmadc: cannot link the AOT ledger"
+	fprintf(stderr, "madc: cannot link the startup / AOT-ledger"
 		" runtime: %s\n", cir_mir_error_text);
 	return false;
     }
@@ -699,7 +863,8 @@ static bool cir_ledger_obj_link_emit(MIR_context_t ctx,
     // Same resolver the source lanes use in object mode: an import stays an
     // UNDEF symbol in the capture instead of binding to this process.
     MIR_link(ctx, MIR_set_gen_interface, cir_object_import_resolver);
-    bool ok = cir_ledger_emit_blob(ctx, blob);
+    bool ok = cir_register_crt_inits(ctx, "madc: link")
+	      && cir_ledger_emit_blob(ctx, blob);
     cir_mir_error_armed = false;
     return ok;
 }
@@ -715,7 +880,8 @@ static bool cir_ledger_relocatable(Program *prog,
     blob.clear();
     MIR_context_t ctx = MIR_init();
     if (!ctx) {
-	fprintf(stderr, "madc: -static-libmadc: MIR_init failed\n");
+	fprintf(stderr, "madc: startup / AOT-ledger runtime: MIR_init"
+		" failed\n");
 	return false;
     }
     MIR_set_error_func(ctx, cir_mir_error);
@@ -1026,7 +1192,8 @@ static MIR_module_t build_tu_module(MIR_context_t ctx, c2m_ctx_t c2m,
 
 CirJitSession::CirJitSession()
     : ctx(NULL), c2m(NULL), builder(NULL), forest(NULL), mod(NULL),
-      cache_mod(NULL), live_mode(false), stub_mod(NULL), stub_modules(0)
+      cache_mod(NULL), live_mode(false), stub_mod(NULL), stub_modules(0),
+      linked(false)
 {
 }
 
@@ -1042,6 +1209,82 @@ static MIR_item_t cir_module_func_item(MIR_module_t m, const char *name)
     return NULL;
 }
 
+// The definition `name` (function or data) in any module of `ctx` — the
+// startup members load beside the program's modules. NULL when none.
+static MIR_item_t cir_ctx_definition(MIR_context_t ctx, const char *name)
+{
+    for (MIR_module_t m = DLIST_HEAD(MIR_module_t, *MIR_get_module_list(ctx));
+	 m; m = DLIST_NEXT(MIR_module_t, m))
+	for (MIR_item_t it = DLIST_HEAD(MIR_item_t, m->items); it;
+	     it = DLIST_NEXT(MIR_item_t, it)) {
+	    if (!cir_item_defines(it))
+		continue;
+	    const char *nm = MIR_item_name(ctx, it);
+	    if (nm && strcmp(nm, name) == 0)
+		return it;
+	}
+    return NULL;
+}
+
+// A linked JIT context's exit, dlclose's __cxa_finalize step: the handlers
+// registered with its image handle run, newest first, while its code is
+// still mapped.
+static void cir_ctx_run_exit_handlers(MIR_context_t ctx)
+{
+    MIR_item_t handle = cir_ctx_definition(ctx, "__dso_handle");
+    if (!handle || !handle->addr)
+	return;			// no startup member: nothing registered here
+    // The image's own __cxa_finalize where a member defines it (Windows),
+    // else the C library's.
+    typedef void (*cir_finalize_fn)(void *);
+    cir_finalize_fn fin = NULL;
+    if (MIR_item_t f = cir_ctx_definition(ctx, "__cxa_finalize"))
+	fin = (cir_finalize_fn)f->addr;
+    else
+	fin = (cir_finalize_fn)madcdl_sym_default("__cxa_finalize");
+    if (fin)
+	fin(handle->addr);
+}
+
+// Windows: a JIT session's handlers live in its own startup member's list (no
+// DLL exports __cxa_atexit), which the UCRT's exit never sees. A DLL's list
+// runs at DLL_PROCESS_DETACH; the live sessions' lists run from one host hook
+// at process exit, while their code is still mapped — so exit() called inside
+// a program runs them. A session leaves the registry when it ends. Elsewhere
+// the C library's exit already runs every __cxa_atexit entry.
+// Thread safety: the registry mutates under its mutex; the hook takes it too.
+#if MADC_TARGET_WINDOWS_P
+static std::mutex cir_live_exit_lock;
+static std::set<MIR_context_t> cir_live_exit_ctxs;
+
+static void cir_live_exit_hook()
+{
+    std::lock_guard<std::mutex> hold(cir_live_exit_lock);
+    for (MIR_context_t ctx : cir_live_exit_ctxs)
+	cir_ctx_run_exit_handlers(ctx);
+    cir_live_exit_ctxs.clear();
+}
+
+static void cir_live_exit_add(MIR_context_t ctx)
+{
+    // Once (a function-local static: mingw's std::call_once calls a null
+    // pointer through its per-thread proxy).
+    static const bool hooked = atexit(cir_live_exit_hook) == 0;
+    (void)hooked;
+    std::lock_guard<std::mutex> hold(cir_live_exit_lock);
+    cir_live_exit_ctxs.insert(ctx);
+}
+
+static void cir_live_exit_remove(MIR_context_t ctx)
+{
+    std::lock_guard<std::mutex> hold(cir_live_exit_lock);
+    cir_live_exit_ctxs.erase(ctx);
+}
+#else
+static void cir_live_exit_add(MIR_context_t) {}
+static void cir_live_exit_remove(MIR_context_t) {}
+#endif
+
 CirJitSession::~CirJitSession()
 {
     teardown();
@@ -1049,6 +1292,12 @@ CirJitSession::~CirJitSession()
 
 void CirJitSession::teardown()
 {
+    // The session's end is its image's exit: the handlers run while its
+    // code is still mapped.
+    run_exit_handlers();
+    if (linked && ctx)
+	cir_live_exit_remove(ctx);
+    linked = false;
     // The proven madc_cir_execute order; the builder / forest own the node
     // storage backing the module, so they are deleted last.
     if (c2m) cir_finish(c2m);
@@ -1115,6 +1364,24 @@ static bool cir_register_tu_init(MIR_context_t ctx, CirBuilder *b,
 	fprintf(stderr, "%s: cannot register module init '%s' in the object"
 		" capture\n", source_name, b->tu_init_name().c_str());
 	return false;
+    }
+    return true;
+}
+
+// Object mode: a pulled startup member's image init (the Windows exit list's
+// hook into the UCRT's exit) joins the capture's .init_array beside the TU
+// inits. Same after-link rule as cir_register_tu_init.
+static bool cir_register_crt_inits(MIR_context_t ctx, const char *source_name)
+{
+    for (const madc_crt_member *m = madc_crt_members; m->name; m++) {
+	if (!m->init || !cir_ctx_definition(ctx, m->init))
+	    continue;
+	MIR_object_t o = MIR_gen_get_object(ctx);
+	if (!o || MIR_object_add_init(o, m->init) != 0) {
+	    fprintf(stderr, "%s: cannot register startup init '%s' in the"
+		    " object capture\n", source_name, m->init);
+	    return false;
+	}
     }
     return true;
 }
@@ -1204,6 +1471,14 @@ static bool cir_emit_alias_symbols(MIR_context_t ctx, Program *prog,
 
 bool CirJitSession::load_and_link(const char *source_name, Program *prog)
 {
+    // The startup members the modules about to load import (the image
+    // handle, atexit, ...), ahead of the error frame armed below: each
+    // member read arms its own.
+    if (cache_mod)
+	cir_crt_pull_for(ctx, cache_mod);
+    if (stub_mod)
+	cir_crt_pull_for(ctx, stub_mod);
+    cir_crt_pull_for(ctx, mod);
     if (setjmp(cir_mir_error_jmp)) {
 	// A MIR fatal (e.g. "import of undefined item") longjmp'd back here.
 	cir_mir_error_armed = false;
@@ -1295,6 +1570,9 @@ bool CirJitSession::load_and_link(const char *source_name, Program *prog)
 	    cir_register_source_debug(ctx);
     }
     cir_mir_error_armed = false;
+    if (!linked && !madc_object_mode)
+	cir_live_exit_add(ctx);
+    linked = true;
     return true;
 }
 
@@ -1425,7 +1703,8 @@ bool CirJitSession::build(Program *prog, const char *source_name,
 
     if (!load_and_link(source_name, prog))
 	return false;
-    if (madc_object_mode && !cir_register_tu_init(ctx, builder, source_name)) {
+    if (madc_object_mode && (!cir_register_tu_init(ctx, builder, source_name)
+			     || !cir_register_crt_inits(ctx, source_name))) {
 	teardown();
 	return false;
     }
@@ -2093,6 +2372,9 @@ bool CirJitSession::append(Program *prog, const char *entry_name)
 	return false;
     }
     live_init.clear();
+    // The startup members the entry imports join the session ahead of its
+    // link check, and stay whether or not the entry is admitted.
+    cir_crt_pull_for(ctx, m);
     // Refused: never loaded, never one of live_mods, never `mod`.
     if (!admits(m, prog, entry_name, b))
 	return false;
@@ -2216,6 +2498,17 @@ int CirJitSession::run_main(int argc, char **argv, bool *ok, double *out_secs)
 	    std::chrono::steady_clock::now() - _ex_t0).count();
     g_jit_module = NULL;
     return result;
+}
+
+void CirJitSession::run_exit_handlers()
+{
+    if (!ctx || !linked || madc_object_mode)
+	return;
+    // A crash in a destructor still symbolizes.
+    MIR_module_t saved = g_jit_module;
+    g_jit_module = mod;
+    cir_ctx_run_exit_handlers(ctx);
+    g_jit_module = saved;
 }
 
 int madc_cir_execute(Program *prog, const char *source_name,
@@ -3202,12 +3495,13 @@ int madc_cir_link_objects(const std::vector<std::string> &paths,
     MIR_object_t obj = cir_read_objects(paths);
     if (!obj)
 	return -1;
-    // -static-libmadc: the runtime pieces this program needs come in as one
-    // more relocatable, generated from the AOT ledger against the merged
-    // builder's own UNDEF names. -r never reaches here (the CLI requires a
-    // linked output), so the runtime is merged exactly once, at the link that
-    // produces the image — gcc's -static-libgcc placement.
-    if (madc_static_libmadc) {
+    // The startup members and, under -static-libmadc, the AOT ledger's
+    // runtime pieces this program needs come in as one more relocatable,
+    // generated against the merged builder's own UNDEF names. -r never
+    // reaches here (the CLI requires a linked output), so they merge exactly
+    // once, at the link that produces the image — gcc's crtbegin.o /
+    // -static-libgcc placement.
+    {
 	std::vector<madc::dis::istring> seed;
 	cir_object_undef_names(obj, seed);
 	std::vector<uint8_t> rt;
@@ -3218,7 +3512,7 @@ int madc_cir_link_objects(const std::vector<std::string> &paths,
 	char err[256];
 	if (!rt.empty()
 	    && MIR_object_read(obj, rt.data(), rt.size(), err, sizeof err) != 0) {
-	    fprintf(stderr, "madc: -static-libmadc: cannot merge the AOT-ledger"
+	    fprintf(stderr, "madc: cannot merge the startup / AOT-ledger"
 		    " runtime: %s\n", err);
 	    MIR_object_destroy(obj);
 	    return -1;
@@ -6454,19 +6748,8 @@ bool madc_cir_ledger_compile(MadcEngine &engine,
 	}
 	cir_ledger_module lm;
 	lm.name = sources[i];
-	// The DEFINED symbol set is the selection index: every func / data
-	// item the module owns. Imports, protos and forwards define nothing.
-	for (MIR_item_t it = DLIST_HEAD(MIR_item_t, mod->items); it;
-	     it = DLIST_NEXT(MIR_item_t, it)) {
-	    if (it->item_type == MIR_import_item
-		|| it->item_type == MIR_export_item
-		|| it->item_type == MIR_forward_item
-		|| it->item_type == MIR_proto_item)
-		continue;
-	    const char *nm = MIR_item_name(ctx, it);
-	    if (nm && nm[0])
-		lm.syms.push_back(nm);
-	}
+	// The DEFINED symbol set is the selection index.
+	cir_module_defined_syms(ctx, mod, lm.syms);
 	if (!cir_ledger_write_module(ctx, mod, sources[i].c_str(), lm.bytes)) {
 	    ok = false;
 	    break;
@@ -7250,7 +7533,13 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 	// Hold them (and the already-parsed Programs) for the whole call.
 	std::vector<CirBuilder *> builders;
 	std::vector<MIR_module_t> modules;
+	bool linked = false;
 	auto teardown = [&]() {
+		// The program's exit: its handlers run while its code is mapped.
+		if (linked) {
+			cir_ctx_run_exit_handlers(ctx);
+			cir_live_exit_remove(ctx);
+		}
 		for (CirBuilder *b : builders) delete b;
 		cir_finish(c2m);
 		MIR_gen_finish(ctx);
@@ -7283,6 +7572,9 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 	// Program answers for all of them.
 	if (!parsed.empty() && parsed[0].prog)
 		cir_open_stdlib_runtime(parsed[0].prog->active_stdlib_flavor());
+	// The startup members the TUs import (the image handle, atexit, ...).
+	for (MIR_module_t m : modules)
+		cir_crt_pull_for(ctx, m);
 	// MIR_set_gen_interface is EAGER — it MIR_gen()s every loaded func at
 	// link (adventure: 271 funcs, 91% of the link wall) before main ever
 	// runs. Ride the lazy interface: functions generate on FIRST CALL, so
@@ -7296,6 +7588,8 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 		 cir_import_resolver);
 	if (madc_debug_info)
 		cir_register_source_debug(ctx);
+	linked = true;
+	cir_live_exit_add(ctx);
 	auto _lk1 = std::chrono::steady_clock::now();
 
 	// Find the entry symbol across all modules. First match wins; a
@@ -7546,6 +7840,10 @@ int madc_project_emit_native(MadcEngine &engine,
 			teardown();
 			return -1;
 		}
+	if (!cir_register_crt_inits(ctx, parsed[0].name.c_str())) {
+		teardown();
+		return -1;
+	}
 	// Each TU's __attribute__((alias)) definitions, same ordering rule.
 	for (size_t bi = 0; bi < builders.size(); bi++)
 		if (!cir_emit_alias_symbols(ctx, parsed[bi].prog.get(),

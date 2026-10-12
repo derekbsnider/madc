@@ -1,0 +1,19 @@
+// quick_exit runs the at_quick_exit functions, not the atexit ones, and ends
+// with its status (an atexit function that ran would end it with 9). glibc
+// keeps at_quick_exit out of libc.so (libc_nonshared.a supplies it to each
+// image, registering with that image's handle), so madc could not link a call
+// to it; madc's startup member supplies it now.
+// Oracle: gcc and clang print exactly the .expect lines and exit 4.
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+static void at_exit_fn(void) { _exit(9); }
+static void at_quick_fn(void) { printf("quick\n"); fflush(stdout); }
+int main(void)
+{
+	atexit(at_exit_fn);
+	at_quick_exit(at_quick_fn);
+	printf("main\n");
+	fflush(stdout);
+	quick_exit(4);
+}

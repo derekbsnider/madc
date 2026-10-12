@@ -561,7 +561,10 @@ class CirBuilder {
 	// is another TU's; a block-scope STATIC (or thread_local) one lives for
 	// the program (or thread), so it takes no scope-exit cleanup — its
 	// destruction at exit is deferred like a file-scope object's.
-	enum class ObjStorage { Automatic, Extern, Static, ThreadStatic };
+	// Global: static storage duration at file scope — no storage-class
+	// specifier and no scope-exit cleanup (static_dtor_registration
+	// destroys it at exit).
+	enum class ObjStorage { Automatic, Extern, Static, ThreadStatic, Global };
 	node_t obj_storage_decl(const char *name, size_t words,
 				const char *dtor_sym, TokenBase *origin,
 				size_t align = 0,
@@ -2730,6 +2733,22 @@ public:
 	// the Pass 1.95 late declarations, ahead of every function definition),
 	// mark it referenced, and return its symbol.
 	madc::dis::istring demand_array_dtor(DataDefCLASS *cdd, size_t n);
+	// The function that ends a class object's lifetime, called with its
+	// address: the complete dtor, or a fixed array's per-(class,N) wrapper.
+	// One owner for the scope-exit cleanup of an automatic object
+	// (var_decl) and the exit-time registration of a static one.
+	madc::dis::istring class_object_dtor_symbol(Variable *v, DataDefCLASS *cdd);
+	// The exit-time destruction of an object with static storage duration,
+	// registered right after its initialization as g++ does:
+	// `__cxa_atexit((void (*)(void *))D, (void *)&v, (void *)&__dso_handle);`
+	// NULL when the object needs none, or ends with its thread.
+	node_t static_dtor_registration(Variable *v, TokenBase *origin);
+	// What that registration names: __cxa_atexit's prototype and the image
+	// handle __dso_handle.
+	void need_exit_registration_externs();
+	// `void (*)(void *)`: a destructor as __cxa_atexit and a vtable slot
+	// call take it.
+	node_t dtor_fnptr_type();
 	node_t synth_array_dtor_def(DataDefCLASS *cdd, size_t n,
 				    const madc::dis::istring &sym);
 	// Wrapper defs demanded during body translation, flushed at Pass 1.95.
@@ -2844,8 +2863,11 @@ public:
 	node_t carrier_scalar_conversion_refusal(TokenBase *src, DataDef *target,
 						 const char *context,
 						 TokenBase *origin);
+	// `object`: the static whose initialization init_items is; its
+	// exit-time destruction is registered inside the once-block.
 	void emit_static_local_once(node_t items, node_t init_items,
-				    TokenBase *origin, bool per_thread);
+				    TokenBase *origin, bool per_thread,
+				    Variable *object = NULL);
 	// Block-scope statics whose DYNAMIC initializer var_decl deferred to
 	// the once-block (the block-scope twin of m_dynamic_global_inits).
 	std::set<Variable *> m_dynamic_static_locals;

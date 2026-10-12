@@ -3501,6 +3501,25 @@ struct (D6's types); madcide's REPL pane (its own repository) needs the
 dialect verb; the `%run` rebuild calling `main` when the buffer defines it but
 never calls it.
 
+**Built, exit-time destruction (2026-10-12), the prerequisite for redefining
+an object with a destructor.** An object with static storage duration had its
+destructor never run, in the JIT or a native executable (the storage carried a
+cleanup attribute c2mir applies to automatic variables only). Now the CIR
+builder registers it right after its initialization as g++ does,
+`__cxa_atexit(dtor, &obj, &__dso_handle)` (`static_dtor_registration`: a
+global's constructor group, a block-scope static's once-block). The image
+handle and the libc functions glibc keeps in libc_nonshared.a (`atexit`,
+`at_quick_exit`, `pthread_atfork`) are madc's startup members
+(`src/madc_crt.cpp`), pulled into a JIT session or an image by its imports,
+as ld pulls archive members. A JIT session's end is its image's exit
+(`CirJitSession::run_exit_handlers`, dlclose's `__cxa_finalize`); a REPL
+session's objects are destroyed when it ends. Windows keeps the list in its
+member (no DLL exports `__cxa_atexit`). Gates: `testglobaldtor`,
+`testglobaldtorexit`, `testatexit`, `testatquickexit`, `testpthreadatfork`,
+`testrepl_globaldtor`. Open: a madc-built shared object unloaded before exit
+(the writers carry no fini array); `thread_local` objects
+(`__cxa_thread_atexit`).
+
 ## 42. Decisions (owner, 2026-09-25)
 
 **The aim (owner, 2026-09-25):** there is a future "ideal C/C++ REPL", and everyone is headed toward it, madc included. madc bets it can get there faster. It is designed to work more like a script language (Python, PHP), and it doesn't carry gcc's or clang's baggage. So the idea is to mimic Julia + IPython. madc follows cling and clang-repl only where their functionality is to its benefit and makes sense, never to mimic them.

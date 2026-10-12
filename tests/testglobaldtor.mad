@@ -1,0 +1,31 @@
+// [basic.start.term]: an object with static storage duration is destroyed
+// when the program exits, in the reverse order of its construction, and the
+// atexit functions registered in between run in that same order. A
+// constant-initialized object counts as constructed in declaration order; an
+// array's elements end last first; a block-scope static is registered when
+// its first call constructs it. madc ran none of these destructors, in the
+// JIT or a native executable. The destructors write the order into `trace`;
+// `last`, constructed first, ends last and prints it.
+// Oracle: g++ and clang++ print exactly the .expect lines.
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+static char trace[256];
+static void note(const char *s) { strcat(trace, s); }
+struct Last { ~Last() { note(" last"); printf("exit order:%s\n", trace); } };
+Last last;
+struct T {
+	int a;
+	T(int x) : a(x) {}
+	~T() { char b[8]; sprintf(b, " %d", a); note(b); }
+};
+struct P { int a; ~P() { char b[8]; sprintf(b, " p%d", a); note(b); } };
+T t1(1);
+P p{7};
+T arr[2] = { T(3), T(4) };
+T &get() { static T s(5); return s; }
+struct H { static T m; };
+T H::m(6);
+T t2(2);
+void bye() { note(" atexit"); }
+int main() { atexit(bye); printf("main %d\n", get().a); return 0; }

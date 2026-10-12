@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### Objects with static storage duration are destroyed at exit
+
+An object with static storage duration — a global, an array global, a
+block-scope static — now has its destructor run when the program exits,
+in the reverse order of construction and interleaved with the `atexit`
+handlers registered between constructions ([basic.start.term]). The CIR
+builder registers each destructor with `__cxa_atexit(dtor, &obj,
+&__dso_handle)` right after the object is initialized, where g++ does.
+`exit()` called from a nested function destroys the static-storage
+objects (not the automatic ones) and ends with its status; `quick_exit`
+runs the `at_quick_exit` handlers, not the `atexit` ones. Before, madc
+ran none of these destructors, in the JIT or a native executable. The
+libc functions glibc keeps in `libc_nonshared.a` — `atexit`,
+`at_quick_exit`, `pthread_atfork` — now link too, from madc's startup
+members (`src/madc_crt.cpp`), pulled into a JIT session or a native image
+by its imports as `ld` pulls an archive member; before, a call to one was
+an "undefined item/symbol". Windows keeps the handler list in its own
+startup member (no DLL exports `__cxa_atexit`). A `madc -i` session's
+static-storage objects are destroyed when the session ends.
+
 ### A REPL session variable can be redefined in place
 
 In a `madc -i` session an object whose definition an earlier entry

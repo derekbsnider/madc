@@ -1,0 +1,19 @@
+// atexit functions run when main returns, the last registered first. glibc
+// keeps atexit out of libc.so (libc_nonshared.a supplies it to each image,
+// registering with that image's handle), so madc could not link a call to it:
+// "undefined item atexit" in the JIT, "undefined symbol: atexit" from a
+// native executable. madc's startup member supplies it now.
+// Oracle: gcc and clang print exactly the .expect lines.
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+static char trace[64];
+static void one(void) { strcat(trace, " one"); printf("atexit order:%s\n", trace); }
+static void two(void) { strcat(trace, " two"); }
+int main(void)
+{
+	atexit(one);
+	atexit(two);
+	printf("main\n");
+	return 0;
+}

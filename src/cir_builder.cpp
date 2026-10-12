@@ -10582,6 +10582,10 @@ bool CirBuilder::ensure_runtime_extern_for(const madc::dis::istring &sym)
 		need_output_extern("__madc_vla_free", false, { { {N_VOID}, true } });
 		return true;
 	}
+	if (sym == "__cxa_atexit" || sym == "__dso_handle") {
+		need_exit_registration_externs();
+		return true;
+	}
 	if (sym == "malloc") {
 		need_output_extern("malloc", true, { { {N_UNSIGNED, N_LONG, N_LONG}, false } });
 		return true;
@@ -11400,6 +11404,8 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		if (!m_file_scope_decl && (v->flags & vfSTATIC))
 			storage = (v->flags & vfTHREADLOCAL)
 				? ObjStorage::ThreadStatic : ObjStorage::Static;
+		else if (m_file_scope_decl)
+			storage = ObjStorage::Global;
 		// var_emit_name like the general shapes below (line ~6700): this
 		// early return was the one path in var_decl that skipped it.
 		return array_storage_decl(var_emit_name(*v).c_str(), origin,
@@ -11945,16 +11951,13 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 			append(attrs, node2(N_ATTR, id("cleanup", origin),
 					    attr_args, origin));
 			attr_node = attrs;
-		} else if (cdd && class_needs_dtor(cdd)) {
-			// A fixed ARRAY gets the per-(class,N) wrapper: the cleanup
-			// mechanism calls one function with &a (element 0), which
-			// destroyed only a[0] — g++ destroys all N in REVERSE
-			// (task #56; the VLA case stays on the free-only arm below).
-			madc::dis::istring dtor_sym =
-				(v->is_fixed_array() && !v->is_vla()
-				 && v->total_elements() > 0)
-				? demand_array_dtor(cdd, v->total_elements())
-				: class_complete_dtor_symbol(cdd);
+		} else if (cdd && class_needs_dtor(cdd)
+			   && !(m_file_scope_decl || (v->flags & vfSTATIC))) {
+			// An object with static storage duration is destroyed at
+			// exit instead (static_dtor_registration, where it is
+			// initialized): c2mir runs a cleanup on automatic
+			// variables only.
+			madc::dis::istring dtor_sym = class_object_dtor_symbol(v, cdd);
 			referenced_funcs.insert(dtor_sym);
 			node_t attr_args = list();
 			append(attr_args, id(dtor_sym.c_str(), origin));
@@ -13659,20 +13662,8 @@ node_t CirBuilder::virtual_dtor_slot_call(DataDefCLASS *cdd, const char *sname,
 				node2(N_DECL, ignore(), vpp_dl));
 	node_t vtab = node2(N_CAST, vpp_type, vptr, tb);
 	node_t slotref = node2(N_IND, vtab, integer(slot, tb), tb);
-	// Cast the slot to void(*)(void*) — the dtor signature. Suffix order
-	// matches fnptr_decl_pieces: POINTER first (the `(*)`), then FUNC (the
-	// `(void*)` params) — pointer-to-function, not fn-returning-pointer.
-	node_t fp_dl = list();
-	append(fp_dl, pointer());
-	append(fp_dl, node1(N_FUNC,
-		node1(N_LIST,
-		      node2(N_TYPE,
-			    node1(N_LIST, simple(N_VOID)),
-			    node2(N_DECL, ignore(),
-				  node1(N_LIST, pointer()))))));
-	node_t fp_type = node2(N_TYPE, node1(N_LIST, simple(N_VOID)),
-			       node2(N_DECL, ignore(), fp_dl));
-	node_t fn = node2(N_CAST, fp_type, slotref, tb);
+	// Cast the slot to void(*)(void*) — the dtor signature.
+	node_t fn = node2(N_CAST, dtor_fnptr_type(), slotref, tb);
 	node_t darg = list();
 	append(darg, recv_arg);
 	return node2(N_CALL, fn, darg, tb);
@@ -17076,6 +17067,116 @@ madc::dis::istring CirBuilder::demand_array_dtor(DataDefCLASS *cdd, size_t n)
 	if (!m_array_dtor_defs.count(sym))
 		m_array_dtor_defs[sym] = synth_array_dtor_def(cdd, n, sym);
 	return sym;
+}
+
+madc::dis::istring CirBuilder::class_object_dtor_symbol(Variable *v,
+							DataDefCLASS *cdd)
+{
+	// A fixed array's wrapper destroys all N, last first (task #56): the
+	// complete dtor called with &a would destroy a[0] only.
+	if (v->is_fixed_array() && !v->is_vla() && v->total_elements() > 0)
+		return demand_array_dtor(cdd, v->total_elements());
+	return class_complete_dtor_symbol(cdd);
+}
+
+node_t CirBuilder::dtor_fnptr_type()
+{
+	// Suffix order matches fnptr_decl_pieces: POINTER first (the `(*)`),
+	// then FUNC (the `(void *)` parameters) — pointer to function, not a
+	// function returning a pointer.
+	node_t dl = list();
+	append(dl, pointer());
+	append(dl, node1(N_FUNC,
+		node1(N_LIST,
+		      node2(N_TYPE,
+			    node1(N_LIST, simple(N_VOID)),
+			    node2(N_DECL, ignore(),
+				  node1(N_LIST, pointer()))))));
+	return node2(N_TYPE, node1(N_LIST, simple(N_VOID)),
+		     node2(N_DECL, ignore(), dl));
+}
+
+void CirBuilder::need_exit_registration_externs()
+{
+	// extern int __cxa_atexit(void (*)(void *), void *, void *);
+	// (the Itanium ABI's, as <cxxabi.h> declares it). Operand layout
+	// mirrors need_output_extern's proto.
+	if (!m_output_externs.count("__cxa_atexit")) {
+		node_t params = list();
+		append(params, dtor_fnptr_type());
+		append(params, void_ptr_type());
+		append(params, void_ptr_type());
+		node_t specs = list();
+		append(specs, simple(N_EXTERN));
+		append(specs, simple(N_INT));
+		node_t proto = simple(N_SPEC_DECL);
+		append(proto, node1(N_SHARE, specs));
+		append(proto, node2(N_DECL, id("__cxa_atexit"),
+				    node1(N_LIST, node1(N_FUNC, params))));
+		append(proto, ignore());
+		append(proto, ignore());
+		append(proto, ignore());
+		m_output_externs["__cxa_atexit"] = proto;
+	}
+	// extern void *__dso_handle; — the image's own: crtbegin.o's under a
+	// system link, madc's startup member (madc_crt.cpp) in the images and
+	// JIT sessions madc links itself.
+	if (!m_output_externs.count("__dso_handle")) {
+		node_t specs = list();
+		append(specs, simple(N_EXTERN));
+		append(specs, simple(N_VOID));
+		node_t sd = simple(N_SPEC_DECL);
+		append(sd, node1(N_SHARE, specs));
+		append(sd, node2(N_DECL, id("__dso_handle"),
+				 node1(N_LIST, pointer())));
+		append(sd, ignore());
+		append(sd, ignore());
+		append(sd, ignore());
+		m_output_externs["__dso_handle"] = sd;
+	}
+}
+
+// g++ registers a static object's destructor right after constructing it
+// (__cxa_atexit in its static-init function and in a block-scope static's
+// guarded init), so objects end in the reverse order they began,
+// interleaved with atexit handlers ([basic.start.term]/3). The handle names
+// the image whose exit or finalization runs it.
+node_t CirBuilder::static_dtor_registration(Variable *v, TokenBase *origin)
+{
+	if (!v || !v->type || v->type->is_pointer()
+	    || (v->flags & (vfEXTERN | vfTHREADLOCAL)))
+		return NULL;
+	madc::dis::istring dsym;
+	if (is_array_object(v->type)) {
+		// One carrier: its storage is one object (array_storage_decl).
+		if (v->is_fixed_array())
+			return NULL;
+		dsym = "madarray_destruct";
+		need_output_extern(dsym.c_str(), false, { { {N_VOID}, true } });
+	} else if (DataDefCLASS *cdd = as_class_instance(v->type)) {
+		if (!class_needs_dtor(cdd))
+			return NULL;
+		dsym = class_object_dtor_symbol(v, cdd);
+		// TYPED forward proto, as synth_array_dtor_def declares it.
+		if (dsym == class_complete_dtor_symbol(cdd))
+			need_output_extern(dsym.c_str(), false,
+					   { { {}, true, cdd } });
+	} else
+		return NULL;
+	referenced_funcs.insert(dsym);
+	need_exit_registration_externs();
+	node_t args = list();
+	append(args, node2(N_CAST, dtor_fnptr_type(),
+			   id(dsym.c_str(), origin), origin));
+	append(args, object_var_void_addr(*v, origin));
+	append(args, node2(N_CAST, void_ptr_type(),
+			   node1(N_ADDR, id("__dso_handle", origin), origin),
+			   origin));
+	node_t call = node2(N_CALL, id("__cxa_atexit", origin), args, origin);
+	CIR_NODE(call)->synth_from_origin = true;
+	node_t stmt = node2(N_EXPR, list(), call, origin);
+	CIR_NODE(stmt)->synth_from_origin = true;
+	return stmt;
 }
 
 // void Cls__arr<N>___dtor(void *p)
@@ -30312,15 +30413,22 @@ void CirBuilder::class_decl_stmts(TokenDecl *sdcl, DataDefCLASS *cdcl,
 		class_decl_construction(sdcl, cdcl, init_items);
 		m_try_body_depth = saved_try_depth;
 		emit_static_local_once(items, init_items, sdcl,
-				       (sdcl->var.flags & vfTHREADLOCAL) != 0);
+				       (sdcl->var.flags & vfTHREADLOCAL) != 0,
+				       &sdcl->var);
 		return;
 	}
 	class_decl_construction(sdcl, cdcl, items);
 }
 
 void CirBuilder::emit_static_local_once(node_t items, node_t init_items,
-					TokenBase *origin, bool per_thread)
+					TokenBase *origin, bool per_thread,
+					Variable *object)
 {
+	// Registered once, after the object is initialized (g++'s guarded
+	// init calls __cxa_atexit inside the guard).
+	if (object)
+		if (node_t reg = static_dtor_registration(object, origin))
+			append(init_items, reg);
 	if (!c2mir_node_first_op(init_items))
 		return;			// nothing to construct: no guard
 	char guard[32], entry[32];
@@ -30834,7 +30942,7 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 					node_t cons = list();
 					append(cons, array_ctor_call(vname.c_str(), tc));
 					emit_static_local_once(items, cons, tc,
-						(v->flags & vfTHREADLOCAL) != 0);
+						(v->flags & vfTHREADLOCAL) != 0, v);
 				} else
 					append(items, array_ctor_call(vname.c_str(), tc));
 			}
@@ -30855,7 +30963,7 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 			if (cc) append(cons, cc);
 			if (once)
 				emit_static_local_once(items, cons, tc,
-					(v->flags & vfTHREADLOCAL) != 0);
+					(v->flags & vfTHREADLOCAL) != 0, v);
 		}
 	}
 
@@ -30954,7 +31062,8 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 					append(cons, vi);
 				if (once)
 					emit_static_local_once(items, cons, sdcl,
-						(sdcl->var.flags & vfTHREADLOCAL) != 0);
+						(sdcl->var.flags & vfTHREADLOCAL) != 0,
+						&sdcl->var);
 				continue;
 			}
 			// Class instance declared with constructor args `Foo f(a,b)` or an
@@ -33548,6 +33657,25 @@ void CirBuilder::collect_global_ctors(Program *prog,
 		if ((v->flags & vfLOCAL) && !(v->flags & vfSTATIC)) continue;
 		// An extern is a reference to a definition elsewhere — no storage, no ctor.
 		if (v->flags & vfEXTERN) continue;
+		// The object's exit-time destruction closes its group, after its
+		// initialization: a statically initialized object is destroyed
+		// as if it were initialized there ([basic.start.term]/3), in
+		// declaration order. An earlier module of the interactive session
+		// that defines the object registered it.
+		auto add_dtor = [&](std::vector<node_t> &grp) {
+			if (!is_array_object(v->type) && !as_class_instance(v->type))
+				return;
+			if (session_defines(var_emit_name(*v)))
+				return;
+			if (node_t reg = static_dtor_registration(v, NULL))
+				grp.push_back(reg);
+		};
+		auto queue_dtor_only = [&]() {
+			std::vector<node_t> grp;
+			add_dtor(grp);
+			if (!grp.empty())
+				queue_global_ctor_group(v, grp, deferred_globals);
+		};
 		DataDefCLASS *cdd = as_class_instance(v->type);
 		if (!cdd) {
 			// Non-class global with a dynamic (non-constant) scalar
@@ -33555,14 +33683,18 @@ void CirBuilder::collect_global_ctors(Program *prog,
 			// full source assignment here so it runs at main entry
 			// in declaration order, interleaved with class ctors
 			// (the g++ dynamic-initialization model).
-			if (!m_dynamic_global_inits.count(v))
+			if (!m_dynamic_global_inits.count(v)) {
+				queue_dtor_only();
 				continue;
+			}
 			TokenDecl *sdecl = NULL;
 			for (auto &td : prog->top_decls)
 				if (td.kind == Program::DeclKind::dkGlobalVar
 				    && td.var == v) { sdecl = td.decl; break; }
-			if (!sdecl)
+			if (!sdecl) {
+				queue_dtor_only();
 				continue;
+			}
 			// The CARRIER's ctor-syntax and brace-list globals
 			// (`value g(7);`, `var G = { "a", "b" };`): the args
 			// ride ctor_args, not initialize. The construct family
@@ -33583,18 +33715,22 @@ void CirBuilder::collect_global_ctors(Program *prog,
 				m_pending_stmts.clear();
 				if (cc)
 					cgrp.push_back(cc);
+				add_dtor(cgrp);
 				queue_global_ctor_group(v, cgrp,
 							deferred_globals);
 				continue;
 			}
-			if (!sdecl->initialize)
+			if (!sdecl->initialize) {
+				queue_dtor_only();
 				continue;
+			}
 			node_t as = translate_expr(sdecl->initialize);
 			std::vector<node_t> sgrp_stmts(m_pending_stmts.begin(),
 						       m_pending_stmts.end());
 			m_pending_stmts.clear();
 			if (as)
 				sgrp_stmts.push_back(node2(N_EXPR, list(), as));
+			add_dtor(sgrp_stmts);
 			queue_global_ctor_group(v, sgrp_stmts, deferred_globals);
 			continue;
 		}
@@ -33650,6 +33786,7 @@ void CirBuilder::collect_global_ctors(Program *prog,
 		// construction does (class_ctor_call_addr's ctorless arm).
 		if (cc)
 			grp_stmts.push_back(cc);
+		add_dtor(grp_stmts);
 		queue_global_ctor_group(v, grp_stmts, deferred_globals);
 	}
 }

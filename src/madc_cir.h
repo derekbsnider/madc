@@ -176,6 +176,13 @@ public:
     // after build().
     bool run_global_init();
 
+    // The session image's exit, as dlclose finalizes a shared object: every
+    // handler registered with its __dso_handle (a static object's
+    // destructor, an atexit function) runs, newest first, while its code is
+    // mapped. The session's end (teardown) runs it: a host may still call
+    // into the program after its main returns. A second run finds nothing.
+    void run_exit_handlers();
+
     // Generate and run main(argc, argv); returns main's return value.
     // `ok` (when non-null) reports whether main was found and invoked.
     // `out_secs` (when non-null) receives the execution wall time in seconds
@@ -222,6 +229,8 @@ private:
     size_t stub_modules;
     std::map<madc::dis::istring, MIR_item_t> late_stubs;
     madc::dis::istring live_init;
+    // A link has succeeded: the image's code (its exit handlers') exists.
+    bool linked;
     // Slice 2: the cells late-bound objects are read through, by cell symbol
     // (a node-stable map: an import binds to a value's address), and the
     // object each unbound cell waits for.
@@ -361,7 +370,26 @@ struct cir_ledger_module
 	madc::dis::istring              name;	 // the ledger source path (module name)
 	std::vector<madc::dis::istring> syms;	 // defined symbols
 	std::vector<uint8_t>     bytes;	 // MIR_write_module bytes
+	madc::dis::istring              init;	 // its image init, "" = none
 };
+
+// One startup member (madc_crt.cpp): what crtbegin.o and libc_nonshared.a
+// give a gcc-linked image — the image handle __dso_handle and the C library
+// functions the platform keeps out of its shared library (atexit, ...) — as
+// C source. A link pulls a member when an import names a symbol in its
+// `defines` (space-separated: the archive index, read without compiling;
+// the compiled member is checked against it), as the ledger's modules are
+// pulled. `init` names the member's image init (an executable's or shared
+// object's init array runs it), NULL = none.
+struct madc_crt_member
+{
+	const char *name;
+	const char *defines;
+	const char *init;
+	const char *source;
+};
+// The target's members, ended by an all-NULL row.
+extern const madc_crt_member madc_crt_members[];
 
 // Freeze the parsed Program's module tree (PRE-check — c2mir's checker
 // mutates trees it compiles) into a forest snapshot container at out_path:

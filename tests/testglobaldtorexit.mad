@@ -1,0 +1,19 @@
+// exit() called from a nested function ends the program there: the objects
+// with static storage duration are destroyed (the block-scope static the
+// call constructed first, then the global), automatic `local` is not, and
+// the status is exit's. madc destroyed nothing.
+// Oracle: g++ and clang++ print exactly the .expect line and exit 3.
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+static char trace[64];
+struct Last { ~Last() { printf("exit order:%s\n", trace); } };
+Last last;
+struct T {
+	int a;
+	T(int x) : a(x) {}
+	~T() { sprintf(trace + strlen(trace), " %d", a); }
+};
+T t1(1);
+void f() { static T s(2); exit(3); }
+int main() { T local(9); f(); return 0; }
