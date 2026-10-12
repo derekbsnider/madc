@@ -192,6 +192,22 @@ on it, through `lane_tools`. The gate script is in the set as well: no suite
 exercises it, and its selftest — run first on every check and every push —
 is the test that can.
 
+The interactive code is outside the full-suite lanes the same way (owner
+2026-10-12: "because these changes only effect REPL mode, they should NOT IN
+ANY WAY SHAPE OR FORM REQUIRE A FULL DAY OF TESTING EVERY SINGLE PART OF
+MADC"). The REPL loops, the session and its backend wire, the ex core and its
+dialect face, the history store and their tests are reached only by `madc -i`,
+`madc --lsp` and a dialect host; a file compile never runs them, so the
+hour-long suites cannot catch a defect there that the REPL, colon-mode,
+session and LSP tests miss. `INTERACTIVE_CODE` in scripts/lane_ledger.sh lists
+them; a change confined to it stales only the interactive lanes
+(`interactive` on the container, `interactive-win` on the owner's Windows box,
+`interactive-darwin` on the Macs), which run that subset and the interactive
+unit binaries (scripts/interactive_lane.sh) in minutes. A change anywhere
+else stales the interactive lanes with every other lane, because the REPL
+runs on all of madc. A file joins the list only when no file compile reaches
+it; one that both faces share stays out.
+
 The application left the lanes with its code (owner 2026-10-09: "if only
 madcide change (and not madc sources) then we do not need the full battery of
 madc tests as that takes HOURS"). madcide is a program written in madc, not

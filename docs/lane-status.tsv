@@ -16,3 +16,6 @@ commonmark	commit	67766e2422a3	2026-10-11	commonmark: 664 passed, 6 failed (of 6
 index-c	yes	67766e2422a3	2026-10-11	index-c: 50/50 tasks OK, 0 failed (rc=0) [-O2] [fast_lanes on 71d4ad43e code content]
 genuine-win	release	8b620b8fdc82	2026-10-11	1926/0/0TO/83skip — the FULL suite on the owner Windows 11 box at 67766e242 content (scripts/win_suite.sh, the seam5 packed PE)
 brew-linux	release	8b620b8fdc82	2026-10-12	2000/0/0TO/9skip - scripts/brew_lane.sh at 67766e242 content (bottle + pour + brew test, keg-masked runpath gate)
+interactive	yes	none	never	not yet run: scripts/interactive_lane.sh on the container (the REPL, colon-mode, session and LSP tests + the interactive unit binaries)
+interactive-win	release	none	never	not yet run: win_suite.sh over interactive_lane.sh INTERACTIVE_GLOBS on the owner Windows 11 box
+interactive-darwin	release	none	never	not yet run: run_tests.sh over interactive_lane.sh INTERACTIVE_GLOBS on both Macs (the macOS packaged madc)

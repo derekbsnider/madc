@@ -49,24 +49,45 @@ RELEASE_TOOLING="scripts/package_release.sh scripts/package_release_macos.sh
 	scripts/promote_release.sh
 	scripts/release_bins.sh scripts/brew_bottle.sh scripts/brew_formula.sh
 	scripts/brew_lane.sh scripts/lane_ledger.sh scripts/git-hooks/pre-push"
+# The interactive faces' code (owner 2026-10-12: "because these changes only
+# effect REPL mode, they should NOT IN ANY WAY SHAPE OR FORM REQUIRE A FULL DAY
+# OF TESTING EVERY SINGLE PART OF MADC"): only `madc -i`, `madc --lsp` and a
+# dialect host (madcide) reach it — a file compile never does. It stales only
+# the interactive lanes (scripts/interactive_lane.sh: the REPL, colon-mode,
+# session and LSP tests and the interactive unit binaries, on Linux, genuine
+# Windows and macOS); any other code change stales those with every lane.
+INTERACTIVE_CODE="src/madc_repl.cpp include/madc_repl.h
+	src/madc_session.cpp src/madc_session_client.cpp src/madc_session_verbs.cpp
+	src/madc_session_interrupt.cpp src/madc_session_stdin.cpp
+	include/madc_session.h include/madc_session_client.h
+	src/madc_ex.cpp include/madc_ex.h include/madc_ex_session.h
+	include/madc/ns_madc_host src/madc_history.cpp include/madc_history.h
+	scripts/interactive_lane.sh
+	tests/testrepl_* tests/testex_* tests/testsession_* tests/testlsp_*
+	tests/unit/test_ex.cpp tests/unit/test_repl_session.cpp
+	tests/unit/test_repl_cli.cpp tests/unit/test_repl_input.cpp
+	tests/unit/test_session_backend.cpp"
 # The release tooling a lane's recorded tally covers, by lane: the brew lane
 # bottles, pours and tests the keg. (The darwin lane's tally is the macOS
 # suite; the macOS packages are proven by release.yml's macos-package jobs.)
+# The interactive lanes cover the interactive code.
 lane_tools() {
 	case "$1" in
 	brew-linux) echo "scripts/brew_bottle.sh scripts/brew_formula.sh
 		scripts/brew_lane.sh packaging/homebrew" ;;
+	interactive|interactive-win|interactive-darwin) echo "$INTERACTIVE_CODE" ;;
 	esac
 }
 
 # lane_paths <lane> -> the pathspecs of the content <lane> validates: the
-# code less the release tooling, plus the tooling the lane runs. An exclude
-# beats an include in git, so a lane's own tools are never excluded.
+# code less the release tooling and the interactive code, plus what the lane
+# runs of them. An exclude beats an include in git, so a lane's own are never
+# excluded.
 lane_paths() {
 	local tools p f
 	tools=" $(lane_tools "$1" | tr -s '[:space:]' ' ') "
 	p="$CODE_PATHS"
-	for f in $RELEASE_TOOLING; do
+	for f in $RELEASE_TOOLING $INTERACTIVE_CODE; do
 		case "$tools" in
 		*" $f "*) ;;
 		*) p="$p :(exclude)$f" ;;
@@ -222,6 +243,21 @@ selftest() {
 	   echo "lane_ledger: SELFTEST FAILED — the brew lane ignores its own tooling" >&2
 	   rm -f "$tmp"; return 1 ;;
 	esac
+	# The interactive table, both ways: a full-suite lane never watches the
+	# REPL's code, and every interactive lane does.
+	case " $(lane_paths linux-battery) " in
+	*" :(exclude)src/madc_repl.cpp "*) ;;
+	*) echo "lane_ledger: SELFTEST FAILED — a full-suite lane watches the interactive code" >&2
+	   rm -f "$tmp"; return 1 ;;
+	esac
+	local il
+	for il in interactive interactive-win interactive-darwin; do
+		case " $(lane_paths "$il") " in
+		*" :(exclude)src/madc_repl.cpp "*)
+		   echo "lane_ledger: SELFTEST FAILED — $il ignores the interactive code" >&2
+		   rm -f "$tmp"; return 1 ;;
+		esac
+	done
 	# shellcheck disable=SC2046
 	stale_sha=$(git log --format=%h -n 1 --skip=1 HEAD -- $(lane_paths selftest-stale))
 	{

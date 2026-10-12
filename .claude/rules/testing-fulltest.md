@@ -12,7 +12,10 @@ and produces exactly the oscillation this rule exists to stop.
           tooling — `RELEASE_TOOLING` in scripts/lane_ledger.sh: packaging,
           the release archive, the gate; the release workflow's install
           gates prove those, and a lane that runs one names it in
-          `lane_tools`) — UNDER THREE MINUTES,
+          `lane_tools`; and LESS the interactive code — `INTERACTIVE_CODE`:
+          the REPL loops, the session, the ex core, their tests — which
+          stales only the interactive lanes, scripts/interactive_lane.sh on
+          Linux, genuine Windows and macOS) — UNDER THREE MINUTES,
           all of it: `bash scripts/fast_lanes.sh` (c-testsuite, c-torture,
           c2mir-tests, gui, index-c, gxx-c++11, commonmark). It is a RATCHET against
           recorded baselines, it records each green lane in the ledger, and
