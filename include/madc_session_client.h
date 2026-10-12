@@ -221,6 +221,12 @@ public:
     unsigned check(const std::string &path, const std::string *text);
     int check_wait(const std::string &path, const std::string *text,
 		   Reply &reply, std::string &output);
+    // The host's REPL buffer edited (the live reparse): its text before and
+    // after, the changed entries read again in the backend
+    // (InteractiveSession::buffer_edited).
+    unsigned edited(const std::string &before, const std::string &after);
+    int edited_wait(const std::string &before, const std::string &after,
+		    Reply &reply, std::string &output);
 
     // The HOST's REPL command rows (split arc 1A.2; design
     // docs/plans/2026-10-09-command-registry-design.md §2.7): an array of
@@ -331,6 +337,7 @@ public:
     const std::string &shown() const override { return shown_text; }
     const std::vector<madc::code_range> &shown_code() const override { return shown_code_ranges; }
     const std::string &taken_source() const override { return kept_source; }
+    bool buffer_edited(const std::string &before, const std::string &after) override;
     std::vector<std::string> complete(const std::string &text, size_t caret,
 				      size_t &start) override;
     bool continues_if(const std::string &line) override;

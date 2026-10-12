@@ -81527,6 +81527,8 @@ void Program::adopt_entry_statement(TokenBase *ts, TokenBase *head)
 {
     if ( !token_is_tu_origin(ts) )
 	Throw(ts) << "file-scope statement in an included file (top-level statements are allowed only in the entry itself)" << flush;
+    if ( entry_definitions_only )
+	return;
     ensure_entry_function(head)->statements.push_back((TokenStmt *)ts);
 }
 
@@ -82317,7 +82319,7 @@ void Program::finish_entry(size_t decls_before, size_t funcs_before)
 	}
     }
     // D10: a final statement written without its `;` shows its value.
-    if ( entry_final_semicolon_omitted )
+    if ( entry_final_semicolon_omitted && !entry_definitions_only )
 	show_entry_value(decls_before);
     // A binding row's values: the session's quiet entry (plan §41.11a).
     if ( !entry_show_rows.empty() )

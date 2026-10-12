@@ -88,11 +88,12 @@ namespace {
 // entry (its first word is the session's `else`). `bindings`: the names the
 // session defined, as rows (InteractiveSession::bindings, %whos's). `build`:
 // %build's (InteractiveSession::build_file), the host's text of a file.
-// `stdin`: Send EOF's (plan §41.12a) — the backend takes the fresh stdin the
+// `edited`: the host's REPL buffer before and after an edit, its changed
+// entries read again (InteractiveSession::buffer_edited). `stdin`: Send EOF's (plan §41.12a) — the backend takes the fresh stdin the
 // client handed over (madc_session_stdin.h). `commands`: the host's REPL
 // command rows (split arc 1A.2), sent after every start. Those two are the
 // requests with no seq and no reply.
-enum class Op : unsigned char { begin, offer, complete, running, load, run, continues, bindings, build, stdin_renew, commands, history, check, project, colour, buffer, unknown };
+enum class Op : unsigned char { begin, offer, complete, running, load, run, continues, bindings, build, stdin_renew, commands, history, check, project, colour, buffer, edited, unknown };
 
 struct OpRow { const char *name; Op op; };
 const OpRow op_rows[] = {
@@ -103,7 +104,7 @@ const OpRow op_rows[] = {
     { "commands", Op::commands }, { "history", Op::history },
     { "check", Op::check },
     { "project", Op::project }, { "colour", Op::colour },
-    { "buffer", Op::buffer },
+    { "buffer", Op::buffer }, { "edited", Op::edited },
 };
 
 const char *op_name(Op op)
@@ -515,6 +516,11 @@ int serve_session(madc::DataChannel &wire, std::unique_ptr<Program> prog,
 		attach_diagnostics(rep, session);
 		break;
 	    }
+	    case Op::edited:
+		rep["ok"] = session.buffer_edited(req.value("before", std::string()),
+						  req.value("after", std::string()));
+		attach_diagnostics(rep, session);
+		break;
 	    case Op::bindings:
 	    {
 		madc::value rows;
@@ -1130,6 +1136,17 @@ unsigned SessionClient::build_text(const std::string &path, const std::string *t
     return send(req.dump()) ? seq : 0;
 }
 
+unsigned SessionClient::edited(const std::string &before, const std::string &after)
+{
+    nlohmann::json req;
+    const unsigned seq = next_seq++;
+    req["seq"] = seq;
+    req["op"] = op_name(Op::edited);
+    req["before"] = before;
+    req["after"] = after;
+    return send(req.dump()) ? seq : 0;
+}
+
 unsigned SessionClient::check(const std::string &path, const std::string *text)
 {
     nlohmann::json req;
@@ -1329,6 +1346,9 @@ int SessionClient::poll(Reply &reply, std::string &output, int timeout_ms)
 	case Op::check:
 	    reply.kind = Reply::Kind::check;
 	    reply.shown = j.value("shown", std::string());
+	    break;
+	case Op::edited:
+	    reply.kind = Reply::Kind::edited;
 	    break;
 	case Op::bindings:
 	    reply.kind = Reply::Kind::bindings;
@@ -1589,6 +1609,15 @@ bool BackendSession::honor(const SessionClient::Reply &reply)
     return run_source(path, has_text ? &text : NULL, args);
 }
 
+bool BackendSession::buffer_edited(const std::string &before, const std::string &after)
+{
+    HostIgnoresInterrupt quiet;	// an initializer it reads again may run
+    SessionClient::Reply r;
+    std::string output;
+    int rc = client.edited_wait(before, after, r, output);
+    return settle(rc, r, output) && r.ok;
+}
+
 bool BackendSession::check_file(const std::vector<std::string> &argv)
 {
     std::string path, text;
@@ -1842,6 +1871,13 @@ int SessionClient::check_wait(const std::string &path, const std::string *text,
 			      Reply &reply, std::string &output)
 {
     return wait_reply(check(path, text), reply, output, -1,
+		      InteractiveSession::TakenHook());
+}
+
+int SessionClient::edited_wait(const std::string &before, const std::string &after,
+			       Reply &reply, std::string &output)
+{
+    return wait_reply(edited(before, after), reply, output, -1,
 		      InteractiveSession::TakenHook());
 }
 

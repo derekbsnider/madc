@@ -8088,6 +8088,10 @@ public:
     // construction runs, later.
     int member_default_init_depth = 0;
     bool entry_if_extendable = false;		// an if ended at the entry's end
+    // An entry re-read from an edited REPL buffer (owner 2026-10-12, the live
+    // reparse): its definitions are taken, its statements are parsed and
+    // never run, and it shows nothing. Its reader sets it for that entry.
+    bool entry_definitions_only = false;
     // The classifier's verdict on one entry (plan §41.1a): run it; run it
     // unless the next line starts with `else` (D11); keep reading; or show
     // the diagnostic and return to a clean prompt.

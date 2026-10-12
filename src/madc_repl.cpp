@@ -20,6 +20,7 @@
 #include <sstream>
 #include <fstream>
 #include <memory>
+#include <functional>
 #include <cstdlib>
 #include <ctime>
 #include <stdint.h>
@@ -154,6 +155,23 @@ static colon_step colon_run(ReplSession &session, const repl_colon &colon,
 	return colon_step::done;
     }
     return colon_report(colon.ex->run(argument), colon, out, &session, theme);
+}
+
+// The live reparse (owner 2026-10-12): an edit a colon command makes to the
+// REPL buffer takes effect at once — the session reads the entries it
+// changed again, their definitions only (ReplSession::buffer_edited).
+static colon_step colon_apply(ReplSession &session, const repl_colon &colon,
+			      madc::hub::entity_id repl,
+			      const std::function<colon_step()> &command)
+{
+    const madc::hub::text_buffer *b = repl ? colon.ex->world().text_of(repl) : 0;
+    const std::string before = b ? b->text() : std::string();
+    const uint64_t version = b ? b->version() : 0;
+    const colon_step c = command();
+    b = repl ? colon.ex->world().text_of(repl) : 0;
+    if ( b && b->version() != version && b->text() != before )
+	session.buffer_edited(before, b->text());
+    return c;
 }
 
 // Input mode on cooked lines: the lines up to one holding only `.` (or the
@@ -422,8 +440,9 @@ int madc_repl_edit(ReplSession &session, line_target &term,
 			}
 			colon_text_mode = false;
 			ed.set_prompt(prompt);
-			quit = colon_report(colon.ex->text(colon_body), colon, out)
-			       == colon_step::quit;
+			quit = colon_apply(session, colon, repl, [&]() {
+			    return colon_report(colon.ex->text(colon_body), colon, out);
+			}) == colon_step::quit;
 			colon_body.clear();
 			break;
 		    }
@@ -433,7 +452,9 @@ int madc_repl_edit(ReplSession &session, line_target &term,
 			remember(history_text(text));
 			ed.entered(line_edit::verdict::taken);
 			over = true;
-			const colon_step c = colon_run(session, colon, argument, out, theme);
+			const colon_step c = colon_apply(session, colon, repl, [&]() {
+			    return colon_run(session, colon, argument, out, theme);
+			});
 			quit = c == colon_step::quit;
 			if ( c == colon_step::wants_text )
 			{
@@ -516,7 +537,9 @@ int madc_repl_edit(ReplSession &session, line_target &term,
 	{
 	    // The end of input ends a / i / c's text, as `.` would.
 	    if ( colon_text_mode )
-		colon_report(colon.ex->text(colon_body), colon, out);
+		colon_apply(session, colon, repl, [&]() {
+		    return colon_report(colon.ex->text(colon_body), colon, out);
+		});
 	    break;
 	}
     }
@@ -579,9 +602,12 @@ static int cooked_loop(ReplSession &session, std::istream &in,
 	std::string argument;
 	if ( pending.empty() && colon_line(colon, line, argument) )
 	{
-	    colon_step c = colon_run(session, colon, argument, out, theme);
-	    if ( c == colon_step::wants_text )
-		c = colon_text(in, out, terminal, continuation, colon);
+	    const colon_step c = colon_apply(session, colon, repl, [&]() {
+		colon_step step = colon_run(session, colon, argument, out, theme);
+		if ( step == colon_step::wants_text )
+		    step = colon_text(in, out, terminal, continuation, colon);
+		return step;
+	    });
 	    if ( c == colon_step::quit )
 		return 0;		// :q
 	    continue;

@@ -143,6 +143,11 @@ madc::value reply_row(const SessionClient::Reply &r)
 	    f["rendered"] = madc::value(r.rendered);
 	    f["diagnostics"] = reply_diagnostics(r);
 	    break;
+	case madc::session_reply::edited:
+	    f["ok"] = madc::value(r.ok);
+	    f["rendered"] = madc::value(r.rendered);
+	    f["diagnostics"] = reply_diagnostics(r);
+	    break;
     }
     return madc::value::make_object(f);
 }

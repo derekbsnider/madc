@@ -3438,6 +3438,52 @@ pseudo-terminal, then a read of new input). Measured on the way: a C session ref
 lines();` at file scope, as gcc does (C11 6.7.9p4), but through c2mir's
 message (BUGS.md B16), so the tests assign to declared globals.
 
+### 41.13a Redefinition (D5) and the live reparse (owner 2026-10-12, 0.105.0)
+
+Owner: "if I edit a function in the REPL buffer, it should reparse instantly
+and if I call that function I should get the new version" — the REPL buffer
+only, never a file buffer. 0.104.0 shipped the explicit rebuild (`%run` with
+the REPL buffer current); this is the live form.
+
+**Built, D5 (`bbb622187`).** A second body for a function whose body an
+earlier unit linked is the session's redefinition, under every standard
+(`Program::session_redefines`: the latest definition's file is one of
+`session_units`). Both parser paths take it: `parseFunction` (one `FuncDef`:
+C linkage, and C++ with the same parameter spelling) and
+`fold_same_signature_overload` (C++, the same ABI signature spelled
+differently). The unit records it in `session_redefined`; the CIR builder
+emits that function's newest `TokenFunc` though its symbol is
+`session_defined`. In the JIT, every function an entry's module exports is
+WEAK once loaded (`CirJitSession::make_interposable`): MIR inlines no weak
+callee, and the next definition replaces it in place (`replaced_weak_def`),
+taking its thunk — so a later call, a caller compiled earlier and a pointer
+taken earlier all reach the newest body (Julia; cling keeps the old body in
+old callers). `function_code`'s cache drops a redefined name. A second body
+within one unit stays the redefinition C and C++ refuse. Gates:
+`testrepl_redefine` (madc, a file's function too), `testrepl_redefine_c`,
+`testrepl_redefine_cxx` (a renamed parameter; a new overload).
+
+**Built, the live reparse.** `ReplSession::buffer_edited(before, after)`,
+the wire's `edited` request, `InteractiveSession::buffer_edited`. The edit is
+the lines the two texts do not share at either end; the entries it touched
+(the session keeps the texts it handed the host, `buffer_entries`, and
+re-groups the text when they no longer match) are grouped again from the
+edited text the way the REPL groups typed lines (`buffer_split`: a trial
+parse per line, rolled back), and each entry that is not one of them
+unchanged is taken as definitions only (`redefine`,
+`Program::entry_definitions_only`): its functions are defined or redefined,
+its statements are parsed and never run, and it shows nothing. It is a
+REPL[N] like any entry, so `%psource` shows the new body. The REPL host calls
+it after every colon command that changed the REPL buffer (`colon_apply`).
+Thread contract: a serialized session verb, as `submit` (D9). Gate:
+`testrepl_live` (the owner's `:s` on `main`, a multi-line body, an edited
+statement not run again, `:$a` adding a function).
+
+Open: an edited object or type definition is a redefinition D6 decides —
+until then it is refused with its diagnostic, and `%run` rebuilds; madcide's
+REPL pane (its own repository) needs the dialect verb; the `%run` rebuild
+calling `main` when the buffer defines it but never calls it.
+
 ## 42. Decisions (owner, 2026-09-25)
 
 **The aim (owner, 2026-09-25):** there is a future "ideal C/C++ REPL", and everyone is headed toward it, madc included. madc bets it can get there faster. It is designed to work more like a script language (Python, PHP), and it doesn't carry gcc's or clang's baggage. So the idea is to mimic Julia + IPython. madc follows cling and clang-repl only where their functionality is to its benefit and makes sense, never to mimic them.

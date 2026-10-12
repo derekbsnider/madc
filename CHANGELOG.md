@@ -19,6 +19,21 @@ earlier body in place and no caller inlines it. A function the loaded file
 itself defines is redefined the same way; a second body within one unit is
 still the redefinition C and C++ refuse.
 
+### A REPL buffer edit reparses live
+
+In a `madc -i` session an edit a colon command makes to the REPL buffer
+now takes effect at once. The session reads each entry the edit changed
+or added again as definitions only: a function the edit rewrites is
+redefined (plan §42 D5), so the next call reaches the new body, while a
+statement the entry re-reads is parsed and never run again and the re-read
+entry shows nothing. Before, a colon edit changed only the buffer text and
+the already-linked functions kept their pre-edit bodies until an explicit
+`%run` rebuild, so a `:s` on a function's body left the next call returning
+the old value. Now the REPL host hands the session the buffer's before and
+after text after every colon command that moved it, and the backend reads
+the touched entries through one serialized verb. An edited object or type
+definition is still refused until D6, where `%run` rebuilds instead.
+
 ## [v0.104.0] — 2026-10-12
 
 The madcide split: madc's interactive mode takes the ed/ex editing core, and madcide leaves to its own repository. `madc -i` gains colon mode, a command registry modules and hosts extend, `%std` / `%reset` / `%history` / `%check` / `%build` / `%run` / `%args` / `%project`, coloured prompts and diagnostics, and host-facing language services; madc ships a Language Server (`--lsp`) and a Model Context Protocol server (`--mcp`) with a project memory, a code graph and an external-task client; the data substrate gains a document component with an edit notification, regexes run on one PCRE2 engine, and a source's standard follows its extension. madcide now lives in its own repository and releases on its own, so madc's packages no longer carry it. Forest and pack correctness and reproducibility, codegen and REPL fixes, and Windows and darwin parity round out the release.

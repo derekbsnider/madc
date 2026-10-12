@@ -1,0 +1,20 @@
+:b REPL
+int main() { puts("hello"); return 0; }
+main();
+:1s/hello/goodbye/
+main();
+int twice(int n)
+{
+    return 2 * n;
+}
+printf("twice %d\n", twice(21));
+:6s/2/3/
+printf("twice %d\n", twice(21));
+int count = 0;
+count += 1;
+:11s/1/5/
+printf("count %d\n", count);
+:$a
+int added(void) { return 7; }
+.
+printf("added %d\n", added());

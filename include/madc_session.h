@@ -69,6 +69,14 @@ public:
     // open buffer's live text when a buffer holds it). Empty after anything
     // else: a refused entry, any other command.
     virtual const std::string &taken_source() const = 0;
+    // The host's REPL buffer was edited (owner 2026-10-12, the live
+    // reparse): `before` and `after` are its text either side of the edit.
+    // Each entry the edit changed or added is read again as definitions
+    // only — a function it defines is redefined (D5), its statements never
+    // run, and it shows nothing. False when one was refused (its diagnostics
+    // render as an entry's do).
+    virtual bool buffer_edited(const std::string &before, const std::string &after)
+    { (void)before; (void)after; return true; }
     virtual std::vector<std::string> complete(const std::string &text,
 					      size_t caret, size_t &start) = 0;
     // Does LINE continue an if that ended an entry (D11)? Its first word is
@@ -189,6 +197,7 @@ public:
     const std::string &shown() const override;
     const std::vector<madc::code_range> &shown_code() const override;
     const std::string &taken_source() const override { return kept_source; }
+    bool buffer_edited(const std::string &before, const std::string &after) override;
     // The text of the file unit the last load_text kept ("" when it was
     // refused): the backend server's load reply carries it, so a host that
     // honors %load's payload can keep it in its REPL buffer.
@@ -445,6 +454,20 @@ private:
     bool quit_asked;			// %quit ended the session
     unsigned quiet_count;		// the quiet entries' units, each its own
     std::vector<std::string> inputs;	// REPL[N]'s text is inputs[N - 1]
+    // The host's REPL buffer as entries (buffer_edited): the text of each
+    // entry and file the session kept, in the order the host appended them.
+    std::vector<std::string> buffer_entries;
+    // A kept unit: one of the session's from here on.
+    void unit_linked(const std::string &name);
+    // Is `text` a whole entry, as the REPL groups typed lines? `extendable`:
+    // an if ended it, so a following `else` line continues it (D11). The
+    // trial leaves the session as it was.
+    bool entry_whole(const std::string &text, bool &extendable);
+    // The entries lines [from, to) hold, each [first, last + 1).
+    std::vector<std::pair<size_t, size_t> >
+	buffer_split(const std::vector<std::string> &lines, size_t from, size_t to);
+    // An entry of the edited REPL buffer read as definitions only.
+    bool redefine(const std::string &text);
     std::string kept_source;		// taken_source()
     std::string unit_text;		// loaded_source()
     std::string history_file;		// %history's store ("" none)
