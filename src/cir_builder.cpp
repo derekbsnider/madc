@@ -34868,6 +34868,13 @@ bool CirBuilder::session_awaits(const madc::dis::istring &sym) const
 	return m_prog && m_prog->session_awaited.count(sym) != 0;
 }
 
+// Plan §42 D6: is TD the newest declaration of an object this unit redefines?
+bool CirBuilder::session_object_redefinition(const Program::TopDecl &td) const
+{
+	return m_prog && td.var && m_prog->session_redefined_objects.count(td.var)
+	       && m_prog->latest_object_declaration(td.var) == &td;
+}
+
 // Plan §42 D5: is TF the newest definition of a function this unit redefines?
 bool CirBuilder::session_redefinition(TokenFunc *tf, FuncDef *fd) const
 {
@@ -35261,8 +35268,10 @@ node_t CirBuilder::translate_module(Program *prog)
 				// An earlier module of the interactive session owns
 				// this global (plan §41.2a), or a refused entry does
 				// (§41.3): declare it `extern`, with no initializer, so
-				// this module reads the live storage.
-				const bool earlier = session_defines(var_emit_name(*td.var));
+				// this module reads the live storage. A redefinition's
+				// newest declaration defines it (D6).
+				const bool earlier = session_defines(var_emit_name(*td.var))
+						     && !session_object_redefinition(td);
 				m_file_scope_decl = true;
 				m_extern_decl = earlier;
 				node_t gd = var_decl(td.var, earlier ? NULL : td.decl);

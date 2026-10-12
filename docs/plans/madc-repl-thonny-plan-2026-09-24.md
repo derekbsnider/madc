@@ -3479,10 +3479,27 @@ Thread contract: a serialized session verb, as `submit` (D9). Gate:
 `testrepl_live` (the owner's `:s` on `main`, a multi-line body, an edited
 statement not run again, `:$a` adding a function).
 
-Open: an edited object or type definition is a redefinition D6 decides —
-until then it is refused with its diagnostic, and `%run` rebuilds; madcide's
-REPL pane (its own repository) needs the dialect verb; the `%run` rebuild
-calling `main` when the buffer defines it but never calls it.
+**Built, D6 for variables (owner 2026-10-12).** A second definition of an
+object an earlier unit defined is the session's redefinition
+(`Program::session_redefines_object`, the functions' rule), recorded in
+`session_redefined_objects`. `declare_object` refuses a changed type, a const
+object (its reads fold into earlier code) and an object with a destructor
+(`trait_has_trivial_destructor`, the madc `var` carrier included), each with
+the `%run` hint; the object keeps its value. The CIR builder emits the newest
+definition (`session_object_redefinition`). In the JIT every exported object
+is WEAK once loaded (`make_interposable`), and MIR loads the new initializer
+into the weak item's storage, so the address stays and earlier functions and
+pointers read the new value. A size change the type check does not see
+(`char msg[] = "hello"` over `"hi"`) is refused at link (`redefinitions_fit`,
+MIR's `_MIR_data_section_len`). In the live reparse an edited variable
+definition is re-initialized; an unchanged entry is never read again, so its
+variables keep their values. Gates: `testrepl_redefine_var`, `testrepl_live`
+(`:10s/= 0/= 40/`).
+
+Open: redefining an object with a destructor (`var` included); a redefined
+struct (D6's types); madcide's REPL pane (its own repository) needs the
+dialect verb; the `%run` rebuild calling `main` when the buffer defines it but
+never calls it.
 
 ## 42. Decisions (owner, 2026-09-25)
 
@@ -3578,8 +3595,7 @@ type.
   - A function's address stays the same across redefinitions, so pointers taken earlier reach the new body (Julia: `f` is one object).
   - Resolves §11.4's open mechanism: dependency recompile plus a stable address.
 - **D6. Redefinition of variables and types.**
-  - A redefined variable gets new storage, and code that uses it is recompiled against the new binding (Julia 1.12 / Python).
-  - Old storage stays alive until `%reset`, since C has no GC to decide when it is unreferenced. Destructors of replaced C++ objects run at `%reset` or exit.
+  - **Owner 2026-10-12, superseding new storage per redefinition:** a same-type redefinition of a variable initializes the SAME storage, so every function and every pointer taken earlier sees the new value (Julia's non-const global, Lisp's `defparameter`, Clojure's `def`). A type change is refused with the `%run` hint (a typed Julia global cannot change type). A REPL-buffer edit re-initializes a changed definition; unchanged entries keep their values. Measured and researched in the section before this one; built in §41.13a.
   - A redefined struct is a new versioned type, and old objects keep the old type (Julia 1.12). The first slice may refuse struct redefinition with a clear message.
   - Resolves §11.3 / §11.5.
 - **D7. Late binding.**

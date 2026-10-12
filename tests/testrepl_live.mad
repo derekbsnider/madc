@@ -1,5 +1,6 @@
 // The live reparse (owner 2026-10-12, 0.105.0): an edit colon mode makes to
 // the REPL buffer takes effect at once. Each entry the edit changed or added
-// is read again as definitions only: a function it defines is redefined, and
-// its statements never run again.
+// is read again as definitions only: a function it defines is redefined, a
+// variable it defines is initialized again (plan §42 D6), and its statements
+// never run again.
 #include <stdio.h>

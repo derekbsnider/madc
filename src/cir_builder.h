@@ -361,6 +361,10 @@ class CirBuilder {
 	// redefines (Program::session_redefined)? It is emitted, and the
 	// session replaces the earlier body with it.
 	bool session_redefinition(TokenFunc *tf, FuncDef *fd) const;
+	// Plan §42 D6: is `td` the newest declaration of an object this unit
+	// redefines (Program::session_redefined_objects)? It defines the object,
+	// and the session loads it into the earlier object's storage.
+	bool session_object_redefinition(const Program::TopDecl &td) const;
 	// Plan §42 D27, slice 2: code in an interactive entry reads an object that
 	// an entry declared and nothing defines yet through a session CELL, so a
 	// later definition is the object it reaches. late_bound_object is the

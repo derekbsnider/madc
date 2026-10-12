@@ -1912,19 +1912,60 @@ void CirJitSession::make_function_stubs(const std::vector<madc::dis::istring> &n
     stub_mod = DLIST_TAIL(MIR_module_t, *MIR_get_module_list(ctx));
 }
 
-// Plan §42 D5: once loaded, a function an entry defines is interposable, as a
-// shared library's is to ld.so: weak, so no caller bakes its body in (MIR
-// inlines no weak callee) and a later definition replaces it in place, taking
-// its address (replaced_weak_def). The callers already linked and the
-// pointers already taken then reach the newest body. A vague-linkage copy
+// Plan §42 D5 / D6: once loaded, a function or an object an entry defines is
+// interposable, as a shared library's is to ld.so: weak, so no caller bakes a
+// function's body in (MIR inlines no weak callee) and a later definition
+// replaces it in place (replaced_weak_def). A function's takes its thunk and
+// an object's is loaded into its storage, so the code already linked and the
+// pointers already taken reach the newest definition. A vague-linkage copy
 // keeps its binding.
+static bool cir_object_item_p(MIR_item_t it)
+{
+    return it->item_type == MIR_data_item || it->item_type == MIR_bss_item
+	   || it->item_type == MIR_ref_data_item
+	   || it->item_type == MIR_expr_data_item;
+}
+
 void CirJitSession::make_interposable(MIR_module_t m)
 {
     for (MIR_item_t it = DLIST_HEAD(MIR_item_t, m->items); it;
 	 it = DLIST_NEXT(MIR_item_t, it))
-	if (it->item_type == MIR_func_item && it->export_p
-	    && it->binding == MIR_ITEM_BIND_GLOBAL)
+	if ((it->item_type == MIR_func_item || cir_object_item_p(it))
+	    && it->export_p && it->binding == MIR_ITEM_BIND_GLOBAL)
 	    MIR_item_set_binding(ctx, it, MIR_ITEM_BIND_WEAK);
+}
+
+// D6: a redefined object takes over the storage the earlier one has, so it
+// must take exactly as many bytes (a type the parser compares coarsely — an
+// array whose bound its initializer sets — can still change size). False,
+// with a diagnostic per object, when one does not.
+bool CirJitSession::redefinitions_fit(MIR_module_t m, Program *prog,
+				      const char *entry_name)
+{
+    bool fit = true;
+    for (MIR_item_t it = DLIST_HEAD(MIR_item_t, m->items); it;
+	 it = DLIST_NEXT(MIR_item_t, it)) {
+	if (!cir_object_item_p(it) || !it->export_p
+	    || it->binding != MIR_ITEM_BIND_GLOBAL)
+	    continue;
+	const char *nm = MIR_item_name(ctx, it);
+	MIR_item_t live = nm ? find_item(nm, false) : NULL;
+	if (!live || live->binding != MIR_ITEM_BIND_WEAK)
+	    continue;
+	const size_t was = _MIR_data_section_len(ctx, live);
+	const size_t now = _MIR_data_section_len(ctx, it);
+	if (was == now)
+	    continue;
+	fit = false;
+	prog->record_frontend_error(Program::DiagnosticPhase::compiler,
+				    "'" + cir_link_display_name(nm)
+				    + "' changes size (" + std::to_string(was)
+				    + " to " + std::to_string(now)
+				    + " bytes): a redefinition keeps its type"
+				    " (%run rebuilds the session)",
+				    entry_name, 0, 0);
+    }
+    return fit;
 }
 
 // After an entry links: a stub whose function the entry defined was replaced
@@ -1982,7 +2023,7 @@ bool CirJitSession::admits(MIR_module_t m, Program *prog, const char *entry_name
 			  cir_record_link_refusal, &refusal);
     cir_active_host_regs = NULL;
     cir_active_cells = NULL;
-    if (refusal.refused != 0)
+    if (refusal.refused != 0 || !redefinitions_fit(m, prog, entry_name))
 	return false;
     if (!refusal.late.empty())
 	make_function_stubs(refusal.late);

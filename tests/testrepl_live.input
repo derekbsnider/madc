@@ -18,3 +18,5 @@ printf("count %d\n", count);
 int added(void) { return 7; }
 .
 printf("added %d\n", added());
+:10s/= 0/= 40/
+printf("count %d\n", count);

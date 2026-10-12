@@ -2322,6 +2322,15 @@ MIR_item_t _MIR_weak_replacement (MIR_context_t ctx, MIR_item_t item) {
   return repl;
 }
 
+/* madc fork: the bytes data ITEM's section takes (its head item and the
+   anonymous items that continue it), as the loader lays it out: a strong
+   object replaces a weak one only when it fits the weak one's storage
+   (replaced_weak_def), so an embedder that needs the two to agree compares
+   them before loading. */
+size_t _MIR_data_section_len (MIR_context_t ctx, MIR_item_t item) {
+  return weak_replaceable_data_p (item->item_type) ? data_section_len (ctx, item) : 0;
+}
+
 /* madc fork: vague linkage in the loader, shared by MIR_load_module and
    MIR_module_link_check.  A LINKONCE or WEAK definition whose name the
    environment already holds (an earlier module's definition, or an external) is

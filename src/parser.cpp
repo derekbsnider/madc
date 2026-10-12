@@ -31496,9 +31496,33 @@ Variable *Program::declare_object(TokenCpnd *code, DataDef &type, const madc::di
 	}
 	else
 	{
+	    // Plan §42 D6 (owner 2026-10-12): an object an earlier session unit
+	    // defined can be defined again with its type, and the new definition
+	    // initializes the same storage, so every function and every pointer
+	    // sees it (Julia's global, Lisp's defparameter). Its type cannot
+	    // change (a typed Julia global's cannot), nor can an object whose
+	    // destructor the earlier definition registered be defined over.
+	    const bool session_redefinition = is_definition
+					      && session_redefines_object(prior);
 	    if ( object_redeclaration_conflicts(prior, &type, dims, object_cv) )
+	    {
+		if ( session_redefinition )
+		    Throw(where) << "'" << id << "' changes type: a redefinition"
+			" keeps its type (%run rebuilds the session)" << flush;
 		Throw(where) << "conflicting types for '" << id << "'" << flush;
-	    if ( is_definition && (prior->flags & vfDEFINED) )
+	    }
+	    // A const object's reads fold to its value, so the code compiled
+	    // before would keep the old one.
+	    if ( session_redefinition && prior->type && prior->type->is_const() )
+		Throw(where) << "redefinition of '" << id << "', which is const:"
+		    " earlier code holds its value (%run rebuilds the session)" << flush;
+	    if ( session_redefinition && prior->type
+	      && !trait_has_trivial_destructor(prior->type->unqualified()) )
+		Throw(where) << "redefinition of '" << id << "', which has a"
+		    " destructor (%run rebuilds the session)" << flush;
+	    if ( session_redefinition )
+		session_redefined_objects.insert(prior);
+	    else if ( is_definition && (prior->flags & vfDEFINED) )
 		Throw(where) << "redefinition of '" << id << "'" << flush;
 	}
     }
@@ -82271,6 +82295,7 @@ void Program::begin_entry()
     // reorders (the auto-include splice) count positions from cursor 0.
     tokens.reset();
     session_redefined.clear();
+    session_redefined_objects.clear();
     entry_function = NULL;
     entry_function_name.clear();
     entry_end_token = NULL;

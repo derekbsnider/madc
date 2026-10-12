@@ -6853,6 +6853,15 @@ public:
     bool session_redefines(const Variable *v, const FuncDef *fd) const;
     // The latest definition of a function in the session's tree.
     TokenFunc *latest_function_definition(const Variable *v, const FuncDef *fd) const;
+    // Plan §42 D6 (owner 2026-10-12): the objects the unit being read
+    // redefines, each one an earlier unit defined (session_redefines_object),
+    // with the same type. The CIR builder emits the newest declaration of
+    // each as its definition though its symbol is session_defined, and the
+    // session loads it into the earlier object's storage. Cleared per unit.
+    std::set<const Variable *> session_redefined_objects;
+    bool session_redefines_object(const Variable *v) const;
+    // The latest file-scope declaration of an object in the session's tree.
+    const TopDecl *latest_object_declaration(const Variable *v) const;
     bool forest_decls_restored = false;	// one-shot decl-record restore (forest-global for now)
     // v13: file-scope globals restored from a bound header. forest_restore_decls
     // runs during lexer #include handling, BEFORE tkProgram exists, so the globals

@@ -483,16 +483,34 @@ madc::dis::istring where(const char *file, int line)
 } // namespace
 
 // Where an object was declared: its latest TopDecl (a redeclaration's).
+const Program::TopDecl *Program::latest_object_declaration(const Variable *v) const
+{
+    for ( size_t i = top_decls.size(); i-- > 0; )
+	if ( top_decls[i].kind == DeclKind::dkGlobalVar && top_decls[i].var == v )
+	    return &top_decls[i];
+    return NULL;
+}
+
 void Program::object_origin(const Variable *v, const char *&file, int &line) const
 {
     file = NULL;
     line = 0;
-    for ( size_t i = top_decls.size(); i-- > 0; )
-	if ( top_decls[i].kind == DeclKind::dkGlobalVar && top_decls[i].var == v )
-	{
-	    file = top_decl_position(top_decls[i], line);
-	    return;
-	}
+    if ( const TopDecl *td = latest_object_declaration(v) )
+	file = top_decl_position(*td, line);
+}
+
+// Plan §42 D6: is a second definition of this object one the interactive
+// session takes? It is when the object is defined and its latest declaration
+// is an earlier unit's, linked and live. A second definition within one unit
+// stays the redefinition C and C++ refuse.
+bool Program::session_redefines_object(const Variable *v) const
+{
+    if ( !interactive_session || !v || !(v->flags & vfDEFINED) )
+	return false;
+    const char *file;
+    int line;
+    object_origin(v, file, line);
+    return file && session_units.count(file);
 }
 
 madc::dis::istring Program::object_location(const Variable *v) const

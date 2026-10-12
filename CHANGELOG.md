@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### A REPL session variable can be redefined in place
+
+In a `madc -i` session an object whose definition an earlier entry
+already linked can be defined again with the same type, and the new
+definition initializes the same storage, so every function and every
+pointer taken earlier reads the new value (plan §42 D6, Julia's
+non-const global, Lisp's `defparameter`, Clojure's `def`). Before, the
+second definition was refused as a "redefinition of 'x'", as clang-repl
+refuses it. A type change, a `const` object (its reads fold to the old
+value), an object with a destructor (the madc `var` carrier included),
+and an initializer that changes an array's size (`char msg[] = "hello"`
+over `"hi"`) are refused with a hint to `%run`, and the object keeps its
+value. A REPL-buffer edit that re-initializes a variable definition
+applies the new initializer; an unchanged entry is never re-read, so its
+variables keep their values.
+
 ### `__has_trivial_destructor` is false for the madc carrier
 
 `__has_trivial_destructor(var)` now returns false: a madc carrier (`var`,
