@@ -357,3 +357,44 @@ against their uncompressed copies and live, same harness (`T6_ARMS`):
   Test 6 floor — IF a sliced pack reaches the floor. That depends on
   ownership: which slice holds a record that several headers share or that
   one header's instantiation made from another's types. Not yet measured.
+
+### Test 8 — ownership: can ONE sliced pack reach the floor? (2026-10-13)
+
+`tmp/pc/t7/owners.py` over the release pack's arena (the raw copy, Test 2's E)
+and its `--dump-forest`. A header NEEDS a record when it declares it (qualified
+name, then bare name, then a template instance's head — as the restore judges)
+or when a record it needs references it (members, bases, methods, parameters,
+aliases; to a fixpoint). A record is PLACEABLE when some header is included by
+every header that needs it; it goes to the one of those that the fewest headers
+include. A program loads the slices of the headers it includes, plus one shared
+slice. Sizes are raw arena bytes (record + payload); strings and templates are
+not attributed.
+
+| | records | raw arena |
+|---|---|---|
+| placeable in one header's slice (230 slices) | 11,431 | 3.07 MB |
+| shared slice (no header common to its needers) | 629 | 0.19 MB |
+| not attributable by name (orphans) | 7,226 | 1.62 MB |
+
+| workload | headers included | loads (its slices + shared) | needs |
+|---|---|---|---|
+| `<stddef.h>` | 1 | 0.19 MB | 4 records |
+| `<stdio.h>` | 24 | 0.25 MB | 0.06 MB |
+| `<vector>` | 61 | 1.65 MB | 1.61 MB |
+| cxx_stl.cpp | 205 | 2.24 MB | 2.23 MB |
+
+- Ownership is not the obstacle: 95% of the attributed records have one header
+  that every needer includes. A C++ program loads within 3% of what it needs;
+  today every bind decodes the whole arena (4.9 MB of these records).
+- The shared slice is mostly STRUCTURAL types: 477 nameless function types,
+  47 pointers, 25 references (`char**`, `uint16_t*`), minted by unrelated
+  headers; plus types defined in one header and named in a sibling (`_IO_FILE`:
+  defined in `struct_FILE.h`, forward-declared in `FILE.h` / `__FILE.h`). It is
+  3x what `<stdio.h>` needs. Structural types can be copied into each slice or
+  rebuilt from their referent; not measured.
+- Orphans: 6,064 namespace bindings, 611 functions, 344 deferred bodies. The
+  freezer knows which unit's parse made each record, so a real slicer
+  attributes them exactly; this analysis cannot.
+- Not yet shown: that a restore walking only the bound slices runs at the
+  Test 6 times. That needs the restore change (Test 5 in full), not a
+  measurement.
