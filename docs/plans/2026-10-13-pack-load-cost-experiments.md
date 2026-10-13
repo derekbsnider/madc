@@ -398,3 +398,41 @@ not attributed.
 - Not yet shown: that a restore walking only the bound slices runs at the
   Test 6 times. That needs the restore change (Test 5 in full), not a
   measurement.
+
+## What the tests settled (2026-10-13, owner review)
+
+| workload | live | today's pack | per-header floor (Test 6) |
+|---|---|---|---|
+| `<stddef.h>` | 4.7 ms / 12.7M | 30.9 / 174M | 5.1 / 12.4M |
+| `<stdio.h>` | 9.9 / 59M | 30.5 / 180M | 5.8 / 18M |
+| `<type_traits>` | 15.9 / 102M | 42.0 / 258M | 7.1 / 29M |
+| `<vector>` | 80.7 / 550M | 64.6 / 352M | 15.0 / 77M |
+| cxx_stl.cpp | 493 / 2,867M | 317 / 1,661M | 270 / 1,420M |
+
+1. A bind's cost is the CONTAINER's size, not the header's: the same
+   `<stddef.h>` bind costs 28.6 → 18.6 → 8.0 → 5.1 ms as the container shrinks
+   (the C question, Test 6). Every bind decodes all shared tables, sweeps every
+   unit's declaration list and judges all 19k arena records by name; those
+   three are ~90% of the fixed ~23 ms.
+2. Decompression is the smaller third (~8 ms, Test 2); the restore's own sweep
+   and judging are the rest (Test 5). Reading raw costs +10 MB of pack and
+   still leaves `<stddef.h>` 4x live.
+3. Scoped to the program's includes, the pack beats live on every workload, C
+   included (Test 6). C headers bind too: no C/C++ layering, no live-for-C.
+4. Per-header slices can stay compressed: +0.9 MB of pack, 0.05–2 ms per bind
+   (Tests 7a, 7b).
+5. Ownership works: 95% of attributable records have one header every needer
+   includes; a C++ program loads within 3% of what it needs. The shared slice
+   (0.19 MB) is mostly structural pointer/function types that unrelated
+   headers each mint (Test 8).
+6. Tests 3 (layering) and 4 (compact arena) are closed by 3 and 4 above; Test 5
+   in full IS the design.
+
+## Design brief (owner-approved 2026-10-13)
+
+One shipped pack, cut per unit. A bind loads only the slices of the units the
+program's include closure reaches — no whole-pack sweep, no whole-arena
+judging. The dialect prelude is a slice like any header, loaded under
+`--std=madc`. Target: the Test 6 column on the shipped binary — `<stddef.h>` at
+live speed, `<vector>` ≤ 15 ms — at a pack size ≤ today's + ~1 MB. The design
+document follows this one.
