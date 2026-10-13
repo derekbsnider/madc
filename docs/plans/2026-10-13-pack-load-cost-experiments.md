@@ -436,3 +436,44 @@ judging. The dialect prelude is a slice like any header, loaded under
 `--std=madc`. Target: the Test 6 column on the shipped binary — `<stddef.h>` at
 live speed, `<vector>` ≤ 15 ms — at a pack size ≤ today's + ~1 MB. The design
 document follows this one.
+
+## Recon — how the compilers do it (2026-10-13)
+
+Prior art for "load pre-parsed headers without loading everything":
+
+- **clang PCH / modules** (`PCHInternals`): the initial load reads an amount
+  of data independent of the file's size. Everything else — identifiers,
+  macros, types, declarations — deserializes on first REFERENCE: an on-disk
+  hash table maps identifier → entry, each declaration context carries its
+  own name → DeclID table, and DeclID / TypeID → file offset. Cost is
+  proportional to what the program USES, not to what it includes. Module
+  chains keep a per-file local→global ID map; the reader unifies them into
+  one global ID space.
+- **GCC C++ modules** (`cp/module.cc`): entities are grouped into strongly
+  connected components; each SCC is one section of the CMI (a mini-ELF). A
+  binding table maps namespace + name → section. The CMI is mmapped
+  read-only; name lookup finds a lazy binding and invokes the loader for that
+  section (recursively, loop-guarded).
+- **rustc rmeta**: `Lazy<T>` = relative offset; tables index without decoding
+  their neighbours; a type already written is referenced by its offset.
+- **MSVC IFC**: datatypes designed to be memory-mapped directly.
+- **clang reduced BMI** (default from clang 22): definitions that do not
+  affect the interface are left out of the module file.
+- **zstd seekable**: independent frames + a jump table; frames under ~1 KB
+  hurt ratio — tiny units should share a frame or stay raw.
+
+What this adds to the brief:
+
+1. Per-unit slices reach the Test 6 floor and are the right first cut. The
+   compilers go one level finer: the unit of LOAD is an entity cluster, the
+   TRIGGER is a name lookup miss. That makes `<vector>` cost what the program
+   uses of it, not the 15 ms of building everything it declares. It touches
+   the parser's lookup path (a focused session of its own, later).
+2. So the slice FORMAT should not have to change for that step: each slice
+   carries its name → record table (the per-unit decl index, already frozen),
+   records grouped in dependency clusters, deferred bodies (DK_DEFBODY token
+   runs) in their own sub-segment pulled only on instantiation, and
+   cross-slice references as (unit, local slot) with a per-slice base
+   assigned at bind — the local→global map clang and GCC both keep.
+3. Already matched: transformed records bound in place (Test 1b: transform
+   costs nothing) is the mmap / relative-pointer model.
