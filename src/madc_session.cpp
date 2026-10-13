@@ -709,13 +709,38 @@ std::string lines_text(const std::vector<std::string> &lines, size_t from, size_
     return t;
 }
 
-// One entry read as definitions only (Program::entry_definitions_only).
+// One entry read as definitions only (Program::entry_definitions_only), and
+// functions only (entry_functions_only).
 struct DefinitionsOnly
 {
     Program &prog;
-    explicit DefinitionsOnly(Program &p) : prog(p) { p.entry_definitions_only = true; }
-    ~DefinitionsOnly() { prog.entry_definitions_only = false; }
+    DefinitionsOnly(Program &p, bool functions_only) : prog(p)
+    {
+	p.entry_definitions_only = true;
+	p.entry_functions_only = functions_only;
+	p.entry_kept_object = false;
+    }
+    ~DefinitionsOnly()
+    {
+	prog.entry_definitions_only = false;
+	prog.entry_functions_only = false;
+    }
 };
+
+// Does TEXT name NAME (its last component) as a word (the one word rule)?
+bool names_identifier(const std::string &text, const std::string &name)
+{
+    const size_t sep = name.rfind("::");
+    const std::string id = sep == std::string::npos ? name : name.substr(sep + 2);
+    if ( id.empty() )
+	return false;
+    for ( size_t at = text.find(id); at != std::string::npos; at = text.find(id, at + 1) )
+	if ( (at == 0 || !madc::hub::text_buffer::word_byte(text[at - 1]))
+	  && (at + id.size() == text.size()
+	   || !madc::hub::text_buffer::word_byte(text[at + id.size()])) )
+	    return true;
+    return false;
+}
 
 } // namespace
 
@@ -833,7 +858,7 @@ bool InteractiveSession::entry_whole(const std::string &text, bool &extendable)
     Program::EntryVerdict v;
     {
 	Program::EntryTransaction trial(*prog);	// rolled back
-	DefinitionsOnly only(*prog);
+	DefinitionsOnly only(*prog, false);
 	v = prog->parse_entry(text, madc::session_entry_unit(submit_count + 1));
     }
     prog->clear_diagnostics();
@@ -871,15 +896,23 @@ InteractiveSession::buffer_split(const std::vector<std::string> &lines, size_t f
     return out;
 }
 
-bool InteractiveSession::redefine(const std::string &text)
+bool InteractiveSession::redefine(const std::string &text, bool functions_only)
 {
     const std::string name = madc::session_entry_unit(submit_count + 1);
     Program::EntryTransaction entry(*prog);
     prog->entry_number = submit_count + 1;
     Program::EntryVerdict verdict;
     {
-	DefinitionsOnly only(*prog);
+	// The refusal an object's declaration raises is the entry left as
+	// it was, never a diagnostic: rewound.
+	Program::SilentReplay kept(*prog, /*loud=*/true);
+	DefinitionsOnly only(*prog, functions_only);
 	verdict = prog->parse_entry(text, name);
+	if ( prog->entry_kept_object )
+	{
+	    kept.rewind();
+	    return true;
+	}
     }
     ++submit_count;
     inputs.push_back(text);
@@ -926,6 +959,7 @@ bool InteractiveSession::buffer_edited(const std::string &before, const std::str
 	++s;
     if ( p == b.size() && p == a.size() )
 	return true;
+    const std::map<madc::dis::istring, unsigned> versions = prog->session_type_versions();
     // The entries the edit touched, [i, j): an inserted line touches only
     // the entry it lands inside.
     const size_t b_end = b.size() - s;
@@ -954,8 +988,23 @@ bool InteractiveSession::buffer_edited(const std::string &before, const std::str
 	if ( !madc::blank_text(t) && !command_text(t).is_command() && !unchanged.count(t) )
 	    ok = redefine(t) && ok;
     }
+    // A type the edit gave a new version (plan §42 D6): each entry below the
+    // edit that names it is read again, functions only, so its functions
+    // take the new version, a type it defines included; an object keeps its
+    // type and its value.
     for ( size_t k = j; k < old.size(); ++k )
-	entries.push_back(lines_text(b, old[k].first, old[k].second));
+    {
+	const std::string t = lines_text(b, old[k].first, old[k].second);
+	entries.push_back(t);
+	if ( madc::blank_text(t) || command_text(t).is_command() )
+	    continue;
+	for ( const madc::dis::istring &n : prog->session_types_versioned_since(versions) )
+	    if ( names_identifier(t, n) )
+	    {
+		ok = redefine(t, true) && ok;
+		break;
+	    }
+    }
     buffer_entries.swap(entries);
     return ok;
 }

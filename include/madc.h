@@ -6871,9 +6871,58 @@ public:
     // The latest file-scope declaration of an object in the session's tree.
     const TopDecl *latest_object_declaration(const Variable *v) const;
     // Plan §42 D6, types: is AGG's definition an earlier unit's, linked and
-    // live? A session does not define such a type again yet: D6 makes a
-    // redefined type a new versioned one (old objects keep the old type).
+    // live? Its definition again is the session's redefinition of the type.
     bool session_defines_type(const DataDefSTRUCT *agg) const;
+    // The complete type an earlier unit defined (session_defines_type) that a
+    // definition stored under `key` redefines; NULL when it is none.
+    DataDefSTRUCT *session_redefined_type(const madc::dis::istring &key) const;
+    // Plan §42 D6 (owner 2026-10-13): a redefinition that changes the type is
+    // a NEW type, the next version of the name — emitted __madc_vN__P, spelled
+    // P[abi:vN] (GCC's abi_tag) — and what was made with the earlier version
+    // keeps it. `fresh` becomes that version of `existing`'s name (`source`,
+    // stored under `key`), before its body is read. One lineage per name,
+    // owned here (deque: stable addresses).
+    std::deque<SessionTypeLineage> session_lineages;
+    void supersede_session_type(DataDefSTRUCT *fresh, DataDefSTRUCT *existing,
+				const madc::dis::istring &source,
+				const madc::dis::istring &key);
+    // The replaced version stays registered under `<key>#<version>`.
+    void retire_session_type(DataDefSTRUCT *existing);
+    // A global definition's bare key held by another scope's flat-registered type.
+    bool bare_key_held_by_other_scope(const DataDefSTRUCT *prior,
+				      const madc::dis::istring &tag) const;
+    // A spelled aggregate name's identity when the session versioned it.
+    madc::dis::istring session_type_identity(const madc::dis::istring &spelling) const;
+    // The current version of every name a session redefined, by its key;
+    // the names (as the source spells them) whose version grew since BEFORE.
+    std::map<madc::dis::istring, unsigned> session_type_versions() const;
+    std::set<madc::dis::istring> session_types_versioned_since(
+	const std::map<madc::dis::istring, unsigned> &before) const;
+    // A nested struct's redefinition of a session's type: the fresh version.
+    DataDefSTRUCT *redefine_session_struct(DataDefSTRUCT *existing,
+					   const madc::dis::istring &source,
+					   const madc::dis::istring &key);
+    // A struct body's end over a session's type: twin, or retire the old one.
+    void settle_session_struct(DataDefSTRUCT *superseded, DataDefSTRUCT *fresh);
+    // A redefinition that is the same type again: `fresh` takes the identity
+    // of `existing`, the version it replaces (a twin: one emitted type).
+    void session_type_twin(DataDefSTRUCT *fresh, const DataDefSTRUCT *existing);
+    // Is S an earlier version than its name's current one?
+    bool session_type_superseded(const DataDefSTRUCT *s) const;
+    // Do two definitions of one name lay out alike: the same members by name,
+    // type, offset and bit-field, and the same size? A member that points to
+    // its own aggregate matches its counterpart's.
+    static bool session_same_layout(const DataDefSTRUCT *a, const DataDefSTRUCT *b);
+    // A class defined again with its earlier version's shape is that type
+    // (a twin): it must lay out as that version — else a type its text names
+    // was redefined, and it is refused — and each member function it gives a
+    // body is redefined (D5).
+    void settle_session_twin(TokenBase *where, const madc::dis::istring &source,
+			     DataDefCLASS *existing, DataDefCLASS *fresh);
+    // Does a typedef that names `existing` (through pointers and cv) name an
+    // earlier version of `fresh`'s name? The session's redefinition of the
+    // aggregate rebinds such an alias (`typedef struct P {...} P;` again).
+    static bool session_retypes_alias(DataDef *existing, const DataDefSTRUCT *fresh);
     // A tag defined again (KIND "Struct" / "Class"): refused, as C and C++
     // refuse it; when an earlier session unit defined it, the refusal names
     // %run, which rebuilds the session from its text.
@@ -8119,6 +8168,13 @@ public:
     // reparse): its definitions are taken, its statements are parsed and
     // never run, and it shows nothing. Its reader sets it for that entry.
     bool entry_definitions_only = false;
+    // An entry re-read, definitions only, because a type it names has a new
+    // version (plan §42 D6, the live reparse): its functions take the new
+    // version, and a file-scope object it declares refuses the entry
+    // (entry_kept_object), so the object keeps its type and its value. Its
+    // reader sets it for that entry.
+    bool entry_functions_only = false;
+    bool entry_kept_object = false;
     // The classifier's verdict on one entry (plan §41.1a): run it; run it
     // unless the next line starts with `else` (D11); keep reading; or show
     // the diagnostic and return to a clean prompt.
@@ -9247,6 +9303,10 @@ public:
     // body is a nested aggregate's, which the struct parser's inline nested
     // reader would take — and that reader has no default member initializer.
     bool struct_body_needs_class_parser_from(size_t start, bool nested);
+    // The shape of an aggregate's definition, from the `{` at tokens[start]
+    // (plan §42 D6): its tokens with member-function bodies elided and each
+    // versioned name but SELF as its version's identity.
+    madc::dis::istring aggregate_shape(size_t start, const madc::dis::istring &self);
     // The struct parser has consumed the tag and tokens[0] is the `::` after
     // it: does the rest of the nested-name-specifier — `(:: name
     // [<template-args>])+` — lead into a class-specifier (`{`, a base-clause

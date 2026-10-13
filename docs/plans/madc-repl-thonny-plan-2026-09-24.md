@@ -3542,8 +3542,40 @@ value, and never appends the replayed entries to the REPL buffer again.
 Gates: `testsession_run` (an entry over several lines, an if taking its else,
 main run once), madcide's `testmadcide_replrunall`.
 
-Open: a redefined struct as a new versioned type (D6's types; old objects keep
-the old type).
+**Built, versioned types (owner 2026-10-13, "I go with your leans").** A
+struct, union or class an earlier entry defined, defined again:
+
+1. With the same data members (a class: the same shape, its member-function
+   bodies aside — `aggregate_shape`) it is the same type: C23's rule for an
+   identical redefinition. A class's member functions are redefined (D5), so
+   every object, the earlier ones included, calls the new bodies.
+2. Otherwise it is the name's next version: the name means the new one, and
+   the objects, functions and pointers made with an earlier version keep it
+   (Julia 1.12's world age). The type of an earlier version shows as `P#1`.
+3. Mixing versions is a type error, never a silent copy: an object of `P#1`
+   is no argument for a `P` parameter.
+4. madc and C++: a function defined again for the new version is an overload
+   beside the earlier one. The new version mangles as g++'s `abi_tag` would
+   (`getx(P[abi:v2])` = `_Z4getx1PB2v2`, checked against g++), so its symbols
+   never collide with the earlier version's.
+5. C: a function defined again with the new version's type changes its type,
+   which C cannot overload; it is refused with the `%run` hint.
+6. The live reparse: an edit that gives a type a new version reads each entry
+   below it that names the type again, functions only — a function takes the
+   new version, a type defined from it gets its own next version, and an
+   object keeps its type and its value.
+
+A version keeps its own `DataDefSTRUCT`: its emitted name `__madc_vN__P`, its
+C++ spelling `P[abi:vN]`, a `SessionTypeLineage` (Program-owned) naming the
+source name and the first version. The registry keeps an earlier version under
+a key no source can spell (`P#1`), so every emission walk still finds it. An
+inline function or an in-class member function an entry emits is weak before
+the entry links (`vague_functions_interposable`): the first copy is the
+definition, no caller inlines it, and a redefinition — emitted strong —
+replaces it in place. Gates: `testrepl_versions`, `testrepl_versions_c`,
+`testrepl_redefine` (an inline function), `testsession_retype` (the live
+reparse), the unit test "a type defined again is its name's next version",
+`test_mangle`'s abi-tag cases.
 
 **Built, exit-time destruction (2026-10-12), the prerequisite for redefining
 an object with a destructor.** An object with static storage duration had its

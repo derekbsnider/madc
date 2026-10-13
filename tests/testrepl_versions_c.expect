@@ -1,0 +1,9 @@
+sizes 4 8
+mixed 9 7
+(struct P#1){ .a = 7 }
+(struct P){ .a = 1, .b = 2 }
+geta kept 7
+twin 3
+typedef 16
+self 1
+nested 48 12

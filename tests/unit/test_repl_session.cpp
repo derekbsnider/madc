@@ -1652,36 +1652,52 @@ TEST_CASE("an entry's statics are session names (§41.5a)")
     check_entry_statics("--std=madc");
 }
 
-// A type an earlier entry defined is not defined again (plan §42 D6 makes a
-// redefined type a new versioned one): the refusal names %run, and the type
-// and its objects stay. Within one entry it is the redefinition C and C++
-// refuse.
-static void check_type_redefinition(const std::string &std_option)
+// A type an earlier entry defined, defined again (plan §42 D6): the name's
+// next version, the earlier one kept for what names it (`P#1`); the same
+// type again when it lays out alike. Within one entry it is the redefinition
+// C and C++ refuse.
+static void check_type_redefinition(const std::string &std_option, const char *p_shown)
 {
     CAPTURE(std_option);
     InteractiveSession s;
     REQUIRE(s.begin(std_option));
     REQUIRE(s.submit("struct P { int a; };"));
     REQUIRE(s.submit("struct P p = {7};"));
-    CHECK_FALSE(s.submit("struct P { int a; int b; };"));
-    CHECK(first_error(s) == "redefinition of 'P', a type an earlier entry"
-	  " defined (%run rebuilds the session)");
-    REQUIRE(s.submit("p.a + (int)sizeof(struct P)"));
-    CHECK(s.shown() == "11");
+    REQUIRE(s.submit("struct P { int a; int b; };"));
+    REQUIRE(s.submit("struct P q = {1, 2};"));
+    REQUIRE(s.submit("p.a + q.b + (int)sizeof p * 10 + (int)sizeof q * 100"));
+    CHECK(s.shown() == "849");
+    REQUIRE(s.submit("p"));
+    CHECK(s.shown() == p_shown);
+    REQUIRE(s.submit("struct P { int a; int b; };"));	// lays out alike
+    REQUIRE(s.submit("struct P r = {3, 4};"));
+    REQUIRE(s.submit("r = q;"));
+    REQUIRE(s.submit("r.a + r.b"));
+    CHECK(s.shown() == "3");
     CHECK_FALSE(s.submit("struct Q { int a; };\nstruct Q { int a; };"));
     CHECK(first_error(s) == "Struct 'Q' already defined");
 }
 
-TEST_CASE("a type an earlier entry defined is not defined again (D6)")
+TEST_CASE("a type defined again is its name's next version (D6)")
 {
-    check_type_redefinition("--std=c17");
-    check_type_redefinition("--std=c++17");
+    check_type_redefinition("--std=c17", "(struct P#1){ .a = 7 }");
+    check_type_redefinition("--std=c++17", "P#1{ .a = 7 }");
+    // A class: the same shape is the same type, its member functions
+    // redefined; another shape is the next version, and an object of the
+    // earlier one is no argument for the new one.
     InteractiveSession s;
     REQUIRE(s.begin("--std=c++17"));
-    REQUIRE(s.submit("class C { public: int x; };"));
-    CHECK_FALSE(s.submit("class C { public: int x; };"));
-    CHECK(first_error(s) == "redefinition of 'C', a type an earlier entry"
-	  " defined (%run rebuilds the session)");
+    REQUIRE(s.submit("class C { public: int x; int get() { return x * 2; } };"));
+    REQUIRE(s.submit("C c = {3};"));
+    REQUIRE(s.submit("class C { public: int x; int get() { return x * 3; } };"));
+    REQUIRE(s.submit("c.get()"));
+    CHECK(s.shown() == "9");
+    REQUIRE(s.submit("class C { public: int x; int y; int get() { return x + y; } };"));
+    REQUIRE(s.submit("C d = {4, 5};"));
+    REQUIRE(s.submit("d.get() * 100 + c.get()"));
+    CHECK(s.shown() == "909");
+    REQUIRE(s.submit("int take(C v) { return v.y; }"));
+    CHECK_FALSE(s.submit("take(c)"));
 }
 
 // TEXT in a fresh temporary file (the temp-file owner places it); its path.

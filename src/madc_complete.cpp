@@ -50,6 +50,7 @@
 #include "madc_type_spelling.h"
 #include "madcdis/text_buffer.h"	// the one word rule (word_byte)
 #include "madc_session.h"		// session_entry_unit: REPL[N]
+#include "cir_builder.h"		// dd_peel_pointers
 
 
 // The probe stands where the word is. It can be no macro and no declared
@@ -288,7 +289,8 @@ void Program::visit_top_level_names(CompletionContext ctx,
     if ( ctx == CompletionContext::Tag )
     {
 	for ( datadef_map_citer it = struct_map.begin(); it != struct_map.end(); ++it )
-	    if ( it->second && spelling_namespace(it->second->canonical_cpp_spelling()).empty() )
+	    if ( it->second && spelling_namespace(it->second->canonical_cpp_spelling()).empty()
+	      && !session_type_superseded(it->second->as_struct_dd()) )
 	    {
 		TopLevelName n(Kind::tag, it->first);
 		n.type = it->second;
@@ -366,7 +368,8 @@ void Program::visit_top_level_names(CompletionContext ctx,
     if ( presents_as_cpp() )
     {
 	for ( datadef_map_citer it = struct_map.begin(); it != struct_map.end(); ++it )
-	    if ( type_reachable(it->second) )
+	    if ( type_reachable(it->second)
+	      && !session_type_superseded(it->second->as_struct_dd()) )
 	    {
 		TopLevelName n(Kind::tag, it->first);
 		n.type = it->second;
@@ -527,6 +530,255 @@ void Program::refuse_type_redefinition(TokenBase *where, const char *kind,
 	Throw(where) << "redefinition of '" << spelling << "', a type an"
 	    " earlier entry defined (%run rebuilds the session)" << std::flush;
     Throw(where) << kind << " '" << spelling << "' already defined" << std::flush;
+}
+
+DataDefSTRUCT *Program::session_redefined_type(const madc::dis::istring &key) const
+{
+    if ( !interactive_session )
+	return NULL;
+    datadef_map_citer it = struct_map.find(key);
+    DataDefSTRUCT *sd = it != struct_map.end()
+	? dynamic_cast<DataDefSTRUCT *>(it->second) : NULL;
+    return sd && sd->is_complete && session_defines_type(sd) ? sd : NULL;
+}
+
+void Program::supersede_session_type(DataDefSTRUCT *fresh, DataDefSTRUCT *existing,
+				     const madc::dis::istring &source,
+				     const madc::dis::istring &key)
+{
+    journal_entity(existing);
+    if ( !existing->session_lineage )
+    {
+	SessionTypeLineage line;
+	line.source = source;
+	line.key = key;
+	line.base_name = existing->name;
+	line.base_spelling = existing->canonical_cpp_spelling().empty()
+	    ? source : existing->canonical_cpp_spelling();
+	session_lineages.push_back(line);
+	existing->session_lineage = &session_lineages.back();
+	existing->session_version = 1;
+    }
+    const SessionTypeLineage *line = existing->session_lineage;
+    fresh->session_lineage = line;
+    fresh->session_version = existing->session_version + 1;
+    const std::string v = std::to_string(fresh->session_version);
+    fresh->name = "__madc_v" + v + "__" + std::string(line->base_name);
+    // C++'s spelling of the new type (its symbols' and its RTTI's): GCC's
+    // abi_tag on the name, `P[abi:v2]` (1PB2v2). C has no such spelling.
+    if ( !is_c_mode() )
+	fresh->set_canonical_spelling(std::string(line->base_spelling) + "[abi:v" + v + "]");
+}
+
+// The version a redefinition replaced stays in the registry, under a key no
+// source can spell (`P#1`): the objects, functions and pointers that name it
+// keep a type every emission walk still finds.
+void Program::retire_session_type(DataDefSTRUCT *existing)
+{
+    struct_map.set(std::string(existing->session_lineage->key) + "#"
+		   + std::to_string(existing->session_version), existing);
+}
+
+// The mirror case of a global-scope definition (TokenSTRUCT::parse,
+// TokenCLASS::parse): the bare key held by a complete prior whose canonical
+// spelling names another scope's type, flat-registered (darwin math.h's
+// `struct exception` after libc++'s std::__1::exception). A session's version
+// of this very name (`P[abi:v2]`, plan §42 D6) is not one: its unversioned
+// spelling is the tag's.
+bool Program::bare_key_held_by_other_scope(const DataDefSTRUCT *prior,
+					   const madc::dis::istring &tag) const
+{
+    return prior && prior->is_complete
+	&& !prior->unversioned_spelling().empty()
+	&& prior->unversioned_spelling() != tag;
+}
+
+// The identity a spelled aggregate name stands for when a session versioned
+// it (plan §42 D6): the version's emitted name (`__madc_v2__P`), so `P`
+// either side of a redefinition reads as two types; empty for any other name.
+madc::dis::istring Program::session_type_identity(const madc::dis::istring &spelling) const
+{
+    if ( !interactive_session )
+	return madc::dis::istring();
+    datadef_map_citer it = struct_map.find(spelling);
+    const DataDefSTRUCT *s = it != struct_map.end() && it->second
+	? it->second->as_struct_dd() : NULL;
+    return s && s->session_lineage ? s->name : madc::dis::istring();
+}
+
+// The live reparse compares these, before an edit and after, to find the
+// names the edit gave a new version (plan §42 D6). A lineage a refused entry
+// began is no name's current one.
+std::map<madc::dis::istring, unsigned> Program::session_type_versions() const
+{
+    std::map<madc::dis::istring, unsigned> out;
+    for ( const SessionTypeLineage &line : session_lineages )
+    {
+	datadef_map_citer it = struct_map.find(line.key);
+	const DataDefSTRUCT *cur = it != struct_map.end()
+	    ? dynamic_cast<const DataDefSTRUCT *>(it->second) : NULL;
+	if ( cur && cur->session_lineage == &line )
+	    out[line.key] = cur->session_version;
+    }
+    return out;
+}
+
+std::set<madc::dis::istring> Program::session_types_versioned_since(
+    const std::map<madc::dis::istring, unsigned> &before) const
+{
+    std::set<madc::dis::istring> names;
+    const std::map<madc::dis::istring, unsigned> now = session_type_versions();
+    for ( const SessionTypeLineage &line : session_lineages )
+    {
+	std::map<madc::dis::istring, unsigned>::const_iterator n = now.find(line.key);
+	if ( n == now.end() )
+	    continue;
+	std::map<madc::dis::istring, unsigned>::const_iterator b = before.find(line.key);
+	// A name with no lineage before had one version.
+	if ( n->second > (b != before.end() ? b->second : 1u) )
+	    names.insert(line.source);
+    }
+    return names;
+}
+
+// A nested aggregate's definition over a tag an earlier entry defined: a
+// fresh type, the name's next version, registered before its body (the
+// top-level arm's order) so a self-reference names it.
+DataDefSTRUCT *Program::redefine_session_struct(DataDefSTRUCT *existing,
+						const madc::dis::istring &source,
+						const madc::dis::istring &key)
+{
+    const madc::dis::istring stored(key);
+    DataDefSTRUCT *fresh = new DataDefSTRUCT(existing->name, 0);
+    supersede_session_type(fresh, existing, source, stored);
+    struct_map.set(stored, fresh);
+    return fresh;
+}
+
+// A struct body's end over a session's type: the same type again (a twin)
+// when a plain struct lays out as the version it replaces; else the new
+// version stands and the old one is retired. A class decides at its head.
+void Program::settle_session_struct(DataDefSTRUCT *superseded, DataDefSTRUCT *fresh)
+{
+    if ( !dynamic_cast<DataDefCLASS *>(fresh) && !dynamic_cast<DataDefCLASS *>(superseded)
+      && session_same_layout(superseded, fresh) )
+	session_type_twin(fresh, superseded);
+    else
+	retire_session_type(superseded);
+}
+
+void Program::session_type_twin(DataDefSTRUCT *fresh, const DataDefSTRUCT *existing)
+{
+    fresh->name = existing->name;
+    fresh->set_canonical_spelling(existing->canonical_cpp_spelling());
+    fresh->session_version = existing->session_version;
+    fresh->session_lineage = existing->session_lineage;
+}
+
+bool Program::session_type_superseded(const DataDefSTRUCT *s) const
+{
+    if ( !s || !s->session_lineage )
+	return false;
+    datadef_map_citer it = struct_map.find(s->session_lineage->key);
+    const DataDefSTRUCT *cur = it != struct_map.end()
+	? dynamic_cast<const DataDefSTRUCT *>(it->second) : NULL;
+    return cur && cur->session_lineage == s->session_lineage
+	   && cur->session_version != s->session_version;
+}
+
+namespace {
+
+// One member's type in two definitions of a name: the same type, or the same
+// shape over each one's own aggregate (`struct P *next`).
+bool same_layout_type(const DataDef *a, const DataDef *b,
+		      const DataDefSTRUCT *a_self, const DataDefSTRUCT *b_self)
+{
+    if ( a == b )
+	return true;
+    if ( !a || !b )
+	return false;
+    const DataDefSTRUCT *as = dynamic_cast<const DataDefSTRUCT *>(a);
+    const DataDefSTRUCT *bs = dynamic_cast<const DataDefSTRUCT *>(b);
+    if ( as || bs )
+	return as && bs && (as->name == a_self->name ? bs->name == b_self->name
+						     : as->name == bs->name);
+    const DataDefPTR *ap = a->as_pointer_dd(), *bp = b->as_pointer_dd();
+    if ( ap || bp )
+	return ap && bp && a->is_const() == b->is_const()
+	       && a->is_volatile() == b->is_volatile()
+	       && same_layout_type(ap->base_type, bp->base_type, a_self, b_self);
+    return false;
+}
+
+} // namespace
+
+bool Program::session_same_layout(const DataDefSTRUCT *a, const DataDefSTRUCT *b)
+{
+    if ( a->union_layout != b->union_layout || a->size != b->size
+      || a->members.size() != b->members.size()
+      || a->member_offsets != b->member_offsets
+      || a->member_counts != b->member_counts
+      || a->member_bitfields.size() != b->member_bitfields.size() )
+	return false;
+    for ( size_t i = 0; i < a->members.size(); ++i )
+	if ( a->members[i].first != b->members[i].first
+	  || !same_layout_type(a->members[i].second, b->members[i].second, a, b) )
+	    return false;
+    for ( size_t i = 0; i < a->member_bitfields.size(); ++i )
+    {
+	const DataDefSTRUCT::BitFieldInfo &x = a->member_bitfields[i];
+	const DataDefSTRUCT::BitFieldInfo &y = b->member_bitfields[i];
+	if ( x.is_bitfield != y.is_bitfield || x.bit_offset != y.bit_offset
+	  || x.bit_width != y.bit_width || x.storage_offset != y.storage_offset )
+	    return false;
+    }
+    // A class: the same vtable and the same bases where they were.
+    const DataDefCLASS *ac = dynamic_cast<const DataDefCLASS *>(a);
+    const DataDefCLASS *bc = dynamic_cast<const DataDefCLASS *>(b);
+    if ( !ac || !bc )
+	return !ac && !bc;
+    if ( ac->vtable_slots != bc->vtable_slots || ac->bases.size() != bc->bases.size() )
+	return false;
+    for ( size_t i = 0; i < ac->bases.size(); ++i )
+	if ( !ac->bases[i].base || !bc->bases[i].base
+	  || ac->bases[i].base->name != bc->bases[i].base->name
+	  || ac->bases[i].is_virtual != bc->bases[i].is_virtual
+	  || ac->bases[i].offset != bc->bases[i].offset )
+	    return false;
+    return true;
+}
+
+void Program::settle_session_twin(TokenBase *where, const madc::dis::istring &source,
+				  DataDefCLASS *existing, DataDefCLASS *fresh)
+{
+    if ( !session_same_layout(existing, fresh) )
+	Throw(where) << "redefinition of '" << source << "' reads as before, but a"
+	    " type it names was redefined (%run rebuilds the session)" << std::flush;
+    // Its member functions are the earlier version's, by symbol: each one
+    // given a body again is redefined (D5), its callers reaching the new one.
+    std::set<madc::dis::istring> earlier;
+    const std::vector<Variable *> *lists[] = { &existing->methods, &existing->ctors };
+    for ( const std::vector<Variable *> *list : lists )
+	for ( Variable *m : *list )
+	    if ( FuncDef *fd = m ? dynamic_cast<FuncDef *>(m->type) : NULL )
+		if ( !fd->local_emit_name.empty() )
+		    earlier.insert(fd->local_emit_name);
+    const std::vector<Variable *> *again[] = { &fresh->methods, &fresh->ctors };
+    for ( const std::vector<Variable *> *list : again )
+	for ( Variable *m : *list )
+	    if ( FuncDef *fd = m ? dynamic_cast<FuncDef *>(m->type) : NULL )
+		if ( fd->body_parsed && earlier.count(fd->local_emit_name) )
+		    session_redefined.insert(fd);
+}
+
+bool Program::session_retypes_alias(DataDef *existing, const DataDefSTRUCT *fresh)
+{
+    if ( !existing || !fresh || !fresh->session_lineage )
+	return false;
+    DataDef *base = existing;
+    dd_peel_pointers(base);
+    const DataDefSTRUCT *named = dynamic_cast<const DataDefSTRUCT *>(base);
+    return named && named->session_lineage == fresh->session_lineage;
 }
 
 madc::dis::istring Program::object_location(const Variable *v) const

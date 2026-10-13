@@ -2,6 +2,38 @@
 
 ## [Unreleased]
 
+### A REPL session's redefined type is its name's next version
+
+A struct, union or class an earlier entry defined and defines again is no
+longer refused. Redefined with the same data members (a class: the same
+shape, its member-function bodies aside) it is the same type — C23's rule for
+an identical redefinition — and a class's member functions are redefined (D5),
+so every object, the earlier ones included, calls the new bodies. Redefined
+with other members it is the name's next version: the name now means the new
+type, while the objects, functions and pointers made with an earlier version
+keep it (Julia 1.12's world age), and an earlier version's type shows as
+`P#1`. Mixing versions is a type error, never a silent copy — an object of
+`P#1` is no argument for a `P` parameter. In madc and C++ a function defined
+again for the new version is an overload beside the earlier one, mangled as
+g++'s `abi_tag` would (`getx(P[abi:v2])` = `_Z4getx1PB2v2`, checked against
+g++), so its symbols never collide with the earlier version's; in C the
+redefined function's type changes, which C cannot overload, so it is refused
+with the `%run` hint. The live reparse follows the same rules: an edit that
+gives a type a new version reads each entry below it that names the type again
+— functions only — a function takes the new version, a type defined from it
+gets its own next version, and an object keeps its type and its value. A
+template already instantiated with an earlier version keeps that instance;
+namespaced types follow the same rules through their unversioned spelling.
+
+Each version keeps its own `DataDefSTRUCT` (emitted name `__madc_vN__P`, C++
+spelling `P[abi:vN]`, a Program-owned `SessionTypeLineage`); a replaced
+version stays registered under a key no source can spell (`P#1`,
+`retire_session_type`) so every emission walk still finds it, and the name
+listings skip it (`session_type_superseded`). Gates: `testrepl_versions`
+(C++), `testrepl_versions_c` (C), `testsession_retype` (the live reparse), the
+unit test "a type defined again is its name's next version", and
+`test_mangle`'s abi-tag cases.
+
 ### A class argument no conversion turns into the parameter's class is refused
 
 Passing an object of one class by value where a different class is expected,

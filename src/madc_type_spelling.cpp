@@ -140,7 +140,14 @@ madc::dis::istring TypeSpeller::alias(DataDef *dd) const
 madc::dis::istring TypeSpeller::class_word(DataDefSTRUCT *cls) const
 {
 	if (cls->union_layout)
-		return "union " + cls->name;
+		return "union " + tag_name(cls);
+	if (const SessionTypeLineage *line = cls->session_lineage) {
+		// Its canonical spelling is the version's (P[abi:v2]): the first
+		// version's is the source's.
+		if (line->base_spelling != line->source)
+			return session_name(cls, strip_inline_namespaces(line->base_spelling));
+		return "struct " + tag_name(cls);
+	}
 	const madc::dis::istring &canon = cls->canonical_cpp_spelling();
 	if (canon.find('<') != madc::dis::istring::npos) {
 		madc::dis::istring named = alias(cls);
@@ -152,7 +159,25 @@ madc::dis::istring TypeSpeller::class_word(DataDefSTRUCT *cls) const
 	}
 	if (!canon.empty())
 		return strip_inline_namespaces(canon);
-	return "struct " + cls->name;
+	return "struct " + tag_name(cls);
+}
+
+// A struct's or union's tag name. A type a REPL session redefined (plan §42
+// D6) is its first version's name — never the emitted __madc_vN__P — with
+// `#N` on an earlier version than the name's current one (P#1), the plan's
+// notation for a version.
+madc::dis::istring TypeSpeller::tag_name(const DataDefSTRUCT *s) const
+{
+	return s->session_lineage ? session_name(s, s->session_lineage->base_name)
+				  : s->name;
+}
+
+madc::dis::istring TypeSpeller::session_name(const DataDefSTRUCT *s,
+					     const madc::dis::istring &base) const
+{
+	if (pgm && pgm->session_type_superseded(s))
+		return std::string(base) + "#" + std::to_string(s->session_version);
+	return base;
 }
 
 // An aggregate a template instantiated (`Box<int>`: no class members, so
@@ -162,7 +187,7 @@ madc::dis::istring TypeSpeller::aggregate_name(DataDefSTRUCT *s) const
 {
 	if (s->union_layout
 	    || s->canonical_cpp_spelling().find('<') == madc::dis::istring::npos)
-		return s->name;
+		return tag_name(s);
 	madc::dis::istring word = class_word(s);
 	if (word.compare(0, 7, "struct ") == 0)
 		word = word.substr(7);
@@ -527,11 +552,11 @@ madc::dis::istring TypeSpeller::shown(DataDef *dd) const
 					break;
 				}
 		} else
-			word = (c->union_layout ? "union " : "struct ") + c->name;
+			word = (c->union_layout ? "union " : "struct ") + tag_name(c);
 	}
 	else if (DataDefSTRUCT *s = dynamic_cast<DataDefSTRUCT *>(ub))
 		word = cxx ? aggregate_name(s)
-			   : madc::dis::istring((s->union_layout ? "union " : "struct ") + s->name);
+			   : madc::dis::istring((s->union_layout ? "union " : "struct ") + tag_name(s));
 	else
 		word = scalar_word(ub);
 	if (!level_cv.empty())

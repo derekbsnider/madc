@@ -22728,6 +22728,11 @@ madc::dis::istring Program::peek_param_list_spelling()
 	   || t->type() == TokenType::ttDataType) )
 	    if ( DataDef *al = resolve_current_class_type_alias(((TokenIdent *)t)->spelling()) )
 		tok_sp = al->name;
+	// A session's redefined aggregate: `P` before and after its
+	// redefinition are two types, so two overloads (plan §42 D6).
+	if ( tok_sp.empty() && (t->type() == TokenType::ttIdentifier
+			     || t->type() == TokenType::ttDataType) )
+	    tok_sp = session_type_identity(((TokenIdent *)t)->spelling_name());
 	spelling += tok_sp.empty() ? overload_token_spelling(t) : tok_sp;
     };
     // The list's depth is the stream tracker's, from inside its consumed `(`;
@@ -31487,6 +31492,13 @@ Variable *Program::declare_object(TokenCpnd *code, DataDef &type, const madc::di
 				  const std::vector<carray_dim_t> *dims, unsigned object_cv)
 {
     bool is_definition = object_declaration_is_definition(code, has_initializer);
+    // An entry re-read for a type's new version keeps its objects as they
+    // are (Program::entry_functions_only).
+    if ( entry_functions_only && _inst_depth == 0 && (!code || code == tkProgram) )
+    {
+	entry_kept_object = true;
+	Throw(where) << "'" << id << "' keeps its type and its value" << flush;
+    }
     // A template's products are re-minted from a pattern that was checked
     // when it was declared.
     Variable *prior = _inst_depth > 0 ? NULL : same_scope_object(code, id);
@@ -47339,6 +47351,92 @@ bool Program::struct_body_needs_class_parser_from(size_t start, bool nested)
     return false;
 }
 
+// The shape of an aggregate's definition (plan §42 D6), from the `{` at
+// tokens[start] through its closing brace: what decides whether a session's
+// definition of a class again is the same type. Its tokens, except that a
+// member-function body is elided to `{}` — in a member-declaration (at any
+// level) whose parameter list came before any `=`, each brace group after it
+// (a body, or an initializer after a parenthesized declarator: neither lays
+// anything out) — and a name the session versioned stands as its version's
+// identity (session_type_identity), so a member typed by a redefined type
+// changes the shape; SELF, the class's own name, stays as spelled.
+madc::dis::istring Program::aggregate_shape(size_t start, const madc::dis::istring &self)
+{
+    // One tracker for the walk (delimiter-tracking.md); per brace level, the
+    // member-declaration's state.
+    struct Member { bool params; bool assigned; };
+    std::vector<Member> level;
+    DelimDepth d(this);
+    std::string out;
+    int elided = -1;			// the level an elided group opened at
+    size_t n = 1;
+    for ( size_t i = start; i < tokens.size(); i += n )
+    {
+	TokenBase *t = tokens[i];
+	n = 1;
+	if ( !t )
+	    continue;
+	const int brace = d.brace, paren = d.paren, angle = d.angle;
+	n = delim_scan_step(tokens, i, d);
+	if ( !n )
+	    n = 1;
+	const TokenID id = t->id();
+	if ( elided >= 0 )
+	{
+	    if ( id == TokenID::tkClBrc && d.brace == elided )
+	    {
+		elided = -1;
+		out += "{} ";
+		level.back() = Member{ false, false };	// a body ends the member
+	    }
+	    continue;
+	}
+	if ( id == TokenID::tkOpBrc )
+	{
+	    if ( !level.empty() && level.back().params && !level.back().assigned )
+	    {
+		elided = brace;
+		continue;
+	    }
+	    out += "{ ";
+	    level.push_back(Member{ false, false });
+	    continue;
+	}
+	if ( id == TokenID::tkClBrc )
+	{
+	    out += "} ";
+	    if ( !level.empty() )
+		level.pop_back();
+	    if ( d.brace == 0 )
+		break;			// the body closed
+	    continue;
+	}
+	if ( token_is_operator_id_start(t) )
+	{
+	    for ( size_t k = i; k < i + n && k < tokens.size(); ++k )
+		if ( tokens[k] )
+		    out += std::string(madc_token_spelling(tokens[k])) + " ";
+	    continue;			// a name: neither a list nor an `=`
+	}
+	if ( !level.empty() && paren == 0 && angle == 0 )
+	{
+	    Member &m = level.back();
+	    if ( id == TokenID::tkSemi )
+		m = Member{ false, false };
+	    else if ( id == TokenID::tkOpBrk && !m.assigned )
+		m.params = true;
+	    else if ( id == TokenID::tkAssign && !m.params )
+		m.assigned = true;
+	}
+	madc::dis::istring sp = madc_token_spelling(t);
+	madc::dis::istring identity = sp == self ? madc::dis::istring()
+						 : session_type_identity(sp);
+	out += std::string(identity.empty() ? sp : identity);
+	out += " ";
+    }
+    return out;
+}
+
 // Queue captured NSDMI initializer tokens under member name `mname` of `dds`:
 // they parse when the class is complete (parse_member_default_inits). Shared
 // tail of the `=` and brace forms in capture_member_default_init.
@@ -48216,7 +48314,13 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    // forest-restore/live seam registers a restored twin of a tag
 		    // the live parse re-declares (C11 6.7p3).
 		    DataDef *existing = &(*bmi)->definition;
-		    if ( existing->denotes_same_type(*alias_dd)
+		    if ( Program::session_retypes_alias(existing,
+			     dynamic_cast<DataDefSTRUCT *>(tag_dd)) )
+		    {
+			// The alias named a version of a struct the session
+			// redefined (plan §42 D6): it names the newest.
+		    }
+		    else if ( existing->denotes_same_type(*alias_dd)
 		      || (existing->is_pointer() && alias_dd->is_pointer()
 			  && existing->rawtype() == alias_dd->rawtype()) )
 			redecl = true;
@@ -48354,7 +48458,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		madc::dis::istring here_spelling =
 		    pgm.current_namespace() + "::" + tag->spelling();
 		if ( prior_sd && prior_sd->is_complete
-		  && prior_sd->canonical_cpp_spelling() != here_spelling )
+		  && prior_sd->unversioned_spelling() != here_spelling )
 		{
 		    tag_store_key = pgm.current_namespace() + "::" + tag->spelling();
 		    dds->name = flat_scope_identifier(pgm.current_namespace())
@@ -48379,9 +48483,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		datadef_map_citer prior = pgm.struct_map.find(tag->spelling());
 		DataDefSTRUCT *prior_sd = prior != pgm.struct_map.end()
 		    ? dynamic_cast<DataDefSTRUCT *>(prior->second) : NULL;
-		if ( prior_sd && prior_sd->is_complete
-		  && !prior_sd->canonical_cpp_spelling().empty()
-		  && prior_sd->canonical_cpp_spelling() != tag->spelling() )
+		if ( pgm.bare_key_held_by_other_scope(prior_sd, tag->spelling()) )
 		{
 		    pgm.pack_tap_struct(prior_sd->canonical_cpp_spelling());
 		    pgm.struct_map.set(prior_sd->canonical_cpp_spelling(),
@@ -48396,6 +48498,14 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    }
 	}
     }
+    // A session's redefinition of a struct an earlier entry defined (plan §42
+    // D6, owner 2026-10-13): the next version of its name, registered before
+    // the body so a self-reference names it; at the body's end it is the same
+    // type again (a twin) when it lays out as the version it replaces.
+    DataDefSTRUCT *superseded = tag && !block_tag_shadowed && !global_reclaims_bare
+	? pgm.session_redefined_type(tag_store_key) : NULL;
+    if ( superseded )
+	pgm.supersede_session_type(dds, superseded, tag->spelling(), tag_store_key);
     // The definition of a tag whose FIRST declaration is already registered in
     // this scope (`struct S;`, or an elaborated-type-specifier that first-
     // declared S) completes THAT object — gcc's xref_tag alters the forward-
@@ -48460,7 +48570,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     // this point (size 0 members none); pointer-to-incomplete works because
     // DataDefPTR only needs an 8-byte pointer size.
     if ( tag && (pgm.struct_map.find(tag_store_key) == pgm.struct_map.end()
-		 || global_reclaims_bare || block_tag_shadowed) )
+		 || global_reclaims_bare || block_tag_shadowed || superseded) )
     {
 	pgm.pack_tap_struct(tag_store_key);	// B4a tap
 	pgm.struct_map.set(tag_store_key, dds);
@@ -48661,6 +48771,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpBrc )
 			    {
 				DataDefSTRUCT *nested = NULL;
+				DataDefSTRUCT *nested_was = sdmi == pgm.struct_map.end() ? NULL
+				    : pgm.session_redefined_type(sdmi->first);
 				if ( sdmi == pgm.struct_map.end() )
 				{
 				    nested = new DataDefSTRUCT(sname, 0);
@@ -48668,6 +48780,9 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 				    pgm.pack_tap_struct(store_key);	// B4a tap
 				    pgm.struct_map.set(store_key, nested);
 				}
+				else if ( nested_was )
+				    nested = pgm.redefine_session_struct(nested_was, sname,
+									 sdmi->first);
 				else
 				{
 				    nested = static_cast<DataDefSTRUCT *>(sdmi->second);
@@ -48679,6 +48794,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 				apply_aggregate_attributes(nested, inner_attrs, false);
 				pgm.nextToken();
 				parse_nested_aggregate_body(nested, inner_tag);
+				if ( nested_was )
+				    pgm.settle_session_struct(nested_was, nested);
 				// Named inline-defined nested struct/union — visible at enclosing
 				// scope in C; record as a standalone top-level def (see outer
 				// member loop). Handles deeper nesting (`struct A{struct B{struct C
@@ -48905,6 +49022,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		else if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpBrc )
 		{
 		    DataDefSTRUCT *inner = NULL;
+		    DataDefSTRUCT *inner_was = sdmi == pgm.struct_map.end() ? NULL
+			: pgm.session_redefined_type(sdmi->first);
 		    if ( sdmi == pgm.struct_map.end() )
 		    {
 			inner = new DataDefSTRUCT(sname, 0);
@@ -48912,6 +49031,11 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			madc::dis::istring store_key = nested_store_key(inner, sname);
 			pgm.pack_tap_struct(store_key);	// B4a tap
 			pgm.struct_map.set(store_key, inner);
+		    }
+		    else if ( inner_was )
+		    {
+			inner = pgm.redefine_session_struct(inner_was, sname, sdmi->first);
+			inner->union_layout = nested_union_kw;
 		    }
 		    else
 		    {
@@ -48923,6 +49047,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    apply_aggregate_attributes(inner, nested_attrs, false);
 		    pgm.nextToken(); // consume '{'
 		    parse_nested_aggregate_body(inner, stag);
+		    if ( inner_was )
+			pgm.settle_session_struct(inner_was, inner);
 		    // A named struct/union defined INLINE as a member type has C scope
 		    // at the ENCLOSING level (`struct T` in `struct S { struct T {} t; }`
 		    // is visible outside S). Record it as a standalone top-level def so
@@ -49163,6 +49289,9 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    }
     }
 
+    if ( superseded )
+	pgm.settle_session_struct(superseded, dds);
+
     // register the struct type
     if ( tag )
     {
@@ -49257,9 +49386,12 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    // real header's typedef of it (gcc's <stddef.h> -> max_align_t) is a
 	    // re-registration, not a conflict. A user-vs-user redefinition still
 	    // throws, which is what this check was written to catch.
+	    // A session's redefinition of the struct rebinds the alias that
+	    // named its earlier version (plan §42 D6).
 	    if ( bmi != pgm.datatype_map.end() && pgm.compounds.empty()
 	      && &(*bmi)->definition != alias_dd
-	      && !(*bmi)->builtin )
+	      && !(*bmi)->builtin
+	      && !Program::session_retypes_alias(&(*bmi)->definition, dds) )
 		pgm.Throw(tn) << "Identifier '" << alias_spelling << "' already defined" << flush;
 	    tdt = new TokenDataType(alias_spelling.c_str(), *alias_dd);
 	    pgm.register_scoped_typedef(alias_spelling, tdt);
@@ -52108,6 +52240,14 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     if ( !tag )
 	pgm.Throw(tn) << "Class definition requires a name" << flush;
 
+    // A session's class records its shape (plan §42 D6): its definition
+    // again with the same shape is the same type, its member functions
+    // redefined.
+    const madc::dis::istring class_shape = pgm.interactive_session
+	? madc::dis::istring(std::string(union_class ? "union " : "")
+			     + std::string(pgm.aggregate_shape(0, tag->spelling())))
+	: madc::dis::istring();
+
     pgm.nextToken(); // consume '{'
 
     // Sibling-SCOPE same-name class definitions (namespace A { class C {...}; }
@@ -52130,7 +52270,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	madc::dis::istring here_spelling =
 	    pgm.current_namespace() + "::" + class_source_name;
 	if ( prior_sd && prior_sd->is_complete
-	  && prior_sd->canonical_cpp_spelling() != here_spelling )
+	  && prior_sd->unversioned_spelling() != here_spelling )
 	{
 	    pgm.set_token_spelling(tag,
 		flat_scope_identifier(pgm.current_namespace()) + "__"
@@ -52165,9 +52305,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	datadef_map_citer prior = pgm.struct_map.find(tag->spelling());
 	DataDefSTRUCT *prior_sd = prior != pgm.struct_map.end()
 	    ? dynamic_cast<DataDefSTRUCT *>(prior->second) : NULL;
-	if ( prior_sd && prior_sd->is_complete
-	  && !prior_sd->canonical_cpp_spelling().empty()
-	  && prior_sd->canonical_cpp_spelling() != tag->spelling() )
+	if ( pgm.bare_key_held_by_other_scope(prior_sd, tag->spelling()) )
 	{
 	    pgm.pack_tap_struct(prior_sd->canonical_cpp_spelling());
 	    pgm.struct_map.set(prior_sd->canonical_cpp_spelling(), prior_sd);
@@ -52183,6 +52321,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     // is the incomplete class created for `class Name;`.
     bool completing_forward_decl = false;
     DataDefCLASS *ddc = NULL;
+    DataDefCLASS *session_superseded = NULL;
     dmi = pgm.struct_map.find(tag->spelling());
     // A NESTED class-head completing a declaration the OWNER's scope holds —
     // `struct B;` inside A, then `struct B { ... }` in the body or
@@ -52271,6 +52410,13 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    DBG(cout << "class live-wins: re-defining forest-restored '"
 		<< tag->spelling() << "'" << endl);
 	}
+	else if ( fwd && fwd == pgm.session_redefined_type(tag->spelling()) )
+	{
+	    // A class an earlier entry defined, defined again (plan §42 D6):
+	    // a fresh definition below, the same type or the name's next
+	    // version.
+	    session_superseded = fwd;
+	}
 	else
 	    pgm.refuse_type_redefinition(tag, "Class", tag->spelling(), fwd);
     }
@@ -52325,6 +52471,21 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    primary_name_from_cpp_spelling(ddc->canonical_cpp_spelling());
 	if ( !primary.empty() )
 	    constructor_source_name = primary;
+    }
+    // A session's class defined again (plan §42 D6): the name's next version
+    // (the lineage every version shares starts here), or the same type again
+    // when its shape is the replaced version's (its member functions are
+    // then redefined).
+    if ( pgm.interactive_session )
+	ddc->session_shape = class_shape;
+    if ( session_superseded )
+    {
+	pgm.supersede_session_type(ddc, session_superseded, class_source_name,
+				   tag->spelling());
+	if ( !class_shape.empty() && class_shape == session_superseded->session_shape )
+	    pgm.session_type_twin(ddc, session_superseded);
+	else
+	    pgm.retire_session_type(session_superseded);
     }
     ddc->is_dependent_placeholder = false;
     ddc->has_dependent_surface = pgm.instantiating_dependent_surface;
@@ -53896,6 +54057,12 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 					     defaulted_comparison_ops[i], synth) )
 	    parse_hoisted_friend_operator(pgm, synth, ddc);
     }
+
+    // The same type again (plan §42 D6): it lays out as before, and its
+    // member functions are redefined.
+    if ( session_superseded
+      && ddc->session_version == session_superseded->session_version )
+	pgm.settle_session_twin(tag, class_source_name, session_superseded, ddc);
 
     member_terminators.close();
     // what follows?
@@ -74316,6 +74483,9 @@ void Program::parseFunction(DataDef &dd, madc::dis::istring &id, DataDefCLASS *o
 		    std::cout << " prior" << rs << "=[" << func->mangle_param_spelling(rs) << "]";
 		std::cout << std::endl;
 	    });
+	if ( redecl_sig != redecl_prior_sig && session_redefinition )
+	    Throw(nt) << "conflicting types for '" << id << "', a function an"
+		" earlier entry defined (%run rebuilds the session)" << flush;
 	if ( redecl_sig != redecl_prior_sig )
 	    Throw(nt) << (is_c_mode() ? "conflicting types for '"
 				      : "conflicting declaration of C function '")
@@ -81138,7 +81308,8 @@ void Program::dump_registered_names(FILE *out)
     {
 	if ( it->first.find('<') != madc::dis::istring::npos
 	  || instantiation_product(it->second)
-	  || function_local_class(it->second) )
+	  || function_local_class(it->second)
+	  || session_type_superseded(it->second->as_struct_dd()) )
 	    continue;
 	lines.insert(std::string("struct\t") + it->first);
     }

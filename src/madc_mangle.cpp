@@ -248,7 +248,32 @@ struct NameComponent {
 	std::string ident;                 // e.g. "char_traits", "__cxx11", "std"
 	bool is_template = false;          // has <...>
 	std::vector<TypeNode> targs;       // template arguments (if is_template)
+	// GCC's abi_tag, spelled as c++filt prints it: `P[abi:v2]` is 1PB2v2
+	// (a REPL session's redefined struct, a new version of the type).
+	std::vector<std::string> abi_tags;
 };
+
+// Is the bracket group of `s` that opens at `ob` an abi tag (`[abi:v2]`), not
+// an array dimension?
+static bool abi_tag_group(const std::string &s, size_t ob)
+{
+	return s.compare(ob + 1, 4, "abi:") == 0;
+}
+
+// Does the spelling end in an array declarator's `[N]` (not an abi tag)?
+static bool ends_in_array_dims(const std::string &s)
+{
+	return !s.empty() && s.back() == ']' && !abi_tag_group(s, s.rfind('['));
+}
+
+// A name's abi tags, as Itanium encodes them after its source name.
+static std::string abi_tag_codes(const NameComponent &nc)
+{
+	std::string out;
+	for (const std::string &tag : nc.abi_tags)
+		out += "B" + std::to_string(tag.size()) + tag;
+	return out;
+}
 
 // A parsed type: a chain of name components (a::b::c<...>) plus pointer/ref/
 // const decorations applied outermost, OR a builtin.
@@ -308,8 +333,18 @@ NameComponent parse_component(const std::string &raw)
 	// is the only one — first and last coincide. Ignore is the historical
 	// policy for anything trailing the closing '>'; the local copy expressed
 	// it by taking rfind('>') as the close.
-	if (!split_template_id_parts(mstrip(raw), nc.ident, targs,
-				     SpellingTail::Ignore))
+	const bool is_template = split_template_id_parts(mstrip(raw), nc.ident,
+							 targs, SpellingTail::Ignore);
+	// The name's abi tags: trailing `[abi:TAG]` groups, in order.
+	size_t ob;
+	while (!nc.ident.empty() && nc.ident.back() == ']'
+	       && (ob = nc.ident.rfind('[')) != std::string::npos
+	       && abi_tag_group(nc.ident, ob)) {
+		nc.abi_tags.insert(nc.abi_tags.begin(),
+				   nc.ident.substr(ob + 5, nc.ident.size() - ob - 6));
+		nc.ident = mstrip(nc.ident.substr(0, ob));
+	}
+	if (!is_template)
 		return nc;
 	nc.is_template = true;
 	for (const auto &a : targs)
@@ -386,7 +421,7 @@ TypeNode parse_type(const std::string &raw)
 	// PA3_Vi).
 	bool composite = s.find("(*)") != std::string::npos
 		      || s.find("(&)") != std::string::npos
-		      || (!s.empty() && s.back() == ']');
+		      || ends_in_array_dims(s);
 	for (; !composite;) {
 		if (s.size() >= 6 && s.compare(0, 6, "const ") == 0) {
 			level_cv |= 1u;
@@ -436,12 +471,13 @@ TypeNode parse_type(const std::string &raw)
 	// to inner; each is an A<dim>_ decoration on the element type, the `(*)`
 	// a P outside them. Every decorated layer is a substitution candidate
 	// (the deco loop in encode_type registers A3_i like any other).
-	if (!s.empty() && s.back() == ']') {
+	if (ends_in_array_dims(s)) {
 		std::vector<std::string> dims;
 		std::string rest = s;
 		size_t ob;
 		while (!rest.empty() && rest.back() == ']'
-		       && (ob = rest.rfind('[')) != std::string::npos) {
+		       && (ob = rest.rfind('[')) != std::string::npos
+		       && !abi_tag_group(rest, ob)) {
 			dims.insert(dims.begin(),
 				    mstrip(rest.substr(ob + 1, rest.size() - ob - 2)));
 			rest = mstrip(rest.substr(0, ob));
@@ -876,6 +912,8 @@ private:
 		for (size_t i = 0; i <= upto; ++i) {
 			if (i) s += "::";
 			s += chain[i].ident;
+			for (const std::string &tag : chain[i].abi_tags)
+				s += "[abi:" + tag + "]";
 			if (chain[i].is_template) {
 				s += "<";
 				for (size_t j = 0; j < chain[i].targs.size(); ++j) {
@@ -1005,7 +1043,7 @@ private:
 						refPrefixed = true;     // S-ref now acts as a prefix
 						bareRef = false;
 					}
-					encoded += source_name(nc.ident);
+					encoded += source_name(nc.ident) + abi_tag_codes(nc);
 					add_sub(canonKey);
 					srcNameCount++;
 				}
@@ -1036,7 +1074,8 @@ private:
 						refPrefixed = true;     // S-ref now acts as a prefix
 						bareRef = false;
 					}
-					tprefix = encoded + source_name(nc.ident);
+					tprefix = encoded + source_name(nc.ident)
+						  + abi_tag_codes(nc);
 					add_sub(prefixKey);
 					srcNameCount++;
 				}

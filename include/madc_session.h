@@ -529,8 +529,10 @@ private:
     // The entries lines [from, to) hold, each [first, last + 1).
     std::vector<std::pair<size_t, size_t> >
 	buffer_split(const std::vector<std::string> &lines, size_t from, size_t to);
-    // An entry of the edited REPL buffer read as definitions only.
-    bool redefine(const std::string &text);
+    // An entry of the edited REPL buffer read as definitions only;
+    // `functions_only`: read again for a type's new version, an entry that
+    // declares an object is left as it was (true, nothing shown).
+    bool redefine(const std::string &text, bool functions_only = false);
     std::string kept_source;		// taken_source()
     std::string unit_text;		// loaded_source()
     std::string history_file;		// %history's store ("" none)

@@ -937,6 +937,16 @@ enum class AggregateDefinitionOrigin : uint8_t
     TranslationUnitRoot
 };
 
+// One aggregate name a REPL session redefined (plan §42 D6): what every
+// version of the name shares. Owned by the Program; immutable.
+struct SessionTypeLineage
+{
+    madc::dis::istring source;		// the name as the source writes it ("P")
+    madc::dis::istring key;		// the current version's struct_map key
+    madc::dis::istring base_name;	// version 1's emitted name
+    madc::dis::istring base_spelling;	// version 1's C++ spelling ("ns::P"), else source
+};
+
 class DataDefSTRUCT: public DataDef
 {
 public:
@@ -1038,6 +1048,22 @@ public:
     // The file the definition is in (FuncDef::decl_file's twin): a session
     // unit's name for an interactive entry's type; NULL when not known.
     const char *definition_file;
+    // A REPL session's redefinition (plan §42 D6): the type's version of its
+    // name — 0 until the session redefines the name, then 1 for the first
+    // definition and N for the Nth that changed the type — and the lineage
+    // every version shares. Program::supersede_session_type sets both.
+    unsigned session_version;
+    const SessionTypeLineage *session_lineage;
+    // Its canonical spelling without a session version's tag: the first
+    // version's (`P` for `P[abi:v2]`); the scope its name belongs to.
+    const madc::dis::istring &unversioned_spelling() const
+    {
+	return session_lineage ? session_lineage->base_spelling
+			       : canonical_cpp_spelling();
+    }
+    // A class a session defined: its definition's shape
+    // (Program::aggregate_shape) — the same shape again is the same type.
+    madc::dis::istring session_shape;
     size_t bitfield_unit_offset;
     size_t bitfield_unit_size;
     size_t bitfield_next_bit;
@@ -1117,14 +1143,14 @@ public:
 	  is_complete(false), has_anon_aggregate(false),
 	  reverse_scalar_storage(false), bitfield_active(false), previous_was_nonzero_bitfield(false),
 	  definition_origin(AggregateDefinitionOrigin::Unknown), definition_file(NULL),
-	  bitfield_unit_offset(0),
+	  session_version(0), session_lineage(NULL), bitfield_unit_offset(0),
 	  bitfield_unit_size(0), bitfield_next_bit(0) {}
     DataDefSTRUCT(madc::dis::istring n, std::vector<memberpair_t> m)
 	: DataDef(n, 0, DataType::dtRESERVED), runtime_size_expr(NULL), pack(0), pragma_pack(0), max_align(1), tag_explicit_align(0),
 	  union_layout(false), is_complete(false), has_anon_aggregate(false),
 	  reverse_scalar_storage(false), bitfield_active(false), previous_was_nonzero_bitfield(false),
 	  definition_origin(AggregateDefinitionOrigin::Unknown), definition_file(NULL),
-	  bitfield_unit_offset(0),
+	  session_version(0), session_lineage(NULL), bitfield_unit_offset(0),
 	  bitfield_unit_size(0), bitfield_next_bit(0)
     {
 	DBG(std::cout << "DataDefSTRUCT(" << n << ") constructor" << std::endl);
