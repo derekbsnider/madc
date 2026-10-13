@@ -18,6 +18,7 @@ madc_cell_refcount	value-cell runtime entry
 madc_cell_release	value-cell runtime entry
 madc_cell_retain	value-cell runtime entry
 madc_class_pattern_capture_active	engine global: forest class-pattern capture flag
+madc_crt_members	engine global: the startup members' table (madc_crt.cpp, the crtbegin / libc_nonshared.a role), read by madc_cir.cpp's member pull
 madc_debug_info	engine global: debug-info emission flag
 madc_default_stdlib_flavor	engine global: stdlib flavor default
 madc_dlclose	script dlopen()/dlsym() runtime entry
