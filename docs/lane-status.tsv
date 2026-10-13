@@ -10,7 +10,6 @@ genuine-win	release	8b620b8fdc82	2026-10-11	1926/0/0TO/83skip — the FULL suite
 brew-linux	release	8b620b8fdc82	2026-10-12	2000/0/0TO/9skip - scripts/brew_lane.sh at 67766e242 content (bottle + pour + brew test, keg-masked runpath gate)
 interactive-win	release	4c4ad82b678b	2026-10-12	37 passed, 0 failed, 0 timed out, 6 skipped — win_suite.sh over interactive_lane.sh's tests/ subset on the owner Windows 11 box, the packed PE at 4c4ad82b6 content
 interactive-darwin	release	4c4ad82b678b	2026-10-12	arm64 Mac Mini 41/0/0TO/2skip + Intel MacBook 41/0/0TO/2skip — interactive_lane.sh's tests/ subset on the macOS packaged madc 0.104.0 at 4c4ad82b6 content; madcide 0.7.0 66/0 + Chthonia 0.1.0 check_install PASS on both
-interactive	yes	d6d78689a10a	2026-10-12	53/0/0TO/0skip + units 7/0 (scripts/interactive_lane.sh, Linux JIT)
 tests-jit	batch	cdaedde2351b	2026-10-13	2026 passed, 0 failed, 0 timed out, 9 skipped
 c-testsuite	commit	cdaedde2351b	2026-10-13	220 passed, 0 failed
 c-torture	commit	cdaedde2351b	2026-10-13	1617 passed, 7 failing, 0 outside baseline
@@ -19,3 +18,4 @@ gui	commit	cdaedde2351b	2026-10-13	15 passed, 0 failed; EXE 15; OBJ 15
 gxx-c++11	no	cdaedde2351b	2026-10-13	1505 passed, 441 failing, 0 outside baseline
 index-c	yes	cdaedde2351b	2026-10-13	50/50 tasks OK
 commonmark	commit	cdaedde2351b	2026-10-13	664 passed, 6 failed, 0 outside baseline
+interactive	yes	cf4865377600	2026-10-13	56/0/0TO/0skip + units 7/0 (scripts/interactive_lane.sh, Linux JIT)
