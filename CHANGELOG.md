@@ -6,6 +6,20 @@
 
 The live REPL release: a `madc -i` session behaves like a buffer you keep editing. A function defined again reaches every caller, an inline one included; a variable defined again is re-initialized in place, an object with a destructor destroyed and constructed again; a type defined again is the same type when its data members are, and otherwise its name's next version (old objects keep `P#1`, mixing versions is a type error, a C++ function for the new version is an `abi_tag`-mangled overload). An edit to the REPL buffer reparses live, Restart and Run All replays the whole buffer and runs its uncalled `main`, and objects with static storage duration are destroyed at exit. madcide 0.8.0 carries the live reparse and Restart and Run All to its REPL pane.
 
+### The embedded-header generator refuses an empty table
+
+`scripts/gen_embedded_headers.sh` bakes `include/madc/*` into the table the
+build compiles into madc. It read its file list through a process substitution
+(`done < <(find ... | sort)`), which a build root with no `/proc` lacks
+(`/dev/fd` resolves through `/proc/self/fd`): the loop read nothing and wrote
+an EMPTY table with exit 0, so the build linked a madc carrying no embedded
+headers (the dialect prelude fragments included) and nothing failed. The
+generator now reads the list through a file beside the output and refuses a run
+that reads no header — `include/madc/` always holds headers, so none read means
+the list was lost — exiting nonzero and leaving no table, so the Makefile's
+`EMBED_GEN` removes the table and the build stops. Gate:
+`scripts/check-embedded-headers-gen.sh`.
+
 ### A conversion-function template converts to the class deduced from the target
 
 A class's `template <typename U> operator Val<U>()` now converts an object of

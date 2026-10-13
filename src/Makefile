@@ -1237,6 +1237,7 @@ gates: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/check-policy-fanout.sh
 	@cd .. && bash scripts/check-dialect-lean.sh
 	@cd .. && bash scripts/check-embedded-headers-stub.sh
+	@cd .. && bash scripts/check-embedded-headers-gen.sh
 	@cd .. && bash scripts/check-one-library-spelling.sh
 	@cd .. && bash scripts/check-one-library-opener.sh
 	@cd .. && bash scripts/check-one-host-interrupt-guard.sh

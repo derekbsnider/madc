@@ -26,6 +26,7 @@ fi
 # header is reflected — an mtime-only prereq never sees a deletion) without
 # churning embedded_headers.o's mtime when nothing changed.
 TMPFILE="${OUTFILE}.tmp.$$"
+LISTFILE="${OUTFILE}.list.$$"
 OUTFILE_REAL="$OUTFILE"
 OUTFILE="$TMPFILE"
 
@@ -38,8 +39,14 @@ static std::map<std::string, std::string> embedded_headers = {
 HEADER
 
 first=1
+count=0
+# The file list goes through a file beside the output, never a process
+# substitution: `done < <(find ...)` reads /dev/fd/N, which a build root
+# without /proc lacks, and the loop then read nothing and wrote an EMPTY
+# table with exit 0 (the 22.04 chroot, 2026-10-12).
 emit_dir() {
     local dir="$1"
+    find "$dir" -type f | sort > "$LISTFILE"
     while IFS= read -r f; do
         [ -f "$f" ] || continue
         # skip generator scratch (write_on_change temporaries)
@@ -54,10 +61,20 @@ emit_dir() {
         printf 'R"EMBED(' >> "$OUTFILE"
         cat "$f" >> "$OUTFILE"
         printf ')EMBED"}' >> "$OUTFILE"
-    done < <(find "$dir" -type f | sort)
+        count=$((count + 1))
+    done < "$LISTFILE"
+    rm -f "$LISTFILE"
 }
 
 emit_dir "$SRCDIR"
+# include/madc/ always holds headers: none read means the list was lost, and
+# an empty table would link a madc with no embedded headers (the dialect
+# prelude included). Refuse it; the build removes the table and stops.
+if [ "$count" -eq 0 ]; then
+    echo "Error: no embedded header read from '$SRCDIR'; refusing an empty table" >&2
+    rm -f "$TMPFILE" "$LISTFILE"
+    exit 1
+fi
 if [ -n "$EXTRADIR" ]; then
     emit_dir "$EXTRADIR"
 fi
