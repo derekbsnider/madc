@@ -10,12 +10,12 @@ genuine-win	release	8b620b8fdc82	2026-10-11	1926/0/0TO/83skip — the FULL suite
 brew-linux	release	8b620b8fdc82	2026-10-12	2000/0/0TO/9skip - scripts/brew_lane.sh at 67766e242 content (bottle + pour + brew test, keg-masked runpath gate)
 interactive-win	release	4c4ad82b678b	2026-10-12	37 passed, 0 failed, 0 timed out, 6 skipped — win_suite.sh over interactive_lane.sh's tests/ subset on the owner Windows 11 box, the packed PE at 4c4ad82b6 content
 interactive-darwin	release	4c4ad82b678b	2026-10-12	arm64 Mac Mini 41/0/0TO/2skip + Intel MacBook 41/0/0TO/2skip — interactive_lane.sh's tests/ subset on the macOS packaged madc 0.104.0 at 4c4ad82b6 content; madcide 0.7.0 66/0 + Chthonia 0.1.0 check_install PASS on both
-c-testsuite	commit	b704a349d41d	2026-10-12	c-testsuite: 220 passed, 0 failed (0 outside baseline, 0 baseline tests now passing)
-c-torture	commit	b704a349d41d	2026-10-12	c-torture: 1617 passed, 2 compile-failed, 5 runtime-failed, 0 timed out, 61 skipped (--std=c17) c-torture: 7 failing, 0 outside baseline, 0 baseline tests now passing
-c2mir-tests	commit	b704a349d41d	2026-10-12	c2mir-tests: 368 passed, 0 failed, 4 skipped (0 outside baseline, 0 baseline tests now passing)
-gui	commit	b704a349d41d	2026-10-12	gui: 15 passed, 0 failed, 0 timed out, 0 skipped | EXE: 15 passed, 0 failed (of 15 JIT-passing tests) | OBJ: 15 passed, 0 failed (of 15 JIT-passing tests)
-gxx-c++11	no	b704a349d41d	2026-10-12	gxx-c++11: 1505 passed, 441 compile-failed, 0 runtime-failed, 0 timed out, 2722 skipped gxx-c++11: 441 failing, 0 outside baseline, 0 baseline tests now passing
-index-c	yes	b704a349d41d	2026-10-12	index-c: 50/50 tasks OK, 0 failed (rc=0) [-O2] — Summary: 83.9958s, 50, 50, 0
-commonmark	commit	b704a349d41d	2026-10-12	commonmark: 664 passed, 6 failed (of 670 examples) (0 outside baseline, 0 baseline examples now passing)
-tests-jit	batch	b704a349d41d	2026-10-12	2021/0/0TO/9skip (JIT, scripts/batch_lane.sh)
 interactive	yes	d6d78689a10a	2026-10-12	53/0/0TO/0skip + units 7/0 (scripts/interactive_lane.sh, Linux JIT)
+tests-jit	batch	cdaedde2351b	2026-10-13	2026 passed, 0 failed, 0 timed out, 9 skipped
+c-testsuite	commit	cdaedde2351b	2026-10-13	220 passed, 0 failed
+c-torture	commit	cdaedde2351b	2026-10-13	1617 passed, 7 failing, 0 outside baseline
+c2mir-tests	commit	cdaedde2351b	2026-10-13	368 passed, 0 failed, 4 skipped
+gui	commit	cdaedde2351b	2026-10-13	15 passed, 0 failed; EXE 15; OBJ 15
+gxx-c++11	no	cdaedde2351b	2026-10-13	1505 passed, 441 failing, 0 outside baseline
+index-c	yes	cdaedde2351b	2026-10-13	50/50 tasks OK
+commonmark	commit	cdaedde2351b	2026-10-13	664 passed, 6 failed, 0 outside baseline
