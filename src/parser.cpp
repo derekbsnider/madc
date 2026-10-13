@@ -27170,21 +27170,21 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
     // node reaches c2mir, exactly as record_typedef does on the live path,
     // parser.cpp ~22689).
 
-    // Item 5 (lazy defrost) + rung 2a: build the TU's demand verdicts BEFORE
-    // materialization. The B4a decl index is the demand key: a name DECLARED
-    // by some unit (source-level export; qualified + bare forms are both
-    // indexed) is kept iff one of its declaring units is in forest_chain_set —
-    // exactly the surface a live parse of the TU's includes would declare.
-    // A name in NO unit's index is a DERIVED entity (instantiation product,
-    // __oN overload symbol, madc-internal — the forest_index_oracle allowlist
+    // Item 5 (lazy defrost) + rung 2a: the TU's demand filter, built BEFORE
+    // materialization. The decl index is the demand key: a name DECLARED by
+    // some unit (source-level export; qualified + bare forms are both indexed)
+    // is kept iff one of its declaring units is in forest_chain_set — exactly
+    // the surface a live parse of the TU's includes would declare. A name in
+    // NO unit's index is a DERIVED entity (instantiation product, __oN
+    // overload symbol, madc-internal — the forest_index_oracle allowlist
     // classes) and is kept unconditionally: its creating machinery only runs
     // when its pattern/owner is reachable. An EMPTY closure (a direct restore
     // with no bound includes — unit tests, non-include consumers) keeps the
     // whole-container semantics. Registration (below) and materialization
-    // (the CirMaterializeFilter installed here) consume the SAME map — one
-    // predicate, two consumers (rung 2a moved the skip from "register fewer"
-    // to "never build the DataDefs at all").
-    std::unordered_map<madc::dis::istring, bool> swept_bound;
+    // read the SAME verdict owner (CirFrozenForest::name_verdict over the
+    // pack's DECL_NAMES index) against this filter — one predicate, two
+    // consumers (pack slices design §6).
+    //
     // Rung 3: the emission-side system-origin verdict for restored decls. A
     // restored TopDecl carries no parse position, so the referenced-surface
     // filter (translate_module) reads TopDecl.forest_system instead: true iff
@@ -27192,97 +27192,47 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
     // the same verdict a live parse's td.file would produce. A tmp/-grove
     // bind (the forest_bind_gate corpora) stays non-system → root → whole
     // surface, exactly like live.
-    std::unordered_map<madc::dis::istring, bool> swept_system;
     const bool forest_closure_filter = !forest_chain_set.empty();
-    // The demand filter this TU asks materialize_for to satisfy — inactive
-    // (whole container) when the closure is empty, else the verdict map the
-    // sweep below builds. S2: on a shared forest a later TU's wider verdicts
-    // union in and materialize incrementally.
     CirMaterializeFilter mf;
-    // S3: the verdict maps are a pure function of (instance, closure) within
-    // one compile group (sibling TUs share dialect config, and the system-path
-    // classification rides the instance's config key) — a sibling with the
-    // same closure adopts them and skips the all-units sweep.
-    std::shared_ptr<const MadcCompileGroup::DeclVerdicts> cached_verdicts;
-    std::pair<const void *, std::vector<uint32_t> > verdict_key;
-    if ( compile_group && forest_closure_filter )
-    {
-	verdict_key.first = (const void *)&forest;
-	verdict_key.second.assign(forest_chain_set.begin(),
-				  forest_chain_set.end());
-	std::map<std::pair<const void *, std::vector<uint32_t> >,
-		 std::shared_ptr<const MadcCompileGroup::DeclVerdicts> >
-	    ::const_iterator ci = compile_group->decl_verdicts.find(verdict_key);
-	if ( ci != compile_group->decl_verdicts.end() )
-	    cached_verdicts = ci->second;
-    }
     double _t_declidx0 = forest_restore_now();
-    if ( forest_closure_filter && !cached_verdicts )
-    {
-	std::vector<cir_forest_decl_entry> ents;
-	for ( uint32_t u = 0; u < forest.unit_count(); ++u )
-	{
-	    if ( !forest.unit_decl_index(u, ents) )
-		continue;
-	    bool bound = forest_chain_set.count(u) != 0;
-	    const char *upath = forest.unit_name(u);
-	    bool sys = bound && upath && is_system_header_path(upath);
-	    for ( size_t e = 0; e < ents.size(); ++e )
-	    {
-		const char *nm = forest.pool_str(ents[e].name_id);
-		if ( !nm || !*nm )
-		    continue;
-		// Env-gated probe (MADC_DECLIDX_PROBE=<substr>): dump matching
-		// declared-name index entries with their unit + bound verdict.
-		{
-		    static const char *dip = ::getenv("MADC_DECLIDX_PROBE");
-		    if ( dip && *dip && strstr(nm, dip) )
-			fprintf(stderr, "DECLIDX %s unit=%s bound=%d\n",
-				nm, upath ? upath : "?", (int)bound);
-		}
-		std::unordered_map<madc::dis::istring, bool>::iterator di =
-		    swept_bound.find(nm);
-		if ( di == swept_bound.end() )
-		    swept_bound[nm] = bound;
-		else if ( bound )
-		    di->second = true;
-		if ( sys )
-		    swept_system[nm] = true;
-	    }
-	}
-	if ( compile_group )
-	{
-	    std::shared_ptr<MadcCompileGroup::DeclVerdicts> dv =
-		std::make_shared<MadcCompileGroup::DeclVerdicts>();
-	    dv->bound.swap(swept_bound);
-	    dv->system.swap(swept_system);
-	    compile_group->decl_verdicts[verdict_key] = dv;
-	    cached_verdicts = dv;
-	}
-    }
-    _forest_declidx_seconds = forest_restore_now() - _t_declidx0;
-    // ONE name for the verdicts from here down, cached or freshly swept —
-    // every consumer below (mf, registration lambdas, rung 3) reads these.
-    const std::unordered_map<madc::dis::istring, bool> &forest_declared_bound =
-	cached_verdicts ? cached_verdicts->bound : swept_bound;
-    const std::unordered_map<madc::dis::istring, bool> &forest_declared_system =
-	cached_verdicts ? cached_verdicts->system : swept_system;
     if ( forest_closure_filter )
     {
 	mf.active = true;
-	mf.declared_bound = forest_declared_bound;
+	for ( std::set<uint32_t>::const_iterator it = forest_chain_set.begin();
+	      it != forest_chain_set.end(); ++it )
+	{
+	    mf.bound_units.insert(*it);
+	    const char *upath = forest.unit_name(*it);
+	    if ( upath && is_system_header_path(upath) )
+		mf.system_units.insert(*it);
+	}
+    }
+    _forest_declidx_seconds = forest_restore_now() - _t_declidx0;
+    // Env-gated probe (MADC_DECLIDX_PROBE=<substr>): dump matching
+    // declared-name index entries with their unit + bound verdict.
+    {
+	static const char *dip = ::getenv("MADC_DECLIDX_PROBE");
+	std::vector<cir_forest_decl_entry> ents;
+	for ( uint32_t u = 0; dip && *dip && u < forest.unit_count(); ++u )
+	{
+	    if ( !forest.unit_decl_index(u, ents) )
+		continue;
+	    const char *upath = forest.unit_name(u);
+	    for ( size_t e = 0; e < ents.size(); ++e )
+	    {
+		const char *nm = forest.pool_str(ents[e].name_id);
+		if ( nm && strstr(nm, dip) )
+		    fprintf(stderr, "DECLIDX %s unit=%s bound=%d\n",
+			    nm, upath ? upath : "?",
+			    (int)(forest_chain_set.count(u) != 0));
+	    }
+	}
     }
 
-    // Rung 3: the system-origin verdict lookup — qualified form first, then
-    // bare (a namespaced decl may be indexed only as "std::name"), the same
-    // discipline as forest_name_permitted / the rung-2a verdicts.
+    // Rung 3: the system-origin verdict lookup — bare first, then qualified
+    // (a namespaced decl may be indexed only as "std::name").
     auto declared_system = [&](const char *ns, const madc::dis::istring &name) -> bool {
-	if ( forest_declared_system.count(name) )
-	    return true;
-	if ( ns && *ns
-	  && forest_declared_system.count(std::string(ns) + "::" + name) )
-	    return true;
-	return false;
+	return forest.declared_system(name.c_str(), ns, mf);
     };
 
     const std::vector<CirRestoredType> &types = forest.materialize_for(mf);
@@ -27318,24 +27268,11 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	    last_tag[k] = i;
     }
 
-    // Registration's verdict lambdas read the map built above (one predicate,
-    // two consumers — see the rung-2a block before materialize_from_arena).
+    // Registration's verdicts: the forest's one owner against this TU's
+    // filter (see the rung-2a block before materialize_for).
     auto forest_name_verdict = [&](const madc::dis::istring &nm,
 				   const char *ns) -> int {
-	if ( !forest_closure_filter )
-	    return 1;
-	if ( ns && *ns )
-	{
-	    std::unordered_map<madc::dis::istring, bool>::const_iterator qi =
-		forest_declared_bound.find(std::string(ns) + "::" + nm);
-	    if ( qi != forest_declared_bound.end() )
-		return qi->second ? 1 : -1;
-	}
-	std::unordered_map<madc::dis::istring, bool>::const_iterator bi =
-	    forest_declared_bound.find(nm);
-	if ( bi != forest_declared_bound.end() )
-	    return bi->second ? 1 : -1;
-	return 0;		// unindexed = derived entity
+	return forest.name_verdict(nm.c_str(), ns, mf);
     };
     auto forest_name_permitted = [&](const madc::dis::istring &nm,
 				     const char *ns) -> bool {
@@ -27353,21 +27290,9 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
     // is handled where the run re-derives: the flush's default re-parse is
     // best-effort and skips a default whose referents the closure dropped.
     auto forest_product_permitted = [&](DataDef *dd) -> bool {
-	if ( !forest_closure_filter || !dd
-	  || dd->canonical_cpp_spelling().empty() )
+	if ( !dd || dd->canonical_cpp_spelling().empty() )
 	    return true;
-	const madc::dis::istring &cs = dd->canonical_cpp_spelling();
-	size_t lt = cs.find('<');
-	if ( lt == madc::dis::istring::npos )
-	    return true;
-	std::string head = cs.substr(0, lt);
-	while ( !head.empty() && head.back() == ' ' )
-	    head.pop_back();
-	std::unordered_map<madc::dis::istring, bool>::const_iterator hi =
-	    forest_declared_bound.find(head);
-	if ( hi != forest_declared_bound.end() )
-	    return hi->second;
-	return true;
+	return forest.head_verdict(dd->canonical_cpp_spelling().c_str(), mf) >= 0;
     };
 
     // A namespaced type (rt.ns != "") also registers into namespace_map[ns] +
@@ -28341,7 +28266,7 @@ Variable *Program::forest_adopt_declared_function(const madc::dis::istring &fnam
     CirMaterializeFilter want;
     want.active = true;
     want.exact = true;
-    want.declared_bound[fname] = true;
+    want.extra_names.insert(fname);
     f->materialize_for(want);
     const std::vector<CirRestoredFunc> &funcs = f->restored_funcs();
     const CirRestoredFunc *rf = NULL;

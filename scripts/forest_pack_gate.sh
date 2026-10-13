@@ -365,6 +365,33 @@ check_dump() {
 		fail "[$PROFILE] $missing listed header(s) are NOT units — a consumer's"
 		echo "       #include of each silently live-parses instead of binding." >&2
 	fi
+	check_pack_bytes "$dump"
+}
+
+# ---------------------------------------------------------------------------
+# PACK SIZE (pack slices design §8): the container's bytes (`bytes` in the
+# dump) may grow at most PACK_BYTES_ALLOWANCE past the profile's recorded
+# `pack-bytes` — the size owner-accepted for the seed index (2026-10-13:
+# +1.2 MB). A profile with no recorded size reports its bytes unjudged; a dump
+# with no `bytes` line under a recorded size is red (nothing was measured).
+# ---------------------------------------------------------------------------
+PACK_BYTES_ALLOWANCE=1200000
+check_pack_bytes() {
+	local dump="$1" bytes base
+	base=$(baseline_for "$PROFILE" pack-bytes)
+	bytes=$(awk -F'\t' '$1 == "bytes" { print $2; exit }' "$dump")
+	if [ "$base" -eq 0 ]; then
+		say "[$PROFILE] pack: ${bytes:-?} bytes (no recorded pack-bytes — unjudged)"
+		return
+	fi
+	if [ -z "$bytes" ]; then
+		fail "[$PROFILE] dump carries no 'bytes' line — the pack size was not measured: $dump"
+		return
+	fi
+	say "[$PROFILE] pack: $bytes bytes (recorded $base, cap $((base + PACK_BYTES_ALLOWANCE)))"
+	if [ "$bytes" -gt $((base + PACK_BYTES_ALLOWANCE)) ]; then
+		fail "[$PROFILE] the pack grew to $bytes bytes, past $base + $PACK_BYTES_ALLOWANCE"
+	fi
 }
 
 # ---------------------------------------------------------------------------
@@ -379,7 +406,7 @@ selftest() {
 	local dir="$ROOT/tmp" bl rc legs=0 bad=0
 	mkdir -p "$dir"
 	bl="$dir/fpgate_selftest_baseline.txt"
-	printf '# selftest baseline\n2 self pack-errors\n1 self closure-drops\n1 self dk-none\n1 self mir-blob-skips\n' > "$bl"
+	printf '# selftest baseline\n2 self pack-errors\n1 self closure-drops\n1 self dk-none\n1 self mir-blob-skips\n1000 self pack-bytes\n' > "$bl"
 
 	leg() {
 		# leg <name> <expect pass|fail> <gate args...>
@@ -452,7 +479,7 @@ selftest() {
 	#     and a guarded root matched by substring all satisfy their lists; a
 	#     listed header with no unit fails; and a list path that matches
 	#     nothing fails instead of verifying zero headers and passing.
-	printf 'forest\tunits=3\n' > "$dir/fpgate_st_dump.txt"
+	printf 'forest\tunits=3\nbytes\t1200900\n' > "$dir/fpgate_st_dump.txt"
 	printf 'unit\t1\tstdio.h\tx\n' >> "$dir/fpgate_st_dump.txt"
 	printf 'unit\t2\t/usr/include/c++/13/vector\tx\n' >> "$dir/fpgate_st_dump.txt"
 	printf 'unit\t3\t/usr/include/c++/13/bits/stl_algo.h\tx\n' >> "$dir/fpgate_st_dump.txt"
@@ -472,6 +499,14 @@ selftest() {
 	printf 'tor\n' > "$dir/fpgate_st_units_sub.txt"
 	leg "entry point is not a substring match" fail --dump "$dir/fpgate_st_dump.txt" \
 		--units-from "$dir/fpgate_st_units_sub.txt"
+	# The pack size: under the cap is GREEN (above), one byte past it is red, and
+	# a dump that never measured it is red.
+	sed 's/^bytes\t.*/bytes\t1201001/' "$dir/fpgate_st_dump.txt" > "$dir/fpgate_st_dump_big.txt"
+	leg "pack past the size cap" fail --dump "$dir/fpgate_st_dump_big.txt" \
+		--units-from "$dir/fpgate_st_units.txt"
+	grep -v '^bytes' "$dir/fpgate_st_dump.txt" > "$dir/fpgate_st_dump_nobytes.txt"
+	leg "pack size not measured" fail --dump "$dir/fpgate_st_dump_nobytes.txt" \
+		--units-from "$dir/fpgate_st_units.txt"
 
 	# 10: the token contract has ONE owner. scripts/mac_battery.sh must stay
 	#     self-contained (it runs on a Mac from a tarball), so it carries its

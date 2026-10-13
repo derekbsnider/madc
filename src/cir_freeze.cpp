@@ -1743,6 +1743,85 @@ void CirFrozenForest::bind_seed_index() const
 			_recordable_bits.bind((const uint32_t *)p, len / sizeof(uint32_t));
 }
 
+// Ascending, each value once.
+template <class V>
+static void forest_sort_unique(V &v)
+{
+	std::sort(v.begin(), v.end());
+	v.erase(std::unique(v.begin(), v.end()), v.end());
+}
+
+// Any unit of a declaring-unit run inside `units`.
+static bool forest_run_meets(const uint32_t *run, uint32_t n,
+			     const std::set<uint32_t> &units)
+{
+	for (uint32_t i = 0; i < n; ++i)
+		if (units.count(run[i]))
+			return true;
+	return false;
+}
+
+int CirFrozenForest::name_verdict(const char *nm, const char *ns,
+				  const CirMaterializeFilter &f) const
+{
+	if (!f.active)
+		return 1;
+	if (!nm || !*nm)
+		return 0;
+	const ForestDeclNames &dn = decl_names();
+	uint32_t n = 0;
+	if (ns && *ns) {
+		std::string q = std::string(ns) + "::" + nm;
+		if (!f.extra_names.empty() && f.extra_names.count(q))
+			return 1;
+		if (!f.exact) {
+			const uint32_t *run = dn.units_of(q.c_str(), n);
+			if (n)
+				return forest_run_meets(run, n, f.bound_units) ? 1 : -1;
+		}
+	}
+	if (!f.extra_names.empty() && f.extra_names.count(nm))
+		return 1;
+	if (!f.exact) {
+		const uint32_t *run = dn.units_of(nm, n);
+		if (n)
+			return forest_run_meets(run, n, f.bound_units) ? 1 : -1;
+	}
+	return f.exact ? -1 : 0;
+}
+
+int CirFrozenForest::head_verdict(const char *canon,
+				  const CirMaterializeFilter &f) const
+{
+	const char *lt = canon ? strchr(canon, '<') : NULL;
+	if (!lt)
+		return 1;
+	std::string head(canon, (size_t)(lt - canon));
+	while (!head.empty() && head[head.size() - 1] == ' ')
+		head.erase(head.size() - 1);
+	if (head.empty())
+		return !f.active ? 1 : f.exact ? -1 : 0;
+	return name_verdict(head.c_str(), NULL, f);
+}
+
+bool CirFrozenForest::declared_system(const char *nm, const char *ns,
+				      const CirMaterializeFilter &f) const
+{
+	if (!f.active || f.system_units.empty() || !nm || !*nm)
+		return false;
+	const ForestDeclNames &dn = decl_names();
+	uint32_t n = 0;
+	const uint32_t *run = dn.units_of(nm, n);
+	if (n && forest_run_meets(run, n, f.system_units))
+		return true;
+	if (ns && *ns) {
+		run = dn.units_of((std::string(ns) + "::" + nm).c_str(), n);
+		if (n && forest_run_meets(run, n, f.system_units))
+			return true;
+	}
+	return false;
+}
+
 bool CirFrozenForest::declares_function(const madc::dis::istring &name) const
 {
 	if (!_fn_index_bound) {
@@ -2111,120 +2190,214 @@ const char *CirFrozenForest::unit_name(uint32_t unit) const
 
 
 // Swizzle an arena type-id to the reconstructed DataDef*: a pinned primitive
-// resolves process-invariantly; anything else must be in by_id (aggregates
-// from pass 1, derived types from pass 1b).
-static DataDef *arena_swizzle(uint32_t tid,
-			      const std::map<uint32_t, DataDef *> &by_id)
+// resolves process-invariantly; an aggregate or enum is the object its pass
+// allocated; a DERIVED type builds here on its first use (pack slices design
+// §6). The retired pass 1b built every derived record of the arena up front;
+// derived objects are reachable only through this map, so building one on
+// first use yields the same object for every reader at a fraction of the work.
+DataDef *CirFrozenForest::swizzle(uint32_t tid) const
 {
 	if (tid && tid < MADC_TYPEID_PRIMITIVE_END)
 		return madc_type_from_id(tid);
-	std::map<uint32_t, DataDef *>::const_iterator it = by_id.find(tid);
-	return it != by_id.end() ? it->second : NULL;
+	std::map<uint32_t, DataDef *>::const_iterator it = _defs_by_tid.find(tid);
+	if (it != _defs_by_tid.end())
+		return it->second;
+	if (!tid || !madc::dis::arena_id_is_project(tid))
+		return NULL;
+	madc::dis::defrec r;
+	if (!_arena.get_def_at(tid, r))
+		return NULL;
+	switch (r.kind) {
+	case madc::dis::DK_PTR:
+	case madc::dis::DK_REF:
+	case madc::dis::DK_CONST:
+	case madc::dis::DK_CARRAY:
+	case madc::dis::DK_FPTR:
+	case madc::dis::DK_MEMBERPTR:
+		break;
+	default:
+		return NULL;	// aggregates and enums come from their passes
+	}
+	if (!_derived_building.insert(tid).second)
+		return NULL;	// a cycle through derived records alone
+	DataDef *d = build_derived(tid, r);
+	_derived_building.erase(tid);
+	if (!d) {
+		report_unresolved_derived(tid, r);
+		return NULL;
+	}
+	_mat_storage.push_back(d);
+	_defs_by_tid[tid] = d;
+	return d;
+}
+
+// One derived record over its operand (NULL while the operand does not
+// restore).
+DataDef *CirFrozenForest::build_derived(uint32_t tid, const madc::dis::defrec &r) const
+{
+	(void)tid;
+	const madc::dis::FrozenDefArena &a = _arena;
+	// v22: a DK_FPTR rebuilds its target signature (a declaration-only
+	// FuncDef from the DK_FUNC record) then DataDefFPTR.
+	if (r.kind == madc::dis::DK_FPTR) {
+		FuncDef *tfd = restore_signature(r.ref0);
+		if (!tfd)
+			return NULL;
+		DataDefFPTR *fpd = new DataDefFPTR(tfd);
+		fpd->ptr_syntax = (r.flags & madc::dis::DF_FPTR_PTR_SYNTAX) != 0;
+		if (r.name_id)
+			if (const char *nn = a.c_str(r.name_id))
+				fpd->name = nn;
+		return fpd;
+	}
+	// v53: a pointer to member — its owner as the parse resolved it (NULL
+	// when it had none, or when the owner did not restore: the spelling
+	// stays, as for an unresolved owner), then the member type or the
+	// signature.
+	if (r.kind == madc::dis::DK_MEMBERPTR) {
+		DataDef *owner = r.body_unit ? swizzle(r.body_unit) : NULL;
+		const char *on = r.disp_id ? a.c_str(r.disp_id) : NULL;
+		madc::dis::istring owner_name = on ? on : "";
+		DataDef *d;
+		if (r.flags & madc::dis::DF_MEMBERPTR_FUNCTION) {
+			FuncDef *tfd = restore_signature(r.ref0);
+			if (!tfd)
+				return NULL;
+			d = new DataDefMemberFnPtr(owner, owner_name, tfd,
+				(r.flags & madc::dis::DF_MEMBERPTR_CONST_METHOD) != 0);
+		} else {
+			DataDef *member = swizzle(r.ref0);
+			if (!member)
+				return NULL;
+			d = new DataDefMemberPtr(owner, owner_name, *member);
+		}
+		if (r.name_id)
+			if (const char *nn = a.c_str(r.name_id))
+				d->name = nn;
+		return d;
+	}
+	DataDef *operand = swizzle(r.ref0);
+	if (!operand)
+		return NULL;	// operand outside the restored set
+	if (r.kind == madc::dis::DK_REF)
+		return new DataDefREF(*operand, (r.flags & 1u) != 0);
+	if (r.kind == madc::dis::DK_CONST)
+		// The cv mask rides flags; a pre-mask record (0) was const.
+		return new DataDefQUAL(*operand, r.flags ? r.flags : cvCONST);
+	if (r.kind == madc::dis::DK_CARRAY) {
+		// v25: rebuild the fixed-size array VERBATIM (name + folded
+		// count; a runtime-sized array is never recorded).
+		uint64_t cnt = (uint64_t)r.carray_count_lo
+			     | ((uint64_t)r.carray_count_hi << 32);
+		const char *an = r.name_id ? a.c_str(r.name_id) : NULL;
+		return new DataDefCArray(*operand,
+					 an ? madc::dis::istring(an) : operand->name,
+					 (size_t)cnt, NULL);
+	}
+	return new DataDefPTR(*operand);
+}
+
+// Permanent -v diagnostic: every DERIVED type asked for that did NOT build.
+// arena_chain_ok admits an fn-ptr chain unconditionally ("the target
+// signature never gates member layout"), but its build can still fail — and
+// pass 2 then drops every aggregate with such a member. Without naming it here
+// the loss surfaces only as a class that is simply absent, layers later (task
+// #64: std::ios_base died on `event_callback *__fn_`, and took the whole
+// iostream family with it). An EXACT pass asks only for what one name needs —
+// nothing to census.
+void CirFrozenForest::report_unresolved_derived(uint32_t tid,
+						const madc::dis::defrec &r) const
+{
+	DBG(do {
+		if (_mat_filter.exact)
+			break;
+		// Once per forest, across widened re-passes (see the member).
+		if (!_derived_unresolved_reported.insert(tid).second)
+			break;
+		const madc::dis::FrozenDefArena &a = _arena;
+		// Built already (a pinned primitive, or in the map) — the reader
+		// below names the first operand that is not, without building.
+		auto built = [&](uint32_t id) -> bool {
+			return (id && id < MADC_TYPEID_PRIMITIVE_END)
+			       || _defs_by_tid.count(id) != 0;
+		};
+		const char *dk = NULL;
+		if (r.kind == madc::dis::DK_PTR)		dk = "ptr";
+		else if (r.kind == madc::dis::DK_REF)		dk = "ref";
+		else if (r.kind == madc::dis::DK_CONST)		dk = "const";
+		else if (r.kind == madc::dis::DK_CARRAY)	dk = "carray";
+		else if (r.kind == madc::dis::DK_FPTR)		dk = "fptr";
+		else if (r.kind == madc::dis::DK_MEMBERPTR)	dk = "memberptr";
+		if (!dk)
+			break;
+		std::string why;
+		// A member-function pointer's ref0 is a signature, as a fn-ptr's.
+		if (r.kind == madc::dis::DK_FPTR
+		    || (r.kind == madc::dis::DK_MEMBERPTR
+			&& (r.flags & madc::dis::DF_MEMBERPTR_FUNCTION))) {
+			madc::dis::defrec fr;
+			if (!r.ref0 || !madc::dis::arena_id_is_project(r.ref0)
+			    || !a.get_def_at(r.ref0, fr)
+			    || fr.kind != madc::dis::DK_FUNC)
+				why = "no signature record";
+			else if (!built(fr.ref0))
+				why = "return type";
+			else
+				for (uint32_t p = 0; p < fr.params_count; ++p) {
+					madc::dis::paramrec pr;
+					if (a.get_payload(fr.params_begin, p, pr)
+					    && built(pr.type_id))
+						continue;
+					why = "param #" + std::to_string(p)
+					    + " tid=" + std::to_string(pr.type_id);
+					madc::dis::defrec pd;
+					if (!a.get_def_at(pr.type_id, pd))
+						why += " (no record)";
+					else {
+						why += " kind=" + std::to_string((int)pd.kind);
+						if (pd.name_id && a.c_str(pd.name_id))
+							why += std::string(" ")
+							     + a.c_str(pd.name_id);
+					}
+					break;
+				}
+		} else {
+			// Spell the operand's record kind, exactly like the fn-ptr
+			// param arm above. An id whose record is DK_NONE (kind=0)
+			// is task #64's fingerprint — stamped by
+			// forest_serialize_type_id as a cross-reference, never
+			// written by any record walk — and `kind=0` is the token
+			// the pack degradation gate ratchets. A DK_NONE operand
+			// printed as a bare "operand" would read like the routine
+			// outside-the-closure case.
+			madc::dis::defrec od;
+			why = "operand";
+			if (!r.ref0 || !a.get_def_at(r.ref0, od))
+				why += " (no record)";
+			else {
+				why += " kind=" + std::to_string((int)od.kind);
+				if (od.name_id && a.c_str(od.name_id))
+					why += std::string(" ")
+					     + a.c_str(od.name_id);
+			}
+		}
+		std::cout << "materialize derived: UNRESOLVED " << dk << " "
+			  << (r.name_id && a.c_str(r.name_id)
+			      ? a.c_str(r.name_id) : "?")
+			  << " (" << why << ")" << std::endl;
+	} while (0));
 }
 
 DataDef *CirFrozenForest::restored_def_by_tid(uint32_t tid) const
 {
-	return arena_swizzle(tid, _defs_by_tid);
+	return swizzle(tid);
 }
 
-// Recordability closure — the v6 save-side fixpoint reproduced at load as
-// a pure analysis over the records: an aggregate is recordable iff every
-// member's type chain resolves (self allowed), every base is recordable
-// (base-before-derived) and every anonymous sub-aggregate is recordable.
-// v22 (iostream): POLYMORPHIC classes (vtable / vptr slot) and
-// virtual-base-carrying classes are ADMITTED — the records carry the full
-// vtable state (own_block_off, vbaserec runs, vgrouprec runs) and pass 2
-// restores it verbatim. A union-layout class (a union with member functions:
-// libstdc++'s _Any_data, std::function's buffer) is admitted too: its members
-// overlap by their recorded offsets, restored verbatim.
-struct ForestRecordable {
-	std::vector<uint32_t> agg_ids;	// slot order == id-stamp order
-	std::set<uint32_t> recordable;
-	// Per-kind SLOT lists, filled by the same one-scan-per-blob builder:
-	// the materialize passes and the seed walk iterate exactly their kind
-	// instead of re-scanning every slot per pass per generation (the -O2
-	// profile's materialize_pass self cost was 6+ full-arena scans per
-	// generation). Slot values feed madc::dis::arena_id_of.
-	std::vector<uint32_t> typedef_slots;	// DK_TYPEDEF
-	std::vector<uint32_t> enum_slots;	// DK_ENUM
-	std::vector<uint32_t> derived_slots;	// DK_PTR/REF/CONST/CARRAY/FPTR/MEMBERPTR
-	std::vector<uint32_t> ns_slots;		// DK_NSLINK/NSBIND/DEFBODY
-	std::vector<uint32_t> free_func_slots;	// DK_FUNC with DF_IS_FREE_FUNC
-	// Max __anon_N across named records — the anon-tag gensym floor the
-	// restore advances to. A pure blob function; the per-restore full-arena
-	// scan moved here.
-	size_t max_anon_tag = 0;
-};
-
-// Process-level recordability cache (the S1 decoded-segment doctrine): the
-// fixpoint is a PURE function of the frozen arena bytes — identical for
-// every Program that binds the same blob — so an 11-TU launch computes it
-// once, not once per TU. Same thread contract as the segment cache:
-// mutex-guarded map, entries immutable after insertion and never evicted
-// (process lifetime), so const refs into them can never dangle.
-static const ForestRecordable &forest_recordable_cached(
-	const void *blob_key, const madc::dis::FrozenDefArena &a)
-{
-	static std::mutex mu;
-	static std::map<const void *, ForestRecordable> cache;
-	std::lock_guard<std::mutex> lk(mu);
-	std::map<const void *, ForestRecordable>::iterator it =
-		cache.find(blob_key);
-	if (it != cache.end())
-		return it->second;
-	ForestRecordable e;
-	uint32_t nslots = a.def_slots();
-	for (uint32_t s = 0; s < nslots; ++s) {
-		uint32_t tid = madc::dis::arena_id_of(s);
-		madc::dis::defrec r;
-		if (!a.get_def_at(tid, r))
-			continue;
-		switch (r.kind) {
-		case madc::dis::DK_TYPEDEF:
-			e.typedef_slots.push_back(s);
-			break;
-		case madc::dis::DK_ENUM:
-			e.enum_slots.push_back(s);
-			break;
-		case madc::dis::DK_PTR:
-		case madc::dis::DK_REF:
-		case madc::dis::DK_CONST:
-		case madc::dis::DK_CARRAY:
-		case madc::dis::DK_FPTR:
-		case madc::dis::DK_MEMBERPTR:
-			e.derived_slots.push_back(s);
-			break;
-		case madc::dis::DK_NSLINK:
-		case madc::dis::DK_NSBIND:
-		case madc::dis::DK_NSALIAS:
-		case madc::dis::DK_DEFBODY:
-			e.ns_slots.push_back(s);
-			break;
-		case madc::dis::DK_FUNC:
-			if (r.flags & madc::dis::DF_IS_FREE_FUNC)
-				e.free_func_slots.push_back(s);
-			break;
-		default:
-			break;
-		}
-		if (r.kind != madc::dis::DK_NONE && r.name_id) {
-			size_t n = arena_anon_tag_of(a.c_str(r.name_id));
-			if (n > e.max_anon_tag)
-				e.max_anon_tag = n;
-		}
-		if (arena_recordable_candidate(r))
-			e.agg_ids.push_back(tid);
-	}
-	arena_recordable_fixpoint(a, e.agg_ids, e.recordable);
-	return cache.emplace(blob_key, std::move(e)).first->second;
-}
-
-// The anon-tag gensym floor: max __anon_N across the arena's named records —
-// a pure blob function served from the process-level recordability cache
-// (the per-restore full-arena scan moved into its one-scan builder).
+// The anon-tag gensym floor: max __anon_N across the arena's named records,
+// computed once at freeze (RECORDABLE's header word).
 size_t CirFrozenForest::max_restored_anon_tag()
 {
-	return forest_recordable_cached(_reader.blob_base(), _arena).max_anon_tag;
+	return recordable_bits().max_anon_tag();
 }
 
 const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
@@ -2237,10 +2410,11 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 }
 
 // S2 (R4-lite): monotone widening — see the declaration. The union is per
-// name: a bound verdict (true) absorbs an unbound one (false); a key only
-// `want` carries is inserted ONLY when true (an absent key already reads as
-// unindexed = derived = kept, so inserting false would NARROW, never widen).
-// Growth = any false -> true flip, or widening to the whole container.
+// unit and per name. Growth = a bound unit the installed filter lacks, exact ->
+// closure, widening to the whole container, or an asked-for name the current
+// filter judges declared-only-by-unbound-units (one it already keeps — a bound
+// or undeclared name under a closure filter — changes nothing; under an exact
+// filter every new name is growth).
 const std::vector<CirRestoredType> &CirFrozenForest::materialize_for(
 	const CirMaterializeFilter &want)
 {
@@ -2258,31 +2432,26 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_for(
 		_mat_filter.exact = false;
 		grew = true;
 	} else {
-		// exact -> non-exact is a widening (unindexed records join).
+		for (std::set<madc::dis::istring>::const_iterator it =
+		     want.extra_names.begin(); it != want.extra_names.end(); ++it) {
+			if (_mat_filter.extra_names.count(*it))
+				continue;
+			if (_mat_filter.exact
+			    || name_verdict(it->c_str(), NULL, _mat_filter) < 0)
+				grew = true;
+			_mat_filter.extra_names.insert(*it);
+		}
+		// exact -> closure is a widening (unindexed records join).
 		if (_mat_filter.exact && !want.exact) {
 			_mat_filter.exact = false;
 			grew = true;
 		}
-		for (std::unordered_map<madc::dis::istring, bool>::const_iterator it =
-		     want.declared_bound.begin();
-		     it != want.declared_bound.end(); ++it) {
-			if (!it->second)
-				continue;
-			std::unordered_map<madc::dis::istring, bool>::iterator oi =
-				_mat_filter.declared_bound.find(it->first);
-			if (oi == _mat_filter.declared_bound.end()) {
-				_mat_filter.declared_bound[it->first] = true;
-				// A NEW name is growth only under exact: a closure
-				// filter had already built every unindexed record,
-				// an exact one built none it was not asked for.
-				if (_mat_filter.exact)
-					grew = true;
-			}
-			else if (!oi->second) {
-				oi->second = true;
+		for (std::set<uint32_t>::const_iterator it = want.bound_units.begin();
+		     it != want.bound_units.end(); ++it)
+			if (_mat_filter.bound_units.insert(*it).second)
 				grew = true;
-			}
-		}
+		_mat_filter.system_units.insert(want.system_units.begin(),
+						want.system_units.end());
 	}
 	if (grew)
 		materialize_pass();
@@ -2304,30 +2473,25 @@ static void restore_param(FuncDef *fd, DataDef *pd,
 	fd->param_cpp_spellings.push_back(sp ? sp : "");
 }
 
-// A callable's SIGNATURE from its DK_FUNC record (a fn-ptr's target, a member-
-// function pointer's): a declaration-only FuncDef, return + params through the
-// same swizzle. NULL when the record is not a DK_FUNC, or while a signature
-// type is not built yet (pass 1b's fixpoint retries).
-static FuncDef *restore_signature(uint32_t func_tid,
-				  const madc::dis::FrozenDefArena &a,
-				  const std::map<uint32_t, DataDef *> &by_id,
-				  std::vector<DataDef *> &storage)
+// A callable's SIGNATURE (see the declaration).
+FuncDef *CirFrozenForest::restore_signature(uint32_t func_tid) const
 {
+	const madc::dis::FrozenDefArena &a = _arena;
 	madc::dis::defrec fr;
 	if (!func_tid || !madc::dis::arena_id_is_project(func_tid)
 	    || !a.get_def_at(func_tid, fr) || fr.kind != madc::dis::DK_FUNC)
 		return NULL;
-	DataDef *ret = arena_swizzle(fr.ref0, by_id);
+	DataDef *ret = swizzle(fr.ref0);
 	if (!ret)
 		return NULL;
 	std::vector<DataDef *> ps(fr.params_count);
 	std::vector<madc::dis::paramrec> prs(fr.params_count);
 	for (uint32_t p = 0; p < fr.params_count; ++p)
 		if (!a.get_payload(fr.params_begin, p, prs[p])
-		    || !(ps[p] = arena_swizzle(prs[p].type_id, by_id)))
+		    || !(ps[p] = swizzle(prs[p].type_id)))
 			return NULL;
 	FuncDef *tfd = new FuncDef(*ret);
-	storage.push_back(tfd);
+	_mat_storage.push_back(tfd);
 	for (uint32_t p = 0; p < fr.params_count; ++p)
 		restore_param(tfd, ps[p], prs[p], a);
 	tfd->is_varargs = (fr.flags & madc::dis::DF_IS_VARARGS) != 0;
@@ -2350,19 +2514,106 @@ void CirFrozenForest::materialize_pass()
 	// restore.
 	const madc::dis::FrozenDefArena &a = _arena;
 
-	// Pass 0 (recordability) comes from the process cache — one fixpoint
-	// per blob per process, shared by every TU Program that binds it.
-	const ForestRecordable &rec0 =
-		forest_recordable_cached(_reader.blob_base(), a);
-	const std::vector<uint32_t> &agg_ids = rec0.agg_ids;
-	const std::set<uint32_t> &recordable = rec0.recordable;
-	// Per-kind slot lists from the same blob cache — each pass below walks
-	// exactly its kind (the full-arena rescans were the profile's cost).
-	const std::vector<uint32_t> &typedef_slots = rec0.typedef_slots;
-	const std::vector<uint32_t> &enum_slots = rec0.enum_slots;
-	const std::vector<uint32_t> &derived_slots = rec0.derived_slots;
-	const std::vector<uint32_t> &ns_slots = rec0.ns_slots;
-	const std::vector<uint32_t> &free_func_slots = rec0.free_func_slots;
+	// Pass 0 — what this generation VISITS (pack slices design §6). Under a
+	// closure filter with the pack's seed index: the seed lists of the
+	// bound units and of the units declaring a name the filter asks for,
+	// plus the always list — and, once admission settles, the dependents
+	// of every admitted class. Otherwise every record, one slot scan (no
+	// filter, a container without seeds, an asked-for name no unit
+	// declares, or the oracle MADC_FOREST_WHOLE_WALK=1 the seed-parity gate
+	// compares against).
+	// Candidate lists ascend (slot / record order == the whole walk's), so
+	// every pass below restores in the order the whole walk did.
+	std::vector<uint32_t> agg_ids;		// candidate aggregate TIDS
+	std::vector<uint32_t> typedef_slots, enum_slots, ns_slots, free_func_slots;
+	std::vector<size_t> tmpl_idx, glob_idx;	// template / global record indices
+	const ForestRecordableBits &rbits = recordable_bits();
+	const ForestSeeds &sd = seeds();
+	static const char *whole_walk_env = ::getenv("MADC_FOREST_WHOLE_WALK");
+	bool seeded = _mat_filter.active && !sd.empty()
+		    && sd.lists() == unit_count() + 1
+		    && !(whole_walk_env && whole_walk_env[0] == '1');
+	std::set<uint32_t> seed_lists;
+	if (seeded) {
+		for (std::set<uint32_t>::const_iterator it =
+		     _mat_filter.bound_units.begin();
+		     it != _mat_filter.bound_units.end(); ++it)
+			if (*it < unit_count())
+				seed_lists.insert(*it);
+		for (std::set<madc::dis::istring>::const_iterator it =
+		     _mat_filter.extra_names.begin();
+		     seeded && it != _mat_filter.extra_names.end(); ++it) {
+			uint32_t n = 0;
+			const uint32_t *run = decl_names().units_of(it->c_str(), n);
+			if (!n)
+				seeded = false;	// no unit to visit it from
+			seed_lists.insert(run, run + n);
+		}
+		seed_lists.insert(sd.always());
+	}
+	// One arena slot into its kind's list.
+	auto bucket_slot = [&](uint32_t s) {
+		madc::dis::defrec r;
+		if (!a.get_def_at(madc::dis::arena_id_of(s), r))
+			return;
+		switch (r.kind) {
+		case madc::dis::DK_STRUCT:
+		case madc::dis::DK_UNION:
+		case madc::dis::DK_CLASS:
+			if (arena_recordable_candidate(r))
+				agg_ids.push_back(madc::dis::arena_id_of(s));
+			break;
+		case madc::dis::DK_TYPEDEF:
+			typedef_slots.push_back(s);
+			break;
+		case madc::dis::DK_ENUM:
+			enum_slots.push_back(s);
+			break;
+		case madc::dis::DK_NSLINK:
+		case madc::dis::DK_NSBIND:
+		case madc::dis::DK_NSALIAS:
+		case madc::dis::DK_DEFBODY:
+			ns_slots.push_back(s);
+			break;
+		case madc::dis::DK_FUNC:
+			if (r.flags & madc::dis::DF_IS_FREE_FUNC)
+				free_func_slots.push_back(s);
+			break;
+		default:
+			break;
+		}
+	};
+	if (seeded) {
+		std::vector<uint32_t> slots;
+		for (std::set<uint32_t>::const_iterator it = seed_lists.begin();
+		     it != seed_lists.end(); ++it) {
+			ForestSeeds::Run ar = sd.arena(*it);
+			slots.insert(slots.end(), ar.p, ar.p + ar.n);
+			ForestSeeds::Run tr = sd.templates(*it);
+			tmpl_idx.insert(tmpl_idx.end(), tr.p, tr.p + tr.n);
+			ForestSeeds::Run gr = sd.globals(*it);
+			glob_idx.insert(glob_idx.end(), gr.p, gr.p + gr.n);
+		}
+		forest_sort_unique(slots);
+		forest_sort_unique(tmpl_idx);
+		forest_sort_unique(glob_idx);
+		for (size_t i = 0; i < slots.size(); ++i)
+			bucket_slot(slots[i]);
+	} else {
+		for (uint32_t s = 0, n = a.def_slots(); s < n; ++s)
+			bucket_slot(s);
+		for (size_t i = 0; i < _templates.size(); ++i)
+			tmpl_idx.push_back(i);
+		for (size_t i = 0; i < _globals.size(); ++i)
+			glob_idx.push_back(i);
+	}
+	// Recordability: frozen with the pack (RECORDABLE — the fixpoint the
+	// freeze ran, cir_arena_recordable.h) — a set view (count) so
+	// arena_chain_ok reads it like the fixpoint's set.
+	struct RecordableView {
+		const ForestRecordableBits *bits;
+		size_t count(uint32_t tid) const { return bits->recordable(tid); }
+	} recordable = { &rbits };
 
 	// Permanent -v diagnostic (the load-side twin of the freeze-completeness
 	// probe): name every candidate aggregate the closure DROPPED and the
@@ -2408,27 +2659,13 @@ void CirFrozenForest::materialize_pass()
 
 	// Rung 2a (closure-filtered materialization): with a demand filter
 	// installed, only records the TU's bound-include closure declares build
-	// DataDefs. Verdicts mirror the item-5 registration filter EXACTLY
-	// (forest_restore_decls): qualified ns::name first, then bare name;
-	// unindexed = derived entity = keep; a `<`-bearing canonical spelling is
-	// judged by its HEAD (the declaring template's name). Tri-state so the
-	// free-function walk below can reproduce registration's display-name
-	// refinement (which applies only when the primary key is UNINDEXED).
+	// DataDefs. Every verdict is the forest's one owner (name_verdict /
+	// head_verdict) against the installed filter — the predicate
+	// registration applies too. Tri-state so the free-function walk below
+	// can reproduce registration's display-name refinement (which applies
+	// only when the primary key is UNINDEXED). Memoized per generation.
 	auto verdict_str = [&](const char *nm, const char *ns) -> int {
-		// +1 declared by a bound unit, -1 declared only by unbound units,
-		// 0 unindexed (derived entity)
-		if (!nm || !*nm)
-			return 0;
-		const std::unordered_map<madc::dis::istring, bool> &db =
-			_mat_filter.declared_bound;
-		std::unordered_map<madc::dis::istring, bool>::const_iterator it = db.end();
-		if (ns && *ns)
-			it = db.find(std::string(ns) + "::" + nm);
-		if (it == db.end())
-			it = db.find(nm);
-		if (it != db.end())
-			return it->second ? 1 : -1;
-		return _mat_filter.exact ? -1 : 0;	// exact: unindexed = not asked for
+		return CirFrozenForest::name_verdict(nm, ns, _mat_filter);
 	};
 	std::unordered_map<uint64_t, int> verdict_memo;
 	auto name_verdict = [&](uint32_t name_id, uint32_t ns_id) -> int {
@@ -2444,7 +2681,7 @@ void CirFrozenForest::materialize_pass()
 		verdict_memo[key] = v;
 		return v;
 	};
-	std::unordered_map<madc::dis::istring, int> head_memo;
+	std::unordered_map<uint32_t, int> head_memo;
 	auto record_kept = [&](const madc::dis::defrec &r) -> bool {
 		if (!_mat_filter.active)
 			return true;
@@ -2462,23 +2699,11 @@ void CirFrozenForest::materialize_pass()
 			return false;
 		if (!r.canon_id)
 			return true;
-		const char *cs = a.c_str(r.canon_id);
-		const char *lt = cs ? strchr(cs, '<') : NULL;
-		if (!lt)
-			return true;
-		std::string head(cs, (size_t)(lt - cs));
-		while (!head.empty() && head[head.size() - 1] == ' ')
-			head.erase(head.size() - 1);
-		std::unordered_map<madc::dis::istring, int>::iterator hi =
-			head_memo.find(head);
-		if (hi == head_memo.end()) {
-			std::unordered_map<madc::dis::istring, bool>::const_iterator di =
-				_mat_filter.declared_bound.find(head);
-			int hv = di == _mat_filter.declared_bound.end()
-				 ? (_mat_filter.exact ? -1 : 0)
-				 : (di->second ? 1 : -1);
-			hi = head_memo.insert(std::make_pair(head, hv)).first;
-		}
+		std::unordered_map<uint32_t, int>::iterator hi =
+			head_memo.find(r.canon_id);
+		if (hi == head_memo.end())
+			hi = head_memo.insert(std::make_pair(r.canon_id,
+				head_verdict(a.c_str(r.canon_id), _mat_filter))).first;
 		return hi->second >= 0;
 	};
 
@@ -2586,17 +2811,24 @@ void CirFrozenForest::materialize_pass()
 				}
 			}
 		}
-		for (size_t i = 0; i < _globals.size(); ++i) {
+		// A file-scope global the filter keeps chases its type.
+		auto seed_global = [&](size_t i) {
 			const cir_forest_global_record &g = _globals[i];
 			if (g.gflags & CIR_GLOBALF_TU_ROOT)
-				continue;
+				return;
 			uint32_t nl = 0, sl = 0;
 			const char *nm = pool_cstr(g.name_id, nl);
 			const char *ns = g.ns_id ? pool_cstr(g.ns_id, sl) : NULL;
 			if (verdict_str(nm, ns) >= 0)
 				tq.push_back(g.type_id);
-		}
-		for (size_t i = 0; i < _templates.size(); ++i) {
+		};
+		for (size_t gi = 0; gi < glob_idx.size(); ++gi)
+			if (glob_idx[gi] < _globals.size())
+				seed_global(glob_idx[gi]);
+		for (size_t ti = 0; ti < tmpl_idx.size(); ++ti) {
+			size_t i = tmpl_idx[ti];
+			if (i >= _templates.size())
+				continue;
 			const cir_forest_template_record &t = _templates[i];
 			if ((t.flags & CIR_TMPLF_TU_ROOT) || !t.owner_type_id)
 				continue;
@@ -2727,6 +2959,42 @@ void CirFrozenForest::materialize_pass()
 		// base chain already resolves inside the admitted set (true
 		// exactly when its owner's world materialized), then drain the
 		// pulls it opens; iterate to a fixpoint.
+		//
+		// Seeded: the dependents of each admitted class (pack slices
+		// design §3 — a method-keyed import, deferred body or namespace-
+		// scope Variable, a member template: each restores exactly when
+		// its owner class does) join the candidates once the owner is
+		// admitted, and a dependent global chases its type like a seeded
+		// one. Same fixpoint.
+		std::set<uint32_t> deps_done;
+		auto add_dependents = [&]() -> bool {
+			if (!seeded)
+				return false;
+			bool pushed = false;
+			for (std::set<uint32_t>::const_iterator it = admitted.begin();
+			     it != admitted.end(); ++it) {
+				if (!deps_done.insert(*it).second)
+					continue;
+				ForestSeeds::Run dr =
+					sd.dependents(madc::dis::arena_slot_of(*it));
+				for (uint32_t k = 0; k < dr.n; ++k) {
+					uint32_t kind = dr.p[k] >> 30;
+					uint32_t idx = dr.p[k] & 0x3fffffffu;
+					if (kind == CIR_SEED_DEP_ARENA)
+						bucket_slot(idx);
+					else if (kind == CIR_SEED_DEP_TEMPLATE)
+						tmpl_idx.push_back(idx);
+					else if (kind == CIR_SEED_DEP_GLOBAL
+						 && idx < _globals.size()) {
+						glob_idx.push_back(idx);
+						size_t before = tq.size();
+						seed_global(idx);
+						pushed = pushed || tq.size() != before;
+					}
+				}
+			}
+			return pushed;
+		};
 		for (bool fnl_grew = true; fnl_grew; ) {
 			fnl_grew = false;
 			for (size_t i = 0; i < agg_ids.size(); ++i) {
@@ -2757,14 +3025,33 @@ void CirFrozenForest::materialize_pass()
 				work.push_back(tid);
 				fnl_grew = true;
 			}
+			if (add_dependents())
+				fnl_grew = true;
 			if (fnl_grew)
 				drain_pulls();
 		}
+		// Enums an admitted record's chain pulled restore even when no
+		// candidate list carries them.
+		for (std::set<uint32_t>::const_iterator it = pulled_enums.begin();
+		     it != pulled_enums.end(); ++it)
+			if (madc::dis::arena_id_is_project(*it))
+				enum_slots.push_back(madc::dis::arena_slot_of(*it));
+		if (seeded || !pulled_enums.empty()) {
+			// Dependents and pulls joined after the seed lists: back
+			// to the whole walk's order.
+			forest_sort_unique(ns_slots);
+			forest_sort_unique(typedef_slots);
+			forest_sort_unique(enum_slots);
+			forest_sort_unique(free_func_slots);
+			forest_sort_unique(tmpl_idx);
+			forest_sort_unique(glob_idx);
+		}
 		DBG(std::cout << "materialize filter: " << admitted.size()
-			      << " of " << recordable.size()
-			      << " recordable aggregates admitted ("
-			      << pulled_enums.size() << " enums pulled)"
-			      << std::endl);
+			      << " of " << agg_ids.size()
+			      << " candidate aggregates admitted ("
+			      << pulled_enums.size() << " enums pulled, "
+			      << (seeded ? seed_lists.size() : 0)
+			      << " seed lists)" << std::endl);
 	}
 
 	// Pass 1: allocate a DataDef per recordable aggregate, so forward member /
@@ -2775,11 +3062,14 @@ void CirFrozenForest::materialize_pass()
 	// S2: this generation's fresh aggregate allocations — pass 2 fills
 	// exactly these (earlier generations already filled theirs).
 	std::set<uint32_t> fresh_aggs;
-	for (size_t i = 0; i < agg_ids.size(); ++i) {
-		uint32_t tid = agg_ids[i];
+	// Under a filter: the admitted set (seeds plus every pull, which can
+	// reach past the candidate lists); ascending tids = slot order.
+	std::vector<uint32_t> admitted_ids(admitted.begin(), admitted.end());
+	const std::vector<uint32_t> &pass1_ids =
+		_mat_filter.active ? admitted_ids : agg_ids;
+	for (size_t i = 0; i < pass1_ids.size(); ++i) {
+		uint32_t tid = pass1_ids[i];
 		if (!recordable.count(tid))
-			continue;
-		if (_mat_filter.active && !admitted.count(tid))
 			continue;
 		if (by_id.count(tid))
 			continue;	// built by an earlier generation
@@ -2845,7 +3135,7 @@ void CirFrozenForest::materialize_pass()
 		// type the live parse emitted ([dcl.enum]p8; libc++
 		// `enum class : uint8_t`, a packed enum, a 64-bit range).
 		if (r.ref0)
-			if (DataDef *u = arena_swizzle(r.ref0, by_id))
+			if (DataDef *u = swizzle(r.ref0))
 			{
 				edd->underlying = u;
 				edd->fixed_base =
@@ -2862,189 +3152,6 @@ void CirFrozenForest::materialize_pass()
 		_mat_storage.push_back(edd);
 		by_id[tid] = edd;
 	}
-
-	// Pass 1b: derived types (pointer / reference / const / fn-ptr), operand-
-	// before-derived fixpoint — chains and the self-referential pointer resolve.
-	bool dprog = true;
-	while (dprog) {
-		dprog = false;
-		for (size_t bi = 0; bi < derived_slots.size(); ++bi) {
-			uint32_t tid = madc::dis::arena_id_of(derived_slots[bi]);
-			if (by_id.count(tid))
-				continue;
-			madc::dis::defrec r;
-			if (!a.get_def_at(tid, r))
-				continue;
-			// v22: a DK_FPTR rebuilds its target signature (a
-			// declaration-only FuncDef from the DK_FUNC record — return
-			// + params through the same swizzle) then DataDefFPTR.
-			// A signature type not ready this round retries; one that
-			// never resolves cleanly lacks (its dependents drop with
-			// the closure diagnostic naming the member).
-			if (r.kind == madc::dis::DK_FPTR) {
-				FuncDef *tfd = restore_signature(r.ref0, a, by_id,
-								 _mat_storage);
-				if (!tfd)
-					continue;	// not ready this round
-				DataDefFPTR *fpd = new DataDefFPTR(tfd);
-				fpd->ptr_syntax =
-					(r.flags & madc::dis::DF_FPTR_PTR_SYNTAX) != 0;
-				if (r.name_id)
-					if (const char *nn = a.c_str(r.name_id))
-						fpd->name = nn;
-				_mat_storage.push_back(fpd);
-				by_id[tid] = fpd;
-				dprog = true;
-				continue;
-			}
-			// v53: a pointer to member — its owner as the parse resolved
-			// it (NULL when it had none, or when the owner did not
-			// restore: the spelling stays, as for an unresolved owner),
-			// then the member type or the signature, which retry.
-			if (r.kind == madc::dis::DK_MEMBERPTR) {
-				DataDef *owner = r.body_unit
-					       ? arena_swizzle(r.body_unit, by_id) : NULL;
-				const char *on = r.disp_id ? a.c_str(r.disp_id) : NULL;
-				madc::dis::istring owner_name = on ? on : "";
-				DataDef *d;
-				if (r.flags & madc::dis::DF_MEMBERPTR_FUNCTION) {
-					FuncDef *tfd = restore_signature(r.ref0, a, by_id,
-									 _mat_storage);
-					if (!tfd)
-						continue;	// not ready this round
-					d = new DataDefMemberFnPtr(owner, owner_name, tfd,
-						(r.flags & madc::dis::DF_MEMBERPTR_CONST_METHOD) != 0);
-				} else {
-					DataDef *member = arena_swizzle(r.ref0, by_id);
-					if (!member)
-						continue;	// not ready this round
-					d = new DataDefMemberPtr(owner, owner_name, *member);
-				}
-				if (r.name_id)
-					if (const char *nn = a.c_str(r.name_id))
-						d->name = nn;
-				_mat_storage.push_back(d);
-				by_id[tid] = d;
-				dprog = true;
-				continue;
-			}
-			if (r.kind != madc::dis::DK_PTR && r.kind != madc::dis::DK_REF
-			    && r.kind != madc::dis::DK_CONST
-			    && r.kind != madc::dis::DK_CARRAY)
-				continue;
-			DataDef *operand = arena_swizzle(r.ref0, by_id);
-			if (!operand)
-				continue;	// not ready this round (or dropped aggregate)
-			DataDef *d;
-			if (r.kind == madc::dis::DK_REF)
-				d = new DataDefREF(*operand, (r.flags & 1u) != 0);
-			else if (r.kind == madc::dis::DK_CONST)
-				// The cv mask rides flags; a pre-mask record (0) was const.
-				d = new DataDefQUAL(*operand, r.flags ? r.flags : cvCONST);
-			else if (r.kind == madc::dis::DK_CARRAY) {
-				// v25: rebuild the fixed-size array VERBATIM (name +
-				// folded count; a runtime-sized array is never recorded).
-				uint64_t cnt = (uint64_t)r.carray_count_lo
-					     | ((uint64_t)r.carray_count_hi << 32);
-				const char *an = r.name_id ? a.c_str(r.name_id) : NULL;
-				d = new DataDefCArray(*operand,
-						      an ? madc::dis::istring(an) : operand->name,
-						      (size_t)cnt, NULL);
-			}
-			else
-				d = new DataDefPTR(*operand);
-			_mat_storage.push_back(d);
-			by_id[tid] = d;
-			dprog = true;
-		}
-	}
-
-	// Permanent -v diagnostic: every DERIVED type the fixpoint above could
-	// NOT build. arena_chain_ok admits an fn-ptr chain unconditionally ("the
-	// target signature never gates member layout"), but this fixpoint can
-	// still fail to build one — and pass 2 then drops every aggregate with
-	// such a member. Without naming it here the loss surfaces only as a class
-	// that is simply absent, layers later (task #64: std::ios_base died on
-	// `event_callback *__fn_`, and took the whole iostream family with it).
-	// An EXACT pass builds on demand — every derived record it did not ask
-	// for is unbuilt by design, not a loss: nothing to census.
-	DBG(for (size_t bi = 0; !_mat_filter.exact && bi < derived_slots.size(); ++bi) {
-		uint32_t tid = madc::dis::arena_id_of(derived_slots[bi]);
-		if (by_id.count(tid))
-			continue;
-		// Once per forest, across widened re-passes (see the member).
-		if (!_derived_unresolved_reported.insert(tid).second)
-			continue;
-		madc::dis::defrec r;
-		if (!a.get_def_at(tid, r))
-			continue;
-		const char *dk = NULL;
-		if (r.kind == madc::dis::DK_PTR)		dk = "ptr";
-		else if (r.kind == madc::dis::DK_REF)		dk = "ref";
-		else if (r.kind == madc::dis::DK_CONST)		dk = "const";
-		else if (r.kind == madc::dis::DK_CARRAY)	dk = "carray";
-		else if (r.kind == madc::dis::DK_FPTR)		dk = "fptr";
-		else if (r.kind == madc::dis::DK_MEMBERPTR)	dk = "memberptr";
-		if (!dk)
-			continue;
-		std::string why;
-		// A member-function pointer's ref0 is a signature, as a fn-ptr's.
-		if (r.kind == madc::dis::DK_FPTR
-		    || (r.kind == madc::dis::DK_MEMBERPTR
-			&& (r.flags & madc::dis::DF_MEMBERPTR_FUNCTION))) {
-			madc::dis::defrec fr;
-			if (!r.ref0 || !madc::dis::arena_id_is_project(r.ref0)
-			    || !a.get_def_at(r.ref0, fr)
-			    || fr.kind != madc::dis::DK_FUNC)
-				why = "no signature record";
-			else if (!arena_swizzle(fr.ref0, by_id))
-				why = "return type";
-			else
-				for (uint32_t p = 0; p < fr.params_count; ++p) {
-					madc::dis::paramrec pr;
-					if (a.get_payload(fr.params_begin, p, pr)
-					    && arena_swizzle(pr.type_id, by_id))
-						continue;
-					why = "param #" + std::to_string(p)
-					    + " tid=" + std::to_string(pr.type_id);
-					madc::dis::defrec pd;
-					if (!a.get_def_at(pr.type_id, pd))
-						why += " (no record)";
-					else {
-						why += " kind=" + std::to_string((int)pd.kind);
-						if (pd.name_id && a.c_str(pd.name_id))
-							why += std::string(" ")
-							     + a.c_str(pd.name_id);
-					}
-					break;
-				}
-		} else {
-			// Spell the operand's record kind, exactly like the fn-ptr
-			// param arm above. An id whose record is DK_NONE (kind=0)
-			// is task #64's fingerprint — stamped by
-			// forest_serialize_type_id as a cross-reference, never
-			// written by any record walk — and `kind=0` is the token
-			// the pack degradation gate hard-zeroes. Naming it only in
-			// the param arm left ptr/ref/const/carray chains, the
-			// MAJORITY of derived ids, unable to say the same thing:
-			// a DK_NONE operand printed as a bare "operand", which
-			// reads like the routine outside-the-closure case.
-			madc::dis::defrec od;
-			why = "operand";
-			if (!r.ref0 || !a.get_def_at(r.ref0, od))
-				why += " (no record)";
-			else {
-				why += " kind=" + std::to_string((int)od.kind);
-				if (od.name_id && a.c_str(od.name_id))
-					why += std::string(" ")
-					     + a.c_str(od.name_id);
-			}
-		}
-		std::cout << "materialize derived: UNRESOLVED " << dk << " "
-			  << (r.name_id && a.c_str(r.name_id)
-			      ? a.c_str(r.name_id) : "?")
-			  << " (" << why << ")" << std::endl;
-	});
 
 	// Method-identity sharing (using-decl imports): a methodrec whose
 	// Variable name is NOT prefixed by its class's own name is a BASE
@@ -3085,10 +3192,11 @@ void CirFrozenForest::materialize_pass()
 	// Pass 2: fill each aggregate VERBATIM (offsets / counts / access /
 	// origin / bitfields as stored, no finalize, no re-derivation) — then
 	// class extras + methods under the v6 selection rules.
-	for (size_t i = 0; i < agg_ids.size(); ++i) {
-		uint32_t tid = agg_ids[i];
-		if (!fresh_aggs.count(tid))
-			continue;	// filled by an earlier generation
+	// This generation's fresh allocations, ascending (earlier generations
+	// already filled theirs).
+	for (std::set<uint32_t>::const_iterator fi = fresh_aggs.begin();
+	     fi != fresh_aggs.end(); ++fi) {
+		uint32_t tid = *fi;
 		std::map<uint32_t, DataDef *>::iterator ai = by_id.find(tid);
 		if (ai == by_id.end())
 			continue;
@@ -3107,7 +3215,7 @@ void CirFrozenForest::materialize_pass()
 				fill_why = "member payload #" + std::to_string(m);
 				break;
 			}
-			DataDef *mdd = arena_swizzle(mr.type_id, by_id);
+			DataDef *mdd = swizzle(mr.type_id);
 			// String id zero is both the arena's empty-string sentinel and the
 			// correct C spelling of an unnamed bit-field.  Admit that exact
 			// structural case; a non-bit-field member still requires a name.
@@ -3144,7 +3252,7 @@ void CirFrozenForest::materialize_pass()
 			// the aggregate rather than silently degrade to static.
 			if (mr.vbase_id) {
 				DataDefCLASS *vbc = dynamic_cast<DataDefCLASS *>(
-					arena_swizzle(mr.vbase_id, by_id));
+					swizzle(mr.vbase_id));
 				if (!vbc) {
 					ok = false;
 					fill_why = std::string("member ")
@@ -3199,7 +3307,7 @@ void CirFrozenForest::materialize_pass()
 			if (!a.get_payload(r.anon_begin, g, ar))
 				break;
 			DataDefSTRUCT *subs = dynamic_cast<DataDefSTRUCT *>(
-				arena_swizzle(ar.sub_type_id, by_id));
+				swizzle(ar.sub_type_id));
 			if (!subs)
 				continue;
 			sdd->anonymous_aggregates.push_back(
@@ -3231,7 +3339,7 @@ void CirFrozenForest::materialize_pass()
 				if (!a.get_payload(r.vbase_begin, vb, vr))
 					break;
 				DataDefCLASS *vbc = dynamic_cast<DataDefCLASS *>(
-					arena_swizzle(vr.class_id, by_id));
+					swizzle(vr.class_id));
 				if (vbc)
 					cdd->vbase_offset[vbc] = vr.offset;
 			}
@@ -3241,7 +3349,7 @@ void CirFrozenForest::materialize_pass()
 					break;
 				DataDefCLASS::VtableGroup g;
 				g.owner = dynamic_cast<DataDefCLASS *>(
-					arena_swizzle(gr.owner_id, by_id));
+					swizzle(gr.owner_id));
 				g.this_offset = gr.this_offset;
 				g.addr_point  = gr.addr_point;
 				for (uint32_t sl = 0; sl < gr.slots_count; ++sl) {
@@ -3312,7 +3420,7 @@ void CirFrozenForest::materialize_pass()
 					break;
 				}
 				DataDefCLASS *bc = dynamic_cast<DataDefCLASS *>(
-					arena_swizzle(br.base_id, by_id));
+					swizzle(br.base_id));
 				if (!bc) {
 					madc::dis::defrec bd;
 					fill_why = std::string("base ")
@@ -3409,7 +3517,7 @@ void CirFrozenForest::materialize_pass()
 					continue;
 				if (!m_static && !fr.params_count)
 					continue;	// no __this slot: malformed
-				DataDef *ret = arena_swizzle(fr.ref0, by_id);
+				DataDef *ret = swizzle(fr.ref0);
 				if (!ret)
 					continue;
 				FuncDef *fd = new FuncDef(*ret);
@@ -3440,7 +3548,7 @@ void CirFrozenForest::materialize_pass()
 					if (!a.get_payload(fr.params_begin, p, pr)) {
 						pok = false; break;
 					}
-					DataDef *pd = arena_swizzle(pr.type_id, by_id);
+					DataDef *pd = swizzle(pr.type_id);
 					if (!pd) { pok = false; break; }
 					// The C++ param spelling rides the paramrec exactly
 					// as on the free-function arm below: without it a
@@ -3577,7 +3685,7 @@ void CirFrozenForest::materialize_pass()
 						continue;
 					const char *pn = a.c_str(ar.name_id);
 					DataDef *ptp = ar.type_id
-						     ? arena_swizzle(ar.type_id, by_id)
+						     ? swizzle(ar.type_id)
 						     : NULL;
 					if (!pn || !*pn || !ptp)
 						continue;
@@ -3640,7 +3748,7 @@ void CirFrozenForest::materialize_pass()
 				if (!a.get_payload(r.alias_begin, ai, ar))
 					break;
 				const char *an = ar.name_id ? a.c_str(ar.name_id) : NULL;
-				DataDef *ad = arena_swizzle(ar.type_id, by_id);
+				DataDef *ad = swizzle(ar.type_id);
 				if (!an || !*an || !ad)
 					continue;
 				// Env-gated probe (MADC_MTI_PROBE_CLASS=<substr>):
@@ -3663,7 +3771,7 @@ void CirFrozenForest::materialize_pass()
 				if (!a.get_payload(r.statty_begin, si, ar))
 					break;
 				const char *an = ar.name_id ? a.c_str(ar.name_id) : NULL;
-				DataDef *ad = arena_swizzle(ar.type_id, by_id);
+				DataDef *ad = swizzle(ar.type_id);
 				if (!an || !*an || !ad)
 					continue;
 				cdd->static_member_types[an] = ad;
@@ -3791,7 +3899,7 @@ void CirFrozenForest::materialize_pass()
 		}
 		if (!nm || !*nm)
 			continue;
-		DataDef *underlying = arena_swizzle(r.ref0, by_id);
+		DataDef *underlying = swizzle(r.ref0);
 		if (!underlying) {
 			if (probed)
 				alias_say(r, nm, "DROPPED (target not materialized)");
@@ -3861,7 +3969,7 @@ void CirFrozenForest::materialize_pass()
 			d.key   = a.c_str(r.name_id);
 			d.owner = NULL;
 			if (r.ref0) {
-				DataDef *od = arena_swizzle(r.ref0, by_id);
+				DataDef *od = swizzle(r.ref0);
 				d.owner = od ? dynamic_cast<DataDefCLASS *>(od) : NULL;
 				if (!d.owner)
 					continue;	// owner dropped -> body cleanly lacks
@@ -3992,7 +4100,7 @@ void CirFrozenForest::materialize_pass()
 		if (was_bodied && !has_body
 		    && !(r.flags & madc::dis::DF_FUNC_DEF_TOKENS))
 			continue;
-		DataDef *ret = arena_swizzle(r.ref0, by_id);
+		DataDef *ret = swizzle(r.ref0);
 		if (!ret)
 			continue;
 		FuncDef *fd = new FuncDef(*ret);
@@ -4005,7 +4113,7 @@ void CirFrozenForest::materialize_pass()
 			if (!a.get_payload(r.params_begin, p, pr)) {
 				pok = false; break;
 			}
-			DataDef *pd = arena_swizzle(pr.type_id, by_id);
+			DataDef *pd = swizzle(pr.type_id);
 			if (!pd) { pok = false; break; }
 			// v21: the C++ param spelling rides the record — the
 			// Itanium mangle of a declaration-only ns function
@@ -4112,7 +4220,7 @@ void CirFrozenForest::materialize_pass()
 				continue;
 			const char *pn = a.c_str(ar.name_id);
 			DataDef *ptp = ar.type_id
-				     ? arena_swizzle(ar.type_id, by_id) : NULL;
+				     ? swizzle(ar.type_id) : NULL;
 			if (!pn || !*pn || !ptp)
 				continue;
 			rf.mparams.push_back(std::make_pair(pn, ptp));
@@ -4136,15 +4244,16 @@ void CirFrozenForest::materialize_pass()
 	// rebuilds a Variable + dkGlobalVar TopDecl from each, so the existing
 	// passes emit the global + queue its ctor into __madc_global_init (class)
 	// or emit its constant data item (scalar init_value).
-	for (size_t i = 0; i < _globals.size(); ++i) {
-		if (_mat_done_globals.count(i))
+	for (size_t gi = 0; gi < glob_idx.size(); ++gi) {
+		size_t i = glob_idx[gi];
+		if (i >= _globals.size() || _mat_done_globals.count(i))
 			continue;		// pushed by an earlier generation
 		const cir_forest_global_record &g = _globals[i];
 		if (g.gflags & CIR_GLOBALF_TU_ROOT)
 			continue;		// v24: the program's own global — fenced
 		uint32_t nlen = 0;
 		const char *nm = pool_cstr(g.name_id, nlen);
-		DataDef *ty = arena_swizzle(g.type_id, by_id);
+		DataDef *ty = swizzle(g.type_id);
 		if (!nm || !ty)
 			continue;		// unresolved type -> bind cleanly lacks it
 		CirRestoredGlobal rg;
@@ -4180,8 +4289,9 @@ void CirFrozenForest::materialize_pass()
 	// live. A record whose owner class did not restore cleanly LACKS (a
 	// member-template pattern without its class cannot instantiate anyway).
 	{
-		for (size_t i = 0; i < _templates.size(); ++i) {
-			if (_mat_done_templates.count(i))
+		for (size_t ti = 0; ti < tmpl_idx.size(); ++ti) {
+			size_t i = tmpl_idx[ti];
+			if (i >= _templates.size() || _mat_done_templates.count(i))
 				continue;	// pushed by an earlier generation
 			const cir_forest_template_record &t = _templates[i];
 			if (t.flags & CIR_TMPLF_TU_ROOT)
@@ -4207,7 +4317,7 @@ void CirFrozenForest::materialize_pass()
 			DataDefCLASS *oc = NULL;
 			if (t.owner_type_id) {
 				oc = dynamic_cast<DataDefCLASS *>(
-					arena_swizzle(t.owner_type_id, by_id));
+					swizzle(t.owner_type_id));
 				if (!oc)
 					continue;	// owner did not restore -> cleanly lack
 			}
@@ -4257,6 +4367,61 @@ void CirFrozenForest::materialize_pass()
 			_restored_templates.push_back(rt);
 			_mat_done_templates.insert(i);
 		}
+	}
+
+	// Env-gated seed-parity probe (MADC_SEED_PARITY_PROBE=1;
+	// scripts/check-pack-seed-parity.sh): after each generation, every
+	// record restored so far with the verdict registration gives it under
+	// the filter as it now stands — the gate reads the LAST block, so a
+	// record restored early and one restored by a later, wider generation
+	// are judged alike. The gate runs a program seeded and as the whole
+	// walk (MADC_FOREST_WHOLE_WALK=1): the seeded lines must be a subset,
+	// and a whole-only line may only carry v<=0 — a name no bound unit
+	// declares (registration drops a -1; a 0 is the undecided record whose
+	// point of creation is unbound).
+	static const char *par_probe = ::getenv("MADC_SEED_PARITY_PROBE");
+	if (par_probe && par_probe[0] == '1') {
+		const size_t par_types0 = 0, par_funcs0 = 0, par_globals0 = 0,
+			     par_tmpls0 = 0, par_binds0 = 0, par_bodies0 = 0;
+		fprintf(stderr, "SEEDPAR-GEN\n");
+		auto say = [&](const char *kind, const char *ns, const char *nm, int v) {
+			fprintf(stderr, "SEEDPAR %s %s%s%s v=%d\n", kind,
+				ns && *ns ? ns : "", ns && *ns ? "::" : "",
+				nm ? nm : "?", v);
+		};
+		for (size_t i = par_types0; i < _restored.size(); ++i) {
+			const CirRestoredType &t = _restored[i];
+			int v = verdict_str(t.name, t.ns);
+			if (t.ns && *t.ns && t.kind != CIR_TYPEK_TYPEDEF)
+				v = std::max(v, verdict_str(t.name, NULL));
+			if (t.dd && !t.dd->canonical_cpp_spelling().empty()
+			    && head_verdict(t.dd->canonical_cpp_spelling().c_str(),
+					    _mat_filter) < 0)
+				v = -1;
+			say(t.kind == CIR_TYPEK_TYPEDEF ? "typedef"
+			    : t.kind == CIR_TYPEK_ENUM ? "enum" : "tag", t.ns, t.name, v);
+		}
+		for (size_t i = par_funcs0; i < _restored_funcs.size(); ++i) {
+			const CirRestoredFunc &f = _restored_funcs[i];
+			int v = verdict_str(f.name, NULL);
+			if (v == 0 && f.fd && !f.fd->function_display_name.empty()
+			    && !f.fd->namespace_name.empty())
+				v = verdict_str(f.fd->function_display_name.c_str(),
+						f.fd->namespace_name.c_str());
+			say("func", NULL, f.name, v);
+		}
+		for (size_t i = par_globals0; i < _restored_globals.size(); ++i)
+			say("global", _restored_globals[i].ns, _restored_globals[i].name,
+			    verdict_str(_restored_globals[i].name, _restored_globals[i].ns));
+		for (size_t i = par_tmpls0; i < _restored_templates.size(); ++i)
+			say("template", _restored_templates[i].ns, _restored_templates[i].key,
+			    verdict_str(_restored_templates[i].key, _restored_templates[i].ns));
+		for (size_t i = par_binds0; i < _restored_nsbinds.size(); ++i)
+			say("nsbind", _restored_nsbinds[i].ns, _restored_nsbinds[i].key,
+			    verdict_str(_restored_nsbinds[i].key, NULL));
+		for (size_t i = par_bodies0; i < _restored_defbodies.size(); ++i)
+			say("defbody", NULL, _restored_defbodies[i].key,
+			    verdict_str(_restored_defbodies[i].key, NULL));
 	}
 
 	_stat_mat_secs += forest_now() - _t0;

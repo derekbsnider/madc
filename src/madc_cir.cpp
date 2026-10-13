@@ -7379,6 +7379,9 @@ int madc_cir_dump_forest(const char *container_path)
 	return -1;
 
     printf("forest\tunits=%u\n", forest.unit_count());
+    // The container's own bytes (an appended container: the image less the
+    // carrier before it) — the pack-size gate's measure (forest_pack_gate.sh).
+    printf("bytes\t%zu\n", forest.container_bytes());
     // The producer configs this profile binds under: its own, then the
     // labels a pack proved identical (the shared-profile gate reads these).
     printf("config\tword=0x%08x\tdefines=0x%08x\n", forest.language_std(),

@@ -367,8 +367,8 @@ bool cir_freeze_read(const madc::dis::snapshot_reader &r, uint32_t seg_id_base,
 // e.g. va_list's `struct __madc_va_list_tag[1]` typedef underlying) records
 // like the other derived types (ref0 = element type-id; the folded 64-bit
 // count in the NEW defrec carray_count_lo/hi words — a LAYOUT change, so a
-// stale v24 container mis-reads defrecs) and pass 1b rebuilds it operand-
-// before-derived. Without it every array-underlying typedef "cleanly lacked"
+// stale v24 container mis-reads defrecs) and the bind rebuilds it over its
+// element on first use (CirFrozenForest::swizzle). Without it every array-underlying typedef "cleanly lacked"
 // at the arena_complete resolvability check, so a bound <stdarg.h> had no
 // va_list (soak family a, 9 tests) and every free fn with an array-typed param
 // (vsprintf) kept the dlsym variadic fallback. A runtime-sized array
@@ -1508,29 +1508,31 @@ struct CirRestoredFuncDefaults
 // connector (or node_for) touches it, never at open. The image must stay
 // mapped for the forest's lifetime (cir_forest_map_image never unmaps).
 // Rung 2a (closure-filtered materialization): the demand filter the parser
-// hands to materialize_for (forest_restore_decls). It carries the SAME
-// verdict map item 5's registration filter builds (forest_restore_decls):
-// decl-index name -> "some declaring unit is in the TU's bound-include
-// closure". materialize_from_arena consults it with the SAME fallback chain
-// as registration (qualified ns::name, then bare name, then unindexed =
-// derived entity = keep; a `<`-bearing record judged by its canonical
-// spelling HEAD). Skipped records never allocate DataDefs; an admitted
-// record's references PULL skipped aggregates/enums back in, so bound
-// chains never break. Inactive (the default) = whole-container
-// materialization — direct restores, unit tests, and --run-frozen are
-// untouched.
+// hands to materialize_for (forest_restore_decls) — the TU's bound-include
+// closure as UNIT indices. Every verdict is CirFrozenForest::name_verdict
+// over the pack's DECL_NAMES index against this filter (pack slices design
+// §6: one verdict owner for materialization, registration and rung 3).
+// Skipped records never allocate DataDefs; an admitted record's references
+// PULL skipped aggregates/enums back in, so bound chains never break.
+// Inactive (the default) = whole-container materialization — direct
+// restores, unit tests, and --run-frozen are untouched.
 struct CirMaterializeFilter
 {
 	bool active = false;
-	// exact: ONLY the names declared_bound marks true (plus what an admitted
-	// record's references pull in) materialize; an UNINDEXED record — the
-	// derived entity a closure filter keeps unconditionally — is skipped
-	// too. The on-demand shape: a TU with no bound closure asking for one
-	// library prototype (forest_adopt_declared_function) must not pay the
-	// whole derived population. Monotone with the rest: a later non-exact
-	// filter (a bound closure) WIDENS an installed exact one and re-runs.
+	// exact: ONLY extra_names (plus what an admitted record's references
+	// pull in) materialize; the decl index is not consulted and an
+	// UNINDEXED record — the derived entity a closure filter keeps — is
+	// skipped too. The on-demand shape: a TU with no bound closure asking
+	// for one library prototype (forest_adopt_declared_function) must not
+	// pay the whole derived population. Monotone with the rest: a later
+	// non-exact filter (a bound closure) WIDENS an installed exact one.
 	bool exact = false;
-	std::unordered_map<madc::dis::istring, bool> declared_bound;
+	// The bound-include closure, and its system-header subset (rung 3's
+	// emission-origin verdict).
+	std::set<uint32_t> bound_units;
+	std::set<uint32_t> system_units;
+	// Names asked for by name, kept whatever declares them.
+	std::set<madc::dis::istring> extra_names;
 };
 
 // --show-stats (task #25 slice D): ONE depth-guarded forest-work clock, the
@@ -1618,11 +1620,31 @@ class CirFrozenForest
 	// The DataDef objects materialize lazily at bind (materialize_from_arena),
 	// swizzling arena id refs back to pointers. The forest owns the
 	// materialized objects and frees them in ~CirFrozenForest.
-	std::vector<DataDef *> _mat_storage;		// forest-owned materialized DataDefs
+	// Mutable: a DERIVED type (pointer / reference / cv / array / fn-ptr /
+	// member pointer) builds on its first swizzle (swizzle(), const), so a
+	// const reader like restored_def_by_tid can create one. One TU drives a
+	// forest at a time (MadcCompileGroup's sequential contract).
+	mutable std::vector<DataDef *> _mat_storage;	// forest-owned materialized DataDefs
 	// Producer tid -> restored DataDef (materialize_from_arena's swizzle
 	// map, kept for post-restore consumers: lazy ClassPattern payload
 	// reads swizzle their concrete_type_id through it).
-	std::map<uint32_t, DataDef *> _defs_by_tid;
+	mutable std::map<uint32_t, DataDef *> _defs_by_tid;
+	// Derived ids mid-build (a cycle answers NULL, as the retired fixpoint
+	// never resolved one).
+	mutable std::set<uint32_t> _derived_building;
+	// Arena id -> restored DataDef: a pinned primitive, an aggregate / enum
+	// a pass allocated, or a derived type built here on first use over its
+	// operand (NULL while the operand is not restored — never cached, so a
+	// wider generation that restores the operand builds it then).
+	DataDef *swizzle(uint32_t tid) const;
+	DataDef *build_derived(uint32_t tid, const madc::dis::defrec &r) const;
+	// A callable's SIGNATURE from its DK_FUNC record (a fn-ptr's target, a
+	// member-function pointer's): a declaration-only FuncDef, return +
+	// params through swizzle(). NULL when the record is not a DK_FUNC or a
+	// signature type does not restore.
+	FuncDef *restore_signature(uint32_t func_tid) const;
+	// The -v census line for a derived type that did not build.
+	void report_unresolved_derived(uint32_t tid, const madc::dis::defrec &r) const;
 	std::vector<Variable *> _mat_vars;		// forest-owned reconstructed method Variables
 	std::vector<CirRestoredType> _restored;		// bind-facing view (built once)
 	// v13 container-global: file-scope global var defs. Records load at open();
@@ -1686,10 +1708,10 @@ class CirFrozenForest
 	CirMaterializeFilter _mat_filter;
 	// The derived-type UNRESOLVED census (the -v diagnostic the pack
 	// degradation gate ratchets on) names each id ONCE per forest: a
-	// widened re-pass (materialize_for growing by a name) re-walks every
-	// derived slot and would otherwise re-report the same ids — the gate
-	// then reads a doubled count as a regression that never happened.
-	std::set<uint32_t> _derived_unresolved_reported;
+	// widened re-pass asks for the same ids again and would otherwise
+	// re-report them — the gate then reads a doubled count as a
+	// regression that never happened.
+	mutable std::set<uint32_t> _derived_unresolved_reported;
 	// S2 (R4-lite): what earlier generations already EMITTED, so a later,
 	// wider filter re-runs the passes without duplicating. _mat_done_slots
 	// covers the arena-slot-keyed walks (typedef / ns-surface / enum-record
@@ -1746,6 +1768,15 @@ public:
 	bool complete_open(c2m_ctx_t c2m);
 	bool previous_image_len(size_t &len) const
 		{ return _reader.previous_image_len(len); }
+	// This container's bytes: from its blob to the end of the image (an
+	// appended container's carrier — libmadc, the executable — excluded).
+	size_t container_bytes() const
+	{
+		const uint8_t *b = (const uint8_t *)_reader.blob_base();
+		const uint8_t *i = (const uint8_t *)_image;
+		return b && i && b >= i && (size_t)(b - i) <= _image_len
+		       ? _image_len - (size_t)(b - i) : 0;
+	}
 
 	// A compile begins (CirBuilder::translate_module, before any node
 	// materializes): each translation unit's tree gets its OWN nodes. A node
@@ -1762,7 +1793,7 @@ public:
 	// Rung 2a + S2 (R4-lite): ensure everything `want` admits is
 	// materialized — THE restore entry (forest_restore_decls). The first
 	// caller installs `want` and materializes under it; a later, WIDER
-	// filter (a bound verdict flipping false -> true, or want.active ==
+	// filter (a newly bound unit, a newly asked-for name, or want.active ==
 	// false = whole container) unions in and re-runs the passes, which
 	// skip already-built records. A narrower or equal filter is a no-op —
 	// monotone widening, so shared-forest consumers can never lose records
@@ -1820,6 +1851,20 @@ public:
 	const ForestSeeds &seeds() const { bind_seed_index(); return _seeds; }
 	const ForestRecordableBits &recordable_bits() const
 		{ bind_seed_index(); return _recordable_bits; }
+	// THE closure verdict (pack slices design §6) — materialization,
+	// registration and rung 3 all ask here, each against the filter it
+	// holds. +1 a name some BOUND unit declares (or one the filter names),
+	// -1 declared only by unbound units, 0 declared by no unit (a derived
+	// entity; -1 under an exact filter). Qualified ns::name first, then the
+	// bare name. Inactive filter: +1.
+	int name_verdict(const char *nm, const char *ns,
+			 const CirMaterializeFilter &f) const;
+	// A template-id product judged by its canonical spelling's HEAD
+	// ("std::vector<int>" -> "std::vector"); +1 for a spelling without one.
+	int head_verdict(const char *canon, const CirMaterializeFilter &f) const;
+	// Rung 3: a BOUND system-header unit declares the name (bare, or under ns).
+	bool declared_system(const char *nm, const char *ns,
+			     const CirMaterializeFilter &f) const;
 	// The mapped image and length this reader was opened on.
 	bool opened_from(const void *image, size_t len) const
 		{ return _header_opened && image == _image && len == _image_len; }

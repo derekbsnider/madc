@@ -3267,16 +3267,6 @@ struct MadcCompileGroup
     // remap and its DataDefs' type_id memos are bound to them.
     std::map<std::pair<uint32_t, uint32_t>,
 	     std::shared_ptr<CirFrozenForest> > bind_forests;
-    // S3: decl-index verdict maps keyed by (instance, bound-include
-    // closure) — a sibling TU with the same closure skips the all-units
-    // decl-index sweep. Config-coherent because the instance key is.
-    struct DeclVerdicts
-    {
-	std::unordered_map<madc::dis::istring, bool> bound;
-	std::unordered_map<madc::dis::istring, bool> system;
-    };
-    std::map<std::pair<const void *, std::vector<uint32_t> >,
-	     std::shared_ptr<const DeclVerdicts> > decl_verdicts;
     // R4-full: exact post-preprocessor token images for pure embedded
     // auto-include fragments. The cache owns immutable TokenRec-based images;
     // every adopting Program materializes fresh mutable TokenBase shells.

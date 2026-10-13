@@ -120,7 +120,9 @@ and the always list; the freeze prints a one-line placement summary.
   `record_kept` call the owner.
 - `materialize_pass` takes its per-kind lists from the bound units' seeds plus
   the always list (bucketed by kind as they are read); recordability from
-  RECORDABLE; `forest_recordable_cached` and the `exact` mode go.
+  RECORDABLE; `forest_recordable_cached` goes (no filter = one slot scan).
+  The `exact` mode stays: the adoption probe's one-name filter keeps only
+  that name's chain, less than a closure filter over its declaring units.
 - Derived types build on first swizzle (`arena_swizzle` becomes a member that
   builds a missing derived record, operand first); pass 1b goes.
 - Globals and templates iterate their seeded indices.

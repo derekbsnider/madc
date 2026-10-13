@@ -47,10 +47,10 @@ static inline bool arena_chain_ok(const Arena &a, uint32_t tid, uint32_t self_id
 		case madc::dis::DK_ENUM:
 			return true;	// v21: enums materialize in pass 1a (leaves)
 		case madc::dis::DK_FPTR:
-			return true;	// v22: fn-ptrs materialize in pass 1b (the
+			return true;	// v22: fn-ptrs build on first use (the
 					// target signature never gates member layout)
 		case madc::dis::DK_MEMBERPTR:
-			return true;	// v53: member pointers materialize in pass 1b
+			return true;	// v53: member pointers build on first use
 					// (8 bytes or the {ptr, adj} pair — neither the
 					// owner nor the member gates member layout)
 		default:
@@ -90,8 +90,8 @@ static inline size_t arena_anon_tag_of(const char *nm)
 // holds a basic_ostream<char>* member (_M_tie) while basic_ostream derives from
 // basic_ios, so neither could ever be inserted first and the whole iostream
 // hierarchy dropped. A through-pointer reference only needs its target IN the
-// surviving set (pass 1 allocates every survivor before pass 1b resolves the
-// pointer), exactly the C incomplete-type rule; a failure still cascades to its
+// surviving set (pass 1 allocates every survivor before the pointer builds
+// over it), exactly the C incomplete-type rule; a failure still cascades to its
 // dependents through the removal rounds.
 template <class Arena>
 static inline void arena_recordable_fixpoint(const Arena &a,
