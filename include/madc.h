@@ -3407,6 +3407,14 @@ public:
 	// This is the incremental shim-retirement lever — bypass system shims while
 	// keeping madc's own headers. Data-driven: see embedded_header_is_system_library_shim().
 	bool bypass_system_library_headers = false;
+	// OWNER LAW (.claude/rules/embedded-headers.md, top section): a binary
+	// built to carry the pack (the product modes' MADC_FOREST_EXPECT_*) reads
+	// the STANDARD CORE system headers from libmadc and never opens, stats or
+	// probes a system include dir for a name libmadc carries; disk serves only
+	// a name it does not carry (an add-on library's header). Set by the CLI's
+	// MADC_FOREST_EXPECT_* block, cleared by --no-embedded-headers, inherited
+	// by runtime-eval children. Read through Program::system_headers_from_libmadc().
+	bool system_headers_from_libmadc = false;
 	// Win64's native headers omit a narrow POSIX delta. When enabled, a real
 	// system header may be followed by the convention-keyed embedded supplement
 	// `posix/<name>`. POSIX hosts never activate the layer; the CLI opt-out is
@@ -7231,6 +7239,16 @@ public:
     // header included N times is looked up once, not once per search
     // directory per inclusion. add_include_dir and a flavor change drop it.
     bool search_include_dirs(const madc::dis::istring &incfile, madc::dis::istring &found);
+    // The ONE owner of "do the core system headers come from libmadc" (the
+    // owner law on RegistrationPolicy::system_headers_from_libmadc). Every
+    // include lookup asks it before any system include dir is touched.
+    bool system_headers_from_libmadc() const
+	{ return registration_policy.system_headers_from_libmadc; }
+    // A path inside a system include dir while the core headers come from
+    // libmadc: nothing may touch the disk for it — no existence probe, no
+    // sidecar probe, no canonicalization (its spelling is libmadc's own).
+    bool path_served_by_libmadc(const char *path) const
+	{ return system_headers_from_libmadc() && is_system_header_path(path); }
     std::unordered_map<madc::dis::istring, madc::dis::istring> include_search_memo;
     const madc_stdlib_flavor *include_search_memo_flavor = NULL;
     bool include_search_memo_sysroot = false;

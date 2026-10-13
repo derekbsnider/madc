@@ -53,6 +53,25 @@ now measures the default packed path of a dialect and a C compile
 (`dialect.forest`, `c_headers.forest`) — the path on which the whole-container
 decode had gone unseen.
 
+### The packed madc reads the core system headers from libmadc, never /usr/include
+
+The release (packed) madc compiles a C, C++ or dialect program that includes a
+standard core system header — the C library, kernel and C++ standard library,
+every `--std=` — without opening, stat-ing or probing /usr/include or any system
+include directory for it: the header's bytes come from libmadc (the embedded set
+plus the forest pack). Earlier packs served these headers only as a fallback
+when the disk lacked them, so on a machine with headers installed the disk won
+and the pack went unread. The include search, `#include_next`, the existence
+check, the reader and the precompiled-header sidecar probe now all ask libmadc
+first for a name it carries. `--no-embedded-headers` is the one switch that sends
+the core headers back to disk; a name libmadc does not carry (an add-on library's
+header) is still searched on disk as gcc searches it, and project headers
+(quoted, `-I`) come from disk in every mode. Gate:
+`scripts/check-system-headers-from-libmadc.sh` replaces every system include
+directory with `#error` poison headers and traces file access, so C, C++ and
+dialect compiles must finish without touching them while gcc and
+`--no-embedded-headers` hit the poison.
+
 ### `quick_exit` on Windows runs only the at_quick_exit handlers
 
 The JIT session's exit hook — the one that destroys a session's objects with

@@ -1,5 +1,33 @@
 # Embedded Header Rules
 
+## System headers come from libmadc — OWNER LAW (2026-10-09, restated 2026-10-13)
+
+- madc's main selling point: it needs NO system headers installed in
+  /usr/include (or anywhere); it provides them inside libmadc.
+- The release (packed) madc reads EVERY standard core system header — C
+  library, kernel, C++ standard library, every `--std=` — from libmadc
+  (embedded set + forest pack). It never opens, stats or probes /usr/include
+  or any system include dir for them.
+- `--no-embedded-headers` is the ONE switch that sends core headers to disk.
+- Add-on library headers (sqlite3, gtk, ...) are not core unless the madc build
+  bundles them; a name libmadc does not carry is searched on disk as gcc does.
+  Their direction: an imported MODULE, self-contained — headers, library and
+  bindings inside its .so / .dll / .dylib.
+- A build with no pack (`--with-forest=none`) is a different product mode that
+  reads system headers from disk. Never measure or test release behaviour on
+  it, and never attach a pack to it by environment and call that "release".
+- Project headers (quoted, `-I`) come from disk in every mode.
+- "Live" = parsing a header's TEXT from libmadc; "bound" = loading its frozen
+  state from libmadc. Neither reads disk.
+- ONE owner answers "do system headers come from libmadc" for every lookup —
+  the search, `#include_next`, the exists check, the reader. Never a disk
+  probe ahead of it.
+- Gate: `scripts/check-system-headers-from-libmadc.sh`, on the RELEASE binary
+  (the static-gate loop per code commit and the seam battery's static-gates
+  stage): the system include dirs are replaced by poison headers and file
+  access under them is traced; C, C++ and dialect programs must compile
+  without touching them, and `--no-embedded-headers` must hit the poison.
+
 ## Adding a new embedded header
 
 1. Create the header file in `include/madc/` (e.g., `stdlib.h`).

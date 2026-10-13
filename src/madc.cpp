@@ -815,6 +815,10 @@ int main(int argc, char **argv)
 	Program::RegistrationPolicy::ForestPolicy::loud_fallback;
     engine.registration_policy.forest_missing_policy =
 	Program::RegistrationPolicy::ForestPolicy::loud_fallback;
+    // OWNER LAW: the standard core system headers come from libmadc, never a
+    // system include dir (.claude/rules/embedded-headers.md, top section).
+    prog->registration_policy.system_headers_from_libmadc = true;
+    engine.registration_policy.system_headers_from_libmadc = true;
 #endif
 
     int filearg = 1;
@@ -969,6 +973,9 @@ int main(int argc, char **argv)
             // Programs copy only the engine's policy, configure_program).
             engine.registration_policy.bypass_system_library_headers = true;
             prog->registration_policy.bypass_system_library_headers = true;
+            // The ONE switch that sends the core system headers to disk.
+            engine.registration_policy.system_headers_from_libmadc = false;
+            prog->registration_policy.system_headers_from_libmadc = false;
             filearg = i + 1;
         } else if (strcmp(argv[i], "--no-posix-compat") == 0) {
             // This policy rides the engine as well as the current Program so

@@ -2,6 +2,35 @@
 
 See `.claude/rules/embedded-headers.md` for the rules themselves.
 
+## Why system headers come from libmadc, never /usr/include
+
+It is the product: madc compiles C and C++ on a machine with no development
+headers installed, because libmadc carries them. The owner has stated this
+rule many times (recorded 2026-10-09; restated 2026-10-13 after it was found
+broken again), and it kept breaking for structural reasons:
+
+- The pack was wired in as a FALLBACK for machines without headers. Four
+  places in `src/lexer.cpp` tried disk first and asked the pack only when the
+  file was missing: `search_include_dirs`, `resolve_include_next_path`,
+  `resolved_include_provider_exists`, `read_resolved_include` (whose comment
+  said "ordinary storage or the packed forest ... in that order").
+- Every test lane runs on a machine WITH /usr/include, so the disk always won
+  and nothing failed. The headerless lane proves the pack works when the disk
+  is ABSENT; it cannot see the disk being used when it is PRESENT.
+- The rule lived only in session notes — not in this file, not in the KG — so
+  it never loaded as a rule and no gate enforced it.
+
+Measured 2026-10-13 on the shipped binary (strace): a C program including
+`<stdio.h>` opened 54 headers from /usr/include; a C++ program opened its
+top-level `<vector>` from disk before binding the pack; `--no-forest-bind` read
+every header from disk. Each disk header was also opened twice (an existence
+probe, then the read).
+
+The gate poisons rather than hides: an empty include dir (the headerless lane)
+proves the pack can serve; a dir full of `#error` headers proves the disk is
+never READ while it is there. `--no-embedded-headers` is its negative control —
+it must reach the poison, or the gate is not watching.
+
 ## Why embed headers instead of reading from disk
 
 Embedding into the binary means `#include <iostream>` works without a

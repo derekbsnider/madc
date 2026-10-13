@@ -5466,8 +5466,13 @@ const std::vector<madc::dis::istring> &Program::sys_include_prefixes_canonical()
     // The directories' COMPARISON spellings, as host_path_within reads them:
     // no separator appended here — the canonicalizer writes the host's own
     // ('\\' on Windows), and a '/' added to it never matched there.
+    // OWNER LAW: with the core headers from libmadc their files carry the
+    // table's own spelling (the pack's unit names), so the system dirs are
+    // never resolved on disk — the table IS the comparison spelling.
+    const bool from_libmadc = system_headers_from_libmadc();
     for ( int i = 0; paths[i]; ++i )
-	_canon_prefixes.push_back(canonical_path_for_compare(paths[i]));
+	_canon_prefixes.push_back(from_libmadc ? madc::dis::istring(paths[i])
+					       : madc::dis::istring(canonical_path_for_compare(paths[i])));
     _canon_prefix_flavor = f;
     return _canon_prefixes;
 }
@@ -5581,6 +5586,22 @@ bool Program::search_include_dirs(const madc::dis::istring &incfile, madc::dis::
     }
     // Then the selected flavor's system include paths (see sys_include_paths()).
     const char *const *sys_paths = sys_include_paths();
+    // OWNER LAW: a core system header comes from libmadc — asked across EVERY
+    // system dir before any of them is touched on disk. The disk walk below
+    // then serves only a name libmadc does not carry (an add-on library's
+    // header), or everything under --no-embedded-headers / a pack-less build.
+    if ( system_headers_from_libmadc() )
+	for ( int i = 0; sys_paths[i]; ++i )
+	{
+	    madc::dis::istring frozen_path;
+	    if ( forest_source_path(std::string(sys_paths[i]) + incfile,
+				    /*allow_tail=*/false, frozen_path) )
+	    {
+		found = frozen_path;
+		include_search_memo.emplace(incfile, found);
+		return true;
+	    }
+	}
     for ( int i = 0; sys_paths[i]; ++i )
     {
 	std::string candidate = std::string(sys_paths[i]) + incfile;
@@ -5604,7 +5625,10 @@ madc::dis::istring Program::canonical_include_key(const std::string &path)
 	canonical_include_memo.find(path);
     if ( it != canonical_include_memo.end() )
 	return it->second;
-    const madc::dis::istring key(canonical_path_for_compare(path));
+    // OWNER LAW: a core header served by libmadc is named by libmadc's own
+    // spelling — resolving it through the filesystem would touch a system dir.
+    const madc::dis::istring key(path_served_by_libmadc(path.c_str())
+				 ? path : canonical_path_for_compare(path));
     canonical_include_memo.emplace(path, key);
     return key;
 }
@@ -5755,20 +5779,45 @@ madc::dis::istring Program::resolve_include_next_path(const madc::dis::istring &
 
     std::vector<madc::dis::istring> search;
     size_t start = include_next_search_list(search);
+    // The list is the -I dirs, then the system dirs (include_next_search_list).
+    // OWNER LAW: a system dir's candidate is libmadc's when libmadc carries it
+    // — never probed on disk; an -I dir (the program's own) is read from disk
+    // in order, so a project header still shadows a later system one.
+    const size_t first_sys = include_paths.size();
+    const bool from_libmadc = system_headers_from_libmadc();
     for ( size_t i = start; i < search.size(); ++i )
     {
 	madc::dis::istring &dir = search[i];
 	madc::dis::istring candidate = dir + (dir.empty() || dir.back() == '/' ? "" : "/") + incfile;
+	madc::dis::istring frozen_path;
+	if ( from_libmadc && i >= first_sys )
+	{
+	    if ( forest_source_path(candidate, /*allow_tail=*/false, frozen_path) )
+		return frozen_path;
+	    continue;
+	}
 	std::ifstream probe(candidate.c_str());
 	if ( probe.good() )
 	    return candidate;
-	madc::dis::istring frozen_path;
 	if ( forest_source_path(candidate, /*allow_tail=*/false, frozen_path) )
 	    return frozen_path;
     }
-	madc::dis::istring frozen_path;
-	if ( forest_source_path(incfile, /*allow_tail=*/true, frozen_path) )
-	    return frozen_path;
+    // A name libmadc does not carry (an add-on library's header): the system
+    // dirs on disk, as gcc searches them.
+    if ( from_libmadc )
+    {
+	for ( size_t i = start > first_sys ? start : first_sys; i < search.size(); ++i )
+	{
+	    madc::dis::istring &dir = search[i];
+	    madc::dis::istring candidate = dir + (dir.empty() || dir.back() == '/' ? "" : "/") + incfile;
+	    std::ifstream probe(candidate.c_str());
+	    if ( probe.good() )
+		return candidate;
+	}
+    }
+    madc::dis::istring frozen_path;
+    if ( forest_source_path(incfile, /*allow_tail=*/true, frozen_path) )
+	return frozen_path;
     return incfile; // not found — will fail at open
 }
 
@@ -6467,7 +6516,7 @@ bool Program::forest_unit_file_live_tokenized(uint32_t unit)
     if ( !strchr(uname, '/') )
 	return forest_live_tokenized.count("<" + std::string(uname) + ">") != 0
 	    || forest_live_tokenized.count(uname) != 0;
-    return forest_live_tokenized.count(canonical_path_for_compare(uname)) != 0;
+    return forest_live_tokenized.count(canonical_include_key(uname)) != 0;
 }
 
 // Defined here, used from tokenize_posix_whole_provider above too (declared
@@ -6486,9 +6535,14 @@ bool Program::resolved_include_provider_exists(const std::string &path)
 {
     if ( path.empty() )
 	return false;
+    madc::dis::istring frozen_path;
+    // OWNER LAW: libmadc's copy of a core system header answers first; the
+    // disk is never probed for a name libmadc carries.
+    if ( system_headers_from_libmadc()
+      && forest_source_path(path, /*allow_tail=*/false, frozen_path) )
+	return true;
     if ( madc_lexer_file_exists(path) )
 	return true;
-    madc::dis::istring frozen_path;
     return forest_source_path(path, /*allow_tail=*/false, frozen_path);
 }
 
@@ -6511,6 +6565,13 @@ bool Program::read_resolved_include(const std::string &path, std::string &text)
 {
     if ( path.empty() )
 	return false;
+    // OWNER LAW: a core system header's bytes are libmadc's — the EXACT unit
+    // name only (never a path-tail guess, which could claim a project file),
+    // and the disk is never opened for it.
+    madc::dis::istring frozen_path;
+    if ( system_headers_from_libmadc()
+      && forest_source_path(path, /*allow_tail=*/false, frozen_path) )
+	return forest_source_text(frozen_path, text);
     std::ifstream in(path.c_str(), std::ios::binary);
     if ( in )
     {
@@ -6555,6 +6616,10 @@ static bool find_filesystem_precompiled_header(Program &pgm,
 
     for ( size_t i = 0; i < candidates.size(); ++i )
     {
+	// OWNER LAW: no sidecar probe beside a libmadc-served core header (the
+	// current file's dir is a system dir there).
+	if ( pgm.path_served_by_libmadc(candidates[i].c_str()) )
+	    continue;
 	if ( madc_lexer_file_exists(candidates[i]) )
 	{
 	    outpath = candidates[i];
