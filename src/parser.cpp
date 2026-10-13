@@ -69075,10 +69075,21 @@ Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
 	    if ( s )
 		span = s;
 	}
+	// A conversion function returns its conversion-type-id
+	// ([class.conv.fct]/1): `operator Val<U>()` instantiates as
+	// `Val<U> <instance>()`, the type kept ahead of the new name.
+	const bool conversion = span > 1
+	    && token_starts_conversion_type_id(ft.decl[name_idx + 1]);
+	std::vector<TokenBase *> conversion_type;
+	if ( conversion )
+	    conversion_type.assign(ft.decl.begin() + name_idx + 1,
+				   ft.decl.begin() + name_idx + span);
 	ft.decl[name_idx] = ren;
 	if ( span > 1 )
 	    ft.decl.erase(ft.decl.begin() + name_idx + 1,
 			  ft.decl.begin() + name_idx + span);
+	ft.decl.insert(ft.decl.begin() + name_idx, conversion_type.begin(),
+		       conversion_type.end());
     }
 
     madc::dis::istring key = inst_name;
@@ -69210,6 +69221,97 @@ Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
 	tc->mti_instance = iv;
 	return iv;
     }
+    return NULL;
+}
+
+// [temp.deduct.conv]: SOURCE's conversion-function template that converts to
+// TARGET, instantiated. Its conversion-type-id, a reference and then its cv
+// dropped (/2-3), is unified with TARGET as a template-id parameter is with a
+// call's argument (unify_nested_spec_pattern_arg), or binds it when it is a
+// bare template parameter; the instance is made as a call with those explicit
+// arguments would make it. A base's template is the source's too. NULL when
+// none deduces every template parameter.
+Variable *Program::instantiate_conversion_template(DataDefCLASS *source, DataDef *target,
+						   TokenBase *where)
+{
+    if ( !source || !target )
+	return NULL;
+    const madc::dis::istring concrete = !target->canonical_cpp_spelling().empty()
+	? target->canonical_cpp_spelling() : cpp_spelling_for_mangle(target, false);
+    for ( Variable *mv : source->methods )
+    {
+	FuncDef *fd = mv ? dynamic_cast<FuncDef *>(mv->type) : NULL;
+	if ( !fd || !fd->is_member_template )
+	    continue;
+	fd->ensure_member_template_thawed();
+	const std::vector<TokenBase *> &decl = fd->member_template_decl;
+	size_t ni = skipped_template_function_declarator_name_index(decl, NULL);
+	DBG(cout << "conversion template: " << source->name << "::"
+	    << fd->method_display_name << " decl=" << decl.size()
+	    << " name at " << ni << " -> " << target->name << endl);
+	if ( ni + 1 >= decl.size() || !token_is_operator_id_start(decl[ni])
+	  || !token_starts_conversion_type_id(decl[ni + 1]) )
+	    continue;
+	size_t end = ni + operator_id_token_span(decl, ni);
+	size_t first = ni + 1;
+	while ( end > first && decl[end - 1]
+	     && (decl[end - 1]->id() == TokenID::tkBand
+	      || decl[end - 1]->id() == TokenID::tkLand
+	      || is_type_qualifier_token(decl[end - 1])) )
+	    --end;
+	while ( first < end && is_type_qualifier_token(decl[first]) )
+	    ++first;
+	if ( first >= end )
+	    continue;
+	std::map<madc::dis::istring, DataDef *> ded;
+	if ( end == first + 1 && is_contextual_identifier_token(decl[first]) )
+	{
+	    madc::dis::istring p = contextual_identifier_name(decl[first]);
+	    if ( std::find(fd->template_param_names.begin(),
+			   fd->template_param_names.end(), p)
+		 != fd->template_param_names.end() )
+		ded[p] = target;
+	}
+	else
+	{
+	    std::string pattern;
+	    for ( size_t k = first; k < end; ++k )
+		if ( decl[k] )
+		    pattern += template_token_fragment(decl[k]);
+	    int score = 0;
+	    if ( concrete.empty()
+	      || !unify_nested_spec_pattern_arg(pattern, fd->template_param_names,
+						concrete, ded, score) )
+		continue;
+	}
+	std::vector<DataDef *> args;
+	for ( const madc::dis::istring &p : fd->template_param_names )
+	{
+	    std::map<madc::dis::istring, DataDef *>::const_iterator d = ded.find(p);
+	    if ( d == ded.end() || !d->second )
+		break;
+	    args.push_back(d->second);
+	}
+	DBG(cout << "conversion template: deduced " << args.size() << " of "
+	    << fd->template_param_names.size() << endl);
+	if ( args.size() != fd->template_param_names.size() )
+	    continue;
+	Variable recv("__madc_conv_recv", *source, 1, NULL, false);
+	TokenCallMethod synth(recv, *mv);
+	synth.explicit_template_args = args;
+	if ( where )
+	    copy_token_location(&synth, where);
+	Variable *iv = instantiate_member_fn_template_for_call(&synth);
+	DBG(cout << "conversion template: instance "
+	    << (iv ? std::string(iv->name) : std::string("(none)")) << endl);
+	if ( iv )
+	    return iv;
+    }
+    if ( Variable *iv = instantiate_conversion_template(source->base_class, target, where) )
+	return iv;
+    for ( const BaseSpec &base : source->bases )
+	if ( Variable *iv = instantiate_conversion_template(base.base, target, where) )
+	    return iv;
     return NULL;
 }
 

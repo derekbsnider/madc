@@ -1,0 +1,28 @@
+// A conversion-function template converts a class object to the class a
+// parameter or a copy-initialization names ([temp.deduct.conv]: its
+// template arguments deduce from that class), its own and one a base
+// declares. g++ and clang++ print testconvtemplate.expect; madc
+// default-constructed the target, printing 0 or garbage, exit 0.
+#include <stdio.h>
+template <typename T> struct Val { T v; T get() { return v; } };
+struct W
+{
+	int x;
+	template <typename U> operator Val<U>() const { Val<U> r; r.v = (U)x; return r; }
+};
+struct D : W { int extra; };
+int take(Val<int> v) { return v.get(); }
+double taked(Val<double> v) { return v.get(); }
+int main()
+{
+	W w = {7};
+	printf("argument %d\n", take(w));
+	Val<long> l = w;
+	printf("copy-init %ld\n", l.get());
+	printf("double %.1f\n", taked(w));
+	D d;
+	d.x = 9;
+	d.extra = 0;
+	printf("base's template %d\n", take(d));
+	return 0;
+}

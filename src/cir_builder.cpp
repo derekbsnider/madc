@@ -18921,7 +18921,14 @@ node_t CirBuilder::try_implicit_copy_construct(node_t dst_lvalue,
 			obj_cv = (int)(src_dd->cv_quals() & (cvCONST | cvVOLATILE));
 		}
 		Variable *conv = class_conversion_to_class(acls, cdd, obj_cv);
+		// A conversion-function template deduces from the target
+		// ([temp.deduct.conv]); its instance converts as a plain one.
+		if (!conv && acls && m_prog)
+			conv = m_prog->instantiate_conversion_template(acls, cdd,
+								       src_arg);
 		FuncDef *conv_fd = conv ? dynamic_cast<FuncDef *>(conv->type) : NULL;
+		if (conv_fd && !same_object_class(&conv_fd->return_value_type(), cdd))
+			conv_fd = NULL;
 		if (conv_fd && class_trivially_copyable(cdd)
 		    && !function_retbuf_class(conv_fd)) {
 			TokenCallMethod *call;

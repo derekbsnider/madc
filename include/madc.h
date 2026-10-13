@@ -5027,6 +5027,10 @@ public:
     // for consumers without a call token. libstdc++-EXPORTED member templates
     // keep the mangled-direct path (member_template_method_call).
     Variable *instantiate_member_fn_template_for_call(TokenCallFunc *tc);
+    // [temp.deduct.conv]: SOURCE's conversion-function template converting
+    // to TARGET, instantiated; NULL when none deduces.
+    Variable *instantiate_conversion_template(DataDefCLASS *source, DataDef *target,
+					      TokenBase *where);
     // Per-call-shape member-template instantiation memo: shape key (the
     // placeholder's unique var.name + arg type/value-category + explicit-arg
     // spellings — placeholder IDENTITY, unlike the display-name cycle key,

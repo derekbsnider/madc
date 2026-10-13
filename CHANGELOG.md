@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### A conversion-function template converts to the class deduced from the target
+
+A class's `template <typename U> operator Val<U>()` now converts an object of
+that class to the `Val<T>` a by-value parameter or a copy-initialization names:
+its template arguments deduce from that target type ([temp.deduct.conv]) — the
+conversion-type-id, a reference and its cv dropped, unified with the target —
+and the deduced instance converts as a plain conversion function would, its own
+template and one a base declares. Before, madc applied no conversion-function
+template and default-constructed the target, a silent wrong answer (exit 0
+printing 0 or garbage where g++ and clang++ print the converted value). Gate:
+`testconvtemplate`.
+
 ### A REPL session's redefined type is its name's next version
 
 A struct, union or class an earlier entry defined and defines again is no
