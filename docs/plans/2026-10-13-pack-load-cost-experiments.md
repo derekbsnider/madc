@@ -307,3 +307,53 @@ not bind and silently parses live), stored uncompressed, bound with
   original plan: "strictly unpack a single header's AST branch on demand"),
   with references into the slices of the headers it includes, and what that
   costs in size against today's shared tables.
+
+### Test 7a — the size of per-header slices (2026-10-13)
+
+`tmp/pc/t7/slices.py`: each shared table of the release pack split into 369
+equal slices (369 = the units that carry records) and each slice compressed on
+its own at the release level (zstd 15), with and without a dictionary trained
+on that table (dictionary counted). The hash-bucket tables (segs 4, 14) are
+left out: slices would carry their own small indexes instead.
+
+| table | raw | one frame (today) | 369 frames | 369 frames + dict |
+|---|---|---|---|---|
+| strings: bytes | 3.08 MB | 0.428 | 0.624 | 0.578 |
+| strings: entries | 0.88 | 0.504 | 0.479 | 0.561 |
+| arena: defs | 4.18 | 0.179 | 0.205 | 0.290 |
+| arena: payload | 1.38 | 0.092 | 0.195 | 0.204 |
+| arena strings: bytes | 0.83 | 0.082 | 0.137 | 0.137 |
+| arena strings: entries | 0.29 | 0.154 | 0.162 | 0.182 |
+| arena token bytes | 0.46 | 0.036 | 0.185 | 0.121 |
+| template payload | 1.47 | 0.163 | 0.203 | 0.240 |
+| template tokens | 4.90 | 0.850 | 1.191 | 1.106 |
+| **total** | **17.47 MB** | **2.49 MB** | **3.38 MB** | **3.42 MB** |
+
+- Compressing per slice costs ~+0.9 MB (+36% on these tables, ~+8% of the
+  11.6 MB pack); a dictionary does not pay. Storing them raw instead costs
+  +15 MB.
+- An ESTIMATE: real per-header slices are not equal-sized byte runs, and
+  ownership (which header a shared record belongs to) still has to be decided.
+
+### Test 7b — compressed per-header containers keep the floor (2026-10-13)
+
+The Test 6 single-header containers as frozen (zstd, the release settings)
+against their uncompressed copies and live, same harness (`T6_ARMS`):
+
+| workload | live | own container, raw | own container, zstd |
+|---|---|---|---|
+| `<stddef.h>` | 4.74 ms / 12.7M | 4.76 / 12.4M | 4.81 / 13.4M |
+| `<stdio.h>` | 9.31 / 58.9M | 5.29 / 18.2M | 5.43 / 21.0M |
+| `<limits>` | 14.13 / 92.6M | 5.87 / 21.4M | 6.11 / 25.2M |
+| `<type_traits>` | 15.83 / 101.9M | 6.82 / 28.7M | 7.38 / 33.8M |
+| `<vector>` | 79.33 / 549.9M | 15.53 / 76.7M | 16.58 / 89.0M |
+| 8 everyday "C" headers | 155.26 / 1,280.5M | 23.60 / 131.3M | 25.54 / 151.2M |
+| cxx_stl.cpp | 481.13 / 2,867.1M | 271.59 / 1,420.0M | 270.24 / 1,465.9M |
+
+- Once a bind decodes only what the program includes, compression costs
+  0.05–2 ms (≤ 8% of the bind). The pack can stay compressed: the +10–15 MB
+  of raw tables buys almost nothing at this scale.
+- Together with 7a: per-header slices, compressed, ≈ +0.9 MB of pack for the
+  Test 6 floor — IF a sliced pack reaches the floor. That depends on
+  ownership: which slice holds a record that several headers share or that
+  one header's instantiation made from another's types. Not yet measured.
