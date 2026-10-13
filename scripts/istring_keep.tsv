@@ -4,10 +4,11 @@ src/lexer.cpp	248
 src/parser.cpp	421
 src/cir_builder.cpp	53
 src/cir_builder.h	16
-src/madc_cir.cpp	61
+src/madc_cir.cpp	62
 src/madc_cir.h	9
 src/cir_freeze.cpp	12
-src/cir_freeze.h	1
+src/cir_freeze.h	2
+src/cir_pack_seeds.cpp	6
 src/cir_dump.cpp	41
 src/cir_emit_c.cpp	3
 src/cir_format.cpp	22

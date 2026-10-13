@@ -3803,6 +3803,14 @@ public:
     // as a DK_MEMBERPTR record at its own project slot: ref0 = the member type (data) or the
     // signature's DK_FUNC record (function), the owner's type-id and spelling beside it.
     void forest_arena_record_member_pointer(DataDef *dd);
+    // Every parse-time arena write: the record, then (freeze only) its slot's POINT OF
+    // CREATION — the global token index where the innermost open top-level declaration
+    // began (pack_decl_stack), the same index the decl index buckets into units. A write
+    // with no declaration open leaves the slot's stamp as it was (0xffffffff = never
+    // stamped). The pack's seed index places an undecided record with that unit
+    // (docs/plans/2026-10-13-pack-slices-design.md §4).
+    std::vector<uint32_t> forest_arena_poi;
+    void forest_arena_put(uint32_t tid, const madc::dis::defrec &r);
     // Class-template parse-once representation. TemplateDef is copied across
     // lookup, merge, partial selection, and forest restore, so it owns only a
     // stable Program-lifetime arena id. Pattern nodes use ids and value fields;

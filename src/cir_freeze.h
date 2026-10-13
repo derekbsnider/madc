@@ -146,7 +146,15 @@ enum : uint32_t
 	SNAP_KIND_CIR_SHARED_CONFIGS   = madc::dis::SNAP_KIND_CONSUMER + 25, // container-global: cir_forest_shared_config[]
 	// v57: the bare FUNCTION names the units' decl indexes declare, sorted —
 	// count, count + 1 offsets, NUL-terminated name bytes (codec None).
-	SNAP_KIND_CIR_FUNC_NAMES       = madc::dis::SNAP_KIND_CONSUMER + 26
+	SNAP_KIND_CIR_FUNC_NAMES       = madc::dis::SNAP_KIND_CONSUMER + 26,
+	// v58 (pack slices, docs/plans/2026-10-13-pack-slices-design.md §3):
+	// the inverted declaration index (name -> declaring units), the per-unit
+	// seed index, and the arena recordability bits — so a bind visits and
+	// judges only what its bound units carry. Layouts: ForestDeclNames,
+	// ForestSeeds, ForestRecordableBits below.
+	SNAP_KIND_CIR_DECL_NAMES       = madc::dis::SNAP_KIND_CONSUMER + 27,
+	SNAP_KIND_CIR_SEEDS            = madc::dis::SNAP_KIND_CONSUMER + 28,
+	SNAP_KIND_CIR_RECORDABLE       = madc::dis::SNAP_KIND_CONSUMER + 29
 };
 
 // One frozen node record (fixed-size POD; x86-64 little-endian first, like
@@ -592,7 +600,13 @@ bool cir_freeze_read(const madc::dis::snapshot_reader &r, uint32_t seg_id_base,
 // header packed, and where" never decodes the string pool or the arena; and
 // CIR_FOREST_SEG_FUNC_NAMES answers "does the pack declare function X" the
 // same way.
-enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 57 };
+//
+// v58: the pack's SEED index (docs/plans/2026-10-13-pack-slices-design.md) —
+// DECL_NAMES (every declared name with its declaring units), SEEDS (per unit,
+// the arena slots / template records / global records a bind of that unit
+// visits, plus the always-visited list) and RECORDABLE (the arena
+// recordability fixpoint, computed once at freeze). UNIT_BASE moves 24 -> 32.
+enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 58 };
 // Flags word of a SNAP_KIND_CIR_BRANCH_DEPS tuple.
 enum : uint32_t {
 	CIR_BRANCH_DEP_DEFINED   = 1u,	// the macro was defined at the consult
@@ -638,7 +652,11 @@ enum : uint32_t
 	CIR_FOREST_SEG_LEDGER           = 21,	// S5 AOT ledger (optional; absent = no ledger)
 	CIR_FOREST_SEG_SHARED_CONFIGS   = 22,	// configs sharing this profile (optional; absent = none)
 	CIR_FOREST_SEG_FUNC_NAMES       = 23,	// v57: the declared bare function names, sorted (read in place)
-	CIR_FOREST_SEG_UNIT_BASE     = 24,
+	CIR_FOREST_SEG_DECL_NAMES       = 24,	// v58: name -> declaring units (ForestDeclNames)
+	CIR_FOREST_SEG_SEEDS            = 25,	// v58: per-unit seed lists (ForestSeeds)
+	CIR_FOREST_SEG_RECORDABLE       = 26,	// v58: arena recordability bits (ForestRecordableBits)
+	// 27-31 reserved (pack slices: the blocked shared tables' block indexes).
+	CIR_FOREST_SEG_UNIT_BASE     = 32,
 	CIR_FOREST_SEGS_PER_UNIT     = 10	// +0 records, +1 children, +2 connectors,
 						// +3 positions, +4 tokens, +5 decl index,
 						// +6 pp exports, +7 edges, +8 branch deps
@@ -745,6 +763,113 @@ struct cir_forest_decl_entry
 	uint32_t slice_begin;	// unit-local token indices [begin, end)
 	uint32_t slice_end;
 	uint32_t aux;		// PACK_DECL_* flags (spans-units / fuzzy-bounds)
+};
+
+// --- v58 pack slices (docs/plans/2026-10-13-pack-slices-design.md) --------
+//
+// DECL_NAMES: every name some unit's decl index declares, sorted (strcmp),
+// unique, each with its declaring units. ONE reader answers the bind's
+// verdicts (declared by a bound unit / only by unbound units / by none) and
+// the freeze's seed placement. Layout (u32 words, then bytes):
+//   [0]                 N names
+//   [1 .. N+1]          name byte offsets into the name bytes (off[N] = total)
+//   [N+2 .. 2N+2]       unit-run word offsets into the unit words (u[N] = total)
+//   unit words          the declaring units of name i at [u[i], u[i+1])
+//   name bytes          NUL-terminated names
+class ForestDeclNames
+{
+public:
+	ForestDeclNames() : _n(0), _off(0), _uoff(0), _units(0), _nunits(0),
+			    _bytes(0), _nbytes(0) {}
+	// Binds the layout in place (validated: the header, both offset tails, the
+	// section sizes); false = malformed, the view stays empty.
+	bool bind(const uint8_t *p, size_t len);
+	bool empty() const { return _n == 0; }
+	uint32_t size() const { return _n; }
+	// The units declaring `name` (n = 0: none).
+	const uint32_t *units_of(const char *name, uint32_t &n) const;
+	// A verdict SURFACE — the bind's qualified-then-bare discipline: the units
+	// declaring "ns::name" when any unit declares it, else those declaring name.
+	const uint32_t *surface(const char *name, const char *ns, uint32_t &n) const;
+	// A template-id's HEAD ("std::vector<int>" -> the units declaring
+	// "std::vector"); has_head = false when the spelling carries no '<'.
+	const uint32_t *head_of(const char *canon, bool &has_head, uint32_t &n) const;
+	// Builds the layout from (name -> sorted unique units).
+	static void build(const std::map<madc::dis::istring, std::vector<uint32_t> > &names,
+			  std::vector<uint8_t> &out);
+private:
+	uint32_t        _n;
+	const uint32_t *_off;
+	const uint32_t *_uoff;
+	const uint32_t *_units;
+	uint32_t        _nunits;
+	const char     *_bytes;
+	uint32_t        _nbytes;
+};
+
+// SEEDS: per bound unit, what a bind of it visits. L lists = unit_count + 1;
+// list L-1 is the ALWAYS list (visited by every bind). Layout (u32 words):
+//   [0]                L
+//   arena_off[L+1]     slot runs (arena slots: madc::dis::arena_id_of)
+//   tmpl_off[L+1]      template-record index runs
+//   glob_off[L+1]      global-record index runs
+//   D                  owner-dependent pairs
+//   dep_owner[D]       owner ARENA SLOTS, ascending
+//   dep_item[D]        (kind << 30) | index — kind 0 an arena slot (a
+//                      DK_DEFBODY / DK_NSBIND keyed by the owner's method),
+//                      kind 1 a template-record index, kind 2 a global-record
+//                      index (a namespace-scope Variable that IS a method)
+//   arena slots, template indices, global indices (the runs, concatenated)
+// A dependent restores exactly when its owner class does, so it is visited
+// from the owner (admitted by seed or by pull), never from a list.
+enum : uint32_t { CIR_SEED_DEP_ARENA = 0u, CIR_SEED_DEP_TEMPLATE = 1u,
+		  CIR_SEED_DEP_GLOBAL = 2u };
+class ForestSeeds
+{
+public:
+	struct Run { const uint32_t *p; uint32_t n; };
+	ForestSeeds() : _l(0), _aoff(0), _toff(0), _goff(0), _d(0), _dep_owner(0),
+			_dep_item(0), _ids(0), _nids(0) {}
+	bool bind(const uint32_t *w, size_t words);	// validated; false = malformed
+	bool empty() const { return _l == 0; }
+	uint32_t lists() const { return _l; }
+	uint32_t always() const { return _l ? _l - 1 : 0; }
+	Run arena(uint32_t list) const     { return run(_aoff, list, 0); }
+	Run templates(uint32_t list) const { return run(_toff, list, _aoff[_l]); }
+	Run globals(uint32_t list) const   { return run(_goff, list, _aoff[_l] + _toff[_l]); }
+	// The dependents of an owner arena slot (equal range of dep_owner).
+	Run dependents(uint32_t owner_slot) const;
+private:
+	Run run(const uint32_t *off, uint32_t list, uint32_t base) const;
+	uint32_t        _l;
+	const uint32_t *_aoff, *_toff, *_goff;
+	uint32_t        _d;
+	const uint32_t *_dep_owner, *_dep_item;
+	const uint32_t *_ids;
+	uint32_t        _nids;
+};
+
+// RECORDABLE: [0] slot count, [1] the anon-tag floor (max __anon_N across the
+// named records), then one bit per arena slot — the recordability fixpoint
+// (an aggregate whose member / base / anon chains all resolve), computed once
+// at freeze instead of by every binding process.
+class ForestRecordableBits
+{
+public:
+	ForestRecordableBits() : _slots(0), _max_anon(0), _bits(0) {}
+	bool bind(const uint32_t *w, size_t words);
+	bool empty() const { return _bits == 0; }
+	uint32_t max_anon_tag() const { return _max_anon; }
+	bool recordable(uint32_t tid) const
+	{
+		if (!madc::dis::arena_id_is_project(tid))
+			return false;
+		uint32_t s = madc::dis::arena_slot_of(tid);
+		return _bits && s < _slots && ((_bits[s >> 5] >> (s & 31)) & 1u);
+	}
+private:
+	uint32_t        _slots, _max_anon;
+	const uint32_t *_bits;
 };
 
 // One PP-export event head in the unit's uint32 event stream; nparams
@@ -1053,7 +1178,27 @@ struct cir_frozen_forest
 	// provenance (decl_file), which differs when a header prototype meets a
 	// root-file definition. Falls back to the unit name when absent.
 	std::map<madc::dis::istring, const char *> funcdef_files;
+	// --- v58 pack slices (docs/plans/2026-10-13-pack-slices-design.md) ---
+	// Transient: the unit of each GLOBAL token index (fill_pack_payloads'
+	// bucketing, 0xffffffff = none) — maps an arena slot's point-of-creation
+	// stamp (Program::forest_arena_poi) to its unit.
+	std::vector<uint32_t> token_unit;
+	// Transient: each globals[] record's declaring file (NULL = unknown).
+	std::vector<const char *> global_files;
+	// Built by cir_forest_build_seeds; written as DECL_NAMES / SEEDS / RECORDABLE.
+	std::vector<uint8_t>  decl_names;
+	std::vector<uint32_t> seeds;
+	std::vector<uint32_t> recordable;
 };
+
+// v58: builds f.decl_names / f.seeds / f.recordable (docs/plans/2026-10-13-
+// pack-slices-design.md §4) from the units' decl indexes, the arena, the
+// templates and the globals. `pool` holds the decl-index / template / global
+// names; `poi` is Program::forest_arena_poi (each arena slot's point-of-
+// creation token index, mapped to a unit through f.token_unit). `summary`
+// receives the placement census for the freeze's progress line.
+void cir_forest_build_seeds(cir_frozen_forest &f, const madc::dis::intern_table &pool,
+			    const std::vector<uint32_t> &poi, std::string &summary);
 
 // The context-hash pin: madc version + record/position layout + the c2mir
 // node-code enum tail + the typeid primitive tail. Stamped by writers,
@@ -1451,6 +1596,13 @@ class CirFrozenForest
 	mutable uint32_t _fn_count = 0;
 	mutable const uint32_t *_fn_off = NULL;
 	mutable const char *_fn_bytes = NULL;
+	// v58 seed index (DECL_NAMES / SEEDS / RECORDABLE), bound on first use
+	// (decoded through the process segment cache; absent = empty view).
+	mutable bool _seed_index_bound = false;
+	mutable ForestDeclNames _decl_names;
+	mutable ForestSeeds _seeds;
+	mutable ForestRecordableBits _recordable_bits;
+	void bind_seed_index() const;
 	uint32_t _root_unit, _root_idx;
 	uint32_t _language_std = 0, _defines_hash = 0;	// v27 producer config (dir header)
 	std::vector<cir_forest_shared_config> _shared_configs;	// more configs this profile serves
@@ -1661,6 +1813,13 @@ public:
 	// search over CIR_FOREST_SEG_FUNC_NAMES in place, after open_header
 	// alone — never the string pool, the arena or a unit's decl index.
 	bool declares_function(const madc::dis::istring &name) const;
+	// v58 seed index (docs/plans/2026-10-13-pack-slices-design.md): the
+	// inverted declaration index, the per-unit seed lists, the frozen
+	// recordability bits. Empty views on a container without them.
+	const ForestDeclNames &decl_names() const { bind_seed_index(); return _decl_names; }
+	const ForestSeeds &seeds() const { bind_seed_index(); return _seeds; }
+	const ForestRecordableBits &recordable_bits() const
+		{ bind_seed_index(); return _recordable_bits; }
 	// The mapped image and length this reader was opened on.
 	bool opened_from(const void *image, size_t len) const
 		{ return _header_opened && image == _image && len == _image_len; }

@@ -3861,6 +3861,8 @@ static void cir_forest_fill_pack_payloads(Program *prog, cir_frozen_forest &f)
 	unit_toks[u].push_back(tb);
     }
 
+    f.token_unit = unit_of;	// v58: each arena slot's point-of-creation unit
+
     // 2. Decl index: global [begin,end) -> (unit, local slice).
     for (size_t d = 0; d < prog->pack_decls.size(); ++d) {
 	const Program::PackDeclEntry &e = prog->pack_decls[d];
@@ -4093,6 +4095,20 @@ static bool forest_type_is_opaque_placeholder(DataDef *dd)
 	return cdd && cdd->is_dependent_placeholder && !cdd->opaque_concrete_tag;
 }
 
+// The one parse-time arena write (declared beside forest_arena in madc.h): the
+// record, and under a freeze its slot's point of creation.
+void Program::forest_arena_put(uint32_t tid, const madc::dis::defrec &r)
+{
+	forest_arena.set_def_at(tid, r);
+	if (!pack_recording || pack_decl_stack.empty()
+	    || !madc::dis::arena_id_is_project(tid))
+		return;
+	uint32_t slot = madc::dis::arena_slot_of(tid);
+	if (forest_arena_poi.size() <= slot)
+		forest_arena_poi.resize((size_t)slot + 1, 0xffffffffu);
+	forest_arena_poi[slot] = (uint32_t)pack_decl_stack.back().begin;
+}
+
 // B3 write-through (SLICE 1c/1d): record a newly-created PROJECT unary derived type — pointer,
 // reference, or const — into this Program's arena, keyed by its own project-id slot. Dispatches
 // on the actual type for the record kind and reads the operand from base_type (DataDefREF is-a
@@ -4152,7 +4168,7 @@ void Program::forest_arena_record_unary(DataDef *dd)
 	r.carray_count_lo = (uint32_t)(carray_count & 0xffffffffu);
 	r.carray_count_hi = (uint32_t)(carray_count >> 32);
 	r.flags    = record_flags;
-	forest_arena.set_def_at(tid, r);
+	forest_arena_put(tid, r);
 }
 
 // B3 write-through (SLICE 1e): record a COMPLETED project aggregate — struct, union, or class
@@ -4529,7 +4545,7 @@ void Program::forest_arena_record_aggregate(DataDefSTRUCT *sdd)
 	for (size_t i = 0; i < arun.size(); ++i)
 		forest_arena.add_payload(arun[i]);
 
-	forest_arena.set_def_at(tid, r);
+	forest_arena_put(tid, r);
 }
 
 // B3 write-through (SLICE 1f): record a FuncDef as a DK_FUNC record at its project-id slot —
@@ -4692,7 +4708,7 @@ void Program::forest_arena_record_func(FuncDef *fd, Method *mth)
 			forest_arena.add_payload(ar);
 		}
 	}
-	forest_arena.set_def_at(tid, r);
+	forest_arena_put(tid, r);
 }
 
 // v22 (iostream): record a FUNCTION-POINTER type reached through a member /
@@ -4723,10 +4739,10 @@ void Program::forest_arena_record_fptr(DataDef *dd)
 			r.datatype = (uint32_t)fp->rawtype();
 			if (fp->ptr_syntax)
 				r.flags |= madc::dis::DF_FPTR_PTR_SYNTAX;
-			forest_arena.set_def_at(tid, r);	// self-ref guard: write first
+			forest_arena_put(tid, r);	// self-ref guard: write first
 			if (fp->target) {
 				r.ref0 = forest_serialize_type_id(fp->target);
-				forest_arena.set_def_at(tid, r);
+				forest_arena_put(tid, r);
 				if (madc::dis::arena_id_is_project(r.ref0)
 				    && !forest_arena.has_def(r.ref0))
 					forest_arena_record_func(fp->target);
@@ -4786,12 +4802,12 @@ void Program::forest_arena_record_member_pointer(DataDef *dd)
 		if (mf->is_const_method)
 			r.flags |= madc::dis::DF_MEMBERPTR_CONST_METHOD;
 	}
-	forest_arena.set_def_at(tid, r);	// self-ref guard: write first
+	forest_arena_put(tid, r);	// self-ref guard: write first
 	if (mf) {
 		if (!mf->target)
 			return;
 		r.ref0 = forest_serialize_type_id(mf->target);
-		forest_arena.set_def_at(tid, r);
+		forest_arena_put(tid, r);
 		if (madc::dis::arena_id_is_project(r.ref0)
 		    && !forest_arena.has_def(r.ref0))
 			forest_arena_record_func(mf->target);
@@ -4800,7 +4816,7 @@ void Program::forest_arena_record_member_pointer(DataDef *dd)
 	if (!md->member_type)
 		return;
 	r.ref0 = forest_serialize_type_id(md->member_type);
-	forest_arena.set_def_at(tid, r);
+	forest_arena_put(tid, r);
 	forest_arena_record_fptr(md->member_type);	// a fn-ptr or member-pointer member
 }
 
@@ -4843,11 +4859,25 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
     // is fenced from the bind restore. Provenance = its dkGlobalVar TopDecl's
     // decl token; a global without one classifies include-origin (conservative:
     // it keeps restoring, like the header tag globals).
-    auto global_tu_root = [&](Variable *gv) -> bool {
+    auto global_top_decl = [&](Variable *gv) -> const Program::TopDecl * {
 	for (auto &t : prog->top_decls)
 	    if (t.kind == Program::DeclKind::dkGlobalVar && t.var == gv)
-		return t.decl && prog->forest_is_tu_root_file(t.decl->file);
-	return false;
+		return &t;
+	return NULL;
+    };
+    auto global_tu_root = [&](Variable *gv) -> bool {
+	const Program::TopDecl *t = global_top_decl(gv);
+	return t && t->decl && prog->forest_is_tu_root_file(t->decl->file);
+    };
+    // The pack's seed index places a global its name does not decide with
+    // the unit of this file (docs/plans/2026-10-13-pack-slices-design.md §4).
+    auto global_decl_file = [&](Variable *gv) -> const char * {
+	const Program::TopDecl *t = global_top_decl(gv);
+	return t && t->decl ? t->decl->file : NULL;
+    };
+    auto push_global = [&](const cir_forest_global_record &g, const char *file) {
+	f.globals.push_back(g);
+	f.global_files.push_back(file);
     };
     // v39: the emitted symbol this Variable resolves to, VERBATIM. Live derived
     // it through whichever owner the entity's category has —
@@ -4897,7 +4927,7 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
 			  << ((g.gflags & CIR_GLOBALF_TU_ROOT)
 			      ? " (TU-root)" : "")
 			  << std::endl);
-		f.globals.push_back(g);
+		push_global(g, eo->second);
 		continue;
 	    }
 	}
@@ -4927,7 +4957,7 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
 		g.gflags |= CIR_GLOBALF_TU_ROOT;
 	    g.ns_id   = global_ns_id(v);
 	    g.alias_id   = global_alias_id(v);	// v39
-	    f.globals.push_back(g);
+	    push_global(g, global_decl_file(v));
 	    continue;
 	}
 	DataDefCLASS *cdd = dynamic_cast<DataDefCLASS *>(v->type);
@@ -4999,7 +5029,7 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
 		}
 		break;
 	    }
-	    f.globals.push_back(g);
+	    push_global(g, global_decl_file(v));
 	    continue;
 	}
 	// v14: a SCALAR-const file-scope global (e.g. hardware_*_interference_size
@@ -5040,7 +5070,7 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
 		g.gflags |= CIR_GLOBALF_TU_ROOT;
 	    g.ns_id   = global_ns_id(v);
 	    g.alias_id   = global_alias_id(v);	// v39
-	    f.globals.push_back(g);
+	    push_global(g, td->file);
 	    continue;
 	}
 	TokenBase *rhs = td->initialize;
@@ -5071,7 +5101,7 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
 	g.ns_id      = global_ns_id(v);
 	g.alias_id      = global_alias_id(v);	// v39
 	g.init_value = rhs->ival();
-	f.globals.push_back(g);
+	push_global(g, td ? td->file : NULL);
     }
 }
 
@@ -6471,7 +6501,7 @@ static void forest_record_enum(Program *prog, DataDefENUM *edd,
 	r.constval_count = (uint32_t)evs.size();
 	for (size_t e = 0; e < evs.size(); ++e)
 		prog->forest_arena.add_payload(evs[e]);
-	prog->forest_arena.set_def_at(tid, r);
+	prog->forest_arena_put(tid, r);
 }
 
 // B3 flip (Chunk 2): RE-RECORD every live project aggregate into the arena at
@@ -6671,7 +6701,7 @@ static void cir_forest_arena_refresh(Program *prog,
 		if (!fd->namespace_name.empty())
 			r.ns_id = prog->forest_arena.strings.intern(
 				fd->namespace_name.c_str());
-		prog->forest_arena.set_def_at(tid, r);
+		prog->forest_arena_put(tid, r);
 	}
 }
 
@@ -7090,6 +7120,15 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 						  : NULL);	// freeze-time fidelity (inline bodies / typedefs / ns)
 		cir_forest_fill_globals(prog, f);	// file-scope globals (CIR_GLOBALS; ids swizzle via the arena)
 		cir_forest_fill_templates(prog, f);	// v20: template-NAME state (pattern maps, token runs)
+		// v58: the seed index — what a bind of each unit visits and how
+		// it judges it (docs/plans/2026-10-13-pack-slices-design.md).
+		if (prog->pack_recording && TokenBase::_active_strpool) {
+			std::string seed_summary;
+			cir_forest_build_seeds(f, *TokenBase::_active_strpool,
+					       prog->forest_arena_poi, seed_summary);
+			fprintf(stderr, "%s: pack seeds: %s\n", source_name,
+				seed_summary.c_str());
+		}
 		// Per-segment zstd, per the container design (2026-07-04 plan:
 		// zstd frames + per-segment codec directory; zlib is the
 		// explicit --without-zstd fallback only). The INTERN pool
@@ -7393,6 +7432,15 @@ int madc_cir_dump_forest(const char *container_path)
 	if (const char *s = forest.pool_str(bm[i]))
 	    printf("branchmacro\t%s\n", s);
 
+    // v58 seed index (docs/plans/2026-10-13-pack-slices-design.md).
+    if (!forest.seeds().empty()) {
+	const ForestSeeds &sd = forest.seeds();
+	ForestSeeds::Run sa = sd.arena(sd.always()), st = sd.templates(sd.always()),
+			 sg = sd.globals(sd.always());
+	printf("declnames\t%u\n", forest.decl_names().size());
+	printf("seeds-always\t%u\t%u\t%u\n", sa.n, st.n, sg.n);
+	printf("recordable-anon\t%u\n", forest.recordable_bits().max_anon_tag());
+    }
     for (uint32_t u = 0; u < forest.unit_count(); ++u) {
 	const char *uname = forest.unit_name(u);
 	uint32_t anchor = forest.unit_anchor(u);
@@ -7402,6 +7450,13 @@ int madc_cir_dump_forest(const char *container_path)
 	printf("unit\t%u\t%s\ttokens=%u\tanchor=%d\n", u,
 	       uname ? uname : "?", ntok,
 	       anchor == CIR_FOREST_ANCHOR_NONE ? -1 : (int)anchor);
+	// v58: what a bind of this unit visits (arena slots / templates / globals).
+	if (u < forest.seeds().lists()) {
+	    ForestSeeds::Run sa = forest.seeds().arena(u), st = forest.seeds().templates(u),
+			     sg = forest.seeds().globals(u);
+	    if (sa.n || st.n || sg.n)
+		printf("seeds\t%s\t%u\t%u\t%u\n", uname ? uname : "?", sa.n, st.n, sg.n);
+	}
 	std::vector<uint32_t> edges;
 	if (forest.unit_edges(u, edges))
 	    for (size_t k = 0; k < edges.size(); ++k)

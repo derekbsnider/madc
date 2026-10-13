@@ -37,6 +37,7 @@ extern thread_local bool madc_verbose;
 #include "token_arena.h"
 #include "madcdis/id_table.h"
 #include "cir_freeze.h"
+#include "cir_arena_recordable.h"
 
 // ---------------------------------------------------------------------------
 // Payload classification
@@ -701,6 +702,20 @@ bool cir_forest_write(const cir_frozen_forest &f, madc::dis::snapshot_writer &w,
 		fn_index.insert(fn_index.end(), fns[i], fns[i] + strlen(fns[i]) + 1);
 	if (!add_seg(w, CIR_FOREST_SEG_FUNC_NAMES, SNAP_KIND_CIR_FUNC_NAMES,
 		     fn_index.data(), fn_index.size(), PchCompression::None))
+		return false;
+	// v58: the seed index (cir_forest_build_seeds; absent on a freeze that
+	// records no decl index — the bind then walks the whole container).
+	if (!f.decl_names.empty()
+	    && !add_seg(w, CIR_FOREST_SEG_DECL_NAMES, SNAP_KIND_CIR_DECL_NAMES,
+			f.decl_names.data(), f.decl_names.size(), codec))
+		return false;
+	if (!f.seeds.empty()
+	    && !add_seg(w, CIR_FOREST_SEG_SEEDS, SNAP_KIND_CIR_SEEDS,
+			f.seeds.data(), f.seeds.size() * sizeof(uint32_t), codec))
+		return false;
+	if (!f.recordable.empty()
+	    && !add_seg(w, CIR_FOREST_SEG_RECORDABLE, SNAP_KIND_CIR_RECORDABLE,
+			f.recordable.data(), f.recordable.size() * sizeof(uint32_t), codec))
 		return false;
 	if (!add_seg(w, CIR_FOREST_SEG_STR_BYTES, madc::dis::SNAP_KIND_INTERN_BYTES,
 		     pool->bytes_data(), pool->bytes_size(), codec)
@@ -1710,6 +1725,24 @@ bool CirFrozenForest::bind_name_index(const uint8_t *p, uint32_t nunits,
 	return true;
 }
 
+void CirFrozenForest::bind_seed_index() const
+{
+	if (_seed_index_bound)
+		return;
+	_seed_index_bound = true;
+	size_t len = 0;
+	const madc::dis::snapshot_segment *s;
+	if ((s = _reader.find(CIR_FOREST_SEG_DECL_NAMES)) && s->kind == SNAP_KIND_CIR_DECL_NAMES)
+		if (const uint8_t *p = forest_segment_bytes(_reader, *s, len))
+			_decl_names.bind(p, len);
+	if ((s = _reader.find(CIR_FOREST_SEG_SEEDS)) && s->kind == SNAP_KIND_CIR_SEEDS)
+		if (const uint8_t *p = forest_segment_bytes(_reader, *s, len))
+			_seeds.bind((const uint32_t *)p, len / sizeof(uint32_t));
+	if ((s = _reader.find(CIR_FOREST_SEG_RECORDABLE)) && s->kind == SNAP_KIND_CIR_RECORDABLE)
+		if (const uint8_t *p = forest_segment_bytes(_reader, *s, len))
+			_recordable_bits.bind((const uint32_t *)p, len / sizeof(uint32_t));
+}
+
 bool CirFrozenForest::declares_function(const madc::dis::istring &name) const
 {
 	if (!_fn_index_bound) {
@@ -2076,48 +2109,6 @@ const char *CirFrozenForest::unit_name(uint32_t unit) const
 // LIVE, never against v6.
 // ---------------------------------------------------------------------------
 
-// A member / param / return / typedef-underlying type-id resolves iff its
-// derived chain (pointer / reference / const ref0 links) bottoms out in a
-// pinned primitive or a recordable aggregate — `self` allowed, the
-// self-referential `Node *next` case. Reproduces the retired v6 save-side
-// test (an enum / func / other kind fails, exactly as v6 bailed).
-static bool arena_chain_ok(const madc::dis::FrozenDefArena &a, uint32_t tid,
-			   uint32_t self_id, const std::set<uint32_t> &recordable)
-{
-	for (int depth = 0; depth < 64; ++depth) {
-		if (!tid)
-			return false;
-		if (madc::dis::arena_id_is_pinned(tid))
-			return true;
-		madc::dis::defrec r;
-		if (!a.get_def_at(tid, r))
-			return false;
-		switch (r.kind) {
-		case madc::dis::DK_PTR:
-		case madc::dis::DK_REF:
-		case madc::dis::DK_CONST:
-		case madc::dis::DK_CARRAY:	// v25: element chain, like the other unaries
-			tid = r.ref0;
-			continue;
-		case madc::dis::DK_STRUCT:
-		case madc::dis::DK_UNION:
-		case madc::dis::DK_CLASS:
-			return tid == self_id || recordable.count(tid) != 0;
-		case madc::dis::DK_ENUM:
-			return true;	// v21: enums materialize in pass 1a (leaves)
-		case madc::dis::DK_FPTR:
-			return true;	// v22: fn-ptrs materialize in pass 1b (the
-					// target signature never gates member layout)
-		case madc::dis::DK_MEMBERPTR:
-			return true;	// v53: member pointers materialize in pass 1b
-					// (8 bytes or the {ptr, adj} pair — neither the
-					// owner nor the member gates member layout)
-		default:
-			return false;
-		}
-	}
-	return false;
-}
 
 // Swizzle an arena type-id to the reconstructed DataDef*: a pinned primitive
 // resolves process-invariantly; anything else must be in by_id (aggregates
@@ -2217,78 +2208,14 @@ static const ForestRecordable &forest_recordable_cached(
 			break;
 		}
 		if (r.kind != madc::dis::DK_NONE && r.name_id) {
-			const char *nm = a.c_str(r.name_id);
-			if (nm && strncmp(nm, "__anon_", 7) == 0) {
-				char *end = NULL;
-				unsigned long n = strtoul(nm + 7, &end, 10);
-				if (end && *end == '\0' && n > e.max_anon_tag)
-					e.max_anon_tag = (size_t)n;
-			}
+			size_t n = arena_anon_tag_of(a.c_str(r.name_id));
+			if (n > e.max_anon_tag)
+				e.max_anon_tag = n;
 		}
-		if (r.kind != madc::dis::DK_STRUCT && r.kind != madc::dis::DK_UNION
-		    && r.kind != madc::dis::DK_CLASS)
-			continue;
-		// v21: an INCOMPLETE record restores only in the payload-less empty
-		// shape (a synthesized recursion tail like _Tuple_impl<N> — live
-		// registers, inherits from, and emits it without completing it).
-		// Anything half-parsed WITH members/bases stays dropped.
-		if (!(r.flags & madc::dis::DF_IS_COMPLETE)
-		    && (r.members_count || r.bases_count))
-			continue;
-		e.agg_ids.push_back(tid);
+		if (arena_recordable_candidate(r))
+			e.agg_ids.push_back(tid);
 	}
-	// GREATEST fixpoint (v22): start from ALL candidates and iteratively
-	// REMOVE any aggregate with an unresolvable member / base / anon group
-	// until stable. The old additive (least) fixpoint could not admit a
-	// POINTER CYCLE — basic_ios<char> holds a basic_ostream<char>* member
-	// (_M_tie) while basic_ostream derives from basic_ios, so neither could
-	// ever be inserted first and the whole iostream hierarchy dropped. A
-	// through-pointer reference only needs its target IN the surviving set
-	// (pass 1 allocates every survivor before pass 1b resolves the pointer),
-	// exactly the C incomplete-type rule; a failure still cascades to its
-	// dependents through the removal rounds.
-	e.recordable.insert(e.agg_ids.begin(), e.agg_ids.end());
-	bool removed = true;
-	while (removed) {
-		removed = false;
-		for (size_t i = 0; i < e.agg_ids.size(); ++i) {
-			uint32_t tid = e.agg_ids[i];
-			if (!e.recordable.count(tid))
-				continue;
-			madc::dis::defrec r;
-			if (!a.get_def_at(tid, r)) {
-				e.recordable.erase(tid);
-				removed = true;
-				continue;
-			}
-			bool ok = true;
-			for (uint32_t m = 0; ok && m < r.members_count; ++m) {
-				madc::dis::memberrec mr;
-				if (!a.get_payload(r.members_begin, m, mr)
-				    || !arena_chain_ok(a, mr.type_id, tid, e.recordable)
-				    || (mr.vbase_id && !e.recordable.count(mr.vbase_id)))
-					ok = false;
-			}
-			if (ok && r.kind == madc::dis::DK_CLASS) {
-				for (uint32_t b = 0; ok && b < r.bases_count; ++b) {
-					madc::dis::baserec br;
-					if (!a.get_payload(r.bases_begin, b, br)
-					    || !e.recordable.count(br.base_id))
-						ok = false;
-				}
-			}
-			for (uint32_t g = 0; ok && g < r.anon_count; ++g) {
-				madc::dis::anonrec ar;
-				if (!a.get_payload(r.anon_begin, g, ar)
-				    || !e.recordable.count(ar.sub_type_id))
-					ok = false;
-			}
-			if (!ok) {
-				e.recordable.erase(tid);
-				removed = true;
-			}
-		}
-	}
+	arena_recordable_fixpoint(a, e.agg_ids, e.recordable);
 	return cache.emplace(blob_key, std::move(e)).first->second;
 }
 
