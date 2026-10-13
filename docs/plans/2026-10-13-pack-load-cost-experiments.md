@@ -392,9 +392,12 @@ not attributed.
   defined in `struct_FILE.h`, forward-declared in `FILE.h` / `__FILE.h`). It is
   3x what `<stdio.h>` needs. Structural types can be copied into each slice or
   rebuilt from their referent; not measured.
-- Orphans: 6,064 namespace bindings, 611 functions, 344 deferred bodies. The
-  freezer knows which unit's parse made each record, so a real slicer
-  attributes them exactly; this analysis cannot.
+- Orphans: 6,064 namespace bindings, 611 functions, 344 deferred bodies —
+  records this NAME-based analysis cannot attribute. Correction (code map,
+  2026-10-13): no arena record stores the unit that made it (`defrec` has no
+  origin field; `body_unit` is set on a few kinds only). A real slicer must
+  stamp the origin unit on every record at write-through time — the parse
+  knows it (`_parse_file` / `definition_file` / `decl_file`).
 - Not yet shown: that a restore walking only the bound slices runs at the
   Test 6 times. That needs the restore change (Test 5 in full), not a
   measurement.
