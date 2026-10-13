@@ -1,0 +1,1 @@
+POSIX headers with no mingw-w64 equivalent (poll.h, sys/mman.h, regex.h, sys/utsname.h, fnmatch.h, sys/resource.h): the Windows source arm is the Linux equivalents mingw ships, owner 2026-10-13

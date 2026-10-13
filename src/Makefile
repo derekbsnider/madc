@@ -417,16 +417,17 @@ endif
 WIN_UCRT_LIBSTDCXX ?= /workspace/win-ucrt-libstdc++/stage
 # The Windows release set's directory (release-windows below).
 WIN_RELEASE_DIR = ../bin/release-windows
-
-ifeq ($(MODE),hosted-x86-64-windows)
-WIN_MINGW = x86_64-w64-mingw32
 # _USE_MATH_DEFINES: mingw math.h hides M_PI (and friends) under
 # __STRICT_ANSI__, which the captured -std=c++17 posture defines. On
 # glibc targets g++ always predefines _GNU_SOURCE, so the Linux lane
 # effectively always has M_PI — this is mingw's own documented knob for
 # the same surface. Rides WIN_UCRT_FLAGS so the HOSTTAB capture seeds
-# it into every script TU (and the host build, harmlessly).
+# it into every script TU (and the host build, harmlessly). Outside the
+# mode conditional too: the release pack lists the headers these flags see.
 WIN_UCRT_FLAGS = -D_UCRT -D__USE_MINGW_ANSI_STDIO=1 -D__USE_MINGW_SETJMP_NON_SEH -D_USE_MATH_DEFINES
+
+ifeq ($(MODE),hosted-x86-64-windows)
+WIN_MINGW = x86_64-w64-mingw32
 WIN_SPECS = $(abspath $(OBJDIR))/ucrt.specs
 # Parse-time generation (the EMBED_GEN/HOSTTAB precedent): the specs file
 # must exist before ANY compile in this make layer, including the recursive
@@ -523,9 +524,12 @@ endif
 # the freezer opens the C++ headers at their real container paths while
 # the hosted binary carries the same spelling (inert on a run-only Mac —
 # the packed groves serve C++ there).
+# Where a Mac keeps the SDK a hosted binary searches (the CLT location):
+# the include table's spelling and the pack's source-arm unit names.
+DARWIN_RUNTIME_SDK = /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
 ifdef DARWIN_PRELUDE_TARGET
 HOSTTAB_CXX = $(DARWIN_CLANGXX) -target $(DARWIN_PRELUDE_TARGET) --sysroot $(MACOS_SDK) -nostdinc++ -isystem $(LLVM_LIBCXX_INC)
-MADC_SYS_INCLUDE_PREFIX_MAP = $(MACOS_SDK)=/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+MADC_SYS_INCLUDE_PREFIX_MAP = $(MACOS_SDK)=$(DARWIN_RUNTIME_SDK)
 export MADC_SYS_INCLUDE_PREFIX_MAP
 # Per-mode include-table source (embedded_headers.cpp precedent): the hosted
 # and cross tables for one arch DIFFER (only the cross madc carries the
@@ -1074,7 +1078,7 @@ release-windows:
 	x86_64-w64-mingw32-strip -o $(WIN_RELEASE_DIR)/libmadc-0.dll ../bin/libmadc-0.dll
 	cp -p ../bin/libstdc++-6.dll ../bin/libwinpthread-1.dll ../bin/madcwebview.dll ../bin/madcgit.dll ../bin/madcmark.dll $(WIN_RELEASE_DIR)/
 	rm -f ../bin/madc-release-x86-64-windows.exe
-	cd .. && MADC_WIN_CXX_INCLUDE="$(WIN_UCRT_LIBSTDCXX)/include/c++/13.2.0" bash scripts/forest_pack_windows.sh --image bin/release-windows/libmadc-0.dll bin/release-windows/madc.exe
+	cd .. && MADC_WIN_CXX_INCLUDE="$(WIN_UCRT_LIBSTDCXX)/include/c++/13.2.0" MADC_WIN_PACK_CFLAGS="$(WIN_UCRT_FLAGS)" bash scripts/forest_pack_windows.sh --image bin/release-windows/libmadc-0.dll bin/release-windows/madc.exe
 	cd .. && bash scripts/verify_pe_release.sh bin/release-windows/madc.exe
 
 # Release pipeline (strip-before-append is MANDATORY ordering: strip rewrites
@@ -1657,7 +1661,7 @@ $(CROSS_MADC_BIN): FORCE
 endif
 
 $(DARWIN_FOREST_BIN): $(DARWIN_FREEZER) $(DARWIN_PRELUDE_DIR)/.MANIFEST ../scripts/forest_pack_darwin.sh ../scripts/forest_pack_share.sh ../scripts/forest_pack_headers_darwin.txt $(RT_LEDGER_INPUTS)
-	bash ../scripts/forest_pack_darwin.sh $(DARWIN_FREEZER) $(DARWIN_PRELUDE_DIR)/.MANIFEST $@
+	MADC_DARWIN_CXX_INCLUDE="$(LLVM_LIBCXX_INC)" MADC_DARWIN_C_INCLUDE_NAME="$(DARWIN_RUNTIME_SDK)/usr/include" MADC_DARWIN_C_INCLUDE="$(DARWIN_PRELUDE_SYSROOT)/usr/include" bash ../scripts/forest_pack_darwin.sh $(DARWIN_FREEZER) $(DARWIN_PRELUDE_DIR)/.MANIFEST $@
 endif
 
 $(PICOBJDIR)/%.o: %.cpp $(DEPENDS)

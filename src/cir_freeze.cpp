@@ -4,6 +4,7 @@
  * story.
  */
 
+#include <algorithm>	// std::stable_sort — the directory's sorted name index
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -505,6 +506,17 @@ static bool cir_forest_compress_intern = false;
 // faster than row order). Trained ZDICT dictionaries were measured the
 // same day and rejected: net ~-0.3 MB for +13s pack CPU and a dictionary
 // segment + reader wiring — the transforms dominate them on every axis.
+// A unit that carries nothing but (possibly) its source text: no records,
+// tokens, declarations, PP exports, edges or branch dependencies.
+static bool forest_unit_source_only(const cir_forest_unit &fu)
+{
+	return fu.blob.records.empty() && fu.blob.children.empty()
+	    && fu.connectors.empty() && fu.positions.empty()
+	    && fu.token_payload.empty() && fu.decl_index.empty()
+	    && fu.pp_events.empty() && fu.edges.empty()
+	    && fu.branch_deps.empty();
+}
+
 static bool add_seg(madc::dis::snapshot_writer &w, uint32_t seg_id,
 		    uint32_t kind, const void *bytes, size_t len,
 		    PchCompression codec)
@@ -627,10 +639,68 @@ bool cir_forest_write(const cir_frozen_forest &f, madc::dis::snapshot_writer &w,
 		memcpy(dir.data() + off, lib_ids.data(),
 		       lib_ids.size() * sizeof(uint32_t));
 	}
+	// v57: the name index — the unit names as text, so a lookup reads the
+	// directory alone (see cir_forest_dir_header).
+	const size_t nunits = f.units.size();
+	std::vector<uint32_t> name_off(nunits + 1, 0);
+	for (size_t u = 0; u < nunits; ++u)
+		name_off[u + 1] = name_off[u]
+				+ pool->length(f.units[u].unit_name_id) + 1;
+	std::vector<uint32_t> sorted(nunits);
+	for (size_t u = 0; u < nunits; ++u)
+		sorted[u] = (uint32_t)u;
+	std::stable_sort(sorted.begin(), sorted.end(),
+			 [&](uint32_t a, uint32_t b) {
+		return strcmp(pool->c_str(f.units[a].unit_name_id),
+			      pool->c_str(f.units[b].unit_name_id)) < 0;
+	});
+	size_t off = dir.size();
+	dir.resize(off + (2 * nunits + 1) * sizeof(uint32_t) + name_off[nunits]);
+	memcpy(dir.data() + off, name_off.data(), (nunits + 1) * sizeof(uint32_t));
+	off += (nunits + 1) * sizeof(uint32_t);
+	memcpy(dir.data() + off, sorted.data(), nunits * sizeof(uint32_t));
+	off += nunits * sizeof(uint32_t);
+	for (size_t u = 0; u < nunits; ++u) {
+		const uint32_t id = f.units[u].unit_name_id;
+		memcpy(dir.data() + off + name_off[u], pool->c_str(id),
+		       pool->length(id));
+		dir[off + name_off[u + 1] - 1] = 0;
+	}
 
 	w.set_context_hash(madc_cir_context_hash());
+	// Uncompressed: the reader binds the index in place in the mapped image.
 	if (!add_seg(w, CIR_FOREST_SEG_DIR, SNAP_KIND_CIR_FOREST_DIR,
-		     dir.data(), dir.size(), codec))
+		     dir.data(), dir.size(), PchCompression::None))
+		return false;
+	// v57: the bare function names every unit's decl index declares (kind
+	// pdkFunction; a qualified form is C++ surface), sorted and unique —
+	// count, count + 1 offsets, NUL-terminated bytes; read in place.
+	std::vector<const char *> fns;
+	for (size_t u = 0; u < nunits; ++u)
+		for (const cir_forest_decl_entry &e : f.units[u].decl_index) {
+			const char *nm = pool->c_str(e.name_id);
+			if (e.kind == Program::pdkFunction && *nm && !strchr(nm, ':'))
+				fns.push_back(nm);
+		}
+	std::sort(fns.begin(), fns.end(), [](const char *a, const char *b) {
+		return strcmp(a, b) < 0;
+	});
+	fns.erase(std::unique(fns.begin(), fns.end(), [](const char *a, const char *b) {
+		return strcmp(a, b) == 0;
+	}), fns.end());
+	std::vector<uint8_t> fn_index((fns.size() + 2) * sizeof(uint32_t));
+	uint32_t fn_at = 0;
+	const uint32_t fn_count = (uint32_t)fns.size();
+	memcpy(fn_index.data(), &fn_count, sizeof(fn_count));
+	for (size_t i = 0; i <= fns.size(); ++i) {
+		memcpy(fn_index.data() + (i + 1) * sizeof(uint32_t), &fn_at, sizeof(fn_at));
+		if (i < fns.size())
+			fn_at += (uint32_t)strlen(fns[i]) + 1;
+	}
+	for (size_t i = 0; i < fns.size(); ++i)
+		fn_index.insert(fn_index.end(), fns[i], fns[i] + strlen(fns[i]) + 1);
+	if (!add_seg(w, CIR_FOREST_SEG_FUNC_NAMES, SNAP_KIND_CIR_FUNC_NAMES,
+		     fn_index.data(), fn_index.size(), PchCompression::None))
 		return false;
 	if (!add_seg(w, CIR_FOREST_SEG_STR_BYTES, madc::dis::SNAP_KIND_INTERN_BYTES,
 		     pool->bytes_data(), pool->bytes_size(), codec)
@@ -700,6 +770,19 @@ bool cir_forest_write(const cir_frozen_forest &f, madc::dis::snapshot_writer &w,
 		const cir_forest_unit &fu = f.units[u];
 		uint32_t base = CIR_FOREST_SEG_UNIT_BASE
 			      + (uint32_t)u * CIR_FOREST_SEGS_PER_UNIT;
+		// v56: a SOURCE-ONLY unit (the pack's source arm, a dedup-skipped
+		// first include) writes its source slot alone. An absent slot
+		// reads as "no payload" everywhere such a unit is asked about,
+		// and it is never bound (unit_has_frozen_surface) — while nine
+		// empty slots per header made every container open index ten
+		// times the segments.
+		if (forest_unit_source_only(fu)) {
+			if (!add_seg(w, base + 9, SNAP_KIND_CIR_UNIT_SOURCE,
+				     fu.source_payload.data(),
+				     fu.source_payload.size(), codec))
+				return false;
+			continue;
+		}
 		// v2: a unit may be token-only (a macro-only header), or even
 		// empty of both records and tokens (a PP-export-only carrier,
 		// or an edge target whose tokens live under another display
@@ -1259,33 +1342,47 @@ bool CirFrozenForest::open_header(const void *image, size_t len,
 			fprintf(stderr, "madc: no forest container found\n");
 		return false;
 	}
+	_image = image;
+	_image_len = len;
 	if (_reader.context_hash() != madc_cir_context_hash()) {
 		fprintf(stderr, "madc: frozen forest was built by a different"
 			" madc (context-hash mismatch) — re-freeze it\n");
 		return false;
 	}
 
-	// Directory.
+	// Directory: bound in place in the mapped image (written uncompressed,
+	// v57); a decoded copy in _dir_bytes otherwise, which then owns the bytes
+	// the name index points into.
 	const madc::dis::snapshot_segment *ds = _reader.find(CIR_FOREST_SEG_DIR);
-	madc::dis::decode_bytes dir;
-	if (!ds || ds->kind != SNAP_KIND_CIR_FOREST_DIR
-	    || !_reader.read_segment(*ds, dir)
-	    || dir.size() < sizeof(cir_forest_dir_header)) {
+	const uint8_t *dir = NULL;
+	size_t dir_len = 0;
+	if (ds && ds->kind == SNAP_KIND_CIR_FOREST_DIR) {
+		dir = _reader.raw_ptr(*ds);
+		dir_len = ds->raw_size;
+		if (!dir && _reader.read_segment(*ds, _dir_bytes)) {
+			dir = _dir_bytes.data();
+			dir_len = _dir_bytes.size();
+		}
+	}
+	if (!dir || dir_len < sizeof(cir_forest_dir_header)) {
 		fprintf(stderr, "madc: forest directory missing or corrupt\n");
 		return false;
 	}
 	cir_forest_dir_header hdr;
-	memcpy(&hdr, dir.data(), sizeof(hdr));
-	if (hdr.version != CIR_FOREST_FORMAT_VERSION
-	    || dir.size() != sizeof(hdr)
-			      + (size_t)hdr.unit_count * sizeof(cir_forest_dir_unit)
-			      + (size_t)hdr.lib_count * sizeof(uint32_t)
-	    || hdr.unit_count == 0) {
+	memcpy(&hdr, dir, sizeof(hdr));
+	const size_t fixed = sizeof(hdr)
+			   + (size_t)hdr.unit_count * sizeof(cir_forest_dir_unit)
+			   + (size_t)hdr.lib_count * sizeof(uint32_t);
+	const size_t index = (2 * (size_t)hdr.unit_count + 1) * sizeof(uint32_t);
+	if (hdr.version != CIR_FOREST_FORMAT_VERSION || hdr.unit_count == 0
+	    || dir_len < fixed + index
+	    || !bind_name_index(dir + fixed, hdr.unit_count,
+				dir_len - fixed - index)) {
 		fprintf(stderr, "madc: forest directory malformed\n");
 		return false;
 	}
 	_units.resize(hdr.unit_count);
-	memcpy(_units.data(), dir.data() + sizeof(hdr),
+	memcpy(_units.data(), dir + sizeof(hdr),
 	       hdr.unit_count * sizeof(cir_forest_dir_unit));
 	_language_std = hdr.language_std;	// v27 producer config (bind gate)
 	_defines_hash = hdr.defines_hash;
@@ -1317,7 +1414,7 @@ bool CirFrozenForest::open_header(const void *image, size_t len,
 
 	// Required-library name IDS (the link-environment closure) — the names
 	// resolve through the container pool in complete_open.
-	const uint8_t *libp = dir.data() + sizeof(hdr)
+	const uint8_t *libp = dir + sizeof(hdr)
 			    + hdr.unit_count * sizeof(cir_forest_dir_unit);
 	for (uint32_t i = 0; i < hdr.lib_count; ++i) {
 		uint32_t id;
@@ -1375,9 +1472,10 @@ bool cir_forest_content_digests(const void *image, size_t len,
 }
 
 // R1 stage 2: everything open() historically did past the directory —
-// string-pool/arena binds, the container-global segments, the unit-name
-// index. Memoized; needs the live string pool. The extern-decl index is no
-// longer built here — it builds on the first extern_loc_for query.
+// string-pool/arena binds, the container-global segments. Memoized; needs the
+// live string pool. Neither name index is built here: the unit names are the
+// directory's own (open_header), and the extern-decl index builds on the first
+// extern_loc_for query.
 bool CirFrozenForest::complete_open(c2m_ctx_t c2m)
 {
 	if (_fully_opened)
@@ -1580,28 +1678,86 @@ bool CirFrozenForest::complete_open(c2m_ctx_t c2m)
 				return false;
 			}
 	}
-	// Reverse directory: unit-name spelling -> index (Phase 6 bind lookup).
-	// The writer dedups unit names, so a name maps to one unit; a stray
-	// duplicate keeps the first (bind is order-insensitive for a conforming
-	// closure).
-	for (uint32_t u = 0; u < (uint32_t)_units.size(); ++u) {
-		uint32_t slen = 0;
-		const char *nm = pool_cstr(_units[u].unit_name_id, slen);
-		if (nm)
-			_unit_by_name.emplace(madc::dis::istring(nm, slen), u);
-	}
-
 	_segs.assign(_units.size(), (CirFrozenSegment *)NULL);
 	_fully_opened = true;
 	_stat_open_secs += forest_now() - _t0;
 	return true;
 }
 
+// Bind the directory's name index (v57) in place and validate it whole, so a
+// corrupt container fails at open, never as a wild read at lookup: offsets
+// rising from 0 to exactly `name_bytes`, each name NUL-terminated, every
+// sorted entry a unit number and the run in byte order.
+bool CirFrozenForest::bind_name_index(const uint8_t *p, uint32_t nunits,
+				      size_t name_bytes)
+{
+	const uint32_t *off = (const uint32_t *)p;
+	const uint32_t *sorted = off + nunits + 1;
+	const char *bytes = (const char *)(sorted + nunits);
+	if (off[0] != 0 || off[nunits] != name_bytes)
+		return false;
+	for (uint32_t u = 0; u < nunits; ++u)
+		if (off[u + 1] <= off[u] || bytes[off[u + 1] - 1] != 0)
+			return false;
+	for (uint32_t i = 0; i < nunits; ++i)
+		if (sorted[i] >= nunits
+		    || (i && strcmp(bytes + off[sorted[i - 1]],
+				    bytes + off[sorted[i]]) > 0))
+			return false;
+	_name_off = off;
+	_name_sorted = sorted;
+	_name_bytes = bytes;
+	return true;
+}
+
+bool CirFrozenForest::declares_function(const madc::dis::istring &name) const
+{
+	if (!_fn_index_bound) {
+		_fn_index_bound = true;
+		const madc::dis::snapshot_segment *s = _reader.find(CIR_FOREST_SEG_FUNC_NAMES);
+		const uint8_t *p = s && s->kind == SNAP_KIND_CIR_FUNC_NAMES
+				 ? _reader.raw_ptr(*s) : NULL;
+		uint32_t n = 0;
+		if (p && s->raw_size >= 2 * sizeof(uint32_t)) {
+			memcpy(&n, p, sizeof(n));
+			const uint32_t *off = (const uint32_t *)(p + sizeof(uint32_t));
+			const char *bytes = (const char *)(off + n + 1);
+			// Validated whole (a corrupt segment answers "none", never a
+			// wild read).
+			bool ok = s->raw_size >= ((uint64_t)n + 2) * sizeof(uint32_t)
+			       && off[0] == 0
+			       && off[n] == s->raw_size - (n + 2) * sizeof(uint32_t);
+			for (uint32_t i = 0; ok && i < n; ++i)
+				ok = off[i + 1] > off[i] && bytes[off[i + 1] - 1] == 0
+				  && (!i || strcmp(bytes + off[i - 1], bytes + off[i]) < 0);
+			if (ok) {
+				_fn_count = n;
+				_fn_off = off;
+				_fn_bytes = bytes;
+			}
+		}
+	}
+	const uint32_t *it = std::lower_bound(_fn_off, _fn_off + _fn_count, name.c_str(),
+		[this](uint32_t o, const char *key) {
+			return strcmp(_fn_bytes + o, key) < 0;
+		});
+	return it != _fn_off + _fn_count && strcmp(_fn_bytes + *it, name.c_str()) == 0;
+}
+
+// The index lookup: a binary search over the sorted names, read in place. A
+// duplicate name (the writer dedups; a stray one) answers its lower unit.
 int CirFrozenForest::find_unit(const madc::dis::istring &name) const
 {
-	std::map<madc::dis::istring, uint32_t>::const_iterator it =
-		_unit_by_name.find(name);
-	return it == _unit_by_name.end() ? -1 : (int)it->second;
+	if (!_name_sorted)
+		return -1;
+	const uint32_t *first = _name_sorted;
+	const uint32_t *last = _name_sorted + _units.size();
+	const uint32_t *it = std::lower_bound(first, last, name.c_str(),
+		[this](uint32_t u, const char *key) {
+			return strcmp(_name_bytes + _name_off[u], key) < 0;
+		});
+	return it != last && strcmp(_name_bytes + _name_off[*it], name.c_str()) == 0
+	     ? (int)*it : -1;
 }
 
 // Path-tail lookup: the unit whose (path-)name ends in "/<incfile>".
@@ -1611,19 +1767,22 @@ int CirFrozenForest::find_unit(const madc::dis::istring &name) const
 // tree, and the Mac's resolver has nothing to resolve against (that is
 // the point: run-only Macs have no headers). The include SPELLING is the
 // machine-portable identity: match it against the name's tail component
-// path. First hit in unit order; -1 when none or when the spelling is
-// itself an absolute path.
+// path. First hit in unit order (the grove's units precede the source arm's);
+// -1 when none or when the spelling is itself an absolute path. A LAST
+// resort: once the pack holds every system header a spelling ends many names
+// (`search.h` ends libc++'s __algorithm/search.h too), so a consumer first
+// asks its build's include roots (Program::forest_unit_under_build_roots).
 int CirFrozenForest::find_unit_path_tail(const madc::dis::istring &incfile) const
 {
 	if (incfile.empty() || madc::detail::host_path_absolute(incfile))
 		return -1;
-	const madc::dis::istring tail = "/" + incfile;
-	for (std::map<madc::dis::istring, uint32_t>::const_iterator it =
-		     _unit_by_name.begin(); it != _unit_by_name.end(); ++it) {
-		const madc::dis::istring &nm = it->first;
-		if (nm.size() > tail.size()
-		    && nm.compare(nm.size() - tail.size(), tail.size(), tail) == 0)
-			return (int)it->second;
+	const size_t n = incfile.size();
+	for (size_t u = 0; _name_off && u < _units.size(); ++u) {
+		const size_t len = _name_off[u + 1] - _name_off[u] - 1;
+		const char *nm = _name_bytes + _name_off[u];
+		if (len > n && nm[len - n - 1] == '/'
+		    && memcmp(nm + len - n, incfile.data(), n) == 0)
+			return (int)u;
 	}
 	return -1;
 }
@@ -1849,6 +2008,31 @@ bool CirFrozenForest::unit_has_source(uint32_t unit) const
 	return s && s->kind == SNAP_KIND_CIR_UNIT_SOURCE && s->raw_size != 0;
 }
 
+// Does the unit carry anything an #include binds — tokens, PP exports or
+// include edges? A unit with none was packed for its SOURCE alone (the pack's
+// source arm, or a dedup-skipped first include): a consumer live-parses its
+// text instead. A macro-only header still binds through its PP exports. A
+// directory/segment probe like unit_has_source: nothing is decompressed.
+bool CirFrozenForest::unit_has_frozen_surface(uint32_t unit) const
+{
+	if (unit >= _units.size())
+		return false;
+	const uint32_t base = CIR_FOREST_SEG_UNIT_BASE
+			    + unit * CIR_FOREST_SEGS_PER_UNIT;
+	static const struct { uint32_t slot, kind; } surface[] = {
+		{ 4, SNAP_KIND_CIR_UNIT_TOKENS },
+		{ 6, SNAP_KIND_CIR_PP_EXPORTS },
+		{ 7, SNAP_KIND_CIR_UNIT_EDGES },
+	};
+	for (size_t i = 0; i < sizeof(surface) / sizeof(surface[0]); ++i) {
+		const madc::dis::snapshot_segment *s =
+			_reader.find(base + surface[i].slot);
+		if (s && s->kind == surface[i].kind && s->raw_size != 0)
+			return true;
+	}
+	return false;
+}
+
 const char *CirFrozenForest::pool_cstr(uint32_t id, uint32_t &len) const
 {
 	if (id > _pool.count())
@@ -1873,10 +2057,9 @@ uint32_t CirFrozenForest::live_str_id(uint32_t frozen_id)
 
 const char *CirFrozenForest::unit_name(uint32_t unit) const
 {
-	if (unit >= _units.size())
+	if (unit >= _units.size() || !_name_off)
 		return NULL;
-	uint32_t slen = 0;
-	return pool_cstr(_units[unit].unit_name_id, slen);
+	return _name_bytes + _name_off[unit];
 }
 
 // ---------------------------------------------------------------------------

@@ -28324,27 +28324,10 @@ Variable *Program::forest_adopt_declared_function(const madc::dis::istring &fnam
     CirFrozenForest *f = ensure_bind_forest();
     if ( !f )
 	f = ensure_source_forest();
-    if ( !f )
-	return NULL;
-    if ( !_forest_bare_func_names_built )
-    {
-	_forest_bare_func_names_built = true;
-	std::vector<cir_forest_decl_entry> ents;
-	for ( uint32_t u = 0; u < f->unit_count(); ++u )
-	{
-	    if ( !f->unit_decl_index(u, ents) )
-		continue;
-	    for ( size_t e = 0; e < ents.size(); ++e )
-	    {
-		if ( ents[e].kind != pdkFunction )
-		    continue;
-		const char *nm = f->pool_str(ents[e].name_id);
-		if ( nm && *nm && !strchr(nm, ':') )
-		    _forest_bare_func_names.insert(nm);
-	    }
-	}
-    }
-    if ( !_forest_bare_func_names.count(fname) )
+    // "Is this a library function" is the pack's own function-name index,
+    // read in place; only a yes opens the frozen content the adoption below
+    // reads (the full open, memoized — a no-op on the bind reader).
+    if ( !f || !f->declares_function(fname) || !f->complete_open(/*c2m=*/NULL) )
 	return NULL;
 
     // EXACT: this one name and what its record pulls in — never the whole
@@ -29930,13 +29913,9 @@ void Program::parse_yield_point()
 // already handle the no-pool state (spelling_id 0 / "").
 Program::~Program()
 {
-    if ( source_forest && source_forest != bind_forest
-	 && source_forest != ledger_forest )
-	delete source_forest;
-    if ( ledger_forest && ledger_forest != bind_forest )
-	delete ledger_forest;
-    // bind_forest is released by _bind_forest_holder (S3): a group-shared
-    // instance survives until its LAST sibling dies; a private one dies here.
+    // Every pack reader is released by _forest_readers / _bind_forest_holder
+    // (S3): a group-shared bind instance survives until its LAST sibling
+    // dies; this compile's own readers die here.
     if ( TokenBase::_active_strpool == &strpool )
 	TokenBase::_active_strpool = NULL;
     if ( TokenBase::_active_valpool == &valpool )

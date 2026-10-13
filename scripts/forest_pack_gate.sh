@@ -310,7 +310,9 @@ check_dump() {
 		out=$(awk -F'\t' -v mode="$mode" '
 			NR == FNR {
 				if ($0 ~ /^[ \t]*$/ || $0 ~ /^[ \t]*#/) next
-				need[$0] = 1; total++
+				# A source-arm line may read `unit-name<TAB>file`:
+				# the unit is the first field.
+				need[$1] = 1; total++
 				next
 			}
 			$1 == "unit" {
@@ -331,7 +333,7 @@ check_dump() {
 			END {
 				miss = 0
 				for (w in need) { print "MISS " w; miss++ }
-				print "TOTAL " total " " miss
+				print "TOTAL " total + 0 " " miss + 0
 			}' "$list" "$dump")
 		local line
 		while IFS= read -r line; do

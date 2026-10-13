@@ -842,6 +842,129 @@ TEST_CASE("B4a: grove payload v2 round-trips tokens, decl index, PP exports, edg
 	CHECK(edge_to_inc);
 }
 
+// ---------------------------------------------------------------------------
+// v56: the pack's SOURCE ARM (--freeze-sources=, owner 2026-10-13: the pack
+// holds every system header) — through the production recorder
+// (Program::pack_record_source_list) and madc_cir_freeze. A listed file joins
+// as a source-only unit: its exact text, nothing an #include binds. A
+// `name<TAB>file` line names the unit as the target spells it.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("v56: the source arm packs listed headers as source-only units") {
+	const std::string pid = std::to_string((long)getpid());
+	const std::string root = "/tmp/madc_v56_root_" + pid;
+	const std::string main_path = "/tmp/madc_v56_main_" + pid + ".mad";
+	const std::string list_path = "/tmp/madc_v56_list_" + pid + ".txt";
+	const std::string snap_path = "/tmp/madc_v56_snap_" + pid + ".msnap";
+	const std::string top = root + "/stdio.h";
+	const std::string nested = root + "/bits/stdio.h";
+	const std::string deeper = root + "/c++/tr1/stdio.h";
+	const std::string staged = root + "/staged_extra.h";
+	const std::string renamed = "/v56/sdk/usr/include/extra.h";
+	REQUIRE(system(("mkdir -p " + root + "/bits " + root + "/c++/tr1").c_str()) == 0);
+	{ std::ofstream f(top.c_str()); f << "int v56_top;\n"; }
+	{ std::ofstream f(nested.c_str()); f << "int v56_nested;\n"; }
+	{ std::ofstream f(deeper.c_str()); f << "int v56_deeper;\n"; }
+	{ std::ofstream f(staged.c_str()); f << "int v56_extra;\n"; }
+	{
+		std::ofstream f(main_path.c_str());
+		f << "int v57_fn(int x) { return x; }\n"
+		     "int main() { return v57_fn(0); }\n";
+	}
+	{
+		std::ofstream f(list_path.c_str());
+		f << "# a comment line\n\n" << deeper << "\n" << nested << "\n"
+		  << top << "\n" << renamed << "\t" << staged << "\n";
+	}
+
+	std::shared_ptr<Program> prog = std::make_shared<Program>();
+	prog->pack_recording = true;	// what --freeze sets before tokenize
+	prog->forest_arena_enabled = true;
+	TokenProgram *tp = prog->tokenize(main_path.c_str());
+	REQUIRE(tp != nullptr);
+	REQUIRE(prog->parse(tp));
+	// An unreadable list, and a list naming an unreadable file, refuse.
+	CHECK_FALSE(prog->pack_record_source_list(list_path + ".absent"));
+	{
+		const std::string bad = list_path + ".bad";
+		{ std::ofstream f(bad.c_str()); f << root << "/absent.h\n"; }
+		CHECK_FALSE(prog->pack_record_source_list(bad));
+		std::remove(bad.c_str());
+	}
+	REQUIRE(prog->pack_record_source_list(list_path));
+	REQUIRE(madc_cir_freeze(prog.get(), main_path.c_str(),
+				snap_path.c_str(), /*append=*/false) == 0);
+	REQUIRE(system(("rm -rf " + root).c_str()) == 0);
+	std::remove(main_path.c_str());
+	std::remove(list_path.c_str());
+
+	const void *image = NULL;
+	size_t image_len = 0;
+	REQUIRE(cir_forest_map_image(snap_path.c_str(), image, image_len));
+	std::remove(snap_path.c_str());
+	CirFrozenForest forest;
+	freeze_test_bind_substrate();
+	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
+
+	const int u_main = forest.find_unit(madc::dis::istring(main_path));
+	REQUIRE(u_main >= 0);
+	CHECK(forest.unit_has_frozen_surface((uint32_t)u_main));
+	const struct { std::string name, text; } listed[] = {
+		{ top, "int v56_top;" }, { nested, "int v56_nested;" },
+		{ deeper, "int v56_deeper;" }, { renamed, "int v56_extra;" },
+	};
+	for (size_t i = 0; i < sizeof(listed) / sizeof(listed[0]); ++i) {
+		CAPTURE(listed[i].name);
+		const int u = forest.find_unit(madc::dis::istring(listed[i].name));
+		REQUIRE(u >= 0);
+		CHECK(forest.unit_has_source((uint32_t)u));
+		CHECK_FALSE(forest.unit_has_frozen_surface((uint32_t)u));
+		CHECK(forest.unit_anchor((uint32_t)u) == CIR_FOREST_ANCHOR_NONE);
+		std::string text;
+		REQUIRE(forest.unit_source((uint32_t)u, text));
+		CHECK(text.find(listed[i].text) != std::string::npos);
+	}
+	// The staged path is only where the text came from, never a unit name.
+	CHECK(forest.find_unit(madc::dis::istring(staged)) < 0);
+	// Three names end in /stdio.h: the bare tail answers the first in unit
+	// order (the list's order here) — which is why a consumer asks its
+	// build's include roots first. A longer spelling narrows it.
+	CHECK(forest.find_unit_path_tail(madc::dis::istring("stdio.h"))
+	      == forest.find_unit(madc::dis::istring(deeper)));
+	CHECK(forest.find_unit_path_tail(madc::dis::istring("bits/stdio.h"))
+	      == forest.find_unit(madc::dis::istring(nested)));
+
+	// v57: the directory IS the index. A reader opened to the directory
+	// alone — no string pool, no arena — answers every name lookup, names
+	// every unit, and serves a header's text.
+	CirFrozenForest index_only;
+	REQUIRE(index_only.open_header(image, image_len));
+	CHECK(index_only.find_unit(madc::dis::istring(main_path)) == u_main);
+	for (size_t i = 0; i < sizeof(listed) / sizeof(listed[0]); ++i) {
+		CAPTURE(listed[i].name);
+		const int u = index_only.find_unit(madc::dis::istring(listed[i].name));
+		REQUIRE(u >= 0);
+		CHECK(u == forest.find_unit(madc::dis::istring(listed[i].name)));
+		REQUIRE(index_only.unit_name((uint32_t)u) != nullptr);
+		CHECK(std::string(index_only.unit_name((uint32_t)u)) == listed[i].name);
+		std::string text;
+		REQUIRE(index_only.unit_source((uint32_t)u, text));
+		CHECK(text.find(listed[i].text) != std::string::npos);
+	}
+	// Absent names on both sides of the sorted run, and a prefix of a name.
+	CHECK(index_only.find_unit(madc::dis::istring("\x01")) < 0);
+	CHECK(index_only.find_unit(madc::dis::istring("~absent")) < 0);
+	CHECK(index_only.find_unit(madc::dis::istring(top.substr(0, top.size() - 1))) < 0);
+	CHECK(index_only.find_unit_path_tail(madc::dis::istring("stdio.h"))
+	      == forest.find_unit(madc::dis::istring(deeper)));
+	CHECK(index_only.unit_name(index_only.unit_count()) == nullptr);
+	// The function-name index answers in place too: a declared function, an
+	// absent one, and a variable (never a function).
+	CHECK(index_only.declares_function(madc::dis::istring("v57_fn")));
+	CHECK_FALSE(index_only.declares_function(madc::dis::istring("v57_absent")));
+	CHECK_FALSE(index_only.declares_function(madc::dis::istring("v56_top")));
+}
+
 // Phase 6 (design 2026-07-05): the forest is the serialized Tree-1 ROM; on bind
 // the parser's symbol tables are RECONSTRUCTED from typed decl records — NEVER
 // re-parsed. Slice 1 proves the smallest vertical of that: a file-scope typedef

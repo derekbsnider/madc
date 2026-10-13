@@ -143,7 +143,10 @@ enum : uint32_t
 	// content is byte-identical to this profile's rides it as a label
 	// instead of a second profile. OPTIONAL segment: absent = the dir
 	// header's config only. See cir_forest_shared_config. ---
-	SNAP_KIND_CIR_SHARED_CONFIGS   = madc::dis::SNAP_KIND_CONSUMER + 25 // container-global: cir_forest_shared_config[]
+	SNAP_KIND_CIR_SHARED_CONFIGS   = madc::dis::SNAP_KIND_CONSUMER + 25, // container-global: cir_forest_shared_config[]
+	// v57: the bare FUNCTION names the units' decl indexes declare, sorted —
+	// count, count + 1 offsets, NUL-terminated name bytes (codec None).
+	SNAP_KIND_CIR_FUNC_NAMES       = madc::dis::SNAP_KIND_CONSUMER + 26
 };
 
 // One frozen node record (fixed-size POD; x86-64 little-endian first, like
@@ -582,7 +585,14 @@ bool cir_freeze_read(const madc::dis::snapshot_reader &r, uint32_t seg_id_base,
 // v50: DK_FUNC preserves = default/delete. Older snapshots lack those flags.
 // v49: DF_ENUM_C_COMPATIBLE — an enum defined in C promotes as its underlying (compatible) type, C11 6.7.2.2p4; v48: DK_ENUM carries its STORAGE raw type (defrec.datatype) and DF_ENUM_FIXED_BASE — a restored enum lowers to the same C type as live, and a computed base is no longer re-adopted as declared; v47: the producer-config word's language_std bits carry the file-kind vocabulary's values (Program::LanguageStd = madc::fk* ranges, <bits/file_kinds>) — a v46 pack's word would compare against different numbers; v46: defrec ovl_spelling_id / ovl_targ run — a DK_FUNC's overload-set declaration identity (FuncDef::overload_spelling + overload_template_args); v45: DF_FUNC_C_LINKAGE (a namespace fn's extern "C" linkage — restore re-derives the C alias); v44: DK_NSALIAS namespace-alias records; v42: defrec vslot/vmeth runs (flat vtable_slots + virtual_methods)
 // v55: a skipped directive-only `#ifndef X` arm (X defined by an external sibling at freeze — mingw stdio.h's `#ifndef NULL` behind the win64 corpus's <cstddef>) rides the unit's branch-dep stream as a CIR_BRANCH_DEP_PP_ARM tuple; the bind replays it when the consumer lacks X, so a C++ consumer of <cstdio> alone has NULL.
-enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 55 };
+// v56: a source-only unit (the pack's source arm: every system header's text,
+// never tokenized at freeze) writes its source slot alone, not ten slots.
+// v57: the directory is the pack's index — every unit's name as TEXT, sorted,
+// beside its unit number — stored uncompressed and read in place, so "is this
+// header packed, and where" never decodes the string pool or the arena; and
+// CIR_FOREST_SEG_FUNC_NAMES answers "does the pack declare function X" the
+// same way.
+enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 57 };
 // Flags word of a SNAP_KIND_CIR_BRANCH_DEPS tuple.
 enum : uint32_t {
 	CIR_BRANCH_DEP_DEFINED   = 1u,	// the macro was defined at the consult
@@ -627,6 +637,7 @@ enum : uint32_t
 	CIR_FOREST_SEG_MIR_MODULE       = 20,	// MIR module cache (optional; absent = no cache)
 	CIR_FOREST_SEG_LEDGER           = 21,	// S5 AOT ledger (optional; absent = no ledger)
 	CIR_FOREST_SEG_SHARED_CONFIGS   = 22,	// configs sharing this profile (optional; absent = none)
+	CIR_FOREST_SEG_FUNC_NAMES       = 23,	// v57: the declared bare function names, sorted (read in place)
 	CIR_FOREST_SEG_UNIT_BASE     = 24,
 	CIR_FOREST_SEGS_PER_UNIT     = 10	// +0 records, +1 children, +2 connectors,
 						// +3 positions, +4 tokens, +5 decl index,
@@ -634,7 +645,12 @@ enum : uint32_t
 						// +9 raw source (v41; slots may be zero-length)
 };
 
-struct cir_forest_dir_header	// directory payload: header, then units, then lib name ids
+// Directory payload (CIR_FOREST_SEG_DIR, codec None): the header, the unit
+// table, the lib name ids, then (v57) the NAME INDEX — unit_count + 1 offsets
+// (unit order) into the name bytes, unit_count unit numbers sorted by name
+// (byte order; a duplicate name keeps the lower unit first), and the name
+// bytes, each NUL-terminated so a name is a C string read in place.
+struct cir_forest_dir_header
 {
 	uint32_t version;	// CIR_FOREST_FORMAT_VERSION
 	uint32_t unit_count;
@@ -1417,7 +1433,24 @@ class CirFrozenForest
 	std::vector<madc::dis::istring> _libs;
 	std::vector<uint32_t> _lib_ids;	// dir lib name-ids (resolved in complete_open)
 	std::map<uint32_t, uint32_t> _live_ids;	// frozen str id -> live pool id
-	std::map<madc::dis::istring, uint32_t> _unit_by_name;	// unit-name spelling -> index (Phase 6 bind)
+	// The directory's name index (v57), in place in the mapped directory (or
+	// in _dir_bytes when the segment had to be decoded): unit-order offsets
+	// into the NUL-terminated name bytes, and the unit numbers sorted by name.
+	madc::dis::decode_bytes _dir_bytes;
+	const uint32_t *_name_off = NULL;
+	const uint32_t *_name_sorted = NULL;
+	const char *_name_bytes = NULL;
+	// The mapped image and length this reader opened (one reader per
+	// (image, profile) per compile — Program::forest_reader).
+	const void *_image = NULL;
+	size_t _image_len = 0;
+	bool bind_name_index(const uint8_t *p, uint32_t nunits, size_t name_bytes);
+	// CIR_FOREST_SEG_FUNC_NAMES, bound in place on the first
+	// declares_function query (validated whole; absent or malformed = none).
+	mutable bool _fn_index_bound = false;
+	mutable uint32_t _fn_count = 0;
+	mutable const uint32_t *_fn_off = NULL;
+	mutable const char *_fn_bytes = NULL;
 	uint32_t _root_unit, _root_idx;
 	uint32_t _language_std = 0, _defines_hash = 0;	// v27 producer config (dir header)
 	std::vector<cir_forest_shared_config> _shared_configs;	// more configs this profile serves
@@ -1616,12 +1649,21 @@ public:
 	// own header's pair or one of its shared labels.
 	bool serves_config(uint32_t config, uint32_t defines) const;
 	const std::vector<madc::dis::istring> &libs() const { return _libs; }
+	// A unit's name, read in place from the directory (valid after
+	// open_header, for the reader's lifetime); NULL when out of range.
 	const char *unit_name(uint32_t unit) const;
-	// Reverse directory (Phase 6 bind): unit-name spelling -> unit index, or
-	// -1 if no unit carries that name. Built once in open() over the directory.
-	// The key is the exact unit_name string — a resolved include path or a bare
-	// compiler-builtin/embedded name (e.g. "stddef.h").
+	// The directory's index: unit-name spelling -> unit index, or -1 if no
+	// unit carries that name — a binary search over the sorted names, after
+	// open_header alone. The key is the exact unit_name string — a resolved
+	// include path or a bare compiler-builtin/embedded name (e.g. "stddef.h").
 	int find_unit(const madc::dis::istring &name) const;
+	// Does any unit's decl index declare the bare function `name`? A binary
+	// search over CIR_FOREST_SEG_FUNC_NAMES in place, after open_header
+	// alone — never the string pool, the arena or a unit's decl index.
+	bool declares_function(const madc::dis::istring &name) const;
+	// The mapped image and length this reader was opened on.
+	bool opened_from(const void *image, size_t len) const
+		{ return _header_opened && image == _image && len == _image_len; }
 	// Machine-portable fallback: the unit whose path-name ends in
 	// "/<incfile>" (see the .cpp comment — consumers on machines without
 	// the producer's header tree cannot spell full-path unit names).
@@ -1641,6 +1683,7 @@ public:
 	bool unit_edges(uint32_t unit, std::vector<uint32_t> &out);
 	bool unit_branch_deps(uint32_t unit, std::vector<uint32_t> &out);	// v40
 	bool unit_has_source(uint32_t unit) const;	// v41 directory/segment probe
+	bool unit_has_frozen_surface(uint32_t unit) const;	// tokens, PP exports or edges: anything an #include binds
 	bool unit_source(uint32_t unit, std::string &out) const;	// v41 raw source fallback
 	const std::vector<uint32_t> &branch_macros() const { return _branch_macros; }
 	const std::vector<uint32_t> &canon_order() const { return _canon_order; }

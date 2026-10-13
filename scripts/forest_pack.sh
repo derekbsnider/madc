@@ -63,6 +63,18 @@ fi
 mkdir -p tmp
 TU=tmp/forest_pack_tu.cpp
 
+# The SOURCE ARM (owner 2026-10-13: the pack holds ALL system headers, never a
+# test-driven subset): every header the C library's, the kernel headers' and
+# the C++ standard library's packages install, GENERATED here from the
+# package manager's own lists, packed as source-only units beside the frozen
+# grove (--freeze-sources=) and checked unit by unit by the gate
+# (--units-from). docs/plans/2026-10-13-pack-all-system-headers.md.
+SOURCES_LIST=tmp/forest_pack_sources.txt
+if ! bash scripts/forest_pack_sources.sh linux "$CXX_INCLUDE" > "$SOURCES_LIST"; then
+    echo "forest_pack: could not list the system headers" >&2
+    exit 1
+fi
+
 # AOT ledger (forest-carriers S5): the C-lane madc runtime, compiled by THIS
 # madc into MIR modules and packed as one more container segment, so
 # -static-libmadc programs carry the machinery inside their own image.
@@ -130,7 +142,7 @@ fi
 # Redirect-then-cat, never `| tee` — without pipefail a pipeline's status is
 # tee's, so a pack FAILURE would read as success.
 PACK_LOG=tmp/forest_pack_freeze.log
-if ! timeout 900 tmp/forest_packer_madc --no-config --std=madc --freeze-mir-cache "${LEDGER_ARGS[@]}" "${FOREST_SHARE_ARGS[@]}" --freeze-append="$APPEND_TO" "$TU" > "$PACK_LOG" 2>&1; then
+if ! timeout 900 tmp/forest_packer_madc --no-config --std=madc --freeze-mir-cache --freeze-sources="$SOURCES_LIST" "${LEDGER_ARGS[@]}" "${FOREST_SHARE_ARGS[@]}" --freeze-append="$APPEND_TO" "$TU" > "$PACK_LOG" 2>&1; then
     cat "$PACK_LOG"
     echo "forest_pack: FAILED - freeze-append exited nonzero" >&2
     exit 1
@@ -204,7 +216,7 @@ timeout 300 "$BIN" -v tests/testfreezerun.mad > "$LOAD_LOG" 2>&1
 bash scripts/forest_pack_gate.sh --profile linux \
     --pack-log "$PACK_LOG" --load-log "$LOAD_LOG" \
     --dump tmp/forest_pack_dump.txt \
-    --units-from "$LIST" --sources-from "$GUARDED_LIST"
+    --units-from "$LIST" --units-from "$SOURCES_LIST" --sources-from "$GUARDED_LIST"
 
 units=$(grep -c '^unit	' tmp/forest_pack_dump.txt)
 if [ "$SIDECAR" = 1 ]; then

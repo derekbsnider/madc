@@ -5671,8 +5671,13 @@ public:
     void pack_record_undef(const madc::dis::istring &name);
     void pack_record_edge(const madc::dis::istring &includee);	// includer = current source
     // A dedup-SKIPPED include still needs its bytes in the corpus — see the
-    // definition. Freeze-time only, at most one read per unit.
-    void pack_record_skipped_source(const madc::dis::istring &path);
+    // definition. Freeze-time only, at most one read per unit. False when the
+    // file cannot be read.
+    bool pack_record_skipped_source(const madc::dis::istring &path);
+    // --freeze-sources=LIST: every file LIST names joins the container as a
+    // source-only unit (the pack's source arm). False, said, when the list or
+    // a file it names cannot be read.
+    bool pack_record_source_list(const std::string &list_path);
     // True when an EXTERNAL definition (an earlier sibling's #define) gates
     // this consult — the condition a skipped `#ifndef` arm is missing content.
     bool pack_record_branch_macro(const std::string &name,	// interned only when recording
@@ -6817,6 +6822,11 @@ public:
     // group-shared instance both live here; ~Program releases the holder
     // (never a raw delete), so N sibling TUs can hold ONE instance.
     std::shared_ptr<CirFrozenForest> _bind_forest_holder;
+    // Every pack reader this compile opened, ONE per (image, profile): the
+    // grove bind, the header-text lookup and the AOT ledger share it, so the
+    // directory is read once and the pool/arena only when a role needs them
+    // (complete_open, memoized). Released with the Program.
+    std::vector<std::shared_ptr<CirFrozenForest> > _forest_readers;
     // S3: the compile group this Program is a sibling of (NULL = standalone).
     // Set by the ctor; the group outlives nothing — Programs hold shared_ptr
     // copies of everything they adopt from it, except this backpointer, which
@@ -7007,12 +7017,6 @@ public:
     std::map<const FuncDef *, size_t> forest_unsettled_defaults;
     std::map<madc::dis::istring, std::vector<madc::dis::istring> >
 	forest_deferred_func_families;
-    // forest_adopt_declared_function: the bare FUNCTION names the pack's decl
-    // index carries (kind pdkFunction; a qualified form is C++ surface), built
-    // once per bound forest on first demand — the "is this a library
-    // function" question answered from the pack, never from a name list.
-    std::unordered_set<madc::dis::istring> _forest_bare_func_names;
-    bool _forest_bare_func_names_built = false;
     unsigned long long _forest_funcs_eager = 0;
     unsigned long long _forest_funcs_deferred = 0;
     unsigned long long _forest_funcs_activated = 0;
@@ -7091,9 +7095,16 @@ public:
     // ledger is a container-global segment). NULL = no carrier at all.
     CirFrozenForest *ensure_ledger_forest();
     CirFrozenForest *ensure_source_forest();
+    // This compile's reader for (image, profile length): the one already
+    // opened, else a new one through open_header. NULL when the bytes are
+    // not a usable container.
+    CirFrozenForest *forest_reader(const void *image, size_t len, bool quiet_missing);
+    std::shared_ptr<CirFrozenForest> forest_reader_holder(CirFrozenForest *f) const;
     void forest_missing_fallback(bool config_mismatch); // discovery exhausted: apply forest_missing_policy (mismatch = container seen, wrong std/-D)
     madc::dis::istring forest_probed_arms() const;	// the arms probe_forest_chain walked, for the failure diagnostics (one owner)
-    int forest_unit_for_include(const madc::dis::istring &incfile); // spelling/path lookup; -1 miss
+    int forest_unit_for_include(const madc::dis::istring &incfile); // the unit an include BINDS; -1 miss or nothing frozen to bind
+    int forest_unit_named_by_include(const madc::dis::istring &incfile); // spelling/path lookup; -1 miss
+    int forest_unit_under_build_roots(CirFrozenForest *f, const madc::dis::istring &incfile); // spelling under a build include root; -1 none
     bool forest_source_path(const std::string &candidate,
 			    bool allow_tail, madc::dis::istring &resolved);
     bool forest_source_text(const madc::dis::istring &path, std::string &text);

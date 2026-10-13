@@ -49,6 +49,21 @@ LEDGER_LIST=scripts/ledger_sources.txt
 WIN_CXX_INCLUDE="${MADC_WIN_CXX_INCLUDE:?missing MinGW libstdc++ include root}"
 mkdir -p tmp
 
+# The SOURCE ARM (owner 2026-10-13): the Linux-equivalent C headers, the C
+# runtime's own (scripts/forest_pack_crt_windows.txt), what they include, and
+# the whole libstdc++ tree, GENERATED from the cross toolchain and
+# packed as source-only units beside the frozen grove (--freeze-sources=);
+# the gate checks each one is a unit (--units-from). MADC_WIN_PACK_CFLAGS are
+# the target's own defines (src/Makefile WIN_UCRT_FLAGS).
+# docs/plans/2026-10-13-pack-all-system-headers.md.
+SOURCES_LIST=tmp/forest_pack_sources_windows.txt
+if ! bash scripts/forest_pack_sources.sh windows "${MADC_WIN_CC:-x86_64-w64-mingw32-gcc-posix}" \
+        "${MADC_WIN_CXX:-x86_64-w64-mingw32-g++-posix}" "$WIN_CXX_INCLUDE" \
+        scripts/forest_pack_crt_windows.txt > "$SOURCES_LIST"; then
+    echo "forest_pack_windows: could not list the system headers" >&2
+    exit 1
+fi
+
 if [ ! -f "$BIN" ]; then
     echo "forest_pack_windows: exe '$BIN' not found" >&2
     exit 1
@@ -134,7 +149,7 @@ ulimit -t 1800
 # Captured for the degradation gate (task #63) — see scripts/forest_pack.sh for
 # why this is redirect-then-cat and never `| tee`.
 PACK_LOG=tmp/forest_pack_win_freeze.log
-if ! timeout 1800 "$WINE" "$PACKER" --no-config --std=madc --freeze-mir-cache "${LEDGER_ARGS[@]}" "${FOREST_SHARE_ARGS[@]}" --freeze-append="$APPEND_TO" "$TU" > "$PACK_LOG" 2>&1; then
+if ! timeout 1800 "$WINE" "$PACKER" --no-config --std=madc --freeze-mir-cache --freeze-sources="$SOURCES_LIST" "${LEDGER_ARGS[@]}" "${FOREST_SHARE_ARGS[@]}" --freeze-append="$APPEND_TO" "$TU" > "$PACK_LOG" 2>&1; then
     cat "$PACK_LOG"
     echo "forest_pack_windows: FAILED - freeze-append exited nonzero" >&2
     exit 1
@@ -217,7 +232,7 @@ fi
 bash scripts/forest_pack_gate.sh --profile win64 \
     --pack-log "$PACK_LOG" --load-log "$LOAD_LOG" \
     --dump tmp/forest_pack_win_dump.txt \
-    --units-from "$LIST" --sources-from "$GUARDED_LIST"
+    --units-from "$LIST" --units-from "$SOURCES_LIST" --sources-from "$GUARDED_LIST"
 
 units=$(grep -c '^unit	' tmp/forest_pack_win_dump.txt)
 echo "forest_pack_windows: OK (1 profile, $units units appended to $IMAGE; product smokes green)"

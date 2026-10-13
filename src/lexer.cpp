@@ -4162,12 +4162,11 @@ static CirFrozenForest *forest_probe_arm(Program *prog, const char *path,
     size_t candidate_len = image_len;
     for (;;)
     {
-	CirFrozenForest *f = new CirFrozenForest();
 	double _t1 = forest_stat_now();
-	if ( !f->open_header(image, candidate_len, quiet_missing) )
+	CirFrozenForest *f = prog->forest_reader(image, candidate_len, quiet_missing);
+	if ( !f )
 	{
 	    open_secs += forest_stat_now() - _t1;
-	    delete f;
 	    return NULL;
 	}
 	size_t previous_len = 0;
@@ -4191,7 +4190,6 @@ static CirFrozenForest *forest_probe_arm(Program *prog, const char *path,
 		" mismatch — trying older profile" << std::endl);
 	    if ( config_match == Program::forestMatchExact )
 		config_mismatch = true;
-	    delete f;
 	}
 	else if ( header_only || f->complete_open(/*c2m=*/NULL) )
 	{
@@ -4203,15 +4201,33 @@ static CirFrozenForest *forest_probe_arm(Program *prog, const char *path,
 	    return f;
 	}
 	else
-	{
 	    open_secs += forest_stat_now() - _t1;
-	    delete f;
-	}
 
 	if ( !have_previous )
 	    return NULL;
 	candidate_len = previous_len;
     }
+}
+
+CirFrozenForest *Program::forest_reader(const void *image, size_t len,
+				       bool quiet_missing)
+{
+    for ( size_t i = 0; i < _forest_readers.size(); ++i )
+	if ( _forest_readers[i]->opened_from(image, len) )
+	    return _forest_readers[i].get();
+    std::shared_ptr<CirFrozenForest> f(new CirFrozenForest());
+    if ( !f->open_header(image, len, quiet_missing) )
+	return NULL;
+    _forest_readers.push_back(f);
+    return f.get();
+}
+
+std::shared_ptr<CirFrozenForest> Program::forest_reader_holder(CirFrozenForest *f) const
+{
+    for ( size_t i = 0; i < _forest_readers.size(); ++i )
+	if ( _forest_readers[i].get() == f )
+	    return _forest_readers[i];
+    return std::shared_ptr<CirFrozenForest>();
 }
 
 // The ordered carrier discovery chain (forest-carriers plan: one format, one
@@ -4340,6 +4356,9 @@ CirFrozenForest *Program::ensure_bind_forest()
 	{
 	    _bind_forest_holder = gi->second;
 	    bind_forest = _bind_forest_holder.get();
+	    // This compile's other roles share it too (forest_reader).
+	    if ( !forest_reader_holder(bind_forest) )
+		_forest_readers.push_back(_bind_forest_holder);
 	    bind_forest->_work_secs = &_forest_work_seconds;
 	    bind_forest->_work_depth = &_forest_work_depth;
 	    return bind_forest;
@@ -4349,7 +4368,7 @@ CirFrozenForest *Program::ensure_bind_forest()
     bind_forest = probe_forest_chain(forestMatchExact, cfg_mismatch);
     if ( bind_forest )
     {
-	_bind_forest_holder.reset(bind_forest);
+	_bind_forest_holder = forest_reader_holder(bind_forest);
 	if ( compile_group )
 	    compile_group->bind_forests[group_key] = _bind_forest_holder;
 	bind_forest->_work_secs = &_forest_work_seconds;
@@ -4423,15 +4442,47 @@ CirFrozenForest *Program::ensure_source_forest()
     // re-tokenized under THIS Program's live policy, but it must match the
     // selected stdlib flavor: libc++ and libstdc++ own different header text.
     // The same carrier walker remains the one owner of discovery/profile order.
+    // header_only: a header's text is its own unit segment and its name is the
+    // directory's — neither needs the string pool or the arena.
     bool cfg_mismatch = false;
     source_forest = probe_forest_chain(forestMatchStdlibFlavor,
-				       cfg_mismatch, /*header_only=*/false);
+				       cfg_mismatch, /*header_only=*/true);
     if ( source_forest )
     {
 	source_forest->_work_secs = &_forest_work_seconds;
 	source_forest->_work_depth = &_forest_work_depth;
     }
     return source_forest;
+}
+
+// The unit a spelling names under one of the BUILD's include roots: each -I
+// dir, then every directory of the selected flavor's table — past the
+// toolchain-only view's cut (--no-sysroot-includes) too, since a packed header
+// is madc's own, named under the root the build gave it, whichever roots this
+// compile searches on disk. The step before a bare path-tail match, which
+// cannot tell <search.h> from libc++'s __algorithm/search.h. -1: none.
+int Program::forest_unit_under_build_roots(CirFrozenForest *f,
+					   const madc::dis::istring &incfile)
+{
+    if ( !f || incfile.empty() || madc::detail::host_path_absolute(incfile) )
+	return -1;
+    std::vector<madc::dis::istring> roots(include_paths.begin(), include_paths.end());
+    const madc_stdlib_flavor *fl = active_stdlib_flavor();
+    const char *const *table = fl && fl->paths && fl->paths[0]
+	? fl->paths : sys_include_paths();
+    for ( ; *table; ++table )
+	roots.push_back(*table);
+    for ( size_t i = 0; i < roots.size(); ++i )
+    {
+	std::string candidate = roots[i];
+	if ( !candidate.empty() && candidate.back() != '/' )
+	    candidate += '/';
+	candidate += incfile;
+	const int u = f->find_unit(candidate);
+	if ( u >= 0 )
+	    return u;
+    }
+    return -1;
 }
 
 bool Program::forest_source_path(const std::string &candidate,
@@ -4441,6 +4492,8 @@ bool Program::forest_source_path(const std::string &candidate,
     if ( !forest )
 	return false;
     int unit = forest->find_unit(candidate);
+    if ( unit < 0 && allow_tail )
+	unit = forest_unit_under_build_roots(forest, candidate);
     if ( unit < 0 && allow_tail )
 	unit = forest->find_unit_path_tail(candidate);
     if ( unit < 0 || !forest->unit_has_source((uint32_t)unit) )
@@ -4458,6 +4511,8 @@ bool Program::forest_source_text(const madc::dis::istring &path, std::string &te
     if ( !forest )
 	return false;
     int unit = forest->find_unit(path);
+    if ( unit < 0 )
+	unit = forest_unit_under_build_roots(forest, path);
     if ( unit < 0 )
 	unit = forest->find_unit_path_tail(path);
     if ( unit < 0 || !forest->unit_has_source((uint32_t)unit) )
@@ -4587,7 +4642,17 @@ bool Program::need_protocol_macro_live()
 // grove the pack froze.  A compilerless consumer cannot stat() the producer's
 // paths, but it still carries their ordered search table: consult those exact
 // frozen provider names before falling back to an ambiguous path-tail match.
+// The grove unit an include BINDS to. A unit the include names but that has
+// no frozen surface (the pack's source arm: text only, never tokenized at
+// freeze) binds nothing — the include takes the live path, which reads that
+// text where no disk has it (forest_source_path).
 int Program::forest_unit_for_include(const madc::dis::istring &incfile)
+{
+    const int u = forest_unit_named_by_include(incfile);
+    return u >= 0 && bind_forest->unit_has_frozen_surface((uint32_t)u) ? u : -1;
+}
+
+int Program::forest_unit_named_by_include(const madc::dis::istring &incfile)
 {
     CirFrozenForest *f = ensure_bind_forest();
     if ( !f )
@@ -4618,12 +4683,16 @@ int Program::forest_unit_for_include(const madc::dis::istring &incfile)
 	if ( u >= 0 )
 	    return u;
     }
-    // Machine-portable arm: filesystem-frozen units carry the PRODUCER's
+    // The build's own roots next — past the toolchain-only cut — then the
+    // machine-portable arm: filesystem-frozen units carry the PRODUCER's
     // full header path, which this machine's resolver may not be able to
     // spell at all (the hosted darwin groves are frozen from the build
     // container's libc++ tree; run-only Macs have no headers to resolve
     // against). The include SPELLING matched against the unit name's tail
     // components is the identity that travels.
+    u = forest_unit_under_build_roots(f, incfile);
+    if ( u >= 0 )
+	return u;
     u = f->find_unit_path_tail(incfile);
     // posix/<name> is an internal storage key, never an alternate tail match
     // for an ordinary native header. Whole providers map to it explicitly at
@@ -6001,16 +6070,69 @@ void Program::pack_record_source(const char *interned_file,
 // So the reference and the content are recorded TOGETHER: an edge without bytes
 // is not a smaller corpus, it is a broken one. Freeze-time only (pack_recording
 // gates it) and at most one read per unit, so ordinary compiles pay nothing.
-void Program::pack_record_skipped_source(const madc::dis::istring &path)
+bool Program::pack_record_skipped_source(const madc::dis::istring &path)
 {
     if ( !pack_recording )
-	return;
+	return false;
     const char *interned = intern_file(path);
-    if ( !interned || pack_unit_sources.count(interned) )
-	return;		// already captured by a real tokenization — first wins
+    if ( !interned )
+	return false;
+    if ( pack_unit_sources.count(interned) )
+	return true;	// already captured by a real tokenization — first wins
     std::string text;
-    if ( read_resolved_include(path, text) )
-	pack_record_source(interned, text);
+    if ( !read_resolved_include(path, text) )
+	return false;
+    pack_record_source(interned, text);
+    return true;
+}
+
+// --freeze-sources=LIST: the pack's SOURCE ARM. Each file LIST names (one path
+// per line; blank lines and `#` comments skipped) joins the container as a
+// source-only unit through the same recorder a skipped include uses, so a
+// compiler-less target serves every system header, not only the ones the
+// frozen translation unit happened to reach (owner 2026-10-13;
+// docs/plans/2026-10-13-pack-all-system-headers.md). A line may instead read
+// `unit-name<TAB>file`: the unit is named as the TARGET's search list spells
+// it while its text comes from where the build host keeps it (darwin's SDK
+// path vs the staged open-licensed tree). A unit the freeze already tokenized
+// keeps that record. Unreadable = false, said on stderr: a source arm that
+// silently lacks a header is the defect it exists to close.
+bool Program::pack_record_source_list(const std::string &list_path)
+{
+    std::ifstream in(list_path.c_str());
+    if ( !in )
+    {
+	std::cerr << "madc: --freeze-sources: cannot read " << list_path << std::endl;
+	return false;
+    }
+    std::string line;
+    size_t n = 0;
+    while ( std::getline(in, line) )
+    {
+	if ( line.empty() || line[0] == '#' )
+	    continue;
+	const size_t tab = line.find('\t');
+	const std::string file = tab == std::string::npos ? line : line.substr(tab + 1);
+	bool ok;
+	if ( tab == std::string::npos )
+	    ok = pack_record_skipped_source(line);
+	else
+	{
+	    std::string text;
+	    ok = pack_recording && read_resolved_include(file, text);
+	    if ( ok )
+		pack_record_source(intern_file(line.substr(0, tab)), text);
+	}
+	if ( !ok )
+	{
+	    std::cerr << "madc: --freeze-sources: cannot read " << file
+		      << " (listed in " << list_path << ")" << std::endl;
+	    return false;
+	}
+	n++;
+    }
+    DBG(std::cout << "freeze-sources: " << n << " file(s) from " << list_path << std::endl);
+    return true;
 }
 
 void Program::pack_record_define(const madc::dis::istring &name, const std::string &value)
@@ -7366,7 +7488,19 @@ TokenBase *Program::_getToken()
 			if ( registration_policy.enable_forest_bind
 			  && !protocol_visit )
 			{
-			    int fu = forest_unit_for_include(incfile);
+			    // An embedded name a search dir ahead of madc's slot
+			    // outranks (libc++'s C wrappers on an Apple target)
+			    // binds the WRAPPER's unit, never the embedded copy's
+			    // bare-name unit — the precedence the live path below
+			    // applies (embedded_header_outranked), applied before
+			    // the bind.
+			    const bool outranked = !is_include_next
+				&& find_embedded_header(incfile)
+				&& embedded_header_outranked(incfile);
+			    const madc::dis::istring bind_name = outranked
+				? resolve_include_path(incfile, /*is_system=*/true)
+				: madc::dis::istring(incfile);
+			    int fu = forest_unit_for_include(bind_name);
 			    // A parent bind selected this exact child for live
 			    // tokenization. Its recursive synthetic include must pass
 			    // through the normal provider path, never re-bind the husk.

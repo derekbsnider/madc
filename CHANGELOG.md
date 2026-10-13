@@ -6,6 +6,38 @@
 
 The live REPL release: a `madc -i` session behaves like a buffer you keep editing. A function defined again reaches every caller, an inline one included; a variable defined again is re-initialized in place, an object with a destructor destroyed and constructed again; a type defined again is the same type when its data members are, and otherwise its name's next version (old objects keep `P#1`, mixing versions is a type error, a C++ function for the new version is an `abi_tag`-mangled overload). An edit to the REPL buffer reparses live, Restart and Run All replays the whole buffer and runs its uncalled `main`, and objects with static storage duration are destroyed at exit. madcide 0.8.0 carries the live reparse and Restart and Run All to its REPL pane.
 
+### The forest pack serves every system header
+
+A packed madc now compiles a program that includes any system header on a
+machine with no headers on disk, not only the handful of headers earlier packs
+listed. The pack's source arm holds the exact text of every header the
+platform's C library, kernel and C++ standard library install — on Linux every
+file of `libc6-dev`, `linux-libc-dev` and `libstdc++-N-dev`; on Windows the
+glibc header names mingw-w64/UCRT also ships plus the Microsoft C runtime's own
+headers, never the Windows API; on macOS the staged open-licensed Apple libc
+tree under the SDK's name and the pinned libc++ tree. `--freeze-sources=<list>`
+packs each listed file as a source-only unit (freeze format v56: its source slot
+alone); the list is generated from the platform's include roots by
+`scripts/forest_pack_sources.sh`, never hand-kept, and the pack gate fails when
+any listed header is missing from the container. The frozen grove stays the
+parsed-once common set — a speed-up, not the coverage boundary — and a
+source-only header's text is read only when a compile includes one outside the
+grove.
+
+Freeze format v57 carries the pack's own index. The directory stores every
+unit's name as sorted text, and a second sorted table holds the bare function
+names the units declare; both are uncompressed and read in place in the mapped
+image, so "is this header packed, and where" and "does the pack declare function
+X" are binary searches after the directory open alone, never a decode of the
+string pool or the arena, and a header-text lookup no longer forces the full
+container open. One reader per mapped image and profile serves the grove bind,
+the header-text lookup and the AOT ledger. An include resolves against the
+build's own include roots before an ambiguous path tail. On the Linux 24.04
+container the pack grows from 370 to 2283 units and from 19.35 MB to 24.32 MB,
+and a headerless C compile's front-end cost drops 24.75% (parse-cost
+`c_headers.live`, 324.37 M to 244.10 M instructions); the grove-bind rows stay
+flat.
+
 ### `quick_exit` on Windows runs only the at_quick_exit handlers
 
 The JIT session's exit hook — the one that destroys a session's objects with
