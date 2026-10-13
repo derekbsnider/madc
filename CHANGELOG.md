@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [v0.105.0] — 2026-10-13
+
+The live REPL release: a `madc -i` session behaves like a buffer you keep editing. A function defined again reaches every caller, an inline one included; a variable defined again is re-initialized in place, an object with a destructor destroyed and constructed again; a type defined again is the same type when its data members are, and otherwise its name's next version (old objects keep `P#1`, mixing versions is a type error, a C++ function for the new version is an `abi_tag`-mangled overload). An edit to the REPL buffer reparses live, Restart and Run All replays the whole buffer and runs its uncalled `main`, and objects with static storage duration are destroyed at exit. madcide 0.8.0 carries the live reparse and Restart and Run All to its REPL pane.
+
 ### A conversion-function template converts to the class deduced from the target
 
 A class's `template <typename U> operator Val<U>()` now converts an object of
