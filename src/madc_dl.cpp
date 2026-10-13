@@ -62,6 +62,20 @@ bool madcdl_addr(const void *addr, MadcDlInfo &info)
 	return true;
 }
 
+bool madcdl_pin_image_of(const void *addr)
+{
+	// RTLD_NODELETE on a NOLOAD reopen: the image stays mapped past its
+	// last dlclose. The reopen's own reference is dropped at once.
+	Dl_info di;
+	if (!dladdr(addr, &di) || !di.dli_fname)
+		return false;
+	void *h = dlopen(di.dli_fname, RTLD_LAZY | RTLD_NOLOAD | RTLD_NODELETE);
+	if (!h)
+		return false;
+	dlclose(h);
+	return true;
+}
+
 #else
 
 // ---------------------------------------------------------------- Win32 ---
@@ -259,6 +273,14 @@ bool madcdl_addr(const void *addr, MadcDlInfo &info)
 	info.sname = NULL;
 	info.saddr = NULL;
 	return true;
+}
+
+bool madcdl_pin_image_of(const void *addr)
+{
+	HMODULE h = NULL;
+	return GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
+				  | GET_MODULE_HANDLE_EX_FLAG_PIN,
+				  (LPCSTR)addr, &h) != 0;
 }
 
 #endif

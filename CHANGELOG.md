@@ -6,6 +6,20 @@
 
 The live REPL release: a `madc -i` session behaves like a buffer you keep editing. A function defined again reaches every caller, an inline one included; a variable defined again is re-initialized in place, an object with a destructor destroyed and constructed again; a type defined again is the same type when its data members are, and otherwise its name's next version (old objects keep `P#1`, mixing versions is a type error, a C++ function for the new version is an `abi_tag`-mangled overload). An edit to the REPL buffer reparses live, Restart and Run All replays the whole buffer and runs its uncalled `main`, and objects with static storage duration are destroyed at exit. madcide 0.8.0 carries the live reparse and Restart and Run All to its REPL pane.
 
+### `quick_exit` on Windows runs only the at_quick_exit handlers
+
+The JIT session's exit hook — the one that destroys a session's objects with
+static storage duration when the session ends — registered with `atexit()` from
+`libmadc-0.dll`. On mingw, `atexit()` inside a DLL lands in that DLL's per-DLL
+table, which `DLL_PROCESS_DETACH` runs on every process termination, so
+`quick_exit` and `_Exit` ran the atexit handlers too. The hook now goes in the
+UCRT's process exit table through `_crt_atexit` — the table `exit()` runs and
+`quick_exit` / `_Exit` do not, the same one an executable's startup member hands
+its exit list to. Because that table then holds a pointer into `libmadc-0.dll`,
+the image is pinned first (`madcdl_pin_image_of`) so a host's `FreeLibrary`
+never unmaps it. Gate: `tests/testatquickexit` (headerless-win), which now
+exits 4 instead of 9.
+
 ### A frozen module's trap prebinder leaves the startup members alone
 
 A packed `--run-frozen` binary binds a loud trap stub over every

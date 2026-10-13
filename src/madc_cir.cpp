@@ -1265,8 +1265,16 @@ static void cir_ctx_run_exit_handlers(MIR_context_t ctx)
 // at process exit, while their code is still mapped — so exit() called inside
 // a program runs them. A session leaves the registry when it ends. Elsewhere
 // the C library's exit already runs every __cxa_atexit entry.
+// The hook goes in the UCRT's process exit table (_crt_atexit, as an
+// executable's startup member hands its list over): exit() runs that table,
+// quick_exit and _Exit do not. atexit() called in this DLL would land in
+// mingw's per-DLL table, which DLL_PROCESS_DETACH runs on EVERY termination,
+// so quick_exit ran the atexit handlers. The table then holds a pointer into
+// this DLL, so the DLL is pinned first: a host's FreeLibrary never unmaps it.
 // Thread safety: the registry mutates under its mutex; the hook takes it too.
 #if MADC_TARGET_WINDOWS_P
+#include <corecrt_startup.h>	// _crt_atexit
+
 static std::mutex cir_live_exit_lock;
 static std::set<MIR_context_t> cir_live_exit_ctxs;
 
@@ -1282,7 +1290,8 @@ static void cir_live_exit_add(MIR_context_t ctx)
 {
     // Once (a function-local static: mingw's std::call_once calls a null
     // pointer through its per-thread proxy).
-    static const bool hooked = atexit(cir_live_exit_hook) == 0;
+    static const bool hooked = madcdl_pin_image_of((const void *)&cir_live_exit_hook)
+			       && _crt_atexit(cir_live_exit_hook) == 0;
     (void)hooked;
     std::lock_guard<std::mutex> hold(cir_live_exit_lock);
     cir_live_exit_ctxs.insert(ctx);

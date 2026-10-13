@@ -65,4 +65,10 @@ struct MadcDlInfo {
 // crash handler symbolizes through this).
 bool madcdl_addr(const void *addr, MadcDlInfo &info);
 
+// Keep the image that holds `addr` mapped until the process ends — a later
+// close or FreeLibrary leaves it loaded — for an image that hands a pointer
+// into itself to a process-lifetime table (the UCRT's exit table). False when
+// no loaded image owns `addr` or the platform refuses.
+bool madcdl_pin_image_of(const void *addr);
+
 #endif
