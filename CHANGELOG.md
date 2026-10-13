@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### A class argument no conversion turns into the parameter's class is refused
+
+Passing an object of one class by value where a different class is expected,
+with no conversion between them, is now a compile error instead of a silent
+wrong answer. `getx(a)` for an `int getx(B v)` passed an `A` reports `no
+matching constructor for call to 'B(A)'`; before, madc default-constructed the
+`B` parameter and dropped the `A` argument, so `getx` read garbage and the
+program exited 0. The no-user-ctor construction arm now refuses a single
+unbraced initializer whose class neither copies/slices into the target nor has
+a plain conversion function to it (`class_conversion_to_class`), while a class
+that declares a conversion-function template still stands back, since its
+deduction against the target is not modeled. A same-class copy, a derived
+slice, a conversion function, and an aggregate's braced element still
+initialize. The no-match message now names the source and target types through
+TypeSpeller (`dump_show_type_word`), so a REPL session's earlier version shows
+as `P#1` rather than its emitted name. Gates: `testclassargnoconv` (the
+refusal), `testclassargconv` (the four conversions that stand), `testctornomatch`
+(message unchanged).
+
 ### A session rebuild replays the whole REPL buffer, through one line-grouping rule
 
 `madc::session_rebuild(h, text, argv)` replaces `madc::session_rebuilt(h,

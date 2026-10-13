@@ -2268,6 +2268,9 @@ public:
 	// A same-class (or derived) initializer copies the class ([over.match.
 	// list], [dcl.init.aggr]/4): never a member list, never brace elision.
 	bool initializer_copies_class(TokenBase *init, DataDefCLASS *cdd);
+	// The class of an initializer's value, NULL for a non-class one.
+	DataDefCLASS *initializer_class(TokenBase *init);
+	bool unconvertible_class_source(TokenBase *init, TokenBase *origin);
 	bool braced_class_array_needs_construction(Variable *v,
 			       TokenDecl *tdecl, DataDefCLASS *cdd);
 	// The class half of that rule: an element of `cdd` is constructed, never

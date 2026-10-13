@@ -15370,6 +15370,28 @@ static FuncDef *class_copy_ctor_for(DataDefCLASS *cdd, bool move)
 	return best;
 }
 
+// Does SOURCE (or a base) declare an operator TEMPLATE? A conversion-function
+// template is one (`template<class U> operator Ref<U>&()`, its stub named
+// `operatorRef<U>&`, outside the `operator <type>` convention): its deduction
+// against a target is not modeled (class_conversion_to_class matches a plain
+// conversion function's resolved return), so such a source may still convert.
+static bool class_declares_operator_template(DataDefCLASS *source)
+{
+	if (!source) return false;
+	for (Variable *mv : source->methods) {
+		FuncDef *fd = mv ? dynamic_cast<FuncDef *>(mv->type) : NULL;
+		if (fd && fd->is_member_template
+		    && fd->method_display_name.compare(0, 8, "operator") == 0)
+			return true;
+	}
+	if (class_declares_operator_template(source->base_class))
+		return true;
+	for (const BaseSpec &base : source->bases)
+		if (class_declares_operator_template(base.base))
+			return true;
+	return false;
+}
+
 // Select a zero-argument conversion function whose semantic return class is
 // `target`. Conversion functions are ordinary method records; match their
 // resolved return type rather than their source spelling (which may be an
@@ -18744,18 +18766,25 @@ node_t CirBuilder::no_ctor_match_error(DataDefCLASS *cdd,
 				       const std::vector<TokenBase *> &ctor_args,
 				       TokenBase *origin)
 {
+	// The types as the source names them (TypeSpeller's show word): a
+	// session's earlier version is `P#1`, never its emitted name.
+	auto named = [&](DataDef *dd) -> std::string {
+		return std::string(dd && m_prog ? dump_show_type_word(dd)
+					       : describe_datadef(dd));
+	};
 	std::string args_desc;
 	for (size_t i = 0; i < ctor_args.size(); i++) {
 		if (i) args_desc += ", ";
 		DataDef *ad = ctor_args[i] ? ctor_args[i]->datadef() : NULL;
 		if (DataDefCLASS *rc = object_returning_call_class(ctor_args[i]))
 			ad = rc;
-		args_desc += describe_datadef(ad);
+		args_desc += named(ad);
 	}
+	const std::string cls = cdd ? named(cdd) : std::string("<class>");
 	char buf[256];
 	snprintf(buf, sizeof(buf),
 		 "no matching constructor for call to '%s(%s)'",
-		 cdd ? cdd->name.c_str() : "<class>", args_desc.c_str());
+		 cls.c_str(), args_desc.c_str());
 #ifdef MADC_DEBUG_CTORINIT
 	fprintf(stderr, "[ctorinit] NO-MATCH cdd=%s nctors=%zu origin=%s:%d\n",
 		cdd ? cdd->name.c_str() : "(null)",
@@ -19739,12 +19768,29 @@ node_t CirBuilder::class_array_construct_loop(
 // and an aggregate element takes no brace elision from it.
 bool CirBuilder::initializer_copies_class(TokenBase *init, DataDefCLASS *cdd)
 {
-	if (!init || !cdd) return false;
+	DataDefCLASS *acls = cdd ? initializer_class(init) : NULL;
+	return acls && acls->is_or_derives_from(cdd);
+}
+
+// An unbraced initializer of a class that no conversion turns into the one
+// being initialized, once try_implicit_copy_construct found neither a copy
+// nor a plain conversion function: its class declares no operator template
+// either (a conversion-function template among them). A braced list's
+// element is the aggregate lane's.
+bool CirBuilder::unconvertible_class_source(TokenBase *init, TokenBase *origin)
+{
+	DataDefCLASS *src = initializer_class(init);
+	return src && !ctor_args_are_braced(origin)
+	    && !class_declares_operator_template(src);
+}
+
+DataDefCLASS *CirBuilder::initializer_class(TokenBase *init)
+{
+	if (!init) return NULL;
 	DataDef *ad = operand_value_datadef(init);
 	while (DataDefQUAL *ac = dynamic_cast<DataDefQUAL *>(ad))
 		ad = ac->base_type;
-	DataDefCLASS *acls = dynamic_cast<DataDefCLASS *>(ad);
-	return acls && acls->is_or_derives_from(cdd);
+	return dynamic_cast<DataDefCLASS *>(ad);
 }
 
 bool CirBuilder::braced_class_array_needs_construction(Variable *v,
@@ -20738,9 +20784,14 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 			// A COPY the implicit copy refused is an error, as in the
 			// user-ctor tail. Falling through default-constructed the
 			// object and dropped its source: `P p = q;` with a
-			// polymorphic P left p.x garbage, exit 0.
+			// polymorphic P left p.x garbage, exit 0. So is an object
+			// of another class that converts to none of this one
+			// (g++: "could not convert 'a' from 'A' to 'B'"): `f(a)`
+			// for an `f(B)` passed a default B.
 			if (ctor_args.size() == 1
-			    && initializer_copies_class(ctor_args[0], cdd))
+			    && (initializer_copies_class(ctor_args[0], cdd)
+				|| unconvertible_class_source(ctor_args[0],
+							      origin)))
 				return no_ctor_match_error(cdd, ctor_args, origin);
 		}
 		// NO aggregate leg here: the DECLARATION lanes call this with a
