@@ -594,15 +594,15 @@ static bool cir_ledger_write_module(MIR_context_t ctx, MIR_module_t mod,
 
 // The members' index: (symbol, member) for every name a member's `defines`
 // lists. Built once; immutable after.
-static const std::vector<std::pair<std::string, size_t> > &cir_crt_index()
+static const std::vector<std::pair<madc::dis::istring, size_t> > &cir_crt_index()
 {
-    static const std::vector<std::pair<std::string, size_t> > index = [] {
-	std::vector<std::pair<std::string, size_t> > out;
+    static const std::vector<std::pair<madc::dis::istring, size_t> > index = [] {
+	std::vector<std::pair<madc::dis::istring, size_t> > out;
 	for (size_t i = 0; madc_crt_members[i].name; i++) {
 	    std::istringstream in(madc_crt_members[i].defines);
-	    std::string nm;
+	    std::string nm;	// the stream's read buffer; kept as a name below
 	    while (in >> nm)
-		out.push_back(std::make_pair(nm, i));
+		out.push_back(std::make_pair(madc::dis::istring(nm), i));
 	}
 	return out;
     }();
@@ -612,7 +612,7 @@ static const std::vector<std::pair<std::string, size_t> > &cir_crt_index()
 // Does a member define `name`? (A link that imports none skips the pull.)
 static bool cir_crt_indexed(const char *name)
 {
-    for (const std::pair<std::string, size_t> &e : cir_crt_index())
+    for (const std::pair<madc::dis::istring, size_t> &e : cir_crt_index())
 	if (e.first == name)
 	    return true;
     return false;
@@ -661,10 +661,10 @@ static bool cir_crt_compile(const madc_crt_member &m, cir_ledger_module &out)
     if (MIR_module_t mod = cir_crt_compile_in(ctx, m)) {
 	cir_module_defined_syms(ctx, mod, out.syms);
 	ok = true;
-	for (const std::pair<std::string, size_t> &e : cir_crt_index())
+	for (const std::pair<madc::dis::istring, size_t> &e : cir_crt_index())
 	    if (&madc_crt_members[e.second] == &m
 		&& std::find(out.syms.begin(), out.syms.end(),
-			     madc::dis::istring(e.first)) == out.syms.end()) {
+			     e.first) == out.syms.end()) {
 		fprintf(stderr, "madc: startup member %s does not define"
 			" '%s'\n", m.name, e.first.c_str());
 		ok = false;
@@ -760,8 +760,8 @@ static void cir_ledger_pull(MIR_context_t ctx, Program *prog,
     // symbol -> candidate: the startup members by their index, then the
     // ledger's modules
     std::map<madc::dis::istring, size_t> owner;
-    for (const std::pair<std::string, size_t> &e : cir_crt_index())
-	owner.insert(std::make_pair(madc::dis::istring(e.first), e.second));
+    for (const std::pair<madc::dis::istring, size_t> &e : cir_crt_index())
+	owner.insert(std::make_pair(e.first, e.second));
     for (size_t i = 0; i < ledger.size(); i++)
 	for (const madc::dis::istring &s : ledger[i].syms)
 	    owner.insert(std::make_pair(s, ncrt + i));
