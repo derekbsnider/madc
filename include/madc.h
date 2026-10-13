@@ -6832,7 +6832,12 @@ public:
     // copies of everything they adopt from it, except this backpointer, which
     // is only consulted during compile (the group is alive for all of it).
     MadcCompileGroup *compile_group = NULL;
-    bool bind_forest_tried = false;	// one-shot open attempt (success or fail)
+    bool bind_forest_tried = false;	// one-shot full-open attempt (success or fail)
+    // The bind carrier opened to its directory (bind_forest_directory): the
+    // lookups' reader; bind_forest is the same instance once a bind completes
+    // it. NULL = no exact-config container.
+    CirFrozenForest *_bind_directory = NULL;
+    bool bind_directory_tried = false;	// one-shot discovery (success or fail)
     // AOT ledger carrier (forest-carriers S5): the container the emit lane
     // reads its C-lane runtime modules from under -static-libmadc. Usually
     // bind_forest itself; a SEPARATE open when the grove bind never happened
@@ -7088,7 +7093,8 @@ public:
     CirFrozenForest *probe_forest_chain(ForestConfigMatch config_match,
 					bool &config_mismatch,
 					bool header_only = false);
-    CirFrozenForest *ensure_bind_forest();	// open on first use; NULL if unavailable
+    CirFrozenForest *bind_forest_directory();	// the exact-config carrier, directory only; NULL if none
+    CirFrozenForest *ensure_bind_forest();	// that carrier fully opened, for a bind; NULL if unavailable
     // The container the AOT ledger is read from (-static-libmadc, S5): the
     // already-bound one when it opened, else the SAME discovery chain walked
     // with the producer-config gate off and stopping at the directory (the

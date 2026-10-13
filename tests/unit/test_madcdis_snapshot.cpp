@@ -11,6 +11,7 @@ thread_local bool madc_verbose = false;
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
 
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <string>
 #include <vector>
@@ -174,6 +175,43 @@ TEST_CASE("codec None segments bind in place via raw_ptr")
     CHECK(fz.valid());
     for ( size_t i = 0; i < ids.size(); ++i )
 	CHECK(fz.str(ids[i]) == p.str(ids[i]));
+}
+
+TEST_CASE("the directory table is sorted by seg_id; find binary-searches it")
+{
+    // Added out of id order: the reader finds every id in the table it holds
+    // (no per-open index). A duplicate id is refused at add.
+    const uint32_t first = 0x11111111u, second = 0x22222222u;
+    const uint32_t a = 7, c = 9;
+    snapshot_writer w;
+    REQUIRE(w.add_segment(7, madc::dis::SNAP_KIND_CONSUMER, &a, sizeof(a), PchCompression::None));
+    REQUIRE(w.add_segment(2, madc::dis::SNAP_KIND_CONSUMER, &first, sizeof(first), PchCompression::None));
+    REQUIRE(w.add_segment(9, madc::dis::SNAP_KIND_CONSUMER, &c, sizeof(c), PchCompression::None));
+    CHECK_FALSE(w.add_segment(2, madc::dis::SNAP_KIND_CONSUMER, &second, sizeof(second), PchCompression::None));
+    std::vector<uint8_t> blob;
+    REQUIRE(w.build(blob));
+
+    snapshot_reader r;
+    REQUIRE(r.open(blob.data(), blob.size()));
+    REQUIRE(r.segment_count() == 3u);
+    for ( uint32_t i = 1; i < r.segment_count(); ++i )
+	CHECK(r.segment_at(i - 1)->seg_id <= r.segment_at(i)->seg_id);
+    uint32_t v = 0;
+    const snapshot_segment *s7 = r.find(7);
+    REQUIRE(s7 != nullptr);
+    memcpy(&v, r.raw_ptr(*s7), sizeof(v));
+    CHECK(v == a);
+    const snapshot_segment *s2 = r.find(2);
+    REQUIRE(s2 != nullptr);
+    memcpy(&v, r.raw_ptr(*s2), sizeof(v));
+    CHECK(v == first);
+    const snapshot_segment *s9 = r.find(9);
+    REQUIRE(s9 != nullptr);
+    memcpy(&v, r.raw_ptr(*s9), sizeof(v));
+    CHECK(v == c);
+    CHECK(r.find(1) == nullptr);
+    CHECK(r.find(8) == nullptr);
+    CHECK(r.find(10) == nullptr);
 }
 
 TEST_CASE("placement 1: standalone snapshot file round-trips")

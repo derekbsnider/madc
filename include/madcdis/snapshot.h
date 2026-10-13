@@ -166,9 +166,10 @@ class snapshot_reader
     size_t _blob_size;
     snapshot_header _hdr;
     std::vector<snapshot_segment> _dir;
-    // seg_id -> _dir index, built at open(); find() is O(1), not a scan
-    // (a per-unit load sweep issues four finds per unit over a ~1000-entry
-    // directory).
+    // find(): a binary search of _dir when the table was written sorted by
+    // seg_id (_dir_sorted); else the seg_id -> _dir index built at open() —
+    // never a scan (a per-unit load sweep issues four finds per unit).
+    bool _dir_sorted = false;
     std::unordered_map<uint32_t, uint32_t> _dir_index;
     // The one decode core: decompress (or copy) a payload into dst, no
     // transform inversion, no allocation. Both read_segment overloads and

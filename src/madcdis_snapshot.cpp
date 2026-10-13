@@ -2,6 +2,7 @@
 // Format + placement contract in include/madcdis/snapshot.h. Compression rides
 // the one in-tree implementation (madc_pch::compress/decompress, pch.cpp).
 
+#include <algorithm>	// sorted directory: stable_sort at write, lower_bound at read
 #include <cstdio>
 #include <cstring>
 #include <utility>
@@ -249,6 +250,13 @@ bool snapshot_writer::build(std::vector<uint8_t> &out) const
     for ( size_t i = 0; i < _segs.size(); ++i )
 	if ( !_segs[i].payload.empty() )
 	    memcpy(out.data() + dir[i].offset, _segs[i].payload.data(), _segs[i].payload.size());
+    // The directory table is written sorted by seg_id (ids are unique —
+    // add_segment refuses a duplicate), so a reader finds a segment by binary
+    // search in the table it already holds — no per-open index to build.
+    std::stable_sort(dir.begin(), dir.end(),
+		     [](const snapshot_segment &a, const snapshot_segment &b) {
+			 return a.seg_id < b.seg_id;
+		     });
     if ( !dir.empty() )
 	memcpy(out.data() + dir_offset, dir.data(), dir.size() * sizeof(snapshot_segment));
     memcpy(out.data() + blob_size - sizeof(ftr), &ftr, sizeof(ftr));
@@ -348,9 +356,9 @@ bool snapshot_reader::open(const void *image, size_t image_len)
 
     _dir.resize(ftr.segment_count);
     _dir_index.clear();
+    _dir_sorted = true;
     if ( ftr.segment_count )
 	memcpy(_dir.data(), blob + ftr.dir_offset, (size_t)dir_bytes);
-    _dir_index.reserve(_dir.size());
     for ( size_t i = 0; i < _dir.size(); ++i )
     {
 	const snapshot_segment &s = _dir[i];
@@ -377,8 +385,17 @@ bool snapshot_reader::open(const void *image, size_t image_len)
 	    _dir_index.clear();
 	    return false;
 	}
-	// First-wins, matching the linear find() this index replaces.
-	_dir_index.emplace(s.seg_id, (uint32_t)i);
+	if ( i && _dir[i - 1].seg_id > s.seg_id )
+	    _dir_sorted = false;
+    }
+    // A table written sorted (every writer since the sorted-directory
+    // change) is searched in place; an older unsorted one gets the seg_id
+    // index — first-wins, matching the linear find() it replaced.
+    if ( !_dir_sorted )
+    {
+	_dir_index.reserve(_dir.size());
+	for ( size_t i = 0; i < _dir.size(); ++i )
+	    _dir_index.emplace(_dir[i].seg_id, (uint32_t)i);
     }
 
     _blob = blob;
@@ -412,6 +429,14 @@ bool snapshot_reader::previous_image_len(size_t &image_len) const
 
 const snapshot_segment *snapshot_reader::find(uint32_t seg_id) const
 {
+    if ( _dir_sorted )
+    {
+	std::vector<snapshot_segment>::const_iterator it = std::lower_bound(
+	    _dir.begin(), _dir.end(), seg_id,
+	    [](const snapshot_segment &s, uint32_t id) { return s.seg_id < id; });
+	return it != _dir.end() && it->seg_id == seg_id
+	     ? &*it : (const snapshot_segment *)0;
+    }
     std::unordered_map<uint32_t, uint32_t>::const_iterator it =
 	_dir_index.find(seg_id);
     return it != _dir_index.end() ? &_dir[it->second]

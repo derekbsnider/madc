@@ -4329,21 +4329,22 @@ madc::dis::istring Program::forest_probed_arms() const
     return arms;
 }
 
-CirFrozenForest *Program::ensure_bind_forest()
+// The exact-config bind carrier, opened to its DIRECTORY: discovery, a
+// sibling TU's shared instance, and the missing-container policy. "Does this
+// include name a grove unit" reads only this (the directory is the pack's
+// index); ensure_bind_forest completes it for an actual bind, so a compile
+// that binds nothing — a dialect compile whose fragments the pack does not
+// carry — never decodes the string pool or the arena.
+CirFrozenForest *Program::bind_forest_directory()
 {
-    if ( bind_forest_tried )
-	return bind_forest;
-    bind_forest_tried = true;
+    if ( bind_directory_tried )
+	return _bind_directory;
+    bind_directory_tried = true;
 
-    // task #25 slice D: probe/map/open under the forest-work clock; a bound
-    // forest gets the clock installed so its own on-demand entries (unit
-    // loads, materialize, template payload) accumulate on the same clock.
     ForestWorkFrame _fw(&_forest_work_seconds, &_forest_work_depth);
-    // S3 (R4-lite): a sibling TU adopts the group's already-bound instance
-    // for this dialect — the (config word, -D hash) pair IS the probe's own
-    // config gate, so a group hit is exactly what the probe would re-open.
-    // The clock pointers re-install per adopter (sequential compile: the
-    // forest's on-demand work accumulates on whoever is currently compiling).
+    // S3 (R4-lite): a sibling TU adopts the group's instance for this dialect
+    // — the (config word, -D hash) pair IS the probe's own config gate, so a
+    // group hit is exactly what the probe would re-open.
     std::pair<uint32_t, uint32_t> group_key(0, 0);
     if ( compile_group )
     {
@@ -4355,25 +4356,22 @@ CirFrozenForest *Program::ensure_bind_forest()
 	if ( gi != compile_group->bind_forests.end() )
 	{
 	    _bind_forest_holder = gi->second;
-	    bind_forest = _bind_forest_holder.get();
+	    _bind_directory = _bind_forest_holder.get();
 	    // This compile's other roles share it too (forest_reader).
-	    if ( !forest_reader_holder(bind_forest) )
+	    if ( !forest_reader_holder(_bind_directory) )
 		_forest_readers.push_back(_bind_forest_holder);
-	    bind_forest->_work_secs = &_forest_work_seconds;
-	    bind_forest->_work_depth = &_forest_work_depth;
-	    return bind_forest;
+	    return _bind_directory;
 	}
     }
     bool cfg_mismatch = false;
-    bind_forest = probe_forest_chain(forestMatchExact, cfg_mismatch);
-    if ( bind_forest )
+    _bind_directory = probe_forest_chain(forestMatchExact, cfg_mismatch,
+					 /*header_only=*/true);
+    if ( _bind_directory )
     {
-	_bind_forest_holder = forest_reader_holder(bind_forest);
+	_bind_forest_holder = forest_reader_holder(_bind_directory);
 	if ( compile_group )
 	    compile_group->bind_forests[group_key] = _bind_forest_holder;
-	bind_forest->_work_secs = &_forest_work_seconds;
-	bind_forest->_work_depth = &_forest_work_depth;
-	return bind_forest;
+	return _bind_directory;
     }
 
     // A named container that fails to open falls back to live parse LOUDLY
@@ -4394,6 +4392,32 @@ CirFrozenForest *Program::ensure_bind_forest()
 	return NULL;
     }
     forest_missing_fallback(cfg_mismatch);
+    return NULL;
+}
+
+CirFrozenForest *Program::ensure_bind_forest()
+{
+    if ( bind_forest_tried )
+	return bind_forest;
+    bind_forest_tried = true;
+
+    // task #25 slice D: the full open under the forest-work clock; a bound
+    // forest gets the clock installed so its own on-demand entries (unit
+    // loads, materialize, template payload) accumulate on the same clock.
+    // The clock pointers re-install per adopter (sequential compile: the
+    // forest's on-demand work accumulates on whoever is currently compiling).
+    ForestWorkFrame _fw(&_forest_work_seconds, &_forest_work_depth);
+    CirFrozenForest *f = bind_forest_directory();
+    const double t0 = forest_stat_now();
+    const bool opened = f && f->complete_open(/*c2m=*/NULL);
+    _forest_open_seconds += forest_stat_now() - t0;
+    if ( !opened )
+	return NULL;
+    bind_forest = f;
+    DBG(std::cout << "forest-bind: opened container (" << f->unit_count()
+	<< " units)" << std::endl);
+    bind_forest->_work_secs = &_forest_work_seconds;
+    bind_forest->_work_depth = &_forest_work_depth;
     return bind_forest;
 }
 
@@ -4649,12 +4673,15 @@ bool Program::need_protocol_macro_live()
 int Program::forest_unit_for_include(const madc::dis::istring &incfile)
 {
     const int u = forest_unit_named_by_include(incfile);
-    return u >= 0 && bind_forest->unit_has_frozen_surface((uint32_t)u) ? u : -1;
+    if ( u < 0 || !_bind_directory->unit_has_frozen_surface((uint32_t)u) )
+	return -1;
+    // Only a unit this include binds opens the frozen content.
+    return ensure_bind_forest() ? u : -1;
 }
 
 int Program::forest_unit_named_by_include(const madc::dis::istring &incfile)
 {
-    CirFrozenForest *f = ensure_bind_forest();
+    CirFrozenForest *f = bind_forest_directory();
     if ( !f )
 	return -1;
     int u = f->find_unit(incfile);
@@ -5336,9 +5363,10 @@ void Program::tokenize_posix_header_supplement(const madc::dis::istring &incfile
 	// before this policy bit are rejected by the config-word check.
 	if ( registration_policy.enable_forest_bind )
 	{
-		CirFrozenForest *forest = ensure_bind_forest();
-		int fu = forest ? forest->find_unit(supplement) : -1;
-		if ( fu >= 0 && forest_bind_env_ok((uint32_t)fu) )
+		CirFrozenForest *dir = bind_forest_directory();
+		int fu = dir ? dir->find_unit(supplement) : -1;
+		if ( fu >= 0 && ensure_bind_forest()
+		  && forest_bind_env_ok((uint32_t)fu) )
 		{
 			forest_bind_include((uint32_t)fu);
 			mark_embedded_include_flag(supplement);
@@ -5398,9 +5426,10 @@ bool Program::tokenize_posix_whole_provider(const madc::dis::istring &incfile,
 	const madc::dis::istring provider = std::string("posix/") + incfile;
 	if ( registration_policy.enable_forest_bind )
 	{
-	    CirFrozenForest *forest = ensure_bind_forest();
-	    int fu = forest ? forest->find_unit(provider) : -1;
-	    if ( fu >= 0 && forest_bind_env_ok((uint32_t)fu) )
+	    CirFrozenForest *dir = bind_forest_directory();
+	    int fu = dir ? dir->find_unit(provider) : -1;
+	    if ( fu >= 0 && ensure_bind_forest()
+	      && forest_bind_env_ok((uint32_t)fu) )
 	    {
 		forest_bind_include((uint32_t)fu);
 		mark_embedded_include_flag(provider);

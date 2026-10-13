@@ -38,6 +38,21 @@ and a headerless C compile's front-end cost drops 24.75% (parse-cost
 `c_headers.live`, 324.37 M to 244.10 M instructions); the grove-bind rows stay
 flat.
 
+### A packed compile that binds nothing never decodes the pack
+
+A compile opens the exact-config bind container to its directory only, and
+decodes the string pool and the type arena only when an include actually binds
+a packed unit. A dialect compile — whose prelude fragments the pack does not
+carry — binds nothing, so it no longer decodes the whole container on every
+fragment include: its default packed front-end cost drops from 150.5 M to
+78.7 M instructions (callgrind Ir, release binary), and a bare `println("hi")`
+from 86.9 M to 15.1 M. The container's segment table is written sorted by
+segment id, so a reader finds a segment by binary search in the table it
+already holds instead of building a per-open hash index. The parse-cost gate
+now measures the default packed path of a dialect and a C compile
+(`dialect.forest`, `c_headers.forest`) — the path on which the whole-container
+decode had gone unseen.
+
 ### `quick_exit` on Windows runs only the at_quick_exit handlers
 
 The JIT session's exit hook — the one that destroys a session's objects with

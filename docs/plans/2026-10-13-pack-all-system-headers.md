@@ -102,6 +102,37 @@ file first) and read from the staged tree.
     when frozen content is used (a bind, an adopted prototype);
   - one reader per (image, profile) per compile (`Program::forest_reader`),
     shared by the bind, the header-text lookup and the AOT ledger.
+- **The bind looks before it opens.** `Program::bind_forest_directory()` is
+  the exact-config carrier opened to its directory (discovery, a sibling
+  TU's shared instance, the missing-container policy); an include asks it,
+  and `ensure_bind_forest()` completes the open only for a unit the include
+  BINDS. A dialect compile — its fragments are not packed — decoded the
+  whole container on every fragment include before (0.104.0 too) and binds
+  nothing.
+- **The container's segment table is sorted by id** (`snapshot_writer`),
+  and `snapshot_reader::find` binary-searches the table it holds; the
+  per-open seg_id hash map (~5,600 inserts on this pack) remains only for
+  an older unsorted blob.
+
+Measured on the release binary (callgrind Ir, Linux container):
+
+| program | 0.104.0 | v57 | + bind looks first + sorted table |
+|---|---|---|---|
+| `println("hi")` (default, packed) | 84.7 M | 86.9 M | 18.0 M → 15.1 M |
+| `dialect.mad` (default, packed) | 147.2 M | 150.5 M | 81.6 M → 78.7 M |
+| `c_headers.c` live | — | 244.0 M | 241.2 M |
+
+The parse-cost gate gains `dialect.forest` and `c_headers.forest` rows
+(`scripts/parse_cost/*.modes`): the default packed path of a dialect and a
+C compile was never measured, which is how a whole-container decode on every
+dialect compile went unseen.
+
+Still open (owner 2026-10-13: decide on hard data, not a snap call): a
+compile that binds even one small header pays the container-global decode
+(11.5 MB raw from 1.63 MB stored: the string pool, the type arena, its
+tokens) and a restore pass over the whole arena — `<stddef.h>` costs 174.3 M
+Ir packed vs 12.7 M live (0.104.0: the same). Options and their measured
+costs/gains are being gathered before any size trade.
 
 ## Measured (Linux 24.04 container, packed `libmadc.so`)
 

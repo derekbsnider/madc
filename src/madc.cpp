@@ -2071,7 +2071,7 @@ int main(int argc, char **argv)
 	    // blob-less binary shows just the probe cost.
 	    {
 		Program::ForestBindStats fs = prog->forest_bind_stats();
-		if ( prog->bind_forest_tried )
+		if ( prog->bind_directory_tried )
 		    fprintf(stderr,
 			"[stats] forest map+open ..... %.3f + %.3f s  (%s)\n",
 			fs.map_secs, fs.open_secs,

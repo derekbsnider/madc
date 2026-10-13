@@ -28321,13 +28321,17 @@ Variable *Program::forest_adopt_declared_function(const madc::dis::istring &fnam
     // prototype applies in every -std. (Darwin D4 re-measure: every
     // zero-include strict-mode printf still read garbage on Apple arm64
     // because this returned NULL on the config mismatch.)
-    CirFrozenForest *f = ensure_bind_forest();
+    CirFrozenForest *f = bind_forest_directory();
     if ( !f )
 	f = ensure_source_forest();
     // "Is this a library function" is the pack's own function-name index,
     // read in place; only a yes opens the frozen content the adoption below
-    // reads (the full open, memoized — a no-op on the bind reader).
-    if ( !f || !f->declares_function(fname) || !f->complete_open(/*c2m=*/NULL) )
+    // reads — the bind carrier through ensure_bind_forest, the source carrier
+    // directly (both memoized).
+    if ( !f || !f->declares_function(fname) )
+	return NULL;
+    if ( f == _bind_directory ? !ensure_bind_forest()
+			      : !f->complete_open(/*c2m=*/NULL) )
 	return NULL;
 
     // EXACT: this one name and what its record pulls in — never the whole
