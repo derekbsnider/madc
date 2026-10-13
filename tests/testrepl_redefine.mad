@@ -2,5 +2,6 @@
 // the session already linked can be defined again, and every call reaches the
 // newest body: a later call, a caller compiled earlier, a pointer taken
 // earlier (Julia; cling keeps the old body in old callers). A function this
-// file defines is redefined the same way.
+// file defines is redefined the same way, and so is an inline one, which a
+// caller compiled earlier never inlined.
 int twice(int n) { return 2 * n; }

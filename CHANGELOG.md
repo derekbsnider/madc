@@ -21,6 +21,25 @@ as `P#1` rather than its emitted name. Gates: `testclassargnoconv` (the
 refusal), `testclassargconv` (the four conversions that stand), `testctornomatch`
 (message unchanged).
 
+### A REPL session redefinition of an inline function reaches an earlier caller
+
+An inline (vague-linkage) function redefined in a REPL session now takes effect
+everywhere: a later call, and a caller the session compiled before the
+redefinition, both reach the newest body. Before, the first copy of a
+vague-linkage function was the only body MIR kept, so a redefinition (D5) was
+dropped and earlier callers kept the old body, and c2mir/MIR inlined calls to
+the linkonce callee. Now the CIR emits a session redefinition of a
+vague-linkage function strong (`func_def` drops the `linkonce` attr through
+`session_redefinition`) and emits it even when the entry does not use it
+(`translate_module`'s `on_use`); `CirJitSession::vague_functions_interposable`,
+run before the link check, makes each entry's copy of a function an earlier
+entry defines WEAK so it binds to that definition, and `make_interposable`
+makes a loaded LINKONCE function WEAK so no caller inlines it and a later strong
+definition replaces it in place (MIR's `replaced_weak_def`). Vague-linkage data
+keeps its binding, so static locals and vtables stay one object; the first copy
+of a function still replaces a waiting stub (D27) and loads LINKONCE. Gate:
+`testrepl_redefine`.
+
 ### A session rebuild replays the whole REPL buffer, through one line-grouping rule
 
 `madc::session_rebuild(h, text, argv)` replaces `madc::session_rebuilt(h,

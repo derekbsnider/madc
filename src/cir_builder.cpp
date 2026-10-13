@@ -32958,9 +32958,13 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	// binding and wins: c2mir binds the item WEAK, and a strong definition
 	// from another TU replaces it (MIR's replaced_weak_def). Weak requires
 	// external linkage, as for linkonce.
+	// A session's redefinition (D5) is the function's body from now on, so
+	// it is strong: it replaces the copy linked first, where a vague copy
+	// binds to it (CirJitSession::vague_functions_interposable).
 	if (fd->weak_binding && !fd->internal_linkage)
 		append(ret_type, node2(N_ATTR, id("weak", tf), list(), tf));
-	else if (fd->is_linkonce() && tf->var.name != "main")
+	else if (fd->is_linkonce() && tf->var.name != "main"
+		 && !session_redefinition(tf, fd))
 		append(ret_type, node2(N_ATTR, id("linkonce", tf), list(), tf));
 
 	// C internal linkage (`static` file-scope function): N_STATIC makes
@@ -35661,6 +35665,10 @@ node_t CirBuilder::translate_module(Program *prog)
 		// That is Julia's late binding. clang-repl never emits a body its
 		// own input does not use, so the earlier call fails there.
 		if (on_use && session_awaits(func_emit_name(tf->var, tfd)))
+			on_use = false;
+		// A redefinition replaces the body an earlier entry linked (D5),
+		// used here or not: its body is this module's.
+		if (on_use && session_redefinition(tf, tfd))
 			on_use = false;
 		if (rs_probe && *rs_probe
 		    && tf->var.name.find(rs_probe) != madc::dis::istring::npos)

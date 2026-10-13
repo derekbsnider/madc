@@ -8,3 +8,8 @@ int twice(int k) { return 3 * k; }
 println("file {}", twice(4));
 int f() { return 303; }
 println("third {} {} {}", f(), g(), p());
+inline int sq(int v) { return v * v; }
+int use(int v) { return sq(v) + 1; }
+println("inline {}", use(3));
+inline int sq(int v) { return v * v * v; }
+println("inline again {} {}", use(3), sq(2));

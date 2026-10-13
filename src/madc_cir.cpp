@@ -2196,8 +2196,9 @@ void CirJitSession::make_function_stubs(const std::vector<madc::dis::istring> &n
 // function's body in (MIR inlines no weak callee) and a later definition
 // replaces it in place (replaced_weak_def). A function's takes its thunk and
 // an object's is loaded into its storage, so the code already linked and the
-// pointers already taken reach the newest definition. A vague-linkage copy
-// keeps its binding.
+// pointers already taken reach the newest definition. A vague-linkage
+// function is too (vague_functions_interposable); vague-linkage data keeps
+// its binding.
 static bool cir_object_item_p(MIR_item_t it)
 {
     return it->item_type == MIR_data_item || it->item_type == MIR_bss_item
@@ -2209,9 +2210,34 @@ void CirJitSession::make_interposable(MIR_module_t m)
 {
     for (MIR_item_t it = DLIST_HEAD(MIR_item_t, m->items); it;
 	 it = DLIST_NEXT(MIR_item_t, it))
-	if ((it->item_type == MIR_func_item || cir_object_item_p(it))
-	    && it->export_p && it->binding == MIR_ITEM_BIND_GLOBAL)
+	if (it->export_p
+	    && ((it->item_type == MIR_func_item
+		 && it->binding == MIR_ITEM_BIND_LINKONCE)
+		|| ((it->item_type == MIR_func_item || cir_object_item_p(it))
+		    && it->binding == MIR_ITEM_BIND_GLOBAL)))
 	    MIR_item_set_binding(ctx, it, MIR_ITEM_BIND_WEAK);
+}
+
+// A vague-linkage function (an inline body, an instantiation) is interposable
+// in a session too, so a redefinition (D5, a strong body) replaces it in place
+// and no caller inlines it. Before the link check and the load, an entry's
+// copy of one an earlier entry defines is weak, so it binds to that
+// definition (MIR keeps the first of two weak definitions). The first copy
+// loads as emitted — it is the definition, and it replaces a stub that waits
+// for it (D27) — and make_interposable makes it weak once loaded.
+// Vague-linkage data keeps its binding: a static local or a vtable stays one
+// object, never reloaded over.
+void CirJitSession::vague_functions_interposable(MIR_module_t m)
+{
+    for (MIR_item_t it = DLIST_HEAD(MIR_item_t, m->items); it;
+	 it = DLIST_NEXT(MIR_item_t, it)) {
+	if (it->item_type != MIR_func_item || !it->export_p
+	    || it->binding != MIR_ITEM_BIND_LINKONCE)
+	    continue;
+	const char *nm = MIR_item_name(ctx, it);
+	if (nm && !late_stubs.count(nm) && find_item(nm, true))
+	    MIR_item_set_binding(ctx, it, MIR_ITEM_BIND_WEAK);
+    }
 }
 
 // D6: a redefined object takes over the storage the earlier one has, so it
@@ -2422,6 +2448,7 @@ bool CirJitSession::append(Program *prog, const char *entry_name)
     // The startup members the entry imports join the session ahead of its
     // link check, and stay whether or not the entry is admitted.
     cir_crt_pull_for(ctx, m);
+    vague_functions_interposable(m);
     // Refused: never loaded, never one of live_mods, never `mod`.
     if (!admits(m, prog, entry_name, b))
 	return false;
