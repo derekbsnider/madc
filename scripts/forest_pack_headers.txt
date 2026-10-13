@@ -5,7 +5,7 @@
 # off it. Foundational/config headers first, containers, then streams —
 # the same discipline glibc/libstdc++'s internal ordering encodes.
 #
-# LIST VERSION 6 (2026-10-06: assert.h; v5 2026-10-02: cstdint; v4 2026-09-24; v3 2026-08-16). Grow deliberately: every header here must
+# LIST VERSION 7 (2026-10-13: sys/wait.h; v6 2026-10-06: assert.h; v5 2026-10-02: cstdint; v4 2026-09-24; v3 2026-08-16). Grow deliberately: every header here must
 # compile QUIETLY (exit 0, zero diagnostics) in this combined order — the
 # pack step is a release gate. algorithm CLEARED at v26 HEAD (quiet after
 # streams; the B4a istreambuf_iterator arity blocker is gone). Known
@@ -67,6 +67,10 @@
 # testgnustmtexprvoid, the first tests to include it, failed both headerless
 # lanes on the absent root. It is guard-less by design (re-read under a
 # different NDEBUG); the pack serves its text, and each inclusion reads it.
+#
+# v7 (2026-10-13) added sys/wait.h (the darwin prelude's C set has carried it
+# since v1; UCRT has none): testpthreadatfork, the first test to include it,
+# failed the headerless lane on the absent root.
 cstddef
 climits
 cstdint
@@ -86,6 +90,7 @@ dirent.h
 dlfcn.h
 sys/stat.h
 sys/time.h
+sys/wait.h
 sys/file.h
 sys/socket.h
 netdb.h
