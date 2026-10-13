@@ -40,162 +40,97 @@ The ratchets become `scripts/parse_cost/baseline.tsv` rows (recorded with
 
 ## 2. What changes, in one paragraph
 
-Today every arena record, every arena string, every template and every token
-run sits in ONE shared table per kind (segments 10–17, 19), and the string
-pool for the per-unit token streams in another (2/3/4). A bind decodes all
-of them, sweeps every unit's declaration index, and judges all 19k records by
-name. After this design, each of those tables is cut per UNIT: a unit's slice
-holds exactly the records its own parse created, with its own string table,
-its own template records and tokens, its own deferred bodies. Record ids stay
-global (each unit owns a contiguous id range). The bind walks the include
-closure it already computes (`forest_chain`, post-order) and, per unit,
-decodes that unit's slice and materializes it whole — no name judging, no
-filter. Everything else in the container (DIR, per-unit tokens / PP exports /
-edges / source, globals, FUNC_NAMES, MIR cache, ledger, shared configs) is
+Mechanism revised at implementation start (2026-10-13; same targets, same
+gates): the arena's cross-references — record ids, payload offsets, string
+ids — are global and are also baked into node records (`datadef_id`),
+globals, template records and class-pattern payloads, so physically cutting
+the tables per unit would mean rewriting ids across every segment, and a
+missed field would be a silent wrong type. Instead the tables stay where they
+are and a bind stops touching what the program does not include, on three
+axes: (1) WHICH records are visited — a frozen per-unit SEED index replaces
+the whole-arena walks; (2) how they are JUDGED — a frozen inverted
+declaration index (name → declaring units) replaces the all-units sweep and
+its name maps; (3) which BYTES are decoded — the shared tables are stored as
+independently compressed blocks, decoded on first touch (the zstd seekable /
+clang PCH offset-addressed model). Record ids, offsets and string ids are
 unchanged.
 
 ## 3. Container layout
 
-`CIR_FOREST_FORMAT_VERSION` 57 → 58. An older pack is refused at
-`open_header` (the binary is self-contained; there is no compatibility case).
+`CIR_FOREST_FORMAT_VERSION` 57 → 58; an older pack is refused at
+`open_header` (no compatibility case). New segments:
 
-`CIR_FOREST_SEGS_PER_UNIT` 10 → 24. Per-unit segment ids stay
-`CIR_FOREST_SEG_UNIT_BASE + unit * SEGS_PER_UNIT + slot`:
+| segment | content |
+|---|---|
+| DECLNAMES | every declared name (sorted, unique; the FUNC_NAMES string-table form) + its declaring units (a word run per name). Replaces the all-units decl-index sweep. |
+| SEEDS | per unit, the arena slots, template records and global records a bind of that unit visits (CSR: offsets per unit, then three id arrays); unit index `unit_count` = the always-visited list. |
+| RECORDABLE | the recordability fixpoint (one bit per arena slot) + the anon-tag floor, computed at freeze — today every process recomputes it over the whole arena. |
 
-| slot | content | today |
-|---|---|---|
-| +0 … +9 | records, children, connectors, positions, tokens, decl index, PP exports, edges, branch deps, raw source | unchanged |
-| +10 | ARENA_DEFS — this unit's `defrec` run (owned records, then structural copies) | was shared seg 10 |
-| +11 | ARENA_PAYLOAD — the member/base/method/param/… runs those records reference | was seg 11 |
-| +12 +13 +14 | arena strings (bytes / entries / buckets) for the names and spellings of +10/+11 | was 12/13/14 |
-| +15 +16 +17 | TEMPLATES / TEMPLATE_PAYLOAD / TEMPLATE_TOKENS this unit's parse declared or instantiated | was 15/16/17 |
-| +18 | ARENA_TOKBYTES — param-default token runs of this unit's records | was seg 19 |
-| +19 | DEFBODIES — the DK_DEFBODY token runs (4 runs per body), decoded only when a body is instantiated | was inside seg 11 |
-| +20 +21 +22 | token string pool (bytes / entries / buckets) for this unit's token stream (+4) | was shared 2/3/4 |
-| +23 | spare |
+Shared tables (string pool 2/3/4, arena 10–14, templates 15–17, token bytes
+19) are written as BLOCKED segments: the segment's bytes split into
+fixed-size blocks, each compressed alone, with a block table. The reader
+decodes a block on first access (process cache, as today's segment cache).
+Blocks under 1 KB raw stay codec None.
 
-Shared segments 2/3/4, 10–17, 19 are no longer written. `cir_forest_dir_unit`
-gains two words: `arena_base` (the unit's first global record id) and
-`arena_count`; the DIR therefore carries the id → unit map (binary search on
-`arena_base`, the DIR is already bound in place).
+## 4. Seeds — which records a unit's bind visits
 
-Codec policy is `add_seg`'s today (RECORDS → BYTEPLANE, CHILDREN → DELTA32,
-zstd-15 on a release append), plus one rule: a segment under 1 KB raw is
-written codec None (zstd's own guidance; most tiny units' slices).
+Each restorable entity is placed by the SAME predicate the bind uses to keep
+it (one owner, called at freeze and at bind):
 
-### Record ids
-
-`MADC_TYPEID_PROJECT_BASE` and the pinned ids are unchanged. At freeze the
-arena is renumbered: unit 0's owned records get `[PROJECT_BASE, +n0)`, unit
-1's the next range, and so on, in unit order; every `ref0` / payload id is
-rewritten through the renumbering map. A reference is therefore the same
-32-bit id it is today, and "which unit's slice holds id X" is one binary
-search over `arena_base`. No per-slice remap at bind, no (unit, slot) pairs.
-
-A record in unit U's slice references only (a) pinned ids, (b) ids of units
-in U's include closure — true by construction: U's parse can only name what U
-had included — or (c) structural records, which U's slice carries copies of
-(next section). The bind asserts it: a reference to an id that no bound slice
-has registered is a hard error, not a silent miss (gate, §8).
-
-## 4. Ownership — stamping the origin unit at write-through
-
-The arena gets a parallel side array, `DefArena::origin_file` (one entry per
-slot; never part of `defrec`, which stays 54 words). Every write-through
-(`Program::forest_arena_record_unary` / `_aggregate` / `_func` / `_fptr` /
-`_member_pointer`, `forest_record_enum`) stamps the slot with the file being
-parsed at that moment — the same `TokenBase::_parse_file` the decl-index
-taps and `cir_freeze_partitioned` already use. At freeze,
-`cir_forest_fill_pack_payloads`'s existing file → unit map turns the file
-into the unit number; that is the slice the record is written to.
-
-Freeze-time synthetic records (`cir_forest_arena_complete`: TYPEDEF, NSLINK,
-NSALIAS, NSBIND, DEFBODY) take the unit of their subject: a typedef its
-declaring file, a namespace binding the decl-index entry it was made from, a
-DEFBODY the function it belongs to.
-
-Three ownership cases the data (Test 8) showed:
-
-- **Named entities (structs, classes, enums, functions, variables, typedefs,
-  templates, instantiations)** — owned by the stamping unit. A derived
-  instantiation made during `<map>`'s parse (`_M_emplace_hint_unique`, the
-  Test 5 exact-mode failure) is owned by `<map>`'s slice and binds with it.
-- **Structural types** (DK_PTR, DK_REF, DK_CONST, DK_FPTR, DK_MEMBERPTR,
-  DK_CARRAY, and a DK_FUNC with no name — a function TYPE) — the arena holds
-  one record per spelling, minted by whichever unit needed it first; unrelated
-  units reference it (`char**`, `_IO_FILE*`: 599 of Test 8's 629 shared
-  records). They are not loaded, they are REBUILT: a slice carries a copy of
-  every structural record it references whose owner is outside its own
-  closure; at bind a structural record goes through the type minters
-  (`getPointerType` / `getReferenceType` / `getQualifiedType` /
-  `nest_carray_dims` / the fptr and member-pointer minters), which already
-  dedupe by pointee; the first slice to register an id wins, later copies hit
-  the id map and are skipped. Copies cost ≈ 0.19 MB raw (Test 8).
-- **Defined in one unit, forward-declared in a sibling** (`struct _IO_FILE`:
-  defined in `bits/types/struct_FILE.h`, declared in `bits/types/FILE.h`;
-  15 of 629) — the record is owned by the unit that COMPLETED it; each unit
-  that only declares it carries a stub record (same id, same kind, the
-  incomplete flag) in its own slice. Whichever binds first registers;
-  completion goes through the parser's existing redeclaration path. A program
-  that includes only the declaring unit gets the incomplete type, as live.
+- **Decided by name** — its judged names (qualified, bare, the head of a
+  template-id canonical spelling) are declared by some units: placed in the
+  seed list of every unit in those sets. Keep predicates are monotone in the
+  closure, so a record kept for closure C is in a list of some unit of C.
+- **Undecided** (no judged name declared anywhere — instantiation products,
+  `__oN` instances, function-local classes): placed with its POINT OF
+  CREATION, stamped at write-through — the unit of the innermost open
+  top-level declaration (`pack_decl_stack`), the same token → unit mapping
+  the decl index uses. Unstamped records (created after the parse) go to the
+  always list. This is the one semantic change: today an undecided record is
+  restored for every closure; after, only when its creating unit is bound —
+  what a live parse of the closure creates (Test 6 measured it correct).
+- **Namespace bindings / deferred bodies** — placed with the function or
+  owner class they bind; inline-namespace links and namespace aliases in the
+  always list.
+- **Derived types** (pointer, reference, cv, array, function pointer, member
+  pointer) — not seeded: observable only through the forest's id map, so they
+  are built on first lookup (operand first), which is identical to building
+  all of them.
+- **Pulls** — a seeded record's references are followed exactly as today's
+  admitted-set closure does, reading any record by id.
 
 ## 5. Freeze side
 
-In `madc_cir_freeze` (`src/madc_cir.cpp`) after `cir_forest_arena_complete`,
-one new step, `cir_forest_slice_arena`: assigns each slot to a unit (origin
-file → unit; synthetic kinds as above), computes structural copies and
-forward stubs, renumbers ids per §3 and rewrites every reference, and
-partitions `DefArena::{defs, payload, strings, tokbytes}` and the template
-tables into per-unit `DefArena` instances. `cir_forest_write`'s per-unit loop
-then writes slots +10…+22 from the unit's instance through `add_seg`; the
-shared-table writes (:705-739, :747-758 of today's `cir_forest_write`) go.
-`--dump-forest` prints per-unit record / string / template / body counts and
-the id range; `forest_pack_gate.sh --dump` already diffs that output.
-
-The token string pool (2/3/4) is cut the same way: `cir_forest_write` interns
-each unit's token stream into a per-unit pool (`TokenBase::_active_strpool`
-swapped per unit) and writes +20/+21/+22.
+`madc_cir_freeze` gains one step after `cir_forest_arena_complete`:
+`cir_forest_build_seeds` — builds DECLNAMES from the units' decl indexes,
+places every entity (§4), computes RECORDABLE. `cir_forest_write` writes the
+three segments and the blocked shared tables. The POI stamp is a side vector
+on `Program` (`forest_arena_poi`, one origin token per arena slot), set by
+every parse-time write-through. `--dump-forest` prints per-unit seed counts
+and the always list; the freeze prints a one-line placement summary.
 
 ## 6. Bind and restore side
 
-`forest_bind_include` (lexer.cpp) already walks the include closure
-post-order and fills `forest_chain`. The restore becomes:
-
-- `Program::forest_restore_decls`: the all-units decl-index sweep
-  (parser.cpp:27219-27263) and the `CirMaterializeFilter` /
-  `materialize_for` call go. In their place: for each unit in `forest_chain`
-  (post-order — includes before includers, so every cross-slice reference is
-  already registered when a record needs it), `forest.materialize_unit(u)`.
-  The verdict maps `swept_bound` / `swept_system` are still built — from the
-  BOUND units' decl indexes only — because the lexer's PP side and the
-  registration lambdas read them; the per-group cache
-  (`MadcCompileGroup::decl_verdicts`) stays.
-- `CirFrozenForest::materialize_unit(u)` replaces `materialize_pass` over the
-  whole arena: it decodes slots +10…+14 (one `forest_segment_bytes` each),
-  binds the unit's `FrozenDefArena` view, and runs today's passes
-  (1 aggregates, 1a enums, 1b derived, 2 fill, 3 typedefs, 3a namespace
-  surfaces, 3b enums, free funcs, globals, templates) over that unit's id
-  range only. Name judging (`verdict_str` / `name_verdict` / `record_kept`),
-  the admitted-set and reference-pull closure, `forest_recordable_cached`'s
-  whole-blob scan and the `exact` mode are deleted: everything in a slice is
-  wanted by definition. `arena_swizzle` resolves an id through the per-bind id
-  map (`_defs_by_tid`), filled slice by slice; a miss is the §3 hard error.
-- `restored_nsbinds` / `restored_defbodies` / `restored_nslinks` /
-  `restored_nsaliases` become per-unit vectors appended in bind order;
-  `flush_forest_pending_globals` walks what the bound units produced (today
-  it walks the whole pack's lists: 7.5k lookups for `<stddef.h>`).
-- DEFBODY runs (+19) are decoded only inside `parse_deferred_lazy_body` when
-  that body is first instantiated — `restored_defbodies` carries (unit, byte
-  offset) instead of the deserialized runs.
-- The per-process decode cache (`forest_decoded_segment_cached`, keyed by
-  blob base + offset) serves slices exactly as it serves segments today; the
-  REPL and compile groups re-binding the same unit pay once.
-- `forest_adopt_declared_function` (the FUNC_NAMES probe, seg 23) is
-  unchanged by this design; its known gap — the index answers "declared"
-  where it must answer "adoptable", so every live C++ compile opens the pack
-  for `__builtin_memset` — is Gap `adopt_probe_opens_pack_for_nonadoptable_name`,
-  fixed in its own commit in the same session (the index records the
-  adoptable shape at freeze).
+- ONE verdict owner on `CirFrozenForest` answers "declared by a bound unit /
+  only by unbound units / by none" for a name, from DECLNAMES against
+  `forest_chain_set`. The all-units sweep, the `swept_bound` /
+  `swept_system` maps, the compile-group verdict cache and the
+  `CirMaterializeFilter` name map go; `forest_name_verdict`,
+  `forest_product_permitted`, `declared_system`, `verdict_str` and
+  `record_kept` call the owner.
+- `materialize_pass` takes its per-kind lists from the bound units' seeds plus
+  the always list (bucketed by kind as they are read); recordability from
+  RECORDABLE; `forest_recordable_cached` and the `exact` mode go.
+- Derived types build on first swizzle (`arena_swizzle` becomes a member that
+  builds a missing derived record, operand first); pass 1b goes.
+- Globals and templates iterate their seeded indices.
+- The flush's namespace-binding / deferred-body lists hold only what the
+  bound seeds produced.
+- `forest_adopt_declared_function` (the FUNC_NAMES probe) is unchanged here;
+  its gap is fixed in part 3.
+- Oracle during development: an env-gated full-walk arm runs today's path
+  beside the seeded one and diffs the restored sets; deleted at the end of
+  part 2 (no-parallel-implementations: written deadline).
 
 ## 7. The dialect prelude
 
@@ -218,13 +153,14 @@ closes with it.
   ladder workloads; the seam battery's `parse-cost` stage runs them).
 - **pack size** — `forest_pack_gate.sh` records the pack's byte size in its
   baseline; growth past +1.2 MB over the recorded size is red.
-- **slice closure** — a new static gate on the release pack
-  (`scripts/check-pack-slice-closure.sh`): `--dump-forest` lists, per unit,
-  every id its slice references; each must be pinned, inside the unit's own
-  closure, or a structural copy in the slice. Negative control: a hand-broken
-  pack.
-- **bind assertion** — a reference to an unregistered id at bind is a hard
-  error with the unit and id named (never a silent drop).
+- **seed parity** — `scripts/check-pack-seed-parity.sh`: for each ladder
+  workload and a spread of single-header programs, the restored set (types,
+  typedefs, enums, functions, globals, templates, namespace bindings) of the
+  seeded bind equals today's full-walk bind, except undecided records whose
+  creating unit is outside the closure (§4) — listed, never silent. Runs on
+  the release binary while the full-walk arm exists (part 2), then becomes
+  the closure-only invariant: no restored entity's declaring or creating unit
+  lies outside the bound closure.
 - **existing** — `forest_pack_gate.sh` (load-log losses stay at zero),
   `forest_index_oracle.sh`, `forest_dm_oracle.sh`, the forest `make gates`
   set, `check-system-headers-from-libmadc.sh`, byte-identical suite output
@@ -232,19 +168,18 @@ closes with it.
 
 ## 9. Thread safety
 
-Unchanged contract: slices are immutable bytes in the mapped image; the
+Unchanged contract: the pack is immutable bytes in the mapped image; the
 per-process decode cache is the one shared structure and keeps today's
 locking; per-bind state (the id map, the per-unit restored lists) lives on
 the `Program` / compile group. No new mutable globals.
 
 ## 10. Implementation order (four parts, one feature branch, one seam)
 
-1. **Freeze.** Origin stamping, `cir_forest_slice_arena`, per-unit slots
-   written, shared tables gone, format 58, `--dump-forest` per-unit output,
-   the slice-closure gate. Checkpoint: the gate green on the release pack;
-   pack size within +1 MB; every record in exactly one owned slice.
-2. **Bind/restore.** `materialize_unit`, the sweep and filter removed,
-   per-unit restored lists, the bind assertion. Checkpoint: suite output
+1. **Freeze.** POI stamps, DECLNAMES, SEEDS, RECORDABLE, format 58,
+   `--dump-forest` per-unit output. Checkpoint: placement summary sane;
+   every keep-able entity in a list of each unit that can keep it.
+2. **Bind/restore.** The verdict owner, seeded passes, lazy derived types,
+   the full-walk oracle (then deleted); then the BLOCKED shared tables. Checkpoint: suite output
    byte-identical (batch lane); the ladder at the §1 ratchets on a symbolized
    release build; the rows recorded.
 3. **Bodies, provision, probe.** DEFBODY runs decoded on instantiation;
