@@ -8,7 +8,7 @@ loads only the slices of the units the program's include closure reaches — no
 whole-pack sweep, no whole-arena judging; the dialect prelude is a slice like
 any header, loaded under `--std=madc`. Target: the Test 6 column of
 `2026-10-13-pack-load-cost-experiments.md` on the shipped binary, at a pack
-size ≤ today's + ~1 MB.
+size ≤ today's + 1.2 MB (owner 2026-10-13: measured +0.9 MB; a small increase was accepted).
 **Provision (owner-approved 2026-10-13):** the slice format must not change
 again for the later pull-on-lookup step (clang PCH / GCC CMI model: the unit
 of load is an entity cluster, the trigger a name-lookup miss).
@@ -33,7 +33,7 @@ of 30 interleaved runs + callgrind Ir (`tmp/pc/t6/t6.py` is the harness):
 | 8 everyday "C" headers | 79.7 / 394M | 26.6 / 131M | ≤ 145M |
 | cxx_stl.cpp | 316.7 / 1,661M | 270.4 / 1,420M | ≤ 1,500M |
 | dialect prelude (`println("hi")`) | 78.7M live parse | — | < 78.7M bound |
-| pack size (release, Linux) | 11.6 MB | ≤ 12.6 MB | gate |
+| pack size (release, Linux) | 11.6 MB | ≤ 12.8 MB | gate |
 
 The ratchets become `scripts/parse_cost/baseline.tsv` rows (recorded with
 `parsecost-record` once green, never hand-typed).
@@ -217,7 +217,7 @@ closes with it.
 - **parse-cost ratchet** — rows per §1 (`scripts/parse_cost/` gains the
   ladder workloads; the seam battery's `parse-cost` stage runs them).
 - **pack size** — `forest_pack_gate.sh` records the pack's byte size in its
-  baseline; growth past +1 MB over the recorded size is red.
+  baseline; growth past +1.2 MB over the recorded size is red.
 - **slice closure** — a new static gate on the release pack
   (`scripts/check-pack-slice-closure.sh`): `--dump-forest` lists, per unit,
   every id its slice references; each must be pinned, inside the unit's own
