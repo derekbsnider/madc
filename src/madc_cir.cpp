@@ -386,6 +386,19 @@ static void cir_bind_trap_module(MIR_context_t ctx,
     MIR_load_module(ctx, DLIST_TAIL(MIR_module_t, *MIR_get_module_list(ctx)));
 }
 
+static bool cir_crt_indexed(const char *name);
+
+// Does the link resolve `name` without a trap? The import resolver's names
+// (the host, the opened runtime), and a startup member's: the archive every
+// link searches (cir_ledger_pull), which load_and_link pulls by the module's
+// imports AFTER the traps bind. A trap for a member's name would define it
+// first and the pull would never select the member (Windows: no DLL exports
+// __cxa_atexit, so a frozen module's static object reached the trap).
+static bool cir_link_resolves(const char *name)
+{
+    return cir_import_resolver(name) || cir_crt_indexed(name);
+}
+
 static void cir_prebind_frozen_traps(MIR_context_t ctx, MIR_module_t mod)
 {
     std::set<madc::dis::istring> defined;
@@ -397,7 +410,7 @@ static void cir_prebind_frozen_traps(MIR_context_t ctx, MIR_module_t mod)
 	if (it->item_type != MIR_import_item || !it->u.import_id) continue;
 	madc::dis::istring nm = it->u.import_id;
 	if (defined.count(nm) || !seen.insert(nm).second) continue;
-	if (cir_import_resolver(nm.c_str())) continue;
+	if (cir_link_resolves(nm.c_str())) continue;
 	undef.push_back(nm);
     }
     if (undef.empty()) return;
@@ -434,7 +447,7 @@ static void cir_prebind_cache_traps(MIR_context_t ctx, MIR_module_t cache_mod,
 	madc::dis::istring nm = it->u.import_id;
 	if (defined.count(nm) || consumer_imports.count(nm)
 	    || !seen.insert(nm).second) continue;
-	if (cir_import_resolver(nm.c_str())) continue;
+	if (cir_link_resolves(nm.c_str())) continue;
 	undef.push_back(nm);
     }
     if (undef.empty()) return;

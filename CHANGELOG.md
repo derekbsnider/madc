@@ -6,6 +6,23 @@
 
 The live REPL release: a `madc -i` session behaves like a buffer you keep editing. A function defined again reaches every caller, an inline one included; a variable defined again is re-initialized in place, an object with a destructor destroyed and constructed again; a type defined again is the same type when its data members are, and otherwise its name's next version (old objects keep `P#1`, mixing versions is a type error, a C++ function for the new version is an `abi_tag`-mangled overload). An edit to the REPL buffer reparses live, Restart and Run All replays the whole buffer and runs its uncalled `main`, and objects with static storage duration are destroyed at exit. madcide 0.8.0 carries the live reparse and Restart and Run All to its REPL pane.
 
+### A frozen module's trap prebinder leaves the startup members alone
+
+A packed `--run-frozen` binary binds a loud trap stub over every
+drained-library import outside the translation unit's executed closure, so an
+unexecuted library gap fails loudly instead of resolving to nothing. Its "does
+the link resolve this name" test asked only `cir_import_resolver` (the host and
+the opened runtime), not the startup members (`madc_crt.cpp`) that
+`load_and_link` also pulls by a module's imports — and on Windows no DLL
+exports `__cxa_atexit`, so the startup member providing it was trap-bound and a
+frozen module's static object reached the trap, aborting the build
+(`make -C src release-windows` failed with "reached unresolved drained-library
+symbol `__cxa_atexit`"). The frozen and cache trap prebinders now treat a name
+any startup member defines as link-resolvable and leave no trap over it (128
+imports trap-bound on the win64 release pack where 130 were, the startup
+members' names no longer among them). Gate: the `release-windows` pack check
+runs the frozen module on every build.
+
 ### The embedded-header generator refuses an empty table
 
 `scripts/gen_embedded_headers.sh` bakes `include/madc/*` into the table the
