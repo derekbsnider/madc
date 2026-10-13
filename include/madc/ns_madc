@@ -800,10 +800,14 @@ namespace madc {
     //     seq; the replies are `load` (ok, rendered) and `run` (ok, rendered,
     //     status: main's return value; shown: a call's value) rows. The
     //     cores of %load, %run and %call (D25), and madcide's F5 (plan
-    //     §41.10a). session_rebuilt(h, argv): the end of a REPL-buffer
-    //     rebuild (%run, owner 2026-10-12): main runs with argv when the
-    //     session defines it and no unit names it (a `run` row; ok true
-    //     and nothing run otherwise).
+    //     §41.10a). session_rebuild(h, text, argv): the host's REPL buffer
+    //     run again (Restart and Run All, owner 2026-10-12) in the backend
+    //     it just restarted: text's lines taken as typed entries, then main
+    //     with argv (the buffer's name, then the arguments) when the session
+    //     defines main and no unit names it. Each entry answers with a
+    //     `running` row (entry: its text) and, after its output, a
+    //     `replayed` row (an offer's taken fields); the `rebuild` row (ok,
+    //     main: it ran, status, rendered, diagnostics) is the answer.
     //   session_edited(h, before, after): the host's REPL buffer edited (the
     //     live reparse, owner 2026-10-12): its text before and after; each
     //     entry the edit changed or added is read again as definitions only
@@ -911,7 +915,7 @@ namespace madc {
     int64_t session_load(int64_t handle, const char *path, const char *text);
     int64_t session_run(int64_t handle, value &argv);
     int64_t session_call(int64_t handle, value &argv);
-    int64_t session_rebuilt(int64_t handle, value &argv);
+    int64_t session_rebuild(int64_t handle, const char *text, value &argv);
     int64_t session_edited(int64_t handle, const char *before, const char *after);
     int64_t session_build(int64_t handle, const char *path, const char *text,
 			  const char *out);

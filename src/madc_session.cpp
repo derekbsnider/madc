@@ -709,11 +709,6 @@ std::string lines_text(const std::vector<std::string> &lines, size_t from, size_
     return t;
 }
 
-bool blank_text(const std::string &t)
-{
-    return t.find_first_not_of(" \t\r\n\f\v") == std::string::npos;
-}
-
 // One entry read as definitions only (Program::entry_definitions_only).
 struct DefinitionsOnly
 {
@@ -723,6 +718,115 @@ struct DefinitionsOnly
 };
 
 } // namespace
+
+bool madc::blank_text(const std::string &t)
+{
+    return t.find_first_not_of(" \t\r\n\f\v") == std::string::npos;
+}
+
+void madc::drop_cr(std::string &line)
+{
+    if ( !line.empty() && line[line.size() - 1] == '\r' )
+	line.erase(line.size() - 1);
+}
+
+EntryLines::EntryLines(ReplSession &s, const Running &r)
+    : session(s), running(r), extendable(false), next(0), settled(false),
+      finished(false)
+{
+}
+
+ReplSession::TakenHook EntryLines::hook(const std::string &entry) const
+{
+    if ( !running )
+	return ReplSession::TakenHook();
+    const Running r = running;
+    return [r, entry]() { r(entry); };
+}
+
+bool EntryLines::take(const std::string &entry, bool ok, const Taken &taken)
+{
+    pending.clear();
+    extendable = false;
+    return taken(entry, ok);
+}
+
+bool EntryLines::settle(const std::string &line, const Taken &taken)
+{
+    if ( !extendable )
+	return true;
+    extendable = false;
+    if ( session.continues_if(line) )
+	return true;
+    const std::string entry = pending;
+    return take(entry, session.submit(entry, hook(entry)), taken);
+}
+
+bool EntryLines::add(const std::string &line, const Taken &taken)
+{
+    if ( pending.empty() && madc::blank_text(line) )
+	return true;
+    pending += line;
+    pending += '\n';
+    const std::string entry = pending;
+    const ReplSession::Offered r = session.offer(entry, hook(entry));
+    switch ( r.state )
+    {
+	case ReplSession::OfferState::incomplete:
+	    return true;
+	case ReplSession::OfferState::extendable:
+	    extendable = true;
+	    return true;
+	case ReplSession::OfferState::taken:
+	    break;
+    }
+    return take(entry, r.ok, taken);
+}
+
+bool EntryLines::finish(const Taken &taken)
+{
+    if ( pending.empty() )
+	return true;
+    const std::string entry = pending;
+    return take(entry, session.submit(entry, hook(entry)), taken);
+}
+
+void EntryLines::load(const std::string &text)
+{
+    lines = buffer_lines(text);
+    for ( std::string &line : lines )
+	madc::drop_cr(line);
+    next = 0;
+    settled = finished = false;
+}
+
+bool EntryLines::step(const Taken &taken)
+{
+    bool took = false;
+    const Taken once = [&](const std::string &entry, bool ok) {
+	took = true;
+	return taken(entry, ok);
+    };
+    while ( next < lines.size() )
+    {
+	if ( !settled )
+	{
+	    settled = true;
+	    settle(lines[next], once);
+	    if ( took )
+		return true;		// the line joins at the next step
+	}
+	add(lines[next++], once);
+	settled = false;
+	if ( took )
+	    return true;
+    }
+    if ( finished )
+	return false;
+    finished = true;
+    finish(once);
+    return took;
+}
 
 bool InteractiveSession::entry_whole(const std::string &text, bool &extendable)
 {
@@ -750,7 +854,7 @@ InteractiveSession::buffer_split(const std::vector<std::string> &lines, size_t f
     for ( size_t i = from; i < to; ++i )
     {
 	text += lines[i] + "\n";
-	if ( blank_text(text) )
+	if ( madc::blank_text(text) )
 	    continue;
 	// A command line is an entry of its own, never read as code.
 	bool extendable = false;
@@ -847,7 +951,7 @@ bool InteractiveSession::buffer_edited(const std::string &before, const std::str
     {
 	const std::string t = lines_text(a, e.first, e.second);
 	entries.push_back(t);
-	if ( !blank_text(t) && !command_text(t).is_command() && !unchanged.count(t) )
+	if ( !madc::blank_text(t) && !command_text(t).is_command() && !unchanged.count(t) )
 	    ok = redefine(t) && ok;
     }
     for ( size_t k = j; k < old.size(); ++k )
@@ -885,9 +989,14 @@ bool InteractiveSession::run_file(int argc, char **argv)
     return true;
 }
 
+bool InteractiveSession::rebuilt_main_due()
+{
+    return jit && function("main") && !jit->imports("main");
+}
+
 bool InteractiveSession::run_rebuilt_main(int argc, char **argv, int *status)
 {
-    if ( !jit || !function("main") || jit->imports("main") )
+    if ( !rebuilt_main_due() )
 	return true;
     const bool ok = run_main(argc, argv, status);	// its status is not the session's
     render_pending_diagnostics();

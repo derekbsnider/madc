@@ -22,9 +22,11 @@ namespace madc {
     // crash; the session's state went with it), a program file loaded, its
     // main run (the cores of %load and %run), D11's question answered, or
     // the names the session defined (%whos's rows, plan §41.11a step 3d), a
-    // file built (%build, plan §7f), a file checked (%check), or a host's
-    // edited REPL buffer read again (the live reparse).
-    enum class session_reply : unsigned char { running, offer, complete, stopped, load, run, continues, bindings, build, check, edited };
+    // file built (%build, plan §7f), a file checked (%check), a host's
+    // edited REPL buffer read again (the live reparse), a rebuild's entry
+    // (replayed: its running row carries the entry's text) or the rebuild
+    // done (rebuild: the host's REPL buffer run again, then its main).
+    enum class session_reply : unsigned char { running, offer, complete, stopped, load, run, continues, bindings, build, check, edited, replayed, rebuild };
     // What a taken command asks its HOST to do (IPython's payloads: a
     // kernel's execute reply asks its frontend to act) with the reply's
     // `argv`, the file and then its arguments, the host reading the file (an

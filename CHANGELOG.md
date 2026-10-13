@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+### A session rebuild replays the whole REPL buffer, through one line-grouping rule
+
+`madc::session_rebuild(h, text, argv)` replaces `madc::session_rebuilt(h,
+argv)`: a session rebuild (Restart and Run All) now replays a host's whole
+REPL buffer in the backend the host just restarted, rather than only running
+the buffer's main. The buffer's text is taken line by line as typed entries —
+an entry over several lines, an `if` taking its following `else` as one entry,
+a blank line between entries ignored — each entry announced with a `running`
+row carrying its text, its output, then a `replayed` row (an offer's taken
+fields); the entries run in step with the host, the next one running once the
+host polled the last one's row. Past the last entry the buffer's main runs
+with argv (the buffer's name `[REPL]`, then the arguments) when the session
+defines a main no unit names, and a `rebuild` row answers (ok, whether main
+ran, status). The rule that groups typed lines into entries (D11) is now one
+class, `EntryLines`, shared by the cooked REPL loop and the replay; the
+duplicate `blank_line` / `blank_text` and `drop_cr` helpers are now
+`madc::blank_text` / `madc::drop_cr`. Before, `session_rebuilt` ran only the
+buffer's main and never replayed the entries. Gate: `testsession_run` (six
+replayed entries, the if taking its else as one entry, main run once with argv
+`[REPL]`).
+
 ### A madc-built shared object finalizes its exit handlers when it is unloaded
 
 A shared object madc built and the program unloads before it exits now runs

@@ -89,11 +89,15 @@ namespace {
 // session defined, as rows (InteractiveSession::bindings, %whos's). `build`:
 // %build's (InteractiveSession::build_file), the host's text of a file.
 // `edited`: the host's REPL buffer before and after an edit, its changed
-// entries read again (InteractiveSession::buffer_edited). `stdin`: Send EOF's (plan §41.12a) — the backend takes the fresh stdin the
+// entries read again (InteractiveSession::buffer_edited). `rebuild`: a
+// host's REPL buffer run again in a fresh backend (owner 2026-10-12), its
+// lines taken as typed (EntryLines), then its main (run_rebuilt_main): each
+// entry's `running` row carries its text, and a `replayed` row, an offer's
+// fields, follows its output; the `rebuild` row answers. `stdin`: Send EOF's (plan §41.12a) — the backend takes the fresh stdin the
 // client handed over (madc_session_stdin.h). `commands`: the host's REPL
 // command rows (split arc 1A.2), sent after every start. Those two are the
 // requests with no seq and no reply.
-enum class Op : unsigned char { begin, offer, complete, running, load, run, continues, bindings, build, stdin_renew, commands, history, check, project, colour, buffer, edited, unknown };
+enum class Op : unsigned char { begin, offer, complete, running, load, run, continues, bindings, build, stdin_renew, commands, history, check, project, colour, buffer, edited, rebuild, replayed, unknown };
 
 struct OpRow { const char *name; Op op; };
 const OpRow op_rows[] = {
@@ -105,6 +109,7 @@ const OpRow op_rows[] = {
     { "check", Op::check },
     { "project", Op::project }, { "colour", Op::colour },
     { "buffer", Op::buffer }, { "edited", Op::edited },
+    { "rebuild", Op::rebuild }, { "replayed", Op::replayed },
 };
 
 const char *op_name(Op op)
@@ -268,6 +273,31 @@ void attach_diagnostics(nlohmann::json &rep, InteractiveSession &session)
     rep["diagnostics"] = madc::hub::detail::wt_value_to_json(rows);
 }
 
+// A taken entry's fields: an offer's reply and a rebuild's replayed row.
+void attach_taken(nlohmann::json &rep, InteractiveSession &session)
+{
+    rep["shown"] = session.shown();
+    // The shown text's code: [from, to] byte pairs (1B.9).
+    if ( !session.shown_code().empty() )
+    {
+	nlohmann::json code = nlohmann::json::array();
+	for ( const madc::code_range &r : session.shown_code() )
+	    code.push_back(nlohmann::json::array({ r.from, r.to }));
+	rep["shown_code"] = code;
+    }
+    rep["submitted"] = session.submitted();
+    if ( !session.taken_source().empty() )
+	rep["source"] = session.taken_source();
+    if ( session.payload() != madc::session_payload::none )
+    {
+	rep["payload"] = payload_name(session.payload());
+	rep["argv"] = session.payload_argv();
+	if ( session.payload() == madc::session_payload::command )
+	    rep["code"] = session.payload_code();
+    }
+    attach_diagnostics(rep, session);
+}
+
 // The session's buffer question in a backend (split arc 1B.10, design
 // decision 4): asked of the HOST mid-entry — a `buffer` request, its answer
 // the next `buffer` line on the wire. A Send EOF the host sends meanwhile is
@@ -359,6 +389,11 @@ int serve_session(madc::DataChannel &wire, std::unique_ptr<Program> prog,
 						     std::string &why) {
 	return ask_host_buffer(wire, buf, stdin_socket, name, path, text, has_text, why);
     });
+    // A rebuild's replay between its steps (Op::rebuild): the buffer's
+    // entries, main's argv, and whether every entry so far was ok.
+    std::unique_ptr<EntryLines> replay;
+    std::vector<std::string> replay_argv;
+    bool replay_ok = true;
     for (;;)
     {
 	size_t nl;
@@ -444,28 +479,7 @@ int serve_session(madc::DataChannel &wire, std::unique_ptr<Program> prog,
 		rep["state"] = state_name(o.state);
 		rep["ok"] = o.ok;
 		if ( o.state == InteractiveSession::OfferState::taken )
-		{
-		    rep["shown"] = session.shown();
-		    // The shown text's code: [from, to] byte pairs (1B.9).
-		    if ( !session.shown_code().empty() )
-		    {
-			nlohmann::json code = nlohmann::json::array();
-			for ( const madc::code_range &r : session.shown_code() )
-			    code.push_back(nlohmann::json::array({ r.from, r.to }));
-			rep["shown_code"] = code;
-		    }
-		    rep["submitted"] = session.submitted();
-		    if ( !session.taken_source().empty() )
-			rep["source"] = session.taken_source();
-		    if ( session.payload() != madc::session_payload::none )
-		    {
-			rep["payload"] = payload_name(session.payload());
-			rep["argv"] = session.payload_argv();
-			if ( session.payload() == madc::session_payload::command )
-			    rep["code"] = session.payload_code();
-		    }
-		    attach_diagnostics(rep, session);
-		}
+		    attach_taken(rep, session);
 		break;
 	    }
 	    case Op::complete:
@@ -521,6 +535,60 @@ int serve_session(madc::DataChannel &wire, std::unique_ptr<Program> prog,
 						  req.value("after", std::string()));
 		attach_diagnostics(rep, session);
 		break;
+	    case Op::rebuild:
+	    {
+		// A host's REPL buffer run again (owner 2026-10-12) in the
+		// fresh backend the host started, in step with the host: the
+		// request with the text begins the replay, and each request
+		// takes the next entry as typed — a running row with its text,
+		// its output, then a replayed answer (an offer's taken fields),
+		// after which the client asks again under the same seq. Past
+		// the last entry, main runs when the session defines one no unit
+		// names, and the rebuild row answers.
+		if ( req.contains("text") )
+		{
+		    const unsigned seq = req.value("seq", 0u);
+		    replay.reset(new EntryLines(session, [&, seq](const std::string &entry) {
+			flush_program();
+			nlohmann::json note;
+			note["seq"] = seq;
+			note["op"] = op_name(Op::running);
+			note["text"] = entry;
+			write_line(wire, note.dump());
+		    }));
+		    replay->load(req.value("text", std::string()));
+		    replay_argv = req.value("argv", std::vector<std::string>());
+		    replay_ok = true;
+		}
+		int status = 0;
+		bool ok = true;
+		if ( replay && !session.ended(status)
+		  && replay->step([&ok](const std::string &, bool entry_ok) {
+			 ok = entry_ok;
+			 return true;
+		     }) )
+		{
+		    rep["op"] = op_name(Op::replayed);
+		    rep["ok"] = ok;
+		    attach_taken(rep, session);
+		    replay_ok = replay_ok && ok;
+		    break;
+		}
+		std::vector<char *> argv;
+		for ( std::string &a : replay_argv )
+		    argv.push_back(&a[0]);
+		argv.push_back(NULL);
+		const bool main_due = replay && !session.ended(status)
+				      && session.rebuilt_main_due();
+		rep["main"] = main_due;
+		rep["ok"] = replay && replay_ok
+			    && (!main_due || session.run_rebuilt_main((int)replay_argv.size(),
+									argv.data(), &status));
+		rep["status"] = status;
+		attach_diagnostics(rep, session);
+		replay.reset();
+		break;
+	    }
 	    case Op::bindings:
 	    {
 		madc::value rows;
@@ -562,6 +630,7 @@ int serve_session(madc::DataChannel &wire, std::unique_ptr<Program> prog,
 	    }
 	    case Op::begin:
 	    case Op::running:
+	    case Op::replayed:	// a rebuild's row, never a request
 	    case Op::stdin_renew:	// taken above, no reply
 	    case Op::commands:
 	    case Op::history:
@@ -601,7 +670,8 @@ SessionClient::Reply::Reply()
 }
 
 SessionClient::SessionClient()
-    : output_done(false), next_seq(1), answered_seq(0), configured_backend(false),
+    : output_done(false), next_seq(1), answered_seq(0), rebuild_seq(0),
+      configured_backend(false),
       history_named(false), colour_named(false), colour_on(false),
       inherit_stdio(false)
 {
@@ -645,6 +715,7 @@ bool SessionClient::start(const std::string &std_opt, const ProgramFactory &make
     output_done = false;
     next_seq = 1;
     answered_seq = 0;
+    rebuild_seq = 0;
     // The spawn may leave the greeting's first bytes in inbuf (they can
     // arrive with the connection's token).
     if ( !spawn_backend() )
@@ -1142,6 +1213,29 @@ unsigned SessionClient::build_text(const std::string &path, const std::string *t
     return send(req.dump()) ? seq : 0;
 }
 
+unsigned SessionClient::rebuild(const std::string &text,
+			       const std::vector<std::string> &argv)
+{
+    nlohmann::json req;
+    const unsigned seq = next_seq++;
+    req["seq"] = seq;
+    req["op"] = op_name(Op::rebuild);
+    req["text"] = text;
+    req["argv"] = argv;
+    if ( !send(req.dump()) )
+	return 0;
+    rebuild_seq = seq;
+    return seq;
+}
+
+bool SessionClient::send_rebuild_step()
+{
+    nlohmann::json req;
+    req["seq"] = rebuild_seq;
+    req["op"] = op_name(Op::rebuild);
+    return send(req.dump());
+}
+
 unsigned SessionClient::edited(const std::string &before, const std::string &after)
 {
     nlohmann::json req;
@@ -1291,7 +1385,9 @@ int SessionClient::poll(Reply &reply, std::string &output, int timeout_ms)
     if ( j.is_discarded() || !j.is_object() )
 	return 0;
     reply.seq = j.value("seq", 0u);
-    if ( op != Op::running && op != Op::unknown && reply.seq > answered_seq )
+    // A running row and a rebuild's replayed rows come before the answer.
+    if ( op != Op::running && op != Op::replayed && op != Op::unknown
+      && reply.seq > answered_seq )
 	answered_seq = reply.seq;
     reply.rendered = j.value("rendered", std::string());
     reply.ok = j.value("ok", false);
@@ -1306,10 +1402,18 @@ int SessionClient::poll(Reply &reply, std::string &output, int timeout_ms)
     {
 	case Op::running:
 	    reply.kind = Reply::Kind::running;
+	    reply.entry = j.value("text", std::string());	// a rebuild's
 	    break;
 	case Op::offer:
-	    reply.kind = Reply::Kind::offer;
-	    reply.state = state_of(j.value("state", std::string()));
+	case Op::replayed:
+	    // A rebuild's entry answered: the host has its output and its
+	    // row, so the next entry may run (in step: a later entry's output
+	    // never reaches the host ahead of this row).
+	    if ( op == Op::replayed && reply.seq == rebuild_seq )
+		send_rebuild_step();
+	    reply.kind = op == Op::offer ? Reply::Kind::offer : Reply::Kind::replayed;
+	    reply.state = op == Op::offer ? state_of(j.value("state", std::string()))
+					  : InteractiveSession::OfferState::taken;
 	    reply.shown = j.value("shown", std::string());
 	    if ( j.contains("shown_code") && j["shown_code"].is_array() )
 		for ( const nlohmann::json &r : j["shown_code"] )
@@ -1355,6 +1459,13 @@ int SessionClient::poll(Reply &reply, std::string &output, int timeout_ms)
 	    break;
 	case Op::edited:
 	    reply.kind = Reply::Kind::edited;
+	    break;
+	case Op::rebuild:
+	    if ( reply.seq == rebuild_seq )
+		rebuild_seq = 0;
+	    reply.kind = Reply::Kind::rebuild;
+	    reply.defines_main = j.value("main", false);	// it ran
+	    reply.status = j.value("status", 0);
 	    break;
 	case Op::bindings:
 	    reply.kind = Reply::Kind::bindings;

@@ -88,18 +88,6 @@ static void print_shown(ReplSession &session, std::ostream &out,
     out << std::flush;
 }
 
-static bool blank_line(const std::string &line)
-{
-    return line.find_first_not_of(" \t\r\n\f\v") == std::string::npos;
-}
-
-// A cooked line without a CRLF transcript's '\r'.
-static void drop_cr(std::string &line)
-{
-    if ( !line.empty() && line[line.size() - 1] == '\r' )
-	line.erase(line.size() - 1);
-}
-
 // ---- colon mode (D24; ex core design decision 11; madc_repl.h's
 // repl_colon): what a colon entry leaves the loop to do.
 enum class colon_step : unsigned char { done, wants_text, quit };
@@ -188,7 +176,7 @@ static colon_step colon_text(std::istream &in, std::ostream &out,
 	    out << prompt << std::flush;
 	if ( !std::getline(in, line) )
 	    break;
-	drop_cr(line);
+	madc::drop_cr(line);
 	if ( line == "." )
 	    break;
 	body.push_back(line);
@@ -419,7 +407,7 @@ int madc_repl_edit(ReplSession &session, line_target &term,
 			// final, as at the end of cooked lines.
 			std::string text = ed.text();
 			release("");
-			if ( !blank_line(text) )
+			if ( !madc::blank_text(text) )
 			{
 			    session.submit(text + "\n");
 			    remember(history_text(text));
@@ -480,7 +468,7 @@ int madc_repl_edit(ReplSession &session, line_target &term,
 			rebuild_repl_buffer(session, NULL, out, theme, colon, repl);
 			break;
 		    }
-		    if ( blank_line(text) )
+		    if ( madc::blank_text(text) )
 		    {
 			release("");
 			ed.entered(line_edit::verdict::taken);
@@ -567,48 +555,40 @@ static void reclaim_input(ReplSession &session, std::istream *in)
 	in->putback(*it);
 }
 
-// The cooked loop over `in`; returned stdin bytes go to `reclaim`.
+// The cooked loop over `in`; returned stdin bytes go to `reclaim`. Its lines
+// group into entries by the REPL's one rule (EntryLines); colon mode and the
+// rebuild's line are read between entries.
 static int cooked_loop(ReplSession &session, std::istream &in,
 		       std::istream *reclaim, std::ostream &out, bool terminal,
 		       const repl_colon &colon, const madc::theme *theme,
 		       madc::hub::entity_id repl)
 {
     std::string prompt, continuation;	// the standard's, entry by entry (%std)
-    std::string pending;		// the entry typed so far
-    bool extendable = false;		// pending is an if waiting for else
     std::string line;
     int status = 0;			// a backend's exit(n)
+    EntryLines lines(session);
+    // An exit(n) in an entry ends the REPL.
+    const EntryLines::Taken taken = [&](const std::string &, bool) {
+	reclaim_input(session, reclaim);
+	entry_taken(session, out, theme, colon, repl);
+	return !session.ended(status);
+    };
     for (;;)
     {
-	if ( pending.empty() )
+	if ( lines.idle() )
 	{
 	    prompt = entry_prompt(session);
 	    continuation.assign(prompt.size(), ' ');
 	}
 	if ( terminal )
-	    out << (pending.empty() ? prompt : continuation) << std::flush;
+	    out << (lines.idle() ? prompt : continuation) << std::flush;
 	if ( !std::getline(in, line) )
 	    break;
-	drop_cr(line);			// a CRLF transcript's line
-	if ( extendable )
-	{
-	    // D11: an else continues the if; an empty line runs it; any other
-	    // line runs it and starts the next entry.
-	    extendable = false;
-	    if ( !session.continues_if(line) )
-	    {
-		session.submit(pending);
-		reclaim_input(session, reclaim);
-		entry_taken(session, out, theme, colon, repl);
-		pending.clear();
-		if ( session.ended(status) )
-		    return status;
-	    }
-	}
-	if ( pending.empty() && blank_line(line) )
-	    continue;
+	madc::drop_cr(line);			// a CRLF transcript's line
+	if ( !lines.settle(line, taken) )
+	    return status;
 	std::string argument;
-	if ( pending.empty() && colon_line(colon, line, argument) )
+	if ( lines.idle() && colon_line(colon, line, argument) )
 	{
 	    const colon_step c = colon_apply(session, colon, repl, [&]() {
 		colon_step step = colon_run(session, colon, argument, out, theme);
@@ -620,41 +600,20 @@ static int cooked_loop(ReplSession &session, std::istream &in,
 		return 0;		// :q
 	    continue;
 	}
-	if ( pending.empty() && rebuild_line(colon, repl, line) )
+	if ( lines.idle() && rebuild_line(colon, repl, line) )
 	{
 	    rebuild_repl_buffer(session, reclaim, out, theme, colon, repl);
 	    if ( session.ended(status) )
 		return status;
 	    continue;
 	}
-	pending += line;
-	pending += '\n';
-	ReplSession::Offered r = session.offer(pending);
-	reclaim_input(session, reclaim);
-	switch ( r.state )
-	{
-	    case ReplSession::OfferState::incomplete:
-		break;
-	    case ReplSession::OfferState::extendable:
-		extendable = true;
-		break;
-	    case ReplSession::OfferState::taken:
-		entry_taken(session, out, theme, colon, repl);
-		pending.clear();
-		if ( session.ended(status) )
-		    return status;	// exit(n) in an entry ends the REPL
-		break;
-	}
+	if ( !lines.add(line, taken) )
+	    return status;
     }
     // The end of input: a pending entry is final. An extendable if runs;
     // an incomplete entry is refused with its own end-of-input diagnostic.
-    if ( !pending.empty() )
-    {
-	session.submit(pending);
-	entry_taken(session, out, theme, colon, repl);
-	if ( session.ended(status) )
-	    return status;
-    }
+    if ( !lines.finish(taken) )
+	return status;
     if ( terminal )
 	out << std::endl;
     return 0;

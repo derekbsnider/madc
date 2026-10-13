@@ -88,7 +88,9 @@ public:
 	Kind kind;
 	unsigned seq;			// the request's
 	// running: an offered entry was taken and runs now; its output
-	// follows (the next polls), then its offer reply.
+	// follows (the next polls), then its offer reply. A rebuild's entry
+	// runs the same way, its text in `entry`, then its replayed reply (an
+	// offer's taken fields).
 	// An offer's: the verdict, and once taken, the result, the shown
 	// value, the entries taken so far (REPL[N]), the rendered diagnostics
 	// (the text the CLI prints) and their rows (diagnostic rows: severity,
@@ -119,8 +121,10 @@ public:
 	size_t start;
 	std::vector<std::string> names;
 	// load: the file defined main (InteractiveSession::loaded_main), so
-	// running the file runs it.
+	// running the file runs it. rebuild: the buffer's main ran.
 	bool defines_main;
+	// running: a rebuild's entry, its text ("" for an offered entry).
+	std::string entry;
 	// offer: the source the taken entry added to the session
 	// (InteractiveSession::taken_source); load: the text of the file it
 	// kept (loaded_source). Empty when nothing was kept.
@@ -224,6 +228,14 @@ public:
     unsigned check(const std::string &path, const std::string *text);
     int check_wait(const std::string &path, const std::string *text,
 		   Reply &reply, std::string &output);
+    // The host's REPL buffer run again (owner 2026-10-12) in the backend
+    // the host just started fresh: its lines taken as typed, then its main
+    // with argv (the buffer's name, then the program's arguments) when the
+    // session defines main and no unit names it. Each entry answers with a
+    // running row (its text) and a replayed row; the rebuild row is the
+    // answer. The entries run in step with the host: the next one runs once
+    // the poll took the last one's replayed row.
+    unsigned rebuild(const std::string &text, const std::vector<std::string> &argv);
     // The host's REPL buffer edited (the live reparse): its text before and
     // after, the changed entries read again in the backend
     // (InteractiveSession::buffer_edited).
@@ -301,6 +313,10 @@ private:
     bool output_done;			// the output pipe reached its end
     unsigned next_seq;
     unsigned answered_seq;		// the last request whose reply came back
+    // The rebuild in step (rebuild): its seq while entries remain, else 0.
+    // Each replayed row polled asks for the next entry under it.
+    unsigned rebuild_seq;
+    bool send_rebuild_step();
     std::string std_option;
     ProgramFactory make_program;
     std::vector<std::string> backend_args;	// Windows: the configured child's command line
@@ -459,7 +475,7 @@ int64_t session_complete(int64_t handle, const char *text, int64_t caret);
 int64_t session_load(int64_t handle, const char *path, const char *text);
 int64_t session_run(int64_t handle, value &argv);
 int64_t session_call(int64_t handle, value &argv);
-int64_t session_rebuilt(int64_t handle, value &argv);
+int64_t session_rebuild(int64_t handle, const char *text, value &argv);
 int64_t session_edited(int64_t handle, const char *before, const char *after);
 int64_t session_build(int64_t handle, const char *path, const char *text,
 		      const char *out);

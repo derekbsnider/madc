@@ -3515,14 +3515,35 @@ already); argv[0] is the buffer's name `[REPL]`, then its `%args`
 
 **Built, the dialect verbs (2026-10-12).** `madc::session_edited(h, before,
 after)` (the live reparse's `edited` request; an `edited` reply row) and
-`madc::session_rebuilt(h, argv)` (the rebuild's main, a `run` row) in
-`<ns_madc>`. madcide's REPL pane sends `session_edited` after a colon command
-changes the REPL buffer (madcide 0.8.0, paired with this release). Gate:
-`testsession_run`.
+`madc::session_rebuild(h, text, argv)` (below) in `<ns_madc>`. madcide's REPL
+pane sends `session_edited` after a colon command changes the REPL buffer
+(madcide 0.8.0, paired with this release). Gate: `testsession_run`.
+
+**Built, Restart and Run All (owner 2026-10-13, "I go with your leans").**
+How other tools re-run a session, surveyed for the decision: an editor-plus-
+REPL tool (Thonny, Spyder, DrRacket) runs the EDITOR's file and never re-runs
+the REPL's own input; a tool whose session is an ordered list of entries
+(Jupyter, RStudio's R Markdown, Mathematica) has a separately named command,
+Jupyter's "Restart Kernel and Run All Cells". madcide is the first kind for
+F5 and `%run` (the editor's file, as decided) and the second for its REPL
+buffer: the Build menu's **Restart and Run All** (`replrunall`) and the pane's
+`%runall` (IPython's `%rerun` re-runs inputs in the SAME session, so its name
+is not borrowed). The CLI keeps `%run` with the REPL buffer current (IPython's
+`%reset` + `%rerun` in one step). The rule that groups typed lines into
+entries is one class, `EntryLines` (`madc_session.h`): the cooked loop's and
+the replay's. The backend's `rebuild` request replays the buffer in the
+backend the host just restarted, one entry per step: a `running` row carrying
+the entry's text, its output, a `replayed` answer (an offer's taken fields),
+then the client asks for the next entry under the same seq — in step, so a
+later entry's output never reaches the host ahead of an earlier entry's row.
+Past the last entry the buffer's main runs when no entry named it, and a
+`rebuild` row answers. The pane shows each entry as typed, its output and its
+value, and never appends the replayed entries to the REPL buffer again.
+Gates: `testsession_run` (an entry over several lines, an if taking its else,
+main run once), madcide's `testmadcide_replrunall`.
 
 Open: a redefined struct as a new versioned type (D6's types; old objects keep
-the old type); what rebuilds the REPL buffer in madcide's pane, where `%run`
-runs the editor's buffer and the REPL buffer is never an editor tab (owner).
+the old type).
 
 **Built, exit-time destruction (2026-10-12), the prerequisite for redefining
 an object with a destructor.** An object with static storage duration had its
