@@ -315,6 +315,22 @@ after text after every colon command that moved it, and the backend reads
 the touched entries through one serialized verb. An edited object or type
 definition is still refused until D6, where `%run` rebuilds instead.
 
+### The parse path spends fewer instructions on names and abi-tag mangling
+
+Three per-token costs leave the `--std=madc` parse path. In
+`peek_param_list_spelling` the REPL-session type-identity lookup
+(`session_type_identity`) now runs only when `interactive_session` is set,
+so a non-interactive compile skips it on every identifier and data-type
+token. `token_is_operator_id_start`, asked of every token by the delimiter
+scans, compares the interned name against `MADC_ISTRING_LITERAL("operator")`
+by pointer identity instead of a byte compare. The Itanium mangler keeps a
+name component's GCC abi tags inside `NameComponent::ident` (spelled
+`P[abi:v2]`, as c++filt prints them) rather than a separate
+`std::vector<std::string> abi_tags`, encoding them through
+`component_source_name` / `untagged_length`; an untagged name pays only a
+last-byte test. The parse-cost gate row `dialect.live` drops from
+76,390,431 to 76,255,279 Ir.
+
 ## [v0.104.0] — 2026-10-12
 
 The madcide split: madc's interactive mode takes the ed/ex editing core, and madcide leaves to its own repository. `madc -i` gains colon mode, a command registry modules and hosts extend, `%std` / `%reset` / `%history` / `%check` / `%build` / `%run` / `%args` / `%project`, coloured prompts and diagnostics, and host-facing language services; madc ships a Language Server (`--lsp`) and a Model Context Protocol server (`--mcp`) with a project memory, a code graph and an external-task client; the data substrate gains a document component with an edit notification, regexes run on one PCRE2 engine, and a source's standard follows its extension. madcide now lives in its own repository and releases on its own, so madc's packages no longer carry it. Forest and pack correctness and reproducibility, codegen and REPL fixes, and Windows and darwin parity round out the release.

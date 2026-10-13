@@ -12,7 +12,7 @@ src/cir_dump.cpp	41
 src/cir_emit_c.cpp	3
 src/cir_format.cpp	22
 src/madc_type_spelling.cpp	18
-src/madc_mangle.cpp	171
+src/madc_mangle.cpp	173
 src/madc_complete.cpp	12
 src/madc_keywords.cpp	0
 src/pch.cpp	0

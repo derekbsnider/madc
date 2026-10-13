@@ -248,9 +248,9 @@ struct NameComponent {
 	std::string ident;                 // e.g. "char_traits", "__cxx11", "std"
 	bool is_template = false;          // has <...>
 	std::vector<TypeNode> targs;       // template arguments (if is_template)
-	// GCC's abi_tag, spelled as c++filt prints it: `P[abi:v2]` is 1PB2v2
-	// (a REPL session's redefined struct, a new version of the type).
-	std::vector<std::string> abi_tags;
+	// GCC's abi_tags stay in `ident`, spelled as c++filt prints them:
+	// `P[abi:v2]` (a REPL session's redefined struct, a new version of the
+	// type) encodes as 1PB2v2 — component_source_name.
 };
 
 // Is the bracket group of `s` that opens at `ob` an abi tag (`[abi:v2]`), not
@@ -266,12 +266,34 @@ static bool ends_in_array_dims(const std::string &s)
 	return !s.empty() && s.back() == ']' && !abi_tag_group(s, s.rfind('['));
 }
 
-// A name's abi tags, as Itanium encodes them after its source name.
-static std::string abi_tag_codes(const NameComponent &nc)
+// The length of `ident` without its trailing `[abi:TAG]` groups.
+static size_t untagged_length(const std::string &ident)
 {
-	std::string out;
-	for (const std::string &tag : nc.abi_tags)
+	size_t end = ident.size(), ob;
+	while (end && ident[end - 1] == ']'
+	       && (ob = ident.rfind('[', end - 1)) != std::string::npos
+	       && abi_tag_group(ident, ob)) {
+		end = ob;
+		while (end && (ident[end - 1] == ' ' || ident[end - 1] == '\t'))
+			--end;
+	}
+	return end;
+}
+
+// A component's source name with its abi tags, as Itanium encodes them after
+// it: `P[abi:v2]` is 1PB2v2. An untagged name is its plain source name.
+static std::string component_source_name(const std::string &ident)
+{
+	if (ident.empty() || ident.back() != ']')
+		return source_name(ident);
+	const size_t len = untagged_length(ident);
+	std::string out = source_name(ident.substr(0, len));
+	for (size_t ob = ident.find('[', len); ob != std::string::npos;
+	     ob = ident.find('[', ob + 1)) {
+		const size_t cb = ident.find(']', ob);
+		const std::string tag = ident.substr(ob + 5, cb - ob - 5);
 		out += "B" + std::to_string(tag.size()) + tag;
+	}
 	return out;
 }
 
@@ -333,18 +355,8 @@ NameComponent parse_component(const std::string &raw)
 	// is the only one — first and last coincide. Ignore is the historical
 	// policy for anything trailing the closing '>'; the local copy expressed
 	// it by taking rfind('>') as the close.
-	const bool is_template = split_template_id_parts(mstrip(raw), nc.ident,
-							 targs, SpellingTail::Ignore);
-	// The name's abi tags: trailing `[abi:TAG]` groups, in order.
-	size_t ob;
-	while (!nc.ident.empty() && nc.ident.back() == ']'
-	       && (ob = nc.ident.rfind('[')) != std::string::npos
-	       && abi_tag_group(nc.ident, ob)) {
-		nc.abi_tags.insert(nc.abi_tags.begin(),
-				   nc.ident.substr(ob + 5, nc.ident.size() - ob - 6));
-		nc.ident = mstrip(nc.ident.substr(0, ob));
-	}
-	if (!is_template)
+	if (!split_template_id_parts(mstrip(raw), nc.ident, targs,
+				     SpellingTail::Ignore))
 		return nc;
 	nc.is_template = true;
 	for (const auto &a : targs)
@@ -517,10 +529,12 @@ TypeNode parse_type(const std::string &raw)
 		// before the array production existed, a closure type's display
 		// name) is a spelling this grammar does not read: refuse the whole
 		// symbol rather than encode `14int (*)[3]` into an object.
-		for (char c : t.name.back().ident)
-			if (!isalnum((unsigned char)c) && c != '_')
+		const std::string &id = t.name.back().ident;
+		const size_t len = untagged_length(id);
+		for (size_t k = 0; k < len; ++k)
+			if (!isalnum((unsigned char)id[k]) && id[k] != '_')
 				t.invalid = true;
-		if (t.name.back().ident.empty())
+		if (!len)
 			t.invalid = true;
 	}
 	return t;
@@ -912,8 +926,6 @@ private:
 		for (size_t i = 0; i <= upto; ++i) {
 			if (i) s += "::";
 			s += chain[i].ident;
-			for (const std::string &tag : chain[i].abi_tags)
-				s += "[abi:" + tag + "]";
 			if (chain[i].is_template) {
 				s += "<";
 				for (size_t j = 0; j < chain[i].targs.size(); ++j) {
@@ -1043,7 +1055,7 @@ private:
 						refPrefixed = true;     // S-ref now acts as a prefix
 						bareRef = false;
 					}
-					encoded += source_name(nc.ident) + abi_tag_codes(nc);
+					encoded += component_source_name(nc.ident);
 					add_sub(canonKey);
 					srcNameCount++;
 				}
@@ -1074,8 +1086,7 @@ private:
 						refPrefixed = true;     // S-ref now acts as a prefix
 						bareRef = false;
 					}
-					tprefix = encoded + source_name(nc.ident)
-						  + abi_tag_codes(nc);
+					tprefix = encoded + component_source_name(nc.ident);
 					add_sub(prefixKey);
 					srcNameCount++;
 				}

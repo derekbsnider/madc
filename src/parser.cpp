@@ -5411,8 +5411,10 @@ bool Program::consume_template_close(TokenBase *tok)
 // captured token vector and have no Program & in hand.
 static bool token_is_operator_id_start(TokenBase *t)
 {
+    // Every delimiter scan asks this of every token: compare the interned
+    // name by identity, never by bytes.
     return t && is_contextual_identifier_token(t)
-	&& contextual_identifier_name(t) == "operator";
+	&& contextual_identifier_name(t) == MADC_ISTRING_LITERAL("operator");
 }
 // Number of tokens the operator-function-id at toks[i] spans (keyword + symbol
 // [+ closing )/] for operator()/operator[]]), or 0 if toks[i] is not an
@@ -22730,8 +22732,9 @@ madc::dis::istring Program::peek_param_list_spelling()
 		tok_sp = al->name;
 	// A session's redefined aggregate: `P` before and after its
 	// redefinition are two types, so two overloads (plan §42 D6).
-	if ( tok_sp.empty() && (t->type() == TokenType::ttIdentifier
-			     || t->type() == TokenType::ttDataType) )
+	if ( tok_sp.empty() && interactive_session
+	  && (t->type() == TokenType::ttIdentifier
+	   || t->type() == TokenType::ttDataType) )
 	    tok_sp = session_type_identity(((TokenIdent *)t)->spelling_name());
 	spelling += tok_sp.empty() ? overload_token_spelling(t) : tok_sp;
     };
