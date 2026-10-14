@@ -474,6 +474,14 @@ public:
 	return !overload_template_args.empty()
 	    || overload_spelling.find("\x01@") != madc::dis::istring::npos;
     }
+    // The identity that suffix carries (the instantiation memo's inst_key);
+    // empty without one.
+    madc::dis::istring instantiation_identity() const {
+	size_t at = overload_spelling.find("\x01@");
+	if ( at == madc::dis::istring::npos )
+	    return madc::dis::istring();
+	return madc::dis::istring(overload_spelling.substr(at + 2));
+    }
     // The identity a function template's PLACEHOLDER carries in
     // overload_spelling (register_skipped_namespace_template_function, the
     // forest restore): it is seeded into an overload set so ranking runs,
@@ -3814,6 +3822,32 @@ public:
 	PackPoiFrame(Program &pp, uint32_t poi);
 	~PackPoiFrame();
     };
+    // The instantiation a freeze's creations belong to (pack-slices design §4).
+    // Entering one (`enter`: a class product's or a function instance's own
+    // instantiation) first records that the current context requires it; a
+    // body parsed or translated FOR a product re-opens that product's key
+    // without a record. While open, madc_pack_creation_ctx is the key.
+    struct PackCtxFrame
+    {
+	bool pushed;
+	madc::dis::istring saved;
+	PackCtxFrame(Program &pp, const madc::dis::istring &key, bool enter);
+	~PackCtxFrame();
+    };
+    // A product a parse created or reused: required `by` the instantiation then
+    // in progress, else (by empty) by the unit of the creation point `poi`. The
+    // seed index restores a product with every unit that requires it, directly
+    // or through a requiring product — what a live parse of that unit makes.
+    struct PackRequirement
+    {
+	madc::dis::istring product;
+	madc::dis::istring by;
+	uint32_t poi;
+    };
+    std::vector<PackRequirement> pack_requirements;
+    std::set<std::pair<madc::dis::istring, madc::dis::istring> > pack_required_by;
+    std::set<std::pair<madc::dis::istring, uint32_t> > pack_required_at;
+    void pack_note_require(const madc::dis::istring &product);
     // A FREEZE-time capture's point of creation (freeze only): the file that declared
     // the entity, for a slot no parse-time write stamped — the seed index places it
     // with that file's unit, as it places a template or a global (design §4).
@@ -5902,6 +5936,8 @@ public:
 	// body (pack_current_poi; 0xffffffff = none) — a body parsed after the
 	// parse (the freeze's lazy drain) stamps what it creates there.
 	uint32_t pack_poi;
+	// ...and the instantiation it was deferred in (madc_pack_creation_ctx).
+	madc::dis::istring pack_ctx;
 	DeferredFunctionBody() : var(NULL), method(NULL), full_definition(false), explicit_specialization(false), file(NULL), line(0), column(0), pack_poi(0xffffffffu) {}
     };
     std::map<DataDefCLASS *, std::vector<DeferredFunctionBody> >

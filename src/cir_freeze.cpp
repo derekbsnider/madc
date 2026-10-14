@@ -4479,8 +4479,13 @@ void CirFrozenForest::materialize_pass()
 			    && head_verdict(t.dd->canonical_cpp_spelling().c_str(),
 					    _mat_filter) < 0)
 				v = -1;
+			// A template-id product is placed by the units requiring
+			// it, not by its template's name (design §4): its own kind.
+			bool product = t.dd && t.dd->canonical_cpp_spelling().find('<')
+					      != madc::dis::istring::npos;
 			say(t.kind == CIR_TYPEK_TYPEDEF ? "typedef"
-			    : t.kind == CIR_TYPEK_ENUM ? "enum" : "tag", t.ns, t.name, v);
+			    : t.kind == CIR_TYPEK_ENUM ? "enum"
+			    : product ? "product" : "tag", t.ns, t.name, v);
 		}
 		for (size_t i = par_funcs0; i < _restored_funcs.size(); ++i) {
 			const CirRestoredFunc &f = _restored_funcs[i];
@@ -4489,7 +4494,8 @@ void CirFrozenForest::materialize_pass()
 			    && !f.fd->namespace_name.empty())
 				v = verdict_str(f.fd->function_display_name.c_str(),
 						f.fd->namespace_name.c_str());
-			say("func", NULL, f.name, v);
+			say(f.fd && f.fd->is_specialization_product() ? "instance" : "func",
+			    NULL, f.name, v);
 		}
 		for (size_t i = par_globals0; i < _restored_globals.size(); ++i)
 			say("global", _restored_globals[i].ns, _restored_globals[i].name,

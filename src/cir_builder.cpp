@@ -32864,6 +32864,7 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	// local classes, the instances it names) belongs where fd was created
 	// (pack-slices design §4).
 	Program::PackPoiFrame poi_frame(*m_prog, fd->pack_poi);
+	Program::PackCtxFrame ctx_frame(*m_prog, fd->pack_ctx, false);
 	AnonTagBodyScope anon_tag_scope(m_anon_tags_body, m_in_func_body);
 #ifdef MADC_DEBUG_CTORINIT
 	fprintf(stderr, "[ctorinit] func-def %s\n", tf->var.name.c_str());

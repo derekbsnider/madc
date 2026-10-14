@@ -223,7 +223,7 @@ struct SeedLists {
 
 // Census for the freeze's summary line.
 struct SeedCensus {
-	size_t decided = 0, created = 0, always = 0, dependent = 0, unplaced = 0;
+	size_t decided = 0, created = 0, always = 0, dependent = 0, unplaced = 0, required = 0;
 };
 
 // Add `units` (a declaring-unit run) to `into`.
@@ -344,7 +344,8 @@ void cir_forest_build_seeds(cir_frozen_forest &f, const madc::dis::intern_table 
 	// (name, ns) qualified-then-bare, bare name when namespaced, the head of a
 	// template-id canonical spelling. Undecided = the predicate holds at an
 	// empty closure (every consulted verdict 0 or -1, monotone).
-	auto record_surfaces = [&](const madc::dis::defrec &r, std::set<uint32_t> &units) -> bool {
+	auto record_surfaces = [&](const madc::dis::defrec &r, std::set<uint32_t> &units,
+				   bool with_head) -> bool {
 		const char *nm = r.name_id ? a.strings.c_str(r.name_id) : NULL;
 		const char *ns = r.ns_id ? a.strings.c_str(r.ns_id) : NULL;
 		uint32_t n1 = 0, n2 = 0, nh = 0;
@@ -356,8 +357,9 @@ void cir_forest_build_seeds(cir_frozen_forest &f, const madc::dis::intern_table 
 			add_units(units, s2, n2);
 		}
 		bool has_head = false;
-		const uint32_t *sh = dn.head_of(r.canon_id ? a.strings.c_str(r.canon_id) : NULL,
-						has_head, nh);
+		const uint32_t *sh = with_head
+			? dn.head_of(r.canon_id ? a.strings.c_str(r.canon_id) : NULL, has_head, nh)
+			: NULL;
 		add_units(units, sh, nh);
 		bool name_ok_empty = n1 == 0 || (namespaced && n2 == 0);
 		bool head_ok_empty = !has_head || nh == 0;
@@ -366,6 +368,111 @@ void cir_forest_build_seeds(cir_frozen_forest &f, const madc::dis::intern_table 
 
 	// 2. Arena records.
 	const uint32_t nslots = a.def_slots();
+
+	// Instantiation requirements (design §4). A product — a class product's
+	// record, keyed by its registered name, or a function instance's, by its
+	// instantiation identity — is restored with every unit that requires it:
+	// directly (that unit's parse created or reused it), or through a product
+	// whose instantiation (or a body parsed or translated for it) did. An
+	// entity born inside an instantiation (its creation context) is carried
+	// by that product the same way. required[s] = those units, propagated.
+	// The graph is over instantiation KEYS, not slots: a requirement chain
+	// may run through an instantiation with no record of its own (a member
+	// template's instance), and a slot joins its key's units and its
+	// creation context's.
+	std::vector<madc::dis::istring> slot_key(nslots);
+	std::map<madc::dis::istring, uint32_t> product_of;
+	for (uint32_t s = 0; s < nslots; ++s) {
+		madc::dis::defrec r;
+		if (!a.get_def_at(madc::dis::arena_id_of(s), r))
+			continue;
+		if ((r.kind == madc::dis::DK_STRUCT || r.kind == madc::dis::DK_UNION
+		     || r.kind == madc::dis::DK_CLASS) && r.name_id)
+			slot_key[s] = madc::dis::istring(a.strings.c_str(r.name_id));
+		else if (r.kind == madc::dis::DK_FUNC && r.ovl_spelling_id) {
+			const char *os = a.strings.c_str(r.ovl_spelling_id);
+			const char *at = os ? strstr(os, "\x01@") : NULL;
+			if (at && at[2])
+				slot_key[s] = madc::dis::istring(at + 2);
+		}
+		if (!slot_key[s].empty())
+			product_of.insert(std::make_pair(slot_key[s], s));
+	}
+	typedef std::map<madc::dis::istring, std::vector<madc::dis::istring> > carry_map;
+	carry_map carries;					// key -> keys it requires
+	std::map<madc::dis::istring, std::set<uint32_t> > required;	// key -> requiring units
+	std::vector<std::pair<madc::dis::istring, uint32_t> > req_work;	// (key, unit) newly required
+	auto require_unit = [&](const madc::dis::istring &k, uint32_t u) {
+		if (u < nunits && required[k].insert(u).second)
+			req_work.push_back(std::make_pair(k, u));
+	};
+	for (size_t i = 0; i < f.requirements.size(); ++i) {
+		const cir_frozen_forest::requirement &q = f.requirements[i];
+		if (!q.by.empty())
+			carries[q.by].push_back(q.product);
+		else
+			require_unit(q.product, unit_of_poi(q.poi));
+	}
+	while (!req_work.empty()) {
+		std::pair<madc::dis::istring, uint32_t> w = req_work.back();
+		req_work.pop_back();
+		carry_map::const_iterator ci = carries.find(w.first);
+		if (ci != carries.end())
+			for (size_t k = 0; k < ci->second.size(); ++k)
+				require_unit(ci->second[k], w.second);
+	}
+	auto required_of_key = [&](const madc::dis::istring &k) -> const std::set<uint32_t> * {
+		if (k.empty())
+			return NULL;
+		std::map<madc::dis::istring, std::set<uint32_t> >::const_iterator it = required.find(k);
+		return it == required.end() ? NULL : &it->second;
+	};
+	// A slot's requiring units: its own key's (a product) and its creation
+	// context's (what it was born inside). NULL = none.
+	std::set<uint32_t> req_scratch;
+	auto required_of = [&](uint32_t s) -> const std::set<uint32_t> * {
+		if (s >= nslots)
+			return NULL;
+		const std::set<uint32_t> *own = required_of_key(slot_key[s]);
+		const std::set<uint32_t> *ctx = s < f.slot_ctx.size()
+			? required_of_key(f.slot_ctx[s]) : NULL;
+		if (!ctx || ctx == own)
+			return own;
+		if (!own)
+			return ctx;
+		req_scratch = *own;
+		req_scratch.insert(ctx->begin(), ctx->end());
+		return &req_scratch;
+	};
+	// Env-gated probe (MADC_SEED_REQ_PROBE=<substr>): each product whose key
+	// holds the substring — its requiring units, its creation context and
+	// every requirement naming it (by a product, or at a unit).
+	static const char *req_probe = ::getenv("MADC_SEED_REQ_PROBE");
+	if (req_probe && *req_probe) {
+		auto unit_name = [&](uint32_t u) -> const char * {
+			return u < nunits ? pool.c_str(f.units[u].unit_name_id) : "-";
+		};
+		for (std::map<madc::dis::istring, uint32_t>::const_iterator it = product_of.begin();
+		     it != product_of.end(); ++it) {
+			if (!strstr(it->first.c_str(), req_probe))
+				continue;
+			const std::set<uint32_t> *q = required_of(it->second);
+			fprintf(stderr, "SEEDREQ %s slot=%u units=%zu ctx=%s\n", it->first.c_str(),
+				it->second, q ? q->size() : (size_t)0,
+				it->second < f.slot_ctx.size() && !f.slot_ctx[it->second].empty()
+					? f.slot_ctx[it->second].c_str() : "-");
+			if (q)
+				for (std::set<uint32_t>::const_iterator u = q->begin(); u != q->end(); ++u)
+					fprintf(stderr, "SEEDREQ   unit %s\n", unit_name(*u));
+			for (size_t i = 0; i < f.requirements.size(); ++i)
+				if (f.requirements[i].product == it->first)
+					fprintf(stderr, "SEEDREQ   by %s at %s\n",
+						f.requirements[i].by.empty() ? "-"
+							: f.requirements[i].by.c_str(),
+						f.requirements[i].by.empty()
+							? unit_name(unit_of_poi(f.requirements[i].poi)) : "-");
+		}
+	}
 	std::map<madc::dis::istring, uint32_t> free_fn_by_name;	// funcdef_map key -> slot
 	std::map<uint32_t, std::vector<uint32_t> > fn_lists;	// free fn slot -> its lists
 	// A class METHOD's call symbol (Variable::name, "Class__member") -> the
@@ -412,9 +519,17 @@ void cir_forest_build_seeds(cir_frozen_forest &f, const madc::dis::intern_table 
 			if (r.kind != madc::dis::DK_ENUM && r.kind != madc::dis::DK_TYPEDEF
 			    && (r.flags & madc::dis::DF_CLASS_FN_LOCAL)) {
 				uint32_t cu = unit_of_slot(s);
-				if (cu != NO_UNIT) {
-					L.arena[cu].push_back(s);
-					++c.created;
+				const std::set<uint32_t> *req = required_of(s);
+				if (cu != NO_UNIT || req) {
+					std::set<uint32_t> at;
+					if (req)
+						at = *req;
+					if (cu != NO_UNIT)
+						at.insert(cu);
+					for (std::set<uint32_t>::const_iterator it = at.begin();
+					     it != at.end(); ++it)
+						L.arena[*it].push_back(s);
+					++(req ? c.required : c.created);
 					break;
 				}
 				L.arena[always].push_back(s);
@@ -423,7 +538,17 @@ void cir_forest_build_seeds(cir_frozen_forest &f, const madc::dis::intern_table 
 					     NULL, NULL);
 				break;
 			}
-			bool undecided = record_surfaces(r, units);
+			// A template-id product required by some unit is restored
+			// with its requirers, never with its template's declarers; any
+			// record carried by a product joins that product's units.
+			const std::set<uint32_t> *req = required_of(s);
+			bool product = req && r.canon_id
+				&& strchr(a.strings.c_str(r.canon_id), '<');
+			bool undecided = record_surfaces(r, units, !product) && !product;
+			if (req) {
+				units.insert(req->begin(), req->end());
+				++c.required;
+			}
 			probe_name = kind_name[r.kind];
 			probe_nm = r.name_id ? a.strings.c_str(r.name_id) : NULL;
 			probe_ns = r.ns_id ? a.strings.c_str(r.ns_id) : NULL;
@@ -450,10 +575,20 @@ void cir_forest_build_seeds(cir_frozen_forest &f, const madc::dis::intern_table 
 			{ const uint32_t *run_ = dn.units_of(nm, n1); add_units(units, run_, n1); }
 			const char *disp = r.disp_id ? a.strings.c_str(r.disp_id) : NULL;
 			const char *ns = r.ns_id ? a.strings.c_str(r.ns_id) : NULL;
-			bool refines = disp && *disp && ns && *ns;
+			// A function instance required by some unit is restored with its
+			// requirers, never with its template's declarers (the display
+			// name); a function carried by a product joins its units.
+			const std::set<uint32_t> *req = required_of(s);
+			bool instance = req && r.ovl_spelling_id
+				&& strstr(a.strings.c_str(r.ovl_spelling_id), "\x01@");
+			bool refines = !instance && disp && *disp && ns && *ns;
 			if (refines)
 				{ const uint32_t *run_ = dn.surface(disp, ns, nd); add_units(units, run_, nd); }
-			bool undecided = n1 == 0 && (!refines || nd == 0);
+			bool undecided = !instance && n1 == 0 && (!refines || nd == 0);
+			if (req) {
+				units.insert(req->begin(), req->end());
+				++c.required;
+			}
 			probe_name = "func";
 			probe_nm = nm;
 			probe_ns = ns;
@@ -604,6 +739,13 @@ void cir_forest_build_seeds(cir_frozen_forest &f, const madc::dis::intern_table 
 		uint32_t created = unit_of_poi(i < f.global_poi.size() ? f.global_poi[i] : NO_UNIT);
 		if (created == NO_UNIT)
 			created = unit_of_file(file);
+		// A global born inside an instantiation (a product's static data
+		// member) is carried by that product.
+		if (const std::set<uint32_t> *req = i < f.global_ctx.size()
+			? required_of_key(f.global_ctx[i]) : NULL) {
+			units.insert(req->begin(), req->end());
+			++c.required;
+		}
 		place(L.glob, (uint32_t)i, units, n1 == 0, created, c);
 	}
 
@@ -667,7 +809,8 @@ void cir_forest_build_seeds(cir_frozen_forest &f, const madc::dis::intern_table 
 	w.insert(w.end(), gids.begin(), gids.end());
 
 	// The census: per kind, entities listed by a decided name / by their point
-	// of creation / always / as owner dependents / never visited.
+	// of creation / always / as owner dependents / never visited / and how
+	// many joined the units requiring them (instantiation requirements).
 	char buf[160];
 	snprintf(buf, sizeof(buf), "%u names, %zu+%zu+%zu seeds (always %u/%u/%u), %zu dependents, %zu recordable",
 		 dn.size(), aids.size(), tids.size(), gids.size(),
@@ -676,9 +819,9 @@ void cir_forest_build_seeds(cir_frozen_forest &f, const madc::dis::intern_table 
 	summary = buf;
 	for (std::map<madc::dis::istring, SeedCensus>::const_iterator it = census.begin();
 	     it != census.end(); ++it) {
-		snprintf(buf, sizeof(buf), "; %s %zu/%zu/%zu/%zu/%zu", it->first.c_str(),
+		snprintf(buf, sizeof(buf), "; %s %zu/%zu/%zu/%zu/%zu/%zu", it->first.c_str(),
 			 it->second.decided, it->second.created, it->second.always,
-			 it->second.dependent, it->second.unplaced);
+			 it->second.dependent, it->second.unplaced, it->second.required);
 		summary += buf;
 	}
 }

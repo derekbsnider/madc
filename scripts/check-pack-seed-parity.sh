@@ -15,7 +15,11 @@
 #   1. the seeded lines are a sub-multiset of the whole walk's;
 #   2. every whole-only line carries v<=0 — a name no bound unit declares
 #      (registration drops a -1; a 0 is an undecided record whose point of
-#      creation is an unbound unit, the one difference the design accepts);
+#      creation is an unbound unit) — or is a `product` / `instance` (a
+#      template-id class product, a function-template instance): those are
+#      placed with the units whose parse required them, not by their
+#      template's name, so the whole walk keeps ones no bound unit asked for
+#      (design §4, the differences the design accepts);
 #   3. NEGATIVE CONTROL — each workload printed SEEDPAR lines in both runs (a
 #      run that bound nothing would pass 1 and 2 vacuously); only a program
 #      with no #include may bind nothing.
@@ -71,7 +75,8 @@ for p in "${progs[@]}"; do
 	fi
 	extra=$(LC_ALL=C comm -23 "$W/$b.seed" "$W/$b.whole")
 	missing=$(LC_ALL=C comm -13 "$W/$b.seed" "$W/$b.whole")
-	bad=$(printf '%s\n' "$missing" | grep -a ' v=1$' || true)
+	bad=$(printf '%s\n' "$missing" | grep -a ' v=1$' \
+		| grep -av '^SEEDPAR \(product\|instance\) ' || true)
 	nmiss=$(printf '%s' "$missing" | grep -ac '^SEEDPAR' || true)
 	if [ -n "$extra" ]; then
 		echo "check-pack-seed-parity: FAIL — $b: the seeded bind restored records the whole walk did not:" >&2

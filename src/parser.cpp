@@ -9896,6 +9896,7 @@ static void register_basic_class_pattern_method(
 	body.var = mvar;
 	body.method = method;
 	body.pack_poi = pgm.pack_current_poi();
+	body.pack_ctx = madc_pack_creation_ctx;
 	body.body_tokens = basic_class_pattern_substitute_tokens(pgm,
 	    binding, pattern.body_tokens);
 	body.definition_tokens = basic_class_pattern_substitute_tokens(pgm,
@@ -10376,9 +10377,13 @@ struct ClassInstInFlightGuard {
     Program &pgm;
     madc::dis::istring key;
     bool inserted;
+    // A pack freeze: what the body's instantiation makes belongs to this
+    // product (pack-slices design §4).
+    Program::PackCtxFrame pack_ctx;
     ClassInstInFlightGuard(Program &p, const madc::dis::istring &k,
 			   uint32_t template_id)
-	: pgm(p), key(k), inserted(p.class_inst_in_progress.insert(k).second)
+	: pgm(p), key(k), inserted(p.class_inst_in_progress.insert(k).second),
+	  pack_ctx(p, k, true)
     {
 	pgm.class_inst_template_ids.push_back(template_id);
 	// The body's own declarative region starts at this compound depth: a
@@ -11136,6 +11141,7 @@ TokenDataType *Program::instantiate_template_use(const madc::dis::istring &tname
     }
     if ( have != datatype_map.end() )
     {
+	pack_note_require(registered_mangled);	// a reuse: this context needs it too
 	TokenDataType *cached = (TokenDataType *)(*have);
 	DataDefCLASS *cached_class =
 	    dynamic_cast<DataDefCLASS *>(&cached->definition);
@@ -20607,6 +20613,7 @@ bool Program::bracket_dim_needs_runtime_value(
 uint64_t DataDef::canonical_spelling_gen = 0;
 thread_local bool madc_class_pattern_capture_active = false;
 thread_local uint32_t madc_pack_creation_poi = 0xffffffffu;
+thread_local madc::dis::istring madc_pack_creation_ctx;
 
 // The target's 64-bit data model (datadef.h) — host-derived default: the
 // hosted modes compile for the compiler that built them (the win64 madc.exe
@@ -28182,10 +28189,9 @@ Variable *Program::register_forest_func(const PendingForestFunc &pf)
     // it the restored Variable; MIR: "Repeated item declaration"). First-
     // wins, like the live insert. A method's spelling is empty: no-op.
     {
-	size_t at = pf.fd->overload_spelling.find("\x01@");
-	if ( at != madc::dis::istring::npos && !pf.fd->declaration_only )
+	madc::dis::istring inst_key = pf.fd->instantiation_identity();
+	if ( !pf.fd->declaration_only )
 	{
-	    madc::dis::istring inst_key = pf.fd->overload_spelling.substr(at + 2);
 	    if ( !inst_key.empty() && !fn_template_instantiated.count(inst_key) )
 	    {
 		fn_template_instantiated.insert(inst_key);
@@ -50205,6 +50211,7 @@ void Program::enqueue_deferred_function_body(Variable *var,
     body.var = var;
     body.method = method;
     body.pack_poi = pack_current_poi();
+    body.pack_ctx = madc_pack_creation_ctx;
     body.file = open ? open->file : NULL;
     body.line = open ? open->line : 0;
     body.column = open ? open->column : 0;
@@ -50422,6 +50429,48 @@ Program::PackPoiFrame::~PackPoiFrame()
     }
 }
 
+Program::PackCtxFrame::PackCtxFrame(Program &pp, const madc::dis::istring &key,
+				    bool enter)
+    : pushed(false)
+{
+    if ( !pp.pack_recording || key.empty() )
+	return;
+    if ( enter )
+	pp.pack_note_require(key);
+    saved = madc_pack_creation_ctx;
+    madc_pack_creation_ctx = key;
+    pushed = true;
+}
+
+Program::PackCtxFrame::~PackCtxFrame()
+{
+    if ( pushed )
+	madc_pack_creation_ctx = saved;
+}
+
+void Program::pack_note_require(const madc::dis::istring &product)
+{
+    if ( !pack_recording || product.empty() || product == madc_pack_creation_ctx )
+	return;
+    PackRequirement r;
+    r.product = product;
+    r.by = madc_pack_creation_ctx;
+    r.poi = 0xffffffffu;
+    if ( !r.by.empty() )
+    {
+	if ( !pack_required_by.insert(std::make_pair(r.product, r.by)).second )
+	    return;
+    }
+    else
+    {
+	r.poi = pack_current_poi();
+	if ( r.poi == 0xffffffffu
+	  || !pack_required_at.insert(std::make_pair(r.product, r.poi)).second )
+	    return;
+    }
+    pack_requirements.push_back(r);
+}
+
 void Program::parse_deferred_function_body(Program::DeferredFunctionBody &body)
 {
     if ( !body.var || !body.method )
@@ -50437,6 +50486,7 @@ void Program::parse_deferred_function_body(Program::DeferredFunctionBody &body)
     body.method->reset_hoisted_declarations();
 
     PackPoiFrame poi_frame(*this, body.pack_poi);
+    PackCtxFrame ctx_frame(*this, body.pack_ctx, false);
 
     madc::dis::istring saved_func = cur_func_name;
     madc::dis::istring saved_canon = instantiating_canonical_spelling;
@@ -50703,6 +50753,7 @@ TokenFunc *Program::parse_deferred_lazy_body(const madc::dis::istring &emit_symb
 	size_t saved_compounds = compounds.size();
 	size_t saved_class_scopes = class_scope_stack.size();
 	PackPoiFrame poi_frame(*this, body.pack_poi);
+	PackCtxFrame ctx_frame(*this, body.pack_ctx, false);
 	NestedTokenStream lazy_run(*this, body.definition_tokens,
 				   NestedTokenStream::Injected);
 	cur_func_name = body.var->name;
@@ -51350,6 +51401,7 @@ static bool try_parse_defaulted_member_template_constructor(
 	body.var = mvar;
 	body.method = static_cast<Method *>(mvar->data);
 	body.pack_poi = pgm.pack_current_poi();
+	body.pack_ctx = madc_pack_creation_ctx;
 	body.definition_tokens = definition_tokens;
 	body.full_definition = true;
 	body.file = ctor_name_tok ? ctor_name_tok->file : NULL;
@@ -61370,6 +61422,7 @@ void Program::register_outofline_member_instantiations(
 	body.var = mvar;
 	body.method = static_cast<Method *>(mvar->data);
 	body.pack_poi = pack_current_poi();
+	body.pack_ctx = madc_pack_creation_ctx;
 	body.definition_tokens = declarator_definition_tail(sub, mni, op);
 	if ( body.definition_tokens.empty() )
 	    continue;
@@ -65865,6 +65918,7 @@ static bool instantiate_fn_template_binding(Program &pgm,
 		if ( vi != pgm.fn_template_instantiated_vars.end() )
 		    *var_out = *vi;
 	    }
+	    pgm.pack_note_require(inst_key);	// a reuse: this context needs it too
 	    return true;
 	}
     }
@@ -65905,6 +65959,9 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	{ p.fn_template_inst_in_progress.insert(k); }
 	~InstLiveGuard() { p.fn_template_inst_in_progress.erase(k); }
     } _inst_live_guard(pgm, inst_key);
+    // A pack freeze: what this instance's instantiation makes belongs to it
+    // (pack-slices design §4).
+    Program::PackCtxFrame _pack_ctx(pgm, inst_key, true);
     size_t pre_ovset = 0;
     size_t pre_pending = pgm.pending_funcs.size();
     {
@@ -68875,8 +68932,9 @@ Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
 	if ( mi != member_fn_inst_names.end() )
 	{
 	    Variable *iv = findVariable(mi->second);
-	    if ( iv && dynamic_cast<FuncDef *>(iv->type) )
+	    if ( FuncDef *ifd = iv ? dynamic_cast<FuncDef *>(iv->type) : NULL )
 	    {
+		pack_note_require(ifd->instantiation_identity());	// a reuse
 		tc->mti_instance = iv;
 		return iv;
 	    }

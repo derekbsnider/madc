@@ -114,6 +114,19 @@ it (one owner, called at freeze and at bind):
   always list. This is the one semantic change: today an undecided record is
   restored for every closure; after, only when its creating unit is bound —
   what a live parse of the closure creates (Test 6 measured it correct).
+- **Instantiation products** (as built, 2026-10-14) — a class product or a
+  function-template instance is placed with every unit whose parse REQUIRES
+  it: the unit that created it, every unit that reused it (an instantiation
+  memo hit), and — through the requiring product — the units requiring the
+  instantiation whose class body, signature or method body made or reused it.
+  Not with its template's declarers: measured, the head rule gave a `<vector>`
+  bind ~6,600 records its own container lacks (`basic_string<char16_t>` and
+  its methods, made by `<string>`'s parse), 244M Ir against the own
+  container's 68.9M. The parser records this as it instantiates
+  (`Program::PackCtxFrame`, `pack_note_require`; `DataDef` / `Variable`
+  `pack_ctx` = the instantiation an entity was born in, which it rides). A
+  product no unit requires keeps the head rule. The keep predicate is
+  unchanged; placement only decides which binds visit the record.
 - **Namespace bindings / deferred bodies** — placed with the function or
   owner class they bind; inline-namespace links and namespace aliases in the
   always list.

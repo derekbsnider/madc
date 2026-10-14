@@ -4923,6 +4923,7 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
 	f.globals.push_back(g);
 	f.global_files.push_back(file);
 	f.global_poi.push_back(gv->pack_poi);
+	f.global_ctx.push_back(gv->pack_ctx);
     };
     // v39: the emitted symbol this Variable resolves to, VERBATIM. Live derived
     // it through whichever owner the entity's category has —
@@ -7190,6 +7191,21 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 		// v58: the seed index — what a bind of each unit visits and how
 		// it judges it (docs/plans/2026-10-13-pack-slices-design.md).
 		if (prog->pack_recording && TokenBase::_active_strpool) {
+			// Each slot's creation context, read off its entity (a
+			// synthesized slot has none), and the parse's requirements.
+			const uint32_t nslots = f.arena.def_slots();
+			f.slot_ctx.assign(nslots, madc::dis::istring());
+			for (uint32_t s = 0; s < nslots; ++s)
+				if (DataDef *dd = prog->type_from_id(madc::dis::arena_id_of(s)))
+					f.slot_ctx[s] = dd->pack_ctx;
+			f.requirements.clear();
+			for (const Program::PackRequirement &pr : prog->pack_requirements) {
+				cir_frozen_forest::requirement r;
+				r.product = pr.product;
+				r.by = pr.by;
+				r.poi = pr.poi;
+				f.requirements.push_back(r);
+			}
 			std::string seed_summary;
 			cir_forest_build_seeds(f, *TokenBase::_active_strpool,
 					       prog->forest_arena_poi,

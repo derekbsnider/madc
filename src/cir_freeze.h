@@ -1193,6 +1193,20 @@ struct cir_frozen_forest
 	// its Variable's point of creation (Variable::pack_poi).
 	std::vector<const char *> global_files;
 	std::vector<uint32_t>     global_poi;
+	// Transient (pack-slices design §4): each arena slot's and each global's
+	// creation context (DataDef / Variable::pack_ctx — the instantiation it
+	// was born in; empty = none), and the parse's instantiation requirements
+	// (Program::pack_requirements): `product` created or reused by the
+	// instantiation `by`, else (by empty) by the unit of the token `poi`.
+	struct requirement
+	{
+		madc::dis::istring product;
+		madc::dis::istring by;
+		uint32_t poi;
+	};
+	std::vector<madc::dis::istring> slot_ctx;
+	std::vector<madc::dis::istring> global_ctx;
+	std::vector<requirement>        requirements;
 	// Built by cir_forest_build_seeds; written as DECL_NAMES / SEEDS / RECORDABLE.
 	std::vector<uint8_t>  decl_names;
 	std::vector<uint32_t> seeds;
