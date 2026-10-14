@@ -209,6 +209,23 @@ it (one owner, called at freeze and at bind):
   135.8M. Open: a record the closure only NAMES (an `<iosfwd>` typedef of a
   product `<sstream>` instantiates) still restores complete through the
   typedef's pull (KG Gap `pack_restores_forward_named_product_complete`).
+  **Fixed (format 63, 2026-10-14):** SEEDS carries each class product's
+  DEFINERS (the units defining its template, by canonical template-id; 850
+  pairs). A product whose template no bound unit defines restores
+  DECLARED-ONLY when the closure only names it — listed where it was first
+  named, or reached through a typedef, a signature, a pointer or a reference:
+  allocated and registered, not filled, nothing it reaches chased. A
+  completeness-requiring reach (a member by value, a base) or a later
+  generation admits it whole, completed in place. With only `<iostream>`,
+  `std::stringbuf *` no longer converts to `std::streambuf *` (g++, clang++
+  and live pick the `void *` overload; tests/testpackforwardnamedproduct).
+  cxx_stl restores its 16 sstream / fstream products declared-only:
+  1,446.3M → 1,406.7M Ir, output identical; subscript 2,245.3M → 2,205.9M.
+  Still open: the TEMPLATE record restores with its body where the closure
+  only forward-declares it, so an ill-formed `std::stringbuf sb;` there
+  instantiates it and fails at the MIR link, where g++ rejects the
+  incomplete type (live madc accepts it — KG Gap
+  `sizeof_incomplete_struct_accepted`).
 - **Namespace bindings / deferred bodies** — placed with the function or
   owner class they bind; inline-namespace links and namespace aliases in the
   always list.

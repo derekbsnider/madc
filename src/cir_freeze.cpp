@@ -3390,9 +3390,32 @@ void CirFrozenForest::materialize_pass()
 	// rule). Inactive filter = passes below skip the admitted check.
 	std::set<uint32_t> admitted;
 	std::set<uint32_t> pulled_enums;
+	// Admitted DECLARED-ONLY (format 63): a class product the bound closure
+	// only NAMES — listed where it was first named, or reached through a
+	// typedef, a signature, a pointer or a reference — whose template no
+	// bound unit defines (ForestSeeds::definers). A live
+	// parse of that closure has it declared, never defined (<iosfwd>'s
+	// stringbuf without <sstream>): it is allocated and registered, not
+	// filled, and nothing it reaches is chased. A completeness-requiring
+	// reach (a member by value, a base) admits it whole.
+	std::set<uint32_t> named_only;
+	auto names_only = [&](uint32_t tid) -> bool {
+		if (!_mat_filter.active || sd.empty()
+		    || !madc::dis::arena_id_is_project(tid))
+			return false;
+		ForestSeeds::Run dr = sd.definers(madc::dis::arena_slot_of(tid));
+		if (!dr.n)
+			return false;
+		for (uint32_t k = 0; k < dr.n; ++k)
+			if (_mat_filter.bound_units.count(dr.p[k]))
+				return false;
+		return true;
+	};
 	if (_mat_filter.active) {
 		std::vector<uint32_t> work;	// admitted aggregates to expand
-		std::vector<uint32_t> tq;	// type-ids whose chains to chase
+		std::vector<uint32_t> tq;	// type-ids whose chains to chase: the
+						// referent must be complete
+		std::vector<uint32_t> tq_named;	// ... where a declaration suffices
 		for (size_t i = 0; i < agg_ids.size(); ++i) {
 			uint32_t tid = agg_ids[i];
 			if (!recordable.count(tid))
@@ -3414,7 +3437,12 @@ void CirFrozenForest::materialize_pass()
 					    r.ns_id ? a.c_str(r.ns_id) : "-",
 					    r.canon_id ? a.c_str(r.canon_id) : "-"));
 				admitted.insert(tid);
-				work.push_back(tid);
+				// Listed where it was first NAMED (its point of
+				// creation) yet defined by no bound unit: declared.
+				if (names_only(tid))
+					named_only.insert(tid);
+				else
+					work.push_back(tid);
 			}
 		}
 		// Every OTHER kept restore surface seeds the chase too: pre-2a its
@@ -3441,7 +3469,7 @@ void CirFrozenForest::materialize_pass()
 					    r.name_id ? a.c_str(r.name_id) : "-",
 					    r.ns_id ? a.c_str(r.ns_id) : "-",
 					    (unsigned)r.flags));
-				tq.push_back(r.ref0);
+				tq_named.push_back(r.ref0);
 			}
 		}
 		for (size_t bi = 0; bi < free_func_slots.size(); ++bi) {
@@ -3477,11 +3505,11 @@ void CirFrozenForest::materialize_pass()
 					    r.disp_id ? a.c_str(r.disp_id) : "-",
 					    r.ns_id ? a.c_str(r.ns_id) : "-",
 					    (unsigned)r.flags));
-				tq.push_back(r.ref0);
+				tq_named.push_back(r.ref0);
 				for (uint32_t p = 0; p < r.params_count; ++p) {
 					madc::dis::paramrec pr;
 					if (a.get_payload(r.params_begin, p, pr))
-						tq.push_back(pr.type_id);
+						tq_named.push_back(pr.type_id);
 				}
 			}
 		}
@@ -3518,20 +3546,29 @@ void CirFrozenForest::materialize_pass()
 			if (verdict_str(key, ns) > 0)
 				tq.push_back(t.owner_type_id);
 		}
-		auto admit_agg = [&](uint32_t tid) {
-			if (recordable.count(tid) && !admitted.count(tid)) {
-				DBG({
-					madc::dis::defrec ar;
-					if (a.get_def_at(tid, ar))
-						fprintf(stderr,
-							"forest admit pull name=%s\n",
-							ar.name_id ? a.c_str(ar.name_id)
-								   : "-");
-				});
-				admitted.insert(tid);
-				work.push_back(tid);
-				par_carry_tid(tid);
+		auto admit_agg = [&](uint32_t tid, bool need_complete) {
+			if (!recordable.count(tid))
+				return;
+			if (admitted.count(tid)) {
+				if (need_complete && named_only.erase(tid))
+					work.push_back(tid);
+				return;
 			}
+			DBG({
+				madc::dis::defrec ar;
+				if (a.get_def_at(tid, ar))
+					fprintf(stderr,
+						"forest admit pull name=%s\n",
+						ar.name_id ? a.c_str(ar.name_id)
+							   : "-");
+			});
+			admitted.insert(tid);
+			par_carry_tid(tid);
+			if (!need_complete && names_only(tid)) {
+				named_only.insert(tid);
+				return;
+			}
+			work.push_back(tid);
 		};
 		// A callable's signature (a fn-ptr's, a member-function pointer's):
 		// its return and parameter types join the chase.
@@ -3540,18 +3577,20 @@ void CirFrozenForest::materialize_pass()
 			if (!func_tid || !a.get_def_at(func_tid, fr)
 			    || fr.kind != madc::dis::DK_FUNC)
 				return;
-			tq.push_back(fr.ref0);
+			tq_named.push_back(fr.ref0);
 			for (uint32_t p = 0; p < fr.params_count; ++p) {
 				madc::dis::paramrec pr;
 				if (a.get_payload(fr.params_begin, p, pr))
-					tq.push_back(pr.type_id);
+					tq_named.push_back(pr.type_id);
 			}
 		};
 		auto drain_pulls = [&]() {
-		while (!work.empty() || !tq.empty()) {
-			if (!tq.empty()) {
-				uint32_t tid = tq.back();
-				tq.pop_back();
+		while (!work.empty() || !tq.empty() || !tq_named.empty()) {
+			if (!tq.empty() || !tq_named.empty()) {
+				bool need_complete = !tq.empty();
+				std::vector<uint32_t> &q = need_complete ? tq : tq_named;
+				uint32_t tid = q.back();
+				q.pop_back();
 				for (int depth = 0; depth < 64 && tid; ++depth) {
 					if (madc::dis::arena_id_is_pinned(tid))
 						break;
@@ -3562,13 +3601,18 @@ void CirFrozenForest::materialize_pass()
 					    || r.kind == madc::dis::DK_REF
 					    || r.kind == madc::dis::DK_CONST
 					    || r.kind == madc::dis::DK_CARRAY) {
+						// Through a pointer or reference a
+						// declaration suffices.
+						if (r.kind == madc::dis::DK_PTR
+						    || r.kind == madc::dis::DK_REF)
+							need_complete = false;
 						tid = r.ref0;
 						continue;
 					}
 					if (r.kind == madc::dis::DK_STRUCT
 					    || r.kind == madc::dis::DK_UNION
 					    || r.kind == madc::dis::DK_CLASS)
-						admit_agg(tid);
+						admit_agg(tid, need_complete);
 					else if (r.kind == madc::dis::DK_ENUM) {
 						pulled_enums.insert(tid);
 						par_carry_tid(tid);
@@ -3580,11 +3624,11 @@ void CirFrozenForest::materialize_pass()
 						// resolved one) and the member type or
 						// signature.
 						if (r.body_unit)
-							tq.push_back(r.body_unit);
+							tq_named.push_back(r.body_unit);
 						if (r.flags & madc::dis::DF_MEMBERPTR_FUNCTION)
 							pull_signature(r.ref0);
 						else
-							tq.push_back(r.ref0);
+							tq_named.push_back(r.ref0);
 					}
 					break;
 				}
@@ -3603,12 +3647,12 @@ void CirFrozenForest::materialize_pass()
 			for (uint32_t b = 0; b < r.bases_count; ++b) {
 				madc::dis::baserec br;
 				if (a.get_payload(r.bases_begin, b, br))
-					admit_agg(br.base_id);
+					admit_agg(br.base_id, true);
 			}
 			for (uint32_t g = 0; g < r.anon_count; ++g) {
 				madc::dis::anonrec ar;
 				if (a.get_payload(r.anon_begin, g, ar))
-					admit_agg(ar.sub_type_id);
+					admit_agg(ar.sub_type_id, true);
 			}
 			for (uint32_t m = 0; m < r.methods_count; ++m) {
 				madc::dis::methodrec mr;
@@ -3618,11 +3662,11 @@ void CirFrozenForest::materialize_pass()
 				    || !a.get_def_at(mr.func_id, fr)
 				    || fr.kind != madc::dis::DK_FUNC)
 					continue;
-				tq.push_back(fr.ref0);
+				tq_named.push_back(fr.ref0);
 				for (uint32_t p = 0; p < fr.params_count; ++p) {
 					madc::dis::paramrec pr;
 					if (a.get_payload(fr.params_begin, p, pr))
-						tq.push_back(pr.type_id);
+						tq_named.push_back(pr.type_id);
 				}
 			}
 		}
@@ -3650,6 +3694,8 @@ void CirFrozenForest::materialize_pass()
 			bool pushed = false;
 			for (std::set<uint32_t>::const_iterator it = admitted.begin();
 			     it != admitted.end(); ++it) {
+				if (named_only.count(*it))
+					continue;	// a declaration has no dependents
 				if (!deps_done.insert(*it).second)
 					continue;
 				ForestSeeds::Run dr =
@@ -3746,6 +3792,10 @@ void CirFrozenForest::materialize_pass()
 	// S2: this generation's fresh aggregate allocations — pass 2 fills
 	// exactly these (earlier generations already filled theirs).
 	std::set<uint32_t> fresh_aggs;
+	// A declared-only product an earlier generation registered that this one
+	// admits whole: filled in place (live completes a declared class at its
+	// definition), registered once.
+	std::set<uint32_t> completing;
 	// Under a filter: the admitted set (seeds plus every pull, which can
 	// reach past the candidate lists); ascending tids = slot order.
 	std::vector<uint32_t> admitted_ids(admitted.begin(), admitted.end());
@@ -3755,14 +3805,21 @@ void CirFrozenForest::materialize_pass()
 		uint32_t tid = pass1_ids[i];
 		if (!recordable.count(tid))
 			continue;
-		if (by_id.count(tid))
+		if (by_id.count(tid)) {
+			if (!named_only.count(tid) && _named_only.erase(tid)) {
+				fresh_aggs.insert(tid);
+				completing.insert(tid);
+			}
 			continue;	// built by an earlier generation
+		}
 		madc::dis::defrec r;
 		if (!a.get_def_at(tid, r))
 			continue;
 		const char *nm = r.name_id ? a.c_str(r.name_id) : NULL;
 		if (!nm || !*nm)
 			continue;
+		if (named_only.count(tid))
+			_named_only.insert(tid);
 		// Env-gated probe (MADC_MTI_PROBE_CLASS=<substr>): every pass-1
 		// aggregate allocation for a matching name — the duplicate-record
 		// diagnostic (two tids for one name = producer identity split).
@@ -3878,6 +3935,35 @@ void CirFrozenForest::materialize_pass()
 	// class extras + methods under the v6 selection rules.
 	// This generation's fresh allocations, ascending (earlier generations
 	// already filled theirs).
+	// The consumer-visible surface of a filled (or declared-only) aggregate:
+	// a CirRestoredType, once per record.
+	auto register_aggregate = [&](uint32_t tid, const madc::dis::defrec &r,
+				      DataDefSTRUCT *sdd) {
+		if (completing.count(tid))
+			return;		// registered by the generation that declared it
+		if (r.flags & madc::dis::DF_IS_ANONYMOUS)
+			return;		// nameless sub-aggregate: never surfaced standalone
+		if (r.flags & madc::dis::DF_TU_ROOT_ORIGIN)
+			return;		// v24: the program's own type — the forest holds
+					// #include state only; the consumer parses it fresh
+					// (the object stays in by_id for cross-refs +
+					// run-frozen's closure)
+		CirRestoredType rt;
+		rt.name       = a.c_str(r.name_id);
+		rt.kind       = r.kind == madc::dis::DK_CLASS ? CIR_TYPEK_CLASS
+			      : (r.kind == madc::dis::DK_UNION ? CIR_TYPEK_UNION
+							       : CIR_TYPEK_STRUCT);
+		rt.dd         = sdd;
+		rt.underlying = NULL;
+		rt.ns         = r.ns_id ? a.c_str(r.ns_id) : NULL;
+		rt.flat_alias = false;
+		rt.tag_alias  = false;
+		_restored.push_back(rt);
+		if (par_on)
+			_par_via.types.push_back(par_label(par_listed_slots, par_carried_slots,
+							   madc::dis::arena_slot_of(tid)));
+	};
+	static const char *named_only_probe = ::getenv("MADC_NAMED_ONLY_PROBE");
 	for (std::set<uint32_t>::const_iterator fi = fresh_aggs.begin();
 	     fi != fresh_aggs.end(); ++fi) {
 		uint32_t tid = *fi;
@@ -3890,6 +3976,25 @@ void CirFrozenForest::materialize_pass()
 		madc::dis::defrec r;
 		if (!a.get_def_at(tid, r))
 			continue;
+		if (named_only.count(tid)) {
+			// Declared, never defined: the incomplete class a live parse
+			// of this closure holds — its identity (name, canonical
+			// template-id spelling), no layout, no members.
+			if (named_only_probe && *named_only_probe == '1')
+				fprintf(stderr, "NAMEDONLY %s\n",
+					r.canon_id ? a.c_str(r.canon_id) : a.c_str(r.name_id));
+			sdd->size = 0;
+			sdd->is_complete = false;
+			if (r.canon_id)
+				if (const char *cs = a.c_str(r.canon_id))
+					sdd->set_canonical_spelling(cs);
+			if (DataDefCLASS *cdd = dynamic_cast<DataDefCLASS *>(sdd))
+				cdd->from_system_header =
+					(r.flags & madc::dis::DF_FROM_SYSTEM_HDR) != 0;
+			sdd->type_id = 0;
+			register_aggregate(tid, r, sdd);
+			continue;
+		}
 		bool ok = true;
 		madc::dis::istring fill_why;
 		for (uint32_t m = 0; m < r.members_count; ++m) {
@@ -4471,27 +4576,7 @@ void CirFrozenForest::materialize_pass()
 					(int64_t)(((uint64_t)cr.val_hi << 32) | cr.val_lo);
 			}
 		}
-		if (r.flags & madc::dis::DF_IS_ANONYMOUS)
-			continue;	// nameless sub-aggregate: never surfaced standalone
-		if (r.flags & madc::dis::DF_TU_ROOT_ORIGIN)
-			continue;	// v24: the program's own type — the forest holds
-					// #include state only; the consumer parses it fresh
-					// (the object stays in by_id for cross-refs +
-					// run-frozen's closure)
-		CirRestoredType rt;
-		rt.name       = a.c_str(r.name_id);
-		rt.kind       = r.kind == madc::dis::DK_CLASS ? CIR_TYPEK_CLASS
-			      : (r.kind == madc::dis::DK_UNION ? CIR_TYPEK_UNION
-							       : CIR_TYPEK_STRUCT);
-		rt.dd         = sdd;
-		rt.underlying = NULL;
-		rt.ns         = r.ns_id ? a.c_str(r.ns_id) : NULL;
-		rt.flat_alias = false;
-		rt.tag_alias  = false;
-		_restored.push_back(rt);
-		if (par_on)
-			_par_via.types.push_back(par_label(par_listed_slots, par_carried_slots,
-							   madc::dis::arena_slot_of(tid)));
+		register_aggregate(tid, r, sdd);
 	}
 
 	// Post-pass: bind the staged using-decl method imports to the definer's

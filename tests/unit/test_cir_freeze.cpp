@@ -3412,3 +3412,33 @@ TEST_CASE("NULL-init pointer + uninitialized file-scope globals restore") {
 	CHECK(saw_req);
 	CHECK(saw_calls);
 }
+
+TEST_CASE("v63: SEEDS carries each class product's definers, read by equal range") {
+	// One list (the always list), no seeds, no dependents; definer pairs
+	// (slot 3 -> units 1, 2), (slot 7 -> unit 0).
+	const uint32_t w[] = {
+		1,		// L
+		0, 0,		// arena_off
+		0, 0,		// tmpl_off
+		0, 0,		// glob_off
+		0,		// D
+		3,		// E
+		3, 3, 7,	// def_slot
+		1, 2, 0		// def_unit
+	};
+	ForestSeeds sd;
+	REQUIRE(sd.bind(w, sizeof(w) / sizeof(w[0])));
+	ForestSeeds::Run r = sd.definers(3);
+	REQUIRE(r.n == 2u);
+	CHECK(r.p[0] == 1u);
+	CHECK(r.p[1] == 2u);
+	r = sd.definers(7);
+	REQUIRE(r.n == 1u);
+	CHECK(r.p[0] == 0u);
+	CHECK(sd.definers(4).n == 0u);		// not a product
+	CHECK(sd.definers(99).n == 0u);
+	CHECK(sd.dependents(3).n == 0u);
+	// A truncated definer table is malformed, never a short read.
+	CHECK_FALSE(sd.bind(w, sizeof(w) / sizeof(w[0]) - 1));
+	CHECK_FALSE(sd.bind(w, 9));
+}

@@ -162,6 +162,13 @@ bool ForestSeeds::bind(const uint32_t *w, size_t words)
 		return false;
 	const uint32_t *dep_owner = w + at; at += d;
 	const uint32_t *dep_item = w + at; at += d;
+	if (words < at + 1)
+		return false;
+	const uint32_t e = w[at++];
+	if (words < at + 2 * (size_t)e)
+		return false;
+	const uint32_t *def_slot = w + at; at += e;
+	const uint32_t *def_unit = w + at; at += e;
 	if (aoff[0] || toff[0] || goff[0])
 		return false;
 	for (uint32_t i = 0; i < l; ++i)
@@ -173,6 +180,7 @@ bool ForestSeeds::bind(const uint32_t *w, size_t words)
 	_l = l;
 	_aoff = aoff; _toff = toff; _goff = goff;
 	_d = d; _dep_owner = dep_owner; _dep_item = dep_item;
+	_e = e; _def_slot = def_slot; _def_unit = def_unit;
 	_ids = w + at;
 	_nids = (uint32_t)nids;
 	return true;
@@ -196,6 +204,18 @@ ForestSeeds::Run ForestSeeds::dependents(uint32_t owner_slot) const
 	const uint32_t *b = std::lower_bound(_dep_owner, _dep_owner + _d, owner_slot);
 	const uint32_t *e = std::upper_bound(b, _dep_owner + _d, owner_slot);
 	r.p = _dep_item + (b - _dep_owner);
+	r.n = (uint32_t)(e - b);
+	return r;
+}
+
+ForestSeeds::Run ForestSeeds::definers(uint32_t slot) const
+{
+	Run r = { NULL, 0 };
+	if (!_e)
+		return r;
+	const uint32_t *b = std::lower_bound(_def_slot, _def_slot + _e, slot);
+	const uint32_t *e = std::upper_bound(b, _def_slot + _e, slot);
+	r.p = _def_unit + (b - _def_slot);
 	r.n = (uint32_t)(e - b);
 	return r;
 }
@@ -467,8 +487,8 @@ void cir_forest_build_seeds(cir_frozen_forest &f, const madc::dis::intern_table 
 	// product's record carries its canonical template-id. NULL = unknown
 	// (no filter).
 	std::map<madc::dis::istring, const std::vector<uint32_t> *> def_memo;
-	size_t req_unknown = 0, req_dropped = 0;	// the census: keys no defining
-							// template names, requirers dropped
+	size_t req_dropped = 0;				// the census: requirers dropped,
+	std::set<madc::dis::istring> req_unknown_keys;	// keys no defining template names
 	auto template_units_of = [&](const madc::dis::istring &k) -> const std::vector<uint32_t> * {
 		std::map<madc::dis::istring, const std::vector<uint32_t> *>::const_iterator mi =
 			def_memo.find(k);
@@ -491,14 +511,14 @@ void cir_forest_build_seeds(cir_frozen_forest &f, const madc::dis::intern_table 
 				units = &di->second;
 		}
 		def_memo[k] = units;
-		if (!units)
-			++req_unknown;
 		return units;
 	};
 	auto closure_defines = [&](const madc::dis::istring &k, uint32_t u) -> bool {
 		const std::vector<uint32_t> *du = template_units_of(k);
-		if (!du)
+		if (!du) {
+			req_unknown_keys.insert(k);
 			return true;
+		}
 		const uint64_t *row = &reach[(size_t)u * rwords];
 		for (size_t i = 0; i < du->size(); ++i)
 			if ((row[(*du)[i] >> 6] >> ((*du)[i] & 63)) & 1)
@@ -942,6 +962,26 @@ void cir_forest_build_seeds(cir_frozen_forest &f, const madc::dis::intern_table 
 	finish(L.glob, goff, gids);
 	std::sort(L.deps.begin(), L.deps.end());
 	L.deps.erase(std::unique(L.deps.begin(), L.deps.end()), L.deps.end());
+	// A class product's DEFINERS (format 63): the units defining its template,
+	// by its canonical template-id. A bind whose closure holds none of them
+	// restores a product the closure only NAMES (a typedef, a signature, a
+	// pointer) the way a live parse of that closure has it — declared, never
+	// defined (<iosfwd>'s stringbuf without <sstream>).
+	std::vector<std::pair<uint32_t, uint32_t> > defs;
+	for (uint32_t s = 0; s < nslots; ++s) {
+		madc::dis::defrec r;
+		if (!a.get_def_at(madc::dis::arena_id_of(s), r) || !r.canon_id
+		    || (r.kind != madc::dis::DK_STRUCT && r.kind != madc::dis::DK_UNION
+			&& r.kind != madc::dis::DK_CLASS))
+			continue;
+		const std::vector<uint32_t> *du =
+			template_units_of(madc::dis::istring(a.strings.c_str(r.canon_id)));
+		if (du)
+			for (size_t i = 0; i < du->size(); ++i)
+				defs.push_back(std::make_pair(s, (*du)[i]));
+	}
+	std::sort(defs.begin(), defs.end());
+	defs.erase(std::unique(defs.begin(), defs.end()), defs.end());
 	std::vector<uint32_t> &w = f.seeds;
 	w.clear();
 	w.push_back(nl);
@@ -953,6 +993,11 @@ void cir_forest_build_seeds(cir_frozen_forest &f, const madc::dis::intern_table 
 		w.push_back(L.deps[i].first);
 	for (size_t i = 0; i < L.deps.size(); ++i)
 		w.push_back(L.deps[i].second);
+	w.push_back((uint32_t)defs.size());
+	for (size_t i = 0; i < defs.size(); ++i)
+		w.push_back(defs[i].first);
+	for (size_t i = 0; i < defs.size(); ++i)
+		w.push_back(defs[i].second);
 	w.insert(w.end(), aids.begin(), aids.end());
 	w.insert(w.end(), tids.begin(), tids.end());
 	w.insert(w.end(), gids.begin(), gids.end());
@@ -961,10 +1006,10 @@ void cir_forest_build_seeds(cir_frozen_forest &f, const madc::dis::intern_table 
 	// of creation / always / as owner dependents / never visited / and how
 	// many joined the units requiring them (instantiation requirements).
 	char buf[160];
-	snprintf(buf, sizeof(buf), "%u names, %zu+%zu+%zu seeds (always %u/%u/%u), %zu dependents, %zu recordable",
+	snprintf(buf, sizeof(buf), "%u names, %zu+%zu+%zu seeds (always %u/%u/%u), %zu dependents, %zu definers, %zu recordable",
 		 dn.size(), aids.size(), tids.size(), gids.size(),
 		 aoff[nl] - aoff[nl - 1], toff[nl] - toff[nl - 1], goff[nl] - goff[nl - 1],
-		 L.deps.size(), recordable.size());
+		 L.deps.size(), defs.size(), recordable.size());
 	summary = buf;
 	for (std::map<madc::dis::istring, SeedCensus>::const_iterator it = census.begin();
 	     it != census.end(); ++it) {
@@ -974,6 +1019,6 @@ void cir_forest_build_seeds(cir_frozen_forest &f, const madc::dis::intern_table 
 		summary += buf;
 	}
 	snprintf(buf, sizeof(buf), "; requirements %zu dropped outside the defining closure, %zu keys unfiltered",
-		 req_dropped, req_unknown);
+		 req_dropped, req_unknown_keys.size());
 	summary += buf;
 }

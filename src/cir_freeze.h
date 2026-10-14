@@ -639,7 +639,14 @@ bool cir_freeze_read(const madc::dis::snapshot_reader &r, uint32_t seg_id_base,
 // — Program::forest_adoption_decline, judged at freeze; the decl entry's
 // PACK_DECL_ADOPTABLE), so a live compile's probe of any other name (a
 // header's __builtin_memset asks for memset) no longer opens the pack.
-enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 62 };
+//
+// v63: SEEDS carries each class product's DEFINERS (the units defining its
+// template, by canonical template-id). A product the bound closure only
+// names — a typedef, a signature, a pointer — whose template no bound unit
+// defines restores DECLARED-ONLY, as a live parse of that closure has it
+// (<iosfwd>'s stringbuf without <sstream>); a later generation that admits
+// it whole completes it in place.
+enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 63 };
 // Flags word of a SNAP_KIND_CIR_BRANCH_DEPS tuple.
 enum : uint32_t {
 	CIR_BRANCH_DEP_DEFINED   = 1u,	// the macro was defined at the consult
@@ -851,6 +858,9 @@ private:
 //                      DK_DEFBODY / DK_NSBIND keyed by the owner's method),
 //                      kind 1 a template-record index, kind 2 a global-record
 //                      index (a namespace-scope Variable that IS a method)
+//   E                  (format 63) product-definer pairs
+//   def_slot[E]        a class product's ARENA SLOT, ascending
+//   def_unit[E]        a unit defining its template (by canonical template-id)
 //   arena slots, template indices, global indices (the runs, concatenated)
 // A dependent restores exactly when its owner class does, so it is visited
 // from the owner (admitted by seed or by pull), never from a list.
@@ -861,7 +871,7 @@ class ForestSeeds
 public:
 	struct Run { const uint32_t *p; uint32_t n; };
 	ForestSeeds() : _l(0), _aoff(0), _toff(0), _goff(0), _d(0), _dep_owner(0),
-			_dep_item(0), _ids(0), _nids(0) {}
+			_dep_item(0), _e(0), _def_slot(0), _def_unit(0), _ids(0), _nids(0) {}
 	bool bind(const uint32_t *w, size_t words);	// validated; false = malformed
 	bool empty() const { return _l == 0; }
 	uint32_t lists() const { return _l; }
@@ -871,12 +881,17 @@ public:
 	Run globals(uint32_t list) const   { return run(_goff, list, _aoff[_l] + _toff[_l]); }
 	// The dependents of an owner arena slot (equal range of dep_owner).
 	Run dependents(uint32_t owner_slot) const;
+	// The units defining a class product's template (equal range of
+	// def_slot; n = 0: not a product, or its template is unknown).
+	Run definers(uint32_t slot) const;
 private:
 	Run run(const uint32_t *off, uint32_t list, uint32_t base) const;
 	uint32_t        _l;
 	const uint32_t *_aoff, *_toff, *_goff;
 	uint32_t        _d;
 	const uint32_t *_dep_owner, *_dep_item;
+	uint32_t        _e;
+	const uint32_t *_def_slot, *_def_unit;
 	const uint32_t *_ids;
 	uint32_t        _nids;
 };
@@ -1876,6 +1891,10 @@ class CirFrozenForest
 	std::set<size_t> _mat_done_globals;
 	std::set<size_t> _mat_done_templates;
 	std::map<uint32_t, Variable *> _method_by_func_id;
+	// Aggregates restored DECLARED-ONLY (format 63: a product the closure
+	// only names, its template defined by no bound unit) and not yet
+	// completed: a later generation that admits one whole fills it in place.
+	std::set<uint32_t> _named_only;
 	// The pass engine both entry points share: runs every materialization
 	// pass under the CURRENT _mat_filter, skipping records earlier
 	// generations built (the guards above).

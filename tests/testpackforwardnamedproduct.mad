@@ -1,0 +1,18 @@
+// <iostream> NAMES std::stringbuf (<iosfwd>'s typedef of basic_stringbuf<char>)
+// but does not define it: the template's body is <sstream>'s. So the class is
+// incomplete here, no conversion to its base std::streambuf* is known, and the
+// call picks f(void *). g++ and clang++ (-std=c++17) both print "void", as
+// does madc's live parse. A pack bind printed "streambuf": the pack was frozen
+// with <sstream> instantiated, and the typedef pulled the product's complete
+// record (format 63 restores it declared-only).
+#include <iostream>
+
+static const char *f(std::streambuf *) { return "streambuf"; }
+static const char *f(void *) { return "void"; }
+
+int main()
+{
+	std::stringbuf *p = nullptr;
+	std::cout << f(p) << "\n";
+	return 0;
+}
