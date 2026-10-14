@@ -7650,6 +7650,7 @@ int madc_cir_dump_forest(const char *container_path)
 		printf("ppexport\t%s\t%s\t%s\n", uname ? uname : "?",
 		       tag == Program::PackMacroEvent::peUndef ? "undef"
 		       : tag == Program::PackMacroEvent::peDefineFn ? "define-fn"
+		       : tag == Program::PackMacroEvent::peImport ? "import"
 		       : "define",
 		       nm ? nm : "?");
 		k += 5 + nparams;

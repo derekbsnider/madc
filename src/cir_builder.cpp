@@ -34433,30 +34433,52 @@ void CirBuilder::synth_call_shims(Program *prog,
 // could link — tests/testdlopen's old exe_skip). LIB is the TARGET spelling
 // the module map chose at compile time; MEMBER the source member name.
 // -----------------------------------------------------------------------
+// The runtime resolver every dyn-module slot is assigned from — the shape
+// cir_collect_dyn_module_slots recognizes in a LOADED body.
+static const char *const k_dyn_module_resolver = "__madc_dl_member";
+
+// `static void *SLOT;` rides the extern-declaration flush: the same map, the
+// same splice into the unit's top level, the same referenced-surface filter
+// (cond_mark_sym keys it by the slot name the call references). Operand
+// layout mirrors need_output_extern's proto: specs, declarator, three ignores
+// (the last is the absent initializer). Declared by dyn_module_callee at the
+// lowering site, and for a LOADED forest body (declare_loaded_body_slots),
+// whose pre-built calls never pass it.
+void CirBuilder::declare_dyn_module_slot(const madc::dis::istring &slot, TokenBase *origin)
+{
+	if (m_output_externs.count(slot))
+		return;
+	node_t specs = list();
+	append(specs, simple(N_STATIC));
+	append(specs, simple(N_VOID));
+	node_t sd = simple(N_SPEC_DECL, origin);
+	append(sd, node1(N_SHARE, specs));
+	append(sd, node2(N_DECL, id(slot.c_str(), origin),
+			 node1(N_LIST, pointer())));
+	append(sd, ignore());
+	append(sd, ignore());
+	append(sd, ignore());
+	m_output_externs[slot] = sd;
+}
+
+// A loaded forest body's dyn-module calls carry their slot assignments
+// pre-built (a dialect fragment's wrapper over its imported LAZY module):
+// declare each slot as the lowering site would have.
+void CirBuilder::declare_loaded_body_slots(node_t body)
+{
+	std::set<madc::dis::istring> slots;
+	cir_collect_dyn_module_slots(body, slots);
+	for (std::set<madc::dis::istring>::const_iterator it = slots.begin();
+	     it != slots.end(); ++it)
+		declare_dyn_module_slot(*it, NULL);
+}
+
 node_t CirBuilder::dyn_module_callee(FuncDef *fd, const madc::dis::istring &callee_name,
 				     TokenBase *origin)
 {
 	madc::dis::istring slot = callee_name + "_slot";
-	if (!m_output_externs.count(slot)) {
-		// `static void *SLOT;` rides the extern-declaration flush: the
-		// same map, the same splice into the unit's top level, the same
-		// referenced-surface filter (cond_mark_sym keys it by the slot
-		// name the call below references). Operand layout mirrors
-		// need_output_extern's proto: specs, declarator, three ignores
-		// (the last is the absent initializer).
-		node_t specs = list();
-		append(specs, simple(N_STATIC));
-		append(specs, simple(N_VOID));
-		node_t sd = simple(N_SPEC_DECL, origin);
-		append(sd, node1(N_SHARE, specs));
-		append(sd, node2(N_DECL, id(slot.c_str(), origin),
-				 node1(N_LIST, pointer())));
-		append(sd, ignore());
-		append(sd, ignore());
-		append(sd, ignore());
-		m_output_externs[slot] = sd;
-	}
-	need_output_extern("__madc_dl_member", true,
+	declare_dyn_module_slot(slot, origin);
+	need_output_extern(k_dyn_module_resolver, true,
 			   { { {N_CHAR}, true }, { {N_CHAR}, true } });
 	// N_STR len counts the terminating NUL (the str() contract every other
 	// literal mint follows: strlen + 1).
@@ -34465,7 +34487,7 @@ node_t CirBuilder::dyn_module_callee(FuncDef *fd, const madc::dis::istring &call
 			 fd->dyn_module_library.size() + 1, origin));
 	append(args, str(fd->dyn_module_member.c_str(),
 			 fd->dyn_module_member.size() + 1, origin));
-	node_t resolve = node2(N_CALL, id("__madc_dl_member", origin), args, origin);
+	node_t resolve = node2(N_CALL, id(k_dyn_module_resolver, origin), args, origin);
 	node_t assign = node2(N_ASSIGN, id(slot.c_str(), origin), resolve, origin);
 	node_t pick = node3(N_COND, id(slot.c_str(), origin),
 			    id(slot.c_str(), origin), assign, origin);
@@ -36211,6 +36233,7 @@ node_t CirBuilder::translate_module(Program *prog)
 				// attribute (live registers it at the lowering site,
 				// which a pre-built loaded body never runs).
 				cir_collect_cleanup_attr_fns(bn, callees);
+				declare_loaded_body_slots(bn);
 				// v25: a fn referenced as a CALL ARGUMENT in the loaded
 				// body (`__stoa(strtod, ...)` — decayed bare N_ID, or
 				// `&f`). Live's argument lowering declares it via
@@ -37425,6 +37448,7 @@ node_t CirBuilder::translate_module(Program *prog)
 			cir_collect_call_callees(body->as_node(), callees);
 			// Sibling bound dtors referenced only via cleanup attrs.
 			cir_collect_cleanup_attr_fns(body->as_node(), callees);
+			declare_loaded_body_slots(body->as_node());
 			for (std::set<madc::dis::istring>::iterator ci = callees.begin();
 			     ci != callees.end(); ++ci) {
 				const madc::dis::istring &ck = prog->body_registration_key(*ci);
@@ -37903,6 +37927,31 @@ void cir_collect_addr_fn_refs(node_t n, std::set<madc::dis::istring> &out)
 			node_t op = c2mir_node_op(n, i);
 			if (!op) break;
 			cir_collect_addr_fn_refs(op, out);
+		}
+}
+
+// Collect the slot of every dyn-module call in the tree: the N_ID a
+// `SLOT = __madc_dl_member(LIB, MEMBER)` assignment writes
+// (CirBuilder::dyn_module_callee's shape). FOREST materialization sites only:
+// a loaded body's pre-built call never passes the lowering site that declares
+// its slot (declare_loaded_body_slots).
+void cir_collect_dyn_module_slots(node_t n, std::set<madc::dis::istring> &out)
+{
+	if (!n) return;
+	if (n->code == N_ASSIGN) {
+		node_t lhs = c2mir_node_op(n, 0);
+		node_t rhs = c2mir_node_op(n, 1);
+		node_t callee = rhs && rhs->code == N_CALL ? c2mir_node_op(rhs, 0) : NULL;
+		if (lhs && lhs->code == N_ID && lhs->u.s.s
+		    && callee && callee->code == N_ID && callee->u.s.s
+		    && !strcmp(callee->u.s.s, k_dyn_module_resolver))
+			out.insert(lhs->u.s.s);
+	}
+	if (n->code > N_ID)
+		for (int i = 0; ; i++) {
+			node_t op = c2mir_node_op(n, i);
+			if (!op) break;
+			cir_collect_dyn_module_slots(op, out);
 		}
 }
 

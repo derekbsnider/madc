@@ -635,6 +635,10 @@ class CirBuilder {
 	// first use through __madc_dl_member, cast to the K&R fn-ptr type.
 	node_t dyn_module_callee(FuncDef *fd, const madc::dis::istring &callee_name,
 				 TokenBase *origin);
+	// Its slot's `static void *` declaration — the lowering site's, and a
+	// LOADED forest body's (whose pre-built calls never pass that site).
+	void declare_dyn_module_slot(const madc::dis::istring &slot, TokenBase *origin);
+	void declare_loaded_body_slots(node_t body);
 	node_t obj_default_ctor_call(const char *name, const char *ctor_sym,
 				     TokenBase *origin);
 
@@ -3229,5 +3233,9 @@ void cir_collect_declared_object_names(node_t tree, std::set<madc::dis::istring>
 // lowering site that registers F as referenced never runs for it).
 void cir_collect_cleanup_attr_fns(node_t tree, std::set<madc::dis::istring> &out);
 void cir_collect_addr_fn_refs(node_t tree, std::set<madc::dis::istring> &out);	// v25
+// Collect the slot every dyn-module call in the tree assigns from
+// __madc_dl_member (CirBuilder::dyn_module_callee's shape). FOREST
+// materialization sites only (CirBuilder::declare_loaded_body_slots).
+void cir_collect_dyn_module_slots(node_t tree, std::set<madc::dis::istring> &out);
 
 #endif // __CIR_BUILDER_H

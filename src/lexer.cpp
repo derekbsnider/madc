@@ -2077,10 +2077,6 @@ TokenBase *Program::tokenize_import_directive()
 	Throw << "import: library binding is disabled by registration policy" << flush;
     const MadcModuleSpec *row = madc_module_find(name);
     madc::dis::istring spelling = madc_module_library_spelling(name);
-    // The row's flags are module-map DATA (Rule 7): a GUI module lifts the
-    // memory guard at run start — recorded here, acted on by the driver.
-    if ( row && (row->flags & MADC_MODULE_GUI) )
-	bound_gui_module = true;
     if ( alias.empty() && !(row && row->interface) )
 	Throw << "import: module '" << name << "' has no interface; bind it with"
 	      << " `import " << name << " as <alias>;`" << flush;
@@ -2091,15 +2087,18 @@ TokenBase *Program::tokenize_import_directive()
     // program compiles and runs without the library and asks
     // madc::module_available before using it. The alias form keeps the
     // eager binding (a namespace needs the exports to answer member lookups).
+    // A bound unit replays it from its frozen PP events (pack_record_import).
     if ( alias.empty() && row && (row->flags & MADC_MODULE_LAZY) )
     {
-	module_optional_libs.push_back(spelling);	// the object's manifest: optional
+	adopt_lazy_module_import(name);
+	pack_record_import(name);
 	DBG(std::cout << "import " << name << " -> " << spelling << " (lazy)" << std::endl);
 	source.pushback_reread(std::string("#pragma madc module_begin(\"") + spelling
 			       + "\")\n#include <" + row->interface + ">\n"
 			       + "#pragma madc module_end\n");
 	return getToken();
     }
+    adopt_module_flags(name);
     std::string err;
     if ( !bind_module_namespace(alias, spelling, /*link_form=*/alias.empty(), err) )
 	Throw << "import: cannot load '" << spelling << "': " << err << flush;
@@ -2147,6 +2146,24 @@ bool Program::bind_module_namespace(const madc::dis::istring &ns, const madc::di
 	namespace_variables_for_write(ns);	// create the (empty) namespace
     }
     return true;
+}
+
+// The row's flags are module-map DATA (Rule 7): a GUI module lifts the memory
+// guard at run start — recorded here, acted on by the driver.
+void Program::adopt_module_flags(const madc::dis::istring &module)
+{
+    const MadcModuleSpec *row = madc_module_find(module);
+    if ( row && (row->flags & MADC_MODULE_GUI) )
+	bound_gui_module = true;
+}
+
+// A LAZY row's import binds nothing and links nothing: its spelling joins the
+// object's manifest as OPTIONAL (the loader opens what it can, never fails on
+// it). Shared by the directive and the replay of a bound unit's peImport event.
+void Program::adopt_lazy_module_import(const madc::dis::istring &module)
+{
+    adopt_module_flags(module);
+    module_optional_libs.push_back(madc_module_library_spelling(module));
 }
 
 void Program::tokenize_embedded_header_text(const madc::dis::istring &name,
@@ -4831,7 +4848,7 @@ void Program::forest_unit_defined_macros(uint32_t unit,
 	uint32_t name_id = ev[k], tag_flags = ev[k + 1], nparams = ev[k + 4];
 	uint8_t tag = (uint8_t)(tag_flags & 0xff);
 	const char *enm = bind_forest->pool_str(name_id);
-	if ( enm && tag != PackMacroEvent::peUndef )
+	if ( enm && PackMacroEvent::defines_macro(tag) )
 	    out.insert(enm);
 	k += 5 + (tag == PackMacroEvent::peDefineFn ? nparams : 0);
     }
@@ -5247,7 +5264,7 @@ void Program::forest_replay_pp_arms(uint32_t unit)
 
 // Apply one unit's frozen PP-export delta to the live macro tables, replaying
 // the exact define_map / macro_map writes the lexer's #define/#undef handlers
-// perform. The event stream is flat u32:
+// perform — and a lazy `import`'s program state (adopt_lazy_module_import). The event stream is flat u32:
 //   [name_id, tag_flags, body_id, variadic_param_id, nparams, <nparams ids>]...
 // with the low byte of tag_flags the PackMacroEvent tag and bit 8 the variadic
 // flag. Pool ids resolve through the container's own string pool.
@@ -5270,7 +5287,7 @@ void Program::forest_install_pp(uint32_t unit)
 	uint32_t vpar_id = ev[k + 3], nparams = ev[k + 4];
 	const char *nm = bind_forest->pool_str(name_id);
 	uint8_t tag = (uint8_t)(tag_flags & 0xff);
-	if ( nm && mask && tag != PackMacroEvent::peUndef && mask->count(nm) )
+	if ( nm && mask && PackMacroEvent::defines_macro(tag) && mask->count(nm) )
 	{
 	    DBG(std::cout << "forest bind: unit "
 		<< (bind_forest->unit_name(unit) ? bind_forest->unit_name(unit) : "?")
@@ -5293,6 +5310,8 @@ void Program::forest_install_pp(uint32_t unit)
 		define_map[name] = b ? madc::dis::istring(b) : madc::dis::istring();
 		note_std_abi_define(name, define_map[name]);
 	    }
+	    else if ( tag == PackMacroEvent::peImport )
+		adopt_lazy_module_import(name);
 	    else // peDefineFn
 	    {
 		MacroDef m;
@@ -6325,6 +6344,18 @@ void Program::pack_record_undef(const madc::dis::istring &name)
 	ev.name = name;
 	ev.tag = PackMacroEvent::peUndef;
 	pack_macro_origin[name] = PackMacroOrigin{ unit, false };
+    }
+}
+
+void Program::pack_record_import(const madc::dis::istring &module)
+{
+    if ( const char *unit = pack_current_unit() )
+    {
+	pack_note_unit(unit);
+	pack_pp_exports[unit].push_back(PackMacroEvent());
+	PackMacroEvent &ev = pack_pp_exports[unit].back();
+	ev.name = module;
+	ev.tag = PackMacroEvent::peImport;
     }
 }
 

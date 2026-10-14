@@ -5649,7 +5649,10 @@ public:
     // consumed by madc_cir_freeze to stage the v2 segments. All hooks are
     // no-ops when the flag is off, so default lexing/parsing is unchanged.
     struct PackMacroEvent {		// one PP-export delta, in directive order
-	enum : uint8_t { peDefine = 0, peDefineFn = 1, peUndef = 2 };
+	// peImport: `import <module>;` on a LAZY row — name is the module; the
+	// replay is adopt_lazy_module_import. It defines no macro.
+	enum : uint8_t { peDefine = 0, peDefineFn = 1, peUndef = 2, peImport = 3 };
+	static bool defines_macro(uint8_t tag) { return tag == peDefine || tag == peDefineFn; }
 	madc::dis::istring name;
 	uint8_t     tag;
 	std::string value;		// object-like body (peDefine)
@@ -5756,6 +5759,7 @@ public:
     void pack_record_define(const madc::dis::istring &name, const std::string &value);
     void pack_record_define_fn(const madc::dis::istring &name, const MacroDef &m);
     void pack_record_undef(const madc::dis::istring &name);
+    void pack_record_import(const madc::dis::istring &module);
     void pack_record_edge(const madc::dis::istring &includee);	// includer = current source
     // A dedup-SKIPPED include still needs its bytes in the corpus — see the
     // definition. Freeze-time only, at most one read per unit. False when the
@@ -7428,6 +7432,14 @@ public:
 	TokenBase *tokenize_import_directive();
 	bool bind_module_namespace(const madc::dis::istring &ns, const madc::dis::istring &spelling,
 				   bool link_form, std::string &err);
+	// A module row's flags (module-map DATA): a GUI row lifts the memory
+	// guard at run start (bound_gui_module).
+	void adopt_module_flags(const madc::dis::istring &module);
+	// The program state `import <module>;` leaves for a LAZY row (the
+	// interface form): the row's flags and its spelling as an OPTIONAL entry
+	// of the object's manifest (module_optional_libs). The directive and a
+	// bound unit's replay of it (forest_install_pp, the peImport event) share it.
+	void adopt_lazy_module_import(const madc::dis::istring &module);
 	void tokenize_embedded_header_text(const madc::dis::istring &name,
 					 const std::string &text,
 					 bool protocol_visit);
