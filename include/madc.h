@@ -6872,6 +6872,7 @@ public:
     // compile bind frozen state"), so the default path is one predicted
     // branch; knob OFF = byte-identical behavior.
     madc::dis::istring forest_bind_path;	// explicit container; empty = the discovery chain
+    madc::dis::istring forest_touch_log;	// --forest-touch-log: the pack step's read recorder
     // v24: the TU's ROOT source file (set by tokenize/tokenize_buffer). The
     // forest holds the #include files' state ONLY — never the program's — so
     // the freeze stamps every record whose defining file IS the root
@@ -7193,6 +7194,7 @@ public:
     bool forest_bind_env_ok(uint32_t unit, std::set<uint32_t> &visited);
     void forest_env_collect(uint32_t unit, std::set<uint32_t> &closure);
     bool forest_unit_defines_macro(uint32_t unit, const char *nm);	// v40: include-once prune helper
+    void forest_unit_defined_macros(uint32_t unit, std::set<madc::dis::istring> &out);
     bool forest_unit_is_standalone_husk(uint32_t unit,
 					const std::vector<uint32_t> &deps);	// task #57: empty decl surface + own file guard, safe for exact live include
     // task #57 masked-bind: unit -> its guarded-fallback macros whose guard is

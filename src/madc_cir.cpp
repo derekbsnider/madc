@@ -7244,7 +7244,8 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 		// The intern spine compresses only in the appended pack
 		// (owner-approved ~7ms-per-process trade; dev freezes keep
 		// zero-copy binds).
-		bool staged = cir_forest_write(f, w, codec, append ? 15 : 0,
+		bool staged = cir_forest_write(f, w, codec,
+					       append ? CIR_FOREST_PACK_ZSTD_LEVEL : 0,
 					       append);
 		// Shared configs (--freeze-also-std=): the one pack profile serves
 		// every standard named here too. The madc dialect is C++17 plus
@@ -7307,7 +7308,7 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 			if (!w.add_segment(CIR_FOREST_SEG_MIR_MODULE,
 					   SNAP_KIND_CIR_MIR_MODULE,
 					   mblob.data(), mblob.size(), codec,
-					   append ? 15 : 0))
+					   append ? CIR_FOREST_PACK_ZSTD_LEVEL : 0))
 			    fprintf(stderr, "%s: mir cache: segment add "
 				    "failed — blob skipped\n", source_name);
 			else if (progress)
@@ -7327,7 +7328,7 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 		    if (!w.add_segment(CIR_FOREST_SEG_LEDGER,
 				       SNAP_KIND_CIR_LEDGER,
 				       lblob.data(), lblob.size(), codec,
-				       append ? 15 : 0)) {
+				       append ? CIR_FOREST_PACK_ZSTD_LEVEL : 0)) {
 			fprintf(stderr, "%s: ledger: segment add failed\n",
 				source_name);
 			staged = false;
@@ -7445,6 +7446,47 @@ static const char *pack_decl_kind_name(uint32_t kind)
     }
 }
 
+bool madc_cir_forest_relayout(const char *image_path,
+			      const std::vector<std::string> &logs)
+{
+    FILE *f = fopen(image_path, "rb");
+    std::vector<uint8_t> image;
+    if (f && fseek(f, 0, SEEK_END) == 0) {
+	long n = ftell(f);
+	if (n > 0 && fseek(f, 0, SEEK_SET) == 0) {
+	    image.resize((size_t)n);
+	    if (fread(image.data(), 1, image.size(), f) != image.size())
+		image.clear();
+	}
+    }
+    if (f)
+	fclose(f);
+    if (image.empty()) {
+	fprintf(stderr, "madc: --forest-relayout: cannot read %s\n", image_path);
+	return false;
+    }
+    std::vector<uint8_t> blob;
+    size_t at = 0;
+    size_t hot = 0;
+    std::string err;
+    if (!cir_forest_relayout(image.data(), image.size(), logs, blob, at, hot, err)) {
+	fprintf(stderr, "madc: --forest-relayout: %s: %s\n", image_path, err.c_str());
+	return false;
+    }
+    image.resize(at);
+    image.insert(image.end(), blob.begin(), blob.end());
+    f = fopen(image_path, "wb");
+    bool ok = f && fwrite(image.data(), 1, image.size(), f) == image.size();
+    if (f && fclose(f) != 0)
+	ok = false;
+    if (!ok)
+	fprintf(stderr, "madc: --forest-relayout: cannot write %s\n", image_path);
+    else
+	printf("forest-relayout: %s laid out by %zu root bind(s), %zu block(s) stored raw\n",
+	       image_path, logs.size(), hot);
+    return ok;
+}
+
 int madc_cir_dump_forest(const char *container_path)
 {
     const void *image = NULL;
@@ -7466,6 +7508,9 @@ int madc_cir_dump_forest(const char *container_path)
     // The container's own bytes (an appended container: the image less the
     // carrier before it) — the pack-size gate's measure (forest_pack_gate.sh).
     printf("bytes\t%zu\n", forest.container_bytes());
+    // v60: the pack's layout pass ran (the pack scripts check this line).
+    if (forest.records_laid_out())
+	printf("layout\treads\n");
     // The producer configs this profile binds under: its own, then the
     // labels a pack proved identical (the shared-profile gate reads these).
     printf("config\tword=0x%08x\tdefines=0x%08x\n", forest.language_std(),

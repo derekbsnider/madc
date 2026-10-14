@@ -53,14 +53,15 @@ static void populate(intern_table &p, std::vector<uint32_t> &ids, int n)
 }
 
 // Serialize a live table's two frozen blocks into a writer (the forest's
-// shape): the bytes, and the offsets block.
+// shape): the records, and the offsets block.
 static bool add_intern_segments(snapshot_writer &w, const intern_table &p,
 				PchCompression codec)
 {
+    std::vector<char> bytes;
     std::vector<uint32_t> offs;
-    p.offsets_block(offs);
+    p.frozen_blocks(bytes, offs);
     if ( !w.add_segment(1, madc::dis::SNAP_KIND_INTERN_BYTES,
-			p.bytes_data(), p.bytes_size(), codec) )
+			bytes.data(), bytes.size(), codec) )
 	return false;
     return w.add_segment(2, madc::dis::SNAP_KIND_INTERN_OFFSETS,
 			 offs.data(), offs.size() * sizeof(uint32_t), codec);
@@ -81,13 +82,14 @@ TEST_CASE("frozen view over a live table's blocks: ids and spellings")
     std::vector<uint32_t> ids;
     populate(p, ids, 3000);   // enough to force growth + rehash
 
+    std::vector<char> bytes;
     std::vector<uint32_t> offs;
-    p.offsets_block(offs);
+    p.frozen_blocks(bytes, offs);
     CHECK(offs.size() == p.count() + 2);
-    CHECK(offs.back() == p.bytes_size());
+    CHECK(offs.back() == bytes.size());
 
     frozen_intern_table fz;
-    fz.bind(p.bytes_data(), p.bytes_size(), offs.data(), offs.size());
+    fz.bind(bytes.data(), bytes.size(), offs.data(), offs.size());
     CHECK(fz.valid());
     CHECK(fz.count() == p.count());
     CHECK(fz.length(0) == 0u);
@@ -107,8 +109,55 @@ TEST_CASE("frozen view over a live table's blocks: ids and spellings")
     // A closing offset that disagrees with the byte block is refused.
     offs.back() += 1;
     frozen_intern_table bad;
-    bad.bind(p.bytes_data(), p.bytes_size(), offs.data(), offs.size());
+    bad.bind(bytes.data(), bytes.size(), offs.data(), offs.size());
     CHECK_FALSE(bad.valid());
+}
+
+TEST_CASE("frozen records carry their length: any order, embedded NULs, long spellings")
+{
+    intern_table p;
+    std::vector<uint32_t> ids;
+    populate(p, ids, 400);
+    const char lit[] = { 'a', '\0', 'b', '\0' };	// a string literal's value
+    const uint32_t lit_id = p.intern(lit, sizeof lit, intern_table::hash_bytes(lit, sizeof lit));
+    std::string big(300, 'x');				// a two-byte LEB128 length
+    const uint32_t big_id = p.intern(big.c_str());
+
+    std::vector<char> bytes;
+    std::vector<uint32_t> offs;
+    p.frozen_blocks(bytes, offs);
+    // Re-lay the records in reverse id order (id 0 stays at byte 0), the way
+    // the pack's layout pass reorders them: only the offsets block moves.
+    std::vector<char> rev(bytes.begin(), bytes.begin() + offs[1]);
+    std::vector<uint32_t> roffs(offs.size());
+    roffs[0] = 0;
+    for ( size_t id = offs.size() - 2; id >= 1; --id )
+    {
+	roffs[id] = (uint32_t)rev.size();
+	rev.insert(rev.end(), bytes.begin() + offs[id], bytes.begin() + offs[id + 1]);
+    }
+    roffs.back() = (uint32_t)rev.size();
+    CHECK(rev.size() == bytes.size());
+
+    frozen_intern_table fz;
+    fz.bind(rev.data(), rev.size(), roffs.data(), roffs.size());
+    CHECK(fz.valid());
+    uint32_t len = 99;
+    const char *sp = fz.spelling(lit_id, len);
+    REQUIRE(sp != nullptr);
+    CHECK(len == sizeof lit);
+    CHECK(memcmp(sp, lit, sizeof lit) == 0);
+    CHECK(fz.str(big_id) == big);
+    CHECK(fz.length(0) == 0u);
+    char buf[32];
+    for ( int i = 0; i < 400; ++i )
+    {
+	snprintf(buf, sizeof buf, "spelling_%d", i);
+	CHECK(fz.str(ids[(size_t)i]) == buf);
+    }
+    // A record whose length runs past the bytes reads as absent.
+    rev[roffs[big_id]] = (char)0x7f;	// claims 127 bytes, then no NUL there
+    CHECK(fz.str(big_id).empty());
 }
 
 TEST_CASE("container round-trip in memory (zlib) rebinds an identical frozen table")
@@ -439,21 +488,53 @@ TEST_CASE("transforms that do not fit the payload are refused")
     CHECK(!w.add_segment(5, 0, "abcd", 4, PchCompression::None, 0, 0x01000001u));
 }
 
-TEST_CASE("a corrupt transform in the directory is rejected at open()")
+TEST_CASE("a corrupt directory record is never handed out")
 {
     snapshot_writer w;
     REQUIRE(w.add_segment(1, 0, "abcd", 4, PchCompression::None));
+    REQUIRE(w.add_segment(2, 0, "efgh", 4, PchCompression::None));
     std::vector<uint8_t> blob;
     REQUIRE(w.build(blob));
 
     madc::dis::snapshot_footer ftr;
     memcpy(&ftr, blob.data() + blob.size() - sizeof(ftr), sizeof(ftr));
     snapshot_segment *dir = (snapshot_segment *)(blob.data() + ftr.dir_offset);
-    dir[0].flags = 0x7u;   // invalid transform id
     snapshot_reader r;
-    CHECK(!r.open(blob.data(), blob.size()));
+    dir[0].flags = 0x7u;   // invalid transform id
+    REQUIRE(r.open(blob.data(), blob.size()));
+    CHECK(r.find(1) == nullptr);
+    CHECK(r.segment_at(0) == nullptr);
+    CHECK(r.find(2) != nullptr);   // its neighbour is intact
     dir[0].flags = 0;
-    CHECK(r.open(blob.data(), blob.size()));
+    const uint64_t comp = dir[0].comp_size;
+    dir[0].comp_size = ~(uint64_t)0;   // payload past the table (and wrapping)
+    REQUIRE(r.open(blob.data(), blob.size()));
+    CHECK(r.find(1) == nullptr);
+    dir[0].comp_size = comp;
+    REQUIRE(r.open(blob.data(), blob.size()));
+    REQUIRE(r.find(1) != nullptr);
+    std::vector<uint8_t> got;
+    REQUIRE(r.read_segment(*r.find(1), got));
+    CHECK(memcmp(got.data(), "abcd", 4) == 0);
+}
+
+TEST_CASE("a directory misaligned in the image is copied out and read the same")
+{
+    snapshot_writer w;
+    REQUIRE(w.add_segment(3, 0, "abcd", 4, PchCompression::None));
+    REQUIRE(w.add_segment(9, 0, "efghij", 6, PchCompression::None));
+    std::vector<uint8_t> blob;
+    REQUIRE(w.build(blob));
+    std::vector<uint8_t> shifted(blob.size() + 1);
+    memcpy(shifted.data() + 1, blob.data(), blob.size());
+    snapshot_reader r;
+    REQUIRE(r.open(shifted.data() + 1, blob.size()));
+    CHECK(r.segment_count() == 2u);
+    REQUIRE(r.find(9) != nullptr);
+    std::vector<uint8_t> got;
+    REQUIRE(r.read_segment(*r.find(9), got));
+    CHECK(std::string(got.begin(), got.end()) == "efghij");
+    CHECK(r.find(4) == nullptr);
 }
 
 // A BLOCKED segment over `raw` with 1 KiB blocks (zlib), built into `blob`.
@@ -520,6 +601,38 @@ TEST_CASE("BLOCKED segments decode whole, or block by block on first touch")
     CHECK(rp.open_lazy(*rp.find(1)) == nullptr);
 }
 
+TEST_CASE("BLOCKED blocks the writer is told to keep raw are stored raw and read the same")
+{
+    std::vector<uint8_t> raw = blocked_sample(), blob;
+    std::vector<bool> keep(11, false);
+    keep[0] = keep[4] = true;
+    keep.push_back(true);			// past the last block: ignored
+    snapshot_writer w;
+    REQUIRE(w.add_segment(1, 0, raw.data(), raw.size(), PchCompression::Zlib, 0,
+			  madc::dis::snap_xform_flags(madc::dis::SNAP_XFORM_BLOCKED, 10),
+			  &keep));
+    REQUIRE(w.build(blob));
+    snapshot_reader r;
+    REQUIRE(r.open(blob.data(), blob.size()));
+    const snapshot_segment *s = r.find(1);
+    REQUIRE(s != nullptr);
+    const uint8_t *payload = blob.data() + s->offset;
+    for ( size_t b = 0; b < 10; ++b )
+    {
+	madc::dis::snapshot_block e;
+	memcpy(&e, payload + sizeof(madc::dis::snapshot_block_header) + b * sizeof e, sizeof e);
+	CHECK((e.stored == 1024u) == (b == 0 || b == 4));
+    }
+    std::vector<uint8_t> got;
+    REQUIRE(r.read_segment(*s, got));
+    CHECK(got == raw);
+    madc::dis::snapshot_lazy_segment *lz = r.open_lazy(*s);
+    REQUIRE(lz != nullptr);
+    REQUIRE(lz->ensure(4 * 1024 + 10, 2000));	// a raw block, then a framed one
+    CHECK(memcmp(lz->data() + 4 * 1024 + 10, raw.data() + 4 * 1024 + 10, 2000) == 0);
+    delete lz;
+}
+
 TEST_CASE("a BLOCKED segment with a corrupt block table is refused")
 {
     std::vector<uint8_t> raw = blocked_sample(), blob;
@@ -556,11 +669,12 @@ TEST_CASE("a frozen intern table reads through lazy blocks, decoding only what i
     populate(p, ids, 3000);
 
     snapshot_writer w;
+    std::vector<char> bytes;
     std::vector<uint32_t> offs;
-    p.offsets_block(offs);
+    p.frozen_blocks(bytes, offs);
     uint32_t xf = madc::dis::snap_xform_flags(madc::dis::SNAP_XFORM_BLOCKED, 10);
     REQUIRE(w.add_segment(1, madc::dis::SNAP_KIND_INTERN_BYTES,
-			  p.bytes_data(), p.bytes_size(), PchCompression::Zlib, 0, xf));
+			  bytes.data(), bytes.size(), PchCompression::Zlib, 0, xf));
     std::vector<uint8_t> blob;
     REQUIRE(w.build(blob));
     snapshot_reader r;

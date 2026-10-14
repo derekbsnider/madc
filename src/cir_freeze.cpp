@@ -750,12 +750,14 @@ bool cir_forest_write(const cir_frozen_forest &f, madc::dis::snapshot_writer &w,
 			f.recordable.data(), f.recordable.size() * sizeof(uint32_t),
 			PchCompression::None))
 		return false;
-	// The container's string pool: its bytes and (v59) the raw offsets block.
+	// The container's string pool: its records and (v59) the raw offsets
+	// block (intern_table::frozen_blocks; v60 records carry their length).
+	std::vector<char> pool_bytes, arena_bytes;
 	std::vector<uint32_t> pool_offs, arena_offs;
-	pool->offsets_block(pool_offs);
-	f.arena.strings.offsets_block(arena_offs);
+	pool->frozen_blocks(pool_bytes, pool_offs);
+	f.arena.strings.frozen_blocks(arena_bytes, arena_offs);
 	if (!add_seg(w, CIR_FOREST_SEG_STR_BYTES, madc::dis::SNAP_KIND_INTERN_BYTES,
-		     pool->bytes_data(), pool->bytes_size(), codec)
+		     pool_bytes.data(), pool_bytes.size(), codec)
 	    || !add_seg(w, CIR_FOREST_SEG_STR_OFFSETS, madc::dis::SNAP_KIND_INTERN_OFFSETS,
 			pool_offs.data(), pool_offs.size() * sizeof(uint32_t),
 			PchCompression::None))
@@ -778,7 +780,7 @@ bool cir_forest_write(const cir_frozen_forest &f, madc::dis::snapshot_writer &w,
 			f.arena.payload.data(),
 			f.arena.payload.size() * sizeof(uint32_t), codec)
 	    || !add_seg(w, CIR_FOREST_SEG_ARENA_STR_BYTES, madc::dis::SNAP_KIND_INTERN_BYTES,
-			f.arena.strings.bytes_data(), f.arena.strings.bytes_size(), codec)
+			arena_bytes.data(), arena_bytes.size(), codec)
 	    || !add_seg(w, CIR_FOREST_SEG_ARENA_STR_OFFSETS, madc::dis::SNAP_KIND_INTERN_OFFSETS,
 			arena_offs.data(), arena_offs.size() * sizeof(uint32_t),
 			PchCompression::None))
@@ -1270,6 +1272,49 @@ void CirFrozenForest::begin_compile(c2m_ctx_t c2m)
 			_segs[u]->begin_compile(c2m);
 }
 
+// The --forest-touch-log sink (record_touches): the first read of each
+// (segment, offset) becomes one "seg off len" line, flushed as written — the
+// recording bind may end without tearing the forest down. Only the pack
+// step's recording binds create one; it serializes its own state (a bind may
+// read from worker threads).
+class ForestTouchRecorder : public madc::dis::lazy_touch_sink
+{
+	FILE *_f;
+	std::mutex _mu;
+	std::map<const madc::dis::lazy_blocks *, uint32_t> _seg;
+	std::set<uint64_t> _seen;
+public:
+	explicit ForestTouchRecorder(FILE *f) : _f(f) {}
+	~ForestTouchRecorder()
+	{
+		for (std::map<const madc::dis::lazy_blocks *, uint32_t>::const_iterator it =
+		     _seg.begin(); it != _seg.end(); ++it)
+			it->first->observe(NULL);
+		fclose(_f);
+	}
+	void attach(uint32_t seg_id, const madc::dis::lazy_blocks *lz)
+	{
+		{
+			std::lock_guard<std::mutex> g(_mu);
+			if (!_seg.insert(std::make_pair(lz, seg_id)).second)
+				return;
+		}
+		lz->observe(this);
+	}
+	void touched(const madc::dis::lazy_blocks *span, size_t off,
+		     size_t len) override
+	{
+		std::lock_guard<std::mutex> g(_mu);
+		std::map<const madc::dis::lazy_blocks *, uint32_t>::const_iterator it =
+			_seg.find(span);
+		if (it == _seg.end()
+		    || !_seen.insert(((uint64_t)it->second << 40) | off).second)
+			return;
+		fprintf(_f, "%u %zu %zu\n", it->second, off, len);
+		fflush(_f);
+	}
+};
+
 CirFrozenForest::~CirFrozenForest()
 {
 	for (size_t u = 0; u < _segs.size(); ++u)
@@ -1282,6 +1327,7 @@ CirFrozenForest::~CirFrozenForest()
 	// method_map/methods held non-owning pointers).
 	for (size_t i = 0; i < _mat_vars.size(); ++i)
 		delete _mat_vars[i];
+	delete _touch;
 }
 
 // Bind one pool block: in place from the image when stored uncompressed
@@ -1512,6 +1558,169 @@ bool CirFrozenForest::serves_config(uint32_t config, uint32_t defines) const
 	return false;
 }
 
+// --- the pack layout (format 60; design doc §3) --------------------------
+//
+// The tables the layout pass reorders, decoded whole: the two string pools
+// (bytes + offsets block) and the arena records with their positions (slot
+// order when the container carries no ARENA_DEF_POS).
+struct ForestLayoutTables
+{
+	struct Pool
+	{
+		uint32_t bytes_seg, offs_seg;
+		std::vector<uint8_t> bytes;
+		std::vector<uint32_t> offs;	// ids + 1 (the closing size)
+		size_t ids() const { return offs.empty() ? 0 : offs.size() - 1; }
+	};
+	Pool pools[2];
+	std::vector<uint8_t> defs;
+	std::vector<uint32_t> pos;	// slot -> record position
+	size_t record_bytes = 0;
+	size_t slots() const { return record_bytes ? defs.size() / record_bytes : 0; }
+};
+
+static bool forest_layout_seg(uint32_t seg_id)
+{
+	return seg_id == CIR_FOREST_SEG_STR_BYTES || seg_id == CIR_FOREST_SEG_STR_OFFSETS
+	    || seg_id == CIR_FOREST_SEG_ARENA_STR_BYTES
+	    || seg_id == CIR_FOREST_SEG_ARENA_STR_OFFSETS
+	    || seg_id == CIR_FOREST_SEG_ARENA_DEFS;
+}
+
+static bool forest_read_u32s(const madc::dis::snapshot_reader &r, uint32_t seg_id,
+			     std::vector<uint32_t> &out)
+{
+	const madc::dis::snapshot_segment *s = r.find(seg_id);
+	std::vector<uint8_t> b;
+	if (!s || !r.read_segment(*s, b) || b.size() % sizeof(uint32_t))
+		return false;
+	out.resize(b.size() / sizeof(uint32_t));
+	if (!b.empty())
+		memcpy(out.data(), b.data(), b.size());
+	return true;
+}
+
+static bool forest_read_layout_tables(const madc::dis::snapshot_reader &r,
+				      ForestLayoutTables &t)
+{
+	t.pools[0].bytes_seg = CIR_FOREST_SEG_STR_BYTES;
+	t.pools[0].offs_seg = CIR_FOREST_SEG_STR_OFFSETS;
+	t.pools[1].bytes_seg = CIR_FOREST_SEG_ARENA_STR_BYTES;
+	t.pools[1].offs_seg = CIR_FOREST_SEG_ARENA_STR_OFFSETS;
+	for (ForestLayoutTables::Pool &p : t.pools) {
+		const madc::dis::snapshot_segment *bs = r.find(p.bytes_seg);
+		if (!bs || !r.read_segment(*bs, p.bytes)
+		    || !forest_read_u32s(r, p.offs_seg, p.offs) || p.offs.empty())
+			return false;
+	}
+	const madc::dis::snapshot_segment *ds = r.find(CIR_FOREST_SEG_ARENA_DEFS);
+	if (!ds || !r.read_segment(*ds, t.defs))
+		return false;
+	t.record_bytes = madc::dis::DefArena::def_stride() * sizeof(uint32_t);
+	if (t.defs.size() % t.record_bytes)
+		return false;
+	if (r.find(CIR_FOREST_SEG_ARENA_DEF_POS)) {
+		if (!forest_read_u32s(r, CIR_FOREST_SEG_ARENA_DEF_POS, t.pos)
+		    || t.pos.size() != t.slots())
+			return false;
+		for (size_t i = 0; i < t.pos.size(); ++i)
+			if (t.pos[i] >= t.slots())
+				return false;
+	} else {
+		t.pos.resize(t.slots());
+		for (size_t i = 0; i < t.pos.size(); ++i)
+			t.pos[i] = (uint32_t)i;
+	}
+	return true;
+}
+
+// The byte length of id's record in a pool (its LEB128 length, the spelling,
+// the NUL); 0 when the record runs past the bytes.
+static size_t forest_pool_record_bytes(const ForestLayoutTables::Pool &p, uint32_t id)
+{
+	size_t at = p.offs[id];
+	uint32_t n = 0;
+	for (unsigned sh = 0; ; sh += 7) {
+		if (sh > 28 || at >= p.bytes.size())
+			return 0;
+		const uint8_t b = p.bytes[at++];
+		n |= (uint32_t)(b & 0x7f) << sh;
+		if (!(b & 0x80))
+			break;
+	}
+	if (n >= p.bytes.size() - at)
+		return 0;
+	return at + n + 1 - p.offs[id];
+}
+
+// A pool's records laid out in `order` (every id once), with the offsets
+// block that finds them. A malformed record is written as the empty one.
+static void forest_pool_in_order(const ForestLayoutTables::Pool &p,
+				 const std::vector<uint32_t> &order,
+				 std::vector<uint8_t> &bytes, std::vector<uint32_t> &offs)
+{
+	bytes.clear();
+	bytes.reserve(p.bytes.size());
+	offs.assign(p.ids() + 1, 0);
+	for (size_t k = 0; k < order.size(); ++k) {
+		const uint32_t id = order[k];
+		const size_t n = forest_pool_record_bytes(p, id);
+		offs[id] = (uint32_t)bytes.size();
+		if (n)
+			bytes.insert(bytes.end(), p.bytes.begin() + p.offs[id],
+				     p.bytes.begin() + p.offs[id] + n);
+		else {
+			bytes.push_back(0);	// length 0
+			bytes.push_back(0);	// its NUL
+		}
+	}
+	offs[p.ids()] = (uint32_t)bytes.size();
+}
+
+// The arena records laid out in `order` (every slot once): position k holds
+// slot order[k]; `pos` maps each slot to its position.
+static void forest_defs_in_order(const ForestLayoutTables &t,
+				 const std::vector<uint32_t> &order,
+				 std::vector<uint8_t> &defs, std::vector<uint32_t> &pos)
+{
+	defs.resize(t.defs.size());
+	pos.assign(t.slots(), 0);
+	for (size_t k = 0; k < order.size(); ++k) {
+		const uint32_t slot = order[k];
+		memcpy(defs.data() + k * t.record_bytes,
+		       t.defs.data() + (size_t)t.pos[slot] * t.record_bytes, t.record_bytes);
+		pos[slot] = (uint32_t)k;
+	}
+}
+
+static void forest_identity_order(size_t n, std::vector<uint32_t> &order)
+{
+	order.resize(n);
+	for (size_t i = 0; i < n; ++i)
+		order[i] = (uint32_t)i;
+}
+
+// A layout segment's LOGICAL bytes — the pools and records in id order — so a
+// laid-out container digests as the freeze that produced it.
+static void forest_logical_bytes(const ForestLayoutTables &t, uint32_t seg_id,
+				 std::vector<uint8_t> &out)
+{
+	std::vector<uint32_t> order, words;
+	for (const ForestLayoutTables::Pool &p : t.pools) {
+		if (seg_id != p.bytes_seg && seg_id != p.offs_seg)
+			continue;
+		forest_identity_order(p.ids(), order);
+		forest_pool_in_order(p, order, out, words);
+		if (seg_id == p.offs_seg) {
+			out.resize(words.size() * sizeof(uint32_t));
+			memcpy(out.data(), words.data(), out.size());
+		}
+		return;
+	}
+	forest_identity_order(t.slots(), order);
+	forest_defs_in_order(t, order, out, words);
+}
+
 bool cir_forest_content_digests(const void *image, size_t len,
 				std::map<uint32_t, uint64_t> &out)
 {
@@ -1519,14 +1728,27 @@ bool cir_forest_content_digests(const void *image, size_t len,
 	madc::dis::snapshot_reader r;
 	if (!r.open(image, len))
 		return false;
+	ForestLayoutTables t;
+	bool have_tables = false;
 	for (uint32_t i = 0; i < r.segment_count(); ++i) {
 		const madc::dis::snapshot_segment *s = r.segment_at(i);
+		if (!s)
+			return false;	// a corrupt directory record
 		if (s->seg_id == CIR_FOREST_SEG_MIR_MODULE
 		    || s->seg_id == CIR_FOREST_SEG_LEDGER
 		    || s->seg_id == CIR_FOREST_SEG_SHARED_CONFIGS)
 			continue;
 		std::vector<uint8_t> bytes;
-		if (!r.read_segment(*s, bytes))
+		if (s->seg_id == CIR_FOREST_SEG_ARENA_DEF_POS)
+			continue;	// layout, not content (folded into the records)
+		if (forest_layout_seg(s->seg_id)) {
+			if (!have_tables) {
+				if (!forest_read_layout_tables(r, t))
+					return false;
+				have_tables = true;
+			}
+			forest_logical_bytes(t, s->seg_id, bytes);
+		} else if (!r.read_segment(*s, bytes))
 			return false;
 		if (s->seg_id == CIR_FOREST_SEG_DIR) {
 			if (bytes.size() < sizeof(cir_forest_dir_header))
@@ -1546,12 +1768,254 @@ bool cir_forest_content_digests(const void *image, size_t len,
 	return true;
 }
 
+// One table's reads across the recorded root binds: per item (a string id or
+// an arena slot) the roots that read it, in root order, and when it was first
+// read (a global sequence, so ties keep the order a bind read them in).
+struct ForestLayoutReads
+{
+	struct Sig
+	{
+		std::vector<uint32_t> roots;
+		uint64_t first;
+	};
+	std::map<uint32_t, Sig> items;
+	void note(uint32_t item, uint32_t root, uint64_t seq)
+	{
+		std::map<uint32_t, Sig>::iterator it = items.find(item);
+		if (it == items.end()) {
+			Sig g;
+			g.roots.push_back(root);
+			g.first = seq;
+			items.insert(std::make_pair(item, g));
+		} else if (it->second.roots.back() != root)
+			it->second.roots.push_back(root);
+	}
+	// The read items by signature, then the unread ones in id order; `pin`
+	// (when given) leads.
+	void order(size_t n, std::vector<uint32_t> &out, const uint32_t *pin) const
+	{
+		std::vector<std::pair<const Sig *, uint32_t> > read;
+		for (std::map<uint32_t, Sig>::const_iterator it = items.begin();
+		     it != items.end(); ++it)
+			if (!pin || it->first != *pin)
+				read.push_back(std::make_pair(&it->second, it->first));
+		std::sort(read.begin(), read.end(),
+			  [](const std::pair<const Sig *, uint32_t> &a,
+			     const std::pair<const Sig *, uint32_t> &b) {
+			if (a.first->roots != b.first->roots)
+				return a.first->roots < b.first->roots;
+			return a.first->first < b.first->first;
+		});
+		out.clear();
+		if (pin)
+			out.push_back(*pin);
+		for (size_t i = 0; i < read.size(); ++i)
+			out.push_back(read[i].second);
+		for (uint32_t i = 0; i < n; ++i)
+			if ((!pin || i != *pin) && !items.count(i))
+				out.push_back(i);
+	}
+};
+
+bool cir_forest_relayout(const void *image, size_t image_len,
+			 const std::vector<std::string> &logs,
+			 std::vector<uint8_t> &blob, size_t &blob_offset,
+			 size_t &hot_blocks, std::string &err)
+{
+	madc::dis::snapshot_reader r;
+	if (!r.open(image, image_len)) {
+		err = "no forest container";
+		return false;
+	}
+	if (r.context_hash() != madc_cir_context_hash()) {
+		err = "the container was built by a different madc";
+		return false;
+	}
+	if (r.find(CIR_FOREST_SEG_ARENA_DEF_POS)) {
+		err = "the container is already laid out";
+		return false;
+	}
+	ForestLayoutTables t;
+	if (!forest_read_layout_tables(r, t)) {
+		err = "the container's string pools or arena records are unreadable";
+		return false;
+	}
+
+	// A read names an item by where it starts: a pool record's first byte,
+	// a record's position (slot order here — the container is not laid out).
+	std::map<uint32_t, uint32_t> start_id[2];
+	for (int k = 0; k < 2; ++k)
+		for (uint32_t id = 0; id < t.pools[k].ids(); ++id)
+			start_id[k][t.pools[k].offs[id]] = id;
+	ForestLayoutReads reads[3];	// pool, arena pool, records
+	// The roots reading each block of a BLOCKED segment the layout leaves in
+	// place (its offsets are the new layout's too); the reordered tables'
+	// blocks are counted from `reads` once they are laid out.
+	typedef std::map<std::pair<uint32_t, uint64_t>, std::set<uint32_t> > BlockRoots;
+	BlockRoots block_roots;
+	auto note_block_span = [&](uint32_t seg, uint32_t shift, uint64_t off, uint64_t len,
+				   const uint32_t *roots, size_t n) {
+		for (uint64_t b = off >> shift; len && b <= (off + len - 1) >> shift; ++b)
+			block_roots[std::make_pair(seg, b)].insert(roots, roots + n);
+	};
+	uint64_t seq = 0;
+	for (size_t i = 0; i < logs.size(); ++i) {
+		FILE *lf = fopen(logs[i].c_str(), "r");
+		if (!lf) {
+			err = "cannot read " + logs[i];
+			return false;
+		}
+		unsigned seg = 0;
+		unsigned long long off = 0, len = 0;
+		size_t lines = 0;
+		while (fscanf(lf, "%u %llu %llu", &seg, &off, &len) == 3) {
+			++lines;
+			if (seg == CIR_FOREST_SEG_STR_BYTES || seg == CIR_FOREST_SEG_ARENA_STR_BYTES) {
+				const int k = seg == CIR_FOREST_SEG_STR_BYTES ? 0 : 1;
+				std::map<uint32_t, uint32_t>::const_iterator it =
+					start_id[k].find((uint32_t)off);
+				if (it != start_id[k].end())
+					reads[k].note(it->second, (uint32_t)i, seq++);
+			} else if (seg == CIR_FOREST_SEG_ARENA_DEFS) {
+				if (off % t.record_bytes == 0)
+					reads[2].note((uint32_t)(off / t.record_bytes), (uint32_t)i, seq++);
+			} else if (const madc::dis::snapshot_segment *bs = r.find(seg))
+				if (madc::dis::snap_xform_id(bs->flags) == madc::dis::SNAP_XFORM_BLOCKED) {
+					const uint32_t root = (uint32_t)i;
+					note_block_span(seg, madc::dis::snap_xform_param(bs->flags),
+							off, len, &root, 1);
+				}
+		}
+		fclose(lf);
+		if (!lines) {
+			err = logs[i] + " records no read (did its bind open the container?)";
+			return false;
+		}
+	}
+
+	// The reordered tables.
+	std::vector<uint8_t> pool_bytes[2], defs;
+	std::vector<uint32_t> pool_offs[2], pos, order;
+	const uint32_t empty_id = 0;	// the empty spelling stays at byte 0
+	for (int k = 0; k < 2; ++k) {
+		reads[k].order(t.pools[k].ids(), order, &empty_id);
+		forest_pool_in_order(t.pools[k], order, pool_bytes[k], pool_offs[k]);
+	}
+	reads[2].order(t.slots(), order, NULL);
+	forest_defs_in_order(t, order, defs, pos);
+
+	// The reordered tables' blocks, counted from the reads in their new places.
+	uint32_t shift = 0;
+	auto blocked_shift = [&](uint32_t seg) -> bool {
+		const madc::dis::snapshot_segment *s = r.find(seg);
+		if (!s || madc::dis::snap_xform_id(s->flags) != madc::dis::SNAP_XFORM_BLOCKED)
+			return false;
+		shift = madc::dis::snap_xform_param(s->flags);
+		return true;
+	};
+	for (int k = 0; k < 2; ++k)
+		if (blocked_shift(t.pools[k].bytes_seg))
+			for (std::map<uint32_t, ForestLayoutReads::Sig>::const_iterator it =
+			     reads[k].items.begin(); it != reads[k].items.end(); ++it)
+				note_block_span(t.pools[k].bytes_seg, shift, pool_offs[k][it->first],
+						forest_pool_record_bytes(t.pools[k], it->first),
+						it->second.roots.data(), it->second.roots.size());
+	if (blocked_shift(CIR_FOREST_SEG_ARENA_DEFS))
+		for (std::map<uint32_t, ForestLayoutReads::Sig>::const_iterator it =
+		     reads[2].items.begin(); it != reads[2].items.end(); ++it)
+			note_block_span(CIR_FOREST_SEG_ARENA_DEFS, shift,
+					(uint64_t)pos[it->first] * t.record_bytes, t.record_bytes,
+					it->second.roots.data(), it->second.roots.size());
+	// A block at least half the root binds read is stored raw: a compile
+	// including any of those roots copies it instead of decoding it.
+	std::map<uint32_t, std::vector<bool> > raw_blocks;	// seg -> per block
+	hot_blocks = 0;
+	for (BlockRoots::const_iterator it = block_roots.begin(); it != block_roots.end(); ++it) {
+		if (it->second.size() * 2 < logs.size())
+			continue;
+		std::vector<bool> &v = raw_blocks[it->first.first];
+		if (v.size() <= it->first.second)
+			v.resize((size_t)it->first.second + 1, false);
+		v[(size_t)it->first.second] = true;
+		++hot_blocks;
+	}
+
+	madc::dis::snapshot_writer w;
+	w.set_context_hash(r.context_hash());
+	for (uint32_t i = 0; i < r.segment_count(); ++i) {
+		const madc::dis::snapshot_segment *s = r.segment_at(i);
+		if (!s) {
+			err = "corrupt directory record " + std::to_string(i);
+			return false;
+		}
+		const void *bytes = NULL;
+		size_t n = 0;
+		std::map<uint32_t, std::vector<bool> >::const_iterator rb =
+			raw_blocks.find(s->seg_id);
+		const std::vector<bool> *raw = rb == raw_blocks.end() ? NULL : &rb->second;
+		std::vector<uint8_t> whole;	// a segment left in place, re-blocked
+		if (raw && !forest_layout_seg(s->seg_id)) {
+			if (!r.read_segment(*s, whole) || whole.empty()) {
+				err = "cannot read segment " + std::to_string(s->seg_id);
+				return false;
+			}
+			bytes = whole.data();
+			n = whole.size();
+		}
+		for (int k = 0; k < 2; ++k)
+			if (s->seg_id == t.pools[k].bytes_seg) {
+				bytes = pool_bytes[k].data();
+				n = pool_bytes[k].size();
+			} else if (s->seg_id == t.pools[k].offs_seg) {
+				bytes = pool_offs[k].data();
+				n = pool_offs[k].size() * sizeof(uint32_t);
+			}
+		if (s->seg_id == CIR_FOREST_SEG_ARENA_DEFS) {
+			bytes = defs.data();
+			n = defs.size();
+		}
+		const bool ok = bytes
+			? w.add_segment(s->seg_id, s->kind, n ? bytes : (const void *)"", n,
+					n ? (PchCompression)s->codec : PchCompression::None,
+					CIR_FOREST_PACK_ZSTD_LEVEL, n ? s->flags : 0, raw)
+			: w.add_encoded_segment(*s, r.stored_payload(*s));
+		if (!ok) {
+			err = "cannot re-encode segment " + std::to_string(s->seg_id);
+			return false;
+		}
+	}
+	if (!w.add_segment(CIR_FOREST_SEG_ARENA_DEF_POS, SNAP_KIND_CIR_ARENA_DEF_POS,
+			   pos.empty() ? (const void *)"" : (const void *)pos.data(),
+			   pos.size() * sizeof(uint32_t), PchCompression::None, 0, 0)
+	    || !w.build(blob)) {
+		err = "cannot assemble the laid-out container";
+		return false;
+	}
+	blob_offset = r.blob_offset();
+	return true;
+}
+
 // The --show-stats block census: every lazy span a bind bound, by segment.
 void CirFrozenForest::note_lazy_span(uint32_t seg_id,
 				     const madc::dis::lazy_blocks *lz) const
 {
 	if (lz)
 		_lazy_spans.push_back(std::make_pair(seg_id, lz));
+	if (lz && _touch)
+		_touch->attach(seg_id, lz);
+}
+
+bool CirFrozenForest::record_touches(const char *path)
+{
+	if (_touch)
+		return true;
+	FILE *f = fopen(path, "w");
+	if (!f)
+		return false;
+	_touch = new ForestTouchRecorder(f);
+	for (size_t i = 0; i < _lazy_spans.size(); ++i)
+		_touch->attach(_lazy_spans[i].first, _lazy_spans[i].second);
+	return true;
 }
 
 std::string CirFrozenForest::block_stats(unsigned long long &decoded,
@@ -1720,6 +2184,21 @@ bool CirFrozenForest::complete_open(c2m_ctx_t c2m)
 		    && !(nd % sizeof(uint32_t)) && !(np % sizeof(uint32_t))
 		    && !(no % sizeof(uint32_t))) {
 			_arena.bind_defs((const uint32_t *)pd, nd / sizeof(uint32_t), lzd);
+			// v60: the records' layout (raw, in place; absent = slot
+			// order). One position per slot; a position past the table
+			// reads as absent (get_def_at's bound).
+			const madc::dis::snapshot_segment *ps =
+				_reader.find(CIR_FOREST_SEG_ARENA_DEF_POS);
+			size_t npos = 0;
+			const uint8_t *pos = ps ? forest_segment_bytes(_reader, *ps, npos) : NULL;
+			if (ps && (ps->kind != SNAP_KIND_CIR_ARENA_DEF_POS || !pos
+				   || npos != (size_t)_arena.def_slots() * sizeof(uint32_t))) {
+				fprintf(stderr, "madc: forest record layout corrupt\n");
+				return false;
+			}
+			if (pos)
+				_arena.bind_def_positions((const uint32_t *)pos,
+							  npos / sizeof(uint32_t));
 			_arena.bind_payload((const uint32_t *)pp, np / sizeof(uint32_t), lzp);
 			_arena.strings.bind((const char *)ab, nb, (const uint32_t *)ao,
 					    no / sizeof(uint32_t), lzab);
@@ -1785,15 +2264,13 @@ bool CirFrozenForest::bind_name_index(const uint8_t *p, uint32_t nunits,
 	const uint32_t *off = (const uint32_t *)p;
 	const uint32_t *sorted = off + nunits + 1;
 	const char *bytes = (const char *)(sorted + nunits);
+	// Every read stays in bounds: names ascend and end in a NUL, and the
+	// sorted index names units. Their ORDER is not re-checked — a misordered
+	// index can only make find_unit miss (a hit is an exact strcmp match).
 	if (off[0] != 0 || off[nunits] != name_bytes)
 		return false;
 	for (uint32_t u = 0; u < nunits; ++u)
-		if (off[u + 1] <= off[u] || bytes[off[u + 1] - 1] != 0)
-			return false;
-	for (uint32_t i = 0; i < nunits; ++i)
-		if (sorted[i] >= nunits
-		    || (i && strcmp(bytes + off[sorted[i - 1]],
-				    bytes + off[sorted[i]]) > 0))
+		if (off[u + 1] <= off[u] || bytes[off[u + 1] - 1] != 0 || sorted[u] >= nunits)
 			return false;
 	_name_off = off;
 	_name_sorted = sorted;
@@ -2225,8 +2702,10 @@ const char *CirFrozenForest::pool_cstr(uint32_t id, uint32_t &len) const
 {
 	if (id > _pool.count())
 		return NULL;
-	len = _pool.length(id);
-	return _pool.c_str(id);
+	if (const char *s = _pool.spelling(id, len))
+		return s;
+	len = 0;	// unreadable: the empty spelling, as c_str()
+	return "";
 }
 
 const std::vector<madc::dis::istring> &CirFrozenForest::libs()

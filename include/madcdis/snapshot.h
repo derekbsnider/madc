@@ -148,10 +148,18 @@ public:
     // element/stride). `level` is the Zstd compression level (0 = codec
     // default; see madc_pch::compress) — decompression speed is
     // level-independent. `xform` is a snap_xform_flags() value applied to
-    // the payload before compression (read_segment inverts it).
+    // the payload before compression (read_segment inverts it). For a
+    // SNAP_XFORM_BLOCKED segment, `raw_blocks` (optional) marks the blocks to
+    // store uncompressed — read by most binds, a copy costs less than a decode.
     bool add_segment(uint32_t seg_id, uint32_t kind,
 		     const void *bytes, size_t len, PchCompression codec,
-		     int level = 0, uint32_t xform = 0);
+		     int level = 0, uint32_t xform = 0,
+		     const std::vector<bool> *raw_blocks = 0);
+
+    // Carry a segment over from another container unchanged: its directory
+    // record (offset reassigned at build()) and its stored payload bytes,
+    // already encoded. False on a duplicate seg_id.
+    bool add_encoded_segment(const snapshot_segment &meta, const void *payload);
 
     // Assemble the complete blob (header + payloads + directory + footer).
     bool build(std::vector<uint8_t> &out) const;
@@ -192,8 +200,8 @@ public:
 // Opens a container over a memory image whose LAST bytes are the footer — a
 // standalone snapshot file, or a whole executable with the blob appended. The
 // image must stay live for the reader's lifetime (raw_ptr/read_segment read
-// from it). Directory records are copied out at open(), so interior alignment
-// of the image is never assumed for the metadata.
+// from it). The directory is read in place when aligned in the image and
+// copied out otherwise, so interior alignment is never assumed.
 class snapshot_reader
 {
 	const uint8_t *_image;	// whole mapped carrier passed to open()
@@ -201,23 +209,33 @@ class snapshot_reader
     const uint8_t *_blob;	// blob start within the image
     size_t _blob_size;
     snapshot_header _hdr;
-    std::vector<snapshot_segment> _dir;
-    // find(): a binary search of _dir when the table was written sorted by
-    // seg_id (_dir_sorted); else the seg_id -> _dir index built at open() —
+    // The directory: read in place in the image (_dir_image) when aligned
+    // there, else copied out (_dir_copy); _dir_end bounds every payload.
+    const snapshot_segment *_dir_image;
+    std::vector<snapshot_segment> _dir_copy;
+    uint32_t _dir_n;
+    uint64_t _dir_end;
+    const snapshot_segment *dir() const
+	{ return _dir_image ? _dir_image : _dir_copy.data(); }
+    // find(): a binary search of the table when it was written sorted by
+    // seg_id (_dir_sorted); else the seg_id -> index map built at open() —
     // never a scan (a per-unit load sweep issues four finds per unit).
     bool _dir_sorted = false;
     std::unordered_map<uint32_t, uint32_t> _dir_index;
+    bool record_ok(const snapshot_segment &s) const;
     // The one decode core: decompress (or copy) a payload into dst, no
     // transform inversion, no allocation. Both read_segment overloads and
     // read_segment_into ride it.
     bool decode_payload(const snapshot_segment &seg, uint8_t *dst) const;
 public:
-    snapshot_reader() : _image(0), _image_size(0), _blob(0), _blob_size(0)
+    snapshot_reader() : _image(0), _image_size(0), _blob(0), _blob_size(0),
+			_dir_image(0), _dir_n(0), _dir_end(0)
 	{ _hdr = snapshot_header(); }
 
-    // Validates footer magic/version/sizes, header, and every directory
-    // record's payload bounds. False = not a container / corrupt -> caller
-    // falls back; never throws, never reads out of bounds.
+    // Validates footer magic/version/sizes, the header and the directory's
+    // bounds. False = not a container / corrupt -> caller falls back; never
+    // throws, never reads out of bounds. A directory record is checked when
+    // handed out (find / segment_at): a corrupt one is never returned.
     bool open(const void *image, size_t image_len);
 
     // Placement-2 profile stacks append more than one complete blob to the
@@ -228,15 +246,20 @@ public:
     // and profile selection remain the consumer's concern.
     bool previous_image_len(size_t &image_len) const;
 
-    uint32_t segment_count() const { return (uint32_t)_dir.size(); }
+    uint32_t segment_count() const { return _dir_n; }
     uint64_t context_hash()  const { return _hdr.context_hash; }
     // Stable identity of the OPENED BLOB within its carrier (profile stacks
     // append several blobs to one image, so the image base alone does not
     // identify a directory's segments; blob base + segment offset does).
     // For cache keys only — never dereference through it.
     const void *blob_base() const { return _blob; }
-    const snapshot_segment *segment_at(uint32_t idx) const
-	{ return idx < _dir.size() ? &_dir[idx] : (const snapshot_segment *)0; }
+    // Where the opened blob starts within its carrier image.
+    size_t blob_offset() const { return (size_t)(_blob - _image); }
+    // A segment's STORED bytes (seg.comp_size of them, encoded as recorded).
+    const uint8_t *stored_payload(const snapshot_segment &seg) const
+	{ return _blob + seg.offset; }
+    // NULL past the table or for a corrupt record.
+    const snapshot_segment *segment_at(uint32_t idx) const;
     const snapshot_segment *find(uint32_t seg_id) const;
 
     // Decompress (or copy) a segment payload into out (resized to raw_size),

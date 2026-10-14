@@ -454,4 +454,11 @@ int madc_cir_execute_frozen(const char *container_path,
 // NULL = the blob appended to this executable. Returns 0, or -1 on failure.
 int madc_cir_dump_forest(const char *container_path);
 
+// --forest-relayout=<image> <log>... (the pack step's layout pass): lay the
+// carrier's LAST forest container out by the reads the recorded root binds
+// made (cir_forest_relayout) and write the carrier back with the new container
+// in the old one's place. False, with a diagnostic, on any failure.
+bool madc_cir_forest_relayout(const char *image_path,
+			      const std::vector<std::string> &logs);
+
 #endif // __MADC_CIR_H

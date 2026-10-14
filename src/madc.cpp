@@ -398,6 +398,10 @@ static void print_usage(const char *prog)
 "                          3. <exe>.forest, then <lib>.forest (sidecars),\n"
 "                          4. the $MADC_FOREST path,\n"
 "                          5. the madc.ini `forest' key\n"
+"  --forest-touch-log=<file>  (pack step) record the frozen-table reads\n"
+"                          this compile's bind makes, for --forest-relayout\n"
+"  --forest-relayout=<image> <log>...  (pack step) lay the image's last\n"
+"                          forest container out by the recorded reads\n"
 "  --no-forest-bind        force live parse (overrides the default and an\n"
 "                          explicit --forest-bind; the A/B measurement lever)\n"
 "  --dump-registered       parse, then print the registered name maps\n"
@@ -856,6 +860,7 @@ int main(int argc, char **argv)
     const char *run_frozen_path = NULL;   // NULL = the blob appended to this executable
     bool freeze_run = false;              // --freeze-run: freeze, then re-exec fresh to run
     bool dump_forest = false;             // --dump-forest[=path]: print container surfaces
+    const char *forest_relayout_path = NULL;  // --forest-relayout=<image>: the pack layout pass
     const char *dump_forest_path = NULL;  // NULL = the blob appended to this executable
     bool dump_registered = false;         // --dump-registered: post-parse name maps (oracle side B)
     bool dump_macro_table = false;        // -dM: effective macro table after lex (gcc -dM -E analogue)
@@ -1132,6 +1137,17 @@ int main(int argc, char **argv)
             prog->registration_policy.enable_forest_bind = true;
             prog->forest_bind_path = argv[i] + 14;
             filearg = i + 1;
+        } else if (strncmp(argv[i], "--forest-touch-log=", 19) == 0) {
+            // The pack step's layout recorder: log the frozen-table reads
+            // this compile's bind makes (scripts/forest_pack_layout.sh).
+            prog->forest_touch_log = argv[i] + 19;
+            filearg = i + 1;
+        } else if (strncmp(argv[i], "--forest-relayout=", 18) == 0) {
+            // The pack step's layout pass: the remaining arguments are the
+            // recorded root binds' logs, in canonical root order.
+            forest_relayout_path = argv[i] + 18;
+            filearg = i + 1;
+            break;
         } else if (strcmp(argv[i], "--no-forest-bind") == 0) {
             // Force live parse: overrides both the packed-binary default and
             // an explicit --forest-bind (the A/B lever for measurement).
@@ -1280,6 +1296,15 @@ int main(int argc, char **argv)
     {
         print_usage(argv[0]);
         return 0;
+    }
+
+    // --forest-relayout=<image> <log>...: lay the image's last container out
+    // by the reads the recorded root binds made (format 60; the pack step,
+    // scripts/forest_pack_layout.sh). No source file, no parse.
+    if ( forest_relayout_path )
+    {
+        std::vector<std::string> logs(argv + filearg, argv + argc);
+        return madc_cir_forest_relayout(forest_relayout_path, logs) ? 0 : 1;
     }
 
     // madc.ini (forest-carriers S6). The precedence rule is

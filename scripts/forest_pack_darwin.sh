@@ -30,6 +30,7 @@
 # with ../-relative arguments.
 set -e
 . "$(dirname "$0")/forest_pack_share.sh"	# the standards the one profile serves
+. "$(dirname "$0")/forest_pack_layout.sh"	# the layout pass (format 60)
 
 CROSS="$1"
 MANIFEST="$2"
@@ -135,6 +136,17 @@ cat "$PACK_LOG"
 "$TIMEOUT" 120 "$CROSS" --dump-forest="$OUT" > "$OUT.share.txt"
 forest_share_check "$OUT.share.txt"
 
+# Lay the container out by the reads the pack's root binds make (format 60):
+# the roots are the TU's, in its canonical order.
+ROOTS="$OUT.roots.txt"
+{ grep -v '^[[:space:]]*$' "$MANIFEST"; echo "$CXXNAMES"; } > "$ROOTS"
+if ! forest_pack_layout "$OUT" "$ROOTS" "$TIMEOUT" 120 "$CROSS" --no-sysroot-includes; then
+    rm -f "$OUT"
+    echo "forest_pack_darwin: FAILED - layout pass" >&2
+    exit 1
+fi
+rm -f "$ROOTS"
+
 # Verify: the container reads back (context-hash pin + directory), and every
 # manifest name is a directory unit — a missing stub unit means a consumer's
 # #include of that name would silently live-parse (the G2 silent-degradation
@@ -144,6 +156,11 @@ DUMP="$OUT.dump.txt"
 if ! grep -q '^forest	units=' "$DUMP"; then
     rm -f "$OUT"
     echo "forest_pack_darwin: FAILED - packed image has no forest directory" >&2
+    exit 1
+fi
+if ! grep -q '^layout	reads' "$DUMP"; then
+    rm -f "$OUT"
+    echo "forest_pack_darwin: FAILED - the packed container was not laid out" >&2
     exit 1
 fi
 # The exact selected ledger must be THERE: a hosted darwin madc without it

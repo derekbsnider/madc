@@ -4416,6 +4416,9 @@ CirFrozenForest *Program::ensure_bind_forest()
     bind_forest = f;
     DBG(std::cout << "forest-bind: opened container (" << f->unit_count()
 	<< " units)" << std::endl);
+    if ( !forest_touch_log.empty() && !f->record_touches(forest_touch_log.c_str()) )
+	std::cerr << "madc: --forest-touch-log: cannot write '"
+		  << forest_touch_log << "'" << std::endl;
     bind_forest->_work_secs = &_forest_work_seconds;
     bind_forest->_work_depth = &_forest_work_depth;
     return bind_forest;
@@ -4763,19 +4766,28 @@ int Program::forest_unit_named_by_include(const madc::dis::istring &incfile)
 // it), so the unit prunes as satisfied exactly like a live re-include.
 bool Program::forest_unit_defines_macro(uint32_t unit, const char *nm)
 {
+    std::set<madc::dis::istring> defines;
+    forest_unit_defined_macros(unit, defines);
+    return nm && defines.count(nm) != 0;
+}
+
+// Every macro this unit's own frozen PP-event stream (re)defines — the one
+// walk of that stream for the guard tests above and below.
+void Program::forest_unit_defined_macros(uint32_t unit,
+					 std::set<madc::dis::istring> &out)
+{
     std::vector<uint32_t> ev;
     if ( !bind_forest->unit_pp_events(unit, ev) )
-	return false;
+	return;
     for ( size_t k = 0; k + 5 <= ev.size(); )
     {
 	uint32_t name_id = ev[k], tag_flags = ev[k + 1], nparams = ev[k + 4];
 	uint8_t tag = (uint8_t)(tag_flags & 0xff);
 	const char *enm = bind_forest->pool_str(name_id);
-	if ( enm && tag != PackMacroEvent::peUndef && strcmp(enm, nm) == 0 )
-	    return true;
+	if ( enm && tag != PackMacroEvent::peUndef )
+	    out.insert(enm);
 	k += 5 + (tag == PackMacroEvent::peDefineFn ? nparams : 0);
     }
-    return false;
 }
 
 // A unit-granular live include is safe only for a standalone HEADER husk, not
@@ -4792,12 +4804,14 @@ bool Program::forest_unit_is_standalone_husk(
     std::vector<cir_forest_decl_entry> decls;
     if ( !bind_forest->unit_decl_index(unit, decls) || !decls.empty() )
 	return false;
+    std::set<madc::dis::istring> defines;	// read once for every dep below
+    forest_unit_defined_macros(unit, defines);
     for ( size_t k = 0; k + 4 <= deps.size(); k += 4 )
     {
 	if ( deps[k + 1] & (CIR_BRANCH_DEP_DEFINED | CIR_BRANCH_DEP_PP_ARM) )
 	    continue;
 	const char *nm = bind_forest->pool_str(deps[k]);
-	if ( nm && forest_unit_defines_macro(unit, nm) )
+	if ( nm && defines.count(nm) )
 	    return true;
     }
     return false;

@@ -204,32 +204,47 @@ public:
     }
     size_t      count()             const { return _entries.size() - 1; } // excl. id 0
 
-    // --- serialization accessors: the two blocks a frozen_intern_table
-    // rebinds — the bytes, and the OFFSETS block: id -> byte offset, plus one
-    // trailing word (the byte block's size). Spellings are laid out in id
-    // order, each followed by its NUL, so a spelling's length is the next
-    // offset less one.
-    const char     *bytes_data()   const { return _bytes.data(); }
-    size_t          bytes_size()   const { return _bytes.size(); }
-    void offsets_block(std::vector<uint32_t> &out) const
+    // --- serialization: the two blocks a frozen_intern_table binds — the
+    // RECORDS (per id: its length as LEB128, the spelling, a NUL) in id order,
+    // and the OFFSETS block (id -> its record's byte offset, closed by the
+    // records' size). The length travels with the record, so the records may
+    // sit in any order (the pack layout reorders them, format 60) and a
+    // spelling may hold NUL bytes (a string literal's value does).
+    void frozen_blocks(std::vector<char> &bytes, std::vector<uint32_t> &offs) const
     {
-	out.resize(_entries.size() + 1);
+	bytes.clear();
+	bytes.reserve(_bytes.size() + 2 * _entries.size());
+	offs.resize(_entries.size() + 1);
 	for ( size_t i = 0; i < _entries.size(); ++i )
-	    out[i] = _entries[i].off;
-	out[_entries.size()] = (uint32_t)_bytes.size();
+	{
+	    offs[i] = (uint32_t)bytes.size();
+	    uint32_t n = _entries[i].len;
+	    do
+	    {
+		unsigned char b = n & 0x7f;
+		n >>= 7;
+		bytes.push_back((char)(n ? b | 0x80 : b));
+	    } while ( n );
+	    bytes.insert(bytes.end(), &_bytes[_entries[i].off],
+			 &_bytes[_entries[i].off] + _entries[i].len);
+	    bytes.push_back('\0');
+	}
+	offs[_entries.size()] = (uint32_t)bytes.size();
     }
 };
 
 // The FROZEN intern-table catalog variant: a read-only VIEW over two
-// serialized blocks placed in loaded / mmap'd memory — the spelling bytes and
-// the OFFSETS block (intern_table::offsets_block). No fixup. Lookups by id
-// only: a loaded (forest / PCH) segment never interns, and nothing searches
-// one by spelling — the live TU's intern_table does both. id 0 is the empty
+// serialized blocks placed in loaded / mmap'd memory — the records and the
+// OFFSETS block (intern_table::frozen_blocks). No fixup. Lookups by id only: a
+// loaded (forest / PCH) segment never interns, and nothing searches one by
+// spelling — the live TU's intern_table does both. id 0 is the empty
 // spelling, as in the live table.
 //
 // The offsets block is the whole per-id cost (4 bytes): the live table's
-// hash and chain words exist only for interning, and a spelling's length is
-// the next offset less its NUL. Stored raw, it is read in place.
+// hash and chain words exist only for interning. Each record carries its
+// own length, so the records may sit in any order — the release pack lays
+// them out by the reads that need them (format 60). Stored raw, the offsets
+// block is read in place.
 //
 // Alignment contract: the offsets block must be 4-aligned in the bound memory
 // (the snapshot container 16-aligns segment payloads, which satisfies this).
@@ -241,21 +256,33 @@ class frozen_intern_table
     // ensures the bytes it touches, so a bind decodes only those.
     const lazy_blocks *_lz_bytes;
 
-    // id's spelling (NUL-terminated in place) and its length; NULL when id is
-    // out of range, its span is malformed, or its block fails to decode.
+public:
+    // id's spelling (NUL-terminated in place) and its length in one read;
+    // NULL when id is out of range, its record is malformed, or a block it
+    // reaches fails to decode. Ensures the length's bytes, then the spelling
+    // and its NUL — only the blocks the record occupies.
     const char *spelling(uint32_t id, uint32_t &len) const
     {
 	if ( (size_t)id + 1 >= _noffsets )
 	    return 0;
-	uint32_t off = _offsets[id], end = _offsets[id + 1];
-	if ( end <= off || end > _nbytes
-	     || !lazy_ensure(_lz_bytes, off, end - off)
-	     || _bytes[end - 1] != '\0' )
+	uint32_t n = 0;
+	size_t at = _offsets[id];
+	for ( unsigned sh = 0; ; sh += 7 )
+	{
+	    if ( sh > 28 || at >= _nbytes || !lazy_ensure(_lz_bytes, at, 1) )
+		return 0;
+	    const unsigned char b = (unsigned char)_bytes[at++];
+	    n |= (uint32_t)(b & 0x7f) << sh;
+	    if ( !(b & 0x80) )
+		break;
+	}
+	if ( n >= _nbytes - at || !lazy_ensure(_lz_bytes, at, (size_t)n + 1)
+	     || _bytes[at + n] != '\0' )
 	    return 0;
-	len = end - off - 1;
-	return &_bytes[off];
+	len = n;
+	return &_bytes[at];
     }
-public:
+
     frozen_intern_table()
 	: _bytes(0), _nbytes(0), _offsets(0), _noffsets(0), _lz_bytes(0) {}
 
@@ -268,17 +295,16 @@ public:
 	_lz_bytes = lz_bytes;
     }
 
-    // The container-load gate: the block shapes, the reserved empty entry and
-    // the closing offset. O(1) — every span is checked where it is read, so a
-    // corrupt offset reads as absent, never out of bounds, and validating
-    // decodes nothing a bind does not read. False = the segment set is
-    // corrupt or mismatched and must be rejected (fall back to live parse,
-    // never crash).
+    // The container-load gate: the block shapes, the reserved empty entry at
+    // byte 0 and the closing offset. O(1) — every span is checked where it is
+    // read, so a corrupt offset reads as absent, never out of bounds, and
+    // validating decodes nothing a bind does not read. False = the segment
+    // set is corrupt or mismatched and must be rejected (fall back to live
+    // parse, never crash).
     bool valid() const
     {
 	return _bytes && _nbytes && _offsets && _noffsets >= 2
-	    && _offsets[0] == 0 && _offsets[1] == 1
-	    && _offsets[_noffsets - 1] == _nbytes;
+	    && _offsets[0] == 0 && _offsets[_noffsets - 1] == _nbytes;
     }
 
     // A malformed or unreadable id reads as the empty spelling, length 0.

@@ -24,6 +24,19 @@
 namespace madc {
 namespace dis {
 
+class lazy_blocks;
+
+// An observer of the reads a span serves — the pack step's layout recorder
+// (docs/plans/2026-10-13-pack-slices-design.md §3, format 60): once attached
+// it is told every ensure() range, and it outlives the attachment (it detaches
+// before it is destroyed). Ordinary runs attach none.
+class lazy_touch_sink
+{
+public:
+    virtual ~lazy_touch_sink() {}
+    virtual void touched(const lazy_blocks *span, size_t off, size_t len) = 0;
+};
+
 class lazy_blocks
 {
 protected:
@@ -33,12 +46,14 @@ protected:
     size_t                 _nblocks;
     std::atomic<uint8_t>  *_ready;	// one flag per block
     mutable std::atomic<size_t> _decoded;	// blocks decoded so far
+    mutable std::atomic<lazy_touch_sink *> _sink;	// NULL: no observer
 
     // Slow path: decode every not-yet-ready block in [first, last] and
     // publish each. False on a decode failure (corrupt payload).
     virtual bool fill(size_t first, size_t last) const = 0;
 
-    lazy_blocks() : _buf(0), _size(0), _shift(0), _nblocks(0), _ready(0), _decoded(0) {}
+    lazy_blocks() : _buf(0), _size(0), _shift(0), _nblocks(0), _ready(0), _decoded(0),
+		    _sink(nullptr) {}
     lazy_blocks(const lazy_blocks &);
     lazy_blocks &operator=(const lazy_blocks &);
 public:
@@ -49,6 +64,8 @@ public:
     // The --show-stats observable: how much of the span a run decoded.
     size_t block_count() const { return _nblocks; }
     size_t blocks_decoded() const { return _decoded.load(std::memory_order_relaxed); }
+    // Attach (or, with NULL, detach) the read observer.
+    void observe(lazy_touch_sink *s) const { _sink.store(s, std::memory_order_release); }
 
     // Make [off, off+len) readable. False when the range lies outside the
     // span or a covering block fails to decode — the caller treats the read
@@ -57,6 +74,8 @@ public:
     {
 	if ( off > _size || len > _size - off )
 	    return false;
+	if ( lazy_touch_sink *s = _sink.load(std::memory_order_acquire) )
+	    s->touched(this, off, len);
 	if ( !len )
 	    return true;
 	size_t b = off >> _shift, e = (off + len - 1) >> _shift;

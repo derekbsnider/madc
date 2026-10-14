@@ -154,7 +154,9 @@ enum : uint32_t
 	// ForestSeeds, ForestRecordableBits below.
 	SNAP_KIND_CIR_DECL_NAMES       = madc::dis::SNAP_KIND_CONSUMER + 27,
 	SNAP_KIND_CIR_SEEDS            = madc::dis::SNAP_KIND_CONSUMER + 28,
-	SNAP_KIND_CIR_RECORDABLE       = madc::dis::SNAP_KIND_CONSUMER + 29
+	SNAP_KIND_CIR_RECORDABLE       = madc::dis::SNAP_KIND_CONSUMER + 29,
+	// v60: the arena records' layout — uint32 position per slot (raw).
+	SNAP_KIND_CIR_ARENA_DEF_POS    = madc::dis::SNAP_KIND_CONSUMER + 30
 };
 
 // One frozen node record (fixed-size POD; x86-64 little-endian first, like
@@ -614,7 +616,15 @@ bool cir_freeze_read(const madc::dis::snapshot_reader &r, uint32_t seg_id_base,
 // tokens. A string pool is its bytes plus a raw OFFSETS block (4 bytes an
 // id, read in place) — the entries / buckets segments are gone. The seed
 // index (DECL_NAMES, SEEDS, RECORDABLE) is stored raw and read in place.
-enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 59 };
+//
+// v60: the release pack's LAYOUT pass (cir_forest_relayout) reorders the
+// string pools' bytes and the arena's records by the reads the pack's root
+// binds make, so a bind decodes the blocks its program needs. A string
+// pool's record carries its own length (LEB128, then the spelling and a NUL;
+// intern_table::frozen_blocks), so records may sit in any order, and
+// ARENA_DEF_POS maps a slot to its record's position (absent = slot order).
+// Ids unchanged.
+enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 60 };
 // Flags word of a SNAP_KIND_CIR_BRANCH_DEPS tuple.
 enum : uint32_t {
 	CIR_BRANCH_DEP_DEFINED   = 1u,	// the macro was defined at the consult
@@ -661,7 +671,8 @@ enum : uint32_t
 	CIR_FOREST_SEG_DECL_NAMES       = 24,	// v58: name -> declaring units (ForestDeclNames)
 	CIR_FOREST_SEG_SEEDS            = 25,	// v58: per-unit seed lists (ForestSeeds)
 	CIR_FOREST_SEG_RECORDABLE       = 26,	// v58: arena recordability bits (ForestRecordableBits)
-	// 27-31 reserved (pack slices: the blocked shared tables' block indexes).
+	CIR_FOREST_SEG_ARENA_DEF_POS    = 27,	// v60: slot -> record position (absent = slot order)
+	// 28-31 reserved.
 	CIR_FOREST_SEG_UNIT_BASE     = 32,
 	CIR_FOREST_SEGS_PER_UNIT     = 10	// +0 records, +1 children, +2 connectors,
 						// +3 positions, +4 tokens, +5 decl index,
@@ -1252,6 +1263,30 @@ uint32_t madc_forest_defines_hash(const Program *prog);
 bool cir_forest_content_digests(const void *image, size_t len,
 				std::map<uint32_t, uint64_t> &out);
 
+// The release pack's zstd level (the appended pack pays compression once per
+// release build; see the selection comment at madc_cir.cpp's freeze). The
+// layout pass re-encodes the tables it reorders at the same level.
+enum : int { CIR_FOREST_PACK_ZSTD_LEVEL = 15 };
+
+// The release pack's LAYOUT pass (format 60; docs/plans/2026-10-13-pack-
+// slices-design.md §3). `logs` are --forest-touch-log outputs of the pack's
+// root binds in canonical root order. Every string-pool record and arena
+// record a log names gets a SIGNATURE — the roots whose bind read it — and
+// the tables are rewritten with those items ordered by signature
+// (lexicographic over the root order; the first read breaks ties), then the
+// unread ones in id order. A compile then decodes about the blocks its own
+// includes need. Ids never change: a record moves through its pool's offsets
+// block or through ARENA_DEF_POS. A block (of any BLOCKED segment, in the new
+// layout) that at least half the roots read is stored raw — `hot_blocks`
+// counts them; every other segment is carried over byte for byte. `blob` is
+// the new container, which replaces the old one at `blob_offset` in `image`.
+// False (with `err`) when the image's last container is not a v60 forest of
+// this madc, is already laid out, or a log is unreadable or names nothing.
+bool cir_forest_relayout(const void *image, size_t image_len,
+			 const std::vector<std::string> &logs,
+			 std::vector<uint8_t> &blob, size_t &blob_offset,
+			 size_t &hot_blocks, std::string &err);
+
 // Partition the sub-DAG rooted at `root` into per-unit segments keyed by
 // each node's origin-token source file (origin-less nodes inherit their
 // discovering parent's unit; the root falls back to `main_unit_name`).
@@ -1320,6 +1355,7 @@ public:
 };
 
 class CirFrozenForest;
+class ForestTouchRecorder;	// cir_freeze.cpp: the --forest-touch-log sink
 
 // A loaded frozen segment: joins the live (seg, idx) id space via the B1
 // registry and materializes records to real cir_nodes on touch, at the
@@ -1756,6 +1792,9 @@ class CirFrozenForest
 	// lazy reader) — the --show-stats block census.
 	mutable std::vector<std::pair<uint32_t, const madc::dis::lazy_blocks *> > _lazy_spans;
 	void note_lazy_span(uint32_t seg_id, const madc::dis::lazy_blocks *lz) const;
+	// The pack step's read recorder (record_touches); NULL in every
+	// ordinary run. Observes every span noted above.
+	ForestTouchRecorder *_touch = NULL;
 	// v23: per-FuncDef param-default token runs (paramrec.def_tok_*), built by
 	// materialize_from_arena alongside the methods/free functions. The parser's
 	// pending-funcs flush deserializes each run and re-runs parseExpression.
@@ -1882,6 +1921,13 @@ public:
 	double             stat_zstd_secs() const { return _reader.stat_zstd_secs; }
 	unsigned long long stat_copy_calls() const { return _reader.stat_copy_calls; }
 	unsigned long long stat_copy_bytes() const { return _reader.stat_copy_bytes; }
+	// The pack step's read recorder (--forest-touch-log): from here on every
+	// lazily decoded span this forest reads through reports its reads, and
+	// `path` lists each (segment, offset, length) once, in first-read order —
+	// the input of cir_forest_relayout. False when the log cannot be opened.
+	bool record_touches(const char *path);
+	// v60: the pack's layout pass laid this container's records out.
+	bool records_laid_out() const { return _arena.def_pos != NULL; }
 	// Blocks decoded / held across the BLOCKED shared tables, and one
 	// "seg:decoded/total" row per table.
 	std::string block_stats(unsigned long long &decoded,

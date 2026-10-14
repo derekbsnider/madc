@@ -615,10 +615,15 @@ public:
 	// Lazy sources of the three spans (lazy_blocks.h; NULL = resident): every
 	// accessor ensures the bytes it reads, so a bind decodes only those.
 	const lazy_blocks   *lz_defs, *lz_payload, *lz_tokbytes;
+	// v60: where each slot's record sits in `defs` — the release pack lays
+	// the records out by the reads that need them, ids unchanged. NULL =
+	// slot order. Raw, read in place.
+	const uint32_t      *def_pos;      size_t def_pos_n;
 
 	FrozenDefArena() : defs(0), defs_words(0), payload(0), payload_words(0),
 			   tokbytes(0), tokbytes_len(0),
-			   lz_defs(0), lz_payload(0), lz_tokbytes(0) {}
+			   lz_defs(0), lz_payload(0), lz_tokbytes(0),
+			   def_pos(0), def_pos_n(0) {}
 
 	void bind_defs(const uint32_t *p, size_t words, const lazy_blocks *lz = 0)
 		{ defs = p; defs_words = words; lz_defs = lz; }
@@ -626,6 +631,8 @@ public:
 		{ payload = p; payload_words = words; lz_payload = lz; }
 	void bind_tokbytes(const uint8_t *p, size_t len, const lazy_blocks *lz = 0)
 		{ tokbytes = p; tokbytes_len = len; lz_tokbytes = lz; }
+	void bind_def_positions(const uint32_t *p, size_t n)
+		{ def_pos = p; def_pos_n = n; }
 	// A token run's bytes (paramrec.def_tok_off/def_tok_bytes); NULL if out of range.
 	const uint8_t *tok_run(uint32_t off, uint32_t len) const
 	{
@@ -639,7 +646,12 @@ public:
 	bool get_def_at(uint32_t project_id, defrec &out) const
 	{
 		if ( !arena_id_is_project(project_id) ) return false;
-		size_t off = (size_t)arena_slot_of(project_id) * DefArena::def_stride();
+		size_t at = arena_slot_of(project_id);
+		if ( def_pos ) {
+			if ( at >= def_pos_n ) return false;
+			at = def_pos[at];
+		}
+		size_t off = at * DefArena::def_stride();
 		if ( !defs || off + DefArena::def_stride() > defs_words
 		     || !lazy_ensure(lz_defs, off * sizeof(uint32_t), sizeof(defrec)) )
 			return false;

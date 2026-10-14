@@ -58,7 +58,7 @@ unchanged.
 
 ## 3. Container layout
 
-`CIR_FOREST_FORMAT_VERSION` 57 → 58 (59 as built, below); an older pack is refused at
+`CIR_FOREST_FORMAT_VERSION` 57 → 58 (59, then 60, as built below); an older pack is refused at
 `open_header` (no compatibility case). New segments:
 
 | segment | content |
@@ -96,6 +96,45 @@ kept only where it measured better than the plan's form:
   parse made it, not the always list. A creation point in the producer's own
   source (the root unit, never bound by a consumer) places nothing; the record
   falls back to its declaring file.
+
+**As built (format 60, 2026-10-14) — the LAYOUT pass.** The pack step lays
+the container out by what binds read:
+
+- **Recording.** `scripts/forest_pack_layout.sh` (sourced by all three pack
+  scripts) binds each root of the pack's header list alone against the new
+  container, `--emit=c11` (parse + lower, no execution — a cross freezer runs
+  it too), with `--forest-touch-log=<file>`: every lazy-block `ensure` of a
+  frozen table (`lazy_touch_sink`) is written as `seg off len`.
+- **Relayout** (`--forest-relayout=<image> <logs...>`, `cir_forest_relayout`).
+  Every string-pool record and arena record a log names gets a SIGNATURE (the
+  roots that read it); the pools (2/3, 12/13) and the arena defs (10) are
+  rewritten ordered by signature (lexicographic over the root order; first
+  read breaks ties), then the unread items in id order. Ids never change: a
+  pool record moves through its offsets block, an arena record through the
+  new raw ARENA_DEF_POS segment (slot → position). Simulated against the
+  per-unit touch logs, this ordering beat per-unit placement by seed owner
+  (stdio 13 blocks vs 21, c8 99 vs 168: only 665 of the 1,453 records a
+  `<vector>` bind reads are seeds; the rest are pulls).
+- **Pool records carry their length.** A record is LEB128 length, spelling,
+  NUL; the offsets block maps id → record start. String-literal spellings
+  hold NULs, so a length found by scanning for the NUL is wrong.
+- **Hot blocks are stored raw.** A block (any BLOCKED segment, counted in
+  the new layout) that at least half of the root binds read is written
+  uncompressed — copying a 16 KiB block costs ~16K Ir, decoding it ~230K.
+  17 blocks, +0.23 MB. The reader needs nothing new: stored == raw already
+  meant a raw block.
+- **Open is O(1) in the directory.** The snapshot directory (5,627 records
+  in the pack) is read in place when aligned in the image and each record is
+  checked when handed out (`find` / `segment_at`); open keeps only a
+  sortedness scan. The unit-name index keeps its bounds checks and drops the
+  strcmp order sweep (a misordered index can only miss).
+- **Content digests are layout-invariant**: DEF_POS is skipped and the laid
+  out tables digest in logical (id) order, so a laid-out pack digests as the
+  freeze that produced it.
+
+Measured (symbolized release, pack built in, Ir): stddef 12.7M, stdio 19.8M,
+limits 23.6M, type_traits 28.8M, vector 79.2M, c8 140.0M; pack 12,545,432
+bytes.
 
 ## 4. Seeds — which records a unit's bind visits
 

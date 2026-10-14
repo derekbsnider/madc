@@ -32,6 +32,7 @@
 set -e
 cd "$(dirname "$0")/.."
 . scripts/forest_pack_share.sh	# the standards the one profile serves
+. scripts/forest_pack_layout.sh	# the layout pass (format 60)
 
 IMAGE=
 while [ $# -gt 0 ]; do
@@ -157,6 +158,11 @@ fi
 cat "$PACK_LOG"
 timeout 300 "$WINE" "$PACKER" --dump-forest="$APPEND_TO" > tmp/forest_pack_win_share_dump.txt
 forest_share_check tmp/forest_pack_win_share_dump.txt
+# Lay the container out by the reads the pack's root binds make (format 60).
+if ! forest_pack_layout "$APPEND_TO" "$LIST" timeout 300 "$WINE" "$PACKER"; then
+    echo "forest_pack_windows: FAILED - layout pass" >&2
+    exit 1
+fi
 if [ "$APPEND_TO" != "$IMAGE" ]; then
     mv -f "$APPEND_TO" "$IMAGE"
 fi
@@ -176,6 +182,10 @@ else
 fi
 if ! grep -q '^forest	units=' tmp/forest_pack_win_dump.txt; then
     echo "forest_pack_windows: FAILED - packed exe has no forest directory" >&2
+    exit 1
+fi
+if ! grep -q '^layout	reads' tmp/forest_pack_win_dump.txt; then
+    echo "forest_pack_windows: FAILED - the packed container was not laid out" >&2
     exit 1
 fi
 if ! grep -q "^ledger	modules=$LEDGER_MODULE_COUNT	symbols=" tmp/forest_pack_win_dump.txt; then
