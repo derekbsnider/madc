@@ -115,8 +115,12 @@
 # release-win's own pack run): the same 28 entries as linux, class for class
 # (mingw ships the same libstdc++ 13.2); the 60 are linux's 59 dependent
 # operands plus the one `ptr funcptr*` the old 46-vs-45 split already carried.
+# win64 dk-none 60 -> 1 (2026-10-14, the pack-slices seam pre-build,
+# release-win's own pack run): linux's 59 dependent operands are gone with
+# the lazy derived types of 24a548a17 (linux 59 -> 0); the one left is the
+# `ptr funcptr*` the 46-vs-45 split has always carried.
 28 win64 pack-errors
-60 win64 dk-none
+1 win64 dk-none
 0 win64 closure-drops
 # darwin 64 -> 58 (2026-08-24): the six libc++ <filesystem> "no matching
 # overload ... error_code**" entries (raised 58 -> 64 on 2026-08-23 when the
