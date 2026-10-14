@@ -11,6 +11,9 @@
 			// in-tree compression vocabulary/implementation (zstd
 			// preferred when built with HAVE_ZSTD, zlib fallback).
 #include "pod_alloc.h"	// decode_bytes — resize-without-zero-fill destinations
+#include "madcdis/lazy_blocks.h"	// lazy_blocks — the BLOCKED segment reader's base
+#include <atomic>
+#include <mutex>
 
 // madcdis/snapshot.h — the madc::dis pool-snapshot CONTAINER.
 //
@@ -55,6 +58,7 @@ enum snapshot_kind : uint32_t
     SNAP_KIND_INTERN_BYTES   = 1,	// intern_table byte block
     SNAP_KIND_INTERN_ENTRIES = 2,	// intern_table Entry block
     SNAP_KIND_INTERN_BUCKETS = 3,	// intern_table bucket block
+    SNAP_KIND_INTERN_OFFSETS = 4,	// intern_table offsets block (n + 1 words)
     SNAP_KIND_CONSUMER       = 256	// first consumer-defined kind
 };
 
@@ -74,9 +78,22 @@ enum snapshot_transform : uint32_t
 {
     SNAP_XFORM_NONE      = 0,
     SNAP_XFORM_DELTA32   = 1,	// forward delta over a u32 stream (raw_size % 4 == 0)
-    SNAP_XFORM_BYTEPLANE = 2	// fixed-stride records split into byte planes
+    SNAP_XFORM_BYTEPLANE = 2,	// fixed-stride records split into byte planes
 				// (param = stride > 0, raw_size % stride == 0)
+    SNAP_XFORM_BLOCKED   = 3	// split into fixed-size blocks, each compressed
+				// alone (param = log2 block size, 10..24); the
+				// payload is a snapshot_block_header, the
+				// snapshot_block table, then the stored blocks.
+				// Decodable block by block (snapshot_lazy_segment).
 };
+
+// SNAP_XFORM_BLOCKED payload layout. A block whose stored size equals its raw
+// size is stored raw (codec None — a block under SNAP_BLOCK_RAW_FLOOR bytes,
+// or one the codec did not shrink); every other block is one frame of the
+// segment's codec. Offsets are payload-relative.
+enum : uint32_t { SNAP_BLOCK_RAW_FLOOR = 1024 };
+struct snapshot_block_header { uint32_t block_shift; uint32_t block_count; };
+struct snapshot_block { uint32_t offset; uint32_t stored; };
 
 inline uint32_t snap_xform_flags(snapshot_transform id, uint32_t param = 0)
 	{ return (uint32_t)id | (param << 8); }
@@ -153,6 +170,25 @@ public:
 // ELF carrier arm calls it directly with a container file's bytes.
 bool snapshot_append_blob(const char *path, const void *blob, size_t len);
 
+// The lazy reader of one SNAP_XFORM_BLOCKED segment (lazy_blocks.h): the
+// segment's raw bytes at one address, each block decoded on first ensure().
+// Holds only the payload bytes (a process-lifetime image mapping) and the
+// segment record — never the reader — so it may outlive the reader that made
+// it (snapshot_reader::open_lazy).
+class snapshot_lazy_segment : public lazy_blocks
+{
+    const uint8_t *_payload;
+    uint32_t       _codec;
+    uint32_t       _seg_id;
+    mutable std::mutex _mu;
+    bool fill(size_t first, size_t last) const;
+    snapshot_lazy_segment(const uint8_t *payload, const snapshot_segment &seg);
+    friend class snapshot_reader;
+public:
+    ~snapshot_lazy_segment();
+    uint32_t seg_id() const { return _seg_id; }
+};
+
 // Opens a container over a memory image whose LAST bytes are the footer — a
 // standalone snapshot file, or a whole executable with the blob appended. The
 // image must stay live for the reader's lifetime (raw_ptr/read_segment read
@@ -228,6 +264,10 @@ public:
     // Zero-copy payload pointer for codec None segments (bind-in-place path);
     // NULL for compressed or transformed segments.
     const uint8_t *raw_ptr(const snapshot_segment &seg) const;
+
+    // A lazy reader over a SNAP_XFORM_BLOCKED segment (caller owns it); NULL
+    // when the segment is not blocked or its block table is malformed.
+    snapshot_lazy_segment *open_lazy(const snapshot_segment &seg) const;
 
     // --show-stats observability (accumulated across the reader's lifetime;
     // mutable because read_segment is const). The zstd trio counts real codec

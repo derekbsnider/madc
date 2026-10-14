@@ -9895,6 +9895,7 @@ static void register_basic_class_pattern_method(
 	Program::DeferredFunctionBody body;
 	body.var = mvar;
 	body.method = method;
+	body.pack_poi = pgm.pack_current_poi();
 	body.body_tokens = basic_class_pattern_substitute_tokens(pgm,
 	    binding, pattern.body_tokens);
 	body.definition_tokens = basic_class_pattern_substitute_tokens(pgm,
@@ -20605,6 +20606,7 @@ bool Program::bracket_dim_needs_runtime_value(
 // (see StructRegistry::find_despaced).
 uint64_t DataDef::canonical_spelling_gen = 0;
 thread_local bool madc_class_pattern_capture_active = false;
+thread_local uint32_t madc_pack_creation_poi = 0xffffffffu;
 
 // The target's 64-bit data model (datadef.h) — host-derived default: the
 // hosted modes compile for the compiler that built them (the win64 madc.exe
@@ -36771,6 +36773,7 @@ void Program::ClassRegistrationJournal::rollback()
     for ( size_t i = 0; i < state->pack_decl_stack_size; ++i )
 	pgm.pack_decl_stack[i].names.resize(state->pack_decl_name_sizes[i]);
     pgm.pack_decl_stack.resize(state->pack_decl_stack_size);
+    madc_pack_creation_poi = pgm.pack_current_poi();
     assert(pgm.block_typedef_shadows.size() >=
 	state->block_typedef_shadow_depth);
     for ( size_t i = 0; i < state->block_typedef_shadow_depth; ++i )
@@ -50201,6 +50204,7 @@ void Program::enqueue_deferred_function_body(Variable *var,
     Program::DeferredFunctionBody body;
     body.var = var;
     body.method = method;
+    body.pack_poi = pack_current_poi();
     body.file = open ? open->file : NULL;
     body.line = open ? open->line : 0;
     body.column = open ? open->column : 0;
@@ -50397,6 +50401,27 @@ TokenBase *Program::parse_ctor_initializer_list(FuncDef *func)
     return nt;
 }
 
+Program::PackPoiFrame::PackPoiFrame(Program &pp, uint32_t poi) : p(pp), pushed(false)
+{
+    if ( p.pack_recording && p.pack_decl_stack.empty() && poi != 0xffffffffu )
+    {
+	p.pack_decl_stack.push_back(Program::PackDeclFrame());
+	p.pack_decl_stack.back().begin = poi;
+	p.pack_decl_stack.back().fuzzy = false;
+	pushed = true;
+	madc_pack_creation_poi = p.pack_current_poi();
+    }
+}
+
+Program::PackPoiFrame::~PackPoiFrame()
+{
+    if ( pushed && !p.pack_decl_stack.empty() )
+    {
+	p.pack_decl_stack.pop_back();
+	madc_pack_creation_poi = p.pack_current_poi();
+    }
+}
+
 void Program::parse_deferred_function_body(Program::DeferredFunctionBody &body)
 {
     if ( !body.var || !body.method )
@@ -50410,6 +50435,8 @@ void Program::parse_deferred_function_body(Program::DeferredFunctionBody &body)
 	vfd->vague_linkage = true;
 
     body.method->reset_hoisted_declarations();
+
+    PackPoiFrame poi_frame(*this, body.pack_poi);
 
     madc::dis::istring saved_func = cur_func_name;
     madc::dis::istring saved_canon = instantiating_canonical_spelling;
@@ -50675,6 +50702,7 @@ TokenFunc *Program::parse_deferred_lazy_body(const madc::dis::istring &emit_symb
 	bool saved_ctor_init = parsing_defaulted_member_template_constructor;
 	size_t saved_compounds = compounds.size();
 	size_t saved_class_scopes = class_scope_stack.size();
+	PackPoiFrame poi_frame(*this, body.pack_poi);
 	NestedTokenStream lazy_run(*this, body.definition_tokens,
 				   NestedTokenStream::Injected);
 	cur_func_name = body.var->name;
@@ -51321,6 +51349,7 @@ static bool try_parse_defaulted_member_template_constructor(
 	Program::DeferredFunctionBody body;
 	body.var = mvar;
 	body.method = static_cast<Method *>(mvar->data);
+	body.pack_poi = pgm.pack_current_poi();
 	body.definition_tokens = definition_tokens;
 	body.full_definition = true;
 	body.file = ctor_name_tok ? ctor_name_tok->file : NULL;
@@ -61340,6 +61369,7 @@ void Program::register_outofline_member_instantiations(
 	DeferredFunctionBody body;
 	body.var = mvar;
 	body.method = static_cast<Method *>(mvar->data);
+	body.pack_poi = pack_current_poi();
 	body.definition_tokens = declarator_definition_tail(sub, mni, op);
 	if ( body.definition_tokens.empty() )
 	    continue;
@@ -81193,6 +81223,13 @@ void Program::pack_open_toplevel_decl()
     PackDeclFrame &f = pack_decl_stack.back();
     f.begin = p.cursor;
     f.fuzzy = !p.pushback.empty();
+    madc_pack_creation_poi = pack_current_poi();
+}
+
+uint32_t Program::pack_current_poi() const
+{
+    return pack_recording && !pack_decl_stack.empty()
+	 ? (uint32_t)pack_decl_stack.back().begin : 0xffffffffu;
 }
 
 void Program::pack_close_toplevel_decl()
@@ -81216,6 +81253,7 @@ void Program::pack_close_toplevel_decl()
 	    e.aux   = fuzzy ? PACK_DECL_FUZZY_BOUNDS : 0;
 	}
     pack_decl_stack.pop_back();
+    madc_pack_creation_poi = pack_current_poi();
 }
 
 void Program::pack_tap_name(const madc::dis::istring &name, uint32_t kind)

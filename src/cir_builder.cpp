@@ -32860,6 +32860,10 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 {
 	FuncDef *fd = dynamic_cast<FuncDef *>(tf->var.type);
 	if (!fd) return NULL;
+	// Under a pack freeze, what translating fd creates (a tsubst'd body's
+	// local classes, the instances it names) belongs where fd was created
+	// (pack-slices design §4).
+	Program::PackPoiFrame poi_frame(*m_prog, fd->pack_poi);
 	AnonTagBodyScope anon_tag_scope(m_anon_tags_body, m_in_func_body);
 #ifdef MADC_DEBUG_CTORINIT
 	fprintf(stderr, "[ctorinit] func-def %s\n", tf->var.name.c_str());

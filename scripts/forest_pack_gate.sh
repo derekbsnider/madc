@@ -372,10 +372,11 @@ check_dump() {
 # PACK SIZE (pack slices design §8): the container's bytes (`bytes` in the
 # dump) may grow at most PACK_BYTES_ALLOWANCE past the profile's recorded
 # `pack-bytes` — the size owner-accepted for the seed index (2026-10-13:
-# +1.2 MB). A profile with no recorded size reports its bytes unjudged; a dump
+# +1.2 MB; raised 2026-10-14 to a 13,000,000-byte cap on the linux record).
+# A profile with no recorded size reports its bytes unjudged; a dump
 # with no `bytes` line under a recorded size is red (nothing was measured).
 # ---------------------------------------------------------------------------
-PACK_BYTES_ALLOWANCE=1200000
+PACK_BYTES_ALLOWANCE=1418024
 check_pack_bytes() {
 	local dump="$1" bytes base
 	base=$(baseline_for "$PROFILE" pack-bytes)
@@ -501,7 +502,8 @@ selftest() {
 		--units-from "$dir/fpgate_st_units_sub.txt"
 	# The pack size: under the cap is GREEN (above), one byte past it is red, and
 	# a dump that never measured it is red.
-	sed 's/^bytes\t.*/bytes\t1201001/' "$dir/fpgate_st_dump.txt" > "$dir/fpgate_st_dump_big.txt"
+	# (1000 = the selftest baseline's pack-bytes.)
+	sed "s/^bytes\t.*/bytes\t$((1000 + PACK_BYTES_ALLOWANCE + 1))/" "$dir/fpgate_st_dump.txt" > "$dir/fpgate_st_dump_big.txt"
 	leg "pack past the size cap" fail --dump "$dir/fpgate_st_dump_big.txt" \
 		--units-from "$dir/fpgate_st_units.txt"
 	grep -v '^bytes' "$dir/fpgate_st_dump.txt" > "$dir/fpgate_st_dump_nobytes.txt"

@@ -4632,6 +4632,7 @@ Program::ForestBindStats Program::forest_bind_stats() const
 	s.zstd_secs      = bind_forest->stat_zstd_secs();
 	s.copy_calls     = bind_forest->stat_copy_calls();
 	s.copy_bytes     = bind_forest->stat_copy_bytes();
+	s.block_rows     = bind_forest->block_stats(s.blocks_decoded, s.blocks_total);
     }
     return s;
 }

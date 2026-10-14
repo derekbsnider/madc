@@ -42,6 +42,12 @@ extern thread_local bool madc_no_warnings;
 // True only while the production parser is building an isolated class pattern.
 // DataDefs born in that scope retain speculative provenance after rollback.
 extern thread_local bool madc_class_pattern_capture_active;
+// The point of creation open while a pack freeze records
+// (Program::pack_current_poi — kept current by every frame push / pop),
+// 0xffffffff otherwise. A DataDef born under it keeps it (DataDef::pack_poi):
+// the freeze writes some records long after their entity was made, and the
+// seed index places each with the unit that made it (pack-slices design §4).
+extern thread_local uint32_t madc_pack_creation_poi;
 
 // An argument expression's value category for reference binding
 // ([basic.lval]); a prvalue and an xvalue bind a reference alike
@@ -579,16 +585,19 @@ public:
     // Intrinsic provenance for temporary semantic objects born while an
     // isolated class-pattern production parse is active.
     bool	 speculative_class_capture;
+    uint32_t	 pack_poi;	// madc_pack_creation_poi at birth (a freeze's own)
     DataDef()
 	: _type(0), name(), size(0), canonical_cpp_spelling_(),
 	  despaced_canonical_(), despaced_canonical_valid_(false),
 	  canonical_swept(false), type_id(0), scalar_alias_of(NULL),
-	  speculative_class_capture(madc_class_pattern_capture_active) {}
+	  speculative_class_capture(madc_class_pattern_capture_active),
+	  pack_poi(madc_pack_creation_poi) {}
     DataDef(madc::dis::istring n, size_t s, DataType d)
 	: _type((uint32_t)d), name(n), size(s), canonical_cpp_spelling_(),
 	  despaced_canonical_(), despaced_canonical_valid_(false),
 	  canonical_swept(false), type_id(0), scalar_alias_of(NULL),
-	  speculative_class_capture(madc_class_pattern_capture_active) {}
+	  speculative_class_capture(madc_class_pattern_capture_active),
+	  pack_poi(madc_pack_creation_poi) {}
     // The derived key travels WITH the spelling it was derived from: copying
     // one without the other is what would make the cache lie.
     DataDef(const DataDef &other)
@@ -599,7 +608,8 @@ public:
 	  canonical_swept(other.canonical_swept), type_id(other.type_id),
 	  scalar_alias_of(other.scalar_alias_of),
 	  speculative_class_capture(other.speculative_class_capture
-	      || madc_class_pattern_capture_active) {}
+	      || madc_class_pattern_capture_active),
+	  pack_poi(madc_pack_creation_poi) {}
     DataDef &operator=(const DataDef &other)
     {
 	if ( this != &other )

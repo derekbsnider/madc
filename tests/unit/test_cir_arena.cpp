@@ -593,12 +593,10 @@ TEST_CASE("B3 arena: REAL byte round-trip through the snapshot container (not a 
 			      a.payload.data(), a.payload.size() * sizeof(uint32_t), PchCompression::None));
 	REQUIRE(w.add_segment(3, SNAP_KIND_INTERN_BYTES,
 			      a.strings.bytes_data(), a.strings.bytes_size(), PchCompression::None));
-	REQUIRE(w.add_segment(4, SNAP_KIND_INTERN_ENTRIES,
-			      a.strings.entries_data(),
-			      a.strings.entries_size() * sizeof(intern_table::Entry), PchCompression::None));
-	REQUIRE(w.add_segment(5, SNAP_KIND_INTERN_BUCKETS,
-			      a.strings.buckets_data(),
-			      a.strings.buckets_size() * sizeof(uint32_t), PchCompression::None));
+	std::vector<uint32_t> soffs;
+	a.strings.offsets_block(soffs);
+	REQUIRE(w.add_segment(4, SNAP_KIND_INTERN_OFFSETS,
+			      soffs.data(), soffs.size() * sizeof(uint32_t), PchCompression::None));
 	std::vector<uint8_t> blob;
 	REQUIRE(w.build(blob));
 	CHECK(blob.size() > 0);
@@ -612,11 +610,10 @@ TEST_CASE("B3 arena: REAL byte round-trip through the snapshot container (not a 
 	std::vector<uint32_t>            defs2  = read_seg<uint32_t>(rd, 1);
 	std::vector<uint32_t>            pay2   = read_seg<uint32_t>(rd, 2);
 	std::vector<char>                ibytes = read_seg<char>(rd, 3);
-	std::vector<intern_table::Entry> ients  = read_seg<intern_table::Entry>(rd, 4);
-	std::vector<uint32_t>            ibkts  = read_seg<uint32_t>(rd, 5);
+	std::vector<uint32_t>            ioffs  = read_seg<uint32_t>(rd, 4);
 
 	FrozenDefArena f;
-	f.strings.bind(ibytes.data(), ibytes.size(), ients.data(), ients.size(), ibkts.data(), ibkts.size());
+	f.strings.bind(ibytes.data(), ibytes.size(), ioffs.data(), ioffs.size());
 	REQUIRE(f.strings.valid());		// structural gate over the reloaded intern blocks
 	f.bind_defs(defs2.data(), defs2.size());
 	f.bind_payload(pay2.data(), pay2.size());

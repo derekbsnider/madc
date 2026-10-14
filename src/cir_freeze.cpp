@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <memory>	// unique_ptr — the cache's lazy BLOCKED-segment readers
 #include <mutex>	// the process-level decoded-segment cache's guard
 #include <queue>	// madc.h uses std::queue (included below) and relies on the TU providing it
 #include <set>
@@ -480,11 +481,10 @@ static int cir_forest_zstd_level = 0;
 
 // Pack-time intern-spine compression for the CURRENT cir_forest_write call
 // (owner-approved 2026-07-14, task #37): the RELEASE pack compresses the
-// three intern blocks (3.74 -> 0.81 MB stored — the difference between a
-// ~12.8 and a ~9.5 MB packed binary) and its consumers rebind through the
-// forest_pool_block owned-buffer fallback at ~7ms decode once per process.
-// Dev/standalone freezes keep the spine raw so their binds stay zero-copy
-// (the drain-ladder loop's instant rebinds).
+// intern BYTES (v59: blocked, decoded on first touch; the offsets block
+// stays raw — 4 bytes an id, read in place). Dev/standalone freezes keep the
+// spine raw so their binds stay zero-copy (the drain-ladder loop's instant
+// rebinds).
 static bool cir_forest_compress_intern = false;
 
 // Zero-length payloads take codec None (nothing to compress); the writer
@@ -518,17 +518,47 @@ static bool forest_unit_source_only(const cir_forest_unit &fu)
 	    && fu.branch_deps.empty();
 }
 
+// The SHARED tables a bind reads record by record (both string pools' bytes,
+// the arena's defs / payload / token bytes, the global and template record
+// tables, the template payload and token bytes) are stored BLOCKED when
+// compressed
+// (pack-slices design §3): fixed-size blocks, each one frame, decoded on
+// first touch through the lazy views — a bind decodes the blocks holding
+// what it reads, never the whole table.
+static bool forest_kind_blocked(uint32_t kind)
+{
+	switch (kind) {
+	case madc::dis::SNAP_KIND_INTERN_BYTES:
+	case SNAP_KIND_CIR_ARENA_DEFS:
+	case SNAP_KIND_CIR_ARENA_PAYLOAD:
+	case SNAP_KIND_CIR_ARENA_TOKBYTES:
+	case SNAP_KIND_CIR_TEMPLATE_PAYLOAD:
+	case SNAP_KIND_CIR_TEMPLATE_TOKENS:
+	case SNAP_KIND_CIR_GLOBALS:
+	case SNAP_KIND_CIR_TEMPLATES:
+		return true;
+	default:
+		return false;
+	}
+}
+
+// log2 of the shared tables' block size: 16 KB. Measured 2026-10-13 on the
+// packed corpus — 4 KB blocks cost +0.67 MB (12,785,936 bytes) and made the
+// 8-header C workload slower (more blocks touched, each with frame overhead).
+enum : uint32_t { FOREST_BLOCK_SHIFT = 14 };
+
 static bool add_seg(madc::dis::snapshot_writer &w, uint32_t seg_id,
 		    uint32_t kind, const void *bytes, size_t len,
 		    PchCompression codec)
 {
 	if (!cir_forest_compress_intern
-	    && (kind == madc::dis::SNAP_KIND_INTERN_BYTES
-		|| kind == madc::dis::SNAP_KIND_INTERN_ENTRIES
-		|| kind == madc::dis::SNAP_KIND_INTERN_BUCKETS))
+	    && kind == madc::dis::SNAP_KIND_INTERN_BYTES)
 		codec = PchCompression::None;
 	uint32_t xform = 0;
-	if (kind == SNAP_KIND_CIR_CHILDREN)
+	if (codec != PchCompression::None && forest_kind_blocked(kind))
+		xform = madc::dis::snap_xform_flags(madc::dis::SNAP_XFORM_BLOCKED,
+						    FOREST_BLOCK_SHIFT);
+	else if (kind == SNAP_KIND_CIR_CHILDREN)
 		xform = madc::dis::snap_xform_flags(madc::dis::SNAP_XFORM_DELTA32);
 	else if (kind == SNAP_KIND_CIR_RECORDS)
 		xform = madc::dis::snap_xform_flags(
@@ -705,26 +735,30 @@ bool cir_forest_write(const cir_frozen_forest &f, madc::dis::snapshot_writer &w,
 		return false;
 	// v58: the seed index (cir_forest_build_seeds; absent on a freeze that
 	// records no decl index — the bind then walks the whole container).
+	// v59: stored raw and read in place — every bind consults it first.
 	if (!f.decl_names.empty()
 	    && !add_seg(w, CIR_FOREST_SEG_DECL_NAMES, SNAP_KIND_CIR_DECL_NAMES,
-			f.decl_names.data(), f.decl_names.size(), codec))
+			f.decl_names.data(), f.decl_names.size(), PchCompression::None))
 		return false;
 	if (!f.seeds.empty()
 	    && !add_seg(w, CIR_FOREST_SEG_SEEDS, SNAP_KIND_CIR_SEEDS,
-			f.seeds.data(), f.seeds.size() * sizeof(uint32_t), codec))
+			f.seeds.data(), f.seeds.size() * sizeof(uint32_t),
+			PchCompression::None))
 		return false;
 	if (!f.recordable.empty()
 	    && !add_seg(w, CIR_FOREST_SEG_RECORDABLE, SNAP_KIND_CIR_RECORDABLE,
-			f.recordable.data(), f.recordable.size() * sizeof(uint32_t), codec))
+			f.recordable.data(), f.recordable.size() * sizeof(uint32_t),
+			PchCompression::None))
 		return false;
+	// The container's string pool: its bytes and (v59) the raw offsets block.
+	std::vector<uint32_t> pool_offs, arena_offs;
+	pool->offsets_block(pool_offs);
+	f.arena.strings.offsets_block(arena_offs);
 	if (!add_seg(w, CIR_FOREST_SEG_STR_BYTES, madc::dis::SNAP_KIND_INTERN_BYTES,
 		     pool->bytes_data(), pool->bytes_size(), codec)
-	    || !add_seg(w, CIR_FOREST_SEG_STR_ENTRIES, madc::dis::SNAP_KIND_INTERN_ENTRIES,
-			pool->entries_data(),
-			pool->entries_size() * sizeof(madc::dis::intern_table::Entry), codec)
-	    || !add_seg(w, CIR_FOREST_SEG_STR_BUCKETS, madc::dis::SNAP_KIND_INTERN_BUCKETS,
-			pool->buckets_data(),
-			pool->buckets_size() * sizeof(uint32_t), codec))
+	    || !add_seg(w, CIR_FOREST_SEG_STR_OFFSETS, madc::dis::SNAP_KIND_INTERN_OFFSETS,
+			pool_offs.data(), pool_offs.size() * sizeof(uint32_t),
+			PchCompression::None))
 		return false;
 	// v13 container-global: file-scope global VARIABLE definitions (zero-length
 	// when the freeze recorded none).
@@ -745,12 +779,9 @@ bool cir_forest_write(const cir_frozen_forest &f, madc::dis::snapshot_writer &w,
 			f.arena.payload.size() * sizeof(uint32_t), codec)
 	    || !add_seg(w, CIR_FOREST_SEG_ARENA_STR_BYTES, madc::dis::SNAP_KIND_INTERN_BYTES,
 			f.arena.strings.bytes_data(), f.arena.strings.bytes_size(), codec)
-	    || !add_seg(w, CIR_FOREST_SEG_ARENA_STR_ENTRIES, madc::dis::SNAP_KIND_INTERN_ENTRIES,
-			f.arena.strings.entries_data(),
-			f.arena.strings.entries_size() * sizeof(madc::dis::intern_table::Entry), codec)
-	    || !add_seg(w, CIR_FOREST_SEG_ARENA_STR_BUCKETS, madc::dis::SNAP_KIND_INTERN_BUCKETS,
-			f.arena.strings.buckets_data(),
-			f.arena.strings.buckets_size() * sizeof(uint32_t), codec))
+	    || !add_seg(w, CIR_FOREST_SEG_ARENA_STR_OFFSETS, madc::dis::SNAP_KIND_INTERN_OFFSETS,
+			arena_offs.data(), arena_offs.size() * sizeof(uint32_t),
+			PchCompression::None))
 		return false;
 	// v23: the arena's raw token-byte block (param-default expression runs,
 	// .madh record form; zero-length when no defaults were captured).
@@ -1273,60 +1304,88 @@ CirFrozenForest::~CirFrozenForest()
 // (the C++ stdlib convention). The entries deliberately outlive every
 // CirFrozenForest — materialized state pointing into them can never
 // dangle.
-static const uint8_t *forest_decoded_segment_cached(
+//
+// A BLOCKED segment caches its lazy reader instead (snapshot_lazy_segment —
+// the same process lifetime and immutability, per block): blocks decode on
+// first touch through the views that hold it.
+struct ForestCachedSegment
+{
+	madc::dis::decode_bytes bytes;		// a whole decode (unblocked)
+	std::unique_ptr<madc::dis::snapshot_lazy_segment> lazy;	// BLOCKED
+};
+
+static const ForestCachedSegment *forest_decoded_segment_cached(
 	const madc::dis::snapshot_reader &r,
 	const madc::dis::snapshot_segment &s)
 {
 	static std::mutex mu;
 	static std::map<std::pair<const void *, uint64_t>,
-			madc::dis::decode_bytes> cache;
+			ForestCachedSegment> cache;
 	std::lock_guard<std::mutex> lk(mu);
 	std::pair<const void *, uint64_t> key(r.blob_base(), s.offset);
 	std::map<std::pair<const void *, uint64_t>,
-		 madc::dis::decode_bytes>::iterator it = cache.find(key);
+		 ForestCachedSegment>::iterator it = cache.find(key);
 	bool miss = it == cache.end();
 	if (miss) {
-		madc::dis::decode_bytes d;
-		if (!r.read_segment(s, d))
+		ForestCachedSegment c;
+		if (madc::dis::snap_xform_id(s.flags)
+		    == madc::dis::SNAP_XFORM_BLOCKED) {
+			c.lazy.reset(r.open_lazy(s));
+			if (!c.lazy)
+				return NULL;
+		} else if (!r.read_segment(s, c.bytes))
 			return NULL;
-		it = cache.emplace(key, std::move(d)).first;
+		it = cache.emplace(key, std::move(c)).first;
 	}
 	// Env-gated probe (MADC_FOREST_CACHE_PROBE=1): per-segment hit/miss
 	// evidence — the observable for "N Programs, one decode".
 	if (::getenv("MADC_FOREST_CACHE_PROBE"))
-		fprintf(stderr, "[forest-cache] %s seg=%u off=%llu raw=%llu\n",
+		fprintf(stderr, "[forest-cache] %s seg=%u off=%llu raw=%llu%s\n",
 			miss ? "MISS" : "hit", s.seg_id,
 			(unsigned long long)s.offset,
-			(unsigned long long)s.raw_size);
-	return it->second.data();
+			(unsigned long long)s.raw_size,
+			it->second.lazy ? " blocked" : "");
+	return &it->second;
 }
 
 // The one segment-bytes resolver: zero-copy from the mapped image when the
 // segment is stored raw (no codec, no transform), the process-level decoded
 // cache otherwise. Returned bytes live for the PROCESS (image mapping or
 // cache entry — both outlive every CirFrozenForest), so consumers bind spans
-// instead of owning per-forest copies.
+// instead of owning per-forest copies. A BLOCKED segment hands its lazy
+// reader to a caller that passes `lz` (the bytes are then valid only as it
+// ensures them); a caller that does not gets every block decoded.
 static const uint8_t *forest_segment_bytes(const madc::dis::snapshot_reader &r,
 					   const madc::dis::snapshot_segment &s,
-					   size_t &len)
+					   size_t &len,
+					   const madc::dis::lazy_blocks **lz = NULL)
 {
 	len = (size_t)s.raw_size;
+	if (lz)
+		*lz = NULL;
 	if (const uint8_t *p = r.raw_ptr(s))
 		return p;
-	return forest_decoded_segment_cached(r, s);
+	const ForestCachedSegment *c = forest_decoded_segment_cached(r, s);
+	if (!c)
+		return NULL;
+	if (!c->lazy)
+		return c->bytes.data();
+	if (lz)
+		*lz = c->lazy.get();
+	else if (!c->lazy->ensure(0, len))
+		return NULL;
+	return c->lazy->data();
 }
 
 static const uint8_t *forest_pool_block(const madc::dis::snapshot_reader &r,
 					uint32_t seg_id, uint32_t kind,
-					madc::dis::decode_bytes &own, size_t &len)
+					size_t &len,
+					const madc::dis::lazy_blocks **lz)
 {
 	const madc::dis::snapshot_segment *s = r.find(seg_id);
 	if (!s || s->kind != kind)
 		return NULL;
-	// `own` stays empty by design — image or cache owns the bytes for the
-	// process lifetime.
-	(void)own;
-	return forest_segment_bytes(r, *s, len);
+	return forest_segment_bytes(r, *s, len, lz);
 }
 
 // --show-stats wall clock (R0 startup instrumentation).
@@ -1486,6 +1545,32 @@ bool cir_forest_content_digests(const void *image, size_t len,
 	return true;
 }
 
+// The --show-stats block census: every lazy span a bind bound, by segment.
+void CirFrozenForest::note_lazy_span(uint32_t seg_id,
+				     const madc::dis::lazy_blocks *lz) const
+{
+	if (lz)
+		_lazy_spans.push_back(std::make_pair(seg_id, lz));
+}
+
+std::string CirFrozenForest::block_stats(unsigned long long &decoded,
+					 unsigned long long &total) const
+{
+	std::string rows;
+	decoded = total = 0;
+	for (size_t i = 0; i < _lazy_spans.size(); ++i) {
+		const madc::dis::lazy_blocks *lz = _lazy_spans[i].second;
+		decoded += lz->blocks_decoded();
+		total += lz->block_count();
+		char row[64];
+		snprintf(row, sizeof row, "%s%u:%zu/%zu", rows.empty() ? "" : " ",
+			 _lazy_spans[i].first, lz->blocks_decoded(),
+			 lz->block_count());
+		rows += row;
+	}
+	return rows;
+}
+
 // R1 stage 2: everything open() historically did past the directory —
 // string-pool/arena binds, the container-global segments. Memoized; needs the
 // live string pool. Neither name index is built here: the unit names are the
@@ -1504,32 +1589,27 @@ bool CirFrozenForest::complete_open(c2m_ctx_t c2m)
 		return false;
 	}
 
-	// The container's own string pool (A1 frozen view).
-	size_t nbytes = 0, nentries = 0, nbuckets = 0;
+	// The container's own string pool (A1 frozen view): its bytes (lazy when
+	// blocked) and the raw offsets block, read in place.
+	size_t nbytes = 0, noffs = 0;
+	const madc::dis::lazy_blocks *lzb = NULL, *lzo = NULL;
 	const uint8_t *pb = forest_pool_block(_reader, CIR_FOREST_SEG_STR_BYTES,
 					      madc::dis::SNAP_KIND_INTERN_BYTES,
-					      _pool_bytes, nbytes);
-	const uint8_t *pe = forest_pool_block(_reader, CIR_FOREST_SEG_STR_ENTRIES,
-					      madc::dis::SNAP_KIND_INTERN_ENTRIES,
-					      _pool_entries, nentries);
-	const uint8_t *pk = forest_pool_block(_reader, CIR_FOREST_SEG_STR_BUCKETS,
-					      madc::dis::SNAP_KIND_INTERN_BUCKETS,
-					      _pool_buckets, nbuckets);
-	if (!pk)
-		nbuckets = 0;	// buckets are derivable; never bind NULL with a count
-	if (!pb || !pe || nentries % sizeof(madc::dis::intern_table::Entry)
-	    || (nbuckets % sizeof(uint32_t))) {
+					      nbytes, &lzb);
+	const uint8_t *po = forest_pool_block(_reader, CIR_FOREST_SEG_STR_OFFSETS,
+					      madc::dis::SNAP_KIND_INTERN_OFFSETS,
+					      noffs, &lzo);
+	if (!pb || !po || lzo || noffs % sizeof(uint32_t)) {
 		fprintf(stderr, "madc: forest string pool missing or corrupt\n");
 		return false;
 	}
-	_pool.bind((const char *)pb, nbytes,
-		   (const madc::dis::intern_table::Entry *)pe,
-		   nentries / sizeof(madc::dis::intern_table::Entry),
-		   (const uint32_t *)pk, nbuckets / sizeof(uint32_t));
+	_pool.bind((const char *)pb, nbytes, (const uint32_t *)po,
+		   noffs / sizeof(uint32_t), lzb);
 	if (!_pool.valid()) {
 		fprintf(stderr, "madc: forest string pool failed validation\n");
 		return false;
 	}
+	note_lazy_span(CIR_FOREST_SEG_STR_BYTES, lzb);
 
 	// Required libraries (the link-environment closure) — resolve the
 	// header-stage name IDS through the now-bound container pool.
@@ -1545,35 +1625,37 @@ bool CirFrozenForest::complete_open(c2m_ctx_t c2m)
 
 	// v13 container-global: file-scope global VARIABLE definitions (zero-length
 	// = none; materialize_from_arena swizzles each type_id -> DataDef*).
-	if (const madc::dis::snapshot_segment *gs =
-		_reader.find(CIR_FOREST_SEG_GLOBALS)) {
-		madc::dis::decode_bytes d;
-		if (gs->kind != SNAP_KIND_CIR_GLOBALS
-		    || !_reader.read_segment(*gs, d)
-		    || d.size() % sizeof(cir_forest_global_record)) {
+	{
+		size_t n = 0;
+		const madc::dis::lazy_blocks *lz = NULL;
+		const madc::dis::snapshot_segment *gs = _reader.find(CIR_FOREST_SEG_GLOBALS);
+		const uint8_t *p = gs ? forest_pool_block(_reader, CIR_FOREST_SEG_GLOBALS,
+							  SNAP_KIND_CIR_GLOBALS, n, &lz) : NULL;
+		if (gs && (!p || n % sizeof(cir_forest_global_record))) {
 			fprintf(stderr, "madc: forest global-var table corrupt\n");
 			return false;
 		}
-		_globals.resize(d.size() / sizeof(cir_forest_global_record));
-		if (!d.empty())
-			memcpy(_globals.data(), d.data(), d.size());
+		if (p)
+			_globals.bind(p, n / sizeof(cir_forest_global_record), lz);
+		note_lazy_span(CIR_FOREST_SEG_GLOBALS, lz);
 	}
 	// v20 container-global: template-NAME state (records + u32 payload + token
 	// bytes; zero-length = a template-less freeze). materialize_from_arena
 	// resolves names / swizzles owner ids into _restored_templates; the token
 	// runs deserialize on the parser side (forest_restore_decls).
-	if (const madc::dis::snapshot_segment *ts =
-		_reader.find(CIR_FOREST_SEG_TEMPLATES)) {
-		madc::dis::decode_bytes d;
-		if (ts->kind != SNAP_KIND_CIR_TEMPLATES
-		    || !_reader.read_segment(*ts, d)
-		    || d.size() % sizeof(cir_forest_template_record)) {
+	{
+		size_t n = 0;
+		const madc::dis::lazy_blocks *lz = NULL;
+		const madc::dis::snapshot_segment *ts = _reader.find(CIR_FOREST_SEG_TEMPLATES);
+		const uint8_t *p = ts ? forest_pool_block(_reader, CIR_FOREST_SEG_TEMPLATES,
+							  SNAP_KIND_CIR_TEMPLATES, n, &lz) : NULL;
+		if (ts && (!p || n % sizeof(cir_forest_template_record))) {
 			fprintf(stderr, "madc: forest template table corrupt\n");
 			return false;
 		}
-		_templates.resize(d.size() / sizeof(cir_forest_template_record));
-		if (!d.empty())
-			memcpy(_templates.data(), d.data(), d.size());
+		if (p)
+			_templates.bind(p, n / sizeof(cir_forest_template_record), lz);
+		note_lazy_span(CIR_FOREST_SEG_TEMPLATES, lz);
 	}
 	// R1: the template payload + token segments (the heavy pair) are
 	// shape-validated here (directory metadata only, no decode) and
@@ -1605,57 +1687,53 @@ bool CirFrozenForest::complete_open(c2m_ctx_t c2m)
 		}
 	}
 	// v18 container-global: the B3 DefArena dump — THE type-graph serialization.
-	// Bind the five arena segments read-only (defrec/payload uint32 spans + the
-	// arena's OWN intern blocks; the container 16-aligns payloads, satisfying the
-	// uint32/Entry casts). A type-less freeze dumps zero-length segments -> the
-	// view stays empty; a malformed set is rejected like the other container
-	// globals. The typeid->name closure (type_name_for) derives from the bound
-	// records; the DataDef objects materialize lazily at bind
-	// (materialize_from_arena), never at open — so --run-frozen (which never
-	// binds) pays nothing.
+	// Bind the arena segments read-only (defrec/payload uint32 spans + the
+	// arena's OWN string pool — bytes and the v59 raw offsets block; the
+	// container 16-aligns payloads, satisfying the uint32 casts). A type-less
+	// freeze dumps zero-length segments -> the view stays empty; a malformed
+	// set is rejected like the other container globals. The typeid->name
+	// closure (type_name_for) derives from the bound records; the DataDef
+	// objects materialize lazily at bind (materialize_from_arena), never at
+	// open — so --run-frozen (which never binds) pays nothing.
 	{
-		size_t nd = 0, np = 0, nb = 0, ne = 0, nk = 0;
+		size_t nd = 0, np = 0, nb = 0, no = 0, ntk = 0;
+		const madc::dis::lazy_blocks *lzd = NULL, *lzp = NULL,
+			*lzab = NULL, *lzao = NULL, *lztk = NULL;
 		const uint8_t *pd = forest_pool_block(_reader, CIR_FOREST_SEG_ARENA_DEFS,
 						      SNAP_KIND_CIR_ARENA_DEFS,
-						      _arena_defs, nd);
+						      nd, &lzd);
 		const uint8_t *pp = forest_pool_block(_reader, CIR_FOREST_SEG_ARENA_PAYLOAD,
 						      SNAP_KIND_CIR_ARENA_PAYLOAD,
-						      _arena_payload, np);
+						      np, &lzp);
 		const uint8_t *ab = forest_pool_block(_reader, CIR_FOREST_SEG_ARENA_STR_BYTES,
 						      madc::dis::SNAP_KIND_INTERN_BYTES,
-						      _arena_sbytes, nb);
-		const uint8_t *ae = forest_pool_block(_reader, CIR_FOREST_SEG_ARENA_STR_ENTRIES,
-						      madc::dis::SNAP_KIND_INTERN_ENTRIES,
-						      _arena_sentries, ne);
-		const uint8_t *ak = forest_pool_block(_reader, CIR_FOREST_SEG_ARENA_STR_BUCKETS,
-						      madc::dis::SNAP_KIND_INTERN_BUCKETS,
-						      _arena_sbuckets, nk);
-		if (!ak)
-			nk = 0;	// buckets are derivable; never bind NULL with a count
+						      nb, &lzab);
+		const uint8_t *ao = forest_pool_block(_reader, CIR_FOREST_SEG_ARENA_STR_OFFSETS,
+						      madc::dis::SNAP_KIND_INTERN_OFFSETS,
+						      no, &lzao);
 		// v23: the param-default token-byte block (absent/zero-length on a
 		// defaults-less freeze — the runs then cleanly lack).
-		size_t ntk = 0;
 		const uint8_t *tk = forest_pool_block(_reader, CIR_FOREST_SEG_ARENA_TOKBYTES,
 						      SNAP_KIND_CIR_ARENA_TOKBYTES,
-						      _arena_tokbytes, ntk);
+						      ntk, &lztk);
 		if (tk && ntk)
-			_arena.bind_tokbytes(tk, ntk);
-		if (pd && pp && ab && ae && nd
+			_arena.bind_tokbytes(tk, ntk, lztk);
+		if (pd && pp && ab && ao && nd && !lzao
 		    && !(nd % sizeof(uint32_t)) && !(np % sizeof(uint32_t))
-		    && !(ne % sizeof(madc::dis::intern_table::Entry))
-		    && !(nk % sizeof(uint32_t))) {
-			_arena.bind_defs((const uint32_t *)pd, nd / sizeof(uint32_t));
-			_arena.bind_payload((const uint32_t *)pp, np / sizeof(uint32_t));
-			_arena.strings.bind((const char *)ab, nb,
-					    (const madc::dis::intern_table::Entry *)ae,
-					    ne / sizeof(madc::dis::intern_table::Entry),
-					    (const uint32_t *)ak,
-					    nk / sizeof(uint32_t));
+		    && !(no % sizeof(uint32_t))) {
+			_arena.bind_defs((const uint32_t *)pd, nd / sizeof(uint32_t), lzd);
+			_arena.bind_payload((const uint32_t *)pp, np / sizeof(uint32_t), lzp);
+			_arena.strings.bind((const char *)ab, nb, (const uint32_t *)ao,
+					    no / sizeof(uint32_t), lzab);
 			if (!_arena.strings.valid()) {
 				fprintf(stderr, "madc: forest arena string pool"
 					" failed validation\n");
 				return false;
 			}
+			note_lazy_span(CIR_FOREST_SEG_ARENA_DEFS, lzd);
+			note_lazy_span(CIR_FOREST_SEG_ARENA_PAYLOAD, lzp);
+			note_lazy_span(CIR_FOREST_SEG_ARENA_STR_BYTES, lzab);
+			note_lazy_span(CIR_FOREST_SEG_ARENA_TOKBYTES, lztk);
 			// (The typeid -> name closure derives per-query in
 			// type_name_for — the arena is id-addressed by project
 			// slot, so a def's arena id IS the freeze-time typeid;
@@ -3982,15 +4060,18 @@ void CirFrozenForest::materialize_pass()
 			bool ok = d.key && *d.key;
 			for (int sx = 0; ok && sx < 4; ++sx) {
 				uint32_t off = r.params_begin + (uint32_t)sx * 4u;
-				if (off + 4 > a.payload_words) { ok = false; break; }
+				uint32_t w[4];
+				for (uint32_t k = 0; ok && k < 4; ++k)
+					ok = a.get_word(off, k, w[k]);
+				if (!ok)
+					break;
 				CirRestoredTemplateRun &run = d.runs[sx];
 				run.bytes = NULL;
-				run.len   = a.payload[off + 1];
-				run.count = a.payload[off + 2];
-				run.file  = a.payload[off + 3]
-					  ? a.c_str(a.payload[off + 3]) : NULL;
+				run.len   = w[1];
+				run.count = w[2];
+				run.file  = w[3] ? a.c_str(w[3]) : NULL;
 				if (run.count)
-					run.bytes = a.tok_run(a.payload[off], run.len);
+					run.bytes = a.tok_run(w[0], run.len);
 			}
 			if (ok) {
 				_restored_defbodies.push_back(d);
@@ -4508,23 +4589,27 @@ bool CirFrozenForest::ensure_template_payload() const
 		_reader.find(CIR_FOREST_SEG_TEMPLATE_PAYLOAD)) {
 		size_t len = 0;
 		const uint8_t *p = NULL;
+		const madc::dis::lazy_blocks *lz = NULL;
 		if (tp->kind != SNAP_KIND_CIR_TEMPLATE_PAYLOAD
 		    || (tp->raw_size
-			&& !(p = forest_segment_bytes(_reader, *tp, len)))
+			&& !(p = forest_segment_bytes(_reader, *tp, len, &lz)))
 		    || len % sizeof(uint32_t)) {
 			fprintf(stderr, "madc: forest template payload corrupt\n");
 			return false;
 		}
 		_template_payload = (const uint32_t *)p;
 		_template_payload_words = len / sizeof(uint32_t);
+		_lz_template_payload = lz;
+		note_lazy_span(CIR_FOREST_SEG_TEMPLATE_PAYLOAD, lz);
 	}
 	if (const madc::dis::snapshot_segment *tt =
 		_reader.find(CIR_FOREST_SEG_TEMPLATE_TOKENS)) {
 		size_t len = 0;
 		const uint8_t *p = NULL;
+		const madc::dis::lazy_blocks *lz = NULL;
 		if (tt->kind != SNAP_KIND_CIR_TEMPLATE_TOKENS
 		    || (tt->raw_size
-			&& !(p = forest_segment_bytes(_reader, *tt, len)))) {
+			&& !(p = forest_segment_bytes(_reader, *tt, len, &lz)))) {
 			_template_tokens = NULL;
 			_template_tokens_len = 0;
 			fprintf(stderr, "madc: forest template tokens corrupt\n");
@@ -4532,8 +4617,28 @@ bool CirFrozenForest::ensure_template_payload() const
 		}
 		_template_tokens = p;
 		_template_tokens_len = len;
+		_lz_template_tokens = lz;
+		note_lazy_span(CIR_FOREST_SEG_TEMPLATE_TOKENS, lz);
 	}
 	return true;
+}
+
+// The template payload words [off, off + words) / token bytes [off, off +
+// len), made readable (their blocks decoded on first touch); false when out
+// of range — the read then cleanly lacks.
+bool CirFrozenForest::template_payload_span(size_t off, size_t words) const
+{
+	return off <= _template_payload_words
+	    && words <= _template_payload_words - off
+	    && madc::dis::lazy_ensure(_lz_template_payload,
+				      off * sizeof(uint32_t),
+				      words * sizeof(uint32_t));
+}
+
+bool CirFrozenForest::template_token_span(size_t off, size_t len) const
+{
+	return off <= _template_tokens_len && len <= _template_tokens_len - off
+	    && madc::dis::lazy_ensure(_lz_template_tokens, off, len);
 }
 
 // slice B1 (task #25): decode ONE restored-template record's payload-backed
@@ -4558,11 +4663,13 @@ bool CirFrozenForest::hydrate_restored_template(CirRestoredTemplate &rt) const
 		rr.count = 0;
 		rr.file = NULL;
 		cir_forest_token_run tr;
-		if (!madc::dis::pod_read(_template_payload,
-					 _template_payload_words, word_off, tr))
+		if (!template_payload_span(word_off,
+					   madc::dis::pod_words<cir_forest_token_run>())
+		    || !madc::dis::pod_read(_template_payload,
+					    _template_payload_words, word_off, tr))
 			return rr;
 		if (tr.tok_count
-		    && (size_t)tr.tok_off + tr.tok_bytes <= _template_tokens_len) {
+		    && template_token_span(tr.tok_off, tr.tok_bytes)) {
 			rr.bytes = _template_tokens + tr.tok_off;
 			rr.len   = tr.tok_bytes;
 			rr.count = tr.tok_count;
@@ -4578,17 +4685,17 @@ bool CirFrozenForest::hydrate_restored_template(CirRestoredTemplate &rt) const
 	if (rt.rec_pattern_words) {
 		size_t begin = rt.rec_pattern_begin;
 		size_t count = rt.rec_pattern_words;
-		if (begin > _template_payload_words
-		    || count > _template_payload_words - begin)
+		if (!template_payload_span(begin, count))
 			return false;
 		rt.pattern = _template_payload + begin;
 		rt.pattern_words = rt.rec_pattern_words;
 	}
 	for (uint32_t p = 0; p < rt.rec_param_count; ++p) {
 		cir_forest_template_param pr;
-		if (!madc::dis::pod_read(_template_payload,
-					 _template_payload_words,
-					 rt.rec_param_begin + p * pw, pr))
+		if (!template_payload_span(rt.rec_param_begin + p * pw, pw)
+		    || !madc::dis::pod_read(_template_payload,
+					    _template_payload_words,
+					    rt.rec_param_begin + p * pw, pr))
 			return false;
 		uint32_t plen = 0;
 		const char *pn = pool_cstr(pr.name_id, plen);
@@ -4622,9 +4729,7 @@ CirRestoredTemplateRun CirFrozenForest::restored_template_run(
 	restored.len = 0;
 	restored.count = 0;
 	restored.file = NULL;
-	if (run.tok_count
-	    && (size_t)run.tok_off <= _template_tokens_len
-	    && (size_t)run.tok_bytes <= _template_tokens_len - run.tok_off) {
+	if (run.tok_count && template_token_span(run.tok_off, run.tok_bytes)) {
 		restored.bytes = _template_tokens + run.tok_off;
 		restored.len = run.tok_bytes;
 		restored.count = run.tok_count;

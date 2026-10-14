@@ -236,7 +236,9 @@ void add_units(std::set<uint32_t> &into, const uint32_t *u, uint32_t n)
 } // namespace
 
 void cir_forest_build_seeds(cir_frozen_forest &f, const madc::dis::intern_table &pool,
-			    const std::vector<uint32_t> &poi, std::string &summary)
+			    const std::vector<uint32_t> &poi,
+			    const std::vector<const char *> &poi_files,
+			    std::string &summary)
 {
 	const uint32_t nunits = (uint32_t)f.units.size();
 	const uint32_t always = nunits;
@@ -269,10 +271,15 @@ void cir_forest_build_seeds(cir_frozen_forest &f, const madc::dis::intern_table 
 		std::map<madc::dis::istring, uint32_t>::const_iterator it = unit_by_name.find(file);
 		return it == unit_by_name.end() ? NO_UNIT : it->second;
 	};
+	// A slot's point of creation: the parse-time stamp, else the declaring
+	// file of a freeze-time capture. The producer's own source (the root
+	// unit) is never bound by a consumer, so a stamp there places nothing —
+	// the record falls back to its declaring file, as an unstamped one.
 	auto unit_of_slot = [&](uint32_t slot) -> uint32_t {
-		if (slot >= poi.size() || poi[slot] == NO_UNIT || poi[slot] >= f.token_unit.size())
-			return NO_UNIT;
-		return f.token_unit[poi[slot]];
+		if (slot < poi.size() && poi[slot] != NO_UNIT && poi[slot] < f.token_unit.size()
+		    && f.token_unit[poi[slot]] != f.root_unit)
+			return f.token_unit[poi[slot]];
+		return slot < poi_files.size() ? unit_of_file(poi_files[slot]) : NO_UNIT;
 	};
 
 	SeedLists L((size_t)nunits + 1);
@@ -392,9 +399,17 @@ void cir_forest_build_seeds(cir_frozen_forest &f, const madc::dis::intern_table 
 				break;		// the program's own: never restored
 			// A function-local class is unnameable outside its function;
 			// the bind admits it by STRUCTURE once its owner's world
-			// materialized — visited by every bind, judged there.
+			// materialized — visited with its point of creation (the
+			// unit whose parse, or whose function's translation, made
+			// it), else by every bind.
 			if (r.kind != madc::dis::DK_ENUM && r.kind != madc::dis::DK_TYPEDEF
 			    && (r.flags & madc::dis::DF_CLASS_FN_LOCAL)) {
+				uint32_t cu = unit_of_slot(s);
+				if (cu != NO_UNIT) {
+					L.arena[cu].push_back(s);
+					++c.created;
+					break;
+				}
 				L.arena[always].push_back(s);
 				++c.always;
 				probe_always("fn-local", r.name_id ? a.strings.c_str(r.name_id) : NULL,
@@ -474,6 +489,12 @@ void cir_forest_build_seeds(cir_frozen_forest &f, const madc::dis::intern_table 
 				units.insert(mi->second.begin(), mi->second.end());
 		}
 		if (units.empty()) {
+			uint32_t cu = unit_of_slot(s);
+			if (cu != NO_UNIT && cu < nunits) {
+				L.arena[cu].push_back(s);
+				++c.created;
+				return;
+			}
 			L.arena[always].push_back(s);
 			++c.always;
 			probe_always(what, key, qualified, NULL);

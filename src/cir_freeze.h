@@ -606,7 +606,15 @@ bool cir_freeze_read(const madc::dis::snapshot_reader &r, uint32_t seg_id_base,
 // the arena slots / template records / global records a bind of that unit
 // visits, plus the always-visited list) and RECORDABLE (the arena
 // recordability fixpoint, computed once at freeze). UNIT_BASE moves 24 -> 32.
-enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 58 };
+//
+// v59: the shared tables a bind reads by id are BLOCKED (snapshot.h
+// SNAP_XFORM_BLOCKED — each block compressed alone, decoded on first touch):
+// both string pools' bytes, the arena's records / payload / token bytes, the
+// global-variable and template record tables and the template payload /
+// tokens. A string pool is its bytes plus a raw OFFSETS block (4 bytes an
+// id, read in place) — the entries / buckets segments are gone. The seed
+// index (DECL_NAMES, SEEDS, RECORDABLE) is stored raw and read in place.
+enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 59 };
 // Flags word of a SNAP_KIND_CIR_BRANCH_DEPS tuple.
 enum : uint32_t {
 	CIR_BRANCH_DEP_DEFINED   = 1u,	// the macro was defined at the consult
@@ -627,8 +635,7 @@ enum : uint32_t
 {
 	CIR_FOREST_SEG_DIR           = 1,
 	CIR_FOREST_SEG_STR_BYTES     = 2,	// SNAP_KIND_INTERN_BYTES
-	CIR_FOREST_SEG_STR_ENTRIES   = 3,	// SNAP_KIND_INTERN_ENTRIES
-	CIR_FOREST_SEG_STR_BUCKETS   = 4,	// SNAP_KIND_INTERN_BUCKETS
+	CIR_FOREST_SEG_STR_OFFSETS   = 3,	// SNAP_KIND_INTERN_OFFSETS (v59; 4 is retired)
 	// seg ids 5 and 8 are RETIRED (the v6 type records / payload, deleted at the
 	// v18 flip) — never reuse them for a new segment kind.
 	CIR_FOREST_SEG_BRANCH_MACROS = 6,	// v2 (absent = zero-length)
@@ -639,8 +646,7 @@ enum : uint32_t
 	CIR_FOREST_SEG_ARENA_DEFS    = 10,	// madc::dis::defrec[] (id-addressed by project slot)
 	CIR_FOREST_SEG_ARENA_PAYLOAD = 11,	// arena payload u32 stream
 	CIR_FOREST_SEG_ARENA_STR_BYTES   = 12,	// arena intern bytes   (SNAP_KIND_INTERN_BYTES)
-	CIR_FOREST_SEG_ARENA_STR_ENTRIES = 13,	// arena intern entries (SNAP_KIND_INTERN_ENTRIES)
-	CIR_FOREST_SEG_ARENA_STR_BUCKETS = 14,	// arena intern buckets (SNAP_KIND_INTERN_BUCKETS)
+	CIR_FOREST_SEG_ARENA_STR_OFFSETS = 13,	// arena intern offsets (SNAP_KIND_INTERN_OFFSETS; v59; 14 is retired)
 	// v20 (widening slice 2): template-NAME state. Absent = zero-length (a
 	// template-less freeze). UNIT_BASE moved 16 -> 24 in the same bump.
 	CIR_FOREST_SEG_TEMPLATES        = 15,	// cir_forest_template_record[]
@@ -1195,10 +1201,14 @@ struct cir_frozen_forest
 // pack-slices-design.md §4) from the units' decl indexes, the arena, the
 // templates and the globals. `pool` holds the decl-index / template / global
 // names; `poi` is Program::forest_arena_poi (each arena slot's point-of-
-// creation token index, mapped to a unit through f.token_unit). `summary`
-// receives the placement census for the freeze's progress line.
+// creation token index, mapped to a unit through f.token_unit) and
+// `poi_files` Program::forest_arena_file (a freeze-time capture's declaring
+// file, for a slot the parse did not stamp). `summary` receives the placement
+// census for the freeze's progress line.
 void cir_forest_build_seeds(cir_frozen_forest &f, const madc::dis::intern_table &pool,
-			    const std::vector<uint32_t> &poi, std::string &summary);
+			    const std::vector<uint32_t> &poi,
+			    const std::vector<const char *> &poi_files,
+			    std::string &summary);
 
 // The context-hash pin: madc version + record/position layout + the c2mir
 // node-code enum tail + the typeid primitive tail. Stamped by writers,
@@ -1266,6 +1276,32 @@ bool cir_forest_write(const cir_frozen_forest &f, madc::dis::snapshot_writer &w,
 // blob placement. The mapping is never unmapped (thawed segments read from
 // it for the process lifetime). False = no file / no blob.
 bool cir_forest_map_image(const char *path, const void *&image, size_t &len);
+
+// A fixed-stride record table bound over a container segment, read record by
+// record by value: a BLOCKED segment decodes only the blocks a read touches
+// (lazy_blocks.h; NULL source = resident). An unreadable record reads zeroed.
+template <class T>
+class ForestRecordTable
+{
+	const uint8_t *_p;
+	size_t _n;
+	const madc::dis::lazy_blocks *_lz;
+public:
+	ForestRecordTable() : _p(NULL), _n(0), _lz(NULL) {}
+	void bind(const uint8_t *p, size_t n, const madc::dis::lazy_blocks *lz)
+		{ _p = p; _n = n; _lz = lz; }
+	size_t size() const { return _n; }
+	bool empty() const { return _n == 0; }
+	T operator[](size_t i) const
+	{
+		T t;
+		if (i < _n && madc::dis::lazy_ensure(_lz, i * sizeof(T), sizeof(T)))
+			memcpy(&t, _p + i * sizeof(T), sizeof(T));
+		else
+			memset(&t, 0, sizeof(t));
+		return t;
+	}
+};
 
 class CirFrozenForest;
 
@@ -1610,10 +1646,9 @@ class CirFrozenForest
 	std::vector<cir_forest_shared_config> _shared_configs;	// more configs this profile serves
 
 	// The container's own string pool (A1 frozen view over the three
-	// blocks; decompressed copies owned here when the segments are
-	// compressed, bound in place when codec is None).
+	// blocks: in place when codec is None, else over the process-level
+	// decoded cache — block by block when the segments are BLOCKED).
 	madc::dis::frozen_intern_table _pool;
-	madc::dis::decode_bytes _pool_bytes, _pool_entries, _pool_buckets;
 	// v2 container-global payloads (loaded at open; empty on v2-less
 	// module containers).
 	std::vector<uint32_t> _branch_macros, _canon_order;
@@ -1650,7 +1685,7 @@ class CirFrozenForest
 	// v13 container-global: file-scope global var defs. Records load at open();
 	// _restored_globals (type-ids swizzled to DataDef*) is built by
 	// materialize_from_arena.
-	std::vector<cir_forest_global_record> _globals;
+	ForestRecordTable<cir_forest_global_record> _globals;
 	std::vector<CirRestoredGlobal> _restored_globals;
 	std::vector<CirRestoredNsLink> _restored_nslinks;	// v25: inline-ns links
 	std::vector<CirRestoredNsBind> _restored_nsbinds;	// v25: using-decl fn imports
@@ -1662,7 +1697,7 @@ class CirFrozenForest
 	// v20 container-global: template-NAME state. Records + payload + token
 	// bytes load at open(); _restored_templates (names resolved, owner
 	// swizzled, runs exposed as spans) is built by materialize_from_arena.
-	std::vector<cir_forest_template_record> _templates;
+	ForestRecordTable<cir_forest_template_record> _templates;
 	// R1: the template payload + token-byte segments (the heavy pair —
 	// ~5 MB raw on the packed corpus) decode LAZILY via
 	// ensure_template_payload(): at the first filter-surviving template
@@ -1677,6 +1712,12 @@ class CirFrozenForest
 	mutable size_t _template_payload_words = 0;
 	mutable const uint8_t *_template_tokens = NULL;
 	mutable size_t _template_tokens_len = 0;
+	// Their lazy readers when the segments are BLOCKED (NULL = resident):
+	// every read goes through template_payload_span / template_token_span.
+	mutable const madc::dis::lazy_blocks *_lz_template_payload = NULL;
+	mutable const madc::dis::lazy_blocks *_lz_template_tokens = NULL;
+	bool template_payload_span(size_t off, size_t words) const;
+	bool template_token_span(size_t off, size_t len) const;
 	mutable bool _template_payload_loaded = false;
 	bool ensure_template_payload() const;
 	std::vector<CirRestoredTemplate> _restored_templates;
@@ -1691,12 +1732,14 @@ class CirFrozenForest
 	bool _fully_opened = false;
 	// v18 container-global: the B3 DefArena dump (segments 10-14) — THE type-graph
 	// serialization — bound read-only at open: in place when a segment is
-	// uncompressed, else into the owned buffers. A type-less freeze binds an
-	// empty view (zero-length segments).
+	// uncompressed, else over the process-level decoded cache (block by
+	// block when BLOCKED). A type-less freeze binds an empty view
+	// (zero-length segments).
 	madc::dis::FrozenDefArena _arena;
-	madc::dis::decode_bytes _arena_defs, _arena_payload;
-	madc::dis::decode_bytes _arena_sbytes, _arena_sentries, _arena_sbuckets;
-	madc::dis::decode_bytes _arena_tokbytes;	// v23: param-default token runs
+	// The BLOCKED shared tables this forest's views read through (seg id,
+	// lazy reader) — the --show-stats block census.
+	mutable std::vector<std::pair<uint32_t, const madc::dis::lazy_blocks *> > _lazy_spans;
+	void note_lazy_span(uint32_t seg_id, const madc::dis::lazy_blocks *lz) const;
 	// v23: per-FuncDef param-default token runs (paramrec.def_tok_*), built by
 	// materialize_from_arena alongside the methods/free functions. The parser's
 	// pending-funcs flush deserializes each run and re-runs parseExpression.
@@ -1823,6 +1866,10 @@ public:
 	double             stat_zstd_secs() const { return _reader.stat_zstd_secs; }
 	unsigned long long stat_copy_calls() const { return _reader.stat_copy_calls; }
 	unsigned long long stat_copy_bytes() const { return _reader.stat_copy_bytes; }
+	// Blocks decoded / held across the BLOCKED shared tables, and one
+	// "seg:decoded/total" row per table.
+	std::string block_stats(unsigned long long &decoded,
+				unsigned long long &total) const;
 	// v27 producer config (bind gate: both must equal the consumer's).
 	uint32_t language_std() const { return _language_std; }
 	uint32_t defines_hash() const { return _defines_hash; }

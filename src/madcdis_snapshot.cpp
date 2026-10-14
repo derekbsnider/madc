@@ -40,9 +40,124 @@ static bool xform_valid(uint32_t flags, uint64_t raw_size)
 		uint32_t stride = snap_xform_param(flags);
 		return stride > 0 && raw_size % stride == 0;
 	}
+	case SNAP_XFORM_BLOCKED:
+	{
+		uint32_t shift = snap_xform_param(flags);
+		return shift >= 10 && shift <= 24;
+	}
 	default:
 		return false;
 	}
+}
+
+// --- SNAP_XFORM_BLOCKED: container-level framing, not a byte recoding ---
+
+static size_t block_raw_len(uint64_t raw_size, uint32_t shift, size_t b)
+{
+	uint64_t off = (uint64_t)b << shift;
+	uint64_t bs = (uint64_t)1 << shift;
+	return (size_t)(raw_size - off < bs ? raw_size - off : bs);
+}
+
+static bool block_at(const uint8_t *payload, size_t b, snapshot_block &e)
+{
+	memcpy(&e, payload + sizeof(snapshot_block_header) + b * sizeof(snapshot_block),
+	       sizeof e);
+	return true;
+}
+
+// Writer: the block header, the table, then each block — one codec frame, or
+// raw when it is under SNAP_BLOCK_RAW_FLOOR bytes or the codec did not shrink
+// it (so stored == raw identifies a raw block unambiguously).
+static bool blocked_encode(const uint8_t *raw, size_t len, uint32_t shift,
+			   PchCompression codec, int level,
+			   std::vector<uint8_t> &out)
+{
+	size_t bs = (size_t)1 << shift;
+	uint64_t n = ((uint64_t)len + bs - 1) >> shift;
+	if ( n > 0xffffffffu )
+		return false;
+	snapshot_block_header h;
+	h.block_shift = shift;
+	h.block_count = (uint32_t)n;
+	out.assign(sizeof h + (size_t)n * sizeof(snapshot_block), 0);
+	memcpy(out.data(), &h, sizeof h);
+	std::vector<uint8_t> in, frame;
+	for ( size_t b = 0; b < (size_t)n; ++b )
+	{
+		size_t off = b << shift;
+		size_t blen = block_raw_len(len, shift, b);
+		const uint8_t *src = raw + off;
+		size_t slen = blen;
+		if ( blen >= SNAP_BLOCK_RAW_FLOOR && codec != PchCompression::None )
+		{
+			in.assign(raw + off, raw + off + blen);
+			if ( !madc_pch::compress(in, frame, codec, level) )
+				return false;
+			if ( frame.size() < blen )
+			{
+				src = frame.data();
+				slen = frame.size();
+			}
+		}
+		if ( (uint64_t)out.size() + slen > 0xffffffffu )
+			return false;
+		snapshot_block e;
+		e.offset = (uint32_t)out.size();
+		e.stored = (uint32_t)slen;
+		memcpy(out.data() + sizeof h + b * sizeof e, &e, sizeof e);
+		out.insert(out.end(), src, src + slen);
+	}
+	return true;
+}
+
+// The block table checked against the segment record: the header's shift is
+// the flags', the count covers raw_size, every block lies inside the stored
+// payload after the table, and none stores more than its raw length.
+static bool blocked_table_valid(const uint8_t *payload, uint64_t stored,
+				uint64_t raw_size, uint32_t flags)
+{
+	snapshot_block_header h;
+	if ( stored < sizeof h )
+		return false;
+	memcpy(&h, payload, sizeof h);
+	uint32_t shift = snap_xform_param(flags);
+	if ( h.block_shift != shift )
+		return false;
+	uint64_t n = (raw_size + ((uint64_t)1 << shift) - 1) >> shift;
+	if ( h.block_count != n )
+		return false;
+	uint64_t head = sizeof h + n * sizeof(snapshot_block);
+	if ( head > stored )
+		return false;
+	for ( size_t b = 0; b < (size_t)n; ++b )
+	{
+		snapshot_block e;
+		block_at(payload, b, e);
+		if ( e.offset < head || (uint64_t)e.offset + e.stored > stored
+		     || e.stored > block_raw_len(raw_size, shift, b) )
+			return false;
+	}
+	return true;
+}
+
+// Decode block b of a validated BLOCKED payload into dst + (b << shift).
+static bool blocked_decode(const uint8_t *payload, uint64_t raw_size,
+			   uint32_t shift, uint32_t codec, size_t b, uint8_t *dst,
+			   bool &framed)
+{
+	snapshot_block e;
+	block_at(payload, b, e);
+	size_t blen = block_raw_len(raw_size, shift, b);
+	uint8_t *out = dst + ((size_t)b << shift);
+	framed = e.stored != blen;
+	if ( !framed )
+	{
+		memcpy(out, payload + e.offset, blen);
+		return true;
+	}
+	return madc_pch::decompress(payload + e.offset, e.stored, out, blen,
+				    (PchCompression)codec);
 }
 
 static void delta32_fwd(uint8_t *buf, size_t len)
@@ -198,6 +313,15 @@ bool snapshot_writer::add_segment(uint32_t seg_id, uint32_t kind,
     p.meta.codec = (uint32_t)codec;
     p.meta.flags = xform;
 
+    if ( snap_xform_id(xform) == SNAP_XFORM_BLOCKED )
+    {
+	if ( !blocked_encode((const uint8_t *)bytes, len, snap_xform_param(xform),
+			     codec, level, p.payload) )
+	    return false;
+	p.meta.comp_size = (uint64_t)p.payload.size();
+	_segs.push_back(std::move(p));
+	return true;
+    }
     std::vector<uint8_t> raw((const uint8_t *)bytes, (const uint8_t *)bytes + len);
     if ( xform && !xform_apply(xform, raw) )
 	return false;
@@ -447,6 +571,33 @@ bool snapshot_reader::decode_payload(const snapshot_segment &seg,
 				     uint8_t *dst) const
 {
     const uint8_t *payload = _blob + seg.offset;
+    if ( snap_xform_id(seg.flags) == SNAP_XFORM_BLOCKED )
+    {
+	// Blocking frames the payload; it does not recode the bytes, so the
+	// "transformed" form IS the raw form — every block, in order.
+	if ( !blocked_table_valid(payload, seg.comp_size, seg.raw_size, seg.flags) )
+	    return false;
+	uint32_t shift = snap_xform_param(seg.flags);
+	size_t n = (size_t)((seg.raw_size + ((uint64_t)1 << shift) - 1) >> shift);
+	for ( size_t b = 0; b < n; ++b )
+	{
+	    bool framed = false;
+	    if ( !blocked_decode(payload, seg.raw_size, shift, seg.codec, b, dst, framed) )
+		return false;
+	    size_t blen = block_raw_len(seg.raw_size, shift, b);
+	    if ( framed )
+	    {
+		stat_zstd_frames += 1;
+		stat_zstd_bytes_out += blen;
+	    }
+	    else
+	    {
+		stat_copy_calls += 1;
+		stat_copy_bytes += blen;
+	    }
+	}
+	return true;
+    }
     if ( seg.codec == (uint32_t)PchCompression::None )
     {
 	if ( seg.raw_size )
@@ -537,6 +688,58 @@ const uint8_t *snapshot_reader::raw_ptr(const snapshot_segment &seg) const
     if ( !_blob || seg.codec != (uint32_t)PchCompression::None || seg.flags )
 	return (const uint8_t *)0;
     return _blob + seg.offset;
+}
+
+snapshot_lazy_segment *snapshot_reader::open_lazy(const snapshot_segment &seg) const
+{
+    if ( !_blob || snap_xform_id(seg.flags) != SNAP_XFORM_BLOCKED
+	 || !blocked_table_valid(_blob + seg.offset, seg.comp_size,
+				 seg.raw_size, seg.flags) )
+	return (snapshot_lazy_segment *)0;
+    return new snapshot_lazy_segment(_blob + seg.offset, seg);
+}
+
+// --- snapshot_lazy_segment ---
+
+snapshot_lazy_segment::snapshot_lazy_segment(const uint8_t *payload,
+					     const snapshot_segment &seg)
+    : _payload(payload), _codec(seg.codec), _seg_id(seg.seg_id)
+{
+    _size = (size_t)seg.raw_size;
+    _shift = snap_xform_param(seg.flags);
+    _nblocks = (size_t)((seg.raw_size + ((uint64_t)1 << _shift) - 1) >> _shift);
+    // Uninitialized: a block's bytes are written by its decode, and pages of
+    // blocks never touched are never faulted in.
+    _buf = _size ? new uint8_t[_size] : (uint8_t *)0;
+    _ready = _nblocks ? new std::atomic<uint8_t>[_nblocks] : (std::atomic<uint8_t> *)0;
+    for ( size_t b = 0; b < _nblocks; ++b )
+	_ready[b].store(0, std::memory_order_relaxed);
+}
+
+snapshot_lazy_segment::~snapshot_lazy_segment()
+{
+    delete[] _buf;
+    delete[] _ready;
+}
+
+bool snapshot_lazy_segment::fill(size_t first, size_t last) const
+{
+    std::lock_guard<std::mutex> lk(_mu);
+    for ( size_t b = first; b <= last; ++b )
+    {
+	if ( _ready[b].load(std::memory_order_relaxed) )
+	    continue;
+	bool framed = false;
+	if ( !blocked_decode(_payload, _size, _shift, _codec, b, _buf, framed) )
+	{
+	    fprintf(stderr, "madc: container segment %u block %zu failed to decode\n",
+		    _seg_id, b);
+	    return false;
+	}
+	_decoded.fetch_add(1, std::memory_order_relaxed);
+	_ready[b].store(1, std::memory_order_release);
+    }
+    return true;
 }
 
 } // namespace dis

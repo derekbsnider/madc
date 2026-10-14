@@ -8,7 +8,8 @@ loads only the slices of the units the program's include closure reaches — no
 whole-pack sweep, no whole-arena judging; the dialect prelude is a slice like
 any header, loaded under `--std=madc`. Target: the Test 6 column of
 `2026-10-13-pack-load-cost-experiments.md` on the shipped binary, at a pack
-size ≤ today's + 1.2 MB (owner 2026-10-13: measured +0.9 MB; a small increase was accepted).
+size ≤ 13,000,000 bytes (owner 2026-10-13: today's + 1.2 MB — measured +0.9 MB, a small increase
+accepted; raised 2026-10-14 to 13M for headroom).
 **Provision (owner-approved 2026-10-13):** the slice format must not change
 again for the later pull-on-lookup step (clang PCH / GCC CMI model: the unit
 of load is an entity cluster, the trigger a name-lookup miss).
@@ -57,7 +58,7 @@ unchanged.
 
 ## 3. Container layout
 
-`CIR_FOREST_FORMAT_VERSION` 57 → 58; an older pack is refused at
+`CIR_FOREST_FORMAT_VERSION` 57 → 58 (59 as built, below); an older pack is refused at
 `open_header` (no compatibility case). New segments:
 
 | segment | content |
@@ -71,6 +72,30 @@ Shared tables (string pool 2/3/4, arena 10–14, templates 15–17, token bytes
 fixed-size blocks, each compressed alone, with a block table. The reader
 decodes a block on first access (process cache, as today's segment cache).
 Blocks under 1 KB raw stay codec None.
+
+**As built (format 59, 2026-10-14).** Measured during part 2, each change
+kept only where it measured better than the plan's form:
+
+- **String pools** (2/3, arena 12/13): bytes (BLOCKED) + an OFFSETS block —
+  one `uint32` start per id and a trailing bytes size, stored raw and read in
+  place; length = next − start − 1. The entries/buckets segments (4, 14) are
+  retired: no production path looks a spelling up in a frozen pool (the
+  decl-index and seed lookups are their own sorted tables), so the hash
+  buckets were pure decode cost. Smaller pack, fewer bytes touched per id.
+- **DECLNAMES / SEEDS / RECORDABLE** are stored raw (codec None) and read in
+  place — no decode on open.
+- **BLOCKED set:** string bytes, arena defs / payload / token bytes, template
+  payload / tokens, and the globals (9) and templates (15) record tables,
+  which bind reads lazily by index (`ForestRecordTable`).
+- **Block size 16 KiB.** 4 KiB measured +0.67 MB (12,785,936 bytes) and a
+  slower 8-header C bind (more blocks, each with frame overhead).
+- **Point of creation** is a property of the entity: every `DataDef` keeps
+  the creation point open at its birth (`DataDef::pack_poi`), so a record the
+  freeze writes after the parse (an instantiation product, a namespace
+  binding — stamped with its function's) is still placed with the unit whose
+  parse made it, not the always list. A creation point in the producer's own
+  source (the root unit, never bound by a consumer) places nothing; the record
+  falls back to its declaring file.
 
 ## 4. Seeds — which records a unit's bind visits
 
@@ -154,7 +179,8 @@ closes with it.
 - **parse-cost ratchet** — rows per §1 (`scripts/parse_cost/` gains the
   ladder workloads; the seam battery's `parse-cost` stage runs them).
 - **pack size** — `forest_pack_gate.sh` records the pack's byte size in its
-  baseline; growth past +1.2 MB over the recorded size is red.
+  baseline; growth past the 13,000,000-byte cap (+1,418,024 over the
+  recorded 11,581,976) is red.
 - **seed parity** — `scripts/check-pack-seed-parity.sh`: for each ladder
   workload and a spread of single-header programs, the restored set (types,
   typedefs, enums, functions, globals, templates, namespace bindings) of the

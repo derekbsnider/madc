@@ -30,6 +30,7 @@ madc_no_eval_shims	engine global: eval shim policy flag
 madc_no_warnings	engine global: -w (inhibit warnings) flag
 madc_object_mode	engine global: object-mode flag
 madc_opt_level	engine global: optimization level
+madc_pack_creation_poi	engine global: pack-freeze point of creation (DataDef::pack_poi at birth)
 madc_pack_forest_path	engine global: forest pack path override
 madc_printstr	print runtime entry (CIR-emitted)
 madc_putd	print runtime entry (CIR-emitted)

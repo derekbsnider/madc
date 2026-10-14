@@ -2099,6 +2099,10 @@ int main(int argc, char **argv)
 			fs.zstd_secs, fs.zstd_frames, fs.zstd_bytes / 1024.0,
 			fs.copy_calls, fs.copy_bytes / 1024.0,
 			fw_lex, fw_parse, fw_cir);
+		    if ( fs.blocks_total )
+			fprintf(stderr,
+			    "[stats] forest blocks ....... %llu of %llu decoded  (%s)\n",
+			    fs.blocks_decoded, fs.blocks_total, fs.block_rows.c_str());
 		    fprintf(stderr,
 			"[stats] forest functions .... %llu eager + %llu derived deferred; %llu activated / %llu remain\n",
 			fs.funcs_eager, fs.funcs_deferred,

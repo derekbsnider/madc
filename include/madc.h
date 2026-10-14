@@ -3801,6 +3801,24 @@ public:
     // (docs/plans/2026-10-13-pack-slices-design.md §4).
     std::vector<uint32_t> forest_arena_poi;
     void forest_arena_put(uint32_t tid, const madc::dis::defrec &r);
+    // The point of creation a write would stamp now (0xffffffff = none open).
+    uint32_t pack_current_poi() const;
+    // Work done with no declaration open (a freeze's lazy drain, its CIR
+    // translate) re-opens the point of creation of what it works FOR, so
+    // what it creates is stamped there (pack-slices design §4). The frame
+    // is popped, never closed: it adds no decl-index entry.
+    struct PackPoiFrame
+    {
+	Program &p;
+	bool pushed;
+	PackPoiFrame(Program &pp, uint32_t poi);
+	~PackPoiFrame();
+    };
+    // A FREEZE-time capture's point of creation (freeze only): the file that declared
+    // the entity, for a slot no parse-time write stamped — the seed index places it
+    // with that file's unit, as it places a template or a global (design §4).
+    std::vector<const char *> forest_arena_file;
+    void forest_arena_stamp_file(uint32_t tid, const char *file);
     // Class-template parse-once representation. TemplateDef is copied across
     // lookup, merge, partial selection, and forest restore, so it owns only a
     // stable Program-lifetime arena id. Pattern nodes use ids and value fields;
@@ -5762,6 +5780,8 @@ public:
 	unsigned long long zstd_frames = 0, zstd_bytes = 0;
 	double zstd_secs = 0.0;
 	unsigned long long copy_calls = 0, copy_bytes = 0;
+	unsigned long long blocks_decoded = 0, blocks_total = 0;
+	std::string block_rows;			// "seg:decoded/total" per BLOCKED table
 	unsigned long long funcs_eager = 0, funcs_deferred = 0;
 	unsigned long long funcs_activated = 0, funcs_remaining = 0;
     };
@@ -5878,7 +5898,11 @@ public:
 	const char *file;
 	int line;
 	int column;
-	DeferredFunctionBody() : var(NULL), method(NULL), full_definition(false), explicit_specialization(false), file(NULL), line(0), column(0) {}
+	// Freeze only: the point of creation of the declaration that deferred the
+	// body (pack_current_poi; 0xffffffff = none) — a body parsed after the
+	// parse (the freeze's lazy drain) stamps what it creates there.
+	uint32_t pack_poi;
+	DeferredFunctionBody() : var(NULL), method(NULL), full_definition(false), explicit_specialization(false), file(NULL), line(0), column(0), pack_poi(0xffffffffu) {}
     };
     std::map<DataDefCLASS *, std::vector<DeferredFunctionBody> >
 	*class_pattern_body_capture = NULL;

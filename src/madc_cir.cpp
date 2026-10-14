@@ -4081,6 +4081,21 @@ static uint32_t forest_serialize_type_id(DataDef *dd)
 	return madc_type_id_for(dd);
 }
 
+// A record the freeze writes for an entity with a point of creation (a
+// using-binding: its target function's) is placed there (pack-slices design
+// §4) — unless the parse already stamped the slot.
+static void forest_stamp_poi(Program *prog, uint32_t tid, uint32_t poi)
+{
+	if (!prog->pack_recording || poi == 0xffffffffu
+	    || !madc::dis::arena_id_is_project(tid))
+		return;
+	uint32_t slot = madc::dis::arena_slot_of(tid);
+	if (prog->forest_arena_poi.size() <= slot)
+		prog->forest_arena_poi.resize((size_t)slot + 1, 0xffffffffu);
+	if (prog->forest_arena_poi[slot] == 0xffffffffu)
+		prog->forest_arena_poi[slot] = poi;
+}
+
 // An OPAQUE dependent placeholder never freezes (see the kill arm in
 // forest_arena_record_aggregate); an alias / static-member-type entry that
 // TARGETS one must not freeze either — its serialized tid has a killed
@@ -4100,13 +4115,41 @@ static bool forest_type_is_opaque_placeholder(DataDef *dd)
 void Program::forest_arena_put(uint32_t tid, const madc::dis::defrec &r)
 {
 	forest_arena.set_def_at(tid, r);
-	if (!pack_recording || pack_decl_stack.empty()
+	if (!pack_recording || !madc::dis::arena_id_is_project(tid))
+		return;
+	uint32_t slot = madc::dis::arena_slot_of(tid);
+	uint32_t poi = 0xffffffffu;
+	if (!pack_decl_stack.empty())
+		poi = (uint32_t)pack_decl_stack.back().begin;
+	else {
+		// Written with no declaration open (the freeze's re-record of
+		// live state): the record's entity keeps the point of creation
+		// it was born under (DataDef::pack_poi) — never overriding a
+		// stamp an earlier parse-time write left.
+		if (DataDef *dd = type_from_id(tid))
+			poi = dd->pack_poi;
+		if (poi == 0xffffffffu || (slot < forest_arena_poi.size()
+					   && forest_arena_poi[slot] != 0xffffffffu))
+			return;
+	}
+	if (poi == 0xffffffffu)
+		return;
+	if (forest_arena_poi.size() <= slot)
+		forest_arena_poi.resize((size_t)slot + 1, 0xffffffffu);
+	forest_arena_poi[slot] = poi;
+}
+
+void Program::forest_arena_stamp_file(uint32_t tid, const char *file)
+{
+	if (!pack_recording || !file || !*file
 	    || !madc::dis::arena_id_is_project(tid))
 		return;
 	uint32_t slot = madc::dis::arena_slot_of(tid);
-	if (forest_arena_poi.size() <= slot)
-		forest_arena_poi.resize((size_t)slot + 1, 0xffffffffu);
-	forest_arena_poi[slot] = (uint32_t)pack_decl_stack.back().begin;
+	if (slot < forest_arena_poi.size() && forest_arena_poi[slot] != 0xffffffffu)
+		return;		// the parse stamped it
+	if (forest_arena_file.size() <= slot)
+		forest_arena_file.resize((size_t)slot + 1, (const char *)NULL);
+	forest_arena_file[slot] = file;
 }
 
 // B3 write-through (SLICE 1c/1d): record a newly-created PROJECT unary derived type — pointer,
@@ -6181,6 +6224,7 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f,
 				r.ns_id   = a.strings.intern(ns.c_str());
 				r.name_id = a.strings.intern(name.c_str());
 				r.disp_id = a.strings.intern(ki->second.c_str());
+				forest_stamp_poi(prog, next, fd->pack_poi);
 				a.set_def_at(next++, r);
 			}
 		}
@@ -6213,6 +6257,7 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f,
 				r.ns_id   = a.strings.intern(ni->first.c_str());
 				r.name_id = a.strings.intern(vi->first.c_str());
 				r.disp_id = a.strings.intern(ki->second.c_str());
+				forest_stamp_poi(prog, next, fd->pack_poi);
 				a.set_def_at(next++, r);
 			}
 		}
@@ -6630,8 +6675,22 @@ static void cir_forest_arena_refresh(Program *prog,
 	// resolution chokepoint for a qualified `std::_Destroy(...)` call in a
 	// NEW-specialization instantiation. Templates / member-template PATTERNS
 	// still skip (a pattern is not a concrete symbol).
+	// Walked in point-of-creation order: a function's first project id is
+	// assigned here, so creation order is what keeps one header's functions
+	// in neighbouring arena slots — the blocks a bind decodes (pack-slices
+	// design §3). The map's own (name) order scattered them over the arena.
+	std::vector<funcdef_map_iter> rc2_order;
 	for (funcdef_map_iter it = prog->funcdef_map.begin();
-	     it != prog->funcdef_map.end(); ++it) {
+	     it != prog->funcdef_map.end(); ++it)
+		rc2_order.push_back(it);
+	std::stable_sort(rc2_order.begin(), rc2_order.end(),
+		[](const funcdef_map_iter &a, const funcdef_map_iter &b) {
+			uint32_t pa = a->second ? a->second->pack_poi : 0xffffffffu;
+			uint32_t pb = b->second ? b->second->pack_poi : 0xffffffffu;
+			return pa < pb;
+		});
+	for (size_t oi = 0; oi < rc2_order.size(); ++oi) {
+		funcdef_map_iter it = rc2_order[oi];
 		FuncDef *fd = it->second;
 #ifdef MADC_DBG_PACK
 		bool rc2probe = it->first.find("stoi") != madc::dis::istring::npos
@@ -6646,6 +6705,11 @@ static void cir_forest_arena_refresh(Program *prog,
 		if (!fd || it->first.empty())
 			continue;
 		if (fd->is_member_template || !fd->template_param_names.empty())
+			continue;
+		// A builtin registration exists in every Program before any
+		// source is read (add_core_functions et al.) — nothing for a bind
+		// to restore, and no unit to place it with.
+		if (fd->builtin_registration)
 			continue;
 		// UN-CARRIABLE pack product (pack_dropped): no record at all —
 		// a restored decl-only rank would SHADOW the pattern
@@ -6702,6 +6766,7 @@ static void cir_forest_arena_refresh(Program *prog,
 			r.ns_id = prog->forest_arena.strings.intern(
 				fd->namespace_name.c_str());
 		prog->forest_arena_put(tid, r);
+		prog->forest_arena_stamp_file(tid, fd->decl_file);
 	}
 }
 
@@ -7125,7 +7190,8 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 		if (prog->pack_recording && TokenBase::_active_strpool) {
 			std::string seed_summary;
 			cir_forest_build_seeds(f, *TokenBase::_active_strpool,
-					       prog->forest_arena_poi, seed_summary);
+					       prog->forest_arena_poi,
+					       prog->forest_arena_file, seed_summary);
 			fprintf(stderr, "%s: pack seeds: %s\n", source_name,
 				seed_summary.c_str());
 		}

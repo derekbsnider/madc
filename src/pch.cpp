@@ -509,6 +509,25 @@ bool compress(const std::vector<uint8_t> &in,
     return false;
 }
 
+#ifdef HAVE_ZSTD
+// One zstd decompression context per thread, reused across frames.
+// ZSTD_decompress creates and frees a context on every call — a fixed cost
+// paid per frame, which a block-by-block reader (snapshot BLOCKED segments)
+// pays per block. A context is single-threaded state; thread_local keeps
+// every thread on its own.
+static ZSTD_DCtx *zstd_thread_dctx()
+{
+    struct holder
+    {
+	ZSTD_DCtx *dctx;
+	holder() : dctx(ZSTD_createDCtx()) {}
+	~holder() { ZSTD_freeDCtx(dctx); }
+    };
+    static thread_local holder h;
+    return h.dctx;
+}
+#endif
+
 bool decompress(const uint8_t *in, size_t in_len,
 		uint8_t *out, size_t out_len,
 		PchCompression method)
@@ -523,7 +542,9 @@ bool decompress(const uint8_t *in, size_t in_len,
 #ifdef HAVE_ZSTD
     if ( method == PchCompression::Zstd )
     {
-	size_t result = ZSTD_decompress(out, out_len, in, in_len);
+	ZSTD_DCtx *dctx = zstd_thread_dctx();
+	size_t result = dctx ? ZSTD_decompressDCtx(dctx, out, out_len, in, in_len)
+			     : ZSTD_decompress(out, out_len, in, in_len);
 	return !ZSTD_isError(result) && result == out_len;
     }
 #endif

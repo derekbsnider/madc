@@ -1,8 +1,8 @@
 // Unit tests for the madc::dis pool-snapshot container (madcdis/snapshot.h)
 // and the frozen intern-table tier (madcdis/intern_table.h): writer/reader
 // round-trip, both placements (standalone file / appended-to-binary), codec
-// paths, corruption rejection, and frozen_intern_table bind + find parity
-// with the live table it was serialized from.
+// paths, corruption rejection, and frozen_intern_table bind parity with the
+// live table it was serialized from (bytes + the offsets block).
 
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
@@ -52,46 +52,45 @@ static void populate(intern_table &p, std::vector<uint32_t> &ids, int n)
     }
 }
 
-// Serialize a live table's three blocks into a writer (the B2 consumer shape).
+// Serialize a live table's two frozen blocks into a writer (the forest's
+// shape): the bytes, and the offsets block.
 static bool add_intern_segments(snapshot_writer &w, const intern_table &p,
 				PchCompression codec)
 {
+    std::vector<uint32_t> offs;
+    p.offsets_block(offs);
     if ( !w.add_segment(1, madc::dis::SNAP_KIND_INTERN_BYTES,
 			p.bytes_data(), p.bytes_size(), codec) )
 	return false;
-    if ( !w.add_segment(2, madc::dis::SNAP_KIND_INTERN_ENTRIES,
-			p.entries_data(), p.entries_size() * sizeof(intern_table::Entry),
-			codec) )
-	return false;
-    return w.add_segment(3, madc::dis::SNAP_KIND_INTERN_BUCKETS,
-			 p.buckets_data(), p.buckets_size() * sizeof(uint32_t), codec);
+    return w.add_segment(2, madc::dis::SNAP_KIND_INTERN_OFFSETS,
+			 offs.data(), offs.size() * sizeof(uint32_t), codec);
 }
 
-// Bind a frozen view over three decompressed block buffers.
+// Bind a frozen view over two decompressed block buffers.
 static void bind_frozen(frozen_intern_table &fz,
 			const std::vector<uint8_t> &bytes,
-			const std::vector<uint8_t> &entries,
-			const std::vector<uint8_t> &buckets)
+			const std::vector<uint8_t> &offsets)
 {
     fz.bind((const char *)bytes.data(), bytes.size(),
-	    (const intern_table::Entry *)entries.data(),
-	    entries.size() / sizeof(intern_table::Entry),
-	    (const uint32_t *)buckets.data(),
-	    buckets.size() / sizeof(uint32_t));
+	    (const uint32_t *)offsets.data(), offsets.size() / sizeof(uint32_t));
 }
 
-TEST_CASE("frozen view over a live table's blocks: ids, spellings, find parity")
+TEST_CASE("frozen view over a live table's blocks: ids and spellings")
 {
     intern_table p;
     std::vector<uint32_t> ids;
     populate(p, ids, 3000);   // enough to force growth + rehash
 
+    std::vector<uint32_t> offs;
+    p.offsets_block(offs);
+    CHECK(offs.size() == p.count() + 2);
+    CHECK(offs.back() == p.bytes_size());
+
     frozen_intern_table fz;
-    fz.bind(p.bytes_data(), p.bytes_size(),
-	    p.entries_data(), p.entries_size(),
-	    p.buckets_data(), p.buckets_size());
+    fz.bind(p.bytes_data(), p.bytes_size(), offs.data(), offs.size());
     CHECK(fz.valid());
     CHECK(fz.count() == p.count());
+    CHECK(fz.length(0) == 0u);
 
     char buf[32];
     for ( int i = 0; i < 3000; ++i )
@@ -100,10 +99,16 @@ TEST_CASE("frozen view over a live table's blocks: ids, spellings, find parity")
 	snprintf(buf, sizeof buf, "spelling_%d", i);
 	CHECK(fz.str(id) == buf);
 	CHECK(fz.length(id) == p.length(id));
-	CHECK(fz.find(buf, (uint32_t)strlen(buf)) == id);
     }
-    CHECK(fz.find(std::string("absent_spelling")) == (uint32_t)frozen_intern_table::npos);
-    CHECK(fz.find("", 0) == 0u);   // empty -> reserved id 0
+    // An id past the table reads as the empty spelling, never out of bounds.
+    CHECK(std::string(fz.c_str((uint32_t)p.count() + 1)) == "");
+    CHECK(fz.length((uint32_t)p.count() + 1) == 0u);
+
+    // A closing offset that disagrees with the byte block is refused.
+    offs.back() += 1;
+    frozen_intern_table bad;
+    bad.bind(p.bytes_data(), p.bytes_size(), offs.data(), offs.size());
+    CHECK_FALSE(bad.valid());
 }
 
 TEST_CASE("container round-trip in memory (zlib) rebinds an identical frozen table")
@@ -120,27 +125,24 @@ TEST_CASE("container round-trip in memory (zlib) rebinds an identical frozen tab
 
     snapshot_reader r;
     REQUIRE(r.open(blob.data(), blob.size()));
-    CHECK(r.segment_count() == 3u);
+    CHECK(r.segment_count() == 2u);
     CHECK(r.context_hash() == 0x1122334455667788ull);
 
-    std::vector<uint8_t> bytes, entries, buckets;
+    std::vector<uint8_t> bytes, offsets;
     REQUIRE(r.find(1) != nullptr);
     REQUIRE(r.find(2) != nullptr);
-    REQUIRE(r.find(3) != nullptr);
     CHECK(r.find(1)->kind == (uint32_t)madc::dis::SNAP_KIND_INTERN_BYTES);
+    CHECK(r.find(2)->kind == (uint32_t)madc::dis::SNAP_KIND_INTERN_OFFSETS);
     REQUIRE(r.read_segment(*r.find(1), bytes));
-    REQUIRE(r.read_segment(*r.find(2), entries));
-    REQUIRE(r.read_segment(*r.find(3), buckets));
+    REQUIRE(r.read_segment(*r.find(2), offsets));
     CHECK(r.raw_ptr(*r.find(1)) == nullptr);   // compressed -> no bind-in-place
 
     frozen_intern_table fz;
-    bind_frozen(fz, bytes, entries, buckets);
+    bind_frozen(fz, bytes, offsets);
     CHECK(fz.valid());
     CHECK(fz.count() == p.count());
     for ( size_t i = 0; i < ids.size(); ++i )
 	CHECK(fz.str(ids[i]) == p.str(ids[i]));
-    CHECK(fz.find(std::string("spelling_123")) == p.intern("spelling_123"));
-    CHECK(fz.find(std::string("never_interned")) == (uint32_t)frozen_intern_table::npos);
 }
 
 TEST_CASE("codec None segments bind in place via raw_ptr")
@@ -157,21 +159,16 @@ TEST_CASE("codec None segments bind in place via raw_ptr")
     snapshot_reader r;
     REQUIRE(r.open(blob.data(), blob.size()));
     const snapshot_segment *sb = r.find(1);
-    const snapshot_segment *se = r.find(2);
-    const snapshot_segment *sk = r.find(3);
+    const snapshot_segment *so = r.find(2);
     REQUIRE(sb != nullptr);
-    REQUIRE(se != nullptr);
-    REQUIRE(sk != nullptr);
+    REQUIRE(so != nullptr);
     CHECK(sb->comp_size == sb->raw_size);
-    CHECK((se->offset & 15u) == 0u);   // 16-aligned payloads (bind-in-place contract)
-    CHECK((sk->offset & 15u) == 0u);
+    CHECK((so->offset & 15u) == 0u);   // 16-aligned payloads (bind-in-place contract)
 
     frozen_intern_table fz;
     fz.bind((const char *)r.raw_ptr(*sb), (size_t)sb->raw_size,
-	    (const intern_table::Entry *)r.raw_ptr(*se),
-	    (size_t)se->raw_size / sizeof(intern_table::Entry),
-	    (const uint32_t *)r.raw_ptr(*sk),
-	    (size_t)sk->raw_size / sizeof(uint32_t));
+	    (const uint32_t *)r.raw_ptr(*so),
+	    (size_t)so->raw_size / sizeof(uint32_t));
     CHECK(fz.valid());
     for ( size_t i = 0; i < ids.size(); ++i )
 	CHECK(fz.str(ids[i]) == p.str(ids[i]));
@@ -230,7 +227,7 @@ TEST_CASE("placement 1: standalone snapshot file round-trips")
     REQUIRE(slurp(path, image));
     snapshot_reader r;
     CHECK(r.open(image.data(), image.size()));
-    CHECK(r.segment_count() == 3u);
+    CHECK(r.segment_count() == 2u);
     std::remove(path.c_str());
 }
 
@@ -257,7 +254,7 @@ TEST_CASE("placement 2: blob appended to a host binary is found from EOF")
     REQUIRE(slurp(path, image));
     snapshot_reader r;
     REQUIRE(r.open(image.data(), image.size()));
-    CHECK(r.segment_count() == 3u);
+    CHECK(r.segment_count() == 2u);
 
     // The blob base must have landed 16-aligned in the file (append pads),
     // so a None-codec payload binds in place even from the appended image.
@@ -267,12 +264,11 @@ TEST_CASE("placement 2: blob appended to a host binary is found from EOF")
     REQUIRE(pe != nullptr);
     CHECK((((uintptr_t)pe - (uintptr_t)image.data()) & 15u) == 0u);
 
-    std::vector<uint8_t> bytes, entries, buckets;
+    std::vector<uint8_t> bytes, offsets;
     REQUIRE(r.read_segment(*r.find(1), bytes));
-    REQUIRE(r.read_segment(*r.find(2), entries));
-    REQUIRE(r.read_segment(*r.find(3), buckets));
+    REQUIRE(r.read_segment(*r.find(2), offsets));
     frozen_intern_table fz;
-    bind_frozen(fz, bytes, entries, buckets);
+    bind_frozen(fz, bytes, offsets);
     CHECK(fz.valid());
     for ( size_t i = 0; i < ids.size(); ++i )
 	CHECK(fz.str(ids[i]) == p.str(ids[i]));
@@ -458,4 +454,140 @@ TEST_CASE("a corrupt transform in the directory is rejected at open()")
     CHECK(!r.open(blob.data(), blob.size()));
     dir[0].flags = 0;
     CHECK(r.open(blob.data(), blob.size()));
+}
+
+// A BLOCKED segment over `raw` with 1 KiB blocks (zlib), built into `blob`.
+static const snapshot_segment *blocked_container(const std::vector<uint8_t> &raw,
+						 std::vector<uint8_t> &blob,
+						 snapshot_reader &r)
+{
+    snapshot_writer w;
+    if ( !w.add_segment(1, 0, raw.data(), raw.size(), PchCompression::Zlib, 0,
+			madc::dis::snap_xform_flags(madc::dis::SNAP_XFORM_BLOCKED, 10))
+	 || !w.build(blob) || !r.open(blob.data(), blob.size()) )
+	return nullptr;
+    return r.find(1);
+}
+
+static std::vector<uint8_t> blocked_sample()
+{
+    // Ten compressible 1 KiB blocks and a 100-byte tail under the raw floor.
+    std::vector<uint8_t> raw(10 * 1024 + 100);
+    for ( size_t i = 0; i < raw.size(); ++i )
+	raw[i] = (uint8_t)((i / 7) & 0xff);
+    return raw;
+}
+
+TEST_CASE("BLOCKED segments decode whole, or block by block on first touch")
+{
+    std::vector<uint8_t> raw = blocked_sample(), blob;
+    snapshot_reader r;
+    const snapshot_segment *s = blocked_container(raw, blob, r);
+    REQUIRE(s != nullptr);
+    CHECK(r.raw_ptr(*s) == nullptr);
+    std::vector<uint8_t> got;
+    REQUIRE(r.read_segment(*s, got));
+    CHECK(got == raw);
+
+    madc::dis::snapshot_lazy_segment *lz = r.open_lazy(*s);
+    REQUIRE(lz != nullptr);
+    CHECK(lz->size() == raw.size());
+    CHECK(lz->block_count() == 11u);
+    CHECK(lz->blocks_decoded() == 0u);
+    // A range straddling blocks 3 and 4 decodes exactly those two.
+    REQUIRE(lz->ensure(3 * 1024 + 1000, 100));
+    CHECK(lz->blocks_decoded() == 2u);
+    CHECK(memcmp(lz->data() + 3 * 1024 + 1000, raw.data() + 3 * 1024 + 1000, 100) == 0);
+    REQUIRE(lz->ensure(3 * 1024, 10));		// already decoded
+    CHECK(lz->blocks_decoded() == 2u);
+    REQUIRE(lz->ensure(raw.size() - 1, 1));	// the raw-stored tail
+    CHECK(lz->blocks_decoded() == 3u);
+    CHECK(lz->data()[raw.size() - 1] == raw.back());
+    CHECK(!lz->ensure(raw.size(), 1));		// past the end
+    CHECK(lz->ensure(raw.size(), 0));
+    REQUIRE(lz->ensure(0, raw.size()));
+    CHECK(lz->blocks_decoded() == 11u);
+    CHECK(memcmp(lz->data(), raw.data(), raw.size()) == 0);
+    delete lz;
+
+    // Only a BLOCKED segment has a lazy reader.
+    snapshot_writer w;
+    REQUIRE(w.add_segment(1, 0, raw.data(), raw.size(), PchCompression::Zlib));
+    std::vector<uint8_t> plain;
+    REQUIRE(w.build(plain));
+    snapshot_reader rp;
+    REQUIRE(rp.open(plain.data(), plain.size()));
+    CHECK(rp.open_lazy(*rp.find(1)) == nullptr);
+}
+
+TEST_CASE("a BLOCKED segment with a corrupt block table is refused")
+{
+    std::vector<uint8_t> raw = blocked_sample(), blob;
+    snapshot_reader r;
+    const snapshot_segment *s = blocked_container(raw, blob, r);
+    REQUIRE(s != nullptr);
+    size_t at = (size_t)s->offset;
+    std::vector<uint8_t> got;
+
+    blob[at + 4] ^= 1;				// block_count
+    CHECK(r.open_lazy(*s) == nullptr);
+    CHECK(!r.read_segment(*s, got));
+    blob[at + 4] ^= 1;
+
+    // Block 0's offset pointed past the stored payload.
+    size_t e0 = at + sizeof(madc::dis::snapshot_block_header);
+    uint32_t saved;
+    memcpy(&saved, &blob[e0], 4);
+    uint32_t bad = (uint32_t)s->comp_size;
+    memcpy(&blob[e0], &bad, 4);
+    CHECK(r.open_lazy(*s) == nullptr);
+    CHECK(!r.read_segment(*s, got));
+    memcpy(&blob[e0], &saved, 4);
+
+    madc::dis::snapshot_lazy_segment *lz = r.open_lazy(*s);
+    CHECK(lz != nullptr);
+    delete lz;
+}
+
+TEST_CASE("a frozen intern table reads through lazy blocks, decoding only what it reads")
+{
+    intern_table p;
+    std::vector<uint32_t> ids;
+    populate(p, ids, 3000);
+
+    snapshot_writer w;
+    std::vector<uint32_t> offs;
+    p.offsets_block(offs);
+    uint32_t xf = madc::dis::snap_xform_flags(madc::dis::SNAP_XFORM_BLOCKED, 10);
+    REQUIRE(w.add_segment(1, madc::dis::SNAP_KIND_INTERN_BYTES,
+			  p.bytes_data(), p.bytes_size(), PchCompression::Zlib, 0, xf));
+    std::vector<uint8_t> blob;
+    REQUIRE(w.build(blob));
+    snapshot_reader r;
+    REQUIRE(r.open(blob.data(), blob.size()));
+    madc::dis::snapshot_lazy_segment *lb = r.open_lazy(*r.find(1));
+    REQUIRE(lb != nullptr);
+
+    frozen_intern_table fz;
+    fz.bind((const char *)lb->data(), lb->size(), offs.data(), offs.size(), lb);
+    CHECK(fz.valid());
+    CHECK(lb->blocks_decoded() == 1u);	// the empty spelling's block
+    CHECK(fz.count() == p.count());
+
+    // One spelling decodes the block(s) holding it — not the table.
+    CHECK(fz.str(ids[2500]) == "spelling_2500");
+    CHECK(lb->blocks_decoded() <= 3u);
+    CHECK(lb->blocks_decoded() < lb->block_count() / 4);
+
+    char buf[32];
+    for ( int i = 0; i < 3000; ++i )
+    {
+	snprintf(buf, sizeof buf, "spelling_%d", i);
+	CHECK(fz.str(ids[(size_t)i]) == buf);
+    }
+    CHECK(lb->blocks_decoded() == lb->block_count());
+    // An id past the table reads as the empty spelling, never out of bounds.
+    CHECK(std::string(fz.c_str((uint32_t)p.count() + 7)) == "");
+    CHECK(fz.length((uint32_t)p.count() + 7) == 0u);
+    delete lb;
 }
