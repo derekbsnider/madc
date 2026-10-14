@@ -4840,6 +4840,12 @@ bool Program::forest_bind_env_ok(uint32_t unit, std::set<uint32_t> &visited)
 
 bool Program::forest_bind_env_ok(uint32_t root)
 {
+    // The decl-record restore is one-shot (flush_forest_pending_globals): a
+    // unit asked to bind once it ran — an interactive session's later entry —
+    // would install its macros and never its records (a REPL's `struct tm`
+    // with no members). It declines; its text parses, as live.
+    if ( forest_decls_restored )
+	return false;
     // v40 rollout knob (task #57): the mixed bind/live DECL frontier the
     // decline path exposes is now absorbed (denotes_same_type tolerance +
     // typedef/class live-wins), and the mismatch handling below is the

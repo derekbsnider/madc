@@ -1,0 +1,2 @@
+#include <time.h>
+struct tm t; t.tm_year = 5; printf("tm_year=%d\n", t.tm_year);
