@@ -15,7 +15,9 @@
 #                  most instances are legitimate — a pointer to a template
 #                  parameter has no concrete record by construction, and the
 #                  consumer re-instantiates from the pattern. A CONCRETE type
-#                  here is task #64's shape and is a defect.
+#                  here is task #64's shape and is a defect. Since derived
+#                  types build on first use (pack slices part 2), only one a
+#                  restore ASKED for is censused — linux fell 59 -> 0.
 #   mir-blob-skips 'blob skipped' in the pack log: the MIR module-cache blob
 #                  failed to compile and was dropped with "consumers fall
 #                  back". Correctness survives — which is why the pack exits 0 —
@@ -27,6 +29,12 @@
 #                  whose chain arena_chain_ok refuses to record. Designed
 #                  behaviour, so it ratchets; the container carrying LESS than
 #                  it did is the regression.
+#   pack-bytes     the container's bytes (`bytes` in the pack's --dump-forest):
+#                  NOT a count that only goes down — the pack may grow up to
+#                  1.2 MB past it (owner 2026-10-13, the pack slices seed index;
+#                  PACK_BYTES_ALLOWANCE in the gate). Recorded at the pre-slices
+#                  size: the shipped Linux pack, 11,581,976 bytes. A profile
+#                  with no line is reported, not judged.
 #
 # A MISSING line means ZERO allowed, so a new profile or metric cannot appear
 # with room to spare. Counts may only go DOWN: lower them in the same commit
@@ -88,8 +96,15 @@
 # template parameter — the census's legitimate shape (no record by
 # construction); zero concrete types, so no task #64 shape.
 28 linux pack-errors
-59 linux dk-none
+0 linux dk-none
 0 linux closure-drops
+11581976 linux pack-bytes
+# linux-dialect (2026-10-14, pack-slices design §7): the --with-forest=none
+# build's dialect-only container (forest_pack.sh --dialect-only) — the C
+# headers the full pack freezes ahead of the madc fragments, then the
+# fragments; 247 units. Zero parse errors and zero losses by construction
+# (no line = zero allowed); its size recorded as built.
+3307744 linux-dialect pack-bytes
 # win64 68 -> 70 (2026-09-20): the same libstdc++ 13.2 corpus as linux, the
 # same six exposed __cerb entries (istream.tcc, the mingw stage's line
 # numbers); its freeze-append also compiles src/rt/rt_posix_time.c again —
@@ -100,8 +115,12 @@
 # release-win's own pack run): the same 28 entries as linux, class for class
 # (mingw ships the same libstdc++ 13.2); the 60 are linux's 59 dependent
 # operands plus the one `ptr funcptr*` the old 46-vs-45 split already carried.
+# win64 dk-none 60 -> 1 (2026-10-14, the pack-slices seam pre-build,
+# release-win's own pack run): linux's 59 dependent operands are gone with
+# the lazy derived types of 24a548a17 (linux 59 -> 0); the one left is the
+# `ptr funcptr*` the 46-vs-45 split has always carried.
 28 win64 pack-errors
-60 win64 dk-none
+1 win64 dk-none
 0 win64 closure-drops
 # darwin 64 -> 58 (2026-08-24): the six libc++ <filesystem> "no matching
 # overload ... error_code**" entries (raised 58 -> 64 on 2026-08-23 when the

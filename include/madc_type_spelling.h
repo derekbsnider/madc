@@ -43,6 +43,12 @@ public:
     // template instantiated by its template-id (`Box<int>`), any other by
     // its tag's name. The show, var_dump and print_r name one with it.
     madc::dis::istring aggregate_name(DataDefSTRUCT *s) const;
+    // A struct's or union's tag name: a type a REPL session redefined is its
+    // first version's name, `#N` on an earlier version (plan §42 D6).
+    madc::dis::istring tag_name(const DataDefSTRUCT *s) const;
+    // BASE, `#N` when S is an earlier version than its name's current one.
+    madc::dis::istring session_name(const DataDefSTRUCT *s,
+				    const madc::dis::istring &base) const;
     // The source's own name for a type, found by identity in the datatype
     // maps; empty when nothing names it.
     madc::dis::istring alias(DataDef *dd) const;

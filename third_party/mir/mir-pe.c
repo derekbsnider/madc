@@ -935,9 +935,9 @@ static const char *const pex_stub_import[6]
    each call.  131 bytes, int3-padded to 144 so the captured text keeps
    its alignment.  Patch points are rip-relative disp32 fields (rip = the
    field + 4). */
-static const uint8_t pex_dll_stub[144]
+static const uint8_t pex_dll_stub[160]
   = {0x83, 0xfa, 0x01,                   /* cmp  $1,%edx */
-     0x75, 0x78,                         /* jne  ret_true */
+     0x75, 0x7e,                         /* jne  detach (ret_true, 0x78, with no fini) */
      0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, /* push rbx rsi rdi r12 r13 */
      0x48, 0x83, 0xec, 0x20,             /* sub  $0x20,%rsp */
      0x48, 0x8d, 0x05, 0, 0, 0, 0,       /* lea  fixtab(%rip),%rax  @0x13 */
@@ -969,9 +969,22 @@ static const uint8_t pex_dll_stub[144]
      0x41, 0x5d, 0x41, 0x5c, 0x5f, 0x5e, 0x5b, /* pop r13 r12 rdi rsi rbx */
      0xb8, 0x01, 0x00, 0x00, 0x00,       /* ret_true: mov $1,%eax */
      0xc3,                               /* ret (offset 0x82) */
-     0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc,
-     0xcc /* pad 0x83..0x8f = 144 bytes */};
-#define PEX_DLL_STUB_SIZE 144
+     0x85, 0xd2,                         /* detach: test %edx,%edx (0x83) */
+     0x75, 0xf6,                         /* jne  ret_true (not DLL_PROCESS_DETACH) */
+     0x48, 0x83, 0xec, 0x28,             /* sub  $0x28,%rsp */
+     0xe8, 0, 0, 0, 0,                   /* call fini         @0x8c */
+     0x48, 0x83, 0xc4, 0x28,             /* add  $0x28,%rsp */
+     0xeb, 0xe7,                         /* jmp  ret_true */
+     0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc,
+     0xcc /* pad 0x96..0x9f = 160 bytes */};
+#define PEX_DLL_STUB_SIZE 160
+/* DLL_PROCESS_DETACH calls the image's fini (exec params' `fini`, the
+   role mingw's dllcrt plays: the DLL's exit handlers run at FreeLibrary and
+   at process exit, while its code is mapped); with none, the first branch
+   goes straight to ret_true */
+#define PEX_DLL_DETACH_REL8_AT 0x04
+#define PEX_DLL_DETACH_SKIP_REL8 0x78
+#define PEX_DLL_FINI_AT 0x8c
 #define PEX_DLL_FIX_TAB_AT 0x13
 #define PEX_DLL_FIX_END_AT 0x1a
 #define PEX_DLL_INITARR_AT 0x50
@@ -1171,6 +1184,15 @@ static int pe_emit_executable (MIR_object_t obj, const MIR_object_exec_params *p
       break;
     }
   if (!dll_p && entry_i == n) return -1; /* the driver prints "is main() defined?" */
+  /* a DLL's fini, when named and defined in .text (its detach calls it) */
+  size_t fini_i = n;
+  if (dll_p && params->fini != NULL)
+    for (size_t i = 0; i < n; i++)
+      if (obj->syms[i].name != NULL && obj->syms[i].defined_p
+          && obj->syms[i].sec == MIR_OBJ_SEC_TEXT && strcmp (obj->syms[i].name, params->fini) == 0) {
+        fini_i = i;
+        break;
+      }
   /* the flavor: an executable's entry region is the fixup prologue + the
      CRT stub (six UCRT slots); a DLL's is pex_dll_stub (three) */
   uint64_t image_base = dll_p ? PEX_DLL_IMAGE_BASE : PEX_IMAGE_BASE;
@@ -1523,6 +1545,12 @@ static int pe_emit_executable (MIR_object_t obj, const MIR_object_exec_params *p
       d32 = (int32_t) ((int64_t) (text_rva + entry_size + obj->syms[entry_i].value)
                        - (int64_t) (text_rva + base + PEX_STUB_MAIN_AT + 4));
       memcpy (p + text_fo + base + PEX_STUB_MAIN_AT, &d32, 4);
+    } else if (fini_i != n) {
+      d32 = (int32_t) ((int64_t) (text_rva + entry_size + obj->syms[fini_i].value)
+                       - (int64_t) (text_rva + PEX_DLL_FINI_AT + 4));
+      memcpy (p + text_fo + PEX_DLL_FINI_AT, &d32, 4);
+    } else {
+      p[text_fo + PEX_DLL_DETACH_REL8_AT] = PEX_DLL_DETACH_SKIP_REL8;
     }
   }
 

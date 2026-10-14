@@ -176,6 +176,16 @@ public:
     // after build().
     bool run_global_init();
 
+    // The session image's exit, as dlclose finalizes a shared object: every
+    // handler registered with its __dso_handle (a static object's
+    // destructor, an atexit function) runs, newest first, while its code is
+    // mapped. The session's end (teardown) runs it: a host may still call
+    // into the program after its main returns. A second run finds nothing.
+    void run_exit_handlers();
+    // Does an entry's module import NAME: use a function or an object another
+    // unit defines, or one nothing defines yet?
+    bool imports(const char *name) const;
+
     // Generate and run main(argc, argv); returns main's return value.
     // `ok` (when non-null) reports whether main was found and invoked.
     // `out_secs` (when non-null) receives the execution wall time in seconds
@@ -222,6 +232,8 @@ private:
     size_t stub_modules;
     std::map<madc::dis::istring, MIR_item_t> late_stubs;
     madc::dis::istring live_init;
+    // A link has succeeded: the image's code (its exit handlers') exists.
+    bool linked;
     // Slice 2: the cells late-bound objects are read through, by cell symbol
     // (a node-stable map: an import binds to a value's address), and the
     // object each unbound cell waits for.
@@ -232,6 +244,10 @@ private:
     bool admits(MIR_module_t m, Program *prog, const char *entry_name,
 		CirBuilder *b);
     void make_function_stubs(const std::vector<madc::dis::istring> &names);
+    void make_interposable(MIR_module_t m);
+    void vague_functions_interposable(MIR_module_t m);
+    bool redefinitions_fit(MIR_module_t m, Program *prog, const char *entry_name);
+    void destroy_redefined(Program *prog, const char *entry_name, CirBuilder *b);
     void rebind_late_stubs(MIR_module_t m, Program *prog);
     bool init_contexts(const char *source_name, bool dump_checked);
     bool load_and_link(const char *source_name, Program *prog);
@@ -359,7 +375,28 @@ struct cir_ledger_module
 	madc::dis::istring              name;	 // the ledger source path (module name)
 	std::vector<madc::dis::istring> syms;	 // defined symbols
 	std::vector<uint8_t>     bytes;	 // MIR_write_module bytes
+	madc::dis::istring              init;	 // its image init, "" = none
 };
+
+// One startup member (madc_crt.cpp): what crtbegin.o and libc_nonshared.a
+// give a gcc-linked image — the image handle __dso_handle and the C library
+// functions the platform keeps out of its shared library (atexit, ...) — as
+// C source. A link pulls a member when an import names a symbol in its
+// `defines` (space-separated: the archive index, read without compiling;
+// the compiled member is checked against it), as the ledger's modules are
+// pulled. `init` names the member's image init (an executable's or shared
+// object's init array runs it), NULL = none; `fini` its image fini (DT_FINI:
+// ld.so calls it when it unloads the image or the process exits), NULL = none.
+struct madc_crt_member
+{
+	const char *name;
+	const char *defines;
+	const char *init;
+	const char *fini;
+	const char *source;
+};
+// The target's members, ended by an all-NULL row.
+extern const madc_crt_member madc_crt_members[];
 
 // Freeze the parsed Program's module tree (PRE-check — c2mir's checker
 // mutates trees it compiles) into a forest snapshot container at out_path:
@@ -416,5 +453,12 @@ int madc_cir_execute_frozen(const char *container_path,
 // line-oriented text — the B4a oracle data source. Backs --dump-forest.
 // NULL = the blob appended to this executable. Returns 0, or -1 on failure.
 int madc_cir_dump_forest(const char *container_path);
+
+// --forest-relayout=<image> <log>... (the pack step's layout pass): lay the
+// carrier's LAST forest container out by the reads the recorded root binds
+// made (cir_forest_relayout) and write the carrier back with the new container
+// in the old one's place. False, with a diagnostic, on any failure.
+bool madc_cir_forest_relayout(const char *image_path,
+			      const std::vector<std::string> &logs);
 
 #endif // __MADC_CIR_H

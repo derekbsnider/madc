@@ -1,0 +1,10 @@
+poll: 0
+mmap: mapped
+munmap: 0
+regex: 0 1
+uname: 0 1
+fnmatch: 0 1
+rlimit: 0
+inttypes: 12345678901234
+libgen: libx.so
+search: 2

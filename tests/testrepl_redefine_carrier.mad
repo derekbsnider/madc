@@ -1,0 +1,4 @@
+// Plan §42 D6: a `var` can be defined again in a session, with a value of
+// any kind; the earlier value is destroyed first, and a function defined
+// before reads the new one. madc refused the redefinition ("which has a
+// destructor").

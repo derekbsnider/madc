@@ -248,7 +248,54 @@ struct NameComponent {
 	std::string ident;                 // e.g. "char_traits", "__cxx11", "std"
 	bool is_template = false;          // has <...>
 	std::vector<TypeNode> targs;       // template arguments (if is_template)
+	// GCC's abi_tags stay in `ident`, spelled as c++filt prints them:
+	// `P[abi:v2]` (a REPL session's redefined struct, a new version of the
+	// type) encodes as 1PB2v2 — component_source_name.
 };
+
+// Is the bracket group of `s` that opens at `ob` an abi tag (`[abi:v2]`), not
+// an array dimension?
+static bool abi_tag_group(const std::string &s, size_t ob)
+{
+	return s.compare(ob + 1, 4, "abi:") == 0;
+}
+
+// Does the spelling end in an array declarator's `[N]` (not an abi tag)?
+static bool ends_in_array_dims(const std::string &s)
+{
+	return !s.empty() && s.back() == ']' && !abi_tag_group(s, s.rfind('['));
+}
+
+// The length of `ident` without its trailing `[abi:TAG]` groups.
+static size_t untagged_length(const std::string &ident)
+{
+	size_t end = ident.size(), ob;
+	while (end && ident[end - 1] == ']'
+	       && (ob = ident.rfind('[', end - 1)) != std::string::npos
+	       && abi_tag_group(ident, ob)) {
+		end = ob;
+		while (end && (ident[end - 1] == ' ' || ident[end - 1] == '\t'))
+			--end;
+	}
+	return end;
+}
+
+// A component's source name with its abi tags, as Itanium encodes them after
+// it: `P[abi:v2]` is 1PB2v2. An untagged name is its plain source name.
+static std::string component_source_name(const std::string &ident)
+{
+	if (ident.empty() || ident.back() != ']')
+		return source_name(ident);
+	const size_t len = untagged_length(ident);
+	std::string out = source_name(ident.substr(0, len));
+	for (size_t ob = ident.find('[', len); ob != std::string::npos;
+	     ob = ident.find('[', ob + 1)) {
+		const size_t cb = ident.find(']', ob);
+		const std::string tag = ident.substr(ob + 5, cb - ob - 5);
+		out += "B" + std::to_string(tag.size()) + tag;
+	}
+	return out;
+}
 
 // A parsed type: a chain of name components (a::b::c<...>) plus pointer/ref/
 // const decorations applied outermost, OR a builtin.
@@ -386,7 +433,7 @@ TypeNode parse_type(const std::string &raw)
 	// PA3_Vi).
 	bool composite = s.find("(*)") != std::string::npos
 		      || s.find("(&)") != std::string::npos
-		      || (!s.empty() && s.back() == ']');
+		      || ends_in_array_dims(s);
 	for (; !composite;) {
 		if (s.size() >= 6 && s.compare(0, 6, "const ") == 0) {
 			level_cv |= 1u;
@@ -436,12 +483,13 @@ TypeNode parse_type(const std::string &raw)
 	// to inner; each is an A<dim>_ decoration on the element type, the `(*)`
 	// a P outside them. Every decorated layer is a substitution candidate
 	// (the deco loop in encode_type registers A3_i like any other).
-	if (!s.empty() && s.back() == ']') {
+	if (ends_in_array_dims(s)) {
 		std::vector<std::string> dims;
 		std::string rest = s;
 		size_t ob;
 		while (!rest.empty() && rest.back() == ']'
-		       && (ob = rest.rfind('[')) != std::string::npos) {
+		       && (ob = rest.rfind('[')) != std::string::npos
+		       && !abi_tag_group(rest, ob)) {
 			dims.insert(dims.begin(),
 				    mstrip(rest.substr(ob + 1, rest.size() - ob - 2)));
 			rest = mstrip(rest.substr(0, ob));
@@ -481,10 +529,12 @@ TypeNode parse_type(const std::string &raw)
 		// before the array production existed, a closure type's display
 		// name) is a spelling this grammar does not read: refuse the whole
 		// symbol rather than encode `14int (*)[3]` into an object.
-		for (char c : t.name.back().ident)
-			if (!isalnum((unsigned char)c) && c != '_')
+		const std::string &id = t.name.back().ident;
+		const size_t len = untagged_length(id);
+		for (size_t k = 0; k < len; ++k)
+			if (!isalnum((unsigned char)id[k]) && id[k] != '_')
 				t.invalid = true;
-		if (t.name.back().ident.empty())
+		if (!len)
 			t.invalid = true;
 	}
 	return t;
@@ -1005,7 +1055,7 @@ private:
 						refPrefixed = true;     // S-ref now acts as a prefix
 						bareRef = false;
 					}
-					encoded += source_name(nc.ident);
+					encoded += component_source_name(nc.ident);
 					add_sub(canonKey);
 					srcNameCount++;
 				}
@@ -1036,7 +1086,7 @@ private:
 						refPrefixed = true;     // S-ref now acts as a prefix
 						bareRef = false;
 					}
-					tprefix = encoded + source_name(nc.ident);
+					tprefix = encoded + component_source_name(nc.ident);
 					add_sub(prefixKey);
 					srcNameCount++;
 				}

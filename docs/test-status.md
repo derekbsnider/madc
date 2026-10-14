@@ -1,5 +1,14 @@
 # Test Status
 
+0.105.0 seam battery (2026-10-14, `a2a6d317c` content on `feature/pack-slices-claude`: the REPL live
+reparse and the pack slices): static gates 0 red of 98, `make gates` green, parse-cost 0 red of
+14. Linux packed madc-release headerless 2000 passed, 0 failed, 43 skipped + ondisk 34/0;
+exeobj JIT 2034/0/9skip, EXE 1827/0, OBJ 1827/0. wine64 headerless-win 1959/0/84skip on the
+stage rerun (the battery run's two reds, `teststringobj` and `testtrycatchdtor`, are
+`wine_suite_flake_class` singletons, green on an isolated rerun) + ondisk-win 1/0. macOS build
+and aarch64-ld green. Batch (dev JIT) 2034/0/9skip; interactive lane 57/0 + units 7/0. New
+reducer `testlazymoduledirect`; the `--no-sysroot-includes` pair names `<zstd.h>`.
+
 Split arc Phase 2 — madcide leaves madc (2026-10-11, `072ea1f25`): the
 madcide tests, its window tests and its gates moved to the madcide
 repository, where they run through madc's own runner at the pinned madc

@@ -2128,6 +2128,7 @@ runtime_eval_registration_policy_for_source_child(const Program::RegistrationPol
     child.enable_external_forest = parent.enable_external_forest;
     child.enable_forest_bind = parent.enable_forest_bind;
     child.forest_config_path = parent.forest_config_path;
+    child.system_headers_from_libmadc = parent.system_headers_from_libmadc;
 	child.enable_posix_compat = parent.enable_posix_compat;
     child.runtime_eval_source_policy = parent.runtime_eval_source_policy;
     return child;

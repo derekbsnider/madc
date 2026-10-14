@@ -1,0 +1,8 @@
+// Plan §42 D6 under C (owner 2026-10-13): a struct defined again in a session
+// is its name's next version (`struct P#1` names the first), and the objects
+// and functions the earlier version made keep it; a redefinition that lays
+// out alike is the same type; a typedef follows its tag; a struct defined
+// inside another is versioned the same way. A function defined again with
+// the new version's parameter is refused (C has no overloading; %run
+// rebuilds the session), and the one the session has stays.
+#include <stdio.h>

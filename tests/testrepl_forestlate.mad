@@ -1,0 +1,9 @@
+// A header an interactive entry includes AFTER the session's first restore
+// (this script binds <stdio.h> and the restore runs) still serves its
+// declarations: the restore is one-shot, so a unit asked to bind later
+// parses its text. Bound, <time.h>'s struct tm came back with no members
+// ("Unidentified member 'tm_year' in 'tm'"). The entries are
+// testrepl_forestlate.input. Oracle: g++ 13 == clang++-18, the same lines as
+// one program, print the two lines of the .expect.
+#include <stdio.h>
+printf("loaded\n");

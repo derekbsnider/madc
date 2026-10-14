@@ -1,0 +1,9 @@
+// __has_trivial_destructor over the madc carrier: a `var` is destroyed
+// (madarray_destruct), so neither it nor a struct holding one is trivially
+// destructible -- the CIR builder destroys both (class_needs_dtor). Oracle:
+// g++ and clang++ with std::string in the carrier's place print
+// "false true false".
+struct S { var v; };
+struct P { int a; };
+println("{} {} {}", __has_trivial_destructor(S), __has_trivial_destructor(P),
+        __has_trivial_destructor(var));

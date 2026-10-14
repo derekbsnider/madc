@@ -1,8 +1,9 @@
 /* cir_format.cpp — the GENERATED side of std::format / std::print /
  * std::println.
  *
- * These are declared in <bits/std_format> and defined NOWHERE: the compiler is
- * their implementation (the php::print_r / php::var_dump carrier — see
+ * These are declared by the compiler itself under --std=madc
+ * (Program::add_format_intrinsics; <bits/std_format> for a strict-mode
+ * #include) and defined NOWHERE: the compiler is their implementation (the php::print_r / php::var_dump carrier — see
  * cir_dump.cpp, whose structure this file mirrors). A call site knows the
  * LITERAL format string and every argument's concrete type, so:
  *
@@ -59,7 +60,8 @@ extern thread_local bool madc_verbose;
 // Which compiler-implemented format intrinsic is this call?
 // ---------------------------------------------------------------------------
 // Reads the inline_builtin_kind tag the parser stamped at declaration
-// registration (provenance-gated to <bits/std_format>), converted to an enum
+// registration (Program::add_format_intrinsics, or provenance-gated to an
+// #included <bits/std_format>), converted to an enum
 // here at the boundary — enum-over-strings, the dump_flavor pattern.
 static CirBuilder::FormatFlavor format_flavor(FuncDef *fd)
 {

@@ -1,0 +1,9 @@
+var v = "abc";
+void show() { println("v {}", v); }
+show();
+var v = 42;
+show();
+var v = { "k": "x" };
+println("k {}", v["k"]);
+var v = "done";
+show();

@@ -1,6 +1,11 @@
 # Programs that must PARSE and lower from the darwin forest pack on the build
 # container (scripts/forest_pack_darwin.sh, consumer parse leg): one test
-# basename per line. Each is a libc++ construct whose completion ORDER differs
-# when the class templates are served from the pack instead of a live parse.
+# basename per line. The first two are libc++ constructs whose completion ORDER
+# differs when the class templates are served from the pack instead of a live
+# parse; the last two include headers outside the frozen grove, served from the
+# pack's SOURCE ARM (the open-licensed libc tree under the SDK's name, and
+# libc++) — docs/plans/2026-10-13-pack-all-system-headers.md.
 testlistiter_libcxx      # the libc++ <list> node completion site (darwin dispatch #13)
 testforeachiter          # range-for over std::list / std::map under libc++
+testsysheaders_c         # <poll.h> <regex.h> <search.h> ... from the libc source arm
+testsysheaders_cxx       # <numeric> <stack> <ratio> <cfloat> <cinttypes> from the libc++ source arm

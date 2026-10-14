@@ -69,6 +69,14 @@ public:
     // open buffer's live text when a buffer holds it). Empty after anything
     // else: a refused entry, any other command.
     virtual const std::string &taken_source() const = 0;
+    // The host's REPL buffer was edited (owner 2026-10-12, the live
+    // reparse): `before` and `after` are its text either side of the edit.
+    // Each entry the edit changed or added is read again as definitions
+    // only — a function it defines is redefined (D5), its statements never
+    // run, and it shows nothing. False when one was refused (its diagnostics
+    // render as an entry's do).
+    virtual bool buffer_edited(const std::string &before, const std::string &after)
+    { (void)before; (void)after; return true; }
     virtual std::vector<std::string> complete(const std::string &text,
 					      size_t caret, size_t &start) = 0;
     // Does LINE continue an if that ended an entry (D11)? Its first word is
@@ -78,6 +86,12 @@ public:
     // (the path, then the program's arguments): `madc -i file`, the core of
     // %run (D25). False when the file was refused.
     virtual bool run_file(int argc, char **argv) = 0;
+    // The end of a REPL-buffer rebuild (%run, owner 2026-10-12): the
+    // buffer's main runs, as %run runs a file's, when the session defines
+    // main and no unit names it (an entry that calls main ran it already).
+    // `name` is the buffer's: main's argv[0]. False when main stopped.
+    virtual bool run_rebuilt_main(const std::string &name)
+    { (void)name; return true; }
     // The session ended, and its status: an exit(n) in an entry ended a
     // backend's process (in this process the exit already happened), or
     // %quit asked to end it (status 0).
@@ -109,6 +123,57 @@ public:
     // Windows), handed back: the host reads it before its own input. Taking
     // it clears it. Empty when nothing was read ahead.
     virtual std::string take_returned_input() { return std::string(); }
+};
+
+namespace madc {
+// Is `text` blank — white space only (a blank line is no entry)?
+bool blank_text(const std::string &text);
+// A line without a CRLF text's '\r'.
+void drop_cr(std::string &line);
+}
+
+// The REPL's grouping of typed lines into entries (D11): the ONE rule for
+// every host that feeds lines, the cooked loop (madc_repl.cpp) and a rebuild's
+// replay of the REPL buffer, in this process or in a backend. A line joins
+// the pending entry, offered until the session takes it; an if that ended an
+// entry takes a following `else` line, and any other line runs it first; a
+// blank line between entries is none; at the end of input the pending entry
+// is final. A host reads its own command lines (colon mode, the rebuild's
+// line) only between entries (idle). After each entry the session took,
+// `taken` gets its text and whether it was ok; false from it stops the lines
+// (the session ended). `running`, when given, gets an entry's text once it
+// is final, before it runs (a backend's running row).
+class EntryLines
+{
+public:
+    typedef std::function<bool(const std::string &entry, bool ok)> Taken;
+    typedef std::function<void(const std::string &entry)> Running;
+    explicit EntryLines(ReplSession &session, const Running &running = Running());
+    bool idle() const { return pending.empty(); }
+    // Before `line` joins: an if waiting for its else runs unless `line`
+    // continues it.
+    bool settle(const std::string &line, const Taken &taken);
+    // `line` joins the entry.
+    bool add(const std::string &line, const Taken &taken);
+    // The end of input.
+    bool finish(const Taken &taken);
+    // A text's lines (a CRLF text's included), taken one entry at a time:
+    // a rebuild's replay, in step with its host.
+    void load(const std::string &text);
+    // The loaded text's next entry: true once one was taken (`taken` was
+    // called), false at the text's end.
+    bool step(const Taken &taken);
+private:
+    ReplSession &session;
+    Running running;
+    std::string pending;	// the entry so far
+    bool extendable;		// pending is an if waiting for its else
+    std::vector<std::string> lines;	// load's
+    size_t next;		// the next of them to join
+    bool settled;		// lines[next] passed settle
+    bool finished;		// the loaded text's end was taken
+    ReplSession::TakenHook hook(const std::string &entry) const;
+    bool take(const std::string &entry, bool ok, const Taken &taken);
 };
 
 class InteractiveSession : public ReplSession
@@ -167,6 +232,12 @@ public:
     bool run_main(int argc, char **argv, int *status);
     // load(argv[0]), then run_main when the session defines main.
     bool run_file(int argc, char **argv) override;
+    bool run_rebuilt_main(const std::string &name) override;
+    // The same with main's argv (a backend's: the name, then %args).
+    bool run_rebuilt_main(int argc, char **argv, int *status);
+    // Will the rebuild's main run: the session defines main and no unit
+    // names it.
+    bool rebuilt_main_due();
 
     // Tab's question (plan §41.7a, slice 3): the names that complete the
     // word before `caret` in the text typed so far, sorted; the word starts
@@ -189,6 +260,7 @@ public:
     const std::string &shown() const override;
     const std::vector<madc::code_range> &shown_code() const override;
     const std::string &taken_source() const override { return kept_source; }
+    bool buffer_edited(const std::string &before, const std::string &after) override;
     // The text of the file unit the last load_text kept ("" when it was
     // refused): the backend server's load reply carries it, so a host that
     // honors %load's payload can keep it in its REPL buffer.
@@ -445,6 +517,22 @@ private:
     bool quit_asked;			// %quit ended the session
     unsigned quiet_count;		// the quiet entries' units, each its own
     std::vector<std::string> inputs;	// REPL[N]'s text is inputs[N - 1]
+    // The host's REPL buffer as entries (buffer_edited): the text of each
+    // entry and file the session kept, in the order the host appended them.
+    std::vector<std::string> buffer_entries;
+    // A kept unit: one of the session's from here on.
+    void unit_linked(const std::string &name);
+    // Is `text` a whole entry, as the REPL groups typed lines? `extendable`:
+    // an if ended it, so a following `else` line continues it (D11). The
+    // trial leaves the session as it was.
+    bool entry_whole(const std::string &text, bool &extendable);
+    // The entries lines [from, to) hold, each [first, last + 1).
+    std::vector<std::pair<size_t, size_t> >
+	buffer_split(const std::vector<std::string> &lines, size_t from, size_t to);
+    // An entry of the edited REPL buffer read as definitions only;
+    // `functions_only`: read again for a type's new version, an entry that
+    // declares an object is left as it was (true, nothing shown).
+    bool redefine(const std::string &text, bool functions_only = false);
     std::string kept_source;		// taken_source()
     std::string unit_text;		// loaded_source()
     std::string history_file;		// %history's store ("" none)

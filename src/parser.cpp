@@ -80,6 +80,14 @@ AggregateDefinitionOrigin aggregate_definition_origin(
 	: AggregateDefinitionOrigin::Included;
 }
 
+// Where AGG is defined: FILE, and whether it is the translation unit's root.
+void stamp_aggregate_definition(const Program &pgm, DataDefSTRUCT *agg,
+				const char *file)
+{
+    agg->definition_origin = aggregate_definition_origin(pgm, file);
+    agg->definition_file = file;
+}
+
 struct InstTimer
 {
     Program &pgm;
@@ -3760,7 +3768,12 @@ static bool fold_same_signature_overload(Program &pgm,
 			: !pv->storage_alias_name.empty() ? pv->storage_alias_name
 			: !pfd->emit_symbol.empty() ? pfd->emit_symbol
 			: fresh_sig;
-	if ( !pfd->declaration_only && !fresh_fd->declaration_only )
+	const bool both_bodies = !pfd->declaration_only && !fresh_fd->declaration_only;
+	// Plan §42 D5: the body an earlier session unit linked is redefined —
+	// the newcomer's body becomes the function's, as a body a prior only
+	// declared does below.
+	const bool redefines = both_bodies && pgm.session_redefines(pv, pfd);
+	if ( both_bodies && !redefines )
 	{
 	    // Two BODIES with one ABI signature. A redefinition (g++ rejects it;
 	    // madc's standing policy lets the later definition stand — the
@@ -3815,11 +3828,14 @@ static bool fold_same_signature_overload(Program &pgm,
 		pfd->param_default_tokens[p] = fresh_fd->param_default_tokens[p];
 	    }
 	}
-	if ( pfd->declaration_only && !fresh_fd->declaration_only )
+	if ( redefines || (pfd->declaration_only && !fresh_fd->declaration_only) )
 	{
 	    // The newcomer brings the body: the prior identity carries it.
+	    pgm.journal_entity(pv);
 	    pv->type = fresh_fd;
 	    pgm.funcdef_map[pv->name] = fresh_fd;
+	    if ( redefines )
+		pgm.session_redefined.insert(fresh_fd);
 	}
 	for ( size_t j = 0; j < ovset.size(); ++j )
 	    if ( ovset[j].var == fresh_var )
@@ -5395,8 +5411,10 @@ bool Program::consume_template_close(TokenBase *tok)
 // captured token vector and have no Program & in hand.
 static bool token_is_operator_id_start(TokenBase *t)
 {
+    // Every delimiter scan asks this of every token: compare the interned
+    // name by identity, never by bytes.
     return t && is_contextual_identifier_token(t)
-	&& contextual_identifier_name(t) == "operator";
+	&& contextual_identifier_name(t) == MADC_ISTRING_LITERAL("operator");
 }
 // Number of tokens the operator-function-id at toks[i] spans (keyword + symbol
 // [+ closing )/] for operator()/operator[]]), or 0 if toks[i] is not an
@@ -9877,6 +9895,8 @@ static void register_basic_class_pattern_method(
 	Program::DeferredFunctionBody body;
 	body.var = mvar;
 	body.method = method;
+	body.pack_poi = pgm.pack_current_poi();
+	body.pack_ctx = madc_pack_stamp_ctx();
 	body.body_tokens = basic_class_pattern_substitute_tokens(pgm,
 	    binding, pattern.body_tokens);
 	body.definition_tokens = basic_class_pattern_substitute_tokens(pgm,
@@ -10211,8 +10231,8 @@ static TokenDataType *instantiate_basic_class_pattern(
 	Program &pgm, const BasicClassPatternBinding &binding)
 {
     BasicClassPatternParsePosition parse_position(binding.definition);
-    AggregateDefinitionOrigin definition_origin = aggregate_definition_origin(
-	pgm, basic_class_pattern_source_file(binding.definition));
+    const char *definition_file =
+	basic_class_pattern_source_file(binding.definition);
     Program::ClassRegistrationJournal journal(pgm, false);
     DataDefCLASS *ddc = NULL;
     datadef_map_citer aggregate = pgm.struct_map.find(binding.registered_name);
@@ -10252,7 +10272,7 @@ static TokenDataType *instantiate_basic_class_pattern(
 	ddc->enclosing_class = binding.definition.owner_class;
 	ddc->from_system_header = node.from_system_header;
 	ddc->union_layout = node.kind == Program::ClassAggregateKind::Union;
-	ddc->definition_origin = definition_origin;
+	stamp_aggregate_definition(pgm, ddc, definition_file);
 	ddc->is_dependent_placeholder = false;
 	ddc->opaque_concrete_tag = false;
 	ddc->has_dependent_surface = false;
@@ -10296,7 +10316,7 @@ static TokenDataType *instantiate_basic_class_pattern(
 	    shell->from_system_header = nested.from_system_header;
 	    shell->union_layout =
 		nested.kind == Program::ClassAggregateKind::Union;
-	    shell->definition_origin = definition_origin;
+	    stamp_aggregate_definition(pgm, shell, definition_file);
 	    shell->is_dependent_placeholder = false;
 	    shell->opaque_concrete_tag = false;
 	    shell->has_dependent_surface = false;
@@ -10357,9 +10377,13 @@ struct ClassInstInFlightGuard {
     Program &pgm;
     madc::dis::istring key;
     bool inserted;
+    // A pack freeze: what the body's instantiation makes belongs to this
+    // product (pack-slices design §4).
+    Program::PackCtxFrame pack_ctx;
     ClassInstInFlightGuard(Program &p, const madc::dis::istring &k,
 			   uint32_t template_id)
-	: pgm(p), key(k), inserted(p.class_inst_in_progress.insert(k).second)
+	: pgm(p), key(k), inserted(p.class_inst_in_progress.insert(k).second),
+	  pack_ctx(p, k, true)
     {
 	pgm.class_inst_template_ids.push_back(template_id);
 	// The body's own declarative region starts at this compound depth: a
@@ -11117,6 +11141,7 @@ TokenDataType *Program::instantiate_template_use(const madc::dis::istring &tname
     }
     if ( have != datatype_map.end() )
     {
+	pack_note_require(registered_mangled);	// a reuse: this context needs it too
 	TokenDataType *cached = (TokenDataType *)(*have);
 	DataDefCLASS *cached_class =
 	    dynamic_cast<DataDefCLASS *>(&cached->definition);
@@ -16613,6 +16638,10 @@ bool trait_is_empty(DataDef *dd)
 // trivially destructible. Pointer members are non-class, hence trivial.
 static bool trait_has_trivial_destructor(DataDef *dd)
 {
+    // A madc carrier (`var`, madc::value) is destroyed (madarray_destruct),
+    // as the CIR builder destroys it (class_needs_dtor).
+    if ( dd && dd->is_madc_array() )
+	return false;
     DataDefCLASS *c = dynamic_cast<DataDefCLASS *>(dd);
     if ( !c )
 	return true;
@@ -20583,6 +20612,9 @@ bool Program::bracket_dim_needs_runtime_value(
 // (see StructRegistry::find_despaced).
 uint64_t DataDef::canonical_spelling_gen = 0;
 thread_local bool madc_class_pattern_capture_active = false;
+thread_local uint32_t madc_pack_creation_poi = 0xffffffffu;
+thread_local madc::dis::istring madc_pack_creation_ctx;
+std::atomic<bool> madc_pack_stamping(false);
 
 // The target's 64-bit data model (datadef.h) — host-derived default: the
 // hosted modes compile for the compiler that built them (the win64 madc.exe
@@ -22708,6 +22740,12 @@ madc::dis::istring Program::peek_param_list_spelling()
 	   || t->type() == TokenType::ttDataType) )
 	    if ( DataDef *al = resolve_current_class_type_alias(((TokenIdent *)t)->spelling()) )
 		tok_sp = al->name;
+	// A session's redefined aggregate: `P` before and after its
+	// redefinition are two types, so two overloads (plan §42 D6).
+	if ( tok_sp.empty() && interactive_session
+	  && (t->type() == TokenType::ttIdentifier
+	   || t->type() == TokenType::ttDataType) )
+	    tok_sp = session_type_identity(((TokenIdent *)t)->spelling_name());
 	spelling += tok_sp.empty() ? overload_token_spelling(t) : tok_sp;
     };
     // The list's depth is the stream tracker's, from inside its consumed `(`;
@@ -27142,21 +27180,21 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
     // node reaches c2mir, exactly as record_typedef does on the live path,
     // parser.cpp ~22689).
 
-    // Item 5 (lazy defrost) + rung 2a: build the TU's demand verdicts BEFORE
-    // materialization. The B4a decl index is the demand key: a name DECLARED
-    // by some unit (source-level export; qualified + bare forms are both
-    // indexed) is kept iff one of its declaring units is in forest_chain_set —
-    // exactly the surface a live parse of the TU's includes would declare.
-    // A name in NO unit's index is a DERIVED entity (instantiation product,
-    // __oN overload symbol, madc-internal — the forest_index_oracle allowlist
+    // Item 5 (lazy defrost) + rung 2a: the TU's demand filter, built BEFORE
+    // materialization. The decl index is the demand key: a name DECLARED by
+    // some unit (source-level export; qualified + bare forms are both indexed)
+    // is kept iff one of its declaring units is in forest_chain_set — exactly
+    // the surface a live parse of the TU's includes would declare. A name in
+    // NO unit's index is a DERIVED entity (instantiation product, __oN
+    // overload symbol, madc-internal — the forest_index_oracle allowlist
     // classes) and is kept unconditionally: its creating machinery only runs
     // when its pattern/owner is reachable. An EMPTY closure (a direct restore
     // with no bound includes — unit tests, non-include consumers) keeps the
     // whole-container semantics. Registration (below) and materialization
-    // (the CirMaterializeFilter installed here) consume the SAME map — one
-    // predicate, two consumers (rung 2a moved the skip from "register fewer"
-    // to "never build the DataDefs at all").
-    std::unordered_map<madc::dis::istring, bool> swept_bound;
+    // read the SAME verdict owner (CirFrozenForest::name_verdict over the
+    // pack's DECL_NAMES index) against this filter — one predicate, two
+    // consumers (pack slices design §6).
+    //
     // Rung 3: the emission-side system-origin verdict for restored decls. A
     // restored TopDecl carries no parse position, so the referenced-surface
     // filter (translate_module) reads TopDecl.forest_system instead: true iff
@@ -27164,97 +27202,47 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
     // the same verdict a live parse's td.file would produce. A tmp/-grove
     // bind (the forest_bind_gate corpora) stays non-system → root → whole
     // surface, exactly like live.
-    std::unordered_map<madc::dis::istring, bool> swept_system;
     const bool forest_closure_filter = !forest_chain_set.empty();
-    // The demand filter this TU asks materialize_for to satisfy — inactive
-    // (whole container) when the closure is empty, else the verdict map the
-    // sweep below builds. S2: on a shared forest a later TU's wider verdicts
-    // union in and materialize incrementally.
     CirMaterializeFilter mf;
-    // S3: the verdict maps are a pure function of (instance, closure) within
-    // one compile group (sibling TUs share dialect config, and the system-path
-    // classification rides the instance's config key) — a sibling with the
-    // same closure adopts them and skips the all-units sweep.
-    std::shared_ptr<const MadcCompileGroup::DeclVerdicts> cached_verdicts;
-    std::pair<const void *, std::vector<uint32_t> > verdict_key;
-    if ( compile_group && forest_closure_filter )
-    {
-	verdict_key.first = (const void *)&forest;
-	verdict_key.second.assign(forest_chain_set.begin(),
-				  forest_chain_set.end());
-	std::map<std::pair<const void *, std::vector<uint32_t> >,
-		 std::shared_ptr<const MadcCompileGroup::DeclVerdicts> >
-	    ::const_iterator ci = compile_group->decl_verdicts.find(verdict_key);
-	if ( ci != compile_group->decl_verdicts.end() )
-	    cached_verdicts = ci->second;
-    }
     double _t_declidx0 = forest_restore_now();
-    if ( forest_closure_filter && !cached_verdicts )
-    {
-	std::vector<cir_forest_decl_entry> ents;
-	for ( uint32_t u = 0; u < forest.unit_count(); ++u )
-	{
-	    if ( !forest.unit_decl_index(u, ents) )
-		continue;
-	    bool bound = forest_chain_set.count(u) != 0;
-	    const char *upath = forest.unit_name(u);
-	    bool sys = bound && upath && is_system_header_path(upath);
-	    for ( size_t e = 0; e < ents.size(); ++e )
-	    {
-		const char *nm = forest.pool_str(ents[e].name_id);
-		if ( !nm || !*nm )
-		    continue;
-		// Env-gated probe (MADC_DECLIDX_PROBE=<substr>): dump matching
-		// declared-name index entries with their unit + bound verdict.
-		{
-		    static const char *dip = ::getenv("MADC_DECLIDX_PROBE");
-		    if ( dip && *dip && strstr(nm, dip) )
-			fprintf(stderr, "DECLIDX %s unit=%s bound=%d\n",
-				nm, upath ? upath : "?", (int)bound);
-		}
-		std::unordered_map<madc::dis::istring, bool>::iterator di =
-		    swept_bound.find(nm);
-		if ( di == swept_bound.end() )
-		    swept_bound[nm] = bound;
-		else if ( bound )
-		    di->second = true;
-		if ( sys )
-		    swept_system[nm] = true;
-	    }
-	}
-	if ( compile_group )
-	{
-	    std::shared_ptr<MadcCompileGroup::DeclVerdicts> dv =
-		std::make_shared<MadcCompileGroup::DeclVerdicts>();
-	    dv->bound.swap(swept_bound);
-	    dv->system.swap(swept_system);
-	    compile_group->decl_verdicts[verdict_key] = dv;
-	    cached_verdicts = dv;
-	}
-    }
-    _forest_declidx_seconds = forest_restore_now() - _t_declidx0;
-    // ONE name for the verdicts from here down, cached or freshly swept —
-    // every consumer below (mf, registration lambdas, rung 3) reads these.
-    const std::unordered_map<madc::dis::istring, bool> &forest_declared_bound =
-	cached_verdicts ? cached_verdicts->bound : swept_bound;
-    const std::unordered_map<madc::dis::istring, bool> &forest_declared_system =
-	cached_verdicts ? cached_verdicts->system : swept_system;
     if ( forest_closure_filter )
     {
 	mf.active = true;
-	mf.declared_bound = forest_declared_bound;
+	for ( std::set<uint32_t>::const_iterator it = forest_chain_set.begin();
+	      it != forest_chain_set.end(); ++it )
+	{
+	    mf.bound_units.insert(*it);
+	    const char *upath = forest.unit_name(*it);
+	    if ( upath && is_system_header_path(upath) )
+		mf.system_units.insert(*it);
+	}
+    }
+    _forest_declidx_seconds = forest_restore_now() - _t_declidx0;
+    // Env-gated probe (MADC_DECLIDX_PROBE=<substr>): dump matching
+    // declared-name index entries with their unit + bound verdict.
+    {
+	static const char *dip = ::getenv("MADC_DECLIDX_PROBE");
+	std::vector<cir_forest_decl_entry> ents;
+	for ( uint32_t u = 0; dip && *dip && u < forest.unit_count(); ++u )
+	{
+	    if ( !forest.unit_decl_index(u, ents) )
+		continue;
+	    const char *upath = forest.unit_name(u);
+	    for ( size_t e = 0; e < ents.size(); ++e )
+	    {
+		const char *nm = forest.pool_str(ents[e].name_id);
+		if ( nm && strstr(nm, dip) )
+		    fprintf(stderr, "DECLIDX %s unit=%s bound=%d\n",
+			    nm, upath ? upath : "?",
+			    (int)(forest_chain_set.count(u) != 0));
+	    }
+	}
     }
 
-    // Rung 3: the system-origin verdict lookup — qualified form first, then
-    // bare (a namespaced decl may be indexed only as "std::name"), the same
-    // discipline as forest_name_permitted / the rung-2a verdicts.
+    // Rung 3: the system-origin verdict lookup — bare first, then qualified
+    // (a namespaced decl may be indexed only as "std::name").
     auto declared_system = [&](const char *ns, const madc::dis::istring &name) -> bool {
-	if ( forest_declared_system.count(name) )
-	    return true;
-	if ( ns && *ns
-	  && forest_declared_system.count(std::string(ns) + "::" + name) )
-	    return true;
-	return false;
+	return forest.declared_system(name.c_str(), ns, mf);
     };
 
     const std::vector<CirRestoredType> &types = forest.materialize_for(mf);
@@ -27290,24 +27278,11 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	    last_tag[k] = i;
     }
 
-    // Registration's verdict lambdas read the map built above (one predicate,
-    // two consumers — see the rung-2a block before materialize_from_arena).
+    // Registration's verdicts: the forest's one owner against this TU's
+    // filter (see the rung-2a block before materialize_for).
     auto forest_name_verdict = [&](const madc::dis::istring &nm,
 				   const char *ns) -> int {
-	if ( !forest_closure_filter )
-	    return 1;
-	if ( ns && *ns )
-	{
-	    std::unordered_map<madc::dis::istring, bool>::const_iterator qi =
-		forest_declared_bound.find(std::string(ns) + "::" + nm);
-	    if ( qi != forest_declared_bound.end() )
-		return qi->second ? 1 : -1;
-	}
-	std::unordered_map<madc::dis::istring, bool>::const_iterator bi =
-	    forest_declared_bound.find(nm);
-	if ( bi != forest_declared_bound.end() )
-	    return bi->second ? 1 : -1;
-	return 0;		// unindexed = derived entity
+	return forest.name_verdict(nm.c_str(), ns, mf);
     };
     auto forest_name_permitted = [&](const madc::dis::istring &nm,
 				     const char *ns) -> bool {
@@ -27325,21 +27300,9 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
     // is handled where the run re-derives: the flush's default re-parse is
     // best-effort and skips a default whose referents the closure dropped.
     auto forest_product_permitted = [&](DataDef *dd) -> bool {
-	if ( !forest_closure_filter || !dd
-	  || dd->canonical_cpp_spelling().empty() )
+	if ( !dd || dd->canonical_cpp_spelling().empty() )
 	    return true;
-	const madc::dis::istring &cs = dd->canonical_cpp_spelling();
-	size_t lt = cs.find('<');
-	if ( lt == madc::dis::istring::npos )
-	    return true;
-	std::string head = cs.substr(0, lt);
-	while ( !head.empty() && head.back() == ' ' )
-	    head.pop_back();
-	std::unordered_map<madc::dis::istring, bool>::const_iterator hi =
-	    forest_declared_bound.find(head);
-	if ( hi != forest_declared_bound.end() )
-	    return hi->second;
-	return true;
+	return forest.head_verdict(dd->canonical_cpp_spelling().c_str(), mf) >= 0;
     };
 
     // A namespaced type (rt.ns != "") also registers into namespace_map[ns] +
@@ -28152,6 +28115,7 @@ Variable *Program::register_forest_func(const PendingForestFunc &pf)
 	// (body_symbol_keys); this registrar is the other and records it too.
 	if ( pf.fd->has_forest_body && !pf.fd->emit_symbol.empty() )
 	    body_symbol_keys[pf.fd->emit_symbol] = pf.name;
+	forest_stamp_lazy_module_prototype(pf.fd, pf.name);
 	DBG(std::cout << "register_forest_func: " << pf.name
 		      << " emit=" << pf.fd->emit_symbol
 		      << " alias=" << fv->storage_alias_name
@@ -28227,10 +28191,9 @@ Variable *Program::register_forest_func(const PendingForestFunc &pf)
     // it the restored Variable; MIR: "Repeated item declaration"). First-
     // wins, like the live insert. A method's spelling is empty: no-op.
     {
-	size_t at = pf.fd->overload_spelling.find("\x01@");
-	if ( at != madc::dis::istring::npos && !pf.fd->declaration_only )
+	madc::dis::istring inst_key = pf.fd->instantiation_identity();
+	if ( !pf.fd->declaration_only )
 	{
-	    madc::dis::istring inst_key = pf.fd->overload_spelling.substr(at + 2);
 	    if ( !inst_key.empty() && !fn_template_instantiated.count(inst_key) )
 	    {
 		fn_template_instantiated.insert(inst_key);
@@ -28276,6 +28239,23 @@ static bool forest_adoptable_c_type(DataDef *dd, int depth = 0)
     return dd->is_void() || dd->is_numeric();
 }
 
+// The adoption test's TU-independent half (see the declaration): what the
+// freeze lists in the pack's function-name index, and what the probe re-asks
+// of the restored record.
+const char *Program::forest_adoption_decline(FuncDef *fd)
+{
+    if ( !fd->is_varargs )
+	return "not variadic";
+    if ( !fd->namespace_name.empty() )
+	return "namespaced";
+    if ( !forest_adoptable_c_type(&fd->returns) )
+	return "return type is not a C-primitive shape";
+    for ( size_t i = 0; i < fd->parameters.size(); ++i )
+	if ( !forest_adoptable_c_type(fd->parameters[i]) )
+	    return "parameter type is not a C-primitive shape";
+    return NULL;
+}
+
 // GCC canon (see the declaration): an undeclared variadic call adopts the
 // pack's real prototype. The record comes from the arena through the SAME
 // materialize_for the bound-include restore uses (widened by this one name;
@@ -28293,30 +28273,18 @@ Variable *Program::forest_adopt_declared_function(const madc::dis::istring &fnam
     // prototype applies in every -std. (Darwin D4 re-measure: every
     // zero-include strict-mode printf still read garbage on Apple arm64
     // because this returned NULL on the config mismatch.)
-    CirFrozenForest *f = ensure_bind_forest();
+    CirFrozenForest *f = bind_forest_directory();
     if ( !f )
 	f = ensure_source_forest();
-    if ( !f )
+    // "Does the pack hold an adoptable prototype of this name" is the pack's
+    // own function-name index, read in place (the freeze lists a name only
+    // when its prototype passes forest_adoption_decline); only a yes opens
+    // the frozen content the adoption below reads — the bind carrier through
+    // ensure_bind_forest, the source carrier directly (both memoized).
+    if ( !f || !f->may_adopt_function(fname) )
 	return NULL;
-    if ( !_forest_bare_func_names_built )
-    {
-	_forest_bare_func_names_built = true;
-	std::vector<cir_forest_decl_entry> ents;
-	for ( uint32_t u = 0; u < f->unit_count(); ++u )
-	{
-	    if ( !f->unit_decl_index(u, ents) )
-		continue;
-	    for ( size_t e = 0; e < ents.size(); ++e )
-	    {
-		if ( ents[e].kind != pdkFunction )
-		    continue;
-		const char *nm = f->pool_str(ents[e].name_id);
-		if ( nm && *nm && !strchr(nm, ':') )
-		    _forest_bare_func_names.insert(nm);
-	    }
-	}
-    }
-    if ( !_forest_bare_func_names.count(fname) )
+    if ( f == _bind_directory ? !ensure_bind_forest()
+			      : !f->complete_open(/*c2m=*/NULL) )
 	return NULL;
 
     // EXACT: this one name and what its record pulls in — never the whole
@@ -28326,7 +28294,7 @@ Variable *Program::forest_adopt_declared_function(const madc::dis::istring &fnam
     CirMaterializeFilter want;
     want.active = true;
     want.exact = true;
-    want.declared_bound[fname] = true;
+    want.extra_names.insert(fname);
     f->materialize_for(want);
     const std::vector<CirRestoredFunc> &funcs = f->restored_funcs();
     const CirRestoredFunc *rf = NULL;
@@ -28345,13 +28313,7 @@ Variable *Program::forest_adopt_declared_function(const madc::dis::istring &fnam
     // DEFINITIONS under the -D__USE_MINGW_ANSI_STDIO=1 this build passes, so
     // on win64 every undeclared libc call still took the K&R guess: 91 names
     // (stdio.h 33, wchar.h 56, stdlib.h 4, sys/stat.h 2), printf among them.
-    const char *decline = NULL;
-    if ( !fd->is_varargs )
-	decline = "not variadic";
-    else if ( !fd->namespace_name.empty() )
-	decline = "namespaced";
-    else if ( !forest_adoptable_c_type(&fd->returns) )
-	decline = "return type is not a C-primitive shape";
+    const char *decline = forest_adoption_decline(fd);
     bool shape_ok = decline == NULL;
     if ( shape_ok && !fd->return_typedef_name.empty() )
     {
@@ -28362,12 +28324,6 @@ Variable *Program::forest_adopt_declared_function(const madc::dis::istring &fnam
     }
     for ( size_t i = 0; shape_ok && i < fd->parameters.size(); ++i )
     {
-	shape_ok = forest_adoptable_c_type(fd->parameters[i]);
-	if ( !shape_ok )
-	{
-	    decline = "parameter type is not a C-primitive shape";
-	    break;
-	}
 	if ( i < fd->param_typedef_names.size()
 	  && !fd->param_typedef_names[i].empty() )
 	{
@@ -28520,6 +28476,20 @@ void Program::flush_forest_pending_globals()
     {
 	forest_restore_decls(*bind_forest);
 	forest_decls_restored = true;
+	// The pack's layout recorder (--forest-touch-log) binding a dialect
+	// fragment reads ALL of it: every template a dialect program could
+	// hydrate is hydrated here, so the relayout stores those reads raw too
+	// (pack-slices design §7: the dialect surface is never decompressed).
+	if ( !forest_touch_log.empty() )
+	    for ( size_t i = 0; i < forest_chain.size(); ++i )
+	    {
+		const char *un = bind_forest->unit_name(forest_chain[i]);
+		if ( un && embedded_dialect_fragment_p(un) )
+		{
+		    thaw_all_frozen_templates();
+		    break;
+		}
+	    }
     }
 
     if ( forest_pending_globals.empty() && forest_pending_funcs.empty()
@@ -28745,8 +28715,22 @@ void Program::flush_forest_pending_globals()
     for ( size_t i = 0; i < forest_pending_globals.size(); ++i )
     {
 	const PendingForestGlobal &pg = forest_pending_globals[i];
-	if ( !pg.type || findVariable(pg.name) )
+	// Live's identity (addVariable): a member of a named namespace is a
+	// redeclaration only of THAT namespace's member — ui::NONE and a C
+	// enum's NONE are two entities; at global scope it is the program's.
+	if ( !pg.type || (pg.ns.empty() ? findVariable(pg.name)
+				       : namespace_member_variable(pg.ns, pg.name)) )
 	    continue;			// unresolved / already present
+	// Live's registration inside `namespace N {}` binds the SAME Variable in
+	// namespace_map[N][name] — the binding a qualified reference
+	// (std::piecewise_construct, ui::WEB) resolves through.
+	auto bind_namespace = [this, &pg](Variable *rv) {
+	    if ( pg.ns.empty() )
+		return;
+	    variable_map_t &gns = namespace_variables_for_write(pg.ns);
+	    if ( gns.find(pg.name) == gns.end() )
+		gns[pg.name] = rv;
+	};
 	// v39 (completed): the PRODUCER's emitted symbol rides every restored
 	// Variable, whichever arm builds it — an extern reference, a folded
 	// constant, or a DEFINITION. Since a namespace-scope definition mangles
@@ -28790,9 +28774,7 @@ void Program::flush_forest_pending_globals()
 			<< " carried NO alias — derived "
 			<< xv->storage_alias_name << std::endl);
 		}
-		variable_map_t &xns = namespace_variables_for_write(pg.ns);
-		if ( xns.find(pg.name) == xns.end() )
-		    xns[pg.name] = xv;
+		bind_namespace(xv);
 	    }
 	    tkProgram->variables.push_back(xv);
 	    // Live's parseDeclaration pushes the dkGlobalVar TopDecl for the
@@ -28819,7 +28801,15 @@ void Program::flush_forest_pending_globals()
 	// as an undefined MIR import.
 	if ( pg.gflags & CIR_GLOBALF_CONST_SCALAR )
 	{
-	    Variable *ev = addVariable(NULL, *pg.type, pg.name, 1, NULL, true);
+	    // In a named namespace a FRESH Variable, bound there (the identity
+	    // test above proved the namespace lacks it) — addVariable at this
+	    // global point would hand back a same-named global and overwrite it.
+	    Variable *ev = pg.ns.empty()
+		? addVariable(NULL, *pg.type, pg.name, 1, NULL, true)
+		: new Variable(pg.name, *pg.type, 1, NULL, true);
+	    if ( !pg.ns.empty() )
+		tkProgram->variables.push_back(ev);
+	    bind_namespace(ev);
 	    ev->set(pg.init_value);
 	    ev->makeconstant();
 	    // Live's exact flags (an extern "C" block stamps vfEXTERN on the
@@ -28856,15 +28846,7 @@ void Program::flush_forest_pending_globals()
 	gv->flags = pg.flags;
 	stamp_producer_symbol(gv);
 	tkProgram->variables.push_back(gv);
-	// v22: live's var-decl inside `namespace N {}` registers the SAME Variable
-	// in namespace_map[N][name] — the binding a consumer's fresh instantiation
-	// resolves a QUALIFIED tag reference (std::piecewise_construct) through.
-	if ( !pg.ns.empty() )
-	{
-	    variable_map_t &gns = namespace_variables_for_write(pg.ns);
-	    if ( gns.find(pg.name) == gns.end() )
-		gns[pg.name] = gv;
-	}
+	bind_namespace(gv);	// v22
 	TopDecl gtd;
 	gtd.kind = DeclKind::dkGlobalVar;
 	gtd.name = pg.name;
@@ -29325,6 +29307,73 @@ void Program::forest_settle_param_defaults(const FuncDef *fd)
 void Program::add_namespaces()
 {
     namespace_variables_for_write("std");
+    if ( auto_includes_enabled() )
+	add_format_intrinsics();
+}
+
+static const FormatIntrinsic format_intrinsics[] = {
+    { "format",  "std_format",  true  },
+    { "print",   "std_print",   false },
+    { "println", "std_println", false },
+};
+static const size_t format_intrinsic_count =
+    sizeof(format_intrinsics) / sizeof(format_intrinsics[0]);
+
+const FormatIntrinsic *format_intrinsic_table(size_t &count)
+{
+    count = format_intrinsic_count;
+    return format_intrinsics;
+}
+
+const FormatIntrinsic *find_format_intrinsic(const char *name)
+{
+    for ( size_t i = 0; name && i < format_intrinsic_count; ++i )
+	if ( strcmp(name, format_intrinsics[i].name) == 0 )
+	    return &format_intrinsics[i];
+    return NULL;
+}
+
+// std::format / std::print / std::println are COMPILER-IMPLEMENTED: the call
+// site knows every argument's type, and cir_format.cpp validates the literal
+// format string and lowers each field to the rt_format engine. Under
+// --std=madc the compiler declares them itself — madc's always-included
+// intrinsics (owner law 2026-08-10: never #include-dependent, never in the
+// forest) — the __madc_show shape: a declaration-only FuncDef carrying its
+// inline_builtin_kind, here a C-variadic one (the synthetic trailing
+// __va_args slot every is_varargs FuncDef carries), so `print(stderr, ...)`
+// and `println("x={}", x)` bind one declaration and each argument keeps its
+// own type for the lowering. A member of std, never a global: bare
+// `println` reaches it through the dialect's namespace preference (std
+// follows "c"), so a program's own `println` still wins. Idempotent across
+// _parser_init runs (a REPL session's entries).
+void Program::add_format_intrinsics()
+{
+    variable_map_t &std_ns = namespace_variables_for_write("std");
+    for ( size_t i = 0; i < format_intrinsic_count; ++i )
+    {
+	const FormatIntrinsic &fi = format_intrinsics[i];
+	if ( std_ns.find(fi.name) != std_ns.end() )
+	    continue;
+	DataDef *ret = fi.yields_text
+	    ? getPointerType(getQualifiedType(&ddCHAR, cvCONST & modeled_cv()))
+	    : &ddVOID;
+	FuncDef *fd = new FuncDef(*ret);
+	fd->is_varargs = true;
+	fd->parameters.push_back(&ddINT64);
+	fd->param_typedef_names.push_back("");
+	fd->param_cpp_spellings.push_back("");
+	fd->param_defaults.push_back(NULL);
+	fd->declaration_only = true;
+	fd->inline_builtin_kind = fi.builtin_kind;
+	// The member's identity: `using namespace std;` imports it as an alias
+	// a program's own global `print` then reclaims
+	// (is_using_directive_import_alias). No function_display_name: it is
+	// no libstdc++ template to instantiate mangled-direct.
+	fd->namespace_name = "std";
+	Variable *var = new Variable(fi.name, *fd, 1, NULL, false);
+	var->data = (void *)new Method(*var);
+	std_ns[fi.name] = var;
+    }
 }
 
 void Program::add_madc_namespace()
@@ -29902,13 +29951,9 @@ void Program::parse_yield_point()
 // already handle the no-pool state (spelling_id 0 / "").
 Program::~Program()
 {
-    if ( source_forest && source_forest != bind_forest
-	 && source_forest != ledger_forest )
-	delete source_forest;
-    if ( ledger_forest && ledger_forest != bind_forest )
-	delete ledger_forest;
-    // bind_forest is released by _bind_forest_holder (S3): a group-shared
-    // instance survives until its LAST sibling dies; a private one dies here.
+    // Every pack reader is released by _forest_readers / _bind_forest_holder
+    // (S3): a group-shared bind instance survives until its LAST sibling
+    // dies; this compile's own readers die here.
     if ( TokenBase::_active_strpool == &strpool )
 	TokenBase::_active_strpool = NULL;
     if ( TokenBase::_active_valpool == &valpool )
@@ -31415,7 +31460,15 @@ Variable *Program::same_scope_object(TokenCpnd *code, const madc::dis::istring &
 
 Variable *Program::current_namespace_variable(const madc::dis::istring &id)
 {
-    namespace_map_t::iterator nsi = namespace_map.find(current_namespace());
+    return namespace_member_variable(current_namespace(), id);
+}
+
+// The Variable named namespace `ns` itself registers under `id` (no using
+// chain, no enclosing scope) — NULL when it holds none.
+Variable *Program::namespace_member_variable(const madc::dis::istring &ns,
+					     const madc::dis::istring &id)
+{
+    namespace_map_t::iterator nsi = namespace_map.find(ns);
     if ( nsi == namespace_map.end() )
 	return NULL;
     variable_map_iter vmi = nsi->second.find(id);
@@ -31467,6 +31520,13 @@ Variable *Program::declare_object(TokenCpnd *code, DataDef &type, const madc::di
 				  const std::vector<carray_dim_t> *dims, unsigned object_cv)
 {
     bool is_definition = object_declaration_is_definition(code, has_initializer);
+    // An entry re-read for a type's new version keeps its objects as they
+    // are (Program::entry_functions_only).
+    if ( entry_functions_only && _inst_depth == 0 && (!code || code == tkProgram) )
+    {
+	entry_kept_object = true;
+	Throw(where) << "'" << id << "' keeps its type and its value" << flush;
+    }
     // A template's products are re-minted from a pattern that was checked
     // when it was declared.
     Variable *prior = _inst_depth > 0 ? NULL : same_scope_object(code, id);
@@ -31484,9 +31544,30 @@ Variable *Program::declare_object(TokenCpnd *code, DataDef &type, const madc::di
 	}
 	else
 	{
+	    // Plan §42 D6 (owner 2026-10-12): an object an earlier session unit
+	    // defined can be defined again with its type, and the new definition
+	    // initializes the same storage, so every function and every pointer
+	    // sees it (Julia's global, Lisp's defparameter). Its type cannot
+	    // change (a typed Julia global's cannot). An object with a
+	    // destructor ends its lifetime first, as an assigned object's old
+	    // value does (CirJitSession::destroy_redefined).
+	    const bool session_redefinition = is_definition
+					      && session_redefines_object(prior);
 	    if ( object_redeclaration_conflicts(prior, &type, dims, object_cv) )
+	    {
+		if ( session_redefinition )
+		    Throw(where) << "'" << id << "' changes type: a redefinition"
+			" keeps its type (%run rebuilds the session)" << flush;
 		Throw(where) << "conflicting types for '" << id << "'" << flush;
-	    if ( is_definition && (prior->flags & vfDEFINED) )
+	    }
+	    // A const object's reads fold to its value, so the code compiled
+	    // before would keep the old one.
+	    if ( session_redefinition && prior->type && prior->type->is_const() )
+		Throw(where) << "redefinition of '" << id << "', which is const:"
+		    " earlier code holds its value (%run rebuilds the session)" << flush;
+	    if ( session_redefinition )
+		session_redefined_objects.insert(prior);
+	    else if ( is_definition && (prior->flags & vfDEFINED) )
 		Throw(where) << "redefinition of '" << id << "'" << flush;
 	}
     }
@@ -31789,9 +31870,28 @@ void Program::stamp_lazy_module_prototype(FuncDef *fd, const madc::dis::istring 
 	_lazy_module_tokens.find(proto_end);
     if ( it == _lazy_module_tokens.end() )
 	return;
-    fd->dyn_module_library = it->second;
+    stamp_lazy_module_member(fd, it->second, name);
+}
+
+// The stamp itself — the live prototype's (above) and a restored one's
+// (forest_stamp_lazy_module_prototype).
+void Program::stamp_lazy_module_member(FuncDef *fd, const madc::dis::istring &spelling,
+				       const madc::dis::istring &name)
+{
+    fd->dyn_module_library = spelling;
     fd->dyn_module_member = name;
     fd->dyn_module_typed = true;
+}
+
+// A bound unit's prototype restored from the pack: one its replayed lazy
+// import served (forest_note_lazy_module_interface) gets the stamp a live
+// prototype lexed between the import's module markers gets.
+void Program::forest_stamp_lazy_module_prototype(FuncDef *fd, const madc::dis::istring &name)
+{
+    std::map<madc::dis::istring, madc::dis::istring>::const_iterator it =
+	forest_lazy_module_protos.find(name);
+    if ( fd && it != forest_lazy_module_protos.end() )
+	stamp_lazy_module_member(fd, it->second, name);
 }
 
 void Program::stamp_dynamic_module_member(Variable *var, const madc::dis::istring &ns,
@@ -36807,6 +36907,8 @@ void Program::ClassRegistrationJournal::rollback()
     for ( size_t i = 0; i < state->pack_decl_stack_size; ++i )
 	pgm.pack_decl_stack[i].names.resize(state->pack_decl_name_sizes[i]);
     pgm.pack_decl_stack.resize(state->pack_decl_stack_size);
+    if ( pgm.pack_recording )
+	madc_pack_creation_poi = pgm.pack_current_poi();
     assert(pgm.block_typedef_shadows.size() >=
 	state->block_typedef_shadow_depth);
     for ( size_t i = 0; i < state->block_typedef_shadow_depth; ++i )
@@ -47298,6 +47400,92 @@ bool Program::struct_body_needs_class_parser_from(size_t start, bool nested)
     return false;
 }
 
+// The shape of an aggregate's definition (plan §42 D6), from the `{` at
+// tokens[start] through its closing brace: what decides whether a session's
+// definition of a class again is the same type. Its tokens, except that a
+// member-function body is elided to `{}` — in a member-declaration (at any
+// level) whose parameter list came before any `=`, each brace group after it
+// (a body, or an initializer after a parenthesized declarator: neither lays
+// anything out) — and a name the session versioned stands as its version's
+// identity (session_type_identity), so a member typed by a redefined type
+// changes the shape; SELF, the class's own name, stays as spelled.
+madc::dis::istring Program::aggregate_shape(size_t start, const madc::dis::istring &self)
+{
+    // One tracker for the walk (delimiter-tracking.md); per brace level, the
+    // member-declaration's state.
+    struct Member { bool params; bool assigned; };
+    std::vector<Member> level;
+    DelimDepth d(this);
+    std::string out;
+    int elided = -1;			// the level an elided group opened at
+    size_t n = 1;
+    for ( size_t i = start; i < tokens.size(); i += n )
+    {
+	TokenBase *t = tokens[i];
+	n = 1;
+	if ( !t )
+	    continue;
+	const int brace = d.brace, paren = d.paren, angle = d.angle;
+	n = delim_scan_step(tokens, i, d);
+	if ( !n )
+	    n = 1;
+	const TokenID id = t->id();
+	if ( elided >= 0 )
+	{
+	    if ( id == TokenID::tkClBrc && d.brace == elided )
+	    {
+		elided = -1;
+		out += "{} ";
+		level.back() = Member{ false, false };	// a body ends the member
+	    }
+	    continue;
+	}
+	if ( id == TokenID::tkOpBrc )
+	{
+	    if ( !level.empty() && level.back().params && !level.back().assigned )
+	    {
+		elided = brace;
+		continue;
+	    }
+	    out += "{ ";
+	    level.push_back(Member{ false, false });
+	    continue;
+	}
+	if ( id == TokenID::tkClBrc )
+	{
+	    out += "} ";
+	    if ( !level.empty() )
+		level.pop_back();
+	    if ( d.brace == 0 )
+		break;			// the body closed
+	    continue;
+	}
+	if ( token_is_operator_id_start(t) )
+	{
+	    for ( size_t k = i; k < i + n && k < tokens.size(); ++k )
+		if ( tokens[k] )
+		    out += std::string(madc_token_spelling(tokens[k])) + " ";
+	    continue;			// a name: neither a list nor an `=`
+	}
+	if ( !level.empty() && paren == 0 && angle == 0 )
+	{
+	    Member &m = level.back();
+	    if ( id == TokenID::tkSemi )
+		m = Member{ false, false };
+	    else if ( id == TokenID::tkOpBrk && !m.assigned )
+		m.params = true;
+	    else if ( id == TokenID::tkAssign && !m.params )
+		m.assigned = true;
+	}
+	madc::dis::istring sp = madc_token_spelling(t);
+	madc::dis::istring identity = sp == self ? madc::dis::istring()
+						 : session_type_identity(sp);
+	out += std::string(identity.empty() ? sp : identity);
+	out += " ";
+    }
+    return out;
+}
+
 // Queue captured NSDMI initializer tokens under member name `mname` of `dds`:
 // they parse when the class is complete (parse_member_default_inits). Shared
 // tail of the `=` and brace forms in capture_member_default_init.
@@ -48175,7 +48363,13 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    // forest-restore/live seam registers a restored twin of a tag
 		    // the live parse re-declares (C11 6.7p3).
 		    DataDef *existing = &(*bmi)->definition;
-		    if ( existing->denotes_same_type(*alias_dd)
+		    if ( Program::session_retypes_alias(existing,
+			     dynamic_cast<DataDefSTRUCT *>(tag_dd)) )
+		    {
+			// The alias named a version of a struct the session
+			// redefined (plan §42 D6): it names the newest.
+		    }
+		    else if ( existing->denotes_same_type(*alias_dd)
 		      || (existing->is_pointer() && alias_dd->is_pointer()
 			  && existing->rawtype() == alias_dd->rawtype()) )
 			redecl = true;
@@ -48260,8 +48454,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     // non-delegating path, or __is_final answers 0 for it.
     if ( struct_head_final )
 	dds->struct_is_final = true;
-    dds->definition_origin = aggregate_definition_origin(
-	pgm, tag ? tag->file : file);
+    stamp_aggregate_definition(pgm, dds, tag ? tag->file : file);
     madc::dis::istring tag_store_key = tag ? tag->spelling() : "";
     // Set when a GLOBAL-scope definition reclaims its bare tag from a
     // relocated namespace-scoped prior (the mirror arm below): the
@@ -48314,7 +48507,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		madc::dis::istring here_spelling =
 		    pgm.current_namespace() + "::" + tag->spelling();
 		if ( prior_sd && prior_sd->is_complete
-		  && prior_sd->canonical_cpp_spelling() != here_spelling )
+		  && prior_sd->unversioned_spelling() != here_spelling )
 		{
 		    tag_store_key = pgm.current_namespace() + "::" + tag->spelling();
 		    dds->name = flat_scope_identifier(pgm.current_namespace())
@@ -48339,9 +48532,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		datadef_map_citer prior = pgm.struct_map.find(tag->spelling());
 		DataDefSTRUCT *prior_sd = prior != pgm.struct_map.end()
 		    ? dynamic_cast<DataDefSTRUCT *>(prior->second) : NULL;
-		if ( prior_sd && prior_sd->is_complete
-		  && !prior_sd->canonical_cpp_spelling().empty()
-		  && prior_sd->canonical_cpp_spelling() != tag->spelling() )
+		if ( pgm.bare_key_held_by_other_scope(prior_sd, tag->spelling()) )
 		{
 		    pgm.pack_tap_struct(prior_sd->canonical_cpp_spelling());
 		    pgm.struct_map.set(prior_sd->canonical_cpp_spelling(),
@@ -48356,6 +48547,14 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    }
 	}
     }
+    // A session's redefinition of a struct an earlier entry defined (plan §42
+    // D6, owner 2026-10-13): the next version of its name, registered before
+    // the body so a self-reference names it; at the body's end it is the same
+    // type again (a twin) when it lays out as the version it replaces.
+    DataDefSTRUCT *superseded = tag && !block_tag_shadowed && !global_reclaims_bare
+	? pgm.session_redefined_type(tag_store_key) : NULL;
+    if ( superseded )
+	pgm.supersede_session_type(dds, superseded, tag->spelling(), tag_store_key);
     // The definition of a tag whose FIRST declaration is already registered in
     // this scope (`struct S;`, or an elaborated-type-specifier that first-
     // declared S) completes THAT object — gcc's xref_tag alters the forward-
@@ -48380,6 +48579,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    if ( dds->struct_is_final )
 		prior->struct_is_final = true;
 	    prior->definition_origin = dds->definition_origin;
+	    prior->definition_file = dds->definition_file;
 	    delete dds;
 	    dds = prior;
 	    was_pre_registered = true;
@@ -48419,7 +48619,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     // this point (size 0 members none); pointer-to-incomplete works because
     // DataDefPTR only needs an 8-byte pointer size.
     if ( tag && (pgm.struct_map.find(tag_store_key) == pgm.struct_map.end()
-		 || global_reclaims_bare || block_tag_shadowed) )
+		 || global_reclaims_bare || block_tag_shadowed || superseded) )
     {
 	pgm.pack_tap_struct(tag_store_key);	// B4a tap
 	pgm.struct_map.set(tag_store_key, dds);
@@ -48531,8 +48731,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    std::function<void(DataDefSTRUCT *, TokenBase *)> parse_nested_aggregate_body;
 	    parse_nested_aggregate_body = [&](DataDefSTRUCT *inner, TokenBase *loc) -> void
 	    {
-		inner->definition_origin = aggregate_definition_origin(
-		    pgm, loc ? loc->file : NULL);
+		stamp_aggregate_definition(pgm, inner, loc ? loc->file : NULL);
 		// This body is open for its own nested tags (see the top-level
 		// AggregateScope); the lambda's exit pops it, Throw included.
 		struct InnerScope {
@@ -48621,6 +48820,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpBrc )
 			    {
 				DataDefSTRUCT *nested = NULL;
+				DataDefSTRUCT *nested_was = sdmi == pgm.struct_map.end() ? NULL
+				    : pgm.session_redefined_type(sdmi->first);
 				if ( sdmi == pgm.struct_map.end() )
 				{
 				    nested = new DataDefSTRUCT(sname, 0);
@@ -48628,16 +48829,22 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 				    pgm.pack_tap_struct(store_key);	// B4a tap
 				    pgm.struct_map.set(store_key, nested);
 				}
+				else if ( nested_was )
+				    nested = pgm.redefine_session_struct(nested_was, sname,
+									 sdmi->first);
 				else
 				{
 				    nested = static_cast<DataDefSTRUCT *>(sdmi->second);
 				    if ( nested->size != 0 || !nested->members.empty() )
-					pgm.Throw(inner_tag) << "Struct '" << sname << "' already defined" << flush;
+					pgm.refuse_type_redefinition(inner_tag, "Struct",
+								     sname, nested);
 				}
 				nested->union_layout = inner_union_kw;
 				apply_aggregate_attributes(nested, inner_attrs, false);
 				pgm.nextToken();
 				parse_nested_aggregate_body(nested, inner_tag);
+				if ( nested_was )
+				    pgm.settle_session_struct(nested_was, nested);
 				// Named inline-defined nested struct/union — visible at enclosing
 				// scope in C; record as a standalone top-level def (see outer
 				// member loop). Handles deeper nesting (`struct A{struct B{struct C
@@ -48864,6 +49071,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		else if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpBrc )
 		{
 		    DataDefSTRUCT *inner = NULL;
+		    DataDefSTRUCT *inner_was = sdmi == pgm.struct_map.end() ? NULL
+			: pgm.session_redefined_type(sdmi->first);
 		    if ( sdmi == pgm.struct_map.end() )
 		    {
 			inner = new DataDefSTRUCT(sname, 0);
@@ -48872,16 +49081,23 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			pgm.pack_tap_struct(store_key);	// B4a tap
 			pgm.struct_map.set(store_key, inner);
 		    }
+		    else if ( inner_was )
+		    {
+			inner = pgm.redefine_session_struct(inner_was, sname, sdmi->first);
+			inner->union_layout = nested_union_kw;
+		    }
 		    else
 		    {
 			inner = static_cast<DataDefSTRUCT *>(sdmi->second);
 			if ( inner->size != 0 || !inner->members.empty() )
-			    pgm.Throw(stag) << "Struct '" << sname << "' already defined" << flush;
+			    pgm.refuse_type_redefinition(stag, "Struct", sname, inner);
 			inner->union_layout = nested_union_kw;
 		    }
 		    apply_aggregate_attributes(inner, nested_attrs, false);
 		    pgm.nextToken(); // consume '{'
 		    parse_nested_aggregate_body(inner, stag);
+		    if ( inner_was )
+			pgm.settle_session_struct(inner_was, inner);
 		    // A named struct/union defined INLINE as a member type has C scope
 		    // at the ENCLOSING level (`struct T` in `struct S { struct T {} t; }`
 		    // is visible outside S). Record it as a standalone top-level def so
@@ -49122,6 +49338,9 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    }
     }
 
+    if ( superseded )
+	pgm.settle_session_struct(superseded, dds);
+
     // register the struct type
     if ( tag )
     {
@@ -49153,7 +49372,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    << tag_store_key << " over forest-restored twin" << endl);
 	    }
 	    else
-		pgm.Throw(tag) << "Struct '" << tag->spelling() << "' already defined" << flush;
+		pgm.refuse_type_redefinition(tag, "Struct", tag->spelling(),
+					     existing);
 	}
 	else
 	{
@@ -49215,9 +49435,12 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    // real header's typedef of it (gcc's <stddef.h> -> max_align_t) is a
 	    // re-registration, not a conflict. A user-vs-user redefinition still
 	    // throws, which is what this check was written to catch.
+	    // A session's redefinition of the struct rebinds the alias that
+	    // named its earlier version (plan §42 D6).
 	    if ( bmi != pgm.datatype_map.end() && pgm.compounds.empty()
 	      && &(*bmi)->definition != alias_dd
-	      && !(*bmi)->builtin )
+	      && !(*bmi)->builtin
+	      && !Program::session_retypes_alias(&(*bmi)->definition, dds) )
 		pgm.Throw(tn) << "Identifier '" << alias_spelling << "' already defined" << flush;
 	    tdt = new TokenDataType(alias_spelling.c_str(), *alias_dd);
 	    pgm.register_scoped_typedef(alias_spelling, tdt);
@@ -49485,8 +49708,7 @@ DataDefSTRUCT *Program::parse_class_anonymous_aggregate(TokenBase *kw)
 	return NULL;
     DataDefSTRUCT *agg = new_anon_struct();
     agg->union_layout = kw && kw->id() == TokenID::tkUNION;
-    agg->definition_origin = aggregate_definition_origin(
-	*this, kw ? kw->file : NULL);
+    stamp_aggregate_definition(*this, agg, kw ? kw->file : NULL);
     apply_aggregate_attributes(agg, attrs, false);
     parse_class_anonymous_aggregate_members(agg, kw);
     TokenBase *close = nextToken();
@@ -50117,6 +50339,8 @@ void Program::enqueue_deferred_function_body(Variable *var,
     Program::DeferredFunctionBody body;
     body.var = var;
     body.method = method;
+    body.pack_poi = pack_current_poi();
+    body.pack_ctx = madc_pack_stamp_ctx();
     body.file = open ? open->file : NULL;
     body.line = open ? open->line : 0;
     body.column = open ? open->column : 0;
@@ -50313,6 +50537,69 @@ TokenBase *Program::parse_ctor_initializer_list(FuncDef *func)
     return nt;
 }
 
+Program::PackPoiFrame::PackPoiFrame(Program &pp, uint32_t poi) : p(pp), pushed(false)
+{
+    if ( p.pack_recording && p.pack_decl_stack.empty() && poi != 0xffffffffu )
+    {
+	p.pack_decl_stack.push_back(Program::PackDeclFrame());
+	p.pack_decl_stack.back().begin = poi;
+	p.pack_decl_stack.back().fuzzy = false;
+	pushed = true;
+	madc_pack_creation_poi = p.pack_current_poi();
+    }
+}
+
+Program::PackPoiFrame::~PackPoiFrame()
+{
+    if ( pushed && !p.pack_decl_stack.empty() )
+    {
+	p.pack_decl_stack.pop_back();
+	madc_pack_creation_poi = p.pack_current_poi();
+    }
+}
+
+Program::PackCtxFrame::PackCtxFrame(Program &pp, const madc::dis::istring &key,
+				    bool enter)
+    : pushed(false)
+{
+    if ( !pp.pack_recording || key.empty() )
+	return;
+    if ( enter )
+	pp.pack_note_require(key);
+    saved = madc_pack_creation_ctx;
+    madc_pack_creation_ctx = key;
+    pushed = true;
+}
+
+Program::PackCtxFrame::~PackCtxFrame()
+{
+    if ( pushed )
+	madc_pack_creation_ctx = saved;
+}
+
+void Program::pack_note_require(const madc::dis::istring &product)
+{
+    if ( !pack_recording || product.empty() || product == madc_pack_creation_ctx )
+	return;
+    PackRequirement r;
+    r.product = product;
+    r.by = madc_pack_creation_ctx;
+    r.poi = 0xffffffffu;
+    if ( !r.by.empty() )
+    {
+	if ( !pack_required_by.insert(std::make_pair(r.product, r.by)).second )
+	    return;
+    }
+    else
+    {
+	r.poi = pack_current_poi();
+	if ( r.poi == 0xffffffffu
+	  || !pack_required_at.insert(std::make_pair(r.product, r.poi)).second )
+	    return;
+    }
+    pack_requirements.push_back(r);
+}
+
 void Program::parse_deferred_function_body(Program::DeferredFunctionBody &body)
 {
     if ( !body.var || !body.method )
@@ -50326,6 +50613,9 @@ void Program::parse_deferred_function_body(Program::DeferredFunctionBody &body)
 	vfd->vague_linkage = true;
 
     body.method->reset_hoisted_declarations();
+
+    PackPoiFrame poi_frame(*this, body.pack_poi);
+    PackCtxFrame ctx_frame(*this, body.pack_ctx, false);
 
     madc::dis::istring saved_func = cur_func_name;
     madc::dis::istring saved_canon = instantiating_canonical_spelling;
@@ -50591,6 +50881,8 @@ TokenFunc *Program::parse_deferred_lazy_body(const madc::dis::istring &emit_symb
 	bool saved_ctor_init = parsing_defaulted_member_template_constructor;
 	size_t saved_compounds = compounds.size();
 	size_t saved_class_scopes = class_scope_stack.size();
+	PackPoiFrame poi_frame(*this, body.pack_poi);
+	PackCtxFrame ctx_frame(*this, body.pack_ctx, false);
 	NestedTokenStream lazy_run(*this, body.definition_tokens,
 				   NestedTokenStream::Injected);
 	cur_func_name = body.var->name;
@@ -51237,6 +51529,8 @@ static bool try_parse_defaulted_member_template_constructor(
 	Program::DeferredFunctionBody body;
 	body.var = mvar;
 	body.method = static_cast<Method *>(mvar->data);
+	body.pack_poi = pgm.pack_current_poi();
+	body.pack_ctx = madc_pack_stamp_ctx();
 	body.definition_tokens = definition_tokens;
 	body.full_definition = true;
 	body.file = ctor_name_tok ? ctor_name_tok->file : NULL;
@@ -52067,6 +52361,14 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     if ( !tag )
 	pgm.Throw(tn) << "Class definition requires a name" << flush;
 
+    // A session's class records its shape (plan §42 D6): its definition
+    // again with the same shape is the same type, its member functions
+    // redefined.
+    const madc::dis::istring class_shape = pgm.interactive_session
+	? madc::dis::istring(std::string(union_class ? "union " : "")
+			     + std::string(pgm.aggregate_shape(0, tag->spelling())))
+	: madc::dis::istring();
+
     pgm.nextToken(); // consume '{'
 
     // Sibling-SCOPE same-name class definitions (namespace A { class C {...}; }
@@ -52089,7 +52391,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	madc::dis::istring here_spelling =
 	    pgm.current_namespace() + "::" + class_source_name;
 	if ( prior_sd && prior_sd->is_complete
-	  && prior_sd->canonical_cpp_spelling() != here_spelling )
+	  && prior_sd->unversioned_spelling() != here_spelling )
 	{
 	    pgm.set_token_spelling(tag,
 		flat_scope_identifier(pgm.current_namespace()) + "__"
@@ -52124,9 +52426,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	datadef_map_citer prior = pgm.struct_map.find(tag->spelling());
 	DataDefSTRUCT *prior_sd = prior != pgm.struct_map.end()
 	    ? dynamic_cast<DataDefSTRUCT *>(prior->second) : NULL;
-	if ( prior_sd && prior_sd->is_complete
-	  && !prior_sd->canonical_cpp_spelling().empty()
-	  && prior_sd->canonical_cpp_spelling() != tag->spelling() )
+	if ( pgm.bare_key_held_by_other_scope(prior_sd, tag->spelling()) )
 	{
 	    pgm.pack_tap_struct(prior_sd->canonical_cpp_spelling());
 	    pgm.struct_map.set(prior_sd->canonical_cpp_spelling(), prior_sd);
@@ -52142,6 +52442,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     // is the incomplete class created for `class Name;`.
     bool completing_forward_decl = false;
     DataDefCLASS *ddc = NULL;
+    DataDefCLASS *session_superseded = NULL;
     dmi = pgm.struct_map.find(tag->spelling());
     // A NESTED class-head completing a declaration the OWNER's scope holds —
     // `struct B;` inside A, then `struct B { ... }` in the body or
@@ -52230,8 +52531,15 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    DBG(cout << "class live-wins: re-defining forest-restored '"
 		<< tag->spelling() << "'" << endl);
 	}
+	else if ( fwd && fwd == pgm.session_redefined_type(tag->spelling()) )
+	{
+	    // A class an earlier entry defined, defined again (plan §42 D6):
+	    // a fresh definition below, the same type or the name's next
+	    // version.
+	    session_superseded = fwd;
+	}
 	else
-	    pgm.Throw(tag) << "Class '" << tag->spelling() << "' already defined" << flush;
+	    pgm.refuse_type_redefinition(tag, "Class", tag->spelling(), fwd);
     }
     if ( !ddc )
 	ddc = new DataDefCLASS(class_emitted_name, 0, DataType::dtRESERVED);
@@ -52241,7 +52549,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     // class object, and a re-entered definition must not un-final it.
     if ( head_final )
 	ddc->struct_is_final = true;
-    ddc->definition_origin = aggregate_definition_origin(pgm, tag->file);
+    stamp_aggregate_definition(pgm, ddc, tag->file);
     if ( has_local_class_identity )
 	pgm.function_local_class_identities[ddc] = local_class_identity;
     if ( union_class )
@@ -52284,6 +52592,21 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    primary_name_from_cpp_spelling(ddc->canonical_cpp_spelling());
 	if ( !primary.empty() )
 	    constructor_source_name = primary;
+    }
+    // A session's class defined again (plan §42 D6): the name's next version
+    // (the lineage every version shares starts here), or the same type again
+    // when its shape is the replaced version's (its member functions are
+    // then redefined).
+    if ( pgm.interactive_session )
+	ddc->session_shape = class_shape;
+    if ( session_superseded )
+    {
+	pgm.supersede_session_type(ddc, session_superseded, class_source_name,
+				   tag->spelling());
+	if ( !class_shape.empty() && class_shape == session_superseded->session_shape )
+	    pgm.session_type_twin(ddc, session_superseded);
+	else
+	    pgm.retire_session_type(session_superseded);
     }
     ddc->is_dependent_placeholder = false;
     ddc->has_dependent_surface = pgm.instantiating_dependent_surface;
@@ -53855,6 +54178,12 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 					     defaulted_comparison_ops[i], synth) )
 	    parse_hoisted_friend_operator(pgm, synth, ddc);
     }
+
+    // The same type again (plan §42 D6): it lays out as before, and its
+    // member functions are redefined.
+    if ( session_superseded
+      && ddc->session_version == session_superseded->session_version )
+	pgm.settle_session_twin(tag, class_source_name, session_superseded, ddc);
 
     member_terminators.close();
     // what follows?
@@ -61221,6 +61550,8 @@ void Program::register_outofline_member_instantiations(
 	DeferredFunctionBody body;
 	body.var = mvar;
 	body.method = static_cast<Method *>(mvar->data);
+	body.pack_poi = pack_current_poi();
+	body.pack_ctx = madc_pack_stamp_ctx();
 	body.definition_tokens = declarator_definition_tail(sub, mni, op);
 	if ( body.definition_tokens.empty() )
 	    continue;
@@ -62416,12 +62747,14 @@ static const char *madc_namespace_template_builtin_kind(const madc::dis::istring
     // compiler-owned fragment's declarations are compiler-implemented. A
     // real libstdc++ <format> parsed some day must keep its own std::format
     // untouched — the name alone cannot be the key there.
+    // Under --std=madc the compiler declares them itself
+    // (Program::add_format_intrinsics); this arm tags the fragment's own
+    // declarations for a program that #includes <bits/std_format>.
     if ( ns == "std" && decl_file
       && strcmp(decl_file, "bits/std_format") == 0 )
     {
-	if ( name == "format" )   return "std_format";
-	if ( name == "print" )    return "std_print";
-	if ( name == "println" )  return "std_println";
+	if ( const FormatIntrinsic *fi = find_format_intrinsic(name.c_str()) )
+	    return fi->builtin_kind;
     }
     return NULL;
 }
@@ -65716,6 +66049,7 @@ static bool instantiate_fn_template_binding(Program &pgm,
 		if ( vi != pgm.fn_template_instantiated_vars.end() )
 		    *var_out = *vi;
 	    }
+	    pgm.pack_note_require(inst_key);	// a reuse: this context needs it too
 	    return true;
 	}
     }
@@ -65756,6 +66090,9 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	{ p.fn_template_inst_in_progress.insert(k); }
 	~InstLiveGuard() { p.fn_template_inst_in_progress.erase(k); }
     } _inst_live_guard(pgm, inst_key);
+    // A pack freeze: what this instance's instantiation makes belongs to it
+    // (pack-slices design §4).
+    Program::PackCtxFrame _pack_ctx(pgm, inst_key, true);
     size_t pre_ovset = 0;
     size_t pre_pending = pgm.pending_funcs.size();
     {
@@ -68726,8 +69063,9 @@ Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
 	if ( mi != member_fn_inst_names.end() )
 	{
 	    Variable *iv = findVariable(mi->second);
-	    if ( iv && dynamic_cast<FuncDef *>(iv->type) )
+	    if ( FuncDef *ifd = iv ? dynamic_cast<FuncDef *>(iv->type) : NULL )
 	    {
+		pack_note_require(ifd->instantiation_identity());	// a reuse
 		tc->mti_instance = iv;
 		return iv;
 	    }
@@ -68867,10 +69205,21 @@ Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
 	    if ( s )
 		span = s;
 	}
+	// A conversion function returns its conversion-type-id
+	// ([class.conv.fct]/1): `operator Val<U>()` instantiates as
+	// `Val<U> <instance>()`, the type kept ahead of the new name.
+	const bool conversion = span > 1
+	    && token_starts_conversion_type_id(ft.decl[name_idx + 1]);
+	std::vector<TokenBase *> conversion_type;
+	if ( conversion )
+	    conversion_type.assign(ft.decl.begin() + name_idx + 1,
+				   ft.decl.begin() + name_idx + span);
 	ft.decl[name_idx] = ren;
 	if ( span > 1 )
 	    ft.decl.erase(ft.decl.begin() + name_idx + 1,
 			  ft.decl.begin() + name_idx + span);
+	ft.decl.insert(ft.decl.begin() + name_idx, conversion_type.begin(),
+		       conversion_type.end());
     }
 
     madc::dis::istring key = inst_name;
@@ -69002,6 +69351,97 @@ Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
 	tc->mti_instance = iv;
 	return iv;
     }
+    return NULL;
+}
+
+// [temp.deduct.conv]: SOURCE's conversion-function template that converts to
+// TARGET, instantiated. Its conversion-type-id, a reference and then its cv
+// dropped (/2-3), is unified with TARGET as a template-id parameter is with a
+// call's argument (unify_nested_spec_pattern_arg), or binds it when it is a
+// bare template parameter; the instance is made as a call with those explicit
+// arguments would make it. A base's template is the source's too. NULL when
+// none deduces every template parameter.
+Variable *Program::instantiate_conversion_template(DataDefCLASS *source, DataDef *target,
+						   TokenBase *where)
+{
+    if ( !source || !target )
+	return NULL;
+    const madc::dis::istring concrete = !target->canonical_cpp_spelling().empty()
+	? target->canonical_cpp_spelling() : cpp_spelling_for_mangle(target, false);
+    for ( Variable *mv : source->methods )
+    {
+	FuncDef *fd = mv ? dynamic_cast<FuncDef *>(mv->type) : NULL;
+	if ( !fd || !fd->is_member_template )
+	    continue;
+	fd->ensure_member_template_thawed();
+	const std::vector<TokenBase *> &decl = fd->member_template_decl;
+	size_t ni = skipped_template_function_declarator_name_index(decl, NULL);
+	DBG(cout << "conversion template: " << source->name << "::"
+	    << fd->method_display_name << " decl=" << decl.size()
+	    << " name at " << ni << " -> " << target->name << endl);
+	if ( ni + 1 >= decl.size() || !token_is_operator_id_start(decl[ni])
+	  || !token_starts_conversion_type_id(decl[ni + 1]) )
+	    continue;
+	size_t end = ni + operator_id_token_span(decl, ni);
+	size_t first = ni + 1;
+	while ( end > first && decl[end - 1]
+	     && (decl[end - 1]->id() == TokenID::tkBand
+	      || decl[end - 1]->id() == TokenID::tkLand
+	      || is_type_qualifier_token(decl[end - 1])) )
+	    --end;
+	while ( first < end && is_type_qualifier_token(decl[first]) )
+	    ++first;
+	if ( first >= end )
+	    continue;
+	std::map<madc::dis::istring, DataDef *> ded;
+	if ( end == first + 1 && is_contextual_identifier_token(decl[first]) )
+	{
+	    madc::dis::istring p = contextual_identifier_name(decl[first]);
+	    if ( std::find(fd->template_param_names.begin(),
+			   fd->template_param_names.end(), p)
+		 != fd->template_param_names.end() )
+		ded[p] = target;
+	}
+	else
+	{
+	    std::string pattern;
+	    for ( size_t k = first; k < end; ++k )
+		if ( decl[k] )
+		    pattern += template_token_fragment(decl[k]);
+	    int score = 0;
+	    if ( concrete.empty()
+	      || !unify_nested_spec_pattern_arg(pattern, fd->template_param_names,
+						concrete, ded, score) )
+		continue;
+	}
+	std::vector<DataDef *> args;
+	for ( const madc::dis::istring &p : fd->template_param_names )
+	{
+	    std::map<madc::dis::istring, DataDef *>::const_iterator d = ded.find(p);
+	    if ( d == ded.end() || !d->second )
+		break;
+	    args.push_back(d->second);
+	}
+	DBG(cout << "conversion template: deduced " << args.size() << " of "
+	    << fd->template_param_names.size() << endl);
+	if ( args.size() != fd->template_param_names.size() )
+	    continue;
+	Variable recv("__madc_conv_recv", *source, 1, NULL, false);
+	TokenCallMethod synth(recv, *mv);
+	synth.explicit_template_args = args;
+	if ( where )
+	    copy_token_location(&synth, where);
+	Variable *iv = instantiate_member_fn_template_for_call(&synth);
+	DBG(cout << "conversion template: instance "
+	    << (iv ? std::string(iv->name) : std::string("(none)")) << endl);
+	if ( iv )
+	    return iv;
+    }
+    if ( Variable *iv = instantiate_conversion_template(source->base_class, target, where) )
+	return iv;
+    for ( const BaseSpec &base : source->bases )
+	if ( Variable *iv = instantiate_conversion_template(base.base, target, where) )
+	    return iv;
     return NULL;
 }
 
@@ -73557,6 +73997,10 @@ void Program::parseFunction(DataDef &dd, madc::dis::istring &id, DataDefCLASS *o
     // extern "C"). C++-linkage same-signature bodies are
     // fold_same_signature_overload's — twins the type model cannot yet split.
     bool redecl_prior_bodied = false;
+    // Plan §42 D5: a second body for a function an earlier session unit
+    // defined is the session's redefinition, in every linkage.
+    const bool session_redefinition = func_already_declared && !owner_class
+				      && session_redefines(NULL, func);
     TokenBase *redecl_at = curToken();
     if ( func_already_declared && !owner_class
       && (is_c_mode() || current_linkage == LinkageSpec::C || func->c_linkage) )
@@ -74271,6 +74715,9 @@ void Program::parseFunction(DataDef &dd, madc::dis::istring &id, DataDefCLASS *o
 		    std::cout << " prior" << rs << "=[" << func->mangle_param_spelling(rs) << "]";
 		std::cout << std::endl;
 	    });
+	if ( redecl_sig != redecl_prior_sig && session_redefinition )
+	    Throw(nt) << "conflicting types for '" << id << "', a function an"
+		" earlier entry defined (%run rebuilds the session)" << flush;
 	if ( redecl_sig != redecl_prior_sig )
 	    Throw(nt) << (is_c_mode() ? "conflicting types for '"
 				      : "conflicting declaration of C function '")
@@ -74810,8 +75257,10 @@ void Program::parseFunction(DataDef &dd, madc::dis::istring &id, DataDefCLASS *o
 
     pop_param_scope();
 
-    if ( redecl_prior_bodied )
+    if ( redecl_prior_bodied && !session_redefinition )
 	Throw(redecl_at) << "redefinition of '" << id << "'" << flush;
+    if ( session_redefinition )
+	session_redefined.insert(func);
     func->declaration_only = false;
     func->body_parsed = true;
     // A class madc defines: whatever external binding its declared member
@@ -80963,6 +81412,13 @@ void Program::pack_open_toplevel_decl()
     PackDeclFrame &f = pack_decl_stack.back();
     f.begin = p.cursor;
     f.fuzzy = !p.pushback.empty();
+    madc_pack_creation_poi = pack_current_poi();
+}
+
+uint32_t Program::pack_current_poi() const
+{
+    return pack_recording && !pack_decl_stack.empty()
+	 ? (uint32_t)pack_decl_stack.back().begin : 0xffffffffu;
 }
 
 void Program::pack_close_toplevel_decl()
@@ -80986,6 +81442,7 @@ void Program::pack_close_toplevel_decl()
 	    e.aux   = fuzzy ? PACK_DECL_FUZZY_BOUNDS : 0;
 	}
     pack_decl_stack.pop_back();
+    madc_pack_creation_poi = pack_current_poi();
 }
 
 void Program::pack_tap_name(const madc::dis::istring &name, uint32_t kind)
@@ -81091,7 +81548,8 @@ void Program::dump_registered_names(FILE *out)
     {
 	if ( it->first.find('<') != madc::dis::istring::npos
 	  || instantiation_product(it->second)
-	  || function_local_class(it->second) )
+	  || function_local_class(it->second)
+	  || session_type_superseded(it->second->as_struct_dd()) )
 	    continue;
 	lines.insert(std::string("struct\t") + it->first);
     }
@@ -81513,6 +81971,8 @@ void Program::adopt_entry_statement(TokenBase *ts, TokenBase *head)
 {
     if ( !token_is_tu_origin(ts) )
 	Throw(ts) << "file-scope statement in an included file (top-level statements are allowed only in the entry itself)" << flush;
+    if ( entry_definitions_only )
+	return;
     ensure_entry_function(head)->statements.push_back((TokenStmt *)ts);
 }
 
@@ -82250,6 +82710,8 @@ void Program::begin_entry()
     // A fresh stream, as every translation unit's lex starts on: the lexer's
     // reorders (the auto-include splice) count positions from cursor 0.
     tokens.reset();
+    session_redefined.clear();
+    session_redefined_objects.clear();
     entry_function = NULL;
     entry_function_name.clear();
     entry_end_token = NULL;
@@ -82302,7 +82764,7 @@ void Program::finish_entry(size_t decls_before, size_t funcs_before)
 	}
     }
     // D10: a final statement written without its `;` shows its value.
-    if ( entry_final_semicolon_omitted )
+    if ( entry_final_semicolon_omitted && !entry_definitions_only )
 	show_entry_value(decls_before);
     // A binding row's values: the session's quiet entry (plan §41.11a).
     if ( !entry_show_rows.empty() )

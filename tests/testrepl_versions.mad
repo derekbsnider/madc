@@ -1,0 +1,8 @@
+// Plan §42 D6 under C++ (owner 2026-10-13): a class defined again in a
+// session with its data members as they were is the same type, its member
+// functions redefined for every object; with other members it is the name's
+// next version (`P#1` names the first, mangled as g++'s abi_tag would,
+// `P[abi:v2]`), the objects the earlier version made keep its layout and its
+// member functions, and a function defined again for the new version is an
+// overload beside the earlier one. A virtual function's class the same.
+#include <stdio.h>

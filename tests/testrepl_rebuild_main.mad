@@ -1,0 +1,5 @@
+// %run rebuilding the REPL buffer runs its main when the buffer defines main
+// and no entry calls it, as %run runs a file's, argv[0] the buffer's name
+// (owner 2026-10-12). A buffer that calls main runs it once, in the replay.
+// `runs` counts: the final line reads 1, not 2. madc ran no main.
+int base = 1;

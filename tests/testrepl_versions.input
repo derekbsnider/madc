@@ -1,0 +1,26 @@
+struct P { int x; int area() { return x * 2; } };
+P a = {3};
+int getx(P v) { return v.x; }
+printf("area %d\n", a.area());
+struct P { int x; int area() { return x * 3; } };
+P b = {4};
+printf("twin %d %d\n", a.area(), b.area());
+struct P { int x; int y; int area() { return x * y; } };
+P c = {2, 5};
+printf("version %d %d %d\n", c.area(), a.area(), (int)sizeof a * 10 + (int)sizeof c);
+int getx(P v) { return v.x + v.y; }
+printf("overloads %d %d\n", getx(a), getx(c));
+a
+c
+class Q { public: virtual int k() { return 1; } int v; };
+Q q1;
+class Q { public: virtual int k() { return 2; } int v; int w; };
+Q q2;
+Q *pq = &q2;
+printf("virtual %d %d %d\n", q1.k(), q2.k(), pq->k());
+struct N { int v; N *next; int get() { return v; } };
+struct N { int v; N *next; long w; int get() { return v * 2; } };
+N n2 = {2, 0, 0};
+struct N { int v; N *next; long w; int get() { return v * 3; } };
+printf("self twin %d %d\n", n2.get(), (int)sizeof n2);
+n2

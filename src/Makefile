@@ -132,7 +132,7 @@ RT_OFILES := $(notdir $(RT_LEDGER_SRCS:.c=.o))
 ifeq ($(strip $(RT_OFILES)),)
 $(error scripts/ledger_sources.txt lists no C-lane runtime sources)
 endif
-CORE_OFILES = lexer.o parser.o madc_value.o madc_error.o madc_program.o madc_api.o madc_c_api.o madc_config.o madc_config_file.o madc_globals.o madc_dl.o madc_modules.o madc_guards.o madc_crash.o ns_common.o madc_regex.o madc_ex.o madc_documents.o ns_php.o ns_perl.o ns_python.o ns_ruby.o ns_js.o ns_rust.o ns_madc.o ns_ui.o ui_term.o va_helpers.o $(RT_OFILES) pch.o madc_posix_io.o madc_datachannel.o madc_socket_channel.o madc_channel_stream.o madc_websocket_channel.o madc_header_channel.o madc_process.o madc_run_child.o madc_channel_object.o madcdis_driver.o madcdis_query.o madcdis_source_adapter.o madcdis_snapshot.o madcdis_storage.o embedded_headers.o sys_include_paths.o predefined_macros.o precompiled_headers.o madc_mir_backend.o madc_mangle.o libc_signatures.o madc_cir.o cir_builder.o cir_dump.o madc_type_spelling.o rt_dump_value.o cir_format.o rt_format_value.o rt_task.o madc_task_chan.o madc_io_reactor.o cir_freeze.o cir_emit_c.o file_kinds.o file_kind_editing.o madc_capabilities.o madc_console.o madc_theme.o madc_lang.o madc_jsonrpc.o madc_lsp.o madc_tools.o madc_mcp.o madc_memory.o madc_tool_host.o madc_discovery.o madc_project.o madc_pe_icon.o madc_complete.o madc_keywords.o madc_session.o madc_session_client.o madc_session_interrupt.o madc_session_stdin.o madc_session_verbs.o madc_history.o madc_repl.o madc.o
+CORE_OFILES = lexer.o parser.o madc_value.o madc_error.o madc_program.o madc_api.o madc_c_api.o madc_config.o madc_config_file.o madc_globals.o madc_dl.o madc_modules.o madc_guards.o madc_crash.o ns_common.o madc_regex.o madc_ex.o madc_documents.o ns_php.o ns_perl.o ns_python.o ns_ruby.o ns_js.o ns_rust.o ns_madc.o ns_ui.o ui_term.o va_helpers.o $(RT_OFILES) pch.o madc_posix_io.o madc_datachannel.o madc_socket_channel.o madc_channel_stream.o madc_websocket_channel.o madc_header_channel.o madc_process.o madc_run_child.o madc_channel_object.o madcdis_driver.o madcdis_query.o madcdis_source_adapter.o madcdis_snapshot.o madcdis_storage.o embedded_headers.o sys_include_paths.o predefined_macros.o precompiled_headers.o madc_mir_backend.o madc_mangle.o libc_signatures.o madc_cir.o madc_crt.o cir_builder.o cir_dump.o madc_type_spelling.o rt_dump_value.o cir_format.o rt_format_value.o rt_task.o madc_task_chan.o madc_io_reactor.o cir_freeze.o cir_pack_seeds.o cir_emit_c.o file_kinds.o file_kind_editing.o madc_capabilities.o madc_console.o madc_theme.o madc_lang.o madc_jsonrpc.o madc_lsp.o madc_tools.o madc_mcp.o madc_memory.o madc_tool_host.o madc_discovery.o madc_project.o madc_pe_icon.o madc_complete.o madc_keywords.o madc_session.o madc_session_client.o madc_session_interrupt.o madc_session_stdin.o madc_session_verbs.o madc_history.o madc_repl.o madc.o
 MADDAT_OFILES = $(MADC_STORAGE_DB_OFILES)
 MADHDRS = $(wildcard ../include/madc/*)
 # embedded_headers.cpp regeneration (EMBED_GEN) happens below, AFTER the
@@ -417,16 +417,17 @@ endif
 WIN_UCRT_LIBSTDCXX ?= /workspace/win-ucrt-libstdc++/stage
 # The Windows release set's directory (release-windows below).
 WIN_RELEASE_DIR = ../bin/release-windows
-
-ifeq ($(MODE),hosted-x86-64-windows)
-WIN_MINGW = x86_64-w64-mingw32
 # _USE_MATH_DEFINES: mingw math.h hides M_PI (and friends) under
 # __STRICT_ANSI__, which the captured -std=c++17 posture defines. On
 # glibc targets g++ always predefines _GNU_SOURCE, so the Linux lane
 # effectively always has M_PI — this is mingw's own documented knob for
 # the same surface. Rides WIN_UCRT_FLAGS so the HOSTTAB capture seeds
-# it into every script TU (and the host build, harmlessly).
+# it into every script TU (and the host build, harmlessly). Outside the
+# mode conditional too: the release pack lists the headers these flags see.
 WIN_UCRT_FLAGS = -D_UCRT -D__USE_MINGW_ANSI_STDIO=1 -D__USE_MINGW_SETJMP_NON_SEH -D_USE_MATH_DEFINES
+
+ifeq ($(MODE),hosted-x86-64-windows)
+WIN_MINGW = x86_64-w64-mingw32
 WIN_SPECS = $(abspath $(OBJDIR))/ucrt.specs
 # Parse-time generation (the EMBED_GEN/HOSTTAB precedent): the specs file
 # must exist before ANY compile in this make layer, including the recursive
@@ -523,9 +524,12 @@ endif
 # the freezer opens the C++ headers at their real container paths while
 # the hosted binary carries the same spelling (inert on a run-only Mac —
 # the packed groves serve C++ there).
+# Where a Mac keeps the SDK a hosted binary searches (the CLT location):
+# the include table's spelling and the pack's source-arm unit names.
+DARWIN_RUNTIME_SDK = /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
 ifdef DARWIN_PRELUDE_TARGET
 HOSTTAB_CXX = $(DARWIN_CLANGXX) -target $(DARWIN_PRELUDE_TARGET) --sysroot $(MACOS_SDK) -nostdinc++ -isystem $(LLVM_LIBCXX_INC)
-MADC_SYS_INCLUDE_PREFIX_MAP = $(MACOS_SDK)=/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+MADC_SYS_INCLUDE_PREFIX_MAP = $(MACOS_SDK)=$(DARWIN_RUNTIME_SDK)
 export MADC_SYS_INCLUDE_PREFIX_MAP
 # Per-mode include-table source (embedded_headers.cpp precedent): the hosted
 # and cross tables for one arch DIFFER (only the cross madc carries the
@@ -686,7 +690,10 @@ $(LINK_SHAPE_STAMP):
 # default targets (a rule this early would hijack the default goal).
 # --with-forest=sidecar keeps the cross-freeze but drops the -sectcreate:
 # the link rule ships the container as $(BIN).forest instead (FOREST_SIDECAR);
-# --with-forest=none skips the forest entirely.
+# --with-forest=none skips the forest entirely — the darwin hosted modes build
+# no dialect-only container yet, so there the dialect fragments stay
+# text-parsed (the Linux release's none mode carries one: forest_pack.sh
+# --dialect-only).
 ifdef HOSTED_DARWIN_TARGET
 DARWIN_FOREST_BIN = $(OBJDIR)/forest.bin
 DARWIN_THIN_CLI = $(OBJDIR)/madc-thin
@@ -1074,7 +1081,7 @@ release-windows:
 	x86_64-w64-mingw32-strip -o $(WIN_RELEASE_DIR)/libmadc-0.dll ../bin/libmadc-0.dll
 	cp -p ../bin/libstdc++-6.dll ../bin/libwinpthread-1.dll ../bin/madcwebview.dll ../bin/madcgit.dll ../bin/madcmark.dll $(WIN_RELEASE_DIR)/
 	rm -f ../bin/madc-release-x86-64-windows.exe
-	cd .. && MADC_WIN_CXX_INCLUDE="$(WIN_UCRT_LIBSTDCXX)/include/c++/13.2.0" bash scripts/forest_pack_windows.sh --image bin/release-windows/libmadc-0.dll bin/release-windows/madc.exe
+	cd .. && MADC_WIN_CXX_INCLUDE="$(WIN_UCRT_LIBSTDCXX)/include/c++/13.2.0" MADC_WIN_PACK_CFLAGS="$(WIN_UCRT_FLAGS)" bash scripts/forest_pack_windows.sh --image bin/release-windows/libmadc-0.dll bin/release-windows/madc.exe
 	cd .. && bash scripts/verify_pe_release.sh bin/release-windows/madc.exe
 
 # Release pipeline (strip-before-append is MANDATORY ordering: strip rewrites
@@ -1083,7 +1090,10 @@ release-windows:
 # and survives the stripped binary's dlsym resolver path.
 # --with-forest= picks the carrier: embedded appends the container to the
 # binary (default), sidecar writes bin/madc-release.forest beside it, none
-# skips the pack (live-parse-only product).
+# skips the system-header pack (system headers live-parsed from disk) but
+# still appends the madc dialect surface as a dialect-only container
+# (forest_pack.sh --dialect-only; pack-slices design §7: the dialect is
+# present in every product mode).
 # In the thin-CLI shape the carrier is the LIBRARY image (forest-carriers S4):
 # one container serves the CLI and every embedding host, so the pack targets
 # lib/libmadc.so — and the same strip-before-pack ordering applies to it (the
@@ -1103,6 +1113,8 @@ ifeq ($(WITH_FOREST),embedded)
 	cd .. && bash scripts/forest_pack.sh $(PACK_IMAGE_ARG) bin/madc-release
 else ifeq ($(WITH_FOREST),sidecar)
 	cd .. && bash scripts/forest_pack.sh --sidecar $(PACK_IMAGE_ARG) bin/madc-release
+else ifeq ($(WITH_FOREST),none)
+	cd .. && bash scripts/forest_pack.sh --dialect-only $(PACK_IMAGE_ARG) bin/madc-release
 endif
 
 # Install the release artifacts under $(PREFIX) (DESTDIR-aware). Same layout
@@ -1237,6 +1249,7 @@ gates: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/check-policy-fanout.sh
 	@cd .. && bash scripts/check-dialect-lean.sh
 	@cd .. && bash scripts/check-embedded-headers-stub.sh
+	@cd .. && bash scripts/check-embedded-headers-gen.sh
 	@cd .. && bash scripts/check-one-library-spelling.sh
 	@cd .. && bash scripts/check-one-library-opener.sh
 	@cd .. && bash scripts/check-one-host-interrupt-guard.sh
@@ -1656,7 +1669,7 @@ $(CROSS_MADC_BIN): FORCE
 endif
 
 $(DARWIN_FOREST_BIN): $(DARWIN_FREEZER) $(DARWIN_PRELUDE_DIR)/.MANIFEST ../scripts/forest_pack_darwin.sh ../scripts/forest_pack_share.sh ../scripts/forest_pack_headers_darwin.txt $(RT_LEDGER_INPUTS)
-	bash ../scripts/forest_pack_darwin.sh $(DARWIN_FREEZER) $(DARWIN_PRELUDE_DIR)/.MANIFEST $@
+	MADC_DARWIN_CXX_INCLUDE="$(LLVM_LIBCXX_INC)" MADC_DARWIN_C_INCLUDE_NAME="$(DARWIN_RUNTIME_SDK)/usr/include" MADC_DARWIN_C_INCLUDE="$(DARWIN_PRELUDE_SYSROOT)/usr/include" bash ../scripts/forest_pack_darwin.sh $(DARWIN_FREEZER) $(DARWIN_PRELUDE_DIR)/.MANIFEST $@
 endif
 
 $(PICOBJDIR)/%.o: %.cpp $(DEPENDS)

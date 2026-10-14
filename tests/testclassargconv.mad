@@ -1,0 +1,30 @@
+// A class parameter initialized from an object of a class: the same class
+// copies, a derived one slices, a conversion function converts, and an
+// aggregate's braced element initializes its member. g++ and clang++ print
+// the lines in testclassargconv.expect. The refusal when none applies:
+// testclassargnoconv.
+#include <stdio.h>
+struct A { int x; int f() { return x; } };
+struct B { int x; int y; int f() { return y; } };
+struct C { int v; operator B() const { B b = {v, v * 2}; return b; } };
+struct W { A inner; int k; int g() { return k; } };
+struct D : B { int z; };
+int getx(B v) { return v.x + v.y; }
+int main()
+{
+	C c = {4};
+	printf("converted arg %d\n", getx(c));
+	A a = {3};
+	W w = {a, 5};
+	printf("aggregate %d %d\n", w.inner.x, w.k);
+	B b = c;
+	printf("converted init %d %d\n", b.x, b.y);
+	D d;
+	d.x = 1; d.y = 2; d.z = 3;
+	printf("sliced arg %d\n", getx(d));
+	B b2 = d;
+	printf("sliced init %d %d\n", b2.x, b2.y);
+	B b3 = b2;
+	printf("copied arg %d\n", getx(b3));
+	return 0;
+}

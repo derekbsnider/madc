@@ -1,0 +1,10 @@
+// Plan §42 D6: an object with a destructor can be defined again in a
+// session. The earlier object ends its lifetime first, then the new one is
+// constructed in the same storage (an earlier pointer reads it), and the
+// session's end destroys the newest once, in the first definition's place.
+// The destructors write the order into `trace`; `last` prints it at the end.
+// g++ and clang++ print the same three lines for the equivalent program
+// (`t.~T(); new (&t) T(2);`, the array's elements last first). madc refused
+// the redefinition ("which has a destructor").
+#include <stdio.h>
+#include <string.h>

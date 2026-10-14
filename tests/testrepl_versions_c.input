@@ -1,0 +1,28 @@
+struct P { int a; };
+struct P p = {7};
+int geta(struct P v) { return v.a; }
+struct P { int a; int b; };
+struct P q = {1, 2};
+printf("sizes %d %d\n", (int)sizeof p, (int)sizeof q);
+printf("mixed %d %d\n", p.a + q.b, geta(p));
+p
+q
+int geta(struct P v) { return v.a + v.b; }
+printf("geta kept %d\n", geta(p));
+struct P { int a; int b; };
+struct P r;
+r = q;
+printf("twin %d\n", r.a + r.b);
+typedef struct T { int a; } T;
+typedef struct T { int a; double d; } T;
+printf("typedef %d\n", (int)sizeof(T));
+struct L { int v; struct L *next; };
+struct L l1 = {1, 0};
+struct L { int v; struct L *next; };
+struct L l2 = {2, &l1};
+printf("self %d\n", l2.next->v);
+struct O { struct I { int a; } i; };
+struct O o1 = {{5}};
+struct O { struct I { int a; int b; } i; };
+struct O o2 = {{6, 7}};
+printf("nested %d %d\n", (int)sizeof o1 * 10 + (int)sizeof o2, o1.i.a + o2.i.b);

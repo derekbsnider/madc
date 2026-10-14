@@ -1,0 +1,15 @@
+// An object of one class passed by value where another class is expected,
+// with no conversion between them, is a compile error (g++: "could not
+// convert 'a' from 'A' to 'B'"; clang++: "no matching function for call to
+// 'getx'"). madc default-constructed the parameter and dropped its source:
+// getx printed garbage, exit 0. Positive controls: testclassargconv.
+#include <stdio.h>
+struct A { int x; int f() { return x; } };
+struct B { int x; int y; int f() { return y; } };
+int getx(B v) { return v.x + v.y; }
+int main()
+{
+	A a = {3};
+	printf("%d\n", getx(a));
+	return 0;
+}

@@ -418,6 +418,10 @@ for t in "$TEST_DIR"/*.mad; do
             timed_out=1
         elif [ $rc -eq 0 ]; then
             ok=0
+        elif [ $rc -gt 128 ]; then
+            # Died on a signal: a crash is never the expected diagnostic.
+            ok=0
+            unmet="madc died on signal $((rc - 128))"
         else
             while IFS= read -r line; do
                 [ -z "$line" ] && continue

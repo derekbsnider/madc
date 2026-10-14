@@ -491,7 +491,7 @@ InteractiveSession::Offered InteractiveSession::offer(const std::string &text,
 // Program's policy.
 static bool link_and_run(Program &prog, CirJitSession &jit,
 			 Program::EntryTransaction &unit, const char *unit_file,
-			 bool &linked)
+			 bool &linked, bool run = true)
 {
     prog.push_runtime_scope();
     bool ok = false;
@@ -500,10 +500,10 @@ static bool link_and_run(Program &prog, CirJitSession &jit,
 	linked = jit.append(&prog, unit_file);
 	if ( linked )
 	    unit.commit();
-	const std::string &run = prog.entry_function_name;
+	const std::string &entry_run = prog.entry_function_name;
 	ok = linked && jit.run_entry_init(&prog, unit_file)
-	    && (run.empty()
-		|| jit.run_entry_function(&prog, unit_file, run.c_str()));
+	    && (!run || entry_run.empty()
+		|| jit.run_entry_function(&prog, unit_file, entry_run.c_str()));
     }
     catch (...)
     {
@@ -578,10 +578,9 @@ InteractiveSession::Offered InteractiveSession::enter(const std::string &text,
     bool ok = link_and_run(*prog, *jit, entry, prog->intern_file(name), linked);
     if ( linked )
     {
-	++entry_count;
-	prog->session_units.insert(name);	// its names are the session's
-	register_module_commands();		// its imports' (1B.10)
+	unit_linked(name);
 	kept_source = text;			// the host's REPL buffer keeps it
+	buffer_entries.push_back(text);
     }
     // D12: an entry whose show ran keeps its value as REPL[N]'s result, as
     // IPython's Out[N] (a run that stopped before its show keeps nothing).
@@ -681,6 +680,335 @@ bool InteractiveSession::load_text(const std::string &text, const std::string &p
     return ok;
 }
 
+void InteractiveSession::unit_linked(const std::string &name)
+{
+    ++entry_count;
+    prog->session_units.insert(name);	// its names are the session's
+    register_module_commands();		// its imports' (1B.10)
+}
+
+namespace {
+
+// TEXT's lines, the text buffer's (a final line break ends the last line).
+std::vector<std::string> buffer_lines(const std::string &text)
+{
+    madc::hub::text_buffer b;
+    b.load(text);
+    std::vector<std::string> out;
+    size_t off, len;
+    for ( size_t n = 1; b.line_span(n, off, len); ++n )
+	out.push_back(text.substr(off, len));
+    return out;
+}
+
+std::string lines_text(const std::vector<std::string> &lines, size_t from, size_t to)
+{
+    std::string t;
+    for ( size_t i = from; i < to; ++i )
+	t += lines[i] + "\n";
+    return t;
+}
+
+// One entry read as definitions only (Program::entry_definitions_only), and
+// functions only (entry_functions_only).
+struct DefinitionsOnly
+{
+    Program &prog;
+    DefinitionsOnly(Program &p, bool functions_only) : prog(p)
+    {
+	p.entry_definitions_only = true;
+	p.entry_functions_only = functions_only;
+	p.entry_kept_object = false;
+    }
+    ~DefinitionsOnly()
+    {
+	prog.entry_definitions_only = false;
+	prog.entry_functions_only = false;
+    }
+};
+
+// Does TEXT name NAME (its last component) as a word (the one word rule)?
+bool names_identifier(const std::string &text, const std::string &name)
+{
+    const size_t sep = name.rfind("::");
+    const std::string id = sep == std::string::npos ? name : name.substr(sep + 2);
+    if ( id.empty() )
+	return false;
+    for ( size_t at = text.find(id); at != std::string::npos; at = text.find(id, at + 1) )
+	if ( (at == 0 || !madc::hub::text_buffer::word_byte(text[at - 1]))
+	  && (at + id.size() == text.size()
+	   || !madc::hub::text_buffer::word_byte(text[at + id.size()])) )
+	    return true;
+    return false;
+}
+
+} // namespace
+
+bool madc::blank_text(const std::string &t)
+{
+    return t.find_first_not_of(" \t\r\n\f\v") == std::string::npos;
+}
+
+void madc::drop_cr(std::string &line)
+{
+    if ( !line.empty() && line[line.size() - 1] == '\r' )
+	line.erase(line.size() - 1);
+}
+
+EntryLines::EntryLines(ReplSession &s, const Running &r)
+    : session(s), running(r), extendable(false), next(0), settled(false),
+      finished(false)
+{
+}
+
+ReplSession::TakenHook EntryLines::hook(const std::string &entry) const
+{
+    if ( !running )
+	return ReplSession::TakenHook();
+    const Running r = running;
+    return [r, entry]() { r(entry); };
+}
+
+bool EntryLines::take(const std::string &entry, bool ok, const Taken &taken)
+{
+    pending.clear();
+    extendable = false;
+    return taken(entry, ok);
+}
+
+bool EntryLines::settle(const std::string &line, const Taken &taken)
+{
+    if ( !extendable )
+	return true;
+    extendable = false;
+    if ( session.continues_if(line) )
+	return true;
+    const std::string entry = pending;
+    return take(entry, session.submit(entry, hook(entry)), taken);
+}
+
+bool EntryLines::add(const std::string &line, const Taken &taken)
+{
+    if ( pending.empty() && madc::blank_text(line) )
+	return true;
+    pending += line;
+    pending += '\n';
+    const std::string entry = pending;
+    const ReplSession::Offered r = session.offer(entry, hook(entry));
+    switch ( r.state )
+    {
+	case ReplSession::OfferState::incomplete:
+	    return true;
+	case ReplSession::OfferState::extendable:
+	    extendable = true;
+	    return true;
+	case ReplSession::OfferState::taken:
+	    break;
+    }
+    return take(entry, r.ok, taken);
+}
+
+bool EntryLines::finish(const Taken &taken)
+{
+    if ( pending.empty() )
+	return true;
+    const std::string entry = pending;
+    return take(entry, session.submit(entry, hook(entry)), taken);
+}
+
+void EntryLines::load(const std::string &text)
+{
+    lines = buffer_lines(text);
+    for ( std::string &line : lines )
+	madc::drop_cr(line);
+    next = 0;
+    settled = finished = false;
+}
+
+bool EntryLines::step(const Taken &taken)
+{
+    bool took = false;
+    const Taken once = [&](const std::string &entry, bool ok) {
+	took = true;
+	return taken(entry, ok);
+    };
+    while ( next < lines.size() )
+    {
+	if ( !settled )
+	{
+	    settled = true;
+	    settle(lines[next], once);
+	    if ( took )
+		return true;		// the line joins at the next step
+	}
+	add(lines[next++], once);
+	settled = false;
+	if ( took )
+	    return true;
+    }
+    if ( finished )
+	return false;
+    finished = true;
+    finish(once);
+    return took;
+}
+
+bool InteractiveSession::entry_whole(const std::string &text, bool &extendable)
+{
+    Program::EntryVerdict v;
+    {
+	Program::EntryTransaction trial(*prog);	// rolled back
+	DefinitionsOnly only(*prog, false);
+	v = prog->parse_entry(text, madc::session_entry_unit(submit_count + 1));
+    }
+    prog->clear_diagnostics();
+    extendable = v == Program::EntryVerdict::CompleteExtendable;
+    return v != Program::EntryVerdict::Incomplete;
+}
+
+// The REPL's grouping of typed lines (the cooked loop's): a line joins the
+// entry until the entry is whole, and an if that ended one takes a following
+// `else` line (D11). Blank lines before an entry are its; a remainder that
+// never becomes whole is one entry.
+std::vector<std::pair<size_t, size_t> >
+InteractiveSession::buffer_split(const std::vector<std::string> &lines, size_t from, size_t to)
+{
+    std::vector<std::pair<size_t, size_t> > out;
+    size_t start = from;
+    std::string text;
+    for ( size_t i = from; i < to; ++i )
+    {
+	text += lines[i] + "\n";
+	if ( madc::blank_text(text) )
+	    continue;
+	// A command line is an entry of its own, never read as code.
+	bool extendable = false;
+	if ( !command_text(text).is_command() && !entry_whole(text, extendable) )
+	    continue;
+	if ( extendable && i + 1 < to && continues_if(lines[i + 1]) )
+	    continue;
+	out.push_back(std::make_pair(start, i + 1));
+	start = i + 1;
+	text.clear();
+    }
+    if ( start < to )
+	out.push_back(std::make_pair(start, to));
+    return out;
+}
+
+bool InteractiveSession::redefine(const std::string &text, bool functions_only)
+{
+    const std::string name = madc::session_entry_unit(submit_count + 1);
+    Program::EntryTransaction entry(*prog);
+    prog->entry_number = submit_count + 1;
+    Program::EntryVerdict verdict;
+    {
+	// The refusal an object's declaration raises is the entry left as
+	// it was, never a diagnostic: rewound.
+	Program::SilentReplay kept(*prog, /*loud=*/true);
+	DefinitionsOnly only(*prog, functions_only);
+	verdict = prog->parse_entry(text, name);
+	if ( prog->entry_kept_object )
+	{
+	    kept.rewind();
+	    return true;
+	}
+    }
+    ++submit_count;
+    inputs.push_back(text);
+    render_pending_diagnostics();
+    if ( verdict != Program::EntryVerdict::Complete
+      && verdict != Program::EntryVerdict::CompleteExtendable )
+	return false;
+    bool linked = false;
+    bool ok = link_and_run(*prog, *jit, entry, prog->intern_file(name), linked,
+			   false);
+    if ( linked )
+	unit_linked(name);
+    return ok;
+}
+
+// The live reparse (owner 2026-10-12: "if I edit a function in the REPL
+// buffer, it should reparse instantly"). The edit is the lines the two texts
+// do not share at either end; the entries it touched are read again from
+// the edited text, and each that is not one of them unchanged is taken as
+// definitions only (redefine). The entries are the ones the host was handed
+// while they are its text, else the REPL's grouping of it.
+bool InteractiveSession::buffer_edited(const std::string &before, const std::string &after)
+{
+    const std::vector<std::string> b = buffer_lines(before), a = buffer_lines(after);
+    std::vector<std::pair<size_t, size_t> > old;
+    size_t at = 0;
+    for ( const std::string &e : buffer_entries )
+    {
+	const std::vector<std::string> el = buffer_lines(e);
+	if ( at + el.size() > b.size()
+	  || !std::equal(el.begin(), el.end(), b.begin() + at) )
+	    break;
+	old.push_back(std::make_pair(at, at + el.size()));
+	at += el.size();
+    }
+    if ( old.size() != buffer_entries.size() || at != b.size() )
+	old = buffer_split(b, 0, b.size());
+    size_t p = 0;
+    while ( p < b.size() && p < a.size() && b[p] == a[p] )
+	++p;
+    size_t s = 0;
+    while ( s < b.size() - p && s < a.size() - p
+	 && b[b.size() - 1 - s] == a[a.size() - 1 - s] )
+	++s;
+    if ( p == b.size() && p == a.size() )
+	return true;
+    const std::map<madc::dis::istring, unsigned> versions = prog->session_type_versions();
+    // The entries the edit touched, [i, j): an inserted line touches only
+    // the entry it lands inside.
+    const size_t b_end = b.size() - s;
+    const size_t limit = b_end > p ? b_end : p;
+    auto touched = [&](size_t k) { return old[k].first < limit && old[k].second > p; };
+    size_t i = 0;
+    while ( i < old.size() && !touched(i) && old[i].first < p )
+	++i;
+    size_t j = i;
+    while ( j < old.size() && touched(j) )
+	++j;
+    const size_t from = i < j ? old[i].first : p;
+    const size_t to = (i < j ? old[j - 1].second : b_end) + a.size() - b.size();
+    std::set<std::string> unchanged;
+    for ( size_t k = i; k < j; ++k )
+	unchanged.insert(lines_text(b, old[k].first, old[k].second));
+    const std::vector<std::pair<size_t, size_t> > fresh = buffer_split(a, from, to);
+    bool ok = true;
+    std::vector<std::string> entries;
+    for ( size_t k = 0; k < i; ++k )
+	entries.push_back(lines_text(b, old[k].first, old[k].second));
+    for ( const std::pair<size_t, size_t> &e : fresh )
+    {
+	const std::string t = lines_text(a, e.first, e.second);
+	entries.push_back(t);
+	if ( !madc::blank_text(t) && !command_text(t).is_command() && !unchanged.count(t) )
+	    ok = redefine(t) && ok;
+    }
+    // A type the edit gave a new version (plan §42 D6): each entry below the
+    // edit that names it is read again, functions only, so its functions
+    // take the new version, a type it defines included; an object keeps its
+    // type and its value.
+    for ( size_t k = j; k < old.size(); ++k )
+    {
+	const std::string t = lines_text(b, old[k].first, old[k].second);
+	entries.push_back(t);
+	if ( madc::blank_text(t) || command_text(t).is_command() )
+	    continue;
+	for ( const madc::dis::istring &n : prog->session_types_versioned_since(versions) )
+	    if ( names_identifier(t, n) )
+	    {
+		ok = redefine(t, true) && ok;
+		break;
+	    }
+    }
+    buffer_entries.swap(entries);
+    return ok;
+}
+
 bool InteractiveSession::run_main(int argc, char **argv, int *status)
 {
     const char *unit = prog->intern_file(argc > 0 && argv[0] ? argv[0] : "main");
@@ -708,6 +1036,28 @@ bool InteractiveSession::run_file(int argc, char **argv)
     if ( load_main )
 	run_main(argc, argv, &status);	// its status is not the session's
     return true;
+}
+
+bool InteractiveSession::rebuilt_main_due()
+{
+    return jit && function("main") && !jit->imports("main");
+}
+
+bool InteractiveSession::run_rebuilt_main(int argc, char **argv, int *status)
+{
+    if ( !rebuilt_main_due() )
+	return true;
+    const bool ok = run_main(argc, argv, status);	// its status is not the session's
+    render_pending_diagnostics();
+    return ok;
+}
+
+bool InteractiveSession::run_rebuilt_main(const std::string &name)
+{
+    std::string arg0(name);
+    char *argv[] = { &arg0[0], NULL };
+    int status = 0;
+    return run_rebuilt_main(1, argv, &status);
 }
 
 const std::string &InteractiveSession::shown() const
@@ -1363,6 +1713,8 @@ bool InteractiveSession::load_command(const std::string &argument,
     unit_text.clear();
     const bool ok = file_command(madc::session_payload::load, words);
     kept_source = unit_text;
+    if ( !kept_source.empty() )
+	buffer_entries.push_back(kept_source);
     return ok;
 }
 

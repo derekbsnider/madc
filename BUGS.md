@@ -2406,6 +2406,24 @@ int main(void) { printf("pvEVENT=%d\n", (int)pvEVENT); return 0; }
 - Layer (suspected): the enumerator's declaration into its scope (the enum
   body's reader in the parser) adds the name without a lookup of an earlier
   declaration in the same scope. A parser change, for its own session.
+- The same reuse across scopes (found 2026-10-14, pack-slices part 4): a
+  GLOBAL enumerator declared after a namespace member of the same name
+  overwrites the member.
+
+  ```cpp
+  #include <stdio.h>
+  namespace fba { enum mode { X = 1, Y = 2 }; }
+  namespace fbb { enum kind { X = 7, Z = 9 }; }
+  enum glob { Y = 40 };
+  int main() { printf("%d %d %d %d %d\n", (int)fba::X, (int)fbb::X,
+                      (int)fba::Y, (int)fbb::Z, (int)Y); return 0; }
+  ```
+
+  g++ 13: `1 7 2 9 40`; madc (`--no-forest-bind`, `--std=gnu++17`):
+  `1 7 40 9 40`, exit 0. `Program::addVariable` at global scope matches by
+  bare name through `tkProgram->variables`, which holds every namespace
+  member too, and `TokenENUM`'s global branch then `set()`s the Variable it
+  was handed. The same parser session as the in-scope case.
 
 ### B103. A C function declared with `()` is spelled `int (void)`, not `int ()`
 

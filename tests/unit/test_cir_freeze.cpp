@@ -794,16 +794,29 @@ TEST_CASE("B4a: grove payload v2 round-trips tokens, decl index, PP exports, edg
 	REQUIRE(forest.unit_decl_index(u_inc, di));
 	REQUIRE(di.size() == forest.unit_anchor(u_inc));
 	bool saw_alias = false, saw_rec = false, saw_helper = false;
+	// v64: a type entry's record_id names the arena record its registration
+	// made.
+	auto record_spells = [&](const cir_forest_decl_entry &e, const char *nm) -> bool {
+		if (e.record_id == CIR_DECL_RECORD_NONE || (e.record_id >> 30) != CIR_SEED_DEP_ARENA)
+			return false;
+		madc::dis::defrec r;
+		return forest.arena().get_def_at(madc::dis::arena_id_of(e.record_id & 0x3fffffffu), r)
+		    && r.name_id && !strcmp(forest.arena().c_str(r.name_id), nm);
+	};
 	for (size_t i = 0; i < di.size(); ++i) {
 		const char *nm = forest.pool_str(di[i].name_id);
 		REQUIRE(nm != nullptr);
 		CHECK(di[i].slice_begin < di[i].slice_end);
 		CHECK(di[i].slice_end <= ntok);
 		CHECK((di[i].aux & Program::PACK_DECL_SPANS_UNITS) == 0);
-		if (!strcmp(nm, "b4a_alias_t") && di[i].kind == Program::pdkTypedef)
+		if (!strcmp(nm, "b4a_alias_t") && di[i].kind == Program::pdkTypedef) {
 			saw_alias = true;
-		if (!strcmp(nm, "b4a_rec") && di[i].kind == Program::pdkStruct)
+			CHECK(record_spells(di[i], nm));
+		}
+		if (!strcmp(nm, "b4a_rec") && di[i].kind == Program::pdkStruct) {
 			saw_rec = true;
+			CHECK(record_spells(di[i], nm));
+		}
 		if (!strcmp(nm, "helper") && di[i].kind == Program::pdkFunction)
 			saw_helper = true;
 	}
@@ -840,6 +853,132 @@ TEST_CASE("B4a: grove payload v2 round-trips tokens, decl index, PP exports, edg
 		if (edges[i] == u_inc)
 			edge_to_inc = true;
 	CHECK(edge_to_inc);
+}
+
+// ---------------------------------------------------------------------------
+// v56: the pack's SOURCE ARM (--freeze-sources=, owner 2026-10-13: the pack
+// holds every system header) — through the production recorder
+// (Program::pack_record_source_list) and madc_cir_freeze. A listed file joins
+// as a source-only unit: its exact text, nothing an #include binds. A
+// `name<TAB>file` line names the unit as the target spells it.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("v56: the source arm packs listed headers as source-only units") {
+	const std::string pid = std::to_string((long)getpid());
+	const std::string root = "/tmp/madc_v56_root_" + pid;
+	const std::string main_path = "/tmp/madc_v56_main_" + pid + ".mad";
+	const std::string list_path = "/tmp/madc_v56_list_" + pid + ".txt";
+	const std::string snap_path = "/tmp/madc_v56_snap_" + pid + ".msnap";
+	const std::string top = root + "/stdio.h";
+	const std::string nested = root + "/bits/stdio.h";
+	const std::string deeper = root + "/c++/tr1/stdio.h";
+	const std::string staged = root + "/staged_extra.h";
+	const std::string renamed = "/v56/sdk/usr/include/extra.h";
+	REQUIRE(system(("mkdir -p " + root + "/bits " + root + "/c++/tr1").c_str()) == 0);
+	{ std::ofstream f(top.c_str()); f << "int v56_top;\n"; }
+	{ std::ofstream f(nested.c_str()); f << "int v56_nested;\n"; }
+	{ std::ofstream f(deeper.c_str()); f << "int v56_deeper;\n"; }
+	{ std::ofstream f(staged.c_str()); f << "int v56_extra;\n"; }
+	{
+		std::ofstream f(main_path.c_str());
+		f << "int v57_fn(int x) { return x; }\n"
+		     "int v62_vfn(const char *fmt, ...);\n"
+		     "int main() { return v57_fn(0); }\n";
+	}
+	{
+		std::ofstream f(list_path.c_str());
+		f << "# a comment line\n\n" << deeper << "\n" << nested << "\n"
+		  << top << "\n" << renamed << "\t" << staged << "\n";
+	}
+
+	std::shared_ptr<Program> prog = std::make_shared<Program>();
+	prog->pack_recording = true;	// what --freeze sets before tokenize
+	prog->forest_arena_enabled = true;
+	TokenProgram *tp = prog->tokenize(main_path.c_str());
+	REQUIRE(tp != nullptr);
+	REQUIRE(prog->parse(tp));
+	// An unreadable list, and a list naming an unreadable file, refuse.
+	CHECK_FALSE(prog->pack_record_source_list(list_path + ".absent"));
+	{
+		const std::string bad = list_path + ".bad";
+		{ std::ofstream f(bad.c_str()); f << root << "/absent.h\n"; }
+		CHECK_FALSE(prog->pack_record_source_list(bad));
+		std::remove(bad.c_str());
+	}
+	REQUIRE(prog->pack_record_source_list(list_path));
+	REQUIRE(madc_cir_freeze(prog.get(), main_path.c_str(),
+				snap_path.c_str(), /*append=*/false) == 0);
+	REQUIRE(system(("rm -rf " + root).c_str()) == 0);
+	std::remove(main_path.c_str());
+	std::remove(list_path.c_str());
+
+	const void *image = NULL;
+	size_t image_len = 0;
+	REQUIRE(cir_forest_map_image(snap_path.c_str(), image, image_len));
+	std::remove(snap_path.c_str());
+	CirFrozenForest forest;
+	freeze_test_bind_substrate();
+	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
+
+	const int u_main = forest.find_unit(madc::dis::istring(main_path));
+	REQUIRE(u_main >= 0);
+	CHECK(forest.unit_has_frozen_surface((uint32_t)u_main));
+	const struct { std::string name, text; } listed[] = {
+		{ top, "int v56_top;" }, { nested, "int v56_nested;" },
+		{ deeper, "int v56_deeper;" }, { renamed, "int v56_extra;" },
+	};
+	for (size_t i = 0; i < sizeof(listed) / sizeof(listed[0]); ++i) {
+		CAPTURE(listed[i].name);
+		const int u = forest.find_unit(madc::dis::istring(listed[i].name));
+		REQUIRE(u >= 0);
+		CHECK(forest.unit_has_source((uint32_t)u));
+		CHECK_FALSE(forest.unit_has_frozen_surface((uint32_t)u));
+		CHECK(forest.unit_anchor((uint32_t)u) == CIR_FOREST_ANCHOR_NONE);
+		std::string text;
+		REQUIRE(forest.unit_source((uint32_t)u, text));
+		CHECK(text.find(listed[i].text) != std::string::npos);
+	}
+	// The staged path is only where the text came from, never a unit name.
+	CHECK(forest.find_unit(madc::dis::istring(staged)) < 0);
+	// Three names end in /stdio.h: the bare tail answers the first in unit
+	// order (the list's order here) — which is why a consumer asks its
+	// build's include roots first. A longer spelling narrows it.
+	CHECK(forest.find_unit_path_tail(madc::dis::istring("stdio.h"))
+	      == forest.find_unit(madc::dis::istring(deeper)));
+	CHECK(forest.find_unit_path_tail(madc::dis::istring("bits/stdio.h"))
+	      == forest.find_unit(madc::dis::istring(nested)));
+
+	// v57: the directory IS the index. A reader opened to the directory
+	// alone — no string pool, no arena — answers every name lookup, names
+	// every unit, and serves a header's text.
+	CirFrozenForest index_only;
+	REQUIRE(index_only.open_header(image, image_len));
+	CHECK(index_only.find_unit(madc::dis::istring(main_path)) == u_main);
+	for (size_t i = 0; i < sizeof(listed) / sizeof(listed[0]); ++i) {
+		CAPTURE(listed[i].name);
+		const int u = index_only.find_unit(madc::dis::istring(listed[i].name));
+		REQUIRE(u >= 0);
+		CHECK(u == forest.find_unit(madc::dis::istring(listed[i].name)));
+		REQUIRE(index_only.unit_name((uint32_t)u) != nullptr);
+		CHECK(std::string(index_only.unit_name((uint32_t)u)) == listed[i].name);
+		std::string text;
+		REQUIRE(index_only.unit_source((uint32_t)u, text));
+		CHECK(text.find(listed[i].text) != std::string::npos);
+	}
+	// Absent names on both sides of the sorted run, and a prefix of a name.
+	CHECK(index_only.find_unit(madc::dis::istring("\x01")) < 0);
+	CHECK(index_only.find_unit(madc::dis::istring("~absent")) < 0);
+	CHECK(index_only.find_unit(madc::dis::istring(top.substr(0, top.size() - 1))) < 0);
+	CHECK(index_only.find_unit_path_tail(madc::dis::istring("stdio.h"))
+	      == forest.find_unit(madc::dis::istring(deeper)));
+	CHECK(index_only.unit_name(index_only.unit_count()) == nullptr);
+	// The function-name index answers in place too (v62: the adoptable
+	// functions only): a variadic C-shaped prototype, a declared function
+	// that is not variadic, an absent name, and a variable.
+	CHECK(index_only.may_adopt_function(madc::dis::istring("v62_vfn")));
+	CHECK_FALSE(index_only.may_adopt_function(madc::dis::istring("v57_fn")));
+	CHECK_FALSE(index_only.may_adopt_function(madc::dis::istring("v57_absent")));
+	CHECK_FALSE(index_only.may_adopt_function(madc::dis::istring("v56_top")));
 }
 
 // Phase 6 (design 2026-07-05): the forest is the serialized Tree-1 ROM; on bind
@@ -3285,4 +3424,124 @@ TEST_CASE("NULL-init pointer + uninitialized file-scope globals restore") {
 	CHECK(saw_last);
 	CHECK(saw_req);
 	CHECK(saw_calls);
+}
+
+// v64: each spelling of a namespaced typedef carries its own registration's
+// record (the arena keeps the flat key's and the namespaced one's); a scoped
+// enumerator carries its enum's.
+TEST_CASE("v64: decl entries carry the record their registration made") {
+	std::string inc_path = std::string("/tmp/madc_v64_inc_")
+			     + std::to_string((long)getpid()) + ".h";
+	std::string main_path = std::string("/tmp/madc_v64_main_")
+			      + std::to_string((long)getpid()) + ".mad";
+	std::string snap_path = std::string("/tmp/madc_v64_snap_")
+			      + std::to_string((long)getpid()) + ".msnap";
+	{
+		std::ofstream inc(inc_path.c_str());
+		inc << "#ifndef V64_T_H\n"
+		       "#define V64_T_H\n"
+		       "namespace v64ns {\n"
+		       "typedef int v64_t;\n"
+		       "enum class v64_e { One, Two };\n"
+		       "}\n"
+		       "#endif\n";
+	}
+	{
+		std::ofstream mn(main_path.c_str());
+		mn << "#include \"" << inc_path << "\"\n"
+		      "int main() { return 0; }\n";
+	}
+	std::shared_ptr<Program> prog = std::make_shared<Program>();
+	prog->pack_recording = true;
+	prog->forest_arena_enabled = true;
+	TokenProgram *tp = prog->tokenize(main_path.c_str());
+	REQUIRE(tp != nullptr);
+	REQUIRE(prog->parse(tp));
+	REQUIRE(madc_cir_freeze(prog.get(), main_path.c_str(),
+				snap_path.c_str(), /*append=*/false) == 0);
+	std::remove(inc_path.c_str());
+	std::remove(main_path.c_str());
+
+	const void *image = NULL;
+	size_t image_len = 0;
+	REQUIRE(cir_forest_map_image(snap_path.c_str(), image, image_len));
+	std::remove(snap_path.c_str());
+	CirFrozenForest forest;
+	freeze_test_bind_substrate();
+	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
+	uint32_t u_inc = 0xffffffffu;
+	for (uint32_t u = 0; u < forest.unit_count(); ++u) {
+		const char *nm = forest.unit_name(u);
+		if (nm && inc_path == nm)
+			u_inc = u;
+	}
+	REQUIRE(u_inc != 0xffffffffu);
+	std::vector<cir_forest_decl_entry> di;
+	REQUIRE(forest.unit_decl_index(u_inc, di));
+	std::map<std::string, uint32_t> rec;	// "kind name" -> record_id
+	for (size_t i = 0; i < di.size(); ++i)
+		rec[std::to_string(di[i].kind) + " " + forest.pool_str(di[i].name_id)] = di[i].record_id;
+	const std::string td = std::to_string(Program::pdkTypedef) + " ";
+	REQUIRE(rec.count(td + "v64_t"));
+	REQUIRE(rec.count(td + "v64ns::v64_t"));
+	madc::dis::defrec r;
+	for (int q = 0; q < 2; ++q) {
+		const uint32_t t = rec[td + (q ? "v64ns::v64_t" : "v64_t")];
+		REQUIRE(t != CIR_DECL_RECORD_NONE);
+		CHECK((t >> 30) == CIR_SEED_DEP_ARENA);
+		REQUIRE(forest.arena().get_def_at(madc::dis::arena_id_of(t & 0x3fffffffu), r));
+		CHECK(r.kind == madc::dis::DK_TYPEDEF);
+		CHECK(!strcmp(forest.arena().c_str(r.name_id), "v64_t"));
+		if (q)
+			CHECK((r.ns_id && !strcmp(forest.arena().c_str(r.ns_id), "v64ns")));
+		else
+			CHECK((!r.ns_id || !*forest.arena().c_str(r.ns_id)));
+	}
+	// The scoped enumerators resolve to the enum's record.
+	uint32_t en = CIR_DECL_RECORD_NONE;
+	size_t enumerators = 0;
+	for (size_t i = 0; i < di.size(); ++i) {
+		const std::string nm = forest.pool_str(di[i].name_id);
+		if (di[i].kind != Program::pdkVariable || nm.find("v64_e::") == std::string::npos)
+			continue;
+		++enumerators;
+		REQUIRE(di[i].record_id != CIR_DECL_RECORD_NONE);
+		if (en == CIR_DECL_RECORD_NONE)
+			en = di[i].record_id;
+		CHECK(di[i].record_id == en);
+	}
+	CHECK(enumerators >= 2);
+	REQUIRE(en != CIR_DECL_RECORD_NONE);
+	REQUIRE(forest.arena().get_def_at(madc::dis::arena_id_of(en & 0x3fffffffu), r));
+	CHECK(r.kind == madc::dis::DK_ENUM);
+}
+
+TEST_CASE("v63: SEEDS carries each class product's definers, read by equal range") {
+	// One list (the always list), no seeds, no dependents; definer pairs
+	// (slot 3 -> units 1, 2), (slot 7 -> unit 0).
+	const uint32_t w[] = {
+		1,		// L
+		0, 0,		// arena_off
+		0, 0,		// tmpl_off
+		0, 0,		// glob_off
+		0,		// D
+		3,		// E
+		3, 3, 7,	// def_slot
+		1, 2, 0		// def_unit
+	};
+	ForestSeeds sd;
+	REQUIRE(sd.bind(w, sizeof(w) / sizeof(w[0])));
+	ForestSeeds::Run r = sd.definers(3);
+	REQUIRE(r.n == 2u);
+	CHECK(r.p[0] == 1u);
+	CHECK(r.p[1] == 2u);
+	r = sd.definers(7);
+	REQUIRE(r.n == 1u);
+	CHECK(r.p[0] == 0u);
+	CHECK(sd.definers(4).n == 0u);		// not a product
+	CHECK(sd.definers(99).n == 0u);
+	CHECK(sd.dependents(3).n == 0u);
+	// A truncated definer table is malformed, never a short read.
+	CHECK_FALSE(sd.bind(w, sizeof(w) / sizeof(w[0]) - 1));
+	CHECK_FALSE(sd.bind(w, 9));
 }

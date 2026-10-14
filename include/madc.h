@@ -129,6 +129,9 @@ struct CirFrozenMemberTmpl {
     CirFrozenMemberTmpl() : owner(NULL), rt(NULL), forest(NULL), pgm(NULL) {}
 };
 void madc_thaw_member_template(FuncDef *fd);	// defined in parser.cpp beside the stamps
+// A dialect fragment's embedded name (`ns_*`, `bits/*`) — the one owner of the
+// rule (lexer.cpp); the pack's seed builder reads it too.
+bool embedded_dialect_fragment_p(const madc::dis::istring &name);
 
 // [over.ics.rank]/3.2.3 for a same-class copy/move constructor's one
 // reference parameter. Higher is better; -1 means the parameter cannot bind.
@@ -473,6 +476,14 @@ public:
     bool is_specialization_product() const {
 	return !overload_template_args.empty()
 	    || overload_spelling.find("\x01@") != madc::dis::istring::npos;
+    }
+    // The identity that suffix carries (the instantiation memo's inst_key);
+    // empty without one.
+    madc::dis::istring instantiation_identity() const {
+	size_t at = overload_spelling.find("\x01@");
+	if ( at == madc::dis::istring::npos )
+	    return madc::dis::istring();
+	return madc::dis::istring(overload_spelling.substr(at + 2));
     }
     // The identity a function template's PLACEHOLDER carries in
     // overload_spelling (register_skipped_namespace_template_function, the
@@ -1127,6 +1138,14 @@ public:
     // (which never had an initializer), so the extern is not turned into a
     // second definition ("Repeated item declaration").
     bool baked_static_init = false;
+    // Does this declaration carry an initializer (`= x`, `(args)`, `{...}`,
+    // or a constant the parser baked)? One without (`extern T v;`, a
+    // tentative `T v;`) declares, or default-initializes.
+    bool has_initializer() const
+    {
+	return initialize || !ctor_args.empty() || ctor_args_braced
+	       || has_brace_init || !init_list.empty() || baked_static_init;
+    }
     // True when this is a FUNCTION-BLOCK-scope `extern T name;` that refers to a
     // file-scope global of the same name. The CIR backend must emit an actual
     // `extern T name;` inside that block so c2mir's scope resolution rebinds the
@@ -3259,16 +3278,6 @@ struct MadcCompileGroup
     // remap and its DataDefs' type_id memos are bound to them.
     std::map<std::pair<uint32_t, uint32_t>,
 	     std::shared_ptr<CirFrozenForest> > bind_forests;
-    // S3: decl-index verdict maps keyed by (instance, bound-include
-    // closure) — a sibling TU with the same closure skips the all-units
-    // decl-index sweep. Config-coherent because the instance key is.
-    struct DeclVerdicts
-    {
-	std::unordered_map<madc::dis::istring, bool> bound;
-	std::unordered_map<madc::dis::istring, bool> system;
-    };
-    std::map<std::pair<const void *, std::vector<uint32_t> >,
-	     std::shared_ptr<const DeclVerdicts> > decl_verdicts;
     // R4-full: exact post-preprocessor token images for pure embedded
     // auto-include fragments. The cache owns immutable TokenRec-based images;
     // every adopting Program materializes fresh mutable TokenBase shells.
@@ -3283,6 +3292,22 @@ struct MadcCompileGroup
 			MADC_TYPEID_PROJECT_BASE))
     {}
 };
+
+// The compiler-implemented formatting intrinsics, std::format / std::print /
+// std::println: the name, the inline_builtin_kind tag the CIR builder lowers
+// on (cir_format.cpp), and whether the call yields text (format's
+// ring-lifetime const char*) or nothing. ONE table: the --std=madc
+// declarations (Program::add_format_intrinsics), the strict-mode
+// <bits/std_format> tagging and the REPL's completion words read it.
+// Immutable; safe to read from any thread.
+struct FormatIntrinsic {
+    const char *name;
+    const char *builtin_kind;
+    bool yields_text;
+};
+// The table (its row count in `count`), and its row for `name` or NULL.
+const FormatIntrinsic *format_intrinsic_table(size_t &count);
+const FormatIntrinsic *find_format_intrinsic(const char *name);
 
 // program class, keep things somewhat contained
 // One parsed template-parameter-list (`template < ... >`), the shape
@@ -3399,6 +3424,14 @@ public:
 	// This is the incremental shim-retirement lever — bypass system shims while
 	// keeping madc's own headers. Data-driven: see embedded_header_is_system_library_shim().
 	bool bypass_system_library_headers = false;
+	// OWNER LAW (.claude/rules/embedded-headers.md, top section): a binary
+	// built to carry the pack (the product modes' MADC_FOREST_EXPECT_*) reads
+	// the STANDARD CORE system headers from libmadc and never opens, stats or
+	// probes a system include dir for a name libmadc carries; disk serves only
+	// a name it does not carry (an add-on library's header). Set by the CLI's
+	// MADC_FOREST_EXPECT_* block, cleared by --no-embedded-headers, inherited
+	// by runtime-eval children. Read through Program::system_headers_from_libmadc().
+	bool system_headers_from_libmadc = false;
 	// Win64's native headers omit a narrow POSIX delta. When enabled, a real
 	// system header may be followed by the convention-keyed embedded supplement
 	// `posix/<name>`. POSIX hosts never activate the layer; the CLI opt-out is
@@ -3787,6 +3820,58 @@ public:
     // as a DK_MEMBERPTR record at its own project slot: ref0 = the member type (data) or the
     // signature's DK_FUNC record (function), the owner's type-id and spelling beside it.
     void forest_arena_record_member_pointer(DataDef *dd);
+    // Every parse-time arena write: the record, then (freeze only) its slot's POINT OF
+    // CREATION — the global token index where the innermost open top-level declaration
+    // began (pack_decl_stack), the same index the decl index buckets into units. A write
+    // with no declaration open leaves the slot's stamp as it was (0xffffffff = never
+    // stamped). The pack's seed index places an undecided record with that unit
+    // (docs/plans/2026-10-13-pack-slices-design.md §4).
+    std::vector<uint32_t> forest_arena_poi;
+    void forest_arena_put(uint32_t tid, const madc::dis::defrec &r);
+    // The point of creation a write would stamp now (0xffffffff = none open).
+    uint32_t pack_current_poi() const;
+    // Work done with no declaration open (a freeze's lazy drain, its CIR
+    // translate) re-opens the point of creation of what it works FOR, so
+    // what it creates is stamped there (pack-slices design §4). The frame
+    // is popped, never closed: it adds no decl-index entry.
+    struct PackPoiFrame
+    {
+	Program &p;
+	bool pushed;
+	PackPoiFrame(Program &pp, uint32_t poi);
+	~PackPoiFrame();
+    };
+    // The instantiation a freeze's creations belong to (pack-slices design §4).
+    // Entering one (`enter`: a class product's or a function instance's own
+    // instantiation) first records that the current context requires it; a
+    // body parsed or translated FOR a product re-opens that product's key
+    // without a record. While open, madc_pack_creation_ctx is the key.
+    struct PackCtxFrame
+    {
+	bool pushed;
+	madc::dis::istring saved;
+	PackCtxFrame(Program &pp, const madc::dis::istring &key, bool enter);
+	~PackCtxFrame();
+    };
+    // A product a parse created or reused: required `by` the instantiation then
+    // in progress, else (by empty) by the unit of the creation point `poi`. The
+    // seed index restores a product with every unit that requires it, directly
+    // or through a requiring product — what a live parse of that unit makes.
+    struct PackRequirement
+    {
+	madc::dis::istring product;
+	madc::dis::istring by;
+	uint32_t poi;
+    };
+    std::vector<PackRequirement> pack_requirements;
+    std::set<std::pair<madc::dis::istring, madc::dis::istring> > pack_required_by;
+    std::set<std::pair<madc::dis::istring, uint32_t> > pack_required_at;
+    void pack_note_require(const madc::dis::istring &product);
+    // A FREEZE-time capture's point of creation (freeze only): the file that declared
+    // the entity, for a slot no parse-time write stamped — the seed index places it
+    // with that file's unit, as it places a template or a global (design §4).
+    std::vector<const char *> forest_arena_file;
+    void forest_arena_stamp_file(uint32_t tid, const char *file);
     // Class-template parse-once representation. TemplateDef is copied across
     // lookup, merge, partial selection, and forest restore, so it owns only a
     // stable Program-lifetime arena id. Pattern nodes use ids and value fields;
@@ -5019,6 +5104,10 @@ public:
     // for consumers without a call token. libstdc++-EXPORTED member templates
     // keep the mangled-direct path (member_template_method_call).
     Variable *instantiate_member_fn_template_for_call(TokenCallFunc *tc);
+    // [temp.deduct.conv]: SOURCE's conversion-function template converting
+    // to TARGET, instantiated; NULL when none deduces.
+    Variable *instantiate_conversion_template(DataDefCLASS *source, DataDef *target,
+					      TokenBase *where);
     // Per-call-shape member-template instantiation memo: shape key (the
     // placeholder's unique var.name + arg type/value-category + explicit-arg
     // spellings — placeholder IDENTITY, unlike the display-name cycle key,
@@ -5560,7 +5649,10 @@ public:
     // consumed by madc_cir_freeze to stage the v2 segments. All hooks are
     // no-ops when the flag is off, so default lexing/parsing is unchanged.
     struct PackMacroEvent {		// one PP-export delta, in directive order
-	enum : uint8_t { peDefine = 0, peDefineFn = 1, peUndef = 2 };
+	// peImport: `import <module>;` on a LAZY row — name is the module; the
+	// replay is adopt_lazy_module_import. It defines no macro.
+	enum : uint8_t { peDefine = 0, peDefineFn = 1, peUndef = 2, peImport = 3 };
+	static bool defines_macro(uint8_t tag) { return tag == peDefine || tag == peDefineFn; }
 	madc::dis::istring name;
 	uint8_t     tag;
 	std::string value;		// object-like body (peDefine)
@@ -5572,7 +5664,10 @@ public:
     };
     enum : uint32_t {			// PackDeclEntry aux flags (v2 wire values)
 	PACK_DECL_SPANS_UNITS  = 1u,	// slice crosses unit boundaries: bind must live-parse
-	PACK_DECL_FUZZY_BOUNDS = 2u	// stream pushback was non-empty at a boundary
+	PACK_DECL_FUZZY_BOUNDS = 2u,	// stream pushback was non-empty at a boundary
+	PACK_DECL_ADOPTABLE    = 4u	// a bare function whose prototype has the adoption
+					// probe's TU-independent shape (forest_adoption_decline):
+					// listed in the pack's function-name index
     };
     struct PackDeclEntry {
 	madc::dis::istring name;		// exported (namespace-qualified) name
@@ -5586,6 +5681,13 @@ public:
 	std::vector<std::pair<madc::dis::istring, uint32_t> > names; // (name, kind)
     };
     bool pack_recording = false;
+    // Start recording a pack freeze: this program's lex + parse keep the
+    // grove payload and the creation stamps (madc_pack_stamping).
+    void begin_pack_recording()
+    {
+	pack_recording = true;
+	madc_pack_stamping.store(true, std::memory_order_relaxed);
+    }
     bool class_registration_taps_muted = false;
     std::vector<const char *> pack_unit_order;	// first-tokenization order (interned)
     std::set<const char *> pack_units_seen;
@@ -5657,10 +5759,16 @@ public:
     void pack_record_define(const madc::dis::istring &name, const std::string &value);
     void pack_record_define_fn(const madc::dis::istring &name, const MacroDef &m);
     void pack_record_undef(const madc::dis::istring &name);
+    void pack_record_import(const madc::dis::istring &module);
     void pack_record_edge(const madc::dis::istring &includee);	// includer = current source
     // A dedup-SKIPPED include still needs its bytes in the corpus — see the
-    // definition. Freeze-time only, at most one read per unit.
-    void pack_record_skipped_source(const madc::dis::istring &path);
+    // definition. Freeze-time only, at most one read per unit. False when the
+    // file cannot be read.
+    bool pack_record_skipped_source(const madc::dis::istring &path);
+    // --freeze-sources=LIST: every file LIST names joins the container as a
+    // source-only unit (the pack's source arm). False, said, when the list or
+    // a file it names cannot be read.
+    bool pack_record_source_list(const std::string &list_path);
     // True when an EXTERNAL definition (an earlier sibling's #define) gates
     // this consult — the condition a skipped `#ifndef` arm is missing content.
     bool pack_record_branch_macro(const std::string &name,	// interned only when recording
@@ -5736,9 +5844,13 @@ public:
 	double restore_secs = 0.0, declidx_secs = 0.0;
 	double unitload_secs = 0.0, mat_secs = 0.0;
 	unsigned long long unitload_count = 0;
+	unsigned long long unit_records = 0, unit_records_materialized = 0;
+	std::string unit_rows;			// "unit:materialized/records[blocks]" per loaded unit
 	unsigned long long zstd_frames = 0, zstd_bytes = 0;
 	double zstd_secs = 0.0;
 	unsigned long long copy_calls = 0, copy_bytes = 0;
+	unsigned long long blocks_decoded = 0, blocks_total = 0;
+	std::string block_rows;			// "seg:decoded/total" per BLOCKED table
 	unsigned long long funcs_eager = 0, funcs_deferred = 0;
 	unsigned long long funcs_activated = 0, funcs_remaining = 0;
     };
@@ -5855,7 +5967,13 @@ public:
 	const char *file;
 	int line;
 	int column;
-	DeferredFunctionBody() : var(NULL), method(NULL), full_definition(false), explicit_specialization(false), file(NULL), line(0), column(0) {}
+	// Freeze only: the point of creation of the declaration that deferred the
+	// body (pack_current_poi; 0xffffffff = none) — a body parsed after the
+	// parse (the freeze's lazy drain) stamps what it creates there.
+	uint32_t pack_poi;
+	// ...and the instantiation it was deferred in (madc_pack_creation_ctx).
+	madc::dis::istring pack_ctx;
+	DeferredFunctionBody() : var(NULL), method(NULL), full_definition(false), explicit_specialization(false), file(NULL), line(0), column(0), pack_poi(0xffffffffu) {}
     };
     std::map<DataDefCLASS *, std::vector<DeferredFunctionBody> >
 	*class_pattern_body_capture = NULL;
@@ -6769,6 +6887,13 @@ public:
     // call put them in registers. NULL = the pack declares no such bare
     // variadic function in that shape: the caller's guess stands, as before.
     Variable *forest_adopt_declared_function(const madc::dis::istring &fname);
+    // The TU-independent half of that adoption test — variadic, unnamespaced,
+    // a C-primitive return and parameters: NULL when fd has the shape, else
+    // the conjunct that rejects it. The freeze lists exactly these names in
+    // the pack's function-name index, so the probe opens the pack only for a
+    // name it can adopt; the TU-dependent half (a typedef'd return or
+    // parameter the TU must already know) stays in the probe.
+    static const char *forest_adoption_decline(FuncDef *fd);
     // `__builtin_X` IS X: register the adopted twin's prototype under the
     // builtin spelling (a copy emitting as X). NULL when X is not adopted.
     Variable *register_builtin_twin_alias(const madc::dis::istring &fname,
@@ -6789,6 +6914,7 @@ public:
     // compile bind frozen state"), so the default path is one predicted
     // branch; knob OFF = byte-identical behavior.
     madc::dis::istring forest_bind_path;	// explicit container; empty = the discovery chain
+    madc::dis::istring forest_touch_log;	// --forest-touch-log: the pack step's read recorder
     // v24: the TU's ROOT source file (set by tokenize/tokenize_buffer). The
     // forest holds the #include files' state ONLY — never the program's — so
     // the freeze stamps every record whose defining file IS the root
@@ -6805,12 +6931,22 @@ public:
     // group-shared instance both live here; ~Program releases the holder
     // (never a raw delete), so N sibling TUs can hold ONE instance.
     std::shared_ptr<CirFrozenForest> _bind_forest_holder;
+    // Every pack reader this compile opened, ONE per (image, profile): the
+    // grove bind, the header-text lookup and the AOT ledger share it, so the
+    // directory is read once and the pool/arena only when a role needs them
+    // (complete_open, memoized). Released with the Program.
+    std::vector<std::shared_ptr<CirFrozenForest> > _forest_readers;
     // S3: the compile group this Program is a sibling of (NULL = standalone).
     // Set by the ctor; the group outlives nothing — Programs hold shared_ptr
     // copies of everything they adopt from it, except this backpointer, which
     // is only consulted during compile (the group is alive for all of it).
     MadcCompileGroup *compile_group = NULL;
-    bool bind_forest_tried = false;	// one-shot open attempt (success or fail)
+    bool bind_forest_tried = false;	// one-shot full-open attempt (success or fail)
+    // The bind carrier opened to its directory (bind_forest_directory): the
+    // lookups' reader; bind_forest is the same instance once a bind completes
+    // it. NULL = no exact-config container.
+    CirFrozenForest *_bind_directory = NULL;
+    bool bind_directory_tried = false;	// one-shot discovery (success or fail)
     // AOT ledger carrier (forest-carriers S5): the container the emit lane
     // reads its C-lane runtime modules from under -static-libmadc. Usually
     // bind_forest itself; a SEPARATE open when the grove bind never happened
@@ -6845,6 +6981,82 @@ public:
     // emits such a function's vague-linkage body in the entry that defines
     // it, whether or not that entry uses it, so the stub's callers reach it.
     std::set<madc::dis::istring> session_awaited;
+    // Plan §42 D5: the functions the unit being read redefines, each a body
+    // an earlier unit linked (session_redefines). The CIR builder emits the
+    // newest definition of each though its symbol is session_defined, and
+    // the session replaces the earlier body in place. Cleared per unit.
+    std::set<const FuncDef *> session_redefined;
+    bool session_redefines(const Variable *v, const FuncDef *fd) const;
+    // The latest definition of a function in the session's tree.
+    TokenFunc *latest_function_definition(const Variable *v, const FuncDef *fd) const;
+    // Plan §42 D6 (owner 2026-10-12): the objects the unit being read
+    // redefines, each one an earlier unit defined (session_redefines_object),
+    // with the same type. The CIR builder emits the newest declaration of
+    // each as its definition though its symbol is session_defined, and the
+    // session loads it into the earlier object's storage. Cleared per unit.
+    std::set<const Variable *> session_redefined_objects;
+    bool session_redefines_object(const Variable *v) const;
+    // The latest file-scope declaration of an object in the session's tree.
+    const TopDecl *latest_object_declaration(const Variable *v) const;
+    // Plan §42 D6, types: is AGG's definition an earlier unit's, linked and
+    // live? Its definition again is the session's redefinition of the type.
+    bool session_defines_type(const DataDefSTRUCT *agg) const;
+    // The complete type an earlier unit defined (session_defines_type) that a
+    // definition stored under `key` redefines; NULL when it is none.
+    DataDefSTRUCT *session_redefined_type(const madc::dis::istring &key) const;
+    // Plan §42 D6 (owner 2026-10-13): a redefinition that changes the type is
+    // a NEW type, the next version of the name — emitted __madc_vN__P, spelled
+    // P[abi:vN] (GCC's abi_tag) — and what was made with the earlier version
+    // keeps it. `fresh` becomes that version of `existing`'s name (`source`,
+    // stored under `key`), before its body is read. One lineage per name,
+    // owned here (deque: stable addresses).
+    std::deque<SessionTypeLineage> session_lineages;
+    void supersede_session_type(DataDefSTRUCT *fresh, DataDefSTRUCT *existing,
+				const madc::dis::istring &source,
+				const madc::dis::istring &key);
+    // The replaced version stays registered under `<key>#<version>`.
+    void retire_session_type(DataDefSTRUCT *existing);
+    // A global definition's bare key held by another scope's flat-registered type.
+    bool bare_key_held_by_other_scope(const DataDefSTRUCT *prior,
+				      const madc::dis::istring &tag) const;
+    // A spelled aggregate name's identity when the session versioned it.
+    madc::dis::istring session_type_identity(const madc::dis::istring &spelling) const;
+    // The current version of every name a session redefined, by its key;
+    // the names (as the source spells them) whose version grew since BEFORE.
+    std::map<madc::dis::istring, unsigned> session_type_versions() const;
+    std::set<madc::dis::istring> session_types_versioned_since(
+	const std::map<madc::dis::istring, unsigned> &before) const;
+    // A nested struct's redefinition of a session's type: the fresh version.
+    DataDefSTRUCT *redefine_session_struct(DataDefSTRUCT *existing,
+					   const madc::dis::istring &source,
+					   const madc::dis::istring &key);
+    // A struct body's end over a session's type: twin, or retire the old one.
+    void settle_session_struct(DataDefSTRUCT *superseded, DataDefSTRUCT *fresh);
+    // A redefinition that is the same type again: `fresh` takes the identity
+    // of `existing`, the version it replaces (a twin: one emitted type).
+    void session_type_twin(DataDefSTRUCT *fresh, const DataDefSTRUCT *existing);
+    // Is S an earlier version than its name's current one?
+    bool session_type_superseded(const DataDefSTRUCT *s) const;
+    // Do two definitions of one name lay out alike: the same members by name,
+    // type, offset and bit-field, and the same size? A member that points to
+    // its own aggregate matches its counterpart's.
+    static bool session_same_layout(const DataDefSTRUCT *a, const DataDefSTRUCT *b);
+    // A class defined again with its earlier version's shape is that type
+    // (a twin): it must lay out as that version — else a type its text names
+    // was redefined, and it is refused — and each member function it gives a
+    // body is redefined (D5).
+    void settle_session_twin(TokenBase *where, const madc::dis::istring &source,
+			     DataDefCLASS *existing, DataDefCLASS *fresh);
+    // Does a typedef that names `existing` (through pointers and cv) name an
+    // earlier version of `fresh`'s name? The session's redefinition of the
+    // aggregate rebinds such an alias (`typedef struct P {...} P;` again).
+    static bool session_retypes_alias(DataDef *existing, const DataDefSTRUCT *fresh);
+    // A tag defined again (KIND "Struct" / "Class"): refused, as C and C++
+    // refuse it; when an earlier session unit defined it, the refusal names
+    // %run, which rebuilds the session from its text.
+    void refuse_type_redefinition(TokenBase *where, const char *kind,
+				  const madc::dis::istring &spelling,
+				  const DataDefSTRUCT *existing);
     bool forest_decls_restored = false;	// one-shot decl-record restore (forest-global for now)
     // v13: file-scope globals restored from a bound header. forest_restore_decls
     // runs during lexer #include handling, BEFORE tkProgram exists, so the globals
@@ -6919,12 +7131,6 @@ public:
     std::map<const FuncDef *, size_t> forest_unsettled_defaults;
     std::map<madc::dis::istring, std::vector<madc::dis::istring> >
 	forest_deferred_func_families;
-    // forest_adopt_declared_function: the bare FUNCTION names the pack's decl
-    // index carries (kind pdkFunction; a qualified form is C++ surface), built
-    // once per bound forest on first demand — the "is this a library
-    // function" question answered from the pack, never from a name list.
-    std::unordered_set<madc::dis::istring> _forest_bare_func_names;
-    bool _forest_bare_func_names_built = false;
     unsigned long long _forest_funcs_eager = 0;
     unsigned long long _forest_funcs_deferred = 0;
     unsigned long long _forest_funcs_activated = 0;
@@ -6996,16 +7202,24 @@ public:
     CirFrozenForest *probe_forest_chain(ForestConfigMatch config_match,
 					bool &config_mismatch,
 					bool header_only = false);
-    CirFrozenForest *ensure_bind_forest();	// open on first use; NULL if unavailable
+    CirFrozenForest *bind_forest_directory();	// the exact-config carrier, directory only; NULL if none
+    CirFrozenForest *ensure_bind_forest();	// that carrier fully opened, for a bind; NULL if unavailable
     // The container the AOT ledger is read from (-static-libmadc, S5): the
     // already-bound one when it opened, else the SAME discovery chain walked
     // with the producer-config gate off and stopping at the directory (the
     // ledger is a container-global segment). NULL = no carrier at all.
     CirFrozenForest *ensure_ledger_forest();
     CirFrozenForest *ensure_source_forest();
+    // This compile's reader for (image, profile length): the one already
+    // opened, else a new one through open_header. NULL when the bytes are
+    // not a usable container.
+    CirFrozenForest *forest_reader(const void *image, size_t len, bool quiet_missing);
+    std::shared_ptr<CirFrozenForest> forest_reader_holder(CirFrozenForest *f) const;
     void forest_missing_fallback(bool config_mismatch); // discovery exhausted: apply forest_missing_policy (mismatch = container seen, wrong std/-D)
     madc::dis::istring forest_probed_arms() const;	// the arms probe_forest_chain walked, for the failure diagnostics (one owner)
-    int forest_unit_for_include(const madc::dis::istring &incfile); // spelling/path lookup; -1 miss
+    int forest_unit_for_include(const madc::dis::istring &incfile); // the unit an include BINDS; -1 miss or nothing frozen to bind
+    int forest_unit_named_by_include(const madc::dis::istring &incfile); // spelling/path lookup; -1 miss
+    int forest_unit_under_build_roots(CirFrozenForest *f, const madc::dis::istring &incfile); // spelling under a build include root; -1 none
     bool forest_source_path(const std::string &candidate,
 			    bool allow_tail, madc::dis::istring &resolved);
     bool forest_source_text(const madc::dis::istring &path, std::string &text);
@@ -7020,8 +7234,12 @@ public:
     bool forest_unit_file_live_tokenized(uint32_t unit);	// v40: was this unit's FILE live-tokenized here?
     bool forest_bind_env_ok(uint32_t unit);	// v40: closure branch-dep env check (task #57)
     bool forest_bind_env_ok(uint32_t unit, std::set<uint32_t> &visited);
+    // The dialect surface binds DIRECTLY (pack-slices design §7): a fragment's
+    // frozen unit, under --std=madc, no #include; false = serve its text.
+    bool forest_bind_dialect_fragment(const madc::dis::istring &name);
     void forest_env_collect(uint32_t unit, std::set<uint32_t> &closure);
     bool forest_unit_defines_macro(uint32_t unit, const char *nm);	// v40: include-once prune helper
+    void forest_unit_defined_macros(uint32_t unit, std::set<madc::dis::istring> &out);
     bool forest_unit_is_standalone_husk(uint32_t unit,
 					const std::vector<uint32_t> &deps);	// task #57: empty decl surface + own file guard, safe for exact live include
     // task #57 masked-bind: unit -> its guarded-fallback macros whose guard is
@@ -7035,6 +7253,10 @@ public:
     void forest_replay_pp_arms(uint32_t unit);
     void forest_install_pp(uint32_t unit);	// apply one unit's frozen macro delta to the live tables
     void add_namespaces();
+    // --std=madc: declares std::format / print / println itself — madc's
+    // always-included intrinsics (owner law 2026-08-10), never a header or
+    // the forest. Per-Program state.
+    void add_format_intrinsics();
     void add_madc_namespace();
     void add_array_methods();	// native count()/size() on the builtin array (ddARRAY)
     void add_carrier_free_operators();	// `1 + v`: per-Program free rows (D28)
@@ -7047,6 +7269,15 @@ public:
     void stamp_lazy_module_prototype(FuncDef *fd, const madc::dis::istring &name,
 				     DataDefCLASS *owner_class,
 				     const TokenBase *proto_end);
+    void stamp_lazy_module_member(FuncDef *fd, const madc::dis::istring &spelling,
+				  const madc::dis::istring &name);
+    // The bound half: a bound unit never re-lexes its `import`, so the replay
+    // of its peImport event records the row's interface unit's functions
+    // (forest_note_lazy_module_interface: name -> spelling) and
+    // register_forest_func stamps each as it is restored.
+    std::map<madc::dis::istring, madc::dis::istring> forest_lazy_module_protos;
+    void forest_note_lazy_module_interface(const madc::dis::istring &module);
+    void forest_stamp_lazy_module_prototype(FuncDef *fd, const madc::dis::istring &name);
     void stamp_dynamic_module_member(Variable *var, const madc::dis::istring &ns,
 				     const madc::dis::istring &member);
     bool is_dynamic_symbol_fallback_enabled() const;
@@ -7126,6 +7357,16 @@ public:
     // header included N times is looked up once, not once per search
     // directory per inclusion. add_include_dir and a flavor change drop it.
     bool search_include_dirs(const madc::dis::istring &incfile, madc::dis::istring &found);
+    // The ONE owner of "do the core system headers come from libmadc" (the
+    // owner law on RegistrationPolicy::system_headers_from_libmadc). Every
+    // include lookup asks it before any system include dir is touched.
+    bool system_headers_from_libmadc() const
+	{ return registration_policy.system_headers_from_libmadc; }
+    // A path inside a system include dir while the core headers come from
+    // libmadc: nothing may touch the disk for it — no existence probe, no
+    // sidecar probe, no canonicalization (its spelling is libmadc's own).
+    bool path_served_by_libmadc(const char *path) const
+	{ return system_headers_from_libmadc() && is_system_header_path(path); }
     std::unordered_map<madc::dis::istring, madc::dis::istring> include_search_memo;
     const madc_stdlib_flavor *include_search_memo_flavor = NULL;
     bool include_search_memo_sysroot = false;
@@ -7200,6 +7441,14 @@ public:
 	TokenBase *tokenize_import_directive();
 	bool bind_module_namespace(const madc::dis::istring &ns, const madc::dis::istring &spelling,
 				   bool link_form, std::string &err);
+	// A module row's flags (module-map DATA): a GUI row lifts the memory
+	// guard at run start (bound_gui_module).
+	void adopt_module_flags(const madc::dis::istring &module);
+	// The program state `import <module>;` leaves for a LAZY row (the
+	// interface form): the row's flags and its spelling as an OPTIONAL entry
+	// of the object's manifest (module_optional_libs). The directive and a
+	// bound unit's replay of it (forest_install_pp, the peImport event) share it.
+	void adopt_lazy_module_import(const madc::dis::istring &module);
 	void tokenize_embedded_header_text(const madc::dis::istring &name,
 					 const std::string &text,
 					 bool protocol_visit);
@@ -8080,6 +8329,17 @@ public:
     // construction runs, later.
     int member_default_init_depth = 0;
     bool entry_if_extendable = false;		// an if ended at the entry's end
+    // An entry re-read from an edited REPL buffer (owner 2026-10-12, the live
+    // reparse): its definitions are taken, its statements are parsed and
+    // never run, and it shows nothing. Its reader sets it for that entry.
+    bool entry_definitions_only = false;
+    // An entry re-read, definitions only, because a type it names has a new
+    // version (plan §42 D6, the live reparse): its functions take the new
+    // version, and a file-scope object it declares refuses the entry
+    // (entry_kept_object), so the object keeps its type and its value. Its
+    // reader sets it for that entry.
+    bool entry_functions_only = false;
+    bool entry_kept_object = false;
     // The classifier's verdict on one entry (plan §41.1a): run it; run it
     // unless the next line starts with `else` (D11); keep reading; or show
     // the diagnostic and return to a clean prompt.
@@ -9208,6 +9468,10 @@ public:
     // body is a nested aggregate's, which the struct parser's inline nested
     // reader would take — and that reader has no default member initializer.
     bool struct_body_needs_class_parser_from(size_t start, bool nested);
+    // The shape of an aggregate's definition, from the `{` at tokens[start]
+    // (plan §42 D6): its tokens with member-function bodies elided and each
+    // versioned name but SELF as its version's identity.
+    madc::dis::istring aggregate_shape(size_t start, const madc::dis::istring &self);
     // The struct parser has consumed the tag and tokens[0] is the `::` after
     // it: does the rest of the nested-name-specifier — `(:: name
     // [<template-args>])+` — lead into a class-specifier (`{`, a base-clause
@@ -9723,6 +9987,8 @@ public:
     // probe (no forest materialization, no module binding: that is
     // find_namespace_member's miss path).
     Variable *current_namespace_variable(const madc::dis::istring &id);
+    Variable *namespace_member_variable(const madc::dis::istring &ns,
+					const madc::dis::istring &id);
     bool object_redeclaration_conflicts(Variable *prior, DataDef *type,
 					const std::vector<carray_dim_t> *dims,
 					unsigned object_cv);

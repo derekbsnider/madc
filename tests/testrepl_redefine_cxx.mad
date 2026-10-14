@@ -1,0 +1,4 @@
+// Plan §42 D5 under C++: a same-signature definition replaces the body an
+// earlier entry linked, however its parameters are spelled, and every call
+// reaches it; a different signature is a new overload.
+#include <cstdio>

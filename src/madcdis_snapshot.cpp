@@ -2,6 +2,7 @@
 // Format + placement contract in include/madcdis/snapshot.h. Compression rides
 // the one in-tree implementation (madc_pch::compress/decompress, pch.cpp).
 
+#include <algorithm>	// sorted directory: stable_sort at write, lower_bound at read
 #include <cstdio>
 #include <cstring>
 #include <utility>
@@ -28,6 +29,23 @@ static bool xform_valid(uint32_t flags, uint64_t raw_size)
 {
 	if ( flags == 0 )
 		return true;
+	if ( snap_xform_id(flags) == SNAP_XFORM_BLOCKED )
+	{
+		uint32_t shift = snap_blocked_shift(flags);
+		if ( shift < 10 || shift > 24 )
+			return false;
+		switch ( snap_blocked_inner(flags) )
+		{
+		case SNAP_XFORM_NONE:
+			return snap_blocked_stride(flags) == 0;
+		case SNAP_XFORM_DELTA32:	// every block a whole number of words
+			return snap_blocked_stride(flags) == 0 && raw_size % 4 == 0;
+		case SNAP_XFORM_BYTEPLANE:
+			return snap_blocked_stride(flags) > 0;
+		default:
+			return false;
+		}
+	}
 	if ( flags >> 24 )				// reserved bits
 		return false;
 	switch ( snap_xform_id(flags) )
@@ -42,6 +60,181 @@ static bool xform_valid(uint32_t flags, uint64_t raw_size)
 	default:
 		return false;
 	}
+}
+
+// --- SNAP_XFORM_BLOCKED: container-level framing, not a byte recoding ---
+
+static size_t block_raw_len(uint64_t raw_size, uint32_t shift, size_t b)
+{
+	uint64_t off = (uint64_t)b << shift;
+	uint64_t bs = (uint64_t)1 << shift;
+	return (size_t)(raw_size - off < bs ? raw_size - off : bs);
+}
+
+static void delta32_fwd(uint8_t *buf, size_t len);
+static void delta32_inv(uint8_t *buf, size_t len);
+static void byteplane_fwd(const uint8_t *in, uint8_t *out, size_t n, size_t stride);
+static void byteplane_inv(const uint8_t *in, uint8_t *out, size_t n, size_t stride);
+
+// A BLOCKED segment's inner transform over one block's bytes (in place):
+// forward before the block's frame is compressed, inverse after it is
+// decompressed. BYTEPLANE recodes the block's whole records; a tail shorter
+// than one record is left as it is.
+static void block_inner_fwd(uint32_t flags, uint8_t *buf, size_t len, std::vector<uint8_t> &tmp)
+{
+	switch ( snap_blocked_inner(flags) )
+	{
+	case SNAP_XFORM_DELTA32:
+		delta32_fwd(buf, len);
+		break;
+	case SNAP_XFORM_BYTEPLANE:
+	{
+		size_t stride = snap_blocked_stride(flags), rows = len / stride;
+		tmp.resize(rows * stride);
+		byteplane_fwd(buf, tmp.data(), rows, stride);
+		if ( !tmp.empty() )
+			memcpy(buf, tmp.data(), tmp.size());
+		break;
+	}
+	default:
+		break;
+	}
+}
+
+static void block_inner_inv(uint32_t flags, uint8_t *buf, size_t len)
+{
+	switch ( snap_blocked_inner(flags) )
+	{
+	case SNAP_XFORM_DELTA32:
+		delta32_inv(buf, len);
+		break;
+	case SNAP_XFORM_BYTEPLANE:
+	{
+		// Per-thread scratch: a block is at most 16 MB (shift <= 24) and is
+		// reused across decodes (thread-safety: one per decoding thread).
+		static thread_local std::vector<uint8_t> tmp;
+		size_t stride = snap_blocked_stride(flags), rows = len / stride;
+		tmp.resize(rows * stride);
+		byteplane_inv(buf, tmp.data(), rows, stride);
+		if ( !tmp.empty() )
+			memcpy(buf, tmp.data(), tmp.size());
+		break;
+	}
+	default:
+		break;
+	}
+}
+
+static bool block_at(const uint8_t *payload, size_t b, snapshot_block &e)
+{
+	memcpy(&e, payload + sizeof(snapshot_block_header) + b * sizeof(snapshot_block),
+	       sizeof e);
+	return true;
+}
+
+// Writer: the block header, the table, then each block — one codec frame of
+// its inner-transformed bytes, or raw (untransformed) when it is under
+// SNAP_BLOCK_RAW_FLOOR bytes, the codec did not shrink it, or the caller
+// marked it raw in `raw_blocks` (so stored == raw identifies a raw block
+// unambiguously).
+static bool blocked_encode(const uint8_t *raw, size_t len, uint32_t flags,
+			   PchCompression codec, int level,
+			   const std::vector<bool> *raw_blocks,
+			   std::vector<uint8_t> &out)
+{
+	const uint32_t shift = snap_blocked_shift(flags);
+	size_t bs = (size_t)1 << shift;
+	uint64_t n = ((uint64_t)len + bs - 1) >> shift;
+	if ( n > 0xffffffffu )
+		return false;
+	snapshot_block_header h;
+	h.block_shift = shift;
+	h.block_count = (uint32_t)n;
+	out.assign(sizeof h + (size_t)n * sizeof(snapshot_block), 0);
+	memcpy(out.data(), &h, sizeof h);
+	std::vector<uint8_t> in, frame, tmp;
+	for ( size_t b = 0; b < (size_t)n; ++b )
+	{
+		size_t off = b << shift;
+		size_t blen = block_raw_len(len, shift, b);
+		const uint8_t *src = raw + off;
+		size_t slen = blen;
+		const bool keep_raw = raw_blocks && b < raw_blocks->size() && (*raw_blocks)[b];
+		if ( blen >= SNAP_BLOCK_RAW_FLOOR && codec != PchCompression::None && !keep_raw )
+		{
+			in.assign(raw + off, raw + off + blen);
+			block_inner_fwd(flags, in.data(), in.size(), tmp);
+			if ( !madc_pch::compress(in, frame, codec, level) )
+				return false;
+			if ( frame.size() < blen )
+			{
+				src = frame.data();
+				slen = frame.size();
+			}
+		}
+		if ( (uint64_t)out.size() + slen > 0xffffffffu )
+			return false;
+		snapshot_block e;
+		e.offset = (uint32_t)out.size();
+		e.stored = (uint32_t)slen;
+		memcpy(out.data() + sizeof h + b * sizeof e, &e, sizeof e);
+		out.insert(out.end(), src, src + slen);
+	}
+	return true;
+}
+
+// The block table checked against the segment record: the header's shift is
+// the flags', the count covers raw_size, every block lies inside the stored
+// payload after the table, and none stores more than its raw length.
+static bool blocked_table_valid(const uint8_t *payload, uint64_t stored,
+				uint64_t raw_size, uint32_t flags)
+{
+	snapshot_block_header h;
+	if ( stored < sizeof h )
+		return false;
+	memcpy(&h, payload, sizeof h);
+	uint32_t shift = snap_blocked_shift(flags);
+	if ( h.block_shift != shift )
+		return false;
+	uint64_t n = (raw_size + ((uint64_t)1 << shift) - 1) >> shift;
+	if ( h.block_count != n )
+		return false;
+	uint64_t head = sizeof h + n * sizeof(snapshot_block);
+	if ( head > stored )
+		return false;
+	for ( size_t b = 0; b < (size_t)n; ++b )
+	{
+		snapshot_block e;
+		block_at(payload, b, e);
+		if ( e.offset < head || (uint64_t)e.offset + e.stored > stored
+		     || e.stored > block_raw_len(raw_size, shift, b) )
+			return false;
+	}
+	return true;
+}
+
+// Decode block b of a validated BLOCKED payload (`flags` its segment's) into
+// dst + (b << shift): its raw bytes, the inner transform undone.
+static bool blocked_decode(const uint8_t *payload, uint64_t raw_size,
+			   uint32_t flags, uint32_t codec, size_t b, uint8_t *dst,
+			   bool &framed)
+{
+	const uint32_t shift = snap_blocked_shift(flags);
+	snapshot_block e;
+	block_at(payload, b, e);
+	size_t blen = block_raw_len(raw_size, shift, b);
+	uint8_t *out = dst + ((size_t)b << shift);
+	framed = e.stored != blen;
+	if ( !framed )
+	{
+		memcpy(out, payload + e.offset, blen);
+		return true;
+	}
+	if ( !madc_pch::decompress(payload + e.offset, e.stored, out, blen,
+				   (PchCompression)codec) )
+		return false;
+	block_inner_inv(flags, out, blen);
+	return true;
 }
 
 static void delta32_fwd(uint8_t *buf, size_t len)
@@ -180,7 +373,8 @@ static bool xform_apply(uint32_t flags, std::vector<uint8_t> &buf)
 
 bool snapshot_writer::add_segment(uint32_t seg_id, uint32_t kind,
 				  const void *bytes, size_t len, PchCompression codec,
-				  int level, uint32_t xform)
+				  int level, uint32_t xform,
+				  const std::vector<bool> *raw_blocks)
 {
     for ( size_t i = 0; i < _segs.size(); ++i )
 	if ( _segs[i].meta.seg_id == seg_id )
@@ -197,6 +391,15 @@ bool snapshot_writer::add_segment(uint32_t seg_id, uint32_t kind,
     p.meta.codec = (uint32_t)codec;
     p.meta.flags = xform;
 
+    if ( snap_xform_id(xform) == SNAP_XFORM_BLOCKED )
+    {
+	if ( !blocked_encode((const uint8_t *)bytes, len, xform,
+			     codec, level, raw_blocks, p.payload) )
+	    return false;
+	p.meta.comp_size = (uint64_t)p.payload.size();
+	_segs.push_back(std::move(p));
+	return true;
+    }
     std::vector<uint8_t> raw((const uint8_t *)bytes, (const uint8_t *)bytes + len);
     if ( xform && !xform_apply(xform, raw) )
 	return false;
@@ -206,6 +409,21 @@ bool snapshot_writer::add_segment(uint32_t seg_id, uint32_t kind,
 	return false;
     p.meta.comp_size = (uint64_t)p.payload.size();
 
+    _segs.push_back(std::move(p));
+    return true;
+}
+
+bool snapshot_writer::add_encoded_segment(const snapshot_segment &meta,
+					  const void *payload)
+{
+    for ( size_t i = 0; i < _segs.size(); ++i )
+	if ( _segs[i].meta.seg_id == meta.seg_id )
+	    return false;			// duplicate id
+    Pending p;
+    p.meta = meta;
+    p.meta.offset = 0;				// assigned at build()
+    const uint8_t *b = (const uint8_t *)payload;
+    p.payload.assign(b, b + meta.comp_size);
     _segs.push_back(std::move(p));
     return true;
 }
@@ -249,6 +467,13 @@ bool snapshot_writer::build(std::vector<uint8_t> &out) const
     for ( size_t i = 0; i < _segs.size(); ++i )
 	if ( !_segs[i].payload.empty() )
 	    memcpy(out.data() + dir[i].offset, _segs[i].payload.data(), _segs[i].payload.size());
+    // The directory table is written sorted by seg_id (ids are unique —
+    // add_segment refuses a duplicate), so a reader finds a segment by binary
+    // search in the table it already holds — no per-open index to build.
+    std::stable_sort(dir.begin(), dir.end(),
+		     [](const snapshot_segment &a, const snapshot_segment &b) {
+			 return a.seg_id < b.seg_id;
+		     });
     if ( !dir.empty() )
 	memcpy(out.data() + dir_offset, dir.data(), dir.size() * sizeof(snapshot_segment));
     memcpy(out.data() + blob_size - sizeof(ftr), &ftr, sizeof(ftr));
@@ -314,7 +539,11 @@ bool snapshot_reader::open(const void *image, size_t image_len)
     _image_size = 0;
     _blob = 0;
     _blob_size = 0;
-    _dir.clear();
+    _dir_image = 0;
+    _dir_n = 0;
+    _dir_end = 0;
+    _dir_copy.clear();
+    _dir_index.clear();
 
     if ( !image || image_len < sizeof(snapshot_header) + sizeof(snapshot_footer) )
 	return false;
@@ -346,39 +575,33 @@ bool snapshot_reader::open(const void *image, size_t image_len)
 	 || ftr.dir_offset + dir_bytes + sizeof(snapshot_footer) > ftr.blob_size )
 	return false;
 
-    _dir.resize(ftr.segment_count);
-    _dir_index.clear();
-    if ( ftr.segment_count )
-	memcpy(_dir.data(), blob + ftr.dir_offset, (size_t)dir_bytes);
-    _dir_index.reserve(_dir.size());
-    for ( size_t i = 0; i < _dir.size(); ++i )
+    // The table is read in place when it is aligned in the image (a writer
+    // places it 16-aligned in a 16-aligned blob), else copied out. Its records
+    // are checked as they are handed out (record_ok) — a bind reads a few of
+    // a pack's thousands — so open() costs the sortedness scan only.
+    const uint8_t *dp = blob + ftr.dir_offset;
+    if ( (uintptr_t)dp % alignof(snapshot_segment) == 0 )
+	_dir_image = (const snapshot_segment *)dp;
+    else if ( ftr.segment_count )
     {
-	const snapshot_segment &s = _dir[i];
-	if ( s.offset < _hdr.header_bytes
-	     || s.offset + s.comp_size > ftr.dir_offset )
-	{
-	    _dir.clear();
-	    _dir_index.clear();
-	    return false;
-	}
-	if ( s.codec == (uint32_t)PchCompression::None && s.comp_size != s.raw_size )
-	{
-	    _dir.clear();
-	    _dir_index.clear();
-	    return false;
-	}
-	// Transform vocabulary is v2; a v1 blob must carry zeroed flags, and
-	// any recorded transform must fit the payload so read_segment can
-	// trust it.
-	if ( ( _hdr.version < 2 && s.flags != 0 )
-	     || !xform_valid(s.flags, s.raw_size) )
-	{
-	    _dir.clear();
-	    _dir_index.clear();
-	    return false;
-	}
-	// First-wins, matching the linear find() this index replaces.
-	_dir_index.emplace(s.seg_id, (uint32_t)i);
+	_dir_copy.resize(ftr.segment_count);
+	memcpy(_dir_copy.data(), dp, (size_t)dir_bytes);
+    }
+    _dir_n = ftr.segment_count;
+    _dir_end = ftr.dir_offset;
+    const snapshot_segment *d = dir();
+    _dir_sorted = true;
+    for ( uint32_t i = 1; i < _dir_n && _dir_sorted; ++i )
+	if ( d[i - 1].seg_id > d[i].seg_id )
+	    _dir_sorted = false;
+    // A table written sorted (every writer since the sorted-directory
+    // change) is searched in place; an older unsorted one gets the seg_id
+    // index — first-wins, matching the linear find() it replaced.
+    if ( !_dir_sorted )
+    {
+	_dir_index.reserve(_dir_n);
+	for ( uint32_t i = 0; i < _dir_n; ++i )
+	    _dir_index.emplace(d[i].seg_id, i);
     }
 
     _blob = blob;
@@ -386,6 +609,29 @@ bool snapshot_reader::open(const void *image, size_t image_len)
     _image = bytes;
     _image_size = image_len;
     return true;
+}
+
+// One directory record's own checks: its payload lies between the header and
+// the table, a codec-None payload stores its raw size, and its transform fits
+// (a v1 blob carries none). A record failing them is never handed out.
+bool snapshot_reader::record_ok(const snapshot_segment &s) const
+{
+    if ( s.offset < _hdr.header_bytes || s.offset > _dir_end
+	 || s.comp_size > _dir_end - s.offset )
+	return false;
+    if ( s.codec == (uint32_t)PchCompression::None && s.comp_size != s.raw_size )
+	return false;
+    if ( ( _hdr.version < 2 && s.flags != 0 ) || !xform_valid(s.flags, s.raw_size) )
+	return false;
+    return true;
+}
+
+const snapshot_segment *snapshot_reader::segment_at(uint32_t idx) const
+{
+    if ( idx >= _dir_n )
+	return (const snapshot_segment *)0;
+    const snapshot_segment *s = dir() + idx;
+    return record_ok(*s) ? s : (const snapshot_segment *)0;
 }
 
 bool snapshot_reader::previous_image_len(size_t &image_len) const
@@ -412,16 +658,57 @@ bool snapshot_reader::previous_image_len(size_t &image_len) const
 
 const snapshot_segment *snapshot_reader::find(uint32_t seg_id) const
 {
-    std::unordered_map<uint32_t, uint32_t>::const_iterator it =
-	_dir_index.find(seg_id);
-    return it != _dir_index.end() ? &_dir[it->second]
-				  : (const snapshot_segment *)0;
+    const snapshot_segment *d = dir(), *s = 0;
+    if ( _dir_sorted )
+    {
+	const snapshot_segment *it = std::lower_bound(
+	    d, d + _dir_n, seg_id,
+	    [](const snapshot_segment &e, uint32_t id) { return e.seg_id < id; });
+	if ( it != d + _dir_n && it->seg_id == seg_id )
+	    s = it;
+    }
+    else
+    {
+	std::unordered_map<uint32_t, uint32_t>::const_iterator it =
+	    _dir_index.find(seg_id);
+	if ( it != _dir_index.end() )
+	    s = d + it->second;
+    }
+    return s && record_ok(*s) ? s : (const snapshot_segment *)0;
 }
 
 bool snapshot_reader::decode_payload(const snapshot_segment &seg,
 				     uint8_t *dst) const
 {
     const uint8_t *payload = _blob + seg.offset;
+    if ( snap_xform_id(seg.flags) == SNAP_XFORM_BLOCKED )
+    {
+	// Each block decodes to its raw bytes (blocked_decode undoes its inner
+	// transform), so the "transformed" form IS the raw form — every block,
+	// in order.
+	if ( !blocked_table_valid(payload, seg.comp_size, seg.raw_size, seg.flags) )
+	    return false;
+	uint32_t shift = snap_blocked_shift(seg.flags);
+	size_t n = (size_t)((seg.raw_size + ((uint64_t)1 << shift) - 1) >> shift);
+	for ( size_t b = 0; b < n; ++b )
+	{
+	    bool framed = false;
+	    if ( !blocked_decode(payload, seg.raw_size, seg.flags, seg.codec, b, dst, framed) )
+		return false;
+	    size_t blen = block_raw_len(seg.raw_size, shift, b);
+	    if ( framed )
+	    {
+		stat_zstd_frames += 1;
+		stat_zstd_bytes_out += blen;
+	    }
+	    else
+	    {
+		stat_copy_calls += 1;
+		stat_copy_bytes += blen;
+	    }
+	}
+	return true;
+    }
     if ( seg.codec == (uint32_t)PchCompression::None )
     {
 	if ( seg.raw_size )
@@ -512,6 +799,58 @@ const uint8_t *snapshot_reader::raw_ptr(const snapshot_segment &seg) const
     if ( !_blob || seg.codec != (uint32_t)PchCompression::None || seg.flags )
 	return (const uint8_t *)0;
     return _blob + seg.offset;
+}
+
+snapshot_lazy_segment *snapshot_reader::open_lazy(const snapshot_segment &seg) const
+{
+    if ( !_blob || snap_xform_id(seg.flags) != SNAP_XFORM_BLOCKED
+	 || !blocked_table_valid(_blob + seg.offset, seg.comp_size,
+				 seg.raw_size, seg.flags) )
+	return (snapshot_lazy_segment *)0;
+    return new snapshot_lazy_segment(_blob + seg.offset, seg);
+}
+
+// --- snapshot_lazy_segment ---
+
+snapshot_lazy_segment::snapshot_lazy_segment(const uint8_t *payload,
+					     const snapshot_segment &seg)
+    : _payload(payload), _codec(seg.codec), _flags(seg.flags), _seg_id(seg.seg_id)
+{
+    _size = (size_t)seg.raw_size;
+    _shift = snap_blocked_shift(seg.flags);
+    _nblocks = (size_t)((seg.raw_size + ((uint64_t)1 << _shift) - 1) >> _shift);
+    // Uninitialized: a block's bytes are written by its decode, and pages of
+    // blocks never touched are never faulted in.
+    _buf = _size ? new uint8_t[_size] : (uint8_t *)0;
+    _ready = _nblocks ? new std::atomic<uint8_t>[_nblocks] : (std::atomic<uint8_t> *)0;
+    for ( size_t b = 0; b < _nblocks; ++b )
+	_ready[b].store(0, std::memory_order_relaxed);
+}
+
+snapshot_lazy_segment::~snapshot_lazy_segment()
+{
+    delete[] _buf;
+    delete[] _ready;
+}
+
+bool snapshot_lazy_segment::fill(size_t first, size_t last) const
+{
+    std::lock_guard<std::mutex> lk(_mu);
+    for ( size_t b = first; b <= last; ++b )
+    {
+	if ( _ready[b].load(std::memory_order_relaxed) )
+	    continue;
+	bool framed = false;
+	if ( !blocked_decode(_payload, _size, _flags, _codec, b, _buf, framed) )
+	{
+	    fprintf(stderr, "madc: container segment %u block %zu failed to decode\n",
+		    _seg_id, b);
+	    return false;
+	}
+	_decoded.fetch_add(1, std::memory_order_relaxed);
+	_ready[b].store(1, std::memory_order_release);
+    }
+    return true;
 }
 
 } // namespace dis

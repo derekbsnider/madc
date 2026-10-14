@@ -612,17 +612,32 @@ public:
 	const uint32_t      *defs;         size_t defs_words;
 	const uint32_t      *payload;      size_t payload_words;
 	const uint8_t       *tokbytes;     size_t tokbytes_len;	// v23 (may be absent: 0)
+	// Lazy sources of the three spans (lazy_blocks.h; NULL = resident): every
+	// accessor ensures the bytes it reads, so a bind decodes only those.
+	const lazy_blocks   *lz_defs, *lz_payload, *lz_tokbytes;
+	// v60: where each slot's record sits in `defs` — the release pack lays
+	// the records out by the reads that need them, ids unchanged. NULL =
+	// slot order. Raw, read in place.
+	const uint32_t      *def_pos;      size_t def_pos_n;
 
 	FrozenDefArena() : defs(0), defs_words(0), payload(0), payload_words(0),
-			   tokbytes(0), tokbytes_len(0) {}
+			   tokbytes(0), tokbytes_len(0),
+			   lz_defs(0), lz_payload(0), lz_tokbytes(0),
+			   def_pos(0), def_pos_n(0) {}
 
-	void bind_defs(const uint32_t *p, size_t words)    { defs = p; defs_words = words; }
-	void bind_payload(const uint32_t *p, size_t words) { payload = p; payload_words = words; }
-	void bind_tokbytes(const uint8_t *p, size_t len)   { tokbytes = p; tokbytes_len = len; }
+	void bind_defs(const uint32_t *p, size_t words, const lazy_blocks *lz = 0)
+		{ defs = p; defs_words = words; lz_defs = lz; }
+	void bind_payload(const uint32_t *p, size_t words, const lazy_blocks *lz = 0)
+		{ payload = p; payload_words = words; lz_payload = lz; }
+	void bind_tokbytes(const uint8_t *p, size_t len, const lazy_blocks *lz = 0)
+		{ tokbytes = p; tokbytes_len = len; lz_tokbytes = lz; }
+	void bind_def_positions(const uint32_t *p, size_t n)
+		{ def_pos = p; def_pos_n = n; }
 	// A token run's bytes (paramrec.def_tok_off/def_tok_bytes); NULL if out of range.
 	const uint8_t *tok_run(uint32_t off, uint32_t len) const
 	{
-		if ( !tokbytes || !len || (size_t)off + len > tokbytes_len ) return NULL;
+		if ( !tokbytes || !len || (size_t)off + len > tokbytes_len
+		     || !lazy_ensure(lz_tokbytes, off, len) ) return NULL;
 		return tokbytes + off;
 	}
 
@@ -631,8 +646,15 @@ public:
 	bool get_def_at(uint32_t project_id, defrec &out) const
 	{
 		if ( !arena_id_is_project(project_id) ) return false;
-		size_t off = (size_t)arena_slot_of(project_id) * DefArena::def_stride();
-		if ( !defs || off + DefArena::def_stride() > defs_words ) return false;
+		size_t at = arena_slot_of(project_id);
+		if ( def_pos ) {
+			if ( at >= def_pos_n ) return false;
+			at = def_pos[at];
+		}
+		size_t off = at * DefArena::def_stride();
+		if ( !defs || off + DefArena::def_stride() > defs_words
+		     || !lazy_ensure(lz_defs, off * sizeof(uint32_t), sizeof(defrec)) )
+			return false;
 		memcpy(&out, defs + off, sizeof(defrec));
 		return true;
 	}
@@ -643,13 +665,17 @@ public:
 	}
 	template <typename T> bool get_payload(uint32_t begin, uint32_t i, T &out) const {
 		size_t off = (size_t)begin + (size_t)i * pod_words<T>();
-		if ( !payload || off + pod_words<T>() > payload_words ) return false;
+		if ( !payload || off + pod_words<T>() > payload_words
+		     || !lazy_ensure(lz_payload, off * sizeof(uint32_t), sizeof(T)) )
+			return false;
 		memcpy(&out, payload + off, sizeof(T));
 		return true;
 	}
 	bool get_word(uint32_t begin, uint32_t i, uint32_t &out) const {
 		size_t off = (size_t)begin + i;
-		if ( !payload || off >= payload_words ) return false;
+		if ( !payload || off >= payload_words
+		     || !lazy_ensure(lz_payload, off * sizeof(uint32_t), sizeof(uint32_t)) )
+			return false;
 		out = payload[off];
 		return true;
 	}

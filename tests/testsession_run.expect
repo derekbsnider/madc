@@ -3,3 +3,11 @@ loaded: ok=true
 output: main ran: argc=2 last=extra
 ran: run=true ok=true status=5
 entry: 43
+edited: edited=true ok=true
+after the edit: 7
+rebuilt: rebuild=true ok=true main=true status=5 entries=6 replayed=6
+third entry: if ( count > 5 ) count = 0;
+else count = twice(count);
+last shown: 4
+rebuilt: main ran: argc=1 last=[REPL] count=4
+named, not run again: ok=true main=false runs=1

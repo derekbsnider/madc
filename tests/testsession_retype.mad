@@ -1,0 +1,72 @@
+// The live reparse over a type's redefinition (plan §42 D6, owner
+// 2026-10-13): an edit that gives struct P a new version reads each entry
+// below it that names P again, functions only. Under C++ the function there
+// becomes an overload for the new version beside the earlier one, a struct
+// holding a P gets its own next version, and an object keeps its type and
+// its value. Under C the function's new type is refused (C has no
+// overloading; %run rebuilds the session) and the earlier one stays.
+
+// The next reply, passing over running notices; the output printed before
+// it goes to stdout.
+long next_reply(var &r, long h)
+{
+    var cases;
+    cases[0] = madc::session_readable(h);
+    for ( ;; )
+    {
+	long got = madc::session_poll(r, h);
+	var o;
+	madc::session_output(o, h);
+	print("{}", o);
+	if ( got != 0 && r["kind"] == madc::session_reply::running )
+	    continue;
+	if ( got != 0 )
+	    return got;
+	var fired;
+	madc::chan_select(fired, cases);
+    }
+}
+
+// TEXT entered; its shown value.
+var shown(long h, const char *text)
+{
+    var r;
+    madc::session_offer(h, text, true);
+    next_reply(r, h);
+    return r["shown"];
+}
+
+void run(const char *std)
+{
+    const char *above = "struct P { int x; };\n";
+    const char *below =
+	"struct P a = {3};\n"
+	"int getx(struct P v) { return v.x * 10 + (int)sizeof v; }\n"
+	"struct Q { struct P p; int k; };\n";
+    long h = madc::session_open(std);
+    var r;
+    shown(h, "struct P { int x; };");
+    shown(h, "struct P a = {3};");
+    shown(h, "int getx(struct P v) { return v.x * 10 + (int)sizeof v; }");
+    shown(h, "struct Q { struct P p; int k; };");
+    println("{} before: getx(a)={}", std, shown(h, "getx(a)"));
+    var before = format("{}{}", above, below);
+    var after = format("struct P {{ int x; int y; }};\n{}", below);
+    madc::session_edited(h, before.c_str(), after.c_str());
+    next_reply(r, h);
+    var rendered = r["rendered"];
+    println("{} edited: ok={} refused getx={}", std, r["ok"],
+	    rust::contains(rendered.c_str(), "conflicting types for 'getx'") != 0);
+    shown(h, "struct P b = {4, 5};");
+    println("{} after: getx(a)={} a={} sizeof Q={}", std, shown(h, "getx(a)"),
+	    shown(h, "a"), shown(h, "(int)sizeof(struct Q)"));
+    println("{} new version: getx(b)={}", std, shown(h, "getx(b)"));
+    madc::session_close(h);
+}
+
+int main()
+{
+    run("c++17");
+    run("c17");
+    return 0;
+}

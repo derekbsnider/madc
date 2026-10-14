@@ -1,0 +1,18 @@
+int count = 1;
+int read_count(void) { return count; }
+int *p = &count;
+int count = 5;
+printf("same %d %d %d\n", count, read_count(), *p);
+double count = 2.5;
+printf("kept %d\n", count);
+const int k = 3;
+const int k = 4;
+printf("k %d\n", k);
+int a[3] = {1, 2, 3};
+int a[3] = {4, 5, 6};
+printf("a %d %d\n", a[0], a[2]);
+char msg[] = "hi";
+char msg[] = "hello";
+printf("msg %s\n", msg);
+int count = 7;
+printf("again %d %d\n", read_count(), *p);

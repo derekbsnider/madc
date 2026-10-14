@@ -1,0 +1,7 @@
+char trace[32];
+struct Last { ~Last() { printf("session end:%s\n", trace); } };
+Last last;
+struct T { int a; ~T() { sprintf(trace + strlen(trace), " %d", a); } };
+T t{1};
+T u{2};
+printf("defined\n");

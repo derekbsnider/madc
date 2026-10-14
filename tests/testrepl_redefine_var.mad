@@ -1,0 +1,6 @@
+// Plan §42 D6 (owner 2026-10-12): an object the session already defined can
+// be defined again with its type; the new definition initializes the same
+// storage, so an earlier function and an earlier pointer see it (Julia's
+// global, Lisp's defparameter). A type change, a const object and an array
+// whose size changes are refused, and the object keeps its value.
+#include <stdio.h>

@@ -37,7 +37,7 @@ cd "$(dirname "$0")/.." || exit 2
 
 BASELINE=scripts/istring_keep.tsv
 CORE="src/lexer.cpp src/parser.cpp src/cir_builder.cpp src/cir_builder.h
-src/madc_cir.cpp src/madc_cir.h src/cir_freeze.cpp src/cir_freeze.h
+src/madc_cir.cpp src/madc_cir.h src/cir_freeze.cpp src/cir_freeze.h src/cir_pack_seeds.cpp
 src/cir_dump.cpp src/cir_emit_c.cpp src/cir_format.cpp
 src/madc_type_spelling.cpp src/madc_mangle.cpp src/madc_complete.cpp
 src/madc_keywords.cpp src/pch.cpp src/madc.cpp

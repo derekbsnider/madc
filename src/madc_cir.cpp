@@ -24,6 +24,8 @@
 #include <setjmp.h>
 #include <signal.h>	// sig_atomic_t: the session interrupt's flag (D8)
 #include <chrono>
+#include <memory>
+#include <mutex>
 #include <sys/stat.h>	// -o: chmod 0755 on the emitted executable
 #include <errno.h>
 #include <cxxabi.h>	// abi::__cxa_demangle: a link refusal names the symbol as ld does
@@ -384,6 +386,19 @@ static void cir_bind_trap_module(MIR_context_t ctx,
     MIR_load_module(ctx, DLIST_TAIL(MIR_module_t, *MIR_get_module_list(ctx)));
 }
 
+static bool cir_crt_indexed(const char *name);
+
+// Does the link resolve `name` without a trap? The import resolver's names
+// (the host, the opened runtime), and a startup member's: the archive every
+// link searches (cir_ledger_pull), which load_and_link pulls by the module's
+// imports AFTER the traps bind. A trap for a member's name would define it
+// first and the pull would never select the member (Windows: no DLL exports
+// __cxa_atexit, so a frozen module's static object reached the trap).
+static bool cir_link_resolves(const char *name)
+{
+    return cir_import_resolver(name) || cir_crt_indexed(name);
+}
+
 static void cir_prebind_frozen_traps(MIR_context_t ctx, MIR_module_t mod)
 {
     std::set<madc::dis::istring> defined;
@@ -395,7 +410,7 @@ static void cir_prebind_frozen_traps(MIR_context_t ctx, MIR_module_t mod)
 	if (it->item_type != MIR_import_item || !it->u.import_id) continue;
 	madc::dis::istring nm = it->u.import_id;
 	if (defined.count(nm) || !seen.insert(nm).second) continue;
-	if (cir_import_resolver(nm.c_str())) continue;
+	if (cir_link_resolves(nm.c_str())) continue;
 	undef.push_back(nm);
     }
     if (undef.empty()) return;
@@ -432,7 +447,7 @@ static void cir_prebind_cache_traps(MIR_context_t ctx, MIR_module_t cache_mod,
 	madc::dis::istring nm = it->u.import_id;
 	if (defined.count(nm) || consumer_imports.count(nm)
 	    || !seen.insert(nm).second) continue;
-	if (cir_import_resolver(nm.c_str())) continue;
+	if (cir_link_resolves(nm.c_str())) continue;
 	undef.push_back(nm);
     }
     if (undef.empty()) return;
@@ -495,6 +510,31 @@ static int cir_mir_cache_read_byte(MIR_context_t)
     return (*cir_mir_cache_read_src)[cir_mir_cache_read_pos++];
 }
 
+// Does this item DEFINE its name (a function or a data item)? An import, an
+// export, a forward and a prototype define nothing.
+static bool cir_item_defines(MIR_item_t it)
+{
+    return it->item_type != MIR_import_item
+	&& it->item_type != MIR_export_item
+	&& it->item_type != MIR_forward_item
+	&& it->item_type != MIR_proto_item;
+}
+
+// The symbols a module defines: the selection index of a ledger module and
+// of a startup member.
+static void cir_module_defined_syms(MIR_context_t ctx, MIR_module_t mod,
+				    std::vector<madc::dis::istring> &out)
+{
+    for (MIR_item_t it = DLIST_HEAD(MIR_item_t, mod->items); it;
+	 it = DLIST_NEXT(MIR_item_t, it)) {
+	if (!cir_item_defines(it))
+	    continue;
+	const char *nm = MIR_item_name(ctx, it);
+	if (nm && nm[0])
+	    out.push_back(nm);
+    }
+}
+
 // --- AOT ledger pull (-static-libmadc, forest-carriers S5) ----------------
 //
 // Collect every import no loaded module defines. The caller's two uses are
@@ -521,9 +561,7 @@ static void cir_ctx_unresolved_imports(MIR_context_t ctx,
 		    imports.push_back(it->u.import_id);
 		continue;
 	    }
-	    if (it->item_type == MIR_export_item
-		|| it->item_type == MIR_forward_item
-		|| it->item_type == MIR_proto_item)
+	    if (!cir_item_defines(it))
 		continue;
 	    const char *nm = MIR_item_name(ctx, it);
 	    if (nm && nm[0])
@@ -543,6 +581,118 @@ static void cir_ctx_unresolved_imports(MIR_context_t ctx,
 // ships no ledger" from "this program needs Tier-B pieces" — two very
 // different user actions, so they must not share a diagnostic.
 static bool cir_ledger_available = false;
+
+// --- madc's startup members (madc_crt.cpp) ---------------------------------
+//
+// A member is a few lines of self-contained C (no headers): c2mir's own front
+// end compiles it in a private context, once per process and only when a
+// link selects it, into the ledger's module shape, so one pull selects both.
+
+static bool cir_ledger_write_module(MIR_context_t ctx, MIR_module_t mod,
+				    const char *name,
+				    std::vector<uint8_t> &out);
+
+// The members' index: (symbol, member) for every name a member's `defines`
+// lists. Built once; immutable after.
+static const std::vector<std::pair<madc::dis::istring, size_t> > &cir_crt_index()
+{
+    static const std::vector<std::pair<madc::dis::istring, size_t> > index = [] {
+	std::vector<std::pair<madc::dis::istring, size_t> > out;
+	for (size_t i = 0; madc_crt_members[i].name; i++) {
+	    std::istringstream in(madc_crt_members[i].defines);
+	    std::string nm;	// the stream's read buffer; kept as a name below
+	    while (in >> nm)
+		out.push_back(std::make_pair(madc::dis::istring(nm), i));
+	}
+	return out;
+    }();
+    return index;
+}
+
+// Does a member define `name`? (A link that imports none skips the pull.)
+static bool cir_crt_indexed(const char *name)
+{
+    for (const std::pair<madc::dis::istring, size_t> &e : cir_crt_index())
+	if (e.first == name)
+	    return true;
+    return false;
+}
+
+struct CirCrtSource { const char *p; };
+static int cir_crt_getc(void *data)
+{
+    CirCrtSource *src = (CirCrtSource *)data;
+    return *src->p ? (unsigned char)*src->p++ : EOF;
+}
+
+// The member's module in `ctx` (its own MIR error frame), NULL when it does
+// not compile.
+static MIR_module_t cir_crt_compile_in(MIR_context_t ctx,
+				       const madc_crt_member &m)
+{
+    if (setjmp(cir_mir_error_jmp)) {
+	cir_mir_error_armed = false;
+	fprintf(stderr, "madc: startup member %s: MIR error: %s\n", m.name,
+		cir_mir_error_text);
+	return NULL;
+    }
+    cir_mir_error_armed = true;
+    struct c2mir_options opts;
+    memset(&opts, 0, sizeof opts);
+    opts.message_file = stderr;
+    CirCrtSource src = { m.source };
+    MIR_module_t before = DLIST_TAIL(MIR_module_t, *MIR_get_module_list(ctx));
+    int ok = c2mir_compile(ctx, &opts, cir_crt_getc, &src, m.name, NULL);
+    cir_mir_error_armed = false;
+    MIR_module_t got = DLIST_TAIL(MIR_module_t, *MIR_get_module_list(ctx));
+    return ok && got && got != before ? got : NULL;
+}
+
+// Compile one member. A member that does not compile, or does not define
+// what its index says, is a defect in madc: said loudly, and never pulled.
+static bool cir_crt_compile(const madc_crt_member &m, cir_ledger_module &out)
+{
+    out.name = m.name;
+    out.init = m.init ? m.init : "";
+    MIR_context_t ctx = MIR_init();
+    MIR_set_error_func(ctx, cir_mir_error);
+    c2mir_init(ctx);
+    bool ok = false;
+    if (MIR_module_t mod = cir_crt_compile_in(ctx, m)) {
+	cir_module_defined_syms(ctx, mod, out.syms);
+	ok = true;
+	for (const std::pair<madc::dis::istring, size_t> &e : cir_crt_index())
+	    if (&madc_crt_members[e.second] == &m
+		&& std::find(out.syms.begin(), out.syms.end(),
+			     e.first) == out.syms.end()) {
+		fprintf(stderr, "madc: startup member %s does not define"
+			" '%s'\n", m.name, e.first.c_str());
+		ok = false;
+	    }
+	ok = ok && cir_ledger_write_module(ctx, mod, m.name, out.bytes);
+    } else
+	fprintf(stderr, "madc: startup member %s does not compile\n", m.name);
+    c2mir_finish(ctx);
+    MIR_finish(ctx);
+    return ok;
+}
+
+// Member i's module, compiled on first use; NULL when it cannot be.
+static const cir_ledger_module *cir_crt_module(size_t i)
+{
+    static std::mutex lock;
+    static std::map<size_t, std::unique_ptr<cir_ledger_module> > compiled;
+    std::lock_guard<std::mutex> hold(lock);
+    std::map<size_t, std::unique_ptr<cir_ledger_module> >::iterator it
+	= compiled.find(i);
+    if (it == compiled.end()) {
+	std::unique_ptr<cir_ledger_module> m(new cir_ledger_module);
+	if (!cir_crt_compile(madc_crt_members[i], *m))
+	    m.reset();
+	it = compiled.insert(std::make_pair(i, std::move(m))).first;
+    }
+    return it->second.get();
+}
 
 // Read ONE ledger module's .bmir into `ctx` and load it. The MIR error
 // bracket lives in its own frame on purpose: a longjmp leaves automatic
@@ -592,24 +742,31 @@ static bool cir_ledger_read_module(MIR_context_t ctx,
 // `seed` names references the program has that are NOT module imports — the .o
 // link lane's inputs (see cir_ledger_relocatable). Selection is otherwise
 // identical: one pull implementation, two shapes of program.
+//
+// The startup members (madc_crt.cpp) are candidates in every link, the
+// archive the link always searches (libc_nonshared.a's place); the ledger's
+// modules join under -static-libmadc when `prog` can provide them.
 static void cir_ledger_pull(MIR_context_t ctx, Program *prog,
 			    const std::vector<madc::dis::istring> *seed = NULL)
 {
-    if (!madc_static_libmadc || !prog)
-	return;
-    CirFrozenForest *forest = prog->ensure_ledger_forest();
-    if (!forest)
-	return;
+    size_t ncrt = 0;
+    while (madc_crt_members[ncrt].name)
+	ncrt++;
     std::vector<cir_ledger_module> ledger;
-    if (!forest->ledger_modules(ledger))
-	return;
-    cir_ledger_available = true;
-    std::map<madc::dis::istring, size_t> owner;	// symbol -> ledger module index
+    if (madc_static_libmadc && prog)
+	if (CirFrozenForest *forest = prog->ensure_ledger_forest())
+	    if (forest->ledger_modules(ledger))
+		cir_ledger_available = true;
+    // symbol -> candidate: the startup members by their index, then the
+    // ledger's modules
+    std::map<madc::dis::istring, size_t> owner;
+    for (const std::pair<madc::dis::istring, size_t> &e : cir_crt_index())
+	owner.insert(std::make_pair(e.first, e.second));
     for (size_t i = 0; i < ledger.size(); i++)
 	for (const madc::dis::istring &s : ledger[i].syms)
-	    owner.insert(std::make_pair(s, i));
+	    owner.insert(std::make_pair(s, ncrt + i));
 
-    std::vector<bool> pulled(ledger.size(), false);
+    std::vector<bool> pulled(ncrt + ledger.size(), false);
     for (;;) {
 	std::vector<madc::dis::istring> undef;
 	cir_ctx_unresolved_imports(ctx, undef, seed);
@@ -619,17 +776,33 @@ static void cir_ledger_pull(MIR_context_t ctx, Program *prog,
 	    if (it == owner.end() || pulled[it->second])
 		continue;
 	    pulled[it->second] = true;	// once, whether or not the read works
-	    if (cir_ledger_read_module(ctx, ledger[it->second])) {
+	    const cir_ledger_module *m = it->second < ncrt
+		? cir_crt_module(it->second) : &ledger[it->second - ncrt];
+	    if (m && cir_ledger_read_module(ctx, *m)) {
 		pulled_now++;
-		DBG(std::cout << "ledger: pulled " << ledger[it->second].name
+		DBG(std::cout << "ledger: pulled " << m->name
 			      << " for '" << nm << "' ("
-			      << ledger[it->second].syms.size() << " symbols)"
+			      << m->syms.size() << " symbols)"
 			      << std::endl);
 	    }
 	}
 	if (!pulled_now)
 	    break;	// fixpoint: nothing new selected this round
     }
+}
+
+// The startup members `m` needs, loaded into `ctx` ahead of its own load
+// (and of any armed MIR error frame: each read arms its own).
+static void cir_crt_pull_for(MIR_context_t ctx, MIR_module_t m)
+{
+    std::vector<madc::dis::istring> seed;
+    for (MIR_item_t it = DLIST_HEAD(MIR_item_t, m->items); it;
+	 it = DLIST_NEXT(MIR_item_t, it))
+	if (it->item_type == MIR_import_item && it->u.import_id
+	    && cir_crt_indexed(it->u.import_id))
+	    seed.push_back(it->u.import_id);
+    if (!seed.empty())
+	cir_ledger_pull(ctx, NULL, &seed);
 }
 
 // --- AOT ledger as a RELOCATABLE (the .o link lane, -static-libmadc) -------
@@ -656,7 +829,7 @@ static bool cir_ledger_emit_blob(MIR_context_t ctx, std::vector<uint8_t> &blob)
     void *buf = NULL;
     size_t size = 0;
     if (MIR_gen_object_emit(ctx, &buf, &size) != 0 || !buf || size == 0) {
-	fprintf(stderr, "madc: -static-libmadc: AOT-ledger object emission"
+	fprintf(stderr, "madc: startup / AOT-ledger object emission"
 		" failed\n");
 	free(buf);
 	return false;
@@ -674,8 +847,8 @@ static bool cir_ledger_obj_pull(MIR_context_t ctx, Program *prog,
 {
     if (setjmp(cir_mir_error_jmp)) {
 	cir_mir_error_armed = false;
-	fprintf(stderr, "madc: -static-libmadc: cannot prepare the AOT ledger:"
-		" %s\n", cir_mir_error_text);
+	fprintf(stderr, "madc: cannot prepare the startup / AOT-ledger"
+		" runtime: %s\n", cir_mir_error_text);
 	return false;
     }
     cir_mir_error_armed = true;
@@ -685,13 +858,17 @@ static bool cir_ledger_obj_pull(MIR_context_t ctx, Program *prog,
     return true;
 }
 
-// Link + generate + serialize, under a FRESH error frame (see above).
+static bool cir_register_crt_inits(MIR_context_t ctx, const char *source_name);
+
+// Link + generate + serialize, under a FRESH error frame (see above). A
+// pulled startup member's image init rides the relocatable's own
+// .init_array, which the merge concatenates.
 static bool cir_ledger_obj_link_emit(MIR_context_t ctx,
 				     std::vector<uint8_t> &blob)
 {
     if (setjmp(cir_mir_error_jmp)) {
 	cir_mir_error_armed = false;
-	fprintf(stderr, "madc: -static-libmadc: cannot link the AOT ledger"
+	fprintf(stderr, "madc: cannot link the startup / AOT-ledger"
 		" runtime: %s\n", cir_mir_error_text);
 	return false;
     }
@@ -699,7 +876,8 @@ static bool cir_ledger_obj_link_emit(MIR_context_t ctx,
     // Same resolver the source lanes use in object mode: an import stays an
     // UNDEF symbol in the capture instead of binding to this process.
     MIR_link(ctx, MIR_set_gen_interface, cir_object_import_resolver);
-    bool ok = cir_ledger_emit_blob(ctx, blob);
+    bool ok = cir_register_crt_inits(ctx, "madc: link")
+	      && cir_ledger_emit_blob(ctx, blob);
     cir_mir_error_armed = false;
     return ok;
 }
@@ -715,7 +893,8 @@ static bool cir_ledger_relocatable(Program *prog,
     blob.clear();
     MIR_context_t ctx = MIR_init();
     if (!ctx) {
-	fprintf(stderr, "madc: -static-libmadc: MIR_init failed\n");
+	fprintf(stderr, "madc: startup / AOT-ledger runtime: MIR_init"
+		" failed\n");
 	return false;
     }
     MIR_set_error_func(ctx, cir_mir_error);
@@ -1026,7 +1205,8 @@ static MIR_module_t build_tu_module(MIR_context_t ctx, c2m_ctx_t c2m,
 
 CirJitSession::CirJitSession()
     : ctx(NULL), c2m(NULL), builder(NULL), forest(NULL), mod(NULL),
-      cache_mod(NULL), live_mode(false), stub_mod(NULL), stub_modules(0)
+      cache_mod(NULL), live_mode(false), stub_mod(NULL), stub_modules(0),
+      linked(false)
 {
 }
 
@@ -1042,6 +1222,91 @@ static MIR_item_t cir_module_func_item(MIR_module_t m, const char *name)
     return NULL;
 }
 
+// The definition `name` (function or data) in any module of `ctx` — the
+// startup members load beside the program's modules. NULL when none.
+static MIR_item_t cir_ctx_definition(MIR_context_t ctx, const char *name)
+{
+    for (MIR_module_t m = DLIST_HEAD(MIR_module_t, *MIR_get_module_list(ctx));
+	 m; m = DLIST_NEXT(MIR_module_t, m))
+	for (MIR_item_t it = DLIST_HEAD(MIR_item_t, m->items); it;
+	     it = DLIST_NEXT(MIR_item_t, it)) {
+	    if (!cir_item_defines(it))
+		continue;
+	    const char *nm = MIR_item_name(ctx, it);
+	    if (nm && strcmp(nm, name) == 0)
+		return it;
+	}
+    return NULL;
+}
+
+// A linked JIT context's exit, dlclose's __cxa_finalize step: the handlers
+// registered with its image handle run, newest first, while its code is
+// still mapped.
+static void cir_ctx_run_exit_handlers(MIR_context_t ctx)
+{
+    MIR_item_t handle = cir_ctx_definition(ctx, "__dso_handle");
+    if (!handle || !handle->addr)
+	return;			// no startup member: nothing registered here
+    // The image's own __cxa_finalize where a member defines it (Windows),
+    // else the C library's.
+    typedef void (*cir_finalize_fn)(void *);
+    cir_finalize_fn fin = NULL;
+    if (MIR_item_t f = cir_ctx_definition(ctx, "__cxa_finalize"))
+	fin = (cir_finalize_fn)f->addr;
+    else
+	fin = (cir_finalize_fn)madcdl_sym_default("__cxa_finalize");
+    if (fin)
+	fin(handle->addr);
+}
+
+// Windows: a JIT session's handlers live in its own startup member's list (no
+// DLL exports __cxa_atexit), which the UCRT's exit never sees. A DLL's list
+// runs at DLL_PROCESS_DETACH; the live sessions' lists run from one host hook
+// at process exit, while their code is still mapped — so exit() called inside
+// a program runs them. A session leaves the registry when it ends. Elsewhere
+// the C library's exit already runs every __cxa_atexit entry.
+// The hook goes in the UCRT's process exit table (_crt_atexit, as an
+// executable's startup member hands its list over): exit() runs that table,
+// quick_exit and _Exit do not. atexit() called in this DLL would land in
+// mingw's per-DLL table, which DLL_PROCESS_DETACH runs on EVERY termination,
+// so quick_exit ran the atexit handlers. The table then holds a pointer into
+// this DLL, so the DLL is pinned first: a host's FreeLibrary never unmaps it.
+// Thread safety: the registry mutates under its mutex; the hook takes it too.
+#if MADC_TARGET_WINDOWS_P
+#include <corecrt_startup.h>	// _crt_atexit
+
+static std::mutex cir_live_exit_lock;
+static std::set<MIR_context_t> cir_live_exit_ctxs;
+
+static void cir_live_exit_hook()
+{
+    std::lock_guard<std::mutex> hold(cir_live_exit_lock);
+    for (MIR_context_t ctx : cir_live_exit_ctxs)
+	cir_ctx_run_exit_handlers(ctx);
+    cir_live_exit_ctxs.clear();
+}
+
+static void cir_live_exit_add(MIR_context_t ctx)
+{
+    // Once (a function-local static: mingw's std::call_once calls a null
+    // pointer through its per-thread proxy).
+    static const bool hooked = madcdl_pin_image_of((const void *)&cir_live_exit_hook)
+			       && _crt_atexit(cir_live_exit_hook) == 0;
+    (void)hooked;
+    std::lock_guard<std::mutex> hold(cir_live_exit_lock);
+    cir_live_exit_ctxs.insert(ctx);
+}
+
+static void cir_live_exit_remove(MIR_context_t ctx)
+{
+    std::lock_guard<std::mutex> hold(cir_live_exit_lock);
+    cir_live_exit_ctxs.erase(ctx);
+}
+#else
+static void cir_live_exit_add(MIR_context_t) {}
+static void cir_live_exit_remove(MIR_context_t) {}
+#endif
+
 CirJitSession::~CirJitSession()
 {
     teardown();
@@ -1049,6 +1314,12 @@ CirJitSession::~CirJitSession()
 
 void CirJitSession::teardown()
 {
+    // The session's end is its image's exit: the handlers run while its
+    // code is still mapped.
+    run_exit_handlers();
+    if (linked && ctx)
+	cir_live_exit_remove(ctx);
+    linked = false;
     // The proven madc_cir_execute order; the builder / forest own the node
     // storage backing the module, so they are deleted last.
     if (c2m) cir_finish(c2m);
@@ -1115,6 +1386,24 @@ static bool cir_register_tu_init(MIR_context_t ctx, CirBuilder *b,
 	fprintf(stderr, "%s: cannot register module init '%s' in the object"
 		" capture\n", source_name, b->tu_init_name().c_str());
 	return false;
+    }
+    return true;
+}
+
+// Object mode: a pulled startup member's image init (the Windows exit list's
+// hook into the UCRT's exit) joins the capture's .init_array beside the TU
+// inits. Same after-link rule as cir_register_tu_init.
+static bool cir_register_crt_inits(MIR_context_t ctx, const char *source_name)
+{
+    for (const madc_crt_member *m = madc_crt_members; m->name; m++) {
+	if (!m->init || !cir_ctx_definition(ctx, m->init))
+	    continue;
+	MIR_object_t o = MIR_gen_get_object(ctx);
+	if (!o || MIR_object_add_init(o, m->init) != 0) {
+	    fprintf(stderr, "%s: cannot register startup init '%s' in the"
+		    " object capture\n", source_name, m->init);
+	    return false;
+	}
     }
     return true;
 }
@@ -1204,6 +1493,14 @@ static bool cir_emit_alias_symbols(MIR_context_t ctx, Program *prog,
 
 bool CirJitSession::load_and_link(const char *source_name, Program *prog)
 {
+    // The startup members the modules about to load import (the image
+    // handle, atexit, ...), ahead of the error frame armed below: each
+    // member read arms its own.
+    if (cache_mod)
+	cir_crt_pull_for(ctx, cache_mod);
+    if (stub_mod)
+	cir_crt_pull_for(ctx, stub_mod);
+    cir_crt_pull_for(ctx, mod);
     if (setjmp(cir_mir_error_jmp)) {
 	// A MIR fatal (e.g. "import of undefined item") longjmp'd back here.
 	cir_mir_error_armed = false;
@@ -1245,6 +1542,8 @@ bool CirJitSession::load_and_link(const char *source_name, Program *prog)
 	stub_mod = NULL;
     }
     MIR_load_module(ctx, mod);
+    if (live_mode)
+	make_interposable(mod);
     mc_lap("load(consumer)");
     if (cache_mod)
 	cir_prebind_cache_traps(ctx, cache_mod, mod);
@@ -1293,6 +1592,9 @@ bool CirJitSession::load_and_link(const char *source_name, Program *prog)
 	    cir_register_source_debug(ctx);
     }
     cir_mir_error_armed = false;
+    if (!linked && !madc_object_mode)
+	cir_live_exit_add(ctx);
+    linked = true;
     return true;
 }
 
@@ -1423,7 +1725,8 @@ bool CirJitSession::build(Program *prog, const char *source_name,
 
     if (!load_and_link(source_name, prog))
 	return false;
-    if (madc_object_mode && !cir_register_tu_init(ctx, builder, source_name)) {
+    if (madc_object_mode && (!cir_register_tu_init(ctx, builder, source_name)
+			     || !cir_register_crt_inits(ctx, source_name))) {
 	teardown();
 	return false;
     }
@@ -1910,6 +2213,88 @@ void CirJitSession::make_function_stubs(const std::vector<madc::dis::istring> &n
     stub_mod = DLIST_TAIL(MIR_module_t, *MIR_get_module_list(ctx));
 }
 
+// Plan §42 D5 / D6: once loaded, a function or an object an entry defines is
+// interposable, as a shared library's is to ld.so: weak, so no caller bakes a
+// function's body in (MIR inlines no weak callee) and a later definition
+// replaces it in place (replaced_weak_def). A function's takes its thunk and
+// an object's is loaded into its storage, so the code already linked and the
+// pointers already taken reach the newest definition. A vague-linkage
+// function is too (vague_functions_interposable); vague-linkage data keeps
+// its binding.
+static bool cir_object_item_p(MIR_item_t it)
+{
+    return it->item_type == MIR_data_item || it->item_type == MIR_bss_item
+	   || it->item_type == MIR_ref_data_item
+	   || it->item_type == MIR_expr_data_item;
+}
+
+void CirJitSession::make_interposable(MIR_module_t m)
+{
+    for (MIR_item_t it = DLIST_HEAD(MIR_item_t, m->items); it;
+	 it = DLIST_NEXT(MIR_item_t, it))
+	if (it->export_p
+	    && ((it->item_type == MIR_func_item
+		 && it->binding == MIR_ITEM_BIND_LINKONCE)
+		|| ((it->item_type == MIR_func_item || cir_object_item_p(it))
+		    && it->binding == MIR_ITEM_BIND_GLOBAL)))
+	    MIR_item_set_binding(ctx, it, MIR_ITEM_BIND_WEAK);
+}
+
+// A vague-linkage function (an inline body, an instantiation) is interposable
+// in a session too, so a redefinition (D5, a strong body) replaces it in place
+// and no caller inlines it. Before the link check and the load, an entry's
+// copy of one an earlier entry defines is weak, so it binds to that
+// definition (MIR keeps the first of two weak definitions). The first copy
+// loads as emitted — it is the definition, and it replaces a stub that waits
+// for it (D27) — and make_interposable makes it weak once loaded.
+// Vague-linkage data keeps its binding: a static local or a vtable stays one
+// object, never reloaded over.
+void CirJitSession::vague_functions_interposable(MIR_module_t m)
+{
+    for (MIR_item_t it = DLIST_HEAD(MIR_item_t, m->items); it;
+	 it = DLIST_NEXT(MIR_item_t, it)) {
+	if (it->item_type != MIR_func_item || !it->export_p
+	    || it->binding != MIR_ITEM_BIND_LINKONCE)
+	    continue;
+	const char *nm = MIR_item_name(ctx, it);
+	if (nm && !late_stubs.count(nm) && find_item(nm, true))
+	    MIR_item_set_binding(ctx, it, MIR_ITEM_BIND_WEAK);
+    }
+}
+
+// D6: a redefined object takes over the storage the earlier one has, so it
+// must take exactly as many bytes (a type the parser compares coarsely — an
+// array whose bound its initializer sets — can still change size). False,
+// with a diagnostic per object, when one does not.
+bool CirJitSession::redefinitions_fit(MIR_module_t m, Program *prog,
+				      const char *entry_name)
+{
+    bool fit = true;
+    for (MIR_item_t it = DLIST_HEAD(MIR_item_t, m->items); it;
+	 it = DLIST_NEXT(MIR_item_t, it)) {
+	if (!cir_object_item_p(it) || !it->export_p
+	    || it->binding != MIR_ITEM_BIND_GLOBAL)
+	    continue;
+	const char *nm = MIR_item_name(ctx, it);
+	MIR_item_t live = nm ? find_item(nm, false) : NULL;
+	if (!live || live->binding != MIR_ITEM_BIND_WEAK)
+	    continue;
+	const size_t was = _MIR_data_section_len(ctx, live);
+	const size_t now = _MIR_data_section_len(ctx, it);
+	if (was == now)
+	    continue;
+	fit = false;
+	prog->record_frontend_error(Program::DiagnosticPhase::compiler,
+				    "'" + cir_link_display_name(nm)
+				    + "' changes size (" + std::to_string(was)
+				    + " to " + std::to_string(now)
+				    + " bytes): a redefinition keeps its type"
+				    " (%run rebuilds the session)",
+				    entry_name, 0, 0);
+    }
+    return fit;
+}
+
 // After an entry links: a stub whose function the entry defined was replaced
 // by the loader, and one that a library now provides (an entry's `import` or
 // `#load`) is redirected to the library's function.
@@ -1965,7 +2350,7 @@ bool CirJitSession::admits(MIR_module_t m, Program *prog, const char *entry_name
 			  cir_record_link_refusal, &refusal);
     cir_active_host_regs = NULL;
     cir_active_cells = NULL;
-    if (refusal.refused != 0)
+    if (refusal.refused != 0 || !redefinitions_fit(m, prog, entry_name))
 	return false;
     if (!refusal.late.empty())
 	make_function_stubs(refusal.late);
@@ -2006,6 +2391,53 @@ bool CirJitSession::begin_live(const char *session_name)
     return true;
 }
 
+bool CirJitSession::imports(const char *name) const
+{
+    for (MIR_module_t m : live_mods)
+	for (MIR_item_t it = DLIST_HEAD(MIR_item_t, m->items); it;
+	     it = DLIST_NEXT(MIR_item_t, it))
+	    if (it->item_type == MIR_import_item
+		&& strcmp(MIR_item_name(ctx, it), name) == 0)
+		return true;
+    return false;
+}
+
+// A destructor called with its object's address, through the boundary's
+// one-pointer call.
+struct CirDestroyCall
+{
+    void *fn;
+    void *obj;
+};
+
+static void cir_call_destroy(void *call)
+{
+    CirDestroyCall *dc = (CirDestroyCall *)call;
+    ((void (*)(void *))dc->fn)(dc->obj);
+}
+
+// Plan §42 D6: a destructible object the admitted entry redefines ends its
+// lifetime first, as an assigned object's old value does. The load copies
+// the new definition's bytes over its storage and the entry's init constructs
+// the new object there; the registration the first definition made destroys
+// the newest at session end. The destructor is an entry's (generated here) or
+// a library's.
+void CirJitSession::destroy_redefined(Program *prog, const char *entry_name,
+				      CirBuilder *b)
+{
+    if (!b)
+	return;
+    for (const auto &od : b->redefined_destroys()) {
+	CirDestroyCall dc;
+	dc.obj = data_address(od.first.c_str());
+	dc.fn = function_code(od.second.c_str());
+	if (!dc.fn)
+	    dc.fn = cir_import_resolver(od.second.c_str());
+	if (dc.obj && dc.fn)
+	    cir_run_at_entry_boundary(prog, entry_name, cir_call_destroy, &dc);
+    }
+}
+
 bool CirJitSession::append(Program *prog, const char *entry_name)
 {
     if (!live_mode || !ctx || !prog)
@@ -2035,9 +2467,14 @@ bool CirJitSession::append(Program *prog, const char *entry_name)
 	return false;
     }
     live_init.clear();
+    // The startup members the entry imports join the session ahead of its
+    // link check, and stay whether or not the entry is admitted.
+    cir_crt_pull_for(ctx, m);
+    vague_functions_interposable(m);
     // Refused: never loaded, never one of live_mods, never `mod`.
     if (!admits(m, prog, entry_name, b))
 	return false;
+    destroy_redefined(prog, entry_name, b);
     live_mods.push_back(m);
     mod = m;
     if (!load_and_link(entry_name, prog)) {
@@ -2064,6 +2501,10 @@ bool CirJitSession::append(Program *prog, const char *entry_name)
 	const char *nm = MIR_item_name(ctx, it);
 	if (nm && nm[0])
 	    prog->session_defined.insert(nm);
+	// A redefinition (D5): the code generated for the earlier body is
+	// no longer the function's.
+	if (nm && it->item_type == MIR_func_item)
+	    gen_cache.erase(nm);
     }
     rebind_late_stubs(m, prog);
     bind_late_cells(prog);
@@ -2154,6 +2595,17 @@ int CirJitSession::run_main(int argc, char **argv, bool *ok, double *out_secs)
 	    std::chrono::steady_clock::now() - _ex_t0).count();
     g_jit_module = NULL;
     return result;
+}
+
+void CirJitSession::run_exit_handlers()
+{
+    if (!ctx || !linked || madc_object_mode)
+	return;
+    // A crash in a destructor still symbolizes.
+    MIR_module_t saved = g_jit_module;
+    g_jit_module = mod;
+    cir_ctx_run_exit_handlers(ctx);
+    g_jit_module = saved;
 }
 
 int madc_cir_execute(Program *prog, const char *source_name,
@@ -2544,6 +2996,11 @@ static void cir_fill_exec_params(MIR_object_exec_params &xp,
 	xp.gui_subsystem_p = gui_subsystem;
     }
     xp.runpath = runpath.empty() ? NULL : runpath.c_str();
+    // The startup members' image fini (the image handle's): the writer names
+    // it in DT_FINI when the image defines it, i.e. pulled the member.
+    for (const madc_crt_member *m = madc_crt_members; m->name; m++)
+	if (m->fini)
+	    xp.fini = m->fini;
 }
 
 #if MADC_TARGET_APPLE_P
@@ -3140,12 +3597,13 @@ int madc_cir_link_objects(const std::vector<std::string> &paths,
     MIR_object_t obj = cir_read_objects(paths);
     if (!obj)
 	return -1;
-    // -static-libmadc: the runtime pieces this program needs come in as one
-    // more relocatable, generated from the AOT ledger against the merged
-    // builder's own UNDEF names. -r never reaches here (the CLI requires a
-    // linked output), so the runtime is merged exactly once, at the link that
-    // produces the image — gcc's -static-libgcc placement.
-    if (madc_static_libmadc) {
+    // The startup members and, under -static-libmadc, the AOT ledger's
+    // runtime pieces this program needs come in as one more relocatable,
+    // generated against the merged builder's own UNDEF names. -r never
+    // reaches here (the CLI requires a linked output), so they merge exactly
+    // once, at the link that produces the image — gcc's crtbegin.o /
+    // -static-libgcc placement.
+    {
 	std::vector<madc::dis::istring> seed;
 	cir_object_undef_names(obj, seed);
 	std::vector<uint8_t> rt;
@@ -3156,7 +3614,7 @@ int madc_cir_link_objects(const std::vector<std::string> &paths,
 	char err[256];
 	if (!rt.empty()
 	    && MIR_object_read(obj, rt.data(), rt.size(), err, sizeof err) != 0) {
-	    fprintf(stderr, "madc: -static-libmadc: cannot merge the AOT-ledger"
+	    fprintf(stderr, "madc: cannot merge the startup / AOT-ledger"
 		    " runtime: %s\n", err);
 	    MIR_object_destroy(obj);
 	    return -1;
@@ -3403,6 +3861,8 @@ static void cir_forest_fill_pack_payloads(Program *prog, cir_frozen_forest &f)
 	unit_toks[u].push_back(tb);
     }
 
+    f.token_unit = unit_of;	// v58: each arena slot's point-of-creation unit
+
     // 2. Decl index: global [begin,end) -> (unit, local slice).
     for (size_t d = 0; d < prog->pack_decls.size(); ++d) {
 	const Program::PackDeclEntry &e = prog->pack_decls[d];
@@ -3419,12 +3879,22 @@ static void cir_forest_fill_pack_payloads(Program *prog, cir_frozen_forest &f)
 	    else
 		aux |= Program::PACK_DECL_SPANS_UNITS;
 	}
+	// The function-name index (CIR_FOREST_SEG_FUNC_NAMES) lists the
+	// functions the adoption probe can adopt: their prototype's shape is
+	// judged here, on the producer's own FuncDef.
+	if (e.kind == Program::pdkFunction) {
+	    funcdef_map_t::const_iterator fi = prog->funcdef_map.find(e.name);
+	    if (fi != prog->funcdef_map.end() && fi->second
+		&& !Program::forest_adoption_decline(fi->second))
+		aux |= Program::PACK_DECL_ADOPTABLE;
+	}
 	cir_forest_decl_entry de;
 	de.name_id     = pool->intern(e.name);
 	de.kind        = e.kind;
 	de.slice_begin = local_of[e.begin];
 	de.slice_end   = last_local + 1;
 	de.aux         = aux;
+	de.record_id   = CIR_DECL_RECORD_NONE;	// cir_forest_build_seeds fills it
 	f.units[u].decl_index.push_back(de);
     }
 
@@ -3621,6 +4091,21 @@ static uint32_t forest_serialize_type_id(DataDef *dd)
 	return madc_type_id_for(dd);
 }
 
+// A record the freeze writes for an entity with a point of creation (a
+// using-binding: its target function's) is placed there (pack-slices design
+// §4) — unless the parse already stamped the slot.
+static void forest_stamp_poi(Program *prog, uint32_t tid, uint32_t poi)
+{
+	if (!prog->pack_recording || poi == 0xffffffffu
+	    || !madc::dis::arena_id_is_project(tid))
+		return;
+	uint32_t slot = madc::dis::arena_slot_of(tid);
+	if (prog->forest_arena_poi.size() <= slot)
+		prog->forest_arena_poi.resize((size_t)slot + 1, 0xffffffffu);
+	if (prog->forest_arena_poi[slot] == 0xffffffffu)
+		prog->forest_arena_poi[slot] = poi;
+}
+
 // An OPAQUE dependent placeholder never freezes (see the kill arm in
 // forest_arena_record_aggregate); an alias / static-member-type entry that
 // TARGETS one must not freeze either — its serialized tid has a killed
@@ -3633,6 +4118,48 @@ static bool forest_type_is_opaque_placeholder(DataDef *dd)
 	// recursion tail) is legitimate live state and freezes in the v21
 	// empty shape; only pattern-context placeholders are pack artifacts.
 	return cdd && cdd->is_dependent_placeholder && !cdd->opaque_concrete_tag;
+}
+
+// The one parse-time arena write (declared beside forest_arena in madc.h): the
+// record, and under a freeze its slot's point of creation.
+void Program::forest_arena_put(uint32_t tid, const madc::dis::defrec &r)
+{
+	forest_arena.set_def_at(tid, r);
+	if (!pack_recording || !madc::dis::arena_id_is_project(tid))
+		return;
+	uint32_t slot = madc::dis::arena_slot_of(tid);
+	uint32_t poi = 0xffffffffu;
+	if (!pack_decl_stack.empty())
+		poi = (uint32_t)pack_decl_stack.back().begin;
+	else {
+		// Written with no declaration open (the freeze's re-record of
+		// live state): the record's entity keeps the point of creation
+		// it was born under (DataDef::pack_poi) — never overriding a
+		// stamp an earlier parse-time write left.
+		if (DataDef *dd = type_from_id(tid))
+			poi = dd->pack_poi;
+		if (poi == 0xffffffffu || (slot < forest_arena_poi.size()
+					   && forest_arena_poi[slot] != 0xffffffffu))
+			return;
+	}
+	if (poi == 0xffffffffu)
+		return;
+	if (forest_arena_poi.size() <= slot)
+		forest_arena_poi.resize((size_t)slot + 1, 0xffffffffu);
+	forest_arena_poi[slot] = poi;
+}
+
+void Program::forest_arena_stamp_file(uint32_t tid, const char *file)
+{
+	if (!pack_recording || !file || !*file
+	    || !madc::dis::arena_id_is_project(tid))
+		return;
+	uint32_t slot = madc::dis::arena_slot_of(tid);
+	if (slot < forest_arena_poi.size() && forest_arena_poi[slot] != 0xffffffffu)
+		return;		// the parse stamped it
+	if (forest_arena_file.size() <= slot)
+		forest_arena_file.resize((size_t)slot + 1, (const char *)NULL);
+	forest_arena_file[slot] = file;
 }
 
 // B3 write-through (SLICE 1c/1d): record a newly-created PROJECT unary derived type — pointer,
@@ -3694,7 +4221,7 @@ void Program::forest_arena_record_unary(DataDef *dd)
 	r.carray_count_lo = (uint32_t)(carray_count & 0xffffffffu);
 	r.carray_count_hi = (uint32_t)(carray_count >> 32);
 	r.flags    = record_flags;
-	forest_arena.set_def_at(tid, r);
+	forest_arena_put(tid, r);
 }
 
 // B3 write-through (SLICE 1e): record a COMPLETED project aggregate — struct, union, or class
@@ -4071,7 +4598,7 @@ void Program::forest_arena_record_aggregate(DataDefSTRUCT *sdd)
 	for (size_t i = 0; i < arun.size(); ++i)
 		forest_arena.add_payload(arun[i]);
 
-	forest_arena.set_def_at(tid, r);
+	forest_arena_put(tid, r);
 }
 
 // B3 write-through (SLICE 1f): record a FuncDef as a DK_FUNC record at its project-id slot —
@@ -4234,7 +4761,7 @@ void Program::forest_arena_record_func(FuncDef *fd, Method *mth)
 			forest_arena.add_payload(ar);
 		}
 	}
-	forest_arena.set_def_at(tid, r);
+	forest_arena_put(tid, r);
 }
 
 // v22 (iostream): record a FUNCTION-POINTER type reached through a member /
@@ -4265,10 +4792,10 @@ void Program::forest_arena_record_fptr(DataDef *dd)
 			r.datatype = (uint32_t)fp->rawtype();
 			if (fp->ptr_syntax)
 				r.flags |= madc::dis::DF_FPTR_PTR_SYNTAX;
-			forest_arena.set_def_at(tid, r);	// self-ref guard: write first
+			forest_arena_put(tid, r);	// self-ref guard: write first
 			if (fp->target) {
 				r.ref0 = forest_serialize_type_id(fp->target);
-				forest_arena.set_def_at(tid, r);
+				forest_arena_put(tid, r);
 				if (madc::dis::arena_id_is_project(r.ref0)
 				    && !forest_arena.has_def(r.ref0))
 					forest_arena_record_func(fp->target);
@@ -4328,12 +4855,12 @@ void Program::forest_arena_record_member_pointer(DataDef *dd)
 		if (mf->is_const_method)
 			r.flags |= madc::dis::DF_MEMBERPTR_CONST_METHOD;
 	}
-	forest_arena.set_def_at(tid, r);	// self-ref guard: write first
+	forest_arena_put(tid, r);	// self-ref guard: write first
 	if (mf) {
 		if (!mf->target)
 			return;
 		r.ref0 = forest_serialize_type_id(mf->target);
-		forest_arena.set_def_at(tid, r);
+		forest_arena_put(tid, r);
 		if (madc::dis::arena_id_is_project(r.ref0)
 		    && !forest_arena.has_def(r.ref0))
 			forest_arena_record_func(mf->target);
@@ -4342,7 +4869,7 @@ void Program::forest_arena_record_member_pointer(DataDef *dd)
 	if (!md->member_type)
 		return;
 	r.ref0 = forest_serialize_type_id(md->member_type);
-	forest_arena.set_def_at(tid, r);
+	forest_arena_put(tid, r);
 	forest_arena_record_fptr(md->member_type);	// a fn-ptr or member-pointer member
 }
 
@@ -4358,8 +4885,9 @@ void Program::forest_arena_record_member_pointer(DataDef *dd)
 // as the retired v6 save-side filter did. No initializer is stored for a class
 // global: collect_global_ctors synthesizes the default ctor from the class's
 // restored ctor set (v12); the initializer FORM rides gflags (v16) and a
-// scalar-const's VALUE rides init_value (v14). Dedup by name (a global appears
-// once). Names intern into the ACTIVE pool that cir_forest_write serializes.
+// scalar-const's VALUE rides init_value (v14). Dedup by identity (a global
+// appears once; global_identity). Names intern into the ACTIVE pool that
+// cir_forest_write serializes.
 static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
 {
     if (!prog || !TokenBase::_active_strpool || !prog->tkProgram)
@@ -4371,25 +4899,78 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
     // that sits in tkProgram->variables; a consumer's fresh instantiation resolves
     // the tag by QUALIFIED name through that binding, so record it (reverse walk —
     // the v10 namespace discipline; first match wins, live has one owner per tag).
-    auto global_ns_id = [&](Variable *gv) -> uint32_t {
+    // Does namespace `key` hold this very Variable?
+    auto ns_holds = [&](const madc::dis::istring &key, Variable *gv) -> bool {
+	auto nsi = prog->namespace_map.find(key);
+	if (nsi == prog->namespace_map.end())
+	    return false;
+	variable_map_t::iterator ni = nsi->second.find(gv->name);
+	return ni != nsi->second.end() && ni->second == gv;
+    };
+    // A tagged C++ enum's enumerator is ALSO indexed under its tag's
+    // pseudo-namespace ([dcl.enum]/11; TokenENUM's scope_ns): `T` at global
+    // scope, `R::T` beside its real namespace R. That index is the TAG's —
+    // the restore rebuilds it from the enum's own record — never the scope
+    // that holds the enumerator.
+    auto tag_scope = [&](Variable *gv, const madc::dis::istring &key) -> bool {
+	const DataDefENUM *ed = gv->is_enumerator()
+	    ? dynamic_cast<const DataDefENUM *>(gv->type) : NULL;
+	if (!ed || ed->enum_name.empty())
+	    return false;
+	if (key == ed->enum_name)
+	    return true;
+	const size_t kn = key.size(), tn = ed->enum_name.size();
+	const char *k = key.c_str();
+	return kn > tn + 2 && k[kn - tn - 2] == ':' && k[kn - tn - 1] == ':'
+	    && strcmp(k + kn - tn, ed->enum_name.c_str()) == 0
+	    && ns_holds(madc::dis::istring(k, kn - tn - 2), gv);
+    };
+    auto global_ns = [&](Variable *gv) -> const madc::dis::istring * {
 	for (auto &nskv : prog->namespace_map) {
-	    if (nskv.first.empty())
+	    if (nskv.first.empty() || tag_scope(gv, nskv.first))
 		continue;
 	    variable_map_t::iterator ni = nskv.second.find(gv->name);
 	    if (ni != nskv.second.end() && ni->second == gv)
-		return pool.intern(nskv.first);
+		return &nskv.first;
 	}
-	return 0;
+	return NULL;
+    };
+    auto global_ns_id = [&](Variable *gv) -> uint32_t {
+	const madc::dis::istring *ns = global_ns(gv);
+	return ns ? pool.intern(*ns) : 0u;
+    };
+    // A global's identity is live's (addVariable): a named namespace's member,
+    // else the program's name — ui::NONE and a C enum's NONE are two globals.
+    auto global_identity = [&](Variable *gv) -> madc::dis::istring {
+	const madc::dis::istring *ns = global_ns(gv);
+	return ns ? madc::dis::istring(*ns + "::" + gv->name) : gv->name;
     };
     // v24: a global DECLARED in the TU's root file (the program's own globals)
     // is fenced from the bind restore. Provenance = its dkGlobalVar TopDecl's
     // decl token; a global without one classifies include-origin (conservative:
     // it keeps restoring, like the header tag globals).
-    auto global_tu_root = [&](Variable *gv) -> bool {
+    auto global_top_decl = [&](Variable *gv) -> const Program::TopDecl * {
 	for (auto &t : prog->top_decls)
 	    if (t.kind == Program::DeclKind::dkGlobalVar && t.var == gv)
-		return t.decl && prog->forest_is_tu_root_file(t.decl->file);
-	return false;
+		return &t;
+	return NULL;
+    };
+    auto global_tu_root = [&](Variable *gv) -> bool {
+	const Program::TopDecl *t = global_top_decl(gv);
+	return t && t->decl && prog->forest_is_tu_root_file(t->decl->file);
+    };
+    // The pack's seed index places a global its name does not decide with
+    // the unit of this file (docs/plans/2026-10-13-pack-slices-design.md §4).
+    auto global_decl_file = [&](Variable *gv) -> const char * {
+	const Program::TopDecl *t = global_top_decl(gv);
+	return t && t->decl ? t->decl->file : NULL;
+    };
+    auto push_global = [&](const cir_forest_global_record &g, const char *file,
+			   const Variable *gv) {
+	f.globals.push_back(g);
+	f.global_files.push_back(file);
+	f.global_poi.push_back(gv->pack_poi);
+	f.global_ctx.push_back(gv->pack_ctx);
     };
     // v39: the emitted symbol this Variable resolves to, VERBATIM. Live derived
     // it through whichever owner the entity's category has —
@@ -4421,7 +5002,7 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
 		prog->forest_enum_const_origin.find(v->name);
 	    if (eo != prog->forest_enum_const_origin.end()) {
 		uint32_t esid = forest_serialize_type_id(v->type);
-		if (!esid || !seen_globals.insert(v->name).second)
+		if (!esid || !seen_globals.insert(global_identity(v)).second)
 			continue;
 		cir_forest_global_record g;
 		memset(&g, 0, sizeof(g));
@@ -4439,7 +5020,7 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
 			  << ((g.gflags & CIR_GLOBALF_TU_ROOT)
 			      ? " (TU-root)" : "")
 			  << std::endl);
-		f.globals.push_back(g);
+		push_global(g, eo->second, v);
 		continue;
 	    }
 	}
@@ -4457,7 +5038,7 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
 		  || (madc::dis::arena_id_is_project(xtid)
 		      && prog->forest_arena.has_def(xtid))))
 		continue;
-	    if (!seen_globals.insert(v->name).second)
+	    if (!seen_globals.insert(global_identity(v)).second)
 		continue;
 	    cir_forest_global_record g;
 	    memset(&g, 0, sizeof(g));
@@ -4469,7 +5050,7 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
 		g.gflags |= CIR_GLOBALF_TU_ROOT;
 	    g.ns_id   = global_ns_id(v);
 	    g.alias_id   = global_alias_id(v);	// v39
-	    f.globals.push_back(g);
+	    push_global(g, global_decl_file(v), v);
 	    continue;
 	}
 	DataDefCLASS *cdd = dynamic_cast<DataDefCLASS *>(v->type);
@@ -4478,7 +5059,7 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
 	    if (!madc::dis::arena_id_is_project(ctid)
 		|| !prog->forest_arena.has_def(ctid))
 		continue;	// class not in the arena -> its global cleanly lacks
-	    if (!seen_globals.insert(v->name).second)
+	    if (!seen_globals.insert(global_identity(v)).second)
 		continue;
 	    cir_forest_global_record g;
 	    memset(&g, 0, sizeof(g));
@@ -4541,7 +5122,7 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
 		}
 		break;
 	    }
-	    f.globals.push_back(g);
+	    push_global(g, global_decl_file(v), v);
 	    continue;
 	}
 	// v14: a SCALAR-const file-scope global (e.g. hardware_*_interference_size
@@ -4570,7 +5151,7 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
 	    uint32_t usid = forest_serialize_type_id(v->type);
 	    if (!usid)
 		continue;
-	    if (!seen_globals.insert(v->name).second)
+	    if (!seen_globals.insert(global_identity(v)).second)
 		continue;
 	    cir_forest_global_record g;
 	    memset(&g, 0, sizeof(g));
@@ -4582,7 +5163,7 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
 		g.gflags |= CIR_GLOBALF_TU_ROOT;
 	    g.ns_id   = global_ns_id(v);
 	    g.alias_id   = global_alias_id(v);	// v39
-	    f.globals.push_back(g);
+	    push_global(g, td->file, v);
 	    continue;
 	}
 	TokenBase *rhs = td->initialize;
@@ -4600,7 +5181,7 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
 	uint32_t sid = forest_serialize_type_id(v->type);
 	if (!sid)
 	    continue;
-	if (!seen_globals.insert(v->name).second)
+	if (!seen_globals.insert(global_identity(v)).second)
 	    continue;
 	cir_forest_global_record g;
 	memset(&g, 0, sizeof(g));
@@ -4613,7 +5194,7 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
 	g.ns_id      = global_ns_id(v);
 	g.alias_id      = global_alias_id(v);	// v39
 	g.init_value = rhs->ival();
-	f.globals.push_back(g);
+	push_global(g, td ? td->file : NULL, v);
     }
 }
 
@@ -5693,6 +6274,7 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f,
 				r.ns_id   = a.strings.intern(ns.c_str());
 				r.name_id = a.strings.intern(name.c_str());
 				r.disp_id = a.strings.intern(ki->second.c_str());
+				forest_stamp_poi(prog, next, fd->pack_poi);
 				a.set_def_at(next++, r);
 			}
 		}
@@ -5725,6 +6307,7 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f,
 				r.ns_id   = a.strings.intern(ni->first.c_str());
 				r.name_id = a.strings.intern(vi->first.c_str());
 				r.disp_id = a.strings.intern(ki->second.c_str());
+				forest_stamp_poi(prog, next, fd->pack_poi);
 				a.set_def_at(next++, r);
 			}
 		}
@@ -6013,7 +6596,7 @@ static void forest_record_enum(Program *prog, DataDefENUM *edd,
 	r.constval_count = (uint32_t)evs.size();
 	for (size_t e = 0; e < evs.size(); ++e)
 		prog->forest_arena.add_payload(evs[e]);
-	prog->forest_arena.set_def_at(tid, r);
+	prog->forest_arena_put(tid, r);
 }
 
 // B3 flip (Chunk 2): RE-RECORD every live project aggregate into the arena at
@@ -6142,8 +6725,22 @@ static void cir_forest_arena_refresh(Program *prog,
 	// resolution chokepoint for a qualified `std::_Destroy(...)` call in a
 	// NEW-specialization instantiation. Templates / member-template PATTERNS
 	// still skip (a pattern is not a concrete symbol).
+	// Walked in point-of-creation order: a function's first project id is
+	// assigned here, so creation order is what keeps one header's functions
+	// in neighbouring arena slots — the blocks a bind decodes (pack-slices
+	// design §3). The map's own (name) order scattered them over the arena.
+	std::vector<funcdef_map_iter> rc2_order;
 	for (funcdef_map_iter it = prog->funcdef_map.begin();
-	     it != prog->funcdef_map.end(); ++it) {
+	     it != prog->funcdef_map.end(); ++it)
+		rc2_order.push_back(it);
+	std::stable_sort(rc2_order.begin(), rc2_order.end(),
+		[](const funcdef_map_iter &a, const funcdef_map_iter &b) {
+			uint32_t pa = a->second ? a->second->pack_poi : 0xffffffffu;
+			uint32_t pb = b->second ? b->second->pack_poi : 0xffffffffu;
+			return pa < pb;
+		});
+	for (size_t oi = 0; oi < rc2_order.size(); ++oi) {
+		funcdef_map_iter it = rc2_order[oi];
 		FuncDef *fd = it->second;
 #ifdef MADC_DBG_PACK
 		bool rc2probe = it->first.find("stoi") != madc::dis::istring::npos
@@ -6158,6 +6755,11 @@ static void cir_forest_arena_refresh(Program *prog,
 		if (!fd || it->first.empty())
 			continue;
 		if (fd->is_member_template || !fd->template_param_names.empty())
+			continue;
+		// A builtin registration exists in every Program before any
+		// source is read (add_core_functions et al.) — nothing for a bind
+		// to restore, and no unit to place it with.
+		if (fd->builtin_registration)
 			continue;
 		// UN-CARRIABLE pack product (pack_dropped): no record at all —
 		// a restored decl-only rank would SHADOW the pattern
@@ -6213,7 +6815,8 @@ static void cir_forest_arena_refresh(Program *prog,
 		if (!fd->namespace_name.empty())
 			r.ns_id = prog->forest_arena.strings.intern(
 				fd->namespace_name.c_str());
-		prog->forest_arena.set_def_at(tid, r);
+		prog->forest_arena_put(tid, r);
+		prog->forest_arena_stamp_file(tid, fd->decl_file);
 	}
 }
 
@@ -6392,19 +6995,8 @@ bool madc_cir_ledger_compile(MadcEngine &engine,
 	}
 	cir_ledger_module lm;
 	lm.name = sources[i];
-	// The DEFINED symbol set is the selection index: every func / data
-	// item the module owns. Imports, protos and forwards define nothing.
-	for (MIR_item_t it = DLIST_HEAD(MIR_item_t, mod->items); it;
-	     it = DLIST_NEXT(MIR_item_t, it)) {
-	    if (it->item_type == MIR_import_item
-		|| it->item_type == MIR_export_item
-		|| it->item_type == MIR_forward_item
-		|| it->item_type == MIR_proto_item)
-		continue;
-	    const char *nm = MIR_item_name(ctx, it);
-	    if (nm && nm[0])
-		lm.syms.push_back(nm);
-	}
+	// The DEFINED symbol set is the selection index.
+	cir_module_defined_syms(ctx, mod, lm.syms);
 	if (!cir_ledger_write_module(ctx, mod, sources[i].c_str(), lm.bytes)) {
 	    ok = false;
 	    break;
@@ -6643,6 +7235,31 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 						  : NULL);	// freeze-time fidelity (inline bodies / typedefs / ns)
 		cir_forest_fill_globals(prog, f);	// file-scope globals (CIR_GLOBALS; ids swizzle via the arena)
 		cir_forest_fill_templates(prog, f);	// v20: template-NAME state (pattern maps, token runs)
+		// v58: the seed index — what a bind of each unit visits and how
+		// it judges it (docs/plans/2026-10-13-pack-slices-design.md).
+		if (prog->pack_recording && TokenBase::_active_strpool) {
+			// Each slot's creation context, read off its entity (a
+			// synthesized slot has none), and the parse's requirements.
+			const uint32_t nslots = f.arena.def_slots();
+			f.slot_ctx.assign(nslots, madc::dis::istring());
+			for (uint32_t s = 0; s < nslots; ++s)
+				if (DataDef *dd = prog->type_from_id(madc::dis::arena_id_of(s)))
+					f.slot_ctx[s] = dd->pack_ctx;
+			f.requirements.clear();
+			for (const Program::PackRequirement &pr : prog->pack_requirements) {
+				cir_frozen_forest::requirement r;
+				r.product = pr.product;
+				r.by = pr.by;
+				r.poi = pr.poi;
+				f.requirements.push_back(r);
+			}
+			std::string seed_summary;
+			cir_forest_build_seeds(f, *TokenBase::_active_strpool,
+					       prog->forest_arena_poi,
+					       prog->forest_arena_file, seed_summary);
+			fprintf(stderr, "%s: pack seeds: %s\n", source_name,
+				seed_summary.c_str());
+		}
 		// Per-segment zstd, per the container design (2026-07-04 plan:
 		// zstd frames + per-segment codec directory; zlib is the
 		// explicit --without-zstd fallback only). The INTERN pool
@@ -6674,7 +7291,8 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 		// The intern spine compresses only in the appended pack
 		// (owner-approved ~7ms-per-process trade; dev freezes keep
 		// zero-copy binds).
-		bool staged = cir_forest_write(f, w, codec, append ? 15 : 0,
+		bool staged = cir_forest_write(f, w, codec,
+					       append ? CIR_FOREST_PACK_ZSTD_LEVEL : 0,
 					       append);
 		// Shared configs (--freeze-also-std=): the one pack profile serves
 		// every standard named here too. The madc dialect is C++17 plus
@@ -6737,7 +7355,7 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 			if (!w.add_segment(CIR_FOREST_SEG_MIR_MODULE,
 					   SNAP_KIND_CIR_MIR_MODULE,
 					   mblob.data(), mblob.size(), codec,
-					   append ? 15 : 0))
+					   append ? CIR_FOREST_PACK_ZSTD_LEVEL : 0))
 			    fprintf(stderr, "%s: mir cache: segment add "
 				    "failed — blob skipped\n", source_name);
 			else if (progress)
@@ -6757,7 +7375,7 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 		    if (!w.add_segment(CIR_FOREST_SEG_LEDGER,
 				       SNAP_KIND_CIR_LEDGER,
 				       lblob.data(), lblob.size(), codec,
-				       append ? 15 : 0)) {
+				       append ? CIR_FOREST_PACK_ZSTD_LEVEL : 0)) {
 			fprintf(stderr, "%s: ledger: segment add failed\n",
 				source_name);
 			staged = false;
@@ -6875,6 +7493,47 @@ static const char *pack_decl_kind_name(uint32_t kind)
     }
 }
 
+bool madc_cir_forest_relayout(const char *image_path,
+			      const std::vector<std::string> &logs)
+{
+    FILE *f = fopen(image_path, "rb");
+    std::vector<uint8_t> image;
+    if (f && fseek(f, 0, SEEK_END) == 0) {
+	long n = ftell(f);
+	if (n > 0 && fseek(f, 0, SEEK_SET) == 0) {
+	    image.resize((size_t)n);
+	    if (fread(image.data(), 1, image.size(), f) != image.size())
+		image.clear();
+	}
+    }
+    if (f)
+	fclose(f);
+    if (image.empty()) {
+	fprintf(stderr, "madc: --forest-relayout: cannot read %s\n", image_path);
+	return false;
+    }
+    std::vector<uint8_t> blob;
+    size_t at = 0;
+    size_t hot = 0;
+    std::string err;
+    if (!cir_forest_relayout(image.data(), image.size(), logs, blob, at, hot, err)) {
+	fprintf(stderr, "madc: --forest-relayout: %s: %s\n", image_path, err.c_str());
+	return false;
+    }
+    image.resize(at);
+    image.insert(image.end(), blob.begin(), blob.end());
+    f = fopen(image_path, "wb");
+    bool ok = f && fwrite(image.data(), 1, image.size(), f) == image.size();
+    if (f && fclose(f) != 0)
+	ok = false;
+    if (!ok)
+	fprintf(stderr, "madc: --forest-relayout: cannot write %s\n", image_path);
+    else
+	printf("forest-relayout: %s laid out by %zu root bind(s), %zu block(s) stored raw\n",
+	       image_path, logs.size(), hot);
+    return ok;
+}
+
 int madc_cir_dump_forest(const char *container_path)
 {
     const void *image = NULL;
@@ -6893,6 +7552,12 @@ int madc_cir_dump_forest(const char *container_path)
 	return -1;
 
     printf("forest\tunits=%u\n", forest.unit_count());
+    // The container's own bytes (an appended container: the image less the
+    // carrier before it) — the pack-size gate's measure (forest_pack_gate.sh).
+    printf("bytes\t%zu\n", forest.container_bytes());
+    // v60: the pack's layout pass ran (the pack scripts check this line).
+    if (forest.records_laid_out())
+	printf("layout\treads\n");
     // The producer configs this profile binds under: its own, then the
     // labels a pack proved identical (the shared-profile gate reads these).
     printf("config\tword=0x%08x\tdefines=0x%08x\n", forest.language_std(),
@@ -6946,6 +7611,15 @@ int madc_cir_dump_forest(const char *container_path)
 	if (const char *s = forest.pool_str(bm[i]))
 	    printf("branchmacro\t%s\n", s);
 
+    // v58 seed index (docs/plans/2026-10-13-pack-slices-design.md).
+    if (!forest.seeds().empty()) {
+	const ForestSeeds &sd = forest.seeds();
+	ForestSeeds::Run sa = sd.arena(sd.always()), st = sd.templates(sd.always()),
+			 sg = sd.globals(sd.always());
+	printf("declnames\t%u\n", forest.decl_names().size());
+	printf("seeds-always\t%u\t%u\t%u\n", sa.n, st.n, sg.n);
+	printf("recordable-anon\t%u\n", forest.recordable_bits().max_anon_tag());
+    }
     for (uint32_t u = 0; u < forest.unit_count(); ++u) {
 	const char *uname = forest.unit_name(u);
 	uint32_t anchor = forest.unit_anchor(u);
@@ -6955,6 +7629,13 @@ int madc_cir_dump_forest(const char *container_path)
 	printf("unit\t%u\t%s\ttokens=%u\tanchor=%d\n", u,
 	       uname ? uname : "?", ntok,
 	       anchor == CIR_FOREST_ANCHOR_NONE ? -1 : (int)anchor);
+	// v58: what a bind of this unit visits (arena slots / templates / globals).
+	if (u < forest.seeds().lists()) {
+	    ForestSeeds::Run sa = forest.seeds().arena(u), st = forest.seeds().templates(u),
+			     sg = forest.seeds().globals(u);
+	    if (sa.n || st.n || sg.n)
+		printf("seeds\t%s\t%u\t%u\t%u\n", uname ? uname : "?", sa.n, st.n, sg.n);
+	}
 	std::vector<uint32_t> edges;
 	if (forest.unit_edges(u, edges))
 	    for (size_t k = 0; k < edges.size(); ++k)
@@ -6969,6 +7650,7 @@ int madc_cir_dump_forest(const char *container_path)
 		printf("ppexport\t%s\t%s\t%s\n", uname ? uname : "?",
 		       tag == Program::PackMacroEvent::peUndef ? "undef"
 		       : tag == Program::PackMacroEvent::peDefineFn ? "define-fn"
+		       : tag == Program::PackMacroEvent::peImport ? "import"
 		       : "define",
 		       nm ? nm : "?");
 		k += 5 + nparams;
@@ -6977,12 +7659,20 @@ int madc_cir_dump_forest(const char *container_path)
 	if (forest.unit_decl_index(u, di))
 	    for (size_t k = 0; k < di.size(); ++k) {
 		const char *nm = forest.pool_str(di[k].name_id);
-		printf("declindex\t%s\t%s\t%s\t[%u,%u)%s%s\n",
+		// The record column: arena slot / template / global index.
+		static const char *const rec_kind[] = { "arena", "template", "global", "?" };
+		char rec[48] = "";
+		if (di[k].record_id != CIR_DECL_RECORD_NONE)
+		    snprintf(rec, sizeof(rec), "\trecord=%s:%u",
+			     rec_kind[di[k].record_id >> 30], di[k].record_id & 0x3fffffffu);
+		printf("declindex\t%s\t%s\t%s\t[%u,%u)%s%s%s%s\n",
 		       uname ? uname : "?",
 		       pack_decl_kind_name(di[k].kind), nm ? nm : "?",
 		       di[k].slice_begin, di[k].slice_end,
 		       (di[k].aux & Program::PACK_DECL_SPANS_UNITS) ? "\tSPANS" : "",
-		       (di[k].aux & Program::PACK_DECL_FUZZY_BOUNDS) ? "\tFUZZY" : "");
+		       (di[k].aux & Program::PACK_DECL_FUZZY_BOUNDS) ? "\tFUZZY" : "",
+		       (di[k].aux & Program::PACK_DECL_ADOPTABLE) ? "\tADOPTABLE" : "",
+		       rec);
 	    }
     }
     return 0;
@@ -7188,7 +7878,13 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 	// Hold them (and the already-parsed Programs) for the whole call.
 	std::vector<CirBuilder *> builders;
 	std::vector<MIR_module_t> modules;
+	bool linked = false;
 	auto teardown = [&]() {
+		// The program's exit: its handlers run while its code is mapped.
+		if (linked) {
+			cir_ctx_run_exit_handlers(ctx);
+			cir_live_exit_remove(ctx);
+		}
 		for (CirBuilder *b : builders) delete b;
 		cir_finish(c2m);
 		MIR_gen_finish(ctx);
@@ -7221,6 +7917,9 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 	// Program answers for all of them.
 	if (!parsed.empty() && parsed[0].prog)
 		cir_open_stdlib_runtime(parsed[0].prog->active_stdlib_flavor());
+	// The startup members the TUs import (the image handle, atexit, ...).
+	for (MIR_module_t m : modules)
+		cir_crt_pull_for(ctx, m);
 	// MIR_set_gen_interface is EAGER — it MIR_gen()s every loaded func at
 	// link (adventure: 271 funcs, 91% of the link wall) before main ever
 	// runs. Ride the lazy interface: functions generate on FIRST CALL, so
@@ -7234,6 +7933,8 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 		 cir_import_resolver);
 	if (madc_debug_info)
 		cir_register_source_debug(ctx);
+	linked = true;
+	cir_live_exit_add(ctx);
 	auto _lk1 = std::chrono::steady_clock::now();
 
 	// Find the entry symbol across all modules. First match wins; a
@@ -7484,6 +8185,10 @@ int madc_project_emit_native(MadcEngine &engine,
 			teardown();
 			return -1;
 		}
+	if (!cir_register_crt_inits(ctx, parsed[0].name.c_str())) {
+		teardown();
+		return -1;
+	}
 	// Each TU's __attribute__((alias)) definitions, same ordering rule.
 	for (size_t bi = 0; bi < builders.size(); bi++)
 		if (!cir_emit_alias_symbols(ctx, parsed[bi].prog.get(),

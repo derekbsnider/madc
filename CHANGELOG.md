@@ -2,6 +2,523 @@
 
 ## [Unreleased]
 
+## [v0.105.0] — 2026-10-13
+
+The live REPL release: a `madc -i` session behaves like a buffer you keep editing. A function defined again reaches every caller, an inline one included; a variable defined again is re-initialized in place, an object with a destructor destroyed and constructed again; a type defined again is the same type when its data members are, and otherwise its name's next version (old objects keep `P#1`, mixing versions is a type error, a C++ function for the new version is an `abi_tag`-mangled overload). An edit to the REPL buffer reparses live, Restart and Run All replays the whole buffer and runs its uncalled `main`, and objects with static storage duration are destroyed at exit. madcide 0.8.0 carries the live reparse and Restart and Run All to its REPL pane.
+
+### The forest pack serves every system header
+
+A packed madc now compiles a program that includes any system header on a
+machine with no headers on disk, not only the handful of headers earlier packs
+listed. The pack's source arm holds the exact text of every header the
+platform's C library, kernel and C++ standard library install — on Linux every
+file of `libc6-dev`, `linux-libc-dev` and `libstdc++-N-dev`; on Windows the
+glibc header names mingw-w64/UCRT also ships plus the Microsoft C runtime's own
+headers, never the Windows API; on macOS the staged open-licensed Apple libc
+tree under the SDK's name and the pinned libc++ tree. `--freeze-sources=<list>`
+packs each listed file as a source-only unit (freeze format v56: its source slot
+alone); the list is generated from the platform's include roots by
+`scripts/forest_pack_sources.sh`, never hand-kept, and the pack gate fails when
+any listed header is missing from the container. The frozen grove stays the
+parsed-once common set — a speed-up, not the coverage boundary — and a
+source-only header's text is read only when a compile includes one outside the
+grove.
+
+Freeze format v57 carries the pack's own index. The directory stores every
+unit's name as sorted text, and a second sorted table holds the bare function
+names the units declare; both are uncompressed and read in place in the mapped
+image, so "is this header packed, and where" and "does the pack declare function
+X" are binary searches after the directory open alone, never a decode of the
+string pool or the arena, and a header-text lookup no longer forces the full
+container open. One reader per mapped image and profile serves the grove bind,
+the header-text lookup and the AOT ledger. An include resolves against the
+build's own include roots before an ambiguous path tail. On the Linux 24.04
+container the pack grows from 370 to 2283 units and from 19.35 MB to 24.32 MB,
+and a headerless C compile's front-end cost drops 24.75% (parse-cost
+`c_headers.live`, 324.37 M to 244.10 M instructions); the grove-bind rows stay
+flat.
+
+### A packed compile that binds nothing never decodes the pack
+
+A compile opens the exact-config bind container to its directory only, and
+decodes the string pool and the type arena only when an include actually binds
+a packed unit. A dialect compile — whose prelude fragments the pack does not
+carry — binds nothing, so it no longer decodes the whole container on every
+fragment include: its default packed front-end cost drops from 150.5 M to
+78.7 M instructions (callgrind Ir, release binary), and a bare `println("hi")`
+from 86.9 M to 15.1 M. The container's segment table is written sorted by
+segment id, so a reader finds a segment by binary search in the table it
+already holds instead of building a per-open hash index. The parse-cost gate
+now measures the default packed path of a dialect and a C compile
+(`dialect.forest`, `c_headers.forest`) — the path on which the whole-container
+decode had gone unseen.
+
+### The packed madc reads the core system headers from libmadc, never /usr/include
+
+The release (packed) madc compiles a C, C++ or dialect program that includes a
+standard core system header — the C library, kernel and C++ standard library,
+every `--std=` — without opening, stat-ing or probing /usr/include or any system
+include directory for it: the header's bytes come from libmadc (the embedded set
+plus the forest pack). Earlier packs served these headers only as a fallback
+when the disk lacked them, so on a machine with headers installed the disk won
+and the pack went unread. The include search, `#include_next`, the existence
+check, the reader and the precompiled-header sidecar probe now all ask libmadc
+first for a name it carries. `--no-embedded-headers` is the one switch that sends
+the core headers back to disk; a name libmadc does not carry (an add-on library's
+header) is still searched on disk as gcc searches it, and project headers
+(quoted, `-I`) come from disk in every mode. Gate:
+`scripts/check-system-headers-from-libmadc.sh` replaces every system include
+directory with `#error` poison headers and traces file access, so C, C++ and
+dialect compiles must finish without touching them while gcc and
+`--no-embedded-headers` hit the poison.
+
+### The forest pack is cut into per-unit slices, and a bind loads only the units a program includes
+
+A packed compile used to open its bind container and judge every unit in it
+against the program, so its front-end cost tracked the whole container, not the
+headers the program actually included. The pack is now cut per unit and carries a
+frozen index — a per-unit seed list of the arena, template and global records a
+bind of that unit visits, an inverted name index (each declared name → the units
+that declare it), and a recordability bitmap computed once at freeze. A bind now
+visits and judges only the slices of the units the program's include closure
+reaches, builds a derived type (pointer, reference, cv, array, function pointer,
+member pointer) on first use instead of building every one up front, and reads a
+node unit's records block by block as each is first resolved rather than decoding
+the whole unit — `cxx_stl.cpp`'s sixteen node units hold 569,504 records, of
+which a bind materializes about 2,121.
+
+An instantiation product — a class-template product or a function-template
+instance — is restored only in the units whose parse requires it: the unit that
+created it and every unit that both reuses it and whose include closure defines
+its template, never with every unit that merely declares the template's name. A
+`<vector>` bind therefore no longer carries the `basic_string<char16_t>` products
+that `<string>`'s parse made. On a symbolized release binary with the pack built
+in, the packed front-end cost of `<stddef.h>` drops from 174M to 12.7M
+instructions, `<vector>` from 352M to 76M, the eight everyday C headers from 394M
+to 136M, and `cxx_stl.cpp` from 1,661M to 1,395M (callgrind Ir), with every
+program's output identical to a live parse.
+
+A live compile that binds no packed unit no longer opens the pack at all: the
+function-name index now lists only the prototypes an adoption probe could accept,
+so a declared name the probe would decline (a header's `__builtin_memset` asking
+for `memset`) is answered without opening the container. The container is laid out
+by the reads its own single-header binds make, a block at least half the binds
+read stored uncompressed and the directory read in place, so an open costs a
+sortedness scan; a header that binds no frozen table — a pragma-only Windows
+header such as `pshpack1.h` — records an empty read log so the layout pass accepts
+it. The Linux release pack grows from 11.58 MB to 14.53 MB, within a 15 MB cap.
+
+### A standard type the pack only names stays incomplete
+
+With only `<iostream>` included, a pack bind used to restore a class-template
+product complete wherever a typedef, signature, pointer or reference named it — an
+`<iosfwd>` typedef of a product that `<sstream>` instantiates pulled in the frozen
+complete record — so `std::stringbuf *` converted to `std::streambuf *` and an
+overloaded call picked the wrong candidate. A product whose template no bound unit
+defines is now restored declared-only when the closure merely names it: allocated
+and registered but not filled, completed in place only when a later bind requires
+it whole. With only `<iostream>`, `std::stringbuf *` no longer converts to
+`std::streambuf *` and the call picks the `void *` overload, matching g++, clang++
+and a live parse. Gate: `testpackforwardnamedproduct`.
+
+### A namespace's unscoped enumerator keeps its namespace through the pack
+
+An unscoped enumerator declared inside a namespace is a member of that namespace
+([dcl.enum]/11): `<limits>`'s `float_denorm_style` and `float_round_style`
+enumerators are `std::denorm_present`, `std::round_toward_neg_infinity` and the
+rest. The frozen global table deduplicated globals by bare name and bound them at
+global scope, so a packed-release consumer of `std::denorm_present` failed to
+compile with "'denorm_present' is not a member of namespace 'std'". Globals are
+now keyed by qualified identity at freeze and rebound into their namespace at
+restore, so the consumer compiles. Gate: `testforestnsenum` (g++ and clang++
+print `1 3 -1`).
+
+### A later REPL entry's `#include` parses its header text
+
+The pack's declaration restore runs once per session, so a header first included
+by a later interactive entry got its macros but not its declaration records:
+`#include <time.h>` returned a `struct tm` with no members ("Unidentified member
+'tm_year'"), and a later `#include <vector>` or `<string>` failed with "use of
+undeclared identifier". A unit asked to bind after the one-shot restore now parses
+its text instead, so a header included mid-session resolves as it does on a live
+parse.
+
+### The dialect prelude is the compiler's own — intrinsic and bound directly
+
+Under `--std=madc` the compiler now declares `std::format`, `std::print` and
+`std::println` itself at startup, as always-available intrinsics with no header
+and no forest unit behind them; they were previously served through an
+auto-include row and the `bits/std_format` fragment, which this drops from the
+pack list. Registering the three costs about 15K instructions per `--std=madc`
+compile and nothing in a strict mode; a strict `--std=c##` / `--std=c++##` compile
+never sees them, and `<bits/std_format>` is kept only for an explicit strict-mode
+`#include`. The REPL describes `println` as declared by the madc compiler, always
+available.
+
+The rest of the dialect surface — the `ns_*` fragments and their `bits/*` enums —
+now binds directly from its frozen unit under `--std=madc` instead of being parsed
+from text on every compile, while a strict compile that includes a fragment still
+parses its text. The dialect's blocks are stored uncompressed, so the surface is
+never decoded, and a `--with-forest=none` build carries the dialect as its own
+small container (3.31 MB) so a dialect program pays the same cost with or without
+the system-header pack. The dialect workload's packed front-end cost drops from
+77.7M to 42.0M instructions and a bare `println("hi")` from 14.0M to 12.3M
+(callgrind Ir, release binary); strict-mode costs are unchanged.
+
+### A refused link no longer crashes at the session's end
+
+`MIR_link` marked each function it would inline into by writing a sentinel into
+the item's owned-allocation slot and cleared it on a later pass. When a link was
+refused — an undefined import, or an error handler that longjmps out — the flagged
+items never reached the clearing pass, so the sentinel survived into `MIR_finish`,
+which freed it as a pointer and crashed. The inline set is now held in a separate
+per-context array, leaving the item slot untouched across a link, so a refused
+link survives to `MIR_finish`. Relatedly, the compile-error test runner now fails
+a run that dies on a signal — it formerly accepted any nonzero exit, counting a
+crash after the right diagnostic as a pass. Gate: `testlinkundefcxx` (g++ and
+clang++ report "undefined reference to `foo()'"; madc now reports the undefined
+import and exits cleanly where it formerly crashed in `MIR_finish`).
+
+### A packed dialect program that imports a module compiles
+
+Because the dialect fragments now bind directly from the pack, a fragment's text
+is never re-lexed and its `import <module>;` directive never runs. A fragment that
+imports a lazy module row — `ns_markdown` (madcmark), `ns_git` (madcgit),
+`ns_ui_web` (madcwebview) — therefore lost three things on the packed release: the
+`static void *` slot declaration of the loaded body, the optional-library manifest
+entry, and the `dyn_module` stamp on its restored interface prototypes, so
+`tests/testmarkdown.mad` and `tests/testgit.mad` failed to compile and a direct
+call to a module function lowered to a MIR import of an undefined symbol. The
+import directive now records a frozen preprocessor event that a bound unit
+replays, re-declaring the slot, re-adding the manifest entry and restamping the
+restored prototypes, so a packed dialect program that imports a module compiles as
+the live parse does. Gates: `testmarkdown`, `testgit`, `testlazymoduledirect`.
+
+### `quick_exit` on Windows runs only the at_quick_exit handlers
+
+The JIT session's exit hook — the one that destroys a session's objects with
+static storage duration when the session ends — registered with `atexit()` from
+`libmadc-0.dll`. On mingw, `atexit()` inside a DLL lands in that DLL's per-DLL
+table, which `DLL_PROCESS_DETACH` runs on every process termination, so
+`quick_exit` and `_Exit` ran the atexit handlers too. The hook now goes in the
+UCRT's process exit table through `_crt_atexit` — the table `exit()` runs and
+`quick_exit` / `_Exit` do not, the same one an executable's startup member hands
+its exit list to. Because that table then holds a pointer into `libmadc-0.dll`,
+the image is pinned first (`madcdl_pin_image_of`) so a host's `FreeLibrary`
+never unmaps it. Gate: `tests/testatquickexit` (headerless-win), which now
+exits 4 instead of 9.
+
+### A frozen module's trap prebinder leaves the startup members alone
+
+A packed `--run-frozen` binary binds a loud trap stub over every
+drained-library import outside the translation unit's executed closure, so an
+unexecuted library gap fails loudly instead of resolving to nothing. Its "does
+the link resolve this name" test asked only `cir_import_resolver` (the host and
+the opened runtime), not the startup members (`madc_crt.cpp`) that
+`load_and_link` also pulls by a module's imports — and on Windows no DLL
+exports `__cxa_atexit`, so the startup member providing it was trap-bound and a
+frozen module's static object reached the trap, aborting the build
+(`make -C src release-windows` failed with "reached unresolved drained-library
+symbol `__cxa_atexit`"). The frozen and cache trap prebinders now treat a name
+any startup member defines as link-resolvable and leave no trap over it (128
+imports trap-bound on the win64 release pack where 130 were, the startup
+members' names no longer among them). Gate: the `release-windows` pack check
+runs the frozen module on every build.
+
+### The embedded-header generator refuses an empty table
+
+`scripts/gen_embedded_headers.sh` bakes `include/madc/*` into the table the
+build compiles into madc. It read its file list through a process substitution
+(`done < <(find ... | sort)`), which a build root with no `/proc` lacks
+(`/dev/fd` resolves through `/proc/self/fd`): the loop read nothing and wrote
+an EMPTY table with exit 0, so the build linked a madc carrying no embedded
+headers (the dialect prelude fragments included) and nothing failed. The
+generator now reads the list through a file beside the output and refuses a run
+that reads no header — `include/madc/` always holds headers, so none read means
+the list was lost — exiting nonzero and leaving no table, so the Makefile's
+`EMBED_GEN` removes the table and the build stops. Gate:
+`scripts/check-embedded-headers-gen.sh`.
+
+### A conversion-function template converts to the class deduced from the target
+
+A class's `template <typename U> operator Val<U>()` now converts an object of
+that class to the `Val<T>` a by-value parameter or a copy-initialization names:
+its template arguments deduce from that target type ([temp.deduct.conv]) — the
+conversion-type-id, a reference and its cv dropped, unified with the target —
+and the deduced instance converts as a plain conversion function would, its own
+template and one a base declares. Before, madc applied no conversion-function
+template and default-constructed the target, a silent wrong answer (exit 0
+printing 0 or garbage where g++ and clang++ print the converted value). Gate:
+`testconvtemplate`.
+
+### A REPL session's redefined type is its name's next version
+
+A struct, union or class an earlier entry defined and defines again is no
+longer refused. Redefined with the same data members (a class: the same
+shape, its member-function bodies aside) it is the same type — C23's rule for
+an identical redefinition — and a class's member functions are redefined (D5),
+so every object, the earlier ones included, calls the new bodies. Redefined
+with other members it is the name's next version: the name now means the new
+type, while the objects, functions and pointers made with an earlier version
+keep it (Julia 1.12's world age), and an earlier version's type shows as
+`P#1`. Mixing versions is a type error, never a silent copy — an object of
+`P#1` is no argument for a `P` parameter. In madc and C++ a function defined
+again for the new version is an overload beside the earlier one, mangled as
+g++'s `abi_tag` would (`getx(P[abi:v2])` = `_Z4getx1PB2v2`, checked against
+g++), so its symbols never collide with the earlier version's; in C the
+redefined function's type changes, which C cannot overload, so it is refused
+with the `%run` hint. The live reparse follows the same rules: an edit that
+gives a type a new version reads each entry below it that names the type again
+— functions only — a function takes the new version, a type defined from it
+gets its own next version, and an object keeps its type and its value. A
+template already instantiated with an earlier version keeps that instance;
+namespaced types follow the same rules through their unversioned spelling.
+
+Each version keeps its own `DataDefSTRUCT` (emitted name `__madc_vN__P`, C++
+spelling `P[abi:vN]`, a Program-owned `SessionTypeLineage`); a replaced
+version stays registered under a key no source can spell (`P#1`,
+`retire_session_type`) so every emission walk still finds it, and the name
+listings skip it (`session_type_superseded`). Gates: `testrepl_versions`
+(C++), `testrepl_versions_c` (C), `testsession_retype` (the live reparse), the
+unit test "a type defined again is its name's next version", and
+`test_mangle`'s abi-tag cases.
+
+### A class argument no conversion turns into the parameter's class is refused
+
+Passing an object of one class by value where a different class is expected,
+with no conversion between them, is now a compile error instead of a silent
+wrong answer. `getx(a)` for an `int getx(B v)` passed an `A` reports `no
+matching constructor for call to 'B(A)'`; before, madc default-constructed the
+`B` parameter and dropped the `A` argument, so `getx` read garbage and the
+program exited 0. The no-user-ctor construction arm now refuses a single
+unbraced initializer whose class neither copies/slices into the target nor has
+a plain conversion function to it (`class_conversion_to_class`), while a class
+that declares a conversion-function template still stands back, since its
+deduction against the target is not modeled. A same-class copy, a derived
+slice, a conversion function, and an aggregate's braced element still
+initialize. The no-match message now names the source and target types through
+TypeSpeller (`dump_show_type_word`), so a REPL session's earlier version shows
+as `P#1` rather than its emitted name. Gates: `testclassargnoconv` (the
+refusal), `testclassargconv` (the four conversions that stand), `testctornomatch`
+(message unchanged).
+
+### A REPL session redefinition of an inline function reaches an earlier caller
+
+An inline (vague-linkage) function redefined in a REPL session now takes effect
+everywhere: a later call, and a caller the session compiled before the
+redefinition, both reach the newest body. Before, the first copy of a
+vague-linkage function was the only body MIR kept, so a redefinition (D5) was
+dropped and earlier callers kept the old body, and c2mir/MIR inlined calls to
+the linkonce callee. Now the CIR emits a session redefinition of a
+vague-linkage function strong (`func_def` drops the `linkonce` attr through
+`session_redefinition`) and emits it even when the entry does not use it
+(`translate_module`'s `on_use`); `CirJitSession::vague_functions_interposable`,
+run before the link check, makes each entry's copy of a function an earlier
+entry defines WEAK so it binds to that definition, and `make_interposable`
+makes a loaded LINKONCE function WEAK so no caller inlines it and a later strong
+definition replaces it in place (MIR's `replaced_weak_def`). Vague-linkage data
+keeps its binding, so static locals and vtables stay one object; the first copy
+of a function still replaces a waiting stub (D27) and loads LINKONCE. Gate:
+`testrepl_redefine`.
+
+### A session rebuild replays the whole REPL buffer, through one line-grouping rule
+
+`madc::session_rebuild(h, text, argv)` replaces `madc::session_rebuilt(h,
+argv)`: a session rebuild (Restart and Run All) now replays a host's whole
+REPL buffer in the backend the host just restarted, rather than only running
+the buffer's main. The buffer's text is taken line by line as typed entries —
+an entry over several lines, an `if` taking its following `else` as one entry,
+a blank line between entries ignored — each entry announced with a `running`
+row carrying its text, its output, then a `replayed` row (an offer's taken
+fields); the entries run in step with the host, the next one running once the
+host polled the last one's row. Past the last entry the buffer's main runs
+with argv (the buffer's name `[REPL]`, then the arguments) when the session
+defines a main no unit names, and a `rebuild` row answers (ok, whether main
+ran, status). The rule that groups typed lines into entries (D11) is now one
+class, `EntryLines`, shared by the cooked REPL loop and the replay; the
+duplicate `blank_line` / `blank_text` and `drop_cr` helpers are now
+`madc::blank_text` / `madc::drop_cr`. Before, `session_rebuilt` ran only the
+buffer's main and never replayed the entries. Gate: `testsession_run` (six
+replayed entries, the if taking its else as one entry, main run once with argv
+`[REPL]`).
+
+### A madc-built shared object finalizes its exit handlers when it is unloaded
+
+A shared object madc built and the program unloads before it exits now runs
+its objects' destructors at the unload, while the image's code is still
+mapped, and the program exits cleanly. The image handle's startup member
+carries an image fini `__madc_dso_fini` (`__cxa_finalize(&__dso_handle)`,
+crtbegin.o's `__do_global_dtors_aux`): the `madc_crt_members` table gains a
+`fini` column beside `init`, and the exec params carry it. The ELF writer
+names the fini symbol in `DT_FINI`, and the PE DLL entry stub runs it at
+`DLL_PROCESS_DETACH` (mingw's dllcrt), so ld.so and Windows run it at
+dlclose / FreeLibrary and at process exit. Before, a madc-built image
+registered its objects' destructors but carried no fini, so a shared object
+unloaded before exit never ran them and `exit()` called into the unmapped
+library (SIGSEGV). On Windows only the executable hooks the UCRT's exit, so a
+DLL freed before exit leaves nothing in the UCRT's table. Gate:
+`testbuild_shared_unload`.
+
+### Dialect verbs for the live reparse and the rebuild's main
+
+A madc-dialect host can now reach a session's live reparse and the REPL
+buffer's rebuilt main through two new `<ns_madc>` verbs.
+`madc::session_edited(h, before, after)` sends the REPL buffer's text before
+and after an edit; each entry the edit changed or added is read again as
+definitions only — a function redefined, an object re-initialized, no
+statement run — and the reply is an `edited` row. `madc::session_rebuilt(h,
+argv)` runs the rebuild's main with argv[0] the buffer's name `[REPL]` when
+the session defines main and no entry named it, and runs nothing once an
+entry has called main (a `run` row). Both wrap the session request machinery
+the C++ CLI REPL already uses (`ReplSession::buffer_edited`,
+`ReplSession::run_rebuilt_main`); there is no new wire op. Before, a dialect
+host — madcide — could not reach the live reparse or the rebuild's main. Gate:
+`testsession_run`.
+
+### A rebuilt REPL buffer runs its uncalled main
+
+In a `madc -i` session `%run` rebuilds the REPL buffer by replaying its
+lines in a fresh session. The rebuild now ends by running the buffer's
+main — as `%run` runs a file's — when the buffer defines a main that no
+entry called; argv[0] is the buffer's name `[REPL]`, then its `%args`. A
+buffer that already calls main runs it once, in the replay, not twice.
+Before, madc ran no main when the buffer defined one but never called it
+(plan §42). An entry whose module imports `main` ran it in the replay
+already, so the rebuild leaves that main alone
+(`CirJitSession::imports`).
+
+### A REPL session entry that redefines a type names `%run`
+
+In a `madc -i` session a `struct`, `union`, or `class` an earlier entry
+defined is refused when it is defined again, and the refusal now names
+`%run`: "redefinition of 'P', a type an earlier entry defined (%run
+rebuilds the session)". The type and the objects it holds keep their value
+(plan §42 D6). Before, madc refused with "Struct 'P' already defined" or
+"Class 'C' already defined" and gave no hint. A type defined twice within
+one entry still reports the plain "Struct 'Q' already defined" — the
+redefinition C and C++ refuse. An aggregate records the file its
+definition is in (`DataDefSTRUCT::definition_file`, `FuncDef::decl_file`'s
+twin), so the session tells an entry's type from a header's.
+
+### A REPL session object with a destructor can be redefined
+
+In a `madc -i` session an object with a destructor — the madc `var`
+carrier included — can now be defined again (plan §42 D6). The earlier
+object's destructor runs first, then the new definition constructs a new
+object in the same storage, so a pointer taken earlier reads the new
+value; the session's end destroys the newest object once, in the first
+definition's place. An array object destroys its elements last-first
+before the new ones are constructed. Before, madc refused the
+redefinition as "redefinition of 'x', which has a destructor" with a hint
+to `%run`. A type change and a `const` object are still refused and keep
+their value.
+
+### A global is initialized from its defining declaration
+
+A global declared `extern` ahead of its definition is now initialized by
+the definition: `extern S s; S s(5);` constructs `s` with 5, and `extern
+int g; int g = f();` runs `f`. Before, madc took the first declaration's
+absent initializer, so `s` was default-constructed and `g` stayed 0. In a
+`madc -i` session a redefinition (plan §42 D6) now initializes the object
+again with its new initializer — a class object is constructed again in
+the same storage, so an earlier pointer into it reads the new value, and a
+dynamic initializer runs the new expression; before, madc skipped the
+class object's construction (its storage read 0) and re-ran the earlier
+declaration's initializer.
+
+### Objects with static storage duration are destroyed at exit
+
+An object with static storage duration — a global, an array global, a
+block-scope static — now has its destructor run when the program exits,
+in the reverse order of construction and interleaved with the `atexit`
+handlers registered between constructions ([basic.start.term]). The CIR
+builder registers each destructor with `__cxa_atexit(dtor, &obj,
+&__dso_handle)` right after the object is initialized, where g++ does.
+`exit()` called from a nested function destroys the static-storage
+objects (not the automatic ones) and ends with its status; `quick_exit`
+runs the `at_quick_exit` handlers, not the `atexit` ones. Before, madc
+ran none of these destructors, in the JIT or a native executable. The
+libc functions glibc keeps in `libc_nonshared.a` — `atexit`,
+`at_quick_exit`, `pthread_atfork` — now link too, from madc's startup
+members (`src/madc_crt.cpp`), pulled into a JIT session or a native image
+by its imports as `ld` pulls an archive member; before, a call to one was
+an "undefined item/symbol". Windows keeps the handler list in its own
+startup member (no DLL exports `__cxa_atexit`). A `madc -i` session's
+static-storage objects are destroyed when the session ends.
+
+### A REPL session variable can be redefined in place
+
+In a `madc -i` session an object whose definition an earlier entry
+already linked can be defined again with the same type, and the new
+definition initializes the same storage, so every function and every
+pointer taken earlier reads the new value (plan §42 D6, Julia's
+non-const global, Lisp's `defparameter`, Clojure's `def`). Before, the
+second definition was refused as a "redefinition of 'x'", as clang-repl
+refuses it. A type change, a `const` object (its reads fold to the old
+value), and an initializer that changes an array's size (`char msg[] =
+"hello"` over `"hi"`) are refused with a hint to `%run`, and the object
+keeps its value. A REPL-buffer edit that re-initializes a variable definition
+applies the new initializer; an unchanged entry is never re-read, so its
+variables keep their values.
+
+### `__has_trivial_destructor` is false for the madc carrier
+
+`__has_trivial_destructor(var)` now returns false: a madc carrier (`var`,
+`madc::value`) is destroyed at runtime (`madarray_destruct`), so it is not
+trivially destructible, and neither is a struct that holds one as a member.
+A struct of only scalar members stays trivially destructible. Before, the
+trait reported the carrier, and any struct holding it, as trivial. This
+matches g++ and clang++ with `std::string` in the carrier's place
+("false true false").
+
+### A REPL function can be redefined, and every call reaches the newest body
+
+In a `madc -i` session a function whose body an earlier entry already
+linked can be defined again, and every call then reaches the newest body:
+a later call, a caller compiled before the redefinition, and a function
+pointer taken before it (plan §42 D5, Julia's rule). Before, C refused the
+second body as a "redefinition of 'f'", while under C++ and madc the old
+body stood — `f()`, a `g()` that calls `f()`, and a `p = f` all kept the
+first definition. Now the parser takes the second body as the session's
+redefinition (a same-signature C++ body however its parameters are
+spelled; a different signature is still a new overload), the CIR builder
+emits the newest definition though the symbol is already session_defined,
+and each entry's loaded functions bind weak so MIR's loader replaces the
+earlier body in place and no caller inlines it. A function the loaded file
+itself defines is redefined the same way; a second body within one unit is
+still the redefinition C and C++ refuse.
+
+### A REPL buffer edit reparses live
+
+In a `madc -i` session an edit a colon command makes to the REPL buffer
+now takes effect at once. The session reads each entry the edit changed
+or added again as definitions only: a function the edit rewrites is
+redefined (plan §42 D5), so the next call reaches the new body, while a
+statement the entry re-reads is parsed and never run again and the re-read
+entry shows nothing. Before, a colon edit changed only the buffer text and
+the already-linked functions kept their pre-edit bodies until an explicit
+`%run` rebuild, so a `:s` on a function's body left the next call returning
+the old value. Now the REPL host hands the session the buffer's before and
+after text after every colon command that moved it, and the backend reads
+the touched entries through one serialized verb. An edited object or type
+definition is still refused until D6, where `%run` rebuilds instead.
+
+### The parse path spends fewer instructions on names and abi-tag mangling
+
+Three per-token costs leave the `--std=madc` parse path. In
+`peek_param_list_spelling` the REPL-session type-identity lookup
+(`session_type_identity`) now runs only when `interactive_session` is set,
+so a non-interactive compile skips it on every identifier and data-type
+token. `token_is_operator_id_start`, asked of every token by the delimiter
+scans, compares the interned name against `MADC_ISTRING_LITERAL("operator")`
+by pointer identity instead of a byte compare. The Itanium mangler keeps a
+name component's GCC abi tags inside `NameComponent::ident` (spelled
+`P[abi:v2]`, as c++filt prints them) rather than a separate
+`std::vector<std::string> abi_tags`, encoding them through
+`component_source_name` / `untagged_length`; an untagged name pays only a
+last-byte test. The parse-cost gate row `dialect.live` drops from
+76,390,431 to 76,255,279 Ir.
+
 ## [v0.104.0] — 2026-10-12
 
 The madcide split: madc's interactive mode takes the ed/ex editing core, and madcide leaves to its own repository. `madc -i` gains colon mode, a command registry modules and hosts extend, `%std` / `%reset` / `%history` / `%check` / `%build` / `%run` / `%args` / `%project`, coloured prompts and diagnostics, and host-facing language services; madc ships a Language Server (`--lsp`) and a Model Context Protocol server (`--mcp`) with a project memory, a code graph and an external-task client; the data substrate gains a document component with an edit notification, regexes run on one PCRE2 engine, and a source's standard follows its extension. madcide now lives in its own repository and releases on its own, so madc's packages no longer carry it. Forest and pack correctness and reproducibility, codegen and REPL fixes, and Windows and darwin parity round out the release.

@@ -357,6 +357,14 @@ class CirBuilder {
 	// (Program::session_awaited)? Its vague-linkage body is then emitted in
 	// the entry that defines it, used there or not.
 	bool session_awaits(const madc::dis::istring &sym) const;
+	// Plan §42 D5: is `tf` the newest definition of a function this unit
+	// redefines (Program::session_redefined)? It is emitted, and the
+	// session replaces the earlier body with it.
+	bool session_redefinition(TokenFunc *tf, FuncDef *fd) const;
+	// Plan §42 D6: is `td` the newest declaration of an object this unit
+	// redefines (Program::session_redefined_objects)? It defines the object,
+	// and the session loads it into the earlier object's storage.
+	bool session_object_redefinition(const Program::TopDecl &td) const;
 	// Plan §42 D27, slice 2: code in an interactive entry reads an object that
 	// an entry declared and nothing defines yet through a session CELL, so a
 	// later definition is the object it reaches. late_bound_object is the
@@ -367,6 +375,11 @@ class CirBuilder {
 	bool late_bound_object(const class Variable &v) const;
 	node_t var_storage_node(const class Variable &v, TokenBase *origin);
 	std::map<madc::dis::istring, madc::dis::istring> m_late_cells;
+	// Plan §42 D6: each object this entry redefines that ends its earlier
+	// lifetime first, object symbol -> the function that destroys it
+	// (redefined_destroys()).
+	std::vector<std::pair<madc::dis::istring, madc::dis::istring>>
+		m_redefined_destroys;
 	// Wide string literals (parser addWideLiteral): the sanitized module
 	// symbol (__wlit_<n>) each synthetic __wliteral__ Variable emits under.
 	// The Variable's own name embeds the raw UTF-32 payload (binary-safe for
@@ -553,7 +566,10 @@ class CirBuilder {
 	// is another TU's; a block-scope STATIC (or thread_local) one lives for
 	// the program (or thread), so it takes no scope-exit cleanup — its
 	// destruction at exit is deferred like a file-scope object's.
-	enum class ObjStorage { Automatic, Extern, Static, ThreadStatic };
+	// Global: static storage duration at file scope — no storage-class
+	// specifier and no scope-exit cleanup (static_dtor_registration
+	// destroys it at exit).
+	enum class ObjStorage { Automatic, Extern, Static, ThreadStatic, Global };
 	node_t obj_storage_decl(const char *name, size_t words,
 				const char *dtor_sym, TokenBase *origin,
 				size_t align = 0,
@@ -619,6 +635,10 @@ class CirBuilder {
 	// first use through __madc_dl_member, cast to the K&R fn-ptr type.
 	node_t dyn_module_callee(FuncDef *fd, const madc::dis::istring &callee_name,
 				 TokenBase *origin);
+	// Its slot's `static void *` declaration — the lowering site's, and a
+	// LOADED forest body's (whose pre-built calls never pass that site).
+	void declare_dyn_module_slot(const madc::dis::istring &slot, TokenBase *origin);
+	void declare_loaded_body_slots(node_t body);
 	node_t obj_default_ctor_call(const char *name, const char *ctor_sym,
 				     TokenBase *origin);
 
@@ -1227,7 +1247,7 @@ private:
 
 	// ---- std::format / std::print / std::println (src/cir_format.cpp) ----
 	// The C++23 formatting surface as compiler-implemented intrinsics
-	// (declared in <bits/std_format>, defined nowhere): the LITERAL format
+	// (declared by the compiler under --std=madc, defined nowhere): the LITERAL format
 	// string is parsed and validated at COMPILE time by the same C engine
 	// the runtime uses (src/rt/rt_format.c — one grammar owner), so an
 	// invalid format string is a compile error exactly as C++23 requires,
@@ -2252,6 +2272,9 @@ public:
 	// A same-class (or derived) initializer copies the class ([over.match.
 	// list], [dcl.init.aggr]/4): never a member list, never brace elision.
 	bool initializer_copies_class(TokenBase *init, DataDefCLASS *cdd);
+	// The class of an initializer's value, NULL for a non-class one.
+	DataDefCLASS *initializer_class(TokenBase *init);
+	bool unconvertible_class_source(TokenBase *init, TokenBase *origin);
 	bool braced_class_array_needs_construction(Variable *v,
 			       TokenDecl *tdecl, DataDefCLASS *cdd);
 	// The class half of that rule: an element of `cdd` is constructed, never
@@ -2722,6 +2745,29 @@ public:
 	// the Pass 1.95 late declarations, ahead of every function definition),
 	// mark it referenced, and return its symbol.
 	madc::dis::istring demand_array_dtor(DataDefCLASS *cdd, size_t n);
+	// The function that ends a class object's lifetime, called with its
+	// address: the complete dtor, or a fixed array's per-(class,N) wrapper.
+	// One owner for the scope-exit cleanup of an automatic object
+	// (var_decl) and the exit-time registration of a static one.
+	// DEMAND false names the function without making its definition.
+	madc::dis::istring class_object_dtor_symbol(Variable *v, DataDefCLASS *cdd,
+						    bool demand = true);
+	// The function that ends V's lifetime at exit, called with its address
+	// (an object with static storage duration); empty when V needs none or
+	// ends with its thread. DEMAND makes the prototype or definition a call
+	// from this module needs.
+	madc::dis::istring static_object_destroyer(Variable *v, bool demand);
+	// The exit-time destruction of an object with static storage duration,
+	// registered right after its initialization as g++ does:
+	// `__cxa_atexit((void (*)(void *))D, (void *)&v, (void *)&__dso_handle);`
+	// NULL when the object needs none, or ends with its thread.
+	node_t static_dtor_registration(Variable *v, TokenBase *origin);
+	// What that registration names: __cxa_atexit's prototype and the image
+	// handle __dso_handle.
+	void need_exit_registration_externs();
+	// `void (*)(void *)`: a destructor as __cxa_atexit and a vtable slot
+	// call take it.
+	node_t dtor_fnptr_type();
 	node_t synth_array_dtor_def(DataDefCLASS *cdd, size_t n,
 				    const madc::dis::istring &sym);
 	// Wrapper defs demanded during body translation, flushed at Pass 1.95.
@@ -2836,8 +2882,11 @@ public:
 	node_t carrier_scalar_conversion_refusal(TokenBase *src, DataDef *target,
 						 const char *context,
 						 TokenBase *origin);
+	// `object`: the static whose initialization init_items is; its
+	// exit-time destruction is registered inside the once-block.
 	void emit_static_local_once(node_t items, node_t init_items,
-				    TokenBase *origin, bool per_thread);
+				    TokenBase *origin, bool per_thread,
+				    Variable *object = NULL);
 	// Block-scope statics whose DYNAMIC initializer var_decl deferred to
 	// the once-block (the block-scope twin of m_dynamic_global_inits).
 	std::set<Variable *> m_dynamic_static_locals;
@@ -2948,6 +2997,11 @@ public:
 	// late-bound objects through, cell symbol -> object symbol.
 	const std::map<madc::dis::istring, madc::dis::istring> &late_cells() const
 		{ return m_late_cells; }
+	// Plan §42 D6: the destructible objects this entry redefines, object
+	// symbol -> the function the session calls with the earlier object's
+	// address before this module's definition takes its storage.
+	const std::vector<std::pair<madc::dis::istring, madc::dis::istring>> &
+	redefined_destroys() const { return m_redefined_destroys; }
 	// Pack-side c2mir check gate, drop arm (rung 1, layer 4): called by
 	// madc_cir_freeze with the defective top-level child indices reported
 	// by c2mir_check_tree on a COPY of the pristine translated tree. Drops
@@ -3179,5 +3233,9 @@ void cir_collect_declared_object_names(node_t tree, std::set<madc::dis::istring>
 // lowering site that registers F as referenced never runs for it).
 void cir_collect_cleanup_attr_fns(node_t tree, std::set<madc::dis::istring> &out);
 void cir_collect_addr_fn_refs(node_t tree, std::set<madc::dis::istring> &out);	// v25
+// Collect the slot every dyn-module call in the tree assigns from
+// __madc_dl_member (CirBuilder::dyn_module_callee's shape). FOREST
+// materialization sites only (CirBuilder::declare_loaded_body_slots).
+void cir_collect_dyn_module_slots(node_t tree, std::set<madc::dis::istring> &out);
 
 #endif // __CIR_BUILDER_H

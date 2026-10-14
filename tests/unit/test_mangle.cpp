@@ -111,6 +111,25 @@ TEST_SUITE("Itanium type encoding") {
 		CHECK(itanium_encode_type_sub("int64_t") == "l");
 	}
 
+	TEST_CASE("abi-tagged class names (g++ [[gnu::abi_tag]] oracle)") {
+		// A REPL session's redefined struct is a new version of the type,
+		// spelled P[abi:v2] (c++filt's form); g++ 13 on
+		// `struct [[gnu::abi_tag("v2")]] P`.
+		CHECK(itanium_encode_type_sub("P[abi:v2]") == "1PB2v2");
+		CHECK(itanium_mangle_nested_sub({}, "getx", {"P[abi:v2]"}) == "_Z4getx1PB2v2");
+		CHECK(itanium_mangle_nested_sub({}, "take", {"P[abi:v2]*"}) == "_Z4takeP1PB2v2");
+		CHECK(itanium_mangle_nested_sub({}, "f", {"P[abi:v2]", "P[abi:v2]"})
+		      == "_Z1f1PB2v2S_");
+		CHECK(itanium_mangle_nested_sub({}, "g", {"const P[abi:v2]&", "P[abi:v2]*"})
+		      == "_Z1gRK1PB2v2PS_");
+		CHECK(itanium_mangle_nested_sub({}, "h", {"ns::Q[abi:v3]"}) == "_Z1hN2ns1QB2v3E");
+		CHECK(itanium_mangle_nested_sub({"P[abi:v2]"}, "area", {}) == "_ZN1PB2v24areaEv");
+		// The untagged name stays distinct.
+		CHECK(itanium_mangle_nested_sub({}, "getx", {"P"}) == "_Z4getx1P");
+		// An array of a tagged class: the tag is the name's, the dims the array's.
+		CHECK(itanium_encode_type_sub("P[abi:v2] (*)[3]") == "PA3_1PB2v2");
+	}
+
 	TEST_CASE("Pointer types") {
 		CHECK(itanium_encode_type_sub("int*") == "Pi");
 		CHECK(itanium_encode_type_sub("char*") == "Pc");

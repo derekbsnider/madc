@@ -491,15 +491,17 @@ TEST_CASE("colon mode: `:` entries are the host's ex session's (D24)")
     InteractiveSession s;
     REQUIRE(s.begin("--std=c17"));
     colon_host h;
+    // The lines `:a` adds to the REPL buffer, and the line `:3s` edits, are
+    // read as definitions at once (the live reparse): y and z, then w.
     std::istringstream in(
 	"int x = 2;\n"
 	":a\n"
-	"first line\n"
-	"second\n"
+	"int y = 3;\n"
+	"int z = 4;\n"
 	".\n"
-	"x * 3\n"
+	"x * y\n"
 	":%p\n"
-	":3s/second/2nd/\n"
+	":3s/z/w/\n"
 	":nu\n"
 	":bogus\n"
 	"int twice(int a) { return a * 2; }\n"
@@ -509,12 +511,13 @@ TEST_CASE("colon mode: `:` entries are the host's ex session's (D24)")
     std::ostringstream out;
     CHECK(madc_repl_run(s, in, out, false, h.colon) == 0);
     CHECK(out.str()
-	  == "6\nint x = 2;\nfirst line\nsecond\nx * 3\n  3 2nd\n"
-	     "Signature: int twice(int a)  @ REPL[3]:1\nType:      function\n");
+	  == "6\nint x = 2;\nint y = 3;\nint z = 4;\nx * y\n  3 int w = 4;\n"
+	     "Signature: int twice(int a)  @ REPL[6]:1\nType:      function\n");
     CHECK(h.err.str() == "not an editor command: 'bogus'\n");
-    CHECK(h.text() == "int x = 2;\nfirst line\n2nd\nx * 3\n"
+    CHECK(h.text() == "int x = 2;\nint y = 3;\nint w = 4;\nx * y\n"
 		      "int twice(int a) { return a * 2; }\n");
-    CHECK(s.submitted() == 4);	// int x, x * 3, twice, ?twice
+    CHECK(s.submitted() == 7);	// int x, y, z, x * y, w, twice, ?twice
+    CHECK((s.data("w") != NULL));
 }
 
 TEST_CASE("colon mode at the line editor: input mode reads at the continuation prompt")
@@ -522,14 +525,15 @@ TEST_CASE("colon mode at the line editor: input mode reads at the continuation p
     InteractiveSession s;
     REQUIRE(s.begin("--std=c17"));
     colon_host h;
-    scripted_terminal term({ ":a\r", "one\r", "\r", ".\r", ":%p\r", "1 + 1\r",
-			     ":q!\r", "2 + 2\r" });
+    scripted_terminal term({ ":a\r", "int one = 1;\r", "\r", ".\r", ":%p\r",
+			     "one + 1\r", ":q!\r", "2 + 2\r" });
     std::ostringstream out;
     CHECK(madc_repl_edit(s, term, out, "", h.colon) == 0);
-    CHECK(out.str() == "one\n\n2\n");
-    CHECK(h.text() == "one\n\n1 + 1\n");	// the kept entry joins the REPL buffer
+    CHECK(out.str() == "int one = 1;\n\n2\n");
+    // the kept entry joins the REPL buffer
+    CHECK(h.text() == "int one = 1;\n\none + 1\n");
     CHECK(term.painted.find("c17>") != std::string::npos);
-    CHECK(s.submitted() == 1);
+    CHECK(s.submitted() == 2);	// `one`, read from the buffer, then one + 1
 }
 
 #include "madc_console.h"
