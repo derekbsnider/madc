@@ -28115,6 +28115,7 @@ Variable *Program::register_forest_func(const PendingForestFunc &pf)
 	// (body_symbol_keys); this registrar is the other and records it too.
 	if ( pf.fd->has_forest_body && !pf.fd->emit_symbol.empty() )
 	    body_symbol_keys[pf.fd->emit_symbol] = pf.name;
+	forest_stamp_lazy_module_prototype(pf.fd, pf.name);
 	DBG(std::cout << "register_forest_func: " << pf.name
 		      << " emit=" << pf.fd->emit_symbol
 		      << " alias=" << fv->storage_alias_name
@@ -31869,9 +31870,28 @@ void Program::stamp_lazy_module_prototype(FuncDef *fd, const madc::dis::istring 
 	_lazy_module_tokens.find(proto_end);
     if ( it == _lazy_module_tokens.end() )
 	return;
-    fd->dyn_module_library = it->second;
+    stamp_lazy_module_member(fd, it->second, name);
+}
+
+// The stamp itself — the live prototype's (above) and a restored one's
+// (forest_stamp_lazy_module_prototype).
+void Program::stamp_lazy_module_member(FuncDef *fd, const madc::dis::istring &spelling,
+				       const madc::dis::istring &name)
+{
+    fd->dyn_module_library = spelling;
     fd->dyn_module_member = name;
     fd->dyn_module_typed = true;
+}
+
+// A bound unit's prototype restored from the pack: one its replayed lazy
+// import served (forest_note_lazy_module_interface) gets the stamp a live
+// prototype lexed between the import's module markers gets.
+void Program::forest_stamp_lazy_module_prototype(FuncDef *fd, const madc::dis::istring &name)
+{
+    std::map<madc::dis::istring, madc::dis::istring>::const_iterator it =
+	forest_lazy_module_protos.find(name);
+    if ( fd && it != forest_lazy_module_protos.end() )
+	stamp_lazy_module_member(fd, it->second, name);
 }
 
 void Program::stamp_dynamic_module_member(Variable *var, const madc::dis::istring &ns,

@@ -5262,6 +5262,26 @@ void Program::forest_replay_pp_arms(uint32_t unit)
     }
 }
 
+// A replayed lazy import's interface prototypes (the row's interface unit's
+// functions, by its decl index): live, the import serves that header between
+// its module markers and every prototype in it is stamped
+// (stamp_lazy_module_prototype); a restored one is stamped by name as
+// register_forest_func registers it.
+void Program::forest_note_lazy_module_interface(const madc::dis::istring &module)
+{
+    const MadcModuleSpec *row = madc_module_find(module);
+    const int u = row && row->interface && bind_forest
+	? bind_forest->find_unit(row->interface) : -1;
+    std::vector<cir_forest_decl_entry> di;
+    if ( u < 0 || !bind_forest->unit_decl_index((uint32_t)u, di) )
+	return;
+    const madc::dis::istring spelling = madc_module_library_spelling(module);
+    for ( size_t k = 0; k < di.size(); ++k )
+	if ( di[k].kind == pdkFunction )
+	    if ( const char *nm = bind_forest->pool_str(di[k].name_id) )
+		forest_lazy_module_protos[madc::dis::istring(nm)] = spelling;
+}
+
 // Apply one unit's frozen PP-export delta to the live macro tables, replaying
 // the exact define_map / macro_map writes the lexer's #define/#undef handlers
 // perform — and a lazy `import`'s program state (adopt_lazy_module_import). The event stream is flat u32:
@@ -5311,7 +5331,10 @@ void Program::forest_install_pp(uint32_t unit)
 		note_std_abi_define(name, define_map[name]);
 	    }
 	    else if ( tag == PackMacroEvent::peImport )
+	    {
 		adopt_lazy_module_import(name);
+		forest_note_lazy_module_interface(name);
+	    }
 	    else // peDefineFn
 	    {
 		MacroDef m;

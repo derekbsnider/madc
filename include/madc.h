@@ -7269,6 +7269,15 @@ public:
     void stamp_lazy_module_prototype(FuncDef *fd, const madc::dis::istring &name,
 				     DataDefCLASS *owner_class,
 				     const TokenBase *proto_end);
+    void stamp_lazy_module_member(FuncDef *fd, const madc::dis::istring &spelling,
+				  const madc::dis::istring &name);
+    // The bound half: a bound unit never re-lexes its `import`, so the replay
+    // of its peImport event records the row's interface unit's functions
+    // (forest_note_lazy_module_interface: name -> spelling) and
+    // register_forest_func stamps each as it is restored.
+    std::map<madc::dis::istring, madc::dis::istring> forest_lazy_module_protos;
+    void forest_note_lazy_module_interface(const madc::dis::istring &module);
+    void forest_stamp_lazy_module_prototype(FuncDef *fd, const madc::dis::istring &name);
     void stamp_dynamic_module_member(Variable *var, const madc::dis::istring &ns,
 				     const madc::dis::istring &member);
     bool is_dynamic_symbol_fallback_enabled() const;
