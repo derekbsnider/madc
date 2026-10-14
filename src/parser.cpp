@@ -9896,7 +9896,7 @@ static void register_basic_class_pattern_method(
 	body.var = mvar;
 	body.method = method;
 	body.pack_poi = pgm.pack_current_poi();
-	body.pack_ctx = madc_pack_creation_ctx;
+	body.pack_ctx = madc_pack_stamp_ctx();
 	body.body_tokens = basic_class_pattern_substitute_tokens(pgm,
 	    binding, pattern.body_tokens);
 	body.definition_tokens = basic_class_pattern_substitute_tokens(pgm,
@@ -20614,6 +20614,7 @@ uint64_t DataDef::canonical_spelling_gen = 0;
 thread_local bool madc_class_pattern_capture_active = false;
 thread_local uint32_t madc_pack_creation_poi = 0xffffffffu;
 thread_local madc::dis::istring madc_pack_creation_ctx;
+std::atomic<bool> madc_pack_stamping(false);
 
 // The target's 64-bit data model (datadef.h) — host-derived default: the
 // hosted modes compile for the compiler that built them (the win64 madc.exe
@@ -36779,7 +36780,8 @@ void Program::ClassRegistrationJournal::rollback()
     for ( size_t i = 0; i < state->pack_decl_stack_size; ++i )
 	pgm.pack_decl_stack[i].names.resize(state->pack_decl_name_sizes[i]);
     pgm.pack_decl_stack.resize(state->pack_decl_stack_size);
-    madc_pack_creation_poi = pgm.pack_current_poi();
+    if ( pgm.pack_recording )
+	madc_pack_creation_poi = pgm.pack_current_poi();
     assert(pgm.block_typedef_shadows.size() >=
 	state->block_typedef_shadow_depth);
     for ( size_t i = 0; i < state->block_typedef_shadow_depth; ++i )
@@ -50211,7 +50213,7 @@ void Program::enqueue_deferred_function_body(Variable *var,
     body.var = var;
     body.method = method;
     body.pack_poi = pack_current_poi();
-    body.pack_ctx = madc_pack_creation_ctx;
+    body.pack_ctx = madc_pack_stamp_ctx();
     body.file = open ? open->file : NULL;
     body.line = open ? open->line : 0;
     body.column = open ? open->column : 0;
@@ -51401,7 +51403,7 @@ static bool try_parse_defaulted_member_template_constructor(
 	body.var = mvar;
 	body.method = static_cast<Method *>(mvar->data);
 	body.pack_poi = pgm.pack_current_poi();
-	body.pack_ctx = madc_pack_creation_ctx;
+	body.pack_ctx = madc_pack_stamp_ctx();
 	body.definition_tokens = definition_tokens;
 	body.full_definition = true;
 	body.file = ctor_name_tok ? ctor_name_tok->file : NULL;
@@ -61422,7 +61424,7 @@ void Program::register_outofline_member_instantiations(
 	body.var = mvar;
 	body.method = static_cast<Method *>(mvar->data);
 	body.pack_poi = pack_current_poi();
-	body.pack_ctx = madc_pack_creation_ctx;
+	body.pack_ctx = madc_pack_stamp_ctx();
 	body.definition_tokens = declarator_definition_tail(sub, mni, op);
 	if ( body.definition_tokens.empty() )
 	    continue;

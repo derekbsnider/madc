@@ -6,6 +6,7 @@
 //////////////////////////////////////////////////////////////////////////
 #define __DATADEF_H 1
 
+#include <atomic>
 #include <cstdint>
 #include <iostream>
 #include <map>
@@ -54,6 +55,23 @@ extern thread_local uint32_t madc_pack_creation_poi;
 // it keeps it (pack_ctx): what an instantiation makes is restored with that
 // product, whichever unit asked for it (pack-slices design §4).
 extern thread_local madc::dis::istring madc_pack_creation_ctx;
+// Set once any program in the process records a pack freeze
+// (Program::begin_pack_recording); never cleared. The stamps above move only
+// while a freeze records, so a compile with no freeze in its process reads
+// their defaults without the thread-local access every DataDef and Variable
+// would otherwise pay. Contract: process-wide, monotone, relaxed loads; the
+// stamps stay per-thread.
+extern std::atomic<bool> madc_pack_stamping;
+inline uint32_t madc_pack_stamp_poi()
+{
+    return madc_pack_stamping.load(std::memory_order_relaxed)
+	? madc_pack_creation_poi : 0xffffffffu;
+}
+inline madc::dis::istring madc_pack_stamp_ctx()
+{
+    return madc_pack_stamping.load(std::memory_order_relaxed)
+	? madc_pack_creation_ctx : madc::dis::istring();
+}
 
 // An argument expression's value category for reference binding
 // ([basic.lval]); a prvalue and an xvalue bind a reference alike
@@ -598,13 +616,13 @@ public:
 	  despaced_canonical_(), despaced_canonical_valid_(false),
 	  canonical_swept(false), type_id(0), scalar_alias_of(NULL),
 	  speculative_class_capture(madc_class_pattern_capture_active),
-	  pack_poi(madc_pack_creation_poi), pack_ctx(madc_pack_creation_ctx) {}
+	  pack_poi(madc_pack_stamp_poi()), pack_ctx(madc_pack_stamp_ctx()) {}
     DataDef(madc::dis::istring n, size_t s, DataType d)
 	: _type((uint32_t)d), name(n), size(s), canonical_cpp_spelling_(),
 	  despaced_canonical_(), despaced_canonical_valid_(false),
 	  canonical_swept(false), type_id(0), scalar_alias_of(NULL),
 	  speculative_class_capture(madc_class_pattern_capture_active),
-	  pack_poi(madc_pack_creation_poi), pack_ctx(madc_pack_creation_ctx) {}
+	  pack_poi(madc_pack_stamp_poi()), pack_ctx(madc_pack_stamp_ctx()) {}
     // The derived key travels WITH the spelling it was derived from: copying
     // one without the other is what would make the cache lie.
     DataDef(const DataDef &other)
@@ -616,7 +634,7 @@ public:
 	  scalar_alias_of(other.scalar_alias_of),
 	  speculative_class_capture(other.speculative_class_capture
 	      || madc_class_pattern_capture_active),
-	  pack_poi(madc_pack_creation_poi), pack_ctx(madc_pack_creation_ctx) {}
+	  pack_poi(madc_pack_stamp_poi()), pack_ctx(madc_pack_stamp_ctx()) {}
     DataDef &operator=(const DataDef &other)
     {
 	if ( this != &other )

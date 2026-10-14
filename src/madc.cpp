@@ -1866,7 +1866,7 @@ int main(int argc, char **argv)
 	    prog->keep_trivia = true;   // the C++ reverse-render echoes TU
 					// statements from the retained tokens
 	if ( freeze_path )
-	    prog->pack_recording = true;   // B4a: record grove payload v2 during lex+parse
+	    prog->begin_pack_recording();   // B4a: record grove payload v2 during lex+parse
 	if ( freeze_path || freeze_run )
 	    prog->forest_arena_enabled = true; // B3: populate forest_arena during parse — the arena IS the type-graph dump (v18)
 	struct timeval _tk0, _tk1;     // --show-stats: tokenize (read+lex) wall time

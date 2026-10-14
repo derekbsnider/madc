@@ -113,8 +113,8 @@ public:
     // The pack freeze's point of creation open at birth (DataDef::pack_poi's
     // twin): a class's static data member is born while the class body parses,
     // and the seed index places its global with the unit that parse belongs to.
-    uint32_t pack_poi = madc_pack_creation_poi;
-    madc::dis::istring pack_ctx = madc_pack_creation_ctx;	// the instantiation it was born in
+    uint32_t pack_poi = madc_pack_stamp_poi();
+    madc::dis::istring pack_ctx = madc_pack_stamp_ctx();	// the instantiation it was born in
     madc::dis::istring storage_alias_name;
     // storage_alias_name answers "what symbol does a REFERENCE to this
     // declaration resolve to" — it is a redirect, written by the GNU asm

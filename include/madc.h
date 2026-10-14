@@ -5656,6 +5656,13 @@ public:
 	std::vector<std::pair<madc::dis::istring, uint32_t> > names; // (name, kind)
     };
     bool pack_recording = false;
+    // Start recording a pack freeze: this program's lex + parse keep the
+    // grove payload and the creation stamps (madc_pack_stamping).
+    void begin_pack_recording()
+    {
+	pack_recording = true;
+	madc_pack_stamping.store(true, std::memory_order_relaxed);
+    }
     bool class_registration_taps_muted = false;
     std::vector<const char *> pack_unit_order;	// first-tokenization order (interned)
     std::set<const char *> pack_units_seen;
