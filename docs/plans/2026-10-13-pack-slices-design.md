@@ -369,7 +369,7 @@ the `Program` / compile group. No new mutable globals.
    using-declaration its DK_NSBIND). 11,009 of 11,020 entries resolve; the
    11 left name no record (function-pointer typedefs, enumerators imported
    by using-declarations, a folded `static const`, a nested struct frozen
-   under its flattened name). Pack +15 KB (13,275,448 bytes).
+   under its flattened name). Pack +15 KB (13,275,496 bytes).
 4. **Prelude.** The dialect fragments frozen as `--std=madc` units; the
    auto-include binds them. Checkpoint: the prelude row < 78.7M Ir; strict
    stds unaffected.
