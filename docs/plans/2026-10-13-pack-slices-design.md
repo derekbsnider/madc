@@ -337,6 +337,13 @@ the `Program` / compile group. No new mutable globals.
    layout accounts for multi-header binds. Checkpoint: cxx_stl / testsubscript
    timings not worse; live C++ compiles no longer open the pack; cxx_stl's Ir
    row ratcheted down toward ≤ 1,500M.
+   Progress (2026-10-14): node units by block (format 61, §3) and the
+   adoptable FUNC_NAMES (format 62, §6) meet the checkpoint — cxx_stl
+   1,447.5M Ir / 218 ms, subscript 2,245.3M / 338 ms, live compiles open no
+   pack. DEFBODY-on-instantiation DROPPED (owner 2026-10-14): measured on
+   cxx_stl, its 186 restored deferred bodies cost ~4–6M Ir to decode (0.4%)
+   against ~111 token-reading sites to guard; template bodies, the larger
+   share, already thaw on use (`thaw_fn_def`).
 4. **Prelude.** The dialect fragments frozen as `--std=madc` units; the
    auto-include binds them. Checkpoint: the prelude row < 78.7M Ir; strict
    stds unaffected.
