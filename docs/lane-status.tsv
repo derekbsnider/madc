@@ -1,17 +1,10 @@
 # lane	promote	last_green_commit	date	tally
 libcxx	no	96b3358a3d8a	2026-10-03	retired from the release tier 2026-10-03 (owner): the libc++ lane is darwin-suite on the macOS -O2 packed binary; last linux run: jit 1903/0/0TO/23skip; exe 1735/0; obj 1735/0 (-stdlib=libc++, 14 tests carry .libcxx_skip: B157-B161 + libstdc++-internal; at 028e31c36 content) [+ 96b3358a3: textual rename chthonic->chthonia, owner 2026-10-03, not re-run]
 darwin-suite	release	67766e2422a3	2026-10-11	darwin-suite native libc++ at 67766e242 content: arm64 Mac Mini 1968/0/0TO/41skip + mac battery 12/0; Intel MacBook 1970/0/0TO/39skip + mac battery 12/0 (the 5 seam4 darwin reds fixed: prelude predefines 8d762d1a9, REPL forest memo 71d4ad43e); EXE advisory 284/290 failed unchanged class (D5)
-linux-battery	yes	67766e2422a3	2026-10-11	seam_battery.sh green at 67766e242 (seam5): headerless 1966/0/0TO/43skip + ondisk 34/0 on packed -O2 madc-release; exeobj JIT 2000/0/0TO/9skip, EXE 1811/0, OBJ 1811/0; parse-cost 0 red of 6; static gates 0 red of 95 + make gates green
-headerless-win	yes	67766e2422a3	2026-10-11	1927/0/0TO/82skip at 67766e242 (seam5) + ondisk-win 1/0 — packed PE under wine
-wine64	yes	67766e2422a3	2026-10-11	the packed PE under wine: headerless-win 1927/0/0TO/82skip + ondisk-win 1/0 at 67766e242 (seam5)
-macos	yes	67766e2422a3	2026-10-11	BUILD lane: seam5 macos-build + macos stages rc=0 at 67766e242; darwin forest pack 837 units, consumer parse leg OK
-aarch64-ld	yes	67766e2422a3	2026-10-11	aarch64_ldouble_lane GREEN — seam_battery.sh (seam5) at 67766e242
 genuine-win	release	8b620b8fdc82	2026-10-11	1926/0/0TO/83skip — the FULL suite on the owner Windows 11 box at 67766e242 content (scripts/win_suite.sh, the seam5 packed PE)
 brew-linux	release	8b620b8fdc82	2026-10-12	2000/0/0TO/9skip - scripts/brew_lane.sh at 67766e242 content (bottle + pour + brew test, keg-masked runpath gate)
 interactive-win	release	4c4ad82b678b	2026-10-12	37 passed, 0 failed, 0 timed out, 6 skipped — win_suite.sh over interactive_lane.sh's tests/ subset on the owner Windows 11 box, the packed PE at 4c4ad82b6 content
 interactive-darwin	release	4c4ad82b678b	2026-10-12	arm64 Mac Mini 41/0/0TO/2skip + Intel MacBook 41/0/0TO/2skip — interactive_lane.sh's tests/ subset on the macOS packaged madc 0.104.0 at 4c4ad82b6 content; madcide 0.7.0 66/0 + Chthonia 0.1.0 check_install PASS on both
-interactive	yes	cf4865377600	2026-10-13	56/0/0TO/0skip + units 7/0 (scripts/interactive_lane.sh, Linux JIT)
-tests-jit	batch	873c2517ade6	2026-10-14	2033 passed, 0 failed, 9 skipped (run before the format_intrinsic_table() linkage-only change)
 c-testsuite	commit	a2a6d317ca83	2026-10-14	220 passed, 0 failed
 c-torture	commit	a2a6d317ca83	2026-10-14	1617 passed, 7 failing (baseline), 0 outside baseline
 c2mir-tests	commit	a2a6d317ca83	2026-10-14	368 passed, 0 failed, 4 skipped
@@ -19,3 +12,10 @@ gui	commit	a2a6d317ca83	2026-10-14	15 passed; EXE 15; OBJ 15
 gxx-c++11	no	a2a6d317ca83	2026-10-14	1505 passed, 441 failing (baseline), 0 outside baseline
 index-c	yes	a2a6d317ca83	2026-10-14	50/50 tasks OK
 commonmark	commit	a2a6d317ca83	2026-10-14	664 passed, 6 failed (baseline)
+linux-battery	yes	aec9cef791fe	2026-10-14	seam_battery.sh green at a2a6d317c (pack-slices 0.105.0 seam, run 2): headerless 2000/0/0TO/43skip + ondisk 34/0 on packed -O2 madc-release; exeobj JIT 2034/0/0TO/9skip, EXE 1827/0, OBJ 1827/0; parse-cost 0 red of 14; static gates 0 red of 98 + make gates green
+headerless-win	yes	aec9cef791fe	2026-10-14	1959/0/0TO/84skip at a2a6d317c (stage rerun; the battery's run was 1957/2, wine_suite_flake_class singletons teststringobj + testtrycatchdtor, 2/2 on isolated rerun) + ondisk-win 1/0 — packed PE under wine
+wine64	yes	aec9cef791fe	2026-10-14	the packed PE under wine: headerless-win 1959/0/0TO/84skip + ondisk-win 1/0 at a2a6d317c (pack-slices seam run 2, stage rerun)
+macos	yes	aec9cef791fe	2026-10-14	BUILD lane: macos-build + macos stages rc=0 at a2a6d317c (pack-slices seam run 2); darwin libmadc 1614 units, verify_macho_release OK both arches
+aarch64-ld	yes	aec9cef791fe	2026-10-14	aarch64_ldouble_lane GREEN — seam_battery.sh (pack-slices seam run 2) at a2a6d317c
+interactive	yes	7a5126a68e5e	2026-10-14	57/0/0TO/0skip + units 7/0 (scripts/interactive_lane.sh, Linux JIT) at a2a6d317c content
+tests-jit	batch	7a5126a68e5e	2026-10-14	2034 passed, 0 failed, 9 skipped (batch_lane.sh, dev JIT) at a2a6d317c content
