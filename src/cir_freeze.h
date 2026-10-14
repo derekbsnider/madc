@@ -633,7 +633,13 @@ bool cir_freeze_read(const madc::dis::snapshot_reader &r, uint32_t seg_id_base,
 // longer decodes and validates a whole unit — a record's bounds are checked
 // when it is first resolved. cxx_stl.cpp's bind decoded 569,504 node
 // records to materialize 2,121 (pack-slices design §10 part 3).
-enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 61 };
+//
+// v62: CIR_FOREST_SEG_FUNC_NAMES lists only the bare functions whose
+// prototype the adoption probe can adopt (variadic, unnamespaced, C-primitive
+// — Program::forest_adoption_decline, judged at freeze; the decl entry's
+// PACK_DECL_ADOPTABLE), so a live compile's probe of any other name (a
+// header's __builtin_memset asks for memset) no longer opens the pack.
+enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 62 };
 // Flags word of a SNAP_KIND_CIR_BRANCH_DEPS tuple.
 enum : uint32_t {
 	CIR_BRANCH_DEP_DEFINED   = 1u,	// the macro was defined at the consult
@@ -676,7 +682,7 @@ enum : uint32_t
 	CIR_FOREST_SEG_MIR_MODULE       = 20,	// MIR module cache (optional; absent = no cache)
 	CIR_FOREST_SEG_LEDGER           = 21,	// S5 AOT ledger (optional; absent = no ledger)
 	CIR_FOREST_SEG_SHARED_CONFIGS   = 22,	// configs sharing this profile (optional; absent = none)
-	CIR_FOREST_SEG_FUNC_NAMES       = 23,	// v57: the declared bare function names, sorted (read in place)
+	CIR_FOREST_SEG_FUNC_NAMES       = 23,	// v57: the bare function names, sorted (read in place); v62: the adoptable ones
 	CIR_FOREST_SEG_DECL_NAMES       = 24,	// v58: name -> declaring units (ForestDeclNames)
 	CIR_FOREST_SEG_SEEDS            = 25,	// v58: per-unit seed lists (ForestSeeds)
 	CIR_FOREST_SEG_RECORDABLE       = 26,	// v58: arena recordability bits (ForestRecordableBits)
@@ -1718,7 +1724,7 @@ class CirFrozenForest
 	size_t _image_len = 0;
 	bool bind_name_index(const uint8_t *p, uint32_t nunits, size_t name_bytes);
 	// CIR_FOREST_SEG_FUNC_NAMES, bound in place on the first
-	// declares_function query (validated whole; absent or malformed = none).
+	// may_adopt_function query (validated whole; absent or malformed = none).
 	mutable bool _fn_index_bound = false;
 	mutable uint32_t _fn_count = 0;
 	mutable const uint32_t *_fn_off = NULL;
@@ -2004,10 +2010,12 @@ public:
 	// open_header alone. The key is the exact unit_name string — a resolved
 	// include path or a bare compiler-builtin/embedded name (e.g. "stddef.h").
 	int find_unit(const madc::dis::istring &name) const;
-	// Does any unit's decl index declare the bare function `name`? A binary
-	// search over CIR_FOREST_SEG_FUNC_NAMES in place, after open_header
-	// alone — never the string pool, the arena or a unit's decl index.
-	bool declares_function(const madc::dis::istring &name) const;
+	// Does the pack hold a prototype of the bare function `name` that the
+	// adoption probe can adopt (Program::forest_adoption_decline — format
+	// 62)? A binary search over CIR_FOREST_SEG_FUNC_NAMES in place, after
+	// open_header alone — never the string pool, the arena or a unit's decl
+	// index.
+	bool may_adopt_function(const madc::dis::istring &name) const;
 	// v58 seed index (docs/plans/2026-10-13-pack-slices-design.md): the
 	// inverted declaration index, the per-unit seed lists, the frozen
 	// recordability bits. Empty views on a container without them.

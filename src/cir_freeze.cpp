@@ -742,11 +742,14 @@ bool cir_forest_write(const cir_frozen_forest &f, madc::dis::snapshot_writer &w,
 	// v57: the bare function names every unit's decl index declares (kind
 	// pdkFunction; a qualified form is C++ surface), sorted and unique —
 	// count, count + 1 offsets, NUL-terminated bytes; read in place.
+	// v62: only the ones the adoption probe can adopt (PACK_DECL_ADOPTABLE).
 	std::vector<const char *> fns;
 	for (size_t u = 0; u < nunits; ++u)
 		for (const cir_forest_decl_entry &e : f.units[u].decl_index) {
 			const char *nm = pool->c_str(e.name_id);
-			if (e.kind == Program::pdkFunction && *nm && !strchr(nm, ':'))
+			if (e.kind == Program::pdkFunction
+			    && (e.aux & Program::PACK_DECL_ADOPTABLE)
+			    && *nm && !strchr(nm, ':'))
 				fns.push_back(nm);
 		}
 	std::sort(fns.begin(), fns.end(), [](const char *a, const char *b) {
@@ -2453,7 +2456,7 @@ bool CirFrozenForest::declared_system(const char *nm, const char *ns,
 	return false;
 }
 
-bool CirFrozenForest::declares_function(const madc::dis::istring &name) const
+bool CirFrozenForest::may_adopt_function(const madc::dis::istring &name) const
 {
 	if (!_fn_index_bound) {
 		_fn_index_bound = true;

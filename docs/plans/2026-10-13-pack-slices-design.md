@@ -249,7 +249,16 @@ and the always list; the freeze prints a one-line placement summary.
 - The flush's namespace-binding / deferred-body lists hold only what the
   bound seeds produced.
 - `forest_adopt_declared_function` (the FUNC_NAMES probe) is unchanged here;
-  its gap is fixed in part 3.
+  its gap is fixed in part 3. **Fixed (format 62, 2026-10-14):** FUNC_NAMES
+  lists only the bare functions whose prototype has the probe's
+  TU-independent shape (`Program::forest_adoption_decline`, judged at freeze
+  on the producer's FuncDef — the decl entry's `PACK_DECL_ADOPTABLE`; 72
+  names), so a probe of any other name (a header's `__builtin_memset` asks
+  for `memset`) answers no without opening the pack. Live C++ compiles no
+  longer open it (`<vector>` live 439.1M → 438.1M Ir, cxx_stl live 2,690.7M →
+  2,686.2M); a bound compile no longer widens its restored set by a name it
+  then declines (subscript restores 11,764 records, was 11,787; 2,270.1M →
+  2,245.3M Ir).
 - Oracle during development: an env-gated full-walk arm runs today's path
   beside the seeded one and diffs the restored sets; deleted at the end of
   part 2 (no-parallel-implementations: written deadline). **Deleted

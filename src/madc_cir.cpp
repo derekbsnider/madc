@@ -3879,6 +3879,15 @@ static void cir_forest_fill_pack_payloads(Program *prog, cir_frozen_forest &f)
 	    else
 		aux |= Program::PACK_DECL_SPANS_UNITS;
 	}
+	// The function-name index (CIR_FOREST_SEG_FUNC_NAMES) lists the
+	// functions the adoption probe can adopt: their prototype's shape is
+	// judged here, on the producer's own FuncDef.
+	if (e.kind == Program::pdkFunction) {
+	    funcdef_map_t::const_iterator fi = prog->funcdef_map.find(e.name);
+	    if (fi != prog->funcdef_map.end() && fi->second
+		&& !Program::forest_adoption_decline(fi->second))
+		aux |= Program::PACK_DECL_ADOPTABLE;
+	}
 	cir_forest_decl_entry de;
 	de.name_id     = pool->intern(e.name);
 	de.kind        = e.kind;
@@ -7611,12 +7620,13 @@ int madc_cir_dump_forest(const char *container_path)
 	if (forest.unit_decl_index(u, di))
 	    for (size_t k = 0; k < di.size(); ++k) {
 		const char *nm = forest.pool_str(di[k].name_id);
-		printf("declindex\t%s\t%s\t%s\t[%u,%u)%s%s\n",
+		printf("declindex\t%s\t%s\t%s\t[%u,%u)%s%s%s\n",
 		       uname ? uname : "?",
 		       pack_decl_kind_name(di[k].kind), nm ? nm : "?",
 		       di[k].slice_begin, di[k].slice_end,
 		       (di[k].aux & Program::PACK_DECL_SPANS_UNITS) ? "\tSPANS" : "",
-		       (di[k].aux & Program::PACK_DECL_FUZZY_BOUNDS) ? "\tFUZZY" : "");
+		       (di[k].aux & Program::PACK_DECL_FUZZY_BOUNDS) ? "\tFUZZY" : "",
+		       (di[k].aux & Program::PACK_DECL_ADOPTABLE) ? "\tADOPTABLE" : "");
 	    }
     }
     return 0;

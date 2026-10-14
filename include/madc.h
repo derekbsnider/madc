@@ -5642,7 +5642,10 @@ public:
     };
     enum : uint32_t {			// PackDeclEntry aux flags (v2 wire values)
 	PACK_DECL_SPANS_UNITS  = 1u,	// slice crosses unit boundaries: bind must live-parse
-	PACK_DECL_FUZZY_BOUNDS = 2u	// stream pushback was non-empty at a boundary
+	PACK_DECL_FUZZY_BOUNDS = 2u,	// stream pushback was non-empty at a boundary
+	PACK_DECL_ADOPTABLE    = 4u	// a bare function whose prototype has the adoption
+					// probe's TU-independent shape (forest_adoption_decline):
+					// listed in the pack's function-name index
     };
     struct PackDeclEntry {
 	madc::dis::istring name;		// exported (namespace-qualified) name
@@ -6861,6 +6864,13 @@ public:
     // call put them in registers. NULL = the pack declares no such bare
     // variadic function in that shape: the caller's guess stands, as before.
     Variable *forest_adopt_declared_function(const madc::dis::istring &fname);
+    // The TU-independent half of that adoption test — variadic, unnamespaced,
+    // a C-primitive return and parameters: NULL when fd has the shape, else
+    // the conjunct that rejects it. The freeze lists exactly these names in
+    // the pack's function-name index, so the probe opens the pack only for a
+    // name it can adopt; the TU-dependent half (a typedef'd return or
+    // parameter the TU must already know) stays in the probe.
+    static const char *forest_adoption_decline(FuncDef *fd);
     // `__builtin_X` IS X: register the adopted twin's prototype under the
     // builtin spelling (a copy emitting as X). NULL when X is not adopted.
     Variable *register_builtin_twin_alias(const madc::dis::istring &fname,

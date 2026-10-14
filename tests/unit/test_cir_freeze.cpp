@@ -869,6 +869,7 @@ TEST_CASE("v56: the source arm packs listed headers as source-only units") {
 	{
 		std::ofstream f(main_path.c_str());
 		f << "int v57_fn(int x) { return x; }\n"
+		     "int v62_vfn(const char *fmt, ...);\n"
 		     "int main() { return v57_fn(0); }\n";
 	}
 	{
@@ -958,11 +959,13 @@ TEST_CASE("v56: the source arm packs listed headers as source-only units") {
 	CHECK(index_only.find_unit_path_tail(madc::dis::istring("stdio.h"))
 	      == forest.find_unit(madc::dis::istring(deeper)));
 	CHECK(index_only.unit_name(index_only.unit_count()) == nullptr);
-	// The function-name index answers in place too: a declared function, an
-	// absent one, and a variable (never a function).
-	CHECK(index_only.declares_function(madc::dis::istring("v57_fn")));
-	CHECK_FALSE(index_only.declares_function(madc::dis::istring("v57_absent")));
-	CHECK_FALSE(index_only.declares_function(madc::dis::istring("v56_top")));
+	// The function-name index answers in place too (v62: the adoptable
+	// functions only): a variadic C-shaped prototype, a declared function
+	// that is not variadic, an absent name, and a variable.
+	CHECK(index_only.may_adopt_function(madc::dis::istring("v62_vfn")));
+	CHECK_FALSE(index_only.may_adopt_function(madc::dis::istring("v57_fn")));
+	CHECK_FALSE(index_only.may_adopt_function(madc::dis::istring("v57_absent")));
+	CHECK_FALSE(index_only.may_adopt_function(madc::dis::istring("v56_top")));
 }
 
 // Phase 6 (design 2026-07-05): the forest is the serialized Tree-1 ROM; on bind

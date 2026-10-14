@@ -28238,6 +28238,23 @@ static bool forest_adoptable_c_type(DataDef *dd, int depth = 0)
     return dd->is_void() || dd->is_numeric();
 }
 
+// The adoption test's TU-independent half (see the declaration): what the
+// freeze lists in the pack's function-name index, and what the probe re-asks
+// of the restored record.
+const char *Program::forest_adoption_decline(FuncDef *fd)
+{
+    if ( !fd->is_varargs )
+	return "not variadic";
+    if ( !fd->namespace_name.empty() )
+	return "namespaced";
+    if ( !forest_adoptable_c_type(&fd->returns) )
+	return "return type is not a C-primitive shape";
+    for ( size_t i = 0; i < fd->parameters.size(); ++i )
+	if ( !forest_adoptable_c_type(fd->parameters[i]) )
+	    return "parameter type is not a C-primitive shape";
+    return NULL;
+}
+
 // GCC canon (see the declaration): an undeclared variadic call adopts the
 // pack's real prototype. The record comes from the arena through the SAME
 // materialize_for the bound-include restore uses (widened by this one name;
@@ -28258,11 +28275,12 @@ Variable *Program::forest_adopt_declared_function(const madc::dis::istring &fnam
     CirFrozenForest *f = bind_forest_directory();
     if ( !f )
 	f = ensure_source_forest();
-    // "Is this a library function" is the pack's own function-name index,
-    // read in place; only a yes opens the frozen content the adoption below
-    // reads — the bind carrier through ensure_bind_forest, the source carrier
-    // directly (both memoized).
-    if ( !f || !f->declares_function(fname) )
+    // "Does the pack hold an adoptable prototype of this name" is the pack's
+    // own function-name index, read in place (the freeze lists a name only
+    // when its prototype passes forest_adoption_decline); only a yes opens
+    // the frozen content the adoption below reads — the bind carrier through
+    // ensure_bind_forest, the source carrier directly (both memoized).
+    if ( !f || !f->may_adopt_function(fname) )
 	return NULL;
     if ( f == _bind_directory ? !ensure_bind_forest()
 			      : !f->complete_open(/*c2m=*/NULL) )
@@ -28294,13 +28312,7 @@ Variable *Program::forest_adopt_declared_function(const madc::dis::istring &fnam
     // DEFINITIONS under the -D__USE_MINGW_ANSI_STDIO=1 this build passes, so
     // on win64 every undeclared libc call still took the K&R guess: 91 names
     // (stdio.h 33, wchar.h 56, stdlib.h 4, sys/stat.h 2), printf among them.
-    const char *decline = NULL;
-    if ( !fd->is_varargs )
-	decline = "not variadic";
-    else if ( !fd->namespace_name.empty() )
-	decline = "namespaced";
-    else if ( !forest_adoptable_c_type(&fd->returns) )
-	decline = "return type is not a C-primitive shape";
+    const char *decline = forest_adoption_decline(fd);
     bool shape_ok = decline == NULL;
     if ( shape_ok && !fd->return_typedef_name.empty() )
     {
@@ -28311,12 +28323,6 @@ Variable *Program::forest_adopt_declared_function(const madc::dis::istring &fnam
     }
     for ( size_t i = 0; shape_ok && i < fd->parameters.size(); ++i )
     {
-	shape_ok = forest_adoptable_c_type(fd->parameters[i]);
-	if ( !shape_ok )
-	{
-	    decline = "parameter type is not a C-primitive shape";
-	    break;
-	}
 	if ( i < fd->param_typedef_names.size()
 	  && !fd->param_typedef_names[i].empty() )
 	{
