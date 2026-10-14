@@ -99,6 +99,12 @@
 0 linux dk-none
 0 linux closure-drops
 11581976 linux pack-bytes
+# linux-dialect (2026-10-14, pack-slices design §7): the --with-forest=none
+# build's dialect-only container (forest_pack.sh --dialect-only) — the C
+# headers the full pack freezes ahead of the madc fragments, then the
+# fragments; 247 units. Zero parse errors and zero losses by construction
+# (no line = zero allowed); its size recorded as built.
+3307744 linux-dialect pack-bytes
 # win64 68 -> 70 (2026-09-20): the same libstdc++ 13.2 corpus as linux, the
 # same six exposed __cerb entries (istream.tcc, the mingw stage's line
 # numbers); its freeze-append also compiles src/rt/rt_posix_time.c again —

@@ -690,7 +690,10 @@ $(LINK_SHAPE_STAMP):
 # default targets (a rule this early would hijack the default goal).
 # --with-forest=sidecar keeps the cross-freeze but drops the -sectcreate:
 # the link rule ships the container as $(BIN).forest instead (FOREST_SIDECAR);
-# --with-forest=none skips the forest entirely.
+# --with-forest=none skips the forest entirely — the darwin hosted modes build
+# no dialect-only container yet, so there the dialect fragments stay
+# text-parsed (the Linux release's none mode carries one: forest_pack.sh
+# --dialect-only).
 ifdef HOSTED_DARWIN_TARGET
 DARWIN_FOREST_BIN = $(OBJDIR)/forest.bin
 DARWIN_THIN_CLI = $(OBJDIR)/madc-thin
@@ -1087,7 +1090,10 @@ release-windows:
 # and survives the stripped binary's dlsym resolver path.
 # --with-forest= picks the carrier: embedded appends the container to the
 # binary (default), sidecar writes bin/madc-release.forest beside it, none
-# skips the pack (live-parse-only product).
+# skips the system-header pack (system headers live-parsed from disk) but
+# still appends the madc dialect surface as a dialect-only container
+# (forest_pack.sh --dialect-only; pack-slices design §7: the dialect is
+# present in every product mode).
 # In the thin-CLI shape the carrier is the LIBRARY image (forest-carriers S4):
 # one container serves the CLI and every embedding host, so the pack targets
 # lib/libmadc.so — and the same strip-before-pack ordering applies to it (the
@@ -1107,6 +1113,8 @@ ifeq ($(WITH_FOREST),embedded)
 	cd .. && bash scripts/forest_pack.sh $(PACK_IMAGE_ARG) bin/madc-release
 else ifeq ($(WITH_FOREST),sidecar)
 	cd .. && bash scripts/forest_pack.sh --sidecar $(PACK_IMAGE_ARG) bin/madc-release
+else ifeq ($(WITH_FOREST),none)
+	cd .. && bash scripts/forest_pack.sh --dialect-only $(PACK_IMAGE_ARG) bin/madc-release
 endif
 
 # Install the release artifacts under $(PREFIX) (DESTDIR-aware). Same layout
