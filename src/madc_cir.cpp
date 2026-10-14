@@ -4885,8 +4885,9 @@ void Program::forest_arena_record_member_pointer(DataDef *dd)
 // as the retired v6 save-side filter did. No initializer is stored for a class
 // global: collect_global_ctors synthesizes the default ctor from the class's
 // restored ctor set (v12); the initializer FORM rides gflags (v16) and a
-// scalar-const's VALUE rides init_value (v14). Dedup by name (a global appears
-// once). Names intern into the ACTIVE pool that cir_forest_write serializes.
+// scalar-const's VALUE rides init_value (v14). Dedup by identity (a global
+// appears once; global_identity). Names intern into the ACTIVE pool that
+// cir_forest_write serializes.
 static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
 {
     if (!prog || !TokenBase::_active_strpool || !prog->tkProgram)
@@ -4898,15 +4899,51 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
     // that sits in tkProgram->variables; a consumer's fresh instantiation resolves
     // the tag by QUALIFIED name through that binding, so record it (reverse walk —
     // the v10 namespace discipline; first match wins, live has one owner per tag).
-    auto global_ns_id = [&](Variable *gv) -> uint32_t {
+    // Does namespace `key` hold this very Variable?
+    auto ns_holds = [&](const madc::dis::istring &key, Variable *gv) -> bool {
+	auto nsi = prog->namespace_map.find(key);
+	if (nsi == prog->namespace_map.end())
+	    return false;
+	variable_map_t::iterator ni = nsi->second.find(gv->name);
+	return ni != nsi->second.end() && ni->second == gv;
+    };
+    // A tagged C++ enum's enumerator is ALSO indexed under its tag's
+    // pseudo-namespace ([dcl.enum]/11; TokenENUM's scope_ns): `T` at global
+    // scope, `R::T` beside its real namespace R. That index is the TAG's —
+    // the restore rebuilds it from the enum's own record — never the scope
+    // that holds the enumerator.
+    auto tag_scope = [&](Variable *gv, const madc::dis::istring &key) -> bool {
+	const DataDefENUM *ed = gv->is_enumerator()
+	    ? dynamic_cast<const DataDefENUM *>(gv->type) : NULL;
+	if (!ed || ed->enum_name.empty())
+	    return false;
+	if (key == ed->enum_name)
+	    return true;
+	const size_t kn = key.size(), tn = ed->enum_name.size();
+	const char *k = key.c_str();
+	return kn > tn + 2 && k[kn - tn - 2] == ':' && k[kn - tn - 1] == ':'
+	    && strcmp(k + kn - tn, ed->enum_name.c_str()) == 0
+	    && ns_holds(madc::dis::istring(k, kn - tn - 2), gv);
+    };
+    auto global_ns = [&](Variable *gv) -> const madc::dis::istring * {
 	for (auto &nskv : prog->namespace_map) {
-	    if (nskv.first.empty())
+	    if (nskv.first.empty() || tag_scope(gv, nskv.first))
 		continue;
 	    variable_map_t::iterator ni = nskv.second.find(gv->name);
 	    if (ni != nskv.second.end() && ni->second == gv)
-		return pool.intern(nskv.first);
+		return &nskv.first;
 	}
-	return 0;
+	return NULL;
+    };
+    auto global_ns_id = [&](Variable *gv) -> uint32_t {
+	const madc::dis::istring *ns = global_ns(gv);
+	return ns ? pool.intern(*ns) : 0u;
+    };
+    // A global's identity is live's (addVariable): a named namespace's member,
+    // else the program's name — ui::NONE and a C enum's NONE are two globals.
+    auto global_identity = [&](Variable *gv) -> madc::dis::istring {
+	const madc::dis::istring *ns = global_ns(gv);
+	return ns ? madc::dis::istring(*ns + "::" + gv->name) : gv->name;
     };
     // v24: a global DECLARED in the TU's root file (the program's own globals)
     // is fenced from the bind restore. Provenance = its dkGlobalVar TopDecl's
@@ -4965,7 +5002,7 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
 		prog->forest_enum_const_origin.find(v->name);
 	    if (eo != prog->forest_enum_const_origin.end()) {
 		uint32_t esid = forest_serialize_type_id(v->type);
-		if (!esid || !seen_globals.insert(v->name).second)
+		if (!esid || !seen_globals.insert(global_identity(v)).second)
 			continue;
 		cir_forest_global_record g;
 		memset(&g, 0, sizeof(g));
@@ -5001,7 +5038,7 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
 		  || (madc::dis::arena_id_is_project(xtid)
 		      && prog->forest_arena.has_def(xtid))))
 		continue;
-	    if (!seen_globals.insert(v->name).second)
+	    if (!seen_globals.insert(global_identity(v)).second)
 		continue;
 	    cir_forest_global_record g;
 	    memset(&g, 0, sizeof(g));
@@ -5022,7 +5059,7 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
 	    if (!madc::dis::arena_id_is_project(ctid)
 		|| !prog->forest_arena.has_def(ctid))
 		continue;	// class not in the arena -> its global cleanly lacks
-	    if (!seen_globals.insert(v->name).second)
+	    if (!seen_globals.insert(global_identity(v)).second)
 		continue;
 	    cir_forest_global_record g;
 	    memset(&g, 0, sizeof(g));
@@ -5114,7 +5151,7 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
 	    uint32_t usid = forest_serialize_type_id(v->type);
 	    if (!usid)
 		continue;
-	    if (!seen_globals.insert(v->name).second)
+	    if (!seen_globals.insert(global_identity(v)).second)
 		continue;
 	    cir_forest_global_record g;
 	    memset(&g, 0, sizeof(g));
@@ -5144,7 +5181,7 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
 	uint32_t sid = forest_serialize_type_id(v->type);
 	if (!sid)
 	    continue;
-	if (!seen_globals.insert(v->name).second)
+	if (!seen_globals.insert(global_identity(v)).second)
 	    continue;
 	cir_forest_global_record g;
 	memset(&g, 0, sizeof(g));

@@ -9940,6 +9940,8 @@ public:
     // probe (no forest materialization, no module binding: that is
     // find_namespace_member's miss path).
     Variable *current_namespace_variable(const madc::dis::istring &id);
+    Variable *namespace_member_variable(const madc::dis::istring &ns,
+					const madc::dis::istring &id);
     bool object_redeclaration_conflicts(Variable *prior, DataDef *type,
 					const std::vector<carray_dim_t> *dims,
 					unsigned object_cv);

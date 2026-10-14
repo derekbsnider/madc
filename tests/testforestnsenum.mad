@@ -1,0 +1,14 @@
+// A namespaced unscoped enumerator through a BOUND header: <limits>'s
+// float_denorm_style / float_round_style enumerators are members of namespace
+// std ([dcl.enum]/11: an unscoped enumerator is declared in the scope that
+// holds its enum). The pack restored them at global scope only, so
+// `std::denorm_present` failed with "is not a member of namespace 'std'".
+// Oracle: g++ 13 == clang++-18 print the line below.
+#include <cstdio>
+#include <limits>
+int main()
+{
+    printf("%d %d %d\n", (int)std::denorm_present,
+	   (int)std::round_toward_neg_infinity, (int)std::round_indeterminate);
+    return 0;
+}

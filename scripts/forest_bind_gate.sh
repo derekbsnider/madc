@@ -896,6 +896,34 @@ rm -f "$sh_snap" "$sh_log" tmp/fbgate_share.cpp tmp/fbgate_share_println.cpp \
       tmp/fbgate_share_var.cpp tmp/fbgate_share_nomain.cpp
 echo "forest_bind_gate: [sharegate] OK — the madc profile binds for gnu++17 and c++17 with no madc extras; c++20 does not bind"
 
+# --- case: nsenum (a namespaced unscoped enumerator's identity) ---------------
+# An unscoped enumerator inside a namespace is that namespace's member
+# ([dcl.enum]/11). The freeze deduped globals by BARE name (fbb::X lost to
+# fba::X) and the restore bound none to its namespace (fba::X "is not a
+# member of namespace 'fba'"); both now key on live's identity — the
+# namespace's member, else the program's name. A tagged enum's enumerator is
+# also indexed under the tag (gtag::GA): that index is the tag's, never the
+# enumerator's scope — GA stays a global.
+cat > tmp/fbgate_nsenum.h <<'EOF'
+#ifndef FBGATE_NSENUM_H
+#define FBGATE_NSENUM_H
+namespace fba { enum mode { X = 1, Y = 2 }; }
+namespace fbb { enum kind { X = 7, Z = 9 }; }
+enum gtag { GA = 5 };
+#endif
+EOF
+cat > tmp/fbgate_nsenum_producer.cpp <<'EOF'
+#include <fbgate_nsenum.h>
+int main() { return 0; }
+EOF
+cat > tmp/fbgate_nsenum_consumer.cpp <<'EOF'
+#include <stdio.h>
+#include <fbgate_nsenum.h>
+int main() { printf("%d %d %d %d %d %d\n", (int)fba::X, (int)fbb::X, (int)fba::Y, (int)fbb::Z, (int)GA, (int)gtag::GA); return 0; }
+EOF
+run_case nsenum "1 7 2 9 5 5"
+rm -f tmp/fbgate_nsenum.h tmp/fbgate_nsenum_producer.cpp tmp/fbgate_nsenum_consumer.cpp
+
 # --- case: armreplay (2026-10-11, forest v55: a skipped directive-only arm replays) ---
 # A unit whose `#ifndef X` arm was skipped at freeze because an EARLIER corpus
 # sibling defined X carries none of that arm (mingw stdio.h's NULL behind the

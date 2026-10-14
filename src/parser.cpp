@@ -28700,8 +28700,22 @@ void Program::flush_forest_pending_globals()
     for ( size_t i = 0; i < forest_pending_globals.size(); ++i )
     {
 	const PendingForestGlobal &pg = forest_pending_globals[i];
-	if ( !pg.type || findVariable(pg.name) )
+	// Live's identity (addVariable): a member of a named namespace is a
+	// redeclaration only of THAT namespace's member — ui::NONE and a C
+	// enum's NONE are two entities; at global scope it is the program's.
+	if ( !pg.type || (pg.ns.empty() ? findVariable(pg.name)
+				       : namespace_member_variable(pg.ns, pg.name)) )
 	    continue;			// unresolved / already present
+	// Live's registration inside `namespace N {}` binds the SAME Variable in
+	// namespace_map[N][name] — the binding a qualified reference
+	// (std::piecewise_construct, ui::WEB) resolves through.
+	auto bind_namespace = [this, &pg](Variable *rv) {
+	    if ( pg.ns.empty() )
+		return;
+	    variable_map_t &gns = namespace_variables_for_write(pg.ns);
+	    if ( gns.find(pg.name) == gns.end() )
+		gns[pg.name] = rv;
+	};
 	// v39 (completed): the PRODUCER's emitted symbol rides every restored
 	// Variable, whichever arm builds it — an extern reference, a folded
 	// constant, or a DEFINITION. Since a namespace-scope definition mangles
@@ -28745,9 +28759,7 @@ void Program::flush_forest_pending_globals()
 			<< " carried NO alias — derived "
 			<< xv->storage_alias_name << std::endl);
 		}
-		variable_map_t &xns = namespace_variables_for_write(pg.ns);
-		if ( xns.find(pg.name) == xns.end() )
-		    xns[pg.name] = xv;
+		bind_namespace(xv);
 	    }
 	    tkProgram->variables.push_back(xv);
 	    // Live's parseDeclaration pushes the dkGlobalVar TopDecl for the
@@ -28774,7 +28786,15 @@ void Program::flush_forest_pending_globals()
 	// as an undefined MIR import.
 	if ( pg.gflags & CIR_GLOBALF_CONST_SCALAR )
 	{
-	    Variable *ev = addVariable(NULL, *pg.type, pg.name, 1, NULL, true);
+	    // In a named namespace a FRESH Variable, bound there (the identity
+	    // test above proved the namespace lacks it) — addVariable at this
+	    // global point would hand back a same-named global and overwrite it.
+	    Variable *ev = pg.ns.empty()
+		? addVariable(NULL, *pg.type, pg.name, 1, NULL, true)
+		: new Variable(pg.name, *pg.type, 1, NULL, true);
+	    if ( !pg.ns.empty() )
+		tkProgram->variables.push_back(ev);
+	    bind_namespace(ev);
 	    ev->set(pg.init_value);
 	    ev->makeconstant();
 	    // Live's exact flags (an extern "C" block stamps vfEXTERN on the
@@ -28811,15 +28831,7 @@ void Program::flush_forest_pending_globals()
 	gv->flags = pg.flags;
 	stamp_producer_symbol(gv);
 	tkProgram->variables.push_back(gv);
-	// v22: live's var-decl inside `namespace N {}` registers the SAME Variable
-	// in namespace_map[N][name] — the binding a consumer's fresh instantiation
-	// resolves a QUALIFIED tag reference (std::piecewise_construct) through.
-	if ( !pg.ns.empty() )
-	{
-	    variable_map_t &gns = namespace_variables_for_write(pg.ns);
-	    if ( gns.find(pg.name) == gns.end() )
-		gns[pg.name] = gv;
-	}
+	bind_namespace(gv);	// v22
 	TopDecl gtd;
 	gtd.kind = DeclKind::dkGlobalVar;
 	gtd.name = pg.name;
@@ -31366,7 +31378,15 @@ Variable *Program::same_scope_object(TokenCpnd *code, const madc::dis::istring &
 
 Variable *Program::current_namespace_variable(const madc::dis::istring &id)
 {
-    namespace_map_t::iterator nsi = namespace_map.find(current_namespace());
+    return namespace_member_variable(current_namespace(), id);
+}
+
+// The Variable named namespace `ns` itself registers under `id` (no using
+// chain, no enclosing scope) — NULL when it holds none.
+Variable *Program::namespace_member_variable(const madc::dis::istring &ns,
+					     const madc::dis::istring &id)
+{
+    namespace_map_t::iterator nsi = namespace_map.find(ns);
     if ( nsi == namespace_map.end() )
 	return NULL;
     variable_map_iter vmi = nsi->second.find(id);
