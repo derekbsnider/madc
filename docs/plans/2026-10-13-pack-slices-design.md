@@ -39,6 +39,19 @@ of 30 interleaved runs + callgrind Ir (`tmp/pc/t6/t6.py` is the harness):
 The ratchets become `scripts/parse_cost/baseline.tsv` rows (recorded with
 `parsecost-record` once green, never hand-typed).
 
+As closed (part 2, 2026-10-14; symbolized release, pack built in, every
+output identical to live): `<stddef.h>` 12.7M, `<stdio.h>` 19.7M, `<limits>`
+23.4M, `<type_traits>` 28.3M, `<vector>` 76.3M, the 8 C headers 135.8M,
+cxx_stl.cpp 1,574.5M / 247 ms (a container frozen from its own includes:
+1,491M / 234 ms), pack 12.51 MB. cxx_stl meets its time target, not its Ir
+ratchet; its row is recorded at the measured value (owner 2026-10-14) and the
+remaining excess over its own container moves to part 3: a record the closure
+only names restores complete (KG Gap
+`pack_restores_forward_named_product_complete`), a node unit decodes whole
+(the TU unit: 388K records, its own container's 303K), and the shared
+tables' blocks are laid out by single-header binds (cxx_stl decodes 722
+blocks, its own container 605).
+
 ## 2. What changes, in one paragraph
 
 Mechanism revised at implementation start (2026-10-13; same targets, same
@@ -290,12 +303,17 @@ the `Program` / compile group. No new mutable globals.
 2. **Bind/restore.** The verdict owner, seeded passes, lazy derived types,
    the full-walk oracle (then deleted); then the BLOCKED shared tables. Checkpoint: suite output
    byte-identical (batch lane); the ladder at the §1 ratchets on a symbolized
-   release build; the rows recorded.
+   release build; the rows recorded. Closed 2026-10-14 with cxx_stl's row at
+   its measured Ir (§1, "As closed").
 3. **Bodies, provision, probe.** DEFBODY runs decoded on instantiation;
    `cir_forest_decl_entry` gains `record_id` (the name → record column the
    pull-on-lookup step will read; entry version bump); the FUNC_NAMES index
-   answers "adoptable". Checkpoint: cxx_stl / testsubscript timings not
-   worse; live C++ compiles no longer open the pack.
+   answers "adoptable". Carried from part 2: a record the bound closure only
+   names restores in its declared-only shape (completed when a later bind
+   requires it); a node unit decodes by block, not whole; the shared-table
+   layout accounts for multi-header binds. Checkpoint: cxx_stl / testsubscript
+   timings not worse; live C++ compiles no longer open the pack; cxx_stl's Ir
+   row ratcheted down toward ≤ 1,500M.
 4. **Prelude.** The dialect fragments frozen as `--std=madc` units; the
    auto-include binds them. Checkpoint: the prelude row < 78.7M Ir; strict
    stds unaffected.
