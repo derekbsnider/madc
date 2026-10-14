@@ -11,6 +11,7 @@ DEF_VARR (MIR_op_t);
 DEF_VARR (MIR_type_t);
 DEF_HTAB (MIR_item_t);
 DEF_VARR (MIR_module_t);
+DEF_VARR (MIR_item_t);
 DEF_VARR (size_t);
 DEF_VARR (char);
 DEF_VARR (uint8_t);
@@ -50,6 +51,7 @@ struct MIR_context {
   size_t curr_label_num;
   DLIST (MIR_module_t) all_modules;
   VARR (MIR_module_t) * modules_to_link;
+  VARR (MIR_item_t) * link_inline_funcs; /* MIR_link: funcs to inline into, in link order */
   VARR (MIR_op_t) * temp_ops;
   struct string_ctx *string_ctx;
   struct reg_ctx *reg_ctx;
@@ -85,6 +87,7 @@ struct MIR_context {
 #define curr_label_num ctx->curr_label_num
 #define all_modules ctx->all_modules
 #define modules_to_link ctx->modules_to_link
+#define link_inline_funcs ctx->link_inline_funcs
 #define temp_ops ctx->temp_ops
 #define setjmp_addr ctx->setjmp_addr
 #define wrapper_end_addr ctx->wrapper_end_addr
@@ -906,6 +909,7 @@ MIR_context_t _MIR_init (MIR_alloc_t alloc, MIR_code_alloc_t code_alloc) {
   scan_init (ctx);
 #endif
   VARR_CREATE (MIR_module_t, modules_to_link, alloc, 0);
+  VARR_CREATE (MIR_item_t, link_inline_funcs, alloc, 0);
   VARR_CREATE (MIR_op_t, temp_ops, alloc, 0);
   init_module (ctx, &environment_module, ".environment");
   HTAB_CREATE (MIR_item_t, module_item_tab, ctx->alloc, 512, item_hash, item_eq, NULL);
@@ -1022,6 +1026,7 @@ void MIR_finish (MIR_context_t ctx) {
   remove_all_modules (ctx);
   HTAB_DESTROY (MIR_item_t, module_item_tab);
   VARR_DESTROY (MIR_module_t, modules_to_link);
+  VARR_DESTROY (MIR_item_t, link_inline_funcs);
   VARR_DESTROY (MIR_op_t, temp_ops);
 #if !MIR_NO_SCAN
   scan_finish (ctx);
@@ -2487,6 +2492,12 @@ void MIR_link (MIR_context_t ctx, void (*set_interface) (MIR_context_t ctx, MIR_
     void *a;
   } v;
 
+  size_t next_inline = 0;
+
+  /* The funcs to inline into are kept here, never as a flag in item->data: the
+     error func may not return (a longjmp), and item->data is an allocation
+     MIR_finish frees. */
+  VARR_TRUNC (MIR_item_t, link_inline_funcs, 0);
   for (size_t i = 0; i < VARR_LENGTH (MIR_module_t, modules_to_link); i++) {
     m = VARR_GET (MIR_module_t, modules_to_link, i);
     simplify_module_init (ctx);
@@ -2494,7 +2505,7 @@ void MIR_link (MIR_context_t ctx, void (*set_interface) (MIR_context_t ctx, MIR_
          item = DLIST_NEXT (MIR_item_t, item))
       if (item->item_type == MIR_func_item) {
         assert (item->data == NULL);
-        if (simplify_func (ctx, item, TRUE)) item->data = (void *) 1; /* flag inlining */
+        if (simplify_func (ctx, item, TRUE)) VARR_PUSH (MIR_item_t, link_inline_funcs, item);
       } else if (item->item_type == MIR_import_item) {
         if ((tab_item = import_binding (ctx, item->u.import_id, import_resolver, &addr)) == NULL) {
           if (addr == NULL)
@@ -2524,9 +2535,10 @@ void MIR_link (MIR_context_t ctx, void (*set_interface) (MIR_context_t ctx, MIR_
     m = VARR_GET (MIR_module_t, modules_to_link, i);
     for (item = DLIST_HEAD (MIR_item_t, m->items); item != NULL;
          item = DLIST_NEXT (MIR_item_t, item)) {
-      if (item->item_type == MIR_func_item && item->data != NULL) {
+      if (item->item_type == MIR_func_item && next_inline < VARR_LENGTH (MIR_item_t, link_inline_funcs)
+          && VARR_GET (MIR_item_t, link_inline_funcs, next_inline) == item) {
+        next_inline++;
         if (!no_inline_p) process_inlines (ctx, item);
-        item->data = NULL;
 #if 0
         fprintf (stderr, "+++++ Function after inlining:\n");
         MIR_output_item (ctx, stderr, item);

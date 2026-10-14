@@ -1,0 +1,14 @@
+// A C++ program calling a function nothing defines is a LINK error: g++ and
+// clang++ (-std=c++17) compile it and the link fails with "undefined reference
+// to `foo()'" (exit 1). madc reports the undefined MIR import and exits
+// nonzero; it crashed in MIR_finish after the report (MIR_link left its
+// inlining flag in each function's item->data, which MIR_finish frees).
+#include <iostream>
+
+int foo();
+
+int main()
+{
+	std::cout << 1;
+	return foo();
+}

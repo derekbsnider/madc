@@ -11,7 +11,8 @@
   - `tests/foo.argv` — whitespace-split, appended as argv
   - `tests/foo.expect` — each non-empty line must appear in the output
   - `tests/foo.expect_err` — compile-error test: must exit nonzero (not a
-    timeout) and stderr must contain each non-empty line; EXE pass skips it
+    timeout, not a signal) and stderr must contain each non-empty line; EXE
+    pass skips it
   - `tests/foo.expect_quiet` — JIT run must produce EMPTY stderr (content
     of the fixture file is ignored; presence enables the check)
   - `tests/foo.expect_rc` — the exit status every run (JIT, exe, obj) must

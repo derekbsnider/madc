@@ -51,6 +51,11 @@ test: nonzero exit (a timeout still fails) and the listed lines must
 appear on stderr — the diagnostics are the expected output. The EXE pass
 skips these tests because the source does not compile by design.
 
+A death on a signal fails too (2026-10-14): madc printed the expected
+undefined-import diagnostic and then crashed in `MIR_finish`, which a
+nonzero exit alone accepted (`testlinkundefcxx`). A crash is never the
+diagnostic a compile-error test asks for.
+
 ## Why `.expect_quiet` exists
 
 `.expect` only requires the listed lines to *appear*, so a test whose
