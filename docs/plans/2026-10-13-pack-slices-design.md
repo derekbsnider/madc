@@ -361,6 +361,15 @@ the `Program` / compile group. No new mutable globals.
    cxx_stl, its 186 restored deferred bodies cost ~4–6M Ir to decode (0.4%)
    against ~111 token-reading sites to guard; template bodies, the larger
    share, already thaw on use (`thaw_fn_def`).
+   The provision (format 64): `cir_forest_decl_entry.record_id` carries the
+   record each entry's registration made — `(CIR_SEED_DEP_* << 30) | index`,
+   an arena slot, template record or global record; filled at freeze by
+   `cir_forest_build_seeds` (the entry's own unit's record first; a
+   namespaced twin takes its bare twin's record; an enumerator its enum's; a
+   using-declaration its DK_NSBIND). 11,009 of 11,020 entries resolve; the
+   11 left name no record (function-pointer typedefs, enumerators imported
+   by using-declarations, a folded `static const`, a nested struct frozen
+   under its flattened name). Pack +15 KB (13,275,448 bytes).
 4. **Prelude.** The dialect fragments frozen as `--std=madc` units; the
    auto-include binds them. Checkpoint: the prelude row < 78.7M Ir; strict
    stds unaffected.

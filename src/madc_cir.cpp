@@ -3894,6 +3894,7 @@ static void cir_forest_fill_pack_payloads(Program *prog, cir_frozen_forest &f)
 	de.slice_begin = local_of[e.begin];
 	de.slice_end   = last_local + 1;
 	de.aux         = aux;
+	de.record_id   = CIR_DECL_RECORD_NONE;	// cir_forest_build_seeds fills it
 	f.units[u].decl_index.push_back(de);
     }
 
@@ -7620,13 +7621,20 @@ int madc_cir_dump_forest(const char *container_path)
 	if (forest.unit_decl_index(u, di))
 	    for (size_t k = 0; k < di.size(); ++k) {
 		const char *nm = forest.pool_str(di[k].name_id);
-		printf("declindex\t%s\t%s\t%s\t[%u,%u)%s%s%s\n",
+		// The record column: arena slot / template / global index.
+		static const char *const rec_kind[] = { "arena", "template", "global", "?" };
+		char rec[48] = "";
+		if (di[k].record_id != CIR_DECL_RECORD_NONE)
+		    snprintf(rec, sizeof(rec), "\trecord=%s:%u",
+			     rec_kind[di[k].record_id >> 30], di[k].record_id & 0x3fffffffu);
+		printf("declindex\t%s\t%s\t%s\t[%u,%u)%s%s%s%s\n",
 		       uname ? uname : "?",
 		       pack_decl_kind_name(di[k].kind), nm ? nm : "?",
 		       di[k].slice_begin, di[k].slice_end,
 		       (di[k].aux & Program::PACK_DECL_SPANS_UNITS) ? "\tSPANS" : "",
 		       (di[k].aux & Program::PACK_DECL_FUZZY_BOUNDS) ? "\tFUZZY" : "",
-		       (di[k].aux & Program::PACK_DECL_ADOPTABLE) ? "\tADOPTABLE" : "");
+		       (di[k].aux & Program::PACK_DECL_ADOPTABLE) ? "\tADOPTABLE" : "",
+		       rec);
 	    }
     }
     return 0;

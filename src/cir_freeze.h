@@ -646,7 +646,12 @@ bool cir_freeze_read(const madc::dis::snapshot_reader &r, uint32_t seg_id_base,
 // defines restores DECLARED-ONLY, as a live parse of that closure has it
 // (<iosfwd>'s stringbuf without <sstream>); a later generation that admits
 // it whole completes it in place.
-enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 63 };
+//
+// v64: each decl-index entry carries record_id — the arena slot, template
+// record or global record its name's registration made (the entry's own
+// unit's record first) — the name -> record column the pull-on-lookup step
+// reads (pack-slices design §10 part 3: the slice format's provision).
+enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 64 };
 // Flags word of a SNAP_KIND_CIR_BRANCH_DEPS tuple.
 enum : uint32_t {
 	CIR_BRANCH_DEP_DEFINED   = 1u,	// the macro was defined at the consult
@@ -795,6 +800,7 @@ struct cir_forest_dir_unit
 // One decl-index entry: exported name -> token-slice range in the unit's
 // token segment. A name with N registrations has N entries (bind
 // materializes the full set — overloads, fwd decl + definition).
+enum : uint32_t { CIR_DECL_RECORD_NONE = 0xffffffffu };
 struct cir_forest_decl_entry
 {
 	uint32_t name_id;	// pool handle (exported, namespace-qualified form)
@@ -802,6 +808,11 @@ struct cir_forest_decl_entry
 	uint32_t slice_begin;	// unit-local token indices [begin, end)
 	uint32_t slice_end;
 	uint32_t aux;		// PACK_DECL_* flags (spans-units / fuzzy-bounds)
+	uint32_t record_id;	// v64: the record the name's registration made —
+				// (CIR_SEED_DEP_* << 30) | index: an arena slot, a
+				// template-record index, a global-record index;
+				// CIR_DECL_RECORD_NONE = none (a namespace, a freeze
+				// without seeds). The column a pull-on-lookup reads.
 };
 
 // --- v58 pack slices (docs/plans/2026-10-13-pack-slices-design.md) --------

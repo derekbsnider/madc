@@ -794,16 +794,29 @@ TEST_CASE("B4a: grove payload v2 round-trips tokens, decl index, PP exports, edg
 	REQUIRE(forest.unit_decl_index(u_inc, di));
 	REQUIRE(di.size() == forest.unit_anchor(u_inc));
 	bool saw_alias = false, saw_rec = false, saw_helper = false;
+	// v64: a type entry's record_id names the arena record its registration
+	// made.
+	auto record_spells = [&](const cir_forest_decl_entry &e, const char *nm) -> bool {
+		if (e.record_id == CIR_DECL_RECORD_NONE || (e.record_id >> 30) != CIR_SEED_DEP_ARENA)
+			return false;
+		madc::dis::defrec r;
+		return forest.arena().get_def_at(madc::dis::arena_id_of(e.record_id & 0x3fffffffu), r)
+		    && r.name_id && !strcmp(forest.arena().c_str(r.name_id), nm);
+	};
 	for (size_t i = 0; i < di.size(); ++i) {
 		const char *nm = forest.pool_str(di[i].name_id);
 		REQUIRE(nm != nullptr);
 		CHECK(di[i].slice_begin < di[i].slice_end);
 		CHECK(di[i].slice_end <= ntok);
 		CHECK((di[i].aux & Program::PACK_DECL_SPANS_UNITS) == 0);
-		if (!strcmp(nm, "b4a_alias_t") && di[i].kind == Program::pdkTypedef)
+		if (!strcmp(nm, "b4a_alias_t") && di[i].kind == Program::pdkTypedef) {
 			saw_alias = true;
-		if (!strcmp(nm, "b4a_rec") && di[i].kind == Program::pdkStruct)
+			CHECK(record_spells(di[i], nm));
+		}
+		if (!strcmp(nm, "b4a_rec") && di[i].kind == Program::pdkStruct) {
 			saw_rec = true;
+			CHECK(record_spells(di[i], nm));
+		}
 		if (!strcmp(nm, "helper") && di[i].kind == Program::pdkFunction)
 			saw_helper = true;
 	}
@@ -3411,6 +3424,96 @@ TEST_CASE("NULL-init pointer + uninitialized file-scope globals restore") {
 	CHECK(saw_last);
 	CHECK(saw_req);
 	CHECK(saw_calls);
+}
+
+// v64: each spelling of a namespaced typedef carries its own registration's
+// record (the arena keeps the flat key's and the namespaced one's); a scoped
+// enumerator carries its enum's.
+TEST_CASE("v64: decl entries carry the record their registration made") {
+	std::string inc_path = std::string("/tmp/madc_v64_inc_")
+			     + std::to_string((long)getpid()) + ".h";
+	std::string main_path = std::string("/tmp/madc_v64_main_")
+			      + std::to_string((long)getpid()) + ".mad";
+	std::string snap_path = std::string("/tmp/madc_v64_snap_")
+			      + std::to_string((long)getpid()) + ".msnap";
+	{
+		std::ofstream inc(inc_path.c_str());
+		inc << "#ifndef V64_T_H\n"
+		       "#define V64_T_H\n"
+		       "namespace v64ns {\n"
+		       "typedef int v64_t;\n"
+		       "enum class v64_e { One, Two };\n"
+		       "}\n"
+		       "#endif\n";
+	}
+	{
+		std::ofstream mn(main_path.c_str());
+		mn << "#include \"" << inc_path << "\"\n"
+		      "int main() { return 0; }\n";
+	}
+	std::shared_ptr<Program> prog = std::make_shared<Program>();
+	prog->pack_recording = true;
+	prog->forest_arena_enabled = true;
+	TokenProgram *tp = prog->tokenize(main_path.c_str());
+	REQUIRE(tp != nullptr);
+	REQUIRE(prog->parse(tp));
+	REQUIRE(madc_cir_freeze(prog.get(), main_path.c_str(),
+				snap_path.c_str(), /*append=*/false) == 0);
+	std::remove(inc_path.c_str());
+	std::remove(main_path.c_str());
+
+	const void *image = NULL;
+	size_t image_len = 0;
+	REQUIRE(cir_forest_map_image(snap_path.c_str(), image, image_len));
+	std::remove(snap_path.c_str());
+	CirFrozenForest forest;
+	freeze_test_bind_substrate();
+	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
+	uint32_t u_inc = 0xffffffffu;
+	for (uint32_t u = 0; u < forest.unit_count(); ++u) {
+		const char *nm = forest.unit_name(u);
+		if (nm && inc_path == nm)
+			u_inc = u;
+	}
+	REQUIRE(u_inc != 0xffffffffu);
+	std::vector<cir_forest_decl_entry> di;
+	REQUIRE(forest.unit_decl_index(u_inc, di));
+	std::map<std::string, uint32_t> rec;	// "kind name" -> record_id
+	for (size_t i = 0; i < di.size(); ++i)
+		rec[std::to_string(di[i].kind) + " " + forest.pool_str(di[i].name_id)] = di[i].record_id;
+	const std::string td = std::to_string(Program::pdkTypedef) + " ";
+	REQUIRE(rec.count(td + "v64_t"));
+	REQUIRE(rec.count(td + "v64ns::v64_t"));
+	madc::dis::defrec r;
+	for (int q = 0; q < 2; ++q) {
+		const uint32_t t = rec[td + (q ? "v64ns::v64_t" : "v64_t")];
+		REQUIRE(t != CIR_DECL_RECORD_NONE);
+		CHECK((t >> 30) == CIR_SEED_DEP_ARENA);
+		REQUIRE(forest.arena().get_def_at(madc::dis::arena_id_of(t & 0x3fffffffu), r));
+		CHECK(r.kind == madc::dis::DK_TYPEDEF);
+		CHECK(!strcmp(forest.arena().c_str(r.name_id), "v64_t"));
+		if (q)
+			CHECK((r.ns_id && !strcmp(forest.arena().c_str(r.ns_id), "v64ns")));
+		else
+			CHECK((!r.ns_id || !*forest.arena().c_str(r.ns_id)));
+	}
+	// The scoped enumerators resolve to the enum's record.
+	uint32_t en = CIR_DECL_RECORD_NONE;
+	size_t enumerators = 0;
+	for (size_t i = 0; i < di.size(); ++i) {
+		const std::string nm = forest.pool_str(di[i].name_id);
+		if (di[i].kind != Program::pdkVariable || nm.find("v64_e::") == std::string::npos)
+			continue;
+		++enumerators;
+		REQUIRE(di[i].record_id != CIR_DECL_RECORD_NONE);
+		if (en == CIR_DECL_RECORD_NONE)
+			en = di[i].record_id;
+		CHECK(di[i].record_id == en);
+	}
+	CHECK(enumerators >= 2);
+	REQUIRE(en != CIR_DECL_RECORD_NONE);
+	REQUIRE(forest.arena().get_def_at(madc::dis::arena_id_of(en & 0x3fffffffu), r));
+	CHECK(r.kind == madc::dis::DK_ENUM);
 }
 
 TEST_CASE("v63: SEEDS carries each class product's definers, read by equal range") {

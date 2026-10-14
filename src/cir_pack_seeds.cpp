@@ -15,9 +15,17 @@
 #include <cstring>
 #include <map>
 #include <set>
+#include <queue>	// madc.h uses std::queue and relies on the TU providing it
 #include <string>
 #include <vector>
 
+extern thread_local bool madc_verbose;
+#define DBG(x) do { if(madc_verbose){x;} } while(0)
+
+#include "datadef.h"
+#include "tokens.h"
+#include "datatokens.h"
+#include "madc.h"		// Program::PackDeclKind — a decl entry's kind (its record id)
 #include "cir_freeze.h"
 #include "cir_arena_recordable.h"
 
@@ -833,6 +841,24 @@ void cir_forest_build_seeds(cir_frozen_forest &f, const madc::dis::intern_table 
 				      c, "defbody");
 	}
 
+	// The unit whose parse declared template record i (its first token run's
+	// file).
+	auto template_declared_in = [&](size_t i) -> uint32_t {
+		const cir_forest_template_record &t = f.templates[i];
+		if (t.run_begin + 4 > f.template_payload.size())
+			return NO_UNIT;
+		uint32_t file_id = f.template_payload[t.run_begin + 3];
+		return unit_of_file(file_id ? pool.c_str(file_id) : NULL);
+	};
+	// The unit whose parse created global record i: its point of creation,
+	// else its declaring file.
+	auto global_created_in = [&](size_t i) -> uint32_t {
+		uint32_t u = unit_of_poi(i < f.global_poi.size() ? f.global_poi[i] : NO_UNIT);
+		if (u == NO_UNIT)
+			u = unit_of_file(i < f.global_files.size() ? f.global_files[i] : NULL);
+		return u;
+	};
+
 	// 3. Templates: the bind keeps one whose key verdict holds (and whose owner
 	// class restored); a BOUND-declared key also seeds its owner. A member
 	// template rides its owner class (a dependent); a declared key is also
@@ -855,13 +881,7 @@ void cir_forest_build_seeds(cir_frozen_forest &f, const madc::dis::intern_table 
 			place(L.tmpl, (uint32_t)i, units, false, NO_UNIT, c);
 			continue;
 		}
-		// The unit whose parse declared this record (its first token run's
-		// file).
-		uint32_t declared_in = NO_UNIT;
-		if (t.run_begin + 4 <= f.template_payload.size()) {
-			uint32_t file_id = f.template_payload[t.run_begin + 3];
-			declared_in = unit_of_file(file_id ? pool.c_str(file_id) : NULL);
-		}
+		const uint32_t declared_in = template_declared_in(i);
 		// A namespace function template is one OVERLOAD of a name many units
 		// may declare overloads of (std::swap: <bits/move.h>, <sstream>,
 		// <fstream>, ...): a live parse of a closure sees the overloads its
@@ -899,14 +919,11 @@ void cir_forest_build_seeds(cir_frozen_forest &f, const madc::dis::intern_table 
 				continue;
 			}
 		}
-		const char *file = i < f.global_files.size() ? f.global_files[i] : NULL;
 		probe_name = "global";
 		probe_nm = pool.c_str(g.name_id);
 		probe_ns = g.ns_id ? pool.c_str(g.ns_id) : NULL;
-		probe_extra = file;
-		uint32_t created = unit_of_poi(i < f.global_poi.size() ? f.global_poi[i] : NO_UNIT);
-		if (created == NO_UNIT)
-			created = unit_of_file(file);
+		probe_extra = i < f.global_files.size() ? f.global_files[i] : NULL;
+		const uint32_t created = global_created_in(i);
 		// A global born inside an instantiation (a product's static data
 		// member) is carried by that product — by its requirers alone.
 		const std::set<uint32_t> *greq = i < f.global_ctx.size()
@@ -916,6 +933,182 @@ void cir_forest_build_seeds(cir_frozen_forest &f, const madc::dis::intern_table 
 			++c.required;
 		}
 		place(L.glob, (uint32_t)i, units, n1 == 0 && !greq, created, c);
+	}
+
+	// 4b. Decl-entry record ids (format 64): each decl-index entry's name ->
+	// the record its registration made, the column a pull-on-lookup reads. A
+	// name's candidates are the records of its kind that it spells (bare, or
+	// namespace-qualified); the one created in the entry's own unit wins, else
+	// the lowest. A function's map key names a free function's record, else a
+	// method's owner class (the method's call symbol); a variable's, a global
+	// record or a using-declaration's import (DK_NSBIND); a template's, its
+	// map key or a member template's own name. A record spelled by its full
+	// name (`exact`) outranks a namespaced record's bare spelling: the arena
+	// keeps one typedef record per registration — the flat key's and the
+	// namespaced one's.
+	struct rec_cand { uint32_t tagged, unit; bool exact; };
+	typedef std::map<madc::dis::istring, std::vector<rec_cand> > rec_names;
+	rec_names type_recs, enum_recs, fn_recs, tmpl_recs, var_recs;
+	auto spell = [](rec_names &m, const char *nm, const char *ns, uint32_t tagged,
+			uint32_t unit) {
+		if (!nm || !*nm)
+			return;
+		const bool namespaced = ns && *ns;
+		std::string q;
+		if (namespaced)
+			q.append(ns).append("::");
+		const bool prefixed = namespaced && !strncmp(nm, q.c_str(), q.size());
+		m[madc::dis::istring(nm)].push_back(rec_cand{tagged, unit, !namespaced || prefixed});
+		if (namespaced && !prefixed)
+			m[madc::dis::istring(q + nm)].push_back(rec_cand{tagged, unit, true});
+	};
+	for (uint32_t s = 0; s < nslots; ++s) {
+		madc::dis::defrec r;
+		if (!a.get_def_at(madc::dis::arena_id_of(s), r) || !r.name_id)
+			continue;
+		const uint32_t tagged = (CIR_SEED_DEP_ARENA << 30) | s;
+		const char *nm = a.strings.c_str(r.name_id);
+		const char *ns = r.ns_id ? a.strings.c_str(r.ns_id) : NULL;
+		switch (r.kind) {
+		case madc::dis::DK_ENUM:
+			spell(enum_recs, nm, ns, tagged, unit_of_slot(s));
+			spell(type_recs, nm, ns, tagged, unit_of_slot(s));
+			break;
+		case madc::dis::DK_STRUCT:
+		case madc::dis::DK_UNION:
+		case madc::dis::DK_CLASS:
+		case madc::dis::DK_TYPEDEF:
+		case madc::dis::DK_CARRAY:
+			spell(type_recs, nm, ns, tagged, unit_of_slot(s));
+			break;
+		case madc::dis::DK_FUNC:
+			if (r.flags & madc::dis::DF_IS_FREE_FUNC)
+				spell(fn_recs, nm, NULL, tagged, unit_of_slot(s));
+			break;
+		case madc::dis::DK_NSBIND:	// the visible name in its importing namespace
+			spell(var_recs, ns && *ns ? (std::string(ns) + "::" + nm).c_str() : nm, NULL,
+			      tagged, unit_of_slot(s));
+			break;
+		default:
+			break;
+		}
+	}
+	for (std::map<madc::dis::istring, uint32_t>::const_iterator it = method_owner.begin();
+	     it != method_owner.end(); ++it)
+		spell(fn_recs, it->first.c_str(), NULL, (CIR_SEED_DEP_ARENA << 30) | it->second,
+		      unit_of_slot(it->second));
+	for (size_t i = 0; i < f.templates.size(); ++i) {
+		const cir_forest_template_record &t = f.templates[i];
+		const char *key = pool.c_str(t.key_id);
+		const char *tn = t.name_id ? pool.c_str(t.name_id) : NULL;
+		const char *ns = t.ns_id ? pool.c_str(t.ns_id) : NULL;
+		const uint32_t tagged = (CIR_SEED_DEP_TEMPLATE << 30) | (uint32_t)i;
+		spell(tmpl_recs, key, ns, tagged, template_declared_in(i));
+		if (tn && key && strcmp(tn, key))
+			spell(tmpl_recs, tn, ns, tagged, template_declared_in(i));
+	}
+	for (size_t i = 0; i < f.globals.size(); ++i) {
+		const cir_forest_global_record &g = f.globals[i];
+		spell(var_recs, pool.c_str(g.name_id), g.ns_id ? pool.c_str(g.ns_id) : NULL,
+		      (CIR_SEED_DEP_GLOBAL << 30) | (uint32_t)i, global_created_in(i));
+	}
+	// A name's record: its spelling's candidates ranked by the entry's own
+	// unit first, then a full-name spelling, then the lowest; a qualified
+	// name some record spells only bare (a typedef or enum recorded without
+	// its namespace, an inline namespace's member) through its last
+	// component, among the entry's own unit's records alone. A template-id is
+	// never split.
+	auto resolve = [](const rec_names &m, const madc::dis::istring &nm, uint32_t u) -> uint32_t {
+		uint32_t best = CIR_DECL_RECORD_NONE;
+		rec_names::const_iterator it = m.find(nm);
+		if (it != m.end()) {
+			bool b_own = false, b_exact = false;
+			for (const rec_cand &c : it->second) {
+				const bool own = c.unit == u;
+				if (own != b_own ? own
+				    : c.exact != b_exact ? c.exact
+				    : c.tagged < best) {
+					best = c.tagged;
+					b_own = own;
+					b_exact = c.exact;
+				}
+			}
+			return best;
+		}
+		const size_t cut = nm.rfind("::");
+		if (cut == madc::dis::istring::npos || nm.find('<') != madc::dis::istring::npos)
+			return best;
+		it = m.find(madc::dis::istring(nm, cut + 2));
+		if (it != m.end())
+			for (const rec_cand &c : it->second)
+				if (c.unit == u && c.tagged < best)
+					best = c.tagged;
+		return best;
+	};
+	size_t decl_entries = 0, decl_records = 0;
+	for (uint32_t u = 0; u < nunits; ++u)
+		for (cir_forest_decl_entry &e : f.units[u].decl_index) {
+			++decl_entries;
+			e.record_id = CIR_DECL_RECORD_NONE;
+			const char *nm = pool.c_str(e.name_id);
+			if (!nm || !*nm)
+				continue;
+			const madc::dis::istring name(nm);
+			switch (e.kind) {
+			case Program::pdkTypedef:
+			case Program::pdkStruct:
+			case Program::pdkClass:
+			case Program::pdkEnum:
+				e.record_id = resolve(type_recs, name, u);
+				break;
+			case Program::pdkFunction:
+				e.record_id = resolve(fn_recs, name, u);
+				break;
+			case Program::pdkTemplate:
+				e.record_id = resolve(tmpl_recs, name, u);
+				break;
+			case Program::pdkVariable: {
+				e.record_id = resolve(var_recs, name, u);
+				// An enumerator, registered under its enum's scope: the
+				// enum's record registers it.
+				const size_t cut = name.rfind("::");
+				if (e.record_id == CIR_DECL_RECORD_NONE && cut != madc::dis::istring::npos)
+					e.record_id = resolve(enum_recs, madc::dis::istring(name, 0, cut), u);
+				break;
+			}
+			default:
+				break;
+			}
+		}
+	// A qualified entry is often the namespaced twin of a bare one — the same
+	// declaration (one slice, one kind) registered under both keys: it takes
+	// its twin's record.
+	typedef std::pair<std::pair<uint32_t, uint32_t>, std::pair<uint32_t, madc::dis::istring> >
+		twin_key;	// ((slice_begin, slice_end), (kind, name))
+	for (uint32_t u = 0; u < nunits; ++u) {
+		std::vector<cir_forest_decl_entry> &di = f.units[u].decl_index;
+		std::map<twin_key, uint32_t> twin;
+		for (const cir_forest_decl_entry &e : di)
+			if (e.record_id != CIR_DECL_RECORD_NONE)
+				twin[twin_key(std::make_pair(e.slice_begin, e.slice_end),
+					      std::make_pair(e.kind, madc::dis::istring(pool.c_str(e.name_id))))]
+					= e.record_id;
+		for (cir_forest_decl_entry &e : di) {
+			if (e.record_id != CIR_DECL_RECORD_NONE)
+				continue;
+			const madc::dis::istring name(pool.c_str(e.name_id));
+			const size_t cut = name.rfind("::");
+			if (cut == madc::dis::istring::npos || name.find('<') != madc::dis::istring::npos)
+				continue;
+			std::map<twin_key, uint32_t>::const_iterator t =
+				twin.find(twin_key(std::make_pair(e.slice_begin, e.slice_end),
+						   std::make_pair(e.kind, madc::dis::istring(name, cut + 2))));
+			if (t != twin.end())
+				e.record_id = t->second;
+		}
+		for (const cir_forest_decl_entry &e : di)
+			if (e.record_id != CIR_DECL_RECORD_NONE)
+				++decl_records;
 	}
 
 	// 5. RECORDABLE — the fixpoint once, here.
@@ -1020,5 +1213,7 @@ void cir_forest_build_seeds(cir_frozen_forest &f, const madc::dis::intern_table 
 	}
 	snprintf(buf, sizeof(buf), "; requirements %zu dropped outside the defining closure, %zu keys unfiltered",
 		 req_dropped, req_unknown_keys.size());
+	summary += buf;
+	snprintf(buf, sizeof(buf), "; decl records %zu of %zu entries", decl_records, decl_entries);
 	summary += buf;
 }
