@@ -16,7 +16,8 @@
 # <madc> [args...] is the freezer's own command (wine + exe, the cross madc
 # plus its flags). Work files sit beside the container and are removed on
 # success. Returns nonzero — failing the pack — when a root does not compile
-# against the container, records no read, or the relayout fails.
+# against the container, its bind never opens the container, or the relayout
+# fails.
 forest_pack_layout() {
     local image="$1" list="$2"
     shift 2
@@ -32,6 +33,12 @@ forest_pack_layout() {
                 > /dev/null 2> "$dir/r_$n.err"; then
             echo "forest_pack_layout: FAILED - <$h> does not compile against the container:" >&2
             head -5 "$dir/r_$n.err" >&2
+            return 1
+        fi
+        # madc writes the log when the bind opens the container; a root that
+        # binds no frozen table (a pragma-only header) writes it empty.
+        if [ ! -e "$dir/r_$n.log" ]; then
+            echo "forest_pack_layout: FAILED - <$h>'s bind never opened the container" >&2
             return 1
         fi
         # The log names its root last: the relayout counts the dialect

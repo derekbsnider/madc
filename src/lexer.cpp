@@ -4377,6 +4377,15 @@ CirFrozenForest *Program::bind_forest_directory()
 	_bind_forest_holder = forest_reader_holder(_bind_directory);
 	if ( compile_group )
 	    compile_group->bind_forests[group_key] = _bind_forest_holder;
+	// The pack step's read recorder starts with the bind's container, not
+	// its full open: a root that binds no frozen table (a pragma-only
+	// header, served as source alone) still writes its log, so the log
+	// exists exactly when the bind opened the container
+	// (forest_pack_layout.sh).
+	if ( !forest_touch_log.empty()
+	     && !_bind_directory->record_touches(forest_touch_log.c_str()) )
+	    std::cerr << "madc: --forest-touch-log: cannot write '"
+		      << forest_touch_log << "'" << std::endl;
 	return _bind_directory;
     }
 
@@ -4422,9 +4431,6 @@ CirFrozenForest *Program::ensure_bind_forest()
     bind_forest = f;
     DBG(std::cout << "forest-bind: opened container (" << f->unit_count()
 	<< " units)" << std::endl);
-    if ( !forest_touch_log.empty() && !f->record_touches(forest_touch_log.c_str()) )
-	std::cerr << "madc: --forest-touch-log: cannot write '"
-		  << forest_touch_log << "'" << std::endl;
     bind_forest->_work_secs = &_forest_work_seconds;
     bind_forest->_work_depth = &_forest_work_depth;
     return bind_forest;

@@ -1965,11 +1965,13 @@ bool cir_forest_relayout(const void *image, size_t image_len,
 			err = "cannot read " + logs[i];
 			return false;
 		}
+		// A log with no read is a root that binds no frozen table (a
+		// pragma-only header, served as source alone): it counts in its
+		// population and reads no block. forest_pack_layout.sh fails a root
+		// whose bind wrote no log — one that never opened the container.
 		unsigned seg = 0;
 		unsigned long long off = 0, len = 0;
-		size_t lines = 0;
 		while (fscanf(lf, "%u %llu %llu", &seg, &off, &len) == 3) {
-			++lines;
 			if (seg == CIR_FOREST_SEG_STR_BYTES || seg == CIR_FOREST_SEG_ARENA_STR_BYTES) {
 				const int k = seg == CIR_FOREST_SEG_STR_BYTES ? 0 : 1;
 				std::map<uint32_t, uint32_t>::const_iterator it =
@@ -1990,10 +1992,6 @@ bool cir_forest_relayout(const void *image, size_t image_len,
 		if (fscanf(lf, " root %511s", root_name) == 1)
 			dialect_root[i] = embedded_dialect_fragment_p(madc::dis::istring(root_name));
 		fclose(lf);
-		if (!lines) {
-			err = logs[i] + " records no read (did its bind open the container?)";
-			return false;
-		}
 	}
 
 	// The reordered tables.
