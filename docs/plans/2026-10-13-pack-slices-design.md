@@ -166,6 +166,22 @@ it (one owner, called at freeze and at bind):
   `pack_ctx` = the instantiation an entity was born in, which it rides). A
   product no unit requires keeps the head rule. The keep predicate is
   unchanged; placement only decides which binds visit the record.
+  As built, second pass (2026-10-14): a unit requires a product only when its
+  include closure DEFINES the product's template (the template's body-run
+  unit, by qualified name; an unknown template is not filtered) — the
+  producer parsed every root in one TU, so libstdc++'s `__try_use_facet`
+  instantiated `moneypunct<char>` (and every other standard facet) under
+  `<istream>`, where a live parse has only the forward declaration. What a
+  product on the requirement graph carries stays on it with no requirer of
+  its own, never falling back to its template's declarers. A function-
+  template record is listed with the one unit declaring it (`std::swap`'s
+  overloads in `<bits/move.h>`, `<sstream>`, `<fstream>`, ... are separate
+  records). A function-local class born in an instantiation rides its
+  requirers only. Measured on the release: cxx_stl 1,628M → 1,576M Ir
+  (249 → 246 ms), `<vector>` 79.2M → 76.4M, the 8 C headers 140.0M →
+  135.8M. Open: a record the closure only NAMES (an `<iosfwd>` typedef of a
+  product `<sstream>` instantiates) still restores complete through the
+  typedef's pull (KG Gap `pack_restores_forward_named_product_complete`).
 - **Namespace bindings / deferred bodies** — placed with the function or
   owner class they bind; inline-namespace links and namespace aliases in the
   always list.

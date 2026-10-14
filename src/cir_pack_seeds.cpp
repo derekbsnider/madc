@@ -92,17 +92,25 @@ const uint32_t *ForestDeclNames::surface(const char *name, const char *ns, uint3
 	return units_of(name, n);
 }
 
+// The template a template-id spells: the name before its '<', trailing blanks
+// trimmed. has_head = false when the spelling has no '<'.
+static madc::dis::istring template_id_head(const char *spell, bool &has_head)
+{
+	const char *lt = spell ? strchr(spell, '<') : NULL;
+	has_head = lt != NULL;
+	if (!lt)
+		return madc::dis::istring();
+	size_t n = (size_t)(lt - spell);
+	while (n && spell[n - 1] == ' ')
+		--n;
+	return madc::dis::istring(spell, n);
+}
+
 const uint32_t *ForestDeclNames::head_of(const char *canon, bool &has_head, uint32_t &n) const
 {
 	n = 0;
-	const char *lt = canon ? strchr(canon, '<') : NULL;
-	has_head = lt != NULL;
-	if (!lt)
-		return NULL;
-	std::string head(canon, (size_t)(lt - canon));
-	while (!head.empty() && head[head.size() - 1] == ' ')
-		head.erase(head.size() - 1);
-	return units_of(head.c_str(), n);
+	madc::dis::istring head = template_id_head(canon, has_head);
+	return has_head ? units_of(head.c_str(), n) : NULL;
 }
 
 void ForestDeclNames::build(const std::map<madc::dis::istring, std::vector<uint32_t> > &names,
@@ -310,6 +318,9 @@ void cir_forest_build_seeds(cir_frozen_forest &f, const madc::dis::intern_table 
 				nm ? nm : "-", ns ? ns : "-", extra ? extra : "");
 	};
 	const char *probe_name = NULL, *probe_nm = NULL, *probe_ns = NULL, *probe_extra = NULL;
+	// Env-gated probe (MADC_SEED_PLACE_PROBE=<substr>): every seed list an
+	// entity whose name holds the substring lands in.
+	static const char *place_probe = ::getenv("MADC_SEED_PLACE_PROBE");
 	// `used` (optional) receives the list indices the entity landed in.
 	auto place = [&](std::vector<std::vector<uint32_t> > &lists, uint32_t id,
 			 const std::set<uint32_t> &decided_units, bool undecided,
@@ -319,6 +330,9 @@ void cir_forest_build_seeds(cir_frozen_forest &f, const madc::dis::intern_table 
 			lists[l].push_back(id);
 			if (used)
 				used->push_back(l);
+			if (place_probe && *place_probe && probe_nm && strstr(probe_nm, place_probe))
+				fprintf(stderr, "SEEDPLACE %s %s -> %s\n", probe_name ? probe_name : "-",
+					probe_nm, l < nunits ? pool.c_str(f.units[l].unit_name_id) : "always");
 		};
 		for (std::set<uint32_t>::const_iterator it = decided_units.begin();
 		     it != decided_units.end(); ++it)
@@ -402,8 +416,104 @@ void cir_forest_build_seeds(cir_frozen_forest &f, const madc::dis::intern_table 
 	carry_map carries;					// key -> keys it requires
 	std::map<madc::dis::istring, std::set<uint32_t> > required;	// key -> requiring units
 	std::vector<std::pair<madc::dis::istring, uint32_t> > req_work;	// (key, unit) newly required
+
+	// A unit can require an instantiation only when its include closure
+	// DEFINES the template: a live parse of that closure has nothing else to
+	// instantiate from. The producer parsed every header in one TU, so a
+	// template another root defined could be instantiated where a closure has
+	// only its forward declaration (libstdc++'s __try_use_facet names every
+	// standard facet: moneypunct<char> instantiated under <istream>). reach =
+	// one bitset per unit, the units its edges reach (itself included).
+	const size_t rwords = ((size_t)nunits + 63) / 64;
+	std::vector<uint64_t> reach((size_t)nunits * rwords, 0);
+	{
+		std::vector<uint32_t> stack;
+		for (uint32_t u = 0; u < nunits; ++u) {
+			uint64_t *row = &reach[(size_t)u * rwords];
+			stack.assign(1, u);
+			while (!stack.empty()) {
+				const uint32_t v = stack.back();
+				stack.pop_back();
+				if (v >= nunits || ((row[v >> 6] >> (v & 63)) & 1))
+					continue;
+				row[v >> 6] |= 1ull << (v & 63);
+				stack.insert(stack.end(), f.units[v].edges.begin(), f.units[v].edges.end());
+			}
+		}
+	}
+	// A template's DEFINING units, by its qualified name: a class template's
+	// record (namespace + bare key) or a function template's (its key is
+	// already qualified), each at its first token run's file.
+	std::map<madc::dis::istring, std::vector<uint32_t> > defined_in;
+	for (size_t i = 0; i < f.templates.size(); ++i) {
+		const cir_forest_template_record &t = f.templates[i];
+		if ((t.kind != CIR_TMPLK_CLASS && t.kind != CIR_TMPLK_FN)
+		    || t.run_begin + 4 > f.template_payload.size())
+			continue;
+		const uint32_t file_id = f.template_payload[t.run_begin + 3];
+		const uint32_t du = unit_of_file(file_id ? pool.c_str(file_id) : NULL);
+		const char *key = pool.c_str(t.key_id);
+		if (du == NO_UNIT || !key || !*key)
+			continue;
+		const char *ns = t.ns_id ? pool.c_str(t.ns_id) : NULL;
+		std::string q;
+		if (t.kind == CIR_TMPLK_CLASS && ns && *ns)
+			q.append(ns).append("::");
+		q.append(key);
+		defined_in[madc::dis::istring(q)].push_back(du);
+	}
+	// The defining units of a requirement key's template: a function
+	// instance's identity spells its template before the '<'; a class
+	// product's record carries its canonical template-id. NULL = unknown
+	// (no filter).
+	std::map<madc::dis::istring, const std::vector<uint32_t> *> def_memo;
+	size_t req_unknown = 0, req_dropped = 0;	// the census: keys no defining
+							// template names, requirers dropped
+	auto template_units_of = [&](const madc::dis::istring &k) -> const std::vector<uint32_t> * {
+		std::map<madc::dis::istring, const std::vector<uint32_t> *>::const_iterator mi =
+			def_memo.find(k);
+		if (mi != def_memo.end())
+			return mi->second;
+		const char *spell = k.c_str();
+		std::map<madc::dis::istring, uint32_t>::const_iterator pi = product_of.find(k);
+		if (!strchr(spell, '<') && pi != product_of.end()) {
+			madc::dis::defrec r;
+			spell = a.get_def_at(madc::dis::arena_id_of(pi->second), r) && r.canon_id
+				? a.strings.c_str(r.canon_id) : NULL;
+		}
+		bool has_head = false;
+		madc::dis::istring head = template_id_head(spell, has_head);
+		const std::vector<uint32_t> *units = NULL;
+		if (has_head && !head.empty()) {
+			std::map<madc::dis::istring, std::vector<uint32_t> >::const_iterator di =
+				defined_in.find(head);
+			if (di != defined_in.end())
+				units = &di->second;
+		}
+		def_memo[k] = units;
+		if (!units)
+			++req_unknown;
+		return units;
+	};
+	auto closure_defines = [&](const madc::dis::istring &k, uint32_t u) -> bool {
+		const std::vector<uint32_t> *du = template_units_of(k);
+		if (!du)
+			return true;
+		const uint64_t *row = &reach[(size_t)u * rwords];
+		for (size_t i = 0; i < du->size(); ++i)
+			if ((row[(*du)[i] >> 6] >> ((*du)[i] & 63)) & 1)
+				return true;
+		return false;
+	};
+	// A key with a requirement on record keeps its (possibly emptied) entry:
+	// it is placed by requirement, never by its template's name.
 	auto require_unit = [&](const madc::dis::istring &k, uint32_t u) {
-		if (u < nunits && required[k].insert(u).second)
+		if (u >= nunits)
+			return;
+		std::set<uint32_t> &rs = required[k];
+		if (!closure_defines(k, u))
+			++req_dropped;
+		else if (rs.insert(u).second)
 			req_work.push_back(std::make_pair(k, u));
 	};
 	for (size_t i = 0; i < f.requirements.size(); ++i) {
@@ -420,6 +530,25 @@ void cir_forest_build_seeds(cir_frozen_forest &f, const madc::dis::intern_table 
 		if (ci != carries.end())
 			for (size_t k = 0; k < ci->second.size(); ++k)
 				require_unit(ci->second[k], w.second);
+	}
+	// What a product on the requirement graph carries is on it too, even when
+	// the filter left the carrier no requirer: it is required only through
+	// that carrier, never by its template's name.
+	{
+		std::vector<madc::dis::istring> on_graph;
+		for (std::map<madc::dis::istring, std::set<uint32_t> >::const_iterator it =
+			required.begin(); it != required.end(); ++it)
+			on_graph.push_back(it->first);
+		while (!on_graph.empty()) {
+			madc::dis::istring k = on_graph.back();
+			on_graph.pop_back();
+			carry_map::const_iterator ci = carries.find(k);
+			if (ci == carries.end())
+				continue;
+			for (size_t j = 0; j < ci->second.size(); ++j)
+				if (required.insert(std::make_pair(ci->second[j], std::set<uint32_t>())).second)
+					on_graph.push_back(ci->second[j]);
+		}
 	}
 	auto required_of_key = [&](const madc::dis::istring &k) -> const std::set<uint32_t> * {
 		if (k.empty())
@@ -464,6 +593,9 @@ void cir_forest_build_seeds(cir_frozen_forest &f, const madc::dis::intern_table 
 			if (q)
 				for (std::set<uint32_t>::const_iterator u = q->begin(); u != q->end(); ++u)
 					fprintf(stderr, "SEEDREQ   unit %s\n", unit_name(*u));
+			if (const std::vector<uint32_t> *du = template_units_of(it->first))
+				for (size_t d = 0; d < du->size(); ++d)
+					fprintf(stderr, "SEEDREQ   defined-in %s\n", unit_name((*du)[d]));
 			for (size_t i = 0; i < f.requirements.size(); ++i)
 				if (f.requirements[i].product == it->first)
 					fprintf(stderr, "SEEDREQ   by %s at %s\n",
@@ -521,10 +653,12 @@ void cir_forest_build_seeds(cir_frozen_forest &f, const madc::dis::intern_table 
 				uint32_t cu = unit_of_slot(s);
 				const std::set<uint32_t> *req = required_of(s);
 				if (cu != NO_UNIT || req) {
+					// Born inside an instantiation: its requirers, never the
+					// unit the producer happened to instantiate it under.
 					std::set<uint32_t> at;
 					if (req)
 						at = *req;
-					if (cu != NO_UNIT)
+					else
 						at.insert(cu);
 					for (std::set<uint32_t>::const_iterator it = at.begin();
 					     it != at.end(); ++it)
@@ -544,7 +678,8 @@ void cir_forest_build_seeds(cir_frozen_forest &f, const madc::dis::intern_table 
 			const std::set<uint32_t> *req = required_of(s);
 			bool product = req && r.canon_id
 				&& strchr(a.strings.c_str(r.canon_id), '<');
-			bool undecided = record_surfaces(r, units, !product) && !product;
+			// A record on the requirement graph is placed by its requirers alone.
+			bool undecided = record_surfaces(r, units, !product) && !product && !req;
 			if (req) {
 				units.insert(req->begin(), req->end());
 				++c.required;
@@ -584,7 +719,7 @@ void cir_forest_build_seeds(cir_frozen_forest &f, const madc::dis::intern_table 
 			bool refines = !instance && disp && *disp && ns && *ns;
 			if (refines)
 				{ const uint32_t *run_ = dn.surface(disp, ns, nd); add_units(units, run_, nd); }
-			bool undecided = !instance && n1 == 0 && (!refines || nd == 0);
+			bool undecided = !instance && !req && n1 == 0 && (!refines || nd == 0);
 			if (req) {
 				units.insert(req->begin(), req->end());
 				++c.required;
@@ -681,7 +816,8 @@ void cir_forest_build_seeds(cir_frozen_forest &f, const madc::dis::intern_table 
 	// 3. Templates: the bind keeps one whose key verdict holds (and whose owner
 	// class restored); a BOUND-declared key also seeds its owner. A member
 	// template rides its owner class (a dependent); a declared key is also
-	// listed under its declaring units.
+	// listed under its declaring units — a namespace function template's
+	// overload under the one unit declaring it.
 	for (size_t i = 0; i < f.templates.size(); ++i) {
 		const cir_forest_template_record &t = f.templates[i];
 		SeedCensus &c = census["template"];
@@ -699,16 +835,28 @@ void cir_forest_build_seeds(cir_frozen_forest &f, const madc::dis::intern_table 
 			place(L.tmpl, (uint32_t)i, units, false, NO_UNIT, c);
 			continue;
 		}
-		uint32_t created = NO_UNIT;
-		if (nk == 0 && t.run_begin + 4 <= f.template_payload.size()) {
+		// The unit whose parse declared this record (its first token run's
+		// file).
+		uint32_t declared_in = NO_UNIT;
+		if (t.run_begin + 4 <= f.template_payload.size()) {
 			uint32_t file_id = f.template_payload[t.run_begin + 3];
-			created = unit_of_file(file_id ? pool.c_str(file_id) : NULL);
+			declared_in = unit_of_file(file_id ? pool.c_str(file_id) : NULL);
+		}
+		// A namespace function template is one OVERLOAD of a name many units
+		// may declare overloads of (std::swap: <bits/move.h>, <sstream>,
+		// <fstream>, ...): a live parse of a closure sees the overloads its
+		// own units declare, so the record is listed with its declaring unit
+		// alone — never with every unit declaring the name.
+		if ((t.kind == CIR_TMPLK_FN || t.kind == CIR_TMPLK_FN_DECL) && declared_in != NO_UNIT) {
+			units.clear();
+			units.insert(declared_in);
 		}
 		probe_name = "template";
 		probe_nm = key;
 		probe_ns = ns;
 		probe_extra = NULL;
-		place(L.tmpl, (uint32_t)i, units, nk == 0, created, c);
+		place(L.tmpl, (uint32_t)i, units, nk == 0 && units.empty(),
+		      nk == 0 ? declared_in : NO_UNIT, c);
 	}
 
 	// 4. Globals: the bind keeps one whose (name, ns) verdict holds.
@@ -740,13 +888,14 @@ void cir_forest_build_seeds(cir_frozen_forest &f, const madc::dis::intern_table 
 		if (created == NO_UNIT)
 			created = unit_of_file(file);
 		// A global born inside an instantiation (a product's static data
-		// member) is carried by that product.
-		if (const std::set<uint32_t> *req = i < f.global_ctx.size()
-			? required_of_key(f.global_ctx[i]) : NULL) {
-			units.insert(req->begin(), req->end());
+		// member) is carried by that product — by its requirers alone.
+		const std::set<uint32_t> *greq = i < f.global_ctx.size()
+			? required_of_key(f.global_ctx[i]) : NULL;
+		if (greq) {
+			units.insert(greq->begin(), greq->end());
 			++c.required;
 		}
-		place(L.glob, (uint32_t)i, units, n1 == 0, created, c);
+		place(L.glob, (uint32_t)i, units, n1 == 0 && !greq, created, c);
 	}
 
 	// 5. RECORDABLE — the fixpoint once, here.
@@ -824,4 +973,7 @@ void cir_forest_build_seeds(cir_frozen_forest &f, const madc::dis::intern_table 
 			 it->second.dependent, it->second.unplaced, it->second.required);
 		summary += buf;
 	}
+	snprintf(buf, sizeof(buf), "; requirements %zu dropped outside the defining closure, %zu keys unfiltered",
+		 req_dropped, req_unknown);
+	summary += buf;
 }
