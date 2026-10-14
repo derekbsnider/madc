@@ -1,1 +1,1 @@
-glibc-only header (<sys/sysinfo.h>); the win64 sysroot has no such file
+add-on header (<zstd.h>); the win64 sysroot has no such file

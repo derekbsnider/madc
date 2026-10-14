@@ -1,0 +1,1 @@
+brew's <zstd.h> sits in /usr/local/include on an Intel mac, a root clang lists ahead of its compiler-owned dir (inside the toolchain-only view); the darwin SDK has no sysroot-only add-on header to cut
