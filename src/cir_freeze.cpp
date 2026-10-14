@@ -803,13 +803,14 @@ bool cir_forest_write(const cir_frozen_forest &f, madc::dis::snapshot_writer &w,
 			f.extern_locs.size() * sizeof(cir_forest_extern_loc), codec))
 		return false;
 	// v2 container-global payloads (zero-length when the freeze recorded
-	// nothing — a module-only freeze).
+	// nothing — a module-only freeze). Every open reads both and they are
+	// small, so they are stored raw: no decode on open.
 	if (!add_seg(w, CIR_FOREST_SEG_BRANCH_MACROS, SNAP_KIND_CIR_BRANCH_MACROS,
 		     f.branch_macros.data(),
-		     f.branch_macros.size() * sizeof(uint32_t), codec)
+		     f.branch_macros.size() * sizeof(uint32_t), PchCompression::None)
 	    || !add_seg(w, CIR_FOREST_SEG_CANON_ORDER, SNAP_KIND_CIR_CANON_ORDER,
 			f.canon_order.data(),
-			f.canon_order.size() * sizeof(uint32_t), codec))
+			f.canon_order.size() * sizeof(uint32_t), PchCompression::None))
 		return false;
 
 	for (size_t u = 0; u < f.units.size(); ++u) {
@@ -1611,17 +1612,14 @@ bool CirFrozenForest::complete_open(c2m_ctx_t c2m)
 	}
 	note_lazy_span(CIR_FOREST_SEG_STR_BYTES, lzb);
 
-	// Required libraries (the link-environment closure) — resolve the
-	// header-stage name IDS through the now-bound container pool.
-	for (size_t i = 0; i < _lib_ids.size(); ++i) {
-		uint32_t slen = 0;
-		const char *s = pool_cstr(_lib_ids[i], slen);
-		if (!s) {
+	// Required libraries (the link-environment closure): the header-stage
+	// name IDS are range-checked here and spelled by libs() — a bind never
+	// reads them, so their pool block is not decoded for one.
+	for (size_t i = 0; i < _lib_ids.size(); ++i)
+		if (_lib_ids[i] > _pool.count()) {
 			fprintf(stderr, "madc: forest library list corrupt\n");
 			return false;
 		}
-		_libs.push_back(madc::dis::istring(s, slen));
-	}
 
 	// v13 container-global: file-scope global VARIABLE definitions (zero-length
 	// = none; materialize_from_arena swizzles each type_id -> DataDef*).
@@ -2229,6 +2227,20 @@ const char *CirFrozenForest::pool_cstr(uint32_t id, uint32_t &len) const
 		return NULL;
 	len = _pool.length(id);
 	return _pool.c_str(id);
+}
+
+const std::vector<madc::dis::istring> &CirFrozenForest::libs()
+{
+	if (_libs.size() != _lib_ids.size()) {
+		_libs.clear();
+		for (size_t i = 0; i < _lib_ids.size(); ++i) {
+			uint32_t slen = 0;
+			const char *s = pool_cstr(_lib_ids[i], slen);
+			_libs.push_back(s ? madc::dis::istring(s, slen)
+					  : madc::dis::istring());
+		}
+	}
+	return _libs;
 }
 
 uint32_t CirFrozenForest::live_str_id(uint32_t frozen_id)

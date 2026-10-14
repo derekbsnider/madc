@@ -276,10 +276,9 @@ public:
     // never crash).
     bool valid() const
     {
-	uint32_t l0 = 1;
 	return _bytes && _nbytes && _offsets && _noffsets >= 2
-	    && _offsets[0] == 0 && _offsets[_noffsets - 1] == _nbytes
-	    && spelling(0, l0) && l0 == 0;
+	    && _offsets[0] == 0 && _offsets[1] == 1
+	    && _offsets[_noffsets - 1] == _nbytes;
     }
 
     // A malformed or unreadable id reads as the empty spelling, length 0.

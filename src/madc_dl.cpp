@@ -8,6 +8,10 @@
 
 // ---------------------------------------------------------------- POSIX ---
 #include <dlfcn.h>
+#include <stdint.h>
+#if !defined(__APPLE__)
+#include <link.h>
+#endif
 
 void *madcdl_open_global(const char *path, bool bind_now)
 {
@@ -75,6 +79,70 @@ bool madcdl_pin_image_of(const void *addr)
 	dlclose(h);
 	return true;
 }
+
+#if defined(__APPLE__)
+bool madcdl_image_of(const void *addr, MadcDlInfo &info)
+{
+	if (!madcdl_addr(addr, info))
+		return false;
+	info.sname = NULL;
+	info.saddr = NULL;
+	return true;
+}
+#else
+// ELF: the loaded-object walk — each object's PT_LOAD ranges against the
+// address, no symbol table read. The loader names every object but the main
+// executable (dladdr reports argv[0] there), so that one case asks dladdr.
+struct madcdl_image_query {
+	uintptr_t addr;
+	const char *fname;
+	uintptr_t fbase;
+	bool found;
+};
+
+static int madcdl_image_visit(struct dl_phdr_info *pi, size_t, void *data)
+{
+	madcdl_image_query *q = (madcdl_image_query *)data;
+	uintptr_t lo = UINTPTR_MAX;
+	bool owns = false;
+	for (ElfW(Half) i = 0; i < pi->dlpi_phnum; ++i) {
+		const ElfW(Phdr) &ph = pi->dlpi_phdr[i];
+		if (ph.p_type != PT_LOAD)
+			continue;
+		uintptr_t start = (uintptr_t)pi->dlpi_addr + ph.p_vaddr;
+		uintptr_t map = ph.p_align > 1 ? start & ~(uintptr_t)(ph.p_align - 1) : start;
+		if (map < lo)
+			lo = map;
+		if (q->addr >= start && q->addr - start < ph.p_memsz)
+			owns = true;
+	}
+	if (!owns)
+		return 0;
+	q->found = true;
+	q->fname = pi->dlpi_name;
+	q->fbase = lo;
+	return 1;
+}
+
+bool madcdl_image_of(const void *addr, MadcDlInfo &info)
+{
+	madcdl_image_query q = { (uintptr_t)addr, NULL, 0, false };
+	dl_iterate_phdr(madcdl_image_visit, &q);
+	if (!q.found)
+		return false;
+	if (!q.fname || !q.fname[0]) {
+		if (!madcdl_addr(addr, info))
+			return false;
+		q.fname = info.fname;
+		q.fbase = (uintptr_t)info.fbase;
+	}
+	info.fname = q.fname;
+	info.fbase = (void *)q.fbase;
+	info.sname = NULL;
+	info.saddr = NULL;
+	return true;
+}
+#endif
 
 #else
 
@@ -273,6 +341,12 @@ bool madcdl_addr(const void *addr, MadcDlInfo &info)
 	info.sname = NULL;
 	info.saddr = NULL;
 	return true;
+}
+
+// madcdl_addr already reads the owning module alone here.
+bool madcdl_image_of(const void *addr, MadcDlInfo &info)
+{
+	return madcdl_addr(addr, info);
 }
 
 bool madcdl_pin_image_of(const void *addr)

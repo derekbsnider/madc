@@ -1630,7 +1630,7 @@ class CirFrozenForest
 	std::vector<cir_forest_dir_unit> _units;
 	std::vector<CirFrozenSegment *> _segs;	// lazily constructed per unit
 	std::vector<madc::dis::istring> _libs;
-	std::vector<uint32_t> _lib_ids;	// dir lib name-ids (resolved in complete_open)
+	std::vector<uint32_t> _lib_ids;	// dir lib name-ids (spelled by libs())
 	std::map<uint32_t, uint32_t> _live_ids;	// frozen str id -> live pool id
 	// The directory's name index (v57), in place in the mapped directory (or
 	// in _dir_bytes when the segment had to be decoded): unit-order offsets
@@ -1894,7 +1894,9 @@ public:
 	// The bind gate: this profile was frozen under (config, defines) — its
 	// own header's pair or one of its shared labels.
 	bool serves_config(uint32_t config, uint32_t defines) const;
-	const std::vector<madc::dis::istring> &libs() const { return _libs; }
+	// The required libraries, spelled through the container pool on first
+	// use (valid after complete_open).
+	const std::vector<madc::dis::istring> &libs();
 	// A unit's name, read in place from the directory (valid after
 	// open_header, for the reader's lifetime); NULL when out of range.
 	const char *unit_name(uint32_t unit) const;

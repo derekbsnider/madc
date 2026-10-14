@@ -70,12 +70,12 @@ std::string madc_self_lib_dir()
 
 // Resolved absolute path of the image holding libmadc's code (see datadef.h).
 // This function itself is the probe symbol: it is compiled into libmadc, so
-// dladdr maps it to libmadc.so / madc.dylib in the shared shape and to the
+// the image lookup maps it to libmadc.so / madc.dylib in the shared shape and to the
 // executable in the monolithic one (a static libmadc IS the exe's text).
 std::string madc_self_lib_path()
 {
 	MadcDlInfo info;
-	if (!madcdl_addr((void *)&madc_self_lib_path, info)
+	if (!madcdl_image_of((void *)&madc_self_lib_path, info)
 	    || !info.fname || !info.fname[0])
 		return std::string();
 	std::string real = madc::detail::resolve_real_path(info.fname);

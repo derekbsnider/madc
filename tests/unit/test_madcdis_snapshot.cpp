@@ -571,7 +571,7 @@ TEST_CASE("a frozen intern table reads through lazy blocks, decoding only what i
     frozen_intern_table fz;
     fz.bind((const char *)lb->data(), lb->size(), offs.data(), offs.size(), lb);
     CHECK(fz.valid());
-    CHECK(lb->blocks_decoded() == 1u);	// the empty spelling's block
+    CHECK(lb->blocks_decoded() == 0u);	// validating decodes nothing
     CHECK(fz.count() == p.count());
 
     // One spelling decodes the block(s) holding it — not the table.
