@@ -372,11 +372,12 @@ check_dump() {
 # PACK SIZE (pack slices design §8): the container's bytes (`bytes` in the
 # dump) may grow at most PACK_BYTES_ALLOWANCE past the profile's recorded
 # `pack-bytes` — the size owner-accepted for the seed index (2026-10-13:
-# +1.2 MB; raised 2026-10-14 to a 13,000,000-byte cap on the linux record).
+# +1.2 MB; raised 2026-10-14 to a 13,000,000-byte cap on the linux record,
+# then to 15,000,000 for the node units read block by block, format 61).
 # A profile with no recorded size reports its bytes unjudged; a dump
 # with no `bytes` line under a recorded size is red (nothing was measured).
 # ---------------------------------------------------------------------------
-PACK_BYTES_ALLOWANCE=1418024
+PACK_BYTES_ALLOWANCE=3418024
 check_pack_bytes() {
 	local dump="$1" bytes base
 	base=$(baseline_for "$PROFILE" pack-bytes)

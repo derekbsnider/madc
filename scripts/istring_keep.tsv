@@ -6,8 +6,8 @@ src/cir_builder.cpp	53
 src/cir_builder.h	16
 src/madc_cir.cpp	64
 src/madc_cir.h	10
-src/cir_freeze.cpp	18
-src/cir_freeze.h	5
+src/cir_freeze.cpp	19
+src/cir_freeze.h	6
 src/cir_pack_seeds.cpp	6
 src/cir_dump.cpp	41
 src/cir_emit_c.cpp	3
@@ -18,7 +18,7 @@ src/madc_complete.cpp	12
 src/madc_keywords.cpp	0
 src/pch.cpp	0
 src/madc.cpp	64
-include/madc.h	116
+include/madc.h	117
 include/datadef.h	6
 include/tokens.h	7
 include/datatokens.h	0

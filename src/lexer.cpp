@@ -4629,6 +4629,7 @@ Program::ForestBindStats Program::forest_bind_stats() const
 	s.units_total    = bind_forest->unit_count();
 	s.unitload_secs  = bind_forest->_stat_unitload_secs;
 	s.unitload_count = bind_forest->_stat_unitload_count;
+	bind_forest->node_record_counts(s.unit_records, s.unit_records_materialized, &s.unit_rows);
 	s.mat_secs       = bind_forest->_stat_mat_secs;
 	s.zstd_frames    = bind_forest->stat_zstd_frames();
 	s.zstd_bytes     = bind_forest->stat_zstd_bytes_out();

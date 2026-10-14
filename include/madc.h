@@ -5818,6 +5818,8 @@ public:
 	double restore_secs = 0.0, declidx_secs = 0.0;
 	double unitload_secs = 0.0, mat_secs = 0.0;
 	unsigned long long unitload_count = 0;
+	unsigned long long unit_records = 0, unit_records_materialized = 0;
+	std::string unit_rows;			// "unit:materialized/records[blocks]" per loaded unit
 	unsigned long long zstd_frames = 0, zstd_bytes = 0;
 	double zstd_secs = 0.0;
 	unsigned long long copy_calls = 0, copy_bytes = 0;

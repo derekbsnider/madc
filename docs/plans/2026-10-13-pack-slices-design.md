@@ -9,7 +9,8 @@ whole-pack sweep, no whole-arena judging; the dialect prelude is a slice like
 any header, loaded under `--std=madc`. Target: the Test 6 column of
 `2026-10-13-pack-load-cost-experiments.md` on the shipped binary, at a pack
 size ≤ 13,000,000 bytes (owner 2026-10-13: today's + 1.2 MB — measured +0.9 MB, a small increase
-accepted; raised 2026-10-14 to 13M for headroom).
+accepted; raised 2026-10-14 to 13M for headroom, then to 15M for the node
+units read block by block — §3, format 61).
 **Provision (owner-approved 2026-10-13):** the slice format must not change
 again for the later pull-on-lookup step (clang PCH / GCC CMI model: the unit
 of load is an entity cluster, the trigger a name-lookup miss).
@@ -149,6 +150,19 @@ Measured (symbolized release, pack built in, Ir): stddef 12.7M, stdio 19.8M,
 limits 23.6M, type_traits 28.8M, vector 79.2M, c8 140.0M; pack 12,545,432
 bytes.
 
+**As built (format 61, 2026-10-14) — node units by block.** A unit's node
+records, child entries, connectors and positions are BLOCKED too (128 KiB
+blocks; the records keep their byte-plane and the children their delta as
+each block's inner transform), and a bound unit reads them in place: a record
+is decoded with its block and bounds-checked when first resolved, never as a
+whole-unit decode + validation pass. cxx_stl.cpp's 16 units hold 569,504
+records, of which it materializes 2,121, and its reads cluster (96 of the
+3,381 16 KiB blocks). Block size moves the pack, not the bind — measured on
+the release, 16 / 64 / 128 KiB: pack 14.61 / 13.65 / 13.35 MB; cxx_stl
+1,436.4M / 1,442.0M / 1,447.2M Ir, 218 ms at each (from 1,574.6M / 247 ms);
+subscript 2,397.2M → 2,269.3M Ir, 367 → 338 ms at 128 KiB; the ladder rungs
+unchanged (they bind no node unit). The owner took 128 KiB and a 15 MB cap.
+
 ## 4. Seeds — which records a unit's bind visits
 
 Each restorable entity is placed by the SAME predicate the bind uses to keep
@@ -262,8 +276,8 @@ closes with it.
 - **parse-cost ratchet** — rows per §1 (`scripts/parse_cost/` gains the
   ladder workloads; the seam battery's `parse-cost` stage runs them).
 - **pack size** — `forest_pack_gate.sh` records the pack's byte size in its
-  baseline; growth past the 13,000,000-byte cap (+1,418,024 over the
-  recorded 11,581,976) is red.
+  baseline; growth past the 15,000,000-byte cap (+3,418,024 over the
+  recorded 11,581,976; 13,000,000 until format 61) is red.
 - **seed parity** — `scripts/check-pack-seed-parity.sh`: for each ladder
   workload and a spread of single-header programs, the restored set (types,
   typedefs, enums, functions, globals, templates, namespace bindings) of the

@@ -60,6 +60,7 @@
 #include <cstdint>
 #include <deque>
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -624,7 +625,15 @@ bool cir_freeze_read(const madc::dis::snapshot_reader &r, uint32_t seg_id_base,
 // intern_table::frozen_blocks), so records may sit in any order, and
 // ARENA_DEF_POS maps a slot to its record's position (absent = slot order).
 // Ids unchanged.
-enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 60 };
+//
+// v61: a unit's node records, child entries, connectors and positions are
+// stored BLOCKED in 128 KB blocks (the records' byte-plane and the children's
+// delta recode each block, snap_blocked_flags' inner transform),
+// and a bound unit reads them in place, block by block: unit_segment no
+// longer decodes and validates a whole unit — a record's bounds are checked
+// when it is first resolved. cxx_stl.cpp's bind decoded 569,504 node
+// records to materialize 2,121 (pack-slices design §10 part 3).
+enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 61 };
 // Flags word of a SNAP_KIND_CIR_BRANCH_DEPS tuple.
 enum : uint32_t {
 	CIR_BRANCH_DEP_DEFINED   = 1u,	// the macro was defined at the consult
@@ -1367,18 +1376,46 @@ class CirFrozenSegment : public cir_segment_source
 {
 	friend class CirFrozenForest;
 
-	cir_frozen_blob _blob;
-	madc::dis::decode_bytes _record_planes;	// forest byte-plane records, kept columnar
+public:
+	// One of a forest unit's four tables, read in place: process-lifetime
+	// bytes (the mapped image or the forest's decoded-segment cache), lazy —
+	// decoded block by block on first touch — when stored BLOCKED (format
+	// 61). n = element count.
+	struct Table
+	{
+		const uint8_t *p = NULL;
+		const madc::dis::lazy_blocks *lz = NULL;
+		size_t n = 0;
+	};
+
+private:
+	cir_frozen_blob _blob;			// standalone (B2) segments: resident
+	Table _recs, _kids, _conns, _poss;	// forest units
 	size_t _record_count;
-	madc::dis::decode_vector<uint64_t> _connectors;	// forest units only
-	madc::dis::decode_vector<cir_frozen_pos> _positions;	// forest units only
 	CirFrozenForest *_forest;		// NULL = standalone (B2 mode)
 	c2m_ctx_t _c2m;
 	uint32_t _seg;				// registered segment id
-	std::vector<cir_node *> _mat;		// per-record memo (NULL = cold)
+	uint32_t _unit;				// forest unit (diagnostics)
+	// Per-record memo (NULL = cold), one chunk of MAT_CHUNK records
+	// allocated on its first materialization: a bind materializes a few
+	// hundred of a unit's records, never a pointer per record up front.
+	enum : uint32_t { MAT_CHUNK_SHIFT = 8, MAT_CHUNK = 1u << MAT_CHUNK_SHIFT };
+	std::vector<std::unique_ptr<cir_node *[]> > _mat;
 	std::deque<cir_node> _nodes;		// materialized node storage (stable)
 
+	// The record / child entry / connector / position at an index; false
+	// when it is out of range or its block fails to decode (a forest unit's
+	// bounds are checked HERE, at first read, never as a wild read).
 	bool record_at(uint32_t idx, cir_frozen_record &out) const;
+	bool child_entry(uint64_t i, uint32_t &out) const;
+	bool connector_at(uint32_t i, uint64_t &out) const;
+	bool position_at(uint32_t idx, cir_frozen_pos &out) const;
+	cir_node *mat(uint32_t idx) const
+	{
+		size_t c = idx >> MAT_CHUNK_SHIFT;
+		return c < _mat.size() && _mat[c] ? _mat[c][idx & (MAT_CHUNK - 1)] : NULL;
+	}
+	void set_mat(uint32_t idx, cir_node *cn);
 	// A new compile: forget the memo of the nodes materialized for earlier
 	// units, keeping their storage (CirFrozenForest::begin_compile).
 	void begin_compile(c2m_ctx_t c2m);
@@ -1392,19 +1429,19 @@ class CirFrozenSegment : public cir_segment_source
 
 public:
 	CirFrozenSegment(cir_frozen_blob &&blob, c2m_ctx_t c2m);
-	CirFrozenSegment(cir_forest_unit &&unit, CirFrozenForest *forest,
-			 c2m_ctx_t c2m);
-	CirFrozenSegment(cir_forest_unit &&unit,
-			 madc::dis::decode_bytes &&record_planes,
-			 size_t record_count, CirFrozenForest *forest,
-			 c2m_ctx_t c2m);
+	// A forest unit over its four tables (CirFrozenForest::unit_segment).
+	CirFrozenSegment(uint32_t unit, const Table &recs, const Table &kids,
+			 const Table &conns, const Table &poss,
+			 CirFrozenForest *forest, c2m_ctx_t c2m);
 	~CirFrozenSegment();
 
 	uint32_t seg() const { return _seg; }
 	size_t record_count() const { return _record_count; }
 	size_t materialized_count() const;
+	// Over a forest unit's BLOCKED tables: blocks decoded / blocks stored.
+	void block_counts(size_t &decoded, size_t &total) const;
 	CirFrozenForest *forest() const { return _forest; }
-	uint64_t connector(uint32_t i) const { return _connectors[i]; }
+	bool connector(uint32_t i, uint64_t &out) const { return connector_at(i, out); }
 
 	// THE resolve-on-touch entry: materialize the sub-DAG rooted at idx
 	// (memoized; shares/cycles terminate) and return its real node.
@@ -1910,6 +1947,13 @@ public:
 
 	uint32_t unit_count() const { return (uint32_t)_units.size(); }
 	size_t units_loaded() const;			// laziness observability
+	// Over the loaded units: node records decoded, and how many of them a
+	// compile materialized (--show-stats).
+	// rows (optional): "unit:materialized/records[blocks decoded/stored]" per
+	// loaded unit.
+	void node_record_counts(unsigned long long &loaded,
+				unsigned long long &materialized,
+				std::string *rows = NULL) const;
 
 	// --show-stats observability (startup-latency R0): where forest wall
 	// time goes, split by owner. The reader's decode counters (zstd frames

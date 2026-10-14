@@ -662,6 +662,76 @@ TEST_CASE("a BLOCKED segment with a corrupt block table is refused")
     delete lz;
 }
 
+TEST_CASE("BLOCKED inner transforms recode each framed block and read back raw")
+{
+    using madc::dis::snap_blocked_flags;
+    using madc::dis::SNAP_XFORM_NONE;
+    using madc::dis::SNAP_XFORM_DELTA32;
+    using madc::dis::SNAP_XFORM_BYTEPLANE;
+
+    // u32 child-entry-like words: ascending runs plus a connector-style entry.
+    std::vector<uint32_t> idx;
+    for ( uint32_t i = 0; i < 2600; ++i )
+	idx.push_back(i % 900 == 5 ? 0x80000000u | i : i * 3);
+    // 24-byte records: 1 KiB blocks hold 42 whole records and a 16-byte tail.
+    std::vector<uint8_t> recs;
+    for ( uint32_t i = 0; i < 450; ++i )
+	for ( uint32_t c = 0; c < 24; ++c )
+	    recs.push_back((uint8_t)(c < 4 ? i >> (8 * c) : c * 7));
+    std::vector<bool> keep(11, false);
+    keep[2] = true;				// stored raw: no inner recoding
+
+    const uint32_t fd = snap_blocked_flags(10, SNAP_XFORM_DELTA32);
+    const uint32_t fb = snap_blocked_flags(10, SNAP_XFORM_BYTEPLANE, 24);
+    CHECK(madc::dis::snap_blocked_shift(fb) == 10u);
+    CHECK(madc::dis::snap_blocked_stride(fb) == 24u);
+    CHECK(madc::dis::snap_blocked_inner(fb) == (uint32_t)SNAP_XFORM_BYTEPLANE);
+    snapshot_writer w;
+    REQUIRE(w.add_segment(1, 0, idx.data(), idx.size() * 4, PchCompression::Zlib, 0, fd));
+    REQUIRE(w.add_segment(2, 0, recs.data(), recs.size(), PchCompression::Zlib, 0, fb, &keep));
+    std::vector<uint8_t> blob;
+    REQUIRE(w.build(blob));
+    snapshot_reader r;
+    REQUIRE(r.open(blob.data(), blob.size()));
+
+    std::vector<uint8_t> got;
+    REQUIRE(r.read_segment(*r.find(1), got));
+    REQUIRE(got.size() == idx.size() * 4);
+    CHECK(memcmp(got.data(), idx.data(), got.size()) == 0);
+    REQUIRE(r.read_segment(*r.find(2), got));
+    CHECK(got == recs);
+
+    madc::dis::snapshot_lazy_segment *lz = r.open_lazy(*r.find(1));
+    REQUIRE(lz != nullptr);
+    REQUIRE(lz->ensure(5 * 1024 - 8, 16));	// straddles blocks 4 and 5
+    CHECK(lz->blocks_decoded() == 2u);
+    CHECK(memcmp(lz->data() + 5 * 1024 - 8, (const uint8_t *)idx.data() + 5 * 1024 - 8, 16) == 0);
+    delete lz;
+    lz = r.open_lazy(*r.find(2));
+    REQUIRE(lz != nullptr);
+    REQUIRE(lz->ensure(3 * 1024 - 20, 40));	// a framed block's tail, then a framed block
+    CHECK(memcmp(lz->data() + 3 * 1024 - 20, recs.data() + 3 * 1024 - 20, 40) == 0);
+    REQUIRE(lz->ensure(2 * 1024, 1024));		// the raw-kept block
+    CHECK(memcmp(lz->data() + 2 * 1024, recs.data() + 2 * 1024, 1024) == 0);
+    REQUIRE(lz->ensure(0, recs.size()));
+    CHECK(memcmp(lz->data(), recs.data(), recs.size()) == 0);
+    delete lz;
+
+    // Flags that do not fit: block size out of range, a stride without
+    // byte-planes, delta over a partial word, a zero stride, an unknown inner.
+    snapshot_writer bad;
+    CHECK(!bad.add_segment(3, 0, idx.data(), 400, PchCompression::Zlib, 0,
+			   snap_blocked_flags(9)));
+    CHECK(!bad.add_segment(4, 0, idx.data(), 400, PchCompression::Zlib, 0,
+			   snap_blocked_flags(10, SNAP_XFORM_NONE, 8)));
+    CHECK(!bad.add_segment(5, 0, idx.data(), 401, PchCompression::Zlib, 0,
+			   snap_blocked_flags(10, SNAP_XFORM_DELTA32)));
+    CHECK(!bad.add_segment(6, 0, idx.data(), 400, PchCompression::Zlib, 0,
+			   snap_blocked_flags(10, SNAP_XFORM_BYTEPLANE, 0)));
+    CHECK(!bad.add_segment(7, 0, idx.data(), 400, PchCompression::Zlib, 0,
+			   snap_blocked_flags(10, (madc::dis::snapshot_transform)7)));
+}
+
 TEST_CASE("a frozen intern table reads through lazy blocks, decoding only what it reads")
 {
     intern_table p;

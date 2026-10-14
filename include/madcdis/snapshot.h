@@ -73,7 +73,8 @@ enum snapshot_kind : uint32_t
 //
 // `flags` layout: bits 0..7 transform id (snapshot_transform), bits 8..23
 // transform parameter (SNAP_XFORM_BYTEPLANE: the record stride), bits 24..31
-// reserved (0).
+// reserved (0) — except SNAP_XFORM_BLOCKED, whose parameter word is laid out
+// by snap_blocked_flags().
 enum snapshot_transform : uint32_t
 {
     SNAP_XFORM_NONE      = 0,
@@ -81,10 +82,12 @@ enum snapshot_transform : uint32_t
     SNAP_XFORM_BYTEPLANE = 2,	// fixed-stride records split into byte planes
 				// (param = stride > 0, raw_size % stride == 0)
     SNAP_XFORM_BLOCKED   = 3	// split into fixed-size blocks, each compressed
-				// alone (param = log2 block size, 10..24); the
-				// payload is a snapshot_block_header, the
-				// snapshot_block table, then the stored blocks.
-				// Decodable block by block (snapshot_lazy_segment).
+				// alone (snap_blocked_flags: log2 block size,
+				// 10..24, and an INNER transform recoding each
+				// compressed block); the payload is a
+				// snapshot_block_header, the snapshot_block
+				// table, then the stored blocks. Decodable block
+				// by block (snapshot_lazy_segment).
 };
 
 // SNAP_XFORM_BLOCKED payload layout. A block whose stored size equals its raw
@@ -99,6 +102,22 @@ inline uint32_t snap_xform_flags(snapshot_transform id, uint32_t param = 0)
 	{ return (uint32_t)id | (param << 8); }
 inline uint32_t snap_xform_id(uint32_t flags)    { return flags & 0xffu; }
 inline uint32_t snap_xform_param(uint32_t flags) { return (flags >> 8) & 0xffffu; }
+
+// SNAP_XFORM_BLOCKED's flags: bits 8..15 log2 block size, bits 24..31 the
+// INNER transform recoding each compressed block before its frame
+// (SNAP_XFORM_NONE, DELTA32 over the block's u32 words, or BYTEPLANE over
+// the block's whole records of bits 16..23 bytes — a block's tail shorter
+// than one record stays as it is). A block stored raw carries no inner
+// recoding. Decoded, every block is its raw bytes: the inner transform is
+// the codec's business, never a reader's.
+inline uint32_t snap_blocked_flags(uint32_t shift,
+				   snapshot_transform inner = SNAP_XFORM_NONE,
+				   uint32_t stride = 0)
+	{ return (uint32_t)SNAP_XFORM_BLOCKED | (shift << 8) | (stride << 16)
+		 | ((uint32_t)inner << 24); }
+inline uint32_t snap_blocked_shift(uint32_t flags)  { return (flags >> 8) & 0xffu; }
+inline uint32_t snap_blocked_stride(uint32_t flags) { return (flags >> 16) & 0xffu; }
+inline uint32_t snap_blocked_inner(uint32_t flags)  { return flags >> 24; }
 
 struct snapshot_header		// at blob offset 0 (32 bytes)
 {
@@ -187,6 +206,7 @@ class snapshot_lazy_segment : public lazy_blocks
 {
     const uint8_t *_payload;
     uint32_t       _codec;
+    uint32_t       _flags;		// the segment's (snap_blocked_flags)
     uint32_t       _seg_id;
     mutable std::mutex _mu;
     bool fill(size_t first, size_t last) const;

@@ -536,6 +536,14 @@ static bool forest_kind_blocked(uint32_t kind)
 	case SNAP_KIND_CIR_TEMPLATE_TOKENS:
 	case SNAP_KIND_CIR_GLOBALS:
 	case SNAP_KIND_CIR_TEMPLATES:
+	// A unit's node records, child entries, connectors and positions
+	// (format 61): a bind materializes a few hundred of a unit's records —
+	// 2,121 of the 569,504 its 16 node units hold for cxx_stl.cpp — so
+	// each is read block by block too.
+	case SNAP_KIND_CIR_RECORDS:
+	case SNAP_KIND_CIR_CHILDREN:
+	case SNAP_KIND_CIR_CONNECTORS:
+	case SNAP_KIND_CIR_POSITIONS:
 		return true;
 	default:
 		return false;
@@ -545,7 +553,36 @@ static bool forest_kind_blocked(uint32_t kind)
 // log2 of the shared tables' block size: 16 KB. Measured 2026-10-13 on the
 // packed corpus — 4 KB blocks cost +0.67 MB (12,785,936 bytes) and made the
 // 8-header C workload slower (more blocks touched, each with frame overhead).
-enum : uint32_t { FOREST_BLOCK_SHIFT = 14 };
+// A node unit's tables (format 61) use 128 KB: a bind's reads of them cluster
+// (cxx_stl.cpp decodes 96 of the 3,381 16 KB blocks of the 16 units it
+// loads), so the block size moves the pack, not the bind — measured
+// 2026-10-14 on the release, 16 / 64 / 128 KB: pack 14.61 / 13.65 / 13.35 MB,
+// cxx_stl 1,436.4M / 1,442.0M / 1,447.2M Ir at the same wall time (owner:
+// 128 KB, pack cap 15 MB).
+enum : uint32_t { FOREST_BLOCK_SHIFT = 14, FOREST_UNIT_BLOCK_SHIFT = 17 };
+
+// A blocked kind's flags: its block size, and its inner transform — node
+// records keep their byte-plane recoding and child entries their delta, now
+// inside each block.
+static uint32_t forest_blocked_flags(uint32_t kind)
+{
+	static_assert(sizeof(cir_frozen_record) <= 0xff,
+		      "a blocked byte-plane stride is one byte (snap_blocked_flags)");
+	switch (kind) {
+	case SNAP_KIND_CIR_RECORDS:
+		return madc::dis::snap_blocked_flags(FOREST_UNIT_BLOCK_SHIFT,
+						     madc::dis::SNAP_XFORM_BYTEPLANE,
+						     (uint32_t)sizeof(cir_frozen_record));
+	case SNAP_KIND_CIR_CHILDREN:
+		return madc::dis::snap_blocked_flags(FOREST_UNIT_BLOCK_SHIFT,
+						     madc::dis::SNAP_XFORM_DELTA32);
+	case SNAP_KIND_CIR_CONNECTORS:
+	case SNAP_KIND_CIR_POSITIONS:
+		return madc::dis::snap_blocked_flags(FOREST_UNIT_BLOCK_SHIFT);
+	default:
+		return madc::dis::snap_blocked_flags(FOREST_BLOCK_SHIFT);
+	}
+}
 
 static bool add_seg(madc::dis::snapshot_writer &w, uint32_t seg_id,
 		    uint32_t kind, const void *bytes, size_t len,
@@ -556,8 +593,7 @@ static bool add_seg(madc::dis::snapshot_writer &w, uint32_t seg_id,
 		codec = PchCompression::None;
 	uint32_t xform = 0;
 	if (codec != PchCompression::None && forest_kind_blocked(kind))
-		xform = madc::dis::snap_xform_flags(madc::dis::SNAP_XFORM_BLOCKED,
-						    FOREST_BLOCK_SHIFT);
+		xform = forest_blocked_flags(kind);
 	else if (kind == SNAP_KIND_CIR_CHILDREN)
 		xform = madc::dis::snap_xform_flags(madc::dis::SNAP_XFORM_DELTA32);
 	else if (kind == SNAP_KIND_CIR_RECORDS)
@@ -1020,31 +1056,19 @@ bool cir_forest_map_image(const char *path, const void *&image, size_t &len)
 
 CirFrozenSegment::CirFrozenSegment(cir_frozen_blob &&blob, c2m_ctx_t c2m)
 	: _blob(std::move(blob)), _record_count(_blob.records.size()),
-	  _forest(NULL), _c2m(c2m)
+	  _forest(NULL), _c2m(c2m), _unit(0)
 {
-	_mat.assign(_record_count, (cir_node *)NULL);
+	_mat.resize((_record_count + MAT_CHUNK - 1) >> MAT_CHUNK_SHIFT);
 	_seg = madc_cir_register_segment(this);
 }
 
-CirFrozenSegment::CirFrozenSegment(cir_forest_unit &&unit, CirFrozenForest *forest,
-				   c2m_ctx_t c2m)
-	: _blob(std::move(unit.blob)), _record_count(_blob.records.size()),
-	  _connectors(std::move(unit.connectors)),
-	  _positions(std::move(unit.positions)), _forest(forest), _c2m(c2m)
+CirFrozenSegment::CirFrozenSegment(uint32_t unit, const Table &recs, const Table &kids,
+				   const Table &conns, const Table &poss,
+				   CirFrozenForest *forest, c2m_ctx_t c2m)
+	: _recs(recs), _kids(kids), _conns(conns), _poss(poss),
+	  _record_count(recs.n), _forest(forest), _c2m(c2m), _unit(unit)
 {
-	_mat.assign(_record_count, (cir_node *)NULL);
-	_seg = madc_cir_register_segment(this);
-}
-
-CirFrozenSegment::CirFrozenSegment(cir_forest_unit &&unit,
-				   madc::dis::decode_bytes &&record_planes,
-				   size_t record_count, CirFrozenForest *forest,
-				   c2m_ctx_t c2m)
-	: _blob(std::move(unit.blob)), _record_planes(std::move(record_planes)),
-	  _record_count(record_count), _connectors(std::move(unit.connectors)),
-	  _positions(std::move(unit.positions)), _forest(forest), _c2m(c2m)
-{
-	_mat.assign(_record_count, (cir_node *)NULL);
+	_mat.resize((_record_count + MAT_CHUNK - 1) >> MAT_CHUNK_SHIFT);
 	_seg = madc_cir_register_segment(this);
 }
 
@@ -1056,30 +1080,81 @@ CirFrozenSegment::~CirFrozenSegment()
 void CirFrozenSegment::begin_compile(c2m_ctx_t c2m)
 {
 	_c2m = c2m;
-	_mat.assign(_record_count, (cir_node *)NULL);
+	_mat.clear();
+	_mat.resize((_record_count + MAT_CHUNK - 1) >> MAT_CHUNK_SHIFT);
+}
+
+void CirFrozenSegment::set_mat(uint32_t idx, cir_node *cn)
+{
+	std::unique_ptr<cir_node *[]> &c = _mat[idx >> MAT_CHUNK_SHIFT];
+	if (!c)
+		c.reset(new cir_node *[MAT_CHUNK]());
+	c[idx & (MAT_CHUNK - 1)] = cn;
 }
 
 size_t CirFrozenSegment::materialized_count() const
 {
 	size_t n = 0;
-	for (size_t i = 0; i < _mat.size(); ++i)
-		if (_mat[i])
-			++n;
+	for (size_t c = 0; c < _mat.size(); ++c)
+		if (_mat[c])
+			for (uint32_t i = 0; i < MAT_CHUNK; ++i)
+				if (_mat[c][i])
+					++n;
 	return n;
+}
+
+void CirFrozenSegment::block_counts(size_t &decoded, size_t &total) const
+{
+	decoded = total = 0;
+	const Table *t[4] = { &_recs, &_kids, &_conns, &_poss };
+	for (int k = 0; k < 4; ++k)
+		if (t[k]->lz) {
+			decoded += t[k]->lz->blocks_decoded();
+			total += t[k]->lz->block_count();
+		}
+}
+
+// Element i of a forest unit's table: its block decoded on first touch.
+template <class T>
+static bool frozen_table_read(const CirFrozenSegment::Table &t, uint64_t i, T &out)
+{
+	if (i >= t.n)
+		return false;
+	const size_t off = (size_t)i * sizeof(T);
+	if (!madc::dis::lazy_ensure(t.lz, off, sizeof(T)))
+		return false;
+	memcpy(&out, t.p + off, sizeof(T));
+	return true;
 }
 
 bool CirFrozenSegment::record_at(uint32_t idx, cir_frozen_record &out) const
 {
+	if (_forest)
+		return frozen_table_read(_recs, idx, out);
 	if (idx >= _record_count)
 		return false;
-	if (_record_planes.empty()) {
-		out = _blob.records[idx];
-		return true;
-	}
-	uint8_t *dst = reinterpret_cast<uint8_t *>(&out);
-	for (size_t b = 0; b < sizeof(out); ++b)
-		dst[b] = _record_planes[b * _record_count + idx];
+	out = _blob.records[idx];
 	return true;
+}
+
+bool CirFrozenSegment::child_entry(uint64_t i, uint32_t &out) const
+{
+	if (_forest)
+		return frozen_table_read(_kids, i, out);
+	if (i >= _blob.children.size())
+		return false;
+	out = _blob.children[(size_t)i];
+	return true;
+}
+
+bool CirFrozenSegment::connector_at(uint32_t i, uint64_t &out) const
+{
+	return _forest && frozen_table_read(_conns, i, out);
+}
+
+bool CirFrozenSegment::position_at(uint32_t idx, cir_frozen_pos &out) const
+{
+	return _forest && frozen_table_read(_poss, idx, out);
 }
 
 // Phase A: materialize ONE record as a childless node shell — code, uid,
@@ -1148,9 +1223,9 @@ cir_node *CirFrozenSegment::shell(uint32_t idx)
 	// Position: forest units read the side-car (valid without the freezing
 	// process's token arena); standalone segments derive it from the origin
 	// token exactly as CirBuilder::make does for a live build.
+	cir_frozen_pos p;
 	if (_forest) {
-		const cir_frozen_pos &p = _positions[idx];
-		if (p.fname_id) {
+		if (position_at(idx, p) && p.fname_id) {
 			uint32_t flen = 0;
 			const char *fn = _forest->pool_cstr(p.fname_id, flen);
 			if (fn) {
@@ -1167,26 +1242,26 @@ cir_node *CirFrozenSegment::shell(uint32_t idx)
 		}
 	}
 
-	_mat[idx] = cn;
+	set_mat(idx, cn);
 	return cn;
 }
 
-// Resolve a child entry to its owning segment + record index. A connector
-// entry crossing into a not-yet-loaded unit triggers that unit's
-// decompress+register here (forest SETTLED #6: load-on-demand falls out of
-// reference resolution).
+// Resolve a child entry to its owning segment + record index, bounds checked
+// (a corrupt entry fails the resolve, never reads wild). A connector entry
+// crossing into a not-yet-loaded unit loads it here (forest SETTLED #6:
+// load-on-demand falls out of reference resolution).
 static bool cir_child_target(CirFrozenSegment *s, uint32_t entry,
 			     CirFrozenSegment *&cs, uint32_t &cidx)
 {
 	if (!(entry & CIR_FROZEN_CHILD_CONNECTOR_BIT)) {
 		cs = s;
 		cidx = entry;
-		return true;
+		return cidx < s->record_count();
 	}
 	CirFrozenForest *forest = s->forest();
-	if (!forest)
+	uint64_t conn = 0;
+	if (!forest || !s->connector(entry & ~CIR_FROZEN_CHILD_CONNECTOR_BIT, conn))
 		return false;	// standalone blobs have no connector pool
-	uint64_t conn = s->connector(entry & ~CIR_FROZEN_CHILD_CONNECTOR_BIT);
 	cs = forest->unit_segment((uint32_t)(conn >> 32));
 	cidx = (uint32_t)conn;
 	return cs != NULL && cidx < cs->record_count();
@@ -1196,8 +1271,8 @@ cir_node *CirFrozenSegment::resolve(CirFrozenSegment *s0, uint32_t idx0)
 {
 	if (idx0 >= s0->record_count())
 		return NULL;
-	if (s0->_mat[idx0])
-		return s0->_mat[idx0];
+	if (cir_node *done = s0->mat(idx0))
+		return done;
 
 	// Phase A: shells for every cold record reachable from (s0, idx0) —
 	// one iterative worklist ACROSS units (a connector hop is a worklist
@@ -1214,11 +1289,14 @@ cir_node *CirFrozenSegment::resolve(CirFrozenSegment *s0, uint32_t idx0)
 			return NULL;
 		for (uint32_t k = 0; k < r.nchildren; ++k) {
 			CirFrozenSegment *cs = NULL;
-			uint32_t cidx = 0;
-			if (!cir_child_target(s, s->_blob.children[r.child_base + k],
-					      cs, cidx))
+			uint32_t entry = 0, cidx = 0;
+			if (!s->child_entry(r.child_base + k, entry)
+			    || !cir_child_target(s, entry, cs, cidx)) {
+				fprintf(stderr, "madc: forest unit %u record %u failed validation\n",
+					s->_unit, created[w].second);
 				return NULL;
-			if (!cs->_mat[cidx]) {
+			}
+			if (!cs->mat(cidx)) {
 				if (!cs->shell(cidx))
 					return NULL;
 				created.push_back(std::make_pair(cs, cidx));
@@ -1236,18 +1314,18 @@ cir_node *CirFrozenSegment::resolve(CirFrozenSegment *s0, uint32_t idx0)
 		cir_frozen_record r;
 		if (!s->record_at(created[w].second, r))
 			return NULL;
-		cir_node *parent = s->_mat[created[w].second];
+		cir_node *parent = s->mat(created[w].second);
 		for (uint32_t k = 0; k < r.nchildren; ++k) {
 			CirFrozenSegment *cs = NULL;
-			uint32_t cidx = 0;
-			cir_child_target(s, s->_blob.children[r.child_base + k],
-					 cs, cidx);	// memoized: cannot fail now
+			uint32_t entry = 0, cidx = 0;
+			s->child_entry(r.child_base + k, entry);	// read in phase A:
+			cir_child_target(s, entry, cs, cidx);		// cannot fail now
 			c2mir_op_append(s->_c2m, parent->as_node(),
-					cs->_mat[cidx]->as_node());
+					cs->mat(cidx)->as_node());
 		}
 	}
 
-	return s0->_mat[idx0];
+	return s0->mat(idx0);
 }
 
 cir_node *CirFrozenSegment::node_at(uint32_t idx)
@@ -1882,7 +1960,7 @@ bool cir_forest_relayout(const void *image, size_t image_len,
 			} else if (const madc::dis::snapshot_segment *bs = r.find(seg))
 				if (madc::dis::snap_xform_id(bs->flags) == madc::dis::SNAP_XFORM_BLOCKED) {
 					const uint32_t root = (uint32_t)i;
-					note_block_span(seg, madc::dis::snap_xform_param(bs->flags),
+					note_block_span(seg, madc::dis::snap_blocked_shift(bs->flags),
 							off, len, &root, 1);
 				}
 		}
@@ -1910,7 +1988,7 @@ bool cir_forest_relayout(const void *image, size_t image_len,
 		const madc::dis::snapshot_segment *s = r.find(seg);
 		if (!s || madc::dis::snap_xform_id(s->flags) != madc::dis::SNAP_XFORM_BLOCKED)
 			return false;
-		shift = madc::dis::snap_xform_param(s->flags);
+		shift = madc::dis::snap_blocked_shift(s->flags);
 		return true;
 	};
 	for (int k = 0; k < 2; ++k)
@@ -5298,11 +5376,34 @@ size_t CirFrozenForest::units_loaded() const
 	return n;
 }
 
-// The load-on-demand step: decompress one unit's four payload segments,
-// validate them against the directory, and register the segment. Every
-// bound (child entry, connector target, position count) is checked HERE so
-// a corrupt container fails at unit load, never as a wild read at
-// materialize.
+void CirFrozenForest::node_record_counts(unsigned long long &loaded,
+					 unsigned long long &materialized,
+					 std::string *rows) const
+{
+	loaded = materialized = 0;
+	for (size_t u = 0; u < _segs.size(); ++u)
+		if (_segs[u]) {
+			size_t n = _segs[u]->record_count(), m = _segs[u]->materialized_count();
+			loaded += n;
+			materialized += m;
+			if (rows) {
+				size_t bd = 0, bt = 0;
+				_segs[u]->block_counts(bd, bt);
+				char buf[80];
+				snprintf(buf, sizeof(buf), "%s%zu:%zu/%zu[%zu/%zu]",
+					 rows->empty() ? "" : " ", u, m, n, bd, bt);
+				*rows += buf;
+			}
+		}
+}
+
+// The load-on-demand step: bind one unit's four payload segments in place and
+// register the segment. Format 61 stores them BLOCKED, so binding decodes
+// nothing: a record, child entry, connector or position decodes its block on
+// first read, and its bounds (child range, connector target, position) are
+// checked there (CirFrozenSegment::resolve) — a corrupt container fails at
+// that read, never as a wild one. Here: the directory's record, connector and
+// position counts against the segments' sizes.
 CirFrozenSegment *CirFrozenForest::unit_segment(uint32_t unit)
 {
 	if (unit >= _units.size())
@@ -5325,10 +5426,6 @@ CirFrozenSegment *CirFrozenForest::unit_segment(uint32_t unit)
 		fprintf(stderr, "madc: forest unit %u segments missing\n", unit);
 		return NULL;
 	}
-	// Divisibility gates come from the DIRECTORY's raw sizes, so the typed
-	// destination vectors can be sized once and decoded into directly —
-	// no staging buffers (the payload used to be zero-filled twice and
-	// copied twice; the memset alone was 12% of a packed <string> compile).
 	if (recs->raw_size % sizeof(cir_frozen_record)
 	    || kids->raw_size % sizeof(uint32_t)
 	    || conn->raw_size % sizeof(uint64_t)
@@ -5336,108 +5433,29 @@ CirFrozenSegment *CirFrozenForest::unit_segment(uint32_t unit)
 		fprintf(stderr, "madc: forest unit %u payload corrupt\n", unit);
 		return NULL;
 	}
-	madc::dis::decode_bytes rb;	// columnar records: the plane buffer IS the
-					// segment's retained storage (moved below)
-	bool records_columnar =
-		madc::dis::snap_xform_id(recs->flags)
-			== madc::dis::SNAP_XFORM_BYTEPLANE
-		&& madc::dis::snap_xform_param(recs->flags)
-			== sizeof(cir_frozen_record);
-
-	cir_forest_unit fu;
-	fu.unit_name_id = _units[unit].unit_name_id;
-	size_t record_count = (size_t)recs->raw_size / sizeof(cir_frozen_record);
-	bool records_ok;
-	if (records_columnar)
-		records_ok = _reader.read_segment_transformed(*recs, rb);
-	else {
-		fu.blob.records.resize(record_count);
-		records_ok = _reader.read_segment_into(
-			*recs, reinterpret_cast<uint8_t *>(fu.blob.records.data()),
-			(size_t)recs->raw_size);
-	}
-	fu.blob.children.resize((size_t)kids->raw_size / sizeof(uint32_t));
-	fu.connectors.resize((size_t)conn->raw_size / sizeof(uint64_t));
-	fu.positions.resize((size_t)poss->raw_size / sizeof(cir_frozen_pos));
-	if (!records_ok
-	    || !_reader.read_segment_into(
-		    *kids, reinterpret_cast<uint8_t *>(fu.blob.children.data()),
-		    (size_t)kids->raw_size)
-	    || !_reader.read_segment_into(
-		    *conn, reinterpret_cast<uint8_t *>(fu.connectors.data()),
-		    (size_t)conn->raw_size)
-	    || !_reader.read_segment_into(
-		    *poss, reinterpret_cast<uint8_t *>(fu.positions.data()),
-		    (size_t)poss->raw_size)) {
-		fprintf(stderr, "madc: forest unit %u payload corrupt\n", unit);
-		return NULL;
-	}
-
-	bool ok = record_count == _units[unit].record_count
-	       && fu.connectors.size() == _units[unit].connector_count
-	       && fu.positions.size() == record_count;
-	const uint8_t *nchildren_planes[sizeof(uint32_t)] = {};
-	const uint8_t *child_base_planes[sizeof(uint64_t)] = {};
-	if (records_columnar && record_count) {
-		const uint8_t *plane_data = rb.data();
-		for (size_t b = 0; b < sizeof(uint32_t); ++b)
-			nchildren_planes[b] = plane_data
-				+ (offsetof(cir_frozen_record, nchildren) + b)
-				  * record_count;
-		for (size_t b = 0; b < sizeof(uint64_t); ++b)
-			child_base_planes[b] = plane_data
-				+ (offsetof(cir_frozen_record, child_base) + b)
-				  * record_count;
-	}
-	for (size_t i = 0; ok && i < record_count; ++i) {
-		uint32_t nchildren = 0;
-		uint64_t child_base = 0;
-		if (records_columnar) {
-			uint8_t *nchildren_bytes =
-				reinterpret_cast<uint8_t *>(&nchildren);
-			uint8_t *child_base_bytes =
-				reinterpret_cast<uint8_t *>(&child_base);
-			for (size_t b = 0; b < sizeof(nchildren); ++b)
-				nchildren_bytes[b] = nchildren_planes[b][i];
-			for (size_t b = 0; b < sizeof(child_base); ++b)
-				child_base_bytes[b] = child_base_planes[b][i];
-		} else {
-			const cir_frozen_record &rec = fu.blob.records[i];
-			nchildren = rec.nchildren;
-			child_base = rec.child_base;
+	CirFrozenSegment::Table t[4];
+	const madc::dis::snapshot_segment *segs[4] = { recs, kids, conn, poss };
+	const size_t elem[4] = { sizeof(cir_frozen_record), sizeof(uint32_t),
+				 sizeof(uint64_t), sizeof(cir_frozen_pos) };
+	for (int k = 0; k < 4; ++k) {
+		size_t len = 0;
+		t[k].p = forest_segment_bytes(_reader, *segs[k], len, &t[k].lz);
+		if (!t[k].p && len) {
+			fprintf(stderr, "madc: forest unit %u payload corrupt\n", unit);
+			return NULL;
 		}
-		if (!ok || child_base > fu.blob.children.size()
-		    || nchildren > fu.blob.children.size() - child_base) {
-			ok = false;
-			break;
-		}
-		for (uint32_t k = 0; ok && k < nchildren; ++k) {
-			uint32_t ci = fu.blob.children[child_base + k];
-			if (ci & CIR_FROZEN_CHILD_CONNECTOR_BIT)
-				ok = (ci & ~CIR_FROZEN_CHILD_CONNECTOR_BIT)
-				     < fu.connectors.size();
-			else
-				ok = ci < record_count;
-		}
+		t[k].n = len / elem[k];
 	}
-	for (size_t c = 0; ok && c < fu.connectors.size(); ++c) {
-		uint32_t tu = (uint32_t)(fu.connectors[c] >> 32);
-		uint32_t ti = (uint32_t)fu.connectors[c];
-		ok = tu < _units.size() && tu != unit
-		     && ti < _units[tu].record_count;
-	}
-	if (!ok) {
+	if (t[0].n != _units[unit].record_count
+	    || t[2].n != _units[unit].connector_count
+	    || t[3].n != t[0].n) {
 		fprintf(stderr, "madc: forest unit %u failed validation\n", unit);
 		return NULL;
 	}
 
 	DBG(fprintf(stderr, "forest: loading unit %u (%zu records)\n",
-		    unit, record_count));
-	if (records_columnar)
-		_segs[unit] = new CirFrozenSegment(std::move(fu), std::move(rb),
-						   record_count, this, _c2m);
-	else
-		_segs[unit] = new CirFrozenSegment(std::move(fu), this, _c2m);
+		    unit, t[0].n));
+	_segs[unit] = new CirFrozenSegment(unit, t[0], t[1], t[2], t[3], this, _c2m);
 	_stat_unitload_secs += forest_now() - _t0;
 	_stat_unitload_count += 1;
 	return _segs[unit];

@@ -2115,12 +2115,13 @@ int main(int argc, char **argv)
 		    fprintf(stderr,
 			"[stats] forest bind ......... %.3f s  (%llu units bound / %u packed)\n"
 			"[stats] forest restore ...... %.3f s  (decl-index sweep %.3f + materialize %.3f + register %.3f)\n"
-			"[stats] forest unit loads ... %.3f s  (%llu node-record segments)\n"
+			"[stats] forest unit loads ... %.3f s  (%llu node-record segments; %llu of %llu records materialized)\n"
 			"[stats] forest decode ....... %.3f s  (%llu zstd frames -> %.1f KiB; %llu copies, %.1f KiB)\n"
 			"[stats] forest in phases .... lex %.3f + parse %.3f + cir %.3f s  (carved OUT of those buckets)\n",
 			fs.bind_secs, fs.units_bound, fs.units_total,
 			fs.restore_secs, fs.declidx_secs, fs.mat_secs, reg_secs,
 			fs.unitload_secs, fs.unitload_count,
+			fs.unit_records_materialized, fs.unit_records,
 			fs.zstd_secs, fs.zstd_frames, fs.zstd_bytes / 1024.0,
 			fs.copy_calls, fs.copy_bytes / 1024.0,
 			fw_lex, fw_parse, fw_cir);
@@ -2128,6 +2129,10 @@ int main(int argc, char **argv)
 			fprintf(stderr,
 			    "[stats] forest blocks ....... %llu of %llu decoded  (%s)\n",
 			    fs.blocks_decoded, fs.blocks_total, fs.block_rows.c_str());
+		    if ( !fs.unit_rows.empty() )
+			fprintf(stderr,
+			    "[stats] forest node units ... %s  (unit:materialized/records[blocks decoded/stored])\n",
+			    fs.unit_rows.c_str());
 		    fprintf(stderr,
 			"[stats] forest functions .... %llu eager + %llu derived deferred; %llu activated / %llu remain\n",
 			fs.funcs_eager, fs.funcs_deferred,
