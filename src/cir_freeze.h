@@ -1189,8 +1189,10 @@ struct cir_frozen_forest
 	// bucketing, 0xffffffff = none) — maps an arena slot's point-of-creation
 	// stamp (Program::forest_arena_poi) to its unit.
 	std::vector<uint32_t> token_unit;
-	// Transient: each globals[] record's declaring file (NULL = unknown).
+	// Transient: each globals[] record's declaring file (NULL = unknown) and
+	// its Variable's point of creation (Variable::pack_poi).
 	std::vector<const char *> global_files;
+	std::vector<uint32_t>     global_poi;
 	// Built by cir_forest_build_seeds; written as DECL_NAMES / SEEDS / RECORDABLE.
 	std::vector<uint8_t>  decl_names;
 	std::vector<uint32_t> seeds;

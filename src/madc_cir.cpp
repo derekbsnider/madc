@@ -4918,9 +4918,11 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
 	const Program::TopDecl *t = global_top_decl(gv);
 	return t && t->decl ? t->decl->file : NULL;
     };
-    auto push_global = [&](const cir_forest_global_record &g, const char *file) {
+    auto push_global = [&](const cir_forest_global_record &g, const char *file,
+			   const Variable *gv) {
 	f.globals.push_back(g);
 	f.global_files.push_back(file);
+	f.global_poi.push_back(gv->pack_poi);
     };
     // v39: the emitted symbol this Variable resolves to, VERBATIM. Live derived
     // it through whichever owner the entity's category has —
@@ -4970,7 +4972,7 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
 			  << ((g.gflags & CIR_GLOBALF_TU_ROOT)
 			      ? " (TU-root)" : "")
 			  << std::endl);
-		push_global(g, eo->second);
+		push_global(g, eo->second, v);
 		continue;
 	    }
 	}
@@ -5000,7 +5002,7 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
 		g.gflags |= CIR_GLOBALF_TU_ROOT;
 	    g.ns_id   = global_ns_id(v);
 	    g.alias_id   = global_alias_id(v);	// v39
-	    push_global(g, global_decl_file(v));
+	    push_global(g, global_decl_file(v), v);
 	    continue;
 	}
 	DataDefCLASS *cdd = dynamic_cast<DataDefCLASS *>(v->type);
@@ -5072,7 +5074,7 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
 		}
 		break;
 	    }
-	    push_global(g, global_decl_file(v));
+	    push_global(g, global_decl_file(v), v);
 	    continue;
 	}
 	// v14: a SCALAR-const file-scope global (e.g. hardware_*_interference_size
@@ -5113,7 +5115,7 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
 		g.gflags |= CIR_GLOBALF_TU_ROOT;
 	    g.ns_id   = global_ns_id(v);
 	    g.alias_id   = global_alias_id(v);	// v39
-	    push_global(g, td->file);
+	    push_global(g, td->file, v);
 	    continue;
 	}
 	TokenBase *rhs = td->initialize;
@@ -5144,7 +5146,7 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
 	g.ns_id      = global_ns_id(v);
 	g.alias_id      = global_alias_id(v);	// v39
 	g.init_value = rhs->ival();
-	push_global(g, td ? td->file : NULL);
+	push_global(g, td ? td->file : NULL, v);
     }
 }
 

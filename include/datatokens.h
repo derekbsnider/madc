@@ -110,6 +110,10 @@ public:
     // (a variable's declaration is its TokenDecl node; a member's and an
     // enumerator's are their type's records) or a synthesized parameter.
     TokenBase *decl_tok = nullptr;
+    // The pack freeze's point of creation open at birth (DataDef::pack_poi's
+    // twin): a class's static data member is born while the class body parses,
+    // and the seed index places its global with the unit that parse belongs to.
+    uint32_t pack_poi = madc_pack_creation_poi;
     madc::dis::istring storage_alias_name;
     // storage_alias_name answers "what symbol does a REFERENCE to this
     // declaration resolve to" — it is a redirect, written by the GNU asm

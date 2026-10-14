@@ -271,14 +271,21 @@ void cir_forest_build_seeds(cir_frozen_forest &f, const madc::dis::intern_table 
 		std::map<madc::dis::istring, uint32_t>::const_iterator it = unit_by_name.find(file);
 		return it == unit_by_name.end() ? NO_UNIT : it->second;
 	};
+	// An entity's point of creation (a token index) -> its unit. The
+	// producer's own source (the root unit) is never bound by a consumer, so
+	// a point there places nothing — the entity falls back to its declaring
+	// file, as an unstamped one.
+	auto unit_of_poi = [&](uint32_t at) -> uint32_t {
+		if (at == NO_UNIT || at >= f.token_unit.size() || f.token_unit[at] == f.root_unit)
+			return NO_UNIT;
+		return f.token_unit[at];
+	};
 	// A slot's point of creation: the parse-time stamp, else the declaring
-	// file of a freeze-time capture. The producer's own source (the root
-	// unit) is never bound by a consumer, so a stamp there places nothing —
-	// the record falls back to its declaring file, as an unstamped one.
+	// file of a freeze-time capture.
 	auto unit_of_slot = [&](uint32_t slot) -> uint32_t {
-		if (slot < poi.size() && poi[slot] != NO_UNIT && poi[slot] < f.token_unit.size()
-		    && f.token_unit[poi[slot]] != f.root_unit)
-			return f.token_unit[poi[slot]];
+		uint32_t u = unit_of_poi(slot < poi.size() ? poi[slot] : NO_UNIT);
+		if (u != NO_UNIT)
+			return u;
 		return slot < poi_files.size() ? unit_of_file(poi_files[slot]) : NO_UNIT;
 	};
 
@@ -421,7 +428,15 @@ void cir_forest_build_seeds(cir_frozen_forest &f, const madc::dis::intern_table 
 			probe_nm = r.name_id ? a.strings.c_str(r.name_id) : NULL;
 			probe_ns = r.ns_id ? a.strings.c_str(r.ns_id) : NULL;
 			probe_extra = r.canon_id ? a.strings.c_str(r.canon_id) : NULL;
-			place(L.arena, s, units, undecided, unit_of_slot(s), c);
+			// A namespaced alias the freeze synthesizes (a namespace-map
+			// entry naming a recorded type, no stamp of its own) exists
+			// because its target was registered under that name: it is
+			// created with its target.
+			uint32_t created = unit_of_slot(s);
+			if (created == NO_UNIT && r.kind == madc::dis::DK_TYPEDEF
+			    && r.ref0 && madc::dis::arena_id_is_project(r.ref0))
+				created = unit_of_slot(madc::dis::arena_slot_of(r.ref0));
+			place(L.arena, s, units, undecided, created, c);
 			break;
 		}
 		case madc::dis::DK_FUNC: {
@@ -586,7 +601,10 @@ void cir_forest_build_seeds(cir_frozen_forest &f, const madc::dis::intern_table 
 		probe_nm = pool.c_str(g.name_id);
 		probe_ns = g.ns_id ? pool.c_str(g.ns_id) : NULL;
 		probe_extra = file;
-		place(L.glob, (uint32_t)i, units, n1 == 0, unit_of_file(file), c);
+		uint32_t created = unit_of_poi(i < f.global_poi.size() ? f.global_poi[i] : NO_UNIT);
+		if (created == NO_UNIT)
+			created = unit_of_file(file);
+		place(L.glob, (uint32_t)i, units, n1 == 0, created, c);
 	}
 
 	// 5. RECORDABLE — the fixpoint once, here.
