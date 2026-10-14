@@ -370,6 +370,15 @@ the `Program` / compile group. No new mutable globals.
    11 left name no record (function-pointer typedefs, enumerators imported
    by using-declarations, a folded `static const`, a nested struct frozen
    under its flattened name). Pack +15 KB (13,275,496 bytes).
+   Multi-header layout DROPPED (owner 2026-10-14): measured on cxx_stl
+   (format 64), header combinations add no reads — every read the 40
+   single-root layout binds miss is an INSTANTIATION read (template payload,
+   template tokens, the strings they name), which a root bound with an empty
+   `main` never makes. cxx_stl decodes 690 shared blocks against a floor of
+   466 if its reads were contiguous; laying template bodies beside their
+   records means rewriting the offsets the records hold (a format change) for
+   at most ~30M Ir (~2%), with cxx_stl already under its ratchet. Closed
+   2026-10-14: cxx_stl 1,406.6M Ir, subscript 2,206.0M.
 4. **Prelude.** The dialect fragments frozen as `--std=madc` units; the
    auto-include binds them. Checkpoint: the prelude row < 78.7M Ir; strict
    stds unaffected.
