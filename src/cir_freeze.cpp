@@ -2029,10 +2029,11 @@ bool cir_forest_relayout(const void *image, size_t image_len,
 			note_block_span(CIR_FOREST_SEG_ARENA_DEFS, shift,
 					(uint64_t)pos[it->first] * t.record_bytes, t.record_bytes,
 					it->second.roots.data(), it->second.roots.size());
-	// A block at least half the root binds read is stored raw: a compile
-	// including any of those roots copies it instead of decoding it. Each
-	// population counts alone — the C/C++ roots, the dialect's — so one never
-	// dilutes the other's hot set.
+	// A block at least half the C/C++ root binds read is stored raw: a compile
+	// including any of those roots copies it instead of decoding it. The
+	// dialect surface is never decompressed (pack-slices design §7): a block
+	// ANY dialect root reads is stored raw. The populations count apart, so
+	// the dialect roots never dilute the C/C++ hot set.
 	size_t dialect_roots = 0;
 	for (size_t i = 0; i < dialect_root.size(); ++i)
 		dialect_roots += dialect_root[i];
@@ -2046,7 +2047,7 @@ bool cir_forest_relayout(const void *image, size_t image_len,
 			by_dialect += dialect_root[*ri];
 		const size_t by_header = it->second.size() - by_dialect;
 		if (!(header_roots && by_header * 2 >= header_roots)
-		    && !(dialect_roots && by_dialect * 2 >= dialect_roots))
+		    && !by_dialect)
 			continue;
 		std::vector<bool> &v = raw_blocks[it->first.first];
 		if (v.size() <= it->first.second)
