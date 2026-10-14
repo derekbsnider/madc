@@ -72,6 +72,128 @@ directory with `#error` poison headers and traces file access, so C, C++ and
 dialect compiles must finish without touching them while gcc and
 `--no-embedded-headers` hit the poison.
 
+### The forest pack is cut into per-unit slices, and a bind loads only the units a program includes
+
+A packed compile used to open its bind container and judge every unit in it
+against the program, so its front-end cost tracked the whole container, not the
+headers the program actually included. The pack is now cut per unit and carries a
+frozen index — a per-unit seed list of the arena, template and global records a
+bind of that unit visits, an inverted name index (each declared name → the units
+that declare it), and a recordability bitmap computed once at freeze. A bind now
+visits and judges only the slices of the units the program's include closure
+reaches, builds a derived type (pointer, reference, cv, array, function pointer,
+member pointer) on first use instead of building every one up front, and reads a
+node unit's records block by block as each is first resolved rather than decoding
+the whole unit — `cxx_stl.cpp`'s sixteen node units hold 569,504 records, of
+which a bind materializes about 2,121.
+
+An instantiation product — a class-template product or a function-template
+instance — is restored only in the units whose parse requires it: the unit that
+created it and every unit that both reuses it and whose include closure defines
+its template, never with every unit that merely declares the template's name. A
+`<vector>` bind therefore no longer carries the `basic_string<char16_t>` products
+that `<string>`'s parse made. On a symbolized release binary with the pack built
+in, the packed front-end cost of `<stddef.h>` drops from 174M to 12.7M
+instructions, `<vector>` from 352M to 76M, the eight everyday C headers from 394M
+to 136M, and `cxx_stl.cpp` from 1,661M to 1,395M (callgrind Ir), with every
+program's output identical to a live parse.
+
+A live compile that binds no packed unit no longer opens the pack at all: the
+function-name index now lists only the prototypes an adoption probe could accept,
+so a declared name the probe would decline (a header's `__builtin_memset` asking
+for `memset`) is answered without opening the container. The container is laid out
+by the reads its own single-header binds make, a block at least half the binds
+read stored uncompressed and the directory read in place, so an open costs a
+sortedness scan; a header that binds no frozen table — a pragma-only Windows
+header such as `pshpack1.h` — records an empty read log so the layout pass accepts
+it. The Linux release pack grows from 11.58 MB to 14.53 MB, within a 15 MB cap.
+
+### A standard type the pack only names stays incomplete
+
+With only `<iostream>` included, a pack bind used to restore a class-template
+product complete wherever a typedef, signature, pointer or reference named it — an
+`<iosfwd>` typedef of a product that `<sstream>` instantiates pulled in the frozen
+complete record — so `std::stringbuf *` converted to `std::streambuf *` and an
+overloaded call picked the wrong candidate. A product whose template no bound unit
+defines is now restored declared-only when the closure merely names it: allocated
+and registered but not filled, completed in place only when a later bind requires
+it whole. With only `<iostream>`, `std::stringbuf *` no longer converts to
+`std::streambuf *` and the call picks the `void *` overload, matching g++, clang++
+and a live parse. Gate: `testpackforwardnamedproduct`.
+
+### A namespace's unscoped enumerator keeps its namespace through the pack
+
+An unscoped enumerator declared inside a namespace is a member of that namespace
+([dcl.enum]/11): `<limits>`'s `float_denorm_style` and `float_round_style`
+enumerators are `std::denorm_present`, `std::round_toward_neg_infinity` and the
+rest. The frozen global table deduplicated globals by bare name and bound them at
+global scope, so a packed-release consumer of `std::denorm_present` failed to
+compile with "'denorm_present' is not a member of namespace 'std'". Globals are
+now keyed by qualified identity at freeze and rebound into their namespace at
+restore, so the consumer compiles. Gate: `testforestnsenum` (g++ and clang++
+print `1 3 -1`).
+
+### A later REPL entry's `#include` parses its header text
+
+The pack's declaration restore runs once per session, so a header first included
+by a later interactive entry got its macros but not its declaration records:
+`#include <time.h>` returned a `struct tm` with no members ("Unidentified member
+'tm_year'"), and a later `#include <vector>` or `<string>` failed with "use of
+undeclared identifier". A unit asked to bind after the one-shot restore now parses
+its text instead, so a header included mid-session resolves as it does on a live
+parse.
+
+### The dialect prelude is the compiler's own — intrinsic and bound directly
+
+Under `--std=madc` the compiler now declares `std::format`, `std::print` and
+`std::println` itself at startup, as always-available intrinsics with no header
+and no forest unit behind them; they were previously served through an
+auto-include row and the `bits/std_format` fragment, which this drops from the
+pack list. Registering the three costs about 15K instructions per `--std=madc`
+compile and nothing in a strict mode; a strict `--std=c##` / `--std=c++##` compile
+never sees them, and `<bits/std_format>` is kept only for an explicit strict-mode
+`#include`. The REPL describes `println` as declared by the madc compiler, always
+available.
+
+The rest of the dialect surface — the `ns_*` fragments and their `bits/*` enums —
+now binds directly from its frozen unit under `--std=madc` instead of being parsed
+from text on every compile, while a strict compile that includes a fragment still
+parses its text. The dialect's blocks are stored uncompressed, so the surface is
+never decoded, and a `--with-forest=none` build carries the dialect as its own
+small container (3.31 MB) so a dialect program pays the same cost with or without
+the system-header pack. The dialect workload's packed front-end cost drops from
+77.7M to 42.0M instructions and a bare `println("hi")` from 14.0M to 12.3M
+(callgrind Ir, release binary); strict-mode costs are unchanged.
+
+### A refused link no longer crashes at the session's end
+
+`MIR_link` marked each function it would inline into by writing a sentinel into
+the item's owned-allocation slot and cleared it on a later pass. When a link was
+refused — an undefined import, or an error handler that longjmps out — the flagged
+items never reached the clearing pass, so the sentinel survived into `MIR_finish`,
+which freed it as a pointer and crashed. The inline set is now held in a separate
+per-context array, leaving the item slot untouched across a link, so a refused
+link survives to `MIR_finish`. Relatedly, the compile-error test runner now fails
+a run that dies on a signal — it formerly accepted any nonzero exit, counting a
+crash after the right diagnostic as a pass. Gate: `testlinkundefcxx` (g++ and
+clang++ report "undefined reference to `foo()'"; madc now reports the undefined
+import and exits cleanly where it formerly crashed in `MIR_finish`).
+
+### A packed dialect program that imports a module compiles
+
+Because the dialect fragments now bind directly from the pack, a fragment's text
+is never re-lexed and its `import <module>;` directive never runs. A fragment that
+imports a lazy module row — `ns_markdown` (madcmark), `ns_git` (madcgit),
+`ns_ui_web` (madcwebview) — therefore lost three things on the packed release: the
+`static void *` slot declaration of the loaded body, the optional-library manifest
+entry, and the `dyn_module` stamp on its restored interface prototypes, so
+`tests/testmarkdown.mad` and `tests/testgit.mad` failed to compile and a direct
+call to a module function lowered to a MIR import of an undefined symbol. The
+import directive now records a frozen preprocessor event that a bound unit
+replays, re-declaring the slot, re-adding the manifest entry and restamping the
+restored prototypes, so a packed dialect program that imports a module compiles as
+the live parse does. Gates: `testmarkdown`, `testgit`, `testlazymoduledirect`.
+
 ### `quick_exit` on Windows runs only the at_quick_exit handlers
 
 The JIT session's exit hook — the one that destroys a session's objects with
