@@ -12,10 +12,10 @@ interactive-win	release	4c4ad82b678b	2026-10-12	37 passed, 0 failed, 0 timed out
 interactive-darwin	release	4c4ad82b678b	2026-10-12	arm64 Mac Mini 41/0/0TO/2skip + Intel MacBook 41/0/0TO/2skip — interactive_lane.sh's tests/ subset on the macOS packaged madc 0.104.0 at 4c4ad82b6 content; madcide 0.7.0 66/0 + Chthonia 0.1.0 check_install PASS on both
 interactive	yes	cf4865377600	2026-10-13	56/0/0TO/0skip + units 7/0 (scripts/interactive_lane.sh, Linux JIT)
 tests-jit	batch	873c2517ade6	2026-10-14	2033 passed, 0 failed, 9 skipped (run before the format_intrinsic_table() linkage-only change)
-c-testsuite	commit	0cb45e28ca37	2026-10-14	220 passed, 0 failed
-c-torture	commit	0cb45e28ca37	2026-10-14	1617 passed, 7 failing (baseline), 0 outside baseline
-c2mir-tests	commit	0cb45e28ca37	2026-10-14	368 passed, 0 failed, 4 skipped
-gui	commit	0cb45e28ca37	2026-10-14	15 passed; EXE 15; OBJ 15
-gxx-c++11	no	0cb45e28ca37	2026-10-14	1505 passed, 441 failing (baseline), 0 outside baseline
-index-c	yes	0cb45e28ca37	2026-10-14	50/50 tasks OK
-commonmark	commit	0cb45e28ca37	2026-10-14	664 passed, 6 failed (baseline)
+c-testsuite	commit	a2a6d317ca83	2026-10-14	220 passed, 0 failed
+c-torture	commit	a2a6d317ca83	2026-10-14	1617 passed, 7 failing (baseline), 0 outside baseline
+c2mir-tests	commit	a2a6d317ca83	2026-10-14	368 passed, 0 failed, 4 skipped
+gui	commit	a2a6d317ca83	2026-10-14	15 passed; EXE 15; OBJ 15
+gxx-c++11	no	a2a6d317ca83	2026-10-14	1505 passed, 441 failing (baseline), 0 outside baseline
+index-c	yes	a2a6d317ca83	2026-10-14	50/50 tasks OK
+commonmark	commit	a2a6d317ca83	2026-10-14	664 passed, 6 failed (baseline)
