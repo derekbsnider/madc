@@ -14,9 +14,10 @@
 #
 # Workloads live in scripts/parse_cost/: <name>.<ext> + <name>.expect (its
 # exact stdout), optionally <name>.modes ("live forest"; default "live"). A
-# LIVE row parses every header (--no-forest-bind: the parser and instantiator
-# are what is measured); a FOREST row takes the packed forest, the path a
-# default compile takes. A workload may be a symlink to a test (subscript.mad
+# LIVE row parses every system header (--no-forest-bind: the parser and
+# instantiator are what is measured; the dialect surface still binds — it is
+# the compiler's own, pack-slices design §7); a FOREST row takes the packed
+# forest, the path a default compile takes. A workload may be a symlink to a test (subscript.mad
 # is tests/testsubscript.mad, the owner's benchmark against g++). The baseline records the
 # toolchain it was measured on (compiler, libc, libstdc++ headers, valgrind):
 # a different toolchain parses different headers, so a mismatch REFUSES the

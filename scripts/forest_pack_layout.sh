@@ -10,7 +10,8 @@
 # bind makes (--forest-touch-log), then lays the container out by those reads
 # (--forest-relayout): string-pool records and arena records are ordered by
 # which roots read them, so a compile decodes about the blocks its own
-# includes need. The binds run --emit=c11 — they parse and lower but never
+# includes need; a block half of a population's roots read (the C/C++
+# headers', the dialect fragments') is stored raw. The binds run --emit=c11 — they parse and lower but never
 # execute — so they run wherever the freezer runs, a cross freezer included.
 # <madc> [args...] is the freezer's own command (wine + exe, the cross madc
 # plus its flags). Work files sit beside the container and are removed on
@@ -33,6 +34,9 @@ forest_pack_layout() {
             head -5 "$dir/r_$n.err" >&2
             return 1
         fi
+        # The log names its root last: the relayout counts the dialect
+        # surface's roots as their own population (pack-slices design §7).
+        printf 'root %s\n' "$h" >> "$dir/r_$n.log"
         logs+=("$dir/r_$n.log")
         i=$((i + 1))
     done < <(grep -vE '^[[:space:]]*(#|$)' "$list")

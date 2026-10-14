@@ -19,6 +19,9 @@ set -e
 cd "$(dirname "$0")/.."
 
 BIN="${1:-bin/madc}"
+# The pack's own standard (forest_pack.sh freezes --std=madc): the list
+# carries the dialect surface since v8, which a .cpp TU's gnu++17 cannot parse.
+STD=--std=madc
 LIST=scripts/forest_pack_headers.txt
 mkdir -p tmp
 TU=tmp/forest_oracle_tu.cpp
@@ -32,12 +35,12 @@ TU=tmp/forest_oracle_tu.cpp
 echo 'int main() { return 0; }' > tmp/forest_oracle_empty.cpp
 
 ulimit -t 900
-timeout 600 "$BIN" --freeze=tmp/forest_oracle.msnap "$TU" > /dev/null 2>&1
+timeout 600 "$BIN" $STD --freeze=tmp/forest_oracle.msnap "$TU" > /dev/null 2>&1
 timeout 120 "$BIN" --dump-forest=tmp/forest_oracle.msnap 2>/dev/null \
     | awk -F'\t' '$1=="declindex"{print $4}' | sort -u > tmp/forest_oracle_a.txt
-timeout 600 "$BIN" --dump-registered "$TU" 2>/dev/null | sort -u \
+timeout 600 "$BIN" $STD --dump-registered "$TU" 2>/dev/null | sort -u \
     > tmp/forest_oracle_full.txt
-timeout 120 "$BIN" --dump-registered tmp/forest_oracle_empty.cpp 2>/dev/null \
+timeout 120 "$BIN" $STD --dump-registered tmp/forest_oracle_empty.cpp 2>/dev/null \
     | sort -u > tmp/forest_oracle_base.txt
 
 comm -23 tmp/forest_oracle_full.txt tmp/forest_oracle_base.txt \

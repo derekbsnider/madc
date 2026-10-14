@@ -67,6 +67,10 @@ TOK_CLOSURE='materialize closure: DROPPED'
 # dropped with "consumers fall back". Correctness survives; every consumer
 # compile then pays full price. Tolerated + exit 0 = exactly this gate's remit.
 TOK_BLOB='blob skipped'
+# Producer-side leak: a C/C++ header's entity whose seed verdict rests on
+# dialect names alone (pack-slices design §7) — a dialect fragment would then
+# decide what a strict compile binds. HARD ZERO.
+TOK_DIALECT_DECIDED='header entities decided by dialect names alone'
 
 usage() {
 	echo "usage: $0 --profile <key> [--pack-log FILE] [--load-log FILE]" >&2
@@ -166,6 +170,13 @@ check_pack_log() {
 		echo "       full price. Correctness survives, which is why it exits 0." >&2
 	elif [ "$blobs" -lt "$blobs_allowed" ]; then
 		say "[$PROFILE] IMPROVED — lower '$PROFILE mir-blob-skips' to $blobs in $BASELINE"
+	fi
+	local leaked
+	leaked=$(grep -ao "[0-9]* $TOK_DIALECT_DECIDED" "$norm" | awk '{ s += $1 } END { print s + 0 }')
+	if [ "$leaked" -gt 0 ]; then
+		fail "[$PROFILE] $leaked $TOK_DIALECT_DECIDED — a dialect fragment"
+		echo "       would decide what a strict (C/C++) compile binds. A header's" >&2
+		echo "       entity must be listed by a header unit's names." >&2
 	fi
 	if [ -s "$norm" ] && [ "$n" -gt 0 ]; then
 		echo "--- pack parse-error classes (the burndown list) ---"
@@ -452,6 +463,12 @@ selftest() {
 	leg "mir blob skips at baseline" pass --pack-log "$dir/fpgate_st_blob_ok.log"
 	printf 'a.tu.cpp: mir cache: boom — blob skipped (consumers fall back)\nb.tu.cpp: mir cache: bang — blob skipped (consumers fall back)\n' > "$dir/fpgate_st_blob_bad.log"
 	leg "mir blob skips over baseline" fail --pack-log "$dir/fpgate_st_blob_bad.log"
+
+	# 3c: the dialect seed leak, hard zero — zero GREEN, one RED.
+	printf 'x.mad: pack seeds: n; dialect 9 listed with dialect units alone, 0 %s\n' "$TOK_DIALECT_DECIDED" > "$dir/fpgate_st_dialect_ok.log"
+	leg "dialect seed leak zero" pass --pack-log "$dir/fpgate_st_dialect_ok.log"
+	printf 'x.mad: pack seeds: n; dialect 9 listed with dialect units alone, 1 %s\n' "$TOK_DIALECT_DECIDED" > "$dir/fpgate_st_dialect_bad.log"
+	leg "dialect seed leak" fail --pack-log "$dir/fpgate_st_dialect_bad.log"
 
 	# 4: no marker => the load check must refuse to render a verdict.
 	printf 'nothing bound here\n' > "$dir/fpgate_st_blind.log"

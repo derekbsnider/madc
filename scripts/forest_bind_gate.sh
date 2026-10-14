@@ -896,6 +896,45 @@ rm -f "$sh_snap" "$sh_log" tmp/fbgate_share.cpp tmp/fbgate_share_println.cpp \
       tmp/fbgate_share_var.cpp tmp/fbgate_share_nomain.cpp
 echo "forest_bind_gate: [sharegate] OK — the madc profile binds for gnu++17 and c++17 with no madc extras; c++20 does not bind"
 
+# --- case: dialectbind (pack-slices design §7: the dialect surface binds directly) ---
+# A dialect fragment frozen into the madc profile binds DIRECTLY for a madc
+# consumer that names it (a bare php:: name) — no #include — with output ==
+# its text's. A strict C++ consumer that #includes a fragment strict C++ can
+# parse (bits/ui_enums) never binds its unit (frozen under the dialect's
+# parse): it parses the text. (That
+# --no-forest-bind leaves the dialect bound needs a binary that carries its
+# own container: parse_cost_gate's dialect.live row on the packed release —
+# it runs --no-forest-bind, and a dialect that stopped binding regrows it.)
+printf '#include <ns_php>\n#include <bits/ui_enums>\nint main() { return 0; }\n' > tmp/fbgate_dialect.cpp
+printf '#include <bits/ui_enums>\nint main() { return (int)ui::WEB; }\n' > tmp/fbgate_dialect_strict.cpp
+printf 'int main() { println("{}", php::strtoupper("ok")); return 0; }\n' > tmp/fbgate_dialect.mad
+db_snap=tmp/fbgate_dialect.msnap
+db_log=tmp/fbgate_dialect.log
+rm -f "$db_snap"
+timeout 600 "$BIN" --std=madc --freeze="$db_snap" --freeze-also-std=gnu++17 --freeze-also-std=c++17 \
+    tmp/fbgate_dialect.cpp >"$db_log" 2>&1 || fail "[dialectbind] the madc freeze of <ns_php> FAILED: $(tail -n 3 "$db_log")"
+db_text=$(timeout 60 "$BIN" tmp/fbgate_dialect.mad 2>&1)
+db_out=$(timeout 60 "$BIN" --forest-bind="$db_snap" tmp/fbgate_dialect.mad 2>&1)
+[ "$db_out" = "OK" ] && [ "$db_out" = "$db_text" ] \
+    || fail "[dialectbind] the madc consumer printed '$db_out' (text '$db_text', want 'OK')"
+timeout 60 "$BIN" -v --forest-bind="$db_snap" tmp/fbgate_dialect.mad >"$db_log" 2>/dev/null
+grep -aq "dialect: <ns_php> bound directly to grove unit" "$db_log" \
+    || fail "[dialectbind] the madc consumer did not bind <ns_php> directly"
+if grep -aq "^#include <ns_php>" "$db_log"; then
+    fail "[dialectbind] the madc consumer served <ns_php> through an #include"
+fi
+for db_std in c++17 gnu++17; do
+    timeout 60 "$BIN" -v --std=$db_std --forest-bind="$db_snap" tmp/fbgate_dialect_strict.cpp >"$db_log" 2>&1
+    db_rc=$?
+    [ "$db_rc" -eq 3 ] \
+        || fail "[dialectbind] the $db_std compile of <bits/ui_enums> exited $db_rc (want ui::WEB = 3): $(tail -n 3 "$db_log")"
+    if grep -aqE "bound to grove unit [0-9]+ \(bits/ui_enums\)" "$db_log"; then
+        fail "[dialectbind] a $db_std consumer BOUND the dialect fragment's unit"
+    fi
+done
+rm -f "$db_snap" "$db_log" tmp/fbgate_dialect.cpp tmp/fbgate_dialect_strict.cpp tmp/fbgate_dialect.mad
+echo "forest_bind_gate: [dialectbind] OK — a madc compile binds <ns_php> directly (output == its text's); c++17 and gnu++17 parse <bits/ui_enums>, never bind it"
+
 # --- case: nsenum (a namespaced unscoped enumerator's identity) ---------------
 # An unscoped enumerator inside a namespace is that namespace's member
 # ([dcl.enum]/11). The freeze deduped globals by BARE name (fbb::X lost to

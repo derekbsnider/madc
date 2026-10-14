@@ -10,7 +10,7 @@
 # off it. Foundational/config headers first, containers, then streams —
 # the same discipline glibc/libstdc++'s internal ordering encodes.
 #
-# LIST VERSION 7 (2026-10-13: sys/wait.h; v6 2026-10-06: assert.h; v5 2026-10-02: cstdint; v4 2026-09-24; v3 2026-08-16). Grow deliberately: every header here must
+# LIST VERSION 8 (2026-10-14: the dialect surface; v7 2026-10-13: sys/wait.h; v6 2026-10-06: assert.h; v5 2026-10-02: cstdint; v4 2026-09-24; v3 2026-08-16). Grow deliberately: every header here must
 # compile QUIETLY (exit 0, zero diagnostics) in this combined order — the
 # pack step is a release gate. algorithm CLEARED at v26 HEAD (quiet after
 # streams; the B4a istreambuf_iterator arity blocker is gone). Known
@@ -76,6 +76,15 @@
 # v7 (2026-10-13) added sys/wait.h (the darwin prelude's C set has carried it
 # since v1; UCRT has none): testpthreadatfork, the first test to include it,
 # failed the headerless lane on the absent root.
+#
+# v8 (2026-10-14) adds the DIALECT SURFACE (pack-slices design §7): the madc
+# fragments (bits/std_format, the ns_* surfaces; the bits/* enums ride them as
+# includes) frozen under --std=madc and bound DIRECTLY by a --std=madc compile
+# — never through #include, never by a strict compile. They sit after the C
+# headers and before the C++ ones because that is the order the dialect's
+# auto-include serves them in: frozen here, their branch decisions (the
+# <string> / <ostream> guards) match a dialect program's. bits/value_stream is
+# not listed: it is served after <ostream> as a protocol visit, never a unit.
 cstddef
 climits
 cstdint
@@ -100,6 +109,20 @@ sys/file.h
 sys/socket.h
 netdb.h
 arpa/inet.h
+bits/std_format
+ns_php
+ns_perl
+ns_python
+ns_ruby
+ns_js
+ns_rust
+ns_madc
+ns_madc_host
+ns_ui
+ns_ui_web
+ns_ui_ws
+ns_git
+ns_markdown
 string
 vector
 list

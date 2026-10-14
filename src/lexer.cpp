@@ -1705,8 +1705,9 @@ static bool is_trivia_token(const TokenBase *t)
 // A dialect FRAGMENT: an extensionless file under include/madc/ (ns_*,
 // bits/*) — madc code, the same set scripts/check-dialect-lean.sh holds to
 // zero includes. Every other embedded file (a .h stub, a page asset) is a
-// declaration or data surface.
-static bool embedded_dialect_fragment_p(const madc::dis::istring &name)
+// declaration or data surface. The pack's seed builder reads it too: a
+// fragment's unit is the dialect's own (pack-slices design §7).
+bool embedded_dialect_fragment_p(const madc::dis::istring &name)
 {
     // The repo's layout IS the rule: `ns_*` at the top of include/madc/ and
     // the files under bits/. "Extensionless" alone is not it — a cross
@@ -2420,6 +2421,10 @@ void Program::inject_pending_auto_includes()
 	      hi != ordered.end(); ++hi )
 	{
 	    const madc::dis::istring &header = *hi;
+	    // A dialect fragment the carrier froze binds directly — no #include
+	    // (pack-slices design §7); the C/C++ headers below stay includes.
+	    if ( forest_bind_dialect_fragment(header) )
+		continue;
 	    MadcSharedPreludeCache *preludes = NULL;
 	    madc::dis::istring prelude_key;
 	    std::vector<MadcSharedPreludeCache::MacroState> prelude_before_macros;
@@ -4680,8 +4685,42 @@ int Program::forest_unit_for_include(const madc::dis::istring &incfile)
     const int u = forest_unit_named_by_include(incfile);
     if ( u < 0 || !_bind_directory->unit_has_frozen_surface((uint32_t)u) )
 	return -1;
+    // A dialect fragment's unit was frozen under the madc dialect's parse;
+    // the profile's C++ labels hold for C++ headers (one parse under either
+    // standard), never for it. A strict-std include of one parses its text.
+    const char *uname = _bind_directory->unit_name((uint32_t)u);
+    if ( language_std != STD_MADC && uname && embedded_dialect_fragment_p(uname) )
+	return -1;
     // Only a unit this include binds opens the frozen content.
     return ensure_bind_forest() ? u : -1;
+}
+
+// The dialect surface binds DIRECTLY (pack-slices design §7): under
+// --std=madc a fragment the carrier froze binds as its unit — no #include,
+// whatever the system-header bind policy (the dialect is the compiler's own,
+// never forest-bind-dependent). Its frozen branch decisions are always
+// verified (forest_bind_env_ok): a fragment frozen without its <string>
+// conveniences declines for a program that has <string>. False = the caller
+// serves the fragment's text.
+bool Program::forest_bind_dialect_fragment(const madc::dis::istring &name)
+{
+    if ( language_std != STD_MADC || !embedded_dialect_fragment_p(name) )
+	return false;
+    CirFrozenForest *dir = bind_forest_directory();
+    const int u = dir ? dir->find_unit(name) : -1;
+    if ( u < 0 || !dir->unit_has_frozen_surface((uint32_t)u) || !ensure_bind_forest() )
+	return false;
+    if ( !forest_chain_set.count((uint32_t)u) && !forest_bind_env_ok((uint32_t)u) )
+    {
+	DBG(std::cout << "dialect: <" << name << "> declined (forest_bind_env_ok)"
+	    " — serving its text" << std::endl);
+	return false;
+    }
+    DBG(std::cout << "dialect: <" << name << "> bound directly to grove unit "
+	<< u << std::endl);
+    forest_bind_include((uint32_t)u);
+    mark_embedded_include_flag(name);
+    return true;
 }
 
 int Program::forest_unit_named_by_include(const madc::dis::istring &incfile)
@@ -4870,7 +4909,13 @@ bool Program::forest_bind_env_ok(uint32_t root)
     // units (`char_traits_char` unknown in <iosfwd>, `div_t` defined twice).
     // A skipped directive-only arm (mingw stdio.h's `#ifndef NULL`) needs no
     // decline at all: the bind replays it (forest_replay_pp_arms).
-    const bool verified = enabled != 0;
+    // A dialect fragment always verifies (pack-slices design §7) — on its
+    // direct bind and on an #include alike: a fragment frozen without its
+    // <string> conveniences never stands in for the text a <string> program
+    // parses with them.
+    const char *root_name = bind_forest->unit_name(root);
+    const bool verified = enabled != 0
+	|| (root_name && embedded_dialect_fragment_p(root_name));
     std::set<uint32_t> closure;
     std::set<uint32_t> husk_live;
     forest_env_collect(root, closure);

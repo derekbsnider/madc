@@ -129,6 +129,9 @@ struct CirFrozenMemberTmpl {
     CirFrozenMemberTmpl() : owner(NULL), rt(NULL), forest(NULL), pgm(NULL) {}
 };
 void madc_thaw_member_template(FuncDef *fd);	// defined in parser.cpp beside the stamps
+// A dialect fragment's embedded name (`ns_*`, `bits/*`) — the one owner of the
+// rule (lexer.cpp); the pack's seed builder reads it too.
+bool embedded_dialect_fragment_p(const madc::dis::istring &name);
 
 // [over.ics.rank]/3.2.3 for a same-class copy/move constructor's one
 // reference parameter. Higher is better; -1 means the parameter cannot bind.
@@ -7211,6 +7214,9 @@ public:
     bool forest_unit_file_live_tokenized(uint32_t unit);	// v40: was this unit's FILE live-tokenized here?
     bool forest_bind_env_ok(uint32_t unit);	// v40: closure branch-dep env check (task #57)
     bool forest_bind_env_ok(uint32_t unit, std::set<uint32_t> &visited);
+    // The dialect surface binds DIRECTLY (pack-slices design §7): a fragment's
+    // frozen unit, under --std=madc, no #include; false = serve its text.
+    bool forest_bind_dialect_fragment(const madc::dis::istring &name);
     void forest_env_collect(uint32_t unit, std::set<uint32_t> &closure);
     bool forest_unit_defines_macro(uint32_t unit, const char *nm);	// v40: include-once prune helper
     void forest_unit_defined_macros(uint32_t unit, std::set<madc::dis::istring> &out);

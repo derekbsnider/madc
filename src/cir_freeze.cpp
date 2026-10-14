@@ -1940,6 +1940,9 @@ bool cir_forest_relayout(const void *image, size_t image_len,
 			block_roots[std::make_pair(seg, b)].insert(roots, roots + n);
 	};
 	uint64_t seq = 0;
+	// Each log ends `root <header>` (forest_pack_layout.sh): the dialect
+	// surface's roots are their own population (pack-slices design §7).
+	std::vector<bool> dialect_root(logs.size(), false);
 	for (size_t i = 0; i < logs.size(); ++i) {
 		FILE *lf = fopen(logs[i].c_str(), "r");
 		if (!lf) {
@@ -1967,6 +1970,9 @@ bool cir_forest_relayout(const void *image, size_t image_len,
 							off, len, &root, 1);
 				}
 		}
+		char root_name[512];
+		if (fscanf(lf, " root %511s", root_name) == 1)
+			dialect_root[i] = embedded_dialect_fragment_p(madc::dis::istring(root_name));
 		fclose(lf);
 		if (!lines) {
 			err = logs[i] + " records no read (did its bind open the container?)";
@@ -2008,11 +2014,23 @@ bool cir_forest_relayout(const void *image, size_t image_len,
 					(uint64_t)pos[it->first] * t.record_bytes, t.record_bytes,
 					it->second.roots.data(), it->second.roots.size());
 	// A block at least half the root binds read is stored raw: a compile
-	// including any of those roots copies it instead of decoding it.
+	// including any of those roots copies it instead of decoding it. Each
+	// population counts alone — the C/C++ roots, the dialect's — so one never
+	// dilutes the other's hot set.
+	size_t dialect_roots = 0;
+	for (size_t i = 0; i < dialect_root.size(); ++i)
+		dialect_roots += dialect_root[i];
+	const size_t header_roots = logs.size() - dialect_roots;
 	std::map<uint32_t, std::vector<bool> > raw_blocks;	// seg -> per block
 	hot_blocks = 0;
 	for (BlockRoots::const_iterator it = block_roots.begin(); it != block_roots.end(); ++it) {
-		if (it->second.size() * 2 < logs.size())
+		size_t by_dialect = 0;
+		for (std::set<uint32_t>::const_iterator ri = it->second.begin();
+		     ri != it->second.end(); ++ri)
+			by_dialect += dialect_root[*ri];
+		const size_t by_header = it->second.size() - by_dialect;
+		if (!(header_roots && by_header * 2 >= header_roots)
+		    && !(dialect_roots && by_dialect * 2 >= dialect_roots))
 			continue;
 		std::vector<bool> &v = raw_blocks[it->first.first];
 		if (v.size() <= it->first.second)
