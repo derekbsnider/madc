@@ -28475,6 +28475,20 @@ void Program::flush_forest_pending_globals()
     {
 	forest_restore_decls(*bind_forest);
 	forest_decls_restored = true;
+	// The pack's layout recorder (--forest-touch-log) binding a dialect
+	// fragment reads ALL of it: every template a dialect program could
+	// hydrate is hydrated here, so the relayout stores those reads raw too
+	// (pack-slices design §7: the dialect surface is never decompressed).
+	if ( !forest_touch_log.empty() )
+	    for ( size_t i = 0; i < forest_chain.size(); ++i )
+	    {
+		const char *un = bind_forest->unit_name(forest_chain[i]);
+		if ( un && embedded_dialect_fragment_p(un) )
+		{
+		    thaw_all_frozen_templates();
+		    break;
+		}
+	    }
     }
 
     if ( forest_pending_globals.empty() && forest_pending_funcs.empty()
