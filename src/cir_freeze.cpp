@@ -838,10 +838,26 @@ bool cir_forest_write(const cir_frozen_forest &f, madc::dis::snapshot_writer &w,
 			f.template_payload.data(),
 			f.template_payload.size() * sizeof(uint32_t), codec)
 	    || !add_seg(w, CIR_FOREST_SEG_TEMPLATE_TOKENS, SNAP_KIND_CIR_TEMPLATE_TOKENS,
-			f.template_tokens.data(), f.template_tokens.size(), codec)
-	    || !add_seg(w, CIR_FOREST_SEG_EXTERN_LOCS, SNAP_KIND_CIR_EXTERN_LOCS,
-			f.extern_locs.data(),
-			f.extern_locs.size() * sizeof(cir_forest_extern_loc), codec))
+			f.template_tokens.data(), f.template_tokens.size(), codec))
+		return false;
+	// v65: the extern-decl index as a ForestDeclNames table — each symbol's
+	// run is its (unit, idx) — stored raw and read in place (extern_loc_for).
+	// The freeze recorded each symbol's first decl only.
+	std::map<madc::dis::istring, std::vector<uint32_t> > extern_names;
+	for (const cir_forest_extern_loc &xl : f.extern_locs) {
+		const char *nm = pool->c_str(xl.name_id);
+		if (!nm || !*nm)
+			continue;
+		std::vector<uint32_t> &run = extern_names[madc::dis::istring(nm)];
+		if (run.empty()) {
+			run.push_back(xl.unit);
+			run.push_back(xl.idx);
+		}
+	}
+	std::vector<uint8_t> extern_index;
+	ForestDeclNames::build(extern_names, extern_index);
+	if (!add_seg(w, CIR_FOREST_SEG_EXTERN_LOCS, SNAP_KIND_CIR_EXTERN_LOCS,
+		     extern_index.data(), extern_index.size(), PchCompression::None))
 		return false;
 	// v2 container-global payloads (zero-length when the freeze recorded
 	// nothing — a module-only freeze). Every open reads both and they are
@@ -2236,13 +2252,13 @@ bool CirFrozenForest::complete_open(c2m_ctx_t c2m)
 			return false;
 		}
 	}
-	// v20 container-global: the extern-decl index. R1: shape-validate only
-	// (directory metadata, no decode) — the map builds on the first
-	// extern_loc_for query, so a compile that never asks pays nothing.
+	// v20 container-global: the extern-decl index. R1: kind-check only
+	// (directory metadata, no decode) — the table binds, validated whole, on
+	// the first extern_loc_for query (v65), so a compile that never asks pays
+	// nothing.
 	if (const madc::dis::snapshot_segment *xs =
 		_reader.find(CIR_FOREST_SEG_EXTERN_LOCS)) {
-		if (xs->kind != SNAP_KIND_CIR_EXTERN_LOCS
-		    || xs->raw_size % sizeof(cir_forest_extern_loc)) {
+		if (xs->kind != SNAP_KIND_CIR_EXTERN_LOCS) {
 			fprintf(stderr, "madc: forest extern index corrupt\n");
 			return false;
 		}
@@ -5251,47 +5267,31 @@ const char *CirFrozenForest::type_name_for(uint32_t type_id) const
 	return _arena.c_str(r.name_id);
 }
 
-// v20 extern-decl index, built on FIRST query (R1) from the shape-validated
-// segment: one symbol -> (unit, idx) entry per producer top-level extern. A
-// decode failure logs loud and leaves the index empty (misses resolve like
-// an unindexed symbol).
+// v20 extern-decl index: one symbol -> (unit, idx) per producer top-level
+// extern. v65: a ForestDeclNames table bound in place on the FIRST query (R1)
+// and binary-searched — never a decode of every name through the string pool.
+// A malformed table logs loud and stays empty (misses resolve like an
+// unindexed symbol).
 bool CirFrozenForest::extern_loc_for(const madc::dis::istring &sym,
 				     uint32_t &unit, uint32_t &idx)
 {
-	if (!_extern_index_built && _fully_opened) {
-		// (Gated on _fully_opened: name ids resolve through the pool
-		// complete_open binds — never memoize an empty index early.)
-		_extern_index_built = true;
-		// slice D: the one-shot index build decodes a segment; the
-		// per-call map lookup below stays outside the clock.
+	if (!_extern_index_bound) {
+		_extern_index_bound = true;
 		ForestWorkFrame _fw(_work_secs, _work_depth);
+		size_t len = 0;
 		const madc::dis::snapshot_segment *xs =
 			_reader.find(CIR_FOREST_SEG_EXTERN_LOCS);
-		madc::dis::decode_bytes d;
-		if (xs && xs->kind == SNAP_KIND_CIR_EXTERN_LOCS
-		    && _reader.read_segment(*xs, d)
-		    && d.size() % sizeof(cir_forest_extern_loc) == 0) {
-			size_t n = d.size() / sizeof(cir_forest_extern_loc);
-			for (size_t i = 0; i < n; ++i) {
-				cir_forest_extern_loc xl;
-				memcpy(&xl, d.data() + i * sizeof(xl), sizeof(xl));
-				uint32_t nlen = 0;
-				const char *nm = pool_cstr(xl.name_id, nlen);
-				if (!nm || !nlen)
-					continue;
-				_extern_by_name[madc::dis::istring(nm, nlen)] =
-					std::make_pair(xl.unit, xl.idx);
-			}
-		} else if (xs) {
+		const uint8_t *p = xs && xs->kind == SNAP_KIND_CIR_EXTERN_LOCS
+				 ? forest_segment_bytes(_reader, *xs, len) : NULL;
+		if (xs && !_extern_names.bind(p, len))
 			fprintf(stderr, "madc: forest extern index corrupt\n");
-		}
 	}
-	std::map<madc::dis::istring, std::pair<uint32_t, uint32_t> >::const_iterator
-		it = _extern_by_name.find(sym);
-	if (it == _extern_by_name.end())
+	uint32_t n = 0;
+	const uint32_t *run = _extern_names.units_of(sym.c_str(), n);
+	if (n != 2)
 		return false;
-	unit = it->second.first;
-	idx  = it->second.second;
+	unit = run[0];
+	idx  = run[1];
 	return true;
 }
 

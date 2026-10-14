@@ -106,7 +106,7 @@ enum : uint32_t
 	SNAP_KIND_CIR_TEMPLATES        = madc::dis::SNAP_KIND_CONSUMER + 16, // container-global: cir_forest_template_record[]
 	SNAP_KIND_CIR_TEMPLATE_PAYLOAD = madc::dis::SNAP_KIND_CONSUMER + 17, // container-global: uint32 stream (params + token-run descriptors)
 	SNAP_KIND_CIR_TEMPLATE_TOKENS  = madc::dis::SNAP_KIND_CONSUMER + 18, // container-global: raw token bytes (.madh record form)
-	SNAP_KIND_CIR_EXTERN_LOCS      = madc::dis::SNAP_KIND_CONSUMER + 19, // container-global: cir_forest_extern_loc[] (extern decl index)
+	SNAP_KIND_CIR_EXTERN_LOCS      = madc::dis::SNAP_KIND_CONSUMER + 19, // container-global: the extern decl index (v65: ForestDeclNames)
 	// --- v23: the arena's raw token-byte block (DefArena::tokbytes, .madh
 	// record form) — param-default expression runs referenced by BYTE offset
 	// from paramrec.def_tok_off. ---
@@ -651,7 +651,12 @@ bool cir_freeze_read(const madc::dis::snapshot_reader &r, uint32_t seg_id_base,
 // record or global record its name's registration made (the entry's own
 // unit's record first) — the name -> record column the pull-on-lookup step
 // reads (pack-slices design §10 part 3: the slice format's provision).
-enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 64 };
+//
+// v65: EXTERN_LOCS is a ForestDeclNames table — each extern symbol's run is
+// its frozen (unit, idx) — stored raw and read in place, so extern_loc_for
+// binary-searches it instead of decoding every name through the string pool
+// into a map on its first query (19.3M of a dialect compile's 64.8M Ir).
+enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 65 };
 // Flags word of a SNAP_KIND_CIR_BRANCH_DEPS tuple.
 enum : uint32_t {
 	CIR_BRANCH_DEP_DEFINED   = 1u,	// the macro was defined at the consult
@@ -689,7 +694,7 @@ enum : uint32_t
 	CIR_FOREST_SEG_TEMPLATES        = 15,	// cir_forest_template_record[]
 	CIR_FOREST_SEG_TEMPLATE_PAYLOAD = 16,	// uint32 stream: cir_forest_template_param[] + cir_forest_token_run[] slices
 	CIR_FOREST_SEG_TEMPLATE_TOKENS  = 17,	// raw token bytes (.madh record form; runs carry byte offsets)
-	CIR_FOREST_SEG_EXTERN_LOCS      = 18,	// cir_forest_extern_loc[] (extern decl index, v20)
+	CIR_FOREST_SEG_EXTERN_LOCS      = 18,	// extern decl index (v20); v65: ForestDeclNames, run = (unit, idx)
 	CIR_FOREST_SEG_ARENA_TOKBYTES   = 19,	// v23: DefArena::tokbytes (param-default token runs)
 	CIR_FOREST_SEG_MIR_MODULE       = 20,	// MIR module cache (optional; absent = no cache)
 	CIR_FOREST_SEG_LEDGER           = 21,	// S5 AOT ledger (optional; absent = no ledger)
@@ -1852,10 +1857,10 @@ class CirFrozenForest
 	bool ensure_template_payload() const;
 	std::vector<CirRestoredTemplate> _restored_templates;
 	// v20 container-global: extern-decl index (symbol -> frozen location).
-	// R1 (startup latency): built LAZILY on the first extern_loc_for query
-	// — a compile that never asks (trivial C) never decodes the segment.
-	std::map<madc::dis::istring, std::pair<uint32_t, uint32_t> > _extern_by_name;
-	bool _extern_index_built = false;
+	// v65: a ForestDeclNames table bound in place on the first
+	// extern_loc_for query (R1: a compile that never asks never touches it).
+	mutable bool _extern_index_bound = false;
+	mutable ForestDeclNames _extern_names;
 	// R1: two-stage open. open_header = footer + pin + directory (cheap);
 	// complete_open = pools/arena/global segments (heavy, memoized).
 	bool _header_opened = false;
@@ -2166,8 +2171,8 @@ public:
 	{ return _restored_param_defaults; }
 	// v20: the frozen location of the producer's top-level extern decl for
 	// `sym` (false = none indexed). The bind layer loads the decl node via
-	// node_for when a loaded body references the symbol. The index builds
-	// on the first query (R1) — see _extern_by_name.
+	// node_for when a loaded body references the symbol. The index binds
+	// on the first query (R1) — see _extern_names.
 	bool extern_loc_for(const madc::dis::istring &sym,
 			    uint32_t &unit, uint32_t &idx);
 	// The read-only view over the dumped B3 DefArena (an empty view on a
