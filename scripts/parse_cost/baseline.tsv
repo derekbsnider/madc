@@ -1,17 +1,17 @@
 # parse-cost baseline (scripts/parse_cost_gate.sh): callgrind Ir per workload
 # toolchain	g++-13.3.0 glibc-2.39 13 valgrind-3.22.0
 # recorded	2026-10-14 (the commit is the ledger row parse-cost)
-cxx_stl.live	2686795919
-cxx_stl.forest	1406588165
-c_headers.live	244853253
-c_headers.forest	244919370
-dialect.live	76337370
-dialect.forest	77666903
-rung_c8.forest	132188076
-rung_limits.forest	23398807
-rung_stddef.forest	12698203
-rung_stdio.forest	19659953
-rung_type_traits.forest	28270789
-rung_vector.forest	76088391
-subscript.live	3459743167
-subscript.forest	2205952171
+cxx_stl.live	2687075464
+cxx_stl.forest	1395391023
+c_headers.live	244821766
+c_headers.forest	244897431
+dialect.live	44850172
+dialect.forest	44866532
+rung_c8.forest	132360180
+rung_limits.forest	23267139
+rung_stddef.forest	12704180
+rung_stdio.forest	19678645
+rung_type_traits.forest	28223252
+rung_vector.forest	76059985
+subscript.live	3459397319
+subscript.forest	2195137992
