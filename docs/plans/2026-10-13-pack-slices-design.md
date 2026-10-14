@@ -5,8 +5,8 @@
 focused session.
 **Brief (owner-approved 2026-10-13):** one shipped pack, cut per unit; a bind
 loads only the slices of the units the program's include closure reaches — no
-whole-pack sweep, no whole-arena judging; the dialect prelude is a slice like
-any header, loaded under `--std=madc`. Target: the Test 6 column of
+whole-pack sweep, no whole-arena judging. (The dialect prelude is NOT a
+slice: it is intrinsic, bound directly — §7, corrected 2026-10-14.) Target: the Test 6 column of
 `2026-10-13-pack-load-cost-experiments.md` on the shipped binary, at a pack
 size ≤ 13,000,000 bytes (owner 2026-10-13: today's + 1.2 MB — measured +0.9 MB, a small increase
 accepted; raised 2026-10-14 to 13M for headroom, then to 15M for the node
@@ -34,7 +34,8 @@ of 30 interleaved runs + callgrind Ir (`tmp/pc/t6/t6.py` is the harness):
 | `<vector>` | 64.6 / 352M | 15.0 / 76.7M | ≤ 85M |
 | 8 everyday "C" headers | 79.7 / 394M | 26.6 / 131M | ≤ 145M |
 | cxx_stl.cpp | 316.7 / 1,661M | 270.4 / 1,420M | ≤ 1,500M |
-| dialect prelude (`println("hi")`) | 78.7M live parse | — | < 78.7M bound |
+| dialect workload (`parse_cost/dialect.mad`) | 77.7M live (2026-10-14) | — | ≤ 50.5M, bound directly (§7) |
+| `println("hi")` | 13.99M live (2026-10-14) | — | ≤ 12.8M, bound directly (§7) |
 | pack size (release, Linux) | 11.6 MB | ≤ 12.8 MB | gate |
 
 The ratchets become `scripts/parse_cost/baseline.tsv` rows (recorded with
@@ -282,20 +283,52 @@ and the always list; the freeze prints a one-line placement summary.
   2026-10-14** (`MADC_FOREST_WHOLE_WALK`); the gate is now the closure-only
   invariant (§8).
 
-## 7. The dialect prelude
+## 7. The dialect surface — intrinsic, bound directly (corrected 2026-10-14)
 
-The `--std=madc` auto-include fragments (`include/madc/ns_madc`,
-`ns_madc_host`, `ns_php`, `ns_perl`, `ns_python`, `ns_ruby`, `ns_js`,
-`ns_rust`, `ns_git`, `ns_markdown`, `ns_ui`, `ns_ui_web`, `ns_ui_ws`,
-`bits/*`) join the release freeze TU under the `--std=madc` config they are
-served in (`scripts/forest_pack_headers.txt`; the share step keeps the
-gnu++17 / c++17 labels for C++ consumers). They are then units like any
-header: the auto-include binds their slices instead of parsing their text.
-Gate: `println("hi")` under `--std=madc` binds the prelude for less than its
-78.7M-Ir live parse; strict `--std=c*` / `--std=c++*` compiles never bind
-them (the config gate, `serves_config`). This is the whole of Decision
-`dialect_headers_internal_indexed`; Gap `dialect_prelude_parsed_per_compile`
-closes with it.
+**Settled (owner law 2026-08-10; Decision `dialect_headers_internal_indexed`
+2026-10-13; restated 2026-10-14):** under `--std=madc` the dialect surface —
+the fragments `include/madc/ns_*` (`ns_madc`, `ns_madc_host`, `ns_php`,
+`ns_perl`, `ns_python`, `ns_ruby`, `ns_js`, `ns_rust`, `ns_git`,
+`ns_markdown`, `ns_ui`, `ns_ui_web`, `ns_ui_ws`) and `bits/*` — is the
+compiler's own, always present: never `#include`-dependent (written or
+synthesized), never forest- or pack-dependent, never decompressed, never
+parsed per compile. Its prototypes are never in the system-header pack.
+Strict `--std=c##` / `--std=c++##` compiles never see it (they stay symbol-
+and namespace-clean); a strict compile that `#include`s a fragment parses its
+text, as today.
+
+**Rejected (owner 2026-10-14): fragments as pack units.** The first cut of
+this section froze the fragments into the pack and let the auto-include's
+synthetic `#include` bind them. It is include-on-demand and pack-dependent,
+it decompresses, and it restores every declaration of each fragment it binds:
+measured on the release build, the dialect workload bound that way cost
+66.9–69.7M Ir against 77.7M live (17.7M of block decodes, 16.3M registering
+restored functions and globals), and strict compiles paid for it — the seed
+index lists a namespaced record under every header declaring its bare name,
+so `madc::getline` landed on `<stdio.h>`'s list (rung_stdio +0.9–1.6%).
+
+**Mechanism.** The build freezes the fragments ONCE, under `--std=madc`, into
+a dialect image carried in libmadc as RAW data read in place (no zstd, no
+BLOCKED tables), separate from the system-header pack and present in every
+product mode (`--with-forest=none` included). Its index maps every dialect
+name — a function, a type, a namespace member, a template — to its record (the
+`record_id` column, format 64). A `--std=madc` Program maps the image at
+init; a name lookup that misses the program's own scopes consults the index
+and materializes that name's record and what it reaches — only the names the
+program uses. The dialect fragments' auto-include retires (the C/C++ header
+auto-includes stay as they are). Thread safety: the image is immutable mapped
+bytes; materialized state is per Program.
+
+**Measured live (2026-10-14, release):** an empty `.mad` program 11.66M Ir;
+`println("hi")` 13.99M (serving `bits/std_format` 1.2M); the dialect workload
+77.7M (serving its six fragments 27.2M, plus their parse).
+
+**Gate:** the dialect row ≤ 50.5M and `println("hi")` ≤ 12.8M (the live rows
+less the fragments' serving share — their parse share comes on top); strict
+rows unchanged (they never open the image); `--no-forest-bind` and a
+pack-less build give the same dialect cost; dialect output identical to the
+live parse of the fragments (the suite). Closes Gap
+`dialect_prelude_parsed_per_compile`.
 
 ## 8. Gates
 
@@ -379,9 +412,14 @@ the `Program` / compile group. No new mutable globals.
    records means rewriting the offsets the records hold (a format change) for
    at most ~30M Ir (~2%), with cxx_stl already under its ratchet. Closed
    2026-10-14: cxx_stl 1,406.6M Ir, subscript 2,206.0M.
-4. **Prelude.** The dialect fragments frozen as `--std=madc` units; the
-   auto-include binds them. Checkpoint: the prelude row < 78.7M Ir; strict
-   stds unaffected.
+4. **The dialect surface, bound directly (§7).** The build freezes the
+   fragments into a raw dialect image in libmadc with its by-name index; a
+   `--std=madc` lookup miss materializes the name from it; the fragments'
+   auto-include retires. Checkpoint: dialect row ≤ 50.5M Ir, `println("hi")`
+   ≤ 12.8M; strict rows unchanged; the same cost with `--no-forest-bind` and
+   without a pack. (Corrected 2026-10-14: the first cut — fragments as pack
+   units bound through the auto-include — contradicted the settled design and
+   was dropped unmerged.)
 
 Each part is a few commits at most (Tier 1 + Tier 2 per commit, the static
 gate loop, the batch lane per part). The seam is 0.105.0: the full battery
