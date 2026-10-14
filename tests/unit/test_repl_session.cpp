@@ -2895,15 +2895,16 @@ TEST_CASE("session commands: ?name and %pinfo describe a name")
     REQUIRE(p.submit("?geometry"));
     CHECK(p.shown() == "Type:      namespace");
 
-    // madc: the carrier, and a compiler-implemented public, which its
-    // fragment declares as a template (no invented signature).
+    // madc: the carrier, and a compiler-implemented public, which the
+    // compiler itself declares (no header, no invented signature).
     InteractiveSession m;
     REQUIRE(m.begin("--std=madc"));
     REQUIRE(m.submit("var v = 5;"));
     REQUIRE(m.submit("?v"));
     CHECK(m.shown() == "Type:      var\nDefined:   @ REPL[1]:1");
     REQUIRE(m.submit("?println"));
-    CHECK(m.shown() == "Type:      function template");
+    CHECK(m.shown() == "Type:      function\n"
+		       "Declared:  by the madc compiler, always available");
 }
 
 // The shown text's code (split arc 1B.9): `%type`'s type and `%pinfo`'s

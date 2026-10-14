@@ -19,9 +19,11 @@
 // that would make every dialect TU pay the <string> closure for one
 // declaration (owner ruling 2026-08-21).
 //
-// The lexer's auto-include serves this fragment when a bare
-// format/print/println identifier appears (madc dialect only), so a
-// zero-include script just calls std::println("x={}", x). The oracle
+// Under --std=madc this fragment is NOT served: the compiler declares
+// format/print/println itself (Program::add_format_intrinsics — madc's
+// always-included intrinsics, owner law 2026-08-10: never a header, never
+// in the forest), so a zero-include script just calls println("x={}", x).
+// This text remains for a program that #includes it by name. The oracle
 // for every formatting behavior is libstdc++'s real std::format —
 // tests/unit/rt_format_oracle.inc pins it.
 namespace std {

@@ -3293,6 +3293,22 @@ struct MadcCompileGroup
     {}
 };
 
+// The compiler-implemented formatting intrinsics, std::format / std::print /
+// std::println: the name, the inline_builtin_kind tag the CIR builder lowers
+// on (cir_format.cpp), and whether the call yields text (format's
+// ring-lifetime const char*) or nothing. ONE table: the --std=madc
+// declarations (Program::add_format_intrinsics), the strict-mode
+// <bits/std_format> tagging and the REPL's completion words read it.
+// Immutable; safe to read from any thread.
+struct FormatIntrinsic {
+    const char *name;
+    const char *builtin_kind;
+    bool yields_text;
+};
+// The table (its row count in `count`), and its row for `name` or NULL.
+const FormatIntrinsic *format_intrinsic_table(size_t &count);
+const FormatIntrinsic *find_format_intrinsic(const char *name);
+
 // program class, keep things somewhat contained
 // One parsed template-parameter-list (`template < ... >`), the shape
 // parse_template_parameter_list fills for TokenTEMPLATE::parse and the
@@ -7233,6 +7249,10 @@ public:
     void forest_replay_pp_arms(uint32_t unit);
     void forest_install_pp(uint32_t unit);	// apply one unit's frozen macro delta to the live tables
     void add_namespaces();
+    // --std=madc: declares std::format / print / println itself — madc's
+    // always-included intrinsics (owner law 2026-08-10), never a header or
+    // the forest. Per-Program state.
+    void add_format_intrinsics();
     void add_madc_namespace();
     void add_array_methods();	// native count()/size() on the builtin array (ddARRAY)
     void add_carrier_free_operators();	// `1 + v`: per-Program free rows (D28)

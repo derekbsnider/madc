@@ -78,13 +78,18 @@
 # failed the headerless lane on the absent root.
 #
 # v8 (2026-10-14) adds the DIALECT SURFACE (pack-slices design §7): the madc
-# fragments (bits/std_format, the ns_* surfaces; the bits/* enums ride them as
+# fragments (the ns_* surfaces; the bits/* enums ride them as
 # includes) frozen under --std=madc and bound DIRECTLY by a --std=madc compile
 # — never through #include, never by a strict compile. They sit after the C
 # headers and before the C++ ones because that is the order the dialect's
 # auto-include serves them in: frozen here, their branch decisions (the
 # <string> / <ostream> guards) match a dialect program's. bits/value_stream is
 # not listed: it is served after <ostream> as a protocol visit, never a unit.
+#
+# v9 (2026-10-14) drops bits/std_format: std::format / print / println are
+# madc's always-included intrinsics, declared by the compiler itself under
+# --std=madc (Program::add_format_intrinsics) — an intrinsic's declaration is
+# never in the forest (owner law 2026-08-10).
 cstddef
 climits
 cstdint
@@ -109,7 +114,6 @@ sys/file.h
 sys/socket.h
 netdb.h
 arpa/inet.h
-bits/std_format
 ns_php
 ns_perl
 ns_python

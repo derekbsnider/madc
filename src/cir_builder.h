@@ -1243,7 +1243,7 @@ private:
 
 	// ---- std::format / std::print / std::println (src/cir_format.cpp) ----
 	// The C++23 formatting surface as compiler-implemented intrinsics
-	// (declared in <bits/std_format>, defined nowhere): the LITERAL format
+	// (declared by the compiler under --std=madc, defined nowhere): the LITERAL format
 	// string is parsed and validated at COMPILE time by the same C engine
 	// the runtime uses (src/rt/rt_format.c — one grammar owner), so an
 	// invalid format string is a compile error exactly as C++23 requires,

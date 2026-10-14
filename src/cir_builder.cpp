@@ -27396,8 +27396,8 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// means "not a dump intrinsic"; the call path continues.
 			if (node_t dmp = lower_dump_call(tcf, inline_fd, tb))
 				return dmp;
-			// std::format / std::print / std::println: declared in
-			// <bits/std_format>, defined nowhere — the compiler
+			// std::format / std::print / std::println: declared by
+			// the compiler (--std=madc), defined nowhere — the compiler
 			// validates the literal format string and lowers each
 			// field to the rt_format engine (src/cir_format.cpp).
 			if (node_t fmc = lower_format_call(tcf, inline_fd, tb))

@@ -1,5 +1,5 @@
 // std::print / std::println as always-included madc intrinsics: ZERO
-// includes — the bare identifiers auto-include <bits/std_format>, the
+// includes — the compiler declares them itself (no header, no forest), the
 // compiler validates the literal format strings and lowers each field
 // to the rt_format engine (oracle: libstdc++ std::format, pinned in
 // tests/unit/rt_format_oracle.inc).

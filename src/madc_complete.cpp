@@ -1099,7 +1099,15 @@ bool Program::describe_name(const madc::dis::istring &name, std::string &out,
 		    describe_field(s, "Declared", "by an included header, registered at its first use");
 		    break;
 		case Kind::dialect_word:
-		    describe_field(s, "Declared", "by the madc dialect, included at its first use");
+		    // print / println / format: the compiler declares them
+		    // (Program::add_format_intrinsics) — no header serves them.
+		    if ( find_format_intrinsic(name.c_str()) )
+		    {
+			describe_field(s, "Type", "function");
+			describe_field(s, "Declared", "by the madc compiler, always available");
+		    }
+		    else
+			describe_field(s, "Declared", "by the madc dialect, included at its first use");
 		    break;
 		case Kind::tag:
 		    break;

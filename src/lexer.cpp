@@ -1458,12 +1458,9 @@ static const std::map<madc::dis::istring, madc::dis::istring> &auto_include_iden
 	{"map", "map"},
 	{"set", "set"},
 
-	// std::format / std::print / std::println — compiler-implemented
-	// intrinsics; the fragment declares them (madc dialect only, like
-	// every entry here — auto_includes_enabled gates the scan).
-	{"format", "bits/std_format"},
-	{"print", "bits/std_format"},
-	{"println", "bits/std_format"},
+	// (std::format / std::print / std::println have no row: they are
+	// madc's always-included intrinsics, declared by the compiler itself —
+	// Program::add_format_intrinsics.)
 
 	// The stdio streams: std::print(stderr, ...) in a zero-include
 	// script needs stderr's lazy registration, which rides the
@@ -1605,7 +1602,6 @@ static bool auto_include_member_row(const madc::dis::istring &word, const char *
 static std::vector<madc::dis::istring> ordered_auto_include_headers(const std::set<madc::dis::istring> &headers)
 {
     static const char *preferred_order[] = {
-	"bits/std_format",	// the dialect intrinsics precede everything they serve
 	"stddef.h",
 	"stdint.h",
 	"float.h",
@@ -1741,11 +1737,12 @@ static bool fragment_may_pull_header(const char *header, bool qualified_use)
     // -static-libmadc gate a madarray_destruct the ledger never carried).
     // The C++ system headers are extensionless as well (<string>, <vector>)
     // and are never embedded: a fragment's `getline` must not pull <string>
-    // (madcide paid the whole libstdc++ parse for it). An intrinsic provider
-    // (bits/*: bits/std_format for print/println/format) is no namespace
-    // surface: any mention of an intrinsic reaches it, so <ns_ui_web>'s
-    // `println(stderr, ...)` compiles in a program that says no println
-    // itself.
+    // (madcide paid the whole libstdc++ parse for it). A bits/* fragment is
+    // no namespace surface: any mention reaches it. print/println/format need
+    // no provider at all — the compiler declares them
+    // (Program::add_format_intrinsics) — so <ns_ui_web>'s `println(stderr,
+    // ...)` compiles in a program that says no println itself, its `stderr`
+    // pulling stdio.h.
     if ( embedded_dialect_fragment_p(h) && find_embedded_header(h) )
 	return qualified_use || h.compare(0, 3, "ns_") != 0;
     return h.size() > 2 && h.compare(h.size() - 2, 2, ".h") == 0;
@@ -1863,10 +1860,9 @@ bool Program::auto_include_standard_identifier(const madc::dis::istring &word,
 	if ( !qh || strncmp(qh, "ns_", 3) != 0 || !fragment_row )
 	    return false;
     }
-    // Inside a dialect fragment only the intrinsic and C-header providers
+    // Inside a dialect fragment only the bits/* and C-header providers
     // answer (fragment_may_pull_header) — a fragment's `println(stderr,
-    // ...)` pulls bits/std_format and stdio.h; its `getline` never pulls
-    // <string>.
+    // ...)` pulls stdio.h; its `getline` never pulls <string>.
     if ( auto_include_fragment_scan && !fragment_may_pull_header(header, qualified_use) )
 	return false;
 
@@ -1908,6 +1904,11 @@ void Program::auto_include_words(std::vector<madc::dis::istring> &out)
 {
     if ( !auto_includes_enabled() )
 	return;
+    // The always-included intrinsics complete like the scan's words.
+    size_t nfi = 0;
+    const FormatIntrinsic *fis = format_intrinsic_table(nfi);
+    for ( size_t i = 0; i < nfi; ++i )
+	out.push_back(fis[i].name);
     const std::map<madc::dis::istring, madc::dis::istring> &rows =
 	auto_include_identifier_headers();
     for ( std::map<madc::dis::istring, madc::dis::istring>::const_iterator it = rows.begin();

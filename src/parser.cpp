@@ -29306,6 +29306,73 @@ void Program::forest_settle_param_defaults(const FuncDef *fd)
 void Program::add_namespaces()
 {
     namespace_variables_for_write("std");
+    if ( auto_includes_enabled() )
+	add_format_intrinsics();
+}
+
+static const FormatIntrinsic format_intrinsics[] = {
+    { "format",  "std_format",  true  },
+    { "print",   "std_print",   false },
+    { "println", "std_println", false },
+};
+static const size_t format_intrinsic_count =
+    sizeof(format_intrinsics) / sizeof(format_intrinsics[0]);
+
+const FormatIntrinsic *format_intrinsic_table(size_t &count)
+{
+    count = format_intrinsic_count;
+    return format_intrinsics;
+}
+
+const FormatIntrinsic *find_format_intrinsic(const char *name)
+{
+    for ( size_t i = 0; name && i < format_intrinsic_count; ++i )
+	if ( strcmp(name, format_intrinsics[i].name) == 0 )
+	    return &format_intrinsics[i];
+    return NULL;
+}
+
+// std::format / std::print / std::println are COMPILER-IMPLEMENTED: the call
+// site knows every argument's type, and cir_format.cpp validates the literal
+// format string and lowers each field to the rt_format engine. Under
+// --std=madc the compiler declares them itself — madc's always-included
+// intrinsics (owner law 2026-08-10: never #include-dependent, never in the
+// forest) — the __madc_show shape: a declaration-only FuncDef carrying its
+// inline_builtin_kind, here a C-variadic one (the synthetic trailing
+// __va_args slot every is_varargs FuncDef carries), so `print(stderr, ...)`
+// and `println("x={}", x)` bind one declaration and each argument keeps its
+// own type for the lowering. A member of std, never a global: bare
+// `println` reaches it through the dialect's namespace preference (std
+// follows "c"), so a program's own `println` still wins. Idempotent across
+// _parser_init runs (a REPL session's entries).
+void Program::add_format_intrinsics()
+{
+    variable_map_t &std_ns = namespace_variables_for_write("std");
+    for ( size_t i = 0; i < format_intrinsic_count; ++i )
+    {
+	const FormatIntrinsic &fi = format_intrinsics[i];
+	if ( std_ns.find(fi.name) != std_ns.end() )
+	    continue;
+	DataDef *ret = fi.yields_text
+	    ? getPointerType(getQualifiedType(&ddCHAR, cvCONST & modeled_cv()))
+	    : &ddVOID;
+	FuncDef *fd = new FuncDef(*ret);
+	fd->is_varargs = true;
+	fd->parameters.push_back(&ddINT64);
+	fd->param_typedef_names.push_back("");
+	fd->param_cpp_spellings.push_back("");
+	fd->param_defaults.push_back(NULL);
+	fd->declaration_only = true;
+	fd->inline_builtin_kind = fi.builtin_kind;
+	// The member's identity: `using namespace std;` imports it as an alias
+	// a program's own global `print` then reclaims
+	// (is_using_directive_import_alias). No function_display_name: it is
+	// no libstdc++ template to instantiate mangled-direct.
+	fd->namespace_name = "std";
+	Variable *var = new Variable(fi.name, *fd, 1, NULL, false);
+	var->data = (void *)new Method(*var);
+	std_ns[fi.name] = var;
+    }
 }
 
 void Program::add_madc_namespace()
@@ -62660,12 +62727,14 @@ static const char *madc_namespace_template_builtin_kind(const madc::dis::istring
     // compiler-owned fragment's declarations are compiler-implemented. A
     // real libstdc++ <format> parsed some day must keep its own std::format
     // untouched — the name alone cannot be the key there.
+    // Under --std=madc the compiler declares them itself
+    // (Program::add_format_intrinsics); this arm tags the fragment's own
+    // declarations for a program that #includes <bits/std_format>.
     if ( ns == "std" && decl_file
       && strcmp(decl_file, "bits/std_format") == 0 )
     {
-	if ( name == "format" )   return "std_format";
-	if ( name == "print" )    return "std_print";
-	if ( name == "println" )  return "std_println";
+	if ( const FormatIntrinsic *fi = find_format_intrinsic(name.c_str()) )
+	    return fi->builtin_kind;
     }
     return NULL;
 }
