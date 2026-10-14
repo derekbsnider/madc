@@ -209,7 +209,9 @@ and the always list; the freeze prints a one-line placement summary.
   its gap is fixed in part 3.
 - Oracle during development: an env-gated full-walk arm runs today's path
   beside the seeded one and diffs the restored sets; deleted at the end of
-  part 2 (no-parallel-implementations: written deadline).
+  part 2 (no-parallel-implementations: written deadline). **Deleted
+  2026-10-14** (`MADC_FOREST_WHOLE_WALK`); the gate is now the closure-only
+  invariant (§8).
 
 ## 7. The dialect prelude
 
@@ -240,7 +242,18 @@ closes with it.
   creating unit is outside the closure (§4) — listed, never silent. Runs on
   the release binary while the full-walk arm exists (part 2), then becomes
   the closure-only invariant: no restored entity's declaring or creating unit
-  lies outside the bound closure.
+  lies outside the bound closure. **As built:** the probe labels every
+  restored record by how the bind reached it — LISTED (in a visited seed
+  list: a bound unit's, which holds what that unit declares, created or
+  required, or the always list) or CARRIED (a reference pull, a
+  function-local class by structure, an admitted owner's dependent — §4
+  "Pulls") — and the gate fails any record reached neither way
+  (`check-pack-seed-parity.sh`, with a negative control). A name only
+  unbound units declare is legitimate when listed by requirement (the locale
+  facets' `id` statics ride the units requiring their facet) or carried (a
+  pulled `__basic_file<char>`'s method bindings); the gate reports their
+  count. Measured at the conversion: the ladder rungs restore 71–2,736
+  records.
 - **existing** — `forest_pack_gate.sh` (load-log losses stay at zero),
   `forest_index_oracle.sh`, `forest_dm_oracle.sh`, the forest `make gates`
   set, `check-system-headers-from-libmadc.sh`, byte-identical suite output

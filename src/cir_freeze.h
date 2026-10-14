@@ -1743,6 +1743,15 @@ class CirFrozenForest
 	std::vector<CirRestoredNsBind> _restored_nsbinds;	// v25: using-decl fn imports
 	std::vector<CirRestoredNsAlias> _restored_nsaliases;	// v27: namespace aliases
 	std::vector<CirRestoredDeferredBody> _restored_defbodies;	// v26
+	// The seed-parity probe's labels, index-aligned with the restored vectors
+	// above: 'l' listed in a visited seed list, 'c' carried (a pull, a
+	// function-local class by structure, an owner's dependent), '?' neither
+	// (materialize_pass; filled only under MADC_SEED_PARITY_PROBE=1).
+	struct ParVia
+	{
+		std::vector<char> types, funcs, globals, tmpls, binds, bodies;
+	};
+	ParVia _par_via;
 	// RC2: restored free-function declarations, built by materialize_from_arena
 	// from the DF_IS_FREE_FUNC DK_FUNC records.
 	std::vector<CirRestoredFunc> _restored_funcs;

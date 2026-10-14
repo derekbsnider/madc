@@ -3088,9 +3088,8 @@ void CirFrozenForest::materialize_pass()
 	// bound units and of the units declaring a name the filter asks for,
 	// plus the always list — and, once admission settles, the dependents
 	// of every admitted class. Otherwise every record, one slot scan (no
-	// filter, a container without seeds, an asked-for name no unit
-	// declares, or the oracle MADC_FOREST_WHOLE_WALK=1 the seed-parity gate
-	// compares against).
+	// filter, a container without seeds, or an asked-for name no unit
+	// declares).
 	// Candidate lists ascend (slot / record order == the whole walk's), so
 	// every pass below restores in the order the whole walk did.
 	std::vector<uint32_t> agg_ids;		// candidate aggregate TIDS
@@ -3098,10 +3097,30 @@ void CirFrozenForest::materialize_pass()
 	std::vector<size_t> tmpl_idx, glob_idx;	// template / global record indices
 	const ForestRecordableBits &rbits = recordable_bits();
 	const ForestSeeds &sd = seeds();
-	static const char *whole_walk_env = ::getenv("MADC_FOREST_WHOLE_WALK");
 	bool seeded = _mat_filter.active && !sd.empty()
-		    && sd.lists() == unit_count() + 1
-		    && !(whole_walk_env && whole_walk_env[0] == '1');
+		    && sd.lists() == unit_count() + 1;
+	// The seed-parity probe (MADC_SEED_PARITY_PROBE=1, printed at the end of
+	// the pass) labels every restored record with how this generation reached
+	// it: LISTED in a visited seed list (a bound unit's — every entity its
+	// decl index, its parse or its instantiations made — or the always list)
+	// or CARRIED (a reference pull, a function-local class admitted by
+	// structure, an admitted owner's dependent). Nothing else may restore.
+	static const char *par_probe = ::getenv("MADC_SEED_PARITY_PROBE");
+	const bool par_on = par_probe && par_probe[0] == '1';
+	std::set<uint32_t> par_listed_slots, par_carried_slots;
+	std::set<size_t> par_listed_tmpl, par_carried_tmpl, par_listed_glob, par_carried_glob;
+	auto par_carry_tid = [&](uint32_t tid) {
+		if (par_on && madc::dis::arena_id_is_project(tid))
+			par_carried_slots.insert(madc::dis::arena_slot_of(tid));
+	};
+	auto par_label = [&](const std::set<uint32_t> &listed, const std::set<uint32_t> &carried,
+			     uint32_t key) -> char {
+		return listed.count(key) ? 'l' : carried.count(key) ? 'c' : '?';
+	};
+	auto par_label_idx = [&](const std::set<size_t> &listed, const std::set<size_t> &carried,
+				 size_t key) -> char {
+		return listed.count(key) ? 'l' : carried.count(key) ? 'c' : '?';
+	};
 	std::set<uint32_t> seed_lists;
 	if (seeded) {
 		for (std::set<uint32_t>::const_iterator it =
@@ -3168,6 +3187,11 @@ void CirFrozenForest::materialize_pass()
 		forest_sort_unique(glob_idx);
 		for (size_t i = 0; i < slots.size(); ++i)
 			bucket_slot(slots[i]);
+		if (par_on) {
+			par_listed_slots.insert(slots.begin(), slots.end());
+			par_listed_tmpl.insert(tmpl_idx.begin(), tmpl_idx.end());
+			par_listed_glob.insert(glob_idx.begin(), glob_idx.end());
+		}
 	} else {
 		for (uint32_t s = 0, n = a.def_slots(); s < n; ++s)
 			bucket_slot(s);
@@ -3425,6 +3449,7 @@ void CirFrozenForest::materialize_pass()
 				});
 				admitted.insert(tid);
 				work.push_back(tid);
+				par_carry_tid(tid);
 			}
 		};
 		// A callable's signature (a fn-ptr's, a member-function pointer's):
@@ -3463,8 +3488,10 @@ void CirFrozenForest::materialize_pass()
 					    || r.kind == madc::dis::DK_UNION
 					    || r.kind == madc::dis::DK_CLASS)
 						admit_agg(tid);
-					else if (r.kind == madc::dis::DK_ENUM)
+					else if (r.kind == madc::dis::DK_ENUM) {
 						pulled_enums.insert(tid);
+						par_carry_tid(tid);
+					}
 					else if (r.kind == madc::dis::DK_FPTR)
 						pull_signature(r.ref0);
 					else if (r.kind == madc::dis::DK_MEMBERPTR) {
@@ -3549,13 +3576,19 @@ void CirFrozenForest::materialize_pass()
 				for (uint32_t k = 0; k < dr.n; ++k) {
 					uint32_t kind = dr.p[k] >> 30;
 					uint32_t idx = dr.p[k] & 0x3fffffffu;
-					if (kind == CIR_SEED_DEP_ARENA)
+					if (kind == CIR_SEED_DEP_ARENA) {
 						bucket_slot(idx);
-					else if (kind == CIR_SEED_DEP_TEMPLATE)
+						if (par_on)
+							par_carried_slots.insert(idx);
+					} else if (kind == CIR_SEED_DEP_TEMPLATE) {
 						tmpl_idx.push_back(idx);
-					else if (kind == CIR_SEED_DEP_GLOBAL
+						if (par_on)
+							par_carried_tmpl.insert(idx);
+					} else if (kind == CIR_SEED_DEP_GLOBAL
 						 && idx < _globals.size()) {
 						glob_idx.push_back(idx);
+						if (par_on)
+							par_carried_glob.insert(idx);
 						size_t before = tq.size();
 						seed_global(idx);
 						pushed = pushed || tq.size() != before;
@@ -3592,6 +3625,7 @@ void CirFrozenForest::materialize_pass()
 					continue;
 				admitted.insert(tid);
 				work.push_back(tid);
+				par_carry_tid(tid);
 				fnl_grew = true;
 			}
 			if (add_dependents())
@@ -4374,6 +4408,9 @@ void CirFrozenForest::materialize_pass()
 		rt.flat_alias = false;
 		rt.tag_alias  = false;
 		_restored.push_back(rt);
+		if (par_on)
+			_par_via.types.push_back(par_label(par_listed_slots, par_carried_slots,
+							   madc::dis::arena_slot_of(tid)));
 	}
 
 	// Post-pass: bind the staged using-decl method imports to the definer's
@@ -4487,6 +4524,8 @@ void CirFrozenForest::materialize_pass()
 		rt.tag_alias  =
 			(r.flags & madc::dis::DF_TYPEDEF_TAG_ALIAS) != 0;
 		_restored.push_back(rt);
+		if (par_on)
+			_par_via.types.push_back(par_label(par_listed_slots, par_carried_slots, s));
 		_mat_done_slots.insert(s);
 	}
 
@@ -4518,6 +4557,9 @@ void CirFrozenForest::materialize_pass()
 				(r.flags & madc::dis::DF_NSBIND_OVERLOAD_MEMBER) != 0;
 			if (b.ns && *b.ns && b.name && *b.name && b.key && *b.key) {
 				_restored_nsbinds.push_back(b);
+				if (par_on)
+					_par_via.binds.push_back(par_label(par_listed_slots,
+									   par_carried_slots, s));
 				_mat_done_slots.insert(s);
 			}
 		} else if (r.kind == madc::dis::DK_NSALIAS) {
@@ -4566,6 +4608,9 @@ void CirFrozenForest::materialize_pass()
 			}
 			if (ok) {
 				_restored_defbodies.push_back(d);
+				if (par_on)
+					_par_via.bodies.push_back(par_label(par_listed_slots,
+									    par_carried_slots, s));
 				_mat_done_slots.insert(s);
 			}
 		}
@@ -4619,6 +4664,8 @@ void CirFrozenForest::materialize_pass()
 			rt.enumerators.push_back(std::make_pair(en, val));
 		}
 		_restored.push_back(rt);
+		if (par_on)
+			_par_via.types.push_back(par_label(par_listed_slots, par_carried_slots, s));
 		_mat_done_slots.insert(s);
 	}
 
@@ -4798,6 +4845,8 @@ void CirFrozenForest::materialize_pass()
 			rf.mparams.push_back(std::make_pair(pn, ptp));
 		}
 		_restored_funcs.push_back(rf);
+		if (par_on)
+			_par_via.funcs.push_back(par_label(par_listed_slots, par_carried_slots, s));
 		_mat_done_slots.insert(s);
 		if (!def_runs.empty()) {
 			CirRestoredFuncDefaults rd;
@@ -4850,6 +4899,8 @@ void CirFrozenForest::materialize_pass()
 			rg.ctor_file  = g.ctor_file_id ? a.c_str(g.ctor_file_id) : NULL;
 		}
 		_restored_globals.push_back(rg);
+		if (par_on)
+			_par_via.globals.push_back(par_label_idx(par_listed_glob, par_carried_glob, i));
 		_mat_done_globals.insert(i);
 	}
 
@@ -4937,31 +4988,29 @@ void CirFrozenForest::materialize_pass()
 			rt.rec_pattern_begin = t.pattern_begin;
 			rt.rec_pattern_words = t.pattern_words;
 			_restored_templates.push_back(rt);
+			if (par_on)
+				_par_via.tmpls.push_back(par_label_idx(par_listed_tmpl, par_carried_tmpl, i));
 			_mat_done_templates.insert(i);
 		}
 	}
 
-	// Env-gated seed-parity probe (MADC_SEED_PARITY_PROBE=1;
-	// scripts/check-pack-seed-parity.sh): after each generation, every
-	// record restored so far with the verdict registration gives it under
-	// the filter as it now stands — the gate reads the LAST block, so a
-	// record restored early and one restored by a later, wider generation
-	// are judged alike. The gate runs a program seeded and as the whole
-	// walk (MADC_FOREST_WHOLE_WALK=1): the seeded lines must be a subset,
-	// and a whole-only line may only carry v<=0 — a name no bound unit
-	// declares (registration drops a -1; a 0 is the undecided record whose
-	// point of creation is unbound).
-	static const char *par_probe = ::getenv("MADC_SEED_PARITY_PROBE");
-	if (par_probe && par_probe[0] == '1') {
-		const size_t par_types0 = 0, par_funcs0 = 0, par_globals0 = 0,
-			     par_tmpls0 = 0, par_binds0 = 0, par_bodies0 = 0;
+	// The seed-parity probe (scripts/check-pack-seed-parity.sh): after each
+	// generation, every record restored so far with the verdict registration
+	// gives it under the filter as it now stands (the gate reads the LAST
+	// block, so a record restored early and one restored by a later, wider
+	// generation are judged alike) and how it was reached (_par_via, above):
+	// ` listed`, ` carried`, or ` unreached`.
+	if (par_on) {
 		fprintf(stderr, "SEEDPAR-GEN\n");
-		auto say = [&](const char *kind, const char *ns, const char *nm, int v) {
-			fprintf(stderr, "SEEDPAR %s %s%s%s v=%d\n", kind,
+		auto say = [&](const char *kind, const char *ns, const char *nm, int v,
+			       const std::vector<char> &via, size_t i) {
+			const char c = i < via.size() ? via[i] : '?';
+			fprintf(stderr, "SEEDPAR %s %s%s%s v=%d %s\n", kind,
 				ns && *ns ? ns : "", ns && *ns ? "::" : "",
-				nm ? nm : "?", v);
+				nm ? nm : "?", v,
+				c == 'l' ? "listed" : c == 'c' ? "carried" : "unreached");
 		};
-		for (size_t i = par_types0; i < _restored.size(); ++i) {
+		for (size_t i = 0; i < _restored.size(); ++i) {
 			const CirRestoredType &t = _restored[i];
 			int v = verdict_str(t.name, t.ns);
 			if (t.ns && *t.ns && t.kind != CIR_TYPEK_TYPEDEF)
@@ -4976,9 +5025,9 @@ void CirFrozenForest::materialize_pass()
 					      != madc::dis::istring::npos;
 			say(t.kind == CIR_TYPEK_TYPEDEF ? "typedef"
 			    : t.kind == CIR_TYPEK_ENUM ? "enum"
-			    : product ? "product" : "tag", t.ns, t.name, v);
+			    : product ? "product" : "tag", t.ns, t.name, v, _par_via.types, i);
 		}
-		for (size_t i = par_funcs0; i < _restored_funcs.size(); ++i) {
+		for (size_t i = 0; i < _restored_funcs.size(); ++i) {
 			const CirRestoredFunc &f = _restored_funcs[i];
 			int v = verdict_str(f.name, NULL);
 			if (v == 0 && f.fd && !f.fd->function_display_name.empty()
@@ -4986,20 +5035,22 @@ void CirFrozenForest::materialize_pass()
 				v = verdict_str(f.fd->function_display_name.c_str(),
 						f.fd->namespace_name.c_str());
 			say(f.fd && f.fd->is_specialization_product() ? "instance" : "func",
-			    NULL, f.name, v);
+			    NULL, f.name, v, _par_via.funcs, i);
 		}
-		for (size_t i = par_globals0; i < _restored_globals.size(); ++i)
+		for (size_t i = 0; i < _restored_globals.size(); ++i)
 			say("global", _restored_globals[i].ns, _restored_globals[i].name,
-			    verdict_str(_restored_globals[i].name, _restored_globals[i].ns));
-		for (size_t i = par_tmpls0; i < _restored_templates.size(); ++i)
+			    verdict_str(_restored_globals[i].name, _restored_globals[i].ns),
+			    _par_via.globals, i);
+		for (size_t i = 0; i < _restored_templates.size(); ++i)
 			say("template", _restored_templates[i].ns, _restored_templates[i].key,
-			    verdict_str(_restored_templates[i].key, _restored_templates[i].ns));
-		for (size_t i = par_binds0; i < _restored_nsbinds.size(); ++i)
+			    verdict_str(_restored_templates[i].key, _restored_templates[i].ns),
+			    _par_via.tmpls, i);
+		for (size_t i = 0; i < _restored_nsbinds.size(); ++i)
 			say("nsbind", _restored_nsbinds[i].ns, _restored_nsbinds[i].key,
-			    verdict_str(_restored_nsbinds[i].key, NULL));
-		for (size_t i = par_bodies0; i < _restored_defbodies.size(); ++i)
+			    verdict_str(_restored_nsbinds[i].key, NULL), _par_via.binds, i);
+		for (size_t i = 0; i < _restored_defbodies.size(); ++i)
 			say("defbody", NULL, _restored_defbodies[i].key,
-			    verdict_str(_restored_defbodies[i].key, NULL));
+			    verdict_str(_restored_defbodies[i].key, NULL), _par_via.bodies, i);
 	}
 
 	_stat_mat_secs += forest_now() - _t0;
