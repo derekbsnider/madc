@@ -36,6 +36,7 @@ set -e
 cd "$(dirname "$0")/.."
 . scripts/forest_pack_share.sh	# the standards the one profile serves
 . scripts/forest_pack_layout.sh	# the layout pass (format 60)
+. scripts/forest_pack_roots.sh	# the list's roots by population
 
 SIDECAR=0
 DIALECT_ONLY=0
@@ -77,16 +78,10 @@ TU=tmp/forest_pack_tu.cpp
 # the C headers the full pack freezes ahead of the fragments, then the
 # fragments — so each fragment unit freezes in the same context as the full
 # pack's (an explicitly included fragment gathers no prerequisites: the
-# auto-include alone does). A dialect fragment is the compiler's
-# embedded_dialect_fragment_p rule (src/lexer.cpp) in the shell's alphabet: a
-# top-level ns_* or a bits/<name> entry, extensionless.
+# auto-include alone does).
 if [ "$DIALECT_ONLY" = 1 ]; then
     DIALECT_LIST=tmp/forest_pack_dialect_headers.txt
-    grep -vE '^[[:space:]]*(#|$)' "$LIST" | awk '
-	{ line[NR] = $0 }
-	/\./ || /^ns_[^\/]*\// || /^bits\/[^\/]*\// { next }
-	/^ns_/ || /^bits\// { last = NR }
-	END { for ( i = 1; i <= last; ++i ) print line[i] }' > "$DIALECT_LIST"
+    forest_pack_roots "$LIST" through-dialect > "$DIALECT_LIST"
     if [ ! -s "$DIALECT_LIST" ]; then
 	echo "forest_pack: --dialect-only: $LIST names no dialect fragment" >&2
 	exit 1
