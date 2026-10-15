@@ -509,6 +509,19 @@ static int macho_cstr_cmp (const void *a, const void *b) {
 
 /* ===== the writer ======================================================= */
 
+/* The image handle (ld64's ___dso_handle).  A C++ static registers its
+   destructor with it (__cxa_atexit), and dyld unloading an image calls
+   libSystem's __cxa_finalize_ranges with the image's ranges, which runs
+   exactly the handlers whose handle lies in them.  ld64 resolves the handle
+   to the image's own mach header and lists no symbol for it.  The builder's
+   handle is a data object (the ELF crtbegin shape), so a dylib's handle lay
+   in __DATA, outside the ranges: dlclose ran none of its handlers and exit()
+   entered the unmapped image.  Every reference to it resolves to the header
+   here, and it stays out of the symtab and the export trie, as ld64's does. */
+static int macho_image_handle_p (const objsym_t *s) {
+  return s->name != NULL && s->defined_p && strcmp (s->name, "__dso_handle") == 0;
+}
+
 static int macho_emit_executable (MIR_object_t obj, const MIR_object_exec_params *params,
                                   void **buf, size_t *size) {
   int dylib_p = params->shared_p != 0; /* MH_DYLIB (see the header note) */
@@ -656,6 +669,9 @@ static int macho_emit_executable (MIR_object_t obj, const MIR_object_exec_params
    : (sec) == MIR_OBJ_SEC_BSS     ? bss_vaddr \
    : (sec) == MIR_OBJ_SEC_INITARR ? initarr_vaddr \
                                   : pool_vaddr)
+  /* a defined symbol's link vaddr; the image handle is the header (base) */
+#define MACHO_SYM_VADDR(s) \
+  (macho_image_handle_p (s) ? base : MACHO_SEC_VADDR ((s)->sec) + (s)->value)
   /* slot file offset for a reloc-carrying section (never TEXT/BSS here) */
 #define MACHO_SLOT_OFF(sec) \
   ((sec) == MIR_OBJ_SEC_DATA ? data_off : (sec) == MIR_OBJ_SEC_INITARR ? initarr_off : dc_off)
@@ -767,7 +783,7 @@ static int macho_emit_executable (MIR_object_t obj, const MIR_object_exec_params
   for (int pass = 0; pass < 3; pass++)
     for (size_t i = 0; i < n; i++) {
       objsym_t *s = &obj->syms[i];
-      if (s->name == NULL || s->section_p) continue;
+      if (s->name == NULL || s->section_p || macho_image_handle_p (s)) continue;
       int cls = !s->defined_p ? 2 : s->local_p ? 0 : 1;
       if (cls != pass) continue;
       uint32_t strx = (uint32_t) strtab.len;
@@ -808,7 +824,9 @@ static int macho_emit_executable (MIR_object_t obj, const MIR_object_exec_params
     size_t nx = 0;
     for (size_t i = 0; i < n; i++) {
       objsym_t *s = &obj->syms[i];
-      if (s->name != NULL && s->defined_p && !s->local_p && !s->section_p) nx++;
+      if (s->name != NULL && s->defined_p && !s->local_p && !s->section_p
+          && !macho_image_handle_p (s))
+        nx++;
     }
     xnms = calloc (nx ? nx : 1, sizeof (char *));
     xaddrs = calloc (nx ? nx : 1, sizeof (uint64_t));
@@ -818,7 +836,9 @@ static int macho_emit_executable (MIR_object_t obj, const MIR_object_exec_params
     nx = 0;
     for (size_t i = 0; i < n; i++) { /* the names, one buffer (it may move while growing) */
       objsym_t *s = &obj->syms[i];
-      if (s->name == NULL || !s->defined_p || s->local_p || s->section_p) continue;
+      if (s->name == NULL || !s->defined_p || s->local_p || s->section_p
+          || macho_image_handle_p (s))
+        continue;
       xoff[nx++] = xnames.len;
       buf_u8 (&xnames, '_');
       buf_str (&xnames, s->name);
@@ -834,7 +854,7 @@ static int macho_emit_executable (MIR_object_t obj, const MIR_object_exec_params
         objsym_t *s = &obj->syms[i];
         if (s->name == NULL || !s->defined_p || s->local_p || s->section_p) continue;
         if (strcmp (s->name, xnms[k] + 1) != 0) continue;
-        xaddrs[k] = MACHO_SEC_VADDR (s->sec) + s->value - base;
+        xaddrs[k] = MACHO_SYM_VADDR (s) - base;
         break;
       }
     if (macho_export_trie (&trie, xnms, xaddrs, nd) != 0) goto done;
@@ -885,11 +905,11 @@ static int macho_emit_executable (MIR_object_t obj, const MIR_object_exec_params
     uint64_t slot_off = (r->sec == MIR_OBJ_SEC_TEXT ? text_off : MACHO_SLOT_OFF (r->sec))
                         + r->offset;
     if (r->kind != MIR_OBJ_RELOC_ABS64) {
-      uint64_t v = MACHO_SEC_VADDR (s->sec) + s->value + (uint64_t) r->addend;
+      uint64_t v = MACHO_SYM_VADDR (s) + (uint64_t) r->addend;
       if (obj_apply_field_reloc (r->kind, p + slot_off, v, base + slot_off) != 0)
         goto done; /* range overflow: not an emitter-layout reality */
     } else if (s->defined_p) {
-      uint64_t v = MACHO_SEC_VADDR (s->sec) + s->value + (uint64_t) r->addend;
+      uint64_t v = MACHO_SYM_VADDR (s) + (uint64_t) r->addend;
       memcpy (p + slot_off, &v, 8);
     }
   }
