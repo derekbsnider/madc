@@ -1,6 +1,5 @@
 # lane	promote	last_green_commit	date	tally
 libcxx	no	96b3358a3d8a	2026-10-03	retired from the release tier 2026-10-03 (owner): the libc++ lane is darwin-suite on the macOS -O2 packed binary; last linux run: jit 1903/0/0TO/23skip; exe 1735/0; obj 1735/0 (-stdlib=libc++, 14 tests carry .libcxx_skip: B157-B161 + libstdc++-internal; at 028e31c36 content) [+ 96b3358a3: textual rename chthonic->chthonia, owner 2026-10-03, not re-run]
-interactive-darwin	release	4c4ad82b678b	2026-10-12	arm64 Mac Mini 41/0/0TO/2skip + Intel MacBook 41/0/0TO/2skip — interactive_lane.sh's tests/ subset on the macOS packaged madc 0.104.0 at 4c4ad82b6 content; madcide 0.7.0 66/0 + Chthonia 0.1.0 check_install PASS on both
 tests-jit	batch	e84838409e76	2026-10-15	2035 passed, 0 failed, 9 skipped (batch_lane.sh, dev JIT) at e84838409
 linux-battery	yes	e84838409e76	2026-10-15	seam_battery.sh at e84838409 (0.105.0 release seam: frozen header-global initializers + pack-bound lazy interface): headerless 2001/0/0TO/43skip + ondisk 34/0 on packed -O2 madc-release; exeobj JIT 2035/0/9skip, EXE 1828/0, OBJ 1828/0; parse-cost 0 red; static gates + make gates green
 headerless-win	yes	e84838409e76	2026-10-15	1960/0/0TO/84skip at e84838409 + ondisk-win 1/0 — packed PE under wine
@@ -19,3 +18,4 @@ genuine-win	release	e84838409e76	2026-10-15	1959/0/0TO/85skip — the FULL suite
 interactive-win	release	e84838409e76	2026-10-15	51 passed, 0 failed, 0 timed out, 6 skipped — win_suite.sh over interactive_lane.sh's tests/ subset on the owner Windows 11 box, the packed PE at e84838409 content
 darwin-suite	release	e84838409e76	2026-10-15	darwin-suite native libc++ at e84838409 content: arm64 Mac Mini (macOS 14) 2001/0/0TO/43skip + mac battery 12/0; Intel MacBook (macOS 15) 2004/0/0TO/40skip + mac battery 12/0 (domains darwin libcxx darwin-<arch> macos-<major>); EXE advisory 289/295 failed (D5 class)
 brew-linux	release	e84838409e76	2026-10-15	2035/0/0TO/9skip - scripts/brew_lane.sh at e84838409 content (bottle + pour + brew test, keg-masked runpath gate)
+interactive-darwin	release	94e3310705ac	2026-10-15	arm64 Mac Mini 55/0/0TO/2skip + Intel MacBook 55/0/0TO/2skip — interactive_lane.sh's tests/ subset on the macOS packaged madc 0.105.0 at e84838409 content; madcide 0.8.0 67/0 + check_install PASS on both
