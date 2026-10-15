@@ -802,6 +802,29 @@ int main() { return (int)alignof(S); }
 
 ## Refuses valid code
 
+### B196. A declaration whose type is spelled with the global qualifier (`::T`) is refused
+
+```cpp
+#include <cstddef>
+#include <cstdio>
+::size_t a = 1;
+static ::size_t b = 2;
+const ::size_t c = 3;
+int main() { ::size_t d = 4; printf("%zu\n", a + b + c + d); return 0; }
+```
+
+- Found 2026-10-15 while writing the B94 reducer (`tests/testqualtypedef_redef.mad`).
+- g++ 13 and clang++ 18 accept each line (the program prints `10`). madc
+  (`bin/madc-release`, packed or `--no-forest-bind`): `Expecting identifier
+  after '::'` at file scope and inside a function, `Expecting type after
+  'static'`, `Expecting type after 'const'`. This morning's 0.105.0 build
+  refuses them too.
+- Layer: `Program::resolve_declared_type_token` has a leading-`::` arm
+  ([namespace.qual], the global-scope lookup typedef / using / template
+  arguments take), but the statement dispatcher and the `static` / `const`
+  arms never hand it a leading `::`. KG Gap
+  `global_qualified_type_declaration_refused`.
+
 ### B192. libc++: `std::map<long, long>::operator[]` does not compile
 
 ```cpp
