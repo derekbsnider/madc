@@ -1344,7 +1344,11 @@ static int macho_emit_object (MIR_object_t obj, void **buf, size_t *size) {
                   1, 0);
   macho_osec_set (&S[MACHO_OSEC_POOL], "__mir_addrpool", "__DATA_CONST", obj->pool.p,
                   obj->pool.len, obj->pool_align > 8 ? obj->pool_align : 8, MACHO_S_REGULAR, 1, 0);
-  macho_osec_set (&S[MACHO_OSEC_INIT], "__mod_init_func", "__DATA_CONST", obj->initarr.p,
+  /* __DATA,__mod_init_func, as clang's objects carry it: the linker moves it
+     to __DATA_CONST in the image.  ld64 1167 types an input __mod_init_func
+     of segment __DATA_CONST S_REGULAR in its output, so dyld ran none of the
+     object's initializers. */
+  macho_osec_set (&S[MACHO_OSEC_INIT], "__mod_init_func", "__DATA", obj->initarr.p,
                   obj->initarr.len, 8, MACHO_S_MOD_INIT_FUNC_POINTERS, obj->initarr.len != 0, 0);
   macho_osec_set (&S[MACHO_OSEC_DATA], "__data", "__DATA", obj->data.p, obj->data.len,
                   obj->data_align > 1 ? obj->data_align : 1, MACHO_S_REGULAR, 1, 0);
