@@ -9,13 +9,13 @@ aarch64-ld	yes	e84838409e76	2026-10-15	aarch64_ldouble_lane GREEN — seam_batte
 genuine-win	release	e84838409e76	2026-10-15	1959/0/0TO/85skip — the FULL suite on the owner Windows 11 box at e84838409 content (scripts/win_suite.sh, the 0.105.0 release-seam packed PE)
 darwin-suite	release	e84838409e76	2026-10-15	darwin-suite native libc++ at e84838409 content: arm64 Mac Mini (macOS 14) 2001/0/0TO/43skip + mac battery 12/0; Intel MacBook (macOS 15) 2004/0/0TO/40skip + mac battery 12/0 (domains darwin libcxx darwin-<arch> macos-<major>); EXE advisory 289/295 failed (D5 class)
 brew-linux	release	e84838409e76	2026-10-15	2035/0/0TO/9skip - scripts/brew_lane.sh at e84838409 content (bottle + pour + brew test, keg-masked runpath gate)
-c-testsuite	commit	e4d597afa5f7	2026-10-15	220 passed, 0 failed (0 outside baseline) — fix lane at e4d597afa content
-c-torture	commit	e4d597afa5f7	2026-10-15	1617 passed, 7 failing (0 outside baseline) — fix lane at e4d597afa content
-c2mir-tests	commit	e4d597afa5f7	2026-10-15	368 passed, 0 failed, 4 skipped — fix lane at e4d597afa content
-gui	commit	e4d597afa5f7	2026-10-15	15 passed, 0 failed | EXE 15/0 | OBJ 15/0 (dev) — fix lane at e4d597afa content
-gxx-c++11	no	e4d597afa5f7	2026-10-15	1505 passed, 441 compile-failed (0 outside baseline) — fix lane at e4d597afa content
-index-c	yes	e4d597afa5f7	2026-10-15	50/50 tasks OK [-O2] — fix lane at e4d597afa content
-commonmark	commit	e4d597afa5f7	2026-10-15	664 passed, 6 failed (0 outside baseline) — fix lane at e4d597afa content
 interactive	yes	1498d946dbf5	2026-10-15	57/0/0TO/0skip + units 7/0 (scripts/interactive_lane.sh, Linux JIT) + the same subset 57/0 on the packed madc-release, at e4d597afa content
 interactive-win	release	1498d946dbf5	2026-10-15	51 passed, 0 failed, 0 timed out, 6 skipped — win_suite.sh over interactive_lane.sh's tests/ subset on the owner Windows 11 box, the packed PE at e4d597afa content
 interactive-darwin	release	1498d946dbf5	2026-10-15	arm64 Mac Mini 55/0/0TO/2skip + Intel MacBook 55/0/0TO/2skip — interactive_lane.sh's tests/ subset on the macOS packaged madc 0.105.0 at e4d597afa content; madcide 0.8.0 67/0 + check_install PASS on both
+c-testsuite	commit	24f32659817c	2026-10-15	220 passed, 0 failed (0 outside baseline) — fix lane at 24f326598 content
+c-torture	commit	24f32659817c	2026-10-15	1617 passed, 7 failing (0 outside baseline) — fix lane at 24f326598 content
+c2mir-tests	commit	24f32659817c	2026-10-15	368 passed, 0 failed, 4 skipped — fix lane at 24f326598 content
+gui	commit	24f32659817c	2026-10-15	15 passed, 0 failed | EXE 15/0 | OBJ 15/0 (dev) — fix lane at 24f326598 content
+gxx-c++11	no	24f32659817c	2026-10-15	1505 passed, 441 compile-failed (0 outside baseline) — fix lane at 24f326598 content
+index-c	yes	24f32659817c	2026-10-15	50/50 tasks OK [-O2] — fix lane at 24f326598 content
+commonmark	commit	24f32659817c	2026-10-15	664 passed, 6 failed (0 outside baseline) — fix lane at 24f326598 content
