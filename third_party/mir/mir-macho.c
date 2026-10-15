@@ -517,7 +517,10 @@ static int macho_cstr_cmp (const void *a, const void *b) {
    handle is a data object (the ELF crtbegin shape), so a dylib's handle lay
    in __DATA, outside the ranges: dlclose ran none of its handlers and exit()
    entered the unmapped image.  Every reference to it resolves to the header
-   here, and it stays out of the symtab and the export trie, as ld64's does. */
+   here, and it stays out of the symtab and the export trie, as ld64's does.
+   An object (MH_OBJECT) never defines it: the handle is the linker's, and
+   ld64 keeps an object's definition (weak included) over its own, so the
+   object lists it undefined, as clang's objects do. */
 static int macho_image_handle_p (const objsym_t *s) {
   return s->name != NULL && s->defined_p && strcmp (s->name, "__dso_handle") == 0;
 }
@@ -1390,7 +1393,9 @@ static int macho_emit_object (MIR_object_t obj, void **buf, size_t *size) {
     for (size_t i = 0; i < n; i++) {
       objsym_t *sym = &obj->syms[i];
       if (sym->name == NULL && !sym->section_p) continue; /* anonymous: unreferenceable */
-      int cls = !sym->defined_p ? 2 : (sym->local_p || sym->section_p) ? 0 : 1;
+      int cls = !sym->defined_p || macho_image_handle_p (sym) ? 2
+                : (sym->local_p || sym->section_p)                ? 0
+                                                                  : 1;
       if (cls != pass) continue;
       int osec = macho_osec_of (sym->sec);
       if (sym->defined_p && (osec < 0 || !S[osec].present_p)) goto done; /* stale sec id */
@@ -1403,7 +1408,7 @@ static int macho_emit_object (MIR_object_t obj, void **buf, size_t *size) {
         buf_str (&strtab, sym->name);
       }
       buf_u32 (&symtab, strx); /* n_strx */
-      if (sym->defined_p) {
+      if (cls != 2) {
         buf_u8 (&symtab, (uint8_t) (MACHO_N_SECT | (cls == 1 ? MACHO_N_EXT : 0)));
         buf_u8 (&symtab, (uint8_t) S[osec].ordinal);
         buf_u16 (&symtab, sym->weak_p ? MACHO_N_WEAK_DEF : 0);
