@@ -28,9 +28,11 @@
 #   deb/rpm  dpkg -x / rpm2cpio|cpio extract; installed madc runs a probe
 #            program (output asserted) with LD_LIBRARY_PATH=<root libdir>
 #            (an extracted root has no ldconfig — the real install
-#            registers the .so); `madc -v` must say
+#            registers the .so); `madc -v` over a probe that includes a
+#            system header (pk4forest.c) must say
 #            `forest-bind: [library-image] opened container` — the frozen
-#            header forest served from the INSTALLED libmadc.so.0
+#            header forest served from the INSTALLED libmadc.so.0 (a program
+#            that includes nothing binds nothing and never opens it)
 #            [control: the non-verbose run must NOT match the pattern].
 #   tar      same probes with NO LD_LIBRARY_PATH at all (env -u) — the
 #            run-time $ORIGIN proof (the packager's ldd check is static;
@@ -45,7 +47,8 @@
 #   mactar   (darwin host only — the release.yml mac jobs; the container
 #            cannot execute darwin binaries and prints a stated SKIP) tar
 #            extract; the shipped bin/madc runs the probe (output asserted);
-#            `madc -v` says `forest-bind: [library-image] opened container`
+#            `madc -v` over pk4forest.c says
+#            `forest-bind: [library-image] opened container`
 #            — the forest served from the shipped lib/libmadc-0.dylib, the
 #            thin CLI carrying none [control: hide lib/libmadc-0.dylib =>
 #            madc must fail to run];
@@ -82,6 +85,13 @@ write_probes() {
         printf 'var greeting = "%s";\n' "$MARKER"
         printf 'println("{}", greeting);\n'
     } > "$GATE_TMP/pk4hello.mad"
+    # pk4forest: includes a system header, so its compile binds the frozen
+    # forest (a C file through the pack's source arm) — the forest check's
+    # probe; pk4hello includes nothing, binds nothing, and never opens it.
+    {
+        printf '#include <stdio.h>\n'
+        printf 'int main(void) { printf("%%s\\n", "%s"); return 0; }\n' "$MARKER"
+    } > "$GATE_TMP/pk4forest.c"
 }
 
 # ---------- shipped notices (packaging/notices.tsv) ----------
@@ -168,8 +178,8 @@ run_linux() {
     # 2. the forest is served from the INSTALLED library image
     # (all arm lines: the search prints '[<arm>] no image at ...' for the
     # arms it walks past before the one that opens)
-    out=$( ( ulimit -t 120; timeout 60 "${runenv[@]}" "$madc" -v "$hello" ) 2>&1 \
-           | grep 'forest-bind:' )
+    out=$( ( ulimit -t 120; timeout 60 "${runenv[@]}" "$madc" -v \
+             "$(readlink -f "$GATE_TMP/pk4forest.c")" ) 2>&1 | grep 'forest-bind:' )
     case "$out" in
         *"forest-bind: [library-image] opened container"*)
             ok "$kind" "forest served from the installed libmadc.so.0 ([library-image])" ;;
@@ -321,7 +331,7 @@ gate_mactar() {
     # 1b. the forest is served from the shipped library image (the thin CLI
     # carries none); the grep's control is the non-verbose run above, which
     # asserted the marker and so ran with no -v evidence lines.
-    out=$( ( ulimit -t 120; "$tmo" 60 "$root/bin/madc" -v "$PWD/$GATE_TMP/pk4hello.mad" ) 2>&1 \
+    out=$( ( ulimit -t 120; "$tmo" 60 "$root/bin/madc" -v "$PWD/$GATE_TMP/pk4forest.c" ) 2>&1 \
            | grep 'forest-bind:' )
     case "$out" in
         *"forest-bind: [library-image] opened container"*)
