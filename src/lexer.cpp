@@ -1495,8 +1495,8 @@ static const std::map<madc::dis::istring, madc::dis::istring> &auto_include_iden
 	// QUALIFIED by its namespace head — a bare `WEB` is the user's word.
 	{"WEB", "ns_ui_web"},
 	// The madc:: faces a HOST program uses (<ns_madc_host>: a document's
-	// parse handle and language services, the tool host, the ex core,
-	// discovery's claims, the REPL history store): MEMBER rows, so only a
+	// parse handle and language services, the tool host, the ex core, the
+	// colour theme, discovery's claims, the REPL history store): MEMBER rows, so only a
 	// program naming one qualified (`madc::tool_host`) parses that surface —
 	// an always-on face whose only consumer is optional is gated on that
 	// consumer (owner 2026-10-08).
@@ -1513,6 +1513,8 @@ static const std::map<madc::dis::istring, madc::dis::istring> &auto_include_iden
 	{"doc_spans", "ns_madc_host"},
 	{"tool_host", "ns_madc_host"},
 	{"ex_session", "ns_madc_host"},
+	{"theme_styles", "ns_madc_host"},
+	{"theme_paint", "ns_madc_host"},
 	{"session_claim", "ns_madc_host"},
 	{"session_dir", "ns_madc_host"},
 	{"session_scan", "ns_madc_host"},

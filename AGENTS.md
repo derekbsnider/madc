@@ -405,6 +405,7 @@ no matter how small.
 | [dialect-literals.md](.claude/rules/dialect-literals.md) | 24 | In dialect PRODUCTION code (`tools/`), build objects with literals `var x = { "k": v };` — never a bare `var x;` filled field-by-field; imperative key-assign is for MUTATION / computed keys / indices; gated by madcide's `check-dialect-literals.sh` |
 | [enum-over-strings.md](.claude/rules/enum-over-strings.md) |  32 | Enums (not chars/strings) for type/category discriminators; convert C-string node names to enums at the boundary |
 | [thread-safety.md](.claude/rules/thread-safety.md) | 22 | OWNER LAW: every language addition STATES its thread-safety contract (C++ stdlib convention default); shared mutation routes through the hub/verbs; no new bare mutable globals |
+| [dialect-faces.md](.claude/rules/dialect-faces.md) | 22 | OWNER LAW: what madc builds for itself is exposed in the dialect (madcdis precedent) — a host calls madc's code, never a copy; a move into madc is done when the host's copy is deleted; registry `scripts/dialect_faces.tsv`, gated by `check-dialect-faces.sh` |
 
 ### P3 — Build, test, and validation (gate "done")
 
@@ -440,10 +441,10 @@ editing — don't try to memorize all of them.
 
 ### Total rule footprint
 
-- **36 rules, 1316 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
+- **37 rules, 1339 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
 - **This file (AGENTS.md): ~487 lines** — loaded by Claude via
   `@AGENTS.md` in `CLAUDE.md`, read directly by Codex / Gemini / etc.
-- **Grand total loaded by Claude Code per turn: ~1818 lines.**
+- **Grand total loaded by Claude Code per turn: ~1841 lines.**
 
 Rule bloat ages: if any tier exceeds a few hundred lines, split the
 heaviest rule into a narrower sub-rule or move more content into the

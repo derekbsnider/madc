@@ -1,0 +1,44 @@
+// A session reply's code at the host face (.claude/rules/dialect-faces.md):
+// `%type`'s offer reply carries the bytes of its shown text that are code
+// (shown_code, [{ from, to }]) — the ranges `madc -i` paints — and
+// madc::theme_paint colours them as the CLI prints them. A plain entry's
+// shown value is not code: its reply carries none.
+// Oracle: `madc -i --std=c17` on a terminal, `int k = 3;` then `%type k`,
+// prints `\e[1mint\e[0m` (madc_repl.cpp print_shown, the same painter).
+
+// The next reply, passing over running notices.
+long next_reply(var &r, long h)
+{
+    var cases;
+    cases[0] = madc::session_readable(h);
+    for ( ;; )
+    {
+	long got = madc::session_poll(r, h);
+	var o;
+	madc::session_output(o, h);
+	if ( got != 0 && r["kind"] == madc::session_reply::running )
+	    continue;
+	if ( got != 0 )
+	    return got;
+	var fired;
+	madc::chan_select(fired, cases);
+    }
+}
+
+int main()
+{
+    long h = madc::session_open("c17");
+    var r;
+    madc::session_offer(h, "int k = 3;", true);
+    next_reply(r, h);
+    println("entry: shown_code={}", r["shown_code"].is_null() ? "none" : "some");
+    madc::session_offer(h, "%type k", true);
+    next_reply(r, h);
+    var code = r["shown_code"];
+    println("type: shown={} shown_code={}", js::stringify(r["shown"]), js::stringify(code));
+    var painted;
+    madc::theme_paint(painted, "", r["shown"].c_str(), code, (long)madc::fkC17);
+    println("painted: {}", js::stringify(painted));
+    madc::session_close(h);
+    return 0;
+}

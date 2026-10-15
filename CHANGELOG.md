@@ -80,6 +80,34 @@ session reached from `madc::session_open` met the same drop once it bound the
 pack by default. Gate: `tests/testsession_bindings_madc.mad` on the packed
 binary.
 
+### A dialect host colours what the CLI colours, through madc's own painter
+
+madcide's REPL showed `:%p` uncoloured where `madc -i` coloured it, and `%type`
+and `%pinfo` were plain the same way. The ex core's `outcome` already carried
+`code` — the byte ranges of its `shown` text that are a buffer's text — and the
+CLI painted those ranges through `madc::theme_paint` (`madc_theme.h`), but the
+ex core's dialect face (`outcome_value`, `src/madc_ex.cpp`) and the session
+reply row (`reply_row`, `src/madc_session_verbs.cpp`) never carried the ranges
+into their dialect value. `outcome_value` and `reply_row` now write
+`shown_code` — `[{ from, to }]`, present when there are any — and
+`madc::theme_paint` and `madc::theme_styles` (`<ns_madc_host>`) expose the CLI's
+own theme reader and painter, so a host colours a terminal text with the CLI's
+code instead of a second painter of its own. `theme_paint` lexes each code
+range alone under a `<bits/file_kinds>` standard and emits truecolor SGR,
+leaving the non-code bytes as the CLI prints them; `theme_styles` reads a
+`.theme` text into `{ syntax, chrome }` specs and refuses an unknown class with
+its line. `ns_common::code_ranges_value` / `code_ranges_of` convert
+`madc::code_range` at the value boundary, and `tui_chrome_name` reads a chrome
+piece's name back from the one `ui_chrome.h` table. New rule
+`.claude/rules/dialect-faces.md` (reasoning `docs/rules/dialect-faces.md`): a
+capability madc builds for itself is reached from the dialect through a face,
+never re-implemented by a host. Reducers `tests/testex_theme.mad` and
+`tests/testsession_shown_code.mad`: `madc -i`'s `:%p` and `%type` under a pty
+paint the same bytes `theme_paint` emits. Gate:
+`scripts/check-dialect-faces.sh` (`make gates`) with registry
+`scripts/dialect_faces.tsv`, red on a struct member with no face key or a
+header public with no dialect face.
+
 ### A declaration whose type is a qualified name is placed at its own line
 
 A file-scope declaration whose type is a qualified name — `std::string s`,

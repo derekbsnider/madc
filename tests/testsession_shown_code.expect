@@ -1,0 +1,3 @@
+entry: shown_code=none
+type: shown="int" shown_code=[{"from":0,"to":3}]
+painted: "\u001b[1mint\u001b[0m"

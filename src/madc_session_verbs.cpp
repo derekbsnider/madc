@@ -86,6 +86,10 @@ madc::value reply_row(const SessionClient::Reply &r)
 	    f["state"] = madc::value((int64_t)r.state);
 	    f["ok"] = madc::value(r.ok);
 	    f["shown"] = madc::value(r.shown);
+	    // Its code (`%type`'s type, `%pinfo`'s declarations), as the CLI
+	    // paints it (madc::theme_paint): [{ from, to }] when there is any.
+	    if ( !r.shown_code.empty() )
+		f["shown_code"] = ns_common::code_ranges_value(r.shown_code);
 	    f["rendered"] = madc::value(r.rendered);
 	    f["submitted"] = madc::value((int64_t)r.submitted);
 	    f["diagnostics"] = reply_diagnostics(r);

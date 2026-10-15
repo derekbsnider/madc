@@ -1201,6 +1201,7 @@ gates: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/check-one-void-predicate.sh
 	@cd .. && bash scripts/check-one-slot-dispatch.sh
 	@cd .. && bash scripts/check-one-top-decl-position.sh
+	@cd .. && bash scripts/check-dialect-faces.sh
 	@cd .. && bash scripts/check-one-deref-builder.sh
 	@cd .. && bash scripts/check-one-text-publish.sh
 	@cd .. && bash scripts/check-one-regex-engine.sh

@@ -123,9 +123,11 @@ namespace madc {
     // keeps only the commands that need its views. use() makes a document
     // current; set_line() puts `.` on a line (1-based: the caret's, so an
     // address means what the host shows). parse(): {ok, error, command,
-    // force, argument}, never run; run(): {ok, shown, error, wants_text,
-    // quit, command} — `command` a <bits/ex_commands> ex_command code,
-    // `shown` the lines it prints; text(): a pending a / i / c's lines
+    // force, argument}, never run; run(): {ok, shown, shown_code, error,
+    // wants_text, quit, command} — `command` a <bits/ex_commands> ex_command
+    // code, `shown` the lines it prints, `shown_code` (present when there
+    // are any) its bytes that are a buffer's text, [{ from, to }], as
+    // theme_paint takes them; text(): a pending a / i / c's lines
     // (no line breaks, no closing `.`). Every edit goes through the
     // world's one mutation path and is ONE undo group per line.
     // set_scratch(): an untitled document as a host's scratch buffer,
@@ -155,6 +157,29 @@ namespace madc {
 	ex_session &operator=(const ex_session &);
 	void *s_;
     };
+
+    // madc's colour theme (include/madc_theme.h; split arc 1B.9): the CLI's
+    // own reader and painter, so a host colours what the CLI colours with
+    // the CLI's code. A theme is its `.theme` text — one `name spec` per
+    // line, a highlight class or a chrome piece, `@scope` lines a host's
+    // own; "" = madc's built-in default.
+    //   theme_styles: { syntax: { class: spec }, chrome: { piece: spec } }
+    //       — each highlight class the theme styles (one it leaves unnamed
+    //       holds its parent's: control and directive keyword's, typename
+    //       type's, namespace typename's, include and escape string's) and
+    //       each chrome piece it names (the grid's root `chrome` hint), every
+    //       spec in ui::style's words. False for a text the reader refuses:
+    //       `why` names the line, `out` is left empty.
+    //   theme_paint: `text` as the CLI prints it, its code ranges ([{ from,
+    //       to }]: an ex run's or a session reply's shown_code) coloured —
+    //       each lexed alone under `standard` (a <bits/file_kinds> standard,
+    //       0 = the default), in SGR at truecolor — the rest as it is. A
+    //       theme the reader refuses paints with the default.
+    // Thread contract: pure functions of their arguments (theme_paint lexes
+    // on the calling thread's runtime, as lex_spans does).
+    bool   theme_styles(value &out, value &why, const char *theme_text);
+    value &theme_paint(value &out, const char *theme_text, const char *text,
+		       value &code, int64_t standard);
 
     // Discovery (split arc 1D; include/madc_discovery.h): ONE OWNER PER KEY
     // (a project's canonical path). take() holds <session_dir>/<slug>.json for

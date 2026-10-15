@@ -17,6 +17,8 @@
 
 #include "datadef.h"
 
+namespace madc { struct code_range; }	// highlight_class.h
+
 namespace ns_common {
 
 // ---- String mutators --------------------------------------------------
@@ -82,6 +84,17 @@ bool value_to_string(const madc::value &v, std::string &out,
 // String/integer-only variant for the pop/shift/join family, whose
 // historical (MadValue-era, test-pinned) behavior excluded reals.
 bool value_to_string_no_real(const madc::value &v, std::string &out);
+
+// ---- Code ranges at the value boundary --------------------------------
+
+// The byte ranges of a shown text that are code (highlight_class.h's
+// code_range: ex::outcome::code, a session reply's shown_code) as the
+// dialect reads them — [{ from, to }] — and back. code_ranges_of skips a row
+// that is not an object of two non-negative integers, to >= from; it never
+// reads past the text (madc::theme_paint skips a range that does).
+// Thread contract: pure functions over their arguments.
+madc::value code_ranges_value(const std::vector<madc::code_range> &code);
+void code_ranges_of(const madc::value &rows, std::vector<madc::code_range> &out);
 
 // ---- Mutable container access at the extern-C boundary ----------------
 
