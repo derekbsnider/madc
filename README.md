@@ -305,19 +305,19 @@ on this content), with public binaries built by CI for Linux
 (deb/rpm/tarball), Windows x86-64, and macOS (Apple Silicon + Intel).
 
 Latest validated results — the seam battery and the native macOS lanes on one
-content (`67766e242`, 2026-10-11), on the shipped packed -O2 `madc-release`.
+content (`e84838409`, 2026-10-15), on the shipped packed -O2 `madc-release`.
 Measured conformance against third-party suites is published separately in
 [`docs/conformance-coverage.md`](docs/conformance-coverage.md):
 
 - Linux, on the shipped packed -O2 `madc-release` with no headers on disk:
-  **1966 passed / 0 failed / 43 skipped**, plus the on-disk header-needing
-  subset **34/0**; the whole suite as native artifacts: JIT **2000/0/9**
-  (batch lane), EXE **1811/0**, OBJ **1811/0**
-- Windows: the packed Win64 PE under Wine, headerless, **1927/0/82 skipped**,
-  and the full suite on the owner Windows 11 box **1926/0/83 skipped**
+  **2001 passed / 0 failed / 43 skipped**, plus the on-disk header-needing
+  subset **34/0**; the whole suite as native artifacts: JIT **2035/0/9**
+  (batch lane), EXE **1828/0**, OBJ **1828/0**
+- Windows: the packed Win64 PE under Wine, headerless, **1960/0/84 skipped**,
+  and the full suite on the owner Windows 11 box **1959/0/85 skipped**
 - macOS, libc++, native on both owner Macs: arm64 (macOS 14.8.4)
-  **1968/0/41 skipped**, Intel x86_64 (macOS 15.7.4) **1970/0/39 skipped**
-- static gates: **0 red of 95**
+  **2001/0/43 skipped**, Intel x86_64 (macOS 15.7.4) **2004/0/40 skipped**
+- static gates: **0 red of 98**
 - **zero compiler warnings on every build lane**, enforced by `-Werror`
 
 ### Recent Releases
