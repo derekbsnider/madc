@@ -5097,6 +5097,14 @@ bool Program::forest_bind_env_ok(uint32_t root)
     return true;
 }
 
+// An embedded unit's once-only key: units freeze under bare names
+// ("stddef.h"); the live tokenize records the angle-bracket named key
+// ("<stddef.h>") — should_tokenize_include.
+static madc::dis::istring embedded_unit_include_key(const char *uname)
+{
+    return madc::dis::istring(std::string("<") + uname + ">");
+}
+
 // Bind a grove unit and its include closure: post-order DFS over the unit's
 // frozen edges so an includee's PP delta installs before the includer's own
 // (matching the common "includes at top, defines after" header shape). The
@@ -5210,6 +5218,14 @@ void Program::forest_bind_include(uint32_t unit)
     forest_chain.push_back(unit);
     forest_chain_set.insert(unit);
     forest_bind_walking.erase(unit);
+    // A named (embedded) unit's once-only key, as its live tokenize records it
+    // (should_tokenize_include): a later TEXT include of a name the bind
+    // already served — a REPL entry's late #include parses text — skips it,
+    // as a live parse's second include does. The hosted-darwin prelude
+    // umbrella carries no #ifndef guard; the name key is its only dedup.
+    if ( const char *bound = bind_forest->unit_name(unit) )
+	if ( find_embedded_header(bound) )
+	    included_files[embedded_unit_include_key(bound)] = true;
     _self += forest_stat_now() - _t1;
     _forest_bind_seconds += _self;
     const char *nm = bind_forest->unit_name(unit);
@@ -6642,7 +6658,7 @@ bool Program::forest_unit_file_live_tokenized(uint32_t unit)
     if ( *uname == '<' )
 	return forest_live_tokenized.count(uname) != 0;
     if ( !strchr(uname, '/') )
-	return forest_live_tokenized.count("<" + std::string(uname) + ">") != 0
+	return forest_live_tokenized.count(embedded_unit_include_key(uname)) != 0
 	    || forest_live_tokenized.count(uname) != 0;
     return forest_live_tokenized.count(canonical_include_key(uname)) != 0;
 }
