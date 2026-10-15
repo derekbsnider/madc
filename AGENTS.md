@@ -279,7 +279,7 @@ Integration tests live in `tests/*.mad`. Unit tests in `tests/unit/`.
 Per-test stdin / argv / expected-output fixtures live next to each
 `.mad` file via the filename convention in
 `.claude/rules/test-fixtures.md`. Current pass counts live in
-`docs/test-status.md` and `README.md` — never hard-coded in these
+`docs/test-status.md` — never in `README.md`, and never hard-coded in these
 instructions.
 
 A test with a sibling `tests/<name>.helper` fixture (e.g.

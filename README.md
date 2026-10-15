@@ -1,411 +1,280 @@
-# madc — C and C++ without the ceremony
+# madc
 
-**My Advanced Dialect of C** is a self-contained native utility language for a
-zero-toolchain workflow: run C/C++-style code like a script without giving up
-access to native C/C++ code and libraries. Use it for shell-style automation,
-embed it in another application, or emit object files and executables from the
-same source.
+**A self-contained C and C++ compiler — JIT, AOT and an interactive REPL in
+one small download.**
 
-A basic madc program needs no project scaffolding, no separate compiler
-invocation, and—under the default madc dialect—no explicit `main()`.
+madc compiles standard C (C89 through C23) and C++ (C++98 through C++20) with
+its own front end and its own code generator. It runs a program straight from
+source, in memory; writes native objects and executables; emits portable C11;
+and opens an interactive REPL. It needs no GCC, Clang or LLVM, no linker, and
+no headers on disk: the C, POSIX and C++ standard-library headers ship inside
+madc.
 
-[Usage](docs/usage.md) · [Build](docs/build.md) · [madcide](https://github.com/derekbsnider/madcide) ·
-[Architecture](docs/architecture.md) · [Test status](docs/test-status.md) ·
-[Changelog](CHANGELOG.md) · [Contributing](AGENTS.md)
+madc is not a new language wearing C's syntax. It compiles the C and C++ you
+already have — and, as one more `--std=`, offers its own dialect for code that
+wants less ceremony.
 
-## Why madc?
+[Install](#install) · [Usage](docs/usage.md) · [Benchmarks](docs/benchmarks/README.md) ·
+[Conformance](docs/conformance-coverage.md) · [Changelog](CHANGELOG.md) ·
+[Security](SECURITY.md)
 
-- **C/C++ as a scripting language.** Write top-level statements, add a shebang,
-  and run the file directly. madc synthesizes `main()` when you do not provide
-  one.
-- **One tool from script to binary.** JIT-run a one-off utility, compile a
-  multi-file project, or emit a native executable without moving to another
-  language.
-- **Direct native interoperability.** Call the C and C++ runtime directly.
-  Add other installed libraries with familiar `-l` options, or load them
-  dynamically when runtime selection is useful.
-- **A built-in utility toolkit.** Mix familiar functions from PHP, Perl,
-  Python, Ruby, JavaScript, and Rust through explicit namespaces.
-- **Embeddable.** `libmadc` can compile files or strings, execute code, evaluate
-  expressions, call madc functions, register native callbacks, and control
-  access through host policies and allowlists.
+<p align="center"><img src="docs/images/madc-repl.png" alt="madc's REPL: C++ definitions typed in, a function copied and edited with ex commands, both called, then ?? and ? look up a variable and a function"></p>
 
-Once installed, a basic script needs only the `madc` command—no external C/C++
-compiler, build system, bytecode VM, or separate language runtime. Core utility
-functions need no boilerplate headers; real system headers and native libraries
-remain available whenever a program needs them.
+*The REPL: C++ typed in; a function copied and renamed with ex commands
+(`:t`, `:s`); both versions called; then `??world` and `?say_hello` ask the
+session what it knows.*
 
-## Quick start
+## One compiler, every way to run code
 
-After [building madc](docs/build.md), create `hello.mad`:
+Ordinary C++, nothing madc-specific:
+
+```cpp
+#include <iostream>
+#include <string>
+
+int main()
+{
+    std::string who = "world";
+    std::cout << "Hello, " << who << "!\n";
+}
+```
+
+```bash
+madc hello.cpp               # compile in memory and run it (JIT)
+madc -o hello hello.cpp      # a native executable (AOT)
+madc -c hello.cpp            # an object file — g++ and clang++ link it
+madc --emit=c11 hello.cpp    # the same program as portable C11 source
+madc                         # the REPL
+```
+
+- **JIT.** `madc file.cpp` compiles into memory and runs — usually before
+  g++ or clang++ would have finished linking (see [Speed](#speed)). A
+  `#!/usr/bin/env madc` line makes a source file an executable script.
+- **AOT.** `-o` writes the executable itself; there is no linker to call. A
+  C++ hello-world is a 22 KB executable that needs only the C and C++
+  runtime libraries, not madc. `-c` objects use the Itanium C++ ABI and
+  real mangled names, so they link with g++- and clang++-built code.
+- **C11 out.** `--emit=c11` renders any program, C++ included, as strict
+  C11 that any C compiler accepts.
+- **REPL.** `madc` with no file is an interactive C and C++ session:
+  declarations and statements as you type them, named results, `?name` and
+  `??name` to look things up, `%whos`, history and completion, syntax
+  colour, and an ex-style editor (`:p`, `:s`, `:t`, `:w`) over the
+  session's own buffer — an edited function is redefined at once.
+- **Projects.** `--project compile_commands.json` compiles, links and runs a
+  multi-file program, or writes one executable. The flagship case is SMAUG
+  1.8: about 158,000 lines of C89 in 51 translation units, run both ways.
+
+## Self-contained
+
+| madc does not need | because |
+|---|---|
+| GCC, Clang or LLVM | its own front end lowers to an IR that its own copy of [MIR](#built-on-mir) compiles for x86-64 and ARM64 |
+| a linker | it writes ELF, PE and Mach-O objects and executables itself |
+| system headers | the C library, POSIX and C++ standard-library headers are built into madc |
+
+What it does use is the platform's own runtime: the C library and one C++
+standard library — libstdc++ on Linux and Windows, libc++ on macOS, where it
+is part of the OS. On Linux it also uses the system's zlib, zstd and PCRE2;
+the Windows zip carries the DLLs it needs.
+
+| Platform | Packages | Download |
+|---|---|---:|
+| Linux x86-64 | `.deb` (Ubuntu 22.04, 24.04), `.rpm`, tarball | 18–19 MB |
+| Windows x86-64 | zip | 18 MB |
+| macOS (Apple silicon, Intel) | tarball | 16 MB |
+
+## Built on MIR
+
+One large third-party component makes this possible:
+[MIR](https://github.com/vnmakarov/mir), Vladimir Makarov's lightweight JIT
+compiler infrastructure, and c2mir, its C11 compiler (MIT licence).
+
+The division is clean. madc's front end reads C, C++ and the dialect,
+resolves classes, templates and overloads, and builds c2mir's own C11 syntax
+tree directly — c2mir never sees source text. c2mir checks that tree and
+lowers it to MIR; MIR's generator turns it into machine code, in memory for
+the JIT or as a native object.
+
+madc carries its own maintained copy of MIR in
+[`third_party/mir`](third_party/mir) — a git subtree with upstream history
+kept, built and released with madc. To upstream MIR it adds:
+
+- native **object and executable writers** — ELF, PE/COFF and Mach-O;
+- C language features: native `_Complex`, `__attribute__((cleanup))`,
+  vector types up to 16 bytes, and `volatile` accesses that every
+  optimization pass respects;
+- ABI and code-generation fixes for variadic calls, `_Complex`, `_Alignas`
+  and ARM64.
+
+Fixes that belong to MIR itself are offered upstream as pull requests.
+
+## Speed
+
+madc 0.105.0 against g++ 13.3 and clang++ 18.1 on the same machine
+(Ubuntu 24.04, x86-64), in milliseconds, best of 7 runs, interleaved —
+lower is better:
+
+| task | madc | g++ / gcc | clang++ / clang |
+|---|---:|---:|---:|
+| `hello.cpp` (`<iostream>`), source to output | **83** | 170 | 207 |
+| `<vector>` + `<map>` + `<string>` program, source to output | **209** | 252 | 275 |
+| `hello.c` (`<stdio.h>`), source to output | **9** | 21 | 37 |
+| compile `hello.cpp` to an object | **93** | 144 | 171 |
+| compile `string-build.cpp` to an object | **56** | 93 | 111 |
+| compile `vector-sum.cpp` to an object | **51** | 82 | 92 |
+| compile SMAUG `act_wiz.c` (12,041 lines of C89) | 241 | 402 | **161** |
+
+*Source to output* is madc's JIT against compiling and linking at `-O0`,
+then running. For objects, g++/gcc and clang++/clang run at `-O0` and madc
+at its default, `-O1`. madc's edge is C++ headers: they are parsed once,
+when madc is built, not on every compile. On large C files clang is faster.
+
+Generated code runs at about 81% of the speed of `gcc -O2` on MIR's C
+benchmark set (geometric mean; madc wins some). Method, every row and the
+history: [docs/benchmarks](docs/benchmarks/README.md).
+
+## Compatibility
+
+Measured on test suites madc does not own — gcc's own testsuite and the
+third-party c-testsuite:
+
+| corpus | standard | passing |
+|---|---|---:|
+| gcc `c-torture/execute` | C17 | **99.2%** (1611 of 1624) |
+| [c-testsuite](https://github.com/c-testsuite/c-testsuite) `single-exec` | C11 | **100%** (220 of 220) |
+| `g++.dg/template` | C++98 | 81.3% |
+| `g++.dg/cpp0x` + `template` | C++11 | 77.3% |
+| `g++.dg/cpp1y` | C++14 | 51.3% |
+| `g++.dg/cpp1z` | C++17 | 43.2% |
+| `g++.dg/cpp2a` | C++20 | 53.8% |
+
+madc's own suite of over 2,000 programs passes on Linux, Windows and macOS
+(Apple silicon and Intel), with libstdc++ and with libc++. Scope and caveats:
+[docs/conformance-coverage.md](docs/conformance-coverage.md).
+
+## The madc dialect — C and C++ without the ceremony
+
+The name stands for *My Advanced Dialect of C*. The dialect is `--std=madc`,
+the default for `.mad` files, listed beside `c17`, `c++20` and the rest; a
+`.c` or `.cpp` file keeps its own standard's rules.
 
 ```c
 #!/usr/bin/env madc
-
-puts("Hello from madc");
+// No #include, no using, no main().
+var names = { "ada lovelace", "grace hopper", "dennis ritchie" };
+for ( var n : names )
+    println("{:<16} {}", python::title(n), php::strtoupper(n));
 ```
-
-Run it immediately:
-
-```bash
-bin/madc hello.mad
-```
-
-Or make it an executable script (with `madc` installed on your `PATH`):
-
-```bash
-chmod +x hello.mad
-./hello.mad
-```
-
-The same source can become a native executable:
-
-```bash
-bin/madc -o hello hello.mad
-./hello
-```
-
-Top-level statements are a madc dialect feature. Explicit `--std=c*` and
-`--std=c++*` modes retain their standard language rules.
-
-## Native access without bindings
-
-The C runtime and active C++ standard library are already part of the madc
-process. madc automatically supplies declarations for common library
-functions, so there is no reason to load libc explicitly:
-
-```c
-puts("Hello from libc");
-```
-
-For another installed library, use the familiar linker-style `-l` option:
-
-```bash
-bin/madc -lfoo tool.mad             # load libfoo and run
-bin/madc -lfoo -o tool tool.mad     # emit an executable linked to libfoo
-```
-
-For JIT execution, `-lfoo` loads the named shared library globally so its
-symbols resolve normally. For native output, it becomes a library dependency
-of the emitted program. The source can include the library's normal header and
-call its API directly.
-
-For cases that genuinely require runtime loading or an isolated namespace,
-madc also provides `import name as ns;` (the C++20 `import` made whole —
-interface and library, spelled for the target by the module map, so no
-`.so` / `.dylib` / `.dll` appears in the source), `dlopen`, `dlsym`, and
-`dlcall`:
-
-```c
-import c as libc;
-
-libc::abs(-42);
-```
-
-This makes madc useful for native API exploration, systems utilities,
-automation, and small tools without generated bindings or a separate wrapper.
-When headers are included, madc parses the **real installed headers**. Its
-`std::string` and stream objects are real standard-library objects, not
-replacement shims. Both stdlib flavors are first-class: the full test suite
-passes under libstdc++ and, via `-stdlib=libc++`, under libc++.
-
-## From one file to a native project
-
-Single-file scripts are the smallest madc program, but they are not a separate
-execution model. The same compiler pipeline supports:
-
-- JIT execution in the current process
-- source inclusion with `#include`
-- multi-translation-unit projects
-- native object and executable output
-- external library resolution at link time
-- C11 source emission with `--emit=c11`
-
-Multi-file projects use the standard `compile_commands.json` format produced by
-CMake or tools such as `bear`:
-
-```bash
-bin/madc --project compile_commands.json          # compile, link, and run
-bin/madc --project compile_commands.json -lfoo    # add an installed library
-bin/madc --project compile_commands.json -o app   # emit one native executable
-```
-
-The flagship compatibility case is **SMAUG 1.8**: approximately 158,000 lines
-of C89 across 51 translation units, running both as an in-process JIT program
-and as a native executable.
-
-## C and C++ language support
-
-madc is designed for substantial source compatibility with real-world C and
-C++, while adding optional utility-language features in its own dialect.
-Current coverage includes:
-
-- C integer and floating-point types, structs, pointers, functions, control
-  flow, preprocessor inclusion, and early C23 features
-- C++ classes, constructors and destructors, RAII, access control, inheritance,
-  virtual dispatch, RTTI, exceptions, operator overloading, and templates
-- real `std::string`, streams, containers, references, lambdas **with capture
-  lists**, `constexpr`, `noexcept`, and standard-gated language features
-- **pointers to members** — types and values, `&C::m`, `.*`, `->*`, and calls
-  through a bound member pointer
-- **Itanium ABI compatibility**: every C++ symbol madc defines emits its real
-  mangled name, so a madc object file links against g++- and clang-built code
-  and free functions overload by parameter type; by-value class parameters and
-  returns follow the Itanium calling convention
-- range-based `for`, function pointers, `auto`, `:=`, `defer`, multiple return
-  values, and `rust::match`
-
-**madc does not grade its own homework.** Conformance is measured against
-gcc's own testsuite and the third-party c-testsuite, and the numbers — with
-their scope and caveats — are published in
-[`docs/conformance-coverage.md`](docs/conformance-coverage.md): C at
-**99.2%** of the in-scope gcc c-torture execute set under `--std=c17` and
-**220/220** on c-testsuite; C++ at **80.0%** (C++98) and **75.1%** (C++11) of
-the compile-clean `g++.dg` subset, with C++14/17/20 measured alongside.
-
-See the [usage guide](docs/usage.md) for the language surface and
-[architecture guide](docs/architecture.md) for lowering, ABI, and compiler
-implementation details.
-
-## Multi-language utility namespaces
-
-The “Mad” in Mad-C also reflects its ability to combine familiar utility
-functions from several language ecosystems in one program.
-
-| Namespace | Focus |
-|---|---|
-| [`php::`](docs/language/ns-php.md) | String and array utilities, including split, join, and sort |
-| [`perl::`](docs/language/ns-perl.md) | Regex-oriented grep, glob, split, join, chop, and chomp |
-| [`python::`](docs/language/ns-python.md) | String formatting, alignment, title case, and zero fill |
-| [`ruby::`](docs/language/ns-ruby.md) | Transliteration, squeeze, character, rotation, and compact operations |
-| [`js::`](docs/language/ns-js.md) | Base64, URL encoding, integer parsing, and JSON utilities |
-| [`rust::`](docs/language/ns-rust.md) | String, collection, option-like, and `match` utilities |
-| [`ui::`](docs/language/ns-ui.md) | The data-hub surface: worlds, projections, verbs, and `ui::prompt` |
-| `std::` | C++ strings, streams, containers, conversions, and algorithms |
-| `madc::` | Native madc types and services, including regular expressions |
-
-Namespace precedence can be selected explicitly with `prefer` or
-`#pragma prefer`; see [namespace precedence](docs/language/prefer.md).
-
-## madcide and the Nexus — the IDE *is* the running compiler
-
-madcide lives in its own repository,
-[derekbsnider/madcide](https://github.com/derekbsnider/madcide), and its
-packages carry the madc release they run on. It is not an editor that shells
-out to a compiler. The live parse in
-memory **is** the compilation, so diagnostics, the outline and the emitted
-views are projections of real compiler data rather than a second model that
-can drift.
-
-```bash
-madcide file.mad                              # terminal (the default grid)
-madcide file.mad --gui                        # native window: platform menu bar, file dialogs
-madcide file.mad --line                       # ex / edlin line mode over stdin
-madcide file.mad -c "check"                   # no UI at all — the exit status is the verdict
-madcide file.mad --serve 127.0.0.1:7777       # a session other clients attach to
-madcide file.mad --mcp                        # the MCP seat: the IR as a graph
-madcide file.mad --lsp --serve 127.0.0.1:0    # the LSP face
-madcide file.mad --attach                     # find the session holding this file
-```
-
-One composer and one client loop serve every face, so the terminal rendering
-is byte-identical to the window's.
-
-**A session, not a process.** A second window is a second *client* of the same
-document, with its own caret and its own View; presence carets shift through
-one anchor registry as anyone types. The editor region is a real split tree,
-tool panes are chrome slots, and layouts persist beside the project manifest.
-A View can re-represent the same document as source, MC11, C11 or C++ in
-place — put source left and MC11 right and the carets track each other
-through the emitter's correlation map.
-
-**Every change is an event.** The change log is an append-only journal that
-replays to any point, checkpoints, compacts, and surfaces as an `event:N`
-history View.
-
-**The Nexus — the IR as a graph agents edit.** Beyond the human faces,
-madcide exposes the *live IR* as a node-addressed graph over MCP: an agent
-queries structure, edits through validated verbs instead of text patches,
-walks history with PAST verbs over git, and proposes changes under a
-permission tier. LSP, a VS Code extension, attach and session discovery ride
-the same session — one process, several faces.
-
-See madcide's [guide](https://github.com/derekbsnider/madcide/blob/main/docs/madcide.md)
-and the design documents under [`docs/plans/`](docs/plans/).
-
-## Embedding with libmadc
-
-The public C API in [`include/madc_api.h`](include/madc_api.h) exposes a
-reusable engine and program model. A host application can:
-
-- compile or execute a file or source string
-- evaluate a translation unit, function body, or expression
-- invoke compiled functions and inspect or update globals
-- register native host functions
-- save or load object files and emit executables
-- configure namespaces, process access, dynamic linking, execution limits,
-  diagnostics, and allowlists
-
-Install the embedding library and public headers with:
-
-```bash
-sudo make -C src install-libmadc
-```
-
-See the [libmadc unit tests](tests/unit/test_libmadc_program.cpp) for working
-API examples.
-
-## Architecture
-
-madc uses one source-preserving compiler representation:
 
 ```text
-source → cir_node / MC11-IR → c2mir → MIR → JIT or native output
+Ada Lovelace     ADA LOVELACE
+Grace Hopper     GRACE HOPPER
+Dennis Ritchie   DENNIS RITCHIE
 ```
 
-The `cir_node` tree derives from c2mir's `node_t` and retains its originating
-tokens. The same representation can execute in-process, render C11, and feed
-object or executable generation. There is no bytecode interpreter or parallel
-second compiler backend.
+- **Auto-include.** The standard library is in scope with no `#include`.
+- **Auto-namespace.** Names resolve without `using` or `std::`.
+- **Auto-main.** Top-level statements run as the program; madc writes
+  `main()` when there is none.
+- **`var`.** One value type for strings, numbers, arrays and objects;
+  `print`, `println` and `format` for output.
+- **Portable.** The same script runs on Linux, Windows and macOS. A library
+  is named as a module, never as a file — madc spells `.so`, `.dylib` or
+  `.dll` for the platform — and madc's own modules (git, Markdown, a native
+  window) load the moment a script uses them:
 
-See [docs/architecture.md](docs/architecture.md) for deeper
-implementation details; the MIR/c2mir backend library is maintained
-in-tree at `third_party/mir`.
+  ```c
+  #!/usr/bin/env madc
+  long repo = git::open(".");
+  var hist;
+  git::log(hist, repo, "", 3);
+  for ( var c : hist["rows"] )
+      println("{}  {}", perl::substr(c["sha"], 0, 9), c["summary"]);
+  ```
 
-## Current Release
+## Batteries included
 
-The current release is **v0.104.0**, the **madcide split** release. madc's
-interactive mode takes the ed/ex editing core — `madc -i` gains **colon mode**, a
-**command registry** modules and hosts extend, `%std` / `%reset` / `%history` /
-`%check` / `%build` / `%run` / `%project`, **coloured prompts and diagnostics**,
-and host-facing **language services** — and madc ships a **Language Server**
-(`--lsp`) and a **Model Context Protocol server** (`--mcp`) with a project
-memory, a code graph and an external-task client. Regexes now run on one
-**PCRE2** engine, and a source compiled without `--std` takes the standard its
-**extension** names (`.c` → `gnu17`, `.cpp` → `gnu++17`, `.mad` → the madc
-dialect). **madcide** moves to its own repository and releases on its own, so
-madc's packages no longer carry it.
+- **Functions from other languages**, each in its own namespace:
 
-**madcide** — the IDE and the editor core it builds on — is now its own product
-in its own repository, releasing on its own as **madcide 0.7.0**, its first
-standalone release, built on and pinned to madc 0.104.0. **Chthonia**, the
-Thonny-style teaching IDE, builds on madcide 0.7.0 + madc 0.104.0; each is its
-own product, whose packages carry their own paired madc release.
+  | Namespace | Focus |
+  |---|---|
+  | [`php::`](docs/language/ns-php.md) | strings and arrays: split, join, sort |
+  | [`perl::`](docs/language/ns-perl.md) | regex grep, glob, split, chop, chomp |
+  | [`python::`](docs/language/ns-python.md) | formatting, alignment, title case, zero fill |
+  | [`ruby::`](docs/language/ns-ruby.md) | tr, squeeze, chars, rotate |
+  | [`js::`](docs/language/ns-js.md) | Base64, URL encoding, JSON |
+  | [`rust::`](docs/language/ns-rust.md) | strings, collections, `rust::match` |
 
-v0.104.0 follows **v0.103.0**, the TUI facelift release: madcide's terminal UI
-grew into the GUI's shape — menus, a toolbar, framed panes with a gutter, tab
-strips and a status bar, floating dialogs, the mouse, and Dark+ colour —
-verified by golden screens on POSIX and genuine Windows; names held as interned
-`istring` and headers ranked by a build-time table roughly halved the dialect
-compile.
+- **Native libraries without bindings.** `-lfoo` loads a library for a JIT
+  run or links it into an executable; include its header and call it.
+  `import name as ns;`, `dlopen` and `dlsym` cover loading at run time.
+- **Language extras.** Multiple return values, `defer`, `:=`, regular
+  expressions (PCRE2), and [namespace precedence](docs/language/prefer.md).
+- **A Language Server.** `madc --lsp` gives any LSP editor diagnostics,
+  hover, go to definition, references, document symbols and semantic
+  colour.
+- **A Model Context Protocol server.** `madc --mcp` gives an AI agent the
+  program's structure as a graph, with a project memory.
+- **Embedding.** `libmadc` ([`madc_api.h`](include/madc_api.h)) compiles
+  and runs files or strings inside another program, calls its functions,
+  registers host callbacks, and limits what the code may reach.
 
-Branch state: v0.104.0 is prepared on `develop`; the `master` promotion
-follows the release-tier lane ledger (every platform lane's FULL suite green
-on this content), with public binaries built by CI for Linux
-(deb/rpm/tarball), Windows x86-64, and macOS (Apple Silicon + Intel).
+## Install
 
-Latest validated results — the seam battery and the native macOS lanes on one
-content (`e84838409`, 2026-10-15), on the shipped packed -O2 `madc-release`.
-Measured conformance against third-party suites is published separately in
-[`docs/conformance-coverage.md`](docs/conformance-coverage.md):
+Packages for each release are on the
+[releases page](https://github.com/derekbsnider/madc/releases): install the
+`.deb` or `.rpm`, or unpack the tarball or zip anywhere and run `bin/madc`.
 
-- Linux, on the shipped packed -O2 `madc-release` with no headers on disk:
-  **2001 passed / 0 failed / 43 skipped**, plus the on-disk header-needing
-  subset **34/0**; the whole suite as native artifacts: JIT **2035/0/9**
-  (batch lane), EXE **1828/0**, OBJ **1828/0**
-- Windows: the packed Win64 PE under Wine, headerless, **1960/0/84 skipped**,
-  and the full suite on the owner Windows 11 box **1959/0/85 skipped**
-- macOS, libc++, native on both owner Macs: arm64 (macOS 14.8.4)
-  **2001/0/43 skipped**, Intel x86_64 (macOS 15.7.4) **2004/0/40 skipped**
-- static gates: **0 red of 98**
-- **zero compiler warnings on every build lane**, enforced by `-Werror`
-
-### Recent Releases
-
-- [v0.104.0](docs/release-notes/v0.104.0.md) — **the madcide split release**:
-  madc's interactive mode takes the ed/ex editing core (colon mode, a command
-  registry modules and hosts extend, coloured prompts, and language services),
-  and madc ships a Language Server (`--lsp`) and a Model Context Protocol server
-  (`--mcp`) with a project memory and an external-task client; regexes run on one
-  PCRE2 engine and a source's standard follows its extension; and madcide moves
-  to its own repository and releases on its own (madcide 0.7.0, pinned to madc
-  0.104.0), so madc's packages no longer carry it.
-- [v0.103.0](docs/release-notes/v0.103.0.md) — **the TUI facelift release**:
-  madcide's terminal UI grows into the GUI's shape — a menu bar, a toolbar,
-  framed panes with a gutter, tab strips and a status bar, floating dialogs, the
-  mouse, and Dark+ colour — verified by golden screens on POSIX and genuine
-  Windows; names held as interned `istring` and headers ranked by a build-time
-  table roughly halve the dialect compile; and madcide opens every file named on
-  its command line, with Help in the editor.
-- [v0.102.1](docs/release-notes/v0.102.1.md) — **the Ubuntu 24.04 packaging
-  patch**: the `.deb` built on Ubuntu 24.04 and later carries an AppArmor
-  profile, so madc's and madcide's windows get the user namespaces WebKit's
-  sandbox needs; the release's `SHA256SUMS` names the `.deb` assets as GitHub
-  stores them (10 assets); and release tooling no longer stales the test lanes.
-- [v0.102.0](docs/release-notes/v0.102.0.md) — **the Chthonia-split release**:
-  the Chthonia teaching IDE moves to its own repository (nothing lost on
-  upgrade; libmadcide still ships); a C-conformance correctness burn-down
-  across declarators, declarations and initializers; `va_arg` type names and
-  the GNU/clang vector builtins; `__FILE_NAME__`; more REPL and madcide
-  (Markdown and git views); and one `.deb` per Ubuntu release.
-- [v0.101.0](docs/release-notes/v0.101.0.md) — **the REPL release**:
-  `madc` with no file is an interactive C/C++ session (Julia/IPython
-  semantics, named results, `%whos`, line editing, history, completion);
-  sessions in their own process; madcide plugins and **Chthonia**, the
-  Thonny-style teaching IDE; the B-series correctness burn-down; a Linux
-  Homebrew bottle; every release binary archived.
-
-Older release notes live in [docs/release-notes/](docs/release-notes/).
-
-## Building from source
-
-Everything madc needs from source lives in this repository — MIR (the
-JIT/codegen library, madc's maintained downstream of
-[vnmakarov/mir](https://github.com/vnmakarov/mir)) is included at
-`third_party/mir` and builds automatically. One clone is enough:
+From source — MIR is in the tree, so one clone is enough:
 
 ```bash
 git clone https://github.com/derekbsnider/madc.git
 cd madc
-
 autoreconf -fi
 ./configure
-make -C src
+make -C src release      # bin/madc-release: optimized, headers built in
 ```
 
-Useful targets:
+See [docs/build.md](docs/build.md) for dependencies, build modes and
+packaging.
 
-```bash
-make -C src release     # optimized, stripped, packed CLI
-make -C src fulltest    # unit, integration, and release gates
-sudo make -C src install
-```
+## Releases
 
-See [docs/build.md](docs/build.md) for dependencies, build modes, optional
-features, installation paths, and release packaging.
+The current release is **0.105.0**. What changed, release by release:
+[CHANGELOG.md](CHANGELOG.md) and [docs/release-notes/](docs/release-notes/).
 
 ## Documentation
 
-- [Usage and CLI](docs/usage.md)
-- [madcide — the IDE](https://github.com/derekbsnider/madcide) (its own repository: terminal and window; profiles, projects, Build/Run, the panel and the Terminal)
+- [Usage and the command line](docs/usage.md)
+- [Compiler architecture](docs/architecture.md) — source → `cir_node`
+  (MC11-IR) → c2mir → MIR → JIT or native output
 - [Build and installation](docs/build.md)
-- [Compiler architecture](docs/architecture.md)
-- [Testing guide](docs/testing.md)
-- [Current test status](docs/test-status.md)
-- [Modern language features](docs/language/modern/)
-- [Regular expressions](docs/language/regex.md)
-- [Multiple return values](docs/language/multiple-returns.md)
-- [Data storage and federation plan](docs/plans/data-storage-federation.md)
-- [Change history](CHANGELOG.md)
+- [Benchmarks](docs/benchmarks/README.md) ·
+  [Conformance](docs/conformance-coverage.md) ·
+  [Test status](docs/test-status.md)
+- [Modern language features](docs/language/modern/) ·
+  [Regular expressions](docs/language/regex.md) ·
+  [Multiple return values](docs/language/multiple-returns.md)
 
 ## Contributing
 
-Start with [`AGENTS.md`](AGENTS.md). It is the canonical project briefing for
-human contributors and coding agents. Repository rules live in
-[`.claude/rules/`](.claude/rules/), with supporting reasoning in
-[`docs/rules/`](docs/rules/) and cross-agent handoff guidance in
-[`docs/agent-handoff.md`](docs/agent-handoff.md).
+Start with [`AGENTS.md`](AGENTS.md), the project briefing for contributors
+and coding agents. The rules live in [`.claude/rules/`](.claude/rules/), with
+their reasoning in [`docs/rules/`](docs/rules/).
+
+## Security
+
+See [SECURITY.md](SECURITY.md) to report a vulnerability privately.
 
 ## License
 
 madc is licensed under the [Mozilla Public License 2.0](LICENSE).
+
+## Built on madc
+
+- **[madcide](https://github.com/derekbsnider/madcide)** — an IDE, in a
+  terminal or a window, whose editor, REPL and problem list run on madc's own
+  engine.
+- **[Chthonia](https://github.com/derekbsnider/chthonia)** — an easy IDE
+  for learning C and C++, built on madcide.

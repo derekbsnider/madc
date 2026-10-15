@@ -30,13 +30,15 @@ Perform the full release workflow:
    - Bullet-point highlights of the most important changes (max 10 bullets)
    - Link to the full changelog: `See [CHANGELOG.md](../../CHANGELOG.md) for full details.`
 
-7. **Update README.md**:
-   - There is exactly ONE `## Current Release` section — REPLACE its
-     paragraph with the vX.Y.Z summary (search the whole file for stray
-     older "Current Release" headers first; never add a second one)
-   - Update the "Branch state" line in that section if branch facts changed
-   - Update the `### Recent Releases` sub-section with one-line summaries of the last 5 releases (read from `docs/release-notes/`)
-   - Update the bold "Current status" test-counts line near the Testing section
+7. **Update README.md** — its version facts only (owner 2026-10-15: the
+   README presents madc; release narrative lives in `CHANGELOG.md` and
+   `docs/release-notes/`, test counts in `docs/test-status.md`):
+   - The `## Releases` line: "The current release is **X.Y.Z**."
+   - The `## Speed` table's opening sentence ("madc X.Y.Z against …") ONLY
+     when the timings were re-measured for this release — never re-label
+     old numbers with a new version.
+   - Never add a "Current Release" / "Recent Releases" section, a branch
+     state line or test counts.
 
 8. **MIR needs no separate release** (subtree migration 2026-08-11):
    MIR lives in-tree at `third_party/mir`, so the madc release version
