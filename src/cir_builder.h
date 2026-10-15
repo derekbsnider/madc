@@ -324,6 +324,10 @@ class CirBuilder {
 	// Rung 3: the Pass-0/collect-time storage decl node of each file-scope
 	// global (keyed by Variable) — links a ctor group to its decl node.
 	std::map<Variable *, node_t> m_global_decl_node;
+	// v66: the bound FROZEN_DEF globals' loaded nodes (storage declarations
+	// and init statements) — pre-built, so the reachability fixpoint
+	// registers their references as it does a loaded body's.
+	std::vector<node_t> m_frozen_global_nodes;
 	// C++ dynamic initialization (g++ model): file-scope globals whose
 	// scalar initializer is NOT a C11 constant expression (it reads a
 	// variable or calls a function). var_decl emits their storage without
@@ -2816,6 +2820,16 @@ public:
 	// guard variable's declaration rides `deferred_globals`.
 	void queue_global_ctor_group(class Variable *v, std::vector<node_t> &stmts,
 				     std::vector<node_t> &deferred_globals);
+	// The linkonce once-guard's name and storage declaration (one owner for
+	// the lowered group and a bound FROZEN_DEF group).
+	madc::dis::istring linkonce_init_guard_name(class Variable *v);
+	node_t linkonce_init_guard_decl(class Variable *v);
+	// v66: a bound FROZEN_DEF global — the producer's lowered storage
+	// declaration (NULL for any other global) and its init group, queued
+	// as-is. Both record their nodes in m_frozen_global_nodes.
+	node_t frozen_global_decl(class Variable *v);
+	void queue_frozen_ctor_group(class Variable *v, const std::vector<node_t> &stmts,
+				     std::vector<node_t> &deferred_globals);
 	// An interactive entry's global declared after the entry's first
 	// statement (plan §41.2a slice 2): its queued group moves from the module
 	// init to this point of the entry's run. NULL when it has none.
@@ -3022,6 +3036,13 @@ public:
 	// RE-INSTANTIATES instead, its standing story).
 	const std::set<madc::dis::istring> &pack_uncarriable_syms() const
 		{ return pack_dropped; }
+	// v66: what the freeze locates for a FROZEN_DEF global — its lowered
+	// storage declaration and its __madc_global_init group's statements.
+	const std::map<Variable *, node_t> &global_decl_nodes() const
+		{ return m_global_decl_node; }
+	const std::vector<std::pair<Variable *, std::vector<node_t> > > &
+	global_ctor_groups() const
+		{ return m_ctor_groups; }
 	// Bind ctors/dtor/methods of externally-defined / extern-template classes
 	// to their exported Itanium symbols (dlsym-verified, fills only EMPTY
 	// emit_symbols). Runs early in translate_module; re-run at module end
@@ -3233,6 +3254,9 @@ void cir_collect_declared_object_names(node_t tree, std::set<madc::dis::istring>
 // lowering site that registers F as referenced never runs for it).
 void cir_collect_cleanup_attr_fns(node_t tree, std::set<madc::dis::istring> &out);
 void cir_collect_addr_fn_refs(node_t tree, std::set<madc::dis::istring> &out);	// v25
+// Every identifier an N_SPEC_DECL's initializer names as a value (v66: a
+// loaded FROZEN_DEF declaration's function address constants).
+void cir_collect_initializer_ids(node_t decl, std::set<madc::dis::istring> &out);
 // Collect the slot every dyn-module call in the tree assigns from
 // __madc_dl_member (CirBuilder::dyn_module_callee's shape). FOREST
 // materialization sites only (CirBuilder::declare_loaded_body_slots).

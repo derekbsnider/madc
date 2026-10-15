@@ -4873,6 +4873,121 @@ void Program::forest_arena_record_member_pointer(DataDef *dd)
 	forest_arena_record_fptr(md->member_type);	// a fn-ptr or member-pointer member
 }
 
+// The declaration that defines file-scope global `v`: the dkGlobalVar one
+// carrying an initializer, else the first (the rule collect_global_ctors
+// emits by).
+static TokenDecl *forest_global_defining_decl(Program *prog, Variable *v)
+{
+    TokenDecl *first = NULL;
+    for (const Program::TopDecl &t : prog->top_decls) {
+	if (t.kind != Program::DeclKind::dkGlobalVar || t.var != v || !t.decl)
+	    continue;
+	if (t.decl->has_initializer())
+	    return t.decl;
+	if (!first)
+	    first = t.decl;
+    }
+    return first;
+}
+
+// The initializer FORM a class global's declaration carries in a record
+// (v16 / v25): captured ctor-arg tokens, a default-constructed temporary
+// `T x = T()`, or value-init `T x{}` (the RHS is the variable itself).
+// 0 = none of them.
+static uint32_t forest_class_init_form(Variable *v, TokenDecl *td)
+{
+    if (!td)
+	return 0;
+    if (!td->ctor_args.empty())
+	return td->ctor_arg_src.empty() ? 0u : CIR_GLOBALF_CTOR_ARG_TOKENS;
+    TokenBase *rhs = td->initialize;
+    if (TokenAssign *as = dynamic_cast<TokenAssign *>(rhs))
+	rhs = as->right;
+    if (TokenObjTemp *ot = dynamic_cast<TokenObjTemp *>(rhs))
+	return ot->ctor_args.empty() ? CIR_GLOBALF_CLASS_COPY_TEMP : 0u;
+    if (TokenVar *tv = dynamic_cast<TokenVar *>(rhs))
+	return &tv->var == v ? CIR_GLOBALF_CLASS_VALUE_INIT : 0u;
+    return 0;
+}
+
+// The integer literal a scalar global's initializer is (v14), or NULL. A
+// constant CAST of one unwraps to it: `char *last_log = NULL;` is
+// `((void *)0)` after the NULL macro, and live emits the same scalar data
+// item a bare 0 does.
+static TokenBase *forest_scalar_int_literal(TokenDecl *td)
+{
+    TokenBase *rhs = td ? td->initialize : NULL;
+    if (TokenAssign *as = dynamic_cast<TokenAssign *>(rhs))
+	rhs = as->right;
+    if (TokenCast *tc = dynamic_cast<TokenCast *>(rhs))
+	rhs = tc->expr;
+    return rhs && rhs->is_constant() && rhs->id() == TokenID::tkInt ? rhs : NULL;
+}
+
+// The parse-time VALUE a scalar global's record carries (v14): its integer
+// literal initializer, or the value the parse BAKED into a const object
+// (vfCONSTBAKED — `inline const _Lock_policy __default_lock_policy =
+// _S_atomic;`), which a consumer's parse folds (template arguments) as live's
+// does.
+static bool forest_scalar_init_value(Variable *v, TokenDecl *td, int64_t &out)
+{
+    if (TokenBase *lit = forest_scalar_int_literal(td)) {
+	out = lit->ival();
+	return true;
+    }
+    if ((v->flags & vfCONSTBAKED) && v->holds_constant_value()) {
+	out = v->get<int64_t>();
+	return true;
+    }
+    return false;
+}
+
+// v66: a file-scope DEFINITION whose initializer no record form carries — a
+// call, an aggregate, a string, a baked table. Its record is FROZEN_DEF: the
+// producer's lowered storage declaration and init group, emitted verbatim by
+// a bind. `td` is its defining declaration.
+static bool forest_global_frozen_def(Variable *v, TokenDecl *td)
+{
+    if (!v || !v->type || !td || !td->has_initializer())
+	return false;
+    if ((v->flags & vfLOCAL) && !(v->flags & vfSTATIC))
+	return false;
+    if ((v->flags & vfEXTERN) || v->is_enumerator() || v->type->is_function())
+	return false;
+    if (dynamic_cast<DataDefCLASS *>(v->type))
+	return forest_class_init_form(v, td) == 0;
+    int64_t value = 0;
+    return !forest_scalar_init_value(v, td, value);
+}
+
+// v66: ask the partitioner to locate each FROZEN_DEF global's storage
+// declaration and init statements, and to place the statements in the
+// global's declaring unit (they sit under the root's __madc_global_init).
+static void cir_forest_frozen_def_placement(Program *prog, const CirBuilder &b,
+					    cir_freeze_placement &pl)
+{
+    if (!prog || !prog->tkProgram)
+	return;
+    std::map<Variable *, const std::vector<node_t> *> groups;
+    for (const auto &g : b.global_ctor_groups())
+	groups[g.first] = &g.second;
+    for (const auto &kv : b.global_decl_nodes()) {
+	TokenDecl *td = forest_global_defining_decl(prog, kv.first);
+	if (!kv.second || !forest_global_frozen_def(kv.first, td))
+	    continue;
+	pl.locate.insert(CIR_NODE(kv.second));
+	std::map<Variable *, const std::vector<node_t> *>::const_iterator gi =
+	    groups.find(kv.first);
+	if (gi == groups.end())
+	    continue;
+	for (node_t st : *gi->second) {
+	    pl.locate.insert(CIR_NODE(st));
+	    if (td->file)
+		pl.unit_of[CIR_NODE(st)] = td->file;
+	}
+    }
+}
+
 // File-scope global VARIABLE definitions (v13/v14/v16) — the CIR_GLOBALS
 // segment, which survives the v18 flip (the arena replaced only the type-graph
 // records). A header's file-scope globals are a separate category from types,
@@ -4888,12 +5003,59 @@ void Program::forest_arena_record_member_pointer(DataDef *dd)
 // scalar-const's VALUE rides init_value (v14). Dedup by identity (a global
 // appears once; global_identity). Names intern into the ACTIVE pool that
 // cir_forest_write serializes.
-static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
+static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f,
+				    const CirBuilder *builder)
 {
     if (!prog || !TokenBase::_active_strpool || !prog->tkProgram)
 	return;
     madc::dis::intern_table &pool = *TokenBase::_active_strpool;
     std::set<madc::dis::istring> seen_globals;
+    // v66: a FROZEN_DEF global's lowered nodes, located by the partitioner
+    // (cir_forest_frozen_def_placement asked for them). False when the
+    // freeze did not locate them all (a pack-gate drop): the global keeps
+    // its pre-v66 record.
+    std::map<Variable *, const std::vector<node_t> *> ctor_groups;
+    if (builder)
+	for (const auto &cg : builder->global_ctor_groups())
+	    ctor_groups[cg.first] = &cg.second;
+    auto frozen_def = [&](Variable *gv, cir_forest_global_record &g) -> bool {
+	if (!builder)
+	    return false;
+	std::map<Variable *, node_t>::const_iterator di =
+	    builder->global_decl_nodes().find(gv);
+	if (di == builder->global_decl_nodes().end() || !di->second)
+	    return false;
+	auto loc_of = [&](node_t n, std::pair<uint32_t, uint32_t> &out) -> bool {
+	    std::map<const cir_node *, std::pair<uint32_t, uint32_t> >::const_iterator li =
+		f.located.find(CIR_NODE(n));
+	    if (li == f.located.end())
+		return false;
+	    out = li->second;
+	    return true;
+	};
+	std::pair<uint32_t, uint32_t> dl;
+	if (!loc_of(di->second, dl))
+	    return false;
+	std::vector<std::pair<uint32_t, uint32_t> > inits;
+	std::map<Variable *, const std::vector<node_t> *>::const_iterator gi =
+	    ctor_groups.find(gv);
+	if (gi != ctor_groups.end())
+	    for (node_t st : *gi->second) {
+		std::pair<uint32_t, uint32_t> il;
+		if (!loc_of(st, il))
+		    return false;
+		inits.push_back(il);
+	    }
+	g.gflags    |= CIR_GLOBALF_FROZEN_DEF;
+	g.init_value = (int64_t)f.arena.add_word(dl.first);
+	f.arena.add_word(dl.second);
+	f.arena.add_word((uint32_t)inits.size());
+	for (size_t k = 0; k < inits.size(); ++k) {
+	    f.arena.add_word(inits[k].first);
+	    f.arena.add_word(inits[k].second);
+	}
+	return true;
+    };
     // v22: the namespace a header declared the global in. Live's var-decl inside
     // `namespace std {}` registers namespace_map["std"][name] = the SAME Variable
     // that sits in tkProgram->variables; a consumer's fresh instantiation resolves
@@ -5070,58 +5232,42 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
 		g.gflags |= CIR_GLOBALF_TU_ROOT;
 	    g.ns_id   = global_ns_id(v);
 	    g.alias_id   = global_alias_id(v);	// v39
-	    // v16: classify the header's initializer FORM so the load rebuilds a
-	    // TokenDecl whose emission is byte-identical to a live parse (v13 stored
-	    // NO form -> flush set decl=NULL -> collect_global_ctors' built-in path
-	    // default-constructed DIRECTLY on the global; a live parse builds a stack
-	    // temp for `T x = T()` or a trivially-copyable self-copy for `T x{}`).
-	    // Inspect the dkGlobalVar TopDecl's assign RHS structurally (no
-	    // name-keying): a functional-construction temporary `T()` with NO args ->
-	    // COPY_TEMP; the variable itself (value-init `T x{}`) -> VALUE_INIT. Any
-	    // other/absent form leaves gflags 0 -> v13's default-ctor synthesis.
-	    for (auto &t : prog->top_decls) {
-		if (t.kind != Program::DeclKind::dkGlobalVar || t.var != v)
-			continue;
-		// v25: ctor-syntax initializer `T name(args);` (the <compare>
-		// ordering constants) — serialize the args list's raw-token run
-		// (captured at parse under forest_arena_enabled) into the arena
-		// tokbytes; the flush re-runs the live args-list parse over it.
-		// Uncaptured args (empty run) leave gflags 0 -> the v13
-		// default-ctor synthesis, today's behavior.
-		if (t.decl && !t.decl->ctor_args.empty()
-		    && !t.decl->ctor_arg_src.empty()) {
-			std::vector<uint8_t> bytes;
-			if (madc_pch::serialize_token_seq(t.decl->ctor_arg_src, bytes)
-			    && !bytes.empty()) {
-				uint32_t cnt = 0;
-				for (TokenBase *ct : t.decl->ctor_arg_src)
-					if (ct)
-						++cnt;
-				g.ctor_tok_off   = f.arena.add_tokbytes(bytes);
-				g.ctor_tok_bytes = (uint32_t)bytes.size();
-				g.ctor_tok_count = cnt;
-				for (TokenBase *ct : t.decl->ctor_arg_src)
-					if (ct && ct->file) {
-						g.ctor_file_id =
-						    f.arena.strings.intern(ct->file);
-						break;
-					}
-				g.gflags |= CIR_GLOBALF_CTOR_ARG_TOKENS;
-			}
-			break;
-		}
-		TokenBase *rhs = t.decl ? t.decl->initialize : NULL;
-		if (TokenAssign *as = dynamic_cast<TokenAssign *>(rhs))
-			rhs = as->right;
-		if (TokenObjTemp *ot = dynamic_cast<TokenObjTemp *>(rhs)) {
-			if (ot->ctor_args.empty())
-				g.gflags |= CIR_GLOBALF_CLASS_COPY_TEMP;
-		} else if (TokenVar *tv = dynamic_cast<TokenVar *>(rhs)) {
-			if (&tv->var == v)	// value-init RHS is the variable itself
-				g.gflags |= CIR_GLOBALF_CLASS_VALUE_INIT;
-		}
-		break;
+	    // v66: an initializer no form carries -> the lowered nodes.
+	    TokenDecl *ftd = forest_global_defining_decl(prog, v);
+	    if (forest_global_frozen_def(v, ftd) && frozen_def(v, g)) {
+		push_global(g, global_decl_file(v), v);
+		continue;
 	    }
+	    // v16 / v25: the initializer FORM the record carries
+	    // (forest_class_init_form), so the load rebuilds a TokenDecl whose
+	    // emission is byte-identical to a live parse: a stack temp for
+	    // `T x = T()` (COPY_TEMP), a trivially-copyable self-copy for `T x{}`
+	    // (VALUE_INIT), or — ctor syntax `T name(args);`, the <compare>
+	    // ordering constants — the args list's raw-token run (captured at parse
+	    // under forest_arena_enabled) in the arena tokbytes, which the flush
+	    // re-parses (CTOR_ARG_TOKENS). No form leaves gflags 0 -> v13's
+	    // default-ctor synthesis.
+	    uint32_t form = forest_class_init_form(v, ftd);
+	    if (form == CIR_GLOBALF_CTOR_ARG_TOKENS) {
+		std::vector<uint8_t> bytes;
+		if (madc_pch::serialize_token_seq(ftd->ctor_arg_src, bytes)
+		    && !bytes.empty()) {
+			uint32_t cnt = 0;
+			for (TokenBase *ct : ftd->ctor_arg_src)
+				if (ct)
+					++cnt;
+			g.ctor_tok_off   = f.arena.add_tokbytes(bytes);
+			g.ctor_tok_bytes = (uint32_t)bytes.size();
+			g.ctor_tok_count = cnt;
+			for (TokenBase *ct : ftd->ctor_arg_src)
+				if (ct && ct->file) {
+					g.ctor_file_id = f.arena.strings.intern(ct->file);
+					break;
+				}
+			g.gflags |= CIR_GLOBALF_CTOR_ARG_TOKENS;
+		}
+	    } else
+		g.gflags |= form;
 	    push_global(g, global_decl_file(v), v);
 	    continue;
 	}
@@ -5134,14 +5280,31 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
 	// unresolvable type cleanly LACKS (same discipline as the class path).
 	if (v->type->is_function())
 	    continue;
-	TokenDecl *td = NULL;
-	for (auto &t : prog->top_decls)
-	    if (t.kind == Program::DeclKind::dkGlobalVar && t.var == v) {
-		td = t.decl;
-		break;
-	    }
+	TokenDecl *td = forest_global_defining_decl(prog, v);
 	if (!td)
 	    continue;
+	// v66: an initializer no form carries (a call, an aggregate, a string,
+	// a baked table) -> the lowered nodes. Not located (a pack-gate drop):
+	// the pre-v66 record below.
+	if (forest_global_frozen_def(v, td)) {
+	    uint32_t fsid = forest_serialize_type_id(v->type);
+	    if (!fsid)
+		continue;
+	    cir_forest_global_record g;
+	    memset(&g, 0, sizeof(g));
+	    g.name_id = pool.intern(v->name);
+	    g.type_id = fsid;
+	    g.flags   = v->flags;
+	    if (prog->forest_is_tu_root_file(td->file))
+		g.gflags |= CIR_GLOBALF_TU_ROOT;
+	    g.ns_id   = global_ns_id(v);
+	    g.alias_id   = global_alias_id(v);	// v39
+	    if (frozen_def(v, g)) {
+		if (seen_globals.insert(global_identity(v)).second)
+		    push_global(g, td->file, v);
+		continue;
+	    }
+	}
 	// An UNINITIALIZED file-scope definition (`int REQ;` — a plain-C
 	// tentative definition; also plain struct/array globals): live emits
 	// a bss item (var_decl with no initializer), no ctor, no value.
@@ -5166,17 +5329,10 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
 	    push_global(g, td->file, v);
 	    continue;
 	}
-	TokenBase *rhs = td->initialize;
-	if (TokenAssign *as = dynamic_cast<TokenAssign *>(rhs))
-	    rhs = as->right;
-	// A constant CAST of an integer literal unwraps to the literal:
-	// `char *last_log = NULL;` is `((void *)0)` after the NULL macro —
-	// TokenCast(void*, TokenInt(0)) — and live emits the same scalar
-	// data item a bare 0 does (`last_log: u64 0`). Any non-literal cast
-	// operand still fails the tkInt check below and cleanly lacks.
-	if (TokenCast *tc = dynamic_cast<TokenCast *>(rhs))
-	    rhs = tc->expr;
-	if (!rhs || !rhs->is_constant() || rhs->id() != TokenID::tkInt)
+	// An integer literal or a baked const (forest_scalar_init_value);
+	// anything else not frozen above cleanly lacks.
+	int64_t init_value = 0;
+	if (!forest_scalar_init_value(v, td, init_value))
 	    continue;
 	uint32_t sid = forest_serialize_type_id(v->type);
 	if (!sid)
@@ -5193,7 +5349,7 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
 	    g.gflags |= CIR_GLOBALF_TU_ROOT;
 	g.ns_id      = global_ns_id(v);
 	g.alias_id      = global_alias_id(v);	// v39
-	g.init_value = rhs->ival();
+	g.init_value = init_value;
 	push_global(g, td ? td->file : NULL, v);
     }
 }
@@ -7192,8 +7348,13 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 		    source_name, nerr);
 	} else if (tree && gate_ok) {
 	    cir_frozen_forest f;
+	    // v66: the FROZEN_DEF globals' lowered nodes, located (and their
+	    // init statements placed in the declaring unit) by the partition.
+	    cir_freeze_placement placement;
+	    if (builder)
+		cir_forest_frozen_def_placement(prog, *builder, placement);
 	    if (!cir_freeze_forest(CIR_NODE(tree), source_name, f,
-				   cir_pack_protocol_owner, prog)) {
+				   cir_pack_protocol_owner, prog, &placement)) {
 		fprintf(stderr, "%s: forest freeze failed\n", source_name);
 	    } else {
 		f.libs = prog->loaded_lib_paths;
@@ -7233,7 +7394,7 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 		cir_forest_arena_complete(prog, f,
 					  builder ? &builder->pack_uncarriable_syms()
 						  : NULL);	// freeze-time fidelity (inline bodies / typedefs / ns)
-		cir_forest_fill_globals(prog, f);	// file-scope globals (CIR_GLOBALS; ids swizzle via the arena)
+		cir_forest_fill_globals(prog, f, builder);	// file-scope globals (CIR_GLOBALS; ids swizzle via the arena)
 		cir_forest_fill_templates(prog, f);	// v20: template-NAME state (pattern maps, token runs)
 		// v58: the seed index — what a bind of each unit visits and how
 		// it judges it (docs/plans/2026-10-13-pack-slices-design.md).

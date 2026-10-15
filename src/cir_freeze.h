@@ -656,7 +656,14 @@ bool cir_freeze_read(const madc::dis::snapshot_reader &r, uint32_t seg_id_base,
 // its frozen (unit, idx) — stored raw and read in place, so extern_loc_for
 // binary-searches it instead of decoding every name through the string pool
 // into a map on its first query (19.3M of a dialect compile's 64.8M Ir).
-enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 65 };
+//
+// v66: a global whose initializer no record form carries (a call, an
+// aggregate, a string, a baked table) is CIR_GLOBALF_FROZEN_DEF — its record
+// locates (init_value: an arena-payload offset) the producer's lowered
+// storage declaration and its __madc_global_init group, and a bind emits
+// those nodes verbatim. The freeze places each group statement in its
+// global's declaring unit.
+enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 66 };
 // Flags word of a SNAP_KIND_CIR_BRANCH_DEPS tuple.
 enum : uint32_t {
 	CIR_BRANCH_DEP_DEFINED   = 1u,	// the macro was defined at the consult
@@ -1023,6 +1030,15 @@ enum : uint32_t {
 						// var_decl with NO initializer, so the flush leaves
 						// the rebuilt TokenDecl's initialize NULL. No
 						// init_value. (smaug_requests_source's REQ.)
+	,
+	CIR_GLOBALF_FROZEN_DEF       = 1u << 8	// v66: an initializer no form above carries
+						// (`static bool r = register_host(...)`,
+						// an aggregate of function addresses, a
+						// string, a baked table) — the record
+						// locates the producer's LOWERED storage
+						// declaration and init-group statements;
+						// the bind emits them verbatim (LOADED ==
+						// parsed), never a re-lowering
 };
 struct cir_forest_global_record
 {
@@ -1036,7 +1052,11 @@ struct cir_forest_global_record
 				// QUALIFIED name (std::piecewise_construct) through
 				// namespace_map[ns][name], which live's var-decl
 				// inside `namespace std {}` registers
-	int64_t  init_value;	// scalar integer init (valid iff CIR_GLOBALF_SCALAR_INIT) — v14
+	int64_t  init_value;	// scalar integer init (valid iff CIR_GLOBALF_SCALAR_INIT) — v14;
+				// v66 (CIR_GLOBALF_FROZEN_DEF): the arena-payload offset of
+				// the frozen locations — words [def_unit, def_idx, n, then
+				// n (unit, idx) init-group statements]. Off the fixed record:
+				// every bind decodes the record table
 	// v25 (CIR_GLOBALF_CTOR_ARG_TOKENS): the ctor-args token run, in the arena
 	// tokbytes block (same span shape as paramrec's default run; file_id in the
 	// arena strings pool). A layout change — covered by the v25 version bump.
@@ -1250,6 +1270,10 @@ struct cir_frozen_forest
 	// its Variable's point of creation (Variable::pack_poi).
 	std::vector<const char *> global_files;
 	std::vector<uint32_t>     global_poi;
+	// Transient (v66): the (unit, idx) of each node a cir_freeze_placement
+	// asked the partitioner to locate (cir_forest_fill_globals reads a
+	// FROZEN_DEF global's storage declaration and init statements here).
+	std::map<const cir_node *, std::pair<uint32_t, uint32_t> > located;
 	// Transient (pack-slices design §4): each arena slot's and each global's
 	// creation context (DataDef / Variable::pack_ctx — the instantiation it
 	// was born in; empty = none), and the parse's instantiation requirements
@@ -1344,13 +1368,25 @@ bool cir_forest_relayout(const void *image, size_t image_len,
 // stays Program-blind; the resolver lives with the caller).
 typedef const char *(*cir_unit_owner_fn)(void *ctx, uint32_t origin_id);
 
+// v66: nodes the caller needs back by location. `unit_of` places a node
+// (and the origin-less nodes under it) in the named file's unit — a global's
+// init statement sits under the root's __madc_global_init otherwise, and a
+// bind of the global's header must not decode the root's unit for it.
+// Every node in `locate` reports its (unit, idx) in cir_frozen_forest::located.
+struct cir_freeze_placement
+{
+	std::map<const cir_node *, const char *> unit_of;
+	std::set<const cir_node *> locate;
+};
+
 // Interns unit names, string payloads, and position file names into the
 // ACTIVE string pool — serialize that pool into the same container after
 // this call. False on a null root or an out-of-format tree.
 bool cir_freeze_forest(cir_node *root, const char *main_unit_name,
 		       cir_frozen_forest &out,
 		       cir_unit_owner_fn owner_override = NULL,
-		       void *owner_ctx = NULL);
+		       void *owner_ctx = NULL,
+		       const cir_freeze_placement *placement = NULL);
 
 // Stage a complete forest into a container: directory, string-pool blocks
 // (the active pool, whose ids all forest handles reference), typeid->name
@@ -1539,6 +1575,11 @@ struct CirRestoredGlobal
 	uint32_t       ctor_len;
 	uint32_t       ctor_count;
 	const char    *ctor_file;	// origin file (NULL = none)
+	// v66 (CIR_GLOBALF_FROZEN_DEF): the frozen storage declaration and the
+	// init group's statements, as (unit, idx) for node_for.
+	uint32_t       def_unit;
+	uint32_t       def_idx;
+	std::vector<std::pair<uint32_t, uint32_t> > init_locs;
 };
 
 // v25: restored namespace-surface state. An NSLINK is an inline-namespace

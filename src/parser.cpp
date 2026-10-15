@@ -27640,6 +27640,9 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	pg.ctor_len   = rg.ctor_len;
 	pg.ctor_count = rg.ctor_count;
 	pg.ctor_file  = rg.ctor_file;
+	pg.def_unit   = rg.def_unit;	// v66: CIR_GLOBALF_FROZEN_DEF
+	pg.def_idx    = rg.def_idx;
+	pg.init_locs  = rg.init_locs;
 	pg.system     = declared_system(rg.ns, pg.name);
 	forest_pending_globals.push_back(pg);
     }
@@ -28819,6 +28822,34 @@ void Program::flush_forest_pending_globals()
 	    stamp_producer_symbol(ev);
 	    DBG(std::cout << "flush_forest_pending_globals: enum const "
 		<< pg.name << " = " << pg.init_value << std::endl);
+	    continue;
+	}
+	// v66: a FROZEN_DEF global — the producer's lowered storage declaration
+	// and init group are emitted verbatim (forest_frozen_global_defs), so
+	// the Variable carries the parsed identity only: flags, the producer's
+	// symbol, the namespace binding, its dkGlobalVar TopDecl.
+	if ( pg.gflags & CIR_GLOBALF_FROZEN_DEF )
+	{
+	    Variable *fv = new Variable(pg.name, *pg.type, 1, NULL, /*alloc=*/false);
+	    fv->flags = pg.flags;
+	    stamp_producer_symbol(fv);
+	    tkProgram->variables.push_back(fv);
+	    bind_namespace(fv);
+	    TopDecl ftd;
+	    ftd.kind = DeclKind::dkGlobalVar;
+	    ftd.name = pg.name;
+	    ftd.var  = fv;
+	    ftd.dd   = pg.type;
+	    ftd.decl = NULL;
+	    ftd.forest_system = pg.system;
+	    top_decls.push_back(ftd);
+	    ForestFrozenGlobalDef &fz = forest_frozen_global_defs[fv];
+	    fz.def_unit  = pg.def_unit;
+	    fz.def_idx   = pg.def_idx;
+	    fz.init_locs = pg.init_locs;
+	    DBG(std::cout << "flush_forest_pending_globals: frozen def "
+		<< pg.name << " (" << pg.init_locs.size()
+		<< " init statement(s))" << std::endl);
 	    continue;
 	}
 	// A class that declares a ctor but whose ctor set restored EMPTY cannot be

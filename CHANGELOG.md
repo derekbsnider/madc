@@ -570,6 +570,27 @@ darwin lanes gain a `macos-<major>` execution domain from `sw_vers` beside
 `darwin-<arch>`, so a test skip can name the OS release that cannot run it
 rather than an architecture.
 
+### A bound header global runs its initializer (`register_host`, aggregates)
+
+A packed madc now runs a bound dialect fragment's file-scope global
+initializers, so a UI host registers itself at load and `ui::open("ws")` finds
+its target. Since dialect fragments bind from the pack (0.105.0), a header
+global whose initializer no frozen-record form carried — a call, an aggregate,
+a string, a baked table — was dropped (scalar) or default-constructed (class)
+when the pack bound it: `cir_forest_fill_globals` recorded only literal, class
+value-init / copy-temp, ctor-arg-token, extern, enum and uninitialized forms.
+So `ns_ui_ws` / `ns_ui_web`'s `static bool __ui_ws_registered =
+ui::register_host("ws", ui::WEB, &__ui_ws_ops)` never ran — `ui::open("ws")`
+said "unknown target 'ws'" and the packed GUI lane was 0/15 — and `ns_madc`'s
+`__madc_run_child` never ran. Forest format v66 records such a global as
+`CIR_GLOBALF_FROZEN_DEF`: its record locates the producer's lowered storage
+declaration and its `__madc_global_init` group (the freeze places each group
+statement in the global's declaring unit), and a bind emits those nodes
+verbatim, registering their callees and function-address references through the
+loaded-body path. A baked const scalar carries its value as a scalar init.
+Reducer: `tests/testfragmentinit.mad`. The packed GUI lane goes from 0/15 to
+15/15 (JIT, EXE, OBJ).
+
 ## [v0.104.0] — 2026-10-12
 
 The madcide split: madc's interactive mode takes the ed/ex editing core, and madcide leaves to its own repository. `madc -i` gains colon mode, a command registry modules and hosts extend, `%std` / `%reset` / `%history` / `%check` / `%build` / `%run` / `%args` / `%project`, coloured prompts and diagnostics, and host-facing language services; madc ships a Language Server (`--lsp`) and a Model Context Protocol server (`--mcp`) with a project memory, a code graph and an external-task client; the data substrate gains a document component with an edit notification, regexes run on one PCRE2 engine, and a source's standard follows its extension. madcide now lives in its own repository and releases on its own, so madc's packages no longer carry it. Forest and pack correctness and reproducibility, codegen and REPL fixes, and Windows and darwin parity round out the release.

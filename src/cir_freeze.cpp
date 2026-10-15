@@ -208,7 +208,8 @@ struct cir_freeze_loc { uint32_t unit, idx; };
 static bool cir_freeze_partitioned(cir_node *root, const char *main_unit_name,
 				   bool by_unit, cir_frozen_forest &out,
 				   cir_unit_owner_fn owner_override = NULL,
-				   void *owner_ctx = NULL)
+				   void *owner_ctx = NULL,
+				   const cir_freeze_placement *placement = NULL)
 {
 	if (!root)
 		return false;
@@ -255,6 +256,12 @@ static bool cir_freeze_partitioned(cir_node *root, const char *main_unit_name,
 	// override reassigns it (a __need protocol serving's nodes belong to
 	// the INCLUDER's unit; see cir_unit_owner_fn in cir_freeze.h).
 	auto node_unit_file = [&](cir_node *n) -> const char * {
+		if (placement) {
+			std::map<const cir_node *, const char *>::const_iterator pi =
+				placement->unit_of.find(n);
+			if (pi != placement->unit_of.end() && pi->second)
+				return pi->second;
+		}
 		if (owner_override) {
 			const char *own = owner_override(owner_ctx, n->origin_id);
 			if (own)
@@ -400,6 +407,19 @@ static bool cir_freeze_partitioned(cir_node *root, const char *main_unit_name,
 		out.funcdef_files[id->u.s.s] = deffile;
 	}
 
+	// v66: report the nodes the caller asked to locate.
+	out.located.clear();
+	if (placement)
+		for (std::set<const cir_node *>::const_iterator li =
+			 placement->locate.begin();
+		     li != placement->locate.end(); ++li) {
+			std::map<cir_node *, cir_freeze_loc>::const_iterator wi =
+				where.find(const_cast<cir_node *>(*li));
+			if (wi != where.end())
+				out.located[*li] = std::make_pair(wi->second.unit,
+								  wi->second.idx);
+		}
+
 	// v20: index every top-level EXTERN declaration's symbol -> (unit, idx).
 	// These are the typed (or deliberately unprototyped) extern decls the
 	// producer's lowering emitted (need_output_extern: operator new/delete
@@ -453,7 +473,8 @@ bool cir_freeze_subtree(cir_node *root, cir_frozen_blob &out)
 
 bool cir_freeze_forest(cir_node *root, const char *main_unit_name,
 		       cir_frozen_forest &out,
-		       cir_unit_owner_fn owner_override, void *owner_ctx)
+		       cir_unit_owner_fn owner_override, void *owner_ctx,
+		       const cir_freeze_placement *placement)
 {
 	if (!TokenBase::_active_strpool) {
 		fprintf(stderr, "madc internal: cir forest freeze with no"
@@ -462,7 +483,8 @@ bool cir_freeze_forest(cir_node *root, const char *main_unit_name,
 	}
 	return cir_freeze_partitioned(root, main_unit_name ? main_unit_name
 							   : "<main>",
-				      true, out, owner_override, owner_ctx);
+				      true, out, owner_override, owner_ctx,
+				      placement);
 }
 
 // ---------------------------------------------------------------------------
@@ -5096,6 +5118,28 @@ void CirFrozenForest::materialize_pass()
 			rg.ctor_len   = g.ctor_tok_bytes;
 			rg.ctor_count = g.ctor_tok_count;
 			rg.ctor_file  = g.ctor_file_id ? a.c_str(g.ctor_file_id) : NULL;
+		}
+		// v66: the frozen storage declaration + init group — words
+		// [def_unit, def_idx, n, n (unit, idx) pairs] at init_value.
+		rg.def_unit = rg.def_idx = 0;
+		if (g.gflags & CIR_GLOBALF_FROZEN_DEF) {
+			const uint32_t at = (uint32_t)g.init_value;
+			uint32_t n = 0;
+			bool locs_ok = a.get_word(at, 0, rg.def_unit)
+				    && a.get_word(at, 1, rg.def_idx)
+				    && a.get_word(at, 2, n);
+			for (uint32_t k = 0; locs_ok && k < n; ++k) {
+				uint32_t iu = 0, ix = 0;
+				locs_ok = a.get_word(at, 3 + 2 * k, iu)
+				       && a.get_word(at, 4 + 2 * k, ix);
+				if (locs_ok)
+					rg.init_locs.push_back(std::make_pair(iu, ix));
+			}
+			if (!locs_ok) {
+				fprintf(stderr, "madc: forest global %s: frozen"
+					" locations out of range\n", nm);
+				continue;
+			}
 		}
 		_restored_globals.push_back(rg);
 		if (par_on)

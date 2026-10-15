@@ -33642,6 +33642,28 @@ node_t CirBuilder::global_ctor_call(Variable *v, DataDefCLASS *cdd, TokenDecl *d
 // built-ins registered via addGlobal (e.g. `version`) are NOT in top_decls, so
 // emit their storage here. Either way, queue the ctor into m_global_ctor_stmts
 // for func_def to run at main entry, in declaration order.
+// The once-guard of a linkonce (C++ `inline`) variable `v`'s dynamic init:
+// `__madc_ivg_<sym>`, itself a linkonce int so the merged image holds one.
+madc::dis::istring CirBuilder::linkonce_init_guard_name(Variable *v)
+{
+	return "__madc_ivg_" + var_emit_name(*v);
+}
+
+node_t CirBuilder::linkonce_init_guard_decl(Variable *v)
+{
+	madc::dis::istring gname = linkonce_init_guard_name(v);
+	node_t gspec = list();
+	append(gspec, node2(N_ATTR, id("linkonce"), list()));
+	append(gspec, simple(N_INT));
+	node_t gdecl = simple(N_SPEC_DECL);
+	append(gdecl, node1(N_SHARE, gspec));
+	append(gdecl, node2(N_DECL, id(gname.c_str()), list()));
+	append(gdecl, ignore());
+	append(gdecl, ignore());
+	append(gdecl, ignore());
+	return gdecl;
+}
+
 void CirBuilder::queue_global_ctor_group(Variable *v, std::vector<node_t> &stmts,
 					 std::vector<node_t> &deferred_globals)
 {
@@ -33654,17 +33676,8 @@ void CirBuilder::queue_global_ctor_group(Variable *v, std::vector<node_t> &stmts
 		// this group, but the merged image holds ONE variable — run the
 		// dynamic init once behind a guard that itself merges weak
 		// (`if (__madc_ivg_<sym> == 0) { __madc_ivg_<sym> = 1; ... }`).
-		madc::dis::istring gname = "__madc_ivg_" + var_emit_name(*v);
-		node_t gspec = list();
-		append(gspec, node2(N_ATTR, id("linkonce"), list()));
-		append(gspec, simple(N_INT));
-		node_t gdecl = simple(N_SPEC_DECL);
-		append(gdecl, node1(N_SHARE, gspec));
-		append(gdecl, node2(N_DECL, id(gname.c_str()), list()));
-		append(gdecl, ignore());
-		append(gdecl, ignore());
-		append(gdecl, ignore());
-		deferred_globals.push_back(gdecl);
+		madc::dis::istring gname = linkonce_init_guard_name(v);
+		deferred_globals.push_back(linkonce_init_guard_decl(v));
 		node_t items = list();
 		append(items, node2(N_EXPR, list(),
 				    node2(N_ASSIGN, id(gname.c_str()), integer(1))));
@@ -33681,6 +33694,41 @@ void CirBuilder::queue_global_ctor_group(Variable *v, std::vector<node_t> &stmts
 		m_global_ctor_stmts.push_back(s);
 		grp.push_back(s);
 	}
+}
+
+// v66: a bound FROZEN_DEF global's init group — the producer's statements in
+// their final shape (a linkonce group is already its guarded block), so only
+// the guard's storage declaration is this module's to emit.
+void CirBuilder::queue_frozen_ctor_group(Variable *v, const std::vector<node_t> &stmts,
+					 std::vector<node_t> &deferred_globals)
+{
+	m_ctor_groups.push_back(std::make_pair(v, stmts));
+	if (stmts.empty())
+		return;
+	if (v->flags & vfLINKONCE)
+		deferred_globals.push_back(linkonce_init_guard_decl(v));
+	for (node_t s : stmts)
+		m_global_ctor_stmts.push_back(s);
+}
+
+// v66: the producer's lowered storage declaration of a bound FROZEN_DEF
+// global (Program::forest_frozen_global_def), or NULL for any other global.
+// Its nodes join m_frozen_global_nodes, whose references the module's
+// reachability fixpoint registers as it does a loaded body's.
+node_t CirBuilder::frozen_global_decl(Variable *v)
+{
+	const Program::ForestFrozenGlobalDef *fz =
+		m_prog && m_prog->bind_forest ? m_prog->forest_frozen_global_def(v) : NULL;
+	if (!fz)
+		return NULL;
+	cir_node *dn = m_prog->bind_forest->node_for(fz->def_unit, fz->def_idx);
+	if (!dn) {
+		fprintf(stderr, "madc: forest global %s: the frozen declaration"
+			" is missing\n", v->name.c_str());
+		return NULL;
+	}
+	m_frozen_global_nodes.push_back(dn->as_node());
+	return dn->as_node();
 }
 
 // The module init runs before an interactive entry's run, so a global the
@@ -33756,6 +33804,31 @@ void CirBuilder::collect_global_ctors(Program *prog,
 		if ((v->flags & vfLOCAL) && !(v->flags & vfSTATIC)) continue;
 		// An extern is a reference to a definition elsewhere — no storage, no ctor.
 		if (v->flags & vfEXTERN) continue;
+		// A bound FROZEN_DEF global: the producer's init group, verbatim —
+		// its exit-time destruction included. An earlier module of the
+		// interactive session that defines the object ran it.
+		if (const Program::ForestFrozenGlobalDef *fz = prog->bind_forest
+			? prog->forest_frozen_global_def(v) : NULL) {
+			if (session_defines(var_emit_name(*v))
+			    && !prog->session_redefined_objects.count(v))
+				continue;
+			std::vector<node_t> fstmts;
+			for (size_t k = 0; k < fz->init_locs.size(); ++k) {
+				cir_node *sn = prog->bind_forest->node_for(
+					fz->init_locs[k].first, fz->init_locs[k].second);
+				if (!sn) {
+					fprintf(stderr, "madc: forest global %s: the frozen"
+						" init group is missing\n", v->name.c_str());
+					fstmts.clear();
+					break;
+				}
+				fstmts.push_back(sn->as_node());
+			}
+			m_frozen_global_nodes.insert(m_frozen_global_nodes.end(),
+						     fstmts.begin(), fstmts.end());
+			queue_frozen_ctor_group(v, fstmts, deferred_globals);
+			continue;
+		}
 		// The object's exit-time destruction closes its group, after its
 		// initialization: a statically initialized object is destroyed
 		// as if it were initialized there ([basic.start.term]/3), in
@@ -35227,6 +35300,7 @@ node_t CirBuilder::translate_module(Program *prog)
 	m_cond_nodes.clear();
 	m_ctor_groups.clear();
 	m_global_decl_node.clear();
+	m_frozen_global_nodes.clear();
 	// Emittable-set memo: reset per module so a builder reused across
 	// Programs never carries verdicts (or dangling seen-keys) over.
 	m_synth_dtor_syms_memo.clear();
@@ -35536,13 +35610,19 @@ node_t CirBuilder::translate_module(Program *prog)
 				// newest declaration defines it (D6).
 				const bool earlier = session_defines(var_emit_name(*td.var))
 						     && !session_object_redefinition(td);
+				// A bound FROZEN_DEF global: the producer's lowered
+				// declaration, verbatim (it carries its own position).
+				node_t gd = earlier ? NULL : frozen_global_decl(td.var);
+				const bool frozen = gd != NULL;
 				m_file_scope_decl = true;
 				m_extern_decl = earlier;
-				node_t gd = var_decl(td.var, earlier ? NULL : td.decl);
+				if (!gd)
+					gd = var_decl(td.var, earlier ? NULL : td.decl);
 				m_extern_decl = false;
 				m_file_scope_decl = false;
 				if (gd) {
-					stamp(gd, td);
+					if (!frozen)
+						stamp(gd, td);
 					deferred_globals.push_back(gd);
 					m_global_decl_node[td.var] = gd;
 					// A file-scope STATIC with dynamic init is
@@ -35929,7 +36009,106 @@ node_t CirBuilder::translate_module(Program *prog)
 	// revert to DEFBODY is a consumer-derivable home (the on-use
 	// derivation), so callers of it stay frozen. Drops are recorded via
 	// the pack_record_drop member (shared with the post-translate gate).
+	size_t frozen_refs_done = 0;	// m_frozen_global_nodes registered so far
 	auto materialize_and_lower = [&]() {
+		// A LOADED node's references (a forest lazy body, a bound FROZEN_DEF
+		// global's declaration or init statement): its saved lowering is
+		// pre-built, so register its callees, cleanup functions, dyn-module
+		// slots and function references exactly as translating it live would
+		// have. `decl_initializer`: also the declaration's initializer values.
+		auto register_loaded_refs = [&](node_t bn, bool decl_initializer,
+						const madc::dis::istring &from) -> bool {
+			bool grew = false;
+			std::set<madc::dis::istring> callees;
+			cir_collect_call_callees(bn, callees);
+			// A dtor referenced ONLY via a scope-local's cleanup
+			// attribute (live registers it at the lowering site,
+			// which a pre-built loaded body never runs).
+			cir_collect_cleanup_attr_fns(bn, callees);
+			declare_loaded_body_slots(bn);
+			// v25: a fn referenced as a CALL ARGUMENT in the loaded
+			// body (`__stoa(strtod, ...)` — decayed bare N_ID, or
+			// `&f`). Live's argument lowering declares it via
+			// need_output_extern; reproduce that shape by loading
+			// the producer's OWN extern decl from the index (a
+			// local/param name misses the index and is ignored).
+			{
+				std::set<madc::dis::istring> arg_refs;
+				cir_collect_addr_fn_refs(bn, arg_refs);
+				if (decl_initializer)
+					cir_collect_initializer_ids(bn, arg_refs);
+				for (std::set<madc::dis::istring>::iterator ai =
+				     arg_refs.begin(); ai != arg_refs.end(); ++ai) {
+					if (m_output_externs.count(*ai))
+						continue;
+					uint32_t xu = 0, xi = 0;
+					if (!prog->bind_forest->extern_loc_for(*ai, xu, xi)) {
+						// Not an extern DECL in the producer: the
+						// argument may name a forest-BODIED sibling
+						// (mingw's static-inline strtof passed as
+						// __stoa's converter) — odr-use by address
+						// needs its DEFINITION, exactly as live's
+						// value-use lowering records it. Route it
+						// through referenced_funcs so this same
+						// fixpoint materializes the saved body /
+						// deferred derivation next round; a local or
+						// parameter name is inert there (no funcdef,
+						// no lazy body — nothing keys on it).
+						if (!referenced_funcs.count(*ai)) {
+							referenced_funcs.insert(*ai);
+							grew = true;
+						}
+						continue;
+					}
+					cir_node *xd = prog->bind_forest->node_for(xu, xi);
+					if (xd) {
+						m_output_externs[*ai] = xd->as_node();
+						DBG(std::cout << "forest arg-ref extern: "
+						    << *ai << " (from " << from
+						    << ")" << std::endl);
+					}
+				}
+			}
+			for (std::set<madc::dis::istring>::iterator ci = callees.begin();
+			     ci != callees.end(); ++ci) {
+				// A callee with NO in-TU definition source (not a
+				// bound lazy body, not a deferred/lib body) whose
+				// declaration only ever came from a LOWERING site
+				// (operator new/delete manglings, dlsym-fallback
+				// libc fns, the __madc_* runtime) never gets that
+				// declaration here — the loaded body's calls are
+				// pre-built — and c2mir would implicit-int it
+				// (truncated pointers: the setjmp / operator-new
+				// ext32 SIGSEGV class). LOAD the producer's own
+				// extern decl node for it (verbatim state); the
+				// existing m_output_externs flush places + dedupes
+				// it exactly like a live-lowered extern. Fallback:
+				// the compiler-runtime table (same live shapes).
+				const madc::dis::istring &ck = prog->body_registration_key(*ci);
+				if (!forest_lazy.count(ck)
+				    && !lib_funcs.count(*ci)
+				    && !prog->has_deferred_lazy_body(*ci)
+				    && (pass075_done
+					? !typed_proto_syms.count(*ci)
+					: !forest_funcdef_syms.count(ck)
+					  && !prog->funcdef_map.count(ck)
+					  && !prog->forest_deferred_funcs.count(ck))
+				    && !m_output_externs.count(*ci)) {
+					uint32_t xu = 0, xi = 0;
+					if (prog->bind_forest->extern_loc_for(*ci, xu, xi)) {
+						cir_node *xd = prog->bind_forest->node_for(xu, xi);
+						if (xd) {
+							m_output_externs[*ci] = xd->as_node();
+							continue;
+						}
+					}
+					if (ensure_runtime_extern_for(*ci))
+						continue;
+				}
+				referenced_funcs.insert(*ci);
+			}
+			return grew;
+		};
 		for (bool grew = true; grew; ) {
 			grew = false;
 			// Promote only verdict-0 forest functions whose compiler
@@ -36201,6 +36380,16 @@ node_t CirBuilder::translate_module(Program *prog)
 			// deferred body — and register the body's callees exactly as
 			// translating it live would have (the saved lowered body's
 			// N_CALLs are pre-built, invisible to referenced_funcs).
+			// v66: the bound FROZEN_DEF globals' loaded declarations and
+			// init statements (queued ahead of this fixpoint) register
+			// their references once, as a loaded body's do.
+			for (; frozen_refs_done < m_frozen_global_nodes.size();
+			     ++frozen_refs_done) {
+				node_t gn = m_frozen_global_nodes[frozen_refs_done];
+				register_loaded_refs(gn, gn->code == N_SPEC_DECL,
+						     "frozen global");
+				grew = true;
+			}
 			for (auto &kv : forest_lazy) {
 				if (forest_lazy_emitted.count(kv.first)) continue;
 				FuncDef *ffd = kv.second;
@@ -36227,92 +36416,8 @@ node_t CirBuilder::translate_module(Program *prog)
 					ffd->forest_body_unit, ffd->forest_body_idx);	// memoized
 				if (!body) continue;
 				node_t bn = body->as_node();
-				std::set<madc::dis::istring> callees;
-				cir_collect_call_callees(bn, callees);
-				// A dtor referenced ONLY via a scope-local's cleanup
-				// attribute (live registers it at the lowering site,
-				// which a pre-built loaded body never runs).
-				cir_collect_cleanup_attr_fns(bn, callees);
-				declare_loaded_body_slots(bn);
-				// v25: a fn referenced as a CALL ARGUMENT in the loaded
-				// body (`__stoa(strtod, ...)` — decayed bare N_ID, or
-				// `&f`). Live's argument lowering declares it via
-				// need_output_extern; reproduce that shape by loading
-				// the producer's OWN extern decl from the index (a
-				// local/param name misses the index and is ignored).
-				{
-					std::set<madc::dis::istring> arg_refs;
-					cir_collect_addr_fn_refs(bn, arg_refs);
-					for (std::set<madc::dis::istring>::iterator ai =
-					     arg_refs.begin(); ai != arg_refs.end(); ++ai) {
-						if (m_output_externs.count(*ai))
-							continue;
-						uint32_t xu = 0, xi = 0;
-						if (!prog->bind_forest->extern_loc_for(*ai, xu, xi)) {
-							// Not an extern DECL in the producer: the
-							// argument may name a forest-BODIED sibling
-							// (mingw's static-inline strtof passed as
-							// __stoa's converter) — odr-use by address
-							// needs its DEFINITION, exactly as live's
-							// value-use lowering records it. Route it
-							// through referenced_funcs so this same
-							// fixpoint materializes the saved body /
-							// deferred derivation next round; a local or
-							// parameter name is inert there (no funcdef,
-							// no lazy body — nothing keys on it).
-							if (!referenced_funcs.count(*ai)) {
-								referenced_funcs.insert(*ai);
-								grew = true;
-							}
-							continue;
-						}
-						cir_node *xd = prog->bind_forest->node_for(xu, xi);
-						if (xd) {
-							m_output_externs[*ai] = xd->as_node();
-							DBG(std::cout << "forest arg-ref extern: "
-							    << *ai << " (from " << kv.first
-							    << ")" << std::endl);
-						}
-					}
-				}
-				for (std::set<madc::dis::istring>::iterator ci = callees.begin();
-				     ci != callees.end(); ++ci) {
-					// A callee with NO in-TU definition source (not a
-					// bound lazy body, not a deferred/lib body) whose
-					// declaration only ever came from a LOWERING site
-					// (operator new/delete manglings, dlsym-fallback
-					// libc fns, the __madc_* runtime) never gets that
-					// declaration here — the loaded body's calls are
-					// pre-built — and c2mir would implicit-int it
-					// (truncated pointers: the setjmp / operator-new
-					// ext32 SIGSEGV class). LOAD the producer's own
-					// extern decl node for it (verbatim state); the
-					// existing m_output_externs flush places + dedupes
-					// it exactly like a live-lowered extern. Fallback:
-					// the compiler-runtime table (same live shapes).
-					const madc::dis::istring &ck = prog->body_registration_key(*ci);
-					if (!forest_lazy.count(ck)
-					    && !lib_funcs.count(*ci)
-					    && !prog->has_deferred_lazy_body(*ci)
-					    && (pass075_done
-						? !typed_proto_syms.count(*ci)
-						: !forest_funcdef_syms.count(ck)
-						  && !prog->funcdef_map.count(ck)
-						  && !prog->forest_deferred_funcs.count(ck))
-					    && !m_output_externs.count(*ci)) {
-						uint32_t xu = 0, xi = 0;
-						if (prog->bind_forest->extern_loc_for(*ci, xu, xi)) {
-							cir_node *xd = prog->bind_forest->node_for(xu, xi);
-							if (xd) {
-								m_output_externs[*ci] = xd->as_node();
-								continue;
-							}
-						}
-						if (ensure_runtime_extern_for(*ci))
-							continue;
-					}
-					referenced_funcs.insert(*ci);
-				}
+				if (register_loaded_refs(bn, false, kv.first))
+					grew = true;
 				node_t proto = forest_fwd_proto(bn);
 				// The symbol this body DEFINES is its own declared id
 				// (the frozen lowered name): a header inline namespace
@@ -37928,6 +38033,36 @@ void cir_collect_addr_fn_refs(node_t n, std::set<madc::dis::istring> &out)
 			if (!op) break;
 			cir_collect_addr_fn_refs(op, out);
 		}
+}
+
+// v66: every identifier a FROZEN declaration's initializer names as a value
+// — a bound FROZEN_DEF global's (`{ open, close, ..., "ns_ui_ws" }`: functions
+// as address constants). Live's initializer lowering declares each at its
+// lowering site; the loaded declaration is pre-built, so the materialization
+// site resolves them the way it does a loaded body's call arguments. Type
+// names, designators and member names are not values.
+static void cir_collect_value_ids(node_t n, std::set<madc::dis::istring> &out)
+{
+	if (!n) return;
+	if (n->code == N_ID) {
+		if (n->u.s.s)
+			out.insert(n->u.s.s);
+		return;
+	}
+	if (n->code < N_ID || n->code == N_TYPE || n->code == N_FIELD_ID)
+		return;
+	if (n->code == N_FIELD || n->code == N_DEREF_FIELD) {
+		cir_collect_value_ids(c2mir_node_op(n, 0), out);
+		return;
+	}
+	for (node_t op = c2mir_node_first_op(n); op; op = c2mir_node_next_op(op))
+		cir_collect_value_ids(op, out);
+}
+
+void cir_collect_initializer_ids(node_t decl, std::set<madc::dis::istring> &out)
+{
+	if (decl && decl->code == N_SPEC_DECL)
+		cir_collect_value_ids(c2mir_node_op(decl, 4), out);	// op4: initializer
 }
 
 // Collect the slot of every dyn-module call in the tree: the N_ID a

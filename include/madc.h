@@ -7076,11 +7076,31 @@ public:
 	const uint8_t *ctor_bytes; uint32_t ctor_len, ctor_count;
 	const char *ctor_file;
 	bool system;		// declared by a system-header forest unit (TopDecl.forest_system for the flushed decl)
+	// v66 (CIR_GLOBALF_FROZEN_DEF): the frozen storage declaration and
+	// init-group statements, as bound-forest (unit, idx).
+	uint32_t def_unit, def_idx;
+	std::vector<std::pair<uint32_t, uint32_t> > init_locs;
 	PendingForestGlobal() : type(NULL), flags(0), gflags(0), init_value(0),
 				ctor_bytes(NULL), ctor_len(0), ctor_count(0),
-				ctor_file(NULL), system(false) {}
+				ctor_file(NULL), system(false), def_unit(0),
+				def_idx(0) {}
     };
     std::vector<PendingForestGlobal> forest_pending_globals;
+    // v66: a restored FROZEN_DEF global's lowered nodes in the bound forest —
+    // the producer's storage declaration and its __madc_global_init group,
+    // which the CIR builder emits verbatim in place of lowering the global
+    // (LOADED == parsed). Keyed by the restored Variable.
+    struct ForestFrozenGlobalDef {
+	uint32_t def_unit, def_idx;
+	std::vector<std::pair<uint32_t, uint32_t> > init_locs;
+    };
+    std::map<const Variable *, ForestFrozenGlobalDef> forest_frozen_global_defs;
+    const ForestFrozenGlobalDef *forest_frozen_global_def(const Variable *v) const
+    {
+	std::map<const Variable *, ForestFrozenGlobalDef>::const_iterator it =
+	    forest_frozen_global_defs.find(v);
+	return it == forest_frozen_global_defs.end() ? NULL : &it->second;
+    }
     // Restored FLAT datatype_map registrations (typedef/enum/class names from a
     // bound header). The lexer PROMOTES any identifier found in the flat
     // datatype_map to a TokenDataType at TOKENIZE time (getToken ~4978), and in
