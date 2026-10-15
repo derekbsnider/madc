@@ -6,6 +6,17 @@
 
 The live REPL and the pack slices. A `madc -i` session behaves like a buffer you keep editing: a function defined again reaches every caller, an inline one included; a variable defined again is re-initialized in place, an object with a destructor destroyed and constructed again; a type defined again is the same type when its data members are, and otherwise its name's next version (old objects keep `P#1`, mixing versions is a type error, a C++ function for the new version is an `abi_tag`-mangled overload). An edit to the REPL buffer reparses live, Restart and Run All replays the whole buffer and runs its uncalled `main`, and objects with static storage duration are destroyed at exit. On the pack side, the forest pack now serves every system header the platform ships, so a packed madc compiles a program that includes any of them on a machine with no headers on disk, reading the core system headers from libmadc rather than /usr/include; the pack is cut into per-unit slices with a frozen index, so a bind loads and judges only the units a program's includes reach and a compile that binds nothing never decodes the container, while the dialect prelude binds directly from its own frozen unit. madcide 0.8.0 carries the live reparse and Restart and Run All to its REPL pane.
 
+### A new README and a security policy
+
+The README presents madc first as a self-contained C and C++ compiler — JIT,
+AOT and a REPL, with no GCC, Clang, LLVM, linker or headers on disk — then the
+madc dialect, then the conveniences, the LSP and MCP servers and embedding. It
+carries a REPL screenshot, a section on MIR and what madc's copy adds, timings
+against g++ 13.3 and clang++ 18.1 measured on the 0.105.0 release binary, and
+the conformance figures; the release history moves to this file and
+`docs/release-notes/`. `SECURITY.md` states the supported release and how to
+report a vulnerability privately.
+
 ### The forest pack serves every system header
 
 A packed madc now compiles a program that includes any system header on a
