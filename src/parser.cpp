@@ -27217,7 +27217,7 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 		mf.system_units.insert(*it);
 	}
     }
-    _forest_declidx_seconds = forest_restore_now() - _t_declidx0;
+    _forest_declidx_seconds += forest_restore_now() - _t_declidx0;
     // Env-gated probe (MADC_DECLIDX_PROBE=<substr>): dump matching
     // declared-name index entries with their unit + bound verdict.
     {
@@ -27265,6 +27265,10 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
     // stale TopDecl behind. Tags (struct/union/class share one name space, so
     // a pre-promotion STRUCT dedupes against its CLASS successor) partition
     // separately from typedefs (`typedef struct X X;` keeps both entries).
+    // A name an EARLIER restore registered (an interactive session's entry
+    // before this one) holds: the session already resolved against it, so a
+    // record a wider closure surfaced later never displaces it.
+    forest_type_registered.resize(types.size(), 0);
     std::map<madc::dis::istring, size_t> last_tag, last_alias;
     for ( size_t i = 0; i < types.size(); ++i )
     {
@@ -27272,10 +27276,12 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	    continue;
 	madc::dis::istring k = types[i].ns ? madc::dis::istring(std::string(types[i].ns) + "::" + types[i].name)
 				    : madc::dis::istring(types[i].name);
-	if ( types[i].kind == CIR_TYPEK_TYPEDEF )
-	    last_alias[k] = i;
-	else
-	    last_tag[k] = i;
+	std::map<madc::dis::istring, size_t> &fam =
+	    types[i].kind == CIR_TYPEK_TYPEDEF ? last_alias : last_tag;
+	std::pair<std::map<madc::dis::istring, size_t>::iterator, bool> at =
+	    fam.insert(std::make_pair(k, i));
+	if ( !at.second && !forest_type_registered[at.first->second] )
+	    at.first->second = i;
     }
 
     // Registration's verdicts: the forest's one owner against this TU's
@@ -27319,15 +27325,34 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	namespace_datatype_map[ns][nm] =
 	    existing ? existing : new TokenDataType(nm.c_str(), *dd);
     };
+    // An enum's SCOPED enumerators as constant Variables in the tag's
+    // pseudo-namespace `pk` (TokenENUM::parse's registration).
+    auto scope_enumerators = [&](const CirRestoredType &rt,
+				 const madc::dis::istring &pk) {
+	variable_map_t &scope_ns = namespace_variables_for_write(pk);
+	for ( size_t e = 0; e < rt.enumerators.size(); ++e )
+	{
+	    Variable *evar = new Variable(rt.enumerators[e].first,
+					  *rt.dd, 1, NULL, true);
+	    evar->set(rt.enumerators[e].second);
+	    evar->make_enumerator();
+	    scope_ns[rt.enumerators[e].first] = evar;
+	}
+    };
 
     for ( size_t i = 0; i < types.size(); ++i )
     {
 	const CirRestoredType &rt = types[i];
 	if ( !rt.name || !*rt.name )
 	    continue;
+	unsigned char &registered = forest_type_registered[i];
+	if ( registered & FOREST_TYPE_NS )
+	    continue;			// an earlier restore registered both surfaces
 	madc::dis::istring name(rt.name);
+	// The record's key: its qualified name (the dedupe's, and an enum's
+	// pseudo-namespace inside a namespace).
+	const madc::dis::istring k = rt.ns ? madc::dis::istring(std::string(rt.ns) + "::" + name) : name;
 	{
-	    madc::dis::istring k = rt.ns ? madc::dis::istring(std::string(rt.ns) + "::" + name) : name;
 	    const std::map<madc::dis::istring, size_t> &fam =
 		rt.kind == CIR_TYPEK_TYPEDEF ? last_alias : last_tag;
 	    std::map<madc::dis::istring, size_t>::const_iterator li = fam.find(k);
@@ -27350,10 +27375,32 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	bool ns_ok   = forest_name_permitted(name, rt.ns);
 	bool flat_ok = (rt.ns && *rt.ns && rt.kind != CIR_TYPEK_TYPEDEF)
 		     ? forest_name_permitted(name, NULL) : ns_ok;
+	if ( registered & FOREST_TYPE_FLAT )
+	{
+	    // An earlier restore registered the bare surfaces while no bound
+	    // unit declared the qualified name (<time.h>'s struct tm before
+	    // <ctime>'s std::tm); a unit bound since may declare it. The flat
+	    // registration's own TokenDataType is the namespace's too, as live.
+	    if ( ns_ok )
+	    {
+		flat_datatype_map_iter dmi = datatype_map.find(name);
+		TokenDataType *flat = (dmi != datatype_map.end()
+				       && &(*dmi)->definition == rt.dd) ? *dmi : NULL;
+		register_in_namespace(rt.ns, name, rt.dd, flat);
+		if ( rt.kind == CIR_TYPEK_ENUM && !rt.enumerators.empty() )
+		    scope_enumerators(rt, k);
+		registered |= FOREST_TYPE_NS;
+	    }
+	    continue;
+	}
 	if ( !ns_ok && !flat_ok )
 	    continue;			// declared only by unbound units
 	if ( !forest_product_permitted(rt.dd) )
 	    continue;			// instantiation product of an unbound template
+	// What a registration below leaves done: the bare surfaces, and the
+	// namespace surface when the closure declares it (or there is none).
+	const unsigned char registers = FOREST_TYPE_FLAT
+	    | ((ns_ok || !rt.ns || !*rt.ns) ? FOREST_TYPE_NS : 0);
 	if ( rt.kind == CIR_TYPEK_TYPEDEF )
 	{
 	    if ( !rt.underlying )
@@ -27414,6 +27461,7 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	    td.forest_system = declared_system(rt.ns, name);
 	    top_decls.push_back(td);
 	    register_in_namespace(rt.ns, name, rt.underlying, tdt);
+	    registered = registers;
 	    DBG(std::cout << "forest_restore_decls: typedef " << name
 		<< (rt.ns && *rt.ns ? std::string(" (ns ") + rt.ns + ")" : "")
 		<< std::endl);
@@ -27448,18 +27496,9 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 			    redd->enumerators.push_back(
 				std::make_pair(madc::dis::istring(rt.enumerators[e].first),
 					       rt.enumerators[e].second));
-		madc::dis::istring pk = (rt.ns && *rt.ns && ns_ok)
-			       ? madc::dis::istring(std::string(rt.ns) + "::" + name) : name;
-		variable_map_t &scope_ns = namespace_variables_for_write(pk);
-		for ( size_t e = 0; e < rt.enumerators.size(); ++e )
-		{
-		    Variable *evar = new Variable(rt.enumerators[e].first,
-						  *rt.dd, 1, NULL, true);
-		    evar->set(rt.enumerators[e].second);
-		    evar->make_enumerator();
-		    scope_ns[rt.enumerators[e].first] = evar;
-		}
+		scope_enumerators(rt, (rt.ns && *rt.ns && ns_ok) ? k : name);
 	    }
+	    registered = registers;
 	    DBG(std::cout << "forest_restore_decls: enum " << name << " ("
 		<< rt.enumerators.size() << " enumerators)" << std::endl);
 	}
@@ -27503,6 +27542,7 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	    top_decls.push_back(td);
 	    if ( ns_ok )
 		register_in_namespace(rt.ns, name, sdd, tdt);
+	    registered = registers;
 	    DBG(std::cout << "forest_restore_decls: struct " << name << " ("
 		<< sdd->members.size() << " members)" << std::endl);
 	}
@@ -27604,6 +27644,7 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 		    bind_declared_cpp_symbol(cdd, mv, kind, disp, is_op, conv);
 		}
 	    }
+	    registered = registers;
 	    DBG(std::cout << "forest_restore_decls: class " << name << " ("
 		<< cdd->members.size() << " members, " << cdd->bases.size()
 		<< " bases, " << cdd->methods.size() << " methods)" << std::endl);
@@ -27621,13 +27662,15 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
     // then emit them exactly as a live parse would. No initializer is kept: the
     // default ctor is synthesized from the class's restored ctor set (Phase 6 v12).
     const std::vector<CirRestoredGlobal> &globals = forest.restored_globals();
+    forest_global_registered.resize(globals.size(), false);
     for ( size_t i = 0; i < globals.size(); ++i )
     {
 	const CirRestoredGlobal &rg = globals[i];
-	if ( !rg.name || !rg.type )
+	if ( forest_global_registered[i] || !rg.name || !rg.type )
 	    continue;
 	if ( !forest_name_permitted(rg.name, rg.ns) )
 	    continue;			// declared only by unbound units
+	forest_global_registered[i] = true;
 	PendingForestGlobal pg;
 	pg.name       = rg.name;
 	pg.ns         = rg.ns ? rg.ns : "";	// v22: defining namespace
@@ -27655,9 +27698,11 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
     // the dlsym implicit-variadic fallback (a signed-int return read as a 64-bit
     // long is a real miscompile — the bsearch_skill_exact class of bug).
     const std::vector<CirRestoredFunc> &funcs = forest.restored_funcs();
+    forest_func_registered.resize(funcs.size(), false);
     for ( size_t i = 0; i < funcs.size(); ++i )
     {
-	if ( !funcs[i].name || !*funcs[i].name || !funcs[i].fd )
+	if ( forest_func_registered[i] || !funcs[i].name || !*funcs[i].name
+	  || !funcs[i].fd )
 	    continue;
 	// Closure filter: the funcdef_map key ("printf") is what the index
 	// tapped; a namespace public's __ns_* key falls back to its
@@ -27671,6 +27716,7 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 					  ffd->namespace_name.c_str());
 	if ( verdict < 0 )
 	    continue;
+	forest_func_registered[i] = true;
 	PendingForestFunc pf;
 	pf.name = funcs[i].name;
 	pf.fd   = ffd;
@@ -27717,9 +27763,12 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
     // from_system_header classification, lazy-body deferral, and error
     // attribution — matches a live capture (the .madh record form keeps
     // line/column per token; the file rides the run descriptor).
-    std::vector<CirRestoredTemplate> &tmpls = forest.restored_templates();
+    CirRestoredTemplateList &tmpls = forest.restored_templates();
+    forest_tmpl_registered.resize(tmpls.size(), false);
     for ( size_t i = 0; i < tmpls.size(); ++i )
     {
+	if ( forest_tmpl_registered[i] )
+	    continue;
 	CirRestoredTemplate &rt = tmpls[i];
 	madc::dis::istring key(rt.key);
 	// Namespace/global keys are tapped verbatim. Every member template rides
@@ -27754,6 +27803,7 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	// the eager kinds, at first content read for the lazy ones.
 	if ( !lazy_kind && !forest.hydrate_restored_template(rt) )
 	    continue;
+	forest_tmpl_registered[i] = true;
 	switch ( rt.kind )
 	{
 	case CIR_TMPLK_CLASS:
@@ -27921,7 +27971,44 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
     }
     DBG(std::cout << "forest_restore_decls: " << tmpls.size()
 	<< " template pattern(s) restored" << std::endl);
-    _forest_restore_seconds = forest_restore_now() - _t_restore0;
+    _forest_restore_seconds += forest_restore_now() - _t_restore0;
+}
+
+Program::ForestBindMark Program::forest_bind_mark() const
+{
+    ForestBindMark m;
+    m.chain_size = forest_chain.size();
+    m.restored_chain_size = forest_restored_chain_size;
+    m.live_present = forest_live_present;
+    m.husk_live_pending = forest_husk_live_pending;
+    m.type_registered = forest_type_registered;
+    m.global_registered = forest_global_registered;
+    m.func_registered = forest_func_registered;
+    m.tmpl_registered = forest_tmpl_registered;
+    m.overload_recaptures = forest_pending_overload_recaptures.size();
+    return m;
+}
+
+// The forest's own materialized records stay (a cache: a record no bound
+// unit admits is judged unregistered again at the next restore).
+void Program::forest_bind_rewind(const ForestBindMark &mark)
+{
+    while ( forest_chain.size() > mark.chain_size )
+    {
+	forest_chain_set.erase(forest_chain.back());
+	forest_chain.pop_back();
+    }
+    forest_restored_chain_size = mark.restored_chain_size;
+    forest_live_present = mark.live_present;
+    forest_husk_live_pending = mark.husk_live_pending;
+    forest_type_registered = mark.type_registered;
+    forest_global_registered = mark.global_registered;
+    forest_func_registered = mark.func_registered;
+    forest_tmpl_registered = mark.tmpl_registered;
+    if ( forest_pending_overload_recaptures.size() > mark.overload_recaptures )
+	forest_pending_overload_recaptures.erase(
+	    forest_pending_overload_recaptures.begin() + mark.overload_recaptures,
+	    forest_pending_overload_recaptures.end());
 }
 
 // v21: the flush hydrates a verbatim-restored member-template placeholder with
@@ -28469,16 +28556,18 @@ void Program::flush_forest_pending_globals()
     if ( !tkProgram )
 	return;
 
-    // Item 5 (lazy defrost): the one-shot decl-record restore runs HERE — the
-    // first point after tokenize where forest_chain_set is COMPLETE (every
-    // #include has bound its unit closure) — so forest_restore_decls can
-    // filter registration to the TU's actual bound-include closure instead
-    // of defrosting the whole container's surface. It STAGES the pending
-    // datatypes/globals/funcs this flush then applies below.
-    if ( bind_forest && !forest_decls_restored && !forest_chain.empty() )
+    // Item 5 (lazy defrost): the decl-record restore runs HERE — the first
+    // point after tokenize where forest_chain_set is COMPLETE (every #include
+    // has bound its unit closure) — so forest_restore_decls can filter
+    // registration to the TU's actual bound-include closure instead of
+    // defrosting the whole container's surface. It STAGES the pending
+    // datatypes/globals/funcs this flush then applies below. An interactive
+    // session's entry that bound more units restores again, registering what
+    // the wider closure admits (see forest_restored_chain_size).
+    if ( bind_forest && forest_chain.size() > forest_restored_chain_size )
     {
 	forest_restore_decls(*bind_forest);
-	forest_decls_restored = true;
+	forest_restored_chain_size = forest_chain.size();
 	// The pack's layout recorder (--forest-touch-log) binding a dialect
 	// fragment reads ALL of it: every template a dialect program could
 	// hydrate is hydrated here, so the relayout stores those reads raw too
@@ -28619,6 +28708,9 @@ void Program::flush_forest_pending_globals()
 		<< std::endl);
 	    if ( sret )
 	    {
+		// The stub changes the pack's class in place (its methods, its
+		// constructors): an interactive entry rolled back takes it back.
+		journal_entity(pm.owner);
 		bool is_static = !(pm.rt->flags & CIR_TMPLF_INSTANCE_METHOD);
 		Variable *var = register_member_template_stub(
 		    *this, pm.owner, pm.disp, is_static, sret, 0);
@@ -28702,6 +28794,7 @@ void Program::flush_forest_pending_globals()
 	// return-type resolution reads class-scope names (`iterator`,
 	// `pair<iterator,bool>`) through class_scope_stack + the owner's
 	// (restored) type_aliases. Reproduce that scope context.
+	journal_entity(pm.owner);	// in place, as the stub arm above
 	class_scope_stack.push_back(pm.owner);
 	register_skipped_class_template_function(*this, pm.owner, tokens,
 						 typeparams, 0, madc::dis::istring());
@@ -83177,6 +83270,7 @@ struct Program::EntryTransaction::State
     std::vector<madc::dis::istring> active_using_namespaces;
     std::map<madc::dis::istring, std::vector<madc::dis::istring> > inline_namespace_children;
     bool include_iostream, include_stdio, include_string, include_ns_madc;
+    Program::ForestBindMark forest_bind;	// the pack binds the entry made
     // Entities changed in place, each saved (a copy) at its first change.
     // A saved Variable never owns its storage: the live one does.
     std::vector<std::pair<Variable *, Variable *> > variables;
@@ -83193,7 +83287,8 @@ struct Program::EntryTransaction::State
 	  active_using_namespaces(p.active_using_namespaces),
 	  inline_namespace_children(p.inline_namespace_children),
 	  include_iostream(p._include_iostream), include_stdio(p._include_stdio),
-	  include_string(p._include_string), include_ns_madc(p._include_ns_madc)
+	  include_string(p._include_string), include_ns_madc(p._include_ns_madc),
+	  forest_bind(p.forest_bind_mark())
     {
     }
 
@@ -83240,6 +83335,7 @@ struct Program::EntryTransaction::State
 
     void restore(Program &p) const
     {
+	p.forest_bind_rewind(forest_bind);
 	p.included_files = included_files;
 	p.include_guard_by_file = include_guard_by_file;
 	p.forest_live_tokenized = forest_live_tokenized;

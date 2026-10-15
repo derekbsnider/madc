@@ -1672,6 +1672,13 @@ struct CirRestoredTemplate
 	bool hydrated = false;		// hydrate ran (either way)
 	bool hydrate_failed = false;	// payload bounds broken — drop the def
 };
+// The restored template records, in materialize order. The parser holds
+// pointers into it (each registered pattern's frozen_src) while a later,
+// wider materialize_for appends — an interactive session's later include —
+// so no append may move a record: the first materialize pass reserves one
+// slot per frozen template record, and each record is pushed at most once
+// (_mat_done_templates).
+typedef std::vector<CirRestoredTemplate> CirRestoredTemplateList;
 
 // v26: one restored deferred-method-body entry (DK_DEFBODY). The parser-side
 // flush deserializes the four runs and rebuilds Program::deferred_lazy_bodies
@@ -1896,7 +1903,7 @@ class CirFrozenForest
 	bool template_token_span(size_t off, size_t len) const;
 	mutable bool _template_payload_loaded = false;
 	bool ensure_template_payload() const;
-	std::vector<CirRestoredTemplate> _restored_templates;
+	CirRestoredTemplateList _restored_templates;
 	// v20 container-global: extern-decl index (symbol -> frozen location).
 	// v65: a ForestDeclNames table bound in place on the first
 	// extern_loc_for query (R1: a compile that never asks never touches it).
@@ -2194,9 +2201,9 @@ public:
 	// Valid after materialize_from_arena() — call it first. slice B1: the
 	// walk restores IDENTITY only; a consumer that needs params/runs/
 	// pattern hydrates the record first (non-const overload + hydrate).
-	const std::vector<CirRestoredTemplate> &restored_templates() const
+	const CirRestoredTemplateList &restored_templates() const
 	{ return _restored_templates; }
-	std::vector<CirRestoredTemplate> &restored_templates()
+	CirRestoredTemplateList &restored_templates()
 	{ return _restored_templates; }
 	// slice B1 (lazy template payloads): decode ONE record's params +
 	// token-run table + ClassPattern payload slice, memoized per record.

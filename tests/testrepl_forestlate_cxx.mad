@@ -1,0 +1,10 @@
+// The madc dialect at madc -i: each entry's names bind their headers from the
+// pack as the entry needs them — `std::string` its <string>, then, an entry
+// later, `std::cout` its <iostream>. The later unit's records register at its
+// own entry (the decl restore runs again for every entry that bound a unit),
+// so the session holds what one program including both holds. The second
+// entry failed with "repeated declaration __vptr_8" while a later unit's
+// text parsed next to the bound one. The entries are
+// testrepl_forestlate_cxx.input. Oracle: g++ 13 == clang++-18, the same
+// lines as one program with <string> and <iostream>, print the .expect lines.
+println("loaded");

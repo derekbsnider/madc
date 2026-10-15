@@ -7060,7 +7060,38 @@ public:
     void refuse_type_redefinition(TokenBase *where, const char *kind,
 				  const madc::dis::istring &spelling,
 				  const DataDefSTRUCT *existing);
-    bool forest_decls_restored = false;	// one-shot decl-record restore (forest-global for now)
+    // The decl-record restore (forest_restore_decls) runs whenever a unit has
+    // bound since the last one — once per TU, and again for an interactive
+    // session's entry that includes a header no earlier entry bound. Each run
+    // judges every record it has not yet registered against the closure as it
+    // now stands (materialize_for widens monotonically), so a session that
+    // includes <string> and then <iostream> holds what one TU including both
+    // holds. Per-record state, index-aligned with the forest's restored lists:
+    // a TYPE record registers its bare surfaces and its namespace surface
+    // independently (FOREST_TYPE_FLAT / FOREST_TYPE_NS — a later closure can
+    // admit the namespace one); a global, function or template record is
+    // registered or not.
+    enum : unsigned char { FOREST_TYPE_FLAT = 1, FOREST_TYPE_NS = 2 };
+    std::vector<unsigned char> forest_type_registered;
+    std::vector<bool> forest_global_registered;
+    std::vector<bool> forest_func_registered;
+    std::vector<bool> forest_tmpl_registered;
+    size_t forest_restored_chain_size = 0;	// forest_chain's size at the last restore
+    // The bind's progress as an interactive entry's transaction saves it
+    // (EntryTransaction): a rolled-back entry — a failed one, or a trial
+    // parse — loses the registrations its binds' restore made (the
+    // registration journal), so the binds and restore runs go with them and
+    // the next #include of the header binds and registers again.
+    struct ForestBindMark {
+	size_t chain_size = 0;
+	size_t restored_chain_size = 0;
+	std::set<uint32_t> live_present, husk_live_pending;
+	std::vector<unsigned char> type_registered;
+	std::vector<bool> global_registered, func_registered, tmpl_registered;
+	size_t overload_recaptures = 0;
+    };
+    ForestBindMark forest_bind_mark() const;
+    void forest_bind_rewind(const ForestBindMark &mark);
     // v13: file-scope globals restored from a bound header. forest_restore_decls
     // runs during lexer #include handling, BEFORE tkProgram exists, so the globals
     // (which live in tkProgram->variables + dkGlobalVar top_decls) are staged here

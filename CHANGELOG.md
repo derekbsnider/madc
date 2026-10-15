@@ -163,15 +163,21 @@ now keyed by qualified identity at freeze and rebound into their namespace at
 restore, so the consumer compiles. Gate: `testforestnsenum` (g++ and clang++
 print `1 3 -1`).
 
-### A later REPL entry's `#include` parses its header text
+### A later REPL entry's `#include` binds from the pack
 
-The pack's declaration restore runs once per session, so a header first included
-by a later interactive entry got its macros but not its declaration records:
-`#include <time.h>` returned a `struct tm` with no members ("Unidentified member
-'tm_year'"), and a later `#include <vector>` or `<string>` failed with "use of
-undeclared identifier". A unit asked to bind after the one-shot restore now parses
-its text instead, so a header included mid-session resolves as it does on a live
-parse.
+A header first included by a later interactive (`madc -i`) entry now binds its
+declarations from the forest pack and registers its records, instead of parsing
+its text beside the units already bound. The pack's declaration restore runs
+again for every entry that binds a unit no earlier entry bound, registering what
+the now-wider include closure admits, so a session that includes `<string>` and
+then, an entry later, `<iostream>` holds what one program including both holds —
+and `#include <time.h>`'s `struct tm` comes back with its members. A second
+entry whose `#include` pulled a later unit's text next to a bound one had failed
+to compile ("repeated declaration __vptr_8"); it now prints its output, matching
+g++ and clang++ on the same lines as one program. A failed or speculative entry
+rolls its binds and registrations back, so a following `#include` of the header
+binds and registers again. Gate: `tests/testrepl_forestlate_cxx.mad`,
+`tests/testrepl_forestlate.mad`, and `forest_bind_gate`'s `[replate]` case.
 
 ### The dialect prelude is the compiler's own — intrinsic and bound directly
 

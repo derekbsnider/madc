@@ -5230,6 +5230,10 @@ void CirFrozenForest::materialize_pass()
 			rt.rec_spec_count    = t.spec_count;
 			rt.rec_pattern_begin = t.pattern_begin;
 			rt.rec_pattern_words = t.pattern_words;
+			// One slot per frozen record, reserved at the first push: an
+			// append never moves a record the parser points into.
+			if (_restored_templates.capacity() < _templates.size())
+				_restored_templates.reserve(_templates.size());
 			_restored_templates.push_back(rt);
 			if (par_on)
 				_par_via.tmpls.push_back(par_label_idx(par_listed_tmpl, par_carried_tmpl, i));

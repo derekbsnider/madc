@@ -2673,7 +2673,7 @@ TEST_CASE("v20: template-NAME state (pattern maps + token bodies) freezes and re
 	// slice B1 (task #25): the walk restores IDENTITY only — the payload-
 	// backed fields (params / runs / pattern) fill at hydrate, which is the
 	// consumer contract this test now exercises.
-	std::vector<CirRestoredTemplate> &ts = forest.restored_templates();
+	CirRestoredTemplateList &ts = forest.restored_templates();
 	CirRestoredTemplate *primary = NULL, *partial = NULL, *alias = NULL;
 	for (size_t i = 0; i < ts.size(); ++i) {
 		if (!ts[i].key) continue;

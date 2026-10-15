@@ -4903,12 +4903,6 @@ bool Program::forest_bind_env_ok(uint32_t unit, std::set<uint32_t> &visited)
 
 bool Program::forest_bind_env_ok(uint32_t root)
 {
-    // The decl-record restore is one-shot (flush_forest_pending_globals): a
-    // unit asked to bind once it ran — an interactive session's later entry —
-    // would install its macros and never its records (a REPL's `struct tm`
-    // with no members). It declines; its text parses, as live.
-    if ( forest_decls_restored )
-	return false;
     // v40 rollout knob (task #57): the mixed bind/live DECL frontier the
     // decline path exposes is now absorbed (denotes_same_type tolerance +
     // typedef/class live-wins), and the mismatch handling below is the
@@ -5226,8 +5220,7 @@ void Program::forest_bind_include(uint32_t unit)
     forest_bind_walking.erase(unit);
     // A named (embedded) unit's once-only key, as its live tokenize records it
     // (should_tokenize_include): a later TEXT include of a name the bind
-    // already served — a REPL entry's late #include parses text — skips it,
-    // as a live parse's second include does. The hosted-darwin prelude
+    // already served skips it, as a live parse's second include does. The hosted-darwin prelude
     // umbrella carries no #ifndef guard; the name key is its only dedup.
     if ( const char *bound = bind_forest->unit_name(unit) )
 	if ( find_embedded_header(bound) )
@@ -11976,8 +11969,8 @@ TokenProgram *Program::tokenize(const char *fname)
     DBG(std::cout << "Program::tokenize() finished tokenizing" << std::endl);
 
     // Auto-includes inject BEFORE the forest flush: the synthetic #include
-    // must bind its frozen unit while the one-shot decl restore (item 5,
-    // inside the flush) can still see it in forest_chain_set. The parse()-
+    // must bind its frozen unit before the decl restore (item 5, inside the
+    // flush) reads forest_chain_set. The parse()-
     // start injection stays as the live/eval fallback (pending set is empty
     // here after this call), but under a forest bind it ran too late — the
     // restore window had closed and the auto-included header's names never

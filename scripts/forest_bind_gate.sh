@@ -1074,6 +1074,63 @@ grep -aq "bound to grove unit.*fbgate_repl.h" "$rr_log" \
 rm -rf "$rr_snap" "$rr_log" tmp/fbgate_repl tmp/fbgate_repl_producer.mad tmp/fbgate_repl_consumer.mad tmp/fbgate_repl_input.txt
 echo "forest_bind_gate: [replreuse] OK — a REPL entry re-touching a frozen body gets its own nodes"
 
+# --- case: replate (2026-10-15: a REPL entry's later #include binds) ---
+# A header an interactive entry includes AFTER the session's first decl
+# restore BINDS from the grove, and its records register: the restore runs
+# again for every entry that bound a unit, registering what the wider closure
+# admits (forest_restore_decls' per-record state). The struct's members, the
+# class template and the inline function all resolve. Negative controls: the
+# one-shot restore left the late unit's records out ("Unidentified member
+# 'year'"), and its successor declined the bind so the header's text parsed —
+# the output is right there, so the bound line below is what fails it.
+mkdir -p tmp/fbgate_late
+cat > tmp/fbgate_late/fbgate_late_a.h <<'EOF'
+#ifndef FBGATE_LATE_A_H
+#define FBGATE_LATE_A_H
+inline int fbg_late_one() { return 1; }
+#endif
+EOF
+cat > tmp/fbgate_late/fbgate_late_b.h <<'EOF'
+#ifndef FBGATE_LATE_B_H
+#define FBGATE_LATE_B_H
+struct fbg_late_rec { int year; int day; };
+template<class T> struct fbg_late_box { T v; T get() const { return v; } };
+inline int fbg_late_sum(int a, int b) { return a + b; }
+#endif
+EOF
+cat > tmp/fbgate_late_producer.mad <<'EOF'
+#include <fbgate_late_a.h>
+#include <fbgate_late_b.h>
+int main() { fbg_late_box<int> b; b.v = fbg_late_one(); return b.get() - 1; }
+EOF
+cat > tmp/fbgate_late_consumer.mad <<'EOF'
+#include <fbgate_late_a.h>
+#include <cstdio>
+int main() { printf("main %d\n", fbg_late_one()); return 0; }
+EOF
+cat > tmp/fbgate_late_input.txt <<'EOF'
+#include <fbgate_late_b.h>
+fbg_late_rec r; r.year = 5; printf("year=%d\n", r.year);
+fbg_late_box<int> b; b.v = 7; printf("box=%d sum=%d\n", b.get(), fbg_late_sum(2, 3));
+EOF
+lt_snap=tmp/fbgate_late.msnap
+lt_log=tmp/fbgate_late.log
+rm -f "$lt_snap"
+timeout 600 "$BIN" --freeze="$lt_snap" -I tmp/fbgate_late tmp/fbgate_late_producer.mad \
+    >"$lt_log" 2>&1 || fail "[replate] the freeze FAILED: $(tail -n 3 "$lt_log")"
+lt_out=$(timeout 60 "$BIN" --forest-bind="$lt_snap" -I tmp/fbgate_late -i tmp/fbgate_late_consumer.mad \
+    < tmp/fbgate_late_input.txt 2>&1)
+[ "$lt_out" = "$(printf 'main 1\nyear=5\nbox=7 sum=5')" ] \
+    || fail "[replate] REPL output '$lt_out' != 'main 1 / year=5 / box=7 sum=5'"
+timeout 60 "$BIN" -v --forest-bind="$lt_snap" -I tmp/fbgate_late -i tmp/fbgate_late_consumer.mad \
+    < tmp/fbgate_late_input.txt >"$lt_log" 2>/dev/null
+grep -aq "bound to grove unit.*fbgate_late_a.h" "$lt_log" \
+    || fail "[replate] the consumer never bound its first header (vacuous)"
+grep -aq "bound to grove unit.*fbgate_late_b.h" "$lt_log" \
+    || fail "[replate] the entry's later #include did not BIND (its text parsed)"
+rm -rf "$lt_snap" "$lt_log" tmp/fbgate_late tmp/fbgate_late_producer.mad tmp/fbgate_late_consumer.mad tmp/fbgate_late_input.txt
+echo "forest_bind_gate: [replate] OK — a REPL entry's later #include binds and its records register"
+
 # --- case: reprogate (2026-10-11: a freeze is reproducible) ---
 # --dump-forest's `content` line digests the frozen corpus with the producer
 # config left out. Two freezes of one TU under standards that parse it alike
