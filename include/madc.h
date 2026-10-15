@@ -6405,7 +6405,8 @@ public:
     // Where a file-scope declaration is, its file (the line into `line`):
     // its origin token's, unless that token is another file's than the one
     // the parser was in when it recorded the declaration, as a qualified
-    // typedef name's is its header's (`std::string s`, BUGS.md B94); then
+    // typedef name's is its header's (`std::string s`, BUGS.md B94), or has
+    // no file at all (the same typedef's token bound from the pack); then
     // the recorded parse position. A NULL origin: its file and line (column
     // 0). The one reader of a TopDecl's place: `?`, the REPL's unit statics,
     // the emitter's system-origin verdict and node position, the graph API.

@@ -81709,8 +81709,8 @@ bool Program::top_decl_is_tu_origin(const TopDecl &td) const
 const char *Program::top_decl_position(const TopDecl &td, int &line,
 					 int *column) const
 {
-    if ( td.origin && !(td.parse_file && td.origin->file
-			&& td.origin->file != td.parse_file) )
+    if ( td.origin && !(td.parse_file
+			&& (!td.origin->file || td.origin->file != td.parse_file)) )
     {
 	line = td.origin->line;
 	if ( column )

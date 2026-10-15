@@ -2476,6 +2476,14 @@ std::string s = "hello";
   `tests/testglobal_qualified_typedef_init.mad`; `test_repl_session`, "a
   qualified typedef's object is the entry's own (B94)";
   `scripts/check-one-top-decl-position.sh` (fulltest).
+- The pack-bound form (fixed 2026-10-15): with `<string>` bound from the
+  forest pack, the typedef's token has NO file (line 0), so the
+  other-file test above missed it — `%whos` and madcide's Variables view
+  dropped every `std::string`-spelled object, `?s` printed no `Defined:`
+  line (madc 0.104.0 and 0.105.0; 0.103.0 listed them). A script-hosted
+  session (madc::session_open) met it once it bound the pack. A fileless
+  origin now takes the parse position too. Gate:
+  `tests/testsession_bindings_madc.mad` on the packed binary.
 - What remains: the declaration's type token `tb` in `parseDeclaration` is
   the registered typedef's token (the header's) for a qualified name, where
   an unqualified name carries its use site, and every `TokenDecl` /

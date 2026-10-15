@@ -68,6 +68,21 @@ presses) from 0.30–0.34 s to 0.10–0.12 s on the same package with only libma
 swapped; a CLI `madc hello.cpp` is unchanged at ~0.09 s. The freeze's text dump
 is byte-identical (2308 units).
 
+### A pack-bound `std::string` object lists at its REPL entry
+
+With `<string>` bound from the forest pack, an object whose type is a qualified
+typedef name spelled from that header — every `std::string`-spelled object —
+dropped out of `%whos` and madcide's Variables view, and `?a` printed `Type:
+std::string` with no `Defined:` line (madc 0.104.0 and 0.105.0; 0.103.0 listed
+them). The typedef's token carries no file when bound from the pack, so
+`top_decl_position`'s other-file test — which required a non-null origin file —
+missed it and returned the fileless origin. A fileless origin now takes the
+recorded parse position, the same the other-file case already uses, so the
+object lists at its entry (`?a` reports `Defined: @ REPL[2]:1`). A script-hosted
+session reached from `madc::session_open` met the same drop once it bound the
+pack by default. Gate: `tests/testsession_bindings_madc.mad` on the packed
+binary.
+
 ### The packed madc reads the core system headers from libmadc, never /usr/include
 
 The release (packed) madc compiles a C, C++ or dialect program that includes a
