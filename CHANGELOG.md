@@ -519,6 +519,57 @@ name component's GCC abi tags inside `NameComponent::ident` (spelled
 last-byte test. The parse-cost gate row `dialect.live` drops from
 76,390,431 to 76,255,279 Ir.
 
+### A macOS REPL late `#include` no longer redefines the darwin prelude
+
+On a packed macOS madc, a header first included by a later `madc -i` entry — a
+name the forest bind had already served — re-included the hosted-darwin prelude
+umbrella, which carries no `#ifndef` guard, and redefined its contents
+(`__madc_darwin_prelude.h: Identifier '__mbstate_t' already defined`). A bound
+embedded header's live tokenize records its angle-bracket name (`<time.h>`) in
+the once-only include set, but the forest bind path recorded no such key.
+Binding a named unit now records that key (`embedded_unit_include_key`),
+matching the live parse's second-include skip. Reducer:
+`tests/testrepl_forestlate.mad`.
+
+### macOS images and objects carry the linker's image handle
+
+A shared object madc builds now runs its objects' destructors when it is
+unloaded, where before a madc-built dylib finalized none of them and `exit()`
+entered the unmapped image (SIGSEGV / rc 139). ld64 resolves `___dso_handle`
+to the image's own mach header and lists no symbol for it; the MIR Mach-O
+writer instead placed the builder's crt `__dso_handle` data object at its
+section link address, so a dylib's handle lay in `__DATA`. dyld's `dlclose`
+runs libSystem `__cxa_finalize_ranges` over the image's ranges and finalizes
+only the handlers whose handle lies within them, so none of the dylib's C++
+destructors fired at unload. The image writer now resolves the handle to the
+mach-header base (`MACHO_SYM_VADDR`) and keeps `__dso_handle` out of the symtab
+and export trie, as ld64 does; the relocatable-object writer leaves
+`__dso_handle` undefined (an `N_UNDF` external, `(undefined) external
+___dso_handle`), so ld64 keeps the synthesized mach-header handle over an
+object's own definition. Reducer: `tests/testbuild_shared_unload.mad`; gate:
+`scripts/macho_obj_gate.sh` leg 8.
+
+### A madc Mach-O object carries `__mod_init_func` in `__DATA`
+
+A dylib linked from a madc-compiled Mach-O object now runs its global
+constructors and destructors with Apple's newer linker. A relocatable object
+must carry `__mod_init_func` in segment `__DATA` with flags
+`S_MOD_INIT_FUNC_POINTERS`, as clang's objects do; the writer placed it in
+`__DATA_CONST`, and Apple's ld 1167.5 types such an input section as
+`__DATA_CONST` `S_REGULAR` in the linked image, so dyld ran none of the
+object's initializers (an older ld 1115 kept the flags and ran them). The
+object writer now names the section's segment `__DATA`; the image writer keeps
+`__DATA_CONST,__mod_init_func` for a final image, which dyld runs on both
+linkers. Gate: `scripts/macho_obj_gate.sh` leg 8.
+
+### `testatquickexit` skips on macOS 14
+
+macOS 14's libSystem has no `at_quick_exit` / `quick_exit`, so the test links
+but dyld stops it (`Symbol not found: _at_quick_exit`); macOS 15 runs it. The
+darwin lanes gain a `macos-<major>` execution domain from `sw_vers` beside
+`darwin-<arch>`, so a test skip can name the OS release that cannot run it
+rather than an architecture.
+
 ## [v0.104.0] — 2026-10-12
 
 The madcide split: madc's interactive mode takes the ed/ex editing core, and madcide leaves to its own repository. `madc -i` gains colon mode, a command registry modules and hosts extend, `%std` / `%reset` / `%history` / `%check` / `%build` / `%run` / `%args` / `%project`, coloured prompts and diagnostics, and host-facing language services; madc ships a Language Server (`--lsp`) and a Model Context Protocol server (`--mcp`) with a project memory, a code graph and an external-task client; the data substrate gains a document component with an edit notification, regexes run on one PCRE2 engine, and a source's standard follows its extension. madcide now lives in its own repository and releases on its own, so madc's packages no longer carry it. Forest and pack correctness and reproducibility, codegen and REPL fixes, and Windows and darwin parity round out the release.
