@@ -66,6 +66,12 @@ whose behaviour already differs, then the pure duplicates.
 | 15 | the `std` / `theme` settings owner (owner decision F6: madc.ini owns them) | `src/madc_config.cpp:36,46` | settings.json `"std"` (`madcide_lang.inc:289-330`), its theme from its own profile |
 | — | (suspected) memory record-kind words | `src/madc_memory.cpp:74` | `clog_kind_of` (`editor_events.inc:436`) |
 
+### D. The REPL colours as the editor does (owner 2026-10-15)
+
+| # | Capability | Today | Wanted |
+|---|---|---|---|
+| 18 | the REPL's classes (`madc -i` and madcide's pane) | lexical only — `theme_paint` / `theme_marks` lex each text alone (`lex_classes`, the 1B.9 design), so in `std::string world("World")` only the literal is coloured | the session's parse classes (namespace, typename, variable, function — what `madc::parse_spans` gives the editor): the session parsed the entry with its includes; the painter takes those classes, so the CLI, the pane and the editor agree |
+
 ## How each row lands (one shape)
 
 1. madc: the face — a declaration in `<ns_madc>` / `<ns_madc_host>` /
