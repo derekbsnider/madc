@@ -275,14 +275,6 @@ static TokenBase *object_name_token(TokenBase *object_node)
     return tv ? tv->name_tok : NULL;
 }
 
-// A type-name lookup's answer, recorded on the token that SPELLED the name
-// (note_type_name_use) — for a resolver with several exits, each its own type.
-static TokenDataType *typed_use(TokenBase *spelled, TokenDataType *tdt)
-{
-    if ( spelled && tdt )
-	spelled->note_type_name_use(&tdt->definition);
-    return tdt;
-}
 madc::dis::intern_table *TokenBase::_active_strpool = NULL;
 madc::dis::value_pool *TokenBase::_active_valpool = NULL;
 
@@ -5307,6 +5299,8 @@ static TokenDataType *make_alias_type_token(const madc::dis::istring &name,
     return tdt;
 }
 
+static TokenDataType *use_site_type_token(TokenDataType *proto, TokenBase *at);
+
 TokenDataType *Program::resolve_namespaced_type_token(TokenBase *tb, bool consume_tokens)
 {
     if ( !tb || tb->type() != TokenType::ttIdentifier || !peekToken() || peekToken()->id() != TokenID::tkNS )
@@ -5364,11 +5358,14 @@ TokenDataType *Program::resolve_namespaced_type_token(TokenBase *tb, bool consum
     if ( dti == nti->end() )
 	return NULL;
 
-    member_tb->note_type_name_use(&dti->second->definition);	// `ns::T`: the member names the type
     if ( consume_tokens )
 	for ( size_t k = 0; k <= j; ++k )
 	    nextToken(); // each qualifier's '::' (+ ident) and the member
-    return dti->second;
+    // `ns::T`: the member names the type, at this use — a copy placed at it,
+    // as an unqualified name's is, never the registered token (the typedef's
+    // own place: `std::string s` at <bits/stringfwd.h>, or no file at all
+    // when the header is bound from the pack).
+    return use_site_type_token(dti->second, member_tb);
 }
 
 // Instantiate a captured template on use: `Name<ConcreteType>`. Clones the
@@ -5380,7 +5377,6 @@ TokenDataType *Program::resolve_namespaced_type_token(TokenBase *tb, bool consum
 // NULL if `tname` is not a template / the syntax doesn't match (caller falls
 // through). Assumes `tb` (the template name) is already current; the next token
 // must be '<'. See docs/plans/2026-05-30-template-instantiation.md.
-static TokenDataType *use_site_type_token(TokenDataType *proto, TokenBase *at);
 // Match `<`...`>` as a balanced delimiter pair, like `(`...`)` and `{`...`}`:
 // each `<` opens one template level and is closed by exactly ONE `>`. The lexer,
 // having no template context, emits `>>` as a single TokenBSR (right-shift), so a
@@ -14272,16 +14268,16 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
 	// undeclared one decays to int, as below).
 	madc::dis::istring ename = contextual_identifier_name(name_tb);
 	if ( TokenDataType *ctag = find_c_enum_tag(ename) )
-	    return typed_use(name_tb, ctag);
+	    return use_site_type_token(ctag, name_tb);
 	flat_datatype_map_iter mi = datatype_map.find(ename);
 	if ( mi != datatype_map.end()
 	  && dynamic_cast<DataDefENUM *>(&(*mi)->definition) )
-	    return typed_use(name_tb, *mi);
+	    return use_site_type_token(*mi, name_tb);
 	TokenDataType *tdt = new TokenDataType("int", ddINT);
 	tdt->file = name_tb->file;
 	tdt->line = name_tb->line;
 	tdt->column = name_tb->column;
-	return typed_use(name_tb, tdt);
+	return use_site_type_token(tdt, name_tb);
     }
     // Leading `::` — the global-scope qualifier ([namespace.qual]):
     // `typedef ::timespec t;` / `using A = ::T;` / `::wrap w;` resolve the
@@ -14321,9 +14317,9 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
 	nextToken();	// consume the global name
 	if ( peekToken() && peekToken()->id() == TokenID::tkLT )
 	    if ( TokenDataType *inst = instantiate_template_id(gname, gt) )
-		return resolve_member_chain_or_type(typed_use(gt, inst), gt,
+		return resolve_member_chain_or_type(use_site_type_token(inst, gt), gt,
 						    consume_class_member_chain);
-	return resolve_member_chain_or_type(typed_use(gt, (TokenDataType *)(*gi)), gt,
+	return resolve_member_chain_or_type(use_site_type_token((TokenDataType *)(*gi), gt), gt,
 					    consume_class_member_chain);
     }
     if ( !is_contextual_identifier_token(tb) )
@@ -57498,7 +57494,7 @@ TokenBase *TokenENUM::parse(Program &pgm)
 		pgm.c_enum_tag_map[enum_tag] =
 		    new TokenDataType(enum_tag.c_str(), *fwd_enum_dd);
 	    }
-	    typed_use(tag_tb, pgm.c_enum_tag_map[enum_tag]);
+	    tag_tb->note_type_name_use(&pgm.c_enum_tag_map[enum_tag]->definition);
 	    pgm.nextToken(); // consume ';'
 	    return NULL;
 	}
@@ -57535,7 +57531,7 @@ TokenBase *TokenENUM::parse(Program &pgm)
 	    }
 	    flat_datatype_map_iter opaque = pgm.datatype_map.find(enum_tag);
 	    if ( opaque != pgm.datatype_map.end() )
-		typed_use(tag_tb, *opaque);
+		tag_tb->note_type_name_use(&(*opaque)->definition);
 	    pgm.nextToken(); // consume ';'
 	    return NULL;
 	}
@@ -57550,7 +57546,7 @@ TokenBase *TokenENUM::parse(Program &pgm)
 	    // forward-declared parameter/return uses).
 	    if ( TokenDataType *ctag = pgm.find_c_enum_tag(enum_tag) )
 	    {
-		pgm.pushToken(typed_use(tag_tb, ctag));
+		pgm.pushToken(use_site_type_token(ctag, tag_tb));
 		return NULL;
 	    }
 	    // A registered enum tag resolves to its DataDefENUM — scoped or
@@ -57562,10 +57558,10 @@ TokenBase *TokenENUM::parse(Program &pgm)
 	      && (scoped
 	       || dynamic_cast<DataDefENUM *>(&(*dti)->definition)) )
 	    {
-		pgm.pushToken(typed_use(tag_tb, *dti));
+		pgm.pushToken(use_site_type_token(*dti, tag_tb));
 		return NULL;
 	    }
-	    pgm.pushToken(typed_use(tag_tb, new TokenDataType("int", ddINT)));
+	    pgm.pushToken(use_site_type_token(new TokenDataType("int", ddINT), tag_tb));
 	    return NULL;
 	}
 	pgm.Throw(tn) << "Expecting '{' after enum" << flush;
@@ -77716,9 +77712,6 @@ size_t Program::record_global_top_decl(Variable *var, TokenBase *origin, TokenDe
     td.line = origin ? origin->line : 0;
     td.origin = origin;
     td.decl = decl;
-    td.parse_file = TokenBase::_parse_file;	// the declaration's own place
-    td.parse_line = TokenBase::_parse_line;	// (top_decl_position)
-    td.parse_column = TokenBase::_parse_column;
     top_decls.push_back(td);
     return top_decls.size() - 1;
 }
@@ -81802,20 +81795,12 @@ bool Program::top_decl_is_tu_origin(const TopDecl &td) const
 const char *Program::top_decl_position(const TopDecl &td, int &line,
 					 int *column) const
 {
-    if ( td.origin && !(td.parse_file
-			&& (!td.origin->file || td.origin->file != td.parse_file)) )
+    if ( td.origin )
     {
 	line = td.origin->line;
 	if ( column )
 	    *column = td.origin->column;
 	return td.origin->file;
-    }
-    if ( td.origin )
-    {
-	line = td.parse_line;
-	if ( column )
-	    *column = td.parse_column;
-	return td.parse_file;
     }
     line = td.line;
     if ( column )
@@ -82931,9 +82916,9 @@ void Program::show_entry_value(size_t decls_before)
 		continue;
 	    TokenVar *tv = new TokenVar(*td.var);
 	    // The run, and so its position, belongs to the entry's own text: a
-	    // declaration's origin may be a header's token (`std::string s`'s
-	    // type), and a run placed there reads as a library function, which
-	    // is emitted only when referenced.
+	    // declaration the entry's #include brought is a header's, and a run
+	    // placed there reads as a library function, which is emitted only
+	    // when referenced.
 	    loc = (td.origin && token_is_tu_origin(td.origin)) ? td.origin
 							       : entry_end_token;
 	    if ( loc )

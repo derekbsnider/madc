@@ -74,14 +74,30 @@ With `<string>` bound from the forest pack, an object whose type is a qualified
 typedef name spelled from that header — every `std::string`-spelled object —
 dropped out of `%whos` and madcide's Variables view, and `?a` printed `Type:
 std::string` with no `Defined:` line (madc 0.104.0 and 0.105.0; 0.103.0 listed
-them). The typedef's token carries no file when bound from the pack, so
-`top_decl_position`'s other-file test — which required a non-null origin file —
-missed it and returned the fileless origin. A fileless origin now takes the
-recorded parse position, the same the other-file case already uses, so the
-object lists at its entry (`?a` reports `Defined: @ REPL[2]:1`). A script-hosted
+them). The object now lists at its entry (`?a` reports `Defined: @
+REPL[2]:1`). A script-hosted
 session reached from `madc::session_open` met the same drop once it bound the
 pack by default. Gate: `tests/testsession_bindings_madc.mad` on the packed
 binary.
+
+### A declaration whose type is a qualified name is placed at its own line
+
+A file-scope declaration whose type is a qualified name — `std::string s`,
+`std::size_t n` — is now placed at its own source line in every diagnostic and
+position reader, the same as one whose type is unqualified (`size_t n`). A
+redefinition of `std::string a` is reported at the second declaration
+(`testqualtypedef_redef.mad:10: redefinition of 'a'`), and `?s`'s `Defined:`
+line names the entry. Before, such a declaration carried the typedef's own
+registered position: the header's line when `<string>` parsed
+(`<bits/stringfwd.h>:77`), or no position at all (`0:0`) when `<string>` bound
+from the pack — a redefinition cited the header or `0:0`, not the declaration.
+The qualified type-name reader now yields a copy of the type token placed at
+the use, qualified or not; the one position reader (`top_decl_position`) no
+longer carries the parse-position annotation that worked the symptom around,
+and that annotation (`TopDecl::parse_file` / `parse_line` / `parse_column`) is
+removed. Reducer `tests/testqualtypedef_redef.mad` (`--std=c++17`): g++ 13 and
+clang++ 18 both reject the second `std::string a` as `redefinition of 'a'`.
+Gate: `scripts/check-one-top-decl-position.sh`.
 
 ### The packed madc reads the core system headers from libmadc, never /usr/include
 

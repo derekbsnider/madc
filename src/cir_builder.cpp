@@ -35466,9 +35466,8 @@ node_t CirBuilder::translate_module(Program *prog)
 		const char *file = prog->top_decl_position(td, line, &column);
 		if (td.origin) {
 			// The origin token is the node's +madc origin; the node's
-			// src_*() derive from it. c2mir's absolute store takes the
-			// declaration's own place (top_decl_position: a qualified
-			// typedef name's token is its header's, BUGS.md B94).
+			// src_*() derive from it, and c2mir's absolute store takes
+			// the same place (top_decl_position, the one reader).
 			cn->origin_id = madc_slot_id_for(td.origin);
 			set_pos(cn, file, line, column);
 		} else if (file) {

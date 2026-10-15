@@ -2,14 +2,13 @@
 # DRIFT-PREVENTION GATE -- "where is this file-scope declaration" has ONE
 # owner, Program::top_decl_position() (src/parser.cpp).
 #
-# A TopDecl carries three places: its origin token, the file/line recorded at
-# the record site, and (dkGlobalVar) the parser's own position when it
-# recorded it. They disagree when the origin token is another file's -- a
-# qualified typedef name's token is its header's (`std::string s`, BUGS.md
-# B94) -- and a reader that picked `origin ? origin->file : file` itself
-# read the header: `?` showed stringfwd.h, the REPL kept a unit's static,
-# the emitter called an unreferenced `std::string s = f();` system-origin
-# and dropped its initializer. Every reader asks the owner.
+# A TopDecl carries two places: its origin token and the file/line recorded
+# at the record site. Which one answers is the owner's rule; a reader that
+# picks for itself drifts from the others -- when a qualified typedef name's
+# token was its header's (`std::string s`, BUGS.md B94) such readers diverged:
+# `?` showed stringfwd.h, the REPL kept a unit's static, the emitter called an
+# unreferenced `std::string s = f();` system-origin and dropped its
+# initializer. Every reader asks the owner.
 #
 # Writes (the record sites) are not reads. A TokenDecl's own file (`td->file`
 # on a declaration statement) is a token's place, not a TopDecl's.
@@ -19,11 +18,11 @@
 set -u
 cd "$(dirname "$0")/.."
 
-PAT='\b(td|gtd)(\.|->)origin->(file|line|column)\b|top_decls\[[^]]*\]\.origin->(file|line|column)\b|\b(td|gtd)\.(file|line|parse_(file|line|column))\b'
-WRITE='\b(td|gtd)\.(file|line|parse_(file|line|column)) *= *[^=]'
+PAT='\b(td|gtd)(\.|->)origin->(file|line|column)\b|top_decls\[[^]]*\]\.origin->(file|line|column)\b|\b(td|gtd)\.(file|line)\b'
+WRITE='\b(td|gtd)\.(file|line) *= *[^=]'
 
 ctl=$(printf '\tconst char *f = td.origin ? td.origin->file : td.file;\n\tf["line"] = value((int64_t)td.origin->line);\n' | grep -cE "$PAT")
-wr=$(printf '\ttd.parse_file = TokenBase::_parse_file;\n' | grep -E "$PAT" | grep -cvE "$WRITE")
+wr=$(printf '\ttd.file = TokenBase::_parse_file;\n' | grep -E "$PAT" | grep -cvE "$WRITE")
 if [ "$ctl" -ne 2 ] || [ "$wr" -ne 0 ]; then
 	echo "check-one-top-decl-position: NEGATIVE CONTROL FAILED -- the pattern no longer"
 	echo "  matches a TopDecl position reader (matched $ctl of 2) or flags a write ($wr)"

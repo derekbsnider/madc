@@ -752,8 +752,9 @@ int main() { printf("size=%zu\n", s.size()); return 0; }
   conversion from 'int' to 'std::string'`. madc (`--std=c++17`): no front-end
   diagnostic; the link refuses `MIR error: import of undefined item
   basic_string_char_..._o15` (exit 1), citing no source position.
-- Found 2026-09-30 while filing B94 (the same declaration with a valid
-  initializer is B94's reducer).
+- Found 2026-09-30 while filing B94, a qualified typedef's declaration
+  position (fixed 2026-10-15; the same declaration with a valid initializer is
+  `tests/testglobal_qualified_typedef_init.mad`).
 - Layer (suspected, unmeasured): copy-initialization from `int` selects a
   `basic_string` constructor (`_o15`) that [dcl.init]/17.6.3 does not allow
   (no converting constructor takes an `int`), and the selected overload has
@@ -2446,54 +2447,6 @@ int g(void);
   needs that bit where the declarator reader builds the function type
   (`Program::parse_declarator`), so it is a parser change for its own
   session; under C23 both spellings are `int (void)`.
-
-### B94. A declaration whose type is a qualified typedef name takes the typedef's header position
-
-```text
-#include <string>
-std::string s = "hello";
-?s
-```
-
-- Before 2026-09-30, madc's REPL (`--std=c++17`) said `Defined:   @
-  /usr/include/c++/13/bits/stringfwd.h:77`, where the object is `REPL[2]:1`,
-  and dropped `s` from `%whos`. SILENT then: `static std::string t = "x";`,
-  `t += "y";`, `t` showed `"x"` (the session read `t` as a header's static,
-  so each later unit had its own copy) where cling's rule and madc's own
-  (a unit's statics are session names, plan §41.5a) give `"xy"`. An
-  unqualified typedef (`size_t n = 3;`) was right.
-- SILENT outside the REPL too: an ordinary C++ program's unreferenced
-  `std::string s = make("s");` or `std::size_t n = count("n");` never ran
-  its initializer (g++ and clang++ run it). The emitter's system-origin
-  verdict (`td_system`) read the header's file, so the object became
-  emit-if-referenced, as a header's own global is.
-- Worked around 2026-09-30 (plan §41.11a step 3d): `record_global_top_decl`
-  records the parser's position as an annotation (`TopDecl::parse_file` /
-  `parse_line` / `parse_column`), and `Program::top_decl_position` uses it
-  when the origin token is another file's. It is the one reader of a
-  TopDecl's place: `?`, the unit-statics rule, the emitter's system-origin
-  verdict and c2mir node position, the graph API's global node. Gates:
-  `tests/testglobal_qualified_typedef_init.mad`; `test_repl_session`, "a
-  qualified typedef's object is the entry's own (B94)";
-  `scripts/check-one-top-decl-position.sh` (fulltest).
-- The pack-bound form (fixed 2026-10-15): with `<string>` bound from the
-  forest pack, the typedef's token has NO file (line 0), so the
-  other-file test above missed it — `%whos` and madcide's Variables view
-  dropped every `std::string`-spelled object, `?s` printed no `Defined:`
-  line (madc 0.104.0 and 0.105.0; 0.103.0 listed them). A script-hosted
-  session (madc::session_open) met it once it bound the pack. A fileless
-  origin now takes the parse position too. Gate:
-  `tests/testsession_bindings_madc.mad` on the packed binary.
-- What remains: the declaration's type token `tb` in `parseDeclaration` is
-  the registered typedef's token (the header's) for a qualified name, where
-  an unqualified name carries its use site, and every `TokenDecl` /
-  `TopDecl` position copied from it, and the emitted global's `+madc`
-  origin token, still cite the header (the D10 show's
-  run placement already falls back to the entry's end for the same reason,
-  `show_entry_value`). The qualified type-name reader should yield a
-  use-site token (`clone_origin`), as the unqualified one does; then the
-  annotation and the fallback go. A core parser change: its own focused
-  session (owner, 2026-09-13).
 
 ### B7. An undeducible function-template call dies in MIR without a location
 

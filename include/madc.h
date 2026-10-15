@@ -6183,12 +6183,7 @@ public:
 	TokenDecl *decl;	// for global vars: the TokenDecl carrying initializer (initialize/init_list); NULL → no init
 	bool struct_body;	// dkTypedef only: this combined `typedef struct Tag {...} Alias;` carries the tag's full body (it is the tag's definition point). A `typedef struct Tag *p;` referencing the tag is false.
 	bool forest_system;	// restored from a bound forest unit whose header path is a system include; the emission-side system-origin verdict when file/origin are NULL (a restored decl carries no parse position)
-	// dkGlobalVar: where the parser was when it recorded the declaration
-	// (an annotation; top_decl_position reads it). NULL when not recorded.
-	const char *parse_file;
-	int parse_line;
-	int parse_column;
-	TopDecl() : kind(DeclKind::dkStruct), dd(nullptr), tdt(nullptr), var(nullptr), file(nullptr), line(0), origin(nullptr), decl(nullptr), struct_body(false), forest_system(false), parse_file(nullptr), parse_line(0), parse_column(0) {}
+	TopDecl() : kind(DeclKind::dkStruct), dd(nullptr), tdt(nullptr), var(nullptr), file(nullptr), line(0), origin(nullptr), decl(nullptr), struct_body(false), forest_system(false) {}
     };
     std::vector<TopDecl> top_decls;
     // Record a file-scope variable's declaration in top_decls, in source order
@@ -6403,13 +6398,11 @@ public:
     // included header's (a NULL origin carries its position in file).
     bool top_decl_is_tu_origin(const TopDecl &td) const;
     // Where a file-scope declaration is, its file (the line into `line`):
-    // its origin token's, unless that token is another file's than the one
-    // the parser was in when it recorded the declaration, as a qualified
-    // typedef name's is its header's (`std::string s`, BUGS.md B94), or has
-    // no file at all (the same typedef's token bound from the pack); then
-    // the recorded parse position. A NULL origin: its file and line (column
-    // 0). The one reader of a TopDecl's place: `?`, the REPL's unit statics,
-    // the emitter's system-origin verdict and node position, the graph API.
+    // its origin token's — the declaration's own (a type name's token is a
+    // copy placed at its use, qualified or not). A NULL origin: its file and
+    // line (column 0). The one reader of a TopDecl's place: `?`, the REPL's
+    // unit statics, the emitter's system-origin verdict and node position,
+    // the graph API.
     const char *top_decl_position(const TopDecl &td, int &line,
 				  int *column = NULL) const;
 
