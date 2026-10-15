@@ -1,21 +1,21 @@
 # lane	promote	last_green_commit	date	tally
 libcxx	no	96b3358a3d8a	2026-10-03	retired from the release tier 2026-10-03 (owner): the libc++ lane is darwin-suite on the macOS -O2 packed binary; last linux run: jit 1903/0/0TO/23skip; exe 1735/0; obj 1735/0 (-stdlib=libc++, 14 tests carry .libcxx_skip: B157-B161 + libstdc++-internal; at 028e31c36 content) [+ 96b3358a3: textual rename chthonic->chthonia, owner 2026-10-03, not re-run]
 interactive-darwin	release	4c4ad82b678b	2026-10-12	arm64 Mac Mini 41/0/0TO/2skip + Intel MacBook 41/0/0TO/2skip — interactive_lane.sh's tests/ subset on the macOS packaged madc 0.104.0 at 4c4ad82b6 content; madcide 0.7.0 66/0 + Chthonia 0.1.0 check_install PASS on both
-tests-jit	batch	114eb4bac060	2026-10-15	2034 passed, 0 failed, 9 skipped (batch_lane.sh, dev JIT)
-darwin-suite	release	114eb4bac060	2026-10-15	darwin-suite native libc++ at 114eb4bac content: arm64 Mac Mini (macOS 14) 2000/0/0TO/43skip + mac battery 12/0; Intel MacBook (macOS 15) 2003/0/0TO/40skip + mac battery 12/0 (domains darwin libcxx darwin-<arch> macos-<major>; the 3 darwin reds fixed: eb70e8693, e346af95a, testatquickexit macos-14 skip 114eb4bac); EXE advisory 288/294 failed (D5 class)
-linux-battery	yes	114eb4bac060	2026-10-15	seam_battery.sh at 114eb4bac (0.105.0 release seam: the darwin release-tier fixes): headerless 2000/0/0TO/43skip + ondisk 34/0 on packed -O2 madc-release; exeobj JIT 2033/1 (testrepl_git LEAK of a root-owned testsubscript-g++ written by an interactive root shell in the container tree mid-run; 1/0 on isolated rerun), EXE 1827/0, OBJ 1827/0; parse-cost 0 red; static gates + make gates green
-headerless-win	yes	114eb4bac060	2026-10-15	1954/5/0TO/84skip at 114eb4bac — all 5 reds LEAK(files) of root-owned hello.cpp/.#hello.cpp/hello/hello-g++/hello-clang written by an interactive root shell in the container tree mid-run; 5/5 on isolated rerun + ondisk-win 1/0 — packed PE under wine
-wine64	yes	114eb4bac060	2026-10-15	the packed PE under wine at 114eb4bac: headerless-win 1954/5 (5 environmental LEAK attributions, 5/5 isolated rerun) + ondisk-win 1/0
-macos	yes	114eb4bac060	2026-10-15	BUILD lane: macos-build + macos stages rc=0 at 114eb4bac (seam_battery.sh, 0.105.0 release seam)
-aarch64-ld	yes	114eb4bac060	2026-10-15	aarch64_ldouble_lane GREEN — seam_battery.sh at 114eb4bac
-interactive	yes	54d38afda0b4	2026-10-15	57/0/0TO/0skip + units 7/0 (scripts/interactive_lane.sh, Linux JIT) at 114eb4bac content
-genuine-win	release	54d38afda0b4	2026-10-15	1958/0/0TO/85skip — the FULL suite on the owner Windows 11 box at 114eb4bac content (scripts/win_suite.sh, the 0.105.0 release-seam packed PE)
-interactive-win	release	54d38afda0b4	2026-10-15	51 passed, 0 failed, 0 timed out, 6 skipped — win_suite.sh over interactive_lane.sh's tests/ subset on the owner Windows 11 box, the packed PE at 114eb4bac content
-brew-linux	release	e125675368d8	2026-10-15	2034/0/0TO/9skip - scripts/brew_lane.sh at e12567536 content (bottle + pour + brew test, keg-masked runpath gate); the formula's include-table probe runs without the shim's include dirs
-c-testsuite	commit	cf723b7714a5	2026-10-15	220 passed, 0 failed (0 outside baseline)
-c-torture	commit	cf723b7714a5	2026-10-15	1617 passed, 7 failing (0 outside baseline)
-c2mir-tests	commit	cf723b7714a5	2026-10-15	368 passed, 0 failed, 4 skipped
-gui	commit	cf723b7714a5	2026-10-15	15 passed, 0 failed | EXE 15/0 | OBJ 15/0 (dev); packed madc-release 15/0 JIT/EXE/OBJ
-gxx-c++11	no	cf723b7714a5	2026-10-15	1505 passed, 441 compile-failed (0 outside baseline)
-index-c	yes	cf723b7714a5	2026-10-15	50/50 tasks OK [-O2]
-commonmark	commit	cf723b7714a5	2026-10-15	664 passed, 6 failed (0 outside baseline)
+tests-jit	batch	e84838409e76	2026-10-15	2035 passed, 0 failed, 9 skipped (batch_lane.sh, dev JIT) at e84838409
+linux-battery	yes	e84838409e76	2026-10-15	seam_battery.sh at e84838409 (0.105.0 release seam: frozen header-global initializers + pack-bound lazy interface): headerless 2001/0/0TO/43skip + ondisk 34/0 on packed -O2 madc-release; exeobj JIT 2035/0/9skip, EXE 1828/0, OBJ 1828/0; parse-cost 0 red; static gates + make gates green
+headerless-win	yes	e84838409e76	2026-10-15	1960/0/0TO/84skip at e84838409 + ondisk-win 1/0 — packed PE under wine
+wine64	yes	e84838409e76	2026-10-15	the packed PE under wine at e84838409: headerless-win 1960/0 + ondisk-win 1/0
+macos	yes	e84838409e76	2026-10-15	BUILD lane: macos-build + macos stages rc=0 at e84838409 (seam_battery.sh, 0.105.0 release seam)
+aarch64-ld	yes	e84838409e76	2026-10-15	aarch64_ldouble_lane GREEN — seam_battery.sh at e84838409
+c-testsuite	commit	e84838409e76	2026-10-15	220 passed, 0 failed (0 outside baseline) — run at cf723b771; e84838409 differs only in scripts/parse_cost/baseline.tsv (data)
+c-torture	commit	e84838409e76	2026-10-15	1617 passed, 7 failing (0 outside baseline) — run at cf723b771; e84838409 differs only in scripts/parse_cost/baseline.tsv (data)
+c2mir-tests	commit	e84838409e76	2026-10-15	368 passed, 0 failed, 4 skipped — run at cf723b771; e84838409 differs only in scripts/parse_cost/baseline.tsv (data)
+gui	commit	e84838409e76	2026-10-15	15 passed, 0 failed | EXE 15/0 | OBJ 15/0 (dev); packed madc-release 15/0 JIT/EXE/OBJ — run at cf723b771; e84838409 differs only in scripts/parse_cost/baseline.tsv (data)
+gxx-c++11	no	e84838409e76	2026-10-15	1505 passed, 441 compile-failed (0 outside baseline) — run at cf723b771; e84838409 differs only in scripts/parse_cost/baseline.tsv (data)
+index-c	yes	e84838409e76	2026-10-15	50/50 tasks OK [-O2] — run at cf723b771; e84838409 differs only in scripts/parse_cost/baseline.tsv (data)
+commonmark	commit	e84838409e76	2026-10-15	664 passed, 6 failed (0 outside baseline) — run at cf723b771; e84838409 differs only in scripts/parse_cost/baseline.tsv (data)
+interactive	yes	e84838409e76	2026-10-15	57/0/0TO/0skip + units 7/0 (scripts/interactive_lane.sh, Linux JIT) at e84838409
+genuine-win	release	e84838409e76	2026-10-15	1959/0/0TO/85skip — the FULL suite on the owner Windows 11 box at e84838409 content (scripts/win_suite.sh, the 0.105.0 release-seam packed PE)
+interactive-win	release	e84838409e76	2026-10-15	51 passed, 0 failed, 0 timed out, 6 skipped — win_suite.sh over interactive_lane.sh's tests/ subset on the owner Windows 11 box, the packed PE at e84838409 content
+darwin-suite	release	e84838409e76	2026-10-15	darwin-suite native libc++ at e84838409 content: arm64 Mac Mini (macOS 14) 2001/0/0TO/43skip + mac battery 12/0; Intel MacBook (macOS 15) 2004/0/0TO/40skip + mac battery 12/0 (domains darwin libcxx darwin-<arch> macos-<major>); EXE advisory 289/295 failed (D5 class)
+brew-linux	release	e84838409e76	2026-10-15	2035/0/0TO/9skip - scripts/brew_lane.sh at e84838409 content (bottle + pour + brew test, keg-masked runpath gate)
