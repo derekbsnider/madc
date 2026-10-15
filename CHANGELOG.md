@@ -591,6 +591,25 @@ loaded-body path. A baked const scalar carries its value as a scalar init.
 Reducer: `tests/testfragmentinit.mad`. The packed GUI lane goes from 0/15 to
 15/15 (JIT, EXE, OBJ).
 
+### A live lazy import's pack-bound interface prototypes are module slots
+
+A packed madc now runs the functions of a lazy module a program imports for
+itself. A lazy row's `import` serves a typed interface whose prototypes are
+first-call slots through the library spelling, not link-time imports; live, the
+lexer reads that interface between `#pragma madc module_begin` / `module_end`
+markers and stamps each prototype (`dyn_module_library`). Under the 0.105.0 pack
+a program's own interface include binds from the pack instead of being lexed, so
+no token carried the marker spelling and the restored prototypes stayed plain
+imports — `webview_version()` and every `webview_*` call failed with "MIR error:
+import of undefined item webview_version". Only a replayed import (`peImport`)
+had noted the interface unit's prototypes; `forest_bind_include` now notes the
+unit an `#include` binds between a live import's module markers the same way
+(`forest_note_lazy_unit_prototypes`, extracted from and shared with the replay
+path), so each prototype stamps as a module slot at first call. Reducer:
+`tests/testimportlazy.mad`. The webview GUI tests (`webview.mad`,
+`webview_size.mad`) carried the same undefined `webview_*` imports; the packed
+GUI lane is 15/15 (JIT, EXE, OBJ).
+
 ## [v0.104.0] — 2026-10-12
 
 The madcide split: madc's interactive mode takes the ed/ex editing core, and madcide leaves to its own repository. `madc -i` gains colon mode, a command registry modules and hosts extend, `%std` / `%reset` / `%history` / `%check` / `%build` / `%run` / `%args` / `%project`, coloured prompts and diagnostics, and host-facing language services; madc ships a Language Server (`--lsp`) and a Model Context Protocol server (`--mcp`) with a project memory, a code graph and an external-task client; the data substrate gains a document component with an edit notification, regexes run on one PCRE2 engine, and a source's standard follows its extension. madcide now lives in its own repository and releases on its own, so madc's packages no longer carry it. Forest and pack correctness and reproducibility, codegen and REPL fixes, and Windows and darwin parity round out the release.

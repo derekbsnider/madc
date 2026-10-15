@@ -7294,9 +7294,12 @@ public:
     // The bound half: a bound unit never re-lexes its `import`, so the replay
     // of its peImport event records the row's interface unit's functions
     // (forest_note_lazy_module_interface: name -> spelling) and
-    // register_forest_func stamps each as it is restored.
+    // register_forest_func stamps each as it is restored. A LIVE import whose
+    // interface include binds from the pack records the bound unit's the same
+    // way (forest_bind_include, between the module markers).
     std::map<madc::dis::istring, madc::dis::istring> forest_lazy_module_protos;
     void forest_note_lazy_module_interface(const madc::dis::istring &module);
+    void forest_note_lazy_unit_prototypes(uint32_t unit, const madc::dis::istring &spelling);
     void forest_stamp_lazy_module_prototype(FuncDef *fd, const madc::dis::istring &name);
     void stamp_dynamic_module_member(Variable *var, const madc::dis::istring &ns,
 				     const madc::dis::istring &member);

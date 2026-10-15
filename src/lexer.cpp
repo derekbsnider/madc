@@ -5173,6 +5173,12 @@ void Program::forest_bind_include(uint32_t unit)
 	return;
     }
     ForestWorkFrame _fw(&_forest_work_seconds, &_forest_work_depth);
+    // A unit an #include binds between a LIVE lazy import's module markers is
+    // the interface those markers wrap: its prototypes bind at first call, as
+    // the tokens a live serving would have lexed there are tagged. The unit
+    // alone, as a replayed import notes it (forest_note_lazy_module_interface).
+    if ( !lazy_module_spelling.empty() && forest_bind_walking.empty() )
+	forest_note_lazy_unit_prototypes(unit, lazy_module_spelling);
     forest_bind_walking.insert(unit);
     // --show-stats (R0): per-unit SELF cost — edge decode + PP install,
     // recursion excluded — so the accumulated total sums cleanly.
@@ -5288,10 +5294,20 @@ void Program::forest_note_lazy_module_interface(const madc::dis::istring &module
     const MadcModuleSpec *row = madc_module_find(module);
     const int u = row && row->interface && bind_forest
 	? bind_forest->find_unit(row->interface) : -1;
+    if ( u >= 0 )
+	forest_note_lazy_unit_prototypes((uint32_t)u,
+					 madc_module_library_spelling(module));
+}
+
+// The functions bound unit `unit` declares bind at first call against the
+// library `spelling` — what the module markers give a live-served interface's
+// prototypes (stamp_lazy_module_prototype).
+void Program::forest_note_lazy_unit_prototypes(uint32_t unit,
+					       const madc::dis::istring &spelling)
+{
     std::vector<cir_forest_decl_entry> di;
-    if ( u < 0 || !bind_forest->unit_decl_index((uint32_t)u, di) )
+    if ( !bind_forest || !bind_forest->unit_decl_index(unit, di) )
 	return;
-    const madc::dis::istring spelling = madc_module_library_spelling(module);
     for ( size_t k = 0; k < di.size(); ++k )
 	if ( di[k].kind == pdkFunction )
 	    if ( const char *nm = bind_forest->pool_str(di[k].name_id) )

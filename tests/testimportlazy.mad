@@ -14,5 +14,12 @@ int main()
     println(stderr, "madcwebview: {}", madc::module_available("madcwebview") ? "available" : "absent");
     const webview_version_info_t *v = 0;	// the interface's types are declared
     println("interface types: {}", v == 0 ? "declared" : "?");
+    // A call is a first-call slot, never a link-time import: the program
+    // links where the library is absent. The packed madc binds the interface
+    // from libmadc; its prototypes stayed plain imports there before the fix
+    // ("undefined MIR import: webview_version" — every GUI test failed).
+    if ( madc::module_available("madcwebview") )
+	println(stderr, "webview: {}", webview_version()->version_number);
+    println("call site: linked");
     return 0;
 }
