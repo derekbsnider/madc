@@ -3472,11 +3472,13 @@ public:
 	madc::dis::istring forest_config_path;
 	// May this compile bind frozen state at all (the --forest-bind /
 	// --no-forest-bind switch, and the library's enable_forest_bind
-	// compile_option)? OFF is the Program default because a FREEZE must
-	// live-parse: the CLI turns it on for compiles, and every libmadc host
-	// gets it on through compile_options. It rides the policy so a child
-	// Program (runtime eval, --project TU) inherits it with everything else.
-	bool enable_forest_bind = false;
+	// compile_option)? ON is the Program default: every compile binds the
+	// pack — the CLI's, a libmadc host's, and a Program libmadc builds for
+	// itself (a REPL session's backend). A FREEZE must live-parse, so the
+	// freezers turn it off (the CLI's freeze modes, a ledger source). It
+	// rides the policy so a child Program (runtime eval, --project TU)
+	// inherits it with everything else.
+	bool enable_forest_bind = true;
 	// May `#include <...>` (and __has_include) walk the SYSROOT roots of the
 	// system include table — the C library / SDK dirs and frameworks that
 	// follow the compiler-owned dir — or only the roots the toolchain owns

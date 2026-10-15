@@ -137,6 +137,17 @@ TEST_CASE("ledger carrier probe is silent and policy-free when the chain is empt
 	CHECK(err.str().empty());
 }
 
+// A Program libmadc builds for itself — a REPL session's backend, opened by a
+// script (madc::session_open; madcide's F5) — binds the pack as the CLI's
+// does: the bind is the Program default, and only the freezers turn it off.
+TEST_CASE("forest bind is the Program default") {
+	Program bare;
+	CHECK(bare.registration_policy.enable_forest_bind);
+	MadcEngine engine;
+	std::unique_ptr<Program> prog = engine.create_program();
+	CHECK(prog->registration_policy.enable_forest_bind);
+}
+
 TEST_CASE("strict_require: config mismatch is still a hard error") {
 	MadcEngine engine;
 	std::unique_ptr<Program> prog = engine.create_program();

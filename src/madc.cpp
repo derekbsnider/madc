@@ -865,6 +865,7 @@ int main(int argc, char **argv)
     bool dump_registered = false;         // --dump-registered: post-parse name maps (oracle side B)
     bool dump_macro_table = false;        // -dM: effective macro table after lex (gcc -dM -E analogue)
     bool no_forest_bind = false;          // --no-forest-bind: force live parse (overrides the default and --forest-bind)
+    bool forest_bind_asked = false;       // --forest-bind[=PATH]: bind even while freezing (a test-harness request)
     const char *config_path = NULL;       // --config=<file>: this madc.ini instead of the lookup chain
     bool no_config = false;               // --no-config: skip the madc.ini lookup entirely
     bool cli_set_std = false;             // --std= came from the COMMAND LINE (so a madc.ini `std` key must not override it)
@@ -1130,11 +1131,13 @@ int main(int argc, char **argv)
             // Phase 6 (opt-in): bind grove-backed system #includes from the
             // blob appended to this executable instead of live-parsing them.
             prog->registration_policy.enable_forest_bind = true;
+            forest_bind_asked = true;
             filearg = i + 1;
         } else if (strncmp(argv[i], "--forest-bind=", 14) == 0) {
             // --forest-bind=PATH: bind from a standalone --freeze container
             // (dev/testing without appending to the binary).
             prog->registration_policy.enable_forest_bind = true;
+            forest_bind_asked = true;
             prog->forest_bind_path = argv[i] + 14;
             filearg = i + 1;
         } else if (strncmp(argv[i], "--forest-touch-log=", 19) == 0) {
@@ -1461,18 +1464,17 @@ int main(int argc, char **argv)
     madc_install_resource_guards(manifest.tus.size(), config);
 
     // Embedded-forest default (Phase 4): with no explicit forest flag, bind
-    // system #includes from the blob appended to this executable —
-    // ensure_bind_forest() falls through silently to live parse when no blob
-    // is appended or the context pin mismatches. Freeze modes are excluded:
-    // a freeze PRODUCES forest state from a live parse; binding while
-    // freezing stays an explicit test-harness request, never the default.
-    if ( no_forest_bind )
+    // system #includes from the blob appended to this executable (the
+    // Program default) — ensure_bind_forest() falls through silently to live
+    // parse when no blob is appended or the context pin mismatches. Freeze
+    // modes are excluded: a freeze PRODUCES forest state from a live parse;
+    // binding while freezing stays an explicit test-harness request
+    // (--forest-bind), never the default.
+    if ( no_forest_bind || ((freeze_path || freeze_run) && !forest_bind_asked) )
     {
         prog->registration_policy.enable_forest_bind = false;
         prog->forest_bind_path.clear();
     }
-    else if ( !prog->registration_policy.enable_forest_bind && !freeze_path && !freeze_run )
-        prog->registration_policy.enable_forest_bind = true;
 
     // AOT (-c / -shared / -o / --emit-*): compile through gen object-capture
     // mode and write a native artifact instead of running. -o without -c or

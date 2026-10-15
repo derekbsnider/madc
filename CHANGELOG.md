@@ -53,6 +53,21 @@ now measures the default packed path of a dialect and a C compile
 (`dialect.forest`, `c_headers.forest`) — the path on which the whole-container
 decode had gone unseen.
 
+### A script-hosted session binds the pack like the CLI
+
+Forest bind is now the Program default, so a Program libmadc builds for itself
+with no host configuration — the POSIX and Windows session backends reached from
+a script through `madc::session_open` and from madcide's F5/REPL — binds the
+forest pack as the CLI and `madc -i` already did, instead of live-parsing every
+system header from the pack's source text. The freezers (the CLI's freeze modes,
+a ledger source) turn the bind off, since a freeze must live-parse;
+`--forest-bind` while freezing stays the explicit test-harness request. A
+script-hosted `session_load` of a program that includes `<iostream>` and
+`<string>` drops from 272–292 ms to 83–85 ms, and madcide 0.8.0's F5 run (three
+presses) from 0.30–0.34 s to 0.10–0.12 s on the same package with only libmadc
+swapped; a CLI `madc hello.cpp` is unchanged at ~0.09 s. The freeze's text dump
+is byte-identical (2308 units).
+
 ### The packed madc reads the core system headers from libmadc, never /usr/include
 
 The release (packed) madc compiles a C, C++ or dialect program that includes a
