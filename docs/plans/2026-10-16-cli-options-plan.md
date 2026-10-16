@@ -4544,3 +4544,73 @@ Stage `scripts/check-one-option-parser.sh docs/language/command-line.md AGENTS.m
 
 - The seam battery (`bash scripts/seam_battery.sh`, from the NAS) runs once, at the arc's release boundary, not per task. Its parse-cost stage checks that the reader added no start-up cost past the 0.5% tolerance. Its exe + obj, win64 and macOS stages run the CLI tests on every platform lane.
 - The next plans, one per slice: Windows UTF-8 (the activeCodePage manifest), `madc::sys.flags` / `sys.orig_argv` and the table face for madcide, `python::argparse` (it brings positional rows), and the typed `madc::cli` face (member annotations).
+
+---
+
+## Execution record (2026-10-16)
+
+Executed inline (executing-plans), Tasks 1–8, commits effa62e53..5c4d93bf4;
+one whole-branch review (fresh reviewer, the most capable model) over
+5c1532862..5c4d93bf4 — "with fixes": 0 critical, 4 important, 9 minor; one
+declined line re-graded to a finding. Fix pass: d26c9f74b, d49a60180,
+b13284687.
+
+### Rulings made during execution (each with its cost if wrong)
+
+- T1, T4: doctest 2.5 cannot decompose a prvalue pointer compared with NULL;
+  such values are bound to named locals, same assertions (none).
+- T2: the third new @file case is a negative guard that passes before
+  expansion exists; kept, it must stay green (none).
+- T2–T7: a task that adds built text to a core file re-records
+  `scripts/istring_keep.tsv`, after confirming only its rows moved (a baseline
+  row).
+- T3: madcgit's relpath rewrote every `\` to `/` on every OS; consolidated onto
+  `host_path_generic` in its own commit 90c9cb246 with a reducer (none).
+- T3: `host_path_generic` got its dialect face `madc::path_generic` and its
+  `dialect_faces.tsv` row, per the dialect-faces law (one face).
+- T5: `terminal_columns()` ignores a non-positive or non-numeric `COLUMNS`, as
+  gcc does; the echo's `COLUMNS=0` case changes from 0 to 80 (a caret layout
+  under `COLUMNS=0`).
+- T7: forest_index_oracle red on `__madc_bswap16/32` (from e67a8dac4); two
+  Class 2 allowlist rows in dfb9d0b79 (none).
+- T8: the ladder held 82 option arms, not 83 (the 83rd strcmp is the stdin
+  sentinel); the gate's proof ran on 6ae4b007c; the user doc's did-you-mean
+  example is `--verb` → `--verbose`, verified on the binary (prose only).
+- Review: important 1–4 fixed as graded; fix 1 also adds
+  `scripts/check-gates-wired.sh` (one small gate).
+- Review: a non-regular `@file` stays as written and a regular one is read for
+  its size (`@/dev/null` stays a word where gcc expands it to nothing).
+- Review: a standard option word reads through `madc_cli_standard_of`; the
+  session's `--std=` option-word protocol keeps its shape (a later
+  consolidation).
+- Review: the CHANGELOG's `-fbogus` suggestion example was a factual error,
+  corrected (none).
+- Review, declined lines: backslash escapes in `@file` (libiberty parity),
+  gcc's no-op options still errors (they come in with real-codebase builds,
+  section F), exit status 1 (gcc), madc.ini not on `sources` (scope), nargs
+  and Windows UTF-8 argv (slices 5 and 3), the 2000-expansion memory growth
+  (libiberty parity) — all stand. `--lsp --stdio` refused was re-graded a
+  regression and fixed (an editor could not start madc's server).
+
+### Deferred minors
+
+- `madc x.c @flags` with `-o` only inside `flags` runs `x.c`: the
+  compiler-line peek reads unexpanded words (gcc expands `@file`s first).
+- gcc value forms not yet rows: `-ofoo`, `-l m`, `-Os`/`-Og`/`-Ofast`,
+  `-g3`/`-ggdb`/`-gdwarf-N`, single-dash `-finstrument-functions` (redis's
+  build passes `-ggdb`: section F).
+- bash completion offers files, not directories, after `-I`/`-L`; bash's
+  `COMP_WORDBREAKS` splits `--std=c<TAB>`.
+- fish `complete -s '?'` for `-?` is unverified (no fish on any host).
+- `--help=` with an empty value prints the plain help (gcc: missing argument).
+- `check_required` counts a negated occurrence as present; `exclusive` and
+  `requires_rest` read different sources — to be stated in the header.
+- The option-parser gate misses argv aliases (`const char *a = argv[i]`).
+- A UTF-8 BOM at the start of a response file joins the first word (gcc
+  shares it).
+
+### Found on the way
+
+- KG Gap `shebang_standard_keeps_dialect_predefined_macros` (SILENT): a script
+  whose shebang says `--std=c17` compiles as C17 but sees `__cplusplus` 201703
+  and no `__STDC_VERSION__`. Fixed next, in its own commit.
