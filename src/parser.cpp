@@ -41549,6 +41549,25 @@ bool Program::ufcs_call_fallback(TokenIdent *ident_tb, bool operator_id,
     return true;
 }
 
+// A bare function name beside one of these binary operators — on either
+// side — is its address (function-to-pointer decay), never a call:
+// `t->fn == do_cast`, `p->xCmp == cmp` (SQLite).
+static bool function_name_decays_beside(TokenID id)
+{
+    switch ( id )
+    {
+	case TokenID::tkEquals: case TokenID::tkNotEq:
+	case TokenID::tkLT:     case TokenID::tkLE:
+	case TokenID::tkGT:     case TokenID::tkGE:
+	case TokenID::tkLand:   case TokenID::tkLor:
+	case TokenID::tkBand:   case TokenID::tkBor:
+	case TokenID::tkXor:
+	    return true;
+	default:
+	    return false;
+    }
+}
+
 Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 				 std::stack<TokenBase *> &exStack,
 				 std::stack<TokenBase *> &opStack, TokenCpnd *code)
@@ -43767,12 +43786,11 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			 // like `t->fn == do_cast && tmp->...` where do_cast was
 			 // previously pushed as a TokenCallFunc, then the operator
 			 // was silently consumed and the next token mis-parsed.
-			 || peek_id == TokenID::tkEquals || peek_id == TokenID::tkNotEq
-			 || peek_id == TokenID::tkLT     || peek_id == TokenID::tkLE
-			 || peek_id == TokenID::tkGT     || peek_id == TokenID::tkGE
-			 || peek_id == TokenID::tkLand   || peek_id == TokenID::tkLor
-			 || peek_id == TokenID::tkBand   || peek_id == TokenID::tkBor
-			 || peek_id == TokenID::tkXor;
+			 // This is the LEFT side; the right is the pending
+			 // operator below.
+			 || function_name_decays_beside(peek_id);
+			bool right_of_decaying_operator = !opStack.empty()
+			    && function_name_decays_beside(opStack.top()->id());
 			bool in_assign_context = false;
 			if ( !opStack.empty() )
 			{
@@ -43785,7 +43803,8 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			      || opid == TokenID::tkBSLEq  || opid == TokenID::tkBSREq )
 				in_assign_context = true;
 			}
-			if ( !followed_by_paren && (in_assign_context || followed_by_value_end) )
+			if ( !followed_by_paren && (in_assign_context || followed_by_value_end
+						    || right_of_decaying_operator) )
 			{
 			    DBG(cout << "Pushing function address (decay): " << var->name << " onto exStack" << endl);
 			    exStack.push(new TokenVar(*var));

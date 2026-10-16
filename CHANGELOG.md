@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### A bare function name right of a comparison decays to its address
+
+`p->xCmp == cmp` now compares two function pointers. A bare function name
+beside `==` `!=` `<` `<=` `>` `>=` `&&` `||` `&` `|` `^` is its address
+(function-to-pointer decay), never a call — on either side of the operator.
+Before, only a name FOLLOWED by such an operator decayed; a name AFTER one
+(the right operand) became a zero-argument call `cmp()`, which c2mir refused as
+"too few arguments" (SQLite's `p->xCmp==sqlite3BinaryCompare` and
+`db->xWalCallback==sqlite3WalDefaultHook ? ... : 0`). The right operand now
+decays like the left; the operator set is one predicate used for both sides.
+`tests/testfn_compare_rhs` runs the swapped, member, address-of, ternary and
+`&&`/`||` forms against the gcc/clang oracle
+(`local=1 swap=1 addr=1 dot=1 arrow=1 ne=0 or=1 null=1 tern=7 other=3 and=1`).
+Closes KG gap `c_function_name_right_of_comparison_called`.
+
 ### A `T *const p`'s own const no longer refuses writes through `p->m`
 
 `struct S *const db = h->db; db->n--;` now writes the pointee. A `T *const p` is
