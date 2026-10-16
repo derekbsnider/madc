@@ -20,7 +20,7 @@
 #include "madc_datachannel_internal.h"	// detail::set_channel_error — the ONE
 					// runtime-error composer (gate:
 					// check-one-error-composer.sh)
-#include "madc_posix_io.h"		// canonical_path_for_compare — THE path canonicalizer
+#include "madc_posix_io.h"		// canonical_path_for_compare — THE path canonicalizer; host_path_generic
 
 #include "libgit2_floor.h"		// <git2.h>, refused below the floor
 
@@ -523,12 +523,9 @@ bool GitRepo::relpath(const std::string &path, std::string &rel, error *err) con
     // git paths are forward-slash on every platform (libgit2's own convention);
     // the OS canonicalizer (resolve_real_path) yields NATIVE separators, so on
     // Windows the working-tree-relative result would read "tests\\file" — the
-    // git face normalizes to forward slashes at its output boundary, the same
-    // platform-path discipline the session-discovery layer applies to its slug.
-    rel = p.substr(rel_at);
-    for ( std::size_t i = 0; i < rel.size(); ++i )
-	if ( rel[i] == '\\' )
-	    rel[i] = '/';
+    // git face writes it in generic form at its output boundary, through THE
+    // host separator rule: on POSIX a '\' is a file-name byte and stays.
+    rel = detail::host_path_generic(p.substr(rel_at));
     return true;
 }
 

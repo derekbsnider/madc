@@ -11,6 +11,16 @@ path is unchanged. It is the dialect face over the host path owner
 `host_path_generic` (boost::filesystem's generic format), the form a path is
 stored and printed in.
 
+### Fixed: `git::relpath` keeps a '\' in a POSIX file name
+
+`git::relpath` now writes a working-tree-relative path through the host
+separator rule (`host_path_generic`) at its output boundary, so on POSIX a '\'
+— a file-name byte there, kept as one component by git — is preserved:
+`tests/a\b.txt` comes back `tests/a\b.txt`. Previously the git face rewrote
+every '\' to '/' on every platform, so on POSIX the same input answered
+`tests/a/b.txt` — a different path, returned with success. On Windows '\' is a
+separator and is still written '/'.
+
 ### An undefined weak reference links, its address null, as gcc does
 
 madc now links and runs a program that declares `extern T x
