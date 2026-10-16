@@ -122,6 +122,10 @@ deepest layer. See `.claude/rules/rule-trailers.md`.
    `check-one-library-spelling.sh`), and a library a program names (`import`,
    `#load`, `"libs"`, `-l`) opens through `madc_module_open()` beside it —
    madc's own lib directory first (gated by `check-one-library-opener.sh`);
+   a command line is read by ONE reader, `madc::cli::parse`
+   (`include/libmadc/cli_options.h`), over a table of rows — madc's own is
+   `src/madc_cli.cpp` — and its help, `--help=json` and completions are written
+   from the same rows (gated by `check-one-option-parser.sh`);
    a parse over its own token run — an
    isolated sub-stream or a run injected ahead of the live stream — is
    `Program::NestedTokenStream`, which also returns the outer read context

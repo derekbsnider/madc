@@ -331,3 +331,11 @@ PLANNED 2026-10-15 (owner).
     `emit_c11_sqlite_not_recompilable`. Found on the way, not SQLite's:
     `c11_noreturn_function_specifier_unparsed` (its own parser session),
     `cpp_linemarker_input_refused`.
+- Command-line options, slices 1–2 (2026-10-16; plan
+  `docs/plans/2026-10-16-cli-options-plan.md`): the one option reader
+  `madc::cli::parse` (`include/libmadc/cli_options.h`) — gcc/GNU syntax,
+  `@file`, typed values, environment / config / default sources, help,
+  `--help=json`, bash / zsh / fish / PowerShell completions — and madc's own
+  command line as one table (`src/madc_cli.cpp`) and one `switch`; the 82-arm
+  ladder deleted; gate `check-one-option-parser.sh`; DupFamily
+  `command_line_option_arms` consolidated (this release's `Consolidated:` line).

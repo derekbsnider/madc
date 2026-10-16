@@ -1,6 +1,6 @@
 # Command-line options — one engine, madc's CLI on it, dialect faces
 
-Status: DESIGN (owner-approved direction, 2026-10-16). Spec for review.
+Status: slices 1–2 LANDED (plan docs/plans/2026-10-16-cli-options-plan.md); slices 3–6 open.
 
 ## 1. Why
 

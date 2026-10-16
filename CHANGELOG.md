@@ -39,6 +39,22 @@ instead of a hand-maintained literal, and `Program::set_stdlib_flavor(name)`
 takes the flavor name directly in place of `set_stdlib_flavor_option("-stdlib="
 + name)`.
 
+### A command line stays on the one option reader — gated
+
+`scripts/check-one-option-parser.sh` (static gate loop and `make gates`) keeps
+madc's command line on the one reader `madc::cli::parse`: outside the reader
+(`src/cli_options.cpp`), no C/C++ source under `src/` or `include/` compares an
+argv word with an option spelling (`strcmp(argv[i], "-x")`,
+`strncmp(argv[i], "--x=", n)`) or tests an argv word's leading dash
+(`argv[i][0] == '-'`). A new option adds a row to the program's table
+(`src/madc_cli.cpp`) and a case to its switch instead. Comparing an operand
+with `"-"` (stdin) is not an option read and passes. The gate carries its own
+negative and positive controls. It consolidates the 82-arm strcmp/strncmp
+ladder that `main()` (`src/madc.cpp`) read its options with before the one
+reader landed.
+
+Consolidated: command_line_option_arms — gate scripts/check-one-option-parser.sh
+
 ### `madc::path_generic` — a path in the host's generic form
 
 madc's dialect now exposes `madc::path_generic(value &out, const char *path)`,
