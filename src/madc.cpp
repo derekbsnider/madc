@@ -871,6 +871,7 @@ int main(int argc, char **argv)
     const char *config_path = NULL;       // --config=<file>: this madc.ini instead of the lookup chain
     bool no_config = false;               // --no-config: skip the madc.ini lookup entirely
     bool cli_set_std = false;             // --std= came from the COMMAND LINE (so a madc.ini `std` key must not override it)
+    madc::dis::istring cli_std_option;    // that --std='s standard name: a command-line project's units compile under it
     bool interactive = false;             // -i / --interactive: the REPL, whatever stdin is (D20)
     bool lsp = false;                     // --lsp: the Language Server Protocol on stdio (split arc 1C.12)
     bool mcp = false;                     // --mcp: the Model Context Protocol on stdio (split arc 1C)
@@ -1263,6 +1264,7 @@ int main(int argc, char **argv)
             filearg = i + 1;
         } else if (prog->set_language_standard_option(argv[i])) {
             cli_set_std = true;
+            cli_std_option = argv[i] + 6;
             filearg = i + 1;
         } else if (strncmp(argv[i], "--std=", 6) == 0) {
             std::cerr << "Unknown --std target: " << (argv[i] + 6) << std::endl;
@@ -1480,10 +1482,34 @@ int main(int argc, char **argv)
     // it. Order matters: RLIMIT hard limits can only be lowered, never
     // raised, so the guard must know the workload before it arms.
     ProjectManifest manifest;
-    if ( project_manifest )
+    // Several sources on an artifact lane (gcc's `cc -o prog a.c b.c`,
+    // `cc -c a.c b.c`) are a project of those translation units, built by
+    // the --project lane below: one .o per unit for -c, one image for -o /
+    // -shared, every unit under the command line's --std, -I and -D. Only
+    // when EVERY operand is a unit the compiler reads; anything else keeps
+    // the single-source lane's loud refusal.
+    bool cli_sources_project = !project_manifest && !run_frozen
+        && run_object_paths.empty() && argc - filearg > 1
+        && native_artifact_requested();
+    for ( int i = filearg; cli_sources_project && i < argc; i++ )
+        if ( madc::file_kind_family(madc::file_kind_of_path(argv[i]))
+             == madc::fkUNKNOWN )
+            cli_sources_project = false;
+    if ( cli_sources_project )
+    {
+        for ( int i = filearg; i < argc; i++ )
+        {
+            ProjectTU tu;
+            tu.file = argv[i];
+            tu.std_option = cli_std_option.c_str();
+            manifest.tus.push_back(tu);
+        }
+    }
+    if ( project_manifest || cli_sources_project )
     {
         std::string err;
-        if ( !(mcp ? project_of_path(project_manifest, manifest, err)
+        if ( project_manifest
+          && !(mcp ? project_of_path(project_manifest, manifest, err)
                    : read_project_manifest(project_manifest, manifest, err)) )
         {
             std::cerr << "madc --project: " << err << std::endl;
@@ -1746,7 +1772,7 @@ int main(int argc, char **argv)
     if ( emit_function_name && filearg < argc )
 	return emit_function(*prog, argv[filearg], emit_function_name);
 
-    if ( project_manifest && !mcp )
+    if ( (project_manifest || cli_sources_project) && !mcp )
     {
 	if ( emit_native )
 	{

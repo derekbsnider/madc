@@ -1,5 +1,6 @@
-// The -c lane builds one source: a second operand after it is refused
-// loudly ("unconsumed arguments"), never dropped from the artifact.
-// Options after the source are applied as gcc's are
-// (testaot_flags_after_source).
+// The -c lane refuses an operand that is no unit madc compiles (a
+// second SOURCE is a second unit, built as gcc builds it —
+// testaot_multi_source): it is refused loudly ("unconsumed arguments"),
+// never dropped from the artifact. Options after the source are applied
+// as gcc's are (testaot_flags_after_source).
 int main() { return 0; }

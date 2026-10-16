@@ -1,0 +1,48 @@
+// gcc's driver builds several sources in one command: `cc -o prog a.c b.c`
+// links them into one program, `cc -c a.c b.c` writes a.o and b.o in the
+// working directory. Several sources on an artifact lane are a project of
+// those units, built by the --project lane, every unit under the command
+// line's --std, -I and -D. SQLite's testfixture rule compiles and links ~90
+// sources in one command.
+// Pins: the program links and runs (the -D and the --std reach both
+// units); -c writes one object per unit; an operand that is no source stays
+// refused (testaottrailingargv).
+// Before: every source after the first was refused ("unconsumed arguments
+// after 'a.c' in AOT mode").
+// Oracle: gcc 13 and clang 18 `-std=c11 -DK=5 -o prog a.c b.c` -> prog
+// prints "sum=12 std=201112"; `-c a.c b.c` writes a.o and b.o.
+int main()
+{
+	var dir = "tmp/testaot_multi_source";
+	php::mkdir(dir.c_str());
+	var a = format("{}/a.c", dir);
+	var b = format("{}/b.c", dir);
+	var prog = format("{}/prog", dir);
+	var ao = format("{}/a.o", dir);
+	var bo = format("{}/b.o", dir);
+	php::file_put_contents(a.c_str(),
+		"#include <stdio.h>\n"
+		"int twice(int);\n"
+		"int main(void)\n{\n"
+		"\tprintf(\"sum=%d std=%ld\\n\", twice(K) + 2, (long)__STDC_VERSION__);\n"
+		"\treturn 0;\n}\n");
+	php::file_put_contents(b.c_str(), "int twice(int x) { return 2 * K / 5 * x; }\n");
+	var cp = madc::compiler_path();
+
+	long rc = system(format("{} --no-config --std=c11 -DK=5 -o {} {} {}", cp, prog, a, b));
+	println("link: rc={}", rc);
+	long run = system(prog.c_str());
+	println("run: rc={}", run);
+
+	long rc2 = system(format("cd {}; {} --no-config -DK=5 -c a.c b.c", dir, cp));
+	println("objects: rc={} a={} b={}", rc2, php::file_exists(ao.c_str()) ? 1 : 0,
+		php::file_exists(bo.c_str()) ? 1 : 0);
+
+	php::unlink(ao.c_str());
+	php::unlink(bo.c_str());
+	php::unlink(prog.c_str());
+	php::unlink(a.c_str());
+	php::unlink(b.c_str());
+	php::rmdir(dir.c_str());
+	return 0;
+}

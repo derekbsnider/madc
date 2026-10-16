@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Several source operands on an artifact lane build as a project of translation units
+
+madc's driver now matches gcc's: `madc -o prog a.c b.c` links the sources into
+one program, and `madc -c a.c b.c` writes one object per unit (`a.o`, `b.o`) in
+the working directory. When every operand on an artifact lane (`-o`, `-c`,
+`-shared`) is a compiler unit, the operands become a `ProjectManifest` routed to
+the `--project` AOT lane — one `.o` per unit for `-c`, one image for `-o` /
+`-shared` — each unit built under the command line's `--std`, `-I` and `-D`.
+Previously every source after the first was refused ("unconsumed arguments after
+'a.c' in AOT mode"). An operand that is no compiler unit still keeps the
+single-source lane's loud refusal. `tests/testaot_multi_source` runs both shapes
+against the gcc/clang oracle (`sum=12 std=201112`; `a.o` and `b.o` written).
+Closes the multi-source part of KG gap
+`cli_multiple_sources_compile_and_link`; `-L` and `-Wl,` are follow-up commits.
+
 ### A `(` after `=` opens a grouping, not a call through the function pointer on the left
 
 `Program::parseExpr_operatorArm`'s variable-function-pointer invocation arm
