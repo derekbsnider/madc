@@ -130,6 +130,14 @@ std::string nearest_spelling(const table &t, const std::string &word)
 		std::string cand(sp.text);
 		if ( sp.form == value_form::equals )
 			cand += '=';
+		// The distance is at least the difference in length, so a
+		// spelling that far off is never compared (gcc's spellcheck
+		// tests it first); it also keeps edit_distance's table to the
+		// spellings' own lengths, whatever word an @file holds.
+		const size_t gap = goal.size() > cand.size() ? goal.size() - cand.size()
+							     : cand.size() - goal.size();
+		if ( gap > edit_cutoff(goal.size(), cand.size()) )
+			return false;
 		const size_t d = edit_distance(goal, cand);
 		if ( d <= edit_cutoff(goal.size(), cand.size()) && d < best_d )
 		{
@@ -861,7 +869,9 @@ private:
 
 // words[k] exists, ready to read. A "@file" there is first replaced by the
 // file's words — repeatedly, so one file may name another (gcc's
-// expandargv). A name that cannot be opened stays as written (gcc); a
+// expandargv). A name that cannot be opened stays as written (gcc), and so
+// does one that is not a regular file: gcc reads a file's size, which a
+// device or a FIFO has none of, and reading one might never end. A
 // directory, or a file past response_file_limit expansions, is an error.
 bool reader::fetch(size_t k)
 {
@@ -875,14 +885,17 @@ bool reader::fetch(size_t k)
 		if ( S_ISDIR(st.st_mode) )
 			return fail(_r, error_kind::response_file,
 				    "@-file refers to a directory: " + quoted(path));
+		if ( !S_ISREG(st.st_mode) )
+			return true;
 		std::ifstream in(path.c_str(), std::ios::in | std::ios::binary);
 		if ( !in )
 			return true;
 		if ( ++_expansions > response_file_limit )
 			return fail(_r, error_kind::response_file, "too many @-files encountered");
-		std::ostringstream text;
-		text << in.rdbuf();
-		const std::vector<std::string> got = split_response_text(text.str());
+		std::string text((size_t)st.st_size, '\0');
+		in.read(&text[0], (std::streamsize)text.size());
+		text.resize((size_t)in.gcount());
+		const std::vector<std::string> got = split_response_text(text);
 		_words.erase(_words.begin() + k);
 		_words.insert(_words.begin() + k, got.begin(), got.end());
 	}

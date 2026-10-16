@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Response files: a device or FIFO is left as written; a huge `@file` word costs little
+
+- A response file that is not a regular file (a device such as `/dev/zero`, a
+  FIFO) is now left as written, like a name that cannot be opened — it is no
+  longer opened and read to its end (`/dev/zero` never ends). A regular file is
+  read for its `st_size` bytes.
+- The "did you mean" search no longer builds an n×m edit-distance table per
+  spelling for every unknown word: a spelling whose length differs from the word
+  by more than the cutoff is skipped before the table is built, since the edit
+  distance is at least that length difference. A 16 MiB word from an `@file` no
+  longer allocates gibibytes per spelling and throws `std::bad_alloc`.
+
 ### Every one-owner gate runs in `make gates`
 
 `src/Makefile`'s `gates` target (what `fulltest` runs) named 55 of the 56

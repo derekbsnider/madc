@@ -37,7 +37,8 @@ shell completions are written from the same table.
   Write paths with `/`, or double each `\`.
 
 A file may name another file. One that names itself stops with
-`too many @-files encountered`. A name that cannot be opened stays as written.
+`too many @-files encountered`. A name that cannot be opened, or that is not
+a regular file (a device, a FIFO), stays as written; a directory is an error.
 Response files expand only among madc's options, never inside a program's argv.
 
 ## Errors

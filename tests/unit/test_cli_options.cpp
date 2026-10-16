@@ -10,12 +10,14 @@
 thread_local bool madc_verbose = false;
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
 
+#include <algorithm>
 #include <cstdlib>
 #include <fstream>
 #include <initializer_list>
 #include <map>
 #include <sstream>
 #include <string>
+#include <sys/resource.h>
 #include <unistd.h>
 #include <vector>
 
@@ -349,6 +351,44 @@ TEST_CASE("@file: an unopenable name stays a word; a self-reference and a direct
 	r = cli::parse(t, words({ "@/tmp" }));
 	CHECK(r.error == cli::error_kind::response_file);
 	CHECK(r.message == "@-file refers to a directory: '/tmp'");
+}
+
+TEST_CASE("@file: a name that is not a regular file stays a word, never read")
+{
+	// /dev/zero never ends, and a FIFO blocks; gcc reads a file's size,
+	// which a device has none of.
+	cli::table t = make_table(cli::operand_rule::permute);
+	t.response_files = true;
+	cli::result r = cli::parse(t, words({ "@/dev/zero", "-v" }));
+	REQUIRE(r.ok());
+	CHECK(r.operands == words({ "@/dev/zero" }));
+}
+
+TEST_CASE("unrecognized: a huge word from an @file is refused as any other")
+{
+	// No suggestion is near a 16 MiB word; the search must not compare it
+	// against every spelling at its full length (a table of 16 Mi rows per
+	// spelling is GiBs). Under a 1 GiB address-space cap it still answers.
+	cli::table t = make_table(cli::operand_rule::permute);
+	t.response_files = true;
+	const std::string rsp = write_fixture("huge", "-" + std::string(16 << 20, 'a') + "\n");
+	struct rlimit old;
+	REQUIRE(getrlimit(RLIMIT_AS, &old) == 0);
+	struct rlimit cap = old;
+	cap.rlim_cur = std::min<rlim_t>(old.rlim_cur, (rlim_t)1 << 30);
+	REQUIRE(setrlimit(RLIMIT_AS, &cap) == 0);
+	cli::result r;
+	bool threw = false;
+	try {
+		r = cli::parse(t, std::vector<std::string>(1, "@" + rsp));
+	} catch ( ... ) {
+		threw = true;
+	}
+	setrlimit(RLIMIT_AS, &old);
+	unlink(rsp.c_str());
+	REQUIRE_FALSE(threw);
+	CHECK(r.error == cli::error_kind::unknown_option);
+	CHECK(r.message.find("did you mean") == std::string::npos);
 }
 
 TEST_CASE("@file: off unless the table asks; never inside the remainder")
