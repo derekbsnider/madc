@@ -1,0 +1,17 @@
+// gcc's -dumpmachine prints the compiler's target triple and exits; build
+// systems ask it (dpkg-architecture, autoconf's multiarch probe). madc's is
+// its toolchain's, read at build time with the include paths.
+// Before: "-dumpmachine:0:0: error: Failed to open file" (SQLite's build,
+// through dpkg-architecture).
+// Oracle: gcc 13 / clang 18 on the build host print x86_64-linux-gnu; madc
+// built there prints the same (the toolchain's answer).
+int main()
+{
+	var out = "tmp/testcli_dumpmachine.out";
+	const char *cp = madc::compiler_path();
+	long rc = system(format("{} -dumpmachine > {}", cp, out));
+	long triple = system(format("grep -Eq '^[A-Za-z0-9_.]+(-[A-Za-z0-9_.]+)+$' {}", out));
+	println("dumpmachine: rc={} triple={}", rc, triple == 0 ? 1 : 0);
+	php::unlink(out.c_str());
+	return 0;
+}

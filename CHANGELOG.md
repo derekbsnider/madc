@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### `-dumpmachine` prints the toolchain's target triple
+
+madc now answers `-dumpmachine` the way gcc and clang do: it prints the target
+triple and exits, before parsing any source. The triple is the toolchain madc
+was built against, probed at build time alongside the include and library paths
+— `scripts/gen_sys_includes.sh` emits its `-dumpmachine` answer as
+`madc_toolchain_target`, and on a cross build that answer is the target
+toolchain's. Previously the word fell through to the file operand and madc
+reported `-dumpmachine:0:0: error: Failed to open file`, which broke build
+systems that query it (seen through `dpkg-architecture` in SQLite's build). On
+the build host gcc 13 and clang 18 print `x86_64-linux-gnu`; madc built there
+now prints the same and exits 0 (`unknown` when the toolchain answered nothing).
+
 ### `-g` homes only the locals a debugger describes, not every temporary
 
 madc's `-g` debug codegen (`cir_set_debug_codegen`: O0, no inlining, spill-all)

@@ -38,6 +38,7 @@
 #include "madc_file_kinds.h"  // file_kind_of_path: the source's standard by extension
 #include "cir_emit_c.h"   // CirEmitLang
 #include "madc_capabilities.h" // --capabilities=json (source-free manifest)
+#include "madc_sys_includes.h" // -dumpmachine: the toolchain target triple
 #include "madc_project.h" // --project: compile_commands.json multi-TU driver
 
 #include "madc_cir.h"     // madc_cir_execute/emit/freeze/emit_native + MadcNativeKind
@@ -894,6 +895,7 @@ int main(int argc, char **argv)
     bool emit_relocatable = false;        // -r: relocatable link output — ONE .o (gcc/ld -r), no run
     bool show_help = false;               // --help / -h / -?
     bool show_version = false;            // --version / -V
+    bool show_machine = false;            // -dumpmachine
     bool show_capabilities = false;       // --capabilities=json
     bool show_stats = false;               // --show-stats: print input/token traffic counters
     const char *freeze_path = NULL;       // --freeze= / --freeze-append=: forest container out
@@ -1273,6 +1275,9 @@ int main(int argc, char **argv)
                 || strcmp(argv[i], "-V") == 0) {
             show_version = true;
             filearg = i + 1;
+        } else if (strcmp(argv[i], "-dumpmachine") == 0) {
+            show_machine = true;
+            filearg = i + 1;
         } else if (strcmp(argv[i], "--capabilities=json") == 0) {
             show_capabilities = true;
             filearg = i + 1;
@@ -1391,6 +1396,16 @@ int main(int argc, char **argv)
         // apart and the macOS/Windows tarballs ship exactly that.
         std::cout << "Target: " << MADC_CROSS_TARGET << std::endl;
 #endif
+        return 0;
+    }
+
+    if ( show_machine )
+    {
+        // gcc's -dumpmachine: the target triple (build systems ask it —
+        // dpkg-architecture, autoconf's multiarch probe). The toolchain madc
+        // was built against answered it at build time.
+        std::cout << (*madc_toolchain_target ? madc_toolchain_target : "unknown")
+                  << std::endl;
         return 0;
     }
 

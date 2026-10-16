@@ -337,6 +337,10 @@ emit() {
     emit_standin_array "$DEFAULT_FLAVOR"
     echo
     emit_library_dirs_array $CXX
+    echo
+    # The toolchain's target triple, as its `-dumpmachine` prints it ("" when
+    # it answers nothing): what `madc -dumpmachine` prints.
+    echo "const char *const madc_toolchain_target = \"$DEFAULT_TARGET\";"
 }
 
 # Idempotent write: rewrite only on real content change, so the parse-time
