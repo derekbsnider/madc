@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### A host-call shim passing a `const char *` result to its string setter no longer warns
+
+A function returning `const char *` gets a host-call shim whose step-5 result
+setter is `madc_value_set_string` / `madc_value_set_string_n`, declared with a
+`const char *text_value` parameter in `include/madc_api.h`. The shim generator
+spelled that parameter `char *`, so c2mir's `check_assignment_types` warned
+"discarding type qualifiers in passing argument" — with no source position, the
+call being synthesized — once per `const char *`-returning function (nine times
+over the SQLite amalgamation: `sqlite3_libversion`, `sqlite3_errstr`,
+`sqlite3_uri_parameter`, ...). The two `ExternParam` spec lists for those
+setters now spell the text parameter `const char *`, matching the C API, so the
+shim compiles without diagnostics. `tests/testshim_const_text` runs a
+`const char *`-returning function against the gcc/clang oracle
+(`3.54.0 error mut`) with an empty-stderr fixture. Closes KG gap
+`cir_shim_text_setter_prototype_drops_const`.
+
 ### A function pointer whose return type is a function-pointer typedef keeps its full declarator
 
 A member, global or local declared `sp (*xGet)(const char *)` — a function

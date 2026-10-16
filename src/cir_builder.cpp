@@ -34501,8 +34501,11 @@ node_t CirBuilder::synth_call_shim_var(Program *prog, Variable *fvar)
 	// 5. Result conversion (set helpers; scalar calls nest in the setter).
 	std::vector<ExternParam> set_scalar{ { {N_CHAR}, true }, { {N_LONG, N_LONG}, false } };
 	std::vector<ExternParam> set_real_p{ { {N_CHAR}, true }, { {N_DOUBLE}, false } };
-	std::vector<ExternParam> set_str{ { {N_CHAR}, true }, { {N_CHAR}, true } };
-	std::vector<ExternParam> set_str_n{ { {N_CHAR}, true }, { {N_CHAR}, true },
+	// The text is `const char *`, as include/madc_api.h declares it: a
+	// `const char *` result (SQLite's sqlite3_libversion) passed to a
+	// `char *` prototype warned "discarding type qualifiers".
+	std::vector<ExternParam> set_str{ { {N_CHAR}, true }, { {N_CONST, N_CHAR}, true } };
+	std::vector<ExternParam> set_str_n{ { {N_CHAR}, true }, { {N_CONST, N_CHAR}, true },
 					    { {N_LONG, N_LONG}, false } };
 	switch (rkind) {
 	case R_VOID:
