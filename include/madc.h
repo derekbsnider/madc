@@ -2528,10 +2528,13 @@ public:
     void reset_served_arg_paint() { _served_arg_paint.clear(); }
     const std::set<madc::dis::istring> &served_arg_paint() const
     { return _served_arg_paint; }
-    std::set<madc::dis::istring> current_arg_paint() const
+    // A reference, never a copy: argument collection asks at every frame
+    // change, and a copied set is an allocation per macro argument.
+    const std::set<madc::dis::istring> &current_arg_paint() const
     {
+	static const std::set<madc::dis::istring> none;
 	if ( _pushback_frames.empty() )
-	    return std::set<madc::dis::istring>();
+	    return none;
 	return _pushback_frames.front().arg_disabled;
     }
     // Push a function-like macro's replacement as one frame PER SEGMENT:

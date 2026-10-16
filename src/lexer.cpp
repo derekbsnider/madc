@@ -9221,7 +9221,7 @@ TokenBase *Program::_getToken()
 			{
 			    trim_macro_argument(arg, segs);	// the ONE trim owner
 			    args.push_back(arg);
-			    arg_segs.push_back(segs);
+			    arg_segs.push_back(std::move(segs));
 			    arg_served.push_back(source.served_arg_paint());
 			    source.reset_served_arg_paint();
 			    arg.clear();
@@ -9235,13 +9235,12 @@ TokenBase *Program::_getToken()
 			    if ( source.serving_frame() != seg_frame )
 			    {
 				seg_frame = source.serving_frame();
-				std::set<madc::dis::istring> paint = source.current_arg_paint();
+				const std::set<madc::dis::istring> &paint = source.current_arg_paint();
 				if ( segs.empty() || segs.back().paint != paint )
 				{
-				    Source::PaintSeg seg;
-				    seg.off = arg.size();
-				    seg.paint = paint;
-				    segs.push_back(seg);
+				    segs.push_back(Source::PaintSeg());
+				    segs.back().off = arg.size();
+				    segs.back().paint = paint;
 				}
 			    }
 			    arg += mc;
@@ -9320,7 +9319,7 @@ TokenBase *Program::_getToken()
 		    if ( !arg.empty() || !args.empty() )
 		    {
 			args.push_back(arg);
-			arg_segs.push_back(segs);
+			arg_segs.push_back(std::move(segs));
 			arg_served.push_back(source.served_arg_paint());
 		    }
 		    source.reset_served_arg_paint();

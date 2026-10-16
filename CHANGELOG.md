@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Macro-argument collection no longer copies a paint set per argument
+
+- `Source::current_arg_paint()` now returns a const reference (a static empty
+  set when no macro frame is active) instead of a `std::set` by value, and
+  function-like macro-argument collection copies a paint only into a new
+  `PaintSeg` and moves each argument's segment vector into `arg_segs` instead
+  of copying it. Behaviour is unchanged.
+- Measured on the packed `madc-release` parse-cost gate, the C-headers live
+  parse `c_headers.live` drops from 257,188,052 to 254,643,686 instructions.
+  This recovers part — not all — of the growth that 71f64745f (its per-stretch
+  argument paint) added since v0.105.0; the remainder is being profiled.
+
 ### A script's shebang standard reaches the predefined macros and keywords
 
 - A main source's `#!/usr/bin/madc --std=c17` line now sets the language
