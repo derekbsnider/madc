@@ -19,6 +19,7 @@
 // share no state.
 
 #include <string>
+#include <vector>
 #include "datadef.h"	// TargetOS, madc_target_os
 
 // Row flags — module-map DATA the drivers act on (never a name test).
@@ -90,6 +91,21 @@ std::string madc_module_library_spelling(const std::string &name);	// for madc_t
 // libraries. NULL + `error` on failure.
 void *madc_module_open(const std::string &spelling, std::string &error,
 		       bool bind_now = false);
+
+// The command line's -L directories, searched for a bare spelling in order
+// ahead of madc_module_open's own search (ld searches -L before its default
+// directories): the first `<dir>/<spelling>` that is a file, else `spelling`
+// unchanged. A path spelling is never searched.
+std::string madc_module_locate(const std::string &spelling,
+			       const std::vector<std::string> &search_dirs);
+
+// What an AOT image's link closure carries for a -l spelling under the -L
+// directories, for madc_target_os: a Mach-O image records the located
+// dylib's own install name (ld64; the writer reads it from the path), so the
+// located path; an ELF or PE image records the -l name itself (ld: the
+// SONAME, which madc's images do not carry), so `spelling` unchanged.
+std::string madc_module_link_spelling(const std::string &spelling,
+				      const std::vector<std::string> &search_dirs);
 
 // The load command a Mach-O image linking `spelling` records — the dylib's
 // own install name (LC_ID_DYLIB), as ld64 records it — read from the file

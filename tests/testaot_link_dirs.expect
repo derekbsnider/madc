@@ -1,0 +1,8 @@
+lib: rc=0
+twice(21)=42
+run -L dir: rc=0
+run -Ldir after -l: rc=0
+link with rpath: rc=0
+its run: rc=0
+link without rpath: rc=0 its run fails=1
+-Wl,--as-needed refused: 1

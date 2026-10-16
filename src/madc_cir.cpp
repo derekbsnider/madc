@@ -3242,8 +3242,11 @@ static madc::dis::istring cir_user_library_spelling(const madc::dis::istring &l)
 // toolchain at build time — madc_stdlib_flavor::link_libs), never a host
 // #ifdef: a -stdlib=libc++ emit from a libstdc++-built madc names
 // libc++.so.1. NULL flavor = the build default (table entry 0).
+// DT_RUNPATH: madc's own runtime arms below, then the user's -Wl,-rpath
+// directories in command-line order, once each.
 static void cir_native_link_env(const madc_stdlib_flavor *flavor,
 				const std::vector<std::string> &user_libs,
+				const std::vector<std::string> &user_runpath,
 				std::vector<std::string> &needed,
 				std::string &runpath)
 {
@@ -3336,6 +3339,14 @@ static void cir_native_link_env(const madc_stdlib_flavor *flavor,
 	runpath += MADC_RUNPATH_LIBDIR;
     else
 	runpath += std::string(":") + MADC_RUNPATH_LIBDIR;
+    // The user's -rpath directories follow madc's own arms, which bind the
+    // compiling madc's runtime (libmadc.so.0) whatever else a named directory
+    // holds — the opener's order too (madc_module_open: madc's lib directory
+    // first). PE has no runpath; the writer never reads it.
+    for (const std::string &dir : user_runpath)
+	if (!dir.empty()
+	    && (":" + runpath + ":").find(":" + dir + ":") == std::string::npos)
+	    runpath += (runpath.empty() ? "" : ":") + dir;
 }
 
 // THE object-capture-mode scope (dupaudit family object_mode_emit_scoping):
@@ -3355,7 +3366,8 @@ struct ObjectModeScope
 
 int madc_cir_emit_native(Program *prog, const char *source_name,
 			 MadcNativeKind kind, const char *out_path,
-			 const std::vector<std::string> &user_libs)
+			 const std::vector<std::string> &user_libs,
+			 const std::vector<std::string> &user_runpath)
 {
     ObjectModeScope object_mode_scope;
 
@@ -3389,8 +3401,8 @@ int madc_cir_emit_native(Program *prog, const char *source_name,
     // directly — no external toolchain.
     std::vector<std::string> needed;
     std::string runpath;
-    cir_native_link_env(prog->active_stdlib_flavor(), user_libs, needed,
-			runpath);
+    cir_native_link_env(prog->active_stdlib_flavor(), user_libs,
+			user_runpath, needed, runpath);
     return session.emit_native_executable(out_path, needed, runpath,
 					  kind) ? 0 : -1;
 }
@@ -3590,7 +3602,8 @@ static MIR_object_t cir_read_objects(const std::vector<std::string> &paths)
 int madc_cir_link_objects(const std::vector<std::string> &paths,
 			  MadcNativeKind kind, const char *out_path,
 			  const std::vector<std::string> &user_libs,
-			  Program *prog)
+			  Program *prog,
+			  const std::vector<std::string> &user_runpath)
 {
     // No compile happens here — the inputs are already captures; the fork
     // does the whole link (read/merge + emit).
@@ -3633,7 +3646,7 @@ int madc_cir_link_objects(const std::vector<std::string> &paths,
 	std::vector<std::string> needed;
 	std::string runpath;
 	cir_native_link_env(prog ? prog->active_stdlib_flavor() : NULL,
-			    user_libs, needed, runpath);
+			    user_libs, user_runpath, needed, runpath);
 	// Conditional libmadc.so.0, same policy as the source lanes; here
 	// the external imports are the merged builder's UNDEF names
 	// (unification already netted out cross-object references, and the
@@ -8232,7 +8245,8 @@ int madc_project_emit_native(MadcEngine &engine,
 			     MadcNativeKind kind, const char *out_path,
 			     const std::vector<std::string> &user_libs,
 			     bool forest_bind,
-			     const std::string &forest_bind_path)
+			     const std::string &forest_bind_path,
+			     const std::vector<std::string> &user_runpath)
 {
 	if (manifest.tus.empty()) {
 		fprintf(stderr, "madc_project_emit_native: empty manifest\n");
@@ -8384,7 +8398,8 @@ int madc_project_emit_native(MadcEngine &engine,
 				if (std::find(all_libs.begin(), all_libs.end(), l)
 				    == all_libs.end())
 					all_libs.push_back(l);
-		cir_native_link_env(flavor, all_libs, needed, runpath);
+		cir_native_link_env(flavor, all_libs, user_runpath, needed,
+				    runpath);
 		// The manifest's kind decides the subsystem for a project
 		// build (the CLI's -mwindows is the single-TU lane's
 		// spelling); its "icon" is the image's icon.

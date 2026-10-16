@@ -5,7 +5,7 @@
 #include <string.h>
 #include "madc_modules.h"
 #include "madc_dl.h"
-#include "madc_posix_io.h"	// resolve_real_path, host_path_dirname
+#include "madc_posix_io.h"	// resolve_real_path, host_path_dirname / _join / _type_of
 
 // The rows. `c` and `m` name the C runtime images by their REAL sonames /
 // install names / module names — a dev-symlink spelling (libm.so) needs the
@@ -240,4 +240,24 @@ void *madc_module_open(const std::string &spelling, std::string &error,
 		error = e ? e : "cannot open";
 	}
 	return h;
+}
+
+std::string madc_module_locate(const std::string &spelling,
+			       const std::vector<std::string> &search_dirs)
+{
+	if (is_path_spelling(spelling))
+		return spelling;
+	for (const std::string &dir : search_dirs) {
+		std::string path = madc::detail::host_path_join(dir, spelling);
+		if (madc::detail::host_path_type_of(path) == madc::detail::host_path_type::file)
+			return path;
+	}
+	return spelling;
+}
+
+std::string madc_module_link_spelling(const std::string &spelling,
+				      const std::vector<std::string> &search_dirs)
+{
+	return madc_target_os == TargetOS::Darwin
+		? madc_module_locate(spelling, search_dirs) : spelling;
 }

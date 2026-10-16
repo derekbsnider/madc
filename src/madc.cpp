@@ -330,6 +330,12 @@ static void print_usage(const char *prog)
 "                          libSystem.B.dylib / ucrtbase.dll; lib<name>.<dso>\n"
 "                          otherwise; a path verbatim). The build-line form of\n"
 "                          the source's `import`. Works with or without --project.\n"
+"  -L<dir>                 search <dir> first for the -l libraries a run opens\n"
+"                          (ld's -L order); an AOT image names the library and\n"
+"                          the loader finds it at run time (-Wl,-rpath)\n"
+"  -Wl,-rpath,<dir>        add <dir> to the produced image's run-time library\n"
+"                          path (DT_RUNPATH / LC_RPATH), after madc's own; any\n"
+"                          other -Wl, linker option is refused\n"
 "  --no-auto-load          do not act on `import` / #load library bindings (the\n"
 "                          library is linked, not loaded); link explicitly via\n"
 "                          -l. The namespace binds to the program's own scope.\n"
@@ -509,6 +515,42 @@ static int cross_refuse_run(const char *lane)
     return 1;
 }
 #endif
+
+// gcc's -Wl,<list>: the comma-split options the linker would see. madc is
+// its own linker, so it reads what it implements — `-rpath <dir>` /
+// `-rpath=<dir>`, appended to `runpath` — and false with `refused` naming the
+// first option it does not, so an option is never dropped silently.
+static bool read_linker_options(const char *list, std::vector<std::string> &runpath,
+                                std::string &refused)
+{
+    std::vector<std::string> words;
+    std::string word;
+    for ( const char *p = list; ; p++ )
+    {
+        if ( *p == ',' || *p == '\0' )
+        {
+            words.push_back(word);
+            word.clear();
+            if ( *p == '\0' )
+                break;
+        }
+        else
+            word += *p;
+    }
+    for ( size_t i = 0; i < words.size(); i++ )
+    {
+        if ( words[i] == "-rpath" && i + 1 < words.size() && !words[i + 1].empty() )
+            runpath.push_back(words[++i]);
+        else if ( words[i].compare(0, 7, "-rpath=") == 0 && words[i].size() > 7 )
+            runpath.push_back(words[i].substr(7));
+        else
+        {
+            refused = words[i];
+            return false;
+        }
+    }
+    return true;
+}
 
 // The file lane's one read of its input (plan §41.5a): `-` names stdin, as
 // in gcc and python, read whole into the buffer lane; any other argument
@@ -844,6 +886,8 @@ int main(int argc, char **argv)
     std::vector<std::string> cli_define_args;  // -D as given: likewise
     std::vector<std::string> link_libs;   // -l<name>: TARGET spellings (madc_modules) opened RTLD_GLOBAL
     std::vector<std::string> cc_link_args; // -l<name> → DT_NEEDED in AOT mode
+    std::vector<std::string> link_search_dirs; // -L<dir>: searched for -l ahead of the opener's own
+    std::vector<std::string> link_runpath;     // -Wl,-rpath,<dir> → DT_RUNPATH in AOT mode
     bool compile_object = false;          // -c: emit a relocatable .o, no run
     bool emit_shared = false;             // -shared: emit an ET_DYN .so, no run
     bool no_pie = false;                  // -no-pie: fixed-base ET_EXEC (default = PIE, gcc parity)
@@ -1252,6 +1296,28 @@ int main(int argc, char **argv)
             cc_link_args.push_back(lib);
             link_libs.push_back(lib);
             filearg = i + 1;
+        } else if (strncmp(argv[i], "-L", 2) == 0) {
+            // -Ldir or -L dir: where the -l libraries are searched, ahead of
+            // madc's own lib directory and the loader (ld's -L order). JIT:
+            // the -l open below. AOT: the image names the library and the
+            // loader finds it at run time, so nothing is searched here.
+            const char *dir = argv[i] + 2;
+            if ( *dir == '\0' && i + 1 < argc )
+                dir = argv[++i];
+            if ( *dir )
+                link_search_dirs.push_back(dir);
+            filearg = i + 1;
+        } else if (strncmp(argv[i], "-Wl,", 4) == 0) {
+            // gcc's pass-through to the linker; madc is its own linker.
+            std::string refused;
+            if ( !read_linker_options(argv[i] + 4, link_runpath, refused) )
+            {
+                std::cerr << "madc: " << argv[i] << ": linker option '"
+                          << refused << "' is not supported (-rpath is)"
+                          << std::endl;
+                return 1;
+            }
+            filearg = i + 1;
         } else if (strncmp(argv[i], "--emit=", 7) == 0) {
             // Render the cir_node tree (MC11-IR) as C source; do not run.
             const char *lang = argv[i] + 7;
@@ -1597,6 +1663,10 @@ int main(int argc, char **argv)
     // precompiled captures into one artifact (-r one .o, -o an executable,
     // -shared a .so) — MIR is the linker, no external toolchain. -c stays
     // a loud error (gcc: the input is already compiled).
+    // -L reaches every -l, wherever it stood on the line (ld's rule).
+    for ( std::string &lib : cc_link_args )
+        lib = madc_module_link_spelling(lib, link_search_dirs);
+
     if ( !run_object_paths.empty() && emit_native )
     {
         if ( compile_object || emit_object_path )
@@ -1614,7 +1684,8 @@ int main(int argc, char **argv)
                          : generic_output_path ? generic_output_path
                          : "a.out";
         return madc_cir_link_objects(run_object_paths, kind, outp,
-                                     cc_link_args, prog.get()) == 0 ? 0 : 1;
+                                     cc_link_args, prog.get(),
+                                     link_runpath) == 0 ? 0 : 1;
     }
 
     // -l<name>: dlopen each requested library (RTLD_GLOBAL) so the import
@@ -1630,13 +1701,14 @@ int main(int argc, char **argv)
         if ( emit_native )
             break;
         std::string lerr;
-        if ( !madc_module_open(lib, lerr, /*bind_now=*/true) )
+        std::string target = madc_module_locate(lib, link_search_dirs);
+        if ( !madc_module_open(target, lerr, /*bind_now=*/true) )
         {
             std::cerr << "madc: -l: failed to load " << lib << ": "
                       << lerr << std::endl;
             return 1;
         }
-        prog->loaded_lib_paths.push_back(lib);   // the frozen-forest link closure
+        prog->loaded_lib_paths.push_back(target);   // the frozen-forest link closure
     }
 
     // The REPL host's backend (Windows, split arc 1A.5): this process is its
@@ -1805,7 +1877,8 @@ int main(int argc, char **argv)
 	    int erc = madc_project_emit_native(engine, manifest, kind, outpath,
 					       cc_link_args,
 					       prog->registration_policy.enable_forest_bind,
-					       prog->forest_bind_path);
+					       prog->forest_bind_path,
+					       link_runpath);
 	    return erc == 0 ? 0 : 1;
 	}
 	// Remaining positionals (filearg..argc) become the program's argv.
@@ -2394,7 +2467,8 @@ int main(int argc, char **argv)
 	    else
 		outpath = "a.out";
 	    int erc = madc_cir_emit_native(prog.get(), argv[filearg], kind,
-					   outpath.c_str(), cc_link_args);
+					   outpath.c_str(), cc_link_args,
+					   link_runpath);
 	    print_stats();
 	    return erc == 0 ? 0 : 1;
 	}

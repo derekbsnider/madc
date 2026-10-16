@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### `-L<dir>` searches for `-l` libraries and `-Wl,-rpath,<dir>` sets a produced image's run-time path
+
+madc's driver now accepts gcc's `-L<dir>` and `-Wl,-rpath,<dir>`. `-L<dir>` (or
+`-L <dir>`) adds `<dir>` to the directories searched for each `-l` library,
+ahead of madc's own lib directory and the loader, in ld's `-L` order; a JIT run
+opens the located library, and an AOT image names the library so the loader
+finds it at run time. `-Wl,-rpath,<dir>` (and `-Wl,-rpath=<dir>`) append `<dir>`
+to the produced image's run-time library path (`DT_RUNPATH` / `LC_RPATH`), after
+madc's own runtime arms, once each; PE carries no runpath. Any other `-Wl,`
+linker option is refused with a loud error, never dropped silently.
+`tests/testaot_link_dirs` runs both spellings against the gcc/clang oracle: a
+`-l` library is found through `-L` wherever it stands on the line, an image
+linked with `-Wl,-rpath` runs with no environment help, and the same image
+without it does not load. Completes the `-L` and `-Wl,-rpath` part of KG gap
+`cli_multiple_sources_compile_and_link`.
+
 ### Several source operands on an artifact lane build as a project of translation units
 
 madc's driver now matches gcc's: `madc -o prog a.c b.c` links the sources into
