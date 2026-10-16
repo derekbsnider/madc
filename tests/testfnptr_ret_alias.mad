@@ -1,0 +1,35 @@
+/* A function pointer whose RETURN type is a function-pointer typedef --
+ * `sp (*xGet)(const char *)` -- is declared as that, never as the alias
+ * itself. A member, a global and a local were declared `sp xGet`, so the
+ * call `xGet("a")()` was refused ("too many arguments", "called object is
+ * not a function or function pointer") and SQLite's VFS table initializer
+ * (`sqlite3_syscall_ptr (*xGetSystemCall)(sqlite3_vfs *, const char *)`)
+ * warned. A declaration whose type IS the alias -- `sp plain`, a
+ * function-type alias under `*` -- keeps the alias.
+ * Oracle: gcc and clang -O0 print "a b c p t plain do=9". */
+#include <stdio.h>
+typedef void (*sp)(void);
+typedef int DO_FUN(int);
+typedef sp (*getter)(const char *);
+static const char *last;
+static void hello(void) { printf("%s ", last); }
+static sp get(const char *z) { last = z; return hello; }
+static int nine(int a) { return a + 8; }
+struct V { sp (*xGet)(const char *); sp plain; DO_FUN *fn; };
+static sp (*gget)(const char *) = get;
+static int use(sp (*pget)(const char *)) { pget("p")(); return 1; }
+int main(void)
+{
+	struct V v = { get, hello, nine };
+	sp (*lget)(const char *) = get;
+	getter tget = get;
+	v.xGet("a")();
+	lget("b")();
+	gget("c")();
+	use(get);
+	tget("t")();
+	last = "plain";
+	v.plain();
+	printf("do=%d\n", v.fn(1));
+	return 0;
+}

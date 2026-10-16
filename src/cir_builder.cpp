@@ -9260,19 +9260,25 @@ int CirBuilder::fnptr_alias_stars(const madc::dis::istring &alias)
 	return 1;
 }
 
-// True when `alias` resolves to a function(-pointer) typedef — the only case
-// where the alias can serve as a fn-ptr declaration's whole type spec
-// (`DO_FUN g`). A typedef that names a NON-function type is just the fn-ptr's
+// True when `alias` names the fn-ptr declaration's OWN type — the only case
+// where the alias can serve as its whole type spec: the alias's function
+// pointer (`UNOP u`) or the function type under its `*` (`DO_FUN *g`), one
+// signature. A typedef that names a NON-function type is just the fn-ptr's
 // RETURN type (`X (*fp)(void)` — struct-ret-1; `bool (*m)(args)` members —
-// 20030714-1): the alias spec would erase both the signature and the pointer,
-// so those must keep the full `ret (*name)(params)` declarator. Unresolvable
-// aliases count as function form (matches fnptr_alias_stars' fallback).
-bool CirBuilder::fnptr_alias_is_fn(const madc::dis::istring &alias)
+// 20030714-1), and so is a function-pointer typedef the declarator wraps
+// (`sp (*xGetSystemCall)(sqlite3_vfs *, const char *)`, SQLite's VFS: emitted
+// `sp xGetSystemCall`): the alias spec would erase both the signature and the
+// pointer, so those must keep the full `ret (*name)(params)` declarator.
+// Unresolvable aliases count as function form (matches fnptr_alias_stars'
+// fallback).
+bool CirBuilder::fnptr_alias_is_fn(const madc::dis::istring &alias, DataDefFPTR *decl_fp)
 {
 	if (alias.empty() || !m_prog) return true;
 	flat_datatype_map_iter it = m_prog->datatype_map.find(alias);
 	if (it == m_prog->datatype_map.end() || !*it) return true;
-	return dynamic_cast<DataDefFPTR *>(&(*it)->definition) != NULL; // allowed-exception: the alias's own node
+	DataDefFPTR *afp = dynamic_cast<DataDefFPTR *>(&(*it)->definition); // allowed-exception: the alias's own node
+	if (!afp) return false;
+	return !decl_fp || afp == decl_fp || afp->target == decl_fp->target;
 }
 
 // -----------------------------------------------------------------------
@@ -11472,7 +11478,7 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	// it names the function(-pointer) type itself — see fnptr_alias_is_fn.
 	DataDefFPTR *fnptr = dynamic_cast<DataDefFPTR *>(v->type); // allowed-exception: renders the FPTR node
 	if (fnptr && !v->typedef_name.empty()
-	    && fnptr_alias_is_fn(v->typedef_name))
+	    && fnptr_alias_is_fn(v->typedef_name, fnptr))
 		fnptr = NULL;
 	node_t fnptr_decl_list = NULL;
 	// A pointer or reference TO a function pointer, or a reference to a
@@ -12384,7 +12390,7 @@ node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner,
 		// function(-pointer) type itself; a RETURN-type alias
 		// (`bool (*isTableCell)(args)`, 20030714-1) would emit `bool *m` —
 		// a plain data pointer — so it expands the signature inline.
-		if (!mtypedef.empty() && fnptr_alias_is_fn(mtypedef)) {
+		if (!mtypedef.empty() && fnptr_alias_is_fn(mtypedef, mfp)) {
 			mspec = type_list(mtype, mtypedef);
 			for (size_t d = 0; d < mdims.size(); d++)
 				append(mdl, node3(N_ARR, ignore(), list(), integer(mdims[d])));

@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### A function pointer whose return type is a function-pointer typedef keeps its full declarator
+
+A member, global or local declared `sp (*xGet)(const char *)` — a function
+pointer whose return type is the function-pointer typedef `sp` — now emits the
+full `ret (*name)(params)` declarator, not the alias `sp xGet`. The alias
+spelling erased both the signature and the pointer, so `xGet("a")()` was refused
+("too many arguments", "called object is not a function or function pointer")
+and SQLite's VFS table initializer (`sqlite3_syscall_ptr (*xGetSystemCall)(sqlite3_vfs *, const char *)`)
+warned. `fnptr_alias_is_fn` decided whether the alias names a function pointer;
+it now decides whether the alias is THIS declaration's own type — the alias's
+own fn-pointer or a function type under its `*`, sharing the declaration's target
+signature — so a return-type alias expands inline while a declaration whose type
+IS the alias (`sp plain`, `DO_FUN *fn`, `getter tget`) keeps it.
+`tests/testfnptr_ret_alias` runs the member, global, local, parameter and alias
+forms against the gcc/clang oracle (`a b c p t plain do=9`). Closes KG gap
+`cir_fnptr_returning_fnptr_alias_spelled_as_alias`.
+
 ### A struct member that is a pointer to a function pointer keeps its fn-pointer pointee
 
 A struct member `void (**aExt)(void)` now declares a pointer to a function
