@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+### A range-for over a class container returned by a call reads its referent
+
+A C++11 range-for whose range is a call returning a class container by reference
+(`std::vector<int> &vec()`) or by value (`std::vector<int> make()`), or a
+reference parameter (`std::vector<int> &v`), iterates the referent/temporary and
+evaluates the range expression once ([stmt.ranged]/1 binds `auto &&__range`
+before the loop) rather than once per `size()` / `operator[]` / `begin()` call.
+The address of a class-object expression used as an object is now one helper,
+`class_object_expr_addr` (`src/cir_builder.cpp`): a by-value call receiver is
+materialized into an addressable temporary and a reference-returning call is
+re-wrapped with `&` over the referent lvalue, so c2mir no longer rejects the
+receiver with "incompatible argument type for pointer type parameter". It is the
+body lifted out of `class_this_arg`'s parent-expression arm. `translate_foreach_class`
+and `translate_foreach_iterator` previously each carried a divergent receiver
+lambda with no reference-call or by-value-call case; both now capture the range
+once into a `struct C *__fe_r_N` prelude declaration via `capture_class_range`,
+and a plain named range variable routes through the named-object owner
+`object_var_addr` via the shared `range_named_variable` predicate.
+`tests/testrangefor_ref_call` covers the reference-call, by-value-call and
+reference-parameter shapes against the g++/clang++ oracle.
+
 ### A reference-returned carrier, subscripted or iterated, reads its referent
 
 A carrier returned by reference from a call (`var &fill(var &out, ...)`),

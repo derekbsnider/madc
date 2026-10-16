@@ -14272,6 +14272,90 @@ node_t CirBuilder::object_var_addr(const Variable &v, TokenBase *origin)
 	return var_is_pointer_stored(v) ? base : node1(N_ADDR, base, origin);
 }
 
+// The address of a class-object EXPRESSION used as an object (a member
+// call's receiver, a range-for's range) — never a named variable, which is
+// var_storage_node's. `cls` is the class behind the expression's type.
+node_t CirBuilder::class_object_expr_addr(TokenBase *e, DataDefCLASS *cls,
+					  TokenBase *origin)
+{
+	DataDef *recv_type = e->datadef();
+	// A by-value object-returning CALL receiver (`*begin()` — begin()
+	// returns the iterator by value) is a prvalue; `&call` is not an lvalue
+	// and c2mir rejects it. object_arg_addr materializes it into an
+	// addressable temp ([class.temporary]: a retbuf return via
+	// object_call_temp_addr, a trivially-copyable register return via a
+	// copy into a temp). Gated to the CALL case so an lvalue receiver keeps
+	// its direct &obj — object_arg_addr would otherwise copy a non-matching
+	// lvalue into a temp and call the method on the copy. Detected before
+	// translate_expr so the call is emitted once (inside object_arg_addr).
+	bool recv_is_ptr = recv_type && recv_type->is_pointer();
+	// A cast-to-REFERENCE receiver (static_cast<_Base1&>(*this) —
+	// libc++ __compressed_pair's accessor shape) is the ONE
+	// reference-typed head whose translation preserves the operand
+	// LVALUE (lvalue cast, see the addressable-temp classifier);
+	// every other DataDefREF head (subscript, member, call) carries
+	// the reference's pointer VALUE and stays on the raw-pass path.
+	// Route the lvalue through the value tail's N_ADDR (the same
+	// disease the ref-returning-call re-wrap below fixes).
+	if (TokenCast *rcast = dynamic_cast<TokenCast *>(e))
+		if (rcast->cast_type && rcast->cast_type->is_reference())
+			recv_is_ptr = false;
+	if (!recv_is_ptr
+	    && (e->type() == TokenType::ttCallFunc
+		|| e->type() == TokenType::ttCallMethod)
+	    && !ref_returning_call_type(e))
+		return object_arg_addr(e, cls);
+	// A class-valued OPERATOR receiver (`(a + b).get()` — the free
+	// operator+ emits as a by-value call through the body route /
+	// sret) is the same prvalue as the by-value CALL above; the raw
+	// path would emit `&(call)`. object_arg_addr materializes it
+	// ([class.temporary]); shifts are excluded by the helper (stream
+	// convention returns the lhs by reference).
+	if (!recv_is_ptr && class_operator_value_result(e))
+		return object_arg_addr(e, cls);
+	// A MEMBER of a by-value-CALL receiver (`emplace(...).first->f()`
+	// at map:967): the member's BASE is the prvalue — materialize the
+	// base ([class.temporary], object_arg_addr's trivially-copyable
+	// tail spills it) and select the member off the temp. The raw
+	// path emitted `&(call).first`, which is not an lvalue.
+	if (!recv_is_ptr
+	    && e->type() == TokenType::ttMember) {
+		TokenMember *pm = dynamic_cast<TokenMember *>(e);
+		TokenBase *pb = pm ? pm->parent_expr : NULL;
+		DataDefCLASS *bcls = (pb
+				      && (pb->type() == TokenType::ttCallFunc
+					  || pb->type() == TokenType::ttCallMethod)
+				      && !ref_returning_call_type(pb)
+				      && pb->datadef()
+				      && !pb->datadef()->is_pointer())
+				     ? class_behind(pb->datadef()) : NULL;
+		if (bcls) {
+			node_t bptr = node2(N_CAST,
+				node2(N_TYPE,
+				      node1(N_LIST, class_tag_ref(bcls)),
+				      node2(N_DECL, ignore(),
+					    node1(N_LIST, pointer()))),
+				object_arg_addr(pb, bcls), origin);
+			node_t fld = node2(N_DEREF_FIELD, bptr,
+				id(var_emit_name(pm->var).c_str(),
+				   origin));
+			return node1(N_ADDR, fld, origin);
+		}
+	}
+	node_t recv_node = translate_expr(e);
+	// A REFERENCE-returning CALL receiver: translate_expr yields the
+	// DEREF'd lvalue (`*call` — the reference's referent, see the
+	// returns_reference tail of class_method_call), but the receiver
+	// pointer is the call's raw value. Re-wrap with & (`&(*call)`,
+	// c2mir folds it) — without this the struct LVALUE itself flowed
+	// into the receiver casts: a hard c2mir check error under the
+	// virtual-base owner adjust, a silent "incompatible argument type"
+	// warning elsewhere.
+	if (ref_returning_call_type(e))
+		return node1(N_ADDR, recv_node, origin);
+	return recv_is_ptr ? recv_node : node1(N_ADDR, recv_node, origin);
+}
+
 node_t CirBuilder::class_this_arg(TokenMember *tm, DataDefCLASS *&recv_class,
 				  TokenBase *origin)
 {
@@ -14297,81 +14381,7 @@ node_t CirBuilder::class_this_arg(TokenMember *tm, DataDefCLASS *&recv_class,
 				return carrier_expr_addr(tm->parent_expr, origin);
 		}
 		if (!recv_class) return NULL;
-		// A by-value object-returning CALL receiver (`*begin()` — begin()
-		// returns the iterator by value) is a prvalue; `&call` is not an lvalue
-		// and c2mir rejects it. object_arg_addr materializes it into an
-		// addressable temp ([class.temporary]: a retbuf return via
-		// object_call_temp_addr, a trivially-copyable register return via a
-		// copy into a temp). Gated to the CALL case so an lvalue receiver keeps
-		// its direct &obj — object_arg_addr would otherwise copy a non-matching
-		// lvalue into a temp and call the method on the copy. Detected before
-		// translate_expr so the call is emitted once (inside object_arg_addr).
-		bool recv_is_ptr = recv_type && recv_type->is_pointer();
-		// A cast-to-REFERENCE receiver (static_cast<_Base1&>(*this) —
-		// libc++ __compressed_pair's accessor shape) is the ONE
-		// reference-typed head whose translation preserves the operand
-		// LVALUE (lvalue cast, see the addressable-temp classifier);
-		// every other DataDefREF head (subscript, member, call) carries
-		// the reference's pointer VALUE and stays on the raw-pass path.
-		// Route the lvalue through the value tail's N_ADDR (the same
-		// disease the ref-returning-call re-wrap below fixes).
-		if (TokenCast *rcast = dynamic_cast<TokenCast *>(tm->parent_expr))
-			if (rcast->cast_type && rcast->cast_type->is_reference())
-				recv_is_ptr = false;
-		if (!recv_is_ptr
-		    && (tm->parent_expr->type() == TokenType::ttCallFunc
-			|| tm->parent_expr->type() == TokenType::ttCallMethod)
-		    && !ref_returning_call_type(tm->parent_expr))
-			return object_arg_addr(tm->parent_expr, recv_class);
-		// A class-valued OPERATOR receiver (`(a + b).get()` — the free
-		// operator+ emits as a by-value call through the body route /
-		// sret) is the same prvalue as the by-value CALL above; the raw
-		// path would emit `&(call)`. object_arg_addr materializes it
-		// ([class.temporary]); shifts are excluded by the helper (stream
-		// convention returns the lhs by reference).
-		if (!recv_is_ptr && class_operator_value_result(tm->parent_expr))
-			return object_arg_addr(tm->parent_expr, recv_class);
-		// A MEMBER of a by-value-CALL receiver (`emplace(...).first->f()`
-		// at map:967): the member's BASE is the prvalue — materialize the
-		// base ([class.temporary], object_arg_addr's trivially-copyable
-		// tail spills it) and select the member off the temp. The raw
-		// path emitted `&(call).first`, which is not an lvalue.
-		if (!recv_is_ptr
-		    && tm->parent_expr->type() == TokenType::ttMember) {
-			TokenMember *pm = dynamic_cast<TokenMember *>(tm->parent_expr);
-			TokenBase *pb = pm ? pm->parent_expr : NULL;
-			DataDefCLASS *bcls = (pb
-					      && (pb->type() == TokenType::ttCallFunc
-						  || pb->type() == TokenType::ttCallMethod)
-					      && !ref_returning_call_type(pb)
-					      && pb->datadef()
-					      && !pb->datadef()->is_pointer())
-					     ? class_behind(pb->datadef()) : NULL;
-			if (bcls) {
-				node_t bptr = node2(N_CAST,
-					node2(N_TYPE,
-					      node1(N_LIST, class_tag_ref(bcls)),
-					      node2(N_DECL, ignore(),
-						    node1(N_LIST, pointer()))),
-					object_arg_addr(pb, bcls), origin);
-				node_t fld = node2(N_DEREF_FIELD, bptr,
-					id(var_emit_name(pm->var).c_str(),
-					   origin));
-				return node1(N_ADDR, fld, origin);
-			}
-		}
-		recv_node = translate_expr(tm->parent_expr);
-		// A REFERENCE-returning CALL receiver: translate_expr yields the
-		// DEREF'd lvalue (`*call` — the reference's referent, see the
-		// returns_reference tail of class_method_call), but the receiver
-		// pointer is the call's raw value. Re-wrap with & (`&(*call)`,
-		// c2mir folds it) — without this the struct LVALUE itself flowed
-		// into the receiver casts: a hard c2mir check error under the
-		// virtual-base owner adjust, a silent "incompatible argument type"
-		// warning elsewhere.
-		if (ref_returning_call_type(tm->parent_expr))
-			return node1(N_ADDR, recv_node, origin);
-		return recv_is_ptr ? recv_node : node1(N_ADDR, recv_node, origin);
+		return class_object_expr_addr(tm->parent_expr, recv_class, origin);
 	}
 	recv_type = tm->object.type;
 	recv_node = var_storage_node(tm->object, origin);
@@ -29127,6 +29137,17 @@ static bool class_has_type_alias(DataDefCLASS *cls, const madc::dis::istring &na
 	return true;
 }
 
+// A range-for's range that is a plain NAMED variable — the one shape whose
+// address is object_var_addr's (a reference or by-value-carrier parameter
+// stores its pointer). A member (`s.a`) and a call (`f()`) are TokenVars too,
+// but their var is the bare field / the callee: they report their own token
+// type and stay expressions.
+static TokenVar *range_named_variable(TokenBase *container)
+{
+	return container && container->type() == TokenType::ttVariable
+		? container->as_var_tok() : NULL;
+}
+
 // Range-based for over a madc array (madc::value): `for (T x : arr) body`.
 // The parser already declared `x` in the ENCLOSING scope (so translate_block
 // emits its storage + ctor once, and the cleanup attribute destructs it), so
@@ -29200,7 +29221,7 @@ node_t CirBuilder::translate_foreach_loop(TokenFOREACH *fe,
 	if (DataDefCLASS *ccls = class_behind(cdd)) {
 		Variable *szmv = NULL, *opmv = NULL;
 		if (class_index_iteration_protocol(ccls, szmv, opmv))
-			return translate_foreach_class(fe, ccls, opmv);
+			return translate_foreach_class(fe, ccls, opmv, prelude);
 		// No position, but C++'s own ITERATOR protocol: std::map, std::set,
 		// std::list, and any container shaped like them. THE SAME shared
 		// recognizer the dumper keys on — one predicate, two consumers, which
@@ -29209,7 +29230,7 @@ node_t CirBuilder::translate_foreach_loop(TokenFOREACH *fe,
 		IterProtocol ip;
 		std::string ip_why;
 		if (class_iterator_iteration_protocol(ccls, ip, &ip_why, this))
-			return translate_foreach_iterator(fe, ccls, ip);
+			return translate_foreach_iterator(fe, ccls, ip, prelude);
 		// A class object with no index protocol must NOT fall through to
 		// the madc-array reader below: that reads the object's own bytes as
 		// a madc::value header (garbage length -> out-of-bounds element
@@ -29252,13 +29273,7 @@ node_t CirBuilder::translate_foreach_loop(TokenFOREACH *fe,
 	char rname[32];
 	snprintf(rname, sizeof(rname), "__fe_r_%d", m_strtmp_counter++);
 	{
-		TokenVar *cv = dynamic_cast<TokenVar *>(fe->container);
-		// A MEMBER (s.a) IS-A TokenVar (via TokenCallFunc), but its
-		// var is the bare FIELD — object_var_addr would address it by
-		// name and lose the receiver ("undeclared identifier a").
-		// Only a plain variable takes the stored-pointer shortcut.
-		if (dynamic_cast<TokenMember *>(fe->container))
-			cv = NULL;
+		TokenVar *cv = range_named_variable(fe->container);
 		node_t raw = (cv && carrier_behind(cv->var.type))
 			? object_var_addr(cv->var, fe)
 			: carrier_expr_addr(fe->container, fe);
@@ -29372,17 +29387,52 @@ node_t CirBuilder::translate_foreach_loop(TokenFOREACH *fe,
 	return node5(N_FOR, list(), init, cond, incr, body, fe);
 }
 
+// [stmt.ranged]/1: `auto &&__range = range-init;` — a class container's
+// address captured ONCE, by a unique name, into `struct C *__fe_r_N` (emitted
+// via the wrap prelude BEFORE the element declaration, the raw-array arm's
+// shape), so a range-init with side effects (`vec()`, `make()`) runs once,
+// never once per size() / operator[] / begin() call. The address is
+// object_var_addr's for a named variable (a value's &c, a reference
+// variable's stored pointer), else class_object_expr_addr's (a
+// reference-returning call's referent, a by-value call's materialized
+// temporary).
+madc::dis::istring CirBuilder::capture_class_range(TokenFOREACH *fe, DataDefCLASS *cls,
+					    std::vector<node_t> *prelude)
+{
+	if (!prelude)
+		return madc::dis::istring();
+	char rname[32];
+	snprintf(rname, sizeof(rname), "__fe_r_%d", m_strtmp_counter++);
+	TokenVar *cv = range_named_variable(fe->container);
+	node_t addr = cv ? object_var_addr(cv->var, fe)
+			 : class_object_expr_addr(fe->container, cls, fe);
+	node_t cast = node2(N_CAST,
+			    node2(N_TYPE, node1(N_LIST, class_tag_ref(cls)),
+				  node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
+			    addr, fe);
+	node_t rdecl = simple(N_SPEC_DECL, fe);
+	append(rdecl, node1(N_SHARE, node1(N_LIST, class_tag_ref(cls))));
+	node_t rdl = list();
+	append(rdl, pointer());
+	append(rdecl, node2(N_DECL, id(rname, fe), rdl));
+	append(rdecl, ignore());
+	append(rdecl, ignore());
+	append(rdecl, cast);
+	prelude->push_back(rdecl);
+	return madc::dis::istring(rname);
+}
+
 node_t CirBuilder::translate_foreach_class(TokenFOREACH *fe, DataDefCLASS *cls,
-					   Variable *opmv)
+					   Variable *opmv,
+					   std::vector<node_t> *prelude)
 {
 	FuncDef *opfd = dynamic_cast<FuncDef *>(opmv->type);
-	bool recv_is_ptr = fe->container->datadef()
-			   && fe->container->datadef()->is_pointer();
-	// __this for each method call: value receiver -> &c, pointer -> c.
-	auto recv_addr = [&]() -> node_t {
-		node_t c = translate_expr(fe->container);
-		return recv_is_ptr ? c : node1(N_ADDR, c, fe);
-	};
+	// __this for each method call: the range captured once.
+	madc::dis::istring rname = capture_class_range(fe, cls, prelude);
+	if (rname.empty())
+		return error_node("range-for: class range capture needs the "
+				  "wrap prelude", fe);
+	auto recv_addr = [&]() -> node_t { return id(rname.c_str(), fe); };
 	char idx[32];
 	snprintf(idx, sizeof(idx), "__fe_i_%d", m_strtmp_counter++);
 
@@ -29487,14 +29537,15 @@ node_t CirBuilder::translate_foreach_class(TokenFOREACH *fe, DataDefCLASS *cls,
 // wraps whatever comes back in the element variable's own block, so a block here
 // nests correctly.
 node_t CirBuilder::translate_foreach_iterator(TokenFOREACH *fe, DataDefCLASS *cls,
-					      const IterProtocol &ip)
+					      const IterProtocol &ip,
+					      std::vector<node_t> *prelude)
 {
-	bool recv_is_ptr = fe->container->datadef()
-			   && fe->container->datadef()->is_pointer();
-	auto recv_addr = [&]() -> node_t {
-		node_t c = translate_expr(fe->container);
-		return recv_is_ptr ? c : node1(N_ADDR, c, fe);
-	};
+	// The range captured once (capture_class_range).
+	madc::dis::istring rname = capture_class_range(fe, cls, prelude);
+	if (rname.empty())
+		return error_node("range-for: class range capture needs the "
+				  "wrap prelude", fe);
+	auto recv_addr = [&]() -> node_t { return id(rname.c_str(), fe); };
 	char nm[32], kx[32], itn[32];
 	snprintf(nm, sizeof(nm), "__fe_n_%d", m_strtmp_counter++);
 	snprintf(kx, sizeof(kx), "__fe_k_%d", m_strtmp_counter++);

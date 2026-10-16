@@ -1366,7 +1366,8 @@ private:
 	// iterator precede the loop).
 	node_t translate_foreach_iterator(class TokenFOREACH *fe,
 					  DataDefCLASS *cls,
-					  const IterProtocol &ip);
+					  const IterProtocol &ip,
+					  std::vector<node_t> *prelude);
 	// Call a NULLARY class method (`obj.size()`) and yield its value.
 	// `recv_addr` is the receiver's address. ONE owner for the symbol choice
 	// (emit_symbol-aware, unlike the hand-rolled `Class__size` it replaced),
@@ -2115,6 +2116,10 @@ public:
 	// a pointer receiver. `recv_class` is filled with the receiver's class.
 	node_t class_this_arg(class TokenMember *tm, DataDefCLASS *&recv_class,
 			      TokenBase *origin);
+	// The address of a class-object EXPRESSION used as an object (a member
+	// call's receiver, a range-for's range) — never a named variable.
+	node_t class_object_expr_addr(TokenBase *e, DataDefCLASS *cls,
+				      TokenBase *origin);
 	// Build the constructor-call statement for a class instance `v`:
 	//   ClassName__ClassName(&v, ctor_args...)
 	// Returns NULL when `v` is not a user class or has no user constructor.
@@ -2972,7 +2977,13 @@ public:
 	// class_nullary_call, so no size Variable is threaded here.
 	node_t translate_foreach_class(class TokenFOREACH *fe,
 				       class DataDefCLASS *cls,
-				       class Variable *opmv);
+				       class Variable *opmv,
+				       std::vector<node_t> *prelude);
+	// A class range's address, captured ONCE ([stmt.ranged]/1) into a
+	// prelude `struct C *` declaration; the captured name, or empty.
+	madc::dis::istring capture_class_range(class TokenFOREACH *fe,
+					       class DataDefCLASS *cls,
+					       std::vector<node_t> *prelude);
 	// Range-for over a raw fixed-size C array: `for (T x : a) body` -> a plain
 	// indexed loop over the array's compile-time element count with a direct
 	// subscript `a[__i]`. (No madc-array runtime helper.)
