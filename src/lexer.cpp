@@ -2929,7 +2929,17 @@ class ArgPaintStretches
     bool _started = false;
 public:
     // The argument's characters from offset `off` on were served under `paint`.
+    // Unpainted text after unpainted text -- nearly every call -- returns at
+    // once; the rest is note_paint below.
     void note(size_t off, const std::set<madc::dis::istring> &paint)
+    {
+	if ( _started && paint.empty()
+	  && (_segs.empty() ? _first.paint : _segs.back().paint).empty() )
+	    return;
+	note_paint(off, paint);
+    }
+private:
+    void note_paint(size_t off, const std::set<madc::dis::istring> &paint)
     {
 	if ( !_started )
 	{
@@ -2946,6 +2956,7 @@ public:
 	_segs.back().off = off;
 	_segs.back().paint = paint;
     }
+public:
     // The argument is complete: trim it (the trim owner above) and, when it
     // is still read across more than one stretch, move the stretches to
     // `out` and answer true. Ready for the next argument either way.

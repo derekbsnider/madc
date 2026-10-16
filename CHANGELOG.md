@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### The serving frame is asked of the frames, not stored per character
+
+- `Source::get` no longer writes a `_serving_frame` member on every character it
+  serves. `Source::serving_frame()` — read only by the function-like
+  macro-argument collector — now answers from the pushback frames: the front
+  frame's id, or 0 when there is no frame. A frame that served a character stays
+  at the front until the next `get()` (the delayed pop), and `get()` clears the
+  frames before it reads the buffer, so the front frame right after a `get()` is
+  the one that served it; the collector reads `serving_frame()` immediately after
+  `get()`. The member and both of its per-`get()` stores are gone, and the answer
+  is unchanged.
+- Macro-argument paint-stretch tracking (`ArgPaintStretches::note`) returns
+  inline when unpainted text follows unpainted text — nearly every call — and
+  defers the stretch-building rest to a private `note_paint`.
+- Measured on the packed `madc-release` parse-cost gate, the C-headers live
+  parse `c_headers.live` drops from 250,399,173 to 249,641,795 instructions. The
+  row is still above its v0.105.0 baseline (244,938,187); the remaining distance,
+  and the other rows, are being profiled. The dialect and the other rows are
+  unchanged within noise.
+
 ### A macro argument painted alike keeps no paint storage
 
 - Function-like macro-argument collection no longer keeps a
