@@ -3129,9 +3129,20 @@ TokenCallMethod *Program::arrow_operator_call(TokenBase *lhs, TokenBase *loc_tb)
     return opcall;
 }
 
-static uint32_t member_proxy_flags(uint32_t owner_flags)
+// The flags of a `const`-declared variable (vfCONSTDECL / vfCONSTBAKED say
+// how its value reads).
+static const uint32_t CONST_DECLARED_FLAGS = vfCONSTANT | vfCONSTDECL | vfCONSTBAKED;
+
+// A member's proxy variable inherits its object's flags. Through a pointer
+// (`p->m`) the object is `*p`, never the pointer variable: an `S *const p`
+// is not a const object, so the pointer's own const declaration stays
+// behind (the pointee's cv qualifies the member's TYPE instead).
+static uint32_t member_proxy_flags(uint32_t owner_flags, bool through_pointer)
 {
-    return owner_flags & ~vfFIXEDARRAY;
+    uint32_t flags = owner_flags & ~vfFIXEDARRAY;
+    if ( through_pointer )
+	flags &= ~CONST_DECLARED_FLAGS;
+    return flags;
 }
 
 static DataDef *build_fixed_array_query_type(DataDef *base_type,
@@ -23313,7 +23324,7 @@ int Program::implicit_object_cv(Variable &recv)
 	return pp && pp->base_type ? (int)(pp->base_type->cv_quals() & (cvCONST | cvVOLATILE))
 				   : cvNONE;
     }
-    if ( recv.flags & (vfCONSTANT | vfCONSTDECL | vfCONSTBAKED) )
+    if ( recv.flags & CONST_DECLARED_FLAGS )
 	cv |= cvCONST;
     // A MEMBER receiver read through the implicit `this` joins the implicit
     // object's cv ([expr.ref]): inside a const method a data member is a
@@ -34018,7 +34029,7 @@ TokenBase *Program::parsePostfixChainFrom(TokenBase *result, Variable *var)
 	    DataDef *mtype = member_access_type(sdd->m_type(mname),
 		is_arrow ? obj_type->cv_quals() : glvalue_cv(result));
 	    Variable *mvar = new Variable(mname, *mtype, 1, NULL, false);
-	    mvar->flags = var ? member_proxy_flags(var->flags) : 0;
+	    mvar->flags = var ? member_proxy_flags(var->flags, is_arrow) : 0;
 
 	    TokenMember *tm;
 	    if ( result->type() == TokenType::ttVariable )
@@ -42583,7 +42594,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			((DataDefSTRUCT *)struct_type)->m_type(id), glvalue_cv(lhs_dot));
 		    // create new variable
 		    var = new Variable(id, *mtype, 1, NULL, false);
-		    var->flags = member_proxy_flags(tv_var->flags);
+		    var->flags = member_proxy_flags(tv_var->flags, false);
 		    if ( tv_var->data )
 			var->data = (void *)((char *)tv_var->data + ofs);
 		    // remove LHS from exStack
@@ -42964,7 +42975,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 
 		    // create variable for the member
 		    var = new Variable(id, *mtype, 1, NULL, false);
-		    var->flags = member_proxy_flags(obj_var->flags);
+		    var->flags = member_proxy_flags(obj_var->flags, !fixed_array_arrow);
 
 		    // remove LHS from exStack
 		    exStack.pop();

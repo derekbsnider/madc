@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### A `T *const p`'s own const no longer refuses writes through `p->m`
+
+`struct S *const db = h->db; db->n--;` now writes the pointee. A `T *const p` is
+a const pointer to a modifiable object, so `p->m` is a writable lvalue (C11
+6.5.2.3p4, [expr.ref]); the member is qualified only as the pointed-to type is.
+The pointer variable's own const declaration (`vfCONSTANT` / `vfCONSTDECL` /
+`vfCONSTBAKED`) rode into the member's proxy variable, so every write through it
+was refused ("decrement of read-only variable 'n'" — SQLite's
+`vdbeCloseStatement`: `sqlite3 *const db = p->db; db->nStatement--;`). An arrow
+member access now drops those flags from the proxy; a dot access keeps them. A
+write to a member of an actual const object stays refused — through a pointer to
+const (`p->a`), on a const object (`c.b`), and through a const pointer to const
+(`q->d`). `tests/testconstptr_member_write` runs the writable cases against the
+gcc/clang oracle (`r=6 n=9 d=42 cq=9`); `tests/testconstptr_member_write_err`
+pins the three refusals that stay. Closes KG gap
+`c_const_pointer_member_write_refused`.
+
 ### `-fPIC` is accepted and options may follow the source on an artifact lane
 
 `-fPIC` / `-fpic` / `-fPIE` / `-fpie` are accepted no-ops (a `madc -c` object

@@ -1,0 +1,32 @@
+/* A `T *const p` is a const POINTER to a modifiable object: `p->m` writes
+ * the pointee, whose members are not const (C11 6.5.2.3p4, [expr.ref]: the
+ * member is qualified as the pointed-to type is). The pointer variable's
+ * own const declaration rode into the member's proxy variable, so every
+ * write was refused -- "decrement of read-only variable 'n'" (SQLite's
+ * vdbeCloseStatement: `sqlite3 *const db = p->db; db->nStatement--;`).
+ * testconstptr_member_write_err keeps the refusals that are right.
+ * Oracle: gcc and clang -O0 print "r=6 n=9 d=42 cq=9". */
+#include <stdio.h>
+struct S { int n; long long d; };
+struct H { struct S *db; };
+static int f(struct H *h)
+{
+  struct S *const db = h->db;
+  db->n--;
+  db->d = 40;
+  db->d += 2;
+  ++db->n;
+  db->n++;
+  return db->n;
+}
+int main(void)
+{
+  struct S s = {5, 0};
+  struct H h = {&s};
+  int r = f(&h);
+  struct S *const q = &s;
+  q->n = 9;
+  const struct S *const cq = &s;
+  printf("r=%d n=%d d=%lld cq=%d\n", r, s.n, s.d, cq->n);
+  return 0;
+}
