@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### A tag a parameter list names first is declared at file scope
+
+When a struct or union tag is first named inside a function type's parameter
+list — `struct Obj;` then `typedef int P(struct Obj *const *);` then the
+definition (tcl.h's `struct Tcl_Obj;` and `Tcl_ObjCmdProc`'s
+`struct Tcl_Obj *const *objv`) — madc now prepends a file-scope `struct Obj;` /
+`union Val;` at the head of the module for each such tag. madc models one type
+per tag, but the C it handed c2mir named the tag first in the parameter list, so
+c2mir scoped it to that prototype (C11 6.2.1p4): a different type from the later
+file-scope definition, and every call through a P pointer warned "incompatible
+argument type for pointer type parameter". On `tests/testfnptr_fwd_tag_param`
+(`--std=c17`) gcc 13 and clang 18 `-Wall -Wextra -O0` give no diagnostic and
+print 27; madc warned twice (struct and union) and now gives none, printing 27,
+and `--emit=c11` opens with `struct Obj;` / `union Val;`. SQLite 3.54.0's
+test1.c:7930, test_syscall.c:743 and test_thread.c:358 (calls through
+Tcl_ObjCmdProc pointers) warned before; a tcl.h-based reducer is silent after.
+
 ### `-dumpmachine` prints the toolchain's target triple
 
 madc now answers `-dumpmachine` the way gcc and clang do: it prints the target

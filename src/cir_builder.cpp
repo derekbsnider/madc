@@ -35231,6 +35231,71 @@ static void cir_harvest_type_refs(node_t n, std::set<madc::dis::istring> &tags,
 			cir_harvest_type_refs(op, tags, ids, has_typedef);
 }
 
+// The tags a declaration names before the module declares them at file
+// scope, in order (C11 6.2.1p4): a tag first named inside a function
+// declarator's parameter list (N_FUNC — a prototype's or a definition's) is
+// scoped to that list, a different type from the file-scope tag a later
+// declaration names. Everything else here is file scope: a struct body opens
+// no scope in C. The caller walks no function body (its tags are block-scope).
+static void cir_parameter_scope_tags(node_t n, bool in_params,
+				     std::set<madc::dis::istring> &declared,
+				     std::vector<std::pair<madc::dis::istring, c2mir_node_code_t> > &first_in_params)
+{
+	if (!n || n->code <= N_ID)
+		return;
+	if (n->code == N_STRUCT || n->code == N_UNION) {
+		node_t idn = c2mir_node_first_op(n);
+		if (idn && idn->code == N_ID && idn->u.s.s
+		    && declared.insert(idn->u.s.s).second && in_params)
+			first_in_params.push_back(std::make_pair(madc::dis::istring(idn->u.s.s),
+								 (c2mir_node_code_t)n->code));
+	}
+	bool params = in_params || n->code == N_FUNC;
+	for (node_t op = c2mir_node_first_op(n); op; op = c2mir_node_next_op(op))
+		cir_parameter_scope_tags(op, params, declared, first_in_params);
+}
+
+// madc models ONE type per tag, so a tag a parameter list names first must
+// already be the file-scope tag there: `struct Obj;` / `typedef int
+// P(struct Obj *const *);` / `struct Obj {...};` (tcl.h's Tcl_Obj and its
+// Tcl_ObjCmdProc) emitted the typedef's parameter as a prototype-scope
+// `struct Obj`, and every call through a P pointer was c2mir's "incompatible
+// argument type". A file-scope tag declaration is harmless anywhere before
+// the tag's use, so each such tag is declared at the head of the module.
+void CirBuilder::declare_parameter_scope_tags(node_t &top_list)
+{
+	std::set<madc::dis::istring> declared;
+	std::vector<std::pair<madc::dis::istring, c2mir_node_code_t> > first_in_params;
+	for (node_t n = c2mir_node_first_op(top_list); n; n = c2mir_node_next_op(n)) {
+		if (n->code != N_FUNC_DEF) {
+			cir_parameter_scope_tags(n, false, declared, first_in_params);
+			continue;
+		}
+		node_t body = NULL;
+		for (node_t op = c2mir_node_first_op(n); op; op = c2mir_node_next_op(op))
+			body = op;
+		for (node_t op = c2mir_node_first_op(n); op && op != body; op = c2mir_node_next_op(op))
+			cir_parameter_scope_tags(op, false, declared, first_in_params);
+	}
+	if (first_in_params.empty())
+		return;
+	node_t head = list();
+	for (size_t i = 0; i < first_in_params.size(); ++i) {
+		node_t spec_decl = simple(N_SPEC_DECL);
+		append(spec_decl, node1(N_LIST, node2(first_in_params[i].second,
+						      id(first_in_params[i].first.c_str()),
+						      ignore())));
+		for (int k = 0; k < 4; ++k)
+			append(spec_decl, ignore());
+		append(head, spec_decl);
+	}
+	while (node_t n = c2mir_node_first_op(top_list)) {
+		c2mir_op_remove(top_list, n);
+		append(head, n);
+	}
+	top_list = head;
+}
+
 // Rung 3: the identifier a declaration/definition node declares — op1 of an
 // N_SPEC_DECL / N_FUNC_DEF is the declarator (N_DECL), whose first op is the
 // declared N_ID. NULL for a pure type decl (struct def: no declarator).
@@ -37906,6 +37971,8 @@ node_t CirBuilder::translate_module(Program *prog)
 			      << gremoved << " of " << gpend.size()
 			      << " ctor groups" << std::endl);
 	}
+
+	declare_parameter_scope_tags(top_list);
 
 	// Plan §42 D27: which of an interactive entry's names are functions, from
 	// the module's final declarations. The session stubs a function nothing

@@ -2016,6 +2016,9 @@ public:
 			    const std::set<madc::dis::istring> &emitted_structs,
 			    bool force_incomplete_struct = false);
 	node_t struct_def(DataDefSTRUCT *sdd);
+	// The module's file-scope tag declarations for tags a parameter list
+	// names first (C11 6.2.1p4), at the head of `top_list`.
+	void declare_parameter_scope_tags(node_t &top_list);
 	// Emit a user-defined class as a plain C struct definition. Base-class
 	// members are already flattened into the derived class's member list by
 	// the parser (single inheritance), so this is a flat struct. A `void
