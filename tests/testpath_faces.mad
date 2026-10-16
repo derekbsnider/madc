@@ -20,6 +20,15 @@ void stem(const char *p)
 	println("stem {} -> {}", p, out);
 }
 
+// path_generic: the host's separators written '/'. On POSIX '\' is a
+// file-name byte and stays (tests/testpath_faces.win64_expect: Windows).
+void generic(const char *label, const char *p)
+{
+	var out;
+	madc::path_generic(out, p);
+	println("{}: {} -> {}", label, p, out);
+}
+
 int main()
 {
 	drop("dir.d/foo.c");
@@ -34,6 +43,9 @@ int main()
 	stem("/usr/bin/chthonia");
 	stem("chthonia.exe");
 	stem("dir.d/.hidden");
+
+	generic("generic", "dir/sub/f.c");
+	generic("backslash", "a\\b/c");
 
 	// Every missing directory ABOVE the path is made; the path itself is not.
 	madc::path_make_parents("madc_pathface_probe/a/b/c.txt");

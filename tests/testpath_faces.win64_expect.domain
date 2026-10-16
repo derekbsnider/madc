@@ -1,0 +1,6 @@
+# Labels whose line legitimately DIFFERS from tests/testpath_faces.win64_expect
+# versus tests/testpath_faces.expect — the win64 domain's own answers: on
+# Windows '\' is a path separator, so madc::path_generic writes it '/'; on
+# POSIX it is a file-name byte and stays. Every other labelled line must be
+# identical in both (scripts/check-expect-twins.sh).
+backslash

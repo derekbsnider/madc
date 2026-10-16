@@ -271,6 +271,12 @@ namespace madc {
     value &path_drop_extension(value &out, const char *path);
     value &path_stem(value &out, const char *path);
 
+    // A path in generic form: each of the host's separators written '/'
+    // ("a\\b/c" -> "a/b/c" on Windows; on POSIX '\' is a file-name byte and
+    // the path comes back as it is). The form madc stores and prints a path
+    // in, and a path-typed command-line value's.
+    value &path_generic(value &out, const char *path);
+
     // Make every missing directory above `path` (`mkdir -p` of its parent;
     // owner-only on POSIX): "a/b/c.txt" makes a and a/b, "a/b/" makes a/b
     // too. A failure shows at the caller's own open or test of the path.

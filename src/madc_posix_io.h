@@ -43,6 +43,12 @@ std::string canonical_path_for_compare(const std::string &path);
 std::string host_path_dirname(const std::string &path);
 std::string host_path_basename(const std::string &path);
 
+// `path` in generic form: every separator of the splitters' set written '/'
+// (boost::filesystem's generic format). On Windows a '\' becomes '/'; on
+// POSIX '\' is an ordinary file-name byte and the path comes back as it is.
+// What a path-typed command-line value is stored as (cli_options.h).
+std::string host_path_generic(const std::string &path);
+
 // Does `path` name its own root, so that joining it onto a base directory
 // would be wrong? THE owner of "is this path absolute" for every resolver
 // that joins a relative path to a base (an include, a manifest's file or

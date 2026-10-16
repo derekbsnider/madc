@@ -367,3 +367,103 @@ TEST_CASE("@file: off unless the table asks; never inside the remainder")
 	CHECK(r.operands == just);
 	unlink(rsp.c_str());
 }
+namespace {
+
+enum typed_id { y_jobs = 1, y_scale, y_debug, y_path, y_colour, y_a, y_b, y_need, y_req };
+
+const char *const colour_choices[] = { "auto", "always", "never", NULL };
+
+const cli::row typed_rows[] = {
+	{ y_jobs, "jobs", { { "--jobs", value_form::equals_or_separate } }, "<n>", 0, "jobs",
+	  NULL, 0, 0, cli::value_type::integer },
+	{ y_scale, "scale", { { "--scale", value_form::equals } }, "<x>", 0, "scale",
+	  NULL, 0, 0, cli::value_type::number },
+	{ y_debug, "debug", { { "--debug", value_form::equals } }, "<yes|no>", 0, "debug",
+	  NULL, 0, 0, cli::value_type::boolean },
+	{ y_path, "path", { { "--path", value_form::equals } }, "<dir>", 0, "path",
+	  NULL, 0, 0, cli::value_type::path },
+	{ y_colour, "colour", { { "--colour", value_form::optional_equals } }, "<when>", 0, "colour",
+	  NULL, 0, 0, cli::value_type::text, colour_choices },
+	{ y_a, "a", { { "-a", flag } }, NULL, 0, "a" },
+	{ y_b, "b", { { "-b", flag } }, NULL, 0, "b" },
+	{ y_need, "need", { { "--need", flag } }, NULL, 0, "needs -a" },
+	{ y_req, "req", { { "--req", value_form::equals } }, "<v>", 0, "required",
+	  NULL, cli::rf_required },
+};
+
+const cli::group typed_groups[] = {
+	{ cli::group_rule::exclusive, 2, { y_a, y_b } },
+	{ cli::group_rule::requires_rest, 2, { y_need, y_a } },
+};
+
+cli::table typed_table()
+{
+	cli::table t = cli::table();
+	t.program = "prog";
+	t.sections = sections;
+	t.nsections = 1;
+	t.rows = typed_rows;
+	t.nrows = sizeof(typed_rows) / sizeof(typed_rows[0]);
+	t.groups = typed_groups;
+	t.ngroups = sizeof(typed_groups) / sizeof(typed_groups[0]);
+	t.operands = cli::operand_rule::permute;
+	return t;
+}
+
+} // namespace
+
+TEST_CASE("typed values, choices, and a bare optional value")
+{
+	const cli::table t = typed_table();
+	const cli::result r = cli::parse(t, words({ "--req=1", "--jobs", "4", "--scale=2.5",
+						    "--debug=YES", "--colour=never", "--colour" }));
+	REQUIRE(r.ok());
+	CHECK(r.integer(y_jobs, 0) == 4);
+	CHECK(r.number(y_scale, 0) == doctest::Approx(2.5));
+	CHECK(r.boolean(y_debug, false));
+	CHECK(r.values(y_colour) == words({ "never", "" }));
+}
+
+TEST_CASE("a bad value names the option and what it needs")
+{
+	const cli::table t = typed_table();
+	cli::result r = cli::parse(t, words({ "--req=1", "--jobs=x" }));
+	CHECK(r.error == cli::error_kind::bad_value);
+	CHECK(r.message == "invalid value 'x' for '--jobs': expected an integer");
+	r = cli::parse(t, words({ "--req=1", "--jobs=" }));
+	CHECK(r.message == "invalid value '' for '--jobs': expected an integer");
+	r = cli::parse(t, words({ "--req=1", "--scale=1.5x" }));
+	CHECK(r.message == "invalid value '1.5x' for '--scale': expected a number");
+	r = cli::parse(t, words({ "--req=1", "--debug=maybe" }));
+	CHECK(r.message == "invalid value 'maybe' for '--debug': expected yes or no");
+	r = cli::parse(t, words({ "--req=1", "--colour=purple" }));
+	CHECK(r.message == "invalid value 'purple' for '--colour': expected one of auto, always, never");
+}
+
+TEST_CASE("groups and required options")
+{
+	const cli::table t = typed_table();
+	cli::result r = cli::parse(t, words({ "--req=1", "-a", "-b" }));
+	CHECK(r.error == cli::error_kind::conflict);
+	CHECK(r.message == "'-b' cannot be used with '-a'");
+	r = cli::parse(t, words({ "--req=1", "--need" }));
+	CHECK(r.error == cli::error_kind::missing_required);
+	CHECK(r.message == "'--need' requires '-a'");
+	r = cli::parse(t, words({ "--req=1", "--need", "-a" }));
+	CHECK(r.ok());
+	r = cli::parse(t, words({ "-a" }));
+	CHECK(r.error == cli::error_kind::missing_required);
+	CHECK(r.message == "the option '--req' is required");
+}
+
+TEST_CASE("a path value is stored in generic form on this host")
+{
+	const cli::table t = typed_table();
+	const cli::result r = cli::parse(t, words({ "--req=1", "--path=a\\b/c" }));
+	REQUIRE(r.ok());
+#ifdef _WIN32
+	CHECK(r.last(y_path)->value == "a/b/c");
+#else
+	CHECK(r.last(y_path)->value == "a\\b/c");	// '\' is a file-name byte here
+#endif
+}

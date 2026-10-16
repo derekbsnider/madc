@@ -29,6 +29,7 @@ public	src/madc_posix_io.h	host_path_join	-	exempt: the include and manifest res
 public	src/madc_posix_io.h	host_path_type_of	-	exempt: a host tests a path with php::file_exists / php::is_dir
 public	src/madc_posix_io.h	host_path_drop_extension	include/madc/ns_madc	path_drop_extension
 public	src/madc_posix_io.h	host_path_stem	include/madc/ns_madc	path_stem
+public	src/madc_posix_io.h	host_path_generic	include/madc/ns_madc	path_generic
 public	src/madc_posix_io.h	host_path_make_parents	include/madc/ns_madc	path_make_parents
 public	src/madc_posix_io.h	host_path_expand_home	-	exempt: the command line's and madc.ini's ~ expansion; a host's paths arrive expanded
 public	src/madc_posix_io.h	host_path_within	-	exempt: the include resolver's and the git substrate's "under this directory"; a host asks git::relpath (madcgit)

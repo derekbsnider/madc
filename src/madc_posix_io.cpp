@@ -201,6 +201,15 @@ std::string host_path_basename(const std::string &path)
 	return path.substr(sep + 1);
 }
 
+std::string host_path_generic(const std::string &path)
+{
+	std::string out(path);
+	for ( size_t i = 0; i < out.size(); i++ )
+		if ( host_path_is_separator(out[i]) )
+			out[i] = '/';
+	return out;
+}
+
 bool host_path_absolute(const std::string &path)
 {
 	if ( path.empty() )

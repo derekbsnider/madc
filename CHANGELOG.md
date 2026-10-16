@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### `madc::path_generic` — a path in the host's generic form
+
+madc's dialect now exposes `madc::path_generic(value &out, const char *path)`,
+which writes each of the host's path separators as '/': on Windows `"a\b/c"`
+comes back `"a/b/c"`, and on POSIX '\' is an ordinary file-name byte so the
+path is unchanged. It is the dialect face over the host path owner
+`host_path_generic` (boost::filesystem's generic format), the form a path is
+stored and printed in.
+
 ### An undefined weak reference links, its address null, as gcc does
 
 madc now links and runs a program that declares `extern T x

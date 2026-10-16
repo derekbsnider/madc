@@ -589,6 +589,8 @@ value &path_drop_extension(value &out, const char *path)
 	{ out = detail::host_path_drop_extension(path ? path : ""); return out; }
 value &path_stem(value &out, const char *path)
 	{ out = detail::host_path_stem(path ? path : ""); return out; }
+value &path_generic(value &out, const char *path)
+	{ out = detail::host_path_generic(path ? path : ""); return out; }
 void path_make_parents(const char *path)
 	{ detail::host_path_make_parents(path ? path : ""); }
 

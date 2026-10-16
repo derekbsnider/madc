@@ -3,6 +3,7 @@
 // docs/plans/2026-10-16-cli-options-design.md.
 
 #include "libmadc/cli_options.h"
+#include "madc_posix_io.h"	// host_path_generic
 
 #include <algorithm>
 #include <cctype>
@@ -250,6 +251,136 @@ std::vector<std::string> split_response_text(const std::string &s)
 	}
 }
 
+bool whole_integer(const std::string &s)
+{
+	if ( s.empty() )
+		return false;
+	errno = 0;
+	char *end = NULL;
+	strtoll(s.c_str(), &end, 10);
+	return errno == 0 && end && *end == '\0';
+}
+
+bool whole_number(const std::string &s)
+{
+	if ( s.empty() )
+		return false;
+	errno = 0;
+	char *end = NULL;
+	strtod(s.c_str(), &end);
+	return errno == 0 && end && *end == '\0';
+}
+
+// A command-line occurrence carries a value to check: never a flag, nor the
+// bare word of a form whose value may be absent.
+bool carries_value(value_form f, const std::string &value)
+{
+	if ( f == value_form::none )
+		return false;
+	return !value.empty() || (f != value_form::prefix && f != value_form::optional_equals);
+}
+
+// The value a row needs: its type, then one of its choices. A path is stored
+// in generic form. `what` names where the value came from.
+bool check_value(const row &rw, occurrence &o, const std::string &what, result &r)
+{
+	const char *expected = NULL;
+	bool b;
+	switch ( rw.type )
+	{
+	case value_type::text:
+		break;
+	case value_type::integer:
+		if ( !whole_integer(o.value) )
+			expected = "an integer";
+		break;
+	case value_type::number:
+		if ( !whole_number(o.value) )
+			expected = "a number";
+		break;
+	case value_type::boolean:
+		if ( !parse_boolean(o.value, b) )
+			expected = "yes or no";
+		break;
+	case value_type::path:
+		o.value = madc::detail::host_path_generic(o.value);
+		break;
+	}
+	if ( expected )
+		return fail(r, error_kind::bad_value, "invalid value " + quoted(o.value)
+			    + " for " + what + ": expected " + expected);
+	if ( !rw.choices )
+		return true;
+	std::string list;
+	for ( const char *const *c = rw.choices; *c; c++ )
+	{
+		if ( o.value == *c )
+			return true;
+		list += (list.empty() ? "" : ", ") + std::string(*c);
+	}
+	return fail(r, error_kind::bad_value, "invalid value " + quoted(o.value)
+		    + " for " + what + ": expected one of " + list);
+}
+
+bool given_on_command_line(const result &r, int id)
+{
+	for ( size_t k = 0; k < r.options.size(); k++ )
+		if ( r.options[k].id == id && !r.options[k].negated
+		     && r.options[k].source == value_source::command_line )
+			return true;
+	return false;
+}
+
+// How a message names `id`: the spelling the command line used, else the
+// row's primary spelling.
+std::string spelled_name(const table &t, const result &r, int id)
+{
+	for ( size_t k = 0; k < r.options.size(); k++ )
+		if ( r.options[k].id == id && r.options[k].spelled )
+			return quoted(r.options[k].spelled);
+	const row *rw = find_row(t, id);
+	return quoted(rw && rw->spellings[0].text ? rw->spellings[0].text : "?");
+}
+
+bool check_groups(const table &t, result &r)
+{
+	for ( size_t g = 0; g < t.ngroups; g++ )
+	{
+		const group &gr = t.groups[g];
+		if ( gr.rule == group_rule::exclusive )
+		{
+			const int *first = NULL;
+			for ( size_t k = 0; k < gr.nids; k++ )
+			{
+				if ( !given_on_command_line(r, gr.ids[k]) )
+					continue;
+				if ( first )
+					return fail(r, error_kind::conflict, spelled_name(t, r, gr.ids[k])
+						    + " cannot be used with " + spelled_name(t, r, *first));
+				first = &gr.ids[k];
+			}
+		}
+		else if ( gr.nids > 0 && r.has(gr.ids[0]) )
+			for ( size_t k = 1; k < gr.nids; k++ )
+				if ( !r.has(gr.ids[k]) )
+					return fail(r, error_kind::missing_required, spelled_name(t, r, gr.ids[0])
+						    + " requires " + spelled_name(t, r, gr.ids[k]));
+	}
+	return true;
+}
+
+bool check_required(const table &t, result &r)
+{
+	for ( size_t k = 0; k < t.nrows; k++ )
+	{
+		const row &rw = t.rows[k];
+		if ( (rw.flags & rf_required) && !(rw.flags & rf_doc) && !r.last(rw.id) )
+			return fail(r, error_kind::missing_required,
+				    "the option " + quoted(rw.spellings[0].text) + " is required");
+	}
+	return true;
+}
+
 occurrence command_line_occurrence(const row &rw, const spelling &sp,
 				   const std::string &word, bool negated)
 {
@@ -369,6 +500,9 @@ bool reader::read_option(size_t &i)
 	_r.option_words.push_back(word);
 	if ( !take_value(m, word, i, o) )
 		return false;
+	if ( carries_value(m.spelled->form, o.value)
+	     && !check_value(*m.option, o, quoted(o.spelled), _r) )
+		return false;
 	_r.options.push_back(o);
 	i++;
 	return true;
@@ -438,6 +572,8 @@ bool reader::read_bundle(size_t &i)
 		}
 		else if ( o.value.empty() && sp->form == value_form::joined )
 			return fail(_r, error_kind::missing_value, "missing argument to " + quoted(letter));
+		if ( carries_value(sp->form, o.value) && !check_value(*owner, o, quoted(letter), _r) )
+			return false;
 		got.push_back(o);
 		break;
 	}
@@ -526,7 +662,8 @@ const row *find_row(const table &t, int id)
 result parse(const table &t, const std::vector<std::string> &args)
 {
 	result r;
-	reader(t, args, r).run();
+	if ( reader(t, args, r).run() && check_groups(t, r) )
+		check_required(t, r);
 	return r;
 }
 
