@@ -2360,6 +2360,7 @@ protected:
     std::set<madc::dis::istring> _served_arg_paint;
     size_t _synth_gets = 0;		// chars served from synthesized frames
     size_t _frame_ids = 0;		// the last frame number handed out
+    size_t _union_frame = 0;		// the frame last added to _served_arg_paint
     int _lf, _cr, _column;
     int _last_token_line = 0;		// see last_token_line()
     madc::dis::istring _fname;
@@ -2531,7 +2532,7 @@ public:
     // Reset at the START of a function-like macro invocation's argument
     // collection; read after, to learn what paint covered the argument
     // TEXT this invocation consumed.
-    void reset_served_arg_paint() { _served_arg_paint.clear(); }
+    void reset_served_arg_paint() { _served_arg_paint.clear(); _union_frame = 0; }
     const std::set<madc::dis::istring> &served_arg_paint() const
     { return _served_arg_paint; }
     // A reference, never a copy: argument collection asks at every frame
@@ -2706,12 +2707,17 @@ public:
 	    {
 		recount = _pushback_frames.front().recount;
 		synthesized = _pushback_frames.front().synthesized;
-		// Empty in the overwhelming majority of frames, so this costs a
-		// branch on the hot char path and nothing else.
-		if ( !_pushback_frames.front().arg_disabled.empty() )
-		    _served_arg_paint.insert(
-			_pushback_frames.front().arg_disabled.begin(),
-			_pushback_frames.front().arg_disabled.end());
+		// Once per frame, not per character: a frame's paint never
+		// changes while it serves, and frame numbers are never reused.
+		// Empty in the overwhelming majority of frames.
+		if ( _pushback_frames.front().id != _union_frame )
+		{
+		    _union_frame = _pushback_frames.front().id;
+		    if ( !_pushback_frames.front().arg_disabled.empty() )
+			_served_arg_paint.insert(
+			    _pushback_frames.front().arg_disabled.begin(),
+			    _pushback_frames.front().arg_disabled.end());
+		}
 		if ( _pushback_frames.front().remaining > 0 )
 		    --_pushback_frames.front().remaining;
 	    }

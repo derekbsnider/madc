@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### A painted frame's argument paint joins the served union once, not per character
+
+- `Source::get` no longer inserts the serving frame's argument paint
+  (`PushbackFrame::arg_disabled`, the C11 6.10.3.4p2 paint of the names an
+  argument already expanded) into `Source::_served_arg_paint` on every character
+  served from a painted frame — formerly a `std::set` range insert per character.
+  It now adds a frame's paint once, the first time that frame serves a character
+  after the last `reset_served_arg_paint()` (a new `_union_frame` member, cleared
+  by that reset). Equivalent because a frame's `arg_disabled` is set only at
+  creation and never changes, frame numbers are never reused within a `Source`,
+  and the union is a set — the per-argument union `served_arg_paint()` returns to
+  its one reader, the macro-argument collector, is unchanged.
+- Measured on the packed `madc-release` parse-cost gate, the C-headers live parse
+  `c_headers.live` drops from 249,641,795 to 245,388,581 instructions, +0.18%
+  over its v0.105.0 baseline (244,938,187) and inside the gate's 0.5% tolerance.
+  The C-headers growth the per-stretch argument paint added (71f64745f, with
+  ead3e9752, 8b2abf7ba, be9c1a24a) is closed. The other rows are unchanged within
+  noise.
+
 ### The serving frame is asked of the frames, not stored per character
 
 - `Source::get` no longer writes a `_serving_frame` member on every character it
