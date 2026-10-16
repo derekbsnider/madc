@@ -507,16 +507,12 @@ public:
     // import (alias form): a member of a namespace bound to a dynamic module
     // by `import name as ns;`. Non-empty dyn_module_member marks the FuncDef;
     // the CIR builder lowers every call to a runtime-resolved indirect call
-    // (__madc_dl_member(dyn_module_library, dyn_module_member)) — one
-    // lowering for JIT and native. dyn_module_library is the TARGET
-    // spelling the module map chose (madc_modules).
+    // (__madc_dl_member(dyn_module_library, dyn_module_member)) through a
+    // pointer of this FuncDef's DECLARED type — one lowering for JIT and
+    // native. dyn_module_library is the TARGET spelling the module map chose
+    // (madc_modules).
     madc::dis::istring dyn_module_library;
     madc::dis::istring dyn_module_member;
-    // The slot form with the REAL prototype: a lazy module row's interface
-    // function (dyn_module_library/member set by parseFunction under the
-    // lazy pragma) is called through a pointer of its declared type, not
-    // the alias form's K&R `long (*)()`.
-    bool dyn_module_typed;
     // TRUE when this FuncDef is a BUILTIN-STYLE registration (the
     // builtin_registry core/process/dlfcn loops — the caller passes the
     // intent into Program::addFunction). An explicit source (re)declaration
@@ -665,7 +661,7 @@ public:
     };
     std::vector<CtorInitializer> ctor_initializers;
     // Initializer order matches member declaration order (avoids -Wreorder).
-    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), capture_default(CaptureMode::None), lambda_mutable(false), template_return_param_name(), template_return_deduce_arg_index(-1), template_return_deduce_from_pointer(false), template_return_deduce_forwarding(false), template_return_ref(RefKind::None), return_typedef_name(), emit_symbol(), method_display_name(), function_display_name(), namespace_name(), inline_builtin_kind(), dyn_module_library(), dyn_module_member(), dyn_module_typed(false), ctor_trailing_self(false), is_member_template(false), template_param_names(), template_param_is_pack(), template_param_is_type(), template_return_spelling(), template_param_spellings(), member_template_decl(), member_template_owner(NULL), member_template_return_tokens(), member_template_param_type_tokens(), member_tmpl_frozen(NULL), dependent_pattern(NULL), tsubst_source(NULL), tsubst_type_args(), tsubst_type_arg_packs(), tsubst_body_skipped(false), ctor_initializers(), is_varargs(false), is_void_params(false), no_instrument_function(false), no_strict_aliasing(false), weak_binding(false), has_large_struct_retbuf(false), declaration_only(false), defaulted_or_deleted(false), is_deleted(false), noexcept_spec(0), pure_virtual(false), is_const_method(false), ref_qualifier(0), vague_linkage(false), internal_linkage(false), c_linkage(false) {}
+    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), capture_default(CaptureMode::None), lambda_mutable(false), template_return_param_name(), template_return_deduce_arg_index(-1), template_return_deduce_from_pointer(false), template_return_deduce_forwarding(false), template_return_ref(RefKind::None), return_typedef_name(), emit_symbol(), method_display_name(), function_display_name(), namespace_name(), inline_builtin_kind(), dyn_module_library(), dyn_module_member(), ctor_trailing_self(false), is_member_template(false), template_param_names(), template_param_is_pack(), template_param_is_type(), template_return_spelling(), template_param_spellings(), member_template_decl(), member_template_owner(NULL), member_template_return_tokens(), member_template_param_type_tokens(), member_tmpl_frozen(NULL), dependent_pattern(NULL), tsubst_source(NULL), tsubst_type_args(), tsubst_type_arg_packs(), tsubst_body_skipped(false), ctor_initializers(), is_varargs(false), is_void_params(false), no_instrument_function(false), no_strict_aliasing(false), weak_binding(false), has_large_struct_retbuf(false), declaration_only(false), defaulted_or_deleted(false), is_deleted(false), noexcept_spec(0), pure_virtual(false), is_const_method(false), ref_qualifier(0), vague_linkage(false), internal_linkage(false), c_linkage(false) {}
     DataDef *findParameter(const madc::dis::istring &);
     virtual BaseType basetype() const override { return BaseType::btFunct; }
     virtual size_t alignment() const override { return explicit_alignment ? explicit_alignment : DataDef::alignment(); }
@@ -7330,6 +7326,9 @@ public:
     void forest_stamp_lazy_module_prototype(FuncDef *fd, const madc::dis::istring &name);
     void stamp_dynamic_module_member(Variable *var, const madc::dis::istring &ns,
 				     const madc::dis::istring &member);
+    // A module member declared by the export's REAL prototype (`proto`, the
+    // pack's): a copy registered under `func_id`.
+    Variable *typed_module_member(const madc::dis::istring &func_id, Variable *proto);
     bool is_dynamic_symbol_fallback_enabled() const;
     bool is_runtime_eval_source_scope_access_enabled() const;
     bool is_runtime_eval_expression_scope_access_enabled() const;

@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+### An imported module member is declared and called by its real prototype
+
+An `import name as ns;` namespace member (`math::sqrt`, `libc::strcmp`,
+`libc::llabs`) is now declared with the same prototype an undeclared bare call
+of its name takes — the pack's real prototype when it carries one, else the libc
+return types and `<math.h>` parameter shapes (`dynamic_symbol_fallback_signature`)
+— and its slot is called through a pointer of that declared type.
+`Program::resolve_module_member` had registered every alias member as `{dtINT64}`
+and `CirBuilder::dyn_module_callee` cast its dlsym slot to a K&R `long (*)()`, so
+a double result read as an integer and a float argument promoted to double:
+`math::sqrt(2.0)` printed 1, `math::pow(2.0, 10.0)` 4652218415073722368,
+`math::floorf` and `fmodf` read garbage, and `libc::strcmp`'s signed int result
+read as an unsigned 32-bit value. The member now adopts the export's prototype
+through `forest_adopt_declared_function` and the new
+`Program::typed_module_member` (a bodyless, symbol-less copy under the member id,
+registered through `register_forest_func` as `register_builtin_twin_alias`
+registers its copy), and every member casts through its declared type via
+`fnptr_decl_pieces`; the `FuncDef::dyn_module_typed` flag is deleted.
+`tests/testimport_member_types` covers the double, float, signed-int and
+long-long shapes against the gcc/clang oracle.
+
 ### A range-for over a class container returned by a call reads its referent
 
 A C++11 range-for whose range is a call returning a class container by reference

@@ -1,0 +1,11 @@
+sqrt=1.4142135623730951
+pow=1024
+floor=-3
+ilogb=-3
+lround=-3
+floorf=3
+fmodf=3
+atan2=0.7853981633974483
+held=1.4142135623730951
+strcmp-sign=-1
+llabs=123456789012

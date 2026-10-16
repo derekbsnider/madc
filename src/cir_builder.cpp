@@ -34558,9 +34558,9 @@ void CirBuilder::synth_call_shims(Program *prog,
 // bound to a dynamic module (FuncDef::dyn_module_member set by the parser's
 // stamp_dynamic_module_member). One per-member slot
 //   static void *<callee>_slot;
-// resolved on first use through the runtime helper and cast to the K&R
-// unprototyped fn-ptr type, exactly the dlcall lowering's shape:
-//   (long (*)()) (slot ? slot : (slot = __madc_dl_member(LIB, MEMBER)))
+// resolved on first use through the runtime helper and cast to a pointer of
+// the member's declared type:
+//   (T (*)(P...)) (slot ? slot : (slot = __madc_dl_member(LIB, MEMBER)))
 // so every lane (JIT, exe, obj, --emit=c11) performs the real call through
 // the pointer. Replaces the JIT-only __dl_<ns>_<member> import (an address
 // only cir_import_resolver's per-link table knew and no native artifact
@@ -34625,24 +34625,18 @@ node_t CirBuilder::dyn_module_callee(FuncDef *fd, const madc::dis::istring &call
 	node_t assign = node2(N_ASSIGN, id(slot.c_str(), origin), resolve, origin);
 	node_t pick = node3(N_COND, id(slot.c_str(), origin),
 			    id(slot.c_str(), origin), assign, origin);
-	if (fd->dyn_module_typed) {
-		// A lazy row's interface prototype: the slot is called through a
-		// pointer of the DECLARED type — return and parameters as the
-		// header spelled them (fnptr_decl_pieces, the one fn-ptr type
-		// renderer) — so struct returns, enums and callbacks travel as
-		// they do through a direct call.
-		node_t tspecs = list();
-		node_t tdecl = list();
-		fnptr_decl_pieces(fd, true, tspecs, tdecl, std::vector<carray_dim_t>());
-		node_t typed_t = node2(N_TYPE, tspecs, node2(N_DECL, ignore(), tdecl));
-		return node2(N_CAST, typed_t, pick, origin);
-	}
-	node_t fdecl = list();
-	append(fdecl, pointer());
-	append(fdecl, node1(N_FUNC, list()));
-	node_t fptr_t = node2(N_TYPE, i64_list(origin),
-			      node2(N_DECL, ignore(), fdecl));
-	return node2(N_CAST, fptr_t, pick, origin);
+	// The slot is called through a pointer of the member's DECLARED type —
+	// return and parameters as its declaration spelled them
+	// (fnptr_decl_pieces, the one fn-ptr type renderer): a lazy row's
+	// interface prototype, an alias member's adopted or fallback
+	// declaration (`double (*)(double)` for math::sqrt), and an undescribed
+	// export's K&R `long long (*)()` alike — so struct returns, floating
+	// results, enums and callbacks travel as they do through a direct call.
+	node_t tspecs = list();
+	node_t tdecl = list();
+	fnptr_decl_pieces(fd, true, tspecs, tdecl, std::vector<carray_dim_t>());
+	node_t typed_t = node2(N_TYPE, tspecs, node2(N_DECL, ignore(), tdecl));
+	return node2(N_CAST, typed_t, pick, origin);
 }
 
 // -----------------------------------------------------------------------

@@ -30793,8 +30793,18 @@ Variable *Program::resolve_module_member(const madc::dis::istring &ns_name,
 	return NULL;
     }
     madc::dis::istring func_id = "__dl_" + ns_name + "_" + member_name;
-    Variable *var = addFunction(func_id, datatype_vec_t{DataType::dtINT64},
-				(fVOIDFUNC)sym);
+    // The export's declaration is the one an undeclared bare call of the
+    // same name takes (parseExpression's dlsym fallback) — the symbol `sqrt`
+    // libm exports IS the function C declares (one external namespace), so
+    // `math::sqrt(2.0)` returns a double: the pack's REAL prototype first,
+    // else dynamic_symbol_fallback_signature (the libc return types and the
+    // <math.h> parameter shapes; the int64 K&R convention for the rest).
+    Variable *var = NULL;
+    if ( Variable *proto = forest_adopt_declared_function(member_name) )
+	var = typed_module_member(func_id, proto);
+    if ( !var )
+	var = addFunction(func_id, dynamic_symbol_fallback_signature(member_name),
+			  (fVOIDFUNC)sym);
     if ( !var )
     {
 	if ( diag )
@@ -31970,15 +31980,15 @@ TokenDataType *Program::fold_template_arg_declarator(TokenDataType *adt,
 // add a function definition
 // import (alias form): mark a freshly registered namespace member as a
 // dynamic-module member so the CIR builder lowers its calls to the
-// runtime-resolved shape ((long (*)())(slot ?: __madc_dl_member(LIB, MEMBER)))
-// in every lane. The library spelling is the one the binder recorded for the
+// runtime-resolved shape ((T (*)(P...))(slot ?: __madc_dl_member(LIB, MEMBER)),
+// the member's declared type) in every lane. The library spelling is the one the binder recorded for the
 // namespace (dl_library_spelling); the parse-time dlsym above stays the early
 // diagnostic ("is this member exported at all"), never the bound address.
 // A prototype declared while a LAZY module row's interface is being served
 // (`#pragma madc module_begin(...)` .. `module_end`, the import directive's
 // wrap): the function has no symbol of its own in this program — every call
 // lowers to the first-call slot (CirBuilder::dyn_module_callee) against the
-// row's spelling, through a pointer of the DECLARED type (dyn_module_typed).
+// row's spelling, through a pointer of the DECLARED type.
 // Free functions only: a class member is never a module export.
 void Program::stamp_lazy_module_prototype(FuncDef *fd, const madc::dis::istring &name,
 					  DataDefCLASS *owner_class,
@@ -32000,7 +32010,6 @@ void Program::stamp_lazy_module_member(FuncDef *fd, const madc::dis::istring &sp
 {
     fd->dyn_module_library = spelling;
     fd->dyn_module_member = name;
-    fd->dyn_module_typed = true;
 }
 
 // A bound unit's prototype restored from the pack: one its replayed lazy
@@ -32023,6 +32032,39 @@ void Program::stamp_dynamic_module_member(Variable *var, const madc::dis::istrin
     std::map<madc::dis::istring, madc::dis::istring>::const_iterator it = dl_library_spelling.find(ns);
     fd->dyn_module_library = it != dl_library_spelling.end() ? it->second : ns;
     fd->dyn_module_member = member;
+}
+
+// The member as a COPY of the export's prototype under its own id — the
+// declaration the program adopted stays its own (a bare `sqrt` is still the
+// program's symbol), the copy carries the module identity
+// (stamp_dynamic_module_member) and calls through a pointer of the declared
+// type (CirBuilder::dyn_module_callee). Bodyless and
+// symbol-less, as forest_adopt_declared_function's prototype-only copy;
+// registered by the one restored-function registrar, as
+// register_builtin_twin_alias registers its copy. NULL: not a function.
+Variable *Program::typed_module_member(const madc::dis::istring &func_id, Variable *proto)
+{
+    FuncDef *pfd = proto ? dynamic_cast<FuncDef *>(proto->type) : NULL;
+    if ( !pfd )
+	return NULL;
+    FuncDef *mfd = new FuncDef(*pfd);
+    mfd->declaration_only = true;
+    mfd->has_forest_body = false;
+    mfd->forest_body_unit = 0;
+    mfd->forest_body_idx = 0;
+    mfd->emit_symbol.clear();
+    mfd->function_display_name.clear();
+    mfd->namespace_name.clear();
+    PendingForestFunc pf;
+    pf.name = func_id;
+    pf.fd = mfd;
+    pf.mvar = NULL;
+    if ( Method *pm = static_cast<Method *>(proto->data) )
+	for ( size_t i = 0; i < pm->parameters.size(); ++i )
+	    if ( pm->parameters[i] && pm->parameters[i]->type )
+		pf.mparams.push_back(std::make_pair(
+		    pm->parameters[i]->name.c_str(), pm->parameters[i]->type));
+    return register_forest_func(pf);
 }
 
 Variable *Program::addFunction(madc::dis::istring id, datatype_vec_t params, fVOIDFUNC extfunc, bool isMethod, bool builtin_registration, const madc::dis::istring &emit_symbol)
