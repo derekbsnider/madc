@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### A subscript of a call returning a reference to an array types its element as the array's own
+
+`ra()[i]` for `int (&ra())[3]` now has element type `int`: `sizeof(ra()[0])`
+is 4 and an `auto` bound to it deduces `int`. A subscript of a reference to a
+multi-dimensional array (`int (&rm())[2][3]`) has its ROW as the element —
+`sizeof(rm()[1])` is 12. The generic-expression subscript arm of
+`Program::parseExpr_operatorArm` had admitted any reference base and kept the
+referent as the element; the referent of a reference-to-array is a real
+`DataDefCArray`, so the element was the whole array and `sizeof(ra()[0])` was
+12 (g++/clang++: 4). The arm now admits an array value through
+`DataDef::as_carray_dd` and types the element as `DataDefCArray::element_type`;
+a reference to a non-subscriptable type is no longer admitted, since a subscript
+of a scalar is invalid C++. `tests/testsubscript_ref_call` gains arr-v /
+arr-sizeof / arr-auto-sizeof / row-sizeof / row-v against the gcc/clang oracle,
+closing KG gap sizeof_subscript_of_ref_to_array_call.
+
 ### A subscript of a call returning a reference or a carrier by value types its element
 
 A subscript whose base is a call returning a reference (`int *&rp()`) or a

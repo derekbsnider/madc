@@ -44381,14 +44381,13 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			bool carrier_base = dd && dd->is_madc_array();
 			DataDef *class_elem = carrier_base ? NULL
 			    : TokenSubscript::subscript_operator_element_type(dd);
-			// ... or a reference whose referent is none of those: madc keeps
-			// a reference to an ARRAY flattened as a reference to its
-			// element (`int (&ra())[3]`), so the referent IS the element
-			// (elem_type below starts as it).
-			bool ref_base = rd && rd->is_reference();
+			// ... or an ARRAY value (`ra()[1]` through `int (&ra())[3]`):
+			// the element is the array's own — its ROW for a
+			// multi-dimensional one — never the whole array.
+			DataDefCArray *array_value = dd ? dd->as_carray_dd() : NULL;
 			if ( dd && (dd->is_pointer() || dd->is_simd()
 			  || comma_returns_fixed_array || class_elem || carrier_base
-			  || ref_base) )
+			  || array_value) )
 			{
 			    TokenBase *base_expr = exStack.top();
 			    exStack.pop();
@@ -44403,6 +44402,9 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 				elem_type = madc_array_subscript_type();
 			    else if ( class_elem && !comma_returns_fixed_array )
 				elem_type = class_elem;
+			    else if ( array_value && !comma_returns_fixed_array )
+				elem_type = array_value->element_type
+				    ? array_value->element_type : &ddINT64;
 			    else if ( elem_type && elem_type->is_pointer() )
 			    {
 				DataDefPTR *pdd = pointer_dd_of(elem_type);
