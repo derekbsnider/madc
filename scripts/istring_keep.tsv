@@ -25,5 +25,5 @@ include/datatokens.h	0
 include/madc_mangle.h	0
 include/madc_type_spelling.h	0
 include/spelling_delim.h	27
-src/cli_options.cpp	37
+src/cli_options.cpp	43
 include/libmadc/cli_options.h	11

@@ -10,8 +10,11 @@
 thread_local bool madc_verbose = false;
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
 
+#include <fstream>
 #include <initializer_list>
+#include <sstream>
 #include <string>
+#include <unistd.h>
 #include <vector>
 
 #include "libmadc/cli_options.h"
@@ -78,6 +81,22 @@ bool c_sources_continue(const cli::table &, const cli::result &so_far,
 		return true;
 	const std::string &s = w[at];
 	return s.size() > 2 && s.compare(s.size() - 2, 2, ".c") == 0;
+}
+
+// Fixture files follow the unit-test convention: /tmp/madc_<what>_<pid>.
+std::string fixture_path(const char *tag)
+{
+	std::ostringstream p;
+	p << "/tmp/madc_cli_" << tag << "_" << (long)getpid();
+	return p.str();
+}
+
+std::string write_fixture(const char *tag, const std::string &body)
+{
+	const std::string path = fixture_path(tag);
+	std::ofstream f(path.c_str(), std::ios::binary);
+	f << body;
+	return path;
 }
 
 } // namespace
@@ -279,4 +298,72 @@ TEST_CASE("result accessors")
 	CHECK(r.integer(t_quiet, 7) == 7);
 	CHECK(r.boolean(t_verbose, false));
 	CHECK_FALSE(r.boolean(t_quiet, false));
+}
+TEST_CASE("@file expands in place with gcc's quoting, option values included")
+{
+	cli::table t = make_table(cli::operand_rule::permute);
+	t.response_files = true;
+	const std::string rsp = write_fixture("rsp",
+		"-v -o 'a b' \"-Ic d\" -Ie\\ f -Ig\\\\h\n-l\\m x.c \"\"\n");
+	const std::string out = write_fixture("out", "result.o");
+	std::vector<std::string> args;
+	args.push_back("@" + rsp);
+	args.push_back("-o");
+	args.push_back("@" + out);
+	args.push_back("y.c");
+	const cli::result r = cli::parse(t, args);
+	REQUIRE(r.ok());
+	REQUIRE(r.options.size() == 7);
+	CHECK(r.options[1].value == "a b");
+	CHECK(r.options[2].value == "c d");
+	CHECK(r.options[3].value == "e f");
+	CHECK(r.options[4].value == "g\\h");
+	CHECK(r.options[5].value == "m");
+	CHECK(r.options[6].value == "result.o");
+	CHECK(r.operands == words({ "x.c", "", "y.c" }));
+	CHECK(r.option_words == words({ "-v", "-o", "a b", "-Ic d", "-Ie f", "-Ig\\h", "-lm",
+					"-o", "result.o" }));
+	unlink(rsp.c_str());
+	unlink(out.c_str());
+}
+
+TEST_CASE("@file: an unopenable name stays a word; a self-reference and a directory are errors")
+{
+	cli::table t = make_table(cli::operand_rule::permute);
+	t.response_files = true;
+	cli::result r = cli::parse(t, words({ "@/nonexistent/madc_cli_rsp" }));
+	REQUIRE(r.ok());
+	CHECK(r.operands == words({ "@/nonexistent/madc_cli_rsp" }));
+
+	const std::string self = fixture_path("self");
+	write_fixture("self", "@" + self + "\n");
+	r = cli::parse(t, std::vector<std::string>(1, "@" + self));
+	CHECK(r.error == cli::error_kind::response_file);
+	CHECK(r.message == "too many @-files encountered");
+	unlink(self.c_str());
+
+	r = cli::parse(t, words({ "@/tmp" }));
+	CHECK(r.error == cli::error_kind::response_file);
+	CHECK(r.message == "@-file refers to a directory: '/tmp'");
+}
+
+TEST_CASE("@file: off unless the table asks; never inside the remainder")
+{
+	const std::string rsp = write_fixture("rest", "-v\n");
+	std::vector<std::string> args;
+	args.push_back("tool.mad");
+	args.push_back("@" + rsp);
+	cli::table t = make_table(cli::operand_rule::stop_at_first);
+	t.response_files = true;
+	cli::result r = cli::parse(t, args);
+	REQUIRE(r.ok());
+	CHECK(r.options.empty());
+	CHECK(r.remainder == args);
+
+	const cli::table off = make_table(cli::operand_rule::permute);
+	const std::vector<std::string> just(1, "@" + rsp);
+	r = cli::parse(off, just);
+	REQUIRE(r.ok());
+	CHECK(r.operands == just);
+	unlink(rsp.c_str());
 }

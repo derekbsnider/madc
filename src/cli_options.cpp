@@ -9,6 +9,9 @@
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
+#include <sstream>
+#include <sys/stat.h>
 
 namespace madc {
 namespace cli {
@@ -192,6 +195,61 @@ bool parse_boolean(const std::string &s, bool &out)
 	return false;
 }
 
+// libiberty's limit (expandargv): a file that names itself stops here.
+const unsigned response_file_limit = 2000;
+
+// A response file's words, by libiberty's buildargv (gcc's @file): blanks
+// separate words; '...' and "..." quote; a backslash makes the next
+// character literal everywhere, inside quotes too; "" is an empty word.
+std::vector<std::string> split_response_text(const std::string &s)
+{
+	std::vector<std::string> out;
+	size_t i = 0;
+	for ( ;; )
+	{
+		while ( i < s.size() && isspace((unsigned char)s[i]) )
+			i++;
+		if ( i >= s.size() )
+			return out;
+		std::string arg;
+		bool squote = false, dquote = false, bsquote = false;
+		for ( ; i < s.size(); i++ )
+		{
+			const char c = s[i];
+			if ( isspace((unsigned char)c) && !squote && !dquote && !bsquote )
+				break;
+			if ( bsquote )
+			{
+				bsquote = false;
+				arg += c;
+			}
+			else if ( c == '\\' )
+				bsquote = true;
+			else if ( squote )
+			{
+				if ( c == '\'' )
+					squote = false;
+				else
+					arg += c;
+			}
+			else if ( dquote )
+			{
+				if ( c == '"' )
+					dquote = false;
+				else
+					arg += c;
+			}
+			else if ( c == '\'' )
+				squote = true;
+			else if ( c == '"' )
+				dquote = true;
+			else
+				arg += c;
+		}
+		out.push_back(arg);
+	}
+}
+
 occurrence command_line_occurrence(const row &rw, const spelling &sp,
 				   const std::string &word, bool negated)
 {
@@ -210,12 +268,12 @@ class reader
 {
 public:
 	reader(const table &t, const std::vector<std::string> &args, result &r)
-		: _t(t), _words(args), _r(r) {}
+		: _t(t), _words(args), _r(r), _expansions(0) {}
 	bool run();
 
 private:
-	// words[k] exists and is ready to read.
-	bool fetch(size_t k) { return k < _words.size(); }
+	// words[k] exists and is ready to read (an @file there expanded).
+	bool fetch(size_t k);
 	bool read_option(size_t &i);
 	bool read_bundle(size_t &i);
 	bool take_value(const match &m, const std::string &word, size_t &i,
@@ -224,7 +282,38 @@ private:
 	const table &_t;
 	std::vector<std::string> _words;
 	result &_r;
+	unsigned _expansions;	// @files expanded so far
 };
+
+// words[k] exists, ready to read. A "@file" there is first replaced by the
+// file's words — repeatedly, so one file may name another (gcc's
+// expandargv). A name that cannot be opened stays as written (gcc); a
+// directory, or a file past response_file_limit expansions, is an error.
+bool reader::fetch(size_t k)
+{
+	while ( _t.response_files && k < _words.size()
+		&& _words[k].size() > 1 && _words[k][0] == '@' )
+	{
+		const std::string path = _words[k].substr(1);
+		struct stat st;
+		if ( stat(path.c_str(), &st) != 0 )
+			return true;
+		if ( S_ISDIR(st.st_mode) )
+			return fail(_r, error_kind::response_file,
+				    "@-file refers to a directory: " + quoted(path));
+		std::ifstream in(path.c_str(), std::ios::in | std::ios::binary);
+		if ( !in )
+			return true;
+		if ( ++_expansions > response_file_limit )
+			return fail(_r, error_kind::response_file, "too many @-files encountered");
+		std::ostringstream text;
+		text << in.rdbuf();
+		const std::vector<std::string> got = split_response_text(text.str());
+		_words.erase(_words.begin() + k);
+		_words.insert(_words.begin() + k, got.begin(), got.end());
+	}
+	return k < _words.size();
+}
 
 bool reader::run()
 {
