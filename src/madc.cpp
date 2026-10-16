@@ -876,6 +876,17 @@ int main(int argc, char **argv)
     bool mcp = false;                     // --mcp: the Model Context Protocol on stdio (split arc 1C)
     std::string history_file;             // --history-file=PATH|no: the REPL's history (D23)
     bool history_file_given = false;
+    std::vector<char *> artifact_operands;  // operands on an artifact lane (gcc's argument permutation)
+
+    // AOT (-c / -shared / -r / -o / --emit-*): compile through gen
+    // object-capture mode and write a native artifact instead of running.
+    // -o without -c or -shared means a linked executable (gcc semantics);
+    // --emit-pch keeps its own -o meaning (.madh output path).
+    auto native_artifact_requested = [&]() {
+        return compile_object || emit_shared || emit_relocatable
+            || emit_object_path || emit_executable_path
+            || (generic_output_path && !emit_pch);
+    };
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0) {
@@ -1018,6 +1029,13 @@ int main(int argc, char **argv)
             // Emit-lane state (like -static-libmadc), so every lane —
             // single-TU, --project, .o link — sees the same answer.
             madc_no_eval_shims = strcmp(argv[i], "-fno-eval-shims") == 0;
+            filearg = i + 1;
+        } else if (strcmp(argv[i], "-fPIC") == 0 || strcmp(argv[i], "-fpic") == 0
+                || strcmp(argv[i], "-fPIE") == 0 || strcmp(argv[i], "-fpie") == 0) {
+            // gcc vocabulary: position-independent code. madc's code is
+            // position-independent already — a -c object links into a
+            // `gcc -shared` library with no text relocations, an executable
+            // is PIE unless -no-pie — so there is nothing to change.
             filearg = i + 1;
         } else if (strcmp(argv[i], "-fdiagnostics-color") == 0
                 || strncmp(argv[i], "-fdiagnostics-color=", 20) == 0) {
@@ -1259,10 +1277,30 @@ int main(int argc, char **argv)
                       << " (this madc was built with: " << prog->stdlib_flavor_names()
                       << ")" << std::endl;
             return 1;
+        } else if ( native_artifact_requested() || !artifact_operands.empty() ) {
+            // An artifact lane runs no program, so nothing after its source
+            // is a script's argv: options and operands interleave as gcc's
+            // do (`-c x.c -fPIC -o x.o`; SQLite's `-o $@ -c x.c -I...`).
+            // Once the lane has taken an operand, the rest of the line
+            // stays its own.
+            artifact_operands.push_back(argv[i]);
         } else {
             filearg = i;
             break;
         }
+    }
+    // gcc's argument permutation: every option was consumed where it stood,
+    // so the artifact lane's operands become argv[filearg..argc), in order.
+    std::vector<char *> artifact_argv;
+    if ( !artifact_operands.empty() )
+    {
+        artifact_argv.push_back(argv[0]);
+        artifact_argv.insert(artifact_argv.end(), artifact_operands.begin(),
+                             artifact_operands.end());
+        artifact_argv.push_back(NULL);
+        argv = artifact_argv.data();
+        argc = (int)artifact_operands.size() + 1;
+        filearg = 1;
     }
 
     prog->class_parse_observability = show_stats;
@@ -1478,13 +1516,7 @@ int main(int argc, char **argv)
         prog->forest_bind_path.clear();
     }
 
-    // AOT (-c / -shared / -o / --emit-*): compile through gen object-capture
-    // mode and write a native artifact instead of running. -o without -c or
-    // -shared means a linked executable (gcc semantics); --emit-pch keeps its
-    // own -o meaning (.madh output path).
-    bool emit_native = compile_object || emit_shared || emit_relocatable
-                    || emit_object_path || emit_executable_path
-                    || (generic_output_path && !emit_pch);
+    bool emit_native = native_artifact_requested();
 
     // gcc parity: ld rejects "-r and -shared may not be used together".
     if ( emit_relocatable && emit_shared )
@@ -2279,16 +2311,15 @@ int main(int argc, char **argv)
 	// (gcc CLI vocabulary; --emit-object/--emit-executable are aliases.)
 	if ( emit_native )
 	{
-	    // Positionals after the source are the SCRIPT's argv — but no script
-	    // runs on this lane, so they can only be misplaced flags (madc's
-	    // convention puts flags BEFORE the source, unlike gcc). Dropping
-	    // them silently turned `-c foo.c -o bar.o` into a derived-name .o
-	    // with exit 0 — a silent wrong answer. Refuse loudly instead.
+	    // Options after the source were consumed where they stood (the
+	    // permutation after the option loop), so what remains here is a
+	    // second operand this lane has no use for. Dropping it silently
+	    // would build the artifact from part of the command line — a
+	    // silent wrong answer. Refuse loudly instead.
 	    if ( filearg + 1 < argc )
 	    {
 		std::cerr << "madc: unconsumed arguments after '" << argv[filearg]
-			  << "' in AOT mode (flags go before the source"
-			     " file):";
+			  << "' in AOT mode:";
 		for ( int i = filearg + 1; i < argc; i++ )
 		    std::cerr << " " << argv[i];
 		std::cerr << std::endl;

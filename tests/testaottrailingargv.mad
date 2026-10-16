@@ -1,1 +1,5 @@
+// The -c lane builds one source: a second operand after it is refused
+// loudly ("unconsumed arguments"), never dropped from the artifact.
+// Options after the source are applied as gcc's are
+// (testaot_flags_after_source).
 int main() { return 0; }

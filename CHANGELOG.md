@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### `-fPIC` is accepted and options may follow the source on an artifact lane
+
+`-fPIC` / `-fpic` / `-fPIE` / `-fpie` are accepted no-ops (a `madc -c` object
+links into a `gcc -shared` library with no text relocations, an executable is
+PIE unless `-no-pie`), so SQLite's `-fPIC`-bearing build command is read. On an
+artifact lane (`-c` / `-shared` / `-r` / `-o` / `--emit-*`) options and the
+source interleave as gcc's do: `-fPIC -c x.c -fpic -fPIE -fpie -DVAL=7 -o x.o`
+and `-o $@ -c x.c -I...` write the object and exit 0. Before, `-fPIC` was read
+as the source file name and any option after the source was refused as an
+unconsumed argument. A second source operand on a `-c` lane is still refused
+loudly, never silently dropped. With no artifact flag ahead of the source, what
+follows the source stays the program's argv. `tests/testaot_flags_after_source`
+runs the three cases against the gcc/clang oracle;
+`tests/testaottrailingargv` pins the second-operand refusal. Closes KG gap
+`cli_fpic_and_flags_after_source`.
+
 ### A condition's closing `)` never continues into a postfix call
 
 `if( fp ) (void)0;` for a function-pointer `fp` now parses as the condition `fp`
