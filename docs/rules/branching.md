@@ -161,3 +161,38 @@ over the consolidated code, as the merge-gate ruling above requires. The
 Releases cut before the ruling (up to v0.105.0) are exempt by its EPOCH, which
 moves forward only.
 
+
+## Why every release must move C23 or C++20 forward (owner law 2026-10-16)
+
+Owner ruling, 2026-10-16: *"we also need to have a release gate that each
+release must move the needle forwards towards C23 and/or C++20 compliance."*
+
+The north star is C23 / C++23 parity. A release that only adds tooling, IDE
+work or dialect features can be entirely worthwhile and still leave the
+standards where they were, and a run of such releases drifts away from the
+goal without anyone deciding it should. A rule stated without a gate decays,
+so the law has the same shape as the duplication law above: evidence in the
+release's CHANGELOG section, checked by a script `/release` runs.
+
+The evidence is measured, never typed. `docs/conformance-coverage.md` holds
+figures taken by hand on older content (its C23 rows on 0.103.0), and a
+hand-typed count is exactly the number that goes stale. So the counts live in
+a ledger that one script writes, `scripts/conformance_measure.sh`, over four
+corpora of gcc's own tests: the C23 tests compile-clean and run
+(`gcc.dg/c23-*`), the execute torture under `--std=c23`, and `g++.dg/cpp2a`
+under `--std=c++20`. The gate compares a release's row with the previous
+release's, corpus by corpus.
+
+Two rows compare only when they measured the same thing. The ledger carries
+each corpus's in-scope count, and the gate refuses a pair whose counts differ:
+a newer gcc testsuite on the build host, or a runner whose scope rules
+changed, makes a different corpus, and the fix is to re-measure the previous
+release on its archived binary (`tmp/release-bins/`, kept for exactly this
+kind of comparison), not to compare across. Both sides are release binaries —
+the archived one and the battery's madc-release — so the -O0 development
+build never stands in for what ships.
+
+The rule asks for one count up and none down. A gain in one corpus bought
+with a loss in another is a trade, not progress, and the gate names the fall.
+v0.105.0, the last release before the ruling, is the baseline: its EPOCH
+exempts it and every earlier release, and moves forward only.

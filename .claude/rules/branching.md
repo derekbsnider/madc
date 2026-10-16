@@ -43,3 +43,12 @@
   the seam battery), leaves its gate, and the release's CHANGELOG section names
   it: `Consolidated: <DupFamily> — gate scripts/check-<name>.sh`. Gated by
   `scripts/check-release-consolidation.sh` (`/release` step 5)
+- OWNER LAW (2026-10-16): every release moves C23 and/or C++20 conformance
+  forward — it raises at least one passing count over the previous release and
+  lowers none, on the same in-scope set (`docs/parity/conformance-ledger.tsv`:
+  c23-compile, c23-run, torture-c23, cpp2a). The counts are written only by
+  `scripts/conformance_measure.sh --record` — the previous release on its
+  archived binary, the candidate on the battery's madc-release — and the
+  release's CHANGELOG section names its gain:
+  `Conformance: <corpus> <old> -> <new>`. Gated by
+  `scripts/check-release-conformance.sh` (`/release` step 5)

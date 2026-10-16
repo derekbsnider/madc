@@ -28,6 +28,15 @@ Perform the full release workflow:
      `Consolidated: <DupFamily> — gate scripts/check-<name>.sh`. Then run
      `bash scripts/check-release-consolidation.sh`; red means the release
      consolidated nothing — STOP and tell the user, do not release.
+   - The versioned section names this release's C23 / C++20 gain (owner law
+     2026-10-16, `.claude/rules/branching.md`). On the build container, over
+     the seam battery's `bin/madc-release` (the release content, committed):
+     `bash scripts/conformance_measure.sh --release vX.Y.Z --madc
+     bin/madc-release --record`; bring `docs/parity/conformance-ledger.tsv`
+     back. Add the line `Conformance: <corpus> <old> -> <new>[, ...]` for
+     each count that rose, then run `bash scripts/check-release-conformance.sh`;
+     red means the release moved neither C23 nor C++20, or lowered one —
+     STOP and tell the user, do not release.
 
 6. **Write `docs/release-notes/vX.Y.Z.md`**:
    - Title: `# Release vX.Y.Z — YYYY-MM-DD`

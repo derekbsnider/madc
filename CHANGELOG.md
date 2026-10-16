@@ -2,6 +2,34 @@
 
 ## [Unreleased]
 
+### A release gate: every release moves C23 or C++20 conformance forward
+
+OWNER LAW (2026-10-16): every release raises at least one C23 or C++20 passing
+count over the previous release and lowers none, on the same in-scope set. The
+measure is four corpora of gcc's own tests — `c23-compile` and `c23-run`
+(`gcc.dg/c23-*`, `c2x-*`, compile-clean and run under `--std=c23`),
+`torture-c23` (`gcc.c-torture/execute` under `--std=c23`), and `cpp2a`
+(`g++.dg/cpp2a` under `--std=c++20`).
+
+- The counts are measured, never typed. `scripts/conformance_measure.sh` is the
+  one writer: it runs a release binary over the corpora and records each
+  release's rows (release, corpus, `--std`, passing, in-scope, commit) in
+  `docs/parity/conformance-ledger.tsv`. The previous release is re-measured on
+  its archived binary (`tmp/release-bins/`), the candidate on the seam
+  battery's `bin/madc-release` — the -O0 development build never stands in.
+- `scripts/check-release-conformance.sh` is the gate. For every versioned
+  CHANGELOG section after the EPOCH it reads the release's and the previous
+  release's ledger rows, refuses a corpus pair whose in-scope counts differ (a
+  different measurement, not a comparison), requires one count up and none
+  down, and checks the section's `Conformance: <corpus> <old> -> <new>` line
+  against the rows that rose. The [Unreleased] section requires nothing, so the
+  per-commit gate loop stays green; `/release` runs it beside the consolidation
+  check.
+- The ledger's baseline is v0.105.0, re-measured on its archived binary (commit
+  `be3be7194`): c23-compile 38/72, c23-run 35/70, torture-c23 1490/1624, cpp2a
+  350/651. The EPOCH (0.105.0) exempts it and every earlier release and moves
+  forward only; 0.106.0 is the first release the gate requires a gain of.
+
 ### madc's command line is read by the one option reader
 
 madc's `main()` now reads its command line through the shared option reader
