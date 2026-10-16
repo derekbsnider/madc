@@ -261,6 +261,9 @@ PLANNED 2026-10-15 (owner).
   - Result: `mdevtest` with madc is 1 error of 932121 — the only one is the
     All-Debug `fuzzcheck-ubsan` build (`-fsanitize=undefined`: madc has no
     sanitizers), which skips 18 jobs. Every test file passes in both builds.
+  - Milestone DONE (owner 2026-10-16): the ubsan job is a known exclusion;
+    `-fsanitize=undefined` lands in a future release (KG Gap
+    `sanitizers_unsupported`, first slice trap mode).
   - Rule from this stretch (owner): every release consolidates an EXISTING
     duplicate family (`4c63204d5`, `check-release-consolidation.sh`); the
     candidate here is DupFamily `bare_function_name_call_or_address`.

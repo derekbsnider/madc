@@ -569,7 +569,7 @@ more than one (owner, 2026-10-16). Ranked by how reachable each is today:
 
 | # | Codebase | Status | Its test suite | What it exercises / known blockers | KG Milestone |
 |---|---|---|---|---|---|
-| 1 | SQLite 3.54.0 (amalgamation, shell, testfixture) | 0.106.0 arc, section E: `mdevtest` 1 error of 932121 | Tcl testfixture (`make test` / `mdevtest`) | the one error is the `fuzzcheck-ubsan` build: `-fsanitize=undefined` (madc has no sanitizers) | `sqlite_compiles_and_passes_its_tests` |
+| 1 | SQLite 3.54.0 (amalgamation, shell, testfixture) | **DONE** (owner 2026-10-16; 0.106.0 arc, section E): every test file passes in both `mdevtest` configurations | Tcl testfixture (`make test` / `mdevtest`) | known exclusion: the `fuzzcheck-ubsan` job (`-fsanitize=undefined`) and the 18 fuzz jobs that run its binary — `-fsanitize=undefined` lands in a future release (KG Gap `sanitizers_unsupported`) | `sqlite_compiles_and_passes_its_tests` |
 | 2 | redis (or Valkey, its BSD fork) | 0.106.0 arc, section F (the release's second) | Tcl `./runtest` | threads, C11 atomics (`atomicvar.h` chooses `<stdatomic.h>`, `__atomic` or `__sync` by the compiler's predefines), signals, sockets, an event loop, a bundled Lua; `MALLOC=libc` in place of jemalloc | `redis_compiles_and_passes_its_tests` |
 | 3 | Lua 5.4 | candidate | the lua-5.4 tests | small (about 30k lines), `make CC=madc`; setjmp/longjmp error handling, computed gotos in the VM loop | `lua_compiles_and_passes_its_tests` |
 | 4 | the language runtimes the vision names: CPython, Ruby MRI, PHP, Perl | candidates | `make test` of each | large configure-based builds; the polyglot north star (`docs/plans/madc-vision-and-invariants.md`): most languages are implemented in C | `language_runtimes_compile` |
