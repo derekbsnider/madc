@@ -44347,7 +44347,14 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		    // call results, and other complex expressions.
 		    if ( !exStack.empty() )
 		    {
-			DataDef *dd = exStack.top()->datadef();
+			// The base's VALUE ([expr.sub]; operand_value_type, the one
+			// owner every operator reads an operand through): a
+			// reference-typed base (`rp()[i]` through `int *&rp()`)
+			// denotes its referent. Its datadef() is the reference, which
+			// answered is_pointer() and typed the element as the referent
+			// itself (`int *`: sizeof 8, an `auto` deduced as a pointer).
+			DataDef *rd = exStack.top()->datadef();
+			DataDef *dd = operand_value_type(exStack.top());
 			TokenComma *top_comma = dynamic_cast<TokenComma *>(exStack.top());
 			TokenVar *comma_fixed_array = NULL;
 			if ( top_comma )
@@ -44367,10 +44374,21 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			// element type is the operator's return value type — the one
 			// owner (subscript_operator_element_type); the CIR lowering
 			// dispatches the TokenSubscriptExpr through operator[].
-			DataDef *class_elem =
-			    TokenSubscript::subscript_operator_element_type(dd);
+			// ... or a carrier VALUE (`make(2)["rows"]`, a by-value `var`
+			// return): every carrier subscript types as the carrier — the
+			// slot model (madc_array_subscript_type), as the named and
+			// expression-base arms type it.
+			bool carrier_base = dd && dd->is_madc_array();
+			DataDef *class_elem = carrier_base ? NULL
+			    : TokenSubscript::subscript_operator_element_type(dd);
+			// ... or a reference whose referent is none of those: madc keeps
+			// a reference to an ARRAY flattened as a reference to its
+			// element (`int (&ra())[3]`), so the referent IS the element
+			// (elem_type below starts as it).
+			bool ref_base = rd && rd->is_reference();
 			if ( dd && (dd->is_pointer() || dd->is_simd()
-			  || comma_returns_fixed_array || class_elem) )
+			  || comma_returns_fixed_array || class_elem || carrier_base
+			  || ref_base) )
 			{
 			    TokenBase *base_expr = exStack.top();
 			    exStack.pop();
@@ -44381,7 +44399,9 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 				Throw(tb) << "Expected ] in subscript expression" << flush;
 			    DataDef *elem_type = comma_returns_fixed_array
 				? comma_fixed_array->var.type : dd;
-			    if ( class_elem && !comma_returns_fixed_array )
+			    if ( carrier_base && !comma_returns_fixed_array )
+				elem_type = madc_array_subscript_type();
+			    else if ( class_elem && !comma_returns_fixed_array )
 				elem_type = class_elem;
 			    else if ( elem_type && elem_type->is_pointer() )
 			    {
@@ -44391,7 +44411,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			    else if ( elem_type && elem_type->is_simd() )
 				elem_type = static_cast<DataDefSIMD *>(elem_type)->element_type;
 			    DBG(cout << "parseExpression: subscript on generic expression"
-				     " base=" << dd->name.c_str() << " ref=" << dd->is_reference()
+				     " base=" << dd->name.c_str() << " ref=" << rd->is_reference()
 				     << " ptr=" << dd->is_pointer() << " class_elem="
 				     << (class_elem ? class_elem->name.c_str() : "-")
 				     << " elem=" << (elem_type ? elem_type->name.c_str() : "-")

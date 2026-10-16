@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+### A subscript of a call returning a reference or a carrier by value types its element
+
+A subscript whose base is a call returning a reference (`int *&rp()`) or a
+carrier by value (`var make(long)` → `make(2)["rows"]`) now types its element
+correctly. The generic-expression subscript arm of
+`Program::parseExpr_operatorArm` read the base's `datadef()` directly: a
+reference-returning call answered `is_pointer()`, so `rp()[0]` took the referent
+pointer (`int *`) as its element — `sizeof(rp()[0])` was 8 and an `auto`
+bound to `rp()[0]` deduced as a pointer (g++/clang++: 4 and `int`) — while a
+carrier returned by value had no case at all and was refused at parse with
+"Expecting a name in lambda capture list". The arm now reads the base's value
+through `operand_value_type` (the one owner every operator reads an operand
+through; a reference denotes its referent) and types a carrier base through
+`Program::madc_array_subscript_type`, the slot model the named-variable and
+expression-base subscript arms already use. A call returning a reference to an
+array still parses and reads its element value as before; the separate
+sizeof-of-an-element defect is recorded (KG gap
+sizeof_subscript_of_ref_to_array_call).
+`tests/testsubscript_ref_call` covers the reference-returning call against the
+gcc/clang oracle; `tests/testcarrier_byvalue_call_sub` covers the by-value
+carrier (copy, `php::count`, range-for, chained subscript) against the C++
+oracle, the range-for holding the temporary alive per C++23 [stmt.ranged]/5.
+
 ### An imported module member is declared and called by its real prototype
 
 An `import name as ns;` namespace member (`math::sqrt`, `libc::strcmp`,
