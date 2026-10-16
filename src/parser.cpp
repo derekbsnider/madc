@@ -45568,7 +45568,16 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			    // parse_named_cpp_cast resumes the postfix chain via
 			    // parsePostfixChainFrom. Drives map/set iterator deref
 			    // `*static_cast<_Link_type>(_M_node)->_M_valptr()`.
-			    bool postfix_follows = !cast_operand && next
+			    // The `)` that brought brackets back to 0 from a
+			    // CALLER-opened paren (initial_brackets: an if / while
+			    // condition, a sizeof or decltype operand) closes the
+			    // caller's group, not a sub-expression: nothing after it
+			    // continues this expression — `if( fp ) (void)0;` is the
+			    // condition `fp` and the statement `(void)0`, never the
+			    // call `(fp)(void)` (SQLite's walEnableBlocking).
+			    bool closes_callers_paren = initial_brackets > 0;
+			    bool postfix_follows = !cast_operand && !closes_callers_paren
+			    && next
 			    && (next->id() == TokenID::tkDot
 			     || next->id() == TokenID::tkDeRef
 			     || next->id() == TokenID::tkOpSqr

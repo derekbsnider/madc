@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### A condition's closing `)` never continues into a postfix call
+
+`if( fp ) (void)0;` for a function-pointer `fp` now parses as the condition `fp`
+and the statement `(void)0`, and SQLite's
+`if( xBusy2 ) (void)walEnableBlocking(pBt);` is accepted. An if / while condition
+reads through `parseExpression(..., stop_on_closing_paren=true, initial_brackets=1)`
+— the caller consumed the `(`. The closing-paren arm of
+`Program::parseExpr_operatorArm` continued a parenthesized sub-expression
+(`(ch)->x`) into a postfix call when the operand had a function or
+function-pointer type, so the `)` that returned brackets to 0 and was followed by
+`(` read `if( fp ) (void)0;` as the call `(fp)(void)` and refused the file with
+"Expecting identifier". A `)` that closes a caller-opened paren
+(`initial_brackets > 0`) now admits no postfix continuation.
+`tests/testif_fnptr_paren_stmt` runs a function-pointer condition followed by a
+`(void)`-prefixed statement against the gcc/clang oracle, closing KG gap
+c_if_condition_fnptr_then_paren_read_as_call.
+
 ### The middle operand of `?:` is a whole comma expression
 
 `x ? (v = 7), 3 : 4` now parses: the middle operand of `?:` runs to the matching
