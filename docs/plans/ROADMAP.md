@@ -558,14 +558,27 @@ C++ features make madc useful as a general-purpose scripting language
 beyond the SMAUG port. The rendering abstraction (Track 7) would let
 SMAUG target terminal, web, and GUI from the same game code.
 
-## The SQLite Goal
+## Real C codebases
 
-PLANNED (owner 2026-10-16): madc compiles SQLite — the amalgamation
-(`sqlite3.c`) and its shell — JIT and AOT, and passes SQLite's own test
-suite (the Tcl `testfixture` suite). A second realistic C codebase beside
-SMAUG, and a widely used one. KG Milestone
-`sqlite_compiles_and_passes_its_tests`; in the 0.106.0 arc (section E of
-[the dialect-faces arc plan](2026-10-15-dialect-faces-arc.md)).
+Owner (2026-10-16): madc compiles real, "vexing" C codebases with their
+own build systems (`make CC=madc`, `./configure CC=madc`) and passes their
+own test suites, as gcc does. Each one is a gap list: every failure is
+classified, fixed at its layer with a reducer, and recorded on the
+codebase's KG Milestone (`BLOCKS` from each Gap). Every release carries
+more than one (owner, 2026-10-16). Ranked by how reachable each is today:
+
+| # | Codebase | Status | Its test suite | What it exercises / known blockers | KG Milestone |
+|---|---|---|---|---|---|
+| 1 | SQLite 3.54.0 (amalgamation, shell, testfixture) | 0.106.0 arc, section E: `mdevtest` 1 error of 932121 | Tcl testfixture (`make test` / `mdevtest`) | the one error is the `fuzzcheck-ubsan` build: `-fsanitize=undefined` (madc has no sanitizers) | `sqlite_compiles_and_passes_its_tests` |
+| 2 | redis (or Valkey, its BSD fork) | 0.106.0 arc, section F (the release's second) | Tcl `./runtest` | threads, C11 atomics (`atomicvar.h` chooses `<stdatomic.h>`, `__atomic` or `__sync` by the compiler's predefines), signals, sockets, an event loop, a bundled Lua; `MALLOC=libc` in place of jemalloc | `redis_compiles_and_passes_its_tests` |
+| 3 | Lua 5.4 | candidate | the lua-5.4 tests | small (about 30k lines), `make CC=madc`; setjmp/longjmp error handling, computed gotos in the VM loop | `lua_compiles_and_passes_its_tests` |
+| 4 | the language runtimes the vision names: CPython, Ruby MRI, PHP, Perl | candidates | `make test` of each | large configure-based builds; the polyglot north star (`docs/plans/madc-vision-and-invariants.md`): most languages are implemented in C | `language_runtimes_compile` |
+| 5 | ffmpeg | candidate | FATE (needs the fate-suite sample download) | built `--disable-asm --disable-inline-asm`; over-16 aligned stack arrays work since `0211249a4`; about ten times SQLite's size | `ffmpeg_compiles_and_passes_fate` |
+| 6 | VLC | candidate | its `make check` | C plus C++ and Objective-C modules, many dependencies | `vlc_compiles` |
+| 7 | the Linux kernel | blocked | boot + kselftest | inline assembly (madc has none), `asm goto`, GNU C throughout | `linux_kernel_compiles` |
+
+SMAUG (pure C, its own repo MadSMAUG) is the original real codebase; see
+"The SMAUG Goal" above.
 
 ## Plan Index
 

@@ -76,7 +76,7 @@ whose behaviour already differs, then the pure duplicates.
 
 ### E. SQLite compiles and passes its tests (owner 2026-10-16: "added to the v0.106.0 arc")
 
-KG Milestone `sqlite_compiles_and_passes_its_tests`; ROADMAP "The SQLite Goal".
+KG Milestone `sqlite_compiles_and_passes_its_tests`; ROADMAP "Real C codebases", row 1.
 Source: SQLite 3.54.0 on the build container (`/workspace/sqlite/3.54.0`, the
 amalgamation in `/workspace/sqlite/build-3.54.0`); Tcl 8.6 + headers installed
 there for the test suite. The first compile (`madc -c sqlite3.c`) refuses with
@@ -97,6 +97,28 @@ clang outputs), Tier 1 + Tier 2, never folded together.
 
 Place in the arc: after section A and the three dialect silent wrong answers,
 before sections B-D — a focused parser stretch beside the two C++ compile gaps.
+
+### F. redis compiles and passes its tests (owner 2026-10-16: "more than one tricky project" this release)
+
+KG Milestone `redis_compiles_and_passes_its_tests`; ROADMAP "Real C codebases",
+row 2. The release's second real C codebase beside SQLite.
+
+- Source: a redis release (or Valkey, its BSD-licensed fork) unpacked on the
+  build container beside `/workspace/sqlite`; never vendored into this repo.
+- Build: `make CC=madc MALLOC=libc` (jemalloc stays out). The bundled deps
+  (Lua, hiredis, linenoise, hdr_histogram, fpconv) are compiled by madc too.
+- Tests: the Tcl suite (`./runtest`), Tcl 8.6 being already installed for
+  SQLite; oracle: the same tree built by gcc, its own `./runtest` tally.
+- What it exercises that SQLite did not: threads (bio, I/O threads), C11
+  atomics through `atomicvar.h` (it picks `<stdatomic.h>`, `__atomic` or
+  `__sync` by what the compiler predefines, so madc's predefines decide the
+  path), signals, sockets and the `ae` event loop.
+- Same shape as section E: every refusal or wrong answer a KG Gap that BLOCKS
+  the milestone, fixed at its layer in its own commit with a reducer promoted
+  to `tests/` (gcc and clang outputs), Tier 1 + Tier 2.
+
+Place in the arc: after the command-line options work (slices 1-2), before
+sections B-D.
 
 ## How each row lands (one shape)
 
