@@ -4,6 +4,7 @@
 
 #include "libmadc/cli_options.h"
 #include "madc_posix_io.h"	// host_path_generic
+#include "json.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -462,6 +463,367 @@ bool apply_sources(const table &t, const sources &from, result &r)
 	return true;
 }
 
+const size_t help_column = 26;
+
+std::string metavar_of(const row &rw)
+{
+	return rw.metavar ? rw.metavar : "<value>";
+}
+
+std::string spelling_display(const row &rw, const spelling &sp)
+{
+	std::string s(sp.text);
+	switch ( sp.form )
+	{
+	case value_form::none:
+		break;
+	case value_form::separate:
+		s += " " + metavar_of(rw);
+		break;
+	case value_form::joined:
+	case value_form::joined_or_separate:
+		s += metavar_of(rw);
+		break;
+	case value_form::prefix:
+		if ( rw.metavar )
+			s += "[" + metavar_of(rw) + "]";
+		break;
+	case value_form::equals:
+	case value_form::equals_or_separate:
+		s += "=" + metavar_of(rw);
+		break;
+	case value_form::optional_equals:
+		s += "[=" + metavar_of(rw) + "]";
+		break;
+	}
+	return s;
+}
+
+// Help's left column for a row: its usage, else its spellings.
+std::string row_display(const row &rw)
+{
+	if ( rw.usage )
+		return rw.usage;
+	std::string s;
+	for ( size_t k = 0; k < max_spellings && rw.spellings[k].text; k++ )
+	{
+		if ( k )
+			s += ", ";
+		s += spelling_display(rw, rw.spellings[k]);
+	}
+	if ( rw.flags & rf_negatable )
+		for ( size_t k = 0; k < max_spellings && rw.spellings[k].text; k++ )
+			if ( rw.spellings[k].form == value_form::none
+			     && starts_with(rw.spellings[k].text, "--") )
+				s += ", --no-" + std::string(rw.spellings[k].text + 2);
+	return s;
+}
+
+// A row's help with what the reader knows of it: [default: v] [env: X]
+// [config: k].
+std::string help_text(const row &rw)
+{
+	std::string s = rw.help ? rw.help : "";
+	if ( rw.default_value )
+		s += std::string(s.empty() ? "" : " ") + "[default: " + rw.default_value + "]";
+	if ( rw.env )
+		s += std::string(s.empty() ? "" : " ") + "[env: " + rw.env + "]";
+	if ( rw.config_key )
+		s += std::string(s.empty() ? "" : " ") + "[config: " + rw.config_key + "]";
+	return s;
+}
+
+// `text` as lines of at most `room` columns: each '\n'-separated paragraph
+// on its own, a paragraph's leading blanks kept on each of its lines, a word
+// wider than the room alone on its line.
+std::vector<std::string> wrap(const std::string &text, size_t room)
+{
+	std::vector<std::string> lines;
+	size_t start = 0;
+	for ( ;; )
+	{
+		const size_t nl = text.find('\n', start);
+		const std::string para = text.substr(start, nl == std::string::npos
+						     ? std::string::npos : nl - start);
+		const size_t lead = para.find_first_not_of(' ');
+		if ( lead == std::string::npos )
+			lines.push_back(std::string());
+		else
+		{
+			const std::string indent = para.substr(0, lead);
+			std::istringstream in(para);
+			std::string word, line = indent;
+			while ( in >> word )
+			{
+				if ( line.size() > indent.size() && line.size() + 1 + word.size() > room )
+				{
+					lines.push_back(line);
+					line = indent;
+				}
+				if ( line.size() > indent.size() )
+					line += ' ';
+				line += word;
+			}
+			lines.push_back(line);
+		}
+		if ( nl == std::string::npos )
+			return lines;
+		start = nl + 1;
+	}
+}
+
+// One output line, its trailing blanks dropped.
+void put_line(std::ostream &os, std::string line)
+{
+	const size_t end = line.find_last_not_of(' ');
+	line.erase(end == std::string::npos ? 0 : end + 1);
+	os << line << "\n";
+}
+
+void put_wrapped(std::ostream &os, const std::string &text, size_t width,
+		 const std::string &indent)
+{
+	const std::vector<std::string> lines = wrap(text, width - indent.size());
+	for ( size_t l = 0; l < lines.size(); l++ )
+		put_line(os, indent + lines[l]);
+}
+
+const char *form_name(value_form f)
+{
+	switch ( f )
+	{
+	case value_form::none:			return "none";
+	case value_form::separate:		return "separate";
+	case value_form::joined:		return "joined";
+	case value_form::prefix:		return "prefix";
+	case value_form::joined_or_separate:	return "joined_or_separate";
+	case value_form::equals:		return "equals";
+	case value_form::optional_equals:	return "optional_equals";
+	case value_form::equals_or_separate:	return "equals_or_separate";
+	}
+	return "none";
+}
+
+const char *type_name(value_type v)
+{
+	switch ( v )
+	{
+	case value_type::text:		return "text";
+	case value_type::integer:	return "integer";
+	case value_type::number:	return "number";
+	case value_type::boolean:	return "boolean";
+	case value_type::path:		return "path";
+	}
+	return "text";
+}
+
+// The words a completion offers for options: each visible spelling, a form
+// whose value follows '=' with its '='.
+std::vector<std::string> completion_words(const table &t)
+{
+	std::vector<std::string> out;
+	each_spelling(t, [&](const row &rw, const spelling &sp) -> bool {
+		if ( rw.flags & rf_hidden )
+			return false;
+		std::string w(sp.text);
+		if ( sp.form == value_form::equals || sp.form == value_form::equals_or_separate )
+			w += '=';
+		out.push_back(w);
+		return false;
+	});
+	return out;
+}
+
+// The visible spellings whose bare word takes the next word as its value.
+std::vector<std::string> value_next_words(const table &t)
+{
+	std::vector<std::string> out;
+	each_spelling(t, [&](const row &rw, const spelling &sp) -> bool {
+		if ( !(rw.flags & rf_hidden) && value_follows(sp.form) )
+			out.push_back(sp.text);
+		return false;
+	});
+	return out;
+}
+
+// `s` single-quoted for a POSIX shell (bash, zsh): a ' becomes '\''.
+std::string sh_quote(const std::string &s)
+{
+	std::string out = "'";
+	for ( size_t i = 0; i < s.size(); i++ )
+		out += s[i] == '\'' ? std::string("'\\''") : std::string(1, s[i]);
+	return out + "'";
+}
+
+// `s` single-quoted for fish: ' and \ escaped with a backslash.
+std::string fish_quote(const std::string &s)
+{
+	std::string out = "'";
+	for ( size_t i = 0; i < s.size(); i++ )
+	{
+		if ( s[i] == '\'' || s[i] == '\\' )
+			out += '\\';
+		out += s[i];
+	}
+	return out + "'";
+}
+
+// `s` single-quoted for PowerShell: a ' doubled.
+std::string ps_quote(const std::string &s)
+{
+	std::string out = "'";
+	for ( size_t i = 0; i < s.size(); i++ )
+		out += s[i] == '\'' ? std::string("''") : std::string(1, s[i]);
+	return out + "'";
+}
+
+// A word of bash's compgen -W list: glob characters escaped (compgen expands
+// each word and removes the escapes).
+std::string compgen_word(const std::string &s)
+{
+	std::string out;
+	for ( size_t i = 0; i < s.size(); i++ )
+	{
+		if ( strchr("?*[]\\", s[i]) )
+			out += '\\';
+		out += s[i];
+	}
+	return out;
+}
+
+// A shell identifier from the program's name.
+std::string ident(const char *program)
+{
+	std::string out;
+	for ( const char *p = program ? program : ""; *p; p++ )
+		out += isalnum((unsigned char)*p) ? *p : '_';
+	return out;
+}
+
+// A row's help, short enough for a completion menu: its first paragraph,
+// cut at a word before 60 columns.
+std::string short_help(const row &rw)
+{
+	std::string s = rw.help ? rw.help : "";
+	const size_t nl = s.find('\n');
+	if ( nl != std::string::npos )
+		s.erase(nl);
+	if ( s.size() <= 60 )
+		return s;
+	size_t cut = s.rfind(' ', 57);
+	if ( cut == std::string::npos )
+		cut = 57;
+	return s.substr(0, cut) + "...";
+}
+
+void write_bash(std::ostream &os, const table &t)
+{
+	const std::string fn = "_" + ident(t.program) + "_complete";
+	os << "# bash completion for " << t.program << " - generated by `"
+	   << t.program << " --completion=bash`\n";
+	os << fn << "()\n{\n";
+	os << "\tlocal cur=\"${COMP_WORDS[COMP_CWORD]}\"\n";
+	os << "\tlocal prev=\"${COMP_WORDS[COMP_CWORD-1]}\"\n";
+	const std::vector<std::string> after = value_next_words(t);
+	if ( !after.empty() )
+	{
+		os << "\tcase \"$prev\" in\n\t\t";
+		for ( size_t k = 0; k < after.size(); k++ )
+			os << (k ? "|" : "") << sh_quote(after[k]);
+		os << ") COMPREPLY=( $(compgen -f -- \"$cur\") ); return 0 ;;\n\tesac\n";
+	}
+	std::string list;
+	const std::vector<std::string> all = completion_words(t);
+	for ( size_t k = 0; k < all.size(); k++ )
+		list += (k ? " " : "") + compgen_word(all[k]);
+	os << "\tif [[ \"$cur\" == -* ]]; then\n";
+	os << "\t\tCOMPREPLY=( $(compgen -W " << sh_quote(list) << " -- \"$cur\") )\n";
+	os << "\t\t[[ \"${COMPREPLY[0]}\" == *= ]] && compopt -o nospace\n";
+	os << "\t\treturn 0\n\tfi\n";
+	os << "\tCOMPREPLY=( $(compgen -f -- \"$cur\") )\n}\n";
+	os << "complete -F " << fn << " " << t.program << "\n";
+}
+
+void write_zsh(std::ostream &os, const table &t)
+{
+	const std::string fn = "_" + ident(t.program);
+	std::string plain, equals, after;
+	const std::vector<std::string> all = completion_words(t);
+	for ( size_t k = 0; k < all.size(); k++ )
+		(all[k][all[k].size() - 1] == '=' ? equals : plain) += " " + sh_quote(all[k]);
+	const std::vector<std::string> next = value_next_words(t);
+	for ( size_t k = 0; k < next.size(); k++ )
+		after += " " + sh_quote(next[k]);
+	os << "#compdef " << t.program << "\n";
+	os << "# zsh completion for " << t.program << " - generated by `"
+	   << t.program << " --completion=zsh`\n";
+	os << fn << "() {\n";
+	os << "\tlocal -a plain equals after\n";
+	os << "\tplain=(" << plain << " )\n";
+	os << "\tequals=(" << equals << " )\n";
+	os << "\tafter=(" << after << " )\n";
+	os << "\tif (( ${after[(Ie)${words[CURRENT-1]}]} )); then\n\t\t_files\n";
+	os << "\telif [[ $PREFIX == -* ]]; then\n";
+	os << "\t\tcompadd -- $plain\n\t\tcompadd -S '' -- $equals\n";
+	os << "\telse\n\t\t_files\n\tfi\n}\n";
+	os << fn << " \"$@\"\n";
+}
+
+void write_fish(std::ostream &os, const table &t)
+{
+	os << "# fish completion for " << t.program << " - generated by `"
+	   << t.program << " --completion=fish`\n";
+	each_spelling(t, [&](const row &rw, const spelling &sp) -> bool {
+		if ( rw.flags & rf_hidden )
+			return false;
+		const std::string text(sp.text);
+		os << "complete -c " << t.program;
+		if ( text.compare(0, 2, "--") == 0 )
+			os << " -l " << fish_quote(text.substr(2));
+		else if ( text.size() == 2 )
+			os << " -s " << fish_quote(text.substr(1));
+		else
+			os << " -o " << fish_quote(text.substr(1));
+		if ( sp.form != value_form::none )
+		{
+			if ( rw.choices )
+			{
+				std::string list;
+				for ( const char *const *c = rw.choices; *c; c++ )
+					list += (list.empty() ? "" : " ") + std::string(*c);
+				os << " -x -a " << fish_quote(list);
+			}
+			else if ( value_follows(sp.form) )
+				os << " -r -F";
+			else
+				os << " -r";
+		}
+		const std::string h = short_help(rw);
+		if ( !h.empty() )
+			os << " -d " << fish_quote(h);
+		os << "\n";
+		return false;
+	});
+}
+
+void write_powershell(std::ostream &os, const table &t)
+{
+	os << "# PowerShell completion for " << t.program << " - generated by `"
+	   << t.program << " --completion=powershell`\n";
+	os << "Register-ArgumentCompleter -Native -CommandName " << t.program
+	   << " -ScriptBlock {\n";
+	os << "\tparam($wordToComplete, $commandAst, $cursorPosition)\n";
+	os << "\tif (-not \"$wordToComplete\".StartsWith('-')) { return }\n";
+	os << "\t$options = @(";
+	const std::vector<std::string> all = completion_words(t);
+	for ( size_t k = 0; k < all.size(); k++ )
+		os << (k ? ", " : "") << ps_quote(all[k]);
+	os << ")\n";
+	os << "\t$options | Where-Object { $_.StartsWith(\"$wordToComplete\") } | ForEach-Object {\n";
+	os << "\t\t[System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterName', $_)\n";
+	os << "\t}\n}\n";
+}
+
 occurrence command_line_occurrence(const row &rw, const spelling &sp,
 				   const std::string &word, bool negated)
 {
@@ -738,6 +1100,158 @@ const row *find_row(const table &t, int id)
 		if ( t.rows[r].id == id && !(t.rows[r].flags & rf_doc) )
 			return &t.rows[r];
 	return NULL;
+}
+
+void write_help(std::ostream &os, const table &t, size_t width)
+{
+	if ( width < 40 )
+		width = 40;
+	os << "Usage: " << (t.program ? t.program : "") << " "
+	   << (t.usage ? t.usage : "[options]") << "\n";
+	if ( t.description )
+	{
+		os << "\n";
+		put_wrapped(os, t.description, width, "");
+	}
+	for ( size_t s = 0; s < t.nsections; s++ )
+	{
+		bool any = t.sections[s].note != NULL;
+		for ( size_t k = 0; k < t.nrows && !any; k++ )
+			any = t.rows[k].section == s && !(t.rows[k].flags & rf_hidden);
+		if ( !any )
+			continue;
+		os << "\n" << t.sections[s].title << ":\n";
+		if ( t.sections[s].note )
+			put_wrapped(os, t.sections[s].note, width, "  ");
+		for ( size_t k = 0; k < t.nrows; k++ )
+		{
+			const row &rw = t.rows[k];
+			if ( rw.section != s || (rw.flags & rf_hidden) )
+				continue;
+			std::string left = "  " + row_display(rw);
+			const std::string help = help_text(rw);
+			if ( left.size() + 2 > help_column )
+			{
+				put_line(os, left);
+				left.clear();
+				if ( help.empty() )
+					continue;
+			}
+			const std::vector<std::string> lines = wrap(help, width - help_column);
+			for ( size_t l = 0; l < lines.size(); l++ )
+			{
+				std::string col = l == 0 ? left : std::string();
+				col.resize(help_column, ' ');
+				put_line(os, col + lines[l]);
+			}
+		}
+	}
+	if ( t.epilog )
+	{
+		os << "\n";
+		put_wrapped(os, t.epilog, width, "");
+	}
+}
+
+std::string describe_json(const table &t)
+{
+	nlohmann::json d;
+	d["schema"] = 1;
+	d["program"] = t.program ? t.program : "";
+	d["usage"] = t.usage ? t.usage : "";
+	if ( t.description )
+		d["description"] = t.description;
+	d["sections"] = nlohmann::json::array();
+	for ( size_t s = 0; s < t.nsections; s++ )
+	{
+		nlohmann::json js;
+		js["title"] = t.sections[s].title ? t.sections[s].title : "";
+		if ( t.sections[s].note )
+			js["note"] = t.sections[s].note;
+		js["options"] = nlohmann::json::array();
+		js["entries"] = nlohmann::json::array();
+		for ( size_t k = 0; k < t.nrows; k++ )
+		{
+			const row &rw = t.rows[k];
+			if ( rw.section != s || (rw.flags & rf_hidden) )
+				continue;
+			if ( rw.flags & rf_doc )
+			{
+				nlohmann::json e;
+				e["usage"] = row_display(rw);
+				e["help"] = rw.help ? rw.help : "";
+				js["entries"].push_back(e);
+				continue;
+			}
+			nlohmann::json o;
+			o["name"] = rw.name ? rw.name : "";
+			o["spellings"] = nlohmann::json::array();
+			for ( size_t p = 0; p < max_spellings && rw.spellings[p].text; p++ )
+			{
+				nlohmann::json sp;
+				sp["text"] = rw.spellings[p].text;
+				sp["form"] = form_name(rw.spellings[p].form);
+				o["spellings"].push_back(sp);
+			}
+			o["usage"] = row_display(rw);
+			o["help"] = rw.help ? rw.help : "";
+			o["type"] = type_name(rw.type);
+			if ( rw.metavar )
+				o["metavar"] = rw.metavar;
+			if ( rw.choices )
+			{
+				o["choices"] = nlohmann::json::array();
+				for ( const char *const *c = rw.choices; *c; c++ )
+					o["choices"].push_back(*c);
+			}
+			if ( rw.default_value )
+				o["default"] = rw.default_value;
+			if ( rw.env )
+				o["env"] = rw.env;
+			if ( rw.config_key )
+				o["config_key"] = rw.config_key;
+			o["required"] = (rw.flags & rf_required) != 0;
+			o["negatable"] = (rw.flags & rf_negatable) != 0;
+			o["ends_options"] = (rw.flags & rf_ends_options) != 0;
+			js["options"].push_back(o);
+		}
+		d["sections"].push_back(js);
+	}
+	return d.dump(2);
+}
+
+bool parse_shell(const std::string &name, shell &out)
+{
+	if ( name == "bash" )
+		out = shell::bash;
+	else if ( name == "zsh" )
+		out = shell::zsh;
+	else if ( name == "fish" )
+		out = shell::fish;
+	else if ( name == "powershell" )
+		out = shell::powershell;
+	else
+		return false;
+	return true;
+}
+
+void write_completion(std::ostream &os, const table &t, shell sh)
+{
+	switch ( sh )
+	{
+	case shell::bash:
+		write_bash(os, t);
+		return;
+	case shell::zsh:
+		write_zsh(os, t);
+		return;
+	case shell::fish:
+		write_fish(os, t);
+		return;
+	case shell::powershell:
+		write_powershell(os, t);
+		return;
+	}
 }
 
 result parse(const table &t, const std::vector<std::string> &args, const sources &from)

@@ -11820,8 +11820,7 @@ void show_error_source_line(const std::string &ln, int col, std::ostream &os,
 			    int end_col, const madc::theme *theme,
 			    int64_t standard)
 {
-    char *env_columns = getenv("COLUMNS");
-    size_t term_columns = env_columns ? (size_t)atoi(env_columns) : 80;
+    const size_t term_columns = madc::terminal_columns();
     // The column can exceed the fetched line (a token inside a macro
     // expansion carries post-expansion provenance). A diagnostic must never
     // throw — the caret's byte is clamped to the line's end instead of

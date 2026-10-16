@@ -117,6 +117,13 @@ bool colour_reaches(const std::ostream &os)
     return fd >= 0 && terminal_shows_colour(fd);
 }
 
+size_t terminal_columns()
+{
+    const char *env = getenv("COLUMNS");
+    const long n = env ? atol(env) : 0;
+    return n > 0 ? (size_t)n : 80;
+}
+
 } // namespace madc
 
 #if defined(_WIN32)

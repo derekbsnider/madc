@@ -10,6 +10,7 @@
 thread_local bool madc_verbose = false;
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
 
+#include <cstdlib>
 #include <fstream>
 #include <initializer_list>
 #include <map>
@@ -18,7 +19,9 @@ thread_local bool madc_verbose = false;
 #include <unistd.h>
 #include <vector>
 
+#include "json.hpp"
 #include "libmadc/cli_options.h"
+#include "madc_console.h"
 
 namespace {
 
@@ -581,4 +584,128 @@ TEST_CASE("sources: a flag reads yes or no; a bad value names its source")
 	r = cli::parse(t, none, from);
 	CHECK(r.message == "invalid value 'x' for 'PROG_LEVEL': expected an integer");
 	fake_env.clear();
+}
+namespace {
+
+const cli::section help_sections[] = {
+	{ "Input", "What to read." },
+	{ "Output", NULL },
+};
+
+const cli::row help_rows[] = {
+	{ 0, NULL, {}, NULL, 0, "the program to run", "<file>", cli::rf_doc },
+	{ 1, "verbose", { { "-v", flag }, { "--verbose", flag } }, NULL, 0, "say more" },
+	{ 2, "output", { { "-o", value_form::separate } }, "<file>", 1,
+	  "write the result to <file> instead of the terminal, which is where it goes otherwise" },
+	{ 3, "std", { { "--std", value_form::equals } }, "<std>", 1, "the language standard",
+	  NULL, 0, 0, cli::value_type::text, NULL, "c17", "PROG_STD", "std" },
+	{ 4, "secret", { { "--secret", flag } }, NULL, 1, "hidden", NULL, cli::rf_hidden },
+	{ 5, "long", { { "--a-very-long-option-name", value_form::equals } }, "<value>", 1,
+	  "long left column" },
+};
+
+cli::table help_table()
+{
+	cli::table t = cli::table();
+	t.program = "prog";
+	t.usage = "[options] <file>";
+	t.description = "A test program.";
+	t.sections = help_sections;
+	t.nsections = 2;
+	t.rows = help_rows;
+	t.nrows = sizeof(help_rows) / sizeof(help_rows[0]);
+	t.operands = cli::operand_rule::permute;
+	return t;
+}
+
+// One help line: the left column padded to the help column (26).
+std::string help_line(const std::string &left, const std::string &help)
+{
+	std::string s = left;
+	s.resize(26, ' ');
+	return s + help + "\n";
+}
+
+} // namespace
+
+TEST_CASE("help: sections, notes, wrapping, a long left column, hidden rows left out")
+{
+	std::ostringstream os;
+	cli::write_help(os, help_table(), 80);
+	const std::string expected =
+		"Usage: prog [options] <file>\n"
+		"\n"
+		"A test program.\n"
+		"\n"
+		"Input:\n"
+		"  What to read.\n"
+		+ help_line("  <file>", "the program to run")
+		+ help_line("  -v, --verbose", "say more")
+		+ "\n"
+		"Output:\n"
+		+ help_line("  -o <file>", "write the result to <file> instead of the terminal,")
+		+ help_line("", "which is where it goes otherwise")
+		+ help_line("  --std=<std>", "the language standard [default: c17] [env: PROG_STD]")
+		+ help_line("", "[config: std]")
+		+ "  --a-very-long-option-name=<value>\n"
+		+ help_line("", "long left column");
+	CHECK(os.str() == expected);
+}
+
+TEST_CASE("--help=json describes every visible row")
+{
+	const nlohmann::json d = nlohmann::json::parse(cli::describe_json(help_table()));
+	CHECK(d["schema"] == 1);
+	CHECK(d["program"] == "prog");
+	REQUIRE(d["sections"].size() == 2);
+	CHECK(d["sections"][0]["title"] == "Input");
+	CHECK(d["sections"][0]["entries"][0]["usage"] == "<file>");
+	CHECK(d["sections"][0]["options"][0]["name"] == "verbose");
+	const nlohmann::json &out = d["sections"][1]["options"];
+	REQUIRE(out.size() == 3);			// --secret is hidden
+	CHECK(out[0]["spellings"][0]["text"] == "-o");
+	CHECK(out[0]["spellings"][0]["form"] == "separate");
+	CHECK(out[1]["default"] == "c17");
+	CHECK(out[1]["env"] == "PROG_STD");
+	CHECK(out[1]["config_key"] == "std");
+	CHECK(out[1]["type"] == "text");
+}
+
+TEST_CASE("completion scripts for four shells")
+{
+	const cli::table t = help_table();
+	cli::shell sh;
+	CHECK(cli::parse_shell("bash", sh));
+	CHECK(sh == cli::shell::bash);
+	CHECK_FALSE(cli::parse_shell("tcsh", sh));
+
+	std::ostringstream bash, zsh, fish, ps;
+	cli::write_completion(bash, t, cli::shell::bash);
+	cli::write_completion(zsh, t, cli::shell::zsh);
+	cli::write_completion(fish, t, cli::shell::fish);
+	cli::write_completion(ps, t, cli::shell::powershell);
+
+	CHECK(bash.str().find("complete -F _prog_complete prog\n") != std::string::npos);
+	CHECK(bash.str().find("'-o') COMPREPLY=( $(compgen -f -- \"$cur\") )") != std::string::npos);
+	CHECK(bash.str().find("compgen -W '-v --verbose -o --std= --a-very-long-option-name='")
+	      != std::string::npos);
+	CHECK(zsh.str().compare(0, 15, "#compdef prog\n#") == 0);
+	CHECK(zsh.str().find("equals=( '--std=' '--a-very-long-option-name=' )") != std::string::npos);
+	CHECK(fish.str().find("complete -c prog -s 'v' -d 'say more'\n") != std::string::npos);
+	CHECK(fish.str().find("complete -c prog -l 'std' -r -d 'the language standard'\n")
+	      != std::string::npos);
+	CHECK(ps.str().find("Register-ArgumentCompleter -Native -CommandName prog") != std::string::npos);
+	CHECK(ps.str().find("'--std='") != std::string::npos);
+	const std::string all = bash.str() + zsh.str() + fish.str() + ps.str();
+	CHECK(all.find("secret") == std::string::npos);
+}
+
+TEST_CASE("terminal_columns: $COLUMNS when it is a positive number, else 80")
+{
+	setenv("COLUMNS", "100", 1);
+	CHECK(madc::terminal_columns() == 100);
+	setenv("COLUMNS", "abc", 1);
+	CHECK(madc::terminal_columns() == 80);
+	unsetenv("COLUMNS");
+	CHECK(madc::terminal_columns() == 80);
 }

@@ -221,6 +221,28 @@ match match_word(const table &t, const std::string &word);
 // The row of `id`; NULL when the table has none.
 const row *find_row(const table &t, int id);
 
+// --- The writers: the same rows as help, JSON and completion scripts ---
+
+// The help: the usage line, the description, each section (its note, then
+// its rows and help lines), the epilogue, wrapped to `width` columns (at
+// least 40). Hidden rows are left out.
+void write_help(std::ostream &os, const table &t, size_t width);
+
+// The table as JSON — what `madc --help=json` prints and madcide reads:
+// {schema, program, usage, description, sections: [{title, note, options:
+// [{name, spellings: [{text, form}], usage, help, type, metavar, choices,
+// default, env, config_key, required, negatable, ends_options}], entries:
+// [{usage, help}]}]}. Hidden rows are left out.
+std::string describe_json(const table &t);
+
+enum class shell : uint8_t { bash, zsh, fish, powershell };
+// A shell's name ("bash", "zsh", "fish", "powershell") as its code.
+bool parse_shell(const std::string &name, shell &out);
+// A completion script for `sh` from the table's visible spellings: options
+// after a '-', files after a spelling whose value is the next word, files
+// otherwise.
+void write_completion(std::ostream &os, const table &t, shell sh);
+
 } // namespace cli
 } // namespace madc
 
