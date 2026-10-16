@@ -117,8 +117,68 @@ row 2. The release's second real C codebase beside SQLite.
   the milestone, fixed at its layer in its own commit with a reducer promoted
   to `tests/` (gcc and clang outputs), Tier 1 + Tier 2.
 
-Place in the arc: after the command-line options work (slices 1-2), before
-sections B-D.
+Place in the arc: after section G, before sections B-D.
+
+### H. The conformance release gate (owner 2026-10-16: "each release must move the needle forwards towards C23 and/or C++20 compliance")
+
+OWNER LAW, gated like the duplication law (`check-release-consolidation.sh`):
+
+- The measure: the C23 rows of `docs/conformance-coverage.md` (gcc's own
+  `gcc.dg/c23-*` / `c2x-*` tests, compile-clean and `dg-do run`;
+  `gcc.c-torture/execute` under `--std=c23`) and its C++20 row
+  (`g++.dg/cpp2a`).
+- The rule: every release raises at least one of those passing counts and
+  lowers none, against the previous release.
+- Never a hand-typed number: the measuring scripts record each release's
+  counts in `docs/parity/conformance-ledger.tsv` (release, corpus, `--std`,
+  passing, in scope, commit); the release's CHANGELOG section carries a
+  `Conformance:` line naming its gain; `scripts/check-release-conformance.sh`
+  checks the line against the ledger rows of this release and the previous
+  one, with negative controls; `/release` runs it beside the consolidation
+  check.
+- Baseline: v0.105.0, re-measured on its archived binary
+  (`scripts/release_bins.sh`), since the doc's numbers are v0.103.0 content.
+- 0.106.0 is the first release it gates: this release needs a measured C23
+  or C++20 gain.
+- Compile time (owner 2026-10-16: "a gate to ensure compile times don't
+  regress"): the profiling merge gate `parse-cost` already ratchets the
+  shipped -O2 binary's callgrind Ir over 14 workloads at every seam (0.5%;
+  its result rides the push-gated `linux-battery` row). What it lacks is a
+  real codebase: SQLite's amalgamation compile (`madc -c sqlite3.c`) joins
+  `scripts/parse_cost/` as a workload, its cost under callgrind measured
+  first (a lighter instruction counter if callgrind is too slow at that
+  size); redis joins once section F compiles it.
+
+Place in the arc: after the command-line options work, before section G.
+
+### G. The BUGS.md burndown slice (owner 2026-10-16: "let's fix those bugs before taking on redis")
+
+BUGS.md held 118 entries at v0.105.0 and 117 now; this arc had fixed only
+B91 from it. Before redis (section F), in this order:
+
+1. Re-check every entry at HEAD with its own reducer and both oracles. An
+   entry the arc already fixed (B41 looks like `90cd2ece1`, B66 like
+   `0211249a4`) gets its reducer promoted to `tests/` if no test pins it,
+   and is deleted from BUGS.md; an entry that still fails is re-measured.
+2. The 17 silent wrong answers ("Silent wrong answers" section) — first, as
+   BUGS.md's own rule says.
+3. The 11 C refusals: B151 (`_Noreturn`), B152 (`offsetof` over a type
+   defined in its operand), B142 (wide string for `wchar_t[]`, an overlong
+   string), B140 (excess initializers), B3, B5, B6 (declarator / enum /
+   typedef forms), B28 (2-D compound literal), B49 (compound literal's
+   address as an initializer), B41, B66.
+4. The 6 dialect refusals: B126, B100 (a temporary for a `value &` /
+   `const var &` input), B98 (a nested brace list in a value literal), B11,
+   B20 (a script's top-level scope), B175 (a REPL entry).
+5. The two crashes: B153 (packed `madc-release`, `--project`, `<string>` in
+   two TUs: SIGSEGV under forest bind — shipped since v0.95.0) and B148 (a
+   constructor template's mem-initializer reading a member of a class
+   temporary crashes c2mir; v0.99.2 refused it loudly).
+
+Each fix is its own commit with its reducer promoted to `tests/` (gcc and
+clang outputs) and the entry deleted from BUGS.md in the same commit
+(BUGS.md's rule), Tier 1 + Tier 2; the batch lane per batch. The C++
+library and header families (B192 ... B169) stay in BUGS.md, after redis.
 
 ## How each row lands (one shape)
 
