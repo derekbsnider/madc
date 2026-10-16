@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Every one-owner gate runs in `make gates`
+
+`src/Makefile`'s `gates` target (what `fulltest` runs) named 55 of the 56
+`scripts/check-one-*.sh` one-owner gates one by one and omitted
+`scripts/check-one-option-parser.sh` — the gate of this release's consolidated
+command-line-reader family, which therefore ran only in the per-commit static
+loop and the seam battery, never in `fulltest`. The `gates` target now names
+it, and a new gate `scripts/check-gates-wired.sh` (also run by `gates`) fails
+when any `scripts/check-one-*.sh` is absent from the target, so a consolidated
+family can no longer regrow under a green `fulltest`.
+
 ### A release gate: every release moves C23 or C++20 conformance forward
 
 OWNER LAW (2026-10-16): every release raises at least one C23 or C++20 passing
@@ -40,9 +51,10 @@ the table (`src/madc_cli.cpp`) and the reader (`src/cli_options.cpp`), and
 user-visible changes:
 
 - An unrecognized option is an error in gcc's words —
-  `madc: error: unrecognized command-line option '-fbogus'` — with
-  `; did you mean '--dump-source'?` when one is close. Before, it was opened as
-  the source file.
+  `madc: error: unrecognized command-line option '-fbogus'`, with
+  `; did you mean '--dump-source'?` appended only when a known option is close,
+  as for `--dump-sorce`. `-fbogus` is close to none and gets no suggestion.
+  Before, it was opened as the source file.
 - A missing value is an error: `madc: error: missing argument to '-o'`. Before,
   a trailing `-o` was opened as a file.
 - `--` ends madc's options.
