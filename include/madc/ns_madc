@@ -261,6 +261,20 @@ namespace madc {
     // spellings must name one document; do not write a second normalizer.
     value &canonical_path(value &out, const char *path);
 
+    // A path's extension and stem — THE one rule: the extension is what
+    // follows the last dot of the final component, never a dot in a directory
+    // and never a leading dot (".bashrc" has none). path_drop_extension: the
+    // path without it ("dir.d/foo.c" -> "dir.d/foo"; unchanged when there is
+    // none); path_stem: the final component without it ("dir/foo.tar.gz" ->
+    // "foo.tar"), as gcc names an artifact.
+    value &path_drop_extension(value &out, const char *path);
+    value &path_stem(value &out, const char *path);
+
+    // Make every missing directory above `path` (`mkdir -p` of its parent;
+    // owner-only on POSIX): "a/b/c.txt" makes a and a/b, "a/b/" makes a/b
+    // too. A failure shows at the caller's own open or test of the path.
+    void path_make_parents(const char *path);
+
     // Revision handles (Nexus L4b; design 2026-09-13 §3.3): parse_open_tagged
     // opens a READ-ONLY parse handle of `source` whose generation is a fresh
     // TAG (>= 2^20, engine-allocated) — every id it mints names it, so

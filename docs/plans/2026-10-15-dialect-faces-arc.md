@@ -43,6 +43,8 @@ whose behaviour already differs, then the pure duplicates.
 | 6 | manifest writer: create / add TU / remove TU | `src/madc_project.cpp:413,424,454` | `proj_write` / `proj_add` / `proj_del` (`madcide_core.inc:5290,5358,5416`) | stores a path as typed (madc: relative to the manifest; refuses a non-file) |
 | 8 | project kind names (console / gui) | `src/madc_project.cpp:254,260` | `madcide_enums.inc:422,426` | an unknown word becomes console (madc refuses it) |
 | 7 | manifest reader (object shape, `tus`) | `read_project_manifest` (`src/madc_project.cpp:264`) | `proj_load` (`madcide_core.inc:5463`, own `js::parse`) | rides with 6/8: one manifest owner |
+| 19 | `mkdir -p` (found 2026-10-16, landed with row 10) | `host_path_make_parents` (`src/madc_posix_io.cpp:263`) | `dir_ensure` (`madcide_plugins.inc:324`) | grew a Windows absolute path (`C:\...`) from `.` (it split on `/` only) |
+| 20 | a product's user configuration directory (BUGS.md B91, 2026-09-30) | `config_file::user_config_dir` (`src/madc_config_file.cpp:239`) | `config_dir_of` (`madcide_plugins.inc:44`) | on Windows madc reads `$HOME/.config`, madcide `%APPDATA%` — the Windows rule is the OWNER's decision (B91); then one owner, a face, madcide keeps only its `MADCIDE_CONFIG_DIR` override |
 
 ### B. Behaviour already differs
 
@@ -104,4 +106,11 @@ packages; madcide's paired release.
 
 ## Status
 
-PLANNED 2026-10-15 (owner). Nothing of rows 2-17 started.
+PLANNED 2026-10-15 (owner).
+
+- Rows 10 + 19 (2026-10-16): `madc::path_drop_extension` / `path_stem` /
+  `path_make_parents` (`<ns_madc>`); `src/madc_posix_io.h` registered in
+  `dialect_faces.tsv` (every public a face or an exempt reason); test
+  `testpath_faces`. madcide: `path_sans_ext` and `dir_ensure` deleted, a
+  `layout-path:` line in `testmadcide`, and `check-madcide-single-owners.sh`
+  red on a hand-rolled extension split.

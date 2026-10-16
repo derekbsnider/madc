@@ -17,3 +17,39 @@ public	include/madc_theme.h	theme_default	include/madc/ns_madc_host	theme_paint
 public	include/madc_theme.h	theme_read	include/madc/ns_madc_host	theme_styles
 public	include/madc_theme.h	theme_marks	-	exempt: the marks of madc's own terminal line editor; a host's document colours from doc_spans or lex_spans with theme_styles, its terminal text from theme_paint
 public	include/madc_theme.h	theme_paint	include/madc/ns_madc_host	theme_paint
+public	src/madc_posix_io.h	set_fd_close_on_exec	-	exempt: descriptor plumbing of madc's own files and processes; a script's I/O is stdio or php::
+public	src/madc_posix_io.h	write_fd_without_sigpipe	-	exempt: descriptor plumbing of madc's own files and processes; a script's I/O is stdio or php::
+public	src/madc_posix_io.h	read_fd	-	exempt: descriptor plumbing of madc's own files and processes; a script's I/O is stdio or php::
+public	src/madc_posix_io.h	resolve_real_path	-	exempt: the realpath step under canonical_path_for_compare, whose face is canonical_path
+public	src/madc_posix_io.h	canonical_path_for_compare	include/madc/ns_madc	canonical_path
+public	src/madc_posix_io.h	host_path_dirname	-	exempt: a host splits a path with php::dirname (both separators on a Windows host, PHP's rule)
+public	src/madc_posix_io.h	host_path_basename	-	exempt: a host splits a path with php::basename (both separators on a Windows host, PHP's rule)
+public	src/madc_posix_io.h	host_path_absolute	-	exempt: the include and manifest resolvers' test; a host's project paths come resolved from the manifest owner (madc_project.cpp)
+public	src/madc_posix_io.h	host_path_join	-	exempt: the include and manifest resolvers' join; a host's project paths come resolved from the manifest owner (madc_project.cpp)
+public	src/madc_posix_io.h	host_path_type_of	-	exempt: a host tests a path with php::file_exists / php::is_dir
+public	src/madc_posix_io.h	host_path_drop_extension	include/madc/ns_madc	path_drop_extension
+public	src/madc_posix_io.h	host_path_stem	include/madc/ns_madc	path_stem
+public	src/madc_posix_io.h	host_path_make_parents	include/madc/ns_madc	path_make_parents
+public	src/madc_posix_io.h	host_path_expand_home	-	exempt: the command line's and madc.ini's ~ expansion; a host's paths arrive expanded
+public	src/madc_posix_io.h	host_path_within	-	exempt: the include resolver's and the git substrate's "under this directory"; a host asks git::relpath (madcgit)
+public	src/madc_posix_io.h	local_time	-	exempt: the localtime_r / localtime_s argument-order shim under madc's own stamps
+public	src/madc_posix_io.h	get_host_name	-	exempt: reached as madc::sys.hostname (the sys object's member, not a function)
+public	src/madc_posix_io.h	seek_fd	-	exempt: descriptor plumbing of madc's own files and processes; a script's I/O is stdio or php::
+public	src/madc_posix_io.h	fd_size	-	exempt: descriptor plumbing of madc's own files and processes; a script's I/O is stdio or php::
+public	src/madc_posix_io.h	fd_is_regular_file	-	exempt: descriptor plumbing of madc's own files and processes; a script's I/O is stdio or php::
+public	src/madc_posix_io.h	host_file_held	-	exempt: the held-file liveness test under discovery; a host claims and asks through madc::session_claim
+public	src/madc_posix_io.h	pread_fd	-	exempt: descriptor plumbing of madc's own files and processes; a script's I/O is stdio or php::
+public	src/madc_posix_io.h	pwrite_fd	-	exempt: descriptor plumbing of madc's own files and processes; a script's I/O is stdio or php::
+public	src/madc_posix_io.h	open_string_capture	-	exempt: madc's capture of its own FILE* emitters into a string; no host emits through a FILE*
+public	src/madc_posix_io.h	finish_string_capture	-	exempt: madc's capture of its own FILE* emitters into a string; no host emits through a FILE*
+public	src/madc_posix_io.h	glob_paths	-	exempt: the dialect's glob is perl::glob
+public	src/madc_posix_io.h	map_file_readonly	-	exempt: the forest image's and loader's mapping; no host maps memory
+public	src/madc_posix_io.h	map_exec_region_at	-	exempt: the JIT's code region; no host maps memory
+public	src/madc_posix_io.h	protect_exec_region	-	exempt: the JIT's code region; no host maps memory
+public	src/madc_posix_io.h	unmap_exec_region	-	exempt: the JIT's code region; no host maps memory
+public	src/madc_posix_io.h	make_temp_file	-	exempt: madc's own temporaries (an exec's captured output)
+public	src/madc_posix_io.h	process_cpu_microseconds	-	exempt: madc's own measurement (--show-stats, the invoke limits)
+public	src/madc_posix_io.h	process_resident_bytes	-	exempt: madc's own measurement (--show-stats, the invoke limits)
+public	src/madc_posix_io.h	read_process_memory	-	exempt: the debugger's fault-free read of madc's own process
+public	src/madc_posix_io.h	win_error_text	-	exempt: madc's own Windows error text
+public	src/madc_posix_io.h	debug_log_line	-	exempt: madc's own Windows debug channel

@@ -578,6 +578,16 @@ bool parse_would_accept(value &out_diags, int64_t handle, const char *source)
 value &canonical_path(value &out, const char *path)
 	{ out = detail::canonical_path_for_compare(path ? path : ""); return out; }
 
+// A path's extension and stem, and its missing parent directories: the host
+// path owners (madc_posix_io.h) given dialect faces, so a host names an
+// artifact or makes a directory by madc's rule, never a copy of it.
+value &path_drop_extension(value &out, const char *path)
+	{ out = detail::host_path_drop_extension(path ? path : ""); return out; }
+value &path_stem(value &out, const char *path)
+	{ out = detail::host_path_stem(path ? path : ""); return out; }
+void path_make_parents(const char *path)
+	{ detail::host_path_make_parents(path ? path : ""); }
+
 // L4b (design §3.3): revision handles by generation TAG.
 int64_t parse_open_tagged(const char *source, const char *filename)
 	{ std::string s = source ? source : "", f = filename ? filename : "";

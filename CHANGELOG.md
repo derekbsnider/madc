@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### Dialect faces for a path's extension, stem and parent directories
+
+`madc::path_drop_extension`, `madc::path_stem` and `madc::path_make_parents`,
+declared in `<ns_madc>`, expose the host path owners
+`host_path_drop_extension`, `host_path_stem` and `host_path_make_parents`
+(`src/madc_posix_io.h`) to the dialect, so a host names an artifact or makes a
+directory by madc's one rule rather than a copy of it. The extension is what
+follows the last dot of the final path component: a dot in a directory and a
+leading dot are not extensions, so `path_drop_extension("dir.d/foo.c")` is
+`dir.d/foo`, `path_drop_extension("dir.d/foo")` and
+`path_drop_extension(".bashrc")` are unchanged, and `path_stem("dir/foo.tar.gz")`
+is `foo.tar` while `path_stem("dir.d/.hidden")` is `.hidden`. `path_make_parents`
+creates every missing directory above a path and leaves the final component
+alone. `src/madc_posix_io.h` is now registered in `scripts/dialect_faces.tsv`,
+with every public carrying a face or an exempt reason, and `tests/testpath_faces`
+covers the faces. madcide drops its own `path_sans_ext` and `dir_ensure` copies
+and calls these faces instead.
+
 ## [v0.105.0] — 2026-10-15
 
 The live REPL and the pack slices. A `madc -i` session behaves like a buffer you keep editing: a function defined again reaches every caller, an inline one included; a variable defined again is re-initialized in place, an object with a destructor destroyed and constructed again; a type defined again is the same type when its data members are, and otherwise its name's next version (old objects keep `P#1`, mixing versions is a type error, a C++ function for the new version is an `abi_tag`-mangled overload). An edit to the REPL buffer reparses live, Restart and Run All replays the whole buffer and runs its uncalled `main`, and objects with static storage duration are destroyed at exit. On the pack side, the forest pack now serves every system header the platform ships, so a packed madc compiles a program that includes any of them on a machine with no headers on disk, reading the core system headers from libmadc rather than /usr/include; the pack is cut into per-unit slices with a frozen index, so a bind loads and judges only the units a program's includes reach and a compile that binds nothing never decodes the container, while the dialect prelude binds directly from its own frozen unit. madcide 0.8.0 carries the live reparse and Restart and Run All to its REPL pane.

@@ -1,0 +1,52 @@
+// madc::path_drop_extension / path_stem / path_make_parents — the host path
+// owners (madc_posix_io.h) given dialect faces, so a host names an artifact
+// and makes a directory by madc's rule, never a copy. The extension is what
+// follows the last dot of the FINAL component: a dot in a directory is not
+// one, and neither is a leading dot. A copy that splits at the last dot of
+// the whole path answers "dir" for "dir.d/foo" — the silent wrong answer
+// madcide's path_sans_ext gave. Oracle: gcc names `gcc -c dir.d/foo.tar.c`'s
+// object foo.tar.o; the C++ owner's unit test (test_posix_io.cpp) agrees.
+void drop(const char *p)
+{
+	var out;
+	madc::path_drop_extension(out, p);
+	println("drop {} -> {}", p, out);
+}
+
+void stem(const char *p)
+{
+	var out;
+	madc::path_stem(out, p);
+	println("stem {} -> {}", p, out);
+}
+
+int main()
+{
+	drop("dir.d/foo.c");
+	drop("dir.d/foo");
+	drop("foo.tar.gz");
+	drop(".bashrc");
+	drop("dir/.bashrc");
+	drop("noext");
+
+	stem("dir/foo.tar.gz");
+	stem("tools/madcide/madcide.mad");
+	stem("/usr/bin/chthonia");
+	stem("chthonia.exe");
+	stem("dir.d/.hidden");
+
+	// Every missing directory ABOVE the path is made; the path itself is not.
+	madc::path_make_parents("madc_pathface_probe/a/b/c.txt");
+	println("parents made: {}", php::is_dir("madc_pathface_probe/a/b") ? 1 : 0);
+	println("leaf made: {}", php::file_exists("madc_pathface_probe/a/b/c.txt") ? 1 : 0);
+	// A trailing separator makes the directory it ends.
+	madc::path_make_parents("madc_pathface_probe/d/");
+	println("trailing made: {}", php::is_dir("madc_pathface_probe/d") ? 1 : 0);
+
+	php::rmdir("madc_pathface_probe/d");
+	php::rmdir("madc_pathface_probe/a/b");
+	php::rmdir("madc_pathface_probe/a");
+	php::rmdir("madc_pathface_probe");
+	println("cleaned: {}", php::file_exists("madc_pathface_probe") ? 0 : 1);
+	return 0;
+}
