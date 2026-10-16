@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### An executable with an undefined reference is refused, as ld does
+
+madc now refuses to link an executable that references a function no library of
+the link defines, printing `madc: <out>: undefined reference to `<name>'` for
+each and exiting nonzero. A function a `-l` library defines links, and so does
+one the C library defines; a shared object (`-shared`) may keep undefined
+references. The link opens its own libraries into the process scope before
+asking. Previously madc wrote the executable anyway (exit 0) and the dynamic
+loader refused it only at run time (exit 127), so every configure "does this
+function exist" link probe answered yes — SQLite's `tgetent` without a library
+and `localtime_s` both came out present. On `tests/testcli_undefined_reference`
+gcc 13 and clang 18 exit 1 on an undefined `madc_no_such_function`, link `cos`
+with `-lm` and `gmtime_r` from libc (rc 0), and build a `-shared` object with
+the undefined reference (rc 0); madc now matches. Closes the
+`aot_link_undefined_symbol_not_refused` gap.
+
 ### A C or C++ source before a gcc stage option is a compiler line
 
 madc now treats a C or C++ source (by extension) that is followed by a stage

@@ -2955,6 +2955,42 @@ static bool cir_static_libmadc_verify(const std::vector<madc::dis::istring> &imp
     return false;
 }
 
+// ld's refusal for a linked executable: an import no library of the link
+// defines. The answer is the link's own (cir_link_resolves: the JIT
+// resolver's names and the startup members), asked once the link's libraries
+// (`covers`) joined the process scope through the one opener,
+// madc_module_open — the JIT's -l open. A library that does not open here
+// leaves the question unanswered, so nothing is refused; a cross target's
+// libraries are not this host's, and its loader answers. True = refused
+// (each name printed).
+static bool cir_undefined_references(const std::vector<madc::dis::istring> &imports,
+				     const std::vector<std::string> &covers,
+				     const char *out_path)
+{
+#ifdef MADC_CROSS_TARGET
+    (void)imports;
+    (void)covers;
+    (void)out_path;
+    return false;
+#else
+    for (const std::string &c : covers) {
+	if (!madc_spelled_library_p(c))
+	    continue;	// a prefix cover stem (darwin's libsystem_), no file
+	std::string err;
+	if (!madc_module_open(c, err))
+	    return false;
+    }
+    size_t undefined = 0;
+    for (const madc::dis::istring &imp : imports)
+	if (!cir_link_resolves(imp.c_str())) {
+	    fprintf(stderr, "madc: %s: undefined reference to `%s'\n",
+		    out_path, imp.c_str());
+	    undefined++;
+	}
+    return undefined != 0;
+#endif
+}
+
 // Split the DT_NEEDED list around libmadc.so.0 (the covers for the
 // runtime-need predicates); returns whether it was present at all.
 static bool cir_split_needed(const std::vector<std::string> &needed,
@@ -3155,6 +3191,8 @@ static bool cir_write_native_image(MIR_context_t ctx, const char *out_path,
     bool have_madc = cir_split_needed(needed, other);
     std::vector<madc::dis::istring> imports;
     cir_ctx_unresolved_imports(ctx, imports);
+    if (!shared && cir_undefined_references(imports, other, out_path))
+	return false;
     // -static-libmadc: the ledger pull ran before the link, so the runtime is
     // IN the capture. Verify nothing madc-side is left over, then drop the
     // dependency unconditionally — that is the flag's whole promise.
@@ -3703,6 +3741,11 @@ int madc_cir_link_objects(const std::vector<std::string> &paths,
 	bool have_madc = cir_split_needed(needed, other);
 	std::vector<madc::dis::istring> imports;
 	cir_object_undef_names(obj, imports);
+	if (kind != mnkShared
+	    && cir_undefined_references(imports, other, out_path)) {
+	    MIR_object_destroy(obj);
+	    return -1;
+	}
 	// -static-libmadc: same contract as the source lanes — anything still
 	// uncovered is Tier B, so refuse loudly rather than keep a dependency
 	// the flag promised to remove. The usual cause here is the inputs'

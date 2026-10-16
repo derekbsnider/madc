@@ -1,0 +1,5 @@
+undefined: refused=1 named=1 built=0
+-lm: rc=0
+-lm run: rc=0
+libc: rc=0
+shared: rc=0

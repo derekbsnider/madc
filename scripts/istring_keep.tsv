@@ -4,7 +4,7 @@ src/lexer.cpp	253
 src/parser.cpp	417
 src/cir_builder.cpp	53
 src/cir_builder.h	16
-src/madc_cir.cpp	71
+src/madc_cir.cpp	74
 src/madc_cir.h	12
 src/cir_freeze.cpp	19
 src/cir_freeze.h	6
