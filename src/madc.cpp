@@ -570,6 +570,32 @@ static bool warning_selection_option(const char *arg)
     return strncmp(arg, "-Werror", 7) != 0;
 }
 
+// gcc's stage options: an artifact (-c, -shared, -r, -o) or a preprocess-only
+// stop (-E, -dM) — the arms native_artifact_requested() / preprocess_only()
+// are made of. A line holding one builds; it runs no program.
+static bool stage_option(const char *arg)
+{
+    static const char *const stages[] = { "-c", "-shared", "-r", "-o", "-E", "-dM" };
+    for ( const char *stage : stages )
+        if ( strcmp(arg, stage) == 0 )
+            return true;
+    return false;
+}
+
+// A C or C++ source (by extension) with a stage option AFTER it is a compiler
+// line, permuted as gcc's (configure's `cc -O2 x.c -o x -lm`). A madc script
+// keeps its argv: `madc tool.mad -o out` runs tool.mad (owner, 2026-10-16).
+static bool compiler_line_source(int argc, char **argv, int i)
+{
+    int64_t family = madc::file_kind_family(madc::file_kind_of_path(argv[i]));
+    if ( family != madc::fkC && family != madc::fkCPP )
+        return false;
+    for ( int j = i + 1; j < argc; j++ )
+        if ( stage_option(argv[j]) )
+            return true;
+    return false;
+}
+
 // The preprocess-only stop (-E / --dump-source, -dM): its text goes to the
 // file -o names, else stdout (gcc). -dM wins over -E, as in `gcc -dM -E`.
 static int write_preprocessed_output(Program &prog, bool macros, const char *path)
@@ -1403,11 +1429,13 @@ int main(int argc, char **argv)
                       << ")" << std::endl;
             return 1;
         } else if ( native_artifact_requested() || preprocess_only()
-                    || !artifact_operands.empty() ) {
+                    || !artifact_operands.empty()
+                    || compiler_line_source(argc, argv, i) ) {
             // An artifact lane runs no program, so nothing after its source
             // is a script's argv: options and operands interleave as gcc's
             // do (`-c x.c -fPIC -o x.o`; SQLite's `-o $@ -c x.c -I...`;
-            // ccache's `-E -o x.i x.c`; `-E x.c -o x.i`).
+            // ccache's `-E -o x.i x.c`; `-E x.c -o x.i`), and a C/C++ source
+            // with a stage option after it is one (`cc -O2 x.c -o x -lm`).
             // Once the lane has taken an operand, the rest of the line
             // stays its own.
             artifact_operands.push_back(argv[i]);

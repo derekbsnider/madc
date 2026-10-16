@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### A C or C++ source before a gcc stage option is a compiler line
+
+madc now treats a C or C++ source (by extension) that is followed by a stage
+option (`-c`, `-shared`, `-r`, `-o`, `-E`, `-dM`) as a gcc-style compiler line:
+options and operands permute as gcc's artifact lanes do, the source is
+compiled, and no program runs. A `.mad` script keeps its argv — `madc tool.mad
+-o out` runs `tool.mad` with `-o out` as its arguments (owner decision
+2026-10-16: C/C++ sources permute by extension only; a script's line stays the
+script's). Previously everything after the first source was the program's argv,
+so a plain `cc -O2 conftest.c -o conftest -lfoo` link probe ran conftest
+instead of building it — SQLite's configure probes for `gmtime_r` /
+`localtime_r` / `pthread_mutexattr_init` crashed, and its `readline` /
+`tgetent` probes never saw `-lreadline` / `-lncurses`. On
+`tests/testcli_compiler_line` gcc 13 and clang 18 build `cc -O2 main.c -o prog`
+and `cc probe.c -o probe -lm` without running them (rc 0), write `main.o` for
+`cc main.c -c -o main.o`, and the built `prog` prints `ran argc=1`; madc now
+matches.
+
 ### -E and -dM write their preprocessed text to the file -o names
 
 madc now sends its preprocess-only output — the `-E` / `--dump-source`
