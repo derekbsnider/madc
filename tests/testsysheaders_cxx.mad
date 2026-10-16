@@ -1,0 +1,35 @@
+// Every system header is in the pack (owner 2026-10-13): standard library
+// headers the frozen grove never lists, served from the pack's source arm on a
+// machine with no headers on disk — libstdc++ and libc++ alike. The lines are
+// g++'s and clang++'s.
+#include <cstdio>
+#include <numeric>
+#include <stack>
+#include <vector>
+#include <ratio>
+#include <cfloat>
+#include <cassert>
+#include <cinttypes>
+
+int main()
+{
+	std::vector<int> v;
+	for (int i = 1; i <= 4; ++i)
+		v.push_back(i);
+	std::printf("numeric: %d\n", std::accumulate(v.begin(), v.end(), 0));
+
+	std::stack<int, std::vector<int> > st;
+	st.push(4);
+	st.push(8);
+	st.pop();
+	std::printf("stack: %d %zu\n", st.top(), st.size());
+
+	std::printf("ratio: %d %d\n", (int)std::ratio<6, 4>::num,
+		    (int)std::ratio<6, 4>::den);
+	std::printf("cfloat: %d\n", FLT_RADIX);
+
+	assert(st.size() == 1);
+	std::uint64_t big = 12345678901234ull;
+	std::printf("cinttypes: %" PRIu64 "\n", big);
+	return 0;
+}

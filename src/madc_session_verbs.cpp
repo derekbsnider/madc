@@ -76,12 +76,20 @@ madc::value reply_row(const SessionClient::Reply &r)
     f["seq"] = madc::value((int64_t)r.seq);
     switch ( r.kind )
     {
-	case madc::session_reply::running:	// the kind and the seq say it all
+	case madc::session_reply::running:
+	    // A rebuild's entry: its text, for the transcript ("" for an
+	    // offered entry, which the host has).
+	    f["entry"] = madc::value(r.entry);
 	    break;
 	case madc::session_reply::offer:
+	case madc::session_reply::replayed:	// a rebuild's entry: an offer's fields
 	    f["state"] = madc::value((int64_t)r.state);
 	    f["ok"] = madc::value(r.ok);
 	    f["shown"] = madc::value(r.shown);
+	    // Its code (`%type`'s type, `%pinfo`'s declarations), as the CLI
+	    // paints it (madc::theme_paint): [{ from, to }] when there is any.
+	    if ( !r.shown_code.empty() )
+		f["shown_code"] = ns_common::code_ranges_value(r.shown_code);
 	    f["rendered"] = madc::value(r.rendered);
 	    f["submitted"] = madc::value((int64_t)r.submitted);
 	    f["diagnostics"] = reply_diagnostics(r);
@@ -140,6 +148,18 @@ madc::value reply_row(const SessionClient::Reply &r)
 	case madc::session_reply::check:
 	    f["ok"] = madc::value(r.ok);
 	    f["shown"] = madc::value(r.shown);
+	    f["rendered"] = madc::value(r.rendered);
+	    f["diagnostics"] = reply_diagnostics(r);
+	    break;
+	case madc::session_reply::edited:
+	    f["ok"] = madc::value(r.ok);
+	    f["rendered"] = madc::value(r.rendered);
+	    f["diagnostics"] = reply_diagnostics(r);
+	    break;
+	case madc::session_reply::rebuild:
+	    f["ok"] = madc::value(r.ok);
+	    f["main"] = madc::value(r.defines_main);	// the buffer's main ran
+	    f["status"] = madc::value((int64_t)r.status);
 	    f["rendered"] = madc::value(r.rendered);
 	    f["diagnostics"] = reply_diagnostics(r);
 	    break;
@@ -218,26 +238,48 @@ int64_t session_bindings(int64_t handle)
     return s ? (int64_t)s->client.bindings() : 0;
 }
 
-// session_run's and session_call's one request: argv as strings.
-static int64_t run_request(int64_t handle, value &argv, bool call)
+// A request's argv as strings (a non-string element is "").
+static std::vector<std::string> argv_strings(value &argv)
+{
+    std::vector<std::string> args;
+    for ( const value &a : argv.as_array() )
+	args.push_back(a.is_string() ? a.as_string() : std::string());
+    return args;
+}
+
+// session_run's and session_call's one request.
+static int64_t run_request(int64_t handle, value &argv,
+			   SessionClient::RunRequest what)
 {
     SessionHandle *s = session_of(handle);
     if ( !s || !argv.is_array() )
 	return 0;
-    std::vector<std::string> args;
-    for ( const value &a : argv.as_array() )
-	args.push_back(a.is_string() ? a.as_string() : std::string());
-    return (int64_t)s->client.run(args, call);
+    return (int64_t)s->client.run(argv_strings(argv), what);
 }
 
 int64_t session_run(int64_t handle, value &argv)
 {
-    return run_request(handle, argv, false);
+    return run_request(handle, argv, SessionClient::RunRequest::main);
 }
 
 int64_t session_call(int64_t handle, value &argv)
 {
-    return run_request(handle, argv, true);
+    return run_request(handle, argv, SessionClient::RunRequest::call);
+}
+
+int64_t session_rebuild(int64_t handle, const char *text, value &argv)
+{
+    SessionHandle *s = session_of(handle);
+    if ( !s || !argv.is_array() )
+	return 0;
+    return (int64_t)s->client.rebuild(text ? text : "", argv_strings(argv));
+}
+
+int64_t session_edited(int64_t handle, const char *before, const char *after)
+{
+    SessionHandle *s = session_of(handle);
+    return s ? (int64_t)s->client.edited(before ? before : "", after ? after : "")
+	     : 0;
 }
 
 int64_t session_build(int64_t handle, const char *path, const char *text,

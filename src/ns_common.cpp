@@ -18,6 +18,7 @@
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
 
 #include "ns_common.h"
+#include "highlight_class.h"	// code_range: a shown text's code
 #include "rt/rt_format.h"	// __madc_fmt_shortest_text: the carrier's real text
 
 namespace ns_common {
@@ -240,6 +241,41 @@ bool value_to_string_no_real(const madc::value &v, std::string &out)
 		return true;
 	}
 	return false;
+}
+
+madc::value code_ranges_value(const std::vector<madc::code_range> &code)
+{
+	std::vector<madc::value> rows;
+	for ( const madc::code_range &r : code )
+	{
+		std::map<std::string, madc::value> f;
+		f["from"] = madc::value((int64_t)r.from);
+		f["to"] = madc::value((int64_t)r.to);
+		rows.push_back(madc::value::make_object(f));
+	}
+	return madc::value::make_array(rows);
+}
+
+void code_ranges_of(const madc::value &rows, std::vector<madc::code_range> &out)
+{
+	out.clear();
+	if ( !rows.is_array() )
+		return;
+	for ( const madc::value &row : rows.as_array() )
+	{
+		if ( !row.is_object() )
+			continue;
+		const std::map<std::string, madc::value> &o = row.as_object();
+		std::map<std::string, madc::value>::const_iterator f = o.find("from");
+		std::map<std::string, madc::value>::const_iterator t = o.find("to");
+		if ( f == o.end() || t == o.end() || !f->second.is_integer()
+		     || !t->second.is_integer() )
+			continue;
+		const int64_t from = f->second.as_integer(), to = t->second.as_integer();
+		if ( from < 0 || to < from )
+			continue;
+		out.push_back(madc::code_range{ (size_t)from, (size_t)to });
+	}
 }
 
 static void report_kind_mismatch(const madc::value &v, const char *who,

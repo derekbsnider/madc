@@ -1,0 +1,46 @@
+// madc's colour theme through its host face (<ns_madc_host>): a host colours
+// what `madc -i` colours, with the CLI's own code (.claude/rules/
+// dialect-faces.md). `:%p` over a C buffer carries the bytes it prints from
+// the buffer (shown_code); theme_paint colours them as the CLI prints them —
+// the built-in default: `int` and `return` bold, the number cyan, the
+// comment green, the rest plain — and leaves text with no code as it is.
+// theme_styles reads a scheme's text: a refined class it leaves unnamed holds
+// its parent's style, a chrome piece keeps its own, `@scope` lines are the
+// host's; a name no class or chrome piece has is refused with its line.
+// Oracle: madc -i's `:%p` on the same buffer paints through the same
+// madc::theme_paint (madc_repl.cpp colon_report); the SGR bytes are
+// madcdis/ui_sgr.h's at truecolor.
+// The test removes what it creates.
+int main()
+{
+    const char *path = "tmp/testex_theme.c";
+    php::file_put_contents(path, "int v = 7; // seven\nreturn v;\n");
+    long w = ui::world_new();
+    long d = ui::doc_open(w, path);
+    madc::ex_session ex(w);
+    ex.use(d);
+    var r;
+    ex.run(r, "%p");
+    var code = r["shown_code"];
+    println("shown_code: {}", js::stringify(code));
+    var painted;
+    madc::theme_paint(painted, "", r["shown"].c_str(), code, (long)madc::fkC11);
+    println("painted: {}", js::stringify(painted));
+    var none = {};
+    var plain;
+    madc::theme_paint(plain, "", "int x;\n", none, 0);
+    println("no code: {}", js::stringify(plain));
+    var st;
+    var why;
+    bool ok = madc::theme_styles(st, why,
+	"keyword bold yellow\nstring #ce9178\n@gui bg #000000\ndivider #444444\n");
+    println("styles: ok={} {}", ok ? 1 : 0, js::stringify(st));
+    ok = madc::theme_styles(st, why, "keyword bold\nnosuchclass red\n");
+    println("refused: ok={} why={} empty={}", ok ? 1 : 0, why, st.is_null() ? 1 : 0);
+    var def;
+    madc::theme_styles(def, why, "");
+    println("default: {}", js::stringify(def));
+    ui::world_close(w);
+    php::unlink(path);
+    return 0;
+}

@@ -1,0 +1,55 @@
+# forest_pack_crt_windows.txt — the Windows source arm's EXTRA roots: the
+# Microsoft C runtime's own headers (the CRT reference's header set), which a
+# Windows C program includes and no glibc header name covers. The source arm
+# packs these, every glibc header name mingw-w64 also ships, and what all of
+# them include (scripts/forest_pack_sources.sh windows) — never windows.h and
+# the Windows API it pulls (owner 2026-10-13: "some additional headers than
+# the other platforms, but not the full 10mb (uncompressed) worth").
+# One header name per line, relative to the target's C include dir.
+conio.h
+corecrt.h
+corecrt_startup.h
+corecrt_stdio_config.h
+corecrt_wstdlib.h
+crtdbg.h
+crtdefs.h
+dir.h
+direct.h
+dos.h
+excpt.h
+fpieee.h
+io.h
+malloc.h
+mbctype.h
+mbstring.h
+mem.h
+memory.h
+process.h
+setjmpex.h
+share.h
+stdexcpt.h
+stralign.h
+tchar.h
+uchar.h
+utime.h
+xlocinfo.h
+xmath.h
+ymath.h
+yvals.h
+sys/file.h
+sys/locking.h
+sys/param.h
+sys/timeb.h
+sys/unistd.h
+sys/utime.h
+sec_api/conio_s.h
+sec_api/crtdbg_s.h
+sec_api/mbstring_s.h
+sec_api/search_s.h
+sec_api/stdio_s.h
+sec_api/stdlib_s.h
+sec_api/stralign_s.h
+sec_api/string_s.h
+sec_api/tchar_s.h
+sec_api/wchar_s.h
+sec_api/sys/timeb_s.h

@@ -279,7 +279,7 @@ Integration tests live in `tests/*.mad`. Unit tests in `tests/unit/`.
 Per-test stdin / argv / expected-output fixtures live next to each
 `.mad` file via the filename convention in
 `.claude/rules/test-fixtures.md`. Current pass counts live in
-`docs/test-status.md` and `README.md` — never hard-coded in these
+`docs/test-status.md` — never in `README.md`, and never hard-coded in these
 instructions.
 
 A test with a sibling `tests/<name>.helper` fixture (e.g.
@@ -405,6 +405,7 @@ no matter how small.
 | [dialect-literals.md](.claude/rules/dialect-literals.md) | 24 | In dialect PRODUCTION code (`tools/`), build objects with literals `var x = { "k": v };` — never a bare `var x;` filled field-by-field; imperative key-assign is for MUTATION / computed keys / indices; gated by madcide's `check-dialect-literals.sh` |
 | [enum-over-strings.md](.claude/rules/enum-over-strings.md) |  32 | Enums (not chars/strings) for type/category discriminators; convert C-string node names to enums at the boundary |
 | [thread-safety.md](.claude/rules/thread-safety.md) | 22 | OWNER LAW: every language addition STATES its thread-safety contract (C++ stdlib convention default); shared mutation routes through the hub/verbs; no new bare mutable globals |
+| [dialect-faces.md](.claude/rules/dialect-faces.md) | 22 | OWNER LAW: what madc builds for itself is exposed in the dialect (madcdis precedent) — a host calls madc's code, never a copy; a move into madc is done when the host's copy is deleted; registry `scripts/dialect_faces.tsv`, gated by `check-dialect-faces.sh` |
 
 ### P3 — Build, test, and validation (gate "done")
 
@@ -433,17 +434,17 @@ editing — don't try to memorize all of them.
 | [clang-methodology.md](.claude/rules/clang-methodology.md) | 46 | Same methodology against clang, the co-equal canon; cross-check lowering with both gcc and clang |
 | [debug.md](.claude/rules/debug.md)               |    18 | `DBG(x)` macro usage and rules                 |
 | [c11-transpiler.md](.claude/rules/c11-transpiler.md) | 70 | `--emit=c11` lowers every C++ feature to strict C11; c2mir limits, lowering patterns, emission hygiene |
-| [embedded-headers.md](.claude/rules/embedded-headers.md) |  75 | `include/madc/` headers, lazy registration, `#load`, real return types (signed `int` libc fns), a fragment's namespace-scope variables `inline` (gated) |
+| [embedded-headers.md](.claude/rules/embedded-headers.md) | 103 | **OWNER LAW: the release madc reads the standard core system headers from libmadc, never /usr/include** (only `--no-embedded-headers` sends them to disk; gated by `check-system-headers-from-libmadc.sh`); `include/madc/` headers, lazy registration, `#load`, real return types (signed `int` libc fns), a fragment's namespace-scope variables `inline` (gated) |
 | [gcc-parity.md](.claude/rules/gcc-parity.md)     |    15 | GCC as a reference baseline (verbose `-fverbose-asm` disassembly) for codegen / type / runtime parity |
 | [clang-parity.md](.claude/rules/clang-parity.md) |    16 | clang as the co-equal reference baseline (second lowering opinion); both gcc and clang are canon |
 | [indirection.md](.claude/rules/indirection.md) |   114 | **ONE owner per layered-pointer/reference concern**, indexed: the `*` operand is `parseCastExpression` (the engine, bounded) + `build_indirection` (gated by `check-one-deref-builder.sh`); an operand's value + integer promotions (`operand_value_type` / `promoted_operand_type`, gated), type minting/peeling, an array operand's element (`array_operand_element_type`), decay, declarators, symbol counting (angle brackets → `delimiter-tracking.md`) |
 
 ### Total rule footprint
 
-- **36 rules, 1288 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
+- **37 rules, 1339 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
 - **This file (AGENTS.md): ~487 lines** — loaded by Claude via
   `@AGENTS.md` in `CLAUDE.md`, read directly by Codex / Gemini / etc.
-- **Grand total loaded by Claude Code per turn: ~1790 lines.**
+- **Grand total loaded by Claude Code per turn: ~1841 lines.**
 
 Rule bloat ages: if any tier exceeds a few hundred lines, split the
 heaviest rule into a narrower sub-rule or move more content into the

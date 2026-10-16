@@ -26,7 +26,11 @@
 #   7  -r merge: two .o -> one .o that BOTH linkers still accept, and whose
 #      image matches the direct two-TU link
 #   8  a global constructor's init entry rides __mod_init_func, and both
-#      linkers keep the section (dyld runs the initializer from it)
+#      linkers keep the section (dyld runs the initializer from it); the
+#      section is clang's (__DATA, S_MOD_INIT_FUNC_POINTERS: Apple's ld 1167
+#      typed a __DATA_CONST input S_REGULAR, so dyld ran no initializer), and
+#      the object leaves ___dso_handle undefined (ld64 keeps an object's
+#      definition over the image's mach header, so dlclose ran no destructor)
 #
 # The cross madcs, ld64.lld-18 / llvm-*-18 and the macOS SDK are container
 # artifacts, so the gate SKIPS (rc 0) when any is missing and says which.
@@ -117,6 +121,7 @@ class Counter
 public:
 	int n;
 	Counter() { n = 7; }
+	~Counter() { n = 0; }
 };
 
 Counter g;
@@ -300,6 +305,17 @@ sys.exit(0 if any(want <= v < want + max(size, 1) for v in slots) else 1)
 		else
 			fail "[8] no __mod_init_func section in the object"
 		fi
+		init_sec=$(llvm-otool-18 -l "$P/ctor.o" 2>/dev/null | awk '
+			/sectname __mod_init_func/ { on = 1 }
+			on && /segname/ { seg = $2 }
+			on && /flags/ { print seg, $2; exit }')
+		[ "$init_sec" = "__DATA 0x00000009" ] \
+			&& pass "[8] the init section is clang's: __DATA, S_MOD_INIT_FUNC_POINTERS" \
+			|| fail "[8] the init section is '$init_sec', not clang's '__DATA 0x00000009'"
+		llvm-nm-18 -m "$P/ctor.o" 2>/dev/null \
+			| grep -q "(undefined) external ___dso_handle" \
+			&& pass "[8] the object leaves ___dso_handle to the linker" \
+			|| fail "[8] the object defines ___dso_handle (ld64 keeps it over the image's mach header)"
 		run "$MADC" -o "$P/ctorprog" "$P/ctor.o" >/dev/null 2>&1 \
 			&& pass "[8] madc links the ctor object" \
 			|| fail "[8] madc refused the ctor object"

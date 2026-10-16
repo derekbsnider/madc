@@ -249,8 +249,9 @@ cmd_archive() {
 # <dir>, built the way every release tree was — the dev build THEN release
 # (through v0.100.1 the release link resolved -lmadc in lib/, where only a dev
 # build leaves a libmadc.so: src/Makefile CLI_LINK). `symbols` keeps them: a
-# no-op strip shadows strip(1) and the forest pack is skipped (WITH_FOREST=none),
-# so callgrind can name every function.
+# no-op strip shadows strip(1) and the system-header pack is skipped
+# (WITH_FOREST=none: from 0.105.0 only the dialect-only container rides), so
+# callgrind can name every function.
 build_release() {
 	local c="$1" b="$2" log="$3" sym="${4:-}" path="$PATH" extra=""
 	rm -rf "$b"; mkdir -p "$b" || return 1

@@ -1,9 +1,10 @@
 // A program whose only dialect word is ui::WEB, the UI level it asks for:
 // the auto-include serves <ns_ui_web> (the target that registers the level's
 // host), and that fragment's own mentions of the dialect intrinsics
-// (`println(stderr, ...)`) pull bits/std_format ahead of it. A fragment's
-// unqualified mention reaches an intrinsic provider (bits/*); only a sibling
-// namespace surface (ns_*) needs a qualified use (`madc::x`).
+// (`println(stderr, ...)`) resolve to the compiler-declared intrinsics, its
+// `stderr` pulling stdio.h. A fragment's unqualified mention reaches a bits/*
+// provider; only a sibling namespace surface (ns_*) needs a qualified use
+// (`madc::x`).
 // Before the fix the program was refused: "ns_ui_web:117:6: use of
 // undeclared identifier 'println'", unless the program itself happened to
 // say print/println/format. So this program says none of them: its output is

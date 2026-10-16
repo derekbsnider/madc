@@ -48,8 +48,15 @@ class Madc < Formula
     # appended to it: pouring a bottle rewrites each ELF file's RPATH, and
     # the rewrite appends to the image, past an appended container's footer.
     system "./configure", "--enable-madcdat=no", "--with-forest=sidecar"
-    system "make", "-C", "src", "-j#{ENV.make_jobs}", runpath
-    system "make", "-C", "src", "-j#{ENV.make_jobs}", "release", runpath
+    # madc's system include table records the compiler's own search list
+    # (HOSTTAB_CXX probes it). The build's compiler shim puts the prefix's
+    # include dir and keg-only dependencies' ahead of that list, so the probe
+    # runs without them: the installed madc searches what the compiler
+    # searches, and --no-sysroot-includes cuts after the compiler-owned dir.
+    hosttab = []
+    hosttab << "HOSTTAB_CXX=env HOMEBREW_ISYSTEM_PATHS= HOMEBREW_INCLUDE_PATHS= $(CXX)" if OS.linux?
+    system "make", "-C", "src", "-j#{ENV.make_jobs}", runpath, *hosttab
+    system "make", "-C", "src", "-j#{ENV.make_jobs}", "release", runpath, *hosttab
     system "scripts/stage_install.sh", prefix, "lib", ""
   end
 

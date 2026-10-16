@@ -2,7 +2,11 @@
 // slice 2; the cores of %load and %run, D25): the text is one unit named by
 // its path, main runs with the argv given and prints before its reply, and
 // the entries that follow call its functions. A refused text cites its path
-// and leaves the session as it was.
+// and leaves the session as it was. session_edited reads a changed REPL
+// buffer entry again (the live reparse); session_rebuild runs a REPL buffer
+// again in a restarted backend (Restart and Run All): its lines taken as
+// typed — an entry over several lines, an if taking its else — each entry
+// announced with its text, then main, unless an entry named main.
 
 // The next reply, passing over running notices; the program's output
 // printed before it is appended to `out`.
@@ -22,6 +26,33 @@ long next_reply(var &r, long h, var &out)
 	    return got;
 	var fired;
 	madc::chan_select(fired, cases);
+    }
+}
+
+// A rebuild's rows up to its answer: each entry's text (its running row)
+// into `entries`, each replayed row's shown value into `shown`; the
+// program's output appended to `out`.
+void rebuild_reply(var &r, long h, var &out, var &entries, var &shown)
+{
+    var cases;
+    cases[0] = madc::session_readable(h);
+    for ( ;; )
+    {
+	long got = madc::session_poll(r, h);
+	var o;
+	madc::session_output(o, h);
+	out = format("{}{}", out, o);
+	if ( got != 0 && r["kind"] == madc::session_reply::running )
+	    entries.push(r["entry"]);
+	else if ( got != 0 && r["kind"] == madc::session_reply::replayed )
+	    shown.push(r["shown"]);
+	else if ( got != 0 )
+	    return;
+	else
+	{
+	    var fired;
+	    madc::chan_select(fired, cases);
+	}
     }
 }
 
@@ -64,6 +95,58 @@ int main()
     madc::session_offer(h, "triple(14) + before", true);
     next_reply(r, h, out);
     println("entry: {}", r["shown"]);
+
+    madc::session_offer(h, "int scale = 2;", true);
+    next_reply(r, h, out);
+    madc::session_edited(h, "int scale = 2;\n", "int scale = 7;\n");
+    next_reply(r, h, out);
+    println("edited: edited={} ok={}", r["kind"] == madc::session_reply::edited,
+	    r["ok"]);
+    madc::session_offer(h, "scale", true);
+    next_reply(r, h, out);
+    println("after the edit: {}", r["shown"]);
+
+    var rebuilt = {};
+    rebuilt.push("[REPL]");
+    madc::session_restart(h, "c17");
+    out = "";
+    var entries = {};
+    var shown = {};
+    madc::session_rebuild(h,
+	"int count = 2;\n"
+	"int twice(int v)\n"
+	"{\n"
+	"    return 2 * v;\n"
+	"}\n"
+	"\n"
+	"if ( count > 5 ) count = 0;\n"
+	"else count = twice(count);\n"
+	"#include <stdio.h>\n"
+	"int main(int argc, char **argv)\n"
+	"{\n"
+	"    printf(\"main ran: argc=%d last=%s count=%d\\n\", argc, argv[argc - 1], count);\n"
+	"    return 5;\n"
+	"}\n"
+	"count\n", rebuilt);
+    rebuild_reply(r, h, out, entries, shown);
+    println("rebuilt: rebuild={} ok={} main={} status={} entries={} replayed={}",
+	    r["kind"] == madc::session_reply::rebuild, r["ok"], r["main"],
+	    r["status"], php::count(entries), php::count(shown));
+    println("third entry: {}", entries[2]);
+    println("last shown: {}", shown[5]);
+    print("rebuilt: {}", out);
+
+    madc::session_restart(h, "c17");
+    out = "";
+    entries = {};
+    shown = {};
+    madc::session_rebuild(h,
+	"#include <stdio.h>\n"
+	"int main(void) { printf(\"once\\n\"); return 0; }\n"
+	"main();\n", rebuilt);
+    rebuild_reply(r, h, out, entries, shown);
+    println("named, not run again: ok={} main={} runs={}", r["ok"], r["main"],
+	    python::count(out.c_str(), "once"));
     madc::session_close(h);
     return 0;
 }

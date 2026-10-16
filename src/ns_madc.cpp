@@ -27,6 +27,7 @@
 #include "ns_common.h"
 #include "libmadc/sysinfo.h"
 #include "madc_lang.h"		// doc_parse + doc_*: the language services over a document
+#include "madc_theme.h"		// theme_styles + theme_paint: the CLI's reader and painter
 #include "madc_diag_names.h"	// doc_diagnostics: the severity / phase names
 #include "madc_posix_io.h"	// get_host_name (host-facts seam)
 #if defined(_WIN32)
@@ -450,6 +451,58 @@ value &doc_spans(value &out, int64_t w, int64_t entity)
 	rows.push_back(value::make_object(f));
     }
     out = value::make_array(rows);
+    return out;
+}
+
+// madc's colour theme as a host reads it (<ns_madc_host>): the CLI's own
+// reader and painter (madc_theme.h). The theme `text` spells; "" = the
+// built-in default. False: the reader refused it (`why` the line).
+static bool host_theme(const char *text, theme &out, std::string &why)
+{
+    if ( !text || !*text )
+    {
+	out = theme_default();
+	return true;
+    }
+    return theme_read(text, out, why);
+}
+
+bool theme_styles(value &out, value &why, const char *theme_text)
+{
+    out = value();
+    why = value();
+    theme t;
+    std::string err;
+    if ( !host_theme(theme_text, t, err) )
+    {
+	why = value(err);
+	return false;
+    }
+    std::map<std::string, value> syntax, chrome;
+    for ( size_t i = 0; i < highlight_class_count; ++i )
+	if ( !t.syntax[i].is_normal() )
+	    syntax[highlight_class_name((HighlightClass)i)] = value(hub::ui_style_spec(t.syntax[i]));
+    for ( size_t i = 0; i < (size_t)hub::tui_chrome::count; ++i )
+	if ( t.chrome_named[i] )
+	    chrome[hub::tui_chrome_name((hub::tui_chrome)i)] = value(hub::ui_style_spec(t.chrome[i]));
+    std::map<std::string, value> f;
+    f["syntax"] = value::make_object(syntax);
+    f["chrome"] = value::make_object(chrome);
+    out = value::make_object(f);
+    return true;
+}
+
+value &theme_paint(value &out, const char *theme_text, const char *text,
+		   value &code, int64_t standard)
+{
+    theme t;
+    std::string err;
+    if ( !host_theme(theme_text, t, err) )
+	t = theme_default();
+    std::vector<code_range> ranges;
+    ns_common::code_ranges_of(code, ranges);
+    out = value(theme_paint(t, std::string(text ? text : ""), ranges, standard,
+			    hub::ui_colour_depth::truecolor));
     return out;
 }
 

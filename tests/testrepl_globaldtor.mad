@@ -1,0 +1,6 @@
+// A session's objects with static storage duration are destroyed when the
+// session ends, the last constructed first, as when a program exits. The
+// destructors write the order into `trace`; `last`, defined first, ends last
+// and prints it. madc's session ended without destroying them.
+#include <stdio.h>
+#include <string.h>

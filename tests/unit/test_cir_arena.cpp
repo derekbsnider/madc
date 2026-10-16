@@ -591,14 +591,13 @@ TEST_CASE("B3 arena: REAL byte round-trip through the snapshot container (not a 
 			      a.defs.data(), a.defs.size() * sizeof(uint32_t), PchCompression::None));
 	REQUIRE(w.add_segment(2, SNAP_KIND_CONSUMER + 1,
 			      a.payload.data(), a.payload.size() * sizeof(uint32_t), PchCompression::None));
+	std::vector<char> sbytes;
+	std::vector<uint32_t> soffs;
+	a.strings.frozen_blocks(sbytes, soffs);
 	REQUIRE(w.add_segment(3, SNAP_KIND_INTERN_BYTES,
-			      a.strings.bytes_data(), a.strings.bytes_size(), PchCompression::None));
-	REQUIRE(w.add_segment(4, SNAP_KIND_INTERN_ENTRIES,
-			      a.strings.entries_data(),
-			      a.strings.entries_size() * sizeof(intern_table::Entry), PchCompression::None));
-	REQUIRE(w.add_segment(5, SNAP_KIND_INTERN_BUCKETS,
-			      a.strings.buckets_data(),
-			      a.strings.buckets_size() * sizeof(uint32_t), PchCompression::None));
+			      sbytes.data(), sbytes.size(), PchCompression::None));
+	REQUIRE(w.add_segment(4, SNAP_KIND_INTERN_OFFSETS,
+			      soffs.data(), soffs.size() * sizeof(uint32_t), PchCompression::None));
 	std::vector<uint8_t> blob;
 	REQUIRE(w.build(blob));
 	CHECK(blob.size() > 0);
@@ -612,11 +611,10 @@ TEST_CASE("B3 arena: REAL byte round-trip through the snapshot container (not a 
 	std::vector<uint32_t>            defs2  = read_seg<uint32_t>(rd, 1);
 	std::vector<uint32_t>            pay2   = read_seg<uint32_t>(rd, 2);
 	std::vector<char>                ibytes = read_seg<char>(rd, 3);
-	std::vector<intern_table::Entry> ients  = read_seg<intern_table::Entry>(rd, 4);
-	std::vector<uint32_t>            ibkts  = read_seg<uint32_t>(rd, 5);
+	std::vector<uint32_t>            ioffs  = read_seg<uint32_t>(rd, 4);
 
 	FrozenDefArena f;
-	f.strings.bind(ibytes.data(), ibytes.size(), ients.data(), ients.size(), ibkts.data(), ibkts.size());
+	f.strings.bind(ibytes.data(), ibytes.size(), ioffs.data(), ioffs.size());
 	REQUIRE(f.strings.valid());		// structural gate over the reloaded intern blocks
 	f.bind_defs(defs2.data(), defs2.size());
 	f.bind_payload(pay2.data(), pay2.size());
@@ -657,6 +655,27 @@ TEST_CASE("B3 arena: REAL byte round-trip through the snapshot container (not a 
 	REQUIRE(f.get_word(gr.slots_begin, 1, s1));
 	CHECK(std::string(f.c_str(s0)) == "foo");
 	CHECK(std::string(f.c_str(s1)) == "bar");
+
+	// ---- v60: the records re-laid in reverse slot order behind a position map (the
+	//      pack's layout pass) read back the same records; a slot past the map is absent ----
+	const size_t stride = DefArena::def_stride();
+	const size_t nslots = defs2.size() / stride;
+	std::vector<uint32_t> rdefs(defs2.size()), rpos(nslots);
+	for ( size_t sl = 0; sl < nslots; ++sl ) {
+		rpos[sl] = (uint32_t)(nslots - 1 - sl);
+		memcpy(&rdefs[rpos[sl] * stride], &defs2[sl * stride], stride * sizeof(uint32_t));
+	}
+	FrozenDefArena g;
+	g.strings.bind(ibytes.data(), ibytes.size(), ioffs.data(), ioffs.size());
+	g.bind_defs(rdefs.data(), rdefs.size());
+	g.bind_def_positions(rpos.data(), rpos.size());
+	g.bind_payload(pay2.data(), pay2.size());
+	defrec laid;
+	REQUIRE(g.get_def_at(tid, laid));
+	CHECK(memcmp(&laid, &cr, sizeof cr) == 0);
+	REQUIRE(g.get_def_at(md.func_id, laid));
+	CHECK(laid.kind == DK_FUNC);
+	CHECK_FALSE(g.get_def_at(arena_id_of((uint32_t)nslots), laid));
 
 	delete mv;
 	delete fd;

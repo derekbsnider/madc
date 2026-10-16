@@ -1,0 +1,1 @@
+macOS 14 libSystem has no at_quick_exit/quick_exit (dyld: Symbol not found: _at_quick_exit from the clang oracle too); macOS 15 runs it

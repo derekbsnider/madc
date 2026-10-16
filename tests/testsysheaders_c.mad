@@ -1,0 +1,59 @@
+/* Every system header is in the pack (owner 2026-10-13): POSIX headers the
+   frozen grove never includes, one per family, served from the pack's source
+   arm on a machine with no headers on disk. The lines are gcc's and clang's. */
+#include <stdio.h>
+#include <string.h>
+#include <poll.h>
+#include <sys/mman.h>
+#include <regex.h>
+#include <sys/utsname.h>
+#include <fnmatch.h>
+#include <sys/resource.h>
+#include <inttypes.h>
+#include <libgen.h>
+#include <search.h>
+
+static int cmp(const void *a, const void *b)
+{
+	return *(const int *)a - *(const int *)b;
+}
+
+int main(void)
+{
+	struct pollfd pfd = { -1, POLLIN, 0 };
+	printf("poll: %d\n", poll(&pfd, 1, 0));
+
+	char *p = mmap(NULL, 4096, PROT_READ | PROT_WRITE,
+		       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	strcpy(p, "mapped");
+	printf("mmap: %s\n", p);
+	printf("munmap: %d\n", munmap(p, 4096));
+
+	regex_t re;
+	regcomp(&re, "^a+b$", REG_EXTENDED | REG_NOSUB);
+	printf("regex: %d %d\n", regexec(&re, "aaab", 0, NULL, 0),
+	       regexec(&re, "ba", 0, NULL, 0) == REG_NOMATCH);
+	regfree(&re);
+
+	struct utsname u;
+	printf("uname: %d %d\n", uname(&u), u.sysname[0] != 0);
+
+	printf("fnmatch: %d %d\n", fnmatch("*.mad", "test.mad", 0),
+	       fnmatch("*.c", "test.mad", 0) == FNM_NOMATCH);
+
+	struct rlimit rl;
+	printf("rlimit: %d\n", getrlimit(RLIMIT_NOFILE, &rl));
+
+	uint64_t big = UINT64_C(12345678901234);
+	printf("inttypes: %" PRIu64 "\n", big);
+
+	char path[] = "/usr/lib/libx.so";
+	printf("libgen: %s\n", basename(path));
+
+	int keys[] = { 3, 1, 2 };
+	size_t n = 3;
+	int key = 2;
+	int *hit = lfind(&key, keys, &n, sizeof keys[0], cmp);
+	printf("search: %d\n", (int)(hit - keys));
+	return 0;
+}

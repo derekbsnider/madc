@@ -1,0 +1,41 @@
+// A shared object madc built, unloaded before the program exits: its
+// objects' destructors run at the unload, while its code is mapped, and the
+// program then exits cleanly. An image's fini finalizes the handlers it
+// registered (crtbegin.o's __do_global_dtors_aux under ld.so's dlclose,
+// mingw's dllcrt at DLL_PROCESS_DETACH); madc's images carried none, so the
+// destructor never ran at the unload and exit() called into the unmapped
+// library (SIGSEGV).
+// Oracle: g++ 13 and clang++ 18, `-shared -fPIC` over the same object and a
+// dlopen + dlclose host: the destructor runs at dlclose, the exit is clean.
+typedef long (*value_fn)(void);
+
+int main()
+{
+	var dir = "tmp/testbuild_shared_unload";
+	php::mkdir(dir.c_str());
+	var mark = format("{}/closed", dir);
+	var src = format("{}/madc_su.mad", dir);
+	php::file_put_contents(src.c_str(), format("{}{}{}",
+		"struct Mark { long v; ~Mark() { php::file_put_contents(\"",
+		mark,
+		"\", \"done\"); } };\n"
+		"Mark mark{7};\n"
+		"extern \"C\" long madc_su_value() { return mark.v; }\n"));
+	var lib = format("{}/madc_su{}", dir, madc::library_suffix());
+	var d;
+	bool ok = madc::build_native(d, src.c_str(), "shared", lib.c_str());
+	println("built: {}", ok ? 1 : 0);
+	var why;
+	int64_t h = madc::library_open(format("./{}", lib), why);
+	value_fn vf = (value_fn)madc::library_symbol(h, "madc_su_value");
+	println("value {}", vf ? vf() : -1);
+	println("before close: {}", php::file_exists(mark.c_str()) ? 1 : 0);
+	madc::library_close(h);
+	println("after close: {}", php::file_exists(mark.c_str()) ? 1 : 0);
+	php::unlink(mark.c_str());
+	php::unlink(lib.c_str());
+	php::unlink(src.c_str());
+	php::rmdir(dir.c_str());
+	println("exiting");
+	return 0;
+}

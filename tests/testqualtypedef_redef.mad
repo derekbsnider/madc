@@ -1,0 +1,11 @@
+// Redefining a file-scope object whose type is a QUALIFIED typedef name
+// (`std::string a` twice) is reported at the second declaration: a type
+// name's token is a copy placed at its use, qualified or not. It was the
+// typedef's own registered token — the header's place (<bits/stringfwd.h>:77)
+// when <string> parses, no place at all ("0:0") when it binds from the pack
+// (BUGS.md B94). Oracle: g++ 13 and clang++ 18 reject line 10 ("redefinition
+// of 'std::string a'").
+#include <string>
+std::string a = "x";
+std::string a = "y";
+int main() { return 0; }

@@ -67,6 +67,10 @@ TOK_CLOSURE='materialize closure: DROPPED'
 # dropped with "consumers fall back". Correctness survives; every consumer
 # compile then pays full price. Tolerated + exit 0 = exactly this gate's remit.
 TOK_BLOB='blob skipped'
+# Producer-side leak: a C/C++ header's entity whose seed verdict rests on
+# dialect names alone (pack-slices design §7) — a dialect fragment would then
+# decide what a strict compile binds. HARD ZERO.
+TOK_DIALECT_DECIDED='header entities decided by dialect names alone'
 
 usage() {
 	echo "usage: $0 --profile <key> [--pack-log FILE] [--load-log FILE]" >&2
@@ -166,6 +170,13 @@ check_pack_log() {
 		echo "       full price. Correctness survives, which is why it exits 0." >&2
 	elif [ "$blobs" -lt "$blobs_allowed" ]; then
 		say "[$PROFILE] IMPROVED — lower '$PROFILE mir-blob-skips' to $blobs in $BASELINE"
+	fi
+	local leaked
+	leaked=$(grep -ao "[0-9]* $TOK_DIALECT_DECIDED" "$norm" | awk '{ s += $1 } END { print s + 0 }')
+	if [ "$leaked" -gt 0 ]; then
+		fail "[$PROFILE] $leaked $TOK_DIALECT_DECIDED — a dialect fragment"
+		echo "       would decide what a strict (C/C++) compile binds. A header's" >&2
+		echo "       entity must be listed by a header unit's names." >&2
 	fi
 	if [ -s "$norm" ] && [ "$n" -gt 0 ]; then
 		echo "--- pack parse-error classes (the burndown list) ---"
@@ -310,7 +321,9 @@ check_dump() {
 		out=$(awk -F'\t' -v mode="$mode" '
 			NR == FNR {
 				if ($0 ~ /^[ \t]*$/ || $0 ~ /^[ \t]*#/) next
-				need[$0] = 1; total++
+				# A source-arm line may read `unit-name<TAB>file`:
+				# the unit is the first field.
+				need[$1] = 1; total++
 				next
 			}
 			$1 == "unit" {
@@ -331,7 +344,7 @@ check_dump() {
 			END {
 				miss = 0
 				for (w in need) { print "MISS " w; miss++ }
-				print "TOTAL " total " " miss
+				print "TOTAL " total + 0 " " miss + 0
 			}' "$list" "$dump")
 		local line
 		while IFS= read -r line; do
@@ -363,6 +376,35 @@ check_dump() {
 		fail "[$PROFILE] $missing listed header(s) are NOT units — a consumer's"
 		echo "       #include of each silently live-parses instead of binding." >&2
 	fi
+	check_pack_bytes "$dump"
+}
+
+# ---------------------------------------------------------------------------
+# PACK SIZE (pack slices design §8): the container's bytes (`bytes` in the
+# dump) may grow at most PACK_BYTES_ALLOWANCE past the profile's recorded
+# `pack-bytes` — the size owner-accepted for the seed index (2026-10-13:
+# +1.2 MB; raised 2026-10-14 to a 13,000,000-byte cap on the linux record,
+# then to 15,000,000 for the node units read block by block, format 61).
+# A profile with no recorded size reports its bytes unjudged; a dump
+# with no `bytes` line under a recorded size is red (nothing was measured).
+# ---------------------------------------------------------------------------
+PACK_BYTES_ALLOWANCE=3418024
+check_pack_bytes() {
+	local dump="$1" bytes base
+	base=$(baseline_for "$PROFILE" pack-bytes)
+	bytes=$(awk -F'\t' '$1 == "bytes" { print $2; exit }' "$dump")
+	if [ "$base" -eq 0 ]; then
+		say "[$PROFILE] pack: ${bytes:-?} bytes (no recorded pack-bytes — unjudged)"
+		return
+	fi
+	if [ -z "$bytes" ]; then
+		fail "[$PROFILE] dump carries no 'bytes' line — the pack size was not measured: $dump"
+		return
+	fi
+	say "[$PROFILE] pack: $bytes bytes (recorded $base, cap $((base + PACK_BYTES_ALLOWANCE)))"
+	if [ "$bytes" -gt $((base + PACK_BYTES_ALLOWANCE)) ]; then
+		fail "[$PROFILE] the pack grew to $bytes bytes, past $base + $PACK_BYTES_ALLOWANCE"
+	fi
 }
 
 # ---------------------------------------------------------------------------
@@ -377,7 +419,7 @@ selftest() {
 	local dir="$ROOT/tmp" bl rc legs=0 bad=0
 	mkdir -p "$dir"
 	bl="$dir/fpgate_selftest_baseline.txt"
-	printf '# selftest baseline\n2 self pack-errors\n1 self closure-drops\n1 self dk-none\n1 self mir-blob-skips\n' > "$bl"
+	printf '# selftest baseline\n2 self pack-errors\n1 self closure-drops\n1 self dk-none\n1 self mir-blob-skips\n1000 self pack-bytes\n' > "$bl"
 
 	leg() {
 		# leg <name> <expect pass|fail> <gate args...>
@@ -422,6 +464,12 @@ selftest() {
 	printf 'a.tu.cpp: mir cache: boom — blob skipped (consumers fall back)\nb.tu.cpp: mir cache: bang — blob skipped (consumers fall back)\n' > "$dir/fpgate_st_blob_bad.log"
 	leg "mir blob skips over baseline" fail --pack-log "$dir/fpgate_st_blob_bad.log"
 
+	# 3c: the dialect seed leak, hard zero — zero GREEN, one RED.
+	printf 'x.mad: pack seeds: n; dialect 9 listed with dialect units alone, 0 %s\n' "$TOK_DIALECT_DECIDED" > "$dir/fpgate_st_dialect_ok.log"
+	leg "dialect seed leak zero" pass --pack-log "$dir/fpgate_st_dialect_ok.log"
+	printf 'x.mad: pack seeds: n; dialect 9 listed with dialect units alone, 1 %s\n' "$TOK_DIALECT_DECIDED" > "$dir/fpgate_st_dialect_bad.log"
+	leg "dialect seed leak" fail --pack-log "$dir/fpgate_st_dialect_bad.log"
+
 	# 4: no marker => the load check must refuse to render a verdict.
 	printf 'nothing bound here\n' > "$dir/fpgate_st_blind.log"
 	leg "load log without marker" fail --load-log "$dir/fpgate_st_blind.log"
@@ -450,7 +498,7 @@ selftest() {
 	#     and a guarded root matched by substring all satisfy their lists; a
 	#     listed header with no unit fails; and a list path that matches
 	#     nothing fails instead of verifying zero headers and passing.
-	printf 'forest\tunits=3\n' > "$dir/fpgate_st_dump.txt"
+	printf 'forest\tunits=3\nbytes\t1200900\n' > "$dir/fpgate_st_dump.txt"
 	printf 'unit\t1\tstdio.h\tx\n' >> "$dir/fpgate_st_dump.txt"
 	printf 'unit\t2\t/usr/include/c++/13/vector\tx\n' >> "$dir/fpgate_st_dump.txt"
 	printf 'unit\t3\t/usr/include/c++/13/bits/stl_algo.h\tx\n' >> "$dir/fpgate_st_dump.txt"
@@ -470,6 +518,15 @@ selftest() {
 	printf 'tor\n' > "$dir/fpgate_st_units_sub.txt"
 	leg "entry point is not a substring match" fail --dump "$dir/fpgate_st_dump.txt" \
 		--units-from "$dir/fpgate_st_units_sub.txt"
+	# The pack size: under the cap is GREEN (above), one byte past it is red, and
+	# a dump that never measured it is red.
+	# (1000 = the selftest baseline's pack-bytes.)
+	sed "s/^bytes\t.*/bytes\t$((1000 + PACK_BYTES_ALLOWANCE + 1))/" "$dir/fpgate_st_dump.txt" > "$dir/fpgate_st_dump_big.txt"
+	leg "pack past the size cap" fail --dump "$dir/fpgate_st_dump_big.txt" \
+		--units-from "$dir/fpgate_st_units.txt"
+	grep -v '^bytes' "$dir/fpgate_st_dump.txt" > "$dir/fpgate_st_dump_nobytes.txt"
+	leg "pack size not measured" fail --dump "$dir/fpgate_st_dump_nobytes.txt" \
+		--units-from "$dir/fpgate_st_units.txt"
 
 	# 10: the token contract has ONE owner. scripts/mac_battery.sh must stay
 	#     self-contained (it runs on a Mac from a tarball), so it carries its

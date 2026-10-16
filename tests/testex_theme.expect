@@ -1,0 +1,6 @@
+shown_code: [{"from":0,"to":29}]
+painted: "\u001b[1mint\u001b[0m v = \u001b[36m7\u001b[0m; \u001b[32m// seven\u001b[0m\n\u001b[1mreturn\u001b[0m v;\n"
+no code: "int x;\n"
+styles: ok=1 {"chrome":{"divider":"#444444"},"syntax":{"control":"bold yellow","directive":"bold yellow","escape":"#ce9178","include":"#ce9178","keyword":"bold yellow","string":"#ce9178"}}
+refused: ok=0 why=line 2: no class or chrome named 'nosuchclass' empty=1
+default: {"chrome":{},"syntax":{"comment":"green","control":"bold","directive":"blue","escape":"bold cyan","include":"bold cyan","keyword":"bold","namespace":"bold","number":"cyan","string":"cyan","type":"bold","typename":"bold"}}

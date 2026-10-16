@@ -190,6 +190,7 @@ typedef struct {
 #define DT_STRSZ 10
 #define DT_SYMENT 11
 #define DT_INIT 12
+#define DT_FINI 13
 #define DT_DEBUG 21
 #define DT_TEXTREL 22
 #define DT_JMPREL 23

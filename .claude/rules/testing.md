@@ -8,8 +8,8 @@
 - Per-test fixtures use the filename convention in
   `.claude/rules/test-fixtures.md` — do not add test-specific logic
   to the runner
-- Current counts live in `docs/test-status.md` and `README.md`, never
-  hard-coded in a rules file
+- Current counts live in `docs/test-status.md` (never in `README.md`),
+  never hard-coded in a rules file
 
 ## Unit Tests
 

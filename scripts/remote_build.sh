@@ -199,7 +199,17 @@ note_stage() {
 	stage_summary="$stage_summary
   $1 rc=$2"
 	if [ "$2" -ne 0 ]; then rc_total=1; fi
+	# A failed sync / configure / build leaves the container's tree or
+	# binaries describing OTHER content: every later stage would test the
+	# stale build and could report green (2026-10-14: `sync build fix` ran
+	# the fix lanes GREEN on the previous binary after a unit test failed to
+	# compile). Later stages are skipped instead.
+	case "$1" in
+	"sync madc"|configure|"build madc")
+		if [ "$2" -ne 0 ]; then tree_stale=1; fi ;;
+	esac
 }
+tree_stale=0
 
 run_remote() {
 	# $1 = label, $2 = remote command string
@@ -212,6 +222,11 @@ run_remote() {
 }
 
 for stage in $stages; do
+	if [ "$tree_stale" = 1 ]; then
+		echo "=== $stage === SKIPPED: an earlier sync/configure/build failed"
+		note_stage "$stage (skipped)" 1
+		continue
+	fi
 	case "$stage" in
 	sync)
 		echo "=== sync ==="

@@ -2732,6 +2732,10 @@ value outcome_value(const ex::outcome &o, ex::command code)
     std::map<std::string, value> f;
     f["ok"] = value(o.ok);
     f["shown"] = value(o.shown);
+    // The bytes of `shown` that are a buffer's text, as the CLI paints them
+    // (madc::theme_paint): [{ from, to }], present when there are any.
+    if ( !o.code.empty() )
+	f["shown_code"] = ns_common::code_ranges_value(o.code);
     f["error"] = value(o.error);
     f["wants_text"] = value(o.wants_text);
     f["quit"] = value(o.quit);

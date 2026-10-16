@@ -88,7 +88,9 @@ public:
 	Kind kind;
 	unsigned seq;			// the request's
 	// running: an offered entry was taken and runs now; its output
-	// follows (the next polls), then its offer reply.
+	// follows (the next polls), then its offer reply. A rebuild's entry
+	// runs the same way, its text in `entry`, then its replayed reply (an
+	// offer's taken fields).
 	// An offer's: the verdict, and once taken, the result, the shown
 	// value, the entries taken so far (REPL[N]), the rendered diagnostics
 	// (the text the CLI prints) and their rows (diagnostic rows: severity,
@@ -119,8 +121,10 @@ public:
 	size_t start;
 	std::vector<std::string> names;
 	// load: the file defined main (InteractiveSession::loaded_main), so
-	// running the file runs it.
+	// running the file runs it. rebuild: the buffer's main ran.
 	bool defines_main;
+	// running: a rebuild's entry, its text ("" for an offered entry).
+	std::string entry;
 	// offer: the source the taken entry added to the session
 	// (InteractiveSession::taken_source); load: the text of the file it
 	// kept (loaded_source). Empty when nothing was kept.
@@ -153,8 +157,11 @@ public:
     // With `call` (%call's, cling's .x), argv is the file and the call's
     // text: the session calls the function named after the file, else its
     // main (InteractiveSession::call_file), and the reply's shown is the
-    // call's value.
-    unsigned run(const std::vector<std::string> &argv, bool call = false);
+    // call's value. With `rebuilt`, main runs as a rebuilt REPL buffer's
+    // does (InteractiveSession::run_rebuilt_main).
+    enum class RunRequest : unsigned char { main, call, rebuilt };
+    unsigned run(const std::vector<std::string> &argv,
+		 RunRequest what = RunRequest::main);
     // D11's question, asked of the session's standard: does `line` continue
     // an if that ended an entry (its first word is `else`)?
     unsigned continues(const std::string &line);
@@ -205,7 +212,7 @@ public:
     int load_wait_text(const std::string &text, const std::string &path,
 		       Reply &reply, std::string &output);
     int run_wait(const std::vector<std::string> &argv, Reply &reply,
-		 std::string &output, bool call = false);
+		 std::string &output, RunRequest what = RunRequest::main);
     int continues_wait(const std::string &line, Reply &reply);
     int bindings_wait(Reply &reply, int timeout_ms = -1);
     int build_wait(const std::string &path, const std::string &out,
@@ -221,6 +228,20 @@ public:
     unsigned check(const std::string &path, const std::string *text);
     int check_wait(const std::string &path, const std::string *text,
 		   Reply &reply, std::string &output);
+    // The host's REPL buffer run again (owner 2026-10-12) in the backend
+    // the host just started fresh: its lines taken as typed, then its main
+    // with argv (the buffer's name, then the program's arguments) when the
+    // session defines main and no unit names it. Each entry answers with a
+    // running row (its text) and a replayed row; the rebuild row is the
+    // answer. The entries run in step with the host: the next one runs once
+    // the poll took the last one's replayed row.
+    unsigned rebuild(const std::string &text, const std::vector<std::string> &argv);
+    // The host's REPL buffer edited (the live reparse): its text before and
+    // after, the changed entries read again in the backend
+    // (InteractiveSession::buffer_edited).
+    unsigned edited(const std::string &before, const std::string &after);
+    int edited_wait(const std::string &before, const std::string &after,
+		    Reply &reply, std::string &output);
 
     // The HOST's REPL command rows (split arc 1A.2; design
     // docs/plans/2026-10-09-command-registry-design.md §2.7): an array of
@@ -292,6 +313,10 @@ private:
     bool output_done;			// the output pipe reached its end
     unsigned next_seq;
     unsigned answered_seq;		// the last request whose reply came back
+    // The rebuild in step (rebuild): its seq while entries remain, else 0.
+    // Each replayed row polled asks for the next entry under it.
+    unsigned rebuild_seq;
+    bool send_rebuild_step();
     std::string std_option;
     ProgramFactory make_program;
     std::vector<std::string> backend_args;	// Windows: the configured child's command line
@@ -331,6 +356,8 @@ public:
     const std::string &shown() const override { return shown_text; }
     const std::vector<madc::code_range> &shown_code() const override { return shown_code_ranges; }
     const std::string &taken_source() const override { return kept_source; }
+    bool buffer_edited(const std::string &before, const std::string &after) override;
+    bool run_rebuilt_main(const std::string &name) override;
     std::vector<std::string> complete(const std::string &text, size_t caret,
 				      size_t &start) override;
     bool continues_if(const std::string &line) override;
@@ -448,6 +475,8 @@ int64_t session_complete(int64_t handle, const char *text, int64_t caret);
 int64_t session_load(int64_t handle, const char *path, const char *text);
 int64_t session_run(int64_t handle, value &argv);
 int64_t session_call(int64_t handle, value &argv);
+int64_t session_rebuild(int64_t handle, const char *text, value &argv);
+int64_t session_edited(int64_t handle, const char *before, const char *after);
 int64_t session_build(int64_t handle, const char *path, const char *text,
 		      const char *out);
 bool session_command_of(value &out, const char *text);

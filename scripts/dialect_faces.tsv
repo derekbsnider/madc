@@ -1,0 +1,19 @@
+# dialect_faces.tsv — what madc builds for itself, held to its dialect face
+# (.claude/rules/dialect-faces.md; read by scripts/check-dialect-faces.sh).
+#
+# struct rows: an engine struct a host reads, and the face function that
+# turns it into a dialect value. Every member is a key the face writes
+# (`field`, or `field=key` when the row names it differently) or is omitted
+# with its reason (`-field:reason`, words joined by _).
+#   struct <TAB> header <TAB> struct name <TAB> face file <TAB> face function <TAB> members
+#
+# public rows: a namespace-scope function an engine header declares, and the
+# dialect face a host calls for it — a declaration in a dialect header — or
+# `exempt:` and why no host needs it.
+#   public <TAB> header <TAB> function <TAB> dialect header <TAB> face | exempt: reason
+struct	include/madc_ex.h	outcome	src/madc_ex.cpp	outcome_value	ok shown code=shown_code error wants_text quit
+struct	include/madc_session_client.h	Reply	src/madc_session_verbs.cpp	reply_row	kind seq state ok submitted shown shown_code rendered diagnostics payload argv code start names defines_main=main entry source status continues rows exit_status signal
+public	include/madc_theme.h	theme_default	include/madc/ns_madc_host	theme_paint
+public	include/madc_theme.h	theme_read	include/madc/ns_madc_host	theme_styles
+public	include/madc_theme.h	theme_marks	-	exempt: the marks of madc's own terminal line editor; a host's document colours from doc_spans or lex_spans with theme_styles, its terminal text from theme_paint
+public	include/madc_theme.h	theme_paint	include/madc/ns_madc_host	theme_paint

@@ -3438,6 +3438,184 @@ pseudo-terminal, then a read of new input). Measured on the way: a C session ref
 lines();` at file scope, as gcc does (C11 6.7.9p4), but through c2mir's
 message (BUGS.md B16), so the tests assign to declared globals.
 
+### 41.13a Redefinition (D5) and the live reparse (owner 2026-10-12, 0.105.0)
+
+Owner: "if I edit a function in the REPL buffer, it should reparse instantly
+and if I call that function I should get the new version" — the REPL buffer
+only, never a file buffer. 0.104.0 shipped the explicit rebuild (`%run` with
+the REPL buffer current); this is the live form.
+
+**Built, D5 (`bbb622187`).** A second body for a function whose body an
+earlier unit linked is the session's redefinition, under every standard
+(`Program::session_redefines`: the latest definition's file is one of
+`session_units`). Both parser paths take it: `parseFunction` (one `FuncDef`:
+C linkage, and C++ with the same parameter spelling) and
+`fold_same_signature_overload` (C++, the same ABI signature spelled
+differently). The unit records it in `session_redefined`; the CIR builder
+emits that function's newest `TokenFunc` though its symbol is
+`session_defined`. In the JIT, every function an entry's module exports is
+WEAK once loaded (`CirJitSession::make_interposable`): MIR inlines no weak
+callee, and the next definition replaces it in place (`replaced_weak_def`),
+taking its thunk — so a later call, a caller compiled earlier and a pointer
+taken earlier all reach the newest body (Julia; cling keeps the old body in
+old callers). `function_code`'s cache drops a redefined name. A second body
+within one unit stays the redefinition C and C++ refuse. Gates:
+`testrepl_redefine` (madc, a file's function too), `testrepl_redefine_c`,
+`testrepl_redefine_cxx` (a renamed parameter; a new overload).
+
+**Built, the live reparse.** `ReplSession::buffer_edited(before, after)`,
+the wire's `edited` request, `InteractiveSession::buffer_edited`. The edit is
+the lines the two texts do not share at either end; the entries it touched
+(the session keeps the texts it handed the host, `buffer_entries`, and
+re-groups the text when they no longer match) are grouped again from the
+edited text the way the REPL groups typed lines (`buffer_split`: a trial
+parse per line, rolled back), and each entry that is not one of them
+unchanged is taken as definitions only (`redefine`,
+`Program::entry_definitions_only`): its functions are defined or redefined,
+its statements are parsed and never run, and it shows nothing. It is a
+REPL[N] like any entry, so `%psource` shows the new body. The REPL host calls
+it after every colon command that changed the REPL buffer (`colon_apply`).
+Thread contract: a serialized session verb, as `submit` (D9). Gate:
+`testrepl_live` (the owner's `:s` on `main`, a multi-line body, an edited
+statement not run again, `:$a` adding a function).
+
+**Built, D6 for variables (owner 2026-10-12).** A second definition of an
+object an earlier unit defined is the session's redefinition
+(`Program::session_redefines_object`, the functions' rule), recorded in
+`session_redefined_objects`. `declare_object` refuses a changed type and a
+const object (its reads fold into earlier code), each with the `%run` hint;
+the object keeps its value. The CIR builder emits the newest
+definition (`session_object_redefinition`). In the JIT every exported object
+is WEAK once loaded (`make_interposable`), and MIR loads the new initializer
+into the weak item's storage, so the address stays and earlier functions and
+pointers read the new value. A size change the type check does not see
+(`char msg[] = "hello"` over `"hi"`) is refused at link (`redefinitions_fit`,
+MIR's `_MIR_data_section_len`). In the live reparse an edited variable
+definition is re-initialized; an unchanged entry is never read again, so its
+variables keep their values. Gates: `testrepl_redefine_var`, `testrepl_live`
+(`:10s/= 0/= 40/`).
+
+**Built, D6's first slice for types (2026-10-12).** A struct, union or class
+an earlier entry defined is not defined again: the refusal names `%run`
+("redefinition of 'P', a type an earlier entry defined (%run rebuilds the
+session)"), and the type and its objects stay
+(`Program::refuse_type_redefinition`, every tag-definition arm). An
+aggregate records the file it is defined in (`DataDefSTRUCT::definition_file`,
+FuncDef::decl_file's twin), so the session tells an entry's type from a
+header's, which keeps C's and C++'s refusal. Gate: test_repl_session "a type
+an earlier entry defined is not defined again (D6)".
+
+**Built, the rebuild's main (2026-10-12).** `%run` rebuilding the REPL
+buffer ends by running its main, as `%run` runs a file's, when the session
+defines main and no unit names it (`CirJitSession::imports`: no entry's
+module imports `main`, so an entry that calls it ran it in the replay
+already); argv[0] is the buffer's name `[REPL]`, then its `%args`
+(`ReplSession::run_rebuilt_main`; a backend's through the `run` request's
+`rebuilt` flag). Gate: `testrepl_rebuild_main`.
+
+**Built, the dialect verbs (2026-10-12).** `madc::session_edited(h, before,
+after)` (the live reparse's `edited` request; an `edited` reply row) and
+`madc::session_rebuild(h, text, argv)` (below) in `<ns_madc>`. madcide's REPL
+pane sends `session_edited` after a colon command changes the REPL buffer
+(madcide 0.8.0, paired with this release). Gate: `testsession_run`.
+
+**Built, Restart and Run All (owner 2026-10-13, "I go with your leans").**
+How other tools re-run a session, surveyed for the decision: an editor-plus-
+REPL tool (Thonny, Spyder, DrRacket) runs the EDITOR's file and never re-runs
+the REPL's own input; a tool whose session is an ordered list of entries
+(Jupyter, RStudio's R Markdown, Mathematica) has a separately named command,
+Jupyter's "Restart Kernel and Run All Cells". madcide is the first kind for
+F5 and `%run` (the editor's file, as decided) and the second for its REPL
+buffer: the Build menu's **Restart and Run All** (`replrunall`) and the pane's
+`%runall` (IPython's `%rerun` re-runs inputs in the SAME session, so its name
+is not borrowed). The CLI keeps `%run` with the REPL buffer current (IPython's
+`%reset` + `%rerun` in one step). The rule that groups typed lines into
+entries is one class, `EntryLines` (`madc_session.h`): the cooked loop's and
+the replay's. The backend's `rebuild` request replays the buffer in the
+backend the host just restarted, one entry per step: a `running` row carrying
+the entry's text, its output, a `replayed` answer (an offer's taken fields),
+then the client asks for the next entry under the same seq — in step, so a
+later entry's output never reaches the host ahead of an earlier entry's row.
+Past the last entry the buffer's main runs when no entry named it, and a
+`rebuild` row answers. The pane shows each entry as typed, its output and its
+value, and never appends the replayed entries to the REPL buffer again.
+Gates: `testsession_run` (an entry over several lines, an if taking its else,
+main run once), madcide's `testmadcide_replrunall`.
+
+**Built, versioned types (owner 2026-10-13, "I go with your leans").** A
+struct, union or class an earlier entry defined, defined again:
+
+1. With the same data members (a class: the same shape, its member-function
+   bodies aside — `aggregate_shape`) it is the same type: C23's rule for an
+   identical redefinition. A class's member functions are redefined (D5), so
+   every object, the earlier ones included, calls the new bodies.
+2. Otherwise it is the name's next version: the name means the new one, and
+   the objects, functions and pointers made with an earlier version keep it
+   (Julia 1.12's world age). The type of an earlier version shows as `P#1`.
+3. Mixing versions is a type error, never a silent copy: an object of `P#1`
+   is no argument for a `P` parameter.
+4. madc and C++: a function defined again for the new version is an overload
+   beside the earlier one. The new version mangles as g++'s `abi_tag` would
+   (`getx(P[abi:v2])` = `_Z4getx1PB2v2`, checked against g++), so its symbols
+   never collide with the earlier version's.
+5. C: a function defined again with the new version's type changes its type,
+   which C cannot overload; it is refused with the `%run` hint.
+6. The live reparse: an edit that gives a type a new version reads each entry
+   below it that names the type again, functions only — a function takes the
+   new version, a type defined from it gets its own next version, and an
+   object keeps its type and its value.
+
+A version keeps its own `DataDefSTRUCT`: its emitted name `__madc_vN__P`, its
+C++ spelling `P[abi:vN]`, a `SessionTypeLineage` (Program-owned) naming the
+source name and the first version. The registry keeps an earlier version under
+a key no source can spell (`P#1`), so every emission walk still finds it. An
+inline function or an in-class member function an entry emits is weak before
+the entry links (`vague_functions_interposable`): the first copy is the
+definition, no caller inlines it, and a redefinition — emitted strong —
+replaces it in place. Gates: `testrepl_versions`, `testrepl_versions_c`,
+`testrepl_redefine` (an inline function), `testsession_retype` (the live
+reparse), the unit test "a type defined again is its name's next version",
+`test_mangle`'s abi-tag cases.
+
+**Built, exit-time destruction (2026-10-12), the prerequisite for redefining
+an object with a destructor.** An object with static storage duration had its
+destructor never run, in the JIT or a native executable (the storage carried a
+cleanup attribute c2mir applies to automatic variables only). Now the CIR
+builder registers it right after its initialization as g++ does,
+`__cxa_atexit(dtor, &obj, &__dso_handle)` (`static_dtor_registration`: a
+global's constructor group, a block-scope static's once-block). The image
+handle and the libc functions glibc keeps in libc_nonshared.a (`atexit`,
+`at_quick_exit`, `pthread_atfork`) are madc's startup members
+(`src/madc_crt.cpp`), pulled into a JIT session or an image by its imports,
+as ld pulls archive members. A JIT session's end is its image's exit
+(`CirJitSession::run_exit_handlers`, dlclose's `__cxa_finalize`); a REPL
+session's objects are destroyed when it ends. Windows keeps the list in its
+member (no DLL exports `__cxa_atexit`). Gates: `testglobaldtor`,
+`testglobaldtorexit`, `testatexit`, `testatquickexit`, `testpthreadatfork`,
+`testrepl_globaldtor`. A madc-built shared object unloaded before exit runs
+its objects' destructors at the unload: the image handle's member carries the
+image fini `__madc_dso_fini` (`__cxa_finalize(&__dso_handle)`, crtbegin.o's
+`__do_global_dtors_aux`), named by the exec params' `fini` — ELF `DT_FINI`, a
+PE DLL's `DLL_PROCESS_DETACH` (mingw's dllcrt), and on Windows only the
+executable hooks the UCRT's exit (gate `testbuild_shared_unload`). Open:
+`thread_local` objects (`__cxa_thread_atexit`), which ride MIR's thread-local
+storage (KG `mir_thread_local_storage`).
+
+**Built, D6 for an object with a destructor (2026-10-12), the madc `var`
+included.** The earlier object ends its lifetime first, as an assigned
+object's old value does, then the new one is constructed in the same storage.
+The CIR builder names each redefined object's destroyer
+(`static_object_destroyer`, the one the exit registration names;
+`redefined_destroys()`), and the session calls it with the object's address
+after the link check and before the load copies the new definition's bytes
+over the storage (`CirJitSession::destroy_redefined`, at the entry's
+boundary). The first definition's exit registration destroys the newest at
+session end. A global declared `extern` ahead of its definition, and a
+redefinition, now take the defining declaration's initializer
+(`global_defining_decl`). Gates: `testrepl_redefine_dtor` (g++ and clang++
+print the same trace for `t.~T(); new (&t) T(2);`), `testrepl_redefine_carrier`,
+`testrepl_redefine_class`, `testglobalexterndef`.
+
 ## 42. Decisions (owner, 2026-09-25)
 
 **The aim (owner, 2026-09-25):** there is a future "ideal C/C++ REPL", and everyone is headed toward it, madc included. madc bets it can get there faster. It is designed to work more like a script language (Python, PHP), and it doesn't carry gcc's or clang's baggage. So the idea is to mimic Julia + IPython. madc follows cling and clang-repl only where their functionality is to its benefit and makes sense, never to mimic them.
@@ -3473,6 +3651,47 @@ cling is the precedent for adapting IPython-style interaction to C++, so it is m
   - a refused input is rolled back whole, as in cling, and `%undo` works;
   - C mode keeps declarations now (see slice 2b).
 
+### Redefining a global variable, measured and researched (2026-10-12)
+
+Owner 2026-10-12, before deciding D6 for the live reparse: "re-recon how this
+works in all known REPL languages". Probe (measured on madc-dev,
+`tmp/live/recon/`): define `x`, a function `f` reading it, a reference to it;
+define `x` again with the same type, read through all three; then with another
+type.
+
+- **Measured.** cling 1.2: new storage — `f()` and `*p` read 1, `x` reads 2,
+  a type change is accepted the same way. clang-repl-18 and -20: refused
+  ("redefinition of 'x'"; no redefinition in the 22.1 / 23.1 release notes).
+  Python 3.12: functions read the new value (name lookup at the call);
+  references taken earlier keep the old object; a type change is accepted.
+  Node 22: `let` / `const` refused ("already been declared"), `var` rebinds
+  and functions read the new value. Ruby 3.2 (irb): a constant reassigns with
+  a warning and methods read the new value. PHP 8.3: a function cannot be
+  redeclared. madc before D6: refused, like clang-repl.
+- **Researched** (sources in the session's recon report):
+  - Julia 1.12: a non-const global is reassigned in place, visible at once; a
+    TYPED global (`x::Int`) can never change type. A `const` can be redefined
+    (also to another type), versioned by world age: earlier functions see it
+    from the next prompt. Before 1.12, same type only.
+  - Common Lisp: `defparameter` always reassigns, `defvar` keeps an existing
+    value; SLIME's `C-M-x` deliberately resets a `defvar`. Emacs Lisp
+    `eval-defun` the same. Clojure: a second `def` rebinds the root of the
+    SAME Var, so earlier functions see it; `defonce` keeps it. Scheme / Racket
+    top level: `set!` on the same location. Smalltalk: globals are
+    associations in each method's literal frame — in place, seen everywhere.
+    R: in place, lookup at the call.
+  - Shadowing (earlier code keeps the old binding): GHCi, OCaml, Scala, Elixir
+    closures, MATLAB anonymous handles, cling. Erlang refuses (single
+    assignment). Swift: "replaces the existing definition for all subsequent
+    references", type change allowed.
+  - Edit-and-reload: Revise.jl evaluates only the CHANGED expressions; under
+    `includet` it updates functions but not data (`a = [1]` → `a = [2]` is
+    not applied, because data has untracked dependencies); a package's
+    changed assignments are re-run. IPython `%autoreload` re-runs the whole
+    module, so every global is re-initialized, and patches old functions in
+    place. Clojure tools.namespace re-creates even `defonce`; clj-reload keeps
+    it.
+
 ### Engine
 
 - **D1. Persistence.** One live `Program` accepts appended entries. Each entry lowers to its own MIR module, linked into one live MIR context. Nothing is replayed (all three precedents are incremental). The core is new and is not built on `eval_*` (§40).
@@ -3491,8 +3710,7 @@ cling is the precedent for adapting IPython-style interaction to C++, so it is m
   - A function's address stays the same across redefinitions, so pointers taken earlier reach the new body (Julia: `f` is one object).
   - Resolves §11.4's open mechanism: dependency recompile plus a stable address.
 - **D6. Redefinition of variables and types.**
-  - A redefined variable gets new storage, and code that uses it is recompiled against the new binding (Julia 1.12 / Python).
-  - Old storage stays alive until `%reset`, since C has no GC to decide when it is unreferenced. Destructors of replaced C++ objects run at `%reset` or exit.
+  - **Owner 2026-10-12, superseding new storage per redefinition:** a same-type redefinition of a variable initializes the SAME storage, so every function and every pointer taken earlier sees the new value (Julia's non-const global, Lisp's `defparameter`, Clojure's `def`). A type change is refused with the `%run` hint (a typed Julia global cannot change type). A REPL-buffer edit re-initializes a changed definition; unchanged entries keep their values. Measured and researched in the section before this one; built in §41.13a.
   - A redefined struct is a new versioned type, and old objects keep the old type (Julia 1.12). The first slice may refuse struct redefinition with a clear message.
   - Resolves §11.3 / §11.5.
 - **D7. Late binding.**

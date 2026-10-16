@@ -1122,6 +1122,7 @@ static bool clone_local_aggregate_members(
 	dst->is_anonymous = false;
 	dst->reverse_scalar_storage = src->reverse_scalar_storage;
 	dst->definition_origin = src->definition_origin;
+	dst->definition_file = src->definition_file;
 
 	bool substituted_object_member = false;
 	for (size_t i = 0; i < src->members.size(); ++i) {
@@ -10582,6 +10583,10 @@ bool CirBuilder::ensure_runtime_extern_for(const madc::dis::istring &sym)
 		need_output_extern("__madc_vla_free", false, { { {N_VOID}, true } });
 		return true;
 	}
+	if (sym == "__cxa_atexit" || sym == "__dso_handle") {
+		need_exit_registration_externs();
+		return true;
+	}
 	if (sym == "malloc") {
 		need_output_extern("malloc", true, { { {N_UNSIGNED, N_LONG, N_LONG}, false } });
 		return true;
@@ -11380,9 +11385,7 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		// and were dropped the same way (g read null, SILENTLY) — queue
 		// them too; collect_global_ctors' carrier arm emits them.
 		TokenDecl *adecl = dynamic_cast<TokenDecl *>(origin);
-		bool carrier_defines = adecl
-		    && (adecl->initialize || adecl->ctor_args_braced
-			|| !adecl->ctor_args.empty());
+		bool carrier_defines = adecl && adecl->has_initializer();
 		// `extern var X;` is a DECLARATION: storage, construction, and
 		// cleanup live in the defining TU (the class-instance arm below
 		// applies the same rule — g++ parity with `extern std::string s;`).
@@ -11400,6 +11403,8 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		if (!m_file_scope_decl && (v->flags & vfSTATIC))
 			storage = (v->flags & vfTHREADLOCAL)
 				? ObjStorage::ThreadStatic : ObjStorage::Static;
+		else if (m_file_scope_decl)
+			storage = ObjStorage::Global;
 		// var_emit_name like the general shapes below (line ~6700): this
 		// early return was the one path in var_decl that skipped it.
 		return array_storage_decl(var_emit_name(*v).c_str(), origin,
@@ -11945,16 +11950,13 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 			append(attrs, node2(N_ATTR, id("cleanup", origin),
 					    attr_args, origin));
 			attr_node = attrs;
-		} else if (cdd && class_needs_dtor(cdd)) {
-			// A fixed ARRAY gets the per-(class,N) wrapper: the cleanup
-			// mechanism calls one function with &a (element 0), which
-			// destroyed only a[0] — g++ destroys all N in REVERSE
-			// (task #56; the VLA case stays on the free-only arm below).
-			madc::dis::istring dtor_sym =
-				(v->is_fixed_array() && !v->is_vla()
-				 && v->total_elements() > 0)
-				? demand_array_dtor(cdd, v->total_elements())
-				: class_complete_dtor_symbol(cdd);
+		} else if (cdd && class_needs_dtor(cdd)
+			   && !(m_file_scope_decl || (v->flags & vfSTATIC))) {
+			// An object with static storage duration is destroyed at
+			// exit instead (static_dtor_registration, where it is
+			// initialized): c2mir runs a cleanup on automatic
+			// variables only.
+			madc::dis::istring dtor_sym = class_object_dtor_symbol(v, cdd);
 			referenced_funcs.insert(dtor_sym);
 			node_t attr_args = list();
 			append(attr_args, id(dtor_sym.c_str(), origin));
@@ -13659,20 +13661,8 @@ node_t CirBuilder::virtual_dtor_slot_call(DataDefCLASS *cdd, const char *sname,
 				node2(N_DECL, ignore(), vpp_dl));
 	node_t vtab = node2(N_CAST, vpp_type, vptr, tb);
 	node_t slotref = node2(N_IND, vtab, integer(slot, tb), tb);
-	// Cast the slot to void(*)(void*) — the dtor signature. Suffix order
-	// matches fnptr_decl_pieces: POINTER first (the `(*)`), then FUNC (the
-	// `(void*)` params) — pointer-to-function, not fn-returning-pointer.
-	node_t fp_dl = list();
-	append(fp_dl, pointer());
-	append(fp_dl, node1(N_FUNC,
-		node1(N_LIST,
-		      node2(N_TYPE,
-			    node1(N_LIST, simple(N_VOID)),
-			    node2(N_DECL, ignore(),
-				  node1(N_LIST, pointer()))))));
-	node_t fp_type = node2(N_TYPE, node1(N_LIST, simple(N_VOID)),
-			       node2(N_DECL, ignore(), fp_dl));
-	node_t fn = node2(N_CAST, fp_type, slotref, tb);
+	// Cast the slot to void(*)(void*) — the dtor signature.
+	node_t fn = node2(N_CAST, dtor_fnptr_type(), slotref, tb);
 	node_t darg = list();
 	append(darg, recv_arg);
 	return node2(N_CALL, fn, darg, tb);
@@ -15380,6 +15370,28 @@ static FuncDef *class_copy_ctor_for(DataDefCLASS *cdd, bool move)
 	return best;
 }
 
+// Does SOURCE (or a base) declare an operator TEMPLATE? A conversion-function
+// template is one (`template<class U> operator Ref<U>&()`, its stub named
+// `operatorRef<U>&`, outside the `operator <type>` convention): its deduction
+// against a target is not modeled (class_conversion_to_class matches a plain
+// conversion function's resolved return), so such a source may still convert.
+static bool class_declares_operator_template(DataDefCLASS *source)
+{
+	if (!source) return false;
+	for (Variable *mv : source->methods) {
+		FuncDef *fd = mv ? dynamic_cast<FuncDef *>(mv->type) : NULL;
+		if (fd && fd->is_member_template
+		    && fd->method_display_name.compare(0, 8, "operator") == 0)
+			return true;
+	}
+	if (class_declares_operator_template(source->base_class))
+		return true;
+	for (const BaseSpec &base : source->bases)
+		if (class_declares_operator_template(base.base))
+			return true;
+	return false;
+}
+
 // Select a zero-argument conversion function whose semantic return class is
 // `target`. Conversion functions are ordinary method records; match their
 // resolved return type rather than their source spelling (which may be an
@@ -17078,6 +17090,125 @@ madc::dis::istring CirBuilder::demand_array_dtor(DataDefCLASS *cdd, size_t n)
 	return sym;
 }
 
+madc::dis::istring CirBuilder::class_object_dtor_symbol(Variable *v,
+							DataDefCLASS *cdd,
+							bool demand)
+{
+	// A fixed array's wrapper destroys all N, last first (task #56): the
+	// complete dtor called with &a would destroy a[0] only.
+	if (v->is_fixed_array() && !v->is_vla() && v->total_elements() > 0)
+		return demand ? demand_array_dtor(cdd, v->total_elements())
+			      : class_array_dtor_symbol(cdd, v->total_elements());
+	return class_complete_dtor_symbol(cdd);
+}
+
+node_t CirBuilder::dtor_fnptr_type()
+{
+	// Suffix order matches fnptr_decl_pieces: POINTER first (the `(*)`),
+	// then FUNC (the `(void *)` parameters) — pointer to function, not a
+	// function returning a pointer.
+	node_t dl = list();
+	append(dl, pointer());
+	append(dl, node1(N_FUNC,
+		node1(N_LIST,
+		      node2(N_TYPE,
+			    node1(N_LIST, simple(N_VOID)),
+			    node2(N_DECL, ignore(),
+				  node1(N_LIST, pointer()))))));
+	return node2(N_TYPE, node1(N_LIST, simple(N_VOID)),
+		     node2(N_DECL, ignore(), dl));
+}
+
+void CirBuilder::need_exit_registration_externs()
+{
+	// extern int __cxa_atexit(void (*)(void *), void *, void *);
+	// (the Itanium ABI's, as <cxxabi.h> declares it). Operand layout
+	// mirrors need_output_extern's proto.
+	if (!m_output_externs.count("__cxa_atexit")) {
+		node_t params = list();
+		append(params, dtor_fnptr_type());
+		append(params, void_ptr_type());
+		append(params, void_ptr_type());
+		node_t specs = list();
+		append(specs, simple(N_EXTERN));
+		append(specs, simple(N_INT));
+		node_t proto = simple(N_SPEC_DECL);
+		append(proto, node1(N_SHARE, specs));
+		append(proto, node2(N_DECL, id("__cxa_atexit"),
+				    node1(N_LIST, node1(N_FUNC, params))));
+		append(proto, ignore());
+		append(proto, ignore());
+		append(proto, ignore());
+		m_output_externs["__cxa_atexit"] = proto;
+	}
+	// extern void *__dso_handle; — the image's own: crtbegin.o's under a
+	// system link, madc's startup member (madc_crt.cpp) in the images and
+	// JIT sessions madc links itself.
+	if (!m_output_externs.count("__dso_handle")) {
+		node_t specs = list();
+		append(specs, simple(N_EXTERN));
+		append(specs, simple(N_VOID));
+		node_t sd = simple(N_SPEC_DECL);
+		append(sd, node1(N_SHARE, specs));
+		append(sd, node2(N_DECL, id("__dso_handle"),
+				 node1(N_LIST, pointer())));
+		append(sd, ignore());
+		append(sd, ignore());
+		append(sd, ignore());
+		m_output_externs["__dso_handle"] = sd;
+	}
+}
+
+madc::dis::istring CirBuilder::static_object_destroyer(Variable *v, bool demand)
+{
+	if (!v || !v->type || v->type->is_pointer()
+	    || (v->flags & (vfEXTERN | vfTHREADLOCAL)))
+		return madc::dis::istring();
+	if (is_array_object(v->type)) {
+		// One carrier: its storage is one object (array_storage_decl).
+		if (v->is_fixed_array())
+			return madc::dis::istring();
+		if (demand)
+			need_output_extern("madarray_destruct", false,
+					   { { {N_VOID}, true } });
+		return madc::dis::istring("madarray_destruct");
+	}
+	DataDefCLASS *cdd = as_class_instance(v->type);
+	if (!cdd || !class_needs_dtor(cdd))
+		return madc::dis::istring();
+	madc::dis::istring dsym = class_object_dtor_symbol(v, cdd, demand);
+	// TYPED forward proto, as synth_array_dtor_def declares it.
+	if (demand && dsym == class_complete_dtor_symbol(cdd))
+		need_output_extern(dsym.c_str(), false, { { {}, true, cdd } });
+	return dsym;
+}
+
+// g++ registers a static object's destructor right after constructing it
+// (__cxa_atexit in its static-init function and in a block-scope static's
+// guarded init), so objects end in the reverse order they began,
+// interleaved with atexit handlers ([basic.start.term]/3). The handle names
+// the image whose exit or finalization runs it.
+node_t CirBuilder::static_dtor_registration(Variable *v, TokenBase *origin)
+{
+	madc::dis::istring dsym = static_object_destroyer(v, true);
+	if (dsym.empty())
+		return NULL;
+	referenced_funcs.insert(dsym);
+	need_exit_registration_externs();
+	node_t args = list();
+	append(args, node2(N_CAST, dtor_fnptr_type(),
+			   id(dsym.c_str(), origin), origin));
+	append(args, object_var_void_addr(*v, origin));
+	append(args, node2(N_CAST, void_ptr_type(),
+			   node1(N_ADDR, id("__dso_handle", origin), origin),
+			   origin));
+	node_t call = node2(N_CALL, id("__cxa_atexit", origin), args, origin);
+	CIR_NODE(call)->synth_from_origin = true;
+	node_t stmt = node2(N_EXPR, list(), call, origin);
+	CIR_NODE(stmt)->synth_from_origin = true;
+	return stmt;
+}
+
 // void Cls__arr<N>___dtor(void *p)
 // { struct Cls *q = (struct Cls *)p;
 //   for (long __ci = N-1; __ci >= 0; __ci -= 1) <complete-dtor>(q + __ci); }
@@ -18635,18 +18766,25 @@ node_t CirBuilder::no_ctor_match_error(DataDefCLASS *cdd,
 				       const std::vector<TokenBase *> &ctor_args,
 				       TokenBase *origin)
 {
+	// The types as the source names them (TypeSpeller's show word): a
+	// session's earlier version is `P#1`, never its emitted name.
+	auto named = [&](DataDef *dd) -> std::string {
+		return std::string(dd && m_prog ? dump_show_type_word(dd)
+					       : describe_datadef(dd));
+	};
 	std::string args_desc;
 	for (size_t i = 0; i < ctor_args.size(); i++) {
 		if (i) args_desc += ", ";
 		DataDef *ad = ctor_args[i] ? ctor_args[i]->datadef() : NULL;
 		if (DataDefCLASS *rc = object_returning_call_class(ctor_args[i]))
 			ad = rc;
-		args_desc += describe_datadef(ad);
+		args_desc += named(ad);
 	}
+	const std::string cls = cdd ? named(cdd) : std::string("<class>");
 	char buf[256];
 	snprintf(buf, sizeof(buf),
 		 "no matching constructor for call to '%s(%s)'",
-		 cdd ? cdd->name.c_str() : "<class>", args_desc.c_str());
+		 cls.c_str(), args_desc.c_str());
 #ifdef MADC_DEBUG_CTORINIT
 	fprintf(stderr, "[ctorinit] NO-MATCH cdd=%s nctors=%zu origin=%s:%d\n",
 		cdd ? cdd->name.c_str() : "(null)",
@@ -18783,7 +18921,14 @@ node_t CirBuilder::try_implicit_copy_construct(node_t dst_lvalue,
 			obj_cv = (int)(src_dd->cv_quals() & (cvCONST | cvVOLATILE));
 		}
 		Variable *conv = class_conversion_to_class(acls, cdd, obj_cv);
+		// A conversion-function template deduces from the target
+		// ([temp.deduct.conv]); its instance converts as a plain one.
+		if (!conv && acls && m_prog)
+			conv = m_prog->instantiate_conversion_template(acls, cdd,
+								       src_arg);
 		FuncDef *conv_fd = conv ? dynamic_cast<FuncDef *>(conv->type) : NULL;
+		if (conv_fd && !same_object_class(&conv_fd->return_value_type(), cdd))
+			conv_fd = NULL;
 		if (conv_fd && class_trivially_copyable(cdd)
 		    && !function_retbuf_class(conv_fd)) {
 			TokenCallMethod *call;
@@ -19630,12 +19775,29 @@ node_t CirBuilder::class_array_construct_loop(
 // and an aggregate element takes no brace elision from it.
 bool CirBuilder::initializer_copies_class(TokenBase *init, DataDefCLASS *cdd)
 {
-	if (!init || !cdd) return false;
+	DataDefCLASS *acls = cdd ? initializer_class(init) : NULL;
+	return acls && acls->is_or_derives_from(cdd);
+}
+
+// An unbraced initializer of a class that no conversion turns into the one
+// being initialized, once try_implicit_copy_construct found neither a copy
+// nor a plain conversion function: its class declares no operator template
+// either (a conversion-function template among them). A braced list's
+// element is the aggregate lane's.
+bool CirBuilder::unconvertible_class_source(TokenBase *init, TokenBase *origin)
+{
+	DataDefCLASS *src = initializer_class(init);
+	return src && !ctor_args_are_braced(origin)
+	    && !class_declares_operator_template(src);
+}
+
+DataDefCLASS *CirBuilder::initializer_class(TokenBase *init)
+{
+	if (!init) return NULL;
 	DataDef *ad = operand_value_datadef(init);
 	while (DataDefQUAL *ac = dynamic_cast<DataDefQUAL *>(ad))
 		ad = ac->base_type;
-	DataDefCLASS *acls = dynamic_cast<DataDefCLASS *>(ad);
-	return acls && acls->is_or_derives_from(cdd);
+	return dynamic_cast<DataDefCLASS *>(ad);
 }
 
 bool CirBuilder::braced_class_array_needs_construction(Variable *v,
@@ -20629,9 +20791,14 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 			// A COPY the implicit copy refused is an error, as in the
 			// user-ctor tail. Falling through default-constructed the
 			// object and dropped its source: `P p = q;` with a
-			// polymorphic P left p.x garbage, exit 0.
+			// polymorphic P left p.x garbage, exit 0. So is an object
+			// of another class that converts to none of this one
+			// (g++: "could not convert 'a' from 'A' to 'B'"): `f(a)`
+			// for an `f(B)` passed a default B.
 			if (ctor_args.size() == 1
-			    && initializer_copies_class(ctor_args[0], cdd))
+			    && (initializer_copies_class(ctor_args[0], cdd)
+				|| unconvertible_class_source(ctor_args[0],
+							      origin)))
 				return no_ctor_match_error(cdd, ctor_args, origin);
 		}
 		// NO aggregate leg here: the DECLARATION lanes call this with a
@@ -27229,8 +27396,8 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// means "not a dump intrinsic"; the call path continues.
 			if (node_t dmp = lower_dump_call(tcf, inline_fd, tb))
 				return dmp;
-			// std::format / std::print / std::println: declared in
-			// <bits/std_format>, defined nowhere — the compiler
+			// std::format / std::print / std::println: declared by
+			// the compiler (--std=madc), defined nowhere — the compiler
 			// validates the literal format string and lowers each
 			// field to the rt_format engine (src/cir_format.cpp).
 			if (node_t fmc = lower_format_call(tcf, inline_fd, tb))
@@ -30312,15 +30479,22 @@ void CirBuilder::class_decl_stmts(TokenDecl *sdcl, DataDefCLASS *cdcl,
 		class_decl_construction(sdcl, cdcl, init_items);
 		m_try_body_depth = saved_try_depth;
 		emit_static_local_once(items, init_items, sdcl,
-				       (sdcl->var.flags & vfTHREADLOCAL) != 0);
+				       (sdcl->var.flags & vfTHREADLOCAL) != 0,
+				       &sdcl->var);
 		return;
 	}
 	class_decl_construction(sdcl, cdcl, items);
 }
 
 void CirBuilder::emit_static_local_once(node_t items, node_t init_items,
-					TokenBase *origin, bool per_thread)
+					TokenBase *origin, bool per_thread,
+					Variable *object)
 {
+	// Registered once, after the object is initialized (g++'s guarded
+	// init calls __cxa_atexit inside the guard).
+	if (object)
+		if (node_t reg = static_dtor_registration(object, origin))
+			append(init_items, reg);
 	if (!c2mir_node_first_op(init_items))
 		return;			// nothing to construct: no guard
 	char guard[32], entry[32];
@@ -30834,7 +31008,7 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 					node_t cons = list();
 					append(cons, array_ctor_call(vname.c_str(), tc));
 					emit_static_local_once(items, cons, tc,
-						(v->flags & vfTHREADLOCAL) != 0);
+						(v->flags & vfTHREADLOCAL) != 0, v);
 				} else
 					append(items, array_ctor_call(vname.c_str(), tc));
 			}
@@ -30855,7 +31029,7 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 			if (cc) append(cons, cc);
 			if (once)
 				emit_static_local_once(items, cons, tc,
-					(v->flags & vfTHREADLOCAL) != 0);
+					(v->flags & vfTHREADLOCAL) != 0, v);
 		}
 	}
 
@@ -30912,8 +31086,7 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 				// value over the shared definition (initializer /
 				// ctor-args make it a definition, C semantics).
 				if ((sdcl->var.flags & vfEXTERN)
-				    && !sdcl->initialize && !sdcl->ctor_args_braced
-				    && sdcl->ctor_args.empty())
+				    && !sdcl->has_initializer())
 					continue;
 				// A block-scope static value is constructed and
 				// initialized ONCE ([stmt.dcl]/4): both go into
@@ -30954,7 +31127,8 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 					append(cons, vi);
 				if (once)
 					emit_static_local_once(items, cons, sdcl,
-						(sdcl->var.flags & vfTHREADLOCAL) != 0);
+						(sdcl->var.flags & vfTHREADLOCAL) != 0,
+						&sdcl->var);
 				continue;
 			}
 			// Class instance declared with constructor args `Foo f(a,b)` or an
@@ -32686,6 +32860,11 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 {
 	FuncDef *fd = dynamic_cast<FuncDef *>(tf->var.type);
 	if (!fd) return NULL;
+	// Under a pack freeze, what translating fd creates (a tsubst'd body's
+	// local classes, the instances it names) belongs where fd was created
+	// (pack-slices design §4).
+	Program::PackPoiFrame poi_frame(*m_prog, fd->pack_poi);
+	Program::PackCtxFrame ctx_frame(*m_prog, fd->pack_ctx, false);
 	AnonTagBodyScope anon_tag_scope(m_anon_tags_body, m_in_func_body);
 #ifdef MADC_DEBUG_CTORINIT
 	fprintf(stderr, "[ctorinit] func-def %s\n", tf->var.name.c_str());
@@ -32791,9 +32970,13 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	// binding and wins: c2mir binds the item WEAK, and a strong definition
 	// from another TU replaces it (MIR's replaced_weak_def). Weak requires
 	// external linkage, as for linkonce.
+	// A session's redefinition (D5) is the function's body from now on, so
+	// it is strong: it replaces the copy linked first, where a vague copy
+	// binds to it (CirJitSession::vague_functions_interposable).
 	if (fd->weak_binding && !fd->internal_linkage)
 		append(ret_type, node2(N_ATTR, id("weak", tf), list(), tf));
-	else if (fd->is_linkonce() && tf->var.name != "main")
+	else if (fd->is_linkonce() && tf->var.name != "main"
+		 && !session_redefinition(tf, fd))
 		append(ret_type, node2(N_ATTR, id("linkonce", tf), list(), tf));
 
 	// C internal linkage (`static` file-scope function): N_STATIC makes
@@ -33459,6 +33642,28 @@ node_t CirBuilder::global_ctor_call(Variable *v, DataDefCLASS *cdd, TokenDecl *d
 // built-ins registered via addGlobal (e.g. `version`) are NOT in top_decls, so
 // emit their storage here. Either way, queue the ctor into m_global_ctor_stmts
 // for func_def to run at main entry, in declaration order.
+// The once-guard of a linkonce (C++ `inline`) variable `v`'s dynamic init:
+// `__madc_ivg_<sym>`, itself a linkonce int so the merged image holds one.
+madc::dis::istring CirBuilder::linkonce_init_guard_name(Variable *v)
+{
+	return "__madc_ivg_" + var_emit_name(*v);
+}
+
+node_t CirBuilder::linkonce_init_guard_decl(Variable *v)
+{
+	madc::dis::istring gname = linkonce_init_guard_name(v);
+	node_t gspec = list();
+	append(gspec, node2(N_ATTR, id("linkonce"), list()));
+	append(gspec, simple(N_INT));
+	node_t gdecl = simple(N_SPEC_DECL);
+	append(gdecl, node1(N_SHARE, gspec));
+	append(gdecl, node2(N_DECL, id(gname.c_str()), list()));
+	append(gdecl, ignore());
+	append(gdecl, ignore());
+	append(gdecl, ignore());
+	return gdecl;
+}
+
 void CirBuilder::queue_global_ctor_group(Variable *v, std::vector<node_t> &stmts,
 					 std::vector<node_t> &deferred_globals)
 {
@@ -33471,17 +33676,8 @@ void CirBuilder::queue_global_ctor_group(Variable *v, std::vector<node_t> &stmts
 		// this group, but the merged image holds ONE variable — run the
 		// dynamic init once behind a guard that itself merges weak
 		// (`if (__madc_ivg_<sym> == 0) { __madc_ivg_<sym> = 1; ... }`).
-		madc::dis::istring gname = "__madc_ivg_" + var_emit_name(*v);
-		node_t gspec = list();
-		append(gspec, node2(N_ATTR, id("linkonce"), list()));
-		append(gspec, simple(N_INT));
-		node_t gdecl = simple(N_SPEC_DECL);
-		append(gdecl, node1(N_SHARE, gspec));
-		append(gdecl, node2(N_DECL, id(gname.c_str()), list()));
-		append(gdecl, ignore());
-		append(gdecl, ignore());
-		append(gdecl, ignore());
-		deferred_globals.push_back(gdecl);
+		madc::dis::istring gname = linkonce_init_guard_name(v);
+		deferred_globals.push_back(linkonce_init_guard_decl(v));
 		node_t items = list();
 		append(items, node2(N_EXPR, list(),
 				    node2(N_ASSIGN, id(gname.c_str()), integer(1))));
@@ -33498,6 +33694,41 @@ void CirBuilder::queue_global_ctor_group(Variable *v, std::vector<node_t> &stmts
 		m_global_ctor_stmts.push_back(s);
 		grp.push_back(s);
 	}
+}
+
+// v66: a bound FROZEN_DEF global's init group — the producer's statements in
+// their final shape (a linkonce group is already its guarded block), so only
+// the guard's storage declaration is this module's to emit.
+void CirBuilder::queue_frozen_ctor_group(Variable *v, const std::vector<node_t> &stmts,
+					 std::vector<node_t> &deferred_globals)
+{
+	m_ctor_groups.push_back(std::make_pair(v, stmts));
+	if (stmts.empty())
+		return;
+	if (v->flags & vfLINKONCE)
+		deferred_globals.push_back(linkonce_init_guard_decl(v));
+	for (node_t s : stmts)
+		m_global_ctor_stmts.push_back(s);
+}
+
+// v66: the producer's lowered storage declaration of a bound FROZEN_DEF
+// global (Program::forest_frozen_global_def), or NULL for any other global.
+// Its nodes join m_frozen_global_nodes, whose references the module's
+// reachability fixpoint registers as it does a loaded body's.
+node_t CirBuilder::frozen_global_decl(Variable *v)
+{
+	const Program::ForestFrozenGlobalDef *fz =
+		m_prog && m_prog->bind_forest ? m_prog->forest_frozen_global_def(v) : NULL;
+	if (!fz)
+		return NULL;
+	cir_node *dn = m_prog->bind_forest->node_for(fz->def_unit, fz->def_idx);
+	if (!dn) {
+		fprintf(stderr, "madc: forest global %s: the frozen declaration"
+			" is missing\n", v->name.c_str());
+		return NULL;
+	}
+	m_frozen_global_nodes.push_back(dn->as_node());
+	return dn->as_node();
 }
 
 // The module init runs before an interactive entry's run, so a global the
@@ -33528,12 +33759,37 @@ node_t CirBuilder::global_init_in_place(TokenGlobalInit *gi)
 	return NULL;
 }
 
+// The declaration whose initializer defines global `v`. A session
+// redefinition's is its newest (plan §42 D6: the earlier one's initializer
+// already ran). Otherwise the one that carries an initializer: `extern S s;`
+// ahead of `S s(5);` declares, and the second defines. With none, the first
+// (default initialization).
+static TokenDecl *global_defining_decl(Program *prog, Variable *v)
+{
+	if (prog->session_redefined_objects.count(v)) {
+		const Program::TopDecl *td = prog->latest_object_declaration(v);
+		return td ? td->decl : NULL;
+	}
+	TokenDecl *first = NULL;
+	for (const Program::TopDecl &td : prog->top_decls) {
+		if (td.kind != Program::DeclKind::dkGlobalVar || td.var != v
+		    || !td.decl)
+			continue;
+		if (td.decl->has_initializer())
+			return td.decl;
+		if (!first)
+			first = td.decl;
+	}
+	return first;
+}
+
 void CirBuilder::collect_global_ctors(Program *prog,
 				      std::vector<node_t> &deferred_globals,
 				      std::set<madc::dis::istring> &emitted_globals)
 {
 	m_global_ctor_stmts.clear();
 	m_ctor_groups.clear();
+	m_redefined_destroys.clear();
 	if (!prog || !prog->tkProgram) return;
 	// By index over the LIVE size: translating a global's initializer can
 	// instantiate a template whose objects join tkProgram->variables, and the
@@ -33548,6 +33804,59 @@ void CirBuilder::collect_global_ctors(Program *prog,
 		if ((v->flags & vfLOCAL) && !(v->flags & vfSTATIC)) continue;
 		// An extern is a reference to a definition elsewhere — no storage, no ctor.
 		if (v->flags & vfEXTERN) continue;
+		// A bound FROZEN_DEF global: the producer's init group, verbatim —
+		// its exit-time destruction included. An earlier module of the
+		// interactive session that defines the object ran it.
+		if (const Program::ForestFrozenGlobalDef *fz = prog->bind_forest
+			? prog->forest_frozen_global_def(v) : NULL) {
+			if (session_defines(var_emit_name(*v))
+			    && !prog->session_redefined_objects.count(v))
+				continue;
+			std::vector<node_t> fstmts;
+			for (size_t k = 0; k < fz->init_locs.size(); ++k) {
+				cir_node *sn = prog->bind_forest->node_for(
+					fz->init_locs[k].first, fz->init_locs[k].second);
+				if (!sn) {
+					fprintf(stderr, "madc: forest global %s: the frozen"
+						" init group is missing\n", v->name.c_str());
+					fstmts.clear();
+					break;
+				}
+				fstmts.push_back(sn->as_node());
+			}
+			m_frozen_global_nodes.insert(m_frozen_global_nodes.end(),
+						     fstmts.begin(), fstmts.end());
+			queue_frozen_ctor_group(v, fstmts, deferred_globals);
+			continue;
+		}
+		// The object's exit-time destruction closes its group, after its
+		// initialization: a statically initialized object is destroyed
+		// as if it were initialized there ([basic.start.term]/3), in
+		// declaration order. An earlier module of the interactive session
+		// that defines the object registered it; when this one redefines
+		// the object (D6), the session ends the earlier object before this
+		// module's definition takes its storage.
+		auto add_dtor = [&](std::vector<node_t> &grp) {
+			if (!is_array_object(v->type) && !as_class_instance(v->type))
+				return;
+			if (session_defines(var_emit_name(*v))) {
+				if (!prog->session_redefined_objects.count(v))
+					return;
+				madc::dis::istring d = static_object_destroyer(v, false);
+				if (!d.empty())
+					m_redefined_destroys.push_back(
+						std::make_pair(var_emit_name(*v), d));
+				return;
+			}
+			if (node_t reg = static_dtor_registration(v, NULL))
+				grp.push_back(reg);
+		};
+		auto queue_dtor_only = [&]() {
+			std::vector<node_t> grp;
+			add_dtor(grp);
+			if (!grp.empty())
+				queue_global_ctor_group(v, grp, deferred_globals);
+		};
 		DataDefCLASS *cdd = as_class_instance(v->type);
 		if (!cdd) {
 			// Non-class global with a dynamic (non-constant) scalar
@@ -33555,14 +33864,15 @@ void CirBuilder::collect_global_ctors(Program *prog,
 			// full source assignment here so it runs at main entry
 			// in declaration order, interleaved with class ctors
 			// (the g++ dynamic-initialization model).
-			if (!m_dynamic_global_inits.count(v))
+			if (!m_dynamic_global_inits.count(v)) {
+				queue_dtor_only();
 				continue;
-			TokenDecl *sdecl = NULL;
-			for (auto &td : prog->top_decls)
-				if (td.kind == Program::DeclKind::dkGlobalVar
-				    && td.var == v) { sdecl = td.decl; break; }
-			if (!sdecl)
+			}
+			TokenDecl *sdecl = global_defining_decl(prog, v);
+			if (!sdecl) {
+				queue_dtor_only();
 				continue;
+			}
 			// The CARRIER's ctor-syntax and brace-list globals
 			// (`value g(7);`, `var G = { "a", "b" };`): the args
 			// ride ctor_args, not initialize. The construct family
@@ -33583,28 +33893,34 @@ void CirBuilder::collect_global_ctors(Program *prog,
 				m_pending_stmts.clear();
 				if (cc)
 					cgrp.push_back(cc);
+				add_dtor(cgrp);
 				queue_global_ctor_group(v, cgrp,
 							deferred_globals);
 				continue;
 			}
-			if (!sdecl->initialize)
+			if (!sdecl->initialize) {
+				queue_dtor_only();
 				continue;
+			}
 			node_t as = translate_expr(sdecl->initialize);
 			std::vector<node_t> sgrp_stmts(m_pending_stmts.begin(),
 						       m_pending_stmts.end());
 			m_pending_stmts.clear();
 			if (as)
 				sgrp_stmts.push_back(node2(N_EXPR, list(), as));
+			add_dtor(sgrp_stmts);
 			queue_global_ctor_group(v, sgrp_stmts, deferred_globals);
 			continue;
 		}
 		bool already_emitted = emitted_globals.count(v->name) != 0;
 		// An earlier module of the interactive session defines this object
 		// (plan §41.2a) and ran its construction, or a refused entry did
-		// (§41.3): this module only declares it. A source global is declared by the dkGlobalVar pass (which
+		// (§41.3): this module only declares it, unless it redefines it
+		// (D6: constructed again in the same storage). A source global is declared by the dkGlobalVar pass (which
 		// never queued its dynamic init above); a built-in one is declared
 		// here.
-		if (session_defines(var_emit_name(*v))) {
+		if (session_defines(var_emit_name(*v))
+		    && !prog->session_redefined_objects.count(v)) {
 			if (!already_emitted) {
 				m_extern_decl = true;
 				node_t gd = var_decl(v, NULL);
@@ -33631,10 +33947,8 @@ void CirBuilder::collect_global_ctors(Program *prog,
 			}
 			emitted_globals.insert(v->name);
 		} else {
-			// Source-declared: locate the TokenDecl carrying the initializer.
-			for (auto &td : prog->top_decls)
-				if (td.kind == Program::DeclKind::dkGlobalVar
-				    && td.var == v) { decl = td.decl; break; }
+			// Source-declared: the TokenDecl carrying the initializer.
+			decl = global_defining_decl(prog, v);
 		}
 		node_t cc = global_ctor_call(v, cdd, decl);
 		// Rung 3: record this global's slice of the init statements as a
@@ -33650,6 +33964,7 @@ void CirBuilder::collect_global_ctors(Program *prog,
 		// construction does (class_ctor_call_addr's ctorless arm).
 		if (cc)
 			grp_stmts.push_back(cc);
+		add_dtor(grp_stmts);
 		queue_global_ctor_group(v, grp_stmts, deferred_globals);
 	}
 }
@@ -34191,30 +34506,52 @@ void CirBuilder::synth_call_shims(Program *prog,
 // could link — tests/testdlopen's old exe_skip). LIB is the TARGET spelling
 // the module map chose at compile time; MEMBER the source member name.
 // -----------------------------------------------------------------------
+// The runtime resolver every dyn-module slot is assigned from — the shape
+// cir_collect_dyn_module_slots recognizes in a LOADED body.
+static const char *const k_dyn_module_resolver = "__madc_dl_member";
+
+// `static void *SLOT;` rides the extern-declaration flush: the same map, the
+// same splice into the unit's top level, the same referenced-surface filter
+// (cond_mark_sym keys it by the slot name the call references). Operand
+// layout mirrors need_output_extern's proto: specs, declarator, three ignores
+// (the last is the absent initializer). Declared by dyn_module_callee at the
+// lowering site, and for a LOADED forest body (declare_loaded_body_slots),
+// whose pre-built calls never pass it.
+void CirBuilder::declare_dyn_module_slot(const madc::dis::istring &slot, TokenBase *origin)
+{
+	if (m_output_externs.count(slot))
+		return;
+	node_t specs = list();
+	append(specs, simple(N_STATIC));
+	append(specs, simple(N_VOID));
+	node_t sd = simple(N_SPEC_DECL, origin);
+	append(sd, node1(N_SHARE, specs));
+	append(sd, node2(N_DECL, id(slot.c_str(), origin),
+			 node1(N_LIST, pointer())));
+	append(sd, ignore());
+	append(sd, ignore());
+	append(sd, ignore());
+	m_output_externs[slot] = sd;
+}
+
+// A loaded forest body's dyn-module calls carry their slot assignments
+// pre-built (a dialect fragment's wrapper over its imported LAZY module):
+// declare each slot as the lowering site would have.
+void CirBuilder::declare_loaded_body_slots(node_t body)
+{
+	std::set<madc::dis::istring> slots;
+	cir_collect_dyn_module_slots(body, slots);
+	for (std::set<madc::dis::istring>::const_iterator it = slots.begin();
+	     it != slots.end(); ++it)
+		declare_dyn_module_slot(*it, NULL);
+}
+
 node_t CirBuilder::dyn_module_callee(FuncDef *fd, const madc::dis::istring &callee_name,
 				     TokenBase *origin)
 {
 	madc::dis::istring slot = callee_name + "_slot";
-	if (!m_output_externs.count(slot)) {
-		// `static void *SLOT;` rides the extern-declaration flush: the
-		// same map, the same splice into the unit's top level, the same
-		// referenced-surface filter (cond_mark_sym keys it by the slot
-		// name the call below references). Operand layout mirrors
-		// need_output_extern's proto: specs, declarator, three ignores
-		// (the last is the absent initializer).
-		node_t specs = list();
-		append(specs, simple(N_STATIC));
-		append(specs, simple(N_VOID));
-		node_t sd = simple(N_SPEC_DECL, origin);
-		append(sd, node1(N_SHARE, specs));
-		append(sd, node2(N_DECL, id(slot.c_str(), origin),
-				 node1(N_LIST, pointer())));
-		append(sd, ignore());
-		append(sd, ignore());
-		append(sd, ignore());
-		m_output_externs[slot] = sd;
-	}
-	need_output_extern("__madc_dl_member", true,
+	declare_dyn_module_slot(slot, origin);
+	need_output_extern(k_dyn_module_resolver, true,
 			   { { {N_CHAR}, true }, { {N_CHAR}, true } });
 	// N_STR len counts the terminating NUL (the str() contract every other
 	// literal mint follows: strlen + 1).
@@ -34223,7 +34560,7 @@ node_t CirBuilder::dyn_module_callee(FuncDef *fd, const madc::dis::istring &call
 			 fd->dyn_module_library.size() + 1, origin));
 	append(args, str(fd->dyn_module_member.c_str(),
 			 fd->dyn_module_member.size() + 1, origin));
-	node_t resolve = node2(N_CALL, id("__madc_dl_member", origin), args, origin);
+	node_t resolve = node2(N_CALL, id(k_dyn_module_resolver, origin), args, origin);
 	node_t assign = node2(N_ASSIGN, id(slot.c_str(), origin), resolve, origin);
 	node_t pick = node3(N_COND, id(slot.c_str(), origin),
 			    id(slot.c_str(), origin), assign, origin);
@@ -34868,6 +35205,20 @@ bool CirBuilder::session_awaits(const madc::dis::istring &sym) const
 	return m_prog && m_prog->session_awaited.count(sym) != 0;
 }
 
+// Plan §42 D6: is TD the newest declaration of an object this unit redefines?
+bool CirBuilder::session_object_redefinition(const Program::TopDecl &td) const
+{
+	return m_prog && td.var && m_prog->session_redefined_objects.count(td.var)
+	       && m_prog->latest_object_declaration(td.var) == &td;
+}
+
+// Plan §42 D5: is TF the newest definition of a function this unit redefines?
+bool CirBuilder::session_redefinition(TokenFunc *tf, FuncDef *fd) const
+{
+	return m_prog && fd && m_prog->session_redefined.count(fd)
+	       && m_prog->latest_function_definition(&tf->var, fd) == tf;
+}
+
 // Plan §42 D27, slice 2: does this interactive entry's code read V through a
 // session cell? V is an object with static storage that an entry declared
 // (`extern int x;`, a class's static data member) and that nothing defines:
@@ -34949,6 +35300,7 @@ node_t CirBuilder::translate_module(Program *prog)
 	m_cond_nodes.clear();
 	m_ctor_groups.clear();
 	m_global_decl_node.clear();
+	m_frozen_global_nodes.clear();
 	// Emittable-set memo: reset per module so a builder reused across
 	// Programs never carries verdicts (or dangling seen-keys) over.
 	m_synth_dtor_syms_memo.clear();
@@ -35114,9 +35466,8 @@ node_t CirBuilder::translate_module(Program *prog)
 		const char *file = prog->top_decl_position(td, line, &column);
 		if (td.origin) {
 			// The origin token is the node's +madc origin; the node's
-			// src_*() derive from it. c2mir's absolute store takes the
-			// declaration's own place (top_decl_position: a qualified
-			// typedef name's token is its header's, BUGS.md B94).
+			// src_*() derive from it, and c2mir's absolute store takes
+			// the same place (top_decl_position, the one reader).
 			cn->origin_id = madc_slot_id_for(td.origin);
 			set_pos(cn, file, line, column);
 		} else if (file) {
@@ -35254,15 +35605,23 @@ node_t CirBuilder::translate_module(Program *prog)
 				// An earlier module of the interactive session owns
 				// this global (plan §41.2a), or a refused entry does
 				// (§41.3): declare it `extern`, with no initializer, so
-				// this module reads the live storage.
-				const bool earlier = session_defines(var_emit_name(*td.var));
+				// this module reads the live storage. A redefinition's
+				// newest declaration defines it (D6).
+				const bool earlier = session_defines(var_emit_name(*td.var))
+						     && !session_object_redefinition(td);
+				// A bound FROZEN_DEF global: the producer's lowered
+				// declaration, verbatim (it carries its own position).
+				node_t gd = earlier ? NULL : frozen_global_decl(td.var);
+				const bool frozen = gd != NULL;
 				m_file_scope_decl = true;
 				m_extern_decl = earlier;
-				node_t gd = var_decl(td.var, earlier ? NULL : td.decl);
+				if (!gd)
+					gd = var_decl(td.var, earlier ? NULL : td.decl);
 				m_extern_decl = false;
 				m_file_scope_decl = false;
 				if (gd) {
-					stamp(gd, td);
+					if (!frozen)
+						stamp(gd, td);
 					deferred_globals.push_back(gd);
 					m_global_decl_node[td.var] = gd;
 					// A file-scope STATIC with dynamic init is
@@ -35400,8 +35759,10 @@ node_t CirBuilder::translate_module(Program *prog)
 		FuncDef *tfd = dynamic_cast<FuncDef *>(tf->var.type);
 		// An earlier module of the interactive session defines this
 		// function (plan §41.2a), or a refused entry did (§41.3): Pass 1
-		// still prototypes it, and the call links to the live body.
-		if (session_defines(func_emit_name(tf->var, tfd)))
+		// still prototypes it, and the call links to the live body. A
+		// redefinition's newest body is this module's (D5).
+		if (session_defines(func_emit_name(tf->var, tfd))
+		    && !session_redefinition(tf, tfd))
 			continue;
 		bool sys = tfd && prog->is_system_header_path(tf->file);
 		// An interactive entry emits a vague-linkage body (in-class,
@@ -35417,6 +35778,10 @@ node_t CirBuilder::translate_module(Program *prog)
 		// That is Julia's late binding. clang-repl never emits a body its
 		// own input does not use, so the earlier call fails there.
 		if (on_use && session_awaits(func_emit_name(tf->var, tfd)))
+			on_use = false;
+		// A redefinition replaces the body an earlier entry linked (D5),
+		// used here or not: its body is this module's.
+		if (on_use && session_redefinition(tf, tfd))
 			on_use = false;
 		if (rs_probe && *rs_probe
 		    && tf->var.name.find(rs_probe) != madc::dis::istring::npos)
@@ -35643,7 +36008,106 @@ node_t CirBuilder::translate_module(Program *prog)
 	// revert to DEFBODY is a consumer-derivable home (the on-use
 	// derivation), so callers of it stay frozen. Drops are recorded via
 	// the pack_record_drop member (shared with the post-translate gate).
+	size_t frozen_refs_done = 0;	// m_frozen_global_nodes registered so far
 	auto materialize_and_lower = [&]() {
+		// A LOADED node's references (a forest lazy body, a bound FROZEN_DEF
+		// global's declaration or init statement): its saved lowering is
+		// pre-built, so register its callees, cleanup functions, dyn-module
+		// slots and function references exactly as translating it live would
+		// have. `decl_initializer`: also the declaration's initializer values.
+		auto register_loaded_refs = [&](node_t bn, bool decl_initializer,
+						const madc::dis::istring &from) -> bool {
+			bool grew = false;
+			std::set<madc::dis::istring> callees;
+			cir_collect_call_callees(bn, callees);
+			// A dtor referenced ONLY via a scope-local's cleanup
+			// attribute (live registers it at the lowering site,
+			// which a pre-built loaded body never runs).
+			cir_collect_cleanup_attr_fns(bn, callees);
+			declare_loaded_body_slots(bn);
+			// v25: a fn referenced as a CALL ARGUMENT in the loaded
+			// body (`__stoa(strtod, ...)` — decayed bare N_ID, or
+			// `&f`). Live's argument lowering declares it via
+			// need_output_extern; reproduce that shape by loading
+			// the producer's OWN extern decl from the index (a
+			// local/param name misses the index and is ignored).
+			{
+				std::set<madc::dis::istring> arg_refs;
+				cir_collect_addr_fn_refs(bn, arg_refs);
+				if (decl_initializer)
+					cir_collect_initializer_ids(bn, arg_refs);
+				for (std::set<madc::dis::istring>::iterator ai =
+				     arg_refs.begin(); ai != arg_refs.end(); ++ai) {
+					if (m_output_externs.count(*ai))
+						continue;
+					uint32_t xu = 0, xi = 0;
+					if (!prog->bind_forest->extern_loc_for(*ai, xu, xi)) {
+						// Not an extern DECL in the producer: the
+						// argument may name a forest-BODIED sibling
+						// (mingw's static-inline strtof passed as
+						// __stoa's converter) — odr-use by address
+						// needs its DEFINITION, exactly as live's
+						// value-use lowering records it. Route it
+						// through referenced_funcs so this same
+						// fixpoint materializes the saved body /
+						// deferred derivation next round; a local or
+						// parameter name is inert there (no funcdef,
+						// no lazy body — nothing keys on it).
+						if (!referenced_funcs.count(*ai)) {
+							referenced_funcs.insert(*ai);
+							grew = true;
+						}
+						continue;
+					}
+					cir_node *xd = prog->bind_forest->node_for(xu, xi);
+					if (xd) {
+						m_output_externs[*ai] = xd->as_node();
+						DBG(std::cout << "forest arg-ref extern: "
+						    << *ai << " (from " << from
+						    << ")" << std::endl);
+					}
+				}
+			}
+			for (std::set<madc::dis::istring>::iterator ci = callees.begin();
+			     ci != callees.end(); ++ci) {
+				// A callee with NO in-TU definition source (not a
+				// bound lazy body, not a deferred/lib body) whose
+				// declaration only ever came from a LOWERING site
+				// (operator new/delete manglings, dlsym-fallback
+				// libc fns, the __madc_* runtime) never gets that
+				// declaration here — the loaded body's calls are
+				// pre-built — and c2mir would implicit-int it
+				// (truncated pointers: the setjmp / operator-new
+				// ext32 SIGSEGV class). LOAD the producer's own
+				// extern decl node for it (verbatim state); the
+				// existing m_output_externs flush places + dedupes
+				// it exactly like a live-lowered extern. Fallback:
+				// the compiler-runtime table (same live shapes).
+				const madc::dis::istring &ck = prog->body_registration_key(*ci);
+				if (!forest_lazy.count(ck)
+				    && !lib_funcs.count(*ci)
+				    && !prog->has_deferred_lazy_body(*ci)
+				    && (pass075_done
+					? !typed_proto_syms.count(*ci)
+					: !forest_funcdef_syms.count(ck)
+					  && !prog->funcdef_map.count(ck)
+					  && !prog->forest_deferred_funcs.count(ck))
+				    && !m_output_externs.count(*ci)) {
+					uint32_t xu = 0, xi = 0;
+					if (prog->bind_forest->extern_loc_for(*ci, xu, xi)) {
+						cir_node *xd = prog->bind_forest->node_for(xu, xi);
+						if (xd) {
+							m_output_externs[*ci] = xd->as_node();
+							continue;
+						}
+					}
+					if (ensure_runtime_extern_for(*ci))
+						continue;
+				}
+				referenced_funcs.insert(*ci);
+			}
+			return grew;
+		};
 		for (bool grew = true; grew; ) {
 			grew = false;
 			// Promote only verdict-0 forest functions whose compiler
@@ -35915,6 +36379,16 @@ node_t CirBuilder::translate_module(Program *prog)
 			// deferred body — and register the body's callees exactly as
 			// translating it live would have (the saved lowered body's
 			// N_CALLs are pre-built, invisible to referenced_funcs).
+			// v66: the bound FROZEN_DEF globals' loaded declarations and
+			// init statements (queued ahead of this fixpoint) register
+			// their references once, as a loaded body's do.
+			for (; frozen_refs_done < m_frozen_global_nodes.size();
+			     ++frozen_refs_done) {
+				node_t gn = m_frozen_global_nodes[frozen_refs_done];
+				register_loaded_refs(gn, gn->code == N_SPEC_DECL,
+						     "frozen global");
+				grew = true;
+			}
 			for (auto &kv : forest_lazy) {
 				if (forest_lazy_emitted.count(kv.first)) continue;
 				FuncDef *ffd = kv.second;
@@ -35941,91 +36415,8 @@ node_t CirBuilder::translate_module(Program *prog)
 					ffd->forest_body_unit, ffd->forest_body_idx);	// memoized
 				if (!body) continue;
 				node_t bn = body->as_node();
-				std::set<madc::dis::istring> callees;
-				cir_collect_call_callees(bn, callees);
-				// A dtor referenced ONLY via a scope-local's cleanup
-				// attribute (live registers it at the lowering site,
-				// which a pre-built loaded body never runs).
-				cir_collect_cleanup_attr_fns(bn, callees);
-				// v25: a fn referenced as a CALL ARGUMENT in the loaded
-				// body (`__stoa(strtod, ...)` — decayed bare N_ID, or
-				// `&f`). Live's argument lowering declares it via
-				// need_output_extern; reproduce that shape by loading
-				// the producer's OWN extern decl from the index (a
-				// local/param name misses the index and is ignored).
-				{
-					std::set<madc::dis::istring> arg_refs;
-					cir_collect_addr_fn_refs(bn, arg_refs);
-					for (std::set<madc::dis::istring>::iterator ai =
-					     arg_refs.begin(); ai != arg_refs.end(); ++ai) {
-						if (m_output_externs.count(*ai))
-							continue;
-						uint32_t xu = 0, xi = 0;
-						if (!prog->bind_forest->extern_loc_for(*ai, xu, xi)) {
-							// Not an extern DECL in the producer: the
-							// argument may name a forest-BODIED sibling
-							// (mingw's static-inline strtof passed as
-							// __stoa's converter) — odr-use by address
-							// needs its DEFINITION, exactly as live's
-							// value-use lowering records it. Route it
-							// through referenced_funcs so this same
-							// fixpoint materializes the saved body /
-							// deferred derivation next round; a local or
-							// parameter name is inert there (no funcdef,
-							// no lazy body — nothing keys on it).
-							if (!referenced_funcs.count(*ai)) {
-								referenced_funcs.insert(*ai);
-								grew = true;
-							}
-							continue;
-						}
-						cir_node *xd = prog->bind_forest->node_for(xu, xi);
-						if (xd) {
-							m_output_externs[*ai] = xd->as_node();
-							DBG(std::cout << "forest arg-ref extern: "
-							    << *ai << " (from " << kv.first
-							    << ")" << std::endl);
-						}
-					}
-				}
-				for (std::set<madc::dis::istring>::iterator ci = callees.begin();
-				     ci != callees.end(); ++ci) {
-					// A callee with NO in-TU definition source (not a
-					// bound lazy body, not a deferred/lib body) whose
-					// declaration only ever came from a LOWERING site
-					// (operator new/delete manglings, dlsym-fallback
-					// libc fns, the __madc_* runtime) never gets that
-					// declaration here — the loaded body's calls are
-					// pre-built — and c2mir would implicit-int it
-					// (truncated pointers: the setjmp / operator-new
-					// ext32 SIGSEGV class). LOAD the producer's own
-					// extern decl node for it (verbatim state); the
-					// existing m_output_externs flush places + dedupes
-					// it exactly like a live-lowered extern. Fallback:
-					// the compiler-runtime table (same live shapes).
-					const madc::dis::istring &ck = prog->body_registration_key(*ci);
-					if (!forest_lazy.count(ck)
-					    && !lib_funcs.count(*ci)
-					    && !prog->has_deferred_lazy_body(*ci)
-					    && (pass075_done
-						? !typed_proto_syms.count(*ci)
-						: !forest_funcdef_syms.count(ck)
-						  && !prog->funcdef_map.count(ck)
-						  && !prog->forest_deferred_funcs.count(ck))
-					    && !m_output_externs.count(*ci)) {
-						uint32_t xu = 0, xi = 0;
-						if (prog->bind_forest->extern_loc_for(*ci, xu, xi)) {
-							cir_node *xd = prog->bind_forest->node_for(xu, xi);
-							if (xd) {
-								m_output_externs[*ci] = xd->as_node();
-								continue;
-							}
-						}
-						if (ensure_runtime_extern_for(*ci))
-							continue;
-					}
-					referenced_funcs.insert(*ci);
-				}
+				if (register_loaded_refs(bn, false, kv.first))
+					grew = true;
 				node_t proto = forest_fwd_proto(bn);
 				// The symbol this body DEFINES is its own declared id
 				// (the frozen lowered name): a header inline namespace
@@ -37161,6 +37552,7 @@ node_t CirBuilder::translate_module(Program *prog)
 			cir_collect_call_callees(body->as_node(), callees);
 			// Sibling bound dtors referenced only via cleanup attrs.
 			cir_collect_cleanup_attr_fns(body->as_node(), callees);
+			declare_loaded_body_slots(body->as_node());
 			for (std::set<madc::dis::istring>::iterator ci = callees.begin();
 			     ci != callees.end(); ++ci) {
 				const madc::dis::istring &ck = prog->body_registration_key(*ci);
@@ -37639,6 +38031,61 @@ void cir_collect_addr_fn_refs(node_t n, std::set<madc::dis::istring> &out)
 			node_t op = c2mir_node_op(n, i);
 			if (!op) break;
 			cir_collect_addr_fn_refs(op, out);
+		}
+}
+
+// v66: every identifier a FROZEN declaration's initializer names as a value
+// — a bound FROZEN_DEF global's (`{ open, close, ..., "ns_ui_ws" }`: functions
+// as address constants). Live's initializer lowering declares each at its
+// lowering site; the loaded declaration is pre-built, so the materialization
+// site resolves them the way it does a loaded body's call arguments. Type
+// names, designators and member names are not values.
+static void cir_collect_value_ids(node_t n, std::set<madc::dis::istring> &out)
+{
+	if (!n) return;
+	if (n->code == N_ID) {
+		if (n->u.s.s)
+			out.insert(n->u.s.s);
+		return;
+	}
+	if (n->code < N_ID || n->code == N_TYPE || n->code == N_FIELD_ID)
+		return;
+	if (n->code == N_FIELD || n->code == N_DEREF_FIELD) {
+		cir_collect_value_ids(c2mir_node_op(n, 0), out);
+		return;
+	}
+	for (node_t op = c2mir_node_first_op(n); op; op = c2mir_node_next_op(op))
+		cir_collect_value_ids(op, out);
+}
+
+void cir_collect_initializer_ids(node_t decl, std::set<madc::dis::istring> &out)
+{
+	if (decl && decl->code == N_SPEC_DECL)
+		cir_collect_value_ids(c2mir_node_op(decl, 4), out);	// op4: initializer
+}
+
+// Collect the slot of every dyn-module call in the tree: the N_ID a
+// `SLOT = __madc_dl_member(LIB, MEMBER)` assignment writes
+// (CirBuilder::dyn_module_callee's shape). FOREST materialization sites only:
+// a loaded body's pre-built call never passes the lowering site that declares
+// its slot (declare_loaded_body_slots).
+void cir_collect_dyn_module_slots(node_t n, std::set<madc::dis::istring> &out)
+{
+	if (!n) return;
+	if (n->code == N_ASSIGN) {
+		node_t lhs = c2mir_node_op(n, 0);
+		node_t rhs = c2mir_node_op(n, 1);
+		node_t callee = rhs && rhs->code == N_CALL ? c2mir_node_op(rhs, 0) : NULL;
+		if (lhs && lhs->code == N_ID && lhs->u.s.s
+		    && callee && callee->code == N_ID && callee->u.s.s
+		    && !strcmp(callee->u.s.s, k_dyn_module_resolver))
+			out.insert(lhs->u.s.s);
+	}
+	if (n->code > N_ID)
+		for (int i = 0; ; i++) {
+			node_t op = c2mir_node_op(n, i);
+			if (!op) break;
+			cir_collect_dyn_module_slots(op, out);
 		}
 }
 

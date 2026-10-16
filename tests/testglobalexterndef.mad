@@ -1,0 +1,13 @@
+// A global declared `extern` ahead of its definition is initialized by the
+// definition: `extern S s; S s(5);` constructs s with 5, and `extern int g;
+// int g = f();` runs f. madc took the first declaration's (absent)
+// initializer: s was default-constructed (-1) and g stayed 0.
+// Oracle: g++ and clang++ print exactly the .expect line.
+#include <stdio.h>
+struct S { int a; S() : a(-1) {} S(int x) : a(x) {} };
+extern S s;
+S s(5);
+int f() { return 7; }
+extern int g;
+int g = f();
+int main() { printf("defined %d %d\n", s.a, g); }

@@ -1,0 +1,9 @@
+area 6
+twin 9 12
+version 10 9 48
+overloads 3 7
+P#1{ .x = 3 }
+P{ .x = 2, .y = 5 }
+virtual 1 2 2
+self twin 6 24
+N{ .v = 2, .next = (N *) nullptr, .w = 0 }

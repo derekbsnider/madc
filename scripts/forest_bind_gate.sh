@@ -896,6 +896,73 @@ rm -f "$sh_snap" "$sh_log" tmp/fbgate_share.cpp tmp/fbgate_share_println.cpp \
       tmp/fbgate_share_var.cpp tmp/fbgate_share_nomain.cpp
 echo "forest_bind_gate: [sharegate] OK — the madc profile binds for gnu++17 and c++17 with no madc extras; c++20 does not bind"
 
+# --- case: dialectbind (pack-slices design §7: the dialect surface binds directly) ---
+# A dialect fragment frozen into the madc profile binds DIRECTLY for a madc
+# consumer that names it (a bare php:: name) — no #include — with output ==
+# its text's. A strict C++ consumer that #includes a fragment strict C++ can
+# parse (bits/ui_enums) never binds its unit (frozen under the dialect's
+# parse): it parses the text. (That
+# --no-forest-bind leaves the dialect bound needs a binary that carries its
+# own container: parse_cost_gate's dialect.live row on the packed release —
+# it runs --no-forest-bind, and a dialect that stopped binding regrows it.)
+printf '#include <ns_php>\n#include <bits/ui_enums>\nint main() { return 0; }\n' > tmp/fbgate_dialect.cpp
+printf '#include <bits/ui_enums>\nint main() { return (int)ui::WEB; }\n' > tmp/fbgate_dialect_strict.cpp
+printf 'int main() { println("{}", php::strtoupper("ok")); return 0; }\n' > tmp/fbgate_dialect.mad
+db_snap=tmp/fbgate_dialect.msnap
+db_log=tmp/fbgate_dialect.log
+rm -f "$db_snap"
+timeout 600 "$BIN" --std=madc --freeze="$db_snap" --freeze-also-std=gnu++17 --freeze-also-std=c++17 \
+    tmp/fbgate_dialect.cpp >"$db_log" 2>&1 || fail "[dialectbind] the madc freeze of <ns_php> FAILED: $(tail -n 3 "$db_log")"
+db_text=$(timeout 60 "$BIN" tmp/fbgate_dialect.mad 2>&1)
+db_out=$(timeout 60 "$BIN" --forest-bind="$db_snap" tmp/fbgate_dialect.mad 2>&1)
+[ "$db_out" = "OK" ] && [ "$db_out" = "$db_text" ] \
+    || fail "[dialectbind] the madc consumer printed '$db_out' (text '$db_text', want 'OK')"
+timeout 60 "$BIN" -v --forest-bind="$db_snap" tmp/fbgate_dialect.mad >"$db_log" 2>/dev/null
+grep -aq "dialect: <ns_php> bound directly to grove unit" "$db_log" \
+    || fail "[dialectbind] the madc consumer did not bind <ns_php> directly"
+if grep -aq "^#include <ns_php>" "$db_log"; then
+    fail "[dialectbind] the madc consumer served <ns_php> through an #include"
+fi
+for db_std in c++17 gnu++17; do
+    timeout 60 "$BIN" -v --std=$db_std --forest-bind="$db_snap" tmp/fbgate_dialect_strict.cpp >"$db_log" 2>&1
+    db_rc=$?
+    [ "$db_rc" -eq 3 ] \
+        || fail "[dialectbind] the $db_std compile of <bits/ui_enums> exited $db_rc (want ui::WEB = 3): $(tail -n 3 "$db_log")"
+    if grep -aqE "bound to grove unit [0-9]+ \(bits/ui_enums\)" "$db_log"; then
+        fail "[dialectbind] a $db_std consumer BOUND the dialect fragment's unit"
+    fi
+done
+rm -f "$db_snap" "$db_log" tmp/fbgate_dialect.cpp tmp/fbgate_dialect_strict.cpp tmp/fbgate_dialect.mad
+echo "forest_bind_gate: [dialectbind] OK — a madc compile binds <ns_php> directly (output == its text's); c++17 and gnu++17 parse <bits/ui_enums>, never bind it"
+
+# --- case: nsenum (a namespaced unscoped enumerator's identity) ---------------
+# An unscoped enumerator inside a namespace is that namespace's member
+# ([dcl.enum]/11). The freeze deduped globals by BARE name (fbb::X lost to
+# fba::X) and the restore bound none to its namespace (fba::X "is not a
+# member of namespace 'fba'"); both now key on live's identity — the
+# namespace's member, else the program's name. A tagged enum's enumerator is
+# also indexed under the tag (gtag::GA): that index is the tag's, never the
+# enumerator's scope — GA stays a global.
+cat > tmp/fbgate_nsenum.h <<'EOF'
+#ifndef FBGATE_NSENUM_H
+#define FBGATE_NSENUM_H
+namespace fba { enum mode { X = 1, Y = 2 }; }
+namespace fbb { enum kind { X = 7, Z = 9 }; }
+enum gtag { GA = 5 };
+#endif
+EOF
+cat > tmp/fbgate_nsenum_producer.cpp <<'EOF'
+#include <fbgate_nsenum.h>
+int main() { return 0; }
+EOF
+cat > tmp/fbgate_nsenum_consumer.cpp <<'EOF'
+#include <stdio.h>
+#include <fbgate_nsenum.h>
+int main() { printf("%d %d %d %d %d %d\n", (int)fba::X, (int)fbb::X, (int)fba::Y, (int)fbb::Z, (int)GA, (int)gtag::GA); return 0; }
+EOF
+run_case nsenum "1 7 2 9 5 5"
+rm -f tmp/fbgate_nsenum.h tmp/fbgate_nsenum_producer.cpp tmp/fbgate_nsenum_consumer.cpp
+
 # --- case: armreplay (2026-10-11, forest v55: a skipped directive-only arm replays) ---
 # A unit whose `#ifndef X` arm was skipped at freeze because an EARLIER corpus
 # sibling defined X carries none of that arm (mingw stdio.h's NULL behind the
@@ -1006,6 +1073,63 @@ grep -aq "bound to grove unit.*fbgate_repl.h" "$rr_log" \
     || fail "[replreuse] the consumer never bound the frozen header (vacuous)"
 rm -rf "$rr_snap" "$rr_log" tmp/fbgate_repl tmp/fbgate_repl_producer.mad tmp/fbgate_repl_consumer.mad tmp/fbgate_repl_input.txt
 echo "forest_bind_gate: [replreuse] OK — a REPL entry re-touching a frozen body gets its own nodes"
+
+# --- case: replate (2026-10-15: a REPL entry's later #include binds) ---
+# A header an interactive entry includes AFTER the session's first decl
+# restore BINDS from the grove, and its records register: the restore runs
+# again for every entry that bound a unit, registering what the wider closure
+# admits (forest_restore_decls' per-record state). The struct's members, the
+# class template and the inline function all resolve. Negative controls: the
+# one-shot restore left the late unit's records out ("Unidentified member
+# 'year'"), and its successor declined the bind so the header's text parsed —
+# the output is right there, so the bound line below is what fails it.
+mkdir -p tmp/fbgate_late
+cat > tmp/fbgate_late/fbgate_late_a.h <<'EOF'
+#ifndef FBGATE_LATE_A_H
+#define FBGATE_LATE_A_H
+inline int fbg_late_one() { return 1; }
+#endif
+EOF
+cat > tmp/fbgate_late/fbgate_late_b.h <<'EOF'
+#ifndef FBGATE_LATE_B_H
+#define FBGATE_LATE_B_H
+struct fbg_late_rec { int year; int day; };
+template<class T> struct fbg_late_box { T v; T get() const { return v; } };
+inline int fbg_late_sum(int a, int b) { return a + b; }
+#endif
+EOF
+cat > tmp/fbgate_late_producer.mad <<'EOF'
+#include <fbgate_late_a.h>
+#include <fbgate_late_b.h>
+int main() { fbg_late_box<int> b; b.v = fbg_late_one(); return b.get() - 1; }
+EOF
+cat > tmp/fbgate_late_consumer.mad <<'EOF'
+#include <fbgate_late_a.h>
+#include <cstdio>
+int main() { printf("main %d\n", fbg_late_one()); return 0; }
+EOF
+cat > tmp/fbgate_late_input.txt <<'EOF'
+#include <fbgate_late_b.h>
+fbg_late_rec r; r.year = 5; printf("year=%d\n", r.year);
+fbg_late_box<int> b; b.v = 7; printf("box=%d sum=%d\n", b.get(), fbg_late_sum(2, 3));
+EOF
+lt_snap=tmp/fbgate_late.msnap
+lt_log=tmp/fbgate_late.log
+rm -f "$lt_snap"
+timeout 600 "$BIN" --freeze="$lt_snap" -I tmp/fbgate_late tmp/fbgate_late_producer.mad \
+    >"$lt_log" 2>&1 || fail "[replate] the freeze FAILED: $(tail -n 3 "$lt_log")"
+lt_out=$(timeout 60 "$BIN" --forest-bind="$lt_snap" -I tmp/fbgate_late -i tmp/fbgate_late_consumer.mad \
+    < tmp/fbgate_late_input.txt 2>&1)
+[ "$lt_out" = "$(printf 'main 1\nyear=5\nbox=7 sum=5')" ] \
+    || fail "[replate] REPL output '$lt_out' != 'main 1 / year=5 / box=7 sum=5'"
+timeout 60 "$BIN" -v --forest-bind="$lt_snap" -I tmp/fbgate_late -i tmp/fbgate_late_consumer.mad \
+    < tmp/fbgate_late_input.txt >"$lt_log" 2>/dev/null
+grep -aq "bound to grove unit.*fbgate_late_a.h" "$lt_log" \
+    || fail "[replate] the consumer never bound its first header (vacuous)"
+grep -aq "bound to grove unit.*fbgate_late_b.h" "$lt_log" \
+    || fail "[replate] the entry's later #include did not BIND (its text parsed)"
+rm -rf "$lt_snap" "$lt_log" tmp/fbgate_late tmp/fbgate_late_producer.mad tmp/fbgate_late_consumer.mad tmp/fbgate_late_input.txt
+echo "forest_bind_gate: [replate] OK — a REPL entry's later #include binds and its records register"
 
 # --- case: reprogate (2026-10-11: a freeze is reproducible) ---
 # --dump-forest's `content` line digests the frozen corpus with the producer

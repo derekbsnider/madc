@@ -6,6 +6,7 @@
 //////////////////////////////////////////////////////////////////////////
 #define __DATADEF_H 1
 
+#include <atomic>
 #include <cstdint>
 #include <iostream>
 #include <map>
@@ -42,6 +43,35 @@ extern thread_local bool madc_no_warnings;
 // True only while the production parser is building an isolated class pattern.
 // DataDefs born in that scope retain speculative provenance after rollback.
 extern thread_local bool madc_class_pattern_capture_active;
+// The point of creation open while a pack freeze records
+// (Program::pack_current_poi — kept current by every frame push / pop),
+// 0xffffffff otherwise. A DataDef born under it keeps it (DataDef::pack_poi):
+// the freeze writes some records long after their entity was made, and the
+// seed index places each with the unit that made it (pack-slices design §4).
+extern thread_local uint32_t madc_pack_creation_poi;
+// The instantiation in progress while a pack freeze records — its key (a class
+// product's registered name, a function instance's inst_key), empty outside
+// one; kept current by Program::PackCtxFrame. A DataDef or Variable born under
+// it keeps it (pack_ctx): what an instantiation makes is restored with that
+// product, whichever unit asked for it (pack-slices design §4).
+extern thread_local madc::dis::istring madc_pack_creation_ctx;
+// Set once any program in the process records a pack freeze
+// (Program::begin_pack_recording); never cleared. The stamps above move only
+// while a freeze records, so a compile with no freeze in its process reads
+// their defaults without the thread-local access every DataDef and Variable
+// would otherwise pay. Contract: process-wide, monotone, relaxed loads; the
+// stamps stay per-thread.
+extern std::atomic<bool> madc_pack_stamping;
+inline uint32_t madc_pack_stamp_poi()
+{
+    return madc_pack_stamping.load(std::memory_order_relaxed)
+	? madc_pack_creation_poi : 0xffffffffu;
+}
+inline madc::dis::istring madc_pack_stamp_ctx()
+{
+    return madc_pack_stamping.load(std::memory_order_relaxed)
+	? madc_pack_creation_ctx : madc::dis::istring();
+}
 
 // An argument expression's value category for reference binding
 // ([basic.lval]); a prvalue and an xvalue bind a reference alike
@@ -579,16 +609,20 @@ public:
     // Intrinsic provenance for temporary semantic objects born while an
     // isolated class-pattern production parse is active.
     bool	 speculative_class_capture;
+    uint32_t	 pack_poi;	// madc_pack_creation_poi at birth (a freeze's own)
+    madc::dis::istring pack_ctx;	// madc_pack_creation_ctx at birth (a freeze's own)
     DataDef()
 	: _type(0), name(), size(0), canonical_cpp_spelling_(),
 	  despaced_canonical_(), despaced_canonical_valid_(false),
 	  canonical_swept(false), type_id(0), scalar_alias_of(NULL),
-	  speculative_class_capture(madc_class_pattern_capture_active) {}
+	  speculative_class_capture(madc_class_pattern_capture_active),
+	  pack_poi(madc_pack_stamp_poi()), pack_ctx(madc_pack_stamp_ctx()) {}
     DataDef(madc::dis::istring n, size_t s, DataType d)
 	: _type((uint32_t)d), name(n), size(s), canonical_cpp_spelling_(),
 	  despaced_canonical_(), despaced_canonical_valid_(false),
 	  canonical_swept(false), type_id(0), scalar_alias_of(NULL),
-	  speculative_class_capture(madc_class_pattern_capture_active) {}
+	  speculative_class_capture(madc_class_pattern_capture_active),
+	  pack_poi(madc_pack_stamp_poi()), pack_ctx(madc_pack_stamp_ctx()) {}
     // The derived key travels WITH the spelling it was derived from: copying
     // one without the other is what would make the cache lie.
     DataDef(const DataDef &other)
@@ -599,7 +633,8 @@ public:
 	  canonical_swept(other.canonical_swept), type_id(other.type_id),
 	  scalar_alias_of(other.scalar_alias_of),
 	  speculative_class_capture(other.speculative_class_capture
-	      || madc_class_pattern_capture_active) {}
+	      || madc_class_pattern_capture_active),
+	  pack_poi(madc_pack_stamp_poi()), pack_ctx(madc_pack_stamp_ctx()) {}
     DataDef &operator=(const DataDef &other)
     {
 	if ( this != &other )
@@ -937,6 +972,16 @@ enum class AggregateDefinitionOrigin : uint8_t
     TranslationUnitRoot
 };
 
+// One aggregate name a REPL session redefined (plan §42 D6): what every
+// version of the name shares. Owned by the Program; immutable.
+struct SessionTypeLineage
+{
+    madc::dis::istring source;		// the name as the source writes it ("P")
+    madc::dis::istring key;		// the current version's struct_map key
+    madc::dis::istring base_name;	// version 1's emitted name
+    madc::dis::istring base_spelling;	// version 1's C++ spelling ("ns::P"), else source
+};
+
 class DataDefSTRUCT: public DataDef
 {
 public:
@@ -1035,6 +1080,25 @@ public:
     // zero-width field itself must not arm a second zero-width field.
     bool previous_was_nonzero_bitfield;
     AggregateDefinitionOrigin definition_origin;
+    // The file the definition is in (FuncDef::decl_file's twin): a session
+    // unit's name for an interactive entry's type; NULL when not known.
+    const char *definition_file;
+    // A REPL session's redefinition (plan §42 D6): the type's version of its
+    // name — 0 until the session redefines the name, then 1 for the first
+    // definition and N for the Nth that changed the type — and the lineage
+    // every version shares. Program::supersede_session_type sets both.
+    unsigned session_version;
+    const SessionTypeLineage *session_lineage;
+    // Its canonical spelling without a session version's tag: the first
+    // version's (`P` for `P[abi:v2]`); the scope its name belongs to.
+    const madc::dis::istring &unversioned_spelling() const
+    {
+	return session_lineage ? session_lineage->base_spelling
+			       : canonical_cpp_spelling();
+    }
+    // A class a session defined: its definition's shape
+    // (Program::aggregate_shape) — the same shape again is the same type.
+    madc::dis::istring session_shape;
     size_t bitfield_unit_offset;
     size_t bitfield_unit_size;
     size_t bitfield_next_bit;
@@ -1113,13 +1177,15 @@ public:
 	: DataDef(n, s, d), runtime_size_expr(NULL), pack(0), pragma_pack(0), max_align(1), tag_explicit_align(0), union_layout(false),
 	  is_complete(false), has_anon_aggregate(false),
 	  reverse_scalar_storage(false), bitfield_active(false), previous_was_nonzero_bitfield(false),
-	  definition_origin(AggregateDefinitionOrigin::Unknown), bitfield_unit_offset(0),
+	  definition_origin(AggregateDefinitionOrigin::Unknown), definition_file(NULL),
+	  session_version(0), session_lineage(NULL), bitfield_unit_offset(0),
 	  bitfield_unit_size(0), bitfield_next_bit(0) {}
     DataDefSTRUCT(madc::dis::istring n, std::vector<memberpair_t> m)
 	: DataDef(n, 0, DataType::dtRESERVED), runtime_size_expr(NULL), pack(0), pragma_pack(0), max_align(1), tag_explicit_align(0),
 	  union_layout(false), is_complete(false), has_anon_aggregate(false),
 	  reverse_scalar_storage(false), bitfield_active(false), previous_was_nonzero_bitfield(false),
-	  definition_origin(AggregateDefinitionOrigin::Unknown), bitfield_unit_offset(0),
+	  definition_origin(AggregateDefinitionOrigin::Unknown), definition_file(NULL),
+	  session_version(0), session_lineage(NULL), bitfield_unit_offset(0),
 	  bitfield_unit_size(0), bitfield_next_bit(0)
     {
 	DBG(std::cout << "DataDefSTRUCT(" << n << ") constructor" << std::endl);

@@ -125,9 +125,10 @@ TEST_CASE("an entry the session refuses says so, and the session goes on")
     REQUIRE(s.begin("--std=c17"));
     REQUIRE(s.submit("int g = 5;\nint f(int a) { return a + g; }"));
 
-    // A second definition is refused, as any redefinition is until D5/D6.
-    CHECK_FALSE(s.submit("int g = 6;"));
-    CHECK(first_error(s) == "redefinition of 'g'");
+    // A redefinition keeps its type (D6), so another type is refused.
+    CHECK_FALSE(s.submit("double g = 6;"));
+    CHECK(first_error(s) == "'g' changes type: a redefinition keeps its type"
+	  " (%run rebuilds the session)");
 
     REQUIRE(s.submit("int k(void) { return f(3); }"));
     int_fn k = (int_fn)s.function("k");
@@ -1625,7 +1626,7 @@ TEST_CASE("an entry refused before its end leaves no tokens for the next")
 // A unit's own file-scope statics are session names (plan §41.5a, owner
 // 2026-09-27): the session and every unit it takes are one program, as
 // cling's and clang-repl's are (tmp/repl/d20s2). There is one object, and a
-// second definition is a redefinition, refused as any is today.
+// second definition is a redefinition: it initializes that object again (D6).
 static void check_entry_statics(const std::string &std_option)
 {
     CAPTURE(std_option);
@@ -1639,10 +1640,9 @@ static void check_entry_statics(const std::string &std_option)
     REQUIRE(s.submit("s = 4;"));
     REQUIRE(s.submit("twice_s()"));
     CHECK(s.shown() == "8");
-    CHECK_FALSE(s.submit("static int s = 5;"));
-    CHECK(first_error(s) == "redefinition of 's'");
-    REQUIRE(s.submit("s"));
-    CHECK(s.shown() == "4");
+    REQUIRE(s.submit("static int s = 5;"));
+    REQUIRE(s.submit("twice_s() + s"));
+    CHECK(s.shown() == "15");
 }
 
 TEST_CASE("an entry's statics are session names (§41.5a)")
@@ -1650,6 +1650,54 @@ TEST_CASE("an entry's statics are session names (§41.5a)")
     check_entry_statics("--std=c17");
     check_entry_statics("--std=c++17");
     check_entry_statics("--std=madc");
+}
+
+// A type an earlier entry defined, defined again (plan §42 D6): the name's
+// next version, the earlier one kept for what names it (`P#1`); the same
+// type again when it lays out alike. Within one entry it is the redefinition
+// C and C++ refuse.
+static void check_type_redefinition(const std::string &std_option, const char *p_shown)
+{
+    CAPTURE(std_option);
+    InteractiveSession s;
+    REQUIRE(s.begin(std_option));
+    REQUIRE(s.submit("struct P { int a; };"));
+    REQUIRE(s.submit("struct P p = {7};"));
+    REQUIRE(s.submit("struct P { int a; int b; };"));
+    REQUIRE(s.submit("struct P q = {1, 2};"));
+    REQUIRE(s.submit("p.a + q.b + (int)sizeof p * 10 + (int)sizeof q * 100"));
+    CHECK(s.shown() == "849");
+    REQUIRE(s.submit("p"));
+    CHECK(s.shown() == p_shown);
+    REQUIRE(s.submit("struct P { int a; int b; };"));	// lays out alike
+    REQUIRE(s.submit("struct P r = {3, 4};"));
+    REQUIRE(s.submit("r = q;"));
+    REQUIRE(s.submit("r.a + r.b"));
+    CHECK(s.shown() == "3");
+    CHECK_FALSE(s.submit("struct Q { int a; };\nstruct Q { int a; };"));
+    CHECK(first_error(s) == "Struct 'Q' already defined");
+}
+
+TEST_CASE("a type defined again is its name's next version (D6)")
+{
+    check_type_redefinition("--std=c17", "(struct P#1){ .a = 7 }");
+    check_type_redefinition("--std=c++17", "P#1{ .a = 7 }");
+    // A class: the same shape is the same type, its member functions
+    // redefined; another shape is the next version, and an object of the
+    // earlier one is no argument for the new one.
+    InteractiveSession s;
+    REQUIRE(s.begin("--std=c++17"));
+    REQUIRE(s.submit("class C { public: int x; int get() { return x * 2; } };"));
+    REQUIRE(s.submit("C c = {3};"));
+    REQUIRE(s.submit("class C { public: int x; int get() { return x * 3; } };"));
+    REQUIRE(s.submit("c.get()"));
+    CHECK(s.shown() == "9");
+    REQUIRE(s.submit("class C { public: int x; int y; int get() { return x + y; } };"));
+    REQUIRE(s.submit("C d = {4, 5};"));
+    REQUIRE(s.submit("d.get() * 100 + c.get()"));
+    CHECK(s.shown() == "909");
+    REQUIRE(s.submit("int take(C v) { return v.y; }"));
+    CHECK_FALSE(s.submit("take(c)"));
 }
 
 // TEXT in a fresh temporary file (the temp-file owner places it); its path.
@@ -1666,7 +1714,8 @@ static std::string temp_source(const char *text, const char *prefix)
 
 // The measured shapes (cling 1.2 .L / #include, clang-repl-20 #include):
 // helper=10 count=1 once a.c is loaded; b.c's clashing static refused whole,
-// use_b undeclared afterwards, a.c unchanged.
+// use_b undeclared afterwards, a.c unchanged. b.c's clash is a type change,
+// the redefinition D6 refuses.
 TEST_CASE("a loaded file and the session are one unit (§41.5a)")
 {
     InteractiveSession s;
@@ -1676,7 +1725,7 @@ TEST_CASE("a loaded file and the session are one unit (§41.5a)")
 	"static int helper(void) { return count * 10; }\n"
 	"int use_a(void) { return helper() + count; }\n", "madc_repl_a");
     std::string b = temp_source(
-	"static int count = 2;\n"
+	"static double count = 2;\n"
 	"int use_b(void) { return count; }\n", "madc_repl_b");
     REQUIRE(s.load(a));
     CHECK(s.submitted() == 0);		// a file takes no REPL[N]
@@ -1685,7 +1734,8 @@ TEST_CASE("a loaded file and the session are one unit (§41.5a)")
     REQUIRE(s.submit("count"));
     CHECK(s.shown() == "1");
     CHECK_FALSE(s.load(b));
-    CHECK(first_error(s) == "redefinition of 'count'");
+    CHECK(first_error(s) == "'count' changes type: a redefinition keeps its"
+	  " type (%run rebuilds the session)");
     CHECK_FALSE(s.submit("use_b()"));
     REQUIRE(s.submit("use_a()"));
     CHECK(s.shown() == "11");
@@ -2845,15 +2895,16 @@ TEST_CASE("session commands: ?name and %pinfo describe a name")
     REQUIRE(p.submit("?geometry"));
     CHECK(p.shown() == "Type:      namespace");
 
-    // madc: the carrier, and a compiler-implemented public, which its
-    // fragment declares as a template (no invented signature).
+    // madc: the carrier, and a compiler-implemented public, which the
+    // compiler itself declares (no header, no invented signature).
     InteractiveSession m;
     REQUIRE(m.begin("--std=madc"));
     REQUIRE(m.submit("var v = 5;"));
     REQUIRE(m.submit("?v"));
     CHECK(m.shown() == "Type:      var\nDefined:   @ REPL[1]:1");
     REQUIRE(m.submit("?println"));
-    CHECK(m.shown() == "Type:      function template");
+    CHECK(m.shown() == "Type:      function\n"
+		       "Declared:  by the madc compiler, always available");
 }
 
 // The shown text's code (split arc 1B.9): `%type`'s type and `%pinfo`'s

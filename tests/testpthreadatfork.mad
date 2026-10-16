@@ -1,0 +1,29 @@
+// pthread_atfork's handlers run around fork(): prepare before it, parent in
+// the parent and child in the child after it. glibc keeps pthread_atfork out
+// of libc.so (libc_nonshared.a supplies it to each image, registering with
+// that image's handle), so madc could not link a call to it; madc's startup
+// member supplies it now.
+// Oracle: gcc and clang print exactly the .expect lines.
+#include <stdio.h>
+#include <string.h>
+#include <pthread.h>
+#include <unistd.h>
+#include <sys/wait.h>
+static char trace[64];
+static void prepare(void) { strcat(trace, " prepare"); }
+static void parent(void) { strcat(trace, " parent"); }
+static void child(void) { strcat(trace, " child"); }
+int main(void)
+{
+	pthread_atfork(prepare, parent, child);
+	fflush(stdout);
+	pid_t p = fork();
+	if (p == 0) {
+		printf("child:%s\n", trace);
+		fflush(stdout);
+		_exit(0);
+	}
+	waitpid(p, 0, 0);
+	printf("parent:%s\n", trace);
+	return 0;
+}

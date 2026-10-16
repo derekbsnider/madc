@@ -1,0 +1,7 @@
+c++17 before: getx(a)=34
+c++17 edited: ok=true refused getx=false
+c++17 after: getx(a)=34 a=P#1{ .x = 3 } sizeof Q=12
+c++17 new version: getx(b)=48
+c17 before: getx(a)=34
+c17 edited: ok=false refused getx=true
+c17 after: getx(a)=34 a=(struct P#1){ .x = 3 } sizeof Q=12

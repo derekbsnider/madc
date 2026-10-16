@@ -1,0 +1,6 @@
+int f(void) { return 101; }
+int g(void) { return f() * 10 + 3; }
+int (*p)(void) = f;
+printf("first %d %d %d\n", f(), g(), p());
+int f(void) { return 202; }
+printf("second %d %d %d\n", f(), g(), p());

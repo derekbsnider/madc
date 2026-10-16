@@ -31,7 +31,8 @@ enum class tui_chrome : unsigned char
     dialog, list_selected, field, button_primary,	// S6: floating windows
     count
 };
-inline bool tui_chrome_of(const std::string &name, tui_chrome &out)
+// A piece's name: the one table tui_chrome_of reads back ("" out of range).
+inline const char *tui_chrome_name(tui_chrome c)
 {
     static const char *const names[] = {
 	"divider", "gutter", "gutter_current", "current_line",
@@ -39,8 +40,14 @@ inline bool tui_chrome_of(const std::string &name, tui_chrome &out)
 	"menubar", "menu", "menu_selected", "menu_hot", "shadow",
 	"toolbar", "dialog", "list_selected", "field", "button_primary"
     };
+    static_assert(sizeof(names) / sizeof(names[0]) == (std::size_t)tui_chrome::count,
+		  "one name per tui_chrome");
+    return (std::size_t)c < (std::size_t)tui_chrome::count ? names[(std::size_t)c] : "";
+}
+inline bool tui_chrome_of(const std::string &name, tui_chrome &out)
+{
     for ( std::size_t i = 0; i < (std::size_t)tui_chrome::count; ++i )
-	if ( name == names[i] )
+	if ( name == tui_chrome_name((tui_chrome)i) )
 	{
 	    out = (tui_chrome)i;
 	    return true;

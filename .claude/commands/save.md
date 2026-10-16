@@ -35,9 +35,10 @@ Ensures all documentation is up to date with the current state of the codebase, 
    - Update the gap summary table severities (items that are now implemented should be marked)
 
 6. **Sync README.md**:
-   - Verify the test count in the Testing section matches actual (`make -C src fulltest` output)
-   - Verify the Roadmap table reflects current phase statuses
-   - Verify the Current Release section matches VERSION
+   - Verify the `## Releases` line names VERSION's release
+   - The README carries no test counts, roadmap or release narrative
+     (owner 2026-10-15) — those live in `docs/test-status.md`,
+     `docs/plans/ROADMAP.md` and `CHANGELOG.md`; never add them back
 
 7. **Scan docs/ for staleness**:
    - Read `docs/test-status.md` — verify test counts match

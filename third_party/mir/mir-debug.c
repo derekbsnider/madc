@@ -1931,6 +1931,15 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
       }
     if (entry_i == n) return -1;
   }
+  /* the fini symbol, when named and defined in .text (DT_FINI) */
+  size_t fini_i = n;
+  if (params->fini != NULL)
+    for (size_t i = 0; i < n; i++)
+      if (obj->syms[i].name != NULL && obj->syms[i].defined_p
+          && obj->syms[i].sec == MIR_OBJ_SEC_TEXT && strcmp (obj->syms[i].name, params->fini) == 0) {
+        fini_i = i;
+        break;
+      }
 
   /* dynsym = every undefined (imported) symbol, plus __libc_start_main for
      the _start slot if the module does not already import it (executables);
@@ -2088,7 +2097,7 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
   off = initarr_off + obj->initarr.len;
   off = OBJX_ALIGN (off, 8);
   uint64_t dynamic_off = off;
-  /* NEEDED*n [+RUNPATH] [+INIT_ARRAY/INIT_ARRAYSZ]
+  /* NEEDED*n [+RUNPATH] [+INIT_ARRAY/INIT_ARRAYSZ] [+FINI]
      + STRTAB/STRSZ/SYMTAB/SYMENT/HASH
      + RELA/RELASZ/RELAENT + FLAGS (BIND_NOW) + FLAGS_1 (NOW [| PIE])
      [+DEBUG -- executables only, gcc/ld parity: ld.so writes the r_debug
@@ -2097,7 +2106,8 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
      [+TEXTREL -- only if a dynamic slot targets text; the PIC capture
      keeps text clean] + NULL */
   uint64_t n_dyntags = params->n_needed + (params->runpath != NULL ? 1 : 0)
-                       + (obj->initarr.len != 0 ? 2 : 0) + 10 + (shared_p ? 0 : 1)
+                       + (obj->initarr.len != 0 ? 2 : 0) + (fini_i != n ? 1 : 0) + 10
+                       + (shared_p ? 0 : 1)
                        + (textrel_p ? 1 : 0) + 1;
   uint64_t dynamic_size = n_dyntags * sizeof (Elf64_Dyn);
   uint64_t relro_end = OBJX_ALIGN (dynamic_off + dynamic_size, OBJX_PAGE);
@@ -2344,6 +2354,7 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
       OBJX_DYN (DT_INIT_ARRAY, base + initarr_off);
       OBJX_DYN (DT_INIT_ARRAYSZ, obj->initarr.len);
     }
+    if (fini_i != n) OBJX_DYN (DT_FINI, code_vaddr + obj->syms[fini_i].value);
     OBJX_DYN (DT_STRTAB, base + dynstr_off);
     OBJX_DYN (DT_STRSZ, dynstr.len);
     OBJX_DYN (DT_SYMTAB, base + dynsym_off);
