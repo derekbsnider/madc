@@ -162,3 +162,24 @@ PLANNED 2026-10-15 (owner).
   against the manifest, a relative add, an unknown kind refused) and
   `proj-addcur-nofile`; `check-madcide-single-owners.sh` red on a manifest
   parsed, stringified or given a kind word in madcide.
+- The dialect silent wrong answers (2026-10-16):
+  - KG `range_for_over_call_result_subscript_empty` — FIXED `7a28c50fc`: a
+    carrier returned by reference (`fill(a)["rows"]`, `for (var c :
+    fill(a))`) reads its referent, and a carrier range-for evaluates its range
+    once (`carrier_expr_addr`); test `testcarrier_ref_call`.
+  - KG `rangefor_class_ref_call_receiver` (found on the way) — FIXED
+    `8dd64279c`: a C++ range-for over a class container returned by a call or
+    held by a reference parameter compiles and evaluates its range once
+    (`class_object_expr_addr`, `capture_class_range`); test
+    `testrangefor_ref_call`.
+  - KG `import_module_member_double_return` — FIXED `d4002f602`:
+    `math::sqrt(2.0)` printed 1; an alias-form member is declared as the same
+    name's bare call is (the
+    pack's prototype, else `dynamic_symbol_fallback_signature`) and its slot
+    is called through the declared type; test `testimport_member_types`.
+  - KG `var_copy_init_from_keyed_array_slot_empty` — not a carrier defect:
+    script mode runs file-scope initializers before the statements (script
+    mode semantics #6); source-order interleaving is an owner decision.
+  - KG `carrier_byvalue_call_subscript_parse_refused` (found on the way) —
+    `make(2)["rows"]` refused at parse; the generic subscript arm reads the
+    base's `datadef()`, not its value type.
