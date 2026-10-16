@@ -2,6 +2,43 @@
 
 ## [Unreleased]
 
+### madc's command line is read by the one option reader
+
+madc's `main()` now reads its command line through the shared option reader
+(`madc::cli::parse`) against madc's own table, in place of the strcmp/strncmp
+ladder: every spelling, value form, operand rule and `@file` expansion lives in
+the table (`src/madc_cli.cpp`) and the reader (`src/cli_options.cpp`), and
+`main()` applies the parsed occurrences with a `switch` on `cli_option`. The
+user-visible changes:
+
+- An unrecognized option is an error in gcc's words —
+  `madc: error: unrecognized command-line option '-fbogus'` — with
+  `; did you mean '--dump-source'?` when one is close. Before, it was opened as
+  the source file.
+- A missing value is an error: `madc: error: missing argument to '-o'`. Before,
+  a trailing `-o` was opened as a file.
+- `--` ends madc's options.
+- `@file` response files expand while madc's own options are read (gcc), never
+  inside a script's argv: `madc tool.mad -o out @args -- -v` passes every word
+  after `tool.mad` through to the script untouched.
+- `-std=` (gcc's spelling) is accepted beside `--std=`.
+- `--emit-object`, `--emit-executable` and `--dump-source` count as stage
+  options in the compiler-line rule, so `madc x.c --emit-object x.o` builds;
+  before, it ran `x.c` with two arguments.
+- `-Wa,` and `-Wp,` are refused by name (madc has no separate assembler or
+  preprocessor to pass them to).
+- New: `--help=json` emits the table as JSON, and `--completion=SHELL`
+  (`bash`, `zsh`, `fish`, `powershell`) emits a completion script.
+- The help is generated from the table and now lists what the old text omitted:
+  the `modules` and `theme` madc.ini keys, `-dumpmachine`, the `-fPIC` family
+  and `-feval-shims`.
+
+The exit status on a usage error stays 1 (gcc). The `--capabilities` JSON
+`introspection` list is now derived from the rows tagged `mt_introspection`
+instead of a hand-maintained literal, and `Program::set_stdlib_flavor(name)`
+takes the flavor name directly in place of `set_stdlib_flavor_option("-stdlib="
++ name)`.
+
 ### `madc::path_generic` — a path in the host's generic form
 
 madc's dialect now exposes `madc::path_generic(value &out, const char *path)`,

@@ -8008,7 +8008,7 @@ bool apply_project_tu_options(::Program &prog, const ProjectTU &tu,
 	for (const std::string &d : tu.defines)
 		prog.add_cli_define(d);
 	if (!tu.stdlib_option.empty()
-	 && !prog.set_stdlib_flavor_option("-stdlib=" + tu.stdlib_option)) {
+	 && !prog.set_stdlib_flavor(tu.stdlib_option)) {
 		err = "unknown -stdlib flavor '" + tu.stdlib_option
 		    + "' (this madc was built with: "
 		    + prog.stdlib_flavor_names() + ")";

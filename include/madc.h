@@ -7483,7 +7483,7 @@ public:
     // -stdlib=<name>: true when consumed. An unknown/unbuilt flavor is NOT
     // consumed, so the caller reports it (available flavors are a build-host
     // property, so the diagnostic has to name what this binary actually has).
-    bool set_stdlib_flavor_option(const madc::dis::istring &arg);
+    bool set_stdlib_flavor(const madc::dis::istring &name);	// false: unknown, or not built here
     madc::dis::istring stdlib_flavor_names() const;	// ", "-joined, for that diagnostic
     // The flavor names this binary was built with (the generated table's
     // named entries, in table order) — the diagnostic and the capability

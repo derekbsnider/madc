@@ -1,0 +1,85 @@
+// madc's command line read by the one option reader (src/madc_cli.cpp over
+// include/libmadc/cli_options.h): an unknown option is an error in gcc's
+// words with a "did you mean"; a missing value is an error; -Wp, is refused
+// by name; gcc's -std= spelling; `--` ends madc's options; @file expands
+// among madc's options but never in a script's argv; madc's --emit-object
+// alias makes a compiler line; --help, --help=json and --completion=bash
+// come from the table.
+// Before: -fbogus, a trailing -o and -Wp,... were each opened as the source
+// file; -std=c17 was not an option; `--` and @file were source names;
+// `x.c --emit-object x.o` RAN x.c with two arguments.
+// Oracle: gcc 13 -- `gcc -fbogus`: "unrecognized command-line option
+// '-fbogus'" (rc 1); `gcc @rsp ans.c` with rsp "-DANSWER=42" prints 42;
+// `gcc -std=c17` gives __STDC_VERSION__ 201710; `gcc -- -dash.c` reads the
+// file named -dash.c.
+int main()
+{
+	var dir = "tmp/testcli_option_engine";
+	php::mkdir(dir.c_str());
+	const char *cp = madc::compiler_path();
+	var err = format("{}/err.txt", dir);
+	var out = format("{}/out.txt", dir);
+	var text;
+
+	long rc = system(format("{} --no-config -fbogus 2> {}", cp, err));
+	php::file_get_contents(text, err.c_str());
+	println("unknown: rc={} {}", rc != 0 ? 1 : 0, php::trim(text));
+
+	rc = system(format("{} --no-config --dump-sorce x.c 2> {}", cp, err));
+	php::file_get_contents(text, err.c_str());
+	println("near: rc={} {}", rc != 0 ? 1 : 0, php::trim(text));
+
+	rc = system(format("{} --no-config -o 2> {}", cp, err));
+	php::file_get_contents(text, err.c_str());
+	println("missing: rc={} {}", rc != 0 ? 1 : 0, php::trim(text));
+
+	rc = system(format("{} --no-config -Wp,-MD,x.d x.c 2> {}", cp, err));
+	php::file_get_contents(text, err.c_str());
+	println("pass-through: rc={} {}", rc != 0 ? 1 : 0, php::trim(text));
+
+	rc = system(format("{} --no-config -fdiagnostics-color= x.c 2> {}", cp, err));
+	php::file_get_contents(text, err.c_str());
+	println("colour empty: rc={} {}", rc != 0 ? 1 : 0, php::trim(text));
+
+	var std_c = format("{}/std.c", dir);
+	php::file_put_contents(std_c.c_str(),
+		"#include <stdio.h>\nint main(void)\n{\n\tprintf(\"gcc std: %ld\\n\", (long)__STDC_VERSION__);\n\treturn 0;\n}\n");
+	system(format("{} --no-config -std=c17 {}", cp, std_c));
+
+	var dash = format("{}/-dash.mad", dir);
+	php::file_put_contents(dash.c_str(), "int main()\n{\n\tprintln(\"dashdash: ran\");\n\treturn 0;\n}\n");
+	system(format("cd {} && {} --no-config -- -dash.mad", dir, cp));
+
+	var rsp = format("{}/args.rsp", dir);
+	php::file_put_contents(rsp.c_str(), "--no-config -DANSWER=42\n");
+	var ans = format("{}/ans.c", dir);
+	php::file_put_contents(ans.c_str(),
+		"#include <stdio.h>\nint main(void)\n{\n\tprintf(\"response file: %d\\n\", ANSWER);\n\treturn 0;\n}\n");
+	system(format("{} @{} {}", cp, rsp, ans));
+
+	var tool = format("{}/tool.mad", dir);
+	php::file_put_contents(tool.c_str(),
+		"int main(int argc, char **argv)\n{\n\tprint(\"script argv:\");\n\tfor ( int i = 1; i < argc; i++ )\n\t\tprint(\" {}\", argv[i]);\n\tprintln(\"\");\n\treturn 0;\n}\n");
+	system(format("{} --no-config {} -o out @args -- -v", cp, tool));
+
+	var main_c = format("{}/main.c", dir);
+	php::file_put_contents(main_c.c_str(),
+		"#include <stdio.h>\nint main(void)\n{\n\tprintf(\"main ran\\n\");\n\treturn 0;\n}\n");
+	var obj = format("{}/main.o", dir);
+	rc = system(format("{} --no-config {} --emit-object {} > {}", cp, main_c, obj, out));
+	long quiet = system(format("test ! -s {}", out));
+	println("emit-object: rc={} built={} stdout_empty={}", rc,
+		php::file_exists(obj.c_str()) ? 1 : 0, quiet == 0 ? 1 : 0);
+
+	system(format("{} --help | head -1", cp));
+	rc = system(format("{} --help=json | grep -q '\"name\": \"output\"'", cp));
+	println("help json: rc={}", rc);
+
+	var sh = format("{}/complete.sh", dir);
+	php::file_put_contents(sh.c_str(),
+		"source <(\"$MADC\" --completion=bash)\nCOMP_WORDS=(madc --dump-so)\nCOMP_CWORD=1\n_madc_complete 2>/dev/null\necho \"completion: ${COMPREPLY[@]}\"\n");
+	system(format("MADC={} bash {}", cp, sh));
+
+	system(format("rm -rf {}", dir));
+	return 0;
+}

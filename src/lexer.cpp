@@ -5696,12 +5696,9 @@ const madc_stdlib_flavor *madc_stdlib_flavor_lookup(const std::string &name)
     return NULL;	// unknown or not built with this flavor
 }
 
-bool Program::set_stdlib_flavor_option(const madc::dis::istring &arg)
+bool Program::set_stdlib_flavor(const madc::dis::istring &name)
 {
-    static const madc::dis::istring opt = "-stdlib=";
-    if ( arg.compare(0, opt.size(), opt) != 0 )
-	return false;
-    const madc_stdlib_flavor *f = madc_stdlib_flavor_lookup(arg.substr(opt.size()));
+    const madc_stdlib_flavor *f = madc_stdlib_flavor_lookup(name);
     if ( !f )
 	return false;	// caller diagnoses with stdlib_flavor_names()
     stdlib_flavor = f;
