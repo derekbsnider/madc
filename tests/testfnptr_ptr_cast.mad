@@ -1,0 +1,31 @@
+/* A cast to a POINTER to a function pointer -- `(fp *)v` through a typedef,
+ * `(int (**)(int))v` spelled out -- keeps its function-pointer pointee. The
+ * cast's type name was spelled `(long long *)` (the pointee peeled to the
+ * function pointer printed its 64-bit representation), so the call through
+ * its deref called an integer: c2mir "called object is not a function or
+ * function pointer" (SQLite's `(**(finder_type*)pVfs->pAppData)(zFilename,
+ * pNew)`). Declarations already spelled the type right; casts now share them.
+ * Oracle: gcc and clang -O0 print "sum=30 finder=7 param=10". */
+#include <stdio.h>
+typedef int (*fp)(int);
+struct M { int k; };
+typedef const struct M *(*finder_type)(const char *, int);
+static int twice(int a) { return 2 * a; }
+static fp g = twice;
+static const struct M m7 = { 7 };
+static const struct M *find7(const char *z, int n) { return n ? &m7 : 0; }
+static finder_type the_finder = find7;
+struct V { void *pAppData; };
+static int via_param(fp *pp) { return (**pp)(5); }
+int main(void)
+{
+	void *v = &g;
+	fp *a = (fp *)v;
+	int (**b)(int) = (int (**)(int))v;
+	fp c = *(fp *)v;
+	int sum = (*a)(1) + (*b)(2) + c(3) + (**(fp *)v)(4) + (*(int (**)(int))v)(5);
+	struct V vfs = { (void *)&the_finder };
+	const struct M *m = (**(finder_type *)vfs.pAppData)("x", 1);
+	printf("sum=%d finder=%d param=%d\n", sum, m->k, via_param(v));
+	return 0;
+}

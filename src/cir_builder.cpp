@@ -6550,6 +6550,8 @@ node_t CirBuilder::char_ptr_type()
 // `*` declarators atop the pointee's spec — the same idiom va_arg uses.
 node_t CirBuilder::ptr_type_node(DataDef *dd)
 {
+	if (node_t fnpp = pointer_to_fnptr_type(dd))
+		return fnpp;
 	DataDef *base = dd;
 	std::vector<unsigned> level_cv;	// each level's own cv + the base's
 	int levels = dd_peel_pointers(base, &level_cv);   // the one pointer-peel owner
@@ -10221,6 +10223,18 @@ bool CirBuilder::pointer_to_fnptr_pieces(DataDef *t, node_t spec_list,
 	fnptr_decl_pieces(fp->target, true, spec_list, decl_list,
 			  std::vector<carray_dim_t>());
 	return true;
+}
+
+// The same pieces as an abstract type name — a cast's `(R (**)(A))`.
+// Peeled to the DataDefFPTR, a type name printed its 64-bit rawtype:
+// `(long long *)`, so a call through its deref called an integer.
+node_t CirBuilder::pointer_to_fnptr_type(DataDef *t)
+{
+	node_t spec = list();
+	node_t decl_list = list();
+	if (!pointer_to_fnptr_pieces(t, spec, decl_list))
+		return NULL;
+	return node2(N_TYPE, spec, node2(N_DECL, ignore(), decl_list));
 }
 
 node_t CirBuilder::param_decl(DataDef *ptype, const char *pname,
@@ -26772,6 +26786,13 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				return node2(N_CAST, type_node,
 					     translate_expr(tc->expr), tb);
 			}
+			// A pointer TO a function pointer `(R (**)(A)) expr` (SQLite's
+			// `(**(finder_type*)p)(z, f)`): the one owner's pieces, never
+			// the generic peel below.
+			if (cast_dd && !cast_dd->is_reference())
+				if (node_t fnpp = pointer_to_fnptr_type(cast_dd))
+					return node2(N_CAST, fnpp,
+						     translate_expr(tc->expr), tb);
 			// A class-pointer cast between related classes — an upcast
 			// ([conv.ptr]/3) or a static downcast ([expr.static.cast]/11);
 			// a C-style cast takes static_cast's conversions first

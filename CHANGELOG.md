@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### A cast to a pointer to a function pointer keeps its fn-pointer pointee
+
+`(fp *)v` and `(int (**)(int))v` now cast to a pointer to a function pointer.
+The cast's type name was spelled `(long long *)` — peeled to the `DataDefFPTR`,
+the base printed its 64-bit rawtype — so a call through the cast's deref called
+an integer and c2mir refused it ("called object is not a function or function
+pointer"; SQLite's `(**(finder_type*)pVfs->pAppData)(zFilename, pNew)`). The
+cast's type name now shares the declaration owner's pieces
+(`pointer_to_fnptr_pieces`), rendering `(int (**)(int))`.
+`tests/testfnptr_ptr_cast` runs the typedef and spelled-out forms, the deref
+call, the nested deref and the param form against the gcc/clang oracle
+(`sum=30 finder=7 param=10`). Closes KG gap
+`cir_pointer_to_fnptr_cast_spelled_long_long`.
+
 ### A bare function name right of a comparison decays to its address
 
 `p->xCmp == cmp` now compares two function pointers. A bare function name

@@ -1852,6 +1852,9 @@ public:
 	// A pointer/reference TO a function pointer, or a reference to a function:
 	// the peeled levels + the fn-ptr pieces (param_decl and var_decl share it).
 	bool pointer_to_fnptr_pieces(DataDef *t, node_t spec_list, node_t decl_list);
+	// Its abstract type `R (**)(A)` (a cast, a type name); NULL when `t` is
+	// not one.
+	node_t pointer_to_fnptr_type(DataDef *t);
 	// A function used as a value (its designator, `&f`, a reference bound to
 	// it): its call symbol, recorded for a prototype; NULL for a capturing
 	// nested fn.
