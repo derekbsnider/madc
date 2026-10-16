@@ -12403,6 +12403,28 @@ node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner,
 		return finish_member_layout(mmember, owner, member_index);
 	}
 
+	// A POINTER TO a function pointer member (`void (**aExt)(void)`, SQLite's
+	// sqlite3AutoExtList): pointer_to_fnptr_pieces, the owner var_decl and
+	// param_decl share, after the member's own dims (`R (**m[N])(A)`). The
+	// generic arm below peeled to the DataDefFPTR and spelled its rawtype —
+	// `long long *aExt`, so a call through an element called an integer.
+	if (mtypedef.empty()) {
+		node_t pspec = list();
+		node_t pdl = list();
+		if (m_flexible)
+			append(pdl, node3(N_ARR, ignore(), list(), ignore()));
+		for (size_t d = 0; d < mdims.size(); d++)
+			append(pdl, node3(N_ARR, ignore(), list(), integer(mdims[d])));
+		if (pointer_to_fnptr_pieces(mtype, pspec, pdl)) {
+			node_t mmember = simple(N_MEMBER, m.origin);
+			append(mmember, node1(N_SHARE, pspec));
+			append(mmember, node2(N_DECL, id(m.first.c_str(), m.origin), pdl));
+			append(mmember, ignore());
+			append(mmember, ignore());
+			return finish_member_layout(mmember, owner, member_index);
+		}
+	}
+
 	// A class object member embeds the lowered class struct directly. Its
 	// construction and destruction are driven by the enclosing class ctor/dtor;
 	// members have no independent cleanup attribute. An ARRAY of class objects

@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### A struct member that is a pointer to a function pointer keeps its fn-pointer pointee
+
+A struct member `void (**aExt)(void)` now declares a pointer to a function
+pointer, not `long long *aExt`. The member was spelled through the generic arm,
+which peeled every pointer level and rendered the `DataDefFPTR` base as its
+64-bit rawtype — so `aExt[i] == xInit` compared an integer with a pointer and
+`aExt[i]()` was refused ("called object is not a function or function pointer";
+SQLite's `sqlite3AutoExtList`). `member_node` now spells such a member through
+the one declaration owner's pieces (`pointer_to_fnptr_pieces`, shared with
+`var_decl`/`param_decl`), ahead of the member's own array dims and a flexible
+array; a typedef-alias member keeps the alias path. `tests/testfnptr_ptr_member`
+runs the member, an array of them and a typedef form against the gcc/clang
+oracle (`n=2 same=1 calls=3 tab=21 alias=8`). Closes KG gap
+`cir_pointer_to_fnptr_member_spelled_long_long`.
+
 ### `->` on an array of const structs reads its first element without a crash
 
 `const struct S b[1]; b->n` now reads `b[0].n` (the array decays to its first
