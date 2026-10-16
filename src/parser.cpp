@@ -43806,7 +43806,11 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			      || opid == TokenID::tkBSLEq  || opid == TokenID::tkBSREq )
 				in_assign_context = true;
 			}
-			if ( !followed_by_paren && (in_assign_context || followed_by_value_end
+			// C has no parenless call: a function designator not
+			// followed by `(` is always its address (C11 6.3.2.1p4),
+			// whatever follows it (`!f`, `f ? a : b`, `if (f)`).
+			if ( !followed_by_paren && (is_c_mode() || in_assign_context
+						    || followed_by_value_end
 						    || right_of_decaying_operator) )
 			{
 			    DBG(cout << "Pushing function address (decay): " << var->name << " onto exStack" << endl);

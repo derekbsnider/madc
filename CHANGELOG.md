@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### A C function designator not followed by `(` is its address, not a call
+
+madc now treats a bare function name not followed by `(` as the function's
+address in C mode (C11 6.3.2.1p4), in every context — the operand of `!`, the
+condition of `?:`, `&&`, `if`, `==`, and inside a call's argument list — never
+a parenless call. Previously the identifier arm called the designator in these
+contexts: `!f` became `!f()` and `show(abs ? 1 : 0)` became `show(abs() ?
+1 : 0)`, a silent wrong answer that also invoked the function for its side
+effects. On `tests/testc_function_designator_truth` gcc 13 and clang 18 -O0
+-std=c17 print `b=0` and `calls=0` for both a local and an extern designator;
+madc now matches.
+
 ### An executable with an undefined reference is refused, as ld does
 
 madc now refuses to link an executable that references a function no library of
