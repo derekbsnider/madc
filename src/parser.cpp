@@ -45373,10 +45373,14 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		    // Direct invocation through a function-pointer variable wrapped
 		    // in parens: `(*flfunc)(args)` and `(flfunc)(args)`. After the
 		    // inner expression resolved, exStack top is a TokenVar whose
-		    // type is DataDefFPTR. The `(` here begins the call args.
+		    // type is DataDefFPTR. The `(` begins the call args only when it
+		    // binds to that operand (paren_binds_to_receiver, as the member
+		    // arm asks): in `fp = ((T)-1)` the token before it is `=`, a
+		    // grouping paren, never a call through fp (SQLite's
+		    // SQLITE_TRANSIENT) — the pending-operator scan misses `=`.
 		    TokenVar *var_call_base = NULL;
 		    if ( !exStack.empty()
-		      && !opstack_has_pending_op
+		      && paren_binds_to_receiver
 		      && exStack.top()->type() == TokenType::ttVariable
 		      && (var_call_base = dynamic_cast<TokenVar *>(exStack.top())) != NULL
 		      && var_call_base->var.type

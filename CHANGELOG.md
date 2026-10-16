@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### A `(` after `=` opens a grouping, not a call through the function pointer on the left
+
+`Program::parseExpr_operatorArm`'s variable-function-pointer invocation arm
+("Direct invocation through a function-pointer variable wrapped in parens")
+gated its `(`-is-call test on `!opstack_has_pending_op`, a scan for pending
+operators of precedence below 14 that does not count `=`. In `fp = ((T)-1)` the
+`(` after `=` was taken as `parseCallFunc(fp)`, so the assignment lost its right
+operand and parsing failed with "Missing operand" (SQLite's `SQLITE_TRANSIENT`,
+`((sqlite3_destructor_type)-1)`, in `src/test1.c`, during the testfixture
+build). The arm now gates on `paren_binds_to_receiver`, the adjacency owner the
+member and subscript arms already read: the `(` binds as a call only when the
+token before it ends the operand (an identifier, `)` or `]`). `fp = ((T)-1)`
+assigns the cast, and `1 + (fp)(3)` still calls through the pointer.
+`tests/testfnptr_assign_paren` runs both shapes against the gcc/clang oracle
+(`1 1 1 1 7 16 12`). Closes KG gap
+`c_paren_after_assign_called_through_fnptr_lhs`.
+
 ### glibc's own `__bswap_16/32` are no longer renamed to the madc byteswap helpers
 
 `Program::_tokenizer_init`'s `define_map` renamed both the gcc builtins
