@@ -83,10 +83,13 @@ Perform the full release workflow:
     `bash scripts/release_bins.sh archive` — it files the tree's
     `bin/madc-release` WITH its `lib/` (the driver is thin since v0.98.0) as
     `tmp/release-bins/vX.Y.Z/`, after checking the tree holds the release's
-    content and the entry runs. Then on the NAS
-    `bash scripts/release_bins.sh sync` mirrors it. The master push gate
+    content and the entry runs. Then, on the build container,
+    `bash scripts/release_bins.sh map vX.Y.Z` makes the release's callgrind
+    map (a symbolized build of the release commit, the parse-cost workloads
+    under callgrind; owner 2026-10-08). Then on the NAS
+    `bash scripts/release_bins.sh sync` mirrors both. The master push gate
     (`scripts/lane_ledger.sh check --release`) refuses a release missing from
-    the archive.
+    the archive, or one since v0.102.1 without its map.
 
 14. **Report**: Print a summary of what was released and the madc version, and remind the user to run `/promote` when ready to push to master
 

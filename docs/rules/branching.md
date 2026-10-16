@@ -196,3 +196,21 @@ The rule asks for one count up and none down. A gain in one corpus bought
 with a loss in another is a trade, not progress, and the gate names the fall.
 v0.105.0, the last release before the ruling, is the baseline: its EPOCH
 exempts it and every earlier release, and moves forward only.
+
+## Why a release without its callgrind map cannot reach master (owner 2026-10-16)
+
+Owner ruling, 2026-10-08: keep a callgrind map for every release. The map —
+each parse-cost workload's full profile on a symbolized build of the release
+commit, and the top functions by self and inclusive cost — is what turns a
+red `parse-cost` row into an answer: diffing two releases' maps names the
+functions that grew. Without the previous release's map, a regression found
+at the next seam has to be bisected by rebuilding old commits.
+
+The directive was a step to remember, and it was forgotten: v0.103.0 and
+v0.105.0 shipped without maps, and the first parse-cost regression after
+v0.105.0 (2026-10-16) had no v0.105.0 map to diff against. So the step is
+gated the way the release archive already is: `release_bins.sh check`, which
+the master push gate runs after its selftest, refuses an archived release
+since v0.102.1 (the first one mapped) that has no `callgrind/summary.tsv`,
+and the selftest proves an entry without a map fails. `/release` step 13
+makes the map beside the archive entry, while the release commit is fresh.

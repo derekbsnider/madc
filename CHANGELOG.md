@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### A release archived without its callgrind map cannot reach master
+
+- `scripts/release_bins.sh check` — which the master push gate runs after its
+  selftest — now refuses an archived release since v0.102.1 (`MAP_FIRST`) that
+  has no `callgrind/summary.tsv`, the same way it already refuses a release
+  missing from the archive. The map diffs two releases' parse-cost profiles to
+  name the functions that grew when a `parse-cost` row goes red (owner
+  2026-10-08: keep a callgrind map for every release).
+- The map is made beside the archive entry by `scripts/release_bins.sh map
+  vX.Y.Z` (`/release` step 13), on the build container while the release commit
+  is fresh, and `scripts/release_bins.sh sync` mirrors it with the binary.
+- The selftest's negative control now covers it: an archive entry without a map
+  fails `check` and passes once its `callgrind/summary.tsv` is present. It
+  prints "selftest OK (a missing release or map blocks, a complete archive
+  passes)".
+
 ### A script's shebang reads gcc's `-std=`; an LSP client's `--stdio` is accepted
 
 - A script's shebang line now reads a standard option the way madc's command

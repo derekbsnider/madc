@@ -52,3 +52,7 @@
   release's CHANGELOG section names its gain:
   `Conformance: <corpus> <old> -> <new>`. Gated by
   `scripts/check-release-conformance.sh` (`/release` step 5)
+- Every release since v0.102.1 carries its callgrind map
+  (`scripts/release_bins.sh map vX.Y.Z`, `/release` step 13); the master push
+  gate's `release_bins.sh check` refuses a release without one (owner
+  2026-10-08)
