@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### A script's shebang standard reaches the predefined macros and keywords
+
+- A main source's `#!/usr/bin/madc --std=c17` line now sets the language
+  standard BEFORE the tokenizer seeds that standard's predefined macros and
+  keywords, the way the command line's `--std=` does. Before, a `--std=c17`
+  script compiled as C17 but saw `__cplusplus` 201703L and no
+  `__STDC_VERSION__`; now it sees no `__cplusplus` and `__STDC_VERSION__`
+  201710L, matching `gcc -std=c17` / `clang -std=c17`.
+- The lexer's `#!` arm no longer adopts the standard or patches keywords (it
+  had re-erased only 9 C++ keywords, missing `template` and `friend`); the
+  first source line is read once in `tokenize()` / `tokenize_buffer()` through
+  the new `Program::adopt_shebang_standard`, on the same option table the
+  command line uses (`--std=NAME`, gcc's `-std=NAME`).
+- A shebang line in an `#include`'d file no longer switches the standard
+  mid-file.
+
 ### A release archived without its callgrind map cannot reach master
 
 - `scripts/release_bins.sh check` — which the master push gate runs after its

@@ -7597,44 +7597,14 @@ TokenBase *Program::_getToken()
 	case '#': // #! is a special comment style for shell script execution
 	    if ( source.peek() == '!' )
 	    {
+		// A comment here: the main source's shebang standard was
+		// adopted before the tokenizer was set up
+		// (adopt_shebang_standard), so its keywords and macros are
+		// the standard's own.
 		source.get();
 		word = "#!";
 		while ( source.good() && !source.eof() && source.peek() != '\r' && source.peek() != '\n' )
 		    word += source.get();
-		// Parse shebang args if interpreter is madc
-		{
-		    size_t sp = word.find(' ');
-		    madc::dis::istring path = (sp != madc::dis::istring::npos) ? word.substr(2, sp - 2) : word.substr(2);
-		    madc::dis::istring base = madc::detail::host_path_basename(path);
-		    if ( base == "madc" && sp != madc::dis::istring::npos )
-		    {
-			madc::dis::istring args = word.substr(sp + 1);
-			std::istringstream as(args);
-			std::string arg;
-			// Its words read as the command line reads them:
-			// --std=NAME, and gcc's -std=NAME.
-			while ( as >> arg )
-			{
-			    madc::dis::istring name;
-			    if ( madc_cli_standard_of(arg, name)
-				 && set_language_standard(name) )
-				break;
-			}
-			// Remove C++ keywords retroactively if shebang set C mode
-			if ( is_c_mode() )
-			{
-			    keyword_map.erase("try");
-			    keyword_map.erase("catch");
-			    keyword_map.erase("throw");
-			    keyword_map.erase("class");
-			    keyword_map.erase("new");
-			    keyword_map.erase("delete");
-			    keyword_map.erase("using");
-			    keyword_map.erase("namespace");
-			    keyword_map.erase("prefer");
-			}
-		    }
-		}
 		return make_rem(word);
 	    }
 	    // A comment between `#` and the directive name is white space.
@@ -12051,6 +12021,32 @@ void Program::finish_interactive_entry(const char *fname)
 }
 
 // tokenize a file
+// A script's shebang line (`#!/usr/bin/madc --std=c17`) belongs to its
+// command line: its standard is adopted BEFORE _tokenizer_init seeds the
+// standard's keywords and predefined macros, as the command line's is, and
+// the lexer then reads the line as a comment. Its words read as the command
+// line reads them (--std=NAME, gcc's -std=NAME); the first standard wins.
+// `text` is the source, or at least its first line.
+void Program::adopt_shebang_standard(const std::string &text)
+{
+    if ( text.compare(0, 2, "#!") != 0 )
+	return;
+    const size_t eol = text.find_first_of("\r\n");
+    const std::string line = text.substr(2, eol == std::string::npos ? eol : eol - 2);
+    const size_t sp = line.find(' ');
+    if ( sp == std::string::npos
+	 || madc::detail::host_path_basename(line.substr(0, sp)) != "madc" )
+	return;
+    std::istringstream words(line.substr(sp + 1));
+    std::string word;
+    while ( words >> word )
+    {
+	madc::dis::istring name;
+	if ( madc_cli_standard_of(word, name) && set_language_standard(name) )
+	    return;
+    }
+}
+
 TokenProgram *Program::tokenize(const char *fname)
 {
     ifstream file(fname);
@@ -12066,6 +12062,13 @@ TokenProgram *Program::tokenize(const char *fname)
 	return NULL;
     }
 
+    {
+	std::string first;
+	std::getline(file, first);
+	adopt_shebang_standard(first);
+	file.clear();
+	file.seekg(0);
+    }
     _tokenizer_init();
 
     // INTERN the caller's name before anything stores it: every main-source
@@ -12131,6 +12134,7 @@ TokenProgram *Program::tokenize_buffer(const madc::dis::istring &source_text,
     clear_diagnostics();
     clear_error();
 
+    adopt_shebang_standard(source_text);
     _tokenizer_init();
 
     if ( !lex_unit_text(fname, source_text) )

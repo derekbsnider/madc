@@ -6706,6 +6706,9 @@ public:
 	return cplusplus_value_for(is_cpp_mode() ? language_std : default_cpp_std);
     }
     bool set_language_standard(const madc::dis::istring &standard);
+    // A main source's `#!.../madc --std=NAME` line: its standard, adopted
+    // before the tokenizer seeds the standard's keywords and macros.
+    void adopt_shebang_standard(const std::string &text);
     // The ONE reader of a `--std=` spelling (without the prefix): the
     // standard it names and whether it is the GNU dialect (gnu17 is C17 +
     // GNU extensions, as gcc reads it), no Program changed. False for a word
