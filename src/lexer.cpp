@@ -3702,11 +3702,14 @@ void Program::_tokenizer_init()
     define_map["__builtin_strnlen"] = "strnlen";
     // bswap builtins: these don't exist in glibc as functions, but the
     // GCC testsuite uses them. Map to helpers exported by the madc binary.
+    // glibc's own __bswap_16/32/64 are NOT renamed: <bits/byteswap.h>
+    // defines them as static inline functions over these builtins, and the
+    // rename made that definition `__madc_bswap32(x) { return
+    // __madc_bswap32(x); }` — a TU-local function calling itself, which
+    // shadowed the helper (SQLite's sqlite3Get4byte recursed to SIGSEGV).
     define_map["__builtin_bswap16"] = "__madc_bswap16";
     define_map["__builtin_bswap32"] = "__madc_bswap32";
     define_map["__builtin_bswap64"] = "__madc_bswap64";
-    define_map["__bswap_16"] = "__madc_bswap16";
-    define_map["__bswap_32"] = "__madc_bswap32";
 
     // __builtin_add/sub/mul_overflow pass through to CIR as real c2mir
     // builtins (handled natively at every width incl. __int128); the old

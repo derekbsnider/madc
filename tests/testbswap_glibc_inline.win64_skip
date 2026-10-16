@@ -1,0 +1,1 @@
+includes <byteswap.h> and <arpa/inet.h>, glibc/POSIX headers mingw does not provide (mingw-gcc rejects this source too) — the regression is glibc's own static-inline __bswap_* definitions

@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### glibc's own `__bswap_16/32` are no longer renamed to the madc byteswap helpers
+
+`Program::_tokenizer_init`'s `define_map` renamed both the gcc builtins
+`__builtin_bswap16/32/64` and glibc's own `__bswap_16` / `__bswap_32` to the
+runtime helpers `__madc_bswap16/32`. glibc's `<bits/byteswap.h>` defines
+`__bswap_32` as a static-inline wrapper over `__builtin_bswap32`, so after both
+renames the header's definition lexed as `__madc_bswap32(x) { return
+__madc_bswap32(x); }` — a TU-local function calling itself, shadowing the helper
+and recursing to a stack overflow (the SQLite shell built by madc crashed in
+`sqlite3Get4byte` on its first `select 1;`). The `__bswap_16` / `__bswap_32`
+alias rows are removed; `__builtin_bswap*` still lower to the helpers.
+`tests/testbswap_glibc_inline` runs `__builtin_bswap*` plus glibc's
+`bswap_16/32/64` and `htonl` through `<byteswap.h>` against the gcc/clang oracle
+(`44332211 44332211 2211 8877665544332211 44332211 b2a1`), with
+darwin/win64/wine64 skip fixtures for the glibc-only headers.
+`tests/testbuiltinbswap` is repointed from the bare `__bswap_32` at
+`__builtin_bswap32`. Closes KG gap
+`lexer_glibc_bswap_inline_renamed_to_self_recursion`.
+
 ### A host-call shim passing a `const char *` result to its string setter no longer warns
 
 A function returning `const char *` gets a host-call shim whose step-5 result
