@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### A macro argument painted alike keeps no paint storage
+
+- Function-like macro-argument collection no longer keeps a
+  `std::vector<PaintSeg>` per argument, nor grows a parallel vector-of-vectors
+  per macro invocation. A new `ArgPaintStretches` holds the first paint stretch
+  in place and starts its vector only at a second, differently painted stretch,
+  so an argument painted alike throughout — nearly every one — allocates
+  nothing; only an argument read across more than one paint keeps its stretches,
+  sparsely by argument index. `trim_macro_argument` stays the one trim owner, and
+  the stretches a multi-paint argument is pre-expanded with are unchanged.
+- Measured on the packed `madc-release` parse-cost gate, the C-headers live
+  parse `c_headers.live` drops from 254,643,686 to 250,399,173 instructions
+  (baseline 244,938,187). Part of what remains over the baseline is
+  `Source::get`'s per-character serving-frame store and the stretch handling of
+  arguments that really are read across two paints.
+
 ### A differential harness for madc's command line, old binary against new
 
 - `scripts/cli_differential.sh OLD_BIN NEW_BIN [CORPUS] [OUTDIR]` runs every

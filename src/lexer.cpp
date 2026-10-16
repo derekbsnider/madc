@@ -2917,6 +2917,55 @@ static void trim_macro_argument(std::string &s, std::vector<Source::PaintSeg> &s
     segs.swap(kept);
 }
 
+// One macro argument's paint stretches (Source::PaintSeg) as it is collected.
+// Only an argument read from differently painted regions has more than one;
+// the first stretch is held in place and the vector starts at the second, so
+// an argument painted alike throughout -- nearly every one -- allocates
+// nothing.
+class ArgPaintStretches
+{
+    Source::PaintSeg _first;
+    std::vector<Source::PaintSeg> _segs;	// every stretch, once there are two
+    bool _started = false;
+public:
+    // The argument's characters from offset `off` on were served under `paint`.
+    void note(size_t off, const std::set<madc::dis::istring> &paint)
+    {
+	if ( !_started )
+	{
+	    _first.off = off;
+	    _first.paint = paint;
+	    _started = true;
+	    return;
+	}
+	if ( (_segs.empty() ? _first.paint : _segs.back().paint) == paint )
+	    return;
+	if ( _segs.empty() )
+	    _segs.push_back(_first);
+	_segs.push_back(Source::PaintSeg());
+	_segs.back().off = off;
+	_segs.back().paint = paint;
+    }
+    // The argument is complete: trim it (the trim owner above) and, when it
+    // is still read across more than one stretch, move the stretches to
+    // `out` and answer true. Ready for the next argument either way.
+    bool finish(std::string &arg, std::vector<Source::PaintSeg> &out)
+    {
+	_started = false;
+	if ( _segs.empty() )
+	{
+	    trim_macro_argument(arg);
+	    return false;
+	}
+	trim_macro_argument(arg, _segs);
+	const bool stretched = _segs.size() > 1;
+	if ( stretched )
+	    out.swap(_segs);
+	_segs.clear();
+	return stretched;
+    }
+};
+
 // The one token-to-source spelling owner lives with reconstruct_source below.
 // Macro argument pre-expansion also needs it: its temporary token stream must
 // round-trip literals without changing their value or type.
@@ -9114,9 +9163,10 @@ TokenBase *Program::_getToken()
 		    std::vector<std::set<madc::dis::istring> > arg_served;
 		    // Per-ARGUMENT too: where the paint changes WITHIN the argument.
 		    // An argument read from a painted region AND unpainted body text
-		    // is pre-expanded stretch by stretch (Source::PaintSeg).
-		    std::vector<std::vector<Source::PaintSeg> > arg_segs;
-		    std::vector<Source::PaintSeg> segs;
+		    // is pre-expanded stretch by stretch (Source::PaintSeg); only
+		    // those arguments keep their stretches, by argument index.
+		    std::vector<std::pair<size_t, std::vector<Source::PaintSeg> > > stretched_args;
+		    ArgPaintStretches arg_stretches;
 		    size_t seg_frame = (size_t)-1;
 		    std::string arg;
 		    PpGroupScan group;
@@ -9219,13 +9269,13 @@ TokenBase *Program::_getToken()
 			}
 			else if ( structural && mc == ',' && group.at_argument_level() )
 			{
-			    trim_macro_argument(arg, segs);	// the ONE trim owner
+			    std::vector<Source::PaintSeg> segs;
+			    if ( arg_stretches.finish(arg, segs) )	// trims the argument
+				stretched_args.push_back(std::make_pair(args.size(), std::move(segs)));
 			    args.push_back(arg);
-			    arg_segs.push_back(std::move(segs));
 			    arg_served.push_back(source.served_arg_paint());
 			    source.reset_served_arg_paint();
 			    arg.clear();
-			    segs.clear();
 			    seg_frame = (size_t)-1;
 			}
 			else
@@ -9235,13 +9285,7 @@ TokenBase *Program::_getToken()
 			    if ( source.serving_frame() != seg_frame )
 			    {
 				seg_frame = source.serving_frame();
-				const std::set<madc::dis::istring> &paint = source.current_arg_paint();
-				if ( segs.empty() || segs.back().paint != paint )
-				{
-				    segs.push_back(Source::PaintSeg());
-				    segs.back().off = arg.size();
-				    segs.back().paint = paint;
-				}
+				arg_stretches.note(arg.size(), source.current_arg_paint());
 			    }
 			    arg += mc;
 			}
@@ -9315,11 +9359,13 @@ TokenBase *Program::_getToken()
 			    source.pushback(preserved);
 		    }
 		    // last argument
-		    trim_macro_argument(arg, segs);	// the ONE trim owner
+		    std::vector<Source::PaintSeg> last_segs;
+		    const bool last_stretched = arg_stretches.finish(arg, last_segs);	// trims it
 		    if ( !arg.empty() || !args.empty() )
 		    {
+			if ( last_stretched )
+			    stretched_args.push_back(std::make_pair(args.size(), std::move(last_segs)));
 			args.push_back(arg);
-			arg_segs.push_back(std::move(segs));
 			arg_served.push_back(source.served_arg_paint());
 		    }
 		    source.reset_served_arg_paint();
@@ -9408,7 +9454,11 @@ TokenBase *Program::_getToken()
 			// An argument read across differently painted regions is
 			// served stretch by stretch, each under its own paint (below);
 			// one painted alike reads as plain text under that paint.
-			const bool stretched = i < arg_segs.size() && arg_segs[i].size() > 1;
+			const std::vector<Source::PaintSeg> *own_stretches = NULL;
+			for ( size_t s = 0; s < stretched_args.size(); ++s )
+			    if ( stretched_args[s].first == i )
+				own_stretches = &stretched_args[s].second;
+			const bool stretched = own_stretches != NULL;
 			source.str(stretched ? std::string() : a);
 			// Inherit the ENCLOSING expansions' paint — the frames
 			// mid-rescan in `saved` — but NOT this macro's own
@@ -9450,7 +9500,7 @@ TokenBase *Program::_getToken()
 			    own_region_paint = arg_served[i];
 			source.inherit_macro_disables(saved, "", &own_region_paint);
 			if ( stretched )
-			    source.pushback_painted_text(a, arg_segs[i]);
+			    source.pushback_painted_text(a, *own_stretches);
 			std::string expanded_arg = spell_expanded_source();
 			param_paint[param].insert(
 			    source.expanded_macro_names().begin(),

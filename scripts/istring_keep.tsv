@@ -1,6 +1,6 @@
 # check-istring-fields.sh baseline: std::string mentions in core CODE, per file.
 # Growth fails the gate; record only a keep-list kind (see the script header).
-src/lexer.cpp	258
+src/lexer.cpp	259
 src/parser.cpp	417
 src/cir_builder.cpp	53
 src/cir_builder.h	16
