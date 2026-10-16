@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### -E and -dM write their preprocessed text to the file -o names
+
+madc now sends its preprocess-only output — the `-E` / `--dump-source`
+preprocessed text, or the `-dM` macro table — to the file named by `-o`,
+wherever `-o` stands on the line, and to stdout when there is no `-o`. `-dM`
+with `-E` writes the macro table, not the source (`gcc -dM -E`). An `-o` path
+that cannot be opened or written is an error with exit status 1. `-o` alongside
+a preprocess-only stop no longer requests a native executable, and the
+preprocess-only lane interleaves options and operands like gcc's artifact lanes
+(`-E -o x.i x.c`, `-E x.c -o x.i`). Previously `-o` was dropped and the text
+always went to stdout; ccache hashes the output file of `cc -E -o tmp.i x.c`,
+so configure probes of one shape hashed alike and replayed one cached result
+(SQLite's `SIZEOF_OFF_T` came out 4). On `tests/testcli_preprocess_output` gcc
+13 and clang 18 write the `-o` file and print nothing, write the `#define`
+lines for `-dM -E`, and exit 1 on an unwritable `-o`; madc now matches.
+
 ### A re-spelled string literal keeps its NUL bytes and its wide prefix
 
 madc now re-spells a string literal by its stored byte length, so a literal

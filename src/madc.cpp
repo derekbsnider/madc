@@ -570,6 +570,33 @@ static bool warning_selection_option(const char *arg)
     return strncmp(arg, "-Werror", 7) != 0;
 }
 
+// The preprocess-only stop (-E / --dump-source, -dM): its text goes to the
+// file -o names, else stdout (gcc). -dM wins over -E, as in `gcc -dM -E`.
+static int write_preprocessed_output(Program &prog, bool macros, const char *path)
+{
+    FILE *out = path ? fopen(path, "w") : stdout;
+    if ( !out )
+    {
+        std::cerr << "madc: cannot open output file " << path << ": "
+                  << strerror(errno) << std::endl;
+        return 1;
+    }
+    if ( macros )
+        prog.dump_macros(out);
+    else
+    {
+        auto text = prog.reconstruct_source();
+        fwrite(text.data(), 1, text.size(), out);
+    }
+    if ( out != stdout && fclose(out) != 0 )
+    {
+        std::cerr << "madc: cannot write output file " << path << ": "
+                  << strerror(errno) << std::endl;
+        return 1;
+    }
+    return 0;
+}
+
 // The file lane's one read of its input (plan §41.5a): `-` names stdin, as
 // in gcc and python, read whole into the buffer lane; any other argument
 // names a file.
@@ -945,10 +972,13 @@ int main(int argc, char **argv)
     // object-capture mode and write a native artifact instead of running.
     // -o without -c or -shared means a linked executable (gcc semantics);
     // --emit-pch keeps its own -o meaning (.madh output path).
+    // -E / -dM stop after preprocessing: -o names that text's file, not a
+    // native artifact.
+    auto preprocess_only = [&]() { return dump_source || dump_macro_table; };
     auto native_artifact_requested = [&]() {
         return compile_object || emit_shared || emit_relocatable
             || emit_object_path || emit_executable_path
-            || (generic_output_path && !emit_pch);
+            || (generic_output_path && !emit_pch && !preprocess_only());
     };
 
     for (int i = 1; i < argc; i++) {
@@ -1372,10 +1402,12 @@ int main(int argc, char **argv)
                       << " (this madc was built with: " << prog->stdlib_flavor_names()
                       << ")" << std::endl;
             return 1;
-        } else if ( native_artifact_requested() || !artifact_operands.empty() ) {
+        } else if ( native_artifact_requested() || preprocess_only()
+                    || !artifact_operands.empty() ) {
             // An artifact lane runs no program, so nothing after its source
             // is a script's argv: options and operands interleave as gcc's
-            // do (`-c x.c -fPIC -o x.o`; SQLite's `-o $@ -c x.c -I...`).
+            // do (`-c x.c -fPIC -o x.o`; SQLite's `-o $@ -c x.c -I...`;
+            // ccache's `-E -o x.i x.c`; `-E x.c -o x.i`).
             // Once the lane has taken an operand, the rest of the line
             // stays its own.
             artifact_operands.push_back(argv[i]);
@@ -1816,7 +1848,7 @@ int main(int argc, char **argv)
     }
 
     if ( generic_output_path && !emit_pch && !compile_object && !emit_shared
-	 && !emit_relocatable )
+	 && !emit_relocatable && !preprocess_only() )
 	emit_executable_path = generic_output_path;
 
     if ( emit_native )
@@ -2056,18 +2088,14 @@ int main(int argc, char **argv)
 	gettimeofday(&_tk1, NULL);
 	double _fw_tk1 = prog->_forest_work_seconds;
 
-	if ( dump_source )
+	// -E / --dump-source: the preprocessed text; -dM: the effective macro
+	// table after preprocessing (madc's PP runs during tokenize), sorted —
+	// diffable against `gcc -dM -E`.
+	if ( preprocess_only() )
 	{
-	    std::cout << prog->reconstruct_source();
-	    return 0;
-	}
-
-	// -dM: the effective macro table after preprocessing (madc's PP runs
-	// during tokenize), sorted — diffable against `gcc -dM -E`.
-	if ( dump_macro_table )
-	{
-	    prog->dump_macros(stdout);
-	    return 0;
+	    std::cout.flush();
+	    return write_preprocessed_output(*prog, dump_macro_table,
+					     generic_output_path);
 	}
 
 	// CIR pipeline: madc parse → CIR translate → c2mir compile → MIR execute.
