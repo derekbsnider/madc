@@ -151,6 +151,17 @@ OWNER LAW, gated like the duplication law (`check-release-consolidation.sh`):
 
 Place in the arc: after the command-line options work, before section G.
 
+### I. The dialect pays per name (owner 2026-10-16: "We need that fix asap")
+
+The three face commits of this arc (161bfcdab, 3790c6e1c, aa67a4fa6) grew
+every dialect compile +2.4% (parse-cost dialect rows): 0.105.0 binds each
+active dialect fragment's whole frozen unit, so every declaration costs
+~100K Ir per dialect compile, used or not. Finishing pack-slices §7 — only
+the names a program uses materialize, and the dialect leaves the
+system-header pack — is `docs/plans/2026-10-16-dialect-per-name-plan.md`
+(parts A and B). Place in the arc: next, after the command-line options
+work, before section G.
+
 ### G. The BUGS.md burndown slice (owner 2026-10-16: "let's fix those bugs before taking on redis")
 
 BUGS.md held 118 entries at v0.105.0 and 117 now; this arc had fixed only
