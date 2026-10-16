@@ -24,7 +24,10 @@ day it was written instead of seven weeks later.
 audit rewrites there is code the battery never ran (owner ruling 2026-09-22;
 reasoning in `docs/rules/branching.md`). A wider sweep of a whole subsystem is
 still available on request — it is recon, and its findings become their own
-commits with their own Tier 1 + Tier 2.
+commits with their own Tier 1 + Tier 2. Every release arc runs at least one
+such sweep and consolidates at least one EXISTING family it finds (owner law
+2026-10-16, `.claude/rules/branching.md`; gated by
+`scripts/check-release-consolidation.sh`).
 
 Also run it whenever a fix is about to land in something that "feels like it
 might exist elsewhere." That instinct is usually right.

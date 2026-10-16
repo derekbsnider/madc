@@ -23,6 +23,11 @@ Perform the full release workflow:
    - Change the top `[Unreleased]` header to `[vX.Y.Z] — YYYY-MM-DD` with today's date
    - Add a brief one-line summary after the version header describing the theme of this release
    - Add a new empty `## [Unreleased]` section above it for future changes
+   - The versioned section names the existing duplicate family this release
+     consolidated (owner law 2026-10-16, `.claude/rules/branching.md`):
+     `Consolidated: <DupFamily> — gate scripts/check-<name>.sh`. Then run
+     `bash scripts/check-release-consolidation.sh`; red means the release
+     consolidated nothing — STOP and tell the user, do not release.
 
 6. **Write `docs/release-notes/vX.Y.Z.md`**:
    - Title: `# Release vX.Y.Z — YYYY-MM-DD`

@@ -37,3 +37,9 @@
   merge gate; a family it reports as divergent is a live bug, not debt
 - Every duplication a `/dupaudit` finding gets consolidated leaves a gate behind
   in `fulltest` — one implementation without a gate regrows
+- OWNER LAW (2026-10-16): every release REDUCES existing duplication, not only
+  stops new copies — the arc consolidates at least one EXISTING family found by
+  a whole-subsystem `/dupaudit` sweep (its own commits, Tier 1 + Tier 2, before
+  the seam battery), leaves its gate, and the release's CHANGELOG section names
+  it: `Consolidated: <DupFamily> — gate scripts/check-<name>.sh`. Gated by
+  `scripts/check-release-consolidation.sh` (`/release` step 5)

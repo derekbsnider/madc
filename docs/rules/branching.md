@@ -136,3 +136,28 @@ Scope it to the diff. A per-commit audit of the whole subsystem would be the
 Tier 3 mistake again; what changes per commit is the concepts the diff touches.
 An older family found on the way is recorded, not folded into the commit.
 
+## Why every release must shrink an existing family
+
+Owner ruling, 2026-10-16: *"with each release we need to ensure that we are
+actively seeking to reduce code duplication, and not only preventing additional
+duplication."*
+
+The per-commit audit and the family gates only stop NEW copies. The families
+that already exist keep their copies, and each copy keeps drifting. The day of
+the ruling showed the cost: "is a bare function name a call or its address" is
+answered separately by the identifier arm's follower whitelist, the static
+member arm and the function-pointer arm, so in C `f ? a : b` decayed in one
+position and became a call in another, and `!f` called `f` — a silent wrong
+answer. The fix that day could only gate C; the family itself still has three
+owners.
+
+So the reduction is a planned piece of each release arc, not a side effect: a
+whole-subsystem `/dupaudit` sweep (recon, which `/dupaudit` already allows on
+request), then at least one existing family consolidated in its own commits
+with the usual Tier 1 + Tier 2, before the seam battery — so the battery runs
+over the consolidated code, as the merge-gate ruling above requires. The
+`Consolidated:` line in the release's CHANGELOG section is the evidence, and
+`scripts/check-release-consolidation.sh` makes a release without it fail.
+Releases cut before the ruling (up to v0.105.0) are exempt by its EPOCH, which
+moves forward only.
+
