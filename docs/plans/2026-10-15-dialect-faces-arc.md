@@ -183,3 +183,66 @@ PLANNED 2026-10-15 (owner).
   - KG `carrier_byvalue_call_subscript_parse_refused` (found on the way) —
     `make(2)["rows"]` refused at parse; the generic subscript arm reads the
     base's `datadef()`, not its value type.
+- Section E, SQLite (2026-10-16):
+  - S1-S4 FIXED: `5c49a45cb` (a cast through a typedef heads an integer
+    constant array bound), `7edb34163` (the `?:` middle operand is a comma
+    expression), `5b6d2b4ee` (a condition's `)` never continues into a call),
+    `7d140ebc8` (`-fPIC` accepted; options may follow the source).
+  - The amalgamation, then the test sources, surfaced: `3ca71975c`,
+    `45c322839`, `11fe93c76`, `d3dd78e88`, `385e7d40e`, `8e64cf623`,
+    `8d708f3ec`, `e67a8dac4`, `cebad16e6` (parser / cir, each with its
+    reducer).
+  - gcc's link vocabulary, so the Makefile's compile-and-link lines run
+    unchanged: `35ce6a38f` (several sources on an artifact lane),
+    `5fa1e9571` (`-L`, `-Wl,-rpath`), `07e54ff76` (`-l` resolved as ld
+    resolves it: SONAME, linker scripts, empty stub archives),
+    `f6ec34ad0` (`-dumpmachine`).
+  - `68b12640c`: `-g` homes only the locals a debugger describes (the
+    testfixture's frames fit the stack again).
+  - `fdcf2a26c`: a tag a parameter list names first is declared at file
+    scope (Tcl's `struct Tcl_Obj` warnings).
+  - `0211249a4`: an object may be aligned beyond 16 bytes, static (the MIR
+    item carries it) or automatic (the frame is realigned) — SQLite's
+    `ALIGN128` mutex table; c-torture `20010904-1/2` pass.
+  - Result: the default configuration's `testfixture`, compiled and linked
+    by madc (`make CC=madc testfixture`), runs veryquick with 0 errors out
+    of 330460 tests.
+  - speedtest1 (`--size 50`, the Makefile's flags): gcc -O2 1.24s, madc
+    -O2 1.74s, gcc -O0 2.25s, madc -O2 -g 2.66s. KG
+    `sqlite_speedtest1_slower_than_gcc`: madc's `-g` costs 53 percent
+    (MIR homes named locals in memory; gcc's `-g` never changes code).
+  - SQLite's `make test` (testrunner `mdevtest`: the All-O0 and All-Debug
+    `--enable-all` builds, veryquick + fuzz + shell on each) surfaced:
+    `6cb2f8c67` (`-Wall` / `-W<name>` accepted, `-Werror` refused),
+    `71f64745f` (a macro argument's paint per stretch: SQLITE_DEBUG's
+    `NC_IdxExpr` was hidden), `76f2df507` (a statement expression yielding
+    no value is void: two c2mir crashes on SQLITE_DEBUG's folded asserts),
+    `9681942cc` (a re-spelled string literal keeps its NULs and its wide
+    prefix — SILENT: every FTS5 `contentless_delete` table "corrupt"; the
+    eleven FTS5 files now pass, 0 errors of 4147).
+  - zeroblob, pcache, tkt1644, misc4 and schema were madc's: configure,
+    run with madc as CC, concluded wrong things (SIZEOF_OFF_T 4, no
+    gmtime_r / localtime_r / readline), and a gcc-built testfixture of that
+    configuration fails them the same way. gcc's own `mdevtest` is 0 errors
+    of 978512. Fixed in the driver and the linker: `31283e348` (`-E` / `-dM`
+    write to `-o`: ccache hashed an empty file and replayed one cached probe
+    result), `0942a4f1f` (a C/C++ source with a stage option after it is a
+    compiler line — the link probes RAN the program; owner: `.mad` scripts
+    keep their argv), `1b6a7d80b` (an executable link refuses an undefined
+    reference, as ld does — KG `aot_link_undefined_symbol_not_refused`).
+    `configure --enable-all` with madc now writes gcc's `sqlite_cfg.h` except
+    HAVE_LOG (madc links libm by default; no SQLite source reads it).
+  - On the way: `90cd2ece1` (SILENT: a C function designator not followed
+    by `(` was CALLED in `!f`, `f ? a : b` inside an argument) and the
+    undefined weak reference, `5a2ba28ed` (KG
+    `weak_undefined_reference_unsupported`; Mach-O runtime rides the seam).
+  - Result: `mdevtest` with madc is 1 error of 932121 — the only one is the
+    All-Debug `fuzzcheck-ubsan` build (`-fsanitize=undefined`: madc has no
+    sanitizers), which skips 18 jobs. Every test file passes in both builds.
+  - Rule from this stretch (owner): every release consolidates an EXISTING
+    duplicate family (`4c63204d5`, `check-release-consolidation.sh`); the
+    candidate here is DupFamily `bare_function_name_call_or_address`.
+  - Open (KG Gaps on the milestone): `aot_link_undefined_symbol_not_refused`,
+    `emit_c11_sqlite_not_recompilable`. Found on the way, not SQLite's:
+    `c11_noreturn_function_specifier_unparsed` (its own parser session),
+    `cpp_linemarker_input_refused`.
