@@ -30,6 +30,7 @@
 #include "madc_theme.h"		// theme_styles + theme_paint: the CLI's reader and painter
 #include "madc_diag_names.h"	// doc_diagnostics: the severity / phase names
 #include "madc_posix_io.h"	// get_host_name (host-facts seam)
+#include "madc_config_file.h"	// cfg::user_config_dir: the user configuration directory
 #if defined(_WIN32)
 #include <process.h>		// _getpid — sys.pid's UCRT spelling (never <windows.h>
 				// here: its `interface` macro collides with the module map)
@@ -587,6 +588,15 @@ value &path_stem(value &out, const char *path)
 	{ out = detail::host_path_stem(path ? path : ""); return out; }
 void path_make_parents(const char *path)
 	{ detail::host_path_make_parents(path ? path : ""); }
+
+// The user configuration directory of `app` (madc_config_file.h's one rule):
+// the dialect face of what madc.ini's lookup reads, so a host keeps its
+// settings where madc keeps its own.
+value &user_config_dir(value &out, const char *app)
+	{ out = cfg::user_config_dir(app ? app : ""); return out; }
+value &user_config_dir_of(value &out, const char *app, const char *xdg,
+			  const char *appdata, const char *home, bool windows)
+	{ out = cfg::user_config_dir_of(app ? app : "", xdg, appdata, home, windows); return out; }
 
 // L4b (design §3.3): revision handles by generation TAG.
 int64_t parse_open_tagged(const char *source, const char *filename)

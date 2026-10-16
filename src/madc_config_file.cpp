@@ -236,15 +236,28 @@ bool config_file::assign(const key_spec &spec, const std::string &value,
 	return true;
 }
 
-std::string config_file::user_config_dir(const std::string &app)
+std::string user_config_dir_of(const std::string &app, const char *xdg,
+			       const char *appdata, const char *home, bool windows)
 {
-	const char *xdg = getenv("XDG_CONFIG_HOME");
 	if (xdg && *xdg)
-		return std::string(xdg) + "/" + app;
-	const char *home = getenv("HOME");
+		return madc::detail::host_path_join(xdg, app);
+	if (windows && appdata && *appdata)
+		return madc::detail::host_path_join(appdata, app);
 	if (home && *home)
-		return std::string(home) + "/.config/" + app;
+		return madc::detail::host_path_join(
+			madc::detail::host_path_join(home, ".config"), app);
 	return std::string();
+}
+
+std::string user_config_dir(const std::string &app)
+{
+#ifdef _WIN32
+	const bool windows = true;
+#else
+	const bool windows = false;
+#endif
+	return user_config_dir_of(app, getenv("XDG_CONFIG_HOME"),
+				  getenv("APPDATA"), getenv("HOME"), windows);
 }
 
 std::vector<std::string> config_file::search_paths() const
@@ -252,7 +265,8 @@ std::vector<std::string> config_file::search_paths() const
 	std::vector<std::string> paths;
 	// 1. The current directory — a per-project config, the common case.
 	paths.push_back(_app + ".ini");
-	// 2. The user config directory (XDG; honoured on macOS too when set).
+	// 2. The user config directory (XDG when set, on every host; else
+	//    %APPDATA% on Windows, else ~/.config).
 	const std::string user = user_config_dir(_app);
 	if (!user.empty())
 		paths.push_back(user + "/" + _app + ".ini");

@@ -275,6 +275,16 @@ namespace madc {
     // too. A failure shows at the caller's own open or test of the path.
     void path_make_parents(const char *path);
 
+    // The user configuration directory of `app` — madc's one rule, the one
+    // madc.ini's lookup reads: $XDG_CONFIG_HOME/<app> when it is set, else on
+    // Windows %APPDATA%\<app>, else ~/.config/<app>; "" when none is known.
+    // user_config_dir reads this process's environment; user_config_dir_of
+    // is the rule over its inputs (NULL or "" = unset; `windows` = the
+    // Windows arm applies), so each platform's answer can be asked anywhere.
+    value &user_config_dir(value &out, const char *app);
+    value &user_config_dir_of(value &out, const char *app, const char *xdg,
+			      const char *appdata, const char *home, bool windows);
+
     // Revision handles (Nexus L4b; design 2026-09-13 §3.3): parse_open_tagged
     // opens a READ-ONLY parse handle of `source` whose generation is a fresh
     // TAG (>= 2^20, engine-allocated) — every id it mints names it, so

@@ -175,7 +175,8 @@ image, the libmadc image, `<exe>.forest` / `<lib>.forest` sidecars,
 Precedence: **CLI > environment > `madc.ini` > defaults.**
 
 The config search takes the first existing file of: `./madc.ini`,
-`$XDG_CONFIG_HOME/madc/madc.ini` (default `~/.config/madc/madc.ini`), then
+`$XDG_CONFIG_HOME/madc/madc.ini` (else `%APPDATA%\madc\madc.ini` on Windows,
+else `~/.config/madc/madc.ini`), then
 the system config dir. `--config=<file>` names one explicitly;
 `--no-config` skips the search (hermetic builds). Recognized keys: `std`
 (for a source with no recognised extension — `--std` > the extension > `std`

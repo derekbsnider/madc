@@ -256,6 +256,18 @@ TEST_CASE("the search chain is project, then user, then system") {
 	CHECK(paths[1] == "/home/tester/.config/madc/madc.ini");
 }
 
+// The user config directory is ONE rule over its inputs, so every platform's
+// arm is checked on any host: XDG wins everywhere when set; Windows then takes
+// %APPDATA% before ~/.config; "" when nothing is known.
+TEST_CASE("the user config directory: XDG, then APPDATA on Windows, then ~/.config") {
+	using madc::cfg::user_config_dir_of;
+	CHECK(user_config_dir_of("madc", "/x", "/a", "/h", true) == "/x/madc");
+	CHECK(user_config_dir_of("madc", "", "/a", "/h", true) == "/a/madc");
+	CHECK(user_config_dir_of("madc", NULL, "/a", "/h", false) == "/h/.config/madc");
+	CHECK(user_config_dir_of("madc", NULL, NULL, "/h", true) == "/h/.config/madc");
+	CHECK(user_config_dir_of("madc", NULL, NULL, NULL, false).empty());
+}
+
 // --config=<file> is the whole search and MUST load: a named file that gets
 // ignored is the same failure as a named forest container that gets ignored.
 // (With the configure axis off it refuses instead, naming the build option.)

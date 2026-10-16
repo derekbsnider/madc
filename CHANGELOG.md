@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### One user-configuration-directory rule, with a Windows %APPDATA% arm
+
+`madc::cfg::user_config_dir` and `user_config_dir_of`
+(`include/madc_config_file.h`) are the single rule for a product's user
+configuration directory: `$XDG_CONFIG_HOME/<app>` when it is set on any host,
+else `%APPDATA%\<app>` on Windows, else `~/.config/<app>`, and `""` when none is
+known. `user_config_dir_of` takes the rule's inputs as arguments, so every
+platform's arm is testable on any host, while `user_config_dir` reads this
+process's environment. The `madc.ini` search and the `--mcp` source directory
+(`<user-config>/madc/mcp/`) both read it, replacing the former
+`config_file::user_config_dir` static method. The Windows `%APPDATA%` arm is
+new: a `madc.ini` user file on Windows was previously looked for only under
+`$HOME/.config`, which Windows rarely sets. `madc::user_config_dir` and
+`user_config_dir_of` (`<ns_madc>`) expose the rule to the dialect, registered in
+`scripts/dialect_faces.tsv`, so a host keeps its settings where madc keeps its
+own. `tests/testuserconfigdir` and a unit case in `test_config_file` cover the
+arms; madcide drops its own `config_dir_of` copy and calls the face.
+
 ### Dialect faces for a path's extension, stem and parent directories
 
 `madc::path_drop_extension`, `madc::path_stem` and `madc::path_make_parents`,

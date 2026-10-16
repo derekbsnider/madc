@@ -53,3 +53,5 @@ public	src/madc_posix_io.h	process_resident_bytes	-	exempt: madc's own measureme
 public	src/madc_posix_io.h	read_process_memory	-	exempt: the debugger's fault-free read of madc's own process
 public	src/madc_posix_io.h	win_error_text	-	exempt: madc's own Windows error text
 public	src/madc_posix_io.h	debug_log_line	-	exempt: madc's own Windows debug channel
+public	include/madc_config_file.h	user_config_dir_of	include/madc/ns_madc	user_config_dir_of
+public	include/madc_config_file.h	user_config_dir	include/madc/ns_madc	user_config_dir

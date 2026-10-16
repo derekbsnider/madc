@@ -365,7 +365,8 @@ Set and non-empty: no colour in diagnostics, even on a terminal, unless
 .BI XDG_CONFIG_HOME= dir
 Where the configuration-file search looks for the per-user file
 (\fIdir\fB/madc/madc.ini\fR), and \fB\-\-mcp\fR for the external
-systems' manifests (\fIdir\fB/madc/mcp/\fR); defaults to \fB~/.config\fR.
+systems' manifests (\fIdir\fB/madc/mcp/\fR); defaults to \fB%APPDATA%\fR on
+Windows and \fB~/.config\fR elsewhere.
 .SH FILES
 .B madc
 optionally reads one
@@ -388,7 +389,8 @@ file wins outright \(em configuration files are never merged:
 .PP
 .nf
     ./madc.ini
-    $XDG_CONFIG_HOME/madc/madc.ini   (or ~/.config/madc/madc.ini)
+    $XDG_CONFIG_HOME/madc/madc.ini   (else %APPDATA%\\madc\\madc.ini on
+                                     Windows, else ~/.config/madc/madc.ini)
     <sysconfdir>/madc.ini            (baked at build time)
 .fi
 .PP

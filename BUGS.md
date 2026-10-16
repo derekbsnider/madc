@@ -2893,20 +2893,6 @@ scans), `peek_after_balanced_template_id_from`,
 - Fix: each asks `declarator_written_cv` and applies its own mask. Then a
   gate marker (`const_after_star ? cvCONST` outside the owner) at zero.
 
-### B91. Where a user's configuration lives, in two programs
-
-- Found 2026-09-30 in the bundle work's dupaudit. The compiler's
-  `config_file::search_paths` (`src/madc_config_file.cpp`, madc.ini) reads
-  `$XDG_CONFIG_HOME/<app>`, else `~/.config/<app>`. madcide's
-  `madcide_config_dir` (`tools/madcide/madcide_plugins.inc`, settings.json
-  and `plugins/`) reads `MADCIDE_CONFIG_DIR`, then the same two, and
-  `%APPDATA%/madcide` on Windows before `~/.config`.
-- Divergent on Windows: with no `XDG_CONFIG_HOME`, madc.ini is looked for
-  under `$HOME/.config`, and madcide's configuration under `%APPDATA%`.
-- Fix: one engine owner (`madc::user_config_dir(app)`, also served to the
-  dialect), which both read. The Windows rule is the owner's to decide
-  (`%APPDATA%` is the platform's convention).
-
 ### B59. `(`: twelve hand-rolled paren counters
 
 - Most skip to the matching `)`. `DelimDepth` answers that the same way
