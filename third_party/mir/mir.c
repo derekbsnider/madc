@@ -573,6 +573,7 @@ typedef struct reg_desc {
   MIR_reg_t reg;       /* key reg2rdn hash tab */
   char *name;          /* key for the name2rdn hash tab */
   char *hard_reg_name; /* NULL unless tied global, key for hrn2rdn */
+  char debug_home_p;   /* homed in spill-all mode (MIR_set_reg_debug_home) */
 } reg_desc_t;
 
 DEF_VARR (reg_desc_t);
@@ -584,6 +585,7 @@ typedef struct func_regs {
   HTAB (size_t) * name2rdn_tab;
   HTAB (size_t) * hrn2rdn_tab;
   HTAB (size_t) * reg2rdn_tab;
+  int debug_homes_only_p; /* spill-all homes only the marked regs (MIR_func_debug_homes_only) */
 } *func_regs_t;
 
 static int name2rdn_eq (size_t rdn1, size_t rdn2, void *arg) {
@@ -630,10 +632,11 @@ static htab_hash_t reg2rdn_hash (size_t rdn, void *arg) {
 
 static void func_regs_init (MIR_context_t ctx, MIR_func_t func) {
   func_regs_t func_regs;
-  reg_desc_t rd = {MIR_T_I64, 0, NULL, NULL};
+  reg_desc_t rd = {MIR_T_I64, 0, NULL, NULL, 0};
 
   if ((func_regs = func->internal = MIR_malloc (ctx->alloc, sizeof (struct func_regs))) == NULL)
     MIR_get_error_func (ctx) (MIR_alloc_error, "Not enough memory for func regs info");
+  func_regs->debug_homes_only_p = FALSE;
   VARR_CREATE (reg_desc_t, func_regs->reg_descs, ctx->alloc, 50);
   VARR_PUSH (reg_desc_t, func_regs->reg_descs, rd); /* for 0 reg */
   HTAB_CREATE (size_t, func_regs->name2rdn_tab, ctx->alloc, 100, name2rdn_hash, name2rdn_eq,
@@ -664,6 +667,7 @@ static MIR_reg_t create_func_reg (MIR_context_t ctx, MIR_func_t func, const char
   rd.hard_reg_name = (char *) hard_reg_name;
   rd.type = type;
   rd.reg = reg; /* 0 is reserved */
+  rd.debug_home_p = FALSE;
   rdn = VARR_LENGTH (reg_desc_t, func_regs->reg_descs);
   VARR_PUSH (reg_desc_t, func_regs->reg_descs, rd);
   if (HTAB_DO (size_t, func_regs->name2rdn_tab, rdn, HTAB_FIND, tab_rdn)) {
@@ -788,6 +792,24 @@ void MIR_set_inline_permission (MIR_context_t ctx, int enable_p) { no_inline_p =
 int MIR_get_spill_all_p (MIR_context_t ctx) { return spill_all_p; }
 
 void MIR_set_spill_all (MIR_context_t ctx, int enable_p) { spill_all_p = enable_p; }
+
+static reg_desc_t *get_func_rd_by_reg (MIR_context_t ctx, MIR_reg_t reg, MIR_func_t func);
+
+void MIR_func_debug_homes_only (MIR_context_t ctx MIR_UNUSED, MIR_func_t func) {
+  ((func_regs_t) func->internal)->debug_homes_only_p = TRUE;
+}
+
+int MIR_func_debug_homes_only_p (MIR_func_t func) {
+  return func->internal != NULL && ((func_regs_t) func->internal)->debug_homes_only_p;
+}
+
+void MIR_set_reg_debug_home (MIR_context_t ctx, MIR_reg_t reg, MIR_func_t func) {
+  get_func_rd_by_reg (ctx, reg, func)->debug_home_p = TRUE;
+}
+
+int MIR_reg_debug_home_p (MIR_context_t ctx, MIR_reg_t reg, MIR_func_t func) {
+  return get_func_rd_by_reg (ctx, reg, func)->debug_home_p;
+}
 
 /* Internal: mir-debug-gdb installs its per-context unregister sweep here so
    MIR_finish can drop this context's GDB-JIT debug objects.  Kept as a hook

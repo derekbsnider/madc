@@ -653,6 +653,16 @@ extern void MIR_set_inline_permission (MIR_context_t ctx, int enable_p);
    Pair with optimize level 0.  Default off. */
 extern int MIR_get_spill_all_p (MIR_context_t ctx);
 extern void MIR_set_spill_all (MIR_context_t ctx, int enable_p);
+/* Spill-all mode homes every local of a function -- unless its frontend
+   names the registers a debugger describes (its named variables, not its
+   temporaries): after MIR_func_debug_homes_only, only the registers marked
+   with MIR_set_reg_debug_home are homed, and the rest are allocated as
+   usual.  Every described variable keeps its stable frame slot; the frame no
+   longer holds one per temporary. */
+extern void MIR_func_debug_homes_only (MIR_context_t ctx, MIR_func_t func);
+extern int MIR_func_debug_homes_only_p (MIR_func_t func);
+extern void MIR_set_reg_debug_home (MIR_context_t ctx, MIR_reg_t reg, MIR_func_t func);
+extern int MIR_reg_debug_home_p (MIR_context_t ctx, MIR_reg_t reg, MIR_func_t func);
 /* If reg (1-based function register) was homed in a stack slot by MIR_gen
    (spill-all mode), set *offset to its frame-pointer-relative byte offset and
    return 1; otherwise return 0.  Valid after the function is generated. */

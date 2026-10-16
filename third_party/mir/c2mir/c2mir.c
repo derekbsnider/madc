@@ -18220,6 +18220,8 @@ static void c2m_dbg_collect_locals (c2m_ctx_t c2m_ctx, node_t n) {
 
 /* Called from gen() after a function is finished: snapshot its params and
    locals for later DWARF emission. */
+static MIR_reg_t c2m_dbg_find_reg (MIR_func_t func, const char *name);
+
 static void c2m_dbg_snapshot_func (c2m_ctx_t c2m_ctx, node_t func_def, struct type *func_type,
                                    node_t body) {
   decl_t func_decl = func_def->attr;
@@ -18243,6 +18245,20 @@ static void c2m_dbg_snapshot_func (c2m_ctx_t c2m_ctx, node_t func_def, struct ty
       }
   }
   c2m_dbg_collect_locals (c2m_ctx, body);
+  /* Spill-all homes what the debugger describes -- each value-holding
+     variable's reg, and the frame block's base reg its memory variables are
+     read through -- never a temporary (MIR_func_debug_homes_only). */
+  if (func_decl->u.item != NULL && func_decl->u.item->item_type == MIR_func_item) {
+    MIR_func_t mf = func_decl->u.item->u.func;
+
+    MIR_func_debug_homes_only (c2m_ctx->ctx, mf);
+    for (size_t v = first; v < c2m_dbg_nvars; v++) {
+      MIR_reg_t r = c2m_dbg_find_reg (mf, c2m_dbg_vars[v].reg_name != NULL
+                                            ? c2m_dbg_vars[v].reg_name
+                                            : FP_NAME);
+      if (r != 0) MIR_set_reg_debug_home (c2m_ctx->ctx, r, mf);
+    }
+  }
   if (c2m_dbg_nfuncrecs == c2m_dbg_cfuncrecs) {
     c2m_dbg_cfuncrecs = c2m_dbg_cfuncrecs ? c2m_dbg_cfuncrecs * 2 : 32;
     c2m_dbg_funcrecs = realloc (c2m_dbg_funcrecs, c2m_dbg_cfuncrecs * sizeof (c2m_dbgfunc_t));

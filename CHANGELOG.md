@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+### `-g` homes only the locals a debugger describes, not every temporary
+
+madc's `-g` debug codegen (`cir_set_debug_codegen`: O0, no inlining, spill-all)
+gave every non-tied MIR register its own stable frame slot — c2mir's temporaries
+included — so a debuggable frame was far larger than a debugger needs. MIR now
+carries a per-register debug-home mark: a frontend calls
+`MIR_func_debug_homes_only` to opt a function in and `MIR_set_reg_debug_home` to
+mark the registers it describes, and spill-all homes only those marked
+registers; a function no frontend opts in still homes every local (the c2m
+driver and other MIR users are unchanged). c2mir's debug snapshot
+(`c2m_dbg_snapshot_func`) opts each function in and marks the registers it
+reports to the debugger — the named locals and parameters plus the frame block's
+base (`FP_NAME`) — leaving its temporaries to allocate as usual. Every variable
+gdb shows keeps its stable slot; the frame no longer holds one per temporary. On
+`tests/testdebuginfo_frame` (`--std=c17 -g`) the `walk` frame drops from 992 to
+112 bytes (gcc 13 -O0 -g: 112, clang 18 -O0 -g: 128), all printing
+`r=9203375331364059157`. SQLite 3.54.0's testfixture, built `-O2 -g` (which
+madc's `-g` lowers to O0 debug codegen), shrinks `jsonTranslateTextToBlob`'s
+frame from 9496 to 152 bytes; `test/json101.test` 11.0 (1000-deep JSON)
+previously overflowed the 8 MB stack with SIGSEGV and now reports 0 errors out
+of 282, and `testrunner.tcl veryquick` on the madc-built testfixture goes from 1
+error out of 330180 to 0 out of 330461. gdb on madc `-g` of
+`tests/testdebuginfo.mad` (`break`, `info args`, `info locals`) still prints the
+same values as gcc -O0 -g.
+
 ### `-l<name>` links what ld finds for it, and an image records what ld records
 
 madc's driver now reads a `-l<name>` library as `ld` does. It searches the `-L`

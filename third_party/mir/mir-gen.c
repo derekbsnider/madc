@@ -7815,8 +7815,12 @@ static void assign (gen_ctx_t gen_ctx) {
     allocno_info.reg = reg;
     allocno_info.tied_reg_p = bitmap_bit_p (tied_regs, reg);
     /* Address-taken regs always live in memory; in spill-all (debug) mode every
-       non-tied local does too, so it has a stable, queryable frame slot. */
-    if (bitmap_bit_p (addr_regs, reg) || (spill_all && !allocno_info.tied_reg_p)) {
+       non-tied local does too, so it has a stable, queryable frame slot -- or,
+       when the frontend marked the ones a debugger describes, those alone. */
+    if (bitmap_bit_p (addr_regs, reg)
+        || (spill_all && !allocno_info.tied_reg_p
+            && (!MIR_func_debug_homes_only_p (func)
+                || MIR_reg_debug_home_p (ctx, reg - MAX_HARD_REG, func)))) {
       type = MIR_reg_type (gen_ctx->ctx, reg - MAX_HARD_REG, func);
       best_loc = get_new_stack_slot (gen_ctx, type, &slots_num);
       VARR_SET (MIR_reg_t, reg_renumber, reg, best_loc);

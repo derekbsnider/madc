@@ -1,0 +1,31 @@
+/* -g keeps every named local in a stable frame slot for the debugger, and no
+ * more: a temporary is no variable a debugger describes. -g homed every MIR
+ * register, temporaries included, each in its own slot -- a frame of 992 bytes
+ * here (gcc -O0 -g: 112) and 9496 for SQLite's jsonTranslateTextToBlob, whose
+ * 1000-deep JSON nesting (test/json101.test 11.0) overflowed an 8 MB stack.
+ * The frontend now marks the registers it describes (c2mir's debug snapshot:
+ * named locals, parameters, the frame block's base) and only those are homed.
+ * Oracle: gcc -O0 -g and clang -O0 -g print "r=9203375331364059157" and a
+ * frame of 112 / 128 bytes; madc -g: the same r, a frame of 112. */
+#include <stdio.h>
+#include <stdint.h>
+static uintptr_t level_addr[4];
+static unsigned long walk(int n, unsigned long x)
+{
+	volatile char here = 0;
+	unsigned long a = x * 3 + n, b = (a ^ 5) * 7 - n, c = (a + b) * (a - b) / 3 + (n % 7) * 11;
+	unsigned long d = (c << 2) - (b >> 1) + a * a - c * b, e = (d ^ c) + (a | b) - (c & d);
+	unsigned long f = e * 5 + d * 3 - c * 2 + b - a, g = (f + e + d) % 1000003 + (a * b * c) % 97;
+	if (n < 4)
+		level_addr[n] = (uintptr_t)&here;
+	if (n == 0)
+		return g + here;
+	return walk(n - 1, g) + f - e;
+}
+int main(void)
+{
+	unsigned long r = walk(3, 7);
+	long frame = (long)(level_addr[3] - level_addr[2]);
+	printf("r=%lu frame<=256: %d\n", r, frame > 0 && frame <= 256);
+	return 0;
+}
