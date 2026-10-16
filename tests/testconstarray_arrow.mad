@@ -1,0 +1,20 @@
+/* `->` on an array of const structs reads its first element (the array
+ * decays): `const struct S b[1]; b->n` is `b[0].n`. The member access read
+ * the const-qualified element type through a raw struct cast, which walked
+ * garbage -- madc died with SIGSEGV in DataDefSTRUCT::m_offset. A pointer
+ * to const already read through the unqualified layout; the array element
+ * now does too. testconstarray_arrow_err keeps the write refused.
+ * Oracle: gcc and clang -O0 print "a=4 b=7 b0=7 tab=8 in=5 tin=6". */
+#include <stdio.h>
+struct In { int x; };
+struct S { int n; struct In in; };
+static const struct S tab[2] = { { 8, { 6 } }, { 9, { 0 } } };
+int main(void)
+{
+	struct S a[1] = { { 1, { 0 } } };
+	a->n = 4;
+	const struct S b[1] = { { 7, { 5 } } };
+	printf("a=%d b=%d b0=%d tab=%d in=%d tin=%d\n",
+	       a->n, b->n, b[0].n, tab->n, b->in.x, tab->in.x);
+	return 0;
+}

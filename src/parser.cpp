@@ -42774,8 +42774,11 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    if ( !fixed_array_arrow && !obj_type->is_pointer() )
 			Throw(tb) << "expression before '->' must be a pointer" << flush;
 
-		    // get the pointed-to type
-		    DataDef *base = obj_type;
+		    // get the pointed-to type. A const array's element (`const
+		    // struct S a[1]; a->n`) is read through the unqualified layout
+		    // like a const pointee below — the hard DataDefSTRUCT casts
+		    // must never see the DataDefQUAL wrapper (they walked garbage).
+		    DataDef *base = obj_type->unqualified();
 		    unsigned arrow_object_cv = fixed_array_arrow ? glvalue_cv(lhs) : cvNONE;
 		    if ( !fixed_array_arrow )
 		    {

@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### `->` on an array of const structs reads its first element without a crash
+
+`const struct S b[1]; b->n` now reads `b[0].n` (the array decays to its first
+element). The `->` member access read the const-qualified element type through
+a hard `DataDefSTRUCT` cast, which walked the `DataDefQUAL` wrapper as a struct
+and died with SIGSEGV in `DataDefSTRUCT::m_offset`. The fixed-array arrow now
+derives the layout from the unqualified element type, as the const-pointee
+branch already did; the element's const still qualifies the member's type, so a
+write through `b->n` stays refused. `tests/testconstarray_arrow` reads the
+members (`a=4 b=7 b0=7 tab=8 in=5 tin=6`) and `tests/testconstarray_arrow_err`
+rejects the write, both against the gcc/clang oracle. Closes KG gap
+`const_struct_array_arrow_sigsegv`.
+
 ### A cast to a pointer to a function pointer keeps its fn-pointer pointee
 
 `(fp *)v` and `(int (**)(int))v` now cast to a pointer to a function pointer.
