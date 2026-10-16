@@ -891,6 +891,9 @@ class CirBuilder {
 	// The carrier class behind a receiver type: the carrier itself OR a
 	// reference to it (a `value &` parameter) — NULL otherwise.
 	static DataDefCLASS *carrier_behind(DataDef *dd);
+	// The address of a carrier-valued EXPRESSION (a member, a call, a
+	// keyed subscript — never a named variable, which is object_var_addr's).
+	node_t carrier_expr_addr(TokenBase *e, TokenBase *origin);
 	size_t array_obj_words() const;              // ceil(sizeof(madc::value)/sizeof(long))
 	// The carrier's C-visible aggregate: `struct __madc_value { _Alignas(16)
 	// long long _w[N]; }`, the pointee of a by-value `var` return's result

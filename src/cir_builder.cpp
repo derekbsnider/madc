@@ -14228,6 +14228,21 @@ DataDefCLASS *CirBuilder::carrier_behind(DataDef *dd)
 	return NULL;
 }
 
+// The address of a carrier-valued expression. The translated carrier lvalue
+// decays to its value-buffer address (`s.a`, `madc::sys.argv`) — except the
+// two shapes that translate to a value LVALUE (an N_DEREF), which as an
+// argument LOADS the value's first word instead of decaying: a KEYED carrier
+// subscript (N_DEREF of the madarray_key_slot call) and a
+// REFERENCE-RETURNING call (`fill(a)`, `e.push(5)` — N_DEREF of the call).
+// Those re-wrap with & (c2mir folds &* back to the pointer).
+node_t CirBuilder::carrier_expr_addr(TokenBase *e, TokenBase *origin)
+{
+	node_t rn = translate_expr(e);
+	if (is_carrier_keyed_subscript(e) || ref_returning_call_type(e))
+		return node1(N_ADDR, rn, origin);
+	return rn;
+}
+
 // The raw object address of a NAMED variable (NOT cast to void*): the pointer
 // itself when pointer-stored, else `&name`. The single source of truth for
 // object-instance addressing; object_var_void_addr wraps this in a void* cast.
@@ -14271,28 +14286,15 @@ node_t CirBuilder::class_this_arg(TokenMember *tm, DataDefCLASS *&recv_class,
 		recv_type = tm->parent_expr->datadef();
 		recv_class = class_behind(recv_type);
 		// madc-array receiver via a sub-expression (`s.a.count()`,
-		// `madc::sys.argv.count()`): ddARRAY IS-A DataDefCLASS but is
+		// `madc::sys.argv.count()`, `bag["k"].as_integer()`,
+		// `e.push(5).push("x")`): ddARRAY IS-A DataDefCLASS but is
 		// deliberately not a user class (as_user_class rejects dtARRAY).
-		// The translated array lvalue decays to the value-buffer address —
-		// the same receiver convention as the subscript path. TWO shapes
-		// must NOT ride the decay because they translate to a value
-		// LVALUE (an N_DEREF), which as an argument LOADS the value's
-		// first word instead of decaying: a KEYED carrier subscript
-		// (`bag["k"].as_integer()` — N_DEREF of the madarray_key_slot
-		// call) and a REFERENCE-RETURNING carrier call
-		// (`e.push(5).push("x")` — push returns the receiver reference,
-		// so the chain's outer receiver is N_DEREF of the inner call;
-		// the class path's ref-returning re-wrap below is this same
-		// disease). Re-wrap with & (c2mir folds &* back to the call).
+		// The receiver is carrier_expr_addr's (the class path's
+		// ref-returning re-wrap below is the same disease).
 		if (!recv_class) {
 			recv_class = carrier_behind(recv_type);
-			if (recv_class) {
-				node_t rn = translate_expr(tm->parent_expr);
-				if (is_carrier_keyed_subscript(tm->parent_expr)
-				    || ref_returning_call_type(tm->parent_expr))
-					return node1(N_ADDR, rn, origin);
-				return rn;
-			}
+			if (recv_class)
+				return carrier_expr_addr(tm->parent_expr, origin);
 		}
 		if (!recv_class) return NULL;
 		// A by-value object-returning CALL receiver (`*begin()` — begin()
@@ -15580,12 +15582,8 @@ bool CirBuilder::is_carrier_keyed_subscript(TokenBase *tb)
 			rt = ref_param_referent(rt);
 		return is_array_object(rt);
 	}
-	if (TokenSubscriptExpr *tse = dynamic_cast<TokenSubscriptExpr *>(tb)) {
-		DataDef *bt = tse->base_expr ? tse->base_expr->datadef() : NULL;
-		if (bt && bt->is_reference())
-			bt = ref_param_referent(bt);
-		return is_array_object(bt);
-	}
+	if (TokenSubscriptExpr *tse = dynamic_cast<TokenSubscriptExpr *>(tb))
+		return is_array_object(operand_value_type(tse->base_expr));
 	return false;
 }
 
@@ -26376,11 +26374,12 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				}
 			}
 			// madc array element read on an expression base
-			// (`s.a[0]`, `sys.argv[1]`): route through the runtime
-			// getters — a raw N_IND would index the value object's
-			// long[] buffer words.
-			if (tse->base_expr && tse->base_expr->datadef()
-			    && is_array_object(tse->base_expr->datadef())) {
+			// (`s.a[0]`, `sys.argv[1]`, `fill(a)["k"]` through a
+			// `var &` return): route through the runtime getters — a
+			// raw N_IND would index the value object's long[] buffer
+			// words. The base's VALUE type (operand_value_type) — a
+			// reference-typed base denotes its referent carrier.
+			if (is_array_object(operand_value_type(tse->base_expr))) {
 				// The receiver is the base VALUE's address: the base's
 				// own translation is a value lvalue (a buffer field,
 				// or a keyed-chain link's N_DEREF(slot)); &* folds a
@@ -29241,31 +29240,42 @@ node_t CirBuilder::translate_foreach_loop(TokenFOREACH *fe,
 				  "this container (only raw arrays and "
 				  "size()/operator[] containers)", fe);
 
-	// (void*)container — the madc::value object address. A NAMED variable
-	// goes through object_var_addr (buffer -> &buffer; a value& parameter
-	// reads its stored pointer — the decay the old form relied on LOADS
-	// through a reference and fed garbage to madarray_size); a keyed
-	// subscript re-wraps to the slot address (&* folds); anything else
-	// keeps the translated decay.
-	auto container_addr = [&]() -> node_t {
+	// void *__fe_r_N = (void*)container; — the madc::value object address,
+	// the range captured ONCE ([stmt.ranged]/1: `auto &&__range =
+	// range-init;`) by a unique name, emitted via the wrap prelude BEFORE the
+	// element declaration (the raw-array arm's shape): a range-init with
+	// side effects (`fill(a)`, `fill(a)["rows"]`) runs once, never once per
+	// test and per fill. A NAMED variable goes through object_var_addr
+	// (buffer -> &buffer; a value& parameter reads its stored pointer — the
+	// decay LOADS through a reference); any other carrier expression is
+	// carrier_expr_addr's.
+	char rname[32];
+	snprintf(rname, sizeof(rname), "__fe_r_%d", m_strtmp_counter++);
+	{
 		TokenVar *cv = dynamic_cast<TokenVar *>(fe->container);
 		// A MEMBER (s.a) IS-A TokenVar (via TokenCallFunc), but its
 		// var is the bare FIELD — object_var_addr would address it by
 		// name and lose the receiver ("undeclared identifier a").
-		// Only a plain variable takes the stored-pointer shortcut;
-		// a member keeps its translated field lvalue's decay.
+		// Only a plain variable takes the stored-pointer shortcut.
 		if (dynamic_cast<TokenMember *>(fe->container))
 			cv = NULL;
-		node_t raw;
-		if (cv && carrier_behind(cv->var.type))
-			raw = object_var_addr(cv->var, fe);
-		else {
-			raw = translate_expr(fe->container);
-			if (is_carrier_keyed_subscript(fe->container))
-				raw = node1(N_ADDR, raw, fe);
-		}
-		return node2(N_CAST, void_ptr_type(), raw, fe);
-	};
+		node_t raw = (cv && carrier_behind(cv->var.type))
+			? object_var_addr(cv->var, fe)
+			: carrier_expr_addr(fe->container, fe);
+		node_t rdecl = simple(N_SPEC_DECL, fe);
+		append(rdecl, node1(N_SHARE, node1(N_LIST, simple(N_VOID))));
+		node_t rdl = list();
+		append(rdl, pointer());
+		append(rdecl, node2(N_DECL, id(rname, fe), rdl));
+		append(rdecl, ignore());
+		append(rdecl, ignore());
+		append(rdecl, node2(N_CAST, void_ptr_type(), raw, fe));
+		if (!prelude)
+			return error_node("range-for: carrier range capture needs "
+					  "the wrap prelude", fe);
+		prelude->push_back(rdecl);
+	}
+	auto container_addr = [&]() -> node_t { return id(rname, fe); };
 
 	char idx[32];
 	snprintf(idx, sizeof(idx), "__fe_i_%d", m_strtmp_counter++);

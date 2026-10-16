@@ -1,0 +1,45 @@
+// A carrier returned by REFERENCE from a call (`var &fill(var &out, ...)`),
+// subscripted or iterated in place: the subscript reads the referent's slot
+// (it read `"rows"[*call]` — an empty count, a SIGSEGV on copy), and a
+// range-for evaluates its range expression ONCE ([stmt.ranged]/1 binds
+// `auto &&__range` before the loop; it re-ran the call per test and per
+// element fetch).
+// Oracle: the same shapes in C++ over std::map<std::string,
+// std::vector<long>> — g++ and clang++ (-std=c++11 -O0) both print
+//   loop-sub: k=3 sum=30 calls=1
+//   count-sub: 2 calls=2
+//   copy-sub: 4 calls=3
+//   loop-call: 1 calls=4
+long calls = 0;
+
+var &fill(var &out, long n)
+{
+    calls = calls + 1;
+    var rows = {};
+    for ( long i = 0; i < n; i = i + 1 )
+        rows.push(i * 10);
+    out = { "rows": rows };
+    return out;
+}
+
+int main()
+{
+    var a;
+    long k = 0;
+    long sum = 0;
+    for ( var c : fill(a, 3)["rows"] )
+    {
+        k = k + 1;
+        sum = sum + c.as_integer();
+    }
+    println("loop-sub: k={} sum={} calls={}", k, sum, calls);
+    long n = php::count(fill(a, 2)["rows"]);
+    println("count-sub: {} calls={}", n, calls);
+    var x = fill(a, 4)["rows"];
+    println("copy-sub: {} calls={}", php::count(x), calls);
+    long m = 0;
+    for ( var e : fill(a, 2) )
+        m = m + 1;
+    println("loop-call: {} calls={}", m, calls);
+    return 0;
+}

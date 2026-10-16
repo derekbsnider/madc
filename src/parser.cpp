@@ -44348,7 +44348,12 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			    }
 			    else if ( elem_type && elem_type->is_simd() )
 				elem_type = static_cast<DataDefSIMD *>(elem_type)->element_type;
-			    DBG(cout << "parseExpression: subscript on generic expression" << endl);
+			    DBG(cout << "parseExpression: subscript on generic expression"
+				     " base=" << dd->name.c_str() << " ref=" << dd->is_reference()
+				     << " ptr=" << dd->is_pointer() << " class_elem="
+				     << (class_elem ? class_elem->name.c_str() : "-")
+				     << " elem=" << (elem_type ? elem_type->name.c_str() : "-")
+				     << endl);
 			    exStack.push(new TokenSubscriptExpr(base_expr, idx, elem_type));
 			    return done ? ExprStep::Done : ExprStep::Break;
 			}

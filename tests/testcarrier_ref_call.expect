@@ -1,0 +1,4 @@
+loop-sub: k=3 sum=30 calls=1
+count-sub: 2 calls=2
+copy-sub: 4 calls=3
+loop-call: 1 calls=4

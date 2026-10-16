@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### A reference-returned carrier, subscripted or iterated, reads its referent
+
+A carrier returned by reference from a call (`var &fill(var &out, ...)`),
+subscripted or iterated in place, reads the referent carrier and runs its range
+expression once. A keyed carrier subscript and a reference-returning carrier
+call translate to a value lvalue (an `N_DEREF`); their object address is
+re-wrapped with `&` before it is used as a receiver, so `fill(a)["rows"]` reads
+the `"rows"` slot of the referent instead of indexing the value object's `long[]`
+buffer words — formerly an empty count, and a SIGSEGV on the copy. The address
+of a carrier-valued expression is now one helper, `carrier_expr_addr`
+(`src/cir_builder.cpp`), shared by the carrier-receiver and range-for paths, and
+the keyed-subscript and element-read tests ask `operand_value_type` for the
+base's value type so a reference-typed base denotes its referent. A C++11
+range-for over a carrier call binds its range once into a `void *__fe_r_N`
+capture ([stmt.ranged]/1) emitted before the loop, so a range expression with
+side effects (`fill(a)`, `fill(a)["rows"]`) runs once rather than once per test
+and per element fetch. `tests/testcarrier_ref_call` covers both shapes against
+the g++/clang++ `std::map<std::string, std::vector<long>>` oracle.
+
 ### Dialect faces for a project manifest's one reader and writer
 
 `madc::project_manifest_read`, `project_manifest_create`,
