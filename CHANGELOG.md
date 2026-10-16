@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+### An object may be aligned beyond 16 bytes, static or automatic
+
+madc now places an object on an alignment above 16 — gcc's `aligned(N)`, C11
+`_Alignas(N)`, or a wide vector type — up to a page, for both static and
+automatic storage. c2mir had refused any alignment above 16: a static object
+over-aligned past 16 was rejected, and an automatic one sat on the frame's
+16-byte boundary (a vector's over-alignment dropped, `_Alignas` / `aligned`
+refused). A static (or file-scope) object now carries its storage alignment on
+the MIR data/bss item heading it; the JIT's section allocation and the AOT
+object writer place the storage on that boundary, and `MIR_write` / `MIR_output`
+serialize the alignment as an `align <name> <N>` record beside the weak/linkonce
+binding records. An automatic object's frame is over-allocated and its base
+rounded up to the largest alignment any object in it needs, as gcc and clang
+realign the stack. Two reducers pin a static `_Alignas` / `aligned` table, an
+over-aligned struct member, a 4096-aligned bss block and a function-scope static
+(SQLite's `ALIGN128` mutex table), and automatic `_Alignas`, member-, vector-,
+compound-literal- and recursion-frame objects, on their boundaries in a run, an
+executable and an object file; gcc 13 and clang 18 `-O0 -std=c17` give the same
+output. gcc c-torture `20010904-1.c` and `20010904-2.c` (over-aligned objects)
+now pass.
+
 ### A tag a parameter list names first is declared at file scope
 
 When a struct or union tag is first named inside a function type's parameter

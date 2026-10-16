@@ -994,23 +994,28 @@ static void remove_item (MIR_context_t ctx, MIR_item_t item) {
   case MIR_export_item:
   case MIR_forward_item: break;
   case MIR_data_item:
-    if (item->addr != NULL && item->section_head_p) MIR_free (ctx->alloc, item->addr);
+    if (item->addr != NULL && item->section_head_p)
+      MIR_free (ctx->alloc, item->section_alloc != NULL ? item->section_alloc : item->addr);
     MIR_free (ctx->alloc, item->u.data);
     break;
   case MIR_ref_data_item:
-    if (item->addr != NULL && item->section_head_p) MIR_free (ctx->alloc, item->addr);
+    if (item->addr != NULL && item->section_head_p)
+      MIR_free (ctx->alloc, item->section_alloc != NULL ? item->section_alloc : item->addr);
     MIR_free (ctx->alloc, item->u.ref_data);
     break;
   case MIR_lref_data_item:
-    if (item->addr != NULL && item->section_head_p) MIR_free (ctx->alloc, item->addr);
+    if (item->addr != NULL && item->section_head_p)
+      MIR_free (ctx->alloc, item->section_alloc != NULL ? item->section_alloc : item->addr);
     MIR_free (ctx->alloc, item->u.lref_data);
     break;
   case MIR_expr_data_item:
-    if (item->addr != NULL && item->section_head_p) MIR_free (ctx->alloc, item->addr);
+    if (item->addr != NULL && item->section_head_p)
+      MIR_free (ctx->alloc, item->section_alloc != NULL ? item->section_alloc : item->addr);
     MIR_free (ctx->alloc, item->u.expr_data);
     break;
   case MIR_bss_item:
-    if (item->addr != NULL && item->section_head_p) MIR_free (ctx->alloc, item->addr);
+    if (item->addr != NULL && item->section_head_p)
+      MIR_free (ctx->alloc, item->section_alloc != NULL ? item->section_alloc : item->addr);
     MIR_free (ctx->alloc, item->u.bss);
     break;
   default: mir_assert (FALSE);
@@ -1248,6 +1253,8 @@ static MIR_item_t create_item (MIR_context_t ctx, MIR_item_type_t item_type,
   item->export_p = FALSE;
   item->binding = MIR_ITEM_BIND_GLOBAL;
   item->section_head_p = FALSE;
+  item->align = 0;
+  item->section_alloc = NULL;
   item->addr = NULL;
   return item;
 }
@@ -1290,6 +1297,22 @@ void MIR_item_set_binding (MIR_context_t ctx, MIR_item_t item, MIR_item_binding_
                               "MIR_item_set_binding: item is not a bindable definition");
   item->binding = (char) binding;
 }
+
+void MIR_item_set_align (MIR_context_t ctx, MIR_item_t item, size_t align) {
+  mir_assert (item != NULL);
+  if (item->item_type != MIR_data_item && item->item_type != MIR_ref_data_item
+      && item->item_type != MIR_lref_data_item && item->item_type != MIR_expr_data_item
+      && item->item_type != MIR_bss_item)
+    MIR_get_error_func (ctx) (MIR_wrong_param_value_error,
+                              "MIR_item_set_align: item is not data or bss");
+  if (align == 0 || (align & (align - 1)) != 0 || align > 4096)
+    MIR_get_error_func (ctx) (MIR_wrong_param_value_error,
+                              "MIR_item_set_align: %lu is not a power of two up to 4096",
+                              (unsigned long) align);
+  item->align = align <= 16 ? 0 : (unsigned) align;
+}
+
+size_t MIR_item_align (MIR_item_t item) { return item->align; }
 
 MIR_item_t MIR_new_import (MIR_context_t ctx, const char *name) {
   return new_export_import_forward (ctx, name, MIR_import_item, "import", FALSE);
@@ -2095,11 +2118,20 @@ static MIR_item_t load_bss_data_section (MIR_context_t ctx, MIR_item_t item, int
     }
     if (section_size % 8 != 0)
       section_size += 8 - section_size % 8; /* we might use 64-bit copying of data */
-    if ((item->addr = MIR_malloc (ctx->alloc, section_size)) == NULL) {
+    /* an over-aligned section (MIR_item_set_align) starts at its alignment
+       inside a larger allocation, freed through section_alloc */
+    size_t align = item->align;
+    uint8_t *alloc = MIR_malloc (ctx->alloc, section_size + (align > 16 ? align - 1 : 0));
+    if (alloc == NULL) {
       name = MIR_item_name (ctx, item);
       MIR_get_error_func (ctx) (MIR_alloc_error, "Not enough memory to allocate data/bss %s",
                                 name == NULL ? "" : name);
     }
+    if (align > 16) {
+      item->section_alloc = alloc;
+      alloc = (uint8_t *) (((uintptr_t) alloc + align - 1) & ~(uintptr_t) (align - 1));
+    }
+    item->addr = alloc;
     item->section_head_p = TRUE;
   }
   /* Set up section memory: */
@@ -3735,6 +3767,9 @@ void MIR_output_module (MIR_context_t ctx, FILE *f, MIR_module_t module) {
     if (item->binding != MIR_ITEM_BIND_GLOBAL && MIR_item_name (ctx, item) != NULL)
       fprintf (f, "\t%s\t%s\n", item->binding == MIR_ITEM_BIND_WEAK ? "weak" : "linkonce",
                MIR_item_name (ctx, item));
+    /* an over-aligned data/bss item: a trailing `align <name> <N>` line */
+    if (item->align != 0 && MIR_item_name (ctx, item) != NULL)
+      fprintf (f, "\talign\t%s, %u\n", MIR_item_name (ctx, item), item->align);
   }
   fprintf (f, "\tendmodule\n");
 }
@@ -5779,6 +5814,13 @@ static size_t write_module (MIR_context_t ctx, writer_func_t writer, MIR_module_
                          item->binding == MIR_ITEM_BIND_WEAK ? "weak" : "linkonce");
       len += write_name (ctx, writer, MIR_item_name (ctx, item));
     }
+    /* an over-aligned data/bss item: a trailing `align <name> <N>` record
+       (emitted only when present, like the binding records) */
+    if (item->align != 0 && MIR_item_name (ctx, item) != NULL) {
+      len += write_name (ctx, writer, "align");
+      len += write_name (ctx, writer, MIR_item_name (ctx, item));
+      len += write_uint (ctx, writer, item->align);
+    }
   }
   len += write_name (ctx, writer, "endmodule");
   return len;
@@ -6327,6 +6369,15 @@ void MIR_read_with_func (MIR_context_t ctx, int (*const reader) (MIR_context_t))
           MIR_get_error_func (ctx) (MIR_binary_io_error, "weak/linkonce %s of undefined item",
                                     name);
         MIR_item_set_binding (ctx, bind_item, binding);
+      } else if (strcmp (name, "align") == 0) {
+        /* written right after its data/bss item, like the binding markers */
+        MIR_item_t align_item;
+        name = read_name (ctx, module, "wrong align name");
+        if (VARR_LENGTH (uint64_t, insn_label_string_nums) != 0)
+          MIR_get_error_func (ctx) (MIR_binary_io_error, "align %s should have no labels", name);
+        if (module == NULL || (align_item = item_tab_find (ctx, name, module)) == NULL)
+          MIR_get_error_func (ctx) (MIR_binary_io_error, "align %s of undefined item", name);
+        MIR_item_set_align (ctx, align_item, read_uint (ctx, "wrong align value"));
       } else if (strcmp (name, "import") == 0) {
         name = read_name (ctx, module, "wrong import name");
         if (VARR_LENGTH (uint64_t, insn_label_string_nums) != 0)
@@ -7066,7 +7117,7 @@ void MIR_scan_string (MIR_context_t ctx, const char *str) {
   MIR_label_t label;
   int64_t i, n;
   int module_p, end_module_p, proto_p, func_p, end_func_p, dots_p, export_p, import_p, forward_p;
-  int weak_stmt_p, linkonce_stmt_p;
+  int weak_stmt_p, linkonce_stmt_p, align_stmt_p;
   int bss_p, ref_p, lref_p, expr_p, string_p, global_p, local_p, push_op_p, read_p, disp_p;
   int mem_volatile_p;
   insn_name_t in, el;
@@ -7100,7 +7151,7 @@ void MIR_scan_string (MIR_context_t ctx, const char *str) {
     }
     module_p = end_module_p = proto_p = func_p = end_func_p = FALSE;
     export_p = import_p = forward_p = bss_p = ref_p = lref_p = expr_p = string_p = FALSE;
-    weak_stmt_p = linkonce_stmt_p = FALSE;
+    weak_stmt_p = linkonce_stmt_p = align_stmt_p = FALSE;
     global_p = local_p = FALSE;
     if (strcmp (name, "module") == 0) {
       module_p = TRUE;
@@ -7134,6 +7185,10 @@ void MIR_scan_string (MIR_context_t ctx, const char *str) {
       linkonce_stmt_p = TRUE;
       if (VARR_LENGTH (label_name_t, label_names) != 0)
         scan_error (ctx, "linkonce should have no labels");
+    } else if (strcmp (name, "align") == 0) {
+      align_stmt_p = TRUE;
+      if (VARR_LENGTH (label_name_t, label_names) != 0)
+        scan_error (ctx, "align should have no labels");
     } else if (strcmp (name, "import") == 0) {
       import_p = TRUE;
       if (VARR_LENGTH (label_name_t, label_names) != 0)
@@ -7410,6 +7465,14 @@ void MIR_scan_string (MIR_context_t ctx, const char *str) {
         = (VARR_LENGTH (label_name_t, label_names) == 0 ? NULL
                                                         : VARR_GET (label_name_t, label_names, 0));
       MIR_new_bss (ctx, name, op_addr[0].u.i);
+    } else if (align_stmt_p) {
+      /* `align <name>, <N>`: written right after its data/bss item */
+      if (VARR_LENGTH (MIR_op_t, scan_insn_ops) != 2)
+        scan_error (ctx, "align should have two operands");
+      op_addr = VARR_ADDR (MIR_op_t, scan_insn_ops);
+      if (op_addr[0].mode != MIR_OP_REF) scan_error (ctx, "wrong align item operand");
+      if (op_addr[1].mode != MIR_OP_INT) scan_error (ctx, "wrong align value operand");
+      MIR_item_set_align (ctx, op_addr[0].u.ref, (size_t) op_addr[1].u.i);
     } else if (ref_p) {
       if (VARR_LENGTH (MIR_op_t, scan_insn_ops) != 2)
         scan_error (ctx, "ref should have two operands");

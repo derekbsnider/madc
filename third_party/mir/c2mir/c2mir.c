@@ -6515,6 +6515,9 @@ struct node_scope {
   unsigned char stack_var_p; /* necessity for frame */
   unsigned func_scope_num;
   mir_size_t size, offset, call_arg_area_size;
+  /* madc fork: in a function block, the largest alignment an object in its
+     frame needs (gen realigns the frame when it exceeds MAX_ALIGNMENT) */
+  mir_size_t frame_align;
   node_t scope;
   /* Decls in this scope carrying __attribute__((cleanup(fn))), in declaration
      order; NULL if none. Populated in check, consumed by process_cleanups. */
@@ -7868,6 +7871,7 @@ static void create_node_scope (c2m_ctx_t c2m_ctx, node_t node) {
   ns->func_scope_num = curr_func_scope_num++;
   ns->stack_var_p = FALSE;
   ns->offset = ns->size = ns->call_arg_area_size = 0;
+  ns->frame_align = 0;
   ns->cleanup_decls = NULL;
   node->attr = ns;
   ns->scope = curr_scope;
@@ -9598,6 +9602,16 @@ static void check_decl_align (c2m_ctx_t c2m_ctx, struct decl_spec *decl_spec) {
            "requested alignment is less than minimum alignment for the type");
 }
 
+/* madc fork: the alignment an object's storage needs -- its type's, raised by
+   an alignment specifier on the object itself (C11 6.7.5) */
+static mir_size_t decl_storage_align (c2m_ctx_t c2m_ctx, struct decl *decl) {
+  mir_size_t align = var_align (c2m_ctx, decl->decl_spec.type);
+
+  if (decl->decl_spec.align > 0 && (mir_size_t) decl->decl_spec.align > align)
+    align = decl->decl_spec.align;
+  return align;
+}
+
 static int attr_name_eq_p (const char *attr_name, const char *canonical_name) {
   size_t attr_len = strlen (attr_name), canonical_len = strlen (canonical_name);
 
@@ -10431,8 +10445,10 @@ static int decl_cmp (const void *v1, const void *v2) {
   return 0;
 }
 
-static void process_func_decls_for_allocation (c2m_ctx_t c2m_ctx) {
+/* Returns the largest alignment an object placed in the frame needs. */
+static mir_size_t process_func_decls_for_allocation (c2m_ctx_t c2m_ctx) {
   check_ctx_t check_ctx = c2m_ctx->check_ctx;
+  mir_size_t frame_align = 0;
   size_t i, j;
   decl_t decl;
   struct type *type;
@@ -10487,13 +10503,11 @@ static void process_func_decls_for_allocation (c2m_ctx_t c2m_ctx) {
     }
     {
       /* An alignment specifier on the object (C11 6.7.5: `_Alignas (16) char c;`)
-         places it on that boundary, not only on its type's.  The frame itself is
-         rounded to MAX_ALIGNMENT, the largest alignment the target admits
-         (invalid_alignment). */
-      mir_size_t align = var_align (c2m_ctx, type);
+         places it on that boundary, not only on its type's.  Offsets are from
+         the frame base, which gen aligns to the largest of them (frame_align). */
+      mir_size_t align = decl_storage_align (c2m_ctx, decl);
 
-      if (decl->decl_spec.align > 0 && (mir_size_t) decl->decl_spec.align > align)
-        align = decl->decl_spec.align;
+      if (align > frame_align) frame_align = align;
       ns->offset = round_size (ns->offset, align);
     }
     decl->offset = ns->offset;
@@ -10512,6 +10526,7 @@ static void process_func_decls_for_allocation (c2m_ctx_t c2m_ctx) {
       if (ns->stack_var_p) curr_ns->stack_var_p = TRUE;
     }
   }
+  return frame_align;
 }
 
 static const char *check_attrs (c2m_ctx_t c2m_ctx, node_t r, decl_t decl, node_t attrs,
@@ -12144,7 +12159,12 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     process_goto_cleanups (c2m_ctx);
     assert (curr_scope == top_scope); /* set up in the block */
     func_block_scope = top_scope;
-    process_func_decls_for_allocation (c2m_ctx);
+    {
+      mir_size_t frame_align = process_func_decls_for_allocation (c2m_ctx);
+
+      ns = block->attr;
+      if (frame_align > ns->frame_align) ns->frame_align = frame_align;
+    }
     /* Add call arg area */
     ns = block->attr;
     ns->size = round_size (ns->size, MAX_ALIGNMENT);
@@ -12218,6 +12238,7 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
       mir_size_t size = type_size (c2m_ctx, t1);
       mir_size_t align = var_align (c2m_ctx, t1);
 
+      if (align > fns->frame_align) fns->frame_align = align;
       fns->size = round_size (fns->size, align);
       e->c.u_val = fns->size;
       fns->size += size;
@@ -17688,6 +17709,22 @@ static void gen_initializer (c2m_ctx_t c2m_ctx, size_t init_start, op_t var,
   }
 }
 
+/* madc fork: a static object aligned beyond MAX_ALIGNMENT (gcc's aligned(N),
+   C11 _Alignas(N)) carries the alignment on the MIR item heading its storage;
+   the JIT's section allocation and the object writers honor it. */
+static void set_static_item_align (c2m_ctx_t c2m_ctx, struct decl *decl) {
+  MIR_item_t item = decl->u.item;
+  mir_size_t align;
+
+  if (item == NULL
+      || (item->item_type != MIR_data_item && item->item_type != MIR_ref_data_item
+          && item->item_type != MIR_lref_data_item && item->item_type != MIR_expr_data_item
+          && item->item_type != MIR_bss_item))
+    return;
+  if ((align = decl_storage_align (c2m_ctx, decl)) > MAX_ALIGNMENT)
+    MIR_item_set_align (c2m_ctx->ctx, item, align);
+}
+
 static MIR_item_t get_ref_item (c2m_ctx_t c2m_ctx, node_t def, const char *name) {
   MIR_context_t ctx = c2m_ctx->ctx;
   struct decl *decl = def->attr;
@@ -20218,6 +20255,8 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
                            local_p);
           VARR_TRUNC (init_el_t, init_els, init_start);
         }
+        if (decl->scope == top_scope || decl->decl_spec.static_p)
+          set_static_item_align (c2m_ctx, decl);
         if (decl->u.item != NULL && decl->scope == top_scope && !decl->decl_spec.static_p) {
           MIR_new_export (ctx, name);
           if (decl->decl_spec.weak_p)
@@ -20275,10 +20314,25 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
     DLIST_INIT (MIR_insn_t, slow_code_part);
     if (ns->stack_var_p /* we can have empty struct only with size 0 and still need a frame: */
         || ns->size > 0) {
+      /* madc fork: a frame holding an object aligned beyond MAX_ALIGNMENT is
+         over-allocated and its base rounded up to that alignment, as gcc
+         realigns the stack */
+      mir_size_t over = ns->frame_align > MAX_ALIGNMENT ? ns->frame_align - 1 : 0;
+
       fp_reg = MIR_new_func_reg (ctx, curr_func->u.func, MIR_T_I64, FP_NAME);
       MIR_append_insn (ctx, curr_func,
                        MIR_new_insn (ctx, MIR_ALLOCA, MIR_new_reg_op (ctx, fp_reg),
-                                     MIR_new_int_op (ctx, ns->size)));
+                                     MIR_new_int_op (ctx, ns->size + over)));
+      if (over != 0) {
+        MIR_append_insn (ctx, curr_func,
+                         MIR_new_insn (ctx, MIR_ADD, MIR_new_reg_op (ctx, fp_reg),
+                                       MIR_new_reg_op (ctx, fp_reg),
+                                       MIR_new_int_op (ctx, (int64_t) over)));
+        MIR_append_insn (ctx, curr_func,
+                         MIR_new_insn (ctx, MIR_AND, MIR_new_reg_op (ctx, fp_reg),
+                                       MIR_new_reg_op (ctx, fp_reg),
+                                       MIR_new_int_op (ctx, -(int64_t) ns->frame_align)));
+      }
     }
     for (size_t i = 0; i < VARR_LENGTH (MIR_var_t, proto_info.arg_vars); i++)
       get_reg_var (c2m_ctx, MIR_T_UNDEF, VARR_GET (MIR_var_t, proto_info.arg_vars, i).name, NULL);

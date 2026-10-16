@@ -1,0 +1,4 @@
+mutex: on128=1 id=3 stride=128
+table: on256=1 sum=24
+zeroed: on4096=1 zero=1
+line: on64=1 sizeof=64 alignof=64 n=12 c=ab

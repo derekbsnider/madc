@@ -9931,7 +9931,7 @@ static void obj_emit_module_data (gen_ctx_t gen_ctx, MIR_module_t m) {
     int first_p = TRUE;
     uint64_t head_off = 0, group_end = 0;
     for (MIR_item_t ci = item; ci != g_end; ci = DLIST_NEXT (MIR_item_t, ci), first_p = FALSE) {
-      size_t align = first_p ? 16 : 1;
+      size_t align = !first_p ? 1 : ci->align > 16 ? ci->align : 16;
       uint64_t off = 0;
       size_t len = 0;
       switch (ci->item_type) {

@@ -467,6 +467,11 @@ struct MIR_item {
   char binding;
   /* defined for data-bss after loading. True if it is a start of allocated section */
   char section_head_p;
+  /* data/bss storage alignment beyond the target default (MIR_item_set_align;
+     0 = the default, 16) */
+  unsigned align;
+  /* an over-aligned loaded section's allocation, when it is not addr itself */
+  void *section_alloc;
   union {
     MIR_func_t func;
     MIR_proto_t proto;
@@ -597,6 +602,12 @@ typedef enum {
   MIR_ITEM_BIND_LINKONCE,   /* ODR-identical per-TU copy: STB_WEAK, inlineable */
 } MIR_item_binding_t;
 extern void MIR_item_set_binding (MIR_context_t ctx, MIR_item_t item, MIR_item_binding_t binding);
+/* The alignment a data/bss item's storage needs beyond the target default of
+   16 (gcc's aligned(N), C11 _Alignas(N) on a static object): a power of two
+   up to a page.  The JIT's section allocation and the AOT object capture
+   honor it; MIR_write / MIR_output carry it as an `align <name> <N>` record. */
+extern void MIR_item_set_align (MIR_context_t ctx, MIR_item_t item, size_t align);
+extern size_t MIR_item_align (MIR_item_t item);
 extern MIR_item_t MIR_new_bss (MIR_context_t ctx, const char *name,
                                size_t len); /* name can be NULL */
 extern MIR_item_t MIR_new_data (MIR_context_t ctx, const char *name, MIR_type_t el_type, size_t nel,

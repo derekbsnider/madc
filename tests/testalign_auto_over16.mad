@@ -1,0 +1,43 @@
+/* An automatic object may need more than the stack's 16-byte alignment: an
+ * alignment specifier on it, a member's (`_Alignas(64)`), or a wide vector
+ * type (vector_size(32) aligns to 32). gcc and clang realign the frame; madc
+ * over-allocates the frame and rounds its base up to the largest alignment an
+ * object in it needs. Pins: each such local, a compound literal, and the same
+ * local in every frame of a recursion sit on their boundary, with contents
+ * intact (frames start at whatever 16-byte offset the caller leaves).
+ * Before: the objects sat on 16-byte boundaries only (the alignment above 16
+ * was dropped for a vector, refused for _Alignas / aligned).
+ * Oracle: gcc 13 and clang 18 -O0 -std=c17 print the lines in the .expect. */
+#include <stdio.h>
+#include <stdint.h>
+
+typedef int v8si __attribute__((vector_size(32)));
+struct line { _Alignas(64) char c; int n; };
+
+static int on(const void *p, uintptr_t n) { return (uintptr_t)p % n == 0; }
+
+static int depth(int n)
+{
+	_Alignas(128) char cell[8];
+	char pad[n % 3 + 1];
+	cell[0] = (char)n;
+	pad[0] = 0;
+	int ok = on(cell, 128) && cell[0] == (char)n && pad[0] == 0;
+	return n == 0 ? ok : ok + depth(n - 1);
+}
+
+int main(void)
+{
+	char pad = 1;
+	_Alignas(64) char buf[64];
+	struct line l = { 'a', 7 };
+	v8si v = { 1, 2, 3, 4, 5, 6, 7, 8 };
+	struct line *cl = &(struct line){ 'z', 9 };
+	buf[0] = pad;
+	printf("buf: on64=%d first=%d\n", on(buf, 64), buf[0]);
+	printf("line: on64=%d n=%d c=%c\n", on(&l, 64), l.n, l.c);
+	printf("vector: on32=%d sum=%d\n", on(&v, 32), v[0] + v[3] + v[7]);
+	printf("literal: on64=%d n=%d c=%c\n", on(cl, 64), cl->n, cl->c);
+	printf("recursion: %d of 6 frames aligned\n", depth(5));
+	return 0;
+}
