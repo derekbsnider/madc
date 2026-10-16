@@ -158,13 +158,18 @@ result. A result is a value owned by its caller. No global state.
 - `sys.argv` stays the input every face reads by default (argparse reads
   `sys.argv[1:]`); on Windows it is UTF-8 by the manifest above.
 - New, appended at the end of `SysInfo` (the layout contract with
-  `include/libmadc/sysinfo.h` is append-only): `sys.options`, the running
-  madc's own parsed options as a read-only `var` object (Python's
-  `sys.flags` convention), and a face returning madc's option TABLE as data
-  (the `--help=json` shape). madcide reads both instead of keeping its own
-  copy; registered in `scripts/dialect_faces.tsv` (`dialect-faces.md`).
-  This is the arc's "madcide gate for hand-copied madc tables" for the
-  option table.
+  `include/libmadc/sysinfo.h` is append-only), named as Python names them
+  (owner, 2026-10-16):
+  - `sys.flags` — the running madc's own parsed options, a read-only `var`
+    object keyed by each option's table name. Python's `sys.flags` is a
+    fixed set of interpreter settings; madc's carries every option in the
+    table, the same role.
+  - `sys.orig_argv` — the whole original command line, madc's own options
+    included (Python 3.10+); `sys.argv` stays the program's.
+- A face returning madc's option TABLE as data (the `--help=json` shape).
+  madcide reads `sys.flags` and the table instead of keeping its own copy;
+  registered in `scripts/dialect_faces.tsv` (`dialect-faces.md`). This is
+  the arc's "madcide gate for hand-copied madc tables" for the option table.
 
 ## 7. Dialect faces
 
@@ -201,7 +206,7 @@ dialect code.
    `.flags` exercises it).
 3. Windows UTF-8: the manifest in madc.exe and in produced executables;
    a test with a non-ASCII argument on the genuine-Windows lane.
-4. `madc::sys.options` and the table face; madcide reads them (its copy
+4. `madc::sys.flags`, `sys.orig_argv` and the table face; madcide reads them (its copy
    deleted — a move is done when the host's copy is gone).
 5. `python::argparse`.
 6. Member annotations + the typed `madc::cli` face.
