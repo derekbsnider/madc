@@ -1,0 +1,89 @@
+// The project manifest's dialect faces — madc's ONE reader and writer of
+// <base>.prj.json (madc_project.h), so a host (madcide) never parses or writes
+// the file itself: project_manifest_read / _create / _add_tu / _remove_tu /
+// _set_kind, project_default_output, project_events_path, project_kind_name,
+// and the kind's enum codes from <bits/project_enums>. The oracle is the
+// owner's documented rule (the --project lane reads the same file): a TU named
+// relative to the manifest's directory and resolved against it, an unknown
+// kind word refused, "output" resolved against the manifest's directory, keys
+// madc does not model ("commands") kept by every write and handed back as the
+// file's own JSON.
+void say(const char *label, bool ok, var &err)
+{
+	println("{}: ok={} err={}", label, ok ? 1 : 0, strlen(err.c_str()) > 0 ? 1 : 0);
+}
+
+int main()
+{
+	const char *pf = "madc_pmf_probe/app.prj.json";
+	madc::path_make_parents("madc_pmf_probe/src/a.c");
+	php::file_put_contents("madc_pmf_probe/src/a.c", "int main(void) { return 0; }\n");
+	php::file_put_contents("madc_pmf_probe/b.c", "int b(void) { return 1; }\n");
+
+	var err;
+	say("create", madc::project_manifest_create(err, pf), err);
+	say("create-again", madc::project_manifest_create(err, pf), err);
+	say("add-a", madc::project_manifest_add_tu(err, pf, "madc_pmf_probe/src/a.c"), err);
+	say("add-b", madc::project_manifest_add_tu(err, pf, "madc_pmf_probe/b.c"), err);
+	say("add-a-again", madc::project_manifest_add_tu(err, pf, "madc_pmf_probe/src/a.c"), err);
+	say("add-missing", madc::project_manifest_add_tu(err, pf, "madc_pmf_probe/none.c"), err);
+
+	var m;
+	say("read", madc::project_manifest_read(m, err, pf), err);
+	println("tus: {}", php::count(m["tus"]));
+	for ( var t : m["tus"] )
+	{
+		var f = t["file"];
+		println("tu: {} exists={}", php::basename(f), php::file_exists(f.c_str()) ? 1 : 0);
+	}
+	// The file names its TUs relative to its own directory.
+	for ( var s : m["json"]["tus"] )
+	{
+		const char *sc = s.c_str();
+		bool rooted = sc[0] == '/' || (strlen(sc) > 1 && sc[1] == ':');
+		println("named: {} relative={}", php::basename(s), rooted ? 0 : 1);
+	}
+	println("kind: console={}", m["kind"] == madc::project_kind::console ? 1 : 0);
+
+	say("set-kind", madc::project_manifest_set_kind(err, pf, madc::project_kind::gui), err);
+	madc::project_manifest_read(m, err, pf);
+	println("kind: gui={} word={}", m["kind"] == madc::project_kind::gui ? 1 : 0,
+		madc::project_kind_name(madc::project_kind::gui));
+
+	var out;
+	say("default-output", madc::project_default_output(out, err, pf), err);
+	println("output: {}", out);
+	var ev;
+	madc::project_events_path(ev, pf);
+	println("events: {}", ev);
+	var none;
+	madc::project_events_path(none, "madc_pmf_probe/b.c");
+	println("events-of-source: [{}]", none);
+
+	// Keys madc does not model ride through every write and come back as the
+	// file's own JSON; "output" resolves against the manifest's directory.
+	php::file_put_contents(pf, "{ \"entry\": \"main\", \"output\": \"bin/x\", \"tus\": [\"src/a.c\"],\n"
+		"  \"commands\": [ { \"name\": \"Lint\", \"cmd\": \"lint {path}\" } ] }\n");
+	say("add-b-keeps", madc::project_manifest_add_tu(err, pf, "madc_pmf_probe/b.c"), err);
+	madc::project_manifest_read(m, err, pf);
+	println("commands: {} {}", php::count(m["json"]["commands"]), m["json"]["commands"][0]["name"]);
+	madc::project_default_output(out, err, pf);
+	println("output: {}", out);
+	say("remove-b", madc::project_manifest_remove_tu(err, pf, "madc_pmf_probe/b.c"), err);
+	say("remove-b-again", madc::project_manifest_remove_tu(err, pf, "madc_pmf_probe/b.c"), err);
+	madc::project_manifest_read(m, err, pf);
+	println("tus: {} commands-kept={}", php::count(m["tus"]), php::count(m["json"]["commands"]));
+
+	// An unknown kind word is refused, with the reason.
+	php::file_put_contents(pf, "{ \"tus\": [], \"kind\": \"tui\" }\n");
+	say("read-bad-kind", madc::project_manifest_read(m, err, pf), err);
+	println("bad-kind-reason: {}", err);
+
+	php::unlink(pf);
+	php::unlink("madc_pmf_probe/src/a.c");
+	php::unlink("madc_pmf_probe/b.c");
+	php::rmdir("madc_pmf_probe/src");
+	php::rmdir("madc_pmf_probe");
+	println("cleaned: {}", php::file_exists("madc_pmf_probe") ? 0 : 1);
+	return 0;
+}

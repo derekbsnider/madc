@@ -1,0 +1,23 @@
+// madc embedded <bits/project_enums> — a project manifest's vocabularies as
+// ENUMS, the ONE text for two readers: the engine (ProjectKind in
+// include/madc_project.h aliases this) and the dialect (<ns_madc> includes it,
+// so a host switches on `m["kind"] == madc::project_kind::gui` — an
+// enumerator the compiler checks — instead of comparing the manifest's word).
+// Plain C++11 enums, nothing else (dialect-lean). The manifest's words are the
+// reader's own table (project_kind_from_name / project_kind_name in
+// src/madc_project.cpp), never re-typed here.
+//
+// Thread contract: constants.
+#ifndef __MADC_BITS_PROJECT_ENUMS
+#define __MADC_BITS_PROJECT_ENUMS 1
+
+namespace madc {
+    // What kind of program a project builds (the manifest's "kind"; absent =
+    // console): it decides the executable's SUBSYSTEM on Windows (a gui
+    // program gets no console at start — gcc's -mwindows) and where an IDE
+    // sends the program's output when it runs it; ELF and Mach-O links
+    // ignore it.
+    enum class project_kind : unsigned char { console, gui };
+}
+
+#endif

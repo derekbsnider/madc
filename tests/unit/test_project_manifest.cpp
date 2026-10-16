@@ -408,12 +408,31 @@ TEST_CASE("project_manifest_add_tu / remove_tu: TUs named relative to the "
 	std::remove(dir.c_str());
 }
 
+TEST_CASE("project_manifest_set_kind: the kind's word, console written too; "
+	  "every other key kept") {
+	std::string path = write_tmp("writer_kind.prj.json",
+				     "{\"tus\":[],\"commands\":[{\"name\":\"Lint\"}]}");
+	std::string err;
+	ProjectManifest m;
+	REQUIRE(project_manifest_set_kind(path, ProjectKind::gui, err));
+	REQUIRE(read_project_manifest(path, m, err));
+	CHECK(m.kind == ProjectKind::gui);
+	CHECK(slurp(path).find("\"commands\"") != std::string::npos);
+	REQUIRE(project_manifest_set_kind(path, ProjectKind::console, err));
+	CHECK(slurp(path).find("\"kind\": \"console\"") != std::string::npos);
+	REQUIRE(read_project_manifest(path, m, err));
+	CHECK(m.kind == ProjectKind::console);
+	std::remove(path.c_str());
+}
+
 TEST_CASE("project_manifest writers: a compile_commands.json import and a "
 	  "mistyped field are refused") {
 	std::string cc = write_tmp("writer_cc.json",
 				   "[{\"directory\":\"/p\",\"file\":\"a.c\"}]");
 	std::string err;
 	CHECK_FALSE(project_manifest_remove_tu(cc, "/p/a.c", err));
+	CHECK(err.find("read-only") != std::string::npos);
+	CHECK_FALSE(project_manifest_set_kind(cc, ProjectKind::gui, err));
 	CHECK(err.find("read-only") != std::string::npos);
 	std::string bad = write_tmp("writer_bad.prj.json",
 				    "{\"tus\":[{\"file\":3}]}");

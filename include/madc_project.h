@@ -3,6 +3,7 @@
 
 #include <string>
 #include <vector>
+#include "madc/bits/project_enums"	// madc::project_kind: ProjectKind's one enum text
 
 // One translation unit in a project build, plus the flags it compiles with.
 struct ProjectTU {
@@ -15,10 +16,8 @@ struct ProjectTU {
 };
 
 // What kind of program the project builds (the manifest's "kind"; absent =
-// console). It decides the executable's SUBSYSTEM on Windows (a gui program
-// gets no console at start — gcc's -mwindows) and where an IDE sends the
-// program's output when it runs it; ELF and Mach-O links ignore it.
-enum class ProjectKind { console, gui };
+// console). The one enum text is <bits/project_enums>, the dialect's too.
+typedef ::madc::project_kind ProjectKind;
 
 // A whole project: the TU list + how to link/run it.
 struct ProjectManifest {
@@ -94,6 +93,10 @@ bool project_manifest_add_tu(const std::string &path, const std::string &file,
 // Refused when none does. The file itself is untouched.
 bool project_manifest_remove_tu(const std::string &path,
 				const std::string &file, std::string &err);
+// set kind: the manifest's "kind" becomes `kind`'s word (project_kind_name;
+// console is written too, never dropped, so the file says what an IDE chose).
+bool project_manifest_set_kind(const std::string &path, ProjectKind kind,
+			       std::string &err);
 
 // The executable a project builds when no OUT is named (%project build):
 // its "output" against the manifest's directory, else the manifest's path

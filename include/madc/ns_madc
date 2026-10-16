@@ -20,6 +20,7 @@
 #include <bits/diag_enums>	// diag_severity / diag_phase: the rows' enum codes
 #include <bits/file_kinds>	// madc::fk*: the ONE file-kind vocabulary (a View's lang, emit's target)
 #include <bits/session_enums>	// session_reply / offer_state: a session reply's enum codes
+#include <bits/project_enums>	// project_kind: a project manifest's kind codes
 
 namespace madc {
     // Full-program eval: the source must define (or be wrapped into)
@@ -362,6 +363,41 @@ namespace madc {
     bool project_build(value &out_diags, const char *manifest,
 		       const char *kind, const char *outpath);
     int64_t project_run(const char *manifest);
+
+    // A madc project manifest (<base>.prj.json) — madc's ONE reader and
+    // writer, so a host never parses or writes the file itself:
+    //   project_manifest_read: the manifest at `path` as madc reads it —
+    //       { "tus": [{ "file", "directory", "defines", "include_dirs",
+    //       "std", "stdlib" }], "entry", "output", "kind" (a project_kind
+    //       code), "icon", "libs", "madc", "json" }: each TU's "file"
+    //       resolved against the manifest's directory (as the --project
+    //       lane reads it), "json" the file's own JSON as written (the keys
+    //       madc does not model — an IDE's "commands" — ride there). False
+    //       with out_err's reason when it does not read (an unknown kind
+    //       word, a malformed field, no "tus").
+    //   project_manifest_create / _add_tu / _remove_tu / _set_kind: each a
+    //       read-modify-write of the native manifest that keeps every key
+    //       it does not change. create refuses an existing file; add names
+    //       the file relative to the manifest's directory when it lies
+    //       below it (refused when it is no file, or a TU already); remove
+    //       drops the entry naming `file`; set_kind writes the kind's word.
+    //       False with out_err's reason, the file as it was.
+    //   project_default_output: the executable a build makes when none is
+    //       named — "output" against the manifest's directory, else the
+    //       path less ".prj.json", else less its extension.
+    //   project_events_path: the project memory's file beside a manifest
+    //       (<path less its extension>.events); "" for a source file.
+    //   project_kind_name: a kind's manifest word ("console", "gui").
+    // Thread contract: one writer per manifest is the caller's (as for any
+    // file); the reads are pure functions of the file.
+    bool project_manifest_read(value &out, value &out_err, const char *path);
+    bool project_manifest_create(value &out_err, const char *path);
+    bool project_manifest_add_tu(value &out_err, const char *path, const char *file);
+    bool project_manifest_remove_tu(value &out_err, const char *path, const char *file);
+    bool project_manifest_set_kind(value &out_err, const char *path, project_kind kind);
+    bool project_default_output(value &out, value &out_err, const char *path);
+    value &project_events_path(value &out, const char *path);
+    const char *project_kind_name(project_kind kind);
 
     // The build surface (madcide IDE-10c): the CLI's AOT lane run
     // IN-PROCESS — parse `path` in a child Program (relative #includes

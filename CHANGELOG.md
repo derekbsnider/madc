@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+### Dialect faces for a project manifest's one reader and writer
+
+`madc::project_manifest_read`, `project_manifest_create`,
+`project_manifest_add_tu`, `project_manifest_remove_tu`,
+`project_manifest_set_kind`, `project_default_output`, `project_events_path`
+and `project_kind_name`, declared in `<ns_madc>`, expose madc's one reader and
+writer of a `<base>.prj.json` manifest (`include/madc_project.h`) to the
+dialect, so a host edits the file by madc's rules rather than a copy of them:
+each TU's `file` is resolved against the manifest's directory as the
+`--project` lane reads it, an added TU is named relative to that directory when
+it lies below it, an unknown kind word is refused with its reason, and every
+key madc does not model — an IDE's `commands` — rides through each
+read-modify-write and comes back under `json`. The manifest's kind vocabulary
+is one enum text, `<bits/project_enums>` (`madc::project_kind`, which the
+engine's `ProjectKind` now aliases). `project_manifest_set_kind`
+(`src/madc_project.cpp`) is a new writer verb that records the kind's word,
+`console` written too. `include/madc_project.h` is registered in
+`scripts/dialect_faces.tsv`; `tests/testproject_manifest_faces` and a
+`test_project_manifest` unit case cover the faces. madcide drops its own
+manifest parse and stringify, its kind enum and its events-path copy and calls
+the faces.
+
 ### One user-configuration-directory rule, with a Windows %APPDATA% arm
 
 `madc::cfg::user_config_dir` and `user_config_dir_of`

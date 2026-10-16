@@ -31,6 +31,9 @@
 #include "madc_diag_names.h"	// doc_diagnostics: the severity / phase names
 #include "madc_posix_io.h"	// get_host_name (host-facts seam)
 #include "madc_config_file.h"	// cfg::user_config_dir: the user configuration directory
+#include "madc_project.h"	// the project manifest's one reader and writer
+#include "madc_documents.h"	// document_read_file: a manifest's own JSON
+#include "madcdis/world_text.h"	// hub::detail::wt_json_to_value: JSON -> value
 #if defined(_WIN32)
 #include <process.h>		// _getpid — sys.pid's UCRT spelling (never <windows.h>
 				// here: its `interface` macro collides with the module map)
@@ -695,6 +698,118 @@ bool project_build(value &out_diags, const char *manifest, const char *kind,
 	}
 int64_t project_run(const char *manifest)
 	{ std::string m = manifest ? manifest : ""; return madc_project_run(&m); }
+
+// A project manifest — madc's one reader and writer (madc_project.h) given
+// dialect faces, so a host reads and edits <base>.prj.json by madc's rules
+// (a TU resolved against the manifest's directory, a kind word refused when
+// unknown, a path named relative to the manifest), never its own copy.
+static value text_list_value(const std::vector<std::string> &items)
+{
+	std::vector<value> rows;
+	for ( const std::string &s : items )
+		rows.push_back(value(s));
+	return value::make_array(rows);
+}
+
+static value project_tu_value(const ProjectTU &tu)
+{
+	std::map<std::string, value> f;
+	f["file"] = value(tu.file);
+	f["directory"] = value(tu.working_dir);
+	f["defines"] = text_list_value(tu.defines);
+	f["include_dirs"] = text_list_value(tu.include_dirs);
+	f["std"] = value(tu.std_option);
+	f["stdlib"] = value(tu.stdlib_option);
+	return value::make_object(f);
+}
+
+static value project_manifest_value(const ProjectManifest &m)
+{
+	std::map<std::string, value> f;
+	std::vector<value> tus;
+	for ( const ProjectTU &tu : m.tus )
+		tus.push_back(project_tu_value(tu));
+	f["tus"] = value::make_array(tus);
+	f["entry"] = value(m.entry);
+	f["output"] = value(m.output_name);
+	f["kind"] = value((int64_t)m.kind);
+	f["icon"] = value(m.icon);
+	f["libs"] = text_list_value(m.libs);
+	f["madc"] = value(m.madc_min);
+	return value::make_object(f);
+}
+
+// The verdict of a manifest verb: true, or false with its reason in out_err.
+static bool manifest_verdict(bool ok, const std::string &err, value &out_err)
+{
+	out_err = value(ok ? std::string() : err);
+	return ok;
+}
+
+bool project_manifest_read(value &out, value &out_err, const char *path)
+{
+	const std::string p = path ? path : "";
+	ProjectManifest m;
+	std::string err;
+	out = value();
+	if ( !manifest_verdict(read_project_manifest(p, m, err), err, out_err) )
+		return false;
+	out = project_manifest_value(m);
+	// The file's own JSON as written: the keys madc does not model ride
+	// here, parsed as the reader parses (comments skipped).
+	std::string text;
+	value doc;
+	if ( document_read_file(p, text) )
+	{
+		nlohmann::json j = nlohmann::json::parse(text, nullptr,
+			/*allow_exceptions=*/false, /*ignore_comments=*/true);
+		if ( !j.is_discarded() )
+			doc = hub::detail::wt_json_to_value(j);
+	}
+	out.object()["json"] = doc;
+	return true;
+}
+bool project_manifest_create(value &out_err, const char *path)
+{
+	std::string err;
+	return manifest_verdict(::project_manifest_create(path ? path : "", err),
+				err, out_err);
+}
+bool project_manifest_add_tu(value &out_err, const char *path, const char *file)
+{
+	std::string err;
+	return manifest_verdict(::project_manifest_add_tu(path ? path : "",
+							  file ? file : "", err),
+				err, out_err);
+}
+bool project_manifest_remove_tu(value &out_err, const char *path, const char *file)
+{
+	std::string err;
+	return manifest_verdict(::project_manifest_remove_tu(path ? path : "",
+							     file ? file : "", err),
+				err, out_err);
+}
+bool project_manifest_set_kind(value &out_err, const char *path, project_kind kind)
+{
+	std::string err;
+	return manifest_verdict(::project_manifest_set_kind(path ? path : "", kind, err),
+				err, out_err);
+}
+bool project_default_output(value &out, value &out_err, const char *path)
+{
+	const std::string p = path ? path : "";
+	ProjectManifest m;
+	std::string err;
+	out = value("");
+	if ( !manifest_verdict(read_project_manifest(p, m, err), err, out_err) )
+		return false;
+	out = value(::project_default_output(p, m));
+	return true;
+}
+value &project_events_path(value &out, const char *path)
+	{ out = value(::project_events_path(path ? path : "")); return out; }
+const char *project_kind_name(project_kind kind)
+	{ return ::project_kind_name(kind); }
 
 // Context builders. Kind-safe via value_object_for_write: a null ctx
 // vivifies to kind::object; any other non-object kind degrades to a

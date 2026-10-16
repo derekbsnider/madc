@@ -1,0 +1,28 @@
+create: ok=1 err=0
+create-again: ok=0 err=1
+add-a: ok=1 err=0
+add-b: ok=1 err=0
+add-a-again: ok=0 err=1
+add-missing: ok=0 err=1
+read: ok=1 err=0
+tus: 2
+tu: a.c exists=1
+tu: b.c exists=1
+named: a.c relative=1
+named: b.c relative=1
+kind: console=1
+set-kind: ok=1 err=0
+kind: gui=1 word=gui
+default-output: ok=1 err=0
+output: madc_pmf_probe/app
+events: madc_pmf_probe/app.prj.events
+events-of-source: []
+add-b-keeps: ok=1 err=0
+commands: 1 Lint
+output: madc_pmf_probe/bin/x
+remove-b: ok=1 err=0
+remove-b-again: ok=0 err=1
+tus: 1 commands-kept=1
+read-bad-kind: ok=0 err=1
+bad-kind-reason: "kind" must be "console" or "gui"
+cleaned: 1

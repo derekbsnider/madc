@@ -146,3 +146,19 @@ PLANNED 2026-10-15 (owner).
   madcide: `config_dir_of` deleted (only `MADCIDE_CONFIG_DIR` stays its own),
   `check-madcide-single-owners.sh` red on an `XDG_CONFIG_HOME` / `APPDATA`
   read in madcide.
+- Rows 6-9 (2026-10-16): the manifest's one reader and writer as faces —
+  `madc::project_manifest_read` (the struct faces of `ProjectManifest` /
+  `ProjectTU`; each TU resolved against the manifest's directory; the file's
+  own JSON under "json", so an IDE's "commands" ride), `_create` / `_add_tu`
+  / `_remove_tu` / `_set_kind` (the last a new writer verb),
+  `project_default_output`, `project_events_path`, `project_kind_name`; the
+  kinds one enum text, `<bits/project_enums>` (`ProjectKind` aliases it);
+  `include/madc_project.h` registered; test `testproject_manifest_faces`,
+  unit case for `set_kind`. madcide: `proj_write`, its JSON parse and
+  stringify, `ide_projkind` / `projkind_name` / `projkind_of` and its
+  events-path copy deleted; `proj_load` / `proj_add` / `proj_del` /
+  `proj_toggle_kind` / the build rows call the faces; `testmadcide`'s
+  `proj-faces-*` lines (a TU resolved, `<base>` not `<base>.prj`, `output`
+  against the manifest, a relative add, an unknown kind refused) and
+  `proj-addcur-nofile`; `check-madcide-single-owners.sh` red on a manifest
+  parsed, stringified or given a kind word in madcide.

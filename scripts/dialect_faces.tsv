@@ -55,3 +55,18 @@ public	src/madc_posix_io.h	win_error_text	-	exempt: madc's own Windows error tex
 public	src/madc_posix_io.h	debug_log_line	-	exempt: madc's own Windows debug channel
 public	include/madc_config_file.h	user_config_dir_of	include/madc/ns_madc	user_config_dir_of
 public	include/madc_config_file.h	user_config_dir	include/madc/ns_madc	user_config_dir
+struct	include/madc_project.h	ProjectTU	src/ns_madc.cpp	project_tu_value	file working_dir=directory defines include_dirs std_option=std stdlib_option=stdlib
+struct	include/madc_project.h	ProjectManifest	src/ns_madc.cpp	project_manifest_value	tus entry output_name=output kind icon libs madc_min=madc
+public	include/madc_project.h	project_kind_from_name	-	exempt: the manifest reader's text boundary; a host receives the kind's code from project_manifest_read
+public	include/madc_project.h	project_kind_name	include/madc/ns_madc	project_kind_name
+public	include/madc_project.h	read_project_manifest	include/madc/ns_madc	project_manifest_read
+public	include/madc_project.h	project_of_path	-	exempt: the --project / --mcp --project lanes' path (a manifest, or a source file's one-TU project); a host's project is a manifest it reads through project_manifest_read
+public	include/madc_project.h	project_path_is_manifest	-	exempt: the ".json" test under project_of_path
+public	include/madc_project.h	project_events_path	include/madc/ns_madc	project_events_path
+public	include/madc_project.h	project_manifest_create	include/madc/ns_madc	project_manifest_create
+public	include/madc_project.h	project_manifest_add_tu	include/madc/ns_madc	project_manifest_add_tu
+public	include/madc_project.h	project_manifest_remove_tu	include/madc/ns_madc	project_manifest_remove_tu
+public	include/madc_project.h	project_manifest_set_kind	include/madc/ns_madc	project_manifest_set_kind
+public	include/madc_project.h	project_default_output	include/madc/ns_madc	project_default_output
+public	include/madc_project.h	apply_project_tu_options	-	exempt: a TU's options onto the engine's Program; a host builds and runs through project_build / project_run
+public	include/madc_project.h	madc_project_execute	-	exempt: the engine's --project JIT lane; a host runs a project through project_run
