@@ -1,0 +1,13 @@
+// parse-cost workload: one name from madc's own fragment and from each of the
+// six language fragments — the cost of activating every one of them for a
+// single use (scripts/parse_cost_gate.sh;
+// docs/plans/2026-10-16-dialect-per-name-plan.md).
+int main()
+{
+    var stem;
+    madc::path_stem(stem, "dir/foo.tar.gz");
+    println("{} {} {} {} {} {} {}", php::strtoupper("ok"), perl::lc("OK"),
+	    python::title("ok go"), ruby::squeeze("aabb"), js::btoa("ok"),
+	    rust::trim("  ok  "), stem);
+    return 0;
+}

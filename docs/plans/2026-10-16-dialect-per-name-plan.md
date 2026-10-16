@@ -231,3 +231,31 @@ The parse-cost dialect rows (re-recorded downward at A4 and A5), the
 `dialect_one` / `dialect_all` / `dialect_cxx` rows, the seed-parity
 `demanded` label (A7), and `check-dialect-pay-per-use.sh` (B6): adding an
 unused declaration to a dialect fragment cannot cost a dialect compile.
+
+## Execution record
+
+- **A0 (2026-10-16).** `scripts/test_differential.sh OLD NEW [GLOB...]`:
+  the suite's programs under OLD twice and NEW once through `fixture_load`
+  (stdout, stderr, rc); OLD against itself flags a test nondeterministic,
+  never a difference. Checked: a copy of one binary against itself — 43
+  dialect tests identical; negative control (a wrapper adding one line) —
+  every test differs, exit 1; `check-one-fixture-reader.sh` green. Workloads
+  `dialect_one`, `dialect_all`, `dialect_cxx` (live + forest). Baseline on
+  madc-release at f7e7e5fa3 (Ir; functions registered up front, `--show-stats`
+  "forest functions"):
+
+  | row | live | forest | registered |
+  |---|---:|---:|---:|
+  | dialect | 43,698,552 | 43,689,570 | 335 |
+  | dialect_one | 35,578,265 | 35,570,817 | 335 |
+  | dialect_all | 51,473,813 | 51,471,727 | 533 |
+  | dialect_cxx | 600,001,906 | 287,202,035 | 817 |
+
+  Ruling: no new A0 counters — `--show-stats`' "forest functions N eager"
+  is the baseline metric; the names-demanded / records-carried counters land
+  with A4, when they first count something. Ruling: `dialect_all` takes the
+  seven fragments with plain functions (madc + the six language namespaces);
+  git, markdown and ui load modules at run time, which a cost row must not
+  depend on. The new rows are NEW (red) in the gate until the re-record
+  after A4/A5, with the sqlite3 rows; the dialect rows' +2.4% is not accepted
+  into the baseline — part A closes it.
