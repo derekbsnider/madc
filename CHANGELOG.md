@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+### A statement expression that yields no value is void, not a crash
+
+madc now compiles a GNU statement expression whose value statement yields no
+value — one whose last statement is not an expression, is an empty statement
+`({ ...; ; })`, or is an expression of type void such as a void call tail
+`({ f(); })` — as the void construct it is, with no value captured. glibc's
+GNU-C `assert` lowers to `((void) sizeof ((e) ? 1 : 0), __extension__ ({ if (e)
+; else __assert_fail (...); }))`, so an assert of a constant folds its dead
+branch away and leaves `({ ; })` or `({ __assert_fail (...); })`; SQLite under
+`SQLITE_DEBUG` reaches both, through `assert(sqlite3MemdebugHasType(...))` and
+`NEVER(X) = ((X)?(assert(0),1):0)` in a condition. Previously c2mir crashed on
+these: the check pass read the value (`->attr`) of an absent tail expression (an
+empty statement's `N_IGNORE`), and the gen pass emitted a void call's tail in
+value context, reading the call arm's uninitialized result op. A new helper
+returns the expression the value statement yields or NULL when there is none,
+used by both passes; the gen pass also treats a void-typed statement expression
+as valueless, matching c2mir's `N_COMMA` and `N_CAST` arms, which already pass
+`!void_type_p (...)` as their value flag. On `tests/teststmtexpr_empty_tail`
+(`--std=gnu17`) gcc 13 and clang 18 `-O0` print `size=7 n=8 m=2 c=5`; madc,
+which crashed twice before, now prints the same. SQLite's
+`test/sessionfuzz.c` under `SQLITE_DEBUG` now compiles.
+
 ### A macro argument's paint is tracked per stretch, not as one union
 
 madc now paints a macro argument's collected text region by region instead of

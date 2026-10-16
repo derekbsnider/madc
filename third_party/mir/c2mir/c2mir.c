@@ -10321,6 +10321,19 @@ static int case_eq (case_t el1, case_t el2, void *arg MIR_UNUSED) {
   return expr1->c.u_val == expr2->c.u_val;
 }
 
+/* madc fork: the expression a statement expression's value statement yields,
+   or NULL when it yields none and the construct is void (GNU): a statement
+   other than an expression statement, or an empty one -- `({ ...; ; })`,
+   what `assert (1)` leaves once glibc's `if (1) ; else __assert_fail (...)`
+   loses its dead branch. */
+static node_t stmtexpr_value_expr (node_t last_stmt) {
+  node_t expr;
+
+  if (last_stmt == NULL || last_stmt->code != N_EXPR) return NULL;
+  expr = NL_EL (last_stmt->u.ops, 1);
+  return expr->code == N_IGNORE ? NULL : expr;
+}
+
 static void update_call_arg_area_offset (c2m_ctx_t c2m_ctx, struct type *type, int update_scope_p) {
   check_ctx_t check_ctx = c2m_ctx->check_ctx;
   node_t block = NL_EL (curr_func_def->u.ops, 3);
@@ -12214,8 +12227,9 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
        statement expression) for the gen arm, which must not re-derive it
        from the post-cleanup tail. */
     node_t last_stmt = NL_TAIL (NL_EL (block->u.ops, 1)->u.ops);
+    node_t expr = stmtexpr_value_expr (last_stmt);
     check (c2m_ctx, block, r);
-    if (!last_stmt || last_stmt->code != N_EXPR) {
+    if (expr == NULL) {
       /* GNU: when the last thing in the braces is not an expression, the
          construct has type void and no value -- glibc's GNU-C assert is
          `((void) sizeof ((expr) ? 1 : 0), __extension__ ({ if (expr) ; else
@@ -12225,7 +12239,6 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
       e->def_node = last_stmt;
       break;
     }
-    node_t expr = NL_EL (last_stmt->u.ops, 1);
     e1 = expr->attr;
     t1 = e1->type;
     e = create_expr (c2m_ctx, r);
@@ -20439,8 +20452,10 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
        captured into stmtexpr_last_val at that moment, because statements gen'd
        AFTER it (the scope's cleanup calls) overwrite top_gen_last_op.
        Save/restore both for nested statement expressions. */
+    /* A void statement expression (its value statement a void call, say) has
+       no value to capture: that statement gens as a statement. */
     stmtexpr_last_expr
-      = (last_stmt != NULL && last_stmt->code == N_EXPR) ? NL_EL (last_stmt->u.ops, 1) : NULL;
+      = void_type_p (stmtexpr_type) ? NULL : stmtexpr_value_expr (last_stmt);
     gen (c2m_ctx, block, NULL, NULL, FALSE, NULL, NULL);
     res = stmtexpr_last_expr != NULL ? stmtexpr_last_val : top_gen_last_op;
     stmtexpr_last_expr = saved_last_expr;
