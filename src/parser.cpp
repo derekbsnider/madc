@@ -25117,14 +25117,6 @@ bool Program::set_language_standard(const madc::dis::istring &standard)
     return true;
 }
 
-bool Program::set_language_standard_option(const madc::dis::istring &arg)
-{
-    const madc::dis::istring prefix("--std=");
-    if ( arg.compare(0, prefix.size(), prefix) != 0 )
-	return false;
-    return set_language_standard(arg.substr(prefix.size()));
-}
-
 bool Program::adopt_file_standard(int64_t kind)
 {
     int64_t standard = madc::file_kind_default_standard(kind);

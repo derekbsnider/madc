@@ -52,6 +52,7 @@ void madcdis_mapwrite_trap_hit(const char *key)
 #include "madcdis/text_utf16.h"	// line_layout: THE screen layout of a line (B8)
 #include "madc_console.h"	// colour_reaches: colour only when the stream shows it
 #include "madc_theme.h"		// theme_marks: the echoed line's colours (1B.9)
+#include "madc_cli.h"		// madc_cli_standard_of: the shebang's --std= / -std= word
 #include "madcdis/ui_sgr.h"	// terminal_colour_depth
 
 // Stage-2 cooperative parse: yield-point cadence for the token pumps (a
@@ -7610,9 +7611,15 @@ TokenBase *Program::_getToken()
 			madc::dis::istring args = word.substr(sp + 1);
 			std::istringstream as(args);
 			std::string arg;
+			// Its words read as the command line reads them:
+			// --std=NAME, and gcc's -std=NAME.
 			while ( as >> arg )
-			    if ( set_language_standard_option(arg) )
+			{
+			    madc::dis::istring name;
+			    if ( madc_cli_standard_of(arg, name)
+				 && set_language_standard(name) )
 				break;
+			}
 			// Remove C++ keywords retroactively if shebang set C mode
 			if ( is_c_mode() )
 			{

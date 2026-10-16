@@ -79,6 +79,9 @@ const row rows[] = {
 	  "a Model Context Protocol server on stdin/stdout (one JSON-RPC message per line): the "
 	  "code-graph tools over <file>, for the operator",
 	  "--mcp <file>" },
+	{ id(cli_option::stdio), "stdio", { { "--stdio", flag } }, NULL, s_input,
+	  "with --lsp or --mcp: the transport is stdin/stdout, the only one madc's servers "
+	  "speak (LSP clients pass it)" },
 	{ id(cli_option::history_file), "history_file", { { "--history-file", eq } }, "PATH|no",
 	  s_input,
 	  "where the REPL keeps its history (default $MADC_HISTORY_FILE, else "
@@ -451,4 +454,13 @@ const madc::cli::table madc_table = {
 const madc::cli::table &madc_cli_table()
 {
 	return madc_table;
+}
+
+bool madc_cli_standard_of(const std::string &word, madc::dis::istring &name)
+{
+	const madc::cli::match m = madc::cli::match_word(madc_table, word);
+	if ( !m.option || m.option->id != id(cli_option::language_std) || !m.has_value )
+		return false;
+	name = m.value;
+	return true;
 }

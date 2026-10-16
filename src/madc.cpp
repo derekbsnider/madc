@@ -716,6 +716,7 @@ int main(int argc, char **argv)
     bool interactive = false;             // -i / --interactive: the REPL, whatever stdin is (D20)
     bool lsp = false;                     // --lsp: the Language Server Protocol on stdio (split arc 1C.12)
     bool mcp = false;                     // --mcp: the Model Context Protocol on stdio (split arc 1C)
+    bool stdio_transport = false;         // --stdio: an LSP client names --lsp's transport
     std::string history_file;             // --history-file=PATH|no: the REPL's history (D23)
     bool history_file_given = false;
 
@@ -982,6 +983,9 @@ int main(int argc, char **argv)
             break;
         case cli_option::lsp:
             lsp = true;
+            break;
+        case cli_option::stdio:
+            stdio_transport = true;
             break;
         case cli_option::history_file:
             history_file = o.value;	// `no`: history for the session alone
@@ -1673,6 +1677,11 @@ int main(int argc, char **argv)
 	|| emit_function_name || dump_source || dump_macro_table
 	|| dump_cir || dump_nodes || dump_checked || dump_registered
 	|| freeze_path || freeze_run;
+    if ( stdio_transport && !lsp && !mcp )
+    {
+	std::cerr << "madc: --stdio names the transport of --lsp or --mcp" << std::endl;
+	return 1;
+    }
     if ( lsp )
     {
 	if ( interactive || artifact_request || filearg + 1 < argc )

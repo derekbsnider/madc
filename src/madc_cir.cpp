@@ -7255,7 +7255,7 @@ bool madc_cir_ledger_compile(MadcEngine &engine,
 	// -static-libmadc exists to remove.
 	prog->aot_skip_eval_shims = true;
 	prog->add_cli_define("MADC_RT_TLS=");
-	prog->set_language_standard_option("--std=gnu17");
+	prog->set_language_standard("gnu17");
 	TokenProgram *tp = prog->tokenize(src.c_str());
 	if (!tp) {
 	    fprintf(stderr, "madc: ledger: %s: tokenize failed\n", src.c_str());
@@ -8015,7 +8015,7 @@ bool apply_project_tu_options(::Program &prog, const ProjectTU &tu,
 		return false;
 	}
 	if (!tu.std_option.empty())
-		prog.set_language_standard_option("--std=" + tu.std_option);
+		prog.set_language_standard(tu.std_option);
 	else
 		prog.adopt_file_standard(madc::file_kind_of_path(tu.file.c_str()));
 	return true;

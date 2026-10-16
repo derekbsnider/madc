@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### A script's shebang reads gcc's `-std=`; an LSP client's `--stdio` is accepted
+
+- A script's shebang line now reads a standard option the way madc's command
+  line does, so `#!/usr/bin/madc -std=c17` compiles the script under C17.
+  Before, the shebang read only `--std=`, so gcc's `-std=c17` was ignored and
+  the script compiled in the madc dialect — `(int)sizeof('a')` printed `1`
+  instead of C17's `4`. The shebang, `InteractiveSession::begin`, `%std` and the
+  session's `session_open` now read the word through one reader
+  (`madc_cli_standard_of`, on madc's option table).
+- `madc --lsp --stdio` (and `--mcp --stdio`) is accepted: `--stdio` names the
+  stdin/stdout transport that LSP client libraries append, the only one madc's
+  servers speak. `--stdio` without `--lsp` or `--mcp` is an error:
+  `madc: --stdio names the transport of --lsp or --mcp`. Before, the option
+  reader refused `--stdio` as an unrecognized option.
+
 ### Response files: a device or FIFO is left as written; a huge `@file` word costs little
 
 - A response file that is not a regular file (a device such as `/dev/zero`, a

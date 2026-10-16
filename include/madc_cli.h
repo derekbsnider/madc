@@ -18,7 +18,7 @@ enum class cli_option : int
 {
 	none = 0,		// help lines (rf_doc rows)
 	// Input / mode
-	interactive, lsp, mcp, history_file, project, preprocess,
+	interactive, lsp, mcp, stdio, history_file, project, preprocess,
 	// Language / preprocessor
 	language_std, stdlib_flavor, define, include_dir, library, library_dir,
 	linker_option, no_auto_load, no_includes, no_embedded_headers, no_posix_compat,
@@ -53,5 +53,10 @@ enum madc_cli_tag : uint32_t
 
 // THE table.
 const madc::cli::table &madc_cli_table();
+
+// The standard a `--std=NAME` (or gcc's `-std=NAME`) word names, read as the
+// command line reads it: a script's shebang line and a session's standard
+// option say it the same way. False for any other word.
+bool madc_cli_standard_of(const std::string &word, madc::dis::istring &name);
 
 #endif

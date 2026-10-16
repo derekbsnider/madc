@@ -84,6 +84,20 @@ TEST_CASE("the introspection list --capabilities prints, in its order")
 			     "dump-forest", "dump-registered", "show-stats" }));
 }
 
+TEST_CASE("an LSP client's --stdio names the transport, not a file")
+{
+	// LSP client libraries append --stdio for a stdio transport; madc's
+	// servers speak only on stdin/stdout, so the word is theirs to accept
+	// (the ladder before the table read it as the file and served).
+	cli::result r = parse({ "--lsp", "--stdio" });
+	CHECK(r.ok());
+	CHECK(r.operands.empty());
+	CHECK(r.remainder.empty());
+	r = parse({ "--mcp", "--stdio", "x.mad" });
+	CHECK(r.ok());
+	CHECK(r.remainder == words({ "x.mad" }));
+}
+
 TEST_CASE("a script keeps its argv; a line that builds permutes")
 {
 	cli::result r = parse({ "x.mad", "-o", "out", "@args", "--", "-v" });

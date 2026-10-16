@@ -6706,7 +6706,6 @@ public:
 	return cplusplus_value_for(is_cpp_mode() ? language_std : default_cpp_std);
     }
     bool set_language_standard(const madc::dis::istring &standard);
-    bool set_language_standard_option(const madc::dis::istring &arg);
     // The ONE reader of a `--std=` spelling (without the prefix): the
     // standard it names and whether it is the GNU dialect (gnu17 is C17 +
     // GNU extensions, as gcc reads it), no Program changed. False for a word

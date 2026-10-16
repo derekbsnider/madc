@@ -599,8 +599,8 @@ static std::string cir_capture(const std::string &source) {
 // builder owns the tree's nodes, so it lives as long as the test does.
 static int cir_compile_in(MIR_context_t mir_ctx, c2m_ctx_t c2m,
 			  CirBuilder &builder, Program &prog,
-			  const char *std_option, const char *source) {
-    REQUIRE(prog.set_language_standard_option(std_option));
+			  const char *standard, const char *source) {
+    REQUIRE(prog.set_language_standard(standard));
     TokenProgram *tp = prog.tokenize_buffer(source, "<test>");
     REQUIRE(tp != nullptr);
     REQUIRE(prog.parse(tp));
@@ -625,12 +625,12 @@ TEST_CASE("CIR: a tree compiles after an earlier tree failed in the same c2mir c
     // input only c2mir's check refuses.
     CirBuilder refused_builder(c2m);
     Program refused;
-    CHECK(cir_compile_in(mir_ctx, c2m, refused_builder, refused, "--std=c17",
+    CHECK(cir_compile_in(mir_ctx, c2m, refused_builder, refused, "c17",
 			 "int f(void) { return 7; }\nint r = f();\n") == 0);
 
     CirBuilder next_builder(c2m);
     Program next;
-    CHECK(cir_compile_in(mir_ctx, c2m, next_builder, next, "--std=c17",
+    CHECK(cir_compile_in(mir_ctx, c2m, next_builder, next, "c17",
 			 "int main(void) { return 42; }\n") == 1);
 
     cir_finish(c2m);

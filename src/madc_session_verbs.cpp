@@ -20,6 +20,7 @@
 #include "handle_table.h"
 #include "madc_session_client.h"
 #include "madc_task_io.h"	// readiness_source, chan_readiness
+#include "madc_cli.h"		// madc_cli_standard_of: a standard option word
 #include "ns_common.h"		// ring_text: the lean const char* return
 
 namespace {
@@ -171,15 +172,15 @@ madc::value reply_row(const SessionClient::Reply &r)
 
 namespace madc {
 
-// A standard's spelling as the session's option: `c17` or `--std=c17`;
-// empty keeps the default standard.
+// A standard's spelling as the session's option: `c17`, `--std=c17` or gcc's
+// `-std=c17`; empty keeps the default standard.
 static std::string std_option_of(const char *std_spelling)
 {
-    const std::string prefix("--std=");
     std::string opt = std_spelling ? std_spelling : "";
-    if ( !opt.empty() && opt.compare(0, prefix.size(), prefix) != 0 )
-	opt = prefix + opt;
-    return opt;
+    madc::dis::istring name;
+    if ( opt.empty() || madc_cli_standard_of(opt, name) )
+	return opt;			// already the option word begin() reads
+    return "--std=" + opt;
 }
 
 int64_t session_open(const char *std_spelling)
