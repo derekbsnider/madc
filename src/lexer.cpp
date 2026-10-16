@@ -2920,6 +2920,7 @@ static void trim_macro_argument(std::string &s, std::vector<Source::PaintSeg> &s
 // Macro argument pre-expansion also needs it: its temporary token stream must
 // round-trip literals without changing their value or type.
 madc::dis::istring madc_token_spelling(TokenBase *tb);  // fwd (the one spelling owner, defined below)
+static madc::dis::istring madc_c_escape_wide_string(const char *s, size_t len);  // fwd (its wide escape, below)
 
 static std::string stringify_macro_arg(const std::string &raw)
 {
@@ -11379,9 +11380,16 @@ madc::dis::istring madc_token_spelling(TokenBase *tb)
 		// Re-escape the cooked value so the literal RE-LEXES to the
 		// same bytes (macro-arg re-lex, --dump-source round trips,
 		// the --emit=c++ render recompiles) — the ONE escape rule.
-		madc::dis::istring sv = ti->spelling();
-		return "\"" + madc_c_escape_string(sv.data(), sv.size())
-		     + "\"";
+		// The bytes are the spelling's LENGTH, never its C string: a
+		// literal holds NULs (FTS5's "\xFF\x00\x00\x01" structure
+		// marker spelled "\377" through a macro argument). A wide
+		// literal keeps its prefix and its units.
+		const char *bytes = ti->spelling();
+		size_t len = ti->spelling_len();
+		TokenStr *ts = tb->as_str_tok();
+		if ( ts && ts->wide )
+		    return "L\"" + madc_c_escape_wide_string(bytes, len) + "\"";
+		return "\"" + madc_c_escape_string(bytes, len) + "\"";
 	    }
 	    return madc::dis::istring();
 	case TokenType::ttVariable:
@@ -11490,6 +11498,45 @@ madc::dis::istring madc_c_escape_string(const char *s, size_t len)
     std::vector<char> buf(n + 1);
     __madc_c_escape(s, len, '"', &buf[0], buf.size());
     return madc::dis::istring(&buf[0], n);
+}
+
+// The wide twin: the 4-byte UTF-32 units a wide literal's token holds
+// (append_wide_codepoint), as the body of an L"..." literal that re-lexes to
+// the same units. An ASCII unit takes the narrow rule above; a Unicode scalar
+// is written as its UTF-8, which the lexer reads back as that code point; any
+// other unit (a surrogate, a \x value past U+10FFFF) is a hex escape, and the
+// literal splits (`" L"`) where a hex digit follows one, as a hex escape
+// would otherwise read it.
+static madc::dis::istring madc_c_escape_wide_string(const char *s, size_t len)
+{
+    std::string out;
+    bool hex_open = false;
+    for ( size_t i = 0; i + 4 <= len; i += 4 )
+    {
+	uint32_t cp = (uint32_t)(unsigned char)s[i]
+		    | (uint32_t)(unsigned char)s[i + 1] << 8
+		    | (uint32_t)(unsigned char)s[i + 2] << 16
+		    | (uint32_t)(unsigned char)s[i + 3] << 24;
+	std::string piece;
+	if ( cp < 0x80 )
+	{
+	    char c = (char)cp;
+	    piece = madc_c_escape_string(&c, 1).str();
+	}
+	else if ( cp <= 0x10FFFF && (cp < 0xD800 || cp > 0xDFFF) )
+	    append_utf8_codepoint(piece, cp);
+	else
+	{
+	    char buf[16];
+	    snprintf(buf, sizeof buf, "\\x%x", (unsigned)cp);
+	    piece = buf;
+	}
+	if ( hex_open && isxdigit((unsigned char)piece[0]) )
+	    out += "\" L\"";
+	hex_open = piece.size() > 1 && piece[0] == '\\' && piece[1] == 'x';
+	out += piece;
+    }
+    return madc::dis::istring(out);
 }
 
 // Reconstruct source text from the token stream (full-fidelity mode): each

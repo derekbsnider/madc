@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+### A re-spelled string literal keeps its NUL bytes and its wide prefix
+
+madc now re-spells a string literal by its stored byte length, so a literal
+that holds NUL bytes round-trips whole and a wide literal comes back wide. The
+spelling owner re-escapes a literal's cooked bytes — so the literal re-lexes to
+the same value — when it passes through macro-argument pre-expansion, a
+`--dump-source` round trip, or the `--emit=c++` render. It read the cooked
+value as a C string, stopping at the first NUL: SQLite's FTS5 marks a V2
+structure record with `"\xFF\x00\x00\x01"` and writes it through the
+`fts5BufferSafeAppendBlob` macro, which re-lexed to `"\377"`, and a
+contentless_delete table's first INSERT then reported `fts5: corrupt structure
+record`. A wide literal was re-spelled narrow and lost its units
+(`wcslen("a")`). The re-escape now takes the token's spelling length (NUL-safe)
+and, for a wide `TokenStr`, writes an `L"..."` body whose 4-byte units re-lex
+to the same code points — an ASCII unit by the narrow rule, a Unicode scalar as
+its UTF-8, any other unit (a surrogate, a value past U+10FFFF) as a hex escape
+with the literal split where a hex digit would otherwise join it. The wrong
+answer was silent and predates 0.105.0. On `tests/testpp_literal_respell`
+(`--std=c17`) gcc 13 and clang 18 `-O0` print the NUL-holding bytes, the wide
+literal's length and units, and the split surrogate; madc now prints the same.
+SQLite's `--enable-all` testfixture built by madc now passes all eleven FTS5
+test files that failed before (`fts5contentless`, `fts5delete`, `fts5misc` and
+the rest: 0 errors out of 4147).
+
 ### A statement expression that yields no value is void, not a crash
 
 madc now compiles a GNU statement expression whose value statement yields no

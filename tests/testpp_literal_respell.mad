@@ -1,0 +1,34 @@
+/* A string literal that reaches a macro's argument pre-expansion is spelled
+ * back and re-lexed; it must come back as the same literal. A literal can
+ * hold NUL bytes (SQLite's FTS5 marks a V2 structure record with
+ * "\xFF\x00\x00\x01" and writes it through fts5BufferSafeAppendBlob, a
+ * macro), and a wide literal has a prefix and 4-byte units, a Unicode
+ * character among them, or a unit no UTF-8 can spell.
+ * Pins: the NUL-holding literal copies all four bytes; a wide literal through
+ * an argument keeps its prefix, length and units, a surrogate unit beside a
+ * hex digit included.
+ * Before: the re-spelled literal stopped at its first NUL ("\377": FTS5
+ * contentless_delete tables reported "corrupt structure record"), and a wide
+ * one came back narrow (`wcslen("a")`).
+ * Oracle: gcc 13 and clang 18 -O0 -std=c17 print the lines in the .expect. */
+#include <stdio.h>
+#include <string.h>
+#include <wchar.h>
+
+#define V2 "\xFF\x00\x00\x01"
+#define WIDE L"ab\x00e9\x12345"
+#define SPLIT L"\xd800" L"f"
+#define COPY(dst, src, n) memcpy(dst, src, n)
+#define LEN(s) wcslen(s)
+#define UNIT(s, i) ((unsigned)(s)[i])
+
+int main(void)
+{
+	unsigned char got[4] = { 9, 9, 9, 9 };
+	COPY(got, V2, 4);
+	printf("bytes: %02x %02x %02x %02x\n", got[0], got[1], got[2], got[3]);
+	printf("wide: len=%d units=%x %x %x %x\n", (int)LEN(WIDE), UNIT(WIDE, 0),
+	       UNIT(WIDE, 1), UNIT(WIDE, 2), UNIT(WIDE, 3));
+	printf("split: %x %x\n", UNIT(SPLIT, 0), UNIT(SPLIT, 1));
+	return 0;
+}
