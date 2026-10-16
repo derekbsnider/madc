@@ -423,6 +423,9 @@ static void print_usage(const char *prog)
 "  -g                      debug info: gdb can break/step/inspect the JIT'd\n"
 "                          program (forces -O0, no inlining, spill-all)\n"
 "  -w                      inhibit all warning messages (gcc -w)\n"
+"  -W<name>, -Wno-<name>   gcc's warning selection (-Wall, -Wextra, ...):\n"
+"                          accepted; madc reports one fixed set (-Werror is\n"
+"                          refused)\n"
 "  -fdiagnostics-color[=WHEN]  colour diagnostics (gcc's spelling): WHEN is\n"
 "                          auto (the default: a terminal only, never with\n"
 "                          NO_COLOR set), always, or never; bare = always\n"
@@ -552,6 +555,19 @@ static bool read_linker_options(const char *list, std::vector<std::string> &runp
         }
     }
     return true;
+}
+
+// gcc's warning selection: -W<name>, -Wno-<name>, -W<name>=<value> (-Wall,
+// -Wextra, -Wformat=2, ...). madc's diagnostics are one fixed set, so a
+// selection changes nothing it reports or builds. Not the pass-throughs
+// (-Wl, -Wa, -Wp,) and not -Werror[=<name>], which changes the outcome.
+static bool warning_selection_option(const char *arg)
+{
+    if ( strncmp(arg, "-W", 2) != 0 || arg[2] == '\0' )
+        return false;
+    if ( arg[3] == ',' && (arg[2] == 'l' || arg[2] == 'a' || arg[2] == 'p') )
+        return false;
+    return strncmp(arg, "-Werror", 7) != 0;
 }
 
 // The file lane's one read of its input (plan §41.5a): `-` names stdin, as
@@ -1323,6 +1339,12 @@ int main(int argc, char **argv)
                 return 1;
             }
             filearg = i + 1;
+        } else if (warning_selection_option(argv[i])) {
+            filearg = i + 1;
+        } else if (strncmp(argv[i], "-Werror", 7) == 0) {
+            std::cerr << "madc: " << argv[i] << ": not supported (madc's warnings"
+                      << " are never errors)" << std::endl;
+            return 1;
         } else if (strncmp(argv[i], "--emit=", 7) == 0) {
             // Render the cir_node tree (MC11-IR) as C source; do not run.
             const char *lang = argv[i] + 7;

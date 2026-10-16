@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### madc accepts gcc's warning selection and refuses `-Werror`
+
+madc now accepts gcc's warning-selection options — `-Wall`, `-Wextra`,
+`-Wno-<name>`, `-W<name>=<value>` — on every lane and builds the same thing,
+because its diagnostics are one fixed set that a selection does not change.
+Previously the option loop handled only `-w` and the `-Wl,` / `-Wa,` / `-Wp,`
+pass-throughs, so a build that passed `-Wall` (SQLite's All-Debug testfixture
+and fuzzcheck builds) fell through to the file operand and madc reported
+`-Wall:0:0: error: Failed to open file`. `-Werror` and `-Werror=<name>` are the
+one divergence: madc refuses them with a diagnostic and a nonzero exit, since
+its warnings are never errors. On `tests/testcli_warning_options` gcc 13 and
+clang 18 build and run a program compiled with `-Wall -Wextra
+-Wno-unused-parameter -Wformat=2`; madc now does the same and refuses
+`-Werror`.
+
 ### An object may be aligned beyond 16 bytes, static or automatic
 
 madc now places an object on an alignment above 16 — gcc's `aligned(N)`, C11
