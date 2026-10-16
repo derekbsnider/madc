@@ -5,7 +5,7 @@
 #include <string.h>
 #include "madc_modules.h"
 #include "madc_dl.h"
-#include "madc_posix_io.h"	// resolve_real_path, host_path_dirname / _join / _type_of
+#include "madc_posix_io.h"	// resolve_real_path, host_path_dirname
 
 // The rows. `c` and `m` name the C runtime images by their REAL sonames /
 // install names / module names — a dev-symlink spelling (libm.so) needs the
@@ -116,7 +116,7 @@ bool madc_spelled_library_p(const std::string &name)
 // Char-level twin of host_path_last_separator (madc_posix_io.cpp): a TARGET
 // spelling may carry either separator whatever the host, so both mark a
 // path here.
-static bool is_path_spelling(const std::string &name)
+bool madc_spelling_is_path(const std::string &name)
 {
 	return name.find_first_of("/\\") != std::string::npos;
 }
@@ -124,7 +124,7 @@ static bool is_path_spelling(const std::string &name)
 std::string madc_module_library_spelling(const std::string &name, TargetOS os)
 {
 	const char *sfx = madc_target_dso_suffix(os);
-	if (is_path_spelling(name) || carries_dso_suffix(name, sfx))
+	if (madc_spelling_is_path(name) || carries_dso_suffix(name, sfx))
 		return name;
 	if (const MadcModuleSpec *row = madc_module_find(name)) {
 		switch (os) {
@@ -197,7 +197,7 @@ static std::string macho_dylib_id(const std::string &path)
 std::string madc_darwin_install_name(const std::string &spelling)
 {
 	std::string path = spelling;
-	if (!is_path_spelling(spelling)) {
+	if (!madc_spelling_is_path(spelling)) {
 		std::string libdir = madc_self_lib_dir();
 		if (libdir.empty())
 			return spelling;
@@ -209,7 +209,7 @@ std::string madc_darwin_install_name(const std::string &spelling)
 
 std::string madc_darwin_link_rpath(const std::string &spelling)
 {
-	if (!is_path_spelling(spelling)
+	if (!madc_spelling_is_path(spelling)
 	    || macho_dylib_id(spelling).compare(0, 7, "@rpath/") != 0)
 		return "";
 	// The REAL directory: a versioned link (libx.dylib -> libx.1.dylib)
@@ -221,11 +221,51 @@ std::string madc_darwin_link_rpath(const std::string &spelling)
 	return dir;
 }
 
+// What ld's reading of a library comes to for a run: its shared objects
+// opened in order (the first one's handle answers), an empty archive the
+// process's own scope, a static archive refused.
+static void *open_link_result(madc_link_kind kind, const std::vector<madc_link_image> &images,
+			      const std::string &file, bool bind_now, std::string &error)
+{
+	switch (kind) {
+	case madc_link_kind::images: {
+		void *first = NULL;
+		for (const madc_link_image &im : images) {
+			void *h = madcdl_open_global(im.path.c_str(), bind_now);
+			if (!h) {
+				const char *e = madcdl_error();
+				error = e ? e : "cannot open";
+				return NULL;
+			}
+			if (!first)
+				first = h;
+		}
+		return first;
+	}
+	case madc_link_kind::none:
+		return madcdl_open_self();
+	case madc_link_kind::archive:
+		error = file + ": a static archive (madc links shared libraries)";
+		return NULL;
+	case madc_link_kind::unresolved:
+		break;
+	}
+	return NULL;
+}
+
 void *madc_module_open(const std::string &spelling, std::string &error,
 		       bool bind_now)
 {
 	error.clear();
-	if (!is_path_spelling(spelling)) {
+	// ld's reading of the library, on an ELF host: a path's file at once (a
+	// linker script or an archive is no dlopen input); a bare spelling only
+	// when the loader cannot open it (a link-time name: no dev symlink, a
+	// script, a stub archive).
+	bool elf = madc_target_os == TargetOS::Posix;
+	bool path = madc_spelling_is_path(spelling);
+	std::vector<madc_link_image> images;
+	std::string file;
+	if (!path) {
 		std::string libdir = madc_self_lib_dir();
 		if (!libdir.empty()) {
 			std::string beside = libdir + "/" + spelling;
@@ -233,31 +273,23 @@ void *madc_module_open(const std::string &spelling, std::string &error,
 				return h;
 			(void)madcdl_error();	// consume; the loader's own search follows
 		}
+	} else if (elf) {
+		madc_link_kind k = madc_module_link_images(spelling,
+				madc_link_search_path(std::vector<std::string>()), images, file);
+		if (k != madc_link_kind::unresolved)
+			return open_link_result(k, images, file, bind_now, error);
 	}
 	void *h = madcdl_open_global(spelling.c_str(), bind_now);
-	if (!h) {
-		const char *e = madcdl_error();
-		error = e ? e : "cannot open";
+	if (h)
+		return h;
+	const char *e = madcdl_error();
+	std::string loader_error = e ? e : "cannot open";
+	if (elf && !path) {
+		madc_link_kind k = madc_module_link_images(spelling,
+				madc_link_search_path(std::vector<std::string>()), images, file);
+		if (k != madc_link_kind::unresolved)
+			return open_link_result(k, images, file, bind_now, error);
 	}
-	return h;
-}
-
-std::string madc_module_locate(const std::string &spelling,
-			       const std::vector<std::string> &search_dirs)
-{
-	if (is_path_spelling(spelling))
-		return spelling;
-	for (const std::string &dir : search_dirs) {
-		std::string path = madc::detail::host_path_join(dir, spelling);
-		if (madc::detail::host_path_type_of(path) == madc::detail::host_path_type::file)
-			return path;
-	}
-	return spelling;
-}
-
-std::string madc_module_link_spelling(const std::string &spelling,
-				      const std::vector<std::string> &search_dirs)
-{
-	return madc_target_os == TargetOS::Darwin
-		? madc_module_locate(spelling, search_dirs) : spelling;
+	error = loader_error;
+	return NULL;
 }

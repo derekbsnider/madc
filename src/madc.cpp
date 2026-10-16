@@ -330,9 +330,10 @@ static void print_usage(const char *prog)
 "                          libSystem.B.dylib / ucrtbase.dll; lib<name>.<dso>\n"
 "                          otherwise; a path verbatim). The build-line form of\n"
 "                          the source's `import`. Works with or without --project.\n"
-"  -L<dir>                 search <dir> first for the -l libraries a run opens\n"
-"                          (ld's -L order); an AOT image names the library and\n"
-"                          the loader finds it at run time (-Wl,-rpath)\n"
+"  -L<dir>                 search <dir> for the -l libraries ahead of the\n"
+"                          toolchain's directories (ld's -L order): a run opens\n"
+"                          the library found, an image records it as ld does\n"
+"                          (its SONAME; nothing for an empty archive)\n"
 "  -Wl,-rpath,<dir>        add <dir> to the produced image's run-time library\n"
 "                          path (DT_RUNPATH / LC_RPATH), after madc's own; any\n"
 "                          other -Wl, linker option is refused\n"
@@ -886,8 +887,7 @@ int main(int argc, char **argv)
     std::vector<std::string> cli_define_args;  // -D as given: likewise
     std::vector<std::string> link_libs;   // -l<name>: TARGET spellings (madc_modules) opened RTLD_GLOBAL
     std::vector<std::string> cc_link_args; // -l<name> → DT_NEEDED in AOT mode
-    std::vector<std::string> link_search_dirs; // -L<dir>: searched for -l ahead of the opener's own
-    std::vector<std::string> link_runpath;     // -Wl,-rpath,<dir> → DT_RUNPATH in AOT mode
+    MadcLinkPaths link_paths;             // -L<dir> (the -l search) and -Wl,-rpath,<dir> (DT_RUNPATH)
     bool compile_object = false;          // -c: emit a relocatable .o, no run
     bool emit_shared = false;             // -shared: emit an ET_DYN .so, no run
     bool no_pie = false;                  // -no-pie: fixed-base ET_EXEC (default = PIE, gcc parity)
@@ -1298,19 +1298,19 @@ int main(int argc, char **argv)
             filearg = i + 1;
         } else if (strncmp(argv[i], "-L", 2) == 0) {
             // -Ldir or -L dir: where the -l libraries are searched, ahead of
-            // madc's own lib directory and the loader (ld's -L order). JIT:
-            // the -l open below. AOT: the image names the library and the
-            // loader finds it at run time, so nothing is searched here.
+            // the toolchain's directories (ld's -L order), wherever it stands
+            // on the line. JIT: the -l open below. AOT: the native lanes'
+            // reading of each library (cir_user_library_needed).
             const char *dir = argv[i] + 2;
             if ( *dir == '\0' && i + 1 < argc )
                 dir = argv[++i];
             if ( *dir )
-                link_search_dirs.push_back(dir);
+                link_paths.lib_dirs.push_back(dir);
             filearg = i + 1;
         } else if (strncmp(argv[i], "-Wl,", 4) == 0) {
             // gcc's pass-through to the linker; madc is its own linker.
             std::string refused;
-            if ( !read_linker_options(argv[i] + 4, link_runpath, refused) )
+            if ( !read_linker_options(argv[i] + 4, link_paths.runpath, refused) )
             {
                 std::cerr << "madc: " << argv[i] << ": linker option '"
                           << refused << "' is not supported (-rpath is)"
@@ -1663,10 +1663,6 @@ int main(int argc, char **argv)
     // precompiled captures into one artifact (-r one .o, -o an executable,
     // -shared a .so) — MIR is the linker, no external toolchain. -c stays
     // a loud error (gcc: the input is already compiled).
-    // -L reaches every -l, wherever it stood on the line (ld's rule).
-    for ( std::string &lib : cc_link_args )
-        lib = madc_module_link_spelling(lib, link_search_dirs);
-
     if ( !run_object_paths.empty() && emit_native )
     {
         if ( compile_object || emit_object_path )
@@ -1685,7 +1681,7 @@ int main(int argc, char **argv)
                          : "a.out";
         return madc_cir_link_objects(run_object_paths, kind, outp,
                                      cc_link_args, prog.get(),
-                                     link_runpath) == 0 ? 0 : 1;
+                                     link_paths) == 0 ? 0 : 1;
     }
 
     // -l<name>: dlopen each requested library (RTLD_GLOBAL) so the import
@@ -1701,7 +1697,7 @@ int main(int argc, char **argv)
         if ( emit_native )
             break;
         std::string lerr;
-        std::string target = madc_module_locate(lib, link_search_dirs);
+        std::string target = madc_module_locate(lib, link_paths.lib_dirs);
         if ( !madc_module_open(target, lerr, /*bind_now=*/true) )
         {
             std::cerr << "madc: -l: failed to load " << lib << ": "
@@ -1878,7 +1874,7 @@ int main(int argc, char **argv)
 					       cc_link_args,
 					       prog->registration_policy.enable_forest_bind,
 					       prog->forest_bind_path,
-					       link_runpath);
+					       link_paths);
 	    return erc == 0 ? 0 : 1;
 	}
 	// Remaining positionals (filearg..argc) become the program's argv.
@@ -2468,7 +2464,7 @@ int main(int argc, char **argv)
 		outpath = "a.out";
 	    int erc = madc_cir_emit_native(prog.get(), argv[filearg], kind,
 					   outpath.c_str(), cc_link_args,
-					   link_runpath);
+					   link_paths);
 	    print_stats();
 	    return erc == 0 ? 0 : 1;
 	}

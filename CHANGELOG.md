@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+### `-l<name>` links what ld finds for it, and an image records what ld records
+
+madc's driver now reads a `-l<name>` library as `ld` does. It searches the `-L`
+directories, then the toolchain's library directories (probed at build time like
+the include paths), for `lib<name>.so`, then `lib<name>.a`, and records the
+shared object it finds by its `DT_SONAME` — `libz.so` is the dev link, so an
+image needs `libz.so.1`. A linker script links its members (`libncurses.so` is
+`INPUT(libncurses.so.6 -ltinfo)`, so `-lncurses` records `libncurses.so.6` and
+`libtinfo.so.6`); an archive with no members links nothing (glibc 2.34+ ships
+`libdl.a` / `libpthread.a` as such stubs, their symbols now libc's), and a
+static archive with members is refused. Previously a `-l<name>` was spelled
+`lib<name>.so` and recorded or opened verbatim: a JIT run refused `-lpthread`
+(`failed to load libpthread.so`), and an AOT image recorded `libpthread.so`,
+`libdl.so` and `libz.so` and did not load (SQLite's testfixture:
+`libdl.so: cannot open shared object file`). On an ELF host `madc_module_open`
+reads a library through the new `src/madc_link_files.cpp`, and the native lanes
+record each library's `DT_NEEDED` through it. `tests/testaot_ld_libs` runs
+`-lscripted -lempty -lpthread -ldl -lz` against the gcc/clang oracle: the program
+prints `pthread=1 dlsym=1 zlib=1 twice=42` and the image's `NEEDED` is
+`lib/libtwice.so`, `libz.so.1` (nothing for `-lpthread` / `-ldl` / the empty
+archive). SQLite 3.54.0's testfixture, built and linked by madc, runs
+`select1.test` with 0 errors out of 199 tests. Continues KG gap
+`cli_multiple_sources_compile_and_link`.
+
 ### `-L<dir>` searches for `-l` libraries and `-Wl,-rpath,<dir>` sets a produced image's run-time path
 
 madc's driver now accepts gcc's `-L<dir>` and `-Wl,-rpath,<dir>`. `-L<dir>` (or

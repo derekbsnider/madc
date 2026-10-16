@@ -3232,21 +3232,62 @@ static madc::dis::istring cir_user_library_spelling(const madc::dis::istring &l)
     return l.compare(0, 2, "-l") == 0 ? madc::dis::istring(madc_module_library_spelling(l.substr(2))) : l;
 }
 
+// What the image's library list carries for one user library, as the
+// target's linker records it, appended to `out`: ELF — ld's reading of it
+// (madc_module_link_images over `lib_dirs` then the toolchain's directories:
+// each shared object's DT_SONAME, the name it was found by when it has none,
+// nothing for an empty archive); Mach-O — the file the -L search finds, whose
+// install name the writer records (cir_apple_extra_dylibs); PE — the spelling.
+// A library no search finds keeps its spelling (the loader's search at run
+// time). False, loudly, on a static archive: madc links shared libraries.
+static bool cir_user_library_needed(const madc::dis::istring &l,
+				    const std::vector<std::string> &lib_dirs,
+				    std::vector<std::string> &out)
+{
+    madc::dis::istring spelling = cir_user_library_spelling(l);
+#if MADC_TARGET_APPLE_P
+    out.push_back(madc_module_locate(spelling, lib_dirs));
+#elif MADC_TARGET_WINDOWS_P
+    (void)lib_dirs;
+    out.push_back(spelling);
+#else
+    std::vector<madc_link_image> images;
+    std::string file;
+    switch (madc_module_link_images(spelling, madc_link_search_path(lib_dirs),
+				    images, file)) {
+    case madc_link_kind::images:
+	for (const madc_link_image &im : images)
+	    out.push_back(im.needed);
+	break;
+    case madc_link_kind::none:
+	break;
+    case madc_link_kind::archive:
+	fprintf(stderr, "madc: %s: %s is a static archive (madc links shared"
+			" libraries)\n", spelling.c_str(), file.c_str());
+	return false;
+    case madc_link_kind::unresolved:
+	out.push_back(spelling);
+	break;
+    }
+#endif
+    return true;
+}
+
 // DT_NEEDED / DT_RUNPATH for every produced binary — shared by the
 // single-TU and --project native-emit entries.
 // DT_NEEDED: the madc runtime (its dependency closure brings libmir's
 // builtin exports, libz/libzstd, libpthread), the C++/C runtimes, and
-// the user's -l libraries ("-lfoo" → the same lib<foo>.so spelling the
-// JIT dlopen lane uses; a path form passes through verbatim).
+// the user's libraries as the target's linker records them
+// (cir_user_library_needed). False when one cannot be linked.
 // The C++ runtime set is the ACTIVE stdlib flavor's own (probed from its
 // toolchain at build time — madc_stdlib_flavor::link_libs), never a host
 // #ifdef: a -stdlib=libc++ emit from a libstdc++-built madc names
 // libc++.so.1. NULL flavor = the build default (table entry 0).
 // DT_RUNPATH: madc's own runtime arms below, then the user's -Wl,-rpath
 // directories in command-line order, once each.
-static void cir_native_link_env(const madc_stdlib_flavor *flavor,
+static bool cir_native_link_env(const madc_stdlib_flavor *flavor,
 				const std::vector<std::string> &user_libs,
-				const std::vector<std::string> &user_runpath,
+				const MadcLinkPaths &link_paths,
 				std::vector<std::string> &needed,
 				std::string &runpath)
 {
@@ -3289,15 +3330,17 @@ static void cir_native_link_env(const madc_stdlib_flavor *flavor,
     needed.push_back("libm.so.6");
     needed.push_back("libc.so.6");
 #endif
-    // User libraries (cir_user_library_spelling), once each: `-lm` /
+    // User libraries (cir_user_library_needed), once each: `-lm` /
     // `import m;` names libm.so.6, which the base set above
     // already carries on ELF — a repeated DT_NEEDED is noise the linker
     // would never emit.
-    for (const std::string &l : user_libs) {
-	madc::dis::istring spelling = cir_user_library_spelling(l);
-	if (std::find(needed.begin(), needed.end(), spelling) == needed.end())
-	    needed.push_back(spelling);
-    }
+    std::vector<std::string> user_needed;
+    for (const std::string &l : user_libs)
+	if (!cir_user_library_needed(l, link_paths.lib_dirs, user_needed))
+	    return false;
+    for (const std::string &n : user_needed)
+	if (std::find(needed.begin(), needed.end(), n) == needed.end())
+	    needed.push_back(n);
     // Relocatable arm first: a produced binary placed in a relocatable
     // install (tarball <root>/bin beside <root>/lib — madcide in the
     // release tarball is the standing case) binds its OWN tree's runtime
@@ -3315,8 +3358,8 @@ static void cir_native_link_env(const madc_stdlib_flavor *flavor,
     // (cir_apple_extra_dylibs) — after the relocatable arm, ahead of the
     // compiling madc's lib dir and the system fallback.
     std::vector<madc::dis::istring> link_dirs;
-    for (const std::string &l : user_libs) {
-	madc::dis::istring dir = madc_darwin_link_rpath(cir_user_library_spelling(l));
+    for (const std::string &l : user_needed) {
+	madc::dis::istring dir = madc_darwin_link_rpath(l);
 	if (!dir.empty()
 	    && std::find(link_dirs.begin(), link_dirs.end(), dir) == link_dirs.end()) {
 	    link_dirs.push_back(dir);
@@ -3343,10 +3386,11 @@ static void cir_native_link_env(const madc_stdlib_flavor *flavor,
     // compiling madc's runtime (libmadc.so.0) whatever else a named directory
     // holds — the opener's order too (madc_module_open: madc's lib directory
     // first). PE has no runpath; the writer never reads it.
-    for (const std::string &dir : user_runpath)
+    for (const std::string &dir : link_paths.runpath)
 	if (!dir.empty()
 	    && (":" + runpath + ":").find(":" + dir + ":") == std::string::npos)
 	    runpath += (runpath.empty() ? "" : ":") + dir;
+    return true;
 }
 
 // THE object-capture-mode scope (dupaudit family object_mode_emit_scoping):
@@ -3367,7 +3411,7 @@ struct ObjectModeScope
 int madc_cir_emit_native(Program *prog, const char *source_name,
 			 MadcNativeKind kind, const char *out_path,
 			 const std::vector<std::string> &user_libs,
-			 const std::vector<std::string> &user_runpath)
+			 const MadcLinkPaths &link_paths)
 {
     ObjectModeScope object_mode_scope;
 
@@ -3401,8 +3445,9 @@ int madc_cir_emit_native(Program *prog, const char *source_name,
     // directly — no external toolchain.
     std::vector<std::string> needed;
     std::string runpath;
-    cir_native_link_env(prog->active_stdlib_flavor(), user_libs,
-			user_runpath, needed, runpath);
+    if (!cir_native_link_env(prog->active_stdlib_flavor(), user_libs,
+			     link_paths, needed, runpath))
+	return -1;
     return session.emit_native_executable(out_path, needed, runpath,
 					  kind) ? 0 : -1;
 }
@@ -3603,7 +3648,7 @@ int madc_cir_link_objects(const std::vector<std::string> &paths,
 			  MadcNativeKind kind, const char *out_path,
 			  const std::vector<std::string> &user_libs,
 			  Program *prog,
-			  const std::vector<std::string> &user_runpath)
+			  const MadcLinkPaths &link_paths)
 {
     // No compile happens here — the inputs are already captures; the fork
     // does the whole link (read/merge + emit).
@@ -3645,8 +3690,11 @@ int madc_cir_link_objects(const std::vector<std::string> &paths,
     } else {
 	std::vector<std::string> needed;
 	std::string runpath;
-	cir_native_link_env(prog ? prog->active_stdlib_flavor() : NULL,
-			    user_libs, user_runpath, needed, runpath);
+	if (!cir_native_link_env(prog ? prog->active_stdlib_flavor() : NULL,
+				 user_libs, link_paths, needed, runpath)) {
+	    MIR_object_destroy(obj);
+	    return -1;
+	}
 	// Conditional libmadc.so.0, same policy as the source lanes; here
 	// the external imports are the merged builder's UNDEF names
 	// (unification already netted out cross-object references, and the
@@ -8246,7 +8294,7 @@ int madc_project_emit_native(MadcEngine &engine,
 			     const std::vector<std::string> &user_libs,
 			     bool forest_bind,
 			     const std::string &forest_bind_path,
-			     const std::vector<std::string> &user_runpath)
+			     const MadcLinkPaths &link_paths)
 {
 	if (manifest.tus.empty()) {
 		fprintf(stderr, "madc_project_emit_native: empty manifest\n");
@@ -8398,16 +8446,16 @@ int madc_project_emit_native(MadcEngine &engine,
 				if (std::find(all_libs.begin(), all_libs.end(), l)
 				    == all_libs.end())
 					all_libs.push_back(l);
-		cir_native_link_env(flavor, all_libs, user_runpath, needed,
-				    runpath);
 		// The manifest's kind decides the subsystem for a project
 		// build (the CLI's -mwindows is the single-TU lane's
 		// spelling); its "icon" is the image's icon.
 		CirImageTraits traits;
 		traits.gui_subsystem = manifest.kind == ProjectKind::gui;
 		traits.icon_path = manifest.icon;
-		ok = cir_write_native_image(ctx, out_path, needed, runpath,
-					    kind, traits);
+		ok = cir_native_link_env(flavor, all_libs, link_paths, needed,
+					 runpath)
+		     && cir_write_native_image(ctx, out_path, needed, runpath,
+					       kind, traits);
 	}
 	teardown();
 	return ok ? 0 : -1;

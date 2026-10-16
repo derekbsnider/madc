@@ -85,27 +85,69 @@ std::string madc_module_library_spelling(const std::string &name);	// for madc_t
 // Open a spelled library through the madc_dl seam into the default symbol
 // scope: a bare spelling is tried beside the running binary first
 // (<exe dir>/../lib/<spelling>, the relocatable install shape the runpath
-// uses), then as the loader itself searches. `bind_now` resolves every
-// reference at open (the command line's -l: fail-fast). The one opener for
-// `import`, a manifest's "libs", -l and a frozen forest's recorded
-// libraries. NULL + `error` on failure.
+// uses), then as the loader itself searches, then — on an ELF host, where a
+// generic lib<name>.so is a link-time name the loader may not know — as ld
+// searches (madc_module_link_images over the toolchain's directories). A
+// library FILE opens as ld reads it (madc_module_link_file): a linker script
+// opens its shared members; an archive with no members is the process's own
+// scope. `bind_now` resolves every reference at open (the command line's -l:
+// fail-fast). The one opener for `import`, a manifest's "libs", -l and a
+// frozen forest's recorded libraries. NULL + `error` on failure.
 void *madc_module_open(const std::string &spelling, std::string &error,
 		       bool bind_now = false);
 
-// The command line's -L directories, searched for a bare spelling in order
-// ahead of madc_module_open's own search (ld searches -L before its default
-// directories): the first `<dir>/<spelling>` that is a file, else `spelling`
-// unchanged. A path spelling is never searched.
+// Does a TARGET library spelling name a path (either separator, whatever the
+// host) rather than a name a search finds?
+bool madc_spelling_is_path(const std::string &spelling);
+
+// What ld links for a library, on an ELF target (src/madc_link_files.cpp):
+// the -l search and the files it reads. A library file is a shared object (DT_NEEDED records its
+// DT_SONAME, else the name it was found by), a linker script (INPUT / GROUP:
+// each shared member, -l members searched again; AS_NEEDED lists and archive
+// members are not recorded), or an archive.
+struct madc_link_image
+{
+	std::string path;	// the shared object's file
+	std::string needed;	// what DT_NEEDED records for it
+};
+enum class madc_link_kind : unsigned char
+{
+	unresolved,	// no library file here: the caller keeps the spelling
+	images,		// shared objects, in `images`
+	none,		// an archive with no members (glibc's libdl.a, libpthread.a:
+			// their symbols are libc's): nothing to record or open
+	archive		// a static archive with members: madc links no archives
+};
+
+// The file at `path`, read as ld reads a library; `named` is what DT_NEEDED
+// records for a shared object with no DT_SONAME (the path a program gave, or
+// the name a search found it by). `dirs` serve a script's -l members.
+madc_link_kind madc_module_link_file(const std::string &path, const std::string &named,
+				     const std::vector<std::string> &dirs,
+				     std::vector<madc_link_image> &images);
+
+// What ld links for the library `spelling` names: a path, its file
+// (madc_module_link_file, recording the path for a shared object with no
+// DT_SONAME); the generic lib<name>.so (the -l rule for a name no module row
+// spells), the -l search — each of `dirs` in order, lib<name>.so before
+// lib<name>.a within one, an ELF file of another class passed over. Any other
+// spelling (a module row's, a versioned name) is `unresolved`. `file` is the
+// library file it settled on.
+madc_link_kind madc_module_link_images(const std::string &spelling,
+				       const std::vector<std::string> &dirs,
+				       std::vector<madc_link_image> &images,
+				       std::string &file);
+
+// The directories `cc -l` searches: `cli_dirs` (the command line's -L, in
+// order), then the toolchain's (madc_toolchain_library_dirs, probed at build).
+std::vector<std::string> madc_link_search_path(const std::vector<std::string> &cli_dirs);
+
+// The library file the -l search over `dirs` alone settles on for `spelling`
+// (madc_module_link_images), else `spelling` unchanged. A path spelling is
+// never searched. The command line's -L for a run: the file found opens
+// through madc_module_open, which reads it as ld would.
 std::string madc_module_locate(const std::string &spelling,
 			       const std::vector<std::string> &search_dirs);
-
-// What an AOT image's link closure carries for a -l spelling under the -L
-// directories, for madc_target_os: a Mach-O image records the located
-// dylib's own install name (ld64; the writer reads it from the path), so the
-// located path; an ELF or PE image records the -l name itself (ld: the
-// SONAME, which madc's images do not carry), so `spelling` unchanged.
-std::string madc_module_link_spelling(const std::string &spelling,
-				      const std::vector<std::string> &search_dirs);
 
 // The load command a Mach-O image linking `spelling` records — the dylib's
 // own install name (LC_ID_DYLIB), as ld64 records it — read from the file

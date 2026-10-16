@@ -48,6 +48,15 @@ enum MadcNativeKind {
     mnkObject, mnkExecutable, mnkShared, mnkPieExecutable, mnkRelocatable
 };
 
+// The command line's link paths, handed to the native lanes (gcc's -L and
+// -Wl,-rpath). Per call, so in-process callers (madc::build_native) never
+// inherit a CLI's.
+struct MadcLinkPaths
+{
+    std::vector<std::string> lib_dirs;	// -L: searched for the libraries, ahead of the toolchain's
+    std::vector<std::string> runpath;	// -Wl,-rpath: DT_RUNPATH, after madc's own arms
+};
+
 // --pack-forest=<container>: every emitted native EXECUTABLE additionally
 // carries the named frozen container in its self-image carrier — the ELF
 // arm pads the written image to 16 and appends the blob (footer at EOF,
@@ -303,14 +312,14 @@ int madc_cir_emit(Program *prog, const char *source_name, FILE *out,
 // All output is PIC (R6): address slots live in the .mir.addrpool data
 // section, .text carries no relocations, no DT_TEXTREL.
 // user_libs ("-l<name>" or a path) join
-// the DT_NEEDED list for the linked kinds; user_runpath (the command line's
-// -Wl,-rpath directories) joins DT_RUNPATH after madc's own runtime arms.
+// the image's library list for the linked kinds as ld records them — found
+// through link_paths.lib_dirs and the toolchain's library directories;
+// link_paths.runpath joins DT_RUNPATH after madc's own runtime arms.
 // No execution. Returns 0 on success, -1 on failure.
 int madc_cir_emit_native(Program *prog, const char *source_name,
 			 MadcNativeKind kind, const char *out_path,
 			 const std::vector<std::string> &user_libs,
-			 const std::vector<std::string> &user_runpath
-			     = std::vector<std::string>());
+			 const MadcLinkPaths &link_paths = MadcLinkPaths());
 
 // Multi-object lanes (the .o-input twins of madc_cir_emit_native and
 // madc_cir_run_object). The inputs are madc-emitted relocatable objects;
@@ -338,8 +347,7 @@ int madc_cir_link_objects(const std::vector<std::string> &paths,
 			  MadcNativeKind kind, const char *out_path,
 			  const std::vector<std::string> &user_libs,
 			  Program *prog,
-			  const std::vector<std::string> &user_runpath
-			      = std::vector<std::string>());
+			  const MadcLinkPaths &link_paths = MadcLinkPaths());
 int madc_cir_run_objects(const std::vector<std::string> &paths,
 			 int argc, char **argv,
 			 const madc_stdlib_flavor *flavor = NULL);
@@ -370,8 +378,7 @@ int madc_project_emit_native(MadcEngine &engine,
 			     const std::vector<std::string> &user_libs,
 			     bool forest_bind,
 			     const std::string &forest_bind_path,
-			     const std::vector<std::string> &user_runpath
-				 = std::vector<std::string>());
+			     const MadcLinkPaths &link_paths = MadcLinkPaths());
 
 // One AOT-ledger module (forest-carriers S5), decoded: a C-lane madc runtime
 // source compiled to a MIR module, with the symbol set it DEFINES — the

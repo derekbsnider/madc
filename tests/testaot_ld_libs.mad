@@ -1,0 +1,64 @@
+// `-l<name>` links what ld finds for it, and an image records what ld
+// records. ld searches the -L directories, then the toolchain's, for
+// lib<name>.so, then lib<name>.a. It records a shared object's SONAME (libz.so is
+// the dev link; the image needs libz.so.1). A linker script links its members
+// (libncurses.so is "INPUT(libncurses.so.6 -ltinfo)"). An archive with no
+// members links nothing: glibc 2.34+ ships libdl.a / libpthread.a as such
+// stubs, their symbols now libc's, and no libdl.so / libpthread.so.
+// Pins, on the run and in a produced image: -lpthread -ldl -lz, a script
+// (lib/libscripted.so = INPUT(libtwice.so)), an empty archive (lib/libempty.a);
+// a static archive with members is refused.
+// Before: a run refused -lpthread ("failed to load libpthread.so"); an image
+// recorded libpthread.so, libdl.so and libz.so and did not load (SQLite's
+// testfixture: "libdl.so: cannot open shared object file").
+// Oracle: gcc 13 / clang 18 -- `cc -o prog main.c -Llib -lscripted -lempty
+// -lpthread -ldl -lz '-Wl,-rpath,$ORIGIN/lib'` -> ./prog prints "pthread=1
+// dlsym=1 zlib=1 twice=42"; readelf -d: NEEDED lib/libtwice.so (the script's
+// member as ld opened it: no SONAME), libz.so.1, libc.so.6 (nothing for
+// -lpthread / -ldl / -lempty); a malformed -lfull is refused.
+int main()
+{
+	var dir = "tmp/testaot_ld_libs";
+	var lib = format("{}/lib", dir);
+	php::mkdir(dir.c_str());
+	php::mkdir(lib.c_str());
+	const char *cp = madc::compiler_path();
+	var tsrc = format("{}/twice.c", dir);
+	php::file_put_contents(tsrc.c_str(), "int twice(int x) { return 2 * x; }\n");
+	var twice = format("{}/libtwice.so", lib);
+	long rc = system(format("{} --no-config -shared -o {} {}", cp, twice, tsrc));
+	var script = format("{}/libscripted.so", lib);
+	php::file_put_contents(script.c_str(), "/* a linker script */\nINPUT(libtwice.so)\n");
+	var empty = format("{}/libempty.a", lib);
+	php::file_put_contents(empty.c_str(), "!<arch>\n");
+	var full = format("{}/libfull.a", lib);
+	php::file_put_contents(full.c_str(),
+		"!<arch>\nx.o/            0           0     0     644     4         `\nabcd");
+	println("setup: rc={}", rc);
+	var main_c = format("{}/main.c", dir);
+	php::file_put_contents(main_c.c_str(),
+		"#include <stdio.h>\n#include <pthread.h>\n#include <dlfcn.h>\n"
+		"const char *zlibVersion(void);\nint twice(int);\n"
+		"int main(void)\n{\n\tvoid *self = dlopen(NULL, RTLD_NOW);\n"
+		"\tprintf(\"pthread=%d dlsym=%d zlib=%d twice=%d\\n\", pthread_self() != 0,\n"
+		"\t       dlsym(self, \"printf\") != NULL, zlibVersion()[0] != 0, twice(21));\n"
+		"\treturn 0;\n}\n");
+	var libs = format("-L{} -lscripted -lempty -lpthread -ldl -lz", lib);
+
+	rc = system(format("{} --no-config {} {}", cp, libs, main_c));
+	println("run: rc={}", rc);
+
+	var prog = format("{}/prog", dir);
+	rc = system(format("{} --no-config -o {} {} {} '-Wl,-rpath,$ORIGIN/lib'", cp, prog, main_c, libs));
+	println("link: rc={}", rc);
+	rc = system(prog.c_str());
+	println("its run: rc={}", rc);
+
+	rc = system(format("{} --no-config -L{} -lfull {} 2>/dev/null", cp, lib, main_c));
+	println("run -lfull refused: {}", rc != 0 ? 1 : 0);
+	rc = system(format("{} --no-config -o {} {} -L{} -lfull 2>/dev/null", cp, prog, main_c, lib));
+	println("link -lfull refused: {}", rc != 0 ? 1 : 0);
+
+	system(format("rm -rf {}", dir));
+	return 0;
+}
