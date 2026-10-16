@@ -5095,6 +5095,22 @@ DataDef *Program::resolve_template_param(const madc::dis::istring &name)
     return NULL;
 }
 
+// The type an UNQUALIFIED identifier names where a cast's type-id may start
+// (`(u32)x`, `(size_type)n`): the flat datatype map — the live scope's
+// typedef and class names, a C block-scope object having hidden a same-named
+// typedef there (hide_typedef_name_in_block) — else the class being
+// defined's member type (resolve_current_class_type_alias). NULL: an
+// ordinary name, so `(x)` stays a parenthesized expression. A struct TAG is
+// no answer: in C `(S)x` without `struct` is no cast. Every cast head asks
+// it — the expression parser's and the constant-expression folder's.
+DataDef *Program::unqualified_type_name_datadef(const madc::dis::istring &name)
+{
+    flat_datatype_map_iter it = datatype_map.find(name);
+    if ( it != datatype_map.end() )
+	return &(*it)->definition;
+    return resolve_current_class_type_alias(name);
+}
+
 DataDef *Program::resolve_current_class_type_alias(const madc::dis::istring &name)
 {
     // Two-tree Phase 2 / 2a: during a DEPENDENT template-body parse, the template's
@@ -19704,10 +19720,15 @@ ConstValue Program::parse_constant_primary()
 	// token) — the old arm swallowed it to the `)` as the cast target, the
 	// fold failed, the default stayed unfolded and the partial specialization
 	// keyed on `true` was never selected (tests/testtpldefaultdepfold).
+	// A typedef or class name the lexer left an identifier (`(u32)4`,
+	// SQLite's BITVEC_NPTR) heads a type-id as a type token does — the cast
+	// arm's own test, unqualified_type_name_datadef.
 	TokenBase *inner = peekToken();
 	if ( inner && (inner->type() == TokenType::ttDataType
 	  || inner->id() == TokenID::tkCONST
-	  || inner->id() == TokenID::tkRESTRICT) )
+	  || inner->id() == TokenID::tkRESTRICT
+	  || (inner->type() == TokenType::ttIdentifier
+	   && unqualified_type_name_datadef(((TokenIdent *)inner)->spelling_name()))) )
 	{
 	    DataDef *cast_dd = NULL;
 	    bool is_unsigned = false;
@@ -19789,9 +19810,16 @@ size_t Program::constant_cast_type_id_extent(DataDef *&cast_dd, bool &is_unsigne
 	TokenBase *t = tokens[i];
 	if ( t->id() == TokenID::tkClBrk )
 	    return saw_type ? i : 0;
+	// A type token, or a typedef / class name the lexer left an identifier
+	// (unqualified_type_name_datadef — the cast arm's test).
+	DataDef *head = NULL;
 	if ( t->type() == TokenType::ttDataType )
+	    head = &((TokenDataType *)t)->definition;
+	else if ( !saw_type && t->type() == TokenType::ttIdentifier )
+	    head = unqualified_type_name_datadef(((TokenIdent *)t)->spelling_name());
+	if ( head )
 	{
-	    cast_dd = &((TokenDataType *)t)->definition;
+	    cast_dd = head;
 	    saw_type = true;
 	    ++i;
 	    if ( i < tokens.size() && tokens[i]
@@ -20392,8 +20420,7 @@ static bool constant_initializer_has_runtime_access(Program &pgm, bool comma_end
 	// fold then declines it under a placeholder, which is the correct
 	// capture-time outcome).
 	if ( next && next->id() == TokenID::tkOpBrk && !constant_callable
-	  && (pgm.datatype_map.find(name) != pgm.datatype_map.end()
-	   || pgm.resolve_current_class_type_alias(name)) )
+	  && pgm.unqualified_type_name_datadef(name) )
 	    constant_callable = true;
 	if ( next && next->id() == TokenID::tkOpBrk && !constant_callable )
 	    return true;
@@ -44879,8 +44906,8 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			}
 			else if ( peekToken() && (peekToken()->type() == TokenType::ttDataType
 			       ||  (peekToken()->type() == TokenType::ttIdentifier
-				    && (datatype_map.count(((TokenIdent *)peekToken())->spelling())
-				     || resolve_current_class_type_alias(((TokenIdent *)peekToken())->spelling())))) )
+				    && unqualified_type_name_datadef(
+					((TokenIdent *)peekToken())->spelling()))) )
 			    nextToken();
 			// The cast's type-id is an ABSTRACT declarator over the resolved
 			// type — stars with their cv, `(*)(params)`, `(*)[N]`, `(&)[N]`,

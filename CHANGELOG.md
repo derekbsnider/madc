@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### A cast through a typedef name heads an integer constant array bound
+
+`int a[(u32)4];` for `typedef unsigned int u32;` now folds to a constant array
+bound, and SQLite's `BITVEC_NPTR` (`((u32)(64/sizeof(Bitvec *)))`) is accepted as
+one. The lexer leaves a typedef or class name an identifier token;
+`parseExpression`'s cast arm resolved it, but the constant-expression folder
+(`Program::parse_constant_primary`'s cast gate and
+`Program::constant_cast_type_id_extent`) admitted only a type token, so `(u32)4`
+read as a parenthesized expression — `(unsigned)4` folded — and `int g1[(u32)4];`
+was refused with "Expecting integer constant expression". A new owner
+`Program::unqualified_type_name_datadef` answers whether an unqualified identifier
+names a type a cast may start with — the live scope's typedef / class name, else
+the class being defined's member type; a struct tag is no answer, since in C
+`(S)x` without `struct` is no cast. The constant folder's two sites now ask it, as
+do the two sites that spelled the same test by hand (`parseExpr_operatorArm`'s
+cast arm and the static-const capture scan in
+`constant_initializer_has_runtime_access`). `tests/testarraydim_typedef_cast`
+folds `(u32)4`, `(unsigned)4`, `BITVEC_NPTR` and a struct/union member array bound
+against the gcc/clang oracle, closing KG gap c_array_dim_typedef_cast_not_folded.
+
 ### A subscript of a call returning a reference to an array types its element as the array's own
 
 `ra()[i]` for `int (&ra())[3]` now has element type `int`: `sizeof(ra()[0])`

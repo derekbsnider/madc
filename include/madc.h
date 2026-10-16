@@ -9470,6 +9470,10 @@ public:
 				     const madc::dis::istring &type_spelling,
 				     DataDef *base_dd, TokenBase *name_tok);
     DataDef *resolve_current_class_type_alias(const madc::dis::istring &name);
+    // The type an UNQUALIFIED identifier names where a cast's type-id may
+    // start (`(u32)x`): the live scope's typedef / class name, else the
+    // class being defined's member type; NULL for an ordinary name.
+    DataDef *unqualified_type_name_datadef(const madc::dis::istring &name);
     bool resolve_current_class_static_member_const_value(const madc::dis::istring &name, int64_t &out);
     bool fold_constant_qualified_member(TokenBase *first, madc_wide_int &out);
     bool fold_constant_qualified_member_walk(TokenBase *first,
