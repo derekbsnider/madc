@@ -192,8 +192,19 @@ struct result
 	bool boolean(int id, bool fallback) const;
 };
 
+// The sources beside the command line, below it in precedence: the
+// environment, then the program's config file, then each row's default.
+// Value-initialized (`sources()`): no environment, no config, defaults on.
+struct sources
+{
+	const char *(*environment)(const char *name);	// getenv-shaped; NULL: none
+	const std::map<madc::dis::istring, std::string> *config;	// key -> value; NULL: none
+	bool skip_defaults;				// true: rows' defaults are not applied
+};
+
 // THE reader.
-result parse(const table &t, const std::vector<std::string> &args);
+result parse(const table &t, const std::vector<std::string> &args,
+	     const sources &from = sources());
 
 // What one word names as an option.
 struct match

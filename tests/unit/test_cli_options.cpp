@@ -12,6 +12,7 @@ thread_local bool madc_verbose = false;
 
 #include <fstream>
 #include <initializer_list>
+#include <map>
 #include <sstream>
 #include <string>
 #include <unistd.h>
@@ -466,4 +467,118 @@ TEST_CASE("a path value is stored in generic form on this host")
 #else
 	CHECK(r.last(y_path)->value == "a\\b/c");	// '\' is a file-name byte here
 #endif
+}
+namespace {
+
+enum source_id { s_level = 1, s_name, s_fast };
+
+const cli::row source_rows[] = {
+	{ s_level, "level", { { "--level", value_form::equals } }, "<n>", 0, "level",
+	  NULL, 0, 0, cli::value_type::integer, NULL, "1", "PROG_LEVEL", "level" },
+	{ s_name, "name", { { "--name", value_form::equals } }, "<s>", 0, "name",
+	  NULL, 0, 0, cli::value_type::text, NULL, NULL, NULL, "name" },
+	{ s_fast, "fast", { { "--fast", flag } }, NULL, 0, "fast",
+	  NULL, cli::rf_negatable, 0, cli::value_type::text, NULL, NULL, "PROG_FAST" },
+};
+
+std::map<std::string, std::string> fake_env;
+
+const char *fake_getenv(const char *name)
+{
+	std::map<std::string, std::string>::const_iterator it = fake_env.find(name);
+	return it == fake_env.end() ? NULL : it->second.c_str();
+}
+
+cli::table source_table()
+{
+	cli::table t = cli::table();
+	t.program = "prog";
+	t.sections = sections;
+	t.nsections = 1;
+	t.rows = source_rows;
+	t.nrows = sizeof(source_rows) / sizeof(source_rows[0]);
+	t.operands = cli::operand_rule::permute;
+	return t;
+}
+
+} // namespace
+
+TEST_CASE("sources: command line > environment > config > default")
+{
+	const cli::table t = source_table();
+	std::map<madc::dis::istring, std::string> config;
+	cli::sources from = cli::sources();
+	from.environment = fake_getenv;
+	from.config = &config;
+	fake_env.clear();
+	const std::vector<std::string> none;
+
+	cli::result r = cli::parse(t, none, from);
+	REQUIRE(r.ok());
+	const cli::occurrence *level_default = r.last(s_level);
+	REQUIRE(level_default != NULL);
+	CHECK(r.last(s_level)->source == cli::value_source::default_value);
+	CHECK(r.integer(s_level, 0) == 1);
+
+	config[madc::dis::istring("level")] = "2";
+	r = cli::parse(t, none, from);
+	CHECK(r.last(s_level)->source == cli::value_source::config);
+	CHECK(r.integer(s_level, 0) == 2);
+
+	fake_env["PROG_LEVEL"] = "3";
+	r = cli::parse(t, none, from);
+	CHECK(r.last(s_level)->source == cli::value_source::environment);
+	CHECK(r.integer(s_level, 0) == 3);
+
+	r = cli::parse(t, words({ "--level=5" }), from);
+	CHECK(r.count(s_level) == 1);
+	CHECK(r.last(s_level)->source == cli::value_source::command_line);
+	CHECK(r.integer(s_level, 0) == 5);
+
+	from.skip_defaults = true;
+	fake_env.clear();
+	config.clear();
+	r = cli::parse(t, none, from);
+	const cli::occurrence *level_unset = r.last(s_level);
+	CHECK(level_unset == NULL);
+
+	r = cli::parse(t, none);		// no sources named: defaults only
+	CHECK(r.integer(s_level, 0) == 1);
+}
+
+TEST_CASE("sources: a flag reads yes or no; a bad value names its source")
+{
+	const cli::table t = source_table();
+	std::map<madc::dis::istring, std::string> config;
+	config[madc::dis::istring("name")] = "bob";
+	cli::sources from = cli::sources();
+	from.environment = fake_getenv;
+	from.config = &config;
+	const std::vector<std::string> none;
+
+	fake_env.clear();
+	fake_env["PROG_FAST"] = "yes";
+	cli::result r = cli::parse(t, none, from);
+	REQUIRE(r.ok());
+	CHECK(r.has(s_fast));
+	CHECK(r.values(s_name) == words({ "bob" }));
+
+	fake_env["PROG_FAST"] = "no";
+	r = cli::parse(t, none, from);
+	REQUIRE(r.ok());
+	const cli::occurrence *fast_env = r.last(s_fast);
+	REQUIRE(fast_env != NULL);
+	CHECK(r.last(s_fast)->negated);
+	CHECK_FALSE(r.has(s_fast));
+
+	fake_env["PROG_FAST"] = "maybe";
+	r = cli::parse(t, none, from);
+	CHECK(r.error == cli::error_kind::bad_value);
+	CHECK(r.message == "invalid value 'maybe' for 'PROG_FAST': expected yes or no");
+
+	fake_env.clear();
+	fake_env["PROG_LEVEL"] = "x";
+	r = cli::parse(t, none, from);
+	CHECK(r.message == "invalid value 'x' for 'PROG_LEVEL': expected an integer");
+	fake_env.clear();
 }

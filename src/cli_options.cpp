@@ -381,6 +381,87 @@ bool check_required(const table &t, result &r)
 	return true;
 }
 
+bool takes_value(const row &rw)
+{
+	for ( size_t s = 0; s < max_spellings && rw.spellings[s].text; s++ )
+		if ( rw.spellings[s].form != value_form::none )
+			return true;
+	return false;
+}
+
+// What the sources below the command line give a row it left unset — the
+// environment, then config, then the row's default — with that source and a
+// name for messages; NULL when none does.
+const char *source_value(const row &rw, const sources &from, value_source &src,
+			 std::string &what)
+{
+	if ( from.environment && rw.env )
+	{
+		const char *v = from.environment(rw.env);
+		if ( v && *v )
+		{
+			src = value_source::environment;
+			what = quoted(rw.env);
+			return v;
+		}
+	}
+	if ( from.config && rw.config_key )
+	{
+		std::map<madc::dis::istring, std::string>::const_iterator it =
+			from.config->find(madc::dis::istring(rw.config_key));
+		if ( it != from.config->end() )
+		{
+			src = value_source::config;
+			what = quoted(rw.config_key);
+			return it->second.c_str();
+		}
+	}
+	if ( !from.skip_defaults && rw.default_value )
+	{
+		src = value_source::default_value;
+		what = "the default of " + quoted(rw.spellings[0].text ? rw.spellings[0].text : rw.name);
+		return rw.default_value;
+	}
+	return NULL;
+}
+
+// Every row the command line left unset takes its value from the sources;
+// a flag's value from them is a yes or a no.
+bool apply_sources(const table &t, const sources &from, result &r)
+{
+	for ( size_t k = 0; k < t.nrows; k++ )
+	{
+		const row &rw = t.rows[k];
+		if ( (rw.flags & rf_doc) || r.last(rw.id) )
+			continue;
+		occurrence o;
+		o.id = rw.id;
+		o.spelled = NULL;
+		o.negated = false;
+		std::string what;
+		const char *v = source_value(rw, from, o.source, what);
+		if ( !v )
+			continue;
+		o.value = v;
+		if ( takes_value(rw) )
+		{
+			if ( !check_value(rw, o, what, r) )
+				return false;
+			r.options.push_back(o);
+			continue;
+		}
+		bool on;
+		if ( !parse_boolean(o.value, on) )
+			return fail(r, error_kind::bad_value, "invalid value " + quoted(o.value)
+				    + " for " + what + ": expected yes or no");
+		o.value.clear();
+		o.negated = !on;
+		if ( on || (rw.flags & rf_negatable) )
+			r.options.push_back(o);
+	}
+	return true;
+}
+
 occurrence command_line_occurrence(const row &rw, const spelling &sp,
 				   const std::string &word, bool negated)
 {
@@ -659,10 +740,10 @@ const row *find_row(const table &t, int id)
 	return NULL;
 }
 
-result parse(const table &t, const std::vector<std::string> &args)
+result parse(const table &t, const std::vector<std::string> &args, const sources &from)
 {
 	result r;
-	if ( reader(t, args, r).run() && check_groups(t, r) )
+	if ( reader(t, args, r).run() && apply_sources(t, from, r) && check_groups(t, r) )
 		check_required(t, r);
 	return r;
 }
