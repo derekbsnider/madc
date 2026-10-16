@@ -211,11 +211,15 @@ dialect code.
 5. `python::argparse`.
 6. Member annotations + the typed `madc::cli` face.
 
-## 9. Open questions
+## 9. Settled (2026-10-16)
 
-- Completion scripts and man pages: ship in slice 2, or later?
-- Which madc options gain `env` / `madc.ini` keys beyond the ones
-  `madc.ini` already carries?
-- Does madc's CLI adopt subcommands (`madc run`, `madc build`) or stay
-  gcc-shaped? The engine supports both; gcc compatibility argues for
-  keeping the gcc shape at the top level.
+- **madc stays gcc-shaped (owner).** No subcommands at the top level: `CC=madc`
+  keeps working unchanged. A command-like mode madc ever needs is a new
+  OPTION (as `-i`, `--lsp`, `--project` already are), not a subcommand. The
+  engine's subcommand tables serve dialect programs, not madc's own CLI.
+- Completion scripts (bash, zsh, fish, PowerShell) ship with slice 2: they
+  are generated from the table, so they cost little once it exists. Man
+  pages come later.
+- `env` / `config_key` rows: at first only the options `madc.ini` and the
+  existing `MADC_*` environment variables already carry; more are added one
+  by one, each with its test.
