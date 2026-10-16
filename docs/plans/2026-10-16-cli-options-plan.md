@@ -4613,4 +4613,20 @@ b13284687.
 
 - KG Gap `shebang_standard_keeps_dialect_predefined_macros` (SILENT): a script
   whose shebang says `--std=c17` compiles as C17 but sees `__cplusplus` 201703
-  and no `__STDC_VERSION__`. Fixed next, in its own commit.
+  and no `__STDC_VERSION__`. Fixed in 6a21775f5 (`tests/testshebang_std_macros`).
+- The arc's compile-time growth: 71f64745f copied a paint set per macro
+  argument; ead3e9752 recovers part of it (c_headers 257.19M → 254.64M on
+  madc-release); the rest is being profiled.
+
+### The command line, old against new
+
+`scripts/cli_differential.sh` over `scripts/cli_differential.corpus` (160
+command lines — every row's spellings and value forms, options before, after
+and around sources, `@file`s, `--`, stdin, misspellings), 6ae4b007c (the
+ladder) against b13284687: 120 identical, 40 differ. Every difference is
+intended: a new row or value form (completions, `--help=json`, gcc's `-std=`,
+`-W`, `@file`, `--`); gcc's errors where the ladder said "Failed to open file"
+or ran on (missing argument, invalid value, unrecognized option with its
+did-you-mean); the help's one width rule; an option after the source read as
+an option; the `--lsp --stdio` / `--mcp --stdio` review fix. None is a
+regression. The batch lane on ead3e9752: 2082 passed, 0 failed, 9 skipped.

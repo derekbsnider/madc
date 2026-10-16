@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### A differential harness for madc's command line, old binary against new
+
+- `scripts/cli_differential.sh OLD_BIN NEW_BIN [CORPUS] [OUTDIR]` runs every
+  line of `scripts/cli_differential.corpus` (160 madc command lines — every
+  row's spellings and value forms, options before, after and around sources,
+  `@file`s, `--`, stdin, misspellings) under two madc binaries, each in a fresh
+  scratch directory holding small programs that print their argv, and reports
+  the lines whose exit status, stdout, stderr or created files differ (binary
+  paths, install roots, hex and long decimal addresses, timings, token rates,
+  elapsed counts and frozen-symbol names normalized). It resolves both binaries
+  to absolute paths and refuses one that is not an executable (exit 2).
+- It is the proof for a change meant to keep the command line's behaviour. Run
+  on the build container, 6ae4b007c (the option ladder) against b13284687 (the
+  one reader): 120 identical, 40 differ, every difference intended — none a
+  regression.
+
 ### Macro-argument collection no longer copies a paint set per argument
 
 - `Source::current_arg_paint()` now returns a const reference (a static empty

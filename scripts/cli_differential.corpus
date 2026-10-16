@@ -1,0 +1,167 @@
+# scripts/cli_differential.sh's corpus: one command line per line, madc's own
+# argv (the binary is prepended).
+# {c} {cpp} {mad}: programs that print their argv; {o}: an output path in the
+# run's scratch directory; {inc}: an include directory; {rsp}: a response file
+# holding "-v {c} r1 r2". Lines run in a fresh scratch directory each.
+# ---- every spelling, each value form
+--capabilities
+--capabilities=json
+--completion=bash
+--completion=zsh
+--completion=fish
+--completion=powershell
+--completion=tcsh
+--config=nonexistent.ini {c}
+--dump-cir {c}
+--dump-cir-checked {c}
+--dump-forest {c}
+--dump-nodes {c}
+--dump-registered {c}
+--dump-source {c}
+--emit=c11 {c}
+--emit=mc11 {c}
+--emit=bogus {c}
+--emit {c}
+--emit-executable {o} {c}
+--emit-function main {c}
+--emit-object {o} {c}
+--emit-pch {inc}/h.h
+--finstrument-functions {c}
+--forest-bind {c}
+--forest-relayout=x {c}
+--forest-touch-log={o} {c}
+--freeze={o} {c}
+--freeze-run {c}
+--help
+--help=json
+--help=bogus
+--history-file=no {c}
+--interactive {mad}
+-i {mad}
+--lsp
+--lsp --stdio
+--lsp {mad}
+--mcp {mad}
+--mcp --stdio {mad}
+--stdio {c}
+--no-auto-load {mad}
+--no-config {c}
+--no-embedded-headers {c}
+--no-forest-bind {c}
+--no-includes {mad}
+--no-posix-compat {c}
+--no-sysroot-includes {c}
+--project {o}
+--run-frozen {c}
+--show-stats {c}
+--std=c17 {c}
+--std=c89 {c}
+--std=c++17 {cpp}
+--std=gnu11 {c}
+--std=bogus {c}
+--std= {c}
+--std {c}
+-std=c17 {c}
+-std=gnu++20 {cpp}
+-stdlib=libstdc++ {cpp}
+-stdlib=bogus {cpp}
+--verbose {c}
+-v {c}
+--version
+-V
+-?
+-h
+-D FOO {c}
+-DFOO {c}
+-DFOO=1 {c}
+-D
+-E {c}
+-E {c} -o {o}
+-dM -E {c}
+-I {inc} {c}
+-I{inc} {c}
+-I
+-L {inc} {c}
+-L{inc} {c}
+-O {c}
+-O0 {c}
+-O1 {c}
+-O2 {c}
+-O3 {c}
+-O4 {c}
+-Os {c}
+-W {c}
+-Wall {c}
+-Wextra -Wno-unused {c}
+-Werror {c}
+-Werror=format {c}
+-Wa,-x {c}
+-Wl,-rpath,/opt/x {c} -o {o}
+-Wp,-MD,x.d {c}
+-c {c}
+-c {c} -o {o}
+-dumpmachine
+-fPIC -c {c} -o {o}
+-fPIE {c}
+-fpic -c {c} -o {o}
+-fpie {c}
+-fdiagnostics-color {c}
+-fdiagnostics-color=always {c}
+-fdiagnostics-color=never {c}
+-fdiagnostics-color= {c}
+-fno-diagnostics-color {c}
+-feval-shims {c} -o {o}
+-fno-eval-shims {c} -o {o}
+-fno-builtin-printf {c}
+-g {c}
+-lm {c}
+-l
+-mconsole {c} -o {o}
+-mwindows {c} -o {o}
+-no-pie {c} -o {o}
+-pie {c} -o {o}
+-o {o} {c}
+-o
+-r {c} -o {o}
+-shared {c} -o {o}.so
+-static {c} -o {o}
+-static-libmadc {c} -o {o}
+-w {c}
+# ---- where options sit: before, after, around the source
+{c} -o {o}
+{c} -o {o} -lm
+{c} -c
+{c} -c -o {o}
+{c} --emit-object {o}
+{c} -O2
+{c} -v
+{c} --std=c17
+{mad} -o {o}
+{mad} -o out @args -- -v
+{mad} a b c
+{c} a b c
+{cpp} a b c
+-v {c} a -v --std=c17
+-- {c}
+{c} -- -v
+-v -- {c} x
+- < {c}
+-v - x y < {c}
+@{rsp}
+@{rsp} extra
+{c} @{rsp}
+@/nonexistent/rsp {c}
+@{inc} {c}
+-c {c} {c2} -o {o}
+{c} {c2} -o {o}
+-c {c} {c2}
+-o {o} -c {c}
+-fbogus {c}
+--verb {c}
+--dump-sorce {c}
+-x c {c}
+-pthread {c}
+-m64 {c}
+-MMD -MF x.d -c {c}
+--
+(no arguments)
