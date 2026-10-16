@@ -9933,6 +9933,10 @@ public:
     // side effects. parseExprStmt collects them into a TokenComma chain
     // whose compile() evaluates left for effects and returns right.
     TokenBase *parseExprStmt(TokenBase *);
+    // An EXPRESSION (C11 6.5.17): operands joined by the comma operator — an
+    // expression statement's, the middle operand of `?:`.
+    TokenBase *parse_comma_expression(TokenBase *tb, bool conditional,
+				      bool ternary_branch);
     // MT-1 contextual statement heads (see go_statement_enabled): tb is the
     // already-consumed `go` / `yield` identifier token.
     TokenBase *parse_go_statement(TokenBase *tb);

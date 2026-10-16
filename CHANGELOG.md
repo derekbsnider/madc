@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### The middle operand of `?:` is a whole comma expression
+
+`x ? (v = 7), 3 : 4` now parses: the middle operand of `?:` runs to the matching
+`:` as a whole expression, comma operators included (C11 6.5.15:
+logical-OR-expression ? expression : conditional-expression), so SQLite's
+`getVarint32` (`(*(A) < 0x80) ? ((B) = *(A)), 1 : slow(A, &B)`) is accepted.
+`parseExpression` stops at a top-level `,` by design — a call argument, a for
+clause and an initializer rely on it — and the `?:` arm read its middle operand
+with one `parseExpression` call, so the operand stopped at the comma and the
+ternary was refused with "Expecting : in ternary expression". The comma-chaining
+loop `parseExprStmt` ran over each `parseExpression` (push_back_comma + a peek
+loop building TokenComma) is lifted into `Program::parse_comma_expression`, which
+`parseExprStmt` now calls unchanged in behaviour and the ternary middle operand
+calls in conditional/ternary-branch mode. `tests/testternary_middle_comma` runs
+`?:` middle operands with embedded commas, a nested `?:`, and a call taking the
+conditional as its one argument against the gcc/clang oracle, closing KG gap
+c_ternary_middle_operand_comma_expression.
+
 ### A cast through a typedef name heads an integer constant array bound
 
 `int a[(u32)4];` for `typedef unsigned int u32;` now folds to a constant array

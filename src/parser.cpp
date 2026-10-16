@@ -45626,7 +45626,9 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		    }
 		    else
 		    {
-			ternary->true_expr = parseExpression(texpr, true, true);
+			// The middle operand is a whole EXPRESSION, commas
+			// included, up to the matching `:` (C11 6.5.15).
+			ternary->true_expr = parse_comma_expression(texpr, true, true);
 			// after conditional parseExpression, expect : next
 			colon = nextToken();
 		    }
@@ -80177,19 +80179,19 @@ static madc::dis::istring token_before_phrase(TokenBase *t)
     }
 }
 
-TokenBase *Program::parseExprStmt(TokenBase *tb)
+// An EXPRESSION in the grammar's sense (C11 6.5.17, [expr.comma]): its
+// operands joined by the comma operator, left to right. parseExpression stops
+// at a top-level `,` (a call argument, a for clause and an initializer rely on
+// it), so a context whose operand is a whole expression reads it here: an
+// expression statement (`++p, ++i;`), and the middle operand of `?:`, which
+// runs to the matching `:` (C11 6.5.15; SQLite's getVarint32 is
+// `c ? (B = x), 1 : f()`). push_back_comma=true keeps each `,` in the stream
+// so the chain shows by peeking — without it parseExpression consumes the `,`
+// itself and the chain looks like a single expression.
+TokenBase *Program::parse_comma_expression(TokenBase *tb, bool conditional,
+					   bool ternary_branch)
 {
-    // A closer that opens nothing cannot start a statement ([stmt.expr]: an
-    // expression-statement begins an expression). The engine reads a head
-    // `)` as the end of an empty operand list and consumes it, so `);` was an
-    // empty statement (gcc: "expected statement before ')' token").
-    if ( tb && (tb->id() == TokenID::tkClBrk || tb->id() == TokenID::tkClSqr) )
-	Throw(tb) << "expected statement before " << token_before_phrase(tb) << flush;
-    // push_back_comma=true so we can detect the chain by peeking after
-    // each parseExpression — without it, parseExpression consumes the
-    // `,` itself and the chain looks like a single expression.
-    TokenBase *expr = parseExpression(tb, /*conditional=*/false,
-                                      /*ternary_branch=*/false,
+    TokenBase *expr = parseExpression(tb, conditional, ternary_branch,
                                       /*stop_on_closing_paren=*/false,
                                       /*initial_brackets=*/0,
                                       /*push_back_comma=*/true);
@@ -80199,8 +80201,8 @@ TokenBase *Program::parseExprStmt(TokenBase *tb)
 	TokenBase *next_tb = nextToken();
 	if ( !next_tb )
 	    break;
-	TokenBase *right = parseExpression(next_tb, false, false, false, 0,
-	                                   /*push_back_comma=*/true);
+	TokenBase *right = parseExpression(next_tb, conditional, ternary_branch,
+	                                   false, 0, /*push_back_comma=*/true);
 	if ( !right )
 	    break;
 	TokenComma *seq = new TokenComma();
@@ -80211,6 +80213,19 @@ TokenBase *Program::parseExprStmt(TokenBase *tb)
 	seq->column = expr->column;
 	expr = seq;
     }
+    return expr;
+}
+
+TokenBase *Program::parseExprStmt(TokenBase *tb)
+{
+    // A closer that opens nothing cannot start a statement ([stmt.expr]: an
+    // expression-statement begins an expression). The engine reads a head
+    // `)` as the end of an empty operand list and consumes it, so `);` was an
+    // empty statement (gcc: "expected statement before ')' token").
+    if ( tb && (tb->id() == TokenID::tkClBrk || tb->id() == TokenID::tkClSqr) )
+	Throw(tb) << "expected statement before " << token_before_phrase(tb) << flush;
+    TokenBase *expr = parse_comma_expression(tb, /*conditional=*/false,
+					     /*ternary_branch=*/false);
     // MT-5 `await` statement shapes (slice 1): `v = await ch;` folds the
     // assignment into the TokenAWAIT (the receive writes the target
     // in-place through THE one recv implementation — no value copy), and a
