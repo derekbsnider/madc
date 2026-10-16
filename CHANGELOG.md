@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### A macro argument's paint is tracked per stretch, not as one union
+
+madc now paints a macro argument's collected text region by region instead of
+as a single union. One argument can be read across differently painted text: a
+replacement passes an inner macro an argument made of an outer ARGUMENT (already
+macro-replaced, C11 6.10.3.1p1, painted with the names it expanded) beside the
+replacement's own body text (unpainted). A name the outer argument expanded is
+hidden only for the tokens that came from it (6.10.3.4p2); the body's own
+spelling of the same name still expands. The per-argument paint union hid the
+body's spelling whenever the painted region beside it had expanded the same
+name, so madc reported `use of undeclared identifier 'NC_A'` on the reducer —
+SQLite under `SQLITE_DEBUG`, where `sqlite3ResolveNotValid`'s assert mixes an
+expanded `NC_IdxExpr|NC_GenCol` with the body's own `NC_IdxExpr`. Source now
+records a per-stretch paint (`PaintSeg`) as the argument is collected — each
+change of the serving pushback frame opens a new stretch — and an argument read
+across more than one stretch is pre-expanded stretch by stretch, each under its
+own paint, through `Source::pushback_painted_text`; a single-stretch argument
+keeps the plain path. On `tests/testpp_arg_paint_stretch` (`--std=c17`) gcc 13
+and clang 18 `-O0` print `hits=1 v=10`; madc now prints the same.
+
 ### madc accepts gcc's warning selection and refuses `-Werror`
 
 madc now accepts gcc's warning-selection options — `-Wall`, `-Wextra`,

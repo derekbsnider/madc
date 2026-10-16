@@ -2327,6 +2327,7 @@ protected:
 				  // (macro expansion, __FILE__/__LINE__) — its
 				  // chars advance NO column and taint tokens
 				  // with tfSYNTHPOS (fantasy-coordinate guard)
+	size_t id = 0;		  // this Source's frame number (serving_frame())
     };
     // Flat in-memory source buffer + read cursor. The entire input (file or
     // string) is slurped ONCE into _buf; get()/peek()/good()/eof() are then
@@ -2358,6 +2359,8 @@ protected:
     // to ctx->ctx->tab.
     std::set<madc::dis::istring> _served_arg_paint;
     size_t _synth_gets = 0;		// chars served from synthesized frames
+    size_t _frame_ids = 0;		// the last frame number handed out
+    size_t _serving_frame = 0;		// the frame that served the last get()
     int _lf, _cr, _column;
     int _last_token_line = 0;		// see last_token_line()
     madc::dis::istring _fname;
@@ -2368,6 +2371,7 @@ protected:
 	if ( !len )
 	    return;
 	PushbackFrame frame;
+	frame.id = ++_frame_ids;
 	frame.remaining = len;
 	frame.disabled_macro = disabled_macro;
 	if ( arg_disabled )
@@ -2398,6 +2402,38 @@ public:
 	size_t len;
 	madc::dis::istring param;
     };
+    // A stretch of a macro ARGUMENT's collected text, from `off` to the
+    // next stretch, and the paint of the region that served it. One
+    // argument can be read across regions painted differently: SQLite's
+    // `sqlite3ResolveNotValid(P,N,M,X,E,R)` passes `((X)&~(NC_IsCheck|...
+    // |NC_IdxExpr|NC_GenCol))==0` to assert, so assert's argument is X's
+    // already-expanded text (painted with what X expanded, NC_IdxExpr
+    // among it) and the body's own NC_IdxExpr (unpainted, still to expand).
+    struct PaintSeg
+    {
+	size_t off;
+	std::set<madc::dis::istring> paint;
+    };
+    // The frame that served the last get() (0: the buffer, or no frame).
+    // Read right after a get() to see where a character came from.
+    size_t serving_frame() const { return _serving_frame; }
+    // Serve `s` from the pushback, each PaintSeg stretch as a frame carrying
+    // that stretch's paint (the text before the first stretch joins it) —
+    // a macro argument pre-expanded with the paint of each region it was
+    // read from, never one union over the whole argument.
+    void pushback_painted_text(const std::string &s, const std::vector<PaintSeg> &segs)
+    {
+	push_front_text(s);
+	// add_pushback_frame_len pushes to the FRONT: the last stretch first.
+	for ( size_t i = segs.size(); i-- > 0; )
+	{
+	    size_t from = i == 0 ? 0 : segs[i].off;
+	    size_t to = i + 1 < segs.size() ? segs[i + 1].off : s.size();
+	    if ( to > from )
+		add_pushback_frame_len(to - from, "", true, true,
+				       segs[i].paint.empty() ? NULL : &segs[i].paint);
+	}
+    }
     // gcc's multiple-include optimization, decided DURING the file's one lex
     // (libcpp push_conditional / do_endif / _cpp_pop_file_buffer): the file
     // is guarded by `guard` when its first significant line opens
@@ -2643,6 +2679,7 @@ public:
     void note_token_line(int line) { _last_token_line = line; }
     int get()
     {
+	_serving_frame = 0;
 	if ( !_pushback.empty() )
 	{
 	    // Delayed-pop blue paint. A macro-expansion frame whose text was fully
@@ -2659,6 +2696,7 @@ public:
 	    bool synthesized = false;
 	    if ( !_pushback_frames.empty() )
 	    {
+		_serving_frame = _pushback_frames.front().id;
 		recount = _pushback_frames.front().recount;
 		synthesized = _pushback_frames.front().synthesized;
 		// Empty in the overwhelming majority of frames, so this costs a
