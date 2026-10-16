@@ -558,6 +558,15 @@ C++ features make madc useful as a general-purpose scripting language
 beyond the SMAUG port. The rendering abstraction (Track 7) would let
 SMAUG target terminal, web, and GUI from the same game code.
 
+## The SQLite Goal
+
+PLANNED (owner 2026-10-16): madc compiles SQLite — the amalgamation
+(`sqlite3.c`) and its shell — JIT and AOT, and passes SQLite's own test
+suite (the Tcl `testfixture` suite). A second realistic C codebase beside
+SMAUG, and a widely used one. KG Milestone
+`sqlite_compiles_and_passes_its_tests`; in the 0.106.0 arc (section E of
+[the dialect-faces arc plan](2026-10-15-dialect-faces-arc.md)).
+
 ## Plan Index
 
 | Plan | File |

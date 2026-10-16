@@ -74,6 +74,30 @@ whose behaviour already differs, then the pure duplicates.
 |---|---|---|---|
 | 18 | the REPL's classes (`madc -i` and madcide's pane) | lexical only — `theme_paint` / `theme_marks` lex each text alone (`lex_classes`, the 1B.9 design), so in `std::string world("World")` only the literal is coloured | the session's parse classes (namespace, typename, variable, function — what `madc::parse_spans` gives the editor): the session parsed the entry with its includes; the painter takes those classes, so the CLI, the pane and the editor agree |
 
+### E. SQLite compiles and passes its tests (owner 2026-10-16: "added to the v0.106.0 arc")
+
+KG Milestone `sqlite_compiles_and_passes_its_tests`; ROADMAP "The SQLite Goal".
+Source: SQLite 3.54.0 on the build container (`/workspace/sqlite/3.54.0`, the
+amalgamation in `/workspace/sqlite/build-3.54.0`); Tcl 8.6 + headers installed
+there for the test suite. The first compile (`madc -c sqlite3.c`) refuses with
+ten errors from the four gaps below, each a KG Gap that BLOCKS the milestone.
+A parse error stops the compile, so more surface as each lands.
+
+| # | Gap (KG) | Reducer (`tmp/sqlite_dims/`) | Oracle (gcc = clang) |
+|---|---|---|---|
+| S1 | `c_array_dim_typedef_cast_not_folded` — `int a[(u32)4];` refused (`(unsigned)4` folds); SQLite's `BITVEC_NPTR` | `r1_castdim.c` | `4 4 8 3 72 8` |
+| S2 | `c_ternary_middle_operand_comma_expression` — `x ? (v = 7), 3 : 4` (C11 6.5.15); `getVarint32` / `putVarint32` | `r2_ternary_comma.c` | `3 1 5 2 1200` |
+| S3 | `c_if_condition_fnptr_then_paren_read_as_call` — `if( fp ) (void)f(p);` read as the call `(fp)(void)` | `r3_void_stmt.c` | `called=9` |
+| S4 | `cli_fpic_and_flags_after_source` — `-fPIC` read as a file; options after the source refused | `pic.c` | `madc -c` objects are already position-independent (`gcc -shared` links one, no TEXTREL): `-fPIC` / `-fpic` / `-fPIE` / `-fpie` are accepted no-ops |
+
+Then: the amalgamation compiles (`-c`, then the shell linked), runs, and the
+Tcl suite builds `testfixture` with madc as `CC` and runs. S1-S3 are parser
+changes: each its own commit with its reducer promoted to `tests/` (gcc and
+clang outputs), Tier 1 + Tier 2, never folded together.
+
+Place in the arc: after section A and the three dialect silent wrong answers,
+before sections B-D — a focused parser stretch beside the two C++ compile gaps.
+
 ## How each row lands (one shape)
 
 1. madc: the face — a declaration in `<ns_madc>` / `<ns_madc_host>` /
