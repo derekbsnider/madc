@@ -27,3 +27,5 @@ include/madc_type_spelling.h	0
 include/spelling_delim.h	27
 src/cli_options.cpp	127
 include/libmadc/cli_options.h	14
+src/madc_cli.cpp	2
+include/madc_cli.h	0
