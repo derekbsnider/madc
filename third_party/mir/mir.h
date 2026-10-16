@@ -595,7 +595,12 @@ extern MIR_item_t MIR_new_forward (MIR_context_t ctx, const char *name);
    made direct, as they are never inlined).  A strong func definition after a
    LINKONCE one is still a redefinition (MIR_set_func_redef_permission governs
    funcs).  Weak data is not replaced: references already bound keep the weak
-   object. */
+   object.
+   madc fork: an IMPORT item may be WEAK (never LINKONCE): an undefined weak
+   reference, C's `extern T x __attribute__((weak));` with no definition.
+   MIR_link binds it to the null address when nothing defines the name and
+   MIR_module_link_check does not report it; the object capture emits its
+   undefined symbol STB_WEAK while every import of the name is weak. */
 typedef enum {
   MIR_ITEM_BIND_GLOBAL = 0, /* strong definition (the default) */
   MIR_ITEM_BIND_WEAK,       /* interposable weak: STB_WEAK, never inlined */

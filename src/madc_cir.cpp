@@ -408,6 +408,8 @@ static void cir_prebind_frozen_traps(MIR_context_t ctx, MIR_module_t mod)
     for (MIR_item_t it = DLIST_HEAD(MIR_item_t, mod->items); it;
 	 it = DLIST_NEXT(MIR_item_t, it)) {
 	if (it->item_type != MIR_import_item || !it->u.import_id) continue;
+	// an undefined weak reference binds null (MIR_link), never a trap
+	if (it->binding == MIR_ITEM_BIND_WEAK) continue;
 	madc::dis::istring nm = it->u.import_id;
 	if (defined.count(nm) || !seen.insert(nm).second) continue;
 	if (cir_link_resolves(nm.c_str())) continue;
@@ -444,6 +446,7 @@ static void cir_prebind_cache_traps(MIR_context_t ctx, MIR_module_t cache_mod,
     for (MIR_item_t it = DLIST_HEAD(MIR_item_t, cache_mod->items); it;
 	 it = DLIST_NEXT(MIR_item_t, it)) {
 	if (it->item_type != MIR_import_item || !it->u.import_id) continue;
+	if (it->binding == MIR_ITEM_BIND_WEAK) continue;	// null, never a trap
 	madc::dis::istring nm = it->u.import_id;
 	if (defined.count(nm) || consumer_imports.count(nm)
 	    || !seen.insert(nm).second) continue;
@@ -2910,6 +2913,39 @@ static void cir_object_undef_names(MIR_object_t obj,
 	out.push_back(nm);
 }
 
+// The references a link must resolve: the imports less the undefined weak
+// references, which ld lets stay undefined (address 0). A name is weak only
+// while every reference to it is. From source: the context's import items.
+static void cir_ctx_strong_references(MIR_context_t ctx,
+				      const std::vector<madc::dis::istring> &imports,
+				      std::vector<madc::dis::istring> &out)
+{
+    std::set<madc::dis::istring> strong;
+    for (MIR_module_t m = DLIST_HEAD(MIR_module_t, *MIR_get_module_list(ctx));
+	 m; m = DLIST_NEXT(MIR_module_t, m))
+	for (MIR_item_t it = DLIST_HEAD(MIR_item_t, m->items); it;
+	     it = DLIST_NEXT(MIR_item_t, it))
+	    if (it->item_type == MIR_import_item && it->u.import_id
+		&& it->binding != MIR_ITEM_BIND_WEAK)
+		strong.insert(it->u.import_id);
+    out.clear();
+    for (const madc::dis::istring &imp : imports)
+	if (strong.count(imp))
+	    out.push_back(imp);
+}
+
+// The .o link lane's: the merged builder's undefined symbols less its weak
+// ones (the reader keeps a symbol weak only while every input's is).
+static void cir_object_strong_references(MIR_object_t obj,
+					 std::vector<madc::dis::istring> &out)
+{
+    out.clear();
+    const char *nm;
+    for (size_t i = 0; (nm = MIR_object_undef_name(obj, i)) != NULL; i++)
+	if (!MIR_object_undef_weak_p(obj, i))
+	    out.push_back(nm);
+}
+
 // -static-libmadc verification (S5). The ledger pull already merged every
 // Tier-A piece this program selected, so anything still uncovered is Tier B —
 // the C++ script-lane runtime, which exists only as host-toolchain objects.
@@ -3189,15 +3225,16 @@ static bool cir_write_native_image(MIR_context_t ctx, const char *out_path,
     // libmadc.so.0 DT_NEEDED — it runs on hosts without madc installed.
     std::vector<std::string> other;
     bool have_madc = cir_split_needed(needed, other);
-    std::vector<madc::dis::istring> imports;
+    std::vector<madc::dis::istring> imports, strong;
     cir_ctx_unresolved_imports(ctx, imports);
-    if (!shared && cir_undefined_references(imports, other, out_path))
+    cir_ctx_strong_references(ctx, imports, strong);
+    if (!shared && cir_undefined_references(strong, other, out_path))
 	return false;
     // -static-libmadc: the ledger pull ran before the link, so the runtime is
     // IN the capture. Verify nothing madc-side is left over, then drop the
     // dependency unconditionally — that is the flag's whole promise.
     if (madc_static_libmadc
-	&& !cir_static_libmadc_verify(imports, out_path, other))
+	&& !cir_static_libmadc_verify(strong, out_path, other))
 	return false;
     bool drop_madc = have_madc
 		     && (madc_static_libmadc
@@ -3739,10 +3776,11 @@ int madc_cir_link_objects(const std::vector<std::string> &paths,
 	// ledger merge above already satisfied every piece it carries).
 	std::vector<std::string> other;
 	bool have_madc = cir_split_needed(needed, other);
-	std::vector<madc::dis::istring> imports;
+	std::vector<madc::dis::istring> imports, strong;
 	cir_object_undef_names(obj, imports);
+	cir_object_strong_references(obj, strong);
 	if (kind != mnkShared
-	    && cir_undefined_references(imports, other, out_path)) {
+	    && cir_undefined_references(strong, other, out_path)) {
 	    MIR_object_destroy(obj);
 	    return -1;
 	}
@@ -3753,7 +3791,7 @@ int madc_cir_link_objects(const std::vector<std::string> &paths,
 	// embedding host), and their value-ABI imports are Tier B — so name the
 	// compile-time flag that leaves them out.
 	if (madc_static_libmadc
-	    && !cir_static_libmadc_verify(imports, out_path, other,
+	    && !cir_static_libmadc_verify(strong, out_path, other,
 		    "madc: if these are madc_value_* accessors, the inputs carry"
 		    " the __madc_shim_* host-call adapters; recompile the"
 		    " objects with -fno-eval-shims for a standalone static"

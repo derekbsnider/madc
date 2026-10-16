@@ -11571,8 +11571,10 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	// __attribute__((weak)). An extern reference is not a definition.
 	// __attribute__((weak)) is the declared form of the binding and wins
 	// (c2mir binds the item WEAK; a strong definition in another TU
-	// replaces it), as for a function.
-	if ((v->flags & vfWEAK) && !is_extern && !(v->flags & vfSTATIC))
+	// replaces it), as for a function. On an extern declaration it is an
+	// undefined weak reference: c2mir binds the import WEAK, a null
+	// address when nothing defines the object (gcc/ld).
+	if ((v->flags & vfWEAK) && !(v->flags & vfSTATIC))
 		append(tl, node2(N_ATTR, id("weak"), list()));
 	else if ((v->flags & vfLINKONCE) && !is_extern
 	    && !(v->flags & vfSTATIC))
@@ -36825,6 +36827,11 @@ node_t CirBuilder::translate_module(Program *prog)
 		// func_proto) fills with the declarator below.
 		node_t ext_list = list();
 		append(ext_list, simple(N_EXTERN));
+		// __attribute__((weak)) on a declaration of a function nothing here
+		// defines: an undefined weak reference — c2mir binds the import
+		// WEAK, a null address when no library defines it (gcc/ld).
+		if (fd->weak_binding)
+			append(ext_list, node2(N_ATTR, id("weak"), list()));
 		node_t share = node1(N_SHARE, ext_list);
 
 		// Parameters

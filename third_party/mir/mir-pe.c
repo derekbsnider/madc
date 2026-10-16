@@ -1004,6 +1004,7 @@ typedef struct {
   uint64_t off;       /* slot offset within that section body */
   const char *name;   /* the imported symbol */
   const char *dll;    /* its provider (attributed) */
+  int weak_p;         /* a weak reference: no provider leaves the slot 0 */
   uint32_t hint_rva;  /* filled while building .rdata */
   uint32_t ilt_rva;
   uint32_t name_rva;  /* the DLL-name string's RVA */
@@ -1293,6 +1294,7 @@ static int pe_emit_executable (MIR_object_t obj, const MIR_object_exec_params *p
       imports[n_imports].sec = r->sec;
       imports[n_imports].off = r->offset;
       imports[n_imports].name = s->name;
+      imports[n_imports].weak_p = s->weak_p;
       n_imports++;
     }
   }
@@ -1311,15 +1313,23 @@ static int pe_emit_executable (MIR_object_t obj, const MIR_object_exec_params *p
       n_imports++;
     }
   }
-  /* attribute the rest (first provider in params->needed wins) */
-  for (size_t i = 0; i < n_imports; i++) {
-    if (imports[i].dll != NULL) continue;
-    imports[i].dll = pex_attribute (imports[i].name, params->needed, params->n_needed);
-    if (imports[i].dll == NULL) {
-      fprintf (stderr, "madc: PE emit: import '%s' is provided by none of the %zu link DLLs\n",
-               imports[i].name, params->n_needed);
-      goto done;
+  /* attribute the rest (first provider in params->needed wins).  A weak
+     reference no DLL provides is no import at all: its slot keeps the 0 the
+     file holds (ld's undefined weak), so it leaves the table. */
+  {
+    size_t kept = 0;
+    for (size_t i = 0; i < n_imports; i++) {
+      if (imports[i].dll == NULL)
+        imports[i].dll = pex_attribute (imports[i].name, params->needed, params->n_needed);
+      if (imports[i].dll == NULL && imports[i].weak_p) continue;
+      if (imports[i].dll == NULL) {
+        fprintf (stderr, "madc: PE emit: import '%s' is provided by none of the %zu link DLLs\n",
+                 imports[i].name, params->n_needed);
+        goto done;
+      }
+      imports[kept++] = imports[i];
     }
+    n_imports = kept;
   }
 
   /* ---- .rdata: hint/name entries (deduped by symbol name), DLL-name

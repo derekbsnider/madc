@@ -1291,8 +1291,14 @@ void MIR_item_set_binding (MIR_context_t ctx, MIR_item_t item, MIR_item_binding_
       && binding != MIR_ITEM_BIND_LINKONCE)
     MIR_get_error_func (ctx) (MIR_wrong_param_value_error,
                               "MIR_item_set_binding: unknown binding kind");
-  if (item->item_type != MIR_func_item && item->item_type != MIR_data_item
-      && item->item_type != MIR_ref_data_item && item->item_type != MIR_bss_item)
+  /* madc fork: an import may be WEAK -- an undefined weak reference, whose
+     address is null when no definition is linked (gcc/ld) */
+  if (item->item_type == MIR_import_item) {
+    if (binding == MIR_ITEM_BIND_LINKONCE)
+      MIR_get_error_func (ctx) (MIR_wrong_param_value_error,
+                                "MIR_item_set_binding: an import cannot be linkonce");
+  } else if (item->item_type != MIR_func_item && item->item_type != MIR_data_item
+             && item->item_type != MIR_ref_data_item && item->item_type != MIR_bss_item)
     MIR_get_error_func (ctx) (MIR_wrong_param_value_error,
                               "MIR_item_set_binding: item is not a bindable definition");
   item->binding = (char) binding;
@@ -2505,7 +2511,8 @@ size_t MIR_module_link_check (MIR_context_t ctx, MIR_module_t m,
   for (MIR_item_t item = DLIST_HEAD (MIR_item_t, m->items); item != NULL;
        item = DLIST_NEXT (MIR_item_t, item)) {
     if (item->item_type == MIR_import_item) {
-      if (import_binding (ctx, item->u.import_id, import_resolver, &addr) != NULL || addr != NULL)
+      if (import_binding (ctx, item->u.import_id, import_resolver, &addr) != NULL || addr != NULL
+          || item->binding == MIR_ITEM_BIND_WEAK) /* a weak reference may stay undefined */
         continue;
       error_type = MIR_undeclared_op_ref_error;
       name = item->u.import_id;
@@ -2562,12 +2569,26 @@ void MIR_link (MIR_context_t ctx, void (*set_interface) (MIR_context_t ctx, MIR_
         if (simplify_func (ctx, item, TRUE)) VARR_PUSH (MIR_item_t, link_inline_funcs, item);
       } else if (item->item_type == MIR_import_item) {
         if ((tab_item = import_binding (ctx, item->u.import_id, import_resolver, &addr)) == NULL) {
+          if (addr == NULL && item->binding == MIR_ITEM_BIND_WEAK) {
+            /* madc fork: an undefined weak reference -- no definition, so its
+               address is null (gcc/ld).  Nothing joins the environment: a
+               strong import of the name stays undefined. */
+            item->addr = NULL;
+            item->ref_def = NULL;
+            continue;
+          }
           if (addr == NULL)
             MIR_get_error_func (ctx) (MIR_undeclared_op_ref_error, "import of undefined item %s",
                                       item->u.import_id);
           MIR_load_external (ctx, item->u.import_id, addr);
           tab_item = item_tab_find (ctx, item->u.import_id, &environment_module);
           mir_assert (tab_item != NULL);
+          /* madc fork: an external is a weak reference while every import
+             reaching it is weak (ld: one strong reference makes it strong);
+             the object capture reads it */
+          tab_item->binding = item->binding;
+        } else if (tab_item->ref_def == NULL && item->binding != MIR_ITEM_BIND_WEAK) {
+          tab_item->binding = MIR_ITEM_BIND_GLOBAL;
         }
         item->addr = tab_item->addr;
         item->ref_def = tab_item;

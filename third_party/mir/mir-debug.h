@@ -449,6 +449,9 @@ extern int MIR_object_read (MIR_object_t obj, const void *buf, size_t size, char
 /* Iterate the names of the builder's UNDEFINED (imported) symbols:
    idx 0, 1, ... until NULL. */
 extern const char *MIR_object_undef_name (MIR_object_t obj, size_t idx);
+/* Nonzero when the idx-th undefined symbol (MIR_object_undef_name's order) is
+   a weak reference: the link may leave it undefined, its address 0. */
+extern int MIR_object_undef_weak_p (MIR_object_t obj, size_t idx);
 
 extern MIR_object_loaded_t MIR_object_load (const void *buf, size_t size,
                                             MIR_object_resolver_t resolver, void *env,

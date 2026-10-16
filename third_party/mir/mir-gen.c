@@ -907,9 +907,12 @@ static int gen_obj_item_sym (gen_ctx_t gen_ctx, MIR_item_t item) {
   el.sym = -1;
   if (HTAB_DO (obj_item_sym_t, obj_item_sym_tab, el, HTAB_FIND, tab_el)) return tab_el.sym;
   const char *name = MIR_item_name (gen_ctx->ctx, item);
-  /* imports stay undefined and must bind globally; definitions get their
-     final binding from MIR_object_symbol_define */
-  el.sym = MIR_object_add_symbol (gen_object, name, MIR_OBJ_SEC_UNDEF, 0, 0, 0, 0, 0);
+  /* imports stay undefined, weak when only weak references reach them
+     (MIR_link keeps the external's binding); definitions get their final
+     binding from MIR_object_symbol_define */
+  el.sym = MIR_object_add_symbol (gen_object, name, MIR_OBJ_SEC_UNDEF, 0, 0, 0, 0,
+                                  item->item_type == MIR_import_item
+                                    && item->binding == MIR_ITEM_BIND_WEAK);
   HTAB_DO (obj_item_sym_t, obj_item_sym_tab, el, HTAB_INSERT, tab_el);
   return el.sym;
 }

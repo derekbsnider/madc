@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### An undefined weak reference links, its address null, as gcc does
+
+madc now links and runs a program that declares `extern T x
+__attribute__((weak))` with no definition: the undefined weak reference binds
+to the null address — a function's and an object's alike — so
+`madc_weak_absent_fn == 0`, `&madc_weak_absent_var == 0`, and a call guarded on
+the function is skipped. A weak declaration of a name a library does define
+(`strlen`) resolves to it and calls it. Previously the JIT refused the program
+(`import of undefined item madc_weak_absent_fn`) and an executable built with
+`-o` failed at load (`undefined symbol`). The ELF executable and `.o` carry the
+undefined weak symbol `STB_WEAK`, the Mach-O writer marks it `N_WEAK_REF` /
+`BIND_SYMBOL_FLAGS_WEAK_IMPORT`, and a PE import no DLL provides leaves the
+import table with its slot 0. On `tests/testc_weak_undefined_reference` gcc 13
+and clang 18 -O0 -std=c17 print `absent: fn_null=1 var_null=1 called=0` and
+`present: bound=1 len=4`, as a program and as an executable; madc now matches.
+Closes the `weak_undefined_reference_unsupported` gap.
+
 ### A C function designator not followed by `(` is its address, not a call
 
 madc now treats a bare function name not followed by `(` as the function's

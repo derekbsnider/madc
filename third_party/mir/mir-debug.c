@@ -1981,8 +1981,9 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
                                   s->func_p ? STT_FUNC : STT_OBJECT);
       es.st_shndx = objx_shndx[s->sec];
       es.st_size = s->size;
-    } else {
-      es.st_info = ELF64_ST_INFO (STB_GLOBAL, s->func_p ? STT_FUNC : STT_NOTYPE);
+    } else { /* an undefined weak reference resolves to 0 when no library has it */
+      es.st_info = ELF64_ST_INFO (s->weak_p ? STB_WEAK : STB_GLOBAL,
+                                  s->func_p ? STT_FUNC : STT_NOTYPE);
     }
     buf_bytes (&dynsym, &es, sizeof es);
     dyn_names[ndyn] = s->name;
@@ -3079,11 +3080,11 @@ MIR_object_loaded_t MIR_object_load (const void *vbuf, size_t size,
          an ABI mismatch, and mingw exports neither family from the host. */
       if (a == NULL) a = MIR_int128_helper_resolver (nm);
       if (a == NULL && resolver != NULL) a = resolver (nm, env);
-      if (a == NULL) {
+      if (a == NULL && !s->weak_p) {
         if (unresolved++ == 0) snprintf (first_unresolved, sizeof (first_unresolved), "%s", nm);
         continue;
       }
-      sval = (uint64_t) (uintptr_t) a;
+      sval = (uint64_t) (uintptr_t) a; /* an undefined weak reference: 0 */
     } else if (s->sec >= 0 && s->sec <= 4) {
       sval = (uint64_t) (uintptr_t) (map + reg_off[s->sec]) + s->value;
     } else {
@@ -3352,9 +3353,11 @@ int MIR_object_read (MIR_object_t obj, const void *vbuf, size_t size, char *err_
     }
     if (s->undef_p) {
       int ex = objx_named_lookup (obj, idx, n_idx, first_new, s->name);
+      /* a weak reference stays weak only while every input's is (ld) */
+      if (ex >= 0 && !obj->syms[ex].defined_p && !s->weak_p) obj->syms[ex].weak_p = 0;
       map[i] = ex >= 0 ? ex
                        : MIR_object_add_symbol (obj, s->name, MIR_OBJ_SEC_UNDEF, 0, 0, s->func_p,
-                                                0, 0);
+                                                0, s->weak_p);
       if (map[i] < 0) {
         OBJLOAD_ERR ("out of memory");
         goto done;
@@ -3445,15 +3448,26 @@ done:
   return rc;
 }
 
-const char *MIR_object_undef_name (MIR_object_t obj, size_t idx) {
+/* The idx-th undefined named symbol, the one order both accessors walk. */
+static objsym_t *obj_undef_sym (MIR_object_t obj, size_t idx) {
   if (obj == NULL) return NULL;
   for (size_t i = 0; i < obj->n_syms; i++) {
     objsym_t *s = &obj->syms[i];
     if (s->defined_p || s->name == NULL) continue;
-    if (idx == 0) return s->name;
+    if (idx == 0) return s;
     idx--;
   }
   return NULL;
+}
+
+const char *MIR_object_undef_name (MIR_object_t obj, size_t idx) {
+  objsym_t *s = obj_undef_sym (obj, idx);
+  return s != NULL ? s->name : NULL;
+}
+
+int MIR_object_undef_weak_p (MIR_object_t obj, size_t idx) {
+  objsym_t *s = obj_undef_sym (obj, idx);
+  return s != NULL && s->weak_p;
 }
 
 /* The GDB JIT interface (the process-global __jit_debug_descriptor and

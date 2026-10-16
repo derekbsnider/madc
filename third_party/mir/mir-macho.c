@@ -218,6 +218,7 @@ static void macho_sha256_final (macho_sha256_t *s, uint8_t out[32]) {
 #define MACHO_N_SECT 0xeu
 #define MACHO_N_EXT 0x1u
 #define MACHO_N_WEAK_DEF 0x0080u
+#define MACHO_N_WEAK_REF 0x0040u /* an undefined weak reference */
 
 #define MACHO_PLATFORM_MACOS 1u
 #define MACHO_MINOS_12_0 0x000c0000u /* 12.0.0 as xxxx.yy.zz nibbles */
@@ -234,6 +235,7 @@ static void macho_sha256_final (macho_sha256_t *s, uint8_t out[32]) {
    (imm | 0xF0 as int8): 0xE -> -2 = flat-namespace lookup. */
 #define MACHO_BIND_SPECIAL_DYLIB_FLAT_LOOKUP 0xEu
 #define MACHO_BIND_OPCODE_SET_SYMBOL_TRAILING_FLAGS_IMM 0x40u
+#define MACHO_BIND_SYMBOL_FLAGS_WEAK_IMPORT 0x1u
 #define MACHO_BIND_OPCODE_SET_TYPE_IMM 0x50u
 #define MACHO_BIND_OPCODE_SET_ADDEND_SLEB 0x60u
 #define MACHO_BIND_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB 0x70u
@@ -340,6 +342,7 @@ typedef struct {
   uint64_t off;
   const char *name; /* import name, no `_' prefix yet */
   int64_t addend;
+  int weak_p; /* a weak reference: dyld binds 0 when no image exports it */
 } macho_bind_t;
 
 static int macho_rebase_cmp (const void *a, const void *b) {
@@ -703,7 +706,7 @@ static int macho_emit_executable (MIR_object_t obj, const MIR_object_exec_params
         rebases[ri++] = (macho_rebase_t){MACHO_SLOT_SEG (r->sec), seg_rel};
       else
         binds[bi++] = (macho_bind_t){MACHO_SLOT_SEG (r->sec), seg_rel, obj->syms[r->sym].name,
-                                     r->addend};
+                                     r->addend, obj->syms[r->sym].weak_p};
     }
     qsort (rebases, n_rebase, sizeof (macho_rebase_t), macho_rebase_cmp);
     qsort (binds, n_bind, sizeof (macho_bind_t), macho_bind_cmp);
@@ -741,7 +744,8 @@ static int macho_emit_executable (MIR_object_t obj, const MIR_object_exec_params
       buf_u8 (&bind, MACHO_BIND_OPCODE_SET_DYLIB_ORDINAL_IMM | 1);
     buf_u8 (&bind, MACHO_BIND_OPCODE_SET_TYPE_IMM | MACHO_BIND_TYPE_POINTER);
     for (size_t i = 0; i < n_bind; i++) {
-      buf_u8 (&bind, MACHO_BIND_OPCODE_SET_SYMBOL_TRAILING_FLAGS_IMM | 0);
+      buf_u8 (&bind, MACHO_BIND_OPCODE_SET_SYMBOL_TRAILING_FLAGS_IMM
+                       | (binds[i].weak_p ? MACHO_BIND_SYMBOL_FLAGS_WEAK_IMPORT : 0));
       buf_u8 (&bind, '_'); /* the C-symbol underscore prefix */
       buf_str (&bind, binds[i].name);
       if (binds[i].addend != cur_addend) {
@@ -812,7 +816,8 @@ static int macho_emit_executable (MIR_object_t obj, const MIR_object_exec_params
       } else {
         buf_u8 (&symtab, MACHO_N_UNDF | MACHO_N_EXT);
         buf_u8 (&symtab, 0);                                            /* NO_SECT */
-        buf_u16 (&symtab, 1 << 8);                                      /* libSystem ordinal */
+        buf_u16 (&symtab, (uint16_t) ((1 << 8) | (s->weak_p ? MACHO_N_WEAK_REF : 0)));
+        /* ^ libSystem ordinal; N_WEAK_REF for a weak reference */
         buf_u64 (&symtab, 0);
         n_undef++;
       }
@@ -1424,7 +1429,7 @@ static int macho_emit_object (MIR_object_t obj, void **buf, size_t *size) {
       } else {
         buf_u8 (&symtab, MACHO_N_UNDF | MACHO_N_EXT);
         buf_u8 (&symtab, 0); /* NO_SECT */
-        buf_u16 (&symtab, 0);
+        buf_u16 (&symtab, sym->weak_p ? MACHO_N_WEAK_REF : 0);
         buf_u64 (&symtab, 0);
         n_undef++;
       }
@@ -1792,6 +1797,7 @@ static int objin_from_macho (objin_t *v, const void *vbuf, size_t size, char *er
     const char *nm = (const char *) strtab + strx;
     if ((n_type & MACHO_N_EXT) == 0) d->local_p = 1;
     if ((n_desc & MACHO_N_WEAK_DEF) != 0) d->weak_p = 1;
+    if ((n_type & 0xe) == MACHO_N_UNDF && (n_desc & MACHO_N_WEAK_REF) != 0) d->weak_p = 1;
     if ((n_type & 0xe) == MACHO_N_UNDF) {
       if (nm[0] != '_') {
         OBJLOAD_ERR ("undefined symbol %zu is not a `_'-prefixed C name ('%s')", i, nm);

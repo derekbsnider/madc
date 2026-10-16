@@ -17738,6 +17738,24 @@ static void set_static_item_align (c2m_ctx_t c2m_ctx, struct decl *decl) {
     MIR_item_set_align (c2m_ctx->ctx, item, align);
 }
 
+/* madc fork: an undefined reference to NAME is weak when any declaration of
+   it is (gcc): its import binds MIR_ITEM_BIND_WEAK, a null address if nothing
+   defines the name. */
+static int weak_reference_p (c2m_ctx_t c2m_ctx, decl_t decl, node_t id) {
+  symbol_t sym;
+  decl_t d;
+
+  if (decl->decl_spec.weak_p) return TRUE;
+  if (!symbol_find (c2m_ctx, S_REGULAR, id,
+                    decl->decl_spec.linkage == N_EXTERN ? top_scope : decl->scope, &sym))
+    return FALSE;
+  if (sym.def_node != NULL && (d = sym.def_node->attr) != NULL && d->decl_spec.weak_p)
+    return TRUE;
+  for (size_t i = 0; i < VARR_LENGTH (node_t, sym.defs); i++)
+    if ((d = VARR_GET (node_t, sym.defs, i)->attr) != NULL && d->decl_spec.weak_p) return TRUE;
+  return FALSE;
+}
+
 static MIR_item_t get_ref_item (c2m_ctx_t c2m_ctx, node_t def, const char *name) {
   MIR_context_t ctx = c2m_ctx->ctx;
   struct decl *decl = def->attr;
@@ -20184,6 +20202,8 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
               break;
         }
         if (decl->u.item == NULL) decl->u.item = MIR_new_import (ctx, name);
+        if (decl->u.item->item_type == MIR_import_item && weak_reference_p (c2m_ctx, decl, id))
+          MIR_item_set_binding (ctx, decl->u.item, MIR_ITEM_BIND_WEAK);
         if (decl->scope != top_scope) move_item_forward (c2m_ctx, decl->u.item);
       }
       if (declarator->code == N_DECL && decl->decl_spec.type->mode != TM_FUNC
