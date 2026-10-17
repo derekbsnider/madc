@@ -123,6 +123,60 @@ every compile), `forest_restore_side` 1,044,945, map / probe / teardown
   Strict tests or hosts that name `madc::` today are found by the gate's first
   run and moved to `--std=madc`.
 
+## R1 design (2026-10-17)
+
+Inventory, the decl index of the 13 fragments' freeze (1,367 entries, HEAD
+16b1cfea1):
+
+| kind | count |
+|---|---|
+| functions | ~800: `madc` 190, `php` 177, `ui` 131, `madc_host` 57, `perl` 52, `python` 46, `rust` 46, `ruby` 36, `ui_web` 19, `js` 18, `git` 17, `ui_ws` 5, `markdown` 2 |
+| types | ~100 |
+| enumerators (`bits/*`) | ~380 |
+| structs | 11 |
+| namespace-scope variables | 8 |
+| templates | 2 (`php::print_r`, `php::var_dump`; `std::format` / `print` / `println` are `add_format_intrinsics`' already) |
+| module interfaces the fragments import | `webview.h` 31 functions, `madcgit.h` 16, `madcmark.h` 1 |
+
+Almost every function is C-shaped: `value *`, `array *`, `const char *`,
+`int64_t`, `bool`, `double`; `ns_php` has 21 defaults.
+
+Rulings:
+- **One registration owner:** the builtin registry, extended.
+  - `populate_builtin_registry`'s `add_*_function` / `addFunction` gain what
+    the dialect needs: a namespace, parameter names, defaults (literal
+    values), a mangled or `extern "C"` emit symbol, and the template-builtin
+    kind.
+  - Plus `declare_builtin_struct` and `declare_builtin_enum` beside them.
+  - Today's hand-written entries (`puts`, `fabs`, the `__atomic_*`
+    family, …) and the hand-written `add_madc_namespace` /
+    `add_format_intrinsics` / `add_stdio_streams` move onto the same owner:
+    one way to declare a builtin.
+- **`parseFunction` is not refactored.** The generated calls go through the
+  registry's owner. Fidelity is proved by the differential, not by sharing
+  code with the parser. That keeps the core parser out of this arc (the
+  no-impromptu-parser-change rule).
+- **Types** are built from the DataDef singletons and the minting owners
+  (`getPointerType` / `getReferenceType` / `getQualifiedType`). A named struct
+  or enum is built by its own builder first; the table holds dependencies.
+- **The generator:** `madc --std=madc --emit-builtin-registry=<out.cpp>`.
+  - It parses the fragments as a strict `#include` does (text — at build
+    time only).
+  - It walks what the parse registered, keyed by the decl index the
+    freeze's tap already records.
+  - It writes one builder per name and a sorted (namespace, name) table,
+    into `obj/<mode>/dialect_registry.cpp`.
+- **Two-stage build:** stage one is madc with an empty table (the dialect
+  served as today); it generates; stage two compiles the table, and R3's
+  bodies, into libmadc. Cross builds run stage one on the host; the
+  generated code names DataDefs, not sizes.
+- **Per name:** a `--std=madc` lookup miss binary-searches the table at the
+  Part A hook sites; the builder registers the name once per Program.
+- **Fidelity gate (the RED test):** for every table entry, the builder's
+  registration equals the live parse's, field by field — mangled symbol,
+  return and parameter types by spelling, names, defaults, flags, overload
+  order.
+
 ## Tasks
 
 - **R1 — inventory and the generator for declarations.**
