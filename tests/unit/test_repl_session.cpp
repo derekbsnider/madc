@@ -2364,23 +2364,25 @@ TEST_CASE("dialect per name (A4): a compile registers what it names, what that c
     CHECK(p.funcdef_map.count("__ns_php_count"));
     CHECK(p.funcdef_map.count("__ns_php_strtoupper"));
     CHECK(p.funcdef_map.count("__ns_php_strtoupper__o2"));
-    // What their bodies call: the called overload's runtime entry only.
-    CHECK(p.funcdef_map.count("__php_explode"));
-    CHECK(p.funcdef_map.count("__php_count"));
-    CHECK(p.funcdef_map.count("__php_strtoupper_cstr"));
+    // Their bodies are the host's (R2: the publics are declarations, called
+    // mangled-direct), so no runtime entry registers behind them.
+    CHECK_FALSE(p.funcdef_map.count("__php_explode"));
+    CHECK_FALSE(p.funcdef_map.count("__php_count"));
+    CHECK_FALSE(p.funcdef_map.count("__php_strtoupper_cstr"));
     CHECK_FALSE(p.funcdef_map.count("__php_strtoupper"));
-    // <ns_madc>'s anchor: `__madc_run_child = serve_run_child()`.
-    CHECK(p.funcdef_map.count("__ns_madc_serve_run_child"));
+    // The run child is served from the entry's init (R3), not by an anchor
+    // object in <ns_madc>: serve_run_child is never named here.
+    CHECK_FALSE(p.funcdef_map.count("__ns_madc_serve_run_child"));
     // Never named, never called.
     CHECK_FALSE(p.funcdef_map.count("__ns_php_trim"));
     CHECK_FALSE(p.funcdef_map.count("__php_trim_cstr"));
     CHECK_FALSE(p.funcdef_map.count("__ns_madc_compiler_run"));
     // --show-stats's counters say the same.
     CHECK(s.dialect_units >= 2u);
-    CHECK(s.dialect_funcs == 8u);
-    CHECK(s.dialect_hits >= 7u);
+    CHECK(s.dialect_funcs == 4u);
+    CHECK(s.dialect_hits >= 3u);
     CHECK(s.dialect_names >= s.dialect_hits);
-    CHECK(s.dialect_records >= 8u);
+    CHECK(s.dialect_records >= 4u);
 }
 
 // A demand registers inside the entry that made it: an entry that fails
@@ -2456,8 +2458,8 @@ TEST_CASE("dialect per name (A5): types, enums, templates and objects register a
     CHECK_FALSE(ns_member(p, "madc", "fkMC11"));
     CHECK_FALSE(ns_member(p, "madc", "sys"));
     CHECK_FALSE(fn_template(p, "php::print_r"));
-    // The anchor: `__madc_run_child = serve_run_child()` runs before main.
-    CHECK(ns_member(p, "madc", "__madc_run_child"));
+    // No anchor object: the run child is served from the entry's init (R3).
+    CHECK_FALSE(ns_member(p, "madc", "__madc_run_child"));
     // A scoped enum, named: its enumerators' scope with it.
     REQUIRE(m.submit("madc::project_kind k = madc::project_kind::gui;"));
     CHECK(ns_type(p, "madc", "project_kind"));
