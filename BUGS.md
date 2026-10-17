@@ -28,6 +28,28 @@ and clang 18. The madc flags are `--std=c17` for `.c` files and
 
 ## Silent wrong answers
 
+### B197. Inside a namespace, `sizeof(T)` takes a sibling namespace's same-named struct
+
+```cpp
+#include <stdio.h>
+namespace A { struct host { void *a; void *b; int c[6]; }; }
+namespace B { struct host { void *x; void *y; };
+  long sz() { return sizeof(host); } long szp() { host *h = 0; return sizeof(*h); } }
+int main() { printf("%ld %ld\n", B::sz(), B::szp()); }
+```
+
+- Found 2026-10-17 during the dialect-per-name work (task A5).
+- g++ 13 and clang++ 18: `16 16`. madc (`bin/madc`, live parse, and the
+  packed release of cf05fd6f5): `40 16`, exit 0. The declaration `host *h`
+  resolves to `B::host`; the `sizeof` type-id's unqualified name takes the
+  flat `struct_map` bare key — the last-registered `host` — instead of the
+  enclosing namespace's type.
+- Shipped instance: `ui_ws::open` in `include/madc/ns_ui_ws` mallocs
+  `sizeof(host)` = 40 bytes (`ui_web::host`) for its 16-byte host — an
+  over-allocation, harmless there, wrong.
+- A core-parser fix (the type-id's name lookup): its own focused session
+  (owner 2026-09-13), first in section G of the 0.106.0 arc.
+
 ### B193. On macOS, `NDEBUG` does not disable `assert`
 
 ```c
