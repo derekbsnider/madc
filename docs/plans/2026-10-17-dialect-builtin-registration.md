@@ -819,3 +819,44 @@ modules than like C++ headers."
   lane was not run (the old EXE opened a module only at its first member
   call). The win64 and darwin arms (ui_web.dll, ui_web.dylib) are built and
   run at the seam.
+
+### M5 execution (2026-10-17)
+
+- A program records each module it imported by REFERENCE
+  (`madc_module_reference`: `@`, `g` or `-`, the name, `=`, the file its import
+  opened — absolute now: the import resolves the found path, which was relative
+  to the build's working directory under a relative `--module-path`). The
+  reference is a member call's library (`declare_builtin_function` stamps it;
+  `ImportedModule::reference()`) and the module list's entry.
+- `madc_module_open_reference` (madc_modules.cpp) is the ONE runtime opener of a
+  module, for the program's start (`madc_module_deps_open`, hence
+  `__madc_open_module_deps` and the single-object loader) and a member call's
+  slot (`__madc_dl_member`): the recorded file while it is there, else the
+  module of that name in the program's own directory, then madc's module
+  directory (Python's sys.path). Its errors are the import's: `import: no
+  module named 'x'`, `import: module 'x': <why>`. A GUI reference lifts an
+  armed memory guard first.
+- `madc_module_describe` is the ONE check that a file is the module it is
+  named for (its entry point, ABI, name): the import's and the runtime
+  opener's (lexer.cpp's copy is gone).
+- madc's module directory comes from libmadc's own image when libmadc is a
+  library of its own (POSIX: its directory; Windows: the DLL's `../lib`), else
+  the running binary's `../lib`, so a native program finds the modules of the
+  madc it loads, not modules beside itself.
+- `madc_module_deps_append(table, kind, text)`: a module entry is its
+  reference (the name/gui parameters are gone).
+- Test testmodule_moved (JIT; `.exe_skip`: it drives the lane's own madc): a
+  program built against greet in a build directory runs (the recorded file),
+  runs with the module moved beside it, exits 69 with `import: no module named
+  'greet'` when neither holds it, and a program built against a copy of
+  markdown finds madc's own once the copy is gone. RED before the change: the
+  moved program exited 69 naming the build path. test_modules: references,
+  the opener's errors, the list's module entries.
+- Ruling: the recorded file comes FIRST, the name search second — a program on
+  the machine it was built on runs against exactly the module its table was
+  generated from. Cost if wrong: a same-named module placed beside the program
+  is not preferred while the build's file still exists.
+- Validation: Tier 1 (12 JIT, 7 EXE, 7 OBJ); Tier 2's seven lanes green (gui
+  13/13/13); static gates 0 red; test_modules, test_builtin_registry,
+  test_repl_session green. Hot path: unchanged at compile time; at run time a
+  module opens once per program through one stat of its recorded file.

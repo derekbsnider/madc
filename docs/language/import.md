@@ -50,8 +50,13 @@ madc ships three: `git` (a read-only view of a repository, libgit2 inside),
 platform webview: importing it registers the host, so `ui::open(ui::WEB)`
 gets a window). An imported module opens at program start in every lane —
 the JIT, an executable and an object (its module list names it) — so its own
-initializer runs before `main`; a native program whose module will not open
-exits 69 with the import error before `main`. From the command line, `--import=<name>`
+initializer runs before `main`. A native program finds its modules where it
+RUNS: the module file it was built against while that file is there, else
+the module of that name in the program's own directory, then in the module
+directory of the madc it loads (beside libmadc) — so a program copied to
+another machine finds the modules installed there. One that will not open
+ends the program with the import error and status 69 before `main`. From
+the command line, `--import=<name>`
 imports a module ahead of the program; with no source it only tries the
 import and exits 0, or 69 with the import error — a launcher's test before
 it starts (`python -c "import git"`). The configuration file's

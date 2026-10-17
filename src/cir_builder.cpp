@@ -51,7 +51,6 @@
 #include "madc_mangle.h"
 #include "spelling_delim.h"
 #include "madc_posix_io.h"	// host_path_stem: a TU's init symbol
-#include "madc_module.h"	// mdGui: a module-list entry's guard lift
 #include "madc_modules.h"	// madc_module_deps_append: the unit's module list
 
 extern "C" {
@@ -37121,8 +37120,7 @@ node_t CirBuilder::translate_module(Program *prog)
 		for (const madc::dis::istring &l : m_prog->module_optional_libs)
 			madc_module_deps_append(table, madc_module_dep::optional, l);
 		for (const Program::ImportedModule &im : m_prog->imported_modules)
-			madc_module_deps_append(table, madc_module_dep::module, im.path, im.name,
-						im.desc && (im.desc->flags & mdGui));
+			madc_module_deps_append(table, madc_module_dep::module, im.reference().c_str());
 		node_t specs = list();
 		append(specs, simple(N_STATIC));
 		append(specs, simple(N_CONST));

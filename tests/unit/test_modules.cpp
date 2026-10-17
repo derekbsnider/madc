@@ -138,8 +138,8 @@ TEST_CASE("module list: the entry spellings")
 	std::string t;
 	madc_module_deps_append(t, madc_module_dep::link, "libm.so.6");
 	madc_module_deps_append(t, madc_module_dep::optional, "libfoo.so");
-	madc_module_deps_append(t, madc_module_dep::module, "/x/ui_web.so", "ui_web", true);
-	madc_module_deps_append(t, madc_module_dep::module, "/x/git.so", "git", false);
+	madc_module_deps_append(t, madc_module_dep::module, madc_module_reference("ui_web", "/x/ui_web.so", true));
+	madc_module_deps_append(t, madc_module_dep::module, madc_module_reference("git", "/x/git.so", false));
 	CHECK(t == std::string("libm.so.6\0?libfoo.so\0@gui_web=/x/ui_web.so\0@-git=/x/git.so\0", 59));
 }
 
@@ -158,8 +158,22 @@ TEST_CASE("module list: open")
 	CHECK_FALSE(madc_module_deps_open(r.c_str(), r.c_str() + r.size(), err));
 	CHECK(err.find("import: cannot load 'libmadc-no-such-module-xyz.so'") == 0);
 	std::string m;
-	madc_module_deps_append(m, madc_module_dep::module, "/no/such/dir/nosuch.so", "nosuch");
+	madc_module_deps_append(m, madc_module_dep::module,
+				madc_module_reference("nosuch", "/no/such/dir/nosuch.so", false));
 	m.push_back('\0');	// the emitted table's closing NUL: NULL bounds it
 	CHECK_FALSE(madc_module_deps_open(m.c_str(), NULL, err));
-	CHECK(err.find("import: module 'nosuch': ") == 0);
+	CHECK(err == "import: no module named 'nosuch'");
+}
+
+// A reference opens the file it records while that file is there; a file that
+// is no madc module is refused with the reason (the import's own check).
+TEST_CASE("module reference: the recorded file, described")
+{
+	std::string err;
+	CHECK(madc_module_reference("git", "/x/git.so", false) == "@-git=/x/git.so");
+	CHECK(madc_module_reference("ui_web", "/x/ui_web.so", true) == "@gui_web=/x/ui_web.so");
+	CHECK(!madc_module_open_reference("git", err));
+	CHECK(err.find("is not a module reference") != std::string::npos);
+	CHECK(!madc_module_open_reference("@-nosuch=", err));
+	CHECK(err == "import: no module named 'nosuch'");
 }

@@ -66,8 +66,10 @@ std::string madc_module_library_spelling(const std::string &name);	// for madc_t
 // A madc MODULE (madc_module.h) — found by NAME, apart from the system's
 // libraries: its file is the name and the target's suffix, no lib prefix
 // (markdown.so / markdown.dylib / markdown.dll). madc's own module directory
-// is <the running binary's lib>/madc/modules ("" when madc cannot place its
-// lib directory). madc_module_find_file: the first of `dirs`, then madc's own
+// is <madc's lib directory>/madc/modules — the directory holding libmadc's
+// image when libmadc is a library of its own (so a native program finds the
+// modules of the madc it loads), else <the running binary's dir>/../lib; ""
+// when madc cannot place it. madc_module_find_file: the first of `dirs`, then madc's own
 // directory, that holds the module's file — its path, or "" (no module of
 // that name: the import's "no module named").
 std::string madc_module_file_spelling(const std::string &module);
@@ -81,20 +83,38 @@ std::string madc_module_find_file(const std::string &module, const std::vector<s
 // target has <sysexits.h>).
 const int madc_import_unavailable_status = 69;
 
+// A madc MODULE's REFERENCE — what a program records of a module it imported
+// (its module list's entry, a member call's library): '@', 'g' (a GUI module)
+// or '-', the module's name, '=', the file its import opened (absolute).
+std::string madc_module_reference(const std::string &name, const std::string &file,
+				  bool gui);
+// Open a module by its reference where the program RUNS: the file it was built
+// against while that file is there, else the module of that name in the
+// program's own directory, then madc's module directory (Python's sys.path) —
+// its description checked (madc_module_describe). A GUI module lifts an armed
+// memory guard before it opens. NULL + `error` (the import's error) when none
+// opens.
+void *madc_module_open_reference(const std::string &reference, std::string &error);
+// The description `handle` (the file `path`) exports as the module `name`: its
+// entry point found, its ABI this madc's, its name `name`. The import's check
+// and a program's at start. NULL + `error` (the reason).
+struct MadcModuleDescription;
+const MadcModuleDescription *madc_module_describe(void *handle, const std::string &name,
+						  const std::string &path, std::string &error);
+
 // The module list a unit carries (__madc_module_deps — the CIR builder writes
 // it; the single-object loader opens an object's before load, and a program's
 // own init opens its own before its other initializers): entries
 // NUL-separated, the list double-NUL-terminated.
 //   link      a link-form library's TARGET spelling, required (its DT_NEEDED twin)
 //   optional  a library a LAZY module row named: opened when it can be
-//   module    a madc MODULE (madc_module.h) by name and the file its import
-//             opened, required: opened at program start, so its initializer
-//             runs before main (a host registers); a GUI module lifts an
-//             armed memory guard before it opens
+//   module    a madc MODULE's reference, required: opened at program start
+//             (madc_module_open_reference), so its initializer runs before
+//             main (a host registers)
 enum class madc_module_dep : unsigned char { link, optional, module };
+// One entry: `text` is a library's spelling, or a module's reference.
 void madc_module_deps_append(std::string &table, madc_module_dep kind,
-			     const std::string &spelling, const std::string &name = std::string(),
-			     bool gui = false);
+			     const std::string &text);
 // Open every entry of a module list, in order; `end` bounds it (NULL: its
 // double NUL does). False + `error` (the import error's text) at the first
 // required entry that cannot open.

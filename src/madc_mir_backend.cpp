@@ -58,7 +58,8 @@ void *__madc_get_stderr(void) { return (void *)stderr; }
 //   ((long (*)()) (slot ? slot : (slot = __madc_dl_member(LIB, MEMBER))))(args)
 // — the same lowering in every lane (JIT, exe, obj, --emit=c11), replacing
 // the JIT-only __dl_<ns>_<member> import thunks. LIB is the TARGET
-// spelling the module map chose at compile time. Never returns NULL: a
+// spelling the module map chose at compile time, or a madc module's reference
+// (madc_module_reference). Never returns NULL: a
 // library or member that cannot be resolved raises a script exception.
 //
 // THREAD-SAFETY CONTRACT: the handle cache is guarded by its own mutex;
@@ -77,10 +78,14 @@ void *__madc_dl_member(const char *lib, const char *member)
 			h = it->second;
 	}
 	if (!h) {
+		// A madc module's member names its module by reference (found
+		// where the program runs); a library's, by its target spelling.
 		std::string err;
-		h = madc_module_open(lib, err);
+		bool module = lib[0] == '@';
+		h = module ? madc_module_open_reference(lib, err) : madc_module_open(lib, err);
 		if (!h) {
-			std::string msg = std::string("import: cannot load '") + lib + "': " + err;
+			std::string msg = module ? err
+				: std::string("import: cannot load '") + lib + "': " + err;
 			__madc_throw_cstr(msg.c_str());
 		}
 		std::lock_guard<std::mutex> g(cache_lock);

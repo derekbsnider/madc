@@ -1,0 +1,58 @@
+// A native program finds its modules BY NAME where it runs (plan 2026-10-17,
+// D5, M5): built against tests/modules/greet from a build directory, the
+// executable opens the module it was built against while that file is there;
+// moved away from it (another machine), it finds `greet` beside itself, the
+// program's own directory (Python's sys.path[0]); with no module of that name
+// anywhere it ends before main with the import's error and status 69. A
+// module madc ships (markdown) is found in madc's own module directory — the
+// one beside the libmadc the program loads, not beside the program. Oracle:
+// the C++ analogue (a g++ 13 / clang++ 18 program linked against libgreet.so
+// with an $ORIGIN runpath) runs from the build directory and beside its
+// library, and exits 127 with the loader's error when neither holds it — madc
+// states the import's own error and status instead.
+int main()
+{
+	var dir = "tmp/testmodule_moved";
+	var build = format("{}/build", dir);
+	php::mkdir(dir.c_str());
+	php::mkdir(build.c_str());
+	var built = format("{}/greet.so", build);
+	var beside = format("{}/greet.so", dir);
+	system(format("cp obj/test-modules/greet.so {}", built));
+	var src = format("{}/prog.mad", dir);
+	php::file_put_contents(src.c_str(),
+		"import greet;\nint main()\n{\n"
+		"\tprintln(\"{}\", greet::hello(\"moved\", greet::tone::plain));\n"
+		"\treturn 0;\n}\n");
+	var prog = format("{}/prog", dir);
+	var err = format("{}/err.txt", dir);
+	const char *madc = madc::compiler_path();
+	long rc = system(format("{} --module-path={} -o {} {}", madc, build, prog, src));
+	println("build: rc={}", rc);
+	rc = system(format("./{}", prog));
+	println("built against: rc={}", rc / 256);
+	rename(built.c_str(), beside.c_str());
+	rc = system(format("./{}", prog));
+	println("beside the program: rc={}", rc / 256);
+	php::unlink(beside.c_str());
+	rc = system(format("./{} 2> {}", prog, err));
+	println("no module: rc={}", rc / 256);
+	var text;
+	php::file_get_contents(text, err.c_str());
+	println("stderr: {}", php::trim(text));
+	php::unlink(err.c_str());
+	system(format("cp lib/madc/modules/markdown.so {}/markdown.so", build));
+	php::file_put_contents(src.c_str(),
+		"import markdown;\nint main()\n{\n"
+		"\tprintln(\"markdown opened\");\n\treturn 0;\n}\n");
+	rc = system(format("{} --module-path={} -o {} {}", madc, build, prog, src));
+	var copy = format("{}/markdown.so", build);
+	php::unlink(copy.c_str());
+	rc = system(format("./{}", prog));
+	println("madc's own module: rc={}", rc / 256);
+	php::unlink(prog.c_str());
+	php::unlink(src.c_str());
+	php::rmdir(build.c_str());
+	php::rmdir(dir.c_str());
+	return 0;
+}

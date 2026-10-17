@@ -81,9 +81,10 @@ Variable *declare_builtin_function(Program &pgm, const BuiltinFunctionDecl &d)
     // An imported module's function lives in the module: a call resolves its
     // own symbol there (the slot binding — CirBuilder::dyn_module_callee) —
     // the emit symbol, or a declaration's external one (register_forest_func's
-    // storage alias: Itanium, or the bare name under C linkage).
+    // storage alias: Itanium, or the bare name under C linkage) — in the
+    // module its reference finds where the program runs.
     if ( var && pgm.registering_module )
-	pgm.stamp_lazy_module_member(fd, pgm.registering_module->path,
+	pgm.stamp_lazy_module_member(fd, pgm.registering_module->reference(),
 				     fd->emit_symbol.empty() ? var->storage_alias_name
 							     : fd->emit_symbol);
     return var;

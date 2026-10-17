@@ -1,0 +1,8 @@
+build: rc=0
+hello, moved
+built against: rc=0
+beside the program: rc=0
+no module: rc=69
+stderr: import: no module named 'greet'
+markdown opened
+madc's own module: rc=0

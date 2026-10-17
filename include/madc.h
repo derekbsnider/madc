@@ -5643,6 +5643,9 @@ public:
 	madc::dis::istring path;
 	const MadcModuleDescription *desc;
 	bool registered;
+	// What a program records of it — the module's reference
+	// (madc_module_reference): a member call's library, its list entry.
+	madc::dis::istring reference() const;
     };
     std::vector<ImportedModule> imported_modules;
     // --import=NAME (and the configuration's `modules`): imported ahead of the

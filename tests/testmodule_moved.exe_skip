@@ -1,0 +1,1 @@
+Structurally JIT-only: the test runs the LANE'S OWN madc (madc::compiler_path()) to build the program it moves; in a native artifact the running program is the test itself, not a compiler. The program it builds is a native executable, so the moved-module path is the EXE lane's.

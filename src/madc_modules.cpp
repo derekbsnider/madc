@@ -117,9 +117,26 @@ std::string madc_module_file_spelling(const std::string &module)
 	return module + madc_target_dso_suffix();
 }
 
+// madc's lib directory: libmadc's own image's when it is a library of its
+// own — a shared object in lib/ (POSIX), a DLL in bin/ beside madc.exe
+// (Windows: <dll dir>/../lib, the exe's rule) — else the running binary's
+// <exe dir>/../lib (libmadc linked into it).
+static std::string madc_home_lib_dir()
+{
+	std::string image = madc_self_lib_path();
+	if (image.empty() || image == madc_self_exe_path())
+		return madc_self_lib_dir();
+	std::string dir = madc::detail::host_path_dirname(image);
+#ifdef _WIN32
+	return dir.empty() ? dir : dir + "../lib";
+#else
+	return dir;
+#endif
+}
+
 std::string madc_module_dir()
 {
-	std::string libdir = madc_self_lib_dir();
+	std::string libdir = madc_home_lib_dir();
 	if (libdir.empty())
 		return "";
 	return madc::detail::host_path_join(madc::detail::host_path_join(libdir, "madc"), "modules");
@@ -142,26 +159,76 @@ std::string madc_module_find_file(const std::string &module, const std::vector<s
 	return "";
 }
 
-// The module list's entry spellings (madc_modules.h): a link library is its
-// spelling; an optional one '?' and its spelling; a madc module '@', 'g' (a
-// GUI module) or '-', its name, '=', its file.
-void madc_module_deps_append(std::string &table, madc_module_dep kind,
-			     const std::string &spelling, const std::string &name, bool gui)
+std::string madc_module_reference(const std::string &name, const std::string &file, bool gui)
 {
-	switch (kind) {
-	case madc_module_dep::link:
-		break;
-	case madc_module_dep::optional:
-		table += '?';
-		break;
-	case madc_module_dep::module:
-		table += '@';
-		table += gui ? 'g' : '-';
-		table += name;
-		table += '=';
-		break;
+	return std::string("@") + (gui ? 'g' : '-') + name + '=' + file;
+}
+
+const MadcModuleDescription *madc_module_describe(void *handle, const std::string &name,
+						  const std::string &path, std::string &error)
+{
+	error.clear();
+	std::string entry = madc_module_entry_name(name);
+	madc_module_describe_fn describe = (madc_module_describe_fn)madcdl_sym(handle, entry.c_str());
+	if (!describe) {
+		error = path + " is not a madc module (it exports no " + entry + ")";
+		return NULL;
 	}
-	table += spelling;
+	const MadcModuleDescription *d = describe();
+	if (!d || d->abi != MADC_MODULE_ABI) {
+		error = path + " was built for module ABI " + std::to_string(d ? d->abi : 0u)
+			+ "; this madc reads ABI " + std::to_string(MADC_MODULE_ABI);
+		return NULL;
+	}
+	if (!d->name || name != d->name) {
+		error = path + " describes itself as '" + (d->name ? d->name : "") + "'";
+		return NULL;
+	}
+	return d;
+}
+
+void *madc_module_open_reference(const std::string &reference, std::string &error)
+{
+	error.clear();
+	size_t eq = reference.find('=');
+	if (reference.size() < 3 || reference[0] != '@' || eq == std::string::npos || eq < 2) {
+		error = "import: '" + reference + "' is not a module reference";
+		return NULL;
+	}
+	std::string name = reference.substr(2, eq - 2);
+	std::string path = reference.substr(eq + 1);
+	// Its own load may reserve address space far beyond any program
+	// budget (WebKit's): the guard lifts BEFORE it opens.
+	if (reference[1] == 'g')
+		madc_lift_memory_guard("a GUI module in the program's module list");
+	if (path.empty() || madc::detail::host_path_type_of(path) != madc::detail::host_path_type::file) {
+		std::vector<std::string> dirs;
+		std::string own = madc::detail::host_path_dirname(madc_self_exe_path());
+		if (!own.empty())
+			dirs.push_back(own);
+		path = madc_module_find_file(name, dirs);
+		if (path.empty()) {
+			error = "import: no module named '" + name + "'";
+			return NULL;
+		}
+	}
+	std::string why;
+	void *handle = madc_module_open(path, why);
+	if (handle && !madc_module_describe(handle, name, path, why))
+		handle = NULL;	// the loader keeps it open: a refused module stays mapped
+	if (!handle)
+		error = "import: module '" + name + "': " + why;
+	return handle;
+}
+
+// The module list's entry spellings (madc_modules.h): a link library is its
+// spelling; an optional one '?' and its spelling; a madc module its
+// reference (madc_module_reference).
+void madc_module_deps_append(std::string &table, madc_module_dep kind, const std::string &text)
+{
+	if (kind == madc_module_dep::optional)
+		table += '?';
+	table += text;
 	table.push_back('\0');
 }
 
@@ -184,17 +251,8 @@ bool madc_module_deps_open(const char *table, const char *end, std::string &erro
 			}
 			continue;
 		}
-		size_t eq = entry.find('=');
-		std::string name = eq == std::string::npos ? std::string() : entry.substr(2, eq - 2);
-		std::string file = eq == std::string::npos ? std::string() : entry.substr(eq + 1);
-		// Its own load may reserve address space far beyond any program
-		// budget (WebKit's): the guard lifts BEFORE it opens.
-		if (entry.size() > 1 && entry[1] == 'g')
-			madc_lift_memory_guard("a GUI module in the module list");
-		if (file.empty() || !madc_module_open(file, why)) {
-			error = "import: module '" + name + "': " + (file.empty() ? "no file recorded" : why);
+		if (!madc_module_open_reference(entry, error))
 			return false;
-		}
 	}
 	return true;
 }

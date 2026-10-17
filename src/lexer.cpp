@@ -2173,27 +2173,9 @@ bool Program::import_madc_module(const madc::dis::istring &name, const std::stri
     void *handle = madc_module_open(path, err);
     if ( !handle )
 	return false;
-    std::string entry = madc_module_entry_name(name.c_str());
-    madc_module_describe_fn describe = (madc_module_describe_fn)madcdl_sym(handle, entry.c_str());
-    if ( !describe )
-    {
-	err = path + " is not a madc module (it exports no " + entry + ")";
+    const MadcModuleDescription *d = madc_module_describe(handle, name.c_str(), path, err);
+    if ( !d )
 	return false;
-    }
-    const MadcModuleDescription *d = describe();
-    if ( !d || d->abi != MADC_MODULE_ABI )
-    {
-	std::ostringstream why;
-	why << path << " was built for module ABI " << (d ? d->abi : 0u)
-	    << "; this madc reads ABI " << MADC_MODULE_ABI;
-	err = why.str();
-	return false;
-    }
-    if ( !d->name || name != d->name )
-    {
-	err = path + " describes itself as '" + (d->name ? d->name : "") + "'";
-	return false;
-    }
     ImportedModule im;
     im.name = name;
     im.path = madc::dis::istring(path.c_str());
@@ -2203,6 +2185,12 @@ bool Program::import_madc_module(const madc::dis::istring &name, const std::stri
     if ( d->flags & mdGui )
 	bound_gui_module = true;
     return true;
+}
+
+madc::dis::istring Program::ImportedModule::reference() const
+{
+    return madc::dis::istring(madc_module_reference(name.c_str(), path.c_str(),
+						    desc && (desc->flags & mdGui)).c_str());
 }
 
 // THE import of a madc module by name — the directive's and --import's. A
@@ -2220,6 +2208,11 @@ Program::ModuleImport Program::import_module(const madc::dis::istring &name, std
 	err = std::string("no module named '") + name.c_str() + "'";
 	return ModuleImport::not_found;
     }
+    // The file as a program records it (its module reference): absolute, so
+    // the program opens it from wherever it runs.
+    std::string real = madc::detail::resolve_real_path(path.c_str());
+    if ( !real.empty() )
+	path = real;
     std::string why;
     if ( !import_madc_module(name, path, why) )
     {
