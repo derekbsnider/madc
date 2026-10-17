@@ -17,6 +17,7 @@
 #include <memory>
 #include <typeinfo>
 #include <initializer_list>
+#include <algorithm>
 #include <stdint.h>
 
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
@@ -160,6 +161,15 @@ DataDef *declare_builtin_typedef(Program &pgm, const char *ns, const char *name,
     return aliased;
 }
 
+// One data member as the aggregate parsers add it: laid out by the
+// aggregate's own addMember, its spelled alias and access recorded.
+static void add_builtin_member(DataDefSTRUCT *s, const BuiltinMember &m)
+{
+    s->addMember(madc::dis::istring(m.name), *m.type, 1);
+    s->members.back().typedef_name = madc::dis::istring(m.typedef_name);
+    s->member_access.back() = m.access;
+}
+
 DataDefSTRUCT *declare_builtin_struct(Program &pgm, const BuiltinStructDecl &d)
 {
     madc::dis::istring ns(d.ns), tag(d.name);
@@ -169,10 +179,7 @@ DataDefSTRUCT *declare_builtin_struct(Program &pgm, const BuiltinStructDecl &d)
     s->definition_origin = AggregateDefinitionOrigin::Included;	// a header's; no file
     pgm.struct_map.set(tag, s);
     for ( size_t i = 0; i < d.nmembers; ++i )
-    {
-	s->addMember(madc::dis::istring(d.members[i].name), *d.members[i].type, 1);
-	s->members.back().typedef_name = madc::dis::istring(d.members[i].typedef_name);
-    }
+	add_builtin_member(s, d.members[i]);
     s->is_complete = true;
     s->finalize(true);
     if ( d.object_class )
@@ -196,6 +203,75 @@ DataDefSTRUCT *declare_builtin_struct(Program &pgm, const BuiltinStructDecl &d)
     td.forest_system = true;		// no parse position: a dialect header's
     pgm.top_decls.push_back(td);
     return s;
+}
+
+DataDefCLASS *declare_builtin_class(Program &pgm, const char *ns, const char *name,
+				    bool from_system_header)
+{
+    madc::dis::istring n(ns), tag(name);
+    if ( registered_namespace_type(pgm, n, tag) )
+	return NULL;
+    DataDefCLASS *c = new DataDefCLASS(tag, 0, DataType::dtRESERVED);
+    c->definition_origin = AggregateDefinitionOrigin::Included;	// a header's; no file
+    c->set_canonical_spelling(n + "::" + tag);
+    c->from_system_header = from_system_header;
+    // register_class_shell, under the class's own namespace.
+    pgm.struct_map.set(tag, c);
+    TokenDataType *tdt = new TokenDataType(tag.c_str(), *c);
+    pgm.datatype_map[tag] = tdt;
+    pgm.namespace_datatype_map[n][tag] = tdt;
+    pgm.set_class_type_alias(c, tag, c);
+    return c;
+}
+
+void declare_builtin_class_member(DataDefCLASS *c, const BuiltinMember &m)
+{
+    add_builtin_member(c, m);
+}
+
+Variable *declare_builtin_method(Program &pgm, DataDefCLASS *c, const BuiltinMethodDecl &d)
+{
+    FuncDef *fd = new FuncDef(*d.returns);
+    fill_builtin_params(fd, d.params, d.nparams, true);
+    fd->declaration_only = true;
+    fd->is_varargs = (d.flags & bfVarargs) != 0;
+    fd->is_void_params = (d.flags & bfVoidParams) != 0;
+    fd->c_linkage = (d.flags & bfCLinkage) != 0;
+    fd->noexcept_spec = (d.flags & bfNoexcept) ? FuncDef::NxTrue
+		      : (d.flags & bfNoexceptUnknown) ? FuncDef::NxUnknown
+		      : FuncDef::NxNone;
+    fd->vague_linkage = (d.flags & bfVagueLinkage) != 0;
+    fd->internal_linkage = (d.flags & bfInternalLinkage) != 0;
+    fd->weak_binding = (d.flags & bfWeakBinding) != 0;
+    fd->is_const_method = (d.method_flags & bmConst) != 0;
+    fd->is_explicit = (d.method_flags & bmExplicit) != 0;
+    fd->implicit_dtor_noexcept = (d.method_flags & bmImplicitDtorNx) != 0;
+    // The prototype's Variable and Method (addVariable + parseFunction's
+    // prototype arm), bound in the class's namespace under its key.
+    madc::dis::istring key(d.key);
+    std::string canon = c->canonical_cpp_spelling().c_str();
+    madc::dis::istring ns(canon.substr(0, canon.rfind("::")).c_str());
+    pgm.funcdef_map[key] = fd;
+    Variable *v = new Variable(key, *fd);
+    pgm.tkProgram->variables.push_back(v);
+    pgm.namespace_variables_for_write(ns)[key] = v;
+    Method *m = new Method(*v);
+    v->data = (void *)m;
+    m->owner_class = c;
+    Program::ClassMethodRegistration spec;
+    spec.kind = d.kind;
+    spec.display_name = madc::dis::istring(d.display);
+    spec.access_flags = d.access;
+    spec.is_static = (d.method_flags & bmStatic) != 0;
+    spec.is_operator = (d.method_flags & bmOperator) != 0;
+    spec.local_emit_name = madc::dis::istring(d.local_emit);
+    pgm.register_class_method_signature(c, v, spec);
+    return v;
+}
+
+void complete_builtin_class(Program &pgm, DataDefCLASS *c)
+{
+    pgm.complete_class_aggregate(c);
 }
 
 Variable *declare_builtin_extern(Program &pgm, const BuiltinExternDecl &d)
@@ -880,40 +956,33 @@ bool parse_dialect_as_text(DialectTextParse &out, std::string &err)
     return true;
 }
 
-static std::string named_type_reason(Program &live, DataDef *dd);
+// The types one skip judgement is judging. A type met again while it is
+// being judged is answered by its own builder (a class registers its shell
+// before its members name it); the plan's closing pass refuses any built
+// group that names a type that got no builder.
+typedef std::set<DataDef *> TypeVisit;
+
+static std::string named_type_reason(Program &live, DataDef *dd, TypeVisit &seen);
 
 // A signature that names a dialect type the generator does not build.
-static std::string signature_type_reason(Program &live, FuncDef *fd)
+static std::string signature_type_reason(Program &live, FuncDef *fd, TypeVisit &seen)
 {
-    std::string why = named_type_reason(live, &fd->returns);
+    std::string why = named_type_reason(live, &fd->returns, seen);
     for ( size_t i = 0; why.empty() && i < fd->parameters.size(); ++i )
-	why = named_type_reason(live, fd->parameters[i]);
+	why = named_type_reason(live, fd->parameters[i], seen);
     return why;
 }
 
-// Why a namespace aggregate gets no builder yet: declare_builtin_struct
-// builds a complete, attribute-free, data-only DataDefSTRUCT whose members
-// are plain (one element, no bit-field, array or initializer, public) and
-// name no aggregate (a builder builds what it names first: an aggregate
-// member could close a cycle).
-static std::string struct_skip_reason(Program &live, const madc::dis::istring &ns,
-				      const madc::dis::istring &name, DataDefSTRUCT *s)
+// An aggregate's registration as the builders make it: spelled and bound
+// under its own tag (struct_map and the flat type map hold it), complete and
+// attribute-free, every member plain (one element; no bit-field, array or
+// initializer) naming no aggregate (a struct registers no shell first: an
+// aggregate member could close a cycle) and no type the generator does not
+// build.
+static std::string aggregate_skip_reason(Program &live, const madc::dis::istring &ns,
+					 const madc::dis::istring &name, DataDefSTRUCT *s,
+					 TypeVisit &seen)
 {
-    if ( DataDefCLASS *c = s->as_class_dd() )
-    {
-	// A data-only class TokenSTRUCT promoted (an object member): no class
-	// scope of its own (TokenCLASS binds the tag as its own alias), no
-	// member functions, bases, statics, friends or virtuals.
-	if ( typeid(*c) != typeid(DataDefCLASS) || !c->type_aliases.empty()
-	  || !c->methods.empty() || !c->ctors.empty() || !c->method_map.empty()
-	  || c->has_user_ctor || c->has_user_dtor || c->base_class || !c->bases.empty()
-	  || c->enclosing_class || c->has_vtable || c->has_vptr_slot || c->from_system_header
-	  || !c->staticconst.empty() || !c->static_member_types.empty()
-	  || !c->friend_class_names.empty() || !c->friend_function_names.empty() )
-	    return std::string("a ") + typeid(*s).name() + " (R2)";
-    }
-    else if ( typeid(*s) != typeid(DataDefSTRUCT) )
-	return std::string("a ") + typeid(*s).name() + " (R2)";
     if ( s->canonical_cpp_spelling() != ns + "::" + name || s->name != name )
 	return "an aggregate registered under another name";
     flat_datatype_map_iter fi = live.datatype_map.find(name);
@@ -927,12 +996,12 @@ static std::string struct_skip_reason(Program &live, const madc::dis::istring &n
       || !s->anonymous_aggregates.empty() || !s->member_vbase.empty()
       || !s->member_explicit_align.empty() || !s->member_packed.empty()
       || !s->member_default_inits.empty() || !s->member_nsdmi_braces.empty() )
-	return "a struct with layout attributes or member initializers";
+	return "an aggregate with layout attributes or member initializers";
     for ( size_t i = 0; i < s->members.size(); ++i )
     {
 	if ( s->member_counts[i] != 1 || s->member_array_flags[i]
 	  || s->member_bitfields[i].is_bitfield || !s->member_dims[i].empty()
-	  || s->member_count_exprs[i] || s->member_access[i] )
+	  || s->member_count_exprs[i] )
 	    return "a member the builder does not lay out";
 	std::string expr, err;
 	if ( !type_expr(live, s->members[i].second, expr, err) )
@@ -941,22 +1010,123 @@ static std::string struct_skip_reason(Program &live, const madc::dis::istring &n
 	while ( leaf && (leaf->as_qualified_dd() || leaf->as_pointer_dd()) )
 	    leaf = leaf->as_qualified_dd() ? leaf->as_qualified_dd()->base_type
 					   : leaf->as_pointer_dd()->base_type;
-	if ( leaf && leaf->as_struct_dd() && leaf != &ddARRAY )
+	if ( leaf && leaf->as_struct_dd() && expr.compare(0, 3, "&dd") != 0 )
 	    return "a member naming an aggregate";
-	std::string why = named_type_reason(live, s->members[i].second);
+	std::string why = named_type_reason(live, s->members[i].second, seen);
 	if ( !why.empty() )
 	    return why;
     }
     return std::string();
 }
 
+// A class TokenCLASS registered whose member functions the builder registers:
+// its tag its one scope alias, no base, virtual, static, friend or special-
+// member state, every member function a declaration-only prototype (the host
+// implements it) the class registrar registered, carrying only what
+// declare_builtin_method sets. A constructor, a destructor, a method or an
+// operator — not a conversion function.
+static std::string class_skip_reason(Program &live, DataDefCLASS *c, TypeVisit &seen)
+{
+    if ( typeid(*c) != typeid(DataDefCLASS) )
+	return std::string("a ") + typeid(*c).name();
+    if ( c->type_aliases.size() != 1 || c->type_aliases.begin()->first != c->name
+      || c->type_aliases.begin()->second != c )
+	return "a class with a scope of its own (nested types, aliases)";
+    if ( c->base_class || !c->bases.empty() || c->enclosing_class || c->has_vtable
+      || c->has_vptr_slot || !c->virtual_methods.empty() || !c->vtable_slots.empty() )
+	return "a class with bases or virtual functions";
+    if ( !c->staticconst.empty() || !c->static_member_types.empty()
+      || !c->static_member_const_values.empty() || !c->friend_class_names.empty()
+      || !c->friend_function_names.empty() || c->has_deleted_copy_assign
+      || c->has_deleted_default_ctor || c->has_defaulted_default_ctor || c->has_deleted_dtor
+      || c->is_dependent_placeholder || c->has_dependent_surface || c->opaque_concrete_tag
+      || c->is_extern_template_instantiated )
+	return "a class with static members, friends or special-member state";
+    for ( size_t i = 0; i < c->methods.size(); ++i )
+    {
+	Variable *v = c->methods[i];
+	const Method *m = v ? (const Method *)v->data : NULL;
+	FuncDef *fd = v && v->type ? v->type->as_funcdef_dd() : NULL;
+	if ( !fd || !m || m->owner_class != c || !m->parameters.empty() )
+	    return "a member function the builder does not register";
+	if ( !fd->declaration_only )
+	    return "a member function with a body (R3)";
+	bool ctor = std::find(c->ctors.begin(), c->ctors.end(), v) != c->ctors.end();
+	if ( !ctor && fd->method_display_name.c_str()[0] != '~'
+	  && std::string(fd->method_display_name.c_str()).compare(0, 9, "operator ") == 0 )
+	    return "a conversion function";
+	if ( fd->pure_virtual || fd->is_member_template || fd->ctor_trailing_self
+	  || fd->borrows_receiver_text || fd->is_constexpr || fd->is_volatile_method
+	  || fd->defaulted_or_deleted || fd->is_deleted || fd->has_forest_body
+	  || !fd->inline_builtin_kind.empty() || !fd->return_typedef_name.empty()
+	  || !fd->overload_template_args.empty() || !fd->template_return_param_name.empty()
+	  || !fd->dyn_module_library.empty() || !fd->overload_spelling.empty()
+	  || !fd->namespace_name.empty() || !fd->function_display_name.empty() )
+	    return "a member function with state the builder does not set";
+	if ( (v->flags & ~(uint32_t)(vfPRIVATE | vfPROTECTED | vfSTATIC)) != 0 )
+	    return "a member function whose Variable carries flags the builder does not set";
+	for ( size_t k = 0; k < fd->param_defaults.size(); ++k )
+	    if ( fd->param_defaults[k] )
+		return "a member function with a default argument";
+	for ( size_t k = 0; k < fd->param_default_tokens.size(); ++k )
+	    if ( !fd->param_default_tokens[k].empty() )
+		return "a member function with a default argument";
+	for ( size_t k = 0; k < fd->param_template_param_spelled_directly.size(); ++k )
+	    if ( fd->param_template_param_spelled_directly[k] )
+		return "a member function a template parameter spells";
+	std::string expr, err;
+	if ( !type_expr(live, &fd->returns, expr, err) )
+	    return "return " + err;
+	for ( size_t k = 0; k < fd->parameters.size(); ++k )
+	    if ( !type_expr(live, fd->parameters[k], expr, err) )
+		return "parameter " + err;
+	std::string why = signature_type_reason(live, fd, seen);
+	if ( !why.empty() )
+	    return why;
+    }
+    return std::string();
+}
+
+// Why a namespace aggregate gets no builder yet: a data-only DataDefSTRUCT
+// (declare_builtin_struct), the DataDefCLASS an object member promoted one to
+// (no scope, member functions, bases, statics, friends or virtuals of its
+// own), or a class TokenCLASS registered (declare_builtin_class).
+static std::string struct_skip_reason(Program &live, const madc::dis::istring &ns,
+				      const madc::dis::istring &name, DataDefSTRUCT *s,
+				      TypeVisit &seen)
+{
+    if ( DataDefCLASS *c = s->as_class_dd() )
+    {
+	if ( !c->type_aliases.empty() )
+	{
+	    std::string why = class_skip_reason(live, c, seen);
+	    return why.empty() ? aggregate_skip_reason(live, ns, name, s, seen) : why;
+	}
+	if ( typeid(*c) != typeid(DataDefCLASS)
+	  || !c->methods.empty() || !c->ctors.empty() || !c->method_map.empty()
+	  || c->has_user_ctor || c->has_user_dtor || c->base_class || !c->bases.empty()
+	  || c->enclosing_class || c->has_vtable || c->has_vptr_slot || c->from_system_header
+	  || !c->staticconst.empty() || !c->static_member_types.empty()
+	  || !c->friend_class_names.empty() || !c->friend_function_names.empty() )
+	    return std::string("a ") + typeid(*s).name() + " (R2)";
+    }
+    else if ( typeid(*s) != typeid(DataDefSTRUCT) )
+	return std::string("a ") + typeid(*s).name() + " (R2)";
+    for ( size_t i = 0; i < s->members.size(); ++i )
+	if ( s->member_access[i] )
+	    return "a struct member with an access level";
+    return aggregate_skip_reason(live, ns, name, s, seen);
+}
+
 // Why one namespace type gets no builder yet; empty when it gets one.
 static std::string type_skip_reason(Program &live, const madc::dis::istring &ns,
-				    const madc::dis::istring &name)
+				    const madc::dis::istring &name, TypeVisit &seen)
 {
     DataDef *dd = registered_namespace_type(live, ns, name);
     if ( !dd )
 	return "not a registered type";
+    if ( !seen.insert(dd).second )
+	return std::string();		// being judged: its own builder's
     if ( DataDefFPTR *fp = dd->as_fptr_dd() )
     {
 	madc::dis::istring ins, iname;
@@ -968,10 +1138,10 @@ static std::string type_skip_reason(Program &live, const madc::dis::istring &ns,
 	std::string expr, err;
 	if ( !function_pointer_expr(live, fp, expr, err) )
 	    return err;
-	return signature_type_reason(live, fp->target);
+	return signature_type_reason(live, fp->target, seen);
     }
     if ( DataDefSTRUCT *s = dd->as_struct_dd() )
-	return struct_skip_reason(live, ns, name, s);
+	return struct_skip_reason(live, ns, name, s, seen);
     DataDefENUM *e = dd->as_enum_dd();
     if ( !e )
 	return std::string("a ") + typeid(*dd).name() + " (R2)";
@@ -990,7 +1160,7 @@ static std::string type_skip_reason(Program &live, const madc::dis::istring &ns,
 }
 
 // A function's type that names a dialect type the generator does not build.
-static std::string named_type_reason(Program &live, DataDef *dd)
+static std::string named_type_reason(Program &live, DataDef *dd, TypeVisit &seen)
 {
     for ( int guard = 0; dd && guard < 8; ++guard )
     {
@@ -1008,14 +1178,14 @@ static std::string named_type_reason(Program &live, DataDef *dd)
 	return std::string();
     if ( dd && namespace_type_identity(live, dd, ns, name) )
     {
-	std::string why = type_skip_reason(live, ns, name);
+	std::string why = type_skip_reason(live, ns, name, seen);
 	if ( !why.empty() )
 	    return std::string("type ") + ns.c_str() + "::" + name.c_str() + ": " + why;
     }
     else if ( DataDefFPTR *fp = dd ? dd->as_fptr_dd() : NULL )
     {
 	if ( fp->target )
-	    return signature_type_reason(live, fp->target);	// spelled in place
+	    return signature_type_reason(live, fp->target, seen);	// spelled in place
     }
     return std::string();
 }
@@ -1049,9 +1219,8 @@ static std::string builtin_skip_reason(Program &live, const madc::dis::istring &
     for ( size_t i = 0; i < fd->parameters.size(); ++i )
 	if ( !type_expr(live, fd->parameters[i], expr, err) )
 	    return "parameter " + err;
-    std::string why = named_type_reason(live, &fd->returns);
-    for ( size_t i = 0; why.empty() && i < fd->parameters.size(); ++i )
-	why = named_type_reason(live, fd->parameters[i]);
+    TypeVisit seen;
+    std::string why = signature_type_reason(live, fd, seen);
     if ( !why.empty() )
 	return why;
     for ( size_t i = 0; m && i < m->parameters.size(); ++i )
@@ -1062,9 +1231,6 @@ static std::string builtin_skip_reason(Program &live, const madc::dis::istring &
 	return "an emit symbol that is not the storage alias";
     if ( !fd->return_typedef_name.empty() )
 	return "a return typedef name";
-    for ( size_t i = 0; i < fd->param_typedef_names.size(); ++i )
-	if ( !fd->param_typedef_names[i].empty() )
-	    return "a parameter typedef name";
     if ( !fd->inline_builtin_kind.empty() )
 	return "a builtin kind";
     if ( !fd->overload_template_args.empty() || !fd->template_return_param_name.empty() )
@@ -1090,7 +1256,8 @@ static std::string variable_skip_reason(Program &live, const madc::dis::istring 
     std::string expr, err;
     if ( !type_expr(live, v->type, expr, err) )
 	return "type " + err;
-    return named_type_reason(live, v->type);
+    TypeVisit seen;
+    return named_type_reason(live, v->type, seen);
 }
 
 void plan_builtin_registry(DialectTextParse &dp, std::vector<BuiltinGroup> &groups)
@@ -1099,6 +1266,11 @@ void plan_builtin_registry(DialectTextParse &dp, std::vector<BuiltinGroup> &grou
     std::map<std::pair<std::string, std::string>, std::vector<madc::dis::istring> > by_name;
     for ( size_t i = 0; i < dp.function_keys.size(); ++i )
     {
+	// A member function is its class's (the class group carries its key).
+	Variable *var = live.tkProgram->findVariable(live.strpool, dp.function_keys[i]);
+	const Method *m = var ? (const Method *)var->data : NULL;
+	if ( m && m->owner_class )
+	    continue;
 	const FuncDef *fd = live.funcdef_map[dp.function_keys[i]];
 	std::string name = fd->function_display_name.empty()
 	    ? std::string(dp.function_keys[i].c_str())
@@ -1123,7 +1295,14 @@ void plan_builtin_registry(DialectTextParse &dp, std::vector<BuiltinGroup> &grou
 	bg.ns = dp.type_keys[i].first;
 	bg.name = dp.type_keys[i].second;
 	bg.kind = bgType;
-	bg.skip = type_skip_reason(live, bg.ns, bg.name);
+	TypeVisit seen;
+	bg.skip = type_skip_reason(live, bg.ns, bg.name, seen);
+	// A class's member functions, in registration order.
+	DataDef *dd = registered_namespace_type(live, bg.ns, bg.name);
+	if ( DataDefCLASS *c = dd ? dd->as_class_dd() : NULL )
+	    for ( size_t k = 0; k < c->methods.size(); ++k )
+		if ( c->methods[k] )
+		    bg.keys.push_back(c->methods[k]->name);
 	place(bg);
     }
     for ( size_t i = 0; i < dp.variable_keys.size(); ++i )
@@ -1166,8 +1345,55 @@ void plan_builtin_registry(DialectTextParse &dp, std::vector<BuiltinGroup> &grou
     for ( std::map<std::pair<std::string, std::string>, BuiltinGroup>::const_iterator g =
 	      sorted.begin(); g != sorted.end(); ++g )
 	groups.push_back(g->second);
+    // The closing pass: a built group whose generated code names a dialect
+    // type that got no builder (a judgement answered "its own builder's"
+    // while that type was later refused) is refused too, until none is — a
+    // builder never meets a NULL type.
+    for ( bool changed = true; changed; )
+    {
+	changed = false;
+	std::vector<std::string> unbuilt;
+	for ( size_t g = 0; g < groups.size(); ++g )
+	    if ( groups[g].kind == bgType && !groups[g].skip.empty() )
+		unbuilt.push_back(std::string("builtin_type(pgm, ") + cpp_literal(groups[g].ns.c_str())
+				  + ", " + cpp_literal(groups[g].name.c_str()) + ")");
+	for ( size_t g = 0; g < groups.size(); ++g )
+	{
+	    BuiltinGroup &bg = groups[g];
+	    if ( !bg.skip.empty() )
+		continue;
+	    std::string text = bg.kind == bgType ? builtin_type_line(live, bg.ns, bg.name).c_str()
+			     : bg.kind == bgVariable ? builtin_variable_line(live, bg.ns, bg.name).c_str()
+			     : "";
+	    for ( size_t k = 0; k < bg.keys.size(); ++k )
+		text += builtin_function_line(live, bg.keys[k]).c_str();
+	    for ( size_t u = 0; u < unbuilt.size(); ++u )
+		if ( text.find(unbuilt[u]) != std::string::npos )
+		{
+		    bg.skip = "names a type that got no builder: " + unbuilt[u];
+		    changed = true;
+		    break;
+		}
+	}
+    }
 }
 
+
+// A function's BuiltinFnFlag bits as generated code: ` | bfX | bfY` (appended
+// to `0u`).
+static std::string function_flags_expr(FuncDef *fd)
+{
+    std::string flags;
+    if ( fd->is_varargs ) flags += " | bfVarargs";
+    if ( fd->is_void_params ) flags += " | bfVoidParams";
+    if ( fd->c_linkage ) flags += " | bfCLinkage";
+    if ( fd->noexcept_spec == FuncDef::NxTrue ) flags += " | bfNoexcept";
+    if ( fd->noexcept_spec == FuncDef::NxUnknown ) flags += " | bfNoexceptUnknown";
+    if ( fd->vague_linkage ) flags += " | bfVagueLinkage";
+    if ( fd->internal_linkage ) flags += " | bfInternalLinkage";
+    if ( fd->weak_binding ) flags += " | bfWeakBinding";
+    return flags;
+}
 
 // A signature's parameters as generated code: `const BuiltinParam p[]` (none
 // written for an empty list).
@@ -1208,15 +1434,7 @@ static void emit_declaration(std::ostream &out, Program &live, const madc::dis::
 	    out << ( i ? ", " : " " ) << cpp_literal(m->parameters[i]->name.c_str());
 	out << " };\n";
     }
-    std::string flags;
-    if ( fd->is_varargs ) flags += " | bfVarargs";
-    if ( fd->is_void_params ) flags += " | bfVoidParams";
-    if ( fd->c_linkage ) flags += " | bfCLinkage";
-    if ( fd->noexcept_spec == FuncDef::NxTrue ) flags += " | bfNoexcept";
-    if ( fd->noexcept_spec == FuncDef::NxUnknown ) flags += " | bfNoexceptUnknown";
-    if ( fd->vague_linkage ) flags += " | bfVagueLinkage";
-    if ( fd->internal_linkage ) flags += " | bfInternalLinkage";
-    if ( fd->weak_binding ) flags += " | bfWeakBinding";
+    std::string flags = function_flags_expr(fd);
     if ( !fd->emit_symbol.empty() ) flags += " | bfEmitIsAlias";
     type_expr(live, &fd->returns, expr, err);
     out << "\tBuiltinFunctionDecl d = { " << cpp_literal(key.c_str()) << ", "
@@ -1272,6 +1490,16 @@ static void emit_fptr_typedef(std::ostream &out, Program &live, const madc::dis:
 	<< cpp_literal(name.c_str()) << ",\n\t" << expr << ");\n";
 }
 
+// One data member as generated code: `{ "name", TYPE, "alias", ACCESS }`.
+static std::string member_expr(Program &live, DataDefSTRUCT *s, size_t i)
+{
+    std::string expr, err;
+    type_expr(live, s->members[i].second, expr, err);
+    return std::string("{ ") + cpp_literal(s->members[i].first.c_str()) + ", " + expr + ", "
+	 + cpp_literal(s->members[i].typedef_name.c_str()) + ", "
+	 + std::to_string(s->member_access[i]) + "u }";
+}
+
 // One data-only struct's registration, as generated code. The members' types
 // are expressions over this builder's Program: an automatic array, never a
 // static one.
@@ -1279,22 +1507,62 @@ static void emit_struct(std::ostream &out, Program &live, const madc::dis::istri
 			const madc::dis::istring &name)
 {
     DataDefSTRUCT *s = registered_namespace_type(live, ns, name)->as_struct_dd();
-    std::string expr, err;
     if ( !s->members.empty() )
     {
 	out << "    const BuiltinMember m[] = {\n";
 	for ( size_t i = 0; i < s->members.size(); ++i )
-	{
-	    type_expr(live, s->members[i].second, expr, err);
-	    out << "\t{ " << cpp_literal(s->members[i].first.c_str()) << ", " << expr << ", "
-		<< cpp_literal(s->members[i].typedef_name.c_str()) << " },\n";
-	}
+	    out << "\t" << member_expr(live, s, i) << ",\n";
 	out << "    };\n";
     }
     out << "    BuiltinStructDecl d = { " << cpp_literal(ns.c_str()) << ", "
 	<< cpp_literal(name.c_str()) << ", " << (s->members.empty() ? "NULL" : "m") << ", "
 	<< s->members.size() << ", " << (s->as_class_dd() ? "true" : "false") << " };\n"
 	<< "    declare_builtin_struct(pgm, d);\n";
+}
+
+// One class's registration, as generated code: its shell (a builder that
+// finds it registered stops), its data members, its member functions in
+// registration order (the registrar's kind read from the class: a
+// constructor is in its ctors, a destructor's display name is `~`), then its
+// completion.
+static void emit_class(std::ostream &out, Program &live, const madc::dis::istring &ns,
+		       const madc::dis::istring &name)
+{
+    DataDefCLASS *c = registered_namespace_type(live, ns, name)->as_class_dd();
+    out << "    DataDefCLASS *c = declare_builtin_class(pgm, " << cpp_literal(ns.c_str()) << ", "
+	<< cpp_literal(name.c_str()) << ", " << (c->from_system_header ? "true" : "false") << ");\n"
+	<< "    if ( !c )\n\treturn;\n";
+    for ( size_t i = 0; i < c->members.size(); ++i )
+	out << "    {\n\tconst BuiltinMember mb = " << member_expr(live, c, i) << ";\n"
+	    << "\tdeclare_builtin_class_member(c, mb);\n    }\n";
+    std::string ret, err;
+    for ( size_t i = 0; i < c->methods.size(); ++i )
+    {
+	Variable *v = c->methods[i];
+	FuncDef *fd = v->type->as_funcdef_dd();
+	bool ctor = std::find(c->ctors.begin(), c->ctors.end(), v) != c->ctors.end();
+	const char *kind = ctor ? "Program::ClassMethodKind::Constructor"
+	    : fd->method_display_name.c_str()[0] == '~' ? "Program::ClassMethodKind::Destructor"
+	    : "Program::ClassMethodKind::Method";
+	std::string mflags;
+	if ( fd->is_const_method ) mflags += " | bmConst";
+	if ( fd->is_explicit ) mflags += " | bmExplicit";
+	if ( fd->implicit_dtor_noexcept ) mflags += " | bmImplicitDtorNx";
+	if ( std::string(fd->method_display_name.c_str()).compare(0, 8, "operator") == 0 )
+	    mflags += " | bmOperator";
+	if ( v->flags & vfSTATIC ) mflags += " | bmStatic";
+	type_expr(live, &fd->returns, ret, err);
+	out << "    {\n";
+	emit_params(out, live, fd);
+	out << "\tBuiltinMethodDecl d = { " << cpp_literal(v->name.c_str()) << ", "
+	    << cpp_literal(fd->method_display_name.c_str()) << ", " << kind << ", " << ret << ", "
+	    << ( fd->parameters.empty() ? "NULL" : "p" ) << ", " << fd->parameters.size() << ", "
+	    << "0u" << function_flags_expr(fd) << ", 0u" << mflags << ", "
+	    << (v->flags & (vfPRIVATE | vfPROTECTED)) << "u, "
+	    << cpp_literal(fd->local_emit_name.c_str()) << " };\n"
+	    << "\tdeclare_builtin_method(pgm, c, d);\n    }\n";
+    }
+    out << "    complete_builtin_class(pgm, c);\n";
 }
 
 // One namespace object's registration, as generated code.
@@ -1354,11 +1622,13 @@ bool emit_builtin_registry(std::ostream &out, std::ostream &diag)
 	    emit_extern(out, live, bg.ns, bg.name);
 	else if ( tdd && tdd->as_fptr_dd() )
 	    emit_fptr_typedef(out, live, bg.ns, bg.name);
+	else if ( tdd && tdd->as_class_dd() && !tdd->as_class_dd()->type_aliases.empty() )
+	    emit_class(out, live, bg.ns, bg.name);
 	else if ( tdd && tdd->as_struct_dd() )
 	    emit_struct(out, live, bg.ns, bg.name);
 	else if ( tdd )
 	    emit_enum(out, live, bg.ns, bg.name);
-	for ( size_t k = 0; k < bg.keys.size(); ++k )
+	for ( size_t k = 0; bg.kind == bgFunctions && k < bg.keys.size(); ++k )
 	    emit_declaration(out, live, bg.keys[k]);
 	out << "}\n\n";
 	table << "    { " << cpp_literal(bg.ns.c_str()) << ", "

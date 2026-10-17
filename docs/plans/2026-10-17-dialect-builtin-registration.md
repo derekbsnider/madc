@@ -415,3 +415,27 @@ Next: `git` / `markdown` bodies by hand; `ui_web` / `ui_ws` are R3.
   records, per parameter, whether a template parameter spelled it and its
   default — the R1 builders recorded neither (a function TYPE records
   neither; `fill_builtin_params` now knows which it builds).
+- Classes (`madc::channel`, `tool_host`, `ex_session`, `session_claim`):
+  one builder per class — `declare_builtin_class` (register_class_shell's
+  writes under the class's own namespace: struct_map, the flat and the
+  namespace type maps, the tag its own scope alias; NULL when the shell
+  exists, and the builder stops), its data members with their access, every
+  member function through `declare_builtin_method` (parseFunction's
+  prototype arm: the FuncDef with the hidden `__this` first, the
+  program-scope Variable bound in the class's namespace by key, the Method
+  owned by the class) and the LIVE registrar `register_class_method_signature`
+  (display name, access, method_map / ctors, the emitted symbol — the
+  target's mangling, never spelled), then the live `complete_class_aggregate`
+  (layout, noexcept). The registrar's kind is read from the class (a
+  constructor is in its ctors; a destructor's display name is `~`).
+- A class's member functions are its group's keys (registration order), so
+  the differential compares each one's line beside the class line (methods,
+  ctors, method_map, scope aliases, layout, flags).
+- Skip judgements thread a visiting set: a type met again while it is being
+  judged is its own builder's (a class's shell exists before its members
+  name it). A closing pass refuses any built group whose generated code
+  names a type that got no builder, so a builder never meets a NULL type.
+- 619 declarations, types and objects identical; 53 not yet built: the
+  bodies (R3), `php::print_r` / `var_dump` (compiler-implemented templates),
+  `madc::__madc_run_child` (initialization code, R3) and the ui_web / ui_ws
+  aggregates and objects that ride with their bodies.

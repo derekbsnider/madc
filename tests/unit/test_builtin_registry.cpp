@@ -65,7 +65,7 @@ TEST_CASE("R1: the generated registration registers what a live parse of the dia
 	std::map<std::string, size_t> skip_reasons;
 	for (size_t g = 0; g < groups.size(); ++g) {
 		if (!groups[g].skip.empty()) {
-			skipped += groups[g].kind == bgFunctions ? groups[g].keys.size() : 1;
+			skipped += (groups[g].kind == bgFunctions ? 0 : 1) + groups[g].keys.size();
 			++skip_reasons[groups[g].skip];
 			continue;
 		}

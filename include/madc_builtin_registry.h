@@ -140,6 +140,8 @@ struct BuiltinMember
     const char *name;
     DataDef *type;
     const char *typedef_name;
+    uint32_t access;		// DataDefSTRUCT::member_access (a class's private
+				// member: vfPRIVATE; a struct's: 0)
 };
 
 struct BuiltinStructDecl
@@ -154,6 +156,56 @@ struct BuiltinStructDecl
 };
 
 DataDefSTRUCT *declare_builtin_struct(Program &pgm, const BuiltinStructDecl &d);
+
+// A builtin class as generated code spells it — what TokenCLASS::parse
+// registers for a namespace-scope class whose member functions are all
+// declaration-only (the host implements them; their symbols are the TARGET's
+// mangling, bound by the class registrar): three steps, in one builder.
+//
+// The shell (register_class_shell's writes, under the class's own namespace):
+// the DataDefCLASS spelled ns::Tag, the bare tag in struct_map and
+// datatype_map, the namespace's type, the tag its own scope alias. NULL when
+// ns::Tag is already registered — a builder that finds its shell stops.
+DataDefCLASS *declare_builtin_class(Program &pgm, const char *ns, const char *name,
+				    bool from_system_header);
+
+// One data member, laid out by the class's addMember, with its access.
+void declare_builtin_class_member(DataDefCLASS *c, const BuiltinMember &m);
+
+// One declaration-only member function as parseFunction's prototype arm
+// leaves it — the FuncDef (the hidden `__this` its first parameter), its
+// program-scope Variable bound in the class's namespace under its key, a
+// Method owned by the class — then registered by the class registrar
+// (register_class_method_signature: display name, access, method_map /
+// ctors, the emitted symbol).
+enum BuiltinMethodFlag : unsigned
+{
+    bmConst		= 1u << 0,	// FuncDef::is_const_method
+    bmExplicit		= 1u << 1,	// FuncDef::is_explicit
+    bmImplicitDtorNx	= 1u << 2,	// FuncDef::implicit_dtor_noexcept
+    bmOperator		= 1u << 3,	// an operator-function-id (its Itanium name)
+    bmStatic		= 1u << 4,	// a static member function
+};
+
+struct BuiltinMethodDecl
+{
+    const char *key;		// the funcdef_map key (`channel__ok`, `..._o2`)
+    const char *display;	// the registrar's display name (`channel`, `~channel`, `ok`)
+    Program::ClassMethodKind kind;
+    DataDef *returns;
+    const BuiltinParam *params;	// the hidden `__this` first
+    size_t nparams;
+    unsigned flags;		// BuiltinFnFlag bits (linkage, noexcept)
+    unsigned method_flags;	// BuiltinMethodFlag bits
+    uint32_t access;		// vfPRIVATE / vfPROTECTED / 0
+    const char *local_emit;	// FuncDef::local_emit_name ("" for none)
+};
+
+Variable *declare_builtin_method(Program &pgm, DataDefCLASS *c, const BuiltinMethodDecl &d);
+
+// The class completed as complete_class_aggregate completes it (its layout,
+// noexcept resolution).
+void complete_builtin_class(Program &pgm, DataDefCLASS *c);
 
 // A builtin namespace object as generated code spells it: what parseDeclaration
 // registers for a namespace-scope `extern T name;` (the extern-reference arm the
