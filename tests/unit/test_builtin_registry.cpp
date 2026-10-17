@@ -65,9 +65,19 @@ TEST_CASE("R1: the generated registration registers what a live parse of the dia
 	std::map<std::string, size_t> skip_reasons;
 	for (size_t g = 0; g < groups.size(); ++g) {
 		if (!groups[g].skip.empty()) {
-			skipped += groups[g].keys.size();
+			skipped += groups[g].is_type ? 1 : groups[g].keys.size();
 			++skip_reasons[groups[g].skip];
 			continue;
+		}
+		if (groups[g].is_type) {
+			madc::dis::istring want = builtin_type_line(*dp.live, groups[g].ns, groups[g].name);
+			madc::dis::istring got = builtin_type_line(*gen, groups[g].ns, groups[g].name);
+			++compared;
+			if (want != got) {
+				if (differ < 20)
+					MESSAGE("live: " << std::string(want.c_str()) << "\ngen:  " << std::string(got.c_str()));
+				++differ;
+			}
 		}
 		for (size_t k = 0; k < groups[g].keys.size(); ++k) {
 			madc::dis::istring want = builtin_function_line(*dp.live, groups[g].keys[k]);
@@ -83,7 +93,7 @@ TEST_CASE("R1: the generated registration registers what a live parse of the dia
 	for (std::map<std::string, size_t>::const_iterator it = skip_reasons.begin();
 	     it != skip_reasons.end(); ++it)
 		MESSAGE("not yet built: " << it->second << " name(s) — " << it->first);
-	MESSAGE("compared " << compared << " declaration(s); " << skipped << " not yet built");
+	MESSAGE("compared " << compared << " declaration(s) and type(s); " << skipped << " not yet built");
 	CHECK(compared > 0u);
 	CHECK(differ == 0u);
 }

@@ -60,12 +60,114 @@ Variable *declare_builtin_function(Program &pgm, const BuiltinFunctionDecl &d)
     return var;
 }
 
+// The type `pgm` registered as ns::name (namespace_datatype_map), or NULL.
+static DataDef *registered_namespace_type(Program &pgm, const madc::dis::istring &ns,
+					  const madc::dis::istring &name)
+{
+    namespace_datatype_map_t::iterator nti = pgm.namespace_datatype_map.find(ns);
+    if ( nti == pgm.namespace_datatype_map.end() )
+	return NULL;
+    datatype_map_iter dti = nti->find(name);
+    if ( dti == nti->end() || !dti->second )
+	return NULL;
+    return &dti->second->definition;
+}
+
+DataDefENUM *declare_builtin_enum(Program &pgm, const BuiltinEnumDecl &d)
+{
+    madc::dis::istring ns(d.ns), tag(d.name);
+    if ( DataDef *had = registered_namespace_type(pgm, ns, tag) )
+	return had->as_enum_dd();
+    DataDefENUM *e = new DataDefENUM(tag);
+    e->underlying = d.underlying;
+    e->fixed_base = d.fixed_base;
+    e->c_compatible = false;
+    e->restore_layout(d.size, d.rawtype);
+    e->set_canonical_spelling(ns + "::" + tag);
+    TokenDataType *tdt = new TokenDataType(tag.c_str(), *e);
+    pgm.datatype_map[tag] = tdt;
+    pgm.namespace_datatype_map[ns][tag] = tdt;
+    variable_map_t &scope_ns = pgm.namespace_variables_for_write(ns + "::" + tag);
+    for ( size_t i = 0; i < d.nenumerators; ++i )
+    {
+	madc::dis::istring name(d.enumerators[i].name);
+	Variable *v = new Variable(name, *e, 1, NULL, true);
+	v->set(d.enumerators[i].value);
+	v->make_enumerator();
+	if ( !d.scoped )
+	{
+	    // Unscoped: the namespace's constant too (addVariable's program-scope
+	    // Variable and namespace binding, without its parse state).
+	    v->storage_alias_name = madc::dis::istring(d.enumerators[i].alias);
+	    pgm.tkProgram->variables.push_back(v);
+	    pgm.namespace_variables_for_write(ns)[name] = v;
+	}
+	scope_ns[name] = v;
+	e->enumerators.push_back(std::make_pair(name, d.enumerators[i].value));
+	e->enumerator_toks.push_back(NULL);
+    }
+    return e;
+}
+
+// The table's entry for ns::name (sorted by (ns, name) in byte order), or NULL.
+static const MadcBuiltinEntry *find_builtin_entry(const char *ns, const char *name)
+{
+    size_t lo = 0, hi = madc::builtins::dialect_table_count;
+    while ( lo < hi )
+    {
+	size_t mid = lo + (hi - lo) / 2;
+	const MadcBuiltinEntry &e = madc::builtins::dialect_table[mid];
+	int c = strcmp(e.ns, ns);
+	if ( !c )
+	    c = strcmp(e.name, name);
+	if ( !c )
+	    return &e;
+	if ( c < 0 )
+	    lo = mid + 1;
+	else
+	    hi = mid;
+    }
+    return NULL;
+}
+
+// The C++ string literal of `s` (the one C-string escape rule).
+static std::string cpp_literal(const char *s)
+{
+    return std::string("\"") + madc_c_escape_string(s, strlen(s)).c_str() + "\"";
+}
+
+DataDef *builtin_type(Program &pgm, const char *ns, const char *name)
+{
+    madc::dis::istring n(ns), m(name);
+    if ( DataDef *dd = registered_namespace_type(pgm, n, m) )
+	return dd;
+    if ( const MadcBuiltinEntry *e = find_builtin_entry(ns, name) )
+	e->build(pgm);
+    return registered_namespace_type(pgm, n, m);
+}
+
+// `dd` as the namespace type it is registered as: its canonical spelling
+// `ns::name`, registered under that name.
+static bool namespace_type_identity(Program &pgm, DataDef *dd, madc::dis::istring &ns,
+				    madc::dis::istring &name)
+{
+    std::string spelled = dd->canonical_cpp_spelling().c_str();
+    size_t cut = spelled.rfind("::");
+    if ( cut == std::string::npos || cut == 0 )
+	return false;
+    ns = madc::dis::istring(spelled.substr(0, cut).c_str());
+    name = madc::dis::istring(spelled.substr(cut + 2).c_str());
+    return registered_namespace_type(pgm, ns, name) == dd;
+}
+
 // A type as the C++ expression that yields it in a builder's Program `pgm`:
 // a singleton by identity, a layered type through its one minting owner
 // (getQualifiedType / getReferenceType / getPointerType) over its base. The
 // differential reads types through it too, so "same type" means "built the
-// same way". False with `err` naming a type the generator does not yet express.
-static bool type_expr(DataDef *dd, std::string &expr, std::string &err)
+// same way". A dialect type is named through builtin_type (its own line
+// proves its content). False with `err` naming a type the generator does not
+// yet express.
+static bool type_expr(Program &pgm, DataDef *dd, std::string &expr, std::string &err)
 {
     static const struct { DataDef *dd; const char *spelled; } singletons[] = {
 	{ &ddVOID, "&ddVOID" }, { &ddBOOL, "&ddBOOL" }, { &ddCHAR, "&ddCHAR" },
@@ -93,33 +195,40 @@ static bool type_expr(DataDef *dd, std::string &expr, std::string &err)
     std::string base;
     if ( DataDefQUAL *q = dd->as_qualified_dd() )
     {
-	if ( !type_expr(q->base_type, base, err) )
+	if ( !type_expr(pgm, q->base_type, base, err) )
 	    return false;
 	expr = "pgm.getQualifiedType(" + base + ", " + std::to_string(q->quals) + "u)";
 	return true;
     }
     if ( DataDefREF *r = dd->as_reference_dd() )
     {
-	if ( !type_expr(r->base_type, base, err) )
+	if ( !type_expr(pgm, r->base_type, base, err) )
 	    return false;
 	expr = "pgm.getReferenceType(" + base + (r->rvalue ? ", true)" : ", false)");
 	return true;
     }
     if ( DataDefPTR *p = dd->as_pointer_dd() )
     {
-	if ( !type_expr(p->base_type, base, err) )
+	if ( !type_expr(pgm, p->base_type, base, err) )
 	    return false;
 	expr = "pgm.getPointerType(" + base + ")";
+	return true;
+    }
+    madc::dis::istring ns, name;
+    if ( namespace_type_identity(pgm, dd, ns, name) )
+    {
+	expr = std::string("builtin_type(pgm, ") + cpp_literal(ns.c_str()) + ", "
+	     + cpp_literal(name.c_str()) + ")";
 	return true;
     }
     err = std::string("type '") + dd->name.c_str() + "' (" + typeid(*dd).name() + ")";
     return false;
 }
 
-static std::string type_field(DataDef *dd)
+static std::string type_field(Program &pgm, DataDef *dd)
 {
     std::string expr, err;
-    return type_expr(dd, expr, err) ? expr : "?" + err;
+    return type_expr(pgm, dd, expr, err) ? expr : "?" + err;
 }
 
 // The fields a free function's registration carries — the record the forest
@@ -140,14 +249,14 @@ madc::dis::istring builtin_function_line(Program &pgm, const madc::dis::istring 
     std::string line = std::string(key.c_str());
     line += "\tdisp=" + std::string(fd->function_display_name.c_str());
     line += "\tns=" + std::string(fd->namespace_name.c_str());
-    line += "\tret=" + type_field(&fd->returns);
+    line += "\tret=" + type_field(pgm, &fd->returns);
     line += "\trtd=" + std::string(fd->return_typedef_name.c_str());
     line += "\tparams=";
     for ( size_t i = 0; i < fd->parameters.size(); ++i )
     {
 	if ( i )
 	    line += ";";
-	line += type_field(fd->parameters[i]);
+	line += type_field(pgm, fd->parameters[i]);
 	line += "|";
 	if ( i < fd->param_cpp_spellings.size() )
 	    line += fd->param_cpp_spellings[i].c_str();
@@ -167,7 +276,7 @@ madc::dis::istring builtin_function_line(Program &pgm, const madc::dis::istring 
 	    line += ";";
 	if ( m->parameters[i] )
 	    line += std::string(m->parameters[i]->name.c_str()) + ":"
-		  + type_field(m->parameters[i]->type);
+		  + type_field(pgm, m->parameters[i]->type);
     }
     line += "\temit=" + std::string(fd->emit_symbol.c_str());
     line += "\talias=" + std::string(var ? var->storage_alias_name.c_str() : "");
@@ -209,6 +318,80 @@ madc::dis::istring builtin_function_line(Program &pgm, const madc::dis::istring 
 		if ( ovset[i].var == var )
 		    line += std::to_string(i);
 	}
+    }
+    return line;
+}
+
+// Is `v` in the program scope (tkProgram's own variables)?
+static bool in_program_scope(Program &pgm, const Variable *v)
+{
+    if ( !pgm.tkProgram )
+	return false;
+    for ( size_t i = 0; i < pgm.tkProgram->variables.size(); ++i )
+	if ( pgm.tkProgram->variables[i] == v )
+	    return true;
+    return false;
+}
+
+// The variable `pgm` binds as ns::name (namespace_map), or NULL.
+static Variable *namespace_variable(Program &pgm, const madc::dis::istring &ns,
+				    const madc::dis::istring &name)
+{
+    namespace_map_t::iterator nsi = pgm.namespace_map.find(ns);
+    if ( nsi == pgm.namespace_map.end() )
+	return NULL;
+    variable_map_iter vi = nsi->second.find(name);
+    return vi == nsi->second.end() ? NULL : vi->second;
+}
+
+// An enum's enumerators bound in its namespace too: the unscoped form.
+static bool enum_is_unscoped(Program &pgm, const madc::dis::istring &ns, DataDefENUM *e)
+{
+    if ( e->enumerators.empty() )
+	return false;
+    madc::dis::istring tag = e->enum_name;
+    Variable *in_tag = namespace_variable(pgm, ns + "::" + tag, e->enumerators[0].first);
+    return in_tag && namespace_variable(pgm, ns, e->enumerators[0].first) == in_tag;
+}
+
+madc::dis::istring builtin_type_line(Program &pgm, const madc::dis::istring &ns,
+				     const madc::dis::istring &name)
+{
+    DataDef *dd = registered_namespace_type(pgm, ns, name);
+    if ( !dd )
+	return madc::dis::istring();
+    std::string line = std::string(ns.c_str()) + "::" + name.c_str();
+    line += "\tcanon=" + std::string(dd->canonical_cpp_spelling().c_str());
+    line += "\tsize=" + std::to_string(dd->size);
+    line += "\traw=" + std::to_string((unsigned)dd->type());
+    flat_datatype_map_iter fi = pgm.datatype_map.find(name);
+    line += "\tflat=";
+    line += fi == pgm.datatype_map.end() ? "none" : &(*fi)->definition == dd ? "self" : "other";
+    DataDefENUM *e = dd->as_enum_dd();
+    if ( !e )
+	return line + "\tkind=" + typeid(*dd).name();
+    line += "\tkind=enum\tunder=" + (e->underlying ? type_field(pgm, e->underlying) : "-");
+    line += e->fixed_base ? "\tfixed" : "\tcomputed";
+    line += e->c_compatible ? "\tc" : "\tcxx";
+    bool unscoped = enum_is_unscoped(pgm, ns, e);
+    line += unscoped ? "\tunscoped" : "\tscoped";
+    madc::dis::istring tag_ns = ns + "::" + name;
+    line += "\tenumerators=";
+    for ( size_t i = 0; i < e->enumerators.size(); ++i )
+    {
+	const madc::dis::istring &en = e->enumerators[i].first;
+	line += std::string(i ? ";" : "") + en.c_str() + "=" + std::to_string(e->enumerators[i].second);
+	Variable *v = namespace_variable(pgm, tag_ns, en);
+	if ( !v )
+	{
+	    line += ":missing";
+	    continue;
+	}
+	line += ":" + std::to_string((long long)v->get<int64_t>()) + ":" + std::to_string(v->flags)
+	      + ":" + type_field(pgm, v->type);
+	if ( unscoped )
+	    line += std::string(":") + (namespace_variable(pgm, ns, en) == v ? "ns" : "-")
+		  + (in_program_scope(pgm, v) ? "+prog" : "") + ":" + v->storage_alias_name.c_str();
     }
     return line;
 }
@@ -258,7 +441,73 @@ bool parse_dialect_as_text(DialectTextParse &out, std::string &err)
 	  && it->second && !it->second->builtin_registration
 	  && it->second->dyn_module_library.empty() )
 	    out.function_keys.push_back(it->first);
+    // The namespace types: names copied out first (a lookup interns, and the
+    // enumeration's keys are borrowed from the pool), then filtered.
+    std::vector<std::pair<std::string, std::string> > live_types;
+    out.live->namespace_datatype_map.for_each_readonly(
+	[&live_types](const char *ns, const datatype_map_t &types) {
+	    for ( datatype_map_t::const_iterator t = types.begin(); t != types.end(); ++t )
+		live_types.push_back(std::make_pair(std::string(ns), std::string(t->first.c_str())));
+	    return false;
+	});
+    out.type_keys.clear();
+    for ( size_t i = 0; i < live_types.size(); ++i )
+    {
+	madc::dis::istring ns(live_types[i].first.c_str()), name(live_types[i].second.c_str());
+	if ( !registered_namespace_type(*out.base, ns, name) )
+	    out.type_keys.push_back(std::make_pair(ns, name));
+    }
     return true;
+}
+
+// Why one namespace type gets no builder yet; empty when it gets one.
+static std::string type_skip_reason(Program &live, const madc::dis::istring &ns,
+				    const madc::dis::istring &name)
+{
+    DataDef *dd = registered_namespace_type(live, ns, name);
+    if ( !dd )
+	return "not a registered type";
+    DataDefENUM *e = dd->as_enum_dd();
+    if ( !e )
+	return std::string("a ") + typeid(*dd).name() + " (R2)";
+    if ( e->canonical_cpp_spelling() != ns + "::" + name || e->enum_name != name )
+	return "an enum registered under another name";
+    flat_datatype_map_iter fi = live.datatype_map.find(name);
+    if ( fi == live.datatype_map.end() || &(*fi)->definition != dd )
+	return "a bare tag another type holds";
+    if ( e->underlying )
+    {
+	std::string expr, err;
+	if ( !type_expr(live, e->underlying, expr, err) )
+	    return "underlying " + err;
+    }
+    return std::string();
+}
+
+// A function's type that names a dialect type the generator does not build.
+static std::string named_type_reason(Program &live, DataDef *dd)
+{
+    for ( int guard = 0; dd && guard < 8; ++guard )
+    {
+	if ( DataDefQUAL *q = dd->as_qualified_dd() )
+	    dd = q->base_type;
+	else if ( DataDefPTR *pd = dd->as_pointer_dd() )
+	    dd = pd->base_type;
+	else
+	    break;
+    }
+    madc::dis::istring ns, name;
+    std::string expr, err;
+    // A singleton (ddARRAY is madc::value) is every program's, never a builder's.
+    if ( dd && type_expr(live, dd, expr, err) && expr.compare(0, 3, "&dd") == 0 )
+	return std::string();
+    if ( dd && namespace_type_identity(live, dd, ns, name) )
+    {
+	std::string why = type_skip_reason(live, ns, name);
+	if ( !why.empty() )
+	    return std::string("type ") + ns.c_str() + "::" + name.c_str() + ": " + why;
+    }
+    return std::string();
 }
 
 // Why one function gets no builder yet; empty when it gets one.
@@ -279,11 +528,16 @@ static std::string builtin_skip_reason(Program &live, const madc::dis::istring &
 	if ( !fd->param_default_tokens[i].empty() )
 	    return "a default argument";
     std::string expr, err;
-    if ( !type_expr(&fd->returns, expr, err) )
+    if ( !type_expr(live, &fd->returns, expr, err) )
 	return "return " + err;
     for ( size_t i = 0; i < fd->parameters.size(); ++i )
-	if ( !type_expr(fd->parameters[i], expr, err) )
+	if ( !type_expr(live, fd->parameters[i], expr, err) )
 	    return "parameter " + err;
+    std::string why = named_type_reason(live, &fd->returns);
+    for ( size_t i = 0; why.empty() && i < fd->parameters.size(); ++i )
+	why = named_type_reason(live, fd->parameters[i]);
+    if ( !why.empty() )
+	return why;
     for ( size_t i = 0; m && i < m->parameters.size(); ++i )
 	if ( i >= fd->parameters.size() || !m->parameters[i]
 	  || m->parameters[i]->type != fd->parameters[i] )
@@ -315,12 +569,23 @@ void plan_builtin_registry(DialectTextParse &dp, std::vector<BuiltinGroup> &grou
 	by_name[std::make_pair(std::string(fd->namespace_name.c_str()), name)]
 	    .push_back(dp.function_keys[i]);
     }
-    groups.clear();
+    // One table, sorted by (ns, name): the function groups and the types.
+    std::map<std::pair<std::string, std::string>, BuiltinGroup> sorted;
+    for ( size_t i = 0; i < dp.type_keys.size(); ++i )
+    {
+	BuiltinGroup bg;
+	bg.ns = dp.type_keys[i].first;
+	bg.name = dp.type_keys[i].second;
+	bg.is_type = true;
+	bg.skip = type_skip_reason(live, bg.ns, bg.name);
+	sorted[std::make_pair(std::string(bg.ns.c_str()), std::string(bg.name.c_str()))] = bg;
+    }
     for ( std::map<std::pair<std::string, std::string>,
 		   std::vector<madc::dis::istring> >::const_iterator g = by_name.begin();
 	  g != by_name.end(); ++g )
     {
 	BuiltinGroup bg;
+	bg.is_type = false;
 	bg.ns = madc::dis::istring(g->first.first.c_str());
 	bg.name = madc::dis::istring(g->first.second.c_str());
 	// Registration order: the namespace overload set's, as declared.
@@ -340,15 +605,18 @@ void plan_builtin_registry(DialectTextParse &dp, std::vector<BuiltinGroup> &grou
 		bg.keys.push_back(g->second[i]);
 	for ( size_t i = 0; i < bg.keys.size() && bg.skip.empty(); ++i )
 	    bg.skip = builtin_skip_reason(live, bg.keys[i]);
-	groups.push_back(bg);
+	BuiltinGroup &slot = sorted[g->first];
+	if ( slot.is_type )
+	    slot.skip = bg.skip = "a name that is both a type and a function";
+	else
+	    slot = bg;
     }
+    groups.clear();
+    for ( std::map<std::pair<std::string, std::string>, BuiltinGroup>::const_iterator g =
+	      sorted.begin(); g != sorted.end(); ++g )
+	groups.push_back(g->second);
 }
 
-// The C++ string literal of `s` (the one C-string escape rule).
-static std::string cpp_literal(const char *s)
-{
-    return std::string("\"") + madc_c_escape_string(s, strlen(s)).c_str() + "\"";
-}
 
 // One declaration's registration, as generated code.
 static void emit_declaration(std::ostream &out, Program &live, const madc::dis::istring &key)
@@ -363,7 +631,7 @@ static void emit_declaration(std::ostream &out, Program &live, const madc::dis::
 	out << "\tconst BuiltinParam p[] = {\n";
 	for ( size_t i = 0; i < fd->parameters.size(); ++i )
 	{
-	    type_expr(fd->parameters[i], expr, err);
+	    type_expr(live, fd->parameters[i], expr, err);
 	    out << "\t    { " << expr << ", "
 		<< cpp_literal(i < fd->param_cpp_spellings.size()
 			       ? fd->param_cpp_spellings[i].c_str() : "") << ", "
@@ -390,7 +658,7 @@ static void emit_declaration(std::ostream &out, Program &live, const madc::dis::
     if ( fd->internal_linkage ) flags += " | bfInternalLinkage";
     if ( fd->weak_binding ) flags += " | bfWeakBinding";
     if ( !fd->emit_symbol.empty() ) flags += " | bfEmitIsAlias";
-    type_expr(&fd->returns, expr, err);
+    type_expr(live, &fd->returns, expr, err);
     out << "\tBuiltinFunctionDecl d = { " << cpp_literal(key.c_str()) << ", "
 	<< cpp_literal(fd->namespace_name.c_str()) << ", "
 	<< cpp_literal(fd->function_display_name.c_str()) << ", " << expr << ", "
@@ -400,6 +668,35 @@ static void emit_declaration(std::ostream &out, Program &live, const madc::dis::
 	<< ( flags.empty() ? "0u" : "0u" + flags ) << " };\n"
 	<< "\tdeclare_builtin_function(pgm, d);\n"
 	<< "    }\n";
+}
+
+// One enum's registration, as generated code.
+static void emit_enum(std::ostream &out, Program &live, const madc::dis::istring &ns,
+		      const madc::dis::istring &name)
+{
+    DataDefENUM *e = registered_namespace_type(live, ns, name)->as_enum_dd();
+    bool unscoped = enum_is_unscoped(live, ns, e);
+    if ( !e->enumerators.empty() )
+    {
+	out << "    static const BuiltinEnumerator e[] = {\n";
+	for ( size_t i = 0; i < e->enumerators.size(); ++i )
+	{
+	    Variable *v = unscoped ? namespace_variable(live, ns, e->enumerators[i].first) : NULL;
+	    out << "\t{ " << cpp_literal(e->enumerators[i].first.c_str()) << ", "
+		<< (long long)e->enumerators[i].second << "LL, "
+		<< cpp_literal(v ? v->storage_alias_name.c_str() : "") << " },\n";
+	}
+	out << "    };\n";
+    }
+    std::string under = "NULL", err;
+    if ( e->underlying )
+	type_expr(live, e->underlying, under, err);
+    out << "    BuiltinEnumDecl d = { " << cpp_literal(ns.c_str()) << ", "
+	<< cpp_literal(name.c_str()) << ", " << (unscoped ? "false" : "true") << ", "
+	<< (e->fixed_base ? "true" : "false") << ", " << under << ", " << e->size << "u, "
+	<< (unsigned)e->type() << "u, " << (e->enumerators.empty() ? "NULL" : "e") << ", "
+	<< e->enumerators.size() << " };\n"
+	<< "    declare_builtin_enum(pgm, d);\n";
 }
 
 bool emit_builtin_registry(std::ostream &out, std::ostream &diag)
@@ -433,11 +730,15 @@ bool emit_builtin_registry(std::ostream &out, std::ostream &diag)
 	if ( !bg.skip.empty() )
 	{
 	    out << "// not yet built: " << bg.ns << "::" << bg.name << " — " << bg.skip << "\n";
+	    if ( bg.is_type )
+		out << "//   " << builtin_type_line(live, bg.ns, bg.name).c_str() << "\n";
 	    for ( size_t k = 0; k < bg.keys.size(); ++k )
 		out << "//   " << builtin_function_line(live, bg.keys[k]).c_str() << "\n";
 	    continue;
 	}
 	out << "static void b" << built << "(Program &pgm)\n{\n";
+	if ( bg.is_type )
+	    emit_enum(out, live, bg.ns, bg.name);
 	for ( size_t k = 0; k < bg.keys.size(); ++k )
 	    emit_declaration(out, live, bg.keys[k]);
 	out << "}\n\n";

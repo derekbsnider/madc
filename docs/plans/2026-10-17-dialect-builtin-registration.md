@@ -342,3 +342,22 @@ differential: 511 declarations identical, 157 keys not yet built.
   three bodies wait for R3.
 
 Next: `git` / `markdown` bodies by hand; `ui_web` / `ui_ws` are R3.
+
+## R2 execution (2026-10-17)
+
+- Enums: `declare_builtin_enum` reproduces `TokenENUM::parse` for a tagged
+  namespace-scope C++ enum — the DataDefENUM (base and storage as the close
+  left them), one TokenDataType under the bare tag and under the namespace,
+  every enumerator a constant in the tag's pseudo-namespace, and an unscoped
+  enum's (`ui::level`) also bound in the namespace and the program scope with
+  its storage alias (a mangled NAME — target-neutral).
+- A function or builder names a dialect type through `builtin_type(pgm, ns,
+  name)`: the program's registration, or the table entry's builder the first
+  time. Builders are idempotent (a function's builder may register a type
+  before the table reaches it). A singleton type (`madc::value` is ddARRAY)
+  is every program's.
+- The differential compares `builtin_type_line` for every built type: the
+  enum's spelling, size, storage, base, flat and namespace registration, and
+  each enumerator's value, flags, type and bindings. 526 declarations and
+  types identical; 142 keys not yet built (function-pointer typedefs,
+  structs, classes and their members, bodies).

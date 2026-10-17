@@ -80,6 +80,45 @@ struct BuiltinFunctionDecl
 // alias), as a live parse's declaration registers.
 Variable *declare_builtin_function(Program &pgm, const BuiltinFunctionDecl &d);
 
+// A builtin enumeration as generated code spells it: what TokenENUM::parse
+// registers for a tagged namespace-scope C++ enum (parser.cpp) — the
+// DataDefENUM (its base and storage as the close left them), one
+// TokenDataType under the bare tag and under the namespace, every enumerator
+// a constant in the tag's pseudo-namespace `ns::Tag`, and an unscoped enum's
+// ALSO bound in the namespace and the program scope.
+struct BuiltinEnumerator
+{
+    const char *name;
+    int64_t value;
+    const char *alias;		// an unscoped enumerator's storage alias ("" for scoped)
+};
+
+struct BuiltinEnumDecl
+{
+    const char *ns;
+    const char *name;
+    bool scoped;		// `enum class`: enumerators only under ns::Tag
+    bool fixed_base;		// DataDefENUM::fixed_base
+    DataDef *underlying;	// DataDefENUM::underlying
+    size_t size;		// the storage (DataDefENUM::restore_layout)
+    uint32_t rawtype;
+    const BuiltinEnumerator *enumerators;
+    size_t nenumerators;
+};
+
+DataDefENUM *declare_builtin_enum(Program &pgm, const BuiltinEnumDecl &d);
+
+// A dialect type by its namespace and name: the program's registration, or —
+// the first time — its builder's (the table's entry for ns::name). NULL when
+// the dialect has no such type. The generated code names a dialect type
+// through this, so a builder registers what it needs first.
+DataDef *builtin_type(Program &pgm, const char *ns, const char *name);
+
+// A registered namespace type's identity, field by field, tab-separated (the
+// types' half of the differential). Empty when ns::name names no type.
+madc::dis::istring builtin_type_line(Program &pgm, const madc::dis::istring &ns,
+				     const madc::dis::istring &name);
+
 // A registered free function's identity, field by field, tab-separated: what
 // the generated registration must reproduce of a live parse (R1's
 // differential). `key` is its funcdef_map key. Empty when no function is
@@ -99,6 +138,8 @@ struct DialectTextParse
     std::shared_ptr<Program> live;
     std::shared_ptr<Program> base;
     std::vector<madc::dis::istring> function_keys;
+    // The namespace types `live` registered beyond `base`, as (ns, name).
+    std::vector<std::pair<madc::dis::istring, madc::dis::istring> > type_keys;
 };
 bool parse_dialect_as_text(DialectTextParse &out, std::string &err);
 
@@ -110,7 +151,8 @@ struct BuiltinGroup
 {
     madc::dis::istring ns;
     madc::dis::istring name;
-    std::vector<madc::dis::istring> keys;
+    std::vector<madc::dis::istring> keys;	// a function group's funcdef_map keys
+    bool is_type;				// a namespace type (keys empty)
     std::string skip;
 };
 void plan_builtin_registry(DialectTextParse &dp, std::vector<BuiltinGroup> &groups);
