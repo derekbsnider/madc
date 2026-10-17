@@ -269,6 +269,35 @@ const char *ruby_sub_value(const madc::value *v, const char *pattern,
 // simplified: just returns the string, actual freeze enforcement would need compiler support
 
 
+// The ruby:: publics (cpp-first-api.md): <ns_ruby> declares them,
+// libmadc defines them here, resolved mangled-direct. The extern "C"
+// functions below are C-linkage wrappers over the same cores.
+namespace ruby {
+
+void chars(madc::value &out, const char *text) { ruby_chars(&out, text); }
+int64_t count(const char *text, const char *chars) { return ruby_count(text, chars); }
+int64_t include(const char *text, const char *substr) { return ruby_include(text, substr); }
+void rotate(madc::value &values, int64_t n) { ruby_rotate(&values, n); }
+void compact(madc::value &values) { ruby_compact(&values); }
+void flatten(madc::value &values, const char *text) { ruby_flatten(&values, text); }
+const char *squeeze(madc::value &s) { return ruby_squeeze_value(&s); }
+const char *squeeze(const char *s) { return ruby_squeeze_cstr(s); }
+const char *capitalize(madc::value &s) { return ruby_capitalize_value(&s); }
+const char *capitalize(const char *s) { return ruby_capitalize_cstr(s); }
+const char *tr(madc::value &s, const char *from, const char *to) { return ruby_tr_value(&s, from, to); }
+const char *tr(const char *s, const char *from, const char *to) { return ruby_tr_cstr(s, from, to); }
+const char *gsub(madc::value &s, const char *pattern, const char *replacement) { return ruby_gsub_value(&s, pattern, replacement); }
+const char *gsub(const char *s, const char *pattern, const char *replacement) { return ruby_gsub_cstr(s, pattern, replacement); }
+const char *sub(madc::value &s, const char *pattern, const char *replacement) { return ruby_sub_value(&s, pattern, replacement); }
+const char *sub(const char *s, const char *pattern, const char *replacement) { return ruby_sub_cstr(s, pattern, replacement); }
+std::string &squeeze(std::string &s) { return *ruby_squeeze(&s); }
+std::string &tr(std::string &s, const char *from, const char *to) { return *ruby_tr(&s, from, to); }
+std::string &capitalize(std::string &s) { return *ruby_capitalize(&s); }
+std::string &gsub(std::string &s, const char *pattern, const char *replacement) { return *ruby_gsub(&s, pattern, replacement); }
+std::string &sub(std::string &s, const char *pattern, const char *replacement) { return *ruby_sub(&s, pattern, replacement); }
+
+}
+
 extern "C" {
 // Thin C-linkage wrappers for transpiler import resolution
 const char *__rb_squeeze_cstr(const char *a) { return ruby_squeeze_cstr(a); }

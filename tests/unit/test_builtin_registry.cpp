@@ -43,7 +43,14 @@ TEST_CASE("R1: the generated registration registers what a live parse of the dia
 	DialectTextParse dp;
 	std::string err;
 	REQUIRE(parse_dialect_as_text(dp, err));
-	REQUIRE(dp.function_keys.size() > 700u);
+	// The text parse read every dialect file: each namespace has publics.
+	std::set<std::string> namespaces;
+	for (size_t i = 0; i < dp.function_keys.size(); ++i)
+		namespaces.insert(dp.live->funcdef_map[dp.function_keys[i]]->namespace_name.c_str());
+	const char *expect_ns[] = { "madc", "php", "perl", "python", "ruby", "rust", "js",
+				    "ui", "git", "markdown", "ui_web", "ui_ws" };
+	for (size_t i = 0; i < sizeof(expect_ns) / sizeof(expect_ns[0]); ++i)
+		CHECK_MESSAGE(namespaces.count(expect_ns[i]) == 1u, expect_ns[i]);
 	std::vector<BuiltinGroup> groups;
 	plan_builtin_registry(dp, groups);
 

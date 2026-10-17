@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+### The perl/python/ruby/rust/php publics are libmadc's C++, declared bodiless (R1)
+
+- `<ns_perl>`, `<ns_python>`, `<ns_ruby>`, `<ns_rust>`, `<ns_php>` each declare
+  every namespace public with no body and drop their `extern "C"` `__x_*`
+  declaration blocks (the lean publics and the `std::string` interop overloads
+  under the `<string>` guard); the dialect no longer names the C-linkage
+  exports (`cpp-first-api.md`). Continues the move begun for `js::`.
+- `src/ns_perl.cpp`, `ns_python.cpp`, `ns_ruby.cpp`, `ns_rust.cpp`,
+  `ns_php.cpp` gain `namespace X { ... }`: the lean publics and the
+  `std::string` interop overloads defined in libmadc over the same cores the
+  `extern "C"` exports call (perl 37, python 30, ruby 21, rust 33, php 93
+  bodies), resolved mangled-direct. `php::time` calls `::time` directly — its
+  `extern "C"` export is not a pass-through. The `extern "C"` `__x_*` exports
+  stay as C-linkage wrappers over those cores.
+- `ruby::delete` (three overloads) keeps its `<ns_ruby>` bodies over the
+  `extern "C"` cores: `delete` is a C++ keyword, so host C++ cannot define
+  `ruby::delete`; R3's dialect-body compile takes it.
+- Differential `tests/unit/test_builtin_registry.cpp`: 511 declarations
+  compared, identical; the `> 700` function-key-count floor (which counted the
+  retired `extern "C"` declarations) is replaced by a check that the text parse
+  registered publics in each of the 12 dialect namespaces; keys not yet built
+  339 -> 157.
+
 ### The js:: publics are libmadc's C++, declared bodiless in `<ns_js>` (R1)
 
 - `<ns_js>` (`include/madc/ns_js`) declares every `js::` public with no body

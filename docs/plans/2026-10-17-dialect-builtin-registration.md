@@ -330,6 +330,15 @@ Per namespace:
 - `tmp/polyglot_move.py` (scratch) did the mechanical rewrite: 37 perl
   bodies, all through pass-through cores.
 
-Done: `js` (9 lean publics + 5 interop). Next: `perl`, `python`, `ruby`,
-`rust`, `php` in one change; `git` / `markdown` bodies by hand; `ui_web` /
-`ui_ws` are R3.
+Done: `js` (9 lean publics + 5 interop); then `perl` 37, `python` 30,
+`ruby` 21, `rust` 33, `php` 93 bodies in one change (`php::time` calls
+`::time` directly — its extern "C" export is not a pass-through). The
+differential: 511 declarations identical, 157 keys not yet built.
+
+- Ruling: `ruby::delete` (three overloads) keeps its fragment bodies over
+  the extern "C" cores — `delete` is a C++ keyword, so host C++ cannot
+  define it, and an asm label would spell the Itanium symbol per platform
+  and per stdlib flavor by hand. R3's body compile takes it. Cost if wrong:
+  three bodies wait for R3.
+
+Next: `git` / `markdown` bodies by hand; `ui_web` / `ui_ws` are R3.

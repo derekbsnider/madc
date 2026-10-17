@@ -366,6 +366,51 @@ const char *perl_substr_value(const madc::value *v, int64_t offset,
 }
 
 
+// The perl:: publics (cpp-first-api.md): <ns_perl> declares them,
+// libmadc defines them here, resolved mangled-direct. The extern "C"
+// functions below are C-linkage wrappers over the same cores.
+namespace perl {
+
+void grep(madc::value &dest, const char *needle, madc::value &src) { perl_grep(&dest, needle, &src); }
+void glob(madc::value &out, const char *pattern) { perl_glob(&out, pattern); }
+int64_t scalar(madc::value &values) { return perl_scalar(&values); }
+void push(madc::value &values, const char *text) { perl_push(&values, text); }
+void unshift(madc::value &values, const char *text) { perl_unshift(&values, text); }
+void split(madc::value &out, const char *pattern, const char *text) { perl_split(&out, pattern, text); }
+int64_t index(const char *haystack, const char *needle) { return perl_index(haystack, needle); }
+int64_t rindex(const char *haystack, const char *needle) { return perl_rindex(haystack, needle); }
+int64_t length(const char *text) { return perl_length(text); }
+int64_t chop(madc::value &s) { return perl_chop_value(&s); }
+int64_t chomp(madc::value &s) { return perl_chomp_value(&s); }
+madc::value &pop(madc::value &out, madc::value &values) { return *perl_pop_value(&out, &values); }
+madc::value &shift(madc::value &out, madc::value &values) { return *perl_shift_value(&out, &values); }
+const char *join(const char *separator, madc::value &values) { return perl_join_cstr(separator, &values); }
+const char *reverse(madc::value &s) { return perl_reverse_value(&s); }
+const char *reverse(const char *s) { return perl_reverse_cstr(s); }
+const char *lc(madc::value &s) { return perl_lc_value(&s); }
+const char *lc(const char *s) { return perl_lc_cstr(s); }
+const char *uc(madc::value &s) { return perl_uc_value(&s); }
+const char *uc(const char *s) { return perl_uc_cstr(s); }
+const char *ucfirst(madc::value &s) { return perl_ucfirst_value(&s); }
+const char *ucfirst(const char *s) { return perl_ucfirst_cstr(s); }
+const char *lcfirst(madc::value &s) { return perl_lcfirst_value(&s); }
+const char *lcfirst(const char *s) { return perl_lcfirst_cstr(s); }
+const char *substr(madc::value &text, int64_t offset, int64_t length) { return perl_substr_value(&text, offset, length); }
+const char *substr(const char *text, int64_t offset, int64_t length) { return perl_substr_cstr(text, offset, length); }
+int64_t chop(std::string &s) { return perl_chop(&s); }
+int64_t chomp(std::string &s) { return perl_chomp(&s); }
+std::string &pop(std::string &result, madc::value &values) { return *perl_pop(&result, &values); }
+std::string &shift(std::string &result, madc::value &values) { return *perl_shift(&result, &values); }
+std::string &join(std::string &result, const char *separator, madc::value &values) { return *perl_join(&result, separator, &values); }
+std::string &reverse(std::string &s) { return *perl_reverse(&s); }
+std::string &lc(std::string &s) { return *perl_lc(&s); }
+std::string &uc(std::string &s) { return *perl_uc(&s); }
+std::string &ucfirst(std::string &s) { return *perl_ucfirst(&s); }
+std::string &lcfirst(std::string &s) { return *perl_lcfirst(&s); }
+std::string &substr(std::string &result, const char *text, int64_t offset, int64_t length) { return *perl_substr(&result, text, offset, length); }
+
+}
+
 extern "C" {
 // Thin C-linkage wrappers for transpiler import resolution
 int64_t __perl_chop_value(madc::value *a) { return perl_chop_value(a); }
