@@ -21,6 +21,7 @@ enum class cli_option : int
 	interactive, lsp, mcp, stdio, history_file, project, preprocess,
 	// Language / preprocessor
 	language_std, stdlib_flavor, define, include_dir, library, library_dir, module_path,
+	import_module,
 	linker_option, no_auto_load, no_includes, no_embedded_headers, no_posix_compat,
 	// Codegen
 	opt_level, no_builtin, instrument_functions,

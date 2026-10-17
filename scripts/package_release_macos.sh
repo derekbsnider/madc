@@ -21,7 +21,8 @@
 #   madc-<ver>-macos-<arch>/lib/libmadcwebview.dylib  the platform webview library
 #                                             (WKWebView + native chrome; GUI programs:
 #                                             import madcwebview) — macOS 13.3+
-#   madc-<ver>-macos-<arch>/lib/libmadcgit.dylib   the madcgit module (git::, libgit2 linked in)
+#   madc-<ver>-macos-<arch>/lib/madc/modules/git.dylib  the git module (import git;,
+#                                             libgit2 linked in) — madc's module directory
 #   madc-<ver>-macos-<arch>/lib/madc/modules/markdown.dylib  the markdown module (import markdown;,
 #                                             cmark-gfm linked in) — madc's module directory
 #   madc-<ver>-macos-<arch>/share/man/man1/madc.1.gz
@@ -138,18 +139,18 @@ package_arch() {
         echo "package_release_macos: $rtdylib missing — run 'make -C src release-macos' first" >&2
         exit 1
     fi
-    # The madcgit module (a program that says `git::…`, or `%git` at the prompt) —
-    # release-<arch>-macos builds it beside the webview library (madcgit-<arch>-macos);
-    # the minimal read-only libgit2 is STATIC-linked inside it. The loader finds
-    # it as lib/ next to bin/ (madc_self_lib_dir).
-    local madcgit="lib/madcgit/${bin_arch}-macos/libmadcgit.dylib"
-    if [ ! -f "$madcgit" ]; then
-        echo "package_release_macos: $madcgit missing — run 'make -C src release-macos' first (it builds madcgit-${bin_arch}-macos)" >&2
+    # The git module (a program that says `import git;`, or `%git` at the
+    # prompt) — release-<arch>-macos builds it beside the webview library
+    # (git-<arch>-macos); the minimal read-only libgit2 is STATIC-linked inside
+    # it. Found by name in madc's module directory (the binary's
+    # ../lib/madc/modules).
+    local git="lib/madc/modules/${bin_arch}-macos/git.dylib"
+    if [ ! -f "$git" ]; then
+        echo "package_release_macos: $git missing — run 'make -C src release-macos' first (it builds git-${bin_arch}-macos)" >&2
         exit 1
     fi
     # The markdown module (a program that says `import markdown;`, e.g. the
-    # IDEs' help), built the same way with cmark-gfm STATIC-linked inside it;
-    # found by name in madc's module directory (the binary's ../lib/madc/modules).
+    # IDEs' help), built the same way with cmark-gfm STATIC-linked inside it.
     local markdown="lib/madc/modules/${bin_arch}-macos/markdown.dylib"
     if [ ! -f "$markdown" ]; then
         echo "package_release_macos: $markdown missing — run 'make -C src release-macos' first (it builds markdown-${bin_arch}-macos)" >&2
@@ -167,7 +168,7 @@ package_arch() {
     install -m 644 "$rtlib" "$stage/$root/lib/libmadc_rt.a"
     install -m 755 "$rtdylib" "$stage/$root/lib/libmadc-0.dylib"
     install -m 755 "$webview" "$stage/$root/lib/libmadcwebview.dylib"
-    install -m 755 "$madcgit" "$stage/$root/lib/libmadcgit.dylib"
+    install -m 755 "$git" "$stage/$root/lib/madc/modules/git.dylib"
     install -m 755 "$markdown" "$stage/$root/lib/madc/modules/markdown.dylib"
     gzip -9n < docs/man/madc.1 > "$stage/$root/share/man/man1/madc.1.gz"
     install -m 644 LICENSE "$stage/$root/LICENSE"
@@ -192,7 +193,7 @@ package_arch() {
     # The webview library binds webview/webview (MIT): its notice ships with it.
     install -m 644 third_party/webview/LICENSE \
         "$stage/$root/THIRD_PARTY_NOTICES/webview-LICENSE.txt"
-    # libmadcgit.dylib statically links libgit2 (GPLv2 WITH the linking
+    # The git module statically links libgit2 (GPLv2 WITH the linking
     # exception, which permits linking into a differently-licensed application):
     # its notice ships.
     install -m 644 "$(make -C src -s print-LIBGIT2_STAGE)/src/COPYING" \

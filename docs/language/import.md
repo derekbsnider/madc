@@ -28,6 +28,30 @@ exactly as after `#include <math.h>` — plus the library is bound for the
 program (below). A module with no interface (`c` today) cannot be imported
 this way; the diagnostic points at the alias form.
 
+### madc modules — `import git;`
+
+A **madc module** is a library that describes itself (Python's modules are
+the model; a madc module is madc's built form of a C++20 named module). It
+is found **by name**, never registered in madc: `import git;` searches the
+program's own directory, then each `--module-path=<dir>`, then madc's module
+directory (`<prefix>/lib/madc/modules`) for `git.so` / `git.dylib` /
+`git.dll`, opens it and reads its description through the one entry point
+it exports (`madc_module_git`). The description holds the module's
+declarations — generated from its face (`git.madi`) when the module was
+built — and what it brings a host: REPL commands (`%git`) and a tool
+server's tools. Whether a module is installed is answered by importing it:
+
+- no such module: `import: no module named 'git'`;
+- a file that is not a madc module, or one built for another module ABI:
+  `import: module 'git': <the reason>`.
+
+madc ships two: `git` (a read-only view of a repository, libgit2 inside) and
+`markdown` (cmark-gfm inside). From the command line, `--import=<name>`
+imports a module ahead of the program; with no source it only tries the
+import and exits 0, or 69 with the import error — a launcher's test before
+it starts (`python -c "import git"`). The configuration file's
+`modules = <name>` is the same import.
+
 ### Alias form — `import name as ns;`
 
 Binds the module's library under a namespace of your choosing. Members

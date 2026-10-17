@@ -68,6 +68,8 @@ cout << "hypot(3,4) = " << hypot(3.0, 4.0) << endl;
 | `-D<name>[=value]` | define a macro |
 | `-I<dir>` | add an include search directory |
 | `-l<name>` | bind a library (spelled for the target by the module map: `-lm` → `libm.so.6` / `libSystem.B.dylib` / `ucrtbase.dll`; bare names follow `lib<name>.so` / `.dylib` / `<name>.dll`). JIT: opened globally so its symbols resolve. AOT: a `DT_NEEDED` / load command / PE import. See [language/import.md](language/import.md). |
+| `--import=<name>` | import the module `<name>` ahead of the program, as if its source began with `import <name>;` (repeatable). With no source it only tries the import, so a launcher can test before it starts: exit 0, or the import error and exit **69** (no other failure of madc's uses it). |
+| `--module-path=<dir>` | search `<dir>` for the modules `import` names, after the program's own directory and before madc's module directory (`<prefix>/lib/madc/modules`); repeatable. A module is `<dir>/<name>.so` / `.dylib` / `.dll`. |
 | `--no-embedded-headers` | disable the baked-in headers; use real system headers only |
 | `--no-auto-load` | do not act on `import` / `#load` library bindings; link explicitly via `-l` |
 
@@ -181,8 +183,9 @@ the system config dir. `--config=<file>` names one explicitly;
 `--no-config` skips the search (hermetic builds). Recognized keys: `std`
 (for a source with no recognised extension — `--std` > the extension > `std`
 > `madc`), `stdlib`, `forest`, `include` (repeatable), `modules` (repeatable:
-a module or library to load, as `-l<name>` loads it — `modules = madcgit`; the
-command line's `-l` libraries load first, and a name both give loads once),
+a module to import, as `--import=<name>` imports it — `modules = git`; the
+command line's `--import` modules import first, and a name both give imports
+once),
 `cpu-limit`, `mem-limit` — an unknown key is an error.
 
 | Variable | Effect |

@@ -568,9 +568,6 @@ bool parse_would_accept(value &out_diags, int64_t handle, const char *source)
 	{ std::string s = source ? source : "";
 	  return madc_parse_would_accept(&out_diags, handle, &s); }
 
-// (The git substrate's dialect face lived here as madc::git_* until the V6
-// seam; it is the git:: namespace of the madcgit MODULE now — <ns_git>.)
-
 // The comparison spelling of a path (V6c-2): the standing canonicalizer
 // (detail::canonical_path_for_compare — realpath when it resolves, the input
 // spelling otherwise) given a dialect face. Two spellings of one file must

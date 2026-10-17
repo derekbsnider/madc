@@ -32,7 +32,7 @@ public	src/madc_posix_io.h	host_path_stem	include/madc/ns_madc	path_stem
 public	src/madc_posix_io.h	host_path_generic	include/madc/ns_madc	path_generic
 public	src/madc_posix_io.h	host_path_make_parents	include/madc/ns_madc	path_make_parents
 public	src/madc_posix_io.h	host_path_expand_home	-	exempt: the command line's and madc.ini's ~ expansion; a host's paths arrive expanded
-public	src/madc_posix_io.h	host_path_within	-	exempt: the include resolver's and the git substrate's "under this directory"; a host asks git::relpath (madcgit)
+public	src/madc_posix_io.h	host_path_within	-	exempt: the include resolver's and the git substrate's "under this directory"; a host asks git::relpath (the git module)
 public	src/madc_posix_io.h	local_time	-	exempt: the localtime_r / localtime_s argument-order shim under madc's own stamps
 public	src/madc_posix_io.h	get_host_name	-	exempt: reached as madc::sys.hostname (the sys object's member, not a function)
 public	src/madc_posix_io.h	seek_fd	-	exempt: descriptor plumbing of madc's own files and processes; a script's I/O is stdio or php::

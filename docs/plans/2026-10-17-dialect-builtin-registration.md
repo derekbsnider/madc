@@ -611,7 +611,10 @@ modules than like C++ headers."
   description).
 - **M4 — the web module** (madcwebview: 19 bodies, the host on load, the GUI
   flag in the description); the GUI lane.
-- **M5 — `--import=NAME`** and the distinct exit status.
+- **M5 — the required dependency** (D5: an --exe / --obj records its modules;
+  a missing one at program start is the import error) and an artifact moved to
+  another machine resolving its modules by name. (`--import=NAME` and its
+  distinct exit status landed with M3, which needed them.)
 - **M6 — the deletions** (D6) once nothing uses them.
 - Then R4. After R4, on the C++20 needle: the source form (`export module`,
   `--emit=module`), `import c;` / `import m;` as shipped modules, D9's
@@ -688,3 +691,64 @@ modules than like C++ headers."
   (commonmark 664/670, the baseline), test_markdown / test_builtin_registry /
   test_cir_freeze / test_modules, static gates 0 red. The win64 and darwin
   arms are built and run at the seam.
+
+### M3 execution (2026-10-17)
+
+- madcgit becomes the module `git` (D8), all of it under `src/modules/git/`:
+  `git.madi` (the face: 16 declarations, `#include "git_enums"`), `git.cpp`
+  (GitRepo, the source adapter, the face's definitions in `namespace git` —
+  the C API `madcgit_*` is gone — the generated table and the entry point
+  `madc_module_git`), `git_verbs.{h,cpp}`, `git_history.cpp`, `git_repo.h`
+  (was `include/madcdis/`), `git_enums` (was `include/madc/bits/`),
+  `libgit2_floor.h`. `include/madc/ns_git`, `include/madc/madcgit.h`, the
+  auto-include row, its preferred-order entry, the pack-list line and the
+  module-map row are gone. `git_values.h` is gone too: its two shapers were
+  declared twice (git_repo.h is their owner).
+- The description carries the module's commands and tools
+  (`git::module_commands` — `%git`; `git::module_tools` — the history
+  tools). A session registers the commands, and a tool server adds the tools,
+  of each module its Program IMPORTED (`Program::imported_modules`). The
+  module-map's commands/tools columns, `madc_module_entry_point` and
+  `Program::loaded_modules()` are deleted (no other producer).
+- `src/git.mk` (was `madcgit.mk`; variables `GITMOD_*`, never `GIT_*` — make
+  reads the environment): `lib/madc/modules/git.{so,dll}`,
+  `lib/madc/modules/<arch>-macos/git.dylib` plus a flat copy. Packages ship it
+  in the module directory beside markdown; notices.tsv, check-module-exports
+  (old `lib/lib<m>` / `bin/<m>.dll` rows dropped: no module uses them),
+  check-one-git-owner, stage_libgit2, provisioning and the workflows follow.
+- `--import=NAME` (D11; the one option table): `Program::command_line_imports`,
+  imported by `import_command_line_modules` ahead of a unit's first token
+  (`lex_main_unit`) and at an interactive session's start; `--mcp` imports
+  them into the server's Program before its tool host reads them. With no
+  source it only tries the imports: 0, or the import error
+  (`<command-line>: … import: …`) and exit 69. Gate:
+  `scripts/import_flag_gate.sh` (`make gates`): imports, missing, several, and
+  a library that is no madc module. Test `testmodule_cliimport` (a source that
+  never says `import`).
+- `Program::import_module` is THE import by name (the directive's and
+  --import's): a name already imported is that import, else the module path
+  is searched; `ModuleImport { imported, not_found, refused }` and one wording
+  of the error.
+- Ruling: a module registers ONCE (`ImportedModule::registered`):
+  `_parser_init` re-registers every module (it reset the maps), and
+  `lex_entry` registers an entry's new import — a REPL prompt's `import git;`
+  (testrepl_gitimport) declares git:: and brings `%git`. Cost if wrong: an
+  import inside a loaded unit that is parsed without `lex_entry` would not
+  register; none exists.
+- Ruling: the 69 is sysexits.h's EX_UNAVAILABLE (every other failure of
+  madc's is 1), spelled as a constant because not every target has
+  <sysexits.h>. Cost if wrong: a launcher reading another number — one
+  constant.
+- Ruling: the configuration's `modules = NAME` (php.ini's `extension =`)
+  is the twin of `--import=NAME`, no longer `-l<name>`; a library is `-l` on
+  the command line. docs/usage.md and the key's help say so. Cost if wrong: a
+  config naming a plain library — none known (the key's documented example
+  was madcgit).
+- Tests: testgit says `import git;`; testmcp_git and testrepl_git use
+  `--import=git`; testrepl_gitimport imports git at the prompt;
+  testfragmentobjects drops git (no fragment left); test_gitrepo calls
+  `git::module_tools`; test_builtin_registry's dialect namespaces drop git;
+  test_config_file's sample names git.
+- Found on the way (own commit): test_repl_session's dialect-per-name A4/A5
+  expected the pre-R2 wrapper bodies (`__php_explode`, …) and the pre-R3
+  run-child anchor; the expectations now state the R2/R3 design.

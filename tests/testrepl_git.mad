@@ -1,6 +1,6 @@
 // %git at madc -i (split arc 1B.10, design
-// 2026-10-10-git-module-command-design.md): the madcgit module, loaded by
-// -lmadcgit, brings %git into the session's registry; each verb prints what
+// 2026-10-10-git-module-command-design.md): the git module, imported by
+// --import=git, brings %git into the session's registry; each verb prints what
 // git prints for the same question over the repository the test runs in
 // (every lane runs the suite from a checkout root), asserted by SHAPE —
 // never a sha or a count history would move: status (git status -sb's

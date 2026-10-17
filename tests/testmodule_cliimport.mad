@@ -1,0 +1,12 @@
+// --import=greet (.flags; plan 2026-10-17, D11): the module imported from the
+// command line, ahead of the program, as if this file began with `import
+// greet;` — it does not say so itself. The module is tests/modules/greet
+// (--module-path=obj/test-modules); its face is greet.madi. Oracle: the C++
+// analogue (greet.cpp's definitions called from a g++ 13 / clang++ 18 main)
+// prints the same lines.
+int main()
+{
+	println("{}", greet::hello("command line", greet::tone::plain));
+	println("{}", greet::hello("command line", greet::tone::loud));
+	return 0;
+}

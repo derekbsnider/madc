@@ -1,3 +1,3 @@
 %git status
-import madcgit;
+import git;
 %git status

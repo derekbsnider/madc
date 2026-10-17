@@ -333,8 +333,6 @@ void *madc_graph_at(void *result, int64_t handle, int64_t line, int64_t column);
 bool  madc_parse_refresh_checked(void *result, int64_t handle, void *source);
 // Nexus L4c: the same validator without the swap (the propose tier's verdict).
 bool  madc_parse_would_accept(void *result, int64_t handle, void *source);
-// (The git substrate's bridges lived here until the V6 seam; it is the madcgit
-// MODULE now — include/madc/madcgit.h is its C interface.)
 // L4b (design §3.3): revision handles by generation TAG (engine-allocated).
 int64_t madc_parse_open_tagged(void *source, void *filename);
 int64_t madc_parse_generation(int64_t handle);

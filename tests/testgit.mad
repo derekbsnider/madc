@@ -1,8 +1,10 @@
-// Nexus L4a: the git substrate's dialect face (git::*, the madcgit MODULE) over the repository
-// the test runs in — every lane runs the suite from a checkout root, so the
-// repository is always there; the assertions are SHAPE (never a sha or a count
-// that history would move). Nothing here runs a guest program; stderr stays
-// empty (.expect_quiet).
+// Nexus L4a: the git substrate's face (git::*, the git MODULE: `import git;`)
+// over the repository the test runs in — every lane runs the suite from a
+// checkout root, so the repository is always there; the assertions are SHAPE
+// (never a sha or a count that history would move). Nothing here runs a guest
+// program; stderr stays empty (.expect_quiet).
+import git;
+
 int main()
 {
     long h = git::open(".");

@@ -1,4 +1,4 @@
-// madc --mcp with the madcgit module loaded (split arc 1C.14): -lmadcgit
+// madc --mcp with the git module imported (split arc 1C.14): --import=git
 // (.flags) brings the version history to the server's tools — graph.status
 // answers this file's git state and the versioned layer, graph.commits the
 // commits touching it, graph.revision refuses a revision git cannot resolve,

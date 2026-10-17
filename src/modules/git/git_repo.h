@@ -1,17 +1,17 @@
-#ifndef __MADCDIS_GIT_REPO_H
-#define __MADCDIS_GIT_REPO_H 1
+#ifndef __MODULES_GIT_GIT_REPO_H
+#define __MODULES_GIT_GIT_REPO_H 1
 
-// madcdis/git_repo.h — the ONE owner of every libgit2 call in madc (design
+// modules/git/git_repo.h — the ONE owner of every libgit2 call in madc (design
 // docs/plans/2026-09-13-nexus-L4-design.md §4.2; plan
 // 2026-09-13-nexus-L4a-git-substrate-plan.md; gate
 // scripts/check-one-git-owner.sh). READ-ONLY by construction: no write API is
 // wrapped (a commit, a checkout, a fetch stay git's). Records are plain
 // structs; the value shapers below turn them into the ONE row shape both the
-// source adapter and the engine face (src/madc_git.cpp) answer with.
+// source adapter and the module's face (git.cpp) answer with.
 //
-// libgit2 itself is the vendored, unmodified subtree third_party/libgit2
-// (network transports OFF — scripts/check-libgit2-features.sh); <git2.h> is
-// included by src/madcdis_git_repo.cpp only, never by this header (pimpl).
+// libgit2 is a dependency linked into the git module (src/git.mk; the floor is
+// libgit2_floor.h); <git2.h> is included by git.cpp only, through
+// libgit2_floor.h, never by this header (pimpl).
 //
 // THREAD-SAFETY CONTRACT (.claude/rules/thread-safety.md): a GitRepo is
 // CONFINED to the thread that opened it — libgit2's own objects are not
@@ -22,7 +22,7 @@
 #include "libmadc/error.h"
 #include "libmadc/value.h"
 #include "madcdis/source_adapter.h"
-#include "madc/bits/git_enums"		// git::file_state — a status row's one enum text
+#include "git_enums"		// git::file_state — a status row's one enum text
 
 #include <cstdint>
 #include <string>
@@ -185,4 +185,4 @@ public:
 
 } // namespace madc
 
-#endif // __MADCDIS_GIT_REPO_H
+#endif // __MODULES_GIT_GIT_REPO_H

@@ -1,17 +1,17 @@
-// modules/madcgit/madcgit_verbs.cpp — `%git` (split arc 1B.10; design
+// modules/git/git_verbs.cpp — `%git` (split arc 1B.10; design
 // docs/plans/2026-10-10-git-module-command-design.md): the read verbs over
 // GitRepo — log, show, blame, status, diff — each printing what git prints
 // for the same question (the git command named at each verb is its oracle),
 // and the module's command row (madc_module_commands.h), which a session
-// registers when the module enters its Program. FILE's live text and the
+// registers when its Program imports the module. FILE's live text and the
 // current buffer are the host's: the session's buffer question
 // (madc::session_buffer).
 //
 // Thread contract: a verb runs on its session's thread; its repository is
 // opened and closed inside it.
 
-#include "madcgit_verbs.h"
-#include "madcdis/git_repo.h"
+#include "git_verbs.h"
+#include "git_repo.h"
 #include "madc_module_commands.h"
 #include "madc_session.h"		// session_buffer: the host's buffers
 #include "madc_posix_io.h"		// host_path_dirname
@@ -510,8 +510,8 @@ const madc_module_command git_rows[] = {
 
 } // namespace madc
 
-// The module's command rows (its map row's `commands`): one, `%git`.
-extern "C" const madc_module_command *madcgit_commands(std::size_t *count)
+// The module's command rows (its description's `commands`): one, `%git`.
+const madc_module_command *git::module_commands(std::size_t *count)
 {
     *count = sizeof(madc::git_rows) / sizeof(madc::git_rows[0]);
     return madc::git_rows;

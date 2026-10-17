@@ -57,7 +57,7 @@ TEST_CASE("every key parses, with comments, a section header and quotes") {
 		"forest = /abs/groves.msnap\n"
 		"include = /abs/one\n"
 		"include = /abs/two\n"
-		"modules = madcgit\n"
+		"modules = git\n"
 		"modules = m\n"
 		"cpu-limit = 90\n"
 		"mem-limit = \"8192\"\n");
@@ -78,7 +78,7 @@ TEST_CASE("every key parses, with comments, a section header and quotes") {
 	// modules (split arc 1A.4): names as -l takes them, in the file's order —
 	// text, never resolved against the config file's directory.
 	REQUIRE(cfg.modules.size() == 2);
-	CHECK(cfg.modules[0] == "madcgit");
+	CHECK(cfg.modules[0] == "git");
 	CHECK(cfg.modules[1] == "m");
 	CHECK(cfg.has_cpu_limit);
 	CHECK(cfg.cpu_limit == "90");

@@ -75,9 +75,9 @@ public:
     virtual void applied(const context &c, const value &nodeop) = 0;
 };
 
-// The version history of the served files (item 14) — the madcgit
+// The version history of the served files (item 14) — the git
 // module's (madc_module_tools.h), set on a registry when the module is
-// loaded. Every read names the served file by its path; false = refused,
+// imported. Every read names the served file by its path; false = refused,
 // with {error} in `out`.
 class history_source
 {

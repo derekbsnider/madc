@@ -12,7 +12,7 @@
 # by madc (madc_modules.mk's madc_module_table_rules) and compiled into the
 # module (markdown.cpp includes it).
 #
-# HOW cmark-gfm REACHES EACH TARGET (the madcgit.mk shape):
+# HOW cmark-gfm REACHES EACH TARGET (the git.mk shape):
 #   Linux/host — the pinned static cmark-gfm scripts/stage_cmark_gfm.sh builds
 #     for the host ($(CMARK_GFM_STAGE)/<target>/), linked INTO
 #     markdown.so; its COPYING ships as the notice. Nothing named cmark ships
@@ -58,7 +58,7 @@ MARKDOWN_LINK_PREREQ =
 
 ifeq ($(MODE),hosted-x86-64-windows)
 # --- Windows bundle: lib/madc/modules/markdown.dll, on the SAME UCRT
-# libstdc++/pthread runtime as madc (the madcgit.mk discipline).
+# libstdc++/pthread runtime as madc (the git.mk discipline).
 MARKDOWN_STAGED = $(CMARK_GFM_STAGE)/x86-64-windows
 MARKDOWN_AVAILABLE := 1
 MARKDOWN_CFLAGS = $(MARKDOWN_STAGE_CFLAGS)
@@ -131,7 +131,7 @@ else
 endif
 
 # A command stamp makes flag/toolchain changes rebuild the library, while
-# identical commands leave the artifact alone (the madcgit.mk discipline).
+# identical commands leave the artifact alone (the git.mk discipline).
 $(MARKDOWN_BUILD_DIR)/command: FORCE
 	@mkdir -p $(dir $@)
 	@printf '%s\n' '$(CXX) $(MARKDOWN_LINK_FLAGS) $(CXXFLAGS) $(DEFINES) $(MARKDOWN_CFLAGS) $(MARKDOWN_LIBS)' > $@.tmp
@@ -143,7 +143,7 @@ $(MARKDOWN_LIBRARY): $(MARKDOWN_SRC) $(MARKDOWN_HDRS) $(MARKDOWN_TABLE) $(MARKDO
 	$(CXX) $(MARKDOWN_LINK_FLAGS) -o $@ $(CXXFLAGS) $(DEFINES) -I. -I$(dir $(MARKDOWN_TABLE)) $(MARKDOWN_CFLAGS) $(MARKDOWN_SRC) $(MARKDOWN_LIBS)
 ifdef HOSTED_DARWIN_TARGET
 	# The flat copy of THIS arch, where the module path looks
-	# ($(LIBDIR)/madc/modules/markdown.dylib) — madcgit.mk's discipline.
+	# ($(LIBDIR)/madc/modules/markdown.dylib) — git.mk's discipline.
 	cp -f $@ $(LIBDIR)/madc/modules/markdown.dylib
 endif
 endif

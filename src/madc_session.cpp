@@ -51,7 +51,7 @@
 #include "madc_documents.h"	// document_buffer: host_documents' answer
 #include "madc_posix_io.h"	// host_path_stem / drop_extension: %call's and %build's names
 #include "madc_project.h"	// %project: the manifest's reader and writer
-#include "madc_modules.h"	// a module's row: the commands it brings (1B.10)
+#include "madc_module.h"	// an imported module's description: its commands (1B.10)
 #include "madc_cli.h"		// madc_cli_standard_of: a standard option read as the command line reads it
 
 // The command registry (plan §41.8a, D13/D24; the modes and the extension
@@ -375,11 +375,9 @@ void InteractiveSession::register_module_commands()
 {
     if ( !prog->is_auto_library_loading_enabled() )
 	return;
-    for ( const madc::dis::istring &spelling : prog->loaded_modules() )
-	if ( modules_seen.insert(spelling).second )
-	    add_module_commands(reinterpret_cast<madc_module_commands_fn>(
-				   madc_module_entry_point(spelling,
-							   madc_module_entry::commands)));
+    for ( const Program::ImportedModule &m : prog->imported_modules )
+	if ( modules_seen.insert(m.name).second )
+	    add_module_commands(m.desc->commands);
 }
 
 bool InteractiveSession::add_host_command(const std::string &name,

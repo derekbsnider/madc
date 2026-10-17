@@ -8,9 +8,9 @@
 #define MADC_UNIT_TEST
 #include "doctest.h"
 
-#include "madcdis/git_repo.h"
+#include "modules/git/git_repo.h"
 #include "libmadc/datasource.h"
-#include "modules/madcgit/madcgit_verbs.h"	// %git's verbs (1B.10)
+#include "modules/git/git_verbs.h"	// %git's verbs (1B.10), the module's tools entry (1C.14)
 #include "madc_tools.h"			// the history source the module hands the tools (1C.14)
 #include "madc_session.h"		// set_host_buffers: a program's own buffers
 #include "madc_documents.h"		// document_buffer: a world's documents answer
@@ -660,18 +660,16 @@ TEST_CASE("%git's relative dates are git's date.c (1B.10)")
 	CHECK(madc::git_relative_date(now - pairs[i].age, now) == pairs[i].spelled);
 }
 
-// The module's tools entry (1C.14): madcgit_tools hands the engine's history
+// The module's tools entry (1C.14): git::module_tools hands the engine's history
 // tools its history source. ORACLE: git over the same fixture — `git log --
 // a.txt` (second, first), `git show HEAD~1:a.txt` ("one\n"), `git blame
 // --contents` of an edited buffer (first, second, the uncommitted line's
 // zero sha), `git status` (clean).
-extern "C" void madcgit_tools(madc::tools::registry &r);
-
-TEST_CASE("madcgit's history source answers the history tools over the fixture (1C.14)")
+TEST_CASE("the git module's history source answers the history tools over the fixture (1C.14)")
 {
     Fixture fx;
     madc::tools::registry r;
-    madcgit_tools(r);
+    git::module_tools(r);
     const bool has_history = r.history() != 0;
     const bool has_tools = r.find("graph.commits") && r.find("graph.revision")
 	&& r.find("graph.diff");

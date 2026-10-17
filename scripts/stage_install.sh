@@ -13,9 +13,9 @@
 # Inputs, built before it runs (from the repo root): bin/madc-release,
 # lib/release/libmadc.so (the forest inside), lib/release/libmadc_rt.a. The
 # IDE is madcide's own package (github.com/derekbsnider/madcide), which
-# carries this madc. The optional modules
-# (lib/libmadcwebview.so, lib/libmadcgit.so: weak dependencies, a program
-# that imports them loads them) are staged when they were built;
+# carries this madc. The optional libraries (lib/libmadcwebview.so, a weak
+# dependency) and the madc modules (lib/madc/modules/: git, markdown — a
+# program that imports them loads them) are staged when they were built;
 # MADC_STAGE_REQUIRE_MODULES=1 (the packages) makes a missing one an error.
 set -e
 cd "$(dirname "$0")/.."
@@ -72,9 +72,9 @@ fi
 # context stack + VLA scope-exit helpers, nothing else. Platform parity: the
 # mac and win archives already ship it.
 install -m 644 lib/release/libmadc_rt.a "$root/$libdir/libmadc_rt.a"
-# The optional libraries: the platform webview library (the loader tries
-# <exedir>/../lib first, then the system search) and the madcgit module.
-for m in libmadcwebview.so libmadcgit.so; do
+# The optional library: the platform webview library (the loader tries
+# <exedir>/../lib first, then the system search).
+for m in libmadcwebview.so; do
 	if [ -f "lib/$m" ]; then
 		install -m 755 "lib/$m" "$root/$libdir/$m"
 	elif [ -n "$MADC_STAGE_REQUIRE_MODULES" ]; then
@@ -85,7 +85,7 @@ done
 # The madc modules (include/madc_module.h), found by NAME in madc's module
 # directory — the binary's ../lib/madc/modules — whatever the distribution's
 # library directory: <prefix>/lib/madc/modules.
-for m in markdown; do
+for m in git markdown; do
 	if [ -f "lib/madc/modules/$m.so" ]; then
 		install -d "$p/lib/madc/modules"
 		install -m 755 "lib/madc/modules/$m.so" "$p/lib/madc/modules/$m.so"
@@ -97,13 +97,13 @@ done
 gzip -9n < docs/man/madc.1 > "$p/share/man/man1/madc.1.gz"
 install -m 644 LICENSE "$p/share/doc/madc/copyright"
 install -m 644 third_party/webview/LICENSE "$p/share/doc/madc/webview-copyright"
-# libmadcgit.so statically links the pinned libgit2 (GPLv2 WITH the linking
+# The git module statically links the pinned libgit2 (GPLv2 WITH the linking
 # exception, which permits linking into a differently-licensed program): its
 # notice ships wherever the module does, from the staged source it was built
-# from (src/madcgit.mk's LIBGIT2_STAGE). A module built against a system
-# libgit2 (the Homebrew formula's; MADCGIT_LIBGIT2 empty) links no copy, and
+# from (src/git.mk's LIBGIT2_STAGE). A module built against a system
+# libgit2 (the Homebrew formula's; GITMOD_LIBGIT2 empty) links no copy, and
 # that library's own package carries its notice.
-if [ -f "$root/$libdir/libmadcgit.so" ] && [ -n "$(make -C src -s print-MADCGIT_LIBGIT2)" ]; then
+if [ -f "$p/lib/madc/modules/git.so" ] && [ -n "$(make -C src -s print-GITMOD_LIBGIT2)" ]; then
 	install -m 644 "$(make -C src -s print-LIBGIT2_STAGE)/src/COPYING" "$p/share/doc/madc/libgit2-copyright"
 fi
 # A markdown module linked against the staged cmark-gfm carries its code

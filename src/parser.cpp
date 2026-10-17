@@ -454,8 +454,8 @@ bool internal_program_graph_at(int64_t handle, int64_t line, int64_t column,
 bool internal_program_parse_refresh_checked(::Program &self, int64_t handle,
 					    const std::string &source_text,
 					    value &out_diags, bool commit);
-// The git substrate (Nexus L4a) is the madcgit MODULE since the V6 seam
-// (src/modules/madcgit/madcgit.cpp; owner ruling 2026-09-15: libgit2 is a
+// The git substrate (Nexus L4a) is the git MODULE since the V6 seam
+// (src/modules/git/; owner ruling 2026-09-15: libgit2 is a
 // dependency of the IDE, never part of madc) — no Program face, no bridge here.
 // L4b (design §3.3): revision handles by generation TAG — see madc_program.cpp.
 int64_t internal_program_parse_open_tagged(::Program &self, const std::string &source_text,
@@ -1387,9 +1387,6 @@ void *madc_graph_at(void *result, int64_t handle, int64_t line, int64_t column)
     madc::internal_program_graph_at(handle, line, column, out);
     return result;
 }
-
-// (The git substrate's bridges lived here until the V6 seam; the madcgit
-// MODULE now carries its own C API — src/modules/madcgit/madcgit.cpp.)
 
 // L4b: revision handles by generation TAG. parse_open_tagged needs the active
 // Program exactly as madc_parse_open does; generation/route read the registry.
@@ -30923,7 +30920,11 @@ void Program::_parser_init()
     // populate lazy_map for included headers (actual registration deferred to first use)
     register_included_lazy_surfaces();
     register_namespace_specs();
-    register_imported_modules();	// the TU's `import NAME;` modules (lexed before this)
+    // The TU's `import NAME;` modules (lexed before this), every one again:
+    // this init reset the maps they registered into.
+    for ( size_t m = 0; m < imported_modules.size(); ++m )
+	imported_modules[m].registered = false;
+    register_imported_modules();
     // clang's __make_integer_seq builtin template: a marker registration so
     // every template-id head lookup (type AND expression lanes) recognizes
     // the name and funnels to instantiate_template_use, whose native arm
@@ -83708,6 +83709,8 @@ bool Program::begin_interactive_session(const madc::dis::istring &display_name)
     const char *fname = intern_file(display_name.empty() ? "<session>" : display_name);
     forest_root_file = fname;
     source.fname(fname);
+    if ( !import_command_line_modules() )	// --import: the session's from its start
+	return false;
     tkProgram = new TokenProgram();
     tkFunction = tkProgram;
     flush_forest_pending_globals();

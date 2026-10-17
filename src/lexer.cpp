@@ -1477,9 +1477,6 @@ static const std::map<madc::dis::istring, madc::dis::istring> &auto_include_iden
 	{"ui", "ns_ui"},
 	{"ui_web", "ns_ui_web"},
 	{"ui_ws", "ns_ui_ws"},
-	// The git:: namespace (Nexus L4a → the V6 seam): the madcgit MODULE's
-	// dialect face — <ns_git> imports the module and wraps its C API.
-	{"git", "ns_git"},
 	// The web UI LEVEL's enumerator (ui::WEB, <bits/ui_enums>): a program
 	// that names the level it wants (`ui::open(ui::WEB)`, `lvl = ui::WEB`)
 	// wants the target that serves it — <ns_ui_web>, whose initializer
@@ -1623,7 +1620,6 @@ static std::vector<madc::dis::istring> ordered_auto_include_headers(const std::s
 	"ns_ui",
 	"ns_ui_web",
 	"ns_ui_ws",
-	"ns_git",
 	NULL
     };
 
@@ -2073,22 +2069,19 @@ TokenBase *Program::tokenize_import_directive()
     // A madc MODULE (madc_module.h): found by name on the module path, it
     // describes itself — no row, nothing in the core. The alias form binds a
     // library's exports, never a module.
+    std::string not_found;
     if ( alias.empty() )
     {
-	std::string path = madc_module_find_file(name, module_search_path());
-	if ( !path.empty() )
-	{
-	    std::string err;
-	    if ( !import_madc_module(madc::dis::istring(name), path, err) )
-		Throw << "import: module '" << name << "': " << err << flush;
-	    DBG(std::cout << "import " << name << " -> " << path << " (module)" << std::endl);
+	ModuleImport got = import_module(madc::dis::istring(name), not_found);
+	if ( got == ModuleImport::imported )
 	    return getToken();
-	}
+	if ( got == ModuleImport::refused )
+	    Throw << "import: " << not_found << flush;
     }
     const MadcModuleSpec *row = madc_module_find(name);
     madc::dis::istring spelling = madc_module_library_spelling(name);
     if ( alias.empty() && !row )
-	Throw << "import: no module named '" << name << "'" << flush;
+	Throw << "import: " << not_found << flush;
     if ( alias.empty() && !row->interface )
 	Throw << "import: module '" << name << "' has no interface; bind it with"
 	      << " `import " << name << " as <alias>;`" << flush;
@@ -2187,9 +2180,6 @@ bool Program::import_madc_module(const madc::dis::istring &name, const std::stri
 				 std::string &err)
 {
     err.clear();
-    for ( size_t i = 0; i < imported_modules.size(); ++i )
-	if ( imported_modules[i].name == name )
-	    return true;
     void *handle = madc_module_open(path, err);
     if ( !handle )
 	return false;
@@ -2218,6 +2208,7 @@ bool Program::import_madc_module(const madc::dis::istring &name, const std::stri
     im.name = name;
     im.path = madc::dis::istring(path.c_str());
     im.desc = d;
+    im.registered = false;
     imported_modules.push_back(im);
     if ( d->flags & mdGui )
 	bound_gui_module = true;
@@ -2225,18 +2216,67 @@ bool Program::import_madc_module(const madc::dis::istring &name, const std::stri
     return true;
 }
 
+// THE import of a madc module by name — the directive's and --import's. A
+// name this Program already imported is that import (no second search); else
+// the module path is searched and the module opened (import_madc_module).
+Program::ModuleImport Program::import_module(const madc::dis::istring &name, std::string &err)
+{
+    err.clear();
+    for ( size_t i = 0; i < imported_modules.size(); ++i )
+	if ( imported_modules[i].name == name )
+	    return ModuleImport::imported;
+    std::string path = madc_module_find_file(name.c_str(), module_search_path());
+    if ( path.empty() )
+    {
+	err = std::string("no module named '") + name.c_str() + "'";
+	return ModuleImport::not_found;
+    }
+    std::string why;
+    if ( !import_madc_module(name, path, why) )
+    {
+	err = std::string("module '") + name.c_str() + "': " + why;
+	return ModuleImport::refused;
+    }
+    DBG(std::cout << "import " << name << " -> " << path << " (module)" << std::endl);
+    return ModuleImport::imported;
+}
+
+// --import=NAME, ahead of the unit's first token (lex_main_unit) and of an
+// interactive session's first entry: as if the source began with
+// `import NAME;`. A failure is the import error, at the command line (gcc's
+// <command-line> spelling).
+bool Program::import_command_line_modules()
+{
+    for ( size_t i = 0; i < command_line_imports.size(); ++i )
+    {
+	std::string err;
+	if ( import_module(command_line_imports[i], err) != ModuleImport::imported )
+	{
+	    record_frontend_error(Program::DiagnosticPhase::lexer, "import: " + err,
+				  "<command-line>", 0, 0);
+	    return false;
+	}
+    }
+    return true;
+}
+
 // The imported modules' declarations, registered once the parser's state
-// exists (_parser_init — the import ran at LEX time, before it): each table
-// in order, each function stamped as its module's member.
+// exists — _parser_init for a unit (the import ran at LEX time, before it),
+// lex_entry for an interactive entry's import: each module not yet
+// registered, its table in order, each function stamped as its module's
+// member.
 void Program::register_imported_modules()
 {
     const ImportedModule *was = registering_module;
     for ( size_t m = 0; m < imported_modules.size(); ++m )
     {
+	if ( imported_modules[m].registered )
+	    continue;
 	const MadcModuleDescription *d = imported_modules[m].desc;
 	registering_module = &imported_modules[m];
 	for ( size_t i = 0; i < d->ndeclarations; ++i )
 	    d->declarations[i].build(*this);
+	imported_modules[m].registered = true;
     }
     registering_module = was;
 }
@@ -12279,7 +12319,8 @@ void Program::tokenize(istream &ss)
 
 
 // Lex the main unit whose text the Source holds — the ONE lex loop of
-// tokenize (a file) and tokenize_buffer (a buffer). Every token goes into the
+// tokenize (a file) and tokenize_buffer (a buffer), --import's modules first.
+// Every token goes into the
 // stream, with a yield point every LEX_YIELD_GRAIN tokens (the token pump's
 // chunk grain — sub-millisecond slices; the check is one counter compare, and
 // parse_yield_point itself no-ops without tasks; it is the pump the IDE's
@@ -12289,6 +12330,8 @@ void Program::tokenize(istream &ss)
 // diagnostic whose cause add_diagnostic reads off the Source.
 bool Program::lex_main_unit(const char *fname)
 {
+    if ( !import_command_line_modules() )
+	return false;
     TokenBase *tb;
     try
     {
@@ -12531,6 +12574,8 @@ bool Program::lex_entry(const madc::dis::istring &text, const madc::dis::istring
     ParsePosition::reset();
     if ( !lex_unit_text(fname, entry) )
 	return false;
+    register_imported_modules();	// the entry's `import NAME;` (the session's
+					// parser state exists: _parser_init ran once)
     inject_pending_auto_includes();
     flush_forest_pending_globals();
     // The entry is the unit being parsed: its own tokens are the "main

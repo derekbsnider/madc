@@ -5629,29 +5629,26 @@ public:
     // them as OPTIONAL entries (the loader lifts the guard for a GUI row and
     // opens what it can without failing).
     std::vector<madc::dis::istring> module_optional_libs;
-    // The spellings of the modules this Program loaded: -l / #load, then its
-    // imports' optional rows — the walk a session's module commands and a
-    // tool server's module tools both read (madc_module_entry_point).
-    std::vector<madc::dis::istring> loaded_modules() const
-    {
-	std::vector<madc::dis::istring> all(loaded_lib_paths);
-	all.insert(all.end(), module_optional_libs.begin(), module_optional_libs.end());
-	return all;
-    }
     // A module row flagged MADC_MODULE_GUI was bound by this TU (`import
     // madcwebview;`): the driver lifts an armed memory guard before running.
     bool bound_gui_module;
     // The madc MODULES this Program imported (madc_module.h): each one's name,
     // the file the import opened, and its description. An import registers
-    // its module's declarations; builtin_type asks the imported tables for a
-    // type a builder names.
+    // its module's declarations (once: `registered`); builtin_type asks the
+    // imported tables for a type a builder names; a session's commands and a
+    // tool server's tools come from the descriptions.
     struct ImportedModule
     {
 	madc::dis::istring name;
 	madc::dis::istring path;
 	const MadcModuleDescription *desc;
+	bool registered;
     };
     std::vector<ImportedModule> imported_modules;
+    // --import=NAME (and the configuration's `modules`): imported ahead of the
+    // program's own source, as if it began with `import NAME;`. Kept across
+    // tokenizer resets.
+    std::vector<madc::dis::istring> command_line_imports;
     // Where `import NAME;` looks for a module before madc's own module
     // directory (Python's sys.path): the driver's entries — the program's own
     // directory, then each --module-path. Kept across tokenizer resets.
@@ -5661,10 +5658,20 @@ public:
     const ImportedModule *registering_module;
     std::vector<std::string> module_search_path() const;
     // `import NAME;` for a madc module found at `path`: open it, read its
-    // description, check its ABI, register its declarations. False + err: the
-    // import failed (the caller words the import error).
+    // description, check its ABI, record it. False + err: the import failed
+    // (the caller words the import error).
     bool import_madc_module(const madc::dis::istring &name, const std::string &path,
 			    std::string &err);
+    // THE import of a madc module by name (the directive's, --import's): found
+    // on module_search_path() and imported, or not_found, or refused. `err` is
+    // the import error's text after "import: " for both failures.
+    enum class ModuleImport : unsigned char { imported, not_found, refused };
+    ModuleImport import_module(const madc::dis::istring &name, std::string &err);
+    // The command_line_imports, after a tokenizer reset: false = one failed,
+    // recorded as a lexer diagnostic.
+    bool import_command_line_modules();
+    // Each imported module not yet registered: its declarations, in table
+    // order, each function stamped as the module's member.
     void register_imported_modules();
     // LEX-time state: between `#pragma madc module_begin("<spelling>")` and
     // `module_end` (the import directive's synthetic wrap of a LAZY row's

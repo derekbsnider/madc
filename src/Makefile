@@ -184,7 +184,7 @@ MIRBUILD = $(abspath ../obj/mir)
 # libgit2 is NOT in this repository and NOT in libmadc (owner ruling
 # 2026-09-15, superseding the L4a vendoring): madc carries no fixes to it, so
 # it is an ordinary dependency of the IDE's nexus — the SYSTEM library, bound
-# by the optional madcgit MODULE (src/madcgit.mk, lib/libmadcgit.so), never
+# by the git MODULE (src/git.mk, lib/madc/modules/git.so), never
 # linked into a madc image. The engine's export surface carries no git_*
 # symbol (scripts/check-c-abi-surface.sh).
 # MADC_VERSION (computed below from ../VERSION) is threaded into the binary as a
@@ -807,9 +807,9 @@ pkgconfigdir ?= $(libdir)/pkgconfig
 TESTDIR  = ../tests/unit
 TESTSRCS = $(wildcard $(TESTDIR)/*.cpp)
 MADDAT_TESTSRCS = $(TESTDIR)/test_libmadc_bdb.cpp $(TESTDIR)/test_libmadc_gdbm.cpp $(TESTDIR)/test_libmadc_qdbm.cpp $(TESTDIR)/test_libmadc_sqlite.cpp
-# The modules' unit tests link the module and its dependency: madcgit's
+# The modules' unit tests link the module and its dependency: git's
 # libgit2 (the staged archive, or a system libgit2 at the floor), markdown's
-# cmark-gfm (the staged archives, or a system cmark-gfm). madcgit.mk /
+# cmark-gfm (the staged archives, or a system cmark-gfm). git.mk /
 # markdown.mk build each (and add it to TESTBINS) where its dependency is
 # present.
 MODULE_TESTSRCS = $(TESTDIR)/test_gitrepo.cpp $(TESTDIR)/test_markdown.cpp
@@ -838,9 +838,9 @@ LIBMADC_STAGE_C_SMOKE = $(LIBMADC_STAGE_ROOT)/libmadc_c_smoke
 # build when you are NOT about to run unit tests, pass BUILD_TESTS=0.
 BUILD_TESTS ?= 1
 ifeq ($(BUILD_TESTS),1)
-DEFAULT_TARGETS = $(LIBMADC_STATIC) $(LIBMADC_RT) $(BIN) $(LIBMADC_SHARED) $(TESTBINS) $(MADCGIT_DEFAULT) $(MARKDOWN_DEFAULT) $(TEST_MODULE_LIBS)
+DEFAULT_TARGETS = $(LIBMADC_STATIC) $(LIBMADC_RT) $(BIN) $(LIBMADC_SHARED) $(TESTBINS) $(GITMOD_DEFAULT) $(MARKDOWN_DEFAULT) $(TEST_MODULE_LIBS)
 else
-DEFAULT_TARGETS = $(LIBMADC_STATIC) $(LIBMADC_RT) $(BIN) $(LIBMADC_SHARED) $(MADCGIT_DEFAULT) $(MARKDOWN_DEFAULT)
+DEFAULT_TARGETS = $(LIBMADC_STATIC) $(LIBMADC_RT) $(BIN) $(LIBMADC_SHARED) $(GITMOD_DEFAULT) $(MARKDOWN_DEFAULT)
 endif
 
 
@@ -859,7 +859,7 @@ STAGE_HOST_TARGET := $(shell bash ../scripts/stage_cmake_args.sh --target host)
 
 include madc_modules.mk
 include webview.mk
-include madcgit.mk
+include git.mk
 include markdown.mk
 
 libmadc:
@@ -1006,14 +1006,13 @@ MACHO_READER = bin/madc
 RELEASE_MACOS_ARCHES = arm64 x86-64
 endif
 # The platform webview library (webview.mk) rides the release of each arch:
-# package_release_macos.sh ships it as lib/libmadcwebview.dylib. The madcgit
-# module (madcgit.mk) rides too, with the minimal static libgit2 linked in;
-# package_release_macos.sh ships it as lib/libmadcgit.dylib. So does the
-# markdown module (markdown.mk, cmark-gfm linked in): lib/madc/modules/markdown.dylib.
+# package_release_macos.sh ships it as lib/libmadcwebview.dylib. The madc
+# modules ride too: git (git.mk, the minimal static libgit2 linked in) and
+# markdown (markdown.mk, cmark-gfm linked in), shipped in lib/madc/modules/.
 release-%-macos:
 	$(MAKE) hosted-$*-macos
 	$(MAKE) webview-$*-macos
-	$(MAKE) madcgit-$*-macos
+	$(MAKE) git-$*-macos
 	$(MAKE) markdown-$*-macos
 	$(DARWIN_STRIP) -o ../bin/madc-release-$*-macos ../obj/hosted-$*-macos/madc-thin
 	cd .. && MADC_READER=$(MACHO_READER) OTOOL=$(DARWIN_OTOOL) bash scripts/verify_macho_release.sh bin/madc-release-$*-macos obj/hosted-$*-macos/libmadc-0.dylib obj/hosted-$*-macos/forest.bin
@@ -1074,11 +1073,10 @@ $(MIRBUILD)/hosted-x86-64-windows/libmir.a: FORCE
 # hosted exe stays live-parse; this is the packed product twin.
 # The platform webview library (webview.mk) rides the release too:
 # package_release_windows.sh ships bin/madcwebview.dll beside madc.exe. The
-# madcgit module (madcgit.mk) rides too, with the minimal static libgit2 linked
-# in; package_release_windows.sh ships bin/madcgit.dll beside madc.exe. The
-# markdown module (markdown.mk, cmark-gfm linked in) is a madc module, found by
-# name in lib/madc/modules/markdown.dll (madc.exe's ../lib), not a DLL madc.exe
-# imports: the package ships it there.
+# madc modules ride too — git (git.mk, the minimal static libgit2 linked in)
+# and markdown (markdown.mk, cmark-gfm linked in) — found by name in
+# lib/madc/modules/ (madc.exe's ../lib), not DLLs madc.exe imports: the
+# package ships them there.
 # The release SET (docs/plans/2026-10-03-chthonia-windows-macos.md §7b,
 # forest-carriers S4's shared shape on Windows) is one directory, because a
 # PE binds its DLLs by adjacency: the thin madc.exe, the stripped
@@ -1087,11 +1085,11 @@ $(MIRBUILD)/hosted-x86-64-windows/libmir.a: FORCE
 # program) load that one engine image, and find the forest in it through
 # the library-image arm. Its own directory also keeps a dev rebuild of
 # bin/libmadc-0.dll (no forest) from ever standing in for the release one.
-# The module DLLs a hosted madc.exe imports from beside it (bin/): what
-# release-windows ships, and what the wine lane's hosted exe loads
-# (scripts/remote_build.sh wine) — one list.
+# The madc modules a hosted madc.exe finds by name in lib/madc/modules/:
+# what release-windows builds and the package ships, and what the wine lane's
+# hosted exe imports (scripts/remote_build.sh wine) — one list.
 modules-windows:
-	$(MAKE) madcgit-windows
+	$(MAKE) git-windows
 	$(MAKE) markdown-windows
 release-windows:
 	$(MAKE) hosted-x86-64-windows
@@ -1100,7 +1098,7 @@ release-windows:
 	$(MAKE) MODE=hosted-x86-64-windows $(WIN_RELEASE_DIR)/madc.exe
 	x86_64-w64-mingw32-strip $(WIN_RELEASE_DIR)/madc.exe
 	x86_64-w64-mingw32-strip -o $(WIN_RELEASE_DIR)/libmadc-0.dll ../bin/libmadc-0.dll
-	cp -p ../bin/libstdc++-6.dll ../bin/libwinpthread-1.dll ../bin/madcwebview.dll ../bin/madcgit.dll $(WIN_RELEASE_DIR)/
+	cp -p ../bin/libstdc++-6.dll ../bin/libwinpthread-1.dll ../bin/madcwebview.dll $(WIN_RELEASE_DIR)/
 	rm -f ../bin/madc-release-x86-64-windows.exe
 	cd .. && MADC_WIN_CXX_INCLUDE="$(WIN_UCRT_LIBSTDCXX)/include/c++/13.2.0" MADC_WIN_PACK_CFLAGS="$(WIN_UCRT_FLAGS)" bash scripts/forest_pack_windows.sh --image bin/release-windows/libmadc-0.dll bin/release-windows/madc.exe
 	cd .. && bash scripts/verify_pe_release.sh bin/release-windows/madc.exe
@@ -1323,6 +1321,7 @@ gates: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/tsubst_flagon_gate.sh --check
 	@cd .. && bash scripts/class_pattern_equivalence.sh
 	@cd .. && bash scripts/version_flag_gate.sh
+	@cd .. && bash scripts/import_flag_gate.sh
 	@cd .. && bash scripts/capabilities_json_gate.sh
 	@cd .. && bash scripts/ufcs_gate.sh
 	@cd .. && bash scripts/adventure_roundtrip_gate.sh

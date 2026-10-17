@@ -331,8 +331,8 @@ public:
 			  const std::string &summary, int64_t code);
     // A module's rows (split arc 1B.10, madc_module_commands.h): each that
     // registers (add_command) as a session row; the count registered.
-    // `rows_of` NULL brings none. The session calls it for each module that
-    // enters its Program (register_module_commands); a test hands its own.
+    // `rows_of` NULL brings none. The session calls it for each module its
+    // Program imports (register_module_commands); a test hands its own.
     size_t add_module_commands(madc_module_commands_fn rows_of);
     // The host's rows replaced by `rows` ({name, usage, summary, code} each;
     // the wire's `commands` request, sent after every backend start). A row
@@ -493,7 +493,7 @@ private:
     std::vector<madc::code_range> command_code;	// its ranges that are code
     std::vector<madc::code_range> no_code;	// an entry's shown value: none
     bool showed_command;		// the last entry was a command
-    std::set<madc::dis::istring> modules_seen;	// register_module_commands' spellings
+    std::set<madc::dis::istring> modules_seen;	// the imported modules whose commands registered
     madc::session_payload payload_kind;	// the last command's ask of its host
     std::vector<std::string> payload_args;
     int64_t payload_command;		// the `command` payload's row code

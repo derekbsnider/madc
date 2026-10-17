@@ -75,7 +75,7 @@ PKGS_codec="libzstd-dev libpcre2-dev zlib1g-dev"
 # without it configure reports xqdbm=0 and the build quietly loses a
 # backend (and its unit-test surface) versus the pre-crash config.
 PKGS_storage="libdb-dev libgdbm-dev libsqlite3-dev libqdbm-dev libxqdbm-dev"
-# The madcgit module (src/madcgit.mk): madc's read-only git view statically
+# The git module (src/git.mk): madc's read-only git view statically
 # links the pinned libgit2 that scripts/stage_libgit2.sh builds for each
 # target, the host included (owner floor 2026-10-04: 1.8.7 / 1.9.7 or newer;
 # Ubuntu's libgit2-dev is 1.7.2). The stage needs cmake. Without the host
@@ -209,9 +209,9 @@ report() {
 			missing=1
 		fi
 	done
-	# The madcgit cross targets (docs/plans/2026-09-15-madcgit-cross-targets-plan.md):
+	# The git module's cross targets (docs/plans/2026-09-15-madcgit-cross-targets-plan.md):
 	# the MINIMAL static libgit2 the hosted-<target> module links INTO
-	# libmadcgit.{dll,dylib} (libgit2 is a build requirement, never shipped as
+	# git.{dll,dylib} (libgit2 is a build requirement, never shipped as
 	# its own file). ONE recipe, scripts/stage_libgit2.sh; the macOS twins need
 	# the SDK (like the darwin zstd twins above).
 	local t lg2
@@ -321,23 +321,23 @@ if [ -d "${MACOS_SDK:-/workspace/sdk/MacOSX.sdk}" ]; then
 	done
 fi
 
-# madcgit libgit2 (docs/plans/2026-09-15-madcgit-cross-targets-plan.md):
-# the minimal static libgit2 statically linked into libmadcgit on every
+# The git module's libgit2 (docs/plans/2026-09-15-madcgit-cross-targets-plan.md):
+# the minimal static libgit2 statically linked into the git module on every
 # target — the host's, and the Windows/macOS bundles'. The host and windows
 # targets use toolchains always present here; the macOS twins need the
 # owner-supplied SDK (as the darwin zstd twins above) — its absence stays a
 # report MISSING, not a provisioning fail.
-echo "provision_container: staging libgit2 (madcgit, the host)"
+echo "provision_container: staging libgit2 (git, the host)"
 bash "$(dirname "$0")/stage_libgit2.sh" host || exit 1
 echo "provision_container: staging cmark-gfm (markdown, the host)"
 bash "$(dirname "$0")/stage_cmark_gfm.sh" host || exit 1
-echo "provision_container: staging libgit2 (madcgit cross, x86-64-windows)"
+echo "provision_container: staging libgit2 (git cross, x86-64-windows)"
 bash "$(dirname "$0")/stage_libgit2.sh" x86-64-windows || exit 1
 echo "provision_container: staging cmark-gfm (markdown cross, x86-64-windows)"
 bash "$(dirname "$0")/stage_cmark_gfm.sh" x86-64-windows || exit 1
 if [ -d "${MACOS_SDK:-/workspace/sdk/MacOSX.sdk}" ]; then
 	for a in arm64-macos x86-64-macos; do
-		echo "provision_container: staging libgit2 (madcgit cross, $a)"
+		echo "provision_container: staging libgit2 (git cross, $a)"
 		bash "$(dirname "$0")/stage_libgit2.sh" "$a" || exit 1
 		echo "provision_container: staging cmark-gfm (markdown cross, $a)"
 		bash "$(dirname "$0")/stage_cmark_gfm.sh" "$a" || exit 1

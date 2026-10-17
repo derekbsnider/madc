@@ -1,9 +1,10 @@
-#ifndef __MADCGIT_VERBS_H
-#define __MADCGIT_VERBS_H 1
+#ifndef __MODULES_GIT_VERBS_H
+#define __MODULES_GIT_VERBS_H 1
 
-// modules/madcgit/madcgit_verbs.h — the madcgit module's `%git` verbs
-// (madcgit_verbs.cpp; split arc 1B.10): the module's own, and its unit
-// test's (tests/unit/test_gitrepo.cpp compiles the module's sources).
+// modules/git/git_verbs.h — the git module's `%git` verbs
+// (git_verbs.cpp; split arc 1B.10): the module's own, and its unit
+// test's (tests/unit/test_gitrepo.cpp compiles the module's sources) — and
+// the two entries its description hands a host: its commands, its tools.
 //
 // Thread contract: a verb runs on its caller's thread; its repository is
 // opened and closed inside it.
@@ -12,6 +13,7 @@
 #include <string>
 
 #include "madc_module_commands.h"	// madc_module_command: the %git row
+#include "madc_module_tools.h"	// madc::tools::registry: the history tools
 
 namespace madc {
 
@@ -27,7 +29,12 @@ std::string git_relative_date(int64_t when, int64_t now);
 
 } // namespace madc
 
-// The module's command rows (its map row's `commands`): one, `%git`.
-extern "C" const madc_module_command *madcgit_commands(std::size_t *count);
+// The entries the module's description hands a host: its command rows
+// (`commands` — one, `%git`) and its tools (`tools` — the engine's history
+// tools over the module's version history, git_history.cpp).
+namespace git {
+const madc_module_command *module_commands(std::size_t *count);
+void module_tools(madc::tools::registry &r);
+}
 
 #endif

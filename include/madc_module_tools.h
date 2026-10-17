@@ -4,9 +4,10 @@
 // madc_module_tools.h — the agent tools a module brings to a tool registry
 // (split arc 1C.14; include/madc_tools.h). A module's map row
 // (src/madc_modules.cpp) names the function it exports; a tool server
-// (madc --mcp) calls it for each module its Program loaded, and the module
-// registers into the registry — its own rows, or the engine's own tool
-// family over the dependency the module isolates (madcgit hands
+// (madc --mcp) calls it for each module its Program imported (the module's
+// description's `tools`), and the module registers into the registry — its
+// own rows, or the engine's own tool family over the dependency the module
+// isolates (git hands
 // tools::add_history_tools its history_source).
 //
 // THREAD-SAFETY CONTRACT: the function runs on the registry's thread; what

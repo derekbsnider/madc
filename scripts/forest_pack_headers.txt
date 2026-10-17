@@ -125,7 +125,6 @@ ns_madc_host
 ns_ui
 ns_ui_web
 ns_ui_ws
-ns_git
 string
 vector
 list

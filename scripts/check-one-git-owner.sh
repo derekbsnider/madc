@@ -3,14 +3,13 @@
 # §4.2).
 #
 # The rule: every libgit2 call (git_* from <git2.h>) lives in
-# src/modules/madcgit/ — the madcgit MODULE: madcgit.cpp, the READ-ONLY
-# madc::GitRepo and its C API, and libgit2_floor.h, the version floor
-# madcgit.cpp includes and src/madcgit.mk preprocesses (libgit2 is the SYSTEM
-# library, a dependency of the IDE's nexus and never part of madc: owner
-# ruling 2026-09-15). Nothing
+# src/modules/git/ — the git MODULE: git.cpp, the READ-ONLY madc::GitRepo
+# and the module's face, and libgit2_floor.h, the version floor git.cpp
+# includes and src/git.mk preprocesses (libgit2 is a dependency of the IDE's
+# nexus and never part of madc: owner ruling 2026-09-15). Nothing
 # else in src/, include/ or tools/ includes <git2.h>, calls a git_* API, or
 # spawns a git binary (exec://git …). Consumers use GitRepo (C++) or git::*
-# (the dialect, <ns_git>) — so "read-only" is a property of ONE file, and the
+# (the dialect, `import git;`) — so "read-only" is a property of ONE module, and the
 # second rule below keeps it read-only: the owner calls no remote / clone /
 # fetch / push / write API (with the vendored network-off configuration gone,
 # this is where "the nexus only READS local history" lives). tests/ are
@@ -19,7 +18,7 @@
 set -u
 cd "$(dirname "$0")/.."
 
-OWNER=src/modules/madcgit
+OWNER=src/modules/git
 fail=0
 api='\bgit_(repository|revwalk|commit|blame|tree|blob|reference|status|revparse|object|remote|clone|index|signature|libgit2)_[a-z_]+[[:space:]]*\('
 inc='#include[[:space:]]*[<"]git2(/|\.h|>)'
@@ -43,9 +42,9 @@ own_definitions() {
 		if ($0 ~ /\)[[:space:]]*\{[[:space:]]*$/) print n; else pend = n
 	  }' "$@"
 }
-shapers=$( { grep -oE 'value[[:space:]]+(git_[a-z_]+_value)[[:space:]]*\(' include/madcdis/git_repo.h \
+shapers=$( { grep -oE 'value[[:space:]]+(git_[a-z_]+_value)[[:space:]]*\(' "$OWNER/git_repo.h" \
 		| sed -E 's/value[[:space:]]+//; s/[[:space:]]*\($//';
-	     find tools -type f \( -name '*.inc' -o -name '*.mad' \) -exec cat {} + \
+	     find tools -type f \( -name '*.inc' -o -name '*.mad' \) -exec cat {} + 2>/dev/null \
 		| own_definitions; } | sort -u | paste -sd'|' -)
 [ -z "$shapers" ] && shapers='__no_shapers__'
 

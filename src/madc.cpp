@@ -94,6 +94,11 @@ double time_diff(struct timeval x , struct timeval y)
 // arms by default; knobs off|auto|N; an armed memory guard is a soft limit a
 // GUI module row lifts at run start).
 
+// `madc --import=NAME` with no source: the status of a failed import — its own,
+// so a launcher tells "not installed" from any other failure (sysexits.h's
+// EX_UNAVAILABLE; spelled here because not every target has <sysexits.h>).
+static const int import_unavailable_status = 69;
+
 // Walk backwards from a line to include preceding comment block.
 static int find_comment_start(const std::vector<std::string> &lines, int func_line)
 {
@@ -468,12 +473,12 @@ static int run_lsp(std::unique_ptr<Program> prog, const char *file,
 // one message per line — the tools over FILE's document, for the lone local
 // client, the operator (the owner tier), the session's project memory
 // (memory-only: its events, proposals, records and test runs) and the tools
-// its loaded modules bring (-lmadcgit: the version history). The
+// its imported modules bring (--import=git: the version history). The
 // configured Program is the active runtime Program for the server's life, as
 // for --lsp.
 // The registry a madc --mcp server serves: the code-graph tools, the
-// session's project memory, and the tools the Program's loaded modules bring
-// (-lmadcgit: the version history, 1C.14).
+// session's project memory, and the tools the Program's imported modules
+// bring (--import=git: the version history, 1C.14).
 static int run_mcp(std::unique_ptr<Program> prog, const char *file)
 {
     madc::channel io("stdio://");
@@ -1061,6 +1066,10 @@ int main(int argc, char **argv)
             if ( *value )
                 prog->module_search_dirs.push_back(value);
             break;
+        case cli_option::import_module:
+            if ( *value )
+                prog->command_line_imports.push_back(madc::dis::istring(value));
+            break;
         case cli_option::linker_option:
         {
             // gcc's pass-through to the linker; madc is its own linker.
@@ -1331,16 +1340,15 @@ int main(int argc, char **argv)
     for ( const std::string &dir : config.include_dirs )
         prog->add_include_dir(dir);
     // `modules` (split arc 1A.4) — php.ini's `extension =`: each a module
-    // name as -l<name> takes it, after the command line's. Additive, not an
-    // override (a module is a capability, not a setting); a library the
-    // command line already named is not named twice.
+    // imported as --import=<name> imports it, after the command line's.
+    // Additive, not an override (a module is a capability, not a setting); a
+    // module the command line already named is not named twice.
     for ( const std::string &name : config.modules )
     {
-        std::string lib = madc_module_library_spelling(name);
-        if ( std::find(link_libs.begin(), link_libs.end(), lib) != link_libs.end() )
-            continue;
-        cc_link_args.push_back(lib);
-        link_libs.push_back(lib);
+        madc::dis::istring module(name.c_str());
+        if ( std::find(prog->command_line_imports.begin(), prog->command_line_imports.end(),
+                       module) == prog->command_line_imports.end() )
+            prog->command_line_imports.push_back(module);
     }
     // Discovery arm 5, on both the program and the engine — the engine's copy
     // is what --project TU programs and runtime-eval children inherit (the
@@ -1785,6 +1793,10 @@ int main(int argc, char **argv)
 	return run_lsp(std::move(prog), filearg < argc ? argv[filearg] : NULL,
 		       repl_options);
     }
+    // A tool server's tools come from its Program's imports, read before any
+    // document parses: --import's modules enter it now.
+    if ( mcp && !prog->import_command_line_modules() )
+	return 1;
     if ( mcp && project_manifest )
     {
 	if ( interactive || artifact_request || filearg != argc )
@@ -1819,6 +1831,11 @@ int main(int argc, char **argv)
 		      << "compilation terminated." << std::endl;
 	    return 1;
 	}
+	// --import with no source only tries the imports (python -c "import
+	// NAME"), so a launcher tests before it starts: 0, or the import
+	// error and a status of its own.
+	if ( !interactive && !prog->command_line_imports.empty() )
+	    return prog->import_command_line_modules() ? 0 : import_unavailable_status;
 	if ( interactive || terminal )
 	    return run_repl(std::move(prog), terminal,
 			    history_file_given ? history_file

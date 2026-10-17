@@ -1,15 +1,15 @@
-// modules/madcgit/madcgit_history.cpp — the version history the engine's
+// modules/git/git_history.cpp — the version history the engine's
 // history tools read (split arc 1C.14; include/madc_tools.h's
 // history_source): the served file's state in its repository, the commits
 // touching it, its text at a revision and the blame of its live text, over
 // GitRepo. The module's tools entry (madc_module_tools.h) hands this source
-// to the engine's history tools when a tool server loads the module.
+// to the engine's history tools when a tool server's Program imports it.
 //
 // Thread contract: a read runs on its registry's thread; its repository is
 // opened and closed inside it.
 
-#include "madcgit_values.h"
-#include "madcdis/git_repo.h"
+#include "git_verbs.h"		// git::module_tools: the module's tools entry
+#include "git_repo.h"
 #include "madc_module_tools.h"
 #include "madc_tools.h"
 #include "madc_posix_io.h"		// host_path_dirname: where the repository is found
@@ -131,9 +131,9 @@ private:
 
 } // namespace madc
 
-// The module's tools (its map row's `tools`): the engine's history tools
+// The module's tools (its description's `tools`): the engine's history tools
 // over this module's version history.
-extern "C" void madcgit_tools(madc::tools::registry &r)
+void git::module_tools(madc::tools::registry &r)
 {
     static madc::git_history history;
     madc::tools::add_history_tools(r, history);

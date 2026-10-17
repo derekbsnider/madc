@@ -131,6 +131,11 @@ const row rows[] = {
 	  s_language,
 	  "search <dir> for the modules `import NAME;` names, after the program's own directory "
 	  "and ahead of madc's own module directory (repeatable; a module is <dir>/<NAME>.<dso>)" },
+	{ id(cli_option::import_module), "import_module", { { "--import", eq } }, "<name>",
+	  s_language,
+	  "import the module <name> ahead of the program, as if its source began with "
+	  "`import <name>;` (repeatable); with no source, only try the import: exit 0, or "
+	  "print the import error and exit 69" },
 	{ id(cli_option::linker_option), "linker_option", { { "-Wl,", glued } }, "<option>",
 	  s_language,
 	  "add <dir> to the produced image's run-time library path (DT_RUNPATH / LC_RPATH), "
@@ -330,7 +335,7 @@ const row rows[] = {
 	  "forest = <file>", doc },
 	{ 0, NULL, {}, NULL, s_config, "extra include dir, repeatable, searched after -I",
 	  "include = <dir>", doc },
-	{ 0, NULL, {}, NULL, s_config, "a module to load, as -l<name> (repeatable)",
+	{ 0, NULL, {}, NULL, s_config, "a module to import, as --import=<name> (repeatable)",
 	  "modules = <name>", doc },
 	{ 0, NULL, {}, NULL, s_config,
 	  "the REPL's colours: a .theme file in place of the built-in theme",

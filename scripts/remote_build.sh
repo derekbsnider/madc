@@ -504,11 +504,10 @@ for stage in $stages; do
 		#                      VALIDATES (the `packed` rule) — without it the
 		#                      suite ran whatever hosted PE the last `win`
 		#                      stage left, however old.
-		#   make modules-windows: the module DLLs the hosted exe loads —
-		#                      madcgit.dll from bin/, the markdown module
-		#                      from lib/madc/modules/ — the same rule; a stale
-		#                      madcgit.dll failed testgit with
-		#                      "'madcgit_status' is not exported".
+		#   make modules-windows: the madc modules the hosted exe imports
+		#                      from lib/madc/modules/ (git, markdown) — the
+		#                      same rule; a stale module DLL once failed
+		#                      testgit with an unexported symbol.
 		run_remote "wine" "make -C $REMOTE_MADC/src -j\$(bash $REMOTE_MADC/scripts/build_jobs.sh) hosted-x86-64-windows; make -C $REMOTE_MADC/src -j\$(bash $REMOTE_MADC/scripts/build_jobs.sh) modules-windows; cd $REMOTE_MADC; WINEDEBUG=-all wineserver -p </dev/null >/dev/null 2>&1; WINEDEBUG=-all MADC_BIN=bin/madc-hosted-x86-64-windows.exe MADC_WRAPPER=wine MADC_SKIP_EXT='win64 wine64' bash scripts/run_tests.sh"
 		;;
 	warnscan)
@@ -551,8 +550,8 @@ for stage in $stages; do
 		# freshly-pulled compiler into runtime symbol-lookup errors
 		# in the exes it produces (2026-08-26: bin/madcide undefined
 		# __php_file_get_contents — the lib was 3 days behind bin/madc).
-		# The module images ride along — lib/libmadc[a-z]*.so (madcgit,
-		# webview) and madc's module directory lib/madc (markdown): a
+		# The module images ride along — lib/libmadc[a-z]*.so (webview)
+		# and madc's module directory lib/madc (git, markdown): a
 		# program's import opens madc's own lib directory first, so a
 		# pulled madc without them aborts at the import.
 		rsync -az --no-perms --no-owner --no-group --links \

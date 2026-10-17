@@ -1,1 +1,1 @@
-the test module is built for the Linux host only until the first shipping module brings the darwin arm (plan 2026-10-17, M2)
+the test module (tests/modules/greet) is built by the Linux host build only (src/madc_modules.mk); the shipping modules carry the darwin arm (testmarkdown, testgit)

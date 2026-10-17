@@ -250,9 +250,9 @@ namespace madc {
     bool parse_refresh_checked(value &out_diags, int64_t handle, const char *source);
     bool parse_would_accept(value &out_diags, int64_t handle, const char *source);
 
-    // The git substrate (Nexus L4a) is the git:: namespace of the madcgit
-    // MODULE since the V6 seam — <ns_git> (`import madcgit;`): libgit2 is a
-    // dependency of the IDE's nexus, never part of madc (owner, 2026-09-15).
+    // The git substrate (Nexus L4a) is the git:: namespace of the git MODULE
+    // (`import git;`): libgit2 is a dependency of the IDE's nexus, never part
+    // of madc (owner, 2026-09-15).
 
     // The COMPARISON spelling of a path (V6c-2): symlinks, `.` and `..`
     // resolved (POSIX realpath) when the path exists, the input spelling
