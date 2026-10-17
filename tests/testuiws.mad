@@ -1,0 +1,65 @@
+// The ws UI target end to end, with no browser: a WebSocket pair on
+// loopback. The serve side upgrades the accepted connection, attaches it,
+// and opens target "ws" BY NAME; the page script the engine evaluates goes
+// down the socket as one text frame, a page event coming up the socket
+// becomes the engine's semantic event, and the client closing the socket
+// ends the window. The ws host is libmadc's own (src/ui_ws.cpp): the
+// program registers no host, and open(ui::WEB) never picks it — a level is
+// served by a host the program registers. A ws open with no attached
+// connection is refused on stderr.
+// Oracle: RFC 6455 framing as madc::channel's client side speaks it, and the
+// event a page posts as testuihostfake's fake host proves it ({"kind":"text",
+// "text":"hi"} -> "event text hi").
+var served = "";
+
+void serve_one(long conn)
+{
+    madc::channel c;
+    if ( !c.adopt(conn) )
+	return;
+    if ( !c.upgrade_websocket() )
+	return;
+    ui_ws::attach(&c);
+    long t = ui::open("ws");
+    long w = ui::world_new();
+    served = format("{}open {};", served, t > 0 ? "yes" : "no");
+    served = format("{}level {};", served, ui::level_of(t) == ui::WEB ? "web" : "other");
+    served = format("{}eval {};", served, ui::eval_page(t, "madcApply([])") ? "sent" : "failed");
+    var ev;
+    while ( ui::event(ev, t, w) )
+	served = format("{}event {} {};", served, ev["event"], ev["text"]);
+    served = format("{}ended;", served);
+    ui::close(t);
+    ui::world_close(w);
+    c.close();
+}
+
+int main()
+{
+    println("unattached open -> {}", ui::open("ws"));
+    madc::channel listener("listen://127.0.0.1:0");
+    if ( !listener.ok() )
+    {
+	println("listen-fail: {}", listener.last_error());
+	return 1;
+    }
+    var addr = listener.local_endpoint();
+    var uri = format("tcp://{}", addr);
+
+    madc::channel ws(uri.c_str());
+    madc::channel a;
+    listener.wait_readable();
+    listener.accept(a);
+    long h = a.detach();
+    go serve_one(h);
+    println("client upgraded -> {}", ws.connect_websocket("/") ? 1 : 0);
+    var frame;
+    ws.readline(frame);
+    println("client frame -> [{}]", frame);
+    ws.write("{\"kind\":\"text\",\"text\":\"hi\"}");
+    ws.close();
+    madc::task_drain();
+    println("served -> {}", served);
+    listener.close();
+    return 0;
+}

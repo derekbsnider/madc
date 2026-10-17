@@ -44,7 +44,8 @@ int main() { printf("%ld %ld\n", B::sz(), B::szp()); }
   resolves to `B::host`; the `sizeof` type-id's unqualified name takes the
   flat `struct_map` bare key — the last-registered `host` — instead of the
   enclosing namespace's type.
-- Shipped instance: `ui_ws::open` in `include/madc/ns_ui_ws` mallocs
+- Shipped instance, gone since the ws host moved into libmadc
+  (`src/ui_ws.cpp`): `ui_ws::open` in `include/madc/ns_ui_ws` malloced
   `sizeof(host)` = 40 bytes (`ui_web::host`) for its 16-byte host — an
   over-allocation, harmless there, wrong.
 - A core-parser fix (the type-id's name lookup): its own focused session

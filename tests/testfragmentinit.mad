@@ -1,18 +1,15 @@
-// The ws UI host claims its target name in its fragment's file-scope
-// initializers: `static ui::ui_host_ops __ui_ws_ops = { ui_ws::open, ...,
-// "ns_ui_ws" }` (an aggregate of the host's functions) and `static bool
-// __ui_ws_registered = ui::register_host("ws", ui::WEB, &__ui_ws_ops)` (a
-// call). Both run before main, so the name is held: a second host claiming
-// "ws" is refused, and the same host (its identity, "ns_ui_ws") claiming it
-// again is accepted. The packed madc binds the fragment from libmadc — its
-// frozen lowering — and the dev madc parses it; the two must agree.
-// Before the fix the packed madc accepted the second host (the bind kept the
-// flag but not its initializer: "ws" was never registered — ui::open("ws")
-// said "unknown target 'ws'", and every GUI test failed), then refused the
-// first one's identity behind it.
-// Oracle: g++ 13 and clang++ 18 over the C++ analogue (a header with a static
-// table and a static flag initialized by a registering call, a main that
-// claims the name again) print "refused" then "accepted", as madc does.
+// The ws UI host is libmadc's own (src/ui_ws.cpp): the engine holds target
+// "ws" from the start, by name, with no initializer in the program. A second
+// host claiming "ws" is refused, and the same host (its identity,
+// "ns_ui_ws") claiming it again is accepted. Until the dialect became
+// builtin, the host claimed the name in <ns_ui_ws>'s file-scope initializers
+// (a static table and a static flag set by ui::register_host), and the
+// packed madc once bound the flag without its initializer: "ws" was never
+// registered, ui::open("ws") said "unknown target 'ws'", and every GUI test
+// failed.
+// Oracle: g++ 13 and clang++ 18 over the C++ analogue (a registry holding a
+// named table, a main that claims the name with another table and then with
+// the same identity) print "refused" then "accepted", as madc does.
 ui::ui_host_ops other_host;
 ui::ui_host_ops same_host;
 

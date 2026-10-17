@@ -539,8 +539,8 @@ namespace ui {
     // fullscreen(host, on): the window full screen — on = 1 enters, 0
     // leaves, -1 toggles its current state; 0 = done, nonzero = not here;
     // optional.
-    // LAYOUT CONTRACT with src/ns_ui.cpp — the same eleven pointers in the
-    // same order, append-only, keep both in sync.
+    // LAYOUT CONTRACT with include/madcdis/ui_host.h — the same eleven
+    // pointers in the same order, append-only, keep both in sync.
     typedef void *(*ui_host_open_fn)(const char *title, const char *page, void *ctx);
     typedef void  (*ui_host_close_fn)(void *host);
     typedef int64_t (*ui_host_eval_fn)(void *host, const char *js);

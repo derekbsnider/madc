@@ -477,3 +477,27 @@ Next: `git` / `markdown` bodies by hand; `ui_web` / `ui_ws` are R3.
 - Found: `FuncDef::inline_builtin_kind` is a string discriminator compared by
   value across cir_builder / cir_dump / cir_format / parser / cir_freeze —
   an enum-over-strings violation (owner law). Its own commit, next.
+- The modules discussion (owner 2026-10-17): the line of division is WHO
+  IMPLEMENTS the code. A builtin is what libmadc implements; a module is what a
+  library loaded on `import` implements, and it carries its own face.
+  `git::` (madcgit), `markdown::` (madcmark) and `ui_web` (madcwebview) are
+  their modules' — never builtin-table entries. Owner: `ui_ws` stays a builtin
+  ("let's keep it").
+- `ui_ws` moved into libmadc: src/ui_ws.cpp holds the host (attach, open,
+  close, eval, run) and its ops table; `<ns_ui_ws>` declares the five publics
+  bodiless. The host seam (`ui::ui_host_ops`, `register_host`, `post_event`)
+  moved verbatim out of src/ns_ui.cpp into include/madcdis/ui_host.h, which
+  both include. The engine serves libmadc's own hosts BY NAME
+  (`ui_builtin_hosts`, consulted by `ui_host_named`, never by
+  `ui_host_serving`): the fragment's comment always said a serve seat opens
+  "ws" by name and never by level, and a level is the program's declaration of
+  need, served by a host the program registers. `ui_ws::host` and
+  `ui_ws::__pending` leave the dialect surface; the slot is `thread_local` in
+  libmadc (the host's stated contract: confined to the scheduler thread that
+  opened it). B197's shipped instance (`sizeof(host)` taking `ui_web::host`)
+  goes with it. New test `testuiws`: a loopback WebSocket pair, `ui::open("ws")`,
+  a frame out, a page event back, the close ending the window. Differential:
+  625 compared, 42 not built.
+- testdialectimage_ctypes / _after lost their subject (no dialect body names
+  stderr in the program now: `ui_ws::open` is libmadc's). They still pass; R4
+  retires them with the dialect image.
