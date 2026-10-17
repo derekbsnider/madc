@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### A program's later `#include` of an auto-included header is served by the prelude
+
+- Under `--std=madc` with headers parsed as text (`bin/madc`, or
+  `--no-forest-bind`), `string s` before the program's own
+  `#include <string>` was refused (`use of undeclared identifier 'string'`).
+  The program's later include was served in place at the end of the file, and
+  the prelude's synthetic include of the same header was a once-only no-op.
+- The include handler's defer arm (`Program::_getToken`, the
+  `pending_auto_include_headers` check in `src/lexer.cpp`) deferred only when
+  `named_include_provider_exists` (PCH / embedded). The injector feeds every
+  prelude include through the same handler (`tokenize_synthetic_system_include`)
+  — filesystem walk and loud miss on a true miss included — so every queued
+  header now defers, unconditionally.
+- Oracle g++ 13 / clang++ 18 (includes at the top, `std::string`, printf):
+  `len 3`; madc now prints `len 3`. Test: `testautoinclude_later_include`.
+- B198 (a header nested in an auto-included one, included later, e.g.
+  `<wchar.h>` under `<string>`) stays open: the prelude is lexed after the
+  main file.
+
 ### The madc dialect's stdio streams are built in, as println is
 
 - Under `--std=madc`, `stdin` / `stdout` / `stderr` are the compiler's, needing

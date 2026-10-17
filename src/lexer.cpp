@@ -7959,25 +7959,23 @@ TokenBase *Program::_getToken()
 		    if ( is_system
 		      && (!is_include_next || embedded_wins_include_next(incfile)) )
 		    {
+			// A header the auto-include scan already queued is
+			// served ONCE, by the prelude, ahead of the first use
+			// that queued it: the program's own later include of it
+			// is that serving. The prelude feeds its includes
+			// through this same handler
+			// (tokenize_synthetic_system_include), so a deferred
+			// include still walks the filesystem and still fails
+			// loudly on a true miss (gcc canon: explicit includes
+			// resolve or error). Served in place instead, the
+			// header landed after the use and the prelude's copy
+			// was a once-only no-op.
 			if ( !suppress_auto_include_scan && !protocol_visit
 			  && pending_auto_include_headers.count(incfile) )
 			{
-			    // Defer to the auto-include prelude ONLY when a
-			    // named provider (PCH / embedded) can actually
-			    // supply the header — the prelude has no filesystem
-			    // walk, so deferring an unprovided EXPLICIT include
-			    // would drop it silently. Unprovided names fall
-			    // through to the direct path: filesystem walk, loud
-			    // open failure on a true miss (gcc canon: explicit
-			    // includes resolve or error).
-			    madc::dis::istring defer_pch_path;
-			    if ( named_include_provider_exists(*this, incfile,
-							       defer_pch_path) )
-			    {
-				DBG(std::cout << "#include <" << incfile
-				    << "> deferred to auto-include prelude" << std::endl);
-				return getToken();
-			    }
+			    DBG(std::cout << "#include <" << incfile
+				<< "> deferred to auto-include prelude" << std::endl);
+			    return getToken();
 			}
 			// The dialect surface (pack-slices design §7): under madc a
 			// written `#include <ns_*>` binds the dialect image's unit
