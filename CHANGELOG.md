@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### `--dump-forest` renders a dialect record census; the pack gate holds it at zero
+
+- `madc --dump-forest` now emits a dialect record census. For every unit that
+  `embedded_dialect_fragment_p` (the one fragment-identity owner) names a dialect
+  fragment, each decl entry other than a namespace's is counted; an entry with no
+  record (`CIR_DECL_RECORD_NONE`) prints a `dialectunrecorded <unit> <kind>
+  <name>` line, and the totals print as `dialectrecords units=K entries=M
+  unrecorded=N`.
+- `scripts/forest_pack_gate.sh`'s `check_dump` runs a new `check_dialect_records`:
+  it reports the unrecorded count, is red when any dialect non-namespace entry
+  carries no record (listing the offenders), and red when the dump renders no
+  census. Two selftest legs cover one unrecorded entry and a missing census.
+- Measured on the release pack: 0 of 1,291 non-namespace entries in 22 dialect
+  units lack a record — the record column a per-name dialect lookup reads is
+  complete, and the gate keeps it so.
+
 ### A painted frame's argument paint joins the served union once, not per character
 
 - `Source::get` no longer inserts the serving frame's argument paint

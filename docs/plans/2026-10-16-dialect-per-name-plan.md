@@ -259,3 +259,24 @@ unused declaration to a dialect fragment cannot cost a dialect compile.
   depend on. The new rows are NEW (red) in the gate until the re-record
   after A4/A5, with the sqlite3 rows; the dialect rows' +2.4% is not accepted
   into the baseline — part A closes it.
+- **A1 (2026-10-17).** N was already 0: 1,291 non-namespace decl entries in
+  22 dialect units (13 `ns_*`, 9 `bits/*`), every one with a record; the
+  pack-wide record-less entries (10 of 12,386) are all C/C++ header entities
+  (function-pointer typedefs, `money_base::pattern`,
+  `std::__default_lock_policy`, three enumerators imported by
+  using-declarations) — outside part A. Landed: `--dump-forest` renders the
+  dialect census (`dialectrecords`, each `dialectunrecorded` entry; the unit
+  decided by `embedded_dialect_fragment_p`) and `forest_pack_gate.sh` holds it
+  at a hard zero (two selftest legs: one unrecorded entry, the census
+  missing). Two corrections to the decisions above, carried into A4:
+  - No decl entry is ever `pdkNamespace` (its only producer, `pack_tap_name`,
+    is never called with it), so DECL_NAMES holds no namespaces. Ruling: A4
+    takes a dialect unit's namespace scopes from what its records already
+    say (its namespaced functions' and types' owning namespaces, or its
+    namespace-bind records), decided against the code in A4 — never a new
+    format column.
+  - A namespaced dialect function is indexed by its flat funcdef id
+    (`__ns_php_count`; an overload `__ns_php_str_repeat__o2`), not by
+    `php::count`; only templates appear qualified. Ruling: A4's lookup asks
+    the owner that spells the flat id for `ns::name`, then takes the
+    DECL_NAMES range of that id and its `__oN` overloads (`for_prefix`, A3).

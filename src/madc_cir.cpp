@@ -7923,8 +7923,19 @@ int madc_cir_dump_forest(const char *container_path)
 	printf("seeds-always\t%u\t%u\t%u\n", sa.n, st.n, sg.n);
 	printf("recordable-anon\t%u\n", forest.recordable_bits().max_anon_tag());
     }
+    // The dialect record census (docs/plans/2026-10-16-dialect-per-name-plan.md
+    // A1): a dialect fragment's unit (embedded_dialect_fragment_p, the one
+    // identity owner) serves a name from its decl entries' record column, so
+    // every entry but a namespace's carries a record. Rendered here — each
+    // entry without one as `dialectunrecorded`, the totals as `dialectrecords`
+    // — and judged by forest_pack_gate.sh (hard zero).
+    uint32_t dialect_units = 0;
+    size_t dialect_entries = 0, dialect_unrecorded = 0;
     for (uint32_t u = 0; u < forest.unit_count(); ++u) {
 	const char *uname = forest.unit_name(u);
+	const bool dialect = uname && embedded_dialect_fragment_p(madc::dis::istring(uname));
+	if (dialect)
+	    ++dialect_units;
 	uint32_t anchor = forest.unit_anchor(u);
 	std::vector<uint8_t> toks;
 	uint32_t ntok = 0;
@@ -7976,8 +7987,18 @@ int madc_cir_dump_forest(const char *container_path)
 		       (di[k].aux & Program::PACK_DECL_FUZZY_BOUNDS) ? "\tFUZZY" : "",
 		       (di[k].aux & Program::PACK_DECL_ADOPTABLE) ? "\tADOPTABLE" : "",
 		       rec);
+		if (dialect && di[k].kind != Program::pdkNamespace) {
+		    ++dialect_entries;
+		    if (di[k].record_id == CIR_DECL_RECORD_NONE) {
+			++dialect_unrecorded;
+			printf("dialectunrecorded\t%s\t%s\t%s\n", uname,
+			       pack_decl_kind_name(di[k].kind), nm ? nm : "?");
+		    }
+		}
 	    }
     }
+    printf("dialectrecords\tunits=%u\tentries=%zu\tunrecorded=%zu\n",
+	   dialect_units, dialect_entries, dialect_unrecorded);
     return 0;
 }
 

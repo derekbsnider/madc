@@ -377,6 +377,36 @@ check_dump() {
 		echo "       #include of each silently live-parses instead of binding." >&2
 	fi
 	check_pack_bytes "$dump"
+	check_dialect_records "$dump"
+}
+
+# ---------------------------------------------------------------------------
+# DIALECT RECORDS (docs/plans/2026-10-16-dialect-per-name-plan.md A1): a
+# dialect name is served from its declaring unit's decl index and that entry's
+# record column, so every decl entry of a dialect fragment's unit — a
+# namespace's aside, which has no record by design — carries a record id.
+# The dump renders the census (`dialectrecords`, the unit identity decided by
+# the compiler's one fragment owner) and each entry without a record
+# (`dialectunrecorded`). HARD ZERO. A dump with no census never measured it.
+# ---------------------------------------------------------------------------
+check_dialect_records() {
+	local dump="$1" census units entries unrecorded
+	census=$(awk -F'\t' '$1 == "dialectrecords" {
+			for (i = 2; i <= NF; i++) { split($i, kv, "="); v[kv[1]] = kv[2] }
+			print v["units"] + 0, v["entries"] + 0, v["unrecorded"] + 0; exit
+		}' "$dump")
+	if [ -z "$census" ]; then
+		fail "[$PROFILE] dump carries no 'dialectrecords' census — the dialect record column was not measured: $dump"
+		return
+	fi
+	read -r units entries unrecorded <<<"$census"
+	say "[$PROFILE] dialect decl entries without a record (non-namespace): $unrecorded (of $entries in $units dialect units)"
+	if [ "$unrecorded" -gt 0 ]; then
+		fail "[$PROFILE] $unrecorded dialect decl entries carry no record — a per-name"
+		awk -F'\t' '$1 == "dialectunrecorded" { print "       " $2 "  " $3 "  " $4 }' "$dump" | head -10 >&2
+		echo "       lookup of each would find its name and nothing to materialize." >&2
+		echo "       Fill it where the record column is filled (cir_forest_build_seeds)." >&2
+	fi
 }
 
 # ---------------------------------------------------------------------------
@@ -502,6 +532,7 @@ selftest() {
 	printf 'unit\t1\tstdio.h\tx\n' >> "$dir/fpgate_st_dump.txt"
 	printf 'unit\t2\t/usr/include/c++/13/vector\tx\n' >> "$dir/fpgate_st_dump.txt"
 	printf 'unit\t3\t/usr/include/c++/13/bits/stl_algo.h\tx\n' >> "$dir/fpgate_st_dump.txt"
+	printf 'dialectrecords\tunits=1\tentries=2\tunrecorded=0\n' >> "$dir/fpgate_st_dump.txt"
 	printf '# a comment\n\nstdio.h\nvector\n' > "$dir/fpgate_st_units.txt"
 	printf 'bits/stl_algo.h\n' > "$dir/fpgate_st_sources.txt"
 	leg "dump units present" pass --dump "$dir/fpgate_st_dump.txt" \
@@ -526,6 +557,15 @@ selftest() {
 		--units-from "$dir/fpgate_st_units.txt"
 	grep -v '^bytes' "$dir/fpgate_st_dump.txt" > "$dir/fpgate_st_dump_nobytes.txt"
 	leg "pack size not measured" fail --dump "$dir/fpgate_st_dump_nobytes.txt" \
+		--units-from "$dir/fpgate_st_units.txt"
+	# The dialect record census: zero unrecorded is GREEN (above), one is red,
+	# and a dump that never rendered the census is red.
+	sed 's/unrecorded=0$/unrecorded=1/' "$dir/fpgate_st_dump.txt" > "$dir/fpgate_st_dump_unrec.txt"
+	printf 'dialectunrecorded\tns_x\ttype\tx::f_t\n' >> "$dir/fpgate_st_dump_unrec.txt"
+	leg "dialect decl entry without a record" fail --dump "$dir/fpgate_st_dump_unrec.txt" \
+		--units-from "$dir/fpgate_st_units.txt"
+	grep -v '^dialectrecords' "$dir/fpgate_st_dump.txt" > "$dir/fpgate_st_dump_nodialect.txt"
+	leg "dialect records not measured" fail --dump "$dir/fpgate_st_dump_nodialect.txt" \
 		--units-from "$dir/fpgate_st_units.txt"
 
 	# 10: the token contract has ONE owner. scripts/mac_battery.sh must stay
