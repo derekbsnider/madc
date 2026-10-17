@@ -324,3 +324,60 @@ unused declaration to a dialect fragment cannot cost a dialect compile.
   faces, which A4 removes; C's +545K is the lexer (macro paint, +316K in
   `tokenize`); C++'s +2.97M is `CirBuilder::translate_module` (+3.34M),
   not yet attributed further.
+- **A3 (2026-10-17).** `ForestDeclNames::for_prefix(stem, begin, end)`: a
+  binary search to the run's start, a walk while the stem matches; the run
+  is read with `name_at(i)` / `units_at(i, n)`, bounds-checked readers
+  defined in the class body (`units_of` keeps its own probe — see Cost
+  below). `CirFrozenForest::decl_entry_scope(kind, record,
+  ns, display)`: a decl entry's namespace from its record's own ns field
+  (arena / template / global) and a free function's display name; false for
+  a member (a function entry whose record is its owner class, a template
+  record with an owner). The owner, `Program::forest_dialect_names(scope,
+  prefix, offer)` (parser.cpp, beside the bind mark — A4's demand reads the
+  same units): active units = `forest_chain` ∩ `embedded_dialect_fragment_p`
+  (`forest_active_dialect_units`); two DECL_NAMES runs —
+  `namespace_function_symbol(scope, prefix)` (flat ids and their `__oN`;
+  at the global scope the bare names), kept when the entry's record names
+  the scope, and `scope::prefix` (templates, types, objects, enumerators),
+  direct members only. A unit's decl index decodes once per Program into
+  `forest_unit_names` (name → kind + record). Completion's arms:
+  `completion_scope_names` and `visit_top_level_names` (each visible
+  namespace; its names visit as `dialect_word`); `visit_top_level_names`
+  takes the word, which narrows the index run. Demand state's home:
+  `Program::ForestDialectDemands` (memo name → hit, log of name + records;
+  `record` refuses a second demand of one name), its mark in
+  `ForestBindMark::dialect_demands`, rewound by `forest_bind_rewind`;
+  nothing writes it yet. `forest_unit_names` holds no registration state
+  and stays across a rewind. Thread contract: all of it is per Program, on
+  the Program's thread; the pack read is the bind carrier's immutable bytes;
+  no globals. Tests watched RED with the declarations stubbed: for_prefix
+  (10 failed assertions), the owner over a session bound to a pack frozen
+  in-process (forest_bind_gate's dialectbind recipe — the dev unit binaries
+  carry no pack) failing at its bound-unit check, the rewind (the third
+  demand kept, log size 3). The bare `using namespace php; strto`
+  completion passed before the arms (registration answers it today) — an A4
+  guard, as are the bound session's `php::strto` / `strto` checks; the
+  owner's php names equal what the bind registers into php (53). Rulings:
+  - The leaf is a free function's display name (its record carries
+    function_display_name); `strip_overload_suffix` only for a record
+    without one. The display name is the source's spelling where the flat id
+    is not (an operator's mnemonics, an instance's `__i…` suffix).
+  - A qualified spelling's qualifier is its scope, the record not consulted:
+    a scoped enum's enumerators share their enum's record, whose namespace
+    is the enclosing one.
+  - The global scope's run keeps a name only when its record's namespace is
+    the global one: a bare twin of a namespaced type (`SysInfo`, record ns
+    `madc`) is not offered bare — today's `type_reachable` answer. ns_php's
+    `extern "C"` shims (`__php_*`) are global names, offered only to a
+    reserved-shaped word.
+  - The parameter is `stem`, not `prefix`: check-one-path-within's regex
+    reads `strncmp(…, prefix, …)` as a directory-containment test.
+  - Cost (2026-10-17), symbolized packed builds against A2 (b2ada368d):
+    the first cut put `units_of`'s probe on out-of-line `name_at` /
+    `units_at` — an exported member of the -fPIC libmadc is interposable
+    and gcc did not inline it (cxx_stl.forest +3.48M Ir, all in
+    `forest_restore_decls` / `materialize_pass` through `name_verdict`);
+    inlined in the class body it still cost +2.2M (~107 Ir per lookup over
+    20,079 lookups); `units_of` keeps its own probe and the readers serve
+    `for_prefix` alone. Final: cxx_stl.forest +44K of 1,396M (forest phases
+    −25K), c_headers.forest +13K, dialect.forest +23K against cf05fd6f5.

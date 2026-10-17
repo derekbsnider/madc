@@ -59,7 +59,8 @@ bool ForestDeclNames::bind(const uint8_t *p, size_t len)
 }
 
 // Every probe is bounds-checked against the bound sizes (a corrupt offset
-// answers "not declared", never a wild read).
+// answers "not declared", never a wild read): name_at and units_at
+// (cir_freeze.h) are the two readers of one name's slot.
 const uint32_t *ForestDeclNames::units_of(const char *name, uint32_t &n) const
 {
 	n = 0;
@@ -68,6 +69,9 @@ const uint32_t *ForestDeclNames::units_of(const char *name, uint32_t &n) const
 	uint32_t lo = 0, hi = _n;
 	while (lo < hi) {
 		uint32_t mid = lo + (hi - lo) / 2;
+		// The hot probe (every name_verdict): its own reads, not name_at —
+		// measured, the shared reader's extra index check costs ~107 Ir per
+		// lookup across the binary search (+2.2M on cxx_stl.forest).
 		uint32_t o = _off[mid];
 		if (o >= _nbytes)
 			return NULL;
@@ -85,6 +89,31 @@ const uint32_t *ForestDeclNames::units_of(const char *name, uint32_t &n) const
 		}
 	}
 	return NULL;
+}
+
+// The run's start is the first name not below the stem (strcmp's order):
+// every name the stem starts sorts at or after it, and before any name past
+// it that the stem does not start.
+void ForestDeclNames::for_prefix(const char *stem, uint32_t &begin, uint32_t &end) const
+{
+	begin = end = 0;
+	if (!_n || !stem)
+		return;
+	uint32_t lo = 0, hi = _n;
+	while (lo < hi) {
+		uint32_t mid = lo + (hi - lo) / 2;
+		const char *nm = name_at(mid);
+		if (!nm)
+			return;
+		if (strcmp(nm, stem) < 0)
+			lo = mid + 1;
+		else
+			hi = mid;
+	}
+	const size_t len = strlen(stem);
+	begin = end = lo;
+	for (const char *nm; (nm = name_at(end)) != NULL && !strncmp(nm, stem, len); )
+		++end;
 }
 
 const uint32_t *ForestDeclNames::surface(const char *name, const char *ns, uint32_t &n) const

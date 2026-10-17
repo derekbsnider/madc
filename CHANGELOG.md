@@ -2,6 +2,37 @@
 
 ## [Unreleased]
 
+### Completion and REPL rollback read the dialect index
+
+- `ForestDeclNames::for_prefix(stem, begin, end)` returns the one run of the
+  pack's sorted `DECL_NAMES` a prefix starts: a binary search to the run's start,
+  then a walk while the stem matches. The run is read with `name_at(i)` /
+  `units_at(i, n)`, the bounds-checked readers `units_of` now shares; `units_of`,
+  the hot per-`name_verdict` probe, keeps its own reads.
+- `CirFrozenForest::decl_entry_scope(kind, record, ns, display)` gives a decl
+  entry's namespace from its record's own `ns` field (arena / template / global)
+  and a free function's display name; it is false for a member.
+- `Program::forest_dialect_names(scope, prefix, offer)` offers the names an active
+  dialect unit declares under a scope. Active units are `forest_chain` ∩
+  `embedded_dialect_fragment_p` (`forest_active_dialect_units`), read through two
+  `DECL_NAMES` runs — the flat ids `namespace_function_symbol` spells (a
+  namespaced function and its `__oN` overloads; at the global scope the bare
+  names) kept when the entry's record names the scope, and `scope::prefix`
+  (templates, types, objects, enumerators), direct members only. The leaf is a
+  free function's display name, `strip_overload_suffix` only for a record without
+  one. A unit's decl index decodes once per `Program` into `forest_unit_names`.
+- Completion reads it: `completion_scope_names` and `visit_top_level_names` (each
+  visible namespace, its names offered as `dialect_word`) each gain one arm.
+- REPL rollback carries the dialect demand log. `Program::ForestDialectDemands`
+  (memo name → hit, log of name + records; `record` refuses a second demand of
+  one name) marks into `ForestBindMark::dialect_demands` and is rewound by
+  `forest_bind_rewind`; `forest_unit_names` holds no registration state and stays
+  across a rewind. Nothing writes the demand log yet.
+- New doctest cases (`tests/unit/test_cir_freeze.cpp`,
+  `tests/unit/test_repl_session.cpp`) are the gate — `for_prefix` over a sorted
+  table, the owner's names over a session bound to an in-process pack, and a
+  rolled-back entry forgetting the dialect demands it made.
+
 ### The forest materializer admits records by id and visits only the added ones
 
 - `CirMaterializeFilter` gains two members. `records` holds decl-index record

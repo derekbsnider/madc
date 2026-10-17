@@ -2762,6 +2762,56 @@ bool CirFrozenForest::unit_decl_index(uint32_t unit,
 	return true;
 }
 
+// Each record kind carries its entity's namespace in its own ns field. The
+// decl-entry record builder (cir_forest_build_seeds, 4b) gives a function
+// entry a free function's DK_FUNC record, else — a method's call symbol —
+// its owner class; a template record with an owner is a member template.
+// Neither member names anything at namespace scope.
+bool CirFrozenForest::decl_entry_scope(uint32_t kind, uint32_t record_id,
+				       const char *&ns, const char *&display) const
+{
+	ns = display = NULL;
+	if (record_id == CIR_DECL_RECORD_NONE)
+		return false;
+	const uint32_t idx = cir_seed_item_index(record_id);
+	uint32_t len = 0;
+	switch (cir_seed_item_kind(record_id)) {
+	case CIR_SEED_DEP_ARENA: {
+		madc::dis::defrec r;
+		if (!_arena.get_def_at(madc::dis::arena_id_of(idx), r))
+			return false;
+		const bool free_fn = r.kind == madc::dis::DK_FUNC
+				  && (r.flags & madc::dis::DF_IS_FREE_FUNC);
+		if (kind == Program::pdkFunction && !free_fn)
+			return false;
+		ns = r.ns_id ? _arena.c_str(r.ns_id) : "";
+		// A free function's disp_id is its function_display_name.
+		if (free_fn && r.disp_id)
+			display = _arena.c_str(r.disp_id);
+		break;
+	}
+	case CIR_SEED_DEP_TEMPLATE: {
+		if (idx >= _templates.size())
+			return false;
+		const cir_forest_template_record t = _templates[idx];
+		if (t.owner_type_id)
+			return false;
+		ns = t.ns_id ? pool_cstr(t.ns_id, len) : "";
+		break;
+	}
+	case CIR_SEED_DEP_GLOBAL: {
+		if (idx >= _globals.size())
+			return false;
+		const cir_forest_global_record g = _globals[idx];
+		ns = g.ns_id ? pool_cstr(g.ns_id, len) : "";
+		break;
+	}
+	default:
+		return false;
+	}
+	return ns != NULL;
+}
+
 bool CirFrozenForest::unit_pp_events(uint32_t unit, std::vector<uint32_t> &out)
 {
 	madc::dis::decode_bytes raw;

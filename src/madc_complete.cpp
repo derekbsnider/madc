@@ -14,7 +14,9 @@
  *     steps through its types from a session name (completion_members);
  *     after `::` the scope's registries are read (completion_scope_names),
  *     with the attempt parsed first, since a module's namespace fills only
- *     when its fragment is parsed.
+ *     when its fragment is parsed. A dialect fragment the pack binds is
+ *     read from the pack's index too (forest_dialect_names): a name the
+ *     dialect registers only at its first use completes before it.
  * The top-level walk has a second consumer, `?name` (plan §41.8a, slice 2):
  * visit_top_level_names hands each candidate with its entity, and
  * describe_name keeps the ones spelled exactly as the name, under the same
@@ -279,7 +281,8 @@ private:
 };
 
 void Program::visit_top_level_names(CompletionContext ctx,
-				    const std::function<void(const TopLevelName &)> &visit)
+				    const std::function<void(const TopLevelName &)> &visit,
+				    const madc::dis::istring &word)
 {
     typedef TopLevelName::Kind Kind;
     auto named = [&](Kind k, const madc::dis::istring &n) {
@@ -422,6 +425,14 @@ void Program::visit_top_level_names(CompletionContext ctx,
     auto_include_words(words);
     for ( size_t i = 0; i < words.size(); ++i )
 	named(Kind::dialect_word, words[i]);
+    // The dialect's names in each reachable namespace, read from its active
+    // units' index, a name no entry has demanded yet included: the dialect
+    // registers it at its first use (plan 2026-10-16, A4).
+    for ( std::set<madc::dis::istring>::const_iterator ns = visible.begin();
+	  ns != visible.end(); ++ns )
+	forest_dialect_names(*ns, word, [&](const madc::dis::istring &n) {
+	    named(Kind::dialect_word, n);
+	});
     // The result names (D12), once a value is kept.
     size_t kept = 0;
     for ( size_t i = 0; i < session_results.size(); ++i )
@@ -445,7 +456,7 @@ void Program::completion_names(const madc::dis::istring &word, CompletionContext
 			       std::vector<madc::dis::istring> &out)
 {
     CompletionOffer offer(word);
-    visit_top_level_names(ctx, [&](const TopLevelName &n) { offer(n.name); });
+    visit_top_level_names(ctx, [&](const TopLevelName &n) { offer(n.name); }, word);
     offer.take(out);
 }
 
@@ -897,7 +908,7 @@ void Program::session_bindings(std::vector<SessionBinding> &out)
 	if ( !b.file || !session_units.count(b.file) )
 	    return;
 	sorted.insert(std::make_pair(b.name, b));
-    });
+    }, madc::dis::istring());
     for ( std::multimap<madc::dis::istring, SessionBinding>::const_iterator it = sorted.begin();
 	  it != sorted.end(); ++it )
 	out.push_back(it->second);
@@ -933,8 +944,8 @@ bool Program::describe_name(const madc::dis::istring &name, std::string &out,
 	if ( seen.insert(std::make_pair((int)group, id)).second )
 	    found.push_back(n);
     };
-    visit_top_level_names(CompletionContext::Name, keep);
-    visit_top_level_names(CompletionContext::Tag, keep);
+    visit_top_level_names(CompletionContext::Name, keep, name);
+    visit_top_level_names(CompletionContext::Tag, keep, name);
     // A type keyword (`int`, `bool`) is registered as its type, not in the
     // keyword map: the type found under its own spelling is the keyword too.
     if ( keyword_origin(name) )
@@ -1314,6 +1325,10 @@ void Program::completion_scope_names(const madc::dis::istring &scope, const madc
 	    }
 	return false;
     });
+    // The dialect's names the scope holds, read from its active units'
+    // index: registered, or not demanded yet (plan 2026-10-16, A4). The
+    // offer keeps each name once.
+    forest_dialect_names(scope, word, [&](const madc::dis::istring &n) { offer(n); });
     // A class: what its object gives, which an entry writes qualified too
     // (`&C::get`, `sizeof(C::w)`, `C::count`), and its nested types. The
     // class's alias to itself is its injected-class-name ([class.pre]/2),

@@ -7131,9 +7131,65 @@ public:
 	std::vector<unsigned char> type_registered;
 	std::vector<bool> global_registered, func_registered, tmpl_registered;
 	size_t overload_recaptures = 0;
+	size_t dialect_demands = 0;	// forest_dialect_demands.mark()
     };
     ForestBindMark forest_bind_mark() const;
     void forest_bind_rewind(const ForestBindMark &mark);
+    // The dialect pays per name (docs/plans/2026-10-16-dialect-per-name-plan.md).
+    // Thread contract: every member below is this Program's own, read and
+    // written on its thread (the bind's and the session's); the pack it
+    // reads is the bind carrier's immutable mapped bytes. No globals.
+    //
+    // The demands a lookup made of the dialect (A4's forest_dialect_demand
+    // writes them; A3 gives them their home): each name's answer, hit or
+    // miss, and the log of demands in the order they were made, each with
+    // the records it materialized or registered. Registration state: an
+    // entry's rollback rewinds it with the bind (ForestBindMark), so a later
+    // entry demands the name again.
+    struct ForestDialectDemands
+    {
+	struct Demand
+	{
+	    madc::dis::istring name;
+	    std::vector<uint32_t> records;	// decl-index record ids; empty: a miss
+	};
+	std::map<madc::dis::istring, bool> memo;	// name -> hit
+	std::vector<Demand> log;
+	// A name's demand, once: memoized (a hit when it carried records) and
+	// logged with them. False when the name was demanded already.
+	bool record(const madc::dis::istring &name, const std::vector<uint32_t> &records);
+	// Was the name demanded (and did it hit)?
+	bool demanded(const madc::dis::istring &name, bool &hit) const;
+	size_t mark() const { return log.size(); }
+	// Forget each demand made after `mark`: its log entry and its memo.
+	void rewind(size_t mark);
+    };
+    ForestDialectDemands forest_dialect_demands;
+    // A dialect unit's decl index, decoded once per Program the first time a
+    // lookup touches the unit (plan Decision 1): each name its entries
+    // declare -> those entries' kinds and records. Forest data only, no
+    // registration state: a rewind keeps it (a cache).
+    struct ForestDeclRecord
+    {
+	uint32_t kind;		// PackDeclKind
+	uint32_t record;	// the entry's record_id
+    };
+    typedef std::map<madc::dis::istring, std::vector<ForestDeclRecord> > ForestUnitNames;
+    std::map<uint32_t, ForestUnitNames> forest_unit_names;
+    const ForestUnitNames &forest_unit_decl_names(uint32_t unit);
+    // The dialect units this Program has bound: forest_chain's units that
+    // are dialect fragments (embedded_dialect_fragment_p), in bind order.
+    void forest_active_dialect_units(std::vector<uint32_t> &out) const;
+    // The names `scope` holds that an ACTIVE dialect unit declares and that
+    // start with `prefix` — registered or not yet demanded — read from the
+    // pack's DECL_NAMES and the units' decl indexes, never the registries
+    // (nothing is materialized or registered). `offer` receives each one's
+    // leaf, the name the source wrote; a leaf may come more than once (an
+    // overload set, a template and its placeholder). The completion arms'
+    // owner (madc_complete.cpp).
+    void forest_dialect_names(const madc::dis::istring &scope,
+			      const madc::dis::istring &prefix,
+			      const std::function<void(const madc::dis::istring &)> &offer);
     // v13: file-scope globals restored from a bound header. forest_restore_decls
     // runs during lexer #include handling, BEFORE tkProgram exists, so the globals
     // (which live in tkProgram->variables + dkGlobalVar top_decls) are staged here
@@ -8547,8 +8603,12 @@ public:
     // materializes, registers and throws). The visibility rule lives here:
     // a namespace's member only when its namespace is reachable, no
     // instantiation's product; the name's shape is the caller's rule.
+    // `word`: the start the caller's names must have — an index the walk
+    // reads (the dialect's, forest_dialect_names) skips the rest; a
+    // registry is walked whole.
     void visit_top_level_names(CompletionContext ctx,
-			       const std::function<void(const TopLevelName &)> &visit);
+			       const std::function<void(const TopLevelName &)> &visit,
+			       const madc::dis::istring &word);
     // The names visible at the top level that start with `word`.
     void completion_names(const madc::dis::istring &word, CompletionContext ctx,
 			  std::vector<madc::dis::istring> &out);

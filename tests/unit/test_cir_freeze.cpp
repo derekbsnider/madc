@@ -3735,3 +3735,87 @@ TEST_CASE("A2: an unseeded unit's names are bound, its seed list is never visite
 	CHECK(tys.count("a2_bother") == 1u);
 	CHECK(tys.count("a2_barg") == 0u);
 }
+
+// ---------------------------------------------------------------------------
+// Dialect per name, A3: DECL_NAMES is sorted by strcmp, so the names a prefix
+// starts are one run of the table — what completion reads for `php::strto`
+// (the flat ids `__ns_php_strto...`) and A4's lookups read for a name's
+// overloads (`__ns_php_count`, `__ns_php_count__o2`).
+// ---------------------------------------------------------------------------
+
+// The names of a prefix's run, in table order.
+static std::vector<std::string> a3_run(const ForestDeclNames &dn, const char *prefix,
+				       uint32_t *begin_out = NULL)
+{
+	uint32_t b = 99, e = 99;
+	dn.for_prefix(prefix, b, e);
+	if (begin_out)
+		*begin_out = b;
+	std::vector<std::string> out;
+	for (uint32_t i = b; i < e; ++i) {
+		const char *nm = dn.name_at(i);
+		out.push_back(nm ? nm : "<none>");
+	}
+	return out;
+}
+
+TEST_CASE("A3: for_prefix reads the one run of names a prefix starts") {
+	std::map<madc::dis::istring, std::vector<uint32_t> > in;
+	in[madc::dis::istring("__ns_php_count")] = {1};
+	in[madc::dis::istring("__ns_php_count__o2")] = {1};
+	in[madc::dis::istring("__ns_php_x_m")] = {2};
+	in[madc::dis::istring("alpha")] = {0, 3};
+	in[madc::dis::istring("php::print_r")] = {1};
+	in[madc::dis::istring("zeta")] = {4};
+	std::vector<uint8_t> bytes;
+	ForestDeclNames::build(in, bytes);
+	ForestDeclNames dn;
+	REQUIRE(dn.bind(bytes.data(), bytes.size()));
+	REQUIRE(dn.size() == 6u);
+	typedef std::vector<std::string> names;
+	// The empty prefix is every name, in strcmp order ('_' sorts before 'a').
+	CHECK(a3_run(dn, "") == names{"__ns_php_count", "__ns_php_count__o2", "__ns_php_x_m",
+				       "alpha", "php::print_r", "zeta"});
+	// At the first name; a prefix that is a whole name keeps the names it
+	// starts (an overload's flat id).
+	uint32_t b = 99;
+	CHECK(a3_run(dn, "__ns_php_", &b) == names{"__ns_php_count", "__ns_php_count__o2",
+						     "__ns_php_x_m"});
+	CHECK(b == 0u);
+	CHECK(a3_run(dn, "__ns_php_count") == names{"__ns_php_count", "__ns_php_count__o2"});
+	CHECK(a3_run(dn, "php::") == names{"php::print_r"});
+	// At the last name, by a prefix and by the whole name.
+	CHECK(a3_run(dn, "z", &b) == names{"zeta"});
+	CHECK(b == 5u);
+	CHECK(a3_run(dn, "zeta") == names{"zeta"});
+	// A prefix that starts no name: an empty run at its place — before the
+	// first name, between two, past the last.
+	CHECK(a3_run(dn, "A", &b).empty());
+	CHECK(b == 0u);
+	CHECK(a3_run(dn, "beta", &b).empty());
+	CHECK(b == 4u);
+	CHECK(a3_run(dn, "zz", &b).empty());
+	CHECK(b == 6u);
+	// A run's units, read in place; one past the table reads nothing.
+	uint32_t n = 99;
+	const uint32_t *u = dn.units_at(3, n);
+	REQUIRE(n == 2u);
+	REQUIRE(u != NULL);
+	CHECK(u[0] == 0u);
+	CHECK(u[1] == 3u);
+	CHECK((dn.name_at(6) == NULL));
+	CHECK((dn.units_at(6, n) == NULL));
+	CHECK(n == 0u);
+	// units_of reads the same table.
+	u = dn.units_of("alpha", n);
+	REQUIRE(n == 2u);
+	CHECK(u[1] == 3u);
+	CHECK((dn.units_of("alp", n) == NULL));
+	CHECK(n == 0u);
+	// An unbound view has no names.
+	ForestDeclNames none;
+	uint32_t e = 99;
+	none.for_prefix("", b, e);
+	CHECK(b == 0u);
+	CHECK(e == 0u);
+}

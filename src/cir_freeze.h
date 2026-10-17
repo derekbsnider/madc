@@ -850,6 +850,34 @@ public:
 	uint32_t size() const { return _n; }
 	// The units declaring `name` (n = 0: none).
 	const uint32_t *units_of(const char *name, uint32_t &n) const;
+	// The names starting with `stem`: the table is sorted by strcmp, so
+	// they are one run [begin, end) — a binary search to its start, a walk
+	// while the stem matches. begin == end: none ("" is every name).
+	// Each is read in place with name_at / units_at.
+	void for_prefix(const char *stem, uint32_t &begin, uint32_t &end) const;
+	// Name i and its declaring units; bounds-checked like every probe (an
+	// index or offset out of range answers NULL / n = 0). for_prefix's run
+	// reads them; units_of, the hot probe, keeps its own reads. Defined here
+	// so they inline: an exported member defined out of line in the -fPIC
+	// libmadc is interposable, and gcc does not inline it even in its own
+	// file (measured on units_of: +3.4M Ir on cxx_stl.forest).
+	const char *name_at(uint32_t i) const
+	{
+		if (i >= _n || _off[i] >= _nbytes)
+			return NULL;
+		return _bytes + _off[i];
+	}
+	const uint32_t *units_at(uint32_t i, uint32_t &n) const
+	{
+		n = 0;
+		if (i >= _n)
+			return NULL;
+		const uint32_t b = _uoff[i], e = _uoff[i + 1];
+		if (b > e || e > _nunits)
+			return NULL;
+		n = e - b;
+		return _units + b;
+	}
 	// A verdict SURFACE — the bind's qualified-then-bare discipline: the units
 	// declaring "ns::name" when any unit declares it, else those declaring name.
 	const uint32_t *surface(const char *name, const char *ns, uint32_t &n) const;
@@ -2164,6 +2192,16 @@ public:
 			 uint32_t &token_count);
 	bool unit_decl_index(uint32_t unit,
 			     std::vector<cir_forest_decl_entry> &out);
+	// A decl entry's scope, read from its record (the record_id column,
+	// format 64): the namespace the entity it names is declared in — the
+	// record's own ns field, "" for the global one — and, for a free
+	// function, the name its source wrote (the record's display name;
+	// NULL when it carries none). False when the entry names no
+	// namespace-scope entity: no record, a record out of range, or a
+	// function entry whose record is its owner class (a member function's
+	// key). `kind` is the entry's Program::PackDeclKind.
+	bool decl_entry_scope(uint32_t kind, uint32_t record_id,
+			      const char *&ns, const char *&display) const;
 	bool unit_pp_events(uint32_t unit, std::vector<uint32_t> &out);
 	bool unit_edges(uint32_t unit, std::vector<uint32_t> &out);
 	bool unit_branch_deps(uint32_t unit, std::vector<uint32_t> &out);	// v40

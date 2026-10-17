@@ -18,7 +18,9 @@ thread_local bool madc_verbose = false;
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <memory>
 #include <queue>
+#include <set>
 #include <sstream>
 #include <stack>
 #include <string>
@@ -32,6 +34,8 @@ thread_local bool madc_verbose = false;
 #include "madcdis/line_edit.h"	// history_record: a %history store
 #include "ns_common.h"		// shell_quote / shell_words: the run child's words
 #include "../../src/madc_posix_io.h"
+#include "../../src/madc_cir.h"		// madc_cir_freeze: a dialect pack to bind
+#include "../../src/cir_freeze.h"	// CirFrozenForest::unit_name: what the session bound
 
 #include <cstdio>
 #include <cstdlib>		// std::system: %build's executable runs
@@ -2119,6 +2123,202 @@ TEST_CASE("completion: members after . and ->, and a scope's after ::")
     CHECK(has(vm, "substr"));
     REQUIRE(m.submit("total.count()"));
     CHECK(m.shown() == "1");
+}
+
+// A using-directive makes a dialect namespace's names reachable bare: after
+// `using namespace php;` the bare word completes to php's functions, as the
+// qualified `php::strto` does.
+TEST_CASE("completion: a using-directive's dialect names complete bare (madc)")
+{
+    InteractiveSession m;
+    REQUIRE(m.begin("--std=madc"));
+    CHECK_FALSE(has(complete_at_end(m, "strto"), "strtolower"));	// php's, qualified only
+    REQUIRE(m.submit("using namespace php;"));
+    std::vector<std::string> c = complete_at_end(m, "strto");
+    CHECK(has(c, "strtolower"));
+    CHECK(has(c, "strtoupper"));
+}
+
+// The dialect pays per name (docs/plans/2026-10-16-dialect-per-name-plan.md,
+// A3). A dialect fragment the pack carries binds directly as its unit; what
+// completion and a rolled-back entry need of it is read from the pack's
+// index, never only from what the bind registered.
+namespace {
+
+// A pack holding the dialect's php fragment, frozen under --std=madc
+// (forest_bind_gate's dialectbind recipe): a session bound to it binds
+// <ns_php> directly, as the release binary binds its own pack. Removed when
+// the case ends.
+struct DialectPack
+{
+    std::string path;
+
+    DialectPack()
+    {
+	const std::string pid = std::to_string((long)getpid());
+	const std::string src = "/tmp/madc_a3_dialect_" + pid + ".cpp";
+	path = "/tmp/madc_a3_dialect_" + pid + ".msnap";
+	{
+	    std::ofstream f(src.c_str());
+	    f << "#include <ns_php>\nint main() { return 0; }\n";
+	}
+	bool ok = false;
+	{
+	    std::unique_ptr<Program> prog(new Program());
+	    prog->registration_policy.enable_forest_bind = false;	// a freeze makes a pack, never binds one
+	    if ( prog->set_language_standard("madc") )
+	    {
+		prog->begin_pack_recording();
+		prog->forest_arena_enabled = true;
+		TokenProgram *tp = prog->tokenize(src.c_str());
+		ok = tp && prog->parse(tp)
+		  && madc_cir_freeze(prog.get(), src.c_str(), path.c_str(),
+				     /*append=*/false, /*mir_cache=*/false, NULL,
+				     /*progress=*/false) == 0;
+	    }
+	}
+	std::remove(src.c_str());
+	if ( !ok )
+	{
+	    std::remove(path.c_str());
+	    path.clear();
+	}
+    }
+
+    ~DialectPack()
+    {
+	if ( !path.empty() )
+	    std::remove(path.c_str());
+    }
+
+    // A Program bound to the pack, for a session to adopt.
+    std::unique_ptr<Program> configured() const
+    {
+	std::unique_ptr<Program> p(new Program());
+	p->registration_policy.enable_forest_bind = true;
+	p->forest_bind_path = path;
+	return p;
+    }
+};
+
+// The leaves forest_dialect_names offers for a scope and a prefix, once each.
+std::set<std::string> dialect_names(Program &p, const char *scope, const char *prefix)
+{
+    std::set<std::string> out;
+    p.forest_dialect_names(scope, prefix,
+			   [&](const madc::dis::istring &n) { out.insert(n.str()); });
+    return out;
+}
+
+// The names of the dialect units the session bound from the pack.
+std::set<std::string> bound_dialect_units(Program &p)
+{
+    std::set<std::string> out;
+    std::vector<uint32_t> units;
+    p.forest_active_dialect_units(units);
+    for ( size_t i = 0; i < units.size(); ++i )
+	if ( const char *nm = p.bind_forest ? p.bind_forest->unit_name(units[i]) : NULL )
+	    out.insert(nm);
+    return out;
+}
+
+} // namespace
+
+TEST_CASE("dialect per name (A3): an active unit's names, read from the pack's index")
+{
+    DialectPack pack;
+    REQUIRE_FALSE(pack.path.empty());
+    InteractiveSession m(pack.configured());
+    REQUIRE(m.begin("--std=madc"));
+    Program &p = m.program();
+    CHECK_FALSE(bound_dialect_units(p).count("ns_php"));	// nothing named php yet
+    CHECK(dialect_names(p, "php", "strto").empty());
+    REQUIRE(m.submit("using namespace php;"));
+    // <ns_php> came from the pack: a unit of the chain, not a text parse.
+    REQUIRE(bound_dialect_units(p).count("ns_php"));
+
+    // php's functions by their flat ids (`__ns_php_strtolower`, its __o2
+    // overload), each offered as the name the source wrote.
+    CHECK(dialect_names(p, "php", "strto")
+	  == (std::set<std::string>{ "strtolower", "strtoupper" }));
+    // The equality A4 relies on: what the bind registers into php up front
+    // (every name, today) is what the index answers for the scope — its
+    // templates (`php::print_r`, spelled qualified) included.
+    std::set<std::string> registered;
+    namespace_map_t::const_iterator ns = p.namespace_map.find("php");
+    REQUIRE(ns != p.namespace_map.end());
+    for ( variable_map_t::const_iterator it = ns->second.begin(); it != ns->second.end(); ++it )
+	if ( it->second && !(it->second->flags & vfINSTPRODUCT) )
+	    registered.insert(it->first.str());
+    REQUIRE(registered.count("print_r"));
+    CHECK(dialect_names(p, "php", "") == registered);
+    // A record's namespace decides, never the spelling: none of php's names
+    // is the global scope's.
+    std::set<std::string> bare = dialect_names(p, "", "");
+    CHECK_FALSE(bare.count("strtolower"));
+    CHECK_FALSE(bare.count("count"));
+    CHECK(dialect_names(p, "", "strto").empty());
+
+    // Completion reads it — after `::` and through the using-directive. The
+    // bind registers every php name today, so these hold either way; once A4
+    // registers per name, the index is what keeps them.
+    CHECK(complete_at_end(m, "php::strto")
+	  == (std::vector<std::string>{ "strtolower", "strtoupper" }));
+    std::vector<std::string> c = complete_at_end(m, "strto");
+    CHECK(has(c, "strtolower"));
+    CHECK(has(c, "strtoupper"));
+    InteractiveSession fresh(pack.configured());
+    REQUIRE(fresh.begin("--std=madc"));
+    CHECK(complete_at_end(fresh, "php::strto")
+	  == (std::vector<std::string>{ "strtolower", "strtoupper" }));
+}
+
+// A demand is registration state: an entry that fails forgets the demands it
+// made (its transaction rewinds the bind), so a later entry demands the name
+// again. A4 writes the demands; nothing else does yet.
+TEST_CASE("dialect per name (A3): a rolled-back entry forgets the dialect demands it made")
+{
+    InteractiveSession m;
+    REQUIRE(m.begin("--std=madc"));
+    Program &p = m.program();
+    Program::ForestDialectDemands &d = p.forest_dialect_demands;
+    CHECK(d.record("php::count", std::vector<uint32_t>{ 7u }));
+    CHECK(d.record("php::nope", std::vector<uint32_t>()));	// a miss is an answer too
+    Program::ForestBindMark mark = p.forest_bind_mark();
+    CHECK(d.record("php::strtolower", std::vector<uint32_t>{ 8u, 9u }));
+    CHECK_FALSE(d.record("php::count", std::vector<uint32_t>{ 1u }));	// demanded once
+    p.forest_bind_rewind(mark);
+    bool hit = false;
+    CHECK(d.demanded("php::count", hit));
+    CHECK(hit);
+    CHECK(d.demanded("php::nope", hit));
+    CHECK_FALSE(hit);
+    CHECK_FALSE(d.demanded("php::strtolower", hit));
+    REQUIRE(d.log.size() == 2u);
+    CHECK(d.log[0].name == "php::count");
+    CHECK(d.log[0].records == std::vector<uint32_t>{ 7u });
+    CHECK(d.log[1].name == "php::nope");
+
+    // An entry's transaction carries it: rolled back, the entry's demand is
+    // gone; a later entry makes it again, and a committed one keeps it.
+    {
+	Program::EntryTransaction entry(p);
+	CHECK(d.record("php::strtolower", std::vector<uint32_t>{ 8u, 9u }));
+    }
+    CHECK_FALSE(d.demanded("php::strtolower", hit));
+    CHECK(d.log.size() == 2u);
+    {
+	Program::EntryTransaction entry(p);
+	CHECK(d.record("php::strtolower", std::vector<uint32_t>{ 8u, 9u }));
+	entry.commit();
+    }
+    CHECK(d.demanded("php::strtolower", hit));
+    CHECK(hit);
+    CHECK(d.log.size() == 3u);
+    // The session goes on.
+    REQUIRE(m.submit("var total = 2;"));
+    REQUIRE(m.submit("total + 1"));
+    CHECK(m.shown() == "3");
 }
 
 // §37 item 8 (plan §41.8a, slice 1): the command front and `%type`. A

@@ -28012,13 +28012,18 @@ Program::ForestBindMark Program::forest_bind_mark() const
     m.func_registered = forest_func_registered;
     m.tmpl_registered = forest_tmpl_registered;
     m.overload_recaptures = forest_pending_overload_recaptures.size();
+    m.dialect_demands = forest_dialect_demands.mark();
     return m;
 }
 
 // The forest's own materialized records stay (a cache: a record no bound
-// unit admits is judged unregistered again at the next restore).
+// unit admits is judged unregistered again at the next restore), and so do
+// the dialect units' decoded names (forest_unit_names: the pack's data, no
+// registration). The dialect demands made since the mark go: a later entry
+// demands those names again.
 void Program::forest_bind_rewind(const ForestBindMark &mark)
 {
+    forest_dialect_demands.rewind(mark.dialect_demands);
     while ( forest_chain.size() > mark.chain_size )
     {
 	forest_chain_set.erase(forest_chain.back());
@@ -28035,6 +28040,144 @@ void Program::forest_bind_rewind(const ForestBindMark &mark)
 	forest_pending_overload_recaptures.erase(
 	    forest_pending_overload_recaptures.begin() + mark.overload_recaptures,
 	    forest_pending_overload_recaptures.end());
+}
+
+bool Program::ForestDialectDemands::record(const madc::dis::istring &name,
+					   const std::vector<uint32_t> &records)
+{
+    if ( !memo.insert(std::make_pair(name, !records.empty())).second )
+	return false;
+    Demand d;
+    d.name = name;
+    d.records = records;
+    log.push_back(d);
+    return true;
+}
+
+bool Program::ForestDialectDemands::demanded(const madc::dis::istring &name, bool &hit) const
+{
+    std::map<madc::dis::istring, bool>::const_iterator it = memo.find(name);
+    hit = it != memo.end() && it->second;
+    return it != memo.end();
+}
+
+void Program::ForestDialectDemands::rewind(size_t mark)
+{
+    while ( log.size() > mark )
+    {
+	memo.erase(log.back().name);
+	log.pop_back();
+    }
+}
+
+const Program::ForestUnitNames &Program::forest_unit_decl_names(uint32_t unit)
+{
+    std::map<uint32_t, ForestUnitNames>::const_iterator it = forest_unit_names.find(unit);
+    if ( it != forest_unit_names.end() )
+	return it->second;
+    ForestUnitNames &names = forest_unit_names[unit];
+    std::vector<cir_forest_decl_entry> di;
+    if ( bind_forest && bind_forest->unit_decl_index(unit, di) )
+	for ( size_t k = 0; k < di.size(); ++k )
+	    if ( const char *nm = bind_forest->pool_str(di[k].name_id) )
+	    {
+		ForestDeclRecord r = { di[k].kind, di[k].record_id };
+		names[madc::dis::istring(nm)].push_back(r);
+	    }
+    return names;
+}
+
+void Program::forest_active_dialect_units(std::vector<uint32_t> &out) const
+{
+    out.clear();
+    if ( !bind_forest )
+	return;
+    for ( size_t i = 0; i < forest_chain.size(); ++i )
+    {
+	const char *un = bind_forest->unit_name(forest_chain[i]);
+	if ( un && embedded_dialect_fragment_p(un) )
+	    out.push_back(forest_chain[i]);
+    }
+}
+
+// Defined with the method-definition matcher: a flat id's overload suffix
+// (`__oN`, unique_overload_symbol's) comes off with it.
+static madc::dis::istring strip_overload_suffix(const madc::dis::istring &tail);
+
+// Two runs of the pack's sorted DECL_NAMES (ForestDeclNames::for_prefix):
+//   - the flat ids namespace_function_symbol spells — a namespaced function
+//     and its overloads (`__ns_php_strtolower`, `__ns_php_strtolower__o2`);
+//     at the global scope the bare names, which are their own keys. The
+//     flat spelling does not say its namespace (`__ns_php_` starts
+//     namespace php_x's ids too), so the entry's RECORD decides
+//     (CirFrozenForest::decl_entry_scope), and its leaf is a free
+//     function's display name, else the spelling past the scope's prefix
+//     with the overload suffix off;
+//   - the qualified spellings `scope::prefix...` (templates, types,
+//     objects, enumerators): the qualifier is the scope — a scoped enum's
+//     enumerators share their enum's record, which names the enclosing
+//     namespace — and the direct members' leaves are the names past it.
+// A name counts when an active dialect unit declares it.
+void Program::forest_dialect_names(const madc::dis::istring &scope,
+				   const madc::dis::istring &prefix,
+				   const std::function<void(const madc::dis::istring &)> &offer)
+{
+    std::vector<uint32_t> active;
+    forest_active_dialect_units(active);
+    if ( active.empty() )
+	return;
+    const ForestDeclNames &index = bind_forest->decl_names();
+    // The active units among name i's declaring units.
+    auto declaring_active = [&](uint32_t i, std::vector<uint32_t> &units) -> bool {
+	units.clear();
+	uint32_t n = 0;
+	const uint32_t *u = index.units_at(i, n);
+	for ( uint32_t k = 0; k < n; ++k )
+	    if ( std::find(active.begin(), active.end(), u[k]) != active.end() )
+		units.push_back(u[k]);
+	return !units.empty();
+    };
+    std::vector<uint32_t> units;
+    uint32_t b = 0, e = 0;
+
+    const madc::dis::istring flat_scope = namespace_function_symbol(scope, madc::dis::istring());
+    index.for_prefix(namespace_function_symbol(scope, prefix).c_str(), b, e);
+    for ( uint32_t i = b; i < e; ++i )
+    {
+	const char *nm = index.name_at(i);
+	if ( !nm || strstr(nm, "::") || !declaring_active(i, units) )
+	    continue;
+	const madc::dis::istring name(nm);
+	bool offered = false;
+	for ( size_t k = 0; k < units.size() && !offered; ++k )
+	{
+	    const ForestUnitNames &un = forest_unit_decl_names(units[k]);
+	    ForestUnitNames::const_iterator it = un.find(name);
+	    for ( size_t r = 0; it != un.end() && r < it->second.size() && !offered; ++r )
+	    {
+		const char *ns = NULL, *display = NULL;
+		if ( !bind_forest->decl_entry_scope(it->second[r].kind, it->second[r].record,
+						     ns, display)
+		  || scope != ns )
+		    continue;
+		offer(display && *display ? madc::dis::istring(display)
+			: strip_overload_suffix(madc::dis::istring(nm + flat_scope.size())));
+		offered = true;
+	    }
+	}
+    }
+
+    if ( scope.empty() )
+	return;
+    const madc::dis::istring qualifier(scope + "::");
+    index.for_prefix((qualifier + prefix).c_str(), b, e);
+    for ( uint32_t i = b; i < e; ++i )
+    {
+	const char *nm = index.name_at(i);
+	const char *leaf = nm ? nm + qualifier.size() : NULL;
+	if ( leaf && *leaf && !strstr(leaf, "::") && declaring_active(i, units) )
+	    offer(madc::dis::istring(leaf));
+    }
 }
 
 // v21: the flush hydrates a verbatim-restored member-template placeholder with
