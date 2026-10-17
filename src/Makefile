@@ -88,7 +88,14 @@ endif
 WERROR ?= 1
 WERROR_FLAG = $(if $(filter 0,$(WERROR)),,-Werror)
 CXXFLAGS ?= -std=c++11 -Wall $(WERROR_FLAG) $(MODE_OPTFLAGS)
-PIC_CXXFLAGS ?= $(CXXFLAGS) -fPIC
+# libmadc's own calls to its own exported functions bind inside the library:
+# under -fPIC gcc otherwise treats every default-visibility function as
+# interposable and neither inlines nor direct-calls it, even within its file.
+# Nothing interposes libmadc's symbols (a host calls them; the JIT module's
+# own interposition is MIR's, untouched). Measured 2026-10-17, symbolized
+# packed release: c_headers.forest -0.97%, cxx_stl.forest -0.43%,
+# dialect.forest -1.61% Ir.
+PIC_CXXFLAGS ?= $(CXXFLAGS) -fPIC -fno-semantic-interposition
 AR ?= ar
 # ARFLAGS needs `ifeq ($(origin ...),default)`, NOT `?=`. make DEFINES ARFLAGS
 # itself (built-in value `rv`), so its origin is `default` — never `undefined`

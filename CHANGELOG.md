@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### libmadc binds its own calls inside the library
+
+- `PIC_CXXFLAGS` (every object in libmadc.so, the library the thin CLI and
+  every host load) gains `-fno-semantic-interposition`: under `-fPIC` gcc
+  otherwise treats every default-visibility function as interposable and
+  neither inlines nor direct-calls libmadc's calls to its own exported
+  functions, even within one file. Nothing interposes libmadc's symbols.
+- Measured on symbolized packed release builds of the same content, with and
+  without the flag, outputs identical: `c_headers.forest` −2.38M Ir (−0.97%),
+  `cxx_stl.forest` −6.06M (−0.43%), `dialect.forest` −0.70M (−1.61%), mostly
+  `Program::parse` and `Program::tokenize`.
+
 ### Completion and REPL rollback read the dialect index
 
 - `ForestDeclNames::for_prefix(stem, begin, end)` returns the one run of the
