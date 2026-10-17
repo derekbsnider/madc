@@ -3916,7 +3916,8 @@ TEST_CASE("B1: a dialect-role container carries its role, every segment raw, bel
 			CHECK(forest.role() == (uint32_t)CIR_FOREST_ROLE_SYSTEM);
 		}
 		// A carrier stacking the image first and the system profile after it
-		// (append_file's 16-byte padding between them): the profiles read
+		// (an older writer's 16-byte padding between them; append_file's page
+		// pad is snapshot_reader's own unit case): the profiles read
 		// newest first, each with its role, its bytes and its compressed
 		// segment count.
 		std::vector<uint8_t> carrier(37, 0xab);	// a carrier's own bytes

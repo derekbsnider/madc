@@ -370,6 +370,160 @@ TEST_CASE("placement 2 profile stack walks valid blobs newest to oldest")
     std::remove(path.c_str());
 }
 
+// One small container (one RAW u32 segment under `hash`), built in memory.
+static std::vector<uint8_t> small_blob(uint32_t hash, uint32_t value)
+{
+    snapshot_writer w;
+    w.set_context_hash(hash);
+    std::vector<uint8_t> blob;
+    if ( !w.add_segment(value, madc::dis::SNAP_KIND_RAW, &value, sizeof(value),
+			PchCompression::None) || !w.build(blob) )
+	blob.clear();
+    return blob;
+}
+
+// Zero-pad `img` to a multiple of `align`, as a writer pads ahead of a blob.
+static void pad_to(std::vector<uint8_t> &img, size_t align)
+{
+    img.resize((img.size() + align - 1) / align * align, 0);
+}
+
+static size_t nonzero_between(const std::vector<uint8_t> &img, size_t from, size_t to)
+{
+    size_t n = 0;
+    for ( size_t i = from; i < to; ++i )
+	n += img[i] != 0;
+    return n;
+}
+
+TEST_CASE("placement 2: every appended container starts on a 4096-byte page")
+{
+    const size_t page = 4096;
+    const std::string path = tmp_path("paged");
+    std::remove(path.c_str());
+    {
+	std::ofstream os(path.c_str(), std::ios::binary);
+	std::vector<char> junk(4099, 'Q');	// odd: no alignment at all
+	os.write(junk.data(), (std::streamsize)junk.size());
+    }
+    const uint32_t first_value = 31, second_value = 32;
+    snapshot_writer first;
+    first.set_context_hash(0xa1u);
+    REQUIRE(first.add_segment(31, madc::dis::SNAP_KIND_RAW, &first_value,
+			      sizeof(first_value), PchCompression::None));
+    REQUIRE(first.append_file(path.c_str()));
+    snapshot_writer second;
+    second.set_context_hash(0xa2u);
+    REQUIRE(second.add_segment(32, madc::dis::SNAP_KIND_RAW, &second_value,
+			       sizeof(second_value), PchCompression::None));
+    REQUIRE(second.append_file(path.c_str()));
+
+    std::vector<uint8_t> image;
+    REQUIRE(slurp(path, image));
+    snapshot_reader latest;
+    REQUIRE(latest.open(image.data(), image.size()));
+    CHECK(latest.context_hash() == 0xa2u);
+    CHECK(latest.blob_offset() % page == 0u);
+
+    size_t below = 0;
+    REQUIRE(latest.previous_image_len(below));
+    snapshot_reader previous;
+    REQUIRE(previous.open(image.data(), below));
+    CHECK(previous.context_hash() == 0xa1u);
+    CHECK(previous.find(31) != nullptr);
+    CHECK(previous.blob_offset() % page == 0u);
+    // The host's bytes end where its pad begins; the pad is zeros.
+    CHECK(previous.blob_offset() >= 4099u);
+    CHECK(nonzero_between(image, 4099, previous.blob_offset()) == 0u);
+    CHECK(nonzero_between(image, below, latest.blob_offset()) == 0u);
+    CHECK_FALSE(previous.previous_image_len(below));
+
+    std::remove(path.c_str());
+}
+
+TEST_CASE("placement 2: the profile walk crosses any zero pad below a page, and no further")
+{
+    const size_t page = 4096;
+    const std::vector<uint8_t> older = small_blob(0xb1u, 41);
+    const std::vector<uint8_t> newer = small_blob(0xb2u, 42);
+    REQUIRE(!older.empty());
+    REQUIRE(!newer.empty());
+
+    // Page pads, laid by hand: the walk crosses thousands of zeros.
+    {
+	std::vector<uint8_t> img(37, 0xab);
+	pad_to(img, page);
+	const size_t older_at = img.size();
+	img.insert(img.end(), older.begin(), older.end());
+	pad_to(img, page);
+	const size_t newer_at = img.size();
+	img.insert(img.end(), newer.begin(), newer.end());
+	REQUIRE(newer_at - (older_at + older.size()) > 16u);
+	snapshot_reader latest;
+	REQUIRE(latest.open(img.data(), img.size()));
+	size_t below = 0;
+	REQUIRE(latest.previous_image_len(below));
+	CHECK(below == older_at + older.size());
+	snapshot_reader previous;
+	REQUIRE(previous.open(img.data(), below));
+	CHECK(previous.context_hash() == 0xb1u);
+	CHECK(previous.blob_offset() == older_at);
+	CHECK_FALSE(previous.previous_image_len(below));
+    }
+
+    // An older writer's 16-byte pads still walk.
+    {
+	std::vector<uint8_t> img(37, 0xab);
+	pad_to(img, 16);
+	img.insert(img.end(), older.begin(), older.end());
+	const size_t older_end = img.size();
+	pad_to(img, 16);
+	img.insert(img.end(), newer.begin(), newer.end());
+	snapshot_reader latest;
+	REQUIRE(latest.open(img.data(), img.size()));
+	size_t below = 0;
+	REQUIRE(latest.previous_image_len(below));
+	CHECK(below == older_end);
+	snapshot_reader previous;
+	REQUIRE(previous.open(img.data(), below));
+	CHECK(previous.context_hash() == 0xb1u);
+    }
+
+    // The bound: page - 1 zeros are a pad, a page of zeros is not.
+    for ( size_t zeros = page - 1; zeros <= page; ++zeros )
+    {
+	std::vector<uint8_t> img(older.begin(), older.end());
+	img.resize(img.size() + zeros, 0);
+	img.insert(img.end(), newer.begin(), newer.end());
+	snapshot_reader latest;
+	REQUIRE(latest.open(img.data(), img.size()));
+	size_t below = 0;
+	CHECK(latest.previous_image_len(below) == (zeros < page));
+    }
+
+    // A host ending in zeros, with no container under them: none.
+    {
+	std::vector<uint8_t> img(100, 'E');
+	img.resize(301, 0);
+	pad_to(img, page);
+	img.insert(img.end(), newer.begin(), newer.end());
+	snapshot_reader latest;
+	REQUIRE(latest.open(img.data(), img.size()));
+	size_t below = 0;
+	CHECK_FALSE(latest.previous_image_len(below));
+    }
+    // A host of zeros alone, longer than a page: none.
+    {
+	std::vector<uint8_t> img(5000, 0);
+	pad_to(img, page);
+	img.insert(img.end(), newer.begin(), newer.end());
+	snapshot_reader latest;
+	REQUIRE(latest.open(img.data(), img.size()));
+	size_t below = 0;
+	CHECK_FALSE(latest.previous_image_len(below));
+    }
+}
+
 TEST_CASE("a file with no blob, or a corrupt one, is rejected cleanly")
 {
     snapshot_reader r;

@@ -39,12 +39,24 @@
 // field is reserved for later ports). Segment payload offsets are 16-aligned
 // within the blob so a payload mmap'd/read at a 16-aligned blob base can be
 // bound in place by typed views (frozen_intern_table et al). append_file()
-// pads the target file to 16 before the blob for exactly this reason.
+// pads the target file to SNAPSHOT_APPEND_ALIGN (a multiple of 16) before the
+// blob for this reason and the one stated beside that constant.
 // dir_offset/context-hash live in the header AND the sizes in the footer so a
 // reader can start from either end.
 
 namespace madc {
 namespace dis {
+
+// Placement 2's host pad: an appended container starts on a 4096-byte page of
+// its carrier file (a mapping keeps a file offset's position within its page).
+// libc's string routines test 4096-byte page crossings by operand address, so
+// a container's in-page layout must not depend on the host's size. The pad is
+// zeros and the footer ends in its non-zero magic: a reader finds the container
+// below by walking back over fewer than SNAPSHOT_APPEND_ALIGN zero bytes (an
+// older writer's pad to 16 included — snapshot_reader::previous_image_len).
+enum : uint32_t { SNAPSHOT_APPEND_ALIGN = 4096 };
+static_assert(SNAPSHOT_APPEND_ALIGN % 16 == 0,
+	      "an appended blob base keeps the 16-aligned payload contract");
 
 // v2: segment `flags` carries the byte-stream TRANSFORM vocabulary below.
 // Readers accept v1 (whose flags are always 0) and v2.
@@ -184,14 +196,16 @@ public:
     bool build(std::vector<uint8_t> &out) const;
 
     bool write_file(const char *path) const;	// create/truncate (placement 1)
-    bool append_file(const char *path) const;	// pad-to-16 + append (placement 2)
+    bool append_file(const char *path) const;	// page pad + append (placement 2)
 
     size_t segment_count() const { return _segs.size(); }
 };
 
 // Append a PRE-BUILT container blob to an existing file — the placement-2
-// shape (pad the host to 16 so interior 16-aligned payload offsets stay
-// aligned, then the blob; the footer lands at EOF). The bytes must already
+// shape (pad the host with zeros to SNAPSHOT_APPEND_ALIGN, so interior
+// 16-aligned payload offsets stay aligned and the blob's in-page layout is
+// the host's-size-independent one, then the blob; the footer lands at EOF;
+// an empty file takes no pad). The bytes must already
 // be a complete container (snapshot_writer::build's output, or a standalone
 // container file read verbatim). append_file rides this; --pack-forest's
 // ELF carrier arm calls it directly with a container file's bytes.
@@ -277,8 +291,9 @@ public:
 
     // Placement-2 profile stacks append more than one complete blob to the
     // same carrier. After open(), return the image-prefix length whose EOF is
-    // the preceding valid blob's footer (skipping append_file's 0..15 bytes
-    // of alignment padding). False when this is the first/only blob. The
+    // the preceding valid blob's footer (skipping the writer's zero pad: the
+    // walk crosses fewer than SNAPSHOT_APPEND_ALIGN zero bytes and opens the
+    // one end it reaches). False when this is the first/only blob. The
     // caller opens that prefix with another snapshot_reader; content meaning
     // and profile selection remain the consumer's concern.
     bool previous_image_len(size_t &image_len) const;

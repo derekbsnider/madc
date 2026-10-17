@@ -2744,7 +2744,7 @@ static void cir_pack_forest_attach(MIR_object_exec_params &xp,
 #endif
 }
 
-// The post-write half: ELF appends the container (pad-to-16 + blob, the
+// The post-write half: ELF appends the container (page pad + blob, the
 // placement-2 shape). Mach-O images already carry it under the signature.
 static bool cir_pack_forest_finish(const char *out_path,
 				   const std::vector<uint8_t> &blob)

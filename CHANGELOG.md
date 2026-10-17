@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+### Every appended container starts on a page, so its in-page layout never moves with the host
+
+- `SNAPSHOT_APPEND_ALIGN` (`madcdis/snapshot.h`) is 4096, beside the 16-aligned
+  payload contract (`static_assert` a multiple of 16). `snapshot_append_blob`
+  (`madcdis_snapshot.cpp`) pads the host with zeros to it before the blob — an
+  empty file takes no pad — so a container's position within its 4096-byte page
+  no longer moves with the size of the code ahead of it, which
+  `__strcmp_avx2`'s page-cross path had read as parse-cost at identical call
+  counts. The B2 + B3 review ruling's follow-up.
+- `snapshot_reader::previous_image_len` walks back over fewer than
+  `SNAPSHOT_APPEND_ALIGN` zero bytes to the previous footer's non-zero magic and
+  opens that one end (was 16 candidate opens for pads 0..15). An older writer's
+  16-byte pad still reads; a host ending in zeros with no container, or more
+  zeros than a pad, is no previous blob.
+- Offsets in `lib/release/libmadc.so` (read from the footers): the system pack
+  at 17,412,096, the dialect image at 12,689,408, both 0 mod 4096.
+  `__strcmp_avx2` self cost `cxx_stl.forest` 18,409,052 → 18,220,612,
+  `rung_stdio.forest` 255,042 → 247,817 at the same call counts; parse-cost
+  gate 0 red of 21, no re-record.
+- `test_madcdis_snapshot` gains the page-start and zero-pad-walk cases (21/21);
+  `test_cir_freeze`'s stacked carrier reads an older writer's 16-byte pad
+  (48/48).
+
 ### A dialect compile binds the dialect image; discovery and readers split by role
 
 - `Program::ForestSide` (`madc.h`) holds one bound forest's state — directory,

@@ -59,7 +59,7 @@ struct MadcLinkPaths
 
 // --pack-forest=<container>: every emitted native EXECUTABLE additionally
 // carries the named frozen container in its self-image carrier — the ELF
-// arm pads the written image to 16 and appends the blob (footer at EOF,
+// arm pads the written image to a page and appends the blob (footer at EOF,
 // exactly the --freeze-append placement); the Mach-O arm hands the blob to
 // the fork writer as the __MADC,__forest section, signed once at emit (a
 // signed Mach-O cannot take appended bytes). NULL = off. Read at the two

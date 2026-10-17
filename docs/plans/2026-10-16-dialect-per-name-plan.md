@@ -1063,3 +1063,61 @@ unused declaration to a dialect fragment cannot cost a dialect compile.
   memo, skipped-profile memo); the compile group shares one forest per
   (role, config, defines) under `MadcCompileGroup`'s contract (group
   mutation single-threaded). No new globals.
+- **Page-aligned containers (2026-10-17), a ruling, not a plan step.** The
+  B2 + B3 review ruling's follow-up. `snapshot_append_blob` padded the host to
+  16 only, so a container's position within its 4096-byte page moved with the
+  size of the code ahead of it (symbolized libmadc: the system pack at byte
+  3952 of its page at 70b31ee7c, 2336 at 603872ac6), and `__strcmp_avx2`'s
+  page-cross path read that as cost at identical call counts. Landed:
+  `SNAPSHOT_APPEND_ALIGN` = 4096 (madcdis/snapshot.h, beside the 16-aligned
+  payload contract, `static_assert` a multiple of 16); the writer pads the
+  host with zeros to it (an empty file takes none: the sidecar's and darwin's
+  first container stays at 0); `snapshot_reader::previous_image_len` walks
+  back over fewer than 4096 zero bytes to the previous footer's non-zero
+  magic and opens that one end (was: 16 candidate opens for pads 0..15). An
+  older writer's 16-byte pads still read (test_cir_freeze's stacked carrier,
+  the new unit case); a host ending in zeros with no container, or more zeros
+  than a pad, is no previous blob.
+  Checked: every `previous_image_len` caller (lexer.cpp
+  `forest_profile_skipped`, `forest_probe_arm`; cir_freeze.cpp
+  `cir_forest_profiles`, `cir_forest_profile_role`) uses only the returned
+  length; the pack layout pass (`madc_cir_forest_relayout`) truncates at the
+  container's own start, keeping its page; forest_pack.sh packs after strip,
+  its sidecar stage starts an empty file; darwin embeds a standalone
+  container as its own `__MADC` segment (`-sectcreate`; the fork writer's
+  `--pack-forest` section page-aligned in file); win64 appends one profile
+  to the PE through the same writer (code-read, not run); forest_pack_gate's
+  `bytes` and the dump's profile bytes are container bytes, pad excluded —
+  unchanged (4,722,144 / 14,557,768); `verify_macho_release.sh` compares the
+  section with the container file itself; no gate compares carrier sizes.
+  RED (test_madcdis_snapshot, the old writer and reader): "every appended
+  container starts on a 4096-byte page" — `blob_offset() % 4096` 144 and 16;
+  "the profile walk crosses any zero pad below a page" — a hand-laid page pad
+  not found. GREEN 21/21; test_cir_freeze 48/48.
+  Offsets (`lib/release/libmadc.so`, read from the footers): the system pack
+  at 17,412,096, the dialect image at 12,689,408, both 0 mod 4096; 544 zero
+  bytes between them, which the reader crosses (`--dump-forest` lists both
+  profiles; dialect.mad "0 system + 1 dialect opened").
+  Cost (Ir, symbolized pair in tmp/cost_sweep2, 603872ac6 → page-aligned):
+
+  | row | 603872ac6 | aligned | `__strcmp_avx2` self | its calls |
+  |---|---:|---:|---:|---:|
+  | cxx_stl.forest | 1,391,428,920 | 1,391,367,356 (−0.004%) | 18,409,052 → 18,220,612 | 780,998 both |
+  | rung_stdio.forest | 19,020,198 | 19,019,626 (−0.003%) | 255,042 → 247,817 | 10,973 both |
+
+  A first cut held a static 4 KiB zero page in libmadc's .rodata (the pad's
+  source; now a pack-time vector): with the code 4 KiB longer, the same
+  page-aligned packs read `__strcmp_avx2` 18,229,011 / 247,817 — the in-page
+  layout no longer moves with the code. The rest of either total is MIR's
+  address-keyed hashing and heap layout (`find_rd_by_reg`, `str_hash`,
+  `name2rdn_hash`, `default_malloc`), not work.
+  Parse-cost gate on the packed release: 0 red of 21, every row −0.01% to
+  +0.07%; nothing fell past the tolerance, no re-record.
+  Validation: `make -C src release` — forest_pack_gate OK [linux-dialect] and
+  [linux] (28 pack parse errors = baseline); fix lane GREEN (Tier 1 29/29,
+  EXE/OBJ 28/28; Tier 2's seven lanes at baseline); the static gate loop 0
+  red of 103; forest_bind_gate 42/42, forest_emitpack_gate,
+  forest_ledger_gate OK.
+  Thread contract: unchanged — the writer appends at pack time in one
+  process; the reader is const over immutable mapped bytes. No new state, no
+  globals.
