@@ -3974,7 +3974,6 @@ TEST_CASE("B1: the dialect image roots are the fragments' auto-include closure")
 	CHECK(at("ns_madc") < n);
 	CHECK(at("ns_madc_host") < n);
 	CHECK(at("ns_ui_web") < n);
-	CHECK(at("ns_markdown") < n);
 	std::set<std::string> uniq(r.begin(), r.end());
 	CHECK(uniq.size() == r.size());
 	// Every root is a dialect fragment: ns_ui_web's `println(stderr, ...)`

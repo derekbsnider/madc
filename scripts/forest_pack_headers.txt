@@ -126,7 +126,6 @@ ns_ui
 ns_ui_web
 ns_ui_ws
 ns_git
-ns_markdown
 string
 vector
 list

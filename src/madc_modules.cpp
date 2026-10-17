@@ -30,11 +30,6 @@ static const MadcModuleSpec madc_modules[] = {
 	// the version history to a tool server's history tools (1C.14).
 	{ "madcgit", "madcgit.h", "libmadcgit.so", "libmadcgit.dylib", "madcgit.dll", MADC_MODULE_LAZY,
 	  "madcgit_commands", "madcgit_tools" },
-	// GitHub-flavoured Markdown (plan 2026-10-03-chthonia-windows-macos.md
-	// §7d): cmark-gfm, a dependency linked statically into the module
-	// (src/madcmark.mk); the <ns_markdown> fragment imports it and asks
-	// madc::module_available before the first call.
-	{ "madcmark", "madcmark.h", "libmadcmark.so", "libmadcmark.dylib", "madcmark.dll", MADC_MODULE_LAZY, NULL, NULL },
 	{ NULL, NULL, NULL, NULL, NULL, 0, NULL, NULL }
 };
 

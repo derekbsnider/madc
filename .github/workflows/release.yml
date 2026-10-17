@@ -133,8 +133,8 @@ jobs:
           echo "LIBGIT2_DIR=$HOME/libgit2" >> "$GITHUB_ENV"
           LIBGIT2_DIR=$HOME/libgit2 bash scripts/stage_libgit2.sh host
           ls -la "$(LIBGIT2_DIR=$HOME/libgit2 bash scripts/stage_libgit2.sh --path host)"
-      - name: stage the static cmark-gfm (the madcmark module links it)
-        # The tag src/madcmark.mk pins, staged like libgit2's (after configure:
+      - name: stage the static cmark-gfm (the markdown module links it)
+        # The tag src/markdown.mk pins, staged like libgit2's (after configure:
         # it reads the build's CC/AR from src/Makefile).
         run: |
           echo "CMARK_GFM_DIR=$HOME/cmark-gfm" >> "$GITHUB_ENV"
@@ -267,9 +267,9 @@ jobs:
         run: |
           bash scripts/stage_libgit2.sh x86-64-windows
           ls -la "$(bash scripts/stage_libgit2.sh --path x86-64-windows)"
-      - name: stage the static cmark-gfm (the madcmark module's build-time dep)
+      - name: stage the static cmark-gfm (the markdown module's build-time dep)
         # release-windows builds the markdown:: module too, cmark-gfm linked
-        # into madcmark.dll; staged like libgit2 above (after configure).
+        # into markdown.dll; staged like libgit2 above (after configure).
         run: |
           bash scripts/stage_cmark_gfm.sh x86-64-windows
           ls -la "$(bash scripts/stage_cmark_gfm.sh --path x86-64-windows)"
@@ -349,8 +349,8 @@ jobs:
           echo "DARWIN_ZSTD_DIR=$HOME/zstd" >> "$GITHUB_ENV"
           # madcgit's build-time dep, staged under a runner-writable dir: the
           # container's /workspace/libgit2 default is unwritable on a mac
-          # runner. Same knob darwin-probe.yml sets. madcmark's cmark-gfm
-          # likewise (src/madcmark.mk's CMARK_GFM_DIR).
+          # runner. Same knob darwin-probe.yml sets. markdown's cmark-gfm
+          # likewise (src/markdown.mk's CMARK_GFM_DIR).
           echo "LIBGIT2_DIR=$HOME/libgit2" >> "$GITHUB_ENV"
           echo "CMARK_GFM_DIR=$HOME/cmark-gfm" >> "$GITHUB_ENV"
           echo "PCRE2_DIR=$HOME/pcre2" >> "$GITHUB_ENV"	# libmadc's PCRE2 stage (src/Makefile's PCRE2_DIR)
@@ -388,9 +388,9 @@ jobs:
         run: |
           bash scripts/stage_libgit2.sh ${{ matrix.arch }}-macos
           ls -la "$(bash scripts/stage_libgit2.sh --path ${{ matrix.arch }}-macos)"
-      - name: stage the static cmark-gfm (the madcmark module's build-time dep)
+      - name: stage the static cmark-gfm (the markdown module's build-time dep)
         # The darwin twin of the windows step: release-macos builds
-        # libmadcmark.dylib with the arch's stage linked in.
+        # markdown.dylib with the arch's stage linked in.
         run: |
           bash scripts/stage_cmark_gfm.sh ${{ matrix.arch }}-macos
           ls -la "$(bash scripts/stage_cmark_gfm.sh --path ${{ matrix.arch }}-macos)"

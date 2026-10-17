@@ -22,7 +22,8 @@
 #                                             (WKWebView + native chrome; GUI programs:
 #                                             import madcwebview) — macOS 13.3+
 #   madc-<ver>-macos-<arch>/lib/libmadcgit.dylib   the madcgit module (git::, libgit2 linked in)
-#   madc-<ver>-macos-<arch>/lib/libmadcmark.dylib  the madcmark module (markdown::, cmark-gfm linked in)
+#   madc-<ver>-macos-<arch>/lib/madc/modules/markdown.dylib  the markdown module (import markdown;,
+#                                             cmark-gfm linked in) — madc's module directory
 #   madc-<ver>-macos-<arch>/share/man/man1/madc.1.gz
 #   madc-<ver>-macos-<arch>/share/doc/madc/examples/madc.ini
 #   madc-<ver>-macos-<arch>/LICENSE
@@ -146,16 +147,17 @@ package_arch() {
         echo "package_release_macos: $madcgit missing — run 'make -C src release-macos' first (it builds madcgit-${bin_arch}-macos)" >&2
         exit 1
     fi
-    # The madcmark module (a program that says `markdown::…`, e.g. the IDEs'
-    # help), built the same way with cmark-gfm STATIC-linked inside it.
-    local madcmark="lib/madcmark/${bin_arch}-macos/libmadcmark.dylib"
-    if [ ! -f "$madcmark" ]; then
-        echo "package_release_macos: $madcmark missing — run 'make -C src release-macos' first (it builds madcmark-${bin_arch}-macos)" >&2
+    # The markdown module (a program that says `import markdown;`, e.g. the
+    # IDEs' help), built the same way with cmark-gfm STATIC-linked inside it;
+    # found by name in madc's module directory (the binary's ../lib/madc/modules).
+    local markdown="lib/madc/modules/${bin_arch}-macos/markdown.dylib"
+    if [ ! -f "$markdown" ]; then
+        echo "package_release_macos: $markdown missing — run 'make -C src release-macos' first (it builds markdown-${bin_arch}-macos)" >&2
         exit 1
     fi
 
     rm -rf "$stage"
-    mkdir -p "$stage/$root/bin" "$stage/$root/lib" "$stage/$root/share/man/man1" \
+    mkdir -p "$stage/$root/bin" "$stage/$root/lib/madc/modules" "$stage/$root/share/man/man1" \
              "$stage/$root/share/doc/madc/examples" "$stage/$root/THIRD_PARTY_NOTICES"
     install -m 755 "$bin" "$stage/$root/bin/madc"
     install -m 644 docs/examples/madc.ini "$stage/$root/share/doc/madc/examples/madc.ini"
@@ -166,7 +168,7 @@ package_arch() {
     install -m 755 "$rtdylib" "$stage/$root/lib/libmadc-0.dylib"
     install -m 755 "$webview" "$stage/$root/lib/libmadcwebview.dylib"
     install -m 755 "$madcgit" "$stage/$root/lib/libmadcgit.dylib"
-    install -m 755 "$madcmark" "$stage/$root/lib/libmadcmark.dylib"
+    install -m 755 "$markdown" "$stage/$root/lib/madc/modules/markdown.dylib"
     gzip -9n < docs/man/madc.1 > "$stage/$root/share/man/man1/madc.1.gz"
     install -m 644 LICENSE "$stage/$root/LICENSE"
     # The frozen C++ groves derive from LLVM's libc++ headers
@@ -214,7 +216,7 @@ package_arch() {
         exit 1
     fi
     install -m 644 "$pcre2_licence" "$stage/$root/THIRD_PARTY_NOTICES/pcre2-LICENCE.txt"
-    # libmadcmark.dylib statically links cmark-gfm (BSD-2 and MIT): its notice
+    # markdown.dylib statically links cmark-gfm (BSD-2 and MIT): its notice
     # ships.
     install -m 644 "$(make -C src -s print-CMARK_GFM_STAGE)/src/COPYING" \
         "$stage/$root/THIRD_PARTY_NOTICES/cmark-gfm-COPYING.txt"

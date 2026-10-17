@@ -1,13 +1,14 @@
-// modules/madcmark/madcmark.cpp — THE madcmark MODULE: madc::markdown_tree,
-// the ONE cmark-gfm caller in madc (include/madcdis/markdown.h states the
-// contract), and the module's C API (include/madc/madcmark.h — what
-// `import madcmark;` binds). cmark-gfm is a dependency (owner 2026-10-04,
-// plan docs/plans/2026-10-03-chthonia-windows-macos.md §7d), linked
-// statically into this module by src/madcmark.mk and never into libmadc.
-// The module binds libmadc's own symbols (value) at load, from the image
-// that imported it.
+// modules/markdown/markdown.cpp — THE markdown MODULE (include/madc_module.h):
+// madc::markdown_tree, the ONE cmark-gfm caller in madc (markdown.h states the
+// contract), and the module's face — markdown::parse (markdown.madi) and the
+// description `import markdown;` reads. cmark-gfm is a dependency (owner
+// 2026-10-04, plan docs/plans/2026-10-03-chthonia-windows-macos.md §7d),
+// linked statically into this module by src/markdown.mk and never into
+// libmadc. The module binds libmadc's own symbols (value, the registration API
+// its generated builders call) at load, from the image that imported it.
 
-#include "madcdis/markdown.h"
+#include "markdown.h"
+#include "madc_module.h"
 
 #include <cmark-gfm.h>
 #include <cmark-gfm-core-extensions.h>
@@ -187,16 +188,25 @@ value markdown_tree(const std::string &text)
 
 } // namespace madc
 
-using madc::value;
+// ------------------------------------------------------ the module's face
+namespace markdown {
 
-// ------------------------------------------------------ the module's C API
-extern "C" {
-
-void *madcmark_parse(void *result, const char *text)
+madc::value &parse(madc::value &out, const char *text)
 {
-    value &out = *(value *)result;
     out = madc::markdown_tree(madc::text_of(text));
-    return result;
+    return out;
 }
 
-} // extern "C"
+} // namespace markdown
+
+#include "markdown.inc"	// the face's generated table (madc --emit-module-table)
+
+MADC_MODULE_EXPORT const MadcModuleDescription *madc_module_markdown(void)
+{
+    static const MadcModuleDescription d = {
+	MADC_MODULE_ABI, "markdown", 0u,
+	madc_module_declarations, madc_module_ndeclarations,
+	NULL, NULL
+    };
+    return &d;
+}

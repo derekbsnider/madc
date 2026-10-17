@@ -26,9 +26,10 @@
 #   /usr/lib/<multiarch|lib64>/libmadcgit.so    the madcgit module: madc's read-only git view, the
 #                                               pinned libgit2 linked in statically (the nexus's PAST
 #                                               verbs; git:: programs) — no libgit2 package needed
-#   /usr/lib/<multiarch|lib64>/libmadcmark.so   the madcmark module: Markdown parsed by cmark-gfm,
-#                                               linked in statically (markdown:: programs; the IDE's
-#                                               help and previews) — no cmark-gfm package needed
+#   /usr/lib/madc/modules/markdown.so           the markdown module: Markdown parsed by cmark-gfm,
+#                                               linked in statically (`import markdown;`; the IDE's
+#                                               help and previews) — no cmark-gfm package needed;
+#                                               madc's module directory (the binary's ../lib)
 #   /usr/share/man/man1/madc.1.gz
 #   /etc/apparmor.d/madc                        the .deb on Ubuntu 24.04 and later only: a profile
 #                                               granting madc user namespaces (WebKit's sandbox, for
@@ -36,7 +37,7 @@
 #   /usr/share/doc/madc/copyright               LICENSE (MPL-2.0)
 #   /usr/share/doc/madc/webview-copyright       webview/webview (MIT) — the webview library's notice
 #   /usr/share/doc/madc/libgit2-copyright       libgit2's COPYING — linked into libmadcgit.so
-#   /usr/share/doc/madc/cmark-gfm-copyright     cmark-gfm's notices — linked into libmadcmark.so
+#   /usr/share/doc/madc/cmark-gfm-copyright     cmark-gfm's notices — linked into the markdown module
 #   /usr/share/doc/madc/changelog.gz            CHANGELOG.md
 #   /usr/share/doc/madc/examples/madc.ini       documented example config
 #
@@ -154,7 +155,7 @@ if [ ! -f "$lg2" ]; then
     exit 1
 fi
 make -C src -j"$(bash scripts/build_jobs.sh)" libmadcgit > /dev/null
-# The madcmark module (src/madcmark.mk): Markdown, statically linking the
+# The markdown module (src/markdown.mk): Markdown, statically linking the
 # pinned cmark-gfm scripts/stage_cmark_gfm.sh staged for this host. Required
 # for the same reason as libgit2's stage: the system arm (the Homebrew
 # formula's) links a shared cmark-gfm no package declares.
@@ -163,7 +164,7 @@ if [ ! -f "$cm/libcmark-gfm.a" ]; then
     echo "package_release: $cm/libcmark-gfm.a missing — bash scripts/stage_cmark_gfm.sh host" >&2
     exit 1
 fi
-make -C src -j"$(bash scripts/build_jobs.sh)" libmadcmark > /dev/null
+make -C src -j"$(bash scripts/build_jobs.sh)" markdown > /dev/null
 
 if ldd bin/madc-release | grep -Eq "qdbm|gdbm|libdb|sqlite"; then
     echo "package_release: distribution binary still links storage libs" >&2
@@ -212,7 +213,7 @@ DEBBIN="$PWD/$DEBROOT/usr/bin"
 DEPENDS=$(cd "$SHLIB" && dpkg-shlibdeps -O --ignore-missing-info -l"$DEBLIB" \
               "$DEBBIN/madc" \
               "$DEBLIB/libmadc.so.0" \
-              "$DEBLIB/libmadcgit.so" "$DEBLIB/libmadcmark.so" 2> shlibdeps.log |
+              "$DEBLIB/libmadcgit.so" "$PWD/$DEBROOT/usr/lib/madc/modules/markdown.so" 2> shlibdeps.log |
           sed -n 's/^shlibs:Depends=//p')
 if [ -z "$DEPENDS" ]; then
     echo "package_release: dpkg-shlibdeps named no dependencies (see $SHLIB/shlibdeps.log)" >&2
@@ -298,7 +299,7 @@ Recommends: gtk4
 # The webview library's own DT_NEEDED (webkitgtk, gtk4 and their world) must
 # not become hard Requires of the whole package: the GUI is optional, the
 # weak dependencies above name it.
-%global __requires_exclude_from ^/usr/lib64/(libmadcwebview|libmadcgit|libmadcmark)\\.so\$
+%global __requires_exclude_from ^/usr/lib64/(libmadcwebview|libmadcgit)\\.so\$
 %define __strip /bin/true
 %define _build_id_links none
 
@@ -311,6 +312,7 @@ ${DESC_BODY}
 %files
 /usr/bin/*
 /usr/lib64/*
+/usr/lib/madc
 %doc /usr/share/doc/madc
 /usr/share/man/man1/*
 EOF
@@ -360,9 +362,9 @@ command; an IDE reads history, blame and revisions through it). It is
 loaded on first use and needs no libgit2 installed; libgit2's notice is
 share/doc/madc/libgit2-copyright.
 
-Markdown: lib/libmadcmark.so parses Markdown with cmark-gfm linked into
-it (the \`markdown::\` namespace; the IDEs' help and previews read
-through it). It is loaded on first use and needs no cmark-gfm installed;
+Markdown: the markdown module (lib/madc/modules/markdown.so) parses
+Markdown with cmark-gfm linked into it (\`import markdown;\`; the IDEs'
+help and previews read through it). It needs no cmark-gfm installed;
 cmark-gfm's notice is share/doc/madc/cmark-gfm-copyright.
 
 It needs the WebKitGTK 6.0 and GTK 4 runtime libraries installed

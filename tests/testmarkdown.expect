@@ -1,4 +1,3 @@
-available: true
 blocks: 5
 heading: true level=1 text=Hello
 task: true checked=true

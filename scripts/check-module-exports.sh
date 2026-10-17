@@ -1,13 +1,15 @@
 #!/bin/bash
 # check-module-exports.sh — a madc module exports no symbol of the library it
-# links statically: madcgit no libgit2 symbol, madcmark no cmark-gfm symbol.
+# links statically: madcgit no libgit2 symbol, markdown no cmark-gfm symbol.
 #
 # Each module links its dependency statically (src/madcgit.mk,
-# src/madcmark.mk), and madc loads modules RTLD_GLOBAL (src/madc_dl.cpp): an
+# src/markdown.mk), and madc loads modules RTLD_GLOBAL (src/madc_dl.cpp): an
 # exported dependency symbol would enter the process's global scope beside
 # any copy of that library a program loads itself, and a script's dlsym
-# fallback would bind to the module's copy. A module's own C API is its
-# madc<name>_* (include/madc/madcgit.h, include/madc/madcmark.h).
+# fallback would bind to the module's copy. A module's own exports are its
+# face (madcgit's madcgit_* C API, include/madc/madcgit.h; a madc module's
+# entry point madc_module_<name> and its namespace's symbols,
+# include/madc_module.h).
 #
 # The MODULES table below is the data: a module, its dependency's symbol
 # pattern, and the images a target's build leaves in the tree (an absent
@@ -16,6 +18,8 @@
 #   lib/lib<module>.dylib, lib/<module>/*-macos/lib<module>.dylib
 #                                              Mach-O: llvm-nm -g
 #   bin/<module>.dll                           PE: objdump -p, the export table
+#   lib/madc/modules/<module>.{so,dylib,dll}, lib/madc/modules/*-macos/<module>.dylib
+#                                              a madc module (madc's module directory)
 # An image present with no tool to read it FAILS: a gate that cannot look
 # must not pass.
 #
@@ -28,7 +32,7 @@ cd "$(dirname "$0")/.." || exit 2
 
 # module|dependency|the dependency's exported-symbol pattern
 MODULES="madcgit|libgit2|^(git|giterr)_
-madcmark|cmark-gfm|^(cmark_|CMARK_|houdini_|_scan_|_ext_scan_|create_[a-z]+_extension$|normalize_map_label$)"
+markdown|cmark-gfm|^(cmark_|CMARK_|houdini_|_scan_|_ext_scan_|create_[a-z]+_extension$|normalize_map_label$)"
 FORBIDDEN='^(git|giterr)_'	# the control's pattern (madcgit's row)
 
 first_tool() {
@@ -100,7 +104,11 @@ while IFS='|' read -r module DEPENDENCY FORBIDDEN; do
 	[ -n "$module" ] || continue
 	for row in "elf lib/lib$module.so" "macho lib/lib$module.dylib" \
 		   "macho lib/$module/arm64-macos/lib$module.dylib" \
-		   "macho lib/$module/x86-64-macos/lib$module.dylib" "pe bin/$module.dll"; do
+		   "macho lib/$module/x86-64-macos/lib$module.dylib" "pe bin/$module.dll" \
+		   "elf lib/madc/modules/$module.so" "macho lib/madc/modules/$module.dylib" \
+		   "macho lib/madc/modules/arm64-macos/$module.dylib" \
+		   "macho lib/madc/modules/x86-64-macos/$module.dylib" \
+		   "pe lib/madc/modules/$module.dll"; do
 		kind=${row%% *}
 		f=${row#* }
 		[ -f "$f" ] || continue

@@ -654,3 +654,37 @@ modules than like C++ headers."
   the value carrier) → `obj/test-modules/greet.so`; tests `testmodule_import`
   (JIT, EXE, OBJ) and `testmodule_missing`. Ruling: darwin / win64 domain
   skips until M2 brings those arms (the first shipping module).
+
+### M2 execution (2026-10-17)
+
+- madcmark becomes the module `markdown`, all of it under `src/modules/markdown/`:
+  `markdown.madi` (the face: `markdown::parse` and `#include "markdown_enums"`),
+  `markdown.cpp` (the body, then the generated table and the entry point
+  `madc_module_markdown`), `markdown.h`, `markdown_enums`. The C API
+  (`madcmark_*`, `include/madc/madcmark.h`) and the core's face
+  (`include/madc/ns_markdown`, `include/madc/bits/markdown_enums`,
+  `include/madcdis/markdown.h`) are gone, along with the auto-include row, the
+  preferred-order entry, the module-map row and the pack-list entry.
+- `src/markdown.mk` (was `madcmark.mk`): the table from the face
+  (`madc_module_table_rules`), then `lib/madc/modules/markdown.so` (Linux),
+  `lib/madc/modules/markdown.dll` (Windows, linked against libmadc's import
+  lib), `lib/madc/modules/<arch>-macos/markdown.dylib` plus a flat copy
+  (macOS). The tables are target-neutral, in `obj/modules/<name>/`, written by
+  the host's madc in cross and hosted modes.
+- Packages: `/usr/lib/madc/modules/markdown.so` (deb/rpm; `%files` carries
+  `/usr/lib/madc`), `lib/madc/modules/` in the tarball, the macOS bundle and the
+  Windows zip; `check-module-exports.sh` reads the module-directory images;
+  `notices.tsv` names the new carriers.
+- Programs say `import markdown;`: testmarkdown, the commonmark lane's
+  driver, madcide (its own repository). `markdown::available()` is gone: a
+  missing module is the import error. testfragmentobjects drops markdown.
+- Ruling: testlazymoduledirect is retired. Its subject (a LAZY row's direct
+  call) has no row left to test; M6 deletes the flag. Cost if wrong: git and
+  the web module keep the LAZY path until M3/M4, still covered by testgit*
+  and the GUI lane.
+- Carry (R3's): cross and hosted builds still link the empty dialect table;
+  the markdown table itself is host-generated and needs nothing more.
+- Validation: Tier 1 (13 JIT, 10 EXE, 10 OBJ), Tier 2's seven lanes green
+  (commonmark 664/670, the baseline), test_markdown / test_builtin_registry /
+  test_cir_freeze / test_modules, static gates 0 red. The win64 and darwin
+  arms are built and run at the seam.

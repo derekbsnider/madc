@@ -72,14 +72,25 @@ fi
 # context stack + VLA scope-exit helpers, nothing else. Platform parity: the
 # mac and win archives already ship it.
 install -m 644 lib/release/libmadc_rt.a "$root/$libdir/libmadc_rt.a"
-# The optional modules: the platform webview library (the loader tries
-# <exedir>/../lib first, then the system search), the madcgit module and the
-# madcmark module.
-for m in libmadcwebview.so libmadcgit.so libmadcmark.so; do
+# The optional libraries: the platform webview library (the loader tries
+# <exedir>/../lib first, then the system search) and the madcgit module.
+for m in libmadcwebview.so libmadcgit.so; do
 	if [ -f "lib/$m" ]; then
 		install -m 755 "lib/$m" "$root/$libdir/$m"
 	elif [ -n "$MADC_STAGE_REQUIRE_MODULES" ]; then
 		echo "stage_install: missing lib/$m (the packages carry it)" >&2
+		exit 1
+	fi
+done
+# The madc modules (include/madc_module.h), found by NAME in madc's module
+# directory — the binary's ../lib/madc/modules — whatever the distribution's
+# library directory: <prefix>/lib/madc/modules.
+for m in markdown; do
+	if [ -f "lib/madc/modules/$m.so" ]; then
+		install -d "$p/lib/madc/modules"
+		install -m 755 "lib/madc/modules/$m.so" "$p/lib/madc/modules/$m.so"
+	elif [ -n "$MADC_STAGE_REQUIRE_MODULES" ]; then
+		echo "stage_install: missing lib/madc/modules/$m.so (the packages carry it)" >&2
 		exit 1
 	fi
 done
@@ -95,11 +106,11 @@ install -m 644 third_party/webview/LICENSE "$p/share/doc/madc/webview-copyright"
 if [ -f "$root/$libdir/libmadcgit.so" ] && [ -n "$(make -C src -s print-MADCGIT_LIBGIT2)" ]; then
 	install -m 644 "$(make -C src -s print-LIBGIT2_STAGE)/src/COPYING" "$p/share/doc/madc/libgit2-copyright"
 fi
-# A libmadcmark.so linked against the staged cmark-gfm carries its code
+# A markdown module linked against the staged cmark-gfm carries its code
 # (BSD-2 and MIT), so the stage's notice ships beside it; one linked against a
 # system cmark-gfm (Homebrew) leaves the notice to that package.
-if [ -f "$root/$libdir/libmadcmark.so" ]; then
-	notice=$(make -C src -s print-MADCMARK_NOTICE)
+if [ -f "$p/lib/madc/modules/markdown.so" ]; then
+	notice=$(make -C src -s print-MARKDOWN_NOTICE)
 	if [ -n "$notice" ]; then
 		if [ ! -f "$notice" ]; then
 			echo "stage_install: cmark-gfm's notice $notice is missing (scripts/stage_cmark_gfm.sh host)" >&2

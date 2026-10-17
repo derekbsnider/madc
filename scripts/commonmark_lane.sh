@@ -1,6 +1,6 @@
 #!/bin/bash
 # commonmark_lane.sh — the CommonMark conformance lane (plan
-# docs/plans/2026-10-03-chthonia-windows-macos.md §7d). The madcmark module's
+# docs/plans/2026-10-03-chthonia-windows-macos.md §7d). The markdown module's
 # Markdown TREE, rendered as HTML by scripts/commonmark_lane.mad the way
 # cmark-gfm's own renderer writes it, against every example of the spec the
 # pinned cmark-gfm ships (test/spec.txt in its staged source, read in place —

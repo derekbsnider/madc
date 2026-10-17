@@ -1,14 +1,16 @@
-// The markdown:: namespace (plan docs/plans/2026-10-03-chthonia-windows-
-// macos.md §7d; the madcmark module over cmark-gfm): a README-shaped text
-// parsed into a value tree, read the way a renderer reads it — switching on
-// the markdown::node_kind / markdown::column_align codes (<bits/markdown_enums>) — for a
-// heading's level, a task item's state, a table column's alignment, a code
-// block's info string and text, and a link's url. The values are what
-// cmark-gfm's tree holds for this text (tests/unit/test_markdown.cpp pins the
-// source positions against a cmark-gfm probe).
+// The markdown module (plan docs/plans/2026-10-03-chthonia-windows-
+// macos.md §7d; cmark-gfm linked into it), imported by name: a README-shaped
+// text parsed into a value tree, read the way a renderer reads it — switching
+// on the markdown::node_kind / markdown::column_align codes the module
+// declares — for a heading's level, a task item's state, a table column's
+// alignment, a code block's info string and text, and a link's url. The
+// values are what cmark-gfm's tree holds for this text
+// (tests/unit/test_markdown.cpp pins the source positions against a
+// cmark-gfm probe).
+import markdown;
+
 int main()
 {
-    println("available: {}", markdown::available());
     var doc;
     markdown::parse(doc, "# Hello\n\n- [x] done\n\n| a |\n|--:|\n| 1 |\n\n```c\nint x;\n```\nSee [madc](https://example.com).\n");
     var kids = doc["children"];

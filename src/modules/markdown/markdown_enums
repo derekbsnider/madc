@@ -1,14 +1,13 @@
-// madc embedded <bits/markdown_enums> — the markdown namespace's codes as
-// ENUMS, the ONE text for two readers: the engine (the madcmark module,
-// src/modules/madcmark/madcmark.cpp, converts cmark-gfm's node types to
-// these once) and the dialect (<ns_markdown> includes it, so a renderer
-// switches on `n["kind"] == markdown::node_kind::heading` — an enumerator the
-// compiler checks — instead of comparing a word).
+// modules/markdown/markdown_enums — the markdown module's codes as ENUMS, the
+// ONE text for two readers: the module's C++ (markdown.cpp converts
+// cmark-gfm's node types to these once) and its face (markdown.madi includes
+// it, so a renderer switches on `n["kind"] == markdown::node_kind::heading` —
+// an enumerator the compiler checks — instead of comparing a word).
 // Plain C++11 enums, nothing else (dialect-lean).
 //
 // Thread contract: constants.
-#ifndef __MADC_BITS_MARKDOWN_ENUMS
-#define __MADC_BITS_MARKDOWN_ENUMS 1
+#ifndef __MODULES_MARKDOWN_ENUMS
+#define __MODULES_MARKDOWN_ENUMS 1
 
 namespace markdown {
     // A node's kind: CommonMark's blocks and inlines, then GitHub's

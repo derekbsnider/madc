@@ -1480,9 +1480,6 @@ static const std::map<madc::dis::istring, madc::dis::istring> &auto_include_iden
 	// The git:: namespace (Nexus L4a → the V6 seam): the madcgit MODULE's
 	// dialect face — <ns_git> imports the module and wraps its C API.
 	{"git", "ns_git"},
-	// The markdown:: namespace (plan §7d): the madcmark MODULE's dialect
-	// face — <ns_markdown> imports the module and wraps its C API.
-	{"markdown", "ns_markdown"},
 	// The web UI LEVEL's enumerator (ui::WEB, <bits/ui_enums>): a program
 	// that names the level it wants (`ui::open(ui::WEB)`, `lvl = ui::WEB`)
 	// wants the target that serves it — <ns_ui_web>, whose initializer
@@ -1627,7 +1624,6 @@ static std::vector<madc::dis::istring> ordered_auto_include_headers(const std::s
 	"ns_ui_web",
 	"ns_ui_ws",
 	"ns_git",
-	"ns_markdown",
 	NULL
     };
 

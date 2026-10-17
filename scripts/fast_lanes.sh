@@ -20,7 +20,7 @@
 #   gxx-c++11     ~85s    g++.dg compile-clean subset (a ROADMAP metric, never
 #                         a gate — owner ruling 2026-09-04 — but cheap, so it
 #                         is measured here rather than drifting)
-#   commonmark    ~1s     the CommonMark spec's 670 examples, the madcmark
+#   commonmark    ~1s     the CommonMark spec's 670 examples, the markdown
 #                         module's Markdown tree rendered as HTML against each
 #                         (scripts/commonmark_lane.sh; needs the staged
 #                         cmark-gfm, as the module's build does)

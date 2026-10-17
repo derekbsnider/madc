@@ -1,6 +1,6 @@
 // Two units that each use the namespaces whose embedded fragments define
-// code — the web UI host (ui::WEB, the level a program asks for), git:: and
-// markdown:: — compiled to objects (`madc -c`) and
+// code — the web UI host (ui::WEB, the level a program asks for) and git::
+// — compiled to objects (`madc -c`) and
 // linked (`madc -o`). A fragment's namespace-scope variables are inline and
 // its function bodies have vague linkage, so each object's copy is one
 // entity and the link keeps one; a plain variable in a header is a second
@@ -23,11 +23,11 @@ int main()
 	var a = format("{}/a.mad", dir);
 	php::file_put_contents(a.c_str(),
 		"long a_side(void)\n{\n\tlong l = ui::WEB;\n"
-		"\treturn l + (git::available() ? 1 : 0) + (markdown::available() ? 1 : 0);\n}\n");
+		"\treturn l + (git::available() ? 1 : 0);\n}\n");
 	var b = format("{}/b.mad", dir);
 	php::file_put_contents(b.c_str(),
 		"long a_side(void);\nint main()\n{\n\tlong l = ui::WEB;\n"
-		"\tlong b = l + (git::available() ? 1 : 0) + (markdown::available() ? 1 : 0);\n"
+		"\tlong b = l + (git::available() ? 1 : 0);\n"
 		"\tprintln(\"same: {}\", a_side() == b ? 1 : 0);\n\treturn 0;\n}\n");
 	var ao = format("{}/a.o", dir);
 	var bo = format("{}/b.o", dir);

@@ -3,7 +3,7 @@
 
 // The dialect is builtin (docs/plans/2026-10-17-dialect-builtin-registration.md):
 // the madc dialect's namespaces (madc:: php:: perl:: python:: ruby:: js:: rust::
-// ui:: git:: markdown::) and bits/* are registered by generated initialization
+// ui:: git::) and bits/* are registered by generated initialization
 // code, never parsed per compile and never unfrozen. The build reads the
 // include/madc/ns_* and bits/* files once (`madc --emit-builtin-registry=`) and
 // writes one builder per name plus the sorted table below into the object tree

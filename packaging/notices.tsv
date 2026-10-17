@@ -10,7 +10,7 @@
 linux	libmadc.so.0	copyright	madc (MPL-2.0)
 linux	libmadcwebview.so	webview-copyright	webview/webview (MIT)
 linux	libmadcgit.so	libgit2-copyright	libgit2 (GPLv2 with the linking exception)
-linux	libmadcmark.so	cmark-gfm-copyright	cmark-gfm (BSD-2, MIT)
+linux	markdown.so	cmark-gfm-copyright	cmark-gfm (BSD-2, MIT)
 windows	libmadc-0.dll	LICENSE	madc (MPL-2.0)
 windows	libmadc-0.dll	zstd-LICENSE.txt	zstd (BSD)
 windows	libmadc-0.dll	pcre2-LICENCE.txt	PCRE2 (BSD)
@@ -19,7 +19,7 @@ windows	libstdc++-6.dll	GCC-RUNTIME-LIBRARY-EXCEPTION.txt	the GCC runtime librar
 windows	libwinpthread-1.dll	mingw-w64-copyright.txt	mingw-w64 winpthreads
 windows	madcwebview.dll	webview-LICENSE.txt	webview/webview (MIT)
 windows	madcgit.dll	libgit2-COPYING.txt	libgit2 (GPLv2 with the linking exception)
-windows	madcmark.dll	cmark-gfm-COPYING.txt	cmark-gfm (BSD-2, MIT)
+windows	markdown.dll	cmark-gfm-COPYING.txt	cmark-gfm (BSD-2, MIT)
 macos	libmadc-0.dylib	LICENSE	madc (MPL-2.0)
 macos	libmadc-0.dylib	zstd-LICENSE.txt	zstd (BSD)
 macos	libmadc-0.dylib	pcre2-LICENCE.txt	PCRE2 (BSD)
@@ -28,4 +28,4 @@ macos	libmadc-0.dylib	darwin-libc-NOTICE.txt	Apple libc headers in the C prelude
 macos	libmadc-0.dylib	APSL-2.0.txt	Apple Public Source License 2.0
 macos	libmadcwebview.dylib	webview-LICENSE.txt	webview/webview (MIT)
 macos	libmadcgit.dylib	libgit2-COPYING.txt	libgit2 (GPLv2 with the linking exception)
-macos	libmadcmark.dylib	cmark-gfm-COPYING.txt	cmark-gfm (BSD-2, MIT)
+macos	markdown.dylib	cmark-gfm-COPYING.txt	cmark-gfm (BSD-2, MIT)

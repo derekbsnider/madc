@@ -80,7 +80,7 @@ PKGS_storage="libdb-dev libgdbm-dev libsqlite3-dev libqdbm-dev libxqdbm-dev"
 # target, the host included (owner floor 2026-10-04: 1.8.7 / 1.9.7 or newer;
 # Ubuntu's libgit2-dev is 1.7.2). The stage needs cmake. Without the host
 # stage the module is not built and the nexus degrades to "no repository";
-# the suite's git tests need it. The madcmark module (src/madcmark.mk) links
+# the suite's git tests need it. The markdown module (src/markdown.mk) links
 # the pinned cmark-gfm scripts/stage_cmark_gfm.sh builds the same way.
 PKGS_git="cmake"
 PKGS_cross="qemu-user-static gcc-aarch64-linux-gnu g++-aarch64-linux-gnu"
@@ -242,7 +242,7 @@ report() {
 			missing=1
 		fi
 	done
-	# The madcmark module's pinned cmark-gfm (scripts/stage_cmark_gfm.sh), per
+	# The markdown module's pinned cmark-gfm (scripts/stage_cmark_gfm.sh), per
 	# target like libgit2's; the macOS twins need the SDK.
 	local cm
 	for t in host x86-64-windows arm64-macos x86-64-macos; do
@@ -329,17 +329,17 @@ fi
 # report MISSING, not a provisioning fail.
 echo "provision_container: staging libgit2 (madcgit, the host)"
 bash "$(dirname "$0")/stage_libgit2.sh" host || exit 1
-echo "provision_container: staging cmark-gfm (madcmark, the host)"
+echo "provision_container: staging cmark-gfm (markdown, the host)"
 bash "$(dirname "$0")/stage_cmark_gfm.sh" host || exit 1
 echo "provision_container: staging libgit2 (madcgit cross, x86-64-windows)"
 bash "$(dirname "$0")/stage_libgit2.sh" x86-64-windows || exit 1
-echo "provision_container: staging cmark-gfm (madcmark cross, x86-64-windows)"
+echo "provision_container: staging cmark-gfm (markdown cross, x86-64-windows)"
 bash "$(dirname "$0")/stage_cmark_gfm.sh" x86-64-windows || exit 1
 if [ -d "${MACOS_SDK:-/workspace/sdk/MacOSX.sdk}" ]; then
 	for a in arm64-macos x86-64-macos; do
 		echo "provision_container: staging libgit2 (madcgit cross, $a)"
 		bash "$(dirname "$0")/stage_libgit2.sh" "$a" || exit 1
-		echo "provision_container: staging cmark-gfm (madcmark cross, $a)"
+		echo "provision_container: staging cmark-gfm (markdown cross, $a)"
 		bash "$(dirname "$0")/stage_cmark_gfm.sh" "$a" || exit 1
 	done
 fi

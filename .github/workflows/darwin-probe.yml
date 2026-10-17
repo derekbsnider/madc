@@ -95,8 +95,8 @@ jobs:
           echo "LIBCXX_HEADERS_HOME=$HOME/libcxx-headers" >> "$GITHUB_ENV"
           # madcgit's build-time dep: the minimal static libgit2 (#2), staged
           # under a runner-writable dir — the container's /workspace/libgit2
-          # default is unwritable here. Staged in its own step below; madcmark's
-          # cmark-gfm likewise (src/madcmark.mk's CMARK_GFM_DIR).
+          # default is unwritable here. Staged in its own step below; markdown's
+          # cmark-gfm likewise (src/markdown.mk's CMARK_GFM_DIR).
           echo "LIBGIT2_DIR=$HOME/libgit2" >> "$GITHUB_ENV"
           echo "CMARK_GFM_DIR=$HOME/cmark-gfm" >> "$GITHUB_ENV"
           echo "PCRE2_DIR=$HOME/pcre2" >> "$GITHUB_ENV"	# libmadc's PCRE2 stage (src/Makefile's PCRE2_DIR)
@@ -133,10 +133,10 @@ jobs:
           # serves the native build with no path hardcoded to the container.
           bash scripts/stage_libgit2.sh ${{ matrix.arch }}-macos
           ls -la "$(bash scripts/stage_libgit2.sh --path ${{ matrix.arch }}-macos)"
-      - name: stage the static cmark-gfm (the madcmark module's build-time dep)
+      - name: stage the static cmark-gfm (the markdown module's build-time dep)
         run: |
           # release-%-macos builds the markdown:: module too, cmark-gfm
-          # linked into libmadcmark.dylib; staged like libgit2 above.
+          # linked into markdown.dylib; staged like libgit2 above.
           bash scripts/stage_cmark_gfm.sh ${{ matrix.arch }}-macos
           ls -la "$(bash scripts/stage_cmark_gfm.sh --path ${{ matrix.arch }}-macos)"
       - name: stage the static PCRE2 (libmadc's regex engine, linked in)

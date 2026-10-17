@@ -504,10 +504,11 @@ for stage in $stages; do
 		#                      VALIDATES (the `packed` rule) — without it the
 		#                      suite ran whatever hosted PE the last `win`
 		#                      stage left, however old.
-		#   make modules-windows: the module DLLs the hosted exe imports
-		#                      from bin/ (madcgit.dll, madcmark.dll) — the
-		#                      same rule; a stale madcgit.dll failed testgit
-		#                      with "'madcgit_status' is not exported".
+		#   make modules-windows: the module DLLs the hosted exe loads —
+		#                      madcgit.dll from bin/, the markdown module
+		#                      from lib/madc/modules/ — the same rule; a stale
+		#                      madcgit.dll failed testgit with
+		#                      "'madcgit_status' is not exported".
 		run_remote "wine" "make -C $REMOTE_MADC/src -j\$(bash $REMOTE_MADC/scripts/build_jobs.sh) hosted-x86-64-windows; make -C $REMOTE_MADC/src -j\$(bash $REMOTE_MADC/scripts/build_jobs.sh) modules-windows; cd $REMOTE_MADC; WINEDEBUG=-all wineserver -p </dev/null >/dev/null 2>&1; WINEDEBUG=-all MADC_BIN=bin/madc-hosted-x86-64-windows.exe MADC_WRAPPER=wine MADC_SKIP_EXT='win64 wine64' bash scripts/run_tests.sh"
 		;;
 	warnscan)
@@ -550,14 +551,15 @@ for stage in $stages; do
 		# freshly-pulled compiler into runtime symbol-lookup errors
 		# in the exes it produces (2026-08-26: bin/madcide undefined
 		# __php_file_get_contents — the lib was 3 days behind bin/madc).
-		# The module images (lib/libmadc[a-z]*.so: madcgit, madcmark,
-		# webview) ride along: a program's `import madcgit;` opens
-		# madc's own lib directory first, so a pulled madc without them
-		# aborts at the import.
+		# The module images ride along — lib/libmadc[a-z]*.so (madcgit,
+		# webview) and madc's module directory lib/madc (markdown): a
+		# program's import opens madc's own lib directory first, so a
+		# pulled madc without them aborts at the import.
 		rsync -az --no-perms --no-owner --no-group --links \
 			-e "ssh -p $PORT" \
 			"$REMOTE:$REMOTE_MADC/lib/libmadc.so" \
 			"$REMOTE:$REMOTE_MADC/lib/libmadc[a-z]*.so" \
+			"$REMOTE:$REMOTE_MADC/lib/madc" \
 			"$REMOTE:$REMOTE_MADC/lib/libmadc.so.0" \
 			"$REMOTE:$REMOTE_MADC/lib/libmadc.a" \
 			"$REMOTE:$REMOTE_MADC/lib/libmadc_rt.a" \

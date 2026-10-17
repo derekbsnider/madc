@@ -1,19 +1,19 @@
-#ifndef __MADCDIS_MARKDOWN_H
-#define __MADCDIS_MARKDOWN_H 1
+#ifndef __MODULES_MARKDOWN_MARKDOWN_H
+#define __MODULES_MARKDOWN_MARKDOWN_H 1
 
-// madcdis/markdown.h — the ONE Markdown parser in madc (plan
+// modules/markdown/markdown.h — the ONE Markdown parser in madc (plan
 // docs/plans/2026-10-03-chthonia-windows-macos.md §7d): cmark-gfm, the
 // CommonMark reference implementation with GitHub's extensions (tables,
 // task lists, strikethrough, autolinks, footnotes). Its only caller is the
-// madcmark MODULE (src/modules/madcmark/madcmark.cpp, built by
-// src/madcmark.mk, never into libmadc); <cmark-gfm.h> is included there only.
+// markdown MODULE (markdown.cpp beside this file, built by src/markdown.mk,
+// never into libmadc); <cmark-gfm.h> is included there only.
 //
 // THREAD-SAFETY CONTRACT (.claude/rules/thread-safety.md): markdown_tree is
 // a pure function of its text — each call owns its parser; the extension
 // registry is filled once per process behind a static guard.
 
 #include "libmadc/value.h"
-#include "madc/bits/markdown_enums"	// markdown::node_kind — a node's one enum text
+#include "markdown_enums"	// markdown::node_kind — a node's one enum text
 
 #include <string>
 
@@ -39,4 +39,4 @@ value markdown_tree(const std::string &text);
 
 } // namespace madc
 
-#endif // __MADCDIS_MARKDOWN_H
+#endif // __MODULES_MARKDOWN_MARKDOWN_H
