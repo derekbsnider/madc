@@ -1,0 +1,14 @@
+// Whether a module is there is answered by importing it (owner 2026-10-17:
+// Python's model): a name no module directory holds, and no library row
+// names, is the import error — Python's "No module named". A program that
+// must run without a module keeps its users in their own unit, whose import
+// fails when that unit is loaded.
+// Oracle: python3 -c "import no_such_module_anywhere" fails with
+// "ModuleNotFoundError: No module named 'no_such_module_anywhere'".
+import no_such_module_anywhere;
+
+int main()
+{
+	println("unreachable");
+	return 0;
+}

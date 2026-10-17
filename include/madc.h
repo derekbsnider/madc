@@ -51,6 +51,7 @@ struct CirRestoredTemplateRun;	// one frozen token run (cir_freeze.h)
 struct CirRestoredFuncDefaults;	// one restored function's default-argument runs (cir_freeze.h)
 struct CirMaterializeFilter;	// the bind's demand filter (cir_freeze.h); held by pointer
 struct cir_node;		// a CIR tree node (cir_node.h); Program::forest_extern_node
+struct MadcModuleDescription;	// madc_module.h: what an imported module describes; pointer member only
 struct madc_stdlib_flavor;	// generated stdlib flavor table (madc_sys_includes.h); pointer member only
 class MadcEngine;
 class TokenBase;
@@ -5640,6 +5641,31 @@ public:
     // A module row flagged MADC_MODULE_GUI was bound by this TU (`import
     // madcwebview;`): the driver lifts an armed memory guard before running.
     bool bound_gui_module;
+    // The madc MODULES this Program imported (madc_module.h): each one's name,
+    // the file the import opened, and its description. An import registers
+    // its module's declarations; builtin_type asks the imported tables for a
+    // type a builder names.
+    struct ImportedModule
+    {
+	madc::dis::istring name;
+	madc::dis::istring path;
+	const MadcModuleDescription *desc;
+    };
+    std::vector<ImportedModule> imported_modules;
+    // Where `import NAME;` looks for a module before madc's own module
+    // directory (Python's sys.path): the driver's entries — the program's own
+    // directory, then each --module-path. Kept across tokenizer resets.
+    std::vector<std::string> module_search_dirs;
+    // While an import registers a module's declarations: the module the
+    // builders stamp each function as a member of (declare_builtin_function).
+    const ImportedModule *registering_module;
+    std::vector<std::string> module_search_path() const;
+    // `import NAME;` for a madc module found at `path`: open it, read its
+    // description, check its ABI, register its declarations. False + err: the
+    // import failed (the caller words the import error).
+    bool import_madc_module(const madc::dis::istring &name, const std::string &path,
+			    std::string &err);
+    void register_imported_modules();
     // LEX-time state: between `#pragma madc module_begin("<spelling>")` and
     // `module_end` (the import directive's synthetic wrap of a LAZY row's
     // interface) every emitted token is tagged with the spelling

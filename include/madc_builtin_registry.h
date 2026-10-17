@@ -265,6 +265,9 @@ struct DialectTextParse
     std::vector<std::pair<madc::dis::istring, madc::dis::istring> > variable_keys;
 };
 bool parse_dialect_as_text(DialectTextParse &out, std::string &err);
+// A module's face (madc_module.h): `base` the dialect parsed as text, `live`
+// the dialect and the face file at `face` — the keys are the face's own.
+bool parse_module_as_text(DialectTextParse &out, const std::string &face, std::string &err);
 
 // The generator's plan: the dialect's functions grouped by (namespace, name),
 // sorted as the table is, each group's keys in registration order. `skip` names
@@ -291,5 +294,10 @@ void plan_builtin_registry(DialectTextParse &dp, std::vector<BuiltinGroup> &grou
 // one builder per planned group and the sorted table — written to `out`; a
 // failure is reported on `diag`.
 bool emit_builtin_registry(std::ostream &out, std::ostream &diag);
+// --emit-module-table=<out.inc> <face>: a module's declarations as builders
+// and a static table (madc_module_declarations / madc_module_ndeclarations)
+// the module's source includes; every declaration must build (a refused one
+// fails the generation, naming it).
+bool emit_module_table(std::ostream &out, std::ostream &diag, const std::string &face);
 
 #endif

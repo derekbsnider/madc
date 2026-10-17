@@ -556,8 +556,11 @@ modules than like C++ headers."
   their embedded interface headers and faces (`ns_git`, `ns_markdown`,
   `ns_ui_web`, `madcgit.h`, `madcmark.h`, `webview.h`), the `git` /
   `markdown` / `WEB` auto-include rows, `madc::module_available`, the LAZY
-  flag and its slot binding, the faces' pack entries. The `c` / `m` rows stay:
-  they name the platform's C runtime images, not madc modules.
+  flag ("compiles without the library"), the faces' pack entries. The slot
+  binding STAYS: `dyn_module_library` / `dyn_module_member` →
+  `__madc_dl_member` is how a call reaches a module's code in the JIT, --exe
+  and --obj; a module's builders stamp it (D5's required dependency replaces
+  the optional `?` one).
 - **D7 — C++20 named modules and madc modules are one thing in two forms**
   (owner 2026-10-17: "we want to support both C++20 style modules and madc
   modules"). A madc module is madc's BUILT form of a C++20 named module: its
@@ -591,3 +594,63 @@ modules than like C++ headers."
   (`<prefix>/lib/madc/modules/<name>.so` / `.dylib` / `.dll`, apart from
   system libraries so a short name cannot collide with a system `libgit`), the
   program's own directory, and `--module-path=DIR` entries.
+
+### Slices (modules before R4)
+
+- **M1 — the module ABI, the resolver, the generator's module mode.**
+  `include/madc_module.h` (the description a module exports, an ABI number);
+  the resolver over the module path; `import NAME;` opens a built module,
+  checks the ABI and registers its declarations per name (each function
+  stamped as the module's member); a failed import is the import error. The
+  generator's module mode: the base is the dialect, the live parse adds the
+  module's face, the delta is the module's table (R1's `parse_dialect_as_text`
+  generalized).
+- **M2 — `markdown`** (madcmark: 2 bodies) — the first module through M1;
+  testmarkdown, testlazymoduledirect, the commonmark lane.
+- **M3 — `git`** (madcgit: 16 wrappers; its commands/tools ride the
+  description).
+- **M4 — the web module** (madcwebview: 19 bodies, the host on load, the GUI
+  flag in the description); the GUI lane.
+- **M5 — `--import=NAME`** and the distinct exit status.
+- **M6 — the deletions** (D6) once nothing uses them.
+- Then R4. After R4, on the C++20 needle: the source form (`export module`,
+  `--emit=module`), `import c;` / `import m;` as shipped modules, D9's
+  feature fact.
+- madcide follows in its own repository: its imports change (`import git;`,
+  the web module's import, no `available()`).
+
+### M1 execution (2026-10-17)
+
+- `include/madc_module.h`: `MadcModuleDescription` (ABI 1, name, flags,
+  declarations, commands, tools), the entry point `madc_module_<name>` (each
+  '.' as '_'), `MADC_MODULE_EXPORT`. `src/madc_modules.cpp` (the one spelling
+  owner): `madc_module_file_spelling` (`<name>.<dso>`, no lib prefix),
+  `madc_module_dir` (`<lib>/madc/modules`), `madc_module_find_file`.
+- `import NAME;` (no alias): `Program::module_search_path()` — the program's own
+  directory, then `--module-path` entries — then madc's directory. Found: the
+  import opens the module, reads and checks its description, records it.
+  Neither a module nor a row: "import: no module named 'NAME'".
+- Ruling: the declarations register in `_parser_init` (`register_imported_modules`),
+  not inside the directive — the import runs at LEX time and the parser's init
+  resets the maps (the embedded-headers rule: never register during
+  tokenization). Cost if wrong: none observed; the import's errors still
+  surface at the directive.
+- Ruling: a module registers WHOLE at its import, in table order (Python runs a
+  module's init whole; its tables are small); `builtin_type` finds a type a
+  builder names in the imported tables. Pay-per-name is the dialect's (R4).
+- `declare_builtin_function` stamps each function as the module's member: the
+  library is the path the import resolved, the member the declaration's
+  external symbol (`storage_alias_name` — Itanium; `emit_symbol` when set).
+  Ruling: the PATH — the JIT and a same-machine --exe / --obj are exact; an
+  artifact moved to another machine resolving its modules by name there is
+  M5's, with D5's required dependency (today the module is an optional entry
+  of the object's module list: a missing one fails at the first call).
+- The generator's module mode: `--emit-module-table=<out.inc> <face>` —
+  `parse_module_as_text` (base: the dialect; live: the dialect and the face),
+  `emit_builders` shared with the dialect table, every group must build. A
+  face is `<name>.madi` (declarations only).
+- `src/madc_modules.mk`: the module rule (face → table → library), the Linux
+  host arm. Test module `tests/modules/greet` (a scoped enum, a text return,
+  the value carrier) → `obj/test-modules/greet.so`; tests `testmodule_import`
+  (JIT, EXE, OBJ) and `testmodule_missing`. Ruling: darwin / win64 domain
+  skips until M2 brings those arms (the first shipping module).

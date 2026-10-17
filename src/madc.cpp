@@ -696,6 +696,7 @@ int main(int argc, char **argv)
     bool show_capabilities = false;       // --capabilities=json
     bool show_dialect_roots = false;      // --print-dialect-roots: the dialect image's roots
     const char *builtin_registry_out = NULL; // --emit-builtin-registry=: the generated registration
+    const char *module_table_out = NULL;     // --emit-module-table=: a module's generated declarations
     bool show_stats = false;               // --show-stats: print input/token traffic counters
     const char *freeze_path = NULL;       // --freeze= / --freeze-append=: forest container out
     bool freeze_append = false;           // --freeze-append=: placement 2 (append to binary)
@@ -927,6 +928,9 @@ int main(int argc, char **argv)
         case cli_option::emit_builtin_registry:
             builtin_registry_out = value;
             break;
+        case cli_option::emit_module_table:
+            module_table_out = value;
+            break;
         case cli_option::freeze_role:
             // The role's spelling -> its code, once, here (the role table in
             // cir_freeze.cpp owns both).
@@ -1052,6 +1056,10 @@ int main(int argc, char **argv)
         case cli_option::library_dir:
             if ( *value )
                 link_paths.lib_dirs.push_back(value);
+            break;
+        case cli_option::module_path:
+            if ( *value )
+                prog->module_search_dirs.push_back(value);
             break;
         case cli_option::linker_option:
         {
@@ -1214,6 +1222,31 @@ int main(int argc, char **argv)
         {
             std::cerr << "madc: --emit-builtin-registry: cannot write "
                       << builtin_registry_out << std::endl;
+            return 1;
+        }
+        return 0;
+    }
+
+    // --emit-module-table=<out.inc> <face>: a module's build step — its face
+    // read once, as text, into one builder per name and the static table its
+    // description returns (madc_module.h). The face is the source argument.
+    if ( module_table_out )
+    {
+        if ( filearg >= argc )
+        {
+            std::cerr << "madc: --emit-module-table: name the module's face file" << std::endl;
+            return 1;
+        }
+        std::ostringstream gen;
+        if ( !emit_module_table(gen, std::cerr, argv[filearg]) )
+            return 1;
+        std::ofstream out(module_table_out);
+        out << gen.str();
+        out.close();
+        if ( !out )
+        {
+            std::cerr << "madc: --emit-module-table: cannot write " << module_table_out
+                      << std::endl;
             return 1;
         }
         return 0;

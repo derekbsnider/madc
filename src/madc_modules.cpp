@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <string.h>
 #include "madc_modules.h"
+#include "madc_module.h"	// madc_module_entry_name
 #include "madc_dl.h"
 #include "madc_posix_io.h"	// resolve_real_path, host_path_dirname
 
@@ -141,6 +142,48 @@ std::string madc_module_library_spelling(const std::string &name, TargetOS os)
 std::string madc_module_library_spelling(const std::string &name)
 {
 	return madc_module_library_spelling(name, madc_target_os);
+}
+
+// A madc MODULE's file (madc_module.h): its name and the target's library
+// suffix, no lib prefix — modules live in their own directories, apart from
+// the system's libraries, so a short name never meets a system lib<name>.
+std::string madc_module_file_spelling(const std::string &module)
+{
+	return module + madc_target_dso_suffix();
+}
+
+std::string madc_module_dir()
+{
+	std::string libdir = madc_self_lib_dir();
+	if (libdir.empty())
+		return "";
+	return madc::detail::host_path_join(madc::detail::host_path_join(libdir, "madc"), "modules");
+}
+
+std::string madc_module_find_file(const std::string &module, const std::vector<std::string> &dirs)
+{
+	std::string file = madc_module_file_spelling(module);
+	std::vector<std::string> search(dirs);
+	std::string own = madc_module_dir();
+	if (!own.empty())
+		search.push_back(own);
+	for (size_t i = 0; i < search.size(); i++) {
+		if (search[i].empty())
+			continue;
+		std::string path = madc::detail::host_path_join(search[i], file);
+		if (madc::detail::host_path_type_of(path) == madc::detail::host_path_type::file)
+			return path;
+	}
+	return "";
+}
+
+std::string madc_module_entry_name(const std::string &module)
+{
+	std::string entry = "madc_module_" + module;
+	for (size_t i = 0; i < entry.size(); i++)
+		if (entry[i] == '.')
+			entry[i] = '_';
+	return entry;
 }
 
 // A Mach-O dylib's LC_ID_DYLIB, read from the file at `path` ("" = not a

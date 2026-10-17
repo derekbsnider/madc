@@ -81,6 +81,16 @@ bool madc_spelled_library_p(const std::string &name);
 bool madc_spelled_library_p(const std::string &name, TargetOS os);
 std::string madc_module_library_spelling(const std::string &name, TargetOS os);
 std::string madc_module_library_spelling(const std::string &name);	// for madc_target_os
+// A madc MODULE (madc_module.h) — found by NAME, apart from the system's
+// libraries: its file is the name and the target's suffix, no lib prefix
+// (markdown.so / markdown.dylib / markdown.dll). madc's own module directory
+// is <the running binary's lib>/madc/modules ("" when madc cannot place its
+// lib directory). madc_module_find_file: the first of `dirs`, then madc's own
+// directory, that holds the module's file — its path, or "" (no module of
+// that name: the import's "no module named").
+std::string madc_module_file_spelling(const std::string &module);
+std::string madc_module_dir();
+std::string madc_module_find_file(const std::string &module, const std::vector<std::string> &dirs);
 
 // Open a spelled library through the madc_dl seam into the default symbol
 // scope: a bare spelling is tried beside the running binary first

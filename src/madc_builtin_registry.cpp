@@ -27,6 +27,7 @@
 #include "datatokens.h"
 #include "madc.h"
 #include "madc_builtin_registry.h"
+#include "madc_module.h"		// MadcModuleDescription: an imported module's table
 
 // A FuncDef's parameter vectors from generated code, as a parse fills them —
 // a typedef name only where the parse recorded one (NULL: none recorded). A
@@ -77,6 +78,14 @@ Variable *declare_builtin_function(Program &pgm, const BuiltinFunctionDecl &d)
     Variable *var = pgm.register_forest_func(pf);
     if ( var && (d.flags & bfEmitIsAlias) )
 	fd->emit_symbol = var->storage_alias_name;
+    // An imported module's function lives in the module: a call resolves its
+    // own symbol there (the slot binding — CirBuilder::dyn_module_callee) —
+    // the emit symbol, or a declaration's external one (register_forest_func's
+    // storage alias: Itanium, or the bare name under C linkage).
+    if ( var && pgm.registering_module )
+	pgm.stamp_lazy_module_member(fd, pgm.registering_module->path,
+				     fd->emit_symbol.empty() ? var->storage_alias_name
+							     : fd->emit_symbol);
     return var;
 }
 
@@ -296,14 +305,16 @@ Variable *declare_builtin_extern(Program &pgm, const BuiltinExternDecl &d)
     return v;
 }
 
-// The table's entry for ns::name (sorted by (ns, name) in byte order), or NULL.
-static const MadcBuiltinEntry *find_builtin_entry(const char *ns, const char *name)
+// A table's entry for ns::name (the table sorted by (ns, name) in byte
+// order), or NULL — the dialect's table and an imported module's alike.
+static const MadcBuiltinEntry *find_table_entry(const MadcBuiltinEntry *table, size_t count,
+						const char *ns, const char *name)
 {
-    size_t lo = 0, hi = madc::builtins::dialect_table_count;
+    size_t lo = 0, hi = count;
     while ( lo < hi )
     {
 	size_t mid = lo + (hi - lo) / 2;
-	const MadcBuiltinEntry &e = madc::builtins::dialect_table[mid];
+	const MadcBuiltinEntry &e = table[mid];
 	int c = strcmp(e.ns, ns);
 	if ( !c )
 	    c = strcmp(e.name, name);
@@ -315,6 +326,12 @@ static const MadcBuiltinEntry *find_builtin_entry(const char *ns, const char *na
 	    hi = mid;
     }
     return NULL;
+}
+
+static const MadcBuiltinEntry *find_builtin_entry(const char *ns, const char *name)
+{
+    return find_table_entry(madc::builtins::dialect_table, madc::builtins::dialect_table_count,
+			    ns, name);
 }
 
 // The C++ string literal of `s` (the one C-string escape rule).
@@ -330,6 +347,19 @@ DataDef *builtin_type(Program &pgm, const char *ns, const char *name)
 	return dd;
     if ( const MadcBuiltinEntry *e = find_builtin_entry(ns, name) )
 	e->build(pgm);
+    else
+	// A type an imported module declares (a builder names its module's own
+	// type before the type's builder ran: the table's order is the name's).
+	for ( size_t i = 0; i < pgm.imported_modules.size(); ++i )
+	{
+	    const MadcModuleDescription *d = pgm.imported_modules[i].desc;
+	    if ( const MadcBuiltinEntry *me = find_table_entry(d->declarations, d->ndeclarations,
+								ns, name) )
+	    {
+		me->build(pgm);
+		break;
+	    }
+	}
     return registered_namespace_type(pgm, n, m);
 }
 
@@ -897,25 +927,64 @@ static std::shared_ptr<Program> parse_text_program(const std::string &src,
     return p;
 }
 
+// The dialect's roots as include lines (the auto-include order), or false
+// outside --std=madc.
+static bool dialect_root_includes(Program &pgm, std::string &src, std::string &err)
+{
+    std::vector<madc::dis::istring> roots;
+    if ( !pgm.dialect_image_roots(roots) )
+    {
+	err = "the dialect's roots exist only under --std=madc";
+	return false;
+    }
+    for ( size_t i = 0; i < roots.size(); ++i )
+	src += std::string("#include <") + roots[i].c_str() + ">\n";
+    return true;
+}
+
+static void collect_delta_keys(DialectTextParse &out);
+
 bool parse_dialect_as_text(DialectTextParse &out, std::string &err)
 {
     const std::string empty = "int main() { return 0; }\n";
     out.base = parse_text_program(empty, "<dialect-base>", err);
     if ( !out.base )
 	return false;
-    std::vector<madc::dis::istring> roots;
-    if ( !out.base->dialect_image_roots(roots) )
-    {
-	err = "the dialect's roots exist only under --std=madc";
-	return false;
-    }
     std::string src;
-    for ( size_t i = 0; i < roots.size(); ++i )
-	src += std::string("#include <") + roots[i].c_str() + ">\n";
+    if ( !dialect_root_includes(*out.base, src, err) )
+	return false;
     src += empty;
     out.live = parse_text_program(src, "<dialect-live>", err);
     if ( !out.live )
 	return false;
+    collect_delta_keys(out);
+    return true;
+}
+
+bool parse_module_as_text(DialectTextParse &out, const std::string &face, std::string &err)
+{
+    const std::string empty = "int main() { return 0; }\n";
+    std::shared_ptr<Program> probe = parse_text_program(empty, "<module-probe>", err);
+    if ( !probe )
+	return false;
+    std::string dialect;
+    if ( !dialect_root_includes(*probe, dialect, err) )
+	return false;
+    out.base = parse_text_program(dialect + empty, "<module-base>", err);
+    if ( !out.base )
+	return false;
+    out.live = parse_text_program(dialect + "#include \"" + face + "\"\n" + empty,
+				  "<module-live>", err);
+    if ( !out.live )
+	return false;
+    collect_delta_keys(out);
+    return true;
+}
+
+// What the live parse declared that the base did not: its functions, its
+// namespace types and its namespace objects (DialectTextParse's keys).
+static void collect_delta_keys(DialectTextParse &out)
+{
     out.function_keys.clear();
     for ( funcdef_map_iter it = out.live->funcdef_map.begin();
 	  it != out.live->funcdef_map.end(); ++it )
@@ -953,7 +1022,6 @@ bool parse_dialect_as_text(DialectTextParse &out, std::string &err)
 		continue;
 	    out.variable_keys.push_back(std::make_pair(nsi->first, vi->first));
 	}
-    return true;
 }
 
 // The types one skip judgement is judging. A type met again while it is
@@ -1577,30 +1645,24 @@ static void emit_extern(std::ostream &out, Program &live, const madc::dis::istri
 	<< "    declare_builtin_extern(pgm, d);\n";
 }
 
-bool emit_builtin_registry(std::ostream &out, std::ostream &diag)
+// The generated file's head: what every builder needs in scope.
+static void emit_builder_prologue(std::ostream &out)
 {
-    DialectTextParse dp;
-    std::string err;
-    if ( !parse_dialect_as_text(dp, err) )
-    {
-	diag << "madc: --emit-builtin-registry: " << err << std::endl;
-	return false;
-    }
-    Program &live = *dp.live;
-    std::vector<BuiltinGroup> groups;
-    plan_builtin_registry(dp, groups);
-
-    out << "// GENERATED by `madc --emit-builtin-registry` from include/madc/ns_* and\n"
-	<< "// bits/* — never edit; see include/madc_builtin_registry.h.\n\n"
-	<< "#include <cstdio>\n#include <cstring>\n#include <string>\n#include <vector>\n"
+    out << "#include <cstdio>\n#include <cstring>\n#include <string>\n#include <vector>\n"
 	<< "#include <map>\n#include <set>\n#include <stack>\n#include <list>\n"
 	<< "#include <queue>\n#include <iostream>\n#include <sstream>\n#include <memory>\n"
 	<< "#include <initializer_list>\n#include <stdint.h>\n\n"
 	<< "#define DBG(x) do { if(madc_verbose){x;} } while(0)\n\n"
 	<< "#include \"datadef.h\"\n#include \"tokens.h\"\n#include \"datatokens.h\"\n"
 	<< "#include \"madc.h\"\n#include \"madc_builtin_registry.h\"\n\n";
+}
 
-    std::ostringstream table;
+// One builder per group the plan built (a refused group is written as a
+// comment with its reason), and each built group's table row into `table`.
+// The count of builders written.
+static size_t emit_builders(std::ostream &out, Program &live,
+			    const std::vector<BuiltinGroup> &groups, std::ostream &table)
+{
     size_t built = 0;
     for ( size_t g = 0; g < groups.size(); ++g )
     {
@@ -1635,9 +1697,60 @@ bool emit_builtin_registry(std::ostream &out, std::ostream &diag)
 	      << cpp_literal(bg.name.c_str()) << ", b" << built << " },\n";
 	++built;
     }
+    return built;
+}
+
+bool emit_builtin_registry(std::ostream &out, std::ostream &diag)
+{
+    DialectTextParse dp;
+    std::string err;
+    if ( !parse_dialect_as_text(dp, err) )
+    {
+	diag << "madc: --emit-builtin-registry: " << err << std::endl;
+	return false;
+    }
+    std::vector<BuiltinGroup> groups;
+    plan_builtin_registry(dp, groups);
+    out << "// GENERATED by `madc --emit-builtin-registry` from include/madc/ns_* and\n"
+	<< "// bits/* — never edit; see include/madc_builtin_registry.h.\n\n";
+    emit_builder_prologue(out);
+    std::ostringstream table;
+    size_t built = emit_builders(out, *dp.live, groups, table);
     out << "\nnamespace madc { namespace builtins {\n"
 	<< "const MadcBuiltinEntry dialect_table[] = {\n" << table.str()
 	<< ( built ? "" : "    { \"\", \"\", NULL },\n" )
 	<< "};\nconst size_t dialect_table_count = " << built << ";\n} }\n";
+    return true;
+}
+
+bool emit_module_table(std::ostream &out, std::ostream &diag, const std::string &face)
+{
+    DialectTextParse dp;
+    std::string err;
+    if ( !parse_module_as_text(dp, face, err) )
+    {
+	diag << "madc: --emit-module-table: " << err << std::endl;
+	return false;
+    }
+    std::vector<BuiltinGroup> groups;
+    plan_builtin_registry(dp, groups);
+    // A module's declarations are all built, or the module is not: a refused
+    // group would be a name the import never registers.
+    for ( size_t g = 0; g < groups.size(); ++g )
+	if ( !groups[g].skip.empty() )
+	{
+	    diag << "madc: --emit-module-table: " << face << ": " << groups[g].ns << "::"
+		 << groups[g].name << " cannot be built — " << groups[g].skip << std::endl;
+	    return false;
+	}
+    out << "// GENERATED by `madc --emit-module-table` from " << face << " — never\n"
+	<< "// edit. The module's source includes it and returns the table in its\n"
+	<< "// description (include/madc_module.h).\n\n";
+    emit_builder_prologue(out);
+    std::ostringstream table;
+    size_t built = emit_builders(out, *dp.live, groups, table);
+    out << "\nstatic const MadcBuiltinEntry madc_module_declarations[] = {\n" << table.str()
+	<< ( built ? "" : "    { \"\", \"\", NULL },\n" )
+	<< "};\nstatic const size_t madc_module_ndeclarations = " << built << ";\n";
     return true;
 }

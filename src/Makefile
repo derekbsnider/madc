@@ -838,7 +838,7 @@ LIBMADC_STAGE_C_SMOKE = $(LIBMADC_STAGE_ROOT)/libmadc_c_smoke
 # build when you are NOT about to run unit tests, pass BUILD_TESTS=0.
 BUILD_TESTS ?= 1
 ifeq ($(BUILD_TESTS),1)
-DEFAULT_TARGETS = $(LIBMADC_STATIC) $(LIBMADC_RT) $(BIN) $(LIBMADC_SHARED) $(TESTBINS) $(MADCGIT_DEFAULT) $(MADCMARK_DEFAULT)
+DEFAULT_TARGETS = $(LIBMADC_STATIC) $(LIBMADC_RT) $(BIN) $(LIBMADC_SHARED) $(TESTBINS) $(MADCGIT_DEFAULT) $(MADCMARK_DEFAULT) $(TEST_MODULE_LIBS)
 else
 DEFAULT_TARGETS = $(LIBMADC_STATIC) $(LIBMADC_RT) $(BIN) $(LIBMADC_SHARED) $(MADCGIT_DEFAULT) $(MADCMARK_DEFAULT)
 endif
@@ -860,6 +860,7 @@ STAGE_HOST_TARGET := $(shell bash ../scripts/stage_cmake_args.sh --target host)
 include webview.mk
 include madcgit.mk
 include madcmark.mk
+include madc_modules.mk
 
 libmadc:
 	$(MAKE) $(LIBMADC_STATIC) $(LIBMADC_SHARED)

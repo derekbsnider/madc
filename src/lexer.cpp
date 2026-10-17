@@ -29,6 +29,8 @@
 #include "datatokens.h"
 #include "madc.h"
 #include "madc_dl.h"
+#include "madc_builtin_registry.h"	// MadcBuiltinEntry: an imported module's declarations
+#include "madc_module.h"		// MadcModuleDescription: what a module describes
 #include "madc_modules.h"	// import: the module map + the one library-spelling owner
 #include "madc_posix_io.h"	// resolve_real_path (canonical_path_for_compare's primitive)
 #include "madc_pch.h"
@@ -2072,9 +2074,26 @@ TokenBase *Program::tokenize_import_directive()
     finish_semicolon();
     if ( !is_dynamic_library_loading_enabled() )
 	Throw << "import: library binding is disabled by registration policy" << flush;
+    // A madc MODULE (madc_module.h): found by name on the module path, it
+    // describes itself — no row, nothing in the core. The alias form binds a
+    // library's exports, never a module.
+    if ( alias.empty() )
+    {
+	std::string path = madc_module_find_file(name, module_search_path());
+	if ( !path.empty() )
+	{
+	    std::string err;
+	    if ( !import_madc_module(madc::dis::istring(name), path, err) )
+		Throw << "import: module '" << name << "': " << err << flush;
+	    DBG(std::cout << "import " << name << " -> " << path << " (module)" << std::endl);
+	    return getToken();
+	}
+    }
     const MadcModuleSpec *row = madc_module_find(name);
     madc::dis::istring spelling = madc_module_library_spelling(name);
-    if ( alias.empty() && !(row && row->interface) )
+    if ( alias.empty() && !row )
+	Throw << "import: no module named '" << name << "'" << flush;
+    if ( alias.empty() && !row->interface )
 	Throw << "import: module '" << name << "' has no interface; bind it with"
 	      << " `import " << name << " as <alias>;`" << flush;
     // A LAZY row's interface form binds nothing at parse and joins no link
@@ -2143,6 +2162,87 @@ bool Program::bind_module_namespace(const madc::dis::istring &ns, const madc::di
 	namespace_variables_for_write(ns);	// create the (empty) namespace
     }
     return true;
+}
+
+// Where `import NAME;` looks, in order (Python's sys.path): the program's own
+// directory (its main source's — "." for a bare file name), then each
+// module_search_dirs entry (--module-path); madc_module_find_file appends
+// madc's own module directory.
+std::vector<std::string> Program::module_search_path() const
+{
+    std::vector<std::string> dirs;
+    if ( !forest_root_file.empty() )
+    {
+	std::string own = madc::detail::host_path_dirname(forest_root_file.c_str());
+	dirs.push_back(own.empty() ? std::string(".") : own);
+    }
+    dirs.insert(dirs.end(), module_search_dirs.begin(), module_search_dirs.end());
+    return dirs;
+}
+
+// A madc module's import, at LEX time: opened once per Program (a second
+// import of the same name is the first), its description read through the
+// entry point named after it, its ABI checked, the module recorded. Its
+// declarations register when the parser's state exists
+// (register_imported_modules), each function stamped as the module's member,
+// so a call reaches the module's code through the slot binding in every lane.
+// The module's file joins the object's module list.
+bool Program::import_madc_module(const madc::dis::istring &name, const std::string &path,
+				 std::string &err)
+{
+    err.clear();
+    for ( size_t i = 0; i < imported_modules.size(); ++i )
+	if ( imported_modules[i].name == name )
+	    return true;
+    void *handle = madc_module_open(path, err);
+    if ( !handle )
+	return false;
+    std::string entry = madc_module_entry_name(name.c_str());
+    madc_module_describe_fn describe = (madc_module_describe_fn)madcdl_sym(handle, entry.c_str());
+    if ( !describe )
+    {
+	err = path + " is not a madc module (it exports no " + entry + ")";
+	return false;
+    }
+    const MadcModuleDescription *d = describe();
+    if ( !d || d->abi != MADC_MODULE_ABI )
+    {
+	std::ostringstream why;
+	why << path << " was built for module ABI " << (d ? d->abi : 0u)
+	    << "; this madc reads ABI " << MADC_MODULE_ABI;
+	err = why.str();
+	return false;
+    }
+    if ( !d->name || name != d->name )
+    {
+	err = path + " describes itself as '" + (d->name ? d->name : "") + "'";
+	return false;
+    }
+    ImportedModule im;
+    im.name = name;
+    im.path = madc::dis::istring(path.c_str());
+    im.desc = d;
+    imported_modules.push_back(im);
+    if ( d->flags & mdGui )
+	bound_gui_module = true;
+    module_optional_libs.push_back(im.path);
+    return true;
+}
+
+// The imported modules' declarations, registered once the parser's state
+// exists (_parser_init — the import ran at LEX time, before it): each table
+// in order, each function stamped as its module's member.
+void Program::register_imported_modules()
+{
+    const ImportedModule *was = registering_module;
+    for ( size_t m = 0; m < imported_modules.size(); ++m )
+    {
+	const MadcModuleDescription *d = imported_modules[m].desc;
+	registering_module = &imported_modules[m];
+	for ( size_t i = 0; i < d->ndeclarations; ++i )
+	    d->declarations[i].build(*this);
+    }
+    registering_module = was;
 }
 
 // The row's flags are module-map DATA (Rule 7): a GUI module lifts the memory
@@ -3520,6 +3620,8 @@ void Program::_tokenizer_init()
     suppress_auto_include_scan = false;
     auto_include_fragment_scan = false;
     bound_gui_module = false;
+    imported_modules.clear();
+    registering_module = NULL;
     module_optional_libs.clear();
     lazy_module_spelling.clear();
     _lazy_module_tokens.clear();

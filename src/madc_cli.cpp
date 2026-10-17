@@ -127,6 +127,10 @@ const row rows[] = {
 	  "search <dir> for the -l libraries ahead of the toolchain's directories (ld's -L "
 	  "order): a run opens the library found, an image records it as ld does (its SONAME; "
 	  "nothing for an empty archive)" },
+	{ id(cli_option::module_path), "module_path", { { "--module-path", eq } }, "<dir>",
+	  s_language,
+	  "search <dir> for the modules `import NAME;` names, after the program's own directory "
+	  "and ahead of madc's own module directory (repeatable; a module is <dir>/<NAME>.<dso>)" },
 	{ id(cli_option::linker_option), "linker_option", { { "-Wl,", glued } }, "<option>",
 	  s_language,
 	  "add <dir> to the produced image's run-time library path (DT_RUNPATH / LC_RPATH), "
@@ -203,6 +207,11 @@ const row rows[] = {
 	  "(build step, --std=madc) write the dialect's generated registration — one builder "
 	  "per namespace member read from the dialect files, and its table — to <out.cpp>, "
 	  "and exit" },
+	{ id(cli_option::emit_module_table), "emit_module_table",
+	  { { "--emit-module-table", eq } }, "<out.inc>", s_forest,
+	  "(module build step, --std=madc) read the source file as a module's face and write "
+	  "its declarations — one builder per name and the static table the module's "
+	  "description returns — to <out.inc>, and exit" },
 	{ id(cli_option::freeze_sources), "freeze_sources", { { "--freeze-sources", eq } },
 	  "<list>", s_forest,
 	  "also pack the exact text of every file <list> names (one path per line) as "

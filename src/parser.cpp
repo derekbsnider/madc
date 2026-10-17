@@ -30923,6 +30923,7 @@ void Program::_parser_init()
     // populate lazy_map for included headers (actual registration deferred to first use)
     register_included_lazy_surfaces();
     register_namespace_specs();
+    register_imported_modules();	// the TU's `import NAME;` modules (lexed before this)
     // clang's __make_integer_seq builtin template: a marker registration so
     // every template-id head lookup (type AND expression lanes) recognizes
     // the name and funnels to instantiate_template_use, whose native arm
