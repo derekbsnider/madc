@@ -30250,7 +30250,7 @@ void Program::forest_settle_param_defaults(const FuncDef *fd)
 void Program::add_namespaces()
 {
     namespace_variables_for_write("std");
-    if ( auto_includes_enabled() )
+    if ( dialect_surface_enabled() )
     {
 	add_format_intrinsics();
 	add_stdio_streams();
@@ -30335,8 +30335,8 @@ void Program::add_madc_namespace()
 
     // register the general carrier as madc::value — the SAME DataDef as
     // madc::array (one tagged carrier; array is its array-flavored
-    // spelling). Unconditional like array: explicit madc:: qualification
-    // is an opt-in even outside the madc dialect.
+    // spelling). Registered under --std=madc only (the namespace
+    // registry asks is_namespace_registration_enabled).
     id = "__madc_value";
     var = new Variable(id, ddARRAY, 1, NULL, false);
     var->flags |= vfSTATIC;
@@ -30990,13 +30990,16 @@ void Program::register_included_lazy_surfaces()
 bool Program::is_namespace_registration_enabled(const madc::dis::istring &name) const
 {
     if ( name == "std" ) return registration_policy.enable_std_namespace;
-    if ( name == "madc" ) return registration_policy.enable_madc_namespace;
-    if ( name == "php" ) return registration_policy.enable_php_namespace;
-    if ( name == "perl" ) return registration_policy.enable_perl_namespace;
-    if ( name == "python" ) return registration_policy.enable_python_namespace;
-    if ( name == "ruby" ) return registration_policy.enable_ruby_namespace;
-    if ( name == "js" ) return registration_policy.enable_js_namespace;
-    if ( name == "rust" ) return registration_policy.enable_rust_namespace;
+    // The dialect namespaces exist only under --std=madc; an embedder's
+    // switch can turn one off there, never on anywhere else.
+    const bool dialect = dialect_surface_enabled();
+    if ( name == "madc" ) return dialect && registration_policy.enable_madc_namespace;
+    if ( name == "php" ) return dialect && registration_policy.enable_php_namespace;
+    if ( name == "perl" ) return dialect && registration_policy.enable_perl_namespace;
+    if ( name == "python" ) return dialect && registration_policy.enable_python_namespace;
+    if ( name == "ruby" ) return dialect && registration_policy.enable_ruby_namespace;
+    if ( name == "js" ) return dialect && registration_policy.enable_js_namespace;
+    if ( name == "rust" ) return dialect && registration_policy.enable_rust_namespace;
     return true;
 }
 
@@ -32039,7 +32042,7 @@ Variable *Program::resolve_preferred_identifier(TokenIdent *ident_tb, bool expre
     };
     const std::vector<madc::dis::istring> &pref_order =
 	!namespace_preference.empty() ? namespace_preference
-	: auto_includes_enabled()     ? madc_default_preference
+	: dialect_surface_enabled()     ? madc_default_preference
 				      : namespace_preference;
     if ( pref_order.empty() )
 	return resolve_c_identifier(ident_tb, expression_head);

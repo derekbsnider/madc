@@ -6671,7 +6671,15 @@ public:
     // the REAL glibc/libstdc++ headers configure their C++ surface. Only
     // explicit C standards present as plain gcc.
     bool presents_as_cpp() const { return language_std == STD_MADC || is_cpp_mode(); }
-    bool auto_includes_enabled() const { return language_std == STD_MADC; }
+    // THE one answer to "is the madc dialect surface on" (owner 2026-10-17:
+    // "the dialect builtin registration is gated on --std=madc"; "the
+    // entire madc:: namespace is gated to --std=madc"): the auto-include
+    // scan, the dialect namespaces' registration (is_namespace_registration_
+    // enabled — an embedder's per-namespace switches sit UNDER it), the
+    // built-in streams and intrinsics, the default preference. Read from
+    // the LanguageStd enum, never a string. Gate:
+    // scripts/check-dialect-std-gated.sh.
+    bool dialect_surface_enabled() const { return language_std == STD_MADC; }
     // C++ SYMBOL MANGLING, phase 1 (free functions) — design:
     // docs/plans/2026-09-16-free-function-overloading-linkage.md, scope (c).
     // In every C++-presenting mode a FILE-SCOPE function of C++ linkage is a

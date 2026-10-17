@@ -896,3 +896,75 @@ modules than like C++ headers."
   test_cir_freeze, test_c2mir, test_ns_frozen, test_madc_cli green. Hot path:
   the lexer's per-token LAZY tag check and parseFunction's two prototype
   stamps are gone.
+
+## R4 design (2026-10-17, after the recon at 818719bbe)
+
+The recon found the table consulted by no lookup yet; Part A's hooks all call
+`forest_dialect_demand` (through `activate_forest_member` for
+`find_namespace_member`). Three serving modes exist today: the Linux packed
+release binds the dialect image per name; a carrier whose system pack holds the
+fragments binds per name on the system side; dev, debug, cross, darwin and
+win64 text-parse every fragment whole. R4 makes the table the ONE path.
+
+Slices:
+- **R4a — the gate.** `Program::dialect_surface_enabled()` (the LanguageStd
+  enum) is the one predicate (was `auto_includes_enabled`); the dialect
+  namespaces' registration sits under it (`is_namespace_registration_enabled`:
+  an embedder's switch can turn a dialect namespace off under --std=madc, never
+  on elsewhere), so `madc::value` / `madc::array` no longer exist in strict
+  modes. Gate `scripts/check-dialect-std-gated.sh` (22 strict standards refuse
+  `php::`, `madc::value`, `ui::`; --std=madc resolves them; a strict program's
+  own `namespace php` is the detector control). The table counter joins it in
+  R4c.
+- **R4b — every build carries the table.** Cross and hosted modes link the
+  host-generated `dialect_registry.cpp` (target-neutral: builders name
+  DataDefs, never sizes — the module tables' rule) instead of the empty stage-1
+  stub, so darwin, win64 and cross madc have the dialect without the text.
+- **R4c — the hooks call the table.** A public `Program`-side demand
+  (`dialect_demand(ns, name)`: the table's builder, once per Program, a
+  `--show-stats` counter) replaces `forest_dialect_demand` at every site the
+  recon found — `activate_forest_member`, `lazy_resolve(_type)`,
+  `resolve_namespaced_type_token`, `namespace_chain_datatype`,
+  `canonical_nested_namespace`, `activate_forest_function_display`,
+  `TokenUSING::parse` (a namespace's range of the sorted table),
+  `parseExpr_identifierArm`, `parse_declaration_body`, completion, and the CIR
+  fixpoint. The NamespaceRegistry holds the dialect namespaces again. The
+  lexer's scan stops serving fragment text under --std=madc; it records which
+  dialect namespaces the program NAMED.
+  - Ruling: no bare-name widening — a preferred bare name resolves only in a
+    dialect namespace the program named (today's reach, which the fragment
+    pull gave). Cost if wrong: a later widening is one predicate.
+  - Ruling: the guarded std::string interop overloads (`#if _GLIBCXX_STRING ||
+    _LIBCPP_STRING`, ~10 blocks, ~20 tests use them) stay text: a program that
+    has `<string>` and names a dialect namespace gets that namespace's interop
+    block served as text (the `bits/value_stream`-after-`<ostream>` precedent).
+    Their mangling is the stdlib flavor's, so the table cannot carry them.
+    Cost if wrong: an interop program pays its blocks' parse, as today.
+  - Ruling: `php::print_r` / `var_dump` get a builder that parses their one
+    declaration at namespace scope (the R3 ruling's parse context); the
+    generator emits it instead of skipping "a builtin kind".
+  - `_include_ns_madc` (the `__madc_sys_init` injection) is set when the
+    table registers a `madc::` name.
+- **R4d — the deletions.** The dialect image (`--freeze-role=dialect`,
+  `CIR_FOREST_ROLE_DIALECT`, `--print-dialect-roots`' image use, forest_pack.sh
+  `--dialect-image`), the dialect `ForestSide`, the `forest_dialect_*` demand
+  machinery, `forest_bind_dialect_fragment`, the fragments' pack-list lines
+  (list v9: 10 fragments), the forest_pack_gate dialect legs, the stats
+  lines, testdialectimage_ctypes(_after) and the B1 unit tests. The generator's
+  root list (`dialect_image_roots`) is kept as the generator's own.
+
+### R4a execution (2026-10-17)
+
+- `Program::dialect_surface_enabled()` replaces `auto_includes_enabled()` as
+  the one predicate (the scan, the intrinsics and streams, the default
+  preference). `is_namespace_registration_enabled` puts the dialect namespaces
+  (madc, php, perl, python, ruby, js, rust) under it, so the namespace
+  registry's `madc` spec (`madc::value` / `madc::array`) registers under
+  --std=madc only.
+- Gate `scripts/check-dialect-std-gated.sh` (the static gate loop picks it
+  up): RED before (every strict standard resolved `madc::value`, C89
+  included), GREEN after.
+- Strict tests that name `madc::` name their OWN namespaces (madc's self-host
+  sources: `madc::dis`, `madc::hub`) or mention it in comments; none changed.
+- Validation: Tier 1 (39 JIT, 36 EXE); Tier 2's seven lanes green; the batch
+  lane (tests/ JIT) 2091/0/0/9; static gates 0 red; `make -C src test` green.

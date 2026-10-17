@@ -1433,7 +1433,7 @@ static bool expansion_is_compound_type_specifiers(const std::string &text, int &
 }
 
 // THE identifier -> header table of the auto-include scan (madc dialect only;
-// auto_includes_enabled gates the scan). The scan's lookup below and the
+// dialect_surface_enabled gates the scan). The scan's lookup below and the
 // REPL's completion (Program::auto_include_words, plan §41.7a) read it.
 static const std::map<madc::dis::istring, madc::dis::istring> &auto_include_identifier_headers()
 {
@@ -1734,7 +1734,7 @@ bool Program::auto_include_standard_identifier(const madc::dis::istring &word,
 {
     if ( skip_includes )
 	return false;
-    if ( !auto_includes_enabled() )
+    if ( !dialect_surface_enabled() )
 	return false;
     if ( suppress_auto_include_scan )
 	return false;
@@ -1882,7 +1882,7 @@ bool Program::auto_include_permitted(const madc::dis::istring &word, const char 
 // Empty outside the madc dialect, where the scan never runs.
 void Program::auto_include_words(std::vector<madc::dis::istring> &out)
 {
-    if ( !auto_includes_enabled() )
+    if ( !dialect_surface_enabled() )
 	return;
     // The always-included intrinsics complete like the scan's words.
     size_t nfi = 0;
@@ -2490,7 +2490,7 @@ void Program::queue_fragment_prerequisites(std::set<madc::dis::istring> &batch)
 bool Program::dialect_image_roots(std::vector<madc::dis::istring> &out)
 {
     out.clear();
-    if ( !auto_includes_enabled() || skip_includes )
+    if ( !dialect_surface_enabled() || skip_includes )
 	return false;
     std::set<madc::dis::istring> batch;
     const std::map<madc::dis::istring, madc::dis::istring> &providers =
@@ -2513,7 +2513,7 @@ void Program::inject_pending_auto_includes()
     static const bool prelude_probe = getenv("MADC_PRELUDE_CACHE_PROBE") != NULL;
     if ( skip_includes )
 	return;
-    if ( !auto_includes_enabled() )
+    if ( !dialect_surface_enabled() )
     {
 	pending_auto_include_headers.clear();
 	pending_auto_include_identifiers.clear();
