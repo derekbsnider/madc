@@ -476,7 +476,8 @@ Next: `git` / `markdown` bodies by hand; `ui_web` / `ui_ws` are R3.
   task longer.
 - Found: `FuncDef::inline_builtin_kind` is a string discriminator compared by
   value across cir_builder / cir_dump / cir_format / parser / cir_freeze —
-  an enum-over-strings violation (owner law). Its own commit, next.
+  an enum-over-strings violation (owner law). Owner 2026-10-17: its own
+  session (it touches parser.cpp), right after R4.
 - The modules discussion (owner 2026-10-17): the line of division is WHO
   IMPLEMENTS the code. A builtin is what libmadc implements; a module is what a
   library loaded on `import` implements, and it carries its own face.
@@ -501,3 +502,92 @@ Next: `git` / `markdown` bodies by hand; `ui_web` / `ui_ws` are R3.
 - testdialectimage_ctypes / _after lost their subject (no dialect body names
   stderr in the program now: `ui_ws::open` is libmadc's). They still pass; R4
   retires them with the dialect image.
+
+## Modules before R4 (owner 2026-10-17)
+
+Owner chose "modules first": `git::` (madcgit), `markdown::` (madcmark) and
+`ui_web` (madcwebview) get their own home before R4 deletes the dialect image,
+because the image and the pack freeze them against `ui::` / `madc::` records
+the builtin table now owns.
+
+Owner ruling, rejecting a design that kept each face's declarations as a
+generated table in libmadc, `available()` beside the module row and the web
+host served from the core's module map (verbatim): "This is all wrong and
+defeats the point of modules if they need to be statically registered into the
+core. Existence should be tested by trying to import. Think more like Python
+modules than like C++ headers."
+
+- A module is self-contained: its declarations, its bodies, its hosts,
+  commands and tools come from its own library, found by name, registered when
+  it is imported. Nothing about a module lives in the core: no row, no
+  embedded face or interface header, no auto-include row, no table in
+  libmadc.
+- Existence is tested by importing: a failed import is the answer. No
+  `available()` probes.
+- A program that must run without a module (madcide's nexus without
+  libgit2) keeps the module's users in their own unit or plugin: that unit's
+  import fails when it is loaded, the loader reports a catchable import error,
+  and the rest of the program runs (owner 2026-10-17: Python's `try: import x
+  / except ImportError`, option (a) — no compile-time `__has_import` test).
+
+### Design
+
+- **D1 — a module describes itself.** Its library exports one C entry
+  point named by convention from the module's name (the commands/tools
+  columns' `madcdl_sym` precedent, without the row): the module's
+  declarations, its commands, its tools, and the ui hosts it serves. The core
+  reads only that entry.
+- **D2 — declarations are the module's builder table** (CPython's
+  `PyMethodDef` shape): the R1 generator runs at the MODULE's build over the
+  module's face file and the output compiles into the module. On import madc
+  opens the library and registers the face per name from that table, as the
+  dialect table does for builtins. Nothing is parsed, nothing is packed.
+- **D3 — bodies are the module's C++** (`namespace git { ... }` in
+  modules/madcgit/), called through the open module.
+- **D4 — hosts register when the module loads**: madcwebview's own initializer
+  calls `ui::register_host("web", ui::WEB, ...)`, so a program that imports it
+  and opens `ui::WEB` gets the web window. The core has no web knowledge.
+- **D5 — a failed import** (no library, no entry point, or an entry from an
+  incompatible madc) is a compile error naming the module and the loader's
+  reason; a unit or plugin loader turns it into a catchable error (D-a above).
+  An --exe or --obj records the module as a dependency, and a missing module
+  at program start is the same import error.
+- **D6 — what leaves the core:** the madcgit / madcmark / madcwebview rows,
+  their embedded interface headers and faces (`ns_git`, `ns_markdown`,
+  `ns_ui_web`, `madcgit.h`, `madcmark.h`, `webview.h`), the `git` /
+  `markdown` / `WEB` auto-include rows, `madc::module_available`, the LAZY
+  flag and its slot binding, the faces' pack entries. The `c` / `m` rows stay:
+  they name the platform's C runtime images, not madc modules.
+- **D7 — C++20 named modules and madc modules are one thing in two forms**
+  (owner 2026-10-17: "we want to support both C++20 style modules and madc
+  modules"). A madc module is madc's BUILT form of a C++20 named module: its
+  exported declarations as a builder table, plus its code, in one library.
+  The SOURCE form is an interface unit (`export module git;`). ONE `import`
+  reader and ONE resolver: `import git;` searches the module path for `git`
+  and finds either a built module (opened, registered from its table) or an
+  interface unit (compiled in-process into the same registration — no cache
+  file, owner law). `madc --emit=module git.cppm -o git.so` builds the binary
+  form explicitly. The module kind is data the resolver finds, never a second
+  import path.
+- **D8 — names are C++20 module names** (dotted, `a.b`), independent of
+  namespaces. madc's own modules follow a convention: module `git` exports
+  `namespace git`. So the program writes `import git;` (not `import madcgit;`)
+  and the three modules are renamed `git`, `markdown` and a web module.
+- **D9 — gated by `--std=`.** Named-module import is a feature of c++20 and
+  later and of madc, through the `--std=` feature registry — never a
+  hard-coded standard test. An earlier standard refuses `import NAME;`.
+- **D10 — `import c;` / `import m;`** would collide with C++20 module names:
+  they become modules madc SHIPS (Python's `import math`) over the platform's
+  C runtime images — no core rows.
+- **D11 — `--import=NAME` on the command line** (owner 2026-10-17: "a CLI
+  argument way to import as well so the program can test import before
+  starting"), repeatable, a row in the one option table
+  (`madc::cli::parse`, src/madc_cli.cpp). With a source it imports NAME
+  before the program, as if the source began with `import NAME;`. With no
+  source it only tries the import: exit 0, or the import error and a
+  DISTINCT exit status, so a launcher tests before starting (`python -c
+  "import git"` is the precedent).
+- Where madc finds a module: madc's module directory
+  (`<prefix>/lib/madc/modules/<name>.so` / `.dylib` / `.dll`, apart from
+  system libraries so a short name cannot collide with a system `libgit`), the
+  program's own directory, and `--module-path=DIR` entries.
