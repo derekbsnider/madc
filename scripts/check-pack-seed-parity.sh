@@ -11,7 +11,9 @@
 #
 # Each workload compiles with MADC_SEED_PARITY_PROBE=1, which prints, after
 # each materialize generation, one `SEEDPAR <kind> <name> v=<verdict> [<role>]
-# <via>` line per record restored so far; the gate reads the last block. <via>
+# <via>` line per record restored so far, under a `SEEDPAR-GEN <forest role>`
+# header; the gate reads each forest's last block (a dialect compile binds the
+# dialect image beside the system pack — dialect per-name plan B2). <via>
 # is how the bind reached the record: `demanded` — asked for by record (a
 # dialect lookup's demand), `listed` — in a visited seed list (a bound unit's:
 # what its decl index declares, its parse created or its instantiations
@@ -59,8 +61,9 @@ probe() {
 	shift 2
 	MADC_SEED_PARITY_PROBE=1 timeout 300 "$BIN" --no-config "${EXTRA[@]}" "$@" "$p" \
 		>/dev/null 2>"$seed.err"
-	awk '/^SEEDPAR-GEN$/ { n = 0; delete L; next }
-		/^SEEDPAR / { L[++n] = $0 } END { for (i = 1; i <= n; ++i) print L[i] }' \
+	awk '/^SEEDPAR-GEN/ { k = NF > 1 ? $2 : "system"; n[k] = 0; next }
+		/^SEEDPAR / { L[k, ++n[k]] = $0 }
+		END { for (f in n) for (i = 1; i <= n[f]; ++i) print L[f, i] }' \
 		"$seed.err" | LC_ALL=C sort > "$seed"
 }
 

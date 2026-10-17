@@ -22,8 +22,8 @@
 #
 # Usage:
 #   bash scripts/forest_pack_gate.sh --profile <key> [--pack-log F] [--load-log F]
-#                                    [--dump F] [--image-stats F] [--image-roots F]
-#                                    [--baseline F]
+#                                    [--dump F] [--image-stats F]... [--image-roots F]
+#                                    [--strict-stats F]... [--baseline F]
 #   bash scripts/forest_pack_gate.sh --selftest
 #
 # Profiles are the pack scripts' own names for themselves — linux (forest_pack.sh),
@@ -43,7 +43,8 @@ PROFILE=
 PACK_LOG=
 LOAD_LOG=
 DUMP=
-IMAGE_STATS=
+IMAGE_STATS=()
+STRICT_STATS=()
 IMAGE_ROOTS=
 SELFTEST=0
 UNITS_LISTS=()
@@ -78,7 +79,8 @@ TOK_DIALECT_DECIDED='header entities decided by dialect names alone'
 usage() {
 	echo "usage: $0 --profile <key> [--pack-log FILE] [--load-log FILE]" >&2
 	echo "         [--dump FILE [--units-from FILE]... [--sources-from FILE]...]" >&2
-	echo "         [--image-stats FILE] [--image-roots FILE (with --dump)]" >&2
+	echo "         [--image-stats FILE]... [--image-roots FILE (with --dump)]" >&2
+	echo "         [--strict-stats FILE]..." >&2
 	echo "         [--baseline FILE]" >&2
 	echo "       $0 --selftest" >&2
 }
@@ -89,7 +91,8 @@ while [ $# -gt 0 ]; do
 		--pack-log) [ $# -ge 2 ] || { usage; exit 2; }; PACK_LOG="$2"; shift 2 ;;
 		--load-log) [ $# -ge 2 ] || { usage; exit 2; }; LOAD_LOG="$2"; shift 2 ;;
 		--dump)     [ $# -ge 2 ] || { usage; exit 2; }; DUMP="$2"; shift 2 ;;
-		--image-stats) [ $# -ge 2 ] || { usage; exit 2; }; IMAGE_STATS="$2"; shift 2 ;;
+		--image-stats) [ $# -ge 2 ] || { usage; exit 2; }; IMAGE_STATS+=("$2"); shift 2 ;;
+		--strict-stats) [ $# -ge 2 ] || { usage; exit 2; }; STRICT_STATS+=("$2"); shift 2 ;;
 		--image-roots) [ $# -ge 2 ] || { usage; exit 2; }; IMAGE_ROOTS="$2"; shift 2 ;;
 		--units-from)   [ $# -ge 2 ] || { usage; exit 2; }; UNITS_LISTS+=("$2"); shift 2 ;;
 		--sources-from) [ $# -ge 2 ] || { usage; exit 2; }; SOURCES_LISTS+=("$2"); shift 2 ;;
@@ -476,21 +479,63 @@ check_image_roots() {
 	fi
 }
 
+# --image-stats: a --show-stats run of a dialect compile. The dialect binds
+# the IMAGE (dialect per-name plan B2) — its own line, units bound, no zstd
+# frame decoded from it — and its dialect units sit on the image, never on the
+# system pack's fragment units; when the run decoded anything at all, the whole
+# run decoded no frame either (a dialect compile opens no compressed pack).
 check_image_stats() {
-	local log="$1" norm="$2" frames
-	if ! grep -aq 'forest map+open .*(container bound)' "$norm"; then
-		fail "[$PROFILE] the dialect image stats run bound no container — nothing measured: $log"
+	local log="$1" norm="$2" line units frames total
+	line=$(grep -a 'dialect image \.* image bound' "$norm" | head -1)
+	if [ -z "$line" ]; then
+		fail "[$PROFILE] the dialect compile bound no dialect image — nothing measured: $log"
 		return
 	fi
-	frames=$(sed -n 's/.*forest decode .*(\([0-9][0-9]*\) zstd frames.*/\1/p' "$norm" | head -1)
-	if [ -z "$frames" ]; then
-		fail "[$PROFILE] the dialect image stats run has no decode line — nothing measured: $log"
+	units=$(sed -n 's/.*image bound (\([0-9][0-9]*\) units bound.*/\1/p' <<<"$line")
+	frames=$(sed -n 's/.*; \([0-9][0-9]*\) zstd frames).*/\1/p' <<<"$line")
+	if [ -z "$units" ] || [ -z "$frames" ]; then
+		fail "[$PROFILE] the dialect image line is malformed — nothing measured: $log"
 		return
 	fi
-	say "[$PROFILE] dialect image bind: $frames zstd frame(s) decoded (hard zero) — $log"
+	say "[$PROFILE] dialect image bind: $units unit(s), $frames zstd frame(s) decoded (hard zero) — $log"
+	if [ "$units" -eq 0 ]; then
+		fail "[$PROFILE] the dialect compile bound the image but none of its units: $log"
+	fi
 	if [ "$frames" -gt 0 ]; then
 		fail "[$PROFILE] a compile against the dialect image decoded $frames zstd frame(s);"
 		echo "       the image is read in place (pack-slices design §7)." >&2
+	fi
+	if grep -aq 'forest dialect \..* units (system pack)' "$norm"; then
+		fail "[$PROFILE] the dialect compile activated the system pack's fragment units, not the image's: $log"
+	fi
+	total=$(sed -n 's/.*forest decode .*(\([0-9][0-9]*\) zstd frames.*/\1/p' "$norm" | head -1)
+	if [ -n "$total" ] && [ "$total" -gt 0 ]; then
+		fail "[$PROFILE] the dialect compile decoded $total zstd frame(s) in all: $log"
+	fi
+}
+
+# --strict-stats: a --show-stats run of a strict (--std=c17 / c++17) compile
+# that includes a system header. The walk opens the system profile and never
+# the dialect image's directory (B2: the role filter skips it unopened).
+check_strict_stats() {
+	local log="$1" norm="$2" line sys dlg
+	line=$(grep -a 'forest profiles \..* dialect opened' "$norm" | head -1)
+	if [ -z "$line" ]; then
+		fail "[$PROFILE] the strict compile opened no profile — nothing measured: $log"
+		return
+	fi
+	sys=$(sed -n 's/.*\.\.\. \([0-9][0-9]*\) system + \([0-9][0-9]*\) dialect opened.*/\1/p' <<<"$line")
+	dlg=$(sed -n 's/.*\.\.\. \([0-9][0-9]*\) system + \([0-9][0-9]*\) dialect opened.*/\2/p' <<<"$line")
+	if [ -z "$sys" ] || [ -z "$dlg" ]; then
+		fail "[$PROFILE] the profiles line is malformed — nothing measured: $log"
+		return
+	fi
+	say "[$PROFILE] strict compile: $sys system + $dlg dialect profile(s) opened (dialect hard zero) — $log"
+	if [ "$sys" -eq 0 ]; then
+		fail "[$PROFILE] the strict compile opened no system profile — nothing measured: $log"
+	fi
+	if [ "$dlg" -gt 0 ] || grep -aq 'dialect image \.* image bound' "$norm"; then
+		fail "[$PROFILE] a strict compile opened the dialect image ($dlg profile(s)): $log"
 	fi
 }
 
@@ -698,14 +743,29 @@ selftest() {
 	grep -v '^profile' "$dir/fpgate_st_dump.txt" > "$dir/fpgate_st_dump_nostack.txt"
 	leg "profile stack not measured" fail --dump "$dir/fpgate_st_dump_nostack.txt" \
 		--units-from "$dir/fpgate_st_units.txt"
-	# The image bind: zero zstd frames GREEN; a frame decoded, or a run that
-	# bound nothing, red.
-	printf '[stats] forest map+open ..... 0.001 + 0.001 s  (container bound)\n[stats] forest decode ....... 0.000 s  (0 zstd frames -> 0.0 KiB; 4 copies, 1.0 KiB)\n' > "$dir/fpgate_st_image_ok.log"
+	# The image bind: its units bound, zero zstd frames GREEN; a frame decoded
+	# (from the image, or anywhere in the run), no unit bound, the dialect units
+	# on the system pack, or a run that bound no image, red.
+	printf '[stats] forest profiles ..... 0 system + 1 dialect opened\n[stats] dialect image ....... image bound (6 units bound / 30 packed; 0 zstd frames)\n[stats] forest dialect ...... 6 units (dialect image); 6 names demanded (3 hit), 4 records, 4 functions + 0 other declarations registered\n' > "$dir/fpgate_st_image_ok.log"
 	leg "dialect image bind decodes nothing" pass --image-stats "$dir/fpgate_st_image_ok.log"
-	sed 's/(0 zstd frames/(3 zstd frames/' "$dir/fpgate_st_image_ok.log" > "$dir/fpgate_st_image_z.log"
+	sed 's/; 0 zstd frames)/; 3 zstd frames)/' "$dir/fpgate_st_image_ok.log" > "$dir/fpgate_st_image_z.log"
 	leg "dialect image bind decodes frames" fail --image-stats "$dir/fpgate_st_image_z.log"
-	printf '[stats] forest map+open ..... 0.001 + 0.001 s  (no container — live parse)\n' > "$dir/fpgate_st_image_none.log"
+	{ cat "$dir/fpgate_st_image_ok.log"; printf '[stats] forest decode ....... 0.000 s  (2 zstd frames -> 9.0 KiB; 4 copies, 1.0 KiB)\n'; } > "$dir/fpgate_st_image_runz.log"
+	leg "dialect compile decodes a pack frame" fail --image-stats "$dir/fpgate_st_image_runz.log"
+	sed 's/(6 units bound/(0 units bound/' "$dir/fpgate_st_image_ok.log" > "$dir/fpgate_st_image_nounit.log"
+	leg "dialect image bound no unit" fail --image-stats "$dir/fpgate_st_image_nounit.log"
+	sed 's/units (dialect image)/units (system pack)/' "$dir/fpgate_st_image_ok.log" > "$dir/fpgate_st_image_sys.log"
+	leg "dialect units on the system pack" fail --image-stats "$dir/fpgate_st_image_sys.log"
+	printf '[stats] forest map+open ..... 0.001 + 0.001 s  (container bound)\n[stats] dialect image ....... no image — the dialect binds as the system pack holds it\n' > "$dir/fpgate_st_image_none.log"
 	leg "dialect image bind bound nothing" fail --image-stats "$dir/fpgate_st_image_none.log"
+	# A strict compile: the system profile opened, the dialect image never
+	# GREEN; the image opened, or no profile line at all, red.
+	printf '[stats] forest map+open ..... 0.001 + 0.001 s  (container bound)\n[stats] forest profiles ..... 1 system + 0 dialect opened\n' > "$dir/fpgate_st_strict_ok.log"
+	leg "strict compile opens no dialect image" pass --strict-stats "$dir/fpgate_st_strict_ok.log"
+	sed 's/1 system + 0 dialect/1 system + 1 dialect/' "$dir/fpgate_st_strict_ok.log" > "$dir/fpgate_st_strict_img.log"
+	leg "strict compile opens the dialect image" fail --strict-stats "$dir/fpgate_st_strict_img.log"
+	grep -v 'forest profiles' "$dir/fpgate_st_strict_ok.log" > "$dir/fpgate_st_strict_none.log"
+	leg "strict compile opened nothing" fail --strict-stats "$dir/fpgate_st_strict_none.log"
 	# The image's roots: unit 0's edges inside the printed roots GREEN (an
 	# embedded spelling and a path tail); an extra root (math.h) red; a unit
 	# 0 with no edge, or a missing roots list, red.
@@ -766,8 +826,9 @@ if [ -z "$PROFILE" ]; then
 	usage
 	exit 2
 fi
-if [ -z "$PACK_LOG" ] && [ -z "$LOAD_LOG" ] && [ -z "$DUMP" ] && [ -z "$IMAGE_STATS" ]; then
-	echo "forest_pack_gate: nothing to check — pass --pack-log, --load-log, --dump and/or --image-stats" >&2
+if [ -z "$PACK_LOG" ] && [ -z "$LOAD_LOG" ] && [ -z "$DUMP" ] \
+   && [ ${#IMAGE_STATS[@]} -eq 0 ] && [ ${#STRICT_STATS[@]} -eq 0 ]; then
+	echo "forest_pack_gate: nothing to check — pass --pack-log, --load-log, --dump, --image-stats and/or --strict-stats" >&2
 	exit 2
 fi
 if [ -z "$DUMP" ] \
@@ -803,14 +864,26 @@ elif [ -n "$IMAGE_ROOTS" ]; then
 	echo "forest_pack_gate: --image-roots needs --dump to check against" >&2
 	exit 2
 fi
-if [ -n "$IMAGE_STATS" ]; then
-	if [ ! -f "$IMAGE_STATS" ]; then
-		fail "[$PROFILE] dialect image stats log is missing: $IMAGE_STATS"
+n=0
+for f in "${IMAGE_STATS[@]+"${IMAGE_STATS[@]}"}"; do
+	n=$((n + 1))
+	if [ ! -f "$f" ]; then
+		fail "[$PROFILE] dialect image stats log is missing: $f"
 	else
-		normalize "$IMAGE_STATS" "$ROOT/tmp/fpgate_${PROFILE}_image.norm"
-		check_image_stats "$IMAGE_STATS" "$ROOT/tmp/fpgate_${PROFILE}_image.norm"
+		normalize "$f" "$ROOT/tmp/fpgate_${PROFILE}_image$n.norm"
+		check_image_stats "$f" "$ROOT/tmp/fpgate_${PROFILE}_image$n.norm"
 	fi
-fi
+done
+n=0
+for f in "${STRICT_STATS[@]+"${STRICT_STATS[@]}"}"; do
+	n=$((n + 1))
+	if [ ! -f "$f" ]; then
+		fail "[$PROFILE] strict compile stats log is missing: $f"
+	else
+		normalize "$f" "$ROOT/tmp/fpgate_${PROFILE}_strict$n.norm"
+		check_strict_stats "$f" "$ROOT/tmp/fpgate_${PROFILE}_strict$n.norm"
+	fi
+done
 
 if [ "$RED" -ne 0 ]; then
 	echo "forest_pack_gate: FAILED [$PROFILE]" >&2

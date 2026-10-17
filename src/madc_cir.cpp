@@ -1630,7 +1630,9 @@ bool CirJitSession::build(Program *prog, const char *source_name,
     // the master off-lever for both lanes.
     cache_mod = NULL;
     if (prog) prog->mir_cache_exports.clear();
-    if (prog && prog->bind_forest && !prog->forest_chain.empty()
+    // The system pack's module cache (the opt-in bind lane); the dialect
+    // image's stays unread (B2).
+    if (prog && prog->forest_system.forest && !prog->forest_system.chain.empty()
 	&& !madc_object_mode   // object emit captures everything itself
 	&& getenv("MADC_MIR_CACHE_BIND")
 	&& !getenv("MADC_NO_MIR_CACHE")) {
@@ -1643,7 +1645,7 @@ bool CirJitSession::build(Program *prog, const char *source_name,
 		    std::chrono::duration<double>(now - mcs_t0).count());
 	    mcs_t0 = now;
 	};
-	if (prog->bind_forest->mir_module_bytes(mblob)) {
+	if (prog->forest_system.forest->mir_module_bytes(mblob)) {
 	    mcs_lap("blob segment read");
 	    if (setjmp(cir_mir_error_jmp)) {
 		// bmir version check / corrupt blob — rebuild-path fallback.

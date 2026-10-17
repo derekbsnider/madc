@@ -1585,10 +1585,13 @@ bool CirFrozenForest::open(const void *image, size_t len, c2m_ctx_t c2m,
 // segment decode) — the bind path config-gates on language_std()/
 // defines_hash() after this and skips complete_open() on a mismatch.
 bool CirFrozenForest::open_header(const void *image, size_t len,
-				  bool quiet_missing)
+				  bool quiet_missing,
+				  madc::dis::snapshot_reader *opened)
 {
 	double _t0 = forest_now();
-	if (!_reader.open(image, len)) {
+	if (opened)
+		_reader.adopt(*opened);
+	else if (!_reader.open(image, len)) {
 		if (!quiet_missing)
 			fprintf(stderr, "madc: no forest container found\n");
 		return false;
@@ -1928,6 +1931,17 @@ bool cir_forest_profiles(const void *image, size_t len,
 			break;
 	}
 	return !out.empty();
+}
+
+bool cir_forest_profile_role(const void *image, size_t len, uint32_t &role,
+			     size_t *previous)
+{
+	madc::dis::snapshot_reader r;
+	if (!r.open(image, len) || !cir_forest_read_role(r, role))
+		return false;
+	if (previous && !r.previous_image_len(*previous))
+		*previous = 0;
+	return true;
 }
 
 bool cir_forest_content_digests(const void *image, size_t len,
@@ -4783,6 +4797,7 @@ void CirFrozenForest::materialize_pass(const std::vector<uint32_t> *added)
 					fd->has_forest_body  = true;
 					fd->forest_body_unit = fr.body_unit;
 					fd->forest_body_idx  = fr.body_idx;
+					fd->forest_body_src  = this;	// B3: the body's forest
 					fd->declaration_only = false;
 				} else {
 					fd->declaration_only = true;
@@ -5361,6 +5376,7 @@ void CirFrozenForest::materialize_pass(const std::vector<uint32_t> *added)
 			fd->has_forest_body  = true;
 			fd->forest_body_unit = r.body_unit;
 			fd->forest_body_idx  = r.body_idx;
+			fd->forest_body_src  = this;	// B3: the body's forest
 			fd->declaration_only = false;
 		} else if (r.flags & madc::dis::DF_FUNC_DEF_TOKENS) {
 			// v26 piece (a): the body arrives via the ownerless
@@ -5596,7 +5612,11 @@ void CirFrozenForest::materialize_pass(const std::vector<uint32_t> *added)
 	// (CirDeclRecordFacts::anchor) — or ` dialect`, which restores only as
 	// demanded or carried (the gate fails a ` dialect listed` line).
 	if (par_on) {
-		fprintf(stderr, "SEEDPAR-GEN\n");
+		// The generation's forest by role (B2: a dialect compile binds the
+		// image beside the system pack; the gate keeps each forest's last
+		// block, so one forest's generation never hides the other's).
+		const cir_forest_role_row *par_role = cir_forest_role_info(_role);
+		fprintf(stderr, "SEEDPAR-GEN %s\n", par_role ? par_role->name : "role?");
 		std::map<uint32_t, bool> par_dialect;	// record -> an anchor
 		std::vector<cir_forest_decl_entry> di;
 		for (uint32_t u = 0; u < unit_count(); ++u) {

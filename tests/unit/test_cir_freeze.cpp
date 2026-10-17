@@ -3004,13 +3004,13 @@ TEST_CASE("v23: method param DEFAULT ARGUMENTS freeze as token runs and restore 
 	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
 
 	std::shared_ptr<Program> progB = std::make_shared<Program>();
-	progB->bind_forest = &forest;	// the flush reads restored_param_defaults
+	progB->forest_system.forest = &forest;	// the flush reads restored_param_defaults
 	TokenProgram *tpB = progB->tokenize(cons_path.c_str());
 	REQUIRE(tpB != nullptr);
 	std::remove(cons_path.c_str());
 	progB->forest_restore_decls(forest);
 	progB->flush_forest_pending_globals();
-	progB->bind_forest = NULL;	// forest is stack-local; detach before dtors
+	progB->forest_system.forest = NULL;	// forest is stack-local; detach before dtors
 
 	REQUIRE(progB->funcdef_map.count("Adder__add") == 1);
 	FuncDef *rf = progB->funcdef_map["Adder__add"];
@@ -3989,4 +3989,99 @@ TEST_CASE("B1: the dialect image roots are the fragments' auto-include closure")
 	std::vector<madc::dis::istring> none;
 	CHECK(!strict.dialect_image_roots(none));
 	CHECK(none.empty());
+}
+
+// B2: the discovery walk filters a carrier's profiles by role. The system
+// walk skips the dialect image and the dialect walk takes only it — through
+// the production walker (probe_forest_chain over an explicit carrier file) —
+// and a skipped profile's forest directory is never opened: a strict compile
+// never reads the dialect image.
+TEST_CASE("B2: the discovery walk takes only its own role, never opening another's") {
+	MIR_context_t mir_ctx = MIR_init();
+	c2mir_init(mir_ctx);
+	c2m_ctx_t c2m = cir_init(mir_ctx);
+	REQUIRE(c2m != nullptr);
+	{
+		std::shared_ptr<Program> prog;
+		CirBuilder *builder = NULL;
+		std::string main_path;
+		node_t tree = build_two_file_module(prog, builder, c2m, main_path);
+		REQUIRE(tree != nullptr);
+		cir_frozen_forest f;
+		REQUIRE(cir_freeze_forest(CIR_NODE(tree), main_path.c_str(), f));
+		std::vector<uint8_t> dialect, system;
+		REQUIRE(b1_role_image(f, CIR_FOREST_ROLE_DIALECT, dialect));
+		REQUIRE(b1_role_image(f, CIR_FOREST_ROLE_SYSTEM, system));
+
+		// The carrier: the image first, the system profile appended after it.
+		std::vector<uint8_t> carrier(37, 0xab);
+		carrier.resize((carrier.size() + 15) & ~(size_t)15, 0);
+		carrier.insert(carrier.end(), dialect.begin(), dialect.end());
+		carrier.resize((carrier.size() + 15) & ~(size_t)15, 0);
+		carrier.insert(carrier.end(), system.begin(), system.end());
+
+		// The peek: a profile's role and the profile below it, from its
+		// footer and segment table.
+		uint32_t role = 99;
+		size_t below = 1;
+		REQUIRE(cir_forest_profile_role(carrier.data(), carrier.size(), role, &below));
+		CHECK(role == (uint32_t)CIR_FOREST_ROLE_SYSTEM);
+		REQUIRE(below > 0u);
+		REQUIRE(cir_forest_profile_role(carrier.data(), below, role, &below));
+		CHECK(role == (uint32_t)CIR_FOREST_ROLE_DIALECT);
+		CHECK(below == 0u);
+		CHECK(!cir_forest_profile_role(carrier.data(), 37, role));
+
+		// One file per carrier: a carrier image is cached by its path.
+		static int carriers = 0;
+		const std::string stem = "/tmp/madc_b2_role_" + std::to_string((long)getpid())
+				       + "_" + std::to_string(++carriers);
+		const std::string both = stem + "_both.forest", image = stem + "_image.forest";
+		{
+			std::ofstream o(both.c_str(), std::ios::binary);
+			o.write((const char *)carrier.data(), (std::streamsize)carrier.size());
+		}
+		{
+			std::ofstream o(image.c_str(), std::ios::binary);
+			o.write((const char *)dialect.data(), (std::streamsize)dialect.size());
+		}
+
+		// Both profiles: each walk finds its own.
+		{
+			Program p;
+			p.forest_bind_path = both;
+			bool mismatch = false;
+			CirFrozenForest *sys = p.probe_forest_chain(Program::forestMatchAny, mismatch,
+								   true, CIR_FOREST_ROLE_SYSTEM);
+			REQUIRE(sys != nullptr);
+			CHECK(sys->role() == (uint32_t)CIR_FOREST_ROLE_SYSTEM);
+			CHECK(p._forest_profiles_opened[CIR_FOREST_ROLE_DIALECT] == 0u);
+			CirFrozenForest *dlg = p.probe_forest_chain(Program::forestMatchAny, mismatch,
+								   true, CIR_FOREST_ROLE_DIALECT);
+			REQUIRE(dlg != nullptr);
+			CHECK(dlg->role() == (uint32_t)CIR_FOREST_ROLE_DIALECT);
+			CHECK(dlg != sys);
+			CHECK(p._forest_profiles_opened[CIR_FOREST_ROLE_SYSTEM] == 1u);
+			CHECK(p._forest_profiles_opened[CIR_FOREST_ROLE_DIALECT] == 1u);
+		}
+		// The image alone: the system walk finds nothing and never opens it.
+		{
+			Program p;
+			p.forest_bind_path = image;
+			bool mismatch = false;
+			CHECK(p.probe_forest_chain(Program::forestMatchAny, mismatch, true,
+						   CIR_FOREST_ROLE_SYSTEM) == nullptr);
+			CHECK(p._forest_profiles_opened[CIR_FOREST_ROLE_DIALECT] == 0u);
+			CirFrozenForest *dlg = p.probe_forest_chain(Program::forestMatchAny, mismatch,
+								   true, CIR_FOREST_ROLE_DIALECT);
+			REQUIRE(dlg != nullptr);
+			CHECK(dlg->role() == (uint32_t)CIR_FOREST_ROLE_DIALECT);
+		}
+		std::remove(both.c_str());
+		std::remove(image.c_str());
+		delete builder;
+	}
+	cir_finish(c2m);
+	c2mir_finish(mir_ctx);
+	MIR_finish(mir_ctx);
 }

@@ -889,3 +889,177 @@ unused declaration to a dialect fragment cannot cost a dialect compile.
   dialect-only container); B5's drop needs one there first.
   Thread contract: the image is immutable mapped bytes; the role is read per
   reader at open; the role table is constant data; no globals.
+- **B2 + B3 (2026-10-17), one change.** Discovery by role, a second forest,
+  and the readers that carry a record's forest. B2 alone is not green: a
+  dialect body, extern or frozen global restored from the image read the
+  system forest (`bind_forest->`), so the split and its readers land
+  together. What existed: one bind state on Program (`bind_forest`,
+  `_bind_directory`, `forest_chain` / `forest_chain_set`, the four
+  `forest_*_registered` vectors, `forest_restore_filter`, the A4/A5 per-unit
+  maps) — every unit id and record id in them local to that one container;
+  the compile group's `bind_forests` keyed (config, defines);
+  `frozen_src_forest` on a template, nothing on a FuncDef body or a pending
+  global. Landed:
+  - `Program::ForestSide` (madc.h): one bound forest's state — directory,
+    forest, holder, chain + chain_set, the walk's pp/husk/live state, the
+    registered vectors, the restore filter, the dialect units, their
+    activations, decoded names and namespaces. Two of them,
+    `forest_system` (role 0) and `forest_dialect` (role 1);
+    `forest_dialect_side()` is the side the dialect binds on — the image
+    when it bound, else the system pack (darwin / Windows packs and test
+    groves keep B1's fragment units). `forest_dialect_active()`,
+    `forest_any_bound()`. `ForestBindMark` marks and rewinds both sides.
+  - Discovery (lexer.cpp): `forest_probe_arm` takes the walk's role and
+    skips a profile of another role from its footer and segment table
+    (`forest_profile_skipped`, file-local) — never its forest directory; the
+    forest opened next adopts that read (`snapshot_reader::adopt`, through
+    `CirFrozenForest::open_header`'s `opened`), a skipped profile is
+    remembered per compile (`Program::_forest_skipped_profiles`), so each
+    profile's table is scanned once. A role skip on an exact walk counts as
+    a config miss (a carrier holding the image alone falls through quietly,
+    as B1's walk did). `forest_reader` counts the profiles it opens by role
+    (`_forest_profiles_opened`). `forest_directory(ForestSide&)` /
+    `forest_bound(ForestSide&)`: the group key is (role, config, defines);
+    the missing policy and the touch log stay the system side's.
+    `forest_dialect_image_permitted()`: `--std=madc`, not freezing, no touch
+    log (the pack's layout pass keeps the system pack's fragment units).
+  - The dialect fragment bind (`forest_bind_dialect_fragment(name,
+    written)`): the image's unit when the image binds, else the system
+    pack's; an angle `#include <ns_*>` tries the image first, under
+    `--no-forest-bind` too. `forest_unit_for_include` declines a fragment's
+    system-pack unit outside `--std=madc` and whenever the image's directory
+    opened. The bind walk (`forest_bind_include`, env checks, pp replay,
+    husks, lazy-module notes) takes its side.
+  - Restore: `forest_restore_side(ForestSide&, CirFrozenForest&, delta)` —
+    the A4/A5 withholding, activation, demand memo (`asked` records belong to
+    the dialect side only) over that side's forest;
+    `forest_restore_if_grown` restores each grown side, system first;
+    `forest_dialect_register` / `forest_dialect_demand` /
+    `forest_dialect_object_records` / every hook read
+    `forest_dialect_side()`; a delta names its side
+    (`ForestRestoreDelta::side`); `forest_apply_pending` walks each side's
+    namespace surface, default bodies and parameter defaults.
+  - B3 — the record carries its forest: `FuncDef::forest_body_src` (set by
+    `materialize_pass`, both sites; cleared on the adoption copy and the
+    lazy module prototype), `PendingForestGlobal::def_forest` /
+    `ForestFrozenGlobalDef::forest`, `forest_unsettled_defaults` holding
+    (forest, index). The owners (parser.cpp): `forest_body_node(fd)`,
+    `forest_body_unit_name(fd)`, `forest_dialect_body_p(fd)`,
+    `forest_extern_node(sym, node)` (system forest, then the dialect forest).
+    Every former `bind_forest->` reader: cir_builder.cpp's frozen-global
+    init (`fz->forest`), begin_compile (each forest), the lazy-body sweep
+    and its three unit names, the extern argument and callee nodes
+    (`forest_extern_node`), the lazy body (`forest_body_node`), the bound
+    methods; parser.cpp's decl names, activation, record facts, dialect
+    names, ask / register / object records, restore, apply-pending, param
+    defaults; madc_cir.cpp's MIR-cache lane (the system pack's; the image's
+    blob stays unread); lexer.cpp's bind walk (its side's forest).
+  - `--show-stats`: `forest profiles ..... N system + M dialect opened`;
+    `dialect image ....... image bound (U units bound / P packed; F zstd
+    frames)`; the `forest dialect` line names its forest. The seed-parity
+    probe heads each generation with its forest's role (`SEEDPAR-GEN
+    dialect`) and the gate keeps each forest's last block.
+  - Gates: `forest_pack_gate.sh` — `--image-stats` (repeatable) reads the
+    image line (units bound, 0 zstd frames, dialect units on the image, the
+    run's decode 0 frames), `--strict-stats` (repeatable: the system profile
+    opened, the image never); nine new / rewritten selftest legs (40 in
+    all). `forest_pack.sh`'s system-pack stage runs the split legs: c17 and
+    c++17 strict compiles, dialect.mad, and dialect.mad under
+    `--no-forest-bind`.
+  Rulings:
+  - The dialect side falls back to the system pack when no image binds — one
+    owner (`forest_dialect_side`) answers which forest the dialect is on.
+  - The image under `--no-forest-bind`: the switch is the system headers'
+    (as B1's fragment units already bound under it).
+  - `--forest-bind=PATH` stays the whole search: an explicit system grove
+    holds the fragments (forest_bind_gate's dialectbind case).
+  - Not done here (B4): type identity across the two forests. Where both
+    bind (dialect_cxx), each restores its always list — the two C++ builtin
+    templates `__make_integer_seq` / `__type_pack_element` twice; output and
+    `--emit=c11` unchanged.
+  RED (B1 + the profiles stats line alone, packed release): `--std=c17`
+  strict.c "forest profiles ..... 1 system + 1 dialect opened";
+  `--no-forest-bind` dialect.mad "6 units bound / 2309 packed", "18 zstd
+  frames" (the system pack's fragment units); dialect.mad the same. Unit
+  "B2: the discovery walk takes only its own role, never opening another's"
+  with the walk's role ignored: 5 of its checks failing (`dlg->role() ==
+  CIR_FOREST_ROLE_DIALECT` 0 == 1, `dlg != sys`, the dialect open count
+  0 == 1, the system walk of an image-only carrier non-NULL, its dialect
+  open count 1 == 0). GREEN: c17 and c++17 "1 system + 0 dialect opened";
+  dialect.mad and `--no-forest-bind` dialect.mad "0 system + 1 dialect
+  opened", "image bound (6 units bound / 51 packed; 0 zstd frames)", "6
+  units (dialect image)", 8 madc 3 OK; the unit case 24/24.
+  The split tests on the packed release: `testdialectpername_* testgit*
+  testmarkdown* testui*` 22/22.
+  Differential (OLD the B1 packed release, both beside the same module
+  libraries; the plan's 14 globs): 100 tests, 100 identical. `--emit=c11`
+  of the four dialect workloads: dialect_cxx identical; dialect,
+  dialect_one, dialect_all 6 lines removed, 0 added — `struct
+  __madc_va_list_tag` (the system pack's always-list record, unused by
+  them, no longer restored: a dialect compile binds no system pack). Seed
+  parity PASS; dialect.mad restores 11 (was 12: the same record),
+  `dialect.restored` lowered to 11; dialect_cxx 2,558 (each forest's last
+  block — the image's 69 beside the system pack's 2,489, the two C++
+  builtin templates once per forest).
+  Cost (Ir, symbolized pair in tmp/cost_sweep2, forest rows, B1 → B2):
+
+  | row | B1 | B2 | delta |
+  |---|---:|---:|---:|
+  | dialect | 29,530,879 | 26,332,139 | −10.83% |
+  | dialect_one | 21,356,568 | 18,182,835 | −14.86% |
+  | dialect_all | 33,395,415 | 27,082,983 | −18.90% |
+  | dialect_cxx | 269,084,076 | 262,811,794 | −2.33% |
+  | c_headers | 242,750,047 | 242,726,056 | −0.010% |
+  | cxx_stl | 1,389,218,539 | 1,391,488,681 | +0.163% |
+  | rung_stdio | 18,997,884 | 19,020,152 | +0.117% |
+
+  The C/C++ rows by object (self Ir): madc's code (the binary, libmadc,
+  MIR) c_headers +18,857, cxx_stl +28,445, rung_stdio +2,626 (≤ 0.02%);
+  libc c_headers −64,008, cxx_stl +2,095,157 (`__strcmp_avx2` +1.67M at
+  identical call counts, 469,637 + 311,357), rung_stdio +9,349; ld.so
+  +9,096 / +54,923 / +8,578. rung_vector (shipped gate +0.19%): madc
+  +12,802, libc +175,740 — one more glibc `_int_realloc` copy (4 → 5,
+  +120K) and `__strcmp_avx2` +61K at identical counts (88,049 + 2,652 +
+  2). Fixed on the way: the role read re-scanned a profile's segment table
+  per walk (`snapshot_reader::open` +77K, rung_stdio +0.50%) — now one scan
+  per profile per compile, the lower profile read only on a skip.
+  Parse-cost gate on the packed release: 0 red of 21; against B1's run
+  (tmp/b1/parse_cost2.log) dialect.live −10.69%, dialect.forest −10.70%
+  (26,749,003: B1's image-alone 26.7M), dialect_all −18.68%, dialect_one
+  −14.6%, dialect_cxx.forest −2.39%; c_headers −0.04%, sqlite3 +0.002%,
+  cxx_stl.forest +0.085%, subscript +0.06%, the rungs +0.003% to +0.19%
+  (rung_vector). The eight dialect rows fell past the 0.5% tolerance:
+  re-recorded with `--record` (no `--accept-increase`), dialect.forest
+  29,953,917 → 26,745,317, dialect.live 29,958,254 → 26,752,318,
+  dialect_all.forest 33,822,568 → 27,506,840, dialect_one.forest
+  21,765,224 → 18,588,881, dialect_cxx.forest 269,886,167 → 263,057,454
+  (every row re-read: the C/C++ rows −0.09% to −0.05%, the rungs −0.02% to
+  +0.13%, subscript −0.14% / −0.07% against the old baseline).
+  Validation (the final tree): `make -C src release` — forest_pack_gate OK
+  for linux-dialect and linux (the split legs: c17 and c++17 "1 system + 0
+  dialect", dialect.mad and its `--no-forest-bind` run 6 image units, 0
+  zstd frames); the gate selftest 40 legs; test_cir_freeze 48/48,
+  test_repl_session 83/83, test_forest_policy 9/9; fix lane GREEN (Tier 1
+  87/87, EXE/OBJ 48/48; Tier 2's seven lanes at baseline); the static gate
+  loop 0 red of 103; forest_bind_gate 42/42, forest_emitpack_gate,
+  forest_ledger_gate OK; check-pack-seed-parity PASS.
+  Review rulings (parent, 2026-10-17):
+  - The C/C++ libc growth is layout, not work. The system pack starts at
+    byte 3952 of its page in B1's symbolized libmadc and at byte 2336 in
+    B2's (offsets 24,936,304 / 24,946,976 — madc's code grew 10,672 bytes;
+    containers pad to 16 only), and `__strcmp_avx2`'s cost depends on where
+    its operands sit in a page (identical call counts). rung_vector
+    symbolized B1 → B2: +198,125 Ir with the same 10,129
+    `c2mir_next_uid` calls — the extra `_int_realloc` copy (+120K) is one
+    MIR VARR that no longer grows in place (heap layout). Accepted. Follow-up:
+    page-align each appended container, so a pack's in-page layout no longer
+    moves with the code size and the gate stops reading it as cost.
+  - The `struct __madc_va_list_tag` lines leaving the dialect workloads'
+    `--emit=c11` are accepted as a second output delta: an unused record of
+    the system pack's always list that a dialect compile no longer binds; the
+    differential (100/100) shows no behaviour change.
+  Thread contract: both images are immutable mapped bytes; each Program owns
+  its two `ForestSide`s (materialized state, registered vectors, demand
+  memo, skipped-profile memo); the compile group shares one forest per
+  (role, config, defines) under `MadcCompileGroup`'s contract (group
+  mutation single-threaded). No new globals.

@@ -2,6 +2,56 @@
 
 ## [Unreleased]
 
+### A dialect compile binds the dialect image; discovery and readers split by role
+
+- `Program::ForestSide` (`madc.h`) holds one bound forest's state — directory,
+  forest, holder, chain and chain-set, the walk's pp/husk/live state, the four
+  registered vectors, the restore filter, the dialect units, their activations,
+  decoded names and namespaces. Two instances, `forest_system` (role 0) and
+  `forest_dialect` (role 1); `forest_dialect_side()` is the side the dialect
+  binds on — the image when it bound, else the system pack. `ForestBindMark`
+  marks and rewinds both sides.
+- Discovery (`lexer.cpp`): `forest_probe_arm` takes the walk's role and skips a
+  profile of another role from its footer and segment table
+  (`forest_profile_skipped`), never its forest directory; the forest opened next
+  adopts that read (`snapshot_reader::adopt`), and a skipped profile is
+  remembered per compile (`_forest_skipped_profiles`), so each profile's table
+  is scanned once. `forest_reader` counts the profiles it opens by role
+  (`_forest_profiles_opened`); the group key is `(role, config, defines)`.
+  `forest_dialect_image_permitted()` gates the image to `--std=madc`, not
+  freezing, no touch log.
+- The dialect fragment bind (`forest_bind_dialect_fragment`) takes the image's
+  unit when the image binds, else the system pack's; an angle `#include <ns_*>`
+  tries the image first, under `--no-forest-bind` too. `forest_unit_for_include`
+  declines a fragment's system-pack unit outside `--std=madc` and whenever the
+  image's directory opened.
+- Restore: `forest_restore_side(ForestSide&, CirFrozenForest&, delta)` carries
+  the A4/A5 withholding, activation and demand memo over that side's forest;
+  `forest_restore_if_grown` restores each grown side, system first; a delta
+  names its side (`ForestRestoreDelta::side`); `forest_apply_pending` walks each
+  side's namespace surface, default bodies and parameter defaults.
+- Each record carries the forest that restored it: `FuncDef::forest_body_src`
+  (set by `materialize_pass`, cleared on the adoption copy and the lazy module
+  prototype), `PendingForestGlobal::def_forest`, `ForestFrozenGlobalDef::forest`,
+  `forest_unsettled_defaults`. The owners `forest_body_node(fd)`,
+  `forest_body_unit_name(fd)`, `forest_dialect_body_p(fd)` and
+  `forest_extern_node(sym, node)` (`parser.cpp`) replace every former
+  `bind_forest->` reader in `cir_builder.cpp`, `parser.cpp`, `madc_cir.cpp` and
+  `lexer.cpp`.
+- `--show-stats`: `forest profiles` names system + dialect opened; `dialect
+  image` reports units bound / packed and zstd frames; the seed-parity probe
+  heads each generation with its forest's role (`SEEDPAR-GEN dialect`) and the
+  gate keeps each forest's last block.
+- `forest_pack_gate.sh` adds `--image-stats` and `--strict-stats` (both
+  repeatable) and nine new / rewritten selftest legs (40 in all);
+  `forest_pack.sh`'s system-pack stage runs the split legs — `c17` and `c++17`
+  strict compiles, `dialect.mad`, and `dialect.mad` under `--no-forest-bind`.
+- Differential against the B1 packed release: 100 tests, 100 identical.
+  `--emit=c11` of the dialect workloads drops 6 lines (`struct
+  __madc_va_list_tag`, the system pack's always-list record a dialect compile no
+  longer binds), adds none. `dialect.restored` 12 → 11; parse-cost re-recorded
+  (the eight dialect rows, e.g. `dialect.forest` 29,953,917 → 26,745,317).
+
 ### A raw dialect image, tagged with a role, built in every product mode
 
 - A frozen forest carries a ROLE segment (`CIR_FOREST_SEG_ROLE`, id 28, kind

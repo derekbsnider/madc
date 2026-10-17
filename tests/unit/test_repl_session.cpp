@@ -2221,7 +2221,7 @@ std::set<std::string> bound_dialect_units(Program &p)
     std::vector<uint32_t> units;
     p.forest_active_dialect_units(units);
     for ( size_t i = 0; i < units.size(); ++i )
-	if ( const char *nm = p.bind_forest ? p.bind_forest->unit_name(units[i]) : NULL )
+	if ( const char *nm = p.forest_dialect_side().forest ? p.forest_dialect_side().forest->unit_name(units[i]) : NULL )
 	    out.insert(nm);
     return out;
 }

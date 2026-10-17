@@ -1427,6 +1427,16 @@ bool cir_forest_read_role(const madc::dis::snapshot_reader &r, uint32_t &role);
 bool cir_forest_profiles(const void *image, size_t len,
 			 std::vector<cir_forest_profile> &out);
 
+// One profile's role, read from its footer and segment table alone — never
+// its forest directory — and, when `previous` is given, the length of the
+// carrier image below it (0: none). The discovery walk's role filter
+// (dialect per-name plan B2): a walk skips a profile of another role without
+// opening it, so a strict compile never reads the dialect image. False when
+// the image's end holds no container (the walk then opens it as before, so a
+// foreign blob keeps its notice).
+bool cir_forest_profile_role(const void *image, size_t len, uint32_t &role,
+			     size_t *previous = NULL);
+
 // The release pack's zstd level (the appended pack pays compression once per
 // release build; see the selection comment at madc_cir.cpp's freeze). The
 // layout pass re-encodes the tables it reorders at the same level.
@@ -2174,8 +2184,11 @@ public:
 	// BEFORE paying the pool/arena binds; a mismatch then costs ~nothing.
 	// complete_open() finishes the job (memoized; needs the live string
 	// pool). open() remains the one-call composition of both.
+	// `opened`: a reader already open on (image, len) — the discovery
+	// walk's role read — adopted (snapshot_reader::adopt), not re-opened.
 	bool open_header(const void *image, size_t len,
-			 bool quiet_missing = false);
+			 bool quiet_missing = false,
+			 madc::dis::snapshot_reader *opened = NULL);
 	bool complete_open(c2m_ctx_t c2m);
 	bool previous_image_len(size_t &len) const
 		{ return _reader.previous_image_len(len); }

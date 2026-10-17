@@ -331,10 +331,24 @@ if [ "$DIALECT_IMAGE" = 1 ]; then
 	--image-roots "$LIST"
 else
     timeout 300 "$BIN" -v tests/testfreezerun.mad > "$LOAD_LOG" 2>&1
+    # The split (dialect per-name plan B2): with the system pack over the
+    # image, a strict compile (C and C++) opens the system profile and never
+    # the image; a dialect compile binds the image — under --no-forest-bind
+    # too — and decodes no zstd frame. (The image-only carrier's stats run is
+    # stage 1's.)
+    printf '#include <stdio.h>\nint main(void) { printf("ok\\n"); return 0; }\n' > ${STAGE}_strict.c
+    printf '#include <cstdio>\nint main() { std::printf("ok\\n"); return 0; }\n' > ${STAGE}_strict.cpp
+    timeout 120 "$BIN" --show-stats --std=c17 ${STAGE}_strict.c > ${STAGE}_strict_c17.log 2>&1
+    timeout 120 "$BIN" --show-stats --std=c++17 ${STAGE}_strict.cpp > ${STAGE}_strict_cxx17.log 2>&1
+    timeout 300 "$BIN" --show-stats scripts/parse_cost/dialect.mad > ${STAGE}_dialect_stats.log 2>&1
+    timeout 300 "$BIN" --show-stats --no-forest-bind scripts/parse_cost/dialect.mad > ${STAGE}_nobind_stats.log 2>&1
+    SPLIT_STATS=(--strict-stats ${STAGE}_strict_c17.log --strict-stats ${STAGE}_strict_cxx17.log
+        --image-stats ${STAGE}_dialect_stats.log --image-stats ${STAGE}_nobind_stats.log)
     bash scripts/forest_pack_gate.sh --profile linux \
 	--pack-log "$PACK_LOG" --load-log "$LOAD_LOG" \
 	--dump "$DUMP" \
-	--units-from "$LIST" --units-from "$SOURCES_LIST" --sources-from "$GUARDED_LIST"
+	--units-from "$LIST" --units-from "$SOURCES_LIST" --sources-from "$GUARDED_LIST" \
+	"${SPLIT_STATS[@]}"
 fi
 
 units=$(grep -c '^unit	' "$DUMP")

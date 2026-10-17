@@ -2508,7 +2508,8 @@ void Program::inject_pending_auto_includes()
 	    size_t fragment_start = tokens.size();
 	    uint32_t boundary_spelling = fragment_start
 		? tokens[fragment_start - 1]->rec.spelling_id : 0;
-	    size_t forest_units_before = forest_chain_set.size();
+	    size_t forest_units_before = forest_system.chain_set.size()
+		+ forest_dialect.chain_set.size();
 	    // Delegate to the LITERAL include owner: feed a synthetic
 	    // `#include <hdr>` line through the real directive handler, so
 	    // forest bind, PCH discovery, embedded text, the filesystem
@@ -2526,7 +2527,9 @@ void Program::inject_pending_auto_includes()
 	    // the captured range. Forest/PCH/nested-include paths stay authoritative.
 	    bool boundary_unchanged = !fragment_start
 		|| tokens[fragment_start - 1]->rec.spelling_id == boundary_spelling;
-	    if ( preludes && forest_chain_set.size() == forest_units_before
+	    if ( preludes
+	      && forest_system.chain_set.size() + forest_dialect.chain_set.size()
+		 == forest_units_before
 	      && boundary_unchanged )
 	    {
 		MadcSharedPreludeCache::Entry entry;
@@ -4280,6 +4283,61 @@ static double forest_stat_now(void)
     return tv.tv_sec + tv.tv_usec / 1e6;
 }
 
+// This compile's reader already opened on (image, profile length); NULL if
+// none (Program::forest_reader opens one).
+static CirFrozenForest *forest_reader_opened(const Program &prog, const void *image,
+					     size_t len)
+{
+    for ( size_t i = 0; i < prog._forest_readers.size(); ++i )
+	if ( prog._forest_readers[i]->opened_from(image, len) )
+	    return prog._forest_readers[i].get();
+    return NULL;
+}
+
+// B2's role filter for one profile of a discovery walk taking `role`: true
+// when the profile is another role's — `below` then the carrier length
+// beneath it (0: none). The role is the opened reader's, else a profile this
+// compile skipped before, else its footer and segment table read through
+// `peek` (`peeked`: left open for the reader to adopt — never its forest
+// directory). Each profile's table is scanned once per compile.
+static bool forest_profile_skipped(Program &prog, const void *image, size_t len,
+				   uint32_t role, madc::dis::snapshot_reader &peek,
+				   bool &peeked, size_t &below)
+{
+    peeked = false;
+    below = 0;
+    if ( CirFrozenForest *f = forest_reader_opened(prog, image, len) )
+    {
+	if ( f->role() == role )
+	    return false;
+	if ( !f->previous_image_len(below) )
+	    below = 0;
+	return true;
+    }
+    for ( size_t i = 0; i < prog._forest_skipped_profiles.size(); ++i )
+    {
+	const Program::ForestSkippedProfile &k = prog._forest_skipped_profiles[i];
+	if ( k.image == image && k.len == len && k.role != role )
+	{
+	    below = k.below;
+	    return true;
+	}
+    }
+    uint32_t profile_role = CIR_FOREST_ROLE_SYSTEM;
+    if ( !peek.open(image, len) || !cir_forest_read_role(peek, profile_role) )
+	return false;		// not a container: the reader's open reports it
+    peeked = true;
+    if ( profile_role == role )
+	return false;		// the reader adopts `peek`
+    if ( !peek.previous_image_len(below) )
+	below = 0;
+    // Skipped: no reader holds its role, so this compile's later walks of
+    // this role read it here.
+    Program::ForestSkippedProfile k = { image, len, profile_role, below };
+    prog._forest_skipped_profiles.push_back(k);
+    return true;
+}
+
 // One discovery arm: map `path` (NULL = the running self-image: ELF trailer /
 // Mach-O __MADC,__forest section) and open it as a forest container. Returns
 // the opened forest, or NULL to fall through to the next arm. quiet_missing
@@ -4296,12 +4354,16 @@ static double forest_stat_now(void)
 // segments (the AOT ledger) live outside the groves, so a consumer that only
 // wants those must not be made to bind the frozen string pool / arena into
 // live parse state it does not have (the .o link lane never parses).
+// `role` filters the stack (dialect per-name plan B2): a profile of another
+// role is skipped from its footer and segment table (forest_profile_skipped)
+// — its forest directory never opens — so the system walks never read the
+// dialect image and the dialect walk reads nothing else.
 static CirFrozenForest *forest_probe_arm(Program *prog, const char *path,
 					 const char *arm, bool quiet_missing,
 					 bool &config_mismatch,
 					 double &map_secs, double &open_secs,
 					 Program::ForestConfigMatch config_match,
-					 bool header_only = false)
+					 bool header_only, uint32_t role)
 {
     double _t0 = forest_stat_now();
     const void *image = NULL;
@@ -4318,7 +4380,27 @@ static CirFrozenForest *forest_probe_arm(Program *prog, const char *path,
     for (;;)
     {
 	double _t1 = forest_stat_now();
-	CirFrozenForest *f = prog->forest_reader(image, candidate_len, quiet_missing);
+	size_t below = 0;
+	madc::dis::snapshot_reader peek;
+	bool peeked = false;
+	if ( forest_profile_skipped(*prog, image, candidate_len, role, peek, peeked,
+				    below) )
+	{
+	    open_secs += forest_stat_now() - _t1;
+	    DBG(std::cout << "forest-bind: [" << arm << "] a profile of another"
+		" role skipped (the walk takes role " << role << ")" << std::endl);
+	    // A container this compile does not take, as a config miss is: a
+	    // carrier holding the dialect image alone falls through quietly
+	    // (as B1's walk met the image and missed on config).
+	    if ( config_match == Program::forestMatchExact )
+		config_mismatch = true;
+	    if ( !below )
+		return NULL;
+	    candidate_len = below;
+	    continue;
+	}
+	CirFrozenForest *f = prog->forest_reader(image, candidate_len, quiet_missing,
+						 peeked ? &peek : NULL);
 	if ( !f )
 	{
 	    open_secs += forest_stat_now() - _t1;
@@ -4365,14 +4447,16 @@ static CirFrozenForest *forest_probe_arm(Program *prog, const char *path,
 }
 
 CirFrozenForest *Program::forest_reader(const void *image, size_t len,
-				       bool quiet_missing)
+				       bool quiet_missing,
+				       madc::dis::snapshot_reader *opened)
 {
-    for ( size_t i = 0; i < _forest_readers.size(); ++i )
-	if ( _forest_readers[i]->opened_from(image, len) )
-	    return _forest_readers[i].get();
+    if ( CirFrozenForest *f = forest_reader_opened(*this, image, len) )
+	return f;
     std::shared_ptr<CirFrozenForest> f(new CirFrozenForest());
-    if ( !f->open_header(image, len, quiet_missing) )
+    if ( !f->open_header(image, len, quiet_missing, opened) )
 	return NULL;
+    if ( f->role() < 2 )
+	++_forest_profiles_opened[f->role()];
     _forest_readers.push_back(f);
     return f.get();
 }
@@ -4394,7 +4478,8 @@ std::shared_ptr<CirFrozenForest> Program::forest_reader_holder(CirFrozenForest *
 // walker keeps both arm order and within-arm profile order in one place.
 CirFrozenForest *Program::probe_forest_chain(ForestConfigMatch config_match,
 					     bool &cfg_mismatch,
-					     bool header_only)
+					     bool header_only,
+					     uint32_t role)
 {
     // Arm 0: an explicit --forest-bind=PATH is the whole search (CLI beats
     // every discovery arm).
@@ -4403,7 +4488,7 @@ CirFrozenForest *Program::probe_forest_chain(ForestConfigMatch config_match,
 				"explicit", /*quiet_missing=*/false,
 				cfg_mismatch, _forest_map_seconds,
 				_forest_open_seconds, config_match,
-				header_only);
+				header_only, role);
 
     // Arm 1: self-image — the running binary's own carrier (ELF trailer /
     // Mach-O __MADC,__forest section). An unpacked dev binary misses quietly.
@@ -4411,7 +4496,7 @@ CirFrozenForest *Program::probe_forest_chain(ForestConfigMatch config_match,
 					  /*quiet_missing=*/true, cfg_mismatch,
 					  _forest_map_seconds, _forest_open_seconds,
 					  config_match,
-					  header_only);
+					  header_only, role);
     // Arm 2 (forest-carriers S4): library image — in the SHARED shape the
     // forest rides libmadc's own image, so ONE container serves the thin CLI
     // and every embedding host. dladdr on a libmadc symbol resolves the image
@@ -4428,7 +4513,7 @@ CirFrozenForest *Program::probe_forest_chain(ForestConfigMatch config_match,
 			     /*quiet_missing=*/true, cfg_mismatch,
 			     _forest_map_seconds, _forest_open_seconds,
 			     config_match,
-			     header_only);
+			     header_only, role);
     if ( !f && registration_policy.enable_external_forest )
     {
 	// Arm 3: sidecar container beside an image (<exe>.forest, then
@@ -4440,13 +4525,13 @@ CirFrozenForest *Program::probe_forest_chain(ForestConfigMatch config_match,
 				 "sidecar", /*quiet_missing=*/false,
 				 cfg_mismatch, _forest_map_seconds,
 				 _forest_open_seconds, config_match,
-				 header_only);
+				 header_only, role);
 	if ( !f && have_lib_image )
 	    f = forest_probe_arm(this, (lib + ".forest").c_str(),
 				 "lib-sidecar", /*quiet_missing=*/false,
 				 cfg_mismatch, _forest_map_seconds,
 				 _forest_open_seconds, config_match,
-				 header_only);
+				 header_only, role);
 	// Arm 4: MADC_FOREST environment variable (a configured path; env
 	// outranks the madc.ini key per the config precedence rule
 	// CLI > environment > madc.ini > baked defaults).
@@ -4456,7 +4541,7 @@ CirFrozenForest *Program::probe_forest_chain(ForestConfigMatch config_match,
 				 /*quiet_missing=*/false, cfg_mismatch,
 				 _forest_map_seconds, _forest_open_seconds,
 				 config_match,
-				 header_only);
+				 header_only, role);
 	// Arm 5 (forest-carriers S6): the madc.ini `forest =` key — the LAST
 	// arm, because a configured default must lose to everything more
 	// specific. The CLI parses the file and hands the path down through
@@ -4467,7 +4552,7 @@ CirFrozenForest *Program::probe_forest_chain(ForestConfigMatch config_match,
 				 "madc.ini", /*quiet_missing=*/false,
 				 cfg_mismatch, _forest_map_seconds,
 				 _forest_open_seconds, config_match,
-				 header_only);
+				 header_only, role);
     }
     return f;
 }
@@ -4484,59 +4569,65 @@ madc::dis::istring Program::forest_probed_arms() const
     return arms;
 }
 
-// The exact-config bind carrier, opened to its DIRECTORY: discovery, a
-// sibling TU's shared instance, and the missing-container policy. "Does this
-// include name a grove unit" reads only this (the directory is the pack's
-// index); ensure_bind_forest completes it for an actual bind, so a compile
-// that binds nothing — a dialect compile whose fragments the pack does not
-// carry — never decodes the string pool or the arena.
-CirFrozenForest *Program::bind_forest_directory()
+// One side's carrier, opened to its DIRECTORY: discovery (the profiles of the
+// side's role under the exact config), a sibling TU's shared instance, and —
+// for the system side — the missing-container policy. "Does this include
+// name a grove unit" reads only this (the directory is the pack's index);
+// forest_bound completes it for an actual bind, so a compile that binds
+// nothing never decodes the string pool or the arena. The dialect side is
+// silent when the carrier holds no image: the dialect then binds as it did
+// before B2 (forest_bind_dialect_fragment, forest_dialect_side).
+CirFrozenForest *Program::forest_directory(ForestSide &s)
 {
-    if ( bind_directory_tried )
-	return _bind_directory;
-    bind_directory_tried = true;
+    if ( s.directory_tried )
+	return s.directory;
+    s.directory_tried = true;
+    const bool system = s.role == CIR_FOREST_ROLE_SYSTEM;
 
     ForestWorkFrame _fw(&_forest_work_seconds, &_forest_work_depth);
-    // S3 (R4-lite): a sibling TU adopts the group's instance for this dialect
-    // — the (config word, -D hash) pair IS the probe's own config gate, so a
-    // group hit is exactly what the probe would re-open.
-    std::pair<uint32_t, uint32_t> group_key(0, 0);
+    // S3 (R4-lite): a sibling TU adopts the group's instance for this role
+    // and dialect — the (config word, -D hash) pair IS the probe's own config
+    // gate, so a group hit is exactly what the probe would re-open.
+    std::tuple<uint32_t, uint32_t, uint32_t> group_key(s.role, 0, 0);
     if ( compile_group )
     {
-	group_key = std::make_pair(madc_forest_config_word(this),
-				   madc_forest_defines_hash(this));
-	std::map<std::pair<uint32_t, uint32_t>,
+	group_key = std::make_tuple(s.role, madc_forest_config_word(this),
+				    madc_forest_defines_hash(this));
+	std::map<std::tuple<uint32_t, uint32_t, uint32_t>,
 		 std::shared_ptr<CirFrozenForest> >::iterator gi =
 	    compile_group->bind_forests.find(group_key);
 	if ( gi != compile_group->bind_forests.end() )
 	{
-	    _bind_forest_holder = gi->second;
-	    _bind_directory = _bind_forest_holder.get();
+	    s.holder = gi->second;
+	    s.directory = s.holder.get();
 	    // This compile's other roles share it too (forest_reader).
-	    if ( !forest_reader_holder(_bind_directory) )
-		_forest_readers.push_back(_bind_forest_holder);
-	    return _bind_directory;
+	    if ( !forest_reader_holder(s.directory) )
+		_forest_readers.push_back(s.holder);
+	    return s.directory;
 	}
     }
     bool cfg_mismatch = false;
-    _bind_directory = probe_forest_chain(forestMatchExact, cfg_mismatch,
-					 /*header_only=*/true);
-    if ( _bind_directory )
+    s.directory = probe_forest_chain(forestMatchExact, cfg_mismatch,
+				     /*header_only=*/true, s.role);
+    if ( s.directory )
     {
-	_bind_forest_holder = forest_reader_holder(_bind_directory);
+	s.holder = forest_reader_holder(s.directory);
 	if ( compile_group )
-	    compile_group->bind_forests[group_key] = _bind_forest_holder;
+	    compile_group->bind_forests[group_key] = s.holder;
 	// The pack step's read recorder starts with the bind's container, not
 	// its full open: a root that binds no frozen table (a pragma-only
 	// header, served as source alone) still writes its log, so the log
 	// exists exactly when the bind opened the container
-	// (forest_pack_layout.sh).
-	if ( !forest_touch_log.empty()
-	     && !_bind_directory->record_touches(forest_touch_log.c_str()) )
+	// (forest_pack_layout.sh). The system pack's alone: the dialect image
+	// is laid out by nothing (B1).
+	if ( system && !forest_touch_log.empty()
+	     && !s.directory->record_touches(forest_touch_log.c_str()) )
 	    std::cerr << "madc: --forest-touch-log: cannot write '"
 		      << forest_touch_log << "'" << std::endl;
-	return _bind_directory;
+	return s.directory;
     }
+    if ( !system )
+	return NULL;
 
     // A named container that fails to open falls back to live parse LOUDLY
     // regardless of policy — the user pointed at it, so ignoring it silently
@@ -4559,11 +4650,11 @@ CirFrozenForest *Program::bind_forest_directory()
     return NULL;
 }
 
-CirFrozenForest *Program::ensure_bind_forest()
+CirFrozenForest *Program::forest_bound(ForestSide &s)
 {
-    if ( bind_forest_tried )
-	return bind_forest;
-    bind_forest_tried = true;
+    if ( s.tried )
+	return s.forest;
+    s.tried = true;
 
     // task #25 slice D: the full open under the forest-work clock; a bound
     // forest gets the clock installed so its own on-demand entries (unit
@@ -4571,18 +4662,29 @@ CirFrozenForest *Program::ensure_bind_forest()
     // The clock pointers re-install per adopter (sequential compile: the
     // forest's on-demand work accumulates on whoever is currently compiling).
     ForestWorkFrame _fw(&_forest_work_seconds, &_forest_work_depth);
-    CirFrozenForest *f = bind_forest_directory();
+    CirFrozenForest *f = forest_directory(s);
     const double t0 = forest_stat_now();
     const bool opened = f && f->complete_open(/*c2m=*/NULL);
     _forest_open_seconds += forest_stat_now() - t0;
     if ( !opened )
 	return NULL;
-    bind_forest = f;
-    DBG(std::cout << "forest-bind: opened container (" << f->unit_count()
-	<< " units)" << std::endl);
-    bind_forest->_work_secs = &_forest_work_seconds;
-    bind_forest->_work_depth = &_forest_work_depth;
-    return bind_forest;
+    s.forest = f;
+    DBG(std::cout << "forest-bind: opened "
+	<< (s.role == CIR_FOREST_ROLE_DIALECT ? "the dialect image" : "container")
+	<< " (" << f->unit_count() << " units)" << std::endl);
+    s.forest->_work_secs = &_forest_work_seconds;
+    s.forest->_work_depth = &_forest_work_depth;
+    return s.forest;
+}
+
+// The two sides' role codes, spelled in madc.h without cir_freeze.h.
+static_assert(CIR_FOREST_ROLE_SYSTEM == 0u && CIR_FOREST_ROLE_DIALECT == 1u,
+	      "Program::forest_system / forest_dialect name these role codes");
+
+bool Program::forest_dialect_image_permitted() const
+{
+    return language_std == STD_MADC && !forest_arena_enabled
+	&& forest_touch_log.empty();
 }
 
 // The carrier the AOT ledger is read from (-static-libmadc, S5). The grove
@@ -4598,9 +4700,9 @@ CirFrozenForest *Program::ensure_ledger_forest()
     if ( ledger_forest_tried )
 	return ledger_forest;
     ledger_forest_tried = true;
-    if ( bind_forest )
+    if ( forest_system.forest )
     {
-	ledger_forest = bind_forest;
+	ledger_forest = forest_system.forest;
 	return ledger_forest;
     }
     bool cfg_mismatch = false;
@@ -4620,9 +4722,9 @@ CirFrozenForest *Program::ensure_source_forest()
     if ( source_forest_tried )
 	return source_forest;
     source_forest_tried = true;
-    if ( bind_forest )
+    if ( forest_system.forest )
     {
-	source_forest = bind_forest;
+	source_forest = forest_system.forest;
 	return source_forest;
     }
 
@@ -4722,7 +4824,7 @@ bool Program::forest_source_text(const madc::dis::istring &path, std::string &te
 // The discovery chain ended with no usable container: apply the failure
 // policy (forest-carriers S3 — the G2 lesson: no SILENT degradation unless
 // silent is the configured contract). Called at most once per Program
-// (bind_forest_tried gates the caller). strict_require raises through the
+// (ForestSide::directory_tried gates the caller). strict_require raises through the
 // standard Throw path so an embedding host sees it as a compile error.
 //
 // config_mismatch = a container WAS found but its producer config (std/-D)
@@ -4779,12 +4881,13 @@ Program::ForestBindStats Program::forest_bind_stats() const
     s.bind_secs    = _forest_bind_seconds;
     s.restore_secs = _forest_restore_seconds;
     s.declidx_secs = _forest_declidx_seconds;
-    s.units_bound  = forest_chain.size();
+    s.units_bound  = forest_system.chain.size();
     s.funcs_eager = _forest_funcs_eager;
     s.funcs_deferred = _forest_funcs_deferred;
     s.funcs_activated = _forest_funcs_activated;
     s.funcs_remaining = forest_deferred_funcs.size();
-    s.dialect_units = forest_dialect_units.size();
+    s.dialect_units = forest_dialect_side().dialect_units.size();
+    s.dialect_on_image = !forest_dialect.dialect_units.empty();
     s.dialect_names = forest_dialect_demands.log.size();
     for ( size_t i = 0; i < forest_dialect_demands.log.size(); ++i )
 	if ( !forest_dialect_demands.log[i].records.empty() )
@@ -4792,20 +4895,34 @@ Program::ForestBindStats Program::forest_bind_stats() const
     s.dialect_records = forest_dialect_demands.asked.size();
     s.dialect_funcs = forest_dialect_registered.size();
     s.dialect_objects = forest_dialect_objects;
-    if ( bind_forest )
+    s.profiles_system  = _forest_profiles_opened[CIR_FOREST_ROLE_SYSTEM];
+    s.profiles_dialect = _forest_profiles_opened[CIR_FOREST_ROLE_DIALECT];
+    if ( CirFrozenForest *sf = forest_system.forest )
     {
 	s.opened         = true;
-	s.units_total    = bind_forest->unit_count();
-	s.unitload_secs  = bind_forest->_stat_unitload_secs;
-	s.unitload_count = bind_forest->_stat_unitload_count;
-	bind_forest->node_record_counts(s.unit_records, s.unit_records_materialized, &s.unit_rows);
-	s.mat_secs       = bind_forest->_stat_mat_secs;
-	s.zstd_frames    = bind_forest->stat_zstd_frames();
-	s.zstd_bytes     = bind_forest->stat_zstd_bytes_out();
-	s.zstd_secs      = bind_forest->stat_zstd_secs();
-	s.copy_calls     = bind_forest->stat_copy_calls();
-	s.copy_bytes     = bind_forest->stat_copy_bytes();
-	s.block_rows     = bind_forest->block_stats(s.blocks_decoded, s.blocks_total);
+	s.units_total    = sf->unit_count();
+	s.unitload_secs  = sf->_stat_unitload_secs;
+	s.unitload_count = sf->_stat_unitload_count;
+	sf->node_record_counts(s.unit_records, s.unit_records_materialized, &s.unit_rows);
+	s.mat_secs       = sf->_stat_mat_secs;
+	s.zstd_frames    = sf->stat_zstd_frames();
+	s.zstd_bytes     = sf->stat_zstd_bytes_out();
+	s.zstd_secs      = sf->stat_zstd_secs();
+	s.copy_calls     = sf->stat_copy_calls();
+	s.copy_bytes     = sf->stat_copy_bytes();
+	s.block_rows     = sf->block_stats(s.blocks_decoded, s.blocks_total);
+    }
+    // The dialect image (B2): its own lines; its materialize time joins the
+    // restore's (the restore timer spans both forests).
+    s.image_probed = forest_dialect.directory_tried;
+    s.image_found = forest_dialect.directory != NULL;
+    if ( CirFrozenForest *df = forest_dialect.forest )
+    {
+	s.image_bound       = true;
+	s.image_units_total = df->unit_count();
+	s.image_units_bound = forest_dialect.chain.size();
+	s.image_zstd_frames = df->stat_zstd_frames();
+	s.mat_secs         += df->_stat_mat_secs;
     }
     return s;
 }
@@ -4847,13 +4964,17 @@ bool Program::need_protocol_macro_live()
 int Program::forest_unit_for_include(const madc::dis::istring &incfile)
 {
     const int u = forest_unit_named_by_include(incfile);
-    if ( u < 0 || !_bind_directory->unit_has_frozen_surface((uint32_t)u) )
+    if ( u < 0 || !forest_system.directory->unit_has_frozen_surface((uint32_t)u) )
 	return -1;
     // A dialect fragment's unit was frozen under the madc dialect's parse;
     // the profile's C++ labels hold for C++ headers (one parse under either
     // standard), never for it. A strict-std include of one parses its text.
-    const char *uname = _bind_directory->unit_name((uint32_t)u);
-    if ( language_std != STD_MADC && uname && embedded_dialect_fragment_p(uname) )
+    // Under madc a carrier with a dialect image binds the fragment from the
+    // image only (forest_bind_dialect_fragment, B2): the system pack's
+    // fragment units are never bound beside it.
+    const char *uname = forest_system.directory->unit_name((uint32_t)u);
+    if ( uname && embedded_dialect_fragment_p(uname)
+      && (language_std != STD_MADC || forest_dialect.directory) )
 	return -1;
     // Only a unit this include binds opens the frozen content.
     return ensure_bind_forest() ? u : -1;
@@ -4862,27 +4983,39 @@ int Program::forest_unit_for_include(const madc::dis::istring &incfile)
 // The dialect surface binds DIRECTLY (pack-slices design §7): under
 // --std=madc a fragment the carrier froze binds as its unit — no #include,
 // whatever the system-header bind policy (the dialect is the compiler's own,
-// never forest-bind-dependent). Its frozen branch decisions are always
+// never forest-bind-dependent). The dialect image when the carrier holds one
+// (B2: forest_dialect — a fragment the image declines serves its text, never
+// the system pack's unit); else the system pack's fragment unit, as before B2
+// (a carrier with no image: the darwin and Windows packs until B5, a test
+// grove; a freeze or the pack's layout pass, forest_dialect_image_permitted).
+// A WRITTEN `#include <ns_*>` takes only the image here: its fallback is the
+// include path's own system bind. Its frozen branch decisions are always
 // verified (forest_bind_env_ok): a fragment frozen without its <string>
 // conveniences declines for a program that has <string>. False = the caller
 // serves the fragment's text.
-bool Program::forest_bind_dialect_fragment(const madc::dis::istring &name)
+bool Program::forest_bind_dialect_fragment(const madc::dis::istring &name, bool written)
 {
     if ( language_std != STD_MADC || !embedded_dialect_fragment_p(name) )
 	return false;
-    CirFrozenForest *dir = bind_forest_directory();
-    const int u = dir ? dir->find_unit(name) : -1;
-    if ( u < 0 || !dir->unit_has_frozen_surface((uint32_t)u) || !ensure_bind_forest() )
+    ForestSide *side = forest_dialect_image_permitted() && forest_directory(forest_dialect)
+	? &forest_dialect : written ? NULL : &forest_system;
+    if ( !side )
 	return false;
-    if ( !forest_chain_set.count((uint32_t)u) && !forest_bind_env_ok((uint32_t)u) )
+    ForestSide &s = *side;
+    CirFrozenForest *dir = forest_directory(s);
+    const int u = dir ? dir->find_unit(name) : -1;
+    if ( u < 0 || !dir->unit_has_frozen_surface((uint32_t)u) || !forest_bound(s) )
+	return false;
+    if ( !s.chain_set.count((uint32_t)u) && !forest_bind_env_ok(s, (uint32_t)u) )
     {
 	DBG(std::cout << "dialect: <" << name << "> declined (forest_bind_env_ok)"
 	    " — serving its text" << std::endl);
 	return false;
     }
     DBG(std::cout << "dialect: <" << name << "> bound directly to grove unit "
-	<< u << std::endl);
-    forest_bind_include((uint32_t)u);
+	<< u << (&s == &forest_dialect ? " (dialect image)" : " (system pack)")
+	<< std::endl);
+    forest_bind_include(s, (uint32_t)u);
     mark_embedded_include_flag(name);
     return true;
 }
@@ -4892,15 +5025,15 @@ bool Program::forest_bind_dialect_fragment(const madc::dis::istring &name)
 // Program's to demand, and its restore (forest_restore_decls) withholds the
 // free functions its decl index names (forest_dialect_activation) until a
 // lookup demands them (forest_dialect_demand). Called by the one
-// bind walk (forest_bind_include) for every route a fragment binds by. The
-// pack's layout pass (--forest-touch-log) reads every unit whole, so nothing
-// activates there.
-void Program::forest_activate_dialect_unit(uint32_t unit)
+// bind walk (forest_bind_include) for every route a fragment binds by, on
+// the side it bound on. The pack's layout pass (--forest-touch-log) reads
+// every unit whole, so nothing activates there.
+void Program::forest_activate_dialect_unit(ForestSide &s, uint32_t unit)
 {
     if ( language_std != STD_MADC || !forest_touch_log.empty()
-      || forest_dialect_unit_p(unit) )
+      || s.dialect_unit_p(unit) )
 	return;
-    forest_dialect_units.push_back(unit);
+    s.dialect_units.push_back(unit);
 }
 
 int Program::forest_unit_named_by_include(const madc::dis::istring &incfile)
@@ -4984,26 +5117,26 @@ int Program::forest_unit_named_by_include(const madc::dis::istring &incfile)
 // and that the unit itself defines is the unit's own GUARD — the consumer
 // already holds this unit's content (an earlier declined root live-parsed
 // it), so the unit prunes as satisfied exactly like a live re-include.
-bool Program::forest_unit_defines_macro(uint32_t unit, const char *nm)
+bool Program::forest_unit_defines_macro(ForestSide &s, uint32_t unit, const char *nm)
 {
     std::set<madc::dis::istring> defines;
-    forest_unit_defined_macros(unit, defines);
+    forest_unit_defined_macros(s, unit, defines);
     return nm && defines.count(nm) != 0;
 }
 
 // Every macro this unit's own frozen PP-event stream (re)defines — the one
 // walk of that stream for the guard tests above and below.
-void Program::forest_unit_defined_macros(uint32_t unit,
+void Program::forest_unit_defined_macros(ForestSide &s, uint32_t unit,
 					 std::set<madc::dis::istring> &out)
 {
     std::vector<uint32_t> ev;
-    if ( !bind_forest->unit_pp_events(unit, ev) )
+    if ( !s.forest->unit_pp_events(unit, ev) )
 	return;
     for ( size_t k = 0; k + 5 <= ev.size(); )
     {
 	uint32_t name_id = ev[k], tag_flags = ev[k + 1], nparams = ev[k + 4];
 	uint8_t tag = (uint8_t)(tag_flags & 0xff);
-	const char *enm = bind_forest->pool_str(name_id);
+	const char *enm = s.forest->pool_str(name_id);
 	if ( enm && PackMacroEvent::defines_macro(tag) )
 	    out.insert(enm);
 	k += 5 + (tag == PackMacroEvent::peDefineFn ? nparams : 0);
@@ -5018,19 +5151,19 @@ void Program::forest_unit_defined_macros(uint32_t unit,
 // stream defines (its include guard). Context-only fragments have no such guard;
 // non-husks have a non-empty declaration index and stay on the broad rollout
 // path even when one conditional branch was absent at freeze.
-bool Program::forest_unit_is_standalone_husk(
+bool Program::forest_unit_is_standalone_husk(ForestSide &s,
 	uint32_t unit, const std::vector<uint32_t> &deps)
 {
     std::vector<cir_forest_decl_entry> decls;
-    if ( !bind_forest->unit_decl_index(unit, decls) || !decls.empty() )
+    if ( !s.forest->unit_decl_index(unit, decls) || !decls.empty() )
 	return false;
     std::set<madc::dis::istring> defines;	// read once for every dep below
-    forest_unit_defined_macros(unit, defines);
+    forest_unit_defined_macros(s, unit, defines);
     for ( size_t k = 0; k + 4 <= deps.size(); k += 4 )
     {
 	if ( deps[k + 1] & (CIR_BRANCH_DEP_DEFINED | CIR_BRANCH_DEP_PP_ARM) )
 	    continue;
-	const char *nm = bind_forest->pool_str(deps[k]);
+	const char *nm = s.forest->pool_str(deps[k]);
 	if ( nm && defines.count(nm) )
 	    return true;
     }
@@ -5039,25 +5172,19 @@ bool Program::forest_unit_is_standalone_husk(
 
 // Pass 1: collect the root's closure (units a bind would install — the
 // already-bound are excluded exactly as forest_bind_include excludes them).
-void Program::forest_env_collect(uint32_t unit, std::set<uint32_t> &closure)
+void Program::forest_env_collect(ForestSide &s, uint32_t unit, std::set<uint32_t> &closure)
 {
-    if ( forest_chain_set.count(unit) || forest_live_present.count(unit)
-      || forest_husk_live_pending.count(unit)
+    if ( s.chain_set.count(unit) || s.live_present.count(unit)
+      || s.husk_live_pending.count(unit)
       || !closure.insert(unit).second )
 	return;
     std::vector<uint32_t> edges;
-    if ( bind_forest->unit_edges(unit, edges) )
+    if ( s.forest->unit_edges(unit, edges) )
 	for ( size_t i = 0; i < edges.size(); ++i )
-	    forest_env_collect(edges[i], closure);
+	    forest_env_collect(s, edges[i], closure);
 }
 
-bool Program::forest_bind_env_ok(uint32_t unit, std::set<uint32_t> &visited)
-{
-    (void)visited;
-    return forest_bind_env_ok(unit);
-}
-
-bool Program::forest_bind_env_ok(uint32_t root)
+bool Program::forest_bind_env_ok(ForestSide &s, uint32_t root)
 {
     // v40 rollout knob (task #57): the mixed bind/live DECL frontier the
     // decline path exposes is now absorbed (denotes_same_type tolerance +
@@ -5087,12 +5214,12 @@ bool Program::forest_bind_env_ok(uint32_t root)
     // direct bind and on an #include alike: a fragment frozen without its
     // <string> conveniences never stands in for the text a <string> program
     // parses with them.
-    const char *root_name = bind_forest->unit_name(root);
+    const char *root_name = s.forest->unit_name(root);
     const bool verified = enabled != 0
 	|| (root_name && embedded_dialect_fragment_p(root_name));
     std::set<uint32_t> closure;
     std::set<uint32_t> husk_live;
-    forest_env_collect(root, closure);
+    forest_env_collect(s, root, closure);
     for ( std::set<uint32_t>::iterator ui = closure.begin();
 	  ui != closure.end(); ++ui )
     {
@@ -5100,10 +5227,10 @@ bool Program::forest_bind_env_ok(uint32_t root)
 	// Mask verdicts are rebuilt on every check of this unit — an earlier
 	// root's declined check may have recorded masks against live tables
 	// that its own live parse then changed.
-	forest_pp_install_mask.erase(unit);
-	forest_pp_arms.erase(unit);
+	s.pp_install_mask.erase(unit);
+	s.pp_arms.erase(unit);
 	std::vector<uint32_t> deps;
-	if ( !bind_forest->unit_branch_deps(unit, deps) )
+	if ( !s.forest->unit_branch_deps(unit, deps) )
 	    continue;
 	for ( size_t k = 0; k + 4 <= deps.size(); k += 4 )
 	{
@@ -5111,7 +5238,7 @@ bool Program::forest_bind_env_ok(uint32_t root)
 	    // replays it when its macro is undefined (forest_replay_pp_arms).
 	    if ( deps[k + 1] & CIR_BRANCH_DEP_PP_ARM )
 	    {
-		forest_pp_arms[unit].push_back(std::make_pair(deps[k], deps[k + 2]));
+		s.pp_arms[unit].push_back(std::make_pair(deps[k], deps[k + 2]));
 		continue;
 	    }
 	    // A dep whose DEFINER is inside this closure is replay-internal:
@@ -5120,7 +5247,7 @@ bool Program::forest_bind_env_ok(uint32_t root)
 	    uint32_t definer = deps[k + 3];
 	    if ( definer != 0xffffffffu && closure.count(definer) )
 		continue;
-	    const char *nm = bind_forest->pool_str(deps[k]);
+	    const char *nm = s.forest->pool_str(deps[k]);
 	    if ( !nm )
 		continue;
 	    bool want_defined = (deps[k + 1] & 1u) != 0;
@@ -5136,12 +5263,12 @@ bool Program::forest_bind_env_ok(uint32_t root)
 		// root fall-through already is the exact-unit live parse.
 		if ( want_defined && !have_defined
 		  && definer != 0xffffffffu
-		  && forest_unit_is_standalone_husk(unit, deps) )
+		  && forest_unit_is_standalone_husk(s, unit, deps) )
 		{
 		    if ( unit == root )
 		    {
 			DBG(std::cout << "forest bind: DECLINE root "
-			    << (bind_forest->unit_name(root) ? bind_forest->unit_name(root) : "?")
+			    << (s.forest->unit_name(root) ? s.forest->unit_name(root) : "?")
 			    << " — root is a missing-content husk (branch dep '"
 			    << nm << "' defined at freeze, undefined here); live-tokenizing root"
 			    << std::endl);
@@ -5149,10 +5276,10 @@ bool Program::forest_bind_env_ok(uint32_t root)
 		    }
 		    husk_live.insert(unit);
 		    DBG(std::cout << "forest bind: unit "
-			<< (bind_forest->unit_name(unit) ? bind_forest->unit_name(unit) : "?")
+			<< (s.forest->unit_name(unit) ? s.forest->unit_name(unit) : "?")
 			<< " is a missing-content husk (branch dep '" << nm
 			<< "' defined at freeze, undefined here); root "
-			<< (bind_forest->unit_name(root) ? bind_forest->unit_name(root) : "?")
+			<< (s.forest->unit_name(root) ? s.forest->unit_name(root) : "?")
 			<< " remains bindable" << std::endl);
 		    goto next_unit;	// every frozen dep of this live unit is moot
 		}
@@ -5167,9 +5294,9 @@ bool Program::forest_bind_env_ok(uint32_t root)
 		//    unit's FILE was live-tokenized here (an earlier
 		//    declined root live-parsed this header), so its whole
 		//    content is already present; skip it like a live
-		//    re-include. forest_live_present keeps
+		//    re-include. s.live_present keeps
 		//    forest_bind_include from installing its PP events —
-		//    but stays OUT of forest_chain_set, whose membership
+		//    but stays OUT of s.chain_set, whose membership
 		//    the decl-restore filter reads: restoring this unit's
 		//    decls BESIDE the live-parsed copy double-defines them
 		//    (struct _iobuf).
@@ -5180,7 +5307,7 @@ bool Program::forest_bind_env_ok(uint32_t root)
 		//    a live-order parse of this unit would take the DEFINED
 		//    arm and skip the unit's own define, so the bind
 		//    installs everything EXCEPT this macro's define events
-		//    (forest_pp_install_mask) — live-true PP state, no
+		//    (s.pp_install_mask) — live-true PP state, no
 		//    clobber of the live value. The unit's OTHER content —
 		//    which is NOT live — installs; decl twins at the shared
 		//    block are the mixed seam the typedef/class live-wins +
@@ -5194,29 +5321,29 @@ bool Program::forest_bind_env_ok(uint32_t root)
 		// isolated to an exact live unit above; extra content binds and
 		// is arbitrated through the prune/masked-bind split here.
 		if ( !want_defined && have_defined
-		  && forest_unit_defines_macro(unit, nm) )
+		  && forest_unit_defines_macro(s, unit, nm) )
 		{
-		    if ( forest_unit_file_live_tokenized(unit) )
+		    if ( forest_unit_file_live_tokenized(s, unit) )
 		    {
 			DBG(std::cout << "forest bind: unit "
-			    << (bind_forest->unit_name(unit) ? bind_forest->unit_name(unit) : "?")
+			    << (s.forest->unit_name(unit) ? s.forest->unit_name(unit) : "?")
 			    << " already present ('" << nm
 			    << "' guard live) — pruned" << std::endl);
-			forest_live_present.insert(unit);
+			s.live_present.insert(unit);
 			goto next_unit;	// a pruned unit's other deps are moot
 		    }
-		    forest_pp_install_mask[unit].insert(nm);
+		    s.pp_install_mask[unit].insert(nm);
 		    DBG(std::cout << "forest bind: unit "
-			<< (bind_forest->unit_name(unit) ? bind_forest->unit_name(unit) : "?")
+			<< (s.forest->unit_name(unit) ? s.forest->unit_name(unit) : "?")
 			<< " dep '" << nm
 			<< "' self-defined guard, live arm wins — binds with define masked"
 			<< std::endl);
 		    continue;	// this dep only; the unit's other deps still gate
 		}
 		DBG(std::cout << "forest bind: DECLINE root "
-		    << (bind_forest->unit_name(root) ? bind_forest->unit_name(root) : "?")
+		    << (s.forest->unit_name(root) ? s.forest->unit_name(root) : "?")
 		    << " — unit "
-		    << (bind_forest->unit_name(unit) ? bind_forest->unit_name(unit) : "?")
+		    << (s.forest->unit_name(unit) ? s.forest->unit_name(unit) : "?")
 		    << " branch dep '" << nm << "' "
 		    << (want_defined ? "defined" : "undefined")
 		    << " at freeze, opposite here" << std::endl);
@@ -5224,7 +5351,7 @@ bool Program::forest_bind_env_ok(uint32_t root)
 	    }
 	    if ( verified && want_defined && (deps[k + 1] & 2u) )
 	    {
-		const char *v = deps[k + 2] ? bind_forest->pool_str(deps[k + 2]) : NULL;
+		const char *v = deps[k + 2] ? s.forest->pool_str(deps[k + 2]) : NULL;
 		madc::dis::istring have;
 		if ( std::string *dv = define_map.find(nm) )
 		    have = *dv;
@@ -5233,9 +5360,9 @@ bool Program::forest_bind_env_ok(uint32_t root)
 		if ( have != madc::dis::istring(v ? v : "") )
 		{
 		    DBG(std::cout << "forest bind: DECLINE root "
-			<< (bind_forest->unit_name(root) ? bind_forest->unit_name(root) : "?")
+			<< (s.forest->unit_name(root) ? s.forest->unit_name(root) : "?")
 			<< " — unit "
-			<< (bind_forest->unit_name(unit) ? bind_forest->unit_name(unit) : "?")
+			<< (s.forest->unit_name(unit) ? s.forest->unit_name(unit) : "?")
 			<< " branch dep '" << nm << "' value differs" << std::endl);
 		    return false;
 		}
@@ -5243,7 +5370,7 @@ bool Program::forest_bind_env_ok(uint32_t root)
 	}
 	next_unit:;
     }
-    forest_husk_live_pending.insert(husk_live.begin(), husk_live.end());
+    s.husk_live_pending.insert(husk_live.begin(), husk_live.end());
     return true;
 }
 
@@ -5258,18 +5385,18 @@ static madc::dis::istring embedded_unit_include_key(const char *uname)
 // Bind a grove unit and its include closure: post-order DFS over the unit's
 // frozen edges so an includee's PP delta installs before the includer's own
 // (matching the common "includes at top, defines after" header shape). The
-// forest_chain_set done-marker prunes a unit bound by an earlier #include;
-// forest_bind_walking breaks include cycles. After the walk every reachable
-// unit's macros are live and it is recorded in forest_chain. The decl records
+// s.chain_set done-marker prunes a unit bound by an earlier #include;
+// s.walking breaks include cycles. After the walk every reachable
+// unit's macros are live and it is recorded in s.chain. The decl records
 // (symbol tables) restore ONCE per compile at the call site — never re-parse.
-void Program::forest_bind_include(uint32_t unit)
+void Program::forest_bind_include(ForestSide &s, uint32_t unit)
 {
-    if ( forest_chain_set.count(unit) || forest_bind_walking.count(unit)
-      || forest_live_present.count(unit) )
+    if ( s.chain_set.count(unit) || s.walking.count(unit)
+      || s.live_present.count(unit) )
     {
 	return;
     }
-	const char *unit_name = bind_forest->unit_name(unit);
+	const char *unit_name = s.forest->unit_name(unit);
 	if ( unit_name && is_posix_compat_header_name(unit_name) )
 	{
 		const madc::dis::istring base = madc::dis::istring(unit_name).substr(
@@ -5281,9 +5408,9 @@ void Program::forest_bind_include(uint32_t unit)
     // producer-side external macro hid declarations that are live here. Feed
     // its portable header spelling through the ONE production include path;
     // that path owns search order, disk/embedded selection, preprocessing,
-    // include guards, and token provenance. Keep it out of forest_chain_set so
+    // include guards, and token provenance. Keep it out of s.chain_set so
     // forest_restore_decls cannot restore the husk's incomplete frozen surface.
-    if ( forest_husk_live_pending.count(unit) )
+    if ( s.husk_live_pending.count(unit) )
     {
 	if ( !unit_name || !*unit_name )
 	    Throw << "Frozen missing-content unit has no source identity" << flush;
@@ -5307,19 +5434,19 @@ void Program::forest_bind_include(uint32_t unit)
 		  << unit_name << flush;
 	DBG(std::cout << "forest bind: missing-content husk " << unit_name
 	    << " — live-tokenizing <" << live_header << "> only" << std::endl);
-	forest_bind_walking.insert(unit);
+	s.walking.insert(unit);
 	try
 	{
 	    tokenize_synthetic_system_include(live_header, unit_name);
 	}
 	catch (...)
 	{
-	    forest_bind_walking.erase(unit);
+	    s.walking.erase(unit);
 	    throw;
 	}
-	forest_bind_walking.erase(unit);
-	forest_husk_live_pending.erase(unit);
-	forest_live_present.insert(unit);
+	s.walking.erase(unit);
+	s.husk_live_pending.erase(unit);
+	s.live_present.insert(unit);
 	return;
     }
     ForestWorkFrame _fw(&_forest_work_seconds, &_forest_work_depth);
@@ -5327,19 +5454,19 @@ void Program::forest_bind_include(uint32_t unit)
     // the interface those markers wrap: its prototypes bind at first call, as
     // the tokens a live serving would have lexed there are tagged. The unit
     // alone, as a replayed import notes it (forest_note_lazy_module_interface).
-    if ( !lazy_module_spelling.empty() && forest_bind_walking.empty() )
-	forest_note_lazy_unit_prototypes(unit, lazy_module_spelling);
-    forest_bind_walking.insert(unit);
+    if ( !lazy_module_spelling.empty() && s.walking.empty() )
+	forest_note_lazy_unit_prototypes(s, unit, lazy_module_spelling);
+    s.walking.insert(unit);
     // --show-stats (R0): per-unit SELF cost — edge decode + PP install,
     // recursion excluded — so the accumulated total sums cleanly.
     double _t0 = forest_stat_now();
     std::vector<uint32_t> edges;
-    bool have_edges = bind_forest->unit_edges(unit, edges);
+    bool have_edges = s.forest->unit_edges(unit, edges);
     double _self = forest_stat_now() - _t0;
     // Children before this unit's own PP delta is right while children are
     // merely BOUND — a bind evaluates no #if, so install order cannot change
     // what it sees. A missing-content husk child is different: it is LIVE-
-    // PARSED (see forest_husk_live_pending above), and a live parse DOES
+    // PARSED (see s.husk_live_pending above), and a live parse DOES
     // evaluate #if, against whatever the macro tables hold at that moment.
     // With this unit's exports still uninstalled, an internal header gets
     // parsed as if its public front had never run — glibc's bits/stat.h then
@@ -5356,40 +5483,40 @@ void Program::forest_bind_include(uint32_t unit)
     bool husk_child = false;
     if ( have_edges )
 	for ( size_t i = 0; i < edges.size() && !husk_child; ++i )
-	    husk_child = forest_husk_live_pending.count(edges[i]) != 0;
+	    husk_child = s.husk_live_pending.count(edges[i]) != 0;
     if ( husk_child )
     {
-	forest_install_pp(unit);
-	forest_replay_pp_arms(unit);
+	forest_install_pp(s, unit);
+	forest_replay_pp_arms(s, unit);
     }
     if ( have_edges )
 	for ( size_t i = 0; i < edges.size(); ++i )
-	    forest_bind_include(edges[i]);
+	    forest_bind_include(s, edges[i]);
     double _t1 = forest_stat_now();
     if ( !husk_child )
     {
-	forest_install_pp(unit);
-	forest_replay_pp_arms(unit);
+	forest_install_pp(s, unit);
+	forest_replay_pp_arms(s, unit);
     }
-    forest_chain.push_back(unit);
-    forest_chain_set.insert(unit);
-    forest_bind_walking.erase(unit);
+    s.chain.push_back(unit);
+    s.chain_set.insert(unit);
+    s.walking.erase(unit);
     // A named (embedded) unit's once-only key, as its live tokenize records it
     // (should_tokenize_include): a later TEXT include of a name the bind
     // already served skips it, as a live parse's second include does. The hosted-darwin prelude
     // umbrella carries no #ifndef guard; the name key is its only dedup.
-    if ( const char *bound = bind_forest->unit_name(unit) )
+    if ( const char *bound = s.forest->unit_name(unit) )
 	if ( find_embedded_header(bound) )
 	{
 	    included_files[embedded_unit_include_key(bound)] = true;
 	    // A dialect fragment bound under madc — directly, as a prerequisite
 	    // or a child, or by a written #include — pays per name.
 	    if ( language_std == STD_MADC && embedded_dialect_fragment_p(bound) )
-		forest_activate_dialect_unit(unit);
+		forest_activate_dialect_unit(s, unit);
 	}
     _self += forest_stat_now() - _t1;
     _forest_bind_seconds += _self;
-    const char *nm = bind_forest->unit_name(unit);
+    const char *nm = s.forest->unit_name(unit);
     _forest_unit_bind_costs.push_back(
 	std::make_pair(madc::dis::istring(nm ? nm : "?"), _self));
 }
@@ -5400,20 +5527,20 @@ void Program::forest_bind_include(uint32_t unit)
 // sibling had defined X first; a consumer without that sibling needs them
 // (mingw stdio.h's NULL). The arm runs through the production preprocessor on
 // its own Source, so nested conditionals (`#ifdef __cplusplus`) answer HERE.
-void Program::forest_replay_pp_arms(uint32_t unit)
+void Program::forest_replay_pp_arms(ForestSide &s, uint32_t unit)
 {
     std::map<uint32_t, std::vector<std::pair<uint32_t, uint32_t> > >::iterator ai =
-	forest_pp_arms.find(unit);
-    if ( ai == forest_pp_arms.end() )
+	s.pp_arms.find(unit);
+    if ( ai == s.pp_arms.end() )
 	return;
     std::vector<std::pair<uint32_t, uint32_t> > arms;
     arms.swap(ai->second);
-    forest_pp_arms.erase(ai);
-    const char *unit_name = bind_forest->unit_name(unit);
+    s.pp_arms.erase(ai);
+    const char *unit_name = s.forest->unit_name(unit);
     for ( size_t i = 0; i < arms.size(); ++i )
     {
-	const char *nm = bind_forest->pool_str(arms[i].first);
-	const char *text = bind_forest->pool_str(arms[i].second);
+	const char *nm = s.forest->pool_str(arms[i].first);
+	const char *text = s.forest->pool_str(arms[i].second);
 	if ( !nm || !text || macro_name_defined(nm) )
 	    continue;
 	DBG(std::cout << "forest bind: unit " << (unit_name ? unit_name : "?")
@@ -5444,28 +5571,28 @@ void Program::forest_replay_pp_arms(uint32_t unit)
 // its module markers and every prototype in it is stamped
 // (stamp_lazy_module_prototype); a restored one is stamped by name as
 // register_forest_func registers it.
-void Program::forest_note_lazy_module_interface(const madc::dis::istring &module)
+void Program::forest_note_lazy_module_interface(ForestSide &s, const madc::dis::istring &module)
 {
     const MadcModuleSpec *row = madc_module_find(module);
-    const int u = row && row->interface && bind_forest
-	? bind_forest->find_unit(row->interface) : -1;
+    const int u = row && row->interface && s.forest
+	? s.forest->find_unit(row->interface) : -1;
     if ( u >= 0 )
-	forest_note_lazy_unit_prototypes((uint32_t)u,
+	forest_note_lazy_unit_prototypes(s, (uint32_t)u,
 					 madc_module_library_spelling(module));
 }
 
 // The functions bound unit `unit` declares bind at first call against the
 // library `spelling` — what the module markers give a live-served interface's
 // prototypes (stamp_lazy_module_prototype).
-void Program::forest_note_lazy_unit_prototypes(uint32_t unit,
+void Program::forest_note_lazy_unit_prototypes(ForestSide &s, uint32_t unit,
 					       const madc::dis::istring &spelling)
 {
     std::vector<cir_forest_decl_entry> di;
-    if ( !bind_forest || !bind_forest->unit_decl_index(unit, di) )
+    if ( !s.forest || !s.forest->unit_decl_index(unit, di) )
 	return;
     for ( size_t k = 0; k < di.size(); ++k )
 	if ( di[k].kind == pdkFunction )
-	    if ( const char *nm = bind_forest->pool_str(di[k].name_id) )
+	    if ( const char *nm = s.forest->pool_str(di[k].name_id) )
 		forest_lazy_module_protos[madc::dis::istring(nm)] = spelling;
 }
 
@@ -5475,29 +5602,29 @@ void Program::forest_note_lazy_unit_prototypes(uint32_t unit,
 //   [name_id, tag_flags, body_id, variadic_param_id, nparams, <nparams ids>]...
 // with the low byte of tag_flags the PackMacroEvent tag and bit 8 the variadic
 // flag. Pool ids resolve through the container's own string pool.
-void Program::forest_install_pp(uint32_t unit)
+void Program::forest_install_pp(ForestSide &s, uint32_t unit)
 {
     std::vector<uint32_t> ev;
-    if ( !bind_forest->unit_pp_events(unit, ev) )
+    if ( !s.forest->unit_pp_events(unit, ev) )
 	return;
     // Masked-bind (task #57): a define event for a macro forest_bind_env_ok
     // masked on this unit is the unit's own guarded fallback whose guard is
     // live-defined — a live-order parse would skip it, so the install does
     // too (the live value survives; undef events still apply).
     std::map<uint32_t, std::set<madc::dis::istring> >::const_iterator mask_it =
-	forest_pp_install_mask.find(unit);
+	s.pp_install_mask.find(unit);
     const std::set<madc::dis::istring> *mask =
-	mask_it == forest_pp_install_mask.end() ? NULL : &mask_it->second;
+	mask_it == s.pp_install_mask.end() ? NULL : &mask_it->second;
     for ( size_t k = 0; k + 5 <= ev.size(); )
     {
 	uint32_t name_id = ev[k], tag_flags = ev[k + 1], body_id = ev[k + 2];
 	uint32_t vpar_id = ev[k + 3], nparams = ev[k + 4];
-	const char *nm = bind_forest->pool_str(name_id);
+	const char *nm = s.forest->pool_str(name_id);
 	uint8_t tag = (uint8_t)(tag_flags & 0xff);
 	if ( nm && mask && PackMacroEvent::defines_macro(tag) && mask->count(nm) )
 	{
 	    DBG(std::cout << "forest bind: unit "
-		<< (bind_forest->unit_name(unit) ? bind_forest->unit_name(unit) : "?")
+		<< (s.forest->unit_name(unit) ? s.forest->unit_name(unit) : "?")
 		<< " define '" << nm << "' masked at install (live guard wins)"
 		<< std::endl);
 	    k += 5 + (tag == PackMacroEvent::peDefineFn ? nparams : 0);
@@ -5513,27 +5640,27 @@ void Program::forest_install_pp(uint32_t unit)
 	    }
 	    else if ( tag == PackMacroEvent::peDefine )
 	    {
-		const char *b = body_id ? bind_forest->pool_str(body_id) : NULL;
+		const char *b = body_id ? s.forest->pool_str(body_id) : NULL;
 		define_map[name] = b ? madc::dis::istring(b) : madc::dis::istring();
 		note_std_abi_define(name, define_map[name]);
 	    }
 	    else if ( tag == PackMacroEvent::peImport )
 	    {
 		adopt_lazy_module_import(name);
-		forest_note_lazy_module_interface(name);
+		forest_note_lazy_module_interface(s, name);
 	    }
 	    else // peDefineFn
 	    {
 		MacroDef m;
 		for ( uint32_t p = 0; p < nparams; ++p )
-		    if ( const char *pn = bind_forest->pool_str(ev[k + 5 + p]) )
+		    if ( const char *pn = s.forest->pool_str(ev[k + 5 + p]) )
 			m.params.push_back(pn);
 		if ( tag_flags & CIR_FOREST_PP_VARIADIC )
 		    m.variadic = true;
 		if ( vpar_id )
-		    if ( const char *vp = bind_forest->pool_str(vpar_id) )
+		    if ( const char *vp = s.forest->pool_str(vpar_id) )
 			m.variadic_param = vp;
-		if ( const char *b = body_id ? bind_forest->pool_str(body_id) : NULL )
+		if ( const char *b = body_id ? s.forest->pool_str(body_id) : NULL )
 		    m.body = b;
 		macro_map[name] = m;
 	    }
@@ -5669,9 +5796,9 @@ void Program::tokenize_posix_header_supplement(const madc::dis::istring &incfile
 		CirFrozenForest *dir = bind_forest_directory();
 		int fu = dir ? dir->find_unit(supplement) : -1;
 		if ( fu >= 0 && ensure_bind_forest()
-		  && forest_bind_env_ok((uint32_t)fu) )
+		  && forest_bind_env_ok(forest_system, (uint32_t)fu) )
 		{
-			forest_bind_include((uint32_t)fu);
+			forest_bind_include(forest_system, (uint32_t)fu);
 			mark_embedded_include_flag(supplement);
 			return;
 		}
@@ -5732,9 +5859,9 @@ bool Program::tokenize_posix_whole_provider(const madc::dis::istring &incfile,
 	    CirFrozenForest *dir = bind_forest_directory();
 	    int fu = dir ? dir->find_unit(provider) : -1;
 	    if ( fu >= 0 && ensure_bind_forest()
-	      && forest_bind_env_ok((uint32_t)fu) )
+	      && forest_bind_env_ok(forest_system, (uint32_t)fu) )
 	    {
-		forest_bind_include((uint32_t)fu);
+		forest_bind_include(forest_system, (uint32_t)fu);
 		mark_embedded_include_flag(provider);
 		return true;
 	    }
@@ -6818,9 +6945,9 @@ bool Program::live_tokenize_record(const madc::dis::istring &canonical, bool tok
 // paths — compare canonically, the same owner the live record used. Embedded
 // units freeze under bare names ("stddef.h"); their live record is the
 // angle-bracket named key ("<stddef.h>").
-bool Program::forest_unit_file_live_tokenized(uint32_t unit)
+bool Program::forest_unit_file_live_tokenized(ForestSide &s, uint32_t unit)
 {
-    const char *uname = bind_forest->unit_name(unit);
+    const char *uname = s.forest->unit_name(unit);
     if ( !uname || !*uname )
 	return false;
     if ( *uname == '<' )
@@ -7859,6 +7986,14 @@ TokenBase *Program::_getToken()
 				return getToken();
 			    }
 			}
+			// The dialect surface (pack-slices design §7): under madc a
+			// written `#include <ns_*>` binds the dialect image's unit
+			// like the auto-include's, whatever the system-header bind
+			// policy (dialect per-name plan B2); with no image it takes
+			// the system bind below, as before.
+			if ( !protocol_visit && !is_include_next
+			  && forest_bind_dialect_fragment(incfile, /*written=*/true) )
+			    return include_completed_token();
 			// Phase 6 (--forest-bind): a grove-backed system header
 			// BINDS instead of tokenizing — install its PP-export
 			// delta along the include DAG (forest_bind_include), then
@@ -7887,19 +8022,19 @@ TokenBase *Program::_getToken()
 			    // tokenization. Its recursive synthetic include must pass
 			    // through the normal provider path, never re-bind the husk.
 			    if ( fu >= 0
-			      && forest_husk_live_pending.count((uint32_t)fu) )
+			      && forest_system.husk_live_pending.count((uint32_t)fu) )
 				fu = -1;
 			    // v40 (task #57): a unit whose frozen branch
 			    // decisions assumed a different macro environment
 			    // declines here and live-parses below.
-			    if ( fu >= 0 && !forest_bind_env_ok((uint32_t)fu) )
+			    if ( fu >= 0 && !forest_bind_env_ok(forest_system, (uint32_t)fu) )
 				fu = -1;
 			    if ( fu >= 0 )
 			    {
 				DBG(std::cout << "#include <" << incfile
 				    << "> bound to grove unit " << fu << " ("
-				    << bind_forest->unit_name(fu) << ")" << std::endl);
-				forest_bind_include((uint32_t)fu);
+				    << forest_system.forest->unit_name(fu) << ")" << std::endl);
+				forest_bind_include(forest_system, (uint32_t)fu);
 				// v25: the embedded-header include FLAG is a live
 				// tokenize-time side effect (_parser_init's lazy_map
 				// registration: stdin/stdout/stderr, cout/cin). A
@@ -7908,14 +8043,14 @@ TokenBase *Program::_getToken()
 				// freeze — re-run the one live side effect. A
 				// REAL-header unit (path name) never marks, exactly
 				// like the live filesystem branch.
-				const char *bound_unit_name = bind_forest->unit_name(fu);
+				const char *bound_unit_name = forest_system.forest->unit_name(fu);
 				const bool bound_embedded = bound_unit_name
 				    && find_embedded_header(bound_unit_name);
 				if ( bound_embedded )
 				    mark_embedded_include_flag(bound_unit_name);
 				// Item 5 (lazy defrost): the decl-record restore
 				// moved to flush_forest_pending_globals — the
-				// post-tokenize point where forest_chain_set is
+				// post-tokenize point where the bound chains are
 				// COMPLETE, so registration filters to the TU's
 				// actual bound-include closure (live parity: a
 				// header you never include declares nothing).
@@ -8058,18 +8193,18 @@ TokenBase *Program::_getToken()
 			{
 			int fu = forest_unit_for_include(full_path);
 			if ( fu >= 0
-			  && forest_husk_live_pending.count((uint32_t)fu) )
+			  && forest_system.husk_live_pending.count((uint32_t)fu) )
 			    fu = -1;
 			// v40 (task #57): environment mismatch declines to
 			// live parse.
-			if ( fu >= 0 && !forest_bind_env_ok((uint32_t)fu) )
+			if ( fu >= 0 && !forest_bind_env_ok(forest_system, (uint32_t)fu) )
 			    fu = -1;
 			if ( fu >= 0 )
 			{
 			    DBG(std::cout << "#include \"" << full_path
 				<< "\" bound to grove unit " << fu << " ("
-				<< bind_forest->unit_name(fu) << ")" << std::endl);
-			    forest_bind_include((uint32_t)fu);
+				<< forest_system.forest->unit_name(fu) << ")" << std::endl);
+			    forest_bind_include(forest_system, (uint32_t)fu);
 			    if ( is_system
 			      && is_system_header_path(full_path.c_str()) )
 				tokenize_posix_header_supplement(incfile);
@@ -12220,7 +12355,7 @@ TokenProgram *Program::tokenize(const char *fname)
 
     // Auto-includes inject BEFORE the forest flush: the synthetic #include
     // must bind its frozen unit before the decl restore (item 5, inside the
-    // flush) reads forest_chain_set. The parse()-
+    // flush) reads the bound chains. The parse()-
     // start injection stays as the live/eval fallback (pending set is empty
     // here after this call), but under a forest bind it ran too late — the
     // restore window had closed and the auto-included header's names never

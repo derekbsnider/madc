@@ -257,6 +257,23 @@ public:
     // throws, never reads out of bounds. A directory record is checked when
     // handed out (find / segment_at): a corrupt one is never returned.
     bool open(const void *image, size_t image_len);
+    // Take over `o`'s open state (left spent): the forest discovery walk
+    // reads a profile's role through one reader, and the forest it then
+    // opens adopts that read — the table is never scanned twice.
+    void adopt(snapshot_reader &o)
+    {
+	_image = o._image;
+	_image_size = o._image_size;
+	_blob = o._blob;
+	_blob_size = o._blob_size;
+	_hdr = o._hdr;
+	_dir_image = o._dir_image;
+	_dir_copy.swap(o._dir_copy);
+	_dir_n = o._dir_n;
+	_dir_end = o._dir_end;
+	_dir_sorted = o._dir_sorted;
+	_dir_index.swap(o._dir_index);
+    }
 
     // Placement-2 profile stacks append more than one complete blob to the
     // same carrier. After open(), return the image-prefix length whose EOF is

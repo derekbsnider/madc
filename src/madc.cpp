@@ -2020,11 +2020,41 @@ int main(int argc, char **argv)
 	    // blob-less binary shows just the probe cost.
 	    {
 		Program::ForestBindStats fs = prog->forest_bind_stats();
-		if ( prog->bind_directory_tried )
+		if ( prog->forest_system.directory_tried )
 		    fprintf(stderr,
 			"[stats] forest map+open ..... %.3f + %.3f s  (%s)\n",
 			fs.map_secs, fs.open_secs,
 			fs.opened ? "container bound" : "no container — live parse");
+		// Every profile whose forest directory a walk opened, by role:
+		// a strict compile opens no dialect image (dialect per-name plan
+		// B2; forest_pack_gate's split legs read it).
+		if ( fs.profiles_system || fs.profiles_dialect )
+		    fprintf(stderr,
+			"[stats] forest profiles ..... %llu system + %llu dialect opened\n",
+			fs.profiles_system, fs.profiles_dialect);
+		// The dialect image (B2): bound in place, beside the system pack.
+		if ( fs.image_probed )
+		{
+		    if ( fs.image_bound )
+			fprintf(stderr,
+			    "[stats] dialect image ....... image bound (%llu units bound / %u packed;"
+			    " %llu zstd frames)\n",
+			    fs.image_units_bound, fs.image_units_total, fs.image_zstd_frames);
+		    else
+			fprintf(stderr, "[stats] dialect image ....... %s\n",
+			    fs.image_found ? "found, not bound"
+					   : "no image — the dialect binds as the system pack holds it");
+		}
+		// The dialect's units, on whichever forest holds them (the image,
+		// or the system pack's fragment units where no image binds).
+		if ( fs.dialect_units )
+		    fprintf(stderr,
+			"[stats] forest dialect ...... %llu units (%s); %llu names demanded"
+			" (%llu hit), %llu records, %llu functions + %llu other"
+			" declarations registered\n",
+			fs.dialect_units, fs.dialect_on_image ? "dialect image" : "system pack",
+			fs.dialect_names, fs.dialect_hits,
+			fs.dialect_records, fs.dialect_funcs, fs.dialect_objects);
 		if ( fs.opened )
 		{
 		    double reg_secs = fs.restore_secs - fs.declidx_secs - fs.mat_secs;
@@ -2054,13 +2084,6 @@ int main(int argc, char **argv)
 			"[stats] forest functions .... %llu eager + %llu derived deferred; %llu activated / %llu remain\n",
 			fs.funcs_eager, fs.funcs_deferred,
 			fs.funcs_activated, fs.funcs_remaining);
-		    if ( fs.dialect_units )
-			fprintf(stderr,
-			    "[stats] forest dialect ...... %llu units; %llu names demanded"
-			    " (%llu hit), %llu records, %llu functions + %llu other"
-			    " declarations registered\n",
-			    fs.dialect_units, fs.dialect_names, fs.dialect_hits,
-			    fs.dialect_records, fs.dialect_funcs, fs.dialect_objects);
 		    if ( !prog->_forest_unit_bind_costs.empty() )
 		    {
 			std::vector<std::pair<madc::dis::istring, double> > rows =

@@ -23,6 +23,7 @@
 #include <initializer_list>
 #include <set>
 #include <stack>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -41,6 +42,7 @@
 class Method;
 class Program;
 class CirFrozenForest;	// forest grove binding (cir_freeze.h); pointer member only
+namespace madc { namespace dis { class snapshot_reader; } }	// madcdis/snapshot.h; the discovery walk's role read
 class InteractiveSession;	// madc_session.h; Program::owning_session only
 namespace madc { struct theme; }	// madc_theme.h; Program::echo_theme only
 struct MadcSharedPreludeCache; // project-local immutable auto-include snapshots
@@ -48,6 +50,7 @@ struct CirRestoredTemplate;	// task #25 B2: lazy template-payload source (cir_fr
 struct CirRestoredTemplateRun;	// one frozen token run (cir_freeze.h)
 struct CirRestoredFuncDefaults;	// one restored function's default-argument runs (cir_freeze.h)
 struct CirMaterializeFilter;	// the bind's demand filter (cir_freeze.h); held by pointer
+struct cir_node;		// a CIR tree node (cir_node.h); Program::forest_extern_node
 struct madc_stdlib_flavor;	// generated stdlib flavor table (madc_sys_includes.h); pointer member only
 class MadcEngine;
 class TokenBase;
@@ -763,12 +766,16 @@ public:
     // frozen container (forest save/load) AND the container held the method's
     // func-def in its AST (an INLINE method, body only in the header — no .so),
     // this locates that Tree-1 func-def subtree by (unit, record idx). On ODR-use
-    // the consumer materializes it from prog->bind_forest and appends it to its
-    // own module — the "copy the saved body into Tree-2" step. False/0 for a
-    // normally-parsed method or a LIBRARY method (body in a .so; declaration_only).
+    // the consumer materializes it from forest_body_src — the forest that
+    // restored the record (the system pack or the dialect image; unit ids are
+    // that container's own: dialect per-name plan B3) — and appends it to its
+    // own module — the "copy the saved body into Tree-2" step. False/0/NULL for
+    // a normally-parsed method or a LIBRARY method (body in a .so;
+    // declaration_only).
     bool     has_forest_body = false;
     uint32_t forest_body_unit = 0;
     uint32_t forest_body_idx = 0;
+    CirFrozenForest *forest_body_src = nullptr;
     // True for C++ special declarations like `= default` or `= delete`.
     // These are not bodyless shared-library declarations and must not be bound
     // as external symbols just because the class has canonical C++ spelling.
@@ -3318,13 +3325,15 @@ struct MadcCompileGroup
 {
     std::shared_ptr<madc::dis::intern_table> strpool;
     std::shared_ptr<madc::dis::id_table<DataDef> > project_types;
-    // S3: ONE bound forest instance per dialect — keyed (producer-config
-    // word, -D defines hash), the same pair the probe's config gate
-    // matches — so sibling TUs adopt it instead of re-opening and
-    // re-materializing the same container. Valid ONLY because the group
-    // also shares strpool/project_types above: the instance's live-id
-    // remap and its DataDefs' type_id memos are bound to them.
-    std::map<std::pair<uint32_t, uint32_t>,
+    // S3: ONE bound forest instance per dialect — keyed (profile role,
+    // producer-config word, -D defines hash): the role the discovery walk
+    // takes (the system pack, or the dialect image — dialect per-name plan
+    // B2) and the pair the probe's config gate matches — so sibling TUs
+    // adopt it instead of re-opening and re-materializing the same
+    // container. Valid ONLY because the group also shares
+    // strpool/project_types above: the instance's live-id remap and its
+    // DataDefs' type_id memos are bound to them.
+    std::map<std::tuple<uint32_t, uint32_t, uint32_t>,
 	     std::shared_ptr<CirFrozenForest> > bind_forests;
     // R4-full: exact post-preprocessor token images for pure embedded
     // auto-include fragments. The cache owns immutable TokenRec-based images;
@@ -5868,6 +5877,11 @@ public:
     // CirFrozenForest::_stat_mat_secs / _stat_unitload_secs).
     double _forest_map_seconds = 0.0;
     double _forest_open_seconds = 0.0;
+    // The profiles whose forest directory this compile opened, by role code
+    // (forest_reader's first open_header of an image's profile): the
+    // observable that a strict compile never opens the dialect image
+    // (dialect per-name plan B2).
+    unsigned long long _forest_profiles_opened[2] = { 0, 0 };	// [role code]: SYSTEM, DIALECT
     double _forest_bind_seconds = 0.0;
     double _forest_restore_seconds = 0.0;
     double _forest_declidx_seconds = 0.0;
@@ -5910,6 +5924,16 @@ public:
 	// they registered (types, enums, templates, objects — A5).
 	unsigned long long dialect_units = 0, dialect_names = 0, dialect_hits = 0;
 	unsigned long long dialect_records = 0, dialect_funcs = 0, dialect_objects = 0;
+	// The profiles whose directory this compile opened, by role (B2).
+	unsigned long long profiles_system = 0, profiles_dialect = 0;
+	// The dialect image's bind (B2): probed, found, bound, its units and
+	// its decode traffic (a raw image decodes no zstd frame); and whether
+	// the dialect units bound there (else on the system pack: a carrier
+	// with no image).
+	bool image_probed = false, image_found = false, image_bound = false;
+	uint32_t image_units_total = 0;
+	unsigned long long image_units_bound = 0, image_zstd_frames = 0;
+	bool dialect_on_image = false;
     };
     ForestBindStats forest_bind_stats() const;
     // --show-stats: template-instantiation time + count, carved out of parse
@@ -6989,8 +7013,11 @@ public:
     // A DELTA restore (a dialect demand's records-only generation) walks only
     // what that generation restored, plus the asked functions an earlier
     // generation restored, under the filter the last whole restore built.
+    struct ForestSide;	// one bound forest's bind state (below)
     struct ForestRestoreDelta
     {
+	// The forest whose generation this is (the dialect side).
+	ForestSide *side = NULL;
 	// The restored lists' sizes before the generation.
 	size_t types = 0, globals = 0, funcs = 0, templates = 0;
 	size_t nsbinds = 0, nslinks = 0, nsaliases = 0, defbodies = 0;
@@ -7008,8 +7035,14 @@ public:
 	std::vector<std::pair<madc::dis::istring, FuncDef *> > staged;
 	size_t objects = 0;
     };
-    void forest_restore_decls(class CirFrozenForest &forest,
-			      ForestRestoreDelta *delta = NULL);
+    // A side's bound forest, against that side's chain and registration
+    // state; and a DIRECT restore of a forest no side bound (an empty
+    // closure: the whole container — unit tests, non-include consumers),
+    // registered as the system side's.
+    void forest_restore_decls(ForestSide &s, ForestRestoreDelta *delta = NULL);
+    void forest_restore_decls(class CirFrozenForest &forest);
+    void forest_restore_side(ForestSide &s, class CirFrozenForest &forest,
+			     ForestRestoreDelta *delta);
     // Phase 6 slice 2 — parse-time grove binding (opt-in --forest-bind). A
     // system #include naming a frozen grove unit BINDS instead of tokenizing:
     // its PP-export delta installs along the include DAG, then the forest's
@@ -7031,36 +7064,32 @@ public:
     {
 	return f && *f && !forest_root_file.empty() && forest_root_file == f;
     }
-    CirFrozenForest *bind_forest = NULL;	// lazily opened on first system include
-    // S3 (R4-lite): ownership of bind_forest. A private probe result and a
-    // group-shared instance both live here; ~Program releases the holder
-    // (never a raw delete), so N sibling TUs can hold ONE instance.
-    std::shared_ptr<CirFrozenForest> _bind_forest_holder;
+    // The bound forests and their bind state: forest_system / forest_dialect
+    // (ForestSide, declared with the dialect's per-name state below).
     // Every pack reader this compile opened, ONE per (image, profile): the
     // grove bind, the header-text lookup and the AOT ledger share it, so the
     // directory is read once and the pool/arena only when a role needs them
     // (complete_open, memoized). Released with the Program.
     std::vector<std::shared_ptr<CirFrozenForest> > _forest_readers;
+    // Profiles a walk skipped by role (lexer.cpp's forest_profile_skipped):
+    // never opened, so no reader holds their role; one entry per (image,
+    // profile length).
+    struct ForestSkippedProfile { const void *image; size_t len; uint32_t role; size_t below; };
+    std::vector<ForestSkippedProfile> _forest_skipped_profiles;
     // S3: the compile group this Program is a sibling of (NULL = standalone).
     // Set by the ctor; the group outlives nothing — Programs hold shared_ptr
     // copies of everything they adopt from it, except this backpointer, which
     // is only consulted during compile (the group is alive for all of it).
     MadcCompileGroup *compile_group = NULL;
-    bool bind_forest_tried = false;	// one-shot full-open attempt (success or fail)
-    // The bind carrier opened to its directory (bind_forest_directory): the
-    // lookups' reader; bind_forest is the same instance once a bind completes
-    // it. NULL = no exact-config container.
-    CirFrozenForest *_bind_directory = NULL;
-    bool bind_directory_tried = false;	// one-shot discovery (success or fail)
     // AOT ledger carrier (forest-carriers S5): the container the emit lane
     // reads its C-lane runtime modules from under -static-libmadc. Usually
-    // bind_forest itself; a SEPARATE open when the grove bind never happened
+    // the system bind's forest itself; a SEPARATE open when the grove bind never happened
     // (a source with no system include) or fell through the v27 producer-
     // config gate — the ledger is madc's own runtime, target-specific but
     // dialect-agnostic, so a --std=c99 compile must still link it.
     CirFrozenForest *ledger_forest = NULL;
     bool ledger_forest_tried = false;	// one-shot open attempt (success or fail)
-    // Raw-source view of the same carrier. Unlike bind_forest, this ignores
+    // Raw-source view of the same carrier. Unlike the system bind, this ignores
     // producer-config identity: the stored bytes are re-preprocessed under
     // this Program's live config. It is consulted only after the ordinary
     // filesystem search misses, so development hosts keep their normal path
@@ -7174,25 +7203,25 @@ public:
     // admit the namespace one); a global, function or template record is
     // registered or not.
     enum : unsigned char { FOREST_TYPE_FLAT = 1, FOREST_TYPE_NS = 2 };
-    std::vector<unsigned char> forest_type_registered;
-    std::vector<bool> forest_global_registered;
-    std::vector<bool> forest_func_registered;
-    std::vector<bool> forest_tmpl_registered;
-    size_t forest_restored_chain_size = 0;	// forest_chain's size at the last restore
+    // (The per-record state lives on each bound forest's ForestSide below.)
     // The bind's progress as an interactive entry's transaction saves it
     // (EntryTransaction): a rolled-back entry — a failed one, or a trial
     // parse — loses the registrations its binds' restore made (the
     // registration journal), so the binds and restore runs go with them and
     // the next #include of the header binds and registers again.
     struct ForestBindMark {
-	size_t chain_size = 0;
-	size_t restored_chain_size = 0;
-	std::set<uint32_t> live_present, husk_live_pending;
-	std::vector<unsigned char> type_registered;
-	std::vector<bool> global_registered, func_registered, tmpl_registered;
+	// One bound forest's progress (ForestSide).
+	struct Side {
+	    size_t chain_size = 0;
+	    size_t restored_chain_size = 0;
+	    std::set<uint32_t> live_present, husk_live_pending;
+	    std::vector<unsigned char> type_registered;
+	    std::vector<bool> global_registered, func_registered, tmpl_registered;
+	    size_t dialect_units = 0;	// ForestSide::dialect_units.size()
+	};
+	Side system, dialect;		// forest_system, forest_dialect
 	size_t overload_recaptures = 0;
 	size_t dialect_demands = 0;	// forest_dialect_demands.mark()
-	size_t dialect_units = 0;	// forest_dialect_units.size()
 	size_t dialect_registered = 0;	// forest_dialect_registered.size()
 	size_t dialect_objects = 0;	// forest_dialect_objects
     };
@@ -7232,21 +7261,6 @@ public:
 	void rewind(size_t mark);
     };
     ForestDialectDemands forest_dialect_demands;
-    // The dialect units this Program demands per name, in activation order:
-    // a fragment bound under --std=madc (forest_activate_dialect_unit). Its
-    // restore withholds the free functions its decl index names until a
-    // lookup demands them (forest_dialect_activation). Empty outside the
-    // dialect, and under --forest-touch-log (the pack's layout pass reads
-    // every unit whole).
-    std::vector<uint32_t> forest_dialect_units;
-    void forest_activate_dialect_unit(uint32_t unit);
-    bool forest_dialect_unit_p(uint32_t unit) const
-    {
-	for ( size_t i = 0; i < forest_dialect_units.size(); ++i )
-	    if ( forest_dialect_units[i] == unit )
-		return true;
-	return false;
-    }
     // What an active dialect unit gives its restore and its demands, read
     // from its decl entries' kinds and records — never an entry's name (the
     // container pool's spellings stay undecoded):
@@ -7254,7 +7268,7 @@ public:
     //    key, record), strcmp-sorted by key — the funcdef id DECL_NAMES
     //    indexes (A1), read from the record; a demand's run of a flat id and
     //    its `__oN` overloads. The keys are the bound forest's spellings,
-    //    valid while bind_forest is;
+    //    valid while that forest is;
     //  - objects: everything else a lookup names (A5) — its types
     //    (aggregates, typedefs, enums), namespace-scope templates and the
     //    globals that have no storage (enumerator constants, extern
@@ -7290,21 +7304,12 @@ public:
 	std::vector<uint32_t> withheld;
 	std::vector<madc::dis::istring> namespaces;
     };
-    std::map<uint32_t, ForestUnitActivation> forest_unit_activation;
-    const ForestUnitActivation &forest_dialect_activation(uint32_t unit);
-    // The active dialect units' namespaces (their activations' union): the
-    // scopes a symbol's demand and a free operator's demand ask.
-    std::set<madc::dis::istring> forest_dialect_namespaces;
     // Every function a demand registered, in registration order (the CIR
     // builder indexes the tail a loaded body's demands added).
     std::vector<std::pair<madc::dis::istring, FuncDef *> > forest_dialect_registered;
     // How many other declarations (types, enums, templates, objects) the
     // demands registered (--show-stats).
     size_t forest_dialect_objects = 0;
-    // The demand filter the last whole restore built (bound units, the
-    // dialect units' withheld functions, the asked records): a delta
-    // restore judges its records against it.
-    std::shared_ptr<CirMaterializeFilter> forest_restore_filter;
     // A dialect unit's decl index, decoded once per Program the first time a
     // lookup touches the unit (plan Decision 1): each name its entries
     // declare -> those entries' kinds and records. Forest data only, no
@@ -7315,11 +7320,126 @@ public:
 	uint32_t record;	// the entry's record_id
     };
     typedef std::map<madc::dis::istring, std::vector<ForestDeclRecord> > ForestUnitNames;
-    std::map<uint32_t, ForestUnitNames> forest_unit_names;
-    const ForestUnitNames &forest_unit_decl_names(uint32_t unit);
-    // The dialect units this Program has bound: forest_chain's units that
-    // are dialect fragments (embedded_dialect_fragment_p), in bind order.
+    // One frozen forest this Program binds (dialect per-name plan B2): the
+    // system-header pack (forest_system) or the dialect image (forest_dialect
+    // — the carrier's profile of role dialect, pack-slices design §7). Unit
+    // ids, record ids and restored-list indices are the forest's own
+    // (container-local), so everything keyed by them is kept per forest:
+    // the discovery, the bound chain and its walk state, the per-record
+    // registration state, the restore's filter and the dialect activation.
+    // Thread contract: per Program, on its thread; `forest` is the compile
+    // group's shared instance when the Program has a group (its mutation is
+    // MadcCompileGroup's single-threaded group mutation), else its own; the
+    // forest's bytes are immutable mapped data.
+    struct ForestSide
+    {
+	explicit ForestSide(uint32_t r) : role(r) {}
+	uint32_t role;			// CirForestRole: the profiles its walk takes
+	// The carrier's profile of this role (and the compile's exact config),
+	// opened to its directory — forest_directory: discovery, or a sibling
+	// TU's shared instance. NULL = none. `forest` is the same instance once
+	// a bind completes it (forest_bound).
+	CirFrozenForest *directory = NULL;
+	bool directory_tried = false;	// one-shot discovery (success or fail)
+	CirFrozenForest *forest = NULL;
+	bool tried = false;		// one-shot full-open attempt (success or fail)
+	// S3 (R4-lite): ownership. A private probe result and a group-shared
+	// instance both live here; ~Program releases the holder (never a raw
+	// delete), so N sibling TUs can hold ONE instance.
+	std::shared_ptr<CirFrozenForest> holder;
+	std::vector<uint32_t> chain;		// bound units, include order (bind-order record)
+	std::set<uint32_t> chain_set;		// membership + DAG-walk prune
+	std::set<uint32_t> walking;		// units on the in-flight bind recursion (cycle break)
+	std::set<uint32_t> live_present;	// v40: units ALREADY PRESENT via a live parse (guard prune) — bind skips them, the decl-restore filter must NOT see them
+	std::set<uint32_t> husk_live_pending;	// task #57: missing-content closure units selected for exact live tokenization; never enter chain_set
+	// task #57 masked-bind: unit -> its guarded-fallback macros whose guard
+	// is live-defined; forest_install_pp skips those define events
+	// (live-order parity — the live arm skipped them). Rebuilt per env
+	// check of the unit.
+	std::map<uint32_t, std::set<madc::dis::istring> > pp_install_mask;
+	// v55: unit -> its skipped directive-only arms, [name_id, text_id] pool
+	// ids, collected by forest_bind_env_ok; forest_replay_pp_arms replays
+	// one whose name is undefined once the unit's own delta is installed.
+	std::map<uint32_t, std::vector<std::pair<uint32_t, uint32_t> > > pp_arms;
+	size_t restored_chain_size = 0;	// chain's size at the last restore
+	// The restore's per-record state, index-aligned with the forest's
+	// restored lists (FOREST_TYPE_* above).
+	std::vector<unsigned char> type_registered;
+	std::vector<bool> global_registered;
+	std::vector<bool> func_registered;
+	std::vector<bool> tmpl_registered;
+	// The demand filter the last whole restore built (bound units, the
+	// dialect units' withheld functions, the asked records): a delta
+	// restore judges its records against it.
+	std::shared_ptr<CirMaterializeFilter> restore_filter;
+	// The dialect units this Program demands per name, in activation
+	// order: a fragment bound under --std=madc (forest_activate_dialect_unit).
+	// Its restore withholds what its decl index names until a lookup
+	// demands it (forest_dialect_activation). Empty outside the dialect,
+	// and under --forest-touch-log (the pack's layout pass reads every unit
+	// whole).
+	std::vector<uint32_t> dialect_units;
+	bool dialect_unit_p(uint32_t unit) const
+	{
+	    for ( size_t i = 0; i < dialect_units.size(); ++i )
+		if ( dialect_units[i] == unit )
+		    return true;
+	    return false;
+	}
+	// Forest data, decoded once per Program: caches, kept across a rewind.
+	std::map<uint32_t, ForestUnitActivation> unit_activation;
+	std::map<uint32_t, ForestUnitNames> unit_names;
+	// The active dialect units' namespaces (their activations' union): the
+	// scopes a symbol's demand and a free operator's demand ask.
+	std::set<madc::dis::istring> dialect_namespaces;
+    };
+    ForestSide forest_system{0u};	// the system-header pack (CIR_FOREST_ROLE_SYSTEM)
+    ForestSide forest_dialect{1u};	// the dialect image (CIR_FOREST_ROLE_DIALECT)
+    // The side the dialect binds on: the dialect image when this compile
+    // bound it, else the system pack — a carrier with no image (the darwin
+    // and Windows packs until B5; a test grove named by --forest-bind=)
+    // binds the fragments its system profile froze, as before B2.
+    ForestSide &forest_dialect_side()
+    {
+	return forest_dialect.forest ? forest_dialect : forest_system;
+    }
+    const ForestSide &forest_dialect_side() const
+    {
+	return forest_dialect.forest ? forest_dialect : forest_system;
+    }
+    // Does a dialect unit this Program activated answer lookups (A4/A5)?
+    bool forest_dialect_active() const
+    {
+	return !forest_system.dialect_units.empty()
+	    || !forest_dialect.dialect_units.empty();
+    }
+    // Has either forest bound a unit (a loaded body may need emitting)?
+    bool forest_any_bound() const
+    {
+	return (forest_system.forest && !forest_system.chain.empty())
+	    || (forest_dialect.forest && !forest_dialect.chain.empty());
+    }
+    // A loaded body from an active dialect unit (its forest is the dialect
+    // side's and its unit an activated one).
+    bool forest_dialect_body_p(const FuncDef *fd) const;
+    void forest_activate_dialect_unit(ForestSide &s, uint32_t unit);
+    const ForestUnitActivation &forest_dialect_activation(ForestSide &s, uint32_t unit);
+    const ForestUnitNames &forest_unit_decl_names(ForestSide &s, uint32_t unit);
+    // The dialect units this Program has bound: the dialect side's chain
+    // units that are dialect fragments (embedded_dialect_fragment_p), in
+    // bind order.
     void forest_active_dialect_units(std::vector<uint32_t> &out) const;
+    // The producer's own extern declaration of `sym` in a bound forest — the
+    // system pack's, then the dialect image's (B3): a loaded body names what
+    // it calls or takes the address of by symbol, whichever forest holds the
+    // declaration. False when neither indexes one; `node` is the
+    // declaration (NULL when its record does not materialize).
+    bool forest_extern_node(const madc::dis::istring &sym, cir_node *&node);
+    // A restored function's loaded body, and the name of its unit, read from
+    // the forest that restored it (FuncDef::forest_body_src, B3). NULL when
+    // it carries none.
+    cir_node *forest_body_node(const FuncDef *fd);
+    const char *forest_body_unit_name(const FuncDef *fd) const;
     // The names `scope` holds that an ACTIVE dialect unit declares and that
     // start with `prefix` — registered or not yet demanded — read from the
     // pack's DECL_NAMES and the units' decl indexes, never the registries
@@ -7349,22 +7469,27 @@ public:
 	const char *ctor_file;
 	bool system;		// declared by a system-header forest unit (TopDecl.forest_system for the flushed decl)
 	// v66 (CIR_GLOBALF_FROZEN_DEF): the frozen storage declaration and
-	// init-group statements, as bound-forest (unit, idx).
+	// init-group statements, as (unit, idx) in def_forest — the forest
+	// that restored the record (B3: the system pack or the dialect image).
 	uint32_t def_unit, def_idx;
 	std::vector<std::pair<uint32_t, uint32_t> > init_locs;
+	CirFrozenForest *def_forest;
 	PendingForestGlobal() : type(NULL), flags(0), gflags(0), init_value(0),
 				ctor_bytes(NULL), ctor_len(0), ctor_count(0),
 				ctor_file(NULL), system(false), def_unit(0),
-				def_idx(0) {}
+				def_idx(0), def_forest(NULL) {}
     };
     std::vector<PendingForestGlobal> forest_pending_globals;
-    // v66: a restored FROZEN_DEF global's lowered nodes in the bound forest —
-    // the producer's storage declaration and its __madc_global_init group,
-    // which the CIR builder emits verbatim in place of lowering the global
-    // (LOADED == parsed). Keyed by the restored Variable.
+    // v66: a restored FROZEN_DEF global's lowered nodes in the forest that
+    // restored it (B3) — the producer's storage declaration and its
+    // __madc_global_init group, which the CIR builder emits verbatim in place
+    // of lowering the global (LOADED == parsed). Keyed by the restored
+    // Variable.
     struct ForestFrozenGlobalDef {
+	CirFrozenForest *forest;
 	uint32_t def_unit, def_idx;
 	std::vector<std::pair<uint32_t, uint32_t> > init_locs;
+	ForestFrozenGlobalDef() : forest(NULL), def_unit(0), def_idx(0) {}
     };
     std::map<const Variable *, ForestFrozenGlobalDef> forest_frozen_global_defs;
     const ForestFrozenGlobalDef *forest_frozen_global_def(const Variable *v) const
@@ -7416,11 +7541,11 @@ public:
     // declaration — never at bind for a function the closure filter dropped
     // or deferred, whose defaults may name referents this TU never declared.
     // forest_registered_funcs: the restored FuncDefs registered so far;
-    // forest_unsettled_defaults: each unregistered one's index into the bound
-    // forest's restored_param_defaults(), rebuilt by
+    // forest_unsettled_defaults: each unregistered one's forest and index into
+    // that forest's restored_param_defaults(), rebuilt by
     // forest_settle_param_defaults when the function registers.
     std::set<const FuncDef *> forest_registered_funcs;
-    std::map<const FuncDef *, size_t> forest_unsettled_defaults;
+    std::map<const FuncDef *, std::pair<CirFrozenForest *, size_t> > forest_unsettled_defaults;
     std::map<madc::dis::istring, std::vector<madc::dis::istring> >
 	forest_deferred_func_families;
     unsigned long long _forest_funcs_eager = 0;
@@ -7479,9 +7604,6 @@ public:
     // surface and default-argument record, or a delta restore's alone.
     void forest_restore_if_grown();
     void forest_apply_pending(const ForestRestoreDelta *delta);
-    std::vector<uint32_t> forest_chain;		// bound units, include order (bind-order record)
-    std::set<uint32_t> forest_chain_set;	// membership + DAG-walk prune
-    std::set<uint32_t> forest_bind_walking;	// units on the in-flight bind recursion (cycle break)
     enum ForestConfigMatch {
 	forestMatchExact,
 	forestMatchStdlibFlavor,
@@ -7496,12 +7618,30 @@ public:
     // at the container directory —
     // enough for the container-global segments (the AOT ledger), and it does
     // NOT need a live string pool, which a no-parse lane has no reason to own.
+    // `role` (a CirForestRole code; 0 = SYSTEM) filters the profiles: the
+    // walk takes only that role's, and skips another role's from its footer
+    // and segment table, never opening its forest directory (dialect
+    // per-name plan B2 — the system walks never read the dialect image).
     // Implemented in lexer.cpp.
     CirFrozenForest *probe_forest_chain(ForestConfigMatch config_match,
 					bool &config_mismatch,
-					bool header_only = false);
-    CirFrozenForest *bind_forest_directory();	// the exact-config carrier, directory only; NULL if none
-    CirFrozenForest *ensure_bind_forest();	// that carrier fully opened, for a bind; NULL if unavailable
+					bool header_only = false,
+					uint32_t role = 0);
+    // One side's carrier, opened to its directory (the exact config; a
+    // sibling TU's shared instance first) — discovery once per Program — and
+    // fully opened for a bind. The system side applies the missing-container
+    // policy; the dialect side is silent (no image: the dialect binds as
+    // before, forest_dialect_side).
+    CirFrozenForest *forest_directory(ForestSide &s);
+    CirFrozenForest *forest_bound(ForestSide &s);
+    CirFrozenForest *bind_forest_directory() { return forest_directory(forest_system); }	// the exact-config system carrier, directory only; NULL if none
+    CirFrozenForest *ensure_bind_forest() { return forest_bound(forest_system); }	// that carrier fully opened, for a bind; NULL if unavailable
+    // May this compile bind the dialect image? Under --std=madc, whatever the
+    // system-header bind policy (--no-forest-bind included: the dialect
+    // surface is never pack-dependent, pack-slices design §7) — never while
+    // freezing (a freeze parses what it freezes) or recording the pack's
+    // layout (--forest-touch-log reads the system pack's fragment units).
+    bool forest_dialect_image_permitted() const;
     // The container the AOT ledger is read from (-static-libmadc, S5): the
     // already-bound one when it opened, else the SAME discovery chain walked
     // with the producer-config gate off and stopping at the directory (the
@@ -7509,9 +7649,11 @@ public:
     CirFrozenForest *ensure_ledger_forest();
     CirFrozenForest *ensure_source_forest();
     // This compile's reader for (image, profile length): the one already
-    // opened, else a new one through open_header. NULL when the bytes are
+    // opened, else a new one through open_header (adopting `opened`, the
+    // walk's reader on that profile, when given). NULL when the bytes are
     // not a usable container.
-    CirFrozenForest *forest_reader(const void *image, size_t len, bool quiet_missing);
+    CirFrozenForest *forest_reader(const void *image, size_t len, bool quiet_missing,
+				   madc::dis::snapshot_reader *opened = NULL);
     std::shared_ptr<CirFrozenForest> forest_reader_holder(CirFrozenForest *f) const;
     void forest_missing_fallback(bool config_mismatch); // discovery exhausted: apply forest_missing_policy (mismatch = container seen, wrong std/-D)
     madc::dis::istring forest_probed_arms() const;	// the arms probe_forest_chain walked, for the failure diagnostics (one owner)
@@ -7524,32 +7666,26 @@ public:
     // A __need_* request macro is live: the next include is a protocol
     // visit (re-tokenize the protocol text; no once-only/PCH/forest).
     bool need_protocol_macro_live();
-    void forest_bind_include(uint32_t unit);	// bind time: DAG walk — install PP + arm chain
-    std::set<uint32_t> forest_live_present;	// v40: units ALREADY PRESENT via a live parse (guard prune) — bind skips them, the decl-restore filter must NOT see them
-    std::set<uint32_t> forest_husk_live_pending;	// task #57: missing-content closure units selected for exact live tokenization; never enter forest_chain_set
+    // The bind walk, over one bound forest (ForestSide): its units, chain and
+    // walk state are that forest's own.
+    void forest_bind_include(ForestSide &s, uint32_t unit);	// bind time: DAG walk — install PP + arm chain
     std::set<madc::dis::istring> forest_live_tokenized;	// v40: canonical keys of files whose tokens ENTERED this TU's live stream (should_tokenize_include true-verdicts) — the prune's honest "already live" source
     bool live_tokenize_record(const madc::dis::istring &canonical, bool tok);	// one recording owner for the set above
-    bool forest_unit_file_live_tokenized(uint32_t unit);	// v40: was this unit's FILE live-tokenized here?
-    bool forest_bind_env_ok(uint32_t unit);	// v40: closure branch-dep env check (task #57)
-    bool forest_bind_env_ok(uint32_t unit, std::set<uint32_t> &visited);
+    bool forest_unit_file_live_tokenized(ForestSide &s, uint32_t unit);	// v40: was this unit's FILE live-tokenized here?
+    bool forest_bind_env_ok(ForestSide &s, uint32_t unit);	// v40: closure branch-dep env check (task #57)
     // The dialect surface binds DIRECTLY (pack-slices design §7): a fragment's
-    // frozen unit, under --std=madc, no #include; false = serve its text.
-    bool forest_bind_dialect_fragment(const madc::dis::istring &name);
-    void forest_env_collect(uint32_t unit, std::set<uint32_t> &closure);
-    bool forest_unit_defines_macro(uint32_t unit, const char *nm);	// v40: include-once prune helper
-    void forest_unit_defined_macros(uint32_t unit, std::set<madc::dis::istring> &out);
-    bool forest_unit_is_standalone_husk(uint32_t unit,
+    // frozen unit, under --std=madc — the dialect image's when the carrier
+    // holds one (B2), else the system pack's — no #include; false = serve
+    // its text. `written`: the source's own `#include <ns_*>`, whose
+    // fallback is the include path's own system bind (enable_forest_bind).
+    bool forest_bind_dialect_fragment(const madc::dis::istring &name, bool written = false);
+    void forest_env_collect(ForestSide &s, uint32_t unit, std::set<uint32_t> &closure);
+    bool forest_unit_defines_macro(ForestSide &s, uint32_t unit, const char *nm);	// v40: include-once prune helper
+    void forest_unit_defined_macros(ForestSide &s, uint32_t unit, std::set<madc::dis::istring> &out);
+    bool forest_unit_is_standalone_husk(ForestSide &s, uint32_t unit,
 					const std::vector<uint32_t> &deps);	// task #57: empty decl surface + own file guard, safe for exact live include
-    // task #57 masked-bind: unit -> its guarded-fallback macros whose guard is
-    // live-defined; forest_install_pp skips those define events (live-order
-    // parity — the live arm skipped them). Rebuilt per env check of the unit.
-    std::map<uint32_t, std::set<madc::dis::istring> > forest_pp_install_mask;
-    // v55: unit -> its skipped directive-only arms, [name_id, text_id] pool
-    // ids, collected by forest_bind_env_ok; forest_replay_pp_arms replays one
-    // whose name is undefined once the unit's own delta is installed.
-    std::map<uint32_t, std::vector<std::pair<uint32_t, uint32_t> > > forest_pp_arms;
-    void forest_replay_pp_arms(uint32_t unit);
-    void forest_install_pp(uint32_t unit);	// apply one unit's frozen macro delta to the live tables
+    void forest_replay_pp_arms(ForestSide &s, uint32_t unit);
+    void forest_install_pp(ForestSide &s, uint32_t unit);	// apply one unit's frozen macro delta to the live tables
     void add_namespaces();
     // --std=madc: declares std::format / print / println itself — madc's
     // always-included intrinsics (owner law 2026-08-10), never a header or
@@ -7576,8 +7712,9 @@ public:
     // interface include binds from the pack records the bound unit's the same
     // way (forest_bind_include, between the module markers).
     std::map<madc::dis::istring, madc::dis::istring> forest_lazy_module_protos;
-    void forest_note_lazy_module_interface(const madc::dis::istring &module);
-    void forest_note_lazy_unit_prototypes(uint32_t unit, const madc::dis::istring &spelling);
+    void forest_note_lazy_module_interface(ForestSide &s, const madc::dis::istring &module);
+    void forest_note_lazy_unit_prototypes(ForestSide &s, uint32_t unit,
+					  const madc::dis::istring &spelling);
     void forest_stamp_lazy_module_prototype(FuncDef *fd, const madc::dis::istring &name);
     void stamp_dynamic_module_member(Variable *var, const madc::dis::istring &ns,
 				     const madc::dis::istring &member);
