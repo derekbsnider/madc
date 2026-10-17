@@ -439,3 +439,41 @@ Next: `git` / `markdown` bodies by hand; `ui_web` / `ui_ws` are R3.
   bodies (R3), `php::print_r` / `var_dump` (compiler-implemented templates),
   `madc::__madc_run_child` (initialization code, R3) and the ui_web / ui_ws
   aggregates and objects that ride with their bodies.
+
+## R3 execution (2026-10-17)
+
+- `ruby::delete` — `delete` is a C++ keyword, so no host C++ definition can
+  carry the public's name. libmadc defines its two lean overloads' Itanium
+  symbols as C-linkage names (`_ZN4ruby6deleteERN4madc5valueEPKc`,
+  `_ZN4ruby6deleteEPKcS1_`, src/ns_ruby.cpp): one spelling on every target
+  madc builds for, because the platform's C-name prefix maps a C name to
+  exactly the C++ symbol (Itanium on Linux, darwin and x64 mingw). The
+  fragment declares them bodiless; a call resolves mangled-direct like every
+  ruby:: public. Ruling: not an asm label — a darwin asm label is the raw
+  object symbol (Apple's `_stat$INODE64`), so it would not be target-neutral.
+  Cost if wrong: two symbols spelled in the host.
+- The guarded `std::string` overload (`#if _GLIBCXX_STRING || _LIBCPP_STRING`)
+  keeps its body: its mangling depends on the stdlib flavor, and the guarded
+  interop blocks are R4's question (a program that includes `<string>` opts
+  into C++ interop; the lean text parse never sees them).
+- `madc::__madc_run_child` — the namespace-scope initializer that served a
+  Run child of self is gone: `__madc_sys_init` (the injected entry init of
+  every program that includes `<ns_madc>`, JIT main wrap and object-mode
+  `.init_array` alike) serves it first, before the program's dynamic
+  initializers and main (madc_run_child.h's contract). Same population, no
+  dialect object: under per-name registration nothing would ever name it.
+- Ruling: `ui_ws` (5 bodies, `ui_ws::host`, `ui_ws::__pending`, its
+  self-registering ops table) joins `ui_web` in the modules discussion — both
+  are ui HOSTS that register themselves by a static initializer, and where a
+  host lives (builtin, module) is that discussion's line of division. Cost if
+  wrong: ui_ws waits one discussion.
+- Ruling: `php::print_r` / `var_dump` (compiler-implemented function
+  templates) wait for R4. Their registration is a token pattern
+  (fn_template_decl_map holds the declaration's tokens), so a builder must
+  lex and parse that one declaration — at namespace scope, which a builder
+  run from inside a function body is not. R4 designs the hook's parse
+  context; these two ride it. Cost if wrong: two names on the old path one
+  task longer.
+- Found: `FuncDef::inline_builtin_kind` is a string discriminator compared by
+  value across cir_builder / cir_dump / cir_format / parser / cir_freeze —
+  an enum-over-strings violation (owner law). Its own commit, next.

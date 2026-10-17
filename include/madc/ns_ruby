@@ -5,11 +5,6 @@
 // BEFORE this header (the <ns_madc> guard convention; auto-include
 // orders <string> first, explicit includers write it above this line).
 
-extern "C" {
-    const char *__rb_delete_cstr(const char *, const char *);
-    const char *__rb_delete_value(value *, const char *);
-}
-
 // Declarations only (cpp-first-api.md): libmadc defines every ruby::
 // public (src/ns_ruby.cpp), resolved mangled-direct.
 namespace ruby {
@@ -28,11 +23,10 @@ namespace ruby {
     const char *capitalize(const char *s);
     const char *tr(value &s, const char *from, const char *to);
     const char *tr(const char *s, const char *from, const char *to);
-    // `delete` is a C++ keyword: host C++ cannot define ruby::delete, so
-    // its overloads keep their bodies over the extern "C" cores (R3 compiles
-    // dialect bodies into libmadc).
-    const char *delete(value &s, const char *chars) { return __rb_delete_value(&s, chars); }
-    const char *delete(const char *s, const char *chars) { return __rb_delete_cstr(s, chars); }
+    // `delete` is a C++ keyword: libmadc defines these overloads' Itanium
+    // symbols as C-linkage names (src/ns_ruby.cpp).
+    const char *delete(value &s, const char *chars);
+    const char *delete(const char *s, const char *chars);
     const char *gsub(value &s, const char *pattern, const char *replacement);
     const char *gsub(const char *s, const char *pattern, const char *replacement);
     const char *sub(value &s, const char *pattern, const char *replacement);

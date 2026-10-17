@@ -668,9 +668,9 @@ int64_t compiler_run(value &args)
 		    argv.push_back(a.is_string() ? a.as_string() : std::string());
 	    return madc::Process::run_and_wait(argv[0], argv);
 	}
-// A Run child of self (madc_run_child.h): <ns_madc>'s namespace-scope
-// initializer calls it, so a program on the engine serves the run its own
-// parent requested before its main runs.
+// A Run child of self (madc_run_child.h): a program's injected entry init
+// (__madc_sys_init) serves it, so a program on the engine serves the run its
+// own parent requested before its main runs; a host may call it too.
 int64_t serve_run_child()
 	{
 	    return madc_serve_run_child();

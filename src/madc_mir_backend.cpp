@@ -33,6 +33,7 @@
 #include "rt/rt_except.h"	// __madc_throw_cstr (madarray_count raises script errors)
 #include "rt/rt_task.h"	// __madc_task_join_all (root-scope join after jitted main)
 #include "libmadc/sysinfo.h"
+#include "madc_run_child.h"	// __madc_sys_init: a Run child of self is served first
 
 extern "C" {
 #include "mir.h"
@@ -736,9 +737,13 @@ int64_t madarray_empty(void *ptr)
 // but a madc-built module dlopen'd MID-program is handed the main
 // program's arguments by ld.so, and repopulating then would stomp the
 // sys.path/sys.argv mutations the running script already made.
+// Both serve a Run child of self first (madc_run_child.h): a program that
+// can request one serves its own parent's request before its main runs —
+// the dialect declares no initializer object for it.
 static bool madc_sys_populated = false;
 void __madc_sys_init(int64_t argc, void *argv)
     {
+	madc_serve_run_child();
 	madc_sys_populated = true;
 	madc::sys_populate_args((int)argc, (char **)argv);
     }

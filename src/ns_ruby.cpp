@@ -298,6 +298,17 @@ std::string &sub(std::string &s, const char *pattern, const char *replacement) {
 
 }
 
+// ruby::delete — `delete` is a C++ keyword, so no C++ definition can carry the
+// public's name: libmadc defines its Itanium symbols as C-linkage names. One
+// spelling on every target madc builds for (Itanium everywhere; the platform's
+// C-name prefix maps a C name to exactly the C++ symbol). <ns_ruby> declares
+// the overloads; a call resolves mangled-direct like every ruby:: public (a
+// reference parameter is the pointer it passes).
+extern "C" {
+const char *_ZN4ruby6deleteERN4madc5valueEPKc(madc::value *s, const char *chars) { return ruby_delete_value(s, chars); }
+const char *_ZN4ruby6deleteEPKcS1_(const char *s, const char *chars) { return ruby_delete_cstr(s, chars); }
+}
+
 extern "C" {
 // Thin C-linkage wrappers for transpiler import resolution
 const char *__rb_squeeze_cstr(const char *a) { return ruby_squeeze_cstr(a); }

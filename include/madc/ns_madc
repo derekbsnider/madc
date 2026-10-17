@@ -439,12 +439,11 @@ namespace madc {
     // and the madcrun:// / madcproj:// channels spawn THIS executable with
     // the run named in its environment (MADC_RUN_CHILD); serve_run_child
     // runs that request and exits with the guest's status, and answers -1
-    // in every other process. The initializer below calls it, so a program
-    // that can make the request serves it before its main runs (the
-    // <iostream> ios_base::Init idiom).
+    // in every other process. A program that includes this header calls it
+    // from its injected entry init (__madc_sys_init), so a program that can
+    // make the request serves it before its main runs.
     // Thread contract: process start, before the program's threads.
     int64_t serve_run_child();
-    static const int64_t __madc_run_child = serve_run_child();
 
     // Value channels between cooperative tasks (MT-2; the Go contract —
     // src/madc_task_chan.cpp carries the full semantics). capacity 0 =
