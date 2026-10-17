@@ -889,6 +889,9 @@ private:
 // from the owner (admitted by seed or by pull), never from a list.
 enum : uint32_t { CIR_SEED_DEP_ARENA = 0u, CIR_SEED_DEP_TEMPLATE = 1u,
 		  CIR_SEED_DEP_GLOBAL = 2u };
+// A tagged item's kind and index — a SEEDS dependent, a decl entry's record_id.
+inline uint32_t cir_seed_item_kind(uint32_t item) { return item >> 30; }
+inline uint32_t cir_seed_item_index(uint32_t item) { return item & 0x3fffffffu; }
 class ForestSeeds
 {
 public:
@@ -1743,6 +1746,22 @@ struct CirMaterializeFilter
 	std::set<uint32_t> system_units;
 	// Names asked for by name, kept whatever declares them.
 	std::set<madc::dis::istring> extra_names;
+	// Units whose names are BOUND (name_verdict counts them as bound_units
+	// does) but whose seed lists no generation visits — nor does an asked
+	// name's lookup: what restores of them is asked by `records` or pulled.
+	// A unit in bound_units is visited whatever this set says.
+	std::set<uint32_t> unseeded_units;
+	// Records asked for directly — the decl-index record column,
+	// (CIR_SEED_DEP_* << 30) | index — kept whatever their verdict, with
+	// their pulls and dependents. A generation that only adds records
+	// visits only the added ones.
+	std::set<uint32_t> records;
+	// The closure binds `unit`: bound, seeded or not.
+	bool binds(uint32_t unit) const
+	{
+		return bound_units.count(unit)
+		    || (!unseeded_units.empty() && unseeded_units.count(unit));
+	}
 };
 
 // --show-stats (task #25 slice D): ONE depth-guarded forest-work clock, the
@@ -1961,8 +1980,10 @@ class CirFrozenForest
 	std::set<uint32_t> _named_only;
 	// The pass engine both entry points share: runs every materialization
 	// pass under the CURRENT _mat_filter, skipping records earlier
-	// generations built (the guards above).
-	void materialize_pass();
+	// generations built (the guards above). `added` (non-NULL): a generation
+	// whose only growth is these asked records — Pass 0 visits them alone,
+	// and their pulls stop at aggregates an earlier generation built whole.
+	void materialize_pass(const std::vector<uint32_t> *added = NULL);
 	// Shared v2 segment reader: decompress unit slot `slot` into `out`
 	// (raw bytes). False on absent/malformed.
 	bool read_unit_seg(uint32_t unit, uint32_t slot, uint32_t kind,
@@ -2052,6 +2073,11 @@ public:
 	double _stat_unitload_secs = 0.0;	// unit_segment(): node-record decode + validate
 	unsigned long long _stat_unitload_count = 0;
 	double _stat_mat_secs = 0.0;	// materialize_from_arena(): DataDef rebuild
+	// materialize_pass generations run, and the records the LAST one's Pass 0
+	// visited (seed-list, whole-walk and asked entries; pulls and an admitted
+	// class's dependents excluded).
+	unsigned long long _stat_mat_generations = 0;
+	unsigned long long _stat_mat_visited = 0;
 	// task #25 slice D: the owning Program's depth-guarded forest-work clock
 	// (Program::_forest_work_seconds / _forest_work_depth), installed by
 	// ensure_bind_forest so forest-side entries share ONE clock with the
@@ -2108,10 +2134,10 @@ public:
 		{ bind_seed_index(); return _recordable_bits; }
 	// THE closure verdict (pack slices design §6) — materialization,
 	// registration and rung 3 all ask here, each against the filter it
-	// holds. +1 a name some BOUND unit declares (or one the filter names),
-	// -1 declared only by unbound units, 0 declared by no unit (a derived
-	// entity; -1 under an exact filter). Qualified ns::name first, then the
-	// bare name. Inactive filter: +1.
+	// holds. +1 a name some unit the filter binds() declares (or one the
+	// filter names), -1 declared only by units it does not bind, 0
+	// declared by no unit (a derived entity; -1 under an exact filter).
+	// Qualified ns::name first, then the bare name. Inactive filter: +1.
 	int name_verdict(const char *nm, const char *ns,
 			 const CirMaterializeFilter &f) const;
 	// A template-id product judged by its canonical spelling's HEAD

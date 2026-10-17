@@ -280,3 +280,47 @@ unused declaration to a dialect fragment cannot cost a dialect compile.
     `php::count`; only templates appear qualified. Ruling: A4's lookup asks
     the owner that spells the flat id for `ns::name`, then takes the
     DECL_NAMES range of that id and its `__oN` overloads (`for_prefix`, A3).
+- **A2 (2026-10-17).** `CirMaterializeFilter` gains `unseeded_units` (bound
+  for `name_verdict`, seed lists never visited) and `records` (asked record
+  ids, Pass 0, kept whatever their verdict), with `binds(unit)`; the tagged
+  `(kind << 30) | index` decode is one pair, `cir_seed_item_kind` /
+  `cir_seed_item_index` (`add_dependents` migrated). `materialize_for` counts
+  a new record as growth of its own: a generation over the added records
+  only (`materialize_pass(&added)`), whose pulls stop at aggregates an
+  earlier generation built whole; a new unseeded unit is a full generation.
+  Counters `_stat_mat_generations` / `_stat_mat_visited`. Three doctest cases
+  (tests/unit/test_cir_freeze.cpp), watched RED (missing members, then 14
+  failed assertions with the fields present but unread): a records filter
+  restores one function and its parameter type; a records-only second
+  generation visits one record; an unseeded unit's names are bound, its list
+  unvisited, its function restored alone when asked by record. Nothing sets
+  the fields yet. Rulings:
+  - An asked NAME's lookup skips unseeded units' seed lists too — else a
+    closure filter naming one dialect name (the adoption probe's bare name)
+    re-admits the whole unit.
+  - `names_only` (the product-definers check) reads `binds()`: an unseeded
+    unit counts as bound there.
+  - An exact filter's `name_verdict` still ignores both unit sets, as it
+    ignores `bound_units`.
+  - Without a seed index a records-only generation is a full pass.
+  - The parity probe labels an asked record `listed` (it is bucketed in Pass
+    0); A7's `demanded` label separates them.
+  - Cost (2026-10-17): the asked-record tests are guarded by an emptiness
+    check and `binds()` reads `unseeded_units` only when it is non-empty, so
+    a bind that asks no record pays a size read, never a lookup. Symbolized
+    packed pair, cf05fd6f5 against cf05fd6f5 + A2: cxx_stl.forest +719K Ir
+    of 1,396M, of which the forest phases (flush, restore, materialize) are
+    +70K; the rest is MIR / c2mir code A2 does not touch moving between links
+    (address-dependent hashing — `pattern_match_p` swings by 7M between
+    builds of near-identical code); c_headers.forest −2K.
+- **v0.105.0 → cf05fd6f5 (2026-10-17), what part A answers.** Shipped
+  binaries, same container (Ir): dialect +1.55% forest, dialect_one +1.85%,
+  dialect_cxx +0.64% forest; c_headers +0.07%, cxx_stl +0.18% forest,
+  subscript +0.17% forest; the six rungs −0.2% to −2.7%; sqlite3 and
+  dialect_all do not compile under v0.105.0. Symbolized (same recipe, both
+  packed): the dialect row's +1.08M is `flush_forest_pending_globals` +742K
+  (`register_forest_func` +562K, `forest_restore_decls` +175K) and
+  `materialize_pass` +128K — the up-front registration of this arc's new
+  faces, which A4 removes; C's +545K is the lexer (macro paint, +316K in
+  `tokenize`); C++'s +2.97M is `CirBuilder::translate_module` (+3.34M),
+  not yet attributed further.

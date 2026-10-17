@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+### The forest materializer admits records by id and visits only the added ones
+
+- `CirMaterializeFilter` gains two members. `records` holds decl-index record
+  ids (the `(CIR_SEED_DEP_* << 30) | index` tagged form) asked for directly;
+  `materialize_pass` keeps each whatever its name verdict, with its pulls and
+  dependents. `unseeded_units` holds units whose names `name_verdict` counts as
+  bound but whose seed lists no generation visits — what restores of them is
+  asked by record or pulled. A new `binds(unit)` answers "the closure binds this
+  unit" (bound or unseeded); `name_verdict` and the product-definers check read
+  it. An asked name's lookup skips an unseeded unit's list; an exact filter still
+  ignores both unit sets.
+- `materialize_for` counts a new asked record as growth of its own: a generation
+  over the added records alone (`materialize_pass(&added)`), whose pulls stop at
+  aggregates an earlier generation built whole. A new unseeded unit is a full
+  generation. New counters `_stat_mat_generations` and `_stat_mat_visited` report
+  the generations run and the records the last one's Pass 0 visited.
+- The `(kind << 30) | index` decode of a tagged seed item is one pair,
+  `cir_seed_item_kind` / `cir_seed_item_index`; `add_dependents` reads them.
+- Nothing in the compiler sets the new fields yet; three doctest cases
+  (`tests/unit/test_cir_freeze.cpp`) are the gate — a records filter restores one
+  function and its parameter type, a records-only second generation visits one
+  record, and an unseeded unit's names are bound with its list unvisited and its
+  function restored alone when asked by record.
+
 ### `--dump-forest` renders a dialect record census; the pack gate holds it at zero
 
 - `madc --dump-forest` now emits a dialect record census. For every unit that
