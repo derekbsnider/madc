@@ -58,6 +58,7 @@ struct BuiltinParam
     DataDef *type;
     const char *cpp_spelling;	// FuncDef::param_cpp_spellings
     bool is_const;		// FuncDef::const_params
+    const char *typedef_name;	// FuncDef::param_typedef_names (a function type's)
 };
 
 struct BuiltinFunctionDecl
@@ -107,6 +108,23 @@ struct BuiltinEnumDecl
 };
 
 DataDefENUM *declare_builtin_enum(Program &pgm, const BuiltinEnumDecl &d);
+
+// A pointer to a builtin function TYPE as generated code spells it — one
+// expression: the function type parseFnPtrParams builds for a declarator's
+// `(params)` (every parameter's type, C++ spelling, referent const and typedef
+// name; `(void)` and `...` as the bfVoidParams / bfVarargs flags), folded by
+// getPointerType as a `(*NAME)` or `(*)` declarator folds it. A fresh type per
+// call, as each declarator makes its own.
+DataDef *builtin_function_pointer(Program &pgm, DataDef *returns,
+				  std::initializer_list<BuiltinParam> params, unsigned flags);
+
+// A namespace-scope typedef whose aliased type keeps its shape (a function
+// pointer): what TokenTYPEDEF::parse's finish_alias + record_typedef register —
+// one TokenDataType under the bare alias and under the namespace, the alias
+// among the typedef names emitted verbatim, and its file-scope typedef
+// declaration (system-origin: a dialect header's).
+DataDef *declare_builtin_typedef(Program &pgm, const char *ns, const char *name,
+				 DataDef *aliased);
 
 // A dialect type by its namespace and name: the program's registration, or —
 // the first time — its builder's (the table's entry for ns::name). NULL when

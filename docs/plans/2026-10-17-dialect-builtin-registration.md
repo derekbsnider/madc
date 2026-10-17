@@ -361,3 +361,25 @@ Next: `git` / `markdown` bodies by hand; `ui_web` / `ui_ws` are R3.
   each enumerator's value, flags, type and bindings. 526 declarations and
   types identical; 142 keys not yet built (function-pointer typedefs,
   structs, classes and their members, bodies).
+- Function pointers have ONE spelling in generated code, an expression:
+  `builtin_function_pointer(pgm, RET, { {T, "spelling", const, "typedef"},
+  ... }, FLAGS)` — the function type parseFnPtrParams builds, folded by
+  getPointerType, a fresh type per use as each declarator makes its own. A
+  function pointer a typedef names is that typedef's (`builtin_type`); one no
+  typedef names (a callback parameter: `madc::command_add`, `fork_uri`,
+  `ui::doc_subscribe`) is spelled in place.
+- Function-pointer typedefs: `declare_builtin_typedef` reproduces
+  `finish_alias` + `record_typedef` at namespace scope — the TokenDataType
+  under the bare alias and under the namespace, the alias among the typedef
+  names emitted verbatim, and its file-scope typedef TopDecl, system-origin
+  (the emitter's td_system verdict; a dialect header's).
+- The differential's lines gained the parameter vectors' lengths (`vecs=`):
+  a live declaration records one typedef-name slot per parameter, which the
+  R1 builders left empty — now reproduced (`BuiltinParam::typedef_name`,
+  NULL where the parse recorded none). Type lines gained the typedef-name
+  set and the TopDecls (kind, system verdict, combined body). 540
+  declarations and types identical; 128 not yet built.
+- R4 carries: a builder that runs mid-parse pushes its TopDecls at that
+  point — after the TopDecl of a function whose body triggered it. The
+  emitter's ordering of a lazily built typedef/struct ahead of its first use
+  is R4's to prove (the forest bind pushed them at the include point).

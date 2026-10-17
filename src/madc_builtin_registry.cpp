@@ -16,6 +16,7 @@
 #include <sstream>
 #include <memory>
 #include <typeinfo>
+#include <initializer_list>
 #include <stdint.h>
 
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
@@ -26,15 +27,24 @@
 #include "madc.h"
 #include "madc_builtin_registry.h"
 
+// A FuncDef's parameter vectors from generated code, as a parse fills them —
+// a typedef name only where the parse recorded one (NULL: none recorded).
+static void fill_builtin_params(FuncDef *fd, const BuiltinParam *params, size_t nparams)
+{
+    for ( size_t i = 0; i < nparams; ++i )
+    {
+	fd->parameters.push_back(params[i].type);
+	fd->const_params.push_back(params[i].is_const);
+	fd->param_cpp_spellings.push_back(madc::dis::istring(params[i].cpp_spelling));
+	if ( params[i].typedef_name )
+	    fd->param_typedef_names.push_back(madc::dis::istring(params[i].typedef_name));
+    }
+}
+
 Variable *declare_builtin_function(Program &pgm, const BuiltinFunctionDecl &d)
 {
     FuncDef *fd = new FuncDef(*d.returns);
-    for ( size_t i = 0; i < d.nparams; ++i )
-    {
-	fd->parameters.push_back(d.params[i].type);
-	fd->const_params.push_back(d.params[i].is_const);
-	fd->param_cpp_spellings.push_back(madc::dis::istring(d.params[i].cpp_spelling));
-    }
+    fill_builtin_params(fd, d.params, d.nparams);
     fd->namespace_name = madc::dis::istring(d.ns);
     fd->function_display_name = madc::dis::istring(d.name);
     fd->overload_spelling = madc::dis::istring(d.overload_spelling);
@@ -109,6 +119,38 @@ DataDefENUM *declare_builtin_enum(Program &pgm, const BuiltinEnumDecl &d)
     return e;
 }
 
+DataDef *builtin_function_pointer(Program &pgm, DataDef *returns,
+				  std::initializer_list<BuiltinParam> params, unsigned flags)
+{
+    FuncDef *fd = new FuncDef(*returns);
+    fill_builtin_params(fd, params.begin(), params.size());
+    fd->is_varargs = (flags & bfVarargs) != 0;
+    fd->is_void_params = (flags & bfVoidParams) != 0;
+    DataDefFPTR *fn = new DataDefFPTR(fd);
+    fn->ptr_syntax = false;		// the function type, until its `*` folds it
+    return pgm.getPointerType(fn);
+}
+
+DataDef *declare_builtin_typedef(Program &pgm, const char *ns, const char *name,
+				 DataDef *aliased)
+{
+    madc::dis::istring n(ns), alias(name);
+    if ( DataDef *had = registered_namespace_type(pgm, n, alias) )
+	return had;
+    TokenDataType *tdt = new TokenDataType(alias.c_str(), *aliased);
+    pgm.datatype_map[alias] = tdt;	// register_scoped_typedef at namespace scope
+    pgm.namespace_datatype_map[n][alias] = tdt;
+    pgm.user_typedef_names.insert(alias);
+    Program::TopDecl td;
+    td.kind = Program::DeclKind::dkTypedef;
+    td.name = alias;
+    td.dd = aliased;
+    td.tdt = tdt;
+    td.forest_system = true;		// no parse position: a dialect header's
+    pgm.top_decls.push_back(td);
+    return aliased;
+}
+
 // The table's entry for ns::name (sorted by (ns, name) in byte order), or NULL.
 static const MadcBuiltinEntry *find_builtin_entry(const char *ns, const char *name)
 {
@@ -146,11 +188,35 @@ DataDef *builtin_type(Program &pgm, const char *ns, const char *name)
     return registered_namespace_type(pgm, n, m);
 }
 
+// The one namespace type whose TokenDataType holds `dd` — a function pointer's
+// identity, which carries no canonical spelling (finish_alias keeps its shape:
+// the alias IS the type). False when none, or more than one name, holds it.
+static bool typedef_type_identity(Program &pgm, DataDef *dd, madc::dis::istring &ns,
+				  madc::dis::istring &name)
+{
+    // Names copied out first (a lookup interns; the enumeration borrows keys).
+    std::vector<std::pair<std::string, std::string> > hits;
+    pgm.namespace_datatype_map.for_each_readonly(
+	[dd, &hits](const char *n, const datatype_map_t &types) {
+	    for ( datatype_map_t::const_iterator t = types.begin(); t != types.end(); ++t )
+		if ( t->second && &t->second->definition == dd )
+		    hits.push_back(std::make_pair(std::string(n), std::string(t->first.c_str())));
+	    return false;
+	});
+    if ( hits.size() != 1 )
+	return false;
+    ns = madc::dis::istring(hits[0].first.c_str());
+    name = madc::dis::istring(hits[0].second.c_str());
+    return true;
+}
+
 // `dd` as the namespace type it is registered as: its canonical spelling
-// `ns::name`, registered under that name.
+// `ns::name`, registered under that name — a function pointer by its typedef.
 static bool namespace_type_identity(Program &pgm, DataDef *dd, madc::dis::istring &ns,
 				    madc::dis::istring &name)
 {
+    if ( dd->as_fptr_dd() )
+	return typedef_type_identity(pgm, dd, ns, name);
     std::string spelled = dd->canonical_cpp_spelling().c_str();
     size_t cut = spelled.rfind("::");
     if ( cut == std::string::npos || cut == 0 )
@@ -159,6 +225,9 @@ static bool namespace_type_identity(Program &pgm, DataDef *dd, madc::dis::istrin
     name = madc::dis::istring(spelled.substr(cut + 2).c_str());
     return registered_namespace_type(pgm, ns, name) == dd;
 }
+
+static bool function_pointer_expr(Program &pgm, DataDefFPTR *fp, std::string &expr,
+				  std::string &err);
 
 // A type as the C++ expression that yields it in a builder's Program `pgm`:
 // a singleton by identity, a layered type through its one minting owner
@@ -221,8 +290,56 @@ static bool type_expr(Program &pgm, DataDef *dd, std::string &expr, std::string 
 	     + cpp_literal(name.c_str()) + ")";
 	return true;
     }
+    if ( DataDefFPTR *fp = dd->as_fptr_dd() )
+	return function_pointer_expr(pgm, fp, expr, err);	// no typedef names it
     err = std::string("type '") + dd->name.c_str() + "' (" + typeid(*dd).name() + ")";
     return false;
+}
+
+// A function pointer spelled structurally — `builtin_function_pointer(pgm,
+// RET, { {T, "spelling", const, "typedef"}, ... }, FLAGS)` — when its
+// signature holds only what that spelling carries.
+static bool function_pointer_expr(Program &pgm, DataDefFPTR *fp, std::string &expr,
+				  std::string &err)
+{
+    FuncDef *fd = fp->target;
+    if ( !fd || !fp->ptr_syntax )
+    {
+	err = "a function type";
+	return false;
+    }
+    size_t n = fd->parameters.size();
+    if ( fd->is_const_method || fd->noexcept_spec != FuncDef::NxNone
+      || !fd->return_typedef_name.empty() || !fd->function_display_name.empty()
+      || !fd->namespace_name.empty() || fd->const_params.size() != n
+      || fd->param_cpp_spellings.size() != n || fd->param_typedef_names.size() > n
+      || !fd->param_default_tokens.empty() )
+    {
+	err = "a function pointer whose signature carries more than its parameters";
+	return false;
+    }
+    std::string t;
+    if ( !type_expr(pgm, &fd->returns, t, err) )
+	return false;
+    expr = "builtin_function_pointer(pgm, " + t + ", {";
+    for ( size_t i = 0; i < n; ++i )
+    {
+	if ( !type_expr(pgm, fd->parameters[i], t, err) )
+	    return false;
+	expr += std::string(i ? ", " : " ") + "{ " + t + ", "
+	      + cpp_literal(fd->param_cpp_spellings[i].c_str()) + ", "
+	      + (fd->const_params[i] ? "true" : "false") + ", "
+	      + (i < fd->param_typedef_names.size()
+		 ? cpp_literal(fd->param_typedef_names[i].c_str()) : std::string("NULL"))
+	      + " }";
+    }
+    expr += n ? " }, 0u" : "}, 0u";
+    if ( fd->is_varargs )
+	expr += " | bfVarargs";
+    if ( fd->is_void_params )
+	expr += " | bfVoidParams";
+    expr += ")";
+    return true;
 }
 
 static std::string type_field(Program &pgm, DataDef *dd)
@@ -231,25 +348,12 @@ static std::string type_field(Program &pgm, DataDef *dd)
     return type_expr(pgm, dd, expr, err) ? expr : "?" + err;
 }
 
-// The fields a free function's registration carries — the record the forest
-// restore proves sufficient (cir_freeze.cpp's DK_FUNC restore + restore_param)
-// plus the registration site's own state (register_forest_func: the Variable's
-// storage_alias_name, its Method's named parameters, its place in the
-// namespace overload set). A default by its token run's spelling.
-madc::dis::istring builtin_function_line(Program &pgm, const madc::dis::istring &key)
+// A signature's fields — what a function and a function TYPE share: the
+// return, each parameter (type | C++ spelling | referent const | typedef name
+// | a default by its token run's spelling) and the parameter vectors' lengths.
+static std::string signature_fields(Program &pgm, FuncDef *fd)
 {
-    funcdef_map_iter fit = pgm.funcdef_map.find(key);
-    if ( fit == pgm.funcdef_map.end() || !fit->second )
-	return madc::dis::istring();
-    FuncDef *fd = fit->second;
-    Variable *var = pgm.tkProgram
-	? pgm.tkProgram->findVariable(pgm.strpool, key) : NULL;
-    const Method *m = var ? (const Method *)var->data : NULL;
-
-    std::string line = std::string(key.c_str());
-    line += "\tdisp=" + std::string(fd->function_display_name.c_str());
-    line += "\tns=" + std::string(fd->namespace_name.c_str());
-    line += "\tret=" + type_field(pgm, &fd->returns);
+    std::string line = "\tret=" + type_field(pgm, &fd->returns);
     line += "\trtd=" + std::string(fd->return_typedef_name.c_str());
     line += "\tparams=";
     for ( size_t i = 0; i < fd->parameters.size(); ++i )
@@ -269,6 +373,33 @@ madc::dis::istring builtin_function_line(Program &pgm, const madc::dis::istring 
 	if ( i < fd->param_default_tokens.size() && !fd->param_default_tokens[i].empty() )
 	    line += template_tokens_spelling(fd->param_default_tokens[i]).c_str();
     }
+    line += "\tvecs=" + std::to_string(fd->parameters.size()) + ","
+	  + std::to_string(fd->const_params.size()) + ","
+	  + std::to_string(fd->param_cpp_spellings.size()) + ","
+	  + std::to_string(fd->param_typedef_names.size()) + ","
+	  + std::to_string(fd->param_default_tokens.size());
+    return line;
+}
+
+// The fields a free function's registration carries — the record the forest
+// restore proves sufficient (cir_freeze.cpp's DK_FUNC restore + restore_param)
+// plus the registration site's own state (register_forest_func: the Variable's
+// storage_alias_name, its Method's named parameters, its place in the
+// namespace overload set).
+madc::dis::istring builtin_function_line(Program &pgm, const madc::dis::istring &key)
+{
+    funcdef_map_iter fit = pgm.funcdef_map.find(key);
+    if ( fit == pgm.funcdef_map.end() || !fit->second )
+	return madc::dis::istring();
+    FuncDef *fd = fit->second;
+    Variable *var = pgm.tkProgram
+	? pgm.tkProgram->findVariable(pgm.strpool, key) : NULL;
+    const Method *m = var ? (const Method *)var->data : NULL;
+
+    std::string line = std::string(key.c_str());
+    line += "\tdisp=" + std::string(fd->function_display_name.c_str());
+    line += "\tns=" + std::string(fd->namespace_name.c_str());
+    line += signature_fields(pgm, fd);
     line += "\tmparams=";
     for ( size_t i = 0; m && i < m->parameters.size(); ++i )
     {
@@ -367,6 +498,37 @@ madc::dis::istring builtin_type_line(Program &pgm, const madc::dis::istring &ns,
     flat_datatype_map_iter fi = pgm.datatype_map.find(name);
     line += "\tflat=";
     line += fi == pgm.datatype_map.end() ? "none" : &(*fi)->definition == dd ? "self" : "other";
+    line += pgm.user_typedef_names.count(name) ? "\tudt" : "\t-";
+    // Its file-scope declarations: kind, system-origin verdict (the emitter's
+    // td_system), a combined typedef's body.
+    line += "\ttop=";
+    for ( size_t i = 0; i < pgm.top_decls.size(); ++i )
+    {
+	const Program::TopDecl &td = pgm.top_decls[i];
+	if ( td.name != name || td.dd != dd )
+	    continue;
+	int at = 0;
+	const char *f = pgm.top_decl_position(td, at);
+	bool sys = td.forest_system || (f && pgm.is_system_header_path(f));
+	line += std::to_string((int)td.kind) + (sys ? "s" : "u") + (td.struct_body ? "b" : "") + ",";
+    }
+    if ( DataDefFPTR *fp = dd->as_fptr_dd() )
+    {
+	line += "\tkind=fptr";
+	line += fp->ptr_syntax ? "\tptr" : "\tfn";
+	if ( !fp->target )
+	    return line + "\tno-target";
+	FuncDef *fd = fp->target;
+	line += signature_fields(pgm, fd) + "\tfflags=";
+	line += fd->is_varargs ? "v" : "-";
+	line += fd->is_void_params ? "0" : "-";
+	line += fd->is_const_method ? "k" : "-";
+	line += fd->noexcept_spec == FuncDef::NxTrue ? "n"
+	      : fd->noexcept_spec == FuncDef::NxUnknown ? "?" : "-";
+	line += "\tdisp=" + std::string(fd->function_display_name.c_str())
+	      + "\tfns=" + fd->namespace_name.c_str();
+	return line;
+    }
     DataDefENUM *e = dd->as_enum_dd();
     if ( !e )
 	return line + "\tkind=" + typeid(*dd).name();
@@ -460,6 +622,17 @@ bool parse_dialect_as_text(DialectTextParse &out, std::string &err)
     return true;
 }
 
+static std::string named_type_reason(Program &live, DataDef *dd);
+
+// A signature that names a dialect type the generator does not build.
+static std::string signature_type_reason(Program &live, FuncDef *fd)
+{
+    std::string why = named_type_reason(live, &fd->returns);
+    for ( size_t i = 0; why.empty() && i < fd->parameters.size(); ++i )
+	why = named_type_reason(live, fd->parameters[i]);
+    return why;
+}
+
 // Why one namespace type gets no builder yet; empty when it gets one.
 static std::string type_skip_reason(Program &live, const madc::dis::istring &ns,
 				    const madc::dis::istring &name)
@@ -467,6 +640,19 @@ static std::string type_skip_reason(Program &live, const madc::dis::istring &ns,
     DataDef *dd = registered_namespace_type(live, ns, name);
     if ( !dd )
 	return "not a registered type";
+    if ( DataDefFPTR *fp = dd->as_fptr_dd() )
+    {
+	madc::dis::istring ins, iname;
+	if ( !typedef_type_identity(live, fp, ins, iname) || ins != ns || iname != name )
+	    return "a function pointer another name holds too";
+	flat_datatype_map_iter fi = live.datatype_map.find(name);
+	if ( fi == live.datatype_map.end() || &(*fi)->definition != dd )
+	    return "a bare alias another type holds";
+	std::string expr, err;
+	if ( !function_pointer_expr(live, fp, expr, err) )
+	    return err;
+	return signature_type_reason(live, fp->target);
+    }
     DataDefENUM *e = dd->as_enum_dd();
     if ( !e )
 	return std::string("a ") + typeid(*dd).name() + " (R2)";
@@ -506,6 +692,11 @@ static std::string named_type_reason(Program &live, DataDef *dd)
 	std::string why = type_skip_reason(live, ns, name);
 	if ( !why.empty() )
 	    return std::string("type ") + ns.c_str() + "::" + name.c_str() + ": " + why;
+    }
+    else if ( DataDefFPTR *fp = dd ? dd->as_fptr_dd() : NULL )
+    {
+	if ( fp->target )
+	    return signature_type_reason(live, fp->target);	// spelled in place
     }
     return std::string();
 }
@@ -618,6 +809,28 @@ void plan_builtin_registry(DialectTextParse &dp, std::vector<BuiltinGroup> &grou
 }
 
 
+// A signature's parameters as generated code: `const BuiltinParam p[]` (none
+// written for an empty list).
+static void emit_params(std::ostream &out, Program &live, FuncDef *fd)
+{
+    if ( fd->parameters.empty() )
+	return;
+    std::string expr, err;
+    out << "\tconst BuiltinParam p[] = {\n";
+    for ( size_t i = 0; i < fd->parameters.size(); ++i )
+    {
+	type_expr(live, fd->parameters[i], expr, err);
+	out << "\t    { " << expr << ", "
+	    << cpp_literal(i < fd->param_cpp_spellings.size()
+			   ? fd->param_cpp_spellings[i].c_str() : "") << ", "
+	    << (( i < fd->const_params.size() && fd->const_params[i] ) ? "true" : "false") << ", "
+	    << ( i < fd->param_typedef_names.size()
+		 ? cpp_literal(fd->param_typedef_names[i].c_str()) : std::string("NULL") )
+	    << " },\n";
+    }
+    out << "\t};\n";
+}
+
 // One declaration's registration, as generated code.
 static void emit_declaration(std::ostream &out, Program &live, const madc::dis::istring &key)
 {
@@ -626,20 +839,7 @@ static void emit_declaration(std::ostream &out, Program &live, const madc::dis::
     const Method *m = var ? (const Method *)var->data : NULL;
     std::string expr, err;
     out << "    {\n";
-    if ( !fd->parameters.empty() )
-    {
-	out << "\tconst BuiltinParam p[] = {\n";
-	for ( size_t i = 0; i < fd->parameters.size(); ++i )
-	{
-	    type_expr(live, fd->parameters[i], expr, err);
-	    out << "\t    { " << expr << ", "
-		<< cpp_literal(i < fd->param_cpp_spellings.size()
-			       ? fd->param_cpp_spellings[i].c_str() : "") << ", "
-		<< (( i < fd->const_params.size() && fd->const_params[i] ) ? "true" : "false")
-		<< " },\n";
-	}
-	out << "\t};\n";
-    }
+    emit_params(out, live, fd);
     size_t nnames = m ? m->parameters.size() : 0;
     if ( nnames )
     {
@@ -699,6 +899,19 @@ static void emit_enum(std::ostream &out, Program &live, const madc::dis::istring
 	<< "    declare_builtin_enum(pgm, d);\n";
 }
 
+// One function-pointer typedef's registration, as generated code: the
+// signature spelled out (never the alias's own builtin_type — it is what this
+// builds).
+static void emit_fptr_typedef(std::ostream &out, Program &live, const madc::dis::istring &ns,
+			      const madc::dis::istring &name)
+{
+    std::string expr, err;
+    function_pointer_expr(live, registered_namespace_type(live, ns, name)->as_fptr_dd(),
+			  expr, err);
+    out << "    declare_builtin_typedef(pgm, " << cpp_literal(ns.c_str()) << ", "
+	<< cpp_literal(name.c_str()) << ",\n\t" << expr << ");\n";
+}
+
 bool emit_builtin_registry(std::ostream &out, std::ostream &diag)
 {
     DialectTextParse dp;
@@ -717,7 +930,7 @@ bool emit_builtin_registry(std::ostream &out, std::ostream &diag)
 	<< "#include <cstdio>\n#include <cstring>\n#include <string>\n#include <vector>\n"
 	<< "#include <map>\n#include <set>\n#include <stack>\n#include <list>\n"
 	<< "#include <queue>\n#include <iostream>\n#include <sstream>\n#include <memory>\n"
-	<< "#include <stdint.h>\n\n"
+	<< "#include <initializer_list>\n#include <stdint.h>\n\n"
 	<< "#define DBG(x) do { if(madc_verbose){x;} } while(0)\n\n"
 	<< "#include \"datadef.h\"\n#include \"tokens.h\"\n#include \"datatokens.h\"\n"
 	<< "#include \"madc.h\"\n#include \"madc_builtin_registry.h\"\n\n";
@@ -737,7 +950,9 @@ bool emit_builtin_registry(std::ostream &out, std::ostream &diag)
 	    continue;
 	}
 	out << "static void b" << built << "(Program &pgm)\n{\n";
-	if ( bg.is_type )
+	if ( bg.is_type && registered_namespace_type(live, bg.ns, bg.name)->as_fptr_dd() )
+	    emit_fptr_typedef(out, live, bg.ns, bg.name);
+	else if ( bg.is_type )
 	    emit_enum(out, live, bg.ns, bg.name);
 	for ( size_t k = 0; k < bg.keys.size(); ++k )
 	    emit_declaration(out, live, bg.keys[k]);
