@@ -223,6 +223,84 @@ madc::dis::istring itanium_typeinfo_name_string(const madc::dis::istring &class_
 	return source_name(class_name);
 }
 
+// The decoder twin of the encoders above for ONE shape: a function's own
+// symbol at namespace (or global) scope — `_Z` [L] <name> or
+// `_ZN` <source-name>+ <name> `E`, where <name> is a source name or (last
+// only) an <operator-name> from operator_code's table — read back to its
+// scope and the name its source wrote. The parameter types after it are not
+// read. Every other shape answers false: a template-id, a substitution, an
+// abi tag, a constructor or destructor, a cv- or ref-qualified member, a
+// local entity, a special name, a conversion or vendor operator.
+bool itanium_function_name(const char *sym, madc::dis::istring &scope,
+			   madc::dis::istring &name)
+{
+	static const char *const ops[] = {
+		"===", "!==", "==", "!=", "<", ">", "<=", ">=", "<=>", "+", "-",
+		"*", "/", "%", "=", "+=", "-=", "*=", "/=", "%=", "&=", "|=",
+		"^=", "<<=", ">>=", "<<", ">>", "[]", "()", "++", "--", "!", "~",
+		"&", "|", "^", "&&", "||", ",", "->", "->*", "new", "new[]",
+		"delete", "delete[]"
+	};
+	if (!sym || sym[0] != '_' || sym[1] != 'Z')
+		return false;
+	const char *p = sym + 2;
+	if (*p == 'L')
+		++p;			// internal linkage
+	bool is_operator = false;
+	// One <unqualified-name> at p (L: a nested internal-linkage name).
+	auto unqualified = [&](madc::dis::istring &out) -> bool {
+		if (*p == 'L' && isdigit((unsigned char)p[1]))
+			++p;
+		if (isdigit((unsigned char)*p)) {
+			size_t len = 0;
+			while (isdigit((unsigned char)*p))
+				len = len * 10 + (size_t)(*p++ - '0');
+			if (!len || strnlen(p, len) < len)
+				return false;
+			out = madc::dis::istring(p, len);
+			p += len;
+			return true;
+		}
+		if (!p[0] || !p[1])
+			return false;
+		const char code[3] = { p[0], p[1], '\0' };
+		for (size_t i = 0; i < sizeof(ops) / sizeof(ops[0]); ++i)
+			for (int unary = 0; unary < 2; ++unary)
+				if (operator_code(ops[i], unary != 0) == code) {
+					out = madc::dis::istring("operator" + madc::dis::istring(ops[i]));
+					p += 2;
+					is_operator = true;
+					return true;
+				}
+		return false;
+	};
+	std::vector<madc::dis::istring> parts;
+	if (*p == 'N') {
+		++p;
+		while (*p && *p != 'E') {
+			if (is_operator)
+				return false;	// an operator is never a scope
+			madc::dis::istring part;
+			if (!unqualified(part))
+				return false;
+			parts.push_back(part);
+		}
+		if (*p != 'E' || parts.size() < 2)
+			return false;
+	} else {
+		madc::dis::istring part;
+		if (!unqualified(part))
+			return false;
+		parts.push_back(part);
+	}
+	madc::dis::istring sc;
+	for (size_t i = 0; i + 1 < parts.size(); ++i)
+		sc = i ? madc::dis::istring(sc + "::" + parts[i]) : parts[i];
+	scope = sc;
+	name = parts.back();
+	return true;
+}
+
 // ===========================================================================
 // Substitution-aware (template-id capable) mangling.
 //

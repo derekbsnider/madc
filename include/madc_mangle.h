@@ -31,6 +31,16 @@ madc::dis::istring itanium_typeinfo_sym_cpp(const madc::dis::istring &cpp_spelli
 madc::dis::istring itanium_typeinfo_name_sym_cpp(const madc::dis::istring &cpp_spelling);
 madc::dis::istring itanium_typeinfo_name_string_cpp(const madc::dis::istring &cpp_spelling);
 
+// A namespace-scope (or global) function's own symbol read back to its scope
+// and source name — the one decoder twin of the encoders here, for that shape
+// only (false for any other: a template-id, a substitution, an abi tag, a
+// member, a ctor/dtor, a local or special name):
+//   "_ZN2ui10post_eventEPvPKcS2_" -> "ui", "post_event"
+//   "_ZN4madclsERSoRKNS_5valueE"  -> "madc", "operator<<"
+//   "_Z5totalN4madc5valueE"       -> "", "total"
+bool itanium_function_name(const char *sym, madc::dis::istring &scope,
+			   madc::dis::istring &name);
+
 // ---------------------------------------------------------------------------
 // Substitution-aware (template-id capable) mangling.
 //

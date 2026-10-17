@@ -2145,22 +2145,26 @@ TEST_CASE("completion: a using-directive's dialect names complete bare (madc)")
 // index, never only from what the bind registered.
 namespace {
 
-// A pack holding the dialect's php fragment, frozen under --std=madc
-// (forest_bind_gate's dialectbind recipe): a session bound to it binds
-// <ns_php> directly, as the release binary binds its own pack. Removed when
-// the case ends.
+// A pack holding the dialect's php fragment (by default), frozen under
+// --std=madc (forest_bind_gate's dialectbind recipe): a session bound to it
+// binds <ns_php> directly, as the release binary binds its own pack. Removed
+// when the case ends.
 struct DialectPack
 {
     std::string path;
 
-    DialectPack()
+    explicit DialectPack(const char *includes = "#include <ns_php>\n")
     {
-	const std::string pid = std::to_string((long)getpid());
+	// One path per pack: a bound carrier's image is cached by its path for
+	// the process, so a second pack at the first one's path would bind the
+	// first one's content.
+	static int packs = 0;
+	const std::string pid = std::to_string((long)getpid()) + "_" + std::to_string(++packs);
 	const std::string src = "/tmp/madc_a3_dialect_" + pid + ".cpp";
 	path = "/tmp/madc_a3_dialect_" + pid + ".msnap";
 	{
 	    std::ofstream f(src.c_str());
-	    f << "#include <ns_php>\nint main() { return 0; }\n";
+	    f << includes << "int main() { return 0; }\n";
 	}
 	bool ok = false;
 	{
@@ -2319,6 +2323,88 @@ TEST_CASE("dialect per name (A3): a rolled-back entry forgets the dialect demand
     REQUIRE(m.submit("var total = 2;"));
     REQUIRE(m.submit("total + 1"));
     CHECK(m.shown() == "3");
+}
+
+// A4: a compile registers the dialect functions its program names — an
+// overload set whole — the ones those functions' bodies call, and what its
+// fragments' startup anchors call; never a fragment's whole surface. The
+// program is scripts/parse_cost/dialect.mad's.
+TEST_CASE("dialect per name (A4): a compile registers what it names, what that calls, and the anchors")
+{
+    DialectPack pack("#include <ns_madc>\n#include <ns_php>\n");
+    REQUIRE_FALSE(pack.path.empty());
+    InteractiveSession m(pack.configured());
+    REQUIRE(m.begin("--std=madc"));
+    Program &p = m.program();
+    REQUIRE(m.load_text(
+	"var total(var xs)\n"
+	"{\n"
+	"    long sum = 0;\n"
+	"    for ( var x : xs )\n"
+	"\tsum = sum + x.as_integer();\n"
+	"    return sum;\n"
+	"}\n"
+	"int main()\n"
+	"{\n"
+	"    var xs = { 4, 1, 3 };\n"
+	"    var who = { \"name\": \"madc\", \"kind\": \"dialect\" };\n"
+	"    array words;\n"
+	"    php::explode(words, \",\", \"a,b,c\");\n"
+	"    println(\"{} {} {} {}\", total(xs), who[\"name\"], php::count(words),\n"
+	"\t    php::strtoupper(\"ok\"));\n"
+	"    return 0;\n"
+	"}\n", "dialect.mad"));
+    REQUIRE(bound_dialect_units(p).count("ns_php"));
+    REQUIRE(bound_dialect_units(p).count("ns_madc"));
+    Program::ForestBindStats s = p.forest_bind_stats();
+    // Nothing a dialect fragment declares registers up front.
+    CHECK(s.funcs_eager == 0u);
+    // The names the program calls, strtoupper's two overloads together.
+    CHECK(p.funcdef_map.count("__ns_php_explode"));
+    CHECK(p.funcdef_map.count("__ns_php_count"));
+    CHECK(p.funcdef_map.count("__ns_php_strtoupper"));
+    CHECK(p.funcdef_map.count("__ns_php_strtoupper__o2"));
+    // What their bodies call: the called overload's runtime entry only.
+    CHECK(p.funcdef_map.count("__php_explode"));
+    CHECK(p.funcdef_map.count("__php_count"));
+    CHECK(p.funcdef_map.count("__php_strtoupper_cstr"));
+    CHECK_FALSE(p.funcdef_map.count("__php_strtoupper"));
+    // <ns_madc>'s anchor: `__madc_run_child = serve_run_child()`.
+    CHECK(p.funcdef_map.count("__ns_madc_serve_run_child"));
+    // Never named, never called.
+    CHECK_FALSE(p.funcdef_map.count("__ns_php_trim"));
+    CHECK_FALSE(p.funcdef_map.count("__php_trim_cstr"));
+    CHECK_FALSE(p.funcdef_map.count("__ns_madc_compiler_run"));
+    // --show-stats's counters say the same.
+    CHECK(s.dialect_units >= 2u);
+    CHECK(s.dialect_funcs == 8u);
+    CHECK(s.dialect_hits >= 7u);
+    CHECK(s.dialect_names >= s.dialect_hits);
+    CHECK(s.dialect_records >= 8u);
+}
+
+// A demand registers inside the entry that made it: an entry that fails
+// takes its registration back with it, and a later entry demands the name
+// again and gets it.
+TEST_CASE("dialect per name (A4): a rolled-back entry's dialect registration is made again")
+{
+    DialectPack pack;
+    REQUIRE_FALSE(pack.path.empty());
+    InteractiveSession m(pack.configured());
+    REQUIRE(m.begin("--std=madc"));
+    Program &p = m.program();
+    REQUIRE(m.submit("array words;"));
+    CHECK_FALSE(m.submit("long n = php::count(words) + no_such_name;"));
+    CHECK_FALSE(p.funcdef_map.count("__ns_php_count"));
+    bool hit = false;
+    CHECK_FALSE(p.forest_dialect_demands.demanded("php::count", hit));
+    REQUIRE(m.submit("long n = php::count(words);"));
+    CHECK(p.funcdef_map.count("__ns_php_count"));
+    CHECK(p.forest_dialect_demands.demanded("php::count", hit));
+    CHECK(hit);
+    REQUIRE(m.submit("php::explode(words, \",\", \"a,b\");"));
+    REQUIRE(m.submit("php::count(words)"));
+    CHECK(m.shown() == "2");
 }
 
 // §37 item 8 (plan §41.8a, slice 1): the command front and `%type`. A

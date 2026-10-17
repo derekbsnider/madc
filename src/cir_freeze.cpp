@@ -2768,9 +2768,12 @@ bool CirFrozenForest::unit_decl_index(uint32_t unit,
 // its owner class; a template record with an owner is a member template.
 // Neither member names anything at namespace scope.
 bool CirFrozenForest::decl_entry_scope(uint32_t kind, uint32_t record_id,
-				       const char *&ns, const char *&display) const
+				       const char *&ns, const char *&display,
+				       const char **key) const
 {
 	ns = display = NULL;
+	if (key)
+		*key = NULL;
 	if (record_id == CIR_DECL_RECORD_NONE)
 		return false;
 	const uint32_t idx = cir_seed_item_index(record_id);
@@ -2788,6 +2791,8 @@ bool CirFrozenForest::decl_entry_scope(uint32_t kind, uint32_t record_id,
 		// A free function's disp_id is its function_display_name.
 		if (free_fn && r.disp_id)
 			display = _arena.c_str(r.disp_id);
+		if (key && r.name_id)
+			*key = _arena.c_str(r.name_id);
 		break;
 	}
 	case CIR_SEED_DEP_TEMPLATE: {
@@ -3226,6 +3231,9 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_for(
 				grew = true;
 		_mat_filter.system_units.insert(want.system_units.begin(),
 						want.system_units.end());
+		// Withheld functions join with their unit (a new bound unit is a
+		// full generation of its own, which reads them).
+		_mat_filter.withheld.insert(want.withheld.begin(), want.withheld.end());
 		for (std::set<uint32_t>::const_iterator it = want.records.begin();
 		     it != want.records.end(); ++it)
 			if (_mat_filter.records.insert(*it).second)
@@ -3410,6 +3418,12 @@ void CirFrozenForest::materialize_pass(const std::vector<uint32_t> *added)
 	auto asked_global = [&](size_t i) -> bool {
 		return !asked_glob.empty() && asked_glob.count(i);
 	};
+	// A withheld free function no record asks: never a candidate.
+	auto withheld_slot = [&](uint32_t s) -> bool {
+		return !_mat_filter.withheld.empty()
+		    && _mat_filter.withheld.count((CIR_SEED_DEP_ARENA << 30) | s)
+		    && !asked_slot(s);
+	};
 	// An aggregate an earlier generation built whole: its pulls were chased
 	// then. A records-only generation's chase stops at it.
 	auto built_whole = [&](uint32_t tid) -> bool {
@@ -3440,7 +3454,7 @@ void CirFrozenForest::materialize_pass(const std::vector<uint32_t> *added)
 			ns_slots.push_back(s);
 			break;
 		case madc::dis::DK_FUNC:
-			if (r.flags & madc::dis::DF_IS_FREE_FUNC)
+			if ((r.flags & madc::dis::DF_IS_FREE_FUNC) && !withheld_slot(s))
 				free_func_slots.push_back(s);
 			break;
 		default:
@@ -5200,6 +5214,9 @@ void CirFrozenForest::materialize_pass(const std::vector<uint32_t> *added)
 		CirRestoredFunc rf;
 		rf.name = nm;
 		rf.fd   = fd;
+		rf.record = (CIR_SEED_DEP_ARENA << 30) | s;
+		if (asked_slot(s))
+			_asked_funcs[rf.record] = _restored_funcs.size();
 		// v26 piece (a): the fn's NAMED parameters (aliasrec run) — the
 		// flush fills Method::parameters so a deferred body's re-parse
 		// resolves its parameter names.

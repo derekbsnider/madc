@@ -381,3 +381,138 @@ unused declaration to a dialect fragment cannot cost a dialect compile.
     20,079 lookups); `units_of` keeps its own probe and the readers serve
     `for_prefix` alone. Final: cxx_stl.forest +44K of 1,396M (forest phases
     −25K), c_headers.forest +13K, dialect.forest +23K against cf05fd6f5.
+- **A4 (2026-10-17).** Functions per name. What existed: verdict-0 (derived)
+  free functions already deferred — `forest_deferred_funcs` /
+  `forest_deferred_func_families`, promoted through `register_forest_func`
+  (the one registration owner) by `activate_forest_func` (`lazy_resolve`, the
+  CIR fixpoint) and the family / display owners. A1 indexes a dialect
+  function by its flat id, so every free function of a bound fragment was
+  verdict 1 and registered up front: dialect.mad's 335 (ns_madc through
+  `queue_fragment_prerequisites`), which `forest_restore_decls` walked and
+  `register_forest_func` registered — A0's 4.9M and 6.4M. Landed:
+  - Activation: `forest_activate_dialect_unit`, called by the one bind walk
+    (`forest_bind_include`) for a fragment unit under `--std=madc` — direct,
+    prerequisite, child or written `#include <ns_*>`; nothing activates under
+    `--forest-touch-log` (the layout pass reads units whole).
+    `forest_dialect_activation` (once per Program) reads the unit's decl
+    entries' kinds and records — never an entry's name — through
+    `CirFrozenForest::decl_entry_scope`, which gains the record's
+    registration key: `funcs` (key, record) strcmp-sorted, `withheld` (those
+    records), `namespaces` (made scopes at the restore).
+  - Restore (`forest_restore_decls`): an active unit binds and is seeded as
+    before; `CirMaterializeFilter::withheld` (new) keeps its free functions
+    out of every generation (`materialize_pass`' bucket) unless asked by
+    record, and registration skips a withheld record this Program did not ask
+    (`ForestDialectDemands::asked`) — a sibling TU's demand restores into the
+    shared forest, never registers here. The filter is kept
+    (`forest_restore_filter`) for delta restores.
+  - The materializer `forest_dialect_demand(ns, name)` (parser.cpp, beside
+    `forest_adopt_declared_function`): the run of
+    `namespace_function_symbol(ns, name)` and its `__oN` in each active
+    unit's `funcs`, an entry kept when its record names `ns` and the display
+    name; memoized hits and misses; one records-only generation
+    (`materialize_for` with `records`); `forest_restore_decls(forest, &delta)`
+    over what the generation restored plus the asked functions an earlier
+    generation restored (`CirFrozenForest::asked_restored_func`, else the
+    restored list), staged in record order; `forest_apply_pending(&delta)`.
+    The flush is `forest_restore_if_grown` + `forest_apply_pending(NULL)`;
+    a delta apply walks the namespace-surface and default lists from the
+    generation's start.
+  - Hooks, each an existing owner: `activate_forest_member` (the family owner
+    renamed and widened) at the top of `find_namespace_member` and
+    `find_namespace_function_overload`, at the expression `ns::m` site ahead
+    of its template / type probes, and at a namespaced declaration
+    (`parseDeclaration`: the dialect's set registers before a program's own
+    overload); `activate_forest_function_display` (every dialect namespace
+    and the global scope); `lazy_resolve` (the global scope); `using namespace`
+    (`forest_dialect_demand_namespace`, the namespace's names through
+    `forest_dialect_names`); the CIR fixpoint (`register_loaded_refs`: every
+    callee and address / initializer reference of a loaded body or frozen
+    global is demanded before the registry judgements, and new
+    registrations join `forest_lazy` / `forest_funcdef_syms` at once and at
+    each round's top; tsubst's `emittable` asks too).
+  - `--show-stats`: "forest dialect ...... N units; N names demanded (N hit),
+    N records, N functions registered".
+  Rulings:
+  - Withheld, not unseeded: an unseeded unit's restore needs its other
+    records asked, and an asked record bypasses every verdict — the seed
+    lists carry records other units declare (ns_ui's list holds
+    `ui_ws::host`, verdict −1 without <ns_ui_ws>), and an asked anchor's
+    initializer loaded node unit 0 (402,678 records). Seeded, the rest of
+    the unit restores under its verdicts exactly as before.
+  - The demand reads the record's own key, not DECL_NAMES + the unit's
+    decoded decl index: DECL_NAMES gives a name's units, not its records, and
+    decoding a unit's entry names fills cold container-pool blocks (13 fills,
+    2.2M Ir on dialect.mad; `forest_unit_decl_names` 3.0M for six units),
+    while a global-scope prefix run walked 2,370 entries. Checked against
+    the replaced lookup on 4,267 demands over the dialect corpus (974 hits,
+    overload sets up to 5): identical.
+  - Symbol → name is a DECODE, not a map over records: a loaded body calls a
+    bodied dialect function by its record's emit symbol, but a declaration-
+    only one by the Itanium alias registration computes
+    (`namespace_cpp_function_symbol`), which no record carries.
+    `itanium_function_name` (madc_mangle.cpp, the encoders' decoder twin)
+    reads a namespace-scope function's own symbol back to scope + name —
+    false for every other shape (template-id, substitution, member, special);
+    a non-Itanium symbol is a global-scope name.
+  - `register_forest_func` makes its program-scope Variable without
+    `addVariable`'s reads of the parse state (namespace binding, `_inst_depth`,
+    `parsing_extern_decl`): identical at the flush, correct mid-parse — for
+    the verdict-0 activations too.
+  - Re-entrancy: `forest_apply_pending` takes the staging lists off before
+    applying (a default / constructor-argument re-parse may demand), and
+    under dialect demand `rebuild_forest_param_defaults` copies its record.
+    A demand made after a unit bound runs the whole flush first.
+  - A DK_DEFBODY whose function a demand registers (none in today's
+    fragments): the delta apply walks the deferred bodies whole when a
+    staged function's body is one.
+  - A rolled-back entry rewinds the active units and the registered list with
+    the bind mark; `asked` is rebuilt from the kept demands.
+  Thread contract: all of it per Program on its thread; the forest's
+  `materialize_for` under `MadcCompileGroup`'s single-threaded group
+  mutation; the activation keys are the bound forest's immutable bytes; the
+  decoder is pure; no globals.
+  Tests (`.expect` from OLD, v0.105.0's head_pack): `testdialectpername_family`
+  (overloads of one name, a using-directive, a bare call through the
+  preference walk, a user `namespace php { int extra(int); }` beside
+  `php::count`) and `testdialectpername_body` (a dialect inline body calling a
+  sibling the program never names; JIT, exe, obj). Watched RED with the
+  namespaced-declaration and loaded-body demands off: "use of undeclared
+  identifier 'register_host'" (family, line 34) and eleven "undeclared
+  identifier _ZN6ui_web4openEPKcS1_Pv" → "cir_compile failed" (body).
+  test_repl_session: a bound compile registers only what it names (no eager
+  function, `php::count`'s family and its `__php_*` shims present,
+  `php::trim` absent, 8 registered) and a rolled-back entry re-demands
+  `php::count` — watched RED before the code; the pack path is unique per
+  case (the bound carrier image is cached per path). test_mangle: the
+  decoder's shapes, round-tripped through the encoders.
+  Cost (2026-10-17), symbolized packed builds against A3 (0172efd76), Ir:
+
+  | row | A3 | A4 | registered (A0 → A4) |
+  |---|---:|---:|---:|
+  | dialect | 43,305,443 | 32,781,345 | 335 → 8 |
+  | dialect_one | 35,570,817 (A0) | 24,511,883 | 335 → 4 |
+  | dialect_all | 51,471,727 (A0) | 36,678,393 | 533 → 19 |
+  | dialect_cxx | 287,202,035 (A0) | 272,267,487 | 817 → 66 (+284 C++ eager) |
+  | c_headers | 245,118,024 | 245,123,975 | — |
+  | cxx_stl | 1,396,609,999 | 1,395,176,711 | — |
+
+  dialect: `register_forest_func` 6,426,518 → 137,608;
+  `flush_forest_pending_globals` 11,848,948 → 3,470,210;
+  `forest_restore_decls` 4,994,537 → 3,043,980 (`materialize_for` 1.13M, the
+  six activations 0.98M — decl-index segments 0.29M, `decl_entry_scope`
+  0.41M); `materialize_pass` 3,643,031 → 1,137,482. cxx_stl: −1.43M, of which
+  `register_forest_func` −1.04M (the context-free Variable);
+  `forest_restore_decls` +313K is `name_verdict` +264K over the same 15,688
+  calls, inside `__strcmp_avx2` under `units_of` (+270K over the same 257,829
+  calls) — no call added. The first cut (whole seed lists asked, each unit's
+  entry names decoded) measured dialect 40.19M, its activation 3.87M.
+  Validation: fix lane GREEN (Tier 1 69/69, EXE/OBJ 30/30; Tier 2's seven
+  lanes at baseline); test_repl_session 81/81, test_cir_freeze 44/44,
+  test_mangle 88/88, test_libmadc_program `security_policy` 2/2;
+  forest_pack_gate OK. Differential OLD (v0.105.0 head_pack) against A4
+  packed: 88/88 identical over the plan's globs with `testfragment*` and
+  `testui*`; the whole suite 2,082 of 2,084 identical, `testfreezerun`
+  nondeterministic under OLD, `testgccvectorcmpresult` a SIGSEGV in the
+  JIT-run program 5 runs in 10 under OLD and A4 alike (0 in 10 on the -O0
+  binary, 0 in 5 without ASLR). `--emit=c11` identical on 69 dialect programs.

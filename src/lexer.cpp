@@ -4757,6 +4757,13 @@ Program::ForestBindStats Program::forest_bind_stats() const
     s.funcs_deferred = _forest_funcs_deferred;
     s.funcs_activated = _forest_funcs_activated;
     s.funcs_remaining = forest_deferred_funcs.size();
+    s.dialect_units = forest_dialect_units.size();
+    s.dialect_names = forest_dialect_demands.log.size();
+    for ( size_t i = 0; i < forest_dialect_demands.log.size(); ++i )
+	if ( !forest_dialect_demands.log[i].records.empty() )
+	    ++s.dialect_hits;
+    s.dialect_records = forest_dialect_demands.asked.size();
+    s.dialect_funcs = forest_dialect_registered.size();
     if ( bind_forest )
     {
 	s.opened         = true;
@@ -4850,6 +4857,22 @@ bool Program::forest_bind_dialect_fragment(const madc::dis::istring &name)
     forest_bind_include((uint32_t)u);
     mark_embedded_include_flag(name);
     return true;
+}
+
+// The dialect pays per name (docs/plans/2026-10-16-dialect-per-name-plan.md,
+// A4): a fragment unit bound under --std=madc ACTIVATES — its names are this
+// Program's to demand, and its restore (forest_restore_decls) withholds the
+// free functions its decl index names (forest_dialect_activation) until a
+// lookup demands them (forest_dialect_demand). Called by the one
+// bind walk (forest_bind_include) for every route a fragment binds by. The
+// pack's layout pass (--forest-touch-log) reads every unit whole, so nothing
+// activates there.
+void Program::forest_activate_dialect_unit(uint32_t unit)
+{
+    if ( language_std != STD_MADC || !forest_touch_log.empty()
+      || forest_dialect_unit_p(unit) )
+	return;
+    forest_dialect_units.push_back(unit);
 }
 
 int Program::forest_unit_named_by_include(const madc::dis::istring &incfile)
@@ -5329,7 +5352,13 @@ void Program::forest_bind_include(uint32_t unit)
     // umbrella carries no #ifndef guard; the name key is its only dedup.
     if ( const char *bound = bind_forest->unit_name(unit) )
 	if ( find_embedded_header(bound) )
+	{
 	    included_files[embedded_unit_include_key(bound)] = true;
+	    // A dialect fragment bound under madc — directly, as a prerequisite
+	    // or a child, or by a written #include — pays per name.
+	    if ( language_std == STD_MADC && embedded_dialect_fragment_p(bound) )
+		forest_activate_dialect_unit(unit);
+	}
     _self += forest_stat_now() - _t1;
     _forest_bind_seconds += _self;
     const char *nm = bind_forest->unit_name(unit);

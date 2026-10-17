@@ -32728,6 +32728,16 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 				    && fi->second.fd && fi->second.fd->has_forest_body)
 					{ ok = true; why = 7; }
 			}
+			// A dialect function registers when first named, after
+			// the memo above was built (forest_dialect_demand).
+			if (!ok && !m_prog->forest_dialect_units.empty()) {
+				m_prog->forest_dialect_demand_symbol(s);
+				funcdef_map_iter di = m_prog->funcdef_map.find(
+					m_prog->body_registration_key(s));
+				if (di != m_prog->funcdef_map.end() && di->second
+				    && di->second->has_forest_body)
+					{ ok = true; why = 8; }
+			}
 			if (!ok) for (TokenBase *pb : m_prog->pending_funcs) {
 				TokenFunc *tf = dynamic_cast<TokenFunc *>(pb);
 				FuncDef *tfd = tf ? dynamic_cast<FuncDef *>(tf->var.type)
@@ -36061,6 +36071,37 @@ node_t CirBuilder::translate_module(Program *prog)
 				forest_funcdef_syms.insert(func_emit_name(*fvar, fd));
 		}
 	}
+	// The dialect pays per name (A4): a dialect function registers when it is
+	// first named — by the parse, or by a loaded body's reference in the
+	// fixpoint below (forest_dialect_demand_symbol). What registered after
+	// the index above joins it as those indexes would have held it: its
+	// symbols, and its loaded body (a free function's — never a method).
+	size_t dialect_indexed = prog->forest_dialect_registered.size();
+	auto index_dialect_registrations = [&]() -> bool {
+		bool added = false;
+		while (dialect_indexed < prog->forest_dialect_registered.size()) {
+			const std::pair<madc::dis::istring, FuncDef *> &r =
+				prog->forest_dialect_registered[dialect_indexed++];
+			FuncDef *fd = r.second;
+			if (!fd || r.first.empty())
+				continue;
+			forest_funcdef_syms.insert(r.first);
+			Variable *fvar = prog->tkProgram
+				? prog->tkProgram->findVariable(prog->strpool, r.first)
+				: NULL;
+			if (fvar)
+				forest_funcdef_syms.insert(func_emit_name(*fvar, fd));
+			if (fd->has_forest_body && !forest_lazy.count(r.first)) {
+				forest_lazy[r.first] = fd;
+				const char *up =
+					prog->bind_forest->unit_name(fd->forest_body_unit);
+				if (!up || !prog->is_system_header_path(up))
+					forest_lazy_root.insert(r.first);
+			}
+			added = true;
+		}
+		return added;
+	};
 	std::set<madc::dis::istring> forest_lazy_emitted;
 	// Symbols that receive a TYPED forward prototype (Pass 0.75 below, Pass 1,
 	// and the materialized-func protos). A void* extern from need_output_extern
@@ -36199,6 +36240,17 @@ node_t CirBuilder::translate_module(Program *prog)
 			// which a pre-built loaded body never runs).
 			cir_collect_cleanup_attr_fns(bn, callees);
 			declare_loaded_body_slots(bn);
+			// A dialect function the body calls registers before
+			// the judgements below read the registries — the state
+			// a bind that registered the whole fragment left.
+			const bool dialect_demands = !prog->forest_dialect_units.empty();
+			if (dialect_demands) {
+				for (std::set<madc::dis::istring>::const_iterator di =
+				     callees.begin(); di != callees.end(); ++di)
+					prog->forest_dialect_demand_symbol(*di);
+				if (index_dialect_registrations())
+					grew = true;
+			}
 			// v25: a fn referenced as a CALL ARGUMENT in the loaded
 			// body (`__stoa(strtod, ...)` — decayed bare N_ID, or
 			// `&f`). Live's argument lowering declares it via
@@ -36210,6 +36262,13 @@ node_t CirBuilder::translate_module(Program *prog)
 				cir_collect_addr_fn_refs(bn, arg_refs);
 				if (decl_initializer)
 					cir_collect_initializer_ids(bn, arg_refs);
+				if (dialect_demands) {
+					for (std::set<madc::dis::istring>::const_iterator di =
+					     arg_refs.begin(); di != arg_refs.end(); ++di)
+						prog->forest_dialect_demand_symbol(*di);
+					if (index_dialect_registrations())
+						grew = true;
+				}
 				for (std::set<madc::dis::istring>::iterator ai =
 				     arg_refs.begin(); ai != arg_refs.end(); ++ai) {
 					if (m_output_externs.count(*ai))
@@ -36284,6 +36343,10 @@ node_t CirBuilder::translate_module(Program *prog)
 		};
 		for (bool grew = true; grew; ) {
 			grew = false;
+			// What a parse in the last round demanded of the dialect
+			// (a deferred body's lookups).
+			if (index_dialect_registrations())
+				grew = true;
 			// Promote only verdict-0 forest functions whose compiler
 			// identity is now reachable. This updates funcdef_map and the
 			// parser-visible Variable/overload surfaces before Pass 0.75,

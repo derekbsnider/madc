@@ -2020,6 +2020,12 @@ int main(int argc, char **argv)
 			"[stats] forest functions .... %llu eager + %llu derived deferred; %llu activated / %llu remain\n",
 			fs.funcs_eager, fs.funcs_deferred,
 			fs.funcs_activated, fs.funcs_remaining);
+		    if ( fs.dialect_units )
+			fprintf(stderr,
+			    "[stats] forest dialect ...... %llu units; %llu names demanded"
+			    " (%llu hit), %llu records, %llu functions registered\n",
+			    fs.dialect_units, fs.dialect_names, fs.dialect_hits,
+			    fs.dialect_records, fs.dialect_funcs);
 		    if ( !prog->_forest_unit_bind_costs.empty() )
 		    {
 			std::vector<std::pair<madc::dis::istring, double> > rows =

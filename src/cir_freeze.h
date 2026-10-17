@@ -1657,6 +1657,9 @@ struct CirRestoredFunc
 	// deferred body's re-parse resolves its parameter names (the scope
 	// parse_deferred_function_body's code->method provides).
 	std::vector<std::pair<const char *, DataDef *> > mparams;
+	// Its record, as a decl entry's record_id names it ((CIR_SEED_DEP_ARENA
+	// << 30) | slot): a demanded dialect function registers by it.
+	uint32_t record = CIR_DECL_RECORD_NONE;
 };
 
 // v20 (widening slice 2): one restored template pattern — the metadata view
@@ -1784,6 +1787,12 @@ struct CirMaterializeFilter
 	// their pulls and dependents. A generation that only adds records
 	// visits only the added ones.
 	std::set<uint32_t> records;
+	// Free-function records ((CIR_SEED_DEP_ARENA << 30) | slot) no
+	// generation admits unless `records` asks for them: a bound unit's list
+	// is visited and judged as ever, less these (the dialect's functions,
+	// restored as a lookup demands them — docs/plans/2026-10-16-dialect-per-
+	// name-plan.md, A4).
+	std::set<uint32_t> withheld;
 	// The closure binds `unit`: bound, seeded or not.
 	bool binds(uint32_t unit) const
 	{
@@ -2001,6 +2010,9 @@ class CirFrozenForest
 	std::set<uint32_t> _mat_done_slots;
 	std::set<size_t> _mat_done_globals;
 	std::set<size_t> _mat_done_templates;
+	// An asked function record -> its index in _restored_funcs (only asked
+	// ones: a demand finds what an earlier generation restored for it).
+	std::map<uint32_t, size_t> _asked_funcs;
 	std::map<uint32_t, Variable *> _method_by_func_id;
 	// Aggregates restored DECLARED-ONLY (format 63: a product the closure
 	// only names, its template defined by no bound unit) and not yet
@@ -2196,12 +2208,25 @@ public:
 	// format 64): the namespace the entity it names is declared in — the
 	// record's own ns field, "" for the global one — and, for a free
 	// function, the name its source wrote (the record's display name;
-	// NULL when it carries none). False when the entry names no
+	// NULL when it carries none) and, when `key` is given, its
+	// registration key (the record's own name: the funcdef id DECL_NAMES
+	// indexes). False when the entry names no
 	// namespace-scope entity: no record, a record out of range, or a
 	// function entry whose record is its owner class (a member function's
 	// key). `kind` is the entry's Program::PackDeclKind.
 	bool decl_entry_scope(uint32_t kind, uint32_t record_id,
-			      const char *&ns, const char *&display) const;
+			      const char *&ns, const char *&display,
+			      const char **key = NULL) const;
+	// An asked function record's restored entry (restored_funcs()[idx]);
+	// false when no generation restored it — not asked, or not yet.
+	bool asked_restored_func(uint32_t record, size_t &idx) const
+	{
+		std::map<uint32_t, size_t>::const_iterator it = _asked_funcs.find(record);
+		if (it == _asked_funcs.end())
+			return false;
+		idx = it->second;
+		return true;
+	}
 	bool unit_pp_events(uint32_t unit, std::vector<uint32_t> &out);
 	bool unit_edges(uint32_t unit, std::vector<uint32_t> &out);
 	bool unit_branch_deps(uint32_t unit, std::vector<uint32_t> &out);	// v40
@@ -2249,6 +2274,9 @@ public:
 	// alongside the types, reusing the same arena-id -> DataDef* map).
 	const std::vector<CirRestoredGlobal> &restored_globals() const
 	{ return _restored_globals; }
+	// The restored types so far (materialize_for's answer).
+	const std::vector<CirRestoredType> &restored_types() const
+	{ return _restored; }
 	const std::vector<CirRestoredNsLink> &restored_nslinks() const
 	{ return _restored_nslinks; }		// v25
 	const std::vector<CirRestoredNsBind> &restored_nsbinds() const

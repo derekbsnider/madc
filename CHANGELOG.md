@@ -2,6 +2,63 @@
 
 ## [Unreleased]
 
+### A dialect compile registers only the functions it names
+
+- A fragment bound under `--std=madc` stays seeded as before;
+  `forest_activate_dialect_unit` (called by the one bind walk
+  `forest_bind_include` for a dialect fragment reached direct, as a
+  prerequisite, as a child, or by a written `#include <ns_*>`) marks it active,
+  and the new `CirMaterializeFilter::withheld` holds that unit's free functions
+  out of every materialize generation. A withheld function restores into the
+  shared forest and registers in this `Program` only when a lookup demands it by
+  name — `register_forest_func` (the one registration owner) no longer registers
+  a bound fragment's functions up front. The verdict-0 derived free functions
+  were already deferred; this withholds the verdict-1 named functions on top.
+- `forest_dialect_activation` (once per `Program`) reads a unit's decl entries'
+  kinds and records — never an entry's name — through
+  `CirFrozenForest::decl_entry_scope`, now carrying each record's registration
+  key: `funcs` (key, record) strcmp-sorted, `withheld` (those records),
+  `namespaces` (scopes made at the restore).
+- The materializer `Program::forest_dialect_demand(ns, name)` takes the run of
+  `namespace_function_symbol(ns, name)` and its `__oN` overloads in each active
+  unit's `funcs`, keeps an entry whose record names `ns` and the display name,
+  memoizes hits and misses, runs one records-only generation (`materialize_for`
+  with `records`), and applies the delta (`forest_restore_decls` +
+  `forest_apply_pending`) in record order. A sibling TU's demand restores into
+  the shared forest but never registers here (`ForestDialectDemands::asked`).
+- Every lookup kind reaches the materializer through an existing owner:
+  `activate_forest_member` at `find_namespace_member` /
+  `find_namespace_function_overload`, the expression `ns::m` site, and a
+  namespaced `parseDeclaration`; `activate_forest_function_display` at every
+  dialect namespace and the global scope; `lazy_resolve`; `using namespace`
+  (`forest_dialect_demand_namespace`); and the CIR fixpoint
+  `register_loaded_refs` — every callee and address / initializer reference of a
+  loaded body or frozen global, demanded before the registry judgements.
+  `forest_dialect_demand_symbol` resolves a loaded body's callee symbol:
+  `itanium_function_name` (madc_mangle.cpp, the encoders' decoder twin) reads a
+  namespace-scope function's own symbol back to scope + name, any other symbol
+  (template-id, substitution, member, special) as a global-scope name.
+- `register_forest_func` makes its program-scope `Variable` without
+  `addVariable`'s reads of the parse state (namespace binding, `_inst_depth`,
+  `parsing_extern_decl`) — identical at the flush, correct mid-parse. A
+  rolled-back entry rewinds the active units and the registered list with the
+  bind mark; `asked` is rebuilt from the kept demands.
+- `--show-stats` reports `forest dialect ... N units; N names demanded (N hit),
+  N records, N functions registered`.
+- Reducers `tests/testdialectpername_family.mad` (overloads of one name, a
+  using-directive, a bare call through the preference walk, a user
+  `namespace php { }` beside `php::count`) and
+  `tests/testdialectpername_body.mad` (a dialect inline body calling a sibling
+  the program never names; JIT, exe, obj); `test_repl_session`,
+  `test_cir_freeze` and `test_mangle` gate the materializer, the activation and
+  the decoder.
+- Cost, symbolized packed builds (Ir): `dialect.forest` 43,305,443 →
+  32,781,345 (functions registered up front 335 → 8); `dialect_one` 35,570,817
+  → 24,511,883 (335 → 4); `dialect_all` 51,471,727 → 36,678,393 (533 → 19);
+  `dialect_cxx` 287,202,035 → 272,267,487 (817 → 66); `c_headers.forest`
+  +0.002%, `cxx_stl.forest` −0.10%. On `dialect.forest`, `register_forest_func`
+  6.43M → 0.14M Ir.
+
 ### libmadc binds its own calls inside the library
 
 - `PIC_CXXFLAGS` (every object in libmadc.so, the library the thin CLI and

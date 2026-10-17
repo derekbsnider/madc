@@ -23199,7 +23199,7 @@ Variable *Program::find_namespace_function_overload(const madc::dis::istring &ns
 		const FnTemplateDeduction *deduction,
 		const std::vector<ArgValueCategory> *categories)
 {
-    activate_forest_function_family(ns, name);
+    activate_forest_member(ns, name);
     if ( strict_no_viable )
 	*strict_no_viable = false;
     if ( ambiguity )
@@ -26334,6 +26334,11 @@ Variable *Program::lazy_resolve(const madc::dis::istring &name)
 {
     if ( Variable *forest_var = activate_forest_func(name) )
 	return forest_var;
+    // A global-scope function an active dialect unit declares (ns_php's
+    // extern "C" entries): registered as the name is first used.
+    if ( !forest_dialect_units.empty() && forest_dialect_demand(madc::dis::istring(), name) )
+	if ( Variable *dialect_var = tkProgram->findVariable(strpool, name) )
+	    return dialect_var;
     std::map<madc::dis::istring, LazyEntry>::iterator it = lazy_map.find(name);
     if ( it == lazy_map.end() )
 	return NULL;
@@ -27190,7 +27195,7 @@ static bool restored_aggregate_yields_bare_tag(Program &pgm,
 	&& prior_sd->canonical_cpp_spelling() != sdd->canonical_cpp_spelling();
 }
 
-void Program::forest_restore_decls(CirFrozenForest &forest)
+void Program::forest_restore_decls(CirFrozenForest &forest, ForestRestoreDelta *delta)
 {
     ForestWorkFrame _fw(&_forest_work_seconds, &_forest_work_depth);
     double _t_restore0 = forest_restore_now();
@@ -27228,24 +27233,49 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
     // the same verdict a live parse's td.file would produce. A tmp/-grove
     // bind (the forest_bind_gate corpora) stays non-system → root → whole
     // surface, exactly like live.
+    //
+    // The dialect pays per name (A4): an active dialect unit
+    // (forest_dialect_units) binds as ever, but the free functions its decl
+    // index names are WITHHELD — none restores or registers until a lookup
+    // asks for it (forest_dialect_demand). A DELTA restore (a demand's
+    // generation) judges its records against the filter the last whole
+    // restore built.
     const bool forest_closure_filter = !forest_chain_set.empty();
-    CirMaterializeFilter mf;
-    double _t_declidx0 = forest_restore_now();
-    if ( forest_closure_filter )
+    if ( !delta || !forest_restore_filter )
     {
-	mf.active = true;
-	for ( std::set<uint32_t>::const_iterator it = forest_chain_set.begin();
-	      it != forest_chain_set.end(); ++it )
+	std::shared_ptr<CirMaterializeFilter> built(new CirMaterializeFilter);
+	CirMaterializeFilter &nf = *built;
+	double _t_declidx0 = forest_restore_now();
+	if ( forest_closure_filter )
 	{
-	    mf.bound_units.insert(*it);
-	    const char *upath = forest.unit_name(*it);
-	    if ( upath && is_system_header_path(upath) )
-		mf.system_units.insert(*it);
+	    nf.active = true;
+	    forest_dialect_namespaces.clear();
+	    for ( std::set<uint32_t>::const_iterator it = forest_chain_set.begin();
+		  it != forest_chain_set.end(); ++it )
+	    {
+		nf.bound_units.insert(*it);
+		if ( forest_dialect_unit_p(*it) )
+		{
+		    const ForestUnitActivation &act = forest_dialect_activation(*it);
+		    nf.withheld.insert(act.withheld.begin(), act.withheld.end());
+		    for ( size_t n = 0; n < act.namespaces.size(); ++n )
+			if ( forest_dialect_namespaces.insert(act.namespaces[n]).second )
+			    namespace_variables_for_write(act.namespaces[n]);
+		}
+		const char *upath = forest.unit_name(*it);
+		if ( upath && is_system_header_path(upath) )
+		    nf.system_units.insert(*it);
+	    }
+	    nf.records.insert(forest_dialect_demands.asked.begin(),
+			      forest_dialect_demands.asked.end());
 	}
+	forest_restore_filter = built;
+	_forest_declidx_seconds += forest_restore_now() - _t_declidx0;
     }
-    _forest_declidx_seconds += forest_restore_now() - _t_declidx0;
+    const CirMaterializeFilter &mf = *forest_restore_filter;
     // Env-gated probe (MADC_DECLIDX_PROBE=<substr>): dump matching
     // declared-name index entries with their unit + bound verdict.
+    if ( !delta )
     {
 	static const char *dip = ::getenv("MADC_DECLIDX_PROBE");
 	std::vector<cir_forest_decl_entry> ents;
@@ -27271,7 +27301,9 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	return forest.declared_system(name.c_str(), ns, mf);
     };
 
-    const std::vector<CirRestoredType> &types = forest.materialize_for(mf);
+    // A delta restore's generation ran already (forest_dialect_demand).
+    const std::vector<CirRestoredType> &types = delta ? forest.restored_types()
+						      : forest.materialize_for(mf);
 
     // v25: advance the anonymous-tag gensym PAST every restored `__anon_N` —
     // exactly where a live parse of the same headers would have left the
@@ -27294,9 +27326,13 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
     // A name an EARLIER restore registered (an interactive session's entry
     // before this one) holds: the session already resolved against it, so a
     // record a wider closure surfaced later never displaces it.
+    // A delta restore registers the types its generation added; when it
+    // added any, the dedupe still reads every record, so a new record never
+    // displaces a registered one (none added: the walks below are empty).
     forest_type_registered.resize(types.size(), 0);
+    const size_t types_from = delta ? delta->types : 0;
     std::map<madc::dis::istring, size_t> last_tag, last_alias;
-    for ( size_t i = 0; i < types.size(); ++i )
+    for ( size_t i = types.size() > types_from ? 0 : types_from; i < types.size(); ++i )
     {
 	if ( !types[i].name || !*types[i].name )
 	    continue;
@@ -27366,7 +27402,7 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	}
     };
 
-    for ( size_t i = 0; i < types.size(); ++i )
+    for ( size_t i = types_from; i < types.size(); ++i )
     {
 	const CirRestoredType &rt = types[i];
 	if ( !rt.name || !*rt.name )
@@ -27689,7 +27725,7 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
     // default ctor is synthesized from the class's restored ctor set (Phase 6 v12).
     const std::vector<CirRestoredGlobal> &globals = forest.restored_globals();
     forest_global_registered.resize(globals.size(), false);
-    for ( size_t i = 0; i < globals.size(); ++i )
+    for ( size_t i = delta ? delta->globals : 0; i < globals.size(); ++i )
     {
 	const CirRestoredGlobal &rg = globals[i];
 	if ( forest_global_registered[i] || !rg.name || !rg.type )
@@ -27725,8 +27761,31 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
     // long is a real miscompile — the bsearch_skill_exact class of bug).
     const std::vector<CirRestoredFunc> &funcs = forest.restored_funcs();
     forest_func_registered.resize(funcs.size(), false);
-    for ( size_t i = 0; i < funcs.size(); ++i )
+    // The registration gate of the dialect per name (A4): a withheld function
+    // registers only when THIS Program asked for its record
+    // (forest_dialect_demands.asked) — a sibling TU's demand in the compile
+    // group restores it into the shared forest, never registers it here.
+    auto withheld_here = [&](const CirRestoredFunc &f) -> bool {
+	return !mf.withheld.empty() && mf.withheld.count(f.record)
+	    && !forest_dialect_demands.asked.count(f.record);
+    };
+    // The functions a delta restore stages: the asked ones an earlier
+    // generation restored, then the generation's own, in record order (the
+    // order one generation over all of them would restore them in).
+    std::vector<size_t> func_order;
+    if ( delta )
     {
+	func_order = delta->asked_funcs;
+	for ( size_t i = delta->funcs; i < funcs.size(); ++i )
+	    func_order.push_back(i);
+	std::sort(func_order.begin(), func_order.end(),
+		  [&](size_t a, size_t b) { return funcs[a].record < funcs[b].record; });
+	func_order.erase(std::unique(func_order.begin(), func_order.end()),
+			 func_order.end());
+    }
+    for ( size_t fo = 0, fn = delta ? func_order.size() : funcs.size(); fo < fn; ++fo )
+    {
+	const size_t i = delta ? func_order[fo] : fo;
 	if ( forest_func_registered[i] || !funcs[i].name || !*funcs[i].name
 	  || !funcs[i].fd )
 	    continue;
@@ -27740,7 +27799,7 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	  && !ffd->function_display_name.empty() )
 	    verdict = forest_name_verdict(ffd->function_display_name,
 					  ffd->namespace_name.c_str());
-	if ( verdict < 0 )
+	if ( verdict < 0 || withheld_here(funcs[i]) )
 	    continue;
 	forest_func_registered[i] = true;
 	PendingForestFunc pf;
@@ -27769,7 +27828,10 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	else
 	{
 	    forest_pending_funcs.push_back(pf);
-	    ++_forest_funcs_eager;
+	    if ( delta && forest_dialect_demands.asked.count(funcs[i].record) )
+		delta->staged.push_back(std::make_pair(pf.name, pf.fd));
+	    else
+		++_forest_funcs_eager;
 	}
     }
 
@@ -27791,7 +27853,7 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
     // line/column per token; the file rides the run descriptor).
     CirRestoredTemplateList &tmpls = forest.restored_templates();
     forest_tmpl_registered.resize(tmpls.size(), false);
-    for ( size_t i = 0; i < tmpls.size(); ++i )
+    for ( size_t i = delta ? delta->templates : 0; i < tmpls.size(); ++i )
     {
 	if ( forest_tmpl_registered[i] )
 	    continue;
@@ -28013,6 +28075,8 @@ Program::ForestBindMark Program::forest_bind_mark() const
     m.tmpl_registered = forest_tmpl_registered;
     m.overload_recaptures = forest_pending_overload_recaptures.size();
     m.dialect_demands = forest_dialect_demands.mark();
+    m.dialect_units = forest_dialect_units.size();
+    m.dialect_registered = forest_dialect_registered.size();
     return m;
 }
 
@@ -28024,6 +28088,10 @@ Program::ForestBindMark Program::forest_bind_mark() const
 void Program::forest_bind_rewind(const ForestBindMark &mark)
 {
     forest_dialect_demands.rewind(mark.dialect_demands);
+    if ( forest_dialect_units.size() > mark.dialect_units )
+	forest_dialect_units.resize(mark.dialect_units);
+    if ( forest_dialect_registered.size() > mark.dialect_registered )
+	forest_dialect_registered.resize(mark.dialect_registered);
     while ( forest_chain.size() > mark.chain_size )
     {
 	forest_chain_set.erase(forest_chain.back());
@@ -28051,6 +28119,7 @@ bool Program::ForestDialectDemands::record(const madc::dis::istring &name,
     d.name = name;
     d.records = records;
     log.push_back(d);
+    asked.insert(records.begin(), records.end());
     return true;
 }
 
@@ -28063,11 +28132,17 @@ bool Program::ForestDialectDemands::demanded(const madc::dis::istring &name, boo
 
 void Program::ForestDialectDemands::rewind(size_t mark)
 {
+    if ( log.size() <= mark )
+	return;
     while ( log.size() > mark )
     {
 	memo.erase(log.back().name);
 	log.pop_back();
     }
+    // Two names may carry one record: what the kept demands ask stays.
+    asked.clear();
+    for ( size_t i = 0; i < log.size(); ++i )
+	asked.insert(log[i].records.begin(), log[i].records.end());
 }
 
 const Program::ForestUnitNames &Program::forest_unit_decl_names(uint32_t unit)
@@ -28085,6 +28160,62 @@ const Program::ForestUnitNames &Program::forest_unit_decl_names(uint32_t unit)
 		names[madc::dis::istring(nm)].push_back(r);
 	    }
     return names;
+}
+
+// An active dialect unit's activation (see the declaration): one pass over
+// its decl entries' kinds and records (each distinct one read once), keys
+// and namespaces from the records.
+const Program::ForestUnitActivation &Program::forest_dialect_activation(uint32_t unit)
+{
+    std::map<uint32_t, ForestUnitActivation>::const_iterator it =
+	forest_unit_activation.find(unit);
+    if ( it != forest_unit_activation.end() )
+	return it->second;
+    ForestUnitActivation &act = forest_unit_activation[unit];
+    std::vector<cir_forest_decl_entry> di;
+    if ( !bind_forest || !bind_forest->unit_decl_index(unit, di) )
+	return act;
+    // (record, kind) once each: a scoped enum's enumerators share its record.
+    std::vector<std::pair<uint32_t, uint32_t> > recs;
+    recs.reserve(di.size());
+    for ( size_t k = 0; k < di.size(); ++k )
+	if ( di[k].record_id != CIR_DECL_RECORD_NONE )
+	    recs.push_back(std::make_pair(di[k].record_id, di[k].kind));
+    std::sort(recs.begin(), recs.end());
+    recs.erase(std::unique(recs.begin(), recs.end()), recs.end());
+    std::set<const char *> spaces;	// a spelling's one place in its table
+    for ( size_t k = 0; k < recs.size(); ++k )
+    {
+	const bool fn = recs[k].second == pdkFunction;
+	const char *ns = NULL, *display = NULL, *key = NULL;
+	if ( !bind_forest->decl_entry_scope(recs[k].second, recs[k].first,
+					    ns, display, fn ? &key : NULL) )
+	    continue;
+	if ( ns && *ns )
+	    spaces.insert(ns);
+	if ( fn && key && *key )
+	    act.funcs.push_back(std::make_pair(key, recs[k].first));
+    }
+    std::sort(act.funcs.begin(), act.funcs.end(),
+	      [](const std::pair<const char *, uint32_t> &a,
+		 const std::pair<const char *, uint32_t> &b) {
+		  int c = strcmp(a.first, b.first);
+		  return c ? c < 0 : a.second < b.second;
+	      });
+    for ( size_t k = 0; k < act.funcs.size(); ++k )
+	act.withheld.push_back(act.funcs[k].second);
+    std::sort(act.withheld.begin(), act.withheld.end());
+    act.withheld.erase(std::unique(act.withheld.begin(), act.withheld.end()),
+		       act.withheld.end());
+    std::set<madc::dis::istring> names;
+    for ( std::set<const char *>::const_iterator si = spaces.begin(); si != spaces.end(); ++si )
+	names.insert(madc::dis::istring(*si));
+    act.namespaces.assign(names.begin(), names.end());
+    DBG(std::cout << "forest_dialect_activation: unit " << unit << " ("
+	<< (bind_forest->unit_name(unit) ? bind_forest->unit_name(unit) : "?")
+	<< "): " << act.withheld.size() << " function(s) by name, "
+	<< act.namespaces.size() << " namespace(s)" << std::endl);
+    return act;
 }
 
 void Program::forest_active_dialect_units(std::vector<uint32_t> &out) const
@@ -28361,7 +28492,14 @@ Variable *Program::register_forest_func(const PendingForestFunc &pf)
     }
     else
     {
-	fv = addVariable(NULL, *pf.fd, pf.name);
+	// The program-scope Variable addVariable makes at the flush — where
+	// no namespace is open, no instantiation runs and no extern
+	// declaration is being parsed — made without reading that parse
+	// state: a demand registers mid-parse (forest_dialect_demand), and the
+	// enclosing parse's namespace binding, instantiation-product flag or
+	// extern flag is not this declaration's.
+	fv = new Variable(pf.name, *pf.fd, 1, NULL, true);
+	tkProgram->variables.push_back(fv);
 	Method *fm = new Method(*fv);
 	fv->data = (void *)fm;
 	// C++ SYMBOL MANGLING phase 4: a restored bodied function carrying its
@@ -28667,6 +28805,177 @@ Variable *Program::register_builtin_twin_alias(const madc::dis::istring &fname,
     return var;
 }
 
+// The dialect pays per name (A4) — the one materializer's halves.
+//
+// The records an active dialect unit declares for `ns::name` as a FREE
+// function: the run of the flat id namespace_function_symbol spells (A1: a
+// namespaced dialect function is indexed by it) and its `__oN` overloads in
+// each active unit's activation keys, each kept when its record names `ns`
+// (the flat spelling does not say its namespace) and its display name,
+// where the record carries one, is `name`. Appended, sorted.
+static void forest_dialect_function_records(Program &pgm,
+					    const madc::dis::istring &ns,
+					    const madc::dis::istring &name,
+					    std::vector<uint32_t> &records)
+{
+    CirFrozenForest &forest = *pgm.bind_forest;
+    const madc::dis::istring flat = namespace_function_symbol(ns, name);
+    const char *f = flat.c_str();
+    const size_t fl = flat.size();
+    for ( size_t u = 0; u < pgm.forest_dialect_units.size(); ++u )
+    {
+	const Program::ForestUnitActivation &act =
+	    pgm.forest_dialect_activation(pgm.forest_dialect_units[u]);
+	std::vector<std::pair<const char *, uint32_t> >::const_iterator it =
+	    std::lower_bound(act.funcs.begin(), act.funcs.end(), f,
+			     [](const std::pair<const char *, uint32_t> &a, const char *k) {
+				 return strcmp(a.first, k) < 0;
+			     });
+	for ( ; it != act.funcs.end() && !strncmp(it->first, f, fl); ++it )
+	{
+	    if ( it->first[fl]
+	      && strip_overload_suffix(madc::dis::istring(it->first)) != flat )
+		continue;		// a longer name, not an overload of it
+	    const char *ens = NULL, *display = NULL;
+	    if ( !forest.decl_entry_scope(Program::pdkFunction, it->second, ens, display)
+	      || ns != madc::dis::istring(ens ? ens : "")
+	      || (display && *display && name != display) )
+		continue;
+	    records.push_back(it->second);
+	}
+    }
+    std::sort(records.begin(), records.end());
+    records.erase(std::unique(records.begin(), records.end()), records.end());
+}
+
+// A name's demand, once (memoized, hit or miss): its records appended to
+// `asked`. A scope no active dialect unit declares into holds none.
+static void forest_dialect_ask(Program &pgm, const madc::dis::istring &ns,
+			       const madc::dis::istring &name,
+			       std::vector<uint32_t> &asked)
+{
+    if ( name.empty()
+      || (!ns.empty() && !pgm.forest_dialect_namespaces.count(ns)) )
+	return;
+    const madc::dis::istring q = ns.empty() ? name : madc::dis::istring(ns + "::" + name);
+    bool hit = false;
+    if ( pgm.forest_dialect_demands.demanded(q, hit) )
+	return;
+    std::vector<uint32_t> records;
+    forest_dialect_function_records(pgm, ns, name, records);
+    pgm.forest_dialect_demands.record(q, records);
+    asked.insert(asked.end(), records.begin(), records.end());
+}
+
+// Materialize the asked records — one records-only generation
+// (CirMaterializeFilter::records) against the closure as it now stands —
+// and register them at once: the delta restore, then the pending apply
+// (plan Decision 5). True when a function registered.
+static bool forest_dialect_register(Program &pgm, std::vector<uint32_t> &asked)
+{
+    if ( asked.empty() )
+	return false;
+    ForestWorkFrame _fw(&pgm._forest_work_seconds, &pgm._forest_work_depth);
+    // A unit bound since the last restore: the whole flush first, so the
+    // generation below runs against the closure as it now stands.
+    if ( pgm.forest_chain.size() > pgm.forest_restored_chain_size )
+	pgm.flush_forest_pending_globals();
+    if ( !pgm.forest_restore_filter )
+	return false;
+    CirFrozenForest &forest = *pgm.bind_forest;
+    std::sort(asked.begin(), asked.end());
+    asked.erase(std::unique(asked.begin(), asked.end()), asked.end());
+    Program::ForestRestoreDelta delta;
+    delta.types = forest.restored_types().size();
+    delta.globals = forest.restored_globals().size();
+    delta.funcs = forest.restored_funcs().size();
+    delta.templates = forest.restored_templates().size();
+    delta.nsbinds = forest.restored_nsbinds().size();
+    delta.nslinks = forest.restored_nslinks().size();
+    delta.nsaliases = forest.restored_nsaliases().size();
+    delta.defbodies = forest.restored_defbodies().size();
+    delta.param_defaults = forest.restored_param_defaults().size();
+    CirMaterializeFilter want;
+    want.active = true;
+    want.records.insert(asked.begin(), asked.end());
+    forest.materialize_for(want);
+    // An asked record an EARLIER generation restored (a sibling TU's
+    // demand into the shared forest, a whole walk): the forest's asked map,
+    // else the restored list itself.
+    const std::vector<CirRestoredFunc> &funcs = forest.restored_funcs();
+    for ( size_t a = 0; a < asked.size(); ++a )
+    {
+	size_t idx = 0;
+	if ( forest.asked_restored_func(asked[a], idx) )
+	{
+	    if ( idx < delta.funcs )
+		delta.asked_funcs.push_back(idx);
+	    continue;
+	}
+	for ( size_t i = 0; i < delta.funcs; ++i )
+	    if ( funcs[i].record == asked[a] )
+	    {
+		delta.asked_funcs.push_back(i);
+		break;
+	    }
+    }
+    pgm.forest_restore_decls(forest, &delta);
+    pgm.forest_apply_pending(&delta);
+    bool registered = false;
+    for ( size_t i = 0; i < delta.staged.size(); ++i )
+    {
+	funcdef_map_iter fit = pgm.funcdef_map.find(delta.staged[i].first);
+	if ( fit != pgm.funcdef_map.end() && fit->second == delta.staged[i].second )
+	{
+	    pgm.forest_dialect_registered.push_back(delta.staged[i]);
+	    registered = true;
+	}
+    }
+    DBG(std::cout << "forest_dialect_register: " << asked.size()
+	<< " record(s) asked, " << delta.staged.size() << " staged" << std::endl);
+    return registered;
+}
+
+bool Program::forest_dialect_demand(const madc::dis::istring &ns,
+				    const madc::dis::istring &name)
+{
+    if ( forest_dialect_units.empty() || !bind_forest || !tkProgram )
+	return false;
+    std::vector<uint32_t> asked;
+    forest_dialect_ask(*this, ns, name, asked);
+    return forest_dialect_register(*this, asked);
+}
+
+bool Program::forest_dialect_demand_symbol(const madc::dis::istring &sym)
+{
+    if ( forest_dialect_units.empty() || sym.empty()
+      || funcdef_map.find(body_registration_key(sym)) != funcdef_map.end() )
+	return false;
+    madc::dis::istring scope, name;
+    if ( sym.size() > 2 && sym[0] == '_' && sym[1] == 'Z' )
+    {
+	if ( !itanium_function_name(sym.c_str(), scope, name) )
+	    return false;
+    }
+    else
+	name = sym;
+    return forest_dialect_demand(scope, name);
+}
+
+void Program::forest_dialect_demand_namespace(const madc::dis::istring &ns)
+{
+    if ( forest_dialect_units.empty() || !bind_forest || !tkProgram
+      || !forest_dialect_namespaces.count(ns) )
+	return;
+    std::vector<madc::dis::istring> leaves;
+    forest_dialect_names(ns, madc::dis::istring(),
+			 [&](const madc::dis::istring &leaf) { leaves.push_back(leaf); });
+    std::vector<uint32_t> asked;
+    for ( size_t i = 0; i < leaves.size(); ++i )
+	forest_dialect_ask(*this, ns, leaves[i], asked);
+    forest_dialect_register(*this, asked);
+}
+
 Variable *Program::activate_forest_func(const madc::dis::istring &name)
 {
     std::map<madc::dis::istring, PendingForestFunc>::iterator it =
@@ -28682,9 +28991,13 @@ Variable *Program::activate_forest_func(const madc::dis::istring &name)
     return var;
 }
 
-void Program::activate_forest_function_family(const madc::dis::istring &ns,
-					       const madc::dis::istring &display_name)
+void Program::activate_forest_member(const madc::dis::istring &ns,
+				     const madc::dis::istring &display_name)
 {
+    if ( !forest_dialect_units.empty() )
+	forest_dialect_demand(ns, display_name);
+    if ( forest_deferred_func_families.empty() )
+	return;
     madc::dis::istring family = ns + "::" + display_name;
     std::map<madc::dis::istring, std::vector<madc::dis::istring> >::iterator fi =
 	forest_deferred_func_families.find(family);
@@ -28699,6 +29012,17 @@ void Program::activate_forest_function_family(const madc::dis::istring &ns,
 
 void Program::activate_forest_function_display(const madc::dis::istring &display_name)
 {
+    // The dialect's free operators: every active scope's, and the global one.
+    if ( !forest_dialect_units.empty() && bind_forest && tkProgram )
+    {
+	std::vector<uint32_t> asked;
+	forest_dialect_ask(*this, madc::dis::istring(), display_name, asked);
+	for ( std::set<madc::dis::istring>::const_iterator it =
+		  forest_dialect_namespaces.begin();
+	      it != forest_dialect_namespaces.end(); ++it )
+	    forest_dialect_ask(*this, *it, display_name, asked);
+	forest_dialect_register(*this, asked);
+    }
     const madc::dis::istring suffix = "::" + display_name;
     std::vector<madc::dis::istring> families;
     for ( std::map<madc::dis::istring, std::vector<madc::dis::istring> >::const_iterator it =
@@ -28713,7 +29037,7 @@ void Program::activate_forest_function_display(const madc::dis::istring &display
     for ( size_t i = 0; i < families.size(); ++i )
     {
 	size_t sep = families[i].size() - suffix.size();
-	activate_forest_function_family(families[i].substr(0, sep), display_name);
+	activate_forest_member(families[i].substr(0, sep), display_name);
     }
 }
 
@@ -28724,7 +29048,14 @@ void Program::flush_forest_pending_globals()
 {
     if ( !tkProgram )
 	return;
+    forest_restore_if_grown();
+    forest_apply_pending(NULL);
+}
 
+// The flush's first half (a dialect demand runs it before its own
+// generation, so a demand never restores against a stale closure).
+void Program::forest_restore_if_grown()
+{
     // Item 5 (lazy defrost): the decl-record restore runs HERE — the first
     // point after tokenize where forest_chain_set is COMPLETE (every #include
     // has bound its unit closure) — so forest_restore_decls can filter
@@ -28752,10 +29083,40 @@ void Program::flush_forest_pending_globals()
 		}
 	    }
     }
+}
 
+// The flush's second half: register what a restore staged. Under a DELTA
+// restore (a dialect demand, mid-parse) the restored namespace-surface and
+// default-argument lists are walked from where the generation began — never
+// again over what an earlier restore applied — except the deferred bodies,
+// walked whole when a staged function's body is one (a bodied function with
+// no translated definition: its DK_DEFBODY entry may have restored with its
+// unit before the function did).
+void Program::forest_apply_pending(const ForestRestoreDelta *delta)
+{
+    if ( !tkProgram )
+	return;
     if ( forest_pending_globals.empty() && forest_pending_funcs.empty()
       && forest_pending_datatypes.empty() )
 	return;
+    // Taken off the staging lists before any of it applies: an apply re-parses
+    // (default and constructor arguments), a re-parse may demand a dialect
+    // name, and that demand restores and applies ITS staging — never this
+    // one's again, and never into a list being walked here.
+    std::vector<std::pair<madc::dis::istring, TokenDataType *> > pending_datatypes;
+    std::vector<PendingForestFunc> pending_funcs;
+    std::vector<PendingForestMemberTmpl> pending_member_tmpls;
+    std::vector<PendingForestGlobal> pending_globals;
+    pending_datatypes.swap(forest_pending_datatypes);
+    pending_funcs.swap(forest_pending_funcs);
+    pending_member_tmpls.swap(forest_pending_member_tmpls);
+    pending_globals.swap(forest_pending_globals);
+    bool staged_deferred_body = false;
+    if ( delta )
+	for ( size_t i = 0; i < pending_funcs.size() && !staged_deferred_body; ++i )
+	    staged_deferred_body = pending_funcs[i].fd
+		&& !pending_funcs[i].fd->declaration_only
+		&& !pending_funcs[i].fd->has_forest_body;
 
     // Staged FLAT datatype_map registrations FIRST (typedef/enum/class names
     // from the bound headers): tokenize is over, so the writes can no longer
@@ -28765,28 +29126,26 @@ void Program::flush_forest_pending_globals()
     // names against the complete map exactly as the eager write provided.
     // Applied in restore order — a later same-named alias wins, the live
     // registration semantics.
-    for ( size_t i = 0; i < forest_pending_datatypes.size(); ++i )
+    for ( size_t i = 0; i < pending_datatypes.size(); ++i )
     {
-	datatype_map[forest_pending_datatypes[i].first] =
-	    forest_pending_datatypes[i].second;
+	datatype_map[pending_datatypes[i].first] =
+	    pending_datatypes[i].second;
 	// v40 (task #57): PERSISTENT provenance — the main parse's typedef
 	// arm lets a live re-declaration overwrite a shape-divergent
 	// RESTORED alias (the frozen twin encodes the freeze's include
 	// order, not this TU's), but must still throw on a genuine live
 	// conflict. forest_pending_datatype_names clears below; this set
 	// survives the whole TU.
-	forest_restored_datatype_names.insert(forest_pending_datatypes[i].first);
+	forest_restored_datatype_names.insert(pending_datatypes[i].first);
     }
-    forest_pending_datatypes.clear();
     forest_pending_datatype_names.clear();
 
     // RC2 + #23: source-declared functions and class methods stay eager so the
     // consumer starts with the same lookup surface as a live header parse.
     // Verdict-0 derived free functions were indexed separately above and
     // promote through this SAME owner only when demanded.
-    for ( size_t i = 0; i < forest_pending_funcs.size(); ++i )
-	register_forest_func(forest_pending_funcs[i]);
-    forest_pending_funcs.clear();
+    for ( size_t i = 0; i < pending_funcs.size(); ++i )
+	register_forest_func(pending_funcs[i]);
     // v21: restored MEMBER function templates. The placeholder FuncDef itself
     // restored VERBATIM from its methodrec (its saved __oN rank — registered
     // by the pending-funcs flush above), so the normal path DEFERS: attach the
@@ -28799,9 +29158,9 @@ void Program::flush_forest_pending_globals()
     // that path needs live parse machinery (class_scope_stack, addFunction) a
     // mid-parse thaw must not touch (fresh-surface robustness — same one
     // production path).
-    for ( size_t i = 0; i < forest_pending_member_tmpls.size(); ++i )
+    for ( size_t i = 0; i < pending_member_tmpls.size(); ++i )
     {
-	PendingForestMemberTmpl &pm = forest_pending_member_tmpls[i];
+	PendingForestMemberTmpl &pm = pending_member_tmpls[i];
 	if ( !pm.owner || !pm.rt || !pm.forest )
 	    continue;
 	funcdef_map_iter fit = pm.key.empty() ? funcdef_map.end()
@@ -28976,10 +29335,9 @@ void Program::flush_forest_pending_globals()
 	    << pm.owner->name << " (" << typeparams.size()
 	    << " param(s), " << tokens.size() << " tokens)" << std::endl);
     }
-    forest_pending_member_tmpls.clear();
-    for ( size_t i = 0; i < forest_pending_globals.size(); ++i )
+    for ( size_t i = 0; i < pending_globals.size(); ++i )
     {
-	const PendingForestGlobal &pg = forest_pending_globals[i];
+	const PendingForestGlobal &pg = pending_globals[i];
 	// Live's identity (addVariable): a member of a named namespace is a
 	// redeclaration only of THAT namespace's member — ui::NONE and a C
 	// enum's NONE are two entities; at global scope it is the program's.
@@ -29242,7 +29600,6 @@ void Program::flush_forest_pending_globals()
 	DBG(std::cout << "flush_forest_pending_globals: global " << pg.name
 	    << " (" << pg.type->name << ")" << std::endl);
     }
-    forest_pending_globals.clear();
 
     // A bound class's STATIC DATA MEMBER storage needs no fix-up here: the
     // vfEXTERN Variable the extern-ref arm above rebuilds now carries the
@@ -29260,7 +29617,7 @@ void Program::flush_forest_pending_globals()
 	// Variable — the exact registration the live using-decl performs. A
 	// fenced/unrestored target cleanly lacks; first-wins matches live.
 	const std::vector<CirRestoredNsBind> &binds = bind_forest->restored_nsbinds();
-	for ( size_t i = 0; i < binds.size(); ++i )
+	for ( size_t i = delta ? delta->nsbinds : 0; i < binds.size(); ++i )
 	{
 	    const CirRestoredNsBind &b = binds[i];
 	    Variable *v = findVariable(b.key);
@@ -29306,7 +29663,7 @@ void Program::flush_forest_pending_globals()
 	// leaves them. Idempotent: the mirror inserts first-wins.
 	const std::vector<CirRestoredNsLink> &links = bind_forest->restored_nslinks();
 	std::vector<std::pair<madc::dis::istring, madc::dis::istring> > mirror_order;
-	for ( size_t i = 0; i < links.size(); ++i )
+	for ( size_t i = delta ? delta->nslinks : 0; i < links.size(); ++i )
 	{
 	    madc::dis::istring parent = links[i].parent ? links[i].parent : "";
 	    madc::dis::istring child(links[i].child);
@@ -29344,7 +29701,7 @@ void Program::flush_forest_pending_globals()
 	// the live parse already made for the same alias wins: re-declaring an
 	// alias to the same namespace is the [namespace.alias] no-op).
 	const std::vector<CirRestoredNsAlias> &nsa = bind_forest->restored_nsaliases();
-	for ( size_t i = 0; i < nsa.size(); ++i )
+	for ( size_t i = delta ? delta->nsaliases : 0; i < nsa.size(); ++i )
 	    if ( nsa[i].alias && *nsa[i].alias && nsa[i].target && *nsa[i].target
 	      && !namespace_aliases.count(nsa[i].alias) )
 		namespace_aliases[nsa[i].alias] = nsa[i].target;
@@ -29356,7 +29713,8 @@ void Program::flush_forest_pending_globals()
 	// whose method did not restore cleanly lacks.
 	const std::vector<CirRestoredDeferredBody> &dbs =
 	    bind_forest->restored_defbodies();
-	for ( size_t i = 0; i < dbs.size(); ++i )
+	for ( size_t i = delta && !staged_deferred_body ? delta->defbodies : 0;
+	      i < dbs.size(); ++i )
 	{
 	    const CirRestoredDeferredBody &db = dbs[i];
 	    if ( !db.key || !*db.key || deferred_lazy_bodies.count(db.key) )
@@ -29443,7 +29801,7 @@ void Program::flush_forest_pending_globals()
     {
 	const std::vector<CirRestoredFuncDefaults> &fdefs =
 	    bind_forest->restored_param_defaults();
-	for ( size_t i = 0; i < fdefs.size(); ++i )
+	for ( size_t i = delta ? delta->param_defaults : 0; i < fdefs.size(); ++i )
 	{
 	    const CirRestoredFuncDefaults &rd = fdefs[i];
 	    if ( !rd.fd || !rd.fd->param_defaults.empty() )
@@ -29480,8 +29838,19 @@ void Program::flush_forest_pending_globals()
 // token runs (the v23 rebuild above): each run deserializes into a sub-stream
 // ending in the live stop token `)` and parses inside the owner's class scope
 // and the defining namespace, as parseFunction parsed it.
-void Program::rebuild_forest_param_defaults(const CirRestoredFuncDefaults &rd)
+void Program::rebuild_forest_param_defaults(const CirRestoredFuncDefaults &rd_ref)
 {
+    // Under the dialect's per-name demand, a copy: the re-parse below may
+    // demand a dialect name, whose generation grows the forest's restored
+    // lists — `rd_ref` is an element of one.
+    CirRestoredFuncDefaults rd_copy;
+    const CirRestoredFuncDefaults *rdp = &rd_ref;
+    if ( !forest_dialect_units.empty() )
+    {
+	rd_copy = rd_ref;
+	rdp = &rd_copy;
+    }
+    const CirRestoredFuncDefaults &rd = *rdp;
     rd.fd->param_defaults.assign(rd.fd->parameters.size(), NULL);
     for ( size_t rix = 0; rix < rd.runs.size(); ++rix )
     {
@@ -30881,7 +31250,7 @@ madc::dis::istring Program::declaring_inline_set_namespace(const madc::dis::istr
 Variable *Program::find_namespace_member(const madc::dis::istring &ns_name, const madc::dis::istring &member_name,
 					 TokenBase *diag)
 {
-    activate_forest_function_family(ns_name, member_name);
+    activate_forest_member(ns_name, member_name);
     // [namespace.qual]: the members of N include the members of N's inline
     // namespace set, TRANSITIVELY — and they are visible while the inline
     // namespace block is still OPEN, not only after
@@ -43232,6 +43601,10 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			else
 			    Throw(member_tb) << "Expecting identifier after '" << ns_name << "::'" << flush;
 		    }
+		    // A dialect name's first touch, ahead of the template and type
+		    // probes below (find_namespace_member's own touch follows).
+		    if ( !forest_dialect_units.empty() )
+			activate_forest_member(ns_name, member_name);
 
 		    DataDef *member_dd = NULL;
 		    // A FUNCTION template (`std::get<0>(t)`) must NOT be treated as a
@@ -47082,6 +47455,9 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	madc::dis::istring ns_name = resolve_source_namespace(raw_ns_name);
 	if ( ns_name.empty() )
 	    pgm.Throw(tn) << "Unknown namespace '" << raw_ns_name << "'" << flush;
+	// The directive imports what the namespace holds: its dialect
+	// functions register first (the dialect's per-name registration).
+	pgm.forest_dialect_demand_namespace(ns_name);
 	// Each component's spelling records the namespace its prefix names.
 	for ( size_t i = 0; i < spelled.size(); ++i )
 	{
@@ -79916,6 +80292,11 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
     bool ns_reuses_declaration = false;	// the textual identity matched a declared member
     if ( namespace_function )
     {
+	// A dialect function of the same name registers first, as it did when
+	// the bind registered the whole fragment: a program's own declaration
+	// in that namespace then overloads or redeclares it.
+	if ( !forest_dialect_units.empty() )
+	    activate_forest_member(current_namespace(), source_id);
 	parse_id = namespace_function_symbol(current_namespace(), source_id);
 	// C++ free-function overloading: each overload of ns::name gets its
 	// OWN Variable/FuncDef under a unique internal symbol; a
