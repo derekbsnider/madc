@@ -7986,7 +7986,6 @@ int madc_cir_dump_forest(const char *container_path)
 		printf("ppexport\t%s\t%s\t%s\n", uname ? uname : "?",
 		       tag == Program::PackMacroEvent::peUndef ? "undef"
 		       : tag == Program::PackMacroEvent::peDefineFn ? "define-fn"
-		       : tag == Program::PackMacroEvent::peImport ? "import"
 		       : "define",
 		       nm ? nm : "?");
 		k += 5 + nparams;
@@ -8141,9 +8140,8 @@ static bool project_parse_all(MadcEngine &engine,
 		parsed.push_back(std::move(pt));
 	}
 	// The manifest's "libs" bind on the first TU as a link-form `import`
-	// in it would: the library opens before the program links, a native
-	// build's closure names it (module_link_libs), and a GUI module row
-	// lifts the memory guard (module-map data, as `import` reads it).
+	// in it would: the library opens before the program links, and a
+	// native build's closure names it (module_link_libs).
 	Program &first = *parsed.front().prog;
 	for (const std::string &lib : manifest.libs) {
 		if (!first.is_dynamic_library_loading_enabled()) {
@@ -8152,9 +8150,6 @@ static bool project_parse_all(MadcEngine &engine,
 			return false;
 		}
 		madc::dis::istring spelling = madc_module_library_spelling(lib);
-		const MadcModuleSpec *row = madc_module_find_spelled(spelling);
-		if (row && (row->flags & MADC_MODULE_GUI))
-			first.bound_gui_module = true;
 		std::string err;
 		if (!first.bind_module_namespace("", spelling,
 						 /*link_form=*/true, err)) {
@@ -8186,11 +8181,11 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 			       forest_bind_path,
 			       class_pattern_live_capture, parsed))
 		return 1;	// no MIR/c2m created yet — nothing to tear down
-	// A GUI module row bound by any TU lifts an armed memory guard before
+	// A GUI module imported by any TU lifts an armed memory guard before
 	// the program runs (the single-TU driver does the same after its parse).
 	for (const CirParsedTU &pt : parsed)
 		if (pt.prog && pt.prog->bound_gui_module) {
-			madc_lift_memory_guard("a GUI module row was imported");
+			madc_lift_memory_guard("a GUI module was imported");
 			break;
 		}
 

@@ -40,8 +40,8 @@
 #else
 #include <unistd.h>		// getpid — sys.pid's POSIX spelling
 #endif
-#include "madc_modules.h"	// module_available: the module map + the one dl seam
 #include "madc_dl.h"		// library_open: the one dl seam
+#include "madc_modules.h"	// madc_target_dso_suffix: madc::library_suffix
 #include "madc_run_child.h"	// serve_run_child: a Run child of self
 #include "madcdis/process.h"	// Process::run_and_wait: compiler_run
 #include "madc_regex.h"		// regex_*: madc's one regex engine (PCRE2)
@@ -981,18 +981,6 @@ void *__madc_context_set_array_runtime(void *ctx, void *key, void *value)
 }
 
 namespace madc {
-// Is a module's library available on this system? Opens the module map's
-// spelling through the one dl seam (madc_module_open — beside the running
-// binary first, then the loader's search) and keeps it open; false when it
-// cannot be opened. The lazy-row contract's question (madc_modules.h).
-bool module_available(const char *name)
-{
-    if ( !name || !*name )
-	return false;
-    std::string err;
-    return madc_module_open(madc_module_library_spelling(name), err) != NULL;
-}
-
 // A shared library opened at run time by PATH (a madcide plugin's, plan
 // §41.11a step 4), through the one dl seam: every reference binds at open,
 // so a library whose names cannot all bind is refused here with the

@@ -2074,25 +2074,6 @@ TokenBase *Program::tokenize_import_directive()
     if ( alias.empty() && !row->interface )
 	Throw << "import: module '" << name << "' has no interface; bind it with"
 	      << " `import " << name << " as <alias>;`" << flush;
-    // A LAZY row's interface form binds nothing at parse and joins no link
-    // closure: its interface is served between the synthetic module markers,
-    // so every prototype in it becomes a typed first-call slot against the
-    // row's spelling (parseFunction + CirBuilder::dyn_module_callee). The
-    // program compiles and runs without the library and asks
-    // madc::module_available before using it. The alias form keeps the
-    // eager binding (a namespace needs the exports to answer member lookups).
-    // A bound unit replays it from its frozen PP events (pack_record_import).
-    if ( alias.empty() && row && (row->flags & MADC_MODULE_LAZY) )
-    {
-	adopt_lazy_module_import(name);
-	pack_record_import(name);
-	DBG(std::cout << "import " << name << " -> " << spelling << " (lazy)" << std::endl);
-	source.pushback_reread(std::string("#pragma madc module_begin(\"") + spelling
-			       + "\")\n#include <" + row->interface + ">\n"
-			       + "#pragma madc module_end\n");
-	return getToken();
-    }
-    adopt_module_flags(name);
     std::string err;
     if ( !bind_module_namespace(alias, spelling, /*link_form=*/alias.empty(), err) )
 	Throw << "import: cannot load '" << spelling << "': " << err << flush;
@@ -2261,24 +2242,6 @@ void Program::register_imported_modules()
 	imported_modules[m].registered = true;
     }
     registering_module = was;
-}
-
-// The row's flags are module-map DATA (Rule 7): a GUI module lifts the memory
-// guard at run start — recorded here, acted on by the driver.
-void Program::adopt_module_flags(const madc::dis::istring &module)
-{
-    const MadcModuleSpec *row = madc_module_find(module);
-    if ( row && (row->flags & MADC_MODULE_GUI) )
-	bound_gui_module = true;
-}
-
-// A LAZY row's import binds nothing and links nothing: its spelling joins the
-// object's manifest as OPTIONAL (the loader opens what it can, never fails on
-// it). Shared by the directive and the replay of a bound unit's peImport event.
-void Program::adopt_lazy_module_import(const madc::dis::istring &module)
-{
-    adopt_module_flags(module);
-    module_optional_libs.push_back(madc_module_library_spelling(module));
 }
 
 void Program::tokenize_embedded_header_text(const madc::dis::istring &name,
@@ -3524,8 +3487,6 @@ void Program::push_token_with_literal_concat(TokenBase *tb)
     if ( pack_protocol_unit )	// __need serving: the includer owns this token
 	pack_protocol_token_owner[tb] = pack_protocol_unit;	// (identity-keyed)
     pin_pending_pack_ops(tb);
-    if ( !lazy_module_spelling.empty() )	// inside a LAZY row's interface
-	_lazy_module_tokens[tb] = lazy_module_spelling;
 }
 
 // Pin queued #pragma pack ops to the first real token emitted after the
@@ -3640,9 +3601,6 @@ void Program::_tokenizer_init()
     bound_gui_module = false;
     imported_modules.clear();
     registering_module = NULL;
-    module_optional_libs.clear();
-    lazy_module_spelling.clear();
-    _lazy_module_tokens.clear();
     pending_no_strict_aliasing = false;
     pending_weak_binding = false;
     pending_specifier_weak = false;
@@ -5563,12 +5521,6 @@ void Program::forest_bind_include(ForestSide &s, uint32_t unit)
 	return;
     }
     ForestWorkFrame _fw(&_forest_work_seconds, &_forest_work_depth);
-    // A unit an #include binds between a LIVE lazy import's module markers is
-    // the interface those markers wrap: its prototypes bind at first call, as
-    // the tokens a live serving would have lexed there are tagged. The unit
-    // alone, as a replayed import notes it (forest_note_lazy_module_interface).
-    if ( !lazy_module_spelling.empty() && s.walking.empty() )
-	forest_note_lazy_unit_prototypes(s, unit, lazy_module_spelling);
     s.walking.insert(unit);
     // --show-stats (R0): per-unit SELF cost — edge decode + PP install,
     // recursion excluded — so the accumulated total sums cleanly.
@@ -5679,39 +5631,9 @@ void Program::forest_replay_pp_arms(ForestSide &s, uint32_t unit)
     }
 }
 
-// A replayed lazy import's interface prototypes (the row's interface unit's
-// functions, by its decl index): live, the import serves that header between
-// its module markers and every prototype in it is stamped
-// (stamp_lazy_module_prototype); a restored one is stamped by name as
-// register_forest_func registers it.
-void Program::forest_note_lazy_module_interface(ForestSide &s, const madc::dis::istring &module)
-{
-    const MadcModuleSpec *row = madc_module_find(module);
-    const int u = row && row->interface && s.forest
-	? s.forest->find_unit(row->interface) : -1;
-    if ( u >= 0 )
-	forest_note_lazy_unit_prototypes(s, (uint32_t)u,
-					 madc_module_library_spelling(module));
-}
-
-// The functions bound unit `unit` declares bind at first call against the
-// library `spelling` — what the module markers give a live-served interface's
-// prototypes (stamp_lazy_module_prototype).
-void Program::forest_note_lazy_unit_prototypes(ForestSide &s, uint32_t unit,
-					       const madc::dis::istring &spelling)
-{
-    std::vector<cir_forest_decl_entry> di;
-    if ( !s.forest || !s.forest->unit_decl_index(unit, di) )
-	return;
-    for ( size_t k = 0; k < di.size(); ++k )
-	if ( di[k].kind == pdkFunction )
-	    if ( const char *nm = s.forest->pool_str(di[k].name_id) )
-		forest_lazy_module_protos[madc::dis::istring(nm)] = spelling;
-}
-
 // Apply one unit's frozen PP-export delta to the live macro tables, replaying
 // the exact define_map / macro_map writes the lexer's #define/#undef handlers
-// perform — and a lazy `import`'s program state (adopt_lazy_module_import). The event stream is flat u32:
+// perform. The event stream is flat u32:
 //   [name_id, tag_flags, body_id, variadic_param_id, nparams, <nparams ids>]...
 // with the low byte of tag_flags the PackMacroEvent tag and bit 8 the variadic
 // flag. Pool ids resolve through the container's own string pool.
@@ -5756,11 +5678,6 @@ void Program::forest_install_pp(ForestSide &s, uint32_t unit)
 		const char *b = body_id ? s.forest->pool_str(body_id) : NULL;
 		define_map[name] = b ? madc::dis::istring(b) : madc::dis::istring();
 		note_std_abi_define(name, define_map[name]);
-	    }
-	    else if ( tag == PackMacroEvent::peImport )
-	    {
-		adopt_lazy_module_import(name);
-		forest_note_lazy_module_interface(s, name);
 	    }
 	    else // peDefineFn
 	    {
@@ -6791,18 +6708,6 @@ void Program::pack_record_undef(const madc::dis::istring &name)
 	ev.name = name;
 	ev.tag = PackMacroEvent::peUndef;
 	pack_macro_origin[name] = PackMacroOrigin{ unit, false };
-    }
-}
-
-void Program::pack_record_import(const madc::dis::istring &module)
-{
-    if ( const char *unit = pack_current_unit() )
-    {
-	pack_note_unit(unit);
-	pack_pp_exports[unit].push_back(PackMacroEvent());
-	PackMacroEvent &ev = pack_pp_exports[unit].back();
-	ev.name = module;
-	ev.tag = PackMacroEvent::peImport;
     }
 }
 
@@ -11449,55 +11354,6 @@ void Program::handle_pragma_body()
 	}
 	// discard trailing tokens via the lexer (handles a
 	// multi-line /* */ comment on this line)
-	consume_directive_line_tail();
-    }
-    else if ( pragma == "madc" )
-    {
-	// `#pragma madc module_begin("<spelling>")` / `module_end` — the import
-	// directive's synthetic wrap of a LAZY module row's interface (never
-	// written by hand): the prototypes between them bind at first call.
-	while ( source.peek() == ' ' || source.peek() == '\t' )
-	    source.get();
-	std::string what;
-	while ( source.good() && !source.eof()
-	     && (isalnum(source.peek()) || source.peek() == '_') )
-	    what += source.get();
-	if ( what == "module_begin" )
-	{
-	    while ( source.peek() == ' ' || source.peek() == '\t' )
-		source.get();
-	    std::string spelling;
-	    if ( source.peek() == '(' )
-	    {
-		source.get();
-		if ( source.peek() == '"' )
-		{
-		    source.get();
-		    while ( source.good() && !source.eof() && source.peek() != '"' )
-			spelling += source.get();
-		    if ( source.peek() == '"' )
-			source.get();
-		}
-		if ( source.peek() == ')' )
-		    source.get();
-	    }
-	    if ( spelling.empty() )
-		Throw << "#pragma madc module_begin: expected (\"<library spelling>\")" << flush;
-	    // Lexing runs ahead of parsing (the whole TU lexes first, then the
-	    // auto-include injector reorders the stream), so the range is a
-	    // TOKEN-IDENTITY fact: every token emitted from here to module_end
-	    // carries the spelling (_lazy_module_tokens) and parseFunction reads
-	    // it off the prototype's own token.
-	    lazy_module_spelling = spelling;
-	    DBG(std::cout << "#pragma madc module_begin(" << spelling << ")" << std::endl);
-	}
-	else if ( what == "module_end" )
-	{
-	    lazy_module_spelling.clear();
-	    DBG(std::cout << "#pragma madc module_end" << std::endl);
-	}
-	else
-	    Throw << "#pragma madc: unknown directive '" << what << "'" << flush;
 	consume_directive_line_tail();
     }
     else if ( pragma == "prefer" )

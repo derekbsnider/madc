@@ -5624,11 +5624,6 @@ public:
     // PE import); madc.cpp appends them to the link line after the parse. The
     // alias form resolves at run time and never lands here.
     std::vector<madc::dis::istring> module_link_libs;
-    // LAZY module rows this TU imported (the interface form): not linked,
-    // not opened at parse — recorded so the object's module list can carry
-    // them as OPTIONAL entries (the loader lifts the guard for a GUI row and
-    // opens what it can without failing).
-    std::vector<madc::dis::istring> module_optional_libs;
     // A GUI module was imported by this TU (`import ui_web;`: its description's
     // mdGui): the driver lifts an armed memory guard before running.
     bool bound_gui_module;
@@ -5676,15 +5671,6 @@ public:
     // Each imported module not yet registered: its declarations, in table
     // order, each function stamped as the module's member.
     void register_imported_modules();
-    // LEX-time state: between `#pragma madc module_begin("<spelling>")` and
-    // `module_end` (the import directive's synthetic wrap of a LAZY row's
-    // interface) every emitted token is tagged with the spelling
-    // (_lazy_module_tokens, identity-keyed). parseFunction reads the tag off
-    // a prototype's own `;` token — a token-identity fact, so the auto-
-    // include injector's later reordering of the stream cannot move a
-    // fragment INTO the range (a time-based marker did exactly that).
-    madc::dis::istring lazy_module_spelling;
-    std::unordered_map<const TokenBase *, madc::dis::istring> _lazy_module_tokens;
     // function-like macro definitions: #define NAME(params) body
     struct MacroDef {
 	struct ReplacementToken {
@@ -5761,9 +5747,8 @@ public:
     // consumed by madc_cir_freeze to stage the v2 segments. All hooks are
     // no-ops when the flag is off, so default lexing/parsing is unchanged.
     struct PackMacroEvent {		// one PP-export delta, in directive order
-	// peImport: `import <module>;` on a LAZY row — name is the module; the
-	// replay is adopt_lazy_module_import. It defines no macro.
-	enum : uint8_t { peDefine = 0, peDefineFn = 1, peUndef = 2, peImport = 3 };
+	// Tag 3 is retired (a LAZY module import's event): never reused.
+	enum : uint8_t { peDefine = 0, peDefineFn = 1, peUndef = 2 };
 	static bool defines_macro(uint8_t tag) { return tag == peDefine || tag == peDefineFn; }
 	madc::dis::istring name;
 	uint8_t     tag;
@@ -5871,7 +5856,6 @@ public:
     void pack_record_define(const madc::dis::istring &name, const std::string &value);
     void pack_record_define_fn(const madc::dis::istring &name, const MacroDef &m);
     void pack_record_undef(const madc::dis::istring &name);
-    void pack_record_import(const madc::dis::istring &module);
     void pack_record_edge(const madc::dis::istring &includee);	// includer = current source
     // A dedup-SKIPPED include still needs its bytes in the corpus — see the
     // definition. Freeze-time only, at most one read per unit. False when the
@@ -7756,25 +7740,12 @@ public:
     bool is_namespace_registration_enabled(const madc::dis::istring &name) const;
     bool is_dynamic_library_loading_enabled() const;
     bool is_auto_library_loading_enabled() const;
-    // import (alias form): mark a freshly registered namespace member as a
-    // dynamic-module member (FuncDef::dyn_module_library/member) so the CIR
-    // builder lowers its calls to the runtime-resolved shape.
-    void stamp_lazy_module_prototype(FuncDef *fd, const madc::dis::istring &name,
-				     DataDefCLASS *owner_class,
-				     const TokenBase *proto_end);
-    void stamp_lazy_module_member(FuncDef *fd, const madc::dis::istring &spelling,
-				  const madc::dis::istring &name);
-    // The bound half: a bound unit never re-lexes its `import`, so the replay
-    // of its peImport event records the row's interface unit's functions
-    // (forest_note_lazy_module_interface: name -> spelling) and
-    // register_forest_func stamps each as it is restored. A LIVE import whose
-    // interface include binds from the pack records the bound unit's the same
-    // way (forest_bind_include, between the module markers).
-    std::map<madc::dis::istring, madc::dis::istring> forest_lazy_module_protos;
-    void forest_note_lazy_module_interface(ForestSide &s, const madc::dis::istring &module);
-    void forest_note_lazy_unit_prototypes(ForestSide &s, uint32_t unit,
-					  const madc::dis::istring &spelling);
-    void forest_stamp_lazy_module_prototype(FuncDef *fd, const madc::dis::istring &name);
+    // A function that lives in a module (FuncDef::dyn_module_library/member):
+    // the CIR builder lowers its calls to the runtime-resolved slot. A madc
+    // module's (its reference, its member's symbol) and the alias form's
+    // (stamp_dynamic_module_member: the library's spelling, the member).
+    void stamp_module_member(FuncDef *fd, const madc::dis::istring &library,
+			     const madc::dis::istring &name);
     void stamp_dynamic_module_member(Variable *var, const madc::dis::istring &ns,
 				     const madc::dis::istring &member);
     // A module member declared by the export's REAL prototype (`proto`, the
@@ -7941,14 +7912,6 @@ public:
 	TokenBase *tokenize_import_directive();
 	bool bind_module_namespace(const madc::dis::istring &ns, const madc::dis::istring &spelling,
 				   bool link_form, std::string &err);
-	// A module row's flags (module-map DATA): a GUI row lifts the memory
-	// guard at run start (bound_gui_module).
-	void adopt_module_flags(const madc::dis::istring &module);
-	// The program state `import <module>;` leaves for a LAZY row (the
-	// interface form): the row's flags and its spelling as an OPTIONAL entry
-	// of the object's manifest (module_optional_libs). The directive and a
-	// bound unit's replay of it (forest_install_pp, the peImport event) share it.
-	void adopt_lazy_module_import(const madc::dis::istring &module);
 	void tokenize_embedded_header_text(const madc::dis::istring &name,
 					 const std::string &text,
 					 bool protocol_visit);

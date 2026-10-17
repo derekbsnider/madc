@@ -92,7 +92,7 @@ double time_diff(struct timeval x , struct timeval y)
 
 // Resource guards: src/madc_guards.cpp (owner ruling 2026-09-07 — no guard
 // arms by default; knobs off|auto|N; an armed memory guard is a soft limit a
-// GUI module row lifts at run start).
+// GUI module lifts at run start).
 
 // Walk backwards from a line to include preceding comment block.
 static int find_comment_start(const std::vector<std::string> &lines, int func_line)
@@ -1901,7 +1901,7 @@ int main(int argc, char **argv)
 	// memory guard before the program runs: WebKit's address-space
 	// reservations dwarf any sane program budget (owner ruling 2026-09-07).
 	if ( parse_ok && prog->bound_gui_module )
-	    madc_lift_memory_guard("a GUI module row was imported");
+	    madc_lift_memory_guard("a GUI module was imported");
 	double _fw_ps1 = prog->_forest_work_seconds;
 	// import (module form): the modules' TARGET spellings join the native
 	// link closure exactly as -l spellings do (verbatim entries — the same

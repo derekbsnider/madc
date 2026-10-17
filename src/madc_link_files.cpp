@@ -262,15 +262,14 @@ madc_link_kind madc_module_link_file(const std::string &path, const std::string 
 }
 
 // The -l rule's generic ELF spelling, lib<name>.so — the one a search reads
-// (a module row's spelling, a path or a versioned name stands as it is).
+// (a module row's real soname, a path or a versioned name stands as it is).
 static bool generic_elf_spelling(const std::string &spelling)
 {
 	const char *sfx = madc_target_dso_suffix(TargetOS::Posix);
 	size_t n = strlen(sfx);
 	return !madc_spelling_is_path(spelling) && spelling.size() > n + 3
 	       && spelling.compare(0, 3, "lib") == 0
-	       && spelling.compare(spelling.size() - n, n, sfx) == 0
-	       && !madc_module_find_spelled(spelling);
+	       && spelling.compare(spelling.size() - n, n, sfx) == 0;
 }
 
 madc_link_kind madc_module_link_images(const std::string &spelling,

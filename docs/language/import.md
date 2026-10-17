@@ -134,20 +134,10 @@ either.
   file.o` opens each spelling before loading — no `-l` on the command line
   for an imported module (the MSVC `.drectve` / Rust `#[link]` shape; a
   `.o` has no `DT_NEEDED`). An explicit `-l` still opens first and stays an
-  override; a `.o` built before the table existed loads as before. A lazy
-  row's spelling is listed with a `?` prefix — optional: the loader opens it
-  when it can and never fails on it. A madc module is listed by name and
-  file (`@-git=<file>`; `@g` for a GUI module, which lifts an armed memory
-  guard before it opens), required, and the program's own init opens it.
-- **Lazy rows**: an OPTIONAL library's row is marked lazy —
-  the interface form binds nothing at parse and joins no link closure; each
-  declared function is a first-call slot through a pointer of its declared
-  type (`__madc_dl_member`, as the alias form, but typed). The program
-  compiles and runs on a machine without the library; ask
-  `madc::module_available("<name>")` before the first call. No shipped row
-  is lazy any more (the web target is the `ui_web` module). The alias form of
-  a lazy row keeps the eager binding — a namespace answers member lookups
-  from the exports.
+  override; a `.o` built before the table existed loads as before. A madc
+  module is listed by its reference — name and file (`@-git=<file>`; `@g`
+  for a GUI module, which lifts an armed memory guard before it opens) —
+  required, and the program's own init opens it.
 - **`--no-auto-load`**: do not act on `import` library bindings — nothing is
   opened; namespaces bind to the program's own symbol scope, so symbols come
   from explicit linking (`-l`, the host). `tests/testnoautoload.mad` pins it.

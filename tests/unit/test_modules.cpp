@@ -103,63 +103,31 @@ TEST_CASE("module open: an unopenable spelling reports an error and NULL")
 	CHECK(!err.empty());
 }
 
-// The row flags are module-map DATA the drivers act on; the C runtime rows
-// carry none (a GUI library is a madc module now: its description says so).
-TEST_CASE("module rows: the C runtime rows carry no flag")
-{
-	const MadcModuleSpec *c = madc_module_find("c");
-	REQUIRE(c);
-	CHECK(c->flags == 0);
-	const MadcModuleSpec *m = madc_module_find("m");
-	REQUIRE(m);
-	CHECK(m->flags == 0);
-}
-
-// The object loader reads SPELLINGS out of __madc_module_deps and asks which
-// carry row flags: the lookup by the target's spelling is the inverse of
-// madc_module_library_spelling for the rows, NULL for a bare library.
-TEST_CASE("module rows: lookup by the target spelling")
-{
-	const MadcModuleSpec *c = madc_module_find_spelled(madc_module_library_spelling("c"));
-	REQUIRE(c);
-	CHECK(std::string(c->name) == "c");
-	const MadcModuleSpec *m = madc_module_find_spelled(madc_module_library_spelling("m"));
-	REQUIRE(m);
-	CHECK(std::string(m->name) == "m");
-	CHECK(!madc_module_find_spelled("libnosuchthing.so"));
-	CHECK(!madc_module_find_spelled(""));
-}
-
 // The module list a unit carries (__madc_module_deps): one writer, one
-// reader. A link entry is its spelling; an optional one '?' and its spelling;
-// a madc module '@', 'g' or '-', its name, '=', its file.
+// reader. A link entry is its spelling; a madc module's, its reference ('@',
+// 'g' or '-', its name, '=', its file).
 TEST_CASE("module list: the entry spellings")
 {
 	std::string t;
-	madc_module_deps_append(t, madc_module_dep::link, "libm.so.6");
-	madc_module_deps_append(t, madc_module_dep::optional, "libfoo.so");
-	madc_module_deps_append(t, madc_module_dep::module, madc_module_reference("ui_web", "/x/ui_web.so", true));
-	madc_module_deps_append(t, madc_module_dep::module, madc_module_reference("git", "/x/git.so", false));
-	CHECK(t == std::string("libm.so.6\0?libfoo.so\0@gui_web=/x/ui_web.so\0@-git=/x/git.so\0", 59));
+	madc_module_deps_append(t, "libm.so.6");
+	madc_module_deps_append(t, madc_module_reference("ui_web", "/x/ui_web.so", true));
+	madc_module_deps_append(t, madc_module_reference("git", "/x/git.so", false));
+	CHECK(t == std::string("libm.so.6\0@gui_web=/x/ui_web.so\0@-git=/x/git.so\0", 48));
 }
 
-// Opening the list: an optional entry that will not open is skipped; a
-// required library or a module that will not open is the import's error.
+// Opening the list: a library or a module that will not open is the import's
+// error; an empty list opens.
 TEST_CASE("module list: open")
 {
 	std::string err;
-	std::string t;
-	madc_module_deps_append(t, madc_module_dep::optional, "libmadc-no-such-module-xyz.so");
-	CHECK(madc_module_deps_open(t.c_str(), t.c_str() + t.size(), err));
-	CHECK(err.empty());
 	CHECK(madc_module_deps_open("", NULL, err));
+	CHECK(err.empty());
 	std::string r;
-	madc_module_deps_append(r, madc_module_dep::link, "libmadc-no-such-module-xyz.so");
+	madc_module_deps_append(r, "libmadc-no-such-module-xyz.so");
 	CHECK_FALSE(madc_module_deps_open(r.c_str(), r.c_str() + r.size(), err));
 	CHECK(err.find("import: cannot load 'libmadc-no-such-module-xyz.so'") == 0);
 	std::string m;
-	madc_module_deps_append(m, madc_module_dep::module,
-				madc_module_reference("nosuch", "/no/such/dir/nosuch.so", false));
+	madc_module_deps_append(m, madc_module_reference("nosuch", "/no/such/dir/nosuch.so", false));
 	m.push_back('\0');	// the emitted table's closing NUL: NULL bounds it
 	CHECK_FALSE(madc_module_deps_open(m.c_str(), NULL, err));
 	CHECK(err == "import: no module named 'nosuch'");

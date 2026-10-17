@@ -18,23 +18,15 @@
 // is all there is). A madc MODULE (madc_module.h) has no row: it is found by
 // name on the module path and describes itself.
 static const MadcModuleSpec madc_modules[] = {
-	{ "c", NULL,     "libc.so.6", "libSystem.B.dylib", "ucrtbase.dll", 0 },
-	{ "m", "math.h", "libm.so.6", "libSystem.B.dylib", "ucrtbase.dll", 0 },
-	{ NULL, NULL, NULL, NULL, NULL, 0 }
+	{ "c", NULL,     "libc.so.6", "libSystem.B.dylib", "ucrtbase.dll" },
+	{ "m", "math.h", "libm.so.6", "libSystem.B.dylib", "ucrtbase.dll" },
+	{ NULL, NULL, NULL, NULL, NULL }
 };
 
 const MadcModuleSpec *madc_module_find(const std::string &name)
 {
 	for (int i = 0; madc_modules[i].name; i++)
 		if (name == madc_modules[i].name)
-			return &madc_modules[i];
-	return NULL;
-}
-
-const MadcModuleSpec *madc_module_find_spelled(const std::string &spelling)
-{
-	for (int i = 0; madc_modules[i].name; i++)
-		if (spelling == madc_module_library_spelling(madc_modules[i].name))
 			return &madc_modules[i];
 	return NULL;
 }
@@ -222,13 +214,10 @@ void *madc_module_open_reference(const std::string &reference, std::string &erro
 }
 
 // The module list's entry spellings (madc_modules.h): a link library is its
-// spelling; an optional one '?' and its spelling; a madc module its
-// reference (madc_module_reference).
-void madc_module_deps_append(std::string &table, madc_module_dep kind, const std::string &text)
+// spelling; a madc module its reference (madc_module_reference).
+void madc_module_deps_append(std::string &table, const std::string &entry)
 {
-	if (kind == madc_module_dep::optional)
-		table += '?';
-	table += text;
+	table += entry;
 	table.push_back('\0');
 }
 
@@ -240,10 +229,6 @@ bool madc_module_deps_open(const char *table, const char *end, std::string &erro
 		std::string entry(p, n);
 		p += n + 1;
 		std::string why;
-		if (entry[0] == '?') {
-			madc_module_open(entry.substr(1), why);	// optional: absent is fine
-			continue;
-		}
 		if (entry[0] != '@') {
 			if (!madc_module_open(entry, why)) {
 				error = "import: cannot load '" + entry + "': " + why;

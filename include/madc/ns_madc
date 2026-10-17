@@ -535,11 +535,6 @@ namespace madc {
     // true with "". The std::getline(cin, string&) contract, carried by
     // the carrier.
     bool getline(value &out);
-    // Is a module's library available on this system? The module map's
-    // spelling is opened through the one dl seam (and stays open); false
-    // when it cannot be. A LAZY module row (madcwebview) compiles and
-    // runs without its library — ask this before the first call.
-    bool module_available(const char *name);
     // The console of the process that started this one (plan
     // 2026-10-03-chthonia-windows-macos.md §7a). A Windows program built as
     // a GUI image (-mwindows, a manifest's "kind": "gui") starts with no

@@ -84,7 +84,7 @@ Variable *declare_builtin_function(Program &pgm, const BuiltinFunctionDecl &d)
     // storage alias: Itanium, or the bare name under C linkage) — in the
     // module its reference finds where the program runs.
     if ( var && pgm.registering_module )
-	pgm.stamp_lazy_module_member(fd, pgm.registering_module->reference(),
+	pgm.stamp_module_member(fd, pgm.registering_module->reference(),
 				     fd->emit_symbol.empty() ? var->storage_alias_name
 							     : fd->emit_symbol);
     return var;

@@ -28676,7 +28676,6 @@ Variable *Program::register_forest_func(const PendingForestFunc &pf)
 	// (body_symbol_keys); this registrar is the other and records it too.
 	if ( pf.fd->has_forest_body && !pf.fd->emit_symbol.empty() )
 	    body_symbol_keys[pf.fd->emit_symbol] = pf.name;
-	forest_stamp_lazy_module_prototype(pf.fd, pf.name);
 	DBG(std::cout << "register_forest_func: " << pf.name
 		      << " emit=" << pf.fd->emit_symbol
 		      << " alias=" << fv->storage_alias_name
@@ -32827,52 +32826,22 @@ TokenDataType *Program::fold_template_arg_declarator(TokenDataType *adt,
     return next;
 }
 
-// add a function definition
-// import (alias form): mark a freshly registered namespace member as a
-// dynamic-module member so the CIR builder lowers its calls to the
-// runtime-resolved shape ((T (*)(P...))(slot ?: __madc_dl_member(LIB, MEMBER)),
-// the member's declared type) in every lane. The library spelling is the one the binder recorded for the
-// namespace (dl_library_spelling); the parse-time dlsym above stays the early
-// diagnostic ("is this member exported at all"), never the bound address.
-// A prototype declared while a LAZY module row's interface is being served
-// (`#pragma madc module_begin(...)` .. `module_end`, the import directive's
-// wrap): the function has no symbol of its own in this program — every call
-// lowers to the first-call slot (CirBuilder::dyn_module_callee) against the
-// row's spelling, through a pointer of the DECLARED type.
-// Free functions only: a class member is never a module export.
-void Program::stamp_lazy_module_prototype(FuncDef *fd, const madc::dis::istring &name,
-					  DataDefCLASS *owner_class,
-					  const TokenBase *proto_end)
+// A function that lives in a module: every call lowers to the first-call
+// slot (CirBuilder::dyn_module_callee — (T (*)(P...))(slot ?:
+// __madc_dl_member(LIB, MEMBER)), the member's declared type) in every lane.
+// LIB is a madc module's reference or a library's spelling.
+void Program::stamp_module_member(FuncDef *fd, const madc::dis::istring &library,
+				  const madc::dis::istring &name)
 {
-    if ( !fd || owner_class || !proto_end || _lazy_module_tokens.empty() )
-	return;
-    std::unordered_map<const TokenBase *, madc::dis::istring>::const_iterator it =
-	_lazy_module_tokens.find(proto_end);
-    if ( it == _lazy_module_tokens.end() )
-	return;
-    stamp_lazy_module_member(fd, it->second, name);
-}
-
-// The stamp itself — the live prototype's (above) and a restored one's
-// (forest_stamp_lazy_module_prototype).
-void Program::stamp_lazy_module_member(FuncDef *fd, const madc::dis::istring &spelling,
-				       const madc::dis::istring &name)
-{
-    fd->dyn_module_library = spelling;
+    fd->dyn_module_library = library;
     fd->dyn_module_member = name;
 }
 
-// A bound unit's prototype restored from the pack: one its replayed lazy
-// import served (forest_note_lazy_module_interface) gets the stamp a live
-// prototype lexed between the import's module markers gets.
-void Program::forest_stamp_lazy_module_prototype(FuncDef *fd, const madc::dis::istring &name)
-{
-    std::map<madc::dis::istring, madc::dis::istring>::const_iterator it =
-	forest_lazy_module_protos.find(name);
-    if ( fd && it != forest_lazy_module_protos.end() )
-	stamp_lazy_module_member(fd, it->second, name);
-}
-
+// import (alias form): a freshly registered namespace member is a
+// dynamic-module member against the library spelling the binder recorded
+// for the namespace (dl_library_spelling); the parse-time dlsym stays the
+// early diagnostic ("is this member exported at all"), never the bound
+// address.
 void Program::stamp_dynamic_module_member(Variable *var, const madc::dis::istring &ns,
 					  const madc::dis::istring &member)
 {
@@ -32880,8 +32849,7 @@ void Program::stamp_dynamic_module_member(Variable *var, const madc::dis::istrin
     if ( !fd )
 	return;
     std::map<madc::dis::istring, madc::dis::istring>::const_iterator it = dl_library_spelling.find(ns);
-    fd->dyn_module_library = it != dl_library_spelling.end() ? it->second : ns;
-    fd->dyn_module_member = member;
+    stamp_module_member(fd, it != dl_library_spelling.end() ? it->second : ns, member);
 }
 
 // The member as a COPY of the export's prototype under its own id — the
@@ -76100,7 +76068,6 @@ void Program::parseFunction(DataDef &dd, madc::dis::istring &id, DataDefCLASS *o
 	if ( !func_already_declared || func->declaration_only )
 	    func->declaration_only = true;	// prototype, no body (see FuncDef::declaration_only)
 	func->decl_file = nt ? nt->file : NULL;
-	stamp_lazy_module_prototype(func, id, owner_class, nt);
 	DBG(std::cout << "parseFunction() forward declaration of function " << id << std::endl);
 	if ( nt->id() == TokenID::tkComma )
 	{
@@ -76195,7 +76162,6 @@ void Program::parseFunction(DataDef &dd, madc::dis::istring &id, DataDefCLASS *o
 	if ( !func_already_declared || func->declaration_only )
 	    func->declaration_only = true;	// prototype, no body (see FuncDef::declaration_only)
 	func->decl_file = nt ? nt->file : NULL;
-	stamp_lazy_module_prototype(func, id, owner_class, nt);
 	pop_param_scope();
 	return;
     }

@@ -860,3 +860,39 @@ modules than like C++ headers."
   13/13/13); static gates 0 red; test_modules, test_builtin_registry,
   test_repl_session green. Hot path: unchanged at compile time; at run time a
   module opens once per program through one stat of its recorded file.
+
+### M6 execution (2026-10-17)
+
+- The LAZY interface-import path is gone (nothing live reached it once the
+  module map kept only `c` and `m`): the directive's LAZY branch,
+  `adopt_lazy_module_import`, `adopt_module_flags`, `pack_record_import` and
+  the pack's import event (`PackMacroEvent` tag 3, retired and never reused)
+  with its replay, `forest_note_lazy_module_interface` /
+  `forest_note_lazy_unit_prototypes` / `forest_lazy_module_protos`,
+  `stamp_lazy_module_prototype` (and its two parseFunction calls),
+  `forest_stamp_lazy_module_prototype`, `lazy_module_spelling` /
+  `_lazy_module_tokens` (a per-token check in the lexer's emit), and the
+  `#pragma madc module_begin` / `module_end` arm.
+- The member stamp is ONE: `Program::stamp_module_member` (was
+  `stamp_lazy_module_member`) — a madc module's reference and the alias
+  form's library spelling (`stamp_dynamic_module_member` calls it).
+- The module map's row flags (`MADC_MODULE_GUI`, `MADC_MODULE_LAZY`,
+  `MadcModuleSpec::flags`), `madc_module_find_spelled` (the manifest "libs"
+  guard lift and a redundant clause of `generic_elf_spelling`),
+  `module_optional_libs` and the module list's optional `?` entry are gone;
+  `madc_module_deps_append(table, entry)` takes a library's spelling or a
+  module's reference (no kind). `bound_gui_module` stays — a madc module's
+  `mdGui` sets it.
+- `madc::module_available` is gone (ns_madc, ns_madc.cpp): a module is
+  there when its import succeeds (`madc --import=NAME`). docs/language/
+  import.md drops the lazy rows.
+- Ruling: an object built by an older madc from a LAZY import (its list holds
+  a `?spelling` entry) no longer loads — the reader takes the entry as a
+  required library spelled `?…`. Only madcwebview's LAZY import wrote one,
+  and that module is gone. Cost if wrong: rebuild the object.
+- Validation: Tier 1 (20 JIT, 16 EXE, 16 OBJ: the import, pragma, module,
+  dlopen and project-libs tests); Tier 2's seven lanes green; static gates 0
+  red; test_modules, test_builtin_registry, test_repl_session,
+  test_cir_freeze, test_c2mir, test_ns_frozen, test_madc_cli green. Hot path:
+  the lexer's per-token LAZY tag check and parseFunction's two prototype
+  stamps are gone.

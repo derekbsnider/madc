@@ -34681,8 +34681,8 @@ void CirBuilder::declare_dyn_module_slot(const madc::dis::istring &slot, TokenBa
 }
 
 // A loaded forest body's dyn-module calls carry their slot assignments
-// pre-built (a dialect fragment's wrapper over its imported LAZY module):
-// declare each slot as the lowering site would have.
+// pre-built (a frozen body that calls into a module): declare each slot as
+// the lowering site would have.
 void CirBuilder::declare_loaded_body_slots(node_t body)
 {
 	std::set<madc::dis::istring> slots;
@@ -34712,8 +34712,8 @@ node_t CirBuilder::dyn_module_callee(FuncDef *fd, const madc::dis::istring &call
 			    id(slot.c_str(), origin), assign, origin);
 	// The slot is called through a pointer of the member's DECLARED type —
 	// return and parameters as its declaration spelled them
-	// (fnptr_decl_pieces, the one fn-ptr type renderer): a lazy row's
-	// interface prototype, an alias member's adopted or fallback
+	// (fnptr_decl_pieces, the one fn-ptr type renderer): a madc module's
+	// declaration, an alias member's adopted or fallback
 	// declaration (`double (*)(double)` for math::sqrt), and an undescribed
 	// export's K&R `long long (*)()` alike — so struct returns, floating
 	// results, enums and callbacks travel as they do through a direct call.
@@ -37106,21 +37106,17 @@ node_t CirBuilder::translate_module(Program *prog)
 	//   static const char __madc_module_deps[] = "libm.so.6\0...";
 	// A referenced-surface filter never drops it: it is the object's
 	// manifest, not a declaration.
-	// A LAZY row's spelling joins the list OPTIONAL (opened when it can be);
-	// a madc MODULE the unit imported joins it by name and file, required —
+	// A madc MODULE the unit imported joins it by its reference, required —
 	// the unit's global init opens the list first (collect_global_ctors), so
 	// the module's own initializer runs before main in every lane. The entry
 	// format is madc_modules.h's (madc_module_deps_append).
 	if (m_prog && (!m_prog->module_link_libs.empty()
-		       || !m_prog->module_optional_libs.empty()
 		       || !m_prog->imported_modules.empty())) {
 		std::string table;
 		for (const madc::dis::istring &l : m_prog->module_link_libs)
-			madc_module_deps_append(table, madc_module_dep::link, l);
-		for (const madc::dis::istring &l : m_prog->module_optional_libs)
-			madc_module_deps_append(table, madc_module_dep::optional, l);
+			madc_module_deps_append(table, l);
 		for (const Program::ImportedModule &im : m_prog->imported_modules)
-			madc_module_deps_append(table, madc_module_dep::module, im.reference().c_str());
+			madc_module_deps_append(table, im.reference().c_str());
 		node_t specs = list();
 		append(specs, simple(N_STATIC));
 		append(specs, simple(N_CONST));
