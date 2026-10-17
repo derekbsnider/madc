@@ -3489,6 +3489,11 @@ public:
 	bool enable_ruby_namespace = true;
 	bool enable_js_namespace = true;
 	bool enable_rust_namespace = true;
+	// May the madc dialect register from the generated table (R4c: the
+	// dialect is builtin)? ON is the default. The dialect's own text parse
+	// (the table's generator, a module table's, the R1 differential) turns
+	// it off: there the fragments ARE the source, parsed as text.
+	bool enable_dialect_table = true;
 	bool restrict_headers_to_allowlist = false;
 	bool restrict_dlfcn_symbols_to_allowlist = false;
 	// Header partition (madc-header-partition-handoff.md): when true, an
@@ -5671,6 +5676,61 @@ public:
     // Each imported module not yet registered: its declarations, in table
     // order, each function stamped as the module's member.
     void register_imported_modules();
+    // The dialect is builtin (R4c, docs/plans/2026-10-17-dialect-builtin-
+    // registration.md): under --std=madc the dialect's names register from the
+    // generated table (madc_builtin_registry.h), per name, when a lookup first
+    // names them. A fragment's TEXT is served only to a program whose first
+    // dialect fragment met <string> already — its std::string interop
+    // declarations exist only as text. Decided once per program, at that
+    // first fragment (dialect_fragment_from_table); the two never mix.
+    // Thread contract: every member below is this Program's own, read and
+    // written on its thread; the table is constant code and data.
+    enum class DialectServing : unsigned char { Undecided, Table, Text };
+    DialectServing dialect_serving = DialectServing::Undecided;
+    bool dialect_from_table() const { return dialect_serving == DialectServing::Table; }
+    // The dialect namespaces the program named — the auto-include scan's
+    // head rows, to closure through the fragments' own mentions: the table
+    // builds only in these, so a bare name never reaches a namespace the
+    // program did not name.
+    std::vector<madc::dis::istring> dialect_named;
+    bool dialect_namespace_named(const madc::dis::istring &ns) const;
+    // The fragments the table serves this program, each one's closure read.
+    std::set<madc::dis::istring> dialect_fragments;
+    // The table entries whose builders ran in this Program (indexed as the
+    // table; empty until the first), and how many (--show-stats).
+    std::vector<unsigned char> dialect_built;
+    size_t dialect_builds = 0;
+    // A dialect fragment the auto-include or a written #include would serve
+    // under --std=madc: true when the table serves it — the namespaces it
+    // heads are recorded as named and no text is served; false = the caller
+    // serves its text (another standard, or a Text program).
+    bool dialect_fragment_from_table(const madc::dis::istring &header);
+    // Each named dialect namespace exists in the namespace map (after
+    // _parser_init's reset; after an interactive entry's lex).
+    void register_dialect_namespaces();
+    // ns::name's first touch by a lookup: the table's builder for it runs,
+    // once per Program, when the program named ns. True when it built.
+    bool dialect_demand(const madc::dis::istring &ns, const madc::dis::istring &name);
+    // A name's first touch at the global scope (a type's bare tag, an
+    // unscoped enumerator, a namespace object — madc_builtin_registry.h's
+    // bare twins): its entry builds in each named namespace that has one.
+    // True when anything built.
+    bool dialect_demand_bare(const madc::dis::istring &name);
+    // `using namespace ns;` imports what the namespace holds: every name the
+    // table holds in ns is demanded.
+    void dialect_demand_namespace(const madc::dis::istring &ns);
+    // Completion: the names the table holds in a named ns, from `prefix`.
+    void dialect_table_names(const madc::dis::istring &ns, const madc::dis::istring &prefix,
+			     const std::function<void(const madc::dis::istring &)> &offer) const;
+    // A bodiless namespace-scope function template, registered as its parse
+    // registers it (the skipped-template registrar: placeholder Variable,
+    // fn_template_decl_map, builtin kind) from its declaration's tokens — the
+    // `template<...>` head's parameters given — inside namespace `ns`.
+    void register_namespace_function_template(const madc::dis::istring &ns,
+	const std::vector<TokenBase *> &decl,
+	const std::vector<madc::dis::istring> &typeparams,
+	const std::vector<bool> &typeparam_is_type,
+	const std::vector<bool> &typeparam_is_pack);
     // function-like macro definitions: #define NAME(params) body
     struct MacroDef {
 	struct ReplacementToken {
@@ -7954,8 +8014,12 @@ public:
 	std::string include_probe_path;
 	madc::dis::istring include_guard_watch_key;
     void expand_pending_auto_include_macros(size_t original_start);
-    std::vector<TokenBase *> tokenize_auto_include_define(const std::string &value,
-							  const TokenBase *origin);
+    // A text run lexed into tokens (no auto-include scan, the live source
+    // untouched): an auto-include define's replacement, stamped at `origin`;
+    // a builtin builder's declaration, its tokens' file `fname`.
+    std::vector<TokenBase *> tokenize_text_run(const std::string &value,
+					       const TokenBase *origin,
+					       const char *fname = NULL);
     void mark_embedded_include_flag(const madc::dis::istring &incfile);
     // Every include-serving arm's completion return (lexer.cpp): fires the
     // include-completion side effects, then continues the outer scan.

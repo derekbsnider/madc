@@ -16,6 +16,8 @@
 #      refusal is the gate's, not a broken program's);
 #   3. detector control: a strict C++ program that declares its OWN
 #      `namespace php` compiles — a strict resolution is visible to this gate.
+#   4. the table serves the dialect (R4c): --std=madc's --show-stats counts
+#      names the generated table built; a strict compile reports no table.
 set -u
 cd "$(dirname "$0")/.."
 
@@ -59,8 +61,20 @@ if ! compiles c++17 "$tmp/own.mad"; then
 	"$MADC_BIN" --std=c++17 -c -o "$tmp/out.o" "$tmp/own.mad" 2>&1 | head -5
 	fail=1
 fi
+table_line() {
+	"$MADC_BIN" "--std=$1" --show-stats -c -o "$tmp/out.o" "$2" 2>&1 >/dev/null | grep "dialect table"
+}
+if ! table_line madc "$tmp/php.mad" | grep -Eq " [1-9][0-9]* of [0-9]+ names built"; then
+	echo "check-dialect-std-gated: --std=madc built no dialect table name for php.mad:"
+	table_line madc "$tmp/php.mad"
+	fail=1
+fi
+if table_line c++17 "$tmp/own.mad" | grep -q .; then
+	echo "check-dialect-std-gated: --std=c++17 reported a dialect table"
+	fail=1
+fi
 if [ "$fail" -ne 0 ]; then
 	echo "Owner: Program::dialect_surface_enabled (include/madc.h) and every registration it gates."
 	exit 1
 fi
-echo "check-dialect-std-gated: OK — 22 strict standards refuse php::, madc::value and ui::; --std=madc resolves them"
+echo "check-dialect-std-gated: OK — 22 strict standards refuse php::, madc::value and ui::; --std=madc resolves them from the table"

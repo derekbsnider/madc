@@ -36,6 +36,25 @@ extern const MadcBuiltinEntry dialect_table[];
 extern const size_t dialect_table_count;
 } }
 
+// A dialect name's BARE twin: madc registers a namespace type's tag, an
+// unscoped enum's enumerators and a namespace object at the program scope
+// too (a struct tag's flat struct_map, the parse's TokenENUM / TokenSTRUCT /
+// extern registrations), so a program that named the namespace finds
+// `SysInfo` / `TUI` / `sys` unqualified, as the fragments' text parse made it.
+// Generated beside the table, sorted by name (a name may repeat, one row per
+// namespace): the table entry (ns, entry) whose builder registers it.
+struct MadcBuiltinBareName
+{
+    const char *name;
+    const char *ns;
+    const char *entry;
+};
+
+namespace madc { namespace builtins {
+extern const MadcBuiltinBareName dialect_bare_names[];
+extern const size_t dialect_bare_names_count;
+} }
+
 // A builtin function declaration as generated code spells it: what a live
 // parse of the declaration registers (FuncDef + the registrar's Variable /
 // Method), field for field.
@@ -224,6 +243,36 @@ struct BuiltinExternDecl
 
 Variable *declare_builtin_extern(Program &pgm, const BuiltinExternDecl &d);
 
+// A bodiless namespace-scope function template as generated code spells it
+// (a COMPILER-IMPLEMENTED public: `php::print_r`, its FuncDef's
+// inline_builtin_kind): the declaration's text after its `template<...>`
+// head — the token run the parse captured, re-lexed — and the head's
+// parameters. Registered as the parse registers it
+// (Program::register_namespace_function_template): the placeholder function
+// in the namespace, the declaration in fn_template_decl_map, its kind.
+struct BuiltinTemplateParam
+{
+    const char *name;
+    bool is_type;		// a type parameter (`class T`), else a non-type one
+    bool is_pack;		// `class... Ts`
+};
+
+struct BuiltinFunctionTemplateDecl
+{
+    const char *ns;
+    const char *decl;		// the declaration's tokens, spelled
+    const BuiltinTemplateParam *params;
+    size_t nparams;
+};
+
+void declare_builtin_function_template(Program &pgm, const BuiltinFunctionTemplateDecl &d);
+
+// A registered bodiless function template's identity (fn_template_decl_map's
+// declarations of ns::name), field by field: the templates' half of the
+// differential. Empty when ns::name declares none.
+madc::dis::istring builtin_function_template_line(Program &pgm, const madc::dis::istring &ns,
+						  const madc::dis::istring &name);
+
 // A dialect type by its namespace and name: the program's registration, or —
 // the first time — its builder's (the table's entry for ns::name). NULL when
 // the dialect has no such type. The generated code names a dialect type
@@ -277,7 +326,8 @@ enum BuiltinGroupKind
 {
     bgFunctions,	// an overload set: `keys` are its funcdef_map keys
     bgType,		// a namespace type (keys empty)
-    bgVariable		// a namespace object (keys empty)
+    bgVariable,		// a namespace object (keys empty)
+    bgFunctionTemplate	// a bodiless function template: `keys` its placeholder
 };
 
 struct BuiltinGroup

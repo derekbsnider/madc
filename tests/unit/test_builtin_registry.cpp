@@ -65,11 +65,22 @@ TEST_CASE("R1: the generated registration registers what a live parse of the dia
 	std::map<std::string, size_t> skip_reasons;
 	for (size_t g = 0; g < groups.size(); ++g) {
 		if (!groups[g].skip.empty()) {
-			skipped += (groups[g].kind == bgFunctions ? 0 : 1) + groups[g].keys.size();
+			skipped += (groups[g].kind == bgType || groups[g].kind == bgVariable ? 1 : 0)
+				 + groups[g].keys.size();
 			++skip_reasons[groups[g].skip];
 			continue;
 		}
-		if (groups[g].kind != bgFunctions) {
+		if (groups[g].kind == bgFunctionTemplate) {
+			madc::dis::istring want = builtin_function_template_line(*dp.live, groups[g].ns, groups[g].name);
+			madc::dis::istring got = builtin_function_template_line(*gen, groups[g].ns, groups[g].name);
+			++compared;
+			if (want != got) {
+				if (differ < 20)
+					MESSAGE("live: " << std::string(want.c_str()) << "\ngen:  " << std::string(got.c_str()));
+				++differ;
+			}
+		}
+		if (groups[g].kind == bgType || groups[g].kind == bgVariable) {
 			madc::dis::istring want = groups[g].kind == bgType
 				? builtin_type_line(*dp.live, groups[g].ns, groups[g].name)
 				: builtin_variable_line(*dp.live, groups[g].ns, groups[g].name);

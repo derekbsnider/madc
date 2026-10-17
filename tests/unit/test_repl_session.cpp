@@ -2139,115 +2139,40 @@ TEST_CASE("completion: a using-directive's dialect names complete bare (madc)")
     CHECK(has(c, "strtoupper"));
 }
 
-// The dialect pays per name (docs/plans/2026-10-16-dialect-per-name-plan.md,
-// A3). A dialect fragment the pack carries binds directly as its unit; what
-// completion and a rolled-back entry need of it is read from the pack's
-// index, never only from what the bind registered.
+// The dialect is builtin (docs/plans/2026-10-17-dialect-builtin-registration.md,
+// R4c): under --std=madc no dialect fragment's text is served; a named
+// namespace's names come from the generated table, each built when a lookup
+// first names it. What completion needs is read from the table, never only
+// from what lookups built.
 namespace {
 
-// A pack holding the dialect's php fragment (by default), frozen under
-// --std=madc (forest_bind_gate's dialectbind recipe): a session bound to it
-// binds <ns_php> directly, as the release binary binds its own pack. Removed
-// when the case ends.
-struct DialectPack
-{
-    std::string path;
-
-    explicit DialectPack(const char *includes = "#include <ns_php>\n")
-    {
-	// One path per pack: a bound carrier's image is cached by its path for
-	// the process, so a second pack at the first one's path would bind the
-	// first one's content.
-	static int packs = 0;
-	const std::string pid = std::to_string((long)getpid()) + "_" + std::to_string(++packs);
-	const std::string src = "/tmp/madc_a3_dialect_" + pid + ".cpp";
-	path = "/tmp/madc_a3_dialect_" + pid + ".msnap";
-	{
-	    std::ofstream f(src.c_str());
-	    f << includes << "int main() { return 0; }\n";
-	}
-	bool ok = false;
-	{
-	    std::unique_ptr<Program> prog(new Program());
-	    prog->registration_policy.enable_forest_bind = false;	// a freeze makes a pack, never binds one
-	    if ( prog->set_language_standard("madc") )
-	    {
-		prog->begin_pack_recording();
-		prog->forest_arena_enabled = true;
-		TokenProgram *tp = prog->tokenize(src.c_str());
-		ok = tp && prog->parse(tp)
-		  && madc_cir_freeze(prog.get(), src.c_str(), path.c_str(),
-				     /*append=*/false, /*mir_cache=*/false, NULL,
-				     /*progress=*/false) == 0;
-	    }
-	}
-	std::remove(src.c_str());
-	if ( !ok )
-	{
-	    std::remove(path.c_str());
-	    path.clear();
-	}
-    }
-
-    ~DialectPack()
-    {
-	if ( !path.empty() )
-	    std::remove(path.c_str());
-    }
-
-    // A Program bound to the pack, for a session to adopt.
-    std::unique_ptr<Program> configured() const
-    {
-	std::unique_ptr<Program> p(new Program());
-	p->registration_policy.enable_forest_bind = true;
-	p->forest_bind_path = path;
-	return p;
-    }
-};
-
-// The leaves forest_dialect_names offers for a scope and a prefix, once each.
-std::set<std::string> dialect_names(Program &p, const char *scope, const char *prefix)
+// The names the table offers for a scope and a prefix, once each.
+std::set<std::string> table_names(Program &p, const char *scope, const char *prefix)
 {
     std::set<std::string> out;
-    p.forest_dialect_names(scope, prefix,
-			   [&](const madc::dis::istring &n) { out.insert(n.str()); });
-    return out;
-}
-
-// The names of the dialect units the session bound from the pack.
-std::set<std::string> bound_dialect_units(Program &p)
-{
-    std::set<std::string> out;
-    std::vector<uint32_t> units;
-    p.forest_active_dialect_units(units);
-    for ( size_t i = 0; i < units.size(); ++i )
-	if ( const char *nm = p.forest_dialect_side().forest ? p.forest_dialect_side().forest->unit_name(units[i]) : NULL )
-	    out.insert(nm);
+    p.dialect_table_names(scope, prefix,
+			  [&](const madc::dis::istring &n) { out.insert(n.str()); });
     return out;
 }
 
 } // namespace
 
-TEST_CASE("dialect per name (A3): an active unit's names, read from the pack's index")
+TEST_CASE("the dialect is builtin (R4c): a named namespace's names, read from the table")
 {
-    DialectPack pack;
-    REQUIRE_FALSE(pack.path.empty());
-    InteractiveSession m(pack.configured());
+    InteractiveSession m;
     REQUIRE(m.begin("--std=madc"));
     Program &p = m.program();
-    CHECK_FALSE(bound_dialect_units(p).count("ns_php"));	// nothing named php yet
-    CHECK(dialect_names(p, "php", "strto").empty());
+    CHECK_FALSE(p.dialect_namespace_named("php"));	// nothing named php yet
+    CHECK(table_names(p, "php", "strto").empty());
     REQUIRE(m.submit("using namespace php;"));
-    // <ns_php> came from the pack: a unit of the chain, not a text parse.
-    REQUIRE(bound_dialect_units(p).count("ns_php"));
+    REQUIRE(p.dialect_from_table());
+    REQUIRE(p.dialect_namespace_named("php"));
 
-    // php's functions by their flat ids (`__ns_php_strtolower`, its __o2
-    // overload), each offered as the name the source wrote.
-    CHECK(dialect_names(p, "php", "strto")
+    // php's functions, each offered as the name the source wrote.
+    CHECK(table_names(p, "php", "strto")
 	  == (std::set<std::string>{ "strtolower", "strtoupper" }));
-    // The equality A4 relies on: what the bind registers into php up front
-    // (every name, today) is what the index answers for the scope — its
-    // templates (`php::print_r`, spelled qualified) included.
+    // The using-directive built every php name: what php holds is what the
+    // table answers for the scope — its templates (`php::print_r`) included.
     std::set<std::string> registered;
     namespace_map_t::const_iterator ns = p.namespace_map.find("php");
     REQUIRE(ns != p.namespace_map.end());
@@ -2255,23 +2180,18 @@ TEST_CASE("dialect per name (A3): an active unit's names, read from the pack's i
 	if ( it->second && !(it->second->flags & vfINSTPRODUCT) )
 	    registered.insert(it->first.str());
     REQUIRE(registered.count("print_r"));
-    CHECK(dialect_names(p, "php", "") == registered);
-    // A record's namespace decides, never the spelling: none of php's names
-    // is the global scope's.
-    std::set<std::string> bare = dialect_names(p, "", "");
-    CHECK_FALSE(bare.count("strtolower"));
-    CHECK_FALSE(bare.count("count"));
-    CHECK(dialect_names(p, "", "strto").empty());
+    CHECK(table_names(p, "php", "") == registered);
+    // A row's namespace decides, never the spelling: none of php's names is
+    // the global scope's.
+    CHECK(table_names(p, "", "").empty());
 
-    // Completion reads it — after `::` and through the using-directive. The
-    // bind registers every php name today, so these hold either way; once A4
-    // registers per name, the index is what keeps them.
+    // Completion reads it — after `::` and through the using-directive.
     CHECK(complete_at_end(m, "php::strto")
 	  == (std::vector<std::string>{ "strtolower", "strtoupper" }));
     std::vector<std::string> c = complete_at_end(m, "strto");
     CHECK(has(c, "strtolower"));
     CHECK(has(c, "strtoupper"));
-    InteractiveSession fresh(pack.configured());
+    InteractiveSession fresh;
     REQUIRE(fresh.begin("--std=madc"));
     CHECK(complete_at_end(fresh, "php::strto")
 	  == (std::vector<std::string>{ "strtolower", "strtoupper" }));
@@ -2325,15 +2245,12 @@ TEST_CASE("dialect per name (A3): a rolled-back entry forgets the dialect demand
     CHECK(m.shown() == "3");
 }
 
-// A4: a compile registers the dialect functions its program names — an
-// overload set whole — the ones those functions' bodies call, and what its
-// fragments' startup anchors call; never a fragment's whole surface. The
-// program is scripts/parse_cost/dialect.mad's.
-TEST_CASE("dialect per name (A4): a compile registers what it names, what that calls, and the anchors")
+// A compile registers the dialect functions its program names — an overload
+// set whole — never a namespace's whole surface. The program is
+// scripts/parse_cost/dialect.mad's.
+TEST_CASE("the dialect is builtin (R4c): a compile registers what it names")
 {
-    DialectPack pack("#include <ns_madc>\n#include <ns_php>\n");
-    REQUIRE_FALSE(pack.path.empty());
-    InteractiveSession m(pack.configured());
+    InteractiveSession m;
     REQUIRE(m.begin("--std=madc"));
     Program &p = m.program();
     REQUIRE(m.load_text(
@@ -2354,11 +2271,8 @@ TEST_CASE("dialect per name (A4): a compile registers what it names, what that c
 	"\t    php::strtoupper(\"ok\"));\n"
 	"    return 0;\n"
 	"}\n", "dialect.mad"));
-    REQUIRE(bound_dialect_units(p).count("ns_php"));
-    REQUIRE(bound_dialect_units(p).count("ns_madc"));
-    Program::ForestBindStats s = p.forest_bind_stats();
-    // Nothing a dialect fragment declares registers up front.
-    CHECK(s.funcs_eager == 0u);
+    REQUIRE(p.dialect_from_table());
+    CHECK(p.dialect_namespace_named("php"));
     // The names the program calls, strtoupper's two overloads together.
     CHECK(p.funcdef_map.count("__ns_php_explode"));
     CHECK(p.funcdef_map.count("__ns_php_count"));
@@ -2370,40 +2284,30 @@ TEST_CASE("dialect per name (A4): a compile registers what it names, what that c
     CHECK_FALSE(p.funcdef_map.count("__php_count"));
     CHECK_FALSE(p.funcdef_map.count("__php_strtoupper_cstr"));
     CHECK_FALSE(p.funcdef_map.count("__php_strtoupper"));
-    // The run child is served from the entry's init (R3), not by an anchor
-    // object in <ns_madc>: serve_run_child is never named here.
+    // The run child is served from the entry's init (R3).
     CHECK_FALSE(p.funcdef_map.count("__ns_madc_serve_run_child"));
-    // Never named, never called.
+    // Never named, never built.
     CHECK_FALSE(p.funcdef_map.count("__ns_php_trim"));
-    CHECK_FALSE(p.funcdef_map.count("__php_trim_cstr"));
     CHECK_FALSE(p.funcdef_map.count("__ns_madc_compiler_run"));
-    // --show-stats's counters say the same.
-    CHECK(s.dialect_units >= 2u);
-    CHECK(s.dialect_funcs == 4u);
-    CHECK(s.dialect_hits >= 3u);
-    CHECK(s.dialect_names >= s.dialect_hits);
-    CHECK(s.dialect_records >= 4u);
+    // --show-stats's counter says the same: the three names, no more than a
+    // handful besides.
+    CHECK(p.dialect_builds >= 3u);
+    CHECK(p.dialect_builds < 10u);
 }
 
 // A demand registers inside the entry that made it: an entry that fails
 // takes its registration back with it, and a later entry demands the name
 // again and gets it.
-TEST_CASE("dialect per name (A4): a rolled-back entry's dialect registration is made again")
+TEST_CASE("the dialect is builtin (R4c): a rolled-back entry's dialect registration is made again")
 {
-    DialectPack pack;
-    REQUIRE_FALSE(pack.path.empty());
-    InteractiveSession m(pack.configured());
+    InteractiveSession m;
     REQUIRE(m.begin("--std=madc"));
     Program &p = m.program();
     REQUIRE(m.submit("array words;"));
     CHECK_FALSE(m.submit("long n = php::count(words) + no_such_name;"));
     CHECK_FALSE(p.funcdef_map.count("__ns_php_count"));
-    bool hit = false;
-    CHECK_FALSE(p.forest_dialect_demands.demanded("php::count", hit));
     REQUIRE(m.submit("long n = php::count(words);"));
     CHECK(p.funcdef_map.count("__ns_php_count"));
-    CHECK(p.forest_dialect_demands.demanded("php::count", hit));
-    CHECK(hit);
     REQUIRE(m.submit("php::explode(words, \",\", \"a,b\");"));
     REQUIRE(m.submit("php::count(words)"));
     CHECK(m.shown() == "2");
@@ -2436,20 +2340,17 @@ bool fn_template(Program &p, const char *key)
 
 } // namespace
 
-// A5: a fragment's types, enums, templates and storage-less objects register
-// as the program names them, like its functions — an enum with its
-// enumerators, an extern object with its type; what the bind still restores
-// up front is the fragments' anchors (a global with storage).
-TEST_CASE("dialect per name (A5): types, enums, templates and objects register as named")
+// The dialect's types, enums, templates and storage-less objects register as
+// the program names them, like its functions — an enum with its enumerators,
+// an extern object with its type.
+TEST_CASE("the dialect is builtin (R4c): types, enums, templates and objects register as named")
 {
-    DialectPack pack("#include <ns_madc>\n#include <ns_php>\n");
-    REQUIRE_FALSE(pack.path.empty());
-    InteractiveSession m(pack.configured());
+    InteractiveSession m;
     REQUIRE(m.begin("--std=madc"));
     Program &p = m.program();
     REQUIRE(m.submit("array words;"));
     REQUIRE(m.submit("php::explode(words, \",\", \"a,b,c\");"));
-    REQUIRE(bound_dialect_units(p).count("ns_madc"));
+    REQUIRE(p.dialect_namespace_named("madc"));	// php's own text names madc
     // Nothing named: no type, enum, enumerator, extern object or template.
     CHECK_FALSE(ns_type(p, "madc", "project_kind"));
     CHECK_FALSE(ns_type(p, "madc", "file_kind"));
@@ -2477,16 +2378,15 @@ TEST_CASE("dialect per name (A5): types, enums, templates and objects register a
     // A compiler-implemented template, named.
     REQUIRE(m.submit("php::print_r(f);"));
     CHECK(fn_template(p, "php::print_r"));
-    CHECK(p.forest_bind_stats().dialect_objects >= 4u);
+    // A bare twin: the type's tag at the program scope (madc's flat tags).
+    REQUIRE(m.submit("SysInfo *si = &madc::sys;"));
 }
 
 // A type a rolled-back entry registered is registered again by the next
 // entry that names it.
-TEST_CASE("dialect per name (A5): a rolled-back entry's dialect type is registered again")
+TEST_CASE("the dialect is builtin (R4c): a rolled-back entry's dialect type is registered again")
 {
-    DialectPack pack("#include <ns_madc>\n");
-    REQUIRE_FALSE(pack.path.empty());
-    InteractiveSession m(pack.configured());
+    InteractiveSession m;
     REQUIRE(m.begin("--std=madc"));
     Program &p = m.program();
     CHECK_FALSE(m.submit("madc::project_kind k = madc::project_kind::gui + no_such_name;"));

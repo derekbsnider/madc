@@ -5375,10 +5375,9 @@ TokenDataType *Program::resolve_namespaced_type_token(TokenBase *tb, bool consum
     else
 	return NULL;
     // The member read: a dialect type's first touch registers it (the
-    // dialect per name, A5) — before the namespace's type map is read,
-    // which holds none of a fragment's types until one is named.
-    if ( forest_dialect_active() )
-	forest_dialect_demand(ns_name, member_name);
+    // dialect is builtin, R4c) — before the namespace's type map is read,
+    // which holds none of the dialect's types until one is named.
+    dialect_demand(ns_name, member_name);
 
     namespace_datatype_map_t::iterator nti = namespace_datatype_map.find(ns_name);
     if ( nti == namespace_datatype_map.end() )
@@ -12713,10 +12712,9 @@ TokenDataType *Program::namespace_chain_datatype(const madc::dis::istring &nm)
     madc::dis::istring scope = current_namespace();
     while ( !scope.empty() )
     {
-	// A dialect type named bare inside its namespace (the dialect per
-	// name, A5): its first touch registers it.
-	if ( forest_dialect_active() && forest_dialect_side().dialect_namespaces.count(scope) )
-	    forest_dialect_demand(scope, nm);
+	// A dialect type named bare inside its namespace (the dialect is
+	// builtin, R4c): its first touch registers it.
+	dialect_demand(scope, nm);
 	namespace_datatype_map_t::iterator nti =
 	    namespace_datatype_map.find(scope);
 	if ( nti != namespace_datatype_map.end() )
@@ -26387,6 +26385,11 @@ Variable *Program::lazy_resolve(const madc::dis::istring &name)
     if ( forest_dialect_active() && forest_dialect_demand(madc::dis::istring(), name) )
 	if ( Variable *dialect_var = tkProgram->findVariable(strpool, name) )
 	    return dialect_var;
+    // A dialect name's bare twin (an unscoped enumerator, a namespace object
+    // — the dialect is builtin, R4c): registered as it is first used.
+    if ( dialect_demand_bare(name) )
+	if ( Variable *dialect_var = tkProgram->findVariable(strpool, name) )
+	    return dialect_var;
     std::map<madc::dis::istring, LazyEntry>::iterator it = lazy_map.find(name);
     if ( it == lazy_map.end() )
 	return NULL;
@@ -26408,8 +26411,9 @@ Variable *Program::lazy_resolve(const madc::dis::istring &name)
 DataDef *Program::lazy_resolve_type(const madc::dis::istring &name)
 {
     // A global-scope dialect type — a namespaced one's bare twin (`SysInfo`):
-    // registered as the name is first used (the dialect per name, A5).
-    if ( forest_dialect_active() && forest_dialect_demand(madc::dis::istring(), name) )
+    // registered as the name is first used (the dialect is builtin, R4c).
+    if ( dialect_demand_bare(name)
+      || (forest_dialect_active() && forest_dialect_demand(madc::dis::istring(), name)) )
     {
 	datadef_map_citer dmi = struct_map.find(name);
 	if ( dmi != struct_map.end() )
@@ -29258,8 +29262,7 @@ Variable *Program::activate_forest_func(const madc::dis::istring &name)
 void Program::activate_forest_member(const madc::dis::istring &ns,
 				     const madc::dis::istring &display_name)
 {
-    if ( forest_dialect_active() )
-	forest_dialect_demand(ns, display_name);
+    dialect_demand(ns, display_name);
     if ( forest_deferred_func_families.empty() )
 	return;
     madc::dis::istring family = ns + "::" + display_name;
@@ -29276,17 +29279,9 @@ void Program::activate_forest_member(const madc::dis::istring &ns,
 
 void Program::activate_forest_function_display(const madc::dis::istring &display_name)
 {
-    // The dialect's free operators: every active scope's, and the global one.
-    if ( forest_dialect_active() && forest_dialect_side().forest && tkProgram )
-    {
-	std::vector<uint32_t> asked;
-	forest_dialect_ask(*this, madc::dis::istring(), display_name, asked);
-	const std::set<madc::dis::istring> &spaces = forest_dialect_side().dialect_namespaces;
-	for ( std::set<madc::dis::istring>::const_iterator it = spaces.begin();
-	      it != spaces.end(); ++it )
-	    forest_dialect_ask(*this, *it, display_name, asked);
-	forest_dialect_register(*this, asked);
-    }
+    // The dialect's free operators: every named dialect namespace's.
+    for ( size_t i = 0; i < dialect_named.size(); ++i )
+	dialect_demand(dialect_named[i], display_name);
     const madc::dis::istring suffix = "::" + display_name;
     std::vector<madc::dis::istring> families;
     for ( std::map<madc::dis::istring, std::vector<madc::dis::istring> >::const_iterator it =
@@ -30924,6 +30919,11 @@ void Program::_parser_init()
     for ( size_t m = 0; m < imported_modules.size(); ++m )
 	imported_modules[m].registered = false;
     register_imported_modules();
+    // The dialect namespaces the TU named (its lex recorded them); their
+    // names build as lookups touch them (dialect_demand), into the maps this
+    // init reset — so every builder runs again.
+    dialect_built.clear();
+    register_dialect_namespaces();
     // clang's __make_integer_seq builtin template: a marker registration so
     // every template-id head lookup (type AND expression lanes) recognizes
     // the name and funnels to instantiate_template_use, whose native arm
@@ -31684,11 +31684,10 @@ madc::dis::istring Program::canonical_nested_namespace(const madc::dis::istring 
 		found = cand;
 	}
 	// A dialect enum's or class's scope (`madc::project_kind::gui`): the
-	// first touch of its name registers it (the dialect per name, A5) —
+	// first touch of its name registers it (the dialect is builtin, R4c) —
 	// an enum's enumerators make its pseudo-namespace.
-	if ( found.empty() && forest_dialect_active() )
+	if ( found.empty() && dialect_demand(parent, comp) )
 	{
-	    forest_dialect_demand(parent, comp);
 	    cand = parent.empty() ? comp : madc::dis::istring(parent + "::" + comp);
 	    if ( namespace_map.find(cand) != namespace_map.end()
 	      || namespace_datatype_map.find(cand) != namespace_datatype_map.end() )
@@ -43883,7 +43882,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    }
 		    // A dialect name's first touch, ahead of the template and type
 		    // probes below (find_namespace_member's own touch follows).
-		    if ( forest_dialect_active() )
+		    if ( dialect_from_table() )
 			activate_forest_member(ns_name, member_name);
 
 		    DataDef *member_dd = NULL;
@@ -47736,8 +47735,8 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	if ( ns_name.empty() )
 	    pgm.Throw(tn) << "Unknown namespace '" << raw_ns_name << "'" << flush;
 	// The directive imports what the namespace holds: its dialect
-	// functions register first (the dialect's per-name registration).
-	pgm.forest_dialect_demand_namespace(ns_name);
+	// names register first (the dialect is builtin, R4c).
+	pgm.dialect_demand_namespace(ns_name);
 	// Each component's spelling records the namespace its prefix names.
 	for ( size_t i = 0; i < spelled.size(); ++i )
 	{
@@ -63956,6 +63955,20 @@ static void register_skipped_namespace_template_function(
 	    ovset.push_back(e);
 	}
     }
+}
+
+void Program::register_namespace_function_template(const madc::dis::istring &ns,
+	const std::vector<TokenBase *> &decl,
+	const std::vector<madc::dis::istring> &typeparams,
+	const std::vector<bool> &typeparam_is_type,
+	const std::vector<bool> &typeparam_is_pack)
+{
+    Program::NamespaceScope guard(*this, ns);
+    const std::vector<std::vector<TokenBase *>> defaults(typeparams.size());
+    const std::vector<std::vector<TokenBase *>> constraints(typeparams.size());
+    register_skipped_namespace_template_function(*this, decl, typeparams, &defaults,
+						 &typeparam_is_type, &typeparam_is_pack,
+						 &constraints);
 }
 
 // v22 (iostream W2): the forest restore's twin of the capture trio above —
@@ -80571,9 +80584,9 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
     if ( namespace_function )
     {
 	// A dialect function of the same name registers first, as it did when
-	// the bind registered the whole fragment: a program's own declaration
-	// in that namespace then overloads or redeclares it.
-	if ( forest_dialect_active() )
+	// the fragment's text declared it: a program's own declaration in that
+	// namespace then overloads or redeclares it.
+	if ( dialect_from_table() )
 	    activate_forest_member(current_namespace(), source_id);
 	parse_id = namespace_function_symbol(current_namespace(), source_id);
 	// C++ free-function overloading: each overload of ns::name gets its
@@ -84213,6 +84226,13 @@ struct Program::EntryTransaction::State
     std::map<madc::dis::istring, std::vector<madc::dis::istring> > inline_namespace_children;
     bool include_iostream, include_string, include_ns_madc;
     Program::ForestBindMark forest_bind;	// the pack binds the entry made
+    // The dialect table's serving, named namespaces and built names (R4c):
+    // a rolled-back entry's names build again when a later entry names them.
+    Program::DialectServing dialect_serving;
+    std::vector<madc::dis::istring> dialect_named;
+    std::set<madc::dis::istring> dialect_fragments;
+    std::vector<unsigned char> dialect_built;
+    size_t dialect_builds;
     // Entities changed in place, each saved (a copy) at its first change.
     // A saved Variable never owns its storage: the live one does.
     std::vector<std::pair<Variable *, Variable *> > variables;
@@ -84230,7 +84250,10 @@ struct Program::EntryTransaction::State
 	  inline_namespace_children(p.inline_namespace_children),
 	  include_iostream(p._include_iostream),
 	  include_string(p._include_string), include_ns_madc(p._include_ns_madc),
-	  forest_bind(p.forest_bind_mark())
+	  forest_bind(p.forest_bind_mark()),
+	  dialect_serving(p.dialect_serving), dialect_named(p.dialect_named),
+	  dialect_fragments(p.dialect_fragments), dialect_built(p.dialect_built),
+	  dialect_builds(p.dialect_builds)
     {
     }
 
@@ -84288,6 +84311,11 @@ struct Program::EntryTransaction::State
 	p._include_iostream = include_iostream;
 	p._include_string = include_string;
 	p._include_ns_madc = include_ns_madc;
+	p.dialect_serving = dialect_serving;
+	p.dialect_named = dialect_named;
+	p.dialect_fragments = dialect_fragments;
+	p.dialect_built = dialect_built;
+	p.dialect_builds = dialect_builds;
     }
 };
 

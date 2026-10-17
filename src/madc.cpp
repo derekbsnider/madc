@@ -2102,6 +2102,13 @@ int main(int argc, char **argv)
 		    fprintf(stderr,
 			"[stats] forest profiles ..... %llu system + %llu dialect opened\n",
 			fs.profiles_system, fs.profiles_dialect);
+		// The dialect is builtin (R4c): the generated table's names this
+		// compile built, in the dialect namespaces it named.
+		if ( prog->dialect_from_table() )
+		    fprintf(stderr,
+			"[stats] dialect table ....... %zu namespaces named; %zu of %zu names built\n",
+			prog->dialect_named.size(), prog->dialect_builds,
+			(size_t)madc::builtins::dialect_table_count);
 		// The dialect image (B2): bound in place, beside the system pack.
 		if ( fs.image_probed )
 		{

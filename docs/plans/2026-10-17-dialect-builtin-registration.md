@@ -986,3 +986,85 @@ Slices:
   2 not yet built — `php::print_r` / `var_dump`, the R4c builder ruling.
 - Validation: Tier 1 (testdialect*: 6 JIT, 5 EXE, 5 OBJ); Tier 2's seven
   lanes green (224s); the win64 and arm64 darwin hosted builds; static gates.
+
+### R4c execution (2026-10-17)
+
+- The table is the dialect's one path under --std=madc. The lexer serves no
+  `ns_*` fragment text: `Program::dialect_fragment_from_table` (the auto-
+  include's loop and a written `#include <ns_*>`) records the namespaces the
+  fragment heads (its provider row) and, to closure, those its own text
+  names (queue_fragment_prerequisites, the scan the text serving ran), and
+  sets the include flag the serving set (`_include_ns_madc`).
+  `register_dialect_namespaces` makes each named namespace exist (after
+  `_parser_init`'s reset; after an interactive entry's lex).
+- `Program::dialect_demand(ns, name)`: in a named namespace, the table's
+  builder for the name, once per Program — the memo `dialect_built`, shared
+  with `builtin_type` through the one runner (`run_dialect_entry`). Hooks
+  re-pointed: `activate_forest_member` (find_namespace_member's first step),
+  the namespaced type-token read, `namespace_chain_datatype`,
+  `canonical_nested_namespace`, the identifier arm and the declaration body
+  (guarded by `dialect_from_table()`), `activate_forest_function_display`
+  (each named namespace), `using namespace` (`dialect_demand_namespace`),
+  completion (`dialect_table_names`). `--show-stats` prints
+  `dialect table ... N namespaces named; M of K names built`; the
+  check-dialect-std-gated.sh gate gains that leg (--std=madc builds names,
+  a strict compile reports no table).
+- Ruling (refines the R4 design's interop ruling): the serving is decided
+  ONCE per program, at its first `ns_*` fragment — Text when the stdlib's
+  string guard is defined by then (the 19 tests that bind a std::string
+  overload all include `<string>` before their first dialect namespace; the
+  auto-include orders `string` ahead of every `ns_*`), else Table; the two
+  never mix (a class's interop members — `madc::channel::readline(std::string
+  &)` — cannot be added to a table-built class from text). A Text program is
+  served exactly as before. Cost if wrong: a program naming a dialect
+  namespace before `<string>` and another after loses the second one's
+  interop overloads (today it had them).
+- Ruling: `bits/*` fragments keep their text path (bits/value_stream,
+  bits/std_format are no table's; the table's own bits/* arrive inside the
+  ns_* fragment that includes them). Cost if wrong: a written
+  `#include <bits/ui_enums>` in a Table program parses that text beside the
+  table.
+- Ruling: an unscoped enumerator gets its own table row (`ui::TUI`), whose
+  builder registers the enum through `builtin_type` — a lookup names the
+  enumerator, never its enum. Module tables take no such rows (an import
+  registers every row).
+- The bare twins: madc registers a namespace type's tag, an unscoped enum's
+  enumerators and a namespace object at the program scope too, so the text
+  parse let a dialect program write `SysInfo` / `TUI` / `sys` unqualified
+  (testdialectpername_types pins `SysInfo`). The generator writes them beside
+  the table (`dialect_bare_names`, sorted by name: the entry that registers
+  each); `dialect_demand_bare` builds them from the global-scope miss paths
+  (`lazy_resolve`, `lazy_resolve_type`), in named namespaces only.
+- Found (its own session — a core-parser lookup rule): madc resolves a bare
+  namespaced struct tag for a program's OWN namespace too, under every
+  standard (`namespace N { struct S { int a; }; } ... S s;` compiles under
+  --std=c++17; g++: "'S' was not declared in this scope; did you mean
+  'N::S'?"). The dialect's bare twins ride that rule; fixing it retires them.
+- Ruling: `_include_ns_madc` is set when the closure names `madc` (as the
+  text serving included ns_madc), not when a madc builder runs — the
+  population that got `__madc_sys_init` stays the same.
+- `php::print_r` / `var_dump` build: `declare_builtin_function_template`
+  re-lexes the captured declaration (`Program::tokenize_text_run`, the
+  renamed one text-run lexer) and registers it through the parse's own
+  skipped-template registrar (`register_namespace_function_template`, inside
+  a NamespaceScope). The differential compares the fn_template_decl_map
+  identity too: 0 not yet built.
+- Left for R4d with the image: the global-scope demands in `lazy_resolve` /
+  `lazy_resolve_type`, the param-default rebuild's copy, the CIR fixpoint's
+  loaded-body demands (the table carries no bodies) — all inert, the image
+  never binds now.
+- The image's per-name REPL cases (test_repl_session A3/A4/A5) re-aim at the
+  table: a named namespace's names read from the table, a compile building
+  what it names, a rolled-back entry's names built again, types / enums /
+  templates / objects / a bare twin as named. The A3 demand-log case is the
+  image's own and goes with it in R4d.
+- Hot path: a dialect program lexes no fragment (the probe `php::` / `var` /
+  `ui::` program: 52 tokens produced); it pays one prerequisite scan of the
+  named fragments' text and, per namespace-member miss in a named namespace,
+  a named check and a binary search of the table. A non-dialect compile pays
+  one enum compare per hook.
+- Validation: Tier 1 (220 JIT, 167 EXE, 167 OBJ over the dialect-facing
+  tests); Tier 2's seven lanes green; the batch lane 2091/0/0/9; static gates
+  0 red (check-dialect-std-gated.sh with the table leg); test_builtin_registry
+  (623 compared, 0 not yet built), test_repl_session, test_cir_freeze,
+  test_modules, test_libmadc_program, test_lang, test_madc_cli green.

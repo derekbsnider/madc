@@ -306,6 +306,23 @@ Variable *declare_builtin_extern(Program &pgm, const BuiltinExternDecl &d)
     return v;
 }
 
+void declare_builtin_function_template(Program &pgm, const BuiltinFunctionTemplateDecl &d)
+{
+    std::vector<madc::dis::istring> names;
+    std::vector<bool> is_type, is_pack;
+    for ( size_t i = 0; i < d.nparams; ++i )
+    {
+	names.push_back(d.params[i].name);
+	is_type.push_back(d.params[i].is_type);
+	is_pack.push_back(d.params[i].is_pack);
+    }
+    // The declaration's tokens, lexed from its spelling (the run the parse
+    // captured), stamped as the dialect's.
+    std::vector<TokenBase *> decl = pgm.tokenize_text_run(d.decl, NULL,
+							   pgm.intern_file("<dialect>"));
+    pgm.register_namespace_function_template(d.ns, decl, names, is_type, is_pack);
+}
+
 // A table's entry for ns::name (the table sorted by (ns, name) in byte
 // order), or NULL — the dialect's table and an imported module's alike.
 static const MadcBuiltinEntry *find_table_entry(const MadcBuiltinEntry *table, size_t count,
@@ -335,6 +352,86 @@ static const MadcBuiltinEntry *find_builtin_entry(const char *ns, const char *na
 			    ns, name);
 }
 
+// The ONE runner of a dialect table entry's builder: once per Program (the
+// memo Program::dialect_built, indexed as the table). True when it ran now.
+static bool run_dialect_entry(Program &pgm, const MadcBuiltinEntry *e)
+{
+    size_t at = (size_t)(e - madc::builtins::dialect_table);
+    if ( pgm.dialect_built.empty() )
+	pgm.dialect_built.assign(madc::builtins::dialect_table_count, 0);
+    if ( pgm.dialect_built[at] )
+	return false;
+    pgm.dialect_built[at] = 1;
+    ++pgm.dialect_builds;
+    e->build(pgm);
+    return true;
+}
+
+bool Program::dialect_demand(const madc::dis::istring &ns, const madc::dis::istring &name)
+{
+    if ( !dialect_from_table() || ns.empty() || !dialect_namespace_named(ns) )
+	return false;
+    const MadcBuiltinEntry *e = find_builtin_entry(ns.c_str(), name.c_str());
+    return e && run_dialect_entry(*this, e);
+}
+
+bool Program::dialect_demand_bare(const madc::dis::istring &name)
+{
+    if ( !dialect_from_table() )
+	return false;
+    const MadcBuiltinBareName *b = madc::builtins::dialect_bare_names;
+    size_t lo = 0, hi = madc::builtins::dialect_bare_names_count;
+    while ( lo < hi )	// the first row of the name
+    {
+	size_t mid = lo + (hi - lo) / 2;
+	if ( strcmp(b[mid].name, name.c_str()) < 0 )
+	    lo = mid + 1;
+	else
+	    hi = mid;
+    }
+    bool built = false;
+    for ( ; lo < madc::builtins::dialect_bare_names_count
+	    && strcmp(b[lo].name, name.c_str()) == 0; ++lo )
+	if ( dialect_demand(b[lo].ns, b[lo].entry) )
+	    built = true;
+    return built;
+}
+
+// The table's run of ns (sorted by (ns, name)): [first, last).
+static void dialect_namespace_run(const madc::dis::istring &ns, size_t &first, size_t &last)
+{
+    const MadcBuiltinEntry *t = madc::builtins::dialect_table;
+    size_t n = madc::builtins::dialect_table_count;
+    first = 0;
+    while ( first < n && strcmp(t[first].ns, ns.c_str()) < 0 )
+	++first;
+    last = first;
+    while ( last < n && strcmp(t[last].ns, ns.c_str()) == 0 )
+	++last;
+}
+
+void Program::dialect_demand_namespace(const madc::dis::istring &ns)
+{
+    if ( !dialect_from_table() || !dialect_namespace_named(ns) )
+	return;
+    size_t first = 0, last = 0;
+    dialect_namespace_run(ns, first, last);
+    for ( size_t i = first; i < last; ++i )
+	run_dialect_entry(*this, &madc::builtins::dialect_table[i]);
+}
+
+void Program::dialect_table_names(const madc::dis::istring &ns, const madc::dis::istring &prefix,
+				  const std::function<void(const madc::dis::istring &)> &offer) const
+{
+    if ( !dialect_from_table() || !dialect_namespace_named(ns) )
+	return;
+    size_t first = 0, last = 0;
+    dialect_namespace_run(ns, first, last);
+    for ( size_t i = first; i < last; ++i )
+	if ( strncmp(madc::builtins::dialect_table[i].name, prefix.c_str(), prefix.size()) == 0 )
+	    offer(madc::builtins::dialect_table[i].name);
+}
+
 // The C++ string literal of `s` (the one C-string escape rule).
 static std::string cpp_literal(const char *s)
 {
@@ -347,7 +444,7 @@ DataDef *builtin_type(Program &pgm, const char *ns, const char *name)
     if ( DataDef *dd = registered_namespace_type(pgm, n, m) )
 	return dd;
     if ( const MadcBuiltinEntry *e = find_builtin_entry(ns, name) )
-	e->build(pgm);
+	run_dialect_entry(pgm, e);
     else
 	// A type an imported module declares (a builder names its module's own
 	// type before the type's builder ran: the table's order is the name's).
@@ -909,6 +1006,49 @@ madc::dis::istring builtin_variable_line(Program &pgm, const madc::dis::istring 
     return line;
 }
 
+// The bodiless declarations of ns::name (fn_template_decl_map), or NULL.
+static const std::vector<Program::FnTemplateDef> *function_template_decls(
+	Program &pgm, const madc::dis::istring &ns, const madc::dis::istring &name)
+{
+    return pgm.thawed_fn_template_decls(ns + "::" + name);
+}
+
+// One declaration's tokens, spelled (the one spelling owner, which re-lexes).
+static std::string decl_tokens_spelling(const std::vector<TokenBase *> &decl)
+{
+    std::string text;
+    for ( size_t i = 0; i < decl.size(); ++i )
+	if ( decl[i] )
+	    text += std::string(text.empty() ? "" : " ") + madc_token_spelling(decl[i]).c_str();
+    return text;
+}
+
+madc::dis::istring builtin_function_template_line(Program &pgm, const madc::dis::istring &ns,
+						  const madc::dis::istring &name)
+{
+    const std::vector<Program::FnTemplateDef> *defs = function_template_decls(pgm, ns, name);
+    if ( !defs )
+	return madc::dis::istring();
+    // A token spells through its Program's pools: this one's, whichever
+    // Program ran last.
+    pgm.activate_token_pools();
+    std::string line;
+    for ( size_t k = 0; k < defs->size(); ++k )
+    {
+	const Program::FnTemplateDef &d = (*defs)[k];
+	line += std::string(d.ns.c_str()) + "\t" + d.inline_builtin_kind.c_str() + "\t";
+	for ( size_t i = 0; i < d.typeparams.size(); ++i )
+	    line += std::string(d.typeparams[i].c_str())
+		  + (i < d.typeparam_is_type.size() && d.typeparam_is_type[i] ? "t" : "n")
+		  + (i < d.typeparam_is_pack.size() && d.typeparam_is_pack[i] ? "p" : "")
+		  + ",";
+	line += "\t" + std::to_string(d.typeparam_defaults.size()) + "/"
+	      + std::to_string(d.typeparam_constraints.size()) + "\t"
+	      + (d.owner_class ? "member" : "free") + "\t" + decl_tokens_spelling(d.decl) + "\n";
+    }
+    return madc::dis::istring(line.c_str());
+}
+
 // One program parsed as text — the pack bind off (--no-forest-bind's
 // setting), so a declaration is what the parser makes of the file's text.
 static std::shared_ptr<Program> parse_text_program(const std::string &src,
@@ -917,6 +1057,7 @@ static std::shared_ptr<Program> parse_text_program(const std::string &src,
 {
     std::shared_ptr<Program> p = std::make_shared<Program>();
     p->registration_policy.enable_forest_bind = false;
+    p->registration_policy.enable_dialect_table = false;	// the fragments ARE the source
     p->forest_bind_path.clear();
     TokenProgram *tp = p->tokenize_buffer(madc::dis::istring(src.c_str()),
 					  madc::dis::istring(display_name));
@@ -1307,6 +1448,39 @@ static std::string builtin_skip_reason(Program &live, const madc::dis::istring &
     return std::string();
 }
 
+// Why one bodiless function template gets no builder yet:
+// declare_builtin_function_template registers a free template's declarations
+// with plain parameters (no default, no constraint) through the parse's own
+// registrar, whose placeholder is the group's one key.
+static std::string function_template_skip_reason(Program &live, const BuiltinGroup &bg)
+{
+    madc::dis::istring key = bg.ns + "::" + bg.name;
+    if ( live.fn_template_map.find(key) != live.fn_template_map.end() )	/* identity-read: existence */
+	return "a template with a body";
+    const std::vector<Program::FnTemplateDef> *defs = function_template_decls(live, bg.ns, bg.name);
+    if ( bg.ns.empty() || bg.keys.size() != 1 )
+	return "a template beside other overloads";
+    FuncDef *fd = live.funcdef_map[bg.keys[0]];
+    if ( !fd || !fd->declaration_only || !fd->parameters.empty() )
+	return "a template beside other overloads";
+    for ( size_t k = 0; k < defs->size(); ++k )
+    {
+	const Program::FnTemplateDef &d = (*defs)[k];
+	if ( d.owner_class || d.instance_method || d.decl.empty() )
+	    return "a member template";
+	for ( size_t i = 0; i < d.typeparam_defaults.size(); ++i )
+	    if ( !d.typeparam_defaults[i].empty() )
+		return "a template parameter default";
+	for ( size_t i = 0; i < d.typeparam_constraints.size(); ++i )
+	    if ( !d.typeparam_constraints[i].empty() )
+		return "a constrained template parameter";
+	if ( d.typeparam_is_type.size() != d.typeparams.size()
+	  || d.typeparam_is_pack.size() != d.typeparams.size() )
+	    return "a template head the parse left partial";
+    }
+    return std::string();
+}
+
 // Why one namespace object gets no builder yet: declare_builtin_extern builds
 // an `extern T name;` reference — no storage, no initializer, one element,
 // bound under its own name with the target's mangled alias.
@@ -1406,7 +1580,14 @@ void plan_builtin_registry(DialectTextParse &dp, std::vector<BuiltinGroup> &grou
 	for ( size_t i = 0; i < g->second.size(); ++i )
 	    if ( pending.count(g->second[i]) )
 		bg.keys.push_back(g->second[i]);
-	for ( size_t i = 0; i < bg.keys.size() && bg.skip.empty(); ++i )
+	// A bodiless function template: its placeholder is the parse's
+	// registrar's, which the builder runs.
+	if ( function_template_decls(live, bg.ns, bg.name) )
+	{
+	    bg.kind = bgFunctionTemplate;
+	    bg.skip = function_template_skip_reason(live, bg);
+	}
+	for ( size_t i = 0; bg.kind == bgFunctions && i < bg.keys.size() && bg.skip.empty(); ++i )
 	    bg.skip = builtin_skip_reason(live, bg.keys[i]);
 	place(bg);
     }
@@ -1646,6 +1827,33 @@ static void emit_extern(std::ostream &out, Program &live, const madc::dis::istri
 	<< "    declare_builtin_extern(pgm, d);\n";
 }
 
+// One bodiless function template's registration, as generated code: each
+// declaration's head parameters and its tokens' spelling.
+static void emit_function_template(std::ostream &out, Program &live, const madc::dis::istring &ns,
+				   const madc::dis::istring &name)
+{
+    const std::vector<Program::FnTemplateDef> &defs = *function_template_decls(live, ns, name);
+    live.activate_token_pools();	// the declaration's tokens spell through live's pools
+    for ( size_t k = 0; k < defs.size(); ++k )
+    {
+	const Program::FnTemplateDef &d = defs[k];
+	out << "    {\n";
+	if ( !d.typeparams.empty() )
+	{
+	    out << "\tstatic const BuiltinTemplateParam tp[] = {";
+	    for ( size_t i = 0; i < d.typeparams.size(); ++i )
+		out << ( i ? ", " : " " ) << "{ " << cpp_literal(d.typeparams[i].c_str()) << ", "
+		    << (d.typeparam_is_type[i] ? "true" : "false") << ", "
+		    << (d.typeparam_is_pack[i] ? "true" : "false") << " }";
+	    out << " };\n";
+	}
+	out << "\tBuiltinFunctionTemplateDecl d = { " << cpp_literal(ns.c_str()) << ",\n\t    "
+	    << cpp_literal(decl_tokens_spelling(d.decl).c_str()) << ",\n\t    "
+	    << (d.typeparams.empty() ? "NULL" : "tp") << ", " << d.typeparams.size() << " };\n"
+	    << "\tdeclare_builtin_function_template(pgm, d);\n    }\n";
+    }
+}
+
 // The generated file's head: what every builder needs in scope.
 static void emit_builder_prologue(std::ostream &out)
 {
@@ -1658,13 +1866,30 @@ static void emit_builder_prologue(std::ostream &out)
 	<< "#include \"madc.h\"\n#include \"madc_builtin_registry.h\"\n\n";
 }
 
+// One table row: a name and the builder that registers it.
+struct BuiltinTableRow
+{
+    std::string ns, name, builder;
+    bool alias;		// an unscoped enumerator's row (its enum's builder)
+};
+
 // One builder per group the plan built (a refused group is written as a
-// comment with its reason), and each built group's table row into `table`.
-// The count of builders written.
+// comment with its reason), and the table's rows into `table`, sorted by
+// (ns, name) in byte order: each built group's, and an unscoped enum's
+// enumerators' — a lookup names `ui::TUI`, never its enum — whose builder
+// registers the enum through builtin_type (once per Program). A group's own
+// row wins a name an enumerator also claims. The dialect's bare twins
+// (MadcBuiltinBareName: each type's tag, each unscoped enumerator, each
+// object) go to `bare` — `*nbare` of them. A module's table registers every
+// row at its import, so it takes neither (`bare` NULL). The count of table
+// rows written.
 static size_t emit_builders(std::ostream &out, Program &live,
-			    const std::vector<BuiltinGroup> &groups, std::ostream &table)
+			    const std::vector<BuiltinGroup> &groups, std::ostream &table,
+			    std::ostream *bare, size_t *nbare)
 {
     size_t built = 0;
+    std::vector<BuiltinTableRow> rows;
+    std::vector<BuiltinTableRow> twins;	// name, ns, the entry (in `builder`)
     for ( size_t g = 0; g < groups.size(); ++g )
     {
 	const BuiltinGroup &bg = groups[g];
@@ -1691,14 +1916,64 @@ static size_t emit_builders(std::ostream &out, Program &live,
 	    emit_struct(out, live, bg.ns, bg.name);
 	else if ( tdd )
 	    emit_enum(out, live, bg.ns, bg.name);
+	else if ( bg.kind == bgFunctionTemplate )
+	    emit_function_template(out, live, bg.ns, bg.name);
 	for ( size_t k = 0; bg.kind == bgFunctions && k < bg.keys.size(); ++k )
 	    emit_declaration(out, live, bg.keys[k]);
 	out << "}\n\n";
-	table << "    { " << cpp_literal(bg.ns.c_str()) << ", "
-	      << cpp_literal(bg.name.c_str()) << ", b" << built << " },\n";
+	const std::string builder = "b" + std::to_string(built);
+	BuiltinTableRow row = { bg.ns.c_str(), bg.name.c_str(), builder, false };
+	rows.push_back(row);
+	if ( bare && (bg.kind == bgType || bg.kind == bgVariable) )
+	{
+	    BuiltinTableRow tw = { bg.ns.c_str(), bg.name.c_str(), bg.name.c_str(), false };
+	    twins.push_back(tw);
+	}
+	DataDefENUM *e = tdd ? tdd->as_enum_dd() : NULL;
+	if ( bare && e && !e->enumerators.empty() && enum_is_unscoped(live, bg.ns, e) )
+	{
+	    out << "static void " << builder << "_e(Program &pgm)\n{\n    builtin_type(pgm, "
+		<< cpp_literal(bg.ns.c_str()) << ", " << cpp_literal(bg.name.c_str()) << ");\n}\n\n";
+	    for ( size_t i = 0; i < e->enumerators.size(); ++i )
+	    {
+		BuiltinTableRow er = { bg.ns.c_str(), e->enumerators[i].first.c_str(),
+				       builder + "_e", true };
+		rows.push_back(er);
+		BuiltinTableRow tw = { bg.ns.c_str(), e->enumerators[i].first.c_str(),
+				       bg.name.c_str(), true };
+		twins.push_back(tw);
+	    }
+	}
 	++built;
     }
-    return built;
+    std::sort(rows.begin(), rows.end(), [](const BuiltinTableRow &a, const BuiltinTableRow &b) {
+	int c = strcmp(a.ns.c_str(), b.ns.c_str());
+	if ( !c )
+	    c = strcmp(a.name.c_str(), b.name.c_str());
+	return c ? c < 0 : (!a.alias && b.alias);
+    });
+    size_t written = 0;
+    for ( size_t r = 0; r < rows.size(); ++r )
+    {
+	if ( r && rows[r].ns == rows[r - 1].ns && rows[r].name == rows[r - 1].name )
+	    continue;
+	table << "    { " << cpp_literal(rows[r].ns.c_str()) << ", "
+	      << cpp_literal(rows[r].name.c_str()) << ", " << rows[r].builder << " },\n";
+	++written;
+    }
+    if ( bare )
+    {
+	std::sort(twins.begin(), twins.end(), [](const BuiltinTableRow &a, const BuiltinTableRow &b) {
+	    int c = strcmp(a.name.c_str(), b.name.c_str());
+	    return c ? c < 0 : strcmp(a.ns.c_str(), b.ns.c_str()) < 0;
+	});
+	for ( size_t t = 0; t < twins.size(); ++t )
+	    *bare << "    { " << cpp_literal(twins[t].name.c_str()) << ", "
+		  << cpp_literal(twins[t].ns.c_str()) << ", "
+		  << cpp_literal(twins[t].builder.c_str()) << " },\n";
+	*nbare = twins.size();
+    }
+    return written;
 }
 
 bool emit_builtin_registry(std::ostream &out, std::ostream &diag)
@@ -1715,12 +1990,16 @@ bool emit_builtin_registry(std::ostream &out, std::ostream &diag)
     out << "// GENERATED by `madc --emit-builtin-registry` from include/madc/ns_* and\n"
 	<< "// bits/* — never edit; see include/madc_builtin_registry.h.\n\n";
     emit_builder_prologue(out);
-    std::ostringstream table;
-    size_t built = emit_builders(out, *dp.live, groups, table);
+    std::ostringstream table, bare;
+    size_t nbare = 0;
+    size_t built = emit_builders(out, *dp.live, groups, table, &bare, &nbare);
     out << "\nnamespace madc { namespace builtins {\n"
 	<< "const MadcBuiltinEntry dialect_table[] = {\n" << table.str()
 	<< ( built ? "" : "    { \"\", \"\", NULL },\n" )
-	<< "};\nconst size_t dialect_table_count = " << built << ";\n} }\n";
+	<< "};\nconst size_t dialect_table_count = " << built << ";\n"
+	<< "const MadcBuiltinBareName dialect_bare_names[] = {\n" << bare.str()
+	<< ( nbare ? "" : "    { \"\", \"\", \"\" },\n" )
+	<< "};\nconst size_t dialect_bare_names_count = " << nbare << ";\n} }\n";
     return true;
 }
 
@@ -1749,7 +2028,7 @@ bool emit_module_table(std::ostream &out, std::ostream &diag, const std::string 
 	<< "// description (include/madc_module.h).\n\n";
     emit_builder_prologue(out);
     std::ostringstream table;
-    size_t built = emit_builders(out, *dp.live, groups, table);
+    size_t built = emit_builders(out, *dp.live, groups, table, NULL, NULL);
     out << "\nstatic const MadcBuiltinEntry madc_module_declarations[] = {\n" << table.str()
 	<< ( built ? "" : "    { \"\", \"\", NULL },\n" )
 	<< "};\nstatic const size_t madc_module_ndeclarations = " << built << ";\n";

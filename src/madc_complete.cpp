@@ -14,9 +14,9 @@
  *     steps through its types from a session name (completion_members);
  *     after `::` the scope's registries are read (completion_scope_names),
  *     with the attempt parsed first, since a module's namespace fills only
- *     when its fragment is parsed. A dialect fragment the pack binds is
- *     read from the pack's index too (forest_dialect_names): a name the
- *     dialect registers only at its first use completes before it.
+ *     when its fragment is parsed. A named dialect namespace is read from
+ *     the generated table too (dialect_table_names): a name the dialect
+ *     registers only at its first use completes before it.
  * The top-level walk has a second consumer, `?name` (plan §41.8a, slice 2):
  * visit_top_level_names hands each candidate with its entity, and
  * describe_name keeps the ones spelled exactly as the name, under the same
@@ -428,12 +428,12 @@ void Program::visit_top_level_names(CompletionContext ctx,
     auto_include_words(words);
     for ( size_t i = 0; i < words.size(); ++i )
 	named(Kind::dialect_word, words[i]);
-    // The dialect's names in each reachable namespace, read from its active
-    // units' index, a name no entry has demanded yet included: the dialect
-    // registers it at its first use (plan 2026-10-16, A4).
+    // The dialect's names in each reachable namespace, read from the table,
+    // a name no entry has demanded yet included: the dialect registers it at
+    // its first use (R4c, dialect_demand).
     for ( std::set<madc::dis::istring>::const_iterator ns = visible.begin();
 	  ns != visible.end(); ++ns )
-	forest_dialect_names(*ns, word, [&](const madc::dis::istring &n) {
+	dialect_table_names(*ns, word, [&](const madc::dis::istring &n) {
 	    named(Kind::dialect_word, n);
 	});
     // The result names (D12), once a value is kept.
@@ -1331,10 +1331,9 @@ void Program::completion_scope_names(const madc::dis::istring &scope, const madc
 	    }
 	return false;
     });
-    // The dialect's names the scope holds, read from its active units'
-    // index: registered, or not demanded yet (plan 2026-10-16, A4). The
-    // offer keeps each name once.
-    forest_dialect_names(scope, word, [&](const madc::dis::istring &n) { offer(n); });
+    // The dialect's names the scope holds, read from the table: registered,
+    // or not demanded yet (R4c). The offer keeps each name once.
+    dialect_table_names(scope, word, [&](const madc::dis::istring &n) { offer(n); });
     // A class: what its object gives, which an entry writes qualified too
     // (`&C::get`, `sizeof(C::w)`, `C::count`), and its nested types. The
     // class's alias to itself is its injected-class-name ([class.pre]/2),

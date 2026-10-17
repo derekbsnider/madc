@@ -1898,8 +1898,9 @@ void Program::auto_include_words(std::vector<madc::dis::istring> &out)
 	    out.push_back(it->first);
 }
 
-std::vector<TokenBase *> Program::tokenize_auto_include_define(const std::string &value,
-							       const TokenBase *origin)
+std::vector<TokenBase *> Program::tokenize_text_run(const std::string &value,
+						    const TokenBase *origin,
+						    const char *fname)
 {
     std::vector<TokenBase *> replacement;
     if ( value.empty() )
@@ -1909,7 +1910,7 @@ std::vector<TokenBase *> Program::tokenize_auto_include_define(const std::string
     bool saved_suppress_auto_include_scan = suppress_auto_include_scan;
     suppress_auto_include_scan = true;
     source = Source();
-    source.fname(origin && origin->file ? origin->file : "<auto-include>");
+    source.fname(origin && origin->file ? origin->file : fname ? fname : "<auto-include>");
     source.str(value);
 
     try
@@ -2373,7 +2374,7 @@ void Program::expand_pending_auto_include_macros(size_t original_start)
 		if ( di != define_map.end() )
 		{
 		    std::vector<TokenBase *> repl =
-			tokenize_auto_include_define(*di, tb);
+			tokenize_text_run(*di, tb);
 		    rewritten.insert(rewritten.end(), repl.begin(), repl.end());
 		    continue;
 		}
@@ -2508,6 +2509,83 @@ bool Program::dialect_image_roots(std::vector<madc::dis::istring> &out)
     return !out.empty();
 }
 
+// A dialect NAMESPACE fragment (`ns_*` at the top of include/madc/): a
+// namespace surface the auto-include serves by its provider row — never a
+// bits/* fragment.
+static bool dialect_namespace_fragment_p(const madc::dis::istring &name)
+{
+    return strncmp(name.c_str(), "ns_", 3) == 0 && embedded_dialect_fragment_p(name);
+}
+
+// The dialect is builtin (R4c): under --std=madc a dialect fragment the
+// auto-include or a written #include would serve is the generated table's,
+// never its text. The serving is decided once per program, at its first
+// fragment: a program that has <string> by then (the stdlib's own guard, the
+// fragments' interop guard) is served the fragments' TEXT, as before — their
+// std::string interop declarations exist only there, their mangling the
+// stdlib flavor's — and the two never mix. A table fragment records the
+// dialect namespaces it heads (its provider row: `ns_php` heads `php`), and
+// those its own text names, to closure (queue_fragment_prerequisites, the scan
+// its text serving runs): the namespaces whose names a lookup may build
+// (dialect_demand). It sets the include flag the text serving set
+// (`_include_ns_madc`: the __madc_sys_init injection).
+bool Program::dialect_fragment_from_table(const madc::dis::istring &header)
+{
+    // The namespace surfaces (`ns_*`): what the table carries. A bits/*
+    // fragment keeps its text — the value inserter and the std::format
+    // declarations are no table's, and the table's own bits/* arrive through
+    // the ns_* fragment that includes them.
+    if ( !dialect_surface_enabled() || !dialect_namespace_fragment_p(header)
+      || !find_embedded_header(header) || !is_embedded_header_allowed(header) )
+	return false;
+    if ( dialect_serving == DialectServing::Undecided )
+	dialect_serving = macro_name_defined("_GLIBCXX_STRING")
+			  || macro_name_defined("_LIBCPP_STRING")
+	    ? DialectServing::Text : DialectServing::Table;
+    if ( dialect_serving != DialectServing::Table )
+	return false;
+    if ( dialect_fragments.count(header) )
+	return true;
+    // The closure scan queues through the auto-include's pending state; the
+    // program's own pending headers and words are left as found.
+    std::set<madc::dis::istring> batch, saved_headers;
+    batch.insert(header);
+    std::set<madc::dis::istring> saved_words = pending_auto_include_identifiers;
+    saved_headers.swap(pending_auto_include_headers);
+    queue_fragment_prerequisites(batch);
+    pending_auto_include_headers.swap(saved_headers);
+    pending_auto_include_identifiers.swap(saved_words);
+    for ( std::set<madc::dis::istring>::const_iterator it = batch.begin(); it != batch.end(); ++it )
+    {
+	if ( !dialect_namespace_fragment_p(*it) || !dialect_fragments.insert(*it).second )
+	    continue;
+	mark_embedded_include_flag(*it);
+	const char *h = it->c_str();
+	const char *head = strncmp(h, "ns_", 3) == 0 ? h + 3 : NULL;
+	const char *row = head ? auto_include_header_for_identifier(head) : NULL;
+	// The host's per-namespace switch (is_namespace_registration_enabled)
+	// holds for the table as for the scan (auto_include_permitted).
+	if ( row && *it == row && is_namespace_registration_enabled(head)
+	  && !dialect_namespace_named(head) )
+	    dialect_named.push_back(head);
+    }
+    return true;
+}
+
+bool Program::dialect_namespace_named(const madc::dis::istring &ns) const
+{
+    for ( size_t i = 0; i < dialect_named.size(); ++i )
+	if ( dialect_named[i] == ns )
+	    return true;
+    return false;
+}
+
+void Program::register_dialect_namespaces()
+{
+    for ( size_t i = 0; i < dialect_named.size(); ++i )
+	namespace_variables_for_write(dialect_named[i]);
+}
+
 void Program::inject_pending_auto_includes()
 {
     static const bool prelude_probe = getenv("MADC_PRELUDE_CACHE_PROBE") != NULL;
@@ -2544,9 +2622,9 @@ void Program::inject_pending_auto_includes()
 	      hi != ordered.end(); ++hi )
 	{
 	    const madc::dis::istring &header = *hi;
-	    // A dialect fragment the carrier froze binds directly — no #include
-	    // (pack-slices design §7); the C/C++ headers below stay includes.
-	    if ( forest_bind_dialect_fragment(header) )
+	    // A dialect fragment is the generated table's — no #include, no text
+	    // (R4c); the C/C++ headers below stay includes.
+	    if ( dialect_fragment_from_table(header) )
 		continue;
 	    MadcSharedPreludeCache *preludes = NULL;
 	    madc::dis::istring prelude_key;
@@ -3601,6 +3679,12 @@ void Program::_tokenizer_init()
     bound_gui_module = false;
     imported_modules.clear();
     registering_module = NULL;
+    dialect_serving = registration_policy.enable_dialect_table
+	? DialectServing::Undecided : DialectServing::Text;
+    dialect_named.clear();
+    dialect_fragments.clear();
+    dialect_built.clear();
+    dialect_builds = 0;
     pending_no_strict_aliasing = false;
     pending_weak_binding = false;
     pending_specifier_weak = false;
@@ -8002,13 +8086,11 @@ TokenBase *Program::_getToken()
 				<< "> deferred to auto-include prelude" << std::endl);
 			    return getToken();
 			}
-			// The dialect surface (pack-slices design §7): under madc a
-			// written `#include <ns_*>` binds the dialect image's unit
-			// like the auto-include's, whatever the system-header bind
-			// policy (dialect per-name plan B2); with no image it takes
-			// the system bind below, as before.
+			// The dialect is builtin (R4c): under madc a written
+			// `#include <ns_*>` is the generated table's, like the
+			// auto-include's — no text.
 			if ( !protocol_visit && !is_include_next
-			  && forest_bind_dialect_fragment(incfile, /*written=*/true) )
+			  && dialect_fragment_from_table(incfile) )
 			    return include_completed_token();
 			// Phase 6 (--forest-bind): a grove-backed system header
 			// BINDS instead of tokenizing — install its PP-export
@@ -12415,6 +12497,7 @@ bool Program::lex_entry(const madc::dis::istring &text, const madc::dis::istring
     register_imported_modules();	// the entry's `import NAME;` (the session's
 					// parser state exists: _parser_init ran once)
     inject_pending_auto_includes();
+    register_dialect_namespaces();	// the dialect namespaces the entry named
     flush_forest_pending_globals();
     // The entry is the unit being parsed: its own tokens are the "main
     // source" token_is_tu_origin tells from an included header's.
