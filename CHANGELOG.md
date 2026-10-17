@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### The js:: publics are libmadc's C++, declared bodiless in `<ns_js>` (R1)
+
+- `<ns_js>` (`include/madc/ns_js`) declares every `js::` public with no body
+  and drops both `extern "C"` `__js_*` declaration blocks; the dialect no
+  longer names the C-linkage exports (`cpp-first-api.md`).
+- `src/ns_js.cpp` gains `namespace js { ... }`: the 9 lean publics
+  (`parseInt`, `btoa`, `atob`, `encodeURIComponent`, `decodeURIComponent`,
+  two `stringify`, two `parse`) and the 5 `std::string` interop overloads are
+  defined in libmadc over the same cores (`js_*_cstr`, `js_parse*`), resolved
+  mangled-direct. The `extern "C"` `__js_*` exports stay as C-linkage
+  wrappers over those cores.
+- Differential `tests/unit/test_builtin_registry.cpp`: 496 declarations
+  compared, identical; the 9 `js::` publics are now built declarations in
+  place of the 9 retired `extern "C"` declarations; keys not yet built
+  348 -> 339.
+
 ### The dialect's generated builders carry lazy module members and file-scope C++ aliases (R1)
 
 - A lazy module member (`madcgit_*`, the `<madcgit.h>` interface `ns_git`

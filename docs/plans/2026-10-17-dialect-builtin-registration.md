@@ -310,3 +310,26 @@ Rulings:
   arm per mode family.
 - Ruling: class members (`madc::channel`, `madc::tool_host`, ...) are R2's
   class registration, not R1's free functions.
+
+## The polyglot publics move into the host (2026-10-17)
+
+Owner 2026-10-17: "the extern "C" stuff was supposed to be the wrappers".
+`cpp-first-api.md` already says so: a script header declares its namespace
+publics bodiless, resolved mangled-direct to real `namespace X { }`
+definitions in libmadc. The polyglot fragments had it inverted — every
+public was a one-line body calling an extern "C" `__x_*` export.
+
+Per namespace:
+- `src/ns_X.cpp` gains `namespace X { ... }`: each public defined in C++,
+  calling the same core its extern "C" export calls (the std::string
+  interop overloads included — the host is always C++).
+- `include/madc/ns_X` keeps declarations only and drops its extern "C"
+  declaration blocks (the dialect no longer names them).
+- The extern "C" exports stay, untouched, as C-linkage wrappers over the
+  same cores; whether any is deleted is the owner's call.
+- `tmp/polyglot_move.py` (scratch) did the mechanical rewrite: 37 perl
+  bodies, all through pass-through cores.
+
+Done: `js` (9 lean publics + 5 interop). Next: `perl`, `python`, `ruby`,
+`rust`, `php` in one change; `git` / `markdown` bodies by hand; `ui_web` /
+`ui_ws` are R3.
