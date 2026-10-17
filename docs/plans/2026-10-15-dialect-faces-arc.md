@@ -162,6 +162,36 @@ system-header pack — is `docs/plans/2026-10-16-dialect-per-name-plan.md`
 (parts A and B). Place in the arc: next, after the command-line options
 work, before section G.
 
+### J. C programs bind the pack's C layer (owner 2026-10-17: "just make sure it doesn't get removed again")
+
+A `.c` compile (gnu17 since 146b2aa8c, 2026-10-10) and every `--std=c*`
+compile parse their system headers from text on every run: the pack's one
+profile is frozen under madc and labelled only for gnu++17 / c++17
+(324a8d501), so a C config misses it ("container config mismatch — live
+parse"). Plain C costs 245M Ir on `c_headers.c` against gcc -O0 -c 144M and
+clang 127M (2026-10-17, gcc 13.3 / clang 18.1, every process summed); the same
+headers compiled as C++ cost madc 5x less than either. The fix was measured
+and agreed on 2026-10-13 (`2026-10-13-pack-load-cost-experiments.md` Test 3
+and "The C question": a C layer frozen under C — its own c17 / gnu17 label
+list, separate from the C++ profile's, stored uncompressed, C tables ahead of
+the C++ boundary; 8 everyday C headers 24 ms against 159 ms live) and was then
+dropped when the per-header slices shipped without it. Never again:
+- The pack freezes the C headers a second time under C (gnu17), on the
+  per-header slices, its blocks raw, with its own label list beside the C++
+  one in `forest_pack_share.sh` (one owner, two lists). Which C standards a
+  gnu17 freeze may serve is measured, not assumed: a standard whose header
+  view differs (`__STRICT_ANSI__` hides glibc's POSIX names under c17;
+  `__STDC_VERSION__` gates C11 names under c99) gets its own freeze or none.
+- GATE, landed with it and never without: `forest_pack_gate.sh` compiles a
+  `.c` program and a `--std=c17` program on the packed binary and is RED
+  unless both bind the C layer (`-v`: "container bound"), with a selftest
+  leg; the parse-cost `c_headers.forest` row is re-recorded at the new
+  level, so losing the bind is a several-fold red.
+- `docs/test-status.md` / ROADMAP carry it; KG Decision
+  `c_pack_layer_never_dropped`.
+Place in the arc: after section I's A4 (the dialect fix the owner called
+urgent), before section G.
+
 ### G. The BUGS.md burndown slice (owner 2026-10-16: "let's fix those bugs before taking on redis")
 
 BUGS.md held 118 entries at v0.105.0 and 117 now; this arc had fixed only
