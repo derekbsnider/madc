@@ -28,8 +28,12 @@
 #include "madc_builtin_registry.h"
 
 // A FuncDef's parameter vectors from generated code, as a parse fills them —
-// a typedef name only where the parse recorded one (NULL: none recorded).
-static void fill_builtin_params(FuncDef *fd, const BuiltinParam *params, size_t nparams)
+// a typedef name only where the parse recorded one (NULL: none recorded). A
+// DECLARATION (parseFunction) also records, per parameter, whether a template
+// parameter spelled it and its default (a builtin has neither); a function
+// TYPE (parseFnPtrParams) records neither.
+static void fill_builtin_params(FuncDef *fd, const BuiltinParam *params, size_t nparams,
+				bool declaration)
 {
     for ( size_t i = 0; i < nparams; ++i )
     {
@@ -38,13 +42,18 @@ static void fill_builtin_params(FuncDef *fd, const BuiltinParam *params, size_t 
 	fd->param_cpp_spellings.push_back(madc::dis::istring(params[i].cpp_spelling));
 	if ( params[i].typedef_name )
 	    fd->param_typedef_names.push_back(madc::dis::istring(params[i].typedef_name));
+	if ( declaration )
+	{
+	    fd->param_template_param_spelled_directly.push_back(false);
+	    fd->param_defaults.push_back(NULL);
+	}
     }
 }
 
 Variable *declare_builtin_function(Program &pgm, const BuiltinFunctionDecl &d)
 {
     FuncDef *fd = new FuncDef(*d.returns);
-    fill_builtin_params(fd, d.params, d.nparams);
+    fill_builtin_params(fd, d.params, d.nparams, true);
     fd->namespace_name = madc::dis::istring(d.ns);
     fd->function_display_name = madc::dis::istring(d.name);
     fd->overload_spelling = madc::dis::istring(d.overload_spelling);
@@ -123,7 +132,7 @@ DataDef *builtin_function_pointer(Program &pgm, DataDef *returns,
 				  std::initializer_list<BuiltinParam> params, unsigned flags)
 {
     FuncDef *fd = new FuncDef(*returns);
-    fill_builtin_params(fd, params.begin(), params.size());
+    fill_builtin_params(fd, params.begin(), params.size(), false);
     fd->is_varargs = (flags & bfVarargs) != 0;
     fd->is_void_params = (flags & bfVoidParams) != 0;
     DataDefFPTR *fn = new DataDefFPTR(fd);
@@ -149,6 +158,66 @@ DataDef *declare_builtin_typedef(Program &pgm, const char *ns, const char *name,
     td.forest_system = true;		// no parse position: a dialect header's
     pgm.top_decls.push_back(td);
     return aliased;
+}
+
+DataDefSTRUCT *declare_builtin_struct(Program &pgm, const BuiltinStructDecl &d)
+{
+    madc::dis::istring ns(d.ns), tag(d.name);
+    if ( DataDef *had = registered_namespace_type(pgm, ns, tag) )
+	return had->as_struct_dd();
+    DataDefSTRUCT *s = new DataDefSTRUCT(tag, 0);
+    s->definition_origin = AggregateDefinitionOrigin::Included;	// a header's; no file
+    pgm.struct_map.set(tag, s);
+    for ( size_t i = 0; i < d.nmembers; ++i )
+    {
+	s->addMember(madc::dis::istring(d.members[i].name), *d.members[i].type, 1);
+	s->members.back().typedef_name = madc::dis::istring(d.members[i].typedef_name);
+    }
+    s->is_complete = true;
+    s->finalize(true);
+    if ( d.object_class )
+    {
+	// TokenSTRUCT's promotion: the class takes the struct's state, the tag
+	// is repointed, and the class layout is computed.
+	DataDefCLASS *c = new DataDefCLASS(s->name, s->size, s->rawtype());
+	static_cast<DataDefSTRUCT &>(*c) = *s;
+	pgm.struct_map.set(tag, c);
+	c->compute_layout();
+	s = c;
+    }
+    s->set_canonical_spelling(ns + "::" + tag);
+    TokenDataType *tdt = new TokenDataType(tag.c_str(), *s);
+    pgm.datatype_map[tag] = tdt;	// register_cpp_aggregate_name
+    pgm.namespace_datatype_map[ns][tag] = tdt;
+    Program::TopDecl td;
+    td.kind = Program::DeclKind::dkStruct;
+    td.name = tag;
+    td.dd = s;
+    td.forest_system = true;		// no parse position: a dialect header's
+    pgm.top_decls.push_back(td);
+    return s;
+}
+
+Variable *declare_builtin_extern(Program &pgm, const BuiltinExternDecl &d)
+{
+    madc::dis::istring ns(d.ns), name(d.name);
+    variable_map_t &scope = pgm.namespace_variables_for_write(ns);
+    variable_map_iter had = scope.find(name);
+    if ( had != scope.end() && had->second )
+	return had->second;
+    Variable *v = new Variable(name, *d.type, 1, NULL, /*alloc=*/false);
+    v->flags = d.flags;
+    v->storage_alias_name = namespace_cpp_variable_symbol(ns, name);
+    scope[name] = v;
+    pgm.tkProgram->variables.push_back(v);
+    Program::TopDecl td;		// the storage pass renders `extern T <alias>`
+    td.kind = Program::DeclKind::dkGlobalVar;
+    td.name = name;
+    td.var = v;
+    td.dd = d.type;
+    td.forest_system = true;		// no parse position: a dialect header's
+    pgm.top_decls.push_back(td);
+    return v;
 }
 
 // The table's entry for ns::name (sorted by (ns, name) in byte order), or NULL.
@@ -313,7 +382,8 @@ static bool function_pointer_expr(Program &pgm, DataDefFPTR *fp, std::string &ex
       || !fd->return_typedef_name.empty() || !fd->function_display_name.empty()
       || !fd->namespace_name.empty() || fd->const_params.size() != n
       || fd->param_cpp_spellings.size() != n || fd->param_typedef_names.size() > n
-      || !fd->param_default_tokens.empty() )
+      || !fd->param_default_tokens.empty() || !fd->param_defaults.empty()
+      || !fd->param_template_param_spelled_directly.empty() )
     {
 	err = "a function pointer whose signature carries more than its parameters";
 	return false;
@@ -377,7 +447,15 @@ static std::string signature_fields(Program &pgm, FuncDef *fd)
 	  + std::to_string(fd->const_params.size()) + ","
 	  + std::to_string(fd->param_cpp_spellings.size()) + ","
 	  + std::to_string(fd->param_typedef_names.size()) + ","
-	  + std::to_string(fd->param_default_tokens.size());
+	  + std::to_string(fd->param_default_tokens.size()) + ","
+	  + std::to_string(fd->param_template_param_spelled_directly.size()) + ","
+	  + std::to_string(fd->param_defaults.size());
+    for ( size_t i = 0; i < fd->param_template_param_spelled_directly.size(); ++i )
+	if ( fd->param_template_param_spelled_directly[i] )
+	    line += ":tp" + std::to_string(i);
+    for ( size_t i = 0; i < fd->param_defaults.size(); ++i )
+	if ( fd->param_defaults[i] )
+	    line += ":def" + std::to_string(i);
     return line;
 }
 
@@ -436,6 +514,29 @@ madc::dis::istring builtin_function_line(Program &pgm, const madc::dis::istring 
     line += "\ttret=" + std::string(fd->template_return_param_name.c_str());
     line += "\tdyn=" + std::string(fd->dyn_module_library.c_str()) + ":"
 	  + fd->dyn_module_member.c_str();
+    // A member function's: its class, its names, its qualifiers; every
+    // function's Variable flags and the namespaces that bind it by its key.
+    line += "\towner=" + std::string(m && m->owner_class
+				     ? m->owner_class->canonical_cpp_spelling().c_str() : "");
+    line += "\tmdisp=" + std::string(fd->method_display_name.c_str())
+	  + "\tlemit=" + fd->local_emit_name.c_str() + "\tmflags=";
+    line += fd->is_const_method ? "k" : "-";
+    line += fd->is_volatile_method ? "V" : "-";
+    line += fd->is_explicit ? "e" : "-";
+    line += fd->pure_virtual ? "p" : "-";
+    line += fd->implicit_dtor_noexcept ? "i" : "-";
+    line += fd->ctor_trailing_self ? "t" : "-";
+    line += fd->is_member_template ? "T" : "-";
+    line += fd->borrows_receiver_text ? "b" : "-";
+    line += fd->is_constexpr ? "c" : "-";
+    line += "\tvflags=" + std::to_string(var ? var->flags : 0) + "\tnsbind=";
+    for ( namespace_map_t::const_iterator nsi = pgm.namespace_map.begin();
+	  var && nsi != pgm.namespace_map.end(); ++nsi )
+    {
+	variable_map_t::const_iterator vi = nsi->second.find(key);
+	if ( vi != nsi->second.end() && vi->second == var )
+	    line += std::string(nsi->first.c_str()) + ",";
+    }
     // Its place in the namespace overload set (registration order).
     line += "\tovidx=";
     if ( var && !fd->function_display_name.empty() )
@@ -485,6 +586,117 @@ static bool enum_is_unscoped(Program &pgm, const madc::dis::istring &ns, DataDef
     return in_tag && namespace_variable(pgm, ns, e->enumerators[0].first) == in_tag;
 }
 
+// A class's own fields: its class layout (compute_layout's), its special
+// members and methods by key, its scope (aliases, statics, friends), its
+// bases and its virtual machinery.
+static std::string class_fields(DataDefCLASS *c)
+{
+    std::string line = "\tnvsize=" + std::to_string(c->nvsize) + "\town=" + std::to_string(c->own_block_off)
+	+ "\tcalign=" + std::to_string(c->class_align) + "\tcflags=";
+    line += c->has_vptr_slot ? "p" : "-";
+    line += c->has_vtable ? "v" : "-";
+    line += c->from_system_header ? "s" : "-";
+    line += c->has_user_ctor ? "c" : "-";
+    line += c->has_user_dtor ? "d" : "-";
+    line += c->is_dependent_placeholder ? "D" : "-";
+    line += c->has_dependent_surface ? "S" : "-";
+    line += c->opaque_concrete_tag ? "o" : "-";
+    line += c->is_extern_template_instantiated ? "x" : "-";
+    line += c->has_deleted_copy_assign ? "=" : "-";
+    line += c->has_deleted_default_ctor ? "0" : "-";
+    line += c->has_defaulted_default_ctor ? "+" : "-";
+    line += c->has_deleted_dtor ? "~" : "-";
+    line += "\tencl=" + std::string(c->enclosing_class ? c->enclosing_class->name.c_str() : "")
+	  + "\tbase=" + std::string(c->base_class ? c->base_class->name.c_str() : "");
+    line += "\tmethods=";
+    for ( size_t i = 0; i < c->methods.size(); ++i )
+	line += std::string(i ? "," : "") + (c->methods[i] ? c->methods[i]->name.c_str() : "?")
+	      + ":" + std::to_string(c->methods[i] ? c->methods[i]->flags : 0);
+    line += "\tctors=";
+    for ( size_t i = 0; i < c->ctors.size(); ++i )
+	line += std::string(i ? "," : "") + (c->ctors[i] ? c->ctors[i]->name.c_str() : "?");
+    line += "\tmmap=";
+    for ( std::map<madc::dis::istring, Variable *>::const_iterator mi = c->method_map.begin();
+	  mi != c->method_map.end(); ++mi )
+	line += std::string(mi->first.c_str()) + ">" + (mi->second ? mi->second->name.c_str() : "?") + ",";
+    line += "\taliases=";
+    for ( std::map<madc::dis::istring, DataDef *>::const_iterator ai = c->type_aliases.begin();
+	  ai != c->type_aliases.end(); ++ai )
+	line += std::string(ai->first.c_str()) + (ai->second == c ? ">self," : ">other,");
+    line += "\tcvecs=" + std::to_string(c->staticconst.size()) + ","
+	  + std::to_string(c->friend_class_names.size()) + ","
+	  + std::to_string(c->friend_function_names.size()) + ","
+	  + std::to_string(c->static_member_types.size()) + ","
+	  + std::to_string(c->static_member_const_values.size()) + ","
+	  + std::to_string(c->bases.size()) + ","
+	  + std::to_string(c->vbase_offset.size()) + ","
+	  + std::to_string(c->secondary_vptr_owners.size()) + ","
+	  + std::to_string(c->vtable_slots.size()) + ","
+	  + std::to_string(c->virtual_methods.size()) + ","
+	  + std::to_string(c->vtable_groups.size());
+    return line;
+}
+
+// An aggregate's fields: its layout (the target's), its flags, its tag binding
+// and every member record with the per-member vectors' lengths.
+static std::string aggregate_fields(Program &pgm, const madc::dis::istring &name,
+				    DataDefSTRUCT *s)
+{
+    std::string line = std::string("\tkind=") + typeid(*s).name();
+    line += s->is_complete ? "\tcomplete" : "\tincomplete";
+    line += "\talign=" + std::to_string(s->max_align) + "\tpack=" + std::to_string(s->pack)
+	  + "/" + std::to_string(s->pragma_pack) + "/" + std::to_string(s->tag_explicit_align);
+    line += "\torigin=" + std::to_string((int)s->definition_origin) + "\tsflags=";
+    line += s->union_layout ? "u" : "-";
+    line += s->struct_is_final ? "f" : "-";
+    line += s->forest_restored ? "r" : "-";
+    line += s->has_anon_aggregate ? "a" : "-";
+    line += s->is_anonymous ? "n" : "-";
+    line += s->reverse_scalar_storage ? "s" : "-";
+    StructRegistry::const_iterator si = pgm.struct_map.find(name);
+    line += "\tsmap=";
+    line += si == pgm.struct_map.end() ? "none" : si->second == s ? "self" : "other";
+    line += "\tmembers=";
+    for ( size_t i = 0; i < s->members.size(); ++i )
+    {
+	const memberpair_t &m = s->members[i];
+	line += std::string(i ? ";" : "") + m.first.c_str() + ":" + type_field(pgm, m.second)
+	      + ":" + m.typedef_name.c_str();
+	if ( i < s->member_offsets.size() )
+	    line += ":@" + std::to_string(s->member_offsets[i]);
+	if ( i < s->member_counts.size() )
+	    line += ":x" + std::to_string(s->member_counts[i]);
+	if ( i < s->member_array_flags.size() && s->member_array_flags[i] )
+	    line += ":arr";
+	if ( i < s->member_access.size() )
+	    line += ":a" + std::to_string(s->member_access[i]);
+	if ( i < s->member_bitfields.size() && s->member_bitfields[i].is_bitfield )
+	    line += ":bits";
+	if ( i < s->member_dims.size() && !s->member_dims[i].empty() )
+	    line += ":dims";
+	if ( i < s->member_count_exprs.size() && s->member_count_exprs[i] )
+	    line += ":vla";
+    }
+    line += "\tmvecs=" + std::to_string(s->members.size()) + ","
+	  + std::to_string(s->member_counts.size()) + ","
+	  + std::to_string(s->member_array_flags.size()) + ","
+	  + std::to_string(s->member_offsets.size()) + ","
+	  + std::to_string(s->member_bitfields.size()) + ","
+	  + std::to_string(s->member_dims.size()) + ","
+	  + std::to_string(s->member_count_exprs.size()) + ","
+	  + std::to_string(s->member_access.size()) + ","
+	  + std::to_string(s->member_origin.size()) + ","
+	  + std::to_string(s->anonymous_aggregates.size()) + ","
+	  + std::to_string(s->member_vbase.size()) + ","
+	  + std::to_string(s->member_explicit_align.size()) + ","
+	  + std::to_string(s->member_packed.size()) + ","
+	  + std::to_string(s->member_default_inits.size()) + ","
+	  + std::to_string(s->member_nsdmi_braces.size());
+    if ( DataDefCLASS *c = s->as_class_dd() )
+	line += class_fields(c);
+    return line;
+}
+
 madc::dis::istring builtin_type_line(Program &pgm, const madc::dis::istring &ns,
 				     const madc::dis::istring &name)
 {
@@ -529,6 +741,8 @@ madc::dis::istring builtin_type_line(Program &pgm, const madc::dis::istring &ns,
 	      + "\tfns=" + fd->namespace_name.c_str();
 	return line;
     }
+    if ( DataDefSTRUCT *s = dd->as_struct_dd() )
+	return line + aggregate_fields(pgm, name, s);
     DataDefENUM *e = dd->as_enum_dd();
     if ( !e )
 	return line + "\tkind=" + typeid(*dd).name();
@@ -554,6 +768,36 @@ madc::dis::istring builtin_type_line(Program &pgm, const madc::dis::istring &ns,
 	if ( unscoped )
 	    line += std::string(":") + (namespace_variable(pgm, ns, en) == v ? "ns" : "-")
 		  + (in_program_scope(pgm, v) ? "+prog" : "") + ":" + v->storage_alias_name.c_str();
+    }
+    return line;
+}
+
+madc::dis::istring builtin_variable_line(Program &pgm, const madc::dis::istring &ns,
+					 const madc::dis::istring &name)
+{
+    Variable *v = namespace_variable(pgm, ns, name);
+    if ( !v )
+	return madc::dis::istring();
+    std::string line = std::string(ns.c_str()) + "::" + name.c_str();
+    line += "\ttype=" + type_field(pgm, v->type);
+    line += "\tflags=" + std::to_string(v->flags) + "\tcount=" + std::to_string(v->count);
+    line += "\talias=" + std::string(v->storage_alias_name.c_str());
+    line += in_program_scope(pgm, v) ? "\tprog" : "\t-";
+    line += v->data ? "\tstorage" : "\t-";
+    // Its file-scope declarations: kind, system-origin verdict, initializer.
+    line += "\ttop=";
+    for ( size_t i = 0; i < pgm.top_decls.size(); ++i )
+    {
+	const Program::TopDecl &td = pgm.top_decls[i];
+	if ( td.var != v )
+	    continue;
+	int at = 0;
+	const char *f = pgm.top_decl_position(td, at);
+	bool sys = td.forest_system || (f && pgm.is_system_header_path(f));
+	bool init = td.decl && (td.decl->initialize || !td.decl->init_list.empty()
+				|| !td.decl->ctor_args.empty());
+	line += std::to_string((int)td.kind) + (sys ? "s" : "u") + (init ? "i" : "")
+	      + (td.dd == v->type ? "" : "?") + ",";
     }
     return line;
 }
@@ -619,6 +863,20 @@ bool parse_dialect_as_text(DialectTextParse &out, std::string &err)
 	if ( !registered_namespace_type(*out.base, ns, name) )
 	    out.type_keys.push_back(std::make_pair(ns, name));
     }
+    // The namespace objects: a function's Variable (its type a FuncDef — a
+    // free function's and a method's) and an enumerator are their own
+    // declarations' (the function and enum builders).
+    out.variable_keys.clear();
+    for ( namespace_map_t::const_iterator nsi = out.live->namespace_map.begin();
+	  nsi != out.live->namespace_map.end(); ++nsi )
+	for ( variable_map_t::const_iterator vi = nsi->second.begin(); vi != nsi->second.end(); ++vi )
+	{
+	    Variable *v = vi->second;
+	    if ( !v || v->is_enumerator() || (v->type && v->type->as_funcdef_dd())
+	      || namespace_variable(*out.base, nsi->first, vi->first) )
+		continue;
+	    out.variable_keys.push_back(std::make_pair(nsi->first, vi->first));
+	}
     return true;
 }
 
@@ -631,6 +889,65 @@ static std::string signature_type_reason(Program &live, FuncDef *fd)
     for ( size_t i = 0; why.empty() && i < fd->parameters.size(); ++i )
 	why = named_type_reason(live, fd->parameters[i]);
     return why;
+}
+
+// Why a namespace aggregate gets no builder yet: declare_builtin_struct
+// builds a complete, attribute-free, data-only DataDefSTRUCT whose members
+// are plain (one element, no bit-field, array or initializer, public) and
+// name no aggregate (a builder builds what it names first: an aggregate
+// member could close a cycle).
+static std::string struct_skip_reason(Program &live, const madc::dis::istring &ns,
+				      const madc::dis::istring &name, DataDefSTRUCT *s)
+{
+    if ( DataDefCLASS *c = s->as_class_dd() )
+    {
+	// A data-only class TokenSTRUCT promoted (an object member): no class
+	// scope of its own (TokenCLASS binds the tag as its own alias), no
+	// member functions, bases, statics, friends or virtuals.
+	if ( typeid(*c) != typeid(DataDefCLASS) || !c->type_aliases.empty()
+	  || !c->methods.empty() || !c->ctors.empty() || !c->method_map.empty()
+	  || c->has_user_ctor || c->has_user_dtor || c->base_class || !c->bases.empty()
+	  || c->enclosing_class || c->has_vtable || c->has_vptr_slot || c->from_system_header
+	  || !c->staticconst.empty() || !c->static_member_types.empty()
+	  || !c->friend_class_names.empty() || !c->friend_function_names.empty() )
+	    return std::string("a ") + typeid(*s).name() + " (R2)";
+    }
+    else if ( typeid(*s) != typeid(DataDefSTRUCT) )
+	return std::string("a ") + typeid(*s).name() + " (R2)";
+    if ( s->canonical_cpp_spelling() != ns + "::" + name || s->name != name )
+	return "an aggregate registered under another name";
+    flat_datatype_map_iter fi = live.datatype_map.find(name);
+    StructRegistry::const_iterator si = live.struct_map.find(name);
+    if ( fi == live.datatype_map.end() || &(*fi)->definition != s
+      || si == live.struct_map.end() || si->second != s )
+	return "a bare tag another type holds";
+    if ( !s->is_complete || s->union_layout || s->pack || s->pragma_pack
+      || s->tag_explicit_align || s->struct_is_final || s->has_anon_aggregate
+      || s->is_anonymous || s->reverse_scalar_storage
+      || !s->anonymous_aggregates.empty() || !s->member_vbase.empty()
+      || !s->member_explicit_align.empty() || !s->member_packed.empty()
+      || !s->member_default_inits.empty() || !s->member_nsdmi_braces.empty() )
+	return "a struct with layout attributes or member initializers";
+    for ( size_t i = 0; i < s->members.size(); ++i )
+    {
+	if ( s->member_counts[i] != 1 || s->member_array_flags[i]
+	  || s->member_bitfields[i].is_bitfield || !s->member_dims[i].empty()
+	  || s->member_count_exprs[i] || s->member_access[i] )
+	    return "a member the builder does not lay out";
+	std::string expr, err;
+	if ( !type_expr(live, s->members[i].second, expr, err) )
+	    return "member " + err;
+	DataDef *leaf = s->members[i].second;
+	while ( leaf && (leaf->as_qualified_dd() || leaf->as_pointer_dd()) )
+	    leaf = leaf->as_qualified_dd() ? leaf->as_qualified_dd()->base_type
+					   : leaf->as_pointer_dd()->base_type;
+	if ( leaf && leaf->as_struct_dd() && leaf != &ddARRAY )
+	    return "a member naming an aggregate";
+	std::string why = named_type_reason(live, s->members[i].second);
+	if ( !why.empty() )
+	    return why;
+    }
+    return std::string();
 }
 
 // Why one namespace type gets no builder yet; empty when it gets one.
@@ -653,6 +970,8 @@ static std::string type_skip_reason(Program &live, const madc::dis::istring &ns,
 	    return err;
 	return signature_type_reason(live, fp->target);
     }
+    if ( DataDefSTRUCT *s = dd->as_struct_dd() )
+	return struct_skip_reason(live, ns, name, s);
     DataDefENUM *e = dd->as_enum_dd();
     if ( !e )
 	return std::string("a ") + typeid(*dd).name() + " (R2)";
@@ -718,6 +1037,12 @@ static std::string builtin_skip_reason(Program &live, const madc::dis::istring &
     for ( size_t i = 0; i < fd->param_default_tokens.size(); ++i )
 	if ( !fd->param_default_tokens[i].empty() )
 	    return "a default argument";
+    for ( size_t i = 0; i < fd->param_defaults.size(); ++i )
+	if ( fd->param_defaults[i] )
+	    return "a default argument";
+    for ( size_t i = 0; i < fd->param_template_param_spelled_directly.size(); ++i )
+	if ( fd->param_template_param_spelled_directly[i] )
+	    return "a parameter a template parameter spells";
     std::string expr, err;
     if ( !type_expr(live, &fd->returns, expr, err) )
 	return "return " + err;
@@ -747,6 +1072,27 @@ static std::string builtin_skip_reason(Program &live, const madc::dis::istring &
     return std::string();
 }
 
+// Why one namespace object gets no builder yet: declare_builtin_extern builds
+// an `extern T name;` reference — no storage, no initializer, one element,
+// bound under its own name with the target's mangled alias.
+static std::string variable_skip_reason(Program &live, const madc::dis::istring &ns,
+					const madc::dis::istring &name)
+{
+    Variable *v = namespace_variable(live, ns, name);
+    if ( !v || v->name != name )
+	return "an object bound under another name";
+    if ( !(v->flags & vfEXTERN) || v->data || v->count != 1 )
+	return "an object with storage (a definition)";
+    if ( v->storage_alias_name != namespace_cpp_variable_symbol(ns, name) )
+	return "an object whose alias is not its namespace mangling";
+    if ( !in_program_scope(live, v) )
+	return "an object outside the program scope";
+    std::string expr, err;
+    if ( !type_expr(live, v->type, expr, err) )
+	return "type " + err;
+    return named_type_reason(live, v->type);
+}
+
 void plan_builtin_registry(DialectTextParse &dp, std::vector<BuiltinGroup> &groups)
 {
     Program &live = *dp.live;
@@ -760,23 +1106,41 @@ void plan_builtin_registry(DialectTextParse &dp, std::vector<BuiltinGroup> &grou
 	by_name[std::make_pair(std::string(fd->namespace_name.c_str()), name)]
 	    .push_back(dp.function_keys[i]);
     }
-    // One table, sorted by (ns, name): the function groups and the types.
+    // One table, sorted by (ns, name): the types, the objects and the function
+    // groups. A name two of them claim gets no builder.
     std::map<std::pair<std::string, std::string>, BuiltinGroup> sorted;
+    auto place = [&sorted](BuiltinGroup &bg) {
+	std::pair<std::string, std::string> at(bg.ns.c_str(), bg.name.c_str());
+	std::map<std::pair<std::string, std::string>, BuiltinGroup>::iterator had = sorted.find(at);
+	if ( had == sorted.end() )
+	    sorted.insert(std::make_pair(at, bg));
+	else
+	    had->second.skip = "a name two kinds of declaration claim";
+    };
     for ( size_t i = 0; i < dp.type_keys.size(); ++i )
     {
 	BuiltinGroup bg;
 	bg.ns = dp.type_keys[i].first;
 	bg.name = dp.type_keys[i].second;
-	bg.is_type = true;
+	bg.kind = bgType;
 	bg.skip = type_skip_reason(live, bg.ns, bg.name);
-	sorted[std::make_pair(std::string(bg.ns.c_str()), std::string(bg.name.c_str()))] = bg;
+	place(bg);
+    }
+    for ( size_t i = 0; i < dp.variable_keys.size(); ++i )
+    {
+	BuiltinGroup bg;
+	bg.ns = dp.variable_keys[i].first;
+	bg.name = dp.variable_keys[i].second;
+	bg.kind = bgVariable;
+	bg.skip = variable_skip_reason(live, bg.ns, bg.name);
+	place(bg);
     }
     for ( std::map<std::pair<std::string, std::string>,
 		   std::vector<madc::dis::istring> >::const_iterator g = by_name.begin();
 	  g != by_name.end(); ++g )
     {
 	BuiltinGroup bg;
-	bg.is_type = false;
+	bg.kind = bgFunctions;
 	bg.ns = madc::dis::istring(g->first.first.c_str());
 	bg.name = madc::dis::istring(g->first.second.c_str());
 	// Registration order: the namespace overload set's, as declared.
@@ -796,11 +1160,7 @@ void plan_builtin_registry(DialectTextParse &dp, std::vector<BuiltinGroup> &grou
 		bg.keys.push_back(g->second[i]);
 	for ( size_t i = 0; i < bg.keys.size() && bg.skip.empty(); ++i )
 	    bg.skip = builtin_skip_reason(live, bg.keys[i]);
-	BuiltinGroup &slot = sorted[g->first];
-	if ( slot.is_type )
-	    slot.skip = bg.skip = "a name that is both a type and a function";
-	else
-	    slot = bg;
+	place(bg);
     }
     groups.clear();
     for ( std::map<std::pair<std::string, std::string>, BuiltinGroup>::const_iterator g =
@@ -912,6 +1272,43 @@ static void emit_fptr_typedef(std::ostream &out, Program &live, const madc::dis:
 	<< cpp_literal(name.c_str()) << ",\n\t" << expr << ");\n";
 }
 
+// One data-only struct's registration, as generated code. The members' types
+// are expressions over this builder's Program: an automatic array, never a
+// static one.
+static void emit_struct(std::ostream &out, Program &live, const madc::dis::istring &ns,
+			const madc::dis::istring &name)
+{
+    DataDefSTRUCT *s = registered_namespace_type(live, ns, name)->as_struct_dd();
+    std::string expr, err;
+    if ( !s->members.empty() )
+    {
+	out << "    const BuiltinMember m[] = {\n";
+	for ( size_t i = 0; i < s->members.size(); ++i )
+	{
+	    type_expr(live, s->members[i].second, expr, err);
+	    out << "\t{ " << cpp_literal(s->members[i].first.c_str()) << ", " << expr << ", "
+		<< cpp_literal(s->members[i].typedef_name.c_str()) << " },\n";
+	}
+	out << "    };\n";
+    }
+    out << "    BuiltinStructDecl d = { " << cpp_literal(ns.c_str()) << ", "
+	<< cpp_literal(name.c_str()) << ", " << (s->members.empty() ? "NULL" : "m") << ", "
+	<< s->members.size() << ", " << (s->as_class_dd() ? "true" : "false") << " };\n"
+	<< "    declare_builtin_struct(pgm, d);\n";
+}
+
+// One namespace object's registration, as generated code.
+static void emit_extern(std::ostream &out, Program &live, const madc::dis::istring &ns,
+			const madc::dis::istring &name)
+{
+    Variable *v = namespace_variable(live, ns, name);
+    std::string expr, err;
+    type_expr(live, v->type, expr, err);
+    out << "    BuiltinExternDecl d = { " << cpp_literal(ns.c_str()) << ", "
+	<< cpp_literal(name.c_str()) << ", " << expr << ", " << v->flags << "u };\n"
+	<< "    declare_builtin_extern(pgm, d);\n";
+}
+
 bool emit_builtin_registry(std::ostream &out, std::ostream &diag)
 {
     DialectTextParse dp;
@@ -943,16 +1340,23 @@ bool emit_builtin_registry(std::ostream &out, std::ostream &diag)
 	if ( !bg.skip.empty() )
 	{
 	    out << "// not yet built: " << bg.ns << "::" << bg.name << " — " << bg.skip << "\n";
-	    if ( bg.is_type )
+	    if ( bg.kind == bgType )
 		out << "//   " << builtin_type_line(live, bg.ns, bg.name).c_str() << "\n";
+	    else if ( bg.kind == bgVariable )
+		out << "//   " << builtin_variable_line(live, bg.ns, bg.name).c_str() << "\n";
 	    for ( size_t k = 0; k < bg.keys.size(); ++k )
 		out << "//   " << builtin_function_line(live, bg.keys[k]).c_str() << "\n";
 	    continue;
 	}
 	out << "static void b" << built << "(Program &pgm)\n{\n";
-	if ( bg.is_type && registered_namespace_type(live, bg.ns, bg.name)->as_fptr_dd() )
+	DataDef *tdd = bg.kind == bgType ? registered_namespace_type(live, bg.ns, bg.name) : NULL;
+	if ( bg.kind == bgVariable )
+	    emit_extern(out, live, bg.ns, bg.name);
+	else if ( tdd && tdd->as_fptr_dd() )
 	    emit_fptr_typedef(out, live, bg.ns, bg.name);
-	else if ( bg.is_type )
+	else if ( tdd && tdd->as_struct_dd() )
+	    emit_struct(out, live, bg.ns, bg.name);
+	else if ( tdd )
 	    emit_enum(out, live, bg.ns, bg.name);
 	for ( size_t k = 0; k < bg.keys.size(); ++k )
 	    emit_declaration(out, live, bg.keys[k]);

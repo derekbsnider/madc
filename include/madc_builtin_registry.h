@@ -126,6 +126,52 @@ DataDef *builtin_function_pointer(Program &pgm, DataDef *returns,
 DataDef *declare_builtin_typedef(Program &pgm, const char *ns, const char *name,
 				 DataDef *aliased);
 
+// A builtin data-only struct as generated code spells it: what TokenSTRUCT::parse
+// registers for a namespace-scope C++ struct whose members are all data (a
+// DataDefSTRUCT, or the DataDefCLASS an object member promotes it to; no
+// method, base or nested type) — the struct laid out member by
+// member by its own addMember and finalize (the TARGET's sizes and
+// alignments, never a recorded offset), complete; the bare tag in struct_map
+// and datatype_map, the namespace's type, its canonical spelling ns::Tag, and
+// its file-scope struct TopDecl (system-origin). A member's typedef_name is
+// the alias it was spelled with ("" for a raw type).
+struct BuiltinMember
+{
+    const char *name;
+    DataDef *type;
+    const char *typedef_name;
+};
+
+struct BuiltinStructDecl
+{
+    const char *ns;
+    const char *name;
+    const BuiltinMember *members;
+    size_t nmembers;
+    bool object_class;		// the parse promoted it — an object member made it
+				// a non-trivial class (TokenSTRUCT's promotion):
+				// a DataDefCLASS, its class layout computed
+};
+
+DataDefSTRUCT *declare_builtin_struct(Program &pgm, const BuiltinStructDecl &d);
+
+// A builtin namespace object as generated code spells it: what parseDeclaration
+// registers for a namespace-scope `extern T name;` (the extern-reference arm the
+// forest restore reproduces too) — the Variable with no storage, its flags as
+// the parse left them, its storage alias the TARGET's mangling of ns::name
+// (namespace_cpp_variable_symbol, never a host string), bound in its namespace
+// and the program scope, and its file-scope global TopDecl (system-origin, no
+// initializer).
+struct BuiltinExternDecl
+{
+    const char *ns;
+    const char *name;
+    DataDef *type;
+    unsigned flags;		// Variable::flags (vfEXTERN, ...)
+};
+
+Variable *declare_builtin_extern(Program &pgm, const BuiltinExternDecl &d);
+
 // A dialect type by its namespace and name: the program's registration, or —
 // the first time — its builder's (the table's entry for ns::name). NULL when
 // the dialect has no such type. The generated code names a dialect type
@@ -136,6 +182,11 @@ DataDef *builtin_type(Program &pgm, const char *ns, const char *name);
 // types' half of the differential). Empty when ns::name names no type.
 madc::dis::istring builtin_type_line(Program &pgm, const madc::dis::istring &ns,
 				     const madc::dis::istring &name);
+
+// A registered namespace object's identity, field by field, tab-separated (the
+// objects' half of the differential). Empty when ns::name binds no object.
+madc::dis::istring builtin_variable_line(Program &pgm, const madc::dis::istring &ns,
+					 const madc::dis::istring &name);
 
 // A registered free function's identity, field by field, tab-separated: what
 // the generated registration must reproduce of a live parse (R1's
@@ -158,6 +209,8 @@ struct DialectTextParse
     std::vector<madc::dis::istring> function_keys;
     // The namespace types `live` registered beyond `base`, as (ns, name).
     std::vector<std::pair<madc::dis::istring, madc::dis::istring> > type_keys;
+    // The namespace objects (not a function, not an enumerator) beyond `base`.
+    std::vector<std::pair<madc::dis::istring, madc::dis::istring> > variable_keys;
 };
 bool parse_dialect_as_text(DialectTextParse &out, std::string &err);
 
@@ -165,12 +218,19 @@ bool parse_dialect_as_text(DialectTextParse &out, std::string &err);
 // sorted as the table is, each group's keys in registration order. `skip` names
 // why a group gets no builder yet (empty: it gets one) — a body, a template, a
 // type the generator does not yet express.
+enum BuiltinGroupKind
+{
+    bgFunctions,	// an overload set: `keys` are its funcdef_map keys
+    bgType,		// a namespace type (keys empty)
+    bgVariable		// a namespace object (keys empty)
+};
+
 struct BuiltinGroup
 {
     madc::dis::istring ns;
     madc::dis::istring name;
-    std::vector<madc::dis::istring> keys;	// a function group's funcdef_map keys
-    bool is_type;				// a namespace type (keys empty)
+    std::vector<madc::dis::istring> keys;
+    BuiltinGroupKind kind;
     std::string skip;
 };
 void plan_builtin_registry(DialectTextParse &dp, std::vector<BuiltinGroup> &groups);

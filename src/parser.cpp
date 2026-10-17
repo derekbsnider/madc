@@ -3874,7 +3874,7 @@ static bool libc_prototype_return_matches(const madc::dis::istring &name, FuncDe
     return !have.is_pointer() && have.rawtype() == want.dt;
 }
 
-static madc::dis::istring namespace_cpp_variable_symbol(const madc::dis::istring &ns_name,
+madc::dis::istring namespace_cpp_variable_symbol(const madc::dis::istring &ns_name,
 						 const madc::dis::istring &member_name)
 {
     return itanium_mangle_nested_var(namespace_qualifiers(ns_name),

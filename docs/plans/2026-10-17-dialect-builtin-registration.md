@@ -383,3 +383,35 @@ Next: `git` / `markdown` bodies by hand; `ui_web` / `ui_ws` are R3.
   point — after the TopDecl of a function whose body triggered it. The
   emitter's ordering of a lazily built typedef/struct ahead of its first use
   is R4's to prove (the forest bind pushed them at the include point).
+- Data-only structs: `declare_builtin_struct` reproduces TokenSTRUCT::parse
+  for a namespace-scope struct — laid out member by member by the struct's
+  OWN `addMember` + `finalize` (the target computes offsets and size; the
+  generated code records names, types and spelled aliases, never an
+  offset); the bare tag in struct_map and datatype_map, the namespace's
+  type, the canonical `ns::Tag`, and its file-scope struct TopDecl
+  (system-origin). A struct whose object member promoted it to a class
+  (`madc::SysInfo`: `array` members) records that outcome
+  (`object_class`), and the builder promotes as the parse does — the class
+  takes the struct's state, the tag is repointed, the class layout is
+  computed. A member's origin token is a source position a builtin does not
+  have (as the forest restore); `definition_file` likewise (read only for
+  interactive-session units).
+- Namespace objects joined the differential (`builtin_variable_line`): an
+  `extern T name;` reference (`madc::sys`) builds through
+  `declare_builtin_extern` — no storage, its alias the target's
+  `namespace_cpp_variable_symbol(ns, name)` (now the shared owner, declared
+  in madc.h), bound in its namespace and the program scope, its dkGlobalVar
+  TopDecl with no initializer (the restore's extern-reference precedent).
+  `madc::__madc_run_child` — a `static const` whose initializer runs
+  `serve_run_child()` before main — is initialization code: R3's.
+- 544 declarations, types and objects identical; 128 not yet built: the
+  method-bearing classes (`madc::channel`, `tool_host`, `ex_session`,
+  `session_claim`) and their 70 members, `php::print_r` / `var_dump`
+  (compiler-implemented templates), the bodies (R3), and the ui_web /
+  ui_ws aggregates and objects that ride with their bodies.
+- The function lines gained the method fields (owner, display name, local
+  emit name, method qualifiers, the Variable's flags, the namespaces that
+  bind it by key) and two more parameter vectors: a live declaration
+  records, per parameter, whether a template parameter spelled it and its
+  default — the R1 builders recorded neither (a function TYPE records
+  neither; `fill_builtin_params` now knows which it builds).

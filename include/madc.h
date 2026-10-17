@@ -2294,6 +2294,12 @@ inline typespec_t ref_of(DataDef &d) { return typespec_t(&d, RefType::rtReferenc
 // argument's identity, a default argument's text.
 madc::dis::istring template_tokens_spelling(const std::vector<class TokenBase *> &tokens);
 
+// A namespace-scope object's storage symbol: the Itanium mangling of
+// ns::name for the active target (parser.cpp — addVariable's, the restore's,
+// the builtin registry's).
+madc::dis::istring namespace_cpp_variable_symbol(const madc::dis::istring &ns_name,
+						 const madc::dis::istring &member_name);
+
 // vectors
 typedef std::vector<typespec_t> datatype_vec_t;
 typedef std::vector<Variable *> variable_vec_t;
