@@ -2,6 +2,44 @@
 
 ## [Unreleased]
 
+### The madc dialect's builtin registration generator and its differential (R1)
+
+- The dialect is builtin (docs/plans/2026-10-17-dialect-builtin-registration.md):
+  instead of re-parsing the `include/madc/ns_*` and `bits/*` fragment text on
+  every `--std=madc` compile, the build generates one registration builder per
+  namespace member and a sorted `(namespace, name)` table. R1 lands the
+  generator, the registration owner and the fidelity differential; there is no
+  runtime caller of the table yet (the lookup-miss hook is R4), so compile
+  behaviour is unchanged.
+- Generator `madc --std=madc --emit-builtin-registry=<out.cpp>`
+  (`src/madc_builtin_registry.cpp`; CLI `cli_option::emit_builtin_registry`, row
+  in `src/madc_cli.cpp`, handled in `src/madc.cpp`). It parses every dialect root
+  as text with the pack bind off (`parse_dialect_as_text`), groups the functions
+  it registers beyond an empty program by `(namespace, name)` in overload-set
+  order (`plan_builtin_registry`), and writes one builder per group plus the
+  table.
+- Registration owner `declare_builtin_function` builds the `FuncDef` and
+  registers it through the existing `Program::register_forest_func` (namespace
+  member, overload set, storage alias). Output is target-neutral: types are
+  DataDef singletons and minting-owner calls
+  (`getPointerType` / `getReferenceType` / `getQualifiedType`), and an emit
+  symbol is never spelled (`bfEmitIsAlias` takes the alias the registrar mangles
+  per target).
+- Two-stage build (`src/Makefile`): `obj/<mode>/madc-stage1` links the same
+  objects with the empty table (`src/madc_builtin_registry_stage1.cpp`),
+  generates `obj/<mode>/dialect_registry.cpp` (moved only when its text changes),
+  and libmadc compiles it in the empty table's place. Cross and hosted modes link
+  the empty table for now.
+- `src/parser.cpp`: `template_tokens_spelling` widens from static to external
+  linkage (declared in `include/madc.h`) so the differential can spell default
+  and template token runs.
+- Differential `tests/unit/test_builtin_registry.cpp` compares
+  `builtin_function_line` (types by their builder expression, parameter spellings
+  and names, alias, flags, overload index) for the generated builders against a
+  live parse of the same files — 479 declarations compared, identical; 371 keys
+  not yet built, each with a stated reason (class members R2, bodies R3,
+  templates, defaults).
+
 ### A program's later `#include` of an auto-included header is served by the prelude
 
 - Under `--std=madc` with headers parsed as text (`bin/madc`, or

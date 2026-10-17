@@ -6707,7 +6707,7 @@ static std::vector<TokenBase *> substitute_var_template_init(
     return clone_template_tokens_with_pack_subst(vd.init, subst, pack_name, pack_elems);
 }
 
-static madc::dis::istring template_tokens_spelling(
+madc::dis::istring template_tokens_spelling(
 	const std::vector<TokenBase *> &tokens)
 {
     std::string spelling;

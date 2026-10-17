@@ -198,6 +198,11 @@ const row rows[] = {
 	  { { "--print-dialect-roots", flag } }, NULL, s_forest,
 	  "(pack step, --std=madc) print the dialect image's roots — every dialect fragment and "
 	  "the headers its auto-include pulls, in auto-include order, one per line — and exit" },
+	{ id(cli_option::emit_builtin_registry), "emit_builtin_registry",
+	  { { "--emit-builtin-registry", eq } }, "<out.cpp>", s_forest,
+	  "(build step, --std=madc) write the dialect's generated registration — one builder "
+	  "per namespace member read from the dialect files, and its table — to <out.cpp>, "
+	  "and exit" },
 	{ id(cli_option::freeze_sources), "freeze_sources", { { "--freeze-sources", eq } },
 	  "<list>", s_forest,
 	  "also pack the exact text of every file <list> names (one path per line) as "

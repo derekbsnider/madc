@@ -26,6 +26,7 @@
 #include "tokens.h"
 #include "datatokens.h"
 #include "madc.h"
+#include "madc_builtin_registry.h"
 #include "madc_dl.h"
 #include "madc_modules.h"	// -l<name> -> the target library spelling (the one owner)
 #include "madc_guards.h"	// the resource guards (install + the GUI lift)
@@ -694,6 +695,7 @@ int main(int argc, char **argv)
     bool show_machine = false;            // -dumpmachine
     bool show_capabilities = false;       // --capabilities=json
     bool show_dialect_roots = false;      // --print-dialect-roots: the dialect image's roots
+    const char *builtin_registry_out = NULL; // --emit-builtin-registry=: the generated registration
     bool show_stats = false;               // --show-stats: print input/token traffic counters
     const char *freeze_path = NULL;       // --freeze= / --freeze-append=: forest container out
     bool freeze_append = false;           // --freeze-append=: placement 2 (append to binary)
@@ -921,6 +923,9 @@ int main(int argc, char **argv)
             break;
         case cli_option::print_dialect_roots:
             show_dialect_roots = true;
+            break;
+        case cli_option::emit_builtin_registry:
+            builtin_registry_out = value;
             break;
         case cli_option::freeze_role:
             // The role's spelling -> its code, once, here (the role table in
@@ -1191,6 +1196,26 @@ int main(int argc, char **argv)
         for ( size_t i = 0; i < roots.size(); ++i )
             std::cout << roots[i].c_str() << "\n";
         std::cout.flush();
+        return 0;
+    }
+
+    // --emit-builtin-registry=<out.cpp> (the dialect is builtin, R1): the
+    // build's generator — the dialect files read once, as text, into one
+    // builder per name (madc_builtin_registry.cpp). No source file.
+    if ( builtin_registry_out )
+    {
+        std::ostringstream gen;
+        if ( !emit_builtin_registry(gen, std::cerr) )
+            return 1;
+        std::ofstream out(builtin_registry_out);
+        out << gen.str();
+        out.close();
+        if ( !out )
+        {
+            std::cerr << "madc: --emit-builtin-registry: cannot write "
+                      << builtin_registry_out << std::endl;
+            return 1;
+        }
         return 0;
     }
 

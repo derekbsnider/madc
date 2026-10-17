@@ -2290,6 +2290,10 @@ struct typespec_t
 inline typespec_t ptr_of(DataDef &d) { return typespec_t(&d, RefType::rtPointer); }
 inline typespec_t ref_of(DataDef &d) { return typespec_t(&d, RefType::rtReference); }
 
+// A stored token run's spelling, token by token (parser.cpp): a template
+// argument's identity, a default argument's text.
+madc::dis::istring template_tokens_spelling(const std::vector<class TokenBase *> &tokens);
+
 // vectors
 typedef std::vector<typespec_t> datatype_vec_t;
 typedef std::vector<Variable *> variable_vec_t;

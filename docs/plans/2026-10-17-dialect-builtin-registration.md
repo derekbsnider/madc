@@ -259,3 +259,45 @@ hot rows measured on the packed release; the batch lane at the end.
   stand-in is never a frozen record.
 - Tests: `testdialectstdiostreams`, `testdialectimage_ctypes(_after)`,
   `testdialectimage_streams`; leg 3 of `scripts/check-autoinclude-position.sh`.
+
+## R1 execution (2026-10-17)
+
+- The generator: `madc --std=madc --emit-builtin-registry=<out.cpp>`
+  (`src/madc_builtin_registry.cpp`). It parses every dialect root as text with
+  the pack bind off (`parse_dialect_as_text`), takes the function keys that
+  parse registers beyond an empty program, groups them by (namespace, name) in
+  overload-set order (`plan_builtin_registry`) and writes one builder per group
+  plus the sorted table.
+- The owner: `declare_builtin_function` builds the FuncDef and registers it
+  through `Program::register_forest_func`, the restored-function registrar
+  (namespace member, overload set, storage alias). Its rename waits for R4,
+  when the dialect forest path it was named for is deleted.
+- Target-neutral output: types are singletons and minting-owner calls; an
+  emit symbol is never spelled — `bfEmitIsAlias` sets it from the alias the
+  registrar mangles for the target (`int64_t` is `l` on Linux, `x` on macOS
+  and Windows).
+- Two-stage build (`src/Makefile`): `obj/<mode>/madc-stage1` links the same
+  objects with the empty table, generates `obj/<mode>/dialect_registry.cpp`
+  (moved only when its text changes), and libmadc compiles it in the empty
+  table's place.
+- The differential: `tests/unit/test_builtin_registry.cpp` compares
+  `builtin_function_line` (types by their builder expression, parameter
+  spellings and names, alias, flags, overload index) for every built key —
+  479 declarations, identical. A group the generator does not build yet is
+  reported with its reason (371 keys at the first green).
+
+Rulings:
+- Ruling: R3 counted ~33 bodies; the live parse has 234 bodied dialect
+  functions. ~210 are polyglot thin wrappers whose fragment body calls an
+  extern "C" `__php_*` export — the inversion `cpp-first-api.md` forbids
+  (owner 2026-10-17: the extern "C" functions are the wrappers). They move
+  into `src/ns_*.cpp` as the namespace's C++ definitions, declared bodiless
+  in the fragments, namespace by namespace, after R1; R3's build-time
+  compile stays for `ui_web` / `ui_ws`. Cost if wrong: the wrappers would
+  need the R3 compile path instead.
+- Ruling: cross and hosted modes link the empty table (the dialect served
+  from its text, as before) until R3 builds them from the host's generated
+  file; the generated code is target-neutral. Cost if wrong: one Makefile
+  arm per mode family.
+- Ruling: class members (`madc::channel`, `madc::tool_host`, ...) are R2's
+  class registration, not R1's free functions.
