@@ -355,7 +355,10 @@ live parse of the fragments (the suite). Closes Gap
   facets' `id` statics ride the units requiring their facet) or carried (a
   pulled `__basic_file<char>`'s method bindings); the gate reports their
   count. Measured at the conversion: the ladder rungs restore 71–2,736
-  records.
+  records. The dialect per-name plan (2026-10-16, A7) adds DEMANDED (asked
+  for by record) and a role on a dialect fragment's record — `anchor` (a
+  global with storage) or `dialect`; a `dialect listed` record fails, and a
+  workload's `<name>.restored` file caps its restored count.
 - **existing** — `forest_pack_gate.sh` (load-log losses stay at zero),
   `forest_index_oracle.sh`, `forest_dm_oracle.sh`, the forest `make gates`
   set, `check-system-headers-from-libmadc.sh`, byte-identical suite output

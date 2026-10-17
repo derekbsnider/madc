@@ -632,3 +632,125 @@ unused declaration to a dialect fragment cannot cost a dialect compile.
   `madarray_destruct` prototype; in testfragmentinit also ns_ui_ws's unused
   `typedef struct ui_ws__host host;` and `struct dialog_wait` emitted later
   (the accepted declaration-order delta).
+- **A6 (2026-10-17).** Demand cost under a large closure. Symbolized packed
+  build of 67c270415 (A5) in tmp/cost_sweep2, forest rows, Ir. Controls
+  beside the workloads (tmp/, not gate rows): `cxx_none` — dialect_cxx with
+  its twenty dialect calls removed; `cxx_one` / `cxx_php10` — cxx_none plus
+  one / ten php names; `small20` — dialect_cxx without `<vector>` and its
+  vector; `small_var` — small20 with its dialect calls removed; `small_none`
+  — dialect_one without its php call.
+
+  | row | Ir |
+  |---|---:|
+  | rung_vector | 74,805,426 |
+  | cxx_none | 230,616,027 |
+  | cxx_one | 240,175,280 |
+  | cxx_php10 | 251,660,645 |
+  | dialect_cxx | 269,213,479 |
+  | small_none | 11,731,176 |
+  | small_var | 12,659,442 |
+  | dialect_one | 21,341,566 |
+  | small20 | 48,499,818 |
+
+  - dialect_cxx = rung_vector 74.8M + the C++ body 155.8M
+    (`std::vector<int>` from an initializer list, `size()`, its destructor:
+    parse +57.3M, `translate_module` +67.3M, `load_and_link` +23.9M of which
+    `MIR_gen` +20.2M) + the twenty dialect calls 38.6M (19 names in six
+    fragments, 11 units active, 40 demands registering 66 functions).
+  - The same twenty calls with no closure (small20 − small_var): 35.8M. The
+    large closure adds 2.76M (+7.7%). One php name with its fragment's
+    activation: 9.56M (cxx_one − cxx_none) against 9.61M (dialect_one −
+    small_none). Each further php name: 1.28M against 1.21M — the name's
+    dialect body translated, compiled and linked, and its `println`
+    statement; backend work, not the demand.
+  - The demand (`forest_dialect_demand`, inclusive), dialect_cxx against
+    small20: 2.87M against 2.09M. Per registering demand the same: the
+    records-only generations (`materialize_for`, 40 calls) 636K against
+    630K, the delta `forest_restore_decls` 186K against 184K; the delta
+    `forest_apply_pending` 686K against 525K. The rest is misses: 104 names
+    asked against 52, 40 hits in each — names of the C++ program reaching
+    the hooks (`activate_forest_member` 580 calls against 199,
+    `lazy_resolve_type` 230 against 80, `canonical_nested_namespace` 89
+    against 0); `forest_dialect_ask` 1.22M against 0.65M, ~11K Ir per miss
+    (the memo, then each active unit's `funcs` and `objects` searched).
+  - Outside the demand: the bind's withheld probe over the larger closure —
+    `std::binary_search` 6,570 calls, 651K, against 765 calls, 75K (an
+    out-of-line instance of the -fPIC libmadc, called through the PLT); MIR
+    codegen of a larger `main` (`reg_alloc`, `process_inlines`);
+    `translate_module` +0.90M; the forest's teardown +0.94M.
+  - Verdict: the per-name cost under the large closure is in proportion to
+    dialect_one's; no task follows from A6. The two closure-dependent costs,
+    should a later row need them: a miss is searched once per active unit
+    for every C++ name the hooks see, and the withheld probe pays a PLT call
+    per candidate.
+- **A7 (2026-10-17).** The gates.
+  - The probe (`MADC_SEED_PARITY_PROBE=1`, `materialize_pass`): its label
+    owner (`par_label` / `par_label_idx`) answers DEMANDED for a record the
+    generation was asked for (`asked_slots` / `asked_tmpl` / `asked_glob` —
+    `CirMaterializeFilter::records`, or a records-only generation's added
+    records), ahead of listed and carried; the printer gives a record a
+    dialect fragment's decl index names (`embedded_dialect_fragment_p` over
+    every unit, `decl_record_facts`) a role before its label: `anchor` or
+    `dialect`. `CirDeclRecordFacts::anchor()` (a global with storage, A5's
+    ruling) is the one predicate; the activation reads it too.
+  - `check-pack-seed-parity.sh`: a `dialect listed` line fails; a workload's
+    `<name>.restored` file caps its restored count (red above it, a hint to
+    lower it below it) — `scripts/parse_cost/dialect.restored` = 12. Controls:
+    the synthetic block flags exactly one unreached line and one listed
+    dialect line; a one-name php program compiled with the withholding off
+    must show `dialect listed` lines. RED: the A5 release failed the
+    withholding-off control (its probe marks no record); the gate with its
+    reader blinded failed the synthetic leg; a cap of 11 failed. GREEN on the
+    new release: withholding off restores 455 records, 419 `dialect listed`;
+    dialect.mad restores 12 — `php::count`, `php::explode`, `php::strtoupper`
+    and its `__o2`, their three `__php_*` shims, `__ns_madc_serve_run_child`
+    (demanded); `madc::__madc_run_child` (anchor, listed);
+    `__madc_va_list_tag`, `__make_integer_seq`, `__type_pack_element`
+    (listed, not dialect). dialect_one 8 (4 demanded), dialect_all 23 (19),
+    dialect_cxx 2,556 (66; rung_vector 2,489).
+  - Parse cost: `sqlite3.modes` = `forest` (owner 2026-10-17: its live row
+    costs the same and doubles the gate's time); `<name>.flags` with
+    `{scratch}`; a symlinked source missing on the host is RED, never
+    skipped. No `println` workload exists; none added. Re-recorded on the
+    packed release of this tree (no `--accept-increase`; check mode then 0
+    red of 21):
+
+    | row | baseline 2026-10-15 | 2026-10-17 | delta |
+    |---|---:|---:|---:|
+    | cxx_stl.live | 2,686,766,558 | 2,664,202,829 | −0.84% |
+    | cxx_stl.forest | 1,394,786,846 | 1,392,069,287 | −0.19% |
+    | c_headers.live | 244,938,187 | 243,120,917 | −0.74% |
+    | c_headers.forest | 245,040,160 | 243,214,986 | −0.74% |
+    | sqlite3.forest | new | 18,764,301,397 | |
+    | dialect.live | 42,662,429 | 29,958,254 | −29.78% |
+    | dialect.forest | 42,661,783 | 29,953,917 | −29.79% |
+    | dialect_all.live | new (A0 51,473,813) | 33,821,789 | |
+    | dialect_all.forest | new (A0 51,471,727) | 33,822,568 | |
+    | dialect_cxx.live | new (A0 600,001,906) | 575,827,557 | |
+    | dialect_cxx.forest | new (A0 287,202,035) | 269,886,167 | |
+    | dialect_one.live | new (A0 35,578,265) | 21,785,232 | |
+    | dialect_one.forest | new (A0 35,570,817) | 21,765,224 | |
+    | rung_c8.forest | 132,744,889 | 130,934,223 | −1.36% |
+    | rung_limits.forest | 23,349,340 | 23,007,047 | −1.47% |
+    | rung_stddef.forest | 12,727,028 | 12,447,593 | −2.20% |
+    | rung_stdio.forest | 19,757,493 | 19,421,983 | −1.70% |
+    | rung_type_traits.forest | 28,368,823 | 27,989,683 | −1.34% |
+    | rung_vector.forest | 75,687,073 | 75,108,530 | −0.76% |
+    | subscript.live | 3,459,050,884 | 3,434,289,652 | −0.72% |
+    | subscript.forest | 2,194,396,538 | 2,191,342,923 | −0.14% |
+
+  Rulings:
+  - The negative control is the withholding OFF, not dialect units seeded
+    (A4: they stay seeded). `--forest-touch-log` turns it off — the pack's
+    layout pass activates no unit (`forest_activate_dialect_unit`) — so no
+    new switch.
+  - A dialect record is any record a dialect fragment's decl index names,
+    read apart from the activation, so a whole-unit restore shows; the rule
+    is checked against those records, not against the withheld set.
+  - Both gates read the packed release: the seed-parity gate runs in the
+    per-commit static gate loop and the seam's static-gates stage (as
+    `check-system-headers-from-libmadc.sh` does), the parse-cost gate in the
+    seam's `parse-cost` stage. `make gates` builds the dev binary, which
+    carries no pack, and names neither.
+  Thread contract: the probe's role map is a local of the print, under the
+  probe only; no state, no globals.

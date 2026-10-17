@@ -18,7 +18,11 @@
 # instantiator are what is measured; the dialect surface still binds — it is
 # the compiler's own, pack-slices design §7); a FOREST row takes the packed
 # forest, the path a default compile takes. A workload may be a symlink to a test (subscript.mad
-# is tests/testsubscript.mad, the owner's benchmark against g++). The baseline records the
+# is tests/testsubscript.mad, the owner's benchmark against g++), or to a real
+# codebase on the build host (sqlite3.c is SQLite's amalgamation — a dependency,
+# never copied into the repo); a symlink whose source is missing is RED, never
+# skipped. <name>.flags adds madc flags to every row of the workload (`-c -o
+# {scratch}/sqlite3.o`: {scratch} is this run's scratch directory). The baseline records the
 # toolchain it was measured on (compiler, libc, libstdc++ headers, valgrind):
 # a different toolchain parses different headers, so a mismatch REFUSES the
 # comparison instead of passing or failing on someone else's numbers.
@@ -76,15 +80,23 @@ measure() {
 }
 
 rows=()
+missing=0
 for src in "$DIR"/*.cpp "$DIR"/*.c "$DIR"/*.mad; do
+	if [ -L "$src" ] && [ ! -e "$src" ]; then
+		echo "RED  $(basename "$src"): its source $(readlink "$src") is not on this host"
+		missing=$((missing + 1))
+		continue
+	fi
 	[ -e "$src" ] || continue
 	name=$(basename "$src"); name="${name%.*}"
 	modes=live
 	[ -f "$DIR/$name.modes" ] && modes=$(cat "$DIR/$name.modes")
+	extra=""
+	[ -f "$DIR/$name.flags" ] && extra=$(sed "s|{scratch}|$SP|g" "$DIR/$name.flags")
 	for m in $modes; do
 		case "$m" in
-		live) rows+=("$name.live|$src|--no-forest-bind") ;;
-		forest) [ -z "$mapdir" ] && rows+=("$name.forest|$src|") ;;
+		live) rows+=("$name.live|$src|--no-forest-bind $extra") ;;
+		forest) [ -z "$mapdir" ] && rows+=("$name.forest|$src|$extra") ;;
 		*) echo "parse_cost_gate: $DIR/$name.modes: unknown mode '$m'" >&2; exit 2 ;;
 		esac
 	done
@@ -92,7 +104,7 @@ done
 
 fp=$(fingerprint)
 declare -A now
-red=0
+red=$missing
 for r in "${rows[@]}"; do
 	IFS='|' read -r row src flags <<< "$r"
 	name="${row%.*}"

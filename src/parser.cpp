@@ -28240,8 +28240,7 @@ const Program::ForestUnitActivation &Program::forest_dialect_activation(uint32_t
 	// A global WITH storage is an anchor: the bind restores it as ever.
 	const bool demandable = f.shape == CirDeclRecordFacts::TYPE
 	    || f.shape == CirDeclRecordFacts::TEMPLATE
-	    || (f.shape == CirDeclRecordFacts::OBJECT
-		&& (f.gflags & (CIR_GLOBALF_CONST_SCALAR | CIR_GLOBALF_EXTERN_REF)));
+	    || (f.shape == CirDeclRecordFacts::OBJECT && !f.anchor());
 	if ( !demandable || !f.leaf || !*f.leaf
 	  || !objects_seen.insert(recs[k].first).second )
 	    continue;

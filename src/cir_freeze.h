@@ -1839,6 +1839,15 @@ struct CirDeclRecordFacts
 	// OBJECT: an enumerator constant's enum ((CIR_SEED_DEP_ARENA << 30) |
 	// slot), CIR_DECL_RECORD_NONE for any other global.
 	uint32_t enum_record = CIR_DECL_RECORD_NONE;
+	// An ANCHOR: a global WITH storage, which the bind restores (plan A5);
+	// a storage-less one (an enumerator constant, an extern reference)
+	// restores by name. The dialect activation and the seed-parity probe
+	// read it here.
+	bool anchor() const
+	{
+		return shape == OBJECT
+		    && !(gflags & (CIR_GLOBALF_CONST_SCALAR | CIR_GLOBALF_EXTERN_REF));
+	}
 };
 
 // --show-stats (task #25 slice D): ONE depth-guarded forest-work clock, the

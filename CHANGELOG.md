@@ -2,6 +2,39 @@
 
 ## [Unreleased]
 
+### The seed-parity gate holds dialect records to demand; parse-cost re-recorded
+
+- The seed-parity probe (`MADC_SEED_PARITY_PROBE=1`, `materialize_pass`) labels a
+  record the generation was asked for `demanded`, ahead of `listed` and
+  `carried`, and marks a record a dialect fragment's decl index names with a role
+  — `anchor` (a global with storage) or `dialect`. `CirDeclRecordFacts::anchor()`
+  is the one predicate for a global with storage; `forest_dialect_activation`
+  reads it in place of its inline `CIR_GLOBALF_CONST_SCALAR` /
+  `CIR_GLOBALF_EXTERN_REF` test.
+- `check-pack-seed-parity.sh` fails a `dialect listed` line — a dialect record
+  restores only as demanded, carried or an anchor — and caps a workload's
+  restored count with a sibling `<name>.restored` file
+  (`scripts/parse_cost/dialect.restored` = 12, may only fall). Negative controls:
+  a synthetic listed-dialect line, and a dialect program compiled with the
+  withholding off (`--forest-touch-log`) must show `dialect listed` lines.
+- On the packed release `dialect.mad` restores 12 records (`php::count`,
+  `php::explode`, `php::strtoupper` and its `__o2`, their three shims,
+  `__ns_madc_serve_run_child` demanded; `madc::__madc_run_child` anchor;
+  `__madc_va_list_tag`, `__make_integer_seq`, `__type_pack_element` listed, not
+  dialect); the withholding off restores 455, 419 `dialect listed`. `dialect_one`
+  8 (4 demanded), `dialect_all` 23 (19), `dialect_cxx` 2,556 (66).
+- `scripts/parse_cost_gate.sh` takes a workload that is a symlink to a real
+  codebase on the build host (`sqlite3.c` → SQLite's amalgamation, never copied
+  into the repo; a symlink whose source is missing is RED, not skipped), a
+  `<name>.flags` adding madc flags per row (`{scratch}` → the run's scratch dir),
+  and `<name>.modes` = `forest`.
+- Parse-cost re-recorded on the packed release (no `--accept-increase`; check
+  mode 0 red of 21): every existing row fell — `dialect` −29.8%, `c_headers`
+  −0.74%, `cxx_stl.forest` −0.19%, the rungs −0.8% to −2.2% — with new rows
+  `sqlite3.forest`, `dialect_one`, `dialect_all`, `dialect_cxx`.
+- A6 measured the per-name demand cost under a large closure (`dialect_cxx`
+  against `small20`): in proportion to `dialect_one`'s; no task follows.
+
 ### A dialect compile restores only the types, enums and templates it names
 
 - After the functions-per-name change, a bound dialect fragment's types, enums,
