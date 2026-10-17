@@ -286,6 +286,15 @@ hot rows measured on the packed release; the batch lane at the end.
   479 declarations, identical. A group the generator does not build yet is
   reported with its reason (371 keys at the first green).
 
+- Lazy module members (`madcgit_*`, the `<madcgit.h>` interface `ns_git`
+  imports) carry their module ROW's name; registration spells the library
+  for the target (`madc_module_library_spelling`). A file-scope C++
+  declaration binds its Itanium symbol through the parser's own mint
+  (`Program::declaration_cpp_symbol`, `bfFileScopeCppAlias`) — the registrar
+  aliases namespace members only. A function the builtin registry registers
+  itself (a libc builtin a dialect body calls) is not the dialect's. 496
+  declarations identical; 348 keys not yet built.
+
 Rulings:
 - Ruling: R3 counted ~33 bodies; the live parse has 234 bodied dialect
   functions. ~210 are polyglot thin wrappers whose fragment body calls an

@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### The dialect's generated builders carry lazy module members and file-scope C++ aliases (R1)
+
+- A lazy module member (`madcgit_*`, the `<madcgit.h>` interface `ns_git`
+  imports) carries its module row's name in `BuiltinFunctionDecl::module`;
+  registration spells the library for the target
+  (`madc_module_library_spelling`) and stamps the member
+  (`Program::stamp_lazy_module_member`).
+- A file-scope C++ declaration binds its Itanium symbol through the parser's
+  own mint (`Program::declaration_cpp_symbol`, flag `bfFileScopeCppAlias`); the
+  registrar aliases namespace members only.
+- A function the builtin registry registers itself (a libc builtin a dialect
+  body calls, `FuncDef::builtin_registration`) is excluded from the dialect's
+  key set.
+- Differential `tests/unit/test_builtin_registry.cpp`: 496 declarations
+  compared, identical; 348 keys not yet built (6 libc builtins the builtin
+  registry owns left the set). Mismatch lines stream as `std::string` (doctest
+  printed a `const char *` as `1`).
+
 ### The madc dialect's builtin registration generator and its differential (R1)
 
 - The dialect is builtin (docs/plans/2026-10-17-dialect-builtin-registration.md):

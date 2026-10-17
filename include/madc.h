@@ -10296,6 +10296,12 @@ public:
     bool paren_group_is_nonclass_direct_init();
     bool paren_group_can_be_param_decl_clause();
     bool unqualified_name_is_type_or_template(const madc::dis::istring &nm);
+    // The Itanium symbol a declaration-only C++ function binds — the mint
+    // parseDeclaration gives a namespace function and a tracked file-scope one
+    // alike (an empty `ns_name` is file scope), in the target's mangling.
+    madc::dis::istring declaration_cpp_symbol(const madc::dis::istring &ns_name,
+				       const madc::dis::istring &member_name,
+				       FuncDef *fd);
     // task #69: the HOST-flavor twin of a namespace public's Itanium symbol
     // (the marshalling boundary's bind target when script flavor != host).
     madc::dis::istring host_flavor_fn_symbol(const madc::dis::istring &ns_name,

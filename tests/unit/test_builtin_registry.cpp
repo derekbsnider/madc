@@ -68,7 +68,7 @@ TEST_CASE("R1: the generated registration registers what a live parse of the dia
 			++compared;
 			if (want != got) {
 				if (differ < 20)
-					MESSAGE("live: " << want.c_str() << "\ngen:  " << got.c_str());
+					MESSAGE("live: " << std::string(want.c_str()) << "\ngen:  " << std::string(got.c_str()));
 				++differ;
 			}
 		}
