@@ -36652,6 +36652,19 @@ node_t CirBuilder::translate_module(Program *prog)
 					ffd->forest_body_unit, ffd->forest_body_idx);	// memoized
 				if (!body) continue;
 				node_t bn = body->as_node();
+				// The dialect per name (A5): a struct a loaded dialect
+				// body names that no signature pulled (`host *h =
+				// (host *)arg;`) registers before the body emits — the
+				// late-struct pass (1.97) defines it.
+				if (!prog->forest_dialect_units.empty()
+				    && prog->forest_dialect_unit_p(ffd->forest_body_unit)) {
+					std::set<madc::dis::istring> tags, ids;
+					cir_harvest_type_refs(bn, tags, ids);
+					for (std::set<madc::dis::istring>::const_iterator ti =
+					     tags.begin(); ti != tags.end(); ++ti)
+						if (prog->struct_map.find(*ti) == prog->struct_map.end())
+							prog->forest_dialect_demand(madc::dis::istring(), *ti);
+				}
 				if (register_loaded_refs(bn, false, kv.first))
 					grew = true;
 				node_t proto = forest_fwd_proto(bn);

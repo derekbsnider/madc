@@ -2407,6 +2407,94 @@ TEST_CASE("dialect per name (A4): a rolled-back entry's dialect registration is 
     CHECK(m.shown() == "2");
 }
 
+namespace {
+
+// Does namespace `ns` hold the type `name`?
+bool ns_type(Program &p, const char *ns, const char *name)
+{
+    namespace_datatype_map_t::iterator it = p.namespace_datatype_map.find(madc::dis::istring(ns));
+    return it != p.namespace_datatype_map.end() && it->find(madc::dis::istring(name)) != it->end();
+}
+
+// Does namespace `ns` hold the object or constant `name`?
+bool ns_member(Program &p, const char *ns, const char *name)
+{
+    namespace_map_t::const_iterator it = p.namespace_map.find(madc::dis::istring(ns));
+    return it != p.namespace_map.end() && it->second.find(madc::dis::istring(name)) != it->second.end();
+}
+
+// Is the function template `key` registered — bodied or (a compiler-
+// implemented public like `php::print_r`) body-less?
+bool fn_template(Program &p, const char *key)
+{
+    const std::string k(key);
+    return p.fn_template_map.find(k) != p.fn_template_map.end()
+	|| p.fn_template_decl_map.find(k) != p.fn_template_decl_map.end();
+}
+
+} // namespace
+
+// A5: a fragment's types, enums, templates and storage-less objects register
+// as the program names them, like its functions — an enum with its
+// enumerators, an extern object with its type; what the bind still restores
+// up front is the fragments' anchors (a global with storage).
+TEST_CASE("dialect per name (A5): types, enums, templates and objects register as named")
+{
+    DialectPack pack("#include <ns_madc>\n#include <ns_php>\n");
+    REQUIRE_FALSE(pack.path.empty());
+    InteractiveSession m(pack.configured());
+    REQUIRE(m.begin("--std=madc"));
+    Program &p = m.program();
+    REQUIRE(m.submit("array words;"));
+    REQUIRE(m.submit("php::explode(words, \",\", \"a,b,c\");"));
+    REQUIRE(bound_dialect_units(p).count("ns_madc"));
+    // Nothing named: no type, enum, enumerator, extern object or template.
+    CHECK_FALSE(ns_type(p, "madc", "project_kind"));
+    CHECK_FALSE(ns_type(p, "madc", "file_kind"));
+    CHECK_FALSE(ns_type(p, "madc", "SysInfo"));
+    CHECK_FALSE(ns_type(p, "madc", "channel"));
+    CHECK_FALSE(ns_member(p, "madc", "fkMC11"));
+    CHECK_FALSE(ns_member(p, "madc", "sys"));
+    CHECK_FALSE(fn_template(p, "php::print_r"));
+    // The anchor: `__madc_run_child = serve_run_child()` runs before main.
+    CHECK(ns_member(p, "madc", "__madc_run_child"));
+    // A scoped enum, named: its enumerators' scope with it.
+    REQUIRE(m.submit("madc::project_kind k = madc::project_kind::gui;"));
+    CHECK(ns_type(p, "madc", "project_kind"));
+    CHECK(ns_member(p, "madc::project_kind", "console"));
+    CHECK_FALSE(ns_type(p, "madc", "file_kind"));
+    // An unscoped enumerator, named: its enum and its siblings with it.
+    REQUIRE(m.submit("long f = madc::fkMC11;"));
+    CHECK(ns_type(p, "madc", "file_kind"));
+    CHECK(ns_member(p, "madc", "fkC"));
+    // An extern object, named: its type pulled with it.
+    REQUIRE(m.submit("long pid = madc::sys.pid;"));
+    CHECK(ns_member(p, "madc", "sys"));
+    CHECK(ns_type(p, "madc", "SysInfo"));
+    CHECK_FALSE(ns_type(p, "madc", "channel"));
+    // A compiler-implemented template, named.
+    REQUIRE(m.submit("php::print_r(f);"));
+    CHECK(fn_template(p, "php::print_r"));
+    CHECK(p.forest_bind_stats().dialect_objects >= 4u);
+}
+
+// A type a rolled-back entry registered is registered again by the next
+// entry that names it.
+TEST_CASE("dialect per name (A5): a rolled-back entry's dialect type is registered again")
+{
+    DialectPack pack("#include <ns_madc>\n");
+    REQUIRE_FALSE(pack.path.empty());
+    InteractiveSession m(pack.configured());
+    REQUIRE(m.begin("--std=madc"));
+    Program &p = m.program();
+    CHECK_FALSE(m.submit("madc::project_kind k = madc::project_kind::gui + no_such_name;"));
+    CHECK_FALSE(ns_type(p, "madc", "project_kind"));
+    REQUIRE(m.submit("madc::project_kind k = madc::project_kind::gui;"));
+    CHECK(ns_type(p, "madc", "project_kind"));
+    REQUIRE(m.submit("(int)k"));
+    CHECK(m.shown() == "1");
+}
+
 // §37 item 8 (plan §41.8a, slice 1): the command front and `%type`. A
 // command is recognized at an entry's start, taken and numbered like any
 // input, and `%type` parses its argument as an attempt that rolls back and

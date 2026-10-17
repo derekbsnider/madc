@@ -1,0 +1,48 @@
+// The dialect pays per name (docs/plans/2026-10-16-dialect-per-name-plan.md,
+// A5): a dialect fragment's types, enums and templates register when a lookup
+// first names them, like its functions (A4). Every type lookup kind must
+// reach the one materializer: a qualified scoped enum (madc::project_kind —
+// a declaration, a qualified enumerator, a switch over it), a qualified
+// struct (ui::ui_host_ops — a declarator, sizeof, a functional cast), a bare
+// twin of a namespaced struct (SysInfo, beside the extern madc::sys that
+// names it), an unscoped enumerator named qualified (madc::fkMC11 brings its
+// enum, madc::file_kind), and the compiler-implemented templates php::print_r
+// (deduced and explicit) and php::var_dump. A dialect program has no gcc
+// oracle: the expected output is the packed madc before the change
+// (v0.105.0's per-fragment registration).
+const char *kind_word(madc::project_kind k)
+{
+    switch ( k )
+    {
+	case madc::project_kind::console: return "console";
+	case madc::project_kind::gui: return "gui";
+    }
+    return "?";
+}
+
+int main()
+{
+    madc::project_kind k = madc::project_kind::gui;
+    println("kind {} {}", kind_word(k), kind_word(madc::project_kind::console));
+
+    ui::ui_host_ops ops = {};
+    ops.identity = "types";
+    ui::ui_host_ops blank = ui::ui_host_ops{};
+    println("ops {} {} {}", sizeof(ui::ui_host_ops), ops.identity,
+	    blank.identity == 0 ? "empty" : "set");
+
+    SysInfo *info = &madc::sys;
+    println("sys {} {}", sizeof(SysInfo) == sizeof(madc::sys) ? "sized" : "?",
+	    info->pid > 0 ? "pid" : "none");
+
+    long fk = madc::fkMC11;
+    madc::file_kind c = madc::fkC;
+    println("fk {} {}", fk, c == madc::fkC ? "C" : "?");
+
+    int x = 5;
+    php::print_r(x);
+    php::print_r<int>(x);
+    println("");
+    php::var_dump(x, 2.5);
+    return 0;
+}

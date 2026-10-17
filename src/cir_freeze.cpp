@@ -2766,14 +2766,12 @@ bool CirFrozenForest::unit_decl_index(uint32_t unit,
 // decl-entry record builder (cir_forest_build_seeds, 4b) gives a function
 // entry a free function's DK_FUNC record, else — a method's call symbol —
 // its owner class; a template record with an owner is a member template.
-// Neither member names anything at namespace scope.
-bool CirFrozenForest::decl_entry_scope(uint32_t kind, uint32_t record_id,
-				       const char *&ns, const char *&display,
-				       const char **key) const
+// Neither member names anything at namespace scope. A variable entry's
+// record is a global's, or — a scoped enumerator — its enum's.
+bool CirFrozenForest::decl_record_facts(uint32_t kind, uint32_t record_id,
+					CirDeclRecordFacts &f) const
 {
-	ns = display = NULL;
-	if (key)
-		*key = NULL;
+	f = CirDeclRecordFacts();
 	if (record_id == CIR_DECL_RECORD_NONE)
 		return false;
 	const uint32_t idx = cir_seed_item_index(record_id);
@@ -2787,12 +2785,30 @@ bool CirFrozenForest::decl_entry_scope(uint32_t kind, uint32_t record_id,
 				  && (r.flags & madc::dis::DF_IS_FREE_FUNC);
 		if (kind == Program::pdkFunction && !free_fn)
 			return false;
-		ns = r.ns_id ? _arena.c_str(r.ns_id) : "";
+		f.ns = r.ns_id ? _arena.c_str(r.ns_id) : "";
 		// A free function's disp_id is its function_display_name.
 		if (free_fn && r.disp_id)
-			display = _arena.c_str(r.disp_id);
-		if (key && r.name_id)
-			*key = _arena.c_str(r.name_id);
+			f.display = _arena.c_str(r.disp_id);
+		if (r.name_id)
+			f.name = f.leaf = _arena.c_str(r.name_id);
+		switch (r.kind) {
+		case madc::dis::DK_FUNC:
+			if (free_fn)
+				f.shape = CirDeclRecordFacts::FREE_FUNCTION;
+			break;
+		case madc::dis::DK_STRUCT:
+		case madc::dis::DK_UNION:
+		case madc::dis::DK_CLASS:
+		case madc::dis::DK_TYPEDEF:
+			f.shape = CirDeclRecordFacts::TYPE;
+			break;
+		case madc::dis::DK_ENUM:
+			f.shape = CirDeclRecordFacts::TYPE;
+			f.is_enum = true;
+			break;
+		default:
+			break;
+		}
 		break;
 	}
 	case CIR_SEED_DEP_TEMPLATE: {
@@ -2801,20 +2817,37 @@ bool CirFrozenForest::decl_entry_scope(uint32_t kind, uint32_t record_id,
 		const cir_forest_template_record t = _templates[idx];
 		if (t.owner_type_id)
 			return false;
-		ns = t.ns_id ? pool_cstr(t.ns_id, len) : "";
+		f.ns = t.ns_id ? pool_cstr(t.ns_id, len) : "";
+		f.shape = CirDeclRecordFacts::TEMPLATE;
+		f.name = f.leaf = t.key_id ? pool_cstr(t.key_id, len) : NULL;
+		// A namespace-scope pattern's key is qualified (`php::print_r`).
+		const size_t nl = f.ns ? strlen(f.ns) : 0;
+		if (f.name && nl && !strncmp(f.name, f.ns, nl)
+		    && f.name[nl] == ':' && f.name[nl + 1] == ':')
+			f.leaf = f.name + nl + 2;
 		break;
 	}
 	case CIR_SEED_DEP_GLOBAL: {
 		if (idx >= _globals.size())
 			return false;
 		const cir_forest_global_record g = _globals[idx];
-		ns = g.ns_id ? pool_cstr(g.ns_id, len) : "";
+		f.ns = g.ns_id ? pool_cstr(g.ns_id, len) : "";
+		f.shape = CirDeclRecordFacts::OBJECT;
+		f.name = f.leaf = g.name_id ? pool_cstr(g.name_id, len) : NULL;
+		f.gflags = g.gflags;
+		// An enumerator constant's type is its enum.
+		madc::dis::defrec er;
+		if ((g.gflags & CIR_GLOBALF_CONST_SCALAR)
+		    && madc::dis::arena_id_is_project(g.type_id)
+		    && _arena.get_def_at(g.type_id, er) && er.kind == madc::dis::DK_ENUM)
+			f.enum_record = (CIR_SEED_DEP_ARENA << 30)
+				      | madc::dis::arena_slot_of(g.type_id);
 		break;
 	}
 	default:
 		return false;
 	}
-	return ns != NULL;
+	return f.ns != NULL;
 }
 
 bool CirFrozenForest::unit_pp_events(uint32_t unit, std::vector<uint32_t> &out)
@@ -3418,11 +3451,44 @@ void CirFrozenForest::materialize_pass(const std::vector<uint32_t> *added)
 	auto asked_global = [&](size_t i) -> bool {
 		return !asked_glob.empty() && asked_glob.count(i);
 	};
-	// A withheld free function no record asks: never a candidate.
+	// A withheld record no record asks (the dialect's, restored as a lookup
+	// demands it): never a candidate — a type still restores when an
+	// admitted record's chain pulls it. No record withheld (every bind but
+	// the dialect's): one size read per probe.
+	if (_withheld_sorted.size() != _mat_filter.withheld.size())
+		_withheld_sorted.assign(_mat_filter.withheld.begin(), _mat_filter.withheld.end());
+	auto withheld_record = [&](uint32_t rid) -> bool {
+		return !_withheld_sorted.empty()
+		    && std::binary_search(_withheld_sorted.begin(), _withheld_sorted.end(), rid);
+	};
 	auto withheld_slot = [&](uint32_t s) -> bool {
-		return !_mat_filter.withheld.empty()
-		    && _mat_filter.withheld.count((CIR_SEED_DEP_ARENA << 30) | s)
-		    && !asked_slot(s);
+		return withheld_record((CIR_SEED_DEP_ARENA << 30) | s) && !asked_slot(s);
+	};
+	auto withheld_template = [&](size_t i) -> bool {
+		return withheld_record((CIR_SEED_DEP_TEMPLATE << 30) | (uint32_t)i)
+		    && !asked_template(i);
+	};
+	auto withheld_global = [&](size_t i) -> bool {
+		return withheld_record((CIR_SEED_DEP_GLOBAL << 30) | (uint32_t)i)
+		    && !asked_global(i);
+	};
+	// A demanded record's place in its restored list (demand_restored): an
+	// asked or withheld one, as it is pushed.
+	const bool demands = !_withheld_sorted.empty() || !asked_slots.empty()
+			  || !asked_tmpl.empty() || !asked_glob.empty();
+	auto note_demand_restored = [&](uint32_t rid, size_t at) {
+		if (!demands)
+			return;
+		const uint32_t idx = cir_seed_item_index(rid);
+		bool asked = false;
+		switch (cir_seed_item_kind(rid)) {
+		case CIR_SEED_DEP_ARENA:    asked = asked_slot(idx); break;
+		case CIR_SEED_DEP_TEMPLATE: asked = asked_template(idx); break;
+		case CIR_SEED_DEP_GLOBAL:   asked = asked_global(idx); break;
+		default: break;
+		}
+		if (asked || withheld_record(rid))
+			_demand_restored[rid] = at;
 	};
 	// An aggregate an earlier generation built whole: its pulls were chased
 	// then. A records-only generation's chase stops at it.
@@ -3438,14 +3504,16 @@ void CirFrozenForest::materialize_pass(const std::vector<uint32_t> *added)
 		case madc::dis::DK_STRUCT:
 		case madc::dis::DK_UNION:
 		case madc::dis::DK_CLASS:
-			if (arena_recordable_candidate(r))
+			if (arena_recordable_candidate(r) && !withheld_slot(s))
 				agg_ids.push_back(madc::dis::arena_id_of(s));
 			break;
 		case madc::dis::DK_TYPEDEF:
-			typedef_slots.push_back(s);
+			if (!withheld_slot(s))
+				typedef_slots.push_back(s);
 			break;
 		case madc::dis::DK_ENUM:
-			enum_slots.push_back(s);
+			if (!withheld_slot(s))
+				enum_slots.push_back(s);
 			break;
 		case madc::dis::DK_NSLINK:
 		case madc::dis::DK_NSBIND:
@@ -3732,7 +3800,7 @@ void CirFrozenForest::materialize_pass(const std::vector<uint32_t> *added)
 		// A file-scope global the filter keeps chases its type.
 		auto seed_global = [&](size_t i) {
 			const cir_forest_global_record &g = _globals[i];
-			if (g.gflags & CIR_GLOBALF_TU_ROOT)
+			if ((g.gflags & CIR_GLOBALF_TU_ROOT) || withheld_global(i))
 				return;
 			uint32_t nl = 0, sl = 0;
 			const char *nm = pool_cstr(g.name_id, nl);
@@ -3745,7 +3813,7 @@ void CirFrozenForest::materialize_pass(const std::vector<uint32_t> *added)
 				seed_global(glob_idx[gi]);
 		for (size_t ti = 0; ti < tmpl_idx.size(); ++ti) {
 			size_t i = tmpl_idx[ti];
-			if (i >= _templates.size())
+			if (i >= _templates.size() || withheld_template(i))
 				continue;
 			const cir_forest_template_record &t = _templates[i];
 			if ((t.flags & CIR_TMPLF_TU_ROOT) || !t.owner_type_id)
@@ -4176,6 +4244,8 @@ void CirFrozenForest::materialize_pass(const std::vector<uint32_t> *added)
 		rt.ns         = r.ns_id ? a.c_str(r.ns_id) : NULL;
 		rt.flat_alias = false;
 		rt.tag_alias  = false;
+		rt.record     = (CIR_SEED_DEP_ARENA << 30) | madc::dis::arena_slot_of(tid);
+		note_demand_restored(rt.record, _restored.size());
 		_restored.push_back(rt);
 		if (par_on)
 			_par_via.types.push_back(par_label(par_listed_slots, par_carried_slots,
@@ -4907,6 +4977,8 @@ void CirFrozenForest::materialize_pass(const std::vector<uint32_t> *added)
 			(r.flags & madc::dis::DF_TYPEDEF_FLAT_ALIAS) != 0;
 		rt.tag_alias  =
 			(r.flags & madc::dis::DF_TYPEDEF_TAG_ALIAS) != 0;
+		rt.record     = (CIR_SEED_DEP_ARENA << 30) | s;
+		note_demand_restored(rt.record, _restored.size());
 		_restored.push_back(rt);
 		if (par_on)
 			_par_via.types.push_back(par_label(par_listed_slots, par_carried_slots, s));
@@ -5047,6 +5119,8 @@ void CirFrozenForest::materialize_pass(const std::vector<uint32_t> *added)
 					      | (uint64_t)cv.val_lo);
 			rt.enumerators.push_back(std::make_pair(en, val));
 		}
+		rt.record = (CIR_SEED_DEP_ARENA << 30) | s;
+		note_demand_restored(rt.record, _restored.size());
 		_restored.push_back(rt);
 		if (par_on)
 			_par_via.types.push_back(par_label(par_listed_slots, par_carried_slots, s));
@@ -5215,8 +5289,7 @@ void CirFrozenForest::materialize_pass(const std::vector<uint32_t> *added)
 		rf.name = nm;
 		rf.fd   = fd;
 		rf.record = (CIR_SEED_DEP_ARENA << 30) | s;
-		if (asked_slot(s))
-			_asked_funcs[rf.record] = _restored_funcs.size();
+		note_demand_restored(rf.record, _restored_funcs.size());
 		// v26 piece (a): the fn's NAMED parameters (aliasrec run) — the
 		// flush fills Method::parameters so a deferred body's re-parse
 		// resolves its parameter names.
@@ -5259,6 +5332,8 @@ void CirFrozenForest::materialize_pass(const std::vector<uint32_t> *added)
 		const cir_forest_global_record &g = _globals[i];
 		if (g.gflags & CIR_GLOBALF_TU_ROOT)
 			continue;		// v24: the program's own global — fenced
+		if (withheld_global(i))
+			continue;		// the dialect's, restored as demanded
 		uint32_t nlen = 0;
 		const char *nm = pool_cstr(g.name_id, nlen);
 		DataDef *ty = swizzle(g.type_id);
@@ -5307,6 +5382,8 @@ void CirFrozenForest::materialize_pass(const std::vector<uint32_t> *added)
 				continue;
 			}
 		}
+		rg.record = (CIR_SEED_DEP_GLOBAL << 30) | (uint32_t)i;
+		note_demand_restored(rg.record, _restored_globals.size());
 		_restored_globals.push_back(rg);
 		if (par_on)
 			_par_via.globals.push_back(par_label_idx(par_listed_glob, par_carried_glob, i));
@@ -5325,6 +5402,8 @@ void CirFrozenForest::materialize_pass(const std::vector<uint32_t> *added)
 			size_t i = tmpl_idx[ti];
 			if (i >= _templates.size() || _mat_done_templates.count(i))
 				continue;	// pushed by an earlier generation
+			if (withheld_template(i))
+				continue;	// the dialect's, restored as demanded
 			const cir_forest_template_record &t = _templates[i];
 			if (t.flags & CIR_TMPLF_TU_ROOT)
 				continue;	// v24: the program's own pattern — fenced
@@ -5396,10 +5475,12 @@ void CirFrozenForest::materialize_pass(const std::vector<uint32_t> *added)
 			rt.rec_spec_count    = t.spec_count;
 			rt.rec_pattern_begin = t.pattern_begin;
 			rt.rec_pattern_words = t.pattern_words;
+			rt.record = (CIR_SEED_DEP_TEMPLATE << 30) | (uint32_t)i;
 			// One slot per frozen record, reserved at the first push: an
 			// append never moves a record the parser points into.
 			if (_restored_templates.capacity() < _templates.size())
 				_restored_templates.reserve(_templates.size());
+			note_demand_restored(rt.record, _restored_templates.size());
 			_restored_templates.push_back(rt);
 			if (par_on)
 				_par_via.tmpls.push_back(par_label_idx(par_listed_tmpl, par_carried_tmpl, i));

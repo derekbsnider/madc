@@ -2023,9 +2023,10 @@ int main(int argc, char **argv)
 		    if ( fs.dialect_units )
 			fprintf(stderr,
 			    "[stats] forest dialect ...... %llu units; %llu names demanded"
-			    " (%llu hit), %llu records, %llu functions registered\n",
+			    " (%llu hit), %llu records, %llu functions + %llu other"
+			    " declarations registered\n",
 			    fs.dialect_units, fs.dialect_names, fs.dialect_hits,
-			    fs.dialect_records, fs.dialect_funcs);
+			    fs.dialect_records, fs.dialect_funcs, fs.dialect_objects);
 		    if ( !prog->_forest_unit_bind_costs.empty() )
 		    {
 			std::vector<std::pair<madc::dis::istring, double> > rows =

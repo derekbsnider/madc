@@ -4764,6 +4764,7 @@ Program::ForestBindStats Program::forest_bind_stats() const
 	    ++s.dialect_hits;
     s.dialect_records = forest_dialect_demands.asked.size();
     s.dialect_funcs = forest_dialect_registered.size();
+    s.dialect_objects = forest_dialect_objects;
     if ( bind_forest )
     {
 	s.opened         = true;

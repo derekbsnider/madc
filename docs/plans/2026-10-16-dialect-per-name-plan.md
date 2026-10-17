@@ -516,3 +516,119 @@ unused declaration to a dialect fragment cannot cost a dialect compile.
   nondeterministic under OLD, `testgccvectorcmpresult` a SIGSEGV in the
   JIT-run program 5 runs in 10 under OLD and A4 alike (0 in 10 on the -O0
   binary, 0 in 5 without ASLR). `--emit=c11` identical on 69 dialect programs.
+- **A5 (2026-10-17).** Types, enums, templates and storage-less objects per
+  name. What existed after A4: an active unit's types, enums, enumerator
+  constants, extern references and owner-less templates restored and
+  registered at the bind — dialect.mad: 11 enums, `madc::SysInfo` and
+  `madc::channel` (with channel's 32 method imports), 68 enumerator
+  constants, `madc::sys`, four templates (two of them `php::print_r` /
+  `php::var_dump`). Landed:
+  - `CirFrozenForest::decl_record_facts(kind, record, CirDeclRecordFacts &)`:
+    a decl entry's record read once — shape (free function, type, template,
+    object), namespace, name, leaf (a namespace-scope template's key past
+    `ns::`), enum flag, a global's flags, an enumerator constant's enum
+    record. `decl_entry_scope` is an inline reader over it.
+  - Activation: beside `funcs`, `objects` — each type, owner-less template
+    and storage-less global (an enumerator constant, an extern reference) as
+    (leaf, namespace, record, group), sorted by leaf; `groups` (an enum's
+    record → its constants); `withheld` = the funcs' and objects' records.
+  - Filter: `CirMaterializeFilter::withheld` holds a record of any kind out of
+    a generation's candidates (the aggregate / typedef / enum buckets, the
+    global and template seeds and lists) unless asked; a withheld type an
+    admitted record's chain pulls still restores. `demand_restored(record,
+    idx)` replaces `asked_restored_func`: an asked or withheld record's index
+    in its restored list, every kind; `CirRestoredType` / `Global` /
+    `Template` carry `record`.
+  - Restore: a withheld global or template registers only when this Program
+    asked it (`withheld_here`, A4's function gate generalized); a restored
+    type registers (a pulled one included). `ForestRestoreDelta::rewalk`: an
+    asked record an earlier generation restored and this Program never
+    registered (a rolled-back entry, a sibling TU's demand) re-walks the
+    type, global and template lists from 0 under their registered flags;
+    `delta.objects` counts the asked non-function registrations.
+  - Demand: `forest_dialect_object_records(ns, name)` — objects whose leaf is
+    the name in that namespace; at the global scope also a type whose unit's
+    DECL_NAMES carries the bare name (the bare twin, `SysInfo`); an enum and
+    its constants expand as one group. `forest_dialect_ask` appends them to
+    the function records — one materializer.
+  - Hooks: `resolve_namespaced_type_token` (the member read, ahead of the
+    namespace's type map), `namespace_chain_datatype` (each enclosing dialect
+    namespace), `lazy_resolve_type` (global scope), `canonical_nested_namespace`
+    (miss arm: `madc::project_kind::gui`'s qualifier); the expression `ns::m`
+    site through A4's `activate_forest_member` (enumerator constants,
+    `madc::sys`, `php::print_r<int>`); the CIR fixpoint
+    (`translate_module`): a loaded dialect body's struct tags not in
+    `struct_map` are demanded before the body emits (`ui_web`'s `host *h =
+    (host *)arg;`), and Pass 1.97 defines them.
+  - `--show-stats`: "N functions + N other declarations registered"
+    (`ForestBindStats::dialect_objects`, carried by the bind mark).
+  Rulings:
+  - An anchor is a global WITH storage; it restores at the bind: a dynamic
+    initializer runs before main (`__madc_run_child`, the ui hosts'
+    `register_host` flags) and a loaded body reaches storage by symbol, while
+    `translate_module` emits frozen global definitions from the bind's list.
+    Storage-less globals restore by name. A loaded body naming a withheld
+    extern reference by symbol fails loudly at c2mir; no fragment body names
+    `madc::sys` today.
+  - A sibling-renamed aggregate (ns_ui_ws's `ui_ws__host`, renamed at freeze
+    by the sibling-namespace rule) carries no namespace and no decl entry
+    names its record: no activation object, restored at the bind as before;
+    `ui_ws::host` resolves through its namespace typedef record, an object.
+  - The registration gate covers functions, globals and templates, never
+    types: a pulled type registers with what pulled it.
+  Thread contract: unchanged from A4 — per Program on its thread; the
+  forest's `_withheld_sorted` / `_demand_restored` change only inside
+  `materialize_for` under `MadcCompileGroup`'s single-threaded group
+  mutation; the activation reads the bound forest's immutable bytes; no
+  globals.
+  Tests: `testdialectpername_types` (`.expect` from OLD; JIT, exe and obj
+  identical) — RED with the five type hooks off and withholding on: "error:
+  'project_kind' is not a member of namespace 'madc'" (line 13), "2 parse
+  error(s) — compilation refused". test_repl_session: types, enums,
+  templates and objects register as named; a rolled-back entry's type
+  registers again. RED on A4: "no member named 'dialect_objects'", then 9
+  failed assertions with that check removed (project_kind, file_kind,
+  SysInfo, channel, fkMC11, sys and `php::print_r` registered at the bind;
+  file_kind after the project_kind entry, channel after the `madc::sys`
+  entry); the rollback case a guard (green on A4).
+  Cost (2026-10-17), symbolized packed builds in one clone (tmp/cost_sweep2),
+  A4 (5e1451416) against A5, Ir:
+
+  | row | A4 | A5 | delta |
+  |---|---:|---:|---:|
+  | dialect | 32,104,537 | 29,483,964 | −2,620,573 |
+  | dialect_one | 23,983,182 | 21,353,166 | −2,630,016 |
+  | dialect_all | 36,065,257 | 33,390,263 | −2,674,994 |
+  | dialect_cxx | 270,201,290 | 268,923,078 | −1,278,212 |
+  | c_headers | 242,716,383 | 242,687,950 | −28,433 (−0.012%) |
+  | cxx_stl | 1,388,504,035 | 1,388,716,573 | +212,538 (+0.015%) |
+
+  dialect: `flush_forest_pending_globals` 3,442,360 → 1,817,063;
+  `forest_restore_decls` 3,027,539 → 1,811,677; `materialize_pass`
+  1,129,955 → 448,392; `register_forest_func` 132,759 → 44,966; MIR_gen
+  −309K and c2mir −104K (SysInfo and its two destructors no longer
+  emitted). What dialect.mad's bind restores: `__madc_va_list_tag`,
+  `__madc_run_child`'s frozen definition and two C++ builtin templates — no
+  enum, class, constant or extern reference; aa67a4fa6's manifest faces
+  restore nothing (bits/project_enums: one withheld record; ns_madc's
+  faces: unnamed functions). cxx_stl: the forest phases +291K —
+  `materialize_pass`' own code −416K, `FrozenDefArena::get_def_at` +814K
+  (gcc no longer inlines it into one `materialize_pass` lambda: 8,839
+  out-of-line calls, that lambda's call count); a bind without dialect units
+  adds no call (`_withheld_sorted` empty, `note_demand_restored` returns at
+  its first test). The A4 table above was measured in another clone (the
+  same-clone A4 dialect row is 32.10M, not 32.78M).
+  Validation: test_repl_session 83/83, test_cir_freeze 44/44, test_mangle
+  88/88, test_libmadc_program `security_policy` 2/2; fix lane GREEN (dev
+  binary: Tier 1 70/70, EXE/OBJ 31/31; Tier 2's seven lanes at baseline);
+  the plan's globs on the packed binary 106/106, EXE/OBJ 65/65;
+  forest_pack_gate OK; the static gate loop 0 red of 103. Differential OLD
+  (cf05fd6f5 head_pack) against A5 packed: 63/63 identical over the plan's
+  globs with `testfragment*` and `testui*`; the whole suite (both binaries
+  beside the same module libraries) 2,083 of 2,085 identical, 0 differ,
+  `testfreezerun` and `testgccvectorcmpresult` nondeterministic under OLD.
+  `--emit=c11` over those 63: 31 identical, 32 differ by removed
+  lines only — `struct SysInfo`, its D1/D2 destructors and their
+  `madarray_destruct` prototype; in testfragmentinit also ns_ui_ws's unused
+  `typedef struct ui_ws__host host;` and `struct dialog_wait` emitted later
+  (the accepted declaration-order delta).

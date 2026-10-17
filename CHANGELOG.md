@@ -2,6 +2,63 @@
 
 ## [Unreleased]
 
+### A dialect compile restores only the types, enums and templates it names
+
+- After the functions-per-name change, a bound dialect fragment's types, enums,
+  enumerator constants, extern references and owner-less templates still
+  restored and registered at the bind (dialect.mad: 11 enums, `madc::SysInfo`
+  and `madc::channel` with its 32 method imports, 68 enumerator constants,
+  `madc::sys`, four templates — two of them `php::print_r` / `php::var_dump`).
+  A5 withholds those too: a type, enum, constant, extern reference or owner-less
+  template of an active unit registers only when a lookup first names it.
+- `CirFrozenForest::decl_record_facts(kind, record, CirDeclRecordFacts &)` reads
+  a decl entry's record once — shape (free function, type, template, object),
+  namespace, name, leaf, enum flag, a global's flags, an enumerator constant's
+  enum record; `decl_entry_scope` becomes an inline reader over it.
+- `forest_dialect_activation` gains `objects` beside `funcs` — each type,
+  owner-less template and storage-less global (an enumerator constant, an extern
+  reference) as (leaf, namespace, record, group), sorted by leaf — `groups` (an
+  enum's record → its constants), and `withheld` now holds the funcs' and
+  objects' records.
+- `CirMaterializeFilter::withheld` holds a record of any kind out of a
+  generation's candidates (the aggregate / typedef / enum buckets, the global
+  and template seeds and lists) unless asked; a withheld type an admitted
+  record's chain pulls still restores. `demand_restored(record, idx)` replaces
+  `asked_restored_func` for every kind, and `CirRestoredType` / `Global` /
+  `Template` carry `record`.
+- In `forest_restore_decls`, a withheld global or template registers only when
+  this `Program` asked it (`withheld_here`); a restored type registers (a pulled
+  one included — the gate covers functions, globals and templates, never types).
+  `ForestRestoreDelta::rewalk` re-walks the type, global and template lists for
+  an asked record an earlier generation restored and this `Program` never
+  registered (a rolled-back entry, a sibling TU's demand); `delta.objects`
+  counts the asked non-function registrations.
+- `forest_dialect_object_records(ns, name)` collects objects whose leaf is the
+  name in that namespace; at the global scope also a type whose unit's
+  `DECL_NAMES` carries the bare name (the bare twin, `SysInfo`); an enum and its
+  constants expand as one group. `forest_dialect_ask` appends them to the
+  function records — one materializer.
+- Each type lookup kind reaches the materializer through an existing owner:
+  `resolve_namespaced_type_token`, `namespace_chain_datatype`,
+  `lazy_resolve_type`, `canonical_nested_namespace`, the expression `ns::m` site
+  through `activate_forest_member`, and the CIR fixpoint `translate_module` — a
+  loaded dialect body's struct tags not in `struct_map` demanded before the body
+  emits (`ui_web`'s `host *h = (host *)arg;`), the late-struct pass (1.97)
+  defining them.
+- `--show-stats` reports `N functions + N other declarations registered`
+  (`ForestBindStats::dialect_objects`, carried by the bind mark).
+- Reducer `tests/testdialectpername_types.mad` (a qualified scoped enum, a
+  qualified struct, a bare twin of a namespaced struct, an unscoped enumerator
+  named qualified, and the compiler-implemented `php::print_r` / `php::var_dump`
+  templates; JIT, exe, obj); `test_repl_session`, `test_cir_freeze` and
+  `test_mangle` gate the materializer and the record reader.
+- Cost, symbolized packed builds (Ir): `dialect` 32,104,537 → 29,483,964;
+  `dialect_one` 23,983,182 → 21,353,166; `dialect_all` 36,065,257 → 33,390,263;
+  `dialect_cxx` 270,201,290 → 268,923,078; `c_headers` −0.012%, `cxx_stl`
+  +0.015%. On `dialect`, `forest_restore_decls` 3.03M → 1.81M Ir,
+  `flush_forest_pending_globals` 3.44M → 1.82M; `SysInfo` and its two
+  destructors no longer emitted.
+
 ### An inlined frame is addressed from its alloca's start, not a realigned frame pointer
 
 - A function holding an object aligned beyond 16 bytes (`_Alignas(32)`, a wide

@@ -5905,10 +5905,11 @@ public:
 	unsigned long long funcs_activated = 0, funcs_remaining = 0;
 	// The dialect per name (docs/plans/2026-10-16-dialect-per-name-plan.md):
 	// the active dialect units, the names demanded of them (each once, hit or
-	// miss) and how many hit, the records those demands carried, and the
-	// dialect functions the demands registered.
+	// miss) and how many hit, the records those demands carried, the
+	// dialect functions the demands registered, and the other declarations
+	// they registered (types, enums, templates, objects — A5).
 	unsigned long long dialect_units = 0, dialect_names = 0, dialect_hits = 0;
-	unsigned long long dialect_records = 0, dialect_funcs = 0;
+	unsigned long long dialect_records = 0, dialect_funcs = 0, dialect_objects = 0;
     };
     ForestBindStats forest_bind_stats() const;
     // --show-stats: template-instantiation time + count, carved out of parse
@@ -6959,16 +6960,19 @@ public:
     // A free operator's lookup: the same, for every namespace.
     void activate_forest_function_display(const madc::dis::istring &display_name);
     // The dialect pays per name (docs/plans/2026-10-16-dialect-per-name-plan.md,
-    // A4). Under --std=madc a bound dialect fragment's FREE FUNCTIONS restore
-    // and register only when a lookup names them: the one materializer.
-    // `ns::name` (ns empty: the global scope) answers from the active dialect
-    // units' decl indexes — the flat id namespace_function_symbol spells and
-    // its `__oN` overloads, each entry kept when its record names `ns` — and
-    // every record found materializes (CirMaterializeFilter::records, a
-    // records-only generation) and registers at once through the split
-    // flush (forest_restore_decls over the delta, then forest_apply_pending).
-    // Memoized per Program, hits and misses (forest_dialect_demands). True
-    // when this call registered a function.
+    // A4, A5). Under --std=madc a bound dialect fragment's free functions,
+    // types, enums, templates and storage-less objects restore and register
+    // only when a lookup names them: the one materializer. `ns::name` (ns
+    // empty: the global scope) answers from the active dialect units'
+    // activations — a function's flat id namespace_function_symbol spells and
+    // its `__oN` overloads; any other record by its own leaf and namespace
+    // (a type's bare twin at the global scope; an enum together with its
+    // enumerators) — and every record found materializes
+    // (CirMaterializeFilter::records, a records-only generation) and
+    // registers at once through the split flush (forest_restore_decls over
+    // the delta, then forest_apply_pending). Memoized per Program, hits and
+    // misses (forest_dialect_demands). True when this call registered
+    // anything.
     bool forest_dialect_demand(const madc::dis::istring &ns,
 			       const madc::dis::istring &name);
     // A symbol a loaded body calls or takes the address of (the CIR
@@ -6994,8 +6998,15 @@ public:
 	// Asked functions an earlier generation restored (restored_funcs()
 	// indices), staged with the generation's own.
 	std::vector<size_t> asked_funcs;
-	// Out: the asked functions the restore staged for registration.
+	// An asked type, template or object an earlier generation restored that
+	// this Program holds unregistered (a rolled-back entry's registration):
+	// the type, global and template walks start at 0 — each record already
+	// registered is skipped as at any restore.
+	bool rewalk = false;
+	// Out: the asked functions the restore staged for registration, and
+	// how many other asked records (types, templates, objects) registered.
 	std::vector<std::pair<madc::dis::istring, FuncDef *> > staged;
+	size_t objects = 0;
     };
     void forest_restore_decls(class CirFrozenForest &forest,
 			      ForestRestoreDelta *delta = NULL);
@@ -7183,6 +7194,7 @@ public:
 	size_t dialect_demands = 0;	// forest_dialect_demands.mark()
 	size_t dialect_units = 0;	// forest_dialect_units.size()
 	size_t dialect_registered = 0;	// forest_dialect_registered.size()
+	size_t dialect_objects = 0;	// forest_dialect_objects
     };
     ForestBindMark forest_bind_mark() const;
     void forest_bind_rewind(const ForestBindMark &mark);
@@ -7243,18 +7255,38 @@ public:
     //    indexes (A1), read from the record; a demand's run of a flat id and
     //    its `__oN` overloads. The keys are the bound forest's spellings,
     //    valid while bind_forest is;
-    //  - withheld: the same records, sorted — restored and registered only
-    //    as demanded (CirMaterializeFilter::withheld). The rest of the
-    //    unit's seed list restores at the bind, as ever (types, enums and
-    //    templates per name are A5);
+    //  - objects: everything else a lookup names (A5) — its types
+    //    (aggregates, typedefs, enums), namespace-scope templates and the
+    //    globals that have no storage (enumerator constants, extern
+    //    references), each as (leaf, namespace, record), strcmp-sorted by
+    //    leaf; an enumerator constant carries its enum's record, so an enum
+    //    and its unscoped enumerators are demanded together;
+    //  - withheld: the funcs' and objects' records, sorted — restored and
+    //    registered only as demanded (CirMaterializeFilter::withheld). What
+    //    the bind still restores of the unit is its ANCHORS — the globals
+    //    with storage (a dynamic initializer that runs before main:
+    //    `__madc_run_child`, ns_ui_web's `register_host`; the storage those
+    //    and the unit's loaded bodies reach by symbol) — and what they pull;
     //  - namespaces: the namespaces its decl entries' records declare into
     //    (a function's, a type's, an object's — A1: no entry is a
     //    namespace), each made a scope by the restore, as registering the
     //    unit's functions made them before.
     // Forest data, decoded once per Program: a cache, kept across a rewind.
+    struct ForestDialectObject
+    {
+	const char *leaf;	// the name a lookup in `ns` reads
+	const char *ns;		// the record's own namespace ("" = global)
+	uint32_t record;
+	uint32_t group;		// an enum's record, for the enum and each of its
+				// enumerator constants; CIR_DECL_RECORD_NONE else
+	bool type;		// a type: its bare twin answers a global-scope
+				// lookup when the unit declares the bare name
+    };
     struct ForestUnitActivation
     {
 	std::vector<std::pair<const char *, uint32_t> > funcs;
+	std::vector<ForestDialectObject> objects;
+	std::vector<std::pair<uint32_t, uint32_t> > groups;	// (group, record), sorted
 	std::vector<uint32_t> withheld;
 	std::vector<madc::dis::istring> namespaces;
     };
@@ -7266,6 +7298,9 @@ public:
     // Every function a demand registered, in registration order (the CIR
     // builder indexes the tail a loaded body's demands added).
     std::vector<std::pair<madc::dis::istring, FuncDef *> > forest_dialect_registered;
+    // How many other declarations (types, enums, templates, objects) the
+    // demands registered (--show-stats).
+    size_t forest_dialect_objects = 0;
     // The demand filter the last whole restore built (bound units, the
     // dialect units' withheld functions, the asked records): a delta
     // restore judges its records against it.
