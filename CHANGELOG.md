@@ -2,6 +2,37 @@
 
 ## [Unreleased]
 
+### The madc dialect's stdio streams are built in, as println is
+
+- Under `--std=madc`, `stdin` / `stdout` / `stderr` are the compiler's, needing
+  no header and no include flag. `Program::add_stdio_streams` enters them in
+  every dialect Program's `lazy_map` (replacing the dead `add_stdio` /
+  `_include_stdio` placeholder); `lazy_resolve`'s stream arm
+  (`Program::stdio_stream_stand_in`) makes a stand-in `Variable` carrying its
+  `StdioStream` (`include/datatokens.h`, `find_stdio_stream`), which the CIR
+  lowers through `CirBuilder::stdio_stream_value` to the runtime's
+  `__madc_stdio_stream(which)` (`src/rt/rt_dump.c`; wire enum `madc_stdio_stream`
+  in `rt_dump.h`). No provider row, no header.
+- A program's own `#include <stdio.h>`, before or after the first use, declares
+  the one real `stderr`, which adopts the stand-in (`Program::declare_object`);
+  `--emit=c11` defines `struct _IO_FILE` once. Strict modes are unchanged — gcc
+  13 `-std=c17` and madc under `--std=c17` both report `stderr` undeclared.
+- Bind: a loaded body's callee takes its producer forest's own extern
+  declaration (`Program::forest_extern_node` now asks the producer forest
+  first), and a stdio stand-in is never frozen (`cir_forest_fill_globals` skips
+  it). This settles the bound-vs-live divergence a dialect program naming
+  `stderr` exposed — a restored `extern void *stderr;` and the system pack's
+  `extern void *malloc(size_t p0);` ahead of the image's `void *malloc()`.
+- `--print-dialect-roots` names the 13 `ns_*` fragments only; the dialect image
+  went from 51 units / 4,722,144 bytes to 26 / 4,188,888.
+- `--std=madc` gates the whole dialect builtin registration, the entire `madc::`
+  namespace included — a docs ruling recorded in
+  `docs/plans/2026-10-17-dialect-builtin-registration.md`.
+- Tests: `testdialectstdiostreams`, `testdialectimage_ctypes(_after)`,
+  `testdialectimage_streams` (oracle g++ 13 / clang++ 18); leg 3 of
+  `scripts/check-autoinclude-position.sh`; `test_cir_freeze`'s dialect-image
+  roots case.
+
 ### Every appended container starts on a page, so its in-page layout never moves with the host
 
 - `SNAPSHOT_APPEND_ALIGN` (`madcdis/snapshot.h`) is 4096, beside the 16-aligned

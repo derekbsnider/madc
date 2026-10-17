@@ -35,6 +35,8 @@ class TokenRETURN;
 class TokenMemberPtrConst;
 class TokenOperator;
 class Variable;
+enum class StdioStream : uint8_t;	// datatokens.h — the dialect's stdio streams
+class CirFrozenForest;		// cir_freeze.h — a bound forest (a loaded node's producer)
 class DataDef;
 class DataDefTemplateParam;
 class DataDefSTRUCT;
@@ -114,8 +116,9 @@ class CirBuilder {
 	// actually uses (matches c2m's #include-driven scope).
 	RefFuncSet referenced_funcs;
 	// Global variables referenced while translating bodies. Used to emit
-	// extern decls for libc globals (stderr/stdout/stdin, registered lazily
-	// via addGlobal but absent from top_decls) so the emitted C compiles.
+	// extern decls for libc globals absent from top_decls so the emitted C
+	// compiles. (The madc dialect's stdio stream stand-ins never land here:
+	// they lower to the runtime's stream, stdio_stream_value.)
 	std::map<madc::dis::istring, Variable *> referenced_globals;
 	std::map<madc::dis::istring, node_t> m_output_externs; // symbol -> proto SPEC_DECL (dedup)
 	std::set<madc::dis::istring> m_rtti_data_externs;    // dedup extern data decls for RTTI (S5b)
@@ -326,8 +329,10 @@ class CirBuilder {
 	std::map<Variable *, node_t> m_global_decl_node;
 	// v66: the bound FROZEN_DEF globals' loaded nodes (storage declarations
 	// and init statements) — pre-built, so the reachability fixpoint
-	// registers their references as it does a loaded body's.
-	std::vector<node_t> m_frozen_global_nodes;
+	// registers their references as it does a loaded body's — each with the
+	// forest that produced it (its references' declarations are that
+	// forest's own: Program::forest_extern_node).
+	std::vector<std::pair<node_t, CirFrozenForest *> > m_frozen_global_nodes;
 	// C++ dynamic initialization (g++ model): file-scope globals whose
 	// scalar initializer is NOT a C11 constant expression (it reads a
 	// variable or calls a function). var_decl emits their storage without
@@ -1567,6 +1572,10 @@ public:
 	// THE one owner: every path that reads a global BY NAME must call it,
 	// or the emitted C references an identifier c2mir never saw.
 	void note_global_reference(const class Variable &v);
+	// The madc dialect's stdio stream a stand-in names (Variable::
+	// stdio_stream — a stdin/stdout/stderr no declaration adopted): the
+	// runtime's stream, `__madc_stdio_stream(which)` (cir_dump.cpp).
+	node_t stdio_stream_value(StdioStream s, TokenBase *origin);
 	// The mangled-direct link test (one owner, three bind sites): a symbol
 	// that neither the loaded native libraries provide nor madc itself
 	// emits can never link — binding it is always wrong; declining lets a

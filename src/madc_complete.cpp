@@ -416,11 +416,14 @@ void Program::visit_top_level_names(CompletionContext ctx,
 	visit(n);
 	return false;
     });
-    // Names an included header registers on first use, and in the madc
-    // dialect the words the auto-include scan serves (`println`, `php`).
+    // Names registered on first use — the madc dialect's stdio streams
+    // (Program::add_stdio_streams: the compiler's, as println is) are its
+    // words, anything else an included header's — and in the madc dialect
+    // the words the auto-include scan serves (`println`, `php`).
     for ( std::map<madc::dis::istring, LazyEntry>::const_iterator it = lazy_map.begin();
 	  it != lazy_map.end(); ++it )
-	named(Kind::header_name, it->first);
+	named(find_stdio_stream(it->first.c_str()) != StdioStream::None
+	      ? Kind::dialect_word : Kind::header_name, it->first);
     std::vector<madc::dis::istring> words;
     auto_include_words(words);
     for ( size_t i = 0; i < words.size(); ++i )
@@ -1110,13 +1113,16 @@ bool Program::describe_name(const madc::dis::istring &name, std::string &out,
 		    describe_field(s, "Declared", "by an included header, registered at its first use");
 		    break;
 		case Kind::dialect_word:
-		    // print / println / format: the compiler declares them
-		    // (Program::add_format_intrinsics) — no header serves them.
+		    // print / println / format and the stdio streams: the
+		    // compiler declares them (Program::add_format_intrinsics,
+		    // add_stdio_streams) — no header serves them.
 		    if ( find_format_intrinsic(name.c_str()) )
 		    {
 			describe_field(s, "Type", "function");
 			describe_field(s, "Declared", "by the madc compiler, always available");
 		    }
+		    else if ( find_stdio_stream(name.c_str()) != StdioStream::None )
+			describe_field(s, "Declared", "by the madc compiler, always available");
 		    else
 			describe_field(s, "Declared", "by the madc dialect, included at its first use");
 		    break;

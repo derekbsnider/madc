@@ -1,8 +1,12 @@
 // A program whose only dialect word is ui::WEB, the UI level it asks for:
 // the auto-include serves <ns_ui_web> (the target that registers the level's
 // host), and that fragment's own mentions of the dialect intrinsics
-// (`println(stderr, ...)`) resolve to the compiler-declared intrinsics, its
-// `stderr` pulling stdio.h. A fragment's unqualified mention reaches a bits/*
+// (`println(stderr, ...)`) resolve to the compiler-declared intrinsics —
+// `stderr` included, hard-coded as println is (no stdio.h). Bound from the
+// dialect image, the fragment's callees keep the image's own declarations
+// (`void *malloc()`, as the live parse emits): the system pack's
+// `malloc(size_t)` named a typedef this program never declares ("unknown type
+// size_t" on the packed binary). A fragment's unqualified mention reaches a bits/*
 // provider; only a sibling namespace surface (ns_*) needs a qualified use
 // (`madc::x`).
 // Before the fix the program was refused: "ns_ui_web:117:6: use of

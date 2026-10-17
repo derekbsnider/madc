@@ -123,6 +123,30 @@ static int dump_col_step(CirBuilder::DumpFlavor fl)
 }
 
 // ---------------------------------------------------------------------------
+// The madc dialect's stdio streams
+// ---------------------------------------------------------------------------
+// A use of a stdin / stdout / stderr no declaration adopted (Variable::
+// stdio_stream, Program::stdio_stream_stand_in) is the runtime's stream:
+// `__madc_stdio_stream(which)`, the dump runtime's stream boundary (FILE* as
+// void*). The emitted C names no libc stream symbol, so it is the same on
+// every target, and a println(stderr, ...) body frozen in the dialect image
+// carries no reference to a header's declaration. The compiler-side enum
+// converts to the wire value here, once.
+static int stdio_stream_wire(StdioStream s)
+{
+	return s == StdioStream::In ? MADC_STDIO_IN
+	     : s == StdioStream::Out ? MADC_STDIO_OUT : MADC_STDIO_ERR;
+}
+
+node_t CirBuilder::stdio_stream_value(StdioStream s, TokenBase *origin)
+{
+	need_output_extern("__madc_stdio_stream", true, { { {N_INT}, false } });
+	node_t a = list();
+	append(a, integer(stdio_stream_wire(s), origin));
+	return node2(N_CALL, id("__madc_stdio_stream", origin), a, origin);
+}
+
+// ---------------------------------------------------------------------------
 // What is NOT a compile-time constant inside a generated dumper
 // ---------------------------------------------------------------------------
 // The in-line walk is EXPANDED per nesting level, so it knows its absolute

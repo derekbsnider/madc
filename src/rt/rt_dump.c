@@ -92,6 +92,22 @@ void *__madc_dump_sink_file(void *stream)
     return (void *)s;
 }
 
+/* The madc dialect's stdio streams (rt_dump.h): the libc stream `which`
+ * names, read through this libc's own <stdio.h> spelling — the one place a
+ * dialect stream meets the target's backing symbol. */
+void *__madc_stdio_stream(int which)
+{
+    switch (which) {
+    case MADC_STDIO_IN:
+	return (void *)stdin;
+    case MADC_STDIO_OUT:
+	return (void *)stdout;
+    case MADC_STDIO_ERR:
+	return (void *)stderr;
+    }
+    return NULL;
+}
+
 // The captured text, always NUL-terminated and never NULL, so the caller needs
 // no branch. An empty capture reads as "".
 const char *__madc_dump_sink_text(void *sink)

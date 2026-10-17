@@ -107,13 +107,16 @@
 # linux-dialect (2026-10-14, pack-slices design §7): the dialect image
 # (forest_pack.sh --dialect-image; B1 2026-10-17: built in every product mode,
 # ROLE dialect, every segment raw) — the compiler's dialect roots
-# (--print-dialect-roots: <stdio.h> and the 13 ns_* fragments, in auto-include
-# order); 51 units. Zero parse errors and zero losses by construction (no
+# (--print-dialect-roots: the 13 ns_* fragments, in auto-include order —
+# <stdio.h> left the roots 2026-10-17, when the dialect hard-coded its stdio
+# streams); 26 units. Zero parse errors and zero losses by construction (no
 # line = zero allowed; a missing prerequisite is a parse error); its size
 # recorded as built: 3,307,744 bytes zstd over the pack list's C headers
 # (2026-10-14), 4,722,144 raw over the compiler's roots (B1, 2026-10-17 —
-# node records 2.64 MB, positions 0.40 MB, unit source 0.36 MB).
-4722144 linux-dialect pack-bytes
+# node records 2.64 MB, positions 0.40 MB, unit source 0.36 MB; 51 units with
+# <stdio.h>), 4,188,888 raw over the fragments alone (2026-10-17; the
+# compiler's stream stand-ins are no records).
+4188888 linux-dialect pack-bytes
 1 linux dialect-images
 1 linux-dialect dialect-images
 # win64 68 -> 70 (2026-09-20): the same libstdc++ 13.2 corpus as linux, the

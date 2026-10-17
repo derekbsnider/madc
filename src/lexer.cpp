@@ -1461,14 +1461,9 @@ static const std::map<madc::dis::istring, madc::dis::istring> &auto_include_iden
 
 	// (std::format / std::print / std::println have no row: they are
 	// madc's always-included intrinsics, declared by the compiler itself —
-	// Program::add_format_intrinsics.)
-
-	// The stdio streams: std::print(stderr, ...) in a zero-include
-	// script needs stderr's lazy registration, which rides the
-	// stdio.h include flag.
-	{"stderr", "stdio.h"},
-	{"stdout", "stdio.h"},
-	{"stdin", "stdio.h"},
+	// Program::add_format_intrinsics. Nor have stdin / stdout / stderr:
+	// the dialect hard-codes its stdio streams as it does println —
+	// Program::add_stdio_streams — so naming one pulls no <stdio.h>.)
 
 	{"php", "ns_php"},
 	{"perl", "ns_perl"},
@@ -1684,8 +1679,6 @@ void Program::mark_embedded_include_flag(const madc::dis::istring &incfile)
 	_include_iostream = true;
 	_include_string = true;
     }
-    if ( incfile == "stdio.h" )
-	_include_stdio = true;
     if ( incfile == "string" )
 	_include_string = true;
     if ( incfile == "ns_madc" )
@@ -1743,9 +1736,10 @@ static bool fragment_may_pull_header(const char *header, bool qualified_use)
     // (madcide paid the whole libstdc++ parse for it). A bits/* fragment is
     // no namespace surface: any mention reaches it. print/println/format need
     // no provider at all — the compiler declares them
-    // (Program::add_format_intrinsics) — so <ns_ui_web>'s `println(stderr,
-    // ...)` compiles in a program that says no println itself, its `stderr`
-    // pulling stdio.h.
+    // (Program::add_format_intrinsics) — and neither do the stdio streams
+    // they write to (Program::add_stdio_streams), so <ns_ui_web>'s
+    // `println(stderr, ...)` compiles in a program that says neither println
+    // nor stderr itself, and pulls no header.
     if ( embedded_dialect_fragment_p(h) && find_embedded_header(h) )
 	return qualified_use || h.compare(0, 3, "ns_") != 0;
     return h.size() > 2 && h.compare(h.size() - 2, 2, ".h") == 0;
@@ -1864,8 +1858,8 @@ bool Program::auto_include_standard_identifier(const madc::dis::istring &word,
 	    return false;
     }
     // Inside a dialect fragment only the bits/* and C-header providers
-    // answer (fragment_may_pull_header) — a fragment's `println(stderr,
-    // ...)` pulls stdio.h; its `getline` never pulls <string>.
+    // answer (fragment_may_pull_header) — a fragment's `getline` never
+    // pulls <string>.
     if ( auto_include_fragment_scan && !fragment_may_pull_header(header, qualified_use) )
 	return false;
 
@@ -3514,7 +3508,6 @@ void Program::_tokenizer_init()
     deferred_function_body_sink = NULL;
     parsing_cpp_struct_class = false;
     _include_iostream = false;
-    _include_stdio = false;
     _include_string = false;
     _include_ns_madc = false;
     _value_stream_operator_injected = false;
@@ -8036,8 +8029,8 @@ TokenBase *Program::_getToken()
 				    << forest_system.forest->unit_name(fu) << ")" << std::endl);
 				forest_bind_include(forest_system, (uint32_t)fu);
 				// v25: the embedded-header include FLAG is a live
-				// tokenize-time side effect (_parser_init's lazy_map
-				// registration: stdin/stdout/stderr, cout/cin). A
+				// tokenize-time side effect (the _include_* flags
+				// _parser_init and the parse read). A
 				// grove unit whose name IS the bare embedded-header
 				// name was tokenized from the embedded text at
 				// freeze — re-run the one live side effect. A

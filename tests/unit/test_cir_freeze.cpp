@@ -3955,7 +3955,10 @@ TEST_CASE("B1: a dialect-role container carries its role, every segment raw, bel
 // auto-include would include for every dialect fragment head — the provider
 // table's fragments with their prerequisite closure, in the auto-include
 // order (queue_fragment_prerequisites + ordered_auto_include_headers) —
-// never the pack list's C portion.
+// never the pack list's C portion. The closure is the fragments alone: what a
+// fragment names that the dialect hard-codes (println, and the stdio streams
+// its `println(stderr, ...)` writes to — Program::add_stdio_streams) pulls
+// no header (owner 2026-10-17).
 TEST_CASE("B1: the dialect image roots are the fragments' auto-include closure") {
 	Program prog;
 	REQUIRE(prog.set_language_standard("madc"));
@@ -3974,12 +3977,17 @@ TEST_CASE("B1: the dialect image roots are the fragments' auto-include closure")
 	CHECK(at("ns_markdown") < n);
 	std::set<std::string> uniq(r.begin(), r.end());
 	CHECK(uniq.size() == r.size());
-	// ns_ui_web's `println(stderr, ...)` pulls stdio.h — ahead of it.
-	REQUIRE(at("stdio.h") < n);
-	CHECK(at("stdio.h") < at("ns_ui_web"));
+	// Every root is a dialect fragment: ns_ui_web's `println(stderr, ...)`
+	// names the dialect's own stream and pulls no stdio.h.
+	for ( const std::string &root : r )
+	{
+		INFO("root: " << root);
+		CHECK(embedded_dialect_fragment_p(root));
+	}
+	CHECK(at("stdio.h") == n);
 	// The auto-include order: ns_php ahead of ns_madc.
 	CHECK(at("ns_php") < at("ns_madc"));
-	// Nothing else: no C header no fragment pulls, never a C++ system header.
+	// Nothing else: never a C header, never a C++ system header.
 	CHECK(at("math.h") == n);
 	CHECK(at("cstddef") == n);
 	CHECK(at("string") == n);

@@ -64,8 +64,11 @@ Some headers need more than constants and dlsym:
 - `<iostream>` registers `cout` / `cin` / `cerr` as global variables
   with specific DataDef types.
 - `<time.h>` registers `struct tm` with its glibc-matching layout.
-- `<stdio.h>` registers `stdin` / `stdout` / `stderr` as pointer
-  globals initialised from libc's dlsym values.
+- Under `--std=madc` the stdio streams `stdin` / `stdout` / `stderr`
+  are the compiler's, as `println` is (`Program::add_stdio_streams`):
+  a lazy_map entry in every dialect Program whose stand-in lowers to the
+  runtime's `__madc_stdio_stream`. No header supplies them, and a
+  program's own `#include <stdio.h>` declares the one real `stderr`.
 
 These need entries in the parser's symbol tables BEFORE the parser
 encounters them. But `tkProgram` doesn't exist yet during lexing, so
@@ -76,7 +79,7 @@ deferred-registration queue the parser drains on demand.
 
 Two-step design:
 
-1. The include flag (`_include_iostream`, `_include_stdio`) records
+1. The include flag (`_include_iostream`, `_include_string`) records
    "the user wrote this include in this compilation unit."
 2. `_parser_init()` sees the flag and calls `add_iostream_symbols()`,
    which populates `lazy_map` with the symbol-name → metadata entries.

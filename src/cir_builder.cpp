@@ -309,8 +309,8 @@ madc::dis::istring CirBuilder::var_emit_name(const Variable &v) const
 //
 // Two shapes reach here and they need OPPOSITE treatment, which is why this is
 // one function rather than a check copied per call site:
-//  - unaliased global (stderr/stdout/stdin, lazily registered and never in
-//    top_decls): record under its own name;
+//  - unaliased global (a libc object never in top_decls): record under its
+//    own name;
 //  - alias to a LOCALLY DEFINED variable (`b __attribute__((alias("a")))`):
 //    record NOTHING — the emitted name is `a`, which is defined here, and
 //    recording `b` would re-introduce an undefined import;
@@ -25813,6 +25813,10 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 	if (tb->type() == TokenType::ttVariable) {
 		TokenVar *tv = (tb ? tb->as_var_tok() : NULL);
 		if (tv) {
+			// The madc dialect's stdio stream no declaration adopted
+			// (Program::stdio_stream_stand_in): the runtime's stream.
+			if (tv->var.stdio_stream != StdioStream::None)
+				return stdio_stream_value(tv->var.stdio_stream, tb);
 			// Constant-fold a read of an integer constant to its value —
 			// but ONLY for a constant whose value was genuinely STORED into
 			// its own data buffer (enum values, set via set()). A plain
@@ -25856,8 +25860,8 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 					return fv;
 			// Record file-scope (non-local, non-param) references so
 			// translate_module can emit extern decls for libc globals
-			// (stderr/stdout/stdin) that were registered lazily and never
-			// reached top_decls. Locals/params already have in-scope decls.
+			// that never reached top_decls. Locals/params already have
+			// in-scope decls.
 			note_global_reference(tv->var);
 			FuncDef::CaptureMode variable_capture_mode =
 				note_capture(&tv->var);
@@ -33851,7 +33855,7 @@ node_t CirBuilder::frozen_global_decl(Variable *v)
 			" is missing\n", v->name.c_str());
 		return NULL;
 	}
-	m_frozen_global_nodes.push_back(dn->as_node());
+	m_frozen_global_nodes.push_back(std::make_pair(dn->as_node(), fz->forest));
 	return dn->as_node();
 }
 
@@ -33949,8 +33953,9 @@ void CirBuilder::collect_global_ctors(Program *prog,
 				}
 				fstmts.push_back(sn->as_node());
 			}
-			m_frozen_global_nodes.insert(m_frozen_global_nodes.end(),
-						     fstmts.begin(), fstmts.end());
+			for (node_t fs : fstmts)
+				m_frozen_global_nodes.push_back(
+					std::make_pair(fs, fz->forest));
 			queue_frozen_ctor_group(v, fstmts, deferred_globals);
 			continue;
 		}
@@ -36235,8 +36240,11 @@ node_t CirBuilder::translate_module(Program *prog)
 		// pre-built, so register its callees, cleanup functions, dyn-module
 		// slots and function references exactly as translating it live would
 		// have. `decl_initializer`: also the declaration's initializer values.
+		// `producer`: the forest the node was loaded from — its callees'
+		// declarations are that forest's own (forest_extern_node).
 		auto register_loaded_refs = [&](node_t bn, bool decl_initializer,
-						const madc::dis::istring &from) -> bool {
+						const madc::dis::istring &from,
+						const CirFrozenForest *producer) -> bool {
 			bool grew = false;
 			std::set<madc::dis::istring> callees;
 			cir_collect_call_callees(bn, callees);
@@ -36279,7 +36287,7 @@ node_t CirBuilder::translate_module(Program *prog)
 					if (m_output_externs.count(*ai))
 						continue;
 					cir_node *xd = NULL;
-					if (!prog->forest_extern_node(*ai, xd)) {
+					if (!prog->forest_extern_node(*ai, xd, producer)) {
 						// Not an extern DECL in the producer: the
 						// argument may name a forest-BODIED sibling
 						// (mingw's static-inline strtof passed as
@@ -36331,7 +36339,7 @@ node_t CirBuilder::translate_module(Program *prog)
 					  && !prog->forest_deferred_funcs.count(ck))
 				    && !m_output_externs.count(*ci)) {
 					cir_node *xd = NULL;
-					if (prog->forest_extern_node(*ci, xd)) {
+					if (prog->forest_extern_node(*ci, xd, producer)) {
 						if (xd) {
 							m_output_externs[*ci] = xd->as_node();
 							continue;
@@ -36624,9 +36632,11 @@ node_t CirBuilder::translate_module(Program *prog)
 			// their references once, as a loaded body's do.
 			for (; frozen_refs_done < m_frozen_global_nodes.size();
 			     ++frozen_refs_done) {
-				node_t gn = m_frozen_global_nodes[frozen_refs_done];
-				register_loaded_refs(gn, gn->code == N_SPEC_DECL,
-						     "frozen global");
+				const std::pair<node_t, CirFrozenForest *> &gn =
+					m_frozen_global_nodes[frozen_refs_done];
+				register_loaded_refs(gn.first,
+						     gn.first->code == N_SPEC_DECL,
+						     "frozen global", gn.second);
 				grew = true;
 			}
 			for (auto &kv : forest_lazy) {
@@ -36666,7 +36676,8 @@ node_t CirBuilder::translate_module(Program *prog)
 						if (prog->struct_map.find(*ti) == prog->struct_map.end())
 							prog->forest_dialect_demand(madc::dis::istring(), *ti);
 				}
-				if (register_loaded_refs(bn, false, kv.first))
+				if (register_loaded_refs(bn, false, kv.first,
+							 ffd->forest_body_src))
 					grew = true;
 				node_t proto = forest_fwd_proto(bn);
 				// The symbol this body DEFINES is its own declared id
@@ -36983,11 +36994,11 @@ node_t CirBuilder::translate_module(Program *prog)
 	pass075_done = true;
 
 	// Pass 0.78: extern declarations for referenced libc globals.
-	// stderr/stdout/stdin (and any future lazily-registered libc global) are
-	// added via addGlobal() during expression parsing, so they never appear
-	// in prog->top_decls and are never emitted by Pass 0. Without a decl the
-	// emitted C fails with "'stderr' undeclared". Emit `extern <type> name;`
-	// for every referenced global the top-level pass did not already define.
+	// A referenced global that never appears in prog->top_decls is never
+	// emitted by Pass 0; without a decl the emitted C fails with "'x'
+	// undeclared". Emit `extern <type> name;` for every referenced global
+	// the top-level pass did not already define. (The madc dialect's stdio
+	// stream stand-ins never reach it: stdio_stream_value.)
 	for (auto &kv : referenced_globals) {
 		const madc::dis::istring &gname = kv.first;
 		Variable *gv = kv.second;

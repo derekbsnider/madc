@@ -1,0 +1,22 @@
+// A dialect program that binds the dialect image (ui::WEB) and names `stderr`
+// itself, including nothing. Bound from the image or parsed live, it emits the
+// same C:
+//   - its own `stderr` is the compiler's stream, `__madc_stdio_stream(2)` —
+//     never a restored `extern void *stderr;` frozen from the image TU's own
+//     stand-in (the stand-in is the compiler's declaration, not a record);
+//   - the image bodies' `malloc` keeps the image's own declaration,
+//     `void *malloc()` — never the system pack's `malloc(size_t)`, whose
+//     typedef this program never declares (c2mir: "unknown type size_t").
+//     The pack opens for `printf` (its prototype is adopted), which is what
+//     put the pack's declaration ahead of the image's.
+// Oracle: C11 7.21.1p3 — stderr is an expression of type FILE *; the C
+// analogue (`#include <stdio.h>`, fputs to stderr, the printf line) behaves the same
+// under gcc 13 and clang 18. The emitted C is the observable: both defects
+// were bind-only (the packed binary), the run's output identical.
+int main(void)
+{
+	long level = ui::WEB;
+	fputs("user stderr line\n", stderr);
+	printf("web above tui: %d\n", level > ui::TUI ? 1 : 0);
+	return 0;
+}

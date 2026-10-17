@@ -5294,6 +5294,12 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f,
 	    continue;
 	if ((v->flags & vfLOCAL) && !(v->flags & vfSTATIC))
 	    continue;		// a non-static local is not file-scope
+	// A dialect stdio stream's stand-in (Program::stdio_stream_stand_in) is
+	// the compiler's declaration, not the TU's: every dialect Program makes
+	// it, as it makes println. No record — a bound consumer's own mention
+	// resolves its own stand-in, as the live parse does.
+	if (v->stdio_stream != StdioStream::None)
+	    continue;
 	// v26: a parse-time CONSTANT scalar — a plain / anonymous enum's
 	// ENUMERATOR (TokenENUM's global branch: addVariable + set +
 	// makeconstant; references FOLD at parse, no TopDecl, no storage,

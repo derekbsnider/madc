@@ -24893,7 +24893,6 @@ Program::Program(MadcCompileGroup *group)
       script_argc(0),
       script_argv(NULL),
       _include_iostream(false),
-      _include_stdio(false),
       _include_string(false),
       _strpool_owner(group ? group->strpool
 		     : std::make_shared<madc::dis::intern_table>()),
@@ -24934,7 +24933,6 @@ Program::Program(MadcEngine *eng, MadcCompileGroup *group)
       script_argc(0),
       script_argv(NULL),
       _include_iostream(false),
-      _include_stdio(false),
       _include_string(false),
       _strpool_owner(group ? group->strpool
 		     : std::make_shared<madc::dis::intern_table>()),
@@ -26328,14 +26326,58 @@ void Program::add_iostream()
 {
 }
 
-void Program::add_stdio()
+// The madc dialect's stdio streams, hard-coded as println is (owner
+// 2026-10-17): no header and no include flag — a dialect program or fragment
+// naming stdin / stdout / stderr pulls no <stdio.h> (the auto-include table
+// has no row for them). The names and the stream each one IS: the one table
+// (find_stdio_stream, madc.h).
+namespace {
+struct StdioStreamName { const char *name; StdioStream stream; };
+const StdioStreamName stdio_stream_names[] = {
+    { "stdin",  StdioStream::In  },
+    { "stdout", StdioStream::Out },
+    { "stderr", StdioStream::Err },
+};
+} // namespace
+
+StdioStream find_stdio_stream(const char *name)
 {
-    // printf family available via dlsym fallback (libc is always loaded).
-    // Register stdin/stdout/stderr for lazy resolution — each becomes an
-    // int64 global whose data holds libc's current FILE* value.
-    lazy_map["stdin"]  = {LAZY_STDIO, Program::lkVariable};
-    lazy_map["stdout"] = {LAZY_STDIO, Program::lkVariable};
-    lazy_map["stderr"] = {LAZY_STDIO, Program::lkVariable};
+    for ( const StdioStreamName &s : stdio_stream_names )
+	if ( name && strcmp(name, s.name) == 0 )
+	    return s.stream;
+    return StdioStream::None;
+}
+
+// Registered with the madc dialect's intrinsics (add_namespaces, beside
+// add_format_intrinsics); each resolves on its first use that no declaration
+// answers (lazy_resolve's stream arm, stdio_stream_stand_in). A program whose
+// <stdio.h> declares the name first never reaches the stand-in.
+void Program::add_stdio_streams()
+{
+    for ( const StdioStreamName &s : stdio_stream_names )
+	lazy_map[s.name] = {LAZY_STDIO, Program::lkVariable};
+}
+
+// The stream a use of `name` stands for while no declaration names it: a
+// FILE-SCOPE extern object of type void * (FILE is <stdio.h>'s; the dialect
+// declares none), whatever namespace the use sits in, marked with its stream
+// (Variable::stdio_stream) — so the CIR builder lowers a use to the
+// runtime's stream (CirBuilder::stdio_stream_value), never to a spelling of
+// the target libc's backing symbol. A later declaration of the name (the
+// program's own #include <stdio.h>) adopts it: declare_object. Never tapped
+// into a pack's decl index: no header declares it.
+// Thread contract: per Program (its tkProgram); mutation single-threaded,
+// as every registration.
+Variable *Program::stdio_stream_stand_in(const madc::dis::istring &name)
+{
+    const StdioStream stream = find_stdio_stream(name.c_str());
+    if ( stream == StdioStream::None )
+	return NULL;
+    Variable *var = new Variable(name, ddVOIDptr, 1, NULL, false);
+    var->flags |= vfEXTERN;
+    var->stdio_stream = stream;
+    tkProgram->variables.push_back(var);
+    return var;
 }
 
 // on-demand variable/function registration — called from parseExpression()
@@ -26359,23 +26401,7 @@ Variable *Program::lazy_resolve(const madc::dis::istring &name)
     lazy_map.erase(it);
 
     if ( header == LAZY_STDIO )
-    {
-	// dlsym the libc symbol and copy the current FILE* value into our
-	// backing slot. Note: dlsym("stderr") returns the address of the
-	// libc `FILE *stderr;` variable — one deref yields the FILE*.
-	// Type them as void* (FILE is `void` in madc), NOT int64 — otherwise
-	// `fp == stdin` warns "comparison of integer with a pointer" and passing
-	// stdin to a FILE* parameter mismatches.
-	void **sym = NULL;
-	if ( name == "stdin" || name == "stdout" || name == "stderr" )
-	    sym = (void **)madcdl_sym_default(name.c_str());
-	if ( sym )
-	{
-	    var = addGlobal(ddVOIDptr, name, 1, NULL);
-	    if ( var && var->data )
-		*(void **)var->data = *sym;
-	}
-    }
+	var = stdio_stream_stand_in(name);
 
     DBG(if (var) std::cout << "lazy_resolve(" << name << ") registered" << std::endl);
     return var;
@@ -28352,10 +28378,13 @@ const char *Program::forest_body_unit_name(const FuncDef *fd) const
 				     : NULL;
 }
 
-bool Program::forest_extern_node(const madc::dis::istring &sym, cir_node *&node)
+bool Program::forest_extern_node(const madc::dis::istring &sym, cir_node *&node,
+				 const CirFrozenForest *producer)
 {
     node = NULL;
     ForestSide *sides[2] = { &forest_system, &forest_dialect };
+    if ( producer && producer == forest_dialect.forest )
+	std::swap(sides[0], sides[1]);
     for ( size_t i = 0; i < 2; ++i )
     {
 	uint32_t xu = 0, xi = 0;
@@ -30226,7 +30255,10 @@ void Program::add_namespaces()
 {
     namespace_variables_for_write("std");
     if ( auto_includes_enabled() )
+    {
 	add_format_intrinsics();
+	add_stdio_streams();
+    }
 }
 
 static const FormatIntrinsic format_intrinsics[] = {
@@ -30952,7 +30984,6 @@ void Program::_parser_init()
 void Program::register_included_lazy_surfaces()
 {
     if ( _include_iostream ) add_iostream();
-    if ( _include_stdio )   add_stdio();
 }
 
 bool Program::is_namespace_registration_enabled(const madc::dis::istring &name) const
@@ -32492,7 +32523,15 @@ Variable *Program::declare_object(TokenCpnd *code, DataDef &type, const madc::di
 	    // value does (CirJitSession::destroy_redefined).
 	    const bool session_redefinition = is_definition
 					      && session_redefines_object(prior);
-	    if ( object_redeclaration_conflicts(prior, &type, dims, object_cv) )
+	    // The dialect's stdio stream stand-in (stdio_stream_stand_in) is
+	    // the compiler's until a declaration names the object: this one
+	    // (the program's <stdio.h>, included after the first use) adopts
+	    // it — one stderr, of the declaration's type (addVariable's extern
+	    // arm retypes it) — rather than conflicting with its void *.
+	    const bool adopts_stdio_stream = prior->stdio_stream != StdioStream::None;
+	    prior->stdio_stream = StdioStream::None;
+	    if ( !adopts_stdio_stream
+	      && object_redeclaration_conflicts(prior, &type, dims, object_cv) )
 	    {
 		if ( session_redefinition )
 		    Throw(where) << "'" << id << "' changes type: a redefinition"
@@ -84199,7 +84238,7 @@ struct Program::EntryTransaction::State
     std::map<madc::dis::istring, std::stack<madc::dis::istring> > macro_save_stack;
     std::vector<madc::dis::istring> active_using_namespaces;
     std::map<madc::dis::istring, std::vector<madc::dis::istring> > inline_namespace_children;
-    bool include_iostream, include_stdio, include_string, include_ns_madc;
+    bool include_iostream, include_string, include_ns_madc;
     Program::ForestBindMark forest_bind;	// the pack binds the entry made
     // Entities changed in place, each saved (a copy) at its first change.
     // A saved Variable never owns its storage: the live one does.
@@ -84216,7 +84255,7 @@ struct Program::EntryTransaction::State
 	  lazy_map(p.lazy_map), macro_save_stack(p._macro_save_stack),
 	  active_using_namespaces(p.active_using_namespaces),
 	  inline_namespace_children(p.inline_namespace_children),
-	  include_iostream(p._include_iostream), include_stdio(p._include_stdio),
+	  include_iostream(p._include_iostream),
 	  include_string(p._include_string), include_ns_madc(p._include_ns_madc),
 	  forest_bind(p.forest_bind_mark())
     {
@@ -84274,7 +84313,6 @@ struct Program::EntryTransaction::State
 	p.active_using_namespaces = active_using_namespaces;
 	p.inline_namespace_children = inline_namespace_children;
 	p._include_iostream = include_iostream;
-	p._include_stdio = include_stdio;
 	p._include_string = include_string;
 	p._include_ns_madc = include_ns_madc;
     }

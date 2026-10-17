@@ -94,6 +94,35 @@ every compile), `forest_restore_side` 1,044,945, map / probe / teardown
    - the hooks' call sites, re-pointed;
    - the gates, re-aimed.
 
+## Gated on `--std=madc` (owner 2026-10-17)
+
+"we do need to make sure that the dialect builtin registration is gated on
+--std=madc".
+
+- One owner predicate answers "is the dialect surface on" for every
+  registration path (the table lookup, the hooks, the NamespaceRegistry's
+  dialect entries, the built-in `stderr` / `stdout` / `stdin`). It reads the
+  `LanguageStd` enum, never a string. When the `--std=` feature registry
+  (vision invariant I4, roadmap P2.11) lands, the predicate becomes its row.
+- The existing per-namespace switches (`registration_policy.enable_php_namespace`
+  …, the embedding API's options) stay embedder switches UNDER that gate,
+  never a way around it.
+- A strict compile resolves no dialect name and consults the table zero times
+  (a `--show-stats` counter). A user's own `namespace php { … }` there is the
+  user's alone.
+- Gate `scripts/check-dialect-std-gated.sh`, in `make gates`:
+  - over every non-madc standard (each C and C++ standard, gnu variants
+    included): `php::strlen` / `madc::…` / `ui::…` are refused and the
+    counter reads 0;
+  - under `--std=madc` they resolve;
+  - negative control: the predicate forced on makes the gate red.
+- Owner 2026-10-17: "the entire madc:: namespace is gated to --std=madc".
+  Today `add_madc_namespace` registers `madc::value` / `madc::array` in every
+  mode ("explicit madc:: qualification is an opt-in even outside the madc
+  dialect"): that registration moves under the gate, and its comment goes.
+  Strict tests or hosts that name `madc::` today are found by the gate's first
+  run and moved to `--std=madc`.
+
 ## Tasks
 
 - **R1 — inventory and the generator for declarations.**
@@ -156,3 +185,23 @@ hot rows measured on the packed release; the batch lane at the end.
 4. Things the parser does as a side effect of reading the fragments (macro
    state, `_include_*` flags, guards such as `_GLIBCXX_STRING`): the
    inventory must list them.
+
+## Change 1 (ahead of R1) — the stdio streams are built in
+
+- Under `--std=madc`, `stdin` / `stdout` / `stderr` are the compiler's, as
+  `println` is: `Program::add_stdio_streams` enters them in every dialect
+  Program's `lazy_map`; `lazy_resolve` makes a stand-in
+  (`Variable::stdio_stream`) that the CIR lowers to the runtime's
+  `__madc_stdio_stream(n)` (src/rt/rt_dump.c). No provider row, no
+  `_include_stdio`, no header.
+- A program's own `#include <stdio.h>`, before or after the first use,
+  declares the one real `stderr`, which adopts the stand-in
+  (`declare_object`); `--emit=c11` defines `struct _IO_FILE` once. Strict
+  modes are unchanged.
+- `--print-dialect-roots` names the 13 `ns_*` fragments only; the dialect
+  image went from 51 units / 4,722,144 bytes to 26 / 4,188,888.
+- Bind fixes the change exposed: a loaded body's callee takes its producer
+  forest's own extern declaration (`Program::forest_extern_node`); the
+  stand-in is never a frozen record.
+- Tests: `testdialectstdiostreams`, `testdialectimage_ctypes(_after)`,
+  `testdialectimage_streams`; leg 3 of `scripts/check-autoinclude-position.sh`.

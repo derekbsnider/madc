@@ -85,6 +85,16 @@ class TokenARRAY:     public TokenDataType { public: TokenARRAY():  TokenDataTyp
 
 class TokenAUTO:      public TokenDataType { public: TokenAUTO():  TokenDataType("auto", ddAUTO) {} };
 
+// The madc dialect's stdio streams (owner 2026-10-17): under --std=madc,
+// stdin / stdout / stderr are hard-coded, as println is — no header, no
+// include flag (Program::add_stdio_streams, lazy_resolve's stream arm). A
+// Variable that IS one carries which (Variable::stdio_stream) until a
+// declaration of the name adopts it (a <stdio.h> the program includes after
+// the first use: Program::declare_object); the CIR builder lowers a use to
+// the runtime's stream (CirBuilder::stdio_stream_value). None = an ordinary
+// variable.
+enum class StdioStream : uint8_t { None = 0, In, Out, Err };
+
 // Variable "container" class to keep track of everything about a variable,
 // primary only used during parsing/compiling
 class Variable
@@ -104,6 +114,9 @@ public:
     size_t aot_cstr_offset;
     uint32_t count;
     uint32_t flags;
+    // The dialect's stdio stream this Variable stands for (StdioStream above);
+    // None for every other Variable.
+    StdioStream stdio_stream = StdioStream::None;
     // The lexed declarator-id token of a PARAMETER's declaration (its name
     // in the function head — parseFunction): the declaration's provenance
     // link, as TokenVar::name_tok is a use's. NULL for any other Variable

@@ -3366,6 +3366,13 @@ struct FormatIntrinsic {
 const FormatIntrinsic *format_intrinsic_table(size_t &count);
 const FormatIntrinsic *find_format_intrinsic(const char *name);
 
+// The madc dialect's stdio streams (stdin / stdout / stderr, hard-coded as
+// println is): the stream `name` names, None for any other name. ONE table:
+// the --std=madc registration (Program::add_stdio_streams), the stand-in
+// (Program::stdio_stream_stand_in) and the REPL's completion words read it.
+// Immutable; safe to read from any thread.
+StdioStream find_stdio_stream(const char *name);
+
 // program class, keep things somewhat contained
 // One parsed template-parameter-list (`template < ... >`), the shape
 // parse_template_parameter_list fills for TokenTEMPLATE::parse and the
@@ -6332,7 +6339,6 @@ public:
     // machinery. Empty in lean/batch mode (zero cost there).
     std::vector<std::pair<std::string, std::string>> fidelity_include_directives;
     bool _include_iostream;		// #include <iostream> was seen during tokenization
-    bool _include_stdio;		// #include <stdio.h> was seen during tokenization
     bool _include_string;		// #include <string> was seen during tokenization
     bool _include_ns_madc;		// #include <ns_madc> was seen — main gets the __madc_sys_init injection
     bool _value_stream_operator_injected; // bits/value_stream fragment served (one-shot; see maybe_inject_value_stream_operator)
@@ -6934,7 +6940,8 @@ public:
     void add_globals();
     void add_host_callbacks();	// declares host_callback_regs prototypes (libmadc register_function)
     void add_iostream();	// populates lazy_map for cout, cin, cerr (via #include <iostream>)
-    void add_stdio();		// placeholder for #include <stdio.h> registration
+    void add_stdio_streams();	// the madc dialect's stdin/stdout/stderr: lazy_map entries, no header (println's twin)
+    Variable *stdio_stream_stand_in(const madc::dis::istring &name);	// lazy_resolve's stream arm
     struct PendingForestFunc;
     Variable *lazy_resolve(const madc::dis::istring &name);	// on-demand variable/function registration
     DataDef  *lazy_resolve_type(const madc::dis::istring &name);	// on-demand type/struct registration
@@ -7429,12 +7436,18 @@ public:
     // units that are dialect fragments (embedded_dialect_fragment_p), in
     // bind order.
     void forest_active_dialect_units(std::vector<uint32_t> &out) const;
-    // The producer's own extern declaration of `sym` in a bound forest — the
-    // system pack's, then the dialect image's (B3): a loaded body names what
-    // it calls or takes the address of by symbol, whichever forest holds the
-    // declaration. False when neither indexes one; `node` is the
-    // declaration (NULL when its record does not materialize).
-    bool forest_extern_node(const madc::dis::istring &sym, cir_node *&node);
+    // The producer's own extern declaration of `sym` in a bound forest (B3):
+    // a loaded body names what it calls or takes the address of by symbol.
+    // `producer` is the forest that holds the loaded node naming it, asked
+    // first — the declaration its own TU emitted, in that TU's spellings (a
+    // dialect body's `malloc` is the image's `void *malloc()`, never the
+    // system TU's `malloc(size_t)`, whose typedef this output may not
+    // declare). Then the other bound forest, the system pack ahead of the
+    // dialect image; NULL asks in that order alone. False when none indexes
+    // one; `node` is the declaration (NULL when its record does not
+    // materialize).
+    bool forest_extern_node(const madc::dis::istring &sym, cir_node *&node,
+			    const CirFrozenForest *producer = NULL);
     // A restored function's loaded body, and the name of its unit, read from
     // the forest that restored it (FuncDef::forest_body_src, B3). NULL when
     // it carries none.

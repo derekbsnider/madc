@@ -1,0 +1,2 @@
+fputs("user stderr line\n", __madc_stdio_stream(2));
+extern void *malloc();

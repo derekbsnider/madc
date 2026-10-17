@@ -1,0 +1,24 @@
+// A program that includes <stdio.h> and a dialect body see ONE stderr and
+// ONE FILE, whichever comes first (owner 2026-10-17: the dialect hard-codes
+// its stdio streams, as println; it needs no header of its own). This order:
+// the program includes <stdio.h> BEFORE its first dialect use, hands its
+// FILE * to the dialect (println's stream), and calls ui_ws::open, whose body
+// writes its refusal to stderr. testdialectimage_ctypes_after.mad holds the
+// other order. `--emit=c11` defines `struct _IO_FILE` once.
+// Oracle (g++ 13 and clang++ 18, -std=c++17, the dialect side written as a
+// C++ namespace + an fputs println), stdout:
+//   program FILE * into the dialect: ok
+//   dialect body refused on its stderr: 1
+//   one stderr: 1
+#include <stdio.h>
+
+int main()
+{
+	FILE *fp = stdout;
+	println(fp, "program FILE * into the dialect: ok");
+	void *h = ui_ws::open("t", "", 0);
+	fprintf(fp, "dialect body refused on its stderr: %d\n", h == 0);
+	FILE *e = stderr;
+	println(fp, "one stderr: {}", e == stderr ? 1 : 0);
+	return 0;
+}
