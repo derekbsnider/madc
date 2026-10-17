@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### An import's members are the import's, never the builtin table's (R1)
+
+- Imports are not builtins (owner 2026-10-17: "Imports are different than
+  builtins"). A module row's interface member — every LAZY row's prototype
+  carries `dyn_module_library` (the `madcgit_*`, `madcmark_*`, `webview_*`
+  interfaces) — is the import's: the import serves it, the builtin table never
+  holds it. `parse_dialect_as_text` now drops a FuncDef with a non-empty
+  `dyn_module_library` from the dialect key set.
+- Withdraws 744a812eb's module-member carrying and file-scope C++ alias mint:
+  `BuiltinFunctionDecl::module`, the `bfFileScopeCppAlias` flag
+  (`include/madc_builtin_registry.h`), `Program::declaration_cpp_symbol`
+  (`include/madc.h`, `src/parser.cpp`), and the `stamp_lazy_module_member` /
+  `madc_module_library_spelling` registration and `madc_module_find_spelled`
+  skip-reason in `src/madc_builtin_registry.cpp`.
+- Differential `tests/unit/test_builtin_registry.cpp`: 494 declarations
+  compared, identical; 126 keys not yet built (the 17 `madcgit_*` and 31
+  `webview_*` import members leave the dialect's key set). No runtime caller of
+  the table yet (R4).
+
 ### The perl/python/ruby/rust/php publics are libmadc's C++, declared bodiless (R1)
 
 - `<ns_perl>`, `<ns_python>`, `<ns_ruby>`, `<ns_rust>`, `<ns_php>` each declare

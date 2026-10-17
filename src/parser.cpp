@@ -3887,13 +3887,6 @@ static madc::dis::istring namespace_cpp_variable_symbol(const madc::dis::istring
 // itself was built against; when the SCRIPT flavor differs, the marshalling
 // boundary needs that twin to bind (and dlsym-verify) the real host entry.
 // The remint reuses the one mint (namespace_cpp_function_symbol) under a
-madc::dis::istring Program::declaration_cpp_symbol(const madc::dis::istring &ns_name,
-					    const madc::dis::istring &member_name,
-					    FuncDef *fd)
-{
-    return namespace_cpp_function_symbol(ns_name, member_name, fd);
-}
-
 // scoped host-flavor mangler state — never string surgery on the script
 // symbol (Itanium substitution compression makes fragment swaps wrong).
 madc::dis::istring Program::host_flavor_fn_symbol(const madc::dis::istring &ns_name,

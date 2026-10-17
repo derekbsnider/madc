@@ -25,7 +25,6 @@
 #include "datatokens.h"
 #include "madc.h"
 #include "madc_builtin_registry.h"
-#include "madc_modules.h"
 
 Variable *declare_builtin_function(Program &pgm, const BuiltinFunctionDecl &d)
 {
@@ -49,10 +48,6 @@ Variable *declare_builtin_function(Program &pgm, const BuiltinFunctionDecl &d)
     fd->vague_linkage = (d.flags & bfVagueLinkage) != 0;
     fd->internal_linkage = (d.flags & bfInternalLinkage) != 0;
     fd->weak_binding = (d.flags & bfWeakBinding) != 0;
-    if ( d.module && *d.module )
-	pgm.stamp_lazy_module_member(fd,
-	    madc::dis::istring(madc_module_library_spelling(d.module).c_str()),
-	    madc::dis::istring(d.key));
     Program::PendingForestFunc pf;
     pf.name = madc::dis::istring(d.key);
     pf.fd = fd;
@@ -60,9 +55,6 @@ Variable *declare_builtin_function(Program &pgm, const BuiltinFunctionDecl &d)
     for ( size_t i = 0; i < d.nparam_names && i < d.nparams; ++i )
 	pf.mparams.push_back(std::make_pair(d.param_names[i], d.params[i].type));
     Variable *var = pgm.register_forest_func(pf);
-    if ( var && (d.flags & bfFileScopeCppAlias) )
-	var->storage_alias_name = pgm.declaration_cpp_symbol(madc::dis::istring(),
-							     fd->function_display_name, fd);
     if ( var && (d.flags & bfEmitIsAlias) )
 	fd->emit_symbol = var->storage_alias_name;
     return var;
@@ -263,7 +255,8 @@ bool parse_dialect_as_text(DialectTextParse &out, std::string &err)
     for ( funcdef_map_iter it = out.live->funcdef_map.begin();
 	  it != out.live->funcdef_map.end(); ++it )
 	if ( out.base->funcdef_map.find(it->first) == out.base->funcdef_map.end()
-	  && it->second && !it->second->builtin_registration )
+	  && it->second && !it->second->builtin_registration
+	  && it->second->dyn_module_library.empty() )
 	    out.function_keys.push_back(it->first);
     return true;
 }
@@ -297,22 +290,11 @@ static std::string builtin_skip_reason(Program &live, const madc::dis::istring &
 	    return "a Method parameter that is not the FuncDef's";
     if ( !fd->emit_symbol.empty() && (!var || fd->emit_symbol != var->storage_alias_name) )
 	return "an emit symbol that is not the storage alias";
-    if ( fd->namespace_name.empty() && var && !var->storage_alias_name.empty()
-      && (fd->c_linkage || var->storage_alias_name
-	  != live.declaration_cpp_symbol(madc::dis::istring(), fd->function_display_name, fd)) )
-	return "a file-scope alias that is not its C++ symbol";
     if ( !fd->return_typedef_name.empty() )
 	return "a return typedef name";
     for ( size_t i = 0; i < fd->param_typedef_names.size(); ++i )
 	if ( !fd->param_typedef_names[i].empty() )
 	    return "a parameter typedef name";
-    if ( !fd->dyn_module_library.empty() )
-    {
-	const MadcModuleSpec *ms =
-	    madc_module_find_spelled(std::string(fd->dyn_module_library.c_str()));
-	if ( !ms || fd->dyn_module_member != key )
-	    return "a module member that is not its row's";
-    }
     if ( !fd->inline_builtin_kind.empty() )
 	return "a builtin kind";
     if ( !fd->overload_template_args.empty() || !fd->template_return_param_name.empty() )
@@ -408,10 +390,6 @@ static void emit_declaration(std::ostream &out, Program &live, const madc::dis::
     if ( fd->internal_linkage ) flags += " | bfInternalLinkage";
     if ( fd->weak_binding ) flags += " | bfWeakBinding";
     if ( !fd->emit_symbol.empty() ) flags += " | bfEmitIsAlias";
-    if ( fd->namespace_name.empty() && var && !var->storage_alias_name.empty() )
-	flags += " | bfFileScopeCppAlias";
-    const MadcModuleSpec *module = fd->dyn_module_library.empty() ? NULL
-	: madc_module_find_spelled(std::string(fd->dyn_module_library.c_str()));
     type_expr(&fd->returns, expr, err);
     out << "\tBuiltinFunctionDecl d = { " << cpp_literal(key.c_str()) << ", "
 	<< cpp_literal(fd->namespace_name.c_str()) << ", "
@@ -419,8 +397,7 @@ static void emit_declaration(std::ostream &out, Program &live, const madc::dis::
 	<< ( fd->parameters.empty() ? "NULL" : "p" ) << ", " << fd->parameters.size() << ", "
 	<< ( nnames ? "n" : "NULL" ) << ", " << nnames << ", "
 	<< cpp_literal(fd->overload_spelling.c_str()) << ", "
-	<< ( flags.empty() ? "0u" : "0u" + flags ) << ", "
-	<< cpp_literal(module ? module->name : "") << " };\n"
+	<< ( flags.empty() ? "0u" : "0u" + flags ) << " };\n"
 	<< "\tdeclare_builtin_function(pgm, d);\n"
 	<< "    }\n";
 }

@@ -51,9 +51,6 @@ enum BuiltinFnFlag : unsigned
     bfWeakBinding	= 1u << 7,	// FuncDef::weak_binding
     bfEmitIsAlias	= 1u << 8,	// emit_symbol = the registrar's storage alias
 					// (the target's mangling, never a host string)
-    bfFileScopeCppAlias	= 1u << 9,	// a file-scope C++ declaration binds its
-					// Itanium symbol (parseDeclaration's rule; the
-					// registrar aliases namespace members only)
 };
 
 struct BuiltinParam
@@ -75,9 +72,6 @@ struct BuiltinFunctionDecl
     size_t nparam_names;
     const char *overload_spelling;
     unsigned flags;		// BuiltinFnFlag bits
-    const char *module;		// a lazy module row's member: the row's name
-				// (madc_modules.cpp), spelled for the target at
-				// registration; "" for none
 };
 
 // The one owner of a builtin function declaration: builds the FuncDef and
@@ -97,7 +91,9 @@ madc::dis::istring builtin_function_line(Program &pgm, const madc::dis::istring 
 // every dialect file as text (Program::dialect_image_roots, the auto-include's
 // order; no pack bind), `base` the same empty program without them;
 // `function_keys` are the funcdef_map keys `live` registered beyond `base`,
-// less the builtin registry's own (a libc builtin a dialect body called).
+// less the builtin registry's own (a libc builtin a dialect body called) and
+// an import's (a module row's interface member — the import serves it, never
+// the builtin table).
 struct DialectTextParse
 {
     std::shared_ptr<Program> live;
