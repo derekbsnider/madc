@@ -968,3 +968,21 @@ Slices:
   sources: `madc::dis`, `madc::hub`) or mention it in comments; none changed.
 - Validation: Tier 1 (39 JIT, 36 EXE); Tier 2's seven lanes green; the batch
   lane (tests/ JIT) 2091/0/0/9; static gates 0 red; `make -C src test` green.
+
+### R4b execution (2026-10-17)
+
+- src/Makefile: `DIALECT_REGISTRY_OFILE` is `dialect_registry.o` in EVERY
+  mode. A mode whose stage one runs on the build host generates the table with
+  it, as before; a cross or hosted mode generates it with the host's dev
+  `../bin/madc` (`DIALECT_REGISTRY_GEN`) — the module tables' rule
+  (src/madc_modules.mk `MODULE_TABLE_GEN`), since the generated code names
+  DataDefs, never sizes or symbols. No mode links the empty stage-one table now.
+- Verified: the win64 hosted build ran
+  `../bin/madc --std=madc --emit-builtin-registry=` into
+  obj/hosted-x86-64-windows/dialect_registry.cpp, compiled it and archived it
+  into libmadc; `madc-hosted-x86-64-windows.exe` under wine prints the same as
+  the host for a php::/var/ui:: program. The arm64 darwin hosted build likewise.
+- Coverage at this point (test_builtin_registry's differential): 619 compared,
+  2 not yet built — `php::print_r` / `var_dump`, the R4c builder ruling.
+- Validation: Tier 1 (testdialect*: 6 JIT, 5 EXE, 5 OBJ); Tier 2's seven
+  lanes green (224s); the win64 and arm64 darwin hosted builds; static gates.
