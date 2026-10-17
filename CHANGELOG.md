@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+### An inlined frame is addressed from its alloca's start, not a realigned frame pointer
+
+- A function holding an object aligned beyond 16 bytes (`_Alignas(32)`, a wide
+  vector type) realigns its frame base in place after the frame alloca
+  (`add`/`and` on the alloca's result register), so the over-16-byte alignment
+  fix left that register no longer holding the allocation's start. `mir.c`
+  `process_inlines` merges an inlined callee's frame into the caller's top alloca
+  and addresses it as that register plus an offset; realigned, the inlined frame
+  landed 0..31 bytes past the allocation, over the caller's saved registers — a
+  SIGSEGV that fired intermittently, depending on the stack's alignment mod 32.
+- `alloca_result_redefined_p` reports whether any insn other than the alloca
+  writes its result register (output operands via `MIR_insn_op_mode`). In
+  `process_inlines`, a top alloca built from a callee that redefines its frame
+  register now takes a fresh base register, and a caller whose own top alloca
+  register is redefined has the alloca write a fresh temp with a following `mov`
+  back to the register, inlined frames addressed from the temp. Code generation
+  is unchanged when no register is redefined.
+- `tests/testalign_over16_inlined_frame.mad` (`--std=c17`) reduces both shapes —
+  a realigned function inlining a callee, and a frameless wrapper inlining a
+  realigned callee that itself inlines one — each run at several stack depths;
+  gcc 13 and clang 18 `-O0 -std=c17` are the oracle.
+
 ### A dialect compile registers only the functions it names
 
 - A fragment bound under `--std=madc` stays seeded as before;

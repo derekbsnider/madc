@@ -4570,6 +4570,28 @@ static MIR_insn_t func_alloca_features (MIR_context_t ctx, MIR_func_t func, int 
   return top_alloca;
 }
 
+/* madc fork: TRUE when an insn of FUNC other than ALLOCA_INSN sets ALLOCA_INSN's
+   result register (c2mir realigns an over-aligned frame base in place with
+   add/and), so the register does not keep the allocation's start everywhere --
+   where process_inlines addresses an inlined callee's frame from it. */
+static int alloca_result_redefined_p (MIR_context_t ctx, MIR_func_t func, MIR_insn_t alloca_insn) {
+  int out_p;
+  MIR_reg_t reg;
+  MIR_insn_t insn;
+
+  if (alloca_insn->ops[0].mode != MIR_OP_REG) return FALSE;
+  reg = alloca_insn->ops[0].u.reg;
+  for (insn = DLIST_HEAD (MIR_insn_t, func->insns); insn != NULL;
+       insn = DLIST_NEXT (MIR_insn_t, insn)) {
+    if (insn == alloca_insn) continue;
+    for (size_t i = 0; i < insn->nops; i++) {
+      MIR_insn_op_mode (ctx, insn, i, &out_p);
+      if (out_p && insn->ops[i].mode == MIR_OP_REG && insn->ops[i].u.reg == reg) return TRUE;
+    }
+  }
+  return FALSE;
+}
+
 /* Generate block move only in simplified MIR.  ??? short move w/o loop. */
 static long add_blk_move (MIR_context_t ctx, MIR_item_t func_item, MIR_insn_t before, MIR_op_t dest,
                           MIR_op_t src, size_t src_size, long label_num) {
@@ -4669,6 +4691,7 @@ static void change_inline_insn_regs (MIR_context_t ctx, MIR_insn_t new_insn) {
    extensions and one return.  */
 static void process_inlines (MIR_context_t ctx, MIR_item_t func_item) {
   int non_top_alloca_p, func_top_alloca_used_p, called_func_top_alloca_used_p, blk_arg_p;
+  int func_top_alloca_base_p = FALSE; /* its result reg keeps the allocation's start */
   int64_t alloca_size, alloca_align, max_func_top_alloca_align;
   int64_t init_func_top_alloca_size, curr_func_top_alloca_size, max_func_top_alloca_size;
   size_t i, nargs, arg_num;
@@ -4856,10 +4879,19 @@ static void process_inlines (MIR_context_t ctx, MIR_item_t func_item) {
     if (called_func_top_alloca != NULL) {
       if (called_func_top_alloca_used_p) {
         func_top_alloca_used_p = TRUE;
+        /* madc fork: every inlined frame is addressed from the top alloca's
+           result register, so it must hold the allocation's start wherever an
+           inlined call sits.  A register redefined after the alloca (a realigned
+           frame base) is replaced, as the alloca's result, by a fresh one. */
         if (func_top_alloca == NULL) {
+          MIR_op_t base_op = new_called_func_top_alloca->ops[0];
+
+          if (alloca_result_redefined_p (ctx, called_func, called_func_top_alloca))
+            base_op = MIR_new_reg_op (ctx, new_temp_reg (ctx, MIR_T_I64, func));
+          func_top_alloca_base_p = TRUE;
           temp_reg = new_temp_reg (ctx, MIR_T_I64, func);
-          func_top_alloca = MIR_new_insn (ctx, MIR_ALLOCA, new_called_func_top_alloca->ops[0],
-                                          MIR_new_reg_op (ctx, temp_reg));
+          func_top_alloca
+            = MIR_new_insn (ctx, MIR_ALLOCA, base_op, MIR_new_reg_op (ctx, temp_reg));
           if (head_func_insn->code != MIR_LABEL)
             MIR_insert_insn_before (ctx, func_item, head_func_insn, func_top_alloca);
           else
@@ -4868,6 +4900,15 @@ static void process_inlines (MIR_context_t ctx, MIR_item_t func_item) {
           new_insn
             = MIR_new_insn (ctx, MIR_MOV, MIR_new_reg_op (ctx, temp_reg), MIR_new_int_op (ctx, 0));
           MIR_insert_insn_before (ctx, func_item, func_top_alloca, new_insn);
+        } else if (!func_top_alloca_base_p) {
+          func_top_alloca_base_p = TRUE;
+          if (alloca_result_redefined_p (ctx, func, func_top_alloca)) {
+            temp_reg = new_temp_reg (ctx, MIR_T_I64, func);
+            new_insn = MIR_new_insn (ctx, MIR_MOV, func_top_alloca->ops[0],
+                                     MIR_new_reg_op (ctx, temp_reg));
+            MIR_insert_insn_after (ctx, func_item, func_top_alloca, new_insn);
+            func_top_alloca->ops[0] = MIR_new_reg_op (ctx, temp_reg);
+          }
         }
         if (curr_func_top_alloca_size - alloca_size == 0) {
           new_insn = MIR_new_insn (ctx, MIR_MOV, new_called_func_top_alloca->ops[0],

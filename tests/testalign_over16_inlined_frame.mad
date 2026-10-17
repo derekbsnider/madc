@@ -1,0 +1,76 @@
+/* A function holding an object aligned beyond 16 bytes realigns its frame
+ * base; a small callee MIR inlines into it still gets frame storage inside
+ * that frame. Two shapes: the realigned function inlines a callee with a frame
+ * (probe <- mix), and a function with no frame inlines a realigned callee that
+ * itself inlines one (wrap <- probe_v <- mix, wrap defined first). Each runs
+ * at several stack depths, under a caller holding a pointer in a callee-saved
+ * register across the call.
+ * Before: the inlined callee's frame sat past the end of the frame (addressed
+ * from the realigned base), over the caller's saved registers: SIGSEGV.
+ * Oracle: gcc 13 and clang 18 -O0 -std=c17 print the lines in the .expect. */
+#include <stdio.h>
+#include <stdint.h>
+
+typedef unsigned short V32 __attribute__((vector_size(32)));
+
+static int aligned_ok = 1;
+
+static long probe_v(int seed);
+
+/* no frame of its own: probe_v (and mix inside it) inline into it */
+static long wrap(int x) { return probe_v(x) + 1; }
+
+/* small, with a frame of its own: inlined into its callers */
+static int mix(int x)
+{
+	int buf[4];
+	for (int i = 0; i < 4; i++)
+		buf[i] = x * (i + 1);
+	return buf[0] + buf[1] + buf[2] + buf[3];
+}
+
+/* a realigned frame (a 32-byte-aligned array) inlining mix */
+static long probe(int seed)
+{
+	_Alignas(32) int w[8] = {seed, seed + 1};
+	if ((uintptr_t)w % 32 != 0)
+		aligned_ok = 0;
+	int r = mix(seed);
+	return r + w[0] + w[1];
+}
+
+/* a realigned frame (a 32-byte vector) inlining mix */
+static long probe_v(int seed)
+{
+	V32 w = {seed, seed + 1};
+	if ((uintptr_t)&w % 32 != 0)
+		aligned_ok = 0;
+	int r = mix(seed);
+	return r + w[0] + w[1];
+}
+
+static long (*volatile probe_fn)(int) = probe;
+static long (*volatile wrap_fn)(int) = wrap;
+
+/* a pointer live across the call, at a stack depth that varies with n */
+static long at_depth(long (*fn)(int), int n)
+{
+	char *shift = __builtin_alloca(n);
+	shift[0] = 1;
+	return fn(n) + shift[0];
+}
+
+static long (*volatile at_depth_fn)(long (*)(int), int) = at_depth;
+
+int main(void)
+{
+	long probe_total = 0, wrap_total = 0;
+	for (int n = 16; n <= 128; n += 16) {
+		probe_total += at_depth_fn(probe_fn, n);
+		wrap_total += at_depth_fn(wrap_fn, n);
+	}
+	printf("probe: total=%ld\n", probe_total);
+	printf("wrap: total=%ld\n", wrap_total);
+	printf("aligned: %d\n", aligned_ok);
+	return 0;
+}
