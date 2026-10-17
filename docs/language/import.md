@@ -45,8 +45,13 @@ server's tools. Whether a module is installed is answered by importing it:
 - a file that is not a madc module, or one built for another module ABI:
   `import: module 'git': <the reason>`.
 
-madc ships two: `git` (a read-only view of a repository, libgit2 inside) and
-`markdown` (cmark-gfm inside). From the command line, `--import=<name>`
+madc ships three: `git` (a read-only view of a repository, libgit2 inside),
+`markdown` (cmark-gfm inside) and `ui_web` (the web UI level's host over the
+platform webview: importing it registers the host, so `ui::open(ui::WEB)`
+gets a window). An imported module opens at program start in every lane —
+the JIT, an executable and an object (its module list names it) — so its own
+initializer runs before `main`; a native program whose module will not open
+exits 69 with the import error before `main`. From the command line, `--import=<name>`
 imports a module ahead of the program; with no source it only tries the
 import and exits 0, or 69 with the import error — a launcher's test before
 it starts (`python -c "import git"`). The configuration file's
@@ -126,14 +131,16 @@ either.
   `.o` has no `DT_NEEDED`). An explicit `-l` still opens first and stays an
   override; a `.o` built before the table existed loads as before. A lazy
   row's spelling is listed with a `?` prefix — optional: the loader opens it
-  when it can and never fails on it.
-- **Lazy rows** (`madcwebview`): an OPTIONAL library's row is marked lazy —
+  when it can and never fails on it. A madc module is listed by name and
+  file (`@-git=<file>`; `@g` for a GUI module, which lifts an armed memory
+  guard before it opens), required, and the program's own init opens it.
+- **Lazy rows**: an OPTIONAL library's row is marked lazy —
   the interface form binds nothing at parse and joins no link closure; each
   declared function is a first-call slot through a pointer of its declared
   type (`__madc_dl_member`, as the alias form, but typed). The program
   compiles and runs on a machine without the library; ask
-  `madc::module_available("madcwebview")` before the first call (the web
-  target's `ui::open` does, and refuses with the reason). The alias form of
+  `madc::module_available("<name>")` before the first call. No shipped row
+  is lazy any more (the web target is the `ui_web` module). The alias form of
   a lazy row keeps the eager binding — a namespace answers member lookups
   from the exports.
 - **`--no-auto-load`**: do not act on `import` library bindings — nothing is

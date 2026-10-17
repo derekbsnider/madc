@@ -752,3 +752,70 @@ modules than like C++ headers."
 - Found on the way (own commit): test_repl_session's dialect-per-name A4/A5
   expected the pre-R2 wrapper bodies (`__php_explode`, …) and the pre-R3
   run-child anchor; the expectations now state the R2/R3 design.
+
+### M4 execution (2026-10-17)
+
+- The web target becomes the module `ui_web`, all of it under
+  `src/modules/ui_web/`: `ui_web.madi` (the face: `ui_web::menu_activate`),
+  `ui_web.cpp` (the host, converted from `<ns_ui_web>` to C++: the ops table
+  with identity "ui_web", registered as target "web" serving ui::WEB by the
+  module's own initializer; `js::parse` / `js::stringify` from libmadc; the
+  generated table and `madc_module_ui_web`, flags `mdGui`),
+  `madcwebview_chrome.{cc,h}`.
+  `include/madc/ns_ui_web`, its auto-include rows (`ui_web`, `WEB`), its
+  preferred-order entry, its pack-list line and the madcwebview module-map row
+  are gone. The host includes upstream's header under `WEBVIEW_HEADER` (the C
+  API alone): Xlib's `None` / `Bool` macros stay in webview.cc's unit.
+- `src/ui_web.mk` (was `webview.mk`): ONE image holds upstream's library, the
+  chrome, the host and the table — `lib/madc/modules/ui_web.{so,dll}`,
+  `lib/madc/modules/<arch>-macos/ui_web.dylib` plus a flat copy. libmadcwebview
+  and madcwebview.dll are gone. Built by `make -C src ui_web` (the gui lane,
+  packaging, `modules-windows`); not in `all`.
+- D5 at program start: the unit's module list (`__madc_module_deps`) names
+  each imported madc module — `@`, `g` (GUI) or `-`, its name, `=`, its file —
+  beside the link (`spelling`) and optional (`?spelling`) entries.
+  `madc_module_deps_append` writes an entry, `madc_module_deps_open` reads the
+  list (include/madc_modules.h: one writer, one reader); the single-object
+  loader and the runtime entry `__madc_open_module_deps` both open through it.
+  The CIR builder makes `__madc_open_module_deps(__madc_module_deps)` the first
+  statement of the unit's global init when the unit imported a module, so the
+  module's initializer (a host's registration) runs before main in every lane;
+  a module that will not open ends the program with the import's status (69,
+  `madc_import_unavailable_status`, now in madc_modules.h). A GUI entry lifts
+  an armed memory guard before it opens. The import no longer adds an
+  optional entry.
+- Capabilities: `ui.levels` lists the binary's own levels (tui). The web level
+  is the module's: `madc --import=ui_web` answers whether it is installed.
+  `madc_module_any_flagged` is deleted (no caller).
+- Tests: tests/gui/ui_web_* say `import ui_web;`; testmodule_start (the test
+  module greet sets an environment variable as it loads; the program never
+  calls greet and sees it in JIT, EXE and OBJ); testwebviewrunstop loads
+  ui_web.dll from madc's module directory; test_modules covers the list's
+  entry spellings and its open; test_cir_freeze and test_builtin_registry drop
+  ns_ui_web / ui_web. testdialectimage_streams keeps its stderr half (the
+  malloc half had no vehicle left).
+- Ruling: retired testimportlazy, testuiwebenum_alone, testuiwebtwoimages,
+  testuiwebtwounits (+ its units) and testdialectpername_body — each tested
+  the `<ns_ui_web>` fragment (a LAZY interface, its initializer per image or
+  unit, its inline bodies), which no longer exists. Cost if wrong: the
+  per-unit host registration has no main-suite test; the gui lane's EXE and
+  OBJ passes cover the module's.
+- Ruling: examples/vised's `--web` needs `--import=ui_web` (its usage says
+  so). Cost if wrong: one line.
+- Owner ruling (2026-10-17, "Drop it"): the face carries no raw webview C
+  API — the module exports its host and `ui_web::menu_activate`; a program
+  reaches the window through ui::. A module carries no macros, and the table
+  generator's global C declarations belong with the C++20 source form after
+  R4. Gone with it: the generated `webview.h`, `scripts/gen_webview_header.py`
+  and its gate (`make gates`, the gui lane's header check), and the raw-API
+  tests tests/gui/webview.mad and webview_size.mad. The local GTK
+  `set_size_impl` patch loses its four-hint test; the host's own size call
+  still runs through it. docs/building-webview.md describes the module.
+- Validation: Tier 1 (14 JIT, 11 EXE, 11 OBJ); Tier 2's seven lanes green
+  (gui 13/13 JIT, 13/13 EXE, 13/13 OBJ); static gates 0 red; test_modules,
+  test_cir_freeze, test_builtin_registry, test_repl_session, test_madc_cli
+  green. Hot path: a unit that imports a module emits one list entry and one
+  init call; compile cost unchanged. testmodule_start's RED on the old EXE
+  lane was not run (the old EXE opened a module only at its first member
+  call). The win64 and darwin arms (ui_web.dll, ui_web.dylib) are built and
+  run at the seam.

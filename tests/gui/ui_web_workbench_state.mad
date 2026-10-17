@@ -18,6 +18,7 @@
 // caret leaves the view where it was (applyEdit's "never pulls a
 // wheel-scrolled view"); before the fix, step 2 printed bottom=0 and step 3
 // panelmax=0.
+import ui_web;	// the web target's host (ui::open(ui::WEB))
 long theme_n = 0;
 
 void compose(var &tree)

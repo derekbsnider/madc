@@ -3,6 +3,7 @@
 // breaks. The engine's door (a host's clip ops, the "\r\n" a Windows
 // clipboard keeps read back as "\n") is testuihostfake's. The first resize
 // is the page's ready signal: the window exists by then.
+import ui_web;	// the web target's host (ui::open(ui::WEB))
 int main()
 {
     long w = ui::world_new();

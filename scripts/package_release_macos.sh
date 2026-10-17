@@ -18,9 +18,9 @@
 #                                             (__MADC,__forest): what the CLI and a
 #                                             runtime-needing program madc -o builds
 #                                             load (@rpath/libmadc-0.dylib)
-#   madc-<ver>-macos-<arch>/lib/libmadcwebview.dylib  the platform webview library
-#                                             (WKWebView + native chrome; GUI programs:
-#                                             import madcwebview) — macOS 13.3+
+#   madc-<ver>-macos-<arch>/lib/madc/modules/ui_web.dylib  the ui_web module: the platform
+#                                             webview (WKWebView + native chrome; GUI programs:
+#                                             import ui_web) — macOS 13.3+
 #   madc-<ver>-macos-<arch>/lib/madc/modules/git.dylib  the git module (import git;,
 #                                             libgit2 linked in) — madc's module directory
 #   madc-<ver>-macos-<arch>/lib/madc/modules/markdown.dylib  the markdown module (import markdown;,
@@ -122,12 +122,12 @@ package_arch() {
         echo "package_release_macos: $rtlib missing — run 'make -C src release-macos' first" >&2
         exit 1
     fi
-    # The platform webview library (GUI programs: import madcwebview) —
-    # release-<arch>-macos builds it beside the binary (webview-<arch>-macos);
-    # the loader finds it as lib/ next to bin/ (madc_self_lib_dir).
-    local webview="lib/webview/${bin_arch}-macos/libmadcwebview.dylib"
+    # The ui_web module (GUI programs: import ui_web) — release-<arch>-macos
+    # builds it beside the binary (ui_web-<arch>-macos); found by name in
+    # madc's module directory (the binary's ../lib/madc/modules).
+    local webview="lib/madc/modules/${bin_arch}-macos/ui_web.dylib"
     if [ ! -f "$webview" ]; then
-        echo "package_release_macos: $webview missing — run 'make -C src release-macos' first (it builds webview-${bin_arch}-macos)" >&2
+        echo "package_release_macos: $webview missing — run 'make -C src release-macos' first (it builds ui_web-${bin_arch}-macos)" >&2
         exit 1
     fi
     # The madc engine and runtime (D5): libmadc-0.dylib, built per arch beside
@@ -140,7 +140,7 @@ package_arch() {
         exit 1
     fi
     # The git module (a program that says `import git;`, or `%git` at the
-    # prompt) — release-<arch>-macos builds it beside the webview library
+    # prompt) — release-<arch>-macos builds it beside the ui_web module
     # (git-<arch>-macos); the minimal read-only libgit2 is STATIC-linked inside
     # it. Found by name in madc's module directory (the binary's
     # ../lib/madc/modules).
@@ -167,7 +167,7 @@ package_arch() {
     # madc library installed this archive is what `cc emitted.c` links.
     install -m 644 "$rtlib" "$stage/$root/lib/libmadc_rt.a"
     install -m 755 "$rtdylib" "$stage/$root/lib/libmadc-0.dylib"
-    install -m 755 "$webview" "$stage/$root/lib/libmadcwebview.dylib"
+    install -m 755 "$webview" "$stage/$root/lib/madc/modules/ui_web.dylib"
     install -m 755 "$git" "$stage/$root/lib/madc/modules/git.dylib"
     install -m 755 "$markdown" "$stage/$root/lib/madc/modules/markdown.dylib"
     gzip -9n < docs/man/madc.1 > "$stage/$root/share/man/man1/madc.1.gz"
@@ -190,7 +190,7 @@ package_arch() {
         "$stage/$root/THIRD_PARTY_NOTICES/darwin-libc-NOTICE.txt"
     install -m 644 docs/licenses/APSL-2.0.txt \
         "$stage/$root/THIRD_PARTY_NOTICES/APSL-2.0.txt"
-    # The webview library binds webview/webview (MIT): its notice ships with it.
+    # The ui_web module binds webview/webview (MIT): its notice ships with it.
     install -m 644 third_party/webview/LICENSE \
         "$stage/$root/THIRD_PARTY_NOTICES/webview-LICENSE.txt"
     # The git module statically links libgit2 (GPLv2 WITH the linking
@@ -256,10 +256,10 @@ A program built with madc -o (or a library built with madc -shared) loads
 it as @rpath/libmadc-0.dylib, and finds it in the lib/ next to its own
 bin/ (or next to the madc that built it), so keep bin/ and lib/ together.
 
-GUI programs: lib/libmadcwebview.dylib is madc's binding of the platform
-webview (WKWebView) with the native menu bar and file dialogs. A program
-that says \`import madcwebview;\` (madc's ui "web" target) loads it from
-this lib/ next to bin/madc. It requires macOS 13.3 or later.
+GUI programs: the ui_web module (lib/madc/modules/ui_web.dylib) is madc's
+binding of the platform webview (WKWebView) with the native menu bar and
+file dialogs. A program that says \`import ui_web;\` gets madc's ui "web"
+target. It requires macOS 13.3 or later.
 
 The IDE, madcide, is its own download
 (https://github.com/derekbsnider/madcide), carrying a madc of its own.

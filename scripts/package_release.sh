@@ -20,8 +20,8 @@
 #   /usr/lib/<multiarch|lib64>/libmadc.so.0     lib/release/libmadc.so (stripped pre-pack, forest inside)
 #   /usr/lib/<multiarch|lib64>/libmadc.so       -> libmadc.so.0
 #   /usr/lib/<multiarch|lib64>/libmadc_rt.a     emitted-C runtime (try/catch + VLA; a bare-box cc links it)
-#   /usr/lib/<multiarch|lib64>/libmadcwebview.so the platform webview library (WebKitGTK 6.0 / GTK4 +
-#                                               native chrome; GUI programs: import madcwebview) —
+#   /usr/lib/madc/modules/ui_web.so             the ui_web module: the platform webview (WebKitGTK 6.0 /
+#                                               GTK4 + native chrome; GUI programs: import ui_web) —
 #                                               a WEAK dependency (Recommends): madc never loads it itself
 #   /usr/lib/madc/modules/git.so                the git module: madc's read-only git view, the
 #                                               pinned libgit2 linked in statically (`import git;`;
@@ -138,11 +138,11 @@ trap restore_tree EXIT
 make -C src clean > /dev/null
 make -C src -j"$(bash scripts/build_jobs.sh)" > /dev/null
 make -C src -j"$(bash scripts/build_jobs.sh)" release > /dev/null
-# The platform webview library (GUI programs: import madcwebview) — built
+# The ui_web module (src/ui_web.mk; GUI programs: import ui_web) — built
 # against the build host's WebKitGTK 6.0 / GTK4 (scripts/provision_container.sh;
 # libwebkitgtk-6.0-dev in release.yml) and shipped as a WEAK dependency:
 # madc itself never loads it, only a program that imports it does.
-make -C src -j"$(bash scripts/build_jobs.sh)" libmadcwebview > /dev/null
+make -C src -j"$(bash scripts/build_jobs.sh)" ui_web > /dev/null
 # The git module (src/git.mk): the read-only git view, statically
 # linking the pinned libgit2 scripts/stage_libgit2.sh staged for this host
 # (the floor: 1.8.7 / 1.9.7 or newer; Ubuntu's libgit2 is 1.7.2). The
@@ -202,7 +202,7 @@ mkdir -p "$DEBROOT/DEBIAN"
 chmod 0755 "$DEBROOT/DEBIAN"
 # Depends: the libraries the shipped binaries link, at the versions this
 # host's packages carry (dpkg-shlibdeps over a minimal debian/control). The
-# webview module is left out: its WebKitGTK and GTK are the Recommends below
+# ui_web module is left out: its WebKitGTK and GTK are the Recommends below
 # (madc never loads it itself). The modules' references to libmadc's own
 # symbols (the host process supplies them) are warnings, kept in the log.
 SHLIB=tmp/pkgroot/shlibdeps
@@ -297,10 +297,10 @@ AutoReqProv: yes
 Recommends: webkitgtk6.0
 Recommends: gtk4
 %define debug_package %{nil}
-# The webview library's own DT_NEEDED (webkitgtk, gtk4 and their world) must
+# The ui_web module's own DT_NEEDED (webkitgtk, gtk4 and their world) must
 # not become hard Requires of the whole package: the GUI is optional, the
 # weak dependencies above name it.
-%global __requires_exclude_from ^/usr/lib64/libmadcwebview\\.so\$
+%global __requires_exclude_from ^/usr/lib/madc/modules/ui_web\\.so\$
 %define __strip /bin/true
 %define _build_id_links none
 
@@ -352,10 +352,10 @@ share/doc/madc/examples/madc.ini for a documented example configuration
 file. The IDE, madcide, is its own download
 (https://github.com/derekbsnider/madcide), carrying a madc of its own.
 
-GUI: lib/libmadcwebview.so is madc's binding of the platform webview
-(WebKitGTK 6.0 / GTK4) with the native menu bar and file dialogs. A
-program that says \`import madcwebview;\` (madc's ui "web" target) loads
-it from this lib/.
+GUI: the ui_web module (lib/madc/modules/ui_web.so) is madc's binding of
+the platform webview (WebKitGTK 6.0 / GTK4) with the native menu bar and
+file dialogs. A program that says \`import ui_web;\` gets madc's ui
+"web" target.
 
 Git: the git module (lib/madc/modules/git.so) is madc's read-only view of a
 git repository, with libgit2 linked into it (\`import git;\` and the

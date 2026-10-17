@@ -8,6 +8,7 @@
 // text). The caret moving re-marks the current line; a render without the
 // hint has no gutter (the negative control). Steps: the first paint, a
 // press in line 3's gutter, the render at the new caret, the hint dropped.
+import ui_web;	// the web target's host (ui::open(ui::WEB))
 var doc = "one\ntwo\nthree";
 long caret = 5;			// line 2, "t|wo"
 bool gutter = true;

@@ -7,6 +7,7 @@
 #include "madc_module.h"	// madc_module_entry_name
 #include "madc_dl.h"
 #include "madc_posix_io.h"	// resolve_real_path, host_path_dirname
+#include "madc_guards.h"	// madc_lift_memory_guard: a GUI module in a module list
 
 // The rows. `c` and `m` name the C runtime images by their REAL sonames /
 // install names / module names — a dev-symlink spelling (libm.so) needs the
@@ -19,7 +20,6 @@
 static const MadcModuleSpec madc_modules[] = {
 	{ "c", NULL,     "libc.so.6", "libSystem.B.dylib", "ucrtbase.dll", 0 },
 	{ "m", "math.h", "libm.so.6", "libSystem.B.dylib", "ucrtbase.dll", 0 },
-	{ "madcwebview", "webview.h", "libmadcwebview.so", "libmadcwebview.dylib", "madcwebview.dll", MADC_MODULE_GUI | MADC_MODULE_LAZY },
 	{ NULL, NULL, NULL, NULL, NULL, 0 }
 };
 
@@ -37,14 +37,6 @@ const MadcModuleSpec *madc_module_find_spelled(const std::string &spelling)
 		if (spelling == madc_module_library_spelling(madc_modules[i].name))
 			return &madc_modules[i];
 	return NULL;
-}
-
-bool madc_module_any_flagged(unsigned flags)
-{
-	for (int i = 0; madc_modules[i].name; i++)
-		if (madc_modules[i].flags & flags)
-			return true;
-	return false;
 }
 
 const char *madc_target_dso_suffix(TargetOS os)
@@ -148,6 +140,63 @@ std::string madc_module_find_file(const std::string &module, const std::vector<s
 			return path;
 	}
 	return "";
+}
+
+// The module list's entry spellings (madc_modules.h): a link library is its
+// spelling; an optional one '?' and its spelling; a madc module '@', 'g' (a
+// GUI module) or '-', its name, '=', its file.
+void madc_module_deps_append(std::string &table, madc_module_dep kind,
+			     const std::string &spelling, const std::string &name, bool gui)
+{
+	switch (kind) {
+	case madc_module_dep::link:
+		break;
+	case madc_module_dep::optional:
+		table += '?';
+		break;
+	case madc_module_dep::module:
+		table += '@';
+		table += gui ? 'g' : '-';
+		table += name;
+		table += '=';
+		break;
+	}
+	table += spelling;
+	table.push_back('\0');
+}
+
+bool madc_module_deps_open(const char *table, const char *end, std::string &error)
+{
+	error.clear();
+	for (const char *p = table; p && (!end || p < end) && *p; ) {
+		size_t n = end ? strnlen(p, (size_t)(end - p)) : strlen(p);
+		std::string entry(p, n);
+		p += n + 1;
+		std::string why;
+		if (entry[0] == '?') {
+			madc_module_open(entry.substr(1), why);	// optional: absent is fine
+			continue;
+		}
+		if (entry[0] != '@') {
+			if (!madc_module_open(entry, why)) {
+				error = "import: cannot load '" + entry + "': " + why;
+				return false;
+			}
+			continue;
+		}
+		size_t eq = entry.find('=');
+		std::string name = eq == std::string::npos ? std::string() : entry.substr(2, eq - 2);
+		std::string file = eq == std::string::npos ? std::string() : entry.substr(eq + 1);
+		// Its own load may reserve address space far beyond any program
+		// budget (WebKit's): the guard lifts BEFORE it opens.
+		if (entry.size() > 1 && entry[1] == 'g')
+			madc_lift_memory_guard("a GUI module in the module list");
+		if (file.empty() || !madc_module_open(file, why)) {
+			error = "import: module '" + name + "': " + (file.empty() ? "no file recorded" : why);
+			return false;
+		}
+	}
+	return true;
 }
 
 std::string madc_module_entry_name(const std::string &module)

@@ -9,7 +9,7 @@
 #   madc-<ver>-windows-x86_64/bin/libstdc++-6.dll     staged UCRT-flavor C++ runtime
 #   madc-<ver>-windows-x86_64/bin/libwinpthread-1.dll staged UCRT winpthreads
 #   madc-<ver>-windows-x86_64/bin/libmadc-0.dll       the full madc engine carrying the forest (win twin of libmadc.so.0; madc.exe and AOT output bind it)
-#   madc-<ver>-windows-x86_64/bin/madcwebview.dll     the platform webview library (WebView2 + native chrome; GUI programs: import madcwebview)
+#   madc-<ver>-windows-x86_64/lib/madc/modules/ui_web.dll    the ui_web module: the platform webview (WebView2 + native chrome; GUI programs: import ui_web)
 #   madc-<ver>-windows-x86_64/lib/madc/modules/git.dll       the git module (import git;, libgit2 linked in)
 #   madc-<ver>-windows-x86_64/lib/madc/modules/markdown.dll  the markdown module (import markdown;, cmark-gfm
 #                                                     linked in) — madc's module directory (madc.exe's ../lib)
@@ -58,7 +58,7 @@ GCC_SRC="${WIN_UCRT_LIBSTDCXX_SRC:-/workspace/win-ucrt-libstdc++/gcc-13.2.0}"
 mkdir -p dist
 
 for f in "$BIN" "$SET/libstdc++-6.dll" "$SET/libwinpthread-1.dll" "$SET/libmadc-0.dll" \
-         "$SET/madcwebview.dll" lib/madc/modules/git.dll lib/madc/modules/markdown.dll lib/libmadc.dll.a lib/libmadc_rt-hosted-x86-64-windows.a; do
+         lib/madc/modules/ui_web.dll lib/madc/modules/git.dll lib/madc/modules/markdown.dll lib/libmadc.dll.a lib/libmadc_rt-hosted-x86-64-windows.a; do
     if [ ! -f "$f" ]; then
         echo "package_release_windows: $f missing — run 'make -C src release-windows' first" >&2
         exit 1
@@ -80,17 +80,16 @@ install -m 644 docs/examples/madc.ini "$STAGE/$ROOT/madc.ini.example"
 install -m 755 "$SET/libstdc++-6.dll" "$STAGE/$ROOT/bin/libstdc++-6.dll"
 install -m 755 "$SET/libwinpthread-1.dll" "$STAGE/$ROOT/bin/libwinpthread-1.dll"
 install -m 755 "$SET/libmadc-0.dll" "$STAGE/$ROOT/bin/libmadc-0.dll"
-# The platform webview library (GUI programs: import madcwebview): the
-# loader searches the exe's directory on Windows — beside madc.exe, like
-# the runtime DLLs. It needs the Evergreen WebView2 runtime on the machine.
-install -m 755 "$SET/madcwebview.dll" "$STAGE/$ROOT/bin/madcwebview.dll"
-# The madc modules — git (a program that says `import git;`, or `%git` at the
-# prompt; the minimal read-only libgit2 STATIC-linked inside it, nothing named
-# libgit2 ships) and markdown (`import markdown;`, e.g. the IDEs' help;
+# The madc modules — ui_web (GUI programs: `import ui_web;`; it needs the
+# Evergreen WebView2 runtime on the machine), git (a program that says
+# `import git;`, or `%git` at the prompt; the minimal read-only libgit2
+# STATIC-linked inside it, nothing named libgit2 ships) and markdown
+# (`import markdown;`, e.g. the IDEs' help;
 # cmark-gfm STATIC-linked inside it): found by name in madc's module
 # directory, madc.exe's ../lib/madc/modules. Each binds libmadc-0.dll and the
 # runtime DLLs madc.exe already loaded.
 install -d "$STAGE/$ROOT/lib/madc/modules"
+install -m 755 lib/madc/modules/ui_web.dll "$STAGE/$ROOT/lib/madc/modules/ui_web.dll"
 install -m 755 lib/madc/modules/git.dll "$STAGE/$ROOT/lib/madc/modules/git.dll"
 install -m 755 lib/madc/modules/markdown.dll "$STAGE/$ROOT/lib/madc/modules/markdown.dll"
 install -m 644 lib/libmadc.dll.a "$STAGE/$ROOT/lib/libmadc.dll.a"
@@ -123,7 +122,7 @@ if [ ! -f "$pcre2_licence" ]; then
     exit 1
 fi
 install -m 644 "$pcre2_licence" "$STAGE/$ROOT/THIRD_PARTY_NOTICES/pcre2-LICENCE.txt"
-# The webview library binds webview/webview (MIT): its notice ships with it.
+# The ui_web module binds webview/webview (MIT): its notice ships with it.
 install -m 644 third_party/webview/LICENSE "$STAGE/$ROOT/THIRD_PARTY_NOTICES/webview-LICENSE.txt"
 # git.dll statically links libgit2 (GPLv2 WITH the linking exception, which
 # permits linking into a differently-licensed application): its notice ships.
@@ -169,11 +168,9 @@ Object output (madc --obj) links against lib\\libmadc.dll.a.
 The IDE, madcide, is its own download
 (https://github.com/derekbsnider/madcide), carrying a madc of its own.
 
-GUI: bin\\madcwebview.dll is madc's binding of the platform webview
-(WebView2) with the native menu bar and file dialogs. A program that
-says \`import madcwebview;\` (madc's ui "web" target) loads it from the
-directory madc.exe runs from — keep it beside the exe like the runtime
-DLLs. It needs the Microsoft Edge WebView2 Runtime, which Windows 11 (and any
+GUI: lib\\madc\\modules\\ui_web.dll is madc's binding of the platform
+webview (WebView2) with the native menu bar and file dialogs. A program
+that says \`import ui_web;\` gets madc's ui "web" target. It needs the Microsoft Edge WebView2 Runtime, which Windows 11 (and any
 machine with Microsoft Edge) already has.
 
 madc.ini.example (this folder) is a documented example configuration

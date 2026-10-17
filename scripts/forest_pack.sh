@@ -103,8 +103,8 @@ TU=${STAGE}_tu.cpp
 
 # --dialect-image: the roots are the COMPILER's (--print-dialect-roots, under
 # --std=madc): every dialect fragment the auto-include's provider table names
-# and the headers their own auto-include pulls (today <stdio.h>, for
-# <ns_ui_web>'s stderr), in the auto-include's order — the two owners a
+# and the headers their own auto-include pulls, in the auto-include's
+# order — the two owners a
 # dialect compile includes them through (Program::queue_fragment_prerequisites,
 # ordered_auto_include_headers). Never the pack list's C portion: the image
 # holds what a dialect compile reaches, nothing more (an explicitly included

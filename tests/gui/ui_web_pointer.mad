@@ -13,6 +13,7 @@
 // that character (the selection covers it once, "éa", not "éab"). Every
 // gesture is a synthetic MouseEvent dispatched at coordinates the page
 // measured — the real handlers and the real hit test run.
+import ui_web;	// the web target's host (ui::open(ui::WEB))
 var doc = "one\ntwo\nthree\nfour\nhéab";
 long caret = 0;
 long mark = -1;

@@ -8,6 +8,7 @@
 // malformed spec paints nothing (the row is refused whole, as in the grid).
 // The probe reads each painted span's classes, text and COMPUTED colours
 // back through the snapshot channel. Runs under Xvfb via remote_build gui.
+import ui_web;	// the web target's host (ui::open(ui::WEB))
 void compose(var &tree)
 {
     var edit;

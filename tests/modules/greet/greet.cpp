@@ -11,6 +11,7 @@
 #include "madc_module.h"
 
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -38,6 +39,11 @@ madc::value &squares(madc::value &out, int64_t n)
 	out = madc::value::make_array(v);
 	return out;
 }
+
+// The module's own initializer, seen by a program that never calls greet
+// (tests/testmodule_start.mad): an imported module opens at program start
+// in every lane, so this runs before main — as a ui host's registration does.
+static const int started __attribute__((used)) = setenv("MADC_GREET_STARTED", "yes", 1);
 
 } // namespace greet
 

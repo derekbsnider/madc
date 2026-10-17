@@ -1475,17 +1475,7 @@ static const std::map<madc::dis::istring, madc::dis::istring> &auto_include_iden
 	{"rust", "ns_rust"},
 	{"madc", "ns_madc"},
 	{"ui", "ns_ui"},
-	{"ui_web", "ns_ui_web"},
 	{"ui_ws", "ns_ui_ws"},
-	// The web UI LEVEL's enumerator (ui::WEB, <bits/ui_enums>): a program
-	// that names the level it wants (`ui::open(ui::WEB)`, `lvl = ui::WEB`)
-	// wants the target that serves it — <ns_ui_web>, whose initializer
-	// registers the host. The same row `ui_web` served while programs
-	// spelled the target's NAME; the enumerator is the program's
-	// declaration of need (enums, not strings — owner law 2026-09-09). A
-	// MEMBER row (the word is not the fragment's own head) fires only
-	// QUALIFIED by its namespace head — a bare `WEB` is the user's word.
-	{"WEB", "ns_ui_web"},
 	// The madc:: faces a HOST program uses (<ns_madc_host>: a document's
 	// parse handle and language services, the tool host, the ex core, the
 	// colour theme, discovery's claims, the REPL history store): MEMBER rows, so only a
@@ -1587,7 +1577,7 @@ static const char *auto_include_header_for_identifier(const madc::dis::istring &
 }
 
 // A dialect fragment's MEMBER row: the word is not the fragment's own head
-// (`WEB` for ns_ui_web), so it answers only QUALIFIED by a dialect head.
+// (`doc_parse` for ns_madc_host), so it answers only QUALIFIED by a dialect head.
 static bool auto_include_member_row(const madc::dis::istring &word, const char *header)
 {
     return strncmp(header, "ns_", 3) == 0 && word != header + 3;
@@ -1618,7 +1608,6 @@ static std::vector<madc::dis::istring> ordered_auto_include_headers(const std::s
 	"ns_madc",
 	"ns_madc_host",
 	"ns_ui",
-	"ns_ui_web",
 	"ns_ui_ws",
 	NULL
     };
@@ -1719,8 +1708,8 @@ static bool fragment_may_pull_header(const char *header, bool qualified_use)
     if ( !header )
 	return false;
     madc::dis::istring h(header);
-    // A sibling dialect fragment (ns_madc from <ns_ui_web>'s
-    // madc::module_available) is a zero-include surface too — an EMBEDDED
+    // A sibling dialect fragment (ns_madc from another fragment's
+    // `madc::` use) is a zero-include surface too — an EMBEDDED
     // extensionless file — but only a QUALIFIED use (`madc::x`) names it:
     // bits/value_stream DEFINES `namespace madc {`, and reading that as a
     // pull gave every iostream program the sys object (and the darwin
@@ -1731,7 +1720,7 @@ static bool fragment_may_pull_header(const char *header, bool qualified_use)
     // no namespace surface: any mention reaches it. print/println/format need
     // no provider at all — the compiler declares them
     // (Program::add_format_intrinsics) — and neither do the stdio streams
-    // they write to (Program::add_stdio_streams), so <ns_ui_web>'s
+    // they write to (Program::add_stdio_streams), so a fragment's
     // `println(stderr, ...)` compiles in a program that says neither println
     // nor stderr itself, and pulls no header.
     if ( embedded_dialect_fragment_p(h) && find_embedded_header(h) )
@@ -1755,8 +1744,8 @@ bool Program::auto_include_standard_identifier(const madc::dis::istring &word,
     // (gcc 20010409-1.c typedefs size_t, then uses it in `extern size_t
     // strlen(...)`; pulling <stddef.h> in as well would redeclare it). The
     // TU's words, for the TU's mentions: a dialect FRAGMENT's mentions are
-    // the fragment's own — <ns_ui_web>'s `js::stringify` means the js
-    // surface even when the TU named a parameter `js` (testuihostfake) —
+    // the fragment's own — a fragment's `js::stringify` means the js
+    // surface even when the TU named a parameter `js` —
     // so the TU's declared words never shadow a fragment scan.
     if ( !auto_include_fragment_scan && auto_include_declared_words.count(word) )
 	return false;
@@ -1830,13 +1819,13 @@ bool Program::auto_include_standard_identifier(const madc::dis::istring &word,
     const char *header = auto_include_header_for_identifier(word);
     if ( !header )
 	return false;
-    // A fragment never pulls ITSELF: <ns_ui_web>'s own `ui::WEB` (its
-    // register_host line) names the fragment being tokenized.
+    // A fragment never pulls ITSELF: its own qualified mention of its
+    // surface names the fragment being tokenized.
     if ( auto_include_fragment_scan && auto_include_fragment_name == header )
 	return false;
     // A MEMBER row of a dialect fragment (the word is not the fragment's own
-    // head: `WEB` for ns_ui_web) fires only when QUALIFIED by a dialect
-    // namespace head (`ui::WEB`) — a bare `WEB` is the user's word. And a
+    // head: `doc_parse` for ns_madc_host) fires only when QUALIFIED by a dialect
+    // namespace head (`madc::doc_parse`) — a bare `doc_parse` is the user's word. And a
     // name qualified by a dialect head may pull only a dialect FRAGMENT its
     // own row names — never a std header: `ui::set` stays the ui surface's
     // own, `madc::getline` never pulls <string>, a user qualifier
@@ -2175,7 +2164,8 @@ std::vector<std::string> Program::module_search_path() const
 // declarations register when the parser's state exists
 // (register_imported_modules), each function stamped as the module's member,
 // so a call reaches the module's code through the slot binding in every lane.
-// The module's file joins the object's module list.
+// The unit's module list names it (the CIR builder reads imported_modules), so
+// a native program opens it at start.
 bool Program::import_madc_module(const madc::dis::istring &name, const std::string &path,
 				 std::string &err)
 {
@@ -2212,7 +2202,6 @@ bool Program::import_madc_module(const madc::dis::istring &name, const std::stri
     imported_modules.push_back(im);
     if ( d->flags & mdGui )
 	bound_gui_module = true;
-    module_optional_libs.push_back(im.path);
     return true;
 }
 

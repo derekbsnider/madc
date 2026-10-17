@@ -94,11 +94,6 @@ double time_diff(struct timeval x , struct timeval y)
 // arms by default; knobs off|auto|N; an armed memory guard is a soft limit a
 // GUI module row lifts at run start).
 
-// `madc --import=NAME` with no source: the status of a failed import — its own,
-// so a launcher tells "not installed" from any other failure (sysexits.h's
-// EX_UNAVAILABLE; spelled here because not every target has <sysexits.h>).
-static const int import_unavailable_status = 69;
-
 // Walk backwards from a line to include preceding comment block.
 static int find_comment_start(const std::vector<std::string> &lines, int func_line)
 {
@@ -1835,7 +1830,7 @@ int main(int argc, char **argv)
 	// NAME"), so a launcher tests before it starts: 0, or the import
 	// error and a status of its own.
 	if ( !interactive && !prog->command_line_imports.empty() )
-	    return prog->import_command_line_modules() ? 0 : import_unavailable_status;
+	    return prog->import_command_line_modules() ? 0 : madc_import_unavailable_status;
 	if ( interactive || terminal )
 	    return run_repl(std::move(prog), terminal,
 			    history_file_given ? history_file
@@ -1902,7 +1897,7 @@ int main(int argc, char **argv)
 	bool parse_ok = prog->parse(tp);
 	intern_hold.reset();
 	gettimeofday(&_ps1, NULL);
-	// A GUI module row bound at parse (`import madcwebview;`) lifts an armed
+	// A GUI module imported at parse (`import ui_web;`) lifts an armed
 	// memory guard before the program runs: WebKit's address-space
 	// reservations dwarf any sane program budget (owner ruling 2026-09-07).
 	if ( parse_ok && prog->bound_gui_module )

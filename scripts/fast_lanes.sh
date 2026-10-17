@@ -11,7 +11,7 @@
 #                         (new/ lacc/ havoc/) — MIR's author's own regression
 #                         tests against the constructs c2mir cares about
 #   gui           ~50s    tests/gui under Xvfb, JIT + exe + obj (builds
-#                         libmadcwebview; needs a host with xvfb-run)
+#                         the ui_web module; needs a host with xvfb-run)
 #   index-c       ~110s   kostya/index-c: one 16k-line self-verifying C program,
 #                         ~50 real-world tasks each checked against its own
 #                         checksum, run at -O2. Catches WRONG ANSWERS, which
@@ -26,7 +26,7 @@
 #                         cmark-gfm, as the module's build does)
 #
 # MEASURED 2026-09-21 on the desktop container: 4 + 28 + 5 + 51 + 86 = under
-# three minutes for the whole tier, incremental webview build included.
+# three minutes for the whole tier, incremental ui_web build included.
 #
 # The reason this exists: gcc c-torture had no lane script and no ledger row,
 # so nothing re-ran it for five weeks and it drifted 1614 -> 1587 passing while

@@ -1,6 +1,5 @@
-// Two units that each use a namespace whose embedded fragment defines
-// code — the web UI host (ui::WEB, the level a program asks for) —
-// compiled to objects (`madc -c`) and
+// Two units that each use the dialect (ui::WEB, the level a program asks
+// for; println) compiled to objects (`madc -c`) and
 // linked (`madc -o`). A fragment's namespace-scope variables are inline and
 // its function bodies have vague linkage, so each object's copy is one
 // entity and the link keeps one; a plain variable in a header is a second

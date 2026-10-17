@@ -858,7 +858,7 @@ all:
 STAGE_HOST_TARGET := $(shell bash ../scripts/stage_cmake_args.sh --target host)
 
 include madc_modules.mk
-include webview.mk
+include ui_web.mk
 include git.mk
 include markdown.mk
 
@@ -1005,13 +1005,13 @@ else
 MACHO_READER = bin/madc
 RELEASE_MACOS_ARCHES = arm64 x86-64
 endif
-# The platform webview library (webview.mk) rides the release of each arch:
-# package_release_macos.sh ships it as lib/libmadcwebview.dylib. The madc
-# modules ride too: git (git.mk, the minimal static libgit2 linked in) and
-# markdown (markdown.mk, cmark-gfm linked in), shipped in lib/madc/modules/.
+# The madc modules ride the release of each arch, shipped in
+# lib/madc/modules/: ui_web (ui_web.mk, the platform webview inside), git
+# (git.mk, the minimal static libgit2 linked in) and markdown (markdown.mk,
+# cmark-gfm linked in).
 release-%-macos:
 	$(MAKE) hosted-$*-macos
-	$(MAKE) webview-$*-macos
+	$(MAKE) ui_web-$*-macos
 	$(MAKE) git-$*-macos
 	$(MAKE) markdown-$*-macos
 	$(DARWIN_STRIP) -o ../bin/madc-release-$*-macos ../obj/hosted-$*-macos/madc-thin
@@ -1071,10 +1071,9 @@ $(MIRBUILD)/hosted-x86-64-windows/libmir.a: FORCE
 # pack script's verify legs (--dump-forest, --run-frozen, bind-cache
 # equivalence) run the EXACT shipped bytes under wine. The suite-facing
 # hosted exe stays live-parse; this is the packed product twin.
-# The platform webview library (webview.mk) rides the release too:
-# package_release_windows.sh ships bin/madcwebview.dll beside madc.exe. The
-# madc modules ride too — git (git.mk, the minimal static libgit2 linked in)
-# and markdown (markdown.mk, cmark-gfm linked in) — found by name in
+# The madc modules ride the release too — ui_web (ui_web.mk, the platform
+# webview inside), git (git.mk, the minimal static libgit2 linked in) and
+# markdown (markdown.mk, cmark-gfm linked in) — found by name in
 # lib/madc/modules/ (madc.exe's ../lib), not DLLs madc.exe imports: the
 # package ships them there.
 # The release SET (docs/plans/2026-10-03-chthonia-windows-macos.md §7b,
@@ -1089,16 +1088,16 @@ $(MIRBUILD)/hosted-x86-64-windows/libmir.a: FORCE
 # what release-windows builds and the package ships, and what the wine lane's
 # hosted exe imports (scripts/remote_build.sh wine) — one list.
 modules-windows:
+	$(MAKE) ui_web-windows
 	$(MAKE) git-windows
 	$(MAKE) markdown-windows
 release-windows:
 	$(MAKE) hosted-x86-64-windows
-	$(MAKE) webview-windows
 	$(MAKE) modules-windows
 	$(MAKE) MODE=hosted-x86-64-windows $(WIN_RELEASE_DIR)/madc.exe
 	x86_64-w64-mingw32-strip $(WIN_RELEASE_DIR)/madc.exe
 	x86_64-w64-mingw32-strip -o $(WIN_RELEASE_DIR)/libmadc-0.dll ../bin/libmadc-0.dll
-	cp -p ../bin/libstdc++-6.dll ../bin/libwinpthread-1.dll ../bin/madcwebview.dll $(WIN_RELEASE_DIR)/
+	cp -p ../bin/libstdc++-6.dll ../bin/libwinpthread-1.dll $(WIN_RELEASE_DIR)/
 	rm -f ../bin/madc-release-x86-64-windows.exe
 	cd .. && MADC_WIN_CXX_INCLUDE="$(WIN_UCRT_LIBSTDCXX)/include/c++/13.2.0" MADC_WIN_PACK_CFLAGS="$(WIN_UCRT_FLAGS)" bash scripts/forest_pack_windows.sh --image bin/release-windows/libmadc-0.dll bin/release-windows/madc.exe
 	cd .. && bash scripts/verify_pe_release.sh bin/release-windows/madc.exe
@@ -1213,7 +1212,6 @@ test: $(TESTBINS)
 # shipped -O2 packed artifact (owner 2026-10-02). fulltest = gates + the suite
 # on the dev binary, for a local all-in-one run.
 gates: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
-	@python3 ../scripts/gen_webview_header.py --check
 	@cd .. && bash scripts/check-no-std-hardcoding.sh
 	@cd .. && bash scripts/check-call-emit-symbol.sh
 	@cd .. && bash scripts/check-var-emit-name-bypass.sh

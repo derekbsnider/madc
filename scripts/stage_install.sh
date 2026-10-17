@@ -13,9 +13,9 @@
 # Inputs, built before it runs (from the repo root): bin/madc-release,
 # lib/release/libmadc.so (the forest inside), lib/release/libmadc_rt.a. The
 # IDE is madcide's own package (github.com/derekbsnider/madcide), which
-# carries this madc. The optional libraries (lib/libmadcwebview.so, a weak
-# dependency) and the madc modules (lib/madc/modules/: git, markdown — a
-# program that imports them loads them) are staged when they were built;
+# carries this madc. The madc modules (lib/madc/modules/: ui_web — a weak
+# dependency, git, markdown; a program that imports them loads them) are
+# staged when they were built;
 # MADC_STAGE_REQUIRE_MODULES=1 (the packages) makes a missing one an error.
 set -e
 cd "$(dirname "$0")/.."
@@ -72,20 +72,10 @@ fi
 # context stack + VLA scope-exit helpers, nothing else. Platform parity: the
 # mac and win archives already ship it.
 install -m 644 lib/release/libmadc_rt.a "$root/$libdir/libmadc_rt.a"
-# The optional library: the platform webview library (the loader tries
-# <exedir>/../lib first, then the system search).
-for m in libmadcwebview.so; do
-	if [ -f "lib/$m" ]; then
-		install -m 755 "lib/$m" "$root/$libdir/$m"
-	elif [ -n "$MADC_STAGE_REQUIRE_MODULES" ]; then
-		echo "stage_install: missing lib/$m (the packages carry it)" >&2
-		exit 1
-	fi
-done
 # The madc modules (include/madc_module.h), found by NAME in madc's module
 # directory — the binary's ../lib/madc/modules — whatever the distribution's
 # library directory: <prefix>/lib/madc/modules.
-for m in git markdown; do
+for m in ui_web git markdown; do
 	if [ -f "lib/madc/modules/$m.so" ]; then
 		install -d "$p/lib/madc/modules"
 		install -m 755 "lib/madc/modules/$m.so" "$p/lib/madc/modules/$m.so"

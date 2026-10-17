@@ -1,12 +1,10 @@
 /* madcwebview_chrome.h — madc's extension of the webview C API: the NATIVE
  * chrome around the webview — a menu bar over the window (madcide GUI chrome
  * S2), the platform's file dialogs (S4) and its clipboard (plan §41.11a step
- * 3e). Built into libmadcwebview beside upstream's webview.cc;
- * scripts/gen_webview_header.py appends this text to the embedded
- * include/madc/webview.h, so the ONE module interface carries upstream's API
- * and madc's — never a hand copy.
+ * 3e). Built into the ui_web module beside upstream's webview.cc; the
+ * module's host (ui_web.cpp) is its caller.
  *
- * JSON-free by design: the host (the <ns_ui_web> fragment) walks the engine's
+ * JSON-free by design: the host (ui_web.cpp) walks the engine's
  * menu description and calls begin / add / separator / end; the platform
  * layer only builds widgets. `key` is a madc key spelling ("^s", "pgdn",
  * "^k d"): a CONTROL key becomes the item's accelerator (GTK4 accel, Cocoa

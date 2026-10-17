@@ -318,7 +318,7 @@ gate_mactar() {
     esac
     [ -x "$root/bin/madc" ]        || fail mactar "no executable bin/madc in the artifact"
     [ -f "$root/lib/libmadc_rt.a" ] || fail mactar "no lib/libmadc_rt.a in the artifact"
-    [ -f "$root/lib/libmadcwebview.dylib" ] || fail mactar "no lib/libmadcwebview.dylib in the artifact"
+    [ -f "$root/lib/madc/modules/ui_web.dylib" ] || fail mactar "no lib/madc/modules/ui_web.dylib in the artifact"
     [ -f "$root/lib/libmadc-0.dylib" ] || fail mactar "no lib/libmadc-0.dylib in the artifact"
 
     # 1. the shipped madc runs a program

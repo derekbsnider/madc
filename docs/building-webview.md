@@ -1,23 +1,27 @@
-# Building and testing the platform webview library
+# Building and testing the ui_web module
 
-`madcwebview` binds the C API of webview/webview **0.12.0**. Its source is a
-Git subtree at `third_party/webview` (upstream commit
+`ui_web` is the madc module (`include/madc_module.h`) that serves the web UI
+level: a program says `import ui_web;` and its `ui::open(ui::WEB)` gets a
+platform window. Its source is `src/modules/ui_web/` — the host
+(`ui_web.cpp`), madc's native chrome (`madcwebview_chrome.{cc,h}`) and the
+face (`ui_web.madi`) — linked into ONE image with webview/webview **0.12.0**,
+whose source is a Git subtree at `third_party/webview` (upstream commit
 `3ab4b5d722438fc8a13e6ca830c5e2372d19a01d`, history preserved). The MIT
 notice remains at `third_party/webview/LICENSE`. The only local patch fixes
 GTK's `set_size_impl` returning an error after successfully applying a valid
-hint; `tests/gui/webview_size.mad` covers all four hints.
+hint (the host sets its window size through it).
 
 The build is optional: ordinary `make -C src` and non-GUI programs do not
-depend on GTK or load a browser engine. Build the library explicitly:
+depend on GTK or load a browser engine. Build the module explicitly:
 
 | Build host/target | Command | Artifact |
 |---|---|---|
-| Linux | `make -C src libmadcwebview` | `lib/libmadcwebview.so` |
-| Linux → Windows x86_64 | `make -C src webview-windows` | `bin/madcwebview.dll`, with the existing UCRT C++/pthread DLLs beside it |
-| Linux → both macOS architectures | `make -C src webview-macos` | `lib/webview/{arm64,x86-64}-macos/libmadcwebview.dylib` |
-| Single macOS architecture | `make -C src webview-arm64-macos` or `make -C src webview-x86-64-macos` | The corresponding artifact above |
+| Linux | `make -C src ui_web` | `lib/madc/modules/ui_web.so` |
+| Linux → Windows x86_64 | `make -C src ui_web-windows` | `lib/madc/modules/ui_web.dll`, linked against libmadc's import lib |
+| Linux → both macOS architectures | `make -C src ui_web-macos` | `lib/madc/modules/{arm64,x86-64}-macos/ui_web.dylib` plus a flat copy |
+| Single macOS architecture | `make -C src ui_web-arm64-macos` or `make -C src ui_web-x86-64-macos` | The corresponding artifact above |
 
-Build on the desktop container, not the NAS. `src/webview.mk` owns these
+Build on the desktop container, not the NAS. `src/ui_web.mk` owns these
 recipes and reuses the main Makefile's SDK and UCRT toolchain settings.
 Products and downloaded SDK headers stay outside the vendor subtree.
 
@@ -36,33 +40,33 @@ and extracts the headers and their license into
 The actual Windows machine must have the Evergreen WebView2 runtime.
 
 Darwin uses `MACOS_SDK`, `DARWIN_CLANGXX`, `DARWIN_CXX_ISYS`, and
-`DARWIN_LD_FLAGS` from the existing Makefile. The **library alone** targets
+`DARWIN_LD_FLAGS` from the existing Makefile. The **module alone** targets
 macOS **13.3**, via `WEBVIEW_MACOS_MINOS`; madc's own minimum stays unchanged.
 The deployment version must appear in clang's target triple: a separate
 `-mmacosx-version-min` cannot override an older explicit target triple.
 The 13.3 choice avoids the cross toolchain's missing
 `__isPlatformVersionAtLeast` helper. Each dylib has install name
-`@rpath/libmadcwebview.dylib`; stage the selected architecture as
-`lib/libmadcwebview.dylib` next to the target madc installation. The host
-posture also supports the existing `DARWIN_HOST=1` toolchain configuration.
+`@rpath/ui_web.dylib`.
 
-## Typed interface
+## The module's surface
+
+A program imports the module and names the level; the module registers its
+host (target "web", level ui::WEB) as it loads, and an imported module opens
+at program start in every lane (JIT, executable, object):
 
 ```c
-import madcwebview;
-webview_t w = webview_create(0, 0);
+import ui_web;
+long t = ui::open(ui::WEB);
 ```
 
-The module row points at embedded `webview.h`. Its **global C declarations**
-come directly from the upstream C section: `typedef void *webview_t`, all
-three enums, the version structs, all **17** functions, pointer returns,
-`const webview_version_info_t *`, and the original callback signatures.
-There are no provider wrappers or namespace aliases in this header.
-`scripts/gen_webview_header.py` regenerates it; `--check` verifies exact
-agreement and runs in `fulltest` without needing GUI dependencies. It omits
-upstream's C++ implementation and selects external rather than inline linkage.
+The face exports `ui_web::menu_activate(id)` (the menu test seam) and nothing
+else. The webview C API is the module's own: the host calls it, and a
+program reaches the window through `ui::`. A module carries no macros (as a
+C++20 named module carries none), and upstream's header is mostly macros and
+global C types.
 
-Use the UI thread for creation, window access, rendering, binding and
+The webview library's own threading contract, which the host keeps: use the
+UI thread for creation, window access, rendering, binding and
 destruction. `webview_dispatch` schedules work onto that thread and
 `webview_terminate` may be called from a background thread. Callback ID and
 request strings are borrowed for the duration of the callback. The caller
@@ -72,13 +76,12 @@ state and synchronization. Handles remain pointers, never boxed `var` values.
 
 ## Native chrome — madc's extension of the library
 
-`src/madcwebview_chrome.h` declares madc's own C API beside upstream's — a
-native menu bar (`madcwebview_menu_begin` / `_add` / `_separator` / `_end`
-/ `_on_action` / `_activate`) and the platform's file dialogs
-(`madcwebview_dialog_open` / `_save`) — and `src/madcwebview_chrome.cc`
-implements it inside `libmadcwebview` on all three platforms;
-`scripts/gen_webview_header.py` appends the header to the embedded
-`include/madc/webview.h`, so `import madcwebview;` sees one interface.
+`src/modules/ui_web/madcwebview_chrome.h` declares madc's own C API beside
+upstream's — a native menu bar (`madcwebview_menu_begin` / `_add` /
+`_separator` / `_end` / `_on_action` / `_activate`) and the platform's file
+dialogs (`madcwebview_dialog_open` / `_save`) — and `madcwebview_chrome.cc`
+implements it inside the module on all three platforms; the host is its
+caller.
 
 | Platform | Menu bar | File dialogs | Extra build inputs |
 |---|---|---|---|
@@ -96,16 +99,15 @@ host is already running (`webview_run`). `madcwebview_menu_activate(id)`
 fires an item as the user would — the test seam `tests/gui/ui_web_menu.mad`
 drives it under Xvfb, and natively on the Windows and macOS staging sets.
 
-The release targets build the library beside the binaries
-(`release-windows` runs `webview-windows`; `release-<arch>-macos` runs
-`webview-<arch>-macos`; `package_release.sh` runs `libmadcwebview`), and
-the packagers ship it where the module loader looks — `bin\madcwebview.dll`
-beside `madc.exe` (the exe's directory), `lib/libmadcwebview.dylib` next to
-`bin/madc` (`<exedir>/../lib`), `lib/libmadcwebview.so` in the tarball and
-the deb/rpm libdir (the system search, `ldconfig`). On Linux it is a WEAK
-dependency (`Recommends: libwebkitgtk-6.0-4, libgtk-4-1`; the rpm excludes
-the library's own requires) — madc never loads it, only a program that
-imports it does. The webview/webview MIT notice ships beside it.
+The release targets build the module beside the binaries
+(`modules-windows` runs `ui_web-windows`; `release-<arch>-macos` runs
+`ui_web-<arch>-macos`; `package_release.sh` runs `ui_web`), and the packagers
+ship it in madc's module directory, where an import looks — `lib/madc/modules/`
+in the tarball, the macOS bundle and the Windows zip, `/usr/lib/madc/modules/`
+in the deb/rpm. On Linux it is a WEAK dependency (`Recommends:
+libwebkitgtk-6.0-4, libgtk-4-1`; the rpm excludes the module's own requires) —
+madc never loads it, only a program that imports it does. The webview/webview
+MIT notice ships beside it.
 
 ## GUI validation and memory policy
 
@@ -113,28 +115,24 @@ imports it does. The webview/webview MIT notice ships beside it.
 scripts/remote_build.sh sync build gui
 ```
 
-The `gui` stage builds the library, checks the generated header, then runs
-`tests/gui/*.mad` through the existing fixture runner under `xvfb-run -a`.
-It covers JIT and native executables. The DOM reducer verifies version data,
-native handles, page text/layout, initialization, both callback signatures,
-the promise returned by `webview_return`, and destruction. The size reducer
-checks each defined size hint. Neither requires Internet page content.
+The `gui` stage (`scripts/gui_lane.sh`) builds the module, then runs
+`tests/gui/*.mad` through the existing fixture runner under `xvfb-run -a`, in
+the JIT, native executable and object lanes. None requires Internet page
+content.
 
 **Memory policy (owner ruling 2026-09-07):** madc arms no resource guard by
 default; the test runner asks for the memory guard's `auto` (4096 MB + 128 MB
 per `--project` TU) for every test process. WebKit's virtual address
-reservations exceed that, so the `madcwebview` module row carries the GUI
-flag and a program that imports it lifts the (soft) guard at run start — the
+reservations exceed that, so the module's description carries the GUI flag
+and a program that imports it lifts the (soft) guard at run start — the
 GUI stage needs no memory override of its own. It still caps CPU time at 30
 seconds and wall time at 120 seconds; individual tests retain runner
 timeouts.
 
 `MADC_TEST_DIR` is a generic fixture-runner input; it defaults to `tests`.
-GUI tests do not change the default suite's inventory or baseline. A
-relocatable `.o` has no shared-library dependency table: to run one directly,
-load its dependency explicitly, for example with `-lmadcwebview` and
-`LD_LIBRARY_PATH` pointing at this build's `lib`. Direct `import` discovery
-is tested by the GUI stage without those extra flags.
+GUI tests do not change the default suite's inventory or baseline. An
+object carries its module list (`__madc_module_deps`), so the single-object
+lane opens the module before load with no extra flags.
 
 ## Separate worktrees
 

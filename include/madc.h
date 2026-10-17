@@ -5629,8 +5629,8 @@ public:
     // them as OPTIONAL entries (the loader lifts the guard for a GUI row and
     // opens what it can without failing).
     std::vector<madc::dis::istring> module_optional_libs;
-    // A module row flagged MADC_MODULE_GUI was bound by this TU (`import
-    // madcwebview;`): the driver lifts an armed memory guard before running.
+    // A GUI module was imported by this TU (`import ui_web;`: its description's
+    // mdGui): the driver lifts an armed memory guard before running.
     bool bound_gui_module;
     // The madc MODULES this Program imported (madc_module.h): each one's name,
     // the file the import opened, and its description. An import registers
@@ -7329,7 +7329,7 @@ public:
     //    registered only as demanded (CirMaterializeFilter::withheld). What
     //    the bind still restores of the unit is its ANCHORS — the globals
     //    with storage (a dynamic initializer that runs before main:
-    //    `__madc_run_child`, ns_ui_web's `register_host`; the storage those
+    //    `__madc_run_child`, a host's `register_host`; the storage those
     //    and the unit's loaded bodies reach by symbol) — and what they pull;
     //  - namespaces: the namespaces its decl entries' records declare into
     //    (a function's, a type's, an object's — A1: no entry is a

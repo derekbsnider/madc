@@ -48,10 +48,6 @@ const MadcModuleSpec *madc_module_find(const std::string &name);
 // for a bare library that has no row — the object loader reads spellings
 // out of __madc_module_deps and asks which of them carry row flags.
 const MadcModuleSpec *madc_module_find_spelled(const std::string &spelling);
-// Does ANY row carry one of `flags`? — a build-level fact read from the map
-// (the capabilities manifest asks "is there a GUI library in this build" to
-// list the web UI level), never a name test.
-bool madc_module_any_flagged(unsigned flags);
 const char *madc_target_dso_suffix(TargetOS os);
 const char *madc_target_dso_suffix();	// for madc_target_os (madc::library_suffix)
 // True when `name` already carries SOME target's library suffix (libc.so.6,
@@ -77,6 +73,32 @@ std::string madc_module_library_spelling(const std::string &name);	// for madc_t
 std::string madc_module_file_spelling(const std::string &module);
 std::string madc_module_dir();
 std::string madc_module_find_file(const std::string &module, const std::vector<std::string> &dirs);
+
+// The exit status of an import that fails before a program can run: `madc
+// --import=NAME` with no source, and a native program whose module cannot
+// open at start — its own, so a launcher tells "not installed" from any
+// other failure (sysexits.h's EX_UNAVAILABLE; spelled here because not every
+// target has <sysexits.h>).
+const int madc_import_unavailable_status = 69;
+
+// The module list a unit carries (__madc_module_deps — the CIR builder writes
+// it; the single-object loader opens an object's before load, and a program's
+// own init opens its own before its other initializers): entries
+// NUL-separated, the list double-NUL-terminated.
+//   link      a link-form library's TARGET spelling, required (its DT_NEEDED twin)
+//   optional  a library a LAZY module row named: opened when it can be
+//   module    a madc MODULE (madc_module.h) by name and the file its import
+//             opened, required: opened at program start, so its initializer
+//             runs before main (a host registers); a GUI module lifts an
+//             armed memory guard before it opens
+enum class madc_module_dep : unsigned char { link, optional, module };
+void madc_module_deps_append(std::string &table, madc_module_dep kind,
+			     const std::string &spelling, const std::string &name = std::string(),
+			     bool gui = false);
+// Open every entry of a module list, in order; `end` bounds it (NULL: its
+// double NUL does). False + `error` (the import error's text) at the first
+// required entry that cannot open.
+bool madc_module_deps_open(const char *table, const char *end, std::string &error);
 
 // Open a spelled library through the madc_dl seam into the default symbol
 // scope: a bare spelling is tried beside the running binary first

@@ -1,0 +1,17 @@
+// An imported module opens at PROGRAM START (plan 2026-10-17, D5): its own
+// initializer runs before main in every lane, though the program never calls
+// it — what a ui host's registration needs (`import ui_web;` then
+// ui::open(ui::WEB), a libmadc call). The test module greet (tests/modules/
+// greet, --module-path=obj/test-modules) sets MADC_GREET_STARTED as it loads.
+// An executable used to open a module only at its first member call, so this
+// program saw no initializer there. Oracle: the C++ analogue (greet.cpp's
+// initializer linked into a g++ 13 / clang++ 18 program reading the variable
+// in main) prints the same line.
+import greet;
+
+int main()
+{
+	const char *s = getenv("MADC_GREET_STARTED");
+	println("greet started: {}", s ? s : "no");
+	return 0;
+}

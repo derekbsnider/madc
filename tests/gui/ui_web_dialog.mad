@@ -11,6 +11,7 @@
 // GtkFileChooserNative — the GTK the library was built against picks the
 // arm, and this test runs whichever that is. The dialog's title carries the
 // process id, so tests sharing one display never answer each other's dialogs.
+import ui_web;	// the web target's host (ui::open(ui::WEB))
 int main()
 {
     long w = ui::world_new();

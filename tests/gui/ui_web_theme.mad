@@ -4,6 +4,7 @@
 // palette the syntax styles read, colour-unification slice 2026-09-08)
 // travels the same way. The probe reads the applied values back through
 // the snapshot channel. Runs under Xvfb via remote_build gui.
+import ui_web;	// the web target's host (ui::open(ui::WEB))
 void compose(var &tree)
 {
     var body;

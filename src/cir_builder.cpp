@@ -51,6 +51,8 @@
 #include "madc_mangle.h"
 #include "spelling_delim.h"
 #include "madc_posix_io.h"	// host_path_stem: a TU's init symbol
+#include "madc_module.h"	// mdGui: a module-list entry's guard lift
+#include "madc_modules.h"	// madc_module_deps_append: the unit's module list
 
 extern "C" {
 #include "c2mir/c2mir_api.h"
@@ -33919,6 +33921,18 @@ void CirBuilder::collect_global_ctors(Program *prog,
 	m_ctor_groups.clear();
 	m_redefined_destroys.clear();
 	if (!prog || !prog->tkProgram) return;
+	// The unit's imported madc modules open FIRST, ahead of every other
+	// initializer: each module's own initializer (a ui host's registration)
+	// runs before anything the program constructs. The list is the unit's
+	// __madc_module_deps (translate_module's extern flush).
+	if (!prog->imported_modules.empty()) {
+		need_output_extern("__madc_open_module_deps", false,
+				   { { {N_CONST, N_CHAR}, true } });
+		node_t oargs = list();
+		append(oargs, id("__madc_module_deps"));
+		m_global_ctor_stmts.push_back(node2(N_EXPR, list(),
+			node2(N_CALL, id("__madc_open_module_deps"), oargs)));
+	}
 	// By index over the LIVE size: translating a global's initializer can
 	// instantiate a template whose objects join tkProgram->variables, and the
 	// reallocation left a range-for reading freed storage (libstdc++ 11's
@@ -37085,7 +37099,7 @@ node_t CirBuilder::translate_module(Program *prog)
 	// NUL-terminated, as a LOCAL data symbol (static: N objects merge
 	// without a clash; each keeps its own table). The single-object loader
 	// reads it BEFORE loading and opens each spelling, so a .o built from
-	// `import madcwebview;` runs with no -l on the command line — the
+	// `import ui_web;` runs with no -l on the command line — the
 	// precedent is MSVC's .drectve / Rust's #[link] / D's pragma(lib): the
 	// object names what it needs (KG Gap obj_lane_module_dependency,
 	// DECIDED 2026-09-07). Emitted in every native mode (harmless data in an
@@ -37093,21 +37107,22 @@ node_t CirBuilder::translate_module(Program *prog)
 	//   static const char __madc_module_deps[] = "libm.so.6\0...";
 	// A referenced-surface filter never drops it: it is the object's
 	// manifest, not a declaration.
-	// A LAZY row's spelling joins the list with a '?' prefix: OPTIONAL — the
-	// loader lifts the memory guard for a GUI row and opens what it can, but
-	// never fails on it (the program asked madc::module_available itself).
+	// A LAZY row's spelling joins the list OPTIONAL (opened when it can be);
+	// a madc MODULE the unit imported joins it by name and file, required —
+	// the unit's global init opens the list first (collect_global_ctors), so
+	// the module's own initializer runs before main in every lane. The entry
+	// format is madc_modules.h's (madc_module_deps_append).
 	if (m_prog && (!m_prog->module_link_libs.empty()
-		       || !m_prog->module_optional_libs.empty())) {
+		       || !m_prog->module_optional_libs.empty()
+		       || !m_prog->imported_modules.empty())) {
 		std::string table;
-		for (const madc::dis::istring &l : m_prog->module_link_libs) {
-			table += l;
-			table.push_back('\0');
-		}
-		for (const madc::dis::istring &l : m_prog->module_optional_libs) {
-			table += "?";
-			table += l;
-			table.push_back('\0');
-		}
+		for (const madc::dis::istring &l : m_prog->module_link_libs)
+			madc_module_deps_append(table, madc_module_dep::link, l);
+		for (const madc::dis::istring &l : m_prog->module_optional_libs)
+			madc_module_deps_append(table, madc_module_dep::optional, l);
+		for (const Program::ImportedModule &im : m_prog->imported_modules)
+			madc_module_deps_append(table, madc_module_dep::module, im.path, im.name,
+						im.desc && (im.desc->flags & mdGui));
 		node_t specs = list();
 		append(specs, simple(N_STATIC));
 		append(specs, simple(N_CONST));

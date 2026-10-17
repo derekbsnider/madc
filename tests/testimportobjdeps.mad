@@ -5,7 +5,7 @@
 // libm's symbols happen to be reachable in madc's own process, so the JIT
 // and exe lanes never needed the table; the gate script asserts the table
 // itself in the emitted C11 (scripts/check-object-module-deps.sh), and the
-// GUI stage's .o lane (import madcwebview — a library madc does NOT link)
+// GUI stage's .o lane (import ui_web — a module madc does NOT link)
 // is where the mechanism carries real weight. (madc dialect: `import` is
 // a directive there as in C++20, and the intrinsics need no include.)
 import m;

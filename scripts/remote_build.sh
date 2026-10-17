@@ -21,7 +21,7 @@
 #   ondisk-win  the win64 twin of ondisk (the packed PE under wine)
 #   exeobj    the native-artifact lanes on the SHIPPED binary:
 #             MADC_BIN=bin/madc-release run_tests.sh --exe --obj
-#   gui       build libmadcwebview; run tests/gui under Xvfb (JIT/exe/obj).
+#   gui       build the ui_web module; run tests/gui under Xvfb (JIT/exe/obj).
 #             a GUI-module test lifts the runner's memory guard itself;
 #             ordinary compiler runs keep their existing memory guard.
 #   fastlanes the whole FAST tier (scripts/fast_lanes.sh) on the container:
@@ -331,7 +331,7 @@ for stage in $stages; do
 		run_remote "exeobj" "make -C $REMOTE_MADC/src -j\$(bash $REMOTE_MADC/scripts/build_jobs.sh) release; cd $REMOTE_MADC; MADC_BIN=bin/madc-release bash scripts/run_tests.sh --exe --obj"
 		;;
 	gui)
-		# ONE body, in scripts/gui_lane.sh — the webview build, the Xvfb
+		# ONE body, in scripts/gui_lane.sh — the ui_web build, the Xvfb
 		# display, the three passes and the zero-tests guard all live there,
 		# so the lane can also run per-commit out of fast_lanes.sh. It used
 		# to be inline here, which is why it had no ledger row for weeks.
@@ -505,7 +505,7 @@ for stage in $stages; do
 		#                      suite ran whatever hosted PE the last `win`
 		#                      stage left, however old.
 		#   make modules-windows: the madc modules the hosted exe imports
-		#                      from lib/madc/modules/ (git, markdown) — the
+		#                      from lib/madc/modules/ (ui_web, git, markdown) — the
 		#                      same rule; a stale module DLL once failed
 		#                      testgit with an unexported symbol.
 		run_remote "wine" "make -C $REMOTE_MADC/src -j\$(bash $REMOTE_MADC/scripts/build_jobs.sh) hosted-x86-64-windows; make -C $REMOTE_MADC/src -j\$(bash $REMOTE_MADC/scripts/build_jobs.sh) modules-windows; cd $REMOTE_MADC; WINEDEBUG=-all wineserver -p </dev/null >/dev/null 2>&1; WINEDEBUG=-all MADC_BIN=bin/madc-hosted-x86-64-windows.exe MADC_WRAPPER=wine MADC_SKIP_EXT='win64 wine64' bash scripts/run_tests.sh"
@@ -550,8 +550,8 @@ for stage in $stages; do
 		# freshly-pulled compiler into runtime symbol-lookup errors
 		# in the exes it produces (2026-08-26: bin/madcide undefined
 		# __php_file_get_contents — the lib was 3 days behind bin/madc).
-		# The module images ride along — lib/libmadc[a-z]*.so (webview)
-		# and madc's module directory lib/madc (git, markdown): a
+		# The module images ride along — lib/libmadc[a-z]*.so and madc's
+		# module directory lib/madc (ui_web, git, markdown): a
 		# program's import opens madc's own lib directory first, so a
 		# pulled madc without them aborts at the import.
 		rsync -az --no-perms --no-owner --no-group --links \

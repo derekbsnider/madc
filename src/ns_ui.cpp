@@ -186,7 +186,7 @@ handle_table<ui_session> &ui_sessions()
 //     semantics / diffing) over a registered byte-moving tui_target (the
 //     built-in one is the hand-rolled VT100/xterm target, src/ui_term.cpp);
 //   - the DOM frontend (level 3): web_model over a script-hosted target
-//     (the web target, <ns_ui_web>) — the next step of this slice.
+//     (the web target, the ui_web module).
 // Independent of world sessions — an application holds both handles. Same
 // handle discipline as ui_sessions (handle_table). The publics speak to
 // this interface only; the tui_* names are the "term" target's spellings
@@ -2096,11 +2096,10 @@ bool register_host(const char *target, ui::level lvl, const ui_host_ops *ops)
 		name.c_str());
 	return false;
     }
-    // The same host registered again is already served: each unit of a
-    // multi-unit program that names its level runs the host fragment's
-    // initializer (<ns_ui_web>'s, the <iostream> ios_base::Init shape), and
-    // so does each image — a library the program links (libmadcide) names
-    // the level too. Another host under a taken name is refused.
+    // The same host registered again is already served: a host's own
+    // initializer may run more than once (a module image loaded under two
+    // names, the <iostream> ios_base::Init shape). Another host under a
+    // taken name is refused.
     if ( const ui_host_reg *had = ui_host_named(name) )
 	if ( had->level == lvl && same_host(*had->ops, *ops) )
 	    return true;

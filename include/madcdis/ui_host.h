@@ -60,8 +60,8 @@ namespace ui {
 				// enters, 0 leaves, -1 toggles its current
 				// state; 0 = done; nonzero = not here;
 				// optional
-	const char *identity;	// the host's name for itself (a host
-				// fragment's header name, "ns_ui_web"): two
+	const char *identity;	// the host's name for itself (its
+				// module's name, "ui_web"): two
 				// registrations stating one identity are one
 				// host, from whichever image; NULL = none
 				// (the entries say it); optional

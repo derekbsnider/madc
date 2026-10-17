@@ -1,8 +1,9 @@
-// The web target end to end under Xvfb: open a window through <ns_ui_web>,
+// The web target end to end under Xvfb: open a window through the ui_web module,
 // render a tree, take the page's text through the snapshot seam, close.
 // No editor, no keys. The first resize event is the page's ready signal
 // (evals before the page loaded are dropped by the platform view), so the
 // render and the snapshot request follow it.
+import ui_web;	// the web target's host (ui::open(ui::WEB))
 int main()
 {
     long w = ui::world_new();

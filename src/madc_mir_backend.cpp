@@ -96,6 +96,25 @@ void *__madc_dl_member(const char *lib, const char *member)
 	return sym;
 }
 
+// The program's module list (__madc_module_deps), opened ahead of its other
+// initializers: the CIR builder makes this call the first of the unit's
+// global init when the list names a madc module, so each module's own
+// initializer runs (a ui host registers) before main in every lane — an
+// executable through .init_array, the JIT through its wrapped main (a cheap
+// re-open: the import already loaded the module). A module that cannot open
+// ends the program with the import's status before main runs.
+//
+// THREAD-SAFETY CONTRACT: runs during static initialization, before the
+// program's threads; madc_module_deps_open is the madc_dl seam's contract.
+void __madc_open_module_deps(const char *table)
+{
+	std::string err;
+	if (!madc_module_deps_open(table, NULL, err)) {
+		fprintf(stderr, "%s\n", err.c_str());
+		exit(madc_import_unavailable_status);
+	}
+}
+
 void madc_puti(int64_t i)    { std::cout << i << std::endl; }
 void madc_putu(uint64_t i)   { std::cout << i << std::endl; }
 void madc_putd(double d)     { std::cout << d << std::endl; }

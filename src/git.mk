@@ -143,7 +143,7 @@ else
 endif
 
 # A command stamp makes flag/toolchain changes rebuild the library, while
-# identical commands leave the artifact alone (the webview.mk discipline).
+# identical commands leave the artifact alone (the ui_web.mk discipline).
 $(GITMOD_BUILD_DIR)/command: FORCE
 	@mkdir -p $(dir $@)
 	@printf '%s\n' '$(CXX) $(GITMOD_LINK_FLAGS) $(CXXFLAGS) $(DEFINES) $(GITMOD_CFLAGS) $(GITMOD_LIBS)' > $@.tmp
