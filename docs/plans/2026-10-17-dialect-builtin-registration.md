@@ -1,0 +1,158 @@
+# The dialect is builtin — generated registration code, no image
+
+**Date:** 2026-10-17
+**Status:** PLAN — replaces Part B (B4–B6) of
+`docs/plans/2026-10-16-dialect-per-name-plan.md` and retires its dialect image;
+next in the 0.106.0 arc (section I), ahead of section J.
+**Decisions:** KG `dialect_builtin_init_code`, `dialect_image_dialect_only`.
+
+## Owner rulings (2026-10-17, verbatim)
+
+- "to have a frozen registry that needs to be unfrozen and loaded adds extra
+  overhead and also confusion, no? would it not be better to use a hardcoded
+  initialization function for things that are 'builtin'?"
+- "anything that the parser does should be able to be done directly in code
+  without parsing"
+- "the dialect is not supposed to need any headers within dialect code for
+  dialect features because they are hard coded"; "for standard c/c++ features
+  under the dialect they use the c++17 pack"
+- "with --std=madc the dialect has hard coded access to everything that is
+  part of the madc:: php:: perl:: rust:: ruby:: js:: etc etc namespaces"
+- "I swear this is how it all used to be several months ago" — it was.
+
+## How it got expensive
+
+| when | how the dialect surface reached a program |
+|---|---|
+| 2026-04-14 → 06-04 | C++ registration code: `Program::add_php_namespace()` (src/ns_php.cpp) — `addFunction` per public, `namespace_map["php"][name]`; wired through `NamespaceRegistry::add_namespace("php", register_php_namespace_spec)` beside `std` / `madc` |
+| 06fc1c08a, 06-04 | "retire std hardcoding gate": the registrations were typed with madc's hard-coded `std::string` (`ddSTRING`); they became the `include/madc/ns_*` header files, parsed as text every compile |
+| 0.105.0 (Oct) | the fragments frozen as units of the system-header pack, bound whole |
+| 0.106.0 Part A | per name, from those frozen units |
+| 0.106.0 B1–B3 | a separate dialect image and a second forest |
+
+Each step after June treated the parse cost instead of returning to
+registration code. Measured on 603872ac6 (packed release, Ir):
+`println("hi")` 11,633,307; `println("{}", php::strtoupper("hi"))`
+18,187,829. About 4.7M of the difference is dialect machinery:
+`queue_fragment_prerequisites` 3,406,806 (re-scanning the fragments' TEXT
+every compile), `forest_restore_side` 1,044,945, map / probe / teardown
+~0.4M.
+
+## Design
+
+1. **One source:** `include/madc/ns_*` and `bits/*` stay the only text anyone
+   edits. A strict-mode `#include <ns_php>` still parses it; madcide's
+   completion and the dialect-faces registry still read it.
+2. **Generated registration code:**
+   - At build time, madc reads the dialect files once (`--std=madc`) and writes
+     C++ into the object tree (`obj/<mode>/dialect_registry.cpp`, beside the
+     generated `embedded_headers.cpp`).
+   - The C++ holds one builder per entity, constructing what the parser built
+     through the same constructors: a function or overload set with its
+     parameter types, defaults and emit symbol; a declaration-only template
+     (`php::print_r`, `std::format` / `print` / `println`) with its
+     `inline_builtin_kind`; a struct; an enum.
+   - It also holds one sorted constant table of (namespace, name) → builders.
+   - Types are named through their DataDef objects (`ddLONG` …), never sizes,
+     so the code is target-independent (LLP64 reads `madc_target_data_model`
+     as it does today).
+   - It is never committed: the build regenerates it.
+3. **Per name, at first use:** a `--std=madc` lookup that misses the
+   program's own scopes asks the table. The hooks Part A placed are the call
+   sites: `find_namespace_member`, `lazy_resolve(_type)`,
+   `resolve_namespaced_type_token`, `namespace_chain_datatype`, the CIR
+   fixpoint. The name's builder registers it once per Program. The
+   `NamespaceRegistry` gains the dialect namespaces again, as it held them
+   before June.
+4. **Bodies compiled once, into libmadc:**
+   - The `ns_ui_web` / `ns_ui_ws` bodies (and any `bits/*` body) are compiled
+     at build time: madc `--emit=c11` → the build's C compiler (the cross
+     compiler for a cross target) → linked into libmadc.
+   - They are registered as host functions, mangled-direct, exactly like the
+     `php::` publics (`cpp-first-api.md`).
+   - A body's call into a LAZY module (`madcwebview`) binds through the module
+     opener at its first call, never by a link-time reference (the module
+     row's contract: the dialect runs on a system without the library).
+5. **Run time:**
+   - A dialect compile scans no fragment text, maps no image and restores
+     nothing.
+   - `stderr` / `stdout` / `stdin` are built in, as `println` is (in flight).
+   - Standard C/C++ in a dialect program comes from the shared C++17 pack.
+   - Strict modes never touch the table.
+6. **One implementation per concern — what retires:**
+   - the dialect image (`--dialect-image`, the `dialect` role's use);
+   - the dialect half of `ForestSide` (B2/B3);
+   - Part A's `forest_dialect_*` demand machinery;
+   - `queue_fragment_prerequisites` on the dialect path;
+   - the 13 fragments in the pack list (v9);
+   - the dev build's text parse of the fragments;
+   - the stopped B4 type-identity attempt (stash).
+
+   What stays:
+   - the ROLE segment (section J's C layer);
+   - page-aligned containers;
+   - the hooks' call sites, re-pointed;
+   - the gates, re-aimed.
+
+## Tasks
+
+- **R1 — inventory and the generator for declarations.**
+  - Every entity the dialect files define, by kind, with the constructor the
+    parser uses for it.
+  - The generator for functions and declaration-only templates, plus the
+    registration differential: a unit test comparing what the generated code
+    registers with what a live parse of the same files registers (name,
+    namespace, parameter and return types, defaults, emit symbol, overload
+    order). RED first.
+- **R2 — structs and enums.** The 9 structs (`ns_madc`, `ns_madc_host`,
+  `ns_ui`, `ns_ui_web`, `ns_ui_ws`) and the ~29 enums in `bits/*` (the
+  `bits/ui_enums` text stays the engine's and the dialect's one enum text),
+  into the same differential.
+- **R3 — bodies into libmadc.** The ~33 dialect bodies, compiled at build
+  time and registered as host functions; the lazy-module binding; the build
+  on Linux, the win64 cross build and macOS.
+- **R4 — the switch.**
+  - The hooks call the table.
+  - The dialect image, the dialect forest side and the demand machinery are
+    deleted.
+  - Pack list v9 drops the fragments.
+  - `--with-forest=none` and the dev build behave identically.
+- **R5 — gates and measurement.**
+  - The pay-per-use gate: 50 unused functions and one unused enum added to a
+    copy of `ns_madc` move a dialect compile by ≤ 0.1%.
+  - Parse-cost rows: the dialect rows, plus `php1` (one `php::` call) as a
+    new row.
+  - The differential over the dialect families.
+  - Dev, release and no-pack builds give identical dialect output.
+
+Per task: Tier 1 + Tier 2, the static gate loop, the touched unit binaries,
+hot rows measured on the packed release; the batch lane at the end.
+
+## Targets
+
+- `php1` from 18.19M toward ~13.5M Ir.
+- The dialect rows fall by the same machinery share.
+- C and C++ rows flat.
+- The pack loses the fragments' bytes.
+- libmadc loses the 4.7 MB image and gains the compiled bodies and the
+  registration code (measure both).
+
+## Thread safety
+
+- The table is constant data.
+- Builders write only the calling Program's state.
+- The bodies are ordinary libmadc functions under their module contracts.
+- No new globals.
+
+## Risks
+
+1. Two-stage build: madc generates code that is compiled into libmadc. Stage
+   one must build without the generated code; the dev build pays the extra
+   step.
+2. Fidelity: the generated code must register exactly what the parser does.
+   The R1 differential is the gate, not review.
+3. Bodies calling lazy modules (`madcwebview`) and the madc runtime from
+   inside libmadc: symbol binding on all three platforms.
+4. Things the parser does as a side effect of reading the fragments (macro
+   state, `_include_*` flags, guards such as `_GLIBCXX_STRING`): the
+   inventory must list them.

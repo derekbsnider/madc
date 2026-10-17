@@ -2,7 +2,11 @@
 
 **Date:** 2026-10-16
 **Status:** PLAN — next in the 0.106.0 arc, ahead of section G (owner
-2026-10-16: "We need that fix asap").
+2026-10-16: "We need that fix asap"). **Part B superseded after B3
+(2026-10-17):** the dialect is builtin — generated registration code, no
+image (owner ruling; `docs/plans/2026-10-17-dialect-builtin-registration.md`).
+B4–B6 are not done; the dialect image, the dialect forest side and Part A's
+demand machinery retire there.
 **Spec:** `docs/plans/2026-10-13-pack-slices-design.md` §7 (settled; owner law
 2026-08-10, Decision `dialect_headers_internal_indexed` 2026-10-13, restated
 2026-10-14), §8 gates, §11 measurement protocol. Closes Gap
