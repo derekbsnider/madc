@@ -613,8 +613,13 @@ static bool add_seg(madc::dis::snapshot_writer &w, uint32_t seg_id,
 	if (!cir_forest_compress_intern
 	    && kind == madc::dis::SNAP_KIND_INTERN_BYTES)
 		codec = PchCompression::None;
+	// The transforms serve the codec (a delta or a byte plane compresses
+	// better); a payload stored with no codec keeps its own bytes, so a bind
+	// reads it in place (a raw role's container, B1).
 	uint32_t xform = 0;
-	if (codec != PchCompression::None && forest_kind_blocked(kind))
+	if (codec == PchCompression::None)
+		xform = 0;
+	else if (forest_kind_blocked(kind))
 		xform = forest_blocked_flags(kind);
 	else if (kind == SNAP_KIND_CIR_CHILDREN)
 		xform = madc::dis::snap_xform_flags(madc::dis::SNAP_XFORM_DELTA32);
@@ -760,6 +765,12 @@ bool cir_forest_write(const cir_frozen_forest &f, madc::dis::snapshot_writer &w,
 	// Uncompressed: the reader binds the index in place in the mapped image.
 	if (!add_seg(w, CIR_FOREST_SEG_DIR, SNAP_KIND_CIR_FOREST_DIR,
 		     dir.data(), dir.size(), PchCompression::None))
+		return false;
+	// B1: the profile's role — written only for a role other than the
+	// system-header profile's, which stays exactly the container it was.
+	if (f.role != CIR_FOREST_ROLE_SYSTEM
+	    && !add_seg(w, CIR_FOREST_SEG_ROLE, SNAP_KIND_CIR_ROLE,
+			&f.role, sizeof(f.role), PchCompression::None))
 		return false;
 	// v57: the bare function names every unit's decl index declares (kind
 	// pdkFunction; a qualified form is C++ surface), sorted and unique —
@@ -1642,6 +1653,12 @@ bool CirFrozenForest::open_header(const void *image, size_t len,
 		if (!_shared_configs.empty())
 			memcpy(_shared_configs.data(), shared.data(), shared.size());
 	}
+	// B1: the role, directory-level state too (a profile walk judges it
+	// before complete_open).
+	if (!cir_forest_read_role(_reader, _role)) {
+		fprintf(stderr, "madc: forest role malformed\n");
+		return false;
+	}
 
 	// Root sanity against the directory.
 	_root_unit = hdr.root_unit;
@@ -1840,6 +1857,79 @@ static void forest_logical_bytes(const ForestLayoutTables &t, uint32_t seg_id,
 	forest_defs_in_order(t, order, out, words);
 }
 
+// The roles (dialect per-name plan B1), one row each: a new role is a row and
+// a code, never a format change. The dialect image is raw (pack-slices design
+// §7: never decompressed, read in place).
+static const cir_forest_role_row forest_roles[] = {
+	{ CIR_FOREST_ROLE_SYSTEM,  "system",  false },
+	{ CIR_FOREST_ROLE_DIALECT, "dialect", true },
+};
+
+const cir_forest_role_row *cir_forest_role_info(uint32_t role)
+{
+	for (const cir_forest_role_row &row : forest_roles)
+		if ((uint32_t)row.role == role)
+			return &row;
+	return NULL;
+}
+
+bool cir_forest_role_named(const char *name, CirForestRole &out)
+{
+	for (const cir_forest_role_row &row : forest_roles)
+		if (name && strcmp(row.name, name) == 0) {
+			out = row.role;
+			return true;
+		}
+	return false;
+}
+
+PchCompression cir_forest_storage_codec(uint32_t role, PchCompression packed)
+{
+	const cir_forest_role_row *row = cir_forest_role_info(role);
+	return row && row->raw ? PchCompression::None : packed;
+}
+
+bool cir_forest_read_role(const madc::dis::snapshot_reader &r, uint32_t &role)
+{
+	role = CIR_FOREST_ROLE_SYSTEM;
+	const madc::dis::snapshot_segment *s = r.find(CIR_FOREST_SEG_ROLE);
+	if (!s)
+		return true;
+	uint32_t code = 0;
+	if (s->kind != SNAP_KIND_CIR_ROLE || s->raw_size != sizeof(code)
+	    || !r.read_segment_into(*s, (uint8_t *)&code, sizeof(code)))
+		return false;
+	role = code;
+	return true;
+}
+
+bool cir_forest_profiles(const void *image, size_t len,
+			 std::vector<cir_forest_profile> &out)
+{
+	out.clear();
+	size_t at = len;
+	for (;;) {
+		madc::dis::snapshot_reader r;
+		if (!r.open(image, at))
+			break;
+		cir_forest_profile p;
+		if (!cir_forest_read_role(r, p.role))
+			break;
+		p.offset = r.blob_offset();
+		p.bytes = at - p.offset;
+		p.compressed = 0;
+		for (uint32_t i = 0; i < r.segment_count(); ++i) {
+			const madc::dis::snapshot_segment *s = r.segment_at(i);
+			if (s && s->codec != (uint32_t)PchCompression::None)
+				++p.compressed;
+		}
+		out.push_back(p);
+		if (!r.previous_image_len(at))
+			break;
+	}
+	return !out.empty();
+}
+
 bool cir_forest_content_digests(const void *image, size_t len,
 				std::map<uint32_t, uint64_t> &out)
 {
@@ -1855,7 +1945,8 @@ bool cir_forest_content_digests(const void *image, size_t len,
 			return false;	// a corrupt directory record
 		if (s->seg_id == CIR_FOREST_SEG_MIR_MODULE
 		    || s->seg_id == CIR_FOREST_SEG_LEDGER
-		    || s->seg_id == CIR_FOREST_SEG_SHARED_CONFIGS)
+		    || s->seg_id == CIR_FOREST_SEG_SHARED_CONFIGS
+		    || s->seg_id == CIR_FOREST_SEG_ROLE)
 			continue;
 		std::vector<uint8_t> bytes;
 		if (s->seg_id == CIR_FOREST_SEG_ARENA_DEF_POS)

@@ -7884,6 +7884,12 @@ public:
     void push_token_with_literal_concat(TokenBase *tb);
     void pin_pending_pack_ops(TokenBase *tb);
     void queue_fragment_prerequisites(std::set<madc::dis::istring> &batch);
+    // The dialect image's roots (dialect per-name plan B1): every dialect
+    // fragment the auto-include provider table names, with its prerequisite
+    // closure, in the auto-include order — what a dialect compile's
+    // auto-include would include, through the same two owners. False (and
+    // `out` empty) outside the madc dialect. Backs --print-dialect-roots.
+    bool dialect_image_roots(std::vector<madc::dis::istring> &out);
 
     // for debugging
     void printt(TokenBase *);

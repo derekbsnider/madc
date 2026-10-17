@@ -7371,7 +7371,8 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 		    const char *out_path, bool append, bool mir_cache,
 		    const std::vector<cir_ledger_module> *ledger,
 		    bool progress,
-		    const std::vector<madc::dis::istring> *also_std)
+		    const std::vector<madc::dis::istring> *also_std,
+		    uint32_t role)
 {
     // The type graph rides the parse-populated DefArena (v18): a Program that
     // parsed with forest_arena_enabled OFF would freeze a type-less container
@@ -7583,6 +7584,14 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 			"pack falls back to zlib (larger container, slower "
 			"binds)\n", source_name);
 #endif
+		// The role (--freeze-role=; dialect per-name plan B1) picks the
+		// storage of everything below: a raw role's container is written
+		// with no codec — read in place, never decompressed (pack-slices
+		// design §7) — and so no level and no compressed intern spine.
+		f.role = role;
+		codec = cir_forest_storage_codec(role, codec);
+		const bool packed = codec != PchCompression::None;
+		const int pack_level = append && packed ? CIR_FOREST_PACK_ZSTD_LEVEL : 0;
 		madc::dis::snapshot_writer w;
 		// Level by placement: the appended release pack pays a high
 		// level once per release build; a standalone dev freeze stays
@@ -7594,9 +7603,8 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 		// The intern spine compresses only in the appended pack
 		// (owner-approved ~7ms-per-process trade; dev freezes keep
 		// zero-copy binds).
-		bool staged = cir_forest_write(f, w, codec,
-					       append ? CIR_FOREST_PACK_ZSTD_LEVEL : 0,
-					       append);
+		bool staged = cir_forest_write(f, w, codec, pack_level,
+					       append && packed);
 		// Shared configs (--freeze-also-std=): the one pack profile serves
 		// every standard named here too. The madc dialect is C++17 plus
 		// extras — auto-includes, auto-namespacing, auto-main, its keywords
@@ -7658,7 +7666,7 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 			if (!w.add_segment(CIR_FOREST_SEG_MIR_MODULE,
 					   SNAP_KIND_CIR_MIR_MODULE,
 					   mblob.data(), mblob.size(), codec,
-					   append ? CIR_FOREST_PACK_ZSTD_LEVEL : 0))
+					   pack_level))
 			    fprintf(stderr, "%s: mir cache: segment add "
 				    "failed — blob skipped\n", source_name);
 			else if (progress)
@@ -7678,7 +7686,7 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 		    if (!w.add_segment(CIR_FOREST_SEG_LEDGER,
 				       SNAP_KIND_CIR_LEDGER,
 				       lblob.data(), lblob.size(), codec,
-				       append ? CIR_FOREST_PACK_ZSTD_LEVEL : 0)) {
+				       pack_level)) {
 			fprintf(stderr, "%s: ledger: segment add failed\n",
 				source_name);
 			staged = false;
@@ -7868,6 +7876,26 @@ int madc_cir_dump_forest(const char *container_path)
     for (const cir_forest_shared_config &c : forest.shared_configs())
 	printf("shared\tword=0x%08x\tdefines=0x%08x\n", c.language_std,
 	       c.defines_hash);
+    // The carrier's profile stack, newest first (the order the discovery
+    // chain walks it; the dumped container is profile 0): each profile's role
+    // (dialect per-name plan B1), size, and segments stored with a codec —
+    // 0 = read in place. The pack gate's dialect-image leg reads them. No
+    // carrier offset: a dump is carrier-transparent (forest_emitpack_gate).
+    {
+	std::vector<cir_forest_profile> stack;
+	cir_forest_profiles(image, image_len, stack);
+	for (size_t i = 0; i < stack.size(); ++i) {
+	    // A code this madc has no row for prints as its number.
+	    const cir_forest_role_row *row = cir_forest_role_info(stack[i].role);
+	    printf("profile\t%zu\trole=", i);
+	    if (row)
+		printf("%s", row->name);
+	    else
+		printf("%u", stack[i].role);
+	    printf("\tbytes=%zu\tcompressed=%zu\n", stack[i].bytes,
+		   stack[i].compressed);
+	}
+    }
     // The frozen corpus, config-blind: equal lines = the same corpus.
     {
 	std::map<uint32_t, uint64_t> digests;

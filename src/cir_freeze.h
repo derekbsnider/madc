@@ -157,7 +157,11 @@ enum : uint32_t
 	SNAP_KIND_CIR_SEEDS            = madc::dis::SNAP_KIND_CONSUMER + 28,
 	SNAP_KIND_CIR_RECORDABLE       = madc::dis::SNAP_KIND_CONSUMER + 29,
 	// v60: the arena records' layout — uint32 position per slot (raw).
-	SNAP_KIND_CIR_ARENA_DEF_POS    = madc::dis::SNAP_KIND_CONSUMER + 30
+	SNAP_KIND_CIR_ARENA_DEF_POS    = madc::dis::SNAP_KIND_CONSUMER + 30,
+	// The profile's ROLE (dialect per-name plan B1): one uint32 role code
+	// (CirForestRole). OPTIONAL segment, like the ledger: absent = the
+	// system-header profile, so no format bump.
+	SNAP_KIND_CIR_ROLE             = madc::dis::SNAP_KIND_CONSUMER + 31
 };
 
 // One frozen node record (fixed-size POD; x86-64 little-endian first, like
@@ -711,7 +715,8 @@ enum : uint32_t
 	CIR_FOREST_SEG_SEEDS            = 25,	// v58: per-unit seed lists (ForestSeeds)
 	CIR_FOREST_SEG_RECORDABLE       = 26,	// v58: arena recordability bits (ForestRecordableBits)
 	CIR_FOREST_SEG_ARENA_DEF_POS    = 27,	// v60: slot -> record position (absent = slot order)
-	// 28-31 reserved.
+	CIR_FOREST_SEG_ROLE             = 28,	// the profile's role (optional; absent = system)
+	// 29-31 reserved.
 	CIR_FOREST_SEG_UNIT_BASE     = 32,
 	CIR_FOREST_SEGS_PER_UNIT     = 10	// +0 records, +1 children, +2 connectors,
 						// +3 positions, +4 tokens, +5 decl index,
@@ -745,6 +750,48 @@ struct cir_forest_shared_config
 {
 	uint32_t language_std;	// madc_forest_config_word of the other config
 	uint32_t defines_hash;	// madc_forest_defines_hash of the other config
+};
+
+// A profile's ROLE (CIR_FOREST_SEG_ROLE; dialect per-name plan B1): which
+// consumer it serves. A carrier stacks profiles (placement 2) and the
+// discovery chain walks them newest first; the role is what that walk can
+// filter by (B2). The segment holds one code. Absent = the system-header
+// profile — every container frozen before B1 — so the segment is optional and
+// a reader that does not know it ignores it. A new role is a new code and a
+// new row below, never a format change; a code a reader has no row for is
+// carried through as a number.
+enum CirForestRole : uint32_t
+{
+	CIR_FOREST_ROLE_SYSTEM  = 0,	// the system-header pack (no ROLE segment)
+	CIR_FOREST_ROLE_DIALECT = 1	// the madc dialect image (pack-slices design §7)
+};
+
+// One role: its code, its spelling (the --freeze-role= word and the
+// --dump-forest field) and its storage — `raw`: every segment stored with no
+// codec and no transform, so a bind reads it in place (§7: the dialect
+// surface is never decompressed).
+struct cir_forest_role_row
+{
+	CirForestRole role;
+	const char   *name;
+	bool          raw;
+};
+
+// The row of a role code; NULL for a code this reader has no row for.
+const cir_forest_role_row *cir_forest_role_info(uint32_t role);
+// The input boundary: a role's spelling -> its code. False for any other word.
+bool cir_forest_role_named(const char *name, CirForestRole &out);
+// The codec a container of this role is written with: none for a raw role,
+// `packed` (the pack's codec) otherwise.
+PchCompression cir_forest_storage_codec(uint32_t role, PchCompression packed);
+
+// One profile of a carrier's stack (cir_forest_profiles).
+struct cir_forest_profile
+{
+	uint32_t role;		// CirForestRole code (SYSTEM when the segment is absent)
+	size_t   offset;	// where the container starts in the carrier image
+	size_t   bytes;		// its bytes
+	size_t   compressed;	// segments stored with a codec (0 = read in place)
 };
 
 // MIR module cache segment header (precedes the raw MIR_write_module bytes).
@@ -1262,6 +1309,9 @@ struct cir_frozen_forest
 	// madc_forest_defines_hash) — bind requires an exact consumer match.
 	uint32_t                     language_std = 0;
 	uint32_t                     defines_hash = 0;
+	// B1: the profile's role (CirForestRole) — written as the ROLE segment
+	// unless SYSTEM (absent = system).
+	uint32_t                     role = CIR_FOREST_ROLE_SYSTEM;
 	std::vector<madc::dis::istring>     libs;	// dlopen closure (#load / -l paths)
 	// --- grove payload v2 (B4a; container-global) ---
 	std::vector<uint32_t>        branch_macros;	// pool name ids, sorted
@@ -1357,12 +1407,25 @@ uint32_t madc_forest_defines_hash(const Program *prog);
 // segment id: every segment's decoded bytes, the directory with its producer
 // config fields zeroed, less the segments that are not parse output (the
 // MIR module cache and the AOT ledger are derived / dialect-agnostic; the
-// shared-config labels are labels). --dump-forest prints their fold as its
-// `content` line: two freezes of one corpus under configs that parse it
-// alike print the same line (a freeze is reproducible). False when the
-// image holds no readable container.
+// shared-config labels and the role are labels). --dump-forest prints their
+// fold as its `content` line: two freezes of one corpus under configs that
+// parse it alike print the same line (a freeze is reproducible). False when
+// the image holds no readable container.
 bool cir_forest_content_digests(const void *image, size_t len,
 				std::map<uint32_t, uint64_t> &out);
+
+// An opened container's role: the ROLE segment's code, SYSTEM when it is
+// absent. False when the segment is malformed (a wrong kind or size). The one
+// reader of the segment — CirFrozenForest::open_header and the profile walk
+// below both read through it.
+bool cir_forest_read_role(const madc::dis::snapshot_reader &r, uint32_t &role);
+
+// A carrier's profile stack, newest first (the order the discovery chain
+// walks it): each container's role, place, size and compressed segment count.
+// False (and `out` empty) when the image's end holds no container. Backs
+// --dump-forest's `profile` lines (the pack gate's dialect-image leg).
+bool cir_forest_profiles(const void *image, size_t len,
+			 std::vector<cir_forest_profile> &out);
 
 // The release pack's zstd level (the appended pack pays compression once per
 // release build; see the selection comment at madc_cir.cpp's freeze). The
@@ -1923,6 +1986,7 @@ class CirFrozenForest
 	uint32_t _root_unit, _root_idx;
 	uint32_t _language_std = 0, _defines_hash = 0;	// v27 producer config (dir header)
 	std::vector<cir_forest_shared_config> _shared_configs;	// more configs this profile serves
+	uint32_t _role = CIR_FOREST_ROLE_SYSTEM;	// B1: the ROLE segment's code (absent = system)
 
 	// The container's own string pool (A1 frozen view over the three
 	// blocks: in place when codec is None, else over the process-level
@@ -2198,6 +2262,10 @@ public:
 	uint32_t defines_hash() const { return _defines_hash; }
 	// The other configs the pack proved this profile serves (shared labels).
 	const std::vector<cir_forest_shared_config> &shared_configs() const { return _shared_configs; }
+	// B1: the profile's role (CirForestRole code; SYSTEM when the container
+	// carries no ROLE segment). Directory-level like the configs: read by
+	// open_header, so a profile walk can judge it before complete_open.
+	uint32_t role() const { return _role; }
 	// The bind gate: this profile was frozen under (config, defines) — its
 	// own header's pair or one of its shared labels.
 	bool serves_config(uint32_t config, uint32_t defines) const;

@@ -190,6 +190,14 @@ const row rows[] = {
 	  "<std>", s_forest,
 	  "label the frozen profile to serve compiles under this --std= too (repeatable; the "
 	  "release pack names the C++ modes that share madc's corpus)" },
+	{ id(cli_option::freeze_role), "freeze_role", { { "--freeze-role", eq } },
+	  "<role>", s_forest,
+	  "stamp the frozen profile with the consumer it serves (system, dialect); a dialect "
+	  "image is stored raw, read in place (the release pack's --dialect-image)" },
+	{ id(cli_option::print_dialect_roots), "print_dialect_roots",
+	  { { "--print-dialect-roots", flag } }, NULL, s_forest,
+	  "(pack step, --std=madc) print the dialect image's roots — every dialect fragment and "
+	  "the headers its auto-include pulls, in auto-include order, one per line — and exit" },
 	{ id(cli_option::freeze_sources), "freeze_sources", { { "--freeze-sources", eq } },
 	  "<list>", s_forest,
 	  "also pack the exact text of every file <list> names (one path per line) as "

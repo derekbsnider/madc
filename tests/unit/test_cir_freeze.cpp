@@ -25,6 +25,7 @@
 #include <cstdlib>
 #include <unistd.h>
 #include "madc_dl.h"
+#include <algorithm>
 #include <string>
 #include <vector>
 #include <map>
@@ -3818,4 +3819,174 @@ TEST_CASE("A3: for_prefix reads the one run of names a prefix starts") {
 	none.for_prefix("", b, e);
 	CHECK(b == 0u);
 	CHECK(e == 0u);
+}
+
+// Dialect per-name plan B1: a container's ROLE (optional segment 28) — which
+// consumer a profile serves — and how a role is stored. One table names each
+// role once; a raw role's container carries no codec and no transform, so a
+// bind reads every segment in place.
+TEST_CASE("B1: the role table names each role once and says how it is stored") {
+	CirForestRole r = CIR_FOREST_ROLE_DIALECT;
+	REQUIRE(cir_forest_role_named("system", r));
+	CHECK(r == CIR_FOREST_ROLE_SYSTEM);
+	REQUIRE(cir_forest_role_named("dialect", r));
+	CHECK(r == CIR_FOREST_ROLE_DIALECT);
+	// The input boundary refuses a misspelling (enum-over-strings).
+	CHECK(!cir_forest_role_named("dialekt", r));
+	CHECK(!cir_forest_role_named("", r));
+	const cir_forest_role_row *d = cir_forest_role_info(CIR_FOREST_ROLE_DIALECT);
+	REQUIRE(d != nullptr);
+	CHECK(std::string(d->name) == "dialect");
+	CHECK(d->raw);
+	const cir_forest_role_row *s = cir_forest_role_info(CIR_FOREST_ROLE_SYSTEM);
+	REQUIRE(s != nullptr);
+	CHECK(std::string(s->name) == "system");
+	CHECK(!s->raw);
+	// A code this reader does not know (a later pack's role): no row.
+	CHECK(cir_forest_role_info(99) == nullptr);
+	CHECK(cir_forest_storage_codec(CIR_FOREST_ROLE_DIALECT, PchCompression::Zstd)
+	      == PchCompression::None);
+	CHECK(cir_forest_storage_codec(CIR_FOREST_ROLE_SYSTEM, PchCompression::Zstd)
+	      == PchCompression::Zstd);
+}
+
+// One forest image under a role, through the writer the freeze uses.
+static bool b1_role_image(cir_frozen_forest &f, uint32_t role, std::vector<uint8_t> &image)
+{
+	f.role = role;
+	madc::dis::snapshot_writer w;
+	if (!cir_forest_write(f, w, cir_forest_storage_codec(role, PchCompression::Zstd)))
+		return false;
+	return w.build(image);
+}
+
+TEST_CASE("B1: a dialect-role container carries its role, every segment raw, below a system profile") {
+	MIR_context_t mir_ctx = MIR_init();
+	c2mir_init(mir_ctx);
+	c2m_ctx_t c2m = cir_init(mir_ctx);
+	REQUIRE(c2m != nullptr);
+	{
+		std::shared_ptr<Program> prog;
+		CirBuilder *builder = NULL;
+		std::string main_path;
+		node_t tree = build_two_file_module(prog, builder, c2m, main_path);
+		REQUIRE(tree != nullptr);
+		cir_frozen_forest f;
+		REQUIRE(cir_freeze_forest(CIR_NODE(tree), main_path.c_str(), f));
+
+		std::vector<uint8_t> dialect, system;
+		REQUIRE(b1_role_image(f, CIR_FOREST_ROLE_DIALECT, dialect));
+		REQUIRE(b1_role_image(f, CIR_FOREST_ROLE_SYSTEM, system));
+
+		// The dialect image: the ROLE segment, and no segment needing a
+		// decode — every payload is read in place.
+		{
+			madc::dis::snapshot_reader r;
+			REQUIRE(r.open(dialect.data(), dialect.size()));
+			REQUIRE(r.find(CIR_FOREST_SEG_ROLE) != nullptr);
+			size_t raw = 0, total = 0;
+			for (uint32_t i = 0; i < r.segment_count(); ++i) {
+				const madc::dis::snapshot_segment *sg = r.segment_at(i);
+				REQUIRE(sg != nullptr);
+				++total;
+				if (sg->codec == (uint32_t)PchCompression::None && sg->flags == 0
+				    && (sg->raw_size == 0 || r.raw_ptr(*sg)))
+					++raw;
+			}
+			CHECK(total > 10u);
+			CHECK(raw == total);
+			uint32_t role = 99;
+			REQUIRE(cir_forest_read_role(r, role));
+			CHECK(role == (uint32_t)CIR_FOREST_ROLE_DIALECT);
+			CirFrozenForest forest;
+			REQUIRE(forest.open_header(dialect.data(), dialect.size()));
+			CHECK(forest.role() == (uint32_t)CIR_FOREST_ROLE_DIALECT);
+		}
+		// The system profile writes no ROLE segment (absent = system), so a
+		// pack frozen before B1 reads as one.
+		{
+			madc::dis::snapshot_reader r;
+			REQUIRE(r.open(system.data(), system.size()));
+			CHECK(r.find(CIR_FOREST_SEG_ROLE) == nullptr);
+			uint32_t role = 99;
+			REQUIRE(cir_forest_read_role(r, role));
+			CHECK(role == (uint32_t)CIR_FOREST_ROLE_SYSTEM);
+			CirFrozenForest forest;
+			REQUIRE(forest.open_header(system.data(), system.size()));
+			CHECK(forest.role() == (uint32_t)CIR_FOREST_ROLE_SYSTEM);
+		}
+		// A carrier stacking the image first and the system profile after it
+		// (append_file's 16-byte padding between them): the profiles read
+		// newest first, each with its role, its bytes and its compressed
+		// segment count.
+		std::vector<uint8_t> carrier(37, 0xab);	// a carrier's own bytes
+		carrier.resize((carrier.size() + 15) & ~(size_t)15, 0);
+		const size_t dialect_at = carrier.size();
+		carrier.insert(carrier.end(), dialect.begin(), dialect.end());
+		carrier.resize((carrier.size() + 15) & ~(size_t)15, 0);
+		carrier.insert(carrier.end(), system.begin(), system.end());
+		std::vector<cir_forest_profile> stack;
+		REQUIRE(cir_forest_profiles(carrier.data(), carrier.size(), stack));
+		REQUIRE(stack.size() == 2u);
+		CHECK(stack[0].role == (uint32_t)CIR_FOREST_ROLE_SYSTEM);
+		CHECK(stack[0].bytes == system.size());
+		CHECK(stack[0].compressed > 0u);
+		CHECK(stack[1].role == (uint32_t)CIR_FOREST_ROLE_DIALECT);
+		CHECK(stack[1].bytes == dialect.size());
+		CHECK(stack[1].offset == dialect_at);
+		CHECK(stack[1].compressed == 0u);
+		// The image alone is one profile.
+		REQUIRE(cir_forest_profiles(dialect.data(), dialect.size(), stack));
+		REQUIRE(stack.size() == 1u);
+		CHECK(stack[0].role == (uint32_t)CIR_FOREST_ROLE_DIALECT);
+		// Not a container: no profile.
+		CHECK(!cir_forest_profiles(carrier.data(), 37, stack));
+		CHECK(stack.empty());
+
+		delete builder;
+	}
+	cir_finish(c2m);
+	c2mir_finish(mir_ctx);
+	MIR_finish(mir_ctx);
+}
+
+// B1 follow-up: the dialect image's roots are what the compiler's own
+// auto-include would include for every dialect fragment head — the provider
+// table's fragments with their prerequisite closure, in the auto-include
+// order (queue_fragment_prerequisites + ordered_auto_include_headers) —
+// never the pack list's C portion.
+TEST_CASE("B1: the dialect image roots are the fragments' auto-include closure") {
+	Program prog;
+	REQUIRE(prog.set_language_standard("madc"));
+	std::vector<madc::dis::istring> roots;
+	REQUIRE(prog.dialect_image_roots(roots));
+	std::vector<std::string> r(roots.begin(), roots.end());
+	auto at = [&](const char *h) {
+		return (long)(std::find(r.begin(), r.end(), std::string(h)) - r.begin());
+	};
+	const long n = (long)r.size();
+	// The fragment heads, each once.
+	CHECK(at("ns_php") < n);
+	CHECK(at("ns_madc") < n);
+	CHECK(at("ns_madc_host") < n);
+	CHECK(at("ns_ui_web") < n);
+	CHECK(at("ns_markdown") < n);
+	std::set<std::string> uniq(r.begin(), r.end());
+	CHECK(uniq.size() == r.size());
+	// ns_ui_web's `println(stderr, ...)` pulls stdio.h — ahead of it.
+	REQUIRE(at("stdio.h") < n);
+	CHECK(at("stdio.h") < at("ns_ui_web"));
+	// The auto-include order: ns_php ahead of ns_madc.
+	CHECK(at("ns_php") < at("ns_madc"));
+	// Nothing else: no C header no fragment pulls, never a C++ system header.
+	CHECK(at("math.h") == n);
+	CHECK(at("cstddef") == n);
+	CHECK(at("string") == n);
+	CHECK(at("iostream") == n);
+	// A strict compile has no dialect surface.
+	Program strict;
+	REQUIRE(strict.set_language_standard("c++17"));
+	std::vector<madc::dis::istring> none;
+	CHECK(!strict.dialect_image_roots(none));
+	CHECK(none.empty());
 }

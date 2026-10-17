@@ -4,8 +4,7 @@
 #
 #   forest_pack_roots <list> all              every root, in list order
 #   forest_pack_roots <list> system           the C/C++ system headers alone
-#   forest_pack_roots <list> through-dialect  the roots through the last
-#                                             dialect fragment
+#   forest_pack_roots <list> dialect          the dialect fragments alone
 #
 # A dialect fragment is the compiler's embedded_dialect_fragment_p rule
 # (src/lexer.cpp) in the shell's alphabet: a top-level ns_* or a bits/<name>
@@ -18,11 +17,11 @@ forest_pack_roots() {
 		return 0
 	    return s ~ /^ns_/ || s ~ /^bits\//
 	}
-	{ line[NR] = $0; frag[NR] = fragment($0); if ( frag[NR] ) last = NR }
+	{ line[NR] = $0; frag[NR] = fragment($0) }
 	END {
 	    for ( i = 1; i <= NR; ++i )
 		if ( mode == "all" || (mode == "system" && !frag[i]) \
-		     || (mode == "through-dialect" && i <= last) )
+		     || (mode == "dialect" && frag[i]) )
 		    print line[i]
 	}'
 }

@@ -2406,6 +2406,33 @@ void Program::queue_fragment_prerequisites(std::set<madc::dis::istring> &batch)
     suppress_auto_include_scan = saved_suppress;
 }
 
+// The dialect image's roots (dialect per-name plan B1): the fragment heads
+// the provider table names (embedded_dialect_fragment_p — the fragment
+// owner), their prerequisites queued by the auto-include's own scan
+// (queue_fragment_prerequisites) and ordered by its own table
+// (ordered_auto_include_headers) — so the image freezes exactly what a
+// dialect compile's auto-include includes, in the order it includes it.
+bool Program::dialect_image_roots(std::vector<madc::dis::istring> &out)
+{
+    out.clear();
+    if ( !auto_includes_enabled() || skip_includes )
+	return false;
+    std::set<madc::dis::istring> batch;
+    const std::map<madc::dis::istring, madc::dis::istring> &providers =
+	auto_include_identifier_headers();
+    for ( std::map<madc::dis::istring, madc::dis::istring>::const_iterator it = providers.begin();
+	  it != providers.end(); ++it )
+	if ( embedded_dialect_fragment_p(it->second) && find_embedded_header(it->second) )
+	    batch.insert(it->second);
+    // The scan notes the words it matched for the injector's macro pass; a
+    // roots query injects nothing, so it leaves that state as it found it.
+    std::set<madc::dis::istring> saved_words = pending_auto_include_identifiers;
+    queue_fragment_prerequisites(batch);
+    pending_auto_include_identifiers.swap(saved_words);
+    out = ordered_auto_include_headers(batch);
+    return !out.empty();
+}
+
 void Program::inject_pending_auto_includes()
 {
     static const bool prelude_probe = getenv("MADC_PRELUDE_CACHE_PROBE") != NULL;

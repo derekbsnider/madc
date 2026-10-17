@@ -41,6 +41,7 @@
 #include "madc_cli.h"	// madc's own command-line table
 #include "madc_sys_includes.h" // -dumpmachine: the toolchain target triple
 #include "madc_project.h" // --project: compile_commands.json multi-TU driver
+#include "cir_freeze.h"	// --freeze-role=: the forest role table (CirForestRole)
 
 #include "madc_cir.h"     // madc_cir_execute/emit/freeze/emit_native + MadcNativeKind
 #include "madc_session.h" // InteractiveSession: the REPL's session (D20)
@@ -692,12 +693,14 @@ int main(int argc, char **argv)
     bool show_version = false;            // --version / -V
     bool show_machine = false;            // -dumpmachine
     bool show_capabilities = false;       // --capabilities=json
+    bool show_dialect_roots = false;      // --print-dialect-roots: the dialect image's roots
     bool show_stats = false;               // --show-stats: print input/token traffic counters
     const char *freeze_path = NULL;       // --freeze= / --freeze-append=: forest container out
     bool freeze_append = false;           // --freeze-append=: placement 2 (append to binary)
     bool freeze_mir_cache = false;        // --freeze-mir-cache: pack the compiled MIR module blob
     std::vector<std::string> freeze_ledger_srcs;  // --freeze-ledger=: AOT ledger sources (S5)
     std::vector<madc::dis::istring> freeze_also_std;  // --freeze-also-std=: more standards the profile serves
+    CirForestRole freeze_role = CIR_FOREST_ROLE_SYSTEM;  // --freeze-role=: the consumer the profile serves (B1)
     std::vector<std::string> freeze_source_lists;  // --freeze-sources=: lists of files for the source arm
     bool run_frozen = false;              // --run-frozen[=path]: thaw + run, no parse
     const char *run_frozen_path = NULL;   // NULL = the blob appended to this executable
@@ -915,6 +918,19 @@ int main(int argc, char **argv)
             break;
         case cli_option::freeze_also_std:
             freeze_also_std.push_back(o.value);
+            break;
+        case cli_option::print_dialect_roots:
+            show_dialect_roots = true;
+            break;
+        case cli_option::freeze_role:
+            // The role's spelling -> its code, once, here (the role table in
+            // cir_freeze.cpp owns both).
+            if ( !cir_forest_role_named(value, freeze_role) )
+            {
+                std::cerr << "madc: --freeze-role=" << value
+                          << ": unknown role (system, dialect)" << std::endl;
+                return 1;
+            }
             break;
         case cli_option::freeze_sources:
             freeze_source_lists.push_back(o.value);
@@ -1157,6 +1173,24 @@ int main(int argc, char **argv)
     if ( show_completion )
     {
         madc::cli::write_completion(std::cout, madc_cli_table(), completion_shell);
+        return 0;
+    }
+
+    // --print-dialect-roots (dialect per-name plan B1): the dialect image's
+    // roots, as the auto-include orders them (Program::dialect_image_roots) —
+    // forest_pack.sh --dialect-image writes the image's TU from them. Only
+    // the madc dialect has the surface; any other standard is refused.
+    if ( show_dialect_roots )
+    {
+        std::vector<madc::dis::istring> roots;
+        if ( !prog->dialect_image_roots(roots) )
+        {
+            std::cerr << "madc: --print-dialect-roots needs --std=madc" << std::endl;
+            return 1;
+        }
+        for ( size_t i = 0; i < roots.size(); ++i )
+            std::cout << roots[i].c_str() << "\n";
+        std::cout.flush();
         return 0;
     }
 
@@ -2114,7 +2148,8 @@ int main(int argc, char **argv)
 	    int frc = madc_cir_freeze(prog.get(), argv[filearg], freeze_path,
 				      freeze_append, freeze_mir_cache,
 				      ledger.empty() ? NULL : &ledger,
-				      /*progress=*/true, &freeze_also_std);
+				      /*progress=*/true, &freeze_also_std,
+				      freeze_role);
 	    print_stats();
 	    return frc == 0 ? 0 : 1;
 	}

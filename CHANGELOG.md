@@ -2,6 +2,43 @@
 
 ## [Unreleased]
 
+### A raw dialect image, tagged with a role, built in every product mode
+
+- A frozen forest carries a ROLE segment (`CIR_FOREST_SEG_ROLE`, id 28, kind
+  `SNAP_KIND_CIR_ROLE`): one u32 `CirForestRole` — `SYSTEM` 0 (the segment
+  absent, every container before B1) or `DIALECT` 1. One table, `forest_roles`
+  (code, name, `raw`), read by `cir_forest_role_info`, `cir_forest_role_named`
+  (the `--freeze-role=` word boundary) and `cir_forest_storage_codec`; its one
+  reader `cir_forest_read_role` is kept at `CirFrozenForest::open_header` as
+  `role()` (directory-level, ahead of `complete_open`, like the shared configs),
+  and the content digest skips it.
+- `cir_frozen_forest::role` becomes the segment unless `SYSTEM`, so the system
+  pack is the container it was. `madc_cir_freeze(…, role)` takes every segment's
+  codec — the forest, the MIR module cache, the ledger — from the role's row: a
+  raw role writes no codec, no level, an uncompressed intern spine, and `add_seg`
+  applies no transform, so every segment reads in place (`raw_ptr`).
+  `--freeze-role=<role>` selects it (an unknown word is refused).
+- `--print-dialect-roots` prints the image's roots from
+  `Program::dialect_image_roots` (the provider table's dialect fragments through
+  `queue_fragment_prerequisites`, ordered by `ordered_auto_include_headers`):
+  `<stdio.h>` and the 13 `ns_*` fragments; refused outside `--std=madc`.
+  `--dump-forest` gains `profile` lines (`cir_forest_profiles`) — the carrier's
+  stack newest first: role, bytes, codec-stored segments.
+- `forest_pack.sh --dialect-image` (was `--dialect-only`) freezes the printed
+  roots with `--freeze-role=dialect`, no layout pass; it packs the image first,
+  then the system pack. `src/Makefile release` ships the image in every mode
+  (`none` alone; `embedded` / `sidecar` both). The run fails loudly unless the
+  printed `ns_*` fragments equal `include/madc/`'s and the list's.
+- `forest_pack_gate.sh` adds `check_dialect_image`, `--image-stats` (a
+  `--show-stats` bind of `dialect.mad` decodes 0 zstd frames) and `--image-roots`
+  (every edge of the image's TU is a printed root); eleven selftest legs.
+  `test_cir_freeze` gains the role table, a dialect-role container (every segment
+  raw) and the roots legs.
+- Sizes: dialect image 4,722,144 bytes raw (51 units); system pack 14,557,768
+  bytes, unchanged; `lib/release/libmadc.so` 27,229,112 → 31,959,480 bytes.
+  `dialect.mad` bound to the image alone 26,706,493 Ir, to the system pack
+  29,953,372 Ir — same output.
+
 ### The seed-parity gate holds dialect records to demand; parse-cost re-recorded
 
 - The seed-parity probe (`MADC_SEED_PARITY_PROBE=1`, `materialize_pass`) labels a

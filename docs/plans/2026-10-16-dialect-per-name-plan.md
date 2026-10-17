@@ -754,3 +754,138 @@ unused declaration to a dialect fragment cannot cost a dialect compile.
     carries no pack, and names neither.
   Thread contract: the probe's role map is a local of the print, under the
   probe only; no state, no globals.
+- **B1 (2026-10-17).** A raw dialect image with a role. What existed: the
+  discovery chain's arms each carry a newest-first stack of profiles
+  (`forest_probe_arm` over `previous_image_len`, the exact config gate per
+  profile); optional segments a reader may lack (SHARED_CONFIGS, LEDGER);
+  `forest_pack.sh --dialect-only` built the dialect container only under
+  `--with-forest=none`, zstd level 15 and laid out; `--show-stats`' decode
+  line counts the bound forest's zstd frames. Landed:
+  - The ROLE segment, id 28 (`CIR_FOREST_SEG_ROLE`, kind
+    `SNAP_KIND_CIR_ROLE`): one u32 code, `CirForestRole` — SYSTEM 0 (the
+    segment absent: every container before B1), DIALECT 1. One table,
+    `forest_roles` (cir_freeze.cpp): code, name, `raw`; its readers
+    `cir_forest_role_info`, `cir_forest_role_named` (the input boundary),
+    `cir_forest_storage_codec`. The segment's one reader,
+    `cir_forest_read_role`: `CirFrozenForest::open_header` keeps it as
+    `role()` (directory-level, ahead of `complete_open`, like the shared
+    configs); the content digest skips it (a label).
+  - Writer: `cir_frozen_forest::role` becomes the segment unless SYSTEM, so
+    the system pack is the container it was. `madc_cir_freeze(…, role)`
+    takes the codec of every segment it writes — the forest, the MIR module
+    cache, the ledger — from the role's row: a raw role writes no codec, no
+    level, an uncompressed intern spine. `add_seg` applies no delta / byte-
+    plane transform to a payload stored with no codec: every segment of the
+    image reads in place (`raw_ptr`). `--freeze-role=<role>` (madc_cli row;
+    an unknown word is refused).
+  - `--dump-forest`: `profile` lines — the carrier's stack, newest first
+    (`cir_forest_profiles`): role, bytes, segments stored with a codec. No
+    carrier offset: a dump stays carrier-transparent
+    (`forest_emitpack_gate.sh` compares a container's dump with its packed
+    executable's).
+  - The image's roots: `Program::dialect_image_roots` (lexer.cpp, beside
+    the injector) — the provider table's dialect fragments
+    (`auto_include_identifier_headers` through `embedded_dialect_fragment_p`),
+    their prerequisites queued by `queue_fragment_prerequisites`, ordered by
+    `ordered_auto_include_headers`: the auto-include's own two owners, no
+    second ordering. `--print-dialect-roots` (madc_cli row; refused outside
+    `--std=madc`) prints them: `<stdio.h>` and the 13 ns_* fragments.
+  - `forest_pack.sh --dialect-image` (was `--dialect-only`): its TU is the
+    printed roots (no longer `forest_pack_roots … through-dialect`, a mode
+    deleted with it; `dialect` lists the list's fragments);
+    `--freeze-role=dialect`, no layout pass, its own work files
+    (`tmp/forest_pack_dialect_*`). It fails loudly unless the printed ns_*
+    fragments equal include/madc/'s and, while the pack list names fragments
+    (list v8), the list's. A run without the flag packs the image first, then
+    the system pack (in sidecar mode the image's stage starts the file).
+    `src/Makefile` release: `none` packs the image alone, `embedded` /
+    `sidecar` both.
+  - `forest_pack_gate.sh`: `check_dialect_image` — the dump's stack holds
+    exactly the profile's `dialect-images` raw dialect profiles (baseline,
+    EXACT: `1 linux`, `1 linux-dialect`; win64 / darwin none) and no
+    compressed one; `--image-stats` — a `--show-stats` run of dialect.mad
+    against the image binds it and decodes 0 zstd frames; `--image-roots` —
+    every edge of the image's unit 0 (its TU) is a printed root. Eleven
+    selftest legs. `linux-dialect pack-bytes` re-recorded raw.
+  Rulings:
+  - Where the image lives: the FIRST container of the carrier the system
+    pack rides — libmadc (shared shape) or the binary (monolithic), the
+    sidecar file in sidecar mode — the system pack appended after it. The
+    arms and the stack walk find it as they are; B2 adds only the role
+    filter (the system walk skips role dialect, the dialect walk takes only
+    it). No new arm, no file beside libmadc (embedded-headers owner law). B1
+    behaviour unchanged: the newest-first walk meets the system pack first,
+    and a `none` carrier holds the image alone, bound as the dialect-only
+    container was. A compile a system profile serves never reaches the
+    image; one no profile serves (a C compile today) reads its footer and
+    directory at the bottom of the stack, then misses on config — B2's
+    filter skips it there.
+  - Role encoding: a u32 code in an optional segment; a role is a row (code,
+    name, raw). Section J's `c` is a new code and row, no format change; a
+    code a reader has no row for passes through as a number (`role=<n>`).
+  - Storage follows the role (`raw` in its row), decided once in the freeze
+    for every segment. Raw = no codec AND no transform, not BLOCKED with raw
+    blocks: no copy at all, as pack-slices §7 says ("no zstd, no BLOCKED
+    tables").
+  - No layout pass for the image: its reads are in place, no lazy block, so
+    a touch log has nothing to order by.
+  - The image's roots are the compiler's: the dialect fragments and their
+    prerequisite closure, ordered as the auto-include orders them — never the
+    pack list's C headers. The fragment set comes from the compiler's
+    fragment owner and provider table, not the pack list, so B5 (list v9
+    without fragments) needs nothing new; at B1 it equals list v8's 13 ns_*
+    fragments, asserted once by the pack. A missing prerequisite fails the
+    freeze: the 13 fragments frozen without `<stdio.h>` refuse the compile
+    (`ns_ui_web:119:14: error: use of undeclared identifier 'stderr'`, the
+    `close` errors a cascade; rc 1), and the gate's linux-dialect pack-error
+    count is zero.
+  - The image keeps its MIR module cache.
+  Measured (tmp/b1x/): the list's C headers cost the first
+  cut 20,394,544 raw bytes — 22 dialect units 2.04 MB, root unit 0 3.82 MB
+  (201 deferred bodies, mostly the cmath / tr1 special functions), 225 system
+  units 9.87 MB, global segments 4.55 MB. The live auto-include over every
+  dialect namespace (`--no-forest-bind --no-embedded-headers -E` under
+  strace) opens one system header, `stdio.h`; the fragments frozen alone
+  fail on `stderr` only.
+  Sizes: dialect image 4,722,144 bytes raw (3,307,744 zstd before, over the
+  list's C headers), 51 units — node records 2.64 MB, positions 0.40 MB, unit
+  source 0.36 MB, string pool 0.29 MB, arena defs 0.27 MB, tokens 0.27 MB.
+  System pack 14,557,768 bytes, unchanged — its dump less the `profile` lines
+  byte-identical to the A7 release's (content 2d1bb43dcef7d433).
+  lib/release/libmadc.so 27,229,112 → 31,959,480 bytes.
+  Cost: dialect.mad bound to the image alone (`--forest-bind=` the carrier's
+  prefix through it) 26,706,493 Ir (26,780,073 over the list's C headers), to
+  the system pack 29,953,372 — same output.
+  Tests: test_cir_freeze — the role table (names, codes, storage, an
+  unknown code and word) and a dialect-role container (its ROLE segment,
+  every segment raw, a system container with none, a carrier stacking the
+  image under a system profile read newest first). RED: "'CirForestRole' was
+  not declared", then with the API stubbed 2 of 2 failing (`REQUIRE(
+  cir_forest_role_named("system", r) )`, `REQUIRE(
+  r.find(CIR_FOREST_SEG_ROLE) != nullptr )`). The gate's seven legs, RED
+  with the two checks blinded (six expected-red legs green: "SELFTEST RED");
+  on the A7 release the gate failed: "dump carries no 'profile' stack" and
+  "decoded 18 zstd frame(s)" (dialect.mad bound to the system pack). The
+  roots: test_cir_freeze "the dialect image roots are the fragments'
+  auto-include closure" (the heads once each, `stdio.h` ahead of
+  `ns_ui_web`, no `math.h` / `cstddef` / C++ header, none under c++17) —
+  RED "no member named 'dialect_image_roots'", then stubbed `REQUIRE(
+  prog.dialect_image_roots(roots) )` false; the gate's four roots legs, RED
+  with the check blinded (three expected-red legs green); the first cut's
+  image against the printed roots: 24 roots it does not name
+  (`/usr/include/c++/13/cstddef` …).
+  Validation (the final tree): `make -C src release` — forest_pack_gate OK
+  for linux-dialect (1 raw image, 0 zstd frames, 14 roots all the
+  compiler's) and linux (1 raw of 1 in 2 profiles); test_cir_freeze 47/47,
+  test_madc_cli 8/8; the static gate loop 0 red of 103 (a first run:
+  check-istring-fields red on a std::string in the dump, printed without
+  one); fix lane GREEN (Tier 1 29/29, EXE/OBJ 28/28; Tier 2's seven lanes at
+  baseline); the packed release over `testdialect* testphp* testforest*
+  testpack* testfragment*` 31/31, EXE/OBJ 29/29; parse-cost 0 red of 21
+  (dialect.forest +0.01%, c_headers.forest −0.02%, the rungs −0.05% to
+  +0.03%); forest_emitpack_gate, forest_ledger_gate OK, forest_bind_gate
+  42/42.
+  Carried: the darwin and Windows packs build no image (as they built no
+  dialect-only container); B5's drop needs one there first.
+  Thread contract: the image is immutable mapped bytes; the role is read per
+  reader at open; the role table is constant data; no globals.
