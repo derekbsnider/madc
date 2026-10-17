@@ -15,7 +15,7 @@ headerless-win	yes	e09316d0dc71	2026-10-15	1964/0/0TO/84skip at e09316d0d + ondi
 wine64	yes	e09316d0dc71	2026-10-15	the packed PE under wine at e09316d0d: headerless-win 1964/0 + ondisk-win 1/0 (seam_battery.sh)
 macos	yes	e09316d0dc71	2026-10-15	BUILD lane: macos-build + macos stages rc=0 at e09316d0d (seam_battery.sh, 0.105.0 release seam)
 aarch64-ld	yes	e09316d0dc71	2026-10-15	aarch64_ldouble_lane GREEN — seam_battery.sh at e09316d0d
-tests-jit	batch	e09316d0dc71	2026-10-15	2039 passed, 0 failed, 9 skipped (seam_battery.sh exeobj JIT leg) at e09316d0d
 genuine-win	release	e09316d0dc71	2026-10-15	1963/0/0TO/85skip — the FULL suite on the owner Windows 11 box at e09316d0d content (scripts/win_suite.sh, the release-seam packed PE)
 brew-linux	release	e09316d0dc71	2026-10-15	2039/0/0TO/9skip - scripts/brew_lane.sh at e09316d0d content (bottle + pour + brew test, keg-masked runpath gate)
 darwin-suite	release	e09316d0dc71	2026-10-15	darwin-suite native libc++ at e09316d0d content: arm64 Mac Mini (macOS 14) 2005/0/0TO/43skip + mac battery 12/0; Intel MacBook (macOS 15) 2008/0/0TO/40skip + mac battery 12/0 (domains darwin libcxx darwin-<arch> macos-<major>); EXE advisory 291/297 failed (D5 class)
+tests-jit	batch	67c2704150ca	2026-10-17	2086 passed, 0 failed, 0 timed out, 9 skipped
