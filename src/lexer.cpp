@@ -662,7 +662,8 @@ static bool push_precompiled_header_tokens(Program &pgm,
 					   std::deque<TokenBase *> &pch_tokens);
 static bool named_include_provider_exists(Program &pgm,
 					  const madc::dis::istring &incfile,
-					  madc::dis::istring &pch_path);
+					  madc::dis::istring &pch_path,
+					  bool include_next);
 
 static DataDef *get_complex_compat_type(DataDef *base_type)
 {
@@ -7215,7 +7216,8 @@ static bool find_filesystem_precompiled_header(Program &pgm,
 // On success pch_path names the filesystem .madh (empty for the others).
 static bool named_include_provider_exists(Program &pgm,
 					  const madc::dis::istring &incfile,
-					  madc::dis::istring &pch_path)
+					  madc::dis::istring &pch_path,
+					  bool include_next)
 {
     if ( find_filesystem_precompiled_header(pgm, incfile, true, pch_path) )
 	return true;
@@ -7227,9 +7229,15 @@ static bool named_include_provider_exists(Program &pgm,
     // instead. Gated here as well as at the tokenize site so the once-only
     // dedup key and the auto-include defer gate agree with what actually
     // resolves; a name they disagreed about would be dropped silently.
+    // An #include_next skips the from-the-TOP test exactly as the tokenize
+    // site does: its caller reached here only when embedded_wins_include_next
+    // placed the embedded slot next in the walk (a libstdc++/libc++ C wrapper
+    // continuing to the real header), so the embedded copy IS what resolves —
+    // and its once-only key must be recorded, or a later bind of a closure
+    // holding that unit installs it a second time beside the live copy.
     return find_embedded_header(incfile) != NULL
 	&& pgm.is_embedded_header_allowed(incfile)
-	&& !pgm.embedded_header_outranked(incfile);
+	&& (include_next || !pgm.embedded_header_outranked(incfile));
 }
 
 static bool load_precompiled_header_file(const madc::dis::istring &path,
@@ -8227,7 +8235,8 @@ TokenBase *Program::_getToken()
 			    && include_already_seen(include_key);
 			madc::dis::istring pch_path;
 			bool resolves_named =
-			    named_include_provider_exists(*this, incfile, pch_path);
+			    named_include_provider_exists(*this, incfile, pch_path,
+							  is_include_next);
 			if ( protocol_visit )
 			    pch_path.clear();	// a baked PCH is the full one-shot
 			if ( resolves_named && name_already_included )
@@ -10791,7 +10800,8 @@ int64_t Program::evaluateHasQuery(const madc::dis::istring &op, const std::strin
 	    else
 	    {
 		madc::dis::istring pch_path;
-		if ( named_include_provider_exists(*this, file, pch_path) )
+		if ( named_include_provider_exists(*this, file, pch_path,
+						   /*include_next=*/false) )
 		    return 1;
 	    }
 	}

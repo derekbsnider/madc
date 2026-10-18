@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+### An embedded header reached through a C wrapper's `#include_next` is recorded (J5)
+
+- `named_include_provider_exists` (`src/lexer.cpp`) — the one owner of "does a
+  named provider resolve", read by the `#include` handler and `__has_include` —
+  gains an `include_next` parameter. On an `#include_next` the predicate skips
+  the from-the-top embedded-outranked test exactly as the tokenize site does:
+  its caller reaches it only when `embedded_wins_include_next` placed the
+  embedded slot next in the walk, so the embedded copy is what resolves and its
+  once-only key must be recorded. Without it a later bind of a closure holding
+  that unit installs its frozen decls a second time beside the live copy.
+  `__has_include_next` already answers through `embedded_wins_include_next`;
+  `__has_include` passes `include_next = false`.
+- On the win64 packed binary a `.c` `<stdlib.h>` resolves to libstdc++'s wrapper
+  (B199); the bind declines the wrapper root and mingw's `stdlib.h` (`_SECIMP`
+  differs from the freeze), so the wrapper's `#include_next <stdlib.h>` live-
+  tokenizes the embedded mingw copy. Unrecorded, mingw's tail
+  `sec_api/stdlib_s.h` bound a closure holding the `stdlib.h` unit and installed
+  it beside the live copy: "Identifier 'div_t' already defined". The packed PE
+  now prints `3 1`; the trace reads "already present (`_INC_STDLIB` guard live)
+  — pruned".
+- Reducer `tests/teststdlibreincludebind_c.mad` (`--std=gnu17` → `3 1`, gcc and
+  clang oracles named in it). See `docs/plans/2026-10-18-c-pack-layer.md`
+  section J, slice J5.
+
 ### The bare family spellings c, c++, cpp name gcc's and g++'s gnu defaults
 
 - `--std=c` now names gcc's default C dialect, gnu17 (was c11); `--std=c++` and
