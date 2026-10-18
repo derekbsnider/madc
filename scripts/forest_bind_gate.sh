@@ -1139,6 +1139,85 @@ grep -aq "bound to grove unit.*fbgate_ab_a.h" "$ab_dir/control.log" \
 rm -rf "$ab_dir"
 echo "forest_bind_gate: [allornone] OK — a C++ TU's first decline with nothing bound stops binding; with nothing different it binds"
 
+# --- case: condrec (docs/plans/2026-10-18-verified-cxx-bind.md, K2, forest v68) ---
+# The freeze records a unit's ITEM ORDER for the bind's positional walk: each
+# edge's place among the unit's PP events, and each conditional it evaluated
+# over an EXTERNAL macro — kind, outcome, single arm, the arm's events / edges /
+# tokens, and a skipped single arm's body. fbgate_cr_u.h, frozen after
+# fbgate_cr_cfg.h and fbgate_cr_pre.h: its guard (#ifndef, taken), #ifdef
+# FBG_CR_CFG (taken, a prototype in the arm), #ifndef FBG_CR_GUARDED (skipped —
+# pre.h defined it — its typedef arm captured), #if over FBG_CR_CFG with an
+# #elif (taken, one define). The #elif after a taken arm is never evaluated.
+cr_dir=tmp/fbgate_cr
+rm -rf "$cr_dir"
+mkdir -p "$cr_dir"
+cat > "$cr_dir/fbgate_cr_cfg.h" <<'EOF'
+#ifndef FBGATE_CR_CFG_H
+#define FBGATE_CR_CFG_H
+#define FBG_CR_CFG 1
+#endif
+EOF
+cat > "$cr_dir/fbgate_cr_pre.h" <<'EOF'
+#ifndef FBGATE_CR_PRE_H
+#define FBGATE_CR_PRE_H
+#define FBG_CR_GUARDED 9
+#endif
+EOF
+cat > "$cr_dir/fbgate_cr_v.h" <<'EOF'
+#ifndef FBGATE_CR_V_H
+#define FBGATE_CR_V_H
+#define FBG_CR_V 1
+#endif
+EOF
+cat > "$cr_dir/fbgate_cr_u.h" <<'EOF'
+#ifndef FBGATE_CR_U_H
+#define FBGATE_CR_U_H
+#define FBG_CR_A 1
+#include <fbgate_cr_v.h>
+#ifdef FBG_CR_CFG
+int fbg_cr_on(void);
+#endif
+#ifndef FBG_CR_GUARDED
+#define FBG_CR_GUARDED 2
+typedef int fbg_cr_t;
+#endif
+#if defined FBG_CR_CFG && FBG_CR_A
+#define FBG_CR_B 3
+#elif 0
+#define FBG_CR_B 4
+#endif
+#endif
+EOF
+cat > "$cr_dir/producer.c" <<'EOF'
+#include <fbgate_cr_cfg.h>
+#include <fbgate_cr_pre.h>
+#include <fbgate_cr_u.h>
+int main(void) { return 0; }
+EOF
+cr_snap=$cr_dir/cr.msnap
+timeout 600 "$BIN" --std=gnu17 --freeze="$cr_snap" -I "$cr_dir" "$cr_dir/producer.c" \
+    >"$cr_dir/freeze.log" 2>&1 || fail "[condrec] the --freeze FAILED: $(tail -n 3 "$cr_dir/freeze.log")"
+timeout 60 "$BIN" --dump-forest="$cr_snap" > "$cr_dir/dump.txt" 2>&1 \
+    || fail "[condrec] --dump-forest FAILED"
+cr_u='[^	]*fbgate_cr_u\.h'
+cr_want() {	# cr_want <label> <ERE over a dump line>
+    grep -aEq "$2" "$cr_dir/dump.txt" \
+	|| fail "[condrec] $1 — no dump line matches: $2"
+}
+cr_want "the edge to v.h sits after u.h's two defines" "^edgepos	${cr_u}	0	2$"
+cr_want "the guard #ifndef: taken, single arm, the whole unit" \
+    "^cond	${cr_u}	ifndef	1	1	ev=0-3	ed=0-1	tok=0-[1-9][0-9]*	arm=none	FBGATE_CR_U_H$"
+cr_want "#ifdef FBG_CR_CFG: taken, single arm, a prototype's tokens, no events" \
+    "^cond	${cr_u}	ifdef	1	1	ev=2-2	ed=1-1	tok=0-[1-9][0-9]*	arm=none	FBG_CR_CFG$"
+cr_want "#ifndef FBG_CR_GUARDED: skipped, single arm, its typedef arm captured" \
+    "^cond	${cr_u}	ifndef	0	1	ev=2-2	ed=1-1	tok=[0-9]+-[0-9]+	arm=decls	FBG_CR_GUARDED$"
+cr_want "#if over FBG_CR_CFG: taken, an #elif follows, one define" \
+    "^cond	${cr_u}	if	1	0	ev=2-3	ed=1-1	tok=[0-9]+-[0-9]+	arm=none	defined FBG_CR_CFG && FBG_CR_A$"
+grep -aEq "^cond	${cr_u}	elif	" "$cr_dir/dump.txt" \
+    && fail "[condrec] an #elif after a taken arm was recorded — it is never evaluated"
+rm -rf "$cr_dir"
+echo "forest_bind_gate: [condrec] OK — the freeze records each edge's place and each external conditional's outcome, arm and body (v68)"
+
 # --- case: cenv (docs/plans/2026-10-18-c-pack-layer.md, J4) ---
 # A C program sets feature-test macros ahead of its system includes as a
 # matter of course — sqlite3.c defines NDEBUG and _GNU_SOURCE. The C layer
@@ -2693,5 +2772,5 @@ run_case patternalias "1 2"
 # coverage. Worse in the other direction: deleting a case would leave this line
 # still claiming it runs. Deriving it from run_case would need the ~12 bespoke
 # cases below to register too; until then, update it when you add a case.
-echo "forest_bind_gate: GREEN 45/45 — typedef + struct + nested + bitfield + class + method + fwd + ptr + nestedenumfn + ldouble + ns + anon + declonlymt + flavorgate + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec + iobind + traitfold + nothrowfold + explicitctor + armreplay + armreplayc + division + allornone + replreuse + deletedctor + constcopy + subbind + redecl + husk + silbody grove headers bound (unit-granular husk recovery only), output == live == g++ + secvptr + friendgrant + patternalias + quietbind + memberptr + unionclass"
+echo "forest_bind_gate: GREEN 46/46 — typedef + struct + nested + bitfield + class + method + fwd + ptr + nestedenumfn + ldouble + ns + anon + declonlymt + flavorgate + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec + iobind + traitfold + nothrowfold + explicitctor + armreplay + armreplayc + division + allornone + condrec + replreuse + deletedctor + constcopy + subbind + redecl + husk + silbody grove headers bound (unit-granular husk recovery only), output == live == g++ + secvptr + friendgrant + patternalias + quietbind + memberptr + unionclass"
 exit 0

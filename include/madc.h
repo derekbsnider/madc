@@ -3709,8 +3709,12 @@ protected:
     };
     SkippedArmCapture *skip_arm_capture = NULL;
     TokenBase *skip_and_capture_arm(const madc::dis::istring &name, bool first_dep);
+    TokenBase *skip_capturing_arm(SkippedArmCapture &cap);
+    TokenBase *skip_recorded_arm();
     void run_skipped_arm(const char *unit_name, const char *name, const char *text);
     bool evaluateIfCondition();
+    std::string read_if_condition_text();
+    bool evaluate_if_text(const std::string &raw_expr);
     // The clang `__has_*` preprocessor operators, evaluated inside an #if.
     // `pos` enters at the operator's '(' and leaves past its ')'. Every one
     // answers from madc's OWN state and answers TRUTHFULLY: a yes madc cannot
@@ -5940,6 +5944,38 @@ public:
     };
     std::map<const char *, std::vector<PackSkippedArm> > pack_unit_skipped_arms;
     std::map<const char *, std::set<madc::dis::istring> > pack_unit_branch_dep_seen;
+    // v68 (docs/plans/2026-10-18-verified-cxx-bind.md, K2): a conditional a
+    // unit evaluated over an EXTERNAL macro, placed in the unit's item order —
+    // its PP events, include edges and conditionals as the freeze met them —
+    // so the bind re-evaluates it in the consumer's positional state.
+    struct PackCondRecord {
+	CondDirective kind;		// If / Ifdef / Ifndef / Elif
+	std::string text;		// the condition, or the #ifdef / #ifndef macro name
+	bool outcome = false;
+	uint32_t ev_begin = 0, ed_begin = 0;	// the unit's events / edges ahead of the directive
+	uint32_t ev_end = 0, ed_end = 0;	// ... ahead of the arm's end (#elif, #else, #endif)
+	size_t tok_begin = 0, tok_end = 0;	// the token stream's size at both (global)
+	bool single_arm = false;	// the group's #endif ended the arm, no #elif / #else in it
+	bool arm_captured = false;	// a skipped single arm's body is in `arm`
+	bool arm_pure = false;		// ... and it holds only directives
+	std::string arm;
+    };
+    std::map<const char *, std::vector<PackCondRecord> > pack_unit_conds;
+    std::map<const char *, std::vector<uint32_t> > pack_unit_edge_events;	// v68: per edge, the unit's events ahead of it
+    // One open conditional group, parallel to cond_groups while freezing.
+    struct PackCondFrame {
+	const char *unit;
+	int pending = -1;		// the record whose arm is open, or -1
+	bool branched = false;		// an #elif / #else came
+    };
+    std::vector<PackCondFrame> pack_cond_stack;
+    size_t pack_external_consults = 0;	// v68: every external branch consult bumps it
+    void pack_cond_open(CondDirective kind, const std::string &text, bool outcome,
+			size_t consults_before);
+    void pack_cond_elif(const std::string &text, bool outcome, size_t consults_before);
+    void pack_cond_branch();
+    void pack_cond_close();
+    PackCondRecord *pack_cond_pending();
     // v41: exact pre-preprocessor source text for every packed unit. A
     // compiler-less target whose consumer config cannot bind the producer's
     // semantic grove (another --std=, -D set, or POSIX posture) tokenizes this

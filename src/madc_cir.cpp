@@ -3963,6 +3963,7 @@ static void cir_forest_fill_pack_payloads(Program *prog, cir_frozen_forest &f)
     size_t n = (size_t)(prog->tokens.end() - prog->tokens.begin());
     std::vector<uint32_t> unit_of(n, 0xffffffffu), local_of(n, 0);
     std::vector<std::vector<TokenBase *> > unit_toks;
+    std::vector<std::vector<size_t> > unit_globals;	// v68: each unit's tokens' global indices
     const char *last_file = NULL;
     uint32_t last_unit = 0;
     size_t i = 0;
@@ -3985,9 +3986,12 @@ static void cir_forest_fill_pack_payloads(Program *prog, cir_frozen_forest &f)
 	}
 	if (unit_toks.size() < f.units.size())
 	    unit_toks.resize(f.units.size());
+	if (unit_globals.size() < f.units.size())
+	    unit_globals.resize(f.units.size());
 	unit_of[i] = u;
 	local_of[i] = (uint32_t)unit_toks[u].size();
 	unit_toks[u].push_back(tb);
+	unit_globals[u].push_back(i);
     }
 
     f.token_unit = unit_of;	// v58: each arena slot's point-of-creation unit
@@ -4136,6 +4140,64 @@ static void cir_forest_fill_pack_payloads(Program *prog, cir_frozen_forest &f)
 	    out.push_back(pool->intern(a.text));
 	    out.push_back(0xffffffffu);
 	}
+    }
+
+    // 5c (v68). Each unit's ITEM ORDER for the bind's positional walk
+    // (docs/plans/2026-10-18-verified-cxx-bind.md, K2): every edge's place
+    // among the unit's PP events, then each conditional it evaluated over an
+    // external macro (SNAP_KIND_CIR_UNIT_CONDS). A token position becomes the
+    // unit's own index: the count of its tokens ahead of the global one.
+    auto local_token = [&](uint32_t u, size_t global) -> uint32_t {
+	if (u >= unit_globals.size())
+	    return 0;
+	const std::vector<size_t> &g = unit_globals[u];
+	return (uint32_t)(std::lower_bound(g.begin(), g.end(), global) - g.begin());
+    };
+    std::map<uint32_t, std::vector<uint32_t> > edge_events_of;
+    typedef std::map<const char *, std::vector<uint32_t> > edge_pos_map;
+    const std::vector<edge_pos_map::const_iterator> edge_pos_in_order =
+	pack_entries_in_unit_order(prog->pack_unit_edge_events, prog->pack_unit_order);
+    for (size_t k = 0; k < edge_pos_in_order.size(); ++k)
+	edge_events_of[ensure_unit(edge_pos_in_order[k]->first)] = edge_pos_in_order[k]->second;
+    std::map<uint32_t, const std::vector<Program::PackCondRecord> *> conds_of;
+    typedef std::map<const char *, std::vector<Program::PackCondRecord> > cond_map;
+    const std::vector<cond_map::const_iterator> conds_in_order =
+	pack_entries_in_unit_order(prog->pack_unit_conds, prog->pack_unit_order);
+    for (size_t k = 0; k < conds_in_order.size(); ++k)
+	conds_of[ensure_unit(conds_in_order[k]->first)] = &conds_in_order[k]->second;
+    std::set<uint32_t> item_units;
+    for (std::map<uint32_t, std::vector<uint32_t> >::const_iterator it = edge_events_of.begin();
+	 it != edge_events_of.end(); ++it)
+	item_units.insert(it->first);
+    for (std::map<uint32_t, const std::vector<Program::PackCondRecord> *>::const_iterator it =
+	     conds_of.begin(); it != conds_of.end(); ++it)
+	item_units.insert(it->first);
+    for (std::set<uint32_t>::const_iterator ui = item_units.begin(); ui != item_units.end(); ++ui) {
+	const uint32_t u = *ui;
+	std::vector<uint32_t> words;
+	const std::vector<uint32_t> &ev = edge_events_of[u];
+	words.push_back((uint32_t)ev.size());
+	words.insert(words.end(), ev.begin(), ev.end());
+	const std::vector<Program::PackCondRecord> *recs = conds_of.count(u) ? conds_of[u] : NULL;
+	words.push_back(recs ? (uint32_t)recs->size() : 0);
+	for (size_t c = 0; recs && c < recs->size(); ++c) {
+	    const Program::PackCondRecord &r = (*recs)[c];
+	    uint32_t w[CIR_COND_WORDS];
+	    w[CIR_COND_KIND] = (uint32_t)r.kind;
+	    w[CIR_COND_TEXT] = pool->intern(r.text);
+	    w[CIR_COND_FLAGS] = (r.outcome ? CIR_COND_F_OUTCOME : 0u)
+			      | (r.single_arm ? CIR_COND_F_SINGLE_ARM : 0u)
+			      | (r.arm_captured && r.arm_pure ? CIR_COND_F_ARM_PURE : 0u);
+	    w[CIR_COND_EV_BEGIN] = r.ev_begin;
+	    w[CIR_COND_ED_BEGIN] = r.ed_begin;
+	    w[CIR_COND_EV_END] = r.ev_end;
+	    w[CIR_COND_ED_END] = r.ed_end;
+	    w[CIR_COND_TOK_BEGIN] = local_token(u, r.tok_begin);
+	    w[CIR_COND_TOK_END] = local_token(u, r.tok_end);
+	    w[CIR_COND_ARM] = r.arm_captured ? pool->intern(r.arm) : 0;
+	    words.insert(words.end(), w, w + CIR_COND_WORDS);
+	}
+	f.units[u].conditions = words;
     }
 
     // 5c (v41). Preserve each unit's exact pre-preprocessor source text.
@@ -7978,6 +8040,34 @@ int madc_cir_dump_forest(const char *container_path)
 	    for (size_t k = 0; k < edges.size(); ++k)
 		printf("edge\t%s\t%s\n", uname ? uname : "?",
 		       forest.unit_name(edges[k]));
+	// v68: the unit's item order — each edge's place among its events, then
+	// each recorded condition (kind, outcome, single arm, its arm's events /
+	// edges / tokens, a captured arm, the text).
+	std::vector<uint32_t> cw;
+	if (forest.unit_conditions(u, cw) && !cw.empty()) {
+	    size_t at = 0;
+	    const uint32_t ne = cw[at++];
+	    for (uint32_t k = 0; k < ne && at < cw.size(); ++k)
+		printf("edgepos\t%s\t%u\t%u\n", uname ? uname : "?", k, cw[at++]);
+	    const uint32_t nc = at < cw.size() ? cw[at++] : 0;
+	    static const char *const kinds[] = { "if", "ifdef", "ifndef", "elif", "else" };
+	    for (uint32_t c = 0; c < nc && at + CIR_COND_WORDS <= cw.size();
+		 ++c, at += CIR_COND_WORDS) {
+		const uint32_t *w = &cw[at];
+		const char *txt = forest.pool_str(w[CIR_COND_TEXT]);
+		printf("cond\t%s\t%s\t%u\t%u\tev=%u-%u\ted=%u-%u\ttok=%u-%u\tarm=%s\t%s\n",
+		       uname ? uname : "?",
+		       w[CIR_COND_KIND] < 5 ? kinds[w[CIR_COND_KIND]] : "?",
+		       (w[CIR_COND_FLAGS] & CIR_COND_F_OUTCOME) ? 1u : 0u,
+		       (w[CIR_COND_FLAGS] & CIR_COND_F_SINGLE_ARM) ? 1u : 0u,
+		       w[CIR_COND_EV_BEGIN], w[CIR_COND_EV_END],
+		       w[CIR_COND_ED_BEGIN], w[CIR_COND_ED_END],
+		       w[CIR_COND_TOK_BEGIN], w[CIR_COND_TOK_END],
+		       !w[CIR_COND_ARM] ? "none"
+			   : (w[CIR_COND_FLAGS] & CIR_COND_F_ARM_PURE) ? "pure" : "decls",
+		       txt ? txt : "?");
+	    }
+	}
 	std::vector<uint32_t> ppe;
 	if (forest.unit_pp_events(u, ppe))
 	    for (size_t k = 0; k + 5 <= ppe.size(); ) {

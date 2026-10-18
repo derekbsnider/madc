@@ -6988,7 +6988,91 @@ void Program::pack_record_edge(const madc::dis::istring &includee)
     {
 	pack_note_unit(unit);
 	pack_unit_edges[unit].push_back(intern_file(includee));
+	// v68: the edge's place among the unit's events (its item order).
+	pack_unit_edge_events[unit].push_back((uint32_t)pack_pp_exports[unit].size());
     }
+}
+
+// v68 (docs/plans/2026-10-18-verified-cxx-bind.md, K2): the freeze's record
+// of each conditional a unit evaluates over an EXTERNAL macro, in the unit's
+// item order. A group's frame opens at its #if / #ifdef / #ifndef, each
+// #elif / #else ends the open arm, and its #endif closes it — the live
+// directives and skipConditionalBlock's both call these.
+void Program::pack_cond_open(CondDirective kind, const std::string &text, bool outcome,
+			     size_t consults_before)
+{
+    if ( !pack_recording )
+	return;
+    PackCondFrame frame;
+    frame.unit = pack_current_unit();
+    pack_cond_stack.push_back(frame);
+    pack_cond_elif(text, outcome, consults_before);
+    if ( !pack_cond_stack.empty() && pack_cond_stack.back().pending >= 0 )
+	pack_unit_conds[frame.unit][pack_cond_stack.back().pending].kind = kind;
+}
+
+// An evaluated arm of the open group: recorded when its condition consulted
+// an external macro (pack_record_branch_macro counted one since
+// consults_before).
+void Program::pack_cond_elif(const std::string &text, bool outcome, size_t consults_before)
+{
+    if ( !pack_recording || pack_cond_stack.empty() )
+	return;
+    PackCondFrame &f = pack_cond_stack.back();
+    if ( !f.unit || pack_external_consults == consults_before )
+	return;
+    std::vector<PackCondRecord> &recs = pack_unit_conds[f.unit];
+    recs.push_back(PackCondRecord());
+    PackCondRecord &r = recs.back();
+    r.kind = CondDirective::Elif;
+    r.text = text;
+    r.outcome = outcome;
+    r.ev_begin = (uint32_t)pack_pp_exports[f.unit].size();
+    r.ed_begin = (uint32_t)pack_unit_edges[f.unit].size();
+    r.tok_begin = tokens.size();
+    f.pending = (int)recs.size() - 1;
+}
+
+// The open arm's end: its events, edges and tokens stop here.
+static void pack_cond_end_arm(Program &pgm, Program::PackCondFrame &f, bool single_arm)
+{
+    if ( f.pending < 0 )
+	return;
+    Program::PackCondRecord &r = pgm.pack_unit_conds[f.unit][f.pending];
+    r.ev_end = (uint32_t)pgm.pack_pp_exports[f.unit].size();
+    r.ed_end = (uint32_t)pgm.pack_unit_edges[f.unit].size();
+    r.tok_end = pgm.tokens.size();
+    r.single_arm = single_arm;
+    f.pending = -1;
+}
+
+// An #elif or #else of the open group.
+void Program::pack_cond_branch()
+{
+    if ( !pack_recording || pack_cond_stack.empty() )
+	return;
+    PackCondFrame &f = pack_cond_stack.back();
+    pack_cond_end_arm(*this, f, false);
+    f.branched = true;
+}
+
+// The open group's #endif.
+void Program::pack_cond_close()
+{
+    if ( !pack_recording || pack_cond_stack.empty() )
+	return;
+    PackCondFrame &f = pack_cond_stack.back();
+    pack_cond_end_arm(*this, f, !f.branched);
+    pack_cond_stack.pop_back();
+}
+
+// The record whose arm is open in the innermost group, or NULL.
+Program::PackCondRecord *Program::pack_cond_pending()
+{
+    if ( !pack_recording || pack_cond_stack.empty() || pack_cond_stack.back().pending < 0 )
+	return NULL;
+    const PackCondFrame &f = pack_cond_stack.back();
+    return &pack_unit_conds[f.unit][f.pending];
 }
 
 bool Program::pack_record_branch_macro(const std::string &name,
@@ -7036,6 +7120,7 @@ bool Program::pack_record_branch_macro(const std::string &name,
 	  && sti->second.count(oi->second.unit) )
 	    return false;		// subtree: edges install it before us
     }
+    ++pack_external_consults;		// v68: the open conditional consulted an external
     PackBranchDep dep;
     dep.name = name;
     dep.defined = defined_now;
@@ -7114,18 +7199,7 @@ TokenBase *Program::skip_and_capture_arm(const madc::dis::istring &name, bool fi
     SkippedArmCapture cap;
     if ( !unit || !source.raw_offset(cap.begin) )
 	return skipConditionalBlock();
-    skip_arm_capture = &cap;
-    TokenBase *next;
-    try
-    {
-	next = skipConditionalBlock();	// ends the capture at the arm's end
-    }
-    catch (...)
-    {
-	skip_arm_capture = NULL;
-	throw;
-    }
-    skip_arm_capture = NULL;
+    TokenBase *next = skip_capturing_arm(cap);
     if ( !cap.closed || !cap.pure )
 	return next;
     if ( first_dep )
@@ -7147,6 +7221,47 @@ TokenBase *Program::skip_and_capture_arm(const madc::dis::istring &name, bool fi
     arm.text = cap.text;
     arms.push_back(arm);
     return next;
+}
+
+// Skip the open arm while capturing its body (cap.begin set by the caller).
+// A SINGLE arm — closed by the group's #endif — becomes the open condition
+// record's `arm` (v68, K2): a consumer that takes the arm the freeze skipped
+// replays it.
+TokenBase *Program::skip_capturing_arm(SkippedArmCapture &cap)
+{
+    const PackCondFrame *f = pack_recording && !pack_cond_stack.empty()
+	? &pack_cond_stack.back() : NULL;
+    const char *rec_unit = f ? f->unit : NULL;
+    const int rec = f ? f->pending : -1;	// the frame pops at the #endif
+    skip_arm_capture = &cap;
+    TokenBase *next;
+    try
+    {
+	next = skipConditionalBlock();	// ends the capture at the arm's end
+    }
+    catch (...)
+    {
+	skip_arm_capture = NULL;
+	throw;
+    }
+    skip_arm_capture = NULL;
+    if ( cap.closed && rec >= 0 )
+    {
+	PackCondRecord &r = pack_unit_conds[rec_unit][rec];
+	r.arm_captured = true;
+	r.arm_pure = cap.pure;
+	r.arm = cap.text;
+    }
+    return next;
+}
+
+// v68: a recorded condition's skipped arm, captured; any other skip is plain.
+TokenBase *Program::skip_recorded_arm()
+{
+    SkippedArmCapture cap;
+    if ( !pack_cond_pending() || !source.raw_offset(cap.begin) )
+	return skipConditionalBlock();
+    return skip_capturing_arm(cap);
 }
 
 // v67 (bind time): run a unit's captured `#ifndef name` arm — its first consult
@@ -8991,15 +9106,17 @@ TokenBase *Program::_getToken()
 			name += source.get();
 		    bool defined = macro_name_defined(name);
 		    bool first_dep = false;
+		    const size_t consults_before = pack_external_consults;
 		    bool external = pack_record_branch_macro(name, false, &first_dep);
 		    bool active = (directive == "ifdef") ? defined : !defined;
 		    if ( !source.guard_watch.key.empty() )
 			guard_watch_open(directive == "ifndef" ? madc::dis::istring(name)
 							       : madc::dis::istring());
 		    ifdef_stack.push(active);
-		    cond_groups.push({ active, directive == "ifdef" ? CondDirective::Ifdef
-							: CondDirective::Ifndef,
-				       dir_line, dir_col });
+		    const CondDirective kind = directive == "ifdef" ? CondDirective::Ifdef
+								 : CondDirective::Ifndef;
+		    cond_groups.push({ active, kind, dir_line, dir_col });
+		    pack_cond_open(kind, name, active, consults_before);
 		    DBG(std::cout << "#" << directive << " " << name << " -> " << (active ? "true" : "false") << " stack=" << ifdef_stack.size() << " file=" << source.fname() << std::endl);
 		    // discard the directive's trailing tokens via the lexer, so a
 		    // multi-line /* */ comment here is handled by the lexer's case '/'
@@ -9007,7 +9124,7 @@ TokenBase *Program::_getToken()
 		    if ( !active && external && directive == "ifndef" )
 			return skip_and_capture_arm(name, first_dep);
 		    if ( !active )
-			return skipConditionalBlock();
+			return skip_recorded_arm();
 		    return getToken();
 		}
 		if ( directive == "if" )
@@ -9027,12 +9144,15 @@ TokenBase *Program::_getToken()
 			    cmacro = if_not_defined_guard(cb, ce);
 			guard_watch_open(cmacro);
 		    }
-		    bool active = evaluateIfCondition();
+		    const size_t consults_before = pack_external_consults;
+		    const std::string cond = read_if_condition_text();
+		    bool active = evaluate_if_text(cond);
 		    ifdef_stack.push(active);
 		    cond_groups.push({ active, CondDirective::If, dir_line, dir_col });
+		    pack_cond_open(CondDirective::If, cond, active, consults_before);
 		    DBG(std::cout << "#if -> " << (active ? "true" : "false") << std::endl);
 		    if ( !active )
-			return skipConditionalBlock();
+			return skip_recorded_arm();
 		    return getToken();
 		}
 		if ( directive == "elif" )
@@ -9040,6 +9160,7 @@ TokenBase *Program::_getToken()
 		    if ( ifdef_stack.empty() )
 			Throw << "#elif without matching #if/#ifdef" << flush;
 		    guard_watch_branch();
+		    pack_cond_branch();
 		    cond_groups.top().directive = CondDirective::Elif;
 		    bool already_done = cond_groups.top().taken;
 		    ifdef_stack.pop();
@@ -9050,7 +9171,10 @@ TokenBase *Program::_getToken()
 		    }
 		    while ( source.peek() == ' ' || source.peek() == '\t' )
 			source.get();
-		    bool active = evaluateIfCondition();
+		    const size_t consults_before = pack_external_consults;
+		    const std::string cond = read_if_condition_text();
+		    bool active = evaluate_if_text(cond);
+		    pack_cond_elif(cond, active, consults_before);
 		    ifdef_stack.push(active);
 		    if ( active )
 			cond_groups.top().taken = true;
@@ -9064,6 +9188,7 @@ TokenBase *Program::_getToken()
 		    if ( ifdef_stack.empty() )
 			Throw << "#else without matching #if/#ifdef" << flush;
 		    guard_watch_branch();
+		    pack_cond_branch();
 		    cond_groups.top().directive = CondDirective::Else;
 		    bool already_done = cond_groups.top().taken;
 		    ifdef_stack.pop();
@@ -9085,6 +9210,7 @@ TokenBase *Program::_getToken()
 			Throw << "#endif without matching #if/#ifdef" << flush;
 		    ifdef_stack.pop();
 		    cond_groups.pop();
+		    pack_cond_close();
 		    guard_watch_close();
 		    DBG(std::cout << "#endif" << std::endl);
 		    // discard the directive's trailing tokens via the lexer, so a
@@ -10594,6 +10720,7 @@ TokenBase *Program::skipConditionalBlock()
 		// this #endif closes our block
 		ifdef_stack.pop();
 		cond_groups.pop();
+		pack_cond_close();
 		guard_watch_close();
 		DBG(std::cout << "skipConditionalBlock: popped, stack now=" << ifdef_stack.size() << std::endl);
 		return getToken();
@@ -10610,6 +10737,7 @@ TokenBase *Program::skipConditionalBlock()
 	    // consume the rest of the directive line (comment-aware)
 	    skip_directive_line_tail(source);
 	    guard_watch_branch();
+	    pack_cond_branch();
 	    cond_groups.top().directive = CondDirective::Else;
 	    bool already_done = cond_groups.top().taken;
 	    ifdef_stack.pop();
@@ -10630,6 +10758,7 @@ TokenBase *Program::skipConditionalBlock()
 	    }
 	    // do NOT consume rest of line — evaluateIfCondition() needs to read the condition
 	    guard_watch_branch();
+	    pack_cond_branch();
 	    cond_groups.top().directive = CondDirective::Elif;
 	    bool already_done = cond_groups.top().taken;
 	    ifdef_stack.pop();
@@ -10643,7 +10772,10 @@ TokenBase *Program::skipConditionalBlock()
 	    }
 	    else
 	    {
-		bool active = evaluateIfCondition();
+		const size_t consults_before = pack_external_consults;
+		const std::string cond = read_if_condition_text();
+		bool active = evaluate_if_text(cond);
+		pack_cond_elif(cond, active, consults_before);
 		ifdef_stack.push(active);
 		if ( active )
 		    cond_groups.top().taken = true;
@@ -11134,7 +11266,15 @@ int64_t Program::evaluateHasQuery(const madc::dis::istring &op, const std::strin
     return 0;
 }
 
+// A #if / #elif directive: read its condition, then evaluate it.
 bool Program::evaluateIfCondition()
+{
+    return evaluate_if_text(read_if_condition_text());
+}
+
+// The raw text of a #if / #elif condition, read from the source to the end of
+// the directive's line.
+std::string Program::read_if_condition_text()
 {
     std::string raw_expr;
     // Translation-phase-3 comment replacement ON the captured condition: each
@@ -11206,7 +11346,14 @@ bool Program::evaluateIfCondition()
 	    in_chr = true;
 	raw_expr += (char)ch;
     }
+    return raw_expr;
+}
 
+// Evaluate a #if / #elif condition's raw text in the CURRENT macro state —
+// the one evaluator, for the live directive and for a frozen condition the
+// bind re-evaluates (docs/plans/2026-10-18-verified-cxx-bind.md, K2).
+bool Program::evaluate_if_text(const std::string &raw_expr)
+{
     // Expand macros before evaluation so expressions like
     // OPENSSL_VERSION_MAJOR * 10000 + OPENSSL_VERSION_MINOR * 100
     // resolve to numeric values.

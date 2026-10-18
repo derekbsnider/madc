@@ -549,7 +549,7 @@ static bool forest_unit_source_only(const cir_forest_unit &fu)
 	    && fu.connectors.empty() && fu.positions.empty()
 	    && fu.token_payload.empty() && fu.decl_index.empty()
 	    && fu.pp_events.empty() && fu.edges.empty()
-	    && fu.branch_deps.empty();
+	    && fu.branch_deps.empty() && fu.conditions.empty();
 }
 
 // The SHARED tables a bind reads record by record (both string pools' bytes,
@@ -975,7 +975,10 @@ bool cir_forest_write(const cir_frozen_forest &f, madc::dis::snapshot_writer &w,
 				fu.branch_deps.size() * sizeof(uint32_t), codec)
 		    || !add_seg(w, base + 9, SNAP_KIND_CIR_UNIT_SOURCE,
 				fu.source_payload.data(),
-				fu.source_payload.size(), codec))
+				fu.source_payload.size(), codec)
+		    || !add_seg(w, base + 10, SNAP_KIND_CIR_UNIT_CONDS,
+				fu.conditions.data(),
+				fu.conditions.size() * sizeof(uint32_t), codec))
 			return false;
 	}
 	return true;
@@ -2886,6 +2889,19 @@ bool CirFrozenForest::unit_branch_deps(uint32_t unit, std::vector<uint32_t> &out
 	madc::dis::decode_bytes raw;
 	if (!read_unit_seg(unit, 8, SNAP_KIND_CIR_BRANCH_DEPS, raw)
 	    || raw.size() % (4 * sizeof(uint32_t)))
+		return false;
+	out.resize(raw.size() / sizeof(uint32_t));
+	if (!raw.empty())
+		memcpy(out.data(), raw.data(), raw.size());
+	return true;
+}
+
+// v68: the unit's item-order words — see SNAP_KIND_CIR_UNIT_CONDS.
+bool CirFrozenForest::unit_conditions(uint32_t unit, std::vector<uint32_t> &out)
+{
+	madc::dis::decode_bytes raw;
+	if (!read_unit_seg(unit, 10, SNAP_KIND_CIR_UNIT_CONDS, raw)
+	    || raw.size() % sizeof(uint32_t))
 		return false;
 	out.resize(raw.size() / sizeof(uint32_t));
 	if (!raw.empty())

@@ -169,7 +169,29 @@ enum : uint32_t
 	// The profile's ROLE: one uint32 role code
 	// (CirForestRole). OPTIONAL segment, like the ledger: absent = the
 	// system-header profile, so no format bump.
-	SNAP_KIND_CIR_ROLE             = madc::dis::SNAP_KIND_CONSUMER + 31
+	SNAP_KIND_CIR_ROLE             = madc::dis::SNAP_KIND_CONSUMER + 31,
+	// v68 (docs/plans/2026-10-18-verified-cxx-bind.md, K2): per-unit uint32
+	// words — the edge count, then each edge's place among the unit's PP
+	// events; the condition count, then CIR_COND_WORDS words per condition
+	// (cir_forest_cond_field).
+	SNAP_KIND_CIR_UNIT_CONDS       = madc::dis::SNAP_KIND_CONSUMER + 32
+};
+
+// v68: one frozen condition record's words (SNAP_KIND_CIR_UNIT_CONDS).
+// tok_begin / tok_end are the unit's own token indices.
+enum cir_forest_cond_field : uint32_t {
+	CIR_COND_KIND = 0,	// Program::CondDirective (If / Ifdef / Ifndef / Elif)
+	CIR_COND_TEXT,		// pool id: the condition, or the #ifdef / #ifndef macro
+	CIR_COND_FLAGS,		// CIR_COND_F_* below
+	CIR_COND_EV_BEGIN, CIR_COND_ED_BEGIN, CIR_COND_EV_END, CIR_COND_ED_END,
+	CIR_COND_TOK_BEGIN, CIR_COND_TOK_END,
+	CIR_COND_ARM,		// pool id of a skipped single arm's body (0 = none)
+	CIR_COND_WORDS
+};
+enum : uint32_t {
+	CIR_COND_F_OUTCOME    = 1u,	// the arm was taken at freeze
+	CIR_COND_F_SINGLE_ARM = 2u,	// the group's #endif ended it (no #elif / #else)
+	CIR_COND_F_ARM_PURE   = 4u	// the captured arm holds only directives
 };
 
 // One frozen node record (fixed-size POD; x86-64 little-endian first, like
@@ -680,7 +702,13 @@ bool cir_freeze_read(const madc::dis::snapshot_reader &r, uint32_t seg_id_base,
 // first consult's and each open ancestor's of a later one — ANY in the closure
 // makes it replay-internal), and CIR_BRANCH_DEP_ARM_REPLAYS marks a consult
 // that IS the unit's skipped directive-only arm, which the bind evaluates.
-enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 67 };
+//
+// v68: per-unit CONDITIONS (slot +10; SEGS_PER_UNIT 10 -> 11) — each edge's
+// place among the unit's PP events, and each conditional the unit evaluated
+// over an external macro (its text, outcome, place and a skipped single arm's
+// body): the unit's item order, for the bind's positional walk (K2 of
+// docs/plans/2026-10-18-verified-cxx-bind.md).
+enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 68 };
 // Flags word of a SNAP_KIND_CIR_BRANCH_DEPS tuple.
 enum : uint32_t {
 	CIR_BRANCH_DEP_DEFINED   = 1u,	// the macro was defined at the consult
@@ -732,10 +760,11 @@ enum : uint32_t
 	CIR_FOREST_SEG_ROLE             = 28,	// the profile's role (optional; absent = system)
 	// 29-31 reserved.
 	CIR_FOREST_SEG_UNIT_BASE     = 32,
-	CIR_FOREST_SEGS_PER_UNIT     = 10	// +0 records, +1 children, +2 connectors,
+	CIR_FOREST_SEGS_PER_UNIT     = 11	// +0 records, +1 children, +2 connectors,
 						// +3 positions, +4 tokens, +5 decl index,
 						// +6 pp exports, +7 edges, +8 branch deps
 						// +9 raw source (v41; slots may be zero-length)
+						// +10 conditions (v68)
 };
 
 // Directory payload (CIR_FOREST_SEG_DIR, codec None): the header, the unit
@@ -1301,6 +1330,7 @@ struct cir_forest_unit
 	// skipped directive-only arm tuple (CIR_BRANCH_DEP_PP_ARM).
 	std::vector<uint32_t>       branch_deps;
 	std::vector<uint8_t>        source_payload;	// v41: pre-PP source bytes
+	std::vector<uint32_t>       conditions;	// v68: SNAP_KIND_CIR_UNIT_CONDS words
 };
 
 // A whole frozen forest in memory (the multi-unit sibling of cir_frozen_blob).
@@ -2279,6 +2309,7 @@ public:
 	bool unit_pp_events(uint32_t unit, std::vector<uint32_t> &out);
 	bool unit_edges(uint32_t unit, std::vector<uint32_t> &out);
 	bool unit_branch_deps(uint32_t unit, std::vector<uint32_t> &out);	// v40
+	bool unit_conditions(uint32_t unit, std::vector<uint32_t> &out);	// v68
 	bool unit_has_source(uint32_t unit) const;	// v41 directory/segment probe
 	bool unit_has_frozen_surface(uint32_t unit) const;	// tokens, PP exports or edges: anything an #include binds
 	bool unit_source(uint32_t unit, std::string &out) const;	// v41 raw source fallback
