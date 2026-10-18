@@ -5407,7 +5407,12 @@ bool Program::forest_bind_env_ok(ForestSide &s, uint32_t root)
     // units (`char_traits_char` unknown in <iosfwd>, `div_t` defined twice).
     // A skipped directive-only arm (mingw stdio.h's `#ifndef NULL`) needs no
     // decline at all: the bind replays it (forest_replay_pp_arms).
-    const bool verified = enabled != 0;
+    // A C compile's bind is verified whatever the knob says: C programs set
+    // feature-test macros ahead of their system includes as a matter of
+    // course (sqlite3.c's NDEBUG and _GNU_SOURCE), and the pack's C layer
+    // (docs/plans/2026-10-18-c-pack-layer.md) has no knob-off frontier to
+    // burn down — a mismatched root declines to a live parse.
+    const bool verified = enabled != 0 || is_c_mode();
     std::set<uint32_t> closure;
     std::set<uint32_t> husk_live;
     forest_env_collect(s, root, closure);

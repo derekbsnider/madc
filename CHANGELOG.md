@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+### A C compile's bind honours its feature macros (J4)
+
+- A C program sets feature-test macros ahead of its system includes as a matter
+  of course (`sqlite3.c` defines `NDEBUG` and `_GNU_SOURCE`). The pack's C layer
+  froze `<assert.h>`, `<features.h>` and `<sys/mman.h>` without them, so binding
+  the frozen view handed such a program the wrong declarations — a live
+  `assert()`, no `mremap`. With the pack's C layer bound, the parse-cost
+  workload `scripts/parse_cost/sqlite3.c` (`-c -o sqlite3.o`) failed: "use of
+  undeclared identifier 'mutexIsInit'", "no member named 'nRef'", "use of
+  undeclared identifier 'mremap'", "use of undeclared identifier
+  'MREMAP_MAYMOVE'". See `docs/plans/2026-10-18-c-pack-layer.md` section J,
+  slice J4.
+- `Program::forest_bind_env_ok` (`src/lexer.cpp`) now verifies a C compile's
+  bind whatever the `MADC_FOREST_ENV_CHECK` rollout knob says: `verified` is
+  `enabled != 0 || is_c_mode()`. A C root whose branch macros differ from the
+  frozen `#if` view declines to a live parse. The C++ default stays the knob's;
+  the C layer has no knob-off frontier to burn down. The check costs one
+  `is_c_mode()` test per bind.
+- Gate `scripts/forest_bind_gate.sh` `[cenv]`, knob off: a raw `--std=gnu17` C
+  freeze, then a consumer that sets `_GNU_SOURCE` and `NDEBUG` must print
+  `mremap=1` (gcc, clang and `--no-forest-bind` agree), and a C program that
+  sets no feature macro still binds. Before the fix the bound consumer reported
+  "use of undeclared identifier 'only_in_debug_builds'".
+
 ### The ledger and source arm come from the profile that carries them (J3)
 
 - `-static-libmadc` and packed system-header text are now read from the frozen

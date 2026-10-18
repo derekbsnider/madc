@@ -1002,6 +1002,57 @@ cl_vla=$(timeout 60 "$cl_dir/vla" 2>/dev/null)
 rm -rf "$cl_dir"
 echo "forest_bind_gate: [clayer] OK — a .c compile bound to a C layer below the madc profile reads that profile's source arm and links its ledger"
 
+# --- case: cenv (docs/plans/2026-10-18-c-pack-layer.md, J4) ---
+# A C program sets feature-test macros ahead of its system includes as a
+# matter of course — sqlite3.c defines NDEBUG and _GNU_SOURCE. The C layer
+# froze those headers without them, so binding the frozen view hands such a
+# program the wrong declarations: a live assert(), no mremap. A C compile's
+# bind is therefore verified whatever the rollout knob says
+# (forest_bind_env_ok): a root whose branch macros differ declines to a live
+# parse. Run with the knob OFF — this gate exports it ON for the C++ frontier.
+# The control: a C program that sets no feature macro still binds.
+ce_dir=tmp/fbgate_cenv
+ce_snap=$ce_dir/c.msnap
+rm -rf "$ce_dir"
+mkdir -p "$ce_dir"
+cat > "$ce_dir/c_tu.c" <<'EOF'
+#include <assert.h>
+#include <stdio.h>
+#include <sys/mman.h>
+int main(void) { return 0; }
+EOF
+cat > "$ce_dir/feat.c" <<'EOF'
+#define _GNU_SOURCE
+#define NDEBUG 1
+#include <assert.h>
+#include <stdio.h>
+#include <sys/mman.h>
+int main(void)
+{
+	assert(only_in_debug_builds);
+	printf("mremap=%d\n", MREMAP_MAYMOVE);
+	return 0;
+}
+EOF
+cat > "$ce_dir/plain.c" <<'EOF'
+#include <stdio.h>
+int main(void) { printf("plain\n"); return 0; }
+EOF
+timeout 600 "$BIN" --std=gnu17 --freeze-raw --freeze="$ce_snap" "$ce_dir/c_tu.c" \
+    > "$ce_dir/freeze.log" 2>&1 \
+    || fail "[cenv] the C freeze FAILED: $(tail -n 3 "$ce_dir/freeze.log")"
+# The oracle: gcc compiles feat.c and prints mremap=1.
+ce_out=$(MADC_FOREST_ENV_CHECK=0 timeout 60 "$BIN" --std=gnu17 --forest-bind="$ce_snap" \
+    "$ce_dir/feat.c" 2>"$ce_dir/feat.err")
+[ "$ce_out" = "mremap=1" ] \
+    || fail "[cenv] a C program's feature macros were ignored by the bind: '$ce_out' $(head -n 2 "$ce_dir/feat.err")"
+MADC_FOREST_ENV_CHECK=0 timeout 60 "$BIN" -v --std=gnu17 --forest-bind="$ce_snap" \
+    "$ce_dir/plain.c" > "$ce_dir/plain.log" 2>/dev/null
+grep -aq "bound to grove unit" "$ce_dir/plain.log" \
+    || fail "[cenv] a C program with no feature macro no longer binds the C layer"
+rm -rf "$ce_dir"
+echo "forest_bind_gate: [cenv] OK — a C compile's bind honours its feature macros (NDEBUG, _GNU_SOURCE) with the knob off; a plain C program still binds"
+
 # --- case: dialectnobind (the dialect is builtin: a fragment never binds) ---
 # A container that froze a dialect fragment's text (bits/ui_enums, which strict
 # C++ parses too) never binds its unit: a madc consumer reads the dialect from
