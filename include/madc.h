@@ -137,6 +137,14 @@ void madc_thaw_member_template(FuncDef *fd);	// defined in parser.cpp beside the
 // A dialect fragment's embedded name (`ns_*`, `bits/*`) — the one owner of the
 // rule (lexer.cpp); the pack's seed builder reads it too.
 bool embedded_dialect_fragment_p(const madc::dis::istring &name);
+// A dialect fragment's prerequisite words: every distinct identifier its text
+// uses that the auto-include's provider table names, with whether a use of
+// it is qualified (`word ::`) — the one reader of a fragment's text for its
+// prerequisites (lexer.cpp). The builtin-registry generator writes them into
+// the binary (dialect_fragment_words); queue_fragment_prerequisites reads
+// those, and scans the text only for a fragment the table does not carry.
+void dialect_fragment_scan_words(const std::string &text,
+				 std::vector<std::pair<madc::dis::istring, bool> > &out);
 
 // [over.ics.rank]/3.2.3 for a same-class copy/move constructor's one
 // reference parameter. Higher is better; -1 means the parameter cannot bind.

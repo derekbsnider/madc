@@ -397,6 +397,28 @@ bool Program::dialect_demand_bare(const madc::dis::istring &name)
     return built;
 }
 
+bool generated_fragment_words(const madc::dis::istring &fragment,
+			      std::vector<std::pair<madc::dis::istring, bool> > &out)
+{
+    const MadcFragmentWord *w = madc::builtins::dialect_fragment_words;
+    const size_t n = madc::builtins::dialect_fragment_words_count;
+    size_t lo = 0, hi = n;
+    while ( lo < hi )	// the fragment's first row
+    {
+	size_t mid = lo + (hi - lo) / 2;
+	if ( strcmp(w[mid].fragment, fragment.c_str()) < 0 )
+	    lo = mid + 1;
+	else
+	    hi = mid;
+    }
+    if ( lo == n || strcmp(w[lo].fragment, fragment.c_str()) != 0 )
+	return false;
+    for ( ; lo < n && strcmp(w[lo].fragment, fragment.c_str()) == 0; ++lo )
+	if ( *w[lo].word )
+	    out.push_back(std::make_pair(madc::dis::istring(w[lo].word), w[lo].qualified));
+    return true;
+}
+
 // The table's run of ns (sorted by (ns, name)): [first, last).
 static void dialect_namespace_run(const madc::dis::istring &ns, size_t &first, size_t &last)
 {
@@ -1976,6 +1998,42 @@ static size_t emit_builders(std::ostream &out, Program &live,
     return written;
 }
 
+// Every dialect fragment root's prerequisite words, read from its text
+// (dialect_fragment_scan_words, the one reader), as table rows sorted by
+// (fragment, word, qualified) — a fragment whose text names no provider
+// gets one empty-word row, so the table carries every root.
+static size_t emit_fragment_words(std::ostream &out, Program &pgm)
+{
+    std::vector<madc::dis::istring> roots;
+    pgm.dialect_image_roots(roots);
+    std::vector<MadcFragmentWord> rows;
+    std::vector<std::vector<std::pair<madc::dis::istring, bool> > > words(roots.size());
+    for ( size_t i = 0; i < roots.size(); ++i )
+    {
+	if ( !embedded_dialect_fragment_p(roots[i]) )
+	    continue;
+	const std::string *text = find_embedded_header(roots[i].c_str());
+	if ( text )
+	    dialect_fragment_scan_words(*text, words[i]);
+	if ( words[i].empty() )
+	    rows.push_back(MadcFragmentWord{ roots[i].c_str(), "", false });
+	for ( size_t k = 0; k < words[i].size(); ++k )
+	    rows.push_back(MadcFragmentWord{ roots[i].c_str(), words[i][k].first.c_str(),
+					     words[i][k].second });
+    }
+    std::sort(rows.begin(), rows.end(), [](const MadcFragmentWord &a, const MadcFragmentWord &b) {
+	if ( int c = strcmp(a.fragment, b.fragment) )
+	    return c < 0;
+	if ( int c = strcmp(a.word, b.word) )
+	    return c < 0;
+	return a.qualified < b.qualified;
+    });
+    for ( size_t i = 0; i < rows.size(); ++i )
+	out << "    { " << cpp_literal(rows[i].fragment) << ", " << cpp_literal(rows[i].word)
+	    << ", " << (rows[i].qualified ? "true" : "false") << " },\n";
+    return rows.size();
+}
+
 bool emit_builtin_registry(std::ostream &out, std::ostream &diag)
 {
     DialectTextParse dp;
@@ -1993,13 +2051,18 @@ bool emit_builtin_registry(std::ostream &out, std::ostream &diag)
     std::ostringstream table, bare;
     size_t nbare = 0;
     size_t built = emit_builders(out, *dp.live, groups, table, &bare, &nbare);
+    std::ostringstream words;
+    size_t nwords = emit_fragment_words(words, *dp.base);
     out << "\nnamespace madc { namespace builtins {\n"
 	<< "const MadcBuiltinEntry dialect_table[] = {\n" << table.str()
 	<< ( built ? "" : "    { \"\", \"\", NULL },\n" )
 	<< "};\nconst size_t dialect_table_count = " << built << ";\n"
 	<< "const MadcBuiltinBareName dialect_bare_names[] = {\n" << bare.str()
 	<< ( nbare ? "" : "    { \"\", \"\", \"\" },\n" )
-	<< "};\nconst size_t dialect_bare_names_count = " << nbare << ";\n} }\n";
+	<< "};\nconst size_t dialect_bare_names_count = " << nbare << ";\n"
+	<< "const MadcFragmentWord dialect_fragment_words[] = {\n" << words.str()
+	<< ( nwords ? "" : "    { \"\", \"\", false },\n" )
+	<< "};\nconst size_t dialect_fragment_words_count = " << nwords << ";\n} }\n";
     return true;
 }
 

@@ -2394,6 +2394,63 @@ void Program::expand_pending_auto_include_macros(size_t original_start)
 // never a C++ system header). Whatever it queues joins `batch` and is
 // itself scanned, to closure. Positional=false: a fragment's own
 // declarators never suppress (they are recorded for nothing here either).
+// The one reader of a fragment's text for its prerequisites: each distinct
+// identifier the provider table names (no other word can pull a header — the
+// scan's lookup answers it before anything else), with whether a use of it is
+// QUALIFIED (`word ::`). A word right after `namespace` is a definition
+// (`namespace madc {`), unless `using namespace`. Comments and literals are
+// skipped.
+void dialect_fragment_scan_words(const std::string &t,
+				 std::vector<std::pair<madc::dis::istring, bool> > &out)
+{
+    std::set<std::pair<madc::dis::istring, bool> > seen;
+    madc::dis::istring prev_word, prev_prev_word;
+    for ( size_t i = 0; i < t.size(); )
+    {
+	char c = t[i];
+	if ( c == '/' && i + 1 < t.size() && t[i + 1] == '/' )
+	{
+	    while ( i < t.size() && t[i] != '\n' )
+		++i;
+	    continue;
+	}
+	if ( c == '/' && i + 1 < t.size() && t[i + 1] == '*' )
+	{
+	    size_t e = t.find("*/", i + 2);
+	    i = e == std::string::npos ? t.size() : e + 2;
+	    continue;
+	}
+	if ( c == '"' || c == '\'' )
+	{
+	    char q = c;
+	    ++i;
+	    while ( i < t.size() && t[i] != q )
+		i += (t[i] == '\\' && i + 1 < t.size()) ? 2 : 1;
+	    ++i;
+	    continue;
+	}
+	if ( isalpha((unsigned char)c) || c == '_' )
+	{
+	    size_t b = i;
+	    while ( i < t.size() && (isalnum((unsigned char)t[i]) || t[i] == '_') )
+		++i;
+	    madc::dis::istring word = t.substr(b, i - b);
+	    size_t k = i;
+	    while ( k < t.size() && (t[k] == ' ' || t[k] == '\t') )
+		++k;
+	    bool qualified = k + 1 < t.size() && t[k] == ':' && t[k + 1] == ':';
+	    const bool definition = prev_word == "namespace" && prev_prev_word != "using";
+	    prev_prev_word = prev_word;
+	    prev_word = word;
+	    if ( !definition && auto_include_header_for_identifier(word)
+	      && seen.insert(std::make_pair(word, qualified)).second )
+		out.push_back(std::make_pair(word, qualified));
+	    continue;
+	}
+	++i;
+    }
+}
+
 void Program::queue_fragment_prerequisites(std::set<madc::dis::istring> &batch)
 {
     std::set<madc::dis::istring> scanned;
@@ -2412,61 +2469,19 @@ void Program::queue_fragment_prerequisites(std::set<madc::dis::istring> &batch)
 	for ( size_t ti = 0; ti < todo.size(); ++ti )
 	{
 	    scanned.insert(todo[ti]);
-	    const std::string *text = find_embedded_header(todo[ti]);
-	    if ( !text )
-		continue;
-	    const std::string &t = *text;
-	    madc::dis::istring prev_word, prev_prev_word;
-	    for ( size_t i = 0; i < t.size(); )
+	    // The words the build read from the fragment's text (the generated
+	    // table); its text, scanned here, only where the table has none
+	    // (stage one of the build: the generator's own parse).
+	    std::vector<std::pair<madc::dis::istring, bool> > words;
+	    if ( !generated_fragment_words(todo[ti], words) )
 	    {
-		char c = t[i];
-		if ( c == '/' && i + 1 < t.size() && t[i + 1] == '/' )
-		{
-		    while ( i < t.size() && t[i] != '\n' )
-			++i;
+		const std::string *text = find_embedded_header(todo[ti]);
+		if ( !text )
 		    continue;
-		}
-		if ( c == '/' && i + 1 < t.size() && t[i + 1] == '*' )
-		{
-		    size_t e = t.find("*/", i + 2);
-		    i = e == madc::dis::istring::npos ? t.size() : e + 2;
-		    continue;
-		}
-		if ( c == '"' || c == '\'' )
-		{
-		    char q = c;
-		    ++i;
-		    while ( i < t.size() && t[i] != q )
-			i += (t[i] == '\\' && i + 1 < t.size()) ? 2 : 1;
-		    ++i;
-		    continue;
-		}
-		if ( isalpha((unsigned char)c) || c == '_' )
-		{
-		    size_t b = i;
-		    while ( i < t.size() && (isalnum((unsigned char)t[i]) || t[i] == '_') )
-			++i;
-		    madc::dis::istring word = t.substr(b, i - b);
-		    // A word right after `namespace` is a definition (`namespace
-		    // madc {`), unless `using namespace`; a namespace surface is
-		    // pulled only by a QUALIFIED use — `word ::`.
-		    size_t k = i;
-		    while ( k < t.size() && (t[k] == ' ' || t[k] == '\t') )
-			++k;
-		    bool qualified = k + 1 < t.size() && t[k] == ':' && t[k + 1] == ':';
-		    if ( prev_word == "namespace" && prev_prev_word != "using" )
-		    {
-			prev_prev_word = prev_word;
-			prev_word = word;
-			continue;
-		    }
-		    prev_prev_word = prev_word;
-		    prev_word = word;
-		    auto_include_standard_identifier(word, false, qualified);
-		    continue;
-		}
-		++i;
+		dialect_fragment_scan_words(*text, words);
 	    }
+	    for ( size_t wi = 0; wi < words.size(); ++wi )
+		auto_include_standard_identifier(words[wi].first, false, words[wi].second);
 	}
 	if ( !pending_auto_include_headers.empty() )
 	{

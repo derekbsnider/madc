@@ -55,6 +55,27 @@ extern const MadcBuiltinBareName dialect_bare_names[];
 extern const size_t dialect_bare_names_count;
 } }
 
+// A dialect fragment's prerequisite word (dialect_fragment_scan_words), read
+// from its text at build time: sorted by (fragment, word, qualified); every
+// fragment the generator covers has at least one row — `word` "" when its
+// text names no provider. Empty in stage one.
+struct MadcFragmentWord
+{
+    const char *fragment;
+    const char *word;
+    bool qualified;
+};
+
+namespace madc { namespace builtins {
+extern const MadcFragmentWord dialect_fragment_words[];
+extern const size_t dialect_fragment_words_count;
+} }
+
+// The generated words of `fragment` (empty-word rows skipped); false when
+// the table does not carry the fragment.
+bool generated_fragment_words(const madc::dis::istring &fragment,
+			      std::vector<std::pair<madc::dis::istring, bool> > &out);
+
 // A builtin function declaration as generated code spells it: what a live
 // parse of the declaration registers (FuncDef + the registrar's Variable /
 // Method), field for field.

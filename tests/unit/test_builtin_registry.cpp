@@ -112,3 +112,35 @@ TEST_CASE("R1: the generated registration registers what a live parse of the dia
 	CHECK(compared > 0u);
 	CHECK(differ == 0u);
 }
+
+// R5a: the prerequisite words the build wrote for each dialect fragment are
+// the words a scan of its embedded text reads (dialect_fragment_scan_words, the
+// one reader) — and every fragment the dialect's roots name is carried.
+TEST_CASE("R5a: the generated fragment words equal a scan of each fragment's text") {
+	std::shared_ptr<Program> prog = parse_empty("<words>");
+	prog->language_std = Program::STD_MADC;
+	std::vector<madc::dis::istring> roots;
+	REQUIRE(prog->dialect_image_roots(roots));
+	size_t fragments = 0;
+	for (size_t i = 0; i < roots.size(); ++i) {
+		if (!embedded_dialect_fragment_p(roots[i]))
+			continue;
+		++fragments;
+		const std::string *text = find_embedded_header(roots[i].c_str());
+		REQUIRE(text != nullptr);
+		std::vector<std::pair<madc::dis::istring, bool> > scanned, generated;
+		dialect_fragment_scan_words(*text, scanned);
+		CHECK_MESSAGE(generated_fragment_words(roots[i], generated), roots[i].c_str());
+		std::set<std::pair<std::string, bool> > want, got;
+		for (size_t k = 0; k < scanned.size(); ++k)
+			want.insert(std::make_pair(std::string(scanned[k].first.c_str()), scanned[k].second));
+		for (size_t k = 0; k < generated.size(); ++k)
+			got.insert(std::make_pair(std::string(generated[k].first.c_str()), generated[k].second));
+		CHECK_MESSAGE(want == got, roots[i].c_str());
+		CHECK(got.size() == generated.size());
+	}
+	CHECK(fragments > 0u);
+	std::vector<std::pair<madc::dis::istring, bool> > none;
+	CHECK_FALSE(generated_fragment_words(madc::dis::istring("stdio.h"), none));
+	CHECK(none.empty());
+}

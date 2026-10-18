@@ -30,4 +30,6 @@ const MadcBuiltinEntry dialect_table[] = { { "", "", NULL } };
 const size_t dialect_table_count = 0;
 const MadcBuiltinBareName dialect_bare_names[] = { { "", "", "" } };
 const size_t dialect_bare_names_count = 0;
+const MadcFragmentWord dialect_fragment_words[] = { { "", "", false } };
+const size_t dialect_fragment_words_count = 0;
 } }

@@ -1130,3 +1130,33 @@ Slices:
   Result: 17 of 17 identical, 37,840 lines byte for byte.
 - Hot path: a generation loses its per-candidate asked / withheld tests and
   the demand-restored note per pushed record (each an empty-set check).
+
+### R5a execution (2026-10-18)
+
+- php1's remaining machinery after R4e was the fragment prerequisite scan
+  (`queue_fragment_prerequisites`): about 5.05M Ir to walk each served
+  fragment's text, twice (the injector and the table serving), for 4,648
+  words, nearly all of which name no provider.
+- The scan is now one reader, `dialect_fragment_scan_words`. It returns each
+  distinct word the auto-include's provider table names, with whether its use
+  is qualified. Dropping repeats and non-provider words is exact, because with
+  `positional=false` a word's lookup depends only on the word and its
+  qualification, and a word with no provider row does nothing.
+- The generator writes those words for every dialect fragment root into the
+  binary (`dialect_fragment_words`, 36 rows, sorted). The queue reads them
+  with `generated_fragment_words`, and scans text only for a fragment the
+  table does not carry: stage one of the build, which is the generator's own
+  parse.
+- Gate: a unit differential (`test_builtin_registry`, R5a case). For every
+  dialect fragment root, the generated rows equal a scan of its embedded
+  text, and every root is carried. A name that is not a fragment is refused.
+- Result on the packed release (parse-cost gate, Ir):
+
+  | Row | Before (R4e) | After (R5a) | Baseline |
+  |---|---|---|---|
+  | dialect_one (php1) | 17,717,768 | 12,698,661 | 18,591,487 |
+  | dialect | 25,050,577 | 20,025,793 | 26,752,318 |
+  | dialect_all | 24,041,050 | 16,953,667 | 27,500,932 |
+  | dialect_cxx.forest | 253,279,652 | 245,962,162 | 263,057,454 |
+
+  The C and C++ rows are flat (within ±0.5%). php1 is past the ~13.5M target.
