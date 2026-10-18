@@ -12,8 +12,7 @@
 # each materialize generation, one `SEEDPAR <kind> <name> v=<verdict> <via>`
 # line per record restored so far, under a `SEEDPAR-GEN <forest role>`
 # header; the gate reads each forest's last block. <via> is how the bind
-# reached the record: `demanded` — asked for by record, `listed` — in a
-# visited seed list (a bound unit's: what its decl index declares, its parse
+# reached the record: `listed` — in a visited seed list (a bound unit's: what its decl index declares, its parse
 # created or its instantiations required; or the always list), `carried` — a
 # reference pull, a function-local class admitted by structure, an admitted
 # owner's dependent, or `unreached`. PASS requires:
@@ -62,7 +61,7 @@ mkdir -p "$W"
 
 printf '%s\n' 'SEEDPAR tag ok v=1 listed' 'SEEDPAR nsbind std::pulled v=-1 carried' \
 	'SEEDPAR global std::p_int__id v=-1 listed' 'SEEDPAR tag std::stray v=0 unreached' \
-	'SEEDPAR func std::count v=1 demanded' > "$W/control"
+	> "$W/control"
 if [ "$(unreached "$W/control")" != 'SEEDPAR tag std::stray v=0 unreached' ]; then
 	echo "check-pack-seed-parity: FAIL — the negative control's unreached line was not flagged exactly" >&2
 	exit 1
@@ -92,7 +91,7 @@ for p in "${progs[@]}"; do
 		fail=1
 		continue
 	fi
-	if grep -avq ' \(listed\|carried\|demanded\|unreached\)$' "$W/$b.seed"; then
+	if grep -avq ' \(listed\|carried\|unreached\)$' "$W/$b.seed"; then
 		echo "check-pack-seed-parity: FAIL — $b: probe lines carry no reach label (a binary older than the gate?)" >&2
 		fail=1
 		continue
@@ -114,7 +113,7 @@ for p in "${progs[@]}"; do
 		fi
 	fi
 	echo "check-pack-seed-parity: $b restored=$n listed=$(grep -ac ' listed$' "$W/$b.seed")" \
-		"carried=$(grep -ac ' carried$' "$W/$b.seed") demanded=$(grep -ac ' demanded$' "$W/$b.seed")" \
+		"carried=$(grep -ac ' carried$' "$W/$b.seed")" \
 		"outside-closure=$(grep -ac ' v=-1 ' "$W/$b.seed")"
 done
 if [ "$fail" -ne 0 ]; then

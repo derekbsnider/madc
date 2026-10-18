@@ -1645,9 +1645,6 @@ struct CirRestoredType
 	// exactly as TokenENUM::parse leaves them. Empty for other kinds and
 	// for an enumerator-less opaque enum (std::align_val_t).
 	std::vector<std::pair<const char *, int64_t> > enumerators;
-	// Its record, as a decl entry's record_id names it ((CIR_SEED_DEP_ARENA
-	// << 30) | slot): a demanded dialect type registers by it.
-	uint32_t record = CIR_DECL_RECORD_NONE;
 };
 
 // A restored file-scope global variable (v13): its type swizzled back to a
@@ -1675,9 +1672,6 @@ struct CirRestoredGlobal
 	uint32_t       def_unit;
 	uint32_t       def_idx;
 	std::vector<std::pair<uint32_t, uint32_t> > init_locs;
-	// Its record ((CIR_SEED_DEP_GLOBAL << 30) | index): a dialect global
-	// registers only as a lookup demands it.
-	uint32_t record = CIR_DECL_RECORD_NONE;
 };
 
 // v25: restored namespace-surface state. An NSLINK is an inline-namespace
@@ -1724,9 +1718,6 @@ struct CirRestoredFunc
 	// deferred body's re-parse resolves its parameter names (the scope
 	// parse_deferred_function_body's code->method provides).
 	std::vector<std::pair<const char *, DataDef *> > mparams;
-	// Its record, as a decl entry's record_id names it ((CIR_SEED_DEP_ARENA
-	// << 30) | slot): a demanded dialect function registers by it.
-	uint32_t record = CIR_DECL_RECORD_NONE;
 };
 
 // v20 (widening slice 2): one restored template pattern — the metadata view
@@ -1772,9 +1763,6 @@ struct CirRestoredTemplate
 	uint32_t rec_pattern_begin = 0, rec_pattern_words = 0;
 	bool hydrated = false;		// hydrate ran (either way)
 	bool hydrate_failed = false;	// payload bounds broken — drop the def
-	// Its record ((CIR_SEED_DEP_TEMPLATE << 30) | index): a dialect
-	// template registers only as a lookup demands it.
-	uint32_t record = CIR_DECL_RECORD_NONE;
 };
 // The restored template records, in materialize order. The parser holds
 // pointers into it (each registered pattern's frozen_src) while a later,
@@ -1847,67 +1835,10 @@ struct CirMaterializeFilter
 	std::set<uint32_t> system_units;
 	// Names asked for by name, kept whatever declares them.
 	std::set<madc::dis::istring> extra_names;
-	// Units whose names are BOUND (name_verdict counts them as bound_units
-	// does) but whose seed lists no generation visits — nor does an asked
-	// name's lookup: what restores of them is asked by `records` or pulled.
-	// A unit in bound_units is visited whatever this set says.
-	std::set<uint32_t> unseeded_units;
-	// Records asked for directly — the decl-index record column,
-	// (CIR_SEED_DEP_* << 30) | index — kept whatever their verdict, with
-	// their pulls and dependents. A generation that only adds records
-	// visits only the added ones.
-	std::set<uint32_t> records;
-	// Records ((CIR_SEED_DEP_* << 30) | index) no generation admits unless
-	// `records` asks for them: a bound unit's list is visited and judged as
-	// ever, less these — the dialect's functions (A4), types, enums,
-	// templates and storage-less objects (A5), restored as a lookup demands
-	// them (docs/plans/2026-10-16-dialect-per-name-plan.md). A withheld type
-	// an admitted record's chain reaches is still PULLED: withholding never
-	// breaks the record that needs it.
-	std::set<uint32_t> withheld;
-	// The closure binds `unit`: bound, seeded or not.
+	// The closure binds `unit`.
 	bool binds(uint32_t unit) const
 	{
-		return bound_units.count(unit)
-		    || (!unseeded_units.empty() && unseeded_units.count(unit));
-	}
-};
-
-// A decl entry's record as the dialect's per-name demand reads it (docs/
-// plans/2026-10-16-dialect-per-name-plan.md, A3-A5): what it declares, in
-// which namespace, under which name — each read from the record itself,
-// never from the entry's own spelling (the container pool's name blocks stay
-// cold). CirFrozenForest::decl_record_facts is the one reader.
-struct CirDeclRecordFacts
-{
-	enum Shape : uint8_t {
-		OTHER,		// a record no lookup names (a namespace-surface record)
-		FREE_FUNCTION,	// a free function's DK_FUNC record
-		TYPE,		// an aggregate, a typedef or an enum
-		TEMPLATE,	// a namespace-scope template
-		OBJECT		// a namespace-scope global
-	};
-	Shape shape = OTHER;
-	const char *ns = NULL;		// the record's own namespace ("" = the global one)
-	const char *display = NULL;	// FREE_FUNCTION: the name its source wrote (NULL = none)
-	const char *name = NULL;	// the record's own name: a function's funcdef id (the
-					// key DECL_NAMES indexes), a type's or a global's name,
-					// a template's key
-	const char *leaf = NULL;	// the name a lookup inside `ns` reads: `name`, or a
-					// template key past its "ns::"
-	bool is_enum = false;		// TYPE: an enum
-	uint32_t gflags = 0;		// OBJECT: CIR_GLOBALF_*
-	// OBJECT: an enumerator constant's enum ((CIR_SEED_DEP_ARENA << 30) |
-	// slot), CIR_DECL_RECORD_NONE for any other global.
-	uint32_t enum_record = CIR_DECL_RECORD_NONE;
-	// An ANCHOR: a global WITH storage, which the bind restores (plan A5);
-	// a storage-less one (an enumerator constant, an extern reference)
-	// restores by name. The dialect activation and the seed-parity probe
-	// read it here.
-	bool anchor() const
-	{
-		return shape == OBJECT
-		    && !(gflags & (CIR_GLOBALF_CONST_SCALAR | CIR_GLOBALF_EXTERN_REF));
+		return bound_units.count(unit) != 0;
 	}
 };
 
@@ -2121,13 +2052,6 @@ class CirFrozenForest
 	std::set<uint32_t> _mat_done_slots;
 	std::set<size_t> _mat_done_globals;
 	std::set<size_t> _mat_done_templates;
-	// An asked or withheld record -> its index in the list its kind
-	// restores into (only those: a demand finds what an earlier generation
-	// restored for it — a rolled-back entry's, a sibling TU's, a pull).
-	std::map<uint32_t, size_t> _demand_restored;
-	// _mat_filter.withheld as a sorted vector (rebuilt as it grows — inserts
-	// only, so a size change is a content change): a generation's probes.
-	std::vector<uint32_t> _withheld_sorted;
 	std::map<uint32_t, Variable *> _method_by_func_id;
 	// Aggregates restored DECLARED-ONLY (format 63: a product the closure
 	// only names, its template defined by no bound unit) and not yet
@@ -2135,10 +2059,8 @@ class CirFrozenForest
 	std::set<uint32_t> _named_only;
 	// The pass engine both entry points share: runs every materialization
 	// pass under the CURRENT _mat_filter, skipping records earlier
-	// generations built (the guards above). `added` (non-NULL): a generation
-	// whose only growth is these asked records — Pass 0 visits them alone,
-	// and their pulls stop at aggregates an earlier generation built whole.
-	void materialize_pass(const std::vector<uint32_t> *added = NULL);
+	// generations built (the guards above).
+	void materialize_pass();
 	// Shared v2 segment reader: decompress unit slot `slot` into `out`
 	// (raw bytes). False on absent/malformed.
 	bool read_unit_seg(uint32_t unit, uint32_t slot, uint32_t kind,
@@ -2326,41 +2248,6 @@ public:
 			 uint32_t &token_count);
 	bool unit_decl_index(uint32_t unit,
 			     std::vector<cir_forest_decl_entry> &out);
-	// A decl entry's record (the record_id column, format 64), read once
-	// (CirDeclRecordFacts). False when the entry names no namespace-scope
-	// entity: no record, a record out of range, a function entry whose
-	// record is its owner class (a member function's key), or a member
-	// template. `kind` is the entry's Program::PackDeclKind.
-	bool decl_record_facts(uint32_t kind, uint32_t record_id,
-			       CirDeclRecordFacts &f) const;
-	// Its scope alone: the record's own namespace ("" = the global one), a
-	// free function's display name and, when `key` is given, the record's
-	// own name (a function's registration key).
-	bool decl_entry_scope(uint32_t kind, uint32_t record_id,
-			      const char *&ns, const char *&display,
-			      const char **key = NULL) const
-	{
-		CirDeclRecordFacts f;
-		const bool ok = decl_record_facts(kind, record_id, f);
-		ns = f.ns;
-		display = f.display;
-		if (key)
-			*key = f.name;
-		return ok;
-	}
-	// A demanded record's restored entry — an asked or withheld record, as
-	// the generation that restored it noted it: its index in the list its
-	// kind restores into (restored_funcs(), restored_types(),
-	// restored_globals(), restored_templates()). False when no generation
-	// restored it — not demanded, or not yet.
-	bool demand_restored(uint32_t record, size_t &idx) const
-	{
-		std::map<uint32_t, size_t>::const_iterator it = _demand_restored.find(record);
-		if (it == _demand_restored.end())
-			return false;
-		idx = it->second;
-		return true;
-	}
 	bool unit_pp_events(uint32_t unit, std::vector<uint32_t> &out);
 	bool unit_edges(uint32_t unit, std::vector<uint32_t> &out);
 	bool unit_branch_deps(uint32_t unit, std::vector<uint32_t> &out);	// v40

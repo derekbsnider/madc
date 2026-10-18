@@ -2520,7 +2520,7 @@ static bool forest_run_meets(const uint32_t *run, uint32_t n,
 	return false;
 }
 
-// Any unit of a declaring-unit run the filter binds (bound or unseeded).
+// Any unit of a declaring-unit run the filter binds.
 static bool forest_run_bound(const uint32_t *run, uint32_t n,
 			     const CirMaterializeFilter &f)
 {
@@ -2830,94 +2830,6 @@ bool CirFrozenForest::unit_decl_index(uint32_t unit,
 	if (!raw.empty())
 		memcpy(out.data(), raw.data(), raw.size());
 	return true;
-}
-
-// Each record kind carries its entity's namespace in its own ns field. The
-// decl-entry record builder (cir_forest_build_seeds, 4b) gives a function
-// entry a free function's DK_FUNC record, else — a method's call symbol —
-// its owner class; a template record with an owner is a member template.
-// Neither member names anything at namespace scope. A variable entry's
-// record is a global's, or — a scoped enumerator — its enum's.
-bool CirFrozenForest::decl_record_facts(uint32_t kind, uint32_t record_id,
-					CirDeclRecordFacts &f) const
-{
-	f = CirDeclRecordFacts();
-	if (record_id == CIR_DECL_RECORD_NONE)
-		return false;
-	const uint32_t idx = cir_seed_item_index(record_id);
-	uint32_t len = 0;
-	switch (cir_seed_item_kind(record_id)) {
-	case CIR_SEED_DEP_ARENA: {
-		madc::dis::defrec r;
-		if (!_arena.get_def_at(madc::dis::arena_id_of(idx), r))
-			return false;
-		const bool free_fn = r.kind == madc::dis::DK_FUNC
-				  && (r.flags & madc::dis::DF_IS_FREE_FUNC);
-		if (kind == Program::pdkFunction && !free_fn)
-			return false;
-		f.ns = r.ns_id ? _arena.c_str(r.ns_id) : "";
-		// A free function's disp_id is its function_display_name.
-		if (free_fn && r.disp_id)
-			f.display = _arena.c_str(r.disp_id);
-		if (r.name_id)
-			f.name = f.leaf = _arena.c_str(r.name_id);
-		switch (r.kind) {
-		case madc::dis::DK_FUNC:
-			if (free_fn)
-				f.shape = CirDeclRecordFacts::FREE_FUNCTION;
-			break;
-		case madc::dis::DK_STRUCT:
-		case madc::dis::DK_UNION:
-		case madc::dis::DK_CLASS:
-		case madc::dis::DK_TYPEDEF:
-			f.shape = CirDeclRecordFacts::TYPE;
-			break;
-		case madc::dis::DK_ENUM:
-			f.shape = CirDeclRecordFacts::TYPE;
-			f.is_enum = true;
-			break;
-		default:
-			break;
-		}
-		break;
-	}
-	case CIR_SEED_DEP_TEMPLATE: {
-		if (idx >= _templates.size())
-			return false;
-		const cir_forest_template_record t = _templates[idx];
-		if (t.owner_type_id)
-			return false;
-		f.ns = t.ns_id ? pool_cstr(t.ns_id, len) : "";
-		f.shape = CirDeclRecordFacts::TEMPLATE;
-		f.name = f.leaf = t.key_id ? pool_cstr(t.key_id, len) : NULL;
-		// A namespace-scope pattern's key is qualified (`php::print_r`).
-		const size_t nl = f.ns ? strlen(f.ns) : 0;
-		if (f.name && nl && !strncmp(f.name, f.ns, nl)
-		    && f.name[nl] == ':' && f.name[nl + 1] == ':')
-			f.leaf = f.name + nl + 2;
-		break;
-	}
-	case CIR_SEED_DEP_GLOBAL: {
-		if (idx >= _globals.size())
-			return false;
-		const cir_forest_global_record g = _globals[idx];
-		f.ns = g.ns_id ? pool_cstr(g.ns_id, len) : "";
-		f.shape = CirDeclRecordFacts::OBJECT;
-		f.name = f.leaf = g.name_id ? pool_cstr(g.name_id, len) : NULL;
-		f.gflags = g.gflags;
-		// An enumerator constant's type is its enum.
-		madc::dis::defrec er;
-		if ((g.gflags & CIR_GLOBALF_CONST_SCALAR)
-		    && madc::dis::arena_id_is_project(g.type_id)
-		    && _arena.get_def_at(g.type_id, er) && er.kind == madc::dis::DK_ENUM)
-			f.enum_record = (CIR_SEED_DEP_ARENA << 30)
-				      | madc::dis::arena_slot_of(g.type_id);
-		break;
-	}
-	default:
-		return false;
-	}
-	return f.ns != NULL;
 }
 
 bool CirFrozenForest::unit_pp_events(uint32_t unit, std::vector<uint32_t> &out)
@@ -3283,13 +3195,12 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 }
 
 // S2 (R4-lite): monotone widening — see the declaration. The union is per
-// unit, per name and per record. Growth = a bound or unseeded unit the
-// installed filter lacks, exact -> closure, widening to the whole container,
-// or an asked-for name the current filter judges declared-only-by-unbound-
-// units (one it already keeps — a bound or undeclared name under a closure
-// filter — changes nothing; under an exact filter every new name is growth):
-// a generation that re-visits every list. A new asked record alone is a
-// generation over the new records only.
+// unit and per name. Growth = a bound unit the installed filter lacks,
+// exact -> closure, widening to the whole container, or an asked-for name
+// the current filter judges declared-only-by-unbound-units (one it already
+// keeps — a bound or undeclared name under a closure filter — changes
+// nothing; under an exact filter every new name is growth): a generation
+// that re-visits every list.
 const std::vector<CirRestoredType> &CirFrozenForest::materialize_for(
 	const CirMaterializeFilter &want)
 {
@@ -3302,7 +3213,6 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_for(
 	if (!_mat_filter.active)
 		return _restored;	// whole container already built
 	bool grew = false;
-	std::vector<uint32_t> added;	// asked records the installed filter lacks
 	if (!want.active) {
 		_mat_filter.active = false;
 		_mat_filter.exact = false;
@@ -3326,26 +3236,11 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_for(
 		     it != want.bound_units.end(); ++it)
 			if (_mat_filter.bound_units.insert(*it).second)
 				grew = true;
-		// A newly bound name can admit a candidate an earlier generation
-		// judged outside the closure: every list again.
-		for (std::set<uint32_t>::const_iterator it = want.unseeded_units.begin();
-		     it != want.unseeded_units.end(); ++it)
-			if (_mat_filter.unseeded_units.insert(*it).second)
-				grew = true;
 		_mat_filter.system_units.insert(want.system_units.begin(),
 						want.system_units.end());
-		// Withheld functions join with their unit (a new bound unit is a
-		// full generation of its own, which reads them).
-		_mat_filter.withheld.insert(want.withheld.begin(), want.withheld.end());
-		for (std::set<uint32_t>::const_iterator it = want.records.begin();
-		     it != want.records.end(); ++it)
-			if (_mat_filter.records.insert(*it).second)
-				added.push_back(*it);
 	}
 	if (grew)
-		materialize_pass();	// every asked record rides the full visit
-	else if (!added.empty())
-		materialize_pass(&added);
+		materialize_pass();
 	return _restored;
 }
 
@@ -3395,7 +3290,7 @@ FuncDef *CirFrozenForest::restore_signature(uint32_t func_tid) const
 	return tfd;
 }
 
-void CirFrozenForest::materialize_pass(const std::vector<uint32_t> *added)
+void CirFrozenForest::materialize_pass()
 {
 	ForestWorkFrame _fw(_work_secs, _work_depth);
 	double _t0 = forest_now();
@@ -3409,10 +3304,8 @@ void CirFrozenForest::materialize_pass(const std::vector<uint32_t> *added)
 	// Pass 0 — what this generation VISITS (pack slices design §6). Under a
 	// closure filter with the pack's seed index: the seed lists of the
 	// bound units and of the units declaring a name the filter asks for,
-	// plus the always list and the records the filter asks for directly —
-	// and, once admission settles, the dependents of every admitted class.
-	// A generation whose only growth is asked records (`added`) visits
-	// those records alone. Otherwise every record, one slot scan (no
+	// plus the always list — and, once admission settles, the dependents of
+	// every admitted class. Otherwise every record, one slot scan (no
 	// filter, a container without seeds, or an asked-for name no unit
 	// declares).
 	// Candidate lists ascend (slot / record order == the whole walk's), so
@@ -3424,17 +3317,12 @@ void CirFrozenForest::materialize_pass(const std::vector<uint32_t> *added)
 	const ForestSeeds &sd = seeds();
 	bool seeded = _mat_filter.active && !sd.empty()
 		    && sd.lists() == unit_count() + 1;
-	// Records alone need the seed index (it places their dependents);
-	// without one, every record as above.
-	const bool records_only = added && seeded;
 	// The seed-parity probe (MADC_SEED_PARITY_PROBE=1, printed at the end of
 	// the pass) labels every restored record with how this generation reached
-	// it: DEMANDED — asked for by record (CirMaterializeFilter::records, a
-	// dialect lookup's demand); LISTED in a visited seed list (a bound unit's —
-	// every entity its decl index, its parse or its instantiations made — or
-	// the always list); or CARRIED (a reference pull, a function-local class
-	// admitted by structure, an admitted owner's dependent). Nothing else may
-	// restore.
+	// it: LISTED in a visited seed list (a bound unit's — every entity its
+	// decl index, its parse or its instantiations made — or the always list);
+	// or CARRIED (a reference pull, a function-local class admitted by
+	// structure, an admitted owner's dependent). Nothing else may restore.
 	static const char *par_probe = ::getenv("MADC_SEED_PARITY_PROBE");
 	const bool par_on = par_probe && par_probe[0] == '1';
 	std::set<uint32_t> par_listed_slots, par_carried_slots;
@@ -3443,18 +3331,16 @@ void CirFrozenForest::materialize_pass(const std::vector<uint32_t> *added)
 		if (par_on && madc::dis::arena_id_is_project(tid))
 			par_carried_slots.insert(madc::dis::arena_slot_of(tid));
 	};
-	auto par_label = [&](const std::set<uint32_t> &asked, const std::set<uint32_t> &listed,
+	auto par_label = [&](const std::set<uint32_t> &listed,
 			     const std::set<uint32_t> &carried, uint32_t key) -> char {
-		return asked.count(key) ? 'd' : listed.count(key) ? 'l'
-		     : carried.count(key) ? 'c' : '?';
+		return listed.count(key) ? 'l' : carried.count(key) ? 'c' : '?';
 	};
-	auto par_label_idx = [&](const std::set<size_t> &asked, const std::set<size_t> &listed,
+	auto par_label_idx = [&](const std::set<size_t> &listed,
 				 const std::set<size_t> &carried, size_t key) -> char {
-		return asked.count(key) ? 'd' : listed.count(key) ? 'l'
-		     : carried.count(key) ? 'c' : '?';
+		return listed.count(key) ? 'l' : carried.count(key) ? 'c' : '?';
 	};
 	std::set<uint32_t> seed_lists;
-	if (seeded && !records_only) {
+	if (seeded) {
 		for (std::set<uint32_t>::const_iterator it =
 		     _mat_filter.bound_units.begin();
 		     it != _mat_filter.bound_units.end(); ++it)
@@ -3467,108 +3353,11 @@ void CirFrozenForest::materialize_pass(const std::vector<uint32_t> *added)
 			const uint32_t *run = decl_names().units_of(it->c_str(), n);
 			if (!n)
 				seeded = false;	// no unit to visit it from
-			// An unseeded unit's list stays unvisited: what restores
-			// of it is asked by record.
-			if (_mat_filter.unseeded_units.empty())
-				seed_lists.insert(run, run + n);
-			else
-				for (uint32_t k = 0; k < n; ++k)
-					if (_mat_filter.bound_units.count(run[k])
-					    || !_mat_filter.unseeded_units.count(run[k]))
-						seed_lists.insert(run[k]);
+			seed_lists.insert(run, run + n);
 		}
 		seed_lists.insert(sd.always());
 	}
-	// The records asked for directly: visited (when this generation visits
-	// lists, not the whole walk) and KEPT whatever their verdict — every
-	// verdict gate below consults the asked_* sets.
 	std::vector<uint32_t> slots;
-	std::set<uint32_t> asked_slots;
-	std::set<size_t> asked_tmpl, asked_glob;
-	auto ask_record = [&](uint32_t rid, bool visit) {
-		const uint32_t idx = cir_seed_item_index(rid);
-		switch (cir_seed_item_kind(rid)) {
-		case CIR_SEED_DEP_ARENA:
-			asked_slots.insert(idx);
-			if (visit)
-				slots.push_back(idx);
-			break;
-		case CIR_SEED_DEP_TEMPLATE:
-			asked_tmpl.insert(idx);
-			if (visit)
-				tmpl_idx.push_back(idx);
-			break;
-		case CIR_SEED_DEP_GLOBAL:
-			asked_glob.insert(idx);
-			if (visit)
-				glob_idx.push_back(idx);
-			break;
-		default:
-			break;
-		}
-	};
-	if (records_only)
-		for (size_t i = 0; i < added->size(); ++i)
-			ask_record((*added)[i], true);
-	else
-		for (std::set<uint32_t>::const_iterator it = _mat_filter.records.begin();
-		     it != _mat_filter.records.end(); ++it)
-			ask_record(*it, seeded);
-	// The verdict gates' asked test. No record asked (every bind but a
-	// dialect demand): one size read per candidate, never a lookup.
-	auto asked_slot = [&](uint32_t s) -> bool {
-		return !asked_slots.empty() && asked_slots.count(s);
-	};
-	auto asked_template = [&](size_t i) -> bool {
-		return !asked_tmpl.empty() && asked_tmpl.count(i);
-	};
-	auto asked_global = [&](size_t i) -> bool {
-		return !asked_glob.empty() && asked_glob.count(i);
-	};
-	// A withheld record no record asks (the dialect's, restored as a lookup
-	// demands it): never a candidate — a type still restores when an
-	// admitted record's chain pulls it. No record withheld (every bind but
-	// the dialect's): one size read per probe.
-	if (_withheld_sorted.size() != _mat_filter.withheld.size())
-		_withheld_sorted.assign(_mat_filter.withheld.begin(), _mat_filter.withheld.end());
-	auto withheld_record = [&](uint32_t rid) -> bool {
-		return !_withheld_sorted.empty()
-		    && std::binary_search(_withheld_sorted.begin(), _withheld_sorted.end(), rid);
-	};
-	auto withheld_slot = [&](uint32_t s) -> bool {
-		return withheld_record((CIR_SEED_DEP_ARENA << 30) | s) && !asked_slot(s);
-	};
-	auto withheld_template = [&](size_t i) -> bool {
-		return withheld_record((CIR_SEED_DEP_TEMPLATE << 30) | (uint32_t)i)
-		    && !asked_template(i);
-	};
-	auto withheld_global = [&](size_t i) -> bool {
-		return withheld_record((CIR_SEED_DEP_GLOBAL << 30) | (uint32_t)i)
-		    && !asked_global(i);
-	};
-	// A demanded record's place in its restored list (demand_restored): an
-	// asked or withheld one, as it is pushed.
-	const bool demands = !_withheld_sorted.empty() || !asked_slots.empty()
-			  || !asked_tmpl.empty() || !asked_glob.empty();
-	auto note_demand_restored = [&](uint32_t rid, size_t at) {
-		if (!demands)
-			return;
-		const uint32_t idx = cir_seed_item_index(rid);
-		bool asked = false;
-		switch (cir_seed_item_kind(rid)) {
-		case CIR_SEED_DEP_ARENA:    asked = asked_slot(idx); break;
-		case CIR_SEED_DEP_TEMPLATE: asked = asked_template(idx); break;
-		case CIR_SEED_DEP_GLOBAL:   asked = asked_global(idx); break;
-		default: break;
-		}
-		if (asked || withheld_record(rid))
-			_demand_restored[rid] = at;
-	};
-	// An aggregate an earlier generation built whole: its pulls were chased
-	// then. A records-only generation's chase stops at it.
-	auto built_whole = [&](uint32_t tid) -> bool {
-		return records_only && _defs_by_tid.count(tid) && !_named_only.count(tid);
-	};
 	// One arena slot into its kind's list.
 	auto bucket_slot = [&](uint32_t s) {
 		madc::dis::defrec r;
@@ -3578,16 +3367,14 @@ void CirFrozenForest::materialize_pass(const std::vector<uint32_t> *added)
 		case madc::dis::DK_STRUCT:
 		case madc::dis::DK_UNION:
 		case madc::dis::DK_CLASS:
-			if (arena_recordable_candidate(r) && !withheld_slot(s))
+			if (arena_recordable_candidate(r))
 				agg_ids.push_back(madc::dis::arena_id_of(s));
 			break;
 		case madc::dis::DK_TYPEDEF:
-			if (!withheld_slot(s))
-				typedef_slots.push_back(s);
+			typedef_slots.push_back(s);
 			break;
 		case madc::dis::DK_ENUM:
-			if (!withheld_slot(s))
-				enum_slots.push_back(s);
+			enum_slots.push_back(s);
 			break;
 		case madc::dis::DK_NSLINK:
 		case madc::dis::DK_NSBIND:
@@ -3596,7 +3383,7 @@ void CirFrozenForest::materialize_pass(const std::vector<uint32_t> *added)
 			ns_slots.push_back(s);
 			break;
 		case madc::dis::DK_FUNC:
-			if ((r.flags & madc::dis::DF_IS_FREE_FUNC) && !withheld_slot(s))
+			if (r.flags & madc::dis::DF_IS_FREE_FUNC)
 				free_func_slots.push_back(s);
 			break;
 		default:
@@ -3782,10 +3569,7 @@ void CirFrozenForest::materialize_pass(const std::vector<uint32_t> *added)
 			// admittable through reference pulls.
 			if (r.flags & madc::dis::DF_CLASS_FN_LOCAL)
 				continue;
-			if (built_whole(tid))
-				continue;
-			if (asked_slot(madc::dis::arena_slot_of(tid))
-			    || record_kept(r)) {
+			if (record_kept(r)) {
 				DBG(fprintf(stderr,
 					    "forest agg seed name=%s ns=%s canon=%s\n",
 					    r.name_id ? a.c_str(r.name_id) : "-",
@@ -3816,8 +3600,7 @@ void CirFrozenForest::materialize_pass(const std::vector<uint32_t> *added)
 				continue;
 			if (r.flags & madc::dis::DF_TU_ROOT_ORIGIN)
 				continue;
-			if (asked_slot(typedef_slots[bi])
-			    || name_verdict(r.name_id, r.ns_id) >= 0) {
+			if (name_verdict(r.name_id, r.ns_id) >= 0) {
 				DBG(fprintf(stderr,
 					    "forest td seed v=%d name=%s ns=%s"
 					    " flags=%x\n",
@@ -3835,9 +3618,7 @@ void CirFrozenForest::materialize_pass(const std::vector<uint32_t> *added)
 			if (r.flags & madc::dis::DF_TU_ROOT_ORIGIN)
 				continue;
 			{
-				// An asked record is demanded: a bound verdict.
-				int v = asked_slot(free_func_slots[bi]) ? 1
-				      : name_verdict(r.name_id, 0);
+				int v = name_verdict(r.name_id, 0);
 				if (v == 0 && r.disp_id && r.ns_id)
 					v = name_verdict(r.disp_id, r.ns_id);
 				if (v < 0)
@@ -3874,12 +3655,12 @@ void CirFrozenForest::materialize_pass(const std::vector<uint32_t> *added)
 		// A file-scope global the filter keeps chases its type.
 		auto seed_global = [&](size_t i) {
 			const cir_forest_global_record &g = _globals[i];
-			if ((g.gflags & CIR_GLOBALF_TU_ROOT) || withheld_global(i))
+			if (g.gflags & CIR_GLOBALF_TU_ROOT)
 				return;
 			uint32_t nl = 0, sl = 0;
 			const char *nm = pool_cstr(g.name_id, nl);
 			const char *ns = g.ns_id ? pool_cstr(g.ns_id, sl) : NULL;
-			if (asked_global(i) || verdict_str(nm, ns) >= 0)
+			if (verdict_str(nm, ns) >= 0)
 				tq.push_back(g.type_id);
 		};
 		for (size_t gi = 0; gi < glob_idx.size(); ++gi)
@@ -3887,7 +3668,7 @@ void CirFrozenForest::materialize_pass(const std::vector<uint32_t> *added)
 				seed_global(glob_idx[gi]);
 		for (size_t ti = 0; ti < tmpl_idx.size(); ++ti) {
 			size_t i = tmpl_idx[ti];
-			if (i >= _templates.size() || withheld_template(i))
+			if (i >= _templates.size())
 				continue;
 			const cir_forest_template_record &t = _templates[i];
 			if ((t.flags & CIR_TMPLF_TU_ROOT) || !t.owner_type_id)
@@ -3901,7 +3682,7 @@ void CirFrozenForest::materialize_pass(const std::vector<uint32_t> *added)
 			// every instantiated owner (allocator<char>, …) into
 			// pure-C binds, defeating the owner fence; it now rides
 			// the owner's own admission (the build loop's fence).
-			if (asked_template(i) || verdict_str(key, ns) > 0)
+			if (verdict_str(key, ns) > 0)
 				tq.push_back(t.owner_type_id);
 		}
 		auto admit_agg = [&](uint32_t tid, bool need_complete) {
@@ -3912,8 +3693,6 @@ void CirFrozenForest::materialize_pass(const std::vector<uint32_t> *added)
 					work.push_back(tid);
 				return;
 			}
-			if (built_whole(tid))
-				return;
 			DBG({
 				madc::dis::defrec ar;
 				if (a.get_def_at(tid, ar))
@@ -4222,7 +4001,7 @@ void CirFrozenForest::materialize_pass(const std::vector<uint32_t> *added)
 		// Rung 2a: an enum outside the bound closure skips unless an
 		// admitted record's chain pulled it.
 		if (_mat_filter.active && !pulled_enums.count(tid)
-		    && !asked_slot(enum_slots[bi]) && !record_kept(r))
+		    && !record_kept(r))
 			continue;
 		const char *nm = r.name_id ? a.c_str(r.name_id) : NULL;
 		if (!nm || !*nm)
@@ -4318,11 +4097,9 @@ void CirFrozenForest::materialize_pass(const std::vector<uint32_t> *added)
 		rt.ns         = r.ns_id ? a.c_str(r.ns_id) : NULL;
 		rt.flat_alias = false;
 		rt.tag_alias  = false;
-		rt.record     = (CIR_SEED_DEP_ARENA << 30) | madc::dis::arena_slot_of(tid);
-		note_demand_restored(rt.record, _restored.size());
 		_restored.push_back(rt);
 		if (par_on)
-			_par_via.types.push_back(par_label(asked_slots, par_listed_slots, par_carried_slots,
+			_par_via.types.push_back(par_label(par_listed_slots, par_carried_slots,
 							   madc::dis::arena_slot_of(tid)));
 	};
 	static const char *named_only_probe = ::getenv("MADC_NAMED_ONLY_PROBE");
@@ -5052,11 +4829,9 @@ void CirFrozenForest::materialize_pass(const std::vector<uint32_t> *added)
 			(r.flags & madc::dis::DF_TYPEDEF_FLAT_ALIAS) != 0;
 		rt.tag_alias  =
 			(r.flags & madc::dis::DF_TYPEDEF_TAG_ALIAS) != 0;
-		rt.record     = (CIR_SEED_DEP_ARENA << 30) | s;
-		note_demand_restored(rt.record, _restored.size());
 		_restored.push_back(rt);
 		if (par_on)
-			_par_via.types.push_back(par_label(asked_slots, par_listed_slots, par_carried_slots, s));
+			_par_via.types.push_back(par_label(par_listed_slots, par_carried_slots, s));
 		_mat_done_slots.insert(s);
 	}
 
@@ -5089,7 +4864,7 @@ void CirFrozenForest::materialize_pass(const std::vector<uint32_t> *added)
 			if (b.ns && *b.ns && b.name && *b.name && b.key && *b.key) {
 				_restored_nsbinds.push_back(b);
 				if (par_on)
-					_par_via.binds.push_back(par_label(asked_slots, par_listed_slots,
+					_par_via.binds.push_back(par_label(par_listed_slots,
 									   par_carried_slots, s));
 				_mat_done_slots.insert(s);
 			}
@@ -5140,7 +4915,7 @@ void CirFrozenForest::materialize_pass(const std::vector<uint32_t> *added)
 			if (ok) {
 				_restored_defbodies.push_back(d);
 				if (par_on)
-					_par_via.bodies.push_back(par_label(asked_slots, par_listed_slots,
+					_par_via.bodies.push_back(par_label(par_listed_slots,
 									    par_carried_slots, s));
 				_mat_done_slots.insert(s);
 			}
@@ -5194,11 +4969,9 @@ void CirFrozenForest::materialize_pass(const std::vector<uint32_t> *added)
 					      | (uint64_t)cv.val_lo);
 			rt.enumerators.push_back(std::make_pair(en, val));
 		}
-		rt.record = (CIR_SEED_DEP_ARENA << 30) | s;
-		note_demand_restored(rt.record, _restored.size());
 		_restored.push_back(rt);
 		if (par_on)
-			_par_via.types.push_back(par_label(asked_slots, par_listed_slots, par_carried_slots, s));
+			_par_via.types.push_back(par_label(par_listed_slots, par_carried_slots, s));
 		_mat_done_slots.insert(s);
 	}
 
@@ -5229,8 +5002,8 @@ void CirFrozenForest::materialize_pass(const std::vector<uint32_t> *added)
 		// Rung 2a: mirror registration's free-function predicate — the
 		// funcdef_map key decides; a key in NO unit's index refines by
 		// the ns::display source form (flush does the same); still
-		// unindexed = derived entity = keep. An asked record is kept.
-		if (_mat_filter.active && !asked_slot(s)) {
+		// unindexed = derived entity = keep.
+		if (_mat_filter.active) {
 			int v = name_verdict(r.name_id, 0);
 			if (v == 0 && r.disp_id && r.ns_id)
 				v = name_verdict(r.disp_id, r.ns_id);
@@ -5364,8 +5137,6 @@ void CirFrozenForest::materialize_pass(const std::vector<uint32_t> *added)
 		CirRestoredFunc rf;
 		rf.name = nm;
 		rf.fd   = fd;
-		rf.record = (CIR_SEED_DEP_ARENA << 30) | s;
-		note_demand_restored(rf.record, _restored_funcs.size());
 		// v26 piece (a): the fn's NAMED parameters (aliasrec run) — the
 		// flush fills Method::parameters so a deferred body's re-parse
 		// resolves its parameter names.
@@ -5382,7 +5153,7 @@ void CirFrozenForest::materialize_pass(const std::vector<uint32_t> *added)
 		}
 		_restored_funcs.push_back(rf);
 		if (par_on)
-			_par_via.funcs.push_back(par_label(asked_slots, par_listed_slots, par_carried_slots, s));
+			_par_via.funcs.push_back(par_label(par_listed_slots, par_carried_slots, s));
 		_mat_done_slots.insert(s);
 		if (!def_runs.empty()) {
 			CirRestoredFuncDefaults rd;
@@ -5408,8 +5179,6 @@ void CirFrozenForest::materialize_pass(const std::vector<uint32_t> *added)
 		const cir_forest_global_record &g = _globals[i];
 		if (g.gflags & CIR_GLOBALF_TU_ROOT)
 			continue;		// v24: the program's own global — fenced
-		if (withheld_global(i))
-			continue;		// the dialect's, restored as demanded
 		uint32_t nlen = 0;
 		const char *nm = pool_cstr(g.name_id, nlen);
 		DataDef *ty = swizzle(g.type_id);
@@ -5458,11 +5227,9 @@ void CirFrozenForest::materialize_pass(const std::vector<uint32_t> *added)
 				continue;
 			}
 		}
-		rg.record = (CIR_SEED_DEP_GLOBAL << 30) | (uint32_t)i;
-		note_demand_restored(rg.record, _restored_globals.size());
 		_restored_globals.push_back(rg);
 		if (par_on)
-			_par_via.globals.push_back(par_label_idx(asked_glob, par_listed_glob,
+			_par_via.globals.push_back(par_label_idx(par_listed_glob,
 								       par_carried_glob, i));
 		_mat_done_globals.insert(i);
 	}
@@ -5479,8 +5246,6 @@ void CirFrozenForest::materialize_pass(const std::vector<uint32_t> *added)
 			size_t i = tmpl_idx[ti];
 			if (i >= _templates.size() || _mat_done_templates.count(i))
 				continue;	// pushed by an earlier generation
-			if (withheld_template(i))
-				continue;	// the dialect's, restored as demanded
 			const cir_forest_template_record &t = _templates[i];
 			if (t.flags & CIR_TMPLF_TU_ROOT)
 				continue;	// v24: the program's own pattern — fenced
@@ -5515,8 +5280,8 @@ void CirFrozenForest::materialize_pass(const std::vector<uint32_t> *added)
 			// record — and the payload/token segments decode only
 			// at the first surviving record, so a TU whose bound
 			// closure declares no templates (trivial C) never
-			// pays their zstd cost. An asked record is kept.
-			if (_mat_filter.active && !asked_template(i)) {
+			// pays their zstd cost.
+			if (_mat_filter.active) {
 				uint32_t sl = 0;
 				const char *tns = t.ns_id ? pool_cstr(t.ns_id, sl)
 							  : NULL;
@@ -5552,15 +5317,13 @@ void CirFrozenForest::materialize_pass(const std::vector<uint32_t> *added)
 			rt.rec_spec_count    = t.spec_count;
 			rt.rec_pattern_begin = t.pattern_begin;
 			rt.rec_pattern_words = t.pattern_words;
-			rt.record = (CIR_SEED_DEP_TEMPLATE << 30) | (uint32_t)i;
 			// One slot per frozen record, reserved at the first push: an
 			// append never moves a record the parser points into.
 			if (_restored_templates.capacity() < _templates.size())
 				_restored_templates.reserve(_templates.size());
-			note_demand_restored(rt.record, _restored_templates.size());
 			_restored_templates.push_back(rt);
 			if (par_on)
-				_par_via.tmpls.push_back(par_label_idx(asked_tmpl, par_listed_tmpl,
+				_par_via.tmpls.push_back(par_label_idx(par_listed_tmpl,
 									      par_carried_tmpl, i));
 			_mat_done_templates.insert(i);
 		}
@@ -5571,7 +5334,7 @@ void CirFrozenForest::materialize_pass(const std::vector<uint32_t> *added)
 	// gives it under the filter as it now stands (the gate reads the LAST
 	// block, so a record restored early and one restored by a later, wider
 	// generation are judged alike) and how it was reached (_par_via, above):
-	// ` demanded`, ` listed`, ` carried`, or ` unreached`.
+	// ` listed`, ` carried`, or ` unreached`.
 	if (par_on) {
 		// The generation's forest by role (the gate keeps each forest's
 		// last block).
@@ -5583,8 +5346,7 @@ void CirFrozenForest::materialize_pass(const std::vector<uint32_t> *added)
 			fprintf(stderr, "SEEDPAR %s %s%s%s v=%d %s\n", kind,
 				ns && *ns ? ns : "", ns && *ns ? "::" : "",
 				nm ? nm : "?", v,
-				c == 'd' ? "demanded" : c == 'l' ? "listed"
-				: c == 'c' ? "carried" : "unreached");
+				c == 'l' ? "listed" : c == 'c' ? "carried" : "unreached");
 		};
 		for (size_t i = 0; i < _restored.size(); ++i) {
 			const CirRestoredType &t = _restored[i];

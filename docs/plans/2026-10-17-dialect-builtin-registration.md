@@ -1110,3 +1110,23 @@ Slices:
   dialect-unit scan; the bind walk's tail loses a fragment test per bound
   embedded unit. A strict compile is unchanged; a dialect compile binds no
   fragment unit.
+
+### R4e execution (2026-10-18)
+
+- Deleted, with no producer since R4d: `CirMaterializeFilter::records` /
+  `unseeded_units` / `withheld`, the records-only generation
+  (`materialize_pass`'s `added`, `ask_record`, the asked / withheld verdict
+  gates, `built_whole`), `demand_restored` and its map, `CirDeclRecordFacts` /
+  `decl_record_facts` / `decl_entry_scope`, the restored lists' write-only
+  `record` fields, the seed-parity probe's `demanded` label (and the gate's),
+  and the A2 unit cases. `materialize_for` widens by bound units, names and
+  exactness alone.
+- Kept: the decl index's on-disk `record_id` column (format 64) and the
+  `--dump-forest` declindex `record=` field — dropping the column is a pack
+  format change, a pack-size decision of its own.
+- Differential: the seed-parity probe's restored-record lists (every record
+  a bind restores, with its reach label) over the gate's 17 workloads on the
+  packed release, R4d's binary against R4e's — identical is the bar.
+  Result: 17 of 17 identical, 37,840 lines byte for byte.
+- Hot path: a generation loses its per-candidate asked / withheld tests and
+  the demand-restored note per pushed record (each an empty-set check).
