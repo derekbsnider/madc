@@ -18,4 +18,4 @@ aarch64-ld	yes	e09316d0dc71	2026-10-15	aarch64_ldouble_lane GREEN — seam_batte
 genuine-win	release	e09316d0dc71	2026-10-15	1963/0/0TO/85skip — the FULL suite on the owner Windows 11 box at e09316d0d content (scripts/win_suite.sh, the release-seam packed PE)
 brew-linux	release	e09316d0dc71	2026-10-15	2039/0/0TO/9skip - scripts/brew_lane.sh at e09316d0d content (bottle + pour + brew test, keg-masked runpath gate)
 darwin-suite	release	e09316d0dc71	2026-10-15	darwin-suite native libc++ at e09316d0d content: arm64 Mac Mini (macOS 14) 2005/0/0TO/43skip + mac battery 12/0; Intel MacBook (macOS 15) 2008/0/0TO/40skip + mac battery 12/0 (domains darwin libcxx darwin-<arch> macos-<major>); EXE advisory 291/297 failed (D5 class)
-tests-jit	batch	3dc025348a97	2026-10-18	2097 passed, 0 failed, 0 timed out, 9 skipped
+tests-jit	batch	f0464c338010	2026-10-18	2097 passed, 0 failed, 0 timed out, 9 skipped
