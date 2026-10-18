@@ -407,6 +407,15 @@ bool snapshot_writer::add_segment(uint32_t seg_id, uint32_t kind,
 	p.payload.swap(raw);
     else if ( !madc_pch::compress(raw, p.payload, codec, level) )
 	return false;
+    else if ( p.payload.size() >= len )
+    {
+	// The codec did not shrink it: store the payload's own bytes,
+	// untransformed, with codec None — the rule blocked_encode applies per
+	// block — so a reader binds it in place instead of decoding a frame.
+	p.meta.codec = (uint32_t)PchCompression::None;
+	p.meta.flags = 0;
+	p.payload.assign((const uint8_t *)bytes, (const uint8_t *)bytes + len);
+    }
     p.meta.comp_size = (uint64_t)p.payload.size();
 
     _segs.push_back(std::move(p));

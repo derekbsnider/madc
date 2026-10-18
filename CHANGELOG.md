@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### A plain segment the codec does not shrink is stored raw and binds in place, not framed at a size not smaller than its raw bytes
+
+- `snapshot_writer::add_segment` (`src/madcdis_snapshot.cpp`): when a plain (non-blocked) segment's codec frame is not smaller than the payload (`p.payload.size() >= len`), the writer keeps the payload's own bytes, untransformed, with codec `None` and flags 0 — the rule `blocked_encode` already applies per block. A reader then binds the segment in place through `raw_ptr` instead of decoding a frame that is larger than the raw bytes.
+- Before the fix the release pack's mixed profile held 206 such plain segments stored with a codec at a size not smaller than their raw bytes (kinds `SNAP_KIND_CIR_DECL_INDEX`, `SNAP_KIND_CIR_BRANCH_DEPS`, `SNAP_KIND_CIR_UNIT_SOURCE`: 6,164 bytes stored vs 4,770 raw); after it, none, and the mixed container goes 14,043,776 -> 14,040,816 bytes.
+- Gate: unit test "a segment the codec does not shrink is stored raw and binds in place" (`tests/unit/test_madcdis_snapshot.cpp`) — incompressible bytes added under zlib were RED (stored 611 >= raw 600, codec 1, `raw_ptr` NULL), now store raw (codec None, flags 0, `comp_size == raw_size`, `raw_ptr` non-null and untransformed) while a compressible payload stays framed; 22/22 cases. Found while measuring K2 step 3's cost.
+
 ### The bind walks a root's closure in frozen item order and re-evaluates each external conditional in the consumer's macro state — forest format v69, bind side (K2 step 3)
 
 - `Program::forest_walk_unit` (`src/lexer.cpp`), one walk per root used by every bind entry through `forest_bind_include_root`, visits a unit's conditions, include edges and PP events in the freeze's item order and re-evaluates each recorded conditional in the consumer's macro state at that position (`macro_name_defined` for `#ifdef` / `#ifndef`, `evaluate_if_text` for `#if` / `#elif`). Same outcome -> the unit binds; a single-arm `#ifndef` guard taken at freeze but skipped now -> skip the arm's events, keep its decls (masked bind); an arm skipped at freeze but taken now -> run it in place on its own `Source` and push its tokens after the walk commits; anything else -> decline verified / follow the frozen outcome knob-off. The undo log (`Program::forest_macro_undo`, written by `set_macro`) restores every macro write on a decline.

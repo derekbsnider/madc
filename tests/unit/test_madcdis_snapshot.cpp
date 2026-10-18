@@ -223,6 +223,52 @@ TEST_CASE("codec None segments bind in place via raw_ptr")
 	CHECK(fz.str(ids[i]) == p.str(ids[i]));
 }
 
+TEST_CASE("a segment the codec does not shrink is stored raw and binds in place")
+{
+    using madc::dis::snap_xform_flags;
+    using madc::dis::SNAP_XFORM_DELTA32;
+
+    // Incompressible bytes (an LCG's high bytes): the codec's frame is larger
+    // than the payload, so the writer keeps the payload's own bytes, as a
+    // BLOCKED segment does per block. A compressible payload stays framed.
+    std::vector<uint8_t> noise(600);
+    uint32_t x = 12345u;
+    for ( size_t i = 0; i < noise.size(); ++i )
+    {
+	x = x * 1103515245u + 12345u;
+	noise[i] = (uint8_t)(x >> 24);
+    }
+    std::vector<uint8_t> runs(600, 7);
+
+    snapshot_writer w;
+    REQUIRE(w.add_segment(1, 0, noise.data(), noise.size(), PchCompression::Zlib));
+    REQUIRE(w.add_segment(2, 0, noise.data(), noise.size(), PchCompression::Zlib,
+			  0, snap_xform_flags(SNAP_XFORM_DELTA32)));
+    REQUIRE(w.add_segment(3, 0, runs.data(), runs.size(), PchCompression::Zlib));
+    std::vector<uint8_t> blob;
+    REQUIRE(w.build(blob));
+
+    snapshot_reader r;
+    REQUIRE(r.open(blob.data(), blob.size()));
+    for ( uint32_t id = 1; id <= 2; ++id )
+    {
+	const snapshot_segment *s = r.find(id);
+	REQUIRE(s != nullptr);
+	CHECK(s->codec == (uint32_t)PchCompression::None);
+	CHECK(s->flags == 0u);			// its own bytes, untransformed
+	CHECK(s->comp_size == s->raw_size);
+	REQUIRE(r.raw_ptr(*s) != nullptr);
+	CHECK(memcmp(r.raw_ptr(*s), noise.data(), noise.size()) == 0);
+	std::vector<uint8_t> got;
+	REQUIRE(r.read_segment(*s, got));
+	CHECK(got == noise);
+    }
+    const snapshot_segment *framed = r.find(3);
+    REQUIRE(framed != nullptr);
+    CHECK(framed->codec == (uint32_t)PchCompression::Zlib);
+    CHECK(framed->comp_size < framed->raw_size);
+}
+
 TEST_CASE("the directory table is sorted by seg_id; find binary-searches it")
 {
     // Added out of id order: the reader finds every id in the table it holds
