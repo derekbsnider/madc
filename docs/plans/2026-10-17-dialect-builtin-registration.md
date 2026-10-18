@@ -1160,3 +1160,43 @@ Slices:
   | dialect_cxx.forest | 253,279,652 | 245,962,162 | 263,057,454 |
 
   The C and C++ rows are flat (within ±0.5%). php1 is past the ~13.5M target.
+
+### R5b execution (2026-10-18) — pay-per-use
+
+- Probe: the plan's measurement, done once on the build container's copy of
+  `ns_madc` only, never committed. It added 50 unused declaration-only
+  functions and one unused unscoped enum (3 enumerators). The table went from
+  539 to 593 entries, and the builds stayed the same: dialect_one 1, and
+  dialect_cxx 19.
+- Every dialect row moved by at most 0.1% (Ir, packed release):
+
+  | Row | R5a | With the probe | Change |
+  |---|---|---|---|
+  | dialect_one.live | 12,698,661 | 12,703,043 | +0.035% |
+  | dialect_one.forest | 12,687,715 | 12,692,539 | +0.038% |
+  | dialect.live | 20,025,793 | 20,033,433 | +0.038% |
+  | dialect.forest | 20,015,010 | 20,024,867 | +0.049% |
+  | dialect_all.live | 16,953,667 | 16,950,023 | -0.021% |
+  | dialect_all.forest | 16,932,368 | 16,945,019 | +0.075% |
+  | dialect_cxx.live | 547,380,527 | 547,664,482 | +0.052% |
+  | dialect_cxx.forest | 245,962,162 | 246,186,158 | +0.091% |
+
+  The rows that cannot see the dialect table drifted as much between the
+  same two binaries: cxx_stl.forest +0.136%, subscript.forest +0.123% and
+  cxx_stl.live +0.057%. The residual is therefore binary-to-binary layout
+  drift, not the probe's names.
+- Gate: `scripts/check-dialect-pay-per-use.sh`, run by `make gates` and the
+  static loop. Each dialect parse-cost workload records the count of table
+  names it builds in `scripts/parse_cost/<name>.builds` (`--show-stats`'
+  "N of M names built"):
+  - growth past the record is red;
+  - a whole-table build is red;
+  - a drop asks for a re-record.
+
+  Its detector control is a program naming two `php::` functions, judged
+  against a record of 1, which must be red. `check-dialect-std-gated.sh`
+  joined `make gates` beside it; before, only the static loop ran it.
+- Known eager path, outside the gate's subject: `using namespace X;` builds
+  X's whole table run (parser.cpp, the using-directive). Dialect code carries
+  no `using` (value-first), so a dialect compile never takes it. Making it
+  lazy is a lookup change, which needs a session of its own.

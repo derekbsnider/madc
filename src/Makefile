@@ -1264,6 +1264,8 @@ gates: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/check-one-mingw-stdio-map.sh
 	@cd .. && bash scripts/check-policy-fanout.sh
 	@cd .. && bash scripts/check-dialect-lean.sh
+	@cd .. && bash scripts/check-dialect-std-gated.sh
+	@cd .. && bash scripts/check-dialect-pay-per-use.sh
 	@cd .. && bash scripts/check-embedded-headers-stub.sh
 	@cd .. && bash scripts/check-embedded-headers-gen.sh
 	@cd .. && bash scripts/check-one-library-spelling.sh

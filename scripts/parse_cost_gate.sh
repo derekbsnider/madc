@@ -22,7 +22,9 @@
 # codebase on the build host (sqlite3.c is SQLite's amalgamation — a dependency,
 # never copied into the repo); a symlink whose source is missing is RED, never
 # skipped. <name>.flags adds madc flags to every row of the workload (`-c -o
-# {scratch}/sqlite3.o`: {scratch} is this run's scratch directory). The baseline records the
+# {scratch}/sqlite3.o`: {scratch} is this run's scratch directory). <name>.builds
+# (dialect workloads) is the count of dialect table names it builds, held by
+# scripts/check-dialect-pay-per-use.sh, not by this gate. The baseline records the
 # toolchain it was measured on (compiler, libc, libstdc++ headers, valgrind):
 # a different toolchain parses different headers, so a mismatch REFUSES the
 # comparison instead of passing or failing on someone else's numbers.
