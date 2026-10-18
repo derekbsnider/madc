@@ -11524,6 +11524,24 @@ std::string Program::read_if_condition_text()
     bool in_str = false, in_chr = false;
     while ( source.good() && !source.eof() )
     {
+	// A run of bytes no state below acts on (a line end, a possible splice,
+	// the current state's quote, a comment introducer outside literals)
+	// appends in one step; the char loop reads the byte that stopped it.
+	const char *run;
+	size_t n;
+	if ( source.fast_span(run, n, [in_str, in_chr](unsigned char c) {
+		if ( c == '\n' || c == '\r' || c == '\\' )
+		    return false;
+		if ( in_str )
+		    return c != '"';
+		if ( in_chr )
+		    return c != '\'';
+		return c != '/' && c != '"' && c != '\'';
+	     }) && n )
+	{
+	    raw_expr.append(run, n);
+	    continue;
+	}
 	int ch = source.peek();
 	if ( ch == '\n' || ch == '\r' )
 	    break;

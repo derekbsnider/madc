@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### `#if` / `#elif` condition text reads a plain-byte run in one step off the flat buffer
+
+- `Program::read_if_condition_text` (`src/lexer.cpp`) appends, in one `Source::fast_span` call, a maximal run of condition bytes that no state below it acts on — not a line end, not a `\` (a possible splice), not the current state's quote (`"` inside a string, `'` inside a char), and outside a literal not a `/` (a comment introducer) or a quote. The char loop then reads the byte that stopped the run. This replaces the per-char `peek()` / `get()` (with their pushback and line-splice branches) and the char-by-char string growth on the condition-reading hot path.
+- `Source::fast_span(base, len, keep)` (`include/madc.h`) is the one-step flat-buffer scan generalized from `Source::fast_ident_span`: it scans the maximal run `keep` accepts off `_buf`, advances the cursor and column in one step, and returns false inside a pushback frame. `fast_ident_span` now calls it with the `isalnum || '_'` predicate.
+- Behaviour-preserving: the char loop classifies with the same test, so the two paths are byte-identical. Parse-cost gate (callgrind Ir, release build): `c_headers.live` 240,150,779 -> 238,307,835, `cxx_stl.live` 2,657,629,732 -> 2,654,286,606, `subscript.live` 3,429,755,978 -> 3,426,287,661; baseline re-recorded in `scripts/parse_cost/baseline.tsv` (rows only fall; gate 0 red of 21).
+- Reducer `tests/testifcomment.mad` adds three `#if` shapes — a backslash line-splice mid-condition, `'\''` / `'\\'` escaped-quote char literals, and block comments beside `'"'` / `'/'` — that pin where the plain-byte run stops; g++ and clang++ accept every shape (expected `all-ok`).
+
 ### A plain segment the codec does not shrink is stored raw and binds in place, not framed at a size not smaller than its raw bytes
 
 - `snapshot_writer::add_segment` (`src/madcdis_snapshot.cpp`): when a plain (non-blocked) segment's codec frame is not smaller than the payload (`p.payload.size() >= len`), the writer keeps the payload's own bytes, untransformed, with codec `None` and flags 0 — the rule `blocked_encode` already applies per block. A reader then binds the segment in place through `raw_ptr` instead of decoding a frame that is larger than the raw bytes.

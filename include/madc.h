@@ -2868,32 +2868,34 @@ public:
 	size_t bs = _buf.rfind('\\');
 	return bs != madc::dis::istring::npos && splice_length_at(bs) == _buf.size() - bs;
     }
-    // Fast-path identifier-continuation scan (perf lever, 2026-06-23). When NOT
-    // inside a pushback/macro expansion, scan the maximal identifier-continuation
-    // run directly off the flat buffer and hand it back as a [base,len) span,
+    // Fast-path span scan (perf lever, 2026-06-23). When NOT inside a
+    // pushback/macro expansion, scan the maximal run of bytes `keep` accepts
+    // directly off the flat buffer and hand it back as a [base,len) span,
     // advancing the cursor + column in ONE step — replacing the per-char
     // get()/peek() (with their pushback/line-splice branches) and the char-by-char
     // std::string growth on the hot path. Returns false when a pushback frame is
-    // active (the caller's char loop handles macro-expanded text). A line-splice
-    // mid-run stops the span at the '\\' (not an identifier char); the caller's
-    // char loop then reads the spliced remainder (peek()/get() resolve the splice).
-    // The classification is the SAME `isalnum||'_'` as the slow loop, so the two
-    // paths are byte-identical. `len` may be 0 (1-char identifier, or an immediate
-    // splice) — still a valid fast-path result; the caller's loop continues.
-    bool fast_ident_span(const char *&base, size_t &len)
+    // active (the caller's char loop handles macro-expanded text). `keep` must
+    // refuse '\\' (a possible line splice — the caller's char loop then reads it,
+    // peek()/get() resolve the splice) and the line ends (they move the line, not
+    // the column). The caller's char loop classifies with the SAME test, so the
+    // two paths are byte-identical. `len` may be 0 — still a valid fast-path
+    // result; the caller's loop continues.
+    template <class Keep>
+    bool fast_span(const char *&base, size_t &len, Keep keep)
     {
 	if ( !_pushback.empty() ) return false;
 	size_t start = _gpos;
-	while ( _gpos < _buf.size() )
-	{
-	    unsigned char c = (unsigned char)_buf[_gpos];
-	    if ( c == '_' || isalnum(c) ) ++_gpos;
-	    else break;
-	}
+	while ( _gpos < _buf.size() && keep((unsigned char)_buf[_gpos]) )
+	    ++_gpos;
 	len = _gpos - start;
 	base = _buf.data() + start;
 	_column += (int)len;
 	return true;
+    }
+    // The identifier-continuation run (`isalnum||'_'`, the slow loop's test).
+    bool fast_ident_span(const char *&base, size_t &len)
+    {
+	return fast_span(base, len, [](unsigned char c) { return c == '_' || isalnum(c); });
     }
     bool getline(std::string &s)
     {

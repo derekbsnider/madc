@@ -5,6 +5,8 @@
 // guard wcstold/strtold/llabs with exactly `#if !defined __NO_ISOCEXT
 // /* in libmingwex.a */` (win64 run-burndown defect #3's second root).
 // The `using ::name` probes fail the parse if a declaration was dropped.
+// The splice and escaped-quote shapes pin where the reader's plain-byte run
+// stops (a backslash, the current state's quote).
 // Oracle: g++ and clang++ accept every shape here; expected output all-ok.
 #define FOO 1 /* define-body comment */
 #if !defined __NEVER_DEFINED_A /* paren-less defined, block comment */
@@ -32,6 +34,17 @@ int pf(void);
 #else
 int pg(void);
 #endif
+#if FOO == 1 && \
+    '\'' == 39 && '\\' == 92
+int ph(void);
+#endif
+#if FOO /* a */ == /* b */ 1 && '"' == 34 && '/' == 47
+int pi(void);
+#endif
+#if FOO == 1 && 0 \
+    || 1
+int pj(void);
+#endif
 namespace q1 { using ::pa; }
 namespace q2 { using ::pb; }
 namespace q3 { using ::pc; }
@@ -39,4 +52,7 @@ namespace q4 { using ::pd; }
 namespace q5 { using ::pe; }
 namespace q6 { using ::pf; }
 namespace q7 { using ::pg; }
+namespace q8 { using ::ph; }
+namespace q9 { using ::pi; }
+namespace q10 { using ::pj; }
 int main() { int z = FOO; puti(z); printstr("all-ok\n"); return 0; }
