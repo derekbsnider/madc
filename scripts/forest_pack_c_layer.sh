@@ -26,9 +26,22 @@
 #       standard and under each label binds it. <madc> [args...] runs the
 #       PACKED product, reaching the container through the discovery chain.
 #
-# Every step returns nonzero on failure, so a pack under `set -e` fails.
+# Every step runs under FOREST_PACK_TIMEOUT (forest_pack_share.sh: GNU timeout
+# or a Mac's gtimeout) and returns nonzero on failure, so a pack under
+# `set -e` fails.
+
+# The pack gate beside this file: the darwin pack runs from src/ with
+# caller-relative paths (no cd), the Linux and win64 packs from the repo root.
+FOREST_PACK_C_LAYER_DIR="$(dirname "${BASH_SOURCE[0]}")"
+
+forest_pack_c_capped() {
+    [ -n "$FOREST_PACK_TIMEOUT" ] && return 0
+    echo "forest_pack_c_layer: FAILED - no timeout/gtimeout on this host" >&2
+    return 1
+}
 
 forest_pack_c_freeze() {
+    forest_pack_c_capped || return 1
     local list="$1" stage="$2" image="$3" secs="$4"
     shift 4
     local tu="${stage}_c_tu.c" row c_std log dump
@@ -44,32 +57,33 @@ forest_pack_c_freeze() {
         read -r c_std _ <<<"$row"
         mapfile -t share_args < <(forest_c_share_args "$c_std")
         log="${stage}_c_${c_std}_freeze.log"
-        if ! timeout "$secs" "$@" --no-config --std="$c_std" --freeze-raw --freeze-mir-cache \
+        if ! "$FOREST_PACK_TIMEOUT" "$secs" "$@" --no-config --std="$c_std" --freeze-raw --freeze-mir-cache \
                 "${share_args[@]}" --freeze-append="$image" "$tu" > "$log" 2>&1; then
             cat "$log"
             echo "forest_pack_c_layer: FAILED - the $c_std freeze exited nonzero" >&2
             return 1
         fi
         cat "$log"
-        if ! forest_pack_layout_std "$c_std" c "$image" "$list" timeout "$secs" "$@"; then
+        if ! forest_pack_layout_std "$c_std" c "$image" "$list" "$FOREST_PACK_TIMEOUT" "$secs" "$@"; then
             echo "forest_pack_c_layer: FAILED - the $c_std layout pass" >&2
             return 1
         fi
         dump="${stage}_c_${c_std}_dump.txt"
-        timeout "$secs" "$@" --dump-forest="$image" | tr -d '\r' > "$dump"
+        "$FOREST_PACK_TIMEOUT" "$secs" "$@" --dump-forest="$image" | tr -d '\r' > "$dump"
         forest_share_check_c "$dump" "$c_std" || return 1
     done
 }
 
 forest_pack_c_gate() {
+    forest_pack_c_capped || return 1
     local list="$1" stage="$2" key="$3" final="$4" secs="$5"
     shift 5
     local probe="${stage}_c_probe.c" row c_std s dump c_bytes
     local bind_args=()
     printf '#include <stdio.h>\n#include <string.h>\nint main(void) { printf("%%d\\n", (int)strlen("c layer")); return 0; }\n' > "$probe"
     # A probe that fails to compile binds nothing: the gate names it.
-    timeout "$secs" "$@" -v "$probe" > "${stage}_c_default_bind.log" 2>&1 || true
-    bash scripts/forest_pack_gate.sh --profile "$key-c-default" \
+    "$FOREST_PACK_TIMEOUT" "$secs" "$@" -v "$probe" > "${stage}_c_default_bind.log" 2>&1 || true
+    bash "$FOREST_PACK_C_LAYER_DIR/forest_pack_gate.sh" --profile "$key-c-default" \
         --bind-log "${stage}_c_default_bind.log" || return 1
     for row in "${FOREST_C_LAYER[@]}"; do
         read -r c_std _ <<<"$row"
@@ -83,10 +97,10 @@ forest_pack_c_gate() {
         fi
         bind_args=()
         for s in "$c_std" $(forest_c_row_labels "$c_std"); do
-            timeout "$secs" "$@" -v --std="$s" "$probe" > "${stage}_c_${s}_bind.log" 2>&1 || true
+            "$FOREST_PACK_TIMEOUT" "$secs" "$@" -v --std="$s" "$probe" > "${stage}_c_${s}_bind.log" 2>&1 || true
             bind_args+=(--bind-log "${stage}_c_${s}_bind.log")
         done
-        bash scripts/forest_pack_gate.sh --profile "$key-$c_std" \
+        bash "$FOREST_PACK_C_LAYER_DIR/forest_pack_gate.sh" --profile "$key-$c_std" \
             --pack-log "${stage}_c_${c_std}_freeze.log" --dump "$dump" --raw-profile \
             --units-from "$list" "${bind_args[@]}" || return 1
     done

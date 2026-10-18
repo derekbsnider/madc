@@ -234,9 +234,29 @@ equals `c_headers.live`, and `sqlite3.forest` is in the same position.
     `forest_bind_env_ok`'s comment names for the C++ default ("`div_t`
     defined twice"); whether the C++ knob can now default on is a separate
     measurement.
-  - darwin: not started. Its C set is the embedded prelude's manifest (36
-    names); the cross pack cannot run its consumer, so the bind probes belong
-    in `mac_battery.sh`.
+  - DONE (darwin, 2026-10-18): `forest_pack_darwin.sh` freezes the gnu17 row
+    onto the empty container first, raw, with the same freezer behind
+    `--no-sysroot-includes`; the madc profile stacks on top (one standalone
+    container, footer at EOF, embedded by `-sectcreate`). Roots:
+    `scripts/forest_pack_c_headers_darwin.txt` (LIST VERSION 1, 45 — the
+    prelude manifest's 36, then madc's own 9; prelude FIRST, or the pack
+    check gate refuses "repeated declaration max_align_t" — the prelude's
+    flattened clang stddef declares it unguarded). Measured with the cross
+    freezers: gnu11 == gnu17 on both arches (arm64 `9a4d33854d2f0dea`,
+    x86-64 `a295be14db94ca6b`). The gate's consumer is the freezer reaching
+    the container explicitly (`--forest-bind`, `--emit=c11`), the split the
+    parse leg already uses: OK `[darwin-c-default]`, OK `[darwin-gnu17]` on
+    both arches (quiet, 45 roots, raw — arm64 4,572,304 bytes, x86-64
+    5,361,392 recorded — gnu17 and gnu11 bind). The run on a Mac against the
+    shipped binary rides `mac_battery.sh` at the seam. The C probe's
+    `<stdio.h>` binds as libc++'s C wrapper (`.../c++/v1/stdio.h`): B199 on
+    darwin, where libc++ wraps nearly every C header — consistent between
+    freeze and consumer, so sound, but every darwin C root passes through the
+    C++ library's directory.
+  - `FOREST_PACK_TIMEOUT` (`forest_pack_share.sh`) is the one capped-run
+    command for every pack step — GNU `timeout`, or `gtimeout` on a Mac build
+    host — and the C stage calls the pack gate beside itself, so it runs from
+    `src/` (darwin) as from the repo root (Linux, win64).
 - **J6 — docs.** `docs/test-status.md`, ROADMAP row 8.12J, the KG nodes.
 
 ## Targets

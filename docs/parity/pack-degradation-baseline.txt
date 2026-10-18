@@ -227,3 +227,9 @@
 # expression", 1 unidentified member.
 17 darwin pack-errors
 1 darwin mir-blob-skips
+# The darwin C layer (J5; FOREST_C_LAYER's one gnu17 row, the embedded prelude,
+# scripts/forest_pack_c_headers_darwin.txt): quiet freeze, its size at its first
+# pack (2026-10-18, the 45 v1 roots, release-macos's own pack run). One key for
+# both arches, like `darwin pack-errors`: arm64 4,572,304, x86-64 5,361,392 —
+# the larger is recorded.
+5361392 darwin-gnu17 pack-bytes

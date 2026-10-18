@@ -127,6 +127,32 @@
   bytes, gnu17 and gnu11 bind; `[win64-c-default]` binds (5 grove units);
   `[win64]` 925 units. `docs/parity/pack-degradation-baseline.txt` records
   `4112528 win64-gnu17 pack-bytes`. Plan J5 win64 moves from BLOCKED to DONE.
+- darwin (J5): `scripts/forest_pack_darwin.sh` now freezes the C layer's one
+  gnu17 row onto the empty container first, raw, through
+  `scripts/forest_pack_c_layer.sh` (the darwin twin of the Linux and win64
+  stages, over `scripts/forest_pack_c_headers_darwin.txt`, LIST VERSION 1, 45
+  roots — the embedded prelude's manifest of 36 names then madc's own 9 C
+  headers, prelude FIRST or the pack check gate refuses "repeated declaration
+  max_align_t" because the prelude's flattened clang stddef declares it
+  unguarded); the madc profile stacks on top, still one standalone container
+  (footer at EOF). The gate's consumer is the cross freezer reaching the
+  container explicitly (`--forest-bind`, `--emit=c11`, `--no-sysroot-includes`),
+  the split the parse leg already uses. Measured on the container
+  (release-macos): `[darwin-gnu17]` quiet freeze, 45 roots, raw — arm64
+  4,572,304 bytes, x86-64 5,361,392 recorded — gnu17 and gnu11 bind (gnu11 ==
+  gnu17 by content digest, arm64 `9a4d33854d2f0dea`, x86-64 `a295be14db94ca6b`);
+  `[darwin-c-default]` binds; the consumer parse leg OK. The run against the
+  shipped binary rides `mac_battery.sh` at the seam.
+  `docs/parity/pack-degradation-baseline.txt` records `5361392 darwin-gnu17
+  pack-bytes`. B199 on darwin: the C probe's `<stdio.h>` binds as libc++'s C
+  wrapper (`.../c++/v1/stdio.h`) — libc++ wraps nearly every C header, so every
+  darwin C root passes through the C++ library's directory (consistent between
+  freeze and consumer, so sound). `scripts/forest_pack_share.sh` now owns the
+  capped-run command `FOREST_PACK_TIMEOUT` (GNU `timeout`, or `gtimeout` on a
+  Mac host) for every pack step, and the C stage calls the pack gate beside
+  itself so it runs from `src/` (darwin) as from the repo root (Linux, win64);
+  the Linux and win64 packs re-run green with the shared change. Plan J5 darwin
+  moves to DONE.
 
 ### A C compile's bind honours its feature macros (J4)
 

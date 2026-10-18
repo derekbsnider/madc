@@ -1,7 +1,8 @@
 #!/bin/bash
 # forest_pack_share.sh — sourced by the pack scripts (forest_pack.sh,
 # forest_pack_windows.sh, forest_pack_darwin.sh): the ONE owner of the
-# standards each of the pack's profiles serves besides its own.
+# standards each of the pack's profiles serves besides its own, and of the
+# capped-run command their steps share.
 #
 # THE MADC PROFILE (owner 2026-10-11). The pack freezes its corpus once, under
 # --std=madc. A source's extension picks its standard (split arc 1A.4: .cpp is
@@ -30,6 +31,7 @@
 #   FOREST_C_LAYER                  the rows
 #   forest_c_share_args STD         the --freeze-also-std= flags of STD's row
 #   forest_share_check_c DUMP STD   STD's profile carries its row's labels
+#   FOREST_PACK_TIMEOUT             the capped-run command (below)
 #
 # A C label is MEASURED, never assumed: a standard is a label only when its
 # freeze of the C roots has the same `content` digest as the row's own
@@ -47,6 +49,12 @@ done
 unset _std
 
 FOREST_C_LAYER=("gnu17 gnu11")
+
+# THE CAPPED RUN: every pack step runs under GNU timeout — `timeout` on the
+# build container, brew coreutils' `timeout` (gnubin) or `gtimeout` on a Mac
+# build host (the darwin self-freeze). Empty when the host has neither; a
+# pack script refuses to run without it.
+FOREST_PACK_TIMEOUT="$(command -v timeout || command -v gtimeout || true)"
 
 # forest_c_row_labels STD — the labels of STD's row, one per line.
 forest_c_row_labels() {

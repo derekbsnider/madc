@@ -1,0 +1,65 @@
+# forest_pack_c_headers_darwin.txt — the darwin pack's C LAYER roots, in
+# CANONICAL ORDER: the darwin twin of forest_pack_c_headers.txt
+# (docs/plans/2026-10-18-c-pack-layer.md, section J, J5). The headers frozen a
+# second time, under C, as the C preprocessor sees them through the embedded
+# darwin prelude, so a .c compile and a --std=c* compile of the hosted binary
+# bind them.
+#
+# Like every pack list, a speed-up, never the coverage boundary: the source
+# arm serves every system header as text.
+#
+# LIST VERSION 1 (2026-10-18): the darwin prelude's manifest — the C roots the
+# C++ pack TU names ahead of its libc++ list, in the manifest's order — then
+# madc's own C headers (include/madc/: stddef.h limits.h stdint.h stdarg.h
+# stdbool.h float.h iso646.h stdalign.h stdnoreturn.h). PRELUDE FIRST, as in
+# the C++ TU: the prelude's flattened clang stddef declares max_align_t with
+# no guard of its own, and madc's stddef.h skips its twin only when the
+# prelude's __CLANG_MAX_ALIGN_T_DEFINED is already live (embedded-first, the
+# pack check gate refuses "repeated declaration max_align_t"). Every root must
+# freeze QUIETLY under the C layer's standards with the cross freezer
+# (`--no-sysroot-includes`) — the pack step is a release gate.
+assert.h
+ctype.h
+errno.h
+fcntl.h
+inttypes.h
+locale.h
+math.h
+setjmp.h
+signal.h
+stdio.h
+stdlib.h
+string.h
+strings.h
+time.h
+unistd.h
+dirent.h
+getopt.h
+libgen.h
+sys/types.h
+sys/stat.h
+sys/time.h
+sys/wait.h
+sys/resource.h
+sys/mman.h
+sys/select.h
+sys/uio.h
+sys/utsname.h
+sys/ioctl.h
+wchar.h
+wctype.h
+xlocale.h
+langinfo.h
+nl_types.h
+monetary.h
+pthread.h
+sched.h
+stddef.h
+limits.h
+stdint.h
+stdarg.h
+stdbool.h
+float.h
+iso646.h
+stdalign.h
+stdnoreturn.h
