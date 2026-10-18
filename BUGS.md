@@ -23,8 +23,10 @@ owner schedules it.
   oracles and a `CHANGELOG.md` line. The same commit deletes the entry here.
 
 All outputs were measured 2026-09-25 with `bin/madc` at `8ffd42b8a`, gcc 13
-and clang 18. The madc flags are `--std=c17` for `.c` files and
-`--std=c++17` for `.cpp` files.
+and clang 18, under `--std=c17` for `.c` files and `--std=c++17` for `.cpp`
+files; an entry that names its own flags says so. New entries use the
+defaults the pack precompiles (owner 2026-10-18): `--std=gnu17` for `.c`
+and `--std=gnu++17` for `.cpp`, against `gcc -std=gnu17` / `g++ -std=gnu++17`.
 
 ## Silent wrong answers
 

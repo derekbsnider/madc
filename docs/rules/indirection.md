@@ -515,7 +515,7 @@ yet measured.
   the const campaign's) — and every producer masks with it:
   `consume_declarator_stars`, the nested and parameter-array arms of
   `parse_declarator`, `member_declarator`, the typedef reader's prefix and
-  top-level cv. Reducers `tests/testvolatilepointeeo2cxx` (`--std=c++17 -O2`)
+  top-level cv. Reducers `tests/testvolatilepointeeo2cxx` (`--std=gnu++17 -O2`)
   and `tests/testvolatilepointeeo2` (madc mode, `-O2`). The volatile TYPE in
   C++ then needs its identity — mangling, overload ranking, deduction,
   volatile member functions — each its own step.

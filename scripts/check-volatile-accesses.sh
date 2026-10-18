@@ -249,7 +249,7 @@ for lvl in -O0 -O1 -O2 -O3; do
 		fail=1
 	fi
 	rm -f "$w/madc.o"
-	( ulimit -t 60; timeout 60 "$MADC" $lvl --std=c17 -c -o "$w/madc.o" "$w/cases.c" ) \
+	( ulimit -t 60; timeout 60 "$MADC" $lvl --std=gnu17 -c -o "$w/madc.o" "$w/cases.c" ) \
 		|| { echo "RED  madc $lvl did not compile the cases" >&2; fail=1; continue; }
 	got=$(count "$w/madc.o") || { echo "RED  madc $lvl: the cases did not run" >&2; fail=1; continue; }
 	if [ "$got" != "$oracle" ]; then

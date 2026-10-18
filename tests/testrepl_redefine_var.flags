@@ -1,1 +1,1 @@
---std=c17 --history-file=no -i
+--std=gnu17 --history-file=no -i

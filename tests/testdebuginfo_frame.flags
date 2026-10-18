@@ -1,1 +1,1 @@
---std=c17 -g
+--std=gnu17 -g

@@ -18,6 +18,29 @@
   g++ oracles named in each; `tests/unit/test_repl_session.cpp` pins the `gnu`
   bit on `c`, `c++`, `cpp`.
 
+### The suite and lanes compile under the gnu defaults gnu17 / gnu++17
+
+- The pack precompiles only the defaults gnu17 and gnu++17 (owner 2026-10-18),
+  so the suite and lanes compile under them: 424 `tests/*.flags` rewrite
+  `--std=c17` → `--std=gnu17` (197) and `--std=c++17` → `--std=gnu++17` (227),
+  binding the pack's layers instead of parsing header text.
+- `tests/testimplicitlibcprotoc17` keeps `--std=c17` on purpose — its `.mad`
+  header says why: the pack precompiles only gnu17, so the strict compile is the
+  fall-through this twin exists to cover.
+- `scripts/index_c_lane.sh` drops `-D_DEFAULT_SOURCE`: gnu17 exposes glibc's
+  POSIX clock names itself, and a `-D` on the line would decline the C-layer
+  bind. `tests/testrepl_std.expect`'s `%std` line now reads `gnu17`.
+- The lanes and gates follow suit — `scripts/c_torture_lane.sh` (default
+  `MADC_TORTURE_STD=gnu17`), `benchmark_lane.sh`, `macho_obj_gate.sh`,
+  `macho_dylib_gate.sh`, `check-alias-symbol-emission.sh`,
+  `check-dialect-std-gated.sh`, `check-volatile-accesses.sh`,
+  `aarch64_ldouble_lane.sh` — and the `ufcs_gate.sh` and
+  `docs/rules/indirection.md` comments track the fixtures.
+- `BUGS.md`'s convention header names the gnu defaults for NEW entries; the
+  existing entries' measured flags are unchanged.
+- Explicit version pins (`c89`, `c99`, `c11`, `c23`, `c++11`, `c++20`, …) are
+  untouched — only the strict `c17` / `c++17` suite spellings move.
+
 ### The release pack freezes a C layer; C programs bind it (J2, J4)
 
 - The release pack now freezes the standard C headers a SECOND time, under C, as

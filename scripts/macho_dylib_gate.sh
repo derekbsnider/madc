@@ -81,7 +81,7 @@ for a in arm64 x86-64; do
 	mkdir -p "$D/$a"
 	# A runtime-free C library: no eval shims (they import the value
 	# runtime, which has no darwin library until D5).
-	if ! run "bin/madc-$a-macos" --std=c17 -fno-eval-shims -shared -o "$lib" "$D/lib.c" \
+	if ! run "bin/madc-$a-macos" --std=gnu17 -fno-eval-shims -shared -o "$lib" "$D/lib.c" \
 			>"$D/$a/emit.log" 2>&1; then
 		fail "[$a] -shared emit failed: $(tail -1 "$D/$a/emit.log")"
 		continue

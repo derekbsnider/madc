@@ -56,9 +56,9 @@ for p in php value ui; do
 		fail=1
 	fi
 done
-if ! compiles c++17 "$tmp/own.mad"; then
+if ! compiles gnu++17 "$tmp/own.mad"; then
 	echo "check-dialect-std-gated: DETECTOR CONTROL FAILED — a strict program's own namespace php did not compile:"
-	"$MADC_BIN" --std=c++17 -c -o "$tmp/out.o" "$tmp/own.mad" 2>&1 | head -5
+	"$MADC_BIN" --std=gnu++17 -c -o "$tmp/out.o" "$tmp/own.mad" 2>&1 | head -5
 	fail=1
 fi
 table_line() {
@@ -69,8 +69,8 @@ if ! table_line madc "$tmp/php.mad" | grep -Eq " [1-9][0-9]* of [0-9]+ names bui
 	table_line madc "$tmp/php.mad"
 	fail=1
 fi
-if table_line c++17 "$tmp/own.mad" | grep -q .; then
-	echo "check-dialect-std-gated: --std=c++17 reported a dialect table"
+if table_line gnu++17 "$tmp/own.mad" | grep -q .; then
+	echo "check-dialect-std-gated: --std=gnu++17 reported a dialect table"
 	fail=1
 fi
 if [ "$fail" -ne 0 ]; then

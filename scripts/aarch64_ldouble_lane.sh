@@ -75,7 +75,7 @@ for fx in tests/cross/aarch64_*.c; do
 	"$CC" -O0 "$fx" -o "$D/$n.gcc" && $QEMU "$D/$n.gcc" > "$D/$n.oracle" \
 		|| { echo "RED  $n: the gcc oracle did not build or run"; fail=1; continue; }
 	# aot: madc-aarch64-linux -c, linked by aarch64 gcc
-	if ! "$MADC" --std=c17 -c -o "$D/$n.o" "$fx" > "$D/$n.aot.log" 2>&1; then
+	if ! "$MADC" --std=gnu17 -c -o "$D/$n.o" "$fx" > "$D/$n.aot.log" 2>&1; then
 		echo "RED  $n aot: madc -c failed"; sed 's/^/    /' "$D/$n.aot.log" | head -5; fail=1
 	else
 		unexported=$("$NM" -u "$D/$n.o" | awk '$2 ~ /^mir\./ { print $2 }' | sort -u \
