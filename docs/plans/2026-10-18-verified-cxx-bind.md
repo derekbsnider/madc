@@ -174,6 +174,70 @@ NAME.
 - Cost: with the knob on, a decline now cascades into more live parsing. K2
   removes the false declines.
 
+K1a DONE 2026-10-18 (5bd77c67e). The knob-on packed suite went from 159 to 32
+failures. Gates:
+- `forest_bind_gate.sh` `[allornone]` (new).
+- `[redecl]`, now C plus a C++ check of the stop.
+- `[statmem]`, consumer `<locale>` first: `<cstdio>`-first declines on
+  `stdio.h`'s `_VA_LIST_DEFINED` arm until K2.
+
+### K2 — detailed design (2026-10-18, after K1a)
+
+Measured after K1a: the knob-on failures are 32, and every one is a decline
+AFTER a bind. Those declines are the corpus-order classes in the table above.
+
+What the freeze records today:
+- Per unit, its PP events (defines and undefs, in order).
+- Per unit, its include edges (in order), as a separate list.
+- Per-MACRO branch deps (name, state, value, definers).
+
+The two lists carry no interleaving, so the bind cannot know the macro state at
+a consult. It installs children before parents (`forest_bind_include`'s own
+comment calls that an approximation), and it compares each dep against the
+consumer's state at ROOT time.
+
+v68:
+- **Positions.**
+  - Every edge records the number of the unit's PP events before it.
+  - Every condition record records the events and the edges before it.
+  - Together they give one total order per unit: events, includes and
+    conditionals, as the freeze met them.
+- **Condition records.** For each `#if` / `#elif` / `#ifdef` / `#ifndef` the
+  freeze evaluates that consults an EXTERNAL macro (the existing test in
+  `pack_record_branch_macro`), it records:
+  - the kind, the raw condition text and the outcome;
+  - for a SINGLE-ARM conditional (no `#elif` / `#else`) that was skipped, the
+    arm's text. This generalizes the v55 / v67 `#ifndef` capture.
+- **The bind walk.** The check and the PP install become ONE pre-order walk
+  in that total order over the root's closure (bound units excluded). It
+  applies events to the live tables under an undo log (`set_macro`, the one
+  writer).
+- **At each condition record**, the walk re-evaluates the text through the ONE
+  `#if` evaluator: `evaluateIfCondition` split into reading the source text and
+  evaluating it.
+  - Same outcome → go on.
+  - A skipped single arm is now taken (missing content):
+    - its directives run in place, under the undo log (the `WCHAR_MIN` shape);
+    - its declarations are spliced as live tokens after the root (the typedef
+      guards, `stdio.h`'s `_WCHAR_H` redeclaration). They are C declarations
+      that merge with any bound twin.
+  - A taken arm is now skipped: a self-guard is masked (as today); otherwise
+    the root declines.
+  - Anything else → the undo log rolls back and the root declines (K1a / K1b
+    decide what follows).
+- **Deleted when the walk lands** (no parallel implementation):
+  - the per-macro dep check;
+  - the `PP_ARM` / `ARM_REPLAYS` tuples;
+  - the post-order install;
+  - the husk path (missing content IS the arm splice).
+- **Gates:**
+  - one `forest_bind_gate.sh` leg per class, each with a g++ / gcc oracle;
+  - the 32 knob-on failures → 0;
+  - the C-layer gates (`[cenv]`, `[armreplayc]`, the `<stdio.h>` C bind) stay
+    green;
+  - the parse-cost gate on the packed binary (one walk replaces the check
+    plus the install, so it should be flat).
+
 ### K2 — the deps are exact (a decline means the content really differs)
 
 - Freeze (format v68): record each conditional's OUTCOME.
