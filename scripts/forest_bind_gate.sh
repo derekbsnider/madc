@@ -898,7 +898,8 @@ echo "forest_bind_gate: [sharegate] OK — the madc profile binds for gnu++17 an
 
 # --- case: rawgate (owner 2026-10-17: the C layer is "separate, uncompressed") ---
 # --freeze-raw writes the profile with no codec — every segment, the MIR cache
-# included — so a bind reads it in place. A .c consumer (gnu17) freezes raw,
+# included — so a bind reads it in place. A .c consumer freezes raw under
+# gnu17 (named: the subject wrapper pins madc, and a later --std= wins),
 # the dump reports the profile with 0 codec segments, and a .c compile binds it
 # with live-equal output. Control: the same freeze without --freeze-raw stores
 # codec segments, so the dump's count is what the flag changed.
@@ -911,24 +912,95 @@ rw_snap=tmp/fbgate_raw.msnap
 rw_ctl=tmp/fbgate_raw_ctl.msnap
 rw_log=tmp/fbgate_raw.log
 rm -f "$rw_snap" "$rw_ctl"
-timeout 600 "$BIN" --freeze="$rw_snap" --freeze-raw --freeze-mir-cache tmp/fbgate_raw.c >"$rw_log" 2>&1 \
+timeout 600 "$BIN" --std=gnu17 --freeze="$rw_snap" --freeze-raw --freeze-mir-cache tmp/fbgate_raw.c >"$rw_log" 2>&1 \
     || fail "[rawgate] the --freeze-raw freeze FAILED: $(tail -n 3 "$rw_log")"
-timeout 600 "$BIN" --freeze="$rw_ctl" --freeze-mir-cache tmp/fbgate_raw.c >"$rw_log" 2>&1 \
+timeout 600 "$BIN" --std=gnu17 --freeze="$rw_ctl" --freeze-mir-cache tmp/fbgate_raw.c >"$rw_log" 2>&1 \
     || fail "[rawgate] control: the compressed freeze FAILED: $(tail -n 3 "$rw_log")"
 rw_raw=$(timeout 60 "$BIN" --dump-forest="$rw_snap" | awk -F'\t' '$1 == "profile" { sub("compressed=", "", $5); print $5; exit }')
 rw_cmp=$(timeout 60 "$BIN" --dump-forest="$rw_ctl" | awk -F'\t' '$1 == "profile" { sub("compressed=", "", $5); print $5; exit }')
 [ "$rw_raw" = 0 ] || fail "[rawgate] the --freeze-raw profile stores '$rw_raw' codec segment(s), expected 0"
 [ -n "$rw_cmp" ] && [ "$rw_cmp" -gt 0 ] \
     || fail "[rawgate] control: the compressed profile reports '$rw_cmp' codec segments (the dump cannot see the codec)"
-rw_live=$(timeout 60 "$BIN" --no-forest-bind tmp/fbgate_raw.c 2>/dev/null)
+rw_live=$(timeout 60 "$BIN" --std=gnu17 --no-forest-bind tmp/fbgate_raw.c 2>/dev/null)
 [ "$rw_live" = "len=3" ] || fail "[rawgate] live output '$rw_live' != 'len=3'"
-rw_out=$(timeout 60 "$BIN" --forest-bind="$rw_snap" tmp/fbgate_raw.c 2>/dev/null)
+rw_out=$(timeout 60 "$BIN" --std=gnu17 --forest-bind="$rw_snap" tmp/fbgate_raw.c 2>/dev/null)
 [ "$rw_out" = "$rw_live" ] || fail "[rawgate] raw-bound output '$rw_out' != live '$rw_live'"
-timeout 60 "$BIN" -v --forest-bind="$rw_snap" tmp/fbgate_raw.c >"$rw_log" 2>/dev/null
+timeout 60 "$BIN" -v --std=gnu17 --forest-bind="$rw_snap" tmp/fbgate_raw.c >"$rw_log" 2>/dev/null
 grep -aq "bound to grove unit" "$rw_log" \
     || fail "[rawgate] the .c consumer did not bind the raw profile"
 rm -f "$rw_snap" "$rw_ctl" "$rw_log" tmp/fbgate_raw.c
 echo "forest_bind_gate: [rawgate] OK — a --freeze-raw profile stores 0 codec segments and a .c compile binds it, output == live"
+
+# --- case: clayer (docs/plans/2026-10-18-c-pack-layer.md, J3) ---
+# The release pack stacks its C layer (gnu17, raw) BELOW the madc profile, and
+# only the madc profile carries the source arm (--freeze-sources=) and the AOT
+# ledger (--freeze-ledger=). A .c compile binds the C layer and must still read
+# a header the C layer lacks from the source arm, and link madc's runtime from
+# the ledger — each from the profile that CARRIES it, never the bound one.
+# The consumers name --std=gnu17 (the subject wrapper pins madc; a later
+# --std= wins). Two programs, so each half is red on its own: a header that exists only in
+# the pack (no file on disk), and a VLA under -static-libmadc (rt_vla).
+cl_dir=tmp/fbgate_clayer
+cl_stack=$cl_dir/stack.msnap
+rm -rf "$cl_dir"
+mkdir -p "$cl_dir"
+cat > "$cl_dir/c_tu.c" <<'EOF'
+#include <stdio.h>
+int main(void) { return 0; }
+EOF
+cat > "$cl_dir/top_tu.mad" <<'EOF'
+#include <stddef.h>
+int main() { return 0; }
+EOF
+cat > "$cl_dir/only_in_pack.h" <<'EOF'
+#define ONLY_IN_PACK 7
+EOF
+printf '/usr/include/madc_fbgate_only_in_pack.h\t%s\n' "$cl_dir/only_in_pack.h" \
+    > "$cl_dir/sources.txt"
+cat > "$cl_dir/src.c" <<'EOF'
+#include <stdio.h>
+#include <madc_fbgate_only_in_pack.h>
+int main(void) { printf("pack=%d\n", ONLY_IN_PACK); return 0; }
+EOF
+cat > "$cl_dir/vla.c" <<'EOF'
+#include <stdio.h>
+static int total(int n)
+{
+	int a[n];
+	int i, s = 0;
+	for ( i = 0; i < n; i++ )
+		a[i] = i * 7;
+	for ( i = 0; i < n; i++ )
+		s += a[i];
+	return s;
+}
+int main(void) { printf("total=%d\n", total(4)); return 0; }
+EOF
+: > "$cl_stack"
+timeout 600 "$BIN" --std=gnu17 --freeze-raw --freeze-append="$cl_stack" "$cl_dir/c_tu.c" \
+    > "$cl_dir/freeze_c.log" 2>&1 \
+    || fail "[clayer] the C layer freeze FAILED: $(tail -n 3 "$cl_dir/freeze_c.log")"
+timeout 600 "$BIN" --std=madc "--freeze-sources=$cl_dir/sources.txt" \
+    --freeze-ledger=src/rt/rt_vla.c --freeze-append="$cl_stack" "$cl_dir/top_tu.mad" \
+    > "$cl_dir/freeze_top.log" 2>&1 \
+    || fail "[clayer] the madc profile freeze FAILED: $(tail -n 3 "$cl_dir/freeze_top.log")"
+cl_profiles=$(timeout 60 "$BIN" --dump-forest="$cl_stack" | awk -F'\t' '$1 == "profile"' | wc -l)
+[ "$cl_profiles" -eq 2 ] || fail "[clayer] the stack holds $cl_profiles profile(s), expected 2"
+# The source arm: the header lives only in the madc profile's source slot.
+cl_out=$(timeout 60 "$BIN" --std=gnu17 --forest-bind="$cl_stack" "$cl_dir/src.c" 2>"$cl_dir/src.err")
+[ "$cl_out" = "pack=7" ] \
+    || fail "[clayer] a .c compile bound to the C layer did not read the source arm: '$cl_out' $(head -n 2 "$cl_dir/src.err")"
+timeout 60 "$BIN" -v --std=gnu17 --forest-bind="$cl_stack" "$cl_dir/src.c" >"$cl_dir/src.log" 2>/dev/null
+grep -aq "bound to grove unit" "$cl_dir/src.log" \
+    || fail "[clayer] the .c compile did not bind the C layer"
+# The ledger: rt_vla rides the madc profile above the bound C layer.
+timeout 120 "$BIN" --std=gnu17 --forest-bind="$cl_stack" -static-libmadc -o "$cl_dir/vla" "$cl_dir/vla.c" \
+    >"$cl_dir/vla.err" 2>&1 \
+    || fail "[clayer] -static-libmadc refused a .c bound to the C layer: $(head -n 2 "$cl_dir/vla.err")"
+cl_vla=$(timeout 60 "$cl_dir/vla" 2>/dev/null)
+[ "$cl_vla" = "total=42" ] || fail "[clayer] the -static-libmadc binary printed '$cl_vla', expected 'total=42'"
+rm -rf "$cl_dir"
+echo "forest_bind_gate: [clayer] OK — a .c compile bound to a C layer below the madc profile reads that profile's source arm and links its ledger"
 
 # --- case: dialectnobind (the dialect is builtin: a fragment never binds) ---
 # A container that froze a dialect fragment's text (bits/ui_enums, which strict

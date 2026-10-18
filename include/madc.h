@@ -7555,13 +7555,16 @@ public:
     enum ForestConfigMatch {
 	forestMatchExact,
 	forestMatchStdlibFlavor,
-	forestMatchAny
+	forestMatchAny,
+	forestMatchLedger	// any config, a profile that carries the AOT ledger
     };
     // The ordered carrier discovery chain (explicit → self-image → library
     // image → sidecars → $MADC_FOREST). Within each carrier, newest-to-
     // oldest appended profiles are searched under `config_match`: exact for
-    // semantic grove bind, same stdlib flavor for live-tokenized source, any
-    // for the dialect-independent AOT ledger. Sets config_mismatch when an
+    // semantic grove bind, same stdlib flavor for live-tokenized source, the
+    // first profile carrying the AOT ledger for the dialect-independent
+    // runtime (the C layer carries none: it sits below the C++ profile that
+    // does, docs/plans/2026-10-18-c-pack-layer.md). Sets config_mismatch when an
     // exact-match candidate was rejected for config alone. header_only stops
     // at the container directory —
     // enough for the container-global segments (the AOT ledger), and it does

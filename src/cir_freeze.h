@@ -2269,6 +2269,9 @@ public:
 	// deliberately NOT gated on the producer-config match — the ledger is
 	// madc's own runtime, not dialect-dependent parse state.
 	bool ledger_modules(std::vector<cir_ledger_module> &out) const;
+	// Does this profile carry the AOT ledger segment? A directory probe:
+	// nothing is decoded (the discovery walk's ledger match).
+	bool has_ledger() const;
 	// B3 (v18): reconstruct the type graph from the dumped DefArena (idempotent;
 	// lazy — allocates on the first call). Reads defrec/memberrec/baserec/
 	// methodrec/anonrec/paramrec, applying at LOAD time the same selection rules

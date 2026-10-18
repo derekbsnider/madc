@@ -4706,6 +4706,8 @@ static CirFrozenForest *forest_probe_arm(Program *prog, const char *path,
 	else if ( config_match == Program::forestMatchStdlibFlavor )
 	    matches = (producer_config & CIR_FOREST_CONFIG_STDLIB_MASK)
 		   == (consumer_config & CIR_FOREST_CONFIG_STDLIB_MASK);
+	else if ( config_match == Program::forestMatchLedger )
+	    matches = f->has_ledger();
 
 	if ( !matches )
 	{
@@ -4960,8 +4962,10 @@ static_assert(CIR_FOREST_ROLE_SYSTEM == 0u,
 	      "Program::forest_system names this role code");
 
 // The carrier the AOT ledger is read from (-static-libmadc, S5). The grove
-// bind's container when it opened one — same file, already mapped — else the
-// SAME chain walked with the producer-config gate OFF, because a compile whose
+// bind's container when it carries the ledger — same file, already mapped —
+// else the SAME chain walked for the first profile that carries it, with the
+// producer-config gate OFF (the C layer carries no ledger: a C compile bound
+// to it reads the C++ profile's), because a compile whose
 // dialect cannot bind the groves must still be able to link madc's runtime.
 // enable_forest_bind is likewise not consulted: --no-forest-bind says "parse
 // the headers live", not "leave the runtime out of my binary".
@@ -4972,7 +4976,7 @@ CirFrozenForest *Program::ensure_ledger_forest()
     if ( ledger_forest_tried )
 	return ledger_forest;
     ledger_forest_tried = true;
-    if ( forest_system.forest )
+    if ( forest_system.forest && forest_system.forest->has_ledger() )
     {
 	ledger_forest = forest_system.forest;
 	return ledger_forest;
@@ -4982,23 +4986,25 @@ CirFrozenForest *Program::ensure_ledger_forest()
     // is the whole requirement — binding the frozen string pool and arena is
     // grove work, and it needs live parse state this consumer may not have
     // (the .o link lane links precompiled objects: no lexer, no pool).
-    ledger_forest = probe_forest_chain(forestMatchAny,
+    ledger_forest = probe_forest_chain(forestMatchLedger,
 				       cfg_mismatch, /*header_only=*/true);
     DBG(std::cout << "ledger: carrier "
 	<< (ledger_forest ? "opened" : "not found") << std::endl);
     return ledger_forest;
 }
 
+// The carrier a header's packed TEXT is read from: the newest profile of the
+// selected stdlib flavor — the walk's own order — never the bound profile for
+// being bound. The pack's source arm (every system header as text,
+// --freeze-sources) rides the C++ profile, and the C layer below it carries
+// only its own units' text (docs/plans/2026-10-18-c-pack-layer.md); a reader
+// already open for that profile is reused (forest_reader). The bound profile
+// answers only when the walk finds none.
 CirFrozenForest *Program::ensure_source_forest()
 {
     if ( source_forest_tried )
 	return source_forest;
     source_forest_tried = true;
-    if ( forest_system.forest )
-    {
-	source_forest = forest_system.forest;
-	return source_forest;
-    }
 
     // Raw source ignores producer std/-D/posix config because these bytes are
     // re-tokenized under THIS Program's live policy, but it must match the
@@ -5009,6 +5015,8 @@ CirFrozenForest *Program::ensure_source_forest()
     bool cfg_mismatch = false;
     source_forest = probe_forest_chain(forestMatchStdlibFlavor,
 				       cfg_mismatch, /*header_only=*/true);
+    if ( !source_forest )
+	source_forest = forest_system.forest;
     if ( source_forest )
     {
 	source_forest->_work_secs = &_forest_work_seconds;

@@ -114,6 +114,19 @@ equals `c_headers.live`, and `sqlite3.forest` is in the same position.
   `ensure_ledger_forest` / `ensure_source_forest` walk the stack for the
   profile that carries the segment. Reducer: a `.c` compile with a header
   served from the source arm, and a `.c` AOT build.
+  - Done: `forestMatchLedger` (a profile that carries the ledger segment,
+    `CirFrozenForest::has_ledger`) for the ledger walk; the source walk takes
+    the newest profile of the stdlib flavor, the bound profile only when the
+    walk finds none. Gate: `forest_bind_gate.sh` `[clayer]` — a two-profile
+    stack (a raw gnu17 C layer below a madc profile carrying `--freeze-sources`
+    and `--freeze-ledger`).
+  - Measured on 0.105.0 (the leg without `--freeze-raw`): the ledger half is
+    red ("-static-libmadc needs this madc's AOT ledger, and no carrier
+    provided one"). The source half was green there by ORDER: the first
+    system include asks the source arm before the grove bind opens, so the
+    bound-forest reuse never fired. J3 removes that order dependence.
+  - Found: the bind gate's subject wraps `--std=madc`, so `[rawgate]`'s `.c`
+    freeze and binds ran under madc. Both legs now name `--std=gnu17`.
 - **J4 — the gate.**
   - A `forest_pack_gate.sh` leg, run by `forest_pack.sh`: a `.c` compile and a
     `--std=c17` compile on the packed binary, red unless each reports bound

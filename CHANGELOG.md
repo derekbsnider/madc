@@ -2,6 +2,34 @@
 
 ## [Unreleased]
 
+### The ledger and source arm come from the profile that carries them (J3)
+
+- `-static-libmadc` and packed system-header text are now read from the frozen
+  forest profile that CARRIES the segment, not the profile a compile bound. The
+  release pack stacks a raw gnu17 C layer below the madc/C++ profile, and only
+  the C++ profile carries the AOT ledger (`--freeze-ledger`) and the source arm
+  (`--freeze-sources`); a `.c` compile binds the C layer and must still link
+  madc's runtime and read header text from the profile above it. See
+  `docs/plans/2026-10-18-c-pack-layer.md` section J, slice J3.
+- `Program::ensure_ledger_forest` (`src/lexer.cpp`) walks the carrier chain
+  under a new `forestMatchLedger` config match (`Program::ForestConfigMatch`,
+  `include/madc.h`; `forest_probe_arm`) — the first profile whose
+  `CirFrozenForest::has_ledger()` (`src/cir_freeze.cpp`, `src/cir_freeze.h`) is
+  true — and reuses the bound forest only when it carries the ledger.
+- `Program::ensure_source_forest` (`src/lexer.cpp`) takes the newest profile of
+  the consumer's stdlib flavor from the chain
+  (`forestMatchStdlibFlavor`), reusing the bound forest only when the walk finds
+  none; the walk no longer depends on the first system include running ahead of
+  the grove bind. The walk costs a cached image-map lookup
+  (`cir_forest_map_image`'s `map_cache`) plus a reused open reader
+  (`forest_reader_opened`).
+- Gate `scripts/forest_bind_gate.sh` `[clayer]`: a two-profile stack (a raw
+  gnu17 C layer below a madc profile carrying `--freeze-sources` and
+  `--freeze-ledger`); a `.c` compile bound to the C layer prints `pack=7` from a
+  header held only in the source arm, and a `-static-libmadc` VLA binary prints
+  `total=42`. The `[rawgate]` consumers now name `--std=gnu17` (the subject
+  wrapper pins `--std=madc`).
+
 ### `--freeze-raw` stores a frozen forest profile uncompressed (J1)
 
 - `--freeze-raw` writes the container — every segment, the MIR cache and the

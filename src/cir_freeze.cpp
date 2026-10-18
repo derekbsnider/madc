@@ -2728,6 +2728,13 @@ bool CirFrozenForest::mir_module_bytes(std::vector<uint8_t> &out) const
 // bounds-checked against the remaining payload — a truncated segment is a
 // loud refusal, never a partial ledger (a half-read ledger would look like a
 // Tier-B program and refuse for the wrong reason).
+bool CirFrozenForest::has_ledger() const
+{
+	const madc::dis::snapshot_segment *s = _reader.find(CIR_FOREST_SEG_LEDGER);
+	return s && s->kind == SNAP_KIND_CIR_LEDGER
+	    && s->raw_size >= sizeof(cir_forest_ledger_header);
+}
+
 bool CirFrozenForest::ledger_modules(std::vector<cir_ledger_module> &out) const
 {
 	out.clear();
