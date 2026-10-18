@@ -595,6 +595,25 @@ static bool forest_kind_blocked(uint32_t kind)
 // 128 KB, pack cap 15 MB).
 enum : uint32_t { FOREST_BLOCK_SHIFT = 14, FOREST_UNIT_BLOCK_SHIFT = 17 };
 
+// A unit's walk slots — its PP events, include edges and condition records
+// (v69) — are read WHOLE for every unit a bind walks (forest_walk_unit), so
+// they are stored raw: a frame of a few KB costs the bind more to decode than
+// its bytes cost the pack (its literal-table build alone is ~14K Ir).
+// Measured 2026-10-18 on the release, rung_stdio (24 units walked): the
+// compressed slots cost 818K Ir of a 1.95M Ir bind; raw, the mixed profile
+// grows 0.23 MB (13.82 MB, cap 15 MB).
+static bool forest_kind_walk_slot(uint32_t kind)
+{
+	switch (kind) {
+	case SNAP_KIND_CIR_PP_EXPORTS:
+	case SNAP_KIND_CIR_UNIT_EDGES:
+	case SNAP_KIND_CIR_UNIT_CONDS:
+		return true;
+	default:
+		return false;
+	}
+}
+
 // A blocked kind's flags: its block size, and its inner transform — node
 // records keep their byte-plane recoding and child entries their delta, now
 // inside each block.
@@ -624,6 +643,8 @@ static bool add_seg(madc::dis::snapshot_writer &w, uint32_t seg_id,
 {
 	if (!cir_forest_compress_intern
 	    && kind == madc::dis::SNAP_KIND_INTERN_BYTES)
+		codec = PchCompression::None;
+	if (forest_kind_walk_slot(kind))
 		codec = PchCompression::None;
 	// The transforms serve the codec (a delta or a byte plane compresses
 	// better); a payload stored with no codec keeps its own bytes, so a bind

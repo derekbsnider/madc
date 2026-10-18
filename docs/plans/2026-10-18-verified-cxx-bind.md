@@ -284,8 +284,9 @@ two include sites and the two posix-provider sites go through
 - Items in frozen order: a condition at `(ev, ed)` comes before edge `ed` and
   event `ev`; an edge at event position `p` comes before event `p`.
 - An event applies through `set_macro`, the one writer. The `#define` and
-  `#undef` handlers write through it too. The undo log keeps each name's
-  first prior state.
+  `#undef` handlers write through it too. The undo log keeps every write's
+  prior state and restores them in reverse, so a name's earliest state comes
+  back last. The log runs only when the check is on.
 - A condition is re-evaluated: `#ifdef` / `#ifndef` with
   `macro_name_defined`, `#if` / `#elif` with `evaluate_if_text`. A text
   naming `__has_include_next` or a quoted `__has_include` is position-bound,
@@ -325,6 +326,26 @@ Deleted with the walk: `forest_bind_env_ok`, `forest_bind_include`,
 `pp_install_mask`, `pp_arms`, `husk_live_pending` and the husk path. Deleted next, on
 the freeze side (v70): the per-macro branch deps, the `PP_ARM` tuples,
 `ARM_REPLAYS`, `skip_and_capture_arm` and the purity flag.
+
+K2 step 3 cost (parse-cost gate, callgrind Ir, release build). The first walk
+cost +2.6% on `rung_stdio` and +5.1% on `c_headers.forest`. Measured causes
+and fixes:
+- Each unit's walk slots (events, edges, conditions) are read whole, and a
+  small zstd frame costs ~14K Ir to decode before its bytes (the literal
+  table). The slots are now stored raw (`forest_kind_walk_slot`). The mixed
+  profile grows 0.23 MB, to 14.04 MB (cap 15 MB).
+- Each `#if` / `#elif` records the macros it consulted, with a state hash
+  (`CIR_COND_CONSULT_*`). When every hash still matches, the bind takes the
+  frozen outcome without evaluating. A text with `__has_include` is always
+  evaluated.
+- Table writes go by spelling id (`set_macro_id`): a frozen event's name is
+  never built as an `istring`. The undo log moves each prior value out of its
+  table instead of copying it.
+- Knob off, only a condition that can mask or run is evaluated.
+
+Result: `rung_stdio` 19.35M → 19.09M Ir (bind 1.46M → 1.19M);
+`c_headers.forest` 38.01M → 38.16M (+0.39%; bind 2.78M → 2.94M, the
+per-condition consult checks the verified walk adds).
 
 ### K2 — the deps are exact (a decline means the content really differs)
 

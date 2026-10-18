@@ -173,7 +173,9 @@ enum : uint32_t
 	// v68 (docs/plans/2026-10-18-verified-cxx-bind.md, K2): per-unit uint32
 	// words — the edge count, then each edge's place among the unit's PP
 	// events; the condition count, then CIR_COND_WORDS words per condition
-	// (cir_forest_cond_field).
+	// (cir_forest_cond_field); v69: the inclusion count, then per inclusion
+	// its end (CIR_INCL_WORDS words: events, edges, conditions); then the
+	// consult word count and the #if / #elif consults (CIR_CONSULT_WORDS each).
 	SNAP_KIND_CIR_UNIT_CONDS       = madc::dis::SNAP_KIND_CONSUMER + 32
 };
 
@@ -186,8 +188,17 @@ enum cir_forest_cond_field : uint32_t {
 	CIR_COND_EV_BEGIN, CIR_COND_ED_BEGIN, CIR_COND_EV_END, CIR_COND_ED_END,
 	CIR_COND_TOK_BEGIN, CIR_COND_TOK_END,
 	CIR_COND_ARM,		// pool id of a skipped single arm's body (0 = none)
+	CIR_COND_REC_END,	// v69: the unit's record count at the arm's end (nested records)
+	CIR_COND_ARM_STATE,	// v69: pool id of the freeze's state of the captured arm's writes (0 = none)
+	CIR_COND_CONSULT_AT,	// v69: an #if / #elif's first consulted macro in the unit's consult words
+	CIR_COND_CONSULT_N,	// v69: ... and how many (CIR_CONSULT_WORDS each)
 	CIR_COND_WORDS
 };
+// v69: one inclusion's end in a unit's events, edges and condition records.
+enum : uint32_t { CIR_INCL_WORDS = 3 };
+// v69: one macro an #if / #elif consulted: its name (pool id) and the freeze's
+// state hash (forest_macro_state_hash, low then high 32 bits).
+enum : uint32_t { CIR_CONSULT_WORDS = 3 };
 enum : uint32_t {
 	CIR_COND_F_OUTCOME    = 1u,	// the arm was taken at freeze
 	CIR_COND_F_SINGLE_ARM = 2u,	// the group's #endif ended it (no #elif / #else)
@@ -708,7 +719,13 @@ bool cir_freeze_read(const madc::dis::snapshot_reader &r, uint32_t seg_id_base,
 // over an external macro (its text, outcome, place and a skipped single arm's
 // body): the unit's item order, for the bind's positional walk (K2 of
 // docs/plans/2026-10-18-verified-cxx-bind.md).
-enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 68 };
+//
+// v69: each condition record carries CIR_COND_REC_END (the records nested in
+// its arm) and CIR_COND_ARM_STATE (the frozen state of every macro a captured
+// arm writes), and the conditions slot ends with the unit's INCLUSIONS — where
+// each of its includes by the freeze TU ended, so the walk reads a guard-less
+// unit's Nth inclusion at the Nth edge to it.
+enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 69 };
 // Flags word of a SNAP_KIND_CIR_BRANCH_DEPS tuple.
 enum : uint32_t {
 	CIR_BRANCH_DEP_DEFINED   = 1u,	// the macro was defined at the consult

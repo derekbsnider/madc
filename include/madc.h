@@ -50,6 +50,9 @@ struct CirRestoredTemplate;	// task #25 B2: lazy template-payload source (cir_fr
 struct CirRestoredTemplateRun;	// one frozen token run (cir_freeze.h)
 struct CirRestoredFuncDefaults;	// one restored function's default-argument runs (cir_freeze.h)
 struct CirMaterializeFilter;	// the bind's demand filter (cir_freeze.h); held by pointer
+struct ForestWalk;		// the bind walk of one root (lexer.cpp, K2)
+struct ForestUnitItems;		// one frozen unit's items, as the walk reads them (lexer.cpp)
+struct ForestMacroUndo;		// a walk's macro undo log (lexer.cpp); Program::forest_macro_undo
 struct cir_node;		// a CIR tree node (cir_node.h); Program::forest_extern_node
 struct MadcModuleDescription;	// madc_module.h: what an imported module describes; pointer member only
 struct madc_stdlib_flavor;	// generated stdlib flavor table (madc_sys_includes.h); pointer member only
@@ -3711,7 +3714,6 @@ protected:
     TokenBase *skip_and_capture_arm(const madc::dis::istring &name, bool first_dep);
     TokenBase *skip_capturing_arm(SkippedArmCapture &cap);
     TokenBase *skip_recorded_arm();
-    void run_skipped_arm(const char *unit_name, const char *name, const char *text);
     bool evaluateIfCondition();
     std::string read_if_condition_text();
     bool evaluate_if_text(const std::string &raw_expr);
@@ -5959,9 +5961,30 @@ public:
 	bool arm_captured = false;	// a skipped single arm's body is in `arm`
 	bool arm_pure = false;		// ... and it holds only directives
 	std::string arm;
+	uint32_t rec_end = 0;		// v69: the unit's record count at the arm's end
+	std::string arm_state;		// v69: the arm's written macros as the freeze held them (forest_macro_state_spelling)
+	uint64_t expansions_at_end = 0;	// v69: pack_expansion_clock at the arm's end
+	// v69: an #if / #elif's consulted macros and their state hashes at the
+	// evaluation — the bind takes the frozen outcome when every one matches.
+	std::vector<std::pair<madc::dis::istring, uint64_t> > consults;
     };
+    // v69: the macros the #if / #elif being evaluated consults (freezing only;
+    // pack_record_branch_macro collects while pack_if_collect is set).
+    bool pack_if_collect = false;
+    std::vector<madc::dis::istring> pack_if_consulted;
+    // v69: when each macro was last expanded into the token stream while
+    // freezing (pack_expansion_clock ticks per expansion) — an arm's frozen
+    // state matters only for names expanded after the arm (pack_arm_state).
+    uint64_t pack_expansion_clock = 0;
+    std::map<madc::dis::istring, uint64_t> pack_macro_expanded_at;
+    void pack_note_expansion(const madc::dis::istring &name);
+    std::string pack_arm_state(const PackCondRecord &r);
     std::map<const char *, std::vector<PackCondRecord> > pack_unit_conds;
     std::map<const char *, std::vector<uint32_t> > pack_unit_edge_events;	// v68: per edge, the unit's events ahead of it
+    // v69: where each of a unit's inclusions ended — its event, edge and
+    // condition-record counts as the include returned (pack_unit_leave).
+    std::map<const char *, std::vector<uint32_t> > pack_unit_inclusions;
+    void pack_unit_leave(const char *unit);
     // One open conditional group, parallel to cond_groups while freezing.
     struct PackCondFrame {
 	const char *unit;
@@ -6026,8 +6049,6 @@ public:
     // dep for name — its first external consult there.
     bool pack_record_branch_macro(const std::string &name,	// interned only when recording
 				  bool include_probe = false, bool *first_dep = NULL);
-    bool skipped_arm_defines(const char *unit_name, const char *name,
-			     const char *text, const char *value);
     const char *pack_current_unit();	// interned current source file (NULL off)
     void dump_macros(FILE *out);	// -dM: effective macro table, sorted
     void pack_open_toplevel_decl();	// loop-top: push a decl frame
@@ -7386,7 +7407,7 @@ public:
 	struct Side {
 	    size_t chain_size = 0;
 	    size_t restored_chain_size = 0;
-	    std::set<uint32_t> live_present, husk_live_pending;
+	    std::set<uint32_t> live_present;
 	    bool bind_stopped = false;
 	    std::vector<unsigned char> type_registered;
 	    std::vector<bool> global_registered, func_registered, tmpl_registered;
@@ -7423,22 +7444,11 @@ public:
 	std::shared_ptr<CirFrozenForest> holder;
 	std::vector<uint32_t> chain;		// bound units, include order (bind-order record)
 	std::set<uint32_t> chain_set;		// membership + DAG-walk prune
-	std::set<uint32_t> walking;		// units on the in-flight bind recursion (cycle break)
 	std::set<uint32_t> live_present;	// v40: units ALREADY PRESENT via a live parse (guard prune) — bind skips them, the decl-restore filter must NOT see them
-	std::set<uint32_t> husk_live_pending;	// task #57: missing-content closure units selected for exact live tokenization; never enter chain_set
 	// K1a (docs/plans/2026-10-18-verified-cxx-bind.md): a C++ / madc TU's
 	// system content is all-bound or all-live — a decline with nothing bound
 	// yet stops every later bind, so the TU parses live from there.
 	bool bind_stopped = false;
-	// task #57 masked-bind: unit -> its guarded-fallback macros whose guard
-	// is live-defined; forest_install_pp skips those define events
-	// (live-order parity — the live arm skipped them). Rebuilt per env
-	// check of the unit.
-	std::map<uint32_t, std::set<madc::dis::istring> > pp_install_mask;
-	// v55: unit -> its skipped directive-only arms, [name_id, text_id] pool
-	// ids, collected by forest_bind_env_ok; forest_replay_pp_arms replays
-	// one whose name is undefined once the unit's own delta is installed.
-	std::map<uint32_t, std::vector<std::pair<uint32_t, uint32_t> > > pp_arms;
 	size_t restored_chain_size = 0;	// chain's size at the last restore
 	// The restore's per-record state, index-aligned with the forest's
 	// restored lists (FOREST_TYPE_* above).
@@ -7677,24 +7687,26 @@ public:
     // A __need_* request macro is live: the next include is a protocol
     // visit (re-tokenize the protocol text; no once-only/PCH/forest).
     bool need_protocol_macro_live();
-    // The bind walk, over one bound forest (ForestSide): its units, chain and
-    // walk state are that forest's own.
-    void forest_bind_include(ForestSide &s, uint32_t unit);	// bind time: DAG walk — install PP + arm chain
+    // The bind walk (K2), over one bound forest (ForestSide): its units, chain
+    // and walk state are that forest's own.
+    bool forest_bind_verified();	// a difference the walk cannot reproduce declines (K3 deletes the knob)
+    bool forest_walk_root(ForestSide &s, uint32_t root, bool reinclude);
+    bool forest_walk_unit(ForestWalk &w, uint32_t unit, bool reinclude);
+    bool forest_walk_condition(ForestWalk &w, uint32_t unit, const ForestUnitItems &it,
+			       uint32_t &i_c, uint32_t &i_ev, uint32_t &i_ed);
+    int forest_condition_now(CirFrozenForest *f, const ForestUnitItems &it,
+			     const uint32_t *cond);	// 1 taken, 0 skipped, -1 not readable here
+    bool forest_arm_guard_passed(CirFrozenForest *f, const ForestUnitItems &it,
+				 const uint32_t *cond, const char *guard);
+    bool forest_arm_state_matches(const char *frozen, const std::vector<madc::dis::istring> &writes);
+    bool run_frozen_arm(const char *unit_name, const std::string &text,
+			std::vector<TokenBase *> &out, std::vector<madc::dis::istring> &writes);
+    ForestMacroUndo *forest_macro_undo = NULL;	// the walk in flight's undo log (set_macro notes into it)
     std::set<madc::dis::istring> forest_live_tokenized;	// v40: canonical keys of files whose tokens ENTERED this TU's live stream (should_tokenize_include true-verdicts) — the prune's honest "already live" source
     bool live_tokenize_record(const madc::dis::istring &canonical, bool tok);	// one recording owner for the set above
     bool forest_unit_file_live_tokenized(ForestSide &s, uint32_t unit);	// v40: was this unit's FILE live-tokenized here?
     bool forest_unit_reinclude_skipped(ForestSide &s, uint32_t unit);	// would a live re-include of its FILE be skipped now?
-    bool forest_bind_env_ok(ForestSide &s, uint32_t unit, bool reinclude = false);	// v40: closure branch-dep env check (task #57)
     bool forest_bind_include_root(uint32_t unit);	// an #include's bind (false: live-parse); a re-read guard-less root rebinds
-    void forest_env_collect(ForestSide &s, uint32_t unit, std::set<uint32_t> &closure);
-    bool forest_unit_defines_macro(ForestSide &s, uint32_t unit, const char *nm);	// v40: include-once prune helper
-    void forest_unit_defined_macros(ForestSide &s, uint32_t unit, std::set<madc::dis::istring> &out);
-    bool forest_unit_is_standalone_husk(ForestSide &s, uint32_t unit,
-					const std::vector<uint32_t> &deps);	// task #57: empty decl surface + own file guard, safe for exact live include
-    void forest_replay_pp_arms(ForestSide &s, uint32_t unit);
-    const char *forest_unit_arm_text(ForestSide &s, const std::vector<uint32_t> &deps,
-				     uint32_t name_id);	// v67: a unit's first skipped arm for a name
-    void forest_install_pp(ForestSide &s, uint32_t unit);	// apply one unit's frozen macro delta to the live tables
     void add_namespaces();
     // --std=madc: declares std::format / print / println itself — madc's
     // always-included intrinsics (owner law 2026-08-10), never a header or
@@ -7853,7 +7865,7 @@ public:
     // Push the std ABI inline namespace into the mangler when `name` is one of
     // the stdlib config macros (_LIBCPP_ABI_NAMESPACE / _GLIBCXX_USE_CXX11_ABI).
     // Called at every define_map write site: directive, forest replay, CLI -D.
-    void note_std_abi_define(const madc::dis::istring &name, const std::string &value);
+    void note_std_abi_define(const char *name, const std::string &value);
     std::string expandIfMacros(const std::string &raw);
     // Macro-replace what remains of the current Source and return its
     // spelling, whitespace kept (a macro argument's pre-expansion).

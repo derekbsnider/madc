@@ -1218,14 +1218,216 @@ grep -aEq "^cond	${cr_u}	elif	" "$cr_dir/dump.txt" \
 rm -rf "$cr_dir"
 echo "forest_bind_gate: [condrec] OK — the freeze records each edge's place and each external conditional's outcome, arm and body (v68)"
 
+# --- case: k2walk (docs/plans/2026-10-18-verified-cxx-bind.md, K2 step 3) ---
+# The bind walks a root's closure in the freeze's item order and re-evaluates
+# each recorded conditional in the consumer's macro state at that position.
+# One freeze, each shape frozen with an external definer the consumer lacks —
+# the three the knob-on packed suite declined on, plus the walk's undo:
+#   pos   — kw_c.h's `#if !defined FBG_KW_A && !defined FBG_KW_B` #error was
+#           frozen under kw_a.h; reached through kw_b.h it holds by position
+#           (glibc bits/setjmp.h under pthread.h). kw_b.h binds.
+#   dirs  — kw_w.h's directive-only `#ifndef FBG_KW_MIN` arm, writing two
+#           names, was skipped (kw_lim.h first); the walk runs it (wchar.h's
+#           WCHAR_MIN). kw_lim.h spells FBG_KW_MIN differently (`(0+1)`), but
+#           no frozen token after the arm expands it, so the state difference
+#           is inert. kw_w.h binds.
+#   expanded — kw_x.h's `#ifndef FBG_KW_XV` arm was skipped (kw_xdef.h's
+#           FBG_KW_XV 1 first) and kw_x.h's own frozen token after the arm
+#           expanded that 1; here the arm makes it 2, so the bound token would
+#           be wrong: kw_x.h declines and parses live.
+#   decls — kw_time.h's `#ifndef FBG_KW_PID_DEFINED` typedef arm was skipped
+#           (kw_types.h first); the walk runs its directives and keeps its
+#           typedef (time.h's __pid_t_defined). kw_time.h binds.
+#   undo  — kw_r.h's walk undefines the consumer's FBG_KW_X, then kw_s.h's
+#           two-arm FBG_KW_CFG group flips and the root declines: the undo
+#           log restores FBG_KW_X before the live parse.
+# g++ and clang++: c=3 b=4 / min=1 max=9 / pid=6 / xv=2 / saw=1 s=20.
+kw_dir=tmp/fbgate_kw
+rm -rf "$kw_dir"
+mkdir -p "$kw_dir"
+cat > "$kw_dir/fbgate_kw_c.h" <<'EOF'
+#ifndef FBGATE_KW_C_H
+#define FBGATE_KW_C_H
+#if !defined FBG_KW_A && !defined FBG_KW_B
+# error "include fbgate_kw_c.h through fbgate_kw_a.h or fbgate_kw_b.h"
+#endif
+struct fbg_kw_c { int v; };
+#define FBG_KW_C 3
+#endif
+EOF
+cat > "$kw_dir/fbgate_kw_a.h" <<'EOF'
+#ifndef FBGATE_KW_A_H
+#define FBGATE_KW_A_H
+#define FBG_KW_A 1
+#include <fbgate_kw_c.h>
+#endif
+EOF
+cat > "$kw_dir/fbgate_kw_b.h" <<'EOF'
+#ifndef FBGATE_KW_B_H
+#define FBGATE_KW_B_H
+#define FBG_KW_B 1
+#include <fbgate_kw_c.h>
+#define FBG_KW_BV 4
+#endif
+EOF
+cat > "$kw_dir/fbgate_kw_lim.h" <<'EOF'
+#ifndef FBGATE_KW_LIM_H
+#define FBGATE_KW_LIM_H
+#define FBG_KW_MIN (0+1)
+#define FBG_KW_MAX 9
+#endif
+EOF
+cat > "$kw_dir/fbgate_kw_w.h" <<'EOF'
+#ifndef FBGATE_KW_W_H
+#define FBGATE_KW_W_H
+struct fbg_kw_w { int v; };
+#ifndef FBG_KW_MIN
+/* These might also be defined in fbgate_kw_lim.h.  */
+# define FBG_KW_MIN 1
+# define FBG_KW_MAX 9
+#endif
+#endif
+EOF
+cat > "$kw_dir/fbgate_kw_types.h" <<'EOF'
+#ifndef FBGATE_KW_TYPES_H
+#define FBGATE_KW_TYPES_H
+#ifndef FBG_KW_PID_DEFINED
+typedef int fbg_kw_pid;
+# define FBG_KW_PID_DEFINED
+#endif
+#endif
+EOF
+cat > "$kw_dir/fbgate_kw_time.h" <<'EOF'
+#ifndef FBGATE_KW_TIME_H
+#define FBGATE_KW_TIME_H
+struct fbg_kw_tm { int v; };
+#ifndef FBG_KW_PID_DEFINED
+typedef int fbg_kw_pid;
+# define FBG_KW_PID_DEFINED
+#endif
+#endif
+EOF
+cat > "$kw_dir/fbgate_kw_cfg.h" <<'EOF'
+#ifndef FBGATE_KW_CFG_H
+#define FBGATE_KW_CFG_H
+#define FBG_KW_CFG 1
+#endif
+EOF
+cat > "$kw_dir/fbgate_kw_s.h" <<'EOF'
+#ifndef FBGATE_KW_S_H
+#define FBGATE_KW_S_H
+struct fbg_kw_s { int v; };
+#ifdef FBG_KW_CFG
+#define FBG_KW_SV 10
+#else
+#define FBG_KW_SV 20
+#endif
+#endif
+EOF
+cat > "$kw_dir/fbgate_kw_r.h" <<'EOF'
+#ifndef FBGATE_KW_R_H
+#define FBGATE_KW_R_H
+#ifdef FBG_KW_X
+#define FBG_KW_SAW 1
+#else
+#define FBG_KW_SAW 0
+#endif
+#undef FBG_KW_X
+#include <fbgate_kw_s.h>
+#endif
+EOF
+cat > "$kw_dir/fbgate_kw_xdef.h" <<'EOF'
+#ifndef FBGATE_KW_XDEF_H
+#define FBGATE_KW_XDEF_H
+#define FBG_KW_XV 1
+#endif
+EOF
+cat > "$kw_dir/fbgate_kw_x.h" <<'EOF'
+#ifndef FBGATE_KW_X_H
+#define FBGATE_KW_X_H
+#ifndef FBG_KW_XV
+# define FBG_KW_XV 2
+#endif
+static const int fbg_kw_xv = FBG_KW_XV;
+#endif
+EOF
+cat > "$kw_dir/producer.cpp" <<'EOF'
+#include <fbgate_kw_xdef.h>
+#include <fbgate_kw_x.h>
+#include <fbgate_kw_a.h>
+#include <fbgate_kw_b.h>
+#include <fbgate_kw_lim.h>
+#include <fbgate_kw_w.h>
+#include <fbgate_kw_types.h>
+#include <fbgate_kw_time.h>
+#define FBG_KW_X 1
+#include <fbgate_kw_cfg.h>
+#include <fbgate_kw_r.h>
+int main() { return 0; }
+EOF
+cat > "$kw_dir/pos.cpp" <<'EOF'
+#include <fbgate_kw_b.h>
+#include <stdio.h>
+int main() { fbg_kw_c c = { FBG_KW_C }; printf("c=%d b=%d\n", c.v, FBG_KW_BV); return 0; }
+EOF
+cat > "$kw_dir/dirs.cpp" <<'EOF'
+#include <fbgate_kw_w.h>
+#include <stdio.h>
+int main() { printf("min=%d max=%d\n", FBG_KW_MIN, FBG_KW_MAX); return 0; }
+EOF
+cat > "$kw_dir/decls.cpp" <<'EOF'
+#include <fbgate_kw_time.h>
+#include <stdio.h>
+int main() { fbg_kw_pid p = 6; printf("pid=%d\n", (int)p); return 0; }
+EOF
+cat > "$kw_dir/expanded.cpp" <<'EOF'
+#include <fbgate_kw_x.h>
+#include <stdio.h>
+int main() { printf("xv=%d\n", fbg_kw_xv); return 0; }
+EOF
+cat > "$kw_dir/undo.cpp" <<'EOF'
+#define FBG_KW_X 1
+#include <fbgate_kw_r.h>
+#include <stdio.h>
+int main() { printf("saw=%d s=%d\n", FBG_KW_SAW, FBG_KW_SV); return 0; }
+EOF
+kw_snap=$kw_dir/kw.msnap
+timeout 600 "$BIN" --std=gnu++17 --freeze="$kw_snap" -I "$kw_dir" "$kw_dir/producer.cpp" \
+    >"$kw_dir/freeze.log" 2>&1 || fail "[k2walk] the --freeze FAILED: $(tail -n 3 "$kw_dir/freeze.log")"
+kw_case() {	# kw_case <name> <expected output> <unit that binds, or "-" for a decline> <declining unit>
+    if command -v g++ >/dev/null 2>&1; then
+	g++ -std=gnu++17 -I "$kw_dir" -o "$kw_dir/$1.gxx" "$kw_dir/$1.cpp" 2>"$kw_dir/$1.gxx.err" \
+	    || fail "[k2walk] $1: g++ compile FAILED: $(head -n 2 "$kw_dir/$1.gxx.err")"
+	[ "$("$kw_dir/$1.gxx")" = "$2" ] || fail "[k2walk] $1: g++ output is not '$2' — the reducer is wrong"
+    fi
+    kw_out=$(timeout 60 "$BIN" --std=gnu++17 --forest-bind="$kw_snap" -I "$kw_dir" "$kw_dir/$1.cpp" 2>&1)
+    [ "$kw_out" = "$2" ] || fail "[k2walk] $1: output '$kw_out' != '$2' (g++)"
+    timeout 60 "$BIN" -v --std=gnu++17 --forest-bind="$kw_snap" -I "$kw_dir" "$kw_dir/$1.cpp" \
+	>"$kw_dir/$1.log" 2>/dev/null
+    if [ "$3" != "-" ]; then
+	grep -aq "bound to grove unit.*$3" "$kw_dir/$1.log" \
+	    || fail "[k2walk] $1: $3 did not bind — $(grep -a -m1 'DECLINE root' "$kw_dir/$1.log")"
+    else
+	grep -aq "DECLINE root.*$4" "$kw_dir/$1.log" \
+	    || fail "[k2walk] $1: $4 did not decline — the undo was never exercised"
+    fi
+}
+kw_case pos "c=3 b=4" "fbgate_kw_b.h"
+kw_case dirs "min=1 max=9" "fbgate_kw_w.h"
+kw_case decls "pid=6" "fbgate_kw_time.h"
+kw_case expanded "xv=2" "-" "fbgate_kw_x.h"
+kw_case undo "saw=1 s=20" "-" "fbgate_kw_r.h"
+rm -rf "$kw_dir"
+echo "forest_bind_gate: [k2walk] OK — the bind re-evaluates each frozen conditional at its position: an equal outcome binds, a skipped arm runs (directives in place, declarations kept), a decline undoes the walk"
+
 # --- case: cenv (docs/plans/2026-10-18-c-pack-layer.md, J4) ---
 # A C program sets feature-test macros ahead of its system includes as a
 # matter of course — sqlite3.c defines NDEBUG and _GNU_SOURCE. The C layer
 # froze those headers without them, so binding the frozen view hands such a
 # program the wrong declarations: a live assert(), no mremap. A C compile's
 # bind is therefore verified whatever the rollout knob says
-# (forest_bind_env_ok): a root whose branch macros differ declines to a live
-# parse. Run with the knob OFF — this gate exports it ON for the C++ frontier.
+# (forest_bind_verified): a root whose recorded conditionals take another arm
+# here declines to a live parse. Run with the knob OFF — this gate exports it ON for the C++ frontier.
 # The control: a C program that sets no feature macro still binds.
 ce_dir=tmp/fbgate_cenv
 ce_snap=$ce_dir/c.msnap
@@ -1403,9 +1605,12 @@ echo "forest_bind_gate: [armreplay] OK — a skipped directive-only arm binds an
 # CIR_BRANCH_DEP_ARM_REPLAYS; the bind runs the arm in the consumer's state and,
 # when it yields the frozen value, takes the replay (fbgate_ac_b.h binds, x=5 —
 # its arm writes the name in two branches, mingw stdio.h's NULL shape, and
-# answers by language). An arm whose value DIFFERS from the definer's is still
-# missing content: fbgate_ac_d.h's root declines and parses live (y=7, its own
-# arm). Negative control: the v66 binary declines fbgate_ac_b.h too.
+# answers by language). Since K2 (v69) an arm whose value DIFFERS from the
+# definer's binds too when no frozen token after the arm expanded that value:
+# fbgate_ac_d.h's FBG_AC_Y is 6 at freeze and its arm makes it 7 here, and the
+# walk runs the arm (y=7, as gcc). The shape whose frozen token DID expand the
+# value declines — [k2walk]'s `expanded`. Negative control: the v66 binary
+# declines fbgate_ac_b.h too.
 mkdir -p tmp/fbgate_ac
 cat > tmp/fbgate_ac/fbgate_ac_a.h <<'EOF'
 #ifndef FBGATE_AC_A_H
@@ -1460,10 +1665,10 @@ grep -aq "bound to grove unit.*fbgate_ac_b.h" "$ac_log" \
     || fail "[armreplayc] the unit whose arm reproduces its dep did not BIND for the C consumer"
 grep -aq "fbgate_ac_b.h replays its skipped '#ifndef FBG_AC_X' arm" "$ac_log" \
     || fail "[armreplayc] the bound unit never replayed its skipped arm"
-grep -aq "DECLINE root.*fbgate_ac_d.h" "$ac_log" \
-    || fail "[armreplayc] the unit whose arm DIFFERS from its definer did not decline"
+grep -aq "fbgate_ac_d.h replays its skipped '#ifndef FBG_AC_Y' arm" "$ac_log" \
+    || fail "[armreplayc] the unit whose arm sets a value no frozen token expanded did not replay it"
 rm -rf "$ac_snap" "$ac_log" tmp/fbgate_ac tmp/fbgate_ac_producer.c tmp/fbgate_ac_consumer.c
-echo "forest_bind_gate: [armreplayc] OK — under C, an arm that reproduces its dep binds; one that differs declines"
+echo "forest_bind_gate: [armreplayc] OK — under C, a skipped arm replays: it reproduces its dep, or sets a value no frozen token expanded"
 
 # --- case: replreuse (2026-10-11: each unit's tree gets its own forest nodes) ---
 # A frozen inline body the program's main uses, touched again by a REPL entry
@@ -2346,16 +2551,17 @@ echo "forest_bind_gate: [subbind] OK — OWNER'S BAR: tests/testsubscript.mad fr
 # is all-bound or all-live (K1a, docs/plans/2026-10-18-verified-cxx-bind.md):
 # corpus 1 compiled as C++ stops binding at its first decline (checked last).
 # Corpus 1 (sub-block guard MASKED-BIND + tolerance): the freeze parses a.h's
-# copy first, so b.h's frozen unit records "FBG_T_DEFINED defined (definer
-# a.h)". The consumer includes b.h FIRST (dep live-undefined ⇒ root b.h
-# DECLINES and live-parses the block: live struct fbg_T + typedef fbgT), then
-# c.h: a.h's FBG_T_DEFINED mismatch is a guard a.h itself defines, but a.h's
-# file is NOT on the live-tokenized record ⇒ the redesign takes the
-# MASKED-BIND arm: a.h BINDS (never pruned — that would lose its non-shared
-# content; never declined — that cascades) with its own FBG_T_DEFINED define
-# masked at install (the live arm won), restoring struct fbg_T + typedef fbgT
-# twins beside the live copies. The main parse's live decls must TOLERATE the
-# twins (DataDef::denotes_same_type, C11 6.7p3), never throw.
+# copy first, so b.h's frozen `#ifndef FBG_T_DEFINED` arm was SKIPPED and
+# captured. The consumer includes b.h FIRST: the bind walk (K2) takes that arm
+# here, runs it — its define leaves FBG_T_DEFINED as the freeze held it — and
+# b.h binds with the arm's struct fbg_T + typedef fbgT parsed LIVE. Then c.h:
+# a.h's taken `#ifndef FBG_T_DEFINED` arm is skipped here, and it is a guard
+# a.h itself defines whose state already matches, while a.h's file is NOT on
+# the live-tokenized record ⇒ the MASKED-BIND arm: a.h BINDS (never pruned —
+# that would lose its non-shared content; never declined — that cascades)
+# with the arm's events skipped, restoring struct fbg_T + typedef fbgT twins
+# beside the live copies. The main parse's live decls must TOLERATE the twins
+# (DataDef::denotes_same_type, C11 6.7p3), never throw.
 # Corpus 2 (real include-once guard, genuine live evidence): a.h consults
 # FBG_SPICE (defined at freeze by spice.h, absent live) so root a.h declines
 # and live-parses — its file IS on the live-tokenized record. c.h then binds
@@ -2441,17 +2647,17 @@ timeout 120 "$BIN" --std=gnu17 --freeze="$rd_snap" tmp/fbgate_redecl_producer.c 
     || fail "[redecl] --freeze corpus 1 FAILED"
 timeout 120 "$BIN" --std=gnu17 --freeze="$rd_snap2" tmp/fbgate_redecl2_producer.c -I tmp >/dev/null 2>&1 \
     || fail "[redecl] --freeze corpus 2 FAILED"
-# Corpus 1: b.h declines; a.h's sub-block-guard mismatch MASKED-BINDS (never
-# pruned, never declined; its own guard define masked); output still exact.
+# Corpus 1: b.h binds through its replayed arm; a.h's sub-block-guard
+# mismatch MASKED-BINDS (never pruned, never declined); output still exact.
 rd_bind=$(timeout 60 "$BIN" --std=gnu17 --forest-bind="$rd_snap" tmp/fbgate_redecl_consumer.c -I tmp 2>/dev/null)
 [ "$rd_bind" = "v=7" ] || fail "[redecl] corpus-1 bind output '$rd_bind' != 'v=7'"
 timeout 60 "$BIN" -v --std=gnu17 --forest-bind="$rd_snap" tmp/fbgate_redecl_consumer.c -I tmp >"$rd_vlog" 2>&1
-grep -aq "DECLINE root tmp/fbgate_redecl_b.h" "$rd_vlog" \
-    || fail "[redecl] root b.h did NOT decline — the seam was never exercised"
-grep -aq "fbgate_redecl_a.h dep 'FBG_T_DEFINED' self-defined guard, live arm wins" "$rd_vlog" \
+grep -aq "fbgate_redecl_b.h replays its skipped '#ifndef FBG_T_DEFINED' arm (its declarations parse live)" "$rd_vlog" \
+    || fail "[redecl] root b.h did NOT replay its skipped arm — the live side of the seam is gone"
+grep -aq "bound to grove unit.*fbgate_redecl_b.h" "$rd_vlog" \
+    || fail "[redecl] corpus-1 b.h did NOT bind"
+grep -aq "fbgate_redecl_a.h '#ifndef FBG_T_DEFINED' arm skipped — its guard is live (masked bind)" "$rd_vlog" \
     || fail "[redecl] corpus-1 a.h's sub-block guard did NOT take the masked-bind arm"
-grep -aq "fbgate_redecl_a.h define 'FBG_T_DEFINED' masked at install" "$rd_vlog" \
-    || fail "[redecl] corpus-1 a.h's guard define was NOT masked at install"
 grep -aq "fbgate_redecl_a.h already present" "$rd_vlog" \
     && fail "[redecl] corpus-1 a.h was PRUNED without live-tokenize evidence (over-claim regressed)"
 grep -aq "DECLINE root tmp/fbgate_redecl_c.h" "$rd_vlog" \
@@ -2477,7 +2683,8 @@ grep -aq "bound to grove unit.*fbgate_redecl_c.h" "$rd_vlog2" \
 grep -aq "Identifier already defined" "$rd_vlog2" \
     && fail "[redecl] corpus 2 hit the redeclaration throw"
 # Corpus 1 as C++ (its own C++ freeze — a C++ compile never reads a C profile,
-# K0): the TU's first decline (b.h) stops binding — c.h parses live.
+# K0): nothing declines now, so the TU binds as the C one does (K1a's stop is
+# [allornone]'s).
 cp tmp/fbgate_redecl_producer.c tmp/fbgate_redecl_producer_cxx.cpp
 cp tmp/fbgate_redecl_consumer.c tmp/fbgate_redecl_consumer_cxx.cpp
 timeout 120 "$BIN" --std=gnu++17 --freeze="$rd_snap" tmp/fbgate_redecl_producer_cxx.cpp -I tmp >/dev/null 2>&1 \
@@ -2485,23 +2692,26 @@ timeout 120 "$BIN" --std=gnu++17 --freeze="$rd_snap" tmp/fbgate_redecl_producer_
 rd_cxx=$(timeout 60 "$BIN" --std=gnu++17 --forest-bind="$rd_snap" tmp/fbgate_redecl_consumer_cxx.cpp -I tmp 2>/dev/null)
 [ "$rd_cxx" = "v=7" ] || fail "[redecl] corpus-1 C++ consumer output '$rd_cxx' != 'v=7'"
 timeout 60 "$BIN" -v --std=gnu++17 --forest-bind="$rd_snap" tmp/fbgate_redecl_consumer_cxx.cpp -I tmp >"$rd_vlog" 2>&1
-grep -aq "binding stopped for this TU" "$rd_vlog" \
-    || fail "[redecl] corpus-1 C++ consumer did not stop binding at its first decline (K1a)"
 grep -aq "bound to grove unit.*fbgate_redecl_c.h" "$rd_vlog" \
-    && fail "[redecl] corpus-1 C++ consumer BOUND c.h beside the live b.h"
+    || fail "[redecl] corpus-1 C++ consumer did NOT bind c.h"
+grep -aq "DECLINE root" "$rd_vlog" \
+    && fail "[redecl] corpus-1 C++ consumer declined: $(grep -a -m1 'DECLINE root' "$rd_vlog")"
 rm -f "$rd_snap" "$rd_snap2" "$rd_gcc" "$rd_vlog" "$rd_vlog2" tmp/fbgate_redecl_consumer_cxx.cpp tmp/fbgate_redecl_producer_cxx.cpp
-echo "forest_bind_gate: [redecl] OK — (C) masked-bind twin restored + tolerated (denotes_same_type); honest-evidence prune pinned; output == live == gcc; (C++) the first decline stops binding"
+echo "forest_bind_gate: [redecl] OK — (C) replayed arm live + masked-bind twin restored + tolerated (denotes_same_type); honest-evidence prune pinned; output == live == gcc; (C++) binds the same"
 
-# --- case: husk — unit-granular missing-content recovery (task #57) ----------
+# --- case: husk — missing-content recovery (task #57; K2's arm replay) -------
 # The mingw stdlib.h -> errno.h shape in miniature. pre.h defines the shared
 # sub-block guard BEFORE first including husk.h, so that frozen unit contains
-# only its file guard: its typedef/value block is absent. root.h later records
-# an edge to that already-included husk beside an independently bindable
-# sibling. On the consumer the shared guard is absent. Binding the frozen husk
-# would silently lose content; declining the WHOLE root throws away the sibling
-# and root too. The only faithful disposition is to bind the root + sibling and
-# live-tokenize just the husk. This recovery is correctness-critical and must
-# work with the broad MADC_FOREST_ENV_CHECK rollout knob both OFF and ON.
+# only its file guard: its typedef/value block is absent (a skipped arm). root.h
+# later records an edge to that already-included husk beside an independently
+# bindable sibling. On the consumer the shared guard is absent. Binding the
+# frozen husk as frozen would silently lose content; declining the WHOLE root
+# throws away the sibling and root too. The bind walk (K2) takes the arm the
+# freeze skipped: it runs it in place — its guard define leaves the state the
+# freeze held, its new FBG_HUSK_VALUE was undefined there — and its typedef
+# parses live, while root + sibling + husk bind. This recovery is
+# correctness-critical and must work with the MADC_FOREST_ENV_CHECK knob both
+# OFF and ON.
 cat > tmp/fbgate_husk_pre.h <<'EOF'
 #ifndef FBG_HUSK_PRE_H
 #define FBG_HUSK_PRE_H
@@ -2579,8 +2789,8 @@ for hs_knob in 0 1; do
     [ "$hs_bind" = "$hs_exp" ] \
 	|| fail "[husk] knob-$hs_knob bind output '$hs_bind' != '$hs_exp'"
     MADC_FOREST_ENV_CHECK="$hs_knob" timeout 60 "$BIN" -v --forest-bind="$hs_snap" tmp/fbgate_husk_consumer.cpp -I tmp >"$hs_vlog" 2>&1
-    grep -aq "missing-content husk.*fbgate_husk.h.*live-tokenizing" "$hs_vlog" \
-	|| fail "[husk] knob-$hs_knob did NOT select unit-granular live tokenization"
+    grep -aq "fbgate_husk.h replays its skipped '#ifndef FBG_HUSK_SHARED_GUARD' arm (its declarations parse live)" "$hs_vlog" \
+	|| fail "[husk] knob-$hs_knob did NOT replay the husk's skipped arm"
     grep -aq "DECLINE root.*fbgate_husk_root.h" "$hs_vlog" \
 	&& fail "[husk] knob-$hs_knob declined the whole root"
     grep -aq "bound to grove unit.*fbgate_husk_root.h" "$hs_vlog" \
@@ -2593,7 +2803,7 @@ for hs_knob in 0 1; do
 	&& fail "[husk] knob-$hs_knob restored the frozen husk decl instead of using live tokens"
 done
 rm -f "$hs_snap" "$hs_gcc" "$hs_vlog_off" "$hs_vlog_on"
-echo "forest_bind_gate: [husk] OK — only the missing-content unit live-tokenized; root + sibling bound with rollout knob OFF and ON; output == live == g++"
+echo "forest_bind_gate: [husk] OK — the missing content is the husk's skipped arm, replayed live; root + sibling + husk bound with the knob OFF and ON; output == live == g++"
 
 # --- case: silbody — a static-inline header fn passed BY ADDRESS through a
 # bound template (task #57, the mingw strtof/__stoa shape). fbg_strtof is a
@@ -2772,5 +2982,5 @@ run_case patternalias "1 2"
 # coverage. Worse in the other direction: deleting a case would leave this line
 # still claiming it runs. Deriving it from run_case would need the ~12 bespoke
 # cases below to register too; until then, update it when you add a case.
-echo "forest_bind_gate: GREEN 46/46 — typedef + struct + nested + bitfield + class + method + fwd + ptr + nestedenumfn + ldouble + ns + anon + declonlymt + flavorgate + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec + iobind + traitfold + nothrowfold + explicitctor + armreplay + armreplayc + division + allornone + condrec + replreuse + deletedctor + constcopy + subbind + redecl + husk + silbody grove headers bound (unit-granular husk recovery only), output == live == g++ + secvptr + friendgrant + patternalias + quietbind + memberptr + unionclass"
+echo "forest_bind_gate: GREEN 47/47 — typedef + struct + nested + bitfield + class + method + fwd + ptr + nestedenumfn + ldouble + ns + anon + declonlymt + flavorgate + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec + iobind + traitfold + nothrowfold + explicitctor + armreplay + armreplayc + division + allornone + condrec + k2walk + replreuse + deletedctor + constcopy + subbind + redecl + husk + silbody grove headers bound (missing content replayed from the skipped arm), output == live == g++ + secvptr + friendgrant + patternalias + quietbind + memberptr + unionclass"
 exit 0

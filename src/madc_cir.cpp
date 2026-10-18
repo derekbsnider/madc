@@ -4165,12 +4165,25 @@ static void cir_forest_fill_pack_payloads(Program *prog, cir_frozen_forest &f)
 	pack_entries_in_unit_order(prog->pack_unit_conds, prog->pack_unit_order);
     for (size_t k = 0; k < conds_in_order.size(); ++k)
 	conds_of[ensure_unit(conds_in_order[k]->first)] = &conds_in_order[k]->second;
+    // v69: a unit's inclusions are written only when there are several (a
+    // guard-less unit the freeze TU included again); none written means one
+    // inclusion over everything.
+    std::map<uint32_t, const std::vector<uint32_t> *> incls_of;
+    typedef std::map<const char *, std::vector<uint32_t> > incl_map;
+    const std::vector<incl_map::const_iterator> incls_in_order =
+	pack_entries_in_unit_order(prog->pack_unit_inclusions, prog->pack_unit_order);
+    for (size_t k = 0; k < incls_in_order.size(); ++k)
+	if (incls_in_order[k]->second.size() > CIR_INCL_WORDS)
+	    incls_of[ensure_unit(incls_in_order[k]->first)] = &incls_in_order[k]->second;
     std::set<uint32_t> item_units;
     for (std::map<uint32_t, std::vector<uint32_t> >::const_iterator it = edge_events_of.begin();
 	 it != edge_events_of.end(); ++it)
 	item_units.insert(it->first);
     for (std::map<uint32_t, const std::vector<Program::PackCondRecord> *>::const_iterator it =
 	     conds_of.begin(); it != conds_of.end(); ++it)
+	item_units.insert(it->first);
+    for (std::map<uint32_t, const std::vector<uint32_t> *>::const_iterator it = incls_of.begin();
+	 it != incls_of.end(); ++it)
 	item_units.insert(it->first);
     for (std::set<uint32_t>::const_iterator ui = item_units.begin(); ui != item_units.end(); ++ui) {
 	const uint32_t u = *ui;
@@ -4180,6 +4193,7 @@ static void cir_forest_fill_pack_payloads(Program *prog, cir_frozen_forest &f)
 	words.insert(words.end(), ev.begin(), ev.end());
 	const std::vector<Program::PackCondRecord> *recs = conds_of.count(u) ? conds_of[u] : NULL;
 	words.push_back(recs ? (uint32_t)recs->size() : 0);
+	std::vector<uint32_t> consult_words;	// v69: every record's consults, after the inclusions
 	for (size_t c = 0; recs && c < recs->size(); ++c) {
 	    const Program::PackCondRecord &r = (*recs)[c];
 	    uint32_t w[CIR_COND_WORDS];
@@ -4195,8 +4209,24 @@ static void cir_forest_fill_pack_payloads(Program *prog, cir_frozen_forest &f)
 	    w[CIR_COND_TOK_BEGIN] = local_token(u, r.tok_begin);
 	    w[CIR_COND_TOK_END] = local_token(u, r.tok_end);
 	    w[CIR_COND_ARM] = r.arm_captured ? pool->intern(r.arm) : 0;
+	    w[CIR_COND_REC_END] = r.rec_end;
+	    w[CIR_COND_ARM_STATE] = r.arm_captured && !r.arm_state.empty()
+				  ? pool->intern(prog->pack_arm_state(r)) : 0;
+	    w[CIR_COND_CONSULT_AT] = (uint32_t)(consult_words.size() / CIR_CONSULT_WORDS);
+	    w[CIR_COND_CONSULT_N] = (uint32_t)r.consults.size();
+	    for (size_t k = 0; k < r.consults.size(); ++k) {
+		consult_words.push_back(pool->intern(r.consults[k].first));
+		consult_words.push_back((uint32_t)(r.consults[k].second & 0xffffffffu));
+		consult_words.push_back((uint32_t)(r.consults[k].second >> 32));
+	    }
 	    words.insert(words.end(), w, w + CIR_COND_WORDS);
 	}
+	const std::vector<uint32_t> *incl = incls_of.count(u) ? incls_of[u] : NULL;
+	words.push_back(incl ? (uint32_t)(incl->size() / CIR_INCL_WORDS) : 0);
+	if (incl)
+	    words.insert(words.end(), incl->begin(), incl->end());
+	words.push_back((uint32_t)consult_words.size());
+	words.insert(words.end(), consult_words.begin(), consult_words.end());
 	f.units[u].conditions = words;
     }
 
@@ -8066,6 +8096,21 @@ int madc_cir_dump_forest(const char *container_path)
 		       !w[CIR_COND_ARM] ? "none"
 			   : (w[CIR_COND_FLAGS] & CIR_COND_F_ARM_PURE) ? "pure" : "decls",
 		       txt ? txt : "?");
+		printf("condnest\t%s\t%u\t%u\n", uname ? uname : "?", c, w[CIR_COND_REC_END]);
+	    }
+	    // v69: where each inclusion ended (written only when there are several).
+	    const uint32_t ni = at < cw.size() ? cw[at++] : 0;
+	    for (uint32_t k = 0; k < ni && at + CIR_INCL_WORDS <= cw.size();
+		 ++k, at += CIR_INCL_WORDS)
+		printf("incl\t%s\t%u\tev=%u\ted=%u\tconds=%u\n", uname ? uname : "?", k,
+		       cw[at], cw[at + 1], cw[at + 2]);
+	    // v69: each #if / #elif's consulted macros (their state hashes elided).
+	    const uint32_t nw = at < cw.size() ? cw[at++] : 0;
+	    for (uint32_t k = 0; k + CIR_CONSULT_WORDS <= nw && at + CIR_CONSULT_WORDS <= cw.size();
+		 k += CIR_CONSULT_WORDS, at += CIR_CONSULT_WORDS) {
+		const char *cn = forest.pool_str(cw[at]);
+		printf("consult\t%s\t%u\t%s\n", uname ? uname : "?",
+		       k / CIR_CONSULT_WORDS, cn ? cn : "?");
 	    }
 	}
 	std::vector<uint32_t> ppe;
