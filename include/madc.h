@@ -7642,7 +7642,9 @@ public:
     std::set<madc::dis::istring> forest_live_tokenized;	// v40: canonical keys of files whose tokens ENTERED this TU's live stream (should_tokenize_include true-verdicts) — the prune's honest "already live" source
     bool live_tokenize_record(const madc::dis::istring &canonical, bool tok);	// one recording owner for the set above
     bool forest_unit_file_live_tokenized(ForestSide &s, uint32_t unit);	// v40: was this unit's FILE live-tokenized here?
-    bool forest_bind_env_ok(ForestSide &s, uint32_t unit);	// v40: closure branch-dep env check (task #57)
+    bool forest_unit_reinclude_skipped(ForestSide &s, uint32_t unit);	// would a live re-include of its FILE be skipped now?
+    bool forest_bind_env_ok(ForestSide &s, uint32_t unit, bool reinclude = false);	// v40: closure branch-dep env check (task #57)
+    bool forest_bind_include_root(uint32_t unit);	// an #include's bind (false: live-parse); a re-read guard-less root rebinds
     void forest_env_collect(ForestSide &s, uint32_t unit, std::set<uint32_t> &closure);
     bool forest_unit_defines_macro(ForestSide &s, uint32_t unit, const char *nm);	// v40: include-once prune helper
     void forest_unit_defined_macros(ForestSide &s, uint32_t unit, std::set<madc::dis::istring> &out);

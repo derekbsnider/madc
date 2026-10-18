@@ -5462,7 +5462,7 @@ const char *Program::forest_unit_arm_text(ForestSide &s, const std::vector<uint3
     return NULL;
 }
 
-bool Program::forest_bind_env_ok(ForestSide &s, uint32_t root)
+bool Program::forest_bind_env_ok(ForestSide &s, uint32_t root, bool reinclude)
 {
     // v40 rollout knob (task #57): the mixed bind/live DECL frontier the
     // decline path exposes is now absorbed (denotes_same_type tolerance +
@@ -5496,7 +5496,10 @@ bool Program::forest_bind_env_ok(ForestSide &s, uint32_t root)
     const bool verified = enabled != 0 || is_c_mode();
     std::set<uint32_t> closure;
     std::set<uint32_t> husk_live;
-    forest_env_collect(s, root, closure);
+    if ( reinclude )
+	closure.insert(root);	// a bound root read again: its own deps alone
+    else
+	forest_env_collect(s, root, closure);
     for ( std::set<uint32_t>::iterator ui = closure.begin();
 	  ui != closure.end(); ++ui )
     {
@@ -5593,8 +5596,10 @@ bool Program::forest_bind_env_ok(ForestSide &s, uint32_t root)
 		// 1. PRUNE — only with honest include-once evidence: the
 		//    unit's FILE was live-tokenized here (an earlier
 		//    declined root live-parsed this header), so its whole
-		//    content is already present; skip it like a live
-		//    re-include. s.live_present keeps
+		//    content is already present, AND a live re-include
+		//    would skip it now (forest_unit_reinclude_skipped — a
+		//    guard-less <assert.h> is read again); skip it like
+		//    that live re-include. s.live_present keeps
 		//    forest_bind_include from installing its PP events —
 		//    but stays OUT of s.chain_set, whose membership
 		//    the decl-restore filter reads: restoring this unit's
@@ -5623,7 +5628,8 @@ bool Program::forest_bind_env_ok(ForestSide &s, uint32_t root)
 		if ( !want_defined && have_defined
 		  && forest_unit_defines_macro(s, unit, nm) )
 		{
-		    if ( forest_unit_file_live_tokenized(s, unit) )
+		    if ( forest_unit_file_live_tokenized(s, unit)
+		      && forest_unit_reinclude_skipped(s, unit) )
 		    {
 			DBG(std::cout << "forest bind: unit "
 			    << (s.forest->unit_name(unit) ? s.forest->unit_name(unit) : "?")
@@ -7325,6 +7331,60 @@ bool Program::forest_unit_file_live_tokenized(ForestSide &s, uint32_t unit)
     return forest_live_tokenized.count(canonical_include_key(uname)) != 0;
 }
 
+// Would a live re-include of a unit's FILE be skipped now — the rule
+// should_tokenize_include applies: a named (embedded) key and a user file are
+// once-only; a system file is skipped only when its whole text sits in an
+// include guard that is defined (gcc's multiple-include rule). A guard-less
+// system header written to be included again (<assert.h> under a new NDEBUG)
+// is re-read, so the bind's "already present" prune must not drop it.
+bool Program::forest_unit_reinclude_skipped(ForestSide &s, uint32_t unit)
+{
+    const char *uname = s.forest->unit_name(unit);
+    if ( !uname || !*uname )
+	return false;
+    if ( *uname == '<' || !strchr(uname, '/') )
+	return true;
+    const madc::dis::istring canonical = canonical_include_key(uname);
+    if ( !is_system_header_path(canonical.c_str()) )
+	return true;
+    std::map<madc::dis::istring, madc::dis::istring>::const_iterator gi =
+	include_guard_by_file.find(canonical);
+    if ( gi == include_guard_by_file.end() )
+    {
+	// A unit only ever BOUND has no live first visit to have recorded its
+	// guard: read the verdict from its frozen source text, with the live
+	// side's one detector, and keep it as that visit would. No text: keep
+	// the once-only answer.
+	std::string text;
+	if ( !forest_source_text(uname, text) )
+	    return true;
+	gi = include_guard_by_file.emplace(canonical,
+					   include_guard_of_text(text, false)).first;
+    }
+    return !gi->second.empty() && macro_name_defined(gi->second);
+}
+
+// Bind the grove unit an #include names (false: it live-parses instead). A
+// root already bound is included again only as gcc would read it again
+// (forest_unit_reinclude_skipped): a guard-less system header (<assert.h>
+// under a new NDEBUG) re-enters the env check on its own and re-installs its
+// macros; its includees keep their own once-only rule.
+bool Program::forest_bind_include_root(uint32_t unit)
+{
+    const bool reinclude = forest_system.chain_set.count(unit)
+	&& !forest_unit_reinclude_skipped(forest_system, unit);
+    if ( !forest_bind_env_ok(forest_system, unit, reinclude) )
+	return false;
+    if ( reinclude )
+    {
+	forest_install_pp(forest_system, unit);
+	forest_replay_pp_arms(forest_system, unit);
+    }
+    else
+	forest_bind_include(forest_system, unit);
+    return true;
+}
+
 // Defined here, used from tokenize_posix_whole_provider above too (declared
 // with it). "Does this path name a readable file" has ONE owner in this file.
 bool madc_lexer_file_exists(const std::string &path)
@@ -8398,14 +8458,13 @@ TokenBase *Program::_getToken()
 			    // v40 (task #57): a unit whose frozen branch
 			    // decisions assumed a different macro environment
 			    // declines here and live-parses below.
-			    if ( fu >= 0 && !forest_bind_env_ok(forest_system, (uint32_t)fu) )
+			    if ( fu >= 0 && !forest_bind_include_root((uint32_t)fu) )
 				fu = -1;
 			    if ( fu >= 0 )
 			    {
 				DBG(std::cout << "#include <" << incfile
 				    << "> bound to grove unit " << fu << " ("
 				    << forest_system.forest->unit_name(fu) << ")" << std::endl);
-				forest_bind_include(forest_system, (uint32_t)fu);
 				// v25: the embedded-header include FLAG is a live
 				// tokenize-time side effect (the _include_* flags
 				// _parser_init and the parse read). A
@@ -8570,14 +8629,13 @@ TokenBase *Program::_getToken()
 			    fu = -1;
 			// v40 (task #57): environment mismatch declines to
 			// live parse.
-			if ( fu >= 0 && !forest_bind_env_ok(forest_system, (uint32_t)fu) )
+			if ( fu >= 0 && !forest_bind_include_root((uint32_t)fu) )
 			    fu = -1;
 			if ( fu >= 0 )
 			{
 			    DBG(std::cout << "#include \"" << full_path
 				<< "\" bound to grove unit " << fu << " ("
 				<< forest_system.forest->unit_name(fu) << ")" << std::endl);
-			    forest_bind_include(forest_system, (uint32_t)fu);
 			    if ( is_system
 			      && is_system_header_path(full_path.c_str()) )
 				tokenize_posix_header_supplement(incfile);

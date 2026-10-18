@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+### A guard-less system header bound from the pack is re-read on every inclusion, as gcc's multiple-include rule requires (`<assert.h>` under a changing NDEBUG)
+
 ### The C layer binds `<stdio.h>` under the verified C bind — open-ancestor definers and a skipped arm that replays the frozen value (forest v67)
 
 ### --no-embedded-headers sends every core system header to disk, the grove bind and the pack source arm included
