@@ -2653,7 +2653,10 @@ int CirFrozenForest::find_unit(const madc::dis::istring &name) const
 // resort: once the pack holds every system header a spelling ends many names
 // (`search.h` ends libc++'s __algorithm/search.h too), so a consumer first
 // asks its build's include roots (Program::forest_unit_under_build_roots).
-int CirFrozenForest::find_unit_path_tail(const madc::dis::istring &incfile) const
+// accept: a consumer's own visibility rule (a C compile never takes a unit in
+// the C++ library's directories) — a refused match does not end the search.
+int CirFrozenForest::find_unit_path_tail(const madc::dis::istring &incfile,
+					 const std::function<bool(const char *)> &accept) const
 {
 	if (incfile.empty() || madc::detail::host_path_absolute(incfile))
 		return -1;
@@ -2662,7 +2665,8 @@ int CirFrozenForest::find_unit_path_tail(const madc::dis::istring &incfile) cons
 		const size_t len = _name_off[u + 1] - _name_off[u] - 1;
 		const char *nm = _name_bytes + _name_off[u];
 		if (len > n && nm[len - n - 1] == '/'
-		    && memcmp(nm + len - n, incfile.data(), n) == 0)
+		    && memcmp(nm + len - n, incfile.data(), n) == 0
+		    && (!accept || accept(nm)))
 			return (int)u;
 	}
 	return -1;

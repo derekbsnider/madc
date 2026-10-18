@@ -24,6 +24,7 @@
   cstdio / stdlib visible / 1 2"; gcc and clang oracles named in it). The three
   release packs re-freeze with their C layers now holding the C library's own
   headers. See `docs/plans/2026-10-18-c-pack-layer.md` section J, slice J4.
+- The frozen-forest source lookup now carries the same language-view cut: `Program::forest_source_unit` (the one owner for `forest_source_path` / `forest_source_text` / `forest_unit_named_by_include`) passes `path_outside_language_view` to `CirFrozenForest::find_unit_path_tail` as an `accept` predicate, so the packed release binary stops resolving `<vector>` / `<cstdio>` via a C++-library path-tail match under C — `tests/testcsearchnocxxdirs_c.mad` now passes on `bin/madc-release` (was "vector visible" / "cstdio visible").
 
 ### An embedded header reached through a C wrapper's `#include_next` is recorded (J5)
 

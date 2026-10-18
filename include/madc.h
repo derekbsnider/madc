@@ -7627,6 +7627,9 @@ public:
     int forest_unit_for_include(const madc::dis::istring &incfile); // the unit an include BINDS; -1 miss or nothing frozen to bind
     int forest_unit_named_by_include(const madc::dis::istring &incfile); // spelling/path lookup; -1 miss
     int forest_unit_under_build_roots(CirFrozenForest *f, const madc::dis::istring &incfile); // spelling under a build include root; -1 none
+    int forest_source_unit(CirFrozenForest *f, const madc::dis::istring &spelling,
+			   bool allow_tail);	// the source arm's unit for a spelling; -1 none
+    bool path_outside_language_view(const char *path) const;	// B199: in a table dir this compile's language view leaves out
     bool forest_source_path(const std::string &candidate,
 			    bool allow_tail, madc::dis::istring &resolved);
     bool forest_source_text(const madc::dis::istring &path, std::string &text);

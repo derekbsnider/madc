@@ -59,6 +59,7 @@
 #include "madcdis/istring.h"	// names are interned (madc::dis::istring)
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <map>
 #include <memory>
 #include <set>
@@ -2247,10 +2248,13 @@ public:
 	// The mapped image and length this reader was opened on.
 	bool opened_from(const void *image, size_t len) const
 		{ return _header_opened && image == _image && len == _image_len; }
-	// Machine-portable fallback: the unit whose path-name ends in
-	// "/<incfile>" (see the .cpp comment — consumers on machines without
-	// the producer's header tree cannot spell full-path unit names).
-	int find_unit_path_tail(const madc::dis::istring &incfile) const;
+	// Machine-portable fallback: the first unit whose path-name ends in
+	// "/<incfile>" and that accept (when given) takes (see the .cpp comment —
+	// consumers on machines without the producer's header tree cannot spell
+	// full-path unit names).
+	int find_unit_path_tail(const madc::dis::istring &incfile,
+				const std::function<bool(const char *)> &accept =
+					std::function<bool(const char *)>()) const;
 	const char *type_name_for(uint32_t type_id) const;  // NULL if unknown
 
 	// --- grove payload v2 readers (B4a observability, B4b bind) ---

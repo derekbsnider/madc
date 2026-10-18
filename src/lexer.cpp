@@ -5091,18 +5091,54 @@ int Program::forest_unit_under_build_roots(CirFrozenForest *f,
     return -1;
 }
 
+// B199: a path inside a directory of the flavor's table that this compile's
+// LANGUAGE view leaves out — the C++ standard library's tree under C. A C
+// program's search never reaches those directories, so no pack unit there is
+// one of its headers (the toolchain-only cut is not a language view: past it a
+// packed header is still madc's own).
+bool Program::path_outside_language_view(const char *path) const
+{
+    if ( !path || !*path || !is_c_mode() )
+	return false;
+    const char *const *view = search_view(/*c_view=*/true, /*toolchain_only=*/false);
+    const madc::dis::istring file(path);
+    for ( const char *const *dir = search_view(false, false); *dir; ++dir )
+    {
+	bool in_view = false;
+	for ( const char *const *v = view; *v && !in_view; ++v )
+	    in_view = strcmp(*v, *dir) == 0;
+	if ( !in_view && madc::detail::host_path_within(*dir, file) )
+	    return true;
+    }
+    return false;
+}
+
+// The source arm's unit for a spelling: the exact unit name, then (allow_tail)
+// under a build include root, then the path-tail match — never a unit this
+// compile's language view leaves out. -1: none, or no source text.
+int Program::forest_source_unit(CirFrozenForest *f, const madc::dis::istring &spelling,
+				bool allow_tail)
+{
+    int unit = f->find_unit(spelling);
+    if ( unit < 0 && allow_tail )
+	unit = forest_unit_under_build_roots(f, spelling);
+    if ( unit < 0 && allow_tail )
+	unit = f->find_unit_path_tail(spelling, [this](const char *nm) {
+	    return !path_outside_language_view(nm);
+	});
+    if ( unit < 0 || !f->unit_has_source((uint32_t)unit) )
+	return -1;
+    return unit;
+}
+
 bool Program::forest_source_path(const std::string &candidate,
 				 bool allow_tail, madc::dis::istring &resolved)
 {
     CirFrozenForest *forest = ensure_source_forest();
     if ( !forest )
 	return false;
-    int unit = forest->find_unit(candidate);
-    if ( unit < 0 && allow_tail )
-	unit = forest_unit_under_build_roots(forest, candidate);
-    if ( unit < 0 && allow_tail )
-	unit = forest->find_unit_path_tail(candidate);
-    if ( unit < 0 || !forest->unit_has_source((uint32_t)unit) )
+    int unit = forest_source_unit(forest, candidate, allow_tail);
+    if ( unit < 0 )
 	return false;
     const char *name = forest->unit_name((uint32_t)unit);
     if ( !name || !*name )
@@ -5116,12 +5152,8 @@ bool Program::forest_source_text(const madc::dis::istring &path, std::string &te
     CirFrozenForest *forest = ensure_source_forest();
     if ( !forest )
 	return false;
-    int unit = forest->find_unit(path);
+    int unit = forest_source_unit(forest, path, /*allow_tail=*/true);
     if ( unit < 0 )
-	unit = forest_unit_under_build_roots(forest, path);
-    if ( unit < 0 )
-	unit = forest->find_unit_path_tail(path);
-    if ( unit < 0 || !forest->unit_has_source((uint32_t)unit) )
 	return false;
     std::map<uint32_t, madc::dis::istring>::iterator cached =
 	forest_source_cache.find((uint32_t)unit);
@@ -5310,7 +5342,9 @@ int Program::forest_unit_named_by_include(const madc::dis::istring &incfile)
     u = forest_unit_under_build_roots(f, incfile);
     if ( u >= 0 )
 	return u;
-    u = f->find_unit_path_tail(incfile);
+    u = f->find_unit_path_tail(incfile, [this](const char *nm) {
+	return !path_outside_language_view(nm);
+    });
     // posix/<name> is an internal storage key, never an alternate tail match
     // for an ordinary native header. Whole providers map to it explicitly at
     // the include site after proving that the native provider is absent.
