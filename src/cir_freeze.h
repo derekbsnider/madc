@@ -158,7 +158,7 @@ enum : uint32_t
 	SNAP_KIND_CIR_RECORDABLE       = madc::dis::SNAP_KIND_CONSUMER + 29,
 	// v60: the arena records' layout — uint32 position per slot (raw).
 	SNAP_KIND_CIR_ARENA_DEF_POS    = madc::dis::SNAP_KIND_CONSUMER + 30,
-	// The profile's ROLE (dialect per-name plan B1): one uint32 role code
+	// The profile's ROLE: one uint32 role code
 	// (CirForestRole). OPTIONAL segment, like the ledger: absent = the
 	// system-header profile, so no format bump.
 	SNAP_KIND_CIR_ROLE             = madc::dis::SNAP_KIND_CONSUMER + 31
@@ -752,8 +752,7 @@ struct cir_forest_shared_config
 	uint32_t defines_hash;	// madc_forest_defines_hash of the other config
 };
 
-// A profile's ROLE (CIR_FOREST_SEG_ROLE; dialect per-name plan B1): which
-// consumer it serves. A carrier stacks profiles (placement 2) and the
+// A profile's ROLE (CIR_FOREST_SEG_ROLE): which consumer it serves. A carrier stacks profiles (placement 2) and the
 // discovery chain walks them newest first; the role is what that walk can
 // filter by (B2). The segment holds one code. Absent = the system-header
 // profile — every container frozen before B1 — so the segment is optional and
@@ -762,28 +761,18 @@ struct cir_forest_shared_config
 // carried through as a number.
 enum CirForestRole : uint32_t
 {
-	CIR_FOREST_ROLE_SYSTEM  = 0,	// the system-header pack (no ROLE segment)
-	CIR_FOREST_ROLE_DIALECT = 1	// the madc dialect image (pack-slices design §7)
+	CIR_FOREST_ROLE_SYSTEM  = 0	// the system-header pack (no ROLE segment)
 };
 
-// One role: its code, its spelling (the --freeze-role= word and the
-// --dump-forest field) and its storage — `raw`: every segment stored with no
-// codec and no transform, so a bind reads it in place (§7: the dialect
-// surface is never decompressed).
+// One role: its code and its spelling (the --dump-forest field).
 struct cir_forest_role_row
 {
 	CirForestRole role;
 	const char   *name;
-	bool          raw;
 };
 
 // The row of a role code; NULL for a code this reader has no row for.
 const cir_forest_role_row *cir_forest_role_info(uint32_t role);
-// The input boundary: a role's spelling -> its code. False for any other word.
-bool cir_forest_role_named(const char *name, CirForestRole &out);
-// The codec a container of this role is written with: none for a raw role,
-// `packed` (the pack's codec) otherwise.
-PchCompression cir_forest_storage_codec(uint32_t role, PchCompression packed);
 
 // One profile of a carrier's stack (cir_forest_profiles).
 struct cir_forest_profile
@@ -1423,15 +1412,14 @@ bool cir_forest_read_role(const madc::dis::snapshot_reader &r, uint32_t &role);
 // A carrier's profile stack, newest first (the order the discovery chain
 // walks it): each container's role, place, size and compressed segment count.
 // False (and `out` empty) when the image's end holds no container. Backs
-// --dump-forest's `profile` lines (the pack gate's dialect-image leg).
+// --dump-forest's `profile` lines.
 bool cir_forest_profiles(const void *image, size_t len,
 			 std::vector<cir_forest_profile> &out);
 
 // One profile's role, read from its footer and segment table alone — never
 // its forest directory — and, when `previous` is given, the length of the
-// carrier image below it (0: none). The discovery walk's role filter
-// (dialect per-name plan B2): a walk skips a profile of another role without
-// opening it, so a strict compile never reads the dialect image. False when
+// carrier image below it (0: none). The discovery walk's role filter: a walk
+// skips a profile of another role without opening it. False when
 // the image's end holds no container (the walk then opens it as before, so a
 // foreign blob keeps its notice).
 bool cir_forest_profile_role(const void *image, size_t len, uint32_t &role,

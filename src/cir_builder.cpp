@@ -32732,16 +32732,6 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 				    && fi->second.fd && fi->second.fd->has_forest_body)
 					{ ok = true; why = 7; }
 			}
-			// A dialect function registers when first named, after
-			// the memo above was built (forest_dialect_demand).
-			if (!ok && m_prog->forest_dialect_active()) {
-				m_prog->forest_dialect_demand_symbol(s);
-				funcdef_map_iter di = m_prog->funcdef_map.find(
-					m_prog->body_registration_key(s));
-				if (di != m_prog->funcdef_map.end() && di->second
-				    && di->second->has_forest_body)
-					{ ok = true; why = 8; }
-			}
 			if (!ok) for (TokenBase *pb : m_prog->pending_funcs) {
 				TokenFunc *tf = dynamic_cast<TokenFunc *>(pb);
 				FuncDef *tfd = tf ? dynamic_cast<FuncDef *>(tf->var.type)
@@ -33848,15 +33838,14 @@ node_t CirBuilder::frozen_global_decl(Variable *v)
 		? m_prog->forest_frozen_global_def(v) : NULL;
 	if (!fz)
 		return NULL;
-	// The forest that restored the global (B3: the system pack or the
-	// dialect image — the dialect's anchors).
+	// The forest that restored the global.
 	cir_node *dn = fz->forest ? fz->forest->node_for(fz->def_unit, fz->def_idx) : NULL;
 	if (!dn) {
 		fprintf(stderr, "madc: forest global %s: the frozen declaration"
 			" is missing\n", v->name.c_str());
 		return NULL;
 	}
-	m_frozen_global_nodes.push_back(std::make_pair(dn->as_node(), fz->forest));
+	m_frozen_global_nodes.push_back(dn->as_node());
 	return dn->as_node();
 }
 
@@ -33967,8 +33956,7 @@ void CirBuilder::collect_global_ctors(Program *prog,
 				fstmts.push_back(sn->as_node());
 			}
 			for (node_t fs : fstmts)
-				m_frozen_global_nodes.push_back(
-					std::make_pair(fs, fz->forest));
+				m_frozen_global_nodes.push_back(fs);
 			queue_frozen_ctor_group(v, fstmts, deferred_globals);
 			continue;
 		}
@@ -35499,8 +35487,6 @@ node_t CirBuilder::translate_module(Program *prog)
 	// an earlier compile materialized lived in that compile's context.
 	if (prog->forest_system.forest)
 		prog->forest_system.forest->begin_compile(c2m);
-	if (prog->forest_dialect.forest)
-		prog->forest_dialect.forest->begin_compile(c2m);
 
 	// Rung 3 referenced-surface filter state: per-module. Cleared at entry
 	// (before Pass 0 populates it), consumed by the filter at the tail.
@@ -36094,37 +36080,6 @@ node_t CirBuilder::translate_module(Program *prog)
 				forest_funcdef_syms.insert(func_emit_name(*fvar, fd));
 		}
 	}
-	// The dialect pays per name (A4): a dialect function registers when it is
-	// first named — by the parse, or by a loaded body's reference in the
-	// fixpoint below (forest_dialect_demand_symbol). What registered after
-	// the index above joins it as those indexes would have held it: its
-	// symbols, and its loaded body (a free function's — never a method).
-	size_t dialect_indexed = prog->forest_dialect_registered.size();
-	auto index_dialect_registrations = [&]() -> bool {
-		bool added = false;
-		while (dialect_indexed < prog->forest_dialect_registered.size()) {
-			const std::pair<madc::dis::istring, FuncDef *> &r =
-				prog->forest_dialect_registered[dialect_indexed++];
-			FuncDef *fd = r.second;
-			if (!fd || r.first.empty())
-				continue;
-			forest_funcdef_syms.insert(r.first);
-			Variable *fvar = prog->tkProgram
-				? prog->tkProgram->findVariable(prog->strpool, r.first)
-				: NULL;
-			if (fvar)
-				forest_funcdef_syms.insert(func_emit_name(*fvar, fd));
-			if (fd->has_forest_body && !forest_lazy.count(r.first)) {
-				forest_lazy[r.first] = fd;
-				const char *up =
-					prog->forest_body_unit_name(fd);
-				if (!up || !prog->is_system_header_path(up))
-					forest_lazy_root.insert(r.first);
-			}
-			added = true;
-		}
-		return added;
-	};
 	std::set<madc::dis::istring> forest_lazy_emitted;
 	// Symbols that receive a TYPED forward prototype (Pass 0.75 below, Pass 1,
 	// and the materialized-func protos). A void* extern from need_output_extern
@@ -36253,11 +36208,8 @@ node_t CirBuilder::translate_module(Program *prog)
 		// pre-built, so register its callees, cleanup functions, dyn-module
 		// slots and function references exactly as translating it live would
 		// have. `decl_initializer`: also the declaration's initializer values.
-		// `producer`: the forest the node was loaded from — its callees'
-		// declarations are that forest's own (forest_extern_node).
 		auto register_loaded_refs = [&](node_t bn, bool decl_initializer,
-						const madc::dis::istring &from,
-						const CirFrozenForest *producer) -> bool {
+						const madc::dis::istring &from) -> bool {
 			bool grew = false;
 			std::set<madc::dis::istring> callees;
 			cir_collect_call_callees(bn, callees);
@@ -36266,17 +36218,6 @@ node_t CirBuilder::translate_module(Program *prog)
 			// which a pre-built loaded body never runs).
 			cir_collect_cleanup_attr_fns(bn, callees);
 			declare_loaded_body_slots(bn);
-			// A dialect function the body calls registers before
-			// the judgements below read the registries — the state
-			// a bind that registered the whole fragment left.
-			const bool dialect_demands = prog->forest_dialect_active();
-			if (dialect_demands) {
-				for (std::set<madc::dis::istring>::const_iterator di =
-				     callees.begin(); di != callees.end(); ++di)
-					prog->forest_dialect_demand_symbol(*di);
-				if (index_dialect_registrations())
-					grew = true;
-			}
 			// v25: a fn referenced as a CALL ARGUMENT in the loaded
 			// body (`__stoa(strtod, ...)` — decayed bare N_ID, or
 			// `&f`). Live's argument lowering declares it via
@@ -36288,19 +36229,12 @@ node_t CirBuilder::translate_module(Program *prog)
 				cir_collect_addr_fn_refs(bn, arg_refs);
 				if (decl_initializer)
 					cir_collect_initializer_ids(bn, arg_refs);
-				if (dialect_demands) {
-					for (std::set<madc::dis::istring>::const_iterator di =
-					     arg_refs.begin(); di != arg_refs.end(); ++di)
-						prog->forest_dialect_demand_symbol(*di);
-					if (index_dialect_registrations())
-						grew = true;
-				}
 				for (std::set<madc::dis::istring>::iterator ai =
 				     arg_refs.begin(); ai != arg_refs.end(); ++ai) {
 					if (m_output_externs.count(*ai))
 						continue;
 					cir_node *xd = NULL;
-					if (!prog->forest_extern_node(*ai, xd, producer)) {
+					if (!prog->forest_extern_node(*ai, xd)) {
 						// Not an extern DECL in the producer: the
 						// argument may name a forest-BODIED sibling
 						// (mingw's static-inline strtof passed as
@@ -36352,7 +36286,7 @@ node_t CirBuilder::translate_module(Program *prog)
 					  && !prog->forest_deferred_funcs.count(ck))
 				    && !m_output_externs.count(*ci)) {
 					cir_node *xd = NULL;
-					if (prog->forest_extern_node(*ci, xd, producer)) {
+					if (prog->forest_extern_node(*ci, xd)) {
 						if (xd) {
 							m_output_externs[*ci] = xd->as_node();
 							continue;
@@ -36367,10 +36301,6 @@ node_t CirBuilder::translate_module(Program *prog)
 		};
 		for (bool grew = true; grew; ) {
 			grew = false;
-			// What a parse in the last round demanded of the dialect
-			// (a deferred body's lookups).
-			if (index_dialect_registrations())
-				grew = true;
 			// Promote only verdict-0 forest functions whose compiler
 			// identity is now reachable. This updates funcdef_map and the
 			// parser-visible Variable/overload surfaces before Pass 0.75,
@@ -36645,11 +36575,9 @@ node_t CirBuilder::translate_module(Program *prog)
 			// their references once, as a loaded body's do.
 			for (; frozen_refs_done < m_frozen_global_nodes.size();
 			     ++frozen_refs_done) {
-				const std::pair<node_t, CirFrozenForest *> &gn =
-					m_frozen_global_nodes[frozen_refs_done];
-				register_loaded_refs(gn.first,
-						     gn.first->code == N_SPEC_DECL,
-						     "frozen global", gn.second);
+				node_t gn = m_frozen_global_nodes[frozen_refs_done];
+				register_loaded_refs(gn, gn->code == N_SPEC_DECL,
+						     "frozen global");
 				grew = true;
 			}
 			for (auto &kv : forest_lazy) {
@@ -36677,20 +36605,7 @@ node_t CirBuilder::translate_module(Program *prog)
 				cir_node *body = prog->forest_body_node(ffd);	// memoized
 				if (!body) continue;
 				node_t bn = body->as_node();
-				// The dialect per name (A5): a struct a loaded dialect
-				// body names that no signature pulled (`host *h =
-				// (host *)arg;`) registers before the body emits — the
-				// late-struct pass (1.97) defines it.
-				if (prog->forest_dialect_body_p(ffd)) {
-					std::set<madc::dis::istring> tags, ids;
-					cir_harvest_type_refs(bn, tags, ids);
-					for (std::set<madc::dis::istring>::const_iterator ti =
-					     tags.begin(); ti != tags.end(); ++ti)
-						if (prog->struct_map.find(*ti) == prog->struct_map.end())
-							prog->forest_dialect_demand(madc::dis::istring(), *ti);
-				}
-				if (register_loaded_refs(bn, false, kv.first,
-							 ffd->forest_body_src))
+				if (register_loaded_refs(bn, false, kv.first))
 					grew = true;
 				node_t proto = forest_fwd_proto(bn);
 				// The symbol this body DEFINES is its own declared id

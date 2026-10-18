@@ -19,8 +19,7 @@ set -e
 cd "$(dirname "$0")/.."
 
 BIN="${1:-bin/madc}"
-# The pack's own standard (forest_pack.sh freezes --std=madc): the list
-# carries the dialect surface since v8, which a .cpp TU's gnu++17 cannot parse.
+# The pack's own standard (forest_pack.sh freezes --std=madc).
 STD=--std=madc
 LIST=scripts/forest_pack_headers.txt
 mkdir -p tmp

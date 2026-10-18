@@ -28,8 +28,8 @@ enum class cli_option : int
 	// Output (no run)
 	emit, emit_pch, emit_function, dump_source, dump_cir, dump_nodes, dump_cir_checked,
 	// Frozen forest
-	freeze, freeze_append, freeze_mir_cache, freeze_ledger, freeze_also_std, freeze_role,
-	print_dialect_roots, emit_builtin_registry, emit_module_table,
+	freeze, freeze_append, freeze_mir_cache, freeze_ledger, freeze_also_std,
+	emit_builtin_registry, emit_module_table,
 	freeze_sources, no_sysroot_includes, run_frozen, freeze_run, pack_forest,
 	dump_forest, forest_bind, forest_touch_log, forest_relayout, no_forest_bind,
 	dump_registered, dump_macros,

@@ -13,7 +13,6 @@
 # and review the diff like any other ratchet move.
 set -e
 cd "$(dirname "$0")/.."
-. scripts/forest_pack_roots.sh	# the list's roots by population
 
 BIN="${1:-bin/madc}"
 [ "$1" = "--rebaseline" ] && { REBASE=1; BIN="${2:-bin/madc}"; } || REBASE=0
@@ -22,10 +21,8 @@ BASE=scripts/forest_dm_baseline.txt
 mkdir -p tmp
 TU=tmp/forest_dm_tu.cpp
 
-# The system headers alone: the list's dialect fragments (v8) are madc's own,
-# with no g++ twin to compare.
 {
-    forest_pack_roots "$LIST" system | while read -r h; do
+    grep -vE '^[[:space:]]*(#|$)' "$LIST" | while read -r h; do
         echo "#include <$h>"
     done
     echo "int main() { return 0; }"

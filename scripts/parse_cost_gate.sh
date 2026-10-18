@@ -15,8 +15,8 @@
 # Workloads live in scripts/parse_cost/: <name>.<ext> + <name>.expect (its
 # exact stdout), optionally <name>.modes ("live forest"; default "live"). A
 # LIVE row parses every system header (--no-forest-bind: the parser and
-# instantiator are what is measured; the dialect surface still binds — it is
-# the compiler's own, pack-slices design §7); a FOREST row takes the packed
+# instantiator are what is measured; the dialect surface is the builtin
+# table, the compiler's own, in both rows); a FOREST row takes the packed
 # forest, the path a default compile takes. A workload may be a symlink to a test (subscript.mad
 # is tests/testsubscript.mad, the owner's benchmark against g++), or to a real
 # codebase on the build host (sqlite3.c is SQLite's amalgamation — a dependency,

@@ -1068,3 +1068,45 @@ Slices:
   0 red (check-dialect-std-gated.sh with the table leg); test_builtin_registry
   (623 compared, 0 not yet built), test_repl_session, test_cir_freeze,
   test_modules, test_libmadc_program, test_lang, test_madc_cli green.
+
+### R4d execution (2026-10-18)
+
+- Deleted: the dialect `ForestSide` (`forest_dialect`), the per-name demand
+  machinery on the Program (`forest_dialect_demand*`, `ForestDialectDemands`,
+  the unit activations and decl-name caches, `ForestRestoreDelta` and the
+  delta restore, `forest_dialect_names`), `forest_bind_dialect_fragment` /
+  `forest_activate_dialect_unit` / `forest_dialect_image_permitted`, the CIR
+  fixpoint's loaded-body demands, `--freeze-role` and `--print-dialect-roots`,
+  `CIR_FOREST_ROLE_DIALECT` with the role table's raw-storage column
+  (`cir_forest_storage_codec`, `cir_forest_role_named`), the profile counter
+  and the image / per-name stats lines, the `--dump-forest` dialect record
+  census, the seed index's dialect-unit lists, the layout pass's dialect
+  population, forest_pack.sh `--dialect-image` (and src/Makefile's
+  `--with-forest=none` image step), scripts/forest_pack_roots.sh, the pack
+  gate's image / strict / roots / census / seed-leak legs and its baseline
+  rows, the seed-parity gate's dialect legs, and the A3 demand-log case.
+- Pack list v10: the ten `ns_*` lines leave. `forest_unit_for_include`
+  declines every dialect fragment's unit, so a carrier that froze one (any
+  pack before v10, or a test freeze that includes `<bits/ui_enums>`) binds
+  only its C/C++ headers. forest_bind_gate's `dialectbind` case becomes
+  `dialectnobind`: a madc consumer of such a freeze prints what the unbound
+  run prints; c++17 / gnu++17 parse the fragment's text, never bind it.
+- Kept: `Program::dialect_image_roots` (the generator's root list; its unit
+  case is renamed R1), the ROLE segment and the walk's role filter (a
+  profile of a code with no row — 1 was the image's — is skipped unopened;
+  the role unit cases now freeze a foreign-role profile).
+- Ruling: testdialectimage_ctypes(_after) are KEPT, renamed
+  testdialectstdio_ctypes(_after): their subject (one stderr, one FILE, with
+  `<stdio.h>` before or after the first dialect use) is not the image's.
+  testdialectimage_streams is testdialectstderr_emit. Cost if wrong: two
+  tests' runtime.
+- Ruling: the forest-side per-record generation (`CirMaterializeFilter::
+  records` / `unseeded_units` / `withheld`, `demand_restored`,
+  `CirDeclRecordFacts`, the records-only materialize pass) has no producer
+  now; it leaves in R4e, its own commit, with an old-vs-new differential of
+  the materialized sets, because it sits on the bind's hot path. Cost if
+  wrong: one more commit.
+- Hot path: the restore and the apply walk one forest; no per-generation
+  dialect-unit scan; the bind walk's tail loses a fragment test per bound
+  embedded unit. A strict compile is unchanged; a dialect compile binds no
+  fragment unit.

@@ -354,39 +354,6 @@ void cir_forest_build_seeds(cir_frozen_forest &f, const madc::dis::intern_table 
 		return slot < poi_files.size() ? unit_of_file(poi_files[slot]) : NO_UNIT;
 	};
 
-	// The dialect surface's units (pack-slices design §7): a fragment's entity
-	// is the dialect's own, listed with dialect units alone — a strict compile
-	// never visits it (madc::getline shares <stdio.h>'s bare `getline`). A
-	// C/C++ header's entity decided only by dialect names would change a
-	// strict compile's verdict: counted, expected zero.
-	std::vector<bool> dialect_unit(nunits, false);
-	for (uint32_t u = 0; u < nunits; ++u) {
-		const char *un = pool.c_str(f.units[u].unit_name_id);
-		dialect_unit[u] = un && embedded_dialect_fragment_p(madc::dis::istring(un));
-	}
-	size_t dialect_listed = 0, dialect_decided_c = 0;
-	auto dialect_lists = [&](std::set<uint32_t> &units, uint32_t origin) -> bool {
-		if (origin >= nunits || !dialect_unit[origin]) {
-			bool any = false, all = !units.empty();
-			for (std::set<uint32_t>::const_iterator it = units.begin(); it != units.end(); ++it)
-				if (*it < nunits && dialect_unit[*it])
-					any = true;
-				else
-					all = false;
-			if (any && all)
-				++dialect_decided_c;
-			return false;
-		}
-		for (std::set<uint32_t>::iterator it = units.begin(); it != units.end(); )
-			if (*it < nunits && dialect_unit[*it])
-				++it;
-			else
-				units.erase(it++);
-		units.insert(origin);
-		++dialect_listed;
-		return true;
-	};
-
 	SeedLists L((size_t)nunits + 1);
 	std::map<madc::dis::istring, SeedCensus> census;	// by kind
 	const char *kind_name[] = { "none", "prim", "void", "ptr", "ref", "const", "enum",
@@ -411,14 +378,11 @@ void cir_forest_build_seeds(cir_frozen_forest &f, const madc::dis::intern_table 
 	// Env-gated probe (MADC_SEED_PLACE_PROBE=<substr>): every seed list an
 	// entity whose name holds the substring lands in.
 	static const char *place_probe = ::getenv("MADC_SEED_PLACE_PROBE");
-	// `used` (optional) receives the list indices the entity landed in;
-	// `origin` is the unit whose parse created the entity (NO_UNIT unknown).
+	// `used` (optional) receives the list indices the entity landed in.
 	auto place = [&](std::vector<std::vector<uint32_t> > &lists, uint32_t id,
-			 std::set<uint32_t> decided_units, bool undecided,
-			 uint32_t created_unit, uint32_t origin, SeedCensus &c,
+			 const std::set<uint32_t> &decided_units, bool undecided,
+			 uint32_t created_unit, SeedCensus &c,
 			 std::vector<uint32_t> *used = NULL) {
-		if (dialect_lists(decided_units, origin))
-			undecided = false;
 		auto put = [&](uint32_t l) {
 			lists[l].push_back(id);
 			if (used)
@@ -789,7 +753,7 @@ void cir_forest_build_seeds(cir_frozen_forest &f, const madc::dis::intern_table 
 			if (created == NO_UNIT && r.kind == madc::dis::DK_TYPEDEF
 			    && r.ref0 && madc::dis::arena_id_is_project(r.ref0))
 				created = unit_of_slot(madc::dis::arena_slot_of(r.ref0));
-			place(L.arena, s, units, undecided, created, created, c);
+			place(L.arena, s, units, undecided, created, c);
 			break;
 		}
 		case madc::dis::DK_FUNC: {
@@ -821,7 +785,7 @@ void cir_forest_build_seeds(cir_frozen_forest &f, const madc::dis::intern_table 
 			probe_nm = nm;
 			probe_ns = ns;
 			probe_extra = disp;
-			place(L.arena, s, units, undecided, unit_of_slot(s), unit_of_slot(s), c, &fn_lists[s]);
+			place(L.arena, s, units, undecided, unit_of_slot(s), c, &fn_lists[s]);
 			break;
 		}
 		case madc::dis::DK_NSBIND:
@@ -866,7 +830,6 @@ void cir_forest_build_seeds(cir_frozen_forest &f, const madc::dis::intern_table 
 			if (mi != fn_lists.end())
 				units.insert(mi->second.begin(), mi->second.end());
 		}
-		dialect_lists(units, unit_of_slot(s));
 		if (units.empty()) {
 			uint32_t cu = unit_of_slot(s);
 			if (cu != NO_UNIT && cu < nunits) {
@@ -944,7 +907,7 @@ void cir_forest_build_seeds(cir_frozen_forest &f, const madc::dis::intern_table 
 			L.deps.push_back(std::make_pair(madc::dis::arena_slot_of(t.owner_type_id),
 							(CIR_SEED_DEP_TEMPLATE << 30) | (uint32_t)i));
 			++c.dependent;
-			place(L.tmpl, (uint32_t)i, units, false, NO_UNIT, template_declared_in(i), c);
+			place(L.tmpl, (uint32_t)i, units, false, NO_UNIT, c);
 			continue;
 		}
 		const uint32_t declared_in = template_declared_in(i);
@@ -962,7 +925,7 @@ void cir_forest_build_seeds(cir_frozen_forest &f, const madc::dis::intern_table 
 		probe_ns = ns;
 		probe_extra = NULL;
 		place(L.tmpl, (uint32_t)i, units, nk == 0 && units.empty(),
-		      nk == 0 ? declared_in : NO_UNIT, declared_in, c);
+		      nk == 0 ? declared_in : NO_UNIT, c);
 	}
 
 	// 4. Globals: the bind keeps one whose (name, ns) verdict holds.
@@ -998,7 +961,7 @@ void cir_forest_build_seeds(cir_frozen_forest &f, const madc::dis::intern_table 
 			units.insert(greq->begin(), greq->end());
 			++c.required;
 		}
-		place(L.glob, (uint32_t)i, units, n1 == 0 && !greq, created, created, c);
+		place(L.glob, (uint32_t)i, units, n1 == 0 && !greq, created, c);
 	}
 
 	// 4b. Decl-entry record ids (format 64): each decl-index entry's name ->
@@ -1281,8 +1244,5 @@ void cir_forest_build_seeds(cir_frozen_forest &f, const madc::dis::intern_table 
 		 req_dropped, req_unknown_keys.size());
 	summary += buf;
 	snprintf(buf, sizeof(buf), "; decl records %zu of %zu entries", decl_records, decl_entries);
-	summary += buf;
-	snprintf(buf, sizeof(buf), "; dialect %zu listed with dialect units alone, %zu header entities decided by dialect names alone",
-		 dialect_listed, dialect_decided_c);
 	summary += buf;
 }

@@ -42,7 +42,6 @@
 #include "madc_cli.h"	// madc's own command-line table
 #include "madc_sys_includes.h" // -dumpmachine: the toolchain target triple
 #include "madc_project.h" // --project: compile_commands.json multi-TU driver
-#include "cir_freeze.h"	// --freeze-role=: the forest role table (CirForestRole)
 
 #include "madc_cir.h"     // madc_cir_execute/emit/freeze/emit_native + MadcNativeKind
 #include "madc_session.h" // InteractiveSession: the REPL's session (D20)
@@ -694,7 +693,6 @@ int main(int argc, char **argv)
     bool show_version = false;            // --version / -V
     bool show_machine = false;            // -dumpmachine
     bool show_capabilities = false;       // --capabilities=json
-    bool show_dialect_roots = false;      // --print-dialect-roots: the dialect image's roots
     const char *builtin_registry_out = NULL; // --emit-builtin-registry=: the generated registration
     const char *module_table_out = NULL;     // --emit-module-table=: a module's generated declarations
     bool show_stats = false;               // --show-stats: print input/token traffic counters
@@ -703,7 +701,6 @@ int main(int argc, char **argv)
     bool freeze_mir_cache = false;        // --freeze-mir-cache: pack the compiled MIR module blob
     std::vector<std::string> freeze_ledger_srcs;  // --freeze-ledger=: AOT ledger sources (S5)
     std::vector<madc::dis::istring> freeze_also_std;  // --freeze-also-std=: more standards the profile serves
-    CirForestRole freeze_role = CIR_FOREST_ROLE_SYSTEM;  // --freeze-role=: the consumer the profile serves (B1)
     std::vector<std::string> freeze_source_lists;  // --freeze-sources=: lists of files for the source arm
     bool run_frozen = false;              // --run-frozen[=path]: thaw + run, no parse
     const char *run_frozen_path = NULL;   // NULL = the blob appended to this executable
@@ -922,24 +919,11 @@ int main(int argc, char **argv)
         case cli_option::freeze_also_std:
             freeze_also_std.push_back(o.value);
             break;
-        case cli_option::print_dialect_roots:
-            show_dialect_roots = true;
-            break;
         case cli_option::emit_builtin_registry:
             builtin_registry_out = value;
             break;
         case cli_option::emit_module_table:
             module_table_out = value;
-            break;
-        case cli_option::freeze_role:
-            // The role's spelling -> its code, once, here (the role table in
-            // cir_freeze.cpp owns both).
-            if ( !cir_forest_role_named(value, freeze_role) )
-            {
-                std::cerr << "madc: --freeze-role=" << value
-                          << ": unknown role (system, dialect)" << std::endl;
-                return 1;
-            }
             break;
         case cli_option::freeze_sources:
             freeze_source_lists.push_back(o.value);
@@ -1190,24 +1174,6 @@ int main(int argc, char **argv)
     if ( show_completion )
     {
         madc::cli::write_completion(std::cout, madc_cli_table(), completion_shell);
-        return 0;
-    }
-
-    // --print-dialect-roots (dialect per-name plan B1): the dialect image's
-    // roots, as the auto-include orders them (Program::dialect_image_roots) —
-    // forest_pack.sh --dialect-image writes the image's TU from them. Only
-    // the madc dialect has the surface; any other standard is refused.
-    if ( show_dialect_roots )
-    {
-        std::vector<madc::dis::istring> roots;
-        if ( !prog->dialect_image_roots(roots) )
-        {
-            std::cerr << "madc: --print-dialect-roots needs --std=madc" << std::endl;
-            return 1;
-        }
-        for ( size_t i = 0; i < roots.size(); ++i )
-            std::cout << roots[i].c_str() << "\n";
-        std::cout.flush();
         return 0;
     }
 
@@ -2095,13 +2061,6 @@ int main(int argc, char **argv)
 			"[stats] forest map+open ..... %.3f + %.3f s  (%s)\n",
 			fs.map_secs, fs.open_secs,
 			fs.opened ? "container bound" : "no container — live parse");
-		// Every profile whose forest directory a walk opened, by role:
-		// a strict compile opens no dialect image (dialect per-name plan
-		// B2; forest_pack_gate's split legs read it).
-		if ( fs.profiles_system || fs.profiles_dialect )
-		    fprintf(stderr,
-			"[stats] forest profiles ..... %llu system + %llu dialect opened\n",
-			fs.profiles_system, fs.profiles_dialect);
 		// The dialect is builtin (R4c): the generated table's names this
 		// compile built, in the dialect namespaces it named.
 		if ( prog->dialect_from_table() )
@@ -2109,29 +2068,6 @@ int main(int argc, char **argv)
 			"[stats] dialect table ....... %zu namespaces named; %zu of %zu names built\n",
 			prog->dialect_named.size(), prog->dialect_builds,
 			(size_t)madc::builtins::dialect_table_count);
-		// The dialect image (B2): bound in place, beside the system pack.
-		if ( fs.image_probed )
-		{
-		    if ( fs.image_bound )
-			fprintf(stderr,
-			    "[stats] dialect image ....... image bound (%llu units bound / %u packed;"
-			    " %llu zstd frames)\n",
-			    fs.image_units_bound, fs.image_units_total, fs.image_zstd_frames);
-		    else
-			fprintf(stderr, "[stats] dialect image ....... %s\n",
-			    fs.image_found ? "found, not bound"
-					   : "no image — the dialect binds as the system pack holds it");
-		}
-		// The dialect's units, on whichever forest holds them (the image,
-		// or the system pack's fragment units where no image binds).
-		if ( fs.dialect_units )
-		    fprintf(stderr,
-			"[stats] forest dialect ...... %llu units (%s); %llu names demanded"
-			" (%llu hit), %llu records, %llu functions + %llu other"
-			" declarations registered\n",
-			fs.dialect_units, fs.dialect_on_image ? "dialect image" : "system pack",
-			fs.dialect_names, fs.dialect_hits,
-			fs.dialect_records, fs.dialect_funcs, fs.dialect_objects);
 		if ( fs.opened )
 		{
 		    double reg_secs = fs.restore_secs - fs.declidx_secs - fs.mat_secs;
@@ -2248,8 +2184,7 @@ int main(int argc, char **argv)
 	    int frc = madc_cir_freeze(prog.get(), argv[filearg], freeze_path,
 				      freeze_append, freeze_mir_cache,
 				      ledger.empty() ? NULL : &ledger,
-				      /*progress=*/true, &freeze_also_std,
-				      freeze_role);
+				      /*progress=*/true, &freeze_also_std);
 	    print_stats();
 	    return frc == 0 ? 0 : 1;
 	}

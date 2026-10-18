@@ -2197,54 +2197,6 @@ TEST_CASE("the dialect is builtin (R4c): a named namespace's names, read from th
 	  == (std::vector<std::string>{ "strtolower", "strtoupper" }));
 }
 
-// A demand is registration state: an entry that fails forgets the demands it
-// made (its transaction rewinds the bind), so a later entry demands the name
-// again. A4 writes the demands; nothing else does yet.
-TEST_CASE("dialect per name (A3): a rolled-back entry forgets the dialect demands it made")
-{
-    InteractiveSession m;
-    REQUIRE(m.begin("--std=madc"));
-    Program &p = m.program();
-    Program::ForestDialectDemands &d = p.forest_dialect_demands;
-    CHECK(d.record("php::count", std::vector<uint32_t>{ 7u }));
-    CHECK(d.record("php::nope", std::vector<uint32_t>()));	// a miss is an answer too
-    Program::ForestBindMark mark = p.forest_bind_mark();
-    CHECK(d.record("php::strtolower", std::vector<uint32_t>{ 8u, 9u }));
-    CHECK_FALSE(d.record("php::count", std::vector<uint32_t>{ 1u }));	// demanded once
-    p.forest_bind_rewind(mark);
-    bool hit = false;
-    CHECK(d.demanded("php::count", hit));
-    CHECK(hit);
-    CHECK(d.demanded("php::nope", hit));
-    CHECK_FALSE(hit);
-    CHECK_FALSE(d.demanded("php::strtolower", hit));
-    REQUIRE(d.log.size() == 2u);
-    CHECK(d.log[0].name == "php::count");
-    CHECK(d.log[0].records == std::vector<uint32_t>{ 7u });
-    CHECK(d.log[1].name == "php::nope");
-
-    // An entry's transaction carries it: rolled back, the entry's demand is
-    // gone; a later entry makes it again, and a committed one keeps it.
-    {
-	Program::EntryTransaction entry(p);
-	CHECK(d.record("php::strtolower", std::vector<uint32_t>{ 8u, 9u }));
-    }
-    CHECK_FALSE(d.demanded("php::strtolower", hit));
-    CHECK(d.log.size() == 2u);
-    {
-	Program::EntryTransaction entry(p);
-	CHECK(d.record("php::strtolower", std::vector<uint32_t>{ 8u, 9u }));
-	entry.commit();
-    }
-    CHECK(d.demanded("php::strtolower", hit));
-    CHECK(hit);
-    CHECK(d.log.size() == 3u);
-    // The session goes on.
-    REQUIRE(m.submit("var total = 2;"));
-    REQUIRE(m.submit("total + 1"));
-    CHECK(m.shown() == "3");
-}
-
 // A compile registers the dialect functions its program names — an overload
 // set whole — never a namespace's whole surface. The program is
 // scripts/parse_cost/dialect.mad's.

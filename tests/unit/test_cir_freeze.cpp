@@ -3821,46 +3821,32 @@ TEST_CASE("A3: for_prefix reads the one run of names a prefix starts") {
 	CHECK(e == 0u);
 }
 
-// Dialect per-name plan B1: a container's ROLE (optional segment 28) — which
-// consumer a profile serves — and how a role is stored. One table names each
-// role once; a raw role's container carries no codec and no transform, so a
-// bind reads every segment in place.
-TEST_CASE("B1: the role table names each role once and says how it is stored") {
-	CirForestRole r = CIR_FOREST_ROLE_DIALECT;
-	REQUIRE(cir_forest_role_named("system", r));
-	CHECK(r == CIR_FOREST_ROLE_SYSTEM);
-	REQUIRE(cir_forest_role_named("dialect", r));
-	CHECK(r == CIR_FOREST_ROLE_DIALECT);
-	// The input boundary refuses a misspelling (enum-over-strings).
-	CHECK(!cir_forest_role_named("dialekt", r));
-	CHECK(!cir_forest_role_named("", r));
-	const cir_forest_role_row *d = cir_forest_role_info(CIR_FOREST_ROLE_DIALECT);
-	REQUIRE(d != nullptr);
-	CHECK(std::string(d->name) == "dialect");
-	CHECK(d->raw);
+// A container's ROLE (optional segment 28) — which consumer a profile
+// serves. The system profile writes none (absent = system); a code this
+// reader has no row for — a profile an older madc froze for another role
+// (1 was the retired dialect image's) — is carried through as a number, and
+// a discovery walk skips it.
+static const uint32_t foreign_role = 1;
+
+TEST_CASE("Role: the role table names the system role; another code has no row") {
 	const cir_forest_role_row *s = cir_forest_role_info(CIR_FOREST_ROLE_SYSTEM);
 	REQUIRE(s != nullptr);
 	CHECK(std::string(s->name) == "system");
-	CHECK(!s->raw);
-	// A code this reader does not know (a later pack's role): no row.
+	CHECK(cir_forest_role_info(foreign_role) == nullptr);
 	CHECK(cir_forest_role_info(99) == nullptr);
-	CHECK(cir_forest_storage_codec(CIR_FOREST_ROLE_DIALECT, PchCompression::Zstd)
-	      == PchCompression::None);
-	CHECK(cir_forest_storage_codec(CIR_FOREST_ROLE_SYSTEM, PchCompression::Zstd)
-	      == PchCompression::Zstd);
 }
 
 // One forest image under a role, through the writer the freeze uses.
-static bool b1_role_image(cir_frozen_forest &f, uint32_t role, std::vector<uint8_t> &image)
+static bool role_image(cir_frozen_forest &f, uint32_t role, std::vector<uint8_t> &image)
 {
 	f.role = role;
 	madc::dis::snapshot_writer w;
-	if (!cir_forest_write(f, w, cir_forest_storage_codec(role, PchCompression::Zstd)))
+	if (!cir_forest_write(f, w, PchCompression::Zstd))
 		return false;
 	return w.build(image);
 }
 
-TEST_CASE("B1: a dialect-role container carries its role, every segment raw, below a system profile") {
+TEST_CASE("Role: a foreign-role container carries its role below a system profile") {
 	MIR_context_t mir_ctx = MIR_init();
 	c2mir_init(mir_ctx);
 	c2m_ctx_t c2m = cir_init(mir_ctx);
@@ -3874,36 +3860,23 @@ TEST_CASE("B1: a dialect-role container carries its role, every segment raw, bel
 		cir_frozen_forest f;
 		REQUIRE(cir_freeze_forest(CIR_NODE(tree), main_path.c_str(), f));
 
-		std::vector<uint8_t> dialect, system;
-		REQUIRE(b1_role_image(f, CIR_FOREST_ROLE_DIALECT, dialect));
-		REQUIRE(b1_role_image(f, CIR_FOREST_ROLE_SYSTEM, system));
+		std::vector<uint8_t> foreign, system;
+		REQUIRE(role_image(f, foreign_role, foreign));
+		REQUIRE(role_image(f, CIR_FOREST_ROLE_SYSTEM, system));
 
-		// The dialect image: the ROLE segment, and no segment needing a
-		// decode — every payload is read in place.
+		// The foreign profile: the ROLE segment, its code read back.
 		{
 			madc::dis::snapshot_reader r;
-			REQUIRE(r.open(dialect.data(), dialect.size()));
+			REQUIRE(r.open(foreign.data(), foreign.size()));
 			REQUIRE(r.find(CIR_FOREST_SEG_ROLE) != nullptr);
-			size_t raw = 0, total = 0;
-			for (uint32_t i = 0; i < r.segment_count(); ++i) {
-				const madc::dis::snapshot_segment *sg = r.segment_at(i);
-				REQUIRE(sg != nullptr);
-				++total;
-				if (sg->codec == (uint32_t)PchCompression::None && sg->flags == 0
-				    && (sg->raw_size == 0 || r.raw_ptr(*sg)))
-					++raw;
-			}
-			CHECK(total > 10u);
-			CHECK(raw == total);
 			uint32_t role = 99;
 			REQUIRE(cir_forest_read_role(r, role));
-			CHECK(role == (uint32_t)CIR_FOREST_ROLE_DIALECT);
+			CHECK(role == foreign_role);
 			CirFrozenForest forest;
-			REQUIRE(forest.open_header(dialect.data(), dialect.size()));
-			CHECK(forest.role() == (uint32_t)CIR_FOREST_ROLE_DIALECT);
+			REQUIRE(forest.open_header(foreign.data(), foreign.size()));
+			CHECK(forest.role() == foreign_role);
 		}
-		// The system profile writes no ROLE segment (absent = system), so a
-		// pack frozen before B1 reads as one.
+		// The system profile writes no ROLE segment (absent = system).
 		{
 			madc::dis::snapshot_reader r;
 			REQUIRE(r.open(system.data(), system.size()));
@@ -3915,15 +3888,14 @@ TEST_CASE("B1: a dialect-role container carries its role, every segment raw, bel
 			REQUIRE(forest.open_header(system.data(), system.size()));
 			CHECK(forest.role() == (uint32_t)CIR_FOREST_ROLE_SYSTEM);
 		}
-		// A carrier stacking the image first and the system profile after it
-		// (an older writer's 16-byte padding between them; append_file's page
-		// pad is snapshot_reader's own unit case): the profiles read
-		// newest first, each with its role, its bytes and its compressed
-		// segment count.
+		// A carrier stacking the foreign profile first and the system profile
+		// after it (an older writer's 16-byte padding between them;
+		// append_file's page pad is snapshot_reader's own unit case): the
+		// profiles read newest first, each with its role and its bytes.
 		std::vector<uint8_t> carrier(37, 0xab);	// a carrier's own bytes
 		carrier.resize((carrier.size() + 15) & ~(size_t)15, 0);
-		const size_t dialect_at = carrier.size();
-		carrier.insert(carrier.end(), dialect.begin(), dialect.end());
+		const size_t foreign_at = carrier.size();
+		carrier.insert(carrier.end(), foreign.begin(), foreign.end());
 		carrier.resize((carrier.size() + 15) & ~(size_t)15, 0);
 		carrier.insert(carrier.end(), system.begin(), system.end());
 		std::vector<cir_forest_profile> stack;
@@ -3932,14 +3904,13 @@ TEST_CASE("B1: a dialect-role container carries its role, every segment raw, bel
 		CHECK(stack[0].role == (uint32_t)CIR_FOREST_ROLE_SYSTEM);
 		CHECK(stack[0].bytes == system.size());
 		CHECK(stack[0].compressed > 0u);
-		CHECK(stack[1].role == (uint32_t)CIR_FOREST_ROLE_DIALECT);
-		CHECK(stack[1].bytes == dialect.size());
-		CHECK(stack[1].offset == dialect_at);
-		CHECK(stack[1].compressed == 0u);
-		// The image alone is one profile.
-		REQUIRE(cir_forest_profiles(dialect.data(), dialect.size(), stack));
+		CHECK(stack[1].role == foreign_role);
+		CHECK(stack[1].bytes == foreign.size());
+		CHECK(stack[1].offset == foreign_at);
+		// The foreign profile alone is one profile.
+		REQUIRE(cir_forest_profiles(foreign.data(), foreign.size(), stack));
 		REQUIRE(stack.size() == 1u);
-		CHECK(stack[0].role == (uint32_t)CIR_FOREST_ROLE_DIALECT);
+		CHECK(stack[0].role == foreign_role);
 		// Not a container: no profile.
 		CHECK(!cir_forest_profiles(carrier.data(), 37, stack));
 		CHECK(stack.empty());
@@ -3951,15 +3922,15 @@ TEST_CASE("B1: a dialect-role container carries its role, every segment raw, bel
 	MIR_finish(mir_ctx);
 }
 
-// B1 follow-up: the dialect image's roots are what the compiler's own
-// auto-include would include for every dialect fragment head — the provider
+// The dialect's roots (the builtin-registry generator's) are what the
+// compiler's own auto-include would include for every dialect fragment head — the provider
 // table's fragments with their prerequisite closure, in the auto-include
 // order (queue_fragment_prerequisites + ordered_auto_include_headers) —
 // never the pack list's C portion. The closure is the fragments alone: what a
 // fragment names that the dialect hard-codes (println, and the stdio streams
 // its `println(stderr, ...)` writes to — Program::add_stdio_streams) pulls
 // no header (owner 2026-10-17).
-TEST_CASE("B1: the dialect image roots are the fragments' auto-include closure") {
+TEST_CASE("R1: the dialect roots are the fragments' auto-include closure") {
 	Program prog;
 	REQUIRE(prog.set_language_standard("madc"));
 	std::vector<madc::dis::istring> roots;
@@ -3998,12 +3969,11 @@ TEST_CASE("B1: the dialect image roots are the fragments' auto-include closure")
 	CHECK(none.empty());
 }
 
-// B2: the discovery walk filters a carrier's profiles by role. The system
-// walk skips the dialect image and the dialect walk takes only it — through
-// the production walker (probe_forest_chain over an explicit carrier file) —
-// and a skipped profile's forest directory is never opened: a strict compile
-// never reads the dialect image.
-TEST_CASE("B2: the discovery walk takes only its own role, never opening another's") {
+// The discovery walk filters a carrier's profiles by role, through the
+// production walker (probe_forest_chain over an explicit carrier file): the
+// system walk skips a foreign-role profile without opening a reader on it,
+// and a walk of that role takes only it.
+TEST_CASE("Role: the discovery walk takes only its own role, never opening another's") {
 	MIR_context_t mir_ctx = MIR_init();
 	c2mir_init(mir_ctx);
 	c2m_ctx_t c2m = cir_init(mir_ctx);
@@ -4016,14 +3986,14 @@ TEST_CASE("B2: the discovery walk takes only its own role, never opening another
 		REQUIRE(tree != nullptr);
 		cir_frozen_forest f;
 		REQUIRE(cir_freeze_forest(CIR_NODE(tree), main_path.c_str(), f));
-		std::vector<uint8_t> dialect, system;
-		REQUIRE(b1_role_image(f, CIR_FOREST_ROLE_DIALECT, dialect));
-		REQUIRE(b1_role_image(f, CIR_FOREST_ROLE_SYSTEM, system));
+		std::vector<uint8_t> foreign, system;
+		REQUIRE(role_image(f, foreign_role, foreign));
+		REQUIRE(role_image(f, CIR_FOREST_ROLE_SYSTEM, system));
 
-		// The carrier: the image first, the system profile appended after it.
+		// The carrier: the foreign profile first, the system profile after it.
 		std::vector<uint8_t> carrier(37, 0xab);
 		carrier.resize((carrier.size() + 15) & ~(size_t)15, 0);
-		carrier.insert(carrier.end(), dialect.begin(), dialect.end());
+		carrier.insert(carrier.end(), foreign.begin(), foreign.end());
 		carrier.resize((carrier.size() + 15) & ~(size_t)15, 0);
 		carrier.insert(carrier.end(), system.begin(), system.end());
 
@@ -4035,25 +4005,26 @@ TEST_CASE("B2: the discovery walk takes only its own role, never opening another
 		CHECK(role == (uint32_t)CIR_FOREST_ROLE_SYSTEM);
 		REQUIRE(below > 0u);
 		REQUIRE(cir_forest_profile_role(carrier.data(), below, role, &below));
-		CHECK(role == (uint32_t)CIR_FOREST_ROLE_DIALECT);
+		CHECK(role == foreign_role);
 		CHECK(below == 0u);
 		CHECK(!cir_forest_profile_role(carrier.data(), 37, role));
 
 		// One file per carrier: a carrier image is cached by its path.
 		static int carriers = 0;
-		const std::string stem = "/tmp/madc_b2_role_" + std::to_string((long)getpid())
+		const std::string stem = "/tmp/madc_role_walk_" + std::to_string((long)getpid())
 				       + "_" + std::to_string(++carriers);
-		const std::string both = stem + "_both.forest", image = stem + "_image.forest";
+		const std::string both = stem + "_both.forest", image = stem + "_foreign.forest";
 		{
 			std::ofstream o(both.c_str(), std::ios::binary);
 			o.write((const char *)carrier.data(), (std::streamsize)carrier.size());
 		}
 		{
 			std::ofstream o(image.c_str(), std::ios::binary);
-			o.write((const char *)dialect.data(), (std::streamsize)dialect.size());
+			o.write((const char *)foreign.data(), (std::streamsize)foreign.size());
 		}
 
-		// Both profiles: each walk finds its own.
+		// Both profiles: each walk finds its own; the system walk opened one
+		// reader, on the system profile.
 		{
 			Program p;
 			p.forest_bind_path = both;
@@ -4062,27 +4033,26 @@ TEST_CASE("B2: the discovery walk takes only its own role, never opening another
 								   true, CIR_FOREST_ROLE_SYSTEM);
 			REQUIRE(sys != nullptr);
 			CHECK(sys->role() == (uint32_t)CIR_FOREST_ROLE_SYSTEM);
-			CHECK(p._forest_profiles_opened[CIR_FOREST_ROLE_DIALECT] == 0u);
-			CirFrozenForest *dlg = p.probe_forest_chain(Program::forestMatchAny, mismatch,
-								   true, CIR_FOREST_ROLE_DIALECT);
-			REQUIRE(dlg != nullptr);
-			CHECK(dlg->role() == (uint32_t)CIR_FOREST_ROLE_DIALECT);
-			CHECK(dlg != sys);
-			CHECK(p._forest_profiles_opened[CIR_FOREST_ROLE_SYSTEM] == 1u);
-			CHECK(p._forest_profiles_opened[CIR_FOREST_ROLE_DIALECT] == 1u);
+			CHECK(p._forest_readers.size() == 1u);
+			CirFrozenForest *other = p.probe_forest_chain(Program::forestMatchAny, mismatch,
+								     true, foreign_role);
+			REQUIRE(other != nullptr);
+			CHECK(other->role() == foreign_role);
+			CHECK(other != sys);
 		}
-		// The image alone: the system walk finds nothing and never opens it.
+		// The foreign profile alone: the system walk finds nothing and opens
+		// no reader on it.
 		{
 			Program p;
 			p.forest_bind_path = image;
 			bool mismatch = false;
 			CHECK(p.probe_forest_chain(Program::forestMatchAny, mismatch, true,
 						   CIR_FOREST_ROLE_SYSTEM) == nullptr);
-			CHECK(p._forest_profiles_opened[CIR_FOREST_ROLE_DIALECT] == 0u);
-			CirFrozenForest *dlg = p.probe_forest_chain(Program::forestMatchAny, mismatch,
-								   true, CIR_FOREST_ROLE_DIALECT);
-			REQUIRE(dlg != nullptr);
-			CHECK(dlg->role() == (uint32_t)CIR_FOREST_ROLE_DIALECT);
+			CHECK(p._forest_readers.empty());
+			CirFrozenForest *other = p.probe_forest_chain(Program::forestMatchAny, mismatch,
+								     true, foreign_role);
+			REQUIRE(other != nullptr);
+			CHECK(other->role() == foreign_role);
 		}
 		std::remove(both.c_str());
 		std::remove(image.c_str());

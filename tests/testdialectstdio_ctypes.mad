@@ -4,9 +4,7 @@
 // the program includes <stdio.h> BEFORE its first dialect use, hands its
 // FILE * to the dialect (println's stream), and calls ui_ws::open, whose body
 // writes its refusal to stderr (libmadc's body since the ws host moved to
-// src/ui_ws.cpp: no dialect body names stderr in the program now — R4
-// retires this test with the dialect image). testdialectimage_ctypes_after.mad holds the
-// other order. `--emit=c11` defines `struct _IO_FILE` once.
+// src/ui_ws.cpp). testdialectstdio_ctypes_after.mad holds the other order. `--emit=c11` defines `struct _IO_FILE` once.
 // Oracle (g++ 13 and clang++ 18, -std=c++17, the dialect side written as a
 // C++ namespace + an fputs println), stdout:
 //   program FILE * into the dialect: ok

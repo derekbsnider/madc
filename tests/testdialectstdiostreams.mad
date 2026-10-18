@@ -3,7 +3,7 @@
 // with no header and no include flag. A program naming them pulls no
 // <stdio.h> — scripts/check-autoinclude-position.sh's -dM leg holds this
 // file to it — and a C function handed one writes to that stream.
-// testdialectimage_ctypes*.mad hold a program that also includes <stdio.h>.
+// testdialectstdio_ctypes*.mad hold a program that also includes <stdio.h>.
 // Oracle (g++ 13 and clang++ 18, -std=c++17, <cstdio> with fprintf for
 // println), stdout:
 //   println to stdout: 1

@@ -428,17 +428,12 @@ extern const madc_crt_member madc_crt_members[];
 // Warnings and errors print regardless. `also_std` names more --std=
 // spellings this profile serves (--freeze-also-std=): each labels it with
 // the config word a compile under that standard carries
-// (CIR_FOREST_SEG_SHARED_CONFIGS). `role` (a CirForestRole code,
-// cir_freeze.h; --freeze-role=) stamps the profile's ROLE segment and picks
-// its storage: a raw role's container — every segment, the MIR cache and the
-// ledger included — is written with no codec. Returns 0 on success, -1 on
-// failure.
+// (CIR_FOREST_SEG_SHARED_CONFIGS). Returns 0 on success, -1 on failure.
 int madc_cir_freeze(Program *prog, const char *source_name,
 		    const char *out_path, bool append, bool mir_cache = false,
 		    const std::vector<cir_ledger_module> *ledger = NULL,
 		    bool progress = true,
-		    const std::vector<madc::dis::istring> *also_std = NULL,
-		    uint32_t role = 0);
+		    const std::vector<madc::dis::istring> *also_std = NULL);
 
 // Compile the AOT ledger sources (--freeze-ledger=, one per call site entry;
 // scripts/ledger_sources.txt is the canonical list) into MIR modules with

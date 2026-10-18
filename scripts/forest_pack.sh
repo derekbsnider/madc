@@ -3,7 +3,7 @@
 # with a madc binary (the release pack step; design doc
 # 2026-07-04-forest-default-mode-design.md §7).
 #
-#   bash scripts/forest_pack.sh [--dialect-image] [--sidecar] [--image <file>] [bin/madc]
+#   bash scripts/forest_pack.sh [--sidecar] [--image <file>] [bin/madc]
 #
 # Default (embedded carrier): append the container to the binary itself.
 # MUST run AFTER strip: strip rewrites the ELF image and discards appended
@@ -24,38 +24,17 @@
 # 2). The named binary still does the freezing and the verification; only the
 # carrier changes. Same strip-before-pack ordering applies to that image.
 #
-# --dialect-image (pack-slices design §7; dialect per-name plan B1): the madc
-# dialect surface as its own container, the DIALECT IMAGE — the compiler's
-# dialect roots (--print-dialect-roots: every dialect fragment and the
-# headers their auto-include pulls, in its order) frozen under --std=madc,
-# and nothing else: no source arm, no AOT ledger, no shared standards, none
-# of the pack list's C headers. A missing prerequisite fails the freeze (a
-# parse error refuses the compile; the gate's pack-error count is zero). It
-# carries ROLE dialect (--freeze-role=dialect), so every
-# segment is stored raw: no zstd, no blocks, read in place (and no layout
-# pass — it has no block to lay out). EVERY product mode ships it: it is the
-# FIRST container of the carrier the system-header pack rides (the image, or
-# the sidecar file it starts), so a discovery walk, newest first, meets the
-# system pack before it (B2 filters the walk by role). A run without
-# --dialect-image packs the image first, then the system-header pack after
-# it; --with-forest=none packs the image alone — that build reads system
-# headers from disk (it bakes no MADC_FOREST_EXPECT_*), and a strict compile
-# never binds a madc-only profile.
-#
 # Pack failure = build failure (set -e).
 set -e
 cd "$(dirname "$0")/.."
 . scripts/forest_pack_share.sh	# the standards the one profile serves
 . scripts/forest_pack_layout.sh	# the layout pass (format 60)
-. scripts/forest_pack_roots.sh	# the list's roots by population
 
 SIDECAR=0
-DIALECT_IMAGE=0
 IMAGE=
 while [ $# -gt 0 ]; do
     case "$1" in
 	--sidecar) SIDECAR=1; shift ;;
-	--dialect-image) DIALECT_IMAGE=1; shift ;;
 	--image) IMAGE="$2"; shift 2 ;;
 	--image=*) IMAGE="${1#--image=}"; shift ;;
 	*) break ;;
@@ -66,22 +45,7 @@ IMAGE="${IMAGE:-$BIN}"
 LIST=scripts/forest_pack_headers.txt
 GUARDED_LIST=scripts/forest_pack_guarded.txt
 LEDGER_LIST=scripts/ledger_sources.txt
-# Each stage keeps its own work files: the image's stage runs inside the
-# system pack's run, and both stay for inspection.
-if [ "$DIALECT_IMAGE" = 1 ]; then
-    STAGE=tmp/forest_pack_dialect
-else
-    STAGE=tmp/forest_pack
-fi
-
-# The dialect image goes into the carrier first, in every product mode.
-if [ "$DIALECT_IMAGE" = 0 ]; then
-    if [ "$SIDECAR" = 1 ]; then
-	bash scripts/forest_pack.sh --dialect-image --sidecar --image "$IMAGE" "$BIN"
-    else
-	bash scripts/forest_pack.sh --dialect-image --image "$IMAGE" "$BIN"
-    fi
-fi
+STAGE=tmp/forest_pack
 
 # The libstdc++ include root, ASKED not assumed: the guarded roots below are
 # included by absolute path, and a hard-coded /usr/include/c++/<ver> would rot
@@ -101,47 +65,14 @@ fi
 mkdir -p tmp
 TU=${STAGE}_tu.cpp
 
-# --dialect-image: the roots are the COMPILER's (--print-dialect-roots, under
-# --std=madc): every dialect fragment the auto-include's provider table names
-# and the headers their own auto-include pulls, in the auto-include's
-# order — the two owners a
-# dialect compile includes them through (Program::queue_fragment_prerequisites,
-# ordered_auto_include_headers). Never the pack list's C portion: the image
-# holds what a dialect compile reaches, nothing more (an explicitly included
-# fragment gathers no prerequisites, so they are roots ahead of it). Nothing
-# drops silently: the printed fragments are exactly include/madc/'s ns_*
-# fragments, and, while the pack list names fragments (list v8; B5 drops
-# them), exactly the list's.
-if [ "$DIALECT_IMAGE" = 1 ]; then
-    DIALECT_LIST=${STAGE}_headers.txt
-    timeout 60 "$BIN" --no-config --std=madc --print-dialect-roots > "$DIALECT_LIST"
-    printed=$(grep '^ns_' "$DIALECT_LIST" | sort)
-    layout=$(ls include/madc | grep '^ns_' | grep -v '\.' | sort)
-    listed=$(forest_pack_roots "$LIST" dialect | grep '^ns_' | sort)
-    if [ -z "$printed" ] || [ "$printed" != "$layout" ]; then
-	echo "forest_pack: --dialect-image: the printed dialect roots are not include/madc's fragments" >&2
-	diff <(echo "$layout") <(echo "$printed") >&2 || true
-	exit 1
-    fi
-    if [ -n "$listed" ] && [ "$printed" != "$listed" ]; then
-	echo "forest_pack: --dialect-image: the printed dialect roots are not $LIST's fragments" >&2
-	diff <(echo "$listed") <(echo "$printed") >&2 || true
-	exit 1
-    fi
-    LIST=$DIALECT_LIST
-fi
-
 # The SOURCE ARM (owner 2026-10-13: the pack holds ALL system headers, never a
 # test-driven subset): every header the C library's, the kernel headers' and
 # the C++ standard library's packages install, GENERATED here from the
 # package manager's own lists, packed as source-only units beside the frozen
 # grove (--freeze-sources=) and checked unit by unit by the gate
 # (--units-from). docs/plans/2026-10-13-pack-all-system-headers.md.
-# (None in the dialect image: the system pack carries them.)
 SOURCES_LIST=${STAGE}_sources.txt
-if [ "$DIALECT_IMAGE" = 1 ]; then
-    : > "$SOURCES_LIST"
-elif ! bash scripts/forest_pack_sources.sh linux "$CXX_INCLUDE" > "$SOURCES_LIST"; then
+if ! bash scripts/forest_pack_sources.sh linux "$CXX_INCLUDE" > "$SOURCES_LIST"; then
     echo "forest_pack: could not list the system headers" >&2
     exit 1
 fi
@@ -151,10 +82,7 @@ fi
 # -static-libmadc programs carry the machinery inside their own image.
 # scripts/ledger_sources.txt is the single owner of the tagged list
 # (src/Makefile selects from the same file to build these into libmadc).
-# (None in the dialect image.)
-if [ "$DIALECT_IMAGE" = 1 ]; then
-    LEDGER_SOURCES=
-elif ! LEDGER_SOURCES=$(bash scripts/select_ledger_sources.sh linux "$LEDGER_LIST"); then
+if ! LEDGER_SOURCES=$(bash scripts/select_ledger_sources.sh linux "$LEDGER_LIST"); then
     echo "forest_pack: could not select Linux ledger sources" >&2
     exit 1
 fi
@@ -174,9 +102,7 @@ LEDGER_MODULE_COUNT=${#LEDGER_ARGS[@]}
     # behind __cplusplus guards. Absolute roots keep their canonical sysroot
     # names while their guarded bodies stay semantically empty in this profile;
     # the freeze still records the exact raw text for live C++20
-    # re-tokenization. Same mechanism as the win64 pack. (Not in the
-    # dialect image: no C++ standard header is its root.)
-    [ "$DIALECT_IMAGE" = 1 ] ||
+    # re-tokenization. Same mechanism as the win64 pack.
     grep -vE '^[[:space:]]*(#|$)' "$GUARDED_LIST" | while read -r h; do
         echo "#include \"$CXX_INCLUDE/$h\""
     done
@@ -191,11 +117,7 @@ cp "$BIN" tmp/forest_packer_madc
 ulimit -t 900
 if [ "$SIDECAR" = 1 ]; then
     OUT="$IMAGE.forest"
-    # The dialect image is the sidecar's first container: its stage starts
-    # the file, the system pack's appends to it.
-    if [ "$DIALECT_IMAGE" = 1 ]; then
-	rm -f "$OUT"
-    fi
+    rm -f "$OUT"
     APPEND_TO="$OUT"
 elif [ "$IMAGE" = "$BIN" ]; then
     OUT="$IMAGE"
@@ -222,27 +144,20 @@ fi
 # Redirect-then-cat, never `| tee` — without pipefail a pipeline's status is
 # tee's, so a pack FAILURE would read as success.
 PACK_LOG=${STAGE}_freeze.log
-FREEZE_ARGS=(--freeze-mir-cache)
-if [ "$DIALECT_IMAGE" = 0 ]; then
-    FREEZE_ARGS+=("--freeze-sources=$SOURCES_LIST" "${LEDGER_ARGS[@]}" "${FOREST_SHARE_ARGS[@]}")
-else
-    FREEZE_ARGS+=(--freeze-role=dialect)
-fi
+FREEZE_ARGS=(--freeze-mir-cache "--freeze-sources=$SOURCES_LIST" "${LEDGER_ARGS[@]}"
+    "${FOREST_SHARE_ARGS[@]}")
 if ! timeout 900 tmp/forest_packer_madc --no-config --std=madc "${FREEZE_ARGS[@]}" --freeze-append="$APPEND_TO" "$TU" > "$PACK_LOG" 2>&1; then
     cat "$PACK_LOG"
     echo "forest_pack: FAILED - freeze-append exited nonzero" >&2
     exit 1
 fi
 cat "$PACK_LOG"
-if [ "$DIALECT_IMAGE" = 0 ]; then
-    timeout 120 tmp/forest_packer_madc --dump-forest="$APPEND_TO" > ${STAGE}_share_dump.txt
-    forest_share_check ${STAGE}_share_dump.txt
-    # Lay the container out by the reads the pack's root binds make (format
-    # 60). Not the raw dialect image: it has no block to decode or lay out.
-    if ! forest_pack_layout "$APPEND_TO" "$LIST" timeout 120 tmp/forest_packer_madc; then
-	echo "forest_pack: FAILED - layout pass" >&2
-	exit 1
-    fi
+timeout 120 tmp/forest_packer_madc --dump-forest="$APPEND_TO" > ${STAGE}_share_dump.txt
+forest_share_check ${STAGE}_share_dump.txt
+# Lay the container out by the reads the pack's root binds make (format 60).
+if ! forest_pack_layout "$APPEND_TO" "$LIST" timeout 120 tmp/forest_packer_madc; then
+    echo "forest_pack: FAILED - layout pass" >&2
+    exit 1
 fi
 if [ "$APPEND_TO" != "$OUT" ]; then
     mv -f "$APPEND_TO" "$OUT"
@@ -265,12 +180,11 @@ if ! grep -q '^forest	units=' "$DUMP"; then
     echo "forest_pack: FAILED - packed image has no forest directory" >&2
     exit 1
 fi
-if [ "$DIALECT_IMAGE" = 0 ] && ! grep -q '^layout	reads' "$DUMP"; then
+if ! grep -q '^layout	reads' "$DUMP"; then
     echo "forest_pack: FAILED - the packed container was not laid out" >&2
     exit 1
 fi
-if [ "$DIALECT_IMAGE" = 0 ] &&
-   ! grep -q "^ledger	modules=$LEDGER_MODULE_COUNT	symbols=" "$DUMP"; then
+if ! grep -q "^ledger	modules=$LEDGER_MODULE_COUNT	symbols=" "$DUMP"; then
     echo "forest_pack: FAILED - expected $LEDGER_MODULE_COUNT selected ledger modules" >&2
     if ! grep -a '^ledger' "$DUMP" >&2; then
         echo "forest_pack: dump has no ledger record" >&2
@@ -292,15 +206,12 @@ done <<<"$LEDGER_SOURCES"
 # testing nothing — and (b) produce byte-identical output vs the default
 # (lane off) run: the blob is DERIVED state, never semantic. The bind reaches
 # its container through the DISCOVERY chain, so for a sidecar or a library
-# image this doubles as that carrier's arm smoke. (The system pack's lane: the
-# dialect image carries no <iostream> for the test to bind.)
-if [ "$DIALECT_IMAGE" = 0 ]; then
-    v=$(MADC_MIR_CACHE_BIND=1 timeout 120 "$BIN" -v tests/testfreezerun.mad 2>&1 | tr -d '\0')
-    grep -aq 'mir cache: bind module staged' <<<"$v"
-    out_cache=$(MADC_MIR_CACHE_BIND=1 timeout 120 "$BIN" tests/testfreezerun.mad 2>&1)
-    out_nocache=$(timeout 120 "$BIN" tests/testfreezerun.mad 2>&1)
-    [ "$out_cache" = "$out_nocache" ]
-fi
+# image this doubles as that carrier's arm smoke.
+v=$(MADC_MIR_CACHE_BIND=1 timeout 120 "$BIN" -v tests/testfreezerun.mad 2>&1 | tr -d '\0')
+grep -aq 'mir cache: bind module staged' <<<"$v"
+out_cache=$(MADC_MIR_CACHE_BIND=1 timeout 120 "$BIN" tests/testfreezerun.mad 2>&1)
+out_nocache=$(timeout 120 "$BIN" tests/testfreezerun.mad 2>&1)
+[ "$out_cache" = "$out_nocache" ]
 
 # Degradation gate (task #63) — the consumer half. A -v run of the PACKED
 # product over a real C++ program (iostream/string/vector: the exact closure
@@ -314,42 +225,12 @@ fi
 # win64 and darwin packs each carried their own "every listed entry point must
 # be a unit" loop, and THIS pack — the primary lane — had none, so a dropped
 # unit here was invisible until the headerless lane. One owner, three callers.
-# The dialect image is its own profile, its load log the dialect workload's
-# (the fragments it binds) — bound through the carrier's discovery arm, the
-# image being the carrier's only container at this stage — and its stats run
-# proves the bind reads it in place (no zstd frame; the gate's image leg). Its
-# TU roots nothing the compiler's dialect roots do not name (--image-roots).
-# The system pack's dump lists the image below it (the gate's stack leg).
 LOAD_LOG=${STAGE}_load.log
-if [ "$DIALECT_IMAGE" = 1 ]; then
-    STATS_LOG=${STAGE}_stats.log
-    timeout 300 "$BIN" -v scripts/parse_cost/dialect.mad > "$LOAD_LOG" 2>&1
-    timeout 300 "$BIN" --show-stats scripts/parse_cost/dialect.mad > "$STATS_LOG" 2>&1
-    bash scripts/forest_pack_gate.sh --profile linux-dialect \
-	--pack-log "$PACK_LOG" --load-log "$LOAD_LOG" \
-	--dump "$DUMP" --units-from "$LIST" --image-stats "$STATS_LOG" \
-	--image-roots "$LIST"
-else
-    timeout 300 "$BIN" -v tests/testfreezerun.mad > "$LOAD_LOG" 2>&1
-    # The split (dialect per-name plan B2): with the system pack over the
-    # image, a strict compile (C and C++) opens the system profile and never
-    # the image; a dialect compile binds the image — under --no-forest-bind
-    # too — and decodes no zstd frame. (The image-only carrier's stats run is
-    # stage 1's.)
-    printf '#include <stdio.h>\nint main(void) { printf("ok\\n"); return 0; }\n' > ${STAGE}_strict.c
-    printf '#include <cstdio>\nint main() { std::printf("ok\\n"); return 0; }\n' > ${STAGE}_strict.cpp
-    timeout 120 "$BIN" --show-stats --std=c17 ${STAGE}_strict.c > ${STAGE}_strict_c17.log 2>&1
-    timeout 120 "$BIN" --show-stats --std=c++17 ${STAGE}_strict.cpp > ${STAGE}_strict_cxx17.log 2>&1
-    timeout 300 "$BIN" --show-stats scripts/parse_cost/dialect.mad > ${STAGE}_dialect_stats.log 2>&1
-    timeout 300 "$BIN" --show-stats --no-forest-bind scripts/parse_cost/dialect.mad > ${STAGE}_nobind_stats.log 2>&1
-    SPLIT_STATS=(--strict-stats ${STAGE}_strict_c17.log --strict-stats ${STAGE}_strict_cxx17.log
-        --image-stats ${STAGE}_dialect_stats.log --image-stats ${STAGE}_nobind_stats.log)
-    bash scripts/forest_pack_gate.sh --profile linux \
-	--pack-log "$PACK_LOG" --load-log "$LOAD_LOG" \
-	--dump "$DUMP" \
-	--units-from "$LIST" --units-from "$SOURCES_LIST" --sources-from "$GUARDED_LIST" \
-	"${SPLIT_STATS[@]}"
-fi
+timeout 300 "$BIN" -v tests/testfreezerun.mad > "$LOAD_LOG" 2>&1
+bash scripts/forest_pack_gate.sh --profile linux \
+    --pack-log "$PACK_LOG" --load-log "$LOAD_LOG" \
+    --dump "$DUMP" \
+    --units-from "$LIST" --units-from "$SOURCES_LIST" --sources-from "$GUARDED_LIST"
 
 units=$(grep -c '^unit	' "$DUMP")
 if [ "$SIDECAR" = 1 ]; then

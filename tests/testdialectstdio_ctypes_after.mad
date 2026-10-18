@@ -2,13 +2,13 @@
 // ONE FILE, whichever comes first (owner 2026-10-17: the dialect hard-codes
 // its stdio streams, as println; it needs no header of its own). This order:
 // the first dialect use (ui_ws::open, whose body writes its refusal to
-// stderr — libmadc's body since the ws host moved to src/ui_ws.cpp; R4
-// retires this test with the dialect image) comes BEFORE the program
+// stderr — libmadc's body since the ws host moved to src/ui_ws.cpp) comes
+// BEFORE the program
 // includes <stdio.h>. Until a declaration
 // arrives, stderr is the dialect's own stream; the header's `extern FILE
 // *stderr;` then declares that same object — one stderr, of the header's
 // type. The program hands its FILE * to the dialect's println.
-// testdialectimage_ctypes.mad holds the other order. `--emit=c11` defines
+// testdialectstdio_ctypes.mad holds the other order. `--emit=c11` defines
 // `struct _IO_FILE` once.
 // Oracle (g++ 13 and clang++ 18, -std=c++17, the dialect side written as a
 // C++ namespace + an fputs println ahead of main), stdout:

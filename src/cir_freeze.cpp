@@ -1860,12 +1860,10 @@ static void forest_logical_bytes(const ForestLayoutTables &t, uint32_t seg_id,
 	forest_defs_in_order(t, order, out, words);
 }
 
-// The roles (dialect per-name plan B1), one row each: a new role is a row and
-// a code, never a format change. The dialect image is raw (pack-slices design
-// §7: never decompressed, read in place).
+// The roles, one row each: a new role is a row and a code, never a format
+// change.
 static const cir_forest_role_row forest_roles[] = {
-	{ CIR_FOREST_ROLE_SYSTEM,  "system",  false },
-	{ CIR_FOREST_ROLE_DIALECT, "dialect", true },
+	{ CIR_FOREST_ROLE_SYSTEM, "system" },
 };
 
 const cir_forest_role_row *cir_forest_role_info(uint32_t role)
@@ -1874,22 +1872,6 @@ const cir_forest_role_row *cir_forest_role_info(uint32_t role)
 		if ((uint32_t)row.role == role)
 			return &row;
 	return NULL;
-}
-
-bool cir_forest_role_named(const char *name, CirForestRole &out)
-{
-	for (const cir_forest_role_row &row : forest_roles)
-		if (name && strcmp(row.name, name) == 0) {
-			out = row.role;
-			return true;
-		}
-	return false;
-}
-
-PchCompression cir_forest_storage_codec(uint32_t role, PchCompression packed)
-{
-	const cir_forest_role_row *row = cir_forest_role_info(role);
-	return row && row->raw ? PchCompression::None : packed;
 }
 
 bool cir_forest_read_role(const madc::dis::snapshot_reader &r, uint32_t &role)
@@ -2083,9 +2065,6 @@ bool cir_forest_relayout(const void *image, size_t image_len,
 			block_roots[std::make_pair(seg, b)].insert(roots, roots + n);
 	};
 	uint64_t seq = 0;
-	// Each log ends `root <header>` (forest_pack_layout.sh): the dialect
-	// surface's roots are their own population (pack-slices design §7).
-	std::vector<bool> dialect_root(logs.size(), false);
 	for (size_t i = 0; i < logs.size(); ++i) {
 		FILE *lf = fopen(logs[i].c_str(), "r");
 		if (!lf) {
@@ -2115,9 +2094,6 @@ bool cir_forest_relayout(const void *image, size_t image_len,
 							off, len, &root, 1);
 				}
 		}
-		char root_name[512];
-		if (fscanf(lf, " root %511s", root_name) == 1)
-			dialect_root[i] = embedded_dialect_fragment_p(madc::dis::istring(root_name));
 		fclose(lf);
 	}
 
@@ -2154,25 +2130,14 @@ bool cir_forest_relayout(const void *image, size_t image_len,
 			note_block_span(CIR_FOREST_SEG_ARENA_DEFS, shift,
 					(uint64_t)pos[it->first] * t.record_bytes, t.record_bytes,
 					it->second.roots.data(), it->second.roots.size());
-	// A block at least half the C/C++ root binds read is stored raw: a compile
-	// including any of those roots copies it instead of decoding it. The
-	// dialect surface is never decompressed (pack-slices design §7): a block
-	// ANY dialect root reads is stored raw. The populations count apart, so
-	// the dialect roots never dilute the C/C++ hot set.
-	size_t dialect_roots = 0;
-	for (size_t i = 0; i < dialect_root.size(); ++i)
-		dialect_roots += dialect_root[i];
-	const size_t header_roots = logs.size() - dialect_roots;
+	// A block at least half the root binds read is stored raw: a compile
+	// including any of those roots copies it instead of decoding it.
+	const size_t header_roots = logs.size();
 	std::map<uint32_t, std::vector<bool> > raw_blocks;	// seg -> per block
 	hot_blocks = 0;
 	for (BlockRoots::const_iterator it = block_roots.begin(); it != block_roots.end(); ++it) {
-		size_t by_dialect = 0;
-		for (std::set<uint32_t>::const_iterator ri = it->second.begin();
-		     ri != it->second.end(); ++ri)
-			by_dialect += dialect_root[*ri];
-		const size_t by_header = it->second.size() - by_dialect;
-		if (!(header_roots && by_header * 2 >= header_roots)
-		    && !by_dialect)
+		const size_t by_header = it->second.size();
+		if (!(header_roots && by_header * 2 >= header_roots))
 			continue;
 		std::vector<bool> &v = raw_blocks[it->first.first];
 		if (v.size() <= it->first.second)
@@ -5606,38 +5571,18 @@ void CirFrozenForest::materialize_pass(const std::vector<uint32_t> *added)
 	// gives it under the filter as it now stands (the gate reads the LAST
 	// block, so a record restored early and one restored by a later, wider
 	// generation are judged alike) and how it was reached (_par_via, above):
-	// ` demanded`, ` listed`, ` carried`, or ` unreached`. A record a dialect
-	// fragment's decl index names carries its role ahead of that: ` anchor` —
-	// a global with storage, which the bind restores
-	// (CirDeclRecordFacts::anchor) — or ` dialect`, which restores only as
-	// demanded or carried (the gate fails a ` dialect listed` line).
+	// ` demanded`, ` listed`, ` carried`, or ` unreached`.
 	if (par_on) {
-		// The generation's forest by role (B2: a dialect compile binds the
-		// image beside the system pack; the gate keeps each forest's last
-		// block, so one forest's generation never hides the other's).
+		// The generation's forest by role (the gate keeps each forest's
+		// last block).
 		const cir_forest_role_row *par_role = cir_forest_role_info(_role);
 		fprintf(stderr, "SEEDPAR-GEN %s\n", par_role ? par_role->name : "role?");
-		std::map<uint32_t, bool> par_dialect;	// record -> an anchor
-		std::vector<cir_forest_decl_entry> di;
-		for (uint32_t u = 0; u < unit_count(); ++u) {
-			const char *un = unit_name(u);
-			if (!un || !embedded_dialect_fragment_p(madc::dis::istring(un))
-			    || !unit_decl_index(u, di))
-				continue;
-			for (size_t k = 0; k < di.size(); ++k) {
-				CirDeclRecordFacts f;
-				if (decl_record_facts(di[k].kind, di[k].record_id, f))
-					par_dialect[di[k].record_id] = f.anchor();
-			}
-		}
 		auto say = [&](const char *kind, const char *ns, const char *nm, int v,
-			       uint32_t record, const std::vector<char> &via, size_t i) {
+			       const std::vector<char> &via, size_t i) {
 			const char c = i < via.size() ? via[i] : '?';
-			std::map<uint32_t, bool>::const_iterator d = par_dialect.find(record);
-			fprintf(stderr, "SEEDPAR %s %s%s%s v=%d%s %s\n", kind,
+			fprintf(stderr, "SEEDPAR %s %s%s%s v=%d %s\n", kind,
 				ns && *ns ? ns : "", ns && *ns ? "::" : "",
 				nm ? nm : "?", v,
-				d == par_dialect.end() ? "" : d->second ? " anchor" : " dialect",
 				c == 'd' ? "demanded" : c == 'l' ? "listed"
 				: c == 'c' ? "carried" : "unreached");
 		};
@@ -5656,7 +5601,7 @@ void CirFrozenForest::materialize_pass(const std::vector<uint32_t> *added)
 					      != madc::dis::istring::npos;
 			say(t.kind == CIR_TYPEK_TYPEDEF ? "typedef"
 			    : t.kind == CIR_TYPEK_ENUM ? "enum"
-			    : product ? "product" : "tag", t.ns, t.name, v, t.record,
+			    : product ? "product" : "tag", t.ns, t.name, v,
 			    _par_via.types, i);
 		}
 		for (size_t i = 0; i < _restored_funcs.size(); ++i) {
@@ -5667,23 +5612,23 @@ void CirFrozenForest::materialize_pass(const std::vector<uint32_t> *added)
 				v = verdict_str(f.fd->function_display_name.c_str(),
 						f.fd->namespace_name.c_str());
 			say(f.fd && f.fd->is_specialization_product() ? "instance" : "func",
-			    NULL, f.name, v, f.record, _par_via.funcs, i);
+			    NULL, f.name, v, _par_via.funcs, i);
 		}
 		for (size_t i = 0; i < _restored_globals.size(); ++i)
 			say("global", _restored_globals[i].ns, _restored_globals[i].name,
 			    verdict_str(_restored_globals[i].name, _restored_globals[i].ns),
-			    _restored_globals[i].record, _par_via.globals, i);
+			    _par_via.globals, i);
 		for (size_t i = 0; i < _restored_templates.size(); ++i)
 			say("template", _restored_templates[i].ns, _restored_templates[i].key,
 			    verdict_str(_restored_templates[i].key, _restored_templates[i].ns),
-			    _restored_templates[i].record, _par_via.tmpls, i);
+			    _par_via.tmpls, i);
 		for (size_t i = 0; i < _restored_nsbinds.size(); ++i)
 			say("nsbind", _restored_nsbinds[i].ns, _restored_nsbinds[i].key,
-			    verdict_str(_restored_nsbinds[i].key, NULL), CIR_DECL_RECORD_NONE,
+			    verdict_str(_restored_nsbinds[i].key, NULL),
 			    _par_via.binds, i);
 		for (size_t i = 0; i < _restored_defbodies.size(); ++i)
 			say("defbody", NULL, _restored_defbodies[i].key,
-			    verdict_str(_restored_defbodies[i].key, NULL), CIR_DECL_RECORD_NONE,
+			    verdict_str(_restored_defbodies[i].key, NULL),
 			    _par_via.bodies, i);
 	}
 

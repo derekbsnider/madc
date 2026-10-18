@@ -129,8 +129,8 @@ static int dump_col_step(CirBuilder::DumpFlavor fl)
 // stdio_stream, Program::stdio_stream_stand_in) is the runtime's stream:
 // `__madc_stdio_stream(which)`, the dump runtime's stream boundary (FILE* as
 // void*). The emitted C names no libc stream symbol, so it is the same on
-// every target, and a println(stderr, ...) body frozen in the dialect image
-// carries no reference to a header's declaration. The compiler-side enum
+// every target, and a println(stderr, ...) body carries no reference to a
+// header's declaration. The compiler-side enum
 // converts to the wire value here, once.
 static int stdio_stream_wire(StdioStream s)
 {

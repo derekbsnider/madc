@@ -1630,8 +1630,7 @@ bool CirJitSession::build(Program *prog, const char *source_name,
     // the master off-lever for both lanes.
     cache_mod = NULL;
     if (prog) prog->mir_cache_exports.clear();
-    // The system pack's module cache (the opt-in bind lane); the dialect
-    // image's stays unread (B2).
+    // The system pack's module cache (the opt-in bind lane).
     if (prog && prog->forest_system.forest && !prog->forest_system.chain.empty()
 	&& !madc_object_mode   // object emit captures everything itself
 	&& getenv("MADC_MIR_CACHE_BIND")
@@ -7365,8 +7364,7 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 		    const char *out_path, bool append, bool mir_cache,
 		    const std::vector<cir_ledger_module> *ledger,
 		    bool progress,
-		    const std::vector<madc::dis::istring> *also_std,
-		    uint32_t role)
+		    const std::vector<madc::dis::istring> *also_std)
 {
     // The type graph rides the parse-populated DefArena (v18): a Program that
     // parsed with forest_arena_enabled OFF would freeze a type-less container
@@ -7578,14 +7576,7 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 			"pack falls back to zlib (larger container, slower "
 			"binds)\n", source_name);
 #endif
-		// The role (--freeze-role=; dialect per-name plan B1) picks the
-		// storage of everything below: a raw role's container is written
-		// with no codec — read in place, never decompressed (pack-slices
-		// design §7) — and so no level and no compressed intern spine.
-		f.role = role;
-		codec = cir_forest_storage_codec(role, codec);
-		const bool packed = codec != PchCompression::None;
-		const int pack_level = append && packed ? CIR_FOREST_PACK_ZSTD_LEVEL : 0;
+		const int pack_level = append ? CIR_FOREST_PACK_ZSTD_LEVEL : 0;
 		madc::dis::snapshot_writer w;
 		// Level by placement: the appended release pack pays a high
 		// level once per release build; a standalone dev freeze stays
@@ -7597,8 +7588,7 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 		// The intern spine compresses only in the appended pack
 		// (owner-approved ~7ms-per-process trade; dev freezes keep
 		// zero-copy binds).
-		bool staged = cir_forest_write(f, w, codec, pack_level,
-					       append && packed);
+		bool staged = cir_forest_write(f, w, codec, pack_level, append);
 		// Shared configs (--freeze-also-std=): the one pack profile serves
 		// every standard named here too. The madc dialect is C++17 plus
 		// extras — auto-includes, auto-namespacing, auto-main, its keywords
@@ -7871,10 +7861,9 @@ int madc_cir_dump_forest(const char *container_path)
 	printf("shared\tword=0x%08x\tdefines=0x%08x\n", c.language_std,
 	       c.defines_hash);
     // The carrier's profile stack, newest first (the order the discovery
-    // chain walks it; the dumped container is profile 0): each profile's role
-    // (dialect per-name plan B1), size, and segments stored with a codec —
-    // 0 = read in place. The pack gate's dialect-image leg reads them. No
-    // carrier offset: a dump is carrier-transparent (forest_emitpack_gate).
+    // chain walks it; the dumped container is profile 0): each profile's role,
+    // size, and segments stored with a codec — 0 = read in place. No carrier
+    // offset: a dump is carrier-transparent (forest_emitpack_gate).
     {
 	std::vector<cir_forest_profile> stack;
 	cir_forest_profiles(image, image_len, stack);
@@ -7945,19 +7934,8 @@ int madc_cir_dump_forest(const char *container_path)
 	printf("seeds-always\t%u\t%u\t%u\n", sa.n, st.n, sg.n);
 	printf("recordable-anon\t%u\n", forest.recordable_bits().max_anon_tag());
     }
-    // The dialect record census (docs/plans/2026-10-16-dialect-per-name-plan.md
-    // A1): a dialect fragment's unit (embedded_dialect_fragment_p, the one
-    // identity owner) serves a name from its decl entries' record column, so
-    // every entry but a namespace's carries a record. Rendered here — each
-    // entry without one as `dialectunrecorded`, the totals as `dialectrecords`
-    // — and judged by forest_pack_gate.sh (hard zero).
-    uint32_t dialect_units = 0;
-    size_t dialect_entries = 0, dialect_unrecorded = 0;
     for (uint32_t u = 0; u < forest.unit_count(); ++u) {
 	const char *uname = forest.unit_name(u);
-	const bool dialect = uname && embedded_dialect_fragment_p(madc::dis::istring(uname));
-	if (dialect)
-	    ++dialect_units;
 	uint32_t anchor = forest.unit_anchor(u);
 	std::vector<uint8_t> toks;
 	uint32_t ntok = 0;
@@ -8008,18 +7986,8 @@ int madc_cir_dump_forest(const char *container_path)
 		       (di[k].aux & Program::PACK_DECL_FUZZY_BOUNDS) ? "\tFUZZY" : "",
 		       (di[k].aux & Program::PACK_DECL_ADOPTABLE) ? "\tADOPTABLE" : "",
 		       rec);
-		if (dialect && di[k].kind != Program::pdkNamespace) {
-		    ++dialect_entries;
-		    if (di[k].record_id == CIR_DECL_RECORD_NONE) {
-			++dialect_unrecorded;
-			printf("dialectunrecorded\t%s\t%s\t%s\n", uname,
-			       pack_decl_kind_name(di[k].kind), nm ? nm : "?");
-		    }
-		}
 	    }
     }
-    printf("dialectrecords\tunits=%u\tentries=%zu\tunrecorded=%zu\n",
-	   dialect_units, dialect_entries, dialect_unrecorded);
     return 0;
 }
 

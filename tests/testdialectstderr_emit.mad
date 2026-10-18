@@ -1,12 +1,10 @@
 // A dialect program that names the dialect (ui::WEB) and `stderr` itself,
-// including nothing. Bound or parsed live, it emits the same C: its own
-// `stderr` is the compiler's stream, `__madc_stdio_stream(2)` — never a
-// restored `extern void *stderr;` frozen from a dialect TU's own stand-in
+// including nothing. Its own `stderr` is the compiler's stream,
+// `__madc_stdio_stream(2)` — never an `extern void *stderr;` declaration
 // (the stand-in is the compiler's declaration, not a record).
 // Oracle: C11 7.21.1p3 — stderr is an expression of type FILE *; the C
 // analogue (`#include <stdio.h>`, fputs to stderr, the printf line) behaves the same
-// under gcc 13 and clang 18. The emitted C is the observable: the defect
-// was bind-only (the packed binary), the run's output identical.
+// under gcc 13 and clang 18. The emitted C is the observable.
 int main(void)
 {
 	long level = ui::WEB;

@@ -329,10 +329,8 @@ class CirBuilder {
 	std::map<Variable *, node_t> m_global_decl_node;
 	// v66: the bound FROZEN_DEF globals' loaded nodes (storage declarations
 	// and init statements) — pre-built, so the reachability fixpoint
-	// registers their references as it does a loaded body's — each with the
-	// forest that produced it (its references' declarations are that
-	// forest's own: Program::forest_extern_node).
-	std::vector<std::pair<node_t, CirFrozenForest *> > m_frozen_global_nodes;
+	// registers their references as it does a loaded body's.
+	std::vector<node_t> m_frozen_global_nodes;
 	// C++ dynamic initialization (g++ model): file-scope globals whose
 	// scalar initializer is NOT a C11 constant expression (it reads a
 	// variable or calls a function). var_decl emits their storage without

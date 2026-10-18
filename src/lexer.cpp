@@ -2482,11 +2482,11 @@ void Program::queue_fragment_prerequisites(std::set<madc::dis::istring> &batch)
     suppress_auto_include_scan = saved_suppress;
 }
 
-// The dialect image's roots (dialect per-name plan B1): the fragment heads
+// The dialect's roots (the builtin-registry generator's): the fragment heads
 // the provider table names (embedded_dialect_fragment_p — the fragment
 // owner), their prerequisites queued by the auto-include's own scan
 // (queue_fragment_prerequisites) and ordered by its own table
-// (ordered_auto_include_headers) — so the image freezes exactly what a
+// (ordered_auto_include_headers) — so the generator parses exactly what a
 // dialect compile's auto-include includes, in the order it includes it.
 bool Program::dialect_image_roots(std::vector<madc::dis::istring> &out)
 {
@@ -2661,8 +2661,7 @@ void Program::inject_pending_auto_includes()
 	    size_t fragment_start = tokens.size();
 	    uint32_t boundary_spelling = fragment_start
 		? tokens[fragment_start - 1]->rec.spelling_id : 0;
-	    size_t forest_units_before = forest_system.chain_set.size()
-		+ forest_dialect.chain_set.size();
+	    size_t forest_units_before = forest_system.chain_set.size();
 	    // Delegate to the LITERAL include owner: feed a synthetic
 	    // `#include <hdr>` line through the real directive handler, so
 	    // forest bind, PCH discovery, embedded text, the filesystem
@@ -2681,8 +2680,7 @@ void Program::inject_pending_auto_includes()
 	    bool boundary_unchanged = !fragment_start
 		|| tokens[fragment_start - 1]->rec.spelling_id == boundary_spelling;
 	    if ( preludes
-	      && forest_system.chain_set.size() + forest_dialect.chain_set.size()
-		 == forest_units_before
+	      && forest_system.chain_set.size() == forest_units_before
 	      && boundary_unchanged )
 	    {
 		MadcSharedPreludeCache::Entry entry;
@@ -4449,7 +4447,7 @@ static CirFrozenForest *forest_reader_opened(const Program &prog, const void *im
     return NULL;
 }
 
-// B2's role filter for one profile of a discovery walk taking `role`: true
+// The role filter for one profile of a discovery walk taking `role`: true
 // when the profile is another role's — `below` then the carrier length
 // beneath it (0: none). The role is the opened reader's, else a profile this
 // compile skipped before, else its footer and segment table read through
@@ -4509,10 +4507,9 @@ static bool forest_profile_skipped(Program &prog, const void *image, size_t len,
 // segments (the AOT ledger) live outside the groves, so a consumer that only
 // wants those must not be made to bind the frozen string pool / arena into
 // live parse state it does not have (the .o link lane never parses).
-// `role` filters the stack (dialect per-name plan B2): a profile of another
-// role is skipped from its footer and segment table (forest_profile_skipped)
-// — its forest directory never opens — so the system walks never read the
-// dialect image and the dialect walk reads nothing else.
+// `role` filters the stack: a profile of another role is skipped from its
+// footer and segment table (forest_profile_skipped) — its forest directory
+// never opens.
 static CirFrozenForest *forest_probe_arm(Program *prog, const char *path,
 					 const char *arm, bool quiet_missing,
 					 bool &config_mismatch,
@@ -4544,9 +4541,7 @@ static CirFrozenForest *forest_probe_arm(Program *prog, const char *path,
 	    open_secs += forest_stat_now() - _t1;
 	    DBG(std::cout << "forest-bind: [" << arm << "] a profile of another"
 		" role skipped (the walk takes role " << role << ")" << std::endl);
-	    // A container this compile does not take, as a config miss is: a
-	    // carrier holding the dialect image alone falls through quietly
-	    // (as B1's walk met the image and missed on config).
+	    // A container this compile does not take, as a config miss is.
 	    if ( config_match == Program::forestMatchExact )
 		config_mismatch = true;
 	    if ( !below )
@@ -4610,8 +4605,6 @@ CirFrozenForest *Program::forest_reader(const void *image, size_t len,
     std::shared_ptr<CirFrozenForest> f(new CirFrozenForest());
     if ( !f->open_header(image, len, quiet_missing, opened) )
 	return NULL;
-    if ( f->role() < 2 )
-	++_forest_profiles_opened[f->role()];
     _forest_readers.push_back(f);
     return f.get();
 }
@@ -4724,20 +4717,17 @@ madc::dis::istring Program::forest_probed_arms() const
     return arms;
 }
 
-// One side's carrier, opened to its DIRECTORY: discovery (the profiles of the
-// side's role under the exact config), a sibling TU's shared instance, and —
-// for the system side — the missing-container policy. "Does this include
-// name a grove unit" reads only this (the directory is the pack's index);
-// forest_bound completes it for an actual bind, so a compile that binds
-// nothing never decodes the string pool or the arena. The dialect side is
-// silent when the carrier holds no image: the dialect then binds as it did
-// before B2 (forest_bind_dialect_fragment, forest_dialect_side).
+// The side's carrier, opened to its DIRECTORY: discovery (the profiles of the
+// side's role under the exact config), a sibling TU's shared instance, and
+// the missing-container policy. "Does this include name a grove unit" reads
+// only this (the directory is the pack's index); forest_bound completes it
+// for an actual bind, so a compile that binds nothing never decodes the
+// string pool or the arena.
 CirFrozenForest *Program::forest_directory(ForestSide &s)
 {
     if ( s.directory_tried )
 	return s.directory;
     s.directory_tried = true;
-    const bool system = s.role == CIR_FOREST_ROLE_SYSTEM;
 
     ForestWorkFrame _fw(&_forest_work_seconds, &_forest_work_depth);
     // S3 (R4-lite): a sibling TU adopts the group's instance for this role
@@ -4773,16 +4763,13 @@ CirFrozenForest *Program::forest_directory(ForestSide &s)
 	// its full open: a root that binds no frozen table (a pragma-only
 	// header, served as source alone) still writes its log, so the log
 	// exists exactly when the bind opened the container
-	// (forest_pack_layout.sh). The system pack's alone: the dialect image
-	// is laid out by nothing (B1).
-	if ( system && !forest_touch_log.empty()
+	// (forest_pack_layout.sh).
+	if ( !forest_touch_log.empty()
 	     && !s.directory->record_touches(forest_touch_log.c_str()) )
 	    std::cerr << "madc: --forest-touch-log: cannot write '"
 		      << forest_touch_log << "'" << std::endl;
 	return s.directory;
     }
-    if ( !system )
-	return NULL;
 
     // A named container that fails to open falls back to live parse LOUDLY
     // regardless of policy — the user pointed at it, so ignoring it silently
@@ -4824,23 +4811,16 @@ CirFrozenForest *Program::forest_bound(ForestSide &s)
     if ( !opened )
 	return NULL;
     s.forest = f;
-    DBG(std::cout << "forest-bind: opened "
-	<< (s.role == CIR_FOREST_ROLE_DIALECT ? "the dialect image" : "container")
-	<< " (" << f->unit_count() << " units)" << std::endl);
+    DBG(std::cout << "forest-bind: opened container (" << f->unit_count()
+	<< " units)" << std::endl);
     s.forest->_work_secs = &_forest_work_seconds;
     s.forest->_work_depth = &_forest_work_depth;
     return s.forest;
 }
 
-// The two sides' role codes, spelled in madc.h without cir_freeze.h.
-static_assert(CIR_FOREST_ROLE_SYSTEM == 0u && CIR_FOREST_ROLE_DIALECT == 1u,
-	      "Program::forest_system / forest_dialect name these role codes");
-
-bool Program::forest_dialect_image_permitted() const
-{
-    return language_std == STD_MADC && !forest_arena_enabled
-	&& forest_touch_log.empty();
-}
+// The side's role code, spelled in madc.h without cir_freeze.h.
+static_assert(CIR_FOREST_ROLE_SYSTEM == 0u,
+	      "Program::forest_system names this role code");
 
 // The carrier the AOT ledger is read from (-static-libmadc, S5). The grove
 // bind's container when it opened one — same file, already mapped — else the
@@ -5041,17 +5021,6 @@ Program::ForestBindStats Program::forest_bind_stats() const
     s.funcs_deferred = _forest_funcs_deferred;
     s.funcs_activated = _forest_funcs_activated;
     s.funcs_remaining = forest_deferred_funcs.size();
-    s.dialect_units = forest_dialect_side().dialect_units.size();
-    s.dialect_on_image = !forest_dialect.dialect_units.empty();
-    s.dialect_names = forest_dialect_demands.log.size();
-    for ( size_t i = 0; i < forest_dialect_demands.log.size(); ++i )
-	if ( !forest_dialect_demands.log[i].records.empty() )
-	    ++s.dialect_hits;
-    s.dialect_records = forest_dialect_demands.asked.size();
-    s.dialect_funcs = forest_dialect_registered.size();
-    s.dialect_objects = forest_dialect_objects;
-    s.profiles_system  = _forest_profiles_opened[CIR_FOREST_ROLE_SYSTEM];
-    s.profiles_dialect = _forest_profiles_opened[CIR_FOREST_ROLE_DIALECT];
     if ( CirFrozenForest *sf = forest_system.forest )
     {
 	s.opened         = true;
@@ -5066,18 +5035,6 @@ Program::ForestBindStats Program::forest_bind_stats() const
 	s.copy_calls     = sf->stat_copy_calls();
 	s.copy_bytes     = sf->stat_copy_bytes();
 	s.block_rows     = sf->block_stats(s.blocks_decoded, s.blocks_total);
-    }
-    // The dialect image (B2): its own lines; its materialize time joins the
-    // restore's (the restore timer spans both forests).
-    s.image_probed = forest_dialect.directory_tried;
-    s.image_found = forest_dialect.directory != NULL;
-    if ( CirFrozenForest *df = forest_dialect.forest )
-    {
-	s.image_bound       = true;
-	s.image_units_total = df->unit_count();
-	s.image_units_bound = forest_dialect.chain.size();
-	s.image_zstd_frames = df->stat_zstd_frames();
-	s.mat_secs         += df->_stat_mat_secs;
     }
     return s;
 }
@@ -5121,74 +5078,14 @@ int Program::forest_unit_for_include(const madc::dis::istring &incfile)
     const int u = forest_unit_named_by_include(incfile);
     if ( u < 0 || !forest_system.directory->unit_has_frozen_surface((uint32_t)u) )
 	return -1;
-    // A dialect fragment's unit was frozen under the madc dialect's parse;
-    // the profile's C++ labels hold for C++ headers (one parse under either
-    // standard), never for it. A strict-std include of one parses its text.
-    // Under madc a carrier with a dialect image binds the fragment from the
-    // image only (forest_bind_dialect_fragment, B2): the system pack's
-    // fragment units are never bound beside it.
+    // A dialect fragment never binds: the dialect is builtin (the generated
+    // table) or served as text — a carrier that froze one (a pack before
+    // list v10) binds only its C/C++ headers.
     const char *uname = forest_system.directory->unit_name((uint32_t)u);
-    if ( uname && embedded_dialect_fragment_p(uname)
-      && (language_std != STD_MADC || forest_dialect.directory) )
+    if ( uname && embedded_dialect_fragment_p(uname) )
 	return -1;
     // Only a unit this include binds opens the frozen content.
     return ensure_bind_forest() ? u : -1;
-}
-
-// The dialect surface binds DIRECTLY (pack-slices design §7): under
-// --std=madc a fragment the carrier froze binds as its unit — no #include,
-// whatever the system-header bind policy (the dialect is the compiler's own,
-// never forest-bind-dependent). The dialect image when the carrier holds one
-// (B2: forest_dialect — a fragment the image declines serves its text, never
-// the system pack's unit); else the system pack's fragment unit, as before B2
-// (a carrier with no image: the darwin and Windows packs until B5, a test
-// grove; a freeze or the pack's layout pass, forest_dialect_image_permitted).
-// A WRITTEN `#include <ns_*>` takes only the image here: its fallback is the
-// include path's own system bind. Its frozen branch decisions are always
-// verified (forest_bind_env_ok): a fragment frozen without its <string>
-// conveniences declines for a program that has <string>. False = the caller
-// serves the fragment's text.
-bool Program::forest_bind_dialect_fragment(const madc::dis::istring &name, bool written)
-{
-    if ( language_std != STD_MADC || !embedded_dialect_fragment_p(name) )
-	return false;
-    ForestSide *side = forest_dialect_image_permitted() && forest_directory(forest_dialect)
-	? &forest_dialect : written ? NULL : &forest_system;
-    if ( !side )
-	return false;
-    ForestSide &s = *side;
-    CirFrozenForest *dir = forest_directory(s);
-    const int u = dir ? dir->find_unit(name) : -1;
-    if ( u < 0 || !dir->unit_has_frozen_surface((uint32_t)u) || !forest_bound(s) )
-	return false;
-    if ( !s.chain_set.count((uint32_t)u) && !forest_bind_env_ok(s, (uint32_t)u) )
-    {
-	DBG(std::cout << "dialect: <" << name << "> declined (forest_bind_env_ok)"
-	    " — serving its text" << std::endl);
-	return false;
-    }
-    DBG(std::cout << "dialect: <" << name << "> bound directly to grove unit "
-	<< u << (&s == &forest_dialect ? " (dialect image)" : " (system pack)")
-	<< std::endl);
-    forest_bind_include(s, (uint32_t)u);
-    mark_embedded_include_flag(name);
-    return true;
-}
-
-// The dialect pays per name (docs/plans/2026-10-16-dialect-per-name-plan.md,
-// A4): a fragment unit bound under --std=madc ACTIVATES — its names are this
-// Program's to demand, and its restore (forest_restore_decls) withholds the
-// free functions its decl index names (forest_dialect_activation) until a
-// lookup demands them (forest_dialect_demand). Called by the one
-// bind walk (forest_bind_include) for every route a fragment binds by, on
-// the side it bound on. The pack's layout pass (--forest-touch-log) reads
-// every unit whole, so nothing activates there.
-void Program::forest_activate_dialect_unit(ForestSide &s, uint32_t unit)
-{
-    if ( language_std != STD_MADC || !forest_touch_log.empty()
-      || s.dialect_unit_p(unit) )
-	return;
-    s.dialect_units.push_back(unit);
 }
 
 int Program::forest_unit_named_by_include(const madc::dis::istring &incfile)
@@ -5365,13 +5262,7 @@ bool Program::forest_bind_env_ok(ForestSide &s, uint32_t root)
     // units (`char_traits_char` unknown in <iosfwd>, `div_t` defined twice).
     // A skipped directive-only arm (mingw stdio.h's `#ifndef NULL`) needs no
     // decline at all: the bind replays it (forest_replay_pp_arms).
-    // A dialect fragment always verifies (pack-slices design §7) — on its
-    // direct bind and on an #include alike: a fragment frozen without its
-    // <string> conveniences never stands in for the text a <string> program
-    // parses with them.
-    const char *root_name = s.forest->unit_name(root);
-    const bool verified = enabled != 0
-	|| (root_name && embedded_dialect_fragment_p(root_name));
+    const bool verified = enabled != 0;
     std::set<uint32_t> closure;
     std::set<uint32_t> husk_live;
     forest_env_collect(s, root, closure);
@@ -5656,13 +5547,7 @@ void Program::forest_bind_include(ForestSide &s, uint32_t unit)
     // umbrella carries no #ifndef guard; the name key is its only dedup.
     if ( const char *bound = s.forest->unit_name(unit) )
 	if ( find_embedded_header(bound) )
-	{
 	    included_files[embedded_unit_include_key(bound)] = true;
-	    // A dialect fragment bound under madc — directly, as a prerequisite
-	    // or a child, or by a written #include — pays per name.
-	    if ( language_std == STD_MADC && embedded_dialect_fragment_p(bound) )
-		forest_activate_dialect_unit(s, unit);
-	}
     _self += forest_stat_now() - _t1;
     _forest_bind_seconds += _self;
     const char *nm = s.forest->unit_name(unit);
