@@ -59,19 +59,19 @@ extern thread_local bool madc_verbose;
 // ---------------------------------------------------------------------------
 // Which compiler-implemented format intrinsic is this call?
 // ---------------------------------------------------------------------------
-// Reads the inline_builtin_kind tag the parser stamped at declaration
-// registration (Program::add_format_intrinsics, or provenance-gated to an
-// #included <bits/std_format>), converted to an enum
-// here at the boundary — enum-over-strings, the dump_flavor pattern.
+// Reads the BuiltinKind the parser stamped at declaration registration
+// (Program::add_format_intrinsics, or provenance-gated to an #included
+// <bits/std_format>) and maps it to the format flavor — the dump_flavor
+// pattern.
 static CirBuilder::FormatFlavor format_flavor(FuncDef *fd)
 {
 	if ( !fd )
 		return CirBuilder::ffNone;
-	if ( fd->inline_builtin_kind == "std_format" )
+	if ( fd->inline_builtin_kind == BuiltinKind::StdFormat )
 		return CirBuilder::ffFormat;
-	if ( fd->inline_builtin_kind == "std_print" )
+	if ( fd->inline_builtin_kind == BuiltinKind::StdPrint )
 		return CirBuilder::ffPrint;
-	if ( fd->inline_builtin_kind == "std_println" )
+	if ( fd->inline_builtin_kind == BuiltinKind::StdPrintln )
 		return CirBuilder::ffPrintln;
 	return CirBuilder::ffNone;
 }
@@ -535,8 +535,8 @@ node_t CirBuilder::lower_format_call(TokenCallFunc *tcf, FuncDef *fd,
 		FuncDef *vfd = (tcf->var.type ? tcf->var.type->as_funcdef_dd() : NULL);
 		fprintf(stderr, "[fmt-hook] name=%s fd_kind=%s var_kind=%s\n",
 			tcf->var.name.c_str(),
-			fd ? fd->inline_builtin_kind.c_str() : "(no fd)",
-			vfd ? vfd->inline_builtin_kind.c_str() : "(no var fd)");
+			fd ? builtin_kind_spelling(fd->inline_builtin_kind) : "(no fd)",
+			vfd ? builtin_kind_spelling(vfd->inline_builtin_kind) : "(no var fd)");
 	}
 	FormatFlavor fl = format_flavor(fd);
 	if ( fl == ffNone )

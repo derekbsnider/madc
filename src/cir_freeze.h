@@ -1231,7 +1231,7 @@ struct cir_forest_template_record
 	uint32_t key_id;	// the map key (bare name, or "ns::name" for fn/var/concept maps)
 	uint32_t name_id;	// TemplateDef::class_name / TemplateAliasDef::alias_name (0 = n/a)
 	uint32_t ns_id;		// defining_namespace / FnTemplateDef::ns (0 = global)
-	uint32_t extra_id;	// FnTemplateDef::inline_builtin_kind (0 = none)
+	uint32_t extra_id;	// FnTemplateDef::inline_builtin_kind's spelling (0 = none)
 	uint32_t owner_type_id;	// owner_class as a serialized type-id (0 = none)
 	uint32_t flags;		// CIR_TMPLF_*
 	uint32_t param_begin;	// u32 word offset of cir_forest_template_param[param_count]
@@ -1742,7 +1742,7 @@ struct CirRestoredTemplate
 	const char *key;		// the map key
 	const char *name;		// class_name / alias_name (NULL = n/a)
 	const char *ns;			// defining namespace (NULL/"" = global)
-	const char *extra;		// FnTemplateDef::inline_builtin_kind (NULL = none)
+	const char *extra;		// FnTemplateDef::inline_builtin_kind's spelling (NULL = none)
 	DataDefCLASS *owner;		// swizzled owner class (NULL = none)
 	uint32_t    flags;		// CIR_TMPLF_*
 	std::vector<std::pair<const char *, uint32_t> > params;	// (name, CIR_TMPLP_*)

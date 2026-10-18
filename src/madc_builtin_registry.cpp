@@ -728,7 +728,7 @@ madc::dis::istring builtin_function_line(Program &pgm, const madc::dis::istring 
     line += fd->internal_linkage ? "i" : "-";
     line += fd->vague_linkage ? "g" : "-";
     line += fd->weak_binding ? "w" : "-";
-    line += "\tbk=" + std::string(fd->inline_builtin_kind.c_str());
+    line += "\tbk=" + std::string(builtin_kind_spelling(fd->inline_builtin_kind));
     line += "\tovl=" + std::string(fd->overload_spelling.c_str());
     line += "\ttargs=";
     for ( size_t i = 0; i < fd->overload_template_args.size(); ++i )
@@ -1058,7 +1058,7 @@ madc::dis::istring builtin_function_template_line(Program &pgm, const madc::dis:
     for ( size_t k = 0; k < defs->size(); ++k )
     {
 	const Program::FnTemplateDef &d = (*defs)[k];
-	line += std::string(d.ns.c_str()) + "\t" + d.inline_builtin_kind.c_str() + "\t";
+	line += std::string(d.ns.c_str()) + "\t" + builtin_kind_spelling(d.inline_builtin_kind) + "\t";
 	for ( size_t i = 0; i < d.typeparams.size(); ++i )
 	    line += std::string(d.typeparams[i].c_str())
 		  + (i < d.typeparam_is_type.size() && d.typeparam_is_type[i] ? "t" : "n")
@@ -1290,7 +1290,7 @@ static std::string class_skip_reason(Program &live, DataDefCLASS *c, TypeVisit &
 	if ( fd->pure_virtual || fd->is_member_template || fd->ctor_trailing_self
 	  || fd->borrows_receiver_text || fd->is_constexpr || fd->is_volatile_method
 	  || fd->defaulted_or_deleted || fd->is_deleted || fd->has_forest_body
-	  || !fd->inline_builtin_kind.empty() || !fd->return_typedef_name.empty()
+	  || fd->inline_builtin_kind != BuiltinKind::None || !fd->return_typedef_name.empty()
 	  || !fd->overload_template_args.empty() || !fd->template_return_param_name.empty()
 	  || !fd->dyn_module_library.empty() || !fd->overload_spelling.empty()
 	  || !fd->namespace_name.empty() || !fd->function_display_name.empty() )
@@ -1463,7 +1463,7 @@ static std::string builtin_skip_reason(Program &live, const madc::dis::istring &
 	return "an emit symbol that is not the storage alias";
     if ( !fd->return_typedef_name.empty() )
 	return "a return typedef name";
-    if ( !fd->inline_builtin_kind.empty() )
+    if ( fd->inline_builtin_kind != BuiltinKind::None )
 	return "a builtin kind";
     if ( !fd->overload_template_args.empty() || !fd->template_return_param_name.empty() )
 	return "a template field";

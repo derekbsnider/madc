@@ -27951,7 +27951,7 @@ void Program::forest_restore_side(ForestSide &s, CirFrozenForest &forest)
 	{
 	    FnTemplateDef fd;
 	    fd.ns = rt.ns ? rt.ns : "";
-	    fd.inline_builtin_kind = rt.extra ? rt.extra : "";
+	    fd.inline_builtin_kind = builtin_kind_named(rt.extra);
 	    fd.owner_class = rt.owner;
 	    fd.instance_method = (rt.flags & CIR_TMPLF_INSTANCE_METHOD) != 0;
 	    fd.frozen_src = &rt;
@@ -29587,9 +29587,9 @@ void Program::add_namespaces()
 }
 
 static const FormatIntrinsic format_intrinsics[] = {
-    { "format",  "std_format",  true  },
-    { "print",   "std_print",   false },
-    { "println", "std_println", false },
+    { "format",  BuiltinKind::StdFormat,  true  },
+    { "print",   BuiltinKind::StdPrint,   false },
+    { "println", BuiltinKind::StdPrintln, false },
 };
 static const size_t format_intrinsic_count =
     sizeof(format_intrinsics) / sizeof(format_intrinsics[0]);
@@ -62764,7 +62764,7 @@ static bool skipped_template_body_returns_inline_addressof(
 	if ( !cv )
 	    continue;
 	FuncDef *fd = dynamic_cast<FuncDef *>(cv->type);
-	if ( fd && fd->inline_builtin_kind == "addressof" )
+	if ( fd && fd->inline_builtin_kind == BuiltinKind::Addressof )
 	    return true;
     }
     return false;
@@ -62957,11 +62957,11 @@ static bool retain_namespace_fn_template_body(
     ft.decl = tokens;
     ft.ns = pgm.current_namespace();
     if ( skipped_template_body_returns_inline_addressof(pgm, tokens) )
-	ft.inline_builtin_kind = "addressof";
+	ft.inline_builtin_kind = BuiltinKind::Addressof;
     else if ( skipped_template_body_is_inline_destroy(tokens, typeparams) )
-	ft.inline_builtin_kind = "destroy";
+	ft.inline_builtin_kind = BuiltinKind::Destroy;
     else if ( skipped_template_body_is_inline_identity_refcast(tokens, name) )
-	ft.inline_builtin_kind = "forward";
+	ft.inline_builtin_kind = BuiltinKind::Forward;
     // A body-LESS declaration has no body to instantiate; keep it OUT of
     // fn_template_map (instantiation + arity-deferral) and record it in
     // fn_template_decl_map for return-TYPE resolution only.
@@ -63117,6 +63117,38 @@ static uint8_t skipped_template_function_noexcept_spec(Program &pgm,
     return declarator_exception_spec_at(pgm, tokens, i, NULL);
 }
 
+// BuiltinKind's spellings: the forest's frozen records keep a kind as its
+// spelling (cir_arena builtin_kind_id, the template record's extra), so a
+// pack never depends on the enum's numbering. ONE table, indexed by the kind.
+static const char *const builtin_kind_spellings[] = {
+    "",			// None
+    "addressof", "destroy", "forward",
+    "madc_show", "madc_show_row",
+    "php_print_r", "php_var_dump",
+    "std_format", "std_print", "std_println"
+};
+static const size_t builtin_kind_count =
+    sizeof(builtin_kind_spellings) / sizeof(builtin_kind_spellings[0]);
+static_assert(sizeof(builtin_kind_spellings) / sizeof(builtin_kind_spellings[0])
+	      == (size_t)BuiltinKind::StdPrintln + 1,
+	      "builtin_kind_spellings has one row per BuiltinKind");
+
+const char *builtin_kind_spelling(BuiltinKind k)
+{
+    size_t i = (size_t)k;
+    return i < builtin_kind_count ? builtin_kind_spellings[i] : "";
+}
+
+BuiltinKind builtin_kind_named(const char *spelling)
+{
+    if ( !spelling || !*spelling )
+	return BuiltinKind::None;
+    for ( size_t i = 1; i < builtin_kind_count; ++i )
+	if ( strcmp(builtin_kind_spellings[i], spelling) == 0 )
+	    return (BuiltinKind)i;
+    return BuiltinKind::None;
+}
+
 // The COMPILER-IMPLEMENTED namespace templates, keyed by (namespace, name) —
 // the one place those spellings are compared. A declaration-only template whose
 // implementation IS the compiler carries an inline_builtin_kind exactly like
@@ -63126,14 +63158,14 @@ static uint8_t skipped_template_function_noexcept_spec(Program &pgm,
 //
 // Unlike its siblings this cannot be a BODY-SHAPE test: these declarations have
 // no body anywhere, which is the point (docs/plans/2026-08-17-php-print-r-var-dump-plan.md).
-static const char *madc_namespace_template_builtin_kind(const madc::dis::istring &ns,
+static BuiltinKind madc_namespace_template_builtin_kind(const madc::dis::istring &ns,
 							const madc::dis::istring &name,
 							const char *decl_file)
 {
     if ( ns == "php" )
     {
-	if ( name == "print_r" )  return "php_print_r";
-	if ( name == "var_dump" ) return "php_var_dump";
+	if ( name == "print_r" )  return BuiltinKind::PhpPrintR;
+	if ( name == "var_dump" ) return BuiltinKind::PhpVarDump;
     }
     // The std:: intrinsics are additionally PROVENANCE-gated: only the
     // compiler-owned fragment's declarations are compiler-implemented. A
@@ -63148,7 +63180,7 @@ static const char *madc_namespace_template_builtin_kind(const madc::dis::istring
 	if ( const FormatIntrinsic *fi = find_format_intrinsic(name.c_str()) )
 	    return fi->builtin_kind;
     }
-    return NULL;
+    return BuiltinKind::None;
 }
 
 static void register_skipped_namespace_template_function(
@@ -63251,16 +63283,19 @@ static void register_skipped_namespace_template_function(
 	    fd->noexcept_spec =
 		skipped_template_function_noexcept_spec(pgm, tokens, name);
 	    if ( skipped_template_body_returns_inline_addressof(pgm, tokens) )
-		fd->inline_builtin_kind = "addressof";
+		fd->inline_builtin_kind = BuiltinKind::Addressof;
 	    else if ( skipped_template_body_is_inline_destroy(tokens, typeparams) )
-		fd->inline_builtin_kind = "destroy";
+		fd->inline_builtin_kind = BuiltinKind::Destroy;
 	    else if ( skipped_template_body_is_inline_identity_refcast(tokens, name) )
-		fd->inline_builtin_kind = "forward";
-	    else if ( const char *bk = madc_namespace_template_builtin_kind(
-					   pgm.current_namespace(), name,
-					   tokens.empty() ? NULL
-							  : tokens[0]->file) )
-		fd->inline_builtin_kind = bk;
+		fd->inline_builtin_kind = BuiltinKind::Forward;
+	    else
+	    {
+		BuiltinKind bk = madc_namespace_template_builtin_kind(
+				     pgm.current_namespace(), name,
+				     tokens.empty() ? NULL : tokens[0]->file);
+		if ( bk != BuiltinKind::None )
+		    fd->inline_builtin_kind = bk;
+	    }
 	}
 	ns[name] = var;
 	ns.erase(parse_id);
@@ -63934,8 +63969,8 @@ ArgValueCategory Program::argument_value_category(TokenBase *arg,
 	FuncDef *fd = callee ? callee : resolved_call_funcdef(call);
 	FuncDef *raw = call->var.type ? call->var.type->as_funcdef_dd() : NULL;
 	if ( call->parameters.size() == 1 && call->parameters[0]
-	  && ((fd && fd->inline_builtin_kind == "forward")
-	      || (raw && raw->inline_builtin_kind == "forward")) )
+	  && ((fd && fd->inline_builtin_kind == BuiltinKind::Forward)
+	      || (raw && raw->inline_builtin_kind == BuiltinKind::Forward)) )
 	{
 	    if ( call->explicit_template_args.empty() )
 		return ArgValueCategory::Rvalue;
@@ -67383,7 +67418,7 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	if ( ne )
 	{
 	    FuncDef *nfd = ne->funcdef();
-	    if ( nfd && !ft.inline_builtin_kind.empty() )
+	    if ( nfd && ft.inline_builtin_kind != BuiltinKind::None )
 		nfd->inline_builtin_kind = ft.inline_builtin_kind;
 	    instantiated_var = ne->var;
 	    // The product's bound template arguments as identity spellings —
@@ -67439,7 +67474,7 @@ static bool instantiate_fn_template_binding(Program &pgm,
 		if ( tf->var.name != key
 		  && pfd->namespace_name + "::" + pfd->function_display_name != key )
 		    continue;
-		if ( !ft.inline_builtin_kind.empty() )
+		if ( ft.inline_builtin_kind != BuiltinKind::None )
 		    pfd->inline_builtin_kind = ft.inline_builtin_kind;
 		instantiated_var = &tf->var;
 		break;
@@ -83241,7 +83276,7 @@ void Program::show_entry_value(size_t decls_before)
     if ( !entry_show_var )
     {
 	FuncDef *fd = new FuncDef(returnDecl(ddVOID, false));
-	fd->inline_builtin_kind = "madc_show";
+	fd->inline_builtin_kind = BuiltinKind::MadcShow;
 	fd->declaration_only = true;
 	entry_show_var = new Variable("__madc_show", *fd, 1, NULL, false);
     }
@@ -83267,7 +83302,7 @@ void Program::show_entry_rows()
     if ( !entry_show_row_var )
     {
 	FuncDef *fd = new FuncDef(returnDecl(ddVOID, false));
-	fd->inline_builtin_kind = "madc_show_row";
+	fd->inline_builtin_kind = BuiltinKind::MadcShowRow;
 	fd->declaration_only = true;
 	entry_show_row_var = new Variable("__madc_show_row", *fd, 1, NULL, false);
     }

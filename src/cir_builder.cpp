@@ -1864,7 +1864,7 @@ static bool tsubst_inline_destroy_call(TokenCallFunc *tc)
 	if (!tc || tc->parameters.size() != 1)
 		return false;
 	FuncDef *fd = dynamic_cast<FuncDef *>(tc->var.type);
-	return fd && fd->inline_builtin_kind == "destroy";
+	return fd && fd->inline_builtin_kind == BuiltinKind::Destroy;
 }
 
 static bool tsubst_destroy_marker_call(TokenCallFunc *tc)
@@ -4272,7 +4272,7 @@ cir_node *CirBuilder::tsubst_scalar_placement_store(
 		TokenBase *inner = pe->pattern;
 		if (TokenCallFunc *fw = dynamic_cast<TokenCallFunc *>(inner)) {
 			FuncDef *ffd = call_target_funcdef(fw);
-			if (ffd && ffd->inline_builtin_kind == "forward"
+			if (ffd && ffd->inline_builtin_kind == BuiltinKind::Forward
 			    && fw->parameters.size() == 1 && fw->parameters[0])
 				inner = fw->parameters[0];
 		}
@@ -4626,7 +4626,7 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 		bool destroy_marker = tsubst_destroy_marker_call(tc);
 		if (!destroy_marker && tc && tc->parameters.size() == 1) {
 			FuncDef *fd = call_target_funcdef(tc);
-			destroy_marker = fd && fd->inline_builtin_kind == "destroy";
+			destroy_marker = fd && fd->inline_builtin_kind == BuiltinKind::Destroy;
 		}
 		if (destroy_marker) {
 			DataDef *concrete_arg = subst_datadef_active(src->datadef(), *subst);
@@ -6027,8 +6027,8 @@ TokenBase *CirBuilder::identity_forward_operand(TokenCallFunc *fw)
 		return NULL;
 	FuncDef *ffd = call_target_funcdef(fw);
 	FuncDef *raw = call_target_funcdef_raw(fw);
-	if ((ffd && ffd->inline_builtin_kind == "forward")
-	    || (raw && raw->inline_builtin_kind == "forward"))
+	if ((ffd && ffd->inline_builtin_kind == BuiltinKind::Forward)
+	    || (raw && raw->inline_builtin_kind == BuiltinKind::Forward))
 		return fw->parameters[0];
 	return NULL;
 }
@@ -8666,7 +8666,7 @@ void CirBuilder::build_call_args(TokenCallFunc *tcf, node_t args,
 		// callee-side twin of object_arg_addr's forward-arg unwrap); the
 		// copy substitutes it per pack element and the bind trivially holds.
 		if (m_tsubst_pattern_mode && callee
-		    && callee->inline_builtin_kind == "forward"
+		    && callee->inline_builtin_kind == BuiltinKind::Forward
 		    && arg && arg->type() == TokenType::ttVariable
 		    && arg->datadef() && arg->datadef()->is_reference()
 		    && template_param_under_type_layers(arg->datadef())) {
@@ -27394,7 +27394,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 					<< "' returns multiple values; receive"
 					" them with 'a, b := " << tcf->var.name
 					<< "(...)'" << std::flush;
-			if (((inline_fd && inline_fd->inline_builtin_kind == "addressof")
+			if (((inline_fd && inline_fd->inline_builtin_kind == BuiltinKind::Addressof)
 			     || tcf->var.name == "__builtin_addressof")
 			    && tcf->parameters.size() == 1) {
 				return node1(N_ADDR, translate_expr(tcf->parameters[0]), tb);
@@ -27451,7 +27451,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				return ec && (ec->is_dependent_placeholder
 					      || ec->has_dependent_surface);
 			};
-			if (inline_fd && inline_fd->inline_builtin_kind == "destroy"
+			if (inline_fd && inline_fd->inline_builtin_kind == BuiltinKind::Destroy
 			    && tcf->parameters.size() == 1
 			    && !destroy_element_pending(tcf->parameters[0]))
 				return lower_destroy_arg(tcf->parameters[0], true);

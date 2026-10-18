@@ -374,7 +374,7 @@ struct defrec {
 	// arg index; the two bools ride DF_TRET_* flags). On a DF_IS_FREE_FUNC
 	// record, disp_id holds FuncDef::function_display_name (a free fn's
 	// method_display_name is always empty) and ns_id holds namespace_name.
-	uint32_t builtin_kind_id;	// intern id of inline_builtin_kind (0 = none)
+	uint32_t builtin_kind_id;	// intern id of inline_builtin_kind's spelling (0 = none)
 	uint32_t tret_name_id;		// intern id of template_return_param_name (0 = none)
 	uint32_t tret_arg_index;	// template_return_deduce_arg_index
 	// CARRAY (DK_CARRAY, v25): DataDefCArray::count (carray_dim_t is 64-bit),

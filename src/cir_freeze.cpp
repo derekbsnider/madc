@@ -5082,7 +5082,7 @@ void CirFrozenForest::materialize_pass()
 				fd->namespace_name = nn;
 		if (r.builtin_kind_id)
 			if (const char *bk = a.c_str(r.builtin_kind_id))
-				fd->inline_builtin_kind = bk;
+				fd->inline_builtin_kind = builtin_kind_named(bk);
 		if (r.tret_name_id)
 			if (const char *tn = a.c_str(r.tret_name_id))
 				fd->template_return_param_name = tn;

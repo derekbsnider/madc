@@ -1234,3 +1234,25 @@ Slices:
 - Release: the 235 tests that name a dialect namespace pass, 235 of 235
   (after the module fix above). The table-name counts match dev for every
   parse-cost dialect workload: 1, 3, 7 and 19 of 539.
+
+### BuiltinKind (2026-10-18) — the owner's enum session
+
+- `FuncDef::inline_builtin_kind` and `FnTemplateDef::inline_builtin_kind`
+  were istring discriminators: 31 sites compared or assigned the kind as
+  string text, across the
+  parser, the CIR builder, cir_dump, cir_format, cir_freeze, madc_cir and the
+  registry. Both are now `BuiltinKind` (include/madc.h): None, Addressof,
+  Destroy, Forward, MadcShow, MadcShowRow, PhpPrintR, PhpVarDump, StdFormat,
+  StdPrint, StdPrintln. `FormatIntrinsic::builtin_kind` and
+  `madc_namespace_template_builtin_kind` return the enum.
+- The forest keeps the kind's SPELLING: `cir_arena` builtin_kind_id and the
+  template record's extra. `builtin_kind_spelling` writes it, and
+  `builtin_kind_named` reads it back once at load. The pack does not depend on
+  the enum's numbering, and the format does not change. One spelling table in
+  parser.cpp, with a static_assert of one row per kind.
+- Gate: the type system. A comparison with a string no longer compiles.
+- Differential, old binary against new on the packed release:
+  - the pack dump (`tmp/forest_pack_dump.txt`, 1.87 MB) is byte-identical;
+  - `--emit=c11` of the 307 tests that use one of these kinds (print_r,
+    var_dump, the format intrinsics, forward / move, addressof, destroy, the
+    show) is identical, exit codes included.

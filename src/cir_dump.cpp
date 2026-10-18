@@ -57,24 +57,23 @@ extern thread_local bool madc_verbose;
 // ---------------------------------------------------------------------------
 // Which compiler-implemented dump is this call?
 // ---------------------------------------------------------------------------
-// The ONE place a dump intrinsic's spelling is compared. The parser stamped
-// FuncDef::inline_builtin_kind at declaration registration (the same carrier
-// std::addressof / std::forward / __destroy use, and one the forest already
-// serializes), so this reads a tag rather than a user-facing name, and it is
-// converted to an enum here — at the boundary — per enum-over-strings.
+// The parser stamped FuncDef::inline_builtin_kind (a BuiltinKind) at
+// declaration registration (the same carrier std::addressof / std::forward /
+// __destroy use, and one the forest serializes), so this reads the kind,
+// never a user-facing name, and maps it to the dump's flavor.
 // `row` says the show's row form (a binding row's, plan §41.11a step 3d):
 // the same walk, bounded (CirBuilder::ShowLimits).
 static CirBuilder::DumpFlavor dump_flavor(FuncDef *fd, bool *row = NULL)
 {
 	if (!fd)
 		return CirBuilder::dfNone;
-	if (fd->inline_builtin_kind == "php_print_r")
+	if (fd->inline_builtin_kind == BuiltinKind::PhpPrintR)
 		return CirBuilder::dfPrintR;
-	if (fd->inline_builtin_kind == "php_var_dump")
+	if (fd->inline_builtin_kind == BuiltinKind::PhpVarDump)
 		return CirBuilder::dfVarDump;
-	if (fd->inline_builtin_kind == "madc_show")
+	if (fd->inline_builtin_kind == BuiltinKind::MadcShow)
 		return CirBuilder::dfShow;
-	if (fd->inline_builtin_kind == "madc_show_row") {
+	if (fd->inline_builtin_kind == BuiltinKind::MadcShowRow) {
 		if (row)
 			*row = true;
 		return CirBuilder::dfShow;

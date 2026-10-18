@@ -184,6 +184,27 @@ protected:
 // The reference a declarator spells: none, `&` ([dcl.ref] lvalue), `&&` (rvalue).
 enum class RefKind : uint8_t { None, Lvalue, Rvalue };
 
+// A COMPILER-IMPLEMENTED function's kind: a declaration-only function or
+// template whose implementation IS the compiler. The parser tags it at
+// declaration registration; the CIR builder and its dump and format lowerings
+// dispatch on it (enum-over-strings: never a spelling compare). Its spelling
+// is text only at the forest's boundary — the frozen records keep the
+// spelling, read back once by builtin_kind_named — and in the registry
+// differential's line.
+enum class BuiltinKind : uint8_t {
+    None,
+    Addressof,			// std::addressof's shape: its operand's address
+    Destroy,			// __destroy's shape: run the destructor
+    Forward,			// std::forward / move's shape: an identity reference cast
+    MadcShow, MadcShowRow,	// the REPL's value display, whole and as a row
+    PhpPrintR, PhpVarDump,	// php::print_r / php::var_dump
+    StdFormat, StdPrint, StdPrintln	// std::format / std::print / std::println
+};
+// The kind's spelling ("" for None), and the kind a spelling names (None for
+// NULL, "" or a spelling no kind has). Immutable table; any thread.
+const char *builtin_kind_spelling(BuiltinKind k);
+BuiltinKind builtin_kind_named(const char *spelling);
+
 class FuncDef: public DataDef
 {
 public:
@@ -466,7 +487,7 @@ public:
     // internal symbols while preserving the source name.
     madc::dis::istring function_display_name;
     madc::dis::istring namespace_name;
-    madc::dis::istring inline_builtin_kind;
+    BuiltinKind inline_builtin_kind;
     // Overload-set DECLARATION IDENTITY — the ranker's inputs, owned by the
     // declaration (g++: the FUNCTION_DECL carries its parameter-type-list and
     // DECL_TEMPLATE_INFO; the overload set is a list of decls) and frozen on
@@ -511,7 +532,7 @@ public:
     // which its script header declares as a template (inline_builtin_kind,
     // cpp-first-api.md).
     bool stands_for_function_template() const
-    { return is_template_placeholder() || !inline_builtin_kind.empty(); }
+    { return is_template_placeholder() || inline_builtin_kind != BuiltinKind::None; }
     // A member function template's PLACEHOLDER: the declaration-only
     // stand-in a call binds while its arguments are still dependent (its
     // return is fabricated; the instance is resolved per substitution).
@@ -3376,7 +3397,7 @@ struct MadcCompileGroup
 // Immutable; safe to read from any thread.
 struct FormatIntrinsic {
     const char *name;
-    const char *builtin_kind;
+    BuiltinKind builtin_kind;
     bool yields_text;
 };
 // The table (its row count in `count`), and its row for `name` or NULL.
@@ -4873,7 +4894,7 @@ public:
 	std::vector<bool> typeparam_is_pack;
 	std::vector<TokenBase *> decl;
 	madc::dis::istring ns;
-	madc::dis::istring inline_builtin_kind;
+	BuiltinKind inline_builtin_kind;
 	// Owner class for a MEMBER function template being instantiated: pushed
 	// on class_scope_stack during the body parse so the params/body resolve
 	// class-scope members ([basic.scope.class]). NULL for free/namespace fn

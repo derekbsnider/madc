@@ -4790,8 +4790,8 @@ void Program::forest_arena_record_func(FuncDef *fd, Method *mth)
 	// pattern record_skipped_template_return_pattern derives (std::move/
 	// forward/declval — the call's return is the deduced arg type). All
 	// empty/0 on a plain method; loaded verbatim by the free-fn restore.
-	r.builtin_kind_id = fd->inline_builtin_kind.empty()
-			  ? 0u : forest_arena.strings.intern(fd->inline_builtin_kind.c_str());
+	r.builtin_kind_id = fd->inline_builtin_kind == BuiltinKind::None
+			  ? 0u : forest_arena.strings.intern(builtin_kind_spelling(fd->inline_builtin_kind));
 	r.tret_name_id    = fd->template_return_param_name.empty()
 			  ? 0u : forest_arena.strings.intern(fd->template_return_param_name.c_str());
 	r.tret_arg_index  = (uint32_t)fd->template_return_deduce_arg_index;
@@ -5965,7 +5965,8 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
     });
     prog->fn_template_map.for_each([&](const char *key, std::vector<Program::FnTemplateDef> &v) {	/* thaw-owner */
 	for (Program::FnTemplateDef &fd : v)
-	    emit(CIR_TMPLK_FN, key, madc::dis::istring(), fd.ns, fd.inline_builtin_kind,
+	    emit(CIR_TMPLK_FN, key, madc::dis::istring(), fd.ns,
+		 madc::dis::istring(builtin_kind_spelling(fd.inline_builtin_kind)),
 		 fd.owner_class,
 		 fd.instance_method ? CIR_TMPLF_INSTANCE_METHOD : 0,
 		 fd.typeparams, fd.typeparam_is_type, fd.typeparam_is_pack,
@@ -5976,7 +5977,8 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
     });
     prog->fn_template_decl_map.for_each([&](const char *key, std::vector<Program::FnTemplateDef> &v) {	/* thaw-owner */
 	for (Program::FnTemplateDef &fd : v)
-	    emit(CIR_TMPLK_FN_DECL, key, madc::dis::istring(), fd.ns, fd.inline_builtin_kind,
+	    emit(CIR_TMPLK_FN_DECL, key, madc::dis::istring(), fd.ns,
+		 madc::dis::istring(builtin_kind_spelling(fd.inline_builtin_kind)),
 		 fd.owner_class,
 		 fd.instance_method ? CIR_TMPLF_INSTANCE_METHOD : 0,
 		 fd.typeparams, fd.typeparam_is_type, fd.typeparam_is_pack,
