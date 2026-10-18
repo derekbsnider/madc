@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### A C++ or madc compile reads only C++-family pack profiles; a C compile binds the C layer — the division is a language-family rule, not the stack's order (K0)
+
+- `cir_forest_profile_serves_family(producer_config, consumer_config)` (`src/cir_freeze.cpp`) answers whether a consumer may read a profile frozen under a producer config at all, over the config word's `language_std` family (`madc::file_kind_family`): a C++ or madc consumer refuses a C-family profile, a C consumer reads either. Every forest probe mode (`forest_probe_arm`, `src/lexer.cpp`) consults it before a match, so a C++ compile never binds or reads the C layer even when that layer sits newest in the stack.
+- Gate: `scripts/forest_bind_gate.sh` `[division]` — on a stack with the C layer on top, a C++ compile reads the mixed profile's header text (`which=1`), the C control reads the C layer's (`which=2`). See `docs/plans/2026-10-18-verified-cxx-bind.md` section K0.
+
 ### A guard-less system header bound from the pack is re-read on every inclusion, as gcc's multiple-include rule requires (`<assert.h>` under a changing NDEBUG)
 
 ### The C layer binds `<stdio.h>` under the verified C bind — open-ancestor definers and a skipped arm that replays the frozen value (forest v67)

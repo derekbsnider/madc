@@ -1407,6 +1407,16 @@ class Program;
 uint32_t madc_forest_config_word(const Program *prog);
 uint32_t madc_forest_defines_hash(const Program *prog);
 
+// The two packs (owner 2026-10-18): a C-family profile (the C layer) serves C
+// alone; the mixed C/C++ profile serves C++ and the madc dialect, and a C
+// compile may read its header text and AOT ledger too (C pack plan, ruling J3).
+// True iff a consumer of `consumer_config` may read a profile frozen under
+// `producer_config` at all — every probe mode asks it first, so a C++ or madc
+// compile never reads the C layer whatever the stack's order. The family is
+// the config word's language standard (madc::file_kind_family).
+bool cir_forest_profile_serves_family(uint32_t producer_config,
+				      uint32_t consumer_config);
+
 // The frozen CONTENT of the last container in `image`, one digest per
 // segment id: every segment's decoded bytes, the directory with its producer
 // config fields zeroed, less the segments that are not parse output (the

@@ -35,6 +35,7 @@ extern thread_local bool madc_verbose;
 #include "datatokens.h"	// Variable (Phase 6 3d: reconstruct method Variables on load)
 #include "madc.h"		// FuncDef (Phase 6 3d: reconstruct method FuncDefs on load)
 #include "madc_sys_includes.h"	// stdlib flavor table (v34 config-word: flavor is config identity)
+#include "madc_file_kinds.h"	// file_kind_family: which pack a config word reads
 #include "token_arena.h"
 #include "madcdis/id_table.h"
 #include "cir_freeze.h"
@@ -125,6 +126,17 @@ uint32_t madc_forest_config_word(const Program *prog)
 		word ^= ((h ^ (h >> 15)) & 0x7fffu) << 17;
 	}
 	return word;
+}
+
+bool cir_forest_profile_serves_family(uint32_t producer_config,
+				      uint32_t consumer_config)
+{
+	const int64_t lang_mask = 0x7fff;	// the config word's language_std bits
+	const bool producer_c = madc::file_kind_family(producer_config & lang_mask)
+				== madc::fkC;
+	const bool consumer_c = madc::file_kind_family(consumer_config & lang_mask)
+				== madc::fkC;
+	return consumer_c || !producer_c;
 }
 
 uint32_t madc_forest_defines_hash(const Program *prog)

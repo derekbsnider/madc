@@ -1002,6 +1002,62 @@ cl_vla=$(timeout 60 "$cl_dir/vla" 2>/dev/null)
 rm -rf "$cl_dir"
 echo "forest_bind_gate: [clayer] OK — a .c compile bound to a C layer below the madc profile reads that profile's source arm and links its ledger"
 
+# --- case: division (docs/plans/2026-10-18-verified-cxx-bind.md, K0) ---
+# Two packs (owner 2026-10-18): the C layer is C's alone; the mixed C/C++
+# profile serves C++ and madc. "C++ should NEVER dip into the C-only pack" —
+# by rule, not by the release stack's order. Here the C layer sits ON TOP, and
+# each profile's source arm carries its own text for one header name. A C++
+# compile that reads the header as text (no exact bind: --std=gnu++17 against
+# a madc-frozen profile) must read the mixed profile's (WHICH=1), never the
+# C layer's above it. The control: a C compile reads the C layer's (WHICH=2).
+dv_dir=tmp/fbgate_division
+dv_stack=$dv_dir/stack.msnap
+rm -rf "$dv_dir"
+mkdir -p "$dv_dir"
+cat > "$dv_dir/cxx_text.h" <<'EOF'
+#define WHICH 1
+EOF
+cat > "$dv_dir/c_text.h" <<'EOF'
+#define WHICH 2
+EOF
+printf '/usr/include/madc_fbgate_division.h\t%s\n' "$dv_dir/cxx_text.h" > "$dv_dir/cxx_sources.txt"
+printf '/usr/include/madc_fbgate_division.h\t%s\n' "$dv_dir/c_text.h" > "$dv_dir/c_sources.txt"
+cat > "$dv_dir/top_tu.mad" <<'EOF'
+#include <stddef.h>
+int main() { return 0; }
+EOF
+cat > "$dv_dir/c_tu.c" <<'EOF'
+#include <stddef.h>
+int main(void) { return 0; }
+EOF
+cat > "$dv_dir/use.cpp" <<'EOF'
+#include <stdio.h>
+#include <madc_fbgate_division.h>
+int main() { printf("which=%d\n", WHICH); return 0; }
+EOF
+cat > "$dv_dir/use.c" <<'EOF'
+#include <stdio.h>
+#include <madc_fbgate_division.h>
+int main(void) { printf("which=%d\n", WHICH); return 0; }
+EOF
+: > "$dv_stack"
+timeout 600 "$BIN" --std=madc "--freeze-sources=$dv_dir/cxx_sources.txt" \
+    --freeze-append="$dv_stack" "$dv_dir/top_tu.mad" > "$dv_dir/freeze_top.log" 2>&1 \
+    || fail "[division] the madc profile freeze FAILED: $(tail -n 3 "$dv_dir/freeze_top.log")"
+timeout 600 "$BIN" --std=gnu17 --freeze-raw "--freeze-sources=$dv_dir/c_sources.txt" \
+    --freeze-append="$dv_stack" "$dv_dir/c_tu.c" > "$dv_dir/freeze_c.log" 2>&1 \
+    || fail "[division] the C layer freeze FAILED: $(tail -n 3 "$dv_dir/freeze_c.log")"
+dv_profiles=$(timeout 60 "$BIN" --dump-forest="$dv_stack" | awk -F'\t' '$1 == "profile"' | wc -l)
+[ "$dv_profiles" -eq 2 ] || fail "[division] the stack holds $dv_profiles profile(s), expected 2"
+dv_c=$(timeout 60 "$BIN" --std=gnu17 --forest-bind="$dv_stack" "$dv_dir/use.c" 2>"$dv_dir/use_c.err")
+[ "$dv_c" = "which=2" ] \
+    || fail "[division] control: a C compile did not read the C layer's text above: '$dv_c' $(head -n 2 "$dv_dir/use_c.err")"
+dv_cxx=$(timeout 60 "$BIN" --std=gnu++17 --forest-bind="$dv_stack" "$dv_dir/use.cpp" 2>"$dv_dir/use_cxx.err")
+[ "$dv_cxx" = "which=1" ] \
+    || fail "[division] a C++ compile read the C-only pack: '$dv_cxx' (want the mixed profile's which=1) $(head -n 2 "$dv_dir/use_cxx.err")"
+rm -rf "$dv_dir"
+echo "forest_bind_gate: [division] OK — with the C layer on top, a C++ compile reads only the mixed C/C++ profile; a C compile reads the C layer"
+
 # --- case: cenv (docs/plans/2026-10-18-c-pack-layer.md, J4) ---
 # A C program sets feature-test macros ahead of its system includes as a
 # matter of course — sqlite3.c defines NDEBUG and _GNU_SOURCE. The C layer
@@ -2538,5 +2594,5 @@ run_case patternalias "1 2"
 # coverage. Worse in the other direction: deleting a case would leave this line
 # still claiming it runs. Deriving it from run_case would need the ~12 bespoke
 # cases below to register too; until then, update it when you add a case.
-echo "forest_bind_gate: GREEN 43/43 — typedef + struct + nested + bitfield + class + method + fwd + ptr + nestedenumfn + ldouble + ns + anon + declonlymt + flavorgate + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec + iobind + traitfold + nothrowfold + explicitctor + armreplay + armreplayc + replreuse + deletedctor + constcopy + subbind + redecl + husk + silbody grove headers bound (unit-granular husk recovery only), output == live == g++ + secvptr + friendgrant + patternalias + quietbind + memberptr + unionclass"
+echo "forest_bind_gate: GREEN 44/44 — typedef + struct + nested + bitfield + class + method + fwd + ptr + nestedenumfn + ldouble + ns + anon + declonlymt + flavorgate + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec + iobind + traitfold + nothrowfold + explicitctor + armreplay + armreplayc + division + replreuse + deletedctor + constcopy + subbind + redecl + husk + silbody grove headers bound (unit-granular husk recovery only), output == live == g++ + secvptr + friendgrant + patternalias + quietbind + memberptr + unionclass"
 exit 0

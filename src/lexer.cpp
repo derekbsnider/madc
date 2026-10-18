@@ -4739,6 +4739,11 @@ static CirFrozenForest *forest_probe_arm(Program *prog, const char *path,
 		   == (consumer_config & CIR_FOREST_CONFIG_STDLIB_MASK);
 	else if ( config_match == Program::forestMatchLedger )
 	    matches = f->has_ledger();
+	// The two packs: a C++ or madc compile never reads the C layer, in any
+	// mode — the division is this rule, not the stack's order.
+	if ( matches
+	  && !cir_forest_profile_serves_family(producer_config, consumer_config) )
+	    matches = false;
 
 	if ( !matches )
 	{
