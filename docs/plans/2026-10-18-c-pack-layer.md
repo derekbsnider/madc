@@ -197,6 +197,24 @@ equals `c_headers.live`, and `sqlite3.forest` is in the same position.
     the include position (or the definer per consult) in the freeze, then rule
     the dep replay-internal. Cost now: `<stdio.h>` parses live under the C
     layer (52.1M, not ~38M).
+    FIXED 2026-10-18 (owner: "you only did half the work"), forest v67, two
+    causes:
+    - glibc: a repeat consult whose definer is an OPEN ANCESTOR (still on
+      the include stack, so its define precedes the consult) adds that
+      definer to the recorded dep; the dep carries one tuple per definer and
+      ANY definer inside the closure makes the name replay-internal.
+    - mingw (win64): `stdio.h`'s `#ifndef WEOF` / `#ifndef NULL` arms were
+      skipped at freeze (the earlier `ctype.h` / `stddef.h` roots defined
+      them) and recorded as replayable arms, but the verified C bind
+      declined on the same consult's want-defined dep first. A dep whose
+      consult IS the captured arm (writing the name alone, over an
+      object-like external definition) now carries
+      `CIR_BRANCH_DEP_ARM_REPLAYS`; the bind runs the arm in the consumer's
+      own state and, when it yields the frozen value, takes the replay. An
+      arm whose value differs still declines. Gate: `forest_bind_gate.sh`
+      `[armreplayc]`.
+    The C gate (`forest_pack_gate.sh --bind-log`) now fails a probe that
+    DECLINES any root, not only one that binds nothing.
   - Found: B199 — a C compile searched libstdc++'s include directories, so
     the C layer's `stdlib.h` / `math.h` units were the libstdc++ wrappers
     (libc++'s, for nearly every C root, on darwin). FIXED 2026-10-18 (owner:

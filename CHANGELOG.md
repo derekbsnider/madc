@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+### The C layer binds `<stdio.h>` under the verified C bind — open-ancestor definers and a skipped arm that replays the frozen value (forest v67)
+
 ### --no-embedded-headers sends every core system header to disk, the grove bind and the pack source arm included
 
 ### A C compile searches the C view of the flavor table, never its C++ directories (B199)

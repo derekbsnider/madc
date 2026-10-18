@@ -3708,7 +3708,8 @@ protected:
 	std::string text;	// source text of the body, closing #endif excluded
     };
     SkippedArmCapture *skip_arm_capture = NULL;
-    TokenBase *skip_and_capture_arm(const madc::dis::istring &name);
+    TokenBase *skip_and_capture_arm(const madc::dis::istring &name, bool first_dep);
+    void run_skipped_arm(const char *unit_name, const char *name, const char *text);
     bool evaluateIfCondition();
     // The clang `__has_*` preprocessor operators, evaluated inside an #if.
     // `pos` enters at the operator's '(' and leaves past its ')'. Every one
@@ -5911,6 +5912,18 @@ public:
 	bool has_value;			// object-like body captured below
 	std::string value;
 	const char *definer;		// unit that established the state (NULL = none)
+	// Later consults in the SAME state whose state an OPEN ANCESTOR of the
+	// consulting unit established — the include position proves its define
+	// precedes the consult (glibc's bits/libc-header-start.h, consulting
+	// __GLIBC_INTERNAL_STARTING_HEADER_IMPLEMENTATION under each including
+	// header that defines it first). Frozen as one tuple per definer.
+	std::vector<const char *> ancestor_definers;
+	// The consult is a captured directive-only `#ifndef name` arm that
+	// writes name alone, over an external object-like definition (mingw
+	// stdio.h's WEOF and NULL behind an earlier C root): a consumer lacking
+	// name runs the arm in its own state, and when it yields the frozen
+	// value the bind's replay supplies it — not missing content.
+	bool arm_replays = false;
     };
     struct PackMacroOrigin {
 	const char *unit;		// innermost unit whose parse defined it
@@ -5973,8 +5986,12 @@ public:
     bool pack_record_source_list(const std::string &list_path);
     // True when an EXTERNAL definition (an earlier sibling's #define) gates
     // this consult — the condition a skipped `#ifndef` arm is missing content.
+    // *first_dep (when given) says whether this consult recorded the unit's
+    // dep for name — its first external consult there.
     bool pack_record_branch_macro(const std::string &name,	// interned only when recording
-				  bool include_probe = false);
+				  bool include_probe = false, bool *first_dep = NULL);
+    bool skipped_arm_defines(const char *unit_name, const char *name,
+			     const char *text, const char *value);
     const char *pack_current_unit();	// interned current source file (NULL off)
     void dump_macros(FILE *out);	// -dM: effective macro table, sorted
     void pack_open_toplevel_decl();	// loop-top: push a decl frame
@@ -7629,6 +7646,8 @@ public:
     bool forest_unit_is_standalone_husk(ForestSide &s, uint32_t unit,
 					const std::vector<uint32_t> &deps);	// task #57: empty decl surface + own file guard, safe for exact live include
     void forest_replay_pp_arms(ForestSide &s, uint32_t unit);
+    const char *forest_unit_arm_text(ForestSide &s, const std::vector<uint32_t> &deps,
+				     uint32_t name_id);	// v67: a unit's first skipped arm for a name
     void forest_install_pp(ForestSide &s, uint32_t unit);	// apply one unit's frozen macro delta to the live tables
     void add_namespaces();
     // --std=madc: declares std::format / print / println itself — madc's

@@ -126,15 +126,22 @@ enum : uint32_t
 	// u32 stream is [name_id, flags, value_id, definer_unit]... with flags
 	// bit0 = defined-at-freeze, bit1 = value_id valid (object-like body),
 	// definer_unit = directory index of the unit that established the
-	// state (0xffffffff = none). Bind eligibility skips deps whose definer
-	// is inside the closure being bound (replay-internal) and compares the
+	// state (0xffffffff = none). A name may carry several tuples, one per
+	// recorded definer (the first consult's, then each open ancestor's of
+	// a later consult in the same state). Bind eligibility skips a name
+	// with ANY definer inside the closure being bound (replay-internal) and compares the
 	// rest against the consumer's live macro tables; a mismatch declines
 	// the whole root bind to live parse (or prunes an already-live unit
 	// via its own guard). v55: a tuple with flags bit2 (CIR_BRANCH_DEP_PP_ARM)
 	// is not a dependency but a skipped arm — [name_id, PP_ARM, text_id,
 	// 0xffffffff]: the body of an `#ifndef name` arm the producer skipped
 	// (an external sibling had defined name) that holds only define / undef /
-	// conditional directives; the bind replays it when name is undefined. ---
+	// conditional directives; the bind replays it when name is undefined.
+	// v67: flags bit3 (CIR_BRANCH_DEP_ARM_REPLAYS) on a defined dep says the
+	// consult IS that unit's skipped arm, writing name alone over an
+	// external object-like definition: a consumer lacking name runs the arm
+	// in its own state, and when it yields the frozen value the bind takes
+	// the replay instead of declining. ---
 	SNAP_KIND_CIR_BRANCH_DEPS      = madc::dis::SNAP_KIND_CONSUMER + 23, // per-unit: uint32 [name_id, flags, value_id, definer_unit] tuples
 	// v41: exact source bytes before preprocessing. A config-mismatched
 	// consumer may re-tokenize these without binding producer semantic state.
@@ -667,12 +674,18 @@ bool cir_freeze_read(const madc::dis::snapshot_reader &r, uint32_t seg_id_base,
 // storage declaration and its __madc_global_init group, and a bind emits
 // those nodes verbatim. The freeze places each group statement in its
 // global's declaring unit.
-enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 66 };
+//
+// v67: a name's branch dependency carries one tuple per recorded definer (the
+// first consult's and each open ancestor's of a later one — ANY in the closure
+// makes it replay-internal), and CIR_BRANCH_DEP_ARM_REPLAYS marks a consult
+// that IS the unit's skipped directive-only arm, which the bind evaluates.
+enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 67 };
 // Flags word of a SNAP_KIND_CIR_BRANCH_DEPS tuple.
 enum : uint32_t {
 	CIR_BRANCH_DEP_DEFINED   = 1u,	// the macro was defined at the consult
 	CIR_BRANCH_DEP_HAS_VALUE = 2u,	// value_id holds its object-like body
-	CIR_BRANCH_DEP_PP_ARM    = 4u	// v55: [name, flags, arm text, none] — not a dep
+	CIR_BRANCH_DEP_PP_ARM    = 4u,	// v55: [name, flags, arm text, none] — not a dep
+	CIR_BRANCH_DEP_ARM_REPLAYS = 8u	// v67: the consult is the unit's PP_ARM (name alone, object-like external)
 };
 	// v43: defrec friendfn/friendcls runs — the friendship grants
 	// (friend_function_names / friend_class_names), parse-time access
@@ -1282,7 +1295,8 @@ struct cir_forest_unit
 	std::vector<uint32_t>       edges;	// directory unit indices, include order
 	// v40: external branch dependencies — [name_id, flags, value_id,
 	// definer_unit] tuples (flags bit0 = defined at freeze, bit1 =
-	// value_id valid; definer_unit 0xffffffff = none). v55: bit2 marks a
+	// value_id valid; definer_unit 0xffffffff = none), one per recorded
+	// definer of a name. v55: bit2 marks a
 	// skipped directive-only arm tuple (CIR_BRANCH_DEP_PP_ARM).
 	std::vector<uint32_t>       branch_deps;
 	std::vector<uint8_t>        source_payload;	// v41: pre-PP source bytes

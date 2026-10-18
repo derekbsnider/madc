@@ -165,8 +165,12 @@ struct MadcSharedPreludeCache
 	out.append(value.data(), value.size());
     }
 
+    // one_mutation_per_name: the cache's final-state replay needs a single
+    // textual write per name; the pack freeze's arm check RUNS the text, so
+    // it only needs the names written (skipped_arm_writes_only).
     static bool embedded_fragment_is_pure(
-	const madc::dis::istring &text, std::vector<madc::dis::istring> *mutations = NULL)
+	const madc::dis::istring &text, std::vector<madc::dis::istring> *mutations = NULL,
+	bool one_mutation_per_name = true)
     {
 	// Only conditional/object-macro directives have state fully represented
 	// by define_map/macro_map below. Includes, loads, pragmas, and line/error
@@ -214,8 +218,11 @@ struct MadcSharedPreludeCache
 		    // A single textual mutation per name makes final-state replay
 		    // equivalent to directive-event replay, including inactive arms.
 		    if ( !seen_mutations.insert(name).second )
-			return false;
-		    if ( mutations )
+		    {
+			if ( one_mutation_per_name )
+			    return false;
+		    }
+		    else if ( mutations )
 			mutations->push_back(name);
 		}
 	    }
@@ -391,6 +398,38 @@ struct MadcSharedPreludeCache
 	return key;
     }
 
+    static bool same_macro_state(const MacroState &a, const MacroState &b)
+    {
+	return a.kind == b.kind
+	    && (a.kind != MacroState::object || a.value == b.value)
+	    && (a.kind != MacroState::function || macro_equal(a.macro, b.macro));
+    }
+
+    // Set one name's macro state on the live tables: the write the #define /
+    // #undef handlers perform (an object-like body re-applies its std ABI
+    // note). Neither body: undefined.
+    static void set_macro(Program &pgm, const madc::dis::istring &name,
+			  const madc::dis::istring *object,
+			  const Program::MacroDef *function)
+    {
+	pgm.define_map.erase(name);
+	pgm.macro_map.erase(name);
+	if ( object )
+	{
+	    pgm.define_map[name] = *object;
+	    pgm.note_std_abi_define(name, *object);
+	}
+	else if ( function )
+	    pgm.macro_map[name] = *function;
+    }
+
+    static void set_macro_state(Program &pgm, const MacroState &state)
+    {
+	set_macro(pgm, state.name,
+		  state.kind == MacroState::object ? &state.value : NULL,
+		  state.kind == MacroState::function ? &state.macro : NULL);
+    }
+
     static MacroState macro_state(Program &pgm, const madc::dis::istring &name)
     {
 	MacroState state;
@@ -418,10 +457,7 @@ struct MadcSharedPreludeCache
 	{
 	    const MacroState &old = before[i];
 	    MacroState now = macro_state(pgm, old.name);
-	    if ( old.kind == now.kind
-	      && (now.kind != MacroState::object || old.value == now.value)
-	      && (now.kind != MacroState::function
-		  || macro_equal(old.macro, now.macro)) )
+	    if ( same_macro_state(old, now) )
 		continue;
 	    Entry::MacroDelta delta;
 	    delta.name = now.name;
@@ -607,15 +643,9 @@ struct MadcSharedPreludeCache
 	for ( size_t i = 0; i < entry.macro_deltas.size(); ++i )
 	{
 	    const Entry::MacroDelta &delta = entry.macro_deltas[i];
-	    pgm.define_map.erase(delta.name);
-	    pgm.macro_map.erase(delta.name);
-	    if ( delta.kind == Entry::MacroDelta::define_object )
-	    {
-		pgm.define_map[delta.name] = delta.value;
-		pgm.note_std_abi_define(delta.name, delta.value);
-	    }
-	    else if ( delta.kind == Entry::MacroDelta::define_function )
-		pgm.macro_map[delta.name] = delta.macro;
+	    set_macro(pgm, delta.name,
+		      delta.kind == Entry::MacroDelta::define_object ? &delta.value : NULL,
+		      delta.kind == Entry::MacroDelta::define_function ? &delta.macro : NULL);
 	}
 	pgm.included_files[entry.include_key] = true;
 	// The restored tokens ENTERED this TU's live stream — record it
@@ -5387,6 +5417,17 @@ void Program::forest_env_collect(ForestSide &s, uint32_t unit, std::set<uint32_t
 	    forest_env_collect(s, edges[i], closure);
 }
 
+// The text of a unit's FIRST captured skipped arm for name_id (its
+// CIR_BRANCH_DEP_PP_ARM tuples, in capture order), or NULL.
+const char *Program::forest_unit_arm_text(ForestSide &s, const std::vector<uint32_t> &deps,
+					  uint32_t name_id)
+{
+    for ( size_t a = 0; a + 4 <= deps.size(); a += 4 )
+	if ( (deps[a + 1] & CIR_BRANCH_DEP_PP_ARM) && deps[a] == name_id )
+	    return s.forest->pool_str(deps[a + 2]);
+    return NULL;
+}
+
 bool Program::forest_bind_env_ok(ForestSide &s, uint32_t root)
 {
     // v40 rollout knob (task #57): the mixed bind/live DECL frontier the
@@ -5434,6 +5475,18 @@ bool Program::forest_bind_env_ok(ForestSide &s, uint32_t root)
 	std::vector<uint32_t> deps;
 	if ( !s.forest->unit_branch_deps(unit, deps) )
 	    continue;
+	// A dep whose DEFINER is inside this closure is replay-internal: the
+	// bind installs the definer's events too (sys/cdefs.h consulting
+	// _FEATURES_H under a root that carries features.h). A name carries one
+	// tuple per recorded definer — the first consult's and each open
+	// ancestor's of a later one (glibc's libc-header-start.h, consulted
+	// under every glibc header that defines its macro first) — and ANY of
+	// them inside the closure makes the name replay-internal.
+	std::set<uint32_t> internal_names;
+	for ( size_t k = 0; k + 4 <= deps.size(); k += 4 )
+	    if ( !(deps[k + 1] & CIR_BRANCH_DEP_PP_ARM)
+	      && deps[k + 3] != 0xffffffffu && closure.count(deps[k + 3]) )
+		internal_names.insert(deps[k]);
 	for ( size_t k = 0; k + 4 <= deps.size(); k += 4 )
 	{
 	    // v55: a skipped directive-only arm is not a dependency — the bind
@@ -5443,12 +5496,9 @@ bool Program::forest_bind_env_ok(ForestSide &s, uint32_t root)
 		s.pp_arms[unit].push_back(std::make_pair(deps[k], deps[k + 2]));
 		continue;
 	    }
-	    // A dep whose DEFINER is inside this closure is replay-internal:
-	    // the bind installs the definer's events too (sys/cdefs.h
-	    // consulting _FEATURES_H under a root that carries features.h).
-	    uint32_t definer = deps[k + 3];
-	    if ( definer != 0xffffffffu && closure.count(definer) )
+	    if ( internal_names.count(deps[k]) )
 		continue;
+	    uint32_t definer = deps[k + 3];
 	    const char *nm = s.forest->pool_str(deps[k]);
 	    if ( !nm )
 		continue;
@@ -5456,6 +5506,20 @@ bool Program::forest_bind_env_ok(ForestSide &s, uint32_t root)
 	    bool have_defined = macro_name_defined(nm);
 	    if ( want_defined != have_defined )
 	    {
+		// v67: the consult is the unit's skipped directive-only arm, and
+		// run here it yields the frozen value — the replay
+		// (forest_replay_pp_arms) supplies the state: not missing content.
+		const char *arm = want_defined && (deps[k + 1] & CIR_BRANCH_DEP_ARM_REPLAYS)
+				? forest_unit_arm_text(s, deps, deps[k]) : NULL;
+		if ( arm && skipped_arm_defines(s.forest->unit_name(unit), nm, arm,
+						deps[k + 2] ? s.forest->pool_str(deps[k + 2]) : "") )
+		{
+		    DBG(std::cout << "forest bind: unit "
+			<< (s.forest->unit_name(unit) ? s.forest->unit_name(unit) : "?")
+			<< " dep '" << nm << "' defined at freeze, undefined here;"
+			<< " its skipped arm yields the frozen value" << std::endl);
+		    continue;
+		}
 		// Missing content is not a rollout choice. The producer saw an
 		// EXTERNAL definition and skipped this unit's conditional block;
 		// the consumer does not, so the frozen unit cannot supply what a
@@ -5735,25 +5799,35 @@ void Program::forest_replay_pp_arms(ForestSide &s, uint32_t unit)
 	    continue;
 	DBG(std::cout << "forest bind: unit " << (unit_name ? unit_name : "?")
 	    << " replays its skipped '#ifndef " << nm << "' arm" << std::endl);
-	Source saved = std::move(source);
-	source = Source();
-	source.fname(unit_name ? unit_name : "");
-	source.str(text);	// the arm body: source text
-	size_t groups_at_entry = cond_groups.size();
-	try
-	{
-	    if ( getRealToken() )
-		Throw << "Frozen skipped arm '#ifndef " << nm << "' of "
-		      << (unit_name ? unit_name : "?") << " produced a token" << flush;
-	    refuse_open_conditional_groups(groups_at_entry);
-	}
-	catch (...)
-	{
-	    source = std::move(saved);
-	    throw;
-	}
-	source = std::move(saved);
+	run_skipped_arm(unit_name, nm, text);
     }
+}
+
+// Run a captured directive-only `#ifndef name` arm body through the production
+// preprocessor on its own Source, so its nested conditionals answer against the
+// live tables — the bind's replay and its pre-bind check (skipped_arm_defines)
+// alike. An arm that yields a token or leaves a group open is a corrupt
+// capture.
+void Program::run_skipped_arm(const char *unit_name, const char *name, const char *text)
+{
+    Source saved = std::move(source);
+    source = Source();
+    source.fname(unit_name ? unit_name : "");
+    source.str(text);	// the arm body: source text
+    size_t groups_at_entry = cond_groups.size();
+    try
+    {
+	if ( getRealToken() )
+	    Throw << "Frozen skipped arm '#ifndef " << name << "' of "
+		  << (unit_name ? unit_name : "?") << " produced a token" << flush;
+	refuse_open_conditional_groups(groups_at_entry);
+    }
+    catch (...)
+    {
+	source = std::move(saved);
+	throw;
+    }
+    source = std::move(saved);
 }
 
 // Apply one unit's frozen PP-export delta to the live macro tables, replaying
@@ -6873,8 +6947,10 @@ void Program::pack_record_edge(const madc::dis::istring &includee)
 }
 
 bool Program::pack_record_branch_macro(const std::string &name,
-				       bool include_probe)
+				       bool include_probe, bool *first_dep)
 {
+    if ( first_dep )
+	*first_dep = false;
     if ( !pack_recording || name.empty() )
 	return false;
     pack_branch_macros.insert(name);
@@ -6915,8 +6991,6 @@ bool Program::pack_record_branch_macro(const std::string &name,
 	  && sti->second.count(oi->second.unit) )
 	    return false;		// subtree: edges install it before us
     }
-    if ( !pack_unit_branch_dep_seen[unit].insert(name).second )
-	return defined_now;
     PackBranchDep dep;
     dep.name = name;
     dep.defined = defined_now;
@@ -6935,8 +7009,50 @@ bool Program::pack_record_branch_macro(const std::string &name,
 	    dep.value = mv->body;
 	}
     }
+    if ( !pack_unit_branch_dep_seen[unit].insert(name).second )
+    {
+	// A REPEAT consult (a guard-less header re-included under another
+	// includer). Its definer joins the recorded dep when the consult sees
+	// the same state and that definer is an OPEN ANCESTOR here — still on
+	// the include stack, so its define precedes this consult by include
+	// position; a consumer closure holding it reproduces the state.
+	if ( dep.definer && dep.definer != unit
+	  && std::find(pack_unit_stack.begin(), pack_unit_stack.end(), dep.definer)
+	     != pack_unit_stack.end() )
+	{
+	    std::vector<PackBranchDep> &recorded = pack_unit_branch_deps[unit];
+	    for ( size_t i = 0; i < recorded.size(); ++i )
+	    {
+		PackBranchDep &r = recorded[i];
+		if ( r.name != name || r.defined != dep.defined
+		  || r.has_value != dep.has_value || r.value != dep.value )
+		    continue;
+		if ( r.definer != dep.definer
+		  && std::find(r.ancestor_definers.begin(), r.ancestor_definers.end(),
+			       dep.definer) == r.ancestor_definers.end() )
+		    r.ancestor_definers.push_back(dep.definer);
+		break;
+	    }
+	}
+	return defined_now;
+    }
     pack_unit_branch_deps[unit].push_back(dep);
+    if ( first_dep )
+	*first_dep = true;
     return defined_now;
+}
+
+// A captured arm body writes `name` and no other macro (the fragment reader's
+// write list — every branch's #define / #undef counted).
+static bool skipped_arm_writes_only(const std::string &text, const madc::dis::istring &name)
+{
+    std::vector<madc::dis::istring> writes;
+    if ( !MadcSharedPreludeCache::embedded_fragment_is_pure(text, &writes, false) )
+	return false;
+    for ( size_t i = 0; i < writes.size(); ++i )
+	if ( writes[i] != name )
+	    return false;
+    return !writes.empty();
 }
 
 // v55 (freeze time): skip an `#ifndef X` arm whose X an EXTERNAL sibling
@@ -6945,8 +7061,9 @@ bool Program::pack_record_branch_macro(const std::string &name,
 // stdio.h's `#ifndef NULL` behind the win64 corpus's <cstddef>). A body of
 // define / undef / conditional directives only, closed by its own #endif, is
 // recorded for the bind to replay (forest_replay_pp_arms); any other arm stays
-// missing content for the branch-dependency check.
-TokenBase *Program::skip_and_capture_arm(const madc::dis::istring &name)
+// missing content for the branch-dependency check. first_dep: this consult
+// recorded the unit's dep for name (pack_record_branch_macro).
+TokenBase *Program::skip_and_capture_arm(const madc::dis::istring &name, bool first_dep)
 {
     const char *unit = pack_current_unit();
     SkippedArmCapture cap;
@@ -6966,6 +7083,16 @@ TokenBase *Program::skip_and_capture_arm(const madc::dis::istring &name)
     skip_arm_capture = NULL;
     if ( !cap.closed || !cap.pure )
 	return next;
+    if ( first_dep )
+    {
+	// The unit's first consult of name IS this arm, over an EXTERNAL
+	// object-like definition, and the arm writes name alone: the bind may
+	// evaluate it in the consumer's state (skipped_arm_defines).
+	std::vector<PackBranchDep> &deps = pack_unit_branch_deps[unit];
+	if ( !deps.empty() && deps.back().name == name && deps.back().has_value
+	  && macro_map.count(name) == 0 && skipped_arm_writes_only(cap.text, name) )
+	    deps.back().arm_replays = true;
+    }
     std::vector<PackSkippedArm> &arms = pack_unit_skipped_arms[unit];
     for ( size_t i = 0; i < arms.size(); ++i )
 	if ( arms[i].name == name && arms[i].text == cap.text )
@@ -6975,6 +7102,38 @@ TokenBase *Program::skip_and_capture_arm(const madc::dis::istring &name)
     arm.text = cap.text;
     arms.push_back(arm);
     return next;
+}
+
+// v67 (bind time): run a unit's captured `#ifndef name` arm — its first consult
+// of name, frozen over an EXTERNAL object-like definition this consumer lacks
+// (name is undefined here) — in the CONSUMER's macro state, and say whether it
+// defines name with the frozen value. Then the bind's replay
+// (forest_replay_pp_arms) supplies what the external definer did, and the dep
+// is not missing content: mingw stdio.h's WEOF and NULL, defined first by the C
+// layer's earlier ctype.h / stddef.h roots. The arm writes name alone (checked
+// at freeze), so undefining name again restores the tables.
+bool Program::skipped_arm_defines(const char *unit_name, const char *name,
+				  const char *text, const char *value)
+{
+    typedef MadcSharedPreludeCache::MacroState MacroState;
+    const bool recording = pack_recording;
+    pack_recording = false;
+    MacroState armed;
+    try
+    {
+	run_skipped_arm(unit_name, name, text);
+	armed = MadcSharedPreludeCache::macro_state(*this, name);
+    }
+    catch (...)
+    {
+	pack_recording = recording;
+	MadcSharedPreludeCache::set_macro(*this, name, NULL, NULL);
+	throw;
+    }
+    pack_recording = recording;
+    MadcSharedPreludeCache::set_macro(*this, name, NULL, NULL);
+    return armed.kind == MacroState::object
+	&& armed.value == madc::dis::istring(value ? value : "");
 }
 
 // -dM: dump the effective macro table (object-like + function-like) in
@@ -8715,7 +8874,8 @@ TokenBase *Program::_getToken()
 		    while ( source.good() && !source.eof() && (isalnum(source.peek()) || source.peek() == '_') )
 			name += source.get();
 		    bool defined = macro_name_defined(name);
-		    bool external = pack_record_branch_macro(name);
+		    bool first_dep = false;
+		    bool external = pack_record_branch_macro(name, false, &first_dep);
 		    bool active = (directive == "ifdef") ? defined : !defined;
 		    if ( !source.guard_watch.key.empty() )
 			guard_watch_open(directive == "ifndef" ? madc::dis::istring(name)
@@ -8729,7 +8889,7 @@ TokenBase *Program::_getToken()
 		    // multi-line /* */ comment here is handled by the lexer's case '/'
 		    consume_directive_line_tail();
 		    if ( !active && external && directive == "ifndef" )
-			return skip_and_capture_arm(name);
+			return skip_and_capture_arm(name, first_dep);
 		    if ( !active )
 			return skipConditionalBlock();
 		    return getToken();

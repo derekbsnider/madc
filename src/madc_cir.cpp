@@ -4085,7 +4085,11 @@ static void cir_forest_fill_pack_payloads(Program *prog, cir_frozen_forest &f)
     std::sort(f.branch_macros.begin(), f.branch_macros.end());
 
     // 5b (v40). Per-unit EXTERNAL branch dependencies — the bind-eligibility
-    // environment (task #57): [name_id, flags, value_id] triplets.
+    // environment (task #57): [name_id, flags, value_id, definer] tuples, one
+    // per recorded definer — the first consult's, then each open-ancestor
+    // definer of a later consult in the same state (the bind reads a name's
+    // tuples as alternatives: any definer inside the closure makes it
+    // replay-internal).
     typedef std::map<const char *, std::vector<Program::PackBranchDep> > dep_map;
     const std::vector<dep_map::const_iterator> deps_in_order =
 	pack_entries_in_unit_order(prog->pack_unit_branch_deps, prog->pack_unit_order);
@@ -4094,17 +4098,25 @@ static void cir_forest_fill_pack_payloads(Program *prog, cir_frozen_forest &f)
 	uint32_t u = ensure_unit(bd->first);
 	for (size_t k = 0; k < bd->second.size(); ++k) {
 	    const Program::PackBranchDep &d = bd->second[k];
-	    // ensure_unit may reallocate f.units — resolve the definer BEFORE
+	    // ensure_unit may reallocate f.units — resolve the definers BEFORE
 	    // taking the output reference.
-	    uint32_t definer = d.definer ? ensure_unit(d.definer) : 0xffffffffu;
+	    std::vector<uint32_t> definers;
+	    definers.push_back(d.definer ? ensure_unit(d.definer) : 0xffffffffu);
+	    for (size_t a = 0; a < d.ancestor_definers.size(); ++a)
+		definers.push_back(ensure_unit(d.ancestor_definers[a]));
 	    std::vector<uint32_t> &out = f.units[u].branch_deps;
 	    uint32_t flags = (d.defined ? 1u : 0u)
-			   | (d.has_value ? 2u : 0u);
-	    out.push_back(pool->intern(d.name));
-	    out.push_back(flags);
-	    out.push_back(d.has_value && !d.value.empty()
-			  ? pool->intern(d.value) : 0);
-	    out.push_back(definer);
+			   | (d.has_value ? 2u : 0u)
+			   | (d.arm_replays ? CIR_BRANCH_DEP_ARM_REPLAYS : 0u);
+	    const uint32_t name_id = pool->intern(d.name);
+	    const uint32_t value_id = d.has_value && !d.value.empty()
+				    ? pool->intern(d.value) : 0;
+	    for (size_t a = 0; a < definers.size(); ++a) {
+		out.push_back(name_id);
+		out.push_back(flags);
+		out.push_back(value_id);
+		out.push_back(definers[a]);
+	    }
 	}
     }
     // v55: each unit's skipped directive-only `#ifndef` arms follow its

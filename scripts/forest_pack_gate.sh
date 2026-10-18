@@ -437,13 +437,20 @@ check_raw_profile() {
 # shipped with (dropped in 0.105.0, unnoticed).
 # ---------------------------------------------------------------------------
 check_bind_log() {
-	local log="$1" norm="$2" bound
+	local log="$1" norm="$2" bound declined
 	bound=$(count_pat "$norm" "bound to grove unit")
-	say "[$PROFILE] bind: $bound grove unit(s) bound — $log"
+	declined=$(count_pat "$norm" "DECLINE root")
+	say "[$PROFILE] bind: $bound grove unit(s) bound, $declined root(s) declined — $log"
 	if [ "$bound" -eq 0 ]; then
 		fail "[$PROFILE] the probe bound NO grove unit: the profile it should bind"
 		echo "       is missing, mislabelled, or its config does not serve the probe" >&2
 		echo "       (or the probe ran without -v): $log" >&2
+	fi
+	# Every probe header is a pack root: one that declines is a live parse
+	# the layer was frozen to spare (<stdio.h> under C, 0.106.0).
+	if [ "$declined" -ne 0 ]; then
+		fail "[$PROFILE] the probe DECLINED $declined root(s) — each one live-parses: $log"
+		/bin/grep -a "DECLINE root" "$norm" | head -5 | sed 's/^/       /' >&2
 	fi
 }
 
@@ -576,10 +583,13 @@ selftest() {
 		--units-from "$dir/fpgate_st_units.txt" --raw-profile
 
 	# 9d: the bind probe. A -v log that bound a unit is green; one that bound
-	#     none (the layer is missing or mislabelled) is red, and a missing log
-	#     is red rather than vacuously green.
+	#     none (the layer is missing or mislabelled) is red, one that bound a
+	#     unit but declined another root is red, and a missing log is red
+	#     rather than vacuously green.
 	printf 'include <stdio.h> bound to grove unit 4 (/usr/include/stdio.h)\n' > "$dir/fpgate_st_bind_ok.log"
 	leg "bind probe bound" pass --bind-log "$dir/fpgate_st_bind_ok.log"
+	printf 'include <string.h> bound to grove unit 7 (/usr/include/string.h)\nforest bind: DECLINE root stdio.h — unit stdio.h branch dep '"'"'WEOF'"'"' defined at freeze, opposite here\n' > "$dir/fpgate_st_bind_declined.log"
+	leg "bind probe declined a root" fail --bind-log "$dir/fpgate_st_bind_declined.log"
 	printf 'forest-bind: [self-image] producer config mismatch — trying older profile\n' > "$dir/fpgate_st_bind_none.log"
 	leg "bind probe bound nothing" fail --bind-log "$dir/fpgate_st_bind_ok.log" \
 		--bind-log "$dir/fpgate_st_bind_none.log"

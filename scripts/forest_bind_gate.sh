@@ -1178,6 +1178,77 @@ grep -aq "fbgate_lv_b.h replays its skipped '#ifndef FBG_MC_X' arm" "$lv_log" \
 rm -rf "$lv_snap" "$lv_log" tmp/fbgate_lv tmp/fbgate_lv_producer.cpp tmp/fbgate_lv_consumer.cpp
 echo "forest_bind_gate: [armreplay] OK — a skipped directive-only arm binds and replays in the consumer's macro state"
 
+# --- case: armreplayc (2026-10-18, forest v67: an arm that reproduces the dep binds under C) ---
+# A C consumer's bind is always verified, so the armreplay unit's want-defined
+# dep DECLINED its root there — mingw stdio.h's WEOF and NULL, defined first by
+# the C layer's earlier ctype.h / stddef.h roots, left <stdio.h> live-parsed in
+# every win64 C compile. Now a dep whose consult IS the unit's captured arm
+# (writing the name alone, over an object-like external) carries
+# CIR_BRANCH_DEP_ARM_REPLAYS; the bind runs the arm in the consumer's state and,
+# when it yields the frozen value, takes the replay (fbgate_ac_b.h binds, x=5 —
+# its arm writes the name in two branches, mingw stdio.h's NULL shape, and
+# answers by language). An arm whose value DIFFERS from the definer's is still
+# missing content: fbgate_ac_d.h's root declines and parses live (y=7, its own
+# arm). Negative control: the v66 binary declines fbgate_ac_b.h too.
+mkdir -p tmp/fbgate_ac
+cat > tmp/fbgate_ac/fbgate_ac_a.h <<'EOF'
+#ifndef FBGATE_AC_A_H
+#define FBGATE_AC_A_H
+#define FBG_AC_X 5
+#define FBG_AC_Y 6
+#endif
+EOF
+cat > tmp/fbgate_ac/fbgate_ac_b.h <<'EOF'
+#ifndef FBGATE_AC_B_H
+#define FBGATE_AC_B_H
+#ifndef FBG_AC_X
+# ifdef __cplusplus
+#  define FBG_AC_X 0
+# else
+#  define FBG_AC_X 5
+# endif
+#endif
+struct fbg_ac_s { int v; };
+#endif
+EOF
+cat > tmp/fbgate_ac/fbgate_ac_d.h <<'EOF'
+#ifndef FBGATE_AC_D_H
+#define FBGATE_AC_D_H
+#ifndef FBG_AC_Y
+#define FBG_AC_Y 7
+#endif
+struct fbg_ac_d { int w; };
+#endif
+EOF
+cat > tmp/fbgate_ac_producer.c <<'EOF'
+#include <fbgate_ac_a.h>
+#include <fbgate_ac_b.h>
+#include <fbgate_ac_d.h>
+int main(void) { return 0; }
+EOF
+cat > tmp/fbgate_ac_consumer.c <<'EOF'
+#include <fbgate_ac_b.h>
+#include <fbgate_ac_d.h>
+#include <stdio.h>
+int main(void) { struct fbg_ac_s s = { FBG_AC_X }; struct fbg_ac_d d = { FBG_AC_Y }; printf("x=%d y=%d\n", s.v, d.w); return 0; }
+EOF
+ac_snap=tmp/fbgate_ac.msnap
+ac_log=tmp/fbgate_ac.log
+rm -f "$ac_snap"
+timeout 600 "$BIN" --std=gnu17 --freeze="$ac_snap" -I tmp/fbgate_ac \
+    tmp/fbgate_ac_producer.c >"$ac_log" 2>&1 || fail "[armreplayc] the madc --freeze FAILED: $(tail -n 3 "$ac_log")"
+ac_out=$(timeout 60 "$BIN" --std=gnu17 --forest-bind="$ac_snap" -I tmp/fbgate_ac tmp/fbgate_ac_consumer.c 2>&1)
+[ "$ac_out" = "x=5 y=7" ] || fail "[armreplayc] gnu17 consumer output '$ac_out' != 'x=5 y=7'"
+timeout 60 "$BIN" -v --std=gnu17 --forest-bind="$ac_snap" -I tmp/fbgate_ac tmp/fbgate_ac_consumer.c >"$ac_log" 2>/dev/null
+grep -aq "bound to grove unit.*fbgate_ac_b.h" "$ac_log" \
+    || fail "[armreplayc] the unit whose arm reproduces its dep did not BIND for the C consumer"
+grep -aq "fbgate_ac_b.h replays its skipped '#ifndef FBG_AC_X' arm" "$ac_log" \
+    || fail "[armreplayc] the bound unit never replayed its skipped arm"
+grep -aq "DECLINE root.*fbgate_ac_d.h" "$ac_log" \
+    || fail "[armreplayc] the unit whose arm DIFFERS from its definer did not decline"
+rm -rf "$ac_snap" "$ac_log" tmp/fbgate_ac tmp/fbgate_ac_producer.c tmp/fbgate_ac_consumer.c
+echo "forest_bind_gate: [armreplayc] OK — under C, an arm that reproduces its dep binds; one that differs declines"
+
 # --- case: replreuse (2026-10-11: each unit's tree gets its own forest nodes) ---
 # A frozen inline body the program's main uses, touched again by a REPL entry
 # (madc -i), a later translation unit of the same c2m session. The segment's
@@ -2467,5 +2538,5 @@ run_case patternalias "1 2"
 # coverage. Worse in the other direction: deleting a case would leave this line
 # still claiming it runs. Deriving it from run_case would need the ~12 bespoke
 # cases below to register too; until then, update it when you add a case.
-echo "forest_bind_gate: GREEN 42/42 — typedef + struct + nested + bitfield + class + method + fwd + ptr + nestedenumfn + ldouble + ns + anon + declonlymt + flavorgate + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec + iobind + traitfold + nothrowfold + explicitctor + armreplay + replreuse + deletedctor + constcopy + subbind + redecl + husk + silbody grove headers bound (unit-granular husk recovery only), output == live == g++ + secvptr + friendgrant + patternalias + quietbind + memberptr + unionclass"
+echo "forest_bind_gate: GREEN 43/43 — typedef + struct + nested + bitfield + class + method + fwd + ptr + nestedenumfn + ldouble + ns + anon + declonlymt + flavorgate + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec + iobind + traitfold + nothrowfold + explicitctor + armreplay + armreplayc + replreuse + deletedctor + constcopy + subbind + redecl + husk + silbody grove headers bound (unit-granular husk recovery only), output == live == g++ + secvptr + friendgrant + patternalias + quietbind + memberptr + unionclass"
 exit 0
