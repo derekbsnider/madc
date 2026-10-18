@@ -238,6 +238,94 @@ v68:
   - the parse-cost gate on the packed binary (one walk replaces the check
     plus the install, so it should be flat).
 
+### K2 step 3 — the walk (2026-10-18, after v68 landed in daf6a6e10)
+
+Measured first. The 32 knob-on failures have three causes:
+- 28: `<string>` → `wchar.h` `#ifndef WCHAR_MIN`. The arm is directive-only
+  and writes two names, so v67's one-name replay cannot take it.
+- 3: `<memory>` → `time.h` `#ifndef __pid_t_defined`. The arm is a typedef
+  plus its guard define.
+- 1: `<iostream>` → `bits/setjmp.h` `#if !defined _SETJMP_H && !defined
+  _PTHREAD_H`. At its real position (after `pthread.h` defines `_PTHREAD_H`)
+  the outcome is the same.
+
+Capture defect found: a comment line inside a skipped arm marks it impure
+(`WCHAR_MIN`'s arm opens with one). The walk does not read the purity flag. It
+runs a captured arm and keeps whatever tokens it yields.
+
+Freeze additions (v69):
+- Per condition, `CIR_COND_REC_END`: the unit's record count at the arm's
+  end. The records between are nested in the arm.
+- Per captured arm, `CIR_COND_ARM_STATE`: the freeze's state of every macro
+  the arm writes, at the arm (`forest_macro_state_spelling`). The frozen
+  content after the arm was expanded with those values. An arm the walk runs
+  must leave the same state for every name the freeze held DEFINED and
+  expanded into a token after the arm (`pack_expansion_clock`: the freeze
+  stamps each macro's last expansion), or the bound content is wrong. Any
+  other name carries no value into a frozen token, and a later conditional on
+  it is recorded and re-evaluated, so the arm may set it (`pack_arm_state`
+  writes such an entry as `?NAME`). Measured: madc's `stdint.h` spells
+  `WCHAR_MIN` `INT32_MIN`, glibc `wchar.h`'s arm `__WCHAR_MIN`, and nothing
+  after expands it. This is v67's value check, generalized to every name the
+  arm writes.
+- Per unit, its inclusions: `[n, (ev_end, ed_end, cond_end) × n]`, recorded
+  where the unit's include returns. A guard-less unit included N times by the
+  freeze TU (`bits/mathcalls.h`) has N inclusions. Each edge to it in the walk
+  takes the next one; past the last, the freeze skipped the include, and the
+  walk skips it too.
+
+The walk (`forest_walk_unit`), one per root, used by every bind entry (the
+two include sites and the two posix-provider sites go through
+`forest_bind_include_root`):
+- Skip a unit already bound, live-present, or on the walk's stack.
+- Prune: when the inclusion opens with a recorded `#ifndef` whose name is
+  defined now, the unit's file was live-tokenized here, and a live re-include
+  would skip it, the unit is live-present and the walk skips it.
+- Items in frozen order: a condition at `(ev, ed)` comes before edge `ed` and
+  event `ev`; an edge at event position `p` comes before event `p`.
+- An event applies through `set_macro`, the one writer. The `#define` and
+  `#undef` handlers write through it too. The undo log keeps each name's
+  first prior state.
+- A condition is re-evaluated: `#ifdef` / `#ifndef` with
+  `macro_name_defined`, `#if` / `#elif` with `evaluate_if_text`. A text
+  naming `__has_include_next` or a quoted `__has_include` is position-bound,
+  so it counts as a flip.
+  - Same outcome: go on.
+  - Taken at freeze, skipped now, a single-arm `#ifndef N`, and the arm's own
+    events define N (a sub-block guard): skip the arm's events, edges and
+    nested records. Every other name the arm's events write must already hold
+    the arm's final value (N itself only needs to be defined). Its declarations
+    stay bound, as today's masked bind.
+  - Skipped at freeze, taken now, arm captured: run it in place on its own
+    Source. Its directives write through `set_macro` (logged), and the names
+    it writes must then match `CIR_COND_ARM_STATE` (as above). Its tokens are kept and
+    pushed after the walk commits, at the root's include site. An arm with a
+    directive other than define, undef or a conditional is refused.
+  - Anything else: verified → roll back and decline; knob off → follow the
+    frozen outcome (today's knob-off behaviour).
+- Commit: units enter `chain` in post-order (the decl restore's order), the
+  embedded once-only keys and the cost stats as before, then the kept arm
+  tokens.
+- Decline: the undo log restores every name and the kept tokens are dropped.
+
+K2 step 3 measured 2026-10-18 (packed `madc-release`, v69 pack):
+- Knob on: 32 → 9 failures. The 9 are one class: `wchar.h`'s
+  `#ifndef __attr_dealloc_fclose` arm. Frozen `wchar.h` expanded `stdio.h`'s
+  `__attr_dealloc (fclose, 1)` into `open_wmemstream`'s declaration after the
+  arm, and a live parse here leaves it empty. The difference is real, so the
+  root declines. It declines after a bind, which is K1b's case.
+- Knob off (the shipping default): 2098 / 2098.
+- `forest_bind_gate.sh` `[k2walk]` (new): position, two-name directive arm
+  with an inert spelling difference, typedef arm, a value expanded after the
+  arm (must decline), and the undo on decline. `[redecl]`, `[husk]` and
+  `[armreplayc]` now go through the walk.
+
+Deleted with the walk: `forest_bind_env_ok`, `forest_bind_include`,
+`forest_install_pp`, `forest_replay_pp_arms`, `skipped_arm_defines`,
+`pp_install_mask`, `pp_arms`, `husk_live_pending` and the husk path. Deleted next, on
+the freeze side (v70): the per-macro branch deps, the `PP_ARM` tuples,
+`ARM_REPLAYS`, `skip_and_capture_arm` and the purity flag.
+
 ### K2 — the deps are exact (a decline means the content really differs)
 
 - Freeze (format v68): record each conditional's OUTCOME.
