@@ -32,7 +32,9 @@ and produces exactly the oscillation this rule exists to stop.
           `make -C src gates` (unit tests + gates, no suite), then the
           PROFILING gate `parse-cost` (owner 2026-10-08: callgrind instruction
           counts of scripts/parse_cost/ on the shipped binary, ratcheted against
-          its baseline — growth is red, a gain is re-recorded downward;
+          its baseline — growth is red, a gain is re-recorded downward, and
+          a row NEVER rises without the operator's approval (owner
+          2026-10-18; `--record` keeps min, `--accept-increase` is theirs);
           `remote_build.sh parsecost` / `parsecost-record`), then the FULL
           tests/ suite ONE way — on the SHIPPED artifact, the -O2 packed
           madc-release, headerless (Linux and win64) — then the small on-disk

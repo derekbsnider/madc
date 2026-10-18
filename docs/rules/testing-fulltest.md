@@ -311,6 +311,12 @@ them against a recorded baseline, which:
 - **refuses growth:** an increase cannot be recorded without a stated reason
   (`--accept-increase`), so the price of a correctness change is written down
   where the next reader sees it;
+- **never rises inside the tolerance either:** `--record` keeps each row at
+  the lower of its recorded and measured cost. A growth inside the 0.5%
+  tolerance passes one commit's check, but written back it becomes the next
+  commit's starting point, and ten such re-records creep 5% (owner
+  2026-10-18, after a re-record baked +0.39% into `c_headers.forest`). Only
+  the operator approves a rise;
 - **is pinned to one toolchain:** a different compiler or set of system
   headers parses different text, so a toolchain mismatch refuses the
   comparison instead of passing or failing on numbers from another machine.
