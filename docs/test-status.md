@@ -9,6 +9,14 @@ stage rerun (the battery run's two reds, `teststringobj` and `testtrycatchdtor`,
 and aarch64-ld green. Batch (dev JIT) 2034/0/9skip; interactive lane 57/0 + units 7/0. New
 reducer `testlazymoduledirect`; the `--no-sysroot-includes` pair names `<zstd.h>`.
 
+0.106.0 arc section J, the pack's C layer (2026-10-18, `24e02f5bc`, Linux): the packed release
+carries two raw C profiles (`c17 c11`, `gnu17 gnu11`); `forest_pack.sh`'s C gate block OK
+(`linux-c-default`, `linux-c17` 2,126,488 bytes, `linux-gnu17` 3,409,816 bytes, every C probe
+binds); `forest_pack_gate --selftest` 25 legs; `forest_bind_gate` 42/42 + `[rawgate]` `[clayer]`
+`[cenv]`; parse-cost re-recorded (`c_headers.forest` 243.0M -> 52.1M Ir); fast lanes on the
+PACKED release: c-testsuite 220/0, c2mir 368/0, index-c 50/50, c-torture's one non-baseline
+red is B200 (also on 0.105.0). Batch (dev JIT) 2093/0/9skip at `91c63d95a`. Static gates 0 red.
+
 Split arc Phase 2 — madcide leaves madc (2026-10-11, `072ea1f25`): the
 madcide tests, its window tests and its gates moved to the madcide
 repository, where they run through madc's own runner at the pinned madc

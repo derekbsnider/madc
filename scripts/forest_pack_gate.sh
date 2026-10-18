@@ -417,7 +417,8 @@ check_pack_bytes() {
 # ---------------------------------------------------------------------------
 check_raw_profile() {
 	local dump="$1" compressed
-	compressed=$(awk -F'\t' '$1 == "profile" && $2 == "0" { sub("compressed=", "", $5); print $5; exit }' "$dump")
+	# CR stripped: wine's CRT writes CRLF.
+	compressed=$(awk -F'\t' '$1 == "profile" && $2 == "0" { sub("compressed=", "", $5); sub(/\r$/, "", $5); print $5; exit }' "$dump")
 	if [ -z "$compressed" ]; then
 		fail "[$PROFILE] dump carries no 'profile 0' line — the codec was not measured: $dump"
 		return

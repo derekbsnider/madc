@@ -194,6 +194,34 @@ equals `c_headers.live`, and `sqlite3.forest` is in the same position.
 - **J5 — platform arms.** The win64 and darwin pack scripts freeze their own C
   lists (mingw/UCRT's C set; darwin's libc). They are built on the container
   and run at the seam.
+  - The stage and its gate have ONE owner, `scripts/forest_pack_c_layer.sh`
+    (`forest_pack_c_freeze`, `forest_pack_c_gate`); the Linux pack calls it
+    and reproduces J2/J4 exactly (every gate OK).
+  - win64 measured 2026-10-18 (`scripts/forest_pack_c_headers_windows.txt`,
+    the hosted PE under wine, `--freeze-raw`; every freeze exit 0, zero
+    errors, zero warnings, 59 units each): gnu17 == gnu11
+    (`ec19d918fe34fde0`, 4,100,760 bytes), c17 == c11 (`2089c41be0ad343f`,
+    4,079,592 bytes); gnu99, gnu89, gnu23, c99, c89 and c23 each differ. The
+    same classes as Linux, so `FOREST_C_LAYER` holds for both.
+  - BLOCKED (win64): `release-windows` with the C stage wired fails its own
+    layout pass — `<stdlib.h>` alone, `--std=c17`, against the C layer:
+    "Identifier 'div_t' already defined" (and `ldiv_t`, `_LDOUBLE`, …). The
+    chain: the C compile resolves `<stdlib.h>` to libstdc++'s wrapper (B199);
+    the verified bind DECLINES the wrapper root and then mingw's `stdlib.h`
+    (branch dep `_SECIMP` defined at freeze, opposite here), so `stdlib.h` is
+    parsed live; a later include whose closure holds the `stdlib.h` unit then
+    takes the MASKED-BIND arm ("dep '_INC_STDLIB' self-defined guard, live arm
+    wins — binds with define masked") and installs its frozen decls beside the
+    live ones. The prune arm needs `forest_unit_file_live_tokenized`; the
+    working hypothesis (not yet traced) is that it looks the bare unit name
+    (`stdlib.h`) up by its embedded key and misses the live parse of the
+    mingw file. This is the knob-on frontier that holds the
+    C++ default off (`forest_bind_env_ok`'s comment: "`div_t` defined twice").
+    The wiring is parked in `git stash` ("J5 win64 C layer wiring"); win64
+    ships without a C layer until the frontier is fixed.
+  - darwin: not started. Its C set is the embedded prelude's manifest (36
+    names); the cross pack cannot run its consumer, so the bind probes belong
+    in `mac_battery.sh`.
 - **J6 — docs.** `docs/test-status.md`, ROADMAP row 8.12J, the KG nodes.
 
 ## Targets
