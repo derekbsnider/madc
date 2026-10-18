@@ -701,6 +701,7 @@ int main(int argc, char **argv)
     bool freeze_mir_cache = false;        // --freeze-mir-cache: pack the compiled MIR module blob
     std::vector<std::string> freeze_ledger_srcs;  // --freeze-ledger=: AOT ledger sources (S5)
     std::vector<madc::dis::istring> freeze_also_std;  // --freeze-also-std=: more standards the profile serves
+    bool freeze_raw = false;              // --freeze-raw: the profile is stored uncompressed
     std::vector<std::string> freeze_source_lists;  // --freeze-sources=: lists of files for the source arm
     bool run_frozen = false;              // --run-frozen[=path]: thaw + run, no parse
     const char *run_frozen_path = NULL;   // NULL = the blob appended to this executable
@@ -918,6 +919,9 @@ int main(int argc, char **argv)
             break;
         case cli_option::freeze_also_std:
             freeze_also_std.push_back(o.value);
+            break;
+        case cli_option::freeze_raw:
+            freeze_raw = true;
             break;
         case cli_option::emit_builtin_registry:
             builtin_registry_out = value;
@@ -2184,7 +2188,7 @@ int main(int argc, char **argv)
 	    int frc = madc_cir_freeze(prog.get(), argv[filearg], freeze_path,
 				      freeze_append, freeze_mir_cache,
 				      ledger.empty() ? NULL : &ledger,
-				      /*progress=*/true, &freeze_also_std);
+				      /*progress=*/true, &freeze_also_std, freeze_raw);
 	    print_stats();
 	    return frc == 0 ? 0 : 1;
 	}

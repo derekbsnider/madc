@@ -199,6 +199,9 @@ const row rows[] = {
 	  "<std>", s_forest,
 	  "label the frozen profile to serve compiles under this --std= too (repeatable; the "
 	  "release pack names the C++ modes that share madc's corpus)" },
+	{ id(cli_option::freeze_raw), "freeze_raw", { { "--freeze-raw", flag } }, NULL, s_forest,
+	  "store the frozen profile uncompressed — every segment, the MIR cache and the ledger — "
+	  "so a bind reads it in place (the release pack's C layer)" },
 	{ id(cli_option::emit_builtin_registry), "emit_builtin_registry",
 	  { { "--emit-builtin-registry", eq } }, "<out.cpp>", s_forest,
 	  "(build step, --std=madc) write the dialect's generated registration — one builder "

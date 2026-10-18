@@ -7366,7 +7366,8 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 		    const char *out_path, bool append, bool mir_cache,
 		    const std::vector<cir_ledger_module> *ledger,
 		    bool progress,
-		    const std::vector<madc::dis::istring> *also_std)
+		    const std::vector<madc::dis::istring> *also_std,
+		    bool raw)
 {
     // The type graph rides the parse-populated DefArena (v18): a Program that
     // parsed with forest_arena_enabled OFF would freeze a type-less container
@@ -7578,7 +7579,15 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 			"pack falls back to zlib (larger container, slower "
 			"binds)\n", source_name);
 #endif
-		const int pack_level = append ? CIR_FOREST_PACK_ZSTD_LEVEL : 0;
+		// --freeze-raw: the container — every segment below, the MIR
+		// cache and the ledger — is written with no codec, read in place
+		// by a bind, never decompressed; so no level and no compressed
+		// intern spine (the release pack's C layer, owner 2026-10-17:
+		// "C is separate, uncompressed").
+		if ( raw )
+			codec = PchCompression::None;
+		const bool packed = codec != PchCompression::None;
+		const int pack_level = append && packed ? CIR_FOREST_PACK_ZSTD_LEVEL : 0;
 		madc::dis::snapshot_writer w;
 		// Level by placement: the appended release pack pays a high
 		// level once per release build; a standalone dev freeze stays
@@ -7590,7 +7599,7 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 		// The intern spine compresses only in the appended pack
 		// (owner-approved ~7ms-per-process trade; dev freezes keep
 		// zero-copy binds).
-		bool staged = cir_forest_write(f, w, codec, pack_level, append);
+		bool staged = cir_forest_write(f, w, codec, pack_level, append && packed);
 		// Shared configs (--freeze-also-std=): the one pack profile serves
 		// every standard named here too. The madc dialect is C++17 plus
 		// extras — auto-includes, auto-namespacing, auto-main, its keywords

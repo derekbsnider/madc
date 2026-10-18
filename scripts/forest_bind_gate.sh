@@ -896,6 +896,40 @@ rm -f "$sh_snap" "$sh_log" tmp/fbgate_share.cpp tmp/fbgate_share_println.cpp \
       tmp/fbgate_share_var.cpp tmp/fbgate_share_nomain.cpp
 echo "forest_bind_gate: [sharegate] OK — the madc profile binds for gnu++17 and c++17 with no madc extras; c++20 does not bind"
 
+# --- case: rawgate (owner 2026-10-17: the C layer is "separate, uncompressed") ---
+# --freeze-raw writes the profile with no codec — every segment, the MIR cache
+# included — so a bind reads it in place. A .c consumer (gnu17) freezes raw,
+# the dump reports the profile with 0 codec segments, and a .c compile binds it
+# with live-equal output. Control: the same freeze without --freeze-raw stores
+# codec segments, so the dump's count is what the flag changed.
+cat > tmp/fbgate_raw.c <<'EOF'
+#include <stdio.h>
+#include <string.h>
+int main(void) { printf("len=%d\n", (int)strlen("raw")); return 0; }
+EOF
+rw_snap=tmp/fbgate_raw.msnap
+rw_ctl=tmp/fbgate_raw_ctl.msnap
+rw_log=tmp/fbgate_raw.log
+rm -f "$rw_snap" "$rw_ctl"
+timeout 600 "$BIN" --freeze="$rw_snap" --freeze-raw --freeze-mir-cache tmp/fbgate_raw.c >"$rw_log" 2>&1 \
+    || fail "[rawgate] the --freeze-raw freeze FAILED: $(tail -n 3 "$rw_log")"
+timeout 600 "$BIN" --freeze="$rw_ctl" --freeze-mir-cache tmp/fbgate_raw.c >"$rw_log" 2>&1 \
+    || fail "[rawgate] control: the compressed freeze FAILED: $(tail -n 3 "$rw_log")"
+rw_raw=$(timeout 60 "$BIN" --dump-forest="$rw_snap" | awk -F'\t' '$1 == "profile" { sub("compressed=", "", $5); print $5; exit }')
+rw_cmp=$(timeout 60 "$BIN" --dump-forest="$rw_ctl" | awk -F'\t' '$1 == "profile" { sub("compressed=", "", $5); print $5; exit }')
+[ "$rw_raw" = 0 ] || fail "[rawgate] the --freeze-raw profile stores '$rw_raw' codec segment(s), expected 0"
+[ -n "$rw_cmp" ] && [ "$rw_cmp" -gt 0 ] \
+    || fail "[rawgate] control: the compressed profile reports '$rw_cmp' codec segments (the dump cannot see the codec)"
+rw_live=$(timeout 60 "$BIN" --no-forest-bind tmp/fbgate_raw.c 2>/dev/null)
+[ "$rw_live" = "len=3" ] || fail "[rawgate] live output '$rw_live' != 'len=3'"
+rw_out=$(timeout 60 "$BIN" --forest-bind="$rw_snap" tmp/fbgate_raw.c 2>/dev/null)
+[ "$rw_out" = "$rw_live" ] || fail "[rawgate] raw-bound output '$rw_out' != live '$rw_live'"
+timeout 60 "$BIN" -v --forest-bind="$rw_snap" tmp/fbgate_raw.c >"$rw_log" 2>/dev/null
+grep -aq "bound to grove unit" "$rw_log" \
+    || fail "[rawgate] the .c consumer did not bind the raw profile"
+rm -f "$rw_snap" "$rw_ctl" "$rw_log" tmp/fbgate_raw.c
+echo "forest_bind_gate: [rawgate] OK — a --freeze-raw profile stores 0 codec segments and a .c compile binds it, output == live"
+
 # --- case: dialectnobind (the dialect is builtin: a fragment never binds) ---
 # A container that froze a dialect fragment's text (bits/ui_enums, which strict
 # C++ parses too) never binds its unit: a madc consumer reads the dialect from

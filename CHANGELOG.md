@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### `--freeze-raw` stores a frozen forest profile uncompressed (J1)
+
+- `--freeze-raw` writes the container — every segment, the MIR cache and the
+  ledger — with no codec: no zstd level and no compressed intern spine, so a
+  bind reads it in place. The release pack's C layer is stored this way (owner
+  2026-10-17: "C is separate, uncompressed"); see
+  `docs/plans/2026-10-18-c-pack-layer.md` section J, slice J1.
+- `madc_cir_freeze` gains a `raw` parameter (`src/madc_cir.cpp`,
+  `src/madc_cir.h`): with it set the codec is `PchCompression::None`, and the
+  pack level and the compressed intern spine are gated on the container being
+  packed. The CLI flag flows through `cli_option::freeze_raw`
+  (`include/madc_cli.h`, `src/madc_cli.cpp`, `src/madc.cpp`).
+- Gate `scripts/forest_bind_gate.sh` `[rawgate]`: a `.c` consumer frozen with
+  `--freeze-raw` reports 0 codec segments under `--dump-forest`, and a `.c`
+  compile bound to it prints `len=3`, equal to the live `--no-forest-bind`
+  output; the control freeze without the flag stores codec segments.
+
 ### B198: a program's later `#include` of a header nested in an auto-included one no longer breaks the prelude
 
 - Under `--std=madc` with headers parsed as text (`bin/madc`, or

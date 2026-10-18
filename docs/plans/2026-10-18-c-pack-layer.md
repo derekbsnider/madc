@@ -79,9 +79,9 @@ equals `c_headers.live`, and `sqlite3.forest` is in the same position.
   system header as text. It grows deliberately, and every root must freeze
   quietly under gnu17. Cost if wrong: a C program that includes a header off
   the list parses that header from text, as today.
-- The raw switch is a CODEC choice on the freeze, `--freeze-codec=none`,
-  never a role. A role names what a container is, and the C layer is a SYSTEM
-  profile.
+- The raw switch is a storage flag on the freeze, `--freeze-raw`, never a
+  role. A role names what a container is, and the C layer is a SYSTEM
+  profile. A flag, not a valued option: there is nothing to misspell.
 - The ledger and source-arm lookups find the profile that CARRIES them,
   rather than reusing the bound one. The C profile does not duplicate them.
 - KG: Decision `shared_pack_profile_configs` (one C++ profile, 2026-10-11)
@@ -91,12 +91,12 @@ equals `c_headers.live`, and `sqlite3.forest` is in the same position.
 ## Slices
 
 - **J1 — raw containers.**
-  - `--freeze-codec=none|zstd` (default as today: zstd when appending, none
-    otherwise). A none container is written with no codec: no level and no
-    compressed intern spine.
-  - `--dump-forest` reports `compressed=0` for it, and it holds 0 zstd frames.
-  - Unit test: a raw container stacked under a compressed one; both bind, and
-    the dump reports each one's codec.
+  - `--freeze-raw` writes the profile with no codec: every segment, the MIR
+    cache and the ledger, with no level and no compressed intern spine.
+  - `--dump-forest` reports `compressed=0` for it.
+  - Gate: `forest_bind_gate.sh` `[rawgate]`. A `.c` consumer frozen raw shows
+    0 codec segments, and a `.c` compile binds it with live-equal output. The
+    control (the same freeze without the flag) stores codec segments.
 - **J2 — the C freeze.**
   - `scripts/forest_pack_c_headers.txt` (v1, canonical order).
   - `FOREST_SHARED_C_STDS` in `forest_pack_share.sh`; `forest_share_check`
