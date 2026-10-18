@@ -151,9 +151,6 @@
   header now defers, unconditionally.
 - Oracle g++ 13 / clang++ 18 (includes at the top, `std::string`, printf):
   `len 3`; madc now prints `len 3`. Test: `testautoinclude_later_include`.
-- B198 (a header nested in an auto-included one, included later, e.g.
-  `<wchar.h>` under `<string>`) stays open: the prelude is lexed after the
-  main file.
 
 ### The madc dialect's stdio streams are built in, as println is
 
