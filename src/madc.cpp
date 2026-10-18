@@ -661,8 +661,10 @@ int main(int argc, char **argv)
 	Program::RegistrationPolicy::ForestPolicy::loud_fallback;
     // OWNER LAW: the standard core system headers come from libmadc, never a
     // system include dir (.claude/rules/embedded-headers.md, top section).
-    prog->registration_policy.system_headers_from_libmadc = true;
-    engine.registration_policy.system_headers_from_libmadc = true;
+    prog->registration_policy.system_header_source =
+	Program::RegistrationPolicy::SystemHeaderSource::libmadc;
+    engine.registration_policy.system_header_source =
+	Program::RegistrationPolicy::SystemHeaderSource::libmadc;
 #endif
 
     const char *emit_object_path = NULL;
@@ -834,8 +836,10 @@ int main(int argc, char **argv)
             // system headers to disk.
             engine.registration_policy.bypass_system_library_headers = true;
             prog->registration_policy.bypass_system_library_headers = true;
-            engine.registration_policy.system_headers_from_libmadc = false;
-            prog->registration_policy.system_headers_from_libmadc = false;
+            engine.registration_policy.system_header_source =
+                Program::RegistrationPolicy::SystemHeaderSource::disk;
+            prog->registration_policy.system_header_source =
+                Program::RegistrationPolicy::SystemHeaderSource::disk;
             break;
         case cli_option::no_posix_compat:
             // Rides the engine so --project units inherit the target surface.
@@ -1417,8 +1421,12 @@ int main(int argc, char **argv)
     // parse when no blob is appended or the context pin mismatches. Freeze
     // modes are excluded: a freeze PRODUCES forest state from a live parse;
     // binding while freezing stays an explicit test-harness request
-    // (--forest-bind), never the default.
-    if ( no_forest_bind || ((freeze_path || freeze_run) && !forest_bind_asked) )
+    // (--forest-bind), never the default. --no-embedded-headers is excluded
+    // too: a bound grove IS the core system headers served from libmadc, and
+    // that switch sends them to disk (owner law, embedded-headers.md) — an
+    // explicit --forest-bind=FILE is a container the user names, still bound.
+    if ( no_forest_bind || ((freeze_path || freeze_run) && !forest_bind_asked)
+      || (prog->system_headers_from_disk_only() && !forest_bind_asked) )
     {
         prog->registration_policy.enable_forest_bind = false;
         prog->forest_bind_path.clear();

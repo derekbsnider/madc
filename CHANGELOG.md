@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+### --no-embedded-headers sends every core system header to disk, the grove bind and the pack source arm included
+
 ### A C compile searches the C view of the flavor table, never its C++ directories (B199)
 
 - `Program::search_view(c_view, toolchain_only)` (`src/lexer.cpp`) is the one cut

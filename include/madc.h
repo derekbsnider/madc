@@ -3542,14 +3542,21 @@ public:
 	// This is the incremental shim-retirement lever — bypass system shims while
 	// keeping madc's own headers. Data-driven: see embedded_header_is_system_library_shim().
 	bool bypass_system_library_headers = false;
-	// OWNER LAW (.claude/rules/embedded-headers.md, top section): a binary
-	// built to carry the pack (the product modes' MADC_FOREST_EXPECT_*) reads
-	// the STANDARD CORE system headers from libmadc and never opens, stats or
-	// probes a system include dir for a name libmadc carries; disk serves only
-	// a name it does not carry (an add-on library's header). Set by the CLI's
-	// MADC_FOREST_EXPECT_* block, cleared by --no-embedded-headers, inherited
-	// by runtime-eval children. Read through Program::system_headers_from_libmadc().
-	bool system_headers_from_libmadc = false;
+	// OWNER LAW (.claude/rules/embedded-headers.md, top section): where the
+	// STANDARD CORE system headers come from.
+	//   disk_then_pack — the library/dev default: the system include dirs,
+	//     then a found pack's source arm for a name no dir holds.
+	//   libmadc — a binary built to carry the pack (the product modes'
+	//     MADC_FOREST_EXPECT_*, set by the CLI): never opens, stats or probes
+	//     a system include dir for a name libmadc carries; disk serves only a
+	//     name it does not carry (an add-on library's header).
+	//   disk — --no-embedded-headers: the system include dirs alone; libmadc
+	//     serves no core header (no grove bind, no source arm) unless the
+	//     command line names a container (--forest-bind=FILE).
+	// Inherited by runtime-eval children. Read through
+	// Program::system_headers_from_libmadc() / system_headers_from_disk_only().
+	enum class SystemHeaderSource : unsigned char { disk_then_pack, libmadc, disk };
+	SystemHeaderSource system_header_source = SystemHeaderSource::disk_then_pack;
 	// Win64's native headers omit a narrow POSIX delta. When enabled, a real
 	// system header may be followed by the convention-keyed embedded supplement
 	// `posix/<name>`. POSIX hosts never activate the layer; the CLI opt-out is
@@ -7726,7 +7733,12 @@ public:
     // owner law on RegistrationPolicy::system_headers_from_libmadc). Every
     // include lookup asks it before any system include dir is touched.
     bool system_headers_from_libmadc() const
-	{ return registration_policy.system_headers_from_libmadc; }
+	{ return registration_policy.system_header_source
+		 == RegistrationPolicy::SystemHeaderSource::libmadc; }
+    // --no-embedded-headers: no core header comes from libmadc at all.
+    bool system_headers_from_disk_only() const
+	{ return registration_policy.system_header_source
+		 == RegistrationPolicy::SystemHeaderSource::disk; }
     // A path inside a system include dir while the core headers come from
     // libmadc: nothing may touch the disk for it — no existence probe, no
     // sidecar probe, no canonicalization (its spelling is libmadc's own).

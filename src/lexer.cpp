@@ -5006,6 +5006,11 @@ CirFrozenForest *Program::ensure_source_forest()
     if ( source_forest_tried )
 	return source_forest;
     source_forest_tried = true;
+    // --no-embedded-headers: the core system headers come from disk alone, so
+    // no image the discovery chain finds serves their text — only a container
+    // the command line names (--forest-bind=FILE).
+    if ( system_headers_from_disk_only() && forest_bind_path.empty() )
+	return NULL;
 
     // Raw source ignores producer std/-D/posix config because these bytes are
     // re-tokenized under THIS Program's live policy, but it must match the

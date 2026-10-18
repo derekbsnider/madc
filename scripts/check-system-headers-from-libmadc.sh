@@ -21,9 +21,13 @@
 #      one C program also reaches a header the pack's C layer does not
 #      freeze (<inttypes.h>), served from the profile above it;
 #   2. NEGATIVE CONTROL — gcc on the same C program hits the poison;
-#   3. NEGATIVE CONTROL — `--no-embedded-headers --no-forest-bind` hits the
-#      poison (the one switch that sends system headers to disk must reach
-#      it, or the gate is not watching; the bind is its own switch).
+#   3. NEGATIVE CONTROL — `--no-embedded-headers` alone hits the poison, for
+#      a C and a C++ program (the one switch that sends system headers to
+#      disk must reach it — the grove bind included — or the gate is not
+#      watching);
+#   4. NEGATIVE CONTROL — under `--no-embedded-headers --no-sysroot-includes`
+#      a core header no searched dir holds fails, where `--no-sysroot-includes`
+#      alone serves it from the pack (the source arm is libmadc too).
 set -u
 cd "$(dirname "$0")/.." || exit 2
 BIN="${1:-bin/madc-release}"
@@ -157,19 +161,41 @@ check "$WORK/prog_c_off.c" "coff 7"
 check "$WORK/prog_cxx.cpp" "cxx 1"
 check "$WORK/prog_mad.mad" "mad 3"
 
-# 3. --no-embedded-headers must reach the disk (and so the poison). The grove
-#    bind is its own switch (--no-forest-bind) and serves a bound root's
-#    frozen state under --no-embedded-headers too — C++ always has, and since
-#    the pack's C layer (docs/plans/2026-10-18-c-pack-layer.md) a C program's
-#    <stdio.h> binds as well — so the control turns the bind off to reach the
-#    switch's own disk path.
-timeout 120 "$BIN" --no-embedded-headers --no-forest-bind "$WORK/prog_c.c" > /dev/null 2> "$WORK/neh.err"
-if ! grep -q "read a system header from disk" "$WORK/neh.err"; then
-	echo "check-system-headers-from-libmadc: CONTROL FAILED — --no-embedded-headers did not reach the disk:" >&2
-	head -3 "$WORK/neh.err" | sed 's/^/    /' >&2
+# 3. --no-embedded-headers must reach the disk (and so the poison), the grove
+#    bind included: a bound root IS the core headers served from libmadc, so
+#    the switch turns the bind off too (only an explicit --forest-bind=FILE
+#    keeps it). Both languages — C binds the pack's C layer, C++ its madc
+#    profile.
+for neh in prog_c.c prog_cxx.cpp; do
+	timeout 120 "$BIN" --no-embedded-headers "$WORK/$neh" > /dev/null 2> "$WORK/neh.err"
+	if ! grep -q "read a system header from disk" "$WORK/neh.err"; then
+		echo "check-system-headers-from-libmadc: CONTROL FAILED — --no-embedded-headers did not reach the disk ($neh):" >&2
+		head -3 "$WORK/neh.err" | sed 's/^/    /' >&2
+		fail=1
+	else
+		echo "  ok  --no-embedded-headers reads the disk (control, $neh)"
+	fi
+done
+
+# 4. --no-embedded-headers serves NOTHING from libmadc — the pack's source arm
+#    included. Past the toolchain cut (--no-sysroot-includes) no searched dir
+#    holds <sys/sysinfo.h>: the packed binary serves it from the pack (the
+#    positive twin, which proves the pack carries it), and with the switch the
+#    include must fail rather than fall back to the pack.
+printf '#include <sys/sysinfo.h>\nint main(void) { return sizeof(struct sysinfo) > 0 ? 0 : 1; }\n' > "$WORK/prog_tail.c"
+if ! timeout 120 "$BIN" --no-sysroot-includes "$WORK/prog_tail.c" > "$WORK/tail.out" 2>&1; then
+	echo "check-system-headers-from-libmadc: CONTROL FAILED — the pack did not serve <sys/sysinfo.h> past the toolchain cut:" >&2
+	head -3 "$WORK/tail.out" | sed 's/^/    /' >&2
+	fail=1
+elif timeout 120 "$BIN" --no-embedded-headers --no-sysroot-includes "$WORK/prog_tail.c" > "$WORK/tail.out" 2>&1 \
+	|| ! grep -q "Failed to open include file: sys/sysinfo.h" "$WORK/tail.out"; then
+	# A failure that is not "not found" (the poison, reached through the
+	# pack's copy's own includes) still means the pack served it.
+	echo "check-system-headers-from-libmadc: FAIL — --no-embedded-headers served <sys/sysinfo.h> from the pack:" >&2
+	head -3 "$WORK/tail.out" | sed 's/^/    /' >&2
 	fail=1
 else
-	echo "  ok  --no-embedded-headers reads the disk (control)"
+	echo "  ok  --no-embedded-headers serves no header from the pack (control)"
 fi
 
 if [ $fail -ne 0 ]; then
