@@ -662,6 +662,38 @@ int main(void)
 
 ## Crashes
 
+### B200. `__builtin_setjmp` / `__builtin_longjmp` crash, layout-sensitive
+
+Two programs, both exit 0 under gcc 13 and clang 18:
+
+1. gcc.c-torture/execute/pr84521.c (in the c-torture lane's corpus):
+   madc-release (-O2) `--std=c17`, `--no-forest-bind` or not: "madc: caught
+   SIGSEGV (segmentation fault) at address (nil)", rc=139 — the same on the
+   archived 0.105.0 release. The dev binary (-O0): exit 0.
+2. pr84521 without its `test2` (no `__builtin_alloca` frame):
+
+   ```c
+   void broken_longjmp (void *p) { __builtin_longjmp (p, 1); }
+   volatile int x = 256;
+   void *volatile p = (void*)&x;
+   void test (void) {
+     void *buf[5]; void *volatile q = p;
+     if (!__builtin_setjmp (buf)) broken_longjmp (buf);
+     if (p != q) __builtin_abort ();
+   }
+   int main (void) { test (); return 0; }
+   ```
+
+   The inverse: the dev binary crashes (rc=139), madc-release exits 0.
+
+- Found 2026-10-18 running the fast lanes on the packed release (section J's
+  C layer check): program 1 was the c-torture lane's one non-baseline failure
+  there. The lanes' baselines are taken on the dev binary, which passes it.
+- Layer: not yet traced. The crash is in the JIT-run program and flips with
+  the madc/libmir build mode, so it depends on stack layout — the first
+  suspect is a frame or stack-pointer assumption in the builtin
+  setjmp/longjmp lowering.
+
 ### B187. MIR branches between code holders still assume reach on aarch64 and in lazy basic-block generation
 
 Found 2026-10-06 while fixing B186 (fc7ffa868, the x86-64 lazy-gen wrapper).
@@ -688,6 +720,32 @@ reach (> 128 MB on aarch64) and the lazy-BB interface for the x86-64 sites.
 No gcc/clang analogue: MIR JIT internals.
 
 ## Accepts invalid code
+
+### B199. A C compile searches the C++ standard library's include directories
+
+```c
+#include <stdlib.h>
+int main(void) { return 0; }
+```
+
+- gcc 13 `-x c` searches `/usr/lib/gcc/x86_64-linux-gnu/13/include`,
+  `/usr/local/include`, `/usr/include/x86_64-linux-gnu`, `/usr/include` — no
+  C++ directory. madc (every build, 0.105.0 included; found 2026-10-18 during
+  the C pack layer, section J) resolves `<stdlib.h>` in a `.c` compile to
+  `/usr/include/c++/13/stdlib.h`, libstdc++'s wrapper, which in C
+  `#include_next`s the real header — the right output by accident. The same
+  for `<math.h>`. A `.c` file's `#include <vector>` opens
+  `/usr/include/c++/13/vector` and fails on its C++ ("use of undeclared
+  identifier 'namespace'") where gcc says `vector: No such file or directory`.
+- Consequence: the pack's C layer, frozen "as the C preprocessor sees" the
+  headers (docs/plans/2026-10-18-c-pack-layer.md, property 1), carries the
+  two wrappers as its `stdlib.h` / `math.h` units.
+- Layer: `Program::sys_include_paths()` (src/lexer.cpp) returns the flavor
+  table's whole list (`madc_stdlib_flavor::paths`, the C++ probe) in every
+  mode. The table's order is the compiler's — the C++ stdlib dirs, then the
+  compiler-owned dir, then the C dirs — so the C view is the list FROM
+  `compiler_owned_dir` on, which is exactly gcc's `-x c` list. Every C
+  compile's include resolution changes: a planned change, not a drive-by.
 
 ### B163. C++ keywords are accepted as variable names under `--std=c++NN`
 
