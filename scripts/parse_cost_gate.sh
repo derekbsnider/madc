@@ -4,10 +4,15 @@
 # (callgrind Ir — deterministic, unlike wall time), ratcheted against a
 # recorded baseline. A growth past the tolerance is RED; an improvement past
 # it asks for the baseline to be re-recorded DOWNWARD so the gain is kept.
+# A row only ever moves DOWN (owner 2026-10-18): --record keeps each row at
+# the lower of its recorded and measured cost, so a growth inside the
+# tolerance is never written back (ten such re-records would creep 5%). A row
+# rises only with --accept-increase, which only the operator approves.
 #
 #   bash scripts/parse_cost_gate.sh                 # check (exit 1 on red)
-#   bash scripts/parse_cost_gate.sh --record        # re-record (refuses growth)
+#   bash scripts/parse_cost_gate.sh --record        # re-record (rows only fall)
 #   bash scripts/parse_cost_gate.sh --record --accept-increase='<reason>'
+#                                                   # operator-approved growth
 #   bash scripts/parse_cost_gate.sh --map=DIR [--label=TEXT]
 #                                                   # a callgrind MAP, no verdict
 #   MADC_BIN=bin/madc-release (default) — the shipped -O2 binary
@@ -162,6 +167,20 @@ if [ "$record" -eq 1 ]; then
 		echo "  (fix it, or --accept-increase='<why the extra work is the price of correctness>')"
 		exit 1
 	fi
+	# Without an approved increase a row never rises: a growth inside the
+	# tolerance keeps its recorded cost. Read before the file is rewritten.
+	declare -A keep
+	if [ -z "$reason" ] && [ "$base_fp" = "$fp" ]; then
+		for r in "${rows[@]}"; do
+			row="${r%%|*}"
+			b=$(awk -F'\t' -v k="$row" '$1==k{print $2}' "$BASE")
+			[ -n "$b" ] || continue
+			if awk -v n="${now[$row]}" -v b="$b" 'BEGIN{exit !(n > b)}'; then
+				keep[$row]=$b
+				echo "parse_cost_gate: $row keeps $b (measured ${now[$row]}: a baseline only falls)"
+			fi
+		done
+	fi
 	{
 		printf '# parse-cost baseline (scripts/parse_cost_gate.sh): callgrind Ir per workload\n'
 		printf '# toolchain\t%s\n' "$fp"
@@ -169,7 +188,7 @@ if [ "$record" -eq 1 ]; then
 		[ -n "$reason" ] && printf '# accepted-increase\t%s\n' "$reason"
 		for r in "${rows[@]}"; do
 			row="${r%%|*}"
-			printf '%s\t%s\n' "$row" "${now[$row]}"
+			printf '%s\t%s\n' "$row" "${keep[$row]:-${now[$row]}}"
 		done
 	} > "$BASE"
 	echo "parse_cost_gate: recorded $BASE"

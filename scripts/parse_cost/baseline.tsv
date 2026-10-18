@@ -4,12 +4,12 @@
 cxx_stl.live	2657629732
 cxx_stl.forest	1386850226
 c_headers.live	240150779
-c_headers.forest	38160558
+c_headers.forest	38013086
 sqlite3.forest	18629558614
-dialect.live	20030636
+dialect.live	20025106
 dialect.forest	20013942
-dialect_all.live	16962410
-dialect_all.forest	16957217
+dialect_all.live	16950386
+dialect_all.forest	16937458
 dialect_cxx.live	546281578
 dialect_cxx.forest	245036609
 dialect_one.live	12699061
