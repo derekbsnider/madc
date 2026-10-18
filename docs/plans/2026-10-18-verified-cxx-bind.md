@@ -97,7 +97,61 @@ container.
   NEWEST, a C++ compile still binds and reads only the C++ profile. The
   control, a C compile, binds the C profile.
 
-### K1 — the bound set is closed (a decline is always safe)
+K0 DONE 2026-10-18 (e5477ae31): `cir_forest_profile_serves_family`, asked by
+every probe mode in `probe_forest_chain`. Gate `forest_bind_gate.sh`
+`[division]`: before the fix, the C++ compile printed `which=2`.
+
+### Finding — K1 as first written made it worse (2026-10-18, measured)
+
+The closed include set below was built and measured: the knob-on packed suite
+went from 159 failures to **352**. It is stashed, not committed. The trace for
+`#include <iostream>` on that build:
+
+- `bits/stringfwd.h` binds before anything is live. It only FORWARD-declares
+  `std::char_traits`.
+- The restore registers the name with the freeze's COMPLETE entity. The arena
+  holds one entity per name, as of the end of the freeze TU: the class pattern
+  with its `__gnu_cxx::char_traits` base.
+- `bits/char_traits.h` then parses live (its closure holds the live
+  `wchar.h`). So `<iosfwd>`'s live `char_traits<_CharT>` meets a pattern whose
+  base was never restored: "ClassPattern could not resolve type
+  '__gnu_cxx::char_traits'".
+
+The restore has no per-unit fidelity: a bound unit brings each name it
+declares as the whole TU defined it. So no rule over include closures alone
+can make a mixed C++ TU sound.
+
+C mixes safely because its restored entities are structs, typedefs, enums and
+functions, which merge with a live twin (typedef/class live-wins,
+`denotes_same_type`). The evidence is the C suite and the C pack gates. C++
+restores class patterns, templates and default arguments that are resolved BY
+NAME.
+
+### K1 (revised) — a C++ TU's system content is all-bound or all-live
+
+- **K1a.** In a C++ / madc TU, a decline with nothing bound yet stops binding
+  for the rest of the TU (`ForestSide::bind_stopped`). Every later include
+  parses live. This is the common shape: a config macro before the first
+  include. No mixing, no restart.
+- **K1b.** A decline AFTER something bound mixes, and needs a decision at the
+  decline. The root's live closure (the units not yet bound) is checked
+  against the bound units' declared names, via the decl index, namespaces
+  excepted:
+  - Disjoint: the root parses live and the TU stays sound. The realistic
+    cases look like this: `NDEBUG` before `<cassert>` after `<iostream>`; a
+    feature macro after `<features.h>` changes nothing.
+  - Overlapping: the TU's tokenize restarts with binding off. The mechanism
+    is designed after K2 measures how often this happens. It is gated by a
+    forced-restart differential over the whole suite (every test identical to
+    a fresh live compile).
+- C keeps per-root declines, the prune included.
+- The stashed closed-set attempt is dropped. Its `[closedset]` reducer (a
+  default argument naming a type from a live header; g++ and clang++
+  `m=3 extra=20`) returns as K1a's gate leg.
+- Measure after K1a: the knob-on suite. The remaining failures should be
+  exactly the decline-after-bind TUs.
+
+### K1 (first draft, superseded above) — the bound set is closed
 
 - Rule: a root binds only if no unit in its closure is live-tokenized in this
   TU. Otherwise the root declines, and its live parse binds or declines its
@@ -162,6 +216,6 @@ of the check. Nothing is shared and there are no new globals.
 
 ## Order
 
-K0 → K1 → K2 → K3. Each slice gets its own commits with Tier 1 + Tier 2, plus
-the knob-on packed suite on the container as K1's and K2's measure. The seam
-battery runs at 0.106.0.
+K0 (done) → K1a → K2 → K1b → K3. Each slice gets its own commits with Tier 1 +
+Tier 2, plus the knob-on packed suite on the container as K1a's and K2's
+measure. The seam battery runs at 0.106.0.
