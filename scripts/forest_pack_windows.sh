@@ -33,6 +33,7 @@ set -e
 cd "$(dirname "$0")/.."
 . scripts/forest_pack_share.sh	# the standards the one profile serves
 . scripts/forest_pack_layout.sh	# the layout pass (format 60)
+. scripts/forest_pack_c_layer.sh	# the C layer stage and its gate
 
 IMAGE=
 while [ $# -gt 0 ]; do
@@ -138,10 +139,11 @@ ulimit -t 1800
 # what the build host happens to have installed — a host-capability probe put
 # the container's own /usr/include/c++/v1 headers inside a Windows PE, where
 # no libc++ runtime exists to resolve them and only wine's Z:\ mapping made it
-# look serviceable. So this pack appends exactly one profile: the MinGW build
-# default. `-stdlib=` remains a compile-time choice on a host that has both
-# installed; it is not a licence to ship both corpora in one binary.
-# verify_pe_release.sh gates the shipped artifact against a second profile.
+# look serviceable. So this pack carries exactly one stdlib FLAVOR: the MinGW
+# build default — its madc profile, and the C layer's profiles below it in the
+# same flavor. `-stdlib=` remains a compile-time choice on a host that has
+# both installed; it is not a licence to ship both corpora in one binary.
+# verify_pe_release.sh gates the shipped artifact against a second flavor.
 
 # --no-config for the same reason as the native pack: an ambient madc.ini
 # must never change the frozen corpus's producer config. The wall cap is
@@ -149,6 +151,15 @@ ulimit -t 1800
 #
 # Captured for the degradation gate (task #63) — see scripts/forest_pack.sh for
 # why this is redirect-then-cat and never `| tee`.
+#
+# THE C LAYER first (docs/plans/2026-10-18-c-pack-layer.md, J5): the win64
+# twin of the Linux pack's — one raw profile per FOREST_C_LAYER row, today the
+# single gnu17 row (owner 2026-10-18: the pack precompiles only the defaults;
+# on the mingw-w64 UCRT chain too, gnu11 == gnu17 by digest), stacked below
+# the madc profile. scripts/forest_pack_c_layer.sh owns the stage.
+C_LIST=scripts/forest_pack_c_headers_windows.txt
+forest_pack_c_freeze "$C_LIST" tmp/forest_pack_win "$APPEND_TO" 1800 "$WINE" "$PACKER"
+
 PACK_LOG=tmp/forest_pack_win_freeze.log
 if ! timeout 1800 "$WINE" "$PACKER" --no-config --std=madc --freeze-mir-cache --freeze-sources="$SOURCES_LIST" "${LEDGER_ARGS[@]}" "${FOREST_SHARE_ARGS[@]}" --freeze-append="$APPEND_TO" "$TU" > "$PACK_LOG" 2>&1; then
     cat "$PACK_LOG"
@@ -244,5 +255,8 @@ bash scripts/forest_pack_gate.sh --profile win64 \
     --dump tmp/forest_pack_win_dump.txt \
     --units-from "$LIST" --units-from "$SOURCES_LIST" --sources-from "$GUARDED_LIST"
 
+# The C layer's gate (scripts/forest_pack_c_layer.sh), on the shipped exe.
+forest_pack_c_gate "$C_LIST" tmp/forest_pack_win win64 tmp/forest_pack_win_dump.txt 300 "$WINE" "$BIN"
+
 units=$(grep -c '^unit	' tmp/forest_pack_win_dump.txt)
-echo "forest_pack_windows: OK (1 profile, $units units appended to $IMAGE; product smokes green)"
+echo "forest_pack_windows: OK (one flavor: the madc profile, $units units, over the C layer, appended to $IMAGE; product smokes green)"

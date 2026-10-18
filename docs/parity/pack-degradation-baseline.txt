@@ -122,6 +122,10 @@
 28 win64 pack-errors
 1 win64 dk-none
 0 win64 closure-drops
+# The win64 C layer (J5; FOREST_C_LAYER's one gnu17 row, the mingw-w64 UCRT
+# chain, scripts/forest_pack_c_headers_windows.txt): quiet freeze, its size at
+# its first pack (2026-10-18, the 25 v1 roots, release-win's own pack run).
+4112528 win64-gnu17 pack-bytes
 # darwin 64 -> 58 (2026-08-24): the six libc++ <filesystem> "no matching
 # overload ... error_code**" entries (raised 58 -> 64 on 2026-08-23 when the
 # strict no-viable-overload refusal replaced their silent wrong-function

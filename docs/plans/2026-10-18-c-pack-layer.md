@@ -213,22 +213,27 @@ equals `c_headers.live`, and `sqlite3.forest` is in the same position.
     (`ec19d918fe34fde0`, 4,100,760 bytes), c17 == c11 (`2089c41be0ad343f`,
     4,079,592 bytes); gnu99, gnu89, gnu23, c99, c89 and c23 each differ. The
     same classes as Linux, so `FOREST_C_LAYER` holds for both.
-  - BLOCKED (win64): `release-windows` with the C stage wired fails its own
-    layout pass — `<stdlib.h>` alone, `--std=c17`, against the C layer:
-    "Identifier 'div_t' already defined" (and `ldiv_t`, `_LDOUBLE`, …). The
-    chain: the C compile resolves `<stdlib.h>` to libstdc++'s wrapper (B199);
-    the verified bind DECLINES the wrapper root and then mingw's `stdlib.h`
-    (branch dep `_SECIMP` defined at freeze, opposite here), so `stdlib.h` is
-    parsed live; a later include whose closure holds the `stdlib.h` unit then
-    takes the MASKED-BIND arm ("dep '_INC_STDLIB' self-defined guard, live arm
-    wins — binds with define masked") and installs its frozen decls beside the
-    live ones. The prune arm needs `forest_unit_file_live_tokenized`; the
-    working hypothesis (not yet traced) is that it looks the bare unit name
-    (`stdlib.h`) up by its embedded key and misses the live parse of the
-    mingw file. This is the knob-on frontier that holds the
-    C++ default off (`forest_bind_env_ok`'s comment: "`div_t` defined twice").
-    The wiring is parked in `git stash` ("J5 win64 C layer wiring"); win64
-    ships without a C layer until the frontier is fixed.
+  - DONE (win64, 2026-10-18): `release-windows` freezes the one gnu17 row
+    below the madc profile and gates it on the shipped PE — `[win64-gnu17]`
+    quiet freeze, 25 roots, raw, 4,112,528 bytes (recorded), gnu17 and gnu11
+    bind; `[win64-c-default]` binds. The layout pass had failed on
+    `<stdlib.h>` alone ("Identifier 'div_t' already defined") under gnu17 as
+    under c17. The chain, traced: the C compile resolves `<stdlib.h>` to
+    libstdc++'s wrapper (B199); the bind declines the wrapper root and
+    mingw's `stdlib.h` (`_SECIMP` defined at freeze, opposite here), so the
+    wrapper's `#include_next <stdlib.h>` live-tokenizes the embedded mingw
+    copy — and `named_include_provider_exists` applied the from-the-top
+    "outranked" test to that `#include_next`, so the `<stdlib.h>` once-only
+    key was never recorded. mingw's tail `sec_api/stdlib_s.h` then bound a
+    closure holding the `stdlib.h` unit; with no live-tokenized evidence the
+    dep check took the MASKED-BIND arm instead of the prune and installed the
+    frozen decls beside the live ones. The fix: the include_next arm skips
+    the outranked test, as the tokenize site already did; the unit now
+    prunes ("already present ('_INC_STDLIB' guard live)"). Reducer
+    `tests/teststdlibreincludebind_c`. This was the frontier
+    `forest_bind_env_ok`'s comment names for the C++ default ("`div_t`
+    defined twice"); whether the C++ knob can now default on is a separate
+    measurement.
   - darwin: not started. Its C set is the embedded prelude's manifest (36
     names); the cross pack cannot run its consumer, so the bind probes belong
     in `mac_battery.sh`.

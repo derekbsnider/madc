@@ -65,7 +65,7 @@
 - Explicit version pins (`c89`, `c99`, `c11`, `c23`, `c++11`, `c++20`, …) are
   untouched — only the strict `c17` / `c++17` suite spellings move.
 
-### The release pack freezes a C layer; C programs bind it (J2, J4)
+### The release pack freezes a C layer; C programs bind it (J2, J4, J5)
 
 - The release pack now freezes the standard C headers a SECOND time, under C, as
   the C preprocessor sees them, into a raw profile stacked below the madc/C++
@@ -118,6 +118,15 @@
   record the include position in the freeze. B199 (`BUGS.md`, filed in
   `fa0dda72e`): a C compile searches libstdc++'s include directories, so the C
   layer's `stdlib.h` / `math.h` units are the libstdc++ wrappers.
+- win64 (J5): `scripts/forest_pack_windows.sh` now freezes the C layer's one
+  gnu17 row below the madc profile through `scripts/forest_pack_c_layer.sh`
+  (`forest_pack_c_freeze` / `forest_pack_c_gate`, the win64 twin of the Linux
+  stage, over `scripts/forest_pack_c_headers_windows.txt`, the mingw-w64 UCRT
+  chain) and gates it on the shipped PE. Measured on the container (release-win):
+  `[win64-gnu17]` quiet freeze, 25 roots, raw (0 codec segments), 4,112,528
+  bytes, gnu17 and gnu11 bind; `[win64-c-default]` binds (5 grove units);
+  `[win64]` 925 units. `docs/parity/pack-degradation-baseline.txt` records
+  `4112528 win64-gnu17 pack-bytes`. Plan J5 win64 moves from BLOCKED to DONE.
 
 ### A C compile's bind honours its feature macros (J4)
 
