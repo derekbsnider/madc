@@ -22,8 +22,13 @@
 #
 # Usage:
 #   bash scripts/forest_pack_gate.sh --profile <key> [--pack-log F] [--load-log F]
-#                                    [--dump F] [--baseline F]
+#                                    [--dump F [--raw-profile]] [--bind-log F]...
+#                                    [--baseline F]
 #   bash scripts/forest_pack_gate.sh --selftest
+#
+# --bind-log and --raw-profile are the C layer's legs
+# (docs/plans/2026-10-18-c-pack-layer.md): a -v compile on the packed product
+# that must bind a grove unit, and a dumped profile that must be stored raw.
 #
 # Profiles are the pack scripts' own names for themselves — linux (forest_pack.sh),
 # win64 (forest_pack_windows.sh), darwin (forest_pack_darwin.sh). Each pack
@@ -45,6 +50,8 @@ DUMP=
 SELFTEST=0
 UNITS_LISTS=()
 SOURCES_LISTS=()
+BIND_LOGS=()
+RAW_PROFILE=0
 
 # ---------------------------------------------------------------------------
 # The token contract. These four strings ARE the interface between the
@@ -71,7 +78,7 @@ TOK_BLOB='blob skipped'
 usage() {
 	echo "usage: $0 --profile <key> [--pack-log FILE] [--load-log FILE]" >&2
 	echo "         [--dump FILE [--units-from FILE]... [--sources-from FILE]...]" >&2
-	echo "         [--baseline FILE]" >&2
+	echo "         [--baseline FILE] [--bind-log FILE]... [--raw-profile]" >&2
 	echo "       $0 --selftest" >&2
 }
 
@@ -84,6 +91,8 @@ while [ $# -gt 0 ]; do
 		--units-from)   [ $# -ge 2 ] || { usage; exit 2; }; UNITS_LISTS+=("$2"); shift 2 ;;
 		--sources-from) [ $# -ge 2 ] || { usage; exit 2; }; SOURCES_LISTS+=("$2"); shift 2 ;;
 		--baseline) [ $# -ge 2 ] || { usage; exit 2; }; BASELINE="$2"; shift 2 ;;
+		--bind-log) [ $# -ge 2 ] || { usage; exit 2; }; BIND_LOGS+=("$2"); shift 2 ;;
+		--raw-profile) RAW_PROFILE=1; shift ;;
 		--selftest) SELFTEST=1; shift ;;
 		-h|--help)  usage; exit 0 ;;
 		*) usage; exit 2 ;;
@@ -366,6 +375,9 @@ check_dump() {
 		echo "       #include of each silently live-parses instead of binding." >&2
 	fi
 	check_pack_bytes "$dump"
+	if [ "$RAW_PROFILE" -eq 1 ]; then
+		check_raw_profile "$dump"
+	fi
 }
 
 # ---------------------------------------------------------------------------
@@ -393,6 +405,44 @@ check_pack_bytes() {
 	say "[$PROFILE] pack: $bytes bytes (recorded $base, cap $((base + PACK_BYTES_ALLOWANCE)))"
 	if [ "$bytes" -gt $((base + PACK_BYTES_ALLOWANCE)) ]; then
 		fail "[$PROFILE] the pack grew to $bytes bytes, past $base + $PACK_BYTES_ALLOWANCE"
+	fi
+}
+
+# ---------------------------------------------------------------------------
+# RAW PROFILE (--raw-profile; docs/plans/2026-10-18-c-pack-layer.md): the
+# dumped container — profile 0 of its stack, the newest — stores no segment
+# with a codec, so a bind reads it in place (owner 2026-10-17: the C layer is
+# "separate, uncompressed"). A dump with no profile line is red: nothing was
+# measured.
+# ---------------------------------------------------------------------------
+check_raw_profile() {
+	local dump="$1" compressed
+	compressed=$(awk -F'\t' '$1 == "profile" && $2 == "0" { sub("compressed=", "", $5); print $5; exit }' "$dump")
+	if [ -z "$compressed" ]; then
+		fail "[$PROFILE] dump carries no 'profile 0' line — the codec was not measured: $dump"
+		return
+	fi
+	say "[$PROFILE] raw profile: $compressed codec segment(s) (must be 0)"
+	if [ "$compressed" != 0 ]; then
+		fail "[$PROFILE] the profile stores $compressed segment(s) with a codec — it must be raw"
+	fi
+}
+
+# ---------------------------------------------------------------------------
+# BIND (--bind-log, repeatable; the C layer's gate, plan section J): each log
+# is a -v compile on the PACKED product, and each must have bound a grove unit.
+# A profile no compile binds is dead weight that every compile it was meant
+# for pays for in a live parse — exactly the loss the C layer's first life
+# shipped with (dropped in 0.105.0, unnoticed).
+# ---------------------------------------------------------------------------
+check_bind_log() {
+	local log="$1" norm="$2" bound
+	bound=$(count_pat "$norm" "bound to grove unit")
+	say "[$PROFILE] bind: $bound grove unit(s) bound — $log"
+	if [ "$bound" -eq 0 ]; then
+		fail "[$PROFILE] the probe bound NO grove unit: the profile it should bind"
+		echo "       is missing, mislabelled, or its config does not serve the probe" >&2
+		echo "       (or the probe ran without -v): $log" >&2
 	fi
 }
 
@@ -512,6 +562,28 @@ selftest() {
 	leg "pack size not measured" fail --dump "$dir/fpgate_st_dump_nobytes.txt" \
 		--units-from "$dir/fpgate_st_units.txt"
 
+	# 9c: the raw profile (the C layer). The selftest dump's profile 0 stores
+	#     12 codec segments, so --raw-profile is red on it; the same dump with
+	#     0 is green; a dump with no profile line is red (nothing measured).
+	leg "raw profile stores a codec" fail --dump "$dir/fpgate_st_dump.txt" \
+		--units-from "$dir/fpgate_st_units.txt" --raw-profile
+	sed 's/compressed=12$/compressed=0/' "$dir/fpgate_st_dump.txt" > "$dir/fpgate_st_dump_raw.txt"
+	leg "raw profile" pass --dump "$dir/fpgate_st_dump_raw.txt" \
+		--units-from "$dir/fpgate_st_units.txt" --raw-profile
+	grep -v '^profile' "$dir/fpgate_st_dump_raw.txt" > "$dir/fpgate_st_dump_noprof.txt"
+	leg "raw profile not measured" fail --dump "$dir/fpgate_st_dump_noprof.txt" \
+		--units-from "$dir/fpgate_st_units.txt" --raw-profile
+
+	# 9d: the bind probe. A -v log that bound a unit is green; one that bound
+	#     none (the layer is missing or mislabelled) is red, and a missing log
+	#     is red rather than vacuously green.
+	printf 'include <stdio.h> bound to grove unit 4 (/usr/include/stdio.h)\n' > "$dir/fpgate_st_bind_ok.log"
+	leg "bind probe bound" pass --bind-log "$dir/fpgate_st_bind_ok.log"
+	printf 'forest-bind: [self-image] producer config mismatch — trying older profile\n' > "$dir/fpgate_st_bind_none.log"
+	leg "bind probe bound nothing" fail --bind-log "$dir/fpgate_st_bind_ok.log" \
+		--bind-log "$dir/fpgate_st_bind_none.log"
+	leg "bind probe log missing" fail --bind-log "$dir/fpgate_st_bind_absent.log"
+
 	# 10: the token contract has ONE owner. scripts/mac_battery.sh must stay
 	#     self-contained (it runs on a Mac from a tarball), so it carries its
 	#     own copy of these strings — the only way that copy cannot rot into a
@@ -551,8 +623,12 @@ if [ -z "$PROFILE" ]; then
 	usage
 	exit 2
 fi
-if [ -z "$PACK_LOG" ] && [ -z "$LOAD_LOG" ] && [ -z "$DUMP" ]; then
-	echo "forest_pack_gate: nothing to check — pass --pack-log, --load-log and/or --dump" >&2
+if [ -z "$PACK_LOG" ] && [ -z "$LOAD_LOG" ] && [ -z "$DUMP" ] && [ ${#BIND_LOGS[@]} -eq 0 ]; then
+	echo "forest_pack_gate: nothing to check — pass --pack-log, --load-log, --dump and/or --bind-log" >&2
+	exit 2
+fi
+if [ -z "$DUMP" ] && [ "$RAW_PROFILE" -eq 1 ]; then
+	echo "forest_pack_gate: --raw-profile needs --dump to check against" >&2
 	exit 2
 fi
 if [ -z "$DUMP" ] \
@@ -581,6 +657,18 @@ if [ -n "$LOAD_LOG" ]; then
 fi
 if [ -n "$DUMP" ]; then
 	check_dump "$DUMP"
+fi
+if [ ${#BIND_LOGS[@]} -gt 0 ]; then
+	_bi=0
+	for _bl in "${BIND_LOGS[@]}"; do
+		if [ ! -f "$_bl" ]; then
+			fail "[$PROFILE] bind log is missing: $_bl"
+			continue
+		fi
+		normalize "$_bl" "$ROOT/tmp/fpgate_${PROFILE}_bind_$_bi.norm"
+		check_bind_log "$_bl" "$ROOT/tmp/fpgate_${PROFILE}_bind_$_bi.norm"
+		_bi=$((_bi + 1))
+	done
 fi
 
 if [ "$RED" -ne 0 ]; then

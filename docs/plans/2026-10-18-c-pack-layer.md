@@ -110,6 +110,28 @@ equals `c_headers.live`, and `sqlite3.forest` is in the same position.
     - c17 must bind (the owner's gate). If its view differs, c17 gets its own
       raw freeze, with the standards equal to it as its labels.
     - Record the table in this plan.
+  - Measured 2026-10-18 (the 30 v1 roots, `--freeze-raw`, dev binary at J3;
+    every freeze exit 0, zero errors, zero warnings):
+
+    | std   | content digest     | units | bytes     |
+    |-------|--------------------|------:|----------:|
+    | gnu17 | `e590413d340dccaf` |   163 | 3,402,928 |
+    | gnu11 | `e590413d340dccaf` |   163 | 3,402,928 |
+    | gnu99 | `ee5c1efaba9fe1a3` |   163 | 3,400,496 |
+    | gnu89 | `afc84172a23f72fe` |   163 | 3,400,656 |
+    | gnu23 | `10faeec2de1ee623` |   165 |         — |
+    | c17   | `3e3addbec7c2bb69` |   114 | 2,122,288 |
+    | c11   | `3e3addbec7c2bb69` |   114 | 2,122,288 |
+    | c99   | `39e6538359c0aa7d` |   113 | 2,113,184 |
+    | c89   | `2a7b606e9399bb3f` |   113 | 1,918,912 |
+    | c23   | `1f382fbd50255115` |   116 |         — |
+
+  - Ruling: the C layer is TWO raw profiles, `FOREST_C_LAYER` rows
+    `c17 c11` (frozen first, the bottom) and `gnu17 gnu11` (directly under the
+    madc profile, so a default `.c` compile reads it second). gnu99, gnu89,
+    gnu23, c99, c89 and c23 each differ from both and parse the pack's text.
+    Cost if wrong: those six configs keep today's text-parse cost; a seventh
+    freeze each would add 2 to 3.4 MB raw.
 - **J3 — one owner for the ledger and the source arm.**
   `ensure_ledger_forest` / `ensure_source_forest` walk the stack for the
   profile that carries the segment. Reducer: a `.c` compile with a header
@@ -136,6 +158,39 @@ equals `c_headers.live`, and `sqlite3.forest` is in the same position.
   - A `c-pack-bytes` baseline line.
   - The parse-cost `c_headers.forest` row (and `sqlite3.forest`) re-recorded
     at the new level.
+  - Found (the first packed parse-cost run): `sqlite3.forest` went RED — the
+    compile failed. sqlite3.c defines NDEBUG and _GNU_SOURCE ahead of its
+    system includes; the C layer froze `<assert.h>` and `<features.h>`
+    without them, and the bind served that view (a live `assert`, no
+    `mremap`). The branch-macro environment check that declines such a root
+    exists, but it is a default-OFF rollout knob (`MADC_FOREST_ENV_CHECK`,
+    held off by the C++ packed-suite frontier).
+  - Ruling: a C compile's bind is always verified (`forest_bind_env_ok`,
+    `is_c_mode()`); the C++ default stays the knob's. C programs set feature
+    macros as a matter of course, and the C layer has no knob-off frontier.
+    Cost if wrong: a declined C root parses live (slower, never wrong).
+    Reducer: `forest_bind_gate.sh` `[cenv]`, knob off (gcc, clang and live:
+    `mremap=1`; bound before the fix: "use of undeclared identifier
+    'only_in_debug_builds'").
+  - Parse-cost on the packed release (2026-10-18, 91c63d95a + this slice):
+    `c_headers.forest` 243.0M -> 52.1M Ir (-78.6%; gcc -O0 -c 144M, clang
+    127M); before the verified bind it read 38.1M, but that bind served
+    sqlite3 the wrong view. `sqlite3.forest` compiles again, flat (+0.04%):
+    its NDEBUG / _GNU_SOURCE decline its roots to a live parse, as they must.
+  - Found: under the verified check `<stdio.h>` DECLINES — unit
+    `bits/libc-header-start.h` consults `__GLIBC_INTERNAL_STARTING_HEADER_IMPLEMENTATION`,
+    which every glibc header defines just before including it; the dep's
+    recorded definer is the FIRST such header of the freeze (not in a later
+    root's closure), so the check calls it external. Ruling: not widened here
+    — the frozen PP events carry no include positions, so "a closure unit
+    defines it" cannot prove the define precedes the consult. Follow-up: record
+    the include position (or the definer per consult) in the freeze, then rule
+    the dep replay-internal. Cost now: `<stdio.h>` parses live under the C
+    layer (52.1M, not ~38M).
+  - Found: B199 (BUGS.md) — a C compile searches libstdc++'s include
+    directories, so the C layer's `stdlib.h` / `math.h` units are the
+    libstdc++ wrappers. Property 1 holds only through their `#include_next`.
+    The fix changes every C compile's include resolution: owner's call.
 - **J5 — platform arms.** The win64 and darwin pack scripts freeze their own C
   lists (mingw/UCRT's C set; darwin's libc). They are built on the container
   and run at the seam.

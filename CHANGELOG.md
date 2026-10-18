@@ -2,6 +2,58 @@
 
 ## [Unreleased]
 
+### The release pack freezes a C layer; C programs bind it (J2, J4)
+
+- The release pack now freezes the standard C headers a SECOND time, under C, as
+  the C preprocessor sees them, into raw profiles stacked below the madc/C++
+  profile. A `.c` or `--std=c*` compile binds them instead of parsing the pack's
+  header text; under C++, `<stdlib.h>` and `<math.h>` are libstdc++'s wrappers,
+  so the C++ profile's C units are not the C view. The source arm and the AOT
+  ledger ride the madc profile above them. See
+  `docs/plans/2026-10-18-c-pack-layer.md` section J, slices J2 and J4.
+- `scripts/forest_pack_c_headers.txt` (LIST VERSION 1, canonical order) lists the
+  C layer's roots — the C spellings of the C++ list's C roots plus madc's own C
+  headers (`stdarg.h`, `stdbool.h`, `float.h`, `iso646.h`, `stdalign.h`,
+  `stdnoreturn.h`). A speed-up list, never the coverage boundary: a header off it
+  parses from the pack's text, and every root must freeze quietly under gnu17.
+- `FOREST_C_LAYER` in `scripts/forest_pack_share.sh` holds the C layer's label
+  rows beside the C++ list (one owner, two lists). Measured 2026-10-18: `gnu11 ==
+  gnu17` and `c11 == c17`, so the C layer is TWO raw profiles — `c17 c11` (the
+  bottom) and `gnu17 gnu11` (directly under the madc profile, so a default `.c`
+  compile reads it second); `gnu99`, `gnu89`, `gnu23`, `c99`, `c89` and `c23`
+  each differ from both and parse the pack's text. A label is confirmed by
+  `content` digest, never assumed (`__STRICT_ANSI__` hides glibc's POSIX names
+  under c17; `__STDC_VERSION__` gates C11 names under c99).
+- `scripts/forest_pack.sh` freezes the C TU once per `FOREST_C_LAYER` row — raw
+  (`--freeze-raw`), laid out, each profile stacked before the next lands on top —
+  then gates it per profile on the PACKED product: a quiet freeze (no
+  `linux-<std>` pack-errors), every C root a unit, stored raw within its recorded
+  size, still in the stack below the madc profile, and a compile under its
+  standard and each label binds it (a no-`--std=` `.c` compile, `linux-c-default`,
+  first).
+- `scripts/forest_pack_layout.sh` grows `forest_pack_layout_std`, naming the
+  standard a profile was frozen under and the extension its roots take (the C
+  layer is gnu17, `.c`); `forest_pack_layout` stays the `--std=madc` `.mad` case.
+- `scripts/forest_pack_gate.sh` gains `--raw-profile` (profile 0 stores 0 codec
+  segments) and `--bind-log` (a `-v` compile must have bound a grove unit), with
+  selftest legs 9c and 9d as the negative controls for both.
+- `scripts/check-system-headers-from-libmadc.sh` adds `prog_c_off.c`, a C program
+  whose `<inttypes.h>` (off the C list) is served from the source arm of the
+  profile above it, and turns the grove bind off (`--no-forest-bind`) in the
+  `--no-embedded-headers` control — a C program's `<stdio.h>` now binds under
+  `--no-embedded-headers`, as C++ always has, so the control needs the bind's own
+  switch to reach the disk.
+- `docs/parity/pack-degradation-baseline.txt` records the C profiles' pack-bytes
+  (`linux-c17` 2,126,488, `linux-gnu17` 3,409,816); `scripts/parse_cost/baseline.tsv`
+  re-records `c_headers.forest` at the C layer level, 52.1M Ir (-78.6%; gcc
+  `-O0 -c` 144M, clang 127M), with `sqlite3.forest` flat.
+- Open (plan J4): `<stdio.h>` declines under the verified bind and parses live —
+  its `__GLIBC_INTERNAL_STARTING_HEADER_IMPLEMENTATION` dep records an external
+  definer — so `c_headers.forest` reads 52.1M rather than ~38M; a follow-up will
+  record the include position in the freeze. B199 (`BUGS.md`, filed in
+  `fa0dda72e`): a C compile searches libstdc++'s include directories, so the C
+  layer's `stdlib.h` / `math.h` units are the libstdc++ wrappers.
+
 ### A C compile's bind honours its feature macros (J4)
 
 - A C program sets feature-test macros ahead of its system includes as a matter

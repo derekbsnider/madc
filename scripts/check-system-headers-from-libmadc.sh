@@ -18,10 +18,12 @@
 #
 # Checks, each a C / C++ / madc-dialect program through the release binary:
 #   1. compiles and runs, output exact, no poison text (headers from libmadc);
+#      one C program also reaches a header the pack's C layer does not
+#      freeze (<inttypes.h>), served from the profile above it;
 #   2. NEGATIVE CONTROL — gcc on the same C program hits the poison;
-#   3. NEGATIVE CONTROL — `--no-embedded-headers` hits the poison (the one
-#      switch that sends system headers to disk must reach it, or the gate is
-#      not watching).
+#   3. NEGATIVE CONTROL — `--no-embedded-headers --no-forest-bind` hits the
+#      poison (the one switch that sends system headers to disk must reach
+#      it, or the gate is not watching; the bind is its own switch).
 set -u
 cd "$(dirname "$0")/.." || exit 2
 BIN="${1:-bin/madc-release}"
@@ -101,6 +103,11 @@ done
 printf '#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\nint main(void) { printf("c %%d\\n", (int)strlen("abc")); return EXIT_SUCCESS; }\n' > "$WORK/prog_c.c"
 printf '#include <vector>\n#include <string>\n#include <cstdio>\nint main() { std::vector<std::string> v; v.push_back("x"); std::printf("cxx %%d\\n", (int)v.size()); return 0; }\n' > "$WORK/prog_cxx.cpp"
 printf '#include <stdio.h>\nint main() { printf("mad %%d\\n", 3); return 0; }\n' > "$WORK/prog_mad.mad"
+# A C program that binds the pack's C layer (<stdio.h>) and reaches a header
+# the C layer does not freeze (<inttypes.h>): that header's text comes from the
+# source arm of the profile above it, never the disk
+# (docs/plans/2026-10-18-c-pack-layer.md, J3/J4).
+printf '#include <stdio.h>\n#include <inttypes.h>\nint main(void) { printf("coff %%" PRId64 "\\n", (int64_t)7); return 0; }\n' > "$WORK/prog_c_off.c"
 
 fail=0
 
@@ -146,11 +153,17 @@ check() {	# check <program> <expected stdout>
 	fi
 }
 check "$WORK/prog_c.c" "c 3"
+check "$WORK/prog_c_off.c" "coff 7"
 check "$WORK/prog_cxx.cpp" "cxx 1"
 check "$WORK/prog_mad.mad" "mad 3"
 
-# 3. --no-embedded-headers must reach the disk (and so the poison).
-timeout 120 "$BIN" --no-embedded-headers "$WORK/prog_c.c" > /dev/null 2> "$WORK/neh.err"
+# 3. --no-embedded-headers must reach the disk (and so the poison). The grove
+#    bind is its own switch (--no-forest-bind) and serves a bound root's
+#    frozen state under --no-embedded-headers too — C++ always has, and since
+#    the pack's C layer (docs/plans/2026-10-18-c-pack-layer.md) a C program's
+#    <stdio.h> binds as well — so the control turns the bind off to reach the
+#    switch's own disk path.
+timeout 120 "$BIN" --no-embedded-headers --no-forest-bind "$WORK/prog_c.c" > /dev/null 2> "$WORK/neh.err"
 if ! grep -q "read a system header from disk" "$WORK/neh.err"; then
 	echo "check-system-headers-from-libmadc: CONTROL FAILED — --no-embedded-headers did not reach the disk:" >&2
 	head -3 "$WORK/neh.err" | sed 's/^/    /' >&2

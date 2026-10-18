@@ -1,24 +1,25 @@
 # parse-cost baseline (scripts/parse_cost_gate.sh): callgrind Ir per workload
 # toolchain	g++-13.3.0 glibc-2.39 13 valgrind-3.22.0
-# recorded	2026-10-17 (the commit is the ledger row parse-cost)
-cxx_stl.live	2661683525
-cxx_stl.forest	1390749947
-c_headers.live	242985358
-c_headers.forest	243007347
-sqlite3.forest	18754452084
-dialect.live	26752318
-dialect.forest	26745317
-dialect_all.live	27500932
-dialect_all.forest	27506840
-dialect_cxx.live	567313117
-dialect_cxx.forest	263057454
-dialect_one.live	18591487
-dialect_one.forest	18588881
-rung_c8.forest	130908464
-rung_limits.forest	23013056
-rung_stddef.forest	12449068
-rung_stdio.forest	19420153
-rung_type_traits.forest	27990060
-rung_vector.forest	75209181
-subscript.live	3431779598
-subscript.forest	2188292128
+# recorded	2026-10-18 (the commit is the ledger row parse-cost)
+# accepted-increase	rung_limits.forest +0.51%: cumulative drift over the 33 code commits since the 603872ac6 record (the J3 source walk is 31K of its 118K Ir); c_headers.forest re-recorded at the pack C layer level 52.1M (plan 2026-10-18-c-pack-layer.md J4)
+cxx_stl.live	2662422400
+cxx_stl.forest	1389313975
+c_headers.live	243014389
+c_headers.forest	52055377
+sqlite3.forest	18762167486
+dialect.live	20028344
+dialect.forest	20016582
+dialect_all.live	16956797
+dialect_all.forest	16935251
+dialect_cxx.live	547469540
+dialect_cxx.forest	245961688
+dialect_one.live	12700993
+dialect_one.forest	12691257
+rung_c8.forest	130115820
+rung_limits.forest	23131379
+rung_stddef.forest	12425342
+rung_stdio.forest	19374414
+rung_type_traits.forest	27894267
+rung_vector.forest	75309141
+subscript.live	3433238017
+subscript.forest	2188116336

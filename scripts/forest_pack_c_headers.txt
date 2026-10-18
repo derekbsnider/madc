@@ -1,0 +1,48 @@
+# forest_pack_c_headers.txt — the pack's C LAYER roots, in CANONICAL ORDER
+# (docs/plans/2026-10-18-c-pack-layer.md, section J; owner 2026-10-17: "C is
+# separate, uncompressed, and not on the same list"). The headers frozen a
+# SECOND time, under C (gnu17), as the C preprocessor sees them, so a .c
+# compile and a --std=c* compile bind them instead of parsing them. Under C++,
+# <stdlib.h> and <math.h> are libstdc++'s wrappers, so the C++ profile's C
+# units (forest_pack_headers.txt) are not the C view.
+#
+# Like the C++ list, this list is a speed-up, never the coverage boundary: the
+# source arm serves every system header as text. A C program that includes a
+# header off this list parses that header from the pack's text, as before.
+#
+# LIST VERSION 1 (2026-10-18): the C spellings of the C++ list's C roots, plus
+# madc's own C headers (include/madc/: stdarg.h stdbool.h float.h iso646.h
+# stdalign.h stdnoreturn.h) — the shape of the 2026-10-13 Test 3 the owner
+# ruled on. Grow deliberately: every root here must freeze QUIETLY under gnu17
+# (exit 0, zero diagnostics) in this combined order — the pack step is a
+# release gate.
+stddef.h
+limits.h
+stdint.h
+stdarg.h
+stdbool.h
+float.h
+iso646.h
+stdalign.h
+stdnoreturn.h
+ctype.h
+string.h
+stdio.h
+stdlib.h
+time.h
+errno.h
+assert.h
+math.h
+setjmp.h
+signal.h
+unistd.h
+fcntl.h
+dirent.h
+dlfcn.h
+sys/stat.h
+sys/time.h
+sys/wait.h
+sys/file.h
+sys/socket.h
+netdb.h
+arpa/inet.h

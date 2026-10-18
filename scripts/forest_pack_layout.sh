@@ -4,6 +4,12 @@
 # script (forest_pack.sh, forest_pack_windows.sh, forest_pack_darwin.sh):
 #
 #   forest_pack_layout <container-image> <header-list> <madc> [madc args...]
+#   forest_pack_layout_std <std> <ext> <container-image> <header-list> <madc> [args...]
+#
+# forest_pack_layout lays out the madc profile (--std=madc, .mad roots);
+# forest_pack_layout_std names the standard the profile was frozen under and
+# the extension a root of that standard takes — the C layer is gnu17, .c
+# (docs/plans/2026-10-18-c-pack-layer.md).
 #
 # Binds each root of <header-list> (the pack's canonical root order) alone
 # against the container just written, recording the frozen-table reads the
@@ -19,17 +25,21 @@
 # against the container, its bind never opens the container, or the relayout
 # fails.
 forest_pack_layout() {
-    local image="$1" list="$2"
-    shift 2
+    forest_pack_layout_std madc mad "$@"
+}
+
+forest_pack_layout_std() {
+    local std="$1" ext="$2" image="$3" list="$4"
+    shift 4
     local dir="$image.layout"
     rm -rf "$dir"
     mkdir -p "$dir"
     local logs=() i=0 h n
     while IFS= read -r h; do
         n=$(printf '%03d' "$i")
-        printf '#include <%s>\nint main() { return 0; }\n' "$h" > "$dir/r_$n.mad"
-        if ! "$@" --no-config --std=madc --forest-bind="$image" \
-                --forest-touch-log="$dir/r_$n.log" --emit=c11 "$dir/r_$n.mad" \
+        printf '#include <%s>\nint main() { return 0; }\n' "$h" > "$dir/r_$n.$ext"
+        if ! "$@" --no-config --std="$std" --forest-bind="$image" \
+                --forest-touch-log="$dir/r_$n.log" --emit=c11 "$dir/r_$n.$ext" \
                 > /dev/null 2> "$dir/r_$n.err"; then
             echo "forest_pack_layout: FAILED - <$h> does not compile against the container:" >&2
             head -5 "$dir/r_$n.err" >&2
