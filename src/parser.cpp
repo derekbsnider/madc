@@ -24961,6 +24961,9 @@ struct LanguageStdRow {
 	bool canonical;
 	char family;
 	int year;	// the year the standard names (0 for the dialect)
+	bool gnu;	// an alias row naming the GNU dialect (the bare family
+			// spellings: gcc's and g++'s defaults, which the pack
+			// precompiles — owner 2026-10-18); false for every other row
 };
 const LanguageStdRow kLanguageStdTable[] = {
 	{ "madc",  Program::STD_MADC,  true,  'm', 0 },
@@ -24973,8 +24976,8 @@ const LanguageStdRow kLanguageStdTable[] = {
 	{ "c95",   Program::STD_C95,   true,  'c', 1995 },
 	{ "c99",   Program::STD_C99,   true,  'c', 1999 },
 	{ "c11",   Program::STD_C11,   true,  'c', 2011 },
-	{ "c",     Program::STD_C11,   false, 'c', 2011 },	// alias of c11
 	{ "c17",   Program::STD_C17,   true,  'c', 2017 },
+	{ "c",     Program::STD_C17,   false, 'c', 2017, true },	// alias of gnu17
 	{ "c23",   Program::STD_C23,   true,  'c', 2023 },
 	{ "c++98", Program::STD_CPP98, true,  'p', 1998 },
 	{ "cpp98", Program::STD_CPP98, false, 'p', 1998 },
@@ -24982,12 +24985,12 @@ const LanguageStdRow kLanguageStdTable[] = {
 	{ "cpp03", Program::STD_CPP03, false, 'p', 2003 },
 	{ "c++11", Program::STD_CPP11, true,  'p', 2011 },
 	{ "cpp11", Program::STD_CPP11, false, 'p', 2011 },
-	{ "c++",   Program::STD_CPP11, false, 'p', 2011 },	// alias of c++11
-	{ "cpp",   Program::STD_CPP11, false, 'p', 2011 },
 	{ "c++14", Program::STD_CPP14, true,  'p', 2014 },
 	{ "cpp14", Program::STD_CPP14, false, 'p', 2014 },
 	{ "c++17", Program::STD_CPP17, true,  'p', 2017 },
 	{ "cpp17", Program::STD_CPP17, false, 'p', 2017 },
+	{ "c++",   Program::STD_CPP17, false, 'p', 2017, true },	// alias of gnu++17
+	{ "cpp",   Program::STD_CPP17, false, 'p', 2017, true },
 	{ "c++20", Program::STD_CPP20, true,  'p', 2020 },
 	{ "cpp20", Program::STD_CPP20, false, 'p', 2020 },
 	{ "c++23", Program::STD_CPP23, true,  'p', 2023 },
@@ -25092,7 +25095,7 @@ bool Program::standard_of_spelling(const madc::dis::istring &spelling,
 	if ( spelling == row.name )
 	{
 	    std = row.std;
-	    gnu = false;
+	    gnu = row.gnu;
 	    return true;
 	}
     return false;

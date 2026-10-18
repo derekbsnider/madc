@@ -3527,6 +3527,17 @@ TEST_CASE("%std and %reset: the spelling, the refusals, the payloads (1B.7)")
     REQUIRE(Program::standard_of_spelling("c11", std, gnu));
     CHECK(std == Program::STD_C11);
     CHECK_FALSE(gnu);
+    // The bare family spellings name gcc's and g++'s defaults, the standards
+    // the pack precompiles (owner 2026-10-18).
+    REQUIRE(Program::standard_of_spelling("c", std, gnu));
+    CHECK(std == Program::STD_C17);
+    CHECK(gnu);
+    REQUIRE(Program::standard_of_spelling("c++", std, gnu));
+    CHECK(std == Program::STD_CPP17);
+    CHECK(gnu);
+    REQUIRE(Program::standard_of_spelling("cpp", std, gnu));
+    CHECK(std == Program::STD_CPP17);
+    CHECK(gnu);
     CHECK_FALSE(Program::standard_of_spelling("c18x", std, gnu));
     CHECK(Program::standard_spelling(Program::STD_CPP20, true) == "gnu++20");
     CHECK(Program::standard_spelling(Program::STD_C17, true) == "gnu17");

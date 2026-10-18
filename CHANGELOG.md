@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### The bare family spellings c, c++, cpp name gcc's and g++'s gnu defaults
+
+- `--std=c` now names gcc's default C dialect, gnu17 (was c11); `--std=c++` and
+  `--std=cpp` name g++'s default C++ dialect, gnu++17 (was c++11). The defaults
+  are the standards the release pack precompiles, and the bare family spelling is
+  the default (owner 2026-10-18).
+- `kLanguageStdTable` in `src/parser.cpp` — the one spelling → (standard, gnu
+  bit) table read by the CLI, the REPL and the session's `%std` switch — carries
+  a `gnu` bit, set on those three alias rows; `standard_of_spelling` returns it in
+  place of a hard-coded `false`.
+- `--std` help text names the new meaning (`c = gnu17, c++ = gnu++17`).
+- Reducers `tests/teststdaliasgnu_c.mad` (`--std=c` → gnu17: `gnu`, `201710`) and
+  `tests/teststdaliasgnu_cxx.mad` (`--std=c++` → gnu++17: `201703`), with gcc /
+  g++ oracles named in each; `tests/unit/test_repl_session.cpp` pins the `gnu`
+  bit on `c`, `c++`, `cpp`.
+
 ### The release pack freezes a C layer; C programs bind it (J2, J4)
 
 - The release pack now freezes the standard C headers a SECOND time, under C, as

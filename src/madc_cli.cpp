@@ -106,7 +106,7 @@ const row rows[] = {
 	// ---- Language / preprocessor
 	{ id(cli_option::language_std), "std", { { "--std", eq }, { "-std", eq } }, "<std>",
 	  s_language,
-	  "c89/c90/c99/c11/c17/c23 (c = c11), gnuNN, c++NN, gnu++NN, or madc (C++ keywords "
+	  "c89/c90/c99/c11/c17/c23, gnuNN, c++NN, gnu++NN (c = gnu17, c++ = gnu++17), or madc (C++ keywords "
 	  "reserved). Without it the extension decides, as gcc/g++ do: .c gnu17, "
 	  ".cpp/.cc/.cxx gnu++17, .mad madc; else madc.ini's std, else madc. A --project TU alike." },
 	{ id(cli_option::stdlib_flavor), "stdlib", { { "-stdlib", eq } }, "<lib>", s_language,
