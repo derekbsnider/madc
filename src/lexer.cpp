@@ -7376,10 +7376,29 @@ bool Program::forest_unit_reinclude_skipped(ForestSide &s, uint32_t unit)
 // macros; its includees keep their own once-only rule.
 bool Program::forest_bind_include_root(uint32_t unit)
 {
+    // K1a (docs/plans/2026-10-18-verified-cxx-bind.md): a C++ / madc TU's
+    // system content is all-bound or all-live. The restore installs each name
+    // a bound unit declares as the WHOLE freeze defined it (a forward
+    // declaration in <bits/stringfwd.h> brings std::char_traits complete), and
+    // C++ resolves class patterns, templates and default arguments by name, so
+    // bound and live system content cannot mix. A C TU mixes safely: its
+    // restored structs, typedefs and functions merge with a live twin.
+    if ( forest_system.bind_stopped )
+	return false;
     const bool reinclude = forest_system.chain_set.count(unit)
 	&& !forest_unit_reinclude_skipped(forest_system, unit);
     if ( !forest_bind_env_ok(forest_system, unit, reinclude) )
+    {
+	if ( !is_c_mode() && forest_system.chain.empty() )
+	{
+	    forest_system.bind_stopped = true;
+	    DBG(std::cout << "forest bind: binding stopped for this TU — its"
+		" first bind declined (" << (forest_system.forest->unit_name(unit)
+		? forest_system.forest->unit_name(unit) : "?")
+		<< "); every later include parses live" << std::endl);
+	}
 	return false;
+    }
     if ( reinclude )
     {
 	forest_install_pp(forest_system, unit);

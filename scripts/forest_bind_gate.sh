@@ -764,9 +764,14 @@ if printf 'int main(){return 0;}\n' > tmp/fbgate_statmem_probe.cpp \
 #include <locale>
 int main() { return 0; }		/* header-only producer: never uses a facet */
 EOF
+    # <locale> first: its closure carries <cstdio>. A <cstdio>-first consumer
+    # declines under the verified check — stdio.h's `#ifndef _VA_LIST_DEFINED`
+    # typedef arm was skipped at freeze (missing content, K2 of
+    # docs/plans/2026-10-18-verified-cxx-bind.md) — and a C++ TU's first
+    # decline stops binding (K1a), so the static member would never bind here.
     cat > "$sm_cons" <<'EOF'
-#include <cstdio>
 #include <locale>
+#include <cstdio>
 int main()
 {
     std::locale loc;
@@ -1057,6 +1062,82 @@ dv_cxx=$(timeout 60 "$BIN" --std=gnu++17 --forest-bind="$dv_stack" "$dv_dir/use.
     || fail "[division] a C++ compile read the C-only pack: '$dv_cxx' (want the mixed profile's which=1) $(head -n 2 "$dv_dir/use_cxx.err")"
 rm -rf "$dv_dir"
 echo "forest_bind_gate: [division] OK — with the C layer on top, a C++ compile reads only the mixed C/C++ profile; a C compile reads the C layer"
+
+# --- case: allornone (docs/plans/2026-10-18-verified-cxx-bind.md, K1a) ---
+# The restore installs each name a bound unit declares as the whole freeze
+# defined it, ahead of every live token, and C++ resolves default arguments,
+# class patterns and templates by name — so a C++ TU's system content is
+# all-bound or all-live. fbgate_ab_b.h declines here (its FBG_AB_CFG arm was
+# taken at freeze, under fbgate_ab_cfg.h) with nothing bound yet: binding
+# stops for the TU, and fbgate_ab_a.h parses live too. Before: a.h bound over
+# the live b.h, and the restore re-parsed a.h's default argument before b.h's
+# fbg_ab_mode existed ("Unknown namespace or class 'fbg_ab_mode'" — <streambuf>
+# over a live bits/ios_base.h in the knob-on packed suite). g++ and clang++:
+# m=3 extra=20. Control: with fbgate_ab_cfg.h first nothing differs and a.h
+# binds (m=3 extra=10).
+ab_dir=tmp/fbgate_ab
+rm -rf "$ab_dir"
+mkdir -p "$ab_dir"
+cat > "$ab_dir/fbgate_ab_cfg.h" <<'EOF'
+#ifndef FBGATE_AB_CFG_H
+#define FBGATE_AB_CFG_H
+#define FBG_AB_CFG 1
+#endif
+EOF
+cat > "$ab_dir/fbgate_ab_b.h" <<'EOF'
+#ifndef FBGATE_AB_B_H
+#define FBGATE_AB_B_H
+struct fbg_ab_mode { enum { in = 1, out = 2 }; };
+#ifdef FBG_AB_CFG
+#define FBG_AB_EXTRA 10
+#else
+#define FBG_AB_EXTRA 20
+#endif
+#endif
+EOF
+cat > "$ab_dir/fbgate_ab_a.h" <<'EOF'
+#ifndef FBGATE_AB_A_H
+#define FBGATE_AB_A_H
+#include <fbgate_ab_b.h>
+struct fbg_ab_buf { int pick(int m = fbg_ab_mode::in | fbg_ab_mode::out) { return m; } };
+#endif
+EOF
+cat > "$ab_dir/producer.cpp" <<'EOF'
+#include <fbgate_ab_cfg.h>
+#include <fbgate_ab_b.h>
+#include <fbgate_ab_a.h>
+int main() { return 0; }
+EOF
+cat > "$ab_dir/consumer.cpp" <<'EOF'
+#include <fbgate_ab_b.h>
+#include <fbgate_ab_a.h>
+#include <stdio.h>
+int main() { fbg_ab_buf b; printf("m=%d extra=%d\n", b.pick(), FBG_AB_EXTRA); return 0; }
+EOF
+cat > "$ab_dir/control.cpp" <<'EOF'
+#include <fbgate_ab_cfg.h>
+#include <fbgate_ab_a.h>
+#include <stdio.h>
+int main() { fbg_ab_buf b; printf("m=%d extra=%d\n", b.pick(), FBG_AB_EXTRA); return 0; }
+EOF
+ab_snap=$ab_dir/ab.msnap
+timeout 600 "$BIN" --std=gnu++17 --freeze="$ab_snap" -I "$ab_dir" "$ab_dir/producer.cpp" \
+    >"$ab_dir/freeze.log" 2>&1 || fail "[allornone] the --freeze FAILED: $(tail -n 3 "$ab_dir/freeze.log")"
+ab_out=$(timeout 60 "$BIN" --std=gnu++17 --forest-bind="$ab_snap" -I "$ab_dir" "$ab_dir/consumer.cpp" 2>&1)
+[ "$ab_out" = "m=3 extra=20" ] \
+    || fail "[allornone] bound and live system content mixed: '$ab_out' (g++: 'm=3 extra=20')"
+timeout 60 "$BIN" -v --std=gnu++17 --forest-bind="$ab_snap" -I "$ab_dir" "$ab_dir/consumer.cpp" >"$ab_dir/consumer.log" 2>/dev/null
+grep -aq "binding stopped for this TU" "$ab_dir/consumer.log" \
+    || fail "[allornone] the first decline did not stop binding for the C++ TU"
+grep -aq "bound to grove unit.*fbgate_ab_a.h" "$ab_dir/consumer.log" \
+    && fail "[allornone] fbgate_ab_a.h BOUND after the TU's first decline"
+ab_ctl=$(timeout 60 "$BIN" --std=gnu++17 --forest-bind="$ab_snap" -I "$ab_dir" "$ab_dir/control.cpp" 2>&1)
+[ "$ab_ctl" = "m=3 extra=10" ] || fail "[allornone] control output '$ab_ctl' != 'm=3 extra=10'"
+timeout 60 "$BIN" -v --std=gnu++17 --forest-bind="$ab_snap" -I "$ab_dir" "$ab_dir/control.cpp" >"$ab_dir/control.log" 2>/dev/null
+grep -aq "bound to grove unit.*fbgate_ab_a.h" "$ab_dir/control.log" \
+    || fail "[allornone] control: fbgate_ab_a.h did not bind when nothing differs"
+rm -rf "$ab_dir"
+echo "forest_bind_gate: [allornone] OK — a C++ TU's first decline with nothing bound stops binding; with nothing different it binds"
 
 # --- case: cenv (docs/plans/2026-10-18-c-pack-layer.md, J4) ---
 # A C program sets feature-test macros ahead of its system includes as a
@@ -2179,7 +2260,12 @@ echo "forest_bind_gate: [subbind] OK — OWNER'S BAR: tests/testsubscript.mad fr
 
 # --- case: redecl — the v40 mixed bind/live redeclaration seam (task #57) ----
 # The wchar.h/stdio.h FILE shape. A shared `#ifndef FBG_T_DEFINED` block lives
-# in BOTH a.h and b.h; c.h re-exports the typedef cstdio-style (`using ::fbgT`).
+# in BOTH a.h and b.h; c.h re-declares the typedef (C11 6.7p3: a typedef may be
+# redefined to the same type — the C spelling of cstdio's `using ::fbgT` re-export).
+# Both corpora are C TUs: a mixed bind/live TU is C's alone — its restored
+# structs and typedefs merge with a live twin — while a C++ TU's system content
+# is all-bound or all-live (K1a, docs/plans/2026-10-18-verified-cxx-bind.md):
+# corpus 1 compiled as C++ stops binding at its first decline (checked last).
 # Corpus 1 (sub-block guard MASKED-BIND + tolerance): the freeze parses a.h's
 # copy first, so b.h's frozen unit records "FBG_T_DEFINED defined (definer
 # a.h)". The consumer includes b.h FIRST (dep live-undefined ⇒ root b.h
@@ -2224,7 +2310,7 @@ cat > tmp/fbgate_redecl_c.h <<'EOF'
 #ifndef FBG_REDECL_C_H
 #define FBG_REDECL_C_H
 #include <fbgate_redecl_a.h>
-namespace fbgns { using ::fbgT; }
+typedef struct fbg_T fbgT;
 #endif
 EOF
 cat > tmp/fbgate_redecl_spice.h <<'EOF'
@@ -2233,26 +2319,26 @@ cat > tmp/fbgate_redecl_spice.h <<'EOF'
 #define FBG_SPICE 1
 #endif
 EOF
-cat > tmp/fbgate_redecl_producer.cpp <<'EOF'
+cat > tmp/fbgate_redecl_producer.c <<'EOF'
 #include <fbgate_redecl_c.h>
 #include <fbgate_redecl_b.h>
 int main() { return 0; }
 EOF
-cat > tmp/fbgate_redecl_consumer.cpp <<'EOF'
+cat > tmp/fbgate_redecl_consumer.c <<'EOF'
 #include <fbgate_redecl_b.h>
 #include <fbgate_redecl_c.h>
-#include <cstdio>
+#include <stdio.h>
 int main() { fbgT t; t.x = 5; t.y = 2; printf("v=%d\n", fbg_b_use(&t) + t.y); return 0; }
 EOF
-cat > tmp/fbgate_redecl2_producer.cpp <<'EOF'
+cat > tmp/fbgate_redecl2_producer.c <<'EOF'
 #include <fbgate_redecl_spice.h>
 #include <fbgate_redecl_c.h>
 int main() { return 0; }
 EOF
-cat > tmp/fbgate_redecl2_consumer.cpp <<'EOF'
+cat > tmp/fbgate_redecl2_consumer.c <<'EOF'
 #include <fbgate_redecl_a.h>
 #include <fbgate_redecl_c.h>
-#include <cstdio>
+#include <stdio.h>
 int main() { fbgT t; t.x = 5; t.y = 2; printf("v=%d\n", t.x + t.y); return 0; }
 EOF
 rd_snap="tmp/fbgate_redecl.msnap"
@@ -2260,27 +2346,27 @@ rd_snap2="tmp/fbgate_redecl2.msnap"
 rd_vlog="tmp/fbgate_redecl_v.log"
 rd_vlog2="tmp/fbgate_redecl2_v.log"
 rd_gcc="tmp/fbgate_redecl_gcc"
-for c in tmp/fbgate_redecl_consumer.cpp tmp/fbgate_redecl2_consumer.cpp; do
-    rd_live=$(timeout 60 "$BIN" "$c" -I tmp 2>/dev/null)
+for c in tmp/fbgate_redecl_consumer.c tmp/fbgate_redecl2_consumer.c; do
+    rd_live=$(timeout 60 "$BIN" --std=gnu17 "$c" -I tmp 2>/dev/null)
     [ "$rd_live" = "v=7" ] || fail "[redecl] live-parse of $c gave '$rd_live' != 'v=7'"
-    if command -v g++ >/dev/null 2>&1; then
-        if timeout 120 g++ -I tmp "$c" -o "$rd_gcc" >/dev/null 2>&1; then
+    if command -v gcc >/dev/null 2>&1; then
+        if timeout 120 gcc -I tmp "$c" -o "$rd_gcc" >/dev/null 2>&1; then
             rd_gcc_out=$("$rd_gcc" 2>/dev/null)
-            [ "$rd_gcc_out" = "v=7" ] || fail "[redecl] g++ output for $c '$rd_gcc_out' != 'v=7'"
+            [ "$rd_gcc_out" = "v=7" ] || fail "[redecl] gcc output for $c '$rd_gcc_out' != 'v=7'"
         else
-            fail "[redecl] g++ compile of $c FAILED"
+            fail "[redecl] gcc compile of $c FAILED"
         fi
     fi
 done
-timeout 120 "$BIN" --freeze="$rd_snap" tmp/fbgate_redecl_producer.cpp -I tmp >/dev/null 2>&1 \
+timeout 120 "$BIN" --std=gnu17 --freeze="$rd_snap" tmp/fbgate_redecl_producer.c -I tmp >/dev/null 2>&1 \
     || fail "[redecl] --freeze corpus 1 FAILED"
-timeout 120 "$BIN" --freeze="$rd_snap2" tmp/fbgate_redecl2_producer.cpp -I tmp >/dev/null 2>&1 \
+timeout 120 "$BIN" --std=gnu17 --freeze="$rd_snap2" tmp/fbgate_redecl2_producer.c -I tmp >/dev/null 2>&1 \
     || fail "[redecl] --freeze corpus 2 FAILED"
 # Corpus 1: b.h declines; a.h's sub-block-guard mismatch MASKED-BINDS (never
 # pruned, never declined; its own guard define masked); output still exact.
-rd_bind=$(timeout 60 "$BIN" --forest-bind="$rd_snap" tmp/fbgate_redecl_consumer.cpp -I tmp 2>/dev/null)
+rd_bind=$(timeout 60 "$BIN" --std=gnu17 --forest-bind="$rd_snap" tmp/fbgate_redecl_consumer.c -I tmp 2>/dev/null)
 [ "$rd_bind" = "v=7" ] || fail "[redecl] corpus-1 bind output '$rd_bind' != 'v=7'"
-timeout 60 "$BIN" -v --forest-bind="$rd_snap" tmp/fbgate_redecl_consumer.cpp -I tmp >"$rd_vlog" 2>&1
+timeout 60 "$BIN" -v --std=gnu17 --forest-bind="$rd_snap" tmp/fbgate_redecl_consumer.c -I tmp >"$rd_vlog" 2>&1
 grep -aq "DECLINE root tmp/fbgate_redecl_b.h" "$rd_vlog" \
     || fail "[redecl] root b.h did NOT decline — the seam was never exercised"
 grep -aq "fbgate_redecl_a.h dep 'FBG_T_DEFINED' self-defined guard, live arm wins" "$rd_vlog" \
@@ -2297,22 +2383,35 @@ grep -aq "forest_restore_decls: typedef fbgT" "$rd_vlog" \
     || fail "[redecl] corpus-1 restored fbgT twin never registered — the collision precondition is gone"
 grep -aq "Identifier already defined" "$rd_vlog" \
     && fail "[redecl] corpus 1 hit the redeclaration throw (denotes_same_type tolerance regressed)"
-# Corpus 2: real-guard prune fires; the pruned unit's flat re-export suppresses.
-rd_bind2=$(timeout 60 "$BIN" --forest-bind="$rd_snap2" tmp/fbgate_redecl2_consumer.cpp -I tmp 2>/dev/null)
+# Corpus 2: real-guard prune fires. (Under C the freeze indexes c.h's repeated
+# typedef under a.h, its first declarer, so this corpus restores no twin —
+# corpus 1 pins the twin tolerance; this one pins the prune.)
+rd_bind2=$(timeout 60 "$BIN" --std=gnu17 --forest-bind="$rd_snap2" tmp/fbgate_redecl2_consumer.c -I tmp 2>/dev/null)
 [ "$rd_bind2" = "v=7" ] || fail "[redecl] corpus-2 bind output '$rd_bind2' != 'v=7'"
-timeout 60 "$BIN" -v --forest-bind="$rd_snap2" tmp/fbgate_redecl2_consumer.cpp -I tmp >"$rd_vlog2" 2>&1
+timeout 60 "$BIN" -v --std=gnu17 --forest-bind="$rd_snap2" tmp/fbgate_redecl2_consumer.c -I tmp >"$rd_vlog2" 2>&1
 grep -aq "DECLINE root tmp/fbgate_redecl_a.h" "$rd_vlog2" \
     || fail "[redecl] corpus-2 root a.h did NOT decline (FBG_SPICE dep lost?)"
 grep -aq "fbgate_redecl_a.h already present ('FBG_REDECL_A_H' guard live)" "$rd_vlog2" \
     || fail "[redecl] corpus-2 a.h was NOT pruned on its REAL include-once guard"
 grep -aq "bound to grove unit.*fbgate_redecl_c.h" "$rd_vlog2" \
     || fail "[redecl] corpus-2 c.h did NOT bind"
-grep -aq "forest_restore_decls: typedef fbgT" "$rd_vlog2" \
-    || fail "[redecl] corpus-2 restored fbgT twin never registered — the collision precondition is gone"
 grep -aq "Identifier already defined" "$rd_vlog2" \
     && fail "[redecl] corpus 2 hit the redeclaration throw"
-rm -f "$rd_snap" "$rd_snap2" "$rd_gcc" "$rd_vlog" "$rd_vlog2"
-echo "forest_bind_gate: [redecl] OK — masked-bind twin restored + tolerated (denotes_same_type); honest-evidence prune pinned; output == live == g++"
+# Corpus 1 as C++ (its own C++ freeze — a C++ compile never reads a C profile,
+# K0): the TU's first decline (b.h) stops binding — c.h parses live.
+cp tmp/fbgate_redecl_producer.c tmp/fbgate_redecl_producer_cxx.cpp
+cp tmp/fbgate_redecl_consumer.c tmp/fbgate_redecl_consumer_cxx.cpp
+timeout 120 "$BIN" --std=gnu++17 --freeze="$rd_snap" tmp/fbgate_redecl_producer_cxx.cpp -I tmp >/dev/null 2>&1 \
+    || fail "[redecl] --freeze corpus 1 (C++) FAILED"
+rd_cxx=$(timeout 60 "$BIN" --std=gnu++17 --forest-bind="$rd_snap" tmp/fbgate_redecl_consumer_cxx.cpp -I tmp 2>/dev/null)
+[ "$rd_cxx" = "v=7" ] || fail "[redecl] corpus-1 C++ consumer output '$rd_cxx' != 'v=7'"
+timeout 60 "$BIN" -v --std=gnu++17 --forest-bind="$rd_snap" tmp/fbgate_redecl_consumer_cxx.cpp -I tmp >"$rd_vlog" 2>&1
+grep -aq "binding stopped for this TU" "$rd_vlog" \
+    || fail "[redecl] corpus-1 C++ consumer did not stop binding at its first decline (K1a)"
+grep -aq "bound to grove unit.*fbgate_redecl_c.h" "$rd_vlog" \
+    && fail "[redecl] corpus-1 C++ consumer BOUND c.h beside the live b.h"
+rm -f "$rd_snap" "$rd_snap2" "$rd_gcc" "$rd_vlog" "$rd_vlog2" tmp/fbgate_redecl_consumer_cxx.cpp tmp/fbgate_redecl_producer_cxx.cpp
+echo "forest_bind_gate: [redecl] OK — (C) masked-bind twin restored + tolerated (denotes_same_type); honest-evidence prune pinned; output == live == gcc; (C++) the first decline stops binding"
 
 # --- case: husk — unit-granular missing-content recovery (task #57) ----------
 # The mingw stdlib.h -> errno.h shape in miniature. pre.h defines the shared
@@ -2594,5 +2693,5 @@ run_case patternalias "1 2"
 # coverage. Worse in the other direction: deleting a case would leave this line
 # still claiming it runs. Deriving it from run_case would need the ~12 bespoke
 # cases below to register too; until then, update it when you add a case.
-echo "forest_bind_gate: GREEN 44/44 — typedef + struct + nested + bitfield + class + method + fwd + ptr + nestedenumfn + ldouble + ns + anon + declonlymt + flavorgate + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec + iobind + traitfold + nothrowfold + explicitctor + armreplay + armreplayc + division + replreuse + deletedctor + constcopy + subbind + redecl + husk + silbody grove headers bound (unit-granular husk recovery only), output == live == g++ + secvptr + friendgrant + patternalias + quietbind + memberptr + unionclass"
+echo "forest_bind_gate: GREEN 45/45 — typedef + struct + nested + bitfield + class + method + fwd + ptr + nestedenumfn + ldouble + ns + anon + declonlymt + flavorgate + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec + iobind + traitfold + nothrowfold + explicitctor + armreplay + armreplayc + division + allornone + replreuse + deletedctor + constcopy + subbind + redecl + husk + silbody grove headers bound (unit-granular husk recovery only), output == live == g++ + secvptr + friendgrant + patternalias + quietbind + memberptr + unionclass"
 exit 0

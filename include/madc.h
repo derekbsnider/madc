@@ -7351,6 +7351,7 @@ public:
 	    size_t chain_size = 0;
 	    size_t restored_chain_size = 0;
 	    std::set<uint32_t> live_present, husk_live_pending;
+	    bool bind_stopped = false;
 	    std::vector<unsigned char> type_registered;
 	    std::vector<bool> global_registered, func_registered, tmpl_registered;
 	};
@@ -7389,6 +7390,10 @@ public:
 	std::set<uint32_t> walking;		// units on the in-flight bind recursion (cycle break)
 	std::set<uint32_t> live_present;	// v40: units ALREADY PRESENT via a live parse (guard prune) — bind skips them, the decl-restore filter must NOT see them
 	std::set<uint32_t> husk_live_pending;	// task #57: missing-content closure units selected for exact live tokenization; never enter chain_set
+	// K1a (docs/plans/2026-10-18-verified-cxx-bind.md): a C++ / madc TU's
+	// system content is all-bound or all-live — a decline with nothing bound
+	// yet stops every later bind, so the TU parses live from there.
+	bool bind_stopped = false;
 	// task #57 masked-bind: unit -> its guarded-fallback macros whose guard
 	// is live-defined; forest_install_pp skips those define events
 	// (live-order parity — the live arm skipped them). Rebuilt per env

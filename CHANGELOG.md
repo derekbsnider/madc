@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### A C++ or madc TU's system content is all-bound or all-live — a bind decline with nothing bound yet stops binding for the rest of the TU (K1a)
+
+- `Program::forest_bind_include_root` (`src/lexer.cpp`): in a C++ or madc compile, a bind decline while nothing is bound yet (`ForestSide::chain` empty) sets `ForestSide::bind_stopped`, so every later system include in the TU parses live instead of binding. The restore installs each name a bound unit declares as the whole freeze defined it, ahead of the live tokens, and C++ resolves default arguments, class patterns and templates by name, so bound and live system content cannot mix. A C compile keeps per-root declines — its restored structs, typedefs and functions merge with a live twin.
+- `ForestSide::bind_stopped` is marked and rewound with the rest of the bind side (`forest_side_mark` / `forest_side_rewind`, `src/parser.cpp`), so an interactive-entry rollback restores it.
+- The knob-on packed suite (`MADC_FOREST_ENV_CHECK=1`, `bin/madc-release`) drops from 159 to 32 failures; the 32 remaining are TUs where a bind precedes the first decline (K1b). Knob-off behaviour changes only when a C++ TU's first bind attempt declines.
+- Gate: `scripts/forest_bind_gate.sh` `[allornone]` — a C++ TU whose first include declines (nothing bound) parses the rest live (`m=3 extra=20`, g++ and clang++), its control binds (`m=3 extra=10`); `[redecl]` is now a C corpus plus a C++ decline-stops-binding check. See `docs/plans/2026-10-18-verified-cxx-bind.md` section K1a.
+
 ### A C++ or madc compile reads only C++-family pack profiles; a C compile binds the C layer — the division is a language-family rule, not the stack's order (K0)
 
 - `cir_forest_profile_serves_family(producer_config, consumer_config)` (`src/cir_freeze.cpp`) answers whether a consumer may read a profile frozen under a producer config at all, over the config word's `language_std` family (`madc::file_kind_family`): a C++ or madc consumer refuses a C-family profile, a C consumer reads either. Every forest probe mode (`forest_probe_arm`, `src/lexer.cpp`) consults it before a match, so a C++ compile never binds or reads the C layer even when that layer sits newest in the stack.
