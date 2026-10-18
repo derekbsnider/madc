@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### A C compile searches the C view of the flavor table, never its C++ directories (B199)
+
+- `Program::search_view(c_view, toolchain_only)` (`src/lexer.cpp`) is the one cut
+  of the selected stdlib flavor's include table at its compiler-owned dir: the C
+  view is the list FROM that dir on — gcc's and clang's `-x c` list — and the
+  toolchain-only view (`--no-sysroot-includes`) is the list up to and including
+  it. `sys_include_paths()` is this compile's live view,
+  `search_view(is_c_mode(), !enable_sysroot_includes)`.
+- Before the fix a `.c` compile searched the flavor's whole C++ list in every
+  mode: `<stdlib.h>` / `<math.h>` resolved to libstdc++'s C++ wrappers (libc++'s,
+  for nearly every C header, on darwin), and `<vector>` was visible to C.
+- `forest_unit_under_build_roots` (packed-unit naming, the one direct reader of
+  the whole table) takes the C cut through the same owner;
+  `sys_include_prefixes_canonical` keys its cache on flavor AND view.
+- Reducer `tests/testcsearchnocxxdirs_c.mad` (`--std=gnu17` → "no vector / no
+  cstdio / stdlib visible / 1 2"; gcc and clang oracles named in it). The three
+  release packs re-freeze with their C layers now holding the C library's own
+  headers. See `docs/plans/2026-10-18-c-pack-layer.md` section J, slice J4.
+
 ### An embedded header reached through a C wrapper's `#include_next` is recorded (J5)
 
 - `named_include_provider_exists` (`src/lexer.cpp`) — the one owner of "does a
@@ -144,10 +163,10 @@
   `[darwin-c-default]` binds; the consumer parse leg OK. The run against the
   shipped binary rides `mac_battery.sh` at the seam.
   `docs/parity/pack-degradation-baseline.txt` records `5361392 darwin-gnu17
-  pack-bytes`. B199 on darwin: the C probe's `<stdio.h>` binds as libc++'s C
-  wrapper (`.../c++/v1/stdio.h`) — libc++ wraps nearly every C header, so every
-  darwin C root passes through the C++ library's directory (consistent between
-  freeze and consumer, so sound). `scripts/forest_pack_share.sh` now owns the
+  pack-bytes`. B199 fixed (this commit): a darwin C compile no longer searches
+  libc++'s directory (`.../c++/v1`), so the C layer's roots are the prelude's
+  own C headers, not libc++'s C wrappers (libc++ wraps nearly every C header).
+  `scripts/forest_pack_share.sh` now owns the
   capped-run command `FOREST_PACK_TIMEOUT` (GNU `timeout`, or `gtimeout` on a
   Mac host) for every pack step, and the C stage calls the pack gate beside
   itself so it runs from `src/` (darwin) as from the repo root (Linux, win64);

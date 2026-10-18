@@ -1,0 +1,28 @@
+// A C compile searches the C search list — the compiler's own include dir
+// onward — never the C++ standard library's directories (B199). Before the
+// fix madc searched the whole C++ list in every mode: <vector> was visible to
+// C, and <stdlib.h> resolved to libstdc++'s C++ wrapper (libc++'s, for nearly
+// every C header, on darwin).
+// Oracle: gcc -std=gnu17 and clang -std=gnu17 print "no vector",
+// "no cstdio", "stdlib visible", "1 2".
+#include <stdio.h>
+#include <stdlib.h>
+int main(void)
+{
+#if __has_include(<vector>)
+	puts("vector visible");
+#else
+	puts("no vector");
+#endif
+#if __has_include(<cstdio>)
+	puts("cstdio visible");
+#else
+	puts("no cstdio");
+#endif
+#if __has_include(<stdlib.h>)
+	puts("stdlib visible");
+#endif
+	div_t q = div(5, 3);
+	printf("%d %d\n", q.quot, q.rem);
+	return 0;
+}

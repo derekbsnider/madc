@@ -723,32 +723,6 @@ No gcc/clang analogue: MIR JIT internals.
 
 ## Accepts invalid code
 
-### B199. A C compile searches the C++ standard library's include directories
-
-```c
-#include <stdlib.h>
-int main(void) { return 0; }
-```
-
-- gcc 13 `-x c` searches `/usr/lib/gcc/x86_64-linux-gnu/13/include`,
-  `/usr/local/include`, `/usr/include/x86_64-linux-gnu`, `/usr/include` — no
-  C++ directory. madc (every build, 0.105.0 included; found 2026-10-18 during
-  the C pack layer, section J) resolves `<stdlib.h>` in a `.c` compile to
-  `/usr/include/c++/13/stdlib.h`, libstdc++'s wrapper, which in C
-  `#include_next`s the real header — the right output by accident. The same
-  for `<math.h>`. A `.c` file's `#include <vector>` opens
-  `/usr/include/c++/13/vector` and fails on its C++ ("use of undeclared
-  identifier 'namespace'") where gcc says `vector: No such file or directory`.
-- Consequence: the pack's C layer, frozen "as the C preprocessor sees" the
-  headers (docs/plans/2026-10-18-c-pack-layer.md, property 1), carries the
-  two wrappers as its `stdlib.h` / `math.h` units.
-- Layer: `Program::sys_include_paths()` (src/lexer.cpp) returns the flavor
-  table's whole list (`madc_stdlib_flavor::paths`, the C++ probe) in every
-  mode. The table's order is the compiler's — the C++ stdlib dirs, then the
-  compiler-owned dir, then the C dirs — so the C view is the list FROM
-  `compiler_owned_dir` on, which is exactly gcc's `-x c` list. Every C
-  compile's include resolution changes: a planned change, not a drive-by.
-
 ### B163. C++ keywords are accepted as variable names under `--std=c++NN`
 
 ```cpp

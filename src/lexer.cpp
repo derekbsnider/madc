@@ -5030,17 +5030,17 @@ CirFrozenForest *Program::ensure_source_forest()
 // dir, then every directory of the selected flavor's table — past the
 // toolchain-only view's cut (--no-sysroot-includes) too, since a packed header
 // is madc's own, named under the root the build gave it, whichever roots this
-// compile searches on disk. The step before a bare path-tail match, which
-// cannot tell <search.h> from libc++'s __algorithm/search.h. -1: none.
+// compile searches on disk. A C compile's roots are still the C view's (B199):
+// libstdc++'s c++/NN/stdlib.h is a packed unit, never a C program's <stdlib.h>.
+// The step before a bare path-tail match, which cannot tell <search.h> from
+// libc++'s __algorithm/search.h. -1: none.
 int Program::forest_unit_under_build_roots(CirFrozenForest *f,
 					   const madc::dis::istring &incfile)
 {
     if ( !f || incfile.empty() || madc::detail::host_path_absolute(incfile) )
 	return -1;
     std::vector<madc::dis::istring> roots(include_paths.begin(), include_paths.end());
-    const madc_stdlib_flavor *fl = active_stdlib_flavor();
-    const char *const *table = fl && fl->paths && fl->paths[0]
-	? fl->paths : sys_include_paths();
+    const char *const *table = search_view(is_c_mode(), /*toolchain_only=*/false);
     for ( ; *table; ++table )
 	roots.push_back(*table);
     for ( size_t i = 0; i < roots.size(); ++i )
@@ -5859,46 +5859,69 @@ static const char *madc_fallback_include_paths[] = {
     (const char *)0
 };
 
+// This compile's live search view: the C view under a C standard, the
+// toolchain-only view under --no-sysroot-includes (search_view below).
 const char *const *Program::sys_include_paths() const
+{
+    return search_view(is_c_mode(), !registration_policy.enable_sysroot_includes);
+}
+
+// The compiler reports its search list in a fixed order — the C++ stdlib dirs,
+// then its own builtin (compiler-owned) dir, then the sysroot's C dirs and
+// frameworks — and the compiler-owned dir is the ONE cut point for both views:
+// - THE C VIEW (a C compile): the list FROM the compiler-owned dir on — exactly
+//   gcc's and clang's `-x c` list. A C compile never searches the C++ standard
+//   library's directories (B199: libstdc++'s <stdlib.h> / <math.h> wrappers,
+//   libc++'s for nearly every C header, and <vector> itself, were reachable
+//   from C).
+// - THE TOOLCHAIN-ONLY VIEW (registration_policy.enable_sysroot_includes ==
+//   false, the freezer's --no-sysroot-includes): the list UP TO AND INCLUDING
+//   the compiler-owned dir — the roots the toolchain owns; what follows is the
+//   host's C library / SDK.
+// Both together: the compiler-owned dir alone. Cached per (flavor, view),
+// NULL-terminated like the table it views — the language standard can change
+// within one session (the REPL's %std). A table with no compiler-owned slot
+// cannot be cut honestly: the toolchain-only view refuses loudly rather than
+// guess a position; the C view keeps the whole table (the slot is absent only
+// when no compiler was detected at build time, whose fallback list is C-only).
+const char *const *Program::search_view(bool c_view, bool toolchain_only) const
 {
     const madc_stdlib_flavor *f = active_stdlib_flavor();
     // Minimal C list when detection produced nothing (no compiler at build time).
     if ( !f->paths || !f->paths[0] )
 	return madc_fallback_include_paths;
-    if ( registration_policy.enable_sysroot_includes )
+    if ( !c_view && !toolchain_only )
 	return f->paths;
-    // The toolchain-only view (registration_policy.enable_sysroot_includes ==
-    // false): the compiler reports its search list in a fixed order — the
-    // C++ stdlib dirs, then its own builtin (compiler-owned) dir, then the
-    // sysroot's C dirs and frameworks — so "everything up to and including the
-    // compiler-owned dir" IS the set of roots the toolchain owns, and what
-    // follows is the host's C library / SDK. Cached per flavor, NULL-terminated
-    // like the table it views. A table with no compiler-owned slot cannot be
-    // cut honestly: refuse loudly rather than guess a position.
-    if ( _toolchain_paths_flavor == f && !_toolchain_paths.empty() )
-	return _toolchain_paths.data();
+    const int kind = (c_view ? 1 : 0) | (toolchain_only ? 2 : 0);
+    std::vector<const char *> &view = _search_view_paths[kind];
+    if ( _search_view_flavor[kind] == f && !view.empty() )
+	return view.data();
     const char *owned = f->compiler_owned_dir ? f->compiler_owned_dir : "";
-    _toolchain_paths.clear();
-    bool cut = false;
-    for ( int i = 0; f->paths[i]; ++i )
-    {
-	_toolchain_paths.push_back(f->paths[i]);
-	if ( *owned && strcmp(f->paths[i], owned) == 0 )
+    int owned_at = -1;
+    for ( int i = 0; *owned && f->paths[i]; ++i )
+	if ( strcmp(f->paths[i], owned) == 0 )
 	{
-	    cut = true;
+	    owned_at = i;
 	    break;
 	}
-    }
-    if ( !cut )
+    if ( owned_at < 0 )
     {
-	_toolchain_paths.clear();
-	throw std::runtime_error("--no-sysroot-includes: this build's system include table has no "
-				 "compiler-owned dir to cut at (flavor '" + std::string(f->name ? f->name : "")
-				 + "'); cannot separate toolchain roots from sysroot roots");
+	if ( toolchain_only )
+	    throw std::runtime_error("--no-sysroot-includes: this build's system include table has no "
+				     "compiler-owned dir to cut at (flavor '" + std::string(f->name ? f->name : "")
+				     + "'); cannot separate toolchain roots from sysroot roots");
+	return f->paths;
     }
-    _toolchain_paths.push_back((const char *)0);
-    _toolchain_paths_flavor = f;
-    return _toolchain_paths.data();
+    view.clear();
+    for ( int i = c_view ? owned_at : 0; f->paths[i]; ++i )
+    {
+	view.push_back(f->paths[i]);
+	if ( toolchain_only && i == owned_at )
+	    break;
+    }
+    view.push_back((const char *)0);
+    _search_view_flavor[kind] = f;
+    return view.data();
 }
 
 bool Program::posix_compat_enabled() const
@@ -6039,10 +6062,13 @@ const char *Program::compiler_owned_include_dir() const
 const std::vector<madc::dis::istring> &Program::sys_include_prefixes_canonical() const
 {
     const madc_stdlib_flavor *f = active_stdlib_flavor();
-    if ( _canon_prefix_flavor == f && !_canon_prefixes.empty() )
+    // Keyed by flavor AND view: the C view and the C++ view of one flavor are
+    // different lists, and the standard can change within a session.
+    const char *const *paths = sys_include_paths();
+    if ( _canon_prefix_flavor == f && _canon_prefix_view == paths
+      && !_canon_prefixes.empty() )
 	return _canon_prefixes;
     _canon_prefixes.clear();
-    const char *const *paths = sys_include_paths();
     // The directories' COMPARISON spellings, as host_path_within reads them:
     // no separator appended here — the canonicalizer writes the host's own
     // ('\\' on Windows), and a '/' added to it never matched there.
@@ -6054,6 +6080,7 @@ const std::vector<madc::dis::istring> &Program::sys_include_prefixes_canonical()
 	_canon_prefixes.push_back(from_libmadc ? madc::dis::istring(paths[i])
 					       : madc::dis::istring(canonical_path_for_compare(paths[i])));
     _canon_prefix_flavor = f;
+    _canon_prefix_view = paths;
     return _canon_prefixes;
 }
 

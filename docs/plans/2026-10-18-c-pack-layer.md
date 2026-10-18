@@ -197,10 +197,13 @@ equals `c_headers.live`, and `sqlite3.forest` is in the same position.
     the include position (or the definer per consult) in the freeze, then rule
     the dep replay-internal. Cost now: `<stdio.h>` parses live under the C
     layer (52.1M, not ~38M).
-  - Found: B199 (BUGS.md) — a C compile searches libstdc++'s include
-    directories, so the C layer's `stdlib.h` / `math.h` units are the
-    libstdc++ wrappers. Property 1 holds only through their `#include_next`.
-    The fix changes every C compile's include resolution: owner's call.
+  - Found: B199 — a C compile searched libstdc++'s include directories, so
+    the C layer's `stdlib.h` / `math.h` units were the libstdc++ wrappers
+    (libc++'s, for nearly every C root, on darwin). FIXED 2026-10-18 (owner:
+    "fix it now"): `Program::search_view` cuts the flavor's table at its
+    compiler-owned dir — a C compile searches from that dir on, gcc's and
+    clang's `-x c` list — so property 1 holds outright: the C layer's units
+    are the C library's own headers on every platform.
 - **J5 — platform arms.** The win64 and darwin pack scripts freeze their own C
   lists (mingw/UCRT's C set; darwin's libc). They are built on the container
   and run at the seam.
@@ -248,11 +251,11 @@ equals `c_headers.live`, and `sqlite3.forest` is in the same position.
     parse leg already uses: OK `[darwin-c-default]`, OK `[darwin-gnu17]` on
     both arches (quiet, 45 roots, raw — arm64 4,572,304 bytes, x86-64
     5,361,392 recorded — gnu17 and gnu11 bind). The run on a Mac against the
-    shipped binary rides `mac_battery.sh` at the seam. The C probe's
-    `<stdio.h>` binds as libc++'s C wrapper (`.../c++/v1/stdio.h`): B199 on
-    darwin, where libc++ wraps nearly every C header — consistent between
-    freeze and consumer, so sound, but every darwin C root passes through the
-    C++ library's directory.
+    shipped binary rides `mac_battery.sh` at the seam. At this commit the C
+    probe's `<stdio.h>` bound as libc++'s C wrapper (`.../c++/v1/stdio.h`) —
+    B199 on darwin, where libc++ wraps nearly every C header; B199's fix
+    (J4 "Found", above) takes the C++ directory off a C compile's search, so
+    every darwin C root is the prelude's own.
   - `FOREST_PACK_TIMEOUT` (`forest_pack_share.sh`) is the one capped-run
     command for every pack step — GNU `timeout`, or `gtimeout` on a Mac build
     host — and the C stage calls the pack gate beside itself, so it runs from

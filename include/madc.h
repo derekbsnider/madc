@@ -5810,8 +5810,9 @@ public:
     const madc_stdlib_flavor *stdlib_flavor = NULL;
     mutable std::vector<madc::dis::istring> _canon_prefixes;		// cache: see sys_include_prefixes_canonical()
     mutable const madc_stdlib_flavor *_canon_prefix_flavor = NULL;
-    mutable std::vector<const char *> _toolchain_paths;		// cache: see sys_include_paths() (enable_sysroot_includes == false)
-    mutable const madc_stdlib_flavor *_toolchain_paths_flavor = NULL;
+    mutable const char *const *_canon_prefix_view = NULL;			// the sys_include_paths() view it was built from
+    mutable std::vector<const char *> _search_view_paths[4];	// cache per kind: see search_view() (cuts of the flavor's table)
+    mutable const madc_stdlib_flavor *_search_view_flavor[4] = { NULL, NULL, NULL, NULL };
     void add_include_dir(const std::string &dir);	// normalize (trailing '/') + append to include_paths
     void add_cli_define(const std::string &def);	// split NAME[=VALUE] (bare => "1") into cli_defines
     std::map<madc::dis::istring, bool> included_files;	// #include files already tokenized (require_once semantics)
@@ -7753,6 +7754,10 @@ public:
     // search order in one place. Both fall back when the build host had no
     // compiler to probe.
     const char *const *sys_include_paths() const;
+    // The ONE cut of the selected flavor's table at its compiler-owned dir:
+    // the C view (from that dir on) and/or the toolchain-only view (up to and
+    // including it). sys_include_paths() is this compile's live view.
+    const char *const *search_view(bool c_view, bool toolchain_only) const;
     const char *compiler_owned_include_dir() const;
     // realpath'd copy of the above, cached per flavor — a compiler's reported
     // search list is not always canonical (clang: `.../bin/../include/c++/v1`).
