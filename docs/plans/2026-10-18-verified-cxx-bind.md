@@ -343,7 +343,9 @@ and fixes:
   table instead of copying it.
 - Knob off, only a condition that can mask or run is evaluated.
 
-Result: `rung_stdio` 19.35M → 19.09M Ir (bind 1.46M → 1.19M);
+Result (the gate run recorded in e5b0d55b5): `rung_stdio` 19.35M → 18.80M Ir
+(−2.8%; bind 1.46M → 1.19M with raw slots alone), `rung_limits` −4.8%,
+`rung_type_traits` −3.2%, `rung_c8` −2.5%, `rung_vector` −1.9%;
 `c_headers.forest` 38.01M → 38.16M (+0.39%; bind 2.78M → 2.94M, the
 per-condition consult checks the verified walk adds).
 
