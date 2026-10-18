@@ -100,10 +100,10 @@
 0 linux closure-drops
 11581976 linux pack-bytes
 # The C layer (docs/plans/2026-10-18-c-pack-layer.md), one key per raw profile
-# (FOREST_C_LAYER in scripts/forest_pack_share.sh). Its freezes are QUIET — no
-# pack-errors line, so zero allowed — and its size is the profile's own bytes
-# at its first pack (2026-10-18, the 30 v1 roots).
-2126488 linux-c17 pack-bytes
+# (FOREST_C_LAYER in scripts/forest_pack_share.sh; owner 2026-10-18: gnu17
+# only). Its freezes are QUIET — no pack-errors line, so zero allowed — and its
+# size is the profile's own bytes at its first pack (2026-10-18, the 30 v1
+# roots).
 3409816 linux-gnu17 pack-bytes
 # win64 68 -> 70 (2026-09-20): the same libstdc++ 13.2 corpus as linux, the
 # same six exposed __cerb entries (istream.tcc, the mingw stage's line

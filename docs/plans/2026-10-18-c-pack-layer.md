@@ -34,7 +34,8 @@ equals `c_headers.live`, and `sqlite3.forest` is in the same position.
 6. It is built on the per-header slices: a bind loads only the units the
    program's include closure reaches.
 7. It lands with a GATE, never without one: `forest_pack_gate.sh` is red
-   unless a `.c` compile and a `--std=c17` compile bind the C layer. The
+   unless a `.c` compile (and each label's compile) binds the C layer. The
+   `--std=c17` bind was dropped by the owner's 2026-10-18 ruling (below). The
    `c_headers.forest` parse-cost row is re-recorded at the new level, so losing
    the bind is a several-fold red.
 
@@ -71,6 +72,15 @@ equals `c_headers.live`, and `sqlite3.forest` is in the same position.
   - `forest_pack_layout.sh` hard-codes `--std=madc` and `.mad` roots.
 
 ## Rulings
+
+- OWNER 2026-10-18: the pack precompiles ONLY the defaults, gnu17 (C) and
+  gnu++17 (C++): "we can't precompile multiple variants as that will take up
+  too much space, but we need to default to the precompiled version". gcc 13
+  and clang 18 both default to gnu17. The bare `--std=c` / `--std=c++` name
+  gnu17 / gnu++17 (they named c11 / c++11), and the tests use the gnu
+  variants. The c17 profile (2.1 MB Linux, 4.1 MB win64) is gone; c17 and
+  c11 parse the pack's text. A measured label (gnu11, c++17) costs no bytes
+  and stays.
 
 - The C roots list starts as the C spellings of the C++ list's C roots, plus
   madc's own C headers. This is the shape of Test 3 (24 headers, 214 units,

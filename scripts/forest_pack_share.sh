@@ -21,8 +21,11 @@
 # separate, uncompressed, and not on the same list"): the C roots frozen again
 # under C, as the C preprocessor sees them, in raw profiles stacked BELOW the
 # madc profile. One row per profile, "<std> [label...]", frozen in row order —
-# the last row sits directly under the madc profile, so gnu17 (every .c
-# compile's default) is the second profile a .c compile's walk reads.
+# the last row sits directly under the madc profile. OWNER 2026-10-18: the
+# pack precompiles ONLY the defaults — gnu17 here, gnu++17 above (the madc
+# profile) — "we can't precompile multiple variants as that will take up too
+# much space"; every other standard parses the pack's text. A label costs no
+# bytes, so a standard MEASURED identical to a row's rides it.
 #
 #   FOREST_C_LAYER                  the rows
 #   forest_c_share_args STD         the --freeze-also-std= flags of STD's row
@@ -33,8 +36,8 @@
 # (__STRICT_ANSI__ hides glibc's POSIX names under c17; __STDC_VERSION__ gates
 # C11 names under c99). A wrong label binds silently — the bind's environment
 # check does not catch it. The 2026-10-18 measurement (the plan, J2): gnu11 ==
-# gnu17 and c11 == c17; c17 != gnu17, so c17 is its own profile; gnu99, gnu89,
-# gnu23, c99, c89 and c23 each differ from both, and parse the pack's text.
+# gnu17 and c11 == c17; c17 != gnu17 (a strict profile was dropped by the
+# owner ruling above); gnu99, gnu89, gnu23, c99, c89 and c23 each differ.
 
 FOREST_SHARED_STDS=(gnu++17 c++17)
 FOREST_SHARE_ARGS=()
@@ -43,7 +46,7 @@ for _std in "${FOREST_SHARED_STDS[@]}"; do
 done
 unset _std
 
-FOREST_C_LAYER=("c17 c11" "gnu17 gnu11")
+FOREST_C_LAYER=("gnu17 gnu11")
 
 # forest_c_row_labels STD — the labels of STD's row, one per line.
 forest_c_row_labels() {
