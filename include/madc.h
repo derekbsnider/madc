@@ -3329,6 +3329,17 @@ public:
 	_buf.erase(_buf.begin() + from, _buf.end());
 	_buf.insert(_buf.begin() + insert_at, tail.begin(), tail.end());
     }
+    // Move [from, to) to the end, everything after it one range earlier (the
+    // prelude's parse-order once-only rule, Program::relocate_include_for_
+    // prelude; same cursor==0 / empty-pushback precondition).
+    void move_range_to_end(size_t from, size_t to)
+    {
+	if ( from >= to || to > _buf.size() )
+	    return;
+	std::vector<uint32_t> range(_buf.begin() + from, _buf.begin() + to);
+	_buf.erase(_buf.begin() + from, _buf.begin() + to);
+	_buf.insert(_buf.end(), range.begin(), range.end());
+    }
 
     // -- tokens popped from the logical FRONT since `before` (callers that only
     //    pop the front, e.g. skip_requires_clause), reconstructed WITHOUT copying
@@ -6938,6 +6949,46 @@ public:
     bool skip_includes;		// --emit-function: lex without processing #include
     std::set<madc::dis::istring> pending_auto_include_headers;
     std::set<madc::dis::istring> pending_auto_include_identifiers;
+    // B198 — the prelude's once-only state follows PARSE order. The prelude
+    // is lexed after the unit but parsed ahead of it, so a header the unit
+    // first includes AFTER the prelude's position, and the prelude includes
+    // too, was a once-only skip in the prelude while its tokens stayed behind
+    // the prelude's uses. include_serving is the stack of #include directives
+    // in flight (IncludeServingScope, lexer.cpp): each records its start, the
+    // once-only key its serving was gated on (should_tokenize_include, the
+    // named arm) and its end at completion (include_completed_token). A served
+    // first inclusion lexed in the unit's own pass keeps its token range in
+    // include_first_ranges (its key's first row), for the unit's lex. While the prelude lexes
+    // (prelude_relocation.active, inject_pending_auto_includes), a skip of a
+    // header whose first range lies in [insert_at, main_end) MOVES that range
+    // to the prelude's tail — where lexing in parse order puts it
+    // (relocate_include_for_prelude). Per Program, single-threaded as the lex.
+    struct IncludeServing {
+	size_t start;
+	size_t end;
+	madc::dis::istring key;
+	bool served;
+    };
+    std::vector<IncludeServing> include_serving;
+    // In serving order; a key's FIRST row is its first inclusion (a
+    // guard-less header served twice has two). Appended, never searched,
+    // until a relocation is armed.
+    struct IncludeRange {
+	madc::dis::istring key;
+	size_t start;
+	size_t end;
+    };
+    std::vector<IncludeRange> include_first_ranges;
+    madc::dis::istring include_once_key;	// the last should_tokenize_include key
+    struct PreludeRelocation {
+	bool active;
+	size_t insert_at;	// the prelude's position in the unit's tokens
+	size_t main_end;	// the unit's own tokens end here (the prelude follows)
+	size_t moved;		// tokens moved to the tail so far
+    };
+    PreludeRelocation prelude_relocation = { false, 0, 0, 0 };
+    void end_include_serving();
+    bool relocate_include_for_prelude(const madc::dis::istring &key);
     // Identifiers this TU declares in a declarator position (after a type
     // or a struct/class/enum tag keyword): the auto-include scan never
     // answers for them again — the TU provides the name itself.

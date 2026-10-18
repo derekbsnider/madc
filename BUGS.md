@@ -825,37 +825,6 @@ int main() { return (int)alignof(S); }
 
 ## Refuses valid code
 
-### B198. A program's later `#include` of a header nested in an auto-included one breaks the prelude
-
-```c
-// --std=madc
-int main()
-{
-	string s = "abc";
-	println("len {}", (int)s.size());
-	return 0;
-}
-
-#include <wchar.h>
-```
-
-- Found 2026-10-17 while fixing the same-header case (a program's later
-  `#include <string>` after `string` is now served by the prelude, test
-  `testautoinclude_later_include`). Reducer: `tmp/inj/testautoinclude_later_nested.mad`.
-- g++ 13 / clang++ 18 (the includes at the top, `std::string`): `len 3`.
-  madc with headers parsed as text (`bin/madc`, `--no-forest-bind`):
-  `/usr/include/c++/13/cwchar:64:11: error: 'mbstate_t' is not a declaration
-  in '::'`. The packed release (headers bound) prints `len 3`.
-- Cause: the auto-include prelude is lexed AFTER the main file and moved
-  ahead of it (`inject_pending_auto_includes` → `move_tail_to`). The main
-  file's own `#include <wchar.h>` was lexed first, at the end, so the
-  prelude's `<string>` → `<cwchar>` → `<wchar.h>` is a once-only no-op, and
-  `<cwchar>`'s `using ::mbstate_t` precedes the only `<wchar.h>` in parse
-  order. Lex order is not parse order for the prelude.
-- Fix: lex the prelude before the main file (lex order = parse order), its
-  own change in the lexer's include machinery; next after the dialect
-  registration's R1.
-
 ### B196. A declaration whose type is spelled with the global qualifier (`::T`) is refused
 
 ```cpp

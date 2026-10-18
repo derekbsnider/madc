@@ -1,0 +1,17 @@
+// B198: the same header written between the program's first code and the use
+// that queued the auto-include prelude: still after the prelude's position,
+// so in parse order the prelude's nested <wchar.h> is the first. g++ 13 /
+// clang++ 18 (std::string, includes at the top): "len 3 wide 2".
+static int twice(int n)
+{
+	return n * 2;
+}
+
+#include <wchar.h>
+
+int main()
+{
+	string s = "abc";
+	println("len {} wide {}", (int)s.size(), twice((int)wcslen(L"a")));
+	return 0;
+}

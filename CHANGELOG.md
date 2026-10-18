@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### B198: a program's later `#include` of a header nested in an auto-included one no longer breaks the prelude
+
+- Under `--std=madc` with headers parsed as text (`bin/madc`, or
+  `--no-forest-bind`), a program's own `#include <wchar.h>` written after the
+  use that queued the prelude broke the `<string>` prelude
+  (`'mbstate_t' is not a declaration in '::'`). The prelude is lexed after the
+  unit and parsed ahead of it, so the unit's include was lexed first and the
+  prelude's nested include (`<string>` -> `<cwchar>` -> `<wchar.h>`) was a
+  once-only skip whose tokens stayed behind the prelude's uses.
+- The prelude's once-only state now follows parse order, in the lexer's include
+  path (`Program::relocate_include_for_prelude`, `src/lexer.cpp`): a header the
+  unit first includes after the prelude's position that the prelude skips as
+  already included moves to the prelude's tail, where lexing in parse order puts
+  it; nested headers ride inside the range. Only a unit with such an include
+  arms the relocation, and its prelude bypasses the shared prelude cache.
+- Oracle g++ 13 / clang++ 18 (includes at the top, `std::string`): `len 3` and
+  `len 3 wide 2`; madc now prints both, on `bin/madc` and on the packed release
+  both bound and with `--no-forest-bind`. Tests: `testautoinclude_later_nested`,
+  `testautoinclude_mid_nested`.
+
 ### An import's members are the import's, never the builtin table's (R1)
 
 - Imports are not builtins (owner 2026-10-17: "Imports are different than

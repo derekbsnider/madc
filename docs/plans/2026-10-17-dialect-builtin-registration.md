@@ -1256,3 +1256,43 @@ Slices:
   - `--emit=c11` of the 307 tests that use one of these kinds (print_r,
     var_dump, the format intrinsics, forward / move, addressof, destroy, the
     show) is identical, exit codes included.
+
+### B198 (2026-10-18) — the prelude's once-only state follows parse order
+
+- The bug: with headers parsed as text, a program's own `#include <wchar.h>`
+  written after the prelude's position broke the `<string>` prelude:
+  "'mbstate_t' is not a declaration in '::'". The prelude is lexed after the
+  unit and parsed ahead of it. The unit's include was lexed first, so the
+  prelude's nested include (`<string>` -> `<cwchar>` -> `<wchar.h>`) was a
+  once-only skip, and its tokens stayed behind the prelude's uses.
+- Ruling: BUGS.md proposed "lex the prelude before the main file". That
+  cannot be done as stated: the prelude set is decided from the unit's lexed
+  tokens (positional declarator suppression, macro expansion, `#if`
+  branches). A raw pre-scan would be approximate and would change what the
+  prelude sees. Instead, the once-only state follows parse order. Cost if
+  wrong: one mechanism in the lexer's include path, gated by two reducers.
+- Fix (lexer):
+  - Every `#include` directive in flight is an `IncludeServingScope`. Its
+    once-only key comes from `should_tokenize_include` or the named arm, and
+    its end from `include_completed_token`, before that call lexes on.
+  - A served first inclusion in a `--std=madc` unit's own pass records its
+    token range.
+  - While the prelude lexes, a skip of a header whose first range lies after
+    the prelude's position moves that range to the prelude's tail:
+    `relocate_include_for_prelude`, `TokenStream::move_range_to_end`. That is
+    where lexing in parse order puts it; nested headers ride inside the range.
+  - Only a unit with such an include arms the relocation, and its prelude
+    bypasses the shared prelude cache.
+- Reducers: `testautoinclude_later_nested` (the include at the end) and
+  `testautoinclude_mid_nested` (between the first code and the use). On the
+  old binary they were 0/2; g++ 13 and clang++ 18 print the expected lines.
+- Hot path: one scope push and pop per `#include`, and one vector append per
+  served first inclusion in a `--std=madc` unit. The ranges are searched only
+  while a relocation is armed (a sorted map cost dialect_cxx.live +0.09%,
+  which the vector removes). Parse-cost gate: 0 red; dialect_cxx.live is
+  +0.007% against R5a.
+- Validation:
+  - Tier 1 (148, then 70 on the final content) + Tier 2: green.
+  - Static gates: 0 red.
+  - test_repl_session, test_builtin_registry and test_cir_freeze: green.
+  - Both reducers pass on the packed release and with `--no-forest-bind`.

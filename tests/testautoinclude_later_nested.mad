@@ -1,0 +1,14 @@
+// B198: a program's own #include of a header that the auto-include prelude
+// includes too, nested (<string> -> <cwchar> -> <wchar.h>), written AFTER
+// the use that queued the prelude. The prelude is parsed ahead of the
+// program, so in parse order its <wchar.h> is the first: the header's
+// tokens belong to the prelude, not behind it. g++ 13 / clang++ 18 with the
+// includes at the top (std::string): "len 3".
+int main()
+{
+	string s = "abc";
+	println("len {}", (int)s.size());
+	return 0;
+}
+
+#include <wchar.h>

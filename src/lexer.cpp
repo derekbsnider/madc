@@ -2350,7 +2350,92 @@ void Program::maybe_inject_value_stream_operator()
 TokenBase *Program::include_completed_token()
 {
     maybe_inject_value_stream_operator();
+    // B198: the directive's serving ends HERE, before getToken() lexes on —
+    // a next #include read by that call is its own directive, after this
+    // range.
+    if ( !include_serving.empty() )
+    {
+	include_serving.back().served = true;
+	include_serving.back().end = tokens.size();
+    }
     return getToken();
+}
+
+// B198: one #include directive in flight (Program::include_serving). The
+// scope closes on every exit of the directive's handler — served, skipped,
+// deferred or thrown.
+namespace {
+struct IncludeServingScope {
+    Program &pgm;
+    explicit IncludeServingScope(Program &p) : pgm(p)
+    {
+	Program::IncludeServing s = { p.tokens.size(), p.tokens.size(),
+				      madc::dis::istring(), false };
+	p.include_serving.push_back(s);
+    }
+    ~IncludeServingScope() { pgm.end_include_serving(); }
+};
+}
+
+// A served FIRST inclusion lexed in the unit's own pass keeps its token range
+// under the once-only key its serving was gated on — the prelude's
+// parse-order rule reads it (relocate_include_for_prelude). Only a dialect
+// unit has a prelude; the prelude's own includes are never recorded.
+void Program::end_include_serving()
+{
+    const IncludeServing done = include_serving.back();
+    include_serving.pop_back();
+    if ( done.served && !done.key.empty() && done.end > done.start
+      && !prelude_relocation.active && dialect_surface_enabled() )
+    {
+	IncludeRange r = { done.key, done.start, done.end };
+	include_first_ranges.push_back(r);
+    }
+}
+
+// B198: the prelude skipped `key` as already included, but its first
+// inclusion lies in the unit AFTER the prelude's position — in parse order the
+// prelude's include is the first. Lexing in parse order would put that
+// header's tokens here, so they move here: [s, e) goes to the tail, the
+// unit's tokens after it close up, and every recorded range follows (a range
+// inside [s, e) moves with it, one around it shrinks, one after it shifts).
+// Nested headers ride inside the range. False when there is nothing to move.
+bool Program::relocate_include_for_prelude(const madc::dis::istring &key)
+{
+    if ( !prelude_relocation.active )
+	return false;
+    size_t first = 0;
+    while ( first < include_first_ranges.size() && include_first_ranges[first].key != key )
+	++first;
+    if ( first == include_first_ranges.size() )
+	return false;
+    const size_t s = include_first_ranges[first].start, e = include_first_ranges[first].end;
+    if ( s >= e || s < prelude_relocation.insert_at || e > prelude_relocation.main_end )
+	return false;
+    const size_t len = e - s;
+    const size_t to = tokens.size() - len;	// the range's start once moved
+    tokens.move_range_to_end(s, e);
+    for ( size_t ri = 0; ri < include_first_ranges.size(); ++ri )
+    {
+	size_t &a = include_first_ranges[ri].start, &b = include_first_ranges[ri].end;
+	if ( a >= s && b <= e )
+	{
+	    a = a - s + to;
+	    b = b - s + to;
+	}
+	else if ( a >= e )
+	{
+	    a -= len;
+	    b -= len;
+	}
+	else if ( a < s && b >= e )
+	    b -= len;
+    }
+    prelude_relocation.main_end -= len;
+    prelude_relocation.moved += len;
+    DBG(std::cout << "auto-include prelude: " << key.c_str() << " moved from the unit ("
+	<< len << " tokens)" << std::endl);
+    return true;
 }
 
 void Program::expand_pending_auto_include_macros(size_t original_start)
@@ -2604,6 +2689,16 @@ void Program::register_dialect_namespaces()
 void Program::inject_pending_auto_includes()
 {
     static const bool prelude_probe = getenv("MADC_PRELUDE_CACHE_PROBE") != NULL;
+    // B198: the unit's include ranges and the prelude's relocation state end
+    // with this call, on every exit (a refused REPL entry included).
+    struct PreludeLexScope {
+	Program &p;
+	~PreludeLexScope()
+	{
+	    p.prelude_relocation.active = false;
+	    p.include_first_ranges.clear();
+	}
+    } prelude_lex_scope = { *this };
     if ( skip_includes )
 	return;
     if ( !dialect_surface_enabled() )
@@ -2619,6 +2714,26 @@ void Program::inject_pending_auto_includes()
     size_t insert_at = auto_include_insertion_index(tokens, include_start,
 						    source.fname(),
 						    auto_include_user_units);
+    // B198: the prelude's once-only state follows parse order. A header the
+    // unit first included AFTER insert_at that the prelude skips as already
+    // included moves to the prelude's tail (relocate_include_for_prelude).
+    // Only a unit with such an include arms it; its prelude is lexed, never
+    // served from the shared cache (whose key cannot see where the unit's
+    // includes sit).
+    bool late_first_includes = false;
+    for ( size_t ri = 0; ri < include_first_ranges.size(); ++ri )
+	if ( include_first_ranges[ri].start >= insert_at )
+	{
+	    late_first_includes = true;
+	    break;
+	}
+    if ( late_first_includes )
+    {
+	prelude_relocation.active = true;
+	prelude_relocation.insert_at = insert_at;
+	prelude_relocation.main_end = include_start;
+	prelude_relocation.moved = 0;
+    }
 
     while ( !pending_auto_include_headers.empty() )
     {
@@ -2644,7 +2759,7 @@ void Program::inject_pending_auto_includes()
 	    MadcSharedPreludeCache *preludes = NULL;
 	    madc::dis::istring prelude_key;
 	    std::vector<MadcSharedPreludeCache::MacroState> prelude_before_macros;
-	    if ( MadcSharedPreludeCache::candidate(*this, header) )
+	    if ( !late_first_includes && MadcSharedPreludeCache::candidate(*this, header) )
 	    {
 		if ( !compile_group->shared_preludes )
 		    compile_group->shared_preludes.reset(new MadcSharedPreludeCache());
@@ -2686,7 +2801,9 @@ void Program::inject_pending_auto_includes()
 	    // arms silently dropped every header without a named provider,
 	    // which is how retiring the embedded <string>/<sstream> twins
 	    // broke the C++ arm of auto-include unnoticed.
+	    const size_t moved_before = prelude_relocation.moved;
 	    tokenize_synthetic_system_include(header, "<auto-include>");
+	    fragment_start -= prelude_relocation.moved - moved_before;	// B198
 
 	    // A direct embedded serving is pure lexer/preprocessor work. Cache its
 	    // immutable output only when the literal owner confirms that no forest
@@ -2717,6 +2834,11 @@ void Program::inject_pending_auto_includes()
     // here). Appending before the move keeps the fragment inside the
     // relocated prelude range.
     maybe_inject_value_stream_operator();
+    if ( late_first_includes )
+    {
+	include_start = prelude_relocation.main_end;	// the unit's tokens closed up
+	prelude_relocation.active = false;
+    }
 
     if ( tokens.size() > include_start )
     {
@@ -6853,6 +6975,10 @@ bool Program::should_tokenize_include(const std::string &path)
     madc::dis::istring canonical = path;
     if ( !path.empty() && path[0] != '<' )
 	canonical = canonical_include_key(path);
+    // B198: the key this check gates on is the directive's once-only key.
+    include_once_key = canonical;
+    if ( !include_serving.empty() )
+	include_serving.back().key = canonical;
     if ( !path.empty() && path[0] == '<' )
     {
 	// Named (embedded/PCH) include keys: blanket once-only — the baked
@@ -7896,6 +8022,7 @@ TokenBase *Program::_getToken()
 			    source.get();
 			return getToken();
 		    }
+		    IncludeServingScope serving_scope(*this);	// B198
 		    // skip whitespace
 		    while ( source.peek() == ' ' || source.peek() == '\t' )
 			source.get();
@@ -8096,6 +8223,7 @@ TokenBase *Program::_getToken()
 			    // the once-only dedup skips re-tokenization — the bind-
 			    // time PP-export composition walks these edges.
 			    pack_record_edge(pch_path.empty() ? madc::dis::istring(incfile) : pch_path);
+			    relocate_include_for_prelude(include_key);	// B198
 			    DBG(std::cout << "#include <" << incfile << "> skipped (already included)" << std::endl);
 			    return getToken();
 			}
@@ -8218,6 +8346,7 @@ TokenBase *Program::_getToken()
 			    pack_record_edge(full_path);	// B4a: edge survives the dedup skip
 			    pack_record_skipped_source(full_path);	// ...and so must its CONTENT
 			}
+			relocate_include_for_prelude(include_once_key);	// B198
 			DBG(std::cout << "#include "
 			    << (is_system ? "<" : "\"") << full_path
 			    << (is_system ? ">" : "\"")
@@ -12150,6 +12279,7 @@ void Program::tokenize(istream &ss)
 // diagnostic whose cause add_diagnostic reads off the Source.
 bool Program::lex_main_unit(const char *fname)
 {
+    include_first_ranges.clear();	// B198: this unit's ranges only
     if ( !import_command_line_modules() )
 	return false;
     TokenBase *tb;
