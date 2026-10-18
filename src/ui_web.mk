@@ -36,7 +36,7 @@ WEBVIEW_CXX = $(CXX)
 UI_WEB_LINK_PREREQ =
 
 ifeq ($(MODE),hosted-x86-64-windows)
-UI_WEB_LIBRARY = $(LIBDIR)/madc/modules/ui_web.dll
+UI_WEB_LIBRARY = $(MODULE_LIBDIR)/ui_web.dll
 WEBVIEW_CXXFLAGS = -std=c++14 $(WEBVIEW_FLAGS) -I$(WEBVIEW_DIR)/compatibility/mingw/include -I$(WEBVIEW2_SDK_DIR)/build/native/include
 # Use the SAME UCRT C++/pthread runtime as madc; never introduce an MSVCRT
 # libstdc++ copy. win_ucrt_compat supplies the static-libgcc setjmp imports.
@@ -48,13 +48,13 @@ WEBVIEW_EXTRA = $(OBJDIR)/win_ucrt_compat.o $(WEBVIEW2_SDK_DIR)/.sha256
 UI_WEB_LINK_PREREQ = ../bin/libmadc-0.dll
 else ifdef HOSTED_DARWIN_TARGET
 WEBVIEW_CXX = $(DARWIN_CLANGXX) -target $(subst x86-64,x86_64,$(DARWIN_ARCH))-apple-macos$(WEBVIEW_MACOS_MINOS) --sysroot $(MACOS_SDK) $(DARWIN_CXX_ISYS)
-UI_WEB_LIBRARY = $(LIBDIR)/madc/modules/$(DARWIN_ARCH)-macos/ui_web.dylib
+UI_WEB_LIBRARY = $(MODULE_LIBDIR)/$(DARWIN_ARCH)-macos/ui_web.dylib
 # -fblocks: the save/open panel's completion handler is a block (the chrome
 # is C++ over the ObjC runtime, like the library itself).
 WEBVIEW_CXXFLAGS = -std=c++11 $(WEBVIEW_FLAGS) -fblocks
 WEBVIEW_LDFLAGS = $(DARWIN_LD_FLAGS) -dynamiclib -Wl,-install_name,@rpath/ui_web.dylib -undefined dynamic_lookup -framework WebKit
 else
-UI_WEB_LIBRARY = $(LIBDIR)/madc/modules/ui_web.so
+UI_WEB_LIBRARY = $(MODULE_LIBDIR)/ui_web.so
 WEBVIEW_CXXFLAGS = -std=c++11 $(WEBVIEW_FLAGS) -fPIC $(shell pkg-config --cflags webkitgtk-$(WEBVIEW_WEBKITGTK_API) gtk4 2>/dev/null)
 WEBVIEW_LDFLAGS = -shared -Wl,-soname,ui_web.so $(shell pkg-config --libs webkitgtk-$(WEBVIEW_WEBKITGTK_API) gtk4 2>/dev/null) -ldl
 endif
@@ -98,6 +98,6 @@ $(UI_WEB_LIBRARY): $(WEBVIEW_SOURCE) $(UI_WEB_SRC) $(UI_WEB_HDRS) $(UI_WEB_TABLE
 	$(WEBVIEW_CXX) $(WEBVIEW_CXXFLAGS) -I$(UI_WEB_DIR) -I$(dir $(UI_WEB_TABLE)) $(WEBVIEW_SOURCE) $(UI_WEB_SRC) $(filter %.o,$(WEBVIEW_EXTRA)) -o $@ $(WEBVIEW_LDFLAGS)
 ifdef HOSTED_DARWIN_TARGET
 	# The flat copy of THIS arch, where the module path looks
-	# ($(LIBDIR)/madc/modules/ui_web.dylib); packaging installs it flat too.
-	cp -f $@ $(LIBDIR)/madc/modules/ui_web.dylib
+	# ($(MODULE_LIBDIR)/ui_web.dylib); packaging installs it flat too.
+	cp -f $@ $(MODULE_LIBDIR)/ui_web.dylib
 endif

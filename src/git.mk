@@ -58,7 +58,7 @@ ifeq ($(MODE),hosted-x86-64-windows)
 # ws2_32: libgit2 references winsock symbols even with the network backends
 # off. Uses the SAME UCRT libstdc++/pthread runtime as madc (webview
 # discipline) — never an MSVCRT libstdc++ copy.
-GITMOD_LIBRARY = $(LIBDIR)/madc/modules/git.dll
+GITMOD_LIBRARY = $(MODULE_LIBDIR)/git.dll
 GITMOD_LIBGIT2 = $(LIBGIT2_STAGE)/libgit2-x86-64-windows.a
 GITMOD_CFLAGS = -I$(LIBGIT2_INCLUDE)
 # --exclude-libs,ALL: the archives' globals (libgit2's whole API among them)
@@ -71,7 +71,7 @@ else ifdef HOSTED_DARWIN_TARGET
 # (compiled against the SDK's zlib); -lz is resolved here (a system lib on
 # every mac). madc:: stays undefined -> -undefined dynamic_lookup, bound at
 # dlopen from madc (which exports its globals to dlsym without -rdynamic).
-GITMOD_LIBRARY = $(LIBDIR)/madc/modules/$(DARWIN_ARCH)-macos/git.dylib
+GITMOD_LIBRARY = $(MODULE_LIBDIR)/$(DARWIN_ARCH)-macos/git.dylib
 GITMOD_LIBGIT2 = $(LIBGIT2_STAGE)/libgit2-$(DARWIN_ARCH)-macos.a
 GITMOD_CFLAGS = -I$(LIBGIT2_INCLUDE)
 GITMOD_LINK_FLAGS = $(DARWIN_LD_FLAGS) -dynamiclib -Wl,-install_name,@rpath/git.dylib -undefined dynamic_lookup
@@ -99,7 +99,7 @@ GITMOD_CFLAGS := $(shell pkg-config --cflags libgit2 2>/dev/null)
 GITMOD_AVAILABLE := $(shell pkg-config --exists libgit2 2>/dev/null && $(CXX) -E -x c++ $(GITMOD_CFLAGS) $(GITMOD_FLOOR) >/dev/null 2>&1 && echo 1)
 GITMOD_LIBS := $(shell pkg-config --libs libgit2 2>/dev/null)
 endif
-GITMOD_LIBRARY = $(LIBDIR)/madc/modules/git.so
+GITMOD_LIBRARY = $(MODULE_LIBDIR)/git.so
 # --exclude-libs,ALL: the static archive's git_* stay internal to the module.
 # Modules load RTLD_GLOBAL (madc_dl_open_global), so an exported copy would
 # enter the process's global scope beside any libgit2 a program loads itself
@@ -157,8 +157,8 @@ $(GITMOD_LIBRARY): $(GITMOD_SRC) $(GITMOD_HDRS) $(GITMOD_TABLE) $(GITMOD_LINK_PR
 	$(CXX) $(GITMOD_LINK_FLAGS) -o $@ $(CXXFLAGS) $(DEFINES) -I. -I$(dir $(GITMOD_TABLE)) $(GITMOD_CFLAGS) $(GITMOD_SRC) $(GITMOD_LIBS)
 ifdef HOSTED_DARWIN_TARGET
 	# The flat copy of THIS arch, where the module path looks
-	# ($(LIBDIR)/madc/modules/git.dylib); packaging installs it flat too.
-	cp -f $@ $(LIBDIR)/madc/modules/git.dylib
+	# ($(MODULE_LIBDIR)/git.dylib); packaging installs it flat too.
+	cp -f $@ $(MODULE_LIBDIR)/git.dylib
 endif
 
 $(BINDIR)/test_gitrepo: $(TESTDIR)/test_gitrepo.cpp $(GITMOD_SRC) $(GITMOD_HDRS) $(GITMOD_TABLE) $(DEPENDS) $(LIBMADC_STATIC) $(MIRLIB) | git-deps

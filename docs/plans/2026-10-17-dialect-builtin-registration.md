@@ -1200,3 +1200,37 @@ Slices:
   X's whole table run (parser.cpp, the using-directive). Dialect code carries
   no `using` (value-first), so a dialect compile never takes it. Making it
   lazy is a lookup change, which needs a session of its own.
+
+### Found in R5 (2026-10-18): the release binary's modules
+
+- R5's release differential ran the 235 dialect-naming tests on
+  `bin/madc-release`: 233 passed. testgit and testmarkdown failed with
+  "import: no module named 'markdown'" (and 'git').
+- Chain: `madc_module_dir()` is the libmadc image's directory +
+  `madc/modules`. The release binary links `lib/release/libmadc.so`, so it
+  looks in `lib/release/madc/modules`. The build put every module in
+  `lib/madc/modules` (the dev library's directory), and `make release` built
+  none. This has been the case since M2/M3 made git and markdown modules; the
+  seam battery's packed suite would have failed both tests.
+- Fix, in the build layer: `MODULE_LIBDIR` is the mode's library directory +
+  `madc/modules`. Dev, cross and hosted keep `lib/madc/modules`; release and
+  debug use `lib/<mode>/madc/modules`. git.mk, markdown.mk and ui_web.mk
+  build into it, and `make release` builds `modules-default` (the host's git
+  and markdown) beside its library.
+- Proof: testgit and testmarkdown on `bin/madc-release` went from 0/2 to 2/2.
+  The dev modules and the gui lane are unchanged.
+- Packaging still builds and copies the dev-mode modules from
+  `lib/madc/modules`, so the packages ship -O0 modules. Whether they should
+  ship the release-built ones is for the release session.
+
+### R5c (2026-10-18): dev, release and no-pack
+
+- The dev binary carries no pack (`--show-stats`: "no container — live
+  parse"), which is the no-pack product's header mode. The release binary
+  binds its pack. A dialect program that includes no system header touches
+  neither: the table serves it in both, and php1 builds 1 of 539 names in
+  each.
+- Dev: the batch lane on 9824aca03 passed 2091 tests, with 0 failed.
+- Release: the 235 tests that name a dialect namespace pass, 235 of 235
+  (after the module fix above). The table-name counts match dev for every
+  parse-cost dialect workload: 1, 3, 7 and 19 of 539.

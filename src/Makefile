@@ -801,6 +801,12 @@ ifneq (,$(filter release debug,$(MODE)))
 LIBMADC_SHARED = $(LIBDIR)/$(MODE)/libmadc.so
 LIBMADC_RT = $(LIBDIR)/$(MODE)/libmadc_rt.a
 endif
+# A mode's madc modules sit beside its library: madc_module_dir() is the
+# library image's directory + madc/modules. Dev's are lib/madc/modules, and
+# release's and debug's are lib/<mode>/madc/modules, so a build-tree release
+# binary imports release-built modules (per-mode names, build.md). Cross and
+# hosted modes keep lib/madc/modules (their libraries are in lib/).
+MODULE_LIBDIR = $(patsubst %/,%,$(dir $(LIBMADC_SHARED)))/madc/modules
 # Objects for the library: everything except the main() driver
 LIBMADC_STATIC_OBJS = $(filter-out $(OBJDIR)/madc.o, $(OBJECTS))
 pkgconfigdir ?= $(libdir)/pkgconfig
@@ -862,6 +868,12 @@ include madc_modules.mk
 include ui_web.mk
 include git.mk
 include markdown.mk
+
+# The default modules of the current MODE (those whose dependency this host
+# has), into its MODULE_LIBDIR: `release` builds them beside its library.
+# After the includes: a rule's prerequisites expand as the rule is read.
+.PHONY: modules-default
+modules-default: $(GITMOD_DEFAULT) $(MARKDOWN_DEFAULT)
 
 libmadc:
 	$(MAKE) $(LIBMADC_STATIC) $(LIBMADC_SHARED)
@@ -1122,7 +1134,7 @@ else
 PACK_IMAGE_ARG =
 endif
 release:
-	$(MAKE) MODE=release $(LIBMADC_STATIC) ../bin/madc-release ../lib/release/libmadc.so ../lib/release/libmadc_rt.a
+	$(MAKE) MODE=release $(LIBMADC_STATIC) ../bin/madc-release ../lib/release/libmadc.so ../lib/release/libmadc_rt.a modules-default
 	strip ../bin/madc-release
 ifeq ($(ENABLE_SHARED_CLI),1)
 	strip --strip-unneeded ../lib/release/libmadc.so

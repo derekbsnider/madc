@@ -62,7 +62,7 @@ ifeq ($(MODE),hosted-x86-64-windows)
 MARKDOWN_STAGED = $(CMARK_GFM_STAGE)/x86-64-windows
 MARKDOWN_AVAILABLE := 1
 MARKDOWN_CFLAGS = $(MARKDOWN_STAGE_CFLAGS)
-MARKDOWN_LIBRARY = $(LIBDIR)/madc/modules/markdown.dll
+MARKDOWN_LIBRARY = $(MODULE_LIBDIR)/markdown.dll
 MARKDOWN_LINK_FLAGS = -shared -static-libgcc -L$(WIN_UCRT_LIBSTDCXX)/lib -Wl,--exclude-libs,ALL
 MARKDOWN_LIBS = $(MARKDOWN_ARCHIVES) -L../lib -lmadc.dll -lpthread
 MARKDOWN_LINK_PREREQ = ../bin/libmadc-0.dll
@@ -72,7 +72,7 @@ else ifdef HOSTED_DARWIN_TARGET
 MARKDOWN_STAGED = $(CMARK_GFM_STAGE)/$(DARWIN_ARCH)-macos
 MARKDOWN_AVAILABLE := 1
 MARKDOWN_CFLAGS = $(MARKDOWN_STAGE_CFLAGS)
-MARKDOWN_LIBRARY = $(LIBDIR)/madc/modules/$(DARWIN_ARCH)-macos/markdown.dylib
+MARKDOWN_LIBRARY = $(MODULE_LIBDIR)/$(DARWIN_ARCH)-macos/markdown.dylib
 MARKDOWN_LINK_FLAGS = $(DARWIN_LD_FLAGS) -dynamiclib -Wl,-install_name,@rpath/markdown.dylib -undefined dynamic_lookup
 MARKDOWN_LIBS = -Wl,-load_hidden,$(MARKDOWN_STAGED)/libcmark-gfm-extensions.a -Wl,-load_hidden,$(MARKDOWN_STAGED)/libcmark-gfm.a
 MARKDOWN_NOTICE = $(CMARK_GFM_STAGE)/src/COPYING
@@ -93,7 +93,7 @@ MARKDOWN_AVAILABLE := $(shell pkg-config --exists libcmark-gfm 2>/dev/null && ec
 MARKDOWN_LIBS := $(shell pkg-config --libs libcmark-gfm 2>/dev/null)
 MARKDOWN_NOTICE =
 endif
-MARKDOWN_LIBRARY = $(LIBDIR)/madc/modules/markdown.so
+MARKDOWN_LIBRARY = $(MODULE_LIBDIR)/markdown.so
 MARKDOWN_LINK_FLAGS = -shared -fPIC -Wl,-soname,markdown.so -Wl,--exclude-libs,ALL
 ifeq ($(MARKDOWN_AVAILABLE),1)
 MARKDOWN_DEFAULT = $(MARKDOWN_LIBRARY)
@@ -143,8 +143,8 @@ $(MARKDOWN_LIBRARY): $(MARKDOWN_SRC) $(MARKDOWN_HDRS) $(MARKDOWN_TABLE) $(MARKDO
 	$(CXX) $(MARKDOWN_LINK_FLAGS) -o $@ $(CXXFLAGS) $(DEFINES) -I. -I$(dir $(MARKDOWN_TABLE)) $(MARKDOWN_CFLAGS) $(MARKDOWN_SRC) $(MARKDOWN_LIBS)
 ifdef HOSTED_DARWIN_TARGET
 	# The flat copy of THIS arch, where the module path looks
-	# ($(LIBDIR)/madc/modules/markdown.dylib) — git.mk's discipline.
-	cp -f $@ $(LIBDIR)/madc/modules/markdown.dylib
+	# ($(MODULE_LIBDIR)/markdown.dylib) — git.mk's discipline.
+	cp -f $@ $(MODULE_LIBDIR)/markdown.dylib
 endif
 endif
 
