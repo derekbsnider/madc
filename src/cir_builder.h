@@ -788,7 +788,7 @@ class CirBuilder {
 	// Words of opaque storage for a runtime-object class that has a concrete ABI
 	// size but no madc data members. 0 for an ordinary user class.
 	size_t object_class_words(DataDefCLASS *cdd) const;
-	node_t void_ptr_type();                      // N_TYPE node for a (void*) cast
+	node_t void_ptr_type(int levels = 1);        // N_TYPE node for a (void*) cast (levels: void **)
 	node_t char_ptr_type();                      // N_TYPE node for a (char*) cast
 	node_t ptr_type_node(DataDef *dd);           // N_TYPE node for an arbitrary pointer DataDef
 	// N_TYPE node for a (struct Cls *) cast — the one owner (gated by

@@ -4,6 +4,14 @@
 Consolidated: type_trait_dispatch — gate scripts/check-one-trait-dispatch.sh
 Consolidated: counted_loop — gate scripts/check-one-counted-loop.sh
 Consolidated: class_pointer_spelling — gate scripts/check-one-class-pointer-decl.sh
+Consolidated: pointer_type_node — gate scripts/check-one-pointer-type-node.sh
+
+### A `char *` or `void *` type node the CIR builder spells has one owner each
+
+- A `char *` or `void *` (or `void **`) `N_TYPE` node for a cast target — `node2(N_TYPE, node1(N_LIST, simple(N_CHAR)), node2(N_DECL, ignore(), node1(N_LIST, pointer())))` for `char *`, `simple(N_VOID)` for `void *` — was spelled by hand at 32 sites in `src/cir_builder.cpp`: the base/vbase pointer-adjust casts (`base_subobject_addr`, `object_arg_addr`, `vbase_dynamic_adjust`, `append_ctor_vbase_forward_args`, `append_ctor_vbase_static_args`, `class_method_call`, `vbase_dtor_stmts`, `append_base_default_construct`, `synth_dtor_def`, `vbase_ctor_stmts_addr`, `try_free_operator_call`, `class_operator_call`, `class_unary_operator_call`, `func_def`), the vtable `void *` slot and offset inits (`class_vtable_def`, `class_typeinfo_def`, `append_vptr_and_member_inits`), the `delete[]` cookie cast (`translate_expr`), the dtor-fnptr parameter (`dtor_fnptr_type`), and the thunk-marshal `char *` cast (`flavor_marshal_thunk_def`). Five more built the vtable read's `void **` from a two-`pointer()` declarator list (`virtual_dtor_slot_call`, `class_method_call`, `synth_instr_exit_thunk`, the `typeid` and member-pointer arms of `translate_expr`).
+- `CirBuilder::char_ptr_type()` and `CirBuilder::void_ptr_type()` already owned the `char *` and `void *` type node. Every hand-spelled site now routes through one of the two; `void_ptr_type` gains a `levels` parameter (default 1) and the five `void **` sites call `void_ptr_type(2)`. The `translate_expr` `new[]` arm's local `char_ptr_type` node, which shadowed the method, is removed in favour of the method. Only the two owners spell `simple(N_CHAR)` / `simple(N_VOID)` beside a `pointer()`, each marked `// allowed-exception: the one owner` (`src/cir_builder.cpp` / `src/cir_builder.h`).
+- Gate `scripts/check-one-pointer-type-node.sh` (wired into `src/Makefile`'s `gates`) fails on a `simple(N_CHAR)` / `simple(N_VOID)` spec within an `N_TYPE` beside a `pointer()` in `src/cir_*.cpp`, except a line marked `// allowed-exception`, with a two-sided negative control.
+- Behaviour-preserving. Differential: `--emit=c11` renders of all 792 class-using tests on the binary before this change (HEAD a033d9477 content) vs after — exit codes identical, stderr identical, 792 of 792 renders byte-identical. Fix lanes tier1 + tier2 all green; static gates 0 red (the new gate's control passes both ways), unit 84/84, `scripts/forest_bind_gate.sh` green, parse-cost 0 red of 21.
 
 ### A class pointer the CIR builder spells has one owner per shape
 

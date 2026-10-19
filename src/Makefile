@@ -1245,6 +1245,7 @@ gates: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/check-one-return-declarator.sh
 	@cd .. && bash scripts/check-one-counted-loop.sh
 	@cd .. && bash scripts/check-one-class-pointer-decl.sh
+	@cd .. && bash scripts/check-one-pointer-type-node.sh
 	@cd .. && bash scripts/check-one-member-init-walk.sh
 	@cd .. && bash scripts/check-one-error-diagnostic-scan.sh
 	@cd .. && bash scripts/check-gates-see-new-files.sh

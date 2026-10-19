@@ -6463,9 +6463,7 @@ node_t CirBuilder::flavor_marshal_thunk_def(const char *thunk_sym,
 	for (size_t i = 0; i < kind.size(); ++i) {
 		if (kind[i] != 3)
 			continue;
-		node_t charp = node2(N_TYPE, node1(N_LIST, simple(N_CHAR)),
-				     node2(N_DECL, ignore(),
-					   node1(N_LIST, pointer())));
+		node_t charp = char_ptr_type();
 		node_t aa = list();
 		append(aa, id(anames[i].c_str()));
 		append(aa, node2(N_CAST, charp,
@@ -6529,19 +6527,22 @@ size_t CirBuilder::object_class_words(DataDefCLASS *cdd) const
 // N_TYPE node for a (void*) cast: TYPE(LIST(VOID), DECL(IGNORE, LIST(POINTER))).
 // The spec is a plain LIST (NOT N_SHARE — that wraps SPEC_DECL specs only;
 // matches the cast at translate_expr and the param TYPE in need_output_extern).
-node_t CirBuilder::void_ptr_type()
+// `levels` pointer levels: void_ptr_type(2) is the `void **` a vtable read
+// casts through.
+node_t CirBuilder::void_ptr_type(int levels)
 {
 	node_t spec = list();
-	append(spec, simple(N_VOID));
+	append(spec, simple(N_VOID));	// allowed-exception: the one owner
 	node_t decl_list = list();
-	append(decl_list, pointer());
+	for (int i = 0; i < levels; i++)
+		append(decl_list, pointer());
 	return node2(N_TYPE, spec, node2(N_DECL, ignore(), decl_list));
 }
 
 node_t CirBuilder::char_ptr_type()
 {
 	node_t spec = list();
-	append(spec, simple(N_CHAR));
+	append(spec, simple(N_CHAR));	// allowed-exception: the one owner
 	node_t decl_list = list();
 	append(decl_list, pointer());
 	return node2(N_TYPE, spec, node2(N_DECL, ignore(), decl_list));
@@ -6924,8 +6925,7 @@ node_t CirBuilder::base_subobject_addr(node_t value, DataDefCLASS *derived,
 		size_t off = derived->base_offset_of(base);
 		if (off != 0 && off != (size_t)-1) {
 			node_t charp = node2(N_CAST,
-				node2(N_TYPE, node1(N_LIST, simple(N_CHAR)),
-				      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
+				char_ptr_type(),
 				value, origin);
 			adj = node2(N_ADD, charp, integer((int64_t)off), origin);
 		}
@@ -7905,8 +7905,7 @@ node_t CirBuilder::object_arg_addr(TokenBase *arg, DataDefCLASS *target,
 						  : 0;
 			if (off != 0 && off != (size_t)-1) {
 				node_t charp = node2(N_CAST,
-					node2(N_TYPE, node1(N_LIST, simple(N_CHAR)),
-					      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
+					char_ptr_type(),
 					addr, arg);
 				addr = node2(N_CAST, void_ptr_type(),
 					node2(N_ADD, charp, integer((int64_t)off), arg), arg);
@@ -7964,8 +7963,7 @@ node_t CirBuilder::object_arg_addr(TokenBase *arg, DataDefCLASS *target,
 		size_t off = own->base_offset_of(target);
 		if (off != 0 && off != (size_t)-1) {
 			node_t charp = node2(N_CAST,
-				node2(N_TYPE, node1(N_LIST, simple(N_CHAR)),
-				      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
+				char_ptr_type(),
 				addr, arg);
 			addr = node2(N_CAST, void_ptr_type(),
 				node2(N_ADD, charp, integer((int64_t)off), arg), arg);
@@ -13253,8 +13251,7 @@ node_t CirBuilder::class_typeinfo_def(DataDefCLASS *cdd, bool force)
 	madc::dis::istring nm = itanium_typeinfo_name_string_cpp(lsp);    // "<len><name>"
 
 	auto vptr_t = [&]() {                            // void* type node
-		return node2(N_TYPE, node1(N_LIST, simple(N_VOID)),
-			     node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+		return void_ptr_type();
 	};
 	auto void_ptr_to = [&](node_t e) { return node2(N_CAST, vptr_t(), e); };
 	// long long, never long: HOST long is 32-bit on the win64 build, and
@@ -13431,8 +13428,7 @@ node_t CirBuilder::class_vtable_def(DataDefCLASS *cdd, std::vector<node_t> &thun
 				     node1(N_LIST, node1(N_FUNC, plist)));
 		// (char*)__self + delta
 		node_t charp = node2(N_CAST,
-			node2(N_TYPE, node1(N_LIST, simple(N_CHAR)),
-			      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
+			char_ptr_type(),
 			id("__self"));
 		node_t adj = node2(N_ADD, charp, integer(delta));
 		// (MOwner*)adj
@@ -13507,8 +13503,7 @@ node_t CirBuilder::class_vtable_def(DataDefCLASS *cdd, std::vector<node_t> &thun
 			size_t voff = cdd->base_offset_of(gvbs[vb]);
 			long vval = (voff == (size_t)-1)
 				? 0 : (long)voff - (long)G.this_offset;
-			node_t vbtype = node2(N_TYPE, node1(N_LIST, simple(N_VOID)),
-					      node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+			node_t vbtype = void_ptr_type();
 			append(inits, node2(N_INIT, list(),
 					    node2(N_CAST, vbtype, integer(vval))));
 		}
@@ -13516,16 +13511,14 @@ node_t CirBuilder::class_vtable_def(DataDefCLASS *cdd, std::vector<node_t> &thun
 		// offset_to_top = -(this_offset): how far back to the most-derived object
 		// (so __dynamic_cast / typeid can recover the complete object from any
 		// subobject vptr). (S5a)
-		node_t vtype = node2(N_TYPE, node1(N_LIST, simple(N_VOID)),
-				     node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+		node_t vtype = void_ptr_type();
 		node_t otop = node2(N_CAST, vtype, integer(-(long)G.this_offset));
 		append(inits, node2(N_INIT, list(), otop));
 		// RTTI slot: &_ZTI<cls> — the most-derived class's type_info (the SAME
 		// object for every group; offset_to_top tells the runtime how far back). (S5b)
 		madc::dis::istring ti_sym = class_typeinfo_symbol(cdd);
 		referenced_funcs.insert(ti_sym);
-		node_t vtype2 = node2(N_TYPE, node1(N_LIST, simple(N_VOID)),
-				      node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+		node_t vtype2 = void_ptr_type();
 		node_t rtti = node2(N_CAST, vtype2, id(ti_sym.c_str()));
 		append(inits, node2(N_INIT, list(), rtti));
 		for (const madc::dis::istring &slot : G.slots) {
@@ -13536,9 +13529,7 @@ node_t CirBuilder::class_vtable_def(DataDefCLASS *cdd, std::vector<node_t> &thun
 				if (class_dtor_is_pure(cdd)) {
 					need_output_extern("__cxa_pure_virtual", false,
 							   std::vector<ExternParam>());
-					node_t pv_type = node2(N_TYPE,
-						node1(N_LIST, simple(N_VOID)),
-						node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+					node_t pv_type = void_ptr_type();
 					append(inits, node2(N_INIT, list(),
 						node2(N_CAST, pv_type,
 						      id("__cxa_pure_virtual"))));
@@ -13552,9 +13543,7 @@ node_t CirBuilder::class_vtable_def(DataDefCLASS *cdd, std::vector<node_t> &thun
 						(sname == "~") ? "D1" : "D0");
 				else
 					referenced_funcs.insert(dsym);
-				node_t vptr_type = node2(N_TYPE,
-					node1(N_LIST, simple(N_VOID)),
-					node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+				node_t vptr_type = void_ptr_type();
 				node_t fnref = node2(N_CAST, vptr_type, id(dsym.c_str()));
 				append(inits, node2(N_INIT, list(), fnref));
 				continue;
@@ -13574,9 +13563,7 @@ node_t CirBuilder::class_vtable_def(DataDefCLASS *cdd, std::vector<node_t> &thun
 			if (mfd && mfd->pure_virtual) {
 				need_output_extern("__cxa_pure_virtual", false,
 						   std::vector<ExternParam>());
-				node_t pv_type = node2(N_TYPE,
-					node1(N_LIST, simple(N_VOID)),
-					node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+				node_t pv_type = void_ptr_type();
 				append(inits, node2(N_INIT, list(),
 					node2(N_CAST, pv_type,
 					      id("__cxa_pure_virtual"))));
@@ -13603,9 +13590,7 @@ node_t CirBuilder::class_vtable_def(DataDefCLASS *cdd, std::vector<node_t> &thun
 				symname = make_thunk(mfd, bsym, mowner, tdelta, sname);
 			else
 				referenced_funcs.insert(bsym);
-			node_t vptr_type = node2(N_TYPE,
-				node1(N_LIST, simple(N_VOID)),
-				node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+			node_t vptr_type = void_ptr_type();
 			node_t fnref = node2(N_CAST, vptr_type, id(symname.c_str()));
 			append(inits, node2(N_INIT, list(), fnref));
 		}
@@ -13653,11 +13638,7 @@ node_t CirBuilder::virtual_dtor_slot_call(DataDefCLASS *cdd, const char *sname,
 	// the static-type pointer (already `struct Cls *`, no recast).
 	node_t vptr = node2(N_DEREF_FIELD, recv_vptr, id(vfld.c_str(), tb));
 	// (void**)vptr[slot]
-	node_t vpp_dl = list();
-	append(vpp_dl, pointer());
-	append(vpp_dl, pointer());
-	node_t vpp_type = node2(N_TYPE, node1(N_LIST, simple(N_VOID)),
-				node2(N_DECL, ignore(), vpp_dl));
+	node_t vpp_type = void_ptr_type(2);
 	node_t vtab = node2(N_CAST, vpp_type, vptr, tb);
 	node_t slotref = node2(N_IND, vtab, integer(slot, tb), tb);
 	// Cast the slot to void(*)(void*) — the dtor signature.
@@ -14700,8 +14681,7 @@ node_t CirBuilder::vbase_dynamic_adjust(node_t this_arg, DataDefCLASS *view,
 			node_t sum = id(pn, origin);
 			if (pnv) {
 				node_t charp = node2(N_CAST,
-					node2(N_TYPE, node1(N_LIST, simple(N_CHAR)),
-					      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
+					char_ptr_type(),
 					sum, origin);
 				sum = node2(N_ADD, charp,
 					    integer((int64_t)pnv, origin), origin);
@@ -14728,8 +14708,7 @@ node_t CirBuilder::vbase_dynamic_adjust(node_t this_arg, DataDefCLASS *view,
 			     integer(-(long)(3 + slot), origin), origin);
 	// (char *)tmp + vboff [+ nv_extra]
 	node_t charp = node2(N_CAST,
-		node2(N_TYPE, node1(N_LIST, simple(N_CHAR)),
-		      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
+		char_ptr_type(),
 		id(tmp, origin), origin);
 	node_t sum = node2(N_ADD, charp, vboff, origin);
 	if (nv_extra)
@@ -14833,8 +14812,7 @@ bool CirBuilder::append_ctor_vbase_forward_args(node_t args, DataDefCLASS *calle
 		node_t sum = id(pn, origin);
 		if (slots[i].second) {
 			node_t charp = node2(N_CAST,
-				node2(N_TYPE, node1(N_LIST, simple(N_CHAR)),
-				      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
+				char_ptr_type(),
 				sum, origin);
 			sum = node2(N_ADD, charp,
 				    integer((int64_t)slots[i].second, origin), origin);
@@ -14864,8 +14842,7 @@ void CirBuilder::append_ctor_vbase_static_args(node_t args, DataDefCLASS *callee
 		node_t adj = mint_base();
 		if (off != 0) {
 			node_t charp = node2(N_CAST,
-				node2(N_TYPE, node1(N_LIST, simple(N_CHAR)),
-				      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
+				char_ptr_type(),
 				adj, origin);
 			adj = node2(N_ADD, charp, integer((int64_t)off, origin),
 				    origin);
@@ -15015,8 +14992,7 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin,
 		const DataDefCLASS::VtableGroup &VG = recv_class->vtable_groups[vgrp];
 		if (VG.this_offset != 0) {
 			node_t charp = node2(N_CAST,
-				node2(N_TYPE, node1(N_LIST, simple(N_CHAR)),
-				      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
+				char_ptr_type(),
 				this_arg, origin);
 			this_arg = node2(N_ADD, charp,
 					 integer((int64_t)VG.this_offset, origin), origin);
@@ -15038,8 +15014,7 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin,
 		if (boff != 0 && boff != (size_t)-1) {
 			// (void*)((char*)this_arg + boff)
 			node_t charp = node2(N_CAST,
-				node2(N_TYPE, node1(N_LIST, simple(N_CHAR)),
-				      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
+				char_ptr_type(),
 				this_arg, origin);
 			this_arg = node2(N_CAST, void_ptr_type(),
 				node2(N_ADD, charp, integer((int64_t)boff), origin),
@@ -15221,12 +15196,8 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin,
 		// lives in recv_class's struct at the right offset).
 		node_t vptr = node2(N_DEREF_FIELD, recv_for_vptr,
 				    id(vfld.c_str(), origin));
-		// Build the `void **` cast type explicitly (two pointer levels).
-		node_t vpp_dl = list();
-		append(vpp_dl, pointer());
-		append(vpp_dl, pointer());
-		node_t vpp_type = node2(N_TYPE, node1(N_LIST, simple(N_VOID)),
-					node2(N_DECL, ignore(), vpp_dl));
+		// The `void **` cast type (two pointer levels).
+		node_t vpp_type = void_ptr_type(2);
 		node_t vtab = node2(N_CAST, vpp_type, vptr, origin);
 		// ((void**)...)[slot]
 		node_t slotref = node2(N_IND, vtab, integer(slot, origin), origin);
@@ -17135,8 +17106,7 @@ void CirBuilder::vbase_dtor_stmts(const madc::dis::istring &objname, bool addr_o
 		node_t adj = obj_addr;
 		if (off != 0) {
 			node_t charp = node2(N_CAST,
-				node2(N_TYPE, node1(N_LIST, simple(N_CHAR)),
-				      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
+				char_ptr_type(),
 				obj_addr, o);
 			adj = node2(N_ADD, charp, integer((int64_t)off, o), o);
 		}
@@ -17226,10 +17196,7 @@ node_t CirBuilder::dtor_fnptr_type()
 	append(dl, pointer());
 	append(dl, node1(N_FUNC,
 		node1(N_LIST,
-		      node2(N_TYPE,
-			    node1(N_LIST, simple(N_VOID)),
-			    node2(N_DECL, ignore(),
-				  node1(N_LIST, pointer()))))));
+		      void_ptr_type())));
 	return node2(N_TYPE, node1(N_LIST, simple(N_VOID)),
 		     node2(N_DECL, ignore(), dl));
 }
@@ -17400,11 +17367,7 @@ node_t CirBuilder::synth_instr_exit_thunk()
 	need_output_extern("__cyg_profile_func_exit", false,
 			   { { {N_VOID}, true }, { {N_VOID}, true } });
 	// *(void **)p
-	node_t stars = list();
-	append(stars, pointer());
-	append(stars, pointer());
-	node_t vpp = node2(N_TYPE, node1(N_LIST, simple(N_VOID)),
-			   node2(N_DECL, ignore(), stars));
+	node_t vpp = void_ptr_type(2);
 	node_t self = node1(N_DEREF, node2(N_CAST, vpp, id("p")));
 	node_t args = list();
 	append(args, self);
@@ -17562,8 +17525,7 @@ void CirBuilder::append_base_default_construct(node_t items,
 	node_t adj = self;
 	if (off != 0) {
 		node_t charp = node2(N_CAST,
-			node2(N_TYPE, node1(N_LIST, simple(N_CHAR)),
-			      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
+			char_ptr_type(),
 			self, origin);
 		adj = node2(N_ADD, charp, integer((int64_t)off, origin), origin);
 	}
@@ -17654,8 +17616,7 @@ node_t CirBuilder::synth_dtor_def(DataDefCLASS *cdd)
 		node_t adj = self;
 		if (off != 0) {
 			node_t charp = node2(N_CAST,
-				node2(N_TYPE, node1(N_LIST, simple(N_CHAR)),
-				      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
+				char_ptr_type(),
 				self);
 			adj = node2(N_ADD, charp, integer((int64_t)off));
 		}
@@ -19323,8 +19284,7 @@ void CirBuilder::append_vptr_and_member_inits(node_t blk, const char *recv,
 				? "__vptr" : ("__vptr_" + std::to_string(G.this_offset));
 			node_t lhs = node2(N_DEREF_FIELD, id(recv, origin),
 				id(fld.c_str(), origin));
-			node_t vptr_type = node2(N_TYPE, node1(N_LIST, simple(N_VOID)),
-				node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+			node_t vptr_type = void_ptr_type();
 			node_t tab = id(vname.c_str(), origin);
 			node_t ap = (G.addr_point == 0) ? tab
 				: node2(N_ADD, tab, integer((int64_t)G.addr_point, origin), origin);
@@ -21170,8 +21130,7 @@ void CirBuilder::vbase_ctor_stmts_addr(const std::function<node_t()> &mint_addr,
 		node_t adj = obj_addr;
 		if (off != 0) {
 			node_t charp = node2(N_CAST,
-				node2(N_TYPE, node1(N_LIST, simple(N_CHAR)),
-				      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
+				char_ptr_type(),
 				obj_addr, o);
 			adj = node2(N_ADD, charp, integer((int64_t)off, o), o);
 		}
@@ -22757,10 +22716,7 @@ node_t CirBuilder::try_free_operator_call(TokenOperator *top, DataDefCLASS *lcls
 						aarg = id(tmp, origin);
 						if (boff) {
 							node_t charp = node2(N_CAST,
-								node2(N_TYPE,
-								      node1(N_LIST, simple(N_CHAR)),
-								      node2(N_DECL, ignore(),
-									    node1(N_LIST, pointer()))),
+								char_ptr_type(),
 								aarg, origin);
 							aarg = node2(N_ADD, charp,
 								integer((int64_t)boff, origin),
@@ -23325,8 +23281,7 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin,
 		size_t boff = lcls->base_offset_of(towner);
 		if (boff != 0 && boff != (size_t)-1) {
 			node_t charp = node2(N_CAST,
-				node2(N_TYPE, node1(N_LIST, simple(N_CHAR)),
-				      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
+				char_ptr_type(),
 				this_arg, origin);
 			this_arg = node2(N_CAST, void_ptr_type(),
 				node2(N_ADD, charp, integer((int64_t)boff), origin),
@@ -24213,8 +24168,7 @@ node_t CirBuilder::class_unary_operator_call(const char *opsym,
 		size_t boff = cls->base_offset_of(towner);
 		if (boff != 0 && boff != (size_t)-1) {
 			node_t charp = node2(N_CAST,
-				node2(N_TYPE, node1(N_LIST, simple(N_CHAR)),
-				      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
+				char_ptr_type(),
 				this_arg, origin);
 			this_arg = node2(N_CAST, void_ptr_type(),
 				node2(N_ADD, charp, integer((int64_t)boff), origin),
@@ -25208,11 +25162,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// (type_info*)( ((void**)(&obj)->__vptr)[-1] )
 			node_t objptr = node1(N_ADDR, translate_expr(ti->operand), tb);
 			node_t vptr = node2(N_DEREF_FIELD, objptr, id("__vptr", tb));
-			node_t vpp_dl = list();
-			append(vpp_dl, pointer());
-			append(vpp_dl, pointer());
-			node_t vpp_type = node2(N_TYPE, node1(N_LIST, simple(N_VOID)),
-						node2(N_DECL, ignore(), vpp_dl));
+			node_t vpp_type = void_ptr_type(2);
 			node_t vtab = node2(N_CAST, vpp_type, vptr, tb);
 			node_t rtti = node2(N_IND, vtab, integer(-1, tb), tb);
 			return node2(N_CAST, tinfo_ptr(), rtti, tb);
@@ -25583,15 +25533,12 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			append(cargs, integer(1, tb));
 			append(cargs, nbytes);
 			node_t ccall = node2(N_CALL, id("calloc", tb), cargs, tb);
-			node_t char_ptr_type = node2(N_TYPE,
-				node1(N_LIST, simple(N_CHAR)),
-				node2(N_DECL, ignore(), node1(N_LIST, pointer())));
 			node_t rdecl = simple(N_SPEC_DECL);
 			append(rdecl, node1(N_SHARE, node1(N_LIST, simple(N_CHAR))));
 			append(rdecl, node2(N_DECL, id(rtmp, tb), node1(N_LIST, pointer())));
 			append(rdecl, ignore());
 			append(rdecl, ignore());
-			append(rdecl, node2(N_CAST, char_ptr_type, ccall, tb));
+			append(rdecl, node2(N_CAST, char_ptr_type(), ccall, tb));
 			append(items, rdecl);
 			// struct C *__newN = (struct C *)(__arN + CK);
 			node_t elem0 = id(rtmp, tb);
@@ -25785,9 +25732,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 							}))
 						append(then_items, loop);
 					// (char *)__dp - CK
-					node_t c_ptr_type = node2(N_TYPE,
-						node1(N_LIST, simple(N_CHAR)),
-						node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+					node_t c_ptr_type = char_ptr_type();
 					freed = node2(N_SUB,
 						node2(N_CAST, c_ptr_type, object(), tb),
 						integer((int64_t)ack, tb), tb);
@@ -26150,11 +26095,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			node_t slot_bytes = node2(N_ADD, node2(N_CAST, char_ptr_type(), vptr, tb),
 						  node2(N_SUB, node2(N_CAST, i64_type(), mp_ptr(), tb),
 							integer(1, tb), tb), tb);
-			node_t vpp_dl = list();
-			append(vpp_dl, pointer());
-			append(vpp_dl, pointer());
-			node_t vpp_type = node2(N_TYPE, node1(N_LIST, simple(N_VOID)),
-						node2(N_DECL, ignore(), vpp_dl));
+			node_t vpp_type = void_ptr_type(2);
 			node_t vfn = node1(N_DEREF, node2(N_CAST, vpp_type, slot_bytes, tb), tb);
 			node_t is_virtual = node2(N_AND, node2(N_CAST, i64_type(), mp_ptr(), tb),
 						  integer(1, tb), tb);
@@ -33366,8 +33307,7 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 			node_t adj = self;
 			if (off != 0) {
 				node_t charp = node2(N_CAST,
-					node2(N_TYPE, node1(N_LIST, simple(N_CHAR)),
-					      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
+					char_ptr_type(),
 					self, tf);
 				adj = node2(N_ADD, charp, integer((int64_t)off), tf);
 			}
@@ -33495,9 +33435,7 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 					? "__vptr" : ("__vptr_" + std::to_string(G.this_offset));
 				node_t vptr_lhs = node2(N_DEREF_FIELD, id("__this", tf),
 							id(fld.c_str(), tf));
-				node_t vptr_type = node2(N_TYPE,
-					node1(N_LIST, simple(N_VOID)),
-					node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+				node_t vptr_type = void_ptr_type();
 				node_t tab = id(vname.c_str(), tf);
 				node_t ap = (G.addr_point == 0) ? tab
 					: node2(N_ADD, tab, integer((int64_t)G.addr_point), tf);
