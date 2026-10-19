@@ -1,0 +1,46 @@
+// The class-property type traits ask about remove_cv<T> ([meta.unary.prop],
+// [meta.rel] "ignoring cv-qualifiers", [basic.types.general]/9): a volatile
+// class is still a class, still empty, still final, and a non-trivial class
+// stays non-trivial behind volatile. Each row prints the plain type, then the
+// volatile one; g++ 13 and clang++ 18 agree on every digit (the .expect).
+// A class whose MEMBER is a volatile class with a destructor is not trivially
+// destructible either.
+#include <type_traits>
+#include <cstdio>
+struct E {};
+struct F final {};
+union U { int i; };
+enum En { A0 };
+struct NT { NT() {} int x; };
+struct D { ~D() {} };
+struct Mixed { public: int a; private: int b; };
+struct B {};
+struct Der : B {};
+struct Holder { volatile D d; };
+template<class T> struct W { T x; };	// first named below behind volatile
+#define ROW(label, trait, T) \
+	printf("%-24s %d %d\n", label, (int)trait<T>::value, (int)trait<volatile T>::value)
+int main()
+{
+	// A template-id first named behind volatile completes before the trait
+	// reads it: W<int> holds a member, so it is not empty.
+	printf("%-24s %d\n", "is_empty_volatile_tmpl",
+	       (int)std::is_empty<volatile W<int> >::value);
+	ROW("is_class", std::is_class, E);
+	ROW("is_union", std::is_union, U);
+	ROW("is_enum", std::is_enum, En);
+	ROW("is_empty", std::is_empty, E);
+	ROW("is_final", std::is_final, F);
+	ROW("is_trivial", std::is_trivial, NT);
+	ROW("is_trivially_copyable", std::is_trivially_copyable, D);
+	ROW("is_standard_layout", std::is_standard_layout, Mixed);
+	ROW("is_pod", std::is_pod, NT);
+	ROW("is_trivially_destructible", std::is_trivially_destructible, D);
+	printf("%-24s %d\n", "holder_trivially_destr",
+	       (int)std::is_trivially_destructible<Holder>::value);
+	printf("%-24s %d %d %d\n", "is_base_of",
+	       (int)std::is_base_of<B, Der>::value,
+	       (int)std::is_base_of<volatile B, Der>::value,
+	       (int)std::is_base_of<B, volatile Der>::value);
+	return 0;
+}

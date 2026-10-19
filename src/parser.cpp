@@ -13734,6 +13734,13 @@ bool Program::request_template_instantiation_completion(const madc::dis::istring
 // covers a replaced map entry.
 DataDef *Program::complete_class_type_on_demand(DataDef *dd)
 {
+    // A cv-qualified class completes as its class and keeps its cv.
+    if ( dd && dd->as_qualified_dd() )
+    {
+	DataDef *unq = dd->unqualified();
+	DataDef *done = complete_class_type_on_demand(unq);
+	return done == unq ? dd : getQualifiedType(done, dd->cv_quals());
+    }
     DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(dd);
     if ( !cls || !is_incomplete_class_datadef(cls) )
 	return dd;
@@ -16590,21 +16597,27 @@ bool is_type_trait_builtin(const madc::dis::istring &name)
     return type_trait_arity(name) != 0;
 }
 
+// The class-property traits below answer for remove_cv<T> ([meta.unary.prop];
+// [meta.rel] ignores cv for is_base_of; [basic.types.general]/9 makes cv
+// versions of a trivially copyable type trivially copyable). They read the
+// type through the kind accessors, which see through a DataDefQUAL
+// (datadef.h): `volatile X` — an operand, or a volatile class-type MEMBER the
+// recursion meets — answers as X. A dynamic_cast answered "not a class" there.
 static bool trait_is_enum(DataDef *dd)
 {
-    return dynamic_cast<DataDefENUM *>(dd) != NULL;
+    return dd && dd->as_enum_dd() != NULL;
 }
 // __is_class: a (non-union) class OR struct. DataDefCLASS derives from
 // DataDefSTRUCT, so both match the cast; union_layout separates out unions, and a
 // DataDefENUM is not a DataDefSTRUCT so enums are excluded.
 static bool trait_is_class(DataDef *dd)
 {
-    DataDefSTRUCT *s = dynamic_cast<DataDefSTRUCT *>(dd);
+    DataDefSTRUCT *s = dd ? dd->as_struct_dd() : NULL;
     return s && !s->union_layout;
 }
 static bool trait_is_union(DataDef *dd)
 {
-    DataDefSTRUCT *s = dynamic_cast<DataDefSTRUCT *>(dd);
+    DataDefSTRUCT *s = dd ? dd->as_struct_dd() : NULL;
     return s && s->union_layout;
 }
 // __is_final(T) ([class.pre]/4): T is a class declared with the `final`
@@ -16624,7 +16637,7 @@ static bool trait_is_final(DataDef *dd)
 {
     // DataDefSTRUCT, not DataDefCLASS: `struct X final { int x; };` never earns
     // promotion to a class, and a union is a class type too ([class.union]).
-    DataDefSTRUCT *s = dynamic_cast<DataDefSTRUCT *>(dd);
+    DataDefSTRUCT *s = dd ? dd->as_struct_dd() : NULL;
     return s && s->struct_is_final;
 }
 // __is_empty(T) ([meta.unary.prop]): T is a non-union class with NO non-static
@@ -16637,12 +16650,12 @@ bool trait_is_empty(DataDef *dd)
     // A non-class/union type is not empty (is_empty<int> = false). `members`
     // lives on the DataDefSTRUCT base, so a bare empty struct (DataDefSTRUCT not
     // promoted to DataDefCLASS) is handled too.
-    DataDefSTRUCT *s = dynamic_cast<DataDefSTRUCT *>(dd);
+    DataDefSTRUCT *s = dd ? dd->as_struct_dd() : NULL;
     if ( !s || s->union_layout )
 	return false;
     if ( !s->members.empty() )		// non-static data members -> not empty
 	return false;
-    DataDefCLASS *c = dynamic_cast<DataDefCLASS *>(dd);
+    DataDefCLASS *c = dd->as_class_dd();
     if ( !c )
 	return true;			// plain empty struct: no bases / virtuals
     if ( c->is_polymorphic() )		// virtual functions -> not empty
@@ -16669,7 +16682,7 @@ static bool trait_has_trivial_destructor(DataDef *dd)
     // as the CIR builder destroys it (class_needs_dtor).
     if ( dd && dd->is_madc_array() )
 	return false;
-    DataDefCLASS *c = dynamic_cast<DataDefCLASS *>(dd);
+    DataDefCLASS *c = dd ? dd->as_class_dd() : NULL;
     if ( !c )
 	return true;
     if ( c->has_user_dtor )
@@ -16695,7 +16708,7 @@ static bool trait_has_trivial_destructor(DataDef *dd)
 // Verified against g++ and clang++ (int/ptr/POD=1, user-ctor/user-dtor/virtual=0).
 static bool trait_is_trivial(DataDef *dd)
 {
-    DataDefCLASS *c = dynamic_cast<DataDefCLASS *>(dd);
+    DataDefCLASS *c = dd ? dd->as_class_dd() : NULL;
     if ( !c )
 	return true;
     if ( c->has_user_ctor || c->has_user_dtor || c->is_polymorphic() )
@@ -16721,7 +16734,7 @@ static bool trait_is_trivial(DataDef *dd)
 // fails an assert LOUDLY or disables an optimization, never miscompiles.
 static bool trait_is_trivially_copyable(DataDef *dd)
 {
-    DataDefCLASS *c = dynamic_cast<DataDefCLASS *>(dd);
+    DataDefCLASS *c = dd ? dd->as_class_dd() : NULL;
     if ( !c )
 	return true;
     if ( c->has_user_ctor || c->has_user_dtor || c->is_polymorphic()
@@ -16750,10 +16763,10 @@ static bool trait_is_trivially_copyable(DataDef *dd)
 // g++/clang for int/ptr/empty-class (=1) and virtual/mixed-access (=0).
 static bool trait_is_standard_layout(DataDef *dd)
 {
-    DataDefSTRUCT *s = dynamic_cast<DataDefSTRUCT *>(dd);
+    DataDefSTRUCT *s = dd ? dd->as_struct_dd() : NULL;
     if ( !s )
 	return true;   // scalar / pointer / enum
-    DataDefCLASS *c = dynamic_cast<DataDefCLASS *>(dd);
+    DataDefCLASS *c = dd->as_class_dd();
     if ( c && c->is_polymorphic() )
 	return false;   // virtual functions / vptr
     uint32_t acc0 = 0;
@@ -16808,8 +16821,8 @@ static bool trait_is_pod(DataDef *dd)
 // std:: layers accessibility on top). Both must be class types.
 static bool trait_is_base_of(DataDef *base, DataDef *derived)
 {
-    DataDefCLASS *b = dynamic_cast<DataDefCLASS *>(base);
-    DataDefCLASS *d = dynamic_cast<DataDefCLASS *>(derived);
+    DataDefCLASS *b = base ? base->as_class_dd() : NULL;
+    DataDefCLASS *d = derived ? derived->as_class_dd() : NULL;
     if ( !b || !d )
 	return false;
     if ( b == d || b->name == d->name )
@@ -17682,7 +17695,7 @@ TokenBase *Program::evaluate_type_trait(TokenBase *op_tb, const madc::dis::istri
 	// pending shell (a deferred template-argument instantiation, a bodyless
 	// forward instantiation) completes on demand here, as sizeof's operand
 	// does; a dependent placeholder has no record and is refused below.
-	if ( dynamic_cast<DataDefCLASS *>(a.dd) )
+	if ( a.dd && a.dd->as_class_dd() )	// a cv-qualified class too
 	    a.dd = complete_class_type_on_demand(a.dd);
 	// A DEPENDENT argument (an unbound template param `_Tp`, a dependent
 	// member-type placeholder) is unanswerable: any 0/1 answered here

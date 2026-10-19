@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Class-property type traits read the type through the kind accessors, so a cv-qualified class answers for its unqualified type
+
+- The class-property type traits (`trait_is_enum` / `_class` / `_union` / `_final` / `_empty`, `trait_has_trivial_destructor`, `trait_is_trivial` / `_trivially_copyable` / `_standard_layout`, `trait_is_base_of` in `src/parser.cpp`) read their argument with a bare `dynamic_cast<DataDefCLASS/DataDefSTRUCT/DataDefENUM>(dd)`. A `volatile T` (or `const T`) is a `DataDefQUAL` wrapper, not a `DataDefCLASS`, so the cast returned `NULL` and every class-property trait answered "not a class" for a cv-qualified class — a silent wrong answer. These traits answer for `remove_cv<T>` ([meta.unary.prop]; [meta.rel] ignores cv for `is_base_of`; [basic.types.general]/9 keeps a trivially copyable type trivially copyable behind cv). They now read the type through the kind accessors (`as_enum_dd` / `as_struct_dd` / `as_class_dd`), which forward through a `DataDefQUAL` to the base type (`include/datadef.h`).
+- `complete_class_type_on_demand` now peels a cv-qualified class, completes the underlying class, and re-qualifies, and the trait dispatcher's completion guard matches a cv-qualified class too — so a template-id first named behind `volatile` (`volatile W<int>`) completes before the trait reads it.
+- The cv-sensitive `is_constructible` / `is_assignable` / `is_convertible` helpers keep their `dynamic_cast`s by design: cv-qualification changes those answers.
+- Reducer `tests/testtraits_volatile.mad` (oracle `tests/testtraits_volatile.expect`, g++ 13 == clang++ 18 at `-std=c++17`). Pre-fix madc had every `volatile` column `0` where the oracle says `1` (`is_class` / `is_union` / `is_enum` / `is_empty` / `is_final`) and `1` where it says `0` (`is_trivial` / `is_trivially_copyable` / `is_standard_layout` / `is_pod` / `is_trivially_destructible`), `holder_trivially_destr` `1` vs `0`, and `is_base_of` `1 0 0` vs `1 1 1`; post-fix it matches the `.expect` (fix lanes tier1 14/14 JIT + EXE + OBJ, tier2 rc=0).
+
 ### Intern-keyed map lookups by spelling ask the pool for the id the name already holds, never interning a probe key
 
 - `intern_keyed_map`'s string-key lookups (`find` / `find_readonly` / `count` / `erase`, `include/madcdis/intern_table.h`) resolved the spelling with `_pool->intern(k)`, which added the spelling to the pool as a side effect of a read. A map keyed by id answers absence for any spelling the pool never interned, so these now call `_pool->find(k)`; `operator[]`, the only insert, keeps `intern`. Probing one key no longer grows the pool.
