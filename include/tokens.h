@@ -1994,6 +1994,11 @@ public:
     std::vector<int> catch_types;            // MADC_EXCEPT_* type tags (99 = catch(...))
     std::vector<madc::dis::istring> catch_varnames; // catch variable names (empty for catch(...))
     std::vector<TokenBase *> catch_bodies;   // compound statements for each catch
+    // The exception-declaration's type, reference / pointer / cv included
+    // (NULL for catch(...)), and — for a NAMED class or pointer handler — the
+    // hidden pointer its guard writes (`__madc_caught_<n>`, NULL otherwise).
+    std::vector<DataDef *> catch_decl_types;
+    std::vector<Variable *> catch_bound_vars;
     TokenTRY() : TokenKeyword("try") { try_body = NULL; }
     virtual TokenID id() const override { return TokenID::tkTRY; }
     virtual TokenBase *clone() override { return new TokenTRY(); }

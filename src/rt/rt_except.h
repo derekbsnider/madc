@@ -47,7 +47,6 @@ extern "C" {
 void __madc_throw_int(int64_t val);
 void __madc_throw_double(double val);
 void __madc_throw_cstr(const char *val);
-void __madc_throw_object(const void *obj);
 
 /* Render the in-flight exception as one line of text (MT-3 scope error
  * capture; also the formatting owner behind every "Unhandled exception"

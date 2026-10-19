@@ -6,6 +6,21 @@ Consolidated: counted_loop — gate scripts/check-one-counted-loop.sh
 Consolidated: class_pointer_spelling — gate scripts/check-one-class-pointer-decl.sh
 Consolidated: pointer_type_node — gate scripts/check-one-pointer-type-node.sh
 
+### A class-type exception is owned by its throw and matched by type in each handler (B202)
+
+- A `throw` of a class object kept the address of the thrower's temporary, which the unwind released, and no type identity, so every class handler matched every class throw and bound a default-constructed object of its own type. A class with a `c_str()` was thrown as its text, so `catch (const char *)` took a thrown `std::string`.
+- The thrown object is constructed into runtime storage (`__madc_exception_alloc`) and passed to `__madc_throw_class` with its destructor and a per-throw-site table of base names and offsets, virtual bases included. A class or pointer handler's guard, `__madc_exception_match`, selects the handler whose type is the thrown type or an unambiguous public base of it, and binds the matched subobject, or the adjusted pointer (a null pointer stays null).
+- The handler's variable is declared from its own exception-declaration, so a reference binds the thrown object, a value handler copies it and destroys the copy at the handler's end, and a pointer handler takes the adjusted pointer. `TokenTRY::parse` reads the exception-declaration through `Program::parse_declarator` (Parameter mode).
+- Each handler ends its catch on every normal exit. `throw;` rethrows the innermost caught exception; the thrown object is destroyed once, when its last handler exits.
+- Reducers `tests/testcatch_class_bind.mad` (by reference, by value, handler selection among unrelated classes), `tests/testcatch_class_base.mad` (public, non-primary and virtual bases; private and ambiguous bases fall through), `tests/testcatch_class_lifetime.mad` (construction and destruction counted once, rethrow, nested try inside a handler) and `tests/testcatch_std_exception.mad` (`std::exception` family, `what()` through the handler). The catch lines of `tests/testlibvirtualcall.mad` are restored. Oracles: g++ 13 and clang++ 18 (`--std=gnu++17`), the lines in each `.expect`.
+- B202 is retired from `BUGS.md`.
+
+### A prvalue returned through the hidden result slot constructs its virtual bases
+
+- A prvalue returned through `__retbuf` built only the non-virtual part of the returned class, so a virtual base was never constructed; `returned:` printed garbage for it (e.g. `returned: 476945 8 476945`) where g++ prints `returned: 6 8 6`.
+- The retbuf prvalue arm (`class_construct_into_slot`, `src/cir_builder.cpp`) now constructs through `complete_object_construct_stmts`, which constructs virtual bases first.
+- Reducer `tests/testreturn_vbase_prvalue.mad` (oracle `tests/testreturn_vbase_prvalue.expect`, g++ 13 == clang++ 18, `--std=gnu++17`).
+
 ### A try block left by return, break, continue or goto ends its frame, and a nested-block object is destroyed once
 
 - A try block's frame ended only when its body reached its end. A `return`, `break`, `continue` or `goto` out of the body left the frame live, so a later throw ran in the abandoned frame's handler. An object in a nested block of a try body was destroyed by its cleanup attribute and again by its runtime cleanup entry.

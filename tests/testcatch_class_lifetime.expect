@@ -1,0 +1,29 @@
+ctor 1
+caught 1 live 1
+dtor 1
+after 1: live 0
+ctor 2
+copy 102
+by value 102 live 2
+dtor 102
+dtor 2
+after 2: live 0
+ctor 3
+nested 7
+rethrow 3
+outer 3 live 1
+dtor 3
+after 3: live 0
+ctor 4
+ctor 5
+dtor 4
+replaced 5 live 1
+dtor 5
+after 4: live 0
+ctor 6
+dtor 6
+ctor 7
+loop 7
+dtor 7
+end: live 0 made 8
+trace: c1 d1 c2 k102 d102 d2 c3 d3 c4 c5 d4 d5 c6 d6 c7 d7

@@ -5,3 +5,5 @@ via bad_alloc* std::bad_array_new_length
 runtime_error via probe boom
 user override via probe MyErr::what
 user override via exception* MyErr::what
+caught library thrown
+caught user MyErr::what

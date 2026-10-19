@@ -1,0 +1,45 @@
+// A handler for a class type binds the THROWN object — by reference, by value
+// (a copy), or as a pointer — and is selected by the thrown object's type
+// ([except.handle]/3): a handler for an unrelated class, a scalar or a
+// `const char *` does not take a class throw. madc kept only the thrower's
+// temporary's address and no type: every class handler matched every class
+// throw and read a default-constructed object of its own (BUGS.md B202).
+// Oracle (g++ 13, clang++ 18, -std=gnu++17): the lines in the .expect.
+// madc before the fix: `by ref -1`, `by value -1`, `wrong handler F -2`, ...
+#include <cstdio>
+struct E { int v; E(int x) : v(x) {} E() : v(-1) {} };
+struct F { int w; F() : w(-2) {} };
+int main()
+{
+	try { throw E(5); }
+	catch (const E &e) { std::printf("by ref %d\n", e.v); }
+	try { throw E(6); }
+	catch (E e) { std::printf("by value %d\n", e.v); }
+	try { throw E(7); }
+	catch (const F &f) { std::printf("wrong handler F %d\n", f.w); }
+	catch (const E &e) { std::printf("right handler E %d\n", e.v); }
+	// An lvalue operand is copied into the exception object.
+	E local(8);
+	try { throw local; }
+	catch (E &e) { e.v = 80; std::printf("lvalue %d %d\n", e.v, local.v); }
+	// A class throw passes a scalar and a text handler by.
+	try {
+		try { throw E(9); }
+		catch (int) { std::printf("wrong int\n"); }
+		catch (const char *) { std::printf("wrong cstr\n"); }
+	}
+	catch (...) { std::printf("outer any\n"); }
+	// A pointer to a class is thrown as that pointer.
+	E heap(10);
+	try { throw &heap; }
+	catch (const char *) { std::printf("wrong cstr pointer\n"); }
+	catch (E *p) { std::printf("pointer %d %d\n", p->v, p == &heap); }
+	// A scalar throw still reaches its own handler, past a class one.
+	try { throw 11; }
+	catch (const E &) { std::printf("wrong class\n"); }
+	catch (int i) { std::printf("int %d\n", i); }
+	// An unnamed class handler.
+	try { throw F(); }
+	catch (const F &) { std::printf("unnamed F\n"); }
+	return 0;
+}

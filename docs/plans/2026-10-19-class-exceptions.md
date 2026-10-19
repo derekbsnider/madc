@@ -128,4 +128,32 @@ immutable static data. No new mutable globals.
 
 ## Status
 
-PLANNED 2026-10-19. Part 4 waits on the owner's go (core-parser change).
+DONE 2026-10-19 (parts 1-5; the owner approved part 4). As built, where it
+differs from the design above:
+
+- The match table is per THROW SITE, two block-scope static arrays (names,
+  offsets) passed with the count: `__madc_throw_class(obj, dtor, count,
+  names, offsets, is_pointer)`. A per-type module table would be missing
+  from a loaded forest body; the block-scope arrays travel with it.
+- `int __madc_exception_match(const char *name, void **out)`: a null pointer
+  thrown at a `B *` handler matches and binds null, which a NULL-means-no
+  return could not say.
+- Every handler begins the catch (`__madc_exception_begin_catch`) into a
+  guard local whose cleanup attribute ends it
+  (`__madc_exception_end_catch`) on every normal exit of the handler; a
+  throw out of the handler ends it through the runtime cleanup entry. The
+  no-match tail is `__madc_exception_resume()`.
+- A named class handler's variable is declared from the clause's own
+  exception-declaration, `<decl> = *__madc_caught_<n>;`, injected as the
+  handler body's first statement; the hidden pointer lives in the enclosing
+  block so the guard can write it.
+- The exception object's storage is a COMPLETE object: a prvalue operand is
+  constructed there through `complete_object_construct_stmts` (virtual bases
+  first) — the same fix the `__retbuf` slot needed
+  (`tests/testreturn_vbase_prvalue`).
+- Implicit move of a thrown local ([class.copy.elision]/3) is applied only
+  when no try block encloses the throw in its function; inside a try body
+  the operand is copied.
+- Out of scope, filed: B205 (a throw through a frame with no try skips that
+  frame's destructors), B206 (an unspecified base in a `class` is public, so
+  a privately inherited base still matches).

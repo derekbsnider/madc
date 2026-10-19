@@ -10612,10 +10612,6 @@ bool CirBuilder::ensure_runtime_extern_for(const madc::dis::istring &sym)
 		need_output_extern("setjmp", false, { { {N_VOID}, true } }, { N_INT });
 		return true;
 	}
-	if (sym == "__madc_cleanup_top") {
-		need_output_extern("__madc_cleanup_top", true, {});
-		return true;
-	}
 	if (sym == "__madc_try_leave") {
 		need_output_extern("__madc_try_leave", false, { { {N_VOID}, true } });
 		return true;
@@ -10626,10 +10622,6 @@ bool CirBuilder::ensure_runtime_extern_for(const madc::dis::istring &sym)
 	}
 	if (sym == "__madc_exception_type") {
 		need_output_extern("__madc_exception_type", false, {}, { N_INT });
-		return true;
-	}
-	if (sym == "__madc_exception_clear") {
-		need_output_extern("__madc_exception_clear", false, {});
 		return true;
 	}
 	if (sym == "__madc_rethrow") {
@@ -10653,8 +10645,36 @@ bool CirBuilder::ensure_runtime_extern_for(const madc::dis::istring &sym)
 		need_output_extern("__madc_throw_cstr", false, { { {N_CHAR}, true } });
 		return true;
 	}
-	if (sym == "__madc_throw_object") {
-		need_output_extern("__madc_throw_object", false, { { {N_VOID}, true } });
+	if (sym == "__madc_exception_alloc") {
+		need_output_extern("__madc_exception_alloc", true,
+				   { { {N_UNSIGNED, N_LONG, N_LONG}, false } });
+		return true;
+	}
+	// The match table is passed as `void *`: its real element types are the
+	// runtime's (const char *const *, const int64_t *), a cast at the call.
+	if (sym == "__madc_throw_class") {
+		need_output_extern("__madc_throw_class", false,
+			{ { {N_VOID}, true }, { {N_VOID}, true },
+			  { {N_UNSIGNED, N_LONG, N_LONG}, false },
+			  { {N_VOID}, true }, { {N_VOID}, true },
+			  { {N_INT}, false } });
+		return true;
+	}
+	if (sym == "__madc_exception_match") {
+		need_output_extern("__madc_exception_match", false,
+				   { { {N_CHAR}, true }, { {N_VOID}, true } }, { N_INT });
+		return true;
+	}
+	if (sym == "__madc_exception_begin_catch") {
+		need_output_extern("__madc_exception_begin_catch", true, {});
+		return true;
+	}
+	if (sym == "__madc_exception_end_catch") {
+		need_output_extern("__madc_exception_end_catch", false, { { {N_VOID}, true } });
+		return true;
+	}
+	if (sym == "__madc_exception_resume") {
+		need_output_extern("__madc_exception_resume", false, {});
 		return true;
 	}
 	if (sym == "__madc_vla_free") {
@@ -16612,22 +16632,23 @@ static bool returned_operand_is_implicitly_movable(DataDefCLASS *cdd,
 	return as_class_instance(v.type) == cdd;
 }
 
-// Copy-construct `cdd` from `src` into the __retbuf return slot. Prefer an
-// available copy constructor; otherwise use the legacy bit-copy plus member
-// reconstruction fallback. `src` is a TokenBase whose translate_expr yields the
-// source object lvalue (the `return obj;` operand).
-void CirBuilder::class_copy_construct_into_retbuf(DataDefCLASS *cdd,
-						  TokenBase *src,
-						  std::vector<node_t> &out,
-						  TokenBase *origin)
+// Copy-initialize `cdd` from `src` into `*slot` — the __retbuf return slot, or
+// a thrown exception object's storage. Prefer an available copy constructor;
+// otherwise use the legacy bit-copy plus member reconstruction fallback. `src`
+// is a TokenBase whose translate_expr yields the source object lvalue (the
+// `return obj;` / `throw obj;` operand).
+void CirBuilder::class_construct_into_slot(DataDefCLASS *cdd, TokenBase *src,
+					   std::vector<node_t> &out,
+					   TokenBase *origin, const char *slot,
+					   bool implicit_move)
 {
-	// A prvalue operand of the returned class initializes the result object
-	// itself ([stmt.return]/2, guaranteed elision — the declaration's
-	// `T b = T(args)` twin). Building a temporary, bit-copying it into
-	// *__retbuf and destroying it freed what the result still held: every
-	// `return std::unique_ptr<T>(p);` (make_unique) handed back a dangling
-	// pointer. An aggregate's braced list keeps the copy path below, whose
-	// construction site owns the aggregate claim.
+	// A prvalue operand of the slot's class initializes the slot's object
+	// itself ([stmt.return]/2, [except.throw]/4 — guaranteed elision, the
+	// declaration's `T b = T(args)` twin). Building a temporary, bit-copying
+	// it into *__retbuf and destroying it freed what the result still held:
+	// every `return std::unique_ptr<T>(p);` (make_unique) handed back a
+	// dangling pointer. An aggregate's braced list keeps the copy path below,
+	// whose construction site owns the aggregate claim.
 	// The slot holds a COMPLETE object: its virtual bases are constructed
 	// first (complete_object_construct_stmts — the ctor itself builds only
 	// the non-virtual bases).
@@ -16635,7 +16656,7 @@ void CirBuilder::class_copy_construct_into_retbuf(DataDefCLASS *cdd,
 		if (as_class_instance(iot->obj_class) == cdd && !cdd->is_aggregate()) {
 			std::vector<node_t> cons;
 			complete_object_construct_stmts([&]() -> node_t {
-				return id(RETBUF_NAME, origin);
+				return id(slot, origin);
 			}, cdd, iot->ctor_args, iot, cons);
 			if (!cons.empty()) {
 				out.insert(out.end(), cons.begin(), cons.end());
@@ -16644,7 +16665,6 @@ void CirBuilder::class_copy_construct_into_retbuf(DataDefCLASS *cdd,
 		}
 	std::vector<TokenBase *> copy_args;
 	if (src) copy_args.push_back(src);
-	bool implicit_move = returned_operand_is_implicitly_movable(cdd, src);
 	FuncDef *copy_ctor = select_or_instantiate_ctor(
 		cdd, copy_args, implicit_move);
 	if (copy_ctor && src) {
@@ -16658,7 +16678,7 @@ void CirBuilder::class_copy_construct_into_retbuf(DataDefCLASS *cdd,
 			// try_implicit_copy_construct (`return str;` into a
 			// view class converts first).
 			node_t copy = try_implicit_copy_construct(
-				node1(N_DEREF, id(RETBUF_NAME, origin), origin),
+				node1(N_DEREF, id(slot, origin), origin),
 				cdd, copy_args, origin, copy_ctor);
 			out.push_back(copy ? copy
 					    : error_node("cannot lower defaulted copy/move constructor",
@@ -16667,7 +16687,7 @@ void CirBuilder::class_copy_construct_into_retbuf(DataDefCLASS *cdd,
 		}
 		madc::dis::istring sym = ctor_call_symbol(cdd, copy_ctor);
 		node_t args = list();
-		append(args, id(RETBUF_NAME, origin));   // __retbuf is already T*
+		append(args, id(slot, origin));   // the slot is already T*
 		auto append_ctor_arg = [&](TokenBase *arg, size_t pi) {
 			DataDef *pt = (pi < copy_ctor->parameters.size())
 					? copy_ctor->parameters[pi] : NULL;
@@ -16691,12 +16711,12 @@ void CirBuilder::class_copy_construct_into_retbuf(DataDefCLASS *cdd,
 		     && copy_ctor->param_defaults[pi]; pi++)
 			append_ctor_arg(copy_ctor->param_defaults[pi], pi);
 		if (copy_ctor->ctor_trailing_self)
-			append(args, id(RETBUF_NAME, origin));
-		// Hidden __madc_vb args — __retbuf is a complete object of
+			append(args, id(slot, origin));
+		// Hidden __madc_vb args — the slot is a complete object of
 		// cdd (no-op for a vbase-less class).
 		if (copy_ctor->emit_symbol.empty()) {
 			std::function<node_t()> vb_mint = [&]() -> node_t {
-				return id(RETBUF_NAME, origin);
+				return id(slot, origin);
 			};
 			append_ctor_vbase_static_args(args, cdd, vb_mint, cdd,
 						      origin);
@@ -16726,16 +16746,19 @@ void CirBuilder::class_copy_construct_into_retbuf(DataDefCLASS *cdd,
 	if (src && !class_copy_ctor_def(cdd)) {
 		bool move = implicit_move
 			|| arg_value_category(src) == ArgValueCategory::Rvalue;
+		// implicit_copy_construct_from_addr reads a `struct cdd *` source.
 		if (node_t copy = implicit_copy_construct_from_addr(
-			    node1(N_DEREF, id(RETBUF_NAME, origin), origin),
-			    object_arg_addr(src, cdd), cdd, origin, move)) {
+			    node1(N_DEREF, id(slot, origin), origin),
+			    node2(N_CAST, class_ptr_type(cdd, origin),
+				  object_arg_addr(src, cdd), origin),
+			    cdd, origin, move)) {
 			out.push_back(copy);
 			return;
 		}
 	}
 	// 1) Bit-copy the source object into *__retbuf (covers scalar members and
 	//    establishes the layout). `*__retbuf = src;` — c2mir struct assignment.
-	node_t retderef = node1(N_DEREF, id(RETBUF_NAME, origin), origin);
+	node_t retderef = node1(N_DEREF, id(slot, origin), origin);
 	node_t bitcopy = node2(N_ASSIGN, retderef, translate_expr(src), origin);
 	out.push_back(node2(N_EXPR, list(), bitcopy, origin));
 	// 2) Re-construct each object member from the source's member, so the slot
@@ -16782,7 +16805,7 @@ void CirBuilder::class_copy_construct_into_retbuf(DataDefCLASS *cdd,
 					   { { {N_VOID}, true }, { {N_VOID}, true } });
 		else
 			referenced_funcs.insert(sym);
-		node_t dstfld = node2(N_DEREF_FIELD, id(RETBUF_NAME, origin),
+		node_t dstfld = node2(N_DEREF_FIELD, id(slot, origin),
 				      id(m.first.c_str(), origin));
 		node_t dst = node1(N_ADDR, dstfld, origin);
 		if (external)
@@ -16801,7 +16824,7 @@ void CirBuilder::class_copy_construct_into_retbuf(DataDefCLASS *cdd,
 			std::function<node_t()> vb_mint = [&]() -> node_t {
 				return node1(N_ADDR,
 					node2(N_DEREF_FIELD,
-					      id(RETBUF_NAME, origin),
+					      id(slot, origin),
 					      id(m.first.c_str(), origin)),
 					origin);
 			};
@@ -28156,8 +28179,10 @@ node_t CirBuilder::translate_return(TokenRETURN *tr)
 		// translate_expr on the return operand, which may queue sub-call temps in
 		// m_pending_stmts). Then flush those temps, then the copy statements.
 		std::vector<node_t> copy_stmts;
-		class_copy_construct_into_retbuf(m_cur_func_returns_object,
-						 tr->returns, copy_stmts, tr);
+		class_construct_into_slot(m_cur_func_returns_object, tr->returns,
+			copy_stmts, tr, RETBUF_NAME,
+			returned_operand_is_implicitly_movable(
+				m_cur_func_returns_object, tr->returns));
 		node_t items = list();
 		for (node_t p : m_pending_stmts)
 			append(items, p);
@@ -28815,36 +28840,78 @@ node_t CirBuilder::translate_for(TokenFOR *tf)
 // wraps this for the statement context.
 node_t CirBuilder::translate_throw_call(TokenTHROW *th)
 {
+	if (node_t items = throw_object_items(th))
+		return node1(N_STMTEXPR, node2(N_BLOCK, list(), items, th), th);
+	return throw_payload_call(th);
+}
+
+// throw STATEMENT lowering: a class or pointer throw's block, else the payload
+// call as an expression-statement (N_EXPR).
+node_t CirBuilder::translate_throw(TokenTHROW *th)
+{
+	if (node_t items = throw_object_items(th))
+		return node2(N_BLOCK, list(), items, th);
+	return node2(N_EXPR, list(), throw_payload_call(th), th);
+}
+
+// What a throw operand raises ([expr.throw]/3: its type, references and
+// top-level cv dropped): a class object (`object` = its class), a pointer
+// that is not text (`object` = the pointer type), the text of a dialect
+// string carrier, or a scalar payload. The catch tags (parser.cpp,
+// exception_declaration_tag) ask the same questions of a handler.
+CirBuilder::ThrownKind CirBuilder::thrown_kind(TokenBase *e, DataDef *&object)
+{
+	object = NULL;
+	if (is_class_object_expr(e)) {
+		DataDefCLASS *cls = operand_object_class(e);
+		// The dialect throws a string carrier (std::string, the value
+		// carrier) as its text; a C++ --std= throws the object.
+		if (thrown_object_has_cstr(e) && (!cls || !m_prog->is_cpp_mode()))
+			return ThrownKind::Text;
+		object = cls;
+		return cls ? ThrownKind::Object : ThrownKind::Unsupported;
+	}
+	DataDef *vt = operand_value_datadef(e);
+	if (!vt)
+		return ThrownKind::Integer;
+	vt = vt->unqualified();
+	DataType dt = vt->rawtype();
+	if (vt->is_pointer()) {
+		if (vt->is_cstr())
+			return ThrownKind::Text;
+		object = vt;
+		return ThrownKind::Pointer;
+	}
+	// dtLDOUBLE rides the double path: the throw runtime carries one real
+	// payload width, and this is where a long double went when it WAS a
+	// double. The catch-tag side (parser.cpp, MADC_EXCEPT_DOUBLE) agrees.
+	if (dt == DataType::dtDOUBLE || dt == DataType::dtFLOAT
+	    || dt == DataType::dtLDOUBLE)
+		return ThrownKind::Real;
+	return ThrownKind::Integer;
+}
+
+// A scalar or text throw: `__madc_throw_int/double/cstr(expr)`; bare `throw;`
+// -> `__madc_rethrow()`.
+node_t CirBuilder::throw_payload_call(TokenTHROW *th)
+{
 	if (!th->throw_expr) {
-		// bare `throw;` — rethrow the in-flight exception.
+		// bare `throw;` — rethrow the exception being handled.
 		need_output_extern("__madc_rethrow", false, {});
 		node_t call = node2(N_CALL, id("__madc_rethrow", th), list(), th);
 		CIR_NODE(call)->synth_from_origin = true;
 		return call;
 	}
-	DataDef *edd = th->throw_expr->datadef();
-	DataType dt = edd ? edd->rawtype() : DataType::dtINT64;
+	DataDef *object = NULL;
+	ThrownKind kind = thrown_kind(th->throw_expr, object);
+	if (kind == ThrownKind::Unsupported)
+		return error_node("cannot throw an object of this type", th);
 	const char *sym;
 	ExternParam ep;
-	bool throw_object_cstr = is_class_object_expr(th->throw_expr);
-	// dtLDOUBLE rides the double path: the throw runtime carries one real
-	// payload width, and this is where a long double went when it WAS a
-	// double. The catch-tag side (parser.cpp, MADC_EXCEPT_DOUBLE) agrees.
-	if (dt == DataType::dtDOUBLE || dt == DataType::dtFLOAT
-	    || dt == DataType::dtLDOUBLE) {
+	if (kind == ThrownKind::Real) {
 		sym = "__madc_throw_double";
 		ep = { {N_DOUBLE}, false };
-	} else if (throw_object_cstr && !thrown_object_has_cstr(th->throw_expr)) {
-		// A thrown class object with NO string form: pass its ADDRESS to the
-		// object entry. The cstr lowering below would hand the raw STRUCT to a
-		// `const char *` parameter — c2mir rejects it ("incompatible argument
-		// type for pointer type parameter", libc++ __throw_length_error's
-		// `throw length_error(__msg)`), and there is no meaningful char* to
-		// synthesize. Per-type class dispatch still needs RTTI (the catch side
-		// keeps class clauses unmatchable), so this only fixes the payload.
-		sym = "__madc_throw_object";
-		ep = { {N_VOID}, true };
-	} else if ((edd && edd->is_pointer()) || throw_object_cstr) {
+	} else if (kind == ThrownKind::Text) {
 		sym = "__madc_throw_cstr";
 		ep = { {N_CHAR}, true };
 	} else {
@@ -28853,20 +28920,279 @@ node_t CirBuilder::translate_throw_call(TokenTHROW *th)
 	}
 	need_output_extern(sym, false, { ep });
 	node_t args = list();
-	if (!strcmp(sym, "__madc_throw_object"))
-		append(args, object_arg_addr(th->throw_expr, NULL));
-	else
-		append(args, throw_object_cstr ? object_cstr_arg(th->throw_expr)
-					       : translate_expr(th->throw_expr));
+	append(args, kind == ThrownKind::Text && is_class_object_expr(th->throw_expr)
+		     ? object_cstr_arg(th->throw_expr)
+		     : translate_expr(th->throw_expr));
 	node_t call = node2(N_CALL, id(sym, th), args, th);
 	CIR_NODE(call)->synth_from_origin = true;
 	return call;
 }
 
-// throw STATEMENT lowering: wrap the throw call as an expression-statement (N_EXPR).
-node_t CirBuilder::translate_throw(TokenTHROW *th)
+// The Itanium type-name string an exception is matched by — what madc spells
+// for a class's _ZTS (`1E`, `St9exception`), `P` + the pointee's for a
+// pointer, the builtin code for a scalar (`i`). A pointee's cv is not part of
+// it: a handler for `const E *` takes a thrown `E *` ([except.handle]/3.3,
+// a qualification conversion).
+madc::dis::istring CirBuilder::exception_type_name(DataDef *object)
 {
-	return node2(N_EXPR, list(), translate_throw_call(th), th);
+	if (!object)
+		return madc::dis::istring();
+	object = object->unqualified();
+	if (DataDefPTR *p = object->as_pointer_dd())
+		return madc::dis::istring("P" + exception_type_name(p->base_type));
+	if (DataDefCLASS *c = as_class_instance(object))
+		return itanium_typeinfo_name_string_cpp(c->cpp_linkage_spelling());
+	return madc::dis::istring(itanium_encode_type_sub(object->cpp_linkage_spelling()));
+}
+
+// [except.handle]/3: the subobjects a thrown `cls` is caught as — the object
+// itself, then every UNAMBIGUOUS PUBLIC base — each with its offset in the
+// complete object (a virtual base where the complete object placed it).
+// A class with two distinct subobjects is ambiguous; a base reached only
+// through a private or protected derivation is not public.
+void CirBuilder::exception_match_subobjects(DataDefCLASS *cls,
+	std::vector<std::pair<DataDefCLASS *, long> > &out)
+{
+	std::vector<DataDefCLASS *> order;
+	std::map<DataDefCLASS *, std::set<long> > offsets;
+	std::map<std::pair<DataDefCLASS *, long>, bool> is_public;
+	std::function<void(DataDefCLASS *, long, bool)> walk =
+		[&](DataDefCLASS *c, long off, bool pub) {
+		std::pair<DataDefCLASS *, long> key(c, off);
+		std::map<std::pair<DataDefCLASS *, long>, bool>::iterator it =
+			is_public.find(key);
+		if (it != is_public.end() && (it->second || !pub))
+			return;		// already walked with this access or better
+		if (!offsets.count(c))
+			order.push_back(c);
+		offsets[c].insert(off);
+		is_public[key] = pub;
+		for (const BaseSpec &bs : c->bases) {
+			if (!bs.base)
+				continue;
+			std::map<DataDefCLASS *, size_t>::const_iterator vo =
+				cls->vbase_offset.find(bs.base);
+			long boff = bs.is_virtual
+				? (vo != cls->vbase_offset.end() ? (long)vo->second : 0)
+				: off + (long)bs.offset;
+			walk(bs.base, boff, pub && bs.access == 0);
+		}
+	};
+	walk(cls, 0, true);
+	for (DataDefCLASS *c : order) {
+		const std::set<long> &o = offsets[c];
+		if (o.size() == 1 && is_public[std::make_pair(c, *o.begin())])
+			out.push_back(std::make_pair(c, *o.begin()));
+	}
+}
+
+// A class or pointer throw ([except.throw]): the exception object's storage
+// from the runtime, the operand copy-initialized into it (a prvalue's
+// constructor runs on the storage itself), its match table as block-scope
+// statics (a loaded forest body carries them with it), then the raise:
+//   struct E *__madc_exc_K = (struct E *)__madc_exception_alloc(sizeof(struct E));
+//   <construct *__madc_exc_K from the operand>
+//   static char *__madc_excn_K[] = { "1E", <public bases> };
+//   static long long __madc_exco_K[] = { 0, <their offsets> };
+//   __madc_throw_class((void *)__madc_exc_K, (void *)E_dtor, N,
+//                      (void *)__madc_excn_K, (void *)__madc_exco_K, 0);
+// A pointer throw stores the pointer VALUE (`void **` storage, no dtor, its
+// table `P`-prefixed plus `Pv` — a `void *` handler takes any object pointer).
+// NULL when the throw is not a class or pointer throw.
+node_t CirBuilder::throw_object_items(TokenTHROW *th)
+{
+	if (!th->throw_expr)
+		return NULL;
+	DataDef *object = NULL;
+	ThrownKind kind = thrown_kind(th->throw_expr, object);
+	if (kind != ThrownKind::Object && kind != ThrownKind::Pointer)
+		return NULL;
+	const bool by_pointer = kind == ThrownKind::Pointer;
+	DataDefCLASS *cls = by_pointer ? NULL : as_class_instance(object);
+	// The match table: (type name, offset) per subobject.
+	std::vector<std::pair<madc::dis::istring, long> > table;
+	DataDef *pointee = by_pointer ? pointer_dd_of(object)->base_type : NULL;
+	DataDefCLASS *match_cls = by_pointer
+		? as_class_instance(pointee ? pointee->unqualified() : NULL) : cls;
+	if (match_cls) {
+		std::vector<std::pair<DataDefCLASS *, long> > subs;
+		exception_match_subobjects(match_cls, subs);
+		for (const auto &s : subs)
+			table.push_back(std::make_pair(by_pointer
+				? madc::dis::istring("P" + exception_type_name(s.first))
+				: exception_type_name(s.first), s.second));
+	} else {
+		table.push_back(std::make_pair(exception_type_name(object), 0L));
+	}
+	if (by_pointer && table.front().first != "Pv")
+		table.push_back(std::make_pair(madc::dis::istring("Pv"), 0L));
+
+	const int k = m_strtmp_counter++;
+	char slot[40], names[40], offs[40];
+	snprintf(slot, sizeof(slot), "__madc_exc%d", k);
+	snprintf(names, sizeof(names), "__madc_excn%d", k);
+	snprintf(offs, sizeof(offs), "__madc_exco%d", k);
+	node_t items = list();
+
+	// The storage: `struct E *slot = (struct E *)alloc(sizeof(struct E))`, or
+	// `void **slot = (void **)alloc(sizeof(void *))` for a pointer.
+	ensure_runtime_extern_for("__madc_exception_alloc");
+	node_t size_type = by_pointer ? void_ptr_type()
+		: node2(N_TYPE, type_list(cls), node2(N_DECL, ignore(), list()));
+	node_t alloc_args = list();
+	append(alloc_args, node1(N_SIZEOF, size_type, th));
+	node_t alloc = node2(N_CALL, id("__madc_exception_alloc", th), alloc_args, th);
+	CIR_NODE(alloc)->synth_from_origin = true;
+	if (by_pointer) {
+		node_t spec = list();
+		append(spec, simple(N_VOID, th));
+		node_t decl_list = list();
+		append(decl_list, pointer());
+		append(decl_list, pointer());
+		node_t sd = simple(N_SPEC_DECL, th);
+		append(sd, node1(N_SHARE, spec));
+		append(sd, node2(N_DECL, id(slot, th), decl_list));
+		append(sd, ignore());
+		append(sd, ignore());
+		append(sd, node2(N_CAST, void_ptr_type(2), alloc, th));
+		CIR_NODE(sd)->synth_from_origin = true;
+		append(items, sd);
+	} else {
+		append(items, class_ptr_bind(cls, slot,
+			node2(N_CAST, class_ptr_type(cls, th), alloc, th), th));
+	}
+
+	// The exception object, copy-initialized from the operand.
+	if (by_pointer) {
+		append(items, node2(N_EXPR, list(),
+			node2(N_ASSIGN, node1(N_DEREF, id(slot, th), th),
+			      node2(N_CAST, void_ptr_type(),
+				    translate_expr(th->throw_expr), th), th), th));
+	} else {
+		std::vector<node_t> ctor;
+		class_construct_into_slot(cls, th->throw_expr, ctor, th, slot,
+			thrown_operand_is_implicitly_movable(cls, th->throw_expr));
+		for (node_t s : ctor)
+			append(items, s);
+	}
+
+	// The match table.
+	{
+		node_t nspec = list();
+		append(nspec, simple(N_STATIC, th));
+		append(nspec, simple(N_CHAR, th));
+		node_t ndl = list();
+		append(ndl, node3(N_ARR, ignore(), list(), ignore()));
+		append(ndl, pointer());
+		node_t ninit = list();
+		node_t ospec = list();
+		append(ospec, simple(N_STATIC, th));
+		append_i64(ospec, th);
+		node_t odl = list();
+		append(odl, node3(N_ARR, ignore(), list(), ignore()));
+		node_t oinit = list();
+		for (const auto &row : table) {
+			append(ninit, node2(N_INIT, list(),
+				str(row.first.c_str(), row.first.size() + 1, th)));
+			append(oinit, node2(N_INIT, list(), integer((int64_t)row.second, th)));
+		}
+		node_t nsd = simple(N_SPEC_DECL, th);
+		append(nsd, node1(N_SHARE, nspec));
+		append(nsd, node2(N_DECL, id(names, th), ndl));
+		append(nsd, ignore());
+		append(nsd, ignore());
+		append(nsd, ninit);
+		CIR_NODE(nsd)->synth_from_origin = true;
+		append(items, nsd);
+		node_t osd = simple(N_SPEC_DECL, th);
+		append(osd, node1(N_SHARE, ospec));
+		append(osd, node2(N_DECL, id(offs, th), odl));
+		append(osd, ignore());
+		append(osd, ignore());
+		append(osd, oinit);
+		CIR_NODE(osd)->synth_from_origin = true;
+		append(items, osd);
+	}
+
+	// The raise.
+	ensure_runtime_extern_for("__madc_throw_class");
+	node_t args = list();
+	append(args, node2(N_CAST, void_ptr_type(), id(slot, th), th));
+	append(args, cls && class_needs_dtor(cls)
+		     ? class_dtor_address(cls, 0, th)
+		     : node2(N_CAST, void_ptr_type(), integer(0, th), th));
+	append(args, integer((int64_t)table.size(), th));
+	append(args, node2(N_CAST, void_ptr_type(), id(names, th), th));
+	append(args, node2(N_CAST, void_ptr_type(), id(offs, th), th));
+	append(args, integer(by_pointer ? 1 : 0, th));
+	node_t call = node2(N_CALL, id("__madc_throw_class", th), args, th);
+	CIR_NODE(call)->synth_from_origin = true;
+	append(items, node2(N_EXPR, list(), call, th));
+	return items;
+}
+
+// A class or pointer handler's guard ([except.handle]/3):
+//   __madc_exception_match("<the handler type's name>", (void *)&__madc_caught_K)
+// — the hidden pointer the handler's variable is declared from
+// (TokenTRY::parse), or a null out-pointer for an unnamed handler. A
+// reference handler matches by its referent; cv is not part of the name.
+node_t CirBuilder::exception_match_guard(TokenTRY *tt, size_t ci)
+{
+	DataDef *decl = ci < tt->catch_decl_types.size() ? tt->catch_decl_types[ci] : NULL;
+	const madc::dis::istring name =
+		exception_type_name(TokenSubscript::referent_type(decl));
+	Variable *bound = ci < tt->catch_bound_vars.size() ? tt->catch_bound_vars[ci] : NULL;
+	ensure_runtime_extern_for("__madc_exception_match");
+	node_t args = list();
+	append(args, str(name.c_str(), name.size() + 1, tt));
+	append(args, node2(N_CAST, void_ptr_type(),
+			   bound ? node1(N_ADDR, var_storage_node(*bound, tt), tt)
+				 : integer(0, tt), tt));
+	node_t call = node2(N_CALL, id("__madc_exception_match", tt), args, tt);
+	CIR_NODE(call)->synth_from_origin = true;
+	return call;
+}
+
+// [class.copy.elision]/3: a throw operand naming a non-volatile automatic
+// object (not a parameter) whose scope does not extend beyond the innermost
+// enclosing try block is moved into the exception object. The scope test is
+// kept to "no try block encloses the throw in this function"; inside a try
+// body the object is copied.
+bool CirBuilder::thrown_operand_is_implicitly_movable(DataDefCLASS *cdd,
+						      TokenBase *src)
+{
+	TokenVar *tv = src ? src->as_var_tok() : NULL;
+	if (!tv || m_try_body_depth > 0)
+		return false;
+	const Variable &v = tv->var;
+	if (!(v.flags & vfLOCAL) || (v.flags & (vfPARAM | vfSTATIC)))
+		return false;
+	if (!v.type || v.type->is_reference() || v.is_reference())
+		return false;
+	return as_class_instance(v.type) == cdd;
+}
+
+// `(void *)dtor` — the complete-object destructor of `cdd` (or, for a fixed
+// array of `array_elems` elements, the per-(class,N) wrapper that destroys
+// them in reverse — task #56), declared and referenced for the module.
+node_t CirBuilder::class_dtor_address(DataDefCLASS *cdd, size_t array_elems,
+				      TokenBase *origin)
+{
+	madc::dis::istring dtor_sym = array_elems
+		? demand_array_dtor(cdd, array_elems)
+		: class_complete_dtor_symbol(cdd);
+	// A user-class dtor is a madc-EMITTED function `void Cls___dtor(struct Cls*)`;
+	// referencing it (referenced_funcs) drives its emission and declaration with
+	// the real signature — re-declaring it here as `void f(void*)` would conflict.
+	// An externally-bound C++ dtor (emit_symbol set) has NO madc body, so it
+	// must be declared extern here so `(void*)dtor_sym` is a well-typed function
+	// address (not "undeclared"). The array wrapper is always madc-emitted.
+	bool dtor_is_external = !array_elems
+		&& (dtor_sym != class_madc_dtor_body_symbol(cdd));
+	if (dtor_is_external)
+		need_output_extern(dtor_sym.c_str(), false, { { {N_VOID}, true } });
+	referenced_funcs.insert(dtor_sym);
+	return node2(N_CAST, void_ptr_type(), id(dtor_sym.c_str(), origin), origin);
 }
 
 // Register a try-body object's destructor on the RUNTIME cleanup stack so it
@@ -28884,24 +29210,6 @@ void CirBuilder::emit_try_body_cleanup_push(const char *varname,
 {
 	if (m_try_body_depth <= 0 || !cdd || !class_needs_dtor(cdd))
 		return;
-	// A fixed array pushes the per-(class,N) wrapper so the longjmp unwind
-	// destroys all N elements in reverse, same as the scope-exit cleanup
-	// attribute (task #56).
-	madc::dis::istring dtor_sym = array_elems
-		? demand_array_dtor(cdd, array_elems)
-		: class_complete_dtor_symbol(cdd);
-	// A user-class dtor is a madc-EMITTED function `void Cls___dtor(struct Cls*)`;
-	// referencing it (referenced_funcs) drives its emission and declaration with
-	// the real signature — re-declaring it here as `void f(void*)` would conflict.
-	// An externally-bound C++ dtor (emit_symbol set) has NO madc body, so it
-	// must be declared extern here so `(void*)dtor_sym` is a well-typed function
-	// address (not "undeclared"). The array wrapper is always madc-emitted.
-	bool dtor_is_external = !array_elems
-		&& (dtor_sym != class_madc_dtor_body_symbol(cdd));
-	if (dtor_is_external)
-		need_output_extern(dtor_sym.c_str(), false, { { {N_VOID}, true } });
-	referenced_funcs.insert(dtor_sym);
-
 	// void *__madc_centry_K __attribute__((cleanup(__madc_cleanup_leave)))
 	//	= __madc_cleanup_push_dtor((void*)dtor_sym, (void*)&varname);
 	// Declared after the object, so a normal exit of its scope removes the
@@ -28909,8 +29217,7 @@ void CirBuilder::emit_try_body_cleanup_push(const char *varname,
 	ensure_runtime_extern_for("__madc_cleanup_push_dtor");
 	ensure_runtime_extern_for("__madc_cleanup_leave");
 	node_t args = list();
-	append(args, node2(N_CAST, void_ptr_type(),
-			   id(dtor_sym.c_str(), origin), origin));
+	append(args, class_dtor_address(cdd, array_elems, origin));
 	append(args, node2(N_CAST, void_ptr_type(),
 			   node1(N_ADDR, id(varname, origin), origin), origin));
 	node_t call = node2(N_CALL, id("__madc_cleanup_push_dtor", origin), args, origin);
@@ -28920,15 +29227,38 @@ void CirBuilder::emit_try_body_cleanup_push(const char *varname,
 	append(items, cleanup_guard_local(guard, call, "__madc_cleanup_leave", origin));
 }
 
+// Take the variable `name` out of a handler body's scope, so translate_block
+// does not declare it there: the try lowering declares it where its binder
+// stands (a scalar payload's in the handler block, a class handler's hidden
+// pointer ahead of the dispatch). No-op when the scope holds no such
+// variable (a second translation of the same try).
+static void take_scope_variable(TokenBase *body, const madc::dis::istring &name)
+{
+	TokenCpnd *scope = body ? body->as_cpnd_tok() : NULL;
+	if (!scope)
+		return;
+	for (size_t vi = 0; vi < scope->variables.size(); vi++) {
+		if (scope->variables[vi]->name != name)
+			continue;
+		scope->variables.erase(scope->variables.begin() + vi);
+		// keep TokenCpnd's name index in sync with the erase
+		scope->var_index.clear();
+		scope->var_indexed = 0;
+		return;
+	}
+}
+
 // SJLJ try/catch lowering. Emits, as a block of statements (NOT a statement-
 // expression — a cleanup-attribute temp inside `({...})` mis-scopes its dtor in
 // c2mir, per the P0.5 finding):
 //   long __try_ctx_N[W];   // opaque MadcTryContext storage, W from sizeof
 //   if (setjmp(*(jmp_buf*)__madc_try_push(&__try_ctx_N)) == 0) {
-//       <try body>; __madc_try_pop();
+//       void *__try_frame_N cleanup(__madc_try_leave) = &__try_ctx_N;
+//       <try body>
 //   } else {
-//       int/double/cstr __t dispatch: bind the catch var, run the handler,
-//       __madc_exception_clear(); no matching catch -> __madc_rethrow();
+//       dispatch by tag / type match: bind a scalar payload, begin the catch
+//       (its guard ends it), run the handler; no match ->
+//       __madc_exception_resume();
 //   }
 node_t CirBuilder::translate_try(TokenTRY *tt)
 {
@@ -29012,11 +29342,14 @@ node_t CirBuilder::translate_try(TokenTRY *tt)
 	node_t then_blk = node2(N_BLOCK, list(), then_items, tt);
 
 	// ELSE arm: catch dispatch. __t = __madc_exception_type(); then a chain of
-	// if/else by type tag, falling through to __madc_rethrow() if no catch
-	// matches. Built inside-out so the rethrow is the innermost else.
+	// if/else guards — a scalar tag, a class or pointer handler's type match
+	// (__madc_exception_match) — falling through to __madc_exception_resume()
+	// if no handler matches. Built inside-out so the resume is the innermost
+	// else.
 	need_output_extern("__madc_exception_type", false, {}, { N_INT });
-	need_output_extern("__madc_exception_clear", false, {});
-	need_output_extern("__madc_rethrow", false, {});
+	ensure_runtime_extern_for("__madc_exception_resume");
+	ensure_runtime_extern_for("__madc_exception_begin_catch");
+	ensure_runtime_extern_for("__madc_exception_end_catch");
 
 	char tname[40];
 	snprintf(tname, sizeof(tname), "__exc_t_%d", n);
@@ -29032,27 +29365,38 @@ node_t CirBuilder::translate_try(TokenTRY *tt)
 	append(t_sd, t_init);
 	CIR_NODE(t_sd)->synth_from_origin = true;
 
-	// No-match tail: __madc_rethrow();
-	node_t rethrow_call = node2(N_CALL, id("__madc_rethrow", tt), list(), tt);
-	CIR_NODE(rethrow_call)->synth_from_origin = true;
-	node_t chain = node2(N_EXPR, list(), rethrow_call, tt);
+	// No-match tail: the exception was never caught here; it continues to the
+	// next enclosing try unchanged.
+	node_t resume_call = node2(N_CALL, id("__madc_exception_resume", tt), list(), tt);
+	CIR_NODE(resume_call)->synth_from_origin = true;
+	node_t chain = node2(N_EXPR, list(), resume_call, tt);
 
 	// Walk catch clauses in REVERSE, wrapping each as an if whose else is the
 	// chain so far (so earlier clauses are tested first).
+	std::vector<node_t> caught_decls;	// the class handlers' hidden pointers
 	for (size_t ci = tt->catch_bodies.size(); ci-- > 0; ) {
 		int tag = tt->catch_types[ci];
 		const madc::dis::istring &vname = tt->catch_varnames[ci];
 
+		// A named class handler's hidden pointer (TokenTRY::parse registered
+		// it in the handler's scope): declared ahead of the whole dispatch,
+		// where the guard that writes it sees it.
+		if (Variable *hv = ci < tt->catch_bound_vars.size()
+				   ? tt->catch_bound_vars[ci] : NULL) {
+			take_scope_variable(tt->catch_bodies[ci], hv->name);
+			caught_decls.push_back(var_decl(hv, tt));
+		}
+
 		node_t handler_items = list();
-		// Bind the catch variable from the exception value (when named + typed).
-		// The parser registered the catch var in the catch BODY's scope, so the
-		// body block would emit a bare `T e;`. Declare it WITH the exception
-		// value as initializer in the handler instead, and remove it from the
-		// body's variables so it isn't double-declared.
-		// tag 4 = class/pointer catch: the clause never matches (no throw
-		// produces tag 4), and the parser registered the variable with its
-		// REAL type in the body scope — leave that declaration in place so
-		// the handler compiles; there is no exception value to bind.
+		// Bind a scalar catch variable from the exception's payload (when
+		// named + typed), read before the catch begins (begin_catch takes the
+		// exception out of flight). The parser registered the catch var in the
+		// catch BODY's scope, so the body block would emit a bare `T e;`.
+		// Declare it WITH the payload as initializer in the handler instead,
+		// and remove it from the body's variables so it isn't double-declared.
+		// tag 4 = class/pointer handler: its variable is the body's first
+		// declaration, `<decl> = *__madc_caught_K;` (TokenTRY::parse), bound
+		// to what the guard's match wrote.
 		if (!vname.empty() && tag != 99 && tag != 4) {
 			const char *valsym; std::vector<c2mir_node_code_t> rs;
 			if (tag == 2) { valsym = "__madc_exception_double"; rs = { N_DOUBLE }; }
@@ -29061,22 +29405,9 @@ node_t CirBuilder::translate_try(TokenTRY *tt)
 			bool ret_ptr = (tag == 3);
 			need_output_extern(valsym, ret_ptr, {}, rs);
 			node_t vcall = node2(N_CALL, id(valsym, tt), list(), tt);
-			// Resolve the catch var's declared type from the body scope, then
-			// remove it so translate_block won't re-declare it.
-			TokenCpnd *cbody = dynamic_cast<TokenCpnd *>(tt->catch_bodies[ci]);
-			DataDef *cvtype = &ddINT64;
-			if (cbody) {
-				for (size_t vi = 0; vi < cbody->variables.size(); vi++) {
-					if (cbody->variables[vi]->name == vname) {
-						cvtype = cbody->variables[vi]->type;
-						cbody->variables.erase(cbody->variables.begin() + vi);
-						// keep TokenCpnd's name index in sync with the erase
-						cbody->var_index.clear();
-						cbody->var_indexed = 0;
-						break;
-					}
-				}
-			}
+			// Remove the catch var from the body scope so translate_block
+			// won't re-declare it.
+			take_scope_variable(tt->catch_bodies[ci], vname);
 			// `T e = <exc value>;` — spec from the var's type, with initializer.
 			node_t cv_spec = list();
 			if (tag == 2) append(cv_spec, simple(N_DOUBLE, tt));
@@ -29092,21 +29423,35 @@ node_t CirBuilder::translate_try(TokenTRY *tt)
 			append(cv_sd, vcall);
 			CIR_NODE(cv_sd)->synth_from_origin = true;
 			append(handler_items, cv_sd);
-			(void)cvtype;
 		}
+		// The catch begins (Itanium __cxa_begin_catch): the exception becomes
+		// the handled one, which `throw;` rethrows. Its guard ends it on every
+		// normal exit of the handler — the end, a return, break, continue or
+		// goto — destroying the exception object unless it was rethrown; a
+		// throw out of the handler ends it through the runtime entry.
+		//   void *__madc_catch_N_I __attribute__((cleanup(
+		//	__madc_exception_end_catch))) = __madc_exception_begin_catch();
+		char catchname[48];
+		snprintf(catchname, sizeof(catchname), "__madc_catch_%d_%zu", n, ci);
+		node_t begin = node2(N_CALL, id("__madc_exception_begin_catch", tt),
+				     list(), tt);
+		CIR_NODE(begin)->synth_from_origin = true;
+		append(handler_items, cleanup_guard_local(catchname, begin,
+				"__madc_exception_end_catch", tt));
 		node_t hbody = translate_stmt(tt->catch_bodies[ci]);
 		if (hbody) append(handler_items, hbody);
-		node_t clear_call = node2(N_CALL, id("__madc_exception_clear", tt),
-					  list(), tt);
-		CIR_NODE(clear_call)->synth_from_origin = true;
-		append(handler_items, node2(N_EXPR, list(), clear_call, tt));
 		node_t handler = node2(N_BLOCK, list(), handler_items, tt);
 
 		// catch(...) matches any type -> no guard, just the handler (but still
-		// wrapped so an earlier-tested clause's else reaches it).
+		// wrapped so an earlier-tested clause's else reaches it). A class or
+		// pointer handler matches by type name ([except.handle]/3), writing the
+		// bound subobject's address (or the adjusted pointer) to its variable's
+		// hidden pointer.
 		node_t guard;
 		if (tag == 99)
 			guard = integer(1, tt);   // always true
+		else if (tag == 4)
+			guard = exception_match_guard(tt, ci);
 		else
 			guard = node2(N_EQ, id(tname, tt), integer(tag, tt), tt);
 		chain = node4(N_IF, list(), guard, handler, chain, tt);
@@ -29119,8 +29464,11 @@ node_t CirBuilder::translate_try(TokenTRY *tt)
 
 	node_t ifnode = node4(N_IF, list(), cond, then_blk, else_blk, tt);
 
-	// Whole try lowering: { ctx_decl; if (setjmp...) {body} else {dispatch} }
+	// Whole try lowering: { caught ptrs; ctx_decl; if (setjmp...) {body} else
+	// {dispatch} }
 	node_t items = list();
+	for (node_t hd : caught_decls)
+		append(items, hd);
 	append(items, ctx_sd);
 	append(items, ifnode);
 	return node2(N_BLOCK, list(), items, tt);

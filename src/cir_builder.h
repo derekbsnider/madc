@@ -170,7 +170,7 @@ class CirBuilder {
 	// ([stmt.return]/[dcl.init]) — e.g. std::set's `iterator find(){ return
 	// _M_t.find(x); }`, where the tree's `iterator` converts to set's
 	// `const_iterator`. The non-trivial (__retbuf) path already applies the
-	// converting ctor via class_copy_construct_into_retbuf's overload selection.
+	// converting ctor via class_construct_into_slot's overload selection.
 	DataDefCLASS *m_cur_func_returns_value_class = NULL;
 	// Returned user-class while translating the body of a function returning a
 	// `Cls *` or `Cls&`, else NULL. Lets translate_return emit the derived->base
@@ -721,11 +721,14 @@ class CirBuilder {
 	// The single function-signature owner for the __retbuf decision: reject
 	// pointer/reference/multi returns, then classify the returned value type.
 	DataDefCLASS *function_retbuf_class(class FuncDef *fd);
-	// Member-wise copy-construct `cdd`'s object members from `src` into *__retbuf
-	// (after a bit-copy for scalars), so the return slot owns its own buffers.
-	void class_copy_construct_into_retbuf(DataDefCLASS *cdd, TokenBase *src,
-					      std::vector<node_t> &out,
-					      TokenBase *origin);
+	// Copy-initialize a `cdd` object from `src` into the storage `*slot` (a
+	// local of type `cdd *`): a prvalue's constructor runs on the slot itself,
+	// otherwise the copy or move constructor (move first when `implicit_move`,
+	// [class.copy.elision]/3). The return slot (*__retbuf) and the exception
+	// object's storage are its two slots.
+	void class_construct_into_slot(DataDefCLASS *cdd, TokenBase *src,
+				       std::vector<node_t> &out, TokenBase *origin,
+				       const char *slot, bool implicit_move);
 	// Member-wise copy-ASSIGNMENT of a non-trivial class into an existing object
 	// (`lhs = rhs`): each class member uses its registered assignment operator
 	// when available; scalar members use plain assignment. This avoids aliasing
@@ -3053,6 +3056,21 @@ public:
 	node_t main_task_join_wrapper(class TokenFunc *tf, class FuncDef *fd);
 	node_t m_main_wrapper_def = NULL;
 	node_t translate_throw_call(class TokenTHROW *th);
+	// What a throw operand raises; see thrown_kind.
+	enum class ThrownKind { Object, Pointer, Text, Real, Integer, Unsupported };
+	ThrownKind thrown_kind(TokenBase *e, DataDef *&object);
+	node_t throw_payload_call(class TokenTHROW *th);
+	node_t throw_object_items(class TokenTHROW *th);
+	bool thrown_operand_is_implicitly_movable(DataDefCLASS *cdd, TokenBase *src);
+	// The Itanium type-name string a handler and a thrown object match by.
+	madc::dis::istring exception_type_name(DataDef *object);
+	void exception_match_subobjects(DataDefCLASS *cls,
+		std::vector<std::pair<DataDefCLASS *, long> > &out);
+	node_t exception_match_guard(class TokenTRY *tt, size_t ci);
+	// `(void *)<complete-object dtor>` of cdd (its per-N array wrapper when
+	// array_elems > 0), declared and referenced.
+	node_t class_dtor_address(DataDefCLASS *cdd, size_t array_elems,
+				  TokenBase *origin);
 	int m_try_ctx_counter = 0;
 	// >0 while lowering a try BODY (set around translate_stmt(tt->try_body) in
 	// translate_try). Objects constructed in a try body keep their normal

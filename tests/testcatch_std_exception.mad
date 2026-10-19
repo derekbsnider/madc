@@ -1,0 +1,29 @@
+// The standard exception hierarchy: a std::runtime_error, a user class
+// derived from std::exception and a std::out_of_range, caught through a base
+// reference, answer what() of the THROWN object; a thrown std::string is a
+// class object under C++, matching `const std::string &`, never
+// `const char *`.
+// Oracle (g++ 13, clang++ 18, -std=gnu++17): the lines in the .expect.
+// madc before the fix: `std::exception` from every what(); the string was
+// taken by the `const char *` handler (BUGS.md B202).
+#include <cstdio>
+#include <exception>
+#include <stdexcept>
+#include <string>
+struct MyErr : std::exception {
+	const char *what() const noexcept override { return "my error"; }
+};
+int main()
+{
+	try { throw std::runtime_error("boom"); }
+	catch (const std::exception &e) { std::printf("std: %s\n", e.what()); }
+	try { throw MyErr(); }
+	catch (const std::exception &e) { std::printf("user: %s\n", e.what()); }
+	try { throw std::out_of_range("range"); }
+	catch (const std::runtime_error &) { std::printf("wrong runtime_error\n"); }
+	catch (const std::logic_error &e) { std::printf("logic: %s\n", e.what()); }
+	try { throw std::string("text"); }
+	catch (const char *) { std::printf("wrong cstr\n"); }
+	catch (const std::string &s) { std::printf("string: %s\n", s.c_str()); }
+	return 0;
+}

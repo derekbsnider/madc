@@ -6529,6 +6529,9 @@ public:
     // name, e.g. `int` -> "int32_t", making a name compare unreliable).
     registration_set<madc::dis::istring> user_typedef_names;
     std::stack<TokenCpnd *> compounds;	// stack to manage nested brackets
+    // Numbers each named class handler's hidden pointer (`__madc_caught_<n>`,
+    // TokenTRY::parse): unique within the translation unit.
+    unsigned catch_bind_serial = 0;
     std::vector<TokenSWITCH *> switch_stack; // active switch parse contexts for nested case/default hoisting
     std::vector<TokenCASE *> switch_case_stack; // current active case/default while parsing each switch
     size_t switch_label_seq = 0;	// unique suffix for nested-case in-place labels

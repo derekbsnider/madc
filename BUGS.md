@@ -30,43 +30,6 @@ and `--std=gnu++17` for `.cpp`, against `gcc -std=gnu17` / `g++ -std=gnu++17`.
 
 ## Silent wrong answers
 
-### B202. A handler for a class type never binds the thrown object, and matches any class
-
-```cpp
-#include <cstdio>
-struct E { int v; E(int x) : v(x) {} E() : v(-1) {} };
-struct F { int w; F() : w(-2) {} };
-int main()
-{
-	try { throw E(5); }
-	catch (const E &e) { std::printf("by ref %d\n", e.v); }
-	try { throw E(6); }
-	catch (E e) { std::printf("by value %d\n", e.v); }
-	try { throw E(7); }
-	catch (const F &f) { std::printf("wrong handler F %d\n", f.w); }
-	catch (const E &e) { std::printf("right handler E %d\n", e.v); }
-	return 0;
-}
-```
-
-- Found 2026-10-19 while pinning library virtual dispatch
-  (`tests/testlibvirtualcall.mad`): `catch (const std::exception &c)
-  { c.what(); }` printed `std::exception` for every thrown exception.
-- g++ 13 and clang++ 18: `by ref 5`, `by value 6`, `right handler E 7`.
-  madc (`bin/madc` with the library-dispatch fix over `1d0044cbb`):
-  `by ref -1`, `by value -1`, `wrong handler F -2`, exit 0.
-- Layer: the runtime record (`src/rt/rt_except.c`, `__madc_throw_object`)
-  keeps only the address of the thrower's temporary, which the unwind
-  releases, and no type identity; the catch lowering (`src/cir_builder.cpp`,
-  the try/catch arm) binds scalar tags only, so a class handler's parameter is
-  the handler body's own default-constructed `T c;`. The parser gives every
-  class or pointer clause tag 4 to keep it unmatchable (`TokenTRY::parse`,
-  src/parser.cpp), but since `4b25ffb80` (2026-07-29) a thrown class object
-  with no string form carries `MADC_EXCEPT_CLASS` = 4 too, so every class
-  handler matches every such throw. The planned fix is roadmap P1.1e
-  (`docs/plans/cpp-support.md`): an owned copy plus type identity in the
-  record, inheritance-aware matching, binding by reference and by value.
-
 ### B205. A throw passing through a function with no try of its own skips its objects' destructors
 
 ```cpp

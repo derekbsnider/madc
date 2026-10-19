@@ -1,0 +1,62 @@
+// The exception object is constructed once (a prvalue operand directly in it)
+// and destroyed once, when the last handler for it exits — by its end, by
+// `continue`, or by a new throw; a `throw;` rethrows it without destroying
+// it, even after a nested try/catch inside the handler; a by-value handler's
+// copy is destroyed at the handler's end, before the exception object.
+// Oracle (g++ 13, clang++ 18, -std=gnu++17): the lines in the .expect.
+// madc before the fix: the handler read a default object; the thrown one was
+// destroyed by the unwind (BUGS.md B202).
+// The runner checks lines, not their order, so the `trace:` line records the
+// order of every construction (c), copy (k) and destruction (d).
+#include <cstdio>
+#include <cstring>
+static int live = 0, made = 0;
+static char trace[512];
+static void note(char what, int id)
+{
+	size_t n = std::strlen(trace);
+	std::snprintf(trace + n, sizeof trace - n, " %c%d", what, id);
+}
+struct T {
+	int id;
+	T(int i) : id(i) { ++live; ++made; note('c', id); std::printf("ctor %d\n", id); }
+	T(const T &o) : id(o.id + 100) { ++live; ++made; note('k', id); std::printf("copy %d\n", id); }
+	~T() { --live; note('d', id); std::printf("dtor %d\n", id); }
+};
+int main()
+{
+	try { throw T(1); }
+	catch (const T &t) { std::printf("caught %d live %d\n", t.id, live); }
+	std::printf("after 1: live %d\n", live);
+	try { throw T(2); }
+	catch (T t) { std::printf("by value %d live %d\n", t.id, live); }
+	std::printf("after 2: live %d\n", live);
+	try {
+		try { throw T(3); }
+		catch (T &t) {
+			try { throw 7; }
+			catch (int i) { std::printf("nested %d\n", i); }
+			std::printf("rethrow %d\n", t.id);
+			throw;
+		}
+	}
+	catch (const T &t) { std::printf("outer %d live %d\n", t.id, live); }
+	std::printf("after 3: live %d\n", live);
+	try {
+		try { throw T(4); }
+		catch (const T &) { throw T(5); }
+	}
+	catch (const T &t) { std::printf("replaced %d live %d\n", t.id, live); }
+	std::printf("after 4: live %d\n", live);
+	for (int i = 0; i < 2; ++i) {
+		try { throw T(6 + i); }
+		catch (const T &t) {
+			if (t.id == 6)
+				continue;
+			std::printf("loop %d\n", t.id);
+		}
+	}
+	std::printf("end: live %d made %d\n", live, made);
+	std::printf("trace:%s\n", trace);
+	return 0;
+}

@@ -58731,6 +58731,66 @@ TokenBase *TokenDEFER::parse(Program &pgm)
 }
 
 // try { ... } catch (type var) { ... }
+// The dispatch tag (rt_except.h MADC_EXCEPT_*) of a handler whose
+// exception-declaration has type `dd` — a reference handler is its
+// referent's: text (DataDef::is_cstr) takes a thrown string, any other
+// pointer and a class match by type name (MADC_EXCEPT_CLASS, the guard is
+// __madc_exception_match), a floating type takes the double payload (long
+// double narrows: the runtime carries one real width) and an integral one
+// the integer payload. The throw lowering asks the same questions.
+static int exception_declaration_tag(DataDef *dd)
+{
+    DataDef *object = TokenSubscript::referent_type(dd);
+    if ( !object )
+	return 99; // MADC_EXCEPT_ANY
+    if ( object->is_cstr() )
+	return 3; // MADC_EXCEPT_CSTR
+    if ( object->is_pointer() || object->unqualified()->as_class_dd() )
+	return 4; // MADC_EXCEPT_CLASS
+    if ( object->is_real() )
+	return 2; // MADC_EXCEPT_DOUBLE
+    if ( object->is_integer() )
+	return 1; // MADC_EXCEPT_INT
+    return 99;
+}
+
+// A named class (or pointer) handler binds the THROWN object. Its guard
+// writes `__madc_caught_<n>` — a pointer to the matched subobject, or the
+// adjusted pointer value — registered in the handler's scope `scope` (the
+// try lowering declares it ahead of the guard). The handler's variable is
+// then declared FROM the clause's own exception-declaration,
+// `<decl> = *__madc_caught_<n>;` (no `*` for a pointer), read as the first
+// statement of the handler body: the one declaration path binds a
+// reference, copy-constructs a by-value object and destroys it at the
+// handler's end. Returns the hidden pointer.
+static Variable *bind_class_handler_variable(Program &pgm,
+	TokenCpnd *scope, DataDef *decl_type,
+	const std::vector<TokenBase *> &decl_run, TokenBase *at)
+{
+    DataDef *object = TokenSubscript::referent_type(decl_type)->unqualified();
+    bool by_pointer = object->is_pointer();
+    DataDef *hidden_type = by_pointer ? object : pgm.getPointerType(object);
+    char hidden_name[32];
+    snprintf(hidden_name, sizeof(hidden_name), "__madc_caught_%u",
+	     pgm.catch_bind_serial++);
+    madc::dis::istring hidden(hidden_name);
+    Variable *hv = pgm.addVariable(scope, *hidden_type, hidden, 1, NULL, false);
+    std::vector<TokenBase *> run(decl_run);
+    std::vector<TokenBase *> tail;
+    tail.push_back(new TokenAssign());
+    if ( !by_pointer )
+	tail.push_back(new TokenMul());
+    tail.push_back(new TokenIdent(hidden.c_str()));
+    tail.push_back(new TokenSemi());
+    for ( TokenBase *t : tail )
+    {
+	copy_token_location(t, at);
+	run.push_back(t);
+    }
+    pgm.tokens.splice_front(0, run);
+    return hv;
+}
+
 TokenBase *TokenTRY::parse(Program &pgm)
 {
     DBG(std::cout << "TokenTRY::parse()" << std::endl);
@@ -58752,8 +58812,9 @@ TokenBase *TokenTRY::parse(Program &pgm)
 	    pgm.Throw(tn ? tn : this) << "Expected '(' after 'catch'" << flush;
 
 	// Parse catch parameter: exception-declaration or (...)
-	TokenDataType *ctype = NULL;   // resolved caught type (class catches)
-	int ptr_depth = 0;             // trailing '*' count on the declarator
+	DataDef *decl_type = NULL;	// the exception-declaration's type
+	std::vector<TokenBase *> decl_run;	// its token run (a class handler's
+					// variable is declared from it)
 	tn = pgm.peekToken();
 	if ( tn && tn->id() == TokenID::tkDot )
 	{
@@ -58770,114 +58831,58 @@ TokenBase *TokenTRY::parse(Program &pgm)
 	}
 	else
 	{
-	    // catch([cv] type [*|&|&&] [name]) — the exception-declaration
-	    // grammar. The type may be namespace-qualified or a template-id
-	    // (`__cxxabiv1::__forced_unwind&` in libstdc++ stream bodies);
+	    // The exception-declaration is a parameter declaration
+	    // ([except.pre]/1): its decl-specifiers, then the ONE declarator
+	    // reader in Parameter mode — the clause's real type, reference,
+	    // pointer and cv included, and its optional name. The type may be
+	    // namespace-qualified or a template-id (`__cxxabiv1::
+	    // __forced_unwind&` in libstdc++ stream bodies);
 	    // resolve_declared_type_token consumes the qualification suffix
-	    // from the stream, so the head token must be CONSUMED first — a
-	    // peeked head misaligns the suffix consume.
-	    while ( tn && (tn->id() == TokenID::tkCONST
-			|| tn->id() == TokenID::tkVOLATILE) )
-	    {
-		pgm.nextToken();
-		tn = pgm.peekToken();
-	    }
+	    // from the stream, so the head token must be CONSUMED first. The
+	    // run is captured first, non-destructively.
+	    pgm.capture_balanced_group_tokens(TokenID::tkClBrk, decl_run);
+	    unsigned lead_cv = pgm.skip_cv_qualifier_tokens();
 	    TokenBase *head = pgm.nextToken();
 	    if ( !head )
 		pgm.Throw(this) << "Expected type in catch parameter" << flush;
-	    ctype = pgm.resolve_declared_type_token(head, true, true);
+	    TokenDataType *ctype = pgm.resolve_declared_type_token(head, true, true);
 	    if ( !ctype )
 		pgm.Throw(head) << "Expected type in catch parameter" << flush;
-
-	    // Declarator: fold trailing '*' / '&' / '&&' and interleaved
-	    // cv-qualifiers. A catch reference binds to the thrown value; at
-	    // the runtime's fidelity (int/double/cstr) ref and value coincide.
-	    while ( (tn = pgm.peekToken()) )
-	    {
-		if ( tn->id() == TokenID::tkStar )
-		{
-		    ptr_depth++;
-		    pgm.nextToken();
-		    continue;
-		}
-		if ( tn->id() == TokenID::tkBand || tn->id() == TokenID::tkLand
-		  || tn->id() == TokenID::tkCONST
-		  || tn->id() == TokenID::tkVOLATILE )
-		{
-		    pgm.nextToken();
-		    continue;
-		}
-		break;
-	    }
-
-	    // Determine exception type tag. The runtime throws int / double /
-	    // cstr only (exception_runtime.cpp MADC_EXCEPT_*): a class- or
-	    // pointer-typed clause can never match a madc-thrown exception, so
-	    // it gets tag 4 — a value no throw produces — and the dispatch
-	    // guard is never taken (GCC canon: catch(T&) matches T only, so a
-	    // thrown int must fall through to a later catch(...) clause).
-	    int tag = 99; // default: any
-	    DataType dt = ctype->definition.rawtype();
-	    if ( dt == DataType::dtCHAR && ptr_depth > 0 )
-		tag = 3; // MADC_EXCEPT_CSTR
-	    else if ( ptr_depth > 0
-		   || dynamic_cast<DataDefCLASS *>(&ctype->definition) )
-		tag = 4; // MADC_EXCEPT_CLASS: unmatchable (see above)
-	    else if ( dt == DataType::dtINT || dt == DataType::dtINT32
-	      || dt == DataType::dtINT64 )
-		tag = 1; // MADC_EXCEPT_INT
-	    else if ( dt == DataType::dtDOUBLE || dt == DataType::dtFLOAT
-	           || dt == DataType::dtLDOUBLE )
-		tag = 2; // MADC_EXCEPT_DOUBLE (long double narrows here, as it
-			 // did when it WAS a double — the exception runtime
-			 // carries one real payload width)
-	    else if ( dt == DataType::dtCHAR )
-		tag = 3; // MADC_EXCEPT_CSTR (char* conceptually)
-	    catch_types.push_back(tag);
-
-	    // Variable name
-	    tn = pgm.nextToken();
-	    if ( tn && tn->type() == TokenType::ttIdentifier )
-		catch_varnames.push_back(((TokenIdent *)tn)->spelling());
-	    else
-	    {
-		catch_varnames.push_back("");
-		if ( tn ) pgm.pushToken(tn);
-	    }
+	    Program::DeclaratorResult kd;
+	    decl_type = pgm.parse_declarator(&ctype->definition,
+					     Program::DeclaratorMode::Parameter,
+					     kd, NULL, lead_cv);
+	    catch_types.push_back(exception_declaration_tag(decl_type));
+	    catch_varnames.push_back(kd.name);
 	}
+	catch_decl_types.push_back(decl_type);
+	catch_bound_vars.push_back(NULL);
 
 	tn = pgm.nextToken();
 	if ( !tn || tn->id() != TokenID::tkClBrk )
 	    pgm.Throw(tn ? tn : this) << "Expected ')' after catch parameter" << flush;
 
-	// Parse catch body — create catch variable in scope first
-	tn = pgm.peekToken();
-	if ( !tn || tn->id() != TokenID::tkOpBrc )
-	    pgm.Throw(tn ? tn : this) << "Expected '{' after catch(...)" << flush;
+	// Parse catch body — the handler's variable is in its scope
+	TokenBase *open = pgm.peekToken();
+	if ( !open || open->id() != TokenID::tkOpBrc )
+	    pgm.Throw(open ? open : this) << "Expected '{' after catch(...)" << flush;
 	pgm.nextToken(); // consume '{'
 	pgm.pushCompound();
-	// Add catch variable to the catch body's scope
-	if ( !catch_varnames.back().empty() )
+	TokenCpnd *catch_scope = pgm.compounds.top();
+	if ( catch_types.back() == 4 && !catch_varnames.back().empty() )
+	    catch_bound_vars.back() = bind_class_handler_variable(pgm, catch_scope,
+								  decl_type, decl_run, open);
+	else if ( !catch_varnames.back().empty() )
 	{
-	    TokenCpnd *catch_scope = pgm.compounds.empty() ? NULL : pgm.compounds.top();
-	    DataDef *cv_type = &ddINT64; // default
-	    if ( catch_types.back() == 2 ) cv_type = &ddDOUBLE;
-	    else if ( catch_types.back() == 3 && ptr_depth > 0 )
-		// cstr catch (`catch (const char *m)`): the variable IS a
-		// char pointer — register the real type so typed consumers
-		// (the std::format classifier, cstr parameters) see text.
-		// As int64 it printed the POINTER BITS through std::println;
-		// printf %s only worked because varargs pass bits through.
+	    // A scalar handler's variable is bound from the payload: the
+	    // double, the text pointer (`catch (const char *m)` registers the
+	    // char pointer — typed consumers see text), or the integer.
+	    DataDef *cv_type = &ddINT64;
+	    if ( catch_types.back() == 2 )
+		cv_type = &ddDOUBLE;
+	    else if ( catch_types.back() == 3
+		      && TokenSubscript::referent_type(decl_type)->is_pointer() )
 		cv_type = &ddCHARptr;
-	    else if ( catch_types.back() == 4 && ctype )
-	    {
-		// class/pointer catch: register the REAL type so the handler
-		// body type-checks; the clause never matches (tag 4 above), so
-		// the variable is never bound from an exception value.
-		cv_type = &ctype->definition;
-		for ( int pd = 0; pd < ptr_depth; pd++ )
-		    cv_type = pgm.getPointerType(cv_type);
-	    }
 	    pgm.addVariable(catch_scope, *cv_type, catch_varnames.back(), 1, NULL, false);
 	}
 	catch_bodies.push_back(pgm.parseCompound());

@@ -213,7 +213,10 @@ These produce wrong answers or crashes on valid C++. Highest priority.
 >   parse; typed cstr/string catch binding needs parser+binding work (used
 >   `catch(...)` as the interim).
 > - **P1.1e — OBJECT / CLASS-typed exceptions with type-matched, inheritance-aware
->   catch (THE major remaining exception gap; verified 2026-06-15).** PLAN:
+>   catch — DONE 2026-10-19** (owned exception object, Itanium type-name match
+>   table with unambiguous public bases, caught stack for `throw;`, handler
+>   binding by reference / value / pointer; `tests/testcatch_class_*`,
+>   `tests/testcatch_std_exception`). What follows is the pre-fix record. PLAN:
 >   `docs/plans/2026-10-19-class-exceptions.md` (BUGS.md B202, 2026-10-19: since
 >   `4b25ffb80` a class throw carries tag 4 = the class clauses' tag, so every class
 >   handler matches every such throw and binds a default-constructed object). The SJLJ

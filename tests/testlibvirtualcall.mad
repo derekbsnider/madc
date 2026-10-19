@@ -2,9 +2,9 @@
 // vtable ([class.virtual]/2, [expr.call]/2): `what()` through a reference or
 // pointer to std::exception / std::bad_alloc runs the most-derived
 // override — the library's own (bad_array_new_length, runtime_error) and a
-// user class's. A call by the static type's symbol ran exception::what for
-// every exception. (Catching a thrown class object is roadmap P1.1e, not
-// pinned here.) g++ 13 and clang++ 18 print the .expect.
+// user class's — and through a handler's `const std::exception &` bound to a
+// thrown object. A call by the static type's symbol ran exception::what for
+// every exception. g++ 13 and clang++ 18 print the .expect.
 #include <cstdio>
 #include <new>
 #include <stdexcept>
@@ -30,5 +30,9 @@ int main()
 	std::printf("user override via probe %s\n", probe(mine));
 	const std::exception *mp = &mine;
 	std::printf("user override via exception* %s\n", mp->what());
+	try { throw std::runtime_error("thrown"); }
+	catch (const std::exception &c) { std::printf("caught library %s\n", c.what()); }
+	try { throw MyErr(); }
+	catch (const std::exception &c) { std::printf("caught user %s\n", c.what()); }
 	return 0;
 }

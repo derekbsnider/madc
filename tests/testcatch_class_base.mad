@@ -1,0 +1,50 @@
+// [except.handle]/3: a handler for cv T or cv T& takes a thrown E when T is E
+// or an UNAMBIGUOUS PUBLIC base of E, bound to that base subobject — a
+// non-primary base at its offset, a virtual base where the complete object
+// placed it. A private or ambiguous base does not match. A handler for T*
+// takes a thrown E* when E* converts to T*, with the pointer adjusted to the
+// base (a null pointer stays null).
+// Oracle (g++ 13, clang++ 18, -std=gnu++17): the lines in the .expect.
+// madc before the fix: every class handler matched, none bound (BUGS.md B202).
+#include <cstdio>
+struct B { int b; B() : b(1) {} };
+struct C { int c; C() : c(2) {} };
+struct D : B, C { int d; D() : d(3) {} };
+struct P { int p; P() : p(4) {} };
+struct Q : private P { int q; Q() : q(5) {} };
+struct A1 : B { };
+struct A2 : B { };
+struct AM : A1, A2 { };
+struct V { int v; V() : v(6) {} };
+struct V1 : virtual V { int x; V1() : x(7) {} };
+struct V2 : virtual V { int y; V2() : y(8) {} };
+struct VD : V1, V2 { int z; VD() : z(9) {} };
+int main()
+{
+	try { throw D(); }
+	catch (const B &b) { std::printf("D as B %d\n", b.b); }
+	try { throw D(); }
+	catch (const C &c) { std::printf("D as C %d\n", c.c); }
+	try { throw D(); }
+	catch (D &d) { std::printf("D as D %d %d %d\n", d.b, d.c, d.d); }
+	try {
+		try { throw Q(); }
+		catch (const P &) { std::printf("wrong private base\n"); }
+	}
+	catch (const Q &q) { std::printf("private base skipped %d\n", q.q); }
+	try {
+		try { throw AM(); }
+		catch (const B &) { std::printf("wrong ambiguous base\n"); }
+	}
+	catch (const A1 &a) { std::printf("ambiguous base skipped %d\n", a.b); }
+	try { throw VD(); }
+	catch (const V &v) { std::printf("virtual base %d\n", v.v); }
+	try { throw VD(); }
+	catch (const V2 &v2) { std::printf("VD as V2 %d %d\n", v2.y, v2.v); }
+	D d;
+	try { throw &d; }
+	catch (C *pc) { std::printf("pointer adjusted %d %d\n", pc->c, (void *)pc != (void *)&d); }
+	try { throw (D *)0; }
+	catch (B *pb) { std::printf("null pointer %d\n", pb == 0); }
+	return 0;
+}
