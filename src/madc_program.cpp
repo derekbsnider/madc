@@ -4999,8 +4999,9 @@ bool internal_program_build_native(::Program &self, const std::string &path,
 // Thread contract: the runtime-eval confinement — a code handle is used
 // only from the thread that opened it, and its code runs on the caller's
 // thread; closing it frees the code, so no address it gave may be called
-// after. Its file-scope objects are not destroyed at close: no namespace-
-// scope destructor runs yet, at exit or here (BUGS.md B102).
+// after. Closing destroys its file-scope objects first, as dlclose does: the
+// JIT session's teardown runs the image's exit handlers (__cxa_finalize on
+// its __dso_handle) while its code is still mapped.
 struct code_state
 {
     ::Program *child;

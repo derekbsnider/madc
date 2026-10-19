@@ -19,9 +19,15 @@
 //      locked for the life of the process). Oracle: g++ 13 and clang++ 18
 //      close a translation unit's files once they are read; under wine the
 //      three removals then succeed.
+//   6. closing a code destroys its file-scope objects, as dlclose runs a
+//      shared object's destructors ([basic.start.term]/1 via __cxa_finalize):
+//      each code's own object, reading that code's own count.
 // Oracle: g++ 13 and clang++ 18 over the same TU (std::format in place of
 // format, a std::string global) linked into a host that calls the three
-// functions print `answer 42`, `greet hello, plugin`, `count 3 then 4`.
+// functions print `answer 42`, `greet hello, plugin`, `count 3 then 4`; built
+// as two copies of a shared object the host dlopens, counts through and
+// dlcloses second-then-first, they print `closed: dtor calls=4` then
+// `closed: dtor calls=5`, each at its dlclose.
 typedef long (*answer_fn)(long x);
 typedef const char *(*greet_fn)(const char *who);
 typedef long (*count_fn)();
@@ -52,7 +58,9 @@ int main()
 		"extern \"C\" const char *madc_co_greet(const char *who)\n"
 		"{\n\treturn co_greeting.c_str();\n}\n"
 		"extern \"C\" long madc_co_count()\n"
-		"{\n\tco_calls = co_calls + 1;\n\treturn co_calls;\n}\n");
+		"{\n\tco_calls = co_calls + 1;\n\treturn co_calls;\n}\n"
+		"struct co_closer { ~co_closer() { println(\"closed: dtor calls={}\", co_calls); } };\n"
+		"co_closer co_obj;\n");
 
 	// 1. -I reaches the header; without it the compile is refused.
 	var incs = { inc };
