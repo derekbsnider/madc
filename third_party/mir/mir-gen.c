@@ -478,6 +478,53 @@ static inline void gen_cfi_note_insn (gen_ctx_t gen_ctx, size_t code_offset, MIR
    file reads the one owner instead of spelling the ladder itself. */
 static MIR_insn_code_t get_move_code (MIR_type_t type);
 
+/* A target's insn patterns by insn code: the patterns of CODE are
+   indexes[info[CODE].start ...], info[CODE].num of them, in table order. */
+typedef struct insn_pattern_info {
+  int start, num;
+} insn_pattern_info_t;
+DEF_VARR (insn_pattern_info_t);
+
+/* Index a target's pattern table PATTERNS (an array of structs, each with an
+   insn code member `code` below CODE_BOUND) into new INDEXES and INFO: a
+   counting sort, so each code's patterns keep their table order. */
+#define GEN_INDEX_PATTERNS(gen_ctx, patterns, code_bound, indexes, info)                     \
+  gen_index_patterns (gen_ctx, &(patterns)[0].code, sizeof ((patterns)[0]),                 \
+                      sizeof (patterns) / sizeof ((patterns)[0]), code_bound, indexes, info)
+
+static void gen_index_patterns (gen_ctx_t gen_ctx, const MIR_insn_code_t *first_code,
+                                size_t pattern_size, int n, int code_bound,
+                                VARR (int) * *indexes, VARR (insn_pattern_info_t) * *info) {
+  MIR_alloc_t alloc = gen_alloc (gen_ctx);
+  insn_pattern_info_t *code_info;
+  int i, start, *ind;
+
+#define GEN_PATTERN_CODE(i) \
+  (*(const MIR_insn_code_t *) ((const char *) first_code + (i) * pattern_size))
+  VARR_CREATE (insn_pattern_info_t, *info, alloc, code_bound);
+  VARR_TAILOR (insn_pattern_info_t, *info, code_bound);
+  code_info = VARR_ADDR (insn_pattern_info_t, *info);
+  memset (code_info, 0, code_bound * sizeof (insn_pattern_info_t));
+  for (i = 0; i < n; i++) {
+    gen_assert ((int) GEN_PATTERN_CODE (i) < code_bound);
+    code_info[GEN_PATTERN_CODE (i)].num++;
+  }
+  for (start = i = 0; i < code_bound; i++) {
+    code_info[i].start = start;
+    start += code_info[i].num;
+    code_info[i].num = 0;
+  }
+  VARR_CREATE (int, *indexes, alloc, n);
+  VARR_TAILOR (int, *indexes, n);
+  ind = VARR_ADDR (int, *indexes);
+  for (i = 0; i < n; i++) {
+    insn_pattern_info_t *ci = &code_info[GEN_PATTERN_CODE (i)];
+
+    ind[ci->start + ci->num++] = i;
+  }
+#undef GEN_PATTERN_CODE
+}
+
 /* Target selection via mir-target.h (madc fork): host detection by
    default, MIR_TARGET_<ARCH> overrides for a cross-capture build. */
 #if MIR_TARGET_IS_X86_64

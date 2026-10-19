@@ -919,14 +919,6 @@ static void get_builtin (gen_ctx_t gen_ctx, MIR_insn_code_t code, MIR_item_t *pr
   }
 }
 
-struct insn_pattern_info {
-  int start, num;
-};
-
-typedef struct insn_pattern_info insn_pattern_info_t;
-
-DEF_VARR (insn_pattern_info_t);
-
 struct const_ref {
   int call_p;            /* flag that constant from call insn */
   MIR_item_t func_item;  /* non-null for constant representing reference to func item */
@@ -2423,45 +2415,18 @@ static uint64_t read_dec (const char **ptr) {
   return res;
 }
 
-static int pattern_index_cmp (const void *a1, const void *a2) {
-  int i1 = *(const int *) a1, i2 = *(const int *) a2;
-  int c1 = (int) patterns[i1].code, c2 = (int) patterns[i2].code;
-
-  return c1 != c2 ? c1 - c2 : (long) i1 - (long) i2;
-}
-
 static int get_max_insn_size (gen_ctx_t gen_ctx, const char *replacement);
 
-static void patterns_init (gen_ctx_t gen_ctx) {
-  MIR_alloc_t alloc = gen_alloc (gen_ctx);
-  int i, ind, n = sizeof (patterns) / sizeof (struct pattern);
-  MIR_insn_code_t prev_code, code;
-  insn_pattern_info_t *info_addr;
-  insn_pattern_info_t pinfo = {0, 0};
+/* The maximal code size of pattern IND, found when the pattern is first used:
+   most patterns never are in a run.  Every context stores the same value. */
+static int pattern_max_insn_size (gen_ctx_t gen_ctx, int ind) {
+  if (patterns[ind].max_insn_size == 0)
+    patterns[ind].max_insn_size = get_max_insn_size (gen_ctx, patterns[ind].replacement);
+  return patterns[ind].max_insn_size;
+}
 
-  VARR_CREATE (int, pattern_indexes, alloc, 0);
-  for (i = 0; i < n; i++) {
-    patterns[i].max_insn_size = get_max_insn_size (gen_ctx, patterns[i].replacement);
-#if 0
-    fprintf (stderr, "size of \"%s\" = %d\n", patterns[i].replacement,
-	     patterns[i].max_insn_size);
-#endif
-    VARR_PUSH (int, pattern_indexes, i);
-  }
-  qsort (VARR_ADDR (int, pattern_indexes), n, sizeof (int), pattern_index_cmp);
-  VARR_CREATE (insn_pattern_info_t, insn_pattern_info, alloc, 0);
-  for (i = 0; i < MIR_INSN_BOUND; i++) VARR_PUSH (insn_pattern_info_t, insn_pattern_info, pinfo);
-  info_addr = VARR_ADDR (insn_pattern_info_t, insn_pattern_info);
-  for (prev_code = MIR_INSN_BOUND, i = 0; i < n; i++) {
-    ind = VARR_GET (int, pattern_indexes, i);
-    if ((code = patterns[ind].code) != prev_code) {
-      if (i != 0) info_addr[prev_code].num = i - info_addr[prev_code].start;
-      info_addr[code].start = i;
-      prev_code = code;
-    }
-  }
-  assert (prev_code != MIR_INSN_BOUND);
-  info_addr[prev_code].num = n - info_addr[prev_code].start;
+static void patterns_init (gen_ctx_t gen_ctx) {
+  GEN_INDEX_PATTERNS (gen_ctx, patterns, MIR_INSN_BOUND, &pattern_indexes, &insn_pattern_info);
 }
 
 static int64_t int_value (gen_ctx_t gen_ctx, const MIR_op_t *op) {
@@ -2619,7 +2584,8 @@ static int pattern_match_p (gen_ctx_t gen_ctx, const struct pattern *pat, MIR_in
       int64_t disp = ((int64_t) get_label_disp (gen_ctx, op_ref->u.label)
                       - (int64_t) VARR_LENGTH (uint8_t, result_code));
       /* short->long (+1 for long jump prefix +3 for offset), minimal jump is 2 bytes: */
-      disp = disp < 0 ? disp - (pat->max_insn_size + 4) : disp - 2;
+      disp = disp < 0 ? disp - (pattern_max_insn_size (gen_ctx, (int) (pat - patterns)) + 4)
+                      : disp - 2;
       if (-128 <= disp && disp < 128) break;
       return FALSE;
     case '0':
@@ -2680,7 +2646,7 @@ static int find_insn_pattern (gen_ctx_t gen_ctx, MIR_insn_t insn, int *size) {
     ind = VARR_GET (int, pattern_indexes, info.start + i);
     pat = &patterns[ind];
     if (pattern_match_p (gen_ctx, pat, insn, size == NULL)) {
-      if (size != NULL) *size = patterns[ind].max_insn_size;
+      if (size != NULL) *size = pattern_max_insn_size (gen_ctx, ind);
       return ind;
     }
   }
@@ -3548,9 +3514,9 @@ static uint8_t *target_translate (gen_ctx_t gen_ctx, size_t *len) {
       out_insn (gen_ctx, insn, patterns[ind].replacement, NULL);
 #ifndef NDEBUG
       size_t insn_len = VARR_LENGTH (uint8_t, result_code) - len_before;
-      if (insn_len > (size_t) patterns[ind].max_insn_size && insn->code != MIR_SWITCH) {
+      if (insn_len > (size_t) pattern_max_insn_size (gen_ctx, ind) && insn->code != MIR_SWITCH) {
         fprintf (stderr, "\"%s\" max size(%d) < real size(%d)\n", patterns[ind].replacement,
-                 patterns[ind].max_insn_size, (int) insn_len);
+                 pattern_max_insn_size (gen_ctx, ind), (int) insn_len);
         gen_assert (FALSE);
       }
 #endif

@@ -1301,6 +1301,7 @@ gates: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/check-runner-refuses-vacuous.sh
 	@cd .. && bash scripts/check-one-fixture-reader.sh
 	@cd .. && bash scripts/check-one-build-jobs.sh
+	@cd .. && bash scripts/check-one-pattern-index.sh
 	@cd .. && bash scripts/check-one-trait-dispatch.sh
 	@cd .. && bash scripts/check-object-module-deps.sh
 	@cd .. && bash scripts/check-autoinclude-position.sh

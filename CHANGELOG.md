@@ -5,6 +5,15 @@ Consolidated: type_trait_dispatch — gate scripts/check-one-trait-dispatch.sh
 Consolidated: counted_loop — gate scripts/check-one-counted-loop.sh
 Consolidated: class_pointer_spelling — gate scripts/check-one-class-pointer-decl.sh
 Consolidated: pointer_type_node — gate scripts/check-one-pointer-type-node.sh
+Consolidated: MIR pattern index by insn code — gate scripts/check-one-pattern-index.sh
+
+### MIR indexes instruction patterns with one counting sort for every target
+
+- The five MIR targets (x86-64, aarch64, ppc64, riscv64, s390x) each built their instruction-pattern index with a private `qsort`. `GEN_INDEX_PATTERNS` (`third_party/mir/mir-gen.c`) is the one counting-sort indexer, and each target's `patterns_init` calls it.
+- x86-64 computes a pattern's maximal code size on first use (`pattern_max_insn_size`), where it was computed for all 826 patterns at every `MIR_gen_init`.
+- Gate `scripts/check-one-pattern-index.sh` (in `make gates`) fails a target file that builds its own pattern index. Its negative control covers both directions.
+- Differential: `sqlite3.c` compiled to an object (`-c`) is byte-identical (2711928 bytes) between release 37e149fdd and this tree.
+- parse-cost against `scripts/parse_cost/baseline.tsv`: 0 rows red; `rung_stddef.forest` -3.85%, `dialect_one.live` -3.94%, `dialect_one.forest` -3.92%, `dialect.live` -2.39%, `dialect.forest` -2.41%, `dialect_all.live` -2.92%, `dialect_all.forest` -2.92%.
 
 ### MIR describes generated frames as DWARF CFI and registers them with the host unwinder
 
