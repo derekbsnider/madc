@@ -2738,7 +2738,26 @@ public:
     // answer.
     int last_token_line() const { return _last_token_line; }
     void note_token_line(int line) { _last_token_line = line; }
+    // One character. Inline for the byte nearly every read is: nothing pushed
+    // back in front, no drained expansion frame left to drop, an ordinary
+    // byte of the buffer (not a possible line splice, not a line end — those
+    // move the line count). Every other read is get_slow()'s, kept out of line
+    // so this stays small enough to inline at every call site.
     int get()
+    {
+	if ( _pushback.empty() && _pushback_frames.empty() && _gpos < _buf.size() )
+	{
+	    const unsigned char ch = (unsigned char)_buf[_gpos];
+	    if ( ch != '\\' && ch != '\n' && ch != '\r' )
+	    {
+		++_gpos;
+		++_column;
+		return ch;
+	    }
+	}
+	return get_slow();
+    }
+    __attribute__((noinline)) int get_slow()
     {
 	if ( !_pushback.empty() )
 	{
@@ -2800,7 +2819,15 @@ public:
 	else { ++_column; }
 	return ch;
     }
+    // The next character, unread. Inline for an ordinary buffer byte; a
+    // pushback, the end, or a possible splice is peek_slow()'s.
     int peek()
+    {
+	if ( _pushback.empty() && _gpos < _buf.size() && _buf[_gpos] != '\\' )
+	    return (unsigned char)_buf[_gpos];
+	return peek_slow();
+    }
+    __attribute__((noinline)) int peek_slow()
     {
 	if ( !_pushback.empty() )
 	    return (unsigned char)_pushback.back();
@@ -2892,6 +2919,25 @@ public:
 	base = _buf.data() + start;
 	_column += (int)len;
 	return true;
+    }
+    // Read through the rest of the physical line, up to (not including) its
+    // line end, as that many get() calls would: plain runs in one step, a
+    // splice continued by get(). A skipped line's text is read for nothing
+    // else.
+    void skip_line_rest()
+    {
+	while ( good() && !eof() )
+	{
+	    const char *run;
+	    size_t n;
+	    if ( fast_span(run, n, [](unsigned char c) {
+		    return c != '\n' && c != '\r' && c != '\\'; }) && n )
+		continue;
+	    const int c = peek();
+	    if ( c == '\n' || c == '\r' )
+		return;
+	    get();
+	}
     }
     // The identifier-continuation run (is_ident_char, the slow loop's test).
     // A lambda, not the function's address: its type names the call, so the

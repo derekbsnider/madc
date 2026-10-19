@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### `Source::get` / `peek` fast-path the common byte inline; a skipped conditional group classifies its directive word and skips lines without per-character string growth
+
+- `Source::get()` / `Source::peek()` (`include/madc.h`) answer the common read inline — an ordinary buffer byte, nothing pushed back, no drained expansion frame, not a possible line splice (`\`) or line end (`\n` / `\r`) — and defer every other read to the out-of-line `Source::get_slow()` / `Source::peek_slow()`. The hot character read is a handful of inlined instructions in place of a call per byte.
+- `Program::skipConditionalBlock` (`src/lexer.cpp`) reads a skipped group's directive word in one `Source::fast_span` step and classifies it to the `PpDirectiveWord` enum through `pp_directive_word` (enum over strings), in place of growing an `std::string` with one `source.get()` per character and comparing it. A word a line-splice or pushback breaks up (`#el\`+`se`) is still gathered by the char loop. Every other skipped line is read through the new `Source::skip_line_rest()`, which spans each plain run in one step.
+- `is_ascii_letter` (`include/ident_char.h`, new) is the one inline `isalpha`-in-the-C-locale test; `is_ident_start` and the directive-word scan call it.
+- Behaviour-preserving. Parse-cost gate (callgrind Ir, release build): `c_headers.live` 221,523,708 -> 204,747,899, `cxx_stl.live` 2,628,895,034 -> 2,553,306,753, `dialect_cxx.live` 533,765,257 -> 504,257,566, `subscript.live` 3,402,088,461 -> 3,332,587,228, `sqlite3.forest` 18,562,781,749 -> 18,145,654,482; baseline re-recorded in `scripts/parse_cost/baseline.tsv` (rows only fall; gate 0 red of 21).
+- Reducer `tests/testskippedgroupsplice.mad` (`--std=c11`) pins translation-phase-2 splicing inside a skipped group — a line spliced onto a skipped line (its `#endif` is text), a directive word split by a splice (`#el\`+`se`), and a skipped `#define`'s tail consumed with its line; g++ 13.3 and clang 18.1 print `1 2 3`.
+
 ### One inline identifier-character test on the lexer's hot loops; `pp_literal_start` scans the encoding prefix directly
 
 - `is_ident_start` / `is_ident_char` (`include/ident_char.h`, new) are the one inline test for an identifier's first character and every following one ([lex.name]), answering `c == '_' || isalpha(c)` / `c == '_' || isalnum(c)` in the C locale without an out-of-line `<cctype>` call per character. `Source::fast_ident_span` (`include/madc.h`, via a lambda so the test inlines into the scan), `tokenize_macro_spelling`'s identifier and pp-number loops, and the wide-string identifier loop in `Program::_getToken` (`src/lexer.cpp`) call them.

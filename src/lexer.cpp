@@ -10880,6 +10880,33 @@ TokenBase *Program::_getToken()
 
 // skip tokens in a false #ifdef/#ifndef/#if/#elif/#else block
 // handles nested #if/#ifdef/#ifndef blocks; returns when matching #else/#elif/#endif found
+// A directive's word as an enum, read once from its spelling (enum over
+// strings): the words a skipped group acts on; any other is Other.
+enum class PpDirectiveWord : unsigned char
+{ Other, If, Ifdef, Ifndef, Elif, Else, Endif, Define, Undef };
+
+static PpDirectiveWord pp_directive_word(const char *w, size_t n)
+{
+    typedef PpDirectiveWord W;
+    switch ( n )
+    {
+    case 2:
+	return memcmp(w, "if", 2) == 0 ? W::If : W::Other;
+    case 4:
+	return memcmp(w, "else", 4) == 0 ? W::Else
+	     : memcmp(w, "elif", 4) == 0 ? W::Elif : W::Other;
+    case 5:
+	return memcmp(w, "ifdef", 5) == 0 ? W::Ifdef
+	     : memcmp(w, "endif", 5) == 0 ? W::Endif
+	     : memcmp(w, "undef", 5) == 0 ? W::Undef : W::Other;
+    case 6:
+	return memcmp(w, "ifndef", 6) == 0 ? W::Ifndef
+	     : memcmp(w, "define", 6) == 0 ? W::Define : W::Other;
+    default:
+	return W::Other;
+    }
+}
+
 TokenBase *Program::skipConditionalBlock()
 {
     int depth = 0;
@@ -10903,23 +10930,35 @@ TokenBase *Program::skipConditionalBlock()
 	{
 	    if ( cap )
 		cap->pure = false;
-	    while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
-		source.get();
+	    source.skip_line_rest();
 	    continue;
 	}
 	// skip whitespace (comments included) after #
 	skip_directive_space(source);
-	// read directive word
-	std::string dir;
-	while ( source.good() && !source.eof() && isalpha(source.peek()) )
-	    dir += source.get();
-	if ( dir == "ifdef" || dir == "ifndef" || dir == "if" )
+	// The directive word, read in place; a word a splice or a pushback
+	// breaks up is gathered by the char loop.
+	const char *w = "";
+	size_t wn = 0;
+	if ( !source.fast_span(w, wn, [](unsigned char c) { return is_ascii_letter(c); }) )
+	    wn = 0;
+	std::string gathered;
+	if ( source.good() && !source.eof() && is_ascii_letter((unsigned char)source.peek()) )
+	{
+	    gathered.assign(w, wn);
+	    while ( source.good() && !source.eof() && is_ascii_letter((unsigned char)source.peek()) )
+		gathered += (char)source.get();
+	    w = gathered.data();
+	    wn = gathered.size();
+	}
+	typedef PpDirectiveWord W;
+	const W dir = pp_directive_word(w, wn);
+	if ( dir == W::Ifdef || dir == W::Ifndef || dir == W::If )
 	{
 	    depth++;
 	    // consume the rest of the directive line (comment-aware)
 	    skip_directive_line_tail(source);
 	}
-	else if ( dir == "endif" )
+	else if ( dir == W::Endif )
 	{
 	    // consume the rest of the directive line (comment-aware)
 	    skip_directive_line_tail(source);
@@ -10945,7 +10984,7 @@ TokenBase *Program::skipConditionalBlock()
 	    }
 	    depth--;
 	}
-	else if ( depth == 0 && dir == "else" )
+	else if ( depth == 0 && dir == W::Else )
 	{
 	    if ( cap )
 	    {
@@ -10967,7 +11006,7 @@ TokenBase *Program::skipConditionalBlock()
 		return getToken();
 	    // still false, keep skipping
 	}
-	else if ( depth == 0 && dir == "elif" )
+	else if ( depth == 0 && dir == W::Elif )
 	{
 	    if ( cap )
 	    {
@@ -11007,11 +11046,10 @@ TokenBase *Program::skipConditionalBlock()
 	{
 	    // A nested #else / #elif and #define / #undef replay as-is; any other
 	    // directive (#include, #error, #pragma) is not a pure macro body.
-	    if ( cap && dir != "define" && dir != "undef" && dir != "else" && dir != "elif" )
+	    if ( cap && dir != W::Define && dir != W::Undef && dir != W::Else && dir != W::Elif )
 		cap->pure = false;
 	    // consume rest of line for unknown directives inside skipped block
-	    while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
-		source.get();
+	    source.skip_line_rest();
 	}
     }
     // The file ended inside a skipped group: the group is still open.

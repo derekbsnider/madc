@@ -1,0 +1,32 @@
+// A skipped group is read line by line, and translation phase 2 comes first:
+// a line spliced onto a skipped line is part of it (its `#endif` is text, not
+// a directive), a directive word a splice breaks (`#el\` + `se`) is still
+// that directive, and a skipped #define's tail is consumed with its line.
+// gcc 13.3 and clang 18.1 (-std=c11) print the .expect line.
+#include <stdio.h>
+#if 0
+this line continues \
+#endif and this is not a directive
+#el\
+se
+int picked_else = 1;
+#endif
+#if 0
+#  if 1
+#  endif
+x \
+y
+#elif 1
+int picked_elif = 2;
+#endif
+#ifdef NOT_DEFINED_ANYWHERE
+#  define A 1 /* a skipped define \
+#endif still the comment */
+#elif defined(__STDC__)
+int picked_ifdef_elif = 3;
+#endif
+int main(void)
+{
+	printf("%d %d %d\n", picked_else, picked_elif, picked_ifdef_elif);
+	return 0;
+}
