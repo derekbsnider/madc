@@ -157,27 +157,6 @@ int main(int argc, char **argv)
   the key and the splice, and an argument that does not fold (and is not
   dependent) is an error.
 
-### B168. `__DATE__` / `__TIME__` are madc's own build date, not the compile's
-
-```c
-#include <stdio.h>
-int main(void) { printf("%s\n", __DATE__); return 0; }
-```
-
-- C11 6.10.8.1: the date of translation of the source file. gcc 13 and
-  clang 18 (2026-10-04): `Oct  4 2026`. The v0.101.0 release madc
-  (`tmp/release-bins/v0.101.0`) the same day: `Oct  3 2026` — the day madc
-  itself was built: `src/lexer.cpp` sets `define_map["__DATE__"]` from the
-  C++ compiler's own `__DATE__` (and `__TIME__` likewise).
-- Consumers: Help ▸ About's copyright year (`product_about`) reads
-  `__DATE__`; it is right only while madc and the product are built in the
-  same year.
-- Not a one-line fix: the frozen forest is keyed by the predefined-macro
-  table (the context hash and the producer config), so a per-compile date
-  must stay out of that key (gcc's `SOURCE_DATE_EPOCH` is the reproducible-
-  build convention to honour too).
-- Found 2026-10-04 writing Help ▸ About.
-
 ### B157. libc++: `std::vector::push_back(std::move(x))` copies instead of moving
 
 ```cpp

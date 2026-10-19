@@ -8,6 +8,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <iostream>
@@ -4041,9 +4042,8 @@ void Program::_tokenizer_init()
     define_map["__LDBL_DIG__"] = "15";
     define_map["__BIGGEST_ALIGNMENT__"] = "16";
 
-    // GCC predefined macros for C compatibility
-    define_map["__DATE__"] = "\"" __DATE__ "\"";
-    define_map["__TIME__"] = "\"" __TIME__ "\"";
+    // __DATE__ / __TIME__ are the TRANSLATION's date and time, computed when
+    // first expanded (builtin_macro_text) — never a table entry.
     // Built-in release-version string literal. MADC_VERSION_STR is supplied by
     // the build (-DMADC_VERSION_STR='"x.y.z"' from ../VERSION); the value stored
     // here keeps its quotes so the macro substitutes as a const char* literal.
@@ -10428,12 +10428,12 @@ TokenBase *Program::_getToken()
 		    // empty define — skip and get next token
 		    return getToken();
 		}
-		// Built-in predefined macros: __FILE__, __FILE_NAME__ and
-		// __LINE__ (builtin_position_macro, their one owner). Users can
-		// still override via #define (handled above).
+		// Built-in predefined macros: __FILE__, __FILE_NAME__, __LINE__,
+		// __DATE__ and __TIME__ (builtin_macro_text, their one owner).
+		// Users can still override via #define (handled above).
 		{
 		    madc::dis::istring text;
-		    if ( builtin_position_macro(wname, &text) )
+		    if ( builtin_macro_text(wname, &text) )
 		    {
 			source.pushback_macro(text, "");
 			return getToken();
@@ -11156,7 +11156,7 @@ std::string Program::expandIfMacros(const std::string &raw)
 		    ++ti;
 		}
 	    }
-	    else if ( builtin_position_macro(word, NULL) )
+	    else if ( builtin_macro_text(word, NULL) )
 	    {
 		// Predefined macros live in getToken's builtin arm, not in
 		// define_map — the string expander needs its own arm or a
@@ -11165,7 +11165,7 @@ std::string Program::expandIfMacros(const std::string &raw)
 		// define_map probe above ran first, so a user #define of
 		// the name still wins, matching getToken's order.
 		madc::dis::istring text;
-		builtin_position_macro(word, &text);
+		builtin_macro_text(word, &text);
 		out += text;
 		changed = true;
 		++ti;
@@ -11256,19 +11256,76 @@ bool Program::macro_name_defined(const madc::dis::istring &name)
     const uint32_t sid = strpool.find(name.str());
     return define_map.count(sid) > 0 || macro_map.count(sid) > 0
 	|| has_query_operator_implemented(name)
-	|| builtin_position_macro(name, NULL);
+	|| builtin_macro_text(name, NULL);
 }
 
-bool Program::builtin_position_macro(const madc::dis::istring &name, madc::dis::istring *out)
+// [cpp.predefined] (C11 6.10.8.1): the date and time of translation of THIS
+// translation unit, computed when first needed and fixed for the rest of it
+// (libcpp's pfile->date / pfile->time). SOURCE_DATE_EPOCH, when set, is that
+// instant, read as UTC (the reproducible-builds convention gcc honours, with
+// gcc's refusal of a malformed value); otherwise the clock, as local time.
+void Program::translation_date_time()
+{
+    if ( !translation_date_text.empty() )
+	return;
+    static const char *const months[] = { "Jan", "Feb", "Mar", "Apr", "May",
+	"Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+    struct tm parts = {};
+    bool known = false;
+    if ( const char *epoch = ::getenv("SOURCE_DATE_EPOCH") )
+    {
+	char *end = NULL;
+	errno = 0;
+	long long v = ::strtoll(epoch, &end, 10);
+	if ( errno == ERANGE || end == epoch || *end != '\0'
+	  || v < 0 || v > 253402300799LL )
+	    Throw << "environment variable 'SOURCE_DATE_EPOCH' must expand to a"
+		     " non-negative integer less than or equal to 253402300799"
+		  << flush;
+	known = madc::detail::utc_time((time_t)v, parts);
+    }
+    else
+    {
+	time_t now = ::time(NULL);
+	known = now != (time_t)-1 && madc::detail::local_time(now, parts);
+    }
+    if ( !known )
+    {
+	report_warning(DiagnosticPhase::lexer, "could not determine date and time",
+		       source.fname(), source.line(), source.column());
+	print_last_diagnostic(error());
+	translation_date_text = "\"??? ?? ????\"";
+	translation_time_text = "\"??:??:??\"";
+	return;
+    }
+    char buf[32];
+    snprintf(buf, sizeof buf, "\"%s %2d %4d\"", months[parts.tm_mon],
+	     parts.tm_mday, parts.tm_year + 1900);
+    translation_date_text = buf;
+    snprintf(buf, sizeof buf, "\"%02d:%02d:%02d\"", parts.tm_hour, parts.tm_min,
+	     parts.tm_sec);
+    translation_time_text = buf;
+}
+
+bool Program::builtin_macro_text(const madc::dis::istring &name, madc::dis::istring *out)
 {
     // Interned once: each test is an identity compare (every identifier the
     // lexer reads asks).
     static const madc::dis::istring k_line("__LINE__"), k_file("__FILE__"),
-	k_file_name("__FILE_NAME__");
+	k_file_name("__FILE_NAME__"), k_date("__DATE__"), k_time("__TIME__");
     if ( name == k_line )
     {
 	if ( out )
 	    *out = std::to_string(source.line());
+	return true;
+    }
+    if ( name == k_date || name == k_time )
+    {
+	if ( out )
+	{
+	    translation_date_time();
+	    *out = name == k_date ? translation_date_text : translation_time_text;
+	}
 	return true;
     }
     if ( name != k_file && name != k_file_name )

@@ -353,6 +353,15 @@ bool local_time(time_t t, struct tm &out)
 #endif
 }
 
+bool utc_time(time_t t, struct tm &out)
+{
+#ifdef _WIN32
+	return ::gmtime_s(&out, &t) == 0;
+#else
+	return ::gmtime_r(&t, &out) != NULL;
+#endif
+}
+
 long long seek_fd(int fd, long long offset)
 {
 #ifdef _WIN32

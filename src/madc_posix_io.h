@@ -108,6 +108,11 @@ bool host_path_within(const std::string &dir, const std::string &path,
 // `out` untouched then.
 bool local_time(time_t t, struct tm &out);
 
+// Thread-safe UTC time (POSIX gmtime_r); the Win32 arm is the MS gmtime_s,
+// its arguments reversed like localtime_s's. False on failure, `out`
+// untouched then.
+bool utc_time(time_t t, struct tm &out);
+
 // This host's name (POSIX gethostname); empty string on failure. The
 // Win32 arm rides GetComputerNameEx, NOT winsock's gethostname — callers
 // run at static-init time, before any WSAStartup.

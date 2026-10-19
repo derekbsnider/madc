@@ -1,0 +1,21 @@
+// __DATE__ and __TIME__ are the date and time of TRANSLATION (C11 6.10.8.1),
+// computed once per translation unit; SOURCE_DATE_EPOCH (the reproducible-
+// builds convention gcc and clang honour) fixes that instant, read as UTC.
+// madc substituted the date and time madc ITSELF was built.
+// Oracles: gcc 13 and clang 18, -std=gnu17, SOURCE_DATE_EPOCH=1696377600
+// (2023-10-04 00:00:00 UTC — a one-digit day, space-padded), the lines below
+// verbatim. madc before the fix: its own build date and time.
+#include <stdio.h>
+
+int main(void)
+{
+	printf("date: [%s]\n", __DATE__);
+	printf("time: [%s]\n", __TIME__);
+	printf("sizes: %d %d\n", (int)sizeof __DATE__, (int)sizeof __TIME__);
+#if defined(__DATE__) && defined(__TIME__)
+	printf("defined: 1\n");
+#else
+	printf("defined: 0\n");
+#endif
+	return 0;
+}

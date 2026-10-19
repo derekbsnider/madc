@@ -6,6 +6,14 @@ Consolidated: counted_loop — gate scripts/check-one-counted-loop.sh
 Consolidated: class_pointer_spelling — gate scripts/check-one-class-pointer-decl.sh
 Consolidated: pointer_type_node — gate scripts/check-one-pointer-type-node.sh
 
+### `__DATE__` and `__TIME__` are the translation's date and time, honouring `SOURCE_DATE_EPOCH` (B168)
+
+- `__DATE__` and `__TIME__` expand to the date and time of translation of the translation unit (C11 6.10.8.1), computed at the first expansion and fixed for the rest of that translation. They were madc's own build date and time. When `SOURCE_DATE_EPOCH` is set it is that instant, read as UTC; a value that is not a non-negative decimal integer no greater than 253402300799 is a compile error, as gcc refuses it. Otherwise the clock is read as local time.
+- `builtin_macro_text` (`src/lexer.cpp`, declared in `include/madc.h`) is the one list of predefined macros the lexer computes at expansion. `__DATE__` and `__TIME__` are no longer `define_map` entries.
+- `utc_time` (`src/madc_posix_io.cpp`, declared in `src/madc_posix_io.h`) is the thread-safe UTC conversion. `utc_now` in `src/madc_history.cpp` calls it in place of its own `gmtime_r` / `gmtime_s` arms.
+- Reducers `tests/testdate_time_epoch.mad` (oracle gcc 13 and clang 18, `SOURCE_DATE_EPOCH=1696377600`) and `tests/testdate_epoch_invalid.mad` (oracle gcc 13, `SOURCE_DATE_EPOCH=-1`).
+- B168 is retired from `BUGS.md`.
+
 ### A constructor template's mem-initializer that reads a deduced trait answers per instantiation (B204)
 
 - A constructor template's mem-initializer that reads a trait of a forwarding-deduced parameter (`k((int)std::is_lvalue_reference<U>::value)`) was copied from the pattern, so every instance read the pattern's answer: `A` for `U = A&` as well as for `U = A`. The pattern now captures a constructor's mem-initializer span only when the body's template-id rule admits it. A span it refuses is parsed per instantiation by the shell parse, as for the same read in a constructor body.
