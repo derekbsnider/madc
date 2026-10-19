@@ -859,6 +859,33 @@ int main() { return (int)alignof(S); }
 
 ## Refuses valid code
 
+### B201. A new-expression whose type-id is cv-qualified (`new const D`) is refused
+
+```cpp
+#include <cstdio>
+struct D { int id; D() : id(7) {} };
+int main()
+{
+	const D *p = new const D;
+	volatile int *q = new volatile int(3);
+	printf("%d %d\n", p->id, *q);
+	delete p;
+	delete q;
+	return 0;
+}
+```
+
+- Found 2026-10-19 while writing the volatile-object reducer
+  (`tests/testvolatile_ctor_dtor.mad`, which uses placement new instead).
+- g++ 13 prints `7 3`. madc (`bin/madc` at `a033d9477`): `use of undeclared
+  identifier 'new'` at the `new` keyword.
+- Layer: `TokenNEW::parse` (src/parser.cpp) reads the allocated type as ONE
+  type token through `Program::resolve_declared_type_token`, not through the
+  type-id owner `Program::parse_type_id`, so a leading cv-qualifier (and any
+  ptr-operator in the new-type-id) is not part of the allocated type. A
+  core-parser change: raised with the owner before fixing. KG Gap
+  `new_expression_cv_qualified_type_id`.
+
 ### B196. A declaration whose type is spelled with the global qualifier (`::T`) is refused
 
 ```cpp
