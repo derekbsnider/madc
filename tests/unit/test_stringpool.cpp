@@ -104,6 +104,31 @@ TEST_CASE("intern-keyed map transaction rolls back touched keys")
     CHECK(map.size() == 2u);
 }
 
+// A lookup by spelling answers from the ids the pool already holds: a key the
+// map never stored is absent whatever its spelling, so probing one (every
+// identifier a #if asks about) must not add it to the pool.
+TEST_CASE("intern-keyed map lookups by spelling never grow the pool")
+{
+    madc::dis::intern_table p;
+    madc::dis::intern_keyed_map<std::string> map;
+    map.set_pool(&p);
+    map["present"] = "1";
+    const size_t interned = p.count();
+
+    const madc::dis::intern_keyed_map<std::string> &readonly = map;
+    CHECK(map.count("absent_a") == 0u);
+    CHECK(map.find("absent_b") == map.end());
+    CHECK(readonly.find_readonly("absent_c") == nullptr);
+    CHECK(map.erase("absent_d") == 0u);
+    CHECK(p.count() == interned);
+
+    CHECK(map.count("present") == 1u);
+    REQUIRE(map.find("present") != map.end());
+    CHECK(*map.find("present") == "1");
+    CHECK(map.count(std::string()) == 0u);
+    CHECK(p.count() == interned);
+}
+
 // Transactions nest (an interactive entry's holds the class journals opened
 // inside it): an inner rollback undoes only its own writes, and an inner
 // commit leaves them to the enclosing transaction's rollback.

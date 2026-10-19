@@ -5786,7 +5786,7 @@ int Program::forest_condition_now(CirFrozenForest *f, const ForestUnitItems &it,
 	    {
 		const uint32_t *k3 = it.consult((size_t)c[CIR_COND_CONSULT_AT] + k);
 		const char *name = k3 ? f->pool_str(k3[0]) : NULL;
-		same = name && forest_macro_state_hash(*this, strpool.intern(name))
+		same = name && forest_macro_state_hash(*this, strpool.find(name))
 		    == ((uint64_t)k3[1] | ((uint64_t)k3[2] << 32));
 	    }
 	    if ( same )
@@ -7217,7 +7217,7 @@ void Program::pack_cond_elif(const std::string &text, bool outcome, size_t consu
     for ( size_t i = 0; i < consulted.size(); ++i )
 	if ( seen.insert(consulted[i]).second )
 	    r.consults.push_back(std::make_pair(consulted[i],
-						forest_macro_state_hash(*this, strpool.intern(consulted[i].str()))));
+						forest_macro_state_hash(*this, strpool.find(consulted[i].str()))));
     f.pending = (int)recs.size() - 1;
 }
 
@@ -11253,7 +11253,7 @@ bool Program::has_query_operator_implemented(const madc::dis::istring &op)
 
 bool Program::macro_name_defined(const madc::dis::istring &name)
 {
-    const uint32_t sid = strpool.intern(name.str());
+    const uint32_t sid = strpool.find(name.str());
     return define_map.count(sid) > 0 || macro_map.count(sid) > 0
 	|| has_query_operator_implemented(name)
 	|| builtin_position_macro(name, NULL);

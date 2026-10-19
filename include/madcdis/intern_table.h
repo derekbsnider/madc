@@ -171,6 +171,7 @@ public:
     }
     uint32_t find(const char *s, uint32_t len) const { return len ? find(s, len, hash_bytes(s, len)) : 0; }
     uint32_t find(const std::string &s) const { return find(s.data(), (uint32_t)s.size()); }
+    uint32_t find(const char *s)          const { return find(s, (uint32_t)strlen(s)); }
     uint32_t intern(const char *s)        const { return intern(s, (uint32_t)strlen(s)); }
 
     void begin_transaction(transaction_state &state) const
@@ -523,11 +524,14 @@ public:
 	return 0;
     }
 
-    // string overloads — intern the key; keep every existing insert / cold call site working
-    V     *find(const std::string &k)        { return find(_pool->intern(k)); }
+    // string overloads. A lookup asks the pool for the id the spelling ALREADY
+    // has (find): a spelling never interned is no key here, and interning it
+    // would grow the pool by every name ever asked about. Only an insert
+    // (operator[]) interns.
+    V     *find(const std::string &k)        { return find(_pool->find(k)); }
     const V *find_readonly(const std::string &k) const
-	{ return find_readonly(_pool->intern(k)); }
-    size_t count(const std::string &k)       { return count(_pool->intern(k)); }
+	{ return find_readonly(_pool->find(k)); }
+    size_t count(const std::string &k)       { return count(_pool->find(k)); }
     V     &operator[](const std::string &k)
     {
 	// Env-gated write trap (MADC_MAPWRITE_TRAP=<exact key>): break here
@@ -537,7 +541,7 @@ public:
 	    madcdis_mapwrite_trap_hit(k.c_str());
 	return (*this)[_pool->intern(k)];
     }
-    size_t erase(const std::string &k)       { return erase(_pool->intern(k)); }
+    size_t erase(const std::string &k)       { return erase(_pool->find(k)); }
 
     // Enumerate live entries: fn(const char *key, V &value) for each present
     // key, in ascending spelling-id order. Returning true from fn stops early

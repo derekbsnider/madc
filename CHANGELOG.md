@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Intern-keyed map lookups by spelling ask the pool for the id the name already holds, never interning a probe key
+
+- `intern_keyed_map`'s string-key lookups (`find` / `find_readonly` / `count` / `erase`, `include/madcdis/intern_table.h`) resolved the spelling with `_pool->intern(k)`, which added the spelling to the pool as a side effect of a read. A map keyed by id answers absence for any spelling the pool never interned, so these now call `_pool->find(k)`; `operator[]`, the only insert, keeps `intern`. Probing one key no longer grows the pool.
+- `intern_table` gains `find(const char *)` beside the existing `find(const char *, uint32_t)` / `find(const std::string &)` — the read-only path (`npos` when the spelling was never interned), the precedent being `template_name_pool.find` in `src/parser.cpp`.
+- Three lexer macro-state probes switch from `strpool.intern` to `strpool.find`: `Program::forest_condition_now`, `Program::pack_cond_elif` and `Program::macro_name_defined` (`src/lexer.cpp`) consult a macro name's defined state, never create it.
+- Behaviour-preserving for program output (fix lanes tier1 + tier2 rc=0, `scripts/forest_bind_gate.sh` GREEN 47/47). `tests/unit/test_stringpool.cpp` adds "intern-keyed map lookups by spelling never grow the pool" — RED on the old header (`CHECK( p.count() == interned )` -> `CHECK( 5 == 1 )`, 8 of 9 cases), GREEN after. Parse-cost gate 0 red of 21, every changed row falls (e.g. `subscript.live` 3,332,587,228 -> 3,324,883,169, `cxx_stl.live` 2,553,306,753 -> 2,544,208,808); baseline re-recorded in `scripts/parse_cost/baseline.tsv`.
+
 ### Forest container format v70 retires the branch-dependency and skipped-arm freeze machinery the K2 condition walk replaced
 
 - `cir_forest_fill_pack_payloads` (`src/madc_cir.cpp`) and `Program::pack_note_recorded_consult` (`src/lexer.cpp`, formerly `pack_record_branch_macro`) no longer build the per-unit external branch dependencies (the v55 `CIR_BRANCH_DEP_PP_ARM` and v67 `CIR_BRANCH_DEP_ARM_REPLAYS` tuples), the container-global branch macro names, or a condition record's token positions (`CIR_COND_TOK_BEGIN` / `_END`) and arm-purity flag (`CIR_COND_F_ARM_PURE`). `pack_note_branch_consult` keeps one job — count an external consult so the open conditional is recorded (`SNAP_KIND_CIR_UNIT_CONDS`), which the K2 positional walk (v69) re-evaluates at bind.
