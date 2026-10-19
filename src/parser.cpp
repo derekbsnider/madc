@@ -16577,6 +16577,7 @@ enum class TypeTrait : unsigned char
     None, IsSame, IsBaseOf, IsAssignable, IsConvertible,
     IsClass, IsUnion, IsEnum, IsEmpty, IsFinal, HasTrivialDestructor,
     IsTrivial, IsTriviallyCopyable, IsStandardLayout, IsPod, IsDestructible,
+    IsPolymorphic, IsAbstract, HasVirtualDestructor,
     IsConstructible, IsNothrowConstructible
 };
 
@@ -16606,10 +16607,41 @@ static TypeTrait type_trait_of(const madc::dis::istring &name, int *arity = NULL
 	{ "__is_standard_layout", TypeTrait::IsStandardLayout, 1 },
 	{ "__is_pod", TypeTrait::IsPod, 1 },
 	{ "__is_destructible", TypeTrait::IsDestructible, 1 },
+	{ "__is_polymorphic", TypeTrait::IsPolymorphic, 1 },
+	{ "__is_abstract", TypeTrait::IsAbstract, 1 },
+	{ "__has_virtual_destructor", TypeTrait::HasVirtualDestructor, 1 },
 	{ "__is_constructible", TypeTrait::IsConstructible, TRAIT_ARITY_VARIADIC },
 	{ "__is_nothrow_constructible", TypeTrait::IsNothrowConstructible,
 	  TRAIT_ARITY_VARIADIC },
     };
+    if ( arity )
+	*arity = 0;   // not a supported trait
+    // The expression parser asks about EVERY identifier it meets. A name
+    // shorter than every spelling, or not starting "__" plus a third character
+    // some spelling has, is no trait — read from the table itself, once (a row
+    // not starting "__" turns the filter off rather than hiding it).
+    static const struct Filter
+    {
+	size_t shortest;
+	bool on;
+	bool third[256];
+	Filter(const Row *b, const Row *e) : shortest((size_t)-1), on(true), third()
+	{
+	    for ( ; b != e; ++b )
+	    {
+		const madc::dis::istring &s = b->name;
+		if ( s.size() < 3 || s[0] != '_' || s[1] != '_' )
+		    on = false;
+		else
+		    third[(unsigned char)s[2]] = true;
+		if ( s.size() < shortest )
+		    shortest = s.size();
+	    }
+	}
+    } filter(rows, rows + sizeof(rows) / sizeof(rows[0]));
+    if ( filter.on && (name.size() < filter.shortest || name[0] != '_'
+		       || name[1] != '_' || !filter.third[(unsigned char)name[2]]) )
+	return TypeTrait::None;
     for ( const Row &r : rows )
 	if ( r.name == name )
 	{
@@ -16617,8 +16649,6 @@ static TypeTrait type_trait_of(const madc::dis::istring &name, int *arity = NULL
 		*arity = r.arity;
 	    return r.kind;
 	}
-    if ( arity )
-	*arity = 0;   // not a supported trait
     return TypeTrait::None;
 }
 
@@ -16855,6 +16885,28 @@ static bool trait_is_standard_layout(DataDef *dd)
 static bool trait_is_pod(DataDef *dd)
 {
     return trait_is_trivial(dd) && trait_is_standard_layout(dd);
+}
+// __is_polymorphic(T) ([class.virtual]/1): a class that declares or inherits a
+// virtual function — madc's has_vtable (DataDefCLASS::is_polymorphic). A virtual
+// BASE alone makes no polymorphic class.
+static bool trait_is_polymorphic(DataDef *dd)
+{
+    DataDefCLASS *c = dd ? dd->as_class_dd() : NULL;
+    return c && c->is_polymorphic();
+}
+// __is_abstract(T) ([class.abstract]/2): a pure virtual function whose final
+// overrider stays pure, or the class's own pure destructor (class_is_abstract).
+static bool trait_is_abstract(DataDef *dd)
+{
+    DataDefCLASS *c = dd ? dd->as_class_dd() : NULL;
+    return c && class_is_abstract(c);
+}
+// __has_virtual_destructor(T): the destructor, declared or inherited, is
+// virtual — the class's vtable carries the destructor slot.
+static bool trait_has_virtual_destructor(DataDef *dd)
+{
+    DataDefCLASS *c = dd ? dd->as_class_dd() : NULL;
+    return c && c->vtable_slot("~") >= 0;
 }
 // __is_base_of(B, D): true if B and D name the same class, or B is a (direct or
 // indirect) base of class D. Ignores access (matches the intrinsic's semantics —
@@ -17723,6 +17775,13 @@ static int eval_type_trait(TypeTrait kind, std::vector<TraitTypeArg> &args,
 	return !trait_arg_is_reference(args[0]) && trait_is_pod(args[0].dd) ? 1 : 0;
     case TypeTrait::IsDestructible:
 	return trait_is_destructible(args[0]);
+    case TypeTrait::IsPolymorphic:
+	return !trait_arg_is_reference(args[0]) && trait_is_polymorphic(args[0].dd) ? 1 : 0;
+    case TypeTrait::IsAbstract:
+	return !trait_arg_is_reference(args[0]) && trait_is_abstract(args[0].dd) ? 1 : 0;
+    case TypeTrait::HasVirtualDestructor:
+	return !trait_arg_is_reference(args[0])
+	    && trait_has_virtual_destructor(args[0].dd) ? 1 : 0;
     case TypeTrait::IsAssignable:
     {
 	const int s = trait_is_assignable(args[0], args[1]);

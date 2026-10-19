@@ -1,0 +1,50 @@
+// __is_polymorphic / __is_abstract / __has_virtual_destructor — the gcc-13
+// builtins behind std::is_polymorphic, std::is_abstract and
+// std::has_virtual_destructor ([meta.unary.prop]). Before madc answered them,
+// `std::is_polymorphic<P>::value` read 0 in an expression: the base clause
+// `integral_constant<bool, __is_polymorphic(_Tp)>` failed and nothing said so.
+// A polymorphic class declares or inherits a virtual function; a virtual BASE
+// alone does not make one ([class.virtual]/1). An abstract class has a pure
+// virtual function its final overrider leaves pure ([class.abstract]/2) — a
+// pure virtual destructor included. The traits answer for remove_cv<T>; a
+// reference or a non-class type answers 0. Every digit: g++ 13 == clang++ 18
+// (-std=c++17), the .expect.
+#include <type_traits>
+#include <cstdio>
+struct Plain { int x; };
+struct P { virtual void f() {} };
+struct DerP : P {};				// inherits a virtual function
+struct VBase : virtual Plain {};		// a virtual base only
+struct A { virtual void g() = 0; };
+struct DerA : A {};				// still abstract
+struct Done : A { void g() override {} };	// overrides the pure function
+struct PureDtor { virtual ~PureDtor() = 0; };
+PureDtor::~PureDtor() {}
+struct VD { virtual ~VD() {} };
+struct DerVD : VD {};				// inherits the virtual destructor
+struct NVD { ~NVD() {} };
+#define ROW(label, trait) \
+	printf("%-22s %d %d %d %d %d %d %d %d %d %d %d\n", label, \
+	       (int)trait<Plain>::value, (int)trait<P>::value, (int)trait<DerP>::value, \
+	       (int)trait<VBase>::value, (int)trait<A>::value, (int)trait<DerA>::value, \
+	       (int)trait<Done>::value, (int)trait<PureDtor>::value, (int)trait<VD>::value, \
+	       (int)trait<DerVD>::value, (int)trait<NVD>::value)
+int main()
+{
+	ROW("is_polymorphic", std::is_polymorphic);
+	ROW("is_abstract", std::is_abstract);
+	ROW("has_virtual_dtor", std::has_virtual_destructor);
+	printf("%-22s %d %d %d\n", "volatile",
+	       (int)std::is_polymorphic<volatile P>::value,
+	       (int)std::is_abstract<volatile A>::value,
+	       (int)std::has_virtual_destructor<volatile VD>::value);
+	printf("%-22s %d %d %d %d\n", "ref_and_scalar",
+	       (int)std::is_polymorphic<P &>::value,
+	       (int)std::is_abstract<int>::value,
+	       (int)std::has_virtual_destructor<int>::value,
+	       (int)std::is_polymorphic<P *>::value);
+	printf("%-22s %d %d %d\n", "builtins",
+	       (int)__is_polymorphic(DerP), (int)__is_abstract(DerA),
+	       (int)__has_virtual_destructor(DerVD));
+	return 0;
+}
