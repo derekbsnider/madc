@@ -380,3 +380,24 @@ PLANNED 2026-10-15 (owner).
   command line as one table (`src/madc_cli.cpp`) and one `switch`; the 82-arm
   ladder deleted; gate `check-one-option-parser.sh`; DupFamily
   `command_line_option_arms` consolidated (this release's `Consolidated:` line).
+- Sections I, J and K (2026-10-17/18) are recorded in their own plans
+  (`2026-10-17-dialect-builtin-registration.md`, `2026-10-18-c-pack-layer.md`,
+  `2026-10-18-verified-cxx-bind.md`); section H's gate and v0.105.0 ledger
+  rows landed 2026-10-16.
+- Parse-cost (2026-10-18/19): the lexer hot loops, kind accessors for the hot
+  `dynamic_cast` sites, the `TypeTrait` enum, the intern-keyed lookup; every
+  re-record lowered rows, none rose. Consolidated this arc: `counted_loop`,
+  `class_pointer_spelling`, `pointer_type_node` (each with its gate).
+- Section G (2026-10-19):
+  - Step 1 done: every entry re-measured at HEAD. Retired with a pinning
+    test: B102, B153 (packed `--project` bind), B107, B18, B23, B36, B41,
+    B48, B66, B195, and the carried `__sync_*` / static-destruction items.
+  - Step 2 (silent wrong answers): class-object fixes `504e6350c`,
+    `2151a9511`, `dfb6d100d`, `b9038b63a`, `cecc4bf3e`, `ee9c91119`,
+    `13026b2bc` (a library virtual dispatches through the vtable). Filed:
+    B202 (a class handler never binds the thrown object and matches any
+    class; plan `2026-10-19-class-exceptions.md`, its parser part awaits the
+    owner), B201 and B203 (core-parser refusals, raised with the owner).
+    Open: B202, B197, B156, B147, B144, B145, B121, B81, B62, B70, B65, B64,
+    B181.
+  - Steps 3-5 (C refusals, dialect refusals, B148) not started.

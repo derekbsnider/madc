@@ -206,7 +206,10 @@ These produce wrong answers or crashes on valid C++. Highest priority.
 >   parse; typed cstr/string catch binding needs parser+binding work (used
 >   `catch(...)` as the interim).
 > - **P1.1e — OBJECT / CLASS-typed exceptions with type-matched, inheritance-aware
->   catch (THE major remaining exception gap; verified 2026-06-15).** The SJLJ
+>   catch (THE major remaining exception gap; verified 2026-06-15).** PLAN:
+>   `docs/plans/2026-10-19-class-exceptions.md` (BUGS.md B202, 2026-10-19: since
+>   `4b25ffb80` a class throw carries tag 4 = the class clauses' tag, so every class
+>   handler matches every such throw and binds a default-constructed object). The SJLJ
 >   runtime only carries SCALAR exceptions: `MadcException` is a fixed
 >   `{ int type; int64_t int_val; double double_val; const char *str_val; }` and the
 >   type tag enum is just `INT=1 / DOUBLE=2 / CSTR=3 / ANY=99`. So `throw` of a
