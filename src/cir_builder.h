@@ -788,6 +788,14 @@ class CirBuilder {
 	node_t char_ptr_type();                      // N_TYPE node for a (char*) cast
 	node_t ptr_type_node(DataDef *dd);           // N_TYPE node for an arbitrary pointer DataDef
 	node_t class_ptr_type(DataDefCLASS *cdd);    // N_TYPE node for a (struct Cls *) cast
+	// The `this` a constructor or destructor of `cls` receives for an object
+	// of type `object` at `addr`: cv-qualifiers do not apply to an object
+	// under construction or destruction ([class.ctor.general]/5,
+	// [class.dtor]/5), so a qualified object's address converts to the plain
+	// class pointer the C callee declares (passed as is, C discards the
+	// qualifier with a diagnostic). An unqualified object's: `addr` itself.
+	node_t structor_receiver(node_t addr, DataDef *object, DataDefCLASS *cls,
+				 TokenBase *origin);
 	// THE base-subobject pointer adjustment (static offset, or the vtable's
 	// vbase-offset slot for a virtual base): a `derived`-object address in,
 	// a `Base *` out. Both upcasts below and the inherited-constructor

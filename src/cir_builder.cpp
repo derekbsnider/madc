@@ -6777,6 +6777,14 @@ node_t CirBuilder::class_ptr_type(DataDefCLASS *cdd)
 	return node2(N_TYPE, spec, node2(N_DECL, ignore(), decl_list));
 }
 
+node_t CirBuilder::structor_receiver(node_t addr, DataDef *object,
+				     DataDefCLASS *cls, TokenBase *origin)
+{
+	if (!addr || !object || !cls || !object->cv_quals())
+		return addr;
+	return node2(N_CAST, class_ptr_type(cls), addr, origin);
+}
+
 // GNU C allows pointer arithmetic on `void *`, treating the element size as 1
 // (i.e. as if the pointer were `char *`). c2mir rejects it ("pointer to
 // incomplete type as an operand of +/-"), so when madc emits `+`/`-` on a
@@ -15877,10 +15885,10 @@ bool CirBuilder::member_default_construct_stmts(DataDefCLASS *cdd, size_t mi,
 	const madc::dis::istring &mname = m.first;
 	const size_t before = out.size();
 	class_member_default_construct([&]() -> node_t {
-		return node1(N_ADDR,
+		return structor_receiver(node1(N_ADDR,
 			node2(N_DEREF_FIELD, id(recv, origin),
 			      id(mname.c_str(), origin)),
-			origin);
+			origin), m.second, mc, origin);
 	}, cdd, mi, mc, out, origin);
 	return out.size() != before;
 }
@@ -16072,11 +16080,13 @@ bool CirBuilder::member_initializer_stmts(DataDefCLASS *cdd, FuncDef *fd,
 #endif
 	node_t fld = node2(N_DEREF_FIELD, id("__this", origin),
 			   id(m.first.c_str(), origin));
-	auto member_addr = [&]() -> node_t {
-		return node1(N_ADDR, node2(N_DEREF_FIELD, id("__this", origin),
-					   id(m.first.c_str(), origin)), origin);
-	};
 	DataDefCLASS *mc = as_class_instance(m.second);
+	auto member_addr = [&]() -> node_t {
+		return structor_receiver(node1(N_ADDR,
+			node2(N_DEREF_FIELD, id("__this", origin),
+			      id(m.first.c_str(), origin)), origin),
+			m.second, mc, origin);
+	};
 	size_t n = 0;
 	if (mc && cdd->member_fixed_array(mi, n)
 	    && (ci->args.empty() || (ci->braced && !ci->nested_list_flattened))) {
@@ -16358,7 +16368,8 @@ bool CirBuilder::class_member_destruct(DataDefCLASS *cdd,
 		// then conflicted with the typed definition (clang: conflicting
 		// types; c2mir tolerated it, so only the portable --emit=c11 output
 		// broke: testofstreamwrite / testmanipview under libc++). The
-		// argument `&__this->m` is a `struct mc *` and needs no cast.
+		// argument `&__this->m` is a `struct mc *`; a cv-qualified
+		// member's converts to one (structor_receiver).
 		need_output_extern(sym.c_str(), false, { { {}, true, mc } });
 		auto member_addr = [&]() -> node_t {
 			return node1(N_ADDR, node2(N_DEREF_FIELD, id("__this", origin),
@@ -16384,7 +16395,8 @@ bool CirBuilder::class_member_destruct(DataDefCLASS *cdd,
 					}))
 				out.push_back(loop);
 		} else
-			out.push_back(dtor_stmt(member_addr()));
+			out.push_back(dtor_stmt(structor_receiver(member_addr(),
+						m.second, mc, origin)));
 		any = true;
 	}
 	return any;
@@ -17252,6 +17264,13 @@ madc::dis::istring CirBuilder::class_object_dtor_symbol(Variable *v,
 	if (v->is_fixed_array() && !v->is_vla() && v->total_elements() > 0)
 		return demand ? demand_array_dtor(cdd, v->total_elements())
 			      : class_array_dtor_symbol(cdd, v->total_elements());
+	// A cv-qualified object: the cleanup passes `&v` as a pointer to the
+	// qualified class, which the complete dtor's `struct Cls *` cannot take
+	// (clang rejects the attribute) — the one-element wrapper's
+	// `volatile void *` can, and destroys it ([class.dtor]/5).
+	if (v->type && v->type->cv_quals())
+		return demand ? demand_array_dtor(cdd, 1)
+			      : class_array_dtor_symbol(cdd, 1);
 	return class_complete_dtor_symbol(cdd);
 }
 
@@ -17362,13 +17381,14 @@ node_t CirBuilder::static_dtor_registration(Variable *v, TokenBase *origin)
 	return stmt;
 }
 
-// void Cls__arr<N>___dtor(void *p)
+// void Cls__arr<N>___dtor(volatile void *p)
 // { struct Cls *q = (struct Cls *)p;
 //   for (long __ci = N-1; __ci >= 0; __ci -= 1) <complete-dtor>(q + __ci); }
-// The param is void*: the cleanup attribute passes &arr — a `Cls (*)[N]`,
-// which a `struct Cls *` param would take only through an
+// The param is volatile void*: the cleanup attribute passes &arr — a
+// `Cls (*)[N]`, which a `struct Cls *` param would take only through an
 // incompatible-pointer-type diagnostic (c2mir warns, gcc on emitted C11
-// warns). void* accepts it silently in both lanes; the body casts once.
+// warns). (volatile) void* accepts it silently in both lanes, a volatile
+// array's too; the body casts once.
 node_t CirBuilder::synth_array_dtor_def(DataDefCLASS *cdd, size_t n,
 					const madc::dis::istring &sym)
 {
@@ -17377,8 +17397,15 @@ node_t CirBuilder::synth_array_dtor_def(DataDefCLASS *cdd, size_t n,
 	// copy refused the entry as a multiple definition.
 	node_t ret_type = node1(N_LIST, simple(N_VOID));
 	append(ret_type, node2(N_ATTR, id("linkonce"), list()));
+	// `volatile void *`: the cleanup attribute passes &arr, which may be a
+	// pointer to a volatile array (or, through class_object_dtor_symbol's
+	// one-element use, to a volatile object); a plain `void *` param takes
+	// neither without a discarded-qualifier diagnostic.
 	node_t param = simple(N_SPEC_DECL);
-	append(param, node1(N_SHARE, node1(N_LIST, simple(N_VOID))));
+	node_t pspecs = list();
+	append(pspecs, simple(N_VOLATILE));
+	append(pspecs, simple(N_VOID));
+	append(param, node1(N_SHARE, pspecs));
 	append(param, node2(N_DECL, id("p"), node1(N_LIST, pointer())));
 	append(param, ignore());
 	append(param, ignore());
@@ -21049,7 +21076,9 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 		// arms and decl_aggregate_claim.
 		std::vector<node_t> stmts;
 		complete_object_construct_stmts([&]() -> node_t {
-			return node1(N_ADDR, id(vname.c_str(), origin), origin);
+			return structor_receiver(
+				node1(N_ADDR, id(vname.c_str(), origin), origin),
+				v->type, cdd, origin);
 		}, cdd, ctor_args, origin, stmts);
 		if (stmts.empty()) return NULL;
 		if (stmts.size() == 1) return stmts[0];
@@ -21104,7 +21133,9 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 	// selection+assembly paths; the inherited case gets ONE of them).
 	if (DataDefCLASS *dc = ctor_declaring_class(cdd, ctor))
 		if (dc != cdd && cdd->is_or_derives_from(dc))
-			return class_ctor_call_addr(object_var_addr(*v, origin),
+			return class_ctor_call_addr(structor_receiver(
+							object_var_addr(*v, origin),
+							v->type, cdd, origin),
 						    cdd, ctor_args, origin);
 
 	madc::dis::istring sym = ctor_call_symbol(cdd, ctor);
@@ -21118,7 +21149,7 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 	node_t self_addr = node1(N_ADDR, id(vname.c_str(), origin), origin);
 	append(args, external_ctor
 		     ? node2(N_CAST, void_ptr_type(), self_addr, origin)
-		     : self_addr); // &v
+		     : structor_receiver(self_addr, v->type, cdd, origin)); // &v
 	// A braced list served by an initializer-list ctor is ONE argument, so
 	// the per-element loop is skipped entirely and the default-argument
 	// filler below starts after that single parameter.
@@ -25835,13 +25866,26 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 	// value (delete is a void expression).
 	if (TokenDELETE *tdl = (tb ? tb->as_delete_tok() : NULL)) {
 		DataDefCLASS *cdd = tdl->del_class;
+		// The operand as the destructor and the deallocation take it: a
+		// pointer to a cv-qualified class converts to the plain class
+		// pointer (structor_receiver), one to any other cv-qualified
+		// pointee to free's void*. A fresh node per use.
+		DataDefPTR *dptr = tdl->expr ? pointer_dd_of(tdl->expr->datadef())
+					     : NULL;
+		DataDef *pointee = dptr ? dptr->base_type : NULL;
+		auto operand = [&]() -> node_t {
+			node_t p = translate_expr(tdl->expr);
+			if (cdd)
+				return structor_receiver(p, pointee, cdd, tb);
+			return pointee && pointee->cv_quals()
+			       ? node2(N_CAST, void_ptr_type(), p, tb) : p;
+		};
 		// Virtual destructor: dispatch through the vtable D0 (deleting) slot,
 		// which runs the most-derived complete destructor AND frees. No
 		// separate free() — the D0 dtor owns the free.
 		if (cdd && !tdl->is_array && cdd->vtable_slot("~$deleting") >= 0) {
 			node_t dcall = virtual_dtor_slot_call(cdd, "~$deleting",
-				translate_expr(tdl->expr),
-				translate_expr(tdl->expr), tb);
+				operand(), operand(), tb);
 			node_t items = list();
 			append(items, node2(N_EXPR, list(), dcall, tb));
 			append(items, node2(N_EXPR, list(), integer(0, tb), tb));
@@ -25879,7 +25923,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			append(pdecl, node2(N_DECL, id(dp, tb), node1(N_LIST, pointer())));
 			append(pdecl, ignore());
 			append(pdecl, ignore());
-			append(pdecl, translate_expr(tdl->expr));
+			append(pdecl, operand());
 			append(items, pdecl);
 			node_t then_items = list();
 			// long __dn = ((long *)__dp)[-1];
@@ -25929,7 +25973,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			return node1(N_STMTEXPR,
 				     node2(N_BLOCK, list(), items, tb), tb);
 		}
-		node_t ptr = translate_expr(tdl->expr);
+		node_t ptr = operand();
 		node_t items = list();
 		// Array delete of a TRIVIAL-dtor class has no cookie (new[] emitted
 		// none) — plain free. A dtor-carrying class takes the cookie arm
@@ -25943,7 +25987,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			append(items, node2(N_EXPR, list(), dcall, tb));
 			// Re-translate the pointer for free() — a fresh expression node
 			// (the same node must not appear twice in the tree).
-			ptr = translate_expr(tdl->expr);
+			ptr = operand();
 		}
 		need_output_extern("free", false, { { {N_VOID}, true } });
 		node_t fargs = list();
@@ -25975,16 +26019,26 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 		// D1 (complete) slot — most-derived destruction, NO free (that is
 		// delete's D0 arm). A '.' receiver's dynamic type IS its static
 		// type, so it stays a devirtualized static call (g++ shape).
+		// The destroyed object's type: a cv-qualified one's address
+		// converts to the plain class pointer (structor_receiver).
+		DataDef *odd = ted->obj ? ted->obj->datadef() : NULL;
+		if (ted->is_arrow) {
+			DataDefPTR *op = pointer_dd_of(odd);
+			odd = op ? op->base_type : NULL;
+		}
+		auto receiver = [&]() -> node_t {
+			node_t r = ted->is_arrow
+				? translate_expr(ted->obj)
+				: node1(N_ADDR, translate_expr(ted->obj), tb);
+			return structor_receiver(r, odd, cdd, tb);
+		};
 		if (cdd && ted->is_arrow && cdd->vtable_slot("~") >= 0) {
 			node_t dcall = virtual_dtor_slot_call(cdd, "~",
-				translate_expr(ted->obj),
-				translate_expr(ted->obj), tb);
+				receiver(), receiver(), tb);
 			if (dcall)
 				return dcall;
 		}
-		node_t obj_ptr = ted->is_arrow
-			? translate_expr(ted->obj)
-			: node1(N_ADDR, translate_expr(ted->obj), tb);
+		node_t obj_ptr = receiver();
 		if (cdd && class_needs_dtor(cdd)) {
 			madc::dis::istring dsym = class_complete_dtor_symbol(cdd);
 			referenced_funcs.insert(dsym);

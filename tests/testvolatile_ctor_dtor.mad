@@ -3,13 +3,21 @@
 // construction or destruction ([class.ctor.general]/5, [class.dtor]/5), and
 // `delete` through a pointer to a volatile class still runs the destructor
 // before freeing ([expr.delete]/6). Each D carries its own id so every line
-// is distinct; g++ 13 and clang++ 18 print the .expect.
+// is distinct; g++ 13 and clang++ 18 print the .expect. The constructor and
+// destructor receive the object as their own class pointer, so the build is
+// diagnostic-free (.expect_quiet).
 #include <cstdio>
+#include <new>
 int next_id;
 struct D {
 	int id;
 	D() : id(++next_id) { printf("D%d()\n", id); }
 	~D() { printf("~D%d()\n", id); }
+};
+struct V {
+	int id;
+	V() : id(++next_id) { printf("V%d()\n", id); }
+	virtual ~V() { printf("~V%d()\n", id); }
 };
 struct H {			// user ctor/dtor: member ctor + member dtor
 	volatile D d;
@@ -19,6 +27,10 @@ struct H {			// user ctor/dtor: member ctor + member dtor
 struct M {			// implicit ctor/dtor
 	volatile D d;
 };
+struct A {			// array member
+	volatile D da[2];
+};
+volatile D g;
 int main()
 {
 	{
@@ -27,9 +39,20 @@ int main()
 	}
 	{ H h; }
 	{ M m; }
+	{ volatile D arr[2]; }
+	{ A a; }
+	{ static volatile D s; }
 	volatile D *p = new D;
 	printf("heap %d\n", p->id);
 	delete p;
 	printf("deleted\n");
+	volatile V *pv = new V;
+	delete pv;
+	volatile D *pa = new D[2];
+	delete[] pa;
+	alignas(D) unsigned char storage[sizeof(D)];
+	volatile D *px = new (storage) D;
+	px->~D();
+	printf("end\n");
 	return 0;
 }
