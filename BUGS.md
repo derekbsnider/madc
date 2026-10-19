@@ -67,6 +67,54 @@ int main()
   (`docs/plans/cpp-support.md`): an owned copy plus type identity in the
   record, inheritance-aware matching, binding by reference and by value.
 
+### B205. A throw passing through a function with no try of its own skips its objects' destructors
+
+```cpp
+#include <cstdio>
+struct T { int id; T(int i) : id(i) { std::printf("ctor %d\n", id); }
+	   ~T() { std::printf("dtor %d\n", id); } };
+static void h() { T x(1); throw 2; }
+int main()
+{
+	try { h(); } catch (int v) { std::printf("caught %d\n", v); }
+	return 0;
+}
+```
+
+- Found 2026-10-19 while designing the B202 handler lifetime.
+- g++ 13 and clang++ 18: `ctor 1`, `dtor 1`, `caught 2`. madc: `ctor 1`,
+  `caught 2`, exit 0 — `~T` never runs.
+- Layer: `src/cir_builder.cpp` `emit_try_body_cleanup_push` registers an
+  object on the runtime cleanup stack only inside a LEXICAL try body
+  (`m_try_body_depth > 0`); the longjmp skips every cleanup attribute of the
+  frames between the throw and the catching try. The fix registers every
+  automatic object with a non-trivial destructor (its guard local already
+  removes the entry on a normal exit) — a runtime push and remove on every
+  non-throwing path, the trade waiting on the owner.
+
+### B206. A base named without an access specifier in a `class` is public
+
+```cpp
+#include <cstdio>
+#include <type_traits>
+struct B { int b; };
+class DC : B { public: int d; };
+int main()
+{
+	std::printf("%d\n", (int)std::is_convertible<DC *, B *>::value);
+	return 0;
+}
+```
+
+- Found 2026-10-19 while building the B202 match table (only an unambiguous
+  PUBLIC base takes a derived throw, [except.handle]/3).
+- g++ 13 and clang++ 18: `0` ([class.access.base]/2: private is assumed for
+  the class-key `class`). madc: `1`, exit 0.
+- Layer: `src/parser.cpp`, the base-clause reader (`uint32_t baccess = 0;`)
+  starts every base at public whatever the class-key, so `BaseSpec::access`,
+  the typeinfo's `__public_mask` and every conversion read it as public. Core
+  parser — waits on the owner.
+
 ### B197. Inside a namespace, `sizeof(T)` takes a sibling namespace's same-named struct
 
 ```cpp
