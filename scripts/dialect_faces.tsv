@@ -27,6 +27,7 @@ public	src/madc_posix_io.h	host_path_basename	-	exempt: a host splits a path wit
 public	src/madc_posix_io.h	host_path_absolute	-	exempt: the include and manifest resolvers' test; a host's project paths come resolved from the manifest owner (madc_project.cpp)
 public	src/madc_posix_io.h	host_path_join	-	exempt: the include and manifest resolvers' join; a host's project paths come resolved from the manifest owner (madc_project.cpp)
 public	src/madc_posix_io.h	host_path_type_of	-	exempt: a host tests a path with php::file_exists / php::is_dir
+public	src/madc_posix_io.h	host_path_mtime	-	exempt: the lexer's __TIMESTAMP__ source-file time; a host reads a file's status through stat(2)
 public	src/madc_posix_io.h	host_path_drop_extension	include/madc/ns_madc	path_drop_extension
 public	src/madc_posix_io.h	host_path_stem	include/madc/ns_madc	path_stem
 public	src/madc_posix_io.h	host_path_generic	include/madc/ns_madc	path_generic

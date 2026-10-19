@@ -4042,7 +4042,8 @@ void Program::_tokenizer_init()
     define_map["__LDBL_DIG__"] = "15";
     define_map["__BIGGEST_ALIGNMENT__"] = "16";
 
-    // __DATE__ / __TIME__ are the TRANSLATION's date and time, computed when
+    // __DATE__ / __TIME__ are the TRANSLATION's date and time, and __TIMESTAMP__
+    // the current file's modification time, computed when
     // first expanded (builtin_macro_text) — never a table entry.
     // Built-in release-version string literal. MADC_VERSION_STR is supplied by
     // the build (-DMADC_VERSION_STR='"x.y.z"' from ../VERSION); the value stored
@@ -10429,7 +10430,8 @@ TokenBase *Program::_getToken()
 		    return getToken();
 		}
 		// Built-in predefined macros: __FILE__, __FILE_NAME__, __LINE__,
-		// __DATE__ and __TIME__ (builtin_macro_text, their one owner).
+		// __DATE__, __TIME__ and __TIMESTAMP__ (builtin_macro_text, their
+		// one owner).
 		// Users can still override via #define (handled above).
 		{
 		    madc::dis::istring text;
@@ -11259,32 +11261,43 @@ bool Program::macro_name_defined(const madc::dis::istring &name)
 	|| builtin_macro_text(name, NULL);
 }
 
+// The C locale's month and weekday abbreviations (asctime's), for the date
+// macros' texts.
+static const char *const k_month_abbrev[] = { "Jan", "Feb", "Mar", "Apr",
+    "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+static const char *const k_weekday_abbrev[] = { "Sun", "Mon", "Tue", "Wed",
+    "Thu", "Fri", "Sat" };
+
+// The reproducible-builds convention gcc and clang honour, with gcc's refusal
+// of a malformed value.
+bool Program::source_date_epoch(struct tm &parts, bool &known)
+{
+    const char *epoch = ::getenv("SOURCE_DATE_EPOCH");
+    if ( !epoch )
+	return false;
+    char *end = NULL;
+    errno = 0;
+    long long v = ::strtoll(epoch, &end, 10);
+    if ( errno == ERANGE || end == epoch || *end != '\0'
+      || v < 0 || v > 253402300799LL )
+	Throw << "environment variable 'SOURCE_DATE_EPOCH' must expand to a"
+		 " non-negative integer less than or equal to 253402300799"
+	      << flush;
+    known = madc::detail::utc_time((time_t)v, parts);
+    return true;
+}
+
 // [cpp.predefined] (C11 6.10.8.1): the date and time of translation of THIS
 // translation unit, computed when first needed and fixed for the rest of it
 // (libcpp's pfile->date / pfile->time). SOURCE_DATE_EPOCH, when set, is that
-// instant, read as UTC (the reproducible-builds convention gcc honours, with
-// gcc's refusal of a malformed value); otherwise the clock, as local time.
+// instant; otherwise the clock, as local time.
 void Program::translation_date_time()
 {
     if ( !translation_date_text.empty() )
 	return;
-    static const char *const months[] = { "Jan", "Feb", "Mar", "Apr", "May",
-	"Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
     struct tm parts = {};
     bool known = false;
-    if ( const char *epoch = ::getenv("SOURCE_DATE_EPOCH") )
-    {
-	char *end = NULL;
-	errno = 0;
-	long long v = ::strtoll(epoch, &end, 10);
-	if ( errno == ERANGE || end == epoch || *end != '\0'
-	  || v < 0 || v > 253402300799LL )
-	    Throw << "environment variable 'SOURCE_DATE_EPOCH' must expand to a"
-		     " non-negative integer less than or equal to 253402300799"
-		  << flush;
-	known = madc::detail::utc_time((time_t)v, parts);
-    }
-    else
+    if ( !source_date_epoch(parts, known) )
     {
 	time_t now = ::time(NULL);
 	known = now != (time_t)-1 && madc::detail::local_time(now, parts);
@@ -11299,7 +11312,7 @@ void Program::translation_date_time()
 	return;
     }
     char buf[32];
-    snprintf(buf, sizeof buf, "\"%s %2d %4d\"", months[parts.tm_mon],
+    snprintf(buf, sizeof buf, "\"%s %2d %4d\"", k_month_abbrev[parts.tm_mon],
 	     parts.tm_mday, parts.tm_year + 1900);
     translation_date_text = buf;
     snprintf(buf, sizeof buf, "\"%02d:%02d:%02d\"", parts.tm_hour, parts.tm_min,
@@ -11307,16 +11320,56 @@ void Program::translation_date_time()
     translation_time_text = buf;
 }
 
+// __TIMESTAMP__ (gcc, clang): the last modification of the file being read
+// now, as local time, spelled as asctime spells it — "Sun Sep 16 01:03:52
+// 1973". SOURCE_DATE_EPOCH, when set, names that instant instead (clang;
+// gcc 13 keeps the mtime), so every date macro names the one reproducible
+// instant. A file libmadc serves has no disk time — nothing is stat'd for
+// it; it and a file that cannot be stat'd get gcc's unknown form.
+madc::dis::istring Program::source_timestamp_text()
+{
+    struct tm parts = {};
+    bool known = false;
+    if ( !source_date_epoch(parts, known) )
+    {
+	const char *fn = source.fname();
+	time_t mtime;
+	known = fn && *fn && !path_served_by_libmadc(fn)
+	     && madc::detail::host_path_mtime(fn, mtime)
+	     && madc::detail::local_time(mtime, parts);
+    }
+    if ( !known )
+	return "\"??? ??? ?? ??:??:?? ????\"";
+    char buf[48];
+    snprintf(buf, sizeof buf, "\"%s %s %2d %02d:%02d:%02d %d\"",
+	     k_weekday_abbrev[parts.tm_wday], k_month_abbrev[parts.tm_mon],
+	     parts.tm_mday, parts.tm_hour, parts.tm_min, parts.tm_sec,
+	     parts.tm_year + 1900);
+    return buf;
+}
+
 bool Program::builtin_macro_text(const madc::dis::istring &name, madc::dis::istring *out)
 {
     // Interned once: each test is an identity compare (every identifier the
     // lexer reads asks).
+    // Every one's name opens with "__": the common identifier leaves after two
+    // byte compares, ahead of a compare per builtin.
+    const char *s = name.c_str();
+    if ( s[0] != '_' || s[1] != '_' )
+	return false;
     static const madc::dis::istring k_line("__LINE__"), k_file("__FILE__"),
-	k_file_name("__FILE_NAME__"), k_date("__DATE__"), k_time("__TIME__");
+	k_file_name("__FILE_NAME__"), k_date("__DATE__"), k_time("__TIME__"),
+	k_timestamp("__TIMESTAMP__");
     if ( name == k_line )
     {
 	if ( out )
 	    *out = std::to_string(source.line());
+	return true;
+    }
+    if ( name == k_timestamp )
+    {
+	if ( out )
+	    *out = source_timestamp_text();
 	return true;
     }
     if ( name == k_date || name == k_time )

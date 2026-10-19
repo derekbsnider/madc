@@ -3796,8 +3796,9 @@ protected:
     // (not const: intern_keyed_map::count() is not const-qualified)
     bool macro_name_defined(const madc::dis::istring &name);
     // A predefined macro whose text the lexer computes as it expands it — the
-    // source position (__FILE__, __FILE_NAME__ (gcc 12+, clang), __LINE__)
-    // and the translation's date and time (__DATE__, __TIME__): true, and the
+    // source position (__FILE__, __FILE_NAME__ (gcc 12+, clang), __LINE__),
+    // the translation's date and time (__DATE__, __TIME__) and the current
+    // file's modification time (__TIMESTAMP__): true, and the
     // replacement text into *out when given. The ONE list getToken's builtin
     // arm, the #if expander and macro_name_defined read, so a name is never
     // expanded but undefined, or defined but left unexpanded.
@@ -3807,6 +3808,12 @@ protected:
     // expansion, then fixed. Per-context state, like the rest of the lexer's.
     madc::dis::istring translation_date_text, translation_time_text;
     void translation_date_time();
+    // SOURCE_DATE_EPOCH, when set: the instant every date macro names, as UTC
+    // broken-down time into `parts` (`known` false when it does not convert);
+    // a malformed value is refused. False when unset.
+    bool source_date_epoch(struct tm &parts, bool &known);
+    // __TIMESTAMP__'s replacement text for the file being read now.
+    madc::dis::istring source_timestamp_text();
     void popOperator(std::stack<TokenBase *> &, std::stack<TokenBase *> &);
     // The end of an expression (every exit of parseExpression): bind the
     // pending operators, refuse juxtaposed operands, return the one left.

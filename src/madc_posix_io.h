@@ -71,6 +71,11 @@ std::string host_path_join(const std::string &dir, const std::string &path);
 enum class host_path_type : unsigned char { none, file, directory, other };
 host_path_type host_path_type_of(const std::string &path);
 
+// The last modification time of what `path` names (stat st_mtime) into `out`;
+// false, `out` untouched, when it cannot be stat'd. The Win32 arm rides
+// _stat64 (a 64-bit time on both arms).
+bool host_path_mtime(const std::string &path, time_t &out);
+
 // A path's extension and stem — THE one rule (gated by
 // check-one-path-stem.sh): the extension is what follows the last dot of the
 // final component, never a dot in a directory and never a leading dot

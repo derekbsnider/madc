@@ -247,6 +247,23 @@ host_path_type host_path_type_of(const std::string &path)
 	return host_path_type::other;
 }
 
+bool host_path_mtime(const std::string &path, time_t &out)
+{
+	if ( path.empty() )
+		return false;
+#ifdef _WIN32
+	struct _stat64 st;
+	if ( ::_stat64(path.c_str(), &st) != 0 )
+		return false;
+#else
+	struct stat st;
+	if ( ::stat(path.c_str(), &st) != 0 )
+		return false;
+#endif
+	out = (time_t)st.st_mtime;
+	return true;
+}
+
 // The offset of the final component's extension dot; npos when it has none.
 static size_t host_path_extension_dot(const std::string &path)
 {

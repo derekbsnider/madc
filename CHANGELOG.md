@@ -6,6 +6,13 @@ Consolidated: counted_loop — gate scripts/check-one-counted-loop.sh
 Consolidated: class_pointer_spelling — gate scripts/check-one-class-pointer-decl.sh
 Consolidated: pointer_type_node — gate scripts/check-one-pointer-type-node.sh
 
+### `__TIMESTAMP__` expands to the current file's modification time
+
+- `__TIMESTAMP__` is a predefined macro. It expands to the last modification time of the file being read, in local time, in asctime's spelling (`"Sun Sep 16 01:03:52 1973"`), as gcc and clang spell it.
+- With `SOURCE_DATE_EPOCH` set, `__TIMESTAMP__` names that instant read as UTC, so `__DATE__`, `__TIME__` and `__TIMESTAMP__` agree. gcc 13 keeps the file's mtime there; madc follows clang 18.
+- A file served by libmadc has no disk time, and a file that cannot be stat'd, expands to gcc's unknown form (`"??? ??? ?? ??:??:?? ????"`).
+- Reducers `tests/testtimestamp.mad` (oracles gcc 13 and clang 18, `--std=gnu17`) and `tests/testtimestamp_epoch.mad` (oracle clang 18, `SOURCE_DATE_EPOCH=1696377600`).
+
 ### A class-type exception is owned by its throw and matched by type in each handler (B202)
 
 - A `throw` of a class object kept the address of the thrower's temporary, which the unwind released, and no type identity, so every class handler matched every class throw and bound a default-constructed object of its own type. A class with a `c_str()` was thrown as its text, so `catch (const char *)` took a thrown `std::string`.
