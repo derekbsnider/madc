@@ -16091,14 +16091,27 @@ bool CirBuilder::member_initializer_stmts(DataDefCLASS *cdd, FuncDef *fd,
 #endif
 	node_t fld = node2(N_DEREF_FIELD, id("__this", origin),
 			   id(m.first.c_str(), origin));
-	if (DataDefCLASS *mc = as_class_instance(m.second))
-		return class_direct_init_stmts(
-			[&]() -> node_t {
-				return node1(N_ADDR,
-					node2(N_DEREF_FIELD, id("__this", origin),
-					      id(m.first.c_str(), origin)),
-					origin);
-			}, mc, ci->args, ci->braced,
+	auto member_addr = [&]() -> node_t {
+		return node1(N_ADDR, node2(N_DEREF_FIELD, id("__this", origin),
+					   id(m.first.c_str(), origin)), origin);
+	};
+	DataDefCLASS *mc = as_class_instance(m.second);
+	size_t n = 0;
+	if (mc && cdd->member_fixed_array(mi, n)
+	    && (ci->args.empty() || (ci->braced && !ci->nested_list_flattened))) {
+		// An array member: `m()` value-initializes every element, `m{...}`
+		// initializes element k from clause k and value-initializes the
+		// rest ([dcl.init]/9.2, [dcl.init.aggr]/5) — the declared array's
+		// list owner, over the member's extents.
+		const std::vector<carray_dim_t> md = cdd->m_array_dims(m.first);
+		class_array_list_init(member_addr,
+			std::vector<size_t>(md.begin(), md.end()),
+			[&]() -> node_t { return integer((int64_t)n, origin); },
+			mc, ci->args, false, false, origin, out);
+		return true;
+	}
+	if (mc)
+		return class_direct_init_stmts(member_addr, mc, ci->args, ci->braced,
 			ci->nested_list_flattened,
 			/*base_subobject=*/false,
 			/*vbase_forward=*/false, out, origin);
@@ -16366,13 +16379,31 @@ bool CirBuilder::class_member_destruct(DataDefCLASS *cdd,
 		// broke: testofstreamwrite / testmanipview under libc++). The
 		// argument `&__this->m` is a `struct mc *` and needs no cast.
 		need_output_extern(sym.c_str(), false, { { {}, true, mc } });
-		node_t fld = node2(N_DEREF_FIELD, id("__this", origin),
-				   id(m.first.c_str(), origin));
-		node_t addr = node1(N_ADDR, fld, origin);
-		node_t a = list();
-		append(a, addr);
-		node_t call = node2(N_CALL, id(sym.c_str(), origin), a, origin);
-		out.push_back(node2(N_EXPR, list(), call, origin));
+		auto member_addr = [&]() -> node_t {
+			return node1(N_ADDR, node2(N_DEREF_FIELD, id("__this", origin),
+						   id(m.first.c_str(), origin)), origin);
+		};
+		auto dtor_stmt = [&](node_t self) -> node_t {
+			node_t a = list();
+			append(a, self);
+			return node2(N_EXPR, list(),
+				     node2(N_CALL, id(sym.c_str(), origin), a, origin),
+				     origin);
+		};
+		size_t n = 0;
+		if (cdd->member_fixed_array(i, n)) {
+			// An array member: every element, last first ([class.dtor]/13).
+			if (node_t loop = class_array_index_loop(
+					[&]() -> node_t { return integer((int64_t)n, origin); },
+					0, true, origin,
+					[&](const char *ci, std::vector<node_t> &body) {
+						body.push_back(dtor_stmt(class_array_element(
+							member_addr(), mc, id(ci, origin),
+							origin)));
+					}))
+				out.push_back(loop);
+		} else
+			out.push_back(dtor_stmt(member_addr()));
 		any = true;
 	}
 	return any;
@@ -18715,7 +18746,8 @@ node_t CirBuilder::initializer_list_literal(DataDefCLASS *ilc, DataDef *elem,
 		tmp->flags |= vfLOCAL | vfFIXEDARRAY;
 		m_pending_stmts.push_back(var_decl(tmp, origin));
 		std::vector<node_t> stmts;
-		class_array_list_init(tname, std::vector<size_t>(1, (size_t)n),
+		class_array_list_init([&]() -> node_t { return id(tname, origin); },
+			std::vector<size_t>(1, (size_t)n),
 			[&]() -> node_t { return integer((int64_t)n, origin); },
 			ec, elems, false, true, origin, stmts);
 		for (node_t st : stmts)
@@ -19167,7 +19199,20 @@ void CirBuilder::implicit_copy_member_reconstructs(DataDefCLASS *cdd,
 		if (!mc) continue;
 		path.push_back(m.first);
 		FuncDef *copy_ctor = class_copy_ctor_for(mc, move);
-		if (copy_ctor) {
+		size_t n = 0;
+		if (cdd->member_fixed_array(mi, n)) {
+			// An array member: element by element ([class.copy.ctor]/14).
+			if (copy_ctor || (!class_trivially_copyable(mc) && !mc->union_layout))
+				if (node_t loop = class_array_index_loop(
+						[&]() -> node_t { return integer((int64_t)n, origin); },
+						0, false, origin,
+						[&](const char *ci, std::vector<node_t> &body) {
+							implicit_copy_element_reconstructs(mc,
+								copy_ctor, object_addr, lname,
+								rname, ci, body, origin, move);
+						}))
+					out.push_back(loop);
+		} else if (copy_ctor) {
 			// The member is a complete object of mc: its hidden
 			// __madc_vb args are offsets from its own address.
 			std::function<node_t()> vb_mint = [&]() -> node_t {
@@ -19185,6 +19230,41 @@ void CirBuilder::implicit_copy_member_reconstructs(DataDefCLASS *cdd,
 		}
 		path.pop_back();
 	}
+}
+
+void CirBuilder::implicit_copy_element_reconstructs(DataDefCLASS *mc,
+		FuncDef *copy_ctor,
+		const std::function<node_t(const char *)> &array_addr,
+		const char *lname, const char *rname, const char *ci,
+		std::vector<node_t> &out, TokenBase *origin, bool move)
+{
+	auto elem = [&](const char *base) -> node_t {
+		return class_array_element(array_addr(base), mc, id(ci, origin),
+					   origin);
+	};
+	if (copy_ctor) {
+		// The element is a complete object of mc: its hidden __madc_vb
+		// args are offsets from its own address.
+		std::function<node_t()> vb_mint = [&]() -> node_t {
+			return elem(lname);
+		};
+		std::vector<node_t> args(1, elem(rname));
+		if (node_t stmt = ctor_call_assemble(elem(lname), mc, copy_ctor,
+						     args, origin, false, &vb_mint, mc))
+			out.push_back(stmt);
+		return;
+	}
+	char l[32], r[32];
+	snprintf(l, sizeof(l), "__mcl%d", m_strtmp_counter++);
+	snprintf(r, sizeof(r), "__mcr%d", m_strtmp_counter++);
+	std::vector<madc::dis::istring> path;
+	std::vector<node_t> walk;
+	implicit_copy_member_reconstructs(mc, l, r, path, walk, origin, move);
+	if (walk.empty())
+		return;
+	out.push_back(class_ptr_bind(mc, l, elem(lname), origin));
+	out.push_back(class_ptr_bind(mc, r, elem(rname), origin));
+	out.insert(out.end(), walk.begin(), walk.end());
 }
 
 // The base half of that walk: every non-virtual base of `cls` (a base of the
@@ -19780,33 +19860,27 @@ size_t CirBuilder::class_array_cookie_size(DataDefCLASS *cdd)
 	return a > sizeof(size_t) ? a : sizeof(size_t);
 }
 
-// `for (long __ci = <first>; __ci < <count>; __ci += 1)
-//      <complete-object construct (arr_ptr + __ci)>;`
-// arr_ptr names an element pointer (or a fixed array, which decays in the
-// N_ADD); `mint_count` returns a fresh count expression node per call.
-// NULL when the element class needs no construction.
-node_t CirBuilder::class_array_construct_loop(
-	const char *arr_ptr, const std::function<node_t()> &mint_count,
-	DataDefCLASS *cdd, TokenBase *origin, long first)
+node_t CirBuilder::class_array_element(node_t base, DataDefCLASS *cdd,
+					node_t index, TokenBase *origin)
+{
+	// Unflattened, a multi-dim array's elements were constructed out of
+	// bounds and its dtors read garbage (task #56).
+	return node2(N_ADD, node2(N_CAST, class_ptr_type(cdd), base, origin),
+		     index, origin);
+}
+
+node_t CirBuilder::class_array_index_loop(const std::function<node_t()> &mint_count,
+					  long first, bool reverse, TokenBase *origin,
+					  const std::function<void(const char *ci,
+						std::vector<node_t> &out)> &body)
 {
 	char ci[32];
 	snprintf(ci, sizeof(ci), "__ci%d", m_strtmp_counter++);
 	std::vector<node_t> elem_stmts;
-	complete_object_construct_stmts([&]() -> node_t {
-		// (struct Cls *)arr + __ci: a MULTI-dim fixed array (`B m[2][2]`)
-		// decays to Cls(*)[M], whose +1 strides a whole ROW — elements
-		// constructed out of bounds, dtors reading garbage (task #56).
-		// The cast flattens to element stride for any dimensionality and
-		// is a no-op for 1D arrays and heap element pointers.
-		node_t flat = node2(N_CAST,
-			node2(N_TYPE, node1(N_LIST, class_tag_ref(cdd)),
-			      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
-			id(arr_ptr, origin), origin);
-		return node2(N_ADD, flat, id(ci, origin), origin);
-	}, cdd, std::vector<TokenBase *>(), origin, elem_stmts);
+	body(ci, elem_stmts);
 	if (elem_stmts.empty()) return NULL;
 
-	// long __ci = 0;
+	// long __ci = <first>;   (reverse: <count> - 1)
 	node_t ispec = list();
 	append_i64(ispec, origin);
 	node_t init = simple(N_SPEC_DECL, origin);
@@ -19814,14 +19888,35 @@ node_t CirBuilder::class_array_construct_loop(
 	append(init, node2(N_DECL, id(ci, origin), list()));
 	append(init, ignore());
 	append(init, ignore());
-	append(init, integer(first, origin));
+	append(init, reverse ? node2(N_SUB, mint_count(), integer(1, origin), origin)
+			     : integer(first, origin));
 
-	node_t cond = node2(N_LT, id(ci, origin), mint_count(), origin);
-	node_t incr = node2(N_ADD_ASSIGN, id(ci, origin), integer(1, origin), origin);
+	node_t cond = reverse ? node2(N_GE, id(ci, origin), integer(first, origin), origin)
+			      : node2(N_LT, id(ci, origin), mint_count(), origin);
+	node_t step = node2(reverse ? N_SUB_ASSIGN : N_ADD_ASSIGN, id(ci, origin),
+			    integer(1, origin), origin);
 	node_t body_items = list();
 	for (node_t s : elem_stmts) append(body_items, s);
-	node_t body = node2(N_BLOCK, list(), body_items, origin);
-	return node5(N_FOR, list(), init, cond, incr, body, origin);
+	node_t blk = node2(N_BLOCK, list(), body_items, origin);
+	return node5(N_FOR, list(), init, cond, step, blk, origin);
+}
+
+node_t CirBuilder::class_array_construct_loop(
+	const std::function<node_t()> &mint_base,
+	const std::function<node_t()> &mint_count,
+	DataDefCLASS *cdd, TokenBase *origin, long first, bool value_init)
+{
+	return class_array_index_loop(mint_count, first, false, origin,
+		[&](const char *ci, std::vector<node_t> &out) {
+			auto elem = [&]() -> node_t {
+				return class_array_element(mint_base(), cdd,
+							   id(ci, origin), origin);
+			};
+			if (value_init)
+				value_init_zero_stmts(elem, cdd, false, out, origin);
+			complete_object_construct_stmts(elem, cdd,
+				std::vector<TokenBase *>(), origin, out);
+		});
 }
 
 // A same-class (or derived) initializer is a COPY of the class, never a
@@ -19974,7 +20069,7 @@ node_t CirBuilder::scalar_array_new_list_init(TokenNEW *tn, DataDef *et,
 	return node1(N_STMTEXPR, node2(N_BLOCK, list(), items, tb), tb);
 }
 
-void CirBuilder::class_array_list_init(const char *arr_ptr,
+void CirBuilder::class_array_list_init(const std::function<node_t()> &mint_base,
 	const std::vector<size_t> &dims,
 	const std::function<node_t()> &mint_count, DataDefCLASS *cdd,
 	const std::vector<TokenBase *> &elements, bool storage_zeroed,
@@ -20095,11 +20190,8 @@ void CirBuilder::class_array_list_init(const char *arr_ptr,
 			     node2(N_DECL, ignore(), list()));
 	};
 	auto elem_addr = [&](size_t index) -> node_t {
-		node_t flat = node2(N_CAST,
-			node2(N_TYPE, node1(N_LIST, class_tag_ref(cdd)),
-			      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
-			id(arr_ptr, origin), origin);
-		return node2(N_ADD, flat, integer((int64_t)index, origin), origin);
+		return class_array_element(mint_base(), cdd,
+					   integer((int64_t)index, origin), origin);
 	};
 	auto zero_fill = [&](size_t from, node_t nelems) -> node_t {
 		return zero_fill_stmt(elem_addr(from),
@@ -20129,7 +20221,7 @@ void CirBuilder::class_array_list_init(const char *arr_ptr,
 			if (value_init_zeroes)
 				out.push_back(zero_fill(i, integer((int64_t)(b - i), origin)));
 			const size_t end = b;
-			if (node_t loop = class_array_construct_loop(arr_ptr,
+			if (node_t loop = class_array_construct_loop(mint_base,
 					[&]() -> node_t { return integer((int64_t)end, origin); },
 					cdd, origin, (long)i))
 				out.push_back(loop);
@@ -20174,7 +20266,7 @@ void CirBuilder::class_array_list_init(const char *arr_ptr,
 			node2(N_SUB, mint_count(), integer((int64_t)k, origin), origin)));
 		below_count(k, fill_stmts);
 	}
-	if (node_t loop = class_array_construct_loop(arr_ptr, mint_count, cdd,
+	if (node_t loop = class_array_construct_loop(mint_base, mint_count, cdd,
 						     origin, (long)k))
 		out.push_back(loop);
 }
@@ -20645,8 +20737,16 @@ void CirBuilder::class_member_default_construct(
 	if (class_member_nsdmi_init(mint_addr, cdd, mi, mc, out, origin))
 		return;
 	std::vector<node_t> cs;
-	complete_object_construct_stmts(mint_addr, mc, std::vector<TokenBase *>(),
-					origin, cs);
+	size_t n = 0;
+	if (cdd->member_fixed_array(mi, n)) {
+		// An array member: EVERY element, in order ([dcl.init]/7.2).
+		if (node_t loop = class_array_construct_loop(mint_addr,
+				[&]() -> node_t { return integer((int64_t)n, origin); },
+				mc, origin))
+			cs.push_back(loop);
+	} else
+		complete_object_construct_stmts(mint_addr, mc,
+						std::vector<TokenBase *>(), origin, cs);
 	flush_pending_stmts(out);
 	out.insert(out.end(), cs.begin(), cs.end());
 }
@@ -20817,7 +20917,8 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 	// Initializer-carrying class arrays keep their existing paths below.
 	if (v->is_fixed_array() && ctor_args.empty()) {
 		long n = (long)v->total_elements();
-		return class_array_construct_loop(vname.c_str(),
+		return class_array_construct_loop(
+			[&]() -> node_t { return id(vname.c_str(), origin); },
 			[&]() -> node_t { return integer(n, origin); },
 			cdd, origin);
 	}
@@ -25567,14 +25668,16 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 					if (kn->ival() >= 0)
 						dims.push_back((size_t)kn->ival());
 				std::vector<node_t> stmts;
-				class_array_list_init(tmp, dims,
+				class_array_list_init(
+					[&]() -> node_t { return id(tmp, tb); }, dims,
 					[&]() -> node_t { return id(ntmp, tb); },
 					cdd, tn->array_init->inits, true, false, tb,
 					stmts);
 				for (node_t st : stmts)
 					append(items, st);
 			} else {
-				node_t loop = class_array_construct_loop(tmp,
+				node_t loop = class_array_construct_loop(
+					[&]() -> node_t { return id(tmp, tb); },
 					[&]() -> node_t { return id(ntmp, tb); }, cdd, tb);
 				if (loop) append(items, loop);
 			}
@@ -30741,7 +30844,8 @@ void CirBuilder::class_decl_construction(TokenDecl *sdcl, DataDefCLASS *cdcl,
 		const long n = (long)sdcl->var.total_elements();
 		std::vector<node_t> stmts;
 		// Static storage is zero before any initialization runs.
-		class_array_list_init(aname.c_str(), dims,
+		class_array_list_init(
+			[&]() -> node_t { return id(aname.c_str(), sdcl); }, dims,
 			[&]() -> node_t { return integer(n, sdcl); },
 			cdcl, sdcl->init_list,
 			(sdcl->var.flags & vfSTATIC) != 0, true, sdcl, stmts);
@@ -33678,7 +33782,8 @@ node_t CirBuilder::global_ctor_call(Variable *v, DataDefCLASS *cdd, TokenDecl *d
 			const std::vector<size_t> dims(v->dims.begin(), v->dims.end());
 			const long n = (long)v->total_elements();
 			std::vector<node_t> stmts;
-			class_array_list_init(aname.c_str(), dims,
+			class_array_list_init(
+				[&]() -> node_t { return id(aname.c_str(), decl); }, dims,
 				[&]() -> node_t { return integer(n, decl); },
 				cdd, decl->init_list, true, true, decl, stmts);
 			if (stmts.empty()) return NULL;

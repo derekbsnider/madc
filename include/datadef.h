@@ -1678,6 +1678,20 @@ public:
 		return (i < member_counts.size()) ? member_counts[i] : 1;
 	return 1;
     }
+    // Member `i` is a FIXED array (an array declarator, not runtime-sized):
+    // true, with its element count (every extent multiplied; a flexible or
+    // zero-length array holds 0) in `elements`.
+    bool member_fixed_array(size_t i, size_t &elements) const
+    {
+	if ( i >= member_counts.size()
+	  || (i < member_count_exprs.size() && member_count_exprs[i]) )
+	    return false;
+	if ( member_counts[i] == 1
+	  && !(i < member_array_flags.size() && member_array_flags[i]) )
+	    return false;
+	elements = member_counts[i];
+	return true;
+    }
     // Per-member access flag (0=public, vfPRIVATE, vfPROTECTED). Returns 0
     // (public) for an unknown member or a struct with no access info (a plain
     // C struct never sets member_access entries past the default 0).

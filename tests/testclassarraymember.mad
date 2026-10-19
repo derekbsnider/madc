@@ -1,0 +1,48 @@
+// A class-type ARRAY member is EVERY element: default-initialization
+// constructs each in order ([dcl.init]/7.2), destruction runs each last first
+// ([class.dtor]/13), the implicit copy constructor copies each
+// ([class.copy.ctor]/14), and a mem-initializer `m()` / `m{...}` value- or
+// list-initializes the whole array ([dcl.init]/9.2, [dcl.init.aggr]/5).
+// Each D carries its own id so every line is distinct; g++ 13 and clang++ 18
+// print the .expect.
+#include <cstdio>
+int next_id;
+struct D {
+	int id;
+	D() : id(++next_id) { printf("D%d()\n", id); }
+	D(const D &o) : id(++next_id) { printf("D%d(copy of D%d)\n", id, o.id); }
+	~D() { printf("~D%d()\n", id); }
+};
+struct A {			// implicit ctor/dtor/copy
+	D d[2];
+};
+struct G {			// two dimensions
+	D g[2][2];
+};
+struct U {			// user ctor/dtor, value-initialized array member
+	int tag;
+	D u[3];
+	U() : tag(7), u() { printf("U()\n"); }
+	~U() { printf("~U()\n"); }
+};
+struct L {			// list-initialized: two clauses, one value-initialized
+	D l[3];
+	L() : l{D(), D()} { printf("L()\n"); }
+};
+struct E {			// no copy ctor of its own, a member with one
+	D e;
+};
+struct AE {
+	E es[2];
+};
+int main()
+{
+	{ A a; printf("a %d %d\n", a.d[0].id, a.d[1].id); }
+	{ G g; printf("g %d %d\n", g.g[0][0].id, g.g[1][1].id); }
+	{ U u; printf("u %d tag %d\n", u.u[2].id, u.tag); }
+	{ L l; printf("l %d %d %d\n", l.l[0].id, l.l[1].id, l.l[2].id); }
+	{ A a; A b = a; printf("b %d %d\n", b.d[0].id, b.d[1].id); }
+	{ AE x; AE y = x; printf("y %d %d\n", y.es[0].e.id, y.es[1].e.id); }
+	printf("end\n");
+	return 0;
+}

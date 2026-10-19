@@ -2280,15 +2280,34 @@ public:
 			       DataDefCLASS *cdd,
 			       const std::vector<TokenBase *> &ctor_args,
 			       TokenBase *origin, std::vector<node_t> &out);
+	// `(struct Cls *)base + index`: the element of a class array at `index`.
+	// A MULTI-dim fixed array (`B m[2][2]`) decays to Cls(*)[M], whose +1
+	// strides a whole ROW; the cast flattens to element stride for any
+	// dimensionality and is a no-op for 1D arrays and heap element pointers.
+	node_t class_array_element(node_t base, DataDefCLASS *cdd, node_t index,
+			       TokenBase *origin);
+	// The ONE per-element loop over a class array:
+	// `for (long __ci = <first>; __ci < <count>; __ci += 1) { body }`, or with
+	// `reverse` (destruction order) `for (long __ci = <count> - 1;
+	// __ci >= <first>; __ci -= 1) { body }`. `body` appends one element's
+	// statements given the index variable's name; NULL when it appends none.
+	node_t class_array_index_loop(const std::function<node_t()> &mint_count,
+			       long first, bool reverse, TokenBase *origin,
+			       const std::function<void(const char *ci,
+						std::vector<node_t> &out)> &body);
 	// Per-element complete-object construction loop over a class array:
 	// `for (long __ci = 0; __ci < <count>; __ci += 1)
-	//      <construct (arr_ptr + __ci)>;`
-	// NULL when the element class needs no construction (trivial).
+	//      <construct (base + __ci)>;`
+	// `mint_base` returns a FRESH node for the array (or its first element)
+	// per call. NULL when the element class needs no construction (trivial).
 	// `first` starts the loop past the elements a braced list initialized.
-	node_t class_array_construct_loop(const char *arr_ptr,
+	// `value_init` value-initializes each element ([dcl.init]/9.2: zeroed
+	// first when the class's value-init zeroes) instead of default-
+	// initializing it.
+	node_t class_array_construct_loop(const std::function<node_t()> &mint_base,
 			       const std::function<node_t()> &mint_count,
 			       DataDefCLASS *cdd, TokenBase *origin,
-			       long first = 0);
+			       long first = 0, bool value_init = false);
 	// TRUE when a braced list on a fixed ARRAY of class type needs real
 	// per-element construction — the element class has a user ctor, a
 	// vptr, bases, or object members. var_decl leaves such storage BARE and
@@ -2326,7 +2345,7 @@ public:
 	// zeroed block, a store per clause (the class twin is the owner below).
 	node_t scalar_array_new_list_init(class TokenNEW *tn, DataDef *et,
 					  TokenBase *tb);
-	void class_array_list_init(const char *arr_ptr,
+	void class_array_list_init(const std::function<node_t()> &mint_base,
 			       const std::vector<size_t> &dims,
 			       const std::function<node_t()> &mint_count,
 			       DataDefCLASS *cdd,
@@ -2415,6 +2434,16 @@ public:
 			       std::vector<madc::dis::istring> &path,
 			       std::vector<node_t> &out, TokenBase *origin,
 			       bool move);
+	// Its array-member element: element `ci` of the array `array_addr`
+	// mints under `lname` copied from `rname`'s — mc's copy/move ctor, or
+	// (none declared, non-trivial) the member walk over the two elements,
+	// bound to pointer temporaries first since the walk names its objects.
+	void implicit_copy_element_reconstructs(DataDefCLASS *mc,
+			       FuncDef *copy_ctor,
+			       const std::function<node_t(const char *)> &array_addr,
+			       const char *lname, const char *rname,
+			       const char *ci, std::vector<node_t> &out,
+			       TokenBase *origin, bool move);
 	// Its base half: each base of `cls` (in object `obj`, at `off0`) with
 	// a copy/move constructor runs it on its subobject. True when one ran.
 	bool implicit_copy_base_reconstructs(DataDefCLASS *obj,
