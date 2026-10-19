@@ -64875,6 +64875,14 @@ bool Program::type_dependent_expression(TokenBase *expr)
 	return is_type_dependent(expr);
 }
 
+std::vector<bool> Program::forwarding_arg_lvalues(const std::vector<TokenBase *> &args)
+{
+	std::vector<bool> lvalues;
+	for ( TokenBase *a : args )
+		lvalues.push_back(fn_template_call_arg_is_lvalue(a, *this));
+	return lvalues;
+}
+
 // Is THIS call type-dependent (and so deferred during a dependent parse)? A thin
 // wrapper over is_type_dependent; a non-dependent call (`cout << "x"`, a
 // fixed-type helper) still instantiates eagerly at definition time, matching
@@ -70234,7 +70242,18 @@ bool Program::instantiate_member_ctor_template_candidate(
 	key += (adp ? adp->name : madc::dis::istring("?")) + ",";
     }
     key += ")";
-    if ( !member_ctor_inst_done.insert(key).second )
+    // The instance identity adds each argument's value category: a
+    // forwarding-reference parameter deduces A& from an lvalue and A from an
+    // rvalue ([temp.deduct.call]/3), two specializations of one value type.
+    // The memo keys on it too — keyed on the value types alone, `W w(a);
+    // W w2(std::move(a));` reused the A& instance for the rvalue. The symbol
+    // is keyed on it as well, so every TU names one construction shape's
+    // instance alike.
+    const std::vector<bool> arg_lvalues = forwarding_arg_lvalues(ctor_args);
+    std::string inst_identity = key;
+    for ( bool lv : arg_lvalues )
+	inst_identity += lv ? "@L" : "@R";
+    if ( !member_ctor_inst_done.insert(inst_identity).second )
 	return false;	// already instantiated (or instantiating) this candidate shape
 
     // Build the free-fn-template descriptor from the retained ctor decl, dropping
@@ -70299,12 +70318,6 @@ bool Program::instantiate_member_ctor_template_candidate(
 
     madc::dis::istring ctor_decl_name =
 	skipped_template_function_declarator_name(fd->member_template_decl);
-    // The instance's symbol is keyed on the memo key plus each argument's
-    // value category (a forwarding-reference parameter deduces A& from an
-    // lvalue), so every TU names one construction shape's instance alike.
-    std::string inst_identity = key;
-    for ( TokenBase *a : ctor_args )
-	inst_identity += fn_template_call_arg_is_lvalue(a, *this) ? "@L" : "@R";
     madc::dis::istring inst_name = instance_overload_symbol(cdd->name + "__" + cdd->name,
 						     inst_identity);
     for ( size_t i = 0; i < fd->member_template_decl.size(); ++i )
@@ -70412,6 +70425,7 @@ bool Program::instantiate_member_ctor_template_candidate(
 	if ( inst_fd->local_emit_name.empty() )
 	    inst_fd->local_emit_name = inst_name;
 	inst_fd->method_display_name = ctor_decl_name;
+	inst_fd->deduced_arg_lvalues = arg_lvalues;
 	{
 	    inst_fd->tsubst_source = fd;
 	    inst_fd->tsubst_type_args = concrete_type_args;

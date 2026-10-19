@@ -18326,9 +18326,26 @@ FuncDef *CirBuilder::select_ctor_overload(DataDefCLASS *cdd,
 	FuncDef *best = NULL;
 	Variable *best_var = NULL;
 	int best_score = -1;
+	// This construction's argument categories, read once when a
+	// constructor-template instance asks (FuncDef::deduced_arg_lvalues).
+	std::vector<bool> call_lvalues;
+	bool call_lvalues_read = false;
 	for (Variable *cv : cdd->ctors) {
 		FuncDef *fd = cv ? dynamic_cast<FuncDef *>(cv->type) : NULL;
 		if (!fd) continue;
+		// A constructor template contributes ONE specialization per
+		// construction ([temp.over]/1): an instance another construction's
+		// deduction formed (`W(A&)` for an lvalue) is no candidate for
+		// arguments of other categories, whose own instance (`W(A&&)`)
+		// sits beside it with the same lowered signature.
+		if (!fd->deduced_arg_lvalues.empty() && m_prog) {
+			if (!call_lvalues_read) {
+				call_lvalues = m_prog->forwarding_arg_lvalues(ctor_args);
+				call_lvalues_read = true;
+			}
+			if (fd->deduced_arg_lvalues != call_lvalues)
+				continue;
+		}
 		// Parameter count excluding the hidden __this (param 0). With default
 		// arguments a ctor is callable with [required..total] user args; the
 		// omitted trailing ones are filled from param_defaults by class_ctor_call.

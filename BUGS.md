@@ -30,6 +30,30 @@ and `--std=gnu++17` for `.cpp`, against `gcc -std=gnu17` / `g++ -std=gnu++17`.
 
 ## Silent wrong answers
 
+### B204. A constructor template's mem-initializer reads a forwarding-deduced `U = A&` as `A`
+
+```cpp
+#include <cstdio>
+#include <type_traits>
+#include <utility>
+struct A { int v; };
+struct V1 { int k; template<class U> V1(U &&) : k((int)std::is_lvalue_reference<U>::value) {} };
+int main() { A a{3}; V1 a1(a), b1(std::move(a)); std::printf("%d%d\n", a1.k, b1.k); return 0; }
+```
+
+- Found 2026-10-19 while fixing constructor-template instance selection
+  (`tests/testctortemplate_fwdref_instances`).
+- g++ 13 and clang++ 18: `10`. madc (over `a51e936f2` with the instance
+  fix): `00`, exit 0. The same trait in the constructor BODY answers `10`
+  (the body is the tsubst copy), and so does the mem-initializer when an
+  earlier `__is_same(U, A &)` in the same class spelled the reference type
+  first — order-dependent.
+- Layer: not yet traced. The mem-initializer list is parsed eagerly from the
+  instance's injected declaration tokens (`try_instantiate_namespace_fn_template`,
+  `subst[U]` = a TokenDataType spelled `A&` over the deduced DataDefREF);
+  the template-id `std::is_lvalue_reference<U>` there resolves to the
+  primary. `decltype(u)` in the mem-initializer reads the same way.
+
 ### B202. A handler for a class type never binds the thrown object, and matches any class
 
 ```cpp

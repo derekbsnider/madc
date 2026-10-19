@@ -655,6 +655,13 @@ public:
     // function. Set in instantiate_member_fn_template_for_call so the cir-build
     // seam can find the recipe.
     FuncDef *tsubst_source;
+    // A member CONSTRUCTOR template's instance: whether each construction
+    // argument was an lvalue when deduction formed it (Program::
+    // forwarding_arg_lvalues — a forwarding reference deduces A& from an
+    // lvalue, A from an rvalue). Empty for every other function. One template
+    // contributes one specialization per call: the constructor ranker takes
+    // this instance only for a construction whose arguments match.
+    std::vector<bool> deduced_arg_lvalues;
     // Concrete TYPE template arguments for the instantiated member-template
     // method, in tsubst_source->template_param_names order. These are captured
     // where deduction/defaulting actually happens (the parser's fn-template
@@ -9890,6 +9897,11 @@ public:
     // type_dependent_expression_p); the CIR builder asks it whether a
     // pattern may pick a constructor. Defined in parser.cpp.
     static bool type_dependent_expression(TokenBase *expr);
+    // Whether each argument is an lvalue as forwarding-reference deduction
+    // reads it ([temp.deduct.call]/3), one entry per argument. A member
+    // constructor template's instance identity and its
+    // FuncDef::deduced_arg_lvalues. Defined in parser.cpp.
+    std::vector<bool> forwarding_arg_lvalues(const std::vector<TokenBase *> &args);
     // madc-dialect spellings of the intrinsic tagged carrier (ddARRAY ==
     // madc::value): `array` / `value` / `var`. Gated to STD_MADC; NULL in
     // every strict C/C++ mode. Instance method on purpose — these names

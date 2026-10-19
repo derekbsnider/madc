@@ -1,0 +1,47 @@
+// A constructor template's forwarding-reference parameter deduces A& from an
+// lvalue and A from an rvalue ([temp.deduct.call]/3): two specializations,
+// two instances. The instantiation memo was keyed on the arguments' value
+// types alone, so `W w2(std::move(a))` reused the A& instance made for
+// `W w1(a)`; and every instance was an ordinary candidate for every later
+// construction, where instances of one template tie (one lowered
+// signature) and the first registered won. A template contributes ONE
+// specialization per call ([temp.over]/1).
+// Oracle (g++ 13, clang++ 18, -std=gnu++17):
+//   ctor 1
+//   ctor 0
+//   pair 10 01 00
+//   member 1 0
+#include <cstdio>
+#include <type_traits>
+#include <utility>
+struct A { int v; };
+struct W {
+	int k;
+	template<class U> W(U &&)
+	{
+		k = (int)std::is_lvalue_reference<U>::value;
+		std::printf("ctor %d\n", k);
+	}
+};
+struct P {
+	int a, b;
+	template<class U, class V> P(U &&, V &&)
+	{
+		a = (int)std::is_lvalue_reference<U>::value;
+		b = (int)std::is_lvalue_reference<V>::value;
+	}
+};
+struct M { template<class U> int f(U &&) { return (int)std::is_lvalue_reference<U>::value; } };
+int main()
+{
+	A a{3}, c{4};
+	W w1(a);
+	W w2(std::move(a));
+	P p1(a, std::move(c));
+	P p2(std::move(a), c);
+	P p3(std::move(a), std::move(c));
+	std::printf("pair %d%d %d%d %d%d\n", p1.a, p1.b, p2.a, p2.b, p3.a, p3.b);
+	M m;
+	std::printf("member %d %d\n", m.f(a), m.f(std::move(a)));
+	return 0;
+}

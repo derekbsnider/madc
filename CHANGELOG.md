@@ -6,6 +6,14 @@ Consolidated: counted_loop — gate scripts/check-one-counted-loop.sh
 Consolidated: class_pointer_spelling — gate scripts/check-one-class-pointer-decl.sh
 Consolidated: pointer_type_node — gate scripts/check-one-pointer-type-node.sh
 
+### A constructor template's forwarding-reference instances are per argument value category
+
+- A constructor template with a forwarding-reference parameter (`template<class U> W(U &&)`) has one specialization per argument value category ([temp.deduct.call]/3): `W(A&)` for an lvalue and `W(A&&)` for an rvalue. The instantiation memo was keyed on the argument value types alone, so `W w2(std::move(a))` reused the `A&` instance made for `W w1(a)`. Every instance was also an ordinary candidate for later constructions whose argument categories differ.
+- The memo key and the instance symbol both take each argument's value category, read by `Program::forwarding_arg_lvalues` (`src/parser.cpp`, declared in `include/madc.h`). An instance records its categories in `FuncDef::deduced_arg_lvalues`, and `CirBuilder::select_ctor_overload` (`src/cir_builder.cpp`) admits an instance only for a construction whose argument categories match ([temp.over]/1).
+- Reducer `tests/testctortemplate_fwdref_instances.mad` (oracle `tests/testctortemplate_fwdref_instances.expect`, g++ 13 == clang++ 18, `--std=gnu++17`): constructor templates with one and two forwarding parameters, and a member function template as a control.
+- Still open: a mem-initializer that reads a forwarding-deduced `U = A&` as `A` (files B204). This change does not fix it.
+- Fix lane Tier 1 96/96 JIT, EXE and OBJ green. Tier 2 `scripts/fast_lanes.sh` at baseline. Static gates 0 red; unit, `scripts/forest_bind_gate.sh` and parse-cost gates green; `scripts/tsubst_flagon_gate.sh --check` green.
+
 ### A member template's constructor argument that is type-dependent picks its constructor per instantiation (B145)
 
 - A local declaration `S s(std::forward<T>(t));` and a placement new `new (buf) S(std::forward<T>(t))` in a member template were lowered once in the shared Tree-1 pattern, and the pattern baked `S(S&&)` for every `T` ([temp.dep.expr]). An lvalue argument was moved from (BUGS.md B145). Only a pack-expansion argument deferred the construction.
