@@ -6,6 +6,13 @@ Consolidated: counted_loop — gate scripts/check-one-counted-loop.sh
 Consolidated: class_pointer_spelling — gate scripts/check-one-class-pointer-decl.sh
 Consolidated: pointer_type_node — gate scripts/check-one-pointer-type-node.sh
 
+### A cast to a reference deduces a forwarding reference by its value category (B144)
+
+- `fn_template_call_arg_is_lvalue` (`src/parser.cpp`) classified a forwarding-reference argument with its own call and named-variable tests, and every cast fell through to rvalue ([temp.deduct.call]/3). `std::forward<T>(t)` over `static_cast<int &>(x)` or `(int &)x` therefore selected `f(int &&)`: madc printed `R R R` (BUGS.md B144) where g++ 13 and clang++ 18 print `L R L`.
+- The helper now asks the one value-category reader first, `Program::argument_value_category`, whose cast arm already gives an lvalue for `T&` and an xvalue for `T&&`. Only an `Unknown` answer falls through to the call, named-variable and addressable tests.
+- Reducer `tests/testforward_cast_category.mad` (oracle `tests/testforward_cast_category.expect`, g++ 13 == clang++ 18, `--std=gnu++17`): casts to `int &`, `int &&` and `(int &)`, a string literal and a named variable as lvalues, a prvalue `x + 1`.
+- Fix lanes Tier 1 67/67 JIT, EXE 63/63, OBJ 63/63 over the new test and the forwarding, value-category and container neighbors. Tier 2 `scripts/fast_lanes.sh` at baseline: c-testsuite 220, c-torture 1619, c2mir-tests 368, gui 13, gxx-c++11 1505, index-c 50/50, commonmark 664. Static gates 0 red; unit 84; `scripts/forest_bind_gate.sh` 47/47; parse-cost 0 red of 21.
+
 ### `__is_same` and `std::is_same` answer type identity, not name equality (B156)
 
 - `TraitTypeArg::same_as` (`src/parser.cpp`) compared `dd->name`, so a namespace-scope scalar typedef was not its type: `std::is_same<w::i, int>` (`typedef int i` in `namespace w`) and `__is_same(std::size_t, unsigned long)` were 0 where g++ 13 and clang++ 18 give 1.

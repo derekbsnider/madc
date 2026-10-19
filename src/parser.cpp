@@ -63958,23 +63958,25 @@ DataDef *Program::conditional_arithmetic_type(TokenBase *t, TokenBase *f)
 }
 
 // [temp.deduct.call]/3 needs the argument expression's value category for a
-// forwarding reference. TokenCallFunc and TokenCallMethod inherit TokenVar, so
-// test real calls before the named-variable arm: a value-returning call is a
-// prvalue, a `T&&`-returning call an xvalue, and any other reference-returning
-// call denotes its referent. Which kind a call returns is its RESOLVED
-// callee's (Program::argument_value_category) — the parse-bound callee may be
-// the template's placeholder, while the CIR ranks the bound instance.
+// forwarding reference: the one reader's, Program::argument_value_category
+// (a cast to `T&` is an lvalue, to `T&&` an xvalue — B144 deduced every cast
+// as an rvalue here). Where that reader answers Unknown: TokenCallFunc and
+// TokenCallMethod inherit TokenVar, so test real calls before the
+// named-variable arm — a value-returning call is a prvalue, a
+// reference-returning one not proven an xvalue denotes its referent; then a
+// named variable, then an addressable expression.
 static bool fn_template_call_arg_is_lvalue(TokenBase *expr, Program &pgm)
 {
     if ( !expr )
 	return false;
+    ArgValueCategory cat = pgm.argument_value_category(expr);
+    if ( cat != ArgValueCategory::Unknown )
+	return cat == ArgValueCategory::Lvalue;
     if ( expr->type() == TokenType::ttCallFunc
       || expr->type() == TokenType::ttCallMethod )
     {
 	TokenCallFunc *call = dynamic_cast<TokenCallFunc *>(expr);
-	if ( !call || !call->call_returns_reference() )
-	    return false;
-	return pgm.argument_value_category(call) != ArgValueCategory::Rvalue;
+	return call && call->call_returns_reference();
     }
     if ( dynamic_cast<TokenVar *>(expr) )
 	return true;

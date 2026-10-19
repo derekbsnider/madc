@@ -266,36 +266,6 @@ int main() {
 - Found 2026-10-02 while fixing the `[subbind]` bind gate. Off the release
   path, filed per owner 2026-09-30.
 
-### B144. A cast to an lvalue reference deduces a forwarding reference as an rvalue
-
-```cpp
-#include <cstdio>
-#include <utility>
-void f(int &) { puts("L"); }
-void f(int &&) { puts("R"); }
-template<class T> void g(T &&t) { f(std::forward<T>(t)); }
-int main() {
-	int x = 1;
-	g(static_cast<int &>(x));
-	g(static_cast<int &&>(x));
-	g((int &)x);
-	return 0;
-}
-```
-
-- g++ 13 and clang++ 18 (`-std=c++17`): `L R L`. madc (`--std=c++17`,
-  2026-10-02): `R R R`, exit 0.
-- Layer: deduction's lvalue test, `fn_template_call_arg_is_lvalue`
-  (`src/parser.cpp`), is a second value-category reader beside
-  `Program::argument_value_category`. It sends a `TokenCast` to
-  `is_addressable_expression`, which answers false for every cast, so
-  [temp.deduct.call]/3 deduces `T = int` for an lvalue. `argument_value_category`
-  reads the cast's kind (`static_cast<T&>` an lvalue) correctly. The fix is to
-  make the deduction reader defer to the one reader. The two also differ on a
-  string literal (an lvalue there, an rvalue here).
-- Found 2026-10-02 while fixing the vecbind gate (substituted call arguments'
-  value category). Off the release path, filed per owner 2026-09-30.
-
 ### B145. A member template's direct-initialization picks its constructor once, for every instantiation
 
 ```cpp
