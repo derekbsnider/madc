@@ -1038,25 +1038,16 @@ bool CirBuilder::dump_array(DumpFlavor fl, const DumpAccess &acc, DataDef *elem,
 	body.insert(body.end(), elem_out.begin(), elem_out.end());
 
 	// for (long i = 0; i < count; i += 1) { ... }
-	node_t ispec = list();
-	append_i64(ispec, origin);
-	node_t init = simple(N_SPEC_DECL, origin);
-	append(init, node1(N_SHARE, ispec));
-	append(init, node2(N_DECL, id(idxname.c_str(), origin), list()));
-	append(init, ignore());
-	append(init, ignore());
-	append(init, integer(0, origin));
 	// A row's bound: at most m_show_limits.elements, then `, …`.
 	const size_t bound = show ? (size_t)show_element_bound((long)count) : count;
 	node_t cond = node2(N_LT, id(idxname.c_str(), origin),
 			    integer((int64_t)bound, origin), origin);
-	node_t incr = node2(N_ADD_ASSIGN, id(idxname.c_str(), origin),
-			    integer(1, origin), origin);
 	node_t items = list();
 	for (size_t i = 0; i < body.size(); i++)
 		append(items, body[i]);
-	node_t blk = node2(N_BLOCK, list(), items, origin);
-	out.push_back(node5(N_FOR, list(), init, cond, incr, blk, origin));
+	out.push_back(counted_loop(idxname.c_str(), integer(0, origin), cond,
+				   false, node2(N_BLOCK, list(), items, origin),
+				   origin));
 
 	if (show && bound < count)
 		out.push_back(dump_show_text(", \u2026", origin));
@@ -1219,26 +1210,17 @@ bool CirBuilder::dump_sequence(DumpFlavor fl, const DumpAccess &acc,
 	}
 
 	// for (long i = 0; i < n; i += 1) { ... }
-	node_t ispec = list();
-	append_i64(ispec, origin);
-	node_t init = simple(N_SPEC_DECL, origin);
-	append(init, node1(N_SHARE, ispec));
-	append(init, node2(N_DECL, id(idxname.c_str(), origin), list()));
-	append(init, ignore());
-	append(init, ignore());
-	append(init, integer(0, origin));
 	// A row's bound (text is never bounded: the row's width cuts it).
 	node_t cond = show_bounded_cond(show && !is_text,
 					node2(N_LT, id(idxname.c_str(), origin),
 					      id(nname.c_str(), origin), origin),
 					idxname, origin);
-	node_t incr = node2(N_ADD_ASSIGN, id(idxname.c_str(), origin),
-			    integer(1, origin), origin);
 	node_t items = list();
 	for (size_t i = 0; i < body.size(); i++)
 		append(items, body[i]);
-	out.push_back(node5(N_FOR, list(), init, cond, incr,
-			    node2(N_BLOCK, list(), items, origin), origin));
+	out.push_back(counted_loop(idxname.c_str(), integer(0, origin), cond,
+				   false, node2(N_BLOCK, list(), items, origin),
+				   origin));
 	if (show && !is_text)
 		if (node_t tail = show_bounded_tail(id(nname.c_str(), origin), origin))
 			out.push_back(tail);
@@ -1497,25 +1479,16 @@ bool CirBuilder::dump_iterator(DumpFlavor fl, const DumpAccess &acc,
 	}
 
 	// for (long k = 0; k < n; k += 1) { ... }
-	node_t kspec = list();
-	append_i64(kspec, origin);
-	node_t init = simple(N_SPEC_DECL, origin);
-	append(init, node1(N_SHARE, kspec));
-	append(init, node2(N_DECL, id(idxname.c_str(), origin), list()));
-	append(init, ignore());
-	append(init, ignore());
-	append(init, integer(0, origin));
 	node_t cond = show_bounded_cond(show,
 					node2(N_LT, id(idxname.c_str(), origin),
 					      id(nname.c_str(), origin), origin),
 					idxname, origin);
-	node_t incr = node2(N_ADD_ASSIGN, id(idxname.c_str(), origin),
-			    integer(1, origin), origin);
 	node_t items = list();
 	for (size_t i = 0; i < body.size(); i++)
 		append(items, body[i]);
-	out.push_back(node5(N_FOR, list(), init, cond, incr,
-			    node2(N_BLOCK, list(), items, origin), origin));
+	out.push_back(counted_loop(idxname.c_str(), integer(0, origin), cond,
+				   false, node2(N_BLOCK, list(), items, origin),
+				   origin));
 	if (show)
 		if (node_t tail = show_bounded_tail(id(nname.c_str(), origin), origin))
 			out.push_back(tail);

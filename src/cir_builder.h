@@ -2326,6 +2326,15 @@ public:
 			       long first, bool reverse, TokenBase *origin,
 			       const std::function<void(const char *ci,
 						std::vector<node_t> &out)> &body);
+	// The ONE counted loop the builder synthesizes (an element loop, a
+	// range-for's index, a dump row):
+	// `for (long <ci> = <start>; <cond>; <ci> += 1) <body>`, with `down`
+	// `<ci> -= 1`; a non-NULL `advance` joins the step as
+	// `(<ci> += 1, <advance>)` so a `continue` in the body still runs it.
+	// Only a user `for` statement's own header is built elsewhere (gated by
+	// check-one-counted-loop.sh).
+	node_t counted_loop(const char *ci, node_t start, node_t cond, bool down,
+			    node_t body, TokenBase *origin, node_t advance = NULL);
 	// Per-element complete-object construction loop over a class array:
 	// `for (long __ci = 0; __ci < <count>; __ci += 1)
 	//      <construct (base + __ci)>;`

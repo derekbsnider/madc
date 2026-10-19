@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 Consolidated: type_trait_dispatch — gate scripts/check-one-trait-dispatch.sh
+Consolidated: counted_loop — gate scripts/check-one-counted-loop.sh
+
+### A counted loop the CIR builder synthesizes has one owner, `CirBuilder::counted_loop`
+
+- A counted `for` loop the CIR builder emits — the i64 index declaration, the `<` / `>=` condition, the `+= 1` / `-= 1` step, the `N_FOR` node — was built by hand at eleven sites: the class-array element loop (`class_array_index_loop`), `delete[]`'s per-element destructor loop, the synthesized array destructor (`synth_array_dtor_def`), the member-pointer null stores (`member_pointer_null_stores`), the four range-for lowerings (`translate_foreach_loop`'s madarray arm, `translate_foreach_class`, `translate_foreach_iterator` with its `++it` advance, `translate_foreach_carray`) and the three `cir_dump.cpp` rows (`dump_array`, `dump_sequence`, `dump_iterator`). Eleven copies of one loop shape drift independently.
+- `CirBuilder::counted_loop` (`src/cir_builder.cpp` / `src/cir_builder.h`) is now the one owner: `for (long <ci> = <start>; <cond>; <ci> += 1) <body>`, with `down` stepping `-= 1` and a non-NULL `advance` joined to the step as `(<ci> += 1, <advance>)` so a `continue` in the body still runs it. `class_array_index_loop` builds on it; `synth_array_dtor_def` and `member_pointer_null_stores` route their per-element loops through `class_array_index_loop` (dropping `synth_array_dtor_def`'s `struct Cls *q` temporary for the shared `class_array_element` cast, and `member_pointer_null_stores`'s hand-rolled counter decl); the four range-for lowerings and the three dump rows call `counted_loop`. Only a user `for` statement's own header (`translate_for`) and the owner itself keep a direct `node5(N_FOR, ...)`, each marked `// allowed-exception`.
+- Gate `scripts/check-one-counted-loop.sh` (wired into `src/Makefile`'s `gates`) fails on a `node5(N_FOR,` on a non-comment, non-`allowed-exception` line of `src/*.cpp` / `src/*.h`, with a two-sided negative control (an unmarked loop must match, a marked one must not).
+- Behaviour-preserving. Differential: `--emit=c11` renders of the 34 affected tests on the binary before this change (HEAD ee9c91119) vs after — exit codes identical, stderr identical, 30 renders byte-identical (every range-for and dump test), 4 differ only in loop shape / temp-counter numbering (the synthesized array destructor loop and the member-pointer null-store loop). Fix lanes tier1 48/48 JIT (EXE 43/43, OBJ 43/43), tier2 rc=0 (c-testsuite 220, c-torture 1619, c2mir-tests 368, gui 13, gxx-c++11 1505, index-c 50/50, commonmark 664 — 0 outside baseline); static gates 0 red (the new gate's control passes both ways), unit 84/84, `scripts/forest_bind_gate.sh` 47/47, parse-cost 0 red of 21.
 
 ### `delete` runs the destructor of a class whose destructor is implicit but non-trivial
 

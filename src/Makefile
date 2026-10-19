@@ -1243,6 +1243,7 @@ gates: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/check-one-ptr-operator-fold.sh
 	@cd .. && bash scripts/check-one-reference-call-result.sh
 	@cd .. && bash scripts/check-one-return-declarator.sh
+	@cd .. && bash scripts/check-one-counted-loop.sh
 	@cd .. && bash scripts/check-one-member-init-walk.sh
 	@cd .. && bash scripts/check-one-error-diagnostic-scan.sh
 	@cd .. && bash scripts/check-gates-see-new-files.sh

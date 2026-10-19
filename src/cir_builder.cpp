@@ -13023,35 +13023,21 @@ void CirBuilder::member_pointer_null_stores(
 {
 	if (!holds_member_data_pointer(dd))
 		return;
-	// One object, or each of `mint_count()` objects through a counter.
-	char ci[32];
-	snprintf(ci, sizeof(ci), "__mpi%d", m_strtmp_counter++);
-	std::vector<node_t> stores;
-	member_pointer_null_lvalue_stores([&]() -> node_t {
-		node_t a = mint_addr();
-		if (mint_count)
-			a = node2(N_ADD, a, id(ci, origin), origin);
-		return node1(N_DEREF, a, origin);
-	}, dd, 1, NULL, stores, origin);
+	// One object, or each of `mint_count()` objects.
 	if (!mint_count) {
-		out.insert(out.end(), stores.begin(), stores.end());
+		member_pointer_null_lvalue_stores([&]() -> node_t {
+			return node1(N_DEREF, mint_addr(), origin);
+		}, dd, 1, NULL, out, origin);
 		return;
 	}
-	node_t ispec = list();
-	append_i64(ispec, origin);
-	node_t init = simple(N_SPEC_DECL, origin);
-	append(init, node1(N_SHARE, ispec));
-	append(init, node2(N_DECL, id(ci, origin), list()));
-	append(init, ignore());
-	append(init, ignore());
-	append(init, integer(0, origin));
-	node_t cond = node2(N_LT, id(ci, origin), mint_count(), origin);
-	node_t incr = node2(N_ADD_ASSIGN, id(ci, origin), integer(1, origin), origin);
-	node_t body_items = list();
-	for (node_t s : stores)
-		append(body_items, s);
-	out.push_back(node5(N_FOR, list(), init, cond, incr,
-			    node2(N_BLOCK, list(), body_items, origin), origin));
+	if (node_t loop = class_array_index_loop(mint_count, 0, false, origin,
+			[&](const char *ci, std::vector<node_t> &body) {
+				member_pointer_null_lvalue_stores([&]() -> node_t {
+					return node1(N_DEREF, node2(N_ADD, mint_addr(),
+						id(ci, origin), origin), origin);
+				}, dd, 1, NULL, body, origin);
+			}))
+		out.push_back(loop);
 }
 
 node_t CirBuilder::member_pointer_null_value(DataDef *dd, size_t count,
@@ -17415,36 +17401,21 @@ node_t CirBuilder::synth_array_dtor_def(DataDefCLASS *cdd, size_t n,
 	append(param_list, param);
 	node_t decl = node2(N_DECL, id(sym.c_str()),
 			    node1(N_LIST, node1(N_FUNC, param_list)));
-	node_t items = list();
-	// struct Cls *q = (struct Cls *)p;
-	node_t qdecl = simple(N_SPEC_DECL);
-	append(qdecl, node1(N_SHARE, node1(N_LIST, class_tag_ref(cdd))));
-	append(qdecl, node2(N_DECL, id("q"), node1(N_LIST, pointer())));
-	append(qdecl, ignore());
-	append(qdecl, ignore());
-	node_t cast_t = node2(N_TYPE, node1(N_LIST, class_tag_ref(cdd)),
-			      node2(N_DECL, ignore(), node1(N_LIST, pointer())));
-	append(qdecl, node2(N_CAST, cast_t, id("p")));
-	append(items, qdecl);
-	// for (long __ci = N-1; __ci >= 0; __ci -= 1) dtor(q + __ci);
+	// Each element, last first: dtor((struct Cls *)p + __ci).
 	madc::dis::istring dsym = class_complete_dtor_symbol(cdd);
 	referenced_funcs.insert(dsym);
 	// TYPED forward proto — a void* extern conflicts with the typed madc
 	// definition (task #50 KIND). Suppressed when a typed proto exists.
 	need_output_extern(dsym.c_str(), false, { { {}, true, cdd } });
-	node_t idecl = simple(N_SPEC_DECL);
-	append(idecl, node1(N_SHARE, i64_list()));
-	append(idecl, node2(N_DECL, id("__ci"), list()));
-	append(idecl, ignore());
-	append(idecl, ignore());
-	append(idecl, integer((int64_t)n - 1));
-	node_t cond = node2(N_GE, id("__ci"), integer(0));
-	node_t step = node2(N_SUB_ASSIGN, id("__ci"), integer(1));
-	node_t dargs = list();
-	append(dargs, node2(N_ADD, id("q"), id("__ci")));
-	node_t dtor_call = node2(N_EXPR, list(),
-		node2(N_CALL, id(dsym.c_str()), dargs));
-	append(items, node5(N_FOR, list(), idecl, cond, step, dtor_call));
+	node_t items = list();
+	append(items, class_array_index_loop(
+		[&]() -> node_t { return integer((int64_t)n); }, 0, true, NULL,
+		[&](const char *ci, std::vector<node_t> &out) {
+			node_t dargs = list();
+			append(dargs, class_array_element(id("p"), cdd, id(ci), NULL));
+			out.push_back(node2(N_EXPR, list(),
+				node2(N_CALL, id(dsym.c_str()), dargs)));
+		}));
 	node_t body = node2(N_BLOCK, list(), items);
 	return node4(N_FUNC_DEF, ret_type, decl, list(), body);
 }
@@ -19975,8 +19946,22 @@ node_t CirBuilder::class_array_index_loop(const std::function<node_t()> &mint_co
 	std::vector<node_t> elem_stmts;
 	body(ci, elem_stmts);
 	if (elem_stmts.empty()) return NULL;
+	node_t body_items = list();
+	for (node_t s : elem_stmts) append(body_items, s);
+	// From <first> up to <count>, or (reverse) from <count> - 1 down to <first>.
+	return counted_loop(ci,
+		reverse ? node2(N_SUB, mint_count(), integer(1, origin), origin)
+			: integer(first, origin),
+		reverse ? node2(N_GE, id(ci, origin), integer(first, origin), origin)
+			: node2(N_LT, id(ci, origin), mint_count(), origin),
+		reverse, node2(N_BLOCK, list(), body_items, origin), origin);
+}
 
-	// long __ci = <first>;   (reverse: <count> - 1)
+node_t CirBuilder::counted_loop(const char *ci, node_t start, node_t cond,
+				bool down, node_t body, TokenBase *origin,
+				node_t advance)
+{
+	// long <ci> = <start>;
 	node_t ispec = list();
 	append_i64(ispec, origin);
 	node_t init = simple(N_SPEC_DECL, origin);
@@ -19984,17 +19969,13 @@ node_t CirBuilder::class_array_index_loop(const std::function<node_t()> &mint_co
 	append(init, node2(N_DECL, id(ci, origin), list()));
 	append(init, ignore());
 	append(init, ignore());
-	append(init, reverse ? node2(N_SUB, mint_count(), integer(1, origin), origin)
-			     : integer(first, origin));
-
-	node_t cond = reverse ? node2(N_GE, id(ci, origin), integer(first, origin), origin)
-			      : node2(N_LT, id(ci, origin), mint_count(), origin);
-	node_t step = node2(reverse ? N_SUB_ASSIGN : N_ADD_ASSIGN, id(ci, origin),
+	append(init, start);
+	// <ci> += 1 (down: -= 1), then <advance> in the same slot.
+	node_t step = node2(down ? N_SUB_ASSIGN : N_ADD_ASSIGN, id(ci, origin),
 			    integer(1, origin), origin);
-	node_t body_items = list();
-	for (node_t s : elem_stmts) append(body_items, s);
-	node_t blk = node2(N_BLOCK, list(), body_items, origin);
-	return node5(N_FOR, list(), init, cond, step, blk, origin);
+	if (advance)
+		step = node2(N_COMMA, step, advance, origin);
+	return node5(N_FOR, list(), init, cond, step, body, origin);	// allowed-exception: the one owner
 }
 
 node_t CirBuilder::class_array_construct_loop(
@@ -28902,7 +28883,7 @@ node_t CirBuilder::translate_for(TokenFOR *tf)
 			incr = node2(N_COMMA, incr, translate_expr(ex));
 	incr = loop_header_expr_scope(incr, hdr_mark, tf);
 	node_t body = translate_loop_body(tf, tf->statement);
-	node_t loop = node5(N_FOR, list(), init, cond, incr, body, tf);
+	node_t loop = node5(N_FOR, list(), init, cond, incr, body, tf);	// allowed-exception: a user for statement's own header
 	// Class-shape for-init: the decl + construction statements precede the
 	// loop inside a synthetic block (see the class_init_items arm above).
 	if (class_init_items) {
@@ -29624,26 +29605,13 @@ node_t CirBuilder::translate_foreach_loop(TokenFOREACH *fe,
 	char idx[32];
 	snprintf(idx, sizeof(idx), "__fe_i_%d", m_strtmp_counter++);
 
-	// long __fe_i = 0;
-	node_t ispec = list();
-	append_i64(ispec, fe);
-	node_t init = simple(N_SPEC_DECL, fe);
-	append(init, node1(N_SHARE, ispec));
-	append(init, node2(N_DECL, id(idx, fe), list()));
-	append(init, ignore());
-	append(init, ignore());
-	append(init, integer(0, fe));
-
-	// __fe_i < madarray_size((void*)container)
+	// for (long __fe_i = 0; __fe_i < madarray_size((void*)container); ...)
 	need_output_extern("madarray_size", false, { { {N_VOID}, true } },
 			   std::vector<c2mir_node_code_t>{N_LONG, N_LONG});
 	node_t size_args = list();
 	append(size_args, container_addr());
 	node_t size_call = node2(N_CALL, id("madarray_size", fe), size_args, fe);
 	node_t cond = node2(N_LT, id(idx, fe), size_call, fe);
-
-	// __fe_i += 1
-	node_t incr = node2(N_ADD_ASSIGN, id(idx, fe), integer(1, fe), fe);
 
 	// Body: element fill + user statement.
 	node_t body_items = list();
@@ -29711,9 +29679,8 @@ node_t CirBuilder::translate_foreach_loop(TokenFOREACH *fe,
 
 	node_t user_body = translate_loop_body(fe, fe->statement);
 	if (user_body) append(body_items, user_body);
-	node_t body = node2(N_BLOCK, list(), body_items, fe);
-
-	return node5(N_FOR, list(), init, cond, incr, body, fe);
+	return counted_loop(idx, integer(0, fe), cond, false,
+			    node2(N_BLOCK, list(), body_items, fe), fe);
 }
 
 // [stmt.ranged]/1: `auto &&__range = range-init;` — a class container's
@@ -29765,25 +29732,13 @@ node_t CirBuilder::translate_foreach_class(TokenFOREACH *fe, DataDefCLASS *cls,
 	char idx[32];
 	snprintf(idx, sizeof(idx), "__fe_i_%d", m_strtmp_counter++);
 
-	// long __fe_i = 0;
-	node_t ispec = list();
-	append_i64(ispec, fe);
-	node_t init = simple(N_SPEC_DECL, fe);
-	append(init, node1(N_SHARE, ispec));
-	append(init, node2(N_DECL, id(idx, fe), list()));
-	append(init, ignore());
-	append(init, ignore());
-	append(init, integer(0, fe));
-
-	// __fe_i < c.size(), through the ONE nullary-call owner (which knows about
-	// an externally bound size(); the hand-rolled `Class__size` did not).
+	// for (long __fe_i = 0; __fe_i < c.size(); ...), the size through the ONE
+	// nullary-call owner (which knows about an externally bound size(); the
+	// hand-rolled `Class__size` did not).
 	node_t sz_call = class_nullary_call(cls, "size", recv_addr(), fe);
 	if (!sz_call)
 		return error_node("range-for: container has no callable size()", fe);
 	node_t cond = node2(N_LT, id(idx, fe), sz_call, fe);
-
-	// __fe_i += 1
-	node_t incr = node2(N_ADD_ASSIGN, id(idx, fe), integer(1, fe), fe);
 
 	// The element accessor `c[__fe_i]`, built by the ONE operator[] call owner
 	// (class_subscript_addr_on): it decides the index argument's shape FROM the
@@ -29843,9 +29798,8 @@ node_t CirBuilder::translate_foreach_class(TokenFOREACH *fe, DataDefCLASS *cls,
 
 	node_t user_body = translate_loop_body(fe, fe->statement);
 	if (user_body) append(body_items, user_body);
-	node_t body = node2(N_BLOCK, list(), body_items, fe);
-
-	return node5(N_FOR, list(), init, cond, incr, body, fe);
+	return counted_loop(idx, integer(0, fe), cond, false,
+			    node2(N_BLOCK, list(), body_items, fe), fe);
 }
 
 // Range-for over an ITERATOR container: `for (T x : m)` / `for (T &x : m)` ->
@@ -30015,20 +29969,10 @@ node_t CirBuilder::translate_foreach_iterator(TokenFOREACH *fe, DataDefCLASS *cl
 				  "operator++", fe);
 
 	// for (long k = 0; k < n; (k += 1, ++it))
-	node_t kspec = list();
-	append_i64(kspec, fe);
-	node_t init = simple(N_SPEC_DECL, fe);
-	append(init, node1(N_SHARE, kspec));
-	append(init, node2(N_DECL, id(kx, fe), list()));
-	append(init, ignore());
-	append(init, ignore());
-	append(init, integer(0, fe));
-	node_t cond = node2(N_LT, id(kx, fe), id(nm, fe), fe);
-	node_t incr = node2(N_COMMA,
-			    node2(N_ADD_ASSIGN, id(kx, fe), integer(1, fe), fe),
-			    advance, fe);
-	node_t loop = node5(N_FOR, list(), init, cond, incr,
-			    node2(N_BLOCK, list(), body_items, fe), fe);
+	node_t loop = counted_loop(kx, integer(0, fe),
+				   node2(N_LT, id(kx, fe), id(nm, fe), fe), false,
+				   node2(N_BLOCK, list(), body_items, fe), fe,
+				   advance);
 
 	node_t items = list();
 	append(items, ndecl);
@@ -30089,20 +30033,8 @@ node_t CirBuilder::translate_foreach_carray(TokenFOREACH *fe, TokenVar *ctv,
 	}
 	const char *arrname = an;
 
-	// long __fe_i = 0;
-	node_t ispec = list();
-	append_i64(ispec, fe);
-	node_t init = simple(N_SPEC_DECL, fe);
-	append(init, node1(N_SHARE, ispec));
-	append(init, node2(N_DECL, id(idx, fe), list()));
-	append(init, ignore());
-	append(init, ignore());
-	append(init, integer(0, fe));
-
-	// __fe_i < N   (compile-time element count)
+	// for (long __fe_i = 0; __fe_i < N; ...)   (compile-time element count)
 	node_t cond = node2(N_LT, id(idx, fe), integer(count, fe), fe);
-	// __fe_i += 1
-	node_t incr = node2(N_ADD_ASSIGN, id(idx, fe), integer(1, fe), fe);
 
 	// Element accessor: a[__fe_i] (direct subscript).
 	auto elem_lvalue = [&]() -> node_t {
@@ -30153,9 +30085,8 @@ node_t CirBuilder::translate_foreach_carray(TokenFOREACH *fe, TokenVar *ctv,
 
 	node_t user_body = translate_loop_body(fe, fe->statement);
 	if (user_body) append(body_items, user_body);
-	node_t body = node2(N_BLOCK, list(), body_items, fe);
-
-	return node5(N_FOR, list(), init, cond, incr, body, fe);
+	return counted_loop(idx, integer(0, fe), cond, false,
+			    node2(N_BLOCK, list(), body_items, fe), fe);
 }
 
 node_t CirBuilder::translate_do(TokenDO *td)
