@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### One inline identifier-character test on the lexer's hot loops; `pp_literal_start` scans the encoding prefix directly
+
+- `is_ident_start` / `is_ident_char` (`include/ident_char.h`, new) are the one inline test for an identifier's first character and every following one ([lex.name]), answering `c == '_' || isalpha(c)` / `c == '_' || isalnum(c)` in the C locale without an out-of-line `<cctype>` call per character. `Source::fast_ident_span` (`include/madc.h`, via a lambda so the test inlines into the scan), `tokenize_macro_spelling`'s identifier and pp-number loops, and the wide-string identifier loop in `Program::_getToken` (`src/lexer.cpp`) call them.
+- `pp_literal_start` (`src/lexer.cpp`) reads a string-literal / character-constant start by walking the optional encoding prefix (`u8` `u` `U` `L`), an optional `R` (raw: a string only) and the quote directly, in place of two static prefix tables scanned with `strlen` + `compare` per entry. `tokenize_macro_spelling` reserves its token vector once and constructs tokens with `emplace_back`.
+- Behaviour-preserving. Parse-cost gate (callgrind Ir, release build): `c_headers.live` 238,307,835 -> 221,523,708, `cxx_stl.live` 2,654,286,606 -> 2,628,895,034, `subscript.live` 3,426,287,661 -> 3,402,088,461, `dialect_cxx.live` 544,405,870 -> 533,765,257; baseline re-recorded in `scripts/parse_cost/baseline.tsv` (rows only fall; gate 0 red of 21).
+- Reducer `tests/teststringizeprefixes.mad` (`--std=c++17`) pins the `#` stringize operator over encoding-prefixed string / character literals and prefix-shaped identifiers (`uR` `Rx` `u8x`, a lone `R` / `u8` / `U` / `L`); g++ 13.3 and clang++ 18.1 print the three `.expect` lines.
+
 ### `#if` / `#elif` condition text reads a plain-byte run in one step off the flat buffer
 
 - `Program::read_if_condition_text` (`src/lexer.cpp`) appends, in one `Source::fast_span` call, a maximal run of condition bytes that no state below it acts on — not a line end, not a `\` (a possible splice), not the current state's quote (`"` inside a string, `'` inside a char), and outside a literal not a `/` (a comment introducer) or a quote. The char loop then reads the byte that stopped the run. This replaces the per-char `peek()` / `get()` (with their pushback and line-splice branches) and the char-by-char string growth on the condition-reading hot path.

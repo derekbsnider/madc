@@ -3103,37 +3103,30 @@ static bool macro_body_space(char c)
 
 typedef Program::MacroDef::ReplacementToken MacroReplacementToken;
 
+// Does a string literal or character constant start at `pos`: an optional
+// encoding prefix (u8 u U L), an optional R (raw: a string only), then the
+// quote ([lex.string], [lex.ccon]). `quote` is the quote's offset.
 static bool pp_literal_start(const std::string &text, size_t pos,
 			     size_t &quote, bool &raw)
 {
-    static const char *const raw_prefixes[] = { "u8R", "uR", "UR", "LR", "R" };
-    static const char *const prefixes[] = { "u8", "u", "U", "L", "" };
-
-    for ( size_t i = 0; i < sizeof(raw_prefixes) / sizeof(raw_prefixes[0]); ++i )
+    size_t p = pos;
+    const char c = text[p];
+    if ( c == 'u' )
     {
-	size_t n = strlen(raw_prefixes[i]);
-	if ( text.compare(pos, n, raw_prefixes[i]) == 0
-	  && pos + n < text.size() && text[pos + n] == '"' )
-	{
-	    quote = pos + n;
-	    raw = true;
-	    return true;
-	}
+	++p;
+	if ( p < text.size() && text[p] == '8' )
+	    ++p;
     }
-    for ( size_t i = 0; i < sizeof(prefixes) / sizeof(prefixes[0]); ++i )
-    {
-	size_t n = strlen(prefixes[i]);
-	if ( text.compare(pos, n, prefixes[i]) != 0 || pos + n >= text.size() )
-	    continue;
-	char q = text[pos + n];
-	if ( q == '"' || q == '\'' )
-	{
-	    quote = pos + n;
-	    raw = false;
-	    return true;
-	}
-    }
-    return false;
+    else if ( c == 'U' || c == 'L' )
+	++p;
+    const bool r = p < text.size() && text[p] == 'R';
+    if ( r )
+	++p;
+    if ( p >= text.size() || (text[p] != '"' && (r || text[p] != '\'')) )
+	return false;
+    quote = p;
+    raw = r;
+    return true;
 }
 
 static std::vector<MacroReplacementToken>
@@ -3141,6 +3134,9 @@ tokenize_macro_spelling(const std::string &text)
 {
     typedef MacroReplacementToken T;
     std::vector<T> tokens;
+    // Sized once for the common spellings (a token, a separator); a run of
+    // one-character tokens grows it.
+    tokens.reserve(text.size() / 2 + 1);
     for ( size_t i = 0; i < text.size(); )
     {
 	size_t start = i;
@@ -3148,7 +3144,7 @@ tokenize_macro_spelling(const std::string &text)
 	{
 	    while ( i < text.size() && macro_body_space(text[i]) )
 		++i;
-	    tokens.push_back(T(T::rtWhitespace, start, i));
+	    tokens.emplace_back(T::rtWhitespace, start, i);
 	    continue;
 	}
 	if ( text[i] == '/' && i + 1 < text.size() && text[i + 1] == '/' )
@@ -3156,7 +3152,7 @@ tokenize_macro_spelling(const std::string &text)
 	    i += 2;
 	    while ( i < text.size() && text[i] != '\n' && text[i] != '\r' )
 		++i;
-	    tokens.push_back(T(T::rtComment, start, i));
+	    tokens.emplace_back(T::rtComment, start, i);
 	    continue;
 	}
 	if ( text[i] == '/' && i + 1 < text.size() && text[i + 1] == '*' )
@@ -3167,7 +3163,7 @@ tokenize_macro_spelling(const std::string &text)
 		++i;
 	    if ( i < text.size() )
 		++i;
-	    tokens.push_back(T(T::rtComment, start, i));
+	    tokens.emplace_back(T::rtComment, start, i);
 	    continue;
 	}
 
@@ -3204,16 +3200,15 @@ tokenize_macro_spelling(const std::string &text)
 			break;
 		}
 	    }
-	    tokens.push_back(T(T::rtLiteral, start, i));
+	    tokens.emplace_back(T::rtLiteral, start, i);
 	    continue;
 	}
-	if ( text[i] == '_' || isalpha((unsigned char)text[i]) )
+	if ( is_ident_start((unsigned char)text[i]) )
 	{
 	    ++i;
-	    while ( i < text.size()
-		 && (text[i] == '_' || isalnum((unsigned char)text[i])) )
+	    while ( i < text.size() && is_ident_char((unsigned char)text[i]) )
 		++i;
-	    tokens.push_back(T(T::rtIdentifier, start, i));
+	    tokens.emplace_back(T::rtIdentifier, start, i);
 	    continue;
 	}
 	if ( isdigit((unsigned char)text[i])
@@ -3224,8 +3219,7 @@ tokenize_macro_spelling(const std::string &text)
 	    while ( i < text.size() )
 	    {
 		char c = text[i];
-		if ( c == '_' || c == '.' || c == '\''
-		  || isalnum((unsigned char)c) )
+		if ( c == '.' || c == '\'' || is_ident_char((unsigned char)c) )
 		{
 		    ++i;
 		    continue;
@@ -3239,7 +3233,7 @@ tokenize_macro_spelling(const std::string &text)
 		}
 		break;
 	    }
-	    tokens.push_back(T(T::rtPpNumber, start, i));
+	    tokens.emplace_back(T::rtPpNumber, start, i);
 	    continue;
 	}
 	if ( text[i] == '#' )
@@ -3247,17 +3241,17 @@ tokenize_macro_spelling(const std::string &text)
 	    if ( i + 1 < text.size() && text[i + 1] == '#' )
 	    {
 		i += 2;
-		tokens.push_back(T(T::rtPaste, start, i));
+		tokens.emplace_back(T::rtPaste, start, i);
 	    }
 	    else
 	    {
 		++i;
-		tokens.push_back(T(T::rtHash, start, i));
+		tokens.emplace_back(T::rtHash, start, i);
 	    }
 	    continue;
 	}
 	++i;
-	tokens.push_back(T(T::rtPunct, start, i));
+	tokens.emplace_back(T::rtPunct, start, i);
     }
     return tokens;
 }
@@ -10121,7 +10115,7 @@ TokenBase *Program::_getToken()
 		    for ( size_t k = 0; k < idlen; ++k )
 			whash = madc::dis::intern_table::hash_step(whash, (unsigned char)idspan[k]);
 		}
-		while ( source.good() && (isalnum(source.peek()) || source.peek() == '_') )
+		while ( source.good() && is_ident_char((unsigned char)source.peek()) )
 		{
 		    int wc = source.get();
 		    word += (char)wc;

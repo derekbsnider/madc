@@ -28,6 +28,7 @@
 #include <vector>
 
 #include "libmadc/value.h"
+#include "ident_char.h"		// is_ident_start / is_ident_char — the one identifier-character test
 #include "spelling_delim.h"
 #include "madc/bits/diag_enums"	// diag_severity / diag_phase — the shared enum text
 #include "madc/bits/file_kinds"	// madc::file_kind — LanguageStd's values ARE its C/C++/madc ranges
@@ -2892,10 +2893,12 @@ public:
 	_column += (int)len;
 	return true;
     }
-    // The identifier-continuation run (`isalnum||'_'`, the slow loop's test).
+    // The identifier-continuation run (is_ident_char, the slow loop's test).
+    // A lambda, not the function's address: its type names the call, so the
+    // test inlines into the scan instead of an indirect call per character.
     bool fast_ident_span(const char *&base, size_t &len)
     {
-	return fast_span(base, len, [](unsigned char c) { return c == '_' || isalnum(c); });
+	return fast_span(base, len, [](unsigned char c) { return is_ident_char(c); });
     }
     bool getline(std::string &s)
     {
