@@ -1,0 +1,7 @@
+// madc -i: an entry's shown type is the source's spelling of the class
+// template-id — `std::unique_ptr<int>`, without its default template argument
+// and with `int`, never madc's `int32_t` (B36:
+// `std::unique_ptr<int32_t,std::default_delete<int32_t>>`). The value entries
+// are the object's own: g++ 13.3 and clang++ 18.1 compute 3 and 43.
+#include <memory>
+std::unique_ptr<int> p(new int(3));

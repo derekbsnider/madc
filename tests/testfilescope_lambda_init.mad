@@ -1,0 +1,12 @@
+// A file-scope lambda object is defined, and a file-scope initializer may
+// call it (B18): `int r1 = inc(2);` referenced a lambda global that was
+// never emitted.
+// Oracle (g++ 13, clang++ 18, -std=gnu++17): "3 4".
+#include <stdio.h>
+auto inc = [](int x) { return x + 1; };
+int r1 = inc(2);
+int main()
+{
+	printf("%d %d\n", r1, inc(3));
+	return 0;
+}

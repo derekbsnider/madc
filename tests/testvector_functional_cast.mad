@@ -1,0 +1,11 @@
+// A functional-cast temporary of std::vector with two int arguments takes the
+// fill constructor (B48): `std::vector<int>(3, 7).size()` bailed in tsubst,
+// the iterator-pair constructor template kept as a candidate for two ints.
+// Oracle (g++ 13, clang++ 18, -std=gnu++17): "3 7".
+#include <stdio.h>
+#include <vector>
+int main()
+{
+	printf("%zu %d\n", std::vector<int>(3, 7).size(), std::vector<int>(3, 7)[2]);
+	return 0;
+}

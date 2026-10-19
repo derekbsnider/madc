@@ -30,6 +30,43 @@ and `--std=gnu++17` for `.cpp`, against `gcc -std=gnu17` / `g++ -std=gnu++17`.
 
 ## Silent wrong answers
 
+### B202. A handler for a class type never binds the thrown object, and matches any class
+
+```cpp
+#include <cstdio>
+struct E { int v; E(int x) : v(x) {} E() : v(-1) {} };
+struct F { int w; F() : w(-2) {} };
+int main()
+{
+	try { throw E(5); }
+	catch (const E &e) { std::printf("by ref %d\n", e.v); }
+	try { throw E(6); }
+	catch (E e) { std::printf("by value %d\n", e.v); }
+	try { throw E(7); }
+	catch (const F &f) { std::printf("wrong handler F %d\n", f.w); }
+	catch (const E &e) { std::printf("right handler E %d\n", e.v); }
+	return 0;
+}
+```
+
+- Found 2026-10-19 while pinning library virtual dispatch
+  (`tests/testlibvirtualcall.mad`): `catch (const std::exception &c)
+  { c.what(); }` printed `std::exception` for every thrown exception.
+- g++ 13 and clang++ 18: `by ref 5`, `by value 6`, `right handler E 7`.
+  madc (`bin/madc` with the library-dispatch fix over `1d0044cbb`):
+  `by ref -1`, `by value -1`, `wrong handler F -2`, exit 0.
+- Layer: the runtime record (`src/rt/rt_except.c`, `__madc_throw_object`)
+  keeps only the address of the thrower's temporary, which the unwind
+  releases, and no type identity; the catch lowering (`src/cir_builder.cpp`,
+  the try/catch arm) binds scalar tags only, so a class handler's parameter is
+  the handler body's own default-constructed `T c;`. The parser gives every
+  class or pointer clause tag 4 to keep it unmatchable (`TokenTRY::parse`,
+  src/parser.cpp), but since `4b25ffb80` (2026-07-29) a thrown class object
+  with no string form carries `MADC_EXCEPT_CLASS` = 4 too, so every class
+  handler matches every such throw. The planned fix is roadmap P1.1e
+  (`docs/plans/cpp-support.md`): an owned copy plus type identity in the
+  record, inheritance-aware matching, binding by reference and by value.
+
 ### B197. Inside a namespace, `sizeof(T)` takes a sibling namespace's same-named struct
 
 ```cpp
@@ -834,6 +871,34 @@ int main() { return (int)alignof(S); }
 
 ## Refuses valid code
 
+### B203. A qualified member call (`p->B::f()`, `r.B::f()`) is refused
+
+```cpp
+#include <cstdio>
+struct B { virtual const char *f() const { return "B::f"; } virtual ~B() {} };
+struct D : B { const char *f() const override { return "D::f"; } };
+int main()
+{
+	D d;
+	B *p = &d;
+	const B &r = d;
+	printf("%s %s\n", p->f(), r.f());
+	printf("%s %s\n", p->B::f(), r.B::f());
+	printf("%s\n", d.B::f());
+	return 0;
+}
+```
+
+- Found 2026-10-19 while checking the virtual-call arm for the library
+  dispatch fix.
+- g++ 13 and clang++ 18: `D::f D::f`, `B::f B::f`, `B::f`. madc (`bin/madc`
+  over `1d0044cbb`): `error: no member named 'B'` at `p->B::f`.
+- Layer: member access after `->` / `.` reads one identifier as the member
+  name; a nested-name-specifier there ([expr.ref]/2, a qualified-id naming
+  a member of the class or a base) is not read, so the call cannot suppress
+  virtual dispatch ([class.virtual]/16). A core-parser change: raised with
+  the owner before fixing. KG Gap `qualified_member_call_refused`.
+
 ### B201. A new-expression whose type-id is cv-qualified (`new const D`) is refused
 
 ```cpp
@@ -1462,37 +1527,6 @@ int main(void) { printf("%zu\n", offsetof(struct { char c; int i; }, i)); return
 - Found 2026-10-02 with B151. Off the release path, filed per owner
   2026-09-30.
 
-### B153. Packed binary, `--project`, `<string>` in two TUs: SIGSEGV under forest bind
-
-```cpp
-// m.cpp
-#include <cstdio>
-int fa(); int fb();
-int main() { printf("%d %d\n", fa(), fb()); return 0; }
-// a.cpp
-#include <string>
-int fa() { std::string s("abc"); return (int)s.size(); }
-// b.cpp
-#include <string>
-int fb() { std::string s("hello"); return (int)s.size(); }
-```
-
-- `cc.json` names the three TUs; `madc-release --project cc.json`.
-- g++ 13 and clang++ 18: `3 5`. Packed `bin/madc-release` (2026-10-02):
-  SIGSEGV, core dumped. `--no-forest-bind` prints `3 5`.
-- Release archive (`scripts/release_bins.sh`): v0.92.0 through v0.94.0
-  print `3 5`; v0.95.0 through v0.100.0 crash. It entered between v0.94.0
-  (caae16af6) and v0.95.0 (36fc42fc5), the cold-startup release.
-- Stack: `madc_thaw_member_template` ←
-  `instantiate_member_ctor_template_candidate` ←
-  `parse_functional_type_expression` ← `rebuild_forest_param_defaults` ←
-  `flush_forest_pending_globals` ← `Program::tokenize` ←
-  `madc_project_execute`. The second TU's bind thaws a member constructor
-  template; layer not yet traced.
-- tests/testprojectmtiorder runs with `--no-forest-bind` until this is
-  fixed. Found 2026-10-02 in the seam battery's packed lanes. Off the
-  release path (shipped since v0.95), filed per owner 2026-09-30.
-
 ### B148. A constructor template's mem-initializer that reads a member of a class temporary crashes c2mir
 
 ```cpp
@@ -1680,27 +1714,6 @@ int main() { printf("%d %d %d\n", eat(), eat(1), eat(1, 2.5)); return 0; }
   owner 2026-09-30.
 - Layer: not yet traced: the pack-expansion parameter declarator of an
   instantiated `const T&...` (empty and one-element packs).
-
-### B107. `sizeof(typename C<T>::m)` outside a template is refused: "Expecting identifier"
-
-```cpp
-#include <cstdio>
-template<typename T> struct traits {};
-template<typename T> struct traits<T *> { typedef int category; };
-int main() { traits<int *>::category c = 3; printf("p1 %d %zu\n", c, sizeof(typename traits<int *>::category)); return 0; }
-```
-
-- g++ 13 and clang++ 18 (`-std=c++17`): `p1 3 4`. madc: `4:109: error:
-  Expecting identifier` at the `typename` inside `sizeof(...)`.
-- C++11 allows `typename` before a qualified name outside a template
-  ([temp.res]/5). The same operand in a template's default argument
-  (`enable_if<sizeof(typename traits<It>::category) != 0>`) is refused too,
-  which there surfaces as a lost candidate: `no matching constructor`.
-- Found 2026-10-01 during B96's recon. Off the release path, filed per owner
-  2026-09-30.
-- Layer (suspected): `sizeof`'s type-id operand reader (`parse_type_id` is
-  the type-id owner, `indirection.md`) does not take a `typename`-prefixed
-  qualified name.
 
 ### B100. A `const var &` parameter refuses a text prvalue: `take("x")`, `take(format(...))`
 
@@ -1909,20 +1922,6 @@ int main() { int k2 = ++K<int>::n; printf("%d %d\n", k1, k2); return 0; }
   that instantiates nothing) are undefined imports too (`_ZN1AIcE1wE`).
   This blocks the test for KG Gap `qualified_template_id_compound_assign_statement`.
 
-### B18. A file-scope lambda global is never defined
-
-- Found 2026-09-26, during slice 3 (measured at `431ee5ef1`). A session is
-  affected the same way.
-
-```cpp
-#include <stdio.h>
-auto inc = [](int x) { return x + 1; };
-int r1 = inc(2);
-int main() { printf("%d %d\n", r1, inc(3)); return 0; }
-```
-
-- g++: `3 4`. madc: `MIR error: import of undefined item inc`.
-
 ### B20. A script's top-level `S::count = 3;` is refused
 
 - Found 2026-09-26, during slice 3. An interactive entry takes it as a
@@ -1976,31 +1975,6 @@ int main() { { J j; } printf("dv=%d\n", dv); return 0; }
   named by a per-builder counter, so two modules can define the same name
   with different bodies. linkonce would be wrong here. It needs a name
   derived from what it marshals, or internal linkage.
-
-### B23. A cast of a `<cmath>` call, then a binary operator, is refused
-
-- Found 2026-09-26, while testing the session's includes. It fails in file
-  mode too, measured at `abd480473`.
-
-```cpp
-#include <cmath>
-int main()
-{
-    int a = (int)std::floor(4.5) + 3;
-    return a - 7;
-}
-```
-
-- g++, clang++: accept, exit 0. madc: `4:34: error: Malformed expression: 2
-  operands with no operator between them`. The same for `std::sqrt`.
-- Passes: `(int)(std::floor(4.5)) + 3`, `(int)sqrt(16.0) + 3`, and a
-  header-free `(int)N::f(4.0) + 3`, where `f` is a plain namespace function
-  or a `using ::g;` redeclaration with an overload.
-- The same family, found 2026-09-26 while writing D10's tests: `int k =
-  std::signbit(-0.0) && (-0.0) == 0;` after `#include <cmath>` gives
-  `expected label name after '&&'` (it reads GNU's `&&label`). g++ gives 1.
-- Where: not traced. The cast's operand is read by `parseCastExpression`,
-  the one owner. What differs is `<cmath>`'s `std::` overload set.
 
 ### B28. A compound literal of a two-dimensional array is refused
 
@@ -2102,26 +2076,6 @@ int main() { P p{1, 2}; auto [a, b] = p; std::printf("%d %d\n", a, b); return 0;
   (`auto [` is read as an array declarator's bound). A parser feature
   ([dcl.struct.bind]) for its own focused session.
 
-### B41. A function name after `==` and before `;` is called
-
-- Found 2026-09-27, while gating D12's prerequisite A (plan §41.6a): an
-  entry's shown function pointer compared with the function.
-
-```c
-#include <stdio.h>
-int g(int v) { return v; }
-int main(void) { int (*p)(int) = g; int k = p == g; printf("%d\n", k); return 0; }
-```
-
-- gcc 13 and clang 18: `1`. madc `--std=c17` and `--std=c++17`: `3:51: too
-  few arguments` (c2mir), after "comparison of integer with a pointer".
-  `p == g,` and `(p == g)` are right, and so is `g == p;`.
-- Where: the function-name arm of `parseExpression` decides decay or call by
-  the next token. A `;` decays only with an empty operator stack (so
-  `cout << endl;` keeps its call), and here the stack holds `==`. The rule
-  C gives is not a token rule: a function designator decays unless it is the
-  operand of `&` or `sizeof`, or the callee of a call (C11 6.3.2.1p4).
-
 ### B44. A namespace-scope lambda's init-capture is refused
 
 - Found 2026-09-27, while testing D12's result names in a lambda capture.
@@ -2168,23 +2122,6 @@ int main() { std::vector<int> v = {1}; (std::vector<int>&&)v; return 0; }
 
 - g++ 13: compiles. madc `--std=c++17`: "use of undeclared identifier
   'std'" at the cast's `std`, at block scope and at an entry's top level.
-
-### B48. `std::vector<int>(3, 7)` fails in the parse-once instantiation
-
-- Found 2026-09-27, while testing functional casts at an entry's top level
-  (plan §41.6a, E).
-
-```cpp
-#include <stdio.h>
-#include <vector>
-int main() { printf("%zu\n", std::vector<int>(3, 7).size()); return 0; }
-```
-
-- g++ 13: `3`. madc `--std=c++17`: "cir error: parse-once internal: tsubst
-  bailed on the covered instantiation ... of std::vector::vector<_InputIterator,
-  __anon_tparam0> [why: tsubst: unresolved dependent member call]" at
-  `stl_vector.h:709`. The error names the iterator-range constructor
-  template, where g++ calls the count-and-value constructor. Not traced.
 
 ### B49. A file-scope compound literal's address is refused as an initializer
 
@@ -2260,24 +2197,6 @@ int main() { T t; return t.h() ? 0 : 1; }
   legacy `__has_*` spellings belong in that dispatch, converted once to the
   trait they mean. The three string ladders should become one enum at the
   boundary (enum-over-strings.md).
-
-### B66. `_Alignas` above 16 is refused by c2mir
-
-- Found 2026-09-29 with B62-B65; measured with `bin/madc` at 6671bd11a.
-
-```c
-#include <stdio.h>
-struct L { char c; int x __attribute__((aligned(32))); };
-int main(void) { printf("a32: %zu %zu\n", sizeof(struct L), __alignof__(struct L)); return 0; }
-```
-
-- gcc = clang: `a32: 64 32`. madc: `2:24: unsupported alignmnent`,
-  `cir_compile failed` (c2mir's check, on the `_Alignas(32)` madc emits).
-- Where: c2mir's `invalid_alignment`
-  (`third_party/mir/c2mir/<target>/c<target>-code.c`) accepts only 0, 1, 2,
-  4, 8 and 16, on every target. A local aligned to 32 needs a realigned
-  frame in MIR, so this may be a floor change
-  (`lowering-vs-raising.md` Tier 2/3), not only the check.
 
 ## Diagnostics
 
@@ -2625,24 +2544,6 @@ int main(void) { return t; }
   `bd3c56500`) throws at `where`, the token its caller passes, and that
   token is not the declarator-id. Reducer: `tmp/repl/d20s2/redef.c`.
 
-### B36. An entry spells a class type with its default template arguments
-
-- Found 2026-09-27, while measuring which values D12 can copy (plan §41.6a).
-  Its silent half is fixed (2026-09-28): a `std::unique_ptr` built from a
-  pointer held null.
-
-```cpp
-#include <memory>
-std::unique_ptr<int> p(new int(3));
-```
-
-- An entry's `p` shows its type as
-  `std::unique_ptr<int32_t,std::default_delete<int32_t>>`. The source's
-  spelling is `std::unique_ptr<int>`, without the default argument (and
-  `int`, not madc's `int32_t`).
-- Where: not traced. The entry's value display spells the instance's
-  canonical name.
-
 ### B39. A missing `;` after an `auto` declaration is cited inside the next line
 
 - Found 2026-09-27, while tracing why an entry's `auto x = 5` shows nothing
@@ -2759,14 +2660,6 @@ int main(void) { return 0; }
   is what lets a program beside madc's `lib/` run; the absolute entries
   should not be baked in by default.
 - Found 2026-10-07 inspecting Chthonia's packages.
-
-### B195. madc's driver has no `-L`
-
-- `madc -o x -L/opt/nowhere hello.c` → `-L/opt/nowhere:0:0: error: Failed
-  to open file`; `-L /opt/nowhere` → `-L:0:0: error: Failed to open file`.
-  `madc --help` lists `-l<name>` but no `-L`. gcc and clang take both
-  forms (a library search directory). Measured 2026-10-07, madc 0.102.0.
-- Found 2026-10-07 with B194.
 
 ### B191. On macOS, a dialect call to `php::array_key_exists` binds 760 of the forest's 836 units
 
@@ -3082,9 +2975,7 @@ entry above when it's next touched.
 
 - Copy elision into heap and array elements.
 - `thread_local` is process-wide (a missing MIR TLS feature).
-- Statics and globals are not destroyed at exit.
 - No `std::bad_array_new_length`.
 - No user conversion operators to scalars.
-- `__sync_*` builtins.
 - The aggregate-predicate duplication family.
 - `u8` prefix and UCN validity.
