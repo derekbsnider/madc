@@ -3,6 +3,14 @@
 ## [Unreleased]
 Consolidated: type_trait_dispatch — gate scripts/check-one-trait-dispatch.sh
 Consolidated: counted_loop — gate scripts/check-one-counted-loop.sh
+Consolidated: class_pointer_spelling — gate scripts/check-one-class-pointer-decl.sh
+
+### A class pointer the CIR builder spells has one owner per shape
+
+- A `struct Cls *` the CIR builder emits — a type node for a cast target, a `struct Cls *<nm> = <init>;` bound temporary, a `struct Cls *<nm>` parameter — was spelled by hand at about thirty sites in `src/cir_builder.cpp`: a `class_tag_ref` call plus a `pointer()` level inside an `N_TYPE`, or the `N_SHARE` / `N_DECL` / three `ignore()` slots of an `N_SPEC_DECL`. The derived→base and vbase-view upcast temporaries, the copy and constructor receiver binds, `new` / `new[]`, the range-for capture, the method-shim slots, every vbase and base cast, and the synthesized destructors' `__this` parameters each repeated the shape.
+- `CirBuilder::class_ptr_type` (now `DataDef *cdd, TokenBase *origin = NULL`, widened from `DataDefCLASS *` with no origin) is the one owner of the `struct Cls *` type node; `CirBuilder::class_ptr_bind` the one owner of a `struct Cls *<nm> = <init>;` bound temporary; and new `CirBuilder::class_ptr_param` the one owner of a `struct Cls *<nm>` parameter declaration (`src/cir_builder.cpp` / `src/cir_builder.h`). Every hand-spelled site routes through one of the three. Only those three owners spell `class_tag_ref(...)` beside a `pointer()`, each marked `// allowed-exception: the one owner`.
+- Gate `scripts/check-one-class-pointer-decl.sh` (wired into `src/Makefile`'s `gates`) fails on a `class_tag_ref(` call with a `pointer()` on its line or the next three in `src/cir_*.cpp`, except a line marked `// allowed-exception`, with a two-sided negative control (an unmarked hand-spelled pointer must match, a marked one must not).
+- Behaviour-preserving. Differential: `--emit=c11` renders of all 792 class-using tests (every `tests/*.mad` defining a class or struct, helpers excluded) on the binary before this change vs after — exit codes identical, stderr identical, 792 of 792 renders byte-identical. Fix lanes tier1 81/81 JIT (EXE 73/73, OBJ 73/73), tier2 rc=0 (c-testsuite 220, c-torture 1619, c2mir-tests 368, gui 13, gxx-c++11 1505, index-c 50/50, commonmark 664 — 0 outside baseline); static gates 0 red (the new gate's control passes both ways), unit 84/84, `scripts/forest_bind_gate.sh` 47/47, parse-cost 0 red of 21.
 
 ### A counted loop the CIR builder synthesizes has one owner, `CirBuilder::counted_loop`
 

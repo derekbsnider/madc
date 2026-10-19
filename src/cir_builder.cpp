@@ -6767,11 +6767,11 @@ node_t CirBuilder::class_tag_ref(DataDef *dd, TokenBase *origin)
 }
 
 // N_TYPE node for a `struct Cls *` cast target (matches class_struct_def's
-// `struct Cls` spec + one pointer level). Used for derived->base upcasts.
-node_t CirBuilder::class_ptr_type(DataDefCLASS *cdd)
+// `struct Cls` spec + one pointer level): every class-pointer type node.
+node_t CirBuilder::class_ptr_type(DataDef *cdd, TokenBase *origin)
 {
 	node_t spec = list();
-	append(spec, class_tag_ref(cdd));
+	append(spec, class_tag_ref(cdd, origin));	// allowed-exception: the one owner
 	node_t decl_list = list();
 	append(decl_list, pointer());
 	return node2(N_TYPE, spec, node2(N_DECL, ignore(), decl_list));
@@ -6979,16 +6979,9 @@ node_t CirBuilder::null_tested_class_ptr(node_t value, DataDefCLASS *from,
 		return step(value);
 	char tmp[40];
 	snprintf(tmp, sizeof(tmp), "__madc_upc_%d", m_strtmp_counter++);
-	node_t sd = simple(N_SPEC_DECL, origin);
-	append(sd, node1(N_SHARE, node1(N_LIST, class_tag_ref(from))));
-	node_t sd_dl = list();
-	append(sd_dl, pointer());
-	append(sd, node2(N_DECL, id(tmp, origin), sd_dl));
-	append(sd, ignore());
-	append(sd, ignore());
-	append(sd, node2(N_CAST, class_ptr_type(from), value, origin));
 	node_t items = list();
-	append(items, sd);
+	append(items, class_ptr_bind(from, tmp,
+		node2(N_CAST, class_ptr_type(from), value, origin), origin));
 	node_t sel = node3(N_COND, id(tmp, origin), step(id(tmp, origin)),
 			   node2(N_CAST, class_ptr_type(to), integer(0, origin), origin),
 			   origin);
@@ -13443,10 +13436,7 @@ node_t CirBuilder::class_vtable_def(DataDefCLASS *cdd, std::vector<node_t> &thun
 			id("__self"));
 		node_t adj = node2(N_ADD, charp, integer(delta));
 		// (MOwner*)adj
-		node_t ownerp = node2(N_CAST,
-			node2(N_TYPE, node1(N_LIST, class_tag_ref(mowner)),
-			      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
-			adj);
+		node_t ownerp = node2(N_CAST, class_ptr_type(mowner), adj);
 		node_t a = list();
 		append(a, ownerp);
 		for (size_t i = 1; i < ov->parameters.size(); i++)
@@ -13479,9 +13469,7 @@ node_t CirBuilder::class_vtable_def(DataDefCLASS *cdd, std::vector<node_t> &thun
 				     node1(N_LIST, node1(N_FUNC, plist)));
 		// (struct Cls *)(__self - off)
 		node_t adj = node2(N_SUB, id("__self"), integer((int64_t)off));
-		node_t cls_spec = node2(N_TYPE,
-			node1(N_LIST, class_tag_ref(cdd)),
-			node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+		node_t cls_spec = class_ptr_type(cdd);
 		node_t adj_cast = node2(N_CAST, cls_spec, adj);
 		node_t a = list();
 		append(a, adj_cast);
@@ -14342,10 +14330,7 @@ node_t CirBuilder::class_object_expr_addr(TokenBase *e, DataDefCLASS *cls,
 				     ? class_behind(pb->datadef()) : NULL;
 		if (bcls) {
 			node_t bptr = node2(N_CAST,
-				node2(N_TYPE,
-				      node1(N_LIST, class_tag_ref(bcls)),
-				      node2(N_DECL, ignore(),
-					    node1(N_LIST, pointer()))),
+				class_ptr_type(bcls),
 				object_arg_addr(pb, bcls), origin);
 			node_t fld = node2(N_DEREF_FIELD, bptr,
 				id(var_emit_name(pm->var).c_str(),
@@ -14732,18 +14717,9 @@ node_t CirBuilder::vbase_dynamic_adjust(node_t this_arg, DataDefCLASS *view,
 	char tmp[40];
 	snprintf(tmp, sizeof(tmp), "__madc_vbv_%d", m_strtmp_counter++);
 	// struct V *tmp = (struct V *)(this_arg);
-	node_t vp_type = node2(N_TYPE, node1(N_LIST, class_tag_ref(view)),
-			       node2(N_DECL, ignore(), node1(N_LIST, pointer())));
-	node_t sd = simple(N_SPEC_DECL, origin);
-	append(sd, node1(N_SHARE, node1(N_LIST, class_tag_ref(view))));
-	node_t sd_dl = list();
-	append(sd_dl, pointer());
-	append(sd, node2(N_DECL, id(tmp, origin), sd_dl));
-	append(sd, ignore());
-	append(sd, ignore());
-	append(sd, node2(N_CAST, vp_type, this_arg, origin));
 	node_t items = list();
-	append(items, sd);
+	append(items, class_ptr_bind(view, tmp,
+		node2(N_CAST, class_ptr_type(view), this_arg, origin), origin));
 	// ((long *)tmp->__vptr)[-(3 + slot)]
 	node_t vptr = node2(N_DEREF_FIELD, id(tmp, origin), id("__vptr", origin));
 	node_t lp_type = node2(N_TYPE, i64_list(),
@@ -14826,14 +14802,7 @@ void CirBuilder::append_ctor_vbase_params(node_t param_list, DataDefCLASS *ocls,
 	for (size_t i = 0; i < vbs.size(); i++) {
 		char pn[32];
 		snprintf(pn, sizeof(pn), "__madc_vb%zu", i);
-		node_t param = simple(N_SPEC_DECL, origin);
-		append(param, node1(N_LIST, class_tag_ref(vbs[i])));
-		append(param, node2(N_DECL, id(pn, origin),
-				    node1(N_LIST, pointer())));
-		append(param, ignore());
-		append(param, ignore());
-		append(param, ignore());
-		append(param_list, param);
+		append(param_list, class_ptr_param(vbs[i], pn, origin));
 	}
 }
 
@@ -14870,9 +14839,7 @@ bool CirBuilder::append_ctor_vbase_forward_args(node_t args, DataDefCLASS *calle
 			sum = node2(N_ADD, charp,
 				    integer((int64_t)slots[i].second, origin), origin);
 		}
-		node_t vt = node2(N_TYPE, node1(N_LIST, class_tag_ref(vbs[i])),
-				  node2(N_DECL, ignore(), node1(N_LIST, pointer())));
-		append(args, node2(N_CAST, vt, sum, origin));
+		append(args, node2(N_CAST, class_ptr_type(vbs[i]), sum, origin));
 	}
 	return true;
 }
@@ -14903,9 +14870,7 @@ void CirBuilder::append_ctor_vbase_static_args(node_t args, DataDefCLASS *callee
 			adj = node2(N_ADD, charp, integer((int64_t)off, origin),
 				    origin);
 		}
-		node_t vt = node2(N_TYPE, node1(N_LIST, class_tag_ref(V)),
-				  node2(N_DECL, ignore(), node1(N_LIST, pointer())));
-		append(args, node2(N_CAST, vt, adj, origin));
+		append(args, node2(N_CAST, class_ptr_type(V), adj, origin));
 	}
 }
 
@@ -15016,18 +14981,8 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin,
 			snprintf(vrecv_tmp, sizeof(vrecv_tmp), "__madc_vrecv_%d",
 				 m_strtmp_counter++);
 			// struct <recv> *__madc_vrecv_N = <receiver>;
-			node_t vr_spec = list();
-			append(vr_spec, class_tag_ref(recv_class));
-			node_t vr_dl = list();
-			append(vr_dl, pointer());
-			node_t vr_sd = simple(N_SPEC_DECL, origin);
-			append(vr_sd, node1(N_SHARE, vr_spec));
-			append(vr_sd, node2(N_DECL, id(vrecv_tmp, origin), vr_dl));
-			append(vr_sd, ignore());
-			append(vr_sd, ignore());
-			append(vr_sd, this_arg);
-			CIR_NODE(vr_sd)->synth_from_origin = true;
-			m_pending_stmts.push_back(vr_sd);
+			m_pending_stmts.push_back(class_ptr_bind(recv_class,
+				vrecv_tmp, this_arg, origin));
 			this_arg = id(vrecv_tmp, origin);
 		}
 	}
@@ -15068,9 +15023,7 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin,
 		}
 		if (owner)
 			this_arg = node2(N_CAST,
-				node2(N_TYPE,
-				      node1(N_LIST, class_tag_ref(owner)),
-				      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
+				class_ptr_type(owner),
 				this_arg, origin);
 	} else if (owner && recv_class && owner != recv_class) {
 		node_t dyn = vbase_dynamic_adjust(this_arg, recv_class, owner,
@@ -15098,9 +15051,7 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin,
 		// (`__new_allocator<T>*`), not the derived receiver type
 		// (`allocator<T>*`).
 		this_arg = node2(N_CAST,
-			node2(N_TYPE,
-			      node1(N_LIST, class_tag_ref(owner)),
-			      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
+			class_ptr_type(owner),
 			this_arg, origin);
 	}
 
@@ -16967,13 +16918,26 @@ node_t CirBuilder::class_ptr_bind(DataDef *cdd, const char *nm,
 {
 	node_t sd = simple(N_SPEC_DECL, origin);
 	append(sd, node1(N_SHARE, node1(N_LIST,
-		class_tag_ref(cdd, origin))));
+		class_tag_ref(cdd, origin))));	// allowed-exception: the one owner
 	append(sd, node2(N_DECL, id(nm, origin), node1(N_LIST, pointer())));
 	append(sd, ignore());
 	append(sd, ignore());
 	append(sd, init);
 	CIR_NODE(sd)->synth_from_origin = true;
 	return sd;
+}
+
+// A `struct Cls *<nm>` parameter declaration (`__this`, a vbase pointer).
+node_t CirBuilder::class_ptr_param(DataDef *cdd, const char *nm,
+				   TokenBase *origin)
+{
+	node_t param = simple(N_SPEC_DECL, origin);
+	append(param, node1(N_LIST, class_tag_ref(cdd, origin)));	// allowed-exception: the one owner
+	append(param, node2(N_DECL, id(nm, origin), node1(N_LIST, pointer())));
+	append(param, ignore());
+	append(param, ignore());
+	append(param, ignore());
+	return param;
 }
 
 void CirBuilder::class_copy_assign(DataDefCLASS *cdd, TokenBase *lhs,
@@ -17176,9 +17140,7 @@ void CirBuilder::vbase_dtor_stmts(const madc::dis::istring &objname, bool addr_o
 				obj_addr, o);
 			adj = node2(N_ADD, charp, integer((int64_t)off, o), o);
 		}
-		node_t vt = node2(N_TYPE,
-			node1(N_LIST, class_tag_ref(vb)),
-			node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+		node_t vt = class_ptr_type(vb);
 		// Itanium: the complete-object dtor destroys each vbase via
 		// its BASE (D2) dtor — a D1 would recurse into the vbase's
 		// own vbases a second time.
@@ -17200,13 +17162,7 @@ node_t CirBuilder::synth_complete_dtor_def(DataDefCLASS *cdd)
 	// multiple definition.
 	node_t ret_type = node1(N_LIST, simple(N_VOID));
 	append(ret_type, node2(N_ATTR, id("linkonce"), list()));
-	node_t pspec = node1(N_LIST, class_tag_ref(cdd));
-	node_t param = simple(N_SPEC_DECL);
-	append(param, pspec);
-	append(param, node2(N_DECL, id("__this"), node1(N_LIST, pointer())));
-	append(param, ignore());
-	append(param, ignore());
-	append(param, ignore());
+	node_t param = class_ptr_param(cdd, "__this", NULL);
 	node_t param_list = list();
 	append(param_list, param);
 	node_t decl = node2(N_DECL, id(class_synth_complete_dtor_symbol(cdd).c_str()),
@@ -17480,13 +17436,7 @@ node_t CirBuilder::base_object_alias_def(const madc::dis::istring &alias,
 			append(args, id(pn.c_str()));
 		}
 	} else {
-		node_t param = simple(N_SPEC_DECL);
-		append(param, node1(N_LIST, class_tag_ref(cdd)));
-		append(param, node2(N_DECL, id("__this"), node1(N_LIST, pointer())));
-		append(param, ignore());
-		append(param, ignore());
-		append(param, ignore());
-		append(plist, param);
+		append(plist, class_ptr_param(cdd, "__this", NULL));
 		append(args, id("__this"));
 	}
 	node_t decl = node2(N_DECL, id(alias.c_str()),
@@ -17508,13 +17458,7 @@ node_t CirBuilder::synth_deleting_dtor_def(DataDefCLASS *cdd)
 	// STRONG D0 (invisible while the name was the internal Cls___dtor_deleting
 	// and no lane linked two such objects; g++ emits it weak).
 	append(ret_type, node2(N_ATTR, id("linkonce"), list()));
-	node_t pspec = node1(N_LIST, class_tag_ref(cdd));
-	node_t param = simple(N_SPEC_DECL);
-	append(param, pspec);
-	append(param, node2(N_DECL, id("__this"), node1(N_LIST, pointer())));
-	append(param, ignore());
-	append(param, ignore());
-	append(param, ignore());
+	node_t param = class_ptr_param(cdd, "__this", NULL);
 	node_t param_list = list();
 	append(param_list, param);
 	node_t decl = node2(N_DECL, id(class_deleting_dtor_symbol(cdd).c_str()),
@@ -17542,13 +17486,7 @@ node_t CirBuilder::synth_deleting_dtor_def(DataDefCLASS *cdd)
 node_t CirBuilder::synth_dtor_proto(const madc::dis::istring &sym, DataDefCLASS *cdd)
 {
 	node_t ret_type = node1(N_LIST, simple(N_VOID));
-	node_t pspec = node1(N_LIST, class_tag_ref(cdd));
-	node_t param = simple(N_SPEC_DECL);
-	append(param, pspec);
-	append(param, node2(N_DECL, id("__this"), node1(N_LIST, pointer())));
-	append(param, ignore());
-	append(param, ignore());
-	append(param, ignore());
+	node_t param = class_ptr_param(cdd, "__this", NULL);
 	node_t param_list = list();
 	append(param_list, param);
 	node_t decl = node2(N_DECL, id(sym.c_str()),
@@ -17629,9 +17567,7 @@ void CirBuilder::append_base_default_construct(node_t items,
 			self, origin);
 		adj = node2(N_ADD, charp, integer((int64_t)off, origin), origin);
 	}
-	node_t bt = node2(N_TYPE, node1(N_LIST, class_tag_ref(b)),
-			  node2(N_DECL, ignore(), node1(N_LIST, pointer())));
-	node_t baddr = node2(N_CAST, bt, adj, origin);
+	node_t baddr = node2(N_CAST, class_ptr_type(b), adj, origin);
 	// The receiver is a COMPLETE object of complete_cls, so a
 	// vbase-carrying base's hidden __madc_vb args are static
 	// offsets in complete_cls's layout off recv_ptr — never b's
@@ -17684,13 +17620,7 @@ node_t CirBuilder::synth_dtor_def(DataDefCLASS *cdd)
 	append(ret_type, node2(N_ATTR, id("linkonce"), list()));
 	// A NAMED parameter is an N_SPEC_DECL (matches param_decl); an N_TYPE is
 	// only for unnamed/abstract params and would lose the __this name.
-	node_t pspec = node1(N_LIST, class_tag_ref(cdd));
-	node_t param = simple(N_SPEC_DECL);
-	append(param, pspec);
-	append(param, node2(N_DECL, id("__this"), node1(N_LIST, pointer())));
-	append(param, ignore());
-	append(param, ignore());
-	append(param, ignore());
+	node_t param = class_ptr_param(cdd, "__this", NULL);
 	node_t param_list = list();
 	append(param_list, param);
 	node_t func_inner = node1(N_FUNC, param_list);
@@ -17729,9 +17659,7 @@ node_t CirBuilder::synth_dtor_def(DataDefCLASS *cdd)
 				self);
 			adj = node2(N_ADD, charp, integer((int64_t)off));
 		}
-		node_t bt = node2(N_TYPE,
-			node1(N_LIST, class_tag_ref(b)),
-			node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+		node_t bt = class_ptr_type(b);
 		node_t a = list();
 		append(a, node2(N_CAST, bt, adj));
 		node_t call = node2(N_CALL, id(bsym.c_str()), a);
@@ -19182,20 +19110,9 @@ node_t CirBuilder::memberwise_copy_construct_from_addr(node_t dst_lvalue,
 	snprintf(lt, sizeof(lt), "__mdc%d", m_strtmp_counter++);
 	snprintf(rt, sizeof(rt), "__mdc%d", m_strtmp_counter++);
 	node_t blk = list();
-	node_t ldecl = simple(N_SPEC_DECL);
-	append(ldecl, node1(N_SHARE, node1(N_LIST, class_tag_ref(cdd))));
-	append(ldecl, node2(N_DECL, id(lt, origin), node1(N_LIST, pointer())));
-	append(ldecl, ignore());
-	append(ldecl, ignore());
-	append(ldecl, node1(N_ADDR, dst_lvalue, origin));
-	append(blk, ldecl);
-	node_t rdecl = simple(N_SPEC_DECL);
-	append(rdecl, node1(N_SHARE, node1(N_LIST, class_tag_ref(cdd))));
-	append(rdecl, node2(N_DECL, id(rt, origin), node1(N_LIST, pointer())));
-	append(rdecl, ignore());
-	append(rdecl, ignore());
-	append(rdecl, src_addr);
-	append(blk, rdecl);
+	append(blk, class_ptr_bind(cdd, lt, node1(N_ADDR, dst_lvalue, origin),
+				   origin));
+	append(blk, class_ptr_bind(cdd, rt, src_addr, origin));
 	node_t bitcopy = node2(N_ASSIGN,
 			       node1(N_DEREF, id(lt, origin), origin),
 			       node1(N_DEREF, id(rt, origin), origin), origin);
@@ -19512,13 +19429,7 @@ node_t CirBuilder::class_ctor_call_addr(node_t this_addr, DataDefCLASS *cdd,
 		char tmp[32];
 		snprintf(tmp, sizeof(tmp), "__mdc%d", m_strtmp_counter++);
 		node_t blk = list();
-		node_t decl = simple(N_SPEC_DECL);
-		append(decl, node1(N_SHARE, node1(N_LIST, class_tag_ref(cdd))));
-		append(decl, node2(N_DECL, id(tmp, origin), node1(N_LIST, pointer())));
-		append(decl, ignore());
-		append(decl, ignore());
-		append(decl, this_addr);
-		append(blk, decl);
+		append(blk, class_ptr_bind(cdd, tmp, this_addr, origin));
 		// Non-virtual bases with user default ctors — BEFORE the vptr
 		// stamps (the derived stamps must overwrite the base ctors'),
 		// [class.base.init] order via the user-ctor prologue model.
@@ -19604,13 +19515,7 @@ node_t CirBuilder::class_ctor_call_addr(node_t this_addr, DataDefCLASS *cdd,
 		char tmp[32];
 		snprintf(tmp, sizeof(tmp), "__mdc%d", m_strtmp_counter++);
 		node_t blk = list();
-		node_t decl = simple(N_SPEC_DECL);
-		append(decl, node1(N_SHARE, node1(N_LIST, class_tag_ref(cdd))));
-		append(decl, node2(N_DECL, id(tmp, origin), node1(N_LIST, pointer())));
-		append(decl, ignore());
-		append(decl, ignore());
-		append(decl, this_addr);
-		append(blk, decl);
+		append(blk, class_ptr_bind(cdd, tmp, this_addr, origin));
 		// The inherited ctor initializes the base it came from; every
 		// other base is default-initialized, in declaration order
 		// ([class.base.init]/13) — `struct D : A, B { using A::A; }`
@@ -19756,16 +19661,9 @@ node_t CirBuilder::ctor_call_assemble(node_t this_addr, DataDefCLASS *cdd,
 	if (bind_local) {
 		snprintf(ccname, sizeof(ccname), "__madc_cc_%d",
 			 m_strtmp_counter++);
-		bind_decl = simple(N_SPEC_DECL, origin);
-		append(bind_decl, node1(N_SHARE, node1(N_LIST, class_tag_ref(cdd))));
-		append(bind_decl, node2(N_DECL, id(ccname, origin),
-					node1(N_LIST, pointer())));
-		append(bind_decl, ignore());
-		append(bind_decl, ignore());
-		append(bind_decl, node2(N_CAST,
-			node2(N_TYPE, node1(N_LIST, class_tag_ref(cdd)),
-			      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
-			this_addr, origin));
+		bind_decl = class_ptr_bind(cdd, ccname,
+			node2(N_CAST, class_ptr_type(cdd), this_addr, origin),
+			origin);
 		self_use = id(ccname, origin);
 	}
 	node_t args = list();
@@ -20847,14 +20745,7 @@ node_t CirBuilder::this_bound_block(DataDefCLASS *cdd, const char *recv,
 				    TokenBase *origin)
 {
 	node_t iblk = list();
-	node_t decl = simple(N_SPEC_DECL);
-	append(decl, node1(N_SHARE, node1(N_LIST, class_tag_ref(cdd))));
-	append(decl, node2(N_DECL, id("__this", origin),
-			   node1(N_LIST, pointer())));
-	append(decl, ignore());
-	append(decl, ignore());
-	append(decl, id(recv, origin));
-	append(iblk, decl);
+	append(iblk, class_ptr_bind(cdd, "__this", id(recv, origin), origin));
 	for (node_t s : stmts)
 		append(iblk, s);
 	return node2(N_BLOCK, list(), iblk, origin);
@@ -21284,9 +21175,7 @@ void CirBuilder::vbase_ctor_stmts_addr(const std::function<node_t()> &mint_addr,
 				obj_addr, o);
 			adj = node2(N_ADD, charp, integer((int64_t)off, o), o);
 		}
-		node_t vt = node2(N_TYPE,
-			node1(N_LIST, class_tag_ref(vb)),
-			node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+		node_t vt = class_ptr_type(vb);
 		node_t vb_this = node2(N_CAST, vt, adj, o);
 		// [class.base.init]p9: a virtual base no mem-initializer names
 		// DEFAULT-constructs — select the 0-arg-callable overload and
@@ -22854,23 +22743,11 @@ node_t CirBuilder::try_free_operator_call(TokenOperator *top, DataDefCLASS *lcls
 						 m_strtmp_counter++);
 					// struct L *tmp = (struct L *)&<lhs>;
 					// (lhs evaluated exactly ONCE)
-					node_t sd = simple(N_SPEC_DECL, origin);
-					append(sd, node1(N_SHARE,
-						node1(N_LIST, class_tag_ref(lcls))));
-					node_t sd_dl = list();
-					append(sd_dl, pointer());
-					append(sd, node2(N_DECL, id(tmp, origin), sd_dl));
-					append(sd, ignore());
-					append(sd, ignore());
-					append(sd, node2(N_CAST,
-						node2(N_TYPE,
-						      node1(N_LIST, class_tag_ref(lcls)),
-						      node2(N_DECL, ignore(),
-							    node1(N_LIST, pointer()))),
-						object_arg_addr(top->left, lcls),
-						origin));
 					node_t items = list();
-					append(items, sd);
+					append(items, class_ptr_bind(lcls, tmp,
+						node2(N_CAST, class_ptr_type(lcls),
+						      object_arg_addr(top->left, lcls),
+						      origin), origin));
 					// fname(<base view of tmp>): dyn-first vbase
 					// adjust (the same subobject the normal arg
 					// coercion binds), static offset fallback.
@@ -22907,10 +22784,7 @@ node_t CirBuilder::try_free_operator_call(TokenOperator *top, DataDefCLASS *lcls
 						node2(N_BLOCK, list(), items, origin),
 						origin);
 					node_t addr = node2(N_CAST,
-						node2(N_TYPE,
-						      node1(N_LIST, class_tag_ref(lcls)),
-						      node2(N_DECL, ignore(),
-							    node1(N_LIST, pointer()))),
+						class_ptr_type(lcls),
 						se, origin);
 					return node1(N_DEREF, addr, origin);
 				}
@@ -22945,10 +22819,7 @@ node_t CirBuilder::try_free_operator_call(TokenOperator *top, DataDefCLASS *lcls
 		if (rcls) {
 			node_t addr = object_call_temp_addr(tc, rcls, top);
 			node_t cast = node2(N_CAST,
-				node2(N_TYPE,
-				      node1(N_LIST, class_tag_ref(rcls)),
-				      node2(N_DECL, ignore(),
-					    node1(N_LIST, pointer()))),
+				class_ptr_type(rcls),
 				addr, top);
 			return node1(N_DEREF, cast, top);
 		}
@@ -23465,9 +23336,7 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin,
 		// the OWNER pointer type, not the derived receiver type (the
 		// inherited method-call path does the same).
 		this_arg = node2(N_CAST,
-			node2(N_TYPE,
-			      node1(N_LIST, class_tag_ref(towner)),
-			      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
+			class_ptr_type(towner),
 			this_arg, origin);
 	}
 
@@ -24356,9 +24225,7 @@ node_t CirBuilder::class_unary_operator_call(const char *opsym,
 		// type (the external branch below void*-casts instead).
 		if (callee->emit_symbol.empty())
 			this_arg = node2(N_CAST,
-				node2(N_TYPE,
-				      node1(N_LIST, class_tag_ref(towner)),
-				      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
+				class_ptr_type(towner),
 				this_arg, origin);
 	}
 
@@ -25312,9 +25179,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 		append(args, node2(N_CAST, void_ptr_type(), id(dst_ti.c_str()), tb));
 		append(args, integer(hint, tb));
 		node_t call = node2(N_CALL, id("__dynamic_cast"), args, tb);
-		node_t tgt_t = node2(N_TYPE,
-			node1(N_LIST, class_tag_ref(dstC)),
-			node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+		node_t tgt_t = class_ptr_type(dstC);
 		return node2(N_CAST, tgt_t, call, tb);
 	}
 
@@ -25671,9 +25536,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 		snprintf(tmp, sizeof(tmp), "__new%d", m_strtmp_counter++);
 		// struct C * type node, reused for the decl and the cast.
 		auto ptr_type = [&]() -> node_t {
-			return node2(N_TYPE,
-				node1(N_LIST, class_tag_ref(cdd)),
-				node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+			return class_ptr_type(cdd);
 		};
 		auto struct_type = [&]() -> node_t {
 			return node2(N_TYPE,
@@ -25734,13 +25597,8 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			node_t elem0 = id(rtmp, tb);
 			if (ck)
 				elem0 = node2(N_ADD, elem0, integer((int64_t)ck, tb), tb);
-			node_t edecl = simple(N_SPEC_DECL);
-			append(edecl, node1(N_SHARE, node1(N_LIST, class_tag_ref(cdd))));
-			append(edecl, node2(N_DECL, id(tmp, tb), node1(N_LIST, pointer())));
-			append(edecl, ignore());
-			append(edecl, ignore());
-			append(edecl, node2(N_CAST, ptr_type(), elem0, tb));
-			append(items, edecl);
+			append(items, class_ptr_bind(cdd, tmp,
+				node2(N_CAST, ptr_type(), elem0, tb), tb));
 			if (ck) {
 				// *(unsigned long *)(__arN + CK - 8) = __anN;
 				node_t ul_specs = list();
@@ -25797,15 +25655,8 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 		node_t calloc_call = node2(N_CALL, id("calloc", tb), calloc_args, tb);
 		node_t cast_alloc = node2(N_CAST, ptr_type(), calloc_call, tb);
 		// struct C *__newN = (struct C*)calloc(...);
-		node_t decl = simple(N_SPEC_DECL);
-		append(decl, node1(N_SHARE, node1(N_LIST,
-			class_tag_ref(cdd))));
-		append(decl, node2(N_DECL, id(tmp, tb), node1(N_LIST, pointer())));
-		append(decl, ignore());
-		append(decl, ignore());
-		append(decl, cast_alloc);
 		node_t items = list();
-		append(items, decl);
+		append(items, class_ptr_bind(cdd, tmp, cast_alloc, tb));
 		// Complete-object construction through __newN: user-ctor virtual
 		// bases first, then the ctor call (or the ctorless arm's base
 		// chain + vptr stamps + member constructions) — the shared
@@ -27890,9 +27741,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				if (ocls == &ddARRAY)
 					return object_call_temp(tcf, ocls, tb);
 				node_t addr = object_call_temp_addr(tcf, ocls, tb);
-				node_t cp_type = node2(N_TYPE,
-					node1(N_LIST, class_tag_ref(ocls, tb)),
-					node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+				node_t cp_type = class_ptr_type(ocls, tb);
 				node_t as_cp = node2(N_CAST, cp_type, addr, tb);
 				return node1(N_DEREF, as_cp, tb);
 			}
@@ -29702,19 +29551,8 @@ madc::dis::istring CirBuilder::capture_class_range(TokenFOREACH *fe, DataDefCLAS
 	TokenVar *cv = range_named_variable(fe->container);
 	node_t addr = cv ? object_var_addr(cv->var, fe)
 			 : class_object_expr_addr(fe->container, cls, fe);
-	node_t cast = node2(N_CAST,
-			    node2(N_TYPE, node1(N_LIST, class_tag_ref(cls)),
-				  node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
-			    addr, fe);
-	node_t rdecl = simple(N_SPEC_DECL, fe);
-	append(rdecl, node1(N_SHARE, node1(N_LIST, class_tag_ref(cls))));
-	node_t rdl = list();
-	append(rdl, pointer());
-	append(rdecl, node2(N_DECL, id(rname, fe), rdl));
-	append(rdecl, ignore());
-	append(rdecl, ignore());
-	append(rdecl, cast);
-	prelude->push_back(rdecl);
+	prelude->push_back(class_ptr_bind(cls, rname,
+		node2(N_CAST, class_ptr_type(cls), addr, fe), fe));
 	return madc::dis::istring(rname);
 }
 
@@ -33533,9 +33371,7 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 					self, tf);
 				adj = node2(N_ADD, charp, integer((int64_t)off), tf);
 			}
-			node_t t = node2(N_TYPE,
-				node1(N_LIST, class_tag_ref(b)),
-				node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+			node_t t = class_ptr_type(b);
 			return node2(N_CAST, t, adj, tf);
 		};
 		auto base_call_at = [&](DataDefCLASS *b, size_t off, const madc::dis::istring &bsym) -> node_t {
@@ -34582,15 +34418,10 @@ node_t CirBuilder::synth_call_shim_var(Program *prog, Variable *fvar)
 		param_tmp[i] = tname;
 		std::vector<ExternParam> dp{ { {N_CHAR}, true }, { {N_VOID}, true } };
 		need_output_extern("madc_value_data", true, dp);
-		node_t sdecl = simple(N_SPEC_DECL);
-		append(sdecl, node1(N_SHARE, node1(N_LIST, class_tag_ref(params[i].cdd))));
-		append(sdecl, node2(N_DECL, id(sname), node1(N_LIST, pointer())));
-		append(sdecl, ignore());
-		append(sdecl, ignore());
-		append(sdecl, node2(N_CAST, class_ptr_type(params[i].cdd),
-				    helper_call("madc_value_data",
-						{arg_slot(i), integer(0)})));
-		stmts.push_back(sdecl);
+		stmts.push_back(class_ptr_bind(params[i].cdd, sname,
+			node2(N_CAST, class_ptr_type(params[i].cdd),
+			      helper_call("madc_value_data",
+					  {arg_slot(i), integer(0)})), NULL));
 		Variable *tv = new Variable(tname, *params[i].cdd, 1, NULL, false);
 		tv->flags |= vfLOCAL;
 		node_t vd = var_decl(tv, NULL);

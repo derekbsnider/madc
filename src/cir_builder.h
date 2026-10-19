@@ -757,6 +757,10 @@ class CirBuilder {
 	// has always taken the base type.
 	node_t class_ptr_bind(DataDef *cdd, const char *nm, node_t init,
 			      TokenBase *origin);
+	// A `struct Tag *<nm>` parameter declaration (`__this`, a vbase pointer).
+	// class_ptr_type, class_ptr_bind and this are a class pointer's ONE
+	// spelling each (gated by check-one-class-pointer-decl.sh).
+	node_t class_ptr_param(DataDef *cdd, const char *nm, TokenBase *origin);
 	// Materialize an object-returning CALL (non-trivial class) into a
 	// cleanup-tagged temp of that class via the __retbuf ABI, and return the
 	// temp's object lvalue (object_call_temp) or its (void*) address.
@@ -787,7 +791,9 @@ class CirBuilder {
 	node_t void_ptr_type();                      // N_TYPE node for a (void*) cast
 	node_t char_ptr_type();                      // N_TYPE node for a (char*) cast
 	node_t ptr_type_node(DataDef *dd);           // N_TYPE node for an arbitrary pointer DataDef
-	node_t class_ptr_type(DataDefCLASS *cdd);    // N_TYPE node for a (struct Cls *) cast
+	// N_TYPE node for a (struct Cls *) cast — the one owner (gated by
+	// check-one-class-pointer-decl.sh, with class_ptr_bind's declaration).
+	node_t class_ptr_type(DataDef *cdd, TokenBase *origin = NULL);
 	// The `this` a constructor or destructor of `cls` receives for an object
 	// of type `object` at `addr`: cv-qualifiers do not apply to an object
 	// under construction or destruction ([class.ctor.general]/5,
