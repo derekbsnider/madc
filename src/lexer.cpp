@@ -12311,7 +12311,7 @@ madc::dis::istring madc_token_spelling(TokenBase *tb)
     switch ( tb->type() )
     {
 	case TokenType::ttString:
-	    if ( TokenIdent *ti = dynamic_cast<TokenIdent *>(tb) )
+	    if ( TokenIdent *ti = tb->as_ident_tok() )
 	    {
 		// Re-escape the cooked value so the literal RE-LEXES to the
 		// same bytes (macro-arg re-lex, --dump-source round trips,
@@ -12329,7 +12329,7 @@ madc::dis::istring madc_token_spelling(TokenBase *tb)
 	    }
 	    return madc::dis::istring();
 	case TokenType::ttVariable:
-	    if ( TokenVar *tv = dynamic_cast<TokenVar *>(tb) ) return tv->var.name;
+	    if ( TokenVar *tv = tb->as_var_tok() ) return tv->var.name;
 	    return madc::dis::istring();
 	case TokenType::ttInteger:
 	{
@@ -12361,8 +12361,8 @@ madc::dis::istring madc_token_spelling(TokenBase *tb)
 	case TokenType::ttOperator:
 	case TokenType::ttSymbol:  return madc::dis::istring(1, (char)tb->get());
 	default:
-	    if ( TokenIdent *ti = dynamic_cast<TokenIdent *>(tb) ) return ti->spelling();
-	    if ( TokenMultiOp *to = dynamic_cast<TokenMultiOp *>(tb) ) return to->str;
+	    if ( TokenIdent *ti = tb->as_ident_tok() ) return ti->spelling();
+	    if ( TokenMultiOp *to = tb->as_multiop_tok() ) return to->str;
 	    return madc::dis::istring();
     }
 }

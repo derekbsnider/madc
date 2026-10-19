@@ -5611,7 +5611,7 @@ static madc::dis::istring template_token_fragment(TokenBase *tb)
     }
     if ( tb->type() == TokenType::ttString )
 	return ((TokenStr *)tb)->str;
-    if ( TokenMultiOp *mo = dynamic_cast<TokenMultiOp *>(tb) )
+    if ( TokenMultiOp *mo = tb->as_multiop_tok() )
 	return mo->str;
     char c = (char)tb->get();
     return c ? madc::dis::istring(1, c) : madc::dis::istring("_");
@@ -33378,8 +33378,8 @@ madc::dis::istring Program::parseOperatorId(TokenBase *operator_tok,
 	}
 	return name;
     }
-    if ( dynamic_cast<TokenMultiOp *>(op_tok) )
-	return "operator" + ((TokenMultiOp *)op_tok)->str;
+    if ( TokenMultiOp *mo = op_tok->as_multiop_tok() )
+	return "operator" + mo->str;
     if ( op_tok->type() == TokenType::ttString )
     {
 	TokenStr *lit = static_cast<TokenStr *>(op_tok);
@@ -61746,7 +61746,7 @@ void Program::register_outofline_member_instantiations(
 	    for ( Variable *cand : ddc->methods )
 	    {
 		FuncDef *cfd = cand && cand->data
-		    ? dynamic_cast<FuncDef *>(cand->type) : NULL;
+		    && cand->type ? cand->type->as_funcdef_dd() : NULL;
 		if ( !cfd )
 		    continue;
 		if ( def_is_ctor )
@@ -61803,7 +61803,7 @@ void Program::register_outofline_member_instantiations(
 	for ( Variable *cand : ddc->methods )
 	{
 	    if ( !cand || !cand->data ) continue;
-	    FuncDef *cfd = dynamic_cast<FuncDef *>(cand->type);
+	    FuncDef *cfd = cand->type ? cand->type->as_funcdef_dd() : NULL;
 	    if ( !cfd ) continue;
 	    // Lazy member-template hydration: the matcher below reads decl
 	    // tokens + template params on each candidate.
@@ -61921,7 +61921,7 @@ void Program::register_outofline_member_instantiations(
 	// `<mangled>::` declarator qualifier.
 	if ( def.is_member_template )
 	{
-	    FuncDef *mfd = dynamic_cast<FuncDef *>(mvar->type);
+	    FuncDef *mfd = mvar->type ? mvar->type->as_funcdef_dd() : NULL;
 	    if ( !mfd || !mfd->member_template_decl.empty() )
 		continue;	// not a member, or already attached
 	    std::vector<TokenBase *> decl2;
@@ -62019,7 +62019,7 @@ void Program::register_outofline_member_instantiations(
 	// library to provide it). We now provide a LOCAL body, so clear that binding:
 	// the call site falls through to the member's own emit name (== mvar->name,
 	// the deferred-body key) and the materialized body is emitted under it.
-	if ( FuncDef *mfd = dynamic_cast<FuncDef *>(mvar->type) )
+	if ( FuncDef *mfd = mvar->type ? mvar->type->as_funcdef_dd() : NULL )
 	{
 	    mfd->emit_symbol.clear();
 	    mfd->declaration_only = false;
@@ -64053,7 +64053,7 @@ ArgValueCategory Program::argument_value_category(TokenBase *arg,
 	    return ArgValueCategory::Rvalue;
 	return ArgValueCategory::Unknown;
     }
-    if ( TokenCast *tc = dynamic_cast<TokenCast *>(arg) )
+    if ( TokenCast *tc = arg->as_cast_tok() )
     {
 	// [expr.static.cast]/1,4 ([expr.cast] for the C-style form): a cast to
 	// a reference type yields an lvalue (`T&`) or an xvalue (`T&&`); a cast
@@ -64065,7 +64065,7 @@ ArgValueCategory Program::argument_value_category(TokenBase *arg,
 	return tc->to_rvalue_ref ? ArgValueCategory::Rvalue
 				 : ArgValueCategory::Lvalue;
     }
-    if ( TokenTerQ *tq = dynamic_cast<TokenTerQ *>(arg) )
+    if ( TokenTerQ *tq = arg->as_terq_tok() )
     {
 	// [expr.cond]/4: two lvalue arms of ONE type are an lvalue; arms of
 	// different types convert to a prvalue (/7).
@@ -64082,18 +64082,18 @@ ArgValueCategory Program::argument_value_category(TokenBase *arg,
 	return t;
     }
     if ( arg->id() == TokenID::tkComma )
-	if ( TokenOperator *co = dynamic_cast<TokenOperator *>(arg) )
+	if ( TokenOperator *co = arg->as_operator_tok() )
 	    return argument_value_category(co->right);
     if ( builtin_operator_yields_lvalue(arg) )
 	return ArgValueCategory::Lvalue;
-    if ( arg->as_objtemp_tok() || dynamic_cast<TokenAddrOf *>(arg)
-      || dynamic_cast<TokenTypeQuery *>(arg) || dynamic_cast<TokenInt *>(arg)
-      || dynamic_cast<TokenChar *>(arg) || dynamic_cast<TokenReal *>(arg)
+    if ( arg->as_objtemp_tok() || arg->as_addr_of_tok()
+      || arg->as_typequery_tok() || arg->as_int_tok()
+      || arg->type() == TokenType::ttChar || arg->as_real_tok()
       || builtin_operator_yields_prvalue(arg) )
 	return ArgValueCategory::Rvalue;
-    if ( arg->is_indirection() || dynamic_cast<TokenSubscript *>(arg)
-      || dynamic_cast<TokenSubscriptExpr *>(arg)
-      || dynamic_cast<TokenStr *>(arg) || dynamic_cast<TokenVar *>(arg) )
+    if ( arg->is_indirection() || arg->as_subscript_tok()
+      || arg->as_subscript_expr_tok()
+      || arg->as_str_tok() || arg->as_var_tok() )
 	return ArgValueCategory::Lvalue;
     return ArgValueCategory::Unknown;
 }
@@ -64738,11 +64738,11 @@ static bool datadef_involves_placeholder(DataDef *dd, bool include_dependent_cla
 	    return true;
 	if ( include_dependent_class )
 	{
-	    DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(dd);
+	    DataDefCLASS *cls = dd->as_class_dd();
 	    if ( cls && cls->is_dependent_placeholder )
 		return true;
 	}
-	if ( DataDefQUAL *c = dynamic_cast<DataDefQUAL *>(dd) )
+	if ( DataDefQUAL *c = dd->as_qualified_dd() )
 	    { dd = c->base_type; continue; }
 	if ( DataDefPTR *p = pointer_dd_of(dd) )
 	    { dd = p->base_type; continue; }
@@ -65820,8 +65820,8 @@ static bool instantiated_template_var_has_pending_body(Program &pgm,
 	return true;
     for ( TokenBase *pb : pgm.pending_funcs )
     {
-	TokenFunc *tf = dynamic_cast<TokenFunc *>(pb);
-	FuncDef *tfd = tf ? dynamic_cast<FuncDef *>(tf->var.type) : NULL;
+	TokenFunc *tf = pb ? pb->as_func_tok() : NULL;
+	FuncDef *tfd = tf && tf->var.type ? tf->var.type->as_funcdef_dd() : NULL;
 	if ( !tf || !tfd || tfd->declaration_only )
 	    continue;
 	if ( &tf->var == v || tfd == fd )
@@ -70086,7 +70086,7 @@ bool Program::instantiate_member_ctor_template_candidate(
     const int nargs = (int)ctor_args.size();
     for ( Variable *cv : cdd->ctors )
     {
-	FuncDef *cfd = cv ? dynamic_cast<FuncDef *>(cv->type) : NULL;
+	FuncDef *cfd = cv && cv->type ? cv->type->as_funcdef_dd() : NULL;
 	// Lazy member-template hydration: the decl/param gates below are
 	// pattern-content reads on each ctor-template candidate.
 	if ( cfd )

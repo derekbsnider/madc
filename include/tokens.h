@@ -31,6 +31,7 @@ class Program;
 // Kind-accessor forward declarations (TokenBase::as_*() below). Classes not
 // defined in this header live in datatokens.h / madc.h.
 class TokenOperator;
+class TokenMultiOp;
 class TokenAssign;
 class TokenTerQ;
 class TokenDynamicCast;
@@ -409,6 +410,7 @@ public:
     // succeeds on it). Callers must null-check the RECEIVER; dynamic_cast
     // accepted a null operand, a virtual call does not.
     virtual TokenOperator      *as_operator_tok()   { return NULL; }
+    virtual TokenMultiOp       *as_multiop_tok()    { return NULL; }
     virtual TokenAssign        *as_assign_tok()     { return NULL; }
     virtual TokenTerQ          *as_terq_tok()       { return NULL; }
     virtual TokenDynamicCast   *as_dyncast_tok()    { return NULL; }
@@ -621,6 +623,7 @@ public:
     virtual TokenType type() const override { return TokenType::ttMultiOp; }
     virtual TokenID   id()   const override { return TokenID::tkMultiOp; }
     virtual inline int precedence() const override { return 16; }
+    virtual TokenMultiOp *as_multiop_tok() override { return this; }
 };
 
 // The parse-side type of an arithmetic OPERAND has one owner per step, and

@@ -2708,8 +2708,8 @@ static bool pending_function_body_available(CirBuilder *cb, Program *prog,
 	if (!cb || !prog || sym.empty())
 		return false;
 	for (TokenBase *pb : prog->pending_funcs) {
-		TokenFunc *tf = dynamic_cast<TokenFunc *>(pb);
-		FuncDef *fd = tf ? dynamic_cast<FuncDef *>(tf->var.type) : NULL;
+		TokenFunc *tf = pb ? pb->as_func_tok() : NULL;
+		FuncDef *fd = tf && tf->var.type ? tf->var.type->as_funcdef_dd() : NULL;
 		// Pointer-identity arm: a member-template instantiation product
 		// is REGISTERED under its per-request __mti symbol while a call
 		// site can still resolve the PLAIN member name (the rename is
@@ -2745,8 +2745,9 @@ public:
 		if (hit != m_by_name.end())
 			return hit->second;
 		for (; m_next < m_prog->ast.size(); ++m_next) {
-			TokenFunc *tf = dynamic_cast<TokenFunc *>(m_prog->ast[m_next]);
-			FuncDef *fd = tf ? dynamic_cast<FuncDef *>(tf->var.type) : NULL;
+			TokenBase *at = m_prog->ast[m_next];
+			TokenFunc *tf = at ? at->as_func_tok() : NULL;
+			FuncDef *fd = tf && tf->var.type ? tf->var.type->as_funcdef_dd() : NULL;
 			if (!tf || !fd || tf->is_overridden || fd->declaration_only)
 				continue;
 			m_by_name.emplace(tf->var.name, tf);
@@ -5255,7 +5256,7 @@ static DataDefCLASS *as_user_class(DataDef *dd)
 	if (dd->basetype() != BaseType::btClass) return NULL;
 	if (dd->is_reference()) return NULL;
 	if (dd->rawtype() != DataType::dtRESERVED) return NULL;
-	return dynamic_cast<DataDefCLASS *>(dd);
+	return dd->as_class_dd();	// dd is unqualified: exactly the dynamic_cast
 }
 
 // Integer-element _Complex (GNU extension): c2mir carries no native integer
@@ -32733,8 +32734,8 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 					{ ok = true; why = 7; }
 			}
 			if (!ok) for (TokenBase *pb : m_prog->pending_funcs) {
-				TokenFunc *tf = dynamic_cast<TokenFunc *>(pb);
-				FuncDef *tfd = tf ? dynamic_cast<FuncDef *>(tf->var.type)
+				TokenFunc *tf = pb ? pb->as_func_tok() : NULL;
+				FuncDef *tfd = tf && tf->var.type ? tf->var.type->as_funcdef_dd()
 						  : NULL;
 				// A declaration-only FuncDef in pending_funcs (e.g. an
 				// instantiated free operator/std::move signature with no
@@ -36348,8 +36349,8 @@ node_t CirBuilder::translate_module(Program *prog)
 					bool referenced = referenced_funcs.count(db.first) > 0;
 					const char *ref_via = referenced ? "key" : "none";
 					if (!referenced && db.second.var) {
-						FuncDef *dfd = dynamic_cast<FuncDef *>(
-							db.second.var->type);
+						FuncDef *dfd = db.second.var->type
+							? db.second.var->type->as_funcdef_dd() : NULL;
 						referenced = referenced_funcs.count(
 							body_emit_symbol(*db.second.var, dfd)) > 0;
 						if (referenced)
