@@ -164,6 +164,21 @@ void __madc_cleanup_discard_to(void *mark)
     }
 }
 
+// A try block's normal exit — the end of its body, a return, break, continue
+// or goto out of it: the cleanup attribute on the try's frame guard (a local
+// holding the MadcTryContext's address) calls this with the guard's address.
+// Ends that frame and drops any cleanup entry its body left (none, when every
+// object's guard removed its own). A throw never gets here: the raise popped
+// the frame before its longjmp, and a longjmp runs no cleanup attribute.
+void __madc_try_leave(void *guard)
+{
+    struct MadcTryContext *ctx = guard ? *(struct MadcTryContext **)guard : NULL;
+    if ( !ctx )
+	return;
+    __madc_cleanup_discard_to(ctx->cleanup_mark);
+    madc_try_stack = ctx->prev;
+}
+
 // Current cleanup-stack top — a mark the try lowering captures before the body
 // so it can discard exactly the try-body entries on the NORMAL exit path (the
 // cleanup attribute already ran their dtors at C-block scope exit). On the
@@ -174,20 +189,21 @@ void *__madc_cleanup_top(void)
 }
 
 // Push a HEAP-ALLOCATED cleanup entry naming a destructor by VALUE (not via a
-// double-indirect fn slot). The lowering passes `(void*)Cls___dtor` and
-// `(void*)&obj` directly — no caller-provided entry storage and no per-object
-// stack locals in the try body. This matters for the JIT path: adding stack
-// arrays/locals inside a try body perturbs the MIR frame allocation and can make
-// the try-context overlap an object (observed 2026-05-31, P1.1c) — passing only
-// immediate call arguments avoids that. The entry is freed by unwind/discard/pop.
+// double-indirect fn slot): the lowering passes `(void*)Cls___dtor` and
+// `(void*)&obj`. Returns the entry — the lowering keeps it in a guard local
+// whose cleanup attribute (__madc_cleanup_leave) removes it when the object's
+// scope exits normally. The entry is freed by unwind/discard/remove.
 // `dtor` has the shape `void (*)(void *this)` — the same single-`this` shape the
 // cleanup attribute and the class dtor symbol use. P1.1c.
-void __madc_cleanup_push_dtor(void *dtor, void *obj)
+void *__madc_cleanup_push_dtor(void *dtor, void *obj)
 {
     struct MadcCleanupEntry *entry
 	= (struct MadcCleanupEntry *)malloc(sizeof(struct MadcCleanupEntry));
     if ( !entry )
-	return;
+    {
+	fprintf(stderr, "out of memory registering a cleanup\n");
+	abort();
+    }
     entry->fn_indirect = NULL;
     entry->obj_ptr = obj;
     entry->guard = NULL;
@@ -196,6 +212,7 @@ void __madc_cleanup_push_dtor(void *dtor, void *obj)
     entry->heap_alloc = 1;
     entry->prev = madc_cleanup_stack;
     madc_cleanup_stack = entry;
+    return entry;
 }
 
 // Push a cleanup entry onto the cleanup stack
@@ -228,9 +245,8 @@ void __madc_cleanup_pop(void)
 // (rt_except.h documents the widening). Top-pop is not enough for a host
 // frame whose registration outlives entries pushed BELOW it and is exited
 // while entries pushed ABOVE it are still live — the MT-5 scope block's
-// normal exit is exactly that shape (an enclosing lexical try's body
-// locals register above the scope's entry and stay until the try ends).
-// O(depth) walk; the stack is short-lived and shallow by construction.
+// normal exit is exactly that shape. O(depth) walk; a scope-bound entry is
+// on top when its scope exits, so the walk is one step there.
 void __madc_cleanup_remove(void *entry)
 {
     struct MadcCleanupEntry *e = (struct MadcCleanupEntry *)entry;
@@ -246,6 +262,18 @@ void __madc_cleanup_remove(void *entry)
 	}
 	link = &(*link)->prev;
     }
+}
+
+// An object's scope exits normally — its end, a return, break, continue or
+// goto: the cleanup attribute on the guard local that holds the object's
+// entry (__madc_cleanup_push_dtor's result) calls this with the guard's
+// address, BEFORE the object's own cleanup destroys it (the guard is declared
+// after the object). The entry goes; a later throw cannot run it again.
+void __madc_cleanup_leave(void *guard)
+{
+    void *entry = guard ? *(void **)guard : NULL;
+    if ( entry )
+	__madc_cleanup_remove(entry);
 }
 
 // Print the unhandled-exception line. The ONE formatting owner is

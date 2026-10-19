@@ -1067,17 +1067,10 @@ static void scope_block_unwind(void *scope)
 
 void *__madc_scope_block_enter(void)
 {
-	void *before = __madc_cleanup_top();
 	madc_scope *s = (madc_scope *)__madc_scope_begin();
-	__madc_cleanup_push_dtor((void *)scope_block_unwind, s);
-	s->block_entry = __madc_cleanup_top();
-	if (s->block_entry == before) {
-		// push_dtor's allocation failed silently — an unregistered
-		// block would leak its children on unwind. Refuse loud.
-		fprintf(stderr, "madc tasks: scope block registration"
-			" failed\n");
-		abort();
-	}
+	// push_dtor refuses loud when it cannot register (an unregistered
+	// block would leak its children on unwind).
+	s->block_entry = __madc_cleanup_push_dtor((void *)scope_block_unwind, s);
 	return s;
 }
 

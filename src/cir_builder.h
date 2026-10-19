@@ -581,6 +581,15 @@ class CirBuilder {
 				const char *dtor_sym, TokenBase *origin,
 				size_t align = 0,
 				ObjStorage storage = ObjStorage::Automatic);
+	// The attribute list `__attribute__((cleanup(fn)))` for a declaration's
+	// attrs slot: c2mir calls fn(&var) at every exit of var's scope.
+	node_t cleanup_attrs(const char *fn, TokenBase *origin);
+	// `void *name [__attribute__((cleanup(leave_fn)))] = init;` — a guard
+	// whose value leave_fn(&name) receives at every exit of its scope (a try
+	// frame, a cleanup entry, the instrumented function's address); no
+	// attribute when leave_fn is NULL. The caller declares leave_fn.
+	node_t cleanup_guard_local(const char *name, node_t init,
+				   const char *leave_fn, TokenBase *origin);
 	// Host-call shim synthesis (translate_module): a per-function
 	// `long __madc_shim_<sym>(char *__args, char *__out)` adapter over
 	// the 32-byte madc_value ABI. NULL when the signature is not
@@ -3022,10 +3031,11 @@ public:
 	node_t translate_while(TokenBase *tw);
 	node_t translate_for(TokenFOR *tf);
 	// SJLJ exception lowering: try/catch -> setjmp on __madc_try_push(&ctx), the
-	// try body on the ==0 arm (then __madc_try_pop), the catch dispatch on the
-	// else arm (by __madc_exception_type, bind value, run handler, clear; no
-	// match -> __madc_rethrow). Emitted as block-scoped statements (NOT a stmt-
-	// expr — see the c2mir cleanup-scope gotcha). throw -> __madc_throw_*.
+	// try body on the ==0 arm (its frame guard ends the frame on every normal
+	// exit, __madc_try_leave), the catch dispatch on the else arm (by
+	// __madc_exception_type, bind value, run handler, clear; no match ->
+	// __madc_rethrow). Emitted as block-scoped statements (NOT a stmt-expr —
+	// see the c2mir cleanup-scope gotcha). throw -> __madc_throw_*.
 	node_t translate_try(class TokenTRY *tt);
 	node_t translate_throw(class TokenTHROW *th);
 	// MT-1 `go f(args);` — spawn thunk + site block (src/rt/rt_task.c).
@@ -3048,12 +3058,15 @@ public:
 	// translate_try). Objects constructed in a try body keep their normal
 	// cleanup-attribute (normal-path scope-exit teardown), but ALSO get a runtime
 	// __madc_cleanup_push so __madc_throw_* unwinds them on the longjmp path
-	// (cleanup attributes do NOT fire on longjmp — P1.1c). On normal try exit the
-	// runtime entries are discarded (cleanup-attribute already ran the dtors).
+	// (cleanup attributes do NOT fire on longjmp — P1.1c). A normal exit of the
+	// object's scope removes its entry (the guard emit_try_body_cleanup_push
+	// declares); its cleanup attribute runs the dtor.
 	int m_try_body_depth = 0;
-	// When in a try body, append a runtime cleanup entry naming `cdd`'s destructor
-	// for the object `varname` (its dtor runs on the exception/longjmp unwind
-	// path). No-op outside a try body or for a class with no dtor. See P1.1c
+	// When in a try body, register a runtime cleanup entry naming `cdd`'s
+	// destructor for the object `varname` (its dtor runs on the exception/
+	// longjmp unwind path), held by a guard local declared after the object
+	// that removes it when the object's scope exits normally. No-op outside a
+	// try body or for a class with no dtor. See P1.1c
 	// (docs/plans/refs/exceptions-sjlj.md).
 	// array_elems > 0 = the object is a fixed array of that many elements;
 	// the pushed dtor is then the per-(class,N) array wrapper.

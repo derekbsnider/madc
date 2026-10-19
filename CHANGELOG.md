@@ -6,6 +6,13 @@ Consolidated: counted_loop — gate scripts/check-one-counted-loop.sh
 Consolidated: class_pointer_spelling — gate scripts/check-one-class-pointer-decl.sh
 Consolidated: pointer_type_node — gate scripts/check-one-pointer-type-node.sh
 
+### A try block left by return, break, continue or goto ends its frame, and a nested-block object is destroyed once
+
+- A try block's frame ended only when its body reached its end. A `return`, `break`, `continue` or `goto` out of the body left the frame live, so a later throw ran in the abandoned frame's handler. An object in a nested block of a try body was destroyed by its cleanup attribute and again by its runtime cleanup entry.
+- The try frame is now a guard local whose cleanup attribute (`__madc_try_leave`) ends the frame on every normal exit of the try arm. Each runtime cleanup entry is a guard local (`__madc_cleanup_leave`) that removes the entry when its object's scope exits normally. `__madc_cleanup_push_dtor` returns the entry.
+- The cleanup attribute is built by one helper, `CirBuilder::cleanup_attrs` (`src/cir_builder.cpp`). `CirBuilder::cleanup_guard_local` builds a guard local for the try frame, the cleanup entry, the static-local guard and the instrumented function's address.
+- Reducer `tests/testtry_scope_exit.mad` (oracle `tests/testtry_scope_exit.expect`, g++ 13 == clang++ 18, `--std=gnu++17`): nested-block objects, a handler object, early return, continue, break and goto out of a try body.
+
 ### `__DATE__` and `__TIME__` are the translation's date and time, honouring `SOURCE_DATE_EPOCH` (B168)
 
 - `__DATE__` and `__TIME__` expand to the date and time of translation of the translation unit (C11 6.10.8.1), computed at the first expansion and fixed for the rest of that translation. They were madc's own build date and time. When `SOURCE_DATE_EPOCH` is set it is that instant, read as UTC; a value that is not a non-negative decimal integer no greater than 253402300799 is a compile error, as gcc refuses it. Otherwise the clock is read as local time.

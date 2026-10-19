@@ -5101,17 +5101,9 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 							? demand_array_dtor(cdd, arr_n)
 							: class_complete_dtor_symbol(cdd);
 						referenced_funcs.insert(dtor_sym);
-						node_t attr_args = list();
-						append(attr_args,
-						       id(dtor_sym.c_str(),
-							  madc_token_for_slot(src->origin_id)));
-						node_t attrs = list();
-						append(attrs, node2(N_ATTR,
-							id("cleanup",
-							   madc_token_for_slot(src->origin_id)),
-							attr_args,
-							madc_token_for_slot(src->origin_id)));
-						c2mir_op_append(c2m, dst->as_node(), attrs);
+						c2mir_op_append(c2m, dst->as_node(),
+							cleanup_attrs(dtor_sym.c_str(),
+								madc_token_for_slot(src->origin_id)));
 					} else {
 						c2mir_op_append(c2m, dst->as_node(),
 								ignore());
@@ -7159,11 +7151,7 @@ node_t CirBuilder::obj_storage_decl(const char *name, size_t words,
 		attrs = ignore();
 	} else {
 		need_output_extern(dtor_sym, false, { { {N_VOID}, true } });
-		node_t attr_args = list();
-		append(attr_args, id(dtor_sym, origin));
-		attrs = list();
-		append(attrs, node2(N_ATTR, id("cleanup", origin), attr_args,
-				    origin));
+		attrs = cleanup_attrs(dtor_sym, origin);
 	}
 	node_t sd = simple(N_SPEC_DECL, origin);
 	append(sd, share);
@@ -7171,6 +7159,32 @@ node_t CirBuilder::obj_storage_decl(const char *name, size_t words,
 	append(sd, attrs);      // __attribute__((cleanup(dtor_sym)))
 	append(sd, ignore());   // asm
 	append(sd, ignore());   // initializer — none; the ctor call does it
+	CIR_NODE(sd)->synth_from_origin = true;
+	return sd;
+}
+
+node_t CirBuilder::cleanup_attrs(const char *fn, TokenBase *origin)
+{
+	node_t attr_args = list();
+	append(attr_args, id(fn, origin));
+	node_t attrs = list();
+	append(attrs, node2(N_ATTR, id("cleanup", origin), attr_args, origin));
+	return attrs;
+}
+
+node_t CirBuilder::cleanup_guard_local(const char *name, node_t init,
+				       const char *leave_fn, TokenBase *origin)
+{
+	node_t spec = list();
+	append(spec, simple(N_VOID, origin));
+	node_t decl_list = list();
+	append(decl_list, pointer());
+	node_t sd = simple(N_SPEC_DECL, origin);
+	append(sd, node1(N_SHARE, spec));
+	append(sd, node2(N_DECL, id(name, origin), decl_list));
+	append(sd, leave_fn ? cleanup_attrs(leave_fn, origin) : ignore());
+	append(sd, ignore());   // asm
+	append(sd, init);
 	CIR_NODE(sd)->synth_from_origin = true;
 	return sd;
 }
@@ -10602,12 +10616,12 @@ bool CirBuilder::ensure_runtime_extern_for(const madc::dis::istring &sym)
 		need_output_extern("__madc_cleanup_top", true, {});
 		return true;
 	}
-	if (sym == "__madc_cleanup_discard_to") {
-		need_output_extern("__madc_cleanup_discard_to", false, { { {N_VOID}, true } });
+	if (sym == "__madc_try_leave") {
+		need_output_extern("__madc_try_leave", false, { { {N_VOID}, true } });
 		return true;
 	}
-	if (sym == "__madc_try_pop") {
-		need_output_extern("__madc_try_pop", false, {});
+	if (sym == "__madc_cleanup_leave") {
+		need_output_extern("__madc_cleanup_leave", false, { { {N_VOID}, true } });
 		return true;
 	}
 	if (sym == "__madc_exception_type") {
@@ -10623,7 +10637,7 @@ bool CirBuilder::ensure_runtime_extern_for(const madc::dis::istring &sym)
 		return true;
 	}
 	if (sym == "__madc_cleanup_push_dtor") {
-		need_output_extern("__madc_cleanup_push_dtor", false,
+		need_output_extern("__madc_cleanup_push_dtor", true,
 				   { { {N_VOID}, true }, { {N_VOID}, true } });
 		return true;
 	}
@@ -12010,12 +12024,7 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 				? user_cleanup->type->as_funcdef_dd() : NULL;
 			madc::dis::istring csym = func_emit_name(*user_cleanup, cfd);
 			referenced_funcs.insert(csym);
-			node_t attr_args = list();
-			append(attr_args, id(csym.c_str(), origin));
-			node_t attrs = list();
-			append(attrs, node2(N_ATTR, id("cleanup", origin),
-					    attr_args, origin));
-			attr_node = attrs;
+			attr_node = cleanup_attrs(csym.c_str(), origin);
 		} else if (cdd && class_needs_dtor(cdd)
 			   && !(m_file_scope_decl || (v->flags & vfSTATIC))) {
 			// An object with static storage duration is destroyed at
@@ -12024,12 +12033,7 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 			// variables only.
 			madc::dis::istring dtor_sym = class_object_dtor_symbol(v, cdd);
 			referenced_funcs.insert(dtor_sym);
-			node_t attr_args = list();
-			append(attr_args, id(dtor_sym.c_str(), origin));
-			node_t attrs = list();
-			append(attrs, node2(N_ATTR, id("cleanup", origin),
-					    attr_args, origin));
-			attr_node = attrs;
+			attr_node = cleanup_attrs(dtor_sym.c_str(), origin);
 		} else if (is_vla_local) {
 			// Free the VLA's malloc'd storage at scope exit. The
 			// cleanup fn receives &a (a `T **`); __madc_vla_free does
@@ -12037,12 +12041,7 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 			referenced_funcs.insert("__madc_vla_free");
 			need_output_extern("__madc_vla_free", false,
 					   { { {N_VOID}, true } });
-			node_t attr_args = list();
-			append(attr_args, id("__madc_vla_free", origin));
-			node_t attrs = list();
-			append(attrs, node2(N_ATTR, id("cleanup", origin),
-					    attr_args, origin));
-			attr_node = attrs;
+			attr_node = cleanup_attrs("__madc_vla_free", origin);
 		}
 	}
 	append(spec_decl, attr_node);
@@ -28867,16 +28866,11 @@ node_t CirBuilder::translate_throw(TokenTHROW *th)
 // Register a try-body object's destructor on the RUNTIME cleanup stack so it
 // runs when an exception (longjmp) unwinds out of the try body — c2mir cleanup
 // attributes do NOT fire on longjmp. The object keeps its cleanup attribute too;
-// that handles the NORMAL scope-exit path (the try lowering discards these
-// runtime entries on normal exit), so each dtor runs exactly once per path.
-//
-// Emits a SINGLE call with only immediate arguments — NO new stack locals in the
-// try body:
-//   __madc_cleanup_push_dtor((void*)Cls___dtor, (void*)&varname);
-// The runtime heap-allocates the entry. Adding stack arrays/locals inside a try
-// body perturbs the MIR JIT frame allocation and was observed to make the
-// try-context overlap an object (2026-05-31) — passing only immediates avoids it.
-// P1.1c.
+// that handles the NORMAL scope-exit path, and the entry's guard local removes
+// the runtime entry on that same exit (a block end, return, break, continue or
+// goto), so each dtor runs exactly once per path. The runtime heap-allocates the
+// entry. (The 2026-05-31 "a try-body local overlaps the try context" fault was
+// c2mir's auto-local layout, fixed at the fork — P1.1b.) P1.1c.
 void CirBuilder::emit_try_body_cleanup_push(const char *varname,
 					    DataDefCLASS *cdd,
 					    node_t items, TokenBase *origin,
@@ -28902,9 +28896,12 @@ void CirBuilder::emit_try_body_cleanup_push(const char *varname,
 		need_output_extern(dtor_sym.c_str(), false, { { {N_VOID}, true } });
 	referenced_funcs.insert(dtor_sym);
 
-	// __madc_cleanup_push_dtor((void*)dtor_sym, (void*)&varname);
-	need_output_extern("__madc_cleanup_push_dtor", false,
-			   { { {N_VOID}, true }, { {N_VOID}, true } });
+	// void *__madc_centry_K __attribute__((cleanup(__madc_cleanup_leave)))
+	//	= __madc_cleanup_push_dtor((void*)dtor_sym, (void*)&varname);
+	// Declared after the object, so a normal exit of its scope removes the
+	// entry before the object's own cleanup destroys it.
+	ensure_runtime_extern_for("__madc_cleanup_push_dtor");
+	ensure_runtime_extern_for("__madc_cleanup_leave");
 	node_t args = list();
 	append(args, node2(N_CAST, void_ptr_type(),
 			   id(dtor_sym.c_str(), origin), origin));
@@ -28912,7 +28909,9 @@ void CirBuilder::emit_try_body_cleanup_push(const char *varname,
 			   node1(N_ADDR, id(varname, origin), origin), origin));
 	node_t call = node2(N_CALL, id("__madc_cleanup_push_dtor", origin), args, origin);
 	CIR_NODE(call)->synth_from_origin = true;
-	append(items, node2(N_EXPR, list(), call, origin));
+	char guard[40];
+	snprintf(guard, sizeof(guard), "__madc_centry%d", m_strtmp_counter++);
+	append(items, cleanup_guard_local(guard, call, "__madc_cleanup_leave", origin));
 }
 
 // SJLJ try/catch lowering. Emits, as a block of statements (NOT a statement-
@@ -28982,49 +28981,28 @@ node_t CirBuilder::translate_try(TokenTRY *tt)
 #endif
 	node_t cond = node2(N_EQ, sj_call, integer(0, tt), tt);
 
-	// THEN arm: capture the cleanup-stack mark (== ctx->cleanup_mark, set by
-	// __madc_try_push), lower the try body (object ctors inside it push runtime
-	// cleanup entries — see emit_try_body_cleanup_push), then on normal exit
-	// DISCARD those entries (their dtors already ran via the cleanup attribute at
-	// the body block's C scope exit) and __madc_try_pop(). On the exception path
-	// the body block is abandoned by longjmp (cleanup attribute does NOT fire),
-	// and __madc_throw_* has already unwound the runtime entries to this same mark
-	// — so each try-body dtor runs exactly once on either path. P1.1c.
-	char markname[40];
-	snprintf(markname, sizeof(markname), "__cleanup_mark_%d", n);
-	need_output_extern("__madc_cleanup_top", true, {});
-	node_t mark_spec = list();
-	append(mark_spec, simple(N_VOID, tt));
-	node_t mark_decl_list = list();
-	append(mark_decl_list, pointer());
-	node_t mark_init = node2(N_CALL, id("__madc_cleanup_top", tt), list(), tt);
-	node_t mark_sd = simple(N_SPEC_DECL, tt);
-	append(mark_sd, node1(N_SHARE, mark_spec));
-	append(mark_sd, node2(N_DECL, id(markname, tt), mark_decl_list));
-	append(mark_sd, ignore());
-	append(mark_sd, ignore());
-	append(mark_sd, mark_init);
-	CIR_NODE(mark_sd)->synth_from_origin = true;
-
+	// THEN arm: the try frame's guard, then the try body (object ctors inside
+	// it push runtime cleanup entries — see emit_try_body_cleanup_push). Every
+	// normal exit of the arm — the body's end, a return, break, continue or
+	// goto out of it — runs the guard's cleanup, __madc_try_leave, which ends
+	// the frame (and drops any entry the body left; each object's own guard
+	// removed its entry as its scope exited). On the exception path the arm is
+	// abandoned by longjmp (no cleanup attribute fires), and the raise has
+	// already popped the frame and unwound the entries to its mark — so each
+	// try-body dtor runs exactly once on either path. P1.1c.
+	//   void *__try_frame_N __attribute__((cleanup(__madc_try_leave)))
+	//	= (void *)&__try_ctx_N;
+	char framename[40];
+	snprintf(framename, sizeof(framename), "__try_frame_%d", n);
+	ensure_runtime_extern_for("__madc_try_leave");
 	node_t then_items = list();
-	append(then_items, mark_sd);
+	append(then_items, cleanup_guard_local(framename,
+		node2(N_CAST, void_ptr_type(), node1(N_ADDR, id(ctxname, tt), tt), tt),
+		"__madc_try_leave", tt));
 	m_try_body_depth++;
 	node_t body = translate_stmt(tt->try_body);
 	m_try_body_depth--;
 	if (body) append(then_items, body);
-	// __madc_cleanup_discard_to(__cleanup_mark_N) — pop the try-body runtime
-	// entries WITHOUT calling dtors (the cleanup attribute ran them at scope exit).
-	need_output_extern("__madc_cleanup_discard_to", false, { { {N_VOID}, true } });
-	node_t disc_args = list();
-	append(disc_args, id(markname, tt));
-	node_t disc_call = node2(N_CALL, id("__madc_cleanup_discard_to", tt),
-				 disc_args, tt);
-	CIR_NODE(disc_call)->synth_from_origin = true;
-	append(then_items, node2(N_EXPR, list(), disc_call, tt));
-	need_output_extern("__madc_try_pop", false, {});
-	node_t pop_call = node2(N_CALL, id("__madc_try_pop", tt), list(), tt);
-	CIR_NODE(pop_call)->synth_from_origin = true;
-	append(then_items, node2(N_EXPR, list(), pop_call, tt));
 	node_t then_blk = node2(N_BLOCK, list(), then_items, tt);
 
 	// ELSE arm: catch dispatch. __t = __madc_exception_type(); then a chain of
@@ -30768,35 +30746,19 @@ void CirBuilder::emit_static_local_once(node_t items, node_t init_items,
 			   { { {N_LONG, N_LONG}, true } });
 	need_output_extern("__cxa_guard_abort", false,
 			   { { {N_LONG, N_LONG}, true } });
-	need_output_extern("__madc_cleanup_push_dtor", false,
-			   { { {N_VOID}, true }, { {N_VOID}, true } });
-	need_output_extern("__madc_cleanup_top", true, {});
+	ensure_runtime_extern_for("__madc_cleanup_push_dtor");
 	need_output_extern("__madc_cleanup_remove", false,
 			   { { {N_VOID}, true } });
 	node_t body = list();
-	// __madc_cleanup_push_dtor((void *)__cxa_guard_abort, (void *)&G);
+	// void *E = __madc_cleanup_push_dtor((void *)__cxa_guard_abort, (void *)&G);
 	{
 		node_t a = list();
 		append(a, node2(N_CAST, void_ptr_type(),
 				id("__cxa_guard_abort", origin), origin));
 		append(a, node2(N_CAST, void_ptr_type(), guard_addr(), origin));
-		append(body, node2(N_EXPR, list(),
+		append(body, cleanup_guard_local(entry,
 			node2(N_CALL, id("__madc_cleanup_push_dtor", origin), a,
-			      origin), origin));
-	}
-	// void *E = __madc_cleanup_top();
-	{
-		node_t espec = list();
-		append(espec, simple(N_VOID, origin));
-		node_t edecl = simple(N_SPEC_DECL, origin);
-		append(edecl, node1(N_SHARE, espec));
-		append(edecl, node2(N_DECL, id(entry, origin),
-				    node1(N_LIST, pointer())));
-		append(edecl, ignore());
-		append(edecl, ignore());
-		append(edecl, node2(N_CALL, id("__madc_cleanup_top", origin),
-				    list(), origin));
-		append(body, edecl);
+			      origin), NULL, origin));
 	}
 	append(body, node2(N_BLOCK, list(), init_items, origin));
 	// __madc_cleanup_remove(E); __cxa_guard_release(&G);
@@ -33642,25 +33604,12 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 				   { { {N_VOID}, true }, { {N_VOID}, true } });
 		// void *__madc_instr_self __attribute__((cleanup(
 		//     __madc_cyg_exit_thunk))) = (void *)<self>;
-		node_t ispec = list();
-		append(ispec, simple(N_VOID, tf));
-		node_t idecl_list = list();
-		append(idecl_list, pointer());
-		node_t isd = simple(N_SPEC_DECL, tf);
-		append(isd, node1(N_SHARE, ispec));
-		append(isd, node2(N_DECL, id("__madc_instr_self", tf),
-				  idecl_list));
-		node_t iattr_args = list();
-		append(iattr_args, id("__madc_cyg_exit_thunk", tf));
-		node_t iattrs = list();
-		append(iattrs, node2(N_ATTR, id("cleanup", tf), iattr_args, tf));
-		append(isd, iattrs);
-		append(isd, ignore());   // asm
 		// func_def_symbol: <self> must name the emitted definition (the
 		// declarator above) or the profiler tags the wrong symbol.
-		append(isd, node2(N_CAST, void_ptr_type(),
-				  id(func_def_symbol(tf, fd).c_str(), tf), tf));
-		CIR_NODE(isd)->synth_from_origin = true;
+		node_t isd = cleanup_guard_local("__madc_instr_self",
+			node2(N_CAST, void_ptr_type(),
+			      id(func_def_symbol(tf, fd).c_str(), tf), tf),
+			"__madc_cyg_exit_thunk", tf);
 		// __cyg_profile_func_enter((void *)<self>, (void *)0);
 		node_t eargs = list();
 		append(eargs, node2(N_CAST, void_ptr_type(),

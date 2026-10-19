@@ -75,14 +75,13 @@ void __madc_exception_clear(void);
  * FOURTH conscious host-consumer widening): a host-side resource that must
  * be released when a throw unwinds PAST its frame registers a handler with
  * push_dtor (handler shape `void (*)(void *obj)`; the entry is
- * heap-allocated and owned by the stack), captures the entry via
- * __madc_cleanup_top() immediately after, and on its NORMAL exit removes
- * that exact entry with __madc_cleanup_remove — NOT a pop: entries pushed
- * above it by an enclosing lexical try's body locals may still be live.
- * The mark discipline does the rest: a throw caught INSIDE the frame's
- * extent never reaches the entry; one unwinding past it runs the handler
- * (and consumes the entry — the handler must not remove it itself). */
-void __madc_cleanup_push_dtor(void *dtor, void *obj);
+ * heap-allocated and owned by the stack; push_dtor returns it), and on its
+ * NORMAL exit removes that exact entry with __madc_cleanup_remove — NOT a
+ * pop: an entry pushed above it may still be live. The mark discipline does
+ * the rest: a throw caught INSIDE the frame's extent never reaches the entry;
+ * one unwinding past it runs the handler (and consumes the entry — the
+ * handler must not remove it itself). */
+void *__madc_cleanup_push_dtor(void *dtor, void *obj);
 void *__madc_cleanup_top(void);
 void __madc_cleanup_remove(void *entry);
 

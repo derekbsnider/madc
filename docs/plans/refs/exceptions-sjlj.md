@@ -20,7 +20,9 @@ Structs (defined in src/rt/rt_except.c):
 
 `extern "C"` functions to call from lowered code:
 - `void *__madc_try_push(MadcTryContext *ctx)` — pushes ctx, **returns `(void*)ctx->jbuf`** (setjmp on this).
-- `void  __madc_try_pop()` — normal try-block exit.
+- `void  __madc_try_leave(void *guard)` — normal try-block exit (the cleanup
+  attribute of the frame guard `void *__try_frame_N = &__try_ctx_N`, so a
+  return / break / continue / goto out of the body ends the frame too).
 - `void  __madc_throw_int(int64_t)` / `__madc_throw_double(double)` / `__madc_throw_cstr(const char*)` — set exception, pop one try ctx, unwind cleanup to `ctx->cleanup_mark`, `longjmp(jbuf,1)`. With no active try → unwind all + abort.
 - `void  __madc_rethrow()` — bare `throw;` (re-longjmp to next try, exception state intact).
 - `int   __madc_exception_type()`, `int64_t __madc_exception_int()`, `double __madc_exception_double()`, `const char *__madc_exception_cstr()` — catch dispatch + value bind.
@@ -32,8 +34,8 @@ For `try { BODY } catch(T e) { H } [catch(...) { H2 }]`, build cir_node equivale
 ```
 MadcTryContext __try_ctx_N;                       // local
 if ( setjmp( *(jmp_buf*)__madc_try_push(&__try_ctx_N) ) == 0 ) {
+    void *__try_frame_N __attribute__((cleanup(__madc_try_leave))) = &__try_ctx_N;
     BODY                                          // lowered normally
-    __madc_try_pop();                             // normal exit (no catch ran)
 } else {
     // exception path — dispatch on type, bind value, run the matching handler:
     int __t = __madc_exception_type();
@@ -51,7 +53,7 @@ if ( setjmp( *(jmp_buf*)__madc_try_push(&__try_ctx_N) ) == 0 ) {
 ## ⚠️ THE ONE REAL DESIGN DECISION (make it deliberately — this is where drift hides)
 **How do try-body object destructors run on the exception (longjmp) path?**
 The current CIR backend does RAII via the **c2mir `__attribute__((cleanup))`** attribute. **`longjmp` does NOT fire cleanup-attribute destructors** — so a naive lowering LEAKS/skips dtors for objects constructed in the try body when an exception propagates. Three options:
-1. **Runtime cleanup stack (recommended, aligns with the live runtime):** at each try-body object construction, also `__madc_cleanup_push` a cleanup entry; `__madc_throw_*` already calls `__madc_cleanup_unwind_to(ctx->cleanup_mark)`, so dtors run correctly on throw. On normal exit, `__madc_cleanup_discard_to` (the cleanup-attribute still handles normal-scope teardown). This is what `MadcCleanupEntry`/`cleanup_mark` exist for.
+1. **Runtime cleanup stack (CHOSEN, aligns with the live runtime):** at each try-body object construction, also push a cleanup entry (`void *__madc_centryK __attribute__((cleanup(__madc_cleanup_leave))) = __madc_cleanup_push_dtor(dtor, &obj);`); `__madc_throw_*` calls `__madc_cleanup_unwind_to(ctx->cleanup_mark)`, so dtors run correctly on throw. A normal exit of the object's scope removes its entry through the guard (the cleanup-attribute still handles normal-scope teardown) — never a discard deferred to the try's end, which left a nested block's entry live for a later throw to run again. This is what `MadcCleanupEntry`/`cleanup_mark` exist for.
 2. The old transpiler's **static per-object guard vars** (`__try_alive_N_M`, reset at entry, set after each ctor, checked in a catch-side dtor pass). Works but is a hack tied to text emission — **do NOT carry this forward** unless option 1 proves infeasible.
 3. Ignore unwind (leak on exception path) — **unacceptable** for compliance.
 Decide between 1 and the cleanup-attribute interaction **before implementing**; verify with a `try { Obj o; throw 1; } catch(...) {}` test that `o`'s dtor runs exactly once. gcc/clang behavior is canon.
