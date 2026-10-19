@@ -64870,6 +64870,11 @@ static bool is_type_dependent(TokenBase *expr)
 	return datadef_involves_placeholder(expr->datadef());
 }
 
+bool Program::type_dependent_expression(TokenBase *expr)
+{
+	return is_type_dependent(expr);
+}
+
 // Is THIS call type-dependent (and so deferred during a dependent parse)? A thin
 // wrapper over is_type_dependent; a non-dependent call (`cout << "x"`, a
 // fixed-type helper) still instantiates eagerly at definition time, matching

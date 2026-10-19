@@ -9884,6 +9884,12 @@ public:
     // proven_scalar_identity, denotes_same_type, the function spelling.
     // Defined in parser.cpp.
     static bool proven_same_type(const DataDef *a, const DataDef *b);
+    // [temp.dep.expr]: is this expression type-dependent (its type, a
+    // call's argument or explicit template argument names a template
+    // parameter, or a pack expansion)? The parser's one test (gcc's
+    // type_dependent_expression_p); the CIR builder asks it whether a
+    // pattern may pick a constructor. Defined in parser.cpp.
+    static bool type_dependent_expression(TokenBase *expr);
     // madc-dialect spellings of the intrinsic tagged carrier (ddARRAY ==
     // madc::value): `array` / `value` / `var`. Gated to STD_MADC; NULL in
     // every strict C/C++ mode. Instance method on purpose — these names

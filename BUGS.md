@@ -266,54 +266,44 @@ int main() {
 - Found 2026-10-02 while fixing the `[subbind]` bind gate. Off the release
   path, filed per owner 2026-09-30.
 
-### B145. A member template's direct-initialization picks its constructor once, for every instantiation
+### B145. A member template's functional-cast temporary picks its constructor once, for every instantiation
 
 ```cpp
-#include <utility>
 #include <cstdio>
-struct S {
+#include <utility>
+struct A {
 	int v;
-	S(int x) : v(x) {}
-	S(const S &o) : v(o.v) { printf("copy "); }
-	S(S &&o) : v(o.v) { printf("move "); }
+	A(int x) : v(x) {}
+	A(const A &o) : v(o.v) { std::printf(" copy"); }
+	A(A &&o) : v(o.v) { std::printf(" move"); }
 };
-struct Relay {
-	template<class T> void make(T &&t) { S s(std::forward<T>(t)); (void)s; }
-};
-template<class T> void free_make(T &&t) { S s(std::forward<T>(t)); (void)s; }
-int main() {
-	Relay r;
-	S a(3);
-	printf("member: ");
-	r.make(a);
-	r.make(std::move(a));
-	printf("\nfree: ");
-	free_make(a);
-	free_make(std::move(a));
-	printf("\n");
+struct R { template<class U> int get(U &&u) { return A(std::forward<U>(u)).v; } };
+struct W { int w; template<class U> W(U &&u) : w(0) { w = A(std::forward<U>(u)).v; } };
+int main()
+{
+	R r;
+	A a(3);
+	std::printf("get:");
+	r.get(a);
+	r.get(std::move(a));
+	std::printf("\nctor:");
+	W w1(a);
+	W w2(std::move(a));
+	std::printf("\n");
 	return 0;
 }
 ```
 
-- g++ 13 and clang++ 18: `member: copy move` / `free: copy move`. madc
-  (2026-10-02): `member: move move` / `free: copy move`, exit 0. It moves
-  from an lvalue.
-- Layer: a member template's body is lowered once as a Tree-1 pattern and
-  copied per instance. `translate_block` defers a local declaration's
-  construction (the decl marker that `tsubst_relower_deferred_construction`
-  relowers) only when its ctor args hold a pack expansion
-  (`tsubst_args_have_pack_expansion`). A non-pack dependent argument
-  (`std::forward<T>(t)`) gets its constructor picked in the PATTERN, where
-  `argument_value_category`'s identity-forward arm reads the dependent `T` as a
-  non-reference (an xvalue). `S(S&&)` is baked in for every `T`. The fix is to
-  defer the construction whenever an argument is type-dependent ([temp.dep.expr]:
-  overload resolution of a dependent call happens at instantiation).
-- The functional-cast form `return A(std::forward<U>(u)).v;` in a member
-  template, and `w = A(std::forward<U>(u)).v;` in a constructor template's
-  body, also move from an lvalue argument. `U` itself deduces correctly
-  (`std::is_lvalue_reference<U>::value` is 1), and
-  `A(static_cast<U &&>(u)).v` copies (2026-10-02).
-- Found 2026-10-02 with B144. Off the release path, filed per owner 2026-09-30.
+- g++ 13 and clang++ 18: `get: copy move` / `ctor: copy move`. madc moves
+  from the lvalue argument (2026-10-02).
+- The local-declaration and placement-new forms were fixed 2026-10-19
+  (`tests/testmembertmpl_dependent_ctor`): a type-dependent constructor
+  argument defers the construction to the tsubst copy
+  (`tsubst_ctor_args_deferred`, src/cir_builder.cpp). The object-temporary
+  arm (`TokenObjTemp` in `translate_expr`) still picks its constructor in
+  the shared pattern; it needs the same deferral marker, carrying the
+  temporary's generated name to the copy side.
+- Found 2026-10-02 with B144.
 
 ### B121. A const object binds the non-const reference overload
 

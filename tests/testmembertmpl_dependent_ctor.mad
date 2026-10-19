@@ -1,0 +1,50 @@
+// A member template's construction from a type-dependent argument picks its
+// constructor per instantiation ([temp.dep.expr]: overload resolution of a
+// dependent call waits for the template arguments). B145: the shared
+// pattern picked S(S&&) for `S s(std::forward<T>(t))` once, for every T, so
+// an lvalue argument was moved from. Local declaration, placement new, and
+// a named forwarding parameter (always an lvalue: copy).
+// Oracle (g++ 13, clang++ 18, -std=gnu++17):
+//   member: copy move
+//   placement: copy move
+//   named: copy copy
+//   free: copy move
+#include <cstdio>
+#include <new>
+#include <utility>
+struct S {
+	int v;
+	S(int x) : v(x) {}
+	S(const S &o) : v(o.v) { std::printf(" copy"); }
+	S(S &&o) : v(o.v) { std::printf(" move"); }
+};
+struct Relay {
+	template<class T> void make(T &&t) { S s(std::forward<T>(t)); (void)s; }
+	template<class T> void place(T &&t)
+	{
+		alignas(S) unsigned char buf[sizeof(S)];
+		S *p = new (buf) S(std::forward<T>(t));
+		p->~S();
+	}
+	template<class T> void named(T &&t) { S s(t); (void)s; }
+};
+template<class T> void free_make(T &&t) { S s(std::forward<T>(t)); (void)s; }
+int main()
+{
+	Relay r;
+	S a(3);
+	std::printf("member:");
+	r.make(a);
+	r.make(std::move(a));
+	std::printf("\nplacement:");
+	r.place(a);
+	r.place(std::move(a));
+	std::printf("\nnamed:");
+	r.named(a);
+	r.named(std::move(a));
+	std::printf("\nfree:");
+	free_make(a);
+	free_make(std::move(a));
+	std::printf("\n");
+	return 0;
+}

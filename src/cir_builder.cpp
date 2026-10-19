@@ -1980,6 +1980,22 @@ static bool tsubst_args_have_pack_expansion(
 	return false;
 }
 
+// May the shared Tree-1 pattern pick a constructor for these arguments? Not
+// when one is a pack expansion (its arity is per instantiation) or is
+// type-dependent ([temp.dep.expr]: `std::forward<T>(t)` is an lvalue or an
+// xvalue by T, so S(const S&) or S(S&&) by T). The construction defers to
+// the tsubst copy, which picks per instantiation (B145: the pattern baked
+// S(S&&) for every T and moved from an lvalue).
+static bool tsubst_ctor_args_deferred(const std::vector<TokenBase *> &args)
+{
+	if (tsubst_args_have_pack_expansion(args))
+		return true;
+	for (TokenBase *arg : args)
+		if (Program::type_dependent_expression(arg))
+			return true;
+	return false;
+}
+
 static bool cir_id_spells(cir_node *n, const char *name)
 {
 	return n && name && n->base.code == N_ID && n->base.u.s.s
@@ -4428,7 +4444,7 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 			dynamic_cast<TokenNEW *>(madc_token_for_slot(src->origin_id));
 		if (tn && tn->placement
 		    && (template_param_under_type_layers(src->datadef())
-			|| tsubst_args_have_pack_expansion(tn->ctor_args))) {
+			|| tsubst_ctor_args_deferred(tn->ctor_args))) {
 			DataDef *concrete = subst_datadef_active(src->datadef(), *subst);
 			if (!concrete || template_param_under_type_layers(concrete))
 				return CIR_NODE(error_node(
@@ -4455,11 +4471,18 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 					      : error_node("tsubst: failed deferred-construction addr copy");
 			};
 			if (concrete_class) {
+				// A concrete class deferred only by a type-dependent
+				// argument (no pack, B145) takes the manual assembly
+				// the decl marker uses: it binds a class-object
+				// argument, which the re-translate fallback cannot.
+				const bool by_dependent_args =
+					!template_param_under_type_layers(src->datadef())
+					&& !tsubst_args_have_pack_expansion(tn->ctor_args);
 				if (cir_node *done = tsubst_relower_deferred_construction(
 						tn->ctor_args, tn, concrete_class,
 						subst, placement_addr,
 						/*yield_this_addr=*/true,
-						/*relax_class_args=*/false))
+						/*relax_class_args=*/by_dependent_args))
 					return done;
 			} else if (!as_class_instance(concrete) && !tn->array_size) {
 				// SCALAR-target placement new (`::new((void*)__p)
@@ -4507,7 +4530,7 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 		// copied separately, so only the constructor call is built here.
 		if (TokenDecl *tdcl = dynamic_cast<TokenDecl *>(
 				    madc_token_for_slot(src->origin_id))) {
-			if (tsubst_args_have_pack_expansion(tdcl->ctor_args)) {
+			if (tsubst_ctor_args_deferred(tdcl->ctor_args)) {
 				DataDef *concrete =
 					subst_datadef_active(src->datadef(), *subst);
 				DataDefCLASS *concrete_class = concrete
@@ -25266,7 +25289,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				       ? tn->alloc_type : tn->alloc_class;
 		if (m_tsubst_pattern_mode && tn->placement && pattern_alloc
 		    && (template_param_under_type_layers(pattern_alloc)
-			|| tsubst_args_have_pack_expansion(tn->ctor_args))) {
+			|| tsubst_ctor_args_deferred(tn->ctor_args))) {
 			cir_node *marker = make(N_IGNORE, tb);
 			marker->set_datadef(pattern_alloc);
 			return marker->as_node();
@@ -30711,14 +30734,14 @@ void CirBuilder::emit_static_local_once(node_t items, node_t init_items,
 void CirBuilder::class_decl_construction(TokenDecl *sdcl, DataDefCLASS *cdcl,
 					 node_t items)
 {
-	// A construction whose arguments contain a pack expansion cannot
-	// select a ctor overload in the shared Tree-1 pattern (pack arity
-	// is per-instantiation; g++ defers the whole call). Emit a
-	// deferred-construction marker; the tsubst copy re-lowers it with
-	// the expanded concrete arguments (the placement-new deferral
-	// shape, copy_cir_subtree).
+	// A construction whose arguments contain a pack expansion or a
+	// type-dependent argument cannot select a ctor overload in the
+	// shared Tree-1 pattern (tsubst_ctor_args_deferred; g++ defers the
+	// whole call). Emit a deferred-construction marker; the tsubst copy
+	// re-lowers it with the concrete arguments (the placement-new
+	// deferral shape, copy_cir_subtree).
 	if (m_tsubst_pattern_mode
-	    && tsubst_args_have_pack_expansion(sdcl->ctor_args)) {
+	    && tsubst_ctor_args_deferred(sdcl->ctor_args)) {
 		cir_node *marker = make(N_IGNORE, sdcl);
 		marker->set_datadef(cdcl);
 		append(items, marker->as_node());

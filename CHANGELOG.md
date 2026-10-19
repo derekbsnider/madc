@@ -6,6 +6,14 @@ Consolidated: counted_loop — gate scripts/check-one-counted-loop.sh
 Consolidated: class_pointer_spelling — gate scripts/check-one-class-pointer-decl.sh
 Consolidated: pointer_type_node — gate scripts/check-one-pointer-type-node.sh
 
+### A member template's constructor argument that is type-dependent picks its constructor per instantiation (B145)
+
+- A local declaration `S s(std::forward<T>(t));` and a placement new `new (buf) S(std::forward<T>(t))` in a member template were lowered once in the shared Tree-1 pattern, and the pattern baked `S(S&&)` for every `T` ([temp.dep.expr]). An lvalue argument was moved from (BUGS.md B145). Only a pack-expansion argument deferred the construction.
+- `tsubst_ctor_args_deferred` (`src/cir_builder.cpp`) defers a construction whose arguments include a type-dependent expression, as it already did for a pack expansion. The test is `Program::type_dependent_expression` (`src/parser.cpp`, declared in `include/madc.h`), a wrapper over the parser's `is_type_dependent`. The local-declaration marker (`class_decl_construction`), the placement-new marker (`copy_cir_subtree` and the `TokenNEW` arm of `translate_expr`) and the copy of a `TokenDecl` construction use it, and the tsubst copy picks the constructor per instantiation through `tsubst_relower_deferred_construction`. A concrete class deferred only by a dependent argument relaxes the class-argument check.
+- Reducer `tests/testmembertmpl_dependent_ctor.mad` (oracle `tests/testmembertmpl_dependent_ctor.expect`, g++ 13 == clang++ 18, `--std=gnu++17`): member, placement, named (a forwarding parameter, always an lvalue: copy) and free-function forms.
+- Still open: the functional-cast form `A(std::forward<U>(u)).v` (a `TokenObjTemp`) in a member template, and `w = A(std::forward<U>(u)).v;` in a constructor template's body, still move from an lvalue. `BUGS.md` narrows B145 to that form; this commit does not fix it.
+- Fix lanes Tier 1 96/96 JIT, 95/95 EXE and 95/95 OBJ over the new test and the member-template, placement, tsubst, emplace and container neighbors. Tier 2 `scripts/fast_lanes.sh` at baseline: c-testsuite 220, c-torture 1619, c2mir-tests 368, gui 13, gxx-c++11 1505, index-c 50/50, commonmark 664. Static gates 0 red; unit 84; `scripts/forest_bind_gate.sh` 47/47; parse-cost 0 red of 21; `scripts/tsubst_flagon_gate.sh --check` green (0 fallbacks).
+
 ### A cast to a reference deduces a forwarding reference by its value category (B144)
 
 - `fn_template_call_arg_is_lvalue` (`src/parser.cpp`) classified a forwarding-reference argument with its own call and named-variable tests, and every cast fell through to rvalue ([temp.deduct.call]/3). `std::forward<T>(t)` over `static_cast<int &>(x)` or `(int &)x` therefore selected `f(int &&)`: madc printed `R R R` (BUGS.md B144) where g++ 13 and clang++ 18 print `L R L`.
