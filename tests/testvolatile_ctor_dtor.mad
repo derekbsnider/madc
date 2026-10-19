@@ -1,0 +1,35 @@
+// A volatile class object is constructed and destroyed by its class's own
+// constructor and destructor: cv-qualifiers do not apply to an object under
+// construction or destruction ([class.ctor.general]/5, [class.dtor]/5), and
+// `delete` through a pointer to a volatile class still runs the destructor
+// before freeing ([expr.delete]/6). Each D carries its own id so every line
+// is distinct; g++ 13 and clang++ 18 print the .expect.
+#include <cstdio>
+int next_id;
+struct D {
+	int id;
+	D() : id(++next_id) { printf("D%d()\n", id); }
+	~D() { printf("~D%d()\n", id); }
+};
+struct H {			// user ctor/dtor: member ctor + member dtor
+	volatile D d;
+	H() { printf("H()\n"); }
+	~H() { printf("~H()\n"); }
+};
+struct M {			// implicit ctor/dtor
+	volatile D d;
+};
+int main()
+{
+	{
+		volatile D local;
+		printf("local %d\n", local.id);
+	}
+	{ H h; }
+	{ M m; }
+	volatile D *p = new D;
+	printf("heap %d\n", p->id);
+	delete p;
+	printf("deleted\n");
+	return 0;
+}

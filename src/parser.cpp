@@ -59031,13 +59031,15 @@ TokenBase *TokenDELETE::parse(Program &pgm)
     if ( !expr )
 	pgm.Throw(tn) << "Failed to parse expression after 'delete'" << flush;
 
-    // Try to determine the class type from the expression's pointer type
+    // Try to determine the class type from the expression's pointer type.
+    // A cv-qualified pointee is still the class ([expr.delete]/6 runs its
+    // destructor): as_class_dd() reads through the qualifier.
     DataDef *dd = expr->datadef();
     if ( dd && dd->is_pointer() )
     {
 	DataDefPTR *ptr = pointer_dd_of(dd);
-	if ( ptr )
-	    del_class = dynamic_cast<DataDefCLASS *>(ptr->base_type);
+	if ( ptr && ptr->base_type )
+	    del_class = ptr->base_type->as_class_dd();
     }
 
     return this;
