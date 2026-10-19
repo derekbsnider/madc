@@ -10148,42 +10148,12 @@ node_t CirBuilder::multi_return_unpack(TokenAssign *as, TokenBase *origin)
 			// slot's buffers against the temp's cleanup dtor);
 			// member-wise copy-assign otherwise (the implicit
 			// operator=, same as class_copy_assign).
-			node_t rfld = node2(N_FIELD, id(nm, origin),
-					    id(mname, origin));
-			if (FuncDef *op = class_assign_operator_def(mc)) {
-				madc::dis::istring osym =
-					class_method_call_symbol(mc, op, "operator=");
-				bool external = !op->emit_symbol.empty();
-				if (external)
-					need_output_extern(osym.c_str(), true,
-						{ { {N_VOID}, true }, { {N_VOID}, true } });
-				else
-					referenced_funcs.insert(osym);
-				node_t ld = node1(N_ADDR, id(rname, origin), origin);
-				node_t rd = node1(N_ADDR, rfld, origin);
-				if (external) {
-					ld = node2(N_CAST, void_ptr_type(), ld, origin);
-					rd = node2(N_CAST, void_ptr_type(), rd, origin);
-				}
-				node_t a = list();
-				append(a, ld);
-				append(a, rd);
-				node_t ocall = node2(N_CALL, id(osym.c_str(), origin),
-						     a, origin);
-				CIR_NODE(ocall)->synth_from_origin = true;
-				m_pending_stmts.push_back(node2(N_EXPR, list(),
-								ocall, origin));
-				continue;
-			}
 			std::vector<node_t> fills;
-			char lnm[40], rnm[40];
-			snprintf(lnm, sizeof lnm, "__ca_l_%d", m_strtmp_counter++);
-			snprintf(rnm, sizeof rnm, "__ca_r_%d", m_strtmp_counter++);
-			fills.push_back(class_ptr_bind(mc, lnm,
-				node1(N_ADDR, id(rname, origin), origin), origin));
-			fills.push_back(class_ptr_bind(mc, rnm,
-				node1(N_ADDR, rfld, origin), origin));
-			class_copy_assign_members(mc, lnm, rnm, fills, origin);
+			class_assign_object_stmts(mc,
+				node1(N_ADDR, id(rname, origin), origin),
+				node1(N_ADDR, node2(N_FIELD, id(nm, origin),
+						    id(mname, origin)), origin),
+				fills, origin);
 			for (node_t f : fills)
 				m_pending_stmts.push_back(f);
 			continue;
@@ -15744,6 +15714,13 @@ static bool moves_own_members(const DataDefCLASS *c)
 {
 	return class_copy_ctor_for(const_cast<DataDefCLASS *>(c), true) != NULL;
 }
+// A class declaring its own copy assignment operator assigns its members in
+// it; the implicit operator= of a class it is a base of runs it on that
+// subobject ([class.copy.assign]/12).
+static bool assigns_own_members(const DataDefCLASS *c)
+{
+	return class_assign_operator_def(const_cast<DataDefCLASS *>(c)) != NULL;
+}
 
 // Walk member `mi` of `cdd` down its flattening (member_origin; member_vbase
 // for a virtual base) to the class that DECLARED it: each source's members
@@ -15843,6 +15820,15 @@ static bool class_has_member_default_init(const DataDefCLASS *cdd)
 	return false;
 }
 
+// Member `mi` of `cdd` came in from a base that handles it itself (`owns`).
+static bool member_owned_by_base(const DataDefCLASS *cdd, size_t mi,
+				 OwnsMembersTest owns)
+{
+	size_t j = 0;
+	const DataDefCLASS *c = member_declaring_class(cdd, mi, &j, owns);
+	return c && c != cdd && owns(c);
+}
+
 // Member `mi` of `cdd` is a base's to construct: the base whose constructor
 // this construction emitted (done_bases), or a user-constructor class it was
 // flattened from, which the base chain constructs — through ctorless layers
@@ -15852,11 +15838,8 @@ static bool class_has_member_default_init(const DataDefCLASS *cdd)
 static bool member_constructed_by_base(const DataDefCLASS *cdd, size_t mi,
 				       const std::set<int> *done_bases)
 {
-	if (member_owned_by_done_base(cdd, mi, done_bases)) return true;
-	size_t j = 0;
-	const DataDefCLASS *c = member_declaring_class(cdd, mi, &j,
-						       constructs_own_members);
-	return c && c != cdd && constructs_own_members(c);
+	return member_owned_by_done_base(cdd, mi, done_bases)
+	    || member_owned_by_base(cdd, mi, constructs_own_members);
 }
 
 // Member `mi` of `cdd` is copied by a base's copy or move constructor, which
@@ -15866,10 +15849,8 @@ static bool member_constructed_by_base(const DataDefCLASS *cdd, size_t mi,
 static bool member_copied_by_base(const DataDefCLASS *cdd, size_t mi,
 				  bool move)
 {
-	OwnsMembersTest owns = move ? moves_own_members : copies_own_members;
-	size_t j = 0;
-	const DataDefCLASS *c = member_declaring_class(cdd, mi, &j, owns);
-	return c && c != cdd && owns(c);
+	return member_owned_by_base(cdd, mi,
+				    move ? moves_own_members : copies_own_members);
 }
 
 bool CirBuilder::member_default_construct_stmts(DataDefCLASS *cdd, size_t mi,
@@ -16821,63 +16802,164 @@ void CirBuilder::class_copy_construct_into_retbuf(DataDefCLASS *cdd,
 	}
 }
 
-// Memberwise copy-ASSIGNMENT of a NON-TRIVIAL class (one needing a dtor) into an
+// The implicitly-defined copy ASSIGNMENT ([class.copy.assign]/12) into an
 // EXISTING object: `lhs = rhs`. Unlike copy-CONSTRUCTION (into raw storage), the
-// members are already constructed, so each member is COPY-ASSIGNED (free-old +
-// deep-copy), NOT placement-copy-constructed — matching g++'s implicit
-// operator=. A bit-copy `*lhs = *rhs` would alias the object members' heap
-// buffers and double-free at cleanup; per-member assignment avoids that and is
-// self-assignment-safe. The scalar members are assigned individually (NO
-// whole-struct bit-copy).
-// `lhs`/`rhs` are object lvalues; the builder re-translates them per member.
+// members are already constructed, so each base and member is COPY-ASSIGNED
+// through its own copy assignment (free-old + deep-copy), never placement-copy-
+// constructed and never bit-copied where its operator= does more — a bit-copy
+// would alias object members' heap buffers and double-free at cleanup, and
+// skip a user operator='s effects.
 // Per-member copy-assignment core: given two already-bound `struct Cls *` local
-// names (`lname` = &lhs, `rname` = &rhs), emit `lname->m`-from-`rname->m` for
-// each member (class object -> operator= when available, scalar -> plain =).
+// names (`lname` = &lhs, `rname` = &rhs), the bases (class_assign_bases), then
+// each member the class assigns itself: a class whose assignment does more
+// than a bit copy (class_assign_nontrivial) through class_assign_object_stmts,
+// an array element by element or as storage, anything else by plain `=`.
 void CirBuilder::class_copy_assign_members(DataDefCLASS *cdd, const char *lname,
 					   const char *rname,
 					   std::vector<node_t> &out,
 					   TokenBase *origin)
 {
-	for (const auto &m : cdd->members) {
-		node_t lfld = node2(N_DEREF_FIELD, id(lname, origin),
-				    id(m.first.c_str(), origin));
-		node_t rfld = node2(N_DEREF_FIELD, id(rname, origin),
-				    id(m.first.c_str(), origin));
+	class_assign_bases(cdd, cdd, lname, rname, out, origin);
+	for (size_t mi = 0; mi < cdd->members.size(); mi++) {
+		if (member_owned_by_base(cdd, mi, assigns_own_members))
+			continue;
+		const auto &m = cdd->members[mi];
+		auto field = [&](const char *base) -> node_t {
+			return node2(N_DEREF_FIELD, id(base, origin),
+				     id(m.first.c_str(), origin));
+		};
+		auto field_addr = [&](const char *base) -> node_t {
+			return node1(N_ADDR, field(base), origin);
+		};
 		DataDefCLASS *mc = as_class_instance(m.second);
-		if (mc) {
-			FuncDef *op = class_assign_operator_def(mc);
-			if (!op) {
-				node_t asn = node2(N_ASSIGN, lfld, rfld, origin);
-				CIR_NODE(asn)->synth_from_origin = true;
-				out.push_back(node2(N_EXPR, list(), asn, origin));
-				continue;
-			}
-			madc::dis::istring sym = class_method_call_symbol(mc, op, "operator=");
-			bool external = !op->emit_symbol.empty();
-			if (external)
-				need_output_extern(sym.c_str(), true,
-						   { { {N_VOID}, true }, { {N_VOID}, true } });
-			else
-				referenced_funcs.insert(sym);
-			node_t ld = node1(N_ADDR, lfld, origin);
-			node_t rd = node1(N_ADDR, rfld, origin);
-			if (external) {
-				ld = node2(N_CAST, void_ptr_type(), ld, origin);
-				rd = node2(N_CAST, void_ptr_type(), rd, origin);
-			}
-			node_t a = list();
-			append(a, ld);
-			append(a, rd);
-			node_t call = node2(N_CALL, id(sym.c_str(), origin), a, origin);
-			CIR_NODE(call)->synth_from_origin = true;
-			out.push_back(node2(N_EXPR, list(), call, origin));
-		} else {
-			// Scalar (or trivial sub-object) member: plain assignment.
-			node_t asn = node2(N_ASSIGN, lfld, rfld, origin);
-			CIR_NODE(asn)->synth_from_origin = true;
-			out.push_back(node2(N_EXPR, list(), asn, origin));
+		const bool deep = mc && class_assign_nontrivial(mc);
+		size_t n = 0;
+		if (cdd->member_fixed_array(mi, n)) {
+			if (deep) {
+				// Element by element, in order.
+				if (node_t loop = class_array_index_loop(
+						[&]() -> node_t { return integer((int64_t)n, origin); },
+						0, false, origin,
+						[&](const char *ci, std::vector<node_t> &body) {
+							class_assign_object_stmts(mc,
+								class_array_element(field_addr(lname),
+									mc, id(ci, origin), origin),
+								class_array_element(field_addr(rname),
+									mc, id(ci, origin), origin),
+								body, origin);
+						}))
+					out.push_back(loop);
+			} else
+				// C assigns no array: copy its storage.
+				out.push_back(copy_bytes_stmt(field_addr(lname),
+					field_addr(rname),
+					node1(N_EXPR_SIZEOF, field(lname), origin), origin));
+			continue;
 		}
+		if (deep) {
+			class_assign_object_stmts(mc, field_addr(lname), field_addr(rname),
+						  out, origin);
+			continue;
+		}
+		// Scalar (or trivially assigned sub-object) member: plain assignment.
+		node_t asn = node2(N_ASSIGN, field(lname), field(rname), origin);
+		CIR_NODE(asn)->synth_from_origin = true;
+		out.push_back(node2(N_EXPR, list(), asn, origin));
 	}
+}
+
+// The base half of that walk: every base of `cls` (a base of the object
+// `obj`) whose copy assignment is its own runs it on its subobject — the
+// members flattened in from it are then its own (member_owned_by_base); a
+// base without one recurses, its members being the object's own.
+void CirBuilder::class_assign_bases(DataDefCLASS *obj, DataDefCLASS *cls,
+				    const char *lname, const char *rname,
+				    std::vector<node_t> &out, TokenBase *origin)
+{
+	for (const BaseSpec &bs : cls->bases) {
+		DataDefCLASS *b = bs.base;
+		if (!b) continue;
+		FuncDef *op = class_assign_operator_def(b);
+		if (!op) {
+			class_assign_bases(obj, b, lname, rname, out, origin);
+			continue;
+		}
+		out.push_back(assign_operator_call_stmt(b, op,
+			base_subobject_addr(id(lname, origin), obj, b, origin),
+			base_subobject_addr(id(rname, origin), obj, b, origin), origin));
+	}
+}
+
+// One object of `mc` copy-assigned from another, by address: its own
+// operator= when it declares one, else — its implicit operator=, which does
+// more than a bit copy — base by base and member by member through two bound
+// pointers.
+void CirBuilder::class_assign_object_stmts(DataDefCLASS *mc, node_t laddr,
+					   node_t raddr, std::vector<node_t> &out,
+					   TokenBase *origin)
+{
+	if (FuncDef *op = class_assign_operator_def(mc)) {
+		out.push_back(assign_operator_call_stmt(mc, op, laddr, raddr, origin));
+		return;
+	}
+	char lname[40], rname[40];
+	snprintf(lname, sizeof(lname), "__ca_l_%d", m_strtmp_counter++);
+	snprintf(rname, sizeof(rname), "__ca_r_%d", m_strtmp_counter++);
+	out.push_back(class_ptr_bind(mc, lname, laddr, origin));
+	out.push_back(class_ptr_bind(mc, rname, raddr, origin));
+	class_copy_assign_members(mc, lname, rname, out, origin);
+}
+
+// `mc::operator=(*ld, *rd)` as a statement — an externally-bound operator
+// takes both addresses as void*, its extern declaration's shape.
+node_t CirBuilder::assign_operator_call_stmt(DataDefCLASS *mc, FuncDef *op,
+					     node_t ld, node_t rd,
+					     TokenBase *origin)
+{
+	madc::dis::istring sym = class_method_call_symbol(mc, op, "operator=");
+	bool external = !op->emit_symbol.empty();
+	if (external) {
+		need_output_extern(sym.c_str(), true,
+				   { { {N_VOID}, true }, { {N_VOID}, true } });
+		ld = node2(N_CAST, void_ptr_type(), ld, origin);
+		rd = node2(N_CAST, void_ptr_type(), rd, origin);
+	} else
+		referenced_funcs.insert(sym);
+	node_t a = list();
+	append(a, ld);
+	append(a, rd);
+	node_t call = node2(N_CALL, id(sym.c_str(), origin), a, origin);
+	CIR_NODE(call)->synth_from_origin = true;
+	return node2(N_EXPR, list(), call, origin);
+}
+
+// The implicitly-defined copy assignment of `cdd` does more than a bit copy
+// ([class.copy.assign]/9, /12): it declares its own operator=, or a base or
+// member — an array's element class included — has a copy assignment that
+// does.
+bool CirBuilder::class_assign_nontrivial(DataDefCLASS *cdd)
+{
+	std::map<DataDefCLASS *, bool>::iterator mi =
+		m_assign_nontrivial_memo.find(cdd);
+	if (mi != m_assign_nontrivial_memo.end()) return mi->second;
+	std::set<DataDefCLASS *> seen;
+	const bool r = class_assign_nontrivial(cdd, seen);
+	m_assign_nontrivial_memo[cdd] = r;
+	return r;
+}
+
+bool CirBuilder::class_assign_nontrivial(DataDefCLASS *cdd,
+					 std::set<DataDefCLASS *> &seen)
+{
+	if (!cdd || !seen.insert(cdd).second) return false;
+	if (class_assign_operator_def(cdd)) return true;
+	for (const auto &m : cdd->members)
+		if (DataDefCLASS *mc = as_class_instance(m.second))
+			if (class_assign_nontrivial(mc, seen)) return true;
+	for (const BaseSpec &bs : cdd->bases)
+		if (bs.base && class_assign_nontrivial(bs.base, seen))
+			return true;
+	return false;
 }
 
 // A `struct Cls *<nm> = <init>;` pointer-binding decl (synthetic).
@@ -16899,18 +16981,12 @@ void CirBuilder::class_copy_assign(DataDefCLASS *cdd, TokenBase *lhs,
 				   TokenBase *rhs, std::vector<node_t> &out,
 				   TokenBase *origin)
 {
-	// Bind lhs and rhs to `struct Cls *` locals ONCE (the rhs is evaluated a
-	// single time) and assign member-by-member through the stable pointers. The
-	// rhs is an object LVALUE (variable / member / by-value param), addressed by
-	// &rhs. (An object-returning-CALL rhs goes through class_copy_assign_from_addr.)
-	char lname[40], rname[40];
-	snprintf(lname, sizeof(lname), "__ca_l_%d", m_strtmp_counter++);
-	snprintf(rname, sizeof(rname), "__ca_r_%d", m_strtmp_counter++);
-	out.push_back(class_ptr_bind(cdd, lname,
-		node1(N_ADDR, translate_expr(lhs), origin), origin));
-	out.push_back(class_ptr_bind(cdd, rname,
-		node1(N_ADDR, translate_expr(rhs), origin), origin));
-	class_copy_assign_members(cdd, lname, rname, out, origin);
+	// The rhs is an object LVALUE (variable / member / by-value param),
+	// addressed by &rhs and bound once (class_assign_object_stmts). (An
+	// object-returning-CALL rhs goes through class_copy_assign_from_addr.)
+	class_assign_object_stmts(cdd, node1(N_ADDR, translate_expr(lhs), origin),
+				  node1(N_ADDR, translate_expr(rhs), origin),
+				  out, origin);
 }
 
 // Copy-assign `lhs = *(Cls*)rhs_addr` where rhs_addr is a pre-materialized
@@ -16922,17 +16998,9 @@ void CirBuilder::class_copy_assign_from_addr(DataDefCLASS *cdd, TokenBase *lhs,
 					     std::vector<node_t> &out,
 					     TokenBase *origin)
 {
-	char lname[40], rname[40];
-	snprintf(lname, sizeof(lname), "__ca_l_%d", m_strtmp_counter++);
-	snprintf(rname, sizeof(rname), "__ca_r_%d", m_strtmp_counter++);
-	node_t rcast = node2(N_CAST,
-		node2(N_TYPE, node1(N_LIST, class_tag_ref(cdd, origin)),
-			node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
-		rhs_addr, origin);
-	out.push_back(class_ptr_bind(cdd, lname,
-		node1(N_ADDR, translate_expr(lhs), origin), origin));
-	out.push_back(class_ptr_bind(cdd, rname, rcast, origin));
-	class_copy_assign_members(cdd, lname, rname, out, origin);
+	class_assign_object_stmts(cdd, node1(N_ADDR, translate_expr(lhs), origin),
+				  node2(N_CAST, class_ptr_type(cdd), rhs_addr, origin),
+				  out, origin);
 }
 
 // A class for which Pass 1.6 synthesizes the base destructor (Cls___dtor):
@@ -20643,6 +20711,20 @@ node_t CirBuilder::zero_fill_stmt(node_t addr, node_t nbytes, TokenBase *origin)
 		     node2(N_CALL, id("memset", origin), zargs, origin), origin);
 }
 
+node_t CirBuilder::copy_bytes_stmt(node_t dst, node_t src, node_t nbytes,
+				   TokenBase *origin)
+{
+	need_output_extern("memcpy", true,
+		{ { {N_VOID}, true }, { {N_CONST, N_VOID}, true },
+		  { {N_UNSIGNED, N_LONG, N_LONG}, false } });
+	node_t cargs = list();
+	append(cargs, node2(N_CAST, void_ptr_type(), dst, origin));
+	append(cargs, node2(N_CAST, void_ptr_type(), src, origin));
+	append(cargs, nbytes);
+	return node2(N_EXPR, list(),
+		     node2(N_CALL, id("memcpy", origin), cargs, origin), origin);
+}
+
 void CirBuilder::zero_init_subobject_stmts(const std::function<node_t()> &mint_addr,
 					   DataDefCLASS *cdd, bool base_subobject,
 					   std::vector<node_t> &out,
@@ -23301,6 +23383,16 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin,
 	// Pick the overload matching the RHS. A class without this operator yields
 	// NULL -> fall through to generic handling.
 	FuncDef *callee = select_operator_overload(lcls, mname, top->right);
+	// The class's implicitly-declared copy/move assignment is an exact match
+	// for a same-class rhs and hides every base operator= ([class.copy.
+	// assign]/8): one inherited here would assign the base subobject alone.
+	// The implicit assignment arm (translate_expr's tkAssign) owns it.
+	if (callee && top->id() == TokenID::tkAssign && !callee->parameters.empty()
+	    && operand_object_class(top->right) == lcls) {
+		DataDefCLASS *owner = class_behind(callee->parameters[0]);
+		if (owner && owner != lcls)
+			callee = NULL;
+	}
 	// W2: a NON-member operator declared at namespace scope (e.g. the free
 	// std::operator<<(ostream&, const char*)) may match rhs more exactly than the
 	// member candidate (member operator<<(const void*) needs a const char*->void*
@@ -27294,18 +27386,23 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				}
 			}
 
-			// Implicit memberwise copy-ASSIGNMENT for a NON-TRIVIAL class
-			// (`lhs = rhs`, both the same class needing a dtor, declaring no
-			// user operator= — class_operator_call returned NULL above, so a
-			// user-declared operator= still wins). A bit-copy N_ASSIGN would
-			// alias object-member resources and double-free at cleanup;
-			// assign each member instead. Trivial classes fall through to the
-			// native bit-copy. The statement-expr yields the lhs object.
+			// The implicitly-defined copy ASSIGNMENT ([class.copy.assign]/12)
+			// when it does more than a bit copy (`lhs = rhs`, both the same
+			// class, declaring no user operator= — class_operator_call
+			// returned NULL above, so a user-declared operator= still wins):
+			// a class needing a dtor (a bit-copy N_ASSIGN would alias
+			// object-member resources and double-free at cleanup), or one
+			// whose bases or members assign through an operator= of their own
+			// (class_assign_nontrivial — a bit copy skips its effects).
+			// Trivial classes fall through to the native bit-copy. The
+			// statement-expr yields the lhs object.
 			if (tb->id() == TokenID::tkAssign) {
 				DataDefCLASS *lc = as_class_instance(top->left->datadef());
 				DataDefCLASS *rc = as_class_instance(top->right->datadef());
+				const bool via_retbuf = lc
+					&& class_return_via_retbuf(top->left->datadef());
 				if (lc && lc == rc
-				    && class_return_via_retbuf(top->left->datadef())) {
+				    && (via_retbuf || class_assign_nontrivial(lc))) {
 					DataDefCLASS *callc =
 						object_returning_call_class(top->right);
 					if (callc == lc) {
@@ -27326,12 +27423,36 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 						return translate_expr(top->left);
 					}
 					// rhs is an object LVALUE: memberwise copy-assign inline.
+					// A class returned in registers (trivial copy and
+					// destruction) has no retbuf temp: an rhs that is not an
+					// lvalue is bound by value first, and the assignment
+					// reads it there.
 					std::vector<node_t> stmts;
-					class_copy_assign(lc, top->left, top->right, stmts, tb);
+					node_t spill = NULL;
+					if (!via_retbuf && (!m_prog
+					    || m_prog->argument_value_category(top->right)
+					       != ArgValueCategory::Lvalue)) {
+						char tname[40];
+						snprintf(tname, sizeof(tname), "__ca_v_%d",
+							 m_strtmp_counter++);
+						spill = simple(N_SPEC_DECL, tb);
+						append(spill, node1(N_SHARE, node1(N_LIST,
+							class_tag_ref(lc, tb))));
+						append(spill, node2(N_DECL, id(tname, tb), list()));
+						append(spill, ignore());
+						append(spill, ignore());
+						append(spill, translate_expr(top->right));
+						class_assign_object_stmts(lc,
+							node1(N_ADDR, translate_expr(top->left), tb),
+							node1(N_ADDR, id(tname, tb), tb), stmts, tb);
+					} else
+						class_copy_assign(lc, top->left, top->right, stmts, tb);
 					node_t items = list();
 					for (node_t p : m_pending_stmts)
 						append(items, p);
 					m_pending_stmts.clear();
+					if (spill)
+						append(items, spill);
 					for (node_t s : stmts)
 						append(items, s);
 					append(items, node2(N_EXPR, list(),

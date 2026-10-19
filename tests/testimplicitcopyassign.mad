@@ -1,0 +1,62 @@
+// The implicitly-defined copy assignment operator assigns every base and
+// member through its own copy assignment ([class.copy.assign]/12): a member
+// (or array element, or base) whose class declares operator= runs it, even
+// when every class involved has a trivial destructor; a scalar array member
+// is copied whole; a self-assignment reaches the member's operator= with
+// `this == &o`. g++ 13 and clang++ 18 print the .expect.
+#include <cstdio>
+struct D {
+	int val;
+	D() : val(0) {}
+	D &operator=(const D &o)
+	{
+		if (this == &o) {
+			printf("operator= saw this == &o\n");
+			return *this;
+		}
+		val = o.val + 100;
+		return *this;
+	}
+};
+struct A { D s; };				// member
+struct B { int k; D s; D arr[2]; char tag[4]; };	// scalar, member, arrays
+struct E { D d; };				// E's own operator= is implicit...
+struct F { E e; };				// ...and non-trivial through D
+struct Base {
+	int b;
+	Base() : b(0) {}
+	Base &operator=(const Base &o) { b = o.b + 1000; return *this; }
+};
+struct Der : Base { int k; D s; };		// base with operator=
+A make_a(int v)
+{
+	A a;
+	a.s.val = v;
+	return a;
+}
+int main()
+{
+	A a1, a2;
+	a1.s.val = 1;
+	a2 = a1;
+	printf("member %d\n", a2.s.val);
+	a2 = make_a(10);
+	printf("prvalue %d\n", a2.s.val);
+	a1 = a1;
+	printf("after self %d\n", a1.s.val);
+	B b1, b2;
+	b1.k = 7; b1.s.val = 2; b1.arr[0].val = 3; b1.arr[1].val = 4;
+	b1.tag[0] = 'x'; b1.tag[1] = 'y'; b1.tag[2] = 0;
+	b2 = b1;
+	printf("scalar %d member %d array %d %d tag %s\n", b2.k, b2.s.val,
+	       b2.arr[0].val, b2.arr[1].val, b2.tag);
+	F f1, f2;
+	f1.e.d.val = 5;
+	f2 = f1;
+	printf("nested %d\n", f2.e.d.val);
+	Der d1, d2;
+	d1.b = 6; d1.k = 8; d1.s.val = 9;
+	d2 = d1;
+	printf("base %d scalar %d member %d\n", d2.b, d2.k, d2.s.val);
+	return 0;
+}

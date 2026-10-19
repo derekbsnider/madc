@@ -732,6 +732,25 @@ class CirBuilder {
 	void class_copy_assign_members(DataDefCLASS *cdd, const char *lname,
 				       const char *rname, std::vector<node_t> &out,
 				       TokenBase *origin);
+	// Its base half: each base of `cls` (in object `obj`) declaring its own
+	// operator= runs it on its subobject; the others recurse.
+	void class_assign_bases(DataDefCLASS *obj, DataDefCLASS *cls,
+				const char *lname, const char *rname,
+				std::vector<node_t> &out, TokenBase *origin);
+	// One object of `mc` assigned from another by address: its own
+	// operator=, else memberwise through two bound pointers.
+	void class_assign_object_stmts(DataDefCLASS *mc, node_t laddr,
+				       node_t raddr, std::vector<node_t> &out,
+				       TokenBase *origin);
+	// `mc::operator=(*ld, *rd);` (void* addresses for an external operator).
+	node_t assign_operator_call_stmt(DataDefCLASS *mc, FuncDef *op,
+					 node_t ld, node_t rd, TokenBase *origin);
+	// The implicit copy assignment of `cdd` does more than a bit copy: its
+	// own operator=, or a base's or member's (an array element's included)
+	// copy assignment that does ([class.copy.assign]/9, /12).
+	bool class_assign_nontrivial(DataDefCLASS *cdd);
+	bool class_assign_nontrivial(DataDefCLASS *cdd,
+				     std::set<DataDefCLASS *> &seen);
 	// A `struct Tag *<nm> = <init>;` pointer-binding decl. Takes DataDef, not
 	// DataDefCLASS: a POD `struct Point` is only PROMOTED to DataDefCLASS when
 	// it earns class-hood, and class_tag_ref (the only thing this passes it to)
@@ -2216,6 +2235,10 @@ public:
 			       TokenBase *origin);
 	// `memset(addr, 0, nbytes);` — the value-initialization zero fill.
 	node_t zero_fill_stmt(node_t addr, node_t nbytes, TokenBase *origin);
+	// `memcpy(dst, src, nbytes);` — a copy of storage C cannot assign (an
+	// array).
+	node_t copy_bytes_stmt(node_t dst, node_t src, node_t nbytes,
+			       TokenBase *origin);
 	// Zero-initialization of a class-type SUBOBJECT ([dcl.init]/6) at the
 	// typed address `mint_addr` returns (FRESH per call), field by field as
 	// gcc emits it. A BASE subobject skips the members its virtual bases
@@ -2753,6 +2776,8 @@ public:
 	// emits nothing for such classes either). Memoized per builder.
 	bool class_needs_dtor(DataDefCLASS *cdd);
 	std::map<DataDefCLASS *, bool> m_needs_dtor_memo;
+	// class_assign_nontrivial's answers, per builder.
+	std::map<DataDefCLASS *, bool> m_assign_nontrivial_memo;
 	// The class's OWN destructor method (the one it wrote itself), or NULL.
 	// Found name-independently: the method_map carries a "~"-prefixed key for
 	// every reachable dtor (own + inherited via the base-merge at parser.cpp
