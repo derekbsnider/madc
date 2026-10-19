@@ -13661,8 +13661,9 @@ node_t CirBuilder::class_vtable_def(DataDefCLASS *cdd, std::vector<node_t> &thun
 // (void(*)(void*))(((void**)recv->__vptr_G)[slot])(recv_arg). sname picks
 // the arm: "~" = D1 complete (explicit p->~X(): most-derived destruction,
 // no free) or "~$deleting" = D0 (delete: D1 then free). recv_vptr and
-// recv_arg are two INDEPENDENT translations of the receiver (c2mir single
-// parent link), both `struct Cls *`-typed so the vptr field loads by name.
+// recv_arg are two fresh nodes (c2mir single parent link) reading ONE
+// evaluated receiver — a bound `struct Cls *` temporary, so the vptr field
+// loads by name; a receiver expression translated twice evaluates twice.
 // NULL when the class has no such virtual slot.
 node_t CirBuilder::virtual_dtor_slot_call(DataDefCLASS *cdd, const char *sname,
 					  node_t recv_vptr, node_t recv_arg,
@@ -25861,9 +25862,8 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 		return node1(N_STMTEXPR, block, tb);
 	}
 
-	// delete ptr -> ({ C___dtor(ptr); free(ptr); }) — dtor only when the
-	// class has a user destructor; free always. Evaluated for effect, no
-	// value (delete is a void expression).
+	// delete ptr / delete[] ptr: destroy, then free (the shapes below).
+	// Evaluated for effect, no value (delete is a void expression).
 	if (TokenDELETE *tdl = (tb ? tb->as_delete_tok() : NULL)) {
 		DataDefCLASS *cdd = tdl->del_class;
 		// The operand as the destructor and the deallocation take it: a
@@ -25880,124 +25880,105 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			return pointee && pointee->cv_quals()
 			       ? node2(N_CAST, void_ptr_type(), p, tb) : p;
 		};
-		// Virtual destructor: dispatch through the vtable D0 (deleting) slot,
-		// which runs the most-derived complete destructor AND frees. No
-		// separate free() — the D0 dtor owns the free.
-		if (cdd && !tdl->is_array && cdd->vtable_slot("~$deleting") >= 0) {
-			node_t dcall = virtual_dtor_slot_call(cdd, "~$deleting",
-				operand(), operand(), tb);
-			node_t items = list();
-			append(items, node2(N_EXPR, list(), dcall, tb));
-			append(items, node2(N_EXPR, list(), integer(0, tb), tb));
-			node_t block = node2(N_BLOCK, list(), items, tb);
-			return node1(N_STMTEXPR, block, tb);
-		}
-		// delete[] of a class with a non-trivial dtor: new[] stored the
-		// element count in the Itanium cookie ahead of element 0 — read it
-		// back, run the complete dtor per element in REVERSE construction
-		// order, and free the cookie base. Null-guarded (delete[] on a null
-		// pointer is a no-op).
-		//   ({ struct C *__dp = <ptr>;
-		//      if (__dp) {
-		//          long __dn = ((long *)__dp)[-1];
-		//          for (long __ci = __dn - 1; __ci >= 0; __ci -= 1)
-		//              C___dtor_complete(__dp + __ci);
-		//          free((char *)__dp - CK);
-		//      } 0; })
-		size_t ack = (cdd && tdl->is_array) ? class_array_cookie_size(cdd) : 0;
-		if (ack) {
-			char dp[32], dn[32], ci[32];
+		// A delete that destroys ([expr.delete]/6-7) evaluates its operand
+		// ONCE, into a class-pointer temporary, and destroys and frees
+		// nothing when it is null:
+		//   ({ struct C *__dp = <ptr>; if (__dp) { <destroy + free> } 0; })
+		// <destroy + free> is
+		//  - a virtual destructor: the vtable D0 (deleting) slot, which runs
+		//    the most-derived complete destructor AND frees;
+		//  - delete[] of a class with a non-trivial destructor: new[] stored
+		//    the element count in the Itanium cookie ahead of element 0 —
+		//    each element's complete destructor, last first, then free of
+		//    the cookie base;
+		//  - otherwise the complete destructor, then free.
+		// A trivially destructible class (or a non-class pointee) frees the
+		// operand directly: free(NULL) is a no-op, and new[] emitted no
+		// cookie for it (feature-drops-audit, delete[] row).
+		const bool virtual_delete = cdd && !tdl->is_array
+			&& cdd->vtable_slot("~$deleting") >= 0;
+		const size_t ack = (cdd && tdl->is_array)
+			? class_array_cookie_size(cdd) : 0;
+		if (virtual_delete || ack
+		    || (cdd && !tdl->is_array && cdd->has_user_dtor)) {
+			char dp[32];
 			snprintf(dp, sizeof(dp), "__dp%d", m_strtmp_counter++);
-			snprintf(dn, sizeof(dn), "__dn%d", m_strtmp_counter++);
-			snprintf(ci, sizeof(ci), "__ci%d", m_strtmp_counter++);
-			madc::dis::istring dsym = class_complete_dtor_symbol(cdd);
-			referenced_funcs.insert(dsym);
-			// TYPED forward proto (`void d(struct C *)`) — a void* extern
-			// conflicts with the typed madc definition (task #50 KIND).
-			need_output_extern(dsym.c_str(), false, { { {}, true, cdd } });
-			need_output_extern("free", false, { { {N_VOID}, true } });
+			auto object = [&]() -> node_t { return id(dp, tb); };
 			node_t items = list();
-			// struct C *__dp = <ptr>;
-			node_t pdecl = simple(N_SPEC_DECL);
-			append(pdecl, node1(N_SHARE, node1(N_LIST, class_tag_ref(cdd))));
-			append(pdecl, node2(N_DECL, id(dp, tb), node1(N_LIST, pointer())));
-			append(pdecl, ignore());
-			append(pdecl, ignore());
-			append(pdecl, operand());
-			append(items, pdecl);
+			append(items, class_ptr_bind(cdd, dp, operand(), tb));
 			node_t then_items = list();
-			// long __dn = ((long *)__dp)[-1];
-			node_t l_ptr_type = node2(N_TYPE,
-				i64_list(),
-				node2(N_DECL, ignore(), node1(N_LIST, pointer())));
-			node_t count_rd = node2(N_IND,
-				node2(N_CAST, l_ptr_type, id(dp, tb), tb),
-				integer(-1, tb), tb);
-			node_t ndecl = simple(N_SPEC_DECL);
-			append(ndecl, node1(N_SHARE, i64_list()));
-			append(ndecl, node2(N_DECL, id(dn, tb), list()));
-			append(ndecl, ignore());
-			append(ndecl, ignore());
-			append(ndecl, count_rd);
-			append(then_items, ndecl);
-			// for (long __ci = __dn - 1; __ci >= 0; __ci -= 1) dtor(__dp + __ci);
-			node_t idecl = simple(N_SPEC_DECL);
-			append(idecl, node1(N_SHARE, i64_list()));
-			append(idecl, node2(N_DECL, id(ci, tb), list()));
-			append(idecl, ignore());
-			append(idecl, ignore());
-			append(idecl, node2(N_SUB, id(dn, tb), integer(1, tb), tb));
-			node_t cond = node2(N_GE, id(ci, tb), integer(0, tb), tb);
-			node_t step = node2(N_SUB_ASSIGN, id(ci, tb), integer(1, tb), tb);
-			node_t dargs = list();
-			append(dargs, node2(N_ADD, id(dp, tb), id(ci, tb), tb));
-			node_t dtor_call = node2(N_EXPR, list(),
-				node2(N_CALL, id(dsym.c_str(), tb), dargs, tb), tb);
-			append(then_items, node5(N_FOR, list(), idecl, cond, step,
-						 dtor_call, tb));
-			// free((char *)__dp - CK);
-			node_t c_ptr_type = node2(N_TYPE,
-				node1(N_LIST, simple(N_CHAR)),
-				node2(N_DECL, ignore(), node1(N_LIST, pointer())));
-			node_t base = node2(N_SUB,
-				node2(N_CAST, c_ptr_type, id(dp, tb), tb),
-				integer((int64_t)ack, tb), tb);
-			node_t fargs2 = list();
-			append(fargs2, base);
-			append(then_items, node2(N_EXPR, list(),
-				node2(N_CALL, id("free", tb), fargs2, tb), tb));
-			node_t then_blk = node2(N_BLOCK, list(), then_items, tb);
-			append(items, node4(N_IF, list(), id(dp, tb), then_blk,
-					    ignore()));
+			if (virtual_delete)
+				append(then_items, node2(N_EXPR, list(),
+					virtual_dtor_slot_call(cdd, "~$deleting",
+						object(), object(), tb), tb));
+			else {
+				madc::dis::istring dsym = class_complete_dtor_symbol(cdd);
+				referenced_funcs.insert(dsym);
+				// TYPED forward proto (`void d(struct C *)`) — a void*
+				// extern conflicts with the typed madc definition (task
+				// #50 KIND).
+				need_output_extern(dsym.c_str(), false, { { {}, true, cdd } });
+				need_output_extern("free", false, { { {N_VOID}, true } });
+				auto dtor_stmt = [&](node_t self) -> node_t {
+					node_t a = list();
+					append(a, self);
+					return node2(N_EXPR, list(),
+						node2(N_CALL, id(dsym.c_str(), tb), a, tb), tb);
+				};
+				node_t freed = NULL;
+				if (ack) {
+					// long __dn = ((long *)__dp)[-1];
+					char dn[32];
+					snprintf(dn, sizeof(dn), "__dn%d", m_strtmp_counter++);
+					node_t l_ptr_type = node2(N_TYPE, i64_list(),
+						node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+					node_t ndecl = simple(N_SPEC_DECL);
+					append(ndecl, node1(N_SHARE, i64_list()));
+					append(ndecl, node2(N_DECL, id(dn, tb), list()));
+					append(ndecl, ignore());
+					append(ndecl, ignore());
+					append(ndecl, node2(N_IND,
+						node2(N_CAST, l_ptr_type, object(), tb),
+						integer(-1, tb), tb));
+					append(then_items, ndecl);
+					if (node_t loop = class_array_index_loop(
+							[&]() -> node_t { return id(dn, tb); },
+							0, true, tb,
+							[&](const char *ci, std::vector<node_t> &body) {
+								body.push_back(dtor_stmt(class_array_element(
+									object(), cdd, id(ci, tb), tb)));
+							}))
+						append(then_items, loop);
+					// (char *)__dp - CK
+					node_t c_ptr_type = node2(N_TYPE,
+						node1(N_LIST, simple(N_CHAR)),
+						node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+					freed = node2(N_SUB,
+						node2(N_CAST, c_ptr_type, object(), tb),
+						integer((int64_t)ack, tb), tb);
+				} else {
+					append(then_items, dtor_stmt(object()));
+					freed = object();
+				}
+				node_t fargs = list();
+				append(fargs, freed);
+				append(then_items, node2(N_EXPR, list(),
+					node2(N_CALL, id("free", tb), fargs, tb), tb));
+			}
+			append(items, node4(N_IF, list(), object(),
+				node2(N_BLOCK, list(), then_items, tb), ignore()));
 			append(items, node2(N_EXPR, list(), integer(0, tb), tb));
-			return node1(N_STMTEXPR,
-				     node2(N_BLOCK, list(), items, tb), tb);
-		}
-		node_t ptr = operand();
-		node_t items = list();
-		// Array delete of a TRIVIAL-dtor class has no cookie (new[] emitted
-		// none) — plain free. A dtor-carrying class takes the cookie arm
-		// above. See feature-drops-audit (delete[] row) for the history.
-		if (cdd && cdd->has_user_dtor && !tdl->is_array) {
-			madc::dis::istring dsym = class_complete_dtor_symbol(cdd);
-			referenced_funcs.insert(dsym);
-			node_t dargs = list();
-			append(dargs, ptr);
-			node_t dcall = node2(N_CALL, id(dsym.c_str(), tb), dargs, tb);
-			append(items, node2(N_EXPR, list(), dcall, tb));
-			// Re-translate the pointer for free() — a fresh expression node
-			// (the same node must not appear twice in the tree).
-			ptr = operand();
+			return node1(N_STMTEXPR, node2(N_BLOCK, list(), items, tb), tb);
 		}
 		need_output_extern("free", false, { { {N_VOID}, true } });
 		node_t fargs = list();
-		append(fargs, ptr);
-		node_t fcall = node2(N_CALL, id("free", tb), fargs, tb);
-		append(items, node2(N_EXPR, list(), fcall, tb));
+		append(fargs, operand());
+		node_t items = list();
+		append(items, node2(N_EXPR, list(),
+			node2(N_CALL, id("free", tb), fargs, tb), tb));
 		// A statement expression needs a trailing value expression; use 0.
 		append(items, node2(N_EXPR, list(), integer(0, tb), tb));
-		node_t block = node2(N_BLOCK, list(), items, tb);
-		return node1(N_STMTEXPR, block, tb);
+		return node1(N_STMTEXPR, node2(N_BLOCK, list(), items, tb), tb);
 	}
 
 	// obj.~T() / ptr->~T() — explicit/pseudo destructor call. Run T's complete
@@ -26032,11 +26013,21 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				: node1(N_ADDR, translate_expr(ted->obj), tb);
 			return structor_receiver(r, odd, cdd, tb);
 		};
+		// The receiver is evaluated ONCE ([expr.call]): bound, then read by
+		// the vptr load and the `this` argument.
+		//   ({ struct C *__dr = <ptr>; <slot call>(__dr); 0; })
 		if (cdd && ted->is_arrow && cdd->vtable_slot("~") >= 0) {
-			node_t dcall = virtual_dtor_slot_call(cdd, "~",
-				receiver(), receiver(), tb);
-			if (dcall)
-				return dcall;
+			char dr[32];
+			snprintf(dr, sizeof(dr), "__dr%d", m_strtmp_counter++);
+			if (node_t dcall = virtual_dtor_slot_call(cdd, "~",
+					id(dr, tb), id(dr, tb), tb)) {
+				node_t items = list();
+				append(items, class_ptr_bind(cdd, dr, receiver(), tb));
+				append(items, node2(N_EXPR, list(), dcall, tb));
+				append(items, node2(N_EXPR, list(), integer(0, tb), tb));
+				return node1(N_STMTEXPR,
+					     node2(N_BLOCK, list(), items, tb), tb);
+			}
 		}
 		node_t obj_ptr = receiver();
 		if (cdd && class_needs_dtor(cdd)) {

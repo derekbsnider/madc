@@ -2399,7 +2399,7 @@ public:
 	bool class_dtor_is_pure(DataDefCLASS *cdd);
 	// Dispatch a destructor through the receiver's vtable dtor slot; sname
 	// is "~" (D1 complete — explicit p->~X()) or "~$deleting" (D0 —
-	// delete). recv_vptr/recv_arg = two independent receiver translations.
+	// delete). recv_vptr/recv_arg = two fresh nodes of ONE bound receiver.
 	node_t virtual_dtor_slot_call(DataDefCLASS *cdd, const char *sname,
 			       node_t recv_vptr, node_t recv_arg,
 			       TokenBase *tb);

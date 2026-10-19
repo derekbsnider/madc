@@ -1,0 +1,49 @@
+// `delete` evaluates its operand once and, given a null pointer, runs no
+// destructor and frees nothing ([expr.delete]/6-7); an explicit `p->~V()`
+// through a virtual destructor evaluates p once. Each object carries its own
+// id so every line is distinct; g++ 13 and clang++ 18 print the .expect.
+#include <cstdio>
+#include <new>
+int next_id;
+struct D {
+	int id;
+	D() : id(++next_id) {}
+	~D() { printf("~D%d\n", id); }
+};
+struct V {
+	int id;
+	V() : id(++next_id) {}
+	virtual ~V() { printf("~V%d\n", id); }
+};
+int main()
+{
+	D *dn = 0;
+	delete dn;
+	V *vn = 0;
+	delete vn;
+	D *dan = 0;
+	delete[] dan;
+	printf("null deletes ran nothing\n");
+	D *ds[2] = { new D, new D };
+	int i = 0;
+	delete ds[i++];
+	delete ds[i++];
+	printf("i=%d\n", i);
+	V *vs[2] = { new V, new V };
+	int j = 0;
+	delete vs[j++];
+	delete vs[j++];
+	printf("j=%d\n", j);
+	D *das[2] = { new D[1], new D[1] };
+	int k = 0;
+	delete[] das[k++];
+	delete[] das[k++];
+	printf("k=%d\n", k);
+	alignas(V) unsigned char store[2][sizeof(V)];
+	V *ps[2] = { new (store[0]) V, new (store[1]) V };
+	int n = 0;
+	ps[n++]->~V();
+	ps[n++]->~V();
+	printf("n=%d\n", n);
+	return 0;
+}
