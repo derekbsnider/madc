@@ -186,6 +186,12 @@ test (JIT, exe and obj alike), exactly as `.argv` and `.input` shape the
 other two ends of the process. No `MADC_TEST_ENV_<name>` switch, no per-test
 branch: the fixture file is the convention.
 
+"Every invocation" includes the madc that BUILDS the exe and obj artifacts
+(2026-10-19). Until then only the artifact runs saw the pairs, so a variable
+madc reads at compile time — `SOURCE_DATE_EPOCH` fixing `__DATE__` /
+`__TIME__` (`tests/testdate_time_epoch`) — shaped the JIT lane's compile and
+not the artifact lanes': the lanes compiled two different programs.
+
 ## A `.flags` pin on a flavor the binary lacks (2026-10-05)
 
 The `-stdlib=` flavors a madc serves are a property of its build host:

@@ -545,7 +545,9 @@ for t in "$TEST_DIR"/*.mad; do
             run_flags+=("$fl")
         done
         # -o BEFORE fixture flags — same positional rule as the EXE pass.
-        if $MADC_WRAPPER "$MADC" $HERMETIC_FLAGS -r -o "$obj_path" "${flags[@]}" "$t" >/dev/null 2>&1; then
+        # The .env pairs reach this compile as they reach the JIT lane's:
+        # a compile-time variable (SOURCE_DATE_EPOCH) shapes the artifact.
+        if env "${envs[@]}" $MADC_WRAPPER "$MADC" $HERMETIC_FLAGS -r -o "$obj_path" "${flags[@]}" "$t" >/dev/null 2>&1; then
             if [ -f "$input_file" ]; then
                 obj_out=$(env "${envs[@]}" timeout "$tmo" $MADC_WRAPPER "$MADC" $HERMETIC_FLAGS "${run_flags[@]}" "$obj_path" "${args[@]}" < "$input_file" 2>/dev/null)
             else
@@ -589,7 +591,7 @@ for t in "$TEST_DIR"/*.mad; do
         # -o BEFORE the fixture flags: a positional .json manifest (project
         # auto-detect) ends madc's flag parsing — everything after it is the
         # program's argv, so a trailing -o would never reach madc.
-        if build_out=$($MADC_WRAPPER "$MADC" $HERMETIC_FLAGS $MADC_EXE_FLAGS -o "$exe_path" "${flags[@]}" "$t" 2>&1); then
+        if build_out=$(env "${envs[@]}" $MADC_WRAPPER "$MADC" $HERMETIC_FLAGS $MADC_EXE_FLAGS -o "$exe_path" "${flags[@]}" "$t" 2>&1); then
             # The produced ARTIFACT runs under the same wrapper as the
             # compiler (wine on the win64 domain lane; empty = native).
             if [ -f "$input_file" ]; then
