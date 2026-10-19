@@ -14432,7 +14432,8 @@ static bool is_constant_evaluated_call(TokenBase *tb)
 node_t CirBuilder::emit_symbol_method_call(TokenMember *tm, FuncDef *callee,
 					   const madc::dis::istring &sym, node_t this_arg,
 					   TokenBase *origin, node_t ret_slot,
-					   DataDefCLASS *slot_cls, bool *slot_used)
+					   DataDefCLASS *slot_cls, bool *slot_used,
+					   node_t vcallee)
 {
 	const madc::dis::istring &method = tm->var.name;
 
@@ -14448,7 +14449,7 @@ node_t CirBuilder::emit_symbol_method_call(TokenMember *tm, FuncDef *callee,
 	bool carrier_recv = carrier_behind(tm->parent_expr
 					   ? tm->parent_expr->datadef()
 					   : tm->object.type) != NULL;
-	if (method == "empty" && !carrier_recv) {
+	if (method == "empty" && !carrier_recv && !vcallee) {
 		DataDefCLASS *owner = (!callee->parameters.empty())
 				    ? class_behind(callee->parameters[0]) : NULL;
 		madc::dis::istring size_sym = class_method_symbol(owner, "size");
@@ -14542,9 +14543,14 @@ node_t CirBuilder::emit_symbol_method_call(TokenMember *tm, FuncDef *callee,
 		ret_cls = as_class_instance(&callee->return_value_type());
 	}
 	DataDef *ret_dd = (!retc && callee) ? &callee->returns : NULL;
-	need_output_extern(sym.c_str(), ret_ptr, eparams, ret_specs, ret_cls,
-			   ret_dd);
-	node_t call = node2(N_CALL, id(sym.c_str(), origin), args, origin);
+	node_t call;
+	if (vcallee)
+		call = node2(N_CALL, vcallee, args, origin);
+	else {
+		need_output_extern(sym.c_str(), ret_ptr, eparams, ret_specs, ret_cls,
+				   ret_dd);
+		call = node2(N_CALL, id(sym.c_str(), origin), args, origin);
+	}
 	CIR_NODE(call)->synth_from_origin = true;
 	if (into_slot) {
 		if (slot_used) *slot_used = true;
@@ -14868,6 +14874,31 @@ static madc::dis::istring method_slot_name(FuncDef *callee, const madc::dis::ist
 		? madc::dis::istring(sym.substr(recv_class->name.size() + 2)) : sym;
 }
 
+node_t CirBuilder::vtable_slot_callee(TokenMember *tm, DataDefCLASS *recv_class,
+				      size_t vgrp, int vslot,
+				      const char *vrecv_tmp, FuncDef *callee,
+				      DataDefCLASS *vowner, TokenBase *origin)
+{
+	const DataDefCLASS::VtableGroup &G = recv_class->vtable_groups[vgrp];
+	madc::dis::istring vfld = (G.this_offset == 0)
+		? "__vptr" : ("__vptr_" + std::to_string(G.this_offset));
+	DataDefCLASS *dummy = NULL;
+	// A call-expression receiver was materialized once — read the temp;
+	// re-deriving via class_this_arg would emit the call twice.
+	node_t recv_for_vptr = (vrecv_tmp && vrecv_tmp[0])
+		? id(vrecv_tmp, origin)
+		: class_this_arg(tm, dummy, origin);
+	// (void**)recv->__vptr[_<off>] — load the owning group's vptr field by
+	// name from the most-derived receiver (no vowner cast: the field already
+	// lives in recv_class's struct at the right offset).
+	node_t vptr = node2(N_DEREF_FIELD, recv_for_vptr,
+			    id(vfld.c_str(), origin));
+	node_t vtab = node2(N_CAST, void_ptr_type(2), vptr, origin);
+	// ((void**)...)[slot], cast to the method's function-pointer type.
+	node_t slotref = node2(N_IND, vtab, integer(vslot, origin), origin);
+	return node2(N_CAST, method_fnptr_type(callee, vowner), slotref, origin);
+}
+
 node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin,
 				     node_t ret_slot, DataDefCLASS *slot_cls,
 				     bool *slot_used)
@@ -14971,13 +15002,15 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin,
 	// the slot is read from; the slot itself (class_vtable_def) carries any
 	// final-overrider `this` adjustment as a thunk. Adjusting to the method
 	// OWNER here would compose with the thunk and double-adjust (the diamond
-	// B-view bug). Externally-bound (emit_symbol) and member-template calls
-	// never reach the vcall arm — they early-return below with the owner
-	// adjust applied (direct-call convention).
+	// B-view bug). A virtual method the LIBRARY defines (emit_symbol — the
+	// libstdc++ std::exception::what) dispatches the same way: called by
+	// its symbol, `e.what()` through a `const std::exception &` ran
+	// exception::what for every exception. Member-template calls never reach
+	// the vcall arm — they early-return below with the owner adjust applied
+	// (direct-call convention).
 	size_t vgrp = 0;
 	int vslot = -1;
-	if (callee && callee->emit_symbol.empty()
-	    && !callee->is_member_template_placeholder()) {
+	if (callee && !callee->is_member_template_placeholder()) {
 		madc::dis::istring vmn = method_slot_name(callee, sym, recv_class);
 		size_t vg; int vs;
 		if (recv_class->find_vslot(vmn, vg, vs)) {
@@ -15085,7 +15118,10 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin,
 			return mt;
 	if (callee && !callee->emit_symbol.empty())
 		return emit_symbol_method_call(tm, callee, sym, this_arg, origin,
-					       ret_slot, slot_cls, slot_used);
+			ret_slot, slot_cls, slot_used,
+			vslot >= 0 ? vtable_slot_callee(tm, recv_class, vgrp, vslot,
+				vrecv_tmp, callee, owner ? owner : recv_class, origin)
+				   : NULL);
 
 	// A method returning a NON-TRIVIAL class by value uses the __retbuf ABI
 	// (func_def / func_proto / fnptr_decl_pieces all lower the signature with
@@ -15179,31 +15215,8 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin,
 	// by the in-group slot (the vptr already points at the group's address
 	// point). Single inheritance = group 0 / "__vptr" / flat slot.
 	if (vslot >= 0 && callee) {
-		size_t grp = vgrp;
-		int slot = vslot;
-		DataDefCLASS *vowner = owner ? owner : recv_class;
-		const DataDefCLASS::VtableGroup &G = recv_class->vtable_groups[grp];
-		madc::dis::istring vfld = (G.this_offset == 0)
-			? "__vptr" : ("__vptr_" + std::to_string(G.this_offset));
-		DataDefCLASS *dummy = NULL;
-		// A call-expression receiver was materialized once above — read the
-		// temp; re-deriving via class_this_arg would emit the call twice.
-		node_t recv_for_vptr = vrecv_tmp[0]
-			? id(vrecv_tmp, origin)
-			: class_this_arg(tm, dummy, origin);
-		// (void**)recv->__vptr[_<off>] — load the owning group's vptr field by
-		// name from the most-derived receiver (no vowner cast: the field already
-		// lives in recv_class's struct at the right offset).
-		node_t vptr = node2(N_DEREF_FIELD, recv_for_vptr,
-				    id(vfld.c_str(), origin));
-		// The `void **` cast type (two pointer levels).
-		node_t vpp_type = void_ptr_type(2);
-		node_t vtab = node2(N_CAST, vpp_type, vptr, origin);
-		// ((void**)...)[slot]
-		node_t slotref = node2(N_IND, vtab, integer(slot, origin), origin);
-		// Cast the slot to the method's function-pointer type.
-		node_t fnptr_type = method_fnptr_type(callee, vowner);
-		node_t fn = node2(N_CAST, fnptr_type, slotref, origin);
+		node_t fn = vtable_slot_callee(tm, recv_class, vgrp, vslot,
+			vrecv_tmp, callee, owner ? owner : recv_class, origin);
 		node_t vcall = node2(N_CALL, fn, args, origin);
 		if (into_slot) {
 			if (slot_used) *slot_used = true;

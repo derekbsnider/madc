@@ -1,0 +1,34 @@
+// A virtual method the library defines is dispatched through the receiver's
+// vtable ([class.virtual]/2, [expr.call]/2): `what()` through a reference or
+// pointer to std::exception / std::bad_alloc runs the most-derived
+// override — the library's own (bad_array_new_length, runtime_error) and a
+// user class's. A call by the static type's symbol ran exception::what for
+// every exception. (Catching a thrown class object is roadmap P1.1e, not
+// pinned here.) g++ 13 and clang++ 18 print the .expect.
+#include <cstdio>
+#include <new>
+#include <stdexcept>
+struct MyErr : std::runtime_error {
+	MyErr() : std::runtime_error("mine") {}
+	const char *what() const noexcept override { return "MyErr::what"; }
+};
+const char *probe(const std::exception &x) { return x.what(); }
+int main()
+{
+	std::bad_array_new_length e;
+	const std::bad_alloc &r = e;
+	const std::exception &x = e;
+	std::printf("direct %s\n", e.what());
+	std::printf("via bad_alloc& %s\n", r.what());
+	std::printf("via exception& %s\n", x.what());
+	std::bad_alloc *p = new std::bad_array_new_length();
+	std::printf("via bad_alloc* %s\n", p->what());
+	delete p;
+	std::runtime_error re("boom");
+	std::printf("runtime_error via probe %s\n", probe(re));
+	MyErr mine;
+	std::printf("user override via probe %s\n", probe(mine));
+	const std::exception *mp = &mine;
+	std::printf("user override via exception* %s\n", mp->what());
+	return 0;
+}

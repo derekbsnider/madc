@@ -2146,13 +2146,26 @@ public:
 				 bool *slot_used = NULL);
 	// Lower a class method bound to an external symbol (FuncDef::emit_symbol —
 	// a parsed C++ ABI symbol): declares the extern from the method's real
-	// signature and routes the call directly. `this_arg` is the receiver address
+	// signature and routes the call directly — or, for a VIRTUAL method,
+	// through `vcallee` (vtable_slot_callee: the receiver's vtable slot), so
+	// the most-derived override runs. `this_arg` is the receiver address
 	// (object_var_addr).
 	node_t emit_symbol_method_call(class TokenMember *tm, class FuncDef *callee,
 				       const madc::dis::istring &sym, node_t this_arg,
 				       TokenBase *origin, node_t ret_slot = NULL,
 				       DataDefCLASS *slot_cls = NULL,
-				       bool *slot_used = NULL);
+				       bool *slot_used = NULL,
+				       node_t vcallee = NULL);
+	// The callee of a virtual call: the receiver's vtable slot cast to the
+	// method's function-pointer type,
+	//   (RET(*)(struct Owner *, params))((void **)recv->__vptr[_<off>])[slot]
+	// — the group (`vgrp`) and in-group slot resolved by find_vslot. The vptr
+	// is read from `vrecv_tmp` when the receiver was bound once, else from a
+	// fresh class_this_arg. Every virtual method call dispatches through it.
+	node_t vtable_slot_callee(class TokenMember *tm, DataDefCLASS *recv_class,
+				  size_t vgrp, int vslot, const char *vrecv_tmp,
+				  class FuncDef *callee, DataDefCLASS *vowner,
+				  TokenBase *origin);
 	node_t member_template_method_call(class TokenMember *tm,
 				       class FuncDef *callee,
 				       node_t this_arg,
