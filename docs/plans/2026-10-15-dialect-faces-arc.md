@@ -394,10 +394,13 @@ PLANNED 2026-10-15 (owner).
     B48, B66, B195, and the carried `__sync_*` / static-destruction items.
   - Step 2 (silent wrong answers): class-object fixes `504e6350c`,
     `2151a9511`, `dfb6d100d`, `b9038b63a`, `cecc4bf3e`, `ee9c91119`,
-    `13026b2bc` (a library virtual dispatches through the vtable). Filed:
-    B202 (a class handler never binds the thrown object and matches any
-    class; plan `2026-10-19-class-exceptions.md`, its parser part awaits the
-    owner), B201 and B203 (core-parser refusals, raised with the owner).
-    Open: B202, B197, B156, B147, B144, B145, B121, B81, B62, B70, B65, B64,
-    B181.
+    `13026b2bc` (a library virtual dispatches through the vtable). Fixed:
+    B156 `279fcf0ba`, B144 `ab1a2bf88`, B145 `a51e936f2` `679647b38`
+    `476c16dec`, B204 `2194f8343`, B168 `2e4e4ccb6`, B207 `af381651b` (try
+    frame and cleanup entries end on every normal exit), B208 `ef5601fe7`
+    (a `__retbuf` prvalue constructs its virtual bases), B202 `9f6699078`
+    (class-type exceptions, plan `2026-10-19-class-exceptions.md` DONE).
+    Filed and raised with the owner: B201, B203, B205 (a throw through a
+    try-less frame skips its destructors), B206 (an unspecified base in a
+    class is public). Open: B197, B147, B121, B81, B62, B70, B65, B64, B181.
   - Steps 3-5 (C refusals, dialect refusals, B148) not started.
