@@ -18372,7 +18372,7 @@ static int c2m_dbg_populate (MIR_object_t obj) {
       addr = (void *) (uintptr_t) off;
     }
     MIR_debug_add_func (c2m_dbg, func->name, addr, func->code_len, func->line_map,
-                        func->line_map_len);
+                        func->line_map_len, func->cfi, func->cfi_len);
     for (size_t v = c2m_dbg_funcrecs[i].first_var;
          v < c2m_dbg_funcrecs[i].first_var + c2m_dbg_funcrecs[i].n_vars; v++) {
       c2m_dbgvar_t *dv = &c2m_dbg_vars[v];

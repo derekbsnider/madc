@@ -382,6 +382,10 @@ typedef struct MIR_func {
   size_t line_map_len;      /* number of entries in line_map */
   MIR_reg_loc_t *reg_locs;  /* local reg -> frame slot, or NULL; filled by MIR_gen in spill-all mode */
   size_t reg_locs_len;      /* number of entries in reg_locs */
+  /* DWARF call frame instructions of the function's FDE, after its target's CIE
+     (MIR_gen_cfi_cie), or NULL; filled by MIR_gen on targets that describe frames */
+  uint8_t *cfi;
+  size_t cfi_len;
 } *MIR_func_t;
 
 typedef struct MIR_proto {

@@ -979,6 +979,7 @@ static void free_func_payload (MIR_context_t ctx, MIR_item_t item) {
   if (item->u.func->global_vars != NULL) VARR_DESTROY (MIR_var_t, item->u.func->global_vars);
   if (item->u.func->line_map != NULL) MIR_free (ctx->alloc, item->u.func->line_map);
   if (item->u.func->reg_locs != NULL) MIR_free (ctx->alloc, item->u.func->reg_locs);
+  if (item->u.func->cfi != NULL) MIR_free (ctx->alloc, item->u.func->cfi);
   if (item->u.func->internal != NULL) func_regs_finish (ctx, item->u.func);
   MIR_free (ctx->alloc, item->u.func);
 }
@@ -1675,6 +1676,8 @@ static MIR_item_t new_func_arr (MIR_context_t ctx, const char *name, size_t nres
   func->line_map_len = 0;
   func->reg_locs = NULL;
   func->reg_locs_len = 0;
+  func->cfi = NULL;
+  func->cfi_len = 0;
   ctx->curr_source_file_id = ctx->curr_source_line = 0; /* don't bleed across functions */
   func_regs_init (ctx, func);
   for (size_t i = 0; i < nargs; i++) {

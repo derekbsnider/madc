@@ -209,6 +209,26 @@ DEF_VARR (MIR_op_t);
 DEF_VARR (MIR_insn_t);
 DEF_VARR (MIR_line_map_t);
 DEF_VARR (MIR_reg_loc_t);
+DEF_VARR (uint8_t);
+
+/* A point of the prologue for the function's CFI: the code after insn AFTER
+   (NULL: the function's entry), and that code's offset. */
+typedef struct gen_cfi_mark {
+  MIR_insn_t after;
+  size_t offset;
+} gen_cfi_mark_t;
+DEF_VARR (gen_cfi_mark_t);
+
+/* A rule of the function's CFI, holding from its mark on: the CFA is DWARF_REG +
+   OFFSET (frame_p), or DWARF_REG is saved at CFA + OFFSET. */
+typedef struct gen_cfi_rule {
+  size_t mark;
+  size_t code_offset; /* the mark's, when encoding */
+  char frame_p;
+  unsigned dwarf_reg;
+  int64_t offset;
+} gen_cfi_rule_t;
+DEF_VARR (gen_cfi_rule_t);
 
 /* AOT object mode: MIR item -> object-symbol id */
 typedef struct obj_item_sym {
@@ -260,6 +280,14 @@ struct gen_ctx {
   VARR (MIR_op_t) * temp_ops;
   VARR (MIR_line_map_t) * line_map; /* (code_offset, file, line) per insn during target_translate */
   VARR (MIR_reg_loc_t) * reg_locs;  /* (reg, fp_offset) for stack-homed locals in spill-all mode */
+  /* The frame of the function being generated, as its target's prologue
+     described it (gen_cfi_mark / gen_cfi_frame / gen_cfi_save), for MIR_func.cfi: */
+  VARR (gen_cfi_mark_t) * cfi_marks;    /* the prologue points the rules start at */
+  VARR (gen_cfi_rule_t) * cfi_rules;
+  MIR_insn_t cfi_prev_insn;             /* target_translate: the insn emitted last ... */
+  size_t cfi_pending;                   /* ... and the marks this pass has yet to locate */
+  VARR (uint8_t) * cfi_insns;           /* the FDE instructions being encoded */
+  VARR (void_ptr_t) * cfi_registered;   /* frame tables registered with the host unwinder */
   VARR (MIR_insn_t) * temp_insns, *temp_insns2;
   VARR (bb_insn_t) * temp_bb_insns, *temp_bb_insns2;
   VARR (loop_node_t) * loop_nodes, *queue_nodes, *loop_entries; /* used in building loop tree */
@@ -347,7 +375,6 @@ DEF_VARR (func_or_bb_t);
 static inline gen_ctx_t *gen_ctx_loc (MIR_context_t ctx) { return (gen_ctx_t *) ctx; }
 
 DEF_VARR (int);
-DEF_VARR (uint8_t);
 DEF_VARR (uint64_t);
 DEF_VARR (MIR_code_reloc_t);
 
@@ -364,6 +391,86 @@ static void gen_record_line (gen_ctx_t gen_ctx, size_t code_offset, MIR_insn_t i
   }
   MIR_line_map_t e = {(uint32_t) code_offset, insn->file_id, insn->line};
   VARR_PUSH (MIR_line_map_t, gen_line_map, e);
+}
+
+/* ---- DWARF call frame information (CFI) of generated code ----------------
+   Each target describes its frame as its prologue builds it
+   (target_make_prolog_epilog), the way gcc's .cfi_* directives do: a mark is
+   the code after one prologue insn (gen_cfi_mark, or gen_cfi_mark_at once the
+   insn exists), and from a mark on gen_cfi_frame -- CFA = a register + an
+   offset -- and gen_cfi_save -- the return address or a register the prologue
+   saved, at the slot's CFA offset -- hold; registers are DWARF numbers.  A
+   callee-saved register keeps its value until the body, so its rule may start
+   at the body's mark.  The generator encodes the FDE instructions after
+   target_translate (MIR_func.cfi); the target's CIE holds the frame at entry
+   (TARGET_CFI_*, MIR_gen_cfi_cie).  An epilogue gets no rows: a walk starts at
+   a call site. */
+enum {
+  GEN_DW_CFA_advance_loc = 0x40,
+  GEN_DW_CFA_offset = 0x80,
+  GEN_DW_CFA_nop = 0x00,
+  GEN_DW_CFA_advance_loc1 = 0x02,
+  GEN_DW_CFA_advance_loc2 = 0x03,
+  GEN_DW_CFA_advance_loc4 = 0x04,
+  GEN_DW_CFA_def_cfa = 0x0c,
+  GEN_DW_CFA_offset_extended_sf = 0x11,
+};
+
+#define GEN_CFI_DATA_ALIGN (-8) /* every save slot is 8-byte aligned */
+
+static size_t gen_cfi_mark (gen_ctx_t gen_ctx, MIR_insn_t after) {
+  gen_cfi_mark_t m = {after, 0};
+
+  VARR_PUSH (gen_cfi_mark_t, gen_ctx->cfi_marks, m);
+  return VARR_LENGTH (gen_cfi_mark_t, gen_ctx->cfi_marks) - 1;
+}
+
+static void gen_cfi_mark_at (gen_ctx_t gen_ctx, size_t mark, MIR_insn_t after) {
+  VARR_ADDR (gen_cfi_mark_t, gen_ctx->cfi_marks)[mark].after = after;
+}
+
+static void gen_cfi_rule (gen_ctx_t gen_ctx, size_t mark, int frame_p, unsigned dwarf_reg,
+                          int64_t offset) {
+  gen_cfi_rule_t r = {mark, 0, frame_p, dwarf_reg, offset};
+
+  VARR_PUSH (gen_cfi_rule_t, gen_ctx->cfi_rules, r);
+}
+
+static void gen_cfi_frame (gen_ctx_t gen_ctx, size_t mark, unsigned cfa_reg, int64_t cfa_offset) {
+  gen_assert (cfa_offset >= 0);
+  gen_cfi_rule (gen_ctx, mark, TRUE, cfa_reg, cfa_offset);
+}
+
+static void gen_cfi_save (gen_ctx_t gen_ctx, size_t mark, unsigned dwarf_reg,
+                          int64_t cfa_offset) {
+  gen_assert (cfa_offset % -GEN_CFI_DATA_ALIGN == 0);
+  gen_cfi_rule (gen_ctx, mark, FALSE, dwarf_reg, cfa_offset);
+}
+
+/* target_translate, before each emission pass over the insns (a multi-pass
+   emitter's last pass wins): every mark is to be located again. */
+static inline void gen_cfi_start_pass (gen_ctx_t gen_ctx) {
+  gen_ctx->cfi_prev_insn = NULL;
+  gen_ctx->cfi_pending = VARR_LENGTH (gen_cfi_mark_t, gen_ctx->cfi_marks);
+}
+
+static void gen_cfi_locate_marks (gen_ctx_t gen_ctx, size_t code_offset, MIR_insn_t insn) {
+  gen_cfi_mark_t *marks = VARR_ADDR (gen_cfi_mark_t, gen_ctx->cfi_marks);
+  MIR_insn_t prev = gen_ctx->cfi_prev_insn;
+
+  gen_ctx->cfi_prev_insn = insn;
+  for (size_t i = 0; i < VARR_LENGTH (gen_cfi_mark_t, gen_ctx->cfi_marks); i++)
+    if (marks[i].after == prev) {
+      marks[i].offset = code_offset;
+      gen_ctx->cfi_pending--;
+    }
+}
+
+/* target_translate, at each insn (label or not) before its code: a mark whose
+   insn was emitted last starts here.  The marks are in the prologue, so past
+   it this is one test. */
+static inline void gen_cfi_note_insn (gen_ctx_t gen_ctx, size_t code_offset, MIR_insn_t insn) {
+  if (gen_ctx->cfi_pending != 0) gen_cfi_locate_marks (gen_ctx, code_offset, insn);
 }
 
 /* The move insn for a value of a given type (MIR_MOV for the integer shapes,
@@ -769,6 +876,11 @@ static void create_new_bb_insns (gen_ctx_t gen_ctx, MIR_insn_t before, MIR_insn_
 }
 
 static void gen_delete_insn (gen_ctx_t gen_ctx, MIR_insn_t insn) {
+  /* a CFI mark's insn hands the mark to its predecessor: the code that replaced
+     it was put before it */
+  gen_cfi_mark_t *marks = VARR_ADDR (gen_cfi_mark_t, gen_ctx->cfi_marks);
+  for (size_t i = 0; i < VARR_LENGTH (gen_cfi_mark_t, gen_ctx->cfi_marks); i++)
+    if (marks[i].after == insn) marks[i].after = DLIST_PREV (MIR_insn_t, insn);
   if (optimize_level == 0)
     delete_insn_data (gen_ctx, insn);
   else
@@ -9554,6 +9666,214 @@ static void *print_and_execute_wrapper (gen_ctx_t gen_ctx, MIR_item_t called_fun
 
 static const int collect_bb_stat_p = FALSE;
 
+/* ---- DWARF CFI: encoding, the target's CIE, host registration ------------ */
+
+static void gen_cfi_uleb (VARR (uint8_t) * b, uint64_t v) {
+  do {
+    uint8_t byte = v & 0x7f;
+
+    v >>= 7;
+    if (v != 0) byte |= 0x80;
+    VARR_PUSH (uint8_t, b, byte);
+  } while (v != 0);
+}
+
+static void gen_cfi_sleb (VARR (uint8_t) * b, int64_t v) {
+  for (;;) {
+    uint8_t byte = v & 0x7f;
+
+    v = v < 0 ? ~(~v >> 7) : v >> 7; /* arithmetic shift */
+    if ((v == 0 && (byte & 0x40) == 0) || (v == -1 && (byte & 0x40) != 0)) {
+      VARR_PUSH (uint8_t, b, byte);
+      return;
+    }
+    VARR_PUSH (uint8_t, b, byte | 0x80);
+  }
+}
+
+/* DW_CFA_advance_loc* by DELTA code bytes (code alignment factor 1); the
+   operand is in the target's byte order, which is the generator host's. */
+static void gen_cfi_advance (VARR (uint8_t) * b, size_t delta) {
+  if (delta == 0) return;
+  if (delta < 64) {
+    VARR_PUSH (uint8_t, b, GEN_DW_CFA_advance_loc | (uint8_t) delta);
+  } else if (delta < 256) {
+    VARR_PUSH (uint8_t, b, GEN_DW_CFA_advance_loc1);
+    VARR_PUSH (uint8_t, b, (uint8_t) delta);
+  } else if (delta < 65536) {
+    uint16_t v = (uint16_t) delta;
+
+    VARR_PUSH (uint8_t, b, GEN_DW_CFA_advance_loc2);
+    VARR_PUSH_ARR (uint8_t, b, (uint8_t *) &v, sizeof (v));
+  } else {
+    uint32_t v = (uint32_t) delta;
+
+    VARR_PUSH (uint8_t, b, GEN_DW_CFA_advance_loc4);
+    VARR_PUSH_ARR (uint8_t, b, (uint8_t *) &v, sizeof (v));
+  }
+}
+
+static void gen_cfi_offset (VARR (uint8_t) * b, unsigned dwarf_reg, int64_t cfa_offset) {
+  int64_t factored = cfa_offset / GEN_CFI_DATA_ALIGN;
+
+  if (dwarf_reg < 64 && factored >= 0) {
+    VARR_PUSH (uint8_t, b, GEN_DW_CFA_offset | (uint8_t) dwarf_reg);
+    gen_cfi_uleb (b, (uint64_t) factored);
+  } else {
+    VARR_PUSH (uint8_t, b, GEN_DW_CFA_offset_extended_sf);
+    gen_cfi_uleb (b, dwarf_reg);
+    gen_cfi_sleb (b, factored);
+  }
+}
+
+/* Does rule R1 come after R2 in the FDE: a later code offset, or on a tie
+   the mark made later. */
+static inline int gen_cfi_rule_after_p (const gen_cfi_rule_t *r1, const gen_cfi_rule_t *r2) {
+  return r1->code_offset != r2->code_offset ? r1->code_offset > r2->code_offset
+                                             : r1->mark > r2->mark;
+}
+
+/* MIR_func.cfi of the function just translated: the prologue's rows, after the
+   CIE's entry row.  A frameless function keeps the entry row throughout. */
+static void gen_cfi_encode (gen_ctx_t gen_ctx, MIR_func_t func) {
+  VARR (uint8_t) *b = gen_ctx->cfi_insns;
+  gen_cfi_rule_t *rules = VARR_ADDR (gen_cfi_rule_t, gen_ctx->cfi_rules);
+  size_t i, at = 0, rules_num = VARR_LENGTH (gen_cfi_rule_t, gen_ctx->cfi_rules);
+
+  if (func->cfi != NULL) {
+    MIR_free (gen_alloc (gen_ctx), func->cfi);
+    func->cfi = NULL;
+    func->cfi_len = 0;
+  }
+#ifdef TARGET_CFI_CIE_INSNS
+  if (func->jret_p) return; /* exits by a jump: no return address to describe */
+  VARR_TRUNC (uint8_t, b, 0);
+  /* the few rules into code order: an insertion sort */
+  for (i = 0; i < rules_num; i++) {
+    gen_cfi_rule_t r = rules[i];
+    size_t j = i;
+
+    r.code_offset = VARR_GET (gen_cfi_mark_t, gen_ctx->cfi_marks, r.mark).offset;
+    for (; j > 0 && gen_cfi_rule_after_p (&rules[j - 1], &r); j--) rules[j] = rules[j - 1];
+    rules[j] = r;
+  }
+  for (i = 0; i < rules_num; i++) {
+    gen_cfi_advance (b, rules[i].code_offset - at);
+    at = rules[i].code_offset;
+    if (rules[i].frame_p) {
+      VARR_PUSH (uint8_t, b, GEN_DW_CFA_def_cfa);
+      gen_cfi_uleb (b, rules[i].dwarf_reg);
+      gen_cfi_uleb (b, (uint64_t) rules[i].offset);
+    } else {
+      gen_cfi_offset (b, rules[i].dwarf_reg, rules[i].offset);
+    }
+  }
+  if (VARR_LENGTH (uint8_t, b) == 0) VARR_PUSH (uint8_t, b, GEN_DW_CFA_nop);
+  func->cfi_len = VARR_LENGTH (uint8_t, b);
+  func->cfi = gen_malloc (gen_ctx, func->cfi_len);
+  memcpy (func->cfi, VARR_ADDR (uint8_t, b), func->cfi_len);
+#endif
+}
+
+int MIR_gen_cfi_cie (MIR_cfi_cie_t *cie) {
+#ifdef TARGET_CFI_CIE_INSNS
+  static const uint8_t insns[] = {TARGET_CFI_CIE_INSNS};
+
+  cie->ra_column = TARGET_CFI_RA_COLUMN;
+  cie->code_align = 1;
+  cie->data_align = GEN_CFI_DATA_ALIGN;
+  cie->insns = insns;
+  cie->insns_len = sizeof (insns);
+  return 0;
+#else
+  (void) cie;
+  return -1;
+#endif
+}
+
+/* Generated code runs here when the target is the host: its frames are
+   registered with the host's unwinder (libgcc / libunwind) so a walk passes
+   through them.  Windows describes frames with its own tables. */
+#if defined(TARGET_CFI_CIE_INSNS) && !MIR_CROSS_P && !MIR_TARGET_WINDOWS_P
+#define GEN_CFI_REGISTER_P 1
+extern void __register_frame (void *);
+extern void __deregister_frame (void *);
+
+static void gen_cfi_align (VARR (uint8_t) * b, size_t start) {
+  while ((VARR_LENGTH (uint8_t, b) - start) % sizeof (void *) != 0)
+    VARR_PUSH (uint8_t, b, GEN_DW_CFA_nop);
+}
+
+static void gen_cfi_patch_u32 (VARR (uint8_t) * b, size_t pos, uint32_t v) {
+  memcpy (VARR_ADDR (uint8_t, b) + pos, &v, sizeof (v));
+}
+
+/* An .eh_frame table for one generated function -- its CIE (augmentation
+   "zR", absolute FDE pointers), its FDE and the terminator -- registered with
+   the host unwinder: libgcc takes the table, libunwind (Apple) one FDE. */
+static void gen_cfi_register (gen_ctx_t gen_ctx, MIR_func_t func, void *code, size_t code_len) {
+  VARR (uint8_t) *b = gen_ctx->cfi_insns;
+  MIR_cfi_cie_t cie;
+  size_t len_pos, fde_pos;
+  uint32_t u32 = 0;
+  uint64_t u64;
+  uint8_t *table;
+
+  if (func->cfi == NULL || code == NULL || code_len == 0) return;
+  MIR_gen_cfi_cie (&cie);
+  VARR_TRUNC (uint8_t, b, 0);
+  /* CIE */
+  VARR_PUSH_ARR (uint8_t, b, (uint8_t *) &u32, 4); /* length, patched */
+  VARR_PUSH_ARR (uint8_t, b, (uint8_t *) &u32, 4); /* CIE id 0 */
+  VARR_PUSH (uint8_t, b, 1);                        /* version */
+  VARR_PUSH_ARR (uint8_t, b, (uint8_t *) "zR", 3);
+  gen_cfi_uleb (b, cie.code_align);
+  gen_cfi_sleb (b, cie.data_align);
+  VARR_PUSH (uint8_t, b, (uint8_t) cie.ra_column);
+  gen_cfi_uleb (b, 1);       /* augmentation data length */
+  VARR_PUSH (uint8_t, b, 0); /* DW_EH_PE_absptr */
+  VARR_PUSH_ARR (uint8_t, b, cie.insns, cie.insns_len);
+  gen_cfi_align (b, 0);
+  gen_cfi_patch_u32 (b, 0, (uint32_t) VARR_LENGTH (uint8_t, b) - 4);
+  /* FDE */
+  fde_pos = len_pos = VARR_LENGTH (uint8_t, b);
+  VARR_PUSH_ARR (uint8_t, b, (uint8_t *) &u32, 4); /* length, patched */
+  u32 = (uint32_t) (fde_pos + 4);                   /* back to the CIE */
+  VARR_PUSH_ARR (uint8_t, b, (uint8_t *) &u32, 4);
+  u64 = (uint64_t) (uintptr_t) code;
+  VARR_PUSH_ARR (uint8_t, b, (uint8_t *) &u64, 8);
+  u64 = code_len;
+  VARR_PUSH_ARR (uint8_t, b, (uint8_t *) &u64, 8);
+  gen_cfi_uleb (b, 0); /* augmentation data length */
+  VARR_PUSH_ARR (uint8_t, b, func->cfi, func->cfi_len);
+  gen_cfi_align (b, fde_pos);
+  gen_cfi_patch_u32 (b, len_pos, (uint32_t) (VARR_LENGTH (uint8_t, b) - len_pos - 4));
+  u32 = 0; /* terminator */
+  VARR_PUSH_ARR (uint8_t, b, (uint8_t *) &u32, 4);
+  table = gen_malloc (gen_ctx, VARR_LENGTH (uint8_t, b));
+  memcpy (table, VARR_ADDR (uint8_t, b), VARR_LENGTH (uint8_t, b));
+#if defined(__APPLE__)
+  table += fde_pos;
+#endif
+  __register_frame (table);
+  VARR_PUSH (void_ptr_t, gen_ctx->cfi_registered, table);
+}
+
+static void gen_cfi_deregister_all (gen_ctx_t gen_ctx) {
+  while (VARR_LENGTH (void_ptr_t, gen_ctx->cfi_registered) != 0) {
+    uint8_t *table = VARR_POP (void_ptr_t, gen_ctx->cfi_registered);
+
+    __deregister_frame (table);
+#if defined(__APPLE__)
+    table -= ((uint32_t *) table)[1] - 4; /* the FDE's CIE pointer leads back to the table */
+#endif
+    MIR_free (gen_alloc (gen_ctx), table);
+  }
+}
+#else
+#define GEN_CFI_REGISTER_P 0
+#endif
+
 static void *generate_func_code (MIR_context_t ctx, MIR_item_t func_item, int machine_code_p) {
   gen_ctx_t gen_ctx = *gen_ctx_loc (ctx);
   uint8_t *code;
@@ -9587,6 +9907,8 @@ static void *generate_func_code (MIR_context_t ctx, MIR_item_t func_item, int ma
   });
   curr_func_item = func_item;
   _MIR_duplicate_func_insns (ctx, func_item);
+  VARR_TRUNC (gen_cfi_mark_t, gen_ctx->cfi_marks, 0);
+  VARR_TRUNC (gen_cfi_rule_t, gen_ctx->cfi_rules, 0);
   curr_cfg = func_item->data = gen_malloc (gen_ctx, sizeof (struct func_cfg));
   build_func_cfg (gen_ctx);
   bbs_num = curr_bb_index;
@@ -9785,6 +10107,7 @@ static void *generate_func_code (MIR_context_t ctx, MIR_item_t func_item, int ma
   if (machine_code_p) {
     VARR_TRUNC (MIR_line_map_t, gen_line_map, 0);
     code = target_translate (gen_ctx, &code_len);
+    gen_cfi_encode (gen_ctx, func_item->u.func);
     if (object_mode_p) {
       /* Capture the blob + relocations instead of publishing; no rebase, no
          thunk redirect -- nothing may depend on run-time addresses. */
@@ -9793,6 +10116,9 @@ static void *generate_func_code (MIR_context_t ctx, MIR_item_t func_item, int ma
     } else {
       machine_code = func_item->u.func->call_addr = _MIR_publish_code (ctx, code, code_len);
       target_rebase (gen_ctx, func_item->u.func->call_addr);
+#if GEN_CFI_REGISTER_P
+      gen_cfi_register (gen_ctx, func_item->u.func, machine_code, code_len);
+#endif
     }
     { /* Hand the collected (code_offset -> source loc) map to the func for debug info. */
       size_t lm_len = VARR_LENGTH (MIR_line_map_t, gen_line_map);
@@ -10228,6 +10554,12 @@ void MIR_gen_init (MIR_context_t ctx) {
   VARR_CREATE (MIR_op_t, temp_ops, alloc, 16);
   VARR_CREATE (MIR_line_map_t, gen_line_map, alloc, 0);
   VARR_CREATE (MIR_reg_loc_t, gen_reg_locs, alloc, 0);
+  VARR_CREATE (gen_cfi_mark_t, gen_ctx->cfi_marks, alloc, 8);
+  VARR_CREATE (gen_cfi_rule_t, gen_ctx->cfi_rules, alloc, 16);
+  VARR_CREATE (uint8_t, gen_ctx->cfi_insns, alloc, 128);
+  VARR_CREATE (void_ptr_t, gen_ctx->cfi_registered, alloc, 0);
+  gen_ctx->cfi_prev_insn = NULL;
+  gen_ctx->cfi_pending = 0;
   VARR_CREATE (MIR_insn_t, temp_insns, alloc, 16);
   VARR_CREATE (MIR_insn_t, temp_insns2, alloc, 16);
   VARR_CREATE (bb_insn_t, temp_bb_insns, alloc, 16);
@@ -10307,6 +10639,13 @@ void MIR_gen_finish (MIR_context_t ctx) {
   VARR_DESTROY (MIR_op_t, temp_ops);
   VARR_DESTROY (MIR_line_map_t, gen_line_map);
   VARR_DESTROY (MIR_reg_loc_t, gen_reg_locs);
+#if GEN_CFI_REGISTER_P
+  gen_cfi_deregister_all (gen_ctx);
+#endif
+  VARR_DESTROY (void_ptr_t, gen_ctx->cfi_registered);
+  VARR_DESTROY (gen_cfi_mark_t, gen_ctx->cfi_marks);
+  VARR_DESTROY (gen_cfi_rule_t, gen_ctx->cfi_rules);
+  VARR_DESTROY (uint8_t, gen_ctx->cfi_insns);
   VARR_DESTROY (MIR_insn_t, temp_insns);
   VARR_DESTROY (MIR_insn_t, temp_insns2);
   VARR_DESTROY (bb_insn_t, temp_bb_insns);

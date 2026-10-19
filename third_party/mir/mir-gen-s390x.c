@@ -57,6 +57,23 @@ Originally SP(r15) and FP (r11) are the same but r15 can be changed by alloca */
 #define S390X_GP_REG_RSAVE_AREA_START 16
 #define S390X_FP_REG_ARG_SAVE_AREA_START 128
 
+/* DWARF CFI (mir-gen.c): at entry CFA = r15 + 160 and the return address is
+   in r14 (column 14, no rule: the register itself). */
+#define TARGET_CFI_RA_COLUMN 14
+#define TARGET_CFI_CIE_INSNS 0x0c, 15, 0xa0, 0x01 /* DW_CFA_def_cfa r15, 160 */
+#define TARGET_DWARF_SP 15
+#define TARGET_DWARF_FP 11
+
+static unsigned target_dwarf_reg (MIR_reg_t hard_reg) {
+  /* the ELF ABI numbers f0, f2, f4, f6, f1, f3, f5, f7, f8, f10, ... from 16 */
+  static const unsigned char fp[] = {16, 20, 17, 21, 18, 22, 19, 23,
+                                     24, 28, 25, 29, 26, 30, 27, 31};
+
+  if (hard_reg <= R15_HARD_REG) return hard_reg;
+  gen_assert (F0_HARD_REG <= hard_reg && hard_reg <= F15_HARD_REG);
+  return fp[hard_reg - F0_HARD_REG];
+}
+
 /* s390x has 3-ops insns */
 static const MIR_insn_code_t target_io_dup_op_insn_codes[]
   = {MIR_ADD,   MIR_ADDS,  MIR_FADD, MIR_DADD,  MIR_SUB,  MIR_SUBS, MIR_SUBO, MIR_SUBOS,
@@ -949,13 +966,41 @@ static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_reg
   gen_mov (gen_ctx, anchor, MIR_MOV, r0_reg_op, r15_reg_op); /* r0 = r15 */
   new_insn = MIR_new_insn (ctx, MIR_ADD, r15_reg_op, r15_reg_op, MIR_new_int_op (ctx, -frame_size));
   gen_add_insn_before (gen_ctx, anchor, new_insn); /* r15 -= frame_size */
+  /* The frame (CFI): the CFA is the caller's r15 + 160, so after the
+     allocation CFA = r15 + frame_size + 160, and once r11 = r15 (the
+     prologue's last insn) CFA = r11 + frame_size + 160 with r14, r11 and the
+     other saved gp registers in the caller's register save area and the saved
+     fp registers in this frame. */
+  gen_cfi_frame (gen_ctx, gen_cfi_mark (gen_ctx, new_insn), TARGET_DWARF_SP,
+                 (int64_t) frame_size + S390X_STACK_HEADER_SIZE);
   gen_mov (gen_ctx, anchor, MIR_MOV,
            _MIR_new_var_mem_op (ctx, MIR_T_I64, 0, R15_HARD_REG, MIR_NON_VAR, 1),
            r0_reg_op); /* mem[r15] = r0 */
   for (n = 0, i = F0_HARD_REG; i <= MAX_HARD_REG; i++)
     if (!target_call_used_hard_reg_p (i, MIR_T_UNDEF) && bitmap_bit_p (used_hard_regs, i))
       fsave (gen_ctx, anchor, start_saved_fregs_offset + (n++) * 8, i);
-  gen_mov (gen_ctx, anchor, MIR_MOV, r11_reg_op, r15_reg_op); /* r11 = r15 */
+  new_insn = gen_mov (gen_ctx, anchor, MIR_MOV, r11_reg_op, r15_reg_op); /* r11 = r15 */
+  {
+    int64_t caller_sp = -S390X_STACK_HEADER_SIZE, sp = caller_sp - (int64_t) frame_size;
+    size_t body_mark = gen_cfi_mark (gen_ctx, new_insn);
+
+    gen_cfi_frame (gen_ctx, body_mark, TARGET_DWARF_FP,
+                   (int64_t) frame_size + S390X_STACK_HEADER_SIZE);
+    if (!func->jret_p)
+      gen_cfi_save (gen_ctx, body_mark, TARGET_CFI_RA_COLUMN,
+                    caller_sp + S390X_GP_REG_RSAVE_AREA_START + (14 - 2) * 8);
+    gen_cfi_save (gen_ctx, body_mark, TARGET_DWARF_FP,
+                  caller_sp + S390X_GP_REG_RSAVE_AREA_START + (11 - 2) * 8);
+    for (i = R2_HARD_REG; i < R15_HARD_REG; i++)
+      if (!target_call_used_hard_reg_p (i, MIR_T_UNDEF) && bitmap_bit_p (used_hard_regs, i)
+          && i != R11_HARD_REG)
+        gen_cfi_save (gen_ctx, body_mark, target_dwarf_reg (i),
+                      caller_sp + S390X_GP_REG_RSAVE_AREA_START + (i - R2_HARD_REG) * 8);
+    for (n = 0, i = F0_HARD_REG; i <= MAX_HARD_REG; i++)
+      if (!target_call_used_hard_reg_p (i, MIR_T_UNDEF) && bitmap_bit_p (used_hard_regs, i))
+        gen_cfi_save (gen_ctx, body_mark, target_dwarf_reg (i),
+                      sp + start_saved_fregs_offset + (n++) * 8);
+  }
   /* Epilogue: */
   for (anchor = DLIST_TAIL (MIR_insn_t, func->insns); anchor != NULL;
        anchor = DLIST_PREV (MIR_insn_t, anchor))
@@ -2222,6 +2267,7 @@ static uint8_t *target_translate (gen_ctx_t gen_ctx, size_t *len) {
   VARR_TRUNC (const_ref_t, const_refs, 0);
   VARR_TRUNC (label_ref_t, label_refs, 0);
   VARR_TRUNC (uint64_t, abs_address_locs, 0);
+  gen_cfi_start_pass (gen_ctx);
   for (insn = DLIST_HEAD (MIR_insn_t, curr_func_item->u.func->insns); insn != NULL;
        insn = DLIST_NEXT (MIR_insn_t, insn)) {
     MIR_insn_code_t code = insn->code;
@@ -2255,6 +2301,7 @@ static uint8_t *target_translate (gen_ctx_t gen_ctx, size_t *len) {
         }
       }
     }
+    gen_cfi_note_insn (gen_ctx, VARR_LENGTH (uint8_t, result_code), insn);
     if (insn->code == MIR_LABEL) {
       set_label_disp (gen_ctx, insn, VARR_LENGTH (uint8_t, result_code));
     } else if (insn->code != MIR_USE) {

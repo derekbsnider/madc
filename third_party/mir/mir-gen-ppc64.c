@@ -24,6 +24,19 @@ static void fancy_abort (int code) {
 
 static const MIR_reg_t LINK_HARD_REG = LR_HARD_REG;
 
+/* DWARF CFI (mir-gen.c): at entry CFA = r1 and the return address is in lr
+   (column 65, no rule: the register itself). */
+#define TARGET_CFI_RA_COLUMN 65
+#define TARGET_CFI_CIE_INSNS 0x0c, 1, 0 /* DW_CFA_def_cfa r1, 0 */
+#define TARGET_DWARF_SP 1
+#define TARGET_DWARF_FP 31
+
+static unsigned target_dwarf_reg (MIR_reg_t hard_reg) {
+  if (hard_reg <= F31_HARD_REG) return hard_reg; /* r0-r31 0-31, f0-f31 32-63 */
+  gen_assert (hard_reg == LR_HARD_REG);
+  return TARGET_CFI_RA_COLUMN;
+}
+
 static inline MIR_reg_t target_nth_loc (MIR_reg_t loc, MIR_type_t type MIR_UNUSED, int n) {
   return loc + n;
 }
@@ -824,7 +837,7 @@ static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_reg
   MIR_insn_t anchor, new_insn;
   MIR_op_t sp_reg_op, fp_reg_op, r0_reg_op, lr_reg_op;
   int64_t start_save_regs_offset;
-  size_t i, n, frame_size, saved_iregs_num, saved_fregs_num;
+  size_t i, n, frame_size, saved_iregs_num, saved_fregs_num, sp_mark, body_mark;
 
   assert (curr_func_item->item_type == MIR_func_item);
   func = curr_func_item->u.func;
@@ -862,6 +875,13 @@ static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_reg
   gen_mov (gen_ctx, anchor, MIR_MOV, r0_reg_op, sp_reg_op);
   new_insn = MIR_new_insn (ctx, MIR_ADD, sp_reg_op, sp_reg_op, MIR_new_int_op (ctx, -frame_size));
   gen_add_insn_before (gen_ctx, anchor, new_insn); /* r1 -= frame_size */
+  /* The frame (CFI): after the allocation CFA = r1 + frame_size, lr in the
+     caller's frame at CFA + 16; once r31 = r1 (the prologue's last insn), CFA =
+     r31 + frame_size and each saved register (r31 last) at its slot. */
+  sp_mark = gen_cfi_mark (gen_ctx, new_insn);
+  gen_cfi_frame (gen_ctx, sp_mark, TARGET_DWARF_SP, (int64_t) frame_size);
+  if (!func->jret_p) gen_cfi_save (gen_ctx, sp_mark, TARGET_CFI_RA_COLUMN, 16);
+  body_mark = gen_cfi_mark (gen_ctx, NULL);
   gen_mov (gen_ctx, anchor, MIR_MOV,
            _MIR_new_var_mem_op (ctx, MIR_T_I64, 0, R1_HARD_REG, MIR_NON_VAR, 1),
            r0_reg_op); /* mem[r1] = r0 */
@@ -870,13 +890,19 @@ static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_reg
            _MIR_new_var_op (ctx, R2_HARD_REG)); /* mem[r1+toc_off] = r2 */
   for (n = i = 0; i <= MAX_HARD_REG; i++)
     if (!target_call_used_hard_reg_p (i, MIR_T_UNDEF) && bitmap_bit_p (used_hard_regs, i)) {
+      gen_cfi_save (gen_ctx, body_mark, target_dwarf_reg (i),
+                    start_save_regs_offset + (int64_t) n * 8 - (int64_t) frame_size);
       if (i < F0_HARD_REG)
         isave (gen_ctx, anchor, start_save_regs_offset + (n++) * 8, i);
       else
         fsave (gen_ctx, anchor, start_save_regs_offset + (n++) * 8, i);
     }
+  gen_cfi_save (gen_ctx, body_mark, TARGET_DWARF_FP,
+                start_save_regs_offset + (int64_t) n * 8 - (int64_t) frame_size);
   isave (gen_ctx, anchor, start_save_regs_offset + n * 8, R31_HARD_REG); /* save R31 */
-  gen_mov (gen_ctx, anchor, MIR_MOV, fp_reg_op, sp_reg_op);              /* r31 = r1 */
+  new_insn = gen_mov (gen_ctx, anchor, MIR_MOV, fp_reg_op, sp_reg_op);   /* r31 = r1 */
+  gen_cfi_mark_at (gen_ctx, body_mark, new_insn);
+  gen_cfi_frame (gen_ctx, body_mark, TARGET_DWARF_FP, (int64_t) frame_size);
   /* Epilogue: */
   for (anchor = DLIST_TAIL (MIR_insn_t, func->insns); anchor != NULL;
        anchor = DLIST_PREV (MIR_insn_t, anchor))
@@ -2408,8 +2434,10 @@ static uint8_t *target_translate (gen_ctx_t gen_ctx, size_t *len) {
     VARR_TRUNC (label_ref_t, label_refs, 0);
     VARR_TRUNC (uint64_t, abs_address_locs, 0);
     short_label_disp_fail_p = FALSE;
+    gen_cfi_start_pass (gen_ctx);
     for (insn = DLIST_HEAD (MIR_insn_t, curr_func_item->u.func->insns); insn != NULL;
          insn = DLIST_NEXT (MIR_insn_t, insn)) {
+      gen_cfi_note_insn (gen_ctx, VARR_LENGTH (uint8_t, result_code), insn);
       if (insn->code == MIR_LABEL) {
         set_label_disp (gen_ctx, insn, VARR_LENGTH (uint8_t, result_code));
       } else if (insn->code != MIR_USE) {

@@ -6,6 +6,13 @@ Consolidated: counted_loop — gate scripts/check-one-counted-loop.sh
 Consolidated: class_pointer_spelling — gate scripts/check-one-class-pointer-decl.sh
 Consolidated: pointer_type_node — gate scripts/check-one-pointer-type-node.sh
 
+### MIR describes generated frames as DWARF CFI and registers them with the host unwinder
+
+- Each generated function carries DWARF call frame information (`MIR_func.cfi`) from its target's prologue: the CFA rule and the saved return address and callee-saved registers, one row per prologue mark. Epilogues carry no rows.
+- On a host target (x86-64, aarch64, ppc64, riscv64, s390x; not Windows) each function's `.eh_frame` table is registered with `__register_frame` and deregistered at `MIR_gen_finish`. A host unwinder walk and a C++ exception now pass through JIT frames.
+- `MIR_debug_add_func` takes the function's CFI, and `.debug_frame` is written from it instead of the x86-64 and aarch64 templates in `mir-debug.c`.
+- Reducer `tests/unit/test_mir_cfi.cpp` (host `_Unwind` walk as oracle; 3 cases).
+
 ### `__TIMESTAMP__` expands to the current file's modification time
 
 - `__TIMESTAMP__` is a predefined macro. It expands to the last modification time of the file being read, in local time, in asctime's spelling (`"Sun Sep 16 01:03:52 1973"`), as gcc and clang spell it.

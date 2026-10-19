@@ -85,14 +85,18 @@ remove on every normal path.
      any other callee take the call's region.
    - Binary and text MIR I/O carry regions, the base and each insn's region.
 2. **MIR CFI (generic encoder + one description per target)**
-   - Each target's prologue states its frame as data: the CFA rule after the
-     prologue (FP + k, or SP + k for a frameless x86-64 body), where the
-     return address and every saved register sit (CFA offsets, DWARF register
-     numbers), and the code offset where the body begins.
+   - Each target's prologue states its frame as data, the way gcc's `.cfi_*`
+     directives do: a mark is the code after one prologue insn, and from a
+     mark on a CFA rule (SP + k once the frame is allocated, FP + k once the
+     frame pointer is set) or a save rule (the return address or a register,
+     at a CFA offset, DWARF numbers) holds. A callee-saved register keeps its
+     value until the body, so its rule starts at the body's mark. A deleted
+     mark insn hands the mark to its predecessor (a split puts its
+     replacement before it).
    - `mir-gen.c` encodes a CIE per target (its entry rule: x86-64 `rsp+8`,
      aarch64/ppc64/riscv64 `sp+0`, s390x `r15+160`) and an FDE per function:
-     the entry rule, one row at the body start; epilogues are not described
-     (walks start at call sites).
+     one row per mark, in code order; epilogues are not described (walks start
+     at call sites).
    - JIT: generated FDEs are registered with the platform unwinder —
      `__register_frame` (libgcc: a terminated table; libunwind: one FDE per
      call), `RtlAddFunctionTable` with x64 unwind codes on Windows — and
@@ -170,6 +174,11 @@ saved and restored with the rest of the exception state at task switches.
   no-try case lands here, the rest is the next step.
 - Epilogues carry no CFI rows: a sampling profiler stopped inside one sees a
   stale rule (walks from call sites are exact).
+- Each generated function is registered as its own table. libgcc 13+ keeps
+  registered tables in a b-tree; older libgcc (Ubuntu 22.04's gcc 11) keeps a
+  list that every frame lookup walks, so a throw costs O(registered functions)
+  per frame there. To measure on 22.04; the remedy, if it shows, is one table
+  per generation batch.
 - Partially constructed arrays and temporaries are covered exactly as far as
   they are `cleanup` variables in the emitted tree.
 - Exceptions crossing into C++ host code (libstdc++ landing pads) need a

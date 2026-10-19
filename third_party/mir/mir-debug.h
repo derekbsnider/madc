@@ -19,7 +19,7 @@
      MIR_debug_type_t ti = MIR_debug_base_type (d, "int", MIR_DEBUG_ENC_SIGNED, 4);
      for each generated function fn:
        MIR_debug_add_func (d, fn->name, fn->machine_code, fn->code_len,
-                           fn->line_map, fn->line_map_len);
+                           fn->line_map, fn->line_map_len, fn->cfi, fn->cfi_len);
        for each local var v with reg r and type t:
          int64_t off; MIR_reg_frame_offset (fn, r, &off);
          MIR_debug_add_var (d, v->name, v->is_param, t, off, deref_p, 0);
@@ -94,11 +94,13 @@ extern MIR_debug_type_t MIR_debug_func_type (MIR_debug_t d, MIR_debug_type_t ret
 extern void MIR_debug_add_param_type (MIR_debug_t d, MIR_debug_type_t fn, MIR_debug_type_t type);
 
 /* --- Functions and their variables --------------------------------------
-   addr/size/line_map come straight from a generated MIR_func (machine_code,
-   code_len, line_map / line_map_len).  Variables are attached to the most
+   addr/size/line_map/cfi come straight from a generated MIR_func (machine_code,
+   code_len, line_map / line_map_len, cfi / cfi_len -- its frame's call frame
+   instructions, written to .debug_frame).  Variables are attached to the most
    recently added function.  */
 extern void MIR_debug_add_func (MIR_debug_t d, const char *name, const void *addr, size_t size,
-                                const MIR_line_map_t *line_map, size_t line_map_len);
+                                const MIR_line_map_t *line_map, size_t line_map_len,
+                                const uint8_t *cfi, size_t cfi_len);
 /* Location of the variable, built as the DWARF expression
      DW_OP_fbreg(fp_offset) [DW_OP_deref] [DW_OP_plus_uconst(member_offset)].
    fp_offset: the frame-pointer-relative slot, from MIR_reg_frame_offset.

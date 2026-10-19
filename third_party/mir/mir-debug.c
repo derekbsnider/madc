@@ -5,6 +5,7 @@
 /* Generic GDB-JIT DWARF debug-object emitter -- see mir-debug.h. */
 
 #include "mir-debug.h"
+#include "mir-gen.h" /* MIR_gen_cfi_cie: the target's CIE for .debug_frame */
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
@@ -290,6 +291,8 @@ typedef struct {
   size_t size;
   MIR_line_map_t *line_map;
   size_t line_map_len;
+  uint8_t *cfi; /* the FDE's call frame instructions (MIR_func.cfi), or NULL */
+  size_t cfi_len;
   int first_var, last_var;
 } dwfunc_t;
 
@@ -354,6 +357,7 @@ void MIR_debug_destroy (MIR_debug_t d) {
   for (int i = 0; i < d->n_funcs; i++) {
     free (d->funcs[i].name);
     free (d->funcs[i].line_map);
+    free (d->funcs[i].cfi);
   }
   free (d->funcs);
   for (int i = 0; i < d->n_vars; i++) free (d->vars[i].name);
@@ -454,14 +458,18 @@ void MIR_debug_add_param_type (MIR_debug_t d, MIR_debug_type_t fn, MIR_debug_typ
 }
 
 void MIR_debug_add_func (MIR_debug_t d, const char *name, const void *addr, size_t size,
-                         const MIR_line_map_t *line_map, size_t line_map_len) {
+                         const MIR_line_map_t *line_map, size_t line_map_len,
+                         const uint8_t *cfi, size_t cfi_len) {
   MIR_line_map_t *lm = NULL;
+  uint8_t *fi = NULL;
   if (line_map != NULL && line_map_len != 0) {
     lm = malloc (line_map_len * sizeof (MIR_line_map_t));
     if (lm != NULL) memcpy (lm, line_map, line_map_len * sizeof (MIR_line_map_t));
   }
+  if (cfi != NULL && cfi_len != 0 && (fi = malloc (cfi_len)) != NULL) memcpy (fi, cfi, cfi_len);
   dwfunc_t f = {.name = dw_strdup (name), .addr = addr, .size = size, .line_map = lm,
-                .line_map_len = lm ? line_map_len : 0, .first_var = -1, .last_var = -1};
+                .line_map_len = lm ? line_map_len : 0, .cfi = fi, .cfi_len = fi ? cfi_len : 0,
+                .first_var = -1, .last_var = -1};
   VEC_PUSH (d, funcs, f);
   d->cur_func = d->n_funcs - 1;
 }
@@ -491,9 +499,6 @@ void MIR_debug_add_var (MIR_debug_t d, const char *name, int is_param, MIR_debug
    for executables / shared objects (gdb rebases ET_DYN itself). */
 typedef struct {
   uint64_t bias;            /* added to every emitted address value */
-  const uint8_t *code_base; /* readable code bytes in offset mode (the frame
-                               emitter's prologue detection); NULL: fn->addr
-                               is itself the readable pointer */
   int offset_mode_p;        /* fn->addr holds a .text offset; offset 0 is a
                                valid function, not the "no code" sentinel */
   /* When non-NULL, called for every 8-byte code-address slot: sec is
@@ -938,45 +943,31 @@ static int elf_assemble (dwsec_t *S, int ns, uint16_t e_machine, void **buf, siz
 }
 
 /* ===== .debug_frame (CFI) ================================================ */
-/* Authoritative unwind info for the JIT frames.  gdb's
-   heuristic prologue analysis does not recognize MIR's FP prologue
-   (mov %rbp,-8(%rsp); lea -8(%rsp),%rbp -- no push), so without CFI a
-   backtrace cannot leave frame 0 even though the in-memory FP chain is
-   canonical (saved rbp at [rbp], return address at [rbp+8]).  Debug codegen
-   (spill-all) forces keep_fp_p, so every function with a prologue gets the
-   same fixed shape and needs only a template FDE: CFA=rsp+8 at entry, rbp
-   saved at CFA-16 after insn 1 (+5), CFA=rbp+16 after insn 2 (+10).  A
-   function whose entry bytes do not match the signature (a prologue-less
-   leaf) keeps the CIE default row, which is exact for it.  The 1-2 insn
-   epilogue window where the restored rbp mislabels the CFA is accepted
-   debug-tier imprecision. */
+/* Authoritative unwind info for the generated functions: the target's CIE
+   (MIR_gen_cfi_cie) and, per function, the call frame instructions its
+   prologue described (MIR_func.cfi, handed in by MIR_debug_add_func) -- the
+   same bytes the generator registers with the host unwinder.  A function
+   without them keeps the CIE's entry row, which is exact for a frameless one. */
 enum {
   DW_CFA_nop = 0x00,
-  DW_CFA_def_cfa = 0x0c, /* ULEB reg, ULEB offset */
-  DW_CFA_advance_loc = 0x40, /* low 6 bits = code delta */
-  DW_CFA_offset = 0x80, /* low 6 bits = reg; ULEB factored offset */
 };
 
 static void buf_patch_u32 (dwbuf_t *b, size_t pos, uint32_t v) { memcpy (b->p + pos, &v, 4); }
 
 static void emit_frame (MIR_debug_t d, dwbuf_t *b, const dwgen_t *g) {
-#if MIR_TARGET_IS_X86_64
-  static const uint8_t fp_prologue[] = {0x48, 0x89, 0x6c, 0x24, 0xf8,  /* mov %rbp,-0x8(%rsp) */
-                                        0x48, 0x8d, 0x6c, 0x24, 0xf8}; /* lea -0x8(%rsp),%rbp */
-  /* CIE (DWARF32 .debug_frame v1): CFA = rsp+8, return address at CFA-8 */
+  MIR_cfi_cie_t cie;
+
+  if (MIR_gen_cfi_cie (&cie) != 0) return; /* the target describes no frames */
+  /* CIE (DWARF32 .debug_frame v1) */
   size_t cie_off = b->len, len_pos = b->len;
   buf_u32 (b, 0); /* length, backpatched */
   buf_u32 (b, 0xffffffff); /* CIE id */
   buf_u8 (b, 1); /* version */
   buf_u8 (b, 0); /* augmentation "" */
-  buf_uleb (b, 1); /* code alignment factor */
-  buf_sleb (b, -8); /* data alignment factor */
-  buf_u8 (b, 16); /* return address register (rip) */
-  buf_u8 (b, DW_CFA_def_cfa);
-  buf_uleb (b, 7); /* rsp */
-  buf_uleb (b, 8); /* CFA = rsp+8 */
-  buf_u8 (b, DW_CFA_offset | 16);
-  buf_uleb (b, 1); /* ra at CFA + 1*(-8) */
+  buf_uleb (b, cie.code_align);
+  buf_sleb (b, cie.data_align);
+  buf_u8 (b, (uint8_t) cie.ra_column);
+  buf_bytes (b, cie.insns, cie.insns_len);
   while ((b->len - len_pos) % 8 != 0) buf_u8 (b, DW_CFA_nop);
   buf_patch_u32 (b, len_pos, (uint32_t) (b->len - len_pos - 4));
 
@@ -988,59 +979,10 @@ static void emit_frame (MIR_debug_t d, dwbuf_t *b, const dwgen_t *g) {
     dw_secref (g, b, 2, 2, (uint32_t) cie_off); /* CIE pointer (section offset) */
     dw_addr (g, b, 2, (uint64_t) (uintptr_t) fn->addr); /* initial location */
     buf_u64 (b, (uint64_t) fn->size); /* address range */
-    /* prologue detection peeks at the machine code: in offset mode fn->addr
-       is a .text offset, readable only through the builder's code bytes */
-    const uint8_t *fbytes = g->code_base != NULL ? g->code_base + (uintptr_t) fn->addr
-                                                 : (const uint8_t *) fn->addr;
-    if (fn->size >= sizeof (fp_prologue)
-        && memcmp (fbytes, fp_prologue, sizeof (fp_prologue)) == 0) {
-      buf_u8 (b, DW_CFA_advance_loc | 5);
-      buf_u8 (b, DW_CFA_offset | 6); /* rbp saved... */
-      buf_uleb (b, 2); /* ...at CFA + 2*(-8) */
-      buf_u8 (b, DW_CFA_advance_loc | 5);
-      buf_u8 (b, DW_CFA_def_cfa);
-      buf_uleb (b, 6); /* rbp */
-      buf_uleb (b, 16); /* CFA = rbp+16 */
-    }
+    if (fn->cfi != NULL) buf_bytes (b, fn->cfi, fn->cfi_len);
     while ((b->len - fde_len_pos) % 8 != 0) buf_u8 (b, DW_CFA_nop);
     buf_patch_u32 (b, fde_len_pos, (uint32_t) (b->len - fde_len_pos - 4));
   }
-#elif MIR_TARGET_IS_AARCH64
-  /* aarch64 CIE + CIE-default FDE rows: at entry CFA = sp+0 and the return
-     address lives in x30 (the CIE default -- no rule -- means "read the
-     register"), which is exact for frame 0 and leaves.  Prologue-template
-     rows (the stp/mov FP save shape) are the debug track's aarch64 rung,
-     not this AOT slice. */
-  size_t cie_off = b->len, len_pos = b->len;
-  buf_u32 (b, 0); /* length, backpatched */
-  buf_u32 (b, 0xffffffff); /* CIE id */
-  buf_u8 (b, 1); /* version */
-  buf_u8 (b, 0); /* augmentation "" */
-  buf_uleb (b, 4); /* code alignment factor */
-  buf_sleb (b, -8); /* data alignment factor */
-  buf_u8 (b, 30); /* return address register (x30/lr) */
-  buf_u8 (b, DW_CFA_def_cfa);
-  buf_uleb (b, 31); /* sp */
-  buf_uleb (b, 0); /* CFA = sp+0 */
-  while ((b->len - len_pos) % 8 != 0) buf_u8 (b, DW_CFA_nop);
-  buf_patch_u32 (b, len_pos, (uint32_t) (b->len - len_pos - 4));
-
-  for (int i = 0; i < d->n_funcs; i++) {
-    dwfunc_t *fn = &d->funcs[i];
-    if (dw_func_skip_p (g, fn) || fn->size == 0) continue;
-    size_t fde_len_pos = b->len;
-    buf_u32 (b, 0); /* length, backpatched */
-    dw_secref (g, b, 2, 2, (uint32_t) cie_off); /* CIE pointer (section offset) */
-    dw_addr (g, b, 2, (uint64_t) (uintptr_t) fn->addr); /* initial location */
-    buf_u64 (b, (uint64_t) fn->size); /* address range */
-    while ((b->len - fde_len_pos) % 8 != 0) buf_u8 (b, DW_CFA_nop);
-    buf_patch_u32 (b, fde_len_pos, (uint32_t) (b->len - fde_len_pos - 4));
-  }
-#else
-  (void) d;
-  (void) b;
-  (void) g;
-#endif
 }
 
 int MIR_debug_emit (MIR_debug_t d, void **buf, size_t *size) {
@@ -1050,7 +992,7 @@ int MIR_debug_emit (MIR_debug_t d, void **buf, size_t *size) {
 
   /* GDB-JIT mode: absolute JIT addresses, fn->addr readable directly;
      cross-section offsets stay in place (single emission, all at 0) */
-  dwgen_t g = {0, NULL, 0, NULL, NULL, NULL};
+  dwgen_t g = {0, 0, NULL, NULL, NULL};
   uint64_t text_base, text_size;
   dw_text_range (d, &g, &text_base, &text_size);
 
@@ -1527,7 +1469,7 @@ int MIR_object_emit (MIR_object_t obj, void **buf, size_t *size) {
   dwbuf_t dw_abbrev = {0}, dw_info = {0}, dw_line = {0}, dw_frame = {0};
   dwcap_t cap = {0};
   if (obj->debug != NULL) {
-    dwgen_t g = {0, obj->text.p, 1, dwslot_record, dwsref_record, &cap};
+    dwgen_t g = {0, 1, dwslot_record, dwsref_record, &cap};
     uint64_t text_lo, text_size;
     dw_text_range (obj->debug, &g, &text_lo, &text_size);
     emit_abbrev (&dw_abbrev);
@@ -2163,7 +2105,7 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
       }
     }
   } else if (obj->debug != NULL) {
-    dwgen_t g = {code_vaddr, obj->text.p, 1, NULL, NULL, NULL};
+    dwgen_t g = {code_vaddr, 1, NULL, NULL, NULL};
     uint64_t text_lo, dbg_text_size;
     dw_text_range (obj->debug, &g, &text_lo, &dbg_text_size);
     emit_abbrev (&dw_abbrev);
