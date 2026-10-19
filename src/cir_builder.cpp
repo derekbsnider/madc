@@ -25891,7 +25891,10 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 		//    the element count in the Itanium cookie ahead of element 0 —
 		//    each element's complete destructor, last first, then free of
 		//    the cookie base;
-		//  - otherwise the complete destructor, then free.
+		//  - otherwise the complete destructor — written or implicit
+		//    ([class.dtor]/8: an implicit one destroys the members;
+		//    class_needs_dtor, as delete[] and `p->~T()` read it) — then
+		//    free.
 		// A trivially destructible class (or a non-class pointee) frees the
 		// operand directly: free(NULL) is a no-op, and new[] emitted no
 		// cookie for it (feature-drops-audit, delete[] row).
@@ -25900,7 +25903,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 		const size_t ack = (cdd && tdl->is_array)
 			? class_array_cookie_size(cdd) : 0;
 		if (virtual_delete || ack
-		    || (cdd && !tdl->is_array && cdd->has_user_dtor)) {
+		    || (cdd && !tdl->is_array && class_needs_dtor(cdd))) {
 			char dp[32];
 			snprintf(dp, sizeof(dp), "__dp%d", m_strtmp_counter++);
 			auto object = [&]() -> node_t { return id(dp, tb); };

@@ -3,6 +3,12 @@
 ## [Unreleased]
 Consolidated: type_trait_dispatch — gate scripts/check-one-trait-dispatch.sh
 
+### `delete` runs the destructor of a class whose destructor is implicit but non-trivial
+
+- The scalar `delete` lowering in `CirBuilder::translate_expr` (`src/cir_builder.cpp`) ran the destructor before `free` only for a class with a user or virtual destructor (`cdd->has_user_dtor`); `delete[]` and an explicit `p->~T()` already keyed on `class_needs_dtor`. A class whose destructor is implicit but non-trivial — a member or base with a destructor ([class.dtor]/8) — was freed without destruction ([expr.delete]/6). `delete` of `struct M { D d; }` (`D` has a destructor) or of `struct N : M { D e; }` ran no member destructor; `delete[]` of `M` and a null `delete` already behaved.
+- The scalar-destructor arm now reads `CirBuilder::class_needs_dtor(cdd)` — the predicate `delete[]` and `p->~T()` already use, true when the class, a base or a member has a non-trivial destructor — so an implicit non-trivial destructor runs before `free`. A trivially destructible class or a non-class pointee still frees the operand directly, and a null operand runs nothing.
+- Reducer `tests/testdeleteimplicitdtor.mad` (oracle `tests/testdeleteimplicitdtor.expect`, g++ 13 == clang++ 18). Pre-fix madc printed `~D5` / `~D4` / `end` only — the member destructors of `delete m` and `delete n` (`~D1`, `~D3`, `~D2`) were missing; post-fix every line. Fix lanes tier1 44/44 JIT (EXE 41/41, OBJ 41/41), tier2 rc=0 (c-testsuite 220, c-torture 1619, c2mir-tests 368, gui 13, gxx-c++11 1505, index-c 50/50, commonmark 664 — 0 outside baseline); static gates 0 red, unit 84/84, `scripts/forest_bind_gate.sh` 47/47, parse-cost 0 red of 21.
+
 ### `delete` evaluates its operand once and runs nothing for a null pointer; explicit `p->~T()` evaluates its receiver once
 
 - The destroying-`delete` lowering in `CirBuilder::translate_expr` (`src/cir_builder.cpp`) translated the operand expression more than once and ran the destructor with no null guard. `delete p` of a null pointer to a class with a user (or virtual) destructor called the destructor on the null pointer and crashed (SIGSEGV); `delete ds[i++]` evaluated `ds[i++]` twice — the destructor on one element and `free` on the next, a double side effect; the explicit virtual `p->~V()` translated its receiver twice (the vptr load and the `this` argument). A `delete` evaluates its operand exactly once and does nothing for a null operand ([expr.delete]/6-7), and a postfix call evaluates its postfix-expression once ([expr.call]).
