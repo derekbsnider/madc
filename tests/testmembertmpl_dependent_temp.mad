@@ -1,0 +1,31 @@
+// A member template's functional-cast temporary `A(std::forward<U>(u))`
+// picks its constructor per instantiation ([temp.dep.expr]), in a member
+// function template's body and in a constructor template's body. B145: the
+// shared pattern picked A(A&&) once, so an lvalue argument was moved from.
+// Oracle (g++ 13, clang++ 18, -std=gnu++17):
+//   get: copy move
+//   ctor: copy move
+//   values: 3 3 3 3
+#include <cstdio>
+#include <utility>
+struct A {
+	int v;
+	A(int x) : v(x) {}
+	A(const A &o) : v(o.v) { std::printf(" copy"); }
+	A(A &&o) : v(o.v) { std::printf(" move"); }
+};
+struct R { template<class U> int get(U &&u) { return A(std::forward<U>(u)).v; } };
+struct W { int w; template<class U> W(U &&u) : w(0) { w = A(std::forward<U>(u)).v; } };
+int main()
+{
+	R r;
+	A a(3);
+	std::printf("get:");
+	int g1 = r.get(a);
+	int g2 = r.get(std::move(a));
+	std::printf("\nctor:");
+	W w1(a);
+	W w2(std::move(a));
+	std::printf("\nvalues: %d %d %d %d\n", g1, g2, w1.w, w2.w);
+	return 0;
+}

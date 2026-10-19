@@ -290,45 +290,6 @@ int main() {
 - Found 2026-10-02 while fixing the `[subbind]` bind gate. Off the release
   path, filed per owner 2026-09-30.
 
-### B145. A member template's functional-cast temporary picks its constructor once, for every instantiation
-
-```cpp
-#include <cstdio>
-#include <utility>
-struct A {
-	int v;
-	A(int x) : v(x) {}
-	A(const A &o) : v(o.v) { std::printf(" copy"); }
-	A(A &&o) : v(o.v) { std::printf(" move"); }
-};
-struct R { template<class U> int get(U &&u) { return A(std::forward<U>(u)).v; } };
-struct W { int w; template<class U> W(U &&u) : w(0) { w = A(std::forward<U>(u)).v; } };
-int main()
-{
-	R r;
-	A a(3);
-	std::printf("get:");
-	r.get(a);
-	r.get(std::move(a));
-	std::printf("\nctor:");
-	W w1(a);
-	W w2(std::move(a));
-	std::printf("\n");
-	return 0;
-}
-```
-
-- g++ 13 and clang++ 18: `get: copy move` / `ctor: copy move`. madc moves
-  from the lvalue argument (2026-10-02).
-- The local-declaration and placement-new forms were fixed 2026-10-19
-  (`tests/testmembertmpl_dependent_ctor`): a type-dependent constructor
-  argument defers the construction to the tsubst copy
-  (`tsubst_ctor_args_deferred`, src/cir_builder.cpp). The object-temporary
-  arm (`TokenObjTemp` in `translate_expr`) still picks its constructor in
-  the shared pattern; it needs the same deferral marker, carrying the
-  temporary's generated name to the copy side.
-- Found 2026-10-02 with B144.
-
 ### B121. A const object binds the non-const reference overload
 
 ```cpp

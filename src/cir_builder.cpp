@@ -1996,6 +1996,26 @@ static bool tsubst_ctor_args_deferred(const std::vector<TokenBase *> &args)
 	return false;
 }
 
+// The functional-cast temporary `A(args)` whose constructor the shared
+// pattern may not pick (tsubst_ctor_args_deferred, a class with
+// constructors, parenthesized): its token's slot, else 0. The pattern names
+// the temporary for that slot and leaves a marker where the constructor call
+// goes; the tsubst copy names the same temporary from the marker's origin
+// and constructs into it (B145).
+static uint32_t deferred_objtemp_slot(TokenObjTemp *ot)
+{
+	if (!ot || ot->braced || ot->ctor_args.empty() || !ot->obj_class
+	    || ot->obj_class->ctors.empty()
+	    || !tsubst_ctor_args_deferred(ot->ctor_args))
+		return 0;
+	return madc_slot_id_for(ot);
+}
+
+static void deferred_objtemp_name(uint32_t slot, char *buf, size_t n)
+{
+	snprintf(buf, n, "__madc_objtmp_d%u", slot);
+}
+
 static bool cir_id_spells(cir_node *n, const char *name)
 {
 	return n && name && n->base.code == N_ID && n->base.u.s.s
@@ -4551,6 +4571,36 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 					return done;
 				return CIR_NODE(error_node(
 					"tsubst: unsupported deferred local construction"));
+			}
+		}
+		// A deferred functional-cast temporary (deferred_objtemp_slot): the
+		// temporary's storage decl was copied separately under its slot
+		// name; build its constructor call per instantiation.
+		if (TokenObjTemp *ot = dynamic_cast<TokenObjTemp *>(
+				    madc_token_for_slot(src->origin_id))) {
+			if (deferred_objtemp_slot(ot) == src->origin_id) {
+				DataDef *concrete =
+					subst_datadef_active(src->datadef(), *subst);
+				DataDefCLASS *concrete_class = concrete
+					? dynamic_cast<DataDefCLASS *>(concrete) : NULL;
+				if (!concrete_class
+				    || template_param_under_type_layers(concrete))
+					return CIR_NODE(error_node(
+						"tsubst: unbound deferred temporary type"));
+				char otname[40];
+				deferred_objtemp_name(src->origin_id, otname,
+						      sizeof(otname));
+				auto tmp_addr = [&]() -> node_t {
+					return node1(N_ADDR, id(otname, ot), ot);
+				};
+				if (cir_node *done = tsubst_relower_deferred_construction(
+						ot->ctor_args, ot, concrete_class,
+						subst, tmp_addr,
+						/*yield_this_addr=*/false,
+						/*relax_class_args=*/true))
+					return done;
+				return CIR_NODE(error_node(
+					"tsubst: unsupported deferred temporary construction"));
 			}
 		}
 		// A deferred class-object ARGUMENT binding (`_KeyOfValue()(__v)` with
@@ -25249,7 +25299,12 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 	if (TokenObjTemp *ot = (tb ? tb->as_objtemp_tok() : NULL)) {
 		DataDefCLASS *ocdd = ot->obj_class;
 		char otname[40];
-		snprintf(otname, sizeof(otname), "__madc_objtmp_%d", m_strtmp_counter++);
+		const uint32_t deferred_slot = m_tsubst_pattern_mode
+			? deferred_objtemp_slot(ot) : 0;
+		if (deferred_slot)
+			deferred_objtemp_name(deferred_slot, otname, sizeof(otname));
+		else
+			snprintf(otname, sizeof(otname), "__madc_objtmp_%d", m_strtmp_counter++);
 		// The CARRIER literal in EXPRESSION position (`rows[] =
 		// {...}`, `rows.push({...})`, `m = {...}` — the braced
 		// list re-spelled to the functional form, owner
@@ -25276,6 +25331,12 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 		Variable *otmp = new Variable(otname, *ocdd, 1, NULL, false);
 		otmp->flags |= vfLOCAL;
 		m_pending_stmts.push_back(var_decl(otmp, tb));
+		if (deferred_slot) {
+			cir_node *marker = make(N_IGNORE, tb);
+			marker->set_datadef(ocdd);
+			m_pending_stmts.push_back(marker->as_node());
+			return id(otname, tb);
+		}
 		// Aggregate list-init FIRST ([dcl.init.aggr]): this construction
 		// site passes the FULL braced list, and for a ctor-less clean
 		// aggregate the list IS memberwise init — the ctor path would
