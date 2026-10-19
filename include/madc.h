@@ -9879,6 +9879,11 @@ public:
     // types over one storage (wchar_t / int, char16_t / unsigned short,
     // char / signed char) come back distinct. Defined in parser.cpp.
     static DataDef *proven_scalar_identity(const DataDef *dd);
+    // Do two types denote ONE type ([basic.types], `__is_same`)? Composed
+    // from the identity owners — cv at every level, the reference kind,
+    // proven_scalar_identity, denotes_same_type, the function spelling.
+    // Defined in parser.cpp.
+    static bool proven_same_type(const DataDef *a, const DataDef *b);
     // madc-dialect spellings of the intrinsic tagged carrier (ddARRAY ==
     // madc::value): `array` / `value` / `var`. Gated to STD_MADC; NULL in
     // every strict C/C++ mode. Instance method on purpose — these names

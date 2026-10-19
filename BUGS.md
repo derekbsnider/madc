@@ -178,33 +178,6 @@ int main(void) { printf("%s\n", __DATE__); return 0; }
   build convention to honour too).
 - Found 2026-10-04 writing Help ▸ About.
 
-### B156. `__is_same` is false for a namespace-scope scalar typedef and its type
-
-```cpp
-#include <type_traits>
-#include <cstddef>
-#include <cstdio>
-namespace w { typedef int i; }
-int main() {
-	std::printf("%d %d %d %d\n", (int)std::is_same<std::size_t, unsigned long>::value,
-		    (int)std::is_same<w::i, int>::value,
-		    (int)std::is_same<std::ptrdiff_t, long>::value,
-		    (int)__is_same(std::size_t, unsigned long));
-	return 0;
-}
-```
-
-- g++ 13 and clang++ 18 (libstdc++ and libc++): `1 1 1 1`. madc
-  (2026-10-03, libstdc++): `0 0 0 0`; under `-stdlib=libc++`: `1 0 1 1`.
-  v0.100.1 gives the same answers.
-- Layer: `TraitTypeArg::same_as` (src/parser.cpp) compares `dd->name`. The
-  namespace-scope arm of `TokenTYPEDEF::parse`'s `finish_alias` mints an
-  alias dd named for the typedef, linked to its type by `scalar_alias_of`.
-  `proven_scalar_identity` walks that link; `same_as` does not.
-- Found 2026-10-03 while fixing the libc++ `add_volatile` regression
-  (tests/testvolatiletypetraitscxx). Off the release path (shipped in
-  v0.100.1), filed per owner 2026-09-30.
-
 ### B157. libc++: `std::vector::push_back(std::move(x))` copies instead of moving
 
 ```cpp
@@ -409,6 +382,11 @@ int main()
   `%whos` lists `p` with Type `char *` under `--std=c++17` and `--std=madc`
   (the Variables view too), `const char *` under `--std=c17`. The binding's
   type is spelled from the type, which carries no C++ const.
+- Same root, seen 2026-10-19 while fixing B156: `__is_same(const int *,
+  int *)` and `std::is_same<const int *, int *>::value` are 1 under
+  `--std=gnu++17` (g++ 13 and clang++ 18: 0). The trait argument's type-id
+  (`parse_type_id`) qualifies each pointee with `modeled_cv()`, which has no
+  const in C++, so the two arguments are one type.
 
 ### B81. A mem-initializer flattens a nested braced list, losing its nesting
 

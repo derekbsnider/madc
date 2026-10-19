@@ -6155,6 +6155,70 @@ DataDef *Program::proven_scalar_identity(const DataDef *dd)
     return resolve_builtin_type_spelling(cs.empty() ? u->name : cs);
 }
 
+// [basic.types] identity of two types — what `__is_same` answers. Each
+// level: the same cv-qualifiers, the same reference kind; then a pointer
+// or reference descends to its pointee, an array to its element at the
+// same bound, and the level ends at its owner: one fundamental type
+// (proven_scalar_identity — typedef-transparent, so std::size_t and
+// unsigned long are one type, wchar_t and int two), one aggregate
+// (denotes_same_type — a restored twin and its live re-declaration), one
+// function type (its structural spelling). A kind no owner proves (an
+// enum, a member pointer) is the same dd or the same spelling.
+bool Program::proven_same_type(const DataDef *a, const DataDef *b)
+{
+    for ( int depth = 0; a && b && depth < 16; ++depth )
+    {
+	if ( a == b )
+	    return true;
+	if ( a->cv_quals() != b->cv_quals() )
+	    return false;
+	a = a->unqualified();
+	b = b->unqualified();
+	if ( a == b )
+	    return true;
+	if ( a->is_reference() != b->is_reference()
+	  || a->is_rvalue_reference() != b->is_rvalue_reference() )
+	    return false;
+	DataDef *ma = const_cast<DataDef *>(a);
+	DataDef *mb = const_cast<DataDef *>(b);
+	if ( ma->is_function() || mb->is_function() )
+	{
+	    madc::dis::istring fa = fptr_structural_spelling(ma);
+	    return !fa.empty() && fa == fptr_structural_spelling(mb);
+	}
+	DataDefCArray *ca = ma->as_carray_dd();
+	DataDefCArray *cb = mb->as_carray_dd();
+	if ( ca || cb )
+	{
+	    if ( !ca || !cb || ca->count != cb->count
+	      || ca->unbounded != cb->unbounded
+	      || ca->has_runtime_size() || cb->has_runtime_size() )
+		return false;
+	    a = ca->element_type;
+	    b = cb->element_type;
+	    continue;
+	}
+	const DataDefPTR *pa = pointer_dd_of(a);
+	const DataDefPTR *pb = pointer_dd_of(b);
+	if ( pa || pb )
+	{
+	    if ( !pa || !pb )
+		return false;
+	    a = pa->base_type;
+	    b = pb->base_type;
+	    continue;
+	}
+	DataDef *sa = proven_scalar_identity(a);
+	DataDef *sb = proven_scalar_identity(b);
+	if ( sa || sb )
+	    return sa == sb;
+	if ( a->is_struct() && b->is_struct() )
+	    return ma->denotes_same_type(*mb);
+	return a->name == b->name;
+    }
+    return false;
+}
+
 static madc::dis::istring sanitize_template_fragment(const madc::dis::istring &s)
 {
     std::string out;
@@ -16938,11 +17002,17 @@ struct TraitTypeArg
     bool is_rref;          // trailing `&&`
     bool referent_const;   // leading `const`
     TraitTypeArg() : dd(NULL), is_lref(false), is_rref(false), referent_const(false) {}
+    // A spelled leading `const` rides the flag, a baked one may still sit in
+    // the dd: compare the referent's const once, then the rest of the type
+    // through the one identity test.
     bool same_as(const TraitTypeArg &o) const
     {
-	return dd && o.dd && dd->name == o.dd->name
-	    && is_lref == o.is_lref && is_rref == o.is_rref
-	    && referent_const == o.referent_const;
+	if ( !dd || !o.dd || is_lref != o.is_lref || is_rref != o.is_rref
+	  || (referent_const || dd->is_const())
+	     != (o.referent_const || o.dd->is_const())
+	  || (dd->cv_quals() & ~cvCONST) != (o.dd->cv_quals() & ~cvCONST) )
+	    return false;
+	return Program::proven_same_type(dd->unqualified(), o.dd->unqualified());
     }
 };
 

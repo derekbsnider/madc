@@ -6,6 +6,16 @@ Consolidated: counted_loop — gate scripts/check-one-counted-loop.sh
 Consolidated: class_pointer_spelling — gate scripts/check-one-class-pointer-decl.sh
 Consolidated: pointer_type_node — gate scripts/check-one-pointer-type-node.sh
 
+### `__is_same` and `std::is_same` answer type identity, not name equality (B156)
+
+- `TraitTypeArg::same_as` (`src/parser.cpp`) compared `dd->name`, so a namespace-scope scalar typedef was not its type: `std::is_same<w::i, int>` (`typedef int i` in `namespace w`) and `__is_same(std::size_t, unsigned long)` were 0 where g++ 13 and clang++ 18 give 1.
+- The identity test is now one owner, `Program::proven_same_type` (`src/parser.cpp`, declared in `include/madc.h`): cv-qualifiers and the reference kind must match at each level; pointers, references and arrays (same bound) descend to the pointee or element; a fundamental type is compared through `proven_scalar_identity`, an aggregate through `denotes_same_type`, a function through `fptr_structural_spelling`. `TraitTypeArg::same_as` keeps its leading-`const` flag and compares the referent's const once, then delegates the rest.
+- Reducer `tests/testis_same_typedef.mad` (oracle `tests/testis_same_typedef.expect`, g++ 13 == clang++ 18, `--std=gnu++17`): alias typedefs (`std::size_t`, `w::i`, `w::j`), levels (`w::i *`, `const w::i &`, `w::i **`, `w::i[3]`), and distinct types (`volatile int`, `wchar_t`, `char` / `signed char`, `int[3]` / `int *`, two same-named structs in different namespaces).
+- `BUGS.md` retires B156. A note on B121 records that a pointee's C++ const (`__is_same(const int *, int *)`, 1 under `--std=gnu++17`, 0 under g++ and clang++) belongs to the const-type model.
+- Fix lanes Tier 1 green JIT, EXE and OBJ over `testis_same_typedef` and the type-trait neighbors. Tier 2 `scripts/fast_lanes.sh` at baseline: c-testsuite 220, c-torture 1619, c2mir-tests 368, gui 13, gxx-c++11 1505, index-c 50/50, commonmark 664. Static gates 0 red; unit 84; `scripts/forest_bind_gate.sh` 47/47; parse-cost 0 red of 21.
+
+### A virtual method bound to a library symbol dispatches through the receiver's vtable
+
 ### A virtual method bound to a library symbol dispatches through the receiver's vtable
 
 - `CirBuilder::class_method_call` (`src/cir_builder.cpp`) computed a virtual slot only for a callee with no external symbol (`callee->emit_symbol.empty()`), so a virtual method the library defines — libstdc++'s `std::exception::what` — was called directly by its static-type symbol instead of dispatched through the receiver's vtable ([class.virtual]/2, [expr.call]/2). `e.what()` through a `const std::exception &` or `const std::bad_alloc &`, and `p->what()` through a `std::bad_alloc *`, ran `std::exception::what` for every exception rather than the most-derived override.
