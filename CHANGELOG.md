@@ -6,6 +6,14 @@ Consolidated: counted_loop — gate scripts/check-one-counted-loop.sh
 Consolidated: class_pointer_spelling — gate scripts/check-one-class-pointer-decl.sh
 Consolidated: pointer_type_node — gate scripts/check-one-pointer-type-node.sh
 
+### A constructor template's mem-initializer that reads a deduced trait answers per instantiation (B204)
+
+- A constructor template's mem-initializer that reads a trait of a forwarding-deduced parameter (`k((int)std::is_lvalue_reference<U>::value)`) was copied from the pattern, so every instance read the pattern's answer: `A` for `U = A&` as well as for `U = A`. The pattern now captures a constructor's mem-initializer span only when the body's template-id rule admits it. A span it refuses is parsed per instantiation by the shell parse, as for the same read in a constructor body.
+- `tsubst_ctor_initializer_copyable` (`src/parser.cpp`) locates the span (`tsubst_ctor_initializer_begin`) and applies the body rule (`tsubst_template_id_blocks_copy`). `build_dependent_pattern` (`src/parser.cpp`) sets `dependent_pattern_ctor_inits` from it.
+- Reducer `tests/testctortemplate_meminit_trait.mad` (oracle `tests/testctortemplate_meminit_trait.expect`, g++ 13 == clang++ 18, `--std=gnu++17`): scalar, delegating, member-construct, body and explicit-template-argument mem-initializers.
+- B204 is retired from `BUGS.md`.
+- Fix lane Tier 1 60/60 JIT, EXE and OBJ green over the new test and the constructor-template, member-template, tsubst, tuple, map, forwarding and variadic neighbours. Tier 2 `scripts/fast_lanes.sh` at baseline. Static gates 0 red; unit, bind and parse-cost gates green; `scripts/tsubst_flagon_gate.sh --check` green.
+
 ### A constructor template's forwarding-reference instances are per argument value category
 
 - A constructor template with a forwarding-reference parameter (`template<class U> W(U &&)`) has one specialization per argument value category ([temp.deduct.call]/3): `W(A&)` for an lvalue and `W(A&&)` for an rvalue. The instantiation memo was keyed on the argument value types alone, so `W w2(std::move(a))` reused the `A&` instance made for `W w1(a)`. Every instance was also an ordinary candidate for later constructions whose argument categories differ.

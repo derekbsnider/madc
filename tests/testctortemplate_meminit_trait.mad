@@ -1,0 +1,44 @@
+// A constructor template's mem-initializer reads a trait of a deduced
+// parameter (`std::is_lvalue_reference<U>::value`, U = A& from an lvalue,
+// A from an rvalue). A dependent template-id there has no parse-once form:
+// the dependent pattern resolves it against the placeholder, so the copied
+// mem-initializer must not be the pattern's — the per-instantiation shell
+// parse supplies it, as it does for the same read in a constructor body.
+// The scalar member, delegating and member-construct shapes all read it.
+// Oracle (g++ 13, clang++ 18, -std=gnu++17):
+//   scalar 10
+//   delegating 10
+//   construct 10
+//   body 10
+//   explicit-call 10
+#include <cstdio>
+#include <type_traits>
+#include <utility>
+struct A { int v; };
+struct B { int x; B(int v) : x(v) {} };
+struct S { int k; template<class U> S(U &&) : k((int)std::is_lvalue_reference<U>::value) {} };
+struct D {
+	int k;
+	D(int x, int) : k(x) {}
+	template<class U> D(U &&) : D((int)std::is_lvalue_reference<U>::value, 0) {}
+};
+struct C { B b; template<class U> C(U &&) : b((int)std::is_lvalue_reference<U>::value) {} };
+struct Y { int k; template<class U> Y(U &&) { k = (int)std::is_lvalue_reference<U>::value; } };
+// An explicit-template-argument call in a mem-initializer stays copyable.
+template<class U> int lref() { return (int)std::is_lvalue_reference<U>::value; }
+struct E { int k; template<class U> E(U &&) : k(lref<U>()) {} };
+int main()
+{
+	A a{3};
+	S s1(a), s2(std::move(a));
+	D d1(a), d2(std::move(a));
+	C c1(a), c2(std::move(a));
+	Y y1(a), y2(std::move(a));
+	E e1(a), e2(std::move(a));
+	std::printf("scalar %d%d\n", s1.k, s2.k);
+	std::printf("delegating %d%d\n", d1.k, d2.k);
+	std::printf("construct %d%d\n", c1.b.x, c2.b.x);
+	std::printf("body %d%d\n", y1.k, y2.k);
+	std::printf("explicit-call %d%d\n", e1.k, e2.k);
+	return 0;
+}

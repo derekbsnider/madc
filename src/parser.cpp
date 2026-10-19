@@ -68888,6 +68888,148 @@ static bool tsubst_lt_opens_call_template_id(const std::vector<TokenBase *> &d,
     return !expect_name;
 }
 
+// Hybrid-B region boundary of a retained member-template declaration: tokens
+// before the returned index are the concrete SHELL (signature + ctor mem-
+// initializers, parsed per instantiation), the rest the BODY block.
+// member_template_decl ends exactly at the body's closing '}'
+// (member_template_decl_end), so the body opens at that brace's backward match
+// — robust against mem-init braces (`: first{...}`), which sit before it. A
+// declaration-only decl (no trailing '}') returns d.size() with *body_empty
+// false, i.e. the conservative whole-decl treatment.
+static size_t tsubst_body_open(const std::vector<TokenBase *> &d, bool *body_empty)
+{
+    size_t body_open = d.size();
+    *body_empty = false;
+    size_t last = d.size();
+    while ( last > 0 && !d[last - 1] )
+	--last;
+    if ( last > 0 && d[last - 1]->id() == TokenID::tkClBrc )
+    {
+	// The body's `{`: the opener balanced_group_open matches to the last `}`.
+	size_t open = balanced_group_open(d, last - 1);
+	if ( open != last - 1 )
+	    body_open = open;
+	if ( body_open < d.size() )
+	{
+	    *body_empty = true;
+	    for ( size_t j = body_open + 1; j + 1 < last; ++j )
+		if ( d[j] )
+		    { *body_empty = false; break; }
+	}
+    }
+    return body_open;
+}
+
+// The template's parameter packs, type and non-type.
+static size_t tsubst_pack_count(FuncDef *fd)
+{
+    size_t n = 0;
+    for ( size_t i = 0; i < fd->template_param_names.size(); ++i )
+	if ( i < fd->template_param_is_pack.size() && fd->template_param_is_pack[i] )
+	    ++n;
+    return n;
+}
+
+// The pack-expansion widening carve-out of the template-id rule: a single
+// TYPE-pack template whose `<`s are structurally covered by the CIR pack
+// fan-out. System-header template-id pack bodies are admitted only for the
+// placement-new constructor-argument shape (`new((void*)p) T(args...)`) and the
+// allocator-traits forwarding member-call shape (`obj.method(args...)`, or its
+// unqualified twin); broader destructor / nested-call surfaces stay on the
+// parsed-body fallback until covered deliberately.
+static bool tsubst_pack_template_ids_covered(const Program &pgm, FuncDef *fd,
+					     size_t pack_count)
+{
+    const std::vector<TokenBase *> &d = fd->member_template_decl;
+    if ( pack_count != 1 || !tsubst_range_has_pack_expansion(d, 0, d.size()) )
+	return false;
+    bool from_system_header = false;
+    for ( size_t i = 0; i < d.size(); ++i )
+	if ( d[i] && d[i]->id() == TokenID::tkLT )
+	{
+	    for ( size_t j = 0; j < d.size(); ++j )
+		if ( d[j] && d[j]->file )
+		{
+		    from_system_header = pgm.is_system_header_path(d[j]->file);
+		    break;
+		}
+	    break;
+	}
+    return !from_system_header
+	|| tsubst_has_placement_new_ctor_pack_expansion(fd)
+	|| tsubst_has_member_call_pack_expansion(fd)
+	|| tsubst_has_unqualified_call_pack_expansion(fd);
+}
+
+// The template-id rule of tsubst copy-safety, for token `i` of a region tsubst
+// COPIES. A `tkLT` only blocks when it actually OPENS A TEMPLATE-ID — the
+// `<...>` is balanced (a matching unparenthesized `>` closes it). A `<` with NO
+// balanced close is the less-than OPERATOR (`__len < __capacity` in
+// _M_construct) and is always safe to copy; `template_id_suffix_end` returns the
+// close index for a real template-id, or `i` unchanged when there is none. This
+// errs SAFELY: a comparison mis-read as a template-id only stays on the
+// fallback; a dependent template-id is never copied (the WIDE-gate failure). A
+// balanced template-id is copyable only when CONCRETE in the owner scope
+// (pname-free, non-nested span — casts, local typedefs, construction types), an
+// explicit-template-arg CALL (the Kind-1 copy-rewritable shape), or under the
+// pack-expansion carve-out.
+static bool tsubst_template_id_blocks_copy(const std::vector<TokenBase *> &d,
+	size_t i, const std::set<madc::dis::istring> &pnames, bool pack_covered)
+{
+    return d[i] && d[i]->id() == TokenID::tkLT
+	&& template_id_suffix_end(d, i) != i
+	&& !tsubst_lt_opens_concrete_template_id(d, i, pnames)
+	&& !tsubst_lt_opens_call_template_id(d, i)
+	&& !pack_covered;
+}
+
+// Where a retained constructor template's ctor-initializer begins: the top-level
+// `:` after the parameter list's `)` (past an exception specification or a
+// trailing requires-clause, whose template-ids are the shell's). `body_open`
+// when the declaration has none.
+static size_t tsubst_ctor_initializer_begin(const std::vector<TokenBase *> &d,
+					    size_t body_open)
+{
+    size_t ni = skipped_template_function_declarator_name_index(d, NULL);
+    size_t op = ni + 1;
+    while ( op < body_open && !(d[op] && d[op]->id() == TokenID::tkOpBrk) )
+	++op;
+    if ( op >= body_open )
+	return body_open;
+    DelimDepth depth;
+    size_t i = op;
+    do
+	i += delim_scan_step(d, i, depth);
+    while ( i < body_open && !depth.top() );
+    while ( i < body_open )
+    {
+	if ( depth.top() && d[i] && d[i]->id() == TokenID::tkColon )
+	    return i;
+	i += delim_scan_step(d, i, depth);
+    }
+    return body_open;
+}
+
+// A constructor pattern's mem-initializers are COPIED per instantiation (Phase-5
+// slice 1: the scalar shape's lowered pattern, the delegating and construct
+// shapes' parsed arguments), so their region obeys the body's template-id rule.
+// A region that fails is not captured; the per-instantiation shell parse
+// (hybrid B) supplies those mem-initializers, as for any other ctor.
+static bool tsubst_ctor_initializer_copyable(const Program &pgm, FuncDef *fd)
+{
+    const std::vector<TokenBase *> &d = fd->member_template_decl;
+    bool body_empty = false;
+    const size_t body_open = tsubst_body_open(d, &body_empty);
+    const std::set<madc::dis::istring> pnames(fd->template_param_names.begin(),
+					      fd->template_param_names.end());
+    const bool pack_covered =
+	tsubst_pack_template_ids_covered(pgm, fd, tsubst_pack_count(fd));
+    for ( size_t i = tsubst_ctor_initializer_begin(d, body_open); i < body_open; ++i )
+	if ( tsubst_template_id_blocks_copy(d, i, pnames, pack_covered) )
+	    return false;
+    return true;
+}
+
 bool Program::tsubst_eligible(FuncDef *fd, const char **why)
 {
     // Record which clause rejected (surfaced in --show-stats); harmless no-op
@@ -68904,36 +69046,9 @@ bool Program::tsubst_eligible(FuncDef *fd, const char **why)
     size_t np = fd->template_param_names.size();
     if ( np < 1 )
 	return no("no type params");
-    // Hybrid-B region boundary: the concrete SHELL (signature + ctor mem-
-    // initializers) is parsed per instantiation on the normal path; tsubst copies
-    // only the BODY block. member_template_decl ends exactly at the body's closing
-    // '}' (member_template_decl_end), so the body opens at that brace's backward
-    // match — robust against mem-init braces (`: first{...}`), which sit before it.
-    // Tokens at index < body_open are shell-side. A declaration-only decl (no
-    // trailing '}') keeps body_open == d.size() with body_empty=false, i.e. the
-    // conservative whole-decl treatment.
-    const std::vector<TokenBase *> &dtoks = fd->member_template_decl;
-    size_t body_open = dtoks.size();
+    // Hybrid-B region boundary: tokens at index < body_open are shell-side.
     bool body_empty = false;
-    {
-	size_t last = dtoks.size();
-	while ( last > 0 && !dtoks[last - 1] )
-	    --last;
-	if ( last > 0 && dtoks[last - 1]->id() == TokenID::tkClBrc )
-	{
-	    // The body's `{`: the opener balanced_group_open matches to the last `}`.
-	    size_t open = balanced_group_open(dtoks, last - 1);
-	    if ( open != last - 1 )
-		body_open = open;
-	    if ( body_open < dtoks.size() )
-	    {
-		body_empty = true;
-		for ( size_t j = body_open + 1; j + 1 < last; ++j )
-		    if ( dtoks[j] )
-			{ body_empty = false; break; }
-	    }
-	}
-    }
+    const size_t body_open = tsubst_body_open(fd->member_template_decl, &body_empty);
     // Every parameter must be a TYPE param, with two EMPTY-BODY exceptions (an
     // empty body has nothing for tsubst to substitute — all dependence lives in
     // the shell, concrete under hybrid B; std::pair's piecewise + indexed ctors):
@@ -68942,16 +69057,14 @@ bool Program::tsubst_eligible(FuncDef *fd, const char **why)
     //     an empty-body copy). Non-type SCALARS still need value substitution and
     //     stay on the re-parse fallback.
     //   - more than one pack is admitted (no fan-out runs).
-    size_t pack_count = 0;
     for ( size_t i = 0; i < np; ++i )
     {
 	bool ip = i < fd->template_param_is_pack.size() && fd->template_param_is_pack[i];
 	if ( i < fd->template_param_is_type.size() && !fd->template_param_is_type[i]
 	  && !(ip && body_empty) )
 	    return no("non-type template param");
-	if ( ip )
-	    ++pack_count;
     }
+    const size_t pack_count = tsubst_pack_count(fd);
     if ( pack_count > 1 && !body_empty )
 	return no(">1 pack param");
     // Param-name membership (>=1 type param, e.g. <class A, class B>): the dependent
@@ -68994,79 +69107,25 @@ bool Program::tsubst_eligible(FuncDef *fd, const char **why)
 	      && pnames.count(contextual_identifier_name(
 				  fd->member_template_return_tokens[i])) )
 		return no("dependent return type (not T/T*)");
-    bool has_pack_expansion = false;
-    for ( size_t i = 0; i + 2 < fd->member_template_decl.size(); ++i )
-	if ( fd->member_template_decl[i]
-	  && fd->member_template_decl[i]->id() == TokenID::tkDot
-	  && fd->member_template_decl[i + 1]
-	  && fd->member_template_decl[i + 1]->id() == TokenID::tkDot
-	  && fd->member_template_decl[i + 2]
-	  && fd->member_template_decl[i + 2]->id() == TokenID::tkDot )
-	    { has_pack_expansion = true; break; }
-    bool template_pack_body_from_system_header = false;
-    if ( pack_count == 1 && has_pack_expansion )
-	for ( size_t i = 0; i < fd->member_template_decl.size(); ++i )
-	{
-	    TokenBase *t = fd->member_template_decl[i];
-	    if ( !t )
-		continue;
-	    if ( t->id() == TokenID::tkLT )
-	    {
-		for ( size_t j = 0; j < fd->member_template_decl.size(); ++j )
-		    if ( fd->member_template_decl[j]
-		      && fd->member_template_decl[j]->file )
-		    {
-			template_pack_body_from_system_header =
-			    is_system_header_path(fd->member_template_decl[j]->file);
-			break;
-		    }
-		break;
-	    }
-	}
-    bool covered_system_header_pack_template_id_body =
-	template_pack_body_from_system_header
-	&& (tsubst_has_placement_new_ctor_pack_expansion(fd)
-	    || tsubst_has_member_call_pack_expansion(fd)
-	    || tsubst_has_unqualified_call_pack_expansion(fd));
-    // Body/param scan: any template-id (`<`) or `P::` dependent lookup (P a param)
-    // disqualifies, except the current pack-expansion widening slice admits a
-    // single TYPE-pack body when it is already structurally covered by CIR pack
-    // fan-out. System-header template-id pack bodies are admitted only for the
-    // placement-new constructor-argument shape (`new((void*)p) T(args...)`) and
-    // the allocator-traits forwarding member-call shape (`obj.method(args...)`);
-    // broader destructor / nested-call surfaces stay on the parsed-body fallback
-    // until covered deliberately.
+    const bool pack_covered = tsubst_pack_template_ids_covered(*this, fd, pack_count);
+    // Body/param scan: a BODY template-id the copy cannot vet
+    // (tsubst_template_id_blocks_copy) or a `P::` dependent lookup (P a param)
+    // anywhere disqualifies.
+    // SHELL-side template-ids (params, exception specification, ctor mem-
+    // initializers; i < body_open) are concrete under hybrid B — the
+    // per-instantiation shell parse resolves them, so they never disqualify the
+    // BODY. A ctor's mem-initializers are copied only when their own region
+    // passes the same rule (tsubst_ctor_initializer_copyable, read by
+    // build_dependent_pattern); otherwise they stay on the shell. (The pattern
+    // parse still covers the shell with placeholders; a shape it cannot parse
+    // fails build_dependent_pattern and falls back cleanly — self-detecting.)
     const std::vector<TokenBase *> &d = fd->member_template_decl;
     for ( size_t i = 0; i < d.size(); ++i )
     {
 	TokenBase *t = d[i];
 	if ( !t )
 	    continue;
-	// A `tkLT` only disqualifies when it actually OPENS A TEMPLATE-ID — i.e. the
-	// `<...>` is balanced (a matching unparenthesized `>` closes it). A `<` with
-	// NO balanced close is the less-than OPERATOR (`__len < __capacity` in
-	// _M_construct) and is always safe to copy. `template_id_suffix_end` returns
-	// the close index for a real template-id, or `i` unchanged when there is none.
-	// This errs SAFELY: a comparison mis-read as a template-id only stays on the
-	// fallback; a dependent template-id is never admitted (the WIDE-gate failure).
-	// A balanced template-id is admitted only when CONCRETE in the owner scope
-	// (pname-free, non-nested span — casts, local typedefs, construction types),
-	// an explicit-template-arg CALL (the Kind-1 copy-rewritable shape), or the
-	// pre-existing pack-expansion carve-out.
-	// SHELL-side template-ids (params + ctor mem-initializers, i < body_open)
-	// are concrete under hybrid B — the per-instantiation shell parse resolves
-	// them; tsubst never copies that region. Only a BODY-region template-id
-	// needs dependent substitution and disqualifies. (The pattern parse still
-	// covers the shell with placeholders; a shape it cannot parse fails
-	// build_dependent_pattern and falls back cleanly — self-detecting.)
-	if ( t->id() == TokenID::tkLT
-	  && i >= body_open
-	  && template_id_suffix_end(d, i) != i
-	  && !tsubst_lt_opens_concrete_template_id(d, i, pnames)
-	  && !tsubst_lt_opens_call_template_id(d, i)
-	  && !(pack_count == 1 && has_pack_expansion
-	       && (!template_pack_body_from_system_header
-		   || covered_system_header_pack_template_id_body)) )
+	if ( i >= body_open && tsubst_template_id_blocks_copy(d, i, pnames, pack_covered) )
 	    return no("template-id '<' in body");
 	if ( pnames.count(contextual_identifier_name(t))
 	  && i + 1 < d.size() && d[i + 1] && d[i + 1]->id() == TokenID::tkNS )
@@ -69261,7 +69320,10 @@ TokenFunc *Program::build_dependent_pattern(FuncDef *fd)
     // Phase-5 slice 1: a CONSTRUCTOR pattern must parse its `: mem-init` span
     // into ctor_initializers instead of the skip loop discarding it (the
     // `__patN` rename defeats parseFunction's owner-prefix ctor gate).
-    // Ctor-ness comes from the class's ctor registry, not name surgery.
+    // Ctor-ness comes from the class's ctor registry, not name surgery. A span
+    // the copy cannot vet (a dependent template-id read: `is_x<U>::value`
+    // resolves against the placeholder here) is not captured — the shell
+    // parses it per instantiation.
     bool fd_is_ctor = false;
     for ( Variable *cv : owner->ctors )
 	if ( cv && cv->type == fd )
@@ -69270,7 +69332,8 @@ TokenFunc *Program::build_dependent_pattern(FuncDef *fd)
 	    break;
 	}
     bool saved_pat_ctor_inits = dependent_pattern_ctor_inits;
-    dependent_pattern_ctor_inits = fd_is_ctor;
+    dependent_pattern_ctor_inits = fd_is_ctor
+	&& tsubst_ctor_initializer_copyable(*this, fd);
 
     SilentReplay quiet(*this);
     bool parsed_pattern = false;
