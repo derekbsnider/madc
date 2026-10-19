@@ -1,6 +1,13 @@
 # Changelog
 
 ## [Unreleased]
+Consolidated: type_trait_dispatch — gate scripts/check-one-trait-dispatch.sh
+
+### Type-trait builtins resolve to one `TypeTrait` kind and one evaluator both parse sites call
+
+- Two hand ladders of `name == "__is_..."` each answered the type-trait builtins (`__is_class`, `__is_same`, `__has_trivial_destructor`, `__is_constructible`, ...): one in the live parse (`Program::evaluate_type_trait`) and one in a template argument's fold (`eval_local_type_trait`, both `src/parser.cpp`). The two lists held the same traits and had to be kept in step by hand, so a trait added to one site but not the other — or a third ladder at a new site — would diverge silently. The spelling is now read ONCE, at the name, into the `TypeTrait` enum (`type_trait_of`'s table of `{ spelling, kind, arity }` rows); both sites dispatch on the kind through one evaluator, `eval_type_trait` — a `switch` with no `default`, so a new `TypeTrait` without a case is a `-Wswitch` build error. `type_trait_arity` reads its arity from the same table. Each case carries the same reference / argument handling the ladders did, so no trait's answer changes (enum over strings, `.claude/rules/enum-over-strings.md`).
+- Gate `scripts/check-one-trait-dispatch.sh` (wired into `src/Makefile`'s `gates`) fails on a `name == "__is_.../__has_..."` spelling compare against a trait builtin on a non-comment line of `src/*.cpp`, with a two-way negative control (a hand compare must FAIL, the `{ "__is_class", TypeTrait::IsClass, 1 }` table form must PASS). The lexer's `__has_include` / `__has_builtin` / `__has_attribute` are `#if` query operators, not type traits; the pattern does not name them.
+- Behaviour-preserving. Fix lanes tier1 15/15 JIT + EXE + OBJ, tier2 rc=0 (c-testsuite 220, c-torture 1619, c2mir-tests 368, gui 13, gxx-c++11 1505, index-c 50/50, commonmark 664 — 0 outside baseline); static gates 0 red (the new gate's control passes both ways), unit 84/84, `scripts/forest_bind_gate.sh` 47/47, parse-cost 0 red of 21.
 
 ### Class-property type traits read the type through the kind accessors, so a cv-qualified class answers for its unqualified type
 

@@ -16560,33 +16560,73 @@ size_t Program::parse_alignment_specifier()
 // CORRECTNESS-FIRST: only traits madc can answer FAITHFULLY from its DataDef model
 // are recognized; the rest fall through to the normal undeclared-identifier path
 // (a clear error, never a WRONG bool that would silently corrupt SFINAE). Adding a
-// new trait = one entry here + one branch in eval_type_trait — provided madc can
-// model it exactly.
+// new trait = one row in type_trait_of's table + one case in eval_type_trait —
+// provided madc can model it exactly.
 // Implement EXACTLY the gcc-13 trait builtins that madc can answer faithfully —
 // no more: providing a builtin gcc lacks (e.g. __is_pointer/__is_void, which gcc
 // implements in libstdc++, not the compiler) could shadow a library identifier.
 static const int TRAIT_ARITY_VARIADIC = -2;   // one-or-more type arguments
 
+// The type-trait builtins madc answers, as a kind (enum over strings): the
+// spelling is read ONCE, at the name (type_trait_of); both evaluation sites —
+// the live parse (evaluate_type_trait) and a template argument's fold
+// (eval_local_type_trait) — dispatch on the kind through eval_type_trait.
+// Gated by scripts/check-one-trait-dispatch.sh.
+enum class TypeTrait : unsigned char
+{
+    None, IsSame, IsBaseOf, IsAssignable, IsConvertible,
+    IsClass, IsUnion, IsEnum, IsEmpty, IsFinal, HasTrivialDestructor,
+    IsTrivial, IsTriviallyCopyable, IsStandardLayout, IsPod, IsDestructible,
+    IsConstructible, IsNothrowConstructible
+};
+
+// name -> kind + arity; arity 0 (TypeTrait::None) for any other name.
+static TypeTrait type_trait_of(const madc::dis::istring &name, int *arity = NULL)
+{
+    struct Row { madc::dis::istring name; TypeTrait kind; int arity; };
+    // Interned once: each test is an identity compare.
+    static const Row rows[] = {
+	{ "__is_same", TypeTrait::IsSame, 2 },
+	{ "__is_base_of", TypeTrait::IsBaseOf, 2 },
+	{ "__is_assignable", TypeTrait::IsAssignable, 2 },
+	// Ungated with the [dcl.spec]/1 east-specifier fix: folding
+	// __has_*_iterator_category flips libc++'s copy dispatch onto
+	// __copy<_ClassicAlgPolicy,...>, whose `pair<...> inline constexpr`
+	// declaration head now parses (the guard's motivating regression).
+	{ "__is_convertible_to", TypeTrait::IsConvertible, 2 },
+	{ "__is_convertible", TypeTrait::IsConvertible, 2 },
+	{ "__is_class", TypeTrait::IsClass, 1 },
+	{ "__is_union", TypeTrait::IsUnion, 1 },
+	{ "__is_enum", TypeTrait::IsEnum, 1 },
+	{ "__is_empty", TypeTrait::IsEmpty, 1 },
+	{ "__is_final", TypeTrait::IsFinal, 1 },
+	{ "__has_trivial_destructor", TypeTrait::HasTrivialDestructor, 1 },
+	{ "__is_trivial", TypeTrait::IsTrivial, 1 },
+	{ "__is_trivially_copyable", TypeTrait::IsTriviallyCopyable, 1 },
+	{ "__is_standard_layout", TypeTrait::IsStandardLayout, 1 },
+	{ "__is_pod", TypeTrait::IsPod, 1 },
+	{ "__is_destructible", TypeTrait::IsDestructible, 1 },
+	{ "__is_constructible", TypeTrait::IsConstructible, TRAIT_ARITY_VARIADIC },
+	{ "__is_nothrow_constructible", TypeTrait::IsNothrowConstructible,
+	  TRAIT_ARITY_VARIADIC },
+    };
+    for ( const Row &r : rows )
+	if ( r.name == name )
+	{
+	    if ( arity )
+		*arity = r.arity;
+	    return r.kind;
+	}
+    if ( arity )
+	*arity = 0;   // not a supported trait
+    return TypeTrait::None;
+}
+
 static int type_trait_arity(const madc::dis::istring &name)
 {
-    if ( name == "__is_same" || name == "__is_base_of"
-      || name == "__is_assignable" )
-	return 2;
-    // Ungated with the [dcl.spec]/1 east-specifier fix: folding
-    // __has_*_iterator_category flips libc++'s copy dispatch onto
-    // __copy<_ClassicAlgPolicy,...>, whose `pair<...> inline constexpr`
-    // declaration head now parses (the guard's motivating regression).
-    if ( name == "__is_convertible_to" || name == "__is_convertible" )
-	return 2;
-    if ( name == "__is_class" || name == "__is_union" || name == "__is_enum"
-      || name == "__has_trivial_destructor" || name == "__is_trivial"
-      || name == "__is_empty" || name == "__is_standard_layout"
-      || name == "__is_pod" || name == "__is_destructible"
-      || name == "__is_final" || name == "__is_trivially_copyable" )
-	return 1;
-    if ( name == "__is_constructible" || name == "__is_nothrow_constructible" )
-	return TRAIT_ARITY_VARIADIC;
-    return 0;   // not a supported trait
+    int arity = 0;
+    type_trait_of(name, &arity);
+    return arity;
 }
 
 // Declared in madc.h: __has_builtin answers from this same registry, so a
@@ -17644,9 +17684,78 @@ static int trait_is_constructible(const TraitTypeArg &to,
     return 0;
 }
 
+// The ONE evaluation of a type-trait builtin over its parsed arguments: 1 or
+// 0, or -1 when madc cannot answer faithfully (the live parse refuses, a fold
+// declines). No default: a new TypeTrait without a case is a -Wswitch error.
+// `site` tags the __is_assignable probe line (MADC_VRI_DEBUG).
+static int eval_type_trait(TypeTrait kind, std::vector<TraitTypeArg> &args,
+			   const char *site)
+{
+    switch ( kind )
+    {
+    case TypeTrait::IsSame:
+	return args[0].same_as(args[1]) ? 1 : 0;
+    case TypeTrait::IsBaseOf:
+	return !trait_arg_is_reference(args[0]) && !trait_arg_is_reference(args[1])
+	    && trait_is_base_of(args[0].dd, args[1].dd) ? 1 : 0;
+    case TypeTrait::IsClass:
+	return !trait_arg_is_reference(args[0]) && trait_is_class(args[0].dd) ? 1 : 0;
+    case TypeTrait::IsUnion:
+	return !trait_arg_is_reference(args[0]) && trait_is_union(args[0].dd) ? 1 : 0;
+    case TypeTrait::IsEnum:
+	return !trait_arg_is_reference(args[0]) && trait_is_enum(args[0].dd) ? 1 : 0;
+    case TypeTrait::IsEmpty:
+	return !trait_arg_is_reference(args[0]) && trait_is_empty(args[0].dd) ? 1 : 0;
+    case TypeTrait::IsFinal:
+	return !trait_arg_is_reference(args[0]) && trait_is_final(args[0].dd) ? 1 : 0;
+    case TypeTrait::HasTrivialDestructor:
+	return trait_arg_is_reference(args[0])
+	    || trait_has_trivial_destructor(args[0].dd) ? 1 : 0;
+    case TypeTrait::IsTrivial:
+	return !trait_arg_is_reference(args[0]) && trait_is_trivial(args[0].dd) ? 1 : 0;
+    case TypeTrait::IsTriviallyCopyable:
+	return !trait_arg_is_reference(args[0])
+	    && trait_is_trivially_copyable(args[0].dd) ? 1 : 0;
+    case TypeTrait::IsStandardLayout:
+	return !trait_arg_is_reference(args[0])
+	    && trait_is_standard_layout(args[0].dd) ? 1 : 0;
+    case TypeTrait::IsPod:
+	return !trait_arg_is_reference(args[0]) && trait_is_pod(args[0].dd) ? 1 : 0;
+    case TypeTrait::IsDestructible:
+	return trait_is_destructible(args[0]);
+    case TypeTrait::IsAssignable:
+    {
+	const int s = trait_is_assignable(args[0], args[1]);
+	if ( vri_debug_enabled() )
+	    fprintf(stderr, "[vriprobe] %s __is_assignable to=%s l%d r%d c%d "
+		    "from=%s l%d r%d c%d -> %d\n", site,
+		    args[0].dd ? args[0].dd->name.c_str() : "?",
+		    (int)args[0].is_lref, (int)args[0].is_rref,
+		    (int)args[0].referent_const,
+		    args[1].dd ? args[1].dd->name.c_str() : "?",
+		    (int)args[1].is_lref, (int)args[1].is_rref,
+		    (int)args[1].referent_const, s);
+	return s;
+    }
+    case TypeTrait::IsConstructible:
+    case TypeTrait::IsNothrowConstructible:
+    {
+	std::vector<TraitTypeArg> ctor_args(args.begin() + 1, args.end());
+	return trait_is_constructible(args[0], ctor_args,
+				      kind == TypeTrait::IsNothrowConstructible, 0);
+    }
+    case TypeTrait::IsConvertible:
+	return trait_is_convertible(args[0], args[1]);
+    case TypeTrait::None:
+	break;
+    }
+    return -1;
+}
+
 TokenBase *Program::evaluate_type_trait(TokenBase *op_tb, const madc::dis::istring &name)
 {
-    int arity = type_trait_arity(name);
+    int arity = 0;
+    const TypeTrait kind = type_trait_of(name, &arity);
     if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
 	Throw(op_tb) << "Expecting '(' after " << name << flush;
     nextToken(); // consume '('
@@ -17722,80 +17831,11 @@ TokenBase *Program::evaluate_type_trait(TokenBase *op_tb, const madc::dis::istri
 		     << (arity == TRAIT_ARITY_VARIADIC ? " or more" : "")
 		     << " type argument(s), got " << args.size() << flush;
 
-    bool result = false;
-    if ( name == "__is_same" )
-	result = args[0].same_as(args[1]);
-    else if ( name == "__is_enum" )
-	result = !trait_arg_is_reference(args[0]) && trait_is_enum(args[0].dd);
-    else if ( name == "__is_class" )
-	result = !trait_arg_is_reference(args[0]) && trait_is_class(args[0].dd);
-    else if ( name == "__is_union" )
-	result = !trait_arg_is_reference(args[0]) && trait_is_union(args[0].dd);
-    else if ( name == "__is_empty" )
-	result = !trait_arg_is_reference(args[0]) && trait_is_empty(args[0].dd);
-    else if ( name == "__is_final" )
-	result = !trait_arg_is_reference(args[0]) && trait_is_final(args[0].dd);
-    else if ( name == "__is_base_of" )
-	result = !trait_arg_is_reference(args[0])
-	      && !trait_arg_is_reference(args[1])
-	      && trait_is_base_of(args[0].dd, args[1].dd);
-    else if ( name == "__has_trivial_destructor" )
-	result = trait_arg_is_reference(args[0])
-	      || trait_has_trivial_destructor(args[0].dd);
-    else if ( name == "__is_trivial" )
-	result = !trait_arg_is_reference(args[0]) && trait_is_trivial(args[0].dd);
-    else if ( name == "__is_trivially_copyable" )
-	result = !trait_arg_is_reference(args[0])
-	      && trait_is_trivially_copyable(args[0].dd);
-    else if ( name == "__is_standard_layout" )
-	result = !trait_arg_is_reference(args[0])
-	      && trait_is_standard_layout(args[0].dd);
-    else if ( name == "__is_pod" )
-	result = !trait_arg_is_reference(args[0]) && trait_is_pod(args[0].dd);
-    else if ( name == "__is_destructible" )
-    {
-	int s = trait_is_destructible(args[0]);
-	if ( s < 0 )
-	    Throw(op_tb) << "cannot faithfully evaluate __is_destructible(...) "
-			 << "for this operand type" << flush;
-	result = s != 0;
-    }
-    else if ( name == "__is_assignable" )
-    {
-	int s = trait_is_assignable(args[0], args[1]);
-	if ( vri_debug_enabled() )
-	    fprintf(stderr, "[vriprobe] LIVE __is_assignable to=%s l%d r%d c%d "
-		    "from=%s l%d r%d c%d -> %d\n",
-		    args[0].dd ? args[0].dd->name.c_str() : "?",
-		    (int)args[0].is_lref, (int)args[0].is_rref,
-		    (int)args[0].referent_const,
-		    args[1].dd ? args[1].dd->name.c_str() : "?",
-		    (int)args[1].is_lref, (int)args[1].is_rref,
-		    (int)args[1].referent_const, s);
-	if ( s < 0 )
-	    Throw(op_tb) << "cannot faithfully evaluate __is_assignable(...) for "
-			 << "these operand types" << flush;
-	result = s != 0;
-    }
-    else if ( name == "__is_constructible"
-	   || name == "__is_nothrow_constructible" )
-    {
-	std::vector<TraitTypeArg> ctor_args(args.begin() + 1, args.end());
-	int s = trait_is_constructible(args[0], ctor_args,
-				       name == "__is_nothrow_constructible", 0);
-	if ( s < 0 )
-	    Throw(op_tb) << "cannot faithfully evaluate " << name
-			 << "(...) for these operand types" << flush;
-	result = s != 0;
-    }
-    else if ( name == "__is_convertible_to" || name == "__is_convertible" )
-    {
-	int s = trait_is_convertible(args[0], args[1]);
-	if ( s < 0 )
-	    Throw(op_tb) << "cannot faithfully evaluate " << name
-			 << "(...) for these operand types" << flush;
-	result = s != 0;
-    }
+    const int s = eval_type_trait(kind, args, "LIVE");
+    if ( s < 0 )
+	Throw(op_tb) << "cannot faithfully evaluate " << name
+		     << "(...) for these operand types" << flush;
+    const bool result = s != 0;
 
     TokenInt *ti = new TokenInt(result ? 1 : 0);
     ti->setDataType(&ddBOOL);
@@ -39946,7 +39986,8 @@ static bool eval_local_type_trait(Program &pgm,
     if ( i >= toks.size() || !toks[i] || !is_contextual_identifier_token(toks[i]) )
 	return false;
     madc::dis::istring nm = contextual_identifier_name(toks[i]);
-    int arity = type_trait_arity(nm);
+    int arity = 0;
+    const TypeTrait kind = type_trait_of(nm, &arity);
     if ( arity == 0 )
 	return false;
     if ( i + 1 >= toks.size() || !toks[i + 1]
@@ -39969,73 +40010,10 @@ static bool eval_local_type_trait(Program &pgm,
     if ( arity == TRAIT_ARITY_VARIADIC ? targs.empty()
 				       : (int)targs.size() != arity )
 	return false;
-    bool r;
-    if ( nm == "__has_trivial_destructor" ) r = trait_arg_is_reference(targs[0])
-					     || trait_has_trivial_destructor(targs[0].dd);
-    else if ( nm == "__is_trivial" )        r = !trait_arg_is_reference(targs[0])
-					     && trait_is_trivial(targs[0].dd);
-    else if ( nm == "__is_trivially_copyable" )
-					    r = !trait_arg_is_reference(targs[0])
-					     && trait_is_trivially_copyable(targs[0].dd);
-    else if ( nm == "__is_standard_layout" ) r = !trait_arg_is_reference(targs[0])
-					      && trait_is_standard_layout(targs[0].dd);
-    else if ( nm == "__is_pod" )            r = !trait_arg_is_reference(targs[0])
-					     && trait_is_pod(targs[0].dd);
-    else if ( nm == "__is_class" )          r = !trait_arg_is_reference(targs[0])
-					     && trait_is_class(targs[0].dd);
-    else if ( nm == "__is_union" )          r = !trait_arg_is_reference(targs[0])
-					     && trait_is_union(targs[0].dd);
-    else if ( nm == "__is_empty" )          r = !trait_arg_is_reference(targs[0])
-					     && trait_is_empty(targs[0].dd);
-    else if ( nm == "__is_final" )          r = !trait_arg_is_reference(targs[0])
-					     && trait_is_final(targs[0].dd);
-    else if ( nm == "__is_enum" )           r = !trait_arg_is_reference(targs[0])
-					     && trait_is_enum(targs[0].dd);
-    else if ( nm == "__is_same" )           r = targs[0].same_as(targs[1]);
-    else if ( nm == "__is_base_of" )        r = !trait_arg_is_reference(targs[0])
-					     && !trait_arg_is_reference(targs[1])
-					     && trait_is_base_of(targs[0].dd, targs[1].dd);
-    else if ( nm == "__is_destructible" )
-    {
-	int s = trait_is_destructible(targs[0]);
-	if ( s < 0 )
-	    return false;   // undetermined -> not a constant-foldable trait here
-	r = s != 0;
-    }
-    else if ( nm == "__is_assignable" )
-    {
-	int s = trait_is_assignable(targs[0], targs[1]);
-	if ( vri_debug_enabled() )
-	    fprintf(stderr, "[vriprobe] LOCAL __is_assignable to=%s l%d r%d c%d "
-		    "from=%s l%d r%d c%d -> %d\n",
-		    targs[0].dd ? targs[0].dd->name.c_str() : "?",
-		    (int)targs[0].is_lref, (int)targs[0].is_rref,
-		    (int)targs[0].referent_const,
-		    targs[1].dd ? targs[1].dd->name.c_str() : "?",
-		    (int)targs[1].is_lref, (int)targs[1].is_rref,
-		    (int)targs[1].referent_const, s);
-	if ( s < 0 )
-	    return false;   // undetermined -> not a constant-foldable trait here
-	r = s != 0;
-    }
-    else if ( nm == "__is_constructible" || nm == "__is_nothrow_constructible" )
-    {
-	std::vector<TraitTypeArg> ctor_args(targs.begin() + 1, targs.end());
-	int s = trait_is_constructible(targs[0], ctor_args,
-				       nm == "__is_nothrow_constructible", 0);
-	if ( s < 0 )
-	    return false;   // undetermined -> not a constant-foldable trait here
-	r = s != 0;
-    }
-    else if ( nm == "__is_convertible_to" || nm == "__is_convertible" )
-    {
-	int s = trait_is_convertible(targs[0], targs[1]);
-	if ( s < 0 )
-	    return false;   // undetermined -> not a constant-foldable trait here
-	r = s != 0;
-    }
-    else return false;
-    out = r ? 1 : 0;
+    const int s = eval_type_trait(kind, targs, "LOCAL");
+    if ( s < 0 )
+	return false;   // undetermined -> not a constant-foldable trait here
+    out = s;
     i = j;
     return true;
 }
