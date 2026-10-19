@@ -16628,14 +16628,20 @@ void CirBuilder::class_copy_construct_into_retbuf(DataDefCLASS *cdd,
 	// `return std::unique_ptr<T>(p);` (make_unique) handed back a dangling
 	// pointer. An aggregate's braced list keeps the copy path below, whose
 	// construction site owns the aggregate claim.
+	// The slot holds a COMPLETE object: its virtual bases are constructed
+	// first (complete_object_construct_stmts — the ctor itself builds only
+	// the non-virtual bases).
 	if (TokenObjTemp *iot = src ? src->as_objtemp_tok() : NULL)
-		if (as_class_instance(iot->obj_class) == cdd && !cdd->is_aggregate())
-			if (node_t cc = class_ctor_call_addr(
-				    id(RETBUF_NAME, origin), cdd, iot->ctor_args,
-				    iot)) {
-				out.push_back(cc);
+		if (as_class_instance(iot->obj_class) == cdd && !cdd->is_aggregate()) {
+			std::vector<node_t> cons;
+			complete_object_construct_stmts([&]() -> node_t {
+				return id(RETBUF_NAME, origin);
+			}, cdd, iot->ctor_args, iot, cons);
+			if (!cons.empty()) {
+				out.insert(out.end(), cons.begin(), cons.end());
 				return;
 			}
+		}
 	std::vector<TokenBase *> copy_args;
 	if (src) copy_args.push_back(src);
 	bool implicit_move = returned_operand_is_implicitly_movable(cdd, src);
