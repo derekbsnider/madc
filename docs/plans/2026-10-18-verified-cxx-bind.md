@@ -323,9 +323,13 @@ K2 step 3 measured 2026-10-18 (packed `madc-release`, v69 pack):
 
 Deleted with the walk: `forest_bind_env_ok`, `forest_bind_include`,
 `forest_install_pp`, `forest_replay_pp_arms`, `skipped_arm_defines`,
-`pp_install_mask`, `pp_arms`, `husk_live_pending` and the husk path. Deleted next, on
-the freeze side (v70): the per-macro branch deps, the `PP_ARM` tuples,
-`ARM_REPLAYS`, `skip_and_capture_arm` and the purity flag.
+`pp_install_mask`, `pp_arms`, `husk_live_pending` and the husk path. Deleted on
+the freeze side (v70): the per-unit branch deps (slot +8) with their `PP_ARM`
+and `ARM_REPLAYS` tuples, the container-global branch macro names (seg 6),
+`skip_and_capture_arm`, the arm-purity flag and a condition record's token
+positions. The consult recorder (`pack_note_branch_consult`) keeps one job:
+count an external consult so the open conditional is recorded. The mixed
+profile shrinks 58.7 KB (13.98 MB, 370 fewer segments), the C layer 32 KB.
 
 K2 step 3 cost (parse-cost gate, callgrind Ir, release build). The first walk
 cost +2.6% on `rung_stdio` and +5.1% on `c_headers.forest`. Measured causes

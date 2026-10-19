@@ -3757,12 +3757,10 @@ protected:
     struct SkippedArmCapture
     {
 	size_t begin = 0;	// raw offset of the arm's first line
-	bool pure = true;	// every significant line is a replayable directive
 	bool closed = false;	// its own #endif (no #else / #elif) ended it
 	std::string text;	// source text of the body, closing #endif excluded
     };
     SkippedArmCapture *skip_arm_capture = NULL;
-    TokenBase *skip_and_capture_arm(const madc::dis::istring &name, bool first_dep);
     TokenBase *skip_capturing_arm(SkippedArmCapture &cap);
     TokenBase *skip_recorded_arm();
     bool evaluateIfCondition();
@@ -5954,49 +5952,14 @@ public:
     std::set<const char *> pack_units_seen;
     std::map<const char *, std::vector<PackMacroEvent> > pack_pp_exports; // unit -> ordered deltas
     std::map<const char *, std::vector<const char *> > pack_unit_edges;   // includer -> includees, in order
-    std::set<madc::dis::istring> pack_branch_macros;	// names PP conditionals consulted
-    // v40 (task #57): per-unit EXTERNAL branch dependencies — a PP-conditional
-    // consult whose macro state was established OUTSIDE the current top-level
-    // include's closure (an earlier sibling's #define, or undefined). Bind
-    // eligibility compares them to the consumer's live tables; mismatch
-    // declines the root bind to live parse. Same-root state is reproduced by
-    // the post-order replay and is deliberately NOT recorded; predefine/-D
-    // state (defined, no recorded origin root) is pinned by the v27 config
-    // word and skipped too.
-    struct PackBranchDep {
-	madc::dis::istring name;
-	bool defined;			// state observed at the consult
-	bool has_value;			// object-like body captured below
-	std::string value;
-	const char *definer;		// unit that established the state (NULL = none)
-	// Later consults in the SAME state whose state an OPEN ANCESTOR of the
-	// consulting unit established — the include position proves its define
-	// precedes the consult (glibc's bits/libc-header-start.h, consulting
-	// __GLIBC_INTERNAL_STARTING_HEADER_IMPLEMENTATION under each including
-	// header that defines it first). Frozen as one tuple per definer.
-	std::vector<const char *> ancestor_definers;
-	// The consult is a captured directive-only `#ifndef name` arm that
-	// writes name alone, over an external object-like definition (mingw
-	// stdio.h's WEOF and NULL behind an earlier C root): a consumer lacking
-	// name runs the arm in its own state, and when it yields the frozen
-	// value the bind's replay supplies it — not missing content.
-	bool arm_replays = false;
-    };
+    // Where each macro's state was established while freezing: a conditional's
+    // consult is EXTERNAL (pack_note_branch_consult) when that was outside the
+    // consulting unit's own subtree, or the macro is undefined with no origin.
     struct PackMacroOrigin {
 	const char *unit;		// innermost unit whose parse defined it
 	bool defined;			// false after #undef
     };
     std::map<madc::dis::istring, PackMacroOrigin> pack_macro_origin;
-    std::map<const char *, std::vector<PackBranchDep> > pack_unit_branch_deps;
-    // v55: per-unit skipped directive-only `#ifndef name` arms whose name an
-    // EXTERNAL sibling defined first (mingw stdio.h's NULL arm). Frozen as
-    // CIR_BRANCH_DEP_PP_ARM tuples; the bind replays one when name is undefined.
-    struct PackSkippedArm {
-	madc::dis::istring name;
-	std::string text;		// arm body source text, not a name
-    };
-    std::map<const char *, std::vector<PackSkippedArm> > pack_unit_skipped_arms;
-    std::map<const char *, std::set<madc::dis::istring> > pack_unit_branch_dep_seen;
     // v68 (docs/plans/2026-10-18-verified-cxx-bind.md, K2): a conditional a
     // unit evaluated over an EXTERNAL macro, placed in the unit's item order —
     // its PP events, include edges and conditionals as the freeze met them —
@@ -6007,10 +5970,8 @@ public:
 	bool outcome = false;
 	uint32_t ev_begin = 0, ed_begin = 0;	// the unit's events / edges ahead of the directive
 	uint32_t ev_end = 0, ed_end = 0;	// ... ahead of the arm's end (#elif, #else, #endif)
-	size_t tok_begin = 0, tok_end = 0;	// the token stream's size at both (global)
 	bool single_arm = false;	// the group's #endif ended the arm, no #elif / #else in it
 	bool arm_captured = false;	// a skipped single arm's body is in `arm`
-	bool arm_pure = false;		// ... and it holds only directives
 	std::string arm;
 	uint32_t rec_end = 0;		// v69: the unit's record count at the arm's end
 	std::string arm_state;		// v69: the arm's written macros as the freeze held them (forest_macro_state_spelling)
@@ -6020,7 +5981,7 @@ public:
 	std::vector<std::pair<madc::dis::istring, uint64_t> > consults;
     };
     // v69: the macros the #if / #elif being evaluated consults (freezing only;
-    // pack_record_branch_macro collects while pack_if_collect is set).
+    // pack_note_branch_consult collects while pack_if_collect is set).
     bool pack_if_collect = false;
     std::vector<madc::dis::istring> pack_if_consulted;
     // v69: when each macro was last expanded into the token stream while
@@ -6094,12 +6055,17 @@ public:
     // source-only unit (the pack's source arm). False, said, when the list or
     // a file it names cannot be read.
     bool pack_record_source_list(const std::string &list_path);
-    // True when an EXTERNAL definition (an earlier sibling's #define) gates
-    // this consult — the condition a skipped `#ifndef` arm is missing content.
-    // *first_dep (when given) says whether this consult recorded the unit's
-    // dep for name — its first external consult there.
-    bool pack_record_branch_macro(const std::string &name,	// interned only when recording
-				  bool include_probe = false, bool *first_dep = NULL);
+    // A conditional consulted `name` while freezing: the #if / #elif's consult
+    // record takes it, and an EXTERNAL consult counts (pack_external_consults),
+    // so the open conditional is recorded for the bind's walk. Inline: a
+    // compile that freezes nothing never makes the call (every identifier of
+    // every #if asks).
+    void pack_note_branch_consult(const std::string &name)
+    {
+	if ( pack_recording )
+	    pack_note_recorded_consult(name);
+    }
+    void pack_note_recorded_consult(const std::string &name);	// interned only when recording
     const char *pack_current_unit();	// interned current source file (NULL off)
     void dump_macros(FILE *out);	// -dM: effective macro table, sorted
     void pack_open_toplevel_decl();	// loop-top: push a decl frame

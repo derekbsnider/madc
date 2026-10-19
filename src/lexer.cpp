@@ -170,8 +170,8 @@ struct MadcSharedPreludeCache
     }
 
     // one_mutation_per_name: the cache's final-state replay needs a single
-    // textual write per name; the pack freeze's arm check RUNS the text, so
-    // it only needs the names written (skipped_arm_writes_only).
+    // textual write per name; the pack freeze's arm state (skip_capturing_arm)
+    // and the bind's arm run only need the names written.
     static bool embedded_fragment_is_pure(
 	const madc::dis::istring &text, std::vector<madc::dis::istring> *mutations = NULL,
 	bool one_mutation_per_name = true)
@@ -7194,7 +7194,7 @@ void Program::pack_cond_open(CondDirective kind, const std::string &text, bool o
 }
 
 // An evaluated arm of the open group: recorded when its condition consulted
-// an external macro (pack_record_branch_macro counted one since
+// an external macro (pack_note_branch_consult counted one since
 // consults_before).
 void Program::pack_cond_elif(const std::string &text, bool outcome, size_t consults_before)
 {
@@ -7213,7 +7213,6 @@ void Program::pack_cond_elif(const std::string &text, bool outcome, size_t consu
     r.outcome = outcome;
     r.ev_begin = (uint32_t)pack_pp_exports[f.unit].size();
     r.ed_begin = (uint32_t)pack_unit_edges[f.unit].size();
-    r.tok_begin = tokens.size();
     std::set<madc::dis::istring> seen;
     for ( size_t i = 0; i < consulted.size(); ++i )
 	if ( seen.insert(consulted[i]).second )
@@ -7222,7 +7221,7 @@ void Program::pack_cond_elif(const std::string &text, bool outcome, size_t consu
     f.pending = (int)recs.size() - 1;
 }
 
-// The open arm's end: its events, edges and tokens stop here.
+// The open arm's end: its events and edges stop here.
 static void pack_cond_end_arm(Program &pgm, Program::PackCondFrame &f, bool single_arm)
 {
     if ( f.pending < 0 )
@@ -7230,7 +7229,6 @@ static void pack_cond_end_arm(Program &pgm, Program::PackCondFrame &f, bool sing
     Program::PackCondRecord &r = pgm.pack_unit_conds[f.unit][f.pending];
     r.ev_end = (uint32_t)pgm.pack_pp_exports[f.unit].size();
     r.ed_end = (uint32_t)pgm.pack_unit_edges[f.unit].size();
-    r.tok_end = pgm.tokens.size();
     r.single_arm = single_arm;
     r.rec_end = (uint32_t)pgm.pack_unit_conds[f.unit].size();
     r.expansions_at_end = pgm.pack_expansion_clock;
@@ -7282,155 +7280,40 @@ Program::PackCondRecord *Program::pack_cond_pending()
     return &pack_unit_conds[f.unit][f.pending];
 }
 
-bool Program::pack_record_branch_macro(const std::string &name,
-				       bool include_probe, bool *first_dep)
+void Program::pack_note_recorded_consult(const std::string &name)
 {
-    if ( first_dep )
-	*first_dep = false;
-    if ( !pack_recording || name.empty() )
-	return false;
-    pack_branch_macros.insert(name);
-    if ( pack_if_collect && !include_probe )
+    if ( name.empty() )
+	return;
+    if ( pack_if_collect )
 	pack_if_consulted.push_back(name);	// v69: the evaluation's consults
-    // An include-once GUARD PROBE (should_tokenize_include asking "is the
-    // includee's guard defined") is an EDGE decision — reproduced by the
-    // frozen edges + include-once semantics at bind, never a branch
-    // dependency of the includer's CONTENT. Recording it made every libc++
-    // header carry its includees' guards as deps and decline on re-binds.
-    if ( include_probe )
-	return false;
-    // v40 (task #57): record the consult as an EXTERNAL branch dependency of
-    // the current unit when the macro's state was NOT established within the
-    // consulting unit's OWN subtree — consumers bind ANY unit directly, so a
-    // sibling under the same top-level include (mingw stdlib.h defining
-    // _CRT_ERRNO_DEFINED before errno.h parsed under <cstdlib>) is just as
-    // external as an earlier root. Self/subtree definitions are reproduced by
-    // the unit's own bind replay; a defined macro with NO recorded origin is
-    // predefine/-D state, pinned by the v27 config word — neither is a
-    // dependency. The DEFINER travels with the dep: the bind walk skips any
-    // dep whose definer is inside the closure being bound (an ANCESTOR's
-    // guard — sys/cdefs.h consulting _FEATURES_H under features.h — is
-    // replay-internal there, and a real external elsewhere).
+    // v40 (task #57): the consult is EXTERNAL when the macro's state was NOT
+    // established within the consulting unit's OWN subtree — consumers bind
+    // ANY unit directly, so a sibling under the same top-level include (mingw
+    // stdlib.h defining _CRT_ERRNO_DEFINED before errno.h parsed under
+    // <cstdlib>) is just as external as an earlier root. Self/subtree
+    // definitions are reproduced by the unit's own bind replay; a defined
+    // macro with NO recorded origin is predefine/-D state, pinned by the v27
+    // config word — neither is external. v68: an external consult makes the
+    // open conditional a recorded one (pack_cond_open / pack_cond_elif).
     const char *unit = pack_current_unit();
     if ( !unit )
-	return false;
-    bool defined_now = macro_name_defined(name);
+	return;
+    const bool defined_now = macro_name_defined(name);
     std::map<madc::dis::istring, PackMacroOrigin>::iterator oi =
 	pack_macro_origin.find(name);
     if ( defined_now && oi == pack_macro_origin.end() )
-	return false;			// predefine / -D: config-word-pinned
+	return;				// predefine / -D: config-word-pinned
     if ( oi != pack_macro_origin.end() && oi->second.unit )
     {
 	if ( oi->second.unit == unit )
-	    return false;		// self: the unit's own replay decides
+	    return;			// self: the unit's own replay decides
 	std::map<const char *, std::set<const char *> >::iterator sti =
 	    pack_unit_subtree.find(unit);
 	if ( sti != pack_unit_subtree.end()
 	  && sti->second.count(oi->second.unit) )
-	    return false;		// subtree: edges install it before us
+	    return;			// subtree: edges install it before us
     }
-    ++pack_external_consults;		// v68: the open conditional consulted an external
-    PackBranchDep dep;
-    dep.name = name;
-    dep.defined = defined_now;
-    dep.has_value = false;
-    dep.definer = oi != pack_macro_origin.end() ? oi->second.unit : NULL;
-    if ( defined_now )
-    {
-	if ( std::string *dv = define_map.find(name) )
-	{
-	    dep.has_value = true;
-	    dep.value = *dv;
-	}
-	else if ( MacroDef *mv = macro_map.find(name) )
-	{
-	    dep.has_value = true;
-	    dep.value = mv->body;
-	}
-    }
-    if ( !pack_unit_branch_dep_seen[unit].insert(name).second )
-    {
-	// A REPEAT consult (a guard-less header re-included under another
-	// includer). Its definer joins the recorded dep when the consult sees
-	// the same state and that definer is an OPEN ANCESTOR here — still on
-	// the include stack, so its define precedes this consult by include
-	// position; a consumer closure holding it reproduces the state.
-	if ( dep.definer && dep.definer != unit
-	  && std::find(pack_unit_stack.begin(), pack_unit_stack.end(), dep.definer)
-	     != pack_unit_stack.end() )
-	{
-	    std::vector<PackBranchDep> &recorded = pack_unit_branch_deps[unit];
-	    for ( size_t i = 0; i < recorded.size(); ++i )
-	    {
-		PackBranchDep &r = recorded[i];
-		if ( r.name != name || r.defined != dep.defined
-		  || r.has_value != dep.has_value || r.value != dep.value )
-		    continue;
-		if ( r.definer != dep.definer
-		  && std::find(r.ancestor_definers.begin(), r.ancestor_definers.end(),
-			       dep.definer) == r.ancestor_definers.end() )
-		    r.ancestor_definers.push_back(dep.definer);
-		break;
-	    }
-	}
-	return defined_now;
-    }
-    pack_unit_branch_deps[unit].push_back(dep);
-    if ( first_dep )
-	*first_dep = true;
-    return defined_now;
-}
-
-// A captured arm body writes `name` and no other macro (the fragment reader's
-// write list — every branch's #define / #undef counted).
-static bool skipped_arm_writes_only(const std::string &text, const madc::dis::istring &name)
-{
-    std::vector<madc::dis::istring> writes;
-    if ( !MadcSharedPreludeCache::embedded_fragment_is_pure(text, &writes, false) )
-	return false;
-    for ( size_t i = 0; i < writes.size(); ++i )
-	if ( writes[i] != name )
-	    return false;
-    return !writes.empty();
-}
-
-// v55 (freeze time): skip an `#ifndef X` arm whose X an EXTERNAL sibling
-// defined, capturing its body as skipConditionalBlock skips it. The frozen unit
-// carries none of that arm, so a consumer without X would bind it short (mingw
-// stdio.h's `#ifndef NULL` behind the win64 corpus's <cstddef>). A body of
-// define / undef / conditional directives only, closed by its own #endif, is
-// recorded as a PP_ARM tuple; any other arm stays missing content for the
-// branch-dependency record. first_dep: this consult recorded the unit's dep for
-// name (pack_record_branch_macro). Since K2 the bind reads the condition
-// records instead (forest_walk_condition); v70 deletes these tuples.
-TokenBase *Program::skip_and_capture_arm(const madc::dis::istring &name, bool first_dep)
-{
-    const char *unit = pack_current_unit();
-    SkippedArmCapture cap;
-    if ( !unit || !source.raw_offset(cap.begin) )
-	return skipConditionalBlock();
-    TokenBase *next = skip_capturing_arm(cap);
-    if ( !cap.closed || !cap.pure )
-	return next;
-    if ( first_dep )
-    {
-	// The unit's first consult of name IS this arm, over an EXTERNAL
-	// object-like definition, and the arm writes name alone: the bind may
-	// evaluate it in the consumer's state (v67's ARM_REPLAYS; unread since K2).
-	std::vector<PackBranchDep> &deps = pack_unit_branch_deps[unit];
-	if ( !deps.empty() && deps.back().name == name && deps.back().has_value
-	  && macro_map.count(name) == 0 && skipped_arm_writes_only(cap.text, name) )
-	    deps.back().arm_replays = true;
-    }
-    std::vector<PackSkippedArm> &arms = pack_unit_skipped_arms[unit];
-    for ( size_t i = 0; i < arms.size(); ++i )
-	if ( arms[i].name == name && arms[i].text == cap.text )
-	    return next;
-    PackSkippedArm arm;
-    arm.name = name;
-    arm.text = cap.text;
-    arms.push_back(arm);
-    return next;
+    ++pack_external_consults;
 }
 
 // Skip the open arm while capturing its body (cap.begin set by the caller).
@@ -7459,7 +7342,6 @@ TokenBase *Program::skip_capturing_arm(SkippedArmCapture &cap)
     {
 	PackCondRecord &r = pack_unit_conds[rec_unit][rec];
 	r.arm_captured = true;
-	r.arm_pure = cap.pure;
 	r.arm = cap.text;
 	// v69: the arm's writes as the freeze holds them here — the content after
 	// the arm was expanded with these values, so an arm the bind runs must
@@ -7628,10 +7510,7 @@ bool Program::should_tokenize_include(const std::string &path)
 	    const madc::dis::istring guard = include_guard_of_text(text, false);
 	    include_guard_by_file[canonical] = guard;
 	    if ( !guard.empty() )
-	    {
-		pack_record_branch_macro(guard, true /* include probe */);
 		return live_tokenize_record(canonical, false);
-	    }
 	}
 	else
 	    include_guard_watch_key = canonical;	// the lex decides the verdict
@@ -7642,7 +7521,6 @@ bool Program::should_tokenize_include(const std::string &path)
     const madc::dis::istring &guard = gi->second;
     if ( guard.empty() )
 	return live_tokenize_record(canonical, true);
-    pack_record_branch_macro(guard, true /* include probe */);	// B4a: guard definedness gates inclusion
     return live_tokenize_record(canonical, !guard_defined(guard));
 }
 
@@ -9319,9 +9197,8 @@ TokenBase *Program::_getToken()
 		    while ( source.good() && !source.eof() && (isalnum(source.peek()) || source.peek() == '_') )
 			name += source.get();
 		    bool defined = macro_name_defined(name);
-		    bool first_dep = false;
 		    const size_t consults_before = pack_external_consults;
-		    bool external = pack_record_branch_macro(name, false, &first_dep);
+		    pack_note_branch_consult(name);
 		    bool active = (directive == "ifdef") ? defined : !defined;
 		    if ( !source.guard_watch.key.empty() )
 			guard_watch_open(directive == "ifndef" ? madc::dis::istring(name)
@@ -9335,8 +9212,6 @@ TokenBase *Program::_getToken()
 		    // discard the directive's trailing tokens via the lexer, so a
 		    // multi-line /* */ comment here is handled by the lexer's case '/'
 		    consume_directive_line_tail();
-		    if ( !active && external && directive == "ifndef" )
-			return skip_and_capture_arm(name, first_dep);
 		    if ( !active )
 			return skip_recorded_arm();
 		    return getToken();
@@ -10878,12 +10753,9 @@ TokenBase *Program::_getToken()
     return NULL;
 }
 
-// skip tokens in a false #ifdef/#ifndef/#if/#elif/#else block
-// handles nested #if/#ifdef/#ifndef blocks; returns when matching #else/#elif/#endif found
 // A directive's word as an enum, read once from its spelling (enum over
 // strings): the words a skipped group acts on; any other is Other.
-enum class PpDirectiveWord : unsigned char
-{ Other, If, Ifdef, Ifndef, Elif, Else, Endif, Define, Undef };
+enum class PpDirectiveWord : unsigned char { Other, If, Ifdef, Ifndef, Elif, Else, Endif };
 
 static PpDirectiveWord pp_directive_word(const char *w, size_t n)
 {
@@ -10897,22 +10769,21 @@ static PpDirectiveWord pp_directive_word(const char *w, size_t n)
 	     : memcmp(w, "elif", 4) == 0 ? W::Elif : W::Other;
     case 5:
 	return memcmp(w, "ifdef", 5) == 0 ? W::Ifdef
-	     : memcmp(w, "endif", 5) == 0 ? W::Endif
-	     : memcmp(w, "undef", 5) == 0 ? W::Undef : W::Other;
+	     : memcmp(w, "endif", 5) == 0 ? W::Endif : W::Other;
     case 6:
-	return memcmp(w, "ifndef", 6) == 0 ? W::Ifndef
-	     : memcmp(w, "define", 6) == 0 ? W::Define : W::Other;
+	return memcmp(w, "ifndef", 6) == 0 ? W::Ifndef : W::Other;
     default:
 	return W::Other;
     }
 }
 
+// skip tokens in a false #ifdef/#ifndef/#if/#elif/#else block
+// handles nested #if/#ifdef/#ifndef blocks; returns when matching #else/#elif/#endif found
 TokenBase *Program::skipConditionalBlock()
 {
     int depth = 0;
-    // v55: an arm capture in progress (skip_and_capture_arm) — the body is
-    // replayable only if every significant line is a define / undef /
-    // conditional directive and the arm's own #endif closes it.
+    // An arm capture in progress (skip_capturing_arm): the body is captured
+    // when the arm's own #endif closes it.
     SkippedArmCapture *cap = skip_arm_capture;
     while ( source.good() && !source.eof() )
     {
@@ -10928,8 +10799,6 @@ TokenBase *Program::skipConditionalBlock()
 	    continue;
 	if ( ch != '#' )
 	{
-	    if ( cap )
-		cap->pure = false;
 	    source.skip_line_rest();
 	    continue;
 	}
@@ -10987,10 +10856,7 @@ TokenBase *Program::skipConditionalBlock()
 	else if ( depth == 0 && dir == W::Else )
 	{
 	    if ( cap )
-	    {
-		cap->pure = false;	// an #else arm ends this capture
-		skip_arm_capture = cap = NULL;
-	    }
+		skip_arm_capture = cap = NULL;	// an #else arm ends this capture
 	    // consume the rest of the directive line (comment-aware)
 	    skip_directive_line_tail(source);
 	    guard_watch_branch();
@@ -11009,10 +10875,7 @@ TokenBase *Program::skipConditionalBlock()
 	else if ( depth == 0 && dir == W::Elif )
 	{
 	    if ( cap )
-	    {
-		cap->pure = false;	// an #elif arm ends this capture
-		skip_arm_capture = cap = NULL;
-	    }
+		skip_arm_capture = cap = NULL;	// an #elif arm ends this capture
 	    // do NOT consume rest of line — evaluateIfCondition() needs to read the condition
 	    guard_watch_branch();
 	    pack_cond_branch();
@@ -11044,10 +10907,6 @@ TokenBase *Program::skipConditionalBlock()
 	}
 	else
 	{
-	    // A nested #else / #elif and #define / #undef replay as-is; any other
-	    // directive (#include, #error, #pragma) is not a pure macro body.
-	    if ( cap && dir != W::Define && dir != W::Undef && dir != W::Else && dir != W::Elif )
-		cap->pure = false;
 	    // consume rest of line for unknown directives inside skipped block
 	    source.skip_line_rest();
 	}
@@ -11170,10 +11029,10 @@ std::string Program::expandIfMacros(const std::string &raw)
 	    bool is_has_op = word.size() > 6 && word.compare(0, 6, "__has_") == 0;
 	    // B4a: every identifier a #if/#elif condition consults (including
 	    // `defined` operands, which the evaluator resolves later) is a
-	    // branch-relevant macro name for the pack container. The operators
-	    // themselves are not macros and are not recorded.
+	    // consult for the pack's condition records. The operators themselves
+	    // are not macros and are not recorded.
 	    if ( word != "defined" && !is_has_op )
-		pack_record_branch_macro(word);
+		pack_note_branch_consult(word);
 	    if ( word == "defined" )
 	    {
 		out += word;
@@ -11549,7 +11408,7 @@ std::string Program::read_if_condition_text()
     // mingw's wchar.h/stdlib.h guard their ISO-C-ext declarations (wcstold,
     // strtold, llabs) with exactly that shape, and the dropped declarations
     // surface as "not a declaration in '::'" a thousand lines later. It also
-    // keeps comment words out of pack_record_branch_macro (B4a). A block
+    // keeps comment words out of pack_note_branch_consult (B4a). A block
     // comment may span physical lines (the <stddef.h> #endif precedent —
     // consume through `*/` wherever it closes); char/string literals shield
     // both comment introducers.
@@ -11638,7 +11497,7 @@ std::string Program::read_if_condition_text()
 bool Program::evaluate_if_text(const std::string &raw_expr)
 {
     // v69: freezing, collect every macro this evaluation consults
-    // (pack_record_branch_macro) for the condition's record (pack_cond_elif).
+    // (pack_note_branch_consult) for the condition's record (pack_cond_elif).
     struct IfCollect
     {
 	Program &p;

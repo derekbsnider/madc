@@ -3963,7 +3963,6 @@ static void cir_forest_fill_pack_payloads(Program *prog, cir_frozen_forest &f)
     size_t n = (size_t)(prog->tokens.end() - prog->tokens.begin());
     std::vector<uint32_t> unit_of(n, 0xffffffffu), local_of(n, 0);
     std::vector<std::vector<TokenBase *> > unit_toks;
-    std::vector<std::vector<size_t> > unit_globals;	// v68: each unit's tokens' global indices
     const char *last_file = NULL;
     uint32_t last_unit = 0;
     size_t i = 0;
@@ -3986,12 +3985,9 @@ static void cir_forest_fill_pack_payloads(Program *prog, cir_frozen_forest &f)
 	}
 	if (unit_toks.size() < f.units.size())
 	    unit_toks.resize(f.units.size());
-	if (unit_globals.size() < f.units.size())
-	    unit_globals.resize(f.units.size());
 	unit_of[i] = u;
 	local_of[i] = (uint32_t)unit_toks[u].size();
 	unit_toks[u].push_back(tb);
-	unit_globals[u].push_back(i);
     }
 
     f.token_unit = unit_of;	// v58: each arena slot's point-of-creation unit
@@ -4082,77 +4078,10 @@ static void cir_forest_fill_pack_payloads(Program *prog, cir_frozen_forest &f)
 	f.units[u].edges = tgts;
     }
 
-    // 5. Branch-relevant macro names (sorted ids for reproducible bytes).
-    for (std::set<madc::dis::istring>::const_iterator bm = prog->pack_branch_macros.begin();
-	 bm != prog->pack_branch_macros.end(); ++bm)
-	f.branch_macros.push_back(pool->intern(*bm));
-    std::sort(f.branch_macros.begin(), f.branch_macros.end());
-
-    // 5b (v40). Per-unit EXTERNAL branch dependencies — the bind-eligibility
-    // environment (task #57): [name_id, flags, value_id, definer] tuples, one
-    // per recorded definer — the first consult's, then each open-ancestor
-    // definer of a later consult in the same state (the bind reads a name's
-    // tuples as alternatives: any definer inside the closure makes it
-    // replay-internal).
-    typedef std::map<const char *, std::vector<Program::PackBranchDep> > dep_map;
-    const std::vector<dep_map::const_iterator> deps_in_order =
-	pack_entries_in_unit_order(prog->pack_unit_branch_deps, prog->pack_unit_order);
-    for (size_t dk = 0; dk < deps_in_order.size(); ++dk) {
-	dep_map::const_iterator bd = deps_in_order[dk];
-	uint32_t u = ensure_unit(bd->first);
-	for (size_t k = 0; k < bd->second.size(); ++k) {
-	    const Program::PackBranchDep &d = bd->second[k];
-	    // ensure_unit may reallocate f.units — resolve the definers BEFORE
-	    // taking the output reference.
-	    std::vector<uint32_t> definers;
-	    definers.push_back(d.definer ? ensure_unit(d.definer) : 0xffffffffu);
-	    for (size_t a = 0; a < d.ancestor_definers.size(); ++a)
-		definers.push_back(ensure_unit(d.ancestor_definers[a]));
-	    std::vector<uint32_t> &out = f.units[u].branch_deps;
-	    uint32_t flags = (d.defined ? 1u : 0u)
-			   | (d.has_value ? 2u : 0u)
-			   | (d.arm_replays ? CIR_BRANCH_DEP_ARM_REPLAYS : 0u);
-	    const uint32_t name_id = pool->intern(d.name);
-	    const uint32_t value_id = d.has_value && !d.value.empty()
-				    ? pool->intern(d.value) : 0;
-	    for (size_t a = 0; a < definers.size(); ++a) {
-		out.push_back(name_id);
-		out.push_back(flags);
-		out.push_back(value_id);
-		out.push_back(definers[a]);
-	    }
-	}
-    }
-    // v55: each unit's skipped directive-only `#ifndef` arms follow its
-    // dependencies as CIR_BRANCH_DEP_PP_ARM tuples [name_id, flags, text_id,
-    // none] — the bind replays one when the consumer lacks its macro.
-    typedef std::map<const char *, std::vector<Program::PackSkippedArm> > arm_map;
-    const std::vector<arm_map::const_iterator> arms_in_order =
-	pack_entries_in_unit_order(prog->pack_unit_skipped_arms, prog->pack_unit_order);
-    for (size_t ak = 0; ak < arms_in_order.size(); ++ak) {
-	arm_map::const_iterator am = arms_in_order[ak];
-	uint32_t u = ensure_unit(am->first);
-	for (size_t k = 0; k < am->second.size(); ++k) {
-	    const Program::PackSkippedArm &a = am->second[k];
-	    std::vector<uint32_t> &out = f.units[u].branch_deps;
-	    out.push_back(pool->intern(a.name));
-	    out.push_back(CIR_BRANCH_DEP_PP_ARM);
-	    out.push_back(pool->intern(a.text));
-	    out.push_back(0xffffffffu);
-	}
-    }
-
-    // 5c (v68). Each unit's ITEM ORDER for the bind's positional walk
+    // 5 (v68). Each unit's ITEM ORDER for the bind's positional walk
     // (docs/plans/2026-10-18-verified-cxx-bind.md, K2): every edge's place
     // among the unit's PP events, then each conditional it evaluated over an
-    // external macro (SNAP_KIND_CIR_UNIT_CONDS). A token position becomes the
-    // unit's own index: the count of its tokens ahead of the global one.
-    auto local_token = [&](uint32_t u, size_t global) -> uint32_t {
-	if (u >= unit_globals.size())
-	    return 0;
-	const std::vector<size_t> &g = unit_globals[u];
-	return (uint32_t)(std::lower_bound(g.begin(), g.end(), global) - g.begin());
-    };
+    // external macro (SNAP_KIND_CIR_UNIT_CONDS).
     std::map<uint32_t, std::vector<uint32_t> > edge_events_of;
     typedef std::map<const char *, std::vector<uint32_t> > edge_pos_map;
     const std::vector<edge_pos_map::const_iterator> edge_pos_in_order =
@@ -4200,14 +4129,11 @@ static void cir_forest_fill_pack_payloads(Program *prog, cir_frozen_forest &f)
 	    w[CIR_COND_KIND] = (uint32_t)r.kind;
 	    w[CIR_COND_TEXT] = pool->intern(r.text);
 	    w[CIR_COND_FLAGS] = (r.outcome ? CIR_COND_F_OUTCOME : 0u)
-			      | (r.single_arm ? CIR_COND_F_SINGLE_ARM : 0u)
-			      | (r.arm_captured && r.arm_pure ? CIR_COND_F_ARM_PURE : 0u);
+			      | (r.single_arm ? CIR_COND_F_SINGLE_ARM : 0u);
 	    w[CIR_COND_EV_BEGIN] = r.ev_begin;
 	    w[CIR_COND_ED_BEGIN] = r.ed_begin;
 	    w[CIR_COND_EV_END] = r.ev_end;
 	    w[CIR_COND_ED_END] = r.ed_end;
-	    w[CIR_COND_TOK_BEGIN] = local_token(u, r.tok_begin);
-	    w[CIR_COND_TOK_END] = local_token(u, r.tok_end);
 	    w[CIR_COND_ARM] = r.arm_captured ? pool->intern(r.arm) : 0;
 	    w[CIR_COND_REC_END] = r.rec_end;
 	    w[CIR_COND_ARM_STATE] = r.arm_captured && !r.arm_state.empty()
@@ -7817,11 +7743,9 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 			;			// library Run verb: silent
 		    else if (prog->pack_recording)
 			fprintf(stderr, "Froze %s: %zu units, %zu records, "
-				"%zu tokens, %zu decl-index entries, "
-				"%zu branch macros -> %s%s\n",
+				"%zu tokens, %zu decl-index entries -> %s%s\n",
 				source_name, f.units.size(), nrec, ntok, ndecl,
-				f.branch_macros.size(), out_path,
-				append ? " (appended)" : "");
+				out_path, append ? " (appended)" : "");
 		    else
 			fprintf(stderr, "Froze %s: %zu units, %zu records -> %s%s\n",
 				source_name, f.units.size(), nrec, out_path,
@@ -8035,10 +7959,6 @@ int madc_cir_dump_forest(const char *container_path)
     const std::vector<uint32_t> &canon = forest.canon_order();
     for (size_t i = 0; i < canon.size(); ++i)
 	printf("canon\t%zu\t%s\n", i, forest.unit_name(canon[i]));
-    const std::vector<uint32_t> &bm = forest.branch_macros();
-    for (size_t i = 0; i < bm.size(); ++i)
-	if (const char *s = forest.pool_str(bm[i]))
-	    printf("branchmacro\t%s\n", s);
 
     // v58 seed index (docs/plans/2026-10-13-pack-slices-design.md).
     if (!forest.seeds().empty()) {
@@ -8085,16 +8005,14 @@ int madc_cir_dump_forest(const char *container_path)
 		 ++c, at += CIR_COND_WORDS) {
 		const uint32_t *w = &cw[at];
 		const char *txt = forest.pool_str(w[CIR_COND_TEXT]);
-		printf("cond\t%s\t%s\t%u\t%u\tev=%u-%u\ted=%u-%u\ttok=%u-%u\tarm=%s\t%s\n",
+		printf("cond\t%s\t%s\t%u\t%u\tev=%u-%u\ted=%u-%u\tarm=%s\t%s\n",
 		       uname ? uname : "?",
 		       w[CIR_COND_KIND] < 5 ? kinds[w[CIR_COND_KIND]] : "?",
 		       (w[CIR_COND_FLAGS] & CIR_COND_F_OUTCOME) ? 1u : 0u,
 		       (w[CIR_COND_FLAGS] & CIR_COND_F_SINGLE_ARM) ? 1u : 0u,
 		       w[CIR_COND_EV_BEGIN], w[CIR_COND_EV_END],
 		       w[CIR_COND_ED_BEGIN], w[CIR_COND_ED_END],
-		       w[CIR_COND_TOK_BEGIN], w[CIR_COND_TOK_END],
-		       !w[CIR_COND_ARM] ? "none"
-			   : (w[CIR_COND_FLAGS] & CIR_COND_F_ARM_PURE) ? "pure" : "decls",
+		       w[CIR_COND_ARM] ? "captured" : "none",
 		       txt ? txt : "?");
 		printf("condnest\t%s\t%u\t%u\n", uname ? uname : "?", c, w[CIR_COND_REC_END]);
 	    }

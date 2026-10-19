@@ -89,7 +89,8 @@ enum : uint32_t
 	SNAP_KIND_CIR_DECL_INDEX    = madc::dis::SNAP_KIND_CONSUMER + 7,  // cir_forest_decl_entry[]
 	SNAP_KIND_CIR_PP_EXPORTS    = madc::dis::SNAP_KIND_CONSUMER + 8,  // uint32 event stream (cir_forest_pp_event + params)
 	SNAP_KIND_CIR_UNIT_EDGES    = madc::dis::SNAP_KIND_CONSUMER + 9,  // uint32[] directory unit indices, include order
-	SNAP_KIND_CIR_BRANCH_MACROS = madc::dis::SNAP_KIND_CONSUMER + 10, // container-global: uint32 name ids, sorted
+	// SNAP_KIND_CONSUMER + 10 RETIRED (v2-v69: the container-global branch
+	// macro names; read by nothing since K2, deleted at v70). Never reuse it.
 	SNAP_KIND_CIR_CANON_ORDER   = madc::dis::SNAP_KIND_CONSUMER + 11, // container-global: uint32 unit indices, canonical order
 	// --- Phase 6: complete type-table serialization (2026-06-12 type-table
 	// design §6.4 "forest type-refs serialize as ids + table segments") ---
@@ -123,27 +124,9 @@ enum : uint32_t
 	// produced image. OPTIONAL segment: absent = no ledger (the flag then
 	// refuses loudly). See cir_forest_ledger_header. ---
 	SNAP_KIND_CIR_LEDGER           = madc::dis::SNAP_KIND_CONSUMER + 22, // container-global: cir_forest_ledger_header + entries + payload
-	// --- v40: per-unit EXTERNAL branch dependencies (task #57) — the flat
-	// u32 stream is [name_id, flags, value_id, definer_unit]... with flags
-	// bit0 = defined-at-freeze, bit1 = value_id valid (object-like body),
-	// definer_unit = directory index of the unit that established the
-	// state (0xffffffff = none). A name may carry several tuples, one per
-	// recorded definer (the first consult's, then each open ancestor's of
-	// a later consult in the same state). Bind eligibility skips a name
-	// with ANY definer inside the closure being bound (replay-internal) and compares the
-	// rest against the consumer's live macro tables; a mismatch declines
-	// the whole root bind to live parse (or prunes an already-live unit
-	// via its own guard). v55: a tuple with flags bit2 (CIR_BRANCH_DEP_PP_ARM)
-	// is not a dependency but a skipped arm — [name_id, PP_ARM, text_id,
-	// 0xffffffff]: the body of an `#ifndef name` arm the producer skipped
-	// (an external sibling had defined name) that holds only define / undef /
-	// conditional directives; the bind replays it when name is undefined.
-	// v67: flags bit3 (CIR_BRANCH_DEP_ARM_REPLAYS) on a defined dep says the
-	// consult IS that unit's skipped arm, writing name alone over an
-	// external object-like definition: a consumer lacking name runs the arm
-	// in its own state, and when it yields the frozen value the bind takes
-	// the replay instead of declining. ---
-	SNAP_KIND_CIR_BRANCH_DEPS      = madc::dis::SNAP_KIND_CONSUMER + 23, // per-unit: uint32 [name_id, flags, value_id, definer_unit] tuples
+	// --- SNAP_KIND_CONSUMER + 23 RETIRED (v40-v69: per-unit branch
+	// dependencies; v70 deletes them — the condition records
+	// (SNAP_KIND_CIR_UNIT_CONDS) replaced them). Never reuse it. ---
 	// v41: exact source bytes before preprocessing. A config-mismatched
 	// consumer may re-tokenize these without binding producer semantic state.
 	SNAP_KIND_CIR_UNIT_SOURCE      = madc::dis::SNAP_KIND_CONSUMER + 24,
@@ -180,13 +163,11 @@ enum : uint32_t
 };
 
 // v68: one frozen condition record's words (SNAP_KIND_CIR_UNIT_CONDS).
-// tok_begin / tok_end are the unit's own token indices.
 enum cir_forest_cond_field : uint32_t {
 	CIR_COND_KIND = 0,	// Program::CondDirective (If / Ifdef / Ifndef / Elif)
 	CIR_COND_TEXT,		// pool id: the condition, or the #ifdef / #ifndef macro
 	CIR_COND_FLAGS,		// CIR_COND_F_* below
 	CIR_COND_EV_BEGIN, CIR_COND_ED_BEGIN, CIR_COND_EV_END, CIR_COND_ED_END,
-	CIR_COND_TOK_BEGIN, CIR_COND_TOK_END,
 	CIR_COND_ARM,		// pool id of a skipped single arm's body (0 = none)
 	CIR_COND_REC_END,	// v69: the unit's record count at the arm's end (nested records)
 	CIR_COND_ARM_STATE,	// v69: pool id of the freeze's state of the captured arm's writes (0 = none)
@@ -201,8 +182,7 @@ enum : uint32_t { CIR_INCL_WORDS = 3 };
 enum : uint32_t { CIR_CONSULT_WORDS = 3 };
 enum : uint32_t {
 	CIR_COND_F_OUTCOME    = 1u,	// the arm was taken at freeze
-	CIR_COND_F_SINGLE_ARM = 2u,	// the group's #endif ended it (no #elif / #else)
-	CIR_COND_F_ARM_PURE   = 4u	// the captured arm holds only directives
+	CIR_COND_F_SINGLE_ARM = 2u	// the group's #endif ended it (no #elif / #else)
 };
 
 // One frozen node record (fixed-size POD; x86-64 little-endian first, like
@@ -725,14 +705,12 @@ bool cir_freeze_read(const madc::dis::snapshot_reader &r, uint32_t seg_id_base,
 // arm writes), and the conditions slot ends with the unit's INCLUSIONS — where
 // each of its includes by the freeze TU ended, so the walk reads a guard-less
 // unit's Nth inclusion at the Nth edge to it.
-enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 69 };
-// Flags word of a SNAP_KIND_CIR_BRANCH_DEPS tuple.
-enum : uint32_t {
-	CIR_BRANCH_DEP_DEFINED   = 1u,	// the macro was defined at the consult
-	CIR_BRANCH_DEP_HAS_VALUE = 2u,	// value_id holds its object-like body
-	CIR_BRANCH_DEP_PP_ARM    = 4u,	// v55: [name, flags, arm text, none] — not a dep
-	CIR_BRANCH_DEP_ARM_REPLAYS = 8u	// v67: the consult is the unit's PP_ARM (name alone, object-like external)
-};
+//
+// v70: what the bind's walk (K2 step 3) replaced is gone — the per-unit
+// branch dependencies (slot +8, the v55 PP_ARM and v67 ARM_REPLAYS tuples
+// with them), the container-global branch macro names (seg 6), and a
+// condition record's token positions and arm-purity flag (dump-only).
+enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 70 };
 	// v43: defrec friendfn/friendcls runs — the friendship grants
 	// (friend_function_names / friend_class_names), parse-time access
 	// state a restored class never carried (hoisted hidden-friend bodies
@@ -749,8 +727,8 @@ enum : uint32_t
 	CIR_FOREST_SEG_STR_BYTES     = 2,	// SNAP_KIND_INTERN_BYTES
 	CIR_FOREST_SEG_STR_OFFSETS   = 3,	// SNAP_KIND_INTERN_OFFSETS (v59; 4 is retired)
 	// seg ids 5 and 8 are RETIRED (the v6 type records / payload, deleted at the
-	// v18 flip) — never reuse them for a new segment kind.
-	CIR_FOREST_SEG_BRANCH_MACROS = 6,	// v2 (absent = zero-length)
+	// v18 flip), and 6 (the branch macro names, v2-v69) — never reuse them for
+	// a new segment kind.
 	CIR_FOREST_SEG_CANON_ORDER   = 7,	// v2 (absent = zero-length)
 	CIR_FOREST_SEG_GLOBALS       = 9,	// v13 (absent = zero-length): file-scope global var defs
 	// B3: the DefArena dump (10-14) — THE type-graph serialization since v18.
@@ -779,8 +757,9 @@ enum : uint32_t
 	CIR_FOREST_SEG_UNIT_BASE     = 32,
 	CIR_FOREST_SEGS_PER_UNIT     = 11	// +0 records, +1 children, +2 connectors,
 						// +3 positions, +4 tokens, +5 decl index,
-						// +6 pp exports, +7 edges, +8 branch deps
-						// +9 raw source (v41; slots may be zero-length)
+						// +6 pp exports, +7 edges, +8 RETIRED
+						// (branch deps, v40-v69), +9 raw source
+						// (v41; slots may be zero-length)
 						// +10 conditions (v68)
 };
 
@@ -1340,12 +1319,6 @@ struct cir_forest_unit
 	std::vector<cir_forest_decl_entry> decl_index;
 	std::vector<uint32_t>       pp_events;	// cir_forest_pp_event stream
 	std::vector<uint32_t>       edges;	// directory unit indices, include order
-	// v40: external branch dependencies — [name_id, flags, value_id,
-	// definer_unit] tuples (flags bit0 = defined at freeze, bit1 =
-	// value_id valid; definer_unit 0xffffffff = none), one per recorded
-	// definer of a name. v55: bit2 marks a
-	// skipped directive-only arm tuple (CIR_BRANCH_DEP_PP_ARM).
-	std::vector<uint32_t>       branch_deps;
 	std::vector<uint8_t>        source_payload;	// v41: pre-PP source bytes
 	std::vector<uint32_t>       conditions;	// v68: SNAP_KIND_CIR_UNIT_CONDS words
 };
@@ -1365,7 +1338,6 @@ struct cir_frozen_forest
 	uint32_t                     role = CIR_FOREST_ROLE_SYSTEM;
 	std::vector<madc::dis::istring>     libs;	// dlopen closure (#load / -l paths)
 	// --- grove payload v2 (B4a; container-global) ---
-	std::vector<uint32_t>        branch_macros;	// pool name ids, sorted
 	std::vector<uint32_t>        canon_order;	// unit indices, canonical include order
 	// --- v13 (container-global): file-scope global VARIABLE definitions ---
 	std::vector<cir_forest_global_record> globals;
@@ -1995,7 +1967,7 @@ class CirFrozenForest
 	madc::dis::frozen_intern_table _pool;
 	// v2 container-global payloads (loaded at open; empty on v2-less
 	// module containers).
-	std::vector<uint32_t> _branch_macros, _canon_order;
+	std::vector<uint32_t> _canon_order;
 	// The DataDef objects materialize lazily at bind (materialize_from_arena),
 	// swizzling arena id refs back to pointers. The forest owns the
 	// materialized objects and frees them in ~CirFrozenForest.
@@ -2325,12 +2297,10 @@ public:
 			     std::vector<cir_forest_decl_entry> &out);
 	bool unit_pp_events(uint32_t unit, std::vector<uint32_t> &out);
 	bool unit_edges(uint32_t unit, std::vector<uint32_t> &out);
-	bool unit_branch_deps(uint32_t unit, std::vector<uint32_t> &out);	// v40
 	bool unit_conditions(uint32_t unit, std::vector<uint32_t> &out);	// v68
 	bool unit_has_source(uint32_t unit) const;	// v41 directory/segment probe
 	bool unit_has_frozen_surface(uint32_t unit) const;	// tokens, PP exports or edges: anything an #include binds
 	bool unit_source(uint32_t unit, std::string &out) const;	// v41 raw source fallback
-	const std::vector<uint32_t> &branch_macros() const { return _branch_macros; }
 	const std::vector<uint32_t> &canon_order() const { return _canon_order; }
 	// MIR module cache: the container's compiled-module blob (raw
 	// MIR_write_module bytes, stamp header validated and stripped). False =

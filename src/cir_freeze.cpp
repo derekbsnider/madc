@@ -542,14 +542,14 @@ static bool cir_forest_compress_intern = false;
 // same day and rejected: net ~-0.3 MB for +13s pack CPU and a dictionary
 // segment + reader wiring — the transforms dominate them on every axis.
 // A unit that carries nothing but (possibly) its source text: no records,
-// tokens, declarations, PP exports, edges or branch dependencies.
+// tokens, declarations, PP exports, edges or conditions.
 static bool forest_unit_source_only(const cir_forest_unit &fu)
 {
 	return fu.blob.records.empty() && fu.blob.children.empty()
 	    && fu.connectors.empty() && fu.positions.empty()
 	    && fu.token_payload.empty() && fu.decl_index.empty()
 	    && fu.pp_events.empty() && fu.edges.empty()
-	    && fu.branch_deps.empty() && fu.conditions.empty();
+	    && fu.conditions.empty();
 }
 
 // The SHARED tables a bind reads record by record (both string pools' bytes,
@@ -925,15 +925,12 @@ bool cir_forest_write(const cir_frozen_forest &f, madc::dis::snapshot_writer &w,
 	if (!add_seg(w, CIR_FOREST_SEG_EXTERN_LOCS, SNAP_KIND_CIR_EXTERN_LOCS,
 		     extern_index.data(), extern_index.size(), PchCompression::None))
 		return false;
-	// v2 container-global payloads (zero-length when the freeze recorded
-	// nothing — a module-only freeze). Every open reads both and they are
-	// small, so they are stored raw: no decode on open.
-	if (!add_seg(w, CIR_FOREST_SEG_BRANCH_MACROS, SNAP_KIND_CIR_BRANCH_MACROS,
-		     f.branch_macros.data(),
-		     f.branch_macros.size() * sizeof(uint32_t), PchCompression::None)
-	    || !add_seg(w, CIR_FOREST_SEG_CANON_ORDER, SNAP_KIND_CIR_CANON_ORDER,
-			f.canon_order.data(),
-			f.canon_order.size() * sizeof(uint32_t), PchCompression::None))
+	// v2 container-global payload (zero-length when the freeze recorded
+	// nothing — a module-only freeze). Every open reads it and it is small,
+	// so it is stored raw: no decode on open.
+	if (!add_seg(w, CIR_FOREST_SEG_CANON_ORDER, SNAP_KIND_CIR_CANON_ORDER,
+		     f.canon_order.data(),
+		     f.canon_order.size() * sizeof(uint32_t), PchCompression::None))
 		return false;
 
 	for (size_t u = 0; u < f.units.size(); ++u) {
@@ -991,9 +988,6 @@ bool cir_forest_write(const cir_frozen_forest &f, madc::dis::snapshot_writer &w,
 		    || !add_seg(w, base + 7, SNAP_KIND_CIR_UNIT_EDGES,
 				fu.edges.data(),
 				fu.edges.size() * sizeof(uint32_t), codec)
-		    || !add_seg(w, base + 8, SNAP_KIND_CIR_BRANCH_DEPS,
-				fu.branch_deps.data(),
-				fu.branch_deps.size() * sizeof(uint32_t), codec)
 		    || !add_seg(w, base + 9, SNAP_KIND_CIR_UNIT_SOURCE,
 				fu.source_payload.data(),
 				fu.source_payload.size(), codec)
@@ -2460,19 +2454,7 @@ bool CirFrozenForest::complete_open(c2m_ctx_t c2m)
 		}
 	}
 
-	// v2 container-global payloads (zero-length segments = empty).
-	if (const madc::dis::snapshot_segment *bs =
-		_reader.find(CIR_FOREST_SEG_BRANCH_MACROS)) {
-		madc::dis::decode_bytes b;
-		if (bs->kind != SNAP_KIND_CIR_BRANCH_MACROS
-		    || !_reader.read_segment(*bs, b) || b.size() % sizeof(uint32_t)) {
-			fprintf(stderr, "madc: forest branch-macro set corrupt\n");
-			return false;
-		}
-		_branch_macros.resize(b.size() / sizeof(uint32_t));
-		if (!b.empty())
-			memcpy(_branch_macros.data(), b.data(), b.size());
-	}
+	// v2 container-global payload (a zero-length segment = empty).
 	if (const madc::dis::snapshot_segment *cs =
 		_reader.find(CIR_FOREST_SEG_CANON_ORDER)) {
 		madc::dis::decode_bytes c;
@@ -2896,20 +2878,6 @@ bool CirFrozenForest::unit_edges(uint32_t unit, std::vector<uint32_t> &out)
 	madc::dis::decode_bytes raw;
 	if (!read_unit_seg(unit, 7, SNAP_KIND_CIR_UNIT_EDGES, raw)
 	    || raw.size() % sizeof(uint32_t))
-		return false;
-	out.resize(raw.size() / sizeof(uint32_t));
-	if (!raw.empty())
-		memcpy(out.data(), raw.data(), raw.size());
-	return true;
-}
-
-// v40: [name_id, flags, value_id, definer_unit] tuples — see
-// SNAP_KIND_CIR_BRANCH_DEPS.
-bool CirFrozenForest::unit_branch_deps(uint32_t unit, std::vector<uint32_t> &out)
-{
-	madc::dis::decode_bytes raw;
-	if (!read_unit_seg(unit, 8, SNAP_KIND_CIR_BRANCH_DEPS, raw)
-	    || raw.size() % (4 * sizeof(uint32_t)))
 		return false;
 	out.resize(raw.size() / sizeof(uint32_t));
 	if (!raw.empty())

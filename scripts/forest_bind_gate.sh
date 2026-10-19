@@ -25,11 +25,11 @@ cd "$(dirname "$0")/.."
 ulimit -t 300 2>/dev/null
 
 BIN=bin/madc
-# v40 (task #57): this gate is the branch-dep environment check's keeper —
-# the redecl tolerance and the three-way prune/inert-bind/decline redesign
-# are in; the check ships default-OFF until the knob-on packed-suite
-# burndown reaches 0 and the #25 latency check passes. Running the whole
-# battery WITH it on keeps the parked mechanism from rotting.
+# This gate is the verified bind's keeper (K2's positional walk re-evaluates
+# each recorded conditional, docs/plans/2026-10-18-verified-cxx-bind.md); the
+# check ships default-OFF for C++ until the knob-on packed-suite burndown
+# reaches 0 (K1b, K3). Running the whole battery WITH it on keeps it from
+# rotting.
 export MADC_FOREST_ENV_CHECK=1
 if [ ! -x "$BIN" ]; then
     echo "forest_bind_gate: missing $BIN"
@@ -1206,13 +1206,13 @@ cr_want() {	# cr_want <label> <ERE over a dump line>
 }
 cr_want "the edge to v.h sits after u.h's two defines" "^edgepos	${cr_u}	0	2$"
 cr_want "the guard #ifndef: taken, single arm, the whole unit" \
-    "^cond	${cr_u}	ifndef	1	1	ev=0-3	ed=0-1	tok=0-[1-9][0-9]*	arm=none	FBGATE_CR_U_H$"
-cr_want "#ifdef FBG_CR_CFG: taken, single arm, a prototype's tokens, no events" \
-    "^cond	${cr_u}	ifdef	1	1	ev=2-2	ed=1-1	tok=0-[1-9][0-9]*	arm=none	FBG_CR_CFG$"
+    "^cond	${cr_u}	ifndef	1	1	ev=0-3	ed=0-1	arm=none	FBGATE_CR_U_H$"
+cr_want "#ifdef FBG_CR_CFG: taken, single arm, no events" \
+    "^cond	${cr_u}	ifdef	1	1	ev=2-2	ed=1-1	arm=none	FBG_CR_CFG$"
 cr_want "#ifndef FBG_CR_GUARDED: skipped, single arm, its typedef arm captured" \
-    "^cond	${cr_u}	ifndef	0	1	ev=2-2	ed=1-1	tok=[0-9]+-[0-9]+	arm=decls	FBG_CR_GUARDED$"
+    "^cond	${cr_u}	ifndef	0	1	ev=2-2	ed=1-1	arm=captured	FBG_CR_GUARDED$"
 cr_want "#if over FBG_CR_CFG: taken, an #elif follows, one define" \
-    "^cond	${cr_u}	if	1	0	ev=2-3	ed=1-1	tok=[0-9]+-[0-9]+	arm=none	defined FBG_CR_CFG && FBG_CR_A$"
+    "^cond	${cr_u}	if	1	0	ev=2-3	ed=1-1	arm=none	defined FBG_CR_CFG && FBG_CR_A$"
 grep -aEq "^cond	${cr_u}	elif	" "$cr_dir/dump.txt" \
     && fail "[condrec] an #elif after a taken arm was recorded — it is never evaluated"
 rm -rf "$cr_dir"
@@ -1533,9 +1533,9 @@ rm -f tmp/fbgate_nsenum.h tmp/fbgate_nsenum_producer.cpp tmp/fbgate_nsenum_consu
 # A unit whose `#ifndef X` arm was skipped at freeze because an EARLIER corpus
 # sibling defined X carries none of that arm (mingw stdio.h's NULL behind the
 # win64 corpus's <cstddef>). A consumer that includes only that unit has no X.
-# An arm of define / undef / conditional directives only now rides the unit's
-# branch-dep stream (CIR_BRANCH_DEP_PP_ARM), and the bind replays it through
-# the live preprocessor when the consumer lacks X: the unit still BINDS, and
+# The freeze captures the arm into the `#ifndef X` condition record (v68; until
+# v70 a CIR_BRANCH_DEP_PP_ARM tuple), and the bind's walk runs it through the
+# live preprocessor when the consumer lacks X: the unit still BINDS, and
 # the arm's nested conditional answers in the CONSUMER's macro state
 # (FBG_LV_WIDE, which the producer never defined, selects 50). The consumer
 # runs at the knob's shipping default (MADC_FOREST_ENV_CHECK=0, overriding this
@@ -1600,10 +1600,10 @@ echo "forest_bind_gate: [armreplay] OK — a skipped directive-only arm binds an
 # A C consumer's bind is always verified, so the armreplay unit's want-defined
 # dep DECLINED its root there — mingw stdio.h's WEOF and NULL, defined first by
 # the C layer's earlier ctype.h / stddef.h roots, left <stdio.h> live-parsed in
-# every win64 C compile. Now a dep whose consult IS the unit's captured arm
-# (writing the name alone, over an object-like external) carries
-# CIR_BRANCH_DEP_ARM_REPLAYS; the bind runs the arm in the consumer's state and,
-# when it yields the frozen value, takes the replay (fbgate_ac_b.h binds, x=5 —
+# every win64 C compile. The walk runs the unit's captured arm (writing the
+# name alone, over an object-like external; v67-v69 marked it
+# CIR_BRANCH_DEP_ARM_REPLAYS) in the consumer's state and, when it yields the
+# frozen value, binds (fbgate_ac_b.h binds, x=5 —
 # its arm writes the name in two branches, mingw stdio.h's NULL shape, and
 # answers by language). Since K2 (v69) an arm whose value DIFFERS from the
 # definer's binds too when no frozen token after the arm expanded that value:

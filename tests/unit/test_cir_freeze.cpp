@@ -692,7 +692,7 @@ TEST_CASE("B3: the directory round-trips libs and the typeid->name closure") {
 // CirFrozenForest's v2 accessors.
 // ---------------------------------------------------------------------------
 
-TEST_CASE("B4a: grove payload v2 round-trips tokens, decl index, PP exports, edges, branch macros, canon order") {
+TEST_CASE("B4a: grove payload round-trips tokens, decl index, PP exports, edges, condition records, canon order") {
 	std::string inc_path = std::string("/tmp/madc_b4a_inc_")
 			     + std::to_string((long)getpid()) + ".h";
 	std::string main_path = std::string("/tmp/madc_b4a_main_")
@@ -759,13 +759,47 @@ TEST_CASE("B4a: grove payload v2 round-trips tokens, decl index, PP exports, edg
 	CHECK(canon[0] == u_main);
 	CHECK(canon[1] == u_inc);
 
-	// Branch macros: the include guard (#ifndef) and the #if consult.
-	std::set<std::string> branch;
-	for (size_t i = 0; i < forest.branch_macros().size(); ++i)
-		if (const char *s = forest.pool_str(forest.branch_macros()[i]))
-			branch.insert(s);
-	CHECK(branch.count("B4A_T_H") == 1);
-	CHECK(branch.count("B4A_MISSING") == 1);
+	// Condition records (v68/v69): the include's guard #ifndef, and main's
+	// #if with its one consult. Slot layout: [n, edge places...], [n, records
+	// (CIR_COND_WORDS each)...], [n, inclusions...], [n words, consults...].
+	auto cond_records = [&](uint32_t u, std::vector<uint32_t> &w,
+				size_t &conds_at, size_t &nconds,
+				size_t &consults_at) {
+		REQUIRE(forest.unit_conditions(u, w));
+		size_t at = 0;
+		REQUIRE(at < w.size());
+		at += 1 + w[at];
+		REQUIRE(at < w.size());
+		nconds = w[at++];
+		conds_at = at;
+		at += nconds * CIR_COND_WORDS;
+		REQUIRE(at < w.size());
+		at += 1 + (size_t)w[at] * CIR_INCL_WORDS;
+		REQUIRE(at < w.size());
+		consults_at = at + 1;
+	};
+	auto pstr = [&](uint32_t id) {
+		const char *s = forest.pool_str(id);
+		return std::string(s ? s : "");
+	};
+	std::vector<uint32_t> wi, wm;
+	size_t ci = 0, ni = 0, ki = 0, cm = 0, nm = 0, km = 0;
+	cond_records(u_inc, wi, ci, ni, ki);
+	cond_records(u_main, wm, cm, nm, km);
+	REQUIRE(ni >= 1);
+	const uint32_t *guard = &wi[ci];
+	CHECK(guard[CIR_COND_KIND] == (uint32_t)Program::CondDirective::Ifndef);
+	CHECK(pstr(guard[CIR_COND_TEXT]) == "B4A_T_H");
+	CHECK((guard[CIR_COND_FLAGS] & CIR_COND_F_OUTCOME) != 0);
+	REQUIRE(nm >= 1);
+	const uint32_t *ifc = &wm[cm];
+	CHECK(ifc[CIR_COND_KIND] == (uint32_t)Program::CondDirective::If);
+	CHECK(pstr(ifc[CIR_COND_TEXT]).find("B4A_MISSING") != std::string::npos);
+	CHECK((ifc[CIR_COND_FLAGS] & CIR_COND_F_OUTCOME) == 0);
+	REQUIRE(ifc[CIR_COND_CONSULT_N] == 1u);
+	const size_t k = km + (size_t)ifc[CIR_COND_CONSULT_AT] * CIR_CONSULT_WORDS;
+	REQUIRE(k < wm.size());
+	CHECK(pstr(wm[k]) == "B4A_MISSING");
 
 	// Token slice: the include unit's stream deserializes to token_count
 	// tokens through the .madh reader.
