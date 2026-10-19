@@ -2637,7 +2637,8 @@ static int pattern_match_p (gen_ctx_t gen_ctx, const struct pattern *pat, MIR_in
   return TRUE;
 }
 
-static int find_insn_pattern (gen_ctx_t gen_ctx, MIR_insn_t insn, int *size) {
+/* inline: the per-insn size estimation in target_translate is its hot caller */
+static inline int find_insn_pattern (gen_ctx_t gen_ctx, MIR_insn_t insn, int *size) {
   int i, ind;
   const struct pattern *pat;
   insn_pattern_info_t info = VARR_GET (insn_pattern_info_t, insn_pattern_info, insn->code);

@@ -11,6 +11,7 @@ Consolidated: MIR pattern index by insn code — gate scripts/check-one-pattern-
 
 - The five MIR targets (x86-64, aarch64, ppc64, riscv64, s390x) each built their instruction-pattern index with a private `qsort`. `GEN_INDEX_PATTERNS` (`third_party/mir/mir-gen.c`) is the one counting-sort indexer, and each target's `patterns_init` calls it.
 - x86-64 computes a pattern's maximal code size on first use (`pattern_max_insn_size`), where it was computed for all 826 patterns at every `MIR_gen_init`.
+- x86-64 `find_insn_pattern` is `static inline`. Its self cost in the sqlite3 callgrind run is 48.99M Ir (53.95M at 37e149fdd).
 - Gate `scripts/check-one-pattern-index.sh` (in `make gates`) fails a target file that builds its own pattern index. Its negative control covers both directions.
 - Differential: `sqlite3.c` compiled to an object (`-c`) is byte-identical (2711928 bytes) between release 37e149fdd and this tree.
 - parse-cost against `scripts/parse_cost/baseline.tsv`: 0 rows red; `rung_stddef.forest` -3.85%, `dialect_one.live` -3.94%, `dialect_one.forest` -3.92%, `dialect.live` -2.39%, `dialect.forest` -2.41%, `dialect_all.live` -2.92%, `dialect_all.forest` -2.92%.
@@ -20,6 +21,7 @@ Consolidated: MIR pattern index by insn code — gate scripts/check-one-pattern-
 - Each generated function carries DWARF call frame information (`MIR_func.cfi`) from its target's prologue: the CFA rule and the saved return address and callee-saved registers, one row per prologue mark. Epilogues carry no rows.
 - On a host target (x86-64, aarch64, ppc64, riscv64, s390x; not Windows) each function's `.eh_frame` table is registered with `__register_frame` and deregistered at `MIR_gen_finish`. A host unwinder walk and a C++ exception now pass through JIT frames.
 - `MIR_debug_add_func` takes the function's CFI, and `.debug_frame` is written from it instead of the x86-64 and aarch64 templates in `mir-debug.c`.
+- `gen_delete_insn` hands a deleted CFI mark to its predecessor only when the mark array is non-empty (`gen_cfi_hand_over_marks`). Its self cost in the sqlite3 callgrind run is 7.84M Ir (9.24M at a839e6dc6).
 - Reducer `tests/unit/test_mir_cfi.cpp` (host `_Unwind` walk as oracle; 3 cases).
 
 ### `__TIMESTAMP__` expands to the current file's modification time

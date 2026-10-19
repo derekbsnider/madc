@@ -922,12 +922,19 @@ static void create_new_bb_insns (gen_ctx_t gen_ctx, MIR_insn_t before, MIR_insn_
   }
 }
 
-static void gen_delete_insn (gen_ctx_t gen_ctx, MIR_insn_t insn) {
-  /* a CFI mark's insn hands the mark to its predecessor: the code that replaced
-     it was put before it */
+/* A CFI mark's insn being deleted hands the mark to its predecessor: the code
+   that replaced it was put before it. */
+static void gen_cfi_hand_over_marks (gen_ctx_t gen_ctx, MIR_insn_t insn) {
   gen_cfi_mark_t *marks = VARR_ADDR (gen_cfi_mark_t, gen_ctx->cfi_marks);
+
   for (size_t i = 0; i < VARR_LENGTH (gen_cfi_mark_t, gen_ctx->cfi_marks); i++)
     if (marks[i].after == insn) marks[i].after = DLIST_PREV (MIR_insn_t, insn);
+}
+
+static void gen_delete_insn (gen_ctx_t gen_ctx, MIR_insn_t insn) {
+  /* marks exist from the prologue on; most deletions come before it */
+  if (VARR_LENGTH (gen_cfi_mark_t, gen_ctx->cfi_marks) != 0)
+    gen_cfi_hand_over_marks (gen_ctx, insn);
   if (optimize_level == 0)
     delete_insn_data (gen_ctx, insn);
   else
