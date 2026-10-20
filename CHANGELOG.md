@@ -8,6 +8,13 @@ Consolidated: pointer_type_node — gate scripts/check-one-pointer-type-node.sh
 Consolidated: MIR pattern index by insn code — gate scripts/check-one-pattern-index.sh
 Consolidated: MIR constant-shift normalizer — gate scripts/check-one-const-shift-normalizer.sh
 
+### MIR gives a generated function's FDE its personality and region table
+
+- A function with unwind regions, a personality (`MIR_set_func_unwind_personality`) and a call inside a region gets an FDE whose LSDA is its region table (`MIR_UNWIND_TABLE_VERSION` 1, format in `third_party/mir/mir.h`). Other functions keep the `zR` CIE augmentation.
+- `MIR_unwind_info_t` states the frame base as a DWARF register plus offset (`base_reg`, `base_offset`), replacing `base_cfa_offset`.
+- `c2mir_options.unwind_personality` names the personality that a function with regions imports. The default is NULL. madc sets neither this option nor `unwind_regions_p` yet, so madc output does not change.
+- Unit tests: `tests/unit/test_mir_unwind.cpp` raises a foreign exception through generated frames under the host unwinder.
+
 ### MIR s390x emits the move a constant shift by 0 becomes
 
 - A shift by a constant 0 on s390x was dropped. The s390x emitter inserted a move ahead of the shift and then skipped past it, so the destination kept its old value. The rewrite now runs once, in `gen_normalize_const_shifts` (`third_party/mir/mir-gen.c`), from `target_split_insns` on ppc64 and s390x. Its emission-loop copy in `mir-gen-s390x.c` and its copy in `mir-gen-ppc64.c` are deleted.

@@ -12815,6 +12815,7 @@ struct gen_ctx {
   MIR_reg_t unwind_base_reg;    /* 0 = the function has no frame block */
   uint32_t unwind_base_align;   /* the frame block's realignment, 0 = none */
   int unwind_base_declared_p;   /* MIR_set_func_unwind_base done for this function */
+  MIR_item_t unwind_personality_item; /* the import of c2mir_options.unwind_personality */
 };
 
 #define zero_op gen_ctx->zero_op
@@ -18512,6 +18513,13 @@ static void start_cleanup_region (c2m_ctx_t c2m_ctx, decl_t decl) {
   if (!gen_ctx->unwind_base_declared_p) {
     MIR_set_func_unwind_base (ctx, curr_func, gen_ctx->unwind_base_reg,
                               gen_ctx->unwind_base_align);
+    if (c2m_options->unwind_personality != NULL) {
+      if (gen_ctx->unwind_personality_item == NULL) {
+        gen_ctx->unwind_personality_item = MIR_new_import (ctx, c2m_options->unwind_personality);
+        move_item_to_module_start (curr_func->module, gen_ctx->unwind_personality_item);
+      }
+      MIR_set_func_unwind_personality (ctx, curr_func, gen_ctx->unwind_personality_item);
+    }
     gen_ctx->unwind_base_declared_p = TRUE;
   }
   decl->unwind_parent = gen_ctx->curr_unwind_region;
@@ -21249,6 +21257,7 @@ static void gen_mir (c2m_ctx_t c2m_ctx, node_t r) {
   abort_proto = abort_item = memcmp_proto = memcmp_item = copysignf_proto = copysignf_item
     = nan_proto = nan_item = memset_proto = memset_item = memcpy_proto = memcpy_item = NULL;
   int128_divmod_proto = divti3_item = udivti3_item = modti3_item = umodti3_item = NULL;
+  gen_ctx->unwind_personality_item = NULL;
   top_gen (c2m_ctx, r, NULL, NULL, NULL);
   gen_finish (c2m_ctx);
 }

@@ -1685,6 +1685,7 @@ static MIR_item_t new_func_arr (MIR_context_t ctx, const char *name, size_t nres
   func->unwind_base_reg = 0;
   func->unwind_base_align = 0;
   func->unwind_regions = NULL;
+  func->unwind_personality = NULL;
   memset (&func->unwind, 0, sizeof (func->unwind));
   ctx->curr_source_file_id = ctx->curr_source_line = 0; /* don't bleed across functions */
   ctx->curr_unwind_region = 0;
@@ -2846,6 +2847,14 @@ void MIR_set_func_unwind_base (MIR_context_t ctx, MIR_item_t func_item, MIR_reg_
   func_item->u.func->unwind_base_align = align;
 }
 
+void MIR_set_func_unwind_personality (MIR_context_t ctx, MIR_item_t func_item,
+                                      MIR_item_t personality) {
+  if (func_item == NULL || func_item->item_type != MIR_func_item)
+    MIR_get_error_func (ctx) (MIR_wrong_param_value_error,
+                              "MIR_set_func_unwind_personality: wrong param");
+  func_item->u.func->unwind_personality = personality;
+}
+
 static MIR_insn_t new_insn1 (MIR_context_t ctx, MIR_insn_code_t code) {
   return create_insn (ctx, 1, code);
 }
@@ -3827,6 +3836,8 @@ void MIR_output_item (MIR_context_t ctx, FILE *f, MIR_item_t item) {
                (unsigned long) (i + 1), r.parent, (long long) r.offset,
                MIR_item_name (ctx, r.cleanup));
     }
+  if (func->unwind_personality != NULL)
+    fprintf (f, "# unwind personality %s\n", MIR_item_name (ctx, func->unwind_personality));
   for (insn = DLIST_HEAD (MIR_insn_t, func->insns); insn != NULL;
        insn = DLIST_NEXT (MIR_insn_t, insn))
     MIR_output_insn (ctx, f, insn, func, TRUE);
@@ -5438,13 +5449,15 @@ DEF_VARR (MIR_str_t);
 DEF_VARR (uint64_t);
 DEF_VARR (MIR_label_t);
 
-/* A function's unwind region read before its cleanup item may exist: applied
-   at the module's end, when every item of the module has been read. */
+/* A function's unwind region, or its personality (personality_p), read before
+   the item it names may exist: applied at the module's end, when every item of
+   the module has been read. */
 typedef struct read_unwind_region {
   MIR_item_t func;
+  char personality_p;
   uint32_t parent;
   int64_t offset;
-  const char *cleanup;
+  const char *item; /* the region's cleanup, or the personality */
 } read_unwind_region_t;
 DEF_VARR (read_unwind_region_t);
 
@@ -5955,6 +5968,10 @@ static size_t write_item (MIR_context_t ctx, writer_func_t writer, MIR_item_t it
       len += write_int (ctx, writer, r.offset);
       len += write_name (ctx, writer, MIR_item_name (ctx, r.cleanup));
     }
+  if (func->unwind_personality != NULL) { /* unwind_personality <item> */
+    len += write_name (ctx, writer, "unwind_personality");
+    len += write_name (ctx, writer, MIR_item_name (ctx, func->unwind_personality));
+  }
   len += write_name (ctx, writer, "endfunc");
   return len;
 }
@@ -6477,11 +6494,14 @@ void MIR_read_with_func (MIR_context_t ctx, int (*const reader) (MIR_context_t))
         for (size_t j = 0; j < VARR_LENGTH (read_unwind_region_t, read_unwind_regions); j++) {
           read_unwind_region_t r = VARR_GET (read_unwind_region_t, read_unwind_regions, j);
 
-          if ((item = item_tab_find (ctx, r.cleanup, module)) == NULL)
+          if ((item = item_tab_find (ctx, r.item, module)) == NULL)
             MIR_get_error_func (ctx) (MIR_binary_io_error,
-                                      "unwind region cleanup refers to non-existing item %s",
-                                      r.cleanup);
-          MIR_new_unwind_region (ctx, r.func, r.parent, r.offset, item);
+                                      "unwind %s refers to non-existing item %s",
+                                      r.personality_p ? "personality" : "region cleanup", r.item);
+          if (r.personality_p)
+            MIR_set_func_unwind_personality (ctx, r.func, item);
+          else
+            MIR_new_unwind_region (ctx, r.func, r.parent, r.offset, item);
         }
         VARR_TRUNC (read_unwind_region_t, read_unwind_regions, 0);
         MIR_finish_module (ctx);
@@ -6731,7 +6751,8 @@ void MIR_read_with_func (MIR_context_t ctx, int (*const reader) (MIR_context_t))
                       VARR_LENGTH (uint8_t, temp_data) / _MIR_type_size (ctx, type),
                       VARR_ADDR (uint8_t, temp_data));
       } else if (strcmp (name, "uregion") == 0 || strcmp (name, "unwind_base") == 0
-                 || strcmp (name, "unwind_region") == 0) {
+                 || strcmp (name, "unwind_region") == 0
+                 || strcmp (name, "unwind_personality") == 0) {
         if (func == NULL)
           MIR_get_error_func (ctx) (MIR_binary_io_error, "%s outside func", name);
         if (VARR_LENGTH (uint64_t, insn_label_string_nums) != 0)
@@ -6742,13 +6763,19 @@ void MIR_read_with_func (MIR_context_t ctx, int (*const reader) (MIR_context_t))
           name = read_name (ctx, module, "wrong unwind base reg");
           MIR_set_func_unwind_base (ctx, func, MIR_reg (ctx, name, func->u.func),
                                     (uint32_t) read_uint (ctx, "wrong unwind base align"));
+        } else if (strcmp (name, "unwind_personality") == 0) { /* unwind_personality <item> */
+          read_unwind_region_t r = {func, TRUE, 0, 0, NULL};
+
+          r.item = read_name (ctx, module, "wrong unwind personality");
+          VARR_PUSH (read_unwind_region_t, read_unwind_regions, r);
         } else { /* unwind_region <parent> <offset> <cleanup> */
           read_unwind_region_t r;
 
           r.func = func;
+          r.personality_p = FALSE;
           r.parent = (uint32_t) read_uint (ctx, "wrong unwind region parent");
           r.offset = read_int (ctx, "wrong unwind region offset");
-          r.cleanup = read_name (ctx, module, "wrong unwind region cleanup");
+          r.item = read_name (ctx, module, "wrong unwind region cleanup");
           VARR_PUSH (read_unwind_region_t, read_unwind_regions, r);
         }
       } else if ((global_p = strcmp (name, "global") == 0) || strcmp (name, "local") == 0) {

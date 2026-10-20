@@ -457,6 +457,30 @@ static void gen_cfi_save (gen_ctx_t gen_ctx, size_t mark, unsigned dwarf_reg,
   gen_cfi_rule (gen_ctx, mark, FALSE, dwarf_reg, cfa_offset);
 }
 
+/* Does rule R1 come after R2 in the FDE: a later code offset, or on a tie
+   the mark made later. */
+static inline int gen_cfi_rule_after_p (const gen_cfi_rule_t *r1, const gen_cfi_rule_t *r2) {
+  return r1->code_offset != r2->code_offset ? r1->code_offset > r2->code_offset
+                                             : r1->mark > r2->mark;
+}
+
+/* After target_translate: the body's CFA rule -- the frame rule the FDE states
+   last (every mark is in the prologue, before any call) -- as CFA = *REG +
+   *OFFSET; FALSE when the target stated none. */
+static int gen_cfi_body_frame (gen_ctx_t gen_ctx, unsigned *reg, int64_t *offset) {
+  gen_cfi_rule_t *rules = VARR_ADDR (gen_cfi_rule_t, gen_ctx->cfi_rules), *body = NULL;
+
+  for (size_t i = 0; i < VARR_LENGTH (gen_cfi_rule_t, gen_ctx->cfi_rules); i++) {
+    if (!rules[i].frame_p) continue;
+    rules[i].code_offset = VARR_GET (gen_cfi_mark_t, gen_ctx->cfi_marks, rules[i].mark).offset;
+    if (body == NULL || gen_cfi_rule_after_p (&rules[i], body)) body = &rules[i];
+  }
+  if (body == NULL) return FALSE;
+  *reg = body->dwarf_reg;
+  *offset = body->offset;
+  return TRUE;
+}
+
 /* target_translate, before each emission pass over the insns (a multi-pass
    emitter's last pass wins): every record kept per emitted insn restarts --
    every CFI mark is to be located again, and the call sites are recorded again
@@ -487,9 +511,9 @@ static inline void gen_cfi_note_insn (gen_ctx_t gen_ctx, size_t code_offset, MIR
 }
 
 /* ---- Unwind regions of generated code (MIR_unwind_info_t) ------------------
-   A walk reaches a frame through its CFI, which gives the frame's CFA; the
-   frame base regions are relative to is the function's top ALLOCA, at a fixed
-   CFA offset the target's prologue determines (gen_unwind_frame). */
+   The frame base regions are relative to is the function's top ALLOCA, at a
+   fixed CFA offset the target's prologue determines (gen_unwind_frame); the
+   body's CFA rule turns it into an offset from the register that rule names. */
 
 /* target_make_prolog_epilog: after the prologue SP = CFA + SP_CFA_OFFSET, and an
    ALLOCA's result is SP + ALLOCA_BIAS after it (the area a target keeps at the
@@ -572,15 +596,18 @@ static void gen_measure_unwind_top_alloca (gen_ctx_t gen_ctx, MIR_func_t func) {
 static void gen_fill_unwind_info (gen_ctx_t gen_ctx, MIR_func_t func) {
   MIR_unwind_info_t *u = &func->unwind;
   size_t n = VARR_LENGTH (MIR_unwind_call_t, gen_ctx->unwind_calls);
+  unsigned cfa_reg;
+  int64_t cfa_offset;
 
   if (u->calls != NULL) MIR_free (gen_alloc (gen_ctx), u->calls);
   memset (u, 0, sizeof (*u));
   if (!gen_ctx->unwind_frame_p) return;
   u->valid_p = TRUE;
-  if (gen_ctx->unwind_entry_alloca_bytes >= 0) {
+  if (gen_ctx->unwind_entry_alloca_bytes >= 0 && gen_cfi_body_frame (gen_ctx, &cfa_reg, &cfa_offset)) {
     u->base_p = TRUE;
-    u->base_cfa_offset = gen_ctx->unwind_sp_cfa_offset - gen_ctx->unwind_entry_alloca_bytes
-                         + gen_ctx->unwind_alloca_bias;
+    u->base_reg = cfa_reg;
+    u->base_offset = cfa_offset + gen_ctx->unwind_sp_cfa_offset
+                     - gen_ctx->unwind_entry_alloca_bytes + gen_ctx->unwind_alloca_bias;
     u->base_align = func->unwind_base_align;
   }
   if (n != 0) {
@@ -9951,13 +9978,6 @@ static void gen_cfi_offset (VARR (uint8_t) * b, unsigned dwarf_reg, int64_t cfa_
   }
 }
 
-/* Does rule R1 come after R2 in the FDE: a later code offset, or on a tie
-   the mark made later. */
-static inline int gen_cfi_rule_after_p (const gen_cfi_rule_t *r1, const gen_cfi_rule_t *r2) {
-  return r1->code_offset != r2->code_offset ? r1->code_offset > r2->code_offset
-                                             : r1->mark > r2->mark;
-}
-
 /* MIR_func.cfi of the function just translated: the prologue's rows, after the
    CIE's entry row.  A frameless function keeps the entry row throughout. */
 static void gen_cfi_encode (gen_ctx_t gen_ctx, MIR_func_t func) {
@@ -10033,16 +10053,53 @@ static void gen_cfi_patch_u32 (VARR (uint8_t) * b, size_t pos, uint32_t v) {
   memcpy (VARR_ADDR (uint8_t, b) + pos, &v, sizeof (v));
 }
 
-/* An .eh_frame table for one generated function -- its CIE (augmentation
-   "zR", absolute FDE pointers), its FDE and the terminator -- registered with
-   the host unwinder: libgcc takes the table, libunwind (Apple) one FDE. */
+#define GEN_DW_EH_PE_absptr 0x00
+
+static void gen_cfi_push_u64 (VARR (uint8_t) * b, uint64_t v) {
+  VARR_PUSH_ARR (uint8_t, b, (uint8_t *) &v, sizeof (v));
+}
+
+/* FUNC's region table (MIR_UNWIND_TABLE_VERSION) into B, its cleanup pointers
+   absolute. */
+static void gen_unwind_table (VARR (uint8_t) * b, MIR_func_t func) {
+  const MIR_unwind_info_t *u = &func->unwind;
+  size_t i, nregions = VARR_LENGTH (MIR_unwind_region_t, func->unwind_regions);
+
+  VARR_PUSH (uint8_t, b, MIR_UNWIND_TABLE_VERSION);
+  VARR_PUSH (uint8_t, b, GEN_DW_EH_PE_absptr);
+  gen_cfi_uleb (b, u->base_reg);
+  gen_cfi_sleb (b, u->base_offset);
+  gen_cfi_uleb (b, u->base_align);
+  gen_cfi_uleb (b, u->ncalls);
+  for (i = 0; i < u->ncalls; i++) {
+    gen_cfi_uleb (b, u->calls[i].start);
+    gen_cfi_uleb (b, u->calls[i].len);
+    gen_cfi_uleb (b, u->calls[i].region);
+  }
+  gen_cfi_uleb (b, nregions);
+  for (i = 0; i < nregions; i++) {
+    MIR_unwind_region_t r = VARR_GET (MIR_unwind_region_t, func->unwind_regions, i);
+
+    gen_cfi_uleb (b, r.parent);
+    gen_cfi_sleb (b, r.offset);
+    gen_cfi_push_u64 (b, (uint64_t) (uintptr_t) r.cleanup->addr);
+  }
+}
+
+/* An .eh_frame table for one generated function -- its CIE (absolute
+   pointers), its FDE and the terminator -- registered with the host unwinder:
+   libgcc takes the table, libunwind (Apple) one FDE.  A function with a
+   personality and calls in a region (as gcc and clang give one with a cleanup)
+   names the personality (augmentation "zPLR"), and its FDE points at its region
+   table, which follows the terminator in the same allocation. */
 static void gen_cfi_register (gen_ctx_t gen_ctx, MIR_func_t func, void *code, size_t code_len) {
   VARR (uint8_t) *b = gen_ctx->cfi_insns;
   MIR_cfi_cie_t cie;
-  size_t len_pos, fde_pos;
+  size_t len_pos, fde_pos, lsda_slot = 0, unwind_table_pos = 0;
   uint32_t u32 = 0;
-  uint64_t u64;
   uint8_t *table;
+  int table_p = func->unwind_personality != NULL && func->unwind_regions != NULL
+                && func->unwind.base_p && func->unwind.ncalls != 0;
 
   if (func->cfi == NULL || code == NULL || code_len == 0) return;
   MIR_gen_cfi_cie (&cie);
@@ -10051,12 +10108,23 @@ static void gen_cfi_register (gen_ctx_t gen_ctx, MIR_func_t func, void *code, si
   VARR_PUSH_ARR (uint8_t, b, (uint8_t *) &u32, 4); /* length, patched */
   VARR_PUSH_ARR (uint8_t, b, (uint8_t *) &u32, 4); /* CIE id 0 */
   VARR_PUSH (uint8_t, b, 1);                        /* version */
-  VARR_PUSH_ARR (uint8_t, b, (uint8_t *) "zR", 3);
+  if (table_p)
+    VARR_PUSH_ARR (uint8_t, b, (uint8_t *) "zPLR", 5);
+  else
+    VARR_PUSH_ARR (uint8_t, b, (uint8_t *) "zR", 3);
   gen_cfi_uleb (b, cie.code_align);
   gen_cfi_sleb (b, cie.data_align);
   VARR_PUSH (uint8_t, b, (uint8_t) cie.ra_column);
-  gen_cfi_uleb (b, 1);       /* augmentation data length */
-  VARR_PUSH (uint8_t, b, 0); /* DW_EH_PE_absptr */
+  if (table_p) {
+    gen_cfi_uleb (b, 1 + 8 + 1 + 1); /* augmentation data length */
+    VARR_PUSH (uint8_t, b, GEN_DW_EH_PE_absptr); /* P: the personality */
+    gen_cfi_push_u64 (b, (uint64_t) (uintptr_t) func->unwind_personality->addr);
+    VARR_PUSH (uint8_t, b, GEN_DW_EH_PE_absptr); /* L: the FDE's region table */
+    VARR_PUSH (uint8_t, b, GEN_DW_EH_PE_absptr); /* R: the FDE's code range */
+  } else {
+    gen_cfi_uleb (b, 1); /* augmentation data length */
+    VARR_PUSH (uint8_t, b, GEN_DW_EH_PE_absptr);
+  }
   VARR_PUSH_ARR (uint8_t, b, cie.insns, cie.insns_len);
   gen_cfi_align (b, 0);
   gen_cfi_patch_u32 (b, 0, (uint32_t) VARR_LENGTH (uint8_t, b) - 4);
@@ -10065,18 +10133,31 @@ static void gen_cfi_register (gen_ctx_t gen_ctx, MIR_func_t func, void *code, si
   VARR_PUSH_ARR (uint8_t, b, (uint8_t *) &u32, 4); /* length, patched */
   u32 = (uint32_t) (fde_pos + 4);                   /* back to the CIE */
   VARR_PUSH_ARR (uint8_t, b, (uint8_t *) &u32, 4);
-  u64 = (uint64_t) (uintptr_t) code;
-  VARR_PUSH_ARR (uint8_t, b, (uint8_t *) &u64, 8);
-  u64 = code_len;
-  VARR_PUSH_ARR (uint8_t, b, (uint8_t *) &u64, 8);
-  gen_cfi_uleb (b, 0); /* augmentation data length */
+  gen_cfi_push_u64 (b, (uint64_t) (uintptr_t) code);
+  gen_cfi_push_u64 (b, code_len);
+  if (table_p) {
+    gen_cfi_uleb (b, 8); /* augmentation data length: the region table's address */
+    lsda_slot = VARR_LENGTH (uint8_t, b);
+    gen_cfi_push_u64 (b, 0); /* patched */
+  } else {
+    gen_cfi_uleb (b, 0); /* augmentation data length */
+  }
   VARR_PUSH_ARR (uint8_t, b, func->cfi, func->cfi_len);
   gen_cfi_align (b, fde_pos);
   gen_cfi_patch_u32 (b, len_pos, (uint32_t) (VARR_LENGTH (uint8_t, b) - len_pos - 4));
   u32 = 0; /* terminator */
   VARR_PUSH_ARR (uint8_t, b, (uint8_t *) &u32, 4);
+  if (table_p) {
+    unwind_table_pos = VARR_LENGTH (uint8_t, b);
+    gen_unwind_table (b, func);
+  }
   table = gen_malloc (gen_ctx, VARR_LENGTH (uint8_t, b));
   memcpy (table, VARR_ADDR (uint8_t, b), VARR_LENGTH (uint8_t, b));
+  if (table_p) {
+    uint64_t lsda = (uint64_t) (uintptr_t) (table + unwind_table_pos);
+
+    memcpy (table + lsda_slot, &lsda, sizeof (lsda));
+  }
 #if defined(__APPLE__)
   table += fde_pos;
 #endif

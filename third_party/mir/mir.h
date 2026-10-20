@@ -374,18 +374,36 @@ typedef struct MIR_unwind_call {
   uint32_t region; /* region live at the call */
 } MIR_unwind_call_t;
 
-/* A generated function's frame, as a stack walk sees it from one of its calls
-   (filled by MIR_gen; valid_p FALSE when the function has no region at a
-   call).  The walk reaches the frame through the function's CFI (MIR_func.cfi),
-   which gives its CFA. */
+/* A generated function's frame, as an unwinder's personality sees it from one
+   of its calls (filled by MIR_gen; valid_p FALSE when MIR_gen did not describe
+   the frame).  The frame base is the value DWARF register base_reg has in the
+   frame plus base_offset: the body's CFA rule (every target moves the CFA onto
+   its frame pointer once it is set) plus the base's CFA offset.  A personality
+   reads the register from its own frame's context (_Unwind_GetGR); the CFA an
+   unwinder reports there is the callee's. */
 typedef struct MIR_unwind_info {
   char valid_p;
-  char base_p;             /* base_cfa_offset is known */
-  int64_t base_cfa_offset; /* frame base = CFA + base_cfa_offset, rounded up to base_align */
-  uint32_t base_align;     /* the frame base's alignment rounding (0 = none) */
-  size_t ncalls;           /* the calls in a region */
+  char base_p;          /* base_reg and base_offset are known */
+  uint32_t base_reg;    /* DWARF register number */
+  int64_t base_offset;  /* frame base = base_reg + base_offset, rounded up to base_align */
+  uint32_t base_align;  /* the frame base's alignment rounding (0 = none) */
+  size_t ncalls;        /* the calls in a region */
   MIR_unwind_call_t *calls; /* in code-offset order */
 } MIR_unwind_info_t;
+
+/* The region table of a function with regions and a personality
+   (MIR_set_func_unwind_personality): MIR_gen points the function's FDE at it as
+   the LSDA (CIE augmentation "zPLR"), and the platform unwinder hands it to
+   the personality (_Unwind_GetLanguageSpecificData).
+     u8    MIR_UNWIND_TABLE_VERSION
+     u8    the cleanup pointers' encoding (a DW_EH_PE_* byte: absptr in the JIT)
+     uleb  base_reg, sleb base_offset, uleb base_align (MIR_unwind_info_t)
+     uleb  the number of calls; per call: uleb start, uleb len, uleb region
+     uleb  the number of regions; per region (region N is the Nth): uleb parent,
+           sleb offset, the cleanup pointer
+   Call ranges are offsets from the function's start (_Unwind_GetRegionStart): a
+   return address RA is in one when start < RA - function start <= start + len. */
+#define MIR_UNWIND_TABLE_VERSION 1
 
 /* Definition of double list of insns */
 DEF_DLIST (MIR_insn_t, insn_link);
@@ -427,6 +445,7 @@ typedef struct MIR_func {
   MIR_reg_t unwind_base_reg; /* the frame base regions are relative to, 0 = none */
   uint32_t unwind_base_align; /* its alignment rounding (0 = none) */
   VARR (MIR_unwind_region_t) * unwind_regions; /* region N is element N-1; NULL if none */
+  MIR_item_t unwind_personality; /* the routine the function's FDE names, or NULL */
   MIR_unwind_info_t unwind;  /* filled by MIR_gen */
 } *MIR_func_t;
 
@@ -750,12 +769,16 @@ extern void MIR_set_source_loc (MIR_context_t ctx, uint32_t file_id, uint32_t li
    1).  MIR_set_func_unwind_base names the register region offsets are relative
    to: it must be defined by a constant ALLOCA at the function's entry, and the
    base is that address rounded up to ALIGN (0 = no rounding).  A function that
-   declares regions is never inlined. */
+   declares regions is never inlined.  MIR_set_func_unwind_personality names the
+   routine the platform unwinder calls for the function's frames with its region
+   table (MIR_UNWIND_TABLE_VERSION); without one the function gets no table. */
 extern void MIR_set_unwind_region (MIR_context_t ctx, uint32_t region);
 extern uint32_t MIR_new_unwind_region (MIR_context_t ctx, MIR_item_t func_item, uint32_t parent,
                                        int64_t offset, MIR_item_t cleanup);
 extern void MIR_set_func_unwind_base (MIR_context_t ctx, MIR_item_t func_item, MIR_reg_t reg,
                                       uint32_t align);
+extern void MIR_set_func_unwind_personality (MIR_context_t ctx, MIR_item_t func_item,
+                                             MIR_item_t personality);
 extern MIR_insn_t MIR_new_ret_insn (MIR_context_t ctx, size_t nops, ...);
 extern MIR_insn_t MIR_copy_insn (MIR_context_t ctx, MIR_insn_t insn);
 

@@ -39,6 +39,9 @@ struct c2mir_options {
                            clang do with -fexceptions.  It becomes live after its
                            declaration's initializer, or at __builtin_cleanup_arm (&var) for
                            an object a later statement constructs. */
+  const char *unwind_personality; /* with unwind_regions_p: the personality routine a
+                                     function with regions names
+                                     (MIR_set_func_unwind_personality), or NULL */
 };
 
 void c2mir_init (MIR_context_t ctx);

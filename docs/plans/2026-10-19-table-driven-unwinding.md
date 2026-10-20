@@ -37,6 +37,14 @@ remove on every normal path.
 - When no handler exists anywhere, g++ terminates WITHOUT running destructors
   (two-phase search). madc runs every registered cleanup first — a second
   divergence this work fixes for the no-`try` case.
+- Recon 2026-10-20 (`lsda_probe.c`, `alloca_cfa_probe.c`): gcc 13 and clang
+  18 C with `-fexceptions` give a function with a `cleanup` variable
+  `.cfi_personality 0x9b, DW.ref.__gcc_personality_v0` and `.cfi_lsda 0x1b`
+  into `.gcc_except_table`, and a function without one neither. In a function
+  whose SP moves after the prologue (a VLA), clang defines the CFA on the
+  frame pointer once it is set on all five targets: x86-64 `rbp+16`, aarch64
+  `x29+16`, ppc64 `r31+144`, riscv64 `s0+0`, s390x `r11+352`. MIR's five
+  prologues already do the same.
 
 ## Constraints
 
@@ -82,11 +90,15 @@ remove on every normal path.
      is the function's constant entry ALLOCA (`reg`), rounded up to `align`.
    - The generator fills `MIR_func.unwind`: the call-site table {start, len,
      region} for calls in a region (a return address RA matches when start <
-     RA <= start + len), and the frame base as a CFA offset
-     (`base_cfa_offset`) — each target's prologue reports where it leaves SP
-     relative to the CFA and its ALLOCA result bias (`gen_unwind_frame`), the
-     generic code subtracts the entry ALLOCA bytes. The CFA is the same at
-     every point of the function, so no target keeps a frame pointer for it.
+     RA <= start + len), and the frame base as a register + offset
+     (`base_reg`, a DWARF number, and `base_offset`; DWARF's `breg` form):
+     the body's CFA rule (each target's CFI moves the CFA onto its frame
+     pointer once it is set, as gcc and clang do) plus the base's CFA offset —
+     each target's prologue reports where it leaves SP relative to the CFA
+     and its ALLOCA result bias (`gen_unwind_frame`), the generic code
+     subtracts the entry ALLOCA bytes. A personality reads the register from
+     its own frame's context (`_Unwind_GetGR`), so it never needs the CFA,
+     which the unwinder reports one frame late.
    - Inliner: a callee that declares regions is not inlined; insns copied from
      any other callee take the call's region.
    - Binary and text MIR I/O carry regions, the base and each insn's region.
@@ -103,6 +115,23 @@ remove on every normal path.
      aarch64/ppc64/riscv64 `sp+0`, s390x `r15+160`) and an FDE per function:
      one row per mark, in code order; epilogues are not described (walks start
      at call sites).
+   - A function with regions names the front end's personality routine and
+     carries its region table as the FDE's LSDA (CIE augmentation `zPLR`), as
+     gcc and clang do for a C function with a `cleanup` variable under
+     `-fexceptions` (`.cfi_personality __gcc_personality_v0`, `.cfi_lsda` into
+     `.gcc_except_table`; a function without one gets neither). The platform
+     unwinder calls that personality only for frames that name it, so a table
+     is never read by a runtime it does not belong to; the personality reads
+     it with `_Unwind_GetLanguageSpecificData`, the call-site offsets against
+     `_Unwind_GetRegionStart` -- no registry, in the JIT or an image.
+     `MIR_set_func_unwind_personality (ctx, func_item, item)` names it (c2mir:
+     an option, set by madc). The table is MIR's own (no landing pads; the
+     cleanup is a function called with the variable's address). One encoder
+     writes it for the JIT and the image writers: a version byte, the pointer
+     encoding of the cleanups (`DW_EH_PE_absptr` in the JIT, pc-relative in
+     images), `base_reg` (uleb), `base_offset` (sleb), `base_align` (uleb),
+     the call sites {start, len, region} and the regions {parent, offset,
+     cleanup pointer}.
    - JIT: generated FDEs are registered with the platform unwinder —
      `__register_frame` (libgcc: a terminated table; libunwind: one FDE per
      call), `RtlAddFunctionTable` with x64 unwind codes on Windows — and
@@ -122,21 +151,48 @@ remove on every normal path.
 4. **AOT images**: the writers carry the CFI and the region tables —
    ELF `.eh_frame` (+ `.eh_frame_hdr`, `PT_GNU_EH_FRAME` in executables; PC
    relocations in objects), Mach-O `__TEXT,__eh_frame`, PE `.pdata`/`.xdata`
-   (the exception directory) — and an init entry registers the image's region
-   tables with the runtime. Linux executables gain `libgcc_s.so.1`.
+   (the exception directory) — each FDE pointing at its function's region
+   table (an ELF/Mach-O except-table section; on Windows the UNWIND_INFO's
+   language-specific data). Linux executables gain `libgcc_s.so.1`.
 5. **Runtime (`src/rt/rt_except.c`, strict C11)**
-   - the walk: `_Unwind_Backtrace`; per frame `_Unwind_GetIP` /
-     `_Unwind_GetCFA`; a frame whose IP is a MIR call site in a region runs
-     that region's cleanups innermost first, each at `CFA + base_cfa_offset +
-     offset` -- the frame's CFA is what the NEXT (calling) context's
-     `_Unwind_GetCFA` reports: a context's own value is the SP at its IP, the
-     CFA of the frame it called (libgcc and LLVM libunwind alike; the unit test
-     walk caught the one-frame-deep misreading); it stops at the frame holding the target try context (running
-     only regions nested inside its try guard). On Windows the same loop over
-     `RtlLookupFunctionEntry` / `RtlVirtualUnwind`, behind one function.
-   - no try at all: print and abort WITHOUT running cleanups (canon).
-   - lookup: tables registered by an AOT image's init, plus a resolver the
-     JIT host installs (per MIR context, sorted index, mutex).
+   - the walk is the platform unwinder's forced unwind to the SJLJ try
+     (revised 2026-10-20 from an `_Unwind_Backtrace` loop, which cannot tell
+     madc's tables from a g++ frame's): glibc's thread-cancellation shape,
+     the canon for running DWARF cleanups down to a `setjmp` point. A throw
+     calls `_Unwind_ForcedUnwind` on an `_Unwind_Exception` inside the madc
+     exception with a stop function; the unwinder calls the stop function
+     for every frame and the personality, `__madc_personality`, for every
+     frame that names it. A two-phase `_Unwind_RaiseException` cannot serve:
+     tries are SJLJ, and some sit in host C frames with no personality (the
+     task runtime's `task_run_body`, the REPL entry boundary), which no
+     search phase can find.
+     - stop function: once the context's `_Unwind_GetCFA` (the SP of the
+       frame it describes) is above the target try context -- the frame
+       holding the try has been passed -- or at the end of the stack, pop
+       the try and longjmp into it (glibc's `unwind_stop` compares the
+       `jmp_buf`'s SP the same way; the try context is a local of the try's
+       frame, so its own address serves, with no `jmp_buf` internals).
+     - personality, per frame: its region table
+       (`_Unwind_GetLanguageSpecificData`), the call site at `_Unwind_GetIP`
+       - `_Unwind_GetRegionStart`, the frame base at `_Unwind_GetGR
+       (base_reg) + base_offset`; the call site's region chain runs
+       innermost first, each cleanup called with `base + offset`, stopping
+       at the target try's guard (the region whose cleanup is the try's
+       leave and whose variable holds that try context) -- objects the try
+       body made go, objects outside it stay.
+     - a foreign exception (a host C++ throw crossing MIR frames): the
+       personality's cleanup phase runs every region, as g++ runs a frame's
+       destructors for any exception. A g++ host frame between a madc throw
+       and its try runs its own destructors through its own personality --
+       the SJLJ longjmp used to skip them.
+     - Windows keeps the SJLJ raise until its step (MIR frames there have no
+       unwind tables yet); then the language-specific handler in each
+       UNWIND_INFO, over the same table.
+   - no try at all: print and abort WITHOUT unwinding or running cleanups
+     (canon: g++'s search phase finds no handler and terminates).
+   - lookup: the platform unwinder's own FDE lookup, which hands the
+     personality its LSDA (revised 2026-10-20 from a runtime registry + JIT
+     resolver: the canon shape needs neither, nor their lock).
    - an "unwinding" query, so a cleanup that must behave differently during a
      throw (the scope block) asks, as a destructor asks
      `std::uncaught_exceptions()`.
@@ -153,14 +209,14 @@ shape (verified by an instruction-count A/B against `tmp/b205/runcost.cpp`).
 
 ## Thread-safety contract
 
-C++ standard-library convention. CFI and AOT tables are registered during
-code generation or image initialization and immutable after; the platform
-unwinder's registry carries its own lock. The JIT resolver's index is per MIR
-context, built and read under one mutex (throw path only). The walk's state is
+C++ standard-library convention. CFI and region tables are written during
+code generation or image loading and immutable after; the platform
+unwinder's registry carries its own lock, and the walk reads the region
+tables through it (no runtime index of its own). The walk's state is
 on the throwing thread's stack; the "unwinding" flag is per-context state,
 saved and restored with the rest of the exception state at task switches.
 
-## Order (each step its own commit, Tier 1 + Tier 2; inert until step 6)
+## Order (each step its own commit, Tier 1 + Tier 2; inert until step 7)
 
 1. MIR regions: carrier, API, I/O, inliner rule, call-site table, CFA-relative
    frame base on all five targets (unit-tested through MIR directly).
@@ -168,10 +224,14 @@ saved and restored with the rest of the exception state at task switches.
    macOS); unit test walks generated frames with `_Unwind_Backtrace`.
    Non-x86 targets are tested under qemu-user with cross toolchains.
 3. c2mir: regions from `cleanup` variables, `__builtin_cleanup_arm`, option.
-4. AOT: CFI and region tables in ELF, Mach-O and PE images; Windows unwind
+4. Region tables as LSDAs: the base as `breg`, the personality API, the one
+   encoder, the JIT FDE names the personality and points at the table; the
+   unit test raises through generated frames with a test personality.
+5. Runtime personality + forced unwind with the stop function (no consumer
+   yet).
+6. AOT: CFI and region tables in ELF, Mach-O and PE images; Windows unwind
    codes and JIT registration.
-5. Runtime walker + registry + resolver (no consumer yet).
-6. Switch: c2mir option on, CIR arms objects and drops the registration,
+7. Switch: c2mir option on, CIR arms objects and drops the registration,
    consumers converted, runtime cleanup stack deleted, REPL boundary.
    `tests/testthrow_through_frame` (11 cases, g++/clang oracle) is the gate,
    plus JIT/exe/obj on every existing exception test.
@@ -190,5 +250,8 @@ saved and restored with the rest of the exception state at task switches.
   per generation batch.
 - Partially constructed arrays and temporaries are covered exactly as far as
   they are `cleanup` variables in the emitted tree.
-- Exceptions crossing into C++ host code (libstdc++ landing pads) need a
-  personality routine; the CFI is the prerequisite, not the whole of it.
+- A host C++ exception crossing MIR frames runs their cleanups but no madc
+  `try` catches it (tries match madc exceptions only); a madc exception
+  crossing g++ host frames runs their destructors, and of their handlers
+  only a `catch (...)` takes it (its class is madc's, which
+  `__gxx_personality_v0` treats as foreign).
