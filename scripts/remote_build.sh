@@ -41,6 +41,12 @@
 #   parsecost-record  re-record that baseline on the container (refuses growth
 #             unless PARSE_COST_ACCEPT='<reason>') and pull it back to the NAS
 #             checkout, where it is committed
+#   perfc2m   madc-release against c2m -O1 (scripts/perf_vs_c2m.sh): callgrind
+#             Ir, interleaved wall and madc's object sha256 per workload of
+#             scripts/perf_vs_c2m/; PERF_C2M_ARGS='--same-objects ...' passes
+#             through
+#   perfc2m-record  record its ledger on the container and pull it back to
+#             the NAS checkout, where it is committed
 #   exe       bash scripts/run_tests.sh --exe
 #   obj       bash scripts/run_tests.sh --obj  (single-object loader lane)
 #   libcxx    the whole suite under -stdlib=libc++, JIT + exe + obj (the
@@ -376,6 +382,21 @@ for stage in $stages; do
 		rc=$?
 		echo "pull parse-cost baseline rc=$rc"
 		note_stage "pull parse-cost baseline" "$rc"
+		;;
+	perfc2m|perfc2m-record)
+		# Build both compilers (make is idempotent; c2m is the host MIR
+		# build's), then compare; the record leg brings the ledger back.
+		pc_args="$PERF_C2M_ARGS"
+		[ "$stage" = perfc2m-record ] && pc_args="--record $pc_args"
+		run_remote "$stage" "make -C $REMOTE_MADC/src -j\$(bash $REMOTE_MADC/scripts/build_jobs.sh) release $REMOTE_MADC/obj/mir/host/libmir.a; cd $REMOTE_MADC; bash scripts/perf_vs_c2m.sh $pc_args"
+		if [ "$stage" = perfc2m-record ]; then
+			rsync -az --no-perms --no-owner --no-group -e "ssh -p $PORT" \
+				"$REMOTE:$REMOTE_MADC/scripts/perf_vs_c2m/ledger.tsv" \
+				"$LOCAL_MADC/scripts/perf_vs_c2m/ledger.tsv"
+			rc=$?
+			echo "pull perf_vs_c2m ledger rc=$rc"
+			note_stage "pull perf_vs_c2m ledger" "$rc"
+		fi
 		;;
 	tests)
 		# TARGETED subset — the inner loop. TESTS holds basename globs.
