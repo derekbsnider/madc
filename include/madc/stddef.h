@@ -97,14 +97,19 @@ typedef __WCHAR_TYPE__ wchar_t;
 // stddef.h set when THEY define it: the hosted-darwin prelude is flattened
 // clang output whose kept #defines include __CLANG_MAX_ALIGN_T_DEFINED, and
 // an anonymous-struct typedef can never pass the repeated-identical-typedef
-// dedup. (Prelude-first ordering is the packed groves' canonical order; an
-// embedded-first live parse would still collide with the prelude's
-// unconditional flattened copy — flattened text cannot re-gain its guard.)
+// dedup. On Apple targets the type is clang's there (__stddef_max_align_t.h):
+// `long double`, the prelude's flattened copy — so the two are ONE type in
+// either order (a root reaching this header before the prelude, or a bound
+// root replaying this arm after the prelude's frozen typedef).
 #if !defined(__CLANG_MAX_ALIGN_T_DEFINED) && !defined(_GCC_MAX_ALIGN_T)
+#if defined(__APPLE__)
+typedef long double max_align_t;
+#else
 typedef struct {
 	long long __madc_max_align_ll;
 	long double __madc_max_align_ld;
 } max_align_t;
+#endif
 #define __CLANG_MAX_ALIGN_T_DEFINED 1
 #define _GCC_MAX_ALIGN_T 1
 #endif

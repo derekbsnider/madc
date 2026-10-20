@@ -1,6 +1,13 @@
 # Changelog
 
 ## [Unreleased]
+### Embedded `<stddef.h>` declares max_align_t as `long double` on Apple targets
+
+- The embedded `include/madc/stddef.h` declares `max_align_t` as `long double` when `__APPLE__` is defined, and as gcc's `{ long long; long double; }` struct elsewhere. Apple clang's `__stddef_max_align_t.h` declares `long double`, the same type the darwin prelude carries.
+- Before, the embedded struct and the prelude's `typedef long double max_align_t;` were two different definitions, and the forest pack's layout pass failed on `<wchar.h>` with `Identifier 'max_align_t' already defined` (`make -C src release-macos`). Which definition held depended on include order.
+- An identical typedef redefinition is accepted, as gcc accepts it, so the two definitions are one type in either order.
+- `tests/testmaxaligntype.mad` (`--std=gnu17`) prints `long double` on Apple (`.darwin_expect`) and `struct` on Linux (`.expect`).
+
 ### Mach-O objects and executables carry unwind tables
 
 - A Mach-O `.o` carries `__TEXT,__eh_frame` and `__TEXT,__gcc_except_tab`, and the `.o` reader reads both back. Before, Apple targets were excluded from the EH object capture (`GEN_EH_OBJECT_P`), so a Mach-O object or executable had no unwind records.
