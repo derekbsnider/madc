@@ -18,7 +18,6 @@
 #include <vector>
 #include <queue>
 #include <stack>
-#define DBG(x) do { if(madc_verbose){x;} } while(0)
 #include "madc_posix_io.h"	// glob_paths — the one pathname-expansion owner
 #include "datadef.h"
 #include "tokens.h"

@@ -23,8 +23,25 @@
 #include "madc_typeid.h"
 
 extern thread_local bool madc_verbose;
+// Set (never cleared) once any thread turns verbose output on: DBG's
+// process-wide pre-test. madc_verbose is a thread_local in libmadc, so each
+// read of it is a __tls_get_addr call; a process that never asked for -v
+// reads only this plain flag. Thread safety: an atomic set-only flag; each
+// thread's madc_verbose stays its own answer.
+extern std::atomic<bool> madc_verbose_requested;
+// The ONE writer of madc_verbose: keeps madc_verbose_requested true for
+// every thread that turns verbose on (scripts/check-one-dbg-macro.sh).
+inline void madc_set_verbose(bool v)
+{
+    if ( v )
+	madc_verbose_requested.store(true, std::memory_order_relaxed);
+    madc_verbose = v;	// the one writer
+}
+// The ONE definition of DBG (a unit-test binary defines its own before the
+// project headers). do-while(0): one statement, its own scope.
 #ifndef DBG
-#define DBG(x) do { if (madc_verbose) { x; } } while (0)
+#define DBG(x) do { if (madc_verbose_requested.load(std::memory_order_relaxed) \
+			 && madc_verbose) { x; } } while (0)
 #endif
 // JIT/codegen optimization level (0-3), set by the `-O<n>` CLI flag. Drives
 // both MIR_gen_set_optimize_level and c2mir's compile optimize_level. Default 1.

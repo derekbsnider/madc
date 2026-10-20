@@ -24,7 +24,6 @@
 #include <stack>
 #include <functional>
 #include <chrono>
-#define DBG(x) do { if(madc_verbose){x;} } while(0)
 #include "datadef.h"
 #include "tokens.h"
 #include "datatokens.h"

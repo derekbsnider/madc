@@ -29,7 +29,6 @@
 #include "json.hpp"
 #include "cir_emit_c.h"		// CIR_EMIT_TARGETS
 
-#define DBG(x) do { if(madc_verbose){x;} } while(0)
 #include "datadef.h"
 #include "tokens.h"
 #include "datatokens.h"

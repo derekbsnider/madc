@@ -16,7 +16,6 @@
 #include <sstream>
 #include <string>
 #include <vector>
-#define DBG(x) do { if(madc_verbose){x;} } while(0)
 
 #include "ns_common.h"		// js_decodeURIComponent: the one percent-decoder
 #include "madc_lsp.h"

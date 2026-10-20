@@ -34,7 +34,6 @@
 #include <chrono>
 #include <algorithm>
 #include "libmadc/program.h"
-#define DBG(x) do { if(madc_verbose){x;} } while(0)
 // Temporary fn-template pack diagnostics — enable with
 // make CXXFLAGS="-std=c++11 -Wall -DMADC_DBG_PACK" (worker-thread-safe,
 // unlike DBG/madc_verbose which is thread_local-dead on parser workers).

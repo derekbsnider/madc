@@ -41,7 +41,6 @@
 #endif
 
 extern thread_local bool madc_verbose;
-#define DBG(x) do { if(madc_verbose){x;} } while(0)
 
 
 #include "datadef.h"
@@ -2627,8 +2626,8 @@ struct program::impl
     struct verbose_scope
     {
 	bool saved;
-	verbose_scope(bool v) : saved(madc_verbose) { madc_verbose = v; }
-	~verbose_scope() { madc_verbose = saved; }
+	verbose_scope(bool v) : saved(madc_verbose) { madc_set_verbose(v); }
+	~verbose_scope() { madc_set_verbose(saved); }
     };
 
     MadcEngine owned_engine;

@@ -21,7 +21,6 @@
 #include <vector>
 #include <queue>
 #include <stack>
-#define DBG(x) do { if(madc_verbose){x;} } while(0)
 #include "datadef.h"
 #include "tokens.h"
 #include "datatokens.h"
@@ -762,7 +761,7 @@ int main(int argc, char **argv)
         case cli_option::none:
             break;
         case cli_option::verbose:
-            madc_verbose = true;
+            madc_set_verbose(true);
             break;
         case cli_option::opt_level:
             // Bare -O == -O1; the row's choices admit 0..3.

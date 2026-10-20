@@ -33,7 +33,6 @@
 #include "madc_posix_io.h"	// resolve_real_path — used by the MADC_CROSS_TARGET arm
 
 
-#define DBG(x) do { if(madc_verbose){x;} } while(0)
 
 #include "datadef.h"
 #include "madc_modules.h"	// madc_module_open — the object's module list opens through the one seam

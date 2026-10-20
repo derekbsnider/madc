@@ -34,7 +34,6 @@
 #include <unistd.h>	// isatty: the default editor runs only on a terminal
 #endif
 
-#define DBG(x) do { if(madc_verbose){x;} } while(0)
 
 #include "datadef.h"
 #include "tokens.h"

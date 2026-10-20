@@ -1,6 +1,15 @@
 # Changelog
 
 ## [Unreleased]
+### DBG has one definition, and madc_verbose has one writer
+
+- `DBG(x)` is defined once, in `include/datadef.h`. The 36 per-file copies in `src/` are deleted. `DBG` first reads the process-wide flag `madc_verbose_requested`, so a process that never turns verbose on reads one plain atomic instead of the thread_local `madc_verbose` through `__tls_get_addr`.
+- `madc_set_verbose(v)` is the only writer of `madc_verbose`. It is called by `-v` / `--verbose` in `src/madc.cpp` and by the embedding verbose scope in `src/madc_program.cpp`. It sets `madc_verbose_requested` before a verbose thread's own flag.
+- A thread whose `madc_verbose` is false stays silent, as before. Trace output is unchanged for a thread that turns verbose on.
+- `scripts/check-one-dbg-macro.sh` (wired into `make gates`) fails on a `#define DBG(` outside `include/datadef.h` and on a `madc_verbose` assignment outside `madc_set_verbose`.
+- `tests/testverbosetrace.mad` (`-v`) checks that the front end's trace lines appear with `-v` and are absent without it.
+- The `-c` objects for `act_wiz.c` and `sqlite3.c` are byte-identical before and after the change. Callgrind instruction counts drop from 1,609,228,176 to 1,596,140,362 (-0.8%) for `act_wiz.c` and from 13,403,586,299 to 13,332,084,430 (-0.5%) for `sqlite3.c`.
+
 ### An if condition's template-id probe asks name lookup whether `<` opens a template-argument list
 
 - The statement-scope template-id demand in `Program::resolve_declared_type_token` builds its delimiter tracker with the Program (`DelimDepth d(this)`), so a variable followed by `<` ends the scan at its first step. Before, `if (a < b)` scanned forward to a later `>` in the file, or to the 4096-step guard.
@@ -86,6 +95,7 @@ Consolidated: class_pointer_spelling — gate scripts/check-one-class-pointer-de
 Consolidated: pointer_type_node — gate scripts/check-one-pointer-type-node.sh
 Consolidated: MIR pattern index by insn code — gate scripts/check-one-pattern-index.sh
 Consolidated: MIR constant-shift normalizer — gate scripts/check-one-const-shift-normalizer.sh
+Consolidated: dbg_macro — gate scripts/check-one-dbg-macro.sh
 
 ### MIR counts object section kinds with MIR_OBJ_SEC_NUM
 

@@ -19,7 +19,6 @@
 #include "spelling_delim.h"
 #include <cstring>
 #include <typeinfo>
-#define DBG(x) do { if(madc_verbose){x;} } while(0)
 #include "datadef.h"
 
 // Length-prefixed source name: "Foo" → "3Foo"

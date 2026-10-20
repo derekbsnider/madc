@@ -443,7 +443,7 @@ editing — don't try to memorize all of them.
 | [lowering-vs-raising.md](.claude/rules/lowering-vs-raising.md) | 39 | Where a missing feature gets fixed: Tier 1 lower/resolve in madc (default) · Tier 2 raise c2mir for semantic primitives · Tier 3 raise MIR for floor gaps (SIMD). Verify c2mir's real surface — stmt-exprs/_Generic/_Complex are supported |
 | [gcc-methodology.md](.claude/rules/gcc-methodology.md) | 44 | Compare with `gcc -S -fverbose-asm` first, fix at deepest layer, operator self-determination |
 | [clang-methodology.md](.claude/rules/clang-methodology.md) | 46 | Same methodology against clang, the co-equal canon; cross-check lowering with both gcc and clang |
-| [debug.md](.claude/rules/debug.md)               |    18 | `DBG(x)` macro usage and rules                 |
+| [debug.md](.claude/rules/debug.md)               |    21 | `DBG(x)` macro usage and rules; ONE definition in `include/datadef.h`, one writer `madc_set_verbose` (gated by `check-one-dbg-macro.sh`) |
 | [c11-transpiler.md](.claude/rules/c11-transpiler.md) | 70 | `--emit=c11` lowers every C++ feature to strict C11; c2mir limits, lowering patterns, emission hygiene |
 | [embedded-headers.md](.claude/rules/embedded-headers.md) | 103 | **OWNER LAW: the release madc reads the standard core system headers from libmadc, never /usr/include** (only `--no-embedded-headers` sends them to disk; gated by `check-system-headers-from-libmadc.sh`); `include/madc/` headers, lazy registration, `#load`, real return types (signed `int` libc fns), a fragment's namespace-scope variables `inline` (gated) |
 | [gcc-parity.md](.claude/rules/gcc-parity.md)     |    15 | GCC as a reference baseline (verbose `-fverbose-asm` disassembly) for codegen / type / runtime parity |
@@ -452,10 +452,10 @@ editing — don't try to memorize all of them.
 
 ### Total rule footprint
 
-- **37 rules, 1358 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
+- **37 rules, 1366 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
 - **This file (AGENTS.md): ~506 lines** — loaded by Claude via
   `@AGENTS.md` in `CLAUDE.md`, read directly by Codex / Gemini / etc.
-- **Grand total loaded by Claude Code per turn: ~1872 lines.**
+- **Grand total loaded by Claude Code per turn: ~1880 lines.**
 
 Rule bloat ages: if any tier exceeds a few hundred lines, split the
 heaviest rule into a narrower sub-rule or move more content into the

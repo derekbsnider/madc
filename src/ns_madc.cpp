@@ -22,7 +22,6 @@
 #include <iostream>
 #include <map>
 #include <vector>
-#define DBG(x) do { if(madc_verbose){x;} } while(0)
 
 #include "ns_common.h"
 #include "libmadc/sysinfo.h"

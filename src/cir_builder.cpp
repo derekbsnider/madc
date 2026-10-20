@@ -29,7 +29,6 @@
 #include <cxxabi.h>
 
 
-#define DBG(x) do { if(madc_verbose){x;} } while(0)
 
 // Compile-time-gated diagnostics (toggle with -DMADC_DBG_FREEFN); avoids the
 // thread_local madc_verbose that silences DBG on worker threads, and avoids

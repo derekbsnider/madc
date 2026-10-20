@@ -20,7 +20,6 @@
 #include <memory>
 #include <stdint.h>
 
-#define DBG(x) do { if(madc_verbose){x;} } while(0)
 
 #include "datadef.h"
 #include "tokens.h"

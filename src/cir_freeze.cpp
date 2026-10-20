@@ -28,7 +28,6 @@
 				// used to force an #undef + (void *)-1 compare)
 
 extern thread_local bool madc_verbose;
-#define DBG(x) do { if(madc_verbose){x;} } while(0)
 
 #include "datadef.h"
 #include "tokens.h"
