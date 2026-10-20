@@ -7958,6 +7958,8 @@ int madc_cir_dump_forest(const char *container_path)
     const std::vector<uint32_t> &canon = forest.canon_order();
     for (size_t i = 0; i < canon.size(); ++i)
 	printf("canon\t%zu\t%s\n", i, forest.unit_name(canon[i]));
+    // B1: the names the frozen units spell (0: no table — a -D declines).
+    printf("spellednames\t%u\n", forest.spelled_names().size());
 
     // v58 seed index (docs/plans/2026-10-13-pack-slices-design.md).
     if (!forest.seeds().empty()) {

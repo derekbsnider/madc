@@ -1,6 +1,13 @@
 # Changelog
 
 ## [Unreleased]
+### A -D that no frozen header spells keeps the pack bound
+
+- A compile with `-D` macros binds the pack when no frozen header spells any `-D` name. Before, any `-D` changed the defines hash, so the pack declined and every system header was lexed from text.
+- The freeze writes an optional `SPELLED_NAMES` segment (slot 29). Absent, a `-D` consumer declines as before. `--dump-forest` prints `spellednames<TAB>N`.
+- `scripts/forest_bind_gate.sh [cdefine]`: with `-DMADC_GATE_UNSPELLED=7`, C (`gnu17`) and C++ (`gnu++17`) bind the pack and print `v=7`, as gcc does. With `-DNDEBUG` over `<assert.h>`, the compile declines and prints `ndebug=ok`.
+- `act_wiz.c` built with `-DREQUESTS -DSMAUG`: callgrind Ir 1,586,854,783 -> 1,502,948,897 (-5.3%); ratio to c2m 1.153x -> 1.092x; object byte-identical. `sqlite3.c` (no `-D`): 13,264.1M -> 13,253.0M Ir (-0.08%); object byte-identical.
+
 ### A raw-string prefix needs a well-formed delimiter; an ordinary literal ends at its line's end
 
 - `tokenize_macro_spelling` (`src/lexer.cpp`) reads `R"`, `LR"`, `uR"`, `UR"` and `u8R"` as a raw string only when the delimiter is well formed: at most 16 characters, none of space, quote, backslash, parenthesis or new-line, then `(`. Otherwise the prefix is an identifier token and the quote starts an ordinary literal.

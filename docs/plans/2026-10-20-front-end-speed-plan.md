@@ -159,10 +159,20 @@ stays ~1.30–1.34× c2m (peak RSS 629 vs 402 MB on sqlite3.c): investigated aft
 - GCC's documented PCH rule is the oracle: a macro defined before the precompiled header must be defined
   as it was when the PCH was built, "or must not affect the precompiled header, which usually means that
   they don't appear in the precompiled header at all".
-- **Shape:** the freeze writes `CIR_FOREST_SEG_IDENT_NAMES` (slot 29, format v71): every identifier spelled
-  in each unit's raw source (slot +9), with its units — the `ForestDeclNames` layout and reader, reused.
-  The bind's exact match accepts a consumer whose `-D` names are all absent from the profile's table
-  (one binary search each; the producer's own defines hash must be 0, as every shipped pack's is). A name
-  the headers spell keeps today's decline; a container without the segment keeps it too.
-- **Gate:** act_wiz.c with `-DREQUESTS -DSMAUG` lexes what the wrapper build lexes (97,851 tokens) and
-  binds; a `-D` of a name a header tests (`-DNDEBUG` with `<assert.h>`) still gives gcc's answer.
+- **Shape (owner 2026-10-20: a list of the defines that disable the pack, every name kept, the
+  per-header table):** the freeze writes `CIR_FOREST_SEG_SPELLED_NAMES` (slot 29), an OPTIONAL segment
+  like the role, so no format bump: every identifier each FROZEN unit's own source text spells (every
+  `#if` arm, comments and literals excluded), with the units spelling it — the `ForestDeclNames` layout
+  and reader, reused. The names come from `source_spelled_names` = `tokenize_macro_spelling`'s identifier
+  tokens (the one spelling reader; its two whole-text edges fixed first: an unclosed quote ends at the
+  line, a malformed raw-string delimiter is a name). A source-only unit lexes live, so a `-D` reaches it.
+- **Bind:** `CirFrozenForest::serves_consumer` — the exact match on the consumer's own pair, or a
+  profile frozen with no defines under its config whose table spells none of its `-D` names (one
+  binary search each). A spelled name, or a container without the table, keeps today's decline. The
+  per-unit units are what B211 (a program macro defined ahead of an include) reads in the walk, after
+  section K (K1b, K3) of the verified-bind plan.
+- Measured (the shipped pack, 2026-10-20): 281 frozen units spell 12,148 names in 31,054 (name, unit)
+  pairs (~335 KB raw); `REQUESTS` / `SMAUG` are spelled by none; `NDEBUG` by `assert.h`.
+- **Gate:** `forest_bind_gate.sh` `[cdefine]` — a `-D` no frozen header spells binds (C and C++) and
+  prints gcc's answer; `-DNDEBUG` over `<assert.h>` does not bind and prints gcc's answer. Measured:
+  act_wiz.c with `-DREQUESTS -DSMAUG` against the wrapper build.

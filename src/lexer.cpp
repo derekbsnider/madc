@@ -263,18 +263,7 @@ struct MadcSharedPreludeCache
     static bool collect_identifiers(const madc::dis::istring &text,
 				    std::set<madc::dis::istring> &names)
     {
-	typedef Program::MacroDef::ReplacementToken T;
-	const std::vector<T> tokens = tokenize_macro_spelling(text);
-	bool has_paste = false;
-	for ( size_t i = 0; i < tokens.size(); ++i )
-	{
-	    if ( tokens[i].kind == T::rtIdentifier )
-		names.insert(text.substr(tokens[i].begin,
-					 tokens[i].end - tokens[i].begin));
-	    else if ( tokens[i].kind == T::rtPaste )
-		has_paste = true;
-	}
-	return has_paste;
+	return source_spelled_names(text, names);
     }
 
     static bool macro_equal(const Program::MacroDef &a,
@@ -3270,6 +3259,22 @@ tokenize_macro_spelling(const std::string &text)
     return tokens;
 }
 
+bool source_spelled_names(const std::string &text, std::set<madc::dis::istring> &names)
+{
+    typedef MacroReplacementToken T;
+    const std::vector<T> tokens = tokenize_macro_spelling(text);
+    bool has_paste = false;
+    for ( size_t i = 0; i < tokens.size(); ++i )
+    {
+	if ( tokens[i].kind == T::rtIdentifier )
+	    names.insert(madc::dis::istring(text.data() + tokens[i].begin,
+					    tokens[i].end - tokens[i].begin));
+	else if ( tokens[i].kind == T::rtPaste )
+	    has_paste = true;
+    }
+    return has_paste;
+}
+
 static bool macro_token_space(const MacroReplacementToken &token)
 {
     return token.kind == MacroReplacementToken::rtWhitespace
@@ -4858,9 +4863,11 @@ static CirFrozenForest *forest_probe_arm(Program *prog, const char *path,
 	bool matches = config_match == Program::forestMatchAny;
 	// Exact: the profile was frozen under the consumer's config — its own
 	// header's pair, or a label the pack stamped after proving that config's
-	// frozen content identical (CIR_FOREST_SEG_SHARED_CONFIGS).
+	// frozen content identical (CIR_FOREST_SEG_SHARED_CONFIGS) — or (B1)
+	// the consumer's -D defines name nothing a frozen unit spells.
 	if ( config_match == Program::forestMatchExact )
-	    matches = f->serves_config(consumer_config, madc_forest_defines_hash(prog));
+	    matches = f->serves_consumer(consumer_config, madc_forest_defines_hash(prog),
+					 prog->cli_defines);
 	else if ( config_match == Program::forestMatchStdlibFlavor )
 	    matches = (producer_config & CIR_FOREST_CONFIG_STDLIB_MASK)
 		   == (consumer_config & CIR_FOREST_CONFIG_STDLIB_MASK);

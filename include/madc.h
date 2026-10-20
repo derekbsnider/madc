@@ -3030,6 +3030,16 @@ private:
     int _deferred_row = 0, _deferred_column = 0;
 };
 
+// Every identifier a C / C++ text spells outside its comments and literals —
+// each #if arm and directive included — into `names`: the identifier tokens
+// of tokenize_macro_spelling, the one reader of a spelling. True when the
+// text carries a ## paste, which can form a name no token spells. Read for a
+// macro replacement's names (the shared prelude cache) and for the pack's
+// SPELLED_NAMES: every name a frozen header spells, the names a macro defined
+// ahead of it could change (GCC's PCH rule). Defined in lexer.cpp.
+bool source_spelled_names(const std::string &text,
+			  std::set<madc::dis::istring> &names);
+
 // Diagnostic source-echo helpers (lexer.cpp). show_error_source_line is the
 // one formatter for the offending-line + caret display; madc_show_file_error
 // rereads a non-live file (an #included header) from disk on the cold

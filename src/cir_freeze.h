@@ -159,7 +159,11 @@ enum : uint32_t
 	// (cir_forest_cond_field); v69: the inclusion count, then per inclusion
 	// its end (CIR_INCL_WORDS words: events, edges, conditions); then the
 	// consult word count and the #if / #elif consults (CIR_CONSULT_WORDS each).
-	SNAP_KIND_CIR_UNIT_CONDS       = madc::dis::SNAP_KIND_CONSUMER + 32
+	SNAP_KIND_CIR_UNIT_CONDS       = madc::dis::SNAP_KIND_CONSUMER + 32,
+	// B1 (docs/plans/2026-10-20-front-end-speed-plan.md): every name a
+	// frozen unit spells, with its units (ForestDeclNames layout).
+	// OPTIONAL segment: absent = a -D consumer declines, as before.
+	SNAP_KIND_CIR_SPELLED_NAMES    = madc::dis::SNAP_KIND_CONSUMER + 33
 };
 
 // v68: one frozen condition record's words (SNAP_KIND_CIR_UNIT_CONDS).
@@ -753,7 +757,8 @@ enum : uint32_t
 	CIR_FOREST_SEG_RECORDABLE       = 26,	// v58: arena recordability bits (ForestRecordableBits)
 	CIR_FOREST_SEG_ARENA_DEF_POS    = 27,	// v60: slot -> record position (absent = slot order)
 	CIR_FOREST_SEG_ROLE             = 28,	// the profile's role (optional; absent = system)
-	// 29-31 reserved.
+	CIR_FOREST_SEG_SPELLED_NAMES    = 29,	// B1: name -> the frozen units spelling it (optional)
+	// 30-31 reserved.
 	CIR_FOREST_SEG_UNIT_BASE     = 32,
 	CIR_FOREST_SEGS_PER_UNIT     = 11	// +0 records, +1 children, +2 connectors,
 						// +3 positions, +4 tokens, +5 decl index,
@@ -1956,6 +1961,9 @@ class CirFrozenForest
 	mutable ForestSeeds _seeds;
 	mutable ForestRecordableBits _recordable_bits;
 	void bind_seed_index() const;
+	// B1 SPELLED_NAMES, bound on the first spelled_names() (a -D consumer).
+	mutable bool _spelled_names_bound = false;
+	mutable ForestDeclNames _spelled_names;
 	uint32_t _root_unit, _root_idx;
 	uint32_t _language_std = 0, _defines_hash = 0;	// v27 producer config (dir header)
 	std::vector<cir_forest_shared_config> _shared_configs;	// more configs this profile serves
@@ -2236,6 +2244,18 @@ public:
 	// The bind gate: this profile was frozen under (config, defines) — its
 	// own header's pair or one of its shared labels.
 	bool serves_config(uint32_t config, uint32_t defines) const;
+	// THE exact-match verdict for a consumer: serves_config on its own pair,
+	// or (B1) its -D defines change nothing the profile holds — the profile
+	// was frozen with none under the consumer's config, and no frozen unit
+	// spells any -D name (SPELLED_NAMES; GCC's PCH rule). A profile without
+	// the table serves a -D consumer only by its pair.
+	bool serves_consumer(uint32_t config, uint32_t defines,
+			     const std::vector<std::pair<madc::dis::istring,
+							 madc::dis::istring> > &cli_defines) const;
+	// B1: every name the frozen units spell, with its units, bound on first
+	// use (directory-level: the exact-match verdict reads it). Empty on a
+	// container without the table.
+	const ForestDeclNames &spelled_names() const;
 	// The required libraries, spelled through the container pool on first
 	// use (valid after complete_open).
 	const std::vector<madc::dis::istring> &libs();

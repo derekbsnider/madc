@@ -717,6 +717,51 @@ bool cir_freeze_read(const madc::dis::snapshot_reader &r, uint32_t seg_id_base,
 	return true;
 }
 
+// B1 (docs/plans/2026-10-20-front-end-speed-plan.md): SPELLED_NAMES — every
+// name each frozen unit's own source text spells (every #if arm), with the
+// units spelling it: what a macro defined ahead of the unit could change in
+// it (CirFrozenForest::serves_consumer). A source-only unit is lexed live, a
+// -D reaching it there. The root unit is the freeze's own main file — no
+// consumer includes it, and the freeze records only included files' text.
+// Any other frozen unit without its text leaves the table out, so a -D
+// consumer keeps declining.
+static bool forest_write_spelled_names(const cir_frozen_forest &f,
+				       madc::dis::snapshot_writer &w,
+				       PchCompression codec)
+{
+	std::map<madc::dis::istring, std::vector<uint32_t> > names;
+	std::set<madc::dis::istring> spelled;
+	uint32_t frozen = 0;
+	for (uint32_t u = 0; u < (uint32_t)f.units.size(); ++u) {
+		const cir_forest_unit &fu = f.units[u];
+		if (forest_unit_source_only(fu))
+			continue;
+		if (fu.source_payload.empty() && u == f.root_unit)
+			continue;
+		++frozen;
+		if (fu.source_payload.empty()) {
+			const char *nm = TokenBase::_active_strpool
+				       ? TokenBase::_active_strpool->c_str(fu.unit_name_id) : NULL;
+			fprintf(stderr, "madc: pack spelled names: frozen unit %u (%s) carries no"
+				" source text — the table is left out\n", u, nm ? nm : "?");
+			return true;
+		}
+		spelled.clear();
+		source_spelled_names(std::string(fu.source_payload.begin(),
+						 fu.source_payload.end()), spelled);
+		for (const madc::dis::istring &nm : spelled)
+			names[nm].push_back(u);
+	}
+	if (names.empty())
+		return true;
+	std::vector<uint8_t> bytes;
+	ForestDeclNames::build(names, bytes);
+	fprintf(stderr, "madc: pack spelled names: %zu names over %u frozen units (%zu bytes)\n",
+		names.size(), frozen, bytes.size());
+	return add_seg(w, CIR_FOREST_SEG_SPELLED_NAMES, SNAP_KIND_CIR_SPELLED_NAMES,
+		       bytes.data(), bytes.size(), codec);
+}
+
 bool cir_forest_write(const cir_frozen_forest &f, madc::dis::snapshot_writer &w,
 		      PchCompression codec, int zstd_level, bool compress_intern)
 {
@@ -853,6 +898,8 @@ bool cir_forest_write(const cir_frozen_forest &f, madc::dis::snapshot_writer &w,
 	    && !add_seg(w, CIR_FOREST_SEG_RECORDABLE, SNAP_KIND_CIR_RECORDABLE,
 			f.recordable.data(), f.recordable.size() * sizeof(uint32_t),
 			PchCompression::None))
+		return false;
+	if (!forest_write_spelled_names(f, w, codec))
 		return false;
 	// The container's string pool: its records and (v59) the raw offsets
 	// block (intern_table::frozen_blocks; v60 records carry their length).
@@ -1724,6 +1771,43 @@ bool CirFrozenForest::serves_config(uint32_t config, uint32_t defines) const
 		if (c.language_std == config && c.defines_hash == defines)
 			return true;
 	return false;
+}
+
+const ForestDeclNames &CirFrozenForest::spelled_names() const
+{
+	if (!_spelled_names_bound) {
+		_spelled_names_bound = true;
+		size_t len = 0;
+		const madc::dis::snapshot_segment *s = _reader.find(CIR_FOREST_SEG_SPELLED_NAMES);
+		if (s && s->kind == SNAP_KIND_CIR_SPELLED_NAMES)
+			if (const uint8_t *p = forest_segment_bytes(_reader, *s, len))
+				_spelled_names.bind(p, len);
+	}
+	return _spelled_names;
+}
+
+bool CirFrozenForest::serves_consumer(uint32_t config, uint32_t defines,
+				      const std::vector<std::pair<madc::dis::istring,
+								  madc::dis::istring> > &cli_defines) const
+{
+	if (serves_config(config, defines))
+		return true;
+	if (!defines || cli_defines.empty() || !serves_config(config, 0))
+		return false;
+	const ForestDeclNames &spelled = spelled_names();
+	if (spelled.empty())
+		return false;
+	for (const std::pair<madc::dis::istring, madc::dis::istring> &d : cli_defines) {
+		// The macro's name: a function-like -D's spelling stops at '('.
+		const size_t paren = d.first.find('(');
+		const madc::dis::istring name = paren == madc::dis::istring::npos
+					      ? d.first : madc::dis::istring(d.first.c_str(), paren);
+		uint32_t n = 0;
+		spelled.units_of(name.c_str(), n);
+		if (n)
+			return false;	// a frozen unit spells it: the -D could change it
+	}
+	return true;
 }
 
 // --- the pack layout (format 60; design doc §3) --------------------------

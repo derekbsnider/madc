@@ -1471,6 +1471,65 @@ grep -aq "bound to grove unit" "$ce_dir/plain.log" \
 rm -rf "$ce_dir"
 echo "forest_bind_gate: [cenv] OK — a C compile's bind honours its feature macros (NDEBUG, _GNU_SOURCE) with the knob off; a plain C program still binds"
 
+# --- case: cdefine (docs/plans/2026-10-20-front-end-speed-plan.md, B1) ---
+# A command-line -D is a macro defined before the first line. The pack is
+# frozen with none, so a -D could change what it holds -- unless no frozen
+# header spells the name: then nothing the pack holds can expand it, and the
+# profile serves the consumer (GCC's PCH rule: a macro defined before the PCH
+# "must not affect the precompiled header, which usually means that they
+# don't appear in the precompiled header at all"). The freeze writes every
+# name the frozen units spell (SPELLED_NAMES); a -D of a spelled name keeps
+# the decline. The oracle for both consumers is gcc / g++ (cd_unspelled
+# prints v=7, cd_ndebug prints ndebug=ok).
+cd_dir=tmp/fbgate_cdefine
+rm -rf "$cd_dir"
+mkdir -p "$cd_dir"
+printf '#include <assert.h>\n#include <stdio.h>\nint main(void) { return 0; }\n' > "$cd_dir/c_tu.c"
+printf '#include <cassert>\n#include <cstdio>\nint main() { return 0; }\n' > "$cd_dir/cxx_tu.cpp"
+cat > "$cd_dir/unspelled.c" <<'EOF'
+#include <stdio.h>
+int main(void) { printf("v=%d\n", MADC_GATE_UNSPELLED); return 0; }
+EOF
+cat > "$cd_dir/unspelled.cpp" <<'EOF'
+#include <cstdio>
+int main() { std::printf("v=%d\n", MADC_GATE_UNSPELLED); return 0; }
+EOF
+cat > "$cd_dir/ndebug.c" <<'EOF'
+#include <assert.h>
+#include <stdio.h>
+int main(void) { assert(0); printf("ndebug=ok\n"); return 0; }
+EOF
+timeout 600 "$BIN" --std=gnu17 --freeze-raw --freeze="$cd_dir/c.msnap" "$cd_dir/c_tu.c" \
+    > "$cd_dir/freeze.log" 2>&1 \
+    || fail "[cdefine] the C freeze FAILED: $(tail -n 3 "$cd_dir/freeze.log")"
+timeout 600 "$BIN" --std=gnu++17 --freeze="$cd_dir/cxx.msnap" "$cd_dir/cxx_tu.cpp" \
+    > "$cd_dir/freeze_cxx.log" 2>&1 \
+    || fail "[cdefine] the C++ freeze FAILED: $(tail -n 3 "$cd_dir/freeze_cxx.log")"
+cd_names=$("$BIN" --dump-forest="$cd_dir/c.msnap" 2>/dev/null | awk -F'\t' '$1=="spellednames"{print $2}')
+[ -n "$cd_names" ] && [ "$cd_names" -gt 0 ] \
+    || fail "[cdefine] the C profile carries no spelled-names table ('$cd_names')"
+# cd_check STD SNAP SRC WANT BIND -D... : the consumer prints WANT, and its
+# trace shows a bind (BIND=1) or none (BIND=0).
+cd_check() {
+    local std=$1 snap=$2 src=$3 want=$4 bind=$5 out
+    shift 5
+    timeout 60 "$BIN" -v --std="$std" "$@" --forest-bind="$snap" "$src" \
+        > "$cd_dir/trace.log" 2>&1
+    if grep -aq "bound to grove unit" "$cd_dir/trace.log"; then
+        [ "$bind" = 1 ] || fail "[cdefine] $std $* bound the profile (a header spells the name)"
+    else
+        [ "$bind" = 0 ] || fail "[cdefine] $std $* did not bind (no frozen header spells the name)"
+    fi
+    out=$(timeout 60 "$BIN" --std="$std" "$@" --forest-bind="$snap" "$src" 2>"$cd_dir/run.err")
+    [ "$out" = "$want" ] \
+        || fail "[cdefine] $std $* printed '$out', want '$want' $(head -n 2 "$cd_dir/run.err")"
+}
+cd_check gnu17 "$cd_dir/c.msnap" "$cd_dir/unspelled.c" "v=7" 1 -DMADC_GATE_UNSPELLED=7
+cd_check gnu++17 "$cd_dir/cxx.msnap" "$cd_dir/unspelled.cpp" "v=7" 1 -DMADC_GATE_UNSPELLED=7
+cd_check gnu17 "$cd_dir/c.msnap" "$cd_dir/ndebug.c" "ndebug=ok" 0 -DNDEBUG
+rm -rf "$cd_dir"
+echo "forest_bind_gate: [cdefine] OK — a -D no frozen header spells binds (C and C++); a -D of a spelled name (NDEBUG) keeps the decline and gcc's answer"
+
 # --- case: dialectnobind (the dialect is builtin: a fragment never binds) ---
 # A container that froze a dialect fragment's text (bits/ui_enums, which strict
 # C++ parses too) never binds its unit: a madc consumer reads the dialect from
