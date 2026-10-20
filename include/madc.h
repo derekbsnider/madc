@@ -1906,6 +1906,11 @@ typedef madc::dis::intern_keyed_map<TokenKeyword *> keyword_map_t;
 typedef madc::dis::intern_keyed_map<TokenDataType *> flat_datatype_map_t;
 typedef std::map<madc::dis::istring, TokenDataType *> datatype_map_t;
 typedef std::map<madc::dis::istring, DataDef *> datadef_map_t;
+// The expression parser's operand / operator stacks (two per parseExpression):
+// vector-backed, so an empty stack allocates nothing — the default std::deque
+// allocates its map and first chunk on construction. No caller holds a
+// reference to an element across a push.
+typedef std::stack<TokenBase *, std::vector<TokenBase *> > token_stack_t;
 
 // The registries' transactions NEST (an interactive entry's transaction holds
 // the class journals opened inside it, plan §41.3): a transaction begun while
@@ -3814,11 +3819,11 @@ protected:
     bool source_date_epoch(struct tm &parts, bool &known);
     // __TIMESTAMP__'s replacement text for the file being read now.
     madc::dis::istring source_timestamp_text();
-    void popOperator(std::stack<TokenBase *> &, std::stack<TokenBase *> &);
+    void popOperator(token_stack_t &, token_stack_t &);
     // The end of an expression (every exit of parseExpression): bind the
     // pending operators, refuse juxtaposed operands, return the one left.
-    TokenBase *finish_expression(std::stack<TokenBase *> &opStack,
-				 std::stack<TokenBase *> &exStack);
+    TokenBase *finish_expression(token_stack_t &opStack,
+				 token_stack_t &exStack);
 //  inline int get(std::istream &is) { ++_column; return is.get(); }
     // initializers / finalizers
     void _tokenizer_init();
@@ -8232,7 +8237,7 @@ public:
     // ends one (token_ends_operand), unless it is a step still waiting on the
     // operator stack — a PREFIX `++`/`--`. Two bounds ask it: a cast-
     // expression's (parseCastExpression) and a juxtaposed operand's.
-    inline bool operand_completed(const std::stack<TokenBase *> &opStack)
+    inline bool operand_completed(const token_stack_t &opStack)
     {
 	if ( !token_ends_operand(_cur_token) )
 	    return false;
@@ -9399,15 +9404,15 @@ public:
     // variable, functional-cast, ns-qualified callee, or an inline declaration).
     // `tb` is in/out so a Redo can hand back a rewritten token.
     ExprStep parseExpr_dataTypeArm(TokenBase *&tb,
-				   std::stack<TokenBase *> &exStack,
-				   std::stack<TokenBase *> &opStack,
+				   token_stack_t &exStack,
+				   token_stack_t &opStack,
 				   TokenCpnd *code);
     // ttSymbol switch-arm of parseExpression: statement/expression terminators
     // and the C comma operator (`;` ends; `,` either builds a comma-expression
     // node inside parens or ends the expression). Read-only `brackets`.
     ExprStep parseExpr_symbolArm(TokenBase *tb,
-				 std::stack<TokenBase *> &exStack,
-				 std::stack<TokenBase *> &opStack,
+				 token_stack_t &exStack,
+				 token_stack_t &opStack,
 				 int brackets, bool push_back_comma);
     // ttIdentifier switch-arm of parseExpression: the largest arm — identifier
     // resolution in expression context (variables, function/method calls,
@@ -9416,8 +9421,8 @@ public:
     // ttKeyword falls through into this for keywords that are contextual
     // identifiers.
     ExprStep parseExpr_identifierArm(TokenBase *&tb,
-				     std::stack<TokenBase *> &exStack,
-				     std::stack<TokenBase *> &opStack,
+				     token_stack_t &exStack,
+				     token_stack_t &opStack,
 				     TokenCpnd *code);
     // UFCS (--std=madc): re-form `receiver.f(args)` / `receiver->f(args)` as
     // the ordinary call `f(receiver, args)` when the receiver has no member
@@ -9434,8 +9439,8 @@ public:
     bool ufcs_attempts_here(bool operator_id);
     bool ufcs_access_fallback(TokenBase *receiver, TokenIdent *ident_tb,
 			      bool operator_id,
-			      std::stack<TokenBase *> &exStack,
-			      std::stack<TokenBase *> &opStack,
+			      token_stack_t &exStack,
+			      token_stack_t &opStack,
 			      TokenBase *&tb, bool &done);
     // UFCS (--std=madc), the other direction: re-form `f(x, args)` as
     // `x.f(args)` when no free `f` is declared and x's type has an
@@ -9443,7 +9448,7 @@ public:
     // C89 implicit int) — a member of the argument's own type beats a blind
     // guess at a libc symbol of the same name.
     bool ufcs_call_fallback(TokenIdent *ident_tb, bool operator_id,
-			    std::stack<TokenBase *> &opStack,
+			    token_stack_t &opStack,
 			    TokenBase *&tb, bool &done, TokenCpnd *code);
     // ttMultiOp/ttOperator switch-arm of parseExpression: the operator
     // shunting-yard core (precedence climbing, unary/binary disambiguation,
@@ -9452,8 +9457,8 @@ public:
     // `result` carries the value for an ExprStep::Return exit (an early
     // return from parseExpression that bypasses the operator-stack drain).
     ExprStep parseExpr_operatorArm(TokenBase *&tb,
-				   std::stack<TokenBase *> &exStack,
-				   std::stack<TokenBase *> &opStack,
+				   token_stack_t &exStack,
+				   token_stack_t &opStack,
 				   int &brackets, TokenCpnd *code,
 				   bool conditional, bool ternary_branch,
 				   bool stop_on_closing_paren,
@@ -10335,7 +10340,7 @@ public:
     // user-label chain share it); NULL when no switch is active.
     TokenBase *parse_nested_case_label(TokenBase *tb);
     TokenObjTemp *try_parse_functional_ctor(TokenBase *name_tb);
-    bool paren_opens_call_on_receiver(std::stack<TokenBase *> &exStack);
+    bool paren_opens_call_on_receiver(token_stack_t &exStack);
     Variable *resolve_c_identifier(TokenIdent *ident_tb, bool expression_head);
     bool datatype_statement_starts_functional_expr();
     // Can `tb` open a parameter-declaration-clause? False only when it
@@ -10450,8 +10455,8 @@ public:
     // continue the postfix chain, so an immediately-invoked lambda
     // (`[](int x){ return x + 99; }(1)`) becomes a call and not a value
     // followed by a stray parenthesized expression.
-    ExprStep parseLambdaExprStep(std::stack<TokenBase *> &exStack,
-				 std::stack<TokenBase *> &opStack,
+    ExprStep parseLambdaExprStep(token_stack_t &exStack,
+				 token_stack_t &opStack,
 				 bool &done);
     // Is the lambda whose introducer is at the head of the token stream
     // IMMEDIATELY INVOKED? Looks past the balanced introducer / parameter

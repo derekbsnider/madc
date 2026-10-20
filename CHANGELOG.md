@@ -1,6 +1,12 @@
 # Changelog
 
 ## [Unreleased]
+### The expression parser's operand and operator stacks are vector-backed
+
+- `token_stack_t` (`include/madc.h`) is `std::stack<TokenBase *, std::vector<TokenBase *> >`. `Program::parseExpression`'s two local stacks and every helper that takes one use it in place of the deque-backed default.
+- A default `std::stack` is a `std::deque`, which allocates its node map and first chunk on construction, even when empty. A vector-backed stack allocates nothing until its first push.
+- Recognised spellings and parse results are unchanged. The `-c` objects for `act_wiz.c` and `sqlite3.c` are byte-identical before and after the change. Callgrind instruction counts drop from 1,596,140,362 to 1,586,854,783 (-0.6%) for `act_wiz.c` and from 13,332,084,430 to 13,264,137,909 (-0.5%) for `sqlite3.c`.
+
 ### DBG has one definition, and madc_verbose has one writer
 
 - `DBG(x)` is defined once, in `include/datadef.h`. The 36 per-file copies in `src/` are deleted. `DBG` first reads the process-wide flag `madc_verbose_requested`, so a process that never turns verbose on reads one plain atomic instead of the thread_local `madc_verbose` through `__tls_get_addr`.

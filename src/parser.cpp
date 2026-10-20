@@ -15205,7 +15205,7 @@ static void parse_objtemp_ctor_arguments(Program &pgm, TokenObjTemp *ot,
 // token is a TYPE (e.g. a substituted class template type parameter,
 // `_KeyOfValue()(__v)` in std::_Rb_tree::_M_insert_) steals the `(` for the
 // cast/compound-literal path, which drops the temp and the trailing arguments.
-bool Program::paren_opens_call_on_receiver(std::stack<TokenBase *> &exStack)
+bool Program::paren_opens_call_on_receiver(token_stack_t &exStack)
 {
 	if ( exStack.empty() )
 		return false;
@@ -32715,7 +32715,7 @@ void Program::unwind_block_typedef_shadows(size_t depth, const char *site)
     }
 }
 
-void Program::popOperator(stack<TokenBase *> &opStack, stack<TokenBase *> &exStack)
+void Program::popOperator(token_stack_t &opStack, token_stack_t &exStack)
 {
     DBG(cout << "popOperator() size: " << opStack.size() << " TOP" << endl);
     TokenOperator *to;
@@ -33883,12 +33883,12 @@ enum class QualifiedClassExprAction {
 
 static QualifiedClassExprAction resolve_class_qualified_expression(
 	Program &pgm, DataDefCLASS *scope, const madc::dis::istring &scope_name,
-	TokenBase *anchor_tb, std::stack<TokenBase *> &exStack,
+	TokenBase *anchor_tb, token_stack_t &exStack,
 	Variable **var_out, TokenBase **tb_out,
 	DataDefCLASS **owner_out = NULL, madc::dis::istring *member_out = NULL);
 static QualifiedClassExprAction resolve_aggregate_qualified_expression(
 	Program &pgm, DataDefSTRUCT *scope, const madc::dis::istring &scope_name,
-	TokenBase *anchor_tb, std::stack<TokenBase *> &exStack,
+	TokenBase *anchor_tb, token_stack_t &exStack,
 	TokenBase **tb_out);
 
 // `Scope::name` in an expression, Scope a class, struct or union: a class
@@ -33897,7 +33897,7 @@ static QualifiedClassExprAction resolve_aggregate_qualified_expression(
 // a scope before `::` asks here.
 static QualifiedClassExprAction resolve_qualified_scope_expression(
 	Program &pgm, DataDefSTRUCT *scope, const madc::dis::istring &scope_name,
-	TokenBase *anchor_tb, std::stack<TokenBase *> &exStack,
+	TokenBase *anchor_tb, token_stack_t &exStack,
 	Variable **var_out, TokenBase **tb_out,
 	DataDefCLASS **owner_out = NULL, madc::dis::istring *member_out = NULL)
 {
@@ -34042,7 +34042,7 @@ TokenBase *Program::parsePostfixChain(TokenBase *head)
 	// the copy did cover.
 	if ( DataDefSTRUCT *scope = qscope.agg )
 	{
-	    std::stack<TokenBase *> qstack;
+	    token_stack_t qstack;
 	    Variable *qvar = NULL;
 	    TokenBase *qtb = NULL;
 	    DataDefCLASS *qowner = NULL;
@@ -35470,7 +35470,7 @@ static madc::dis::istring method_access_violation(DataDef *owner_type,
 static bool try_nested_type_construction(Program &pgm, DataDefCLASS *scope,
 					 const madc::dis::istring &member_name,
 					 TokenBase *member_tb,
-					 std::stack<TokenBase *> &exStack,
+					 token_stack_t &exStack,
 					 TokenBase **tb_out)
 {
     DataDef *nested_dd = resolve_class_type_alias(scope, member_name);
@@ -35513,7 +35513,7 @@ static TokenMember *qualified_member_without_object(DataDefSTRUCT *scope,
 // nothing to find in it.
 static QualifiedClassExprAction resolve_aggregate_qualified_expression(
 	Program &pgm, DataDefSTRUCT *scope, const madc::dis::istring &scope_name,
-	TokenBase *anchor_tb, std::stack<TokenBase *> &exStack,
+	TokenBase *anchor_tb, token_stack_t &exStack,
 	TokenBase **tb_out)
 {
     pgm.nextToken(); // consume '::'
@@ -35534,7 +35534,7 @@ static QualifiedClassExprAction resolve_aggregate_qualified_expression(
 
 static QualifiedClassExprAction resolve_class_qualified_expression(
 	Program &pgm, DataDefCLASS *scope, const madc::dis::istring &scope_name,
-	TokenBase *anchor_tb, std::stack<TokenBase *> &exStack,
+	TokenBase *anchor_tb, token_stack_t &exStack,
 	Variable **var_out, TokenBase **tb_out,
 	DataDefCLASS **owner_out /* = NULL */, madc::dis::istring *member_out /* = NULL */)
 {
@@ -41266,8 +41266,8 @@ Program::TemplateDef *Program::match_partial_specialization(
 // contract). Extracted verbatim so parseExpression's shunting-yard loop owns
 // only dispatch + stack drain; this owns the type-name-in-expression cases.
 Program::ExprStep Program::parseExpr_dataTypeArm(TokenBase *&tb,
-				 std::stack<TokenBase *> &exStack,
-				 std::stack<TokenBase *> &opStack,
+				 token_stack_t &exStack,
+				 token_stack_t &opStack,
 				 TokenCpnd *code)
 {
     TokenDataType *bt = (TokenDataType *)tb;
@@ -41440,8 +41440,8 @@ Program::ExprStep Program::parseExpr_dataTypeArm(TokenBase *&tb,
 // ttSymbol switch-arm of parseExpression (see madc.h for the ExprStep
 // contract). Expression terminators (`;`) and the C comma operator.
 Program::ExprStep Program::parseExpr_symbolArm(TokenBase *tb,
-				 std::stack<TokenBase *> &exStack,
-				 std::stack<TokenBase *> &opStack,
+				 token_stack_t &exStack,
+				 token_stack_t &opStack,
 				 int brackets, bool push_back_comma)
 {
     bool done = false;
@@ -41687,8 +41687,8 @@ bool Program::ufcs_attempts_here(bool operator_id)
 
 bool Program::ufcs_access_fallback(TokenBase *receiver, TokenIdent *ident_tb,
 				bool operator_id,
-				std::stack<TokenBase *> &exStack,
-				std::stack<TokenBase *> &opStack,
+				token_stack_t &exStack,
+				token_stack_t &opStack,
 				TokenBase *&tb, bool &done)
 {
     if ( !receiver || !ident_tb || !ufcs_attempts_here(operator_id) )
@@ -41753,7 +41753,7 @@ bool Program::ufcs_access_fallback(TokenBase *receiver, TokenIdent *ident_tb,
 // motivating shapes; a call whose first argument is a compound expression keeps
 // its old behaviour rather than guessing.
 bool Program::ufcs_call_fallback(TokenIdent *ident_tb, bool operator_id,
-				 std::stack<TokenBase *> &opStack,
+				 token_stack_t &opStack,
 				 TokenBase *&tb, bool &done, TokenCpnd *code)
 {
     if ( !ident_tb || !ufcs_attempts_here(operator_id) )
@@ -41845,8 +41845,8 @@ static bool function_name_decays_beside(TokenID id)
 }
 
 Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
-				 std::stack<TokenBase *> &exStack,
-				 std::stack<TokenBase *> &opStack, TokenCpnd *code)
+				 token_stack_t &exStack,
+				 token_stack_t &opStack, TokenCpnd *code)
 {
     Variable *var = NULL;
     bool done = false;
@@ -44250,7 +44250,7 @@ static bool dtor_ident_names_class(const char *spell, DataDefCLASS *cls)
 // arm-level break -> Break, `done = true` -> Done, the one arm-level
 // continue -> Continue.
 Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
-		 std::stack<TokenBase *> &exStack, std::stack<TokenBase *> &opStack,
+		 token_stack_t &exStack, token_stack_t &opStack,
 		 int &brackets, TokenCpnd *code, bool conditional, bool ternary_branch,
 		 bool stop_on_closing_paren, int initial_brackets, bool push_back_comma,
 		 bool cast_operand)
@@ -45403,7 +45403,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		    TokenMember *member_call_base = NULL;
 		    bool opstack_has_pending_op = false;
 		    {
-			std::stack<TokenBase *> tmp = opStack;
+			token_stack_t tmp = opStack;
 			while ( !tmp.empty() )
 			{
 			    TokenBase *t = tmp.top();
@@ -46349,8 +46349,8 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 // — the pending `=` bound the two juxtaposed operands and `r` was dropped,
 // exit 0). Adjacent string literals never reach here (lexer-level concat:
 // push_token_with_literal_concat).
-TokenBase *Program::finish_expression(std::stack<TokenBase *> &opStack,
-				      std::stack<TokenBase *> &exStack)
+TokenBase *Program::finish_expression(token_stack_t &opStack,
+				      token_stack_t &exStack)
 {
     if ( !opStack.empty() )
 	DBG(cout << "Emptying operator stack" << endl);
@@ -46399,8 +46399,8 @@ static const typename Stack::container_type &stack_items(const Stack &s)
 // unary nets zero, a binary operator awaiting its right operand minus one); a
 // grouping `(` / `[` marker counts nothing, and a call parked on the operator
 // stack counts as the operand it is.
-static bool stacks_hold_complete_operand(const std::stack<TokenBase *> &opStack,
-					 const std::stack<TokenBase *> &exStack)
+static bool stacks_hold_complete_operand(const token_stack_t &opStack,
+					 const token_stack_t &exStack)
 {
     long balance = (long)exStack.size();
     for ( TokenBase *t : stack_items(opStack) )
@@ -46429,8 +46429,8 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 				    bool unary_operand)
 {
     TokenCpnd *code = compounds.empty() ? NULL : compounds.top();
-    stack<TokenBase *> exStack;
-    stack<TokenBase *> opStack;
+    token_stack_t exStack;
+    token_stack_t opStack;
     Variable *var;
     bool done = false;
     int brackets = initial_brackets;
@@ -76734,8 +76734,8 @@ TokenBase *Program::parseLambda()
 // The call is built the same way the function-pointer paths build theirs
 // (TokenCallFunc + parseCallFunc, pushed on opStack): a lambda IS a function
 // pointer here, so it takes the same road rather than a private one.
-Program::ExprStep Program::parseLambdaExprStep(std::stack<TokenBase *> &exStack,
-					       std::stack<TokenBase *> &opStack,
+Program::ExprStep Program::parseLambdaExprStep(token_stack_t &exStack,
+					       token_stack_t &opStack,
 					       bool &done)
 {
     TokenBase *lambda = parseLambda();
