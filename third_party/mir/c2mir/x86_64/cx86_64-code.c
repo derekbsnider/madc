@@ -10,7 +10,6 @@
 #include "mirc_x86_64_win.h"
 #endif
 
-#include "mirc_x86_64_float.h"
 #include "mirc_x86_64_limits.h"
 #include "mirc_x86_64_stdarg.h"
 #include "mirc_x86_64_stdint.h"

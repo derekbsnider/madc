@@ -21,8 +21,9 @@
 # aarch64_varargs.c (a program DEFINING a variadic function: its va_arg calls
 # libmir's mir.va_arg / mir.va_block_arg, which an executable could not find),
 # aarch64_predef.c (the target's predefined macros and header world, which the
-# cross madc captured from the x86-64 host g++), and aarch64_nansl.c (the
-# binary128 signaling NaN). THREE LEGS each:
+# cross madc captured from the x86-64 host g++), aarch64_nansl.c (the
+# binary128 signaling NaN), and aarch64_float.c (<float.h>: madc's on the aot
+# leg, c2mir's on the jit leg). THREE LEGS each:
 #   oracle  aarch64-linux-gnu-gcc's binary under qemu — the expected output.
 #   aot     bin/madc-aarch64-linux -c, linked by aarch64 gcc against the target's
 #           libmir (a madc executable gets libmir through libmadc), run under

@@ -5,7 +5,6 @@
 #include "../mirc.h"
 #include "mirc_ppc64_linux.h"
 
-#include "mirc_ppc64_float.h"
 #include "mirc_ppc64_limits.h"
 #include "mirc_ppc64_stdarg.h"
 #include "mirc_ppc64_stdint.h"
