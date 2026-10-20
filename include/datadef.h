@@ -157,6 +157,16 @@ extern TargetVaList madc_target_va_list;
 inline bool target_scalar_va_list()
 { return madc_target_va_list == TargetVaList::Scalar; }
 
+// The TARGET's long double size and alignment — the sixth target property.
+// Not a model madc chooses: c2mir lays TP_LDOUBLE out per target (sizeof
+// (mir_ldouble), MIR_LDOUBLE_ALIGN), and every parse-time sizeof, _Alignof
+// and struct layout must agree with it, so the backend is the one owner and
+// these read it (defined in src/madc_cir.cpp, the c2mir boundary). Never
+// sizeof(long double) at a consumer: that is the HOST's, and an emit-only
+// cross madc (Linux x86-64 host, arm64-macos target: 16 vs 8) differs.
+size_t target_ldouble_size();
+size_t target_ldouble_align();
+
 // The TARGET-shaped C types whose width the data model decides (task #46b).
 // LP64: `long` IS int64 (ddINT64/ddUINT64) and wchar_t is the 4-byte int32
 // shape — unchanged identities. LLP64: `long`/`unsigned long` are the
@@ -2186,23 +2196,23 @@ class DataDefDOUBLE:    public DataDef { public: DataDefDOUBLE():  DataDef("doub
 // used to lex straight to ddDOUBLE, so sizeof said 8, printf("%Lg") read 80 bits
 // off the varargs stack and printed nan, and the mangler emitted Itanium `e`
 // for a value passed as a double.
-// The size and alignment are the TARGET's, read off the compiler building
-// this madc for it (a hosted madc runs where it was built for; the cross
-// builds compile with -target): 16/16 on x86-64 (x87 extended), 16/16 on
-// Linux aarch64 (IEEE quad), 8/8 on Apple arm64 where long double IS
-// double. c2mir sizes TP_LDOUBLE the same way (sizeof (mir_ldouble)), so
-// the front end and the backend agree by construction; a baked 16 made madc
-// fold sizeof(long double) = 16 and lay structs out 16-aligned on an Apple
-// M-series Mac whose libc, c2mir and MIR all say 8 (darwin D4:
-// testlongdouble, testldblalign, testcomplexretconv, testsignalingnan).
+// The size and alignment are the TARGET's, read from c2mir's layout of
+// TP_LDOUBLE (target_ldouble_size / target_ldouble_align): 16/16 on x86-64
+// (x87 extended), 16/16 on Linux aarch64 (IEEE quad), 8/8 on Apple arm64
+// where long double IS double — so the front end and the backend agree by
+// construction. A baked 16 made madc fold sizeof(long double) = 16 and lay
+// structs out 16-aligned on an Apple M-series Mac whose libc, c2mir and MIR
+// all say 8 (darwin D4: testlongdouble, testldblalign, testcomplexretconv,
+// testsignalingnan); the host's sizeof(long double) did the same in the
+// Linux-hosted arm64-macos cross madc, which freezes the darwin forest.
 class DataDefLDOUBLE:   public DataDef { public:
-	DataDefLDOUBLE(): DataDef("long double", sizeof(long double), DataType::dtLDOUBLE) {}
+	DataDefLDOUBLE(): DataDef("long double", target_ldouble_size(), DataType::dtLDOUBLE) {}
 	// SysV x86-64 alignment IS 16 as the comment above has always said —
 	// but the base alignment() caps simple types at 8, so without this
 	// override struct layout placed long double members on 8-byte
 	// boundaries (parse-time sizeof folded 24 for a struct c2mir lays
 	// out as 32 — gcc/clang: 32). Apple arm64: alignof(long double) = 8.
-	virtual size_t alignment() const override { return alignof(long double); } };
+	virtual size_t alignment() const override { return target_ldouble_align(); } };
 
 // generic pointer-to-type — tracks what the pointer points to
 // pointers are 64-bit integers at the ABI level (stored in Gp registers)

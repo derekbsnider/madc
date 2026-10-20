@@ -22120,6 +22120,11 @@ const char *c2mir_uniq_str (c2m_ctx_t c2m_ctx, const char *s, size_t len) {
   return str.s;
 }
 
+/* ---- Target type layout ---- */
+
+int c2mir_ldouble_size (void) { return basic_type_size (TP_LDOUBLE); }
+int c2mir_ldouble_align (void) { return basic_type_align (TP_LDOUBLE); }
+
 /* Public node-code -> name, for external AST walkers/dumpers. */
 const char *c2mir_node_code_name (c2mir_node_code_t code) {
   return get_node_name ((node_code_t) code);

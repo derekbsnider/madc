@@ -87,6 +87,15 @@ node_t c2mir_node_next_op (node_t op);
    Must be called before appending children. */
 void c2mir_init_node_ops (node_t n);
 
+/* ---- Target type layout ---- */
+
+/* The target's long double size and alignment as c2mir lays TP_LDOUBLE out
+   (sizeof (mir_ldouble), MIR_LDOUBLE_ALIGN): an external front end folding
+   sizeof / _Alignof and struct layout reads them, so the two agree on a
+   target whose long double differs from the host's (arm64-macos: double). */
+int c2mir_ldouble_size (void);
+int c2mir_ldouble_align (void);
+
 /* ---- Compilation from external AST ---- */
 
 int c2mir_compile_tree (MIR_context_t ctx, c2m_ctx_t c2m_ctx,

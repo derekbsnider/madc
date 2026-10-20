@@ -66,6 +66,11 @@ extern thread_local int madc_opt_level;
 extern thread_local bool madc_debug_info;
 extern thread_local bool madc_object_mode;
 
+// The target's long double layout (datadef.h): c2mir's own, which every
+// parse-time sizeof / _Alignof / struct layout must match.
+size_t target_ldouble_size() { return (size_t) c2mir_ldouble_size(); }
+size_t target_ldouble_align() { return (size_t) c2mir_ldouble_align(); }
+
 // -----------------------------------------------------------------------
 // Public API
 // -----------------------------------------------------------------------

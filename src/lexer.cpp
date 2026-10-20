@@ -4659,12 +4659,11 @@ void Program::_tokenizer_init()
 	// pattern is the double one in a long double-typed union — gcc/clang
 	// there print nansl 7ff4000000000000; the x87 pair written into an
 	// 8-byte union would overrun it (darwin D4: testsignalingnan printed
-	// 0000a000000000000000 on an M-series Mac). sizeof(long double) is
-	// the target's, read off the compiler building this madc for it
-	// (the DataDefLDOUBLE rule).
+	// 0000a000000000000000 on an M-series Mac). The size is the TARGET's
+	// (target_ldouble_size, the DataDefLDOUBLE rule), never the host's.
 	MacroDef nansl;
 	nansl.params = {"__tag"};
-	if ( sizeof(long double) == 8 )
+	if ( target_ldouble_size() == 8 )
 	    nansl.body = "(__extension__ ({ union { unsigned long long __i; long double __l; } __u;"
 			 " __u.__i = 0x7ff4000000000000ULL; __u.__l; }))";
 	else
