@@ -1,6 +1,12 @@
 # Changelog
 
 ## [Unreleased]
+### `#include_next` resumes after the search directory the includer was found in
+
+- `#include_next` searches the entries after the search directory the including header was found in (gcc's `file->dir`), not after the includer's own directory. A header found through a subdirectory spelling (`<sub/use.h>`, `<bits/std_abs.h>`) previously restarted the walk at the top of the search list (`include_next_search_list`, `src/lexer.cpp`).
+- libstdc++'s `<bits/std_abs.h>` `#include_next <stdlib.h>` now reaches the C library's header, not the libstdc++ `<stdlib.h>` wrapper. `tests/testincludenextsubdir_c.mad` prints `which=2`, as gcc and clang do; madc printed `which=1` before the fix.
+- The forest pack lists gain `stdlib.h` (`scripts/forest_pack_headers.txt` v11, `scripts/forest_pack_headers_windows.txt` v8).
+
 ### The verified C++ bind accepts two equal-in-effect differences: lex-alike macro bodies and a compound `#if` guard
 
 - A written object-like macro whose body lexes to the same tokens as the frozen body counts as the frozen state, not only one spelled alike (`forest_object_states_lex_alike`). glibc's `__attr_dealloc_fclose` is `__attr_dealloc (fclose, 1)` in a frozen `<stdio.h>` and empty in `<wchar.h>` alone; both lex to no token.

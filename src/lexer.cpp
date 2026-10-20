@@ -6799,17 +6799,25 @@ size_t Program::include_next_search_list(std::vector<madc::dis::istring> &search
 	search.push_back(sys_paths[i]);
 
     // Normalize-with-trailing-slash compare to locate the current file's dir
-    // in the search list; #include_next searches only entries AFTER it.
-    std::string cur = current_source_directory();
-    if ( !cur.empty() && cur.back() != '/' )
-	cur += '/';
-    for ( size_t i = 0; i < search.size(); ++i )
+    // in the search list; #include_next searches only entries AFTER it. The
+    // dir is the one the file was FOUND in, as gcc's file->dir: <bits/std_abs.h>
+    // was found in /usr/include/c++/13, not its own .../bits, which no entry
+    // names — the walk then restarted at the top and reached the libstdc++
+    // <stdlib.h> wrapper instead of the C library's. A file no search found
+    // (the main file, an embedded header) is matched by its own directory.
+    for ( int pass = source.found_dir().empty() ? 1 : 0; pass < 2; ++pass )
     {
-	std::string d = search[i];
-	if ( !d.empty() && d.back() != '/' )
-	    d += '/';
-	if ( d == cur )
-	    return i + 1;
+	std::string cur = pass == 0 ? source.found_dir().str() : current_source_directory().str();
+	if ( !cur.empty() && cur.back() != '/' )
+	    cur += '/';
+	for ( size_t i = 0; i < search.size(); ++i )
+	{
+	    std::string d = search[i];
+	    if ( !d.empty() && d.back() != '/' )
+		d += '/';
+	    if ( d == cur )
+		return i + 1;
+	}
     }
     return 0;
 }
@@ -9090,6 +9098,12 @@ TokenBase *Program::_getToken()
 			Throw << "Failed to open include file: " << full_path.c_str() << flush;
 		    }
 		    source.fname(full_path.c_str());
+		    // The search dir that served the spelling (a resolved path is
+		    // that dir + incfile): #include_next resumes after it.
+		    if ( full_path.size() > incfile.size()
+		      && full_path.compare(full_path.size() - incfile.size(), incfile.size(),
+					   incfile) == 0 )
+			source.found_dir(madc::dis::istring(full_path.substr(0, full_path.size() - incfile.size())));
 		    const char *_interned2 = intern_file(full_path);
 		    {
 			ReadTimer _rt(_read_seconds);

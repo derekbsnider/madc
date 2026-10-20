@@ -2427,6 +2427,7 @@ protected:
     int _lf, _cr, _column;
     int _last_token_line = 0;		// see last_token_line()
     madc::dis::istring _fname;
+    madc::dis::istring _found_dir;	// the search dir an #include found this file in (empty: none)
     void add_pushback_frame_len(size_t len, const madc::dis::istring &disabled_macro,
 			       bool recount = true, bool synthesized = false,
 			       const std::set<madc::dis::istring> *arg_disabled = NULL)
@@ -2547,6 +2548,9 @@ public:
     const char *fname() const { return _fname.c_str(); }
     const char *fname(const char *s)  { _fname = s; return _fname.c_str(); }
     const char *fname(madc::dis::istring &s) { _fname = s; return _fname.c_str(); }
+    // #include_next resumes the search after this directory (gcc's file->dir).
+    const madc::dis::istring &found_dir() const { return _found_dir; }
+    void found_dir(const madc::dis::istring &d) { _found_dir = d; }
     void copybuf(std::streambuf *sb)  { std::ostringstream tmp; tmp << sb; _buf = tmp.str(); _gpos = 0; }
     // Source TEXT, never a name: interning it would hash and keep every
     // header's bytes in the process-wide name table.
