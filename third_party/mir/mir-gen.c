@@ -229,6 +229,7 @@ typedef struct gen_cfi_rule {
   int64_t offset;
 } gen_cfi_rule_t;
 DEF_VARR (gen_cfi_rule_t);
+DEF_VARR (MIR_unwind_call_t);
 
 /* AOT object mode: MIR item -> object-symbol id */
 typedef struct obj_item_sym {
@@ -288,6 +289,15 @@ struct gen_ctx {
   size_t cfi_pending;                   /* ... and the marks this pass has yet to locate */
   VARR (uint8_t) * cfi_insns;           /* the FDE instructions being encoded */
   VARR (void_ptr_t) * cfi_registered;   /* frame tables registered with the host unwinder */
+  /* Unwind info of the function being generated (MIR_unwind_info_t): */
+  VARR (MIR_unwind_call_t) * unwind_calls; /* call sites recorded during target_translate */
+  MIR_insn_t unwind_top_alloca;            /* the frame base's ALLOCA, or NULL */
+  int64_t unwind_entry_alloca_bytes;       /* bytes allocated at entry through it, -1 = unknown */
+  /* Where the target's prologue left SP (gen_unwind_frame); unwind_frame_p is
+     set only when the function has a frame: */
+  char unwind_frame_p;
+  int64_t unwind_sp_cfa_offset; /* SP after the prologue - CFA */
+  int64_t unwind_alloca_bias;   /* an ALLOCA's result - SP after it */
   VARR (MIR_insn_t) * temp_insns, *temp_insns2;
   VARR (bb_insn_t) * temp_bb_insns, *temp_bb_insns2;
   VARR (loop_node_t) * loop_nodes, *queue_nodes, *loop_entries; /* used in building loop tree */
@@ -448,10 +458,13 @@ static void gen_cfi_save (gen_ctx_t gen_ctx, size_t mark, unsigned dwarf_reg,
 }
 
 /* target_translate, before each emission pass over the insns (a multi-pass
-   emitter's last pass wins): every mark is to be located again. */
-static inline void gen_cfi_start_pass (gen_ctx_t gen_ctx) {
+   emitter's last pass wins): every record kept per emitted insn restarts --
+   every CFI mark is to be located again, and the call sites are recorded again
+   (gen_record_call). */
+static inline void gen_start_code_pass (gen_ctx_t gen_ctx) {
   gen_ctx->cfi_prev_insn = NULL;
   gen_ctx->cfi_pending = VARR_LENGTH (gen_cfi_mark_t, gen_ctx->cfi_marks);
+  VARR_TRUNC (MIR_unwind_call_t, gen_ctx->unwind_calls, 0);
 }
 
 static void gen_cfi_locate_marks (gen_ctx_t gen_ctx, size_t code_offset, MIR_insn_t insn) {
@@ -471,6 +484,111 @@ static void gen_cfi_locate_marks (gen_ctx_t gen_ctx, size_t code_offset, MIR_ins
    it this is one test. */
 static inline void gen_cfi_note_insn (gen_ctx_t gen_ctx, size_t code_offset, MIR_insn_t insn) {
   if (gen_ctx->cfi_pending != 0) gen_cfi_locate_marks (gen_ctx, code_offset, insn);
+}
+
+/* ---- Unwind regions of generated code (MIR_unwind_info_t) ------------------
+   A walk reaches a frame through its CFI, which gives the frame's CFA; the
+   frame base regions are relative to is the function's top ALLOCA, at a fixed
+   CFA offset the target's prologue determines (gen_unwind_frame). */
+
+/* target_make_prolog_epilog: after the prologue SP = CFA + SP_CFA_OFFSET, and an
+   ALLOCA's result is SP + ALLOCA_BIAS after it (the area a target keeps at the
+   bottom of the stack).  A function without a frame of its own (jret_p) is not
+   described. */
+static void gen_unwind_frame (gen_ctx_t gen_ctx, int64_t sp_cfa_offset, int64_t alloca_bias) {
+  gen_ctx->unwind_frame_p = !curr_func_item->u.func->jret_p;
+  gen_ctx->unwind_sp_cfa_offset = sp_cfa_offset;
+  gen_ctx->unwind_alloca_bias = alloca_bias;
+}
+
+/* target_translate, after a call insn's code [START, END): record the call site
+   when a region is live at it.  The whole insn's code is the range, so a call
+   pattern's insns around the machine call (an address load, a TOC reload) need
+   no target knowledge. */
+static inline void gen_record_call (gen_ctx_t gen_ctx, size_t start, size_t end, MIR_insn_t insn) {
+  if (insn->unwind_region == 0 || (insn->code != MIR_CALL && insn->code != MIR_INLINE)) return;
+  MIR_unwind_call_t c = {(uint32_t) start, (uint32_t) (end - start), insn->unwind_region};
+  VARR_PUSH (MIR_unwind_call_t, gen_ctx->unwind_calls, c);
+}
+
+/* An ALLOCA's constant size -- its immediate operand, or the constant an
+   immediately preceding MOV put in its size operand (the inliner's form, as
+   func_alloca_features reads it) -- or -1 when it is not a constant. */
+static int64_t gen_const_alloca_size (MIR_insn_t insn) {
+  MIR_op_t size = insn->ops[1];
+  MIR_insn_t prev;
+
+  if (size.mode == MIR_OP_INT || size.mode == MIR_OP_UINT) return size.u.i;
+  if ((size.mode != MIR_OP_REG && size.mode != MIR_OP_VAR)
+      || (prev = DLIST_PREV (MIR_insn_t, insn)) == NULL || prev->code != MIR_MOV
+      || prev->ops[0].mode != size.mode
+      || (prev->ops[1].mode != MIR_OP_INT && prev->ops[1].mode != MIR_OP_UINT))
+    return -1;
+  if (size.mode == MIR_OP_REG ? prev->ops[0].u.reg != size.u.reg : prev->ops[0].u.var != size.u.var)
+    return -1;
+  return prev->ops[1].u.i;
+}
+
+/* At generation start: the function's frame base is its top ALLOCA (the first,
+   with a constant size, before any label -- MIR's own top-alloca rule), when the
+   function declared unwind regions. */
+static void gen_find_unwind_top_alloca (gen_ctx_t gen_ctx, MIR_func_t func) {
+  gen_ctx->unwind_top_alloca = NULL;
+  gen_ctx->unwind_entry_alloca_bytes = -1;
+  if (func->unwind_regions == NULL || func->unwind_base_reg == 0) return;
+  for (MIR_insn_t insn = DLIST_HEAD (MIR_insn_t, func->insns); insn != NULL;
+       insn = DLIST_NEXT (MIR_insn_t, insn)) {
+    if (insn->code == MIR_LABEL || MIR_call_code_p (insn->code)) return;
+    if (insn->code != MIR_ALLOCA) continue;
+    if (gen_const_alloca_size (insn) >= 0) gen_ctx->unwind_top_alloca = insn;
+    return;
+  }
+}
+
+/* After target_machinize: the bytes the entry ALLOCAs take through the top one
+   (a target may have put block-argument ALLOCAs ahead of it), each rounded to 16
+   as every target emits them, whatever its size operand's form.  A label here is the CFG's
+   block start, which emits nothing (the top ALLOCA itself precedes every
+   frontend label -- gen_find_unwind_top_alloca). */
+static void gen_measure_unwind_top_alloca (gen_ctx_t gen_ctx, MIR_func_t func) {
+  int64_t bytes = 0, size;
+
+  if (gen_ctx->unwind_top_alloca == NULL) return;
+  for (MIR_insn_t insn = DLIST_HEAD (MIR_insn_t, func->insns); insn != NULL;
+       insn = DLIST_NEXT (MIR_insn_t, insn)) {
+    if (MIR_call_code_p (insn->code)) return;
+    if (insn->code != MIR_ALLOCA) continue;
+    if ((size = gen_const_alloca_size (insn)) < 0) return;
+    bytes += (size + 15) & -16;
+    if (insn == gen_ctx->unwind_top_alloca) {
+      gen_ctx->unwind_entry_alloca_bytes = bytes;
+      return;
+    }
+  }
+}
+
+/* After target_translate: hand the frame description and the recorded call
+   sites to the function (MIR_func.unwind). */
+static void gen_fill_unwind_info (gen_ctx_t gen_ctx, MIR_func_t func) {
+  MIR_unwind_info_t *u = &func->unwind;
+  size_t n = VARR_LENGTH (MIR_unwind_call_t, gen_ctx->unwind_calls);
+
+  if (u->calls != NULL) MIR_free (gen_alloc (gen_ctx), u->calls);
+  memset (u, 0, sizeof (*u));
+  if (!gen_ctx->unwind_frame_p) return;
+  u->valid_p = TRUE;
+  if (gen_ctx->unwind_entry_alloca_bytes >= 0) {
+    u->base_p = TRUE;
+    u->base_cfa_offset = gen_ctx->unwind_sp_cfa_offset - gen_ctx->unwind_entry_alloca_bytes
+                         + gen_ctx->unwind_alloca_bias;
+    u->base_align = func->unwind_base_align;
+  }
+  if (n != 0) {
+    u->calls = gen_malloc (gen_ctx, n * sizeof (MIR_unwind_call_t));
+    memcpy (u->calls, VARR_ADDR (MIR_unwind_call_t, gen_ctx->unwind_calls),
+            n * sizeof (MIR_unwind_call_t));
+    u->ncalls = n;
+  }
 }
 
 /* The move insn for a value of a given type (MIR_MOV for the integer shapes,
@@ -964,6 +1082,7 @@ static void gen_add_insn_before (gen_ctx_t gen_ctx, MIR_insn_t before, MIR_insn_
   }
   insn->file_id = before->file_id; /* inherit source loc from the anchor for debug info */
   insn->line = before->line;
+  insn->unwind_region = before->unwind_region;
   MIR_insert_insn_before (ctx, curr_func_item, before, insn);
   create_new_bb_insns (gen_ctx, DLIST_PREV (MIR_insn_t, insn), before, insn_for_bb);
 }
@@ -976,6 +1095,7 @@ static void gen_add_insn_after (gen_ctx_t gen_ctx, MIR_insn_t after, MIR_insn_t 
   gen_assert (!MIR_any_branch_code_p (insn_for_bb->code));
   insn->file_id = after->file_id; /* inherit source loc from the anchor for debug info */
   insn->line = after->line;
+  insn->unwind_region = after->unwind_region;
   MIR_insert_insn_after (gen_ctx->ctx, curr_func_item, after, insn);
   create_new_bb_insns (gen_ctx, after, DLIST_NEXT (MIR_insn_t, insn), insn_for_bb);
 }
@@ -9963,6 +10083,7 @@ static void *generate_func_code (MIR_context_t ctx, MIR_item_t func_item, int ma
      generation unlocated; located insns keep the location set when they were
      built, and gen_add_insn_before/after still inherit from their anchor. */
   MIR_set_source_loc (ctx, 0, 0);
+  MIR_set_unwind_region (ctx, 0); /* likewise: generator insns carry no region */
   DEBUG (0, {
     fprintf (debug_file, "Code generation of function %s:\n", MIR_item_name (ctx, func_item));
   });
@@ -9974,6 +10095,10 @@ static void *generate_func_code (MIR_context_t ctx, MIR_item_t func_item, int ma
   _MIR_duplicate_func_insns (ctx, func_item);
   VARR_TRUNC (gen_cfi_mark_t, gen_ctx->cfi_marks, 0);
   VARR_TRUNC (gen_cfi_rule_t, gen_ctx->cfi_rules, 0);
+  VARR_TRUNC (MIR_unwind_call_t, gen_ctx->unwind_calls, 0);
+  gen_ctx->unwind_frame_p = FALSE;
+  gen_ctx->unwind_sp_cfa_offset = gen_ctx->unwind_alloca_bias = 0;
+  gen_find_unwind_top_alloca (gen_ctx, func_item->u.func);
   curr_cfg = func_item->data = gen_malloc (gen_ctx, sizeof (struct func_cfg));
   build_func_cfg (gen_ctx);
   bbs_num = curr_bb_index;
@@ -10092,6 +10217,7 @@ static void *generate_func_code (MIR_context_t ctx, MIR_item_t func_item, int ma
     });
   }
   target_machinize (gen_ctx);
+  gen_measure_unwind_top_alloca (gen_ctx, func_item->u.func);
   make_io_dup_op_insns (gen_ctx);
   DEBUG (2, {
     fprintf (debug_file, "+++++++++++++MIR after machinize:\n");
@@ -10173,6 +10299,7 @@ static void *generate_func_code (MIR_context_t ctx, MIR_item_t func_item, int ma
     VARR_TRUNC (MIR_line_map_t, gen_line_map, 0);
     code = target_translate (gen_ctx, &code_len);
     gen_cfi_encode (gen_ctx, func_item->u.func);
+    gen_fill_unwind_info (gen_ctx, func_item->u.func);
     if (object_mode_p) {
       /* Capture the blob + relocations instead of publishing; no rebase, no
          thunk redirect -- nothing may depend on run-time addresses. */
@@ -10625,6 +10752,7 @@ void MIR_gen_init (MIR_context_t ctx) {
   VARR_CREATE (void_ptr_t, gen_ctx->cfi_registered, alloc, 0);
   gen_ctx->cfi_prev_insn = NULL;
   gen_ctx->cfi_pending = 0;
+  VARR_CREATE (MIR_unwind_call_t, gen_ctx->unwind_calls, alloc, 0);
   VARR_CREATE (MIR_insn_t, temp_insns, alloc, 16);
   VARR_CREATE (MIR_insn_t, temp_insns2, alloc, 16);
   VARR_CREATE (bb_insn_t, temp_bb_insns, alloc, 16);
@@ -10711,6 +10839,7 @@ void MIR_gen_finish (MIR_context_t ctx) {
   VARR_DESTROY (gen_cfi_mark_t, gen_ctx->cfi_marks);
   VARR_DESTROY (gen_cfi_rule_t, gen_ctx->cfi_rules);
   VARR_DESTROY (uint8_t, gen_ctx->cfi_insns);
+  VARR_DESTROY (MIR_unwind_call_t, gen_ctx->unwind_calls);
   VARR_DESTROY (MIR_insn_t, temp_insns);
   VARR_DESTROY (MIR_insn_t, temp_insns2);
   VARR_DESTROY (bb_insn_t, temp_bb_insns);

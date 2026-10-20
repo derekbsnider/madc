@@ -48,6 +48,7 @@ struct MIR_context {
   MIR_module_t curr_module;
   MIR_func_t curr_func;
   uint32_t curr_source_file_id, curr_source_line; /* stamped onto new insns; see MIR_set_source_loc */
+  uint32_t curr_unwind_region; /* stamped onto new insns; see MIR_set_unwind_region */
   size_t curr_label_num;
   DLIST (MIR_module_t) all_modules;
   VARR (MIR_module_t) * modules_to_link;
@@ -980,6 +981,9 @@ static void free_func_payload (MIR_context_t ctx, MIR_item_t item) {
   if (item->u.func->line_map != NULL) MIR_free (ctx->alloc, item->u.func->line_map);
   if (item->u.func->reg_locs != NULL) MIR_free (ctx->alloc, item->u.func->reg_locs);
   if (item->u.func->cfi != NULL) MIR_free (ctx->alloc, item->u.func->cfi);
+  if (item->u.func->unwind_regions != NULL)
+    VARR_DESTROY (MIR_unwind_region_t, item->u.func->unwind_regions);
+  if (item->u.func->unwind.calls != NULL) MIR_free (ctx->alloc, item->u.func->unwind.calls);
   if (item->u.func->internal != NULL) func_regs_finish (ctx, item->u.func);
   MIR_free (ctx->alloc, item->u.func);
 }
@@ -1678,7 +1682,12 @@ static MIR_item_t new_func_arr (MIR_context_t ctx, const char *name, size_t nres
   func->reg_locs_len = 0;
   func->cfi = NULL;
   func->cfi_len = 0;
+  func->unwind_base_reg = 0;
+  func->unwind_base_align = 0;
+  func->unwind_regions = NULL;
+  memset (&func->unwind, 0, sizeof (func->unwind));
   ctx->curr_source_file_id = ctx->curr_source_line = 0; /* don't bleed across functions */
+  ctx->curr_unwind_region = 0;
   func_regs_init (ctx, func);
   for (size_t i = 0; i < nargs; i++) {
     char *stored_name;
@@ -2797,12 +2806,44 @@ static MIR_insn_t create_insn (MIR_context_t ctx, size_t nops, MIR_insn_code_t c
   insn->data = NULL;
   insn->file_id = ctx->curr_source_file_id;
   insn->line = ctx->curr_source_line;
+  insn->unwind_region = ctx->curr_unwind_region;
   return insn;
 }
 
 void MIR_set_source_loc (MIR_context_t ctx, uint32_t file_id, uint32_t line) {
   ctx->curr_source_file_id = file_id;
   ctx->curr_source_line = line;
+}
+
+void MIR_set_unwind_region (MIR_context_t ctx, uint32_t region) {
+  ctx->curr_unwind_region = region;
+}
+
+uint32_t MIR_new_unwind_region (MIR_context_t ctx, MIR_item_t func_item, uint32_t parent,
+                                int64_t offset, MIR_item_t cleanup) {
+  MIR_func_t func;
+  MIR_unwind_region_t r;
+
+  if (func_item == NULL || func_item->item_type != MIR_func_item || cleanup == NULL)
+    MIR_get_error_func (ctx) (MIR_wrong_param_value_error, "MIR_new_unwind_region: wrong param");
+  func = func_item->u.func;
+  if (func->unwind_regions == NULL) VARR_CREATE (MIR_unwind_region_t, func->unwind_regions, ctx->alloc, 4);
+  if (parent > VARR_LENGTH (MIR_unwind_region_t, func->unwind_regions))
+    MIR_get_error_func (ctx) (MIR_wrong_param_value_error,
+                              "MIR_new_unwind_region: undeclared parent region");
+  r.parent = parent;
+  r.offset = offset;
+  r.cleanup = cleanup;
+  VARR_PUSH (MIR_unwind_region_t, func->unwind_regions, r);
+  return (uint32_t) VARR_LENGTH (MIR_unwind_region_t, func->unwind_regions);
+}
+
+void MIR_set_func_unwind_base (MIR_context_t ctx, MIR_item_t func_item, MIR_reg_t reg,
+                               uint32_t align) {
+  if (func_item == NULL || func_item->item_type != MIR_func_item)
+    MIR_get_error_func (ctx) (MIR_wrong_param_value_error, "MIR_set_func_unwind_base: wrong param");
+  func_item->u.func->unwind_base_reg = reg;
+  func_item->u.func->unwind_base_align = align;
 }
 
 static MIR_insn_t new_insn1 (MIR_context_t ctx, MIR_insn_code_t code) {
@@ -3617,6 +3658,8 @@ void MIR_output_insn (MIR_context_t ctx, FILE *f, MIR_insn_t insn, MIR_func_t fu
   }
   if (insn->code == MIR_UNSPEC)
     fprintf (f, " # %s", VARR_GET (MIR_proto_t, unspec_protos, insn->ops[0].u.u)->name);
+  if (insn->unwind_region != 0 && MIR_call_code_p (insn->code))
+    fprintf (f, " # region %u", insn->unwind_region);
   if (newline_p) fprintf (f, "\n");
 }
 
@@ -3773,6 +3816,17 @@ void MIR_output_item (MIR_context_t ctx, FILE *f, MIR_item_t item) {
   output_vars (ctx, f, func, func->global_vars, 0, nglobal, "global");
   fprintf (f, "\n# %u arg%s, %ld local%s, %ld global%s\n", func->nargs, func->nargs == 1 ? "" : "s",
            (long) vars_num, vars_num == 1 ? "" : "s", (long) nglobal, nglobal == 1 ? "" : "s");
+  if (func->unwind_base_reg != 0)
+    fprintf (f, "# unwind base %s, align %u\n", MIR_reg_name (ctx, func->unwind_base_reg, func),
+             func->unwind_base_align);
+  if (func->unwind_regions != NULL)
+    for (size_t i = 0; i < VARR_LENGTH (MIR_unwind_region_t, func->unwind_regions); i++) {
+      MIR_unwind_region_t r = VARR_GET (MIR_unwind_region_t, func->unwind_regions, i);
+
+      fprintf (f, "# unwind region %lu: parent %u, offset %lld, cleanup %s\n",
+               (unsigned long) (i + 1), r.parent, (long long) r.offset,
+               MIR_item_name (ctx, r.cleanup));
+    }
   for (insn = DLIST_HEAD (MIR_insn_t, func->insns); insn != NULL;
        insn = DLIST_NEXT (MIR_insn_t, insn))
     MIR_output_insn (ctx, f, insn, func, TRUE);
@@ -4348,6 +4402,7 @@ static int simplify_func (MIR_context_t ctx, MIR_item_t func_item, int mem_float
      them inherit a stale source line (the prologue would adopt it as the func's
      first line).  Leave them unlocated; the per-insn loop restamps the rest. */
   ctx->curr_source_file_id = ctx->curr_source_line = 0;
+  ctx->curr_unwind_region = 0;
   for (size_t i = 0; i < func->nargs; i++) {
     MIR_var_t var = VARR_GET (MIR_var_t, func->vars, i);
 
@@ -4374,9 +4429,11 @@ static int simplify_func (MIR_context_t ctx, MIR_item_t func_item, int mem_float
   for (insn = DLIST_HEAD (MIR_insn_t, func->insns); insn != NULL; insn = next_insn) {
     MIR_insn_code_t code = insn->code;
     MIR_op_t temp_op;
-    /* Insns simplify creates for this insn inherit its source location. */
+    /* Insns simplify creates for this insn inherit its source location and
+       unwind region. */
     ctx->curr_source_file_id = insn->file_id;
     ctx->curr_source_line = insn->line;
+    ctx->curr_unwind_region = insn->unwind_region;
 
     if ((code == MIR_MOV || code == MIR_FMOV || code == MIR_DMOV || code == MIR_LDMOV)
         && insn->ops[0].mode == MIR_OP_MEM && insn->ops[1].mode == MIR_OP_MEM) {
@@ -4754,8 +4811,10 @@ static void process_inlines (MIR_context_t ctx, MIR_item_t func_item) {
     /* an interposable-weak definition may be replaced by a DIFFERENT one at
        link time -- never bake its body into a caller (gcc parity; LINKONCE
        copies are ODR-identical and stay inlineable) */
+    /* a callee with unwind regions keeps its own frame: its regions are offsets
+       from ITS frame base, which an inlined body would not have */
     if (called_func_item->binding == MIR_ITEM_BIND_WEAK || called_func->first_lref != NULL
-        || called_func->vararg_p || called_func->jret_p
+        || called_func->vararg_p || called_func->jret_p || called_func->unwind_regions != NULL
         || called_func_insns_num > (func_insn->code != MIR_CALL ? MIR_MAX_INSNS_FOR_INLINE
                                                                 : MIR_MAX_INSNS_FOR_CALL_INLINE)
         || (func_insns_num > (100 + MIR_MAX_FUNC_INLINE_GROWTH) * original_func_insns_num / 100
@@ -4765,6 +4824,8 @@ static void process_inlines (MIR_context_t ctx, MIR_item_t func_item) {
     }
     func_insns_num += called_func_insns_num;
     inlined_calls++;
+    /* the inlined body runs at the call: in the call's unwind region */
+    ctx->curr_unwind_region = call->unwind_region;
     res_types = call->ops[0].u.ref->u.proto->res_types;
     prev_insn = DLIST_PREV (MIR_insn_t, call);
     if ((anchor = DLIST_NEXT (MIR_insn_t, call)) == NULL) {
@@ -4836,6 +4897,7 @@ static void process_inlines (MIR_context_t ctx, MIR_item_t func_item) {
         if (insn->code == MIR_RET || insn->code == MIR_JRET) break;
         inline_insns_after++;
         new_insn = MIR_copy_insn (ctx, insn);
+        new_insn->unwind_region = call->unwind_region;
         change_inline_insn_regs (ctx, new_insn);
         store_labels_for_duplication (ctx, labels, temp_insns, insn, new_insn);
         VARR_PUSH (MIR_insn_t, cold_insns, new_insn);
@@ -4848,6 +4910,7 @@ static void process_inlines (MIR_context_t ctx, MIR_item_t func_item) {
       mir_assert (insn->code != MIR_JRET);
       inline_insns_after++;
       new_insn = MIR_copy_insn (ctx, insn);
+      new_insn->unwind_region = call->unwind_region;
       /* va insns are possible here as va_list can be passed as arg */
       if (insn == called_func_top_alloca) new_called_func_top_alloca = new_insn;
       change_inline_insn_regs (ctx, new_insn);
@@ -4938,6 +5001,7 @@ static void process_inlines (MIR_context_t ctx, MIR_item_t func_item) {
                                         : DLIST_NEXT (MIR_insn_t, prev_insn));
   }
   mir_assert (VARR_LENGTH (MIR_insn_t, anchors) == 0 && VARR_LENGTH (size_t, alloca_sizes) == 0);
+  ctx->curr_unwind_region = 0;
   if (func_top_alloca != NULL) {
     if (!func_top_alloca_used_p) {
       MIR_remove_insn (ctx, func_item, func_top_alloca);
@@ -5374,6 +5438,16 @@ DEF_VARR (MIR_str_t);
 DEF_VARR (uint64_t);
 DEF_VARR (MIR_label_t);
 
+/* A function's unwind region read before its cleanup item may exist: applied
+   at the module's end, when every item of the module has been read. */
+typedef struct read_unwind_region {
+  MIR_item_t func;
+  uint32_t parent;
+  int64_t offset;
+  const char *cleanup;
+} read_unwind_region_t;
+DEF_VARR (read_unwind_region_t);
+
 struct io_ctx {
   FILE *io_file;
   int (*io_writer) (MIR_context_t, uint8_t);
@@ -5387,6 +5461,7 @@ struct io_ctx {
   VARR (MIR_str_t) * bin_strings;
   VARR (uint64_t) * insn_label_string_nums;
   VARR (MIR_label_t) * func_labels;
+  VARR (read_unwind_region_t) * read_unwind_regions;
   size_t output_insns_len, output_labs_len;
   size_t output_regs_len, output_mem_len, output_int_len, output_float_len;
 };
@@ -5403,6 +5478,7 @@ struct io_ctx {
 #define bin_strings ctx->io_ctx->bin_strings
 #define insn_label_string_nums ctx->io_ctx->insn_label_string_nums
 #define func_labels ctx->io_ctx->func_labels
+#define read_unwind_regions ctx->io_ctx->read_unwind_regions
 #define output_insns_len ctx->io_ctx->output_insns_len
 #define output_labs_len ctx->io_ctx->output_labs_len
 #define output_regs_len ctx->io_ctx->output_regs_len
@@ -5855,9 +5931,30 @@ static size_t write_item (MIR_context_t ctx, writer_func_t writer, MIR_item_t it
   len += write_vars (ctx, writer, func, func->global_vars, 0,
                      func->global_vars == NULL ? 0 : VARR_LENGTH (MIR_var_t, func->global_vars),
                      "global");
+  if (func->unwind_base_reg != 0) { /* unwind_base <reg> <align> */
+    len += write_name (ctx, writer, "unwind_base");
+    len += write_name (ctx, writer, MIR_reg_name (ctx, func->unwind_base_reg, func));
+    len += write_uint (ctx, writer, func->unwind_base_align);
+  }
+  uint32_t region = 0;
   for (insn = DLIST_HEAD (MIR_insn_t, func->insns); insn != NULL;
-       insn = DLIST_NEXT (MIR_insn_t, insn))
+       insn = DLIST_NEXT (MIR_insn_t, insn)) {
+    if (insn->code != MIR_LABEL && insn->unwind_region != region) { /* uregion <region> */
+      region = insn->unwind_region;
+      len += write_name (ctx, writer, "uregion");
+      len += write_uint (ctx, writer, region);
+    }
     len += write_insn (ctx, writer, func, insn);
+  }
+  if (func->unwind_regions != NULL) /* unwind_region <parent> <offset> <cleanup> per region */
+    for (i = 0; i < VARR_LENGTH (MIR_unwind_region_t, func->unwind_regions); i++) {
+      MIR_unwind_region_t r = VARR_GET (MIR_unwind_region_t, func->unwind_regions, i);
+
+      len += write_name (ctx, writer, "unwind_region");
+      len += write_uint (ctx, writer, r.parent);
+      len += write_int (ctx, writer, r.offset);
+      len += write_name (ctx, writer, MIR_item_name (ctx, r.cleanup));
+    }
   len += write_name (ctx, writer, "endfunc");
   return len;
 }
@@ -6377,6 +6474,16 @@ void MIR_read_with_func (MIR_context_t ctx, int (*const reader) (MIR_context_t))
           MIR_get_error_func (ctx) (MIR_binary_io_error, "endmodule should have no labels");
         if (module == NULL)
           MIR_get_error_func (ctx) (MIR_binary_io_error, "endmodule without module");
+        for (size_t j = 0; j < VARR_LENGTH (read_unwind_region_t, read_unwind_regions); j++) {
+          read_unwind_region_t r = VARR_GET (read_unwind_region_t, read_unwind_regions, j);
+
+          if ((item = item_tab_find (ctx, r.cleanup, module)) == NULL)
+            MIR_get_error_func (ctx) (MIR_binary_io_error,
+                                      "unwind region cleanup refers to non-existing item %s",
+                                      r.cleanup);
+          MIR_new_unwind_region (ctx, r.func, r.parent, r.offset, item);
+        }
+        VARR_TRUNC (read_unwind_region_t, read_unwind_regions, 0);
         MIR_finish_module (ctx);
         module = NULL;
       } else if (strcmp (name, "proto") == 0) {
@@ -6414,6 +6521,7 @@ void MIR_read_with_func (MIR_context_t ctx, int (*const reader) (MIR_context_t))
           MIR_get_error_func (ctx) (MIR_binary_io_error, "endfunc should have no labels");
         if (func == NULL) MIR_get_error_func (ctx) (MIR_binary_io_error, "endfunc without func");
         MIR_finish_func (ctx);
+        MIR_set_unwind_region (ctx, 0);
         func = NULL;
       } else if (strcmp (name, "export") == 0) {
         name = read_name (ctx, module, "wrong export name");
@@ -6622,6 +6730,27 @@ void MIR_read_with_func (MIR_context_t ctx, int (*const reader) (MIR_context_t))
         MIR_new_data (ctx, name, type,
                       VARR_LENGTH (uint8_t, temp_data) / _MIR_type_size (ctx, type),
                       VARR_ADDR (uint8_t, temp_data));
+      } else if (strcmp (name, "uregion") == 0 || strcmp (name, "unwind_base") == 0
+                 || strcmp (name, "unwind_region") == 0) {
+        if (func == NULL)
+          MIR_get_error_func (ctx) (MIR_binary_io_error, "%s outside func", name);
+        if (VARR_LENGTH (uint64_t, insn_label_string_nums) != 0)
+          MIR_get_error_func (ctx) (MIR_binary_io_error, "%s should have no labels", name);
+        if (strcmp (name, "uregion") == 0) { /* uregion <region>: stamps the insns after it */
+          MIR_set_unwind_region (ctx, (uint32_t) read_uint (ctx, "wrong uregion"));
+        } else if (strcmp (name, "unwind_base") == 0) { /* unwind_base <reg> <align> */
+          name = read_name (ctx, module, "wrong unwind base reg");
+          MIR_set_func_unwind_base (ctx, func, MIR_reg (ctx, name, func->u.func),
+                                    (uint32_t) read_uint (ctx, "wrong unwind base align"));
+        } else { /* unwind_region <parent> <offset> <cleanup> */
+          read_unwind_region_t r;
+
+          r.func = func;
+          r.parent = (uint32_t) read_uint (ctx, "wrong unwind region parent");
+          r.offset = read_int (ctx, "wrong unwind region offset");
+          r.cleanup = read_name (ctx, module, "wrong unwind region cleanup");
+          VARR_PUSH (read_unwind_region_t, read_unwind_regions, r);
+        }
       } else if ((global_p = strcmp (name, "global") == 0) || strcmp (name, "local") == 0) {
         if (func == NULL)
           MIR_get_error_func (ctx) (MIR_binary_io_error, "local/global outside func");
@@ -6705,9 +6834,11 @@ static void io_init (MIR_context_t ctx) {
   VARR_CREATE (MIR_str_t, bin_strings, ctx->alloc, 512);
   VARR_CREATE (uint64_t, insn_label_string_nums, ctx->alloc, 64);
   VARR_CREATE (MIR_label_t, func_labels, ctx->alloc, 512);
+  VARR_CREATE (read_unwind_region_t, read_unwind_regions, ctx->alloc, 0);
 }
 
 static void io_finish (MIR_context_t ctx) {
+  VARR_DESTROY (read_unwind_region_t, read_unwind_regions);
   VARR_DESTROY (MIR_label_t, func_labels);
   VARR_DESTROY (uint64_t, insn_label_string_nums);
   VARR_DESTROY (MIR_str_t, bin_strings);

@@ -1544,8 +1544,10 @@ static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_reg
       saved_hard_regs_size += 16;
 #endif
   if (leaf_p && !alloca_p && !block_arg_func_p && saved_hard_regs_size == 0 && !func->vararg_p
-      && stack_slots_num == 0)
+      && stack_slots_num == 0) {
+    gen_unwind_frame (gen_ctx, -8, 0); /* no frame: SP stays at the return address */
     return;
+  }
   anchor = DLIST_HEAD (MIR_insn_t, func->insns);
   sp_reg_op = _MIR_new_var_op (ctx, SP_HARD_REG);
   if (keep_fp_p) {
@@ -1594,6 +1596,8 @@ static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_reg
                    (int64_t) (block_size + service_area_size + 8));
   body_mark = gen_cfi_mark (gen_ctx, NULL);
   bp_saved_reg_offset = block_size;
+  /* For a stack walk (MIR_unwind_info_t): an ALLOCA's result is the new sp. */
+  gen_unwind_frame (gen_ctx, -(int64_t) (block_size + service_area_size + 8), 0);
 #ifdef MIR_NO_RED_ZONE_ABI
   if (keep_fp_p) {
     new_insn
@@ -3486,7 +3490,7 @@ static uint8_t *target_translate (gen_ctx_t gen_ctx, size_t *len) {
       VARR_PUSH (int, insn_pattern_indexes, ind);
     }
   }
-  gen_cfi_start_pass (gen_ctx);
+  gen_start_code_pass (gen_ctx);
   for (n = 0, insn = DLIST_HEAD (MIR_insn_t, curr_func_item->u.func->insns); insn != NULL;
        insn = DLIST_NEXT (MIR_insn_t, insn)) {
     gen_cfi_note_insn (gen_ctx, VARR_LENGTH (uint8_t, result_code), insn);
@@ -3503,13 +3507,12 @@ static uint8_t *target_translate (gen_ctx_t gen_ctx, size_t *len) {
       if (MIR_branch_code_p (insn->code)) /* possible replacement change */
         ind = find_insn_pattern (gen_ctx, insn, NULL);
       gen_assert (ind >= 0);
-      gen_record_line (gen_ctx, VARR_LENGTH (uint8_t, result_code), insn);
-#ifndef NDEBUG
-      size_t len_before = VARR_LENGTH (uint8_t, result_code);
-#endif
+      size_t insn_start = VARR_LENGTH (uint8_t, result_code);
+      gen_record_line (gen_ctx, insn_start, insn);
       out_insn (gen_ctx, insn, patterns[ind].replacement, NULL);
+      gen_record_call (gen_ctx, insn_start, VARR_LENGTH (uint8_t, result_code), insn);
 #ifndef NDEBUG
-      size_t insn_len = VARR_LENGTH (uint8_t, result_code) - len_before;
+      size_t insn_len = VARR_LENGTH (uint8_t, result_code) - insn_start;
       if (insn_len > (size_t) pattern_max_insn_size (gen_ctx, ind) && insn->code != MIR_SWITCH) {
         fprintf (stderr, "\"%s\" max size(%d) < real size(%d)\n", patterns[ind].replacement,
                  pattern_max_insn_size (gen_ctx, ind), (int) insn_len);

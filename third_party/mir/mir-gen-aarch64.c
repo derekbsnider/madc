@@ -1202,8 +1202,10 @@ static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_reg
         saved_fregs_num++;
     }
   if (leaf_p && !alloca_p && saved_iregs_num == 0 && saved_fregs_num == 0 && !func->vararg_p
-      && stack_slots_num == 0 && !block_arg_func_p && small_aggregate_save_area == 0)
+      && stack_slots_num == 0 && !block_arg_func_p && small_aggregate_save_area == 0) {
+    gen_unwind_frame (gen_ctx, 0, 0); /* no frame: SP stays at the CFA */
     return;
+  }
   sp_reg_op = _MIR_new_var_op (ctx, SP_HARD_REG);
   fp_reg_op = _MIR_new_var_op (ctx, FP_HARD_REG);
   /* Prologue: */
@@ -1328,6 +1330,9 @@ static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_reg
                              MIR_new_int_op (ctx, small_aggregate_save_area));
     gen_add_insn_before (gen_ctx, anchor, new_insn); /* sp -= <small aggr save area size> */
   }
+  /* For a stack walk (MIR_unwind_info_t): after the prologue sp = CFA -
+     frame_size - the small aggregate save area; an ALLOCA's result is the new sp. */
+  gen_unwind_frame (gen_ctx, -(int64_t) (frame_size + small_aggregate_save_area), 0);
   /* Epilogue: */
   for (anchor = DLIST_TAIL (MIR_insn_t, func->insns); anchor != NULL;
        anchor = DLIST_PREV (MIR_insn_t, anchor))
@@ -2818,7 +2823,7 @@ static uint8_t *target_translate (gen_ctx_t gen_ctx, size_t *len) {
   VARR_TRUNC (MIR_item_t, const_pool_items, 0);
   VARR_TRUNC (const_ref_t, const_refs, 0);
   VARR_TRUNC (switch_table_desc_t, switch_table_descs, 0);
-  gen_cfi_start_pass (gen_ctx);
+  gen_start_code_pass (gen_ctx);
   for (insn = DLIST_HEAD (MIR_insn_t, curr_func_item->u.func->insns); insn != NULL;
        insn = DLIST_NEXT (MIR_insn_t, insn)) {
     gen_cfi_note_insn (gen_ctx, VARR_LENGTH (uint8_t, result_code), insn);
@@ -2832,8 +2837,10 @@ static uint8_t *target_translate (gen_ctx_t gen_ctx, size_t *len) {
         exit (1);
       } else {
         gen_assert (replacement != NULL);
-        gen_record_line (gen_ctx, VARR_LENGTH (uint8_t, result_code), insn);
+        size_t insn_start = VARR_LENGTH (uint8_t, result_code);
+        gen_record_line (gen_ctx, insn_start, insn);
         out_insn (gen_ctx, insn, replacement, NULL);
+        gen_record_call (gen_ctx, insn_start, VARR_LENGTH (uint8_t, result_code), insn);
       }
     }
   }

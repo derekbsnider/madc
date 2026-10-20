@@ -910,7 +910,7 @@ static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_reg
   MIR_insn_t anchor, new_insn;
   MIR_op_t r15_reg_op, r14_reg_op, r11_reg_op, r0_reg_op;
   int saved_regs_p = FALSE;
-  int64_t start_saved_fregs_offset;
+  int64_t start_saved_fregs_offset, alloca_bias;
   size_t i, n, frame_size, saved_fregs_num;
 
   gen_assert (curr_func_item->item_type == MIR_func_item);
@@ -927,7 +927,13 @@ static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_reg
       saved_regs_p = TRUE;
       if (i >= F0_HARD_REG) saved_fregs_num++;
     }
-  if (leaf_p && !stack_param_p && !alloca_p && saved_regs_p == 0 && stack_slots_num == 0) return;
+  /* For a stack walk (MIR_unwind_info_t): an ALLOCA's result is above the areas
+     it keeps at the new r15 (ALLOCA_END's Q). */
+  alloca_bias = S390X_STACK_HEADER_SIZE + param_save_area_size + blk_ld_value_save_area_size;
+  if (leaf_p && !stack_param_p && !alloca_p && saved_regs_p == 0 && stack_slots_num == 0) {
+    gen_unwind_frame (gen_ctx, -S390X_STACK_HEADER_SIZE, alloca_bias); /* no frame */
+    return;
+  }
   r0_reg_op = _MIR_new_var_op (ctx, R0_HARD_REG);
   r11_reg_op = _MIR_new_var_op (ctx, R11_HARD_REG);
   r14_reg_op = _MIR_new_var_op (ctx, R14_HARD_REG);
@@ -988,6 +994,7 @@ static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_reg
       if (!target_call_used_hard_reg_p (i, MIR_T_UNDEF) && bitmap_bit_p (used_hard_regs, i))
         gen_cfi_save (gen_ctx, body_mark, target_dwarf_reg (i),
                       sp + start_saved_fregs_offset + (n++) * 8);
+    gen_unwind_frame (gen_ctx, sp, alloca_bias);
   }
   /* Epilogue: */
   for (anchor = DLIST_TAIL (MIR_insn_t, func->insns); anchor != NULL;
@@ -1477,8 +1484,10 @@ static const struct pattern patterns[] = {
 /* sgr h15,r0; lg h0,(h15,r0); stg h0,0(h15); lay r0,160+param_area_size+blkparamsize(h15): */
 #define ALLOCA_END "; b909 h15 R0; e3:04 h0 hs15 x0; e3:24 h0 hs15; e3:71 r0 Q hs15"
 
-  /* la r0,7(r1);nill r0,0xfff8; ... : */
-  {MIR_ALLOCA, "r r", "e3:71 r0 s1 md7; a5:7 r0 i65528" ALLOCA_END},
+  /* la r0,15(r1);nill r0,0xfff0; ... -- rounded to 16 like an immediate size
+     (out_insn), so an entry ALLOCA's bytes do not depend on its operand's form
+     (gen_measure_unwind_top_alloca): */
+  {MIR_ALLOCA, "r r", "e3:71 r0 s1 md15; a5:7 r0 i65520" ALLOCA_END},
   /* lllill r0,ua; ...: */
   {MIR_ALLOCA, "r ua", "a5:f r0 ua" ALLOCA_END},
 
@@ -2227,7 +2236,7 @@ static uint8_t *target_translate (gen_ctx_t gen_ctx, size_t *len) {
   VARR_TRUNC (const_ref_t, const_refs, 0);
   VARR_TRUNC (label_ref_t, label_refs, 0);
   VARR_TRUNC (uint64_t, abs_address_locs, 0);
-  gen_cfi_start_pass (gen_ctx);
+  gen_start_code_pass (gen_ctx);
   for (insn = DLIST_HEAD (MIR_insn_t, curr_func_item->u.func->insns); insn != NULL;
        insn = DLIST_NEXT (MIR_insn_t, insn)) {
     MIR_insn_code_t code = insn->code;
@@ -2272,7 +2281,9 @@ static uint8_t *target_translate (gen_ctx_t gen_ctx, size_t *len) {
         exit (1);
       } else {
         gen_assert (replacement != NULL);
+        size_t insn_start = VARR_LENGTH (uint8_t, result_code);
         out_insn (gen_ctx, insn, replacement, NULL);
+        gen_record_call (gen_ctx, insn_start, VARR_LENGTH (uint8_t, result_code), insn);
       }
     }
   }

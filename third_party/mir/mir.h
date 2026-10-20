@@ -329,6 +329,7 @@ struct MIR_insn {
   unsigned int nops : 32; /* number of operands */
   uint32_t file_id;       /* frontend source file id (0 = none); see MIR_set_source_loc */
   uint32_t line;          /* frontend source line (0 = none) */
+  uint32_t unwind_region; /* cleanup region live here (0 = none); see MIR_set_unwind_region */
   MIR_op_t ops[1];
 };
 
@@ -348,6 +349,43 @@ typedef struct MIR_reg_loc {
   uint32_t reg;      /* 1-based function register number */
   int64_t fp_offset; /* byte offset of the register's stack home from the frame pointer */
 } MIR_reg_loc_t;
+
+/* Unwind regions: what a stack walk needs to run a function's cleanups when an
+   exception passes through it, with no code on the normal path (the gcc/clang
+   call-site table model).  A frontend declares each cleanup variable as a
+   REGION (MIR_new_unwind_region): the variable lives at the function's frame
+   base + offset (MIR_set_func_unwind_base), the cleanup is called with its
+   address, and regions nest through parent (0 = none).  Insns are stamped with
+   the region live at them (MIR_set_unwind_region); MIR_gen records the region
+   at every call that has one. */
+typedef struct MIR_unwind_region {
+  uint32_t parent;    /* enclosing region, 0 = none */
+  int64_t offset;     /* variable offset from the frame base */
+  MIR_item_t cleanup; /* function called with the variable's address */
+} MIR_unwind_region_t;
+
+DEF_VARR (MIR_unwind_region_t);
+
+/* One call site of a generated function in a region, filled by MIR_gen: the
+   code [start, start + len) holding the call (the LSDA call-site table's
+   range; a return address RA is in it when start < RA <= start + len). */
+typedef struct MIR_unwind_call {
+  uint32_t start, len;
+  uint32_t region; /* region live at the call */
+} MIR_unwind_call_t;
+
+/* A generated function's frame, as a stack walk sees it from one of its calls
+   (filled by MIR_gen; valid_p FALSE when the function has no region at a
+   call).  The walk reaches the frame through the function's CFI (MIR_func.cfi),
+   which gives its CFA. */
+typedef struct MIR_unwind_info {
+  char valid_p;
+  char base_p;             /* base_cfa_offset is known */
+  int64_t base_cfa_offset; /* frame base = CFA + base_cfa_offset, rounded up to base_align */
+  uint32_t base_align;     /* the frame base's alignment rounding (0 = none) */
+  size_t ncalls;           /* the calls in a region */
+  MIR_unwind_call_t *calls; /* in code-offset order */
+} MIR_unwind_info_t;
 
 /* Definition of double list of insns */
 DEF_DLIST (MIR_insn_t, insn_link);
@@ -386,6 +424,10 @@ typedef struct MIR_func {
      (MIR_gen_cfi_cie), or NULL; filled by MIR_gen on targets that describe frames */
   uint8_t *cfi;
   size_t cfi_len;
+  MIR_reg_t unwind_base_reg; /* the frame base regions are relative to, 0 = none */
+  uint32_t unwind_base_align; /* its alignment rounding (0 = none) */
+  VARR (MIR_unwind_region_t) * unwind_regions; /* region N is element N-1; NULL if none */
+  MIR_unwind_info_t unwind;  /* filled by MIR_gen */
 } *MIR_func_t;
 
 typedef struct MIR_proto {
@@ -702,6 +744,18 @@ extern MIR_insn_t MIR_new_jcall_insn (MIR_context_t ctx, size_t nops, ...);
    frontend file index, line a 1-based source line; both 0 means "no location".
    The generator carries these through its passes and fills MIR_func.line_map. */
 extern void MIR_set_source_loc (MIR_context_t ctx, uint32_t file_id, uint32_t line);
+/* Unwind regions (see MIR_unwind_region_t).  MIR_set_unwind_region stamps the
+   region onto every insn created afterwards, as MIR_set_source_loc does.
+   MIR_new_unwind_region declares one in FUNC_ITEM and returns its number (from
+   1).  MIR_set_func_unwind_base names the register region offsets are relative
+   to: it must be defined by a constant ALLOCA at the function's entry, and the
+   base is that address rounded up to ALIGN (0 = no rounding).  A function that
+   declares regions is never inlined. */
+extern void MIR_set_unwind_region (MIR_context_t ctx, uint32_t region);
+extern uint32_t MIR_new_unwind_region (MIR_context_t ctx, MIR_item_t func_item, uint32_t parent,
+                                       int64_t offset, MIR_item_t cleanup);
+extern void MIR_set_func_unwind_base (MIR_context_t ctx, MIR_item_t func_item, MIR_reg_t reg,
+                                      uint32_t align);
 extern MIR_insn_t MIR_new_ret_insn (MIR_context_t ctx, size_t nops, ...);
 extern MIR_insn_t MIR_copy_insn (MIR_context_t ctx, MIR_insn_t insn);
 

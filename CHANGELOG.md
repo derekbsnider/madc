@@ -7,6 +7,14 @@ Consolidated: class_pointer_spelling — gate scripts/check-one-class-pointer-de
 Consolidated: pointer_type_node — gate scripts/check-one-pointer-type-node.sh
 Consolidated: MIR pattern index by insn code — gate scripts/check-one-pattern-index.sh
 
+### MIR records unwind regions and call sites for generated frames
+
+- `MIR_insn` carries an `unwind_region` number (0 = none). `MIR_new_unwind_region` declares a region in a function under a parent region, and `MIR_set_unwind_region` stamps it onto the instructions created after it. `MIR_set_func_unwind_base` names the register that holds the frame base. Binary and text module I/O carry these fields.
+- After code generation, `MIR_func.unwind` lists each call inside a region with its code range and region number. `base_cfa_offset` is the frame base's offset from the CFA. Each target computes it in `gen_unwind_frame` (`third_party/mir/mir-gen.c`), from the stack pointer's offset after the prologue.
+- A function that has regions is not inlined into its caller. An inlined body takes the region of the call it replaces.
+- The s390x register form of `MIR_ALLOCA` rounds its size to 16 bytes, as its immediate form does. It rounded to 8 bytes before.
+- No code in `src/` or `include/` reads these tables yet.
+
 ### MIR builds for ppc64, riscv64 and s390x hosts again
 
 - `mir-target.h` defines `MIR_TARGET_IS_PPC64`, `MIR_TARGET_IS_S390X` and `MIR_TARGET_IS_RISCV64` from the host macros `__PPC64__`, `__s390x__` and `__riscv`. Before, they were undefined there, and `mir-gen.c` stopped with its unsupported-target `#error`.

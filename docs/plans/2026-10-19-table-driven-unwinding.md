@@ -55,13 +55,16 @@ remove on every normal path.
 - Each target's prologue (`target_make_prolog_epilog`) knows exactly where it
   saves the return address, the caller's frame pointer and each callee-saved
   register — the facts CFI states.
-- Constant ALLOCA sizes round to 16 on every target (each `out_insn`); the
-  result sits at SP (x86-64, aarch64, riscv64) or above the new stack header
-  (ppc64: header + parameter area; s390x: 160 + parameter + ld areas).
+- ALLOCA sizes round to 16 on every target (each `out_insn` for a constant;
+  the register form's own rounding -- s390x's rounded to 8 until the regions
+  made it 16); the result sits at SP (x86-64, aarch64, riscv64) or above the
+  new stack header (ppc64: header + parameter area; s390x: 160 + parameter +
+  ld areas).
 - Per-instruction data already rides the generator into a code-offset table
-  (`file_id`/`line` -> `MIR_func.line_map`, `gen_record_line`). A call is ONE
-  machine instruction on every target, so its return address is the offset
-  after `out_insn`.
+  (`file_id`/`line` -> `MIR_func.line_map`, `gen_record_line`). A call insn's
+  pattern may put insns around the machine call (an address load, ppc64's
+  TOC reload), so a call site is recorded as the insn's whole code range --
+  the LSDA call-site table's shape.
 - Code is freed only with its whole MIR context (no module unload).
 - AOT: the object capture (`MIR_object_*`: data, symbols, relocations,
   `MIR_object_add_init`) is format-neutral; ELF, PE and Mach-O writers lay it out.
@@ -77,10 +80,13 @@ remove on every normal path.
      `cleanup_item (address)`, nested in `parent`.
    - `MIR_set_func_unwind_base (ctx, func_item, reg, align)`: the frame base
      is the function's constant entry ALLOCA (`reg`), rounded up to `align`.
-   - The generator fills `MIR_func.unwind`: the call-site table {return
-     offset, region} for calls in a region, and the frame base as a CFA
-     offset (`base_cfa_offset`) — each target reports its FP's CFA offset and
-     its ALLOCA result bias, the generic code adds the entry ALLOCA bytes.
+   - The generator fills `MIR_func.unwind`: the call-site table {start, len,
+     region} for calls in a region (a return address RA matches when start <
+     RA <= start + len), and the frame base as a CFA offset
+     (`base_cfa_offset`) — each target's prologue reports where it leaves SP
+     relative to the CFA and its ALLOCA result bias (`gen_unwind_frame`), the
+     generic code subtracts the entry ALLOCA bytes. The CFA is the same at
+     every point of the function, so no target keeps a frame pointer for it.
    - Inliner: a callee that declares regions is not inlined; insns copied from
      any other callee take the call's region.
    - Binary and text MIR I/O carry regions, the base and each insn's region.
@@ -122,7 +128,10 @@ remove on every normal path.
    - the walk: `_Unwind_Backtrace`; per frame `_Unwind_GetIP` /
      `_Unwind_GetCFA`; a frame whose IP is a MIR call site in a region runs
      that region's cleanups innermost first, each at `CFA + base_cfa_offset +
-     offset`; it stops at the frame holding the target try context (running
+     offset` -- the frame's CFA is what the NEXT (calling) context's
+     `_Unwind_GetCFA` reports: a context's own value is the SP at its IP, the
+     CFA of the frame it called (libgcc and LLVM libunwind alike; the unit test
+     walk caught the one-frame-deep misreading); it stops at the frame holding the target try context (running
      only regions nested inside its try guard). On Windows the same loop over
      `RtlLookupFunctionEntry` / `RtlVirtualUnwind`, behind one function.
    - no try at all: print and abort WITHOUT running cleanups (canon).
