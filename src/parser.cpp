@@ -21076,12 +21076,18 @@ DataDef *dd_platform_ulonglong()
     return dd;
 }
 
+// max_align_t's layout is the target's own: every use of the name binds to
+// this pre-registered type, so it is the one place that layout is decided.
+// gcc's <stddef.h> (Linux, mingw): { long long; long double; }, each at its
+// natural alignment; clang's on Apple (__stddef_max_align_t.h): long double.
 struct DataDefMAXAlignTInit
 {
     DataDefMAXAlignTInit()
     {
-	ddMAX_ALIGN_T.addMember("__max_align_ll", ddINT64, 1);
-	ddMAX_ALIGN_T.addMember("__max_align_ld", ddDOUBLE, 1);
+#if !MADC_TARGET_APPLE_P
+	ddMAX_ALIGN_T.addMember("__max_align_ll", ddINT64, 1);	// long long's layout
+#endif
+	ddMAX_ALIGN_T.addMember("__max_align_ld", ddLDOUBLE, 1);
 	ddMAX_ALIGN_T.finalize();
 	ddMAX_ALIGN_T.is_complete = true;
     }
