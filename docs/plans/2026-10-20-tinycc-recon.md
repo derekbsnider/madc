@@ -197,3 +197,39 @@ Verdict key: **ADOPTED** = madc already does it. **FITS** = it would fit inside 
 * The "other" bucket is **MIR_link 0.88 s** (simplify + inline + code generation of every function) + module load 0.03 s + about 0.27 s of object emit, write and session teardown (not yet timed separately).
 * `-O0` saves 0.16 s of MIR_link (about 6% of the wall) with inlining still on: rank 1's estimate ("a few hundred ms") is high; the inline-off share is still to measure.
 * 159k minor faults ≈ the 615 MB peak touched once (4 KB pages): every phase's memory is fresh pages, none reused (§2.7).
+
+## 8. The lexer against tcc, measured on the release build (container, 2026-10-20)
+
+SMAUG 1.8 `act_wiz.c` (12,041 lines), `-DREQUESTS -DSMAUG -c`. A symbol-carrying release
+(`rm lib/release/libmadc.so bin/madc-release; PATH=<dir with a no-op strip>:$PATH make -C src release`,
+the pack attached as shipped), callgrind:
+
+| | madc-release | tcc 0.9.27 |
+|---|---:|---:|
+| wall, whole compile | 225 ms | 12.5 ms |
+| Ir, whole compile | 1,835M | 103M |
+| Ir, lexing only (`Program::tokenize`) | **303M** | (inside 103M) |
+| lex Ir per token (~107k tokens) | **≈ 2,800** | — |
+
+tcc's whole compile — its system headers lexed too — is under 1,000 Ir per token; madc's lexer alone
+is ~2,800, without lexing the system headers (the pack binds them). The release profile is flat:
+
+| where the lexer's Ir go | share |
+|---|---:|
+| `Program::_getToken` itself | 14% |
+| `std::string` work: per-char `push_back`, `==`, `strlen`, `memcpy`, `erase`, `replace` | ~14% |
+| per-char `Source::get` / `peek` / `get_slow` (several checks each; no end-of-buffer sentinel) | ~11% |
+| `push_token_with_literal_concat` (a second step over every token) | 7% |
+| token objects + malloc/free | ~6% |
+| name classification by string checks (`compound_type_specifier_flag`, `lexer_type_token`, `madc_slot_id_for`) | ~5% |
+| block comments | 3.4% |
+| pack decompression (zstd; replaces lexing the system headers) | ~2% |
+
+Macro expansions are substituted as text and re-lexed through pushback frames (§1).
+
+**Fix shape (tcc's, §2.1):** a pointer scan over a sentinel-terminated buffer; intern while scanning
+(done); keyword / type class by interned id, never a string compare; no `std::string` per token; literal
+concatenation folded into the scan; macros replayed as token runs with the invocation as provenance (P5).
+Token objects with provenance stay (MC11-IR) — about 6%. Target: ~5x fewer lex Ir. Core lexer work:
+its own focused session (owner parser rule), after the c2mir alias memo and the build-time MIR pattern
+tables. KG: `Gap {name:'lexer_cost_vs_tcc'}`.
