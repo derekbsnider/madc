@@ -8079,17 +8079,18 @@ static decl_t cleanup_arm_decl (c2m_ctx_t c2m_ctx, node_t arg) {
   return decl;
 }
 
-/* Fall-through scope exit: append each scope-local cleanup call (reverse decl
-   order) to the end of the block. */
-static void emit_scope_cleanups (c2m_ctx_t c2m_ctx, node_t block) {
-  struct node_scope *ns = block->attr;
+/* A scope's exit without a jump: append each cleanup call of SCOPE's decls
+   (reverse decl order) to LIST -- a block's statements (its fall-through), or a
+   for statement's own ops past its body (its condition turning false). */
+static void emit_scope_cleanups (c2m_ctx_t c2m_ctx, node_t scope, node_t list) {
+  struct node_scope *ns = scope->attr;
   size_t i, n;
 
   if (ns == NULL || ns->cleanup_decls == NULL) return;
   n = VARR_LENGTH (node_t, ns->cleanup_decls);
   for (i = n; i > 0; i--)
-    op_append (c2m_ctx, NL_EL (block->u.ops, 1),
-               build_cleanup_stmt (c2m_ctx, VARR_GET (node_t, ns->cleanup_decls, i - 1), block));
+    op_append (c2m_ctx, list,
+               build_cleanup_stmt (c2m_ctx, VARR_GET (node_t, ns->cleanup_decls, i - 1), scope));
 }
 
 /* Shared exit-path helper. Record fn(&var) cleanup statements as extra ops on
@@ -12306,7 +12307,8 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     if (curr_scope != r)
       create_node_scope (c2m_ctx, r); /* it happens if it is the top func block */
     check (c2m_ctx, NL_EL (r->u.ops, 1), r);
-    emit_scope_cleanups (c2m_ctx, r); /* __attribute__((cleanup)): fall-through exit */
+    /* __attribute__((cleanup)): fall-through exit */
+    emit_scope_cleanups (c2m_ctx, r, NL_EL (r->u.ops, 1));
     finish_scope (c2m_ctx);
     break;
   case N_MODULE:
@@ -12513,6 +12515,11 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     }
     check (c2m_ctx, iter, r);
     check (c2m_ctx, stmt, r);
+    /* __attribute__((cleanup)): the for-init objects live for the whole
+       statement; their cleanups run when its condition ends it -- ops past the
+       body (gen runs them at the condition's false exit). A break runs its own
+       (record_cleanups_until) and jumps past them. */
+    if (cond->code != N_IGNORE) emit_scope_cleanups (c2m_ctx, r, r);
     finish_scope (c2m_ctx);
     curr_loop_switch = saved_loop_switch;
     curr_loop = saved_loop;
@@ -20858,7 +20865,9 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
     node_t cond = NL_NEXT (init);
     node_t iter = NL_NEXT (cond);
     node_t stmt = NL_NEXT (iter);
-    MIR_label_t stmt_label = MIR_new_label (ctx);
+    /* the for-init objects' cleanups when the condition ends the loop (check) */
+    node_t exit_cleanups = NL_NEXT (stmt);
+    MIR_label_t stmt_label = MIR_new_label (ctx), exit_label;
     MIR_label_t saved_continue_label = continue_label, saved_break_label = break_label;
     /* the cleanup regions the for-init declarations open end with the for */
     uint32_t saved_region = gen_ctx->curr_unwind_region;
@@ -20866,10 +20875,11 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
     assert (false_label == NULL && true_label == NULL);
     continue_label = MIR_new_label (ctx);
     break_label = MIR_new_label (ctx);
+    exit_label = exit_cleanups == NULL ? break_label : MIR_new_label (ctx);
     emit_label (c2m_ctx, r);
     top_gen (c2m_ctx, init, NULL, NULL, NULL);
     if (cond->code != N_IGNORE) /* non-empty condition: */
-      top_gen (c2m_ctx, cond, stmt_label, break_label, NULL);
+      top_gen (c2m_ctx, cond, stmt_label, exit_label, NULL);
     emit_label_insn_opt (c2m_ctx, stmt_label);
     gen (c2m_ctx, stmt, NULL, NULL, FALSE, NULL, NULL);
     emit_label_insn_opt (c2m_ctx, continue_label);
@@ -20877,7 +20887,12 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
     if (cond->code == N_IGNORE) { /* empty condition: */
       emit1 (c2m_ctx, MIR_JMP, MIR_new_label_op (ctx, stmt_label));
     } else {
-      top_gen (c2m_ctx, cond, stmt_label, break_label, NULL);
+      top_gen (c2m_ctx, cond, stmt_label, exit_label, NULL);
+    }
+    if (exit_cleanups != NULL) { /* a break runs its own and jumps past these */
+      emit_label_insn_opt (c2m_ctx, exit_label);
+      for (node_t cl = exit_cleanups; cl != NULL; cl = NL_NEXT (cl))
+        gen (c2m_ctx, cl, NULL, NULL, FALSE, NULL, NULL);
     }
     if (gen_ctx->curr_unwind_region != saved_region) set_unwind_region (c2m_ctx, saved_region);
     emit_label_insn_opt (c2m_ctx, break_label);

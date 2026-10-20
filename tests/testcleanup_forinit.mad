@@ -1,0 +1,55 @@
+// __attribute__((cleanup(f))) on a for-init declaration (GNU C): the object
+// lives for the whole for statement, so f(&object) runs once when the loop
+// ends -- its condition false, a break, a return -- never per iteration
+// (continue stays in the loop), innermost first, in reverse declaration order.
+// madc ran it on break and return but not when the condition ended the loop:
+// c2mir sent a false condition straight past the cleanups.
+// gcc 13.3 and clang 18.1 (-std=gnu11) print the .expect lines.
+#include <stdio.h>
+
+static void done(int *p) { printf("done %d\n", *p); }
+
+static void ends(int stop)
+{
+	for (int i __attribute__((cleanup(done))) = 0; i < 3; i++) {
+		if (i == 1)
+			continue;
+		if (i == stop)
+			break;
+		printf("body %d\n", i);
+	}
+	printf("after %d\n", stop);
+}
+
+static int returns(void)
+{
+	for (int i __attribute__((cleanup(done))) = 50; i < 60; i++)
+		if (i == 52)
+			return i;
+	return -1;
+}
+
+static void nested(void)
+{
+	for (int a __attribute__((cleanup(done))) = 70; a < 72; a++)
+		for (int b __attribute__((cleanup(done))) = 80; b < 81; b++)
+			printf("in %d %d\n", a, b);
+	printf("nested out\n");
+}
+
+static void two(void)
+{
+	for (int x __attribute__((cleanup(done))) = 90, y __attribute__((cleanup(done))) = 95; x < 91; x++)
+		printf("two %d %d\n", x, y);
+	printf("two out\n");
+}
+
+int main(void)
+{
+	ends(9);
+	ends(2);
+	printf("returned %d\n", returns());
+	nested();
+	two();
+	return 0;
+}

@@ -7,12 +7,19 @@ Consolidated: class_pointer_spelling — gate scripts/check-one-class-pointer-de
 Consolidated: pointer_type_node — gate scripts/check-one-pointer-type-node.sh
 Consolidated: MIR pattern index by insn code — gate scripts/check-one-pattern-index.sh
 
+### c2mir runs a for-init cleanup variable's cleanup when the loop condition ends the loop
+
+- A `for` statement's `__attribute__((cleanup))` declarations run their cleanup calls when the loop condition turns false. Before, a false condition skipped them, so the cleanup ran only on `break` and `return`.
+- The cleanups run once, in reverse declaration order, innermost loop first. `continue` does not run them.
+- A `for` with no condition leaves only by a jump (`break`, `return`, `goto`), so it gets no condition-exit cleanups.
+- Reducer `tests/testcleanup_forinit.mad` (`--std=gnu11`): its output matches the `.expect` file, which gcc 13.3 and clang 18.1 print. The JIT, EXE and OBJ runs match.
+
 ### c2mir opens an unwind region per automatic cleanup variable
 
 - With `c2mir_options.unwind_regions_p` (default 0), an automatic `__attribute__((cleanup))` variable is an unwind region from the end of its declaration to the end of its scope. `__builtin_cleanup_arm (&var)` starts the region at that point instead; the constructor before it stays outside the region.
 - The variable's own cleanup call runs in the parent region. A scalar cleanup variable lives in the frame block at its region's offset, not in a register.
 - Each function starts and ends in region 0. The option is off by default, so madc output does not change yet.
-- Not yet covered: a for-init cleanup variable runs no cleanup on the loop's normal exit. Next commit.
+- A for-init cleanup variable's cleanup on the loop's condition exit is covered by the entry above.
 - Unit tests: `tests/unit/test_mir_unwind.cpp` (c2mir suite, 4 cases).
 
 ### MIR records unwind regions and call sites for generated frames
