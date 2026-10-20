@@ -7,6 +7,19 @@
 - A user `#define` of either name still wins. `__has_include` and `__has_include_next` remain directive-only.
 - `tests/testhasattrexpr.mad` (`--std=gnu17`) prints the gcc 13 and clang 18 answers in `tests/testhasattrexpr.expect`.
 
+### `__attribute__((noinline))` keeps the function out of line
+
+- `__attribute__((noinline))` is carried from the source to MIR. A function so marked, on its definition or on any prior declaration, is not inlined: MIR's inliner refuses it for direct calls and for inline candidates alike.
+- `__has_attribute(noinline)` answers 1.
+- Before, the lexer had no row for `noinline`, so the attribute was dropped and a direct call to a small callee was inlined. A backtrace or frame-identity check then found no frame for the function.
+- `tests/testnoinline.mad` (`--std=gnu17`) prints the gcc 13 and clang 18 answers in `tests/testnoinline.expect`: `result 8`, `distinct frames: 1`, `main found: 1`, `has_attribute: 1`.
+
+### C++ cast type-ids accept any parenthesized ptr-operator group
+
+- In C++ mode, a parenthesized abstract declarator made of `*`, `&`, `&&`, cv-qualifiers and attribute groups, closed by `)`, after a type name is the cast's type-id. `(int (**)(void))pf`, `(int (*const)(void))p` and `(int (__attribute__((aligned(8))) *)(void))p` parse as casts. Before, only the exact group `(*)` did.
+- Functional casts such as `(int(*ip))` and `(long(x))` still parse as expressions.
+- `tests/testcasttypeidptrops.mad` (`--std=c++17`) prints the g++ 13 and clang++ 18 lines in `tests/testcasttypeidptrops.expect`.
+
 ### Embedded `<stddef.h>` declares max_align_t as `long double` on Apple targets
 
 - The embedded `include/madc/stddef.h` declares `max_align_t` as `long double` when `__APPLE__` is defined, and as gcc's `{ long long; long double; }` struct elsewhere. Apple clang's `__stddef_max_align_t.h` declares `long double`, the same type the darwin prelude carries.
