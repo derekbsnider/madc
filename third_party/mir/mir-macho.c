@@ -1429,7 +1429,9 @@ static int macho_emit_object (MIR_object_t obj, void **buf, size_t *size) {
       } else {
         buf_u8 (&symtab, MACHO_N_UNDF | MACHO_N_EXT);
         buf_u8 (&symtab, 0); /* NO_SECT */
-        buf_u16 (&symtab, sym->weak_p ? MACHO_N_WEAK_REF : 0);
+        /* a weak REFERENCE is an undefined weak symbol; the image handle is
+           weak by its linkonce definition and lists as clang's does */
+        buf_u16 (&symtab, !sym->defined_p && sym->weak_p ? MACHO_N_WEAK_REF : 0);
         buf_u64 (&symtab, 0);
         n_undef++;
       }
