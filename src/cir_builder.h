@@ -2931,7 +2931,7 @@ public:
 	// class globals (their storage already rode in via the dkGlobalVar pass).
 	void collect_global_ctors(Program *prog,
 				  std::vector<node_t> &deferred_globals,
-				  std::set<madc::dis::istring> &emitted_globals);
+				  std::unordered_set<madc::dis::istring> &emitted_globals);
 	// Build the constructor-call statement for a file-scope class global `v`
 	// (type `cdd`), sourcing its initializer from the linked TokenDecl when
 	// present (user source) or from v->data (a const char* literal, built-ins).

@@ -34323,7 +34323,7 @@ static TokenDecl *global_defining_decl(Program *prog, Variable *v)
 
 void CirBuilder::collect_global_ctors(Program *prog,
 				      std::vector<node_t> &deferred_globals,
-				      std::set<madc::dis::istring> &emitted_globals)
+				      std::unordered_set<madc::dis::istring> &emitted_globals)
 {
 	m_global_ctor_stmts.clear();
 	m_ctor_groups.clear();
@@ -36030,7 +36030,7 @@ node_t CirBuilder::translate_module(Program *prog)
 	// to >1 distinct underlying struct tag (e.g. std::string vs std::pmr::string
 	// both registering `string`). Those emit their unique tag (typedef_emit_name)
 	// instead of the bare alias so flat C has no `typedef X string;` conflict.
-	std::set<madc::dis::istring> struct_def_points;
+	std::unordered_set<madc::dis::istring> struct_def_points;
 	std::map<madc::dis::istring, std::set<madc::dis::istring> > alias_tags;
 	m_combined_typedef_alias.clear();
 	m_hoisted_combined_aliases.clear();
@@ -36095,7 +36095,7 @@ node_t CirBuilder::translate_module(Program *prog)
 	};
 	std::set<madc::dis::istring> emitted_structs;
 	m_emitted_struct_owner.clear();
-	std::set<madc::dis::istring> emitted_globals;
+	std::unordered_set<madc::dis::istring> emitted_globals;
 	std::set<DataDefCLASS *> emitted_classes;
 	std::set<DataDefCLASS *> emitting_classes;
 
@@ -36424,8 +36424,8 @@ node_t CirBuilder::translate_module(Program *prog)
 	//    body — forest_lazy routes it through the SAME fixpoint stage, so
 	//    placement and order match live by mechanism, not by hand-ordering.
 	std::map<madc::dis::istring, FuncDef *> forest_lazy;
-	std::set<madc::dis::istring> forest_lazy_root;	// rung 3: non-system loaded bodies
-	std::set<madc::dis::istring> forest_funcdef_syms;
+	std::unordered_set<madc::dis::istring> forest_lazy_root;	// rung 3: non-system loaded bodies
+	std::unordered_set<madc::dis::istring> forest_funcdef_syms;
 	if (prog->forest_any_bound()) {
 		std::set<FuncDef *> forest_method_fds;
 		for (auto &kv : prog->struct_map) {
@@ -36504,7 +36504,7 @@ node_t CirBuilder::translate_module(Program *prog)
 				forest_funcdef_syms.insert(func_emit_name(*fvar, fd));
 		}
 	}
-	std::set<madc::dis::istring> forest_lazy_emitted;
+	std::unordered_set<madc::dis::istring> forest_lazy_emitted;
 	// Symbols that receive a TYPED forward prototype (Pass 0.75 below, Pass 1,
 	// and the materialized-func protos). A void* extern from need_output_extern
 	// for the SAME symbol — e.g. a mangled-direct `_ZNSaIcEC1ERKS_(void*,void*)`
@@ -36515,7 +36515,7 @@ node_t CirBuilder::translate_module(Program *prog)
 	// typed proto is canonical; the m_output_externs flushes skip these symbols.
 	// (Declared here, above materialize_and_lower, so the loaded-body callee
 	// stage can consult it after Pass 0.75 has run.)
-	std::set<madc::dis::istring> typed_proto_syms;
+	std::unordered_set<madc::dis::istring> typed_proto_syms;
 	// Pass 0.75 is a ONE-shot referenced-only sweep. Before it runs, a
 	// funcdef-sourced loaded-body callee is left to it (the #23 sorted-position
 	// byte-identity mechanism). AFTER it has run, a callee first referenced by
@@ -36560,7 +36560,7 @@ node_t CirBuilder::translate_module(Program *prog)
 			m_main_wrapper_def = NULL;
 		}
 	}
-	std::set<madc::dis::istring> lib_emitted;
+	std::unordered_set<madc::dis::istring> lib_emitted;
 	// TokenFuncs parsed by the fixpoint below (parse_deferred_lazy_body). They
 	// are NOT in the `funcs` snapshot taken at entry, so Pass 1's forward-proto
 	// loop never sees them — they get their prototypes in the late proto pass
@@ -37211,7 +37211,7 @@ node_t CirBuilder::translate_module(Program *prog)
 	// undeclared — c2mir implicit-int'd it, clang rejects the emitted C
 	// ("call to undeclared library function"). The re-run declares only
 	// what nothing declared yet (typed_proto_syms, emitted_extern_syms).
-	std::set<madc::dis::istring> emitted_extern_syms;
+	std::unordered_set<madc::dis::istring> emitted_extern_syms;
 	auto referenced_funcdef_protos = [&](node_t into) {
 	for (auto &kv : prog->funcdef_map) {
 		const madc::dis::istring &fname = kv.first;
