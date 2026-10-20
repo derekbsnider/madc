@@ -43682,8 +43682,11 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		// `arg0.f(rest)` BEFORE the unresolved-symbol guesses below
 		// (dlsym, C89 implicit int) — the owner's order is viable
 		// declared free -> member -> existing unresolved-symbol
-		// behaviour, and tests/testufcscall.mad pins it.
-		if ( (!var
+		// behaviour, and tests/testufcscall.mad pins it. Where UFCS
+		// cannot apply (ufcs_attempts_here: outside --std=madc), the
+		// argument count and the arity test are never asked.
+		if ( ufcs_attempts_here(parsed_operator_name)
+		  && (!var
 		      || free_callee_arity_inviable(*this, var,
 						    count_queued_call_arguments()))
 		  && ufcs_call_fallback(ident_tb, parsed_operator_name,
@@ -43984,8 +43987,11 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    // Unqualified call bound to a GLOBAL whose arity rejects it:
 		    // consult active using-directive namespaces (C++
 		    // [namespace.udir] — `getline(inf, line)` is std::getline,
-		    // not POSIX ::getline(char**, size_t*, FILE*)).
-		    if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk )
+		    // not POSIX ::getline(char**, size_t*, FILE*)). With no
+		    // directive active the fallback answers `var` whatever the
+		    // count, so the argument run is counted only under one.
+		    if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk
+		      && !active_using_namespaces.empty() )
 			var = using_namespace_call_fallback(var,
 				count_queued_call_arguments());
 		    // function pointer variable (DataDefFPTR) — different from regular functions

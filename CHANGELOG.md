@@ -1,6 +1,12 @@
 # Changelog
 
 ## [Unreleased]
+### The call arm counts arguments only where UFCS or a using-directive can apply
+
+- Outside `--std=madc` the identifier arm's UFCS test asks `ufcs_attempts_here` first, so the queued argument count and the free-callee arity test are not evaluated for a call.
+- With no `using namespace` directive active, the using-directive fallback is not called and the argument run is not counted. The fallback returned the bound variable on every path in that case.
+- The `-c` objects for `act_wiz.c` and `sqlite3.c` are byte-identical before and after the change. Callgrind instruction counts drop by 16.2M (-1.0%) for `act_wiz.c` and 70.9M (-0.5%) for `sqlite3.c`.
+
 ### The CIR referenced-name filter keys its sets on interned string pointers
 
 - The referenced-surface filter in `CirBuilder::translate_module` keeps its name sets as `std::unordered_set<const char *>`, keyed on the c2mir-interned string each node already holds, in place of a byte-ordered `std::set<istring>`. `cir_harvest_type_refs` adds the node's own string and no longer constructs an `istring` per identifier.
