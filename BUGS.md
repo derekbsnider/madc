@@ -760,6 +760,80 @@ int main() { return (int)alignof(S); }
 
 ## Refuses valid code
 
+### B209. A braced single same-class element (`S q{s};`) is lowered as a member list
+
+```cpp
+#include <stdio.h>
+struct S { int v; };
+struct E { int v; explicit operator bool() const { return v != 0; } };
+int main()
+{
+	S s = { 4 };
+	S q{s};
+	printf("block-brace: %d\n", q.v);
+	E e = { 5 };
+	E r{e};
+	printf("block-brace-E: %d\n", r.v);
+	if (E c{e}) printf("if-brace: %d\n", c.v);
+	return 0;
+}
+```
+
+- Found 2026-10-20 while writing the reducer for the class-typed if
+  condition declaration fix (`d97509826`).
+- g++ 13 and clang++ 18 (`-std=c++17`): `block-brace: 4`, `block-brace-E: 5`,
+  `if-brace: 5`. madc (`bin/madc` over `d97509826`, `--std=c++17`): refused —
+  `incompatible types in assignment to an arithmetic type lvalue` (c2mir).
+  The emitted C is `struct S q = { s };` (the S becomes member `v`'s
+  initializer), and for a class aggregate `struct E r = { e }; r = e;`.
+- [dcl.init.list]/3.2: an aggregate class list-initialized from ONE element
+  of its own class (or a derived class) is initialized from that element —
+  a copy, as `S q = s;` (which madc lowers correctly). C has no such rule:
+  gcc -std=c17 rejects `struct S q = { s };` too, so the fix is C++-only.
+- Layer: the parser keeps `T x{e}` as a braced `init_list`; every lowering
+  that consumes a braced list (CirBuilder::var_decl's aggregate list, the
+  file-scope dynamic-init queue, the static-local once) treats it as a
+  member list. The uniform fix reads [dcl.init.list]/3.2 where the parser
+  builds the TokenDecl (`initialize` = the element, as `T x = e`) — a
+  core-parser change, so it waits for a focused parser session (owner
+  2026-09-13). Loud, not silent.
+
+### B210. A class-typed while or switch condition declaration (`while (S q = f())`) is refused
+
+```cpp
+#include <stdio.h>
+struct S { int v; explicit operator bool() const { return v != 0; } };
+struct N { int v; operator int() const { return v; } };
+static int left = 3;
+S next_s() { S s = { left > 0 ? left-- : 0 }; return s; }
+int main()
+{
+	N n = { 2 };
+	while (S q = next_s()) printf("while: %d\n", q.v);
+	switch (N q = n) { case 2: printf("switch: %d\n", q.v); break; default: printf("switch: wrong\n"); }
+	while (int i = left) { printf("while-int: %d\n", i); break; }
+	return 0;
+}
+```
+
+- Found 2026-10-20 alongside B209.
+- g++ 13 and clang++ 18 (`-std=c++17`): `while: 3`, `while: 2`, `while: 1`,
+  `switch: 2`. madc (`bin/madc` over `d97509826`): refused at parse —
+  `use of undeclared identifier 'S'` (and `'N'`). A scalar condition
+  declaration is accepted (`int left = 2; while (int i = left) { left = 0;
+  return i; }` exits 2, as g++ does): the expression parser reads a builtin
+  type keyword there, not a class name.
+- [stmt.while]/2: the condition's object is created and destroyed on every
+  iteration; [stmt.switch]/1: a switch condition may declare one object.
+- Layer: TokenWHILE::parse and TokenSWITCH::parse read a parenthesized
+  expression (a scalar declaration rides the expression parser);
+  TokenIF::parse is the one statement parser with the class-aware
+  condition-declaration read (resolve_declared_type_token + parseDeclaration
+  into `condition_decl`). The fix shares that read across the three and
+  lowers a while condition as `while (1) { decl; if (!cond) break; body }`
+  (the object's cleanup at each iteration's block exit) — a core-parser
+  change, so it waits for a focused parser session with B209.
+
 ### B203. A qualified member call (`p->B::f()`, `r.B::f()`) is refused
 
 ```cpp
