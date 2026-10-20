@@ -1,6 +1,12 @@
 # Changelog
 
 ## [Unreleased]
+### `__has_attribute` and `__has_builtin` expand outside `#if`
+
+- `__has_attribute (x)` and `__has_builtin (x)` in ordinary text, in a macro body, or in a constant expression expand to the same 1/0 answer the `#if` directive gives. Before, only `#if` and `#elif` answered them, and elsewhere `noinline` was read as an undeclared identifier.
+- A user `#define` of either name still wins. `__has_include` and `__has_include_next` remain directive-only.
+- `tests/testhasattrexpr.mad` (`--std=gnu17`) prints the gcc 13 and clang 18 answers in `tests/testhasattrexpr.expect`.
+
 ### Embedded `<stddef.h>` declares max_align_t as `long double` on Apple targets
 
 - The embedded `include/madc/stddef.h` declares `max_align_t` as `long double` when `__APPLE__` is defined, and as gcc's `{ long long; long double; }` struct elsewhere. Apple clang's `__stddef_max_align_t.h` declares `long double`, the same type the darwin prelude carries.

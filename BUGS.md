@@ -877,25 +877,6 @@ int main()
   (the object's cleanup at each iteration's block exit) — a core-parser
   change, so it waits for a focused parser session with B209.
 
-### B213. `__has_builtin` outside `#if` is refused
-
-```c
-#include <stdio.h>
-int main(void)
-{
-	printf("%d\n", __has_builtin(__builtin_fclose));
-	return 0;
-}
-```
-
-- Found 2026-10-20 during K2b (glibc's `<wchar.h>` tests
-  `__has_builtin (__builtin_fclose)`).
-- gcc 13 and clang 18 (`-std=gnu17`) print `0`; madc refuses: `use of
-  undeclared identifier '__builtin_fclose'`.
-- Layer: `__has_builtin` is answered only by the `#if` evaluator; in an
-  ordinary expression it reaches the parser as a call whose argument is an
-  undeclared name.
-
 ### B203. A qualified member call (`p->B::f()`, `r.B::f()`) is refused
 
 ```cpp

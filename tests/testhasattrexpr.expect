@@ -1,0 +1,8 @@
+noinline 1
+cleanup 1
+bogus 0
+macro 1
+static 1
+memcpy 1
+no builtin 0
+sum 2

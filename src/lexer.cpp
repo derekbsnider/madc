@@ -10834,6 +10834,29 @@ TokenBase *Program::_getToken()
 		    handle_pragma_operator();
 		    return getToken();
 		}
+		// __has_attribute / __has_builtin in ordinary text: gcc's builtin
+		// macros (BT_HAS_ATTRIBUTE, BT_HAS_BUILTIN) and clang's expand
+		// outside #if too, to the answer the directive gets —
+		// evaluateHasQuery, its one owner, over the operand read to its
+		// balanced `)`. __has_include / __has_include_next stay directive
+		// operators (gcc and clang refuse them outside #if); a user
+		// #define still wins (define_map above).
+		{
+		    static const madc::dis::istring k_has_attribute("__has_attribute"),
+			k_has_builtin("__has_builtin");
+		    if ( wname == k_has_attribute || wname == k_has_builtin )
+		    {
+			while ( source.good() && (source.peek() == ' ' || source.peek() == '\t' || source.peek() == '\n' || source.peek() == '\r') )
+			    source.get();
+			std::string group;
+			if ( source.peek() == '(' && consume_pp_group(source, &group) )
+			{
+			    size_t pos = 0;
+			    source.pushback_macro(evaluateHasQuery(wname, group, pos) ? "1" : "0", "");
+			    return getToken();
+			}
+		    }
+		}
 		// __FUNCTION__ / __func__ / __PRETTY_FUNCTION__: keep these
 		// as magic identifiers. madc tokenizes the whole file before
 		// parsing, so parseExpression resolves them after cur_func_name

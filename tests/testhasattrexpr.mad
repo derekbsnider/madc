@@ -1,0 +1,27 @@
+/* __has_attribute and __has_builtin outside #if: gcc's builtin macros
+ * (BT_HAS_ATTRIBUTE, BT_HAS_BUILTIN) and clang's expand in ordinary text
+ * too, to the answer the directive gets -- directly, through a macro body,
+ * in a constant expression. madc answered them only inside #if, and read
+ * the operator elsewhere as a call to an undeclared function ("use of
+ * undeclared identifier 'noinline'").
+ * Oracle: gcc 13 and clang 18 (C, -std=gnu17) and g++ 13 (C++17): the
+ * lines below. */
+#include <stdio.h>
+
+#define HAS_ATTR(x) __has_attribute (x)
+
+static const int noinline_known = __has_attribute (noinline);
+
+int main (void) {
+	printf ("noinline %d\n", __has_attribute (noinline));
+	printf ("cleanup %d\n", __has_attribute (__cleanup__));
+	printf ("bogus %d\n", __has_attribute (no_such_attribute));
+	printf ("macro %d\n", HAS_ATTR (noinline));
+	printf ("static %d\n", noinline_known);
+	printf ("memcpy %d\n", __has_builtin (__builtin_memcpy));
+	printf ("no builtin %d\n", __has_builtin (__builtin_no_such_thing));
+	int n = __has_attribute (noinline) + __has_attribute
+		(cleanup);
+	printf ("sum %d\n", n);
+	return 0;
+}
