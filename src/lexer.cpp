@@ -4122,6 +4122,7 @@ void Program::_tokenizer_init()
     dialect_builds = 0;
     pending_no_strict_aliasing = false;
     pending_noinline = false;
+    pending_no_instrument_function = false;
     pending_weak_binding = false;
     pending_specifier_weak = false;
     while ( !_pack_stack.empty() )

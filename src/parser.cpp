@@ -2219,6 +2219,8 @@ TokenBase *Program::consume_gnu_attributes(TokenBase *nt,
 		    pending_weak_binding = true;
 		if ( ad.paren == 2 && token_names_gnu_attribute(at, GnuAttributeKind::NoInline) )
 		    pending_noinline = true;
+		if ( ad.paren == 2 && token_names_gnu_attribute(at, GnuAttributeKind::NoInstrumentFunction) )
+		    pending_no_instrument_function = true;
 		if ( token_names_gnu_attribute(at, GnuAttributeKind::Optimize) )
 		    saw_optimize = true;
 		else if ( saw_optimize && at->type() == TokenType::ttString )
@@ -75837,14 +75839,13 @@ void Program::parseFunction(DataDef &dd, madc::dis::istring &id, DataDefCLASS *o
 	return;
     }
 
-    std::set<madc::dis::istring> func_attrs;
     size_t func_align = 0;
     // The alias TARGET out-param was NULL here, so a prototype carrying
     // __attribute__((alias("f"))) after its parameter list dropped the target
     // on the floor — the parseDeclaration path (the `__typeof` spelling MIR
     // uses) captured it, this one did not.
     madc::dis::istring func_alias_target;
-    nt = consume_gnu_attributes(nt, &func_attrs, &func_alias_target, &func_align);
+    nt = consume_gnu_attributes(nt, NULL, &func_alias_target, &func_align);
     if ( !func_alias_name.empty() )
     {
 	var->asm_label = func_alias_name;
@@ -75856,9 +75857,11 @@ void Program::parseFunction(DataDef &dd, madc::dis::istring &id, DataDefCLASS *o
 	if ( var->storage_alias_name.empty() )
 	    var->storage_alias_name = func_alias_target;
     }
-    if ( func_attrs.count("no_instrument_function")
-      || func_attrs.count("__no_instrument_function__") )
+    if ( pending_no_instrument_function )
+    {
 	func->no_instrument_function = true;
+	pending_no_instrument_function = false;
+    }
     if ( pending_no_strict_aliasing )
     {
 	func->no_strict_aliasing = true;
@@ -81228,10 +81231,12 @@ TokenBase *Program::parseStatementBody(TokenBase *tb)
 	    return NULL;
     }
     size_t attr_vector_bytes = 0;
-    // A `weak` or `noinline` left pending by the previous declaration (an
-    // object, whose binding is not the function parse's) never reaches this one.
+    // A `weak`, `noinline` or `no_instrument_function` left pending by the
+    // previous declaration (an object, whose binding is not the function
+    // parse's) never reaches this one.
     pending_weak_binding = false;
     pending_noinline = false;
+    pending_no_instrument_function = false;
     // Attribute groups at the head are the declaration's: their alignment is
     // its declarators' (`AL static char g;`).
     if ( is_attribute_identifier_token(tb) )

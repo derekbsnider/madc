@@ -10227,6 +10227,8 @@ public:
     // weak flag at each declaration's head (an object's never reaches a
     // function).
     bool pending_noinline = false;
+    // `no_instrument_function`, the same way (tests/testnoinstrumentlead).
+    bool pending_no_instrument_function = false;
     // Set by consume_gnu_attributes on cleanup(f): the function f names, for
     // the declaration whose attribute groups are being read; taken (and
     // cleared) by parse_declaration_body for its declarators, and dropped by

@@ -1,6 +1,12 @@
 # Changelog
 
 ## [Unreleased]
+### `__attribute__((no_instrument_function))` is read in every attribute position
+
+- `no_instrument_function` is recorded wherever it appears in a function's declaration: among the leading declaration specifiers, after another specifier, or after a prior declarator. Before, only an attribute group after the declarator was read, so a function marked in the leading position was instrumented under `-finstrument-functions`.
+- The instrumented `__cyg_profile_func_enter` called itself until the stack overflowed (SIGSEGV). With the attribute honoured, the marked functions are not instrumented, and only `counted` gets the enter hook.
+- `tests/testnoinstrumentlead.mad` (`--finstrument-functions --std=gnu17`) prints the gcc 13 and clang 18 answers in `tests/testnoinstrumentlead.expect`: `result 8`, `entries 1`.
+
 ### `__has_attribute` and `__has_builtin` expand outside `#if`
 
 - `__has_attribute (x)` and `__has_builtin (x)` in ordinary text, in a macro body, or in a constant expression expand to the same 1/0 answer the `#if` directive gives. Before, only `#if` and `#elif` answered them, and elsewhere `noinline` was read as an undeclared identifier.
