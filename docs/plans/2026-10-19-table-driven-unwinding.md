@@ -180,6 +180,11 @@ remove on every normal path.
        at the target try's guard (the region whose cleanup is the try's
        leave and whose variable holds that try context) -- objects the try
        body made go, objects outside it stay.
+     - the unwind's header (the ABI's `_Unwind_Exception`, with the target
+       try) is heap-allocated and freed by the stop function as it lands: a
+       g++ landing pad resets SP to its own frame and its `_Unwind_Resume`
+       reads the header back from storage below it (g++ heap-allocates its
+       exceptions; glibc keeps its in the thread descriptor).
      - a foreign exception (a host C++ throw crossing MIR frames): the
        personality's cleanup phase runs every region, as g++ runs a frame's
        destructors for any exception. A g++ host frame between a madc throw
@@ -227,8 +232,11 @@ saved and restored with the rest of the exception state at task switches.
 4. Region tables as LSDAs: the base as `breg`, the personality API, the one
    encoder, the JIT FDE names the personality and points at the table; the
    unit test raises through generated frames with a test personality.
-5. Runtime personality + forced unwind with the stop function (no consumer
-   yet).
+5. Runtime personality + the forced-unwind raise: every throw (not on
+   Windows) reaches its try through `_Unwind_ForcedUnwind` and the stop
+   function -- behaviour-preserving while no frame names the personality, so
+   the whole exception suite proves the landing; a unit test runs the
+   personality end to end through c2mir-compiled frames in madc's try shape.
 6. AOT: CFI and region tables in ELF, Mach-O and PE images; Windows unwind
    codes and JIT registration.
 7. Switch: c2mir option on, CIR arms objects and drops the registration,

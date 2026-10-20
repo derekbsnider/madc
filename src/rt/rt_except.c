@@ -304,6 +304,199 @@ void __madc_cleanup_leave(void *guard)
 	__madc_cleanup_remove(entry);
 }
 
+// --- The platform unwinder (docs/plans/2026-10-19-table-driven-unwinding.md).
+// A throw reaches its try through the unwinder's FORCED unwind (libgcc_s;
+// libunwind on macOS), glibc's thread-cancellation shape: the unwinder calls
+// each frame's personality in its cleanup phase -- a generated frame's
+// __madc_personality runs the cleanups its region table lists, a g++ frame's
+// own personality its destructors -- and madc_unwind_stop longjmps into the
+// try once the walk has passed the try's frame. A frame the unwinder cannot
+// describe ends the walk, and the stop function lands there. The Itanium ABI's
+// functions are declared here under their own names and madc's types: this
+// file is strict C11, compiled by c2mir too, with no <unwind.h>. Windows keeps
+// the plain longjmp until generated frames carry its unwind tables.
+#ifndef _WIN32
+#define MADC_RT_UNWIND 1
+
+enum {
+    MADC_URC_NO_REASON = 0,
+    MADC_URC_CONTINUE_UNWIND = 8,
+    MADC_UA_CLEANUP_PHASE = 2,
+    MADC_UA_END_OF_STACK = 16,
+};
+
+// The ABI's struct _Unwind_Exception on the 64-bit targets.
+struct MadcUnwindHeader {
+    uint64_t exception_class;
+    void (*exception_cleanup)(int, struct MadcUnwindHeader *);
+    uintptr_t private_1, private_2;
+};
+
+// A madc throw's unwind: the header first, so a personality reaches the
+// target try through the header's address. It lives on the heap, never on
+// the stack being unwound: a g++ frame's landing pad resets SP to its own
+// frame, and its _Unwind_Resume reads the header back from storage below
+// (g++ heap-allocates its exception, glibc keeps its in the thread).
+struct MadcUnwind {
+    struct MadcUnwindHeader header;
+    struct MadcTryContext *target;
+};
+
+// The header's exception_cleanup: a host `catch (...)` consumed the unwind.
+static void madc_unwind_delete(int reason, struct MadcUnwindHeader *header)
+{
+    (void)reason;
+    free(header);
+}
+
+#define MADC_UNWIND_CLASS 0x4d4144435354524bULL	/* "MADCSTRK" */
+
+struct MadcUnwindContext;
+typedef int (*madc_unwind_stop_fn)(int, int, uint64_t, struct MadcUnwindHeader *,
+				   struct MadcUnwindContext *, void *);
+extern int _Unwind_ForcedUnwind(struct MadcUnwindHeader *, madc_unwind_stop_fn, void *);
+extern uintptr_t _Unwind_GetCFA(struct MadcUnwindContext *);
+extern uintptr_t _Unwind_GetIP(struct MadcUnwindContext *);
+extern uintptr_t _Unwind_GetRegionStart(struct MadcUnwindContext *);
+extern uintptr_t _Unwind_GetGR(struct MadcUnwindContext *, int);
+extern void *_Unwind_GetLanguageSpecificData(struct MadcUnwindContext *);
+
+// A generated frame's region table, as MIR writes it: the layout is
+// MIR_UNWIND_TABLE_VERSION's in third_party/mir/mir.h.
+#define MADC_UNWIND_TABLE_VERSION 1
+#define MADC_DW_EH_PE_absptr 0x00
+
+static uint64_t madc_uleb(const uint8_t **p)
+{
+    uint64_t v = 0;
+    unsigned shift = 0;
+    uint8_t b;
+    do
+    {
+	b = *(*p)++;
+	if ( shift < 64 )
+	    v |= (uint64_t)(b & 0x7f) << shift;
+	shift += 7;
+    } while ( b & 0x80 );
+    return v;
+}
+
+static int64_t madc_sleb(const uint8_t **p)
+{
+    uint64_t v = 0;
+    unsigned shift = 0;
+    uint8_t b;
+    do
+    {
+	b = *(*p)++;
+	if ( shift < 64 )
+	    v |= (uint64_t)(b & 0x7f) << shift;
+	shift += 7;
+    } while ( b & 0x80 );
+    if ( shift < 64 && (b & 0x40) )
+	v |= ~(uint64_t)0 << shift;
+    return (int64_t)v;
+}
+
+// Region REGION (from 1) of the region list at P: its parent, its variable's
+// offset from the frame base, and its cleanup.
+static void madc_table_region(const uint8_t *p, uint64_t region, uint64_t *parent,
+			      int64_t *offset, uintptr_t *cleanup)
+{
+    uint64_t i, v;
+    for ( i = 1; ; i++ )
+    {
+	*parent = madc_uleb(&p);
+	*offset = madc_sleb(&p);
+	if ( i == region )
+	    break;
+	p += sizeof(v);
+    }
+    memcpy(&v, p, sizeof(v));
+    *cleanup = (uintptr_t)v;
+}
+
+// The personality every generated function with regions names: in the cleanup
+// phase, the region chain live at the frame's call runs innermost first, each
+// cleanup called with its variable's address -- stopping at the throw's target
+// try's guard (the region whose cleanup is __madc_try_leave and whose variable
+// holds that try's context), so what the try body made goes and the rest of
+// the frame stays. A madc try is no search-phase handler: the forced unwind
+// lands it. A foreign exception runs every region, as g++ destroys a frame's
+// objects for any exception.
+int __madc_personality(int version, int actions, uint64_t exception_class,
+		       struct MadcUnwindHeader *header, struct MadcUnwindContext *uc)
+{
+    const uint8_t *p = (const uint8_t *)_Unwind_GetLanguageSpecificData(uc);
+    const uint8_t *regions;
+    struct MadcTryContext *target = NULL;
+    uint64_t base_reg, base_align, ncalls, nregions, region = 0, i;
+    int64_t base_offset;
+    uintptr_t ra, base;
+
+    if ( version != 1 || !p || !(actions & MADC_UA_CLEANUP_PHASE) )
+	return MADC_URC_CONTINUE_UNWIND;
+    if ( p[0] != MADC_UNWIND_TABLE_VERSION || p[1] != MADC_DW_EH_PE_absptr )
+	return MADC_URC_CONTINUE_UNWIND;
+    p += 2;
+    if ( exception_class == MADC_UNWIND_CLASS )
+	target = ((struct MadcUnwind *)header)->target;
+    base_reg = madc_uleb(&p);
+    base_offset = madc_sleb(&p);
+    base_align = madc_uleb(&p);
+    ra = _Unwind_GetIP(uc) - _Unwind_GetRegionStart(uc);
+    ncalls = madc_uleb(&p);
+    for ( i = 0; i < ncalls; i++ )
+    {
+	uint64_t start = madc_uleb(&p), len = madc_uleb(&p), r = madc_uleb(&p);
+	if ( ra > start && ra <= start + len )
+	    region = r;
+    }
+    nregions = madc_uleb(&p);
+    regions = p;
+    if ( region == 0 || region > nregions )
+	return MADC_URC_CONTINUE_UNWIND;
+    base = _Unwind_GetGR(uc, (int)base_reg) + (uintptr_t)base_offset;
+    if ( base_align > 1 )
+	base = (base + (uintptr_t)base_align - 1) & ~((uintptr_t)base_align - 1);
+    while ( region != 0 )
+    {
+	uint64_t parent;
+	int64_t offset;
+	uintptr_t cleanup;
+	void *var;
+	madc_table_region(regions, region, &parent, &offset, &cleanup);
+	var = (void *)(base + (uintptr_t)offset);
+	if ( target && cleanup == (uintptr_t)__madc_try_leave && *(void **)var == (void *)target )
+	    break;
+	((void (*)(void *))cleanup)(var);
+	region = parent;
+    }
+    return MADC_URC_CONTINUE_UNWIND;
+}
+
+// The forced unwind's stop function: called for every frame before its
+// personality, it lands the throw in its try once the walk has passed the
+// try's frame -- the context's CFA is the SP of the frame it describes, above
+// every local of the frames below, the try context among them -- or when the
+// walk ends (glibc's unwind_stop, with the try context's own address in place
+// of the jmp_buf's saved SP).
+static int madc_unwind_stop(int version, int actions, uint64_t exception_class,
+			    struct MadcUnwindHeader *header, struct MadcUnwindContext *uc,
+			    void *param)
+{
+    struct MadcTryContext *target = (struct MadcTryContext *)param;
+    (void)version;
+    (void)exception_class;
+    if ( (actions & MADC_UA_END_OF_STACK) || _Unwind_GetCFA(uc) > (uintptr_t)target )
+    {
+	free(header);
+	longjmp(target->jbuf, 1);
+    }
+    return MADC_URC_NO_REASON;
+}
+#endif
+
 // Print the unhandled-exception line. The ONE formatting owner is
 // __madc_exception_text (below) — the same renderer MT-3's scope error
 // capture reads, so an aborted print and a captured scope error always
@@ -316,11 +509,18 @@ static void madc_print_unhandled(void)
 }
 
 // THE raise tail every throw shares: unwind the cleanup stack to the
-// innermost try's mark and longjmp to it, or — with no try active — run
-// every cleanup, print the exception (`unhandled` names the case) and abort.
+// innermost try's mark and land in that try -- through the platform
+// unwinder's forced unwind, which runs every frame's cleanups on the way
+// (madc_unwind_stop lands it), or by a plain longjmp where there is no
+// unwinder, it returned, or the unwind's header could not be allocated -- or,
+// with no try active, run every cleanup, print the exception
+// (`unhandled` names the case) and abort.
 static void madc_raise(const char *unhandled)
 {
     struct MadcTryContext *ctx;
+#ifdef MADC_RT_UNWIND
+    struct MadcUnwind *unwind;
+#endif
     if ( !madc_try_stack )
     {
 	__madc_cleanup_unwind_to(NULL);
@@ -333,6 +533,17 @@ static void madc_raise(const char *unhandled)
     ctx = madc_try_stack;
     madc_try_stack = ctx->prev;
     __madc_cleanup_unwind_to(ctx->cleanup_mark);
+#ifdef MADC_RT_UNWIND
+    unwind = (struct MadcUnwind *)calloc(1, sizeof(*unwind));
+    if ( unwind )
+    {
+	unwind->header.exception_class = MADC_UNWIND_CLASS;
+	unwind->header.exception_cleanup = madc_unwind_delete;
+	unwind->target = ctx;
+	_Unwind_ForcedUnwind(&unwind->header, madc_unwind_stop, ctx);
+	free(unwind);
+    }
+#endif
     longjmp(ctx->jbuf, 1);
 }
 

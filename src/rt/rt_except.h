@@ -19,10 +19,13 @@
  * RAISE, letting the script-side stack (or the unhandled-exception abort) do
  * the rest. Widening this header is a design decision, not an edit.
  *
- * A throw longjmps to the innermost script `try` (or prints "Unhandled
- * exception: ..." and aborts). The jump unwinds no C++ frames, so a host
- * caller must hold NO live destructors when it throws. A cstr's pointer is
- * STORED, not copied — pass a string literal or other immortal storage.
+ * A throw lands in the innermost script `try` (or prints "Unhandled
+ * exception: ..." and aborts). Outside Windows it gets there through the
+ * platform unwinder's forced unwind, which runs a g++ host frame's
+ * destructors on the way; on Windows a plain longjmp unwinds no C++ frames,
+ * so a host caller must hold NO live destructors when it throws. A cstr's
+ * pointer is STORED, not copied — pass a string literal or other immortal
+ * storage.
  *
  * Plain C, C linkage, ledger-safe (rt_except.c is `all` in
  * scripts/ledger_sources.txt).

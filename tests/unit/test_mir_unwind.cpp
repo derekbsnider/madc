@@ -1,7 +1,8 @@
 // Unit tests for MIR's unwind regions (docs/plans/2026-10-19-table-driven-
 // unwinding.md): the per-call regions MIR_gen records, the region table a
-// function's FDE hands its personality (MIR_UNWIND_TABLE_VERSION), and the
-// regions c2mir opens for cleanup variables. A test that runs the generated
+// function's FDE hands its personality (MIR_UNWIND_TABLE_VERSION), the
+// regions c2mir opens for cleanup variables, and the runtime's own personality
+// and forced unwind (src/rt/rt_except.c). A test that runs the generated
 // code raises an exception through the generated frames with the host
 // unwinder (_Unwind_RaiseException), as the runtime's throw will: the unwinder
 // calls the test's personality for each frame whose FDE names it, with that
@@ -24,6 +25,7 @@ extern "C" {
 #include "mir-gen.h"
 #include "c2mir.h"
 }
+#include "../../src/rt/rt_except.h"
 
 // The targets whose generated frames are registered with the host unwinder
 // (Windows describes frames with its own tables).
@@ -731,6 +733,162 @@ TEST_CASE("without the option: no regions, no personality, the arm is a no-op")
 	CHECK(call_region(ctx, find_item(ctx, mod, "armed"), "unwind_cb_fp", 0) == 0);
 	c2mir_finish(ctx);
 	MIR_finish(ctx);
+}
+
+}
+
+// The runtime's personality (src/rt/rt_except.c): madc's own try shape -- the
+// try context, its setjmp, the guard whose cleanup is __madc_try_leave --
+// compiled by c2mir with regions naming __madc_personality, and a throw
+// through __madc_throw_int, which force-unwinds to the try. Only the runtime
+// functions' addresses are taken here: the personality and the guard's leave
+// are not on rt_except.h's host-callable surface.
+extern "C" int __madc_personality(int, int, uint64_t, void *, void *);
+extern "C" void __madc_try_leave(void *);
+extern "C" int64_t __madc_exception_int(void);
+
+static std::vector<int64_t> recorded;	// what each cleanup saw, in order
+
+extern "C" void rt_record(int64_t *p)
+{
+	recorded.push_back(*p);
+}
+
+// A g++ frame with a live destructor between a throw and its try: g++ runs it
+// from a landing pad, which resets SP to this frame and resumes the unwind with
+// _Unwind_Resume (its own contexts on the stack below) -- so nothing the unwind
+// needs may live on the stack below this frame.
+struct RtHostObject {
+	int64_t v;
+	~RtHostObject() { recorded.push_back(v); }
+};
+
+extern "C" __attribute__((noinline)) void rt_host_layer(int64_t v)
+{
+	RtHostObject o{v + 400};
+	__madc_throw_int(v);
+}
+
+static void *rt_import_resolver(const char *name)
+{
+	if (strcmp(name, "rt_record") == 0) return (void *)rt_record;
+	if (strcmp(name, "rt_host_layer") == 0) return (void *)rt_host_layer;
+	if (strcmp(name, "_setjmp") == 0) return (void *)_setjmp;
+	if (strcmp(name, "__madc_try_push") == 0) return (void *)__madc_try_push;
+	if (strcmp(name, "__madc_try_leave") == 0) return (void *)__madc_try_leave;
+	if (strcmp(name, "__madc_throw_int") == 0) return (void *)__madc_throw_int;
+	if (strcmp(name, "__madc_exception_int") == 0) return (void *)__madc_exception_int;
+	if (strcmp(name, "__madc_exception_clear") == 0) return (void *)__madc_exception_clear;
+	if (strcmp(name, "__madc_personality") == 0) return (void *)__madc_personality;
+	return nullptr;
+}
+
+static const char *rt_try_text =
+	"struct S { long v; };\n"
+	"void rt_record (long *p);\n"
+	"void *__madc_try_push (void *ctx);\n"
+	"void __madc_try_leave (void *guard);\n"
+	"void __madc_throw_int (long v);\n"
+	"long __madc_exception_int (void);\n"
+	"void __madc_exception_clear (void);\n"
+	"int _setjmp (void *env);\n"
+	"static void s_done (struct S *p) { rt_record (&p->v); }\n"
+	"static void thrower (long v) {\n"
+	"  struct S t __attribute__ ((cleanup (s_done))) = {v + 100};\n"
+	"  __madc_throw_int (v);\n"
+	"}\n"
+	"void rt_host_layer (long v);\n"
+	"static void through_host (long v) {\n"
+	"  struct S t __attribute__ ((cleanup (s_done))) = {v + 200};\n"
+	"  rt_host_layer (v);\n"
+	"}\n"
+	"long caught (long a) {\n"
+	"  struct S before __attribute__ ((cleanup (s_done))) = {a};\n"
+	"  long ctx[128];\n"
+	"  if (_setjmp (__madc_try_push (ctx)) == 0) {\n"
+	"    void *guard __attribute__ ((cleanup (__madc_try_leave))) = ctx;\n"
+	"    struct S inside __attribute__ ((cleanup (s_done))) = {a + 1};\n"
+	"    thrower (a + 2);\n"
+	"    return -1;\n"
+	"  }\n"
+	"  long v = __madc_exception_int ();\n"
+	"  __madc_exception_clear ();\n"
+	"  return v;\n"
+	"}\n"
+	"long caught_host (long a) {\n"
+	"  long ctx[128];\n"
+	"  if (_setjmp (__madc_try_push (ctx)) == 0) {\n"
+	"    void *guard __attribute__ ((cleanup (__madc_try_leave))) = ctx;\n"
+	"    struct S inside __attribute__ ((cleanup (s_done))) = {a + 1};\n"
+	"    through_host (a + 2);\n"
+	"    return -1;\n"
+	"  }\n"
+	"  long v = __madc_exception_int ();\n"
+	"  __madc_exception_clear ();\n"
+	"  return v;\n"
+	"}\n";
+
+// Compile rt_try_text (with or without regions), run FUNC(A): its result.
+static int64_t run_caught(bool regions, int64_t a, const char *func = "caught")
+{
+	MIR_context_t ctx = gen_context();
+	c2mir_init(ctx);
+	struct c2mir_options opts;
+	memset(&opts, 0, sizeof(opts));
+	opts.message_file = stderr;
+	opts.unwind_regions_p = regions;
+	opts.unwind_personality = regions ? "__madc_personality" : nullptr;
+	C2mirSource src = {rt_try_text, 0};
+	REQUIRE(c2mir_compile(ctx, &opts, c2mir_source_getc, &src, "rt_try.c", nullptr));
+	MIR_module_t mod = DLIST_TAIL(MIR_module_t, *MIR_get_module_list(ctx));
+	MIR_item_t f = find_item(ctx, mod, func);
+	REQUIRE(f != nullptr);
+	MIR_load_module(ctx, mod);
+	MIR_link(ctx, MIR_set_gen_interface, rt_import_resolver);
+	int64_t (*fn)(int64_t) = (int64_t (*)(int64_t))MIR_gen(ctx, f);
+	REQUIRE(fn != nullptr);
+	recorded.clear();
+	int64_t r = fn(a);
+	c2mir_finish(ctx);
+	MIR_gen_finish(ctx);
+	MIR_finish(ctx);
+	return r;
+}
+
+TEST_SUITE("madc runtime personality") {
+
+TEST_CASE("a throw force-unwinds to its try: the frames' cleanups run, the try body's stop at its guard")
+{
+	CHECK(run_caught(true, 10) == 12);
+	// thrower's object, then the try body's -- both during the unwind -- then
+	// `before`, declared ahead of the try, at the function's own exit
+	REQUIRE(recorded.size() == 3);
+	CHECK(recorded[0] == 112);
+	CHECK(recorded[1] == 11);
+	CHECK(recorded[2] == 10);
+}
+
+TEST_CASE("without regions no frame names the personality: the same throw lands with no frame cleanups")
+{
+	CHECK(run_caught(false, 10) == 12);
+	REQUIRE(recorded.size() == 1);
+	CHECK(recorded[0] == 10);
+}
+
+TEST_CASE("a g++ frame between the throw and the try runs its destructor and resumes the unwind")
+{
+	// the host frame's object (its landing pad and _Unwind_Resume), then the
+	// generated caller's, then the try body's
+	CHECK(run_caught(true, 10, "caught_host") == 12);
+	REQUIRE(recorded.size() == 3);
+	CHECK(recorded[0] == 412);
+	CHECK(recorded[1] == 212);
+	CHECK(recorded[2] == 11);
+	// without regions the host frame's destructor still runs: the forced
+	// unwind reaches every g++ frame
+	CHECK(run_caught(false, 10, "caught_host") == 12);
+	REQUIRE(recorded.size() == 1);
+	CHECK(recorded[0] == 412);
 }
 
 }

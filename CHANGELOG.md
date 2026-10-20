@@ -8,6 +8,14 @@ Consolidated: pointer_type_node — gate scripts/check-one-pointer-type-node.sh
 Consolidated: MIR pattern index by insn code — gate scripts/check-one-pattern-index.sh
 Consolidated: MIR constant-shift normalizer — gate scripts/check-one-const-shift-normalizer.sh
 
+### The runtime's throw reaches its try through the platform unwinder
+
+- Outside Windows, `madc_raise` with a try active runs `_Unwind_ForcedUnwind` on a heap-allocated `MadcUnwind` (the Itanium `_Unwind_Exception` header plus the target try). `madc_unwind_stop` longjmps into the try once the walk passes the try's frame, or at `_UA_END_OF_STACK`. A failed allocation or a returning unwinder lands by the plain longjmp.
+- `__madc_personality` (the name c2mir's `unwind_personality` option takes) runs a generated frame's region cleanups innermost first, each with its variable's address, and stops at the target try's guard. A foreign exception runs every region.
+- madc does not set `unwind_personality` yet, so no frame names the personality: the forced unwind runs no generated-frame cleanups and lands where the longjmp did. A g++ frame between the throw and the try runs its destructors (forced unwind reaches it).
+- Windows keeps the plain longjmp, which unwinds no C++ frames.
+- Unit tests: `tests/unit/test_mir_unwind.cpp`, suite "madc runtime personality" (the cleanup order and the caught value; the control without regions records only the pre-try cleanup), and case "a g++ frame between the throw and the try runs its destructor and resumes the unwind".
+
 ### MIR gives a generated function's FDE its personality and region table
 
 - A function with unwind regions, a personality (`MIR_set_func_unwind_personality`) and a call inside a region gets an FDE whose LSDA is its region table (`MIR_UNWIND_TABLE_VERSION` 1, format in `third_party/mir/mir.h`). Other functions keep the `zR` CIE augmentation.
