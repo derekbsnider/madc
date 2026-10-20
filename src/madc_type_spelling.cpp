@@ -46,8 +46,8 @@ madc::dis::istring TypeSpeller::scalar_word(DataDef *dd)
 	// on every target, never the rank's "int". LP64 never instantiates
 	// these classes, so this cannot rewrite an LP64 word.
 	DataDef *u = dd->unqualified();
-	if (dynamic_cast<DataDefPlatformLONG *>(u)
-	    || dynamic_cast<DataDefPlatformULONG *>(u))
+	const PlatformInteger pi = u->platform_integer();
+	if (pi == PlatformInteger::piLONG || pi == PlatformInteger::piULONG)
 		return u->name;
 	switch (dd->rawtype()) {
 	case DataType::dtBOOL:     return "bool";

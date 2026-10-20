@@ -297,6 +297,12 @@ enum class RefType  : uint8_t { rtNone, rtValue, rtPointer, rtReference  };
 // docs/plans/2026-06-12-type-table-value-abi-design.md §2.
 enum class DerivedKind : uint8_t { dkPointer, dkReference, dkConst };
 
+// Which platform-width integer singleton a type IS (DataDefPlatformLONG /
+// ULONG / LONGLONG / ULONGLONG, declared after DataDef), piNONE for every
+// other type: the answer DataDef::platform_integer() gives in place of one
+// dynamic_cast per class.
+enum class PlatformInteger : uint8_t { piNONE, piLONG, piULONG, piLONGLONG, piULONGLONG };
+
 // The cv-qualifier MASK a qualified type carries (DataDefQUAL::quals): one
 // variant per (unqualified base, mask), minted only by
 // Program::getQualifiedType — gcc's build_qualified_type, clang's QualType.
@@ -553,6 +559,10 @@ public:
     virtual DataDefFPTR          *as_fptr_dd()     { return NULL; }
     virtual DataDefSIMD          *as_simd_dd()     { return NULL; }
     virtual FuncDef              *as_funcdef_dd()  { return NULL; }
+    // The platform-width integer this type IS; the four singleton classes
+    // override it. A qualified wrapper answers piNONE, as a dynamic_cast to
+    // one of those classes did on it.
+    virtual PlatformInteger platform_integer() const { return PlatformInteger::piNONE; }
     // Const twins (non-virtual; funnel through the virtuals above).
     const DataDefSTRUCT  *as_struct_dd()  const { return const_cast<DataDef *>(this)->as_struct_dd(); }
     const DataDefCLASS   *as_class_dd()   const { return const_cast<DataDef *>(this)->as_class_dd(); }
@@ -2097,9 +2107,11 @@ class DataDefUINT64:    public DataDef { public: DataDefUINT64():  DataDef("uint
 // (parser.cpp) are the one owner — on LP64 they return ddINT64/ddUINT64
 // (long IS int64 there) and these classes go uninstantiated.
 class DataDefPlatformLONG:  public DataDef { public:
-	DataDefPlatformLONG():  DataDef("long", 4, DataType::dtINT32) {} };
+	DataDefPlatformLONG():  DataDef("long", 4, DataType::dtINT32) {}
+	PlatformInteger platform_integer() const override { return PlatformInteger::piLONG; } };
 class DataDefPlatformULONG: public DataDef { public:
-	DataDefPlatformULONG(): DataDef("unsigned long", 4, DataType::dtUINT32) {} };
+	DataDefPlatformULONG(): DataDef("unsigned long", 4, DataType::dtUINT32) {}
+	PlatformInteger platform_integer() const override { return PlatformInteger::piULONG; } };
 // Platform `long long` / `unsigned long long` — the darwin mirror of the
 // pair above (LP64 target whose headers alias int64_t to long long): full
 // 8-byte i64 rank, but a DISTINCT identity whose NAME feeds the Itanium
@@ -2109,20 +2121,20 @@ class DataDefPlatformULONG: public DataDef { public:
 // (parser.cpp) are the one owner — everywhere else they return
 // ddINT64/ddUINT64 and these classes go uninstantiated.
 class DataDefPlatformLONGLONG:  public DataDef { public:
-	DataDefPlatformLONGLONG():  DataDef("long long", 8, DataType::dtINT64) {} };
+	DataDefPlatformLONGLONG():  DataDef("long long", 8, DataType::dtINT64) {}
+	PlatformInteger platform_integer() const override { return PlatformInteger::piLONGLONG; } };
 class DataDefPlatformULONGLONG: public DataDef { public:
-	DataDefPlatformULONGLONG(): DataDef("unsigned long long", 8, DataType::dtUINT64) {} };
+	DataDefPlatformULONGLONG(): DataDef("unsigned long long", 8, DataType::dtUINT64) {}
+	PlatformInteger platform_integer() const override { return PlatformInteger::piULONGLONG; } };
 // A platform-width integer: one of the four singletons above — a DISTINCT
 // fundamental type sharing another integer's storage (LLP64 long beside int,
 // darwin long long beside long). Its rawtype cannot tell it apart; its class
-// can. The integer conversion rank (tokens.h) and the type-name renderer
-// (_Generic, __builtin_types_compatible_p) ask this.
+// can, through platform_integer(). The integer conversion rank (tokens.h) and
+// the type-name renderer (_Generic, __builtin_types_compatible_p) ask this.
+// NULL-safe.
 inline bool dd_is_platform_integer(const DataDef *dd)
 {
-    return dynamic_cast<const DataDefPlatformLONG *>(dd)
-	|| dynamic_cast<const DataDefPlatformULONG *>(dd)
-	|| dynamic_cast<const DataDefPlatformLONGLONG *>(dd)
-	|| dynamic_cast<const DataDefPlatformULONGLONG *>(dd);
+    return dd && dd->platform_integer() != PlatformInteger::piNONE;
 }
 // wchar_t / char16_t / char32_t (datadef.h decls above): distinct
 // fundamental types whose STORAGE is an integer DataType (so every width /

@@ -1,6 +1,13 @@
 # Changelog
 
 ## [Unreleased]
+### The platform-width integer test is one virtual call
+
+- `DataDef::platform_integer()` returns `PlatformInteger::piLONG`, `piULONG`, `piLONGLONG` or `piULONGLONG` for the four platform-width integer singletons, and `piNONE` for every other type, including a qualified wrapper.
+- `dd_is_platform_integer()` is `dd && dd->platform_integer() != piNONE`; a NULL argument answers false as before.
+- `unsigned_integer_counterpart()` and `TypeSpeller::scalar_word()` read `platform_integer()` instead of dynamic casts. Their results are unchanged.
+- Generated code is unchanged: the `-c` objects for `act_wiz.c` and `sqlite3.c` are byte-identical before and after the change.
+
 ### c2mir memoizes each type's alias class
 
 - `get_type_alias` in `third_party/mir/c2mir/c2mir.c` caches its result per (mode, pointee object) for a pointer and per (mode, tag node) for a union or an enum. A cache hit returns the stored alias class; a miss computes it as before and stores it.

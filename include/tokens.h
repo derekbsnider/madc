@@ -664,10 +664,12 @@ static inline int integer_conversion_rank(const DataDef *dd)
 // `unsigned int` is `unsigned long`).
 static inline DataDef *unsigned_integer_counterpart(DataDef *dd)
 {
-    if ( dynamic_cast<DataDefPlatformLONG *>(dd) )
-	return dd_platform_ulong();
-    if ( dynamic_cast<DataDefPlatformLONGLONG *>(dd) )
-	return dd_platform_ulonglong();
+    switch ( dd->platform_integer() )
+    {
+	case PlatformInteger::piLONG:     return dd_platform_ulong();
+	case PlatformInteger::piLONGLONG: return dd_platform_ulonglong();
+	default: break;
+    }
     if ( dd->size == ddUINT128.size )
 	return &ddUINT128;
     if ( dd->size == ddUINT64.size )
