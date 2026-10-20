@@ -1,6 +1,12 @@
 # Changelog
 
 ## [Unreleased]
+### A raw-string prefix needs a well-formed delimiter; an ordinary literal ends at its line's end
+
+- `tokenize_macro_spelling` (`src/lexer.cpp`) reads `R"`, `LR"`, `uR"`, `UR"` and `u8R"` as a raw string only when the delimiter is well formed: at most 16 characters, none of space, quote, backslash, parenthesis or new-line, then `(`. Otherwise the prefix is an identifier token and the quote starts an ordinary literal.
+- An ordinary string or character literal ends at its closing quote, or at the line's end when it is never closed. It does not run on to a later quote.
+- In C, `#define CAT(R) R"x"` substitutes the parameter `R`. Before, the rest of the body was one literal token and the build failed with `use of undeclared identifier 'R'`. `tests/testmacrorawprefixc.mad` (`--std=c11`) prints `ax` and `byz`, as gcc 13 and clang 18 do.
+
 ### The expression parser's operand and operator stacks are vector-backed
 
 - `token_stack_t` (`include/madc.h`) is `std::stack<TokenBase *, std::vector<TokenBase *> >`. `Program::parseExpression`'s two local stacks and every helper that takes one use it in place of the deque-backed default.

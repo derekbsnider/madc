@@ -3173,25 +3173,39 @@ tokenize_macro_spelling(const std::string &text)
 	{
 	    if ( raw )
 	    {
-		size_t open = text.find('(', quote + 1);
-		if ( open != madc::dis::istring::npos && open - quote - 1 <= 16 )
+		// A raw string's delimiter: at most 16 characters, none of
+		// space, a quote, a backslash, a parenthesis or a new-line,
+		// then '(' ([lex.string]/2). Anything else is no raw string —
+		// its prefix is a name (`R"x"` in C), the quote a literal.
+		size_t open = quote + 1;
+		while ( open < text.size() && open - quote - 1 <= 16 && text[open] != '('
+		     && !strchr(" \t\v\f\n\r\"\\)", text[open]) )
+		    ++open;
+		if ( open >= text.size() || text[open] != '(' || open - quote - 1 > 16 )
 		{
-		    madc::dis::istring close = ")" + text.substr(quote + 1,
-							 open - quote - 1) + "\"";
-		    size_t end = text.find(close, open + 1);
-		    i = end == madc::dis::istring::npos ? text.size() : end + close.size();
+		    tokens.emplace_back(T::rtIdentifier, start, quote);
+		    i = quote;
+		    continue;
 		}
-		else
-		    i = text.size();
+		madc::dis::istring close = ")" + text.substr(quote + 1,
+						     open - quote - 1) + "\"";
+		size_t end = text.find(close, open + 1);
+		i = end == madc::dis::istring::npos ? text.size() : end + close.size();
 	    }
 	    else
 	    {
+		// An ordinary literal ends at its closing quote — or, never
+		// closed, at the line's end (gcc: "missing terminating
+		// character"); it holds no new-line ([lex.ccon], [lex.string]).
 		char q = text[quote];
 		i = quote + 1;
 		bool escaped = false;
 		while ( i < text.size() )
 		{
-		    char c = text[i++];
+		    char c = text[i];
+		    if ( !escaped && (c == '\n' || c == '\r') )
+			break;
+		    ++i;
 		    if ( escaped )
 			escaped = false;
 		    else if ( c == '\\' )
