@@ -1,0 +1,26 @@
+// <float.h> is the TARGET's, in gcc's shape: every limit spelled through the
+// predefined __FLT_*__ / __DBL_*__ / __LDBL_*__ macros, and the C99, C11 and C23
+// sections present. madc's header carried x86-64's values baked in (an aarch64
+// or Apple arm64 long double read LDBL_MANT_DIG 64) and stopped at C89: no
+// FLT_ROUNDS, and none of FLT_DECIMAL_DIG, FLT_HAS_SUBNORM, FLT_TRUE_MIN (C11)
+// or FLT_NORM_MAX, FLT_IS_IEC_60559, FLT_SNAN, INFINITY, NAN (C23).
+// Oracle: gcc 13 -std=c2x on Linux x86-64 prints every line below with 1.
+// clang 18 -std=c23 agrees through C11; its float.h has no C23 section yet
+// (FLT_SNAN, FLT_NORM_MAX, DBL_IS_IEC_60559, INFINITY, NAN undeclared).
+#include <float.h>
+#include <stdio.h>
+
+int main(void)
+{
+	printf("target %d\n", LDBL_MANT_DIG == __LDBL_MANT_DIG__ && FLT_DIG == 6
+		&& DBL_DIG == 15 && FLT_RADIX == 2 && FLT_ROUNDS == 1);
+	printf("c99 %d\n", FLT_EVAL_METHOD == __FLT_EVAL_METHOD__
+		&& DECIMAL_DIG == __DECIMAL_DIG__);
+	printf("c11 %d\n", FLT_DECIMAL_DIG == 9 && DBL_DECIMAL_DIG == 17
+		&& FLT_HAS_SUBNORM == 1 && FLT_TRUE_MIN > 0.0f && FLT_TRUE_MIN < FLT_MIN
+		&& DBL_TRUE_MIN < DBL_MIN && LDBL_TRUE_MIN < LDBL_MIN);
+	float snan = FLT_SNAN;
+	printf("c23 %d\n", FLT_NORM_MAX == FLT_MAX && DBL_IS_IEC_60559 == 1
+		&& INFINITY > FLT_MAX && NAN != NAN && snan != snan);
+	return 0;
+}
