@@ -6916,6 +6916,31 @@ static size_t balanced_group_close(const Seq &tokens, size_t open_idx)
     return open_idx;
 }
 
+// Past the attribute specifiers starting at tokens[i] — each an introducer
+// (is_attribute_identifier_token: a GNU `__attribute__` group, `_Alignas`)
+// and its balanced `( ... )`: the index of the first token after them. `i`
+// itself when none starts there; an unclosed group's `(` when one never
+// closes. The lookahead twin of consume_gnu_attributes, for a test that must
+// not consume.
+template<typename Seq>
+static size_t attribute_specifiers_end(const Seq &tokens, size_t i)
+{
+    while ( i < tokens.size() && is_attribute_identifier_token(tokens[i]) )
+    {
+	size_t open = i + 1;
+	if ( open >= tokens.size() || !tokens[open] || tokens[open]->id() != TokenID::tkOpBrk )
+	{
+	    i = open;
+	    continue;
+	}
+	size_t close = balanced_group_close(tokens, open);
+	if ( close == open )
+	    return open;
+	i = close + 1;
+    }
+    return i;
+}
+
 // The opener that the close at tokens[close_idx] (`)` `]` `}` `>` `>>`)
 // matches, found FORWARD: DelimDepth has no backward form, and a backward walk
 // re-derives the delimiter rule in reverse (BUGS.md B58: it counted every `>`
@@ -45213,26 +45238,21 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		    // `(string(...) + ...).c_str()`). Decline the cast BEFORE
 		    // consuming — the type re-dispatches to the dataTypeArm,
 		    // whose parse_functional_type_expression owns
-		    // construction. The function-pointer cast head
-		    // `(RET (*)(...))expr` keeps the cast route: its inner
-		    // group is exactly `(*)`. peek1 pointer-equality gates to
-		    // the NON-consuming detection branches only.
+		    // construction. A type-id head whose group is ptr-operators
+		    // alone — `(RET (*)(...))expr`, `(**)`, `(*const)`, an
+		    // attribute group's `(__attribute__((x)) *)` — keeps the
+		    // cast route: no expression has that shape
+		    // (ptr_operator_group_ahead). peek1 pointer-equality gates
+		    // to the NON-consuming detection branches only.
 		    if ( cast_dd && peekToken() == peek1
 		      && cpp_keyword_active(Program::STD_CPP98) )
 		    {
 			size_t after = 1 + cast_qualified_extra_tokens;
 			TokenBase *t1 = tokens.size() > after
 			    ? tokens[after] : NULL;
-			TokenBase *t2 = tokens.size() > after + 1
-			    ? tokens[after + 1] : NULL;
-			TokenBase *t3 = tokens.size() > after + 2
-			    ? tokens[after + 2] : NULL;
-			bool fnptr_cast_head = t1 && t1->id() == TokenID::tkOpBrk
-			    && t2 && t2->id() == TokenID::tkMul
-			    && t3 && t3->id() == TokenID::tkClBrk;
-			if ( !fnptr_cast_head && t1
-			  && (t1->id() == TokenID::tkOpBrk
-			   || t1->id() == TokenID::tkOpBrc) )
+			if ( t1 && (t1->id() == TokenID::tkOpBrc
+				 || (t1->id() == TokenID::tkOpBrk
+				     && !ptr_operator_group_ahead(after))) )
 			    cast_dd = NULL;
 		    }
 		    if ( !cast_dd )	// a splice: the consumed cv run goes back ahead of the operand
@@ -50116,18 +50136,7 @@ bool Program::consume_anonymous_aggregate_open(AggregateAttributes &attrs)
 {
     // Does a `{` follow the attribute groups? Asked on the stored stream first,
     // so a declaration that opens no anonymous aggregate keeps every token.
-    size_t i = 0;
-    while ( i < tokens.size() && is_attribute_identifier_token(tokens[i]) )
-    {
-	++i;
-	if ( i < tokens.size() && tokens[i] && tokens[i]->id() == TokenID::tkOpBrk )
-	{
-	    size_t close = balanced_group_close(tokens, i);
-	    if ( close == i )
-		return false;
-	    i = close + 1;
-	}
-    }
+    size_t i = attribute_specifiers_end(tokens, 0);
     if ( i >= tokens.size() || !tokens[i] || tokens[i]->id() != TokenID::tkOpBrc )
 	return false;
     consume_aggregate_attributes(attrs);
@@ -57034,20 +57043,28 @@ static bool member_pointer_owner_head(TokenBase *tb)
 // (g++.dg/cpp0x/variadic16). paren_starts_parameter_list is the complement.
 // ONE home for the shape consume_template_parameter_declarator spelled inline.
 // `at` reads the `(` that many tokens ahead (drop_redundant_declarator_parens
-// asks it of each level of a group before any of it is read).
+// asks it of each level of a group before any of it is read). Attribute
+// groups right after the `(` may begin either reading — the nested
+// declarator's (`int (__attribute__((aligned(8))) *p)`) or the first
+// parameter's — so the token after them decides, as in gcc
+// (c_parser_direct_declarator) and g++ (cp_parser_declarator's leading
+// attributes).
 bool Program::nested_declarator_opens(DeclaratorMode mode, size_t at)
 {
     if ( tokens.size() < at + 2 || !tokens[at]
-      || tokens[at]->id() != TokenID::tkOpBrk || !tokens[at + 1] )
+      || tokens[at]->id() != TokenID::tkOpBrk )
 	return false;
-    TokenBase *t1 = tokens[at + 1];
-    TokenBase *t2 = tokens.size() > at + 2 ? tokens[at + 2] : NULL;
+    size_t k = attribute_specifiers_end(tokens, at + 1);
+    if ( k >= tokens.size() || !tokens[k] )
+	return false;
+    TokenBase *t1 = tokens[k];
+    TokenBase *t2 = tokens.size() > k + 1 ? tokens[k + 1] : NULL;
     if ( t1->id() == TokenID::tkMul || t1->id() == TokenID::tkBand
       || t1->id() == TokenID::tkLand || t1->id() == TokenID::tkOpBrk
       || t1->id() == TokenID::tkOpSqr )	// `int ([4])`: a parenthesized abstract array declarator
 	return true;
     if ( t2 && (t2->id() == TokenID::tkNS || t2->id() == TokenID::tkLT)
-      && member_pointer_declarator_ahead(t1, at + 2) )
+      && member_pointer_declarator_ahead(t1, k + 1) )
 	return true;			// `(C::*`, `(T1::*` yes; `(std::string` no
     if ( !is_contextual_identifier_token(t1) )
 	return false;
@@ -57106,6 +57123,40 @@ bool Program::paren_starts_parameter_list()
 	return true;
     const madc::dis::istring nm = contextual_identifier_name(t1);
     return nm == "typename" || nm == "decltype";
+}
+
+// At a `(` `at` tokens ahead (unread): is the group ptr-operators alone —
+// `*` `&` `&&` with their cv-qualifiers and attribute groups — closed by `)`?
+// `(*)`, `(**)`, `(*const)`, `(&)`, `(__attribute__((aligned(8))) *)`. No
+// expression has that shape, so after a type name it is an abstract
+// declarator, never a functional cast's operand ([dcl.ambig.res]/2) — where
+// `(T(*p))` names its operand and stays the cast `T(*p)`.
+bool Program::ptr_operator_group_ahead(size_t at)
+{
+    if ( at >= tokens.size() || !tokens[at] || tokens[at]->id() != TokenID::tkOpBrk )
+	return false;
+    bool ptr_op = false;
+    for ( size_t i = at + 1; i < tokens.size(); )
+    {
+	size_t past = attribute_specifiers_end(tokens, i);
+	if ( past != i )
+	{
+	    i = past;
+	    continue;
+	}
+	TokenBase *t = tokens[i];
+	if ( !t )
+	    return false;
+	if ( t->id() == TokenID::tkClBrk )
+	    return ptr_op;
+	if ( t->id() == TokenID::tkMul || t->id() == TokenID::tkBand
+	  || t->id() == TokenID::tkLand )
+	    ptr_op = true;
+	else if ( !is_cv_qualifier_token(t) )
+	    return false;
+	++i;
+    }
+    return false;
 }
 
 // The trailing qualifiers of a MEMBER signature after its parameter list —

@@ -9303,6 +9303,7 @@ public:
     bool nested_declarator_opens(DeclaratorMode mode, size_t at = 0);
     void drop_redundant_declarator_parens(DeclaratorMode mode);
     bool paren_starts_parameter_list();
+    bool ptr_operator_group_ahead(size_t at);
     bool declarator_id_token(TokenBase *tb, DeclaratorMode mode);
     bool parse_member_signature_qualifiers();
 private:

@@ -1,0 +1,27 @@
+/* A C-style cast whose type-id carries a parenthesized ABSTRACT declarator
+ * made only of ptr-operators — `(int (__attribute__((aligned(8))) *)(void))p`,
+ * `(int (**)(void))pp`, `(int (*const)(void))p` — in C++. `T ( ... )` after a
+ * cast's `(` is either a type-id or a functional cast ([dcl.ambig.res]/2: a
+ * construct that can be a type-id is one); a group of ptr-operators alone,
+ * with their cv and GNU attribute groups, can never be an expression, so it
+ * is the type-id. The cast arm accepted the one shape `(*)` and read every
+ * other group as a functional cast: "Missing operand". The functional casts
+ * `(int(*ip))` and `(long(x))` stay expressions.
+ * Oracle: g++ 13 and clang++ 18, -std=c++17: the lines below. */
+extern "C" int printf(const char *, ...);
+static int seven(void) { return 7; }
+int main()
+{
+	void *p = (void *)&seven;
+	printf("attr %d\n", ((int (__attribute__((aligned(8))) *)(void))p)());
+	int (*f)(void) = seven;
+	void *pf = (void *)&f;
+	printf("ptrptr %d\n", (*(int (**)(void))pf)());
+	printf("const %d\n", ((int (*const)(void))p)());
+	int i = 41;
+	int *ip = &i;
+	printf("functional %d\n", (int(*ip)) + 1);
+	long x = 5;
+	printf("long %ld\n", (long(x)) * 2);
+	return 0;
+}
