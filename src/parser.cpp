@@ -707,65 +707,72 @@ Program *require_runtime_eval_program(std::unique_ptr<Program> &owned)
     return owned.get();
 }
 
+// The runtime-eval helper names, one interned row per spelling (one hash
+// lookup on the name's identity, never a compare ladder per call): a source
+// or expression helper names its scope-capturing _ctx twin; a _ctx twin
+// names none.
+enum class RuntimeEvalHelper : uint8_t { Source, Expression, Ctx };
+
+struct RuntimeEvalHelperRow {
+    RuntimeEvalHelper kind;
+    madc::dis::istring ctx;
+};
+
+const RuntimeEvalHelperRow *runtime_eval_helper_row(const madc::dis::istring &name)
+{
+    typedef RuntimeEvalHelper K;
+    static const std::unordered_map<madc::dis::istring, RuntimeEvalHelperRow> rows = {
+	{ "__madc_eval_runtime", { K::Source, "__madc_eval_ctx_runtime" } },
+	{ "__madc_eval_bool_runtime", { K::Source, "__madc_eval_bool_ctx_runtime" } },
+	{ "__madc_eval_int_runtime", { K::Source, "__madc_eval_int_ctx_runtime" } },
+	{ "__madc_eval_double_runtime", { K::Source, "__madc_eval_double_ctx_runtime" } },
+	{ "__madc_eval_string_runtime", { K::Source, "__madc_eval_string_ctx_runtime" } },
+	{ "__madc_eval_expression_runtime",
+	  { K::Expression, "__madc_eval_expression_ctx_runtime" } },
+	{ "__madc_eval_expression_bool_runtime",
+	  { K::Expression, "__madc_eval_expression_bool_ctx_runtime" } },
+	{ "__madc_eval_expression_int_runtime",
+	  { K::Expression, "__madc_eval_expression_int_ctx_runtime" } },
+	{ "__madc_eval_expression_double_runtime",
+	  { K::Expression, "__madc_eval_expression_double_ctx_runtime" } },
+	{ "__madc_eval_expression_string_runtime",
+	  { K::Expression, "__madc_eval_expression_string_ctx_runtime" } },
+	{ "__madc_eval_ctx_runtime", { K::Ctx, madc::dis::istring() } },
+	{ "__madc_eval_bool_ctx_runtime", { K::Ctx, madc::dis::istring() } },
+	{ "__madc_eval_int_ctx_runtime", { K::Ctx, madc::dis::istring() } },
+	{ "__madc_eval_double_ctx_runtime", { K::Ctx, madc::dis::istring() } },
+	{ "__madc_eval_string_ctx_runtime", { K::Ctx, madc::dis::istring() } },
+	{ "__madc_eval_expression_ctx_runtime", { K::Ctx, madc::dis::istring() } },
+	{ "__madc_eval_expression_bool_ctx_runtime", { K::Ctx, madc::dis::istring() } },
+	{ "__madc_eval_expression_int_ctx_runtime", { K::Ctx, madc::dis::istring() } },
+	{ "__madc_eval_expression_double_ctx_runtime", { K::Ctx, madc::dis::istring() } },
+	{ "__madc_eval_expression_string_ctx_runtime", { K::Ctx, madc::dis::istring() } },
+    };
+    std::unordered_map<madc::dis::istring, RuntimeEvalHelperRow>::const_iterator ri =
+	rows.find(name);
+    return ri == rows.end() ? NULL : &ri->second;
+}
+
 bool is_runtime_eval_scope_helper_name(const madc::dis::istring &name)
 {
-    return name == "__madc_eval_runtime"
-	|| name == "__madc_eval_bool_runtime"
-	|| name == "__madc_eval_int_runtime"
-	|| name == "__madc_eval_double_runtime"
-	|| name == "__madc_eval_string_runtime"
-	|| name == "__madc_eval_expression_runtime"
-	|| name == "__madc_eval_expression_bool_runtime"
-	|| name == "__madc_eval_expression_int_runtime"
-	|| name == "__madc_eval_expression_double_runtime"
-	|| name == "__madc_eval_expression_string_runtime";
+    const RuntimeEvalHelperRow *row = runtime_eval_helper_row(name);
+    return row && row->kind != RuntimeEvalHelper::Ctx;
 }
 
 bool is_runtime_eval_scope_ctx_helper_name(const madc::dis::istring &name)
 {
-    return name == "__madc_eval_ctx_runtime"
-	|| name == "__madc_eval_bool_ctx_runtime"
-	|| name == "__madc_eval_int_ctx_runtime"
-	|| name == "__madc_eval_double_ctx_runtime"
-	|| name == "__madc_eval_string_ctx_runtime"
-	|| name == "__madc_eval_expression_ctx_runtime"
-	|| name == "__madc_eval_expression_bool_ctx_runtime"
-	|| name == "__madc_eval_expression_int_ctx_runtime"
-	|| name == "__madc_eval_expression_double_ctx_runtime"
-	|| name == "__madc_eval_expression_string_ctx_runtime";
+    const RuntimeEvalHelperRow *row = runtime_eval_helper_row(name);
+    return row && row->kind == RuntimeEvalHelper::Ctx;
 }
 
 bool is_runtime_eval_scope_public_name(const madc::dis::istring &name)
 {
-    return name == "eval"
-	|| name == "eval_unit"
-	|| name == "eval_bool"
-	|| name == "eval_int"
-	|| name == "eval_double"
-	|| name == "eval_string"
-	|| name == "eval_expression"
-	|| name == "eval_expression_bool"
-	|| name == "eval_expression_int"
-	|| name == "eval_expression_double"
-	|| name == "eval_expression_string";
-}
-
-bool is_runtime_eval_source_helper_name(const madc::dis::istring &name)
-{
-    return name == "__madc_eval_runtime"
-	|| name == "__madc_eval_bool_runtime"
-	|| name == "__madc_eval_int_runtime"
-	|| name == "__madc_eval_double_runtime"
-	|| name == "__madc_eval_string_runtime";
-}
-
-bool is_runtime_eval_expression_helper_name(const madc::dis::istring &name)
-{
-    return name == "__madc_eval_expression_runtime"
-	|| name == "__madc_eval_expression_bool_runtime"
-	|| name == "__madc_eval_expression_int_runtime"
-	|| name == "__madc_eval_expression_double_runtime"
-	|| name == "__madc_eval_expression_string_runtime";
+    static const std::unordered_set<madc::dis::istring> names = {
+	"eval", "eval_unit", "eval_bool", "eval_int", "eval_double", "eval_string",
+	"eval_expression", "eval_expression_bool", "eval_expression_int",
+	"eval_expression_double", "eval_expression_string",
+    };
+    return names.count(name) != 0;
 }
 
 } // namespace
@@ -4089,78 +4096,112 @@ DataDef *Program::madc_array_subscript_type()
 // lexer's type-specifier path emits (`int` -> ddINT32), so identity-sensitive
 // consumers (template instantiation keys) converge on one name regardless of
 // how the type was spelled.
+// The spelling is read ONCE, at the boundary, into its row's kind: an interned
+// table (one hash lookup on the name's identity, never a compare ladder). The
+// target-shaped rows ask their accessors per lookup — the data model is known
+// only once the target is.
+enum class BuiltinSpelling : uint8_t {
+    Void, Bool, Char, SChar, UChar, Short, UShort, Int, UInt,
+    Long, ULong, LongLong, ULongLong, Int128, UInt128,
+    Float, LDouble, Double, Size, PtrDiff, WChar, Char16, Char32,
+    MaxAlign, LPSTR, Auto, VaList
+};
+
+static const std::unordered_map<madc::dis::istring, BuiltinSpelling> &
+builtin_spelling_rows()
+{
+    typedef BuiltinSpelling B;
+    static const std::unordered_map<madc::dis::istring, BuiltinSpelling> rows = {
+	{ "void", B::Void },
+	{ "bool", B::Bool }, { "_Bool", B::Bool },
+	{ "char", B::Char },
+	{ "signed char", B::SChar },
+	{ "unsigned char", B::UChar },
+	{ "short", B::Short }, { "short int", B::Short },
+	{ "signed short", B::Short }, { "signed short int", B::Short },
+	{ "unsigned short", B::UShort }, { "unsigned short int", B::UShort },
+	{ "int", B::Int }, { "signed", B::Int }, { "signed int", B::Int },
+	{ "unsigned", B::UInt }, { "unsigned int", B::UInt },
+	// Plain `long` rows follow the target data model (4-byte on LLP64);
+	// `long long`/__int128 spellings are 8-byte on every target.
+	{ "long", B::Long }, { "long int", B::Long },
+	{ "signed long", B::Long }, { "signed long int", B::Long },
+	{ "unsigned long", B::ULong }, { "unsigned long int", B::ULong },
+	{ "long long", B::LongLong }, { "long long int", B::LongLong },
+	{ "signed long long", B::LongLong }, { "signed long long int", B::LongLong },
+	{ "unsigned long long", B::ULongLong },
+	{ "unsigned long long int", B::ULongLong },
+	// __int128 and long double are their OWN types with their own dds
+	// (ddINT128/ddUINT128, ddLDOUBLE — the lexer's type-specifier path
+	// emits them). These rows once pointed at the 64-bit / double dds
+	// from before those types landed, so the identity formers keyed
+	// K<long double> as K<double> and W<__int128> as W<long>: one shared
+	// instantiation, sizeof(K<double>) 16, the wrong specialization
+	// picked, and (once the overload scorer compared identity through
+	// this table) f(long double) tied f(double) — tests/testbuiltintplkey,
+	// tests/teststaticoverload.
+	{ "__int128", B::Int128 }, { "signed __int128", B::Int128 },
+	{ "unsigned __int128", B::UInt128 },
+	{ "float", B::Float }, { "_Float16", B::Float }, { "_Float32", B::Float },
+	{ "__bf16", B::Float },
+	{ "long double", B::LDouble },
+	// The _FloatN spellings ride the nearest-supported approximation (no
+	// dd of their own); a real _Float128/_Float64x type is its own slice.
+	{ "double", B::Double }, { "_Float64", B::Double }, { "_Float128", B::Double },
+	{ "_Float32x", B::Double }, { "_Float64x", B::Double }, { "__float128", B::Double },
+	{ "int8_t", B::SChar }, { "int16_t", B::Short }, { "int32_t", B::Int },
+	// int64_t/uint64_t follow the target's own alias spelling: `long long`
+	// on Apple/mingw (the accessors), `long` on glibc (the same pinned dds
+	// the accessors return there).
+	{ "int64_t", B::LongLong },
+	{ "uint8_t", B::UChar }, { "uint16_t", B::UShort }, { "uint32_t", B::UInt },
+	{ "uint64_t", B::ULongLong },
+	{ "size_t", B::Size }, { "ptrdiff_t", B::PtrDiff },
+	{ "wchar_t", B::WChar }, { "char16_t", B::Char16 }, { "char32_t", B::Char32 },
+	{ "max_align_t", B::MaxAlign }, { "LPSTR", B::LPSTR }, { "auto", B::Auto },
+	{ "__builtin_va_list", B::VaList },
+    };
+    return rows;
+}
+
 DataDef *Program::resolve_builtin_type_spelling(const madc::dis::istring &name)
 {
-    if ( name == "void" ) return &ddVOID;
-    if ( name == "bool" || name == "_Bool" ) return &ddBOOL;
-    if ( name == "char" ) return &ddCHAR;
-    if ( name == "signed char" ) return &ddINT8;
-    if ( name == "unsigned char" ) return &ddUINT8;
-    if ( name == "short" || name == "short int"
-      || name == "signed short" || name == "signed short int" )
-	return &ddINT16;
-    if ( name == "unsigned short" || name == "unsigned short int" )
-	return &ddUINT16;
-    if ( name == "int" || name == "signed" || name == "signed int" )
-	return &ddINT32;
-    if ( name == "unsigned" || name == "unsigned int" )
-	return &ddUINT32;
-    // Plain `long` rows follow the target data model (4-byte on LLP64);
-    // `long long`/__int128 spellings are 8-byte on every target.
-    if ( name == "long" || name == "long int"
-      || name == "signed long" || name == "signed long int" )
-	return dd_platform_long();
-    if ( name == "unsigned long" || name == "unsigned long int" )
-	return dd_platform_ulong();
-    if ( name == "long long" || name == "long long int"
-      || name == "signed long long" || name == "signed long long int" )
-	return dd_platform_longlong();
-    if ( name == "unsigned long long" || name == "unsigned long long int" )
-	return dd_platform_ulonglong();
-    // __int128 and long double are their OWN types with their own dds
-    // (ddINT128/ddUINT128, ddLDOUBLE — the lexer's type-specifier path
-    // emits them). These rows once pointed at the 64-bit / double dds
-    // from before those types landed, so the identity formers keyed
-    // K<long double> as K<double> and W<__int128> as W<long>: one shared
-    // instantiation, sizeof(K<double>) 16, the wrong specialization
-    // picked, and (once the overload scorer compared identity through
-    // this table) f(long double) tied f(double) — tests/testbuiltintplkey,
-    // tests/teststaticoverload.
-    if ( name == "__int128" || name == "signed __int128" )
-	return &ddINT128;
-    if ( name == "unsigned __int128" )
-	return &ddUINT128;
-    if ( name == "float" || name == "_Float16" || name == "_Float32"
-      || name == "__bf16" )
-	return &ddFLOAT;
-    if ( name == "long double" )
-	return &ddLDOUBLE;
-    // The _FloatN spellings ride the nearest-supported approximation (no
-    // dd of their own); a real _Float128/_Float64x type is its own slice.
-    if ( name == "double" || name == "_Float64" || name == "_Float128"
-      || name == "_Float32x" || name == "_Float64x" || name == "__float128" )
-	return &ddDOUBLE;
-    if ( name == "int8_t" ) return &ddINT8;
-    if ( name == "int16_t" ) return &ddINT16;
-    if ( name == "int32_t" ) return &ddINT32;
-    // int64_t/uint64_t follow the target's own alias spelling: `long long`
-    // on Apple/mingw (the accessors), `long` on glibc (the same pinned dds
-    // the accessors return there).
-    if ( name == "int64_t" ) return dd_platform_longlong();
-    if ( name == "uint8_t" ) return &ddUINT8;
-    if ( name == "uint16_t" ) return &ddUINT16;
-    if ( name == "uint32_t" ) return &ddUINT32;
-    if ( name == "uint64_t" ) return dd_platform_ulonglong();
-    if ( name == "size_t" ) return &ddUINT64;
-    if ( name == "ptrdiff_t" ) return &ddINT64;
-    if ( name == "wchar_t" ) return dd_platform_wchar();
-    if ( name == "char16_t" ) return dd_char16();
-    if ( name == "char32_t" ) return dd_char32();
-    if ( name == "max_align_t" ) return &ddMAX_ALIGN_T;
-    if ( name == "LPSTR" ) return &ddLPSTR;
-    if ( name == "auto" ) return &ddAUTO;
-    if ( name == "__builtin_va_list" ) return builtin_va_list_type();
-
+    const std::unordered_map<madc::dis::istring, BuiltinSpelling> &rows =
+	builtin_spelling_rows();
+    std::unordered_map<madc::dis::istring, BuiltinSpelling>::const_iterator ri =
+	rows.find(name);
+    if ( ri == rows.end() )
+	return NULL;
+    switch ( ri->second )
+    {
+	case BuiltinSpelling::Void:      return &ddVOID;
+	case BuiltinSpelling::Bool:      return &ddBOOL;
+	case BuiltinSpelling::Char:      return &ddCHAR;
+	case BuiltinSpelling::SChar:     return &ddINT8;
+	case BuiltinSpelling::UChar:     return &ddUINT8;
+	case BuiltinSpelling::Short:     return &ddINT16;
+	case BuiltinSpelling::UShort:    return &ddUINT16;
+	case BuiltinSpelling::Int:       return &ddINT32;
+	case BuiltinSpelling::UInt:      return &ddUINT32;
+	case BuiltinSpelling::Long:      return dd_platform_long();
+	case BuiltinSpelling::ULong:     return dd_platform_ulong();
+	case BuiltinSpelling::LongLong:  return dd_platform_longlong();
+	case BuiltinSpelling::ULongLong: return dd_platform_ulonglong();
+	case BuiltinSpelling::Int128:    return &ddINT128;
+	case BuiltinSpelling::UInt128:   return &ddUINT128;
+	case BuiltinSpelling::Float:     return &ddFLOAT;
+	case BuiltinSpelling::LDouble:   return &ddLDOUBLE;
+	case BuiltinSpelling::Double:    return &ddDOUBLE;
+	case BuiltinSpelling::Size:      return &ddUINT64;
+	case BuiltinSpelling::PtrDiff:   return &ddINT64;
+	case BuiltinSpelling::WChar:     return dd_platform_wchar();
+	case BuiltinSpelling::Char16:    return dd_char16();
+	case BuiltinSpelling::Char32:    return dd_char32();
+	case BuiltinSpelling::MaxAlign:  return &ddMAX_ALIGN_T;
+	case BuiltinSpelling::LPSTR:     return &ddLPSTR;
+	case BuiltinSpelling::Auto:      return &ddAUTO;
+	case BuiltinSpelling::VaList:    return builtin_va_list_type();
+    }
     return NULL;
 }
 
@@ -30790,40 +30831,16 @@ Variable *Program::runtime_eval_scope_target(Variable *var) const
     if ( !var )
 	return var;
 
-    if ( is_runtime_eval_source_helper_name(var->name)
-      && !is_runtime_eval_source_scope_access_enabled() )
+    const RuntimeEvalHelperRow *row = runtime_eval_helper_row(var->name);
+    if ( !row || row->kind == RuntimeEvalHelper::Ctx )
 	return var;
 
-    if ( is_runtime_eval_expression_helper_name(var->name)
-      && !is_runtime_eval_expression_scope_access_enabled() )
+    if ( row->kind == RuntimeEvalHelper::Source
+	? !is_runtime_eval_source_scope_access_enabled()
+	: !is_runtime_eval_expression_scope_access_enabled() )
 	return var;
 
-    madc::dis::istring target_name;
-    if ( var->name == "__madc_eval_runtime" )
-	target_name = "__madc_eval_ctx_runtime";
-    else if ( var->name == "__madc_eval_bool_runtime" )
-	target_name = "__madc_eval_bool_ctx_runtime";
-    else if ( var->name == "__madc_eval_int_runtime" )
-	target_name = "__madc_eval_int_ctx_runtime";
-    else if ( var->name == "__madc_eval_double_runtime" )
-	target_name = "__madc_eval_double_ctx_runtime";
-    else if ( var->name == "__madc_eval_string_runtime" )
-	target_name = "__madc_eval_string_ctx_runtime";
-    else if ( var->name == "__madc_eval_expression_runtime" )
-	target_name = "__madc_eval_expression_ctx_runtime";
-    else if ( var->name == "__madc_eval_expression_bool_runtime" )
-	target_name = "__madc_eval_expression_bool_ctx_runtime";
-    else if ( var->name == "__madc_eval_expression_int_runtime" )
-	target_name = "__madc_eval_expression_int_ctx_runtime";
-    else if ( var->name == "__madc_eval_expression_double_runtime" )
-	target_name = "__madc_eval_expression_double_ctx_runtime";
-    else if ( var->name == "__madc_eval_expression_string_runtime" )
-	target_name = "__madc_eval_expression_string_ctx_runtime";
-    else
-	return var;
-
-    madc::dis::istring lookup = target_name;
-    Variable *mapped = tkProgram ? tkProgram->findVariable(strpool, lookup) : NULL;
+    Variable *mapped = tkProgram ? tkProgram->findVariable(strpool, row->ctx) : NULL;
     return mapped ? mapped : var;
 }
 

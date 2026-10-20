@@ -1,6 +1,12 @@
 # Changelog
 
 ## [Unreleased]
+### The builtin type-spelling table and the runtime-eval helper names are interned lookups
+
+- `Program::resolve_builtin_type_spelling` reads the spelling through one interned table (`builtin_spelling_rows`) and a switch on its row kind, in place of a ladder of about 60 byte compares. Each spelling resolves to the same DataDef as before.
+- The runtime-eval helper names are one interned table (`runtime_eval_helper_row`): each `__madc_eval*_runtime` helper names its `_ctx` twin, and the `madc::eval*` public names are a set. `runtime_eval_scope_target` maps a helper to its twin through that row.
+- Recognised spellings and generated code are unchanged. The `-c` objects for `act_wiz.c` and `sqlite3.c` are byte-identical before and after the change. Callgrind instruction counts drop by 6.2M (-0.4%) for `act_wiz.c` and 68.6M (-0.5%) for `sqlite3.c`.
+
 ### The call arm counts arguments only where UFCS or a using-directive can apply
 
 - Outside `--std=madc` the identifier arm's UFCS test asks `ufcs_attempts_here` first, so the queued argument count and the free-callee arity test are not evaluated for a call.
