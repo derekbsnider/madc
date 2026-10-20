@@ -311,11 +311,6 @@ static MIR_reg_t get_arg_reg (MIR_type_t arg_type, size_t *int_arg_num, size_t *
   return arg_reg;
 }
 
-static void gen_mov (gen_ctx_t gen_ctx, MIR_insn_t anchor, MIR_insn_code_t code, MIR_op_t dst_op,
-                     MIR_op_t src_op) {
-  gen_add_insn_before (gen_ctx, anchor, MIR_new_insn (gen_ctx->ctx, code, dst_op, src_op));
-}
-
 static void prohibit_omitting_fp (gen_ctx_t gen_ctx);
 
 static void machinize_call (gen_ctx_t gen_ctx, MIR_insn_t call_insn) {

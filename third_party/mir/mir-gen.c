@@ -478,6 +478,17 @@ static inline void gen_cfi_note_insn (gen_ctx_t gen_ctx, size_t code_offset, MIR
    file reads the one owner instead of spelling the ladder itself. */
 static MIR_insn_code_t get_move_code (MIR_type_t type);
 
+/* A target's move of SRC_OP into DST_OP by CODE, inserted before ANCHOR (its
+   prologue, epilogue and call lowering): the new insn, which a CFI mark may
+   name. */
+static MIR_insn_t gen_mov (gen_ctx_t gen_ctx, MIR_insn_t anchor, MIR_insn_code_t code,
+                           MIR_op_t dst_op, MIR_op_t src_op) {
+  MIR_insn_t insn = MIR_new_insn (gen_ctx->ctx, code, dst_op, src_op);
+
+  gen_add_insn_before (gen_ctx, anchor, insn);
+  return insn;
+}
+
 /* A target's insn patterns by insn code: the patterns of CODE are
    indexes[info[CODE].start ...], info[CODE].num of them, in table order. */
 typedef struct insn_pattern_info {

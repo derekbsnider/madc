@@ -130,11 +130,6 @@ struct target_ctx {
 #define abs_address_locs gen_ctx->target_ctx->abs_address_locs
 #define relocs gen_ctx->target_ctx->relocs
 
-static void gen_mov (gen_ctx_t gen_ctx, MIR_insn_t anchor, MIR_insn_code_t code, MIR_op_t dst_op,
-                     MIR_op_t src_op) {
-  gen_add_insn_before (gen_ctx, anchor, MIR_new_insn (gen_ctx->ctx, code, dst_op, src_op));
-}
-
 static void mir_blk_mov (uint64_t *to, uint64_t *from, uint64_t nwords) {
   for (; nwords > 0; nwords--) *to++ = *from++;
 }

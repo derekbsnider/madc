@@ -7,6 +7,12 @@ Consolidated: class_pointer_spelling — gate scripts/check-one-class-pointer-de
 Consolidated: pointer_type_node — gate scripts/check-one-pointer-type-node.sh
 Consolidated: MIR pattern index by insn code — gate scripts/check-one-pattern-index.sh
 
+### MIR builds for ppc64, riscv64 and s390x hosts again
+
+- `mir-target.h` defines `MIR_TARGET_IS_PPC64`, `MIR_TARGET_IS_S390X` and `MIR_TARGET_IS_RISCV64` from the host macros `__PPC64__`, `__s390x__` and `__riscv`. Before, they were undefined there, and `mir-gen.c` stopped with its unsupported-target `#error`.
+- `gen_mov` is one helper in `third_party/mir/mir-gen.c`, and it returns the inserted insn. The five per-target copies are removed, and the ppc64 and s390x CFI marks assign its result.
+- Gate `scripts/check-mir-targets-compile.sh` (in `make gates`) compiles the MIR translation units that name a target selector with `clang --target` for x86_64, aarch64, powerpc64le, riscv64 and s390x (`-linux-gnu`), and fails unless exactly one target is selected per triple.
+
 ### MIR indexes instruction patterns with one counting sort for every target
 
 - The five MIR targets (x86-64, aarch64, ppc64, riscv64, s390x) each built their instruction-pattern index with a private `qsort`. `GEN_INDEX_PATTERNS` (`third_party/mir/mir-gen.c`) is the one counting-sort indexer, and each target's `patterns_init` calls it.

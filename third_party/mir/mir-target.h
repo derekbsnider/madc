@@ -119,6 +119,25 @@
 #define MIR_TARGET_IS_AARCH64 0
 #endif
 
+/* The other targets are host-detected only (no cross knob): */
+#if !MIR_TARGET_OVERRIDE_P && defined(__PPC64__)
+#define MIR_TARGET_IS_PPC64 1
+#else
+#define MIR_TARGET_IS_PPC64 0
+#endif
+
+#if !MIR_TARGET_OVERRIDE_P && defined(__s390x__)
+#define MIR_TARGET_IS_S390X 1
+#else
+#define MIR_TARGET_IS_S390X 0
+#endif
+
+#if !MIR_TARGET_OVERRIDE_P && defined(__riscv)
+#define MIR_TARGET_IS_RISCV64 1
+#else
+#define MIR_TARGET_IS_RISCV64 0
+#endif
+
 /* --- derived: target OS ABI variant --- */
 
 /* aarch64 has Darwin deviations (all varargs on stack, x18 reserved,
