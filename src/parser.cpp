@@ -22152,24 +22152,25 @@ DataDefCLASS *Program::operand_object_class(TokenBase *operand)
 {
     if ( !operand )
 	return NULL;
+    DataDef *dd = operand->datadef();
+    DataDefCLASS *c = dd ? dd->as_class_dd() : NULL;
+    // A reference-typed operand, else a reference variable: the class behind.
+    DataDefPTR *rp = (!c && dd && dd->is_reference()) ? dd->as_pointer_dd() : NULL;
+    TokenVar *tv = (!c && !rp) ? operand->as_var_tok() : NULL;
+    if ( rp )
+	c = rp->base_type ? rp->base_type->as_class_dd() : NULL;
+    else if ( tv && tv->var.is_reference() )
+	if ( DataDefPTR *vp = (tv->var.type ? tv->var.type->as_pointer_dd() : NULL) )
+	    c = vp->base_type ? vp->base_type->as_class_dd() : NULL;
     // An operand that denotes an ARRAY is no class object, whatever its
     // element ([conv.array]): madc stores an array flattened, so datadef()
     // names the element, and `a + 1` over an array of a class with a
     // constructor typed as D::operator+'s missing result (int) instead of
-    // the decayed D*.
-    if ( array_operand_type(operand) )
+    // the decayed D*. Asked only of a class candidate: the array owner builds
+    // the extents, and every other operand answers NULL either way.
+    if ( c && array_operand_type(operand) )
 	return NULL;
-    DataDef *dd = operand->datadef();
-    if ( DataDefCLASS *c = (dd ? dd->as_class_dd() : NULL) )
-	return c;
-    if ( dd && dd->is_reference() )
-	if ( DataDefPTR *rp = (dd ? dd->as_pointer_dd() : NULL) )
-	    return (rp->base_type ? rp->base_type->as_class_dd() : NULL);
-    TokenVar *tv = (operand ? operand->as_var_tok() : NULL);
-    if ( tv && (tv->var.is_reference()) )
-	if ( DataDefPTR *rp = (tv->var.type ? tv->var.type->as_pointer_dd() : NULL) )
-	    return (rp->base_type ? rp->base_type->as_class_dd() : NULL);
-    return NULL;
+    return c;
 }
 
 bool Program::operator_function_operand(TokenBase *operand)
@@ -22478,7 +22479,9 @@ void Program::resolve_object_operator_type(TokenOperator *to)
 TokenBase *Program::lower_free_operator_to_call(TokenOperator *to,
 						bool no_rewrite)
 {
-    if ( !to || to->argc() != 2 || !to->left || !to->right )
+    // Operator functions exist only where the language presents as C++ (C
+    // has no `operator`): a C operator never has one to lower to.
+    if ( !to || to->argc() != 2 || !to->left || !to->right || !presents_as_cpp() )
 	return NULL;
     const char *opsym = object_operator_symbol(to->id());
     if ( !opsym )
@@ -68279,7 +68282,9 @@ TokenBase *Program::free_unary_operator_call(TokenBase *operand,
 
 TokenBase *Program::lower_free_unary_operator_to_call(TokenOperator *to)
 {
-    if ( !to )
+    // Operator functions exist only where the language presents as C++ (C
+    // has no `operator`): a C operator never has one to lower to.
+    if ( !to || !presents_as_cpp() )
 	return NULL;
     bool step = to->id() == TokenID::tkInc || to->id() == TokenID::tkDec;
     // A unary operator reads its right operand; ++/-- the one it has.

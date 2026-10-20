@@ -7072,15 +7072,20 @@ node_t CirBuilder::upcast_class_ptr(node_t value, DataDef *lhs_dd, TokenBase *rh
 	// A pointer to member converts the other way at the same sites — `B::*`
 	// to `D::*` ([conv.mem]/2) — so at most one operand of a comparison
 	// converts here too.
-	if (lhs_dd && unqualified_type(lhs_dd)->is_member_pointer())
+	DataDef *lhs_u = lhs_dd ? unqualified_type(lhs_dd) : NULL;
+	if (lhs_u && lhs_u->is_member_pointer())
 		return member_pointer_conversion(value, lhs_dd, rhs, false, origin);
 	// [conv.bool]: a pointer to member converts to bool by its null test
 	// — the null data pointer is -1, which a C conversion reads as true.
-	DataDef *rv = rhs ? unqualified_type(operand_value_type(rhs)) : NULL;
-	if (rv && rv->is_member_pointer() && lhs_dd
-	    && unqualified_type(lhs_dd)->rawtype() == DataType::dtBOOL)
-		return member_pointer_truth_value(value, rv, origin);
+	if (lhs_u && lhs_u->rawtype() == DataType::dtBOOL) {
+		DataDef *rv = rhs ? unqualified_type(operand_value_type(rhs)) : NULL;
+		if (rv && rv->is_member_pointer())
+			return member_pointer_truth_value(value, rv, origin);
+	}
+	// Only a pointer to a class converts below: the source's class is asked
+	// of that target alone.
 	DataDefCLASS *base = pointee_user_class(lhs_dd);
+	if (!base) return value;
 	DataDefCLASS *derived = pointee_user_class(rhs_dd);
 	if (!derived)
 		derived = expr_pointee_class(rhs);
@@ -14209,25 +14214,25 @@ DataDefCLASS *CirBuilder::operand_object_class(TokenBase *t)
 		if (DataDefCLASS *c =
 			    as_class_instance(resolved_call_value_type(tcf)))
 			return c;
-	// An array operand is no class object, whatever its (flattened) element
-	// — Program::operand_object_class's rule, through the one array owner.
-	if (m_prog->array_operand_type(t))
-		return NULL;
 	DataDef *dd = t->datadef();
-	if (DataDefCLASS *c = as_class_instance(dd))
-		return c;
+	DataDefCLASS *c = as_class_instance(dd);
 	// A reference-typed result (a DataDefREF — e.g. the result of a T&-returning
 	// operator/method, now that references live in the type) denotes the
 	// referenced class. as_class_instance/as_user_class deliberately answer NULL
 	// for a reference; class_behind unwraps it. This is the single receiver-class
 	// unwrap (first-class refs Phase 2 — replaces the returns_ref flag's role).
-	if (dd && dd->is_reference())
-		if (DataDefCLASS *c = class_behind(dd))
-			return c;
-	if (TokenVar *tv = (t ? t->as_var_tok() : NULL))
-		if (tv->var.is_reference())
-			return class_behind(tv->var.type);
-	return NULL;
+	if (!c && dd && dd->is_reference())
+		c = class_behind(dd);
+	if (!c)
+		if (TokenVar *tv = t->as_var_tok())
+			if (tv->var.is_reference())
+				c = class_behind(tv->var.type);
+	// An array operand is no class object, whatever its (flattened) element
+	// — Program::operand_object_class's rule, through the one array owner,
+	// asked only of a class candidate (as there).
+	if (c && m_prog->array_operand_type(t))
+		return NULL;
+	return c;
 }
 
 // The scalar twin of operand_object_class: a reference variable (`int &x`,
@@ -21352,6 +21357,10 @@ static const char *binop_overload_symbol(TokenID id)
 node_t CirBuilder::carrier_builtin_operator_refusal(TokenOperator *top,
 						    TokenBase *tb)
 {
+	// The carrier is --std=madc's (madc_dialect_type_spelling): no C
+	// operand is one.
+	if (m_prog && !m_prog->presents_as_cpp())
+		return NULL;
 	switch (tb->id()) {
 	case TokenID::tkAssign:
 		// `n = v` into an arithmetic lvalue: the conversion refusal; a
@@ -23268,6 +23277,9 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin,
 				       const char *opsym_override)
 {
 	if (!top || !top->left || !top->right) return NULL;
+	// Operator functions and the carrier exist only where the language
+	// presents as C++ (C has no `operator`; the carrier is --std=madc's).
+	if (m_prog && !m_prog->presents_as_cpp()) return NULL;
 	auto free_operator_body_call = [&](const madc::dis::istring &mname) -> node_t {
 		if (!m_prog)
 			return NULL;

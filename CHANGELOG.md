@@ -1,6 +1,13 @@
 # Changelog
 
 ## [Unreleased]
+### The operand class test asks the class candidate first
+
+- `Program::operand_object_class` (parser) and `CirBuilder::operand_object_class` (cir) compute the class candidate before the array test; `array_operand_type` runs only when a candidate exists. Their answers are unchanged.
+- `Program::lower_free_operator_to_call`, `Program::lower_free_unary_operator_to_call`, `CirBuilder::class_operator_call` and `CirBuilder::carrier_builtin_operator_refusal` return NULL at entry unless `presents_as_cpp()`. A C operator never had an operator function or the carrier; C++ and `--std=madc` are unchanged.
+- `CirBuilder::upcast_class_ptr` asks the rhs's value type only for a bool target, and returns before asking the source's class when the target is not a pointer to a class.
+- Generated code is unchanged: the `-c` objects for `act_wiz.c` and `sqlite3.c` are byte-identical before and after the change.
+
 ### The platform-width integer test is one virtual call
 
 - `DataDef::platform_integer()` returns `PlatformInteger::piLONG`, `piULONG`, `piLONGLONG` or `piULONGLONG` for the four platform-width integer singletons, and `piNONE` for every other type, including a qualified wrapper.
