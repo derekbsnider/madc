@@ -464,12 +464,12 @@ static int pe_sec_of_name (const char *nm) {
 static int objin_from_pe (objin_t *v, const void *vbuf, size_t size, char *err_msg,
                           size_t err_len) {
   const uint8_t *buf = vbuf;
-  uint32_t reloff[5] = {0, 0, 0, 0, 0}, nreloc[5] = {0, 0, 0, 0, 0};
-  int ovfl[5] = {0, 0, 0, 0, 0}, seen[5] = {0, 0, 0, 0, 0};
+  uint32_t reloff[MIR_OBJ_SEC_NUM] = {0}, nreloc[MIR_OBJ_SEC_NUM] = {0};
+  int ovfl[MIR_OBJ_SEC_NUM] = {0}, seen[MIR_OBJ_SEC_NUM] = {0};
   int sec_of_ord[256]; /* 1-based SectionNumber -> MIR_OBJ_SEC_* */
 
   memset (v, 0, sizeof (*v));
-  for (int s = 0; s < 5; s++) v->sec[s].align = 1;
+  for (int s = 0; s < MIR_OBJ_SEC_NUM; s++) v->sec[s].align = 1;
   for (int i = 0; i < 256; i++) sec_of_ord[i] = -1;
   if (buf == NULL || size < 20) {
     OBJLOAD_ERR ("truncated or empty object");
@@ -662,7 +662,7 @@ static int objin_from_pe (objin_t *v, const void *vbuf, size_t size, char *err_m
   }
 
   /* ---- relocations, per section */
-  for (int sec = 0; sec < 5; sec++) {
+  for (int sec = 0; sec < MIR_OBJ_SEC_NUM; sec++) {
     uint64_t count = nreloc[sec];
     uint64_t roff = reloff[sec];
     if (count == 0) continue;

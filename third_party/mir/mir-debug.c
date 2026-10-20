@@ -1088,7 +1088,7 @@ struct MIR_object {
   size_t n_syms, cap_syms;
   objreloc_t *rels;
   size_t n_rels, cap_rels;
-  int sec_sym[5]; /* section-symbol ids for TEXT/DATA/BSS/ADDRPOOL/INITARR; -1 until created */
+  int sec_sym[MIR_OBJ_SEC_NUM]; /* section-symbol ids per MIR_OBJ_SEC_*; -1 until created */
   MIR_debug_t debug; /* borrowed builder with .text-offset func addrs (R5);
                         NULL = no debug sections in the artifacts */
   dwbuf_t dbg[OBJDBG_N]; /* merged raw .debug_{info,line,frame,abbrev} (reader-filled) */
@@ -1147,7 +1147,7 @@ typedef struct {
 } objin_dbgrel_t;
 
 typedef struct {
-  objin_sec_t sec[5]; /* indexed by MIR_OBJ_SEC_* */
+  objin_sec_t sec[MIR_OBJ_SEC_NUM]; /* indexed by MIR_OBJ_SEC_* */
   objin_sec_t dbg[OBJDBG_N];
   int has_debug_p;
   objin_sym_t *syms;
@@ -1187,7 +1187,7 @@ MIR_object_t MIR_object_create (void) {
   MIR_object_t obj = calloc (1, sizeof (struct MIR_object));
   if (obj == NULL) return NULL;
   obj->data_align = obj->bss_align = obj->pool_align = 1;
-  for (int s = 0; s < 5; s++) obj->sec_sym[s] = -1;
+  for (int s = 0; s < MIR_OBJ_SEC_NUM; s++) obj->sec_sym[s] = -1;
   return obj;
 }
 
@@ -1246,6 +1246,7 @@ size_t MIR_object_addrpool_append (MIR_object_t obj, const void *bytes, size_t l
 
 int MIR_object_add_symbol (MIR_object_t obj, const char *name, int sec, uint64_t value,
                            uint64_t size, int func_p, int local_p, int weak_p) {
+  if (sec < MIR_OBJ_SEC_UNDEF || sec >= MIR_OBJ_SEC_NUM) return -1;
   if (obj->n_syms >= obj->cap_syms) {
     size_t c = obj->cap_syms ? obj->cap_syms * 2 : 64;
     void *np = realloc (obj->syms, c * sizeof (objsym_t));
@@ -1268,7 +1269,9 @@ int MIR_object_add_symbol (MIR_object_t obj, const char *name, int sec, uint64_t
 
 void MIR_object_symbol_define (MIR_object_t obj, int sym_id, int sec, uint64_t value,
                                uint64_t size, int func_p, int local_p, int weak_p) {
-  if (sym_id < 0 || (size_t) sym_id >= obj->n_syms) return;
+  if (sym_id < 0 || (size_t) sym_id >= obj->n_syms || sec < MIR_OBJ_SEC_UNDEF
+      || sec >= MIR_OBJ_SEC_NUM)
+    return;
   objsym_t *s = &obj->syms[sym_id];
   s->sec = sec;
   s->value = value;
@@ -1280,7 +1283,7 @@ void MIR_object_symbol_define (MIR_object_t obj, int sym_id, int sec, uint64_t v
 }
 
 int MIR_object_section_symbol (MIR_object_t obj, int sec) {
-  if (sec < MIR_OBJ_SEC_TEXT || sec > MIR_OBJ_SEC_INITARR) return -1;
+  if (sec < 0 || sec >= MIR_OBJ_SEC_NUM) return -1;
   if (obj->sec_sym[sec] < 0) {
     int id = MIR_object_add_symbol (obj, NULL, sec, 0, 0, 0, 1, 0);
     if (id >= 0) obj->syms[id].section_p = 1;
@@ -1320,16 +1323,51 @@ int MIR_object_find_symbol (MIR_object_t obj, const char *name, int *sec, uint64
   return 0;
 }
 
+/* Kind K's body, or NULL for .bss (sized, no bytes) and out-of-range kinds. */
+static dwbuf_t *obj_sec_body (MIR_object_t obj, int k) {
+  switch (k) {
+  case MIR_OBJ_SEC_TEXT: return &obj->text;
+  case MIR_OBJ_SEC_DATA: return &obj->data;
+  case MIR_OBJ_SEC_ADDRPOOL: return &obj->pool;
+  case MIR_OBJ_SEC_INITARR: return &obj->initarr;
+  default: return NULL;
+  }
+}
+
+/* Each kind's ELF section name, and its relocation section's. */
+static const char *const obj_elf_sec_name[MIR_OBJ_SEC_NUM]
+  = {".text", ".data", ".bss", ".mir.addrpool", ".init_array"};
+static const char *const obj_elf_rela_name[MIR_OBJ_SEC_NUM]
+  = {".rela.text", ".rela.data", ".rela.bss", ".rela.mir.addrpool", ".rela.init_array"};
+
+/* Kind K's section in a relocatable object. */
+static dwsec_t obj_elf_alloc_sec (MIR_object_t obj, int k) {
+  dwsec_t s = {obj_elf_sec_name[k], SHT_PROGBITS, 0, 0, 8, SHF_ALLOC | SHF_WRITE, 0, 0, NULL, 0};
+  switch (k) {
+  case MIR_OBJ_SEC_TEXT:
+    s.align = 16;
+    s.flags = SHF_ALLOC | SHF_EXECINSTR;
+    break;
+  case MIR_OBJ_SEC_DATA: s.align = (uint32_t) (obj->data_align > 8 ? obj->data_align : 8); break;
+  case MIR_OBJ_SEC_BSS:
+    s.type = SHT_NOBITS;
+    s.align = (uint32_t) (obj->bss_align > 8 ? obj->bss_align : 8);
+    s.size = obj->bss_size;
+    return s;
+  case MIR_OBJ_SEC_ADDRPOOL: s.align = (uint32_t) (obj->pool_align > 8 ? obj->pool_align : 8); break;
+  case MIR_OBJ_SEC_INITARR:
+    s.type = SHT_INIT_ARRAY;
+    s.entsize = 8;
+    break;
+  }
+  s.body = obj_sec_body (obj, k);
+  s.size = s.body->len;
+  return s;
+}
+
 int MIR_object_section_bytes (MIR_object_t obj, int sec, const void **bytes, size_t *len) {
   const dwbuf_t *b;
-  if (obj == NULL) return 0;
-  if (sec == MIR_OBJ_SEC_TEXT)
-    b = &obj->text;
-  else if (sec == MIR_OBJ_SEC_DATA)
-    b = &obj->data;
-  else if (sec == MIR_OBJ_SEC_ADDRPOOL)
-    b = &obj->pool;
-  else
+  if (obj == NULL || sec == MIR_OBJ_SEC_INITARR || (b = obj_sec_body (obj, sec)) == NULL)
     return 0;
   if (bytes != NULL) *bytes = b->p;
   if (len != NULL) *len = b->len;
@@ -1451,15 +1489,17 @@ int MIR_object_emit (MIR_object_t obj, void **buf, size_t *size) {
   size_t n = obj->n_syms;
   uint32_t *final_idx = calloc (n ? n : 1, sizeof (uint32_t));
   if (final_idx == NULL) return -1;
-  dwbuf_t strtab = {0}, symtab = {0}, rela_text = {0}, rela_data = {0}, rela_pool = {0},
-          rela_init = {0};
+  dwbuf_t strtab = {0}, symtab = {0}, rela[MIR_OBJ_SEC_NUM];
+  memset (rela, 0, sizeof (rela));
   buf_u8 (&strtab, 0);
   Elf64_Sym z = {0};
   buf_bytes (&symtab, &z, sizeof z);
-  /* INITARR's shndx (5) is valid only when the section is emitted -- it is
-     non-empty exactly when a symbol or relocation can reference it */
-  static const int sec_shndx[5] = {1, 2, 3, 4, 5};
-  int init_p = obj->initarr.len != 0;
+  /* one alloc section per present kind, in kind order from index 1; .init_array
+     is present only when non-empty -- exactly when a symbol or relocation can
+     reference it */
+  int sec_shndx[MIR_OBJ_SEC_NUM], n_alloc = 0;
+  for (int k = 0; k < MIR_OBJ_SEC_NUM; k++)
+    sec_shndx[k] = k != MIR_OBJ_SEC_INITARR || obj->initarr.len != 0 ? 1 + n_alloc++ : 0;
 
   /* DWARF emission runs BEFORE the symtab build: the debug sections get
      STT_SECTION symbols of their own (targets of the cross-debug-section
@@ -1478,22 +1518,18 @@ int MIR_object_emit (MIR_object_t obj, void **buf, size_t *size) {
     emit_line (obj->debug, &dw_line, &g);
     emit_frame (obj->debug, &dw_frame, &g);
   }
-  /* Section order below: null, .text, .data, .bss, .mir.addrpool,
-     [.init_array], .symtab, .strtab, [.rela.text], [.rela.data],
-     [.rela.mir.addrpool], [.rela.init_array], then the debug sections.
-     Presence of each .rela.* mirrors the emission loop's classification
-     exactly. */
-  int have_rt = 0, have_rd = 0, have_rp = 0, have_ri = 0;
+  /* Section order below: null, the alloc sections, .symtab, .strtab, one
+     .rela.* per kind that has relocations (kind order), then the debug
+     sections.  Presence of each .rela.* mirrors the emission loop's
+     classification exactly (a relocation in a kind with no body fails the
+     emit there). */
+  int n_rela = 0, has_rela[MIR_OBJ_SEC_NUM] = {0};
   for (size_t i = 0; i < obj->n_rels; i++) {
     int rs = obj->rels[i].sec;
-    if (rs == MIR_OBJ_SEC_TEXT)
-      have_rt = 1;
-    else if (rs == MIR_OBJ_SEC_DATA)
-      have_rd = 1;
-    else if (rs == MIR_OBJ_SEC_INITARR)
-      have_ri = 1;
-    else
-      have_rp = 1;
+    if (rs >= 0 && rs < MIR_OBJ_SEC_NUM && !has_rela[rs]) {
+      has_rela[rs] = 1;
+      n_rela++;
+    }
   }
   /* A merged builder carries raw concatenated debug sections instead of a
      live debug builder (mutually exclusive; MIR_object_read enforces it);
@@ -1507,7 +1543,7 @@ int MIR_object_emit (MIR_object_t obj, void **buf, size_t *size) {
   int dbg_shndx[4] = {0, 0, 0, 0};      /* dwgen ids: info/line/frame/abbrev */
   uint32_t dbg_secsym[4] = {0, 0, 0, 0}; /* their final symtab indexes */
   if (dbg_p) {
-    int nx = 7 + init_p + have_rt + have_rd + have_rp + have_ri;
+    int nx = 1 + n_alloc + 2 + n_rela; /* null, alloc, .symtab/.strtab, .rela.* */
     dbg_shndx[3] = nx++; /* .debug_abbrev */
     dbg_shndx[0] = nx++; /* .debug_info */
     dbg_shndx[1] = nx++; /* .debug_line */
@@ -1557,9 +1593,7 @@ int MIR_object_emit (MIR_object_t obj, void **buf, size_t *size) {
   for (size_t i = 0; i < obj->n_rels; i++) {
     objreloc_t *r = &obj->rels[i];
     int rtype = obj_kind_rtype (r->kind);
-    if (rtype < 0 || r->sym < 0 || (size_t) r->sym >= n
-        || (r->sec != MIR_OBJ_SEC_TEXT && r->sec != MIR_OBJ_SEC_DATA
-            && r->sec != MIR_OBJ_SEC_ADDRPOOL && r->sec != MIR_OBJ_SEC_INITARR)) {
+    if (rtype < 0 || r->sym < 0 || (size_t) r->sym >= n || obj_sec_body (obj, r->sec) == NULL) {
       bad_p = 1;
       break;
     }
@@ -1567,11 +1601,7 @@ int MIR_object_emit (MIR_object_t obj, void **buf, size_t *size) {
     er.r_offset = r->offset;
     er.r_info = ELF64_R_INFO ((uint64_t) final_idx[r->sym], (unsigned) rtype);
     er.r_addend = r->addend;
-    buf_bytes (r->sec == MIR_OBJ_SEC_TEXT      ? &rela_text
-               : r->sec == MIR_OBJ_SEC_DATA    ? &rela_data
-               : r->sec == MIR_OBJ_SEC_INITARR ? &rela_init
-                                               : &rela_pool,
-               &er, sizeof er);
+    buf_bytes (&rela[r->sec], &er, sizeof er);
   }
 
   /* DWARF relocations (R5 + multi-object): each 8-byte code-address slot
@@ -1633,38 +1663,19 @@ int MIR_object_emit (MIR_object_t obj, void **buf, size_t *size) {
     dwsec_t S[DWSEC_MAX];
     int ns = 0;
     S[ns++] = (dwsec_t) {0};
-    S[ns++] = (dwsec_t) {".text", SHT_PROGBITS, 0, 0, 16, SHF_ALLOC | SHF_EXECINSTR, 0, 0,
-                         &obj->text, obj->text.len};
-    S[ns++] = (dwsec_t) {".data", SHT_PROGBITS, 0, 0,
-                         (uint32_t) (obj->data_align > 8 ? obj->data_align : 8),
-                         SHF_ALLOC | SHF_WRITE, 0, 0, &obj->data, obj->data.len};
-    S[ns++] = (dwsec_t) {".bss", SHT_NOBITS, 0, 0,
-                         (uint32_t) (obj->bss_align > 8 ? obj->bss_align : 8),
-                         SHF_ALLOC | SHF_WRITE, 0, 0, NULL, obj->bss_size};
-    S[ns++] = (dwsec_t) {".mir.addrpool", SHT_PROGBITS, 0, 0,
-                         (uint32_t) (obj->pool_align > 8 ? obj->pool_align : 8),
-                         SHF_ALLOC | SHF_WRITE, 0, 0, &obj->pool, obj->pool.len};
-    if (init_p)
-      S[ns++] = (dwsec_t) {".init_array", SHT_INIT_ARRAY, 0, 0, 8, SHF_ALLOC | SHF_WRITE, 0, 8,
-                           &obj->initarr, obj->initarr.len};
+    for (int k = 0; k < MIR_OBJ_SEC_NUM; k++)
+      if (sec_shndx[k] != 0) S[ns++] = obj_elf_alloc_sec (obj, k);
     int i_symtab = ns;
     S[ns++] = (dwsec_t) {".symtab", SHT_SYMTAB, 0, n_locals + 1, 8, 0, 0, sizeof (Elf64_Sym),
                          &symtab, symtab.len};
     int i_strtab = ns;
     S[ns++] = (dwsec_t) {".strtab", SHT_STRTAB, 0, 0, 1, 0, 0, 0, &strtab, strtab.len};
     S[i_symtab].link = (uint32_t) i_strtab;
-    if (rela_text.len != 0)
-      S[ns++] = (dwsec_t) {".rela.text", SHT_RELA, (uint32_t) i_symtab, 1, 8, SHF_INFO_LINK, 0,
-                           sizeof (Elf64_Rela), &rela_text, rela_text.len};
-    if (rela_data.len != 0)
-      S[ns++] = (dwsec_t) {".rela.data", SHT_RELA, (uint32_t) i_symtab, 2, 8, SHF_INFO_LINK, 0,
-                           sizeof (Elf64_Rela), &rela_data, rela_data.len};
-    if (rela_pool.len != 0)
-      S[ns++] = (dwsec_t) {".rela.mir.addrpool", SHT_RELA, (uint32_t) i_symtab, 4, 8,
-                           SHF_INFO_LINK, 0, sizeof (Elf64_Rela), &rela_pool, rela_pool.len};
-    if (rela_init.len != 0)
-      S[ns++] = (dwsec_t) {".rela.init_array", SHT_RELA, (uint32_t) i_symtab, 5, 8, SHF_INFO_LINK,
-                           0, sizeof (Elf64_Rela), &rela_init, rela_init.len};
+    for (int k = 0; k < MIR_OBJ_SEC_NUM; k++)
+      if (rela[k].len != 0)
+        S[ns++] = (dwsec_t) {obj_elf_rela_name[k], SHT_RELA, (uint32_t) i_symtab,
+                             (uint32_t) sec_shndx[k], 8, SHF_INFO_LINK, 0, sizeof (Elf64_Rela),
+                             &rela[k], rela[k].len};
     /* the planned indexes behind dbg_secsym[] must match the table being
        built -- divergence is an emitter-maintenance bug; refuse rather
        than mis-relocate */
@@ -1705,10 +1716,7 @@ int MIR_object_emit (MIR_object_t obj, void **buf, size_t *size) {
   free (final_idx);
   free (strtab.p);
   free (symtab.p);
-  free (rela_text.p);
-  free (rela_data.p);
-  free (rela_pool.p);
-  free (rela_init.p);
+  for (int k = 0; k < MIR_OBJ_SEC_NUM; k++) free (rela[k].p);
   free (dw_abbrev.p);
   free (dw_info.p);
   free (dw_line.p);
@@ -1858,8 +1866,8 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
   const char *interp = params->interp != NULL ? params->interp : "/lib64/ld-linux-x86-64.so.2";
 #endif
   const char *entry_nm = params->entry != NULL ? params->entry : "main";
-  static const Elf64_Section objx_shndx[5]
-    = {6, 10, 11, 7, 8}; /* text/data/bss/pool/initarr shdr indexes */
+  static const Elf64_Section objx_shndx[MIR_OBJ_SEC_NUM]
+    = {6, 10, 11, 7, 8}; /* each kind's shdr index (text/data/bss/pool/initarr) */
 
   /* the entry symbol must be a defined text function (executables only) */
   size_t n = obj->n_syms;
@@ -1976,7 +1984,9 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
   int textrel_p = 0;
   for (size_t i = 0; i < obj->n_rels; i++) {
     objreloc_t *r = &obj->rels[i];
-    if (obj_kind_rtype (r->kind) < 0 || r->sym < 0 || (size_t) r->sym >= n) goto done;
+    if (obj_kind_rtype (r->kind) < 0 || r->sym < 0 || (size_t) r->sym >= n
+        || obj_sec_body (obj, r->sec) == NULL) /* a slot needs a body to live in */
+      goto done;
     if (r->kind != MIR_OBJ_RELOC_ABS64) { /* field kinds resolve at emit */
       if (!obj->syms[r->sym].defined_p) goto done; /* against an import: no such producer */
       continue;
@@ -2063,18 +2073,18 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
   uint64_t bss_vaddr = OBJX_ALIGN (base + off, bss_align);
   uint64_t rw_memsz = bss_vaddr + obj->bss_size - (base + rw_off);
   uint64_t text_vaddr = base + text_off;
-  uint64_t data_vaddr = base + data_off;
-  uint64_t pool_vaddr = base + pool_off;
-  uint64_t initarr_vaddr = base + initarr_off;
   uint64_t code_vaddr = text_vaddr + text_bias; /* the builder's .text offset 0 */
 
-  /* section vaddr for a defined symbol/section id */
-#define OBJX_SEC_VADDR(sec) \
-  ((sec) == MIR_OBJ_SEC_TEXT      ? code_vaddr \
-   : (sec) == MIR_OBJ_SEC_DATA    ? data_vaddr \
-   : (sec) == MIR_OBJ_SEC_BSS     ? bss_vaddr \
-   : (sec) == MIR_OBJ_SEC_INITARR ? initarr_vaddr \
-                                  : pool_vaddr)
+  /* where each kind's builder offset 0 lands: its file offset (.bss has
+     none) and its vaddr -- a defined symbol is at sec_vaddr[sec] + value */
+  uint64_t sec_file[MIR_OBJ_SEC_NUM], sec_vaddr[MIR_OBJ_SEC_NUM];
+  sec_file[MIR_OBJ_SEC_TEXT] = text_off + text_bias;
+  sec_file[MIR_OBJ_SEC_DATA] = data_off;
+  sec_file[MIR_OBJ_SEC_BSS] = 0;
+  sec_file[MIR_OBJ_SEC_ADDRPOOL] = pool_off;
+  sec_file[MIR_OBJ_SEC_INITARR] = initarr_off;
+  for (int k = 0; k < MIR_OBJ_SEC_NUM; k++) sec_vaddr[k] = base + sec_file[k];
+  sec_vaddr[MIR_OBJ_SEC_BSS] = bss_vaddr;
 
   /* ---- DWARF (R5): the builder's .text offsets biased to the final
      link-time vaddrs -- ET_EXEC's identity layout makes them the runtime
@@ -2136,7 +2146,7 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
                                        : STT_OBJECT;
       es.st_info = ELF64_ST_INFO (bind, type);
       es.st_shndx = s->defined_p ? objx_shndx[s->sec] : SHN_UNDEF;
-      es.st_value = s->defined_p ? OBJX_SEC_VADDR (s->sec) + s->value : 0;
+      es.st_value = s->defined_p ? sec_vaddr[s->sec] + s->value : 0;
       es.st_size = s->size;
       buf_bytes (&symtab, &es, sizeof es);
       if (pass == 0) n_locals++;
@@ -2182,7 +2192,7 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
     Elf64_Sym *ds = (Elf64_Sym *) (p + dynsym_off);
     for (size_t i = 0; i < n; i++)
       if (dyn_idx[i] != 0 && obj->syms[i].defined_p)
-        ds[dyn_idx[i]].st_value = OBJX_SEC_VADDR (obj->syms[i].sec) + obj->syms[i].value;
+        ds[dyn_idx[i]].st_value = sec_vaddr[obj->syms[i].sec] + obj->syms[i].value;
   } else {
     memcpy (p + interp_off, interp, interp_size);
     memcpy (p + text_off, objx_start_stub, OBJX_STUB_SIZE);
@@ -2246,17 +2256,12 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
     }
     for (size_t i = 0; i < obj->n_rels; i++) {
       objreloc_t *r = &obj->rels[i];
-      uint64_t slot_off = (r->sec == MIR_OBJ_SEC_TEXT       ? text_off + text_bias
-                           : r->sec == MIR_OBJ_SEC_DATA     ? data_off
-                           : r->sec == MIR_OBJ_SEC_ADDRPOOL ? pool_off
-                           : r->sec == MIR_OBJ_SEC_INITARR  ? initarr_off
-                                                            : 0)
-                          + r->offset;
+      uint64_t slot_off = sec_file[r->sec] + r->offset;
       objsym_t *s = &obj->syms[r->sym];
       if (r->kind != MIR_OBJ_RELOC_ABS64) {
         /* field kind (PC32 / aarch64 page pair): bias-invariant, patched in
            place against the fixed link layout */
-        uint64_t v = OBJX_SEC_VADDR (s->sec) + s->value + (uint64_t) r->addend;
+        uint64_t v = sec_vaddr[s->sec] + s->value + (uint64_t) r->addend;
         if (obj_apply_field_reloc (r->kind, p + slot_off, v, base + slot_off) != 0) {
           free (p);
           p = NULL;
@@ -2265,10 +2270,10 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
       } else if (s->defined_p && pic_image_p) {
         er->r_offset = base + slot_off;
         er->r_info = ELF64_R_INFO (0, OBJ_R_RELATIVE);
-        er->r_addend = (int64_t) (OBJX_SEC_VADDR (s->sec) + s->value + (uint64_t) r->addend);
+        er->r_addend = (int64_t) (sec_vaddr[s->sec] + s->value + (uint64_t) r->addend);
         er++;
       } else if (s->defined_p) {
-        uint64_t v = OBJX_SEC_VADDR (s->sec) + s->value + (uint64_t) r->addend;
+        uint64_t v = sec_vaddr[s->sec] + s->value + (uint64_t) r->addend;
         memcpy (p + slot_off, &v, 8);
       } else {
         er->r_offset = base + slot_off;
@@ -2455,7 +2460,6 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
   *size = (size_t) total;
   p = NULL;
   rc = 0;
-#undef OBJX_SEC_VADDR
 #undef OBJX_ALIGN
 
 done:
@@ -2544,7 +2548,8 @@ typedef struct {
   size_t size;
   const Elf64_Ehdr *eh;
   const Elf64_Shdr *sh;
-  int i_text, i_data, i_bss, i_pool, i_init, i_symtab;
+  int i_sec[MIR_OBJ_SEC_NUM]; /* each kind's shndx; -1 = absent */
+  int i_symtab;
   const Elf64_Sym *syms;
   size_t n_file_syms;
   const char *strtab;
@@ -2560,14 +2565,23 @@ static int objx_shndx_dbg (const objx_scan_t *sc, int shndx) {
   return -1;
 }
 
-/* MIR_OBJ_SEC_* for an alloc section's shndx, -1 if not one of the five */
+/* MIR_OBJ_SEC_* for an alloc section's shndx, -1 if not one of the kinds */
 static int objx_shndx_sec (const objx_scan_t *sc, int shndx) {
-  return shndx == sc->i_text   ? MIR_OBJ_SEC_TEXT
-         : shndx == sc->i_data ? MIR_OBJ_SEC_DATA
-         : shndx == sc->i_bss  ? MIR_OBJ_SEC_BSS
-         : shndx == sc->i_pool ? MIR_OBJ_SEC_ADDRPOOL
-         : shndx == sc->i_init ? MIR_OBJ_SEC_INITARR
-                               : -1;
+  for (int k = 0; k < MIR_OBJ_SEC_NUM; k++)
+    if (sc->i_sec[k] == shndx) return k;
+  return -1;
+}
+
+/* The kind an alloc section holds: a kind whose flags read as data is known
+   by its name; text, bss and data are known by their flags. */
+static int objx_alloc_kind (const char *name, const Elf64_Shdr *s) {
+  for (int k = 0; k < MIR_OBJ_SEC_NUM; k++)
+    if (k != MIR_OBJ_SEC_TEXT && k != MIR_OBJ_SEC_DATA && k != MIR_OBJ_SEC_BSS
+        && strcmp (name, obj_elf_sec_name[k]) == 0)
+      return k;
+  return (s->sh_flags & SHF_EXECINSTR) != 0 ? MIR_OBJ_SEC_TEXT
+         : s->sh_type == SHT_NOBITS         ? MIR_OBJ_SEC_BSS
+                                            : MIR_OBJ_SEC_DATA;
 }
 
 static int objx_scan (objx_scan_t *sc, const void *vbuf, size_t size, char *err_msg,
@@ -2575,7 +2589,8 @@ static int objx_scan (objx_scan_t *sc, const void *vbuf, size_t size, char *err_
   const uint8_t *buf = vbuf;
 
   memset (sc, 0, sizeof (*sc));
-  sc->i_text = sc->i_data = sc->i_bss = sc->i_pool = sc->i_init = sc->i_symtab = -1;
+  for (int k = 0; k < MIR_OBJ_SEC_NUM; k++) sc->i_sec[k] = -1;
+  sc->i_symtab = -1;
   for (int k = 0; k < OBJDBG_N; k++) sc->i_dbg[k] = -1;
   if (!OBJ_TARGET_SUPPORTED_P) {
     OBJLOAD_ERR ("MIR objects are not supported on this build's target");
@@ -2652,11 +2667,7 @@ static int objx_scan (objx_scan_t *sc, const void *vbuf, size_t size, char *err_
       }
       continue;
     }
-    int *slot = strcmp (shstr + sh[i].sh_name, ".mir.addrpool") == 0 ? &sc->i_pool
-                : strcmp (shstr + sh[i].sh_name, ".init_array") == 0 ? &sc->i_init
-                : (sh[i].sh_flags & SHF_EXECINSTR) != 0              ? &sc->i_text
-                : sh[i].sh_type == SHT_NOBITS                        ? &sc->i_bss
-                                                                     : &sc->i_data;
+    int *slot = &sc->i_sec[objx_alloc_kind (shstr + sh[i].sh_name, &sh[i])];
     if (*slot >= 0) {
       OBJLOAD_ERR ("unsupported extra alloc section %s", shstr + sh[i].sh_name);
       return -1;
@@ -2701,8 +2712,8 @@ static int objin_from_elf (objin_t *v, const void *vbuf, size_t size, char *err_
 
   /* Alloc-section bodies + alignments: powers of two; .text is fixed at the
      emitter's 16 (MIR_object_text_append aligns to exactly that). */
-  const int isec[5] = {sc.i_text, sc.i_data, sc.i_bss, sc.i_pool, sc.i_init};
-  for (int s = 0; s < 5; s++) {
+  const int *isec = sc.i_sec;
+  for (int s = 0; s < MIR_OBJ_SEC_NUM; s++) {
     v->sec[s].align = 1;
     if (isec[s] < 0) continue;
     uint64_t a = sh[isec[s]].sh_addralign;
@@ -2964,8 +2975,8 @@ MIR_object_loaded_t MIR_object_load (const void *vbuf, size_t size,
 #define OBJLOAD_PGALIGN(x) (((x) + pg - 1) & ~(pg - 1))
   uint8_t *map = NULL;
   MIR_object_loaded_t lo = NULL;
-  size_t reg_off[5], map_size = 0;
-  for (int s = 0; s < 5; s++) {
+  size_t reg_off[MIR_OBJ_SEC_NUM], map_size = 0;
+  for (int s = 0; s < MIR_OBJ_SEC_NUM; s++) {
     if (v.sec[s].align > pg) {
       OBJLOAD_ERR ("section alignment exceeds the page size");
       goto fail;
@@ -2977,13 +2988,11 @@ MIR_object_loaded_t MIR_object_load (const void *vbuf, size_t size,
     goto fail;
   }
   {
-    /* region order is fixed: text, data, bss, pool, init */
-    static const int order[5] = {MIR_OBJ_SEC_TEXT, MIR_OBJ_SEC_DATA, MIR_OBJ_SEC_BSS,
-                                 MIR_OBJ_SEC_ADDRPOOL, MIR_OBJ_SEC_INITARR};
+    /* one region per kind, in kind order (text first) */
     size_t off = 0;
-    for (int i = 0; i < 5; i++) {
-      reg_off[order[i]] = off;
-      off += OBJLOAD_PGALIGN ((size_t) v.sec[order[i]].size);
+    for (int s = 0; s < MIR_OBJ_SEC_NUM; s++) {
+      reg_off[s] = off;
+      off += OBJLOAD_PGALIGN ((size_t) v.sec[s].size);
     }
     map_size = off != 0 ? off : pg;
   }
@@ -2992,7 +3001,7 @@ MIR_object_loaded_t MIR_object_load (const void *vbuf, size_t size,
     OBJLOAD_ERR ("mapping %zu bytes failed", map_size);
     goto fail;
   }
-  for (int s = 0; s < 5; s++) /* .bss has no body and stays zero-filled */
+  for (int s = 0; s < MIR_OBJ_SEC_NUM; s++) /* .bss has no body and stays zero-filled */
     if (v.sec[s].body != NULL && v.sec[s].size != 0)
       memcpy (map + reg_off[s], v.sec[s].body, (size_t) v.sec[s].size);
 
@@ -3004,7 +3013,7 @@ MIR_object_loaded_t MIR_object_load (const void *vbuf, size_t size,
   for (size_t k = 0; k < v.n_rels; k++) {
     const objin_rel_t *r = &v.rels[k];
     size_t slot_size = obj_kind_slot_size (r->kind);
-    if (r->sec < 0 || r->sec > 4 || r->sym >= v.n_syms || r->offset > v.sec[r->sec].size
+    if (r->sec < 0 || r->sec >= MIR_OBJ_SEC_NUM || r->sym >= v.n_syms || r->offset > v.sec[r->sec].size
         || v.sec[r->sec].size - r->offset < slot_size) {
       OBJLOAD_ERR ("malformed relocation %zu", k);
       goto fail;
@@ -3027,7 +3036,7 @@ MIR_object_loaded_t MIR_object_load (const void *vbuf, size_t size,
         continue;
       }
       sval = (uint64_t) (uintptr_t) a; /* an undefined weak reference: 0 */
-    } else if (s->sec >= 0 && s->sec <= 4) {
+    } else if (s->sec >= 0 && s->sec < MIR_OBJ_SEC_NUM) {
       sval = (uint64_t) (uintptr_t) (map + reg_off[s->sec]) + s->value;
     } else {
       OBJLOAD_ERR ("relocation %zu against an unplaceable symbol", k);
@@ -3069,13 +3078,14 @@ MIR_object_loaded_t MIR_object_load (const void *vbuf, size_t size,
   for (size_t si = 0; si < v.n_syms; si++) {
     const objin_sym_t *s = &v.syms[si];
     if (s->name != NULL && !s->local_p && !s->undef_p && !s->section_p && s->sec >= 0
-        && s->sec <= 4)
+        && s->sec < MIR_OBJ_SEC_NUM)
       n_exp++;
   }
   if (n_exp != 0 && (lo->syms = calloc (n_exp, sizeof (objload_sym_t))) != NULL) {
     for (size_t si = 0; si < v.n_syms; si++) {
       const objin_sym_t *s = &v.syms[si];
-      if (s->name == NULL || s->local_p || s->undef_p || s->section_p || s->sec < 0 || s->sec > 4)
+      if (s->name == NULL || s->local_p || s->undef_p || s->section_p || s->sec < 0
+          || s->sec >= MIR_OBJ_SEC_NUM)
         continue;
       char *nm = obj_strdup (s->name);
       if (nm == NULL) continue;
@@ -3136,6 +3146,21 @@ static size_t objx_initarr_append (MIR_object_t obj, const void *bytes, size_t l
   size_t off = obj->initarr.len;
   buf_bytes (&obj->initarr, bytes, len);
   return off;
+}
+
+/* An input's kind-K section appended to the builder; returns the offset it
+   landed at -- the input's rebase delta for that kind.  An empty one keeps
+   the kind's current end: no symbol or relocation can reference into it. */
+static uint64_t objx_sec_append (MIR_object_t obj, int k, const objin_sec_t *s) {
+  if (s->size == 0) return k == MIR_OBJ_SEC_BSS ? obj->bss_size : obj_sec_body (obj, k)->len;
+  switch (k) {
+  case MIR_OBJ_SEC_TEXT: return MIR_object_text_append (obj, s->body, s->size);
+  case MIR_OBJ_SEC_DATA: return MIR_object_data_append (obj, s->body, s->size, (size_t) s->align);
+  case MIR_OBJ_SEC_BSS: return MIR_object_bss_reserve (obj, s->size, (size_t) s->align);
+  case MIR_OBJ_SEC_ADDRPOOL:
+    return MIR_object_addrpool_append (obj, s->body, s->size, (size_t) s->align);
+  default: return objx_initarr_append (obj, s->body, s->size);
+  }
 }
 
 /* Name -> dst symbol id for unification: the builder's pre-read non-local
@@ -3210,30 +3235,8 @@ int MIR_object_read (MIR_object_t obj, const void *vbuf, size_t size, char *err_
   /* Append the section bodies; the returned offsets are this object's
      rebase deltas.  An absent/empty section keeps a harmless base (no
      symbol or relocation can reference into it). */
-  uint64_t base[5];
-  base[MIR_OBJ_SEC_TEXT] = v.sec[MIR_OBJ_SEC_TEXT].size != 0
-                             ? MIR_object_text_append (obj, v.sec[MIR_OBJ_SEC_TEXT].body,
-                                                       v.sec[MIR_OBJ_SEC_TEXT].size)
-                             : obj->text.len;
-  base[MIR_OBJ_SEC_DATA] = v.sec[MIR_OBJ_SEC_DATA].size != 0
-                             ? MIR_object_data_append (obj, v.sec[MIR_OBJ_SEC_DATA].body,
-                                                       v.sec[MIR_OBJ_SEC_DATA].size,
-                                                       (size_t) v.sec[MIR_OBJ_SEC_DATA].align)
-                             : obj->data.len;
-  base[MIR_OBJ_SEC_BSS] = v.sec[MIR_OBJ_SEC_BSS].size != 0
-                            ? MIR_object_bss_reserve (obj, v.sec[MIR_OBJ_SEC_BSS].size,
-                                                      (size_t) v.sec[MIR_OBJ_SEC_BSS].align)
-                            : obj->bss_size;
-  base[MIR_OBJ_SEC_ADDRPOOL]
-    = v.sec[MIR_OBJ_SEC_ADDRPOOL].size != 0
-        ? MIR_object_addrpool_append (obj, v.sec[MIR_OBJ_SEC_ADDRPOOL].body,
-                                      v.sec[MIR_OBJ_SEC_ADDRPOOL].size,
-                                      (size_t) v.sec[MIR_OBJ_SEC_ADDRPOOL].align)
-        : obj->pool.len;
-  base[MIR_OBJ_SEC_INITARR] = v.sec[MIR_OBJ_SEC_INITARR].size != 0
-                                ? objx_initarr_append (obj, v.sec[MIR_OBJ_SEC_INITARR].body,
-                                                       v.sec[MIR_OBJ_SEC_INITARR].size)
-                                : obj->initarr.len;
+  uint64_t base[MIR_OBJ_SEC_NUM];
+  for (int k = 0; k < MIR_OBJ_SEC_NUM; k++) base[k] = objx_sec_append (obj, k, &v.sec[k]);
 
   /* Debug sections concatenate like data, into the builder's raw store;
      their relocations (kept in dbgrels below) rebase with the same rules.

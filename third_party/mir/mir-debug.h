@@ -166,6 +166,7 @@ enum {
   MIR_OBJ_SEC_BSS = 2,
   MIR_OBJ_SEC_ADDRPOOL = 3,
   MIR_OBJ_SEC_INITARR = 4,
+  MIR_OBJ_SEC_NUM /* the count of kinds: every per-kind table is sized by it */
 };
 
 /* Relocation kinds (mapped to the arch-specific ELF type at emit). */

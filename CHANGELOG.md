@@ -8,6 +8,13 @@ Consolidated: pointer_type_node — gate scripts/check-one-pointer-type-node.sh
 Consolidated: MIR pattern index by insn code — gate scripts/check-one-pattern-index.sh
 Consolidated: MIR constant-shift normalizer — gate scripts/check-one-const-shift-normalizer.sh
 
+### MIR counts object section kinds with MIR_OBJ_SEC_NUM
+
+- `MIR_OBJ_SEC_NUM` closes the `MIR_OBJ_SEC_*` enum in `third_party/mir/mir-debug.h`. The object builder, the relocatable and executable writers, the ELF, Mach-O and PE input readers, the merge reader and the in-process loader size their per-kind tables by it.
+- The section table, its order and its indexes are unchanged for every object.
+- `MIR_object_section_symbol`, `MIR_object_add_symbol` and `MIR_object_symbol_define` return an error for a kind outside `[MIR_OBJ_SEC_UNDEF, MIR_OBJ_SEC_NUM)`.
+- A relocation whose kind has no body (`.bss`, or out of range) now refuses the executable emit instead of patching file offset 0 plus its offset.
+
 ### The runtime's throw reaches its try through the platform unwinder
 
 - Outside Windows, `madc_raise` with a try active runs `_Unwind_ForcedUnwind` on a heap-allocated `MadcUnwind` (the Itanium `_Unwind_Exception` header plus the target try). `madc_unwind_stop` longjmps into the try once the walk passes the try's frame, or at `_UA_END_OF_STACK`. A failed allocation or a returning unwinder lands by the plain longjmp.

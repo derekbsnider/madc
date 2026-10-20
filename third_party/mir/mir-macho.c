@@ -1645,15 +1645,15 @@ static int macho_sec_of_names (const char *seg, const char *sect) {
 static int objin_from_macho (objin_t *v, const void *vbuf, size_t size, char *err_msg,
                             size_t err_len) {
   const uint8_t *buf = vbuf;
-  uint64_t addr[5] = {0, 0, 0, 0, 0}; /* each section's fake address */
-  int seen[5] = {0, 0, 0, 0, 0};
+  uint64_t addr[MIR_OBJ_SEC_NUM] = {0}; /* each section's fake address */
+  int seen[MIR_OBJ_SEC_NUM] = {0};
   int sec_of_ord[256]; /* 1-based section ordinal -> MIR_OBJ_SEC_* */
-  uint32_t reloff[5] = {0, 0, 0, 0, 0}, nreloc[5] = {0, 0, 0, 0, 0};
+  uint32_t reloff[MIR_OBJ_SEC_NUM] = {0}, nreloc[MIR_OBJ_SEC_NUM] = {0};
   const uint8_t *symtab = NULL, *strtab = NULL;
   size_t n_nlist = 0, strsize = 0;
 
   memset (v, 0, sizeof (*v));
-  for (int s = 0; s < 5; s++) v->sec[s].align = 1;
+  for (int s = 0; s < MIR_OBJ_SEC_NUM; s++) v->sec[s].align = 1;
   for (int i = 0; i < 256; i++) sec_of_ord[i] = -1;
   if (buf == NULL || size < 32) {
     OBJLOAD_ERR ("truncated or empty object");
@@ -1837,7 +1837,7 @@ static int objin_from_macho (objin_t *v, const void *vbuf, size_t size, char *er
   }
 
   /* ---- relocations, per section */
-  for (int sec = 0; sec < 5; sec++) {
+  for (int sec = 0; sec < MIR_OBJ_SEC_NUM; sec++) {
     if (nreloc[sec] == 0) continue;
     if (v->sec[sec].body == NULL) {
       OBJLOAD_ERR ("section %d carries relocations but no body", sec);
