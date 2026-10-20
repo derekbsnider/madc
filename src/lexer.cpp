@@ -4659,17 +4659,24 @@ void Program::_tokenizer_init()
 	// pattern is the double one in a long double-typed union — gcc/clang
 	// there print nansl 7ff4000000000000; the x87 pair written into an
 	// 8-byte union would overrun it (darwin D4: testsignalingnan printed
-	// 0000a000000000000000 on an M-series Mac). The size is the TARGET's
-	// (target_ldouble_size, the DataDefLDOUBLE rule), never the host's.
+	// 0000a000000000000000 on an M-series Mac). The SIZE does not name the
+	// format: aarch64-linux, riscv64 and s390x long double is IEEE binary128,
+	// 16 bytes like x87, where the sNaN is the high word 0x7fff4000... (and
+	// the x87 pair reads as a small finite value). So the body keys on the
+	// format the program itself sees, the target's __LDBL_MANT_DIG__ (64 x87,
+	// 113 binary128, 53 binary64, 106 IBM double-double — whose high double,
+	// first in memory, carries the NaN), and binary128's word order on
+	// __BYTE_ORDER__. A 16-byte union serves every format; the conditions fold.
 	MacroDef nansl;
 	nansl.params = {"__tag"};
-	if ( target_ldouble_size() == 8 )
-	    nansl.body = "(__extension__ ({ union { unsigned long long __i; long double __l; } __u;"
-			 " __u.__i = 0x7ff4000000000000ULL; __u.__l; }))";
-	else
-	    nansl.body = "(__extension__ ({ union { unsigned long long __i[2]; long double __l; } __u;"
-			 " __u.__i[0] = 0xa000000000000000ULL; __u.__i[1] = 0x7fffULL;"
-			 " __u.__l; }))";
+	nansl.body = "(__extension__ ({ union { unsigned long long __i[2]; long double __l; } __u;"
+		     " __u.__i[0] = __LDBL_MANT_DIG__ == 64 ? 0xa000000000000000ULL"
+		     " : __LDBL_MANT_DIG__ != 113 ? 0x7ff4000000000000ULL"
+		     " : __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__ ? 0ULL : 0x7fff400000000000ULL;"
+		     " __u.__i[1] = __LDBL_MANT_DIG__ == 64 ? 0x7fffULL"
+		     " : __LDBL_MANT_DIG__ != 113 ? 0ULL"
+		     " : __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__ ? 0x7fff400000000000ULL : 0ULL;"
+		     " __u.__l; }))";
 	macro_map["__builtin_nansl"] = nansl;
     }
     {

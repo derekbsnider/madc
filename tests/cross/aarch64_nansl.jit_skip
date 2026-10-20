@@ -1,0 +1,1 @@
+c2m has no __builtin_nansl / __builtin_nanl / __builtin_infl; the subject is madc's builtin macro

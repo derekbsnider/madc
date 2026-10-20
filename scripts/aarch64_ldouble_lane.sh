@@ -20,8 +20,9 @@
 # emitted spelling and _Generic's match, which read plain char), and
 # aarch64_varargs.c (a program DEFINING a variadic function: its va_arg calls
 # libmir's mir.va_arg / mir.va_block_arg, which an executable could not find),
-# and aarch64_predef.c (the target's predefined macros and header world, which
-# the cross madc captured from the x86-64 host g++). THREE LEGS each:
+# aarch64_predef.c (the target's predefined macros and header world, which the
+# cross madc captured from the x86-64 host g++), and aarch64_nansl.c (the
+# binary128 signaling NaN). THREE LEGS each:
 #   oracle  aarch64-linux-gnu-gcc's binary under qemu — the expected output.
 #   aot     bin/madc-aarch64-linux -c, linked by aarch64 gcc against the target's
 #           libmir (a madc executable gets libmir through libmadc), run under
@@ -29,7 +30,9 @@
 #           EXPORTS (mir.va_arg / mir.va_block_arg -- aarch64_varargs.c), and it
 #           must print the oracle's bytes.
 #   jit     a gcc-built aarch64 c2m (MIR's own driver) running the fixture
-#           through the generator (-eg) under qemu — the libmir JIT path.
+#           through the generator (-eg) under qemu — the libmir JIT path. A
+#           fixture whose subject is madc's front end (a builtin c2m lacks)
+#           names why in tests/cross/<fixture>.jit_skip; aot still runs it.
 #
 # CONTROL (two-sided): the oracle must print the binary128-only value
 # `i2ld 9007199254740993.0` (2^53+1 is not a double) AND must not print the
@@ -96,8 +99,12 @@ for fx in tests/cross/aarch64_*.c; do
 			echo "GREEN $n aot: every dotted import exported by libmir, links, byte-identical to gcc"
 		fi
 	fi
-	# jit: a gcc-built aarch64 c2m through the generator (-eg)
-	if [ -x "$JITB/c2m" ]; then
+	# jit: a gcc-built aarch64 c2m through the generator (-eg). A fixture whose
+	# subject is madc's front end (a builtin c2m does not have) names why in a
+	# sibling <fixture>.jit_skip; the aot leg still runs it.
+	if [ -f "${fx%.c}.jit_skip" ]; then
+		echo "SKIP  $n jit: $(head -1 "${fx%.c}.jit_skip")"
+	elif [ -x "$JITB/c2m" ]; then
 		if ! $QEMU "$JITB/c2m" -I"$TINC" "$fx" -eg > "$D/$n.jit" 2> "$D/$n.jit.err" \
 		   || ! diff -q "$D/$n.oracle" "$D/$n.jit" >/dev/null; then
 			echo "RED  $n jit: output differs from the gcc oracle"; head -3 "$D/$n.jit.err"
