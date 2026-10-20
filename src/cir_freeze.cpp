@@ -720,7 +720,8 @@ bool cir_freeze_read(const madc::dis::snapshot_reader &r, uint32_t seg_id_base,
 // B1 (docs/plans/2026-10-20-front-end-speed-plan.md): SPELLED_NAMES — every
 // name each frozen unit's own source text spells (every #if arm), with the
 // units spelling it: what a macro defined ahead of the unit could change in
-// it (CirFrozenForest::serves_consumer). A source-only unit is lexed live, a
+// it (CirFrozenForest::serves_consumer; the walk's program macros, B211). A
+// unit spelling it only in directives carries CIR_SPELLED_DIRECTIVE_ONLY. A source-only unit is lexed live, a
 // -D reaching it there. The root unit is the freeze's own main file — no
 // consumer includes it, and the freeze records only included files' text.
 // Any other frozen unit without its text leaves the table out, so a -D
@@ -730,7 +731,7 @@ static bool forest_write_spelled_names(const cir_frozen_forest &f,
 				       PchCompression codec)
 {
 	std::map<madc::dis::istring, std::vector<uint32_t> > names;
-	std::set<madc::dis::istring> spelled;
+	std::set<madc::dis::istring> spelled, content;
 	uint32_t frozen = 0;
 	for (uint32_t u = 0; u < (uint32_t)f.units.size(); ++u) {
 		const cir_forest_unit &fu = f.units[u];
@@ -747,10 +748,11 @@ static bool forest_write_spelled_names(const cir_frozen_forest &f,
 			return true;
 		}
 		spelled.clear();
+		content.clear();
 		source_spelled_names(std::string(fu.source_payload.begin(),
-						 fu.source_payload.end()), spelled);
+						 fu.source_payload.end()), spelled, &content);
 		for (const madc::dis::istring &nm : spelled)
-			names[nm].push_back(u);
+			names[nm].push_back(content.count(nm) ? u : u | CIR_SPELLED_DIRECTIVE_ONLY);
 	}
 	if (names.empty())
 		return true;

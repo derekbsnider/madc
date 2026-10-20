@@ -2548,6 +2548,7 @@ public:
     const char *fname() const { return _fname.c_str(); }
     const char *fname(const char *s)  { _fname = s; return _fname.c_str(); }
     const char *fname(madc::dis::istring &s) { _fname = s; return _fname.c_str(); }
+    const madc::dis::istring &fname_name() const { return _fname; }
     // #include_next resumes the search after this directory (gcc's file->dir).
     const madc::dis::istring &found_dir() const { return _found_dir; }
     void found_dir(const madc::dis::istring &d) { _found_dir = d; }
@@ -3040,9 +3041,13 @@ private:
 // text carries a ## paste, which can form a name no token spells. Read for a
 // macro replacement's names (the shared prelude cache) and for the pack's
 // SPELLED_NAMES: every name a frozen header spells, the names a macro defined
-// ahead of it could change (GCC's PCH rule). Defined in lexer.cpp.
+// ahead of it could change (GCC's PCH rule). `content` (optional) gets the
+// names that stand where a macro expands: text, a #define body (its own
+// parameters aside), a computed #include — not a directive's word, condition,
+// header-name or #define / #undef name (B211). Defined in lexer.cpp.
 bool source_spelled_names(const std::string &text,
-			  std::set<madc::dis::istring> &names);
+			  std::set<madc::dis::istring> &names,
+			  std::set<madc::dis::istring> *content = NULL);
 
 // Diagnostic source-echo helpers (lexer.cpp). show_error_source_line is the
 // one formatter for the offending-line + caret display; madc_show_file_error
@@ -7510,6 +7515,15 @@ public:
 	// yet stops every later bind, so the TU parses live from there; K1b: so
 	// does a later decline whose live closure redeclares a bound name.
 	bool bind_stopped = false;
+	// B211: the #define / #undef writes the program's own text made (never
+	// a walk's replay or the freeze) — the spelling id, the file it was read
+	// from, the name's state before — noted until the next root walk reads
+	// them; each name's state before the program's first write; then per
+	// unit the first such name it spells (0: none).
+	struct ProgramMacroWrite { uint32_t sid; madc::dis::istring file; uint64_t before; };
+	std::vector<ProgramMacroWrite> program_macro_writes;
+	std::unordered_map<uint32_t, uint64_t> program_macro_before;
+	std::vector<uint32_t> unit_program_macro;
 	size_t restored_chain_size = 0;	// chain's size at the last restore
 	// The restore's per-record state, index-aligned with the forest's
 	// restored lists (FOREST_TYPE_* above).
@@ -7765,6 +7779,11 @@ public:
     bool run_frozen_arm(const char *unit_name, const std::string &text,
 			std::vector<TokenBase *> &out, std::vector<madc::dis::istring> &writes);
     ForestMacroUndo *forest_macro_undo = NULL;	// the walk in flight's undo log (set_macro notes into it)
+    // B211: the #define / #undef handlers note a program write before it
+    // happens; the next root walk reads the notes into ForestSide's per-unit
+    // marks, and a marked unit declines its root.
+    void forest_note_program_macro(const char *name);
+    void forest_read_program_macros(ForestSide &s);
     std::set<madc::dis::istring> forest_live_tokenized;	// v40: canonical keys of files whose tokens ENTERED this TU's live stream (should_tokenize_include true-verdicts) — the prune's honest "already live" source
     bool live_tokenize_record(const madc::dis::istring &canonical, bool tok);	// one recording owner for the set above
     bool forest_unit_file_live_tokenized(ForestSide &s, uint32_t unit);	// v40: was this unit's FILE live-tokenized here?

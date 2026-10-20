@@ -1533,6 +1533,50 @@ done
 rm -rf "$ov_dir"
 echo "forest_bind_gate: [overlap] OK — a C++ decline after a bind whose live closure redeclares a bound name stops binding; a disjoint one keeps binding"
 
+# --- case: progmacro (BUGS.md B211) ---
+# A macro the program defines ahead of an include changes every token of that
+# header it names. fbgate_pm_a.h spells fbg_pm_sec, frozen without the
+# program's `#define fbg_pm_sec fbg_pm_mine`: its root declines and lexes from
+# text, so the member is fbg_pm_mine, as gcc and g++ read it. fbgate_pm_b.h
+# spells no program macro and binds. A define the program takes back
+# (`#undef` before the include) changes nothing: fbgate_pm_a.h binds. Each
+# prints gcc's v=8.
+pm_dir=tmp/fbgate_progmacro
+rm -rf "$pm_dir"
+mkdir -p "$pm_dir/inc"
+printf '#ifndef FBG_PM_A_H\n#define FBG_PM_A_H\nstruct fbg_pm { int fbg_pm_sec; };\n#endif\n' > "$pm_dir/inc/fbgate_pm_a.h"
+printf '#ifndef FBG_PM_B_H\n#define FBG_PM_B_H\nstruct fbg_pm_b { int b; };\n#endif\n' > "$pm_dir/inc/fbgate_pm_b.h"
+printf '#include <fbgate_pm_b.h>\n#include <fbgate_pm_a.h>\nint main(void) { return 0; }\n' > "$pm_dir/producer.c"
+cp "$pm_dir/producer.c" "$pm_dir/producer.cpp"
+pm_body='int main(void) { struct fbg_pm t = { 0 }; struct fbg_pm_b b = { 1 }; t.fbg_pm_sec = 7; printf("v=%%d\\n", t.%s + b.b); return 0; }\n'
+printf "#define fbg_pm_sec fbg_pm_mine\n#include <fbgate_pm_b.h>\n#include <fbgate_pm_a.h>\n#include <stdio.h>\n$pm_body" fbg_pm_mine > "$pm_dir/use_c_decline.c"
+printf "#define fbg_pm_sec fbg_pm_mine\n#undef fbg_pm_sec\n#include <fbgate_pm_b.h>\n#include <fbgate_pm_a.h>\n#include <stdio.h>\n$pm_body" fbg_pm_sec > "$pm_dir/use_c_back.c"
+printf "#define fbg_pm_sec fbg_pm_mine\n#include <fbgate_pm_b.h>\n#include <fbgate_pm_a.h>\n#include <cstdio>\n$pm_body" fbg_pm_mine > "$pm_dir/use_cxx_decline.cpp"
+timeout 600 "$BIN" --std=gnu17 --freeze="$pm_dir/c.msnap" -I "$pm_dir/inc" "$pm_dir/producer.c" \
+    > "$pm_dir/freeze.log" 2>&1 \
+    || fail "[progmacro] the C freeze FAILED: $(tail -n 3 "$pm_dir/freeze.log")"
+timeout 600 "$BIN" --std=gnu++17 --freeze="$pm_dir/cxx.msnap" -I "$pm_dir/inc" "$pm_dir/producer.cpp" \
+    > "$pm_dir/freeze.log" 2>&1 \
+    || fail "[progmacro] the C++ freeze FAILED: $(tail -n 3 "$pm_dir/freeze.log")"
+for pm_case in "use_c_decline.c gnu17 c decline" "use_c_back.c gnu17 c bind" "use_cxx_decline.cpp gnu++17 cxx decline"; do
+    read -r pm_src pm_std pm_snap pm_want <<<"$pm_case"
+    timeout 60 "$BIN" -v --std="$pm_std" --forest-bind="$pm_dir/$pm_snap.msnap" -I "$pm_dir/inc" "$pm_dir/$pm_src" \
+        > "$pm_dir/trace.log" 2>&1
+    grep -aqE "bound to grove unit [0-9]+ \([^)]*fbgate_pm_b\.h\)" "$pm_dir/trace.log" \
+        || fail "[progmacro] $pm_src: fbgate_pm_b.h (no program macro) did not bind"
+    if [ "$pm_want" = decline ]; then
+        grep -aqE "DECLINE root [^ ]*fbgate_pm_a\.h .* spells the program's macro 'fbg_pm_sec'" "$pm_dir/trace.log" \
+            || fail "[progmacro] $pm_src: fbgate_pm_a.h did not decline on the program's fbg_pm_sec"
+    else
+        grep -aqE "bound to grove unit [0-9]+ \([^)]*fbgate_pm_a\.h\)" "$pm_dir/trace.log" \
+            || fail "[progmacro] $pm_src: fbgate_pm_a.h did not bind after the define was taken back"
+    fi
+    pm_out=$(timeout 60 "$BIN" --std="$pm_std" --forest-bind="$pm_dir/$pm_snap.msnap" -I "$pm_dir/inc" "$pm_dir/$pm_src" 2>"$pm_dir/run.err")
+    [ "$pm_out" = "v=8" ] || fail "[progmacro] $pm_src printed '$pm_out', want 'v=8' $(head -n 2 "$pm_dir/run.err")"
+done
+rm -rf "$pm_dir"
+echo "forest_bind_gate: [progmacro] OK — a unit spelling a macro the program wrote ahead of it declines its root (C and C++); one taken back binds"
+
 # --- case: cenv (docs/plans/2026-10-18-c-pack-layer.md, J4) ---
 # A C program sets feature-test macros ahead of its system includes as a
 # matter of course — sqlite3.c defines NDEBUG and _GNU_SOURCE. The C layer

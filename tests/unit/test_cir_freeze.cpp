@@ -3735,6 +3735,50 @@ TEST_CASE("B2: the decl-name hash index agrees with the binary search") {
 	CHECK_FALSE(unbound.bind_hash(h.data(), h.size()));
 }
 
+// B211: source_spelled_names' `content` — the names that stand where a macro
+// expands — against the directive-only spellings the walk's recorded
+// conditions answer.
+TEST_CASE("B211: spelled names split content from directive-only spellings") {
+	const std::string text =
+		"#ifndef GUARD_H\n"
+		"#define GUARD_H 1\n"
+		"# if defined COND_A && COND_B > 1 \\\n"
+		"      || COND_C\n"
+		"#  include <sys/hdr_piece.h>\n"
+		"#  include COMPUTED_HDR\n"
+		"# endif\n"
+		"#define OBJ obj_body + other\n"
+		"#define FN(p, q) p + fn_body(q)\n"
+		"#define EMPTY_FN() empty_body\n"
+		"#undef UNDEF_NAME\n"
+		"#error a stray_word here\n"
+		"struct text_tag { int text_member; }; /* comment_word */\n"
+		"int x = text_value; // line_comment_word\n"
+		"#endif\n";
+	std::set<madc::dis::istring> all, content;
+	source_spelled_names(text, all, &content);
+	typedef madc::dis::istring I;
+	for (const char *nm : {"text_tag", "text_member", "text_value", "obj_body", "other",
+			       "fn_body", "empty_body", "COMPUTED_HDR", "int", "struct", "x"}) {
+		CAPTURE(nm);
+		CHECK(content.count(I(nm)) == 1u);
+		CHECK(all.count(I(nm)) == 1u);
+	}
+	for (const char *nm : {"GUARD_H", "COND_A", "COND_B", "COND_C", "defined", "sys",
+			       "hdr_piece", "h", "OBJ", "FN", "p", "q", "EMPTY_FN", "UNDEF_NAME",
+			       "stray_word", "ifndef", "define", "include", "undef", "error"}) {
+		CAPTURE(nm);
+		CHECK(content.count(I(nm)) == 0u);
+		CHECK(all.count(I(nm)) == 1u);
+	}
+	CHECK(all.count(I("comment_word")) == 0u);
+	CHECK(all.count(I("line_comment_word")) == 0u);
+	// Without `content` the call reads every name, as before.
+	std::set<madc::dis::istring> only;
+	source_spelled_names(text, only);
+	CHECK(only == all);
+}
+
 // A container's ROLE (optional segment 28) — which consumer a profile
 // serves. The system profile writes none (absent = system); a code this
 // reader has no row for — a profile an older madc froze for another role

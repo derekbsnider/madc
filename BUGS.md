@@ -877,38 +877,6 @@ int main()
   (the object's cleanup at each iteration's block exit) — a core-parser
   change, so it waits for a focused parser session with B209.
 
-### B211. A program macro named like a word a packed header spells does not reach the bound header
-
-```c
-#define tm_sec my_sec
-#include <time.h>
-#include <stdio.h>
-int main(void)
-{
-	struct tm t = {0};
-	t.tm_sec = 7;
-	printf("%d\n", t.my_sec);
-	return 0;
-}
-```
-
-- Found 2026-10-20 during the B1 recon (docs/plans/2026-10-20-front-end-speed-plan.md).
-- gcc 13 prints `7`; madc reading the headers from disk (`--no-embedded-headers`)
-  prints `7`. The packed `bin/madc-release` refuses: `Unidentified member
-  'my_sec' in 'tm'`. A macro the program defines (or undefines) ahead of an
-  include changes every header token it names; the bound unit was frozen
-  without it. The bind re-checks a unit's recorded conditionals (C always,
-  C++ under the K knob), never its ordinary tokens.
-- Layer: the bind walk (`forest_walk_unit`) admits a unit without asking
-  whether it spells a name whose macro state the program changed. The fix
-  reads the pack's SPELLED_NAMES table (B1, per-unit) in the walk: such a
-  unit declines its root, which lexes from text. In C++ a decline after a
-  bind is K1b's case, so this follows section K (K1b, K3) of
-  docs/plans/2026-10-18-verified-cxx-bind.md.
-- The C++ twin is a wrong answer section K owns: `#define NDEBUG` before
-  `<cassert>` keeps `assert` live in a bound C++ compile (g++ prints `ok`,
-  madc aborts in `assert(0)`); `MADC_FOREST_ENV_CHECK=1` gives `ok`.
-
 ### B213. `__has_builtin` outside `#if` is refused
 
 ```c

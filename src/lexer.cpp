@@ -3288,18 +3288,125 @@ tokenize_macro_spelling(const std::string &text)
     return tokens;
 }
 
-bool source_spelled_names(const std::string &text, std::set<madc::dis::istring> &names)
+// A directive's word as an enum, read once from its spelling (enum over
+// strings): the words a skipped group acts on, and the define / include words
+// source_spelled_names reads; any other is Other.
+enum class PpDirectiveWord : unsigned char { Other, If, Ifdef, Ifndef, Elif, Else, Endif,
+					     Define, Include };
+
+static PpDirectiveWord pp_directive_word(const char *w, size_t n)
+{
+    typedef PpDirectiveWord W;
+    switch ( n )
+    {
+    case 2:
+	return memcmp(w, "if", 2) == 0 ? W::If : W::Other;
+    case 4:
+	return memcmp(w, "else", 4) == 0 ? W::Else
+	     : memcmp(w, "elif", 4) == 0 ? W::Elif : W::Other;
+    case 5:
+	return memcmp(w, "ifdef", 5) == 0 ? W::Ifdef
+	     : memcmp(w, "endif", 5) == 0 ? W::Endif : W::Other;
+    case 6:
+	return memcmp(w, "ifndef", 6) == 0 ? W::Ifndef
+	     : memcmp(w, "define", 6) == 0 ? W::Define
+	     : memcmp(w, "import", 6) == 0 ? W::Include : W::Other;
+    case 7:
+	return memcmp(w, "include", 7) == 0 ? W::Include : W::Other;
+    case 12:
+	return memcmp(w, "include_next", 12) == 0 ? W::Include : W::Other;
+    default:
+	return W::Other;
+    }
+}
+
+bool source_spelled_names(const std::string &text, std::set<madc::dis::istring> &names,
+			  std::set<madc::dis::istring> *content)
 {
     typedef MacroReplacementToken T;
+    typedef PpDirectiveWord W;
     const std::vector<T> tokens = tokenize_macro_spelling(text);
     bool has_paste = false;
+    // Where a name stands (content: the names a macro expands there — text,
+    // a #define body, a computed #include): a line opens as text; `#` first
+    // on it opens a directive, whose word picks the rest.
+    enum class At : unsigned char { Text, DirectiveWord, Directive, DefineName,
+				    DefineParams, DefineBody, IncludeOperand };
+    At at = At::Text;
+    std::vector<madc::dis::istring> params;	// the #define in hand's parameters
+    bool bol = true;		// no token yet on this logical line
+    bool continued = false;	// the last token is a backslash: the line goes on
     for ( size_t i = 0; i < tokens.size(); ++i )
     {
-	if ( tokens[i].kind == T::rtIdentifier )
-	    names.insert(madc::dis::istring(text.data() + tokens[i].begin,
-					    tokens[i].end - tokens[i].begin));
-	else if ( tokens[i].kind == T::rtPaste )
+	const T &t = tokens[i];
+	const char *s = text.data() + t.begin;
+	const size_t n = t.end - t.begin;
+	if ( t.kind == T::rtWhitespace )
+	{
+	    if ( memchr(s, '\n', n) && !continued )
+	    {
+		at = At::Text;
+		bol = true;
+	    }
+	    continued = false;
+	    continue;
+	}
+	if ( t.kind == T::rtComment )
+	    continue;
+	continued = t.kind == T::rtPunct && n == 1 && *s == '\\';
+	if ( continued )
+	    continue;
+	if ( bol && t.kind == T::rtHash )
+	{
+	    at = At::DirectiveWord;
+	    bol = false;
+	    continue;
+	}
+	bol = false;
+	if ( t.kind == T::rtPaste )
 	    has_paste = true;
+	if ( at == At::DirectiveWord )
+	{
+	    const W word = t.kind == T::rtIdentifier ? pp_directive_word(s, n) : W::Other;
+	    at = word == W::Define ? At::DefineName
+	       : word == W::Include ? At::IncludeOperand : At::Directive;
+	    if ( t.kind == T::rtIdentifier )
+		names.insert(madc::dis::istring(s, n));
+	    continue;
+	}
+	if ( at == At::IncludeOperand )	// a header-name, or a computed include
+	    at = (t.kind == T::rtPunct && *s == '<') || t.kind == T::rtLiteral
+		? At::Directive : At::DefineBody;
+	if ( at == At::DefineParams && t.kind == T::rtPunct && *s == ')' )
+	{
+	    at = At::DefineBody;
+	    continue;
+	}
+	if ( t.kind != T::rtIdentifier )
+	{
+	    if ( at == At::DefineName )
+		at = At::DefineBody;
+	    continue;
+	}
+	const madc::dis::istring name(s, n);
+	names.insert(name);
+	if ( at == At::DefineName )
+	{
+	    // The macro's own name; a `(` touching it opens the parameters.
+	    params.clear();
+	    at = i + 1 < tokens.size() && tokens[i + 1].kind == T::rtPunct
+		 && text[tokens[i + 1].begin] == '('
+		? At::DefineParams : At::DefineBody;
+	    if ( at == At::DefineParams )
+		++i;
+	    continue;
+	}
+	if ( at == At::DefineParams )
+	    params.push_back(name);
+	else if ( content && (at == At::Text
+			      || (at == At::DefineBody
+				  && std::find(params.begin(), params.end(), name) == params.end())) )
+	    content->insert(name);	// a body's parameter is the argument, never a macro
     }
     return has_paste;
 }
@@ -6136,6 +6243,15 @@ bool Program::forest_walk_unit(ForestWalk &w, uint32_t unit, bool reinclude)
 	    return true;
 	}
     }
+    // B211: a unit spelling a macro the program changed (forest_read_program_macros).
+    if ( unit < s.unit_program_macro.size() && s.unit_program_macro[unit] )
+    {
+	const char *rname = s.forest->unit_name(w.root);
+	DBG(std::cout << "forest bind: DECLINE root " << (rname ? rname : "?") << " — unit "
+	    << (uname ? uname : "?") << " spells the program's macro '"
+	    << strpool.c_str(s.unit_program_macro[unit]) << "'" << std::endl);
+	return false;
+    }
     w.on_stack.insert(unit);
     double children = 0;
     while ( i_ev < ev_hi || i_ed < ed_hi || i_c < c_hi )
@@ -6189,6 +6305,85 @@ static madc::dis::istring embedded_unit_include_key(const char *uname)
     return madc::dis::istring(std::string("<") + uname + ">");
 }
 
+// B211: a #define / #undef about to be written from text — never a walk's
+// replay (forest_macro_undo) or the freeze — noted with its file and the
+// name's state before, while a later include may still bind.
+void Program::forest_note_program_macro(const char *name)
+{
+    if ( !registration_policy.enable_forest_bind || pack_recording || forest_macro_undo
+      || forest_system.bind_stopped || !*name )
+	return;
+    const uint32_t sid = strpool.intern(name);
+    ForestSide::ProgramMacroWrite pw = { sid, source.fname_name(), forest_macro_state_hash(*this, sid) };
+    forest_system.program_macro_writes.push_back(pw);
+}
+
+// B211: the program's macro writes since the last root walk, read into the
+// per-unit marks. A unit spelling (SPELLED_NAMES) a name whose state the
+// program changed was frozen without that change: its tokens expand otherwise
+// here, so its root declines and lexes from text — gcc's PCH rule, a macro
+// defined ahead "must not appear in the precompiled header". A write read from
+// a frozen unit's own text (a declined root lexed live) is the freeze's macro;
+// a name back at its state before the program's first write is unchanged. A
+// name the program wrote first while it was undefined: a directive's spelling
+// of it (CIR_SPELLED_DIRECTIVE_ONLY) is a condition the freeze recorded (an
+// undefined name with no origin is external, pack_note_recorded_consult) and
+// the walk evaluates — only where it expands declines. A name defined before
+// (a predefine, a bound header's): every spelling. No table: every unit.
+void Program::forest_read_program_macros(ForestSide &s)
+{
+    if ( s.program_macro_writes.empty() )
+	return;
+    CirFrozenForest *f = s.forest;
+    std::vector<uint32_t> written;
+    madc::dis::istring file;
+    bool frozen = false;
+    for ( const ForestSide::ProgramMacroWrite &pw : s.program_macro_writes )
+    {
+	if ( pw.file != file )
+	{
+	    file = pw.file;
+	    frozen = !file.empty() && f->find_unit(file) >= 0;
+	}
+	if ( frozen )
+	    continue;
+	s.program_macro_before.insert(std::make_pair(pw.sid, pw.before));
+	written.push_back(pw.sid);
+    }
+    s.program_macro_writes.clear();
+    if ( written.empty() )
+	return;
+    const uint32_t nunits = f->unit_count();
+    if ( s.unit_program_macro.size() < nunits )
+	s.unit_program_macro.resize(nunits, 0);
+    const ForestDeclNames &spelled = f->spelled_names();
+    const uint64_t undefined = forest_macro_state_hash(*this, 0);	// id 0 (the empty spelling) is never a macro
+    for ( const uint32_t sid : written )
+    {
+	const uint64_t before = s.program_macro_before[sid];
+	if ( forest_macro_state_hash(*this, sid) == before )
+	    continue;
+	const bool fresh = before == undefined;
+	if ( spelled.empty() )
+	{
+	    for ( uint32_t u = 0; u < nunits; ++u )
+		if ( !s.unit_program_macro[u] )
+		    s.unit_program_macro[u] = sid;
+	    continue;
+	}
+	uint32_t n = 0;
+	const uint32_t *units = spelled.units_of(strpool.c_str(sid), n);
+	for ( uint32_t k = 0; k < n; ++k )
+	{
+	    if ( fresh && (units[k] & CIR_SPELLED_DIRECTIVE_ONLY) )
+		continue;
+	    const uint32_t u = units[k] & ~CIR_SPELLED_DIRECTIVE_ONLY;
+	    if ( u < nunits && !s.unit_program_macro[u] )
+		s.unit_program_macro[u] = sid;
+	}
+    }
+}
+
 // Walk a root (reinclude: a bound guard-less root read again — its first
 // inclusion re-walked against the state here). Commit: the walked units join
 // s.chain in post-order, each embedded one's once-only key is recorded (a
@@ -6200,6 +6395,7 @@ static madc::dis::istring embedded_unit_include_key(const char *uname)
 bool Program::forest_walk_root(ForestSide &s, uint32_t root, bool reinclude)
 {
     ForestWorkFrame _fw(&_forest_work_seconds, &_forest_work_depth);
+    forest_read_program_macros(s);
     ForestWalk w(s, root);
     ForestMacroUndo *const outer = forest_macro_undo;
     forest_macro_undo = &w.undo;	// a decline restores every name the walk wrote
@@ -9284,6 +9480,7 @@ TokenBase *Program::_getToken()
 			    source.get();
 			std::string body = read_macro_body(source);
 			macro.body = body;
+			forest_note_program_macro(name.c_str());
 			MadcSharedPreludeCache::set_macro(*this, name, NULL, &macro);
 			pack_record_define_fn(name, macro);
 			DBG(std::cout << "#define " << name << "(");
@@ -9297,6 +9494,7 @@ TokenBase *Program::_getToken()
 		    while ( source.peek() == ' ' || source.peek() == '\t' )
 			source.get();
 		    std::string value = read_macro_body(source);
+		    forest_note_program_macro(name.c_str());
 		    MadcSharedPreludeCache::set_macro(*this, name, &value, NULL);
 		    pack_record_define(name, value);
 		    DBG(std::cout << "#define " << name << " " << value << std::endl);
@@ -9309,6 +9507,7 @@ TokenBase *Program::_getToken()
 		    std::string name;
 		    while ( source.good() && !source.eof() && (isalnum(source.peek()) || source.peek() == '_') )
 			name += source.get();
+		    forest_note_program_macro(name.c_str());
 		    MadcSharedPreludeCache::set_macro(*this, name, NULL, NULL);
 		    pack_record_undef(name);
 		    DBG(std::cout << "#undef " << name << std::endl);
@@ -10927,30 +11126,6 @@ TokenBase *Program::_getToken()
     }
 
     return NULL;
-}
-
-// A directive's word as an enum, read once from its spelling (enum over
-// strings): the words a skipped group acts on; any other is Other.
-enum class PpDirectiveWord : unsigned char { Other, If, Ifdef, Ifndef, Elif, Else, Endif };
-
-static PpDirectiveWord pp_directive_word(const char *w, size_t n)
-{
-    typedef PpDirectiveWord W;
-    switch ( n )
-    {
-    case 2:
-	return memcmp(w, "if", 2) == 0 ? W::If : W::Other;
-    case 4:
-	return memcmp(w, "else", 4) == 0 ? W::Else
-	     : memcmp(w, "elif", 4) == 0 ? W::Elif : W::Other;
-    case 5:
-	return memcmp(w, "ifdef", 5) == 0 ? W::Ifdef
-	     : memcmp(w, "endif", 5) == 0 ? W::Endif : W::Other;
-    case 6:
-	return memcmp(w, "ifndef", 6) == 0 ? W::Ifndef : W::Other;
-    default:
-	return W::Other;
-    }
 }
 
 // skip tokens in a false #ifdef/#ifndef/#if/#elif/#else block

@@ -1,0 +1,14 @@
+// A macro the program defines ahead of an include changes every token of the
+// header it names (C11 6.10.3): <time.h>'s `tm_sec` member is `my_sec` here.
+// A packed header frozen without the macro declines its root and lexes from
+// text (BUGS.md B211). Oracle: gcc 13 and clang 18 (-std=gnu17) print 7.
+#define tm_sec my_sec
+#include <time.h>
+#include <stdio.h>
+int main(void)
+{
+	struct tm t = {0};
+	t.tm_sec = 7;
+	printf("%d\n", t.my_sec);
+	return 0;
+}

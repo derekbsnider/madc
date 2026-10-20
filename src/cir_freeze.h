@@ -170,6 +170,12 @@ enum : uint32_t
 	SNAP_KIND_CIR_DECL_NAMES_HASH  = madc::dis::SNAP_KIND_CONSUMER + 34
 };
 
+// B211: a SPELLED_NAMES unit word with this bit spells the name only in a
+// directive's word, condition, header-name or #define / #undef name — never
+// where a macro expands (source_spelled_names' `content`). A table without the
+// bits (frozen before B211) reads as every spelling content.
+static const uint32_t CIR_SPELLED_DIRECTIVE_ONLY = 0x80000000u;
+
 // v68: one frozen condition record's words (SNAP_KIND_CIR_UNIT_CONDS).
 enum cir_forest_cond_field : uint32_t {
 	CIR_COND_KIND = 0,	// Program::CondDirective (If / Ifdef / Ifndef / Elif)

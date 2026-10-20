@@ -1,6 +1,16 @@
 # Changelog
 
 ## [Unreleased]
+### A program macro defined ahead of an include reaches the packed header that spells it
+
+- A `#define` or `#undef` the program makes before an `#include` is seen by the verified bind. A frozen unit that spells the macro's name in its ordinary tokens declines its root, and the root lexes from text, as gcc does for a precompiled header (a macro defined before the PCH must be as it was at PCH build, or must not affect it).
+- Before, the packed `madc-release` bound the frozen `<time.h>` closure for `#define tm_sec my_sec` followed by `t.tm_sec = 7;`, and refused with `Unidentified member 'my_sec' in 'tm'` (C and C++).
+- A name spelled only in directives (a `#if` condition, an `#include` operand, a `#define` or `#undef` name, `#error` text) keeps binding. A program macro first written while undefined skips directive-only spellings. A condition-only program macro (the `[armreplay]` leg's `FBG_LV_WIDE`) still binds.
+- The freeze's `SPELLED_NAMES` unit word carries `CIR_SPELLED_DIRECTIVE_ONLY` (`0x80000000`) on a name spelled only in directives. A table without the bit reads every name as content.
+- `tests/testprogmacrobind_c.mad` (`--std=gnu17`) and `tests/testprogmacrobind.mad` (`--std=gnu++17`) print `7`, as gcc 13 and clang 18 (C) and g++ 13 and clang++ 18 (C++) do. The packed `madc-release` refused both before this change.
+- `scripts/forest_bind_gate.sh` has a `[progmacro]` leg. C and C++ containers include `fbgate_pm_a.h` (spells `fbg_pm_sec`) and `fbgate_pm_b.h`. A program `#define fbg_pm_sec fbg_pm_mine` declines `a.h`'s root and binds `b.h` (`v=8`, as gcc and g++). An `#undef` of that define binds `a.h` (`v=8`).
+- Parse-cost, measured against the re-recorded baseline: +0.01% to +0.03% on every row (`sqlite3.forest` +3.6M of 13.24G Ir; `rung` rows +4K to +13K). `act_wiz` +0.36M of 1.50G; the madc/c2m ratio stays 1.089x. Objects are byte-identical.
+
 ### The verified C++ bind is on for every consumer; an overlapping decline stops binding
 
 - The verified bind is on for every C++ and madc consumer. The `MADC_FOREST_ENV_CHECK` knob and `forest_bind_verified()` are deleted. `ForestWalk` always logs its writes (`forest_macro_undo`) and evaluates every recorded conditional. Before, a C++ consumer followed the frozen arm unless the knob was set.
