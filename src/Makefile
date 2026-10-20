@@ -211,6 +211,15 @@ ifeq ($(MODE),cross-aarch64-linux)
 # MADC_CROSS_TARGET names the target for the driver's emit-only guard.
 MIRLIB	= $(MIRBUILD)/aarch64-linux/libmir.a
 DEFINES += -DMIR_TARGET_AARCH64_LINUX -DMADC_CROSS_TARGET='"aarch64-linux"'
+# The include world and predefined macros this madc presents are the
+# TARGET's: captured from aarch64 g++ into the mode's obj tree (the darwin
+# and windows per-mode tables). Captured from the host g++ (HOSTTAB_CXX ?=
+# $(CXX)), the aarch64 madc predefined __x86_64__ and not __aarch64__, an x87
+# __LDBL_MANT_DIG__ and a signed plain char, and searched x86-64 glibc.
+AARCH64_LINUX_CXX ?= aarch64-linux-gnu-g++
+HOSTTAB_CXX = $(AARCH64_LINUX_CXX)
+SYS_INCLUDES_CPP = $(OBJDIR)/sys_include_paths.cpp
+export MADC_SYS_INCLUDES_OUT = $(SYS_INCLUDES_CPP)
 endif
 # PCRE2 — madc's ONE regex engine (split arc 1A.3,
 # docs/plans/2026-10-10-pcre2-design.md). Linux and the emit-only cross

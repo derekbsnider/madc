@@ -19,7 +19,9 @@
 # aarch64_char_sign.c (plain char is UNSIGNED here: signed char's folds, its
 # emitted spelling and _Generic's match, which read plain char), and
 # aarch64_varargs.c (a program DEFINING a variadic function: its va_arg calls
-# libmir's mir.va_arg / mir.va_block_arg, which an executable could not find). THREE LEGS each:
+# libmir's mir.va_arg / mir.va_block_arg, which an executable could not find),
+# and aarch64_predef.c (the target's predefined macros and header world, which
+# the cross madc captured from the x86-64 host g++). THREE LEGS each:
 #   oracle  aarch64-linux-gnu-gcc's binary under qemu — the expected output.
 #   aot     bin/madc-aarch64-linux -c, linked by aarch64 gcc against the target's
 #           libmir (a madc executable gets libmir through libmadc), run under
@@ -40,6 +42,9 @@ FIX=tests/cross/aarch64_ldouble.c
 CC=aarch64-linux-gnu-gcc
 NM=aarch64-linux-gnu-nm
 QEMU="qemu-aarch64-static -L /usr/aarch64-linux-gnu"
+# the target's C headers, for the c2m legs (jit, boot): c2m's built-in search
+# opens the host's /usr/include, whose x86-64 bits/ an aarch64 c2m cannot use
+TINC=/usr/aarch64-linux-gnu/include
 MADC=bin/madc-aarch64-linux
 JITB="$PWD/obj/mir/aarch64-native"
 LIBMIR="$JITB/libmir.a" # the native aarch64 libmir the aot leg links (obj/mir/aarch64-linux is the x86-hosted cross build's)
@@ -93,7 +98,7 @@ for fx in tests/cross/aarch64_*.c; do
 	fi
 	# jit: a gcc-built aarch64 c2m through the generator (-eg)
 	if [ -x "$JITB/c2m" ]; then
-		if ! $QEMU "$JITB/c2m" "$fx" -eg > "$D/$n.jit" 2> "$D/$n.jit.err" \
+		if ! $QEMU "$JITB/c2m" -I"$TINC" "$fx" -eg > "$D/$n.jit" 2> "$D/$n.jit.err" \
 		   || ! diff -q "$D/$n.oracle" "$D/$n.jit" >/dev/null; then
 			echo "RED  $n jit: output differs from the gcc oracle"; head -3 "$D/$n.jit.err"
 			diff "$D/$n.oracle" "$D/$n.jit" | head -12; fail=1
@@ -114,7 +119,7 @@ done
 if [ -x "$JITB/c2m" ]; then
 	M=third_party/mir
 	BS="$M/mir-gen.c $M/c2mir/c2mir.c $M/c2mir/c2mir-driver.c $M/mir.c $M/mir-debug.c $M/mir-debug-gdb.c"
-	BF="-w -DMIR_BOOTSTRAP -I/usr/aarch64-linux-gnu/include -I$M"
+	BF="-w -DMIR_BOOTSTRAP -I$TINC -I$M"
 	if ! timeout 1800 $QEMU "$JITB/c2m" $BF $BS -o "$D/boot1.bmir" > "$D/boot1.log" 2>&1; then
 		echo "RED  boot: stage 1 (gcc-built c2m compiling MIR) failed"; head -3 "$D/boot1.log"; fail=1
 	elif ! timeout 3600 $QEMU "$JITB/c2m" -DMIR_BOOTSTRAP "$D/boot1.bmir" -el $BF $BS -o "$D/boot2.bmir" > "$D/boot2.log" 2>&1; then
