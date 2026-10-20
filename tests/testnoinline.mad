@@ -1,50 +1,48 @@
 /* __attribute__((noinline)): a function so marked is never inlined, at any
  * optimization level. leaf, called from middle, called from main -- direct
- * calls, every callee small -- learns its own identity through self_id (one
- * frame up from self_id's caller) and walks the stack with _Unwind_Backtrace.
- * leaf carries the attribute on its prior declaration only, in the reserved
- * spelling; gcc merges it into the definition. madc dropped the attribute and
- * MIR inlined every small direct call, so every caller read as main
- * ("distinct frames: 0"). (Which frames the walk itself reports is
- * testunwind_backtrace's subject: clang -O2 keeps every frame here, yet its
- * walk skips leaf and middle.)
- * Oracle: gcc 13 and clang 18, -O0 and -O2: the lines below. */
+ * calls, every callee small -- learns its own frame through self_id (the CFA
+ * of self_id's caller, one frame up the unwind) and walks the stack with
+ * _Unwind_Backtrace. leaf carries the attribute on its prior declaration
+ * only, in the reserved spelling; gcc merges it into the definition. madc
+ * dropped the attribute and MIR inlined every small direct call, so every
+ * caller's frame was main's ("distinct frames: 0"). A frame is told by its
+ * CFA, never by _Unwind_FindEnclosingFunction: macOS answers that from
+ * compact unwind, whose ranges merge adjacent functions (clang -O0 there
+ * names main for an address in self_id). (Which frames the walk itself
+ * reports is testunwind_backtrace's subject.)
+ * Oracle: gcc 13 and clang 18 (Linux), clang 16 (macOS arm64 and x86-64),
+ * -O0 and -O2: the lines below. */
 #include <stdint.h>
 #include <stdio.h>
 
 struct _Unwind_Context;
 typedef int (*trace_fn) (struct _Unwind_Context *, void *);
 extern int _Unwind_Backtrace (trace_fn, void *);
-extern uintptr_t _Unwind_GetIP (struct _Unwind_Context *);
-extern void *_Unwind_FindEnclosingFunction (void *);
-
-static void *enclosing (struct _Unwind_Context *ctx) {
-	return _Unwind_FindEnclosingFunction ((void *) (_Unwind_GetIP (ctx) - 1));
-}
+extern uintptr_t _Unwind_GetCFA (struct _Unwind_Context *);
 
 /* frame 1 is self_id itself, frame 2 its caller */
-struct up { int n; void *fn; };
+struct up { int n; uintptr_t cfa; };
 static int up_trace (struct _Unwind_Context *ctx, void *arg) {
 	struct up *u = arg;
 	if (++u->n < 2) return 0;
-	u->fn = enclosing (ctx);
+	u->cfa = _Unwind_GetCFA (ctx);
 	return 5; /* _URC_END_OF_STACK: stop */
 }
-__attribute__((noinline)) static void *self_id (void) {
-	struct up u = {0, NULL};
+__attribute__((noinline)) static uintptr_t self_id (void) {
+	struct up u = {0, 0};
 	_Unwind_Backtrace (up_trace, &u);
-	return u.fn;
+	return u.cfa;
 }
 
-static void *ids[3];
+static uintptr_t ids[3];
 static int seen[3], frames;
 
 static int trace (struct _Unwind_Context *ctx, void *arg) {
 	(void) arg;
-	void *fn = enclosing (ctx);
+	uintptr_t cfa = _Unwind_GetCFA (ctx);
 	frames++;
 	for (int i = 0; i < 3; i++)
-		if (fn != NULL && fn == ids[i] && seen[i] == 0) seen[i] = frames;
+		if (cfa != 0 && cfa == ids[i] && seen[i] == 0) seen[i] = frames;
 	return 0; /* _URC_NO_REASON: keep walking */
 }
 
@@ -61,10 +59,14 @@ static __attribute__((noinline)) int middle (int n) {
 }
 
 int main (void) {
+	/* volatile: a constant argument lets clang -O2 fold leaf's and middle's
+	 * results into main and turn middle's call into a tail call (`jmp
+	 * leaf`), which reuses middle's frame -- legal under noinline. */
+	volatile int three = 3;
 	ids[2] = self_id ();
-	int r = middle (3);
+	int r = middle (three);
 	printf ("result %d\n", r);
-	printf ("distinct frames: %d\n", ids[0] != NULL && ids[0] != ids[1] && ids[1] != ids[2]
+	printf ("distinct frames: %d\n", ids[0] != 0 && ids[0] != ids[1] && ids[1] != ids[2]
 		&& ids[0] != ids[2]);
 	printf ("main found: %d\n", seen[2] != 0);
 #if __has_attribute (noinline)
