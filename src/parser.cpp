@@ -14626,7 +14626,10 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
     // keeps the lazy opaque route (arming it real-instantiated container
     // internals eagerly and broke their lowering — the new_allocator
     // address() regression).
-    bool stmt_scope_demand = !dependent_parse_in_progress
+    // C has no templates: the demand is read only around a template
+    // instantiation, so the scan is C++'s alone.
+    bool stmt_scope_demand = presents_as_cpp()
+			  && !dependent_parse_in_progress
 			  && class_scope_stack.empty()
 			  && !class_pattern_capture_in_progress;
     if ( stmt_scope_demand )
@@ -14635,10 +14638,18 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
 	if ( !tokens.empty() && tokens[0]
 	  && tokens[0]->id() == TokenID::tkLT )
 	{
-	    DelimDepth d;
-	    // The deque starts AT the '<'; seed the tracker's context with
-	    // the template-name token so the opener is recognized.
-	    d.prev = tb;
+	    // With the Program, the tracker asks name lookup whether this `<`
+	    // opens ([temp.names]/3): a name lookup finds as a variable or
+	    // other non-template (`if (x < y)` probes `x` here) reads it as
+	    // less-than, so the scan ends at its first step instead of running
+	    // to a later `>` or the guard. The deque starts AT the '<'; seed
+	    // the tracker's context with the name token and the token before
+	    // it, so a qualified name (`ns::Tmpl <`) keeps the opening reading
+	    // a stream scan gives it.
+	    DelimDepth d(this);
+	    d.prev = d.hist[0] = tb;
+	    if ( curToken() == tb )
+		d.hist[1] = prevToken();
 	    size_t qi = 0;
 	    size_t guard = 0;
 	    while ( qi < tokens.size() && ++guard < 4096 )

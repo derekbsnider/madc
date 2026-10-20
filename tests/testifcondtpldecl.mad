@@ -1,0 +1,24 @@
+// An if condition's first token is probed as a declared type ([stmt.select]/1:
+// condition: expression | decl-specifier-seq declarator = initializer). A plain
+// object followed by `<` / `<=` is a comparison, never a template-argument
+// list; a template-id head (with or without a `::` member) is a declaration.
+// Oracle: g++ -std=c++17 and clang++ -std=c++17 print the lines in the .expect.
+#include <stdio.h>
+
+template <class T> struct Wrap { typedef T type; static const int value = 7; };
+template <class T> struct Box { T v; explicit operator bool() const { return v != 0; } };
+
+int main()
+{
+	int a = 1, b = 2, c = 5, d = 3;
+	if (a < b) printf("lt: yes\n");
+	if (b <= a) printf("le: wrong\n"); else printf("le: no\n");
+	if (a < b && c > d) printf("lt-and-gt: yes\n");
+	if (a < Wrap<int>::value) printf("lt-member: yes\n");
+	if (Wrap<int>::type x = c - d) printf("decl-member: %d\n", x);
+	Box<int> bx = { 4 };
+	if (Box<int> *p = &bx) printf("decl-ptr: %d\n", p->v);
+	if (Box<int> q = bx) printf("decl-obj: %d\n", q.v);
+	if (const Wrap<long>::type y = 9) printf("decl-const: %ld\n", y);
+	return 0;
+}

@@ -1,6 +1,15 @@
 # Changelog
 
 ## [Unreleased]
+### An if condition's template-id probe asks name lookup whether `<` opens a template-argument list
+
+- The statement-scope template-id demand in `Program::resolve_declared_type_token` builds its delimiter tracker with the Program (`DelimDepth d(this)`), so a variable followed by `<` ends the scan at its first step. Before, `if (a < b)` scanned forward to a later `>` in the file, or to the 4096-step guard.
+- The scan is seeded with the name and the token before it when the name is current, so a qualified template name (`ns::Tmpl <`) keeps the opening reading. Template, unknown and dependent names keep the opening reading as before.
+- The demand runs only in C++ (`presents_as_cpp()`). C has no templates.
+- A synthetic file of 2000 `if (a < b)` statements with no `>` token: callgrind instruction counts drop from 1,847,577,510 to 384,084,153 (-79.2%). The `<=` form of the same file is 382,488,233.
+- The `-c` objects for `act_wiz.c` and `sqlite3.c` are byte-identical before and after the change. Callgrind instruction counts drop from 1,619,050,350 to 1,609,228,176 (-0.6%) for `act_wiz.c` and from 13,648,101,620 to 13,403,586,299 (-1.8%) for `sqlite3.c`.
+- `tests/testifcondtpldecl.mad` covers comparisons beside template-id condition declarations; its output matches g++ and clang++ under `--std=c++17`.
+
 ### The expression parser's identifier arm asks the ordinary-call lookups only where they are read
 
 - `Program::parseExpr_identifierArm` evaluates `find_variable_for_contextual_type_name` and the dynamic-symbol probe only when the functional-construction test (`name (` / `name {` outside member-access position) can hold. Other identifiers no longer pay for a scope lookup and a dlsym probe whose answer was never read.
