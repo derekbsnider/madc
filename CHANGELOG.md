@@ -1,6 +1,12 @@
 # Changelog
 
 ## [Unreleased]
+### c2mir memoizes each type's alias class
+
+- `get_type_alias` in `third_party/mir/c2mir/c2mir.c` caches its result per (mode, pointee object) for a pointer and per (mode, tag node) for a union or an enum. A cache hit returns the stored alias class; a miss computes it as before and stores it.
+- Generated code is unchanged: the `-c` object for `sqlite3.c` is byte-identical before and after the change.
+- The release build compiles `sqlite3.c` in 2,245 ms (best of 3), down from 2,723 ms.
+
 ### A `-g` image describes its frames in `.eh_frame` alone
 
 A `-g` object or executable carries `.debug_abbrev`, `.debug_info` and `.debug_line` and, when it has `.eh_frame`, no `.debug_frame` (the gcc/clang `-g` shape). An image without `.eh_frame` still gets `.debug_frame`. `scripts/check-debuginfo-gdb.sh` (in `make gates`) drives gdb over a `-g` executable: it stops at a breakpoint in a leaf function with its arguments, backtraces through the callers to `main`, and reads locals in each frame.

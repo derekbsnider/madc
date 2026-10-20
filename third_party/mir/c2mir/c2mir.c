@@ -12762,6 +12762,20 @@ DEF_VARR (MIR_op_t);
 DEF_VARR (case_t);
 DEF_HTAB (MIR_item_t);
 
+/* get_type_alias's memo (gcc caches a type's alias set the same way,
+   TYPE_ALIAS_SET): a pointer's alias name is a function of its pointee object
+   alone, a union's or an enum's of its tag node, so each class is computed
+   once per (mode, pointee or tag) instead of once per memory access -- an
+   access through a pointer to a large struct walks every member, nested
+   structs included.  Types are immutable during generation and outlive
+   gen_ctx, which owns the table. */
+typedef struct {
+  enum type_mode mode;
+  const void *key;
+  MIR_alias_t alias;
+} type_alias_memo_t;
+DEF_HTAB (type_alias_memo_t);
+
 struct gen_ctx {
   op_t zero_op, one_op, minus_one_op;
   MIR_item_t curr_func;
@@ -12807,6 +12821,7 @@ struct gen_ctx {
   HTAB (MIR_item_t) * proto_tab;
   VARR (node_t) * node_stack;
   VARR (MIR_alias_t) * union_alias_done; /* union classes whose member conflicts are registered */
+  HTAB (type_alias_memo_t) * type_alias_memo;
   int curr_no_strict_aliasing_p; /* current func has optimize("-fno-strict-aliasing") */
   /* Unwind regions (c2mir_options.unwind_regions_p): the region live at the
      code being generated -- lexical, like the scopes the cleanup variables
@@ -12865,6 +12880,7 @@ struct gen_ctx {
 #define proto_tab gen_ctx->proto_tab
 #define node_stack gen_ctx->node_stack
 #define union_alias_done gen_ctx->union_alias_done
+#define type_alias_memo gen_ctx->type_alias_memo
 #define curr_no_strict_aliasing_p gen_ctx->curr_no_strict_aliasing_p
 
 static op_t new_op (decl_t decl, MIR_op_t mir_op) {
@@ -13216,12 +13232,40 @@ static struct type *enclosing_anon_union_type (decl_t decl) {
   return res;
 }
 
+static htab_hash_t type_alias_memo_hash (type_alias_memo_t m, void *arg MIR_UNUSED) {
+  return (htab_hash_t) (mir_hash_finish (
+    mir_hash_step (mir_hash_step (mir_hash_init (0x42), (uint64_t) m.mode),
+                   (uint64_t) (uintptr_t) m.key)));
+}
+
+static int type_alias_memo_eq (type_alias_memo_t m1, type_alias_memo_t m2,
+                               void *arg MIR_UNUSED) {
+  return m1.mode == m2.mode && m1.key == m2.key;
+}
+
+/* The object a type's alias name is a function of, or NULL for a type whose
+   name is a character or two (basic types) -- not worth a probe. */
+static const void *type_alias_memo_key (struct type *type) {
+  switch (type->mode) {
+  case TM_PTR: return type->u.ptr_type;
+  case TM_UNION:
+  case TM_ENUM: return type->u.tag_type;
+  default: return NULL;
+  }
+}
+
 static MIR_alias_t get_type_alias (c2m_ctx_t c2m_ctx, struct type *type) {
   MIR_context_t ctx = c2m_ctx->ctx;
   gen_ctx_t gen_ctx = c2m_ctx->gen_ctx;
   MIR_alias_t alias;
+  type_alias_memo_t memo, found;
 
   if (curr_no_strict_aliasing_p) return 0; /* every access may alias in this function */
+  memo.mode = type->mode;
+  memo.key = type_alias_memo_key (type);
+  memo.alias = 0;
+  if (memo.key != NULL && HTAB_DO (type_alias_memo_t, type_alias_memo, memo, HTAB_FIND, found))
+    return found.alias;
   switch (type->mode) {
   case TM_BASIC:
     if (type->u.basic_type != TP_CHAR && type->u.basic_type != TP_SCHAR
@@ -13255,6 +13299,10 @@ static MIR_alias_t get_type_alias (c2m_ctx_t c2m_ctx, struct type *type) {
           add_union_member_conflicts (c2m_ctx, decl->decl_spec.type, alias);
         }
     }
+  }
+  if (memo.key != NULL) {
+    memo.alias = alias;
+    HTAB_DO (type_alias_memo_t, type_alias_memo, memo, HTAB_INSERT, found);
   }
   return alias;
 }
@@ -21230,6 +21278,7 @@ static void gen_finish (c2m_ctx_t c2m_ctx) {
   if (init_els != NULL) VARR_DESTROY (init_el_t, init_els);
   if (node_stack != NULL) VARR_DESTROY (node_t, node_stack);
   if (union_alias_done != NULL) VARR_DESTROY (MIR_alias_t, union_alias_done);
+  if (type_alias_memo != NULL) HTAB_DESTROY (type_alias_memo_t, type_alias_memo);
   MIR_free (c2m_alloc (c2m_ctx), c2m_ctx->gen_ctx);
 }
 
@@ -21254,6 +21303,8 @@ static void gen_mir (c2m_ctx_t c2m_ctx, node_t r) {
   init_els_start = init_els_num = 0;
   VARR_CREATE (node_t, node_stack, alloc, 8);
   VARR_CREATE (MIR_alias_t, union_alias_done, alloc, 8);
+  HTAB_CREATE (type_alias_memo_t, type_alias_memo, alloc, 256, type_alias_memo_hash,
+               type_alias_memo_eq, NULL);
   abort_proto = abort_item = memcmp_proto = memcmp_item = copysignf_proto = copysignf_item
     = nan_proto = nan_item = memset_proto = memset_item = memcpy_proto = memcpy_item = NULL;
   int128_divmod_proto = divti3_item = udivti3_item = modti3_item = umodti3_item = NULL;
