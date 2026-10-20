@@ -3070,7 +3070,7 @@ TokenCallMethod *Program::arrow_operator_call(TokenBase *lhs, TokenBase *loc_tb)
     // the chained-receiver precedent of the arrow method-call arm.
     if ( !lhs )
 	return NULL;
-    TokenVar *otv = dynamic_cast<TokenVar *>(lhs);
+    TokenVar *otv = lhs->as_var_tok();
     if ( !otv )
 	return NULL;
     DataDef *rdd = NULL;
@@ -3087,7 +3087,7 @@ TokenCallMethod *Program::arrow_operator_call(TokenBase *lhs, TokenBase *loc_tb)
 	   || lhs->type() == TokenType::ttCallMethod
 	   || lhs->type() == TokenType::ttCallFunc )
     {
-	if ( TokenMember *mtm = dynamic_cast<TokenMember *>(lhs) )
+	if ( TokenMember *mtm = lhs->as_member_tok() )
 	    if ( mtm->is_fixed_array_member() )
 		return NULL;
 	rdd = lhs->datadef();
@@ -18490,14 +18490,14 @@ static int64_t known_object_size_for_expr(TokenBase *expr, int mode)
 {
     if ( !expr )
 	return -1;
-    if ( TokenVar *tv = dynamic_cast<TokenVar *>(expr) )
+    if ( TokenVar *tv = expr->as_var_tok() )
     {
 	int64_t array_size = fixed_array_object_size(tv->var);
 	if ( array_size >= 0 )
 	    return array_size;
 	return tv->var.object_size_hint;
     }
-    if ( TokenMember *tm = dynamic_cast<TokenMember *>(expr) )
+    if ( TokenMember *tm = expr->as_member_tok() )
     {
 	if ( tm->is_fixed_array_member() )
 	{
@@ -18508,16 +18508,16 @@ static int64_t known_object_size_for_expr(TokenBase *expr, int mode)
 	}
 	return tm->var.object_size_hint;
     }
-    if ( TokenAddrOf *tao = dynamic_cast<TokenAddrOf *>(expr) )
+    if ( TokenAddrOf *tao = expr->as_addr_of_tok() )
     {
 	int64_t array_size = fixed_array_object_size(tao->var);
 	if ( array_size >= 0 )
 	    return array_size;
 	return tao->var.type ? (int64_t)tao->var.type->size : -1;
     }
-    if ( TokenAddrExpr *tae = dynamic_cast<TokenAddrExpr *>(expr) )
+    if ( TokenAddrExpr *tae = expr->as_addr_expr_tok() )
 	return known_object_size_for_lvalue(tae->expr, mode);
-    if ( TokenAdd *ta = dynamic_cast<TokenAdd *>(expr) )
+    if ( TokenAdd *ta = expr->id() == TokenID::tkAdd ? static_cast<TokenAdd *>(expr) : NULL )
     {
 	int64_t offset = 0;
 	if ( try_eval_known_integer(ta->right, offset) )
@@ -18532,7 +18532,7 @@ static int64_t known_object_size_for_expr(TokenBase *expr, int mode)
 	}
 	return -1;
     }
-    if ( TokenSub *ts = dynamic_cast<TokenSub *>(expr) )
+    if ( TokenSub *ts = expr->id() == TokenID::tkSub ? static_cast<TokenSub *>(expr) : NULL )
     {
 	int64_t offset = 0;
 	if ( try_eval_known_integer(ts->right, offset) )
@@ -18542,7 +18542,7 @@ static int64_t known_object_size_for_expr(TokenBase *expr, int mode)
 	}
 	return -1;
     }
-    if ( TokenTerQ *tt = dynamic_cast<TokenTerQ *>(expr) )
+    if ( TokenTerQ *tt = expr->as_terq_tok() )
     {
 	int64_t true_size = known_object_size_for_expr(tt->true_expr, mode);
 	int64_t false_size = known_object_size_for_expr(tt->false_expr, mode);
@@ -18551,9 +18551,9 @@ static int64_t known_object_size_for_expr(TokenBase *expr, int mode)
 	return mode == 1 ? std::min(true_size, false_size)
 			 : std::max(true_size, false_size);
     }
-    if ( TokenCast *tc = dynamic_cast<TokenCast *>(expr) )
+    if ( TokenCast *tc = expr->as_cast_tok() )
 	return known_object_size_for_expr(tc->expr, mode);
-    if ( TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(expr) )
+    if ( TokenCallFunc *tcf = expr->as_callfunc_tok() )
     {
 	if ( (tcf->var.name == "__builtin_alloca" || tcf->var.name == "alloca" || tcf->var.name == "malloc")
 	  && tcf->argc() == 1 )
@@ -18570,9 +18570,9 @@ static void update_pointer_object_size_hints(TokenBase *expr)
 {
     if ( !expr )
 	return;
-    if ( TokenAssign *ta = dynamic_cast<TokenAssign *>(expr) )
+    if ( TokenAssign *ta = expr->as_assign_tok() )
     {
-	if ( TokenVar *lhs = dynamic_cast<TokenVar *>(ta->left) )
+	if ( TokenVar *lhs = ta->left ? ta->left->as_var_tok() : NULL )
 	{
 	    if ( lhs->var.type && lhs->var.type->is_pointer() && !lhs->var.is_fixed_array() )
 		lhs->var.object_size_hint = known_object_size_for_expr(ta->right, 0);
@@ -18581,13 +18581,13 @@ static void update_pointer_object_size_hints(TokenBase *expr)
 	update_pointer_object_size_hints(ta->right);
 	return;
     }
-    if ( TokenComma *tc = dynamic_cast<TokenComma *>(expr) )
+    if ( TokenComma *tc = expr->id() == TokenID::tkComma ? static_cast<TokenComma *>(expr) : NULL )
     {
 	update_pointer_object_size_hints(tc->left);
 	update_pointer_object_size_hints(tc->right);
 	return;
     }
-    if ( TokenTerQ *tt = dynamic_cast<TokenTerQ *>(expr) )
+    if ( TokenTerQ *tt = expr->as_terq_tok() )
     {
 	update_pointer_object_size_hints(tt->condition);
 	update_pointer_object_size_hints(tt->true_expr);
@@ -41580,7 +41580,7 @@ static bool fn_template_decl_arity_window(const std::vector<TokenBase *> &decl,
 // host (testufcscall, D4 measurements #3/#4, both arches).
 static bool free_callee_arity_inviable(Program &pgm, Variable *var, size_t argc)
 {
-    FuncDef *fd = var ? dynamic_cast<FuncDef *>(var->type) : NULL;
+    FuncDef *fd = var && var->type ? var->type->as_funcdef_dd() : NULL;
     if ( !fd || fd->function_display_name.empty() )
 	return false;
     madc::dis::istring key = fd->namespace_name + "::" + fd->function_display_name;
@@ -41609,7 +41609,7 @@ static bool free_callee_arity_inviable(Program &pgm, Variable *var, size_t argc)
 	for ( size_t ei = 0; ei < osi->second.size(); ++ei )
 	{
 	    Variable *ov = osi->second[ei].var;
-	    FuncDef *ofd = ov ? dynamic_cast<FuncDef *>(ov->type) : NULL;
+	    FuncDef *ofd = ov && ov->type ? ov->type->as_funcdef_dd() : NULL;
 	    if ( !ofd )
 		continue;
 	    ++candidates;
@@ -78890,7 +78890,7 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 		// lambda: auto fn = [](params) { body };
 		nextToken(); // consume '['
 		rhs_node = parseLambda();
-		rhs_var = &(dynamic_cast<TokenVar *>(rhs_node)->var);
+		rhs_var = &(rhs_node->as_var_tok()->var);
 	    }
 	    else
 	    {
@@ -79379,7 +79379,7 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 	// exactly like its unqualified type: every aggregate test below reads
 	// decl_type->unqualified(), while the variable keeps the qualified type.
     bool is_struct_init = arr_dims.empty()
-	    && dynamic_cast<DataDefSTRUCT *>(decl_type->unqualified()) != NULL
+	    && decl_type->unqualified()->as_struct_dd() != NULL
 	    && decl_type->type() == DataType::dtRESERVED;
 	bool is_simd_init = arr_dims.empty() && decl_type && decl_type->is_simd();
 	if ( nt->id() == TokenID::tkAssign && !provisional_decl_var )
@@ -79513,7 +79513,7 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 		auto nested_slot_type = [&](size_t slot_idx) -> DataDef * {
 		    if ( target_dd )
 		    {
-			DataDefSTRUCT *tsdd = dynamic_cast<DataDefSTRUCT *>(target_dd->unqualified());
+			DataDefSTRUCT *tsdd = target_dd->unqualified()->as_struct_dd();
 			if ( !tsdd )
 			    return NULL;
 			return aggregate_slot_member_type(tsdd,
@@ -79596,7 +79596,7 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 		// short and the construction owner (CIR class_array_list_init)
 		// value-initializes the absent slots.
 		if ( !arr_dims.empty() && depth < arr_dims.size()
-		  && !dynamic_cast<DataDefCLASS *>(decl_type ? decl_type->unqualified() : NULL) )
+		  && !(decl_type && decl_type->unqualified()->as_class_dd()) )
 		    while ( slit->inits.size() < arr_dims[depth] )
 			slit->inits.push_back(zero_array_initializer(depth));
 		return slit;
@@ -79607,7 +79607,7 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 	    auto top_slot_type = [&](size_t slot_idx) -> DataDef * {
 		if ( !arr_dims.empty() )
 		    return arr_dims.size() == 1 ? decl_type : NULL;
-		DataDefSTRUCT *tsdd = dynamic_cast<DataDefSTRUCT *>(decl_type->unqualified());
+		DataDefSTRUCT *tsdd = decl_type->unqualified()->as_struct_dd();
 		if ( !tsdd )
 		    return NULL;
 		return aggregate_slot_member_type(tsdd,
@@ -79640,7 +79640,7 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 		    : InitializerCursor::Shape();
 		bool literal_clause = next_init->type() == TokenType::ttString;
 		DataDefSTRUCT *sdd = is_struct_init
-		    ? dynamic_cast<DataDefSTRUCT *>(decl_type->unqualified()) : NULL;
+		    ? decl_type->unqualified()->as_struct_dd() : NULL;
 		size_t field_index = init_list.size();
 		if ( next_init->id() == TokenID::tkOpBrc )
 		{
@@ -79678,7 +79678,7 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 	    {
 		bool braced_clause = false, elided_clause = false;
 		for ( TokenBase *clause : init_list )
-		    (dynamic_cast<TokenStructLit *>(clause) ? braced_clause
+		    (clause && clause->as_struct_lit_tok() ? braced_clause
 							    : elided_clause) = true;
 		if ( braced_clause && elided_clause )
 		    cursor.elide_braces();
@@ -79689,7 +79689,7 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 	    {
 		bool has_nested_init = false;
 		for ( TokenBase *init : init_list )
-		    if ( dynamic_cast<TokenStructLit *>(init) != NULL )
+		    if ( init && init->as_struct_lit_tok() )
 			has_nested_init = true;
 
 		size_t tail_count = 1;
@@ -79860,11 +79860,11 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 		// 6.5.3.4p2). Constant dims (TokenInt) need no capture.
 		if ( code )
 		{
-		    if ( !dynamic_cast<TokenInt *>(vla_size_expr) )
+		    if ( !(vla_size_expr && vla_size_expr->as_int_tok()) )
 			if ( TokenBase *cap = materialize_vla_dim_capture(code, vla_size_expr, tb) )
 			    code->statements.push_back((TokenStmt *)cap);
 		    for ( size_t i = 1; i < arr_dim_exprs.size(); ++i )
-			if ( arr_dim_exprs[i] && !dynamic_cast<TokenInt *>(arr_dim_exprs[i]) )
+			if ( arr_dim_exprs[i] && !arr_dim_exprs[i]->as_int_tok() )
 			    if ( TokenBase *cap = materialize_vla_dim_capture(code, arr_dim_exprs[i], tb) )
 				code->statements.push_back((TokenStmt *)cap);
 		}
@@ -80048,8 +80048,8 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 	    decl_init_self = var;
 	    td->initialize = parseExpression(new TokenVar(*var), true);
 	    decl_init_self = saved_decl_init_self;
-	    TokenAssign *ta = dynamic_cast<TokenAssign *>(td->initialize);
-	    TokenVar *lhs_var = ta ? dynamic_cast<TokenVar *>(ta->left) : NULL;
+	    TokenAssign *ta = td->initialize ? td->initialize->as_assign_tok() : NULL;
+	    TokenVar *lhs_var = ta && ta->left ? ta->left->as_var_tok() : NULL;
 	    if ( !ta || !lhs_var || &lhs_var->var != var )
 	    {
 		TokenAssign *wrap = new TokenAssign();
@@ -80092,7 +80092,7 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 	    // a constant expression bakes nothing and the object reads as itself.
 	    if ( bakes_const_value && dependent_parse_in_progress )
 	    {
-		TokenAssign *cta = dynamic_cast<TokenAssign *>(td->initialize);
+		TokenAssign *cta = td->initialize ? td->initialize->as_assign_tok() : NULL;
 		const_init_folds = cta && cta->right
 		    && try_eval_known_integer(cta->right, const_init_value);
 	    }

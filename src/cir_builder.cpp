@@ -5807,18 +5807,18 @@ bool CirBuilder::is_class_object_value(TokenBase *arg)
 	// from TokenMember which derives from TokenCallFunc which derives from
 	// TokenVar — an ungated downcast would classify a method CALL (an
 	// rvalue when returning by value) as an addressable member/variable
-	// lvalue. (dynamic_cast stays — TokenVar virtually inherits TokenBase.)
+	// lvalue. (The kind accessors downcast — TokenVar virtually inherits TokenBase.)
 	// The intrinsic value carrier (ddARRAY == madc::value) IS a class
 	// object value: admitting it routes value args through the same
 	// address/coercion arms user-class objects take (object_arg_addr's
 	// named-variable arm, object_cstr_arg in char*/varargs positions)
 	// instead of the materializing tail / raw struct pass.
 	if (arg && arg->type() == TokenType::ttMember)
-		if (TokenMember *tm = dynamic_cast<TokenMember *>(arg))
+		if (TokenMember *tm = arg->as_member_tok())
 			return as_class_instance(tm->datadef()) != NULL
 			    || is_array_object(tm->datadef());
 	if (arg && arg->type() == TokenType::ttVariable)
-		if (TokenVar *tv = dynamic_cast<TokenVar *>(arg)) {
+		if (TokenVar *tv = arg->as_var_tok()) {
 			if (tv->var.is_string_literal())
 				return false;
 			// A reference variable denotes its referent: a user
@@ -6568,9 +6568,10 @@ node_t CirBuilder::flavor_marshal_thunk_def(const char *thunk_sym,
 DataDefCLASS *CirBuilder::object_returning_call_class(TokenBase *arg)
 {
 	// Functional-construction temporary T(args) is a class rvalue too.
-	if (TokenObjTemp *ot = dynamic_cast<TokenObjTemp *>(arg))
+	if (!arg) return NULL;
+	if (TokenObjTemp *ot = arg->as_objtemp_tok())
 		return ot->obj_class;
-	TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(arg);
+	TokenCallFunc *tcf = arg->as_callfunc_tok();
 	if (!tcf) return NULL;
 	FuncDef *fd = NULL;
 	call_target_emit_name(tcf, &fd);
@@ -10864,10 +10865,10 @@ void CirBuilder::unwrap_scalar_braces_list(std::vector<TokenBase *> &inits,
 		TokenBase *child = inits[i];
 		if (!child)
 			continue;	// designator gap — one slot, keep walking
-		bool child_brace = dynamic_cast<TokenStructLit *>(child) != NULL;
+		bool child_brace = child->as_struct_lit_tok() != NULL;
 		DataDef *mu = unqualified_type(mdd);
 		DataDefSTRUCT *msdd = mu
-			? dynamic_cast<DataDefSTRUCT *>(mu) : NULL;
+			? mu->as_struct_dd() : NULL;
 		bool elem_aggregate = (msdd && !mu->is_complex())
 				   || (mu && mu->as_carray_dd());
 		if (child_brace) {
@@ -10877,7 +10878,7 @@ void CirBuilder::unwrap_scalar_braces_list(std::vector<TokenBase *> &inits,
 					TokenBase *sub = clit->inits[k];
 					if (!sub)
 						continue;
-					if (dynamic_cast<TokenStructLit *>(sub))
+					if (sub->as_struct_lit_tok())
 						clit->inits[k] =
 						    unwrap_scalar_braces(sub, mdd);
 					else if (elem_aggregate
@@ -11487,7 +11488,7 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		// `var G = { "a", "b" };`) carry ctor_args instead of initialize
 		// and were dropped the same way (g read null, SILENTLY) — queue
 		// them too; collect_global_ctors' carrier arm emits them.
-		TokenDecl *adecl = dynamic_cast<TokenDecl *>(origin);
+		TokenDecl *adecl = origin ? origin->as_decl_tok() : NULL;
 		bool carrier_defines = adecl && adecl->has_initializer();
 		// `extern var X;` is a DECLARATION: storage, construction, and
 		// cleanup live in the defining TU (the class-instance arm below
@@ -11755,7 +11756,7 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	// __madc_global_init (dynamic init) — skips the upcast on the
 	// placeholder init_node.
 	bool init_deferred = false;
-	TokenDecl *tdecl = dynamic_cast<TokenDecl *>(origin);
+	TokenDecl *tdecl = origin ? origin->as_decl_tok() : NULL;
 
 	// C99 variable-length array local (`int a[n]`, runtime `n`). The parser
 	// recorded the bound in v->vla_size_expr and emitted `a` as a plain
@@ -11920,7 +11921,7 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		// (A multi-receiver `a, b := f()` is no longer a TokenDecl — it
 		// parses as a TokenAssign statement; translate_expr routes it to
 		// multi_return_unpack.)
-		TokenAssign *as = dynamic_cast<TokenAssign *>(init_expr);
+		TokenAssign *as = init_expr ? init_expr->as_assign_tok() : NULL;
 		{
 		if (as && as->right)
 			init_expr = as->right;
@@ -14513,7 +14514,7 @@ static std::vector<c2mir_node_code_t> emit_symbol_ret_specs(FuncDef *fd, bool &r
 
 static bool is_constant_evaluated_call(TokenBase *tb)
 {
-	TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(tb);
+	TokenCallFunc *tcf = tb ? tb->as_callfunc_tok() : NULL;
 	if (!tcf || !tcf->parameters.empty())
 		return false;
 	const madc::dis::istring &name = tcf->var.name;
@@ -25020,7 +25021,7 @@ bool CirBuilder::subscript_root_indices(TokenBase *tb, Variable *&root,
 {
 	root = NULL;
 	idxs.clear();
-	if (TokenSubscript *tsub = dynamic_cast<TokenSubscript *>(tb)) {
+	if (TokenSubscript *tsub = tb ? tb->as_subscript_tok() : NULL) {
 		for (size_t k = tsub->extra_indices.size(); k > 0; k--)
 			idxs.push_back(tsub->extra_indices[k - 1]);
 		idxs.push_back(tsub->index);
@@ -25028,20 +25029,20 @@ bool CirBuilder::subscript_root_indices(TokenBase *tb, Variable *&root,
 		return true;
 	}
 	TokenBase *cur = tb;
-	while (TokenSubscriptExpr *e = dynamic_cast<TokenSubscriptExpr *>(cur)) {
+	while (TokenSubscriptExpr *e = cur ? cur->as_subscript_expr_tok() : NULL) {
 		idxs.push_back(e->index);
 		cur = e->base_expr;
 	}
 	if (idxs.empty())
 		return false;
-	if (TokenSubscript *ts0 = dynamic_cast<TokenSubscript *>(cur)) {
+	if (TokenSubscript *ts0 = cur ? cur->as_subscript_tok() : NULL) {
 		if (!ts0->extra_indices.empty())
 			return false;
 		idxs.push_back(ts0->index);
 		root = &ts0->object;
 		return true;
 	}
-	if (TokenVar *tv0 = dynamic_cast<TokenVar *>(cur)) {
+	if (TokenVar *tv0 = cur ? cur->as_var_tok() : NULL) {
 		root = &tv0->var;
 		return true;
 	}
@@ -25049,11 +25050,11 @@ bool CirBuilder::subscript_root_indices(TokenBase *tb, Variable *&root,
 	// (`(*rp)[j]` == rp[0][j]; `*a` == a[0]) — rewrite deref-as-[0] so
 	// the chain linearizes.
 	Variable *dvar = NULL;
-	if (TokenDerefExpr *tde = dynamic_cast<TokenDerefExpr *>(cur)) {
-		TokenVar *dv = dynamic_cast<TokenVar *>(tde->expr);
+	if (TokenDerefExpr *tde = cur ? cur->as_deref_expr_tok() : NULL) {
+		TokenVar *dv = tde->expr ? tde->expr->as_var_tok() : NULL;
 		if (dv && tde->expr->type() == TokenType::ttVariable)
 			dvar = &dv->var;
-	} else if (TokenDeref *td = dynamic_cast<TokenDeref *>(cur))
+	} else if (TokenDeref *td = cur ? cur->as_deref_tok() : NULL)
 		dvar = &td->var;
 	if (dvar) {
 		TokenInt *zero = new TokenInt((int64_t)0);

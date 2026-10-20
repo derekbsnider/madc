@@ -1,6 +1,13 @@
 # Changelog
 
 ## [Unreleased]
+### The hottest dynamic_casts in the parser and cir builder use the kind accessors
+
+- Token downcasts at the size-hint walker, the call and subscript helpers, the declaration builders and the brace unwrapper read the TokenBase kind accessors (`as_var_tok`, `as_member_tok`, `as_struct_lit_tok`, `as_assign_tok` and the others). A NULL operand is tested first where the cast accepted NULL.
+- `TokenAdd`, `TokenSub` and `TokenComma` have no accessor; their sites test `id()` and then `static_cast`.
+- DataDef downcasts on an `unqualified()` operand read the DataDef kind accessors (`as_struct_dd`, `as_funcdef_dd`). Sites whose operand can be a qualified wrapper keep `dynamic_cast`, because a qualified wrapper forwards the accessors to its base.
+- Recognised declarations, overloads and generated code are unchanged: the `-c` objects for `act_wiz.c` and `sqlite3.c` are byte-identical before and after the change. Callgrind instruction counts drop by 20.0M (-1.2%) for `act_wiz.c` and 135.4M (-1.0%) for `sqlite3.c`.
+
 ### The expression parser's identifier arm compares interned names
 
 - `Program::parseExpr_identifierArm` reads the identifier's name once (`contextual_identifier_name`, the token's interned name) and uses it for every lookup and spelling test in the arm.
