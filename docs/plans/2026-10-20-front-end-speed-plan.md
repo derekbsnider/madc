@@ -133,6 +133,7 @@ the `-c` objects of act_wiz.c and sqlite3.c stayed byte-identical through every 
 | A9 if-condition probe asks lookup | c07e9d5d0 | 1.170× | 1.103× |
 | A10 one DBG, process-wide pre-test | 5c203f89b | 1.160× | 1.097× |
 | A11 vector-backed token stacks | 3bacb056b | 1.153× | 1.092× |
+| B1 a `-D` no frozen header spells binds | 87cb582f6 | 1.092× | 1.091× |
 
 madc's own Ir: act_wiz.c 1,834.7M → 1,586.9M (−13.5%); sqlite3.c 15,436.0M → 13,264.1M (−14.1%). Wall
 stays ~1.30–1.34× c2m (peak RSS 629 vs 402 MB on sqlite3.c): investigated after B1 (§6).
