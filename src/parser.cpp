@@ -24966,10 +24966,12 @@ Variable *TokenCpnd::findVariableLocal(const madc::dis::intern_table &sp, const 
     return NULL;
 }
 
+// Interned names: identity is string equality (one compare per entry, never
+// a byte walk).
 Variable *Method::findVariable(const madc::dis::istring &s)
 {
     for ( variable_vec_iter vvi = variables.begin(); vvi != variables.end(); ++vvi )
-	if ( !s.compare((*vvi)->name) )
+	if ( s == (*vvi)->name )
 	    return *vvi;
 
     return NULL;
@@ -24978,7 +24980,7 @@ Variable *Method::findVariable(const madc::dis::istring &s)
 Variable *Method::findParameter(const madc::dis::istring &s)
 {
     for ( variable_vec_iter vvi = parameters.begin(); vvi != parameters.end(); ++vvi )
-	if ( !s.compare((*vvi)->name) )
+	if ( s == (*vvi)->name )
 	    return *vvi;
 
     return NULL;
@@ -41935,10 +41937,17 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			return ExprStep::Redo;
 		    }
 		}
-		bool ordinary_call_name =
-		    find_variable_for_contextual_type_name(ident_name) != NULL;
-		if ( !ordinary_call_name
-		  && peekToken() && peekToken()->id() == TokenID::tkOpBrk
+		// The ordinary-call-name lookups are read ONLY by the functional-
+		// construction test below (`name (` / `name {` outside member-access
+		// position): ask them only where that test can hold.
+		bool construction_follows = peekToken()
+		  && (peekToken()->id() == TokenID::tkOpBrk
+		   || peekToken()->id() == TokenID::tkOpBrc)
+		  && !isMemberAccessPosition();
+		bool ordinary_call_name = construction_follows
+		  && find_variable_for_contextual_type_name(ident_name) != NULL;
+		if ( construction_follows && !ordinary_call_name
+		  && peekToken()->id() == TokenID::tkOpBrk
 		  && is_dynamic_symbol_fallback_enabled()
 		  && is_dynamic_symbol_allowed(ident_name)
 		  && madcdl_sym_default(ident_name.c_str()) )
@@ -41957,9 +41966,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		// unambiguous — a declaration always has a declarator name
 		// before its brace — and covers plain structs via
 		// parse_functional_type_expression's compound-literal arm.
-		if ( peekToken() && (peekToken()->id() == TokenID::tkOpBrk
-				  || peekToken()->id() == TokenID::tkOpBrc)
-		  && !ordinary_call_name && !isMemberAccessPosition() )
+		if ( construction_follows && !ordinary_call_name )
 		{
 		    if ( TokenDataType *resolved_type =
 			    resolve_declared_type_token(tb, false, true) )

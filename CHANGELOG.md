@@ -1,6 +1,12 @@
 # Changelog
 
 ## [Unreleased]
+### The expression parser's identifier arm asks the ordinary-call lookups only where they are read
+
+- `Program::parseExpr_identifierArm` evaluates `find_variable_for_contextual_type_name` and the dynamic-symbol probe only when the functional-construction test (`name (` / `name {` outside member-access position) can hold. Other identifiers no longer pay for a scope lookup and a dlsym probe whose answer was never read.
+- `Method::findVariable` and `Method::findParameter` compare interned names by identity (`istring` `operator==`) in place of a byte compare.
+- Recognised spellings and parse results are unchanged. The `-c` objects for `act_wiz.c` and `sqlite3.c` are byte-identical before and after the change. Callgrind instruction counts drop by 13.0M (-0.8%) for `act_wiz.c` and 95.0M (-0.7%) for `sqlite3.c`.
+
 ### A class-typed if condition declaration is constructed before the condition reads it
 
 - `if (T q = e)` with a class type now runs q's initialization (copy construction, a prvalue, a braced list) before the condition, and destroys q when the if statement ends. The declaration was lowered to storage only, so the initializer was dropped: a copy read garbage, a zero-valued source took the then-branch, and a class with a destructor was destroyed unconstructed.
