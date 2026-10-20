@@ -462,6 +462,19 @@ roots that declined and whether a bind came first.
 - The parse-cost gate runs on the packed binary: any growth is a finding
   before the re-record, never a silent rebaseline.
 
+Landed 2026-10-20 as 656f8f351, with K1b as the overlap detector (KG
+`k1b_overlap_detector_defer_restart`: an overlapping decline after a bind
+stops binding for the TU; the restart stays designed, not built).
+- Reducer `tests/testndebugcxxbind`: `NDEBUG` defined after `<cstdio>`,
+  before `<cassert>`; g++ and clang++ print `ok`. The packed madc aborted in
+  `assert(0)` with the knob off.
+- Packed Linux suite, no knob: 2139 passed, 2 failed — `testnoreturn_c11`
+  and `testthrow_through_frame`, B205's gates, red without K3 too. win64
+  runs at the 0.106.0 seam (`headerless-win`).
+- Parse-cost: K3 alone raised five C++ rungs (+0.55% to +1.39%). B2 and B3
+  of the front-end speed plan landed first and pay for it; every row ends
+  at or below the old baseline, re-recorded downward.
+
 ## Thread safety
 
 The bind state is per-`Program` (`ForestSide`). The overlay in K2 is a local

@@ -134,6 +134,9 @@ the `-c` objects of act_wiz.c and sqlite3.c stayed byte-identical through every 
 | A10 one DBG, process-wide pre-test | 5c203f89b | 1.160× | 1.097× |
 | A11 vector-backed token stacks | 3bacb056b | 1.153× | 1.092× |
 | B1 a `-D` no frozen header spells binds | 87cb582f6 | 1.092× | 1.091× |
+| B2 decl-name hash index | a45e16b16 | 1.092× | 1.091× |
+| B3 hash sets in `translate_module` | 7962392ce | 1.090× | 1.090× |
+| K3 verified C++ bind always on | 656f8f351 | 1.089× | 1.090× |
 
 madc's own Ir: act_wiz.c 1,834.7M → 1,586.9M (−13.5%); sqlite3.c 15,436.0M → 13,264.1M (−14.1%). Wall
 stays ~1.30–1.34× c2m (peak RSS 629 vs 402 MB on sqlite3.c): investigated after B1 (§6).
@@ -146,6 +149,17 @@ stays ~1.30–1.34× c2m (peak RSS 629 vs 402 MB on sqlite3.c): investigated aft
   `scripts/check-one-dbg-macro.sh` (`Consolidated: dbg_macro`).
 - **A8 ruling:** the plan said "reuse the first lookup"; the pre-check and the arm's resolution are
   different lookups, so the pre-check is asked only where its one reader can fire (`name (` / `name {`).
+- **B2 + B3 pay for K3** (owner 2026-10-20: reduce compile time, never raise it). K3 evaluates every
+  recorded conditional; alone it raised `rung_c8` +1.35%, `rung_stdio` +1.39%, `rung_limits` +1.11%,
+  `rung_type_traits` +1.01%, `rung_vector` +0.55%. B2 (`ForestDeclNames` hash index, optional segment
+  30: a lookup hashes once instead of ~13 `strcmp` through the PLT, ~557 Ir) and B3 (eight
+  membership-only `std::set<istring>` in `translate_module` → `unordered_set`: `istring`'s `<` compares
+  bytes, its hash is the pointer; ~508 Ir per insert) landed first. With K3 every row is at or below the
+  old baseline: `rung_limits` −0.37%, `rung_stdio` −0.66%, `rung_c8` −6.1%, `cxx_stl.forest` −2.3%;
+  re-recorded downward (17 rows).
+- **Measured and dropped:** an `#ifdef` that skips interning its name plus an inlined
+  `CirFrozenForest::pool_cstr` moved every row by ±0.05% on the K3 tree (gains on the large rows,
+  losses on the small); not kept.
 - **Found on the way:** fixed `d97509826` — a class-typed `if (T q = e)` dropped its initializer (silent
   garbage); filed B209 (`S q{s}` refused, [dcl.init.list]/3.2) and B210 (class-typed `while`/`switch`
   condition declarations refused) for a focused parser session.
